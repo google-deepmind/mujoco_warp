@@ -89,6 +89,36 @@
       color: white;
     }
 
+    .tab-buttons {
+      display: flex;
+      gap: 0;
+      margin-bottom: 1.5rem;
+      border-bottom: 2px solid var(--border);
+    }
+
+    .tab-btn {
+      background: none;
+      border: none;
+      border-bottom: 2px solid transparent;
+      margin-bottom: -2px;
+      padding: 0.75rem 1.5rem;
+      cursor: pointer;
+      color: var(--text-dim);
+      font-size: 0.95rem;
+      font-weight: 600;
+      transition: all 0.2s;
+    }
+
+    .tab-btn:hover {
+      color: var(--text);
+      border-bottom-color: var(--text-dim);
+    }
+
+    .tab-btn.active {
+      color: var(--accent);
+      border-bottom-color: var(--accent);
+    }
+
     .chart-container {
       background: var(--bg-card);
       border: 1px solid var(--border);
@@ -281,6 +311,11 @@
     <div class="subtitle">Performance tracking over time</div>
   </header>
 
+  <div class="tab-buttons" id="tab-buttons">
+    <button class="tab-btn active" data-tab="simulation" onclick="switchTab('simulation')">Simulation</button>
+    <button class="tab-btn" data-tab="renderer" onclick="switchTab('renderer')">Rendering</button>
+  </div>
+
   <div class="benchmark-buttons" id="benchmark-buttons"></div>
   <div id="error-message" class="error" style="display: none;"></div>
   <div id="loading" class="loading">Select a benchmark to view data</div>
@@ -295,18 +330,29 @@
   </div>
 
   <div id="charts-container" style="display: none;">
-    <div class="chart-container">
-      <div class="chart-title">Step Time Breakdown (ns/step)</div>
-      <div class="chart-canvas"><canvas id="step-chart"></canvas></div>
+    <!-- Simulation-only charts -->
+    <div id="simulation-charts">
+      <div class="chart-container">
+        <div class="chart-title">Step Time Breakdown (ns/step)</div>
+        <div class="chart-canvas"><canvas id="step-chart"></canvas></div>
+      </div>
+      <div class="chart-container">
+        <div class="chart-title">fwd_position Breakdown (ns/step)</div>
+        <div class="chart-canvas"><canvas id="fwd-position-chart"></canvas></div>
+      </div>
+      <div class="chart-container">
+        <div class="chart-title">fwd_velocity Breakdown (ns/step)</div>
+        <div class="chart-canvas"><canvas id="fwd-velocity-chart"></canvas></div>
+      </div>
     </div>
-    <div class="chart-container">
-      <div class="chart-title">fwd_position Breakdown (ns/step)</div>
-      <div class="chart-canvas"><canvas id="fwd-position-chart"></canvas></div>
+    <!-- Renderer-only charts -->
+    <div id="renderer-charts" style="display: none;">
+      <div class="chart-container">
+        <div class="chart-title">Render Time (ns/step)</div>
+        <div class="chart-canvas"><canvas id="render-chart"></canvas></div>
+      </div>
     </div>
-    <div class="chart-container">
-      <div class="chart-title">fwd_velocity Breakdown (ns/step)</div>
-      <div class="chart-canvas"><canvas id="fwd-velocity-chart"></canvas></div>
-    </div>
+    <!-- Shared charts (both tabs) -->
     <div class="chart-container">
       <div class="chart-title">Memory Usage (bytes)</div>
       <div class="chart-canvas"><canvas id="memory-chart"></canvas></div>
@@ -327,7 +373,7 @@
     ];
 
     // Benchmark metadata: [name, description, nbody, nv, ngeom, nu]
-    const BENCHMARK_DATA = {
+    const SIMULATION_BENCHMARKS = {
       aloha_pot: ['Aloha Pot', 'Lifting a pot off a work table. Exercises convex mesh collision pipeline.', 26, 23, 204, 14],
       aloha_sdf: ['Aloha SDF', 'An SDF cow on the table. Exercises signed distance function queries.', 22, 22, 96, 14],
       aloha_cloth: ['Aloha Cloth', 'Cloth on a work table. Exercises MuJoCo deformable bodies with many DoFs.', 921, 2716, 95, 14],
@@ -341,6 +387,10 @@
       unitree_g1_hfield: ['Unitree G1 Hfield', 'Unitree G1 humanoid on randomized heightfield terrain.', 31, 35, 69, 29]
     };
 
+    const RENDERER_BENCHMARKS = {
+      primitives: ['Primitives', 'GPU ray-traced rendering of spheres, capsules, ellipsoids, cylinders, and boxes.', 126, 131, 131, 0]
+    };
+
     // Execution orders for breakdown charts (matching forward.py)
     const EXECUTION_ORDERS = {
       fwd_position: ['kinematics', 'com_pos', 'camlight', 'flex', 'tendon', 'crb',
@@ -349,22 +399,56 @@
     };
 
     let allCharts = [];
+    let currentTab = 'simulation';
+
+    function getBenchmarks() {
+      return currentTab === 'simulation' ? SIMULATION_BENCHMARKS : RENDERER_BENCHMARKS;
+    }
 
     // --- UI Setup ---
 
-    const buttonsContainer = document.getElementById('benchmark-buttons');
-    Object.keys(BENCHMARK_DATA).forEach(name => {
-      const btn = document.createElement('button');
-      btn.className = 'benchmark-btn';
-      btn.textContent = name.replace(/_/g, ' ');
-      btn.dataset.benchmark = name;
-      btn.addEventListener('click', () => loadBenchmark(name));
-      buttonsContainer.appendChild(btn);
-    });
+    function switchTab(tab) {
+      currentTab = tab;
+
+      // Update tab button styles
+      document.querySelectorAll('.tab-btn').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.tab === tab);
+      });
+
+      // Rebuild benchmark buttons
+      const buttonsContainer = document.getElementById('benchmark-buttons');
+      buttonsContainer.innerHTML = '';
+      const benchmarks = getBenchmarks();
+      Object.keys(benchmarks).forEach(name => {
+        const btn = document.createElement('button');
+        btn.className = 'benchmark-btn';
+        btn.textContent = name.replace(/_/g, ' ');
+        btn.dataset.benchmark = name;
+        btn.addEventListener('click', () => loadBenchmark(name));
+        buttonsContainer.appendChild(btn);
+      });
+
+      // Reset UI
+      allCharts.forEach(c => c.destroy());
+      allCharts = [];
+      document.getElementById('charts-container').style.display = 'none';
+      document.getElementById('benchmark-header').classList.remove('visible');
+      document.getElementById('loading').style.display = 'block';
+      document.getElementById('loading').textContent = 'Select a benchmark to view data';
+      document.getElementById('error-message').style.display = 'none';
+
+      // Toggle chart sections
+      document.getElementById('simulation-charts').style.display = tab === 'simulation' ? '' : 'none';
+      document.getElementById('renderer-charts').style.display = tab === 'renderer' ? '' : 'none';
+
+      // Auto-load first benchmark
+      const defaultBenchmark = Object.keys(benchmarks)[0];
+      if (defaultBenchmark) loadBenchmark(defaultBenchmark);
+    }
 
     function updateBenchmarkHeader(benchmarkName) {
       const header = document.getElementById('benchmark-header');
-      const meta = BENCHMARK_DATA[benchmarkName];
+      const meta = getBenchmarks()[benchmarkName];
       if (!meta) { header.classList.remove('visible'); return; }
 
       const [name, desc, nbody, nv, ngeom, nu, solver] = meta;
@@ -524,9 +608,13 @@
       const timestamps = data.map(d => new Date(d.timestamp));
       const commits = data.map(d => d.commit);
 
-      renderStepChart(data, timestamps, commits, textDim, border);
-      renderBreakdownChart(data, timestamps, commits, textDim, border, 'fwd_position');
-      renderBreakdownChart(data, timestamps, commits, textDim, border, 'fwd_velocity');
+      if (currentTab === 'simulation') {
+        renderStepChart(data, timestamps, commits, textDim, border);
+        renderBreakdownChart(data, timestamps, commits, textDim, border, 'fwd_position');
+        renderBreakdownChart(data, timestamps, commits, textDim, border, 'fwd_velocity');
+      } else {
+        renderRenderChart(data, timestamps, commits, textDim, border);
+      }
       renderMemoryChart(data, timestamps, commits, textDim, border);
       renderJitChart(data, timestamps, commits, textDim, border);
     }
@@ -600,6 +688,27 @@
       allCharts.push(new Chart(ctx, { type: 'line', data: { datasets }, options: baseChartOptions(commits, textDimColor, borderColor, true) }));
     }
 
+    function renderRenderChart(data, timestamps, commits, textDimColor, borderColor) {
+      const ctx = document.getElementById('render-chart');
+      if (!ctx) return;
+
+      const prefix = 'render.';
+      const keys = Object.keys(data[0])
+        .filter(k => k.startsWith(prefix) && !k.substring(prefix.length).includes('.'))
+        .sort();
+
+      const datasets = keys.map((key, idx) =>
+        createStackedDataset(key.replace(prefix, ''), data, key, timestamps, commits, COLORS[idx % COLORS.length], 'render')
+      );
+
+      const opts = baseChartOptions(commits, textDimColor, borderColor, true);
+      opts.scales.x.title = { display: true, text: 'Date', color: textDimColor };
+      opts.scales.y.title = { display: true, text: 'Time (ns/step)', color: textDimColor };
+      opts.scales.y.ticks.callback = v => v.toLocaleString();
+
+      allCharts.push(new Chart(ctx, { type: 'line', data: { datasets }, options: opts }));
+    }
+
     function createStackedDataset(label, data, key, timestamps, commits, color, stack) {
       return {
         label,
@@ -668,8 +777,8 @@
       }));
     }
 
-    // Load default benchmark
-    loadBenchmark('aloha_pot');
+    // Initialize with simulation tab
+    switchTab('simulation');
   </script>
 
   <footer>
