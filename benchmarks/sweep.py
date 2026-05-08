@@ -56,9 +56,7 @@ from datetime import timezone
 from pathlib import Path
 from typing import Iterable
 
-REPO_URL = "git@github.com:google-deepmind/mujoco_warp.git"
-RESULTS_BRANCH = "gh-pages"
-
+_ARGS = None  # module level variable that gets populated with argparse results
 
 logging.basicConfig(format="[%(asctime)s] %(message)s", datefmt="%Y-%m-%d %H:%M:%S", level=logging.INFO)
 log = logging.getLogger(__name__)
@@ -81,116 +79,74 @@ def _git(*args, cwd: Path | None = None, check: bool = True):
 
 def _uv_run(*args, cwd: Path | None = None):
   """Run a uv command, returning CompletedProcess."""
-  env = os.environ.copy()
-  # bypass corporate index settings that may interfere with uv
-  env["UV_DEFAULT_INDEX"] = "https://pypi.org/simple"
-  env["PIP_INDEX_URL"] = "https://pypi.org/simple"
   log.info("Command: uv run %s", " ".join(args))
-  return subprocess.run(("uv", "run") + args, cwd=cwd, env=env, check=True, capture_output=True, text=True)
-
-
-# asset management
-
-
-def _asset_dir(asset: dict) -> Path:
-  """Returns a cache-relative dir for an asset."""
-  uri = asset["source"]
-  if uri.endswith(".git"):
-    return Path(uri.split("/")[-1].replace(".git", "")) / asset["ref"]
-  raise ValueError(f"Unsupported asset uri: {uri}")
-
-
-def _asset_fetch(asset: dict, dst_dir: Path):
-  """Clone an asset repository."""
-  uri = asset["source"]
-  if uri.endswith(".git"):
-    _git("clone", uri, str(dst_dir), "--depth", "1", "--revision", asset["ref"])
-  else:
-    raise ValueError(f"Unsupported asset uri: {uri}")
+  return subprocess.run(("uv", "run") + args, cwd=cwd, check=True, capture_output=True, text=True)
 
 
 # benchmark discovery, assembly, and execution
 
 
-def _discover_benchmarks(benchmarks_dir: Path) -> Iterable[dict]:
-  """Discover benchmarks from __init__.py modules under benchmarks_dir.
+def _discover_benchmarks(input_dir: str) -> Iterable[dict]:
+  """Discover benchmarks from __init__.py modules under benchmarks_dir."""
+  benchmarks_dir = Path(input_dir) / "benchmarks"
 
-  Falls back to config.txt for older commits that predate the modular layout.
-  Handles re-discovery across git checkouts by reloading previously imported
-  benchmark modules.
-  """
   if benchmarks_dir.as_posix() not in sys.path:
     sys.path.append(benchmarks_dir.as_posix())
 
   importlib.invalidate_caches()
 
-  for item_path in sorted(benchmarks_dir.iterdir()):
-    if not item_path.is_dir() or not (item_path / "__init__.py").exists():
+  for benchmark in sorted(benchmarks_dir.iterdir()):
+    if not (benchmark / "__init__.py").exists():
       continue
-    name = item_path.name
-    if name in sys.modules:
-      # reload to pick up changes from the new checkout
-      module = importlib.reload(sys.modules[name])
+    if benchmark.name in sys.modules:
+      module = importlib.reload(sys.modules[benchmark.name])
     else:
-      module = importlib.import_module(name)
-    assets = getattr(module, "ASSETS", [])
+      module = importlib.import_module(benchmark.name)
     for bm in getattr(module, "BENCHMARKS", []):
-      bm["_module_dir"] = item_path
-      bm["_assets"] = assets
-      if "replay" in bm:
-        bm["replay"] = str(item_path / bm["replay"])
-      yield bm
+      if re.match(_ARGS.filter, bm["name"]):
+        bm["_dir"] = benchmark
+        yield bm
 
 
-def _assemble_benchmark(bm: dict, asset_base: Path) -> Path:
-  """Assemble benchmark files into asset_base/<name>/, returns MJCF path."""
-  name = bm["name"]
-  module_dir = bm["_module_dir"]
-  benchmark_dir = asset_base / name
-
+def _assemble_benchmark(bm: dict):
+  """Assemble benchmark files into assets root."""
+  benchmark_dir = Path(_ARGS.assets_root) / bm["name"]
   if benchmark_dir.exists():
     shutil.rmtree(benchmark_dir)
   benchmark_dir.mkdir(parents=True)
 
-  # fetch external assets
-  for asset in bm["_assets"]:
-    asset_dir = asset_base / _asset_dir(asset)
-    if not asset_dir.exists():
-      _asset_fetch(asset, asset_dir)
-
-  # copy asset files into benchmark dir
   for asset_spec in bm.get("assets", []):
-    asset, src_subpath, dst_subpath = (asset_spec + ("",))[:3]
-    src_root = asset_base / _asset_dir(asset)
-    if "*" in src_subpath:
-      src_parts = Path(src_subpath).parts
-      offset = src_parts.index("*") - len(src_parts)
-      for src_path in sorted(src_root.glob(src_subpath)):
-        if not src_path.is_dir():
+    repo, repo_path, dst_path = (asset_spec + ("",))[:3]
+
+    # repo clones are stored in the format: <assets_root>/_git/<repo_source>/<repo_ref>
+    repo_dir = Path(_ARGS.assets_root) / "_git" / Path(repo["source"]).stem / repo["ref"]
+    if not repo_dir.exists():
+      repo_dir.mkdir(parents=True, exist_ok=True)
+      _git("clone", repo["source"], repo_dir.as_posix(), "--depth", "1", "--revision", repo["ref"])
+
+    if "*" in repo_path:
+      parts = Path(repo_path).parts
+      offset = parts.index("*") - len(parts)
+      for path in sorted(repo_dir.glob(repo_path)):
+        if not path.is_dir():
           continue
-        segment = src_path.parts[offset]
-        dst_path = benchmark_dir / dst_subpath / segment
-        dst_path.mkdir(parents=True, exist_ok=True)
-        shutil.copytree(src_path, dst_path, dirs_exist_ok=True)
+        dst = benchmark_dir / dst_path / path.parts[offset]
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(path, dst, dirs_exist_ok=True)
     else:
-      dst_path = benchmark_dir / dst_subpath
-      dst_path.parent.mkdir(parents=True, exist_ok=True)
-      shutil.copytree(src_root / src_subpath, dst_path, dirs_exist_ok=True)
+      shutil.copytree(repo_dir / repo_path, benchmark_dir / dst_path, dirs_exist_ok=True)
 
   # copy benchmark module files on top
-  shutil.copytree(module_dir, benchmark_dir, dirs_exist_ok=True)
-  return benchmark_dir / bm["mjcf"]
+  shutil.copytree(bm["_dir"], benchmark_dir, dirs_exist_ok=True)
 
 
-def _run_benchmark(bm: dict, xml_path: Path, benchmark_dir: Path, work_dir: Path, *, mock: bool) -> dict | None:
-  """Run a single benchmark via uv, returning parsed JSON or None."""
-  name = bm["name"]
-  nworld = 1 if mock else bm["nworld"]
-
+def _run_benchmark(bm: dict, input_dir: Path, *, mock: bool) -> dict:
+  """Run a single benchmark via uv, returning parsed JSON."""
+  mjcf_path = Path(_ARGS.assets_root) / bm["name"] / bm["mjcf"]
   cmd = [
     "mjwarp-testspeed",
-    str(xml_path),
-    f"--nworld={nworld}",
+    mjcf_path.as_posix(),
+    f"--nworld={1 if mock else bm['nworld']}",
     f"--clear_warp_cache={not mock}",
     "--format=json",
     "--event_trace=true",
@@ -198,170 +154,152 @@ def _run_benchmark(bm: dict, xml_path: Path, benchmark_dir: Path, work_dir: Path
     "--measure_solver=true",
     "--measure_alloc=true",
   ]
-  for field in ("nconmax", "njmax"):
-    if field in bm:
-      cmd.append(f"--{field}={bm[field]}")
+  if "nconmax" in bm:
+    cmd.append(f"--nconmax={bm['nconmax']}")
+  if "njmax" in bm:
+    cmd.append(f"--njmax={bm['njmax']}")
   if "replay" in bm:
-    replay_val = bm["replay"]
-    if replay_val.endswith(".npz"):
-      # discovery resolves replay to work_dir; remap to assembled benchmark_dir
-      replay_val = str(benchmark_dir / Path(replay_val).name)
-    cmd.append(f"--replay={replay_val}")
+    replay_path = Path(_ARGS.assets_root) / bm["name"] / bm["replay"]
+    cmd.append(f"--replay={replay_path.as_posix()}")
   if mock:
-    cmd.append(f"--nstep=10")
+    cmd.append("--nstep=10")
   elif "nstep" in bm:
     cmd.append(f"--nstep={bm['nstep']}")
 
-  try:
-    result = _uv_run(*cmd, cwd=work_dir)
-  except subprocess.CalledProcessError as e:
-    log.error("Benchmark %s failed:\n%s", name, e.stderr)
-    return None
+  return json.loads(_uv_run(*cmd, cwd=input_dir).stdout)
 
-  # parse JSON from last line of stdout (uv may emit log lines before it)
-  try:
-    return json.loads(result.stdout.strip().splitlines()[-1])
-  except (json.JSONDecodeError, IndexError) as e:
-    log.error("Failed to parse JSON for %s: %s", name, e)
-    return None
+
+def _sweep(input_dir: str, output_dir: str):
+  """Run the benchmark sweep."""
+  # read commit range
+  range_file = Path(output_dir) / "nightly" / "commit_range.json"
+  if not range_file.exists():
+    log.error("No commit_range.json found at %s", range_file)
+    sys.exit(1)
+
+  commit_range = json.loads(range_file.read_text())
+  log.info("Current commit range: %s..%s", commit_range["from"][:12], commit_range["to"][:12])
+
+  # determine commits to process
+  if _ARGS.direction == "forward":
+    end = "HEAD" if _ARGS.target.isdigit() else _ARGS.target
+    result = _git("rev-list", "--reverse", f"{commit_range['to']}..{end}", cwd=input_dir)
+  else:
+    if _ARGS.target == "root" or _ARGS.target.isdigit():
+      result = _git("rev-list", f"{commit_range['from']}^", cwd=input_dir)
+    else:
+      result = _git("rev-list", f"{_ARGS.target}^..{commit_range['from']}^", cwd=input_dir)
+
+  commits = result.stdout.strip().splitlines()
+  if _ARGS.target.isdigit():
+    commits = commits[: int(_ARGS.target)]
+
+  log.info("Found %d commit(s) to process (%s).", len(commits), _ARGS.direction)
+
+  if not commits:
+    return
+
+  # when running backwards, only discover benchmarks once at the start
+  # when running forwards, re-discover on every commit (to catch new benchmarks)
+  benchmarks: dict[str, dict] = {}
+
+  for i, commit in enumerate(commits):
+    log.info("[%d/%d] Processing commit %s", i + 1, len(commits), commit)
+
+    _git("restore", "--staged", "--worktree", ".", cwd=input_dir)
+    _git("checkout", commit, cwd=input_dir)
+
+    # get commit timestamp (UTC ISO 8601)
+    timestamp = _git("log", "-1", "--format=%cd", "--date=format-local:%Y-%m-%dT%H:%M:%S+00:00", commit, cwd=input_dir)
+
+    # discover and assemble benchmarks
+    if _ARGS.direction == "forward" or i == 0:
+      benchmarks = {}
+      for bm in _discover_benchmarks(input_dir):
+        _assemble_benchmark(bm)
+        benchmarks[bm["name"]] = bm
+
+      log.info("Discovered %d benchmarks for commit %s: [%s]", len(benchmarks), commit, ", ".join(benchmarks.keys()))
+
+    for name, bm in benchmarks.items():
+      log.info("Running benchmark: %s", name)
+      try:
+        result = _run_benchmark(bm, input_dir, mock=_ARGS.mock)
+      except Exception as e:
+        log.error("Benchmark %s failed: %s", name, e)
+        continue
+      result["commit"] = commit
+      result["timestamp"] = timestamp.stdout.strip()
+      path = Path(output_dir) / "nightly" / f"{name}.jsonl"
+      line = json.dumps(result) + "\n"
+      if _ARGS.direction == "forward":
+        with path.open("a") as f:
+          f.write(line)
+      else:
+        text = path.read_text() if path.exists() else ""
+        path.write_text(line + text)
+      log.info("Benchmark %s completed.", name)
+
+    # update commit range after each commit for crash safety
+    commit_range["to" if _ARGS.direction == "forward" else "from"] = commit
+    range_file.write_text(json.dumps(commit_range, indent=2) + "\n")
 
 
 def main():
+  global _ARGS
   parser = argparse.ArgumentParser(description="Sweep benchmarks forward or backward across commits.")
-  parser.add_argument("-f", "--filter", default="", help="filter benchmarks by name (regex)")
+  parser.add_argument(
+    "--input", default="git@github.com:google-deepmind/mujoco_warp.git", help="git uri or path to mujoco_warp repo to benchmark"
+  )
+  parser.add_argument(
+    "--output",
+    default="git@github.com:google-deepmind/mujoco_warp.git#gh-pages",
+    help="git uri or path to repo to write benchmark results",
+  )
+  parser.add_argument("-f", "--filter", default=".*", help="filter benchmarks by name (regex)")
   parser.add_argument("--mock", action="store_true", help="run with nworld=1 nstep=10 for fast testing")
   parser.add_argument("--dry_run", action="store_true", help="run benchmarks but don't push results")
-  parser.add_argument("--results_dir", default="", help="path to gh-pages nightly/ directory (auto-cloned if empty)")
-  parser.add_argument("--assets", default="/tmp/benchmark_assets", help="directory to assemble benchmark assets")
-
+  parser.add_argument("--assets_root", default="/tmp/benchmark_assets", help="root directory to assemble benchmark assets")
   sub = parser.add_subparsers(dest="direction", required=True)
   fwd = sub.add_parser("forward", help="sweep from last benchmarked commit toward HEAD")
   fwd.add_argument("target", nargs="?", default="HEAD", help="commit SHA or N (default: HEAD)")
   bwd = sub.add_parser("back", help="sweep backward from earliest benchmarked commit")
   bwd.add_argument("target", nargs="?", default="root", help="commit SHA or N (default: root)")
 
-  args = parser.parse_args()
-  forward = args.direction == "forward"
+  _ARGS = parser.parse_args()
 
-  # parse target: integer count or commit SHA
-  count, target_sha = None, None
-  if args.target is not None:
-    try:
-      count = int(args.target)
-    except ValueError:
-      target_sha = args.target
-
-  # benchmarks are discovered from the work_dir checkout, not locally
-  asset_base = Path(args.assets)
-
-  # clone a fresh copy of the repo to benchmark against
-  work_dir = Path(tempfile.mkdtemp(prefix="mujoco_warp-sweep-"))
-  log.info("Cloning mujoco_warp to %s...", work_dir)
-  _git("clone", REPO_URL, str(work_dir))
-
-  # set up results directory (either local path or fresh clone of gh-pages)
-  results_repo = None
-  if args.results_dir:
-    results_path = Path(args.results_dir)
-  else:
-    results_repo = Path(tempfile.mkdtemp(prefix="mujoco_warp-results-"))
-    log.info("Cloning results branch to %s...", results_repo)
-    _git("clone", "--branch", RESULTS_BRANCH, "--depth", "1", REPO_URL, str(results_repo))
-    results_path = results_repo / "nightly"
-
-  # read commit range
-  range_file = results_path / "commit_range.json"
-  if not range_file.exists():
-    log.error("No commit_range.json found at %s", range_file)
-    sys.exit(1)
-
-  commit_range = json.loads(range_file.read_text())
-  log.info("Current range: %s..%s", commit_range["from"][:12], commit_range["to"][:12])
-
-  # determine commits to process
-  if forward:
-    end = "HEAD" if args.target.isdigit() else args.target
-    result = _git("rev-list", "--reverse", f"{commit_range['to']}..{end}", cwd=work_dir)
-  else:
-    if args.target == "root" or args.target.isdigit():
-      result = _git("rev-list", f"{commit_range['from']}^", cwd=work_dir)
+  def clone_if_needed(uri):
+    if ":" not in uri:
+      return uri
+    path = tempfile.mkdtemp(prefix="mjwarp-sweep")
+    spec = uri.rsplit("#", 1)
+    if len(spec) < 2:
+      _git("clone", spec[0], path)
     else:
-      result = _git("rev-list", f"{target_sha}^..{commit_range['from']}^", cwd=work_dir)
+      _git("clone", spec[0], path, "--branch", spec[1])
+    return path
 
-  commits = result.stdout.strip().splitlines()
-  if args.target.isdigit():
-    commits = commits[: int(args.target)]
+  input_dir = clone_if_needed(_ARGS.input)
+  output_dir = clone_if_needed(_ARGS.output)
 
-  log.info("Found %d commit(s) to process (%s).", len(commits), args.direction)
+  _sweep(input_dir, output_dir)
 
-  if not commits:
+  if _ARGS.dry_run:
+    log.info("Dry run — temp dirs left for inspection: input_dir=%s output_dir=%s", input_dir, output_dir)
     return
 
-  # run benchmarks and write results after each one
-  # backward sweeps: discover + assemble once from the newest commit (first
-  # in the list), then reuse for every older commit.
-  cached_benchmarks: dict[str, tuple[dict, Path]] | None = None
+  # push results if output was a repo
+  if ":" in _ARGS.output and _git("status", "--porcelain", cwd=output_dir).stdout:
+    log.info("Pushing changes from %s back to %s.", output_dir, _ARGS.output)
+    _git("add", ".", cwd=output_dir)
+    msg = f"Update benchmarks ({_ARGS.direction}) - {datetime.now(timezone.utc):%Y-%m-%d %H:%M:%S UTC}"
+    _git("commit", "-m", msg, cwd=output_dir)
+    _git("push", "origin", *_ARGS.output.rsplit("#", 1)[1:], cwd=output_dir)
 
-  for i, commit in enumerate(commits):
-    log.info("[%d/%d] Processing commit %s", i + 1, len(commits), commit)
-
-    _git("restore", "--staged", "--worktree", ".", cwd=work_dir)
-    _git("checkout", commit, cwd=work_dir)
-
-    # get commit timestamp (UTC ISO 8601)
-    ts = _git("log", "-1", "--format=%cd", "--date=format-local:%Y-%m-%dT%H:%M:%S+00:00", commit, cwd=work_dir)
-    commit_timestamp = ts.stdout.strip()
-
-    # discover and assemble benchmarks
-    if forward or cached_benchmarks is None:
-      cached_benchmarks = {}
-      for bm in _discover_benchmarks(work_dir / "benchmarks"):
-        if args.filter and not re.search(args.filter, bm["name"]):
-          continue
-        xml_path = _assemble_benchmark(bm, asset_base)
-        cached_benchmarks[bm["name"]] = (bm, xml_path)
-
-    for name, (bm, xml_path) in cached_benchmarks.items():
-      log.info("Running benchmark: %s", name)
-
-      benchmark_dir = asset_base / name
-      data = _run_benchmark(bm, xml_path, benchmark_dir, work_dir, mock=args.mock)
-      if data is None:
-        continue
-
-      data["commit"] = commit
-      data["timestamp"] = commit_timestamp
-      path = results_path / f"{name}.jsonl"
-      text = path.read_text() if path.exists() else ""
-      if forward:
-        path.write_text(text + json.dumps(data) + "\n")
-      else:
-        path.write_text(json.dumps(data) + "\n" + text)
-
-      log.info("Benchmark %s completed.", name)
-
-    # update commit range after each commit for crash safety
-    commit_range["to" if forward else "from"] = commit
-    range_file.write_text(json.dumps(commit_range, indent=2) + "\n")
-    log.info("Updated commit range: %s..%s", commit_range["from"][:12], commit_range["to"][:12])
-
-  # push results
-  if args.dry_run:
-    log.info("Dry run - results written to %s but not pushed.", results_path)
-    return
-
-  log.info("Committing and pushing results...")
-  _git("add", "nightly/*.jsonl", "nightly/commit_range.json", cwd=results_repo)
-
-  diff = _git("diff", "--staged", "--quiet", cwd=results_repo, check=False)
-  if diff.returncode == 0:
-    log.info("No changes to commit.")
-    return
-
-  msg = f"Update benchmarks ({args.direction}) - {datetime.now(timezone.utc):%Y-%m-%d %H:%M:%S UTC}"
-  _git("commit", "-m", msg, cwd=results_repo)
-  _git("push", "origin", RESULTS_BRANCH, cwd=results_repo)
-  log.info("Successfully pushed results to %s", RESULTS_BRANCH)
+  if ":" in _ARGS.input:
+    shutil.rmtree(input_dir, ignore_errors=True)
+  if ":" in _ARGS.output:
+    shutil.rmtree(output_dir, ignore_errors=True)
 
 
 if __name__ == "__main__":

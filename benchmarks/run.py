@@ -21,8 +21,8 @@ Usage: python benchmarks/run.py [flags]
 
 Example:
   python benchmarks/run.py -f humanoid
-  python benchmarks/run.py --commit abc123f
-  python benchmarks/run.py --local
+  python benchmarks/run.py --input git@github.com:google-deepmind/mujoco_warp.git#abc123f
+  python benchmarks/run.py --input .
 """
 
 import argparse
@@ -36,13 +36,16 @@ import sys
 import tempfile
 from pathlib import Path
 
-REPO_URL = "git@github.com:google-deepmind/mujoco_warp.git"
+_ARGS = None  # module level variable that gets populated with argparse results
 
 logging.basicConfig(format="[%(asctime)s] %(message)s", datefmt="%Y-%m-%d %H:%M:%S", level=logging.INFO)
 log = logging.getLogger(__name__)
 
 
-def _git(*args, cwd: Path | None = None):
+# external commands
+
+
+def _git(*args, cwd: Path | None = None, check: bool = True):
   """Run a git command, returning CompletedProcess."""
   env = os.environ.copy()
   env["TZ"] = "UTC"
@@ -50,152 +53,162 @@ def _git(*args, cwd: Path | None = None):
   if ssh_key.exists():
     env["GIT_SSH_COMMAND"] = f'ssh -i "{ssh_key}" -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new'
   log.info("Command: git %s", " ".join(args))
-  return subprocess.run(("git",) + args, cwd=cwd, env=env, check=True, capture_output=True, text=True)
+  return subprocess.run(("git",) + args, cwd=cwd, env=env, check=check, capture_output=True, text=True)
 
 
 def _uv_run(*args, cwd: Path | None = None):
   """Run a uv command, returning CompletedProcess."""
-  env = os.environ.copy()
-  # bypass corporate index settings that may interfere with uv
-  env["UV_DEFAULT_INDEX"] = "https://pypi.org/simple"
-  env["PIP_INDEX_URL"] = "https://pypi.org/simple"
   log.info("Command: uv run %s", " ".join(args))
-  return subprocess.run(("uv", "run") + args, cwd=cwd, env=env, check=True, capture_output=True, text=True)
+  return subprocess.run(("uv", "run") + args, cwd=cwd, check=True, capture_output=True, text=True)
 
 
-def _asset_dir(asset: dict) -> Path:
-  """Returns a base dir for an asset uri in the cache."""
-  uri = asset["source"]
-  if uri.endswith(".git"):
-    return Path(uri.split("/")[-1].replace(".git", "")) / asset["ref"]
-  raise ValueError(f"Unsupported asset uri: {uri}")
+# benchmark discovery, assembly, and execution
 
 
-def _asset_fetch(asset: dict, dst_dir: Path):
-  uri = asset["source"]
-  if uri.endswith(".git"):
-    _git("clone", uri, str(dst_dir), "--depth", "1", "--revision", asset["ref"])
-  else:
-    raise ValueError(f"Unsupported asset uri: {uri}")
+def _discover_benchmarks(input_dir: str):
+  """Discover benchmarks from __init__.py modules under input_dir/benchmarks."""
+  benchmarks_dir = Path(input_dir) / "benchmarks"
+
+  if benchmarks_dir.as_posix() not in sys.path:
+    sys.path.insert(0, benchmarks_dir.as_posix())
+
+  importlib.invalidate_caches()
+
+  for benchmark in sorted(benchmarks_dir.iterdir()):
+    if not (benchmark / "__init__.py").exists():
+      continue
+    if benchmark.name in sys.modules:
+      module = importlib.reload(sys.modules[benchmark.name])
+    else:
+      module = importlib.import_module(benchmark.name)
+    for bm in getattr(module, "BENCHMARKS", []):
+      if re.match(_ARGS.filter, bm["name"]):
+        bm["_dir"] = benchmark
+        yield bm
+
+
+def _assemble_benchmark(bm: dict):
+  """Assemble benchmark files into assets root."""
+  benchmark_dir = Path(_ARGS.assets_root) / bm["name"]
+  if benchmark_dir.exists():
+    shutil.rmtree(benchmark_dir)
+  benchmark_dir.mkdir(parents=True)
+
+  for asset_spec in bm.get("assets", []):
+    repo, repo_path, dst_path = (asset_spec + ("",))[:3]
+
+    # repo clones are stored in the format: <assets_root>/_git/<repo_source>/<repo_ref>
+    repo_dir = Path(_ARGS.assets_root) / "_git" / Path(repo["source"]).stem / repo["ref"]
+    if not repo_dir.exists():
+      repo_dir.mkdir(parents=True, exist_ok=True)
+      _git("clone", repo["source"], repo_dir.as_posix(), "--depth", "1", "--revision", repo["ref"])
+
+    if "*" in repo_path:
+      parts = Path(repo_path).parts
+      offset = parts.index("*") - len(parts)
+      for path in sorted(repo_dir.glob(repo_path)):
+        if not path.is_dir():
+          continue
+        dest = benchmark_dir / dst_path / path.parts[offset]
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(path, dest, dirs_exist_ok=True)
+    else:
+      shutil.copytree(repo_dir / repo_path, benchmark_dir / dst_path, dirs_exist_ok=True)
+
+  # copy benchmark module files on top
+  shutil.copytree(bm["_dir"], benchmark_dir, dirs_exist_ok=True)
+
+
+def _run_benchmark(bm: dict, input_dir: Path) -> dict:
+  """Run a single benchmark via uv, returning parsed JSON."""
+  mjcf_path = Path(_ARGS.assets_root) / bm["name"] / bm["mjcf"]
+  cmd = [
+    "mjwarp-testspeed",
+    mjcf_path.as_posix(),
+    f"--nworld={bm['nworld']}",
+    f"--clear_warp_cache={_ARGS.clear_warp_cache}",
+    "--format=short",
+    "--event_trace=true",
+    "--memory=true",
+    "--measure_solver=true",
+    "--measure_alloc=true",
+  ]
+  if "nconmax" in bm:
+    cmd.append(f"--nconmax={bm['nconmax']}")
+  if "njmax" in bm:
+    cmd.append(f"--njmax={bm['njmax']}")
+  if "replay" in bm:
+    replay_path = Path(_ARGS.assets_root) / bm["name"] / bm["replay"]
+    cmd.append(f"--replay={replay_path.as_posix()}")
+  if "nstep" in bm:
+    cmd.append(f"--nstep={bm['nstep']}")
+
+  result = _uv_run(*cmd, cwd=input_dir)
+
+  # parse short-format output into a dict
+  data = {}
+  for line in result.stdout.splitlines():
+    if not line.strip():
+      continue
+    parts = line.split()
+    if len(parts) >= 2:
+      data[parts[0]] = " ".join(parts[1:])
+  return data
 
 
 def main():
+  global _ARGS
   parser = argparse.ArgumentParser(description="Run MuJoCo Warp benchmarks.")
-  parser.add_argument("-f", "--filter", default="", help="filter benchmarks by name (regex)")
-  parser.add_argument("--assets", default="/tmp/benchmark_assets", help="directory to assemble benchmark assets")
+  parser.add_argument("--input", default=".", help="git uri or path to mujoco_warp repo to benchmark")
+  parser.add_argument("-f", "--filter", default=".*", help="filter benchmarks by name (regex)")
+  parser.add_argument("--assets_root", default="/tmp/benchmark_assets", help="root directory to assemble benchmark assets")
   parser.add_argument(
     "--clear_warp_cache",
     default=True,
     type=lambda v: v.lower() not in ("false", "0"),
     help="clear warp caches (kernel, LTO, CUDA compute)",
   )
-  parser.add_argument("--commit", default=None, help="checkout a specific commit SHA (implies clone)")
-  parser.add_argument("--local", action="store_true", help="run from local checkout instead of cloning")
-  args = parser.parse_args()
 
-  asset_base = Path(args.assets)
+  _ARGS = parser.parse_args()
 
-  if args.local:
-    work_dir = Path(__file__).resolve().parent.parent
-    log.info("Running from local checkout: %s", work_dir)
-  else:
-    work_dir = Path(tempfile.mkdtemp(prefix="mujoco_warp-run-"))
-    log.info("Cloning mujoco_warp to %s...", work_dir)
-    _git("clone", REPO_URL, str(work_dir))
-    if args.commit:
-      _git("checkout", args.commit, cwd=work_dir)
-      log.info("Checked out commit %s", args.commit)
-
-  benchmarks_dir = work_dir / "benchmarks"
-  if benchmarks_dir.as_posix() not in sys.path:
-    sys.path.insert(0, benchmarks_dir.as_posix())
-
-  # discover and run benchmarks
-  for item_path in sorted(benchmarks_dir.iterdir()):
-    if not item_path.is_dir() or not (item_path / "__init__.py").exists():
-      continue
-
-    name = item_path.name
-    if name in sys.modules:
-      module = importlib.reload(sys.modules[name])
+  def clone_if_needed(uri):
+    if ":" not in uri:
+      return uri
+    path = tempfile.mkdtemp(prefix="mjwarp-run-")
+    spec = uri.rsplit("#", 1)
+    if len(spec) < 2:
+      _git("clone", spec[0], path)
     else:
-      module = importlib.import_module(name)
+      _git("clone", spec[0], path, "--branch", spec[1])
+    return path
 
-    for asset in getattr(module, "ASSETS", []):
-      asset_dir = asset_base / _asset_dir(asset)
-      if not asset_dir.exists():
-        _asset_fetch(asset, asset_dir)
+  input_dir = clone_if_needed(_ARGS.input)
 
-    for bm in getattr(module, "BENCHMARKS", []):
-      bm_name = bm["name"]
+  try:
+    benchmarks = {}
+    for bm in _discover_benchmarks(input_dir):
+      _assemble_benchmark(bm)
+      benchmarks[bm["name"]] = bm
 
-      if args.filter and not re.search(args.filter, bm_name):
-        continue
+    log.info("Discovered %d benchmarks: [%s]", len(benchmarks), ", ".join(benchmarks.keys()))
 
-      benchmark_dir = asset_base / bm_name
-      if benchmark_dir.exists():
-        shutil.rmtree(benchmark_dir)
-      benchmark_dir.mkdir(parents=True)
-
-      for asset_spec in bm.get("assets", []):
-        asset, src_subpath, dst_subpath = (asset_spec + ("",))[:3]
-        src_root = asset_base / _asset_dir(asset)
-        if "*" in src_subpath:
-          src_parts = Path(src_subpath).parts
-          offset = src_parts.index("*") - len(src_parts)
-          for src_path in sorted(src_root.glob(src_subpath)):
-            if not src_path.is_dir():
-              continue
-            segment = src_path.parts[offset]
-            dst_path = benchmark_dir / dst_subpath / segment
-            dst_path.mkdir(parents=True, exist_ok=True)
-            shutil.copytree(src_path, dst_path, dirs_exist_ok=True)
-        else:
-          dst_path = benchmark_dir / dst_subpath
-          dst_path.parent.mkdir(parents=True, exist_ok=True)
-          shutil.copytree(src_root / src_subpath, dst_path, dirs_exist_ok=True)
-
-      # copy in benchmark files
-      shutil.copytree(item_path, benchmark_dir, dirs_exist_ok=True)
-
-      xml_path = benchmark_dir / bm["mjcf"]
-
-      # Build command for testspeed
-      cmd = [
-        "mjwarp-testspeed",
-        str(xml_path),
-        f"--nworld={bm['nworld']}",
-        f"--clear_warp_cache={args.clear_warp_cache}",
-        "--format=short",
-        "--event_trace=true",
-        "--memory=true",
-        "--measure_solver=true",
-        "--measure_alloc=true",
-      ]
-      for field in ("nconmax", "njmax"):
-        if field in bm:
-          cmd.append(f"--{field}={bm[field]}")
-      if "replay" in bm:
-        cmd.append(f"--replay={benchmark_dir / bm['replay']}")
-      if "nstep" in bm:
-        cmd.append(f"--nstep={bm['nstep']}")
-
-      # Run testspeed via uv in the work_dir
+    for name, bm in benchmarks.items():
+      log.info("Running benchmark: %s", name)
       try:
-        result = _uv_run(*cmd, cwd=work_dir)
+        data = _run_benchmark(bm, input_dir)
       except subprocess.CalledProcessError as e:
-        log.error("Benchmark %s failed:\n%s", bm_name, e.stderr)
+        log.error("Benchmark %s failed:\n%s", name, e.stderr)
         continue
+      for key, value in data.items():
+        print(f"{name}.{key} {value}")
+  except Exception:
+    log.exception("Run failed — temp dir left for diagnosis: input_dir=%s", input_dir)
+    sys.exit(1)
 
-      # Parse output
-      for line in result.stdout.splitlines():
-        if not line.strip():
-          continue
-        parts = line.split()
-        if len(parts) >= 2:
-          key = parts[0]
-          value = " ".join(parts[1:])
-          print(f"{bm_name}.{key} {value}")
+  # clean up cloned temp dir on success
+  if ":" in _ARGS.input:
+    log.info("Cleaning up temp dir %s...", input_dir)
+    shutil.rmtree(input_dir, ignore_errors=True)
 
 
 if __name__ == "__main__":
