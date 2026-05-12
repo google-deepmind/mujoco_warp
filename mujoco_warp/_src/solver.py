@@ -2278,6 +2278,32 @@ def update_gradient_set_h_qM_lower_sparse(
   ctx_h_out[worldid, i, j] += qM_in[worldid, 0, elementid]
 
 
+@wp.kernel
+def update_gradient_init_h_sparse(
+  # Model:
+  qM_fullm_elemid: wp.array2d[int],
+  # Data in:
+  qM_in: wp.array3d[float],
+  # In:
+  ctx_done_in: wp.array[bool],
+  # Out:
+  ctx_h_out: wp.array3d[float],
+):
+  worldid, i, j = wp.tid()
+
+  if ctx_done_in[worldid]:
+    return
+
+  if j > i:
+    return
+
+  elemid = qM_fullm_elemid[i, j]
+  if elemid >= 0:
+    ctx_h_out[worldid, i, j] = qM_in[worldid, 0, elemid]
+  else:
+    ctx_h_out[worldid, i, j] = 0.0
+
+
 @wp.func
 def state_check(D: float, state: int) -> float:
   if state == types.ConstraintState.QUADRATIC.value:
@@ -2936,18 +2962,17 @@ def _update_gradient(m: types.Model, d: types.Data, ctx: SolverContext):
   elif m.opt.solver == types.SolverType.NEWTON:
     # h = qM + (efc_J.T * efc_D * active) @ efc_J
     if m.is_sparse:
-      ctx.h.zero_()
       wp.launch(
-        _JTDAJ_sparse,
-        dim=(d.nworld, d.njmax),
-        inputs=[d.nefc, d.efc.J_rownnz, d.efc.J_rowadr, d.efc.J_colind, d.efc.J, d.efc.D, d.efc.state, ctx.done],
+        update_gradient_init_h_sparse,
+        dim=(d.nworld, m.nv, m.nv),
+        inputs=[m.qM_fullm_elemid, d.qM, ctx.done],
         outputs=[ctx.h],
       )
 
       wp.launch(
-        update_gradient_set_h_qM_lower_sparse,
-        dim=(d.nworld, m.qM_fullm_i.size),
-        inputs=[m.qM_fullm_i, m.qM_fullm_j, d.qM, ctx.done],
+        _JTDAJ_sparse,
+        dim=(d.nworld, d.njmax),
+        inputs=[d.nefc, d.efc.J_rownnz, d.efc.J_rowadr, d.efc.J_colind, d.efc.J, d.efc.D, d.efc.state, ctx.done],
         outputs=[ctx.h],
       )
     else:
