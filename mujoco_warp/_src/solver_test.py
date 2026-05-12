@@ -26,6 +26,7 @@ from mujoco_warp import ConeType
 from mujoco_warp import SolverType
 from mujoco_warp import test_data
 from mujoco_warp._src import solver
+from mujoco_warp._src.util_pkg import check_version
 
 # tolerance for difference between MuJoCo and MJWarp solver calculations - mostly
 # due to float precision
@@ -375,11 +376,16 @@ class SolverTest(parameterized.TestCase):
     )
 
     qM0 = np.zeros((mjm0.nv, mjm0.nv))
-    mujoco.mj_fullM(mjm0, qM0, mjd0.qM)
     qM1 = np.zeros((mjm1.nv, mjm1.nv))
-    mujoco.mj_fullM(mjm1, qM1, mjd1.qM)
     qM2 = np.zeros((mjm2.nv, mjm2.nv))
-    mujoco.mj_fullM(mjm2, qM2, mjd2.qM)
+    if check_version("mujoco>=3.8.1.dev910242375"):
+      mujoco.mju_sym2dense(qM0, mjd0.M, mjm0.M_rownnz, mjm0.M_rowadr, mjm0.M_colind)
+      mujoco.mju_sym2dense(qM1, mjd1.M, mjm1.M_rownnz, mjm1.M_rowadr, mjm1.M_colind)
+      mujoco.mju_sym2dense(qM2, mjd2.M, mjm2.M_rownnz, mjm2.M_rowadr, mjm2.M_colind)
+    else:
+      mujoco.mj_fullM(mjm0, qM0, mjd0.qM)
+      mujoco.mj_fullM(mjm1, qM1, mjd1.qM)
+      mujoco.mj_fullM(mjm2, qM2, mjd2.qM)
 
     qM = np.vstack(
       [

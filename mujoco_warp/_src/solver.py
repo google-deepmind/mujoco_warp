@@ -2785,6 +2785,7 @@ def update_gradient_cholesky_blocked(tile_size: int, matrix_size: int):
   return kernel
 
 
+@cache_kernel
 def update_gradient_cholesky_blocked_skip_unchanged(tile_size: int, matrix_size: int):
   """Blocked Cholesky that skips factorization when no constraints changed."""
 

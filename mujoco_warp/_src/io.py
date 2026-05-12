@@ -620,14 +620,37 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
   m.qLD_all_updates = all_updates_flat if all_updates_flat else [(0, 0, 0)]
   m.qLD_level_offsets = level_offsets
 
-  # indices for sparse qM_fullm (used in solver)
+  # Indices for sparse qM_fullm (used in solver). qM_fullm_i/j are built by
+  # walking dof_parentid for each dof, so for joint types whose internal block
+  # MuJoCo stores diagonal-only in the compact (M_rownnz, M_rowadr) layout
+  # (e.g. free joints), the chain-aware layout here has more entries per row
+  # than the compact layout. qM_fullm_elemid maps (row, col) -> elemid in the
+  # chain-aware layout for O(1) reverse lookup; kernels that indexed via
+  # M_rownnz / M_rowadr would land on wrong slots once such a joint precedes
+  # other dofs in qvel order.
   m.qM_fullm_i, m.qM_fullm_j = [], []
+  qM_fullm_elemid = np.full((mjm.nv, mjm.nv), -1, dtype=np.int32)
+  elemid = 0
   for i in range(mjm.nv):
     j = i
     while j > -1:
       m.qM_fullm_i.append(i)
       m.qM_fullm_j.append(j)
+      qM_fullm_elemid[i, j] = elemid
+      elemid += 1
       j = mjm.dof_parentid[j]
+  m.qM_fullm_elemid = qM_fullm_elemid
+
+  # indices for sparse qD_fullm (used in RNE derivatives)
+  # D-structure is the full square sparsity pattern (both upper and lower triangle)
+  m.qD_fullm_i, m.qD_fullm_j = [], []
+  for i in range(mjm.nv):
+    rowadr = mjm.D_rowadr[i]
+    rownnz = mjm.D_rownnz[i]
+    for k in range(rownnz):
+      m.qD_fullm_i.append(i)
+      m.qD_fullm_j.append(int(mjm.D_colind[rowadr + k]))
+  m.nD = mjm.nD
 
   # Gather-based sparse mul_m: for each row, all (col, madr) including diagonal
   row_elements = [[] for _ in range(mjm.nv)]
@@ -659,6 +682,14 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
   m.flexedge_J_rownnz = mjm.flexedge_J_rownnz
   m.flexedge_J_rowadr = mjm.flexedge_J_rowadr
   m.flexedge_J_colind = mjm.flexedge_J_colind.reshape(-1)
+
+  # flex_bendingadr backward compat: flatten old (nflexedge, 17) to 1D
+  if not check_version("mujoco>=3.8.1.dev909088123"):
+    m.flex_bendingadr = (
+      np.array([mjm.flex_edgeadr[i] * 17 for i in range(mjm.nflex)], dtype=int) if mjm.nflex else np.zeros(0, dtype=int)
+    )
+    m.flex_bending = mjm.flex_bending.ravel()
+    m.nflexbending = len(m.flex_bending)
 
   # place m on device
   sizes = dict({"*": 1}, **{f.name: getattr(m, f.name) for f in dataclasses.fields(types.Model) if f.type is int})
@@ -1248,12 +1279,21 @@ def put_data(
   d.solver_niter = wp.full((nworld,), mjd.solver_niter[0], dtype=int)
 
   if is_sparse(mjm):
-    d.qM = wp.array(np.full((nworld, 1, mjm.nM), mjd.qM), dtype=float)
+    if check_version("mujoco>=3.8.1.dev910242375"):
+      qM_legacy = np.zeros(mjm.nM)
+      qM_legacy[mjm.mapM2M] = mjd.M
+      d.qM = wp.array(np.full((nworld, 1, mjm.nM), qM_legacy), dtype=float)
+    else:
+      d.qM = wp.array(np.full((nworld, 1, mjm.nM), mjd.qM), dtype=float)
     d.qLD = wp.array(np.full((nworld, 1, mjm.nC), mjd.qLD), dtype=float)
   else:
     qM = np.zeros((mjm.nv, mjm.nv))
-    mujoco.mj_fullM(mjm, qM, mjd.qM)
-    qLD = np.linalg.cholesky(qM) if (mjd.qM != 0.0).any() and (mjd.qLD != 0.0).any() else np.zeros((mjm.nv, mjm.nv))
+    if check_version("mujoco>=3.8.1.dev910242375"):
+      mujoco.mju_sym2dense(qM, mjd.M, mjm.M_rownnz, mjm.M_rowadr, mjm.M_colind)
+      qLD = np.linalg.cholesky(qM) if (mjd.M != 0.0).any() and (mjd.qLD != 0.0).any() else np.zeros((mjm.nv, mjm.nv))
+    else:
+      mujoco.mj_fullM(mjm, qM, mjd.qM)
+      qLD = np.linalg.cholesky(qM) if (mjd.qM != 0.0).any() and (mjd.qLD != 0.0).any() else np.zeros((mjm.nv, mjm.nv))
     padding = sizes["nv_pad"] - mjm.nv
     qM_padded = np.pad(qM, ((0, padding), (0, padding)), mode="constant", constant_values=0.0)
     d.qM = wp.array(np.full((nworld, sizes["nv_pad"], sizes["nv_pad"]), qM_padded), dtype=float)
@@ -1409,17 +1449,28 @@ def get_data_into(
   result.contact.efc_address[:ncon] = contact_efc_address_ordered[:ncon]
 
   if is_sparse(mjm):
-    result.qM[:] = d.qM.numpy()[world_id, 0]
+    if check_version("mujoco>=3.8.1.dev910242375"):
+      warp_qM = d.qM.numpy()[world_id, 0]
+      result.M[:] = warp_qM[mjm.mapM2M]
+    else:
+      result.qM[:] = d.qM.numpy()[world_id, 0]
     result.qLD[:] = d.qLD.numpy()[world_id, 0]
   else:
     qM = d.qM.numpy()[world_id]
-    adr = 0
-    for i in range(mjm.nv):
-      j = i
-      while j >= 0:
-        result.qM[adr] = qM[i, j]
-        j = mjm.dof_parentid[j]
-        adr += 1
+    if check_version("mujoco>=3.8.1.dev910242375"):
+      for i in range(mjm.nv):
+        adr = mjm.M_rowadr[i]
+        for k in range(mjm.M_rownnz[i]):
+          col = mjm.M_colind[adr + k]
+          result.M[adr + k] = qM[i, col]
+    else:
+      adr = 0
+      for i in range(mjm.nv):
+        j = i
+        while j >= 0:
+          result.qM[adr] = qM[i, j]
+          j = mjm.dof_parentid[j]
+          adr += 1
     mujoco.mj_factorM(mjm, result)
 
   if nefc > 0:
@@ -2444,27 +2495,31 @@ def set_const(m: types.Model, d: types.Data):
 
   Model fields that can be modified safely with set_const:
 
-    Field                            | Notes
-    ---------------------------------|----------------------------------------------
-    qpos0, qpos_spring               |
-    body_mass, body_inertia,         | Mass and inertia are usually scaled together
-    body_ipos, body_iquat            | since inertia is sum(m * r^2).
-    body_pos, body_quat              | Unsafe for static bodies (invalidates BVH).
-    body_gravcomp                    | If changing from 0 to >0 bodies, required.
-    dof_armature                     |
-    eq_data                          | For connect/weld, offsets computed if not set.
-    hfield_size                      |
-    tendon_stiffness, tendon_damping | Only if changing from/to zero.
-    actuator_gainprm, actuator_biasprm | For position actuators with dampratio.
+  ==================================  ==============================================
+  Field                               Notes
+  ==================================  ==============================================
+  qpos0, qpos_spring
+  body_mass, body_inertia,            Mass and inertia are usually scaled together
+  body_ipos, body_iquat               since inertia is sum(m * r^2).
+  body_pos, body_quat                 Unsafe for static bodies (invalidates BVH).
+  body_gravcomp                       If changing from 0 to >0 bodies, required.
+  dof_armature
+  eq_data                             For connect/weld, offsets computed if not set.
+  hfield_size
+  tendon_stiffness, tendon_damping    Only if changing from/to zero.
+  actuator_gainprm, actuator_biasprm  For position actuators with dampratio.
+  ==================================  ==============================================
 
   For selective updates, use the sub-functions directly based on what changed:
 
-    Modified Field  | Call
-    ----------------|------------------
-    body_mass       | set_const
-    body_gravcomp   | set_const_fixed
-    body_inertia    | set_const_0
-    qpos0           | set_const_0
+  ==============  ===============
+  Modified Field  Call
+  ==============  ===============
+  body_mass       set_const
+  body_gravcomp   set_const_fixed
+  body_inertia    set_const_0
+  qpos0           set_const_0
+  ==============  ===============
 
   Computes:
     - Fixed quantities (via set_const_fixed):
@@ -2654,6 +2709,39 @@ def make_trajectory(model: mujoco.MjModel, keys: list[int]) -> np.ndarray:
   return np.array(ctrls)
 
 
+def load_trajectory(npz_path: str, mjm: mujoco.MjModel, mjd: mujoco.MjData) -> np.ndarray:
+  """Load ctrl sequence from NPZ and interpolate to model timestep.
+
+  If the trajectory dt differs from mjm.opt.timestep, each ctrl value is held
+  constant (zero-order hold) for the appropriate number of physics steps.
+
+  The NPZ file should contain:
+    - 'ctrl': array of shape (nstep, nu) with ctrl values
+    - 'times': array of shape (nstep,) with timestamps
+    - 'qpos' (optional): array of shape (1, nq) - initial state
+    - 'qvel' (optional): array of shape (1, nv) - initial state
+  """
+  data = np.load(npz_path)
+  ctrl = data["ctrl"]
+  times = data["times"]
+
+  if ctrl.shape[1] != mjm.nu:
+    raise ValueError(f"ctrl shape {ctrl.shape} does not match model nu={mjm.nu}")
+
+  # set initial state from first frame if available
+  if "qpos" in data and data["qpos"].shape[1] == mjm.nq:
+    mjd.qpos[:] = data["qpos"][0]
+  if "qvel" in data and data["qvel"].shape[1] == mjm.nv:
+    mjd.qvel[:] = data["qvel"][0]
+
+  # determine decimation from timing
+  ctrl_dt = (times[1] - times[0]) if len(times) > 1 else mjm.opt.timestep
+  decimation = max(1, round(ctrl_dt / mjm.opt.timestep))
+
+  # expand: each ctrl held constant for decimation physics steps
+  return np.repeat(ctrl, decimation, axis=0)
+
+
 @wp.kernel
 def _build_rays(
   # In:
@@ -2683,11 +2771,13 @@ def create_render_context(
   render_seg: list[bool] | bool | None = None,
   use_textures: bool = True,
   use_shadows: bool = False,
+  use_ambient_lighting: bool = True,
   enabled_geom_groups: list[int] = [0, 1, 2],
   cam_active: list[bool] | None = None,
   flex_render_smooth: bool = True,
   use_precomputed_rays: bool = True,
   render_skybox: bool = False,
+  enable_backface_culling: bool = True,
 ) -> types.RenderContext:
   """Creates a render context on device.
 
@@ -2702,6 +2792,8 @@ def create_render_context(
       If None, uses the MuJoCo model values.
     use_textures: Whether to use textures.
     use_shadows: Whether to use shadows.
+    use_ambient_lighting: Whether to add the renderer's hemispheric ambient
+      lighting term before applying model lights.
     enabled_geom_groups: The geom groups to render.
     cam_active: List of booleans indicating which cameras to include in rendering.
                 If None, all cameras are included.
@@ -2710,6 +2802,10 @@ def create_render_context(
                           When using domain randomization for camera intrinsics, set to False.
     render_skybox: Whether to shade missed rays with the MuJoCo skybox texture.
                    Requires the model to contain a texture with type `mjTEXTURE_SKYBOX`.
+    enable_backface_culling: Drop primitive-ray hits whose normal faces away from
+                             the ray (ray origin inside the geom). Matches MuJoCo's
+                             mesh-ray rule. Default True. Disable for a small
+                             performance gain when no camera is ever inside a geom.
 
   Returns:
     The render context containing rendering fields and output arrays on device.
@@ -2896,6 +2992,7 @@ def create_render_context(
     cam_id_map=wp.array(active_cam_indices, dtype=int),
     use_textures=use_textures,
     use_shadows=use_shadows,
+    use_ambient_lighting=use_ambient_lighting,
     background_color=render_util.pack_rgba_to_uint32(0.1 * 255.0, 0.1 * 255.0, 0.2 * 255.0, 1.0 * 255.0),
     use_precomputed_rays=use_precomputed_rays,
     render_skybox=render_skybox,
@@ -2941,6 +3038,7 @@ def create_render_context(
     render_seg=wp.array(render_seg, dtype=bool),
     znear=znear,
     total_rays=int(total),
+    enable_backface_culling=enable_backface_culling,
   )
 
   bvh.build_scene_bvh(mjm, mjd, rc, nworld)

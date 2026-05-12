@@ -43,14 +43,14 @@ The benchmark script outputs metrics in a columnar format:
 
 ```
 $ uv run python3 benchmarks/run.py -f humanoid
-[2026-01-12 18:57:26] humanoid:jit_duration                                              0.3430611090734601
-[2026-01-12 18:57:26] humanoid:run_time                                                  3.0016206190921366
-[2026-01-12 18:57:26] humanoid:steps_per_second                                          2729192.3395961127
-[2026-01-12 18:57:26] humanoid:converged_worlds                                          8192
-[2026-01-12 18:57:26] humanoid:step                                                      364.29383988433983
-[2026-01-12 18:57:26] humanoid:step.forward                                              361.76275029720273
-[2026-01-12 18:57:26] humanoid:step.forward.fwd_position                                 89.69937137590023
-[2026-01-12 18:57:26] humanoid:step.forward.fwd_position.kinematics                      16.32935900670418
+humanoid.jit_duration: 0.3430611090734601
+humanoid.run_time 3.0016206190921366
+humanoid.steps_per_second 2729192.3395961127
+humanoid.converged_worlds 8192
+humanoid.step 364.29383988433983
+humanoid.step.forward 361.76275029720273
+humanoid.step.forward.fwd_position 89.69937137590023
+humanoid.step.forward.fwd_position.kinematics 16.32935900670418
 ...
 ```
 
@@ -90,8 +90,8 @@ Fields:
 - `nconmax`: Maximum number of contacts per world.
 - `njmax`: Maximum number of constraints per world.
 - `nstep`: (Optional) Number of steps per rollout.
-- `replay`: (Optional) Keyframe sequence to replay.
-- `assets`: (Optional) List of assets to fetch.
+- `replay`: (Optional) NPZ file with ctrl sequence to replay.
+- `assets`: (Optional) List of asset mappings (see below).
 
 ### `ASSETS` List
 
@@ -102,11 +102,23 @@ Example:
 ```python
 ASSETS = [
   {
-    "source": "git@github.com:google-deepmind/mujoco_menagerie.git",
+    "source": "https://github.com/google-deepmind/mujoco_menagerie.git",
     "ref": "affef0836947b64cc06c4ab1cbf0152835693374",
   }
 ]
 ```
+
+Each benchmark's `assets` field is a list of tuples mapping fetched assets into the benchmark workspace:
+
+```python
+"assets": [
+  (ASSETS[0], "aloha"),                                        # copy aloha/ directory
+  (ASSETS[1], "model/plugin/sdf/asset", "assets"),              # copy with rename
+  (ASSETS[2], "aloha_sim/assets/ycb/*/google_64k", "assets/ycb"),  # glob pattern
+]
+```
+
+Each tuple is `(asset, src_subpath[, dst_subpath])`. If `src_subpath` contains a `*`, it is expanded as a glob and each matching directory is copied into `dst_subpath` using the `*`-matched segment as the subdirectory name.
 
 ## Adding New Benchmarks
 

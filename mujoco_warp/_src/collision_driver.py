@@ -370,6 +370,7 @@ def _binary_search(values: wp.array[Any], value: Any, lower: int, upper: int) ->
   return upper
 
 
+@cache_kernel
 def _sap_project(opt_broadphase: int):
   @wp.kernel(module="unique", enable_backward=False)
   def sap_project(
@@ -524,6 +525,7 @@ def _sap_broadphase(opt_broadphase_filter: int, ngeom_aabb: int, ngeom_rbound: i
   return kernel
 
 
+@cache_kernel
 def _segmented_sort(tile_size: int):
   @wp.kernel(module="unique")
   def segmented_sort(

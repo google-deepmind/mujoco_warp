@@ -31,6 +31,7 @@ from mujoco_warp import test_data
 from mujoco_warp._src import warp_util
 from mujoco_warp._src.io import put_model
 from mujoco_warp._src.io import set_length_range
+from mujoco_warp._src.util_pkg import check_version
 
 
 def _allocate_worlds(
@@ -509,11 +510,17 @@ class IOTest(parameterized.TestCase):
     d = mjwarp.put_data(mjm, mjd)
 
     mjd.qLD.fill(-123)
-    mjd.qM.fill(-123)
+    if check_version("mujoco>=3.8.1.dev910242375"):
+      mjd.M.fill(-123)
+    else:
+      mjd.qM.fill(-123)
 
     mjwarp.get_data_into(mjd, mjm, d)
     np.testing.assert_allclose(mjd.qLD, mjd_ref.qLD)
-    np.testing.assert_allclose(mjd.qM, mjd_ref.qM)
+    if check_version("mujoco>=3.8.1.dev910242375"):
+      np.testing.assert_allclose(mjd.M, mjd_ref.M)
+    else:
+      np.testing.assert_allclose(mjd.qM, mjd_ref.qM)
 
   @parameterized.named_parameters(
     dict(testcase_name="nworld=1", nworld=1, world_id=0),
@@ -782,7 +789,10 @@ class IOTest(parameterized.TestCase):
     self.assertTrue((d.qLD.numpy() == 0.0).all())
 
     mujoco.mj_forward(mjm, mjd)
-    mjd.qM[:] = 0.0
+    if check_version("mujoco>=3.8.1.dev910242375"):
+      mjd.M[:] = 0.0
+    else:
+      mjd.qM[:] = 0.0
     d = mjwarp.put_data(mjm, mjd)
     self.assertTrue((d.qLD.numpy() == 0.0).all())
 

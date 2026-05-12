@@ -25,6 +25,7 @@ import mujoco_warp as mjw
 from mujoco_warp import ConeType
 from mujoco_warp import DisableBit
 from mujoco_warp import test_data
+from mujoco_warp._src.util_pkg import check_version
 
 # tolerance for difference between MuJoCo and MJWarp smooth calculations - mostly
 # due to float precision
@@ -193,10 +194,18 @@ class SmoothTest(parameterized.TestCase):
     _assert_eq(d.crb.numpy()[0], mjd.crb, "crb")
 
     if jacobian == mujoco.mjtJacobian.mjJAC_SPARSE:
-      _assert_eq(d.qM.numpy()[0, 0], mjd.qM, "qM")
+      if check_version("mujoco>=3.8.1.dev910242375"):
+        mjd_qM = np.zeros(mjm.nM)
+        mjd_qM[mjm.mapM2M] = mjd.M
+        _assert_eq(d.qM.numpy()[0, 0], mjd_qM, "qM")
+      else:
+        _assert_eq(d.qM.numpy()[0, 0], mjd.qM, "qM")
     else:
       qM = np.zeros((mjm.nv, mjm.nv))
-      mujoco.mj_fullM(mjm, qM, mjd.qM)
+      if check_version("mujoco>=3.8.1.dev910242375"):
+        mujoco.mju_sym2dense(qM, mjd.M, mjm.M_rownnz, mjm.M_rowadr, mjm.M_colind)
+      else:
+        mujoco.mj_fullM(mjm, qM, mjd.qM)
       _assert_eq(d.qM.numpy()[0, : mjm.nv, : mjm.nv], qM, "qM")
 
   @parameterized.parameters(mujoco.mjtJacobian.mjJAC_SPARSE, mujoco.mjtJacobian.mjJAC_DENSE)
@@ -473,7 +482,10 @@ class SmoothTest(parameterized.TestCase):
     )
 
     qM = np.zeros((mjm.nv, mjm.nv))
-    mujoco.mj_fullM(mjm, qM, mjd.qM)
+    if check_version("mujoco>=3.8.1.dev910242375"):
+      mujoco.mju_sym2dense(qM, mjd.M, mjm.M_rownnz, mjm.M_rowadr, mjm.M_colind)
+    else:
+      mujoco.mj_fullM(mjm, qM, mjd.qM)
 
     sparse = jacobian == mujoco.mjtJacobian.mjJAC_SPARSE
 
@@ -505,7 +517,10 @@ class SmoothTest(parameterized.TestCase):
     mjw._src.smooth.tendon_armature(m, d)
 
     qM = np.zeros((mjm.nv, mjm.nv))
-    mujoco.mj_fullM(mjm, qM, mjd.qM)
+    if check_version("mujoco>=3.8.1.dev910242375"):
+      mujoco.mju_sym2dense(qM, mjd.M, mjm.M_rownnz, mjm.M_rowadr, mjm.M_colind)
+    else:
+      mujoco.mj_fullM(mjm, qM, mjd.qM)
     _assert_eq(d.qM.numpy()[0, : mjm.nv, : mjm.nv], qM, "qM")
 
     # qfrc_bias

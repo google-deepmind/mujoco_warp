@@ -27,6 +27,7 @@ from mujoco_warp._src.types import Data
 from mujoco_warp._src.types import Model
 from mujoco_warp._src.types import Option
 from mujoco_warp._src.types import TileSet
+from mujoco_warp._src.util_pkg import check_version
 
 
 class TypesTest(parameterized.TestCase):
@@ -53,6 +54,10 @@ class TypesTest(parameterized.TestCase):
       mj_fields.insert(mj_fields.index("nbuffer") + 1, "opt")
       mj_fields.insert(mj_fields.index("nbuffer") + 2, "vis")
       mj_fields.insert(mj_fields.index("nbuffer") + 3, "stat")
+      # flex_bendingadr/nflexbending added in mujoco 3.8.1.dev909088123
+      if not check_version("mujoco>=3.8.1.dev909088123"):
+        mj_fields.insert(mj_fields.index("nflexstiffness") + 1, "nflexbending")
+        mj_fields.insert(mj_fields.index("flex_elemedgeadr") + 1, "flex_bendingadr")
     elif mjw_class is Data:
       # TODO(team): remove this reordering after MjData._all_fields order is fixed
       # there's a bug in _all_fields where solver_niter is in the wrong place

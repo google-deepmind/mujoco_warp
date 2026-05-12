@@ -21,8 +21,11 @@ Type=oneshot
 Environment="PATH=%h/.local/bin:%h/.cargo/bin:/usr/local/bin:/usr/bin:/bin"
 Environment="HOME=%h"
 Environment="CUDA_DEVICE=0"
+# Bypass index settings that may interfere with uv
+Environment="UV_DEFAULT_INDEX=https://pypi.org/simple"
+Environment="PIP_INDEX_URL=https://pypi.org/simple"
 
-ExecStart=%h/.local/bin/mjwarp-nightly
+ExecStart=%h/.local/bin/mjwarp-sweep forward
 
 # Logging
 StandardOutput=journal

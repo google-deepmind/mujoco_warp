@@ -29,16 +29,15 @@ from mujoco_warp import test_data
 
 # tolerance for difference between MuJoCo and MJWarp constraint calculations,
 # mostly due to float precision
-_TOLERANCE = 5e-5
+_TOLERANCE = 5e-4
 
 
-def _assert_eq(a, b, name):
-  tol = _TOLERANCE * 10  # avoid test noise
+def _assert_eq(a, b, name, tol=_TOLERANCE):
   err_msg = f"mismatch: {name}"
   np.testing.assert_allclose(a, b, err_msg=err_msg, atol=tol, rtol=tol)
 
 
-def _assert_efc_eq(mjm, m, d, mjd, nefc, name, nv):
+def _assert_efc_eq(mjm, m, d, mjd, nefc, name, nv, tol=_TOLERANCE):
   """Assert equality of efc fields after sorting both sides."""
   # Get the ordering indices based on efc fields for MJWarp
   efc_type = d.efc.type.numpy()[0, :nefc]
@@ -98,22 +97,22 @@ def _assert_efc_eq(mjm, m, d, mjd, nefc, name, nv):
   mjd_sorted_type = mjd.efc_type[mjd_sort_indices]
 
   # Compare sorted data
-  _assert_eq(d_sorted, mjd_sorted_J, f"{name}_J")
+  _assert_eq(d_sorted, mjd_sorted_J, f"{name}_J", tol=tol)
 
   d_sorted = d.efc.D.numpy()[0, d_sort_indices]
-  _assert_eq(d_sorted, mjd_sorted_D, f"{name}_D")
+  _assert_eq(d_sorted, mjd_sorted_D, f"{name}_D", tol=tol)
 
   d_sorted = d.efc.vel.numpy()[0, d_sort_indices]
-  _assert_eq(d_sorted, mjd_sorted_vel, f"{name}_vel")
+  _assert_eq(d_sorted, mjd_sorted_vel, f"{name}_vel", tol=tol)
 
   d_sorted = d.efc.aref.numpy()[0, d_sort_indices]
-  _assert_eq(d_sorted, mjd_sorted_aref, f"{name}_aref")
+  _assert_eq(d_sorted, mjd_sorted_aref, f"{name}_aref", tol=tol * 2)
 
   d_sorted = d.efc.pos.numpy()[0, d_sort_indices]
-  _assert_eq(d_sorted, mjd_sorted_pos, f"{name}_pos")
+  _assert_eq(d_sorted, mjd_sorted_pos, f"{name}_pos", tol=tol)
 
   d_sorted = d.efc.margin.numpy()[0, d_sort_indices]
-  _assert_eq(d_sorted, mjd_sorted_margin, f"{name}_margin")
+  _assert_eq(d_sorted, mjd_sorted_margin, f"{name}_margin", tol=tol)
 
   d_sorted = d.efc.type.numpy()[0, d_sort_indices]
   _assert_eq(d_sorted, mjd_sorted_type, f"{name}_type")
@@ -174,11 +173,6 @@ class ConstraintTest(parameterized.TestCase):
       self.skipTest("flex/floppy.xml with dense jacobian not supported")
     for key in range(3):
       mjm, mjd, m, d = test_data.fixture(xml, keyframe=key, overrides={"opt.cone": cone, "opt.jacobian": jacobian})
-      # scale down velocities to minimize Jdotv effect (not in mujoco warp)
-      # TODO(team): remove when Jdotv correction is implemented
-      mjd.qvel[:] *= 1e-2
-      mujoco.mj_forward(mjm, mjd)
-      wp.copy(d.qvel, wp.array(mjd.qvel, dtype=float))
       for arr in (d.ne, d.nefc, d.nf, d.nl, d.efc.type):
         arr.fill_(-1)
       for arr in (d.efc.J, d.efc.D, d.efc.vel, d.efc.aref, d.efc.pos, d.efc.margin):
@@ -312,6 +306,30 @@ class ConstraintTest(parameterized.TestCase):
       self.assertGreater(nacon, 0, "Expected at least one contact")
       efc_address = d.contact.efc_address.numpy()[:nacon]
       _assert_eq(efc_address, -1, f"efc_address (cone={cone})")
+
+  @parameterized.parameters(
+    *itertools.product(
+      ("jdotv/connect_2d.xml", "jdotv/connect_3d.xml", "jdotv/weld_3d.xml"),
+      (mujoco.mjtJacobian.mjJAC_DENSE, mujoco.mjtJacobian.mjJAC_SPARSE),
+    )
+  )
+  def test_jdotv(self, xml, jacobian):
+    """Test Jdotv correction."""
+    mjm, mjd, m, d = test_data.fixture(xml, keyframe=0, overrides={"opt.jacobian": jacobian})
+
+    mujoco.mj_forward(mjm, mjd)
+    wp.copy(d.qvel, wp.array(mjd.qvel, dtype=float))
+
+    for arr in (d.ne, d.nefc, d.nf, d.nl, d.efc.type):
+      arr.fill_(-1)
+    for arr in (d.efc.J, d.efc.D, d.efc.vel, d.efc.aref, d.efc.pos, d.efc.margin):
+      arr.fill_(wp.inf)
+
+    mjw.make_constraint(m, d)
+
+    _assert_eq(d.ne.numpy()[0], mjd.ne, "ne")
+    _assert_eq(d.nefc.numpy()[0], mjd.nefc, "nefc")
+    _assert_efc_eq(mjm, m, d, mjd, mjd.nefc, "efc", m.nv)
 
 
 if __name__ == "__main__":

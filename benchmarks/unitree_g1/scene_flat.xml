@@ -1,5 +1,5 @@
-<mujoco model="apptronik_apollo scene flat">
-  <include file="apptronik_apollo.xml" />
+<mujoco model="unitree_g1 scene flat">
+  <include file="unitree_g1_mjlab.xml" />
 
   <visual>
     <map znear="0.01" zfar="200" />
@@ -18,4 +18,25 @@
     <geom name="floor" size="0 0 .05" type="plane" material="grid" contype="1" conaffinity="1"/>
     <light pos="0 0 3" dir="0 0 -1" directional="true" />
   </worldbody>
+
+
+  <keyframe>
+    <key name="home"
+      qpos="
+      0 0 0.783675
+      1 0 0 0
+      -0.1 0 0 0.3 -0.2 0
+      -0.1 0 0 0.3 -0.2 0
+      0 0 0
+      0.2 0.2 0 1.28 0 0 0
+      0.2 -0.2 0 1.28 0 0 0
+      "
+      ctrl="
+      -0.1 0 0 0.3 -0.2 0
+      -0.1 0 0 0.3 -0.2 0
+      0 0 0
+      0.2 0.2 0 1.28 0 0 0
+      0.2 -0.2 0 1.28 0 0 0
+      "/>
+  </keyframe>
 </mujoco>

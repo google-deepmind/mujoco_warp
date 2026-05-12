@@ -858,6 +858,7 @@ class Model:
     ntree: number of kinematic trees
     nM: number of non-zeros in sparse inertia matrix
     nC: number of non-zeros in sparse body-dof matrix
+    nD: number of non-zeros in sparse derivative matrix
     ngeom: number of geoms
     nsite: number of sites
     ncam: number of cameras
@@ -868,6 +869,7 @@ class Model:
     nflexelem: number of elements in all flexes
     nflexelemdata: number of element vertex ids in all flexes
     nflexstiffness: number of stiffness parameters in all flexes
+    nflexbending: number of bending parameters in all flexes
     nflexelemedge: number of element edge ids in all flexes
     nflexshelldata: number of shell fragment vertex ids in all flexes
     nJfe: number of non-zeros in sparse flexedge Jacobian
@@ -1025,6 +1027,7 @@ class Model:
     flex_elemdataadr: first element vertex id address        (nflex,)
     flex_stiffnessadr: stiffness matrix address               (nflex,)
     flex_elemedgeadr: first element edge id address          (nflex,)
+    flex_bendingadr: first bending data address              (nflex,)
     flex_shellnum: number of shells                          (nflex,)
     flex_shelldataadr: first shell data address              (nflex,)
     flex_vertbodyid: vertex body ids                         (nflexvert,)
@@ -1038,7 +1041,7 @@ class Model:
     flexedge_invweight0: inv. inertia for the edge           (nflexedge,)
     flex_radius: radius around primitive element             (nflex,)
     flex_stiffness: finite element stiffness matrix          (nflexstiffness,)
-    flex_bending: bending stiffness                          (nflexedge, 17)
+    flex_bending: bending stiffness                          (nflexbending,)
     flex_damping: Rayleigh's damping coefficient             (nflex,)
     flex_centered: flex vertices are centered at body origin (nflex,)
     flexedge_J_rownnz: number of nonzeros in Jacobian row    (nflexedge,)
@@ -1244,6 +1247,9 @@ class Model:
     qLD_level_offsets: tuple of start offsets for each level
     qM_fullm_i: sparse mass matrix addressing
     qM_fullm_j: sparse mass matrix addressing
+    qM_fullm_elemid: (row, col) -> elemid into qM_fullm_i/qM_fullm_j; -1 if not a chain ancestor
+    qD_fullm_i: D-structure row indices for RNE derivatives
+    qD_fullm_j: D-structure column indices for RNE derivatives
     qM_mulm_rowadr: sparse matmul row pointers
     qM_mulm_col: sparse matmul column indices
     qM_mulm_madr: sparse matmul matrix addresses
@@ -1259,6 +1265,7 @@ class Model:
   ntree: int
   nM: int
   nC: int
+  nD: int
   ngeom: int
   nsite: int
   ncam: int
@@ -1269,6 +1276,7 @@ class Model:
   nflexelem: int
   nflexelemdata: int
   nflexstiffness: int
+  nflexbending: int
   nflexelemedge: int
   nflexshelldata: int
   nJfe: int
@@ -1426,6 +1434,7 @@ class Model:
   flex_elemdataadr: array("nflex", int)
   flex_stiffnessadr: array("nflex", int)
   flex_elemedgeadr: array("nflex", int)
+  flex_bendingadr: array("nflex", int)
   flex_shellnum: array("nflex", int)
   flex_shelldataadr: array("nflex", int)
   flex_vertbodyid: array("nflexvert", int)
@@ -1439,7 +1448,7 @@ class Model:
   flexedge_invweight0: array("nflexedge", float)
   flex_radius: array("nflex", float)
   flex_stiffness: array("nflexstiffness", float)
-  flex_bending: array("nflexedge", 17, float)
+  flex_bending: array("nflexbending", float)
   flex_damping: array("nflex", float)
   flex_centered: array("nflex", bool)
   flexedge_J_rownnz: array("nflexedge", int)
@@ -1634,6 +1643,9 @@ class Model:
   qLD_level_offsets: wp.array[int]
   qM_fullm_i: wp.array[int]
   qM_fullm_j: wp.array[int]
+  qM_fullm_elemid: wp.array2d[int]  # (row, col) -> elemid in qM_fullm_i/j; -1 if col is not a chain ancestor of row
+  qD_fullm_i: wp.array[int]  # D-structure (full square) row indices for RNE derivatives
+  qD_fullm_j: wp.array[int]  # D-structure (full square) column indices for RNE derivatives
   # Gather-based sparse mul_m indices (thread per DOF, no atomics)
   qM_mulm_rowadr: wp.array[int]  # start address for each row [nv+1]
   qM_mulm_col: wp.array[int]  # column index to gather from
@@ -1945,6 +1957,7 @@ class RenderContext:
     cam_id_map: camera id map
     use_textures: whether to use textures
     use_shadows: whether to use shadows
+    use_ambient_lighting: whether to use ambient lighting
     use_precomputed_rays: whether to use precomputed rays
     bvh_ngeom: number of geometries in the BVH
     enabled_geom_ids: enabled geometry ids
@@ -1986,6 +1999,11 @@ class RenderContext:
     render_skybox: whether to shade missed rays with the MuJoCo skybox texture
     skybox_tex_id: index into textures of the skybox (MuJoCo tex_type == SKYBOX), -1 if none
     skybox_face_width: pixel width of one skybox cube face (0 if no skybox)
+    enable_backface_culling: drop primitive ray hits whose normal faces away
+      from the ray (i.e. the ray origin is inside the geom). Matches MuJoCo's
+      mesh-ray rule. When False, the renderer reports inner-surface hits, which
+      is faster but causes a camera placed inside a geom to render that geom's
+      back wall.
   """
 
   nrender: int
@@ -1993,6 +2011,7 @@ class RenderContext:
   cam_id_map: array("ncam", int)
   use_textures: bool
   use_shadows: bool
+  use_ambient_lighting: bool
   background_color: wp.uint32
   use_precomputed_rays: bool
   render_skybox: bool
@@ -2038,3 +2057,4 @@ class RenderContext:
   render_seg: array("ncam", bool)
   znear: float
   total_rays: int
+  enable_backface_culling: bool
