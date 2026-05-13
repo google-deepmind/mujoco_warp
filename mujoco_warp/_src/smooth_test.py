@@ -212,11 +212,16 @@ class SmoothTest(parameterized.TestCase):
   @parameterized.parameters(mujoco.mjtJacobian.mjJAC_SPARSE, mujoco.mjtJacobian.mjJAC_DENSE)
   def test_factor_m(self, jacobian):
     """Tests factor_m."""
-    _, mjd, m, d = test_data.fixture("pendula.xml", overrides={"opt.jacobian": jacobian})
+    mjm, mjd, m, d = test_data.fixture("pendula.xml", overrides={"opt.jacobian": jacobian})
 
-    qLD = d.qLD.numpy()[0].copy()
     d.qLDiagInv.fill_(wp.inf)
     if jacobian == mujoco.mjtJacobian.mjJAC_DENSE:
+      qM = np.zeros((mjm.nv, mjm.nv))
+      if check_version("mujoco>=3.8.1.dev910242375"):
+        mujoco.mju_sym2dense(qM, mjd.M, mjm.M_rownnz, mjm.M_rowadr, mjm.M_colind)
+      else:
+        mujoco.mj_fullM(mjm, qM, mjd.qM)
+      qLD = np.linalg.cholesky(qM).T
       wp_qLD = qLD.copy()
       wp_qLD[wp_qLD != 0.0] = np.inf
       wp.copy(d.qLD, wp.array(wp_qLD, dtype=float))
@@ -229,7 +234,7 @@ class SmoothTest(parameterized.TestCase):
       _assert_eq(d.qLD.numpy()[0, 0], mjd.qLD, "qLD (sparse)")
       _assert_eq(d.qLDiagInv.numpy()[0], mjd.qLDiagInv, "qLDiagInv")
     else:
-      _assert_eq(d.qLD.numpy()[0], qLD, "qLD (dense)")
+      _assert_eq(d.qLD.numpy()[0], qLD, "qLD (dense upper)")
 
   @parameterized.parameters(mujoco.mjtJacobian.mjJAC_SPARSE, mujoco.mjtJacobian.mjJAC_DENSE)
   def test_solve_m(self, jacobian):
@@ -507,8 +512,8 @@ class SmoothTest(parameterized.TestCase):
       _assert_eq(d.qLD.numpy()[0].reshape(-1), mjd.qLD, "qLD")
       _assert_eq(d.qLDiagInv.numpy()[0], mjd.qLDiagInv, "qLDiagInv")
     else:
-      qLD = np.linalg.cholesky(qM)
-      _assert_eq(d.qLD.numpy()[0], qLD, "qLD")
+      qLD = np.linalg.cholesky(qM).T
+      _assert_eq(d.qLD.numpy()[0], qLD, "qLD upper")
 
   def test_tendon_armature(self):
     mjm, mjd, m, d = test_data.fixture("tendon/armature.xml", keyframe=0)

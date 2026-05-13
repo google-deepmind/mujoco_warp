@@ -1188,8 +1188,8 @@ class Model:
     jnt_limited_slide_hinge_adr: limited/slide/hinge jntadr
     jnt_limited_ball_adr: limited/ball jntadr
     body_isdofancestor: precomputed mask of which DOFs affect each body
-    dof_tri_row: dof lower triangle row (used in solver)
-    dof_tri_col: dof lower triangle col (used in solver)
+    dof_tri_row: dof upper triangle row (used in solver)
+    dof_tri_col: dof upper triangle col (used in solver)
     nxn_geom_pair: collision pair geom ids [-2, ngeom-1]
     nxn_geom_pair_filtered: valid collision pair geom ids
                             [-1, ngeom - 1]
@@ -1251,6 +1251,9 @@ class Model:
     qM_fullm_i: sparse mass matrix addressing
     qM_fullm_j: sparse mass matrix addressing
     qM_fullm_elemid: (row, col) -> elemid into qM_fullm_i/qM_fullm_j; -1 if not a chain ancestor
+    qM_fullm_upper_i: upper-triangle row indices for solver h seeding
+    qM_fullm_upper_j: upper-triangle column indices for solver h seeding
+    qM_fullm_upper_elemid: source elemid into qM_fullm_i/qM_fullm_j
     qD_fullm_i: D-structure row indices for RNE derivatives
     qD_fullm_j: D-structure column indices for RNE derivatives
     qM_mulm_rowadr: sparse matmul row pointers
@@ -1647,6 +1650,9 @@ class Model:
   qM_fullm_i: wp.array[int]
   qM_fullm_j: wp.array[int]
   qM_fullm_elemid: wp.array2d[int]  # (row, col) -> elemid in qM_fullm_i/j; -1 if col is not a chain ancestor of row
+  qM_fullm_upper_i: wp.array[int]
+  qM_fullm_upper_j: wp.array[int]
+  qM_fullm_upper_elemid: wp.array[int]
   qD_fullm_i: wp.array[int]  # D-structure (full square) row indices for RNE derivatives
   qD_fullm_j: wp.array[int]  # D-structure (full square) column indices for RNE derivatives
   # Gather-based sparse mul_m indices (thread per DOF, no atomics)
@@ -1814,8 +1820,8 @@ class Data:
     crb: com-based composite inertia and mass                   (nworld, nbody, 10)
     qM: total inertia                                           (nworld, nv, nv) if dense
                                                                 (nworld, 1, nM) if sparse
-    qLD: L'*D*L factorization of M                              (nworld, nv, nv) if dense
-                                                                (nworld, 1, nC) if sparse
+    qLD: upper Cholesky factorization if dense                  (nworld, nv, nv)
+         L'*D*L factorization of M if sparse                    (nworld, 1, nC)
     qLDiagInv: 1/diag(D)                                        (nworld, nv)
     flexedge_velocity: flex edge velocities                     (nworld, nflexedge)
     ten_velocity: tendon velocities                             (nworld, ntendon)

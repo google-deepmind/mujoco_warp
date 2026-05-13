@@ -385,8 +385,8 @@ def _tile_euler_dense(tile: TileSet):
     qm_integration_tile = wp.tile_diag_add(M_tile, damping_scaled)
 
     Ma_tile = wp.tile_load(efc_Ma_in[worldid], shape=(TILE_SIZE,), offset=(dofid,))
-    L_tile = wp.tile_cholesky(qm_integration_tile)
-    qacc_tile = wp.tile_cholesky_solve(L_tile, Ma_tile)
+    L_tile = wp.tile_cholesky(qm_integration_tile, fill_mode="upper")
+    qacc_tile = wp.tile_cholesky_solve(L_tile, Ma_tile, fill_mode="upper")
     wp.tile_store(qacc_out[worldid], qacc_tile, offset=(dofid))
 
   return euler_dense

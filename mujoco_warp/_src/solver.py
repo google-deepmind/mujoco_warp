@@ -2063,9 +2063,9 @@ def update_gradient_h_incremental(
   # Out:
   ctx_h_out: wp.array3d[float],
 ):
-  """Incrementally update lower triangle of H for changed constraints.
+  """Incrementally update upper triangle of H for changed constraints.
 
-  Each thread handles one (i, j) element of the lower triangle.
+  Each thread handles one unique (i, j) element and writes it to the upper triangle.
   For each changed constraint, adds or subtracts D * J[i] * J[j].
   """
   worldid, elementid = wp.tid()
@@ -2074,28 +2074,28 @@ def update_gradient_h_incremental(
   if n_changes == 0:
     return
 
-  # Lower triangle index: elementid -> (i, j) where i >= j
-  i = (int(wp.sqrt(float(1 + 8 * elementid))) - 1) // 2
-  j = elementid - (i * (i + 1)) // 2
+  # Upper-triangle enumeration: elementid -> (row, col) where row <= col.
+  col = (int(wp.sqrt(float(1 + 8 * elementid))) - 1) // 2
+  row = elementid - (col * (col + 1)) // 2
 
   delta = float(0.0)
   for change_idx in range(n_changes):
     efcid = changed_ids_in[worldid, change_idx]
-    Ji = efc_J_in[worldid, efcid, i]
-    if Ji == 0.0:
+    Jrow = efc_J_in[worldid, efcid, row]
+    if Jrow == 0.0:
       continue
-    Jj = efc_J_in[worldid, efcid, j]
-    if Jj == 0.0:
+    Jcol = efc_J_in[worldid, efcid, col]
+    if Jcol == 0.0:
       continue
 
     D = efc_D_in[worldid, efcid]
     if efc_state_in[worldid, efcid] == types.ConstraintState.QUADRATIC.value:
-      delta += D * Ji * Jj
+      delta += D * Jrow * Jcol
     else:
-      delta -= D * Ji * Jj
+      delta -= D * Jrow * Jcol
 
   if delta != 0.0:
-    ctx_h_out[worldid, i, j] += delta
+    ctx_h_out[worldid, row, col] += delta
 
 
 @wp.kernel
@@ -2113,7 +2113,7 @@ def update_gradient_h_incremental_sparse(
   # Out:
   ctx_h_out: wp.array3d[float],
 ):
-  """Incrementally update lower triangle of H for changed constraints (sparse J)."""
+  """Incrementally update upper triangle of H for changed constraints (sparse J)."""
   worldid, change_idx = wp.tid()
 
   n_changes = changed_count_in[worldid]
@@ -2144,8 +2144,8 @@ def update_gradient_h_incremental_sparse(
         continue
       colindj = efc_J_colind_in[worldid, 0, sparseidj]
       h = sign * Ji * Jj
-      # Ensure lower triangle: larger index first
-      if colindi >= colindj:
+      # Ensure upper triangle: smaller index first.
+      if colindi <= colindj:
         wp.atomic_add(ctx_h_out[worldid, colindi], colindj, h)
       else:
         wp.atomic_add(ctx_h_out[worldid, colindj], colindi, h)
@@ -2257,10 +2257,11 @@ def update_gradient_grad(
 
 
 @wp.kernel
-def update_gradient_set_h_qM_lower_sparse(
+def update_gradient_set_h_qM_upper_sparse(
   # Model:
-  qM_fullm_i: wp.array[int],
-  qM_fullm_j: wp.array[int],
+  qM_fullm_upper_i: wp.array[int],
+  qM_fullm_upper_j: wp.array[int],
+  qM_fullm_upper_elemid: wp.array[int],
   # Data in:
   qM_in: wp.array3d[float],
   # In:
@@ -2273,9 +2274,10 @@ def update_gradient_set_h_qM_lower_sparse(
   if ctx_done_in[worldid]:
     return
 
-  i = qM_fullm_i[elementid]
-  j = qM_fullm_j[elementid]
-  ctx_h_out[worldid, i, j] += qM_in[worldid, 0, elementid]
+  i = qM_fullm_upper_i[elementid]
+  j = qM_fullm_upper_j[elementid]
+  qM_elemid = qM_fullm_upper_elemid[elementid]
+  ctx_h_out[worldid, i, j] += qM_in[worldid, 0, qM_elemid]
 
 
 @wp.func
@@ -2317,12 +2319,12 @@ def update_gradient_JTDAJ_sparse_tiled(tile_size: int, njmax: int):
 
     nefc = nefc_in[worldid]
 
-    # get lower diagonal index
-    i = (int(sqrt(float(1 + 8 * elementid))) - 1) // 2
-    j = elementid - (i * (i + 1)) // 2
+    # Upper-triangle tile index: elementid -> (row, col) where row <= col.
+    col = (int(sqrt(float(1 + 8 * elementid))) - 1) // 2
+    row = elementid - (col * (col + 1)) // 2
 
-    offset_i = i * TILE_SIZE
-    offset_j = j * TILE_SIZE
+    offset_row = row * TILE_SIZE
+    offset_col = col * TILE_SIZE
 
     sum_val = wp.tile_zeros(shape=(TILE_SIZE, TILE_SIZE), dtype=wp.float32)
 
@@ -2334,12 +2336,12 @@ def update_gradient_JTDAJ_sparse_tiled(tile_size: int, njmax: int):
       # AD: leaving bounds-check disabled here because I'm not entirely sure that
       # everything always hits the fast path. The padding takes care of any
       # potential OOB accesses.
-      J_ki = wp.tile_load(efc_J_in[worldid], shape=(TILE_SIZE, TILE_SIZE), offset=(k, offset_i), bounds_check=False)
+      J_krow = wp.tile_load(efc_J_in[worldid], shape=(TILE_SIZE, TILE_SIZE), offset=(k, offset_row), bounds_check=False)
 
-      if offset_i != offset_j:
-        J_kj = wp.tile_load(efc_J_in[worldid], shape=(TILE_SIZE, TILE_SIZE), offset=(k, offset_j), bounds_check=False)
+      if offset_row != offset_col:
+        J_kcol = wp.tile_load(efc_J_in[worldid], shape=(TILE_SIZE, TILE_SIZE), offset=(k, offset_col), bounds_check=False)
       else:
-        wp.tile_assign(J_kj, J_ki, (0, 0))
+        wp.tile_assign(J_kcol, J_krow, (0, 0))
 
       D_k = wp.tile_load(efc_D_in[worldid], shape=TILE_SIZE, offset=k, bounds_check=False)
       state = wp.tile_load(efc_state_in[worldid], shape=TILE_SIZE, offset=k, bounds_check=False)
@@ -2353,13 +2355,13 @@ def update_gradient_JTDAJ_sparse_tiled(tile_size: int, njmax: int):
       active_tile = wp.tile_map(active_check, tid_tile, threshold_tile)
       D_k = wp.tile_map(wp.mul, active_tile, D_k)
 
-      J_ki = wp.tile_map(wp.mul, wp.tile_transpose(J_ki), wp.tile_broadcast(D_k, shape=(TILE_SIZE, TILE_SIZE)))
+      J_krow = wp.tile_map(wp.mul, wp.tile_transpose(J_krow), wp.tile_broadcast(D_k, shape=(TILE_SIZE, TILE_SIZE)))
 
-      sum_val += wp.tile_matmul(J_ki, J_kj)
+      sum_val += wp.tile_matmul(J_krow, J_kcol)
 
     # AD: setting bounds_check to True explicitly here because for some reason it was
     # slower to disable it.
-    wp.tile_store(ctx_h_out[worldid], sum_val, offset=(offset_i, offset_j), bounds_check=True)
+    wp.tile_store(ctx_h_out[worldid], sum_val, offset=(offset_row, offset_col), bounds_check=True)
 
   return kernel
 
@@ -2746,9 +2748,9 @@ def update_gradient_cholesky(tile_size: int):
       return
 
     mat_tile = wp.tile_load(h_in[worldid], shape=(TILE_SIZE, TILE_SIZE))
-    fact_tile = wp.tile_cholesky(mat_tile)
+    fact_tile = wp.tile_cholesky(mat_tile, fill_mode="upper")
     input_tile = wp.tile_load(ctx_grad_in[worldid], shape=TILE_SIZE)
-    output_tile = wp.tile_cholesky_solve(fact_tile, input_tile)
+    output_tile = wp.tile_cholesky_solve(fact_tile, input_tile, fill_mode="upper")
     wp.tile_store(ctx_Mgrad_out[worldid], output_tile)
 
   return kernel
@@ -2914,9 +2916,9 @@ def _JTDAJ_sparse(
         colindj = efc_J_colind_in[worldid, 0, sparseidj]
 
       h = Ji * Jj * efc_D
-      # Store in lower triangle only: ensure row >= col
-      row = wp.max(colindi, colindj)
-      col = wp.min(colindi, colindj)
+      # Store in upper triangle only: ensure row <= col.
+      row = wp.min(colindi, colindj)
+      col = wp.max(colindi, colindj)
       wp.atomic_add(h_out[worldid, row], col, h)
 
 
@@ -2945,9 +2947,9 @@ def _update_gradient(m: types.Model, d: types.Data, ctx: SolverContext):
       )
 
       wp.launch(
-        update_gradient_set_h_qM_lower_sparse,
-        dim=(d.nworld, m.qM_fullm_i.size),
-        inputs=[m.qM_fullm_i, m.qM_fullm_j, d.qM, ctx.done],
+        update_gradient_set_h_qM_upper_sparse,
+        dim=(d.nworld, m.qM_fullm_upper_i.size),
+        inputs=[m.qM_fullm_upper_i, m.qM_fullm_upper_j, m.qM_fullm_upper_elemid, d.qM, ctx.done],
         outputs=[ctx.h],
       )
     else:
@@ -3067,7 +3069,7 @@ def _update_gradient_incremental(m: types.Model, d: types.Data, ctx: SolverConte
     outputs=[ctx.grad, ctx.grad_dot],
   )
 
-  # Update lower triangle of H with delta from changed constraints
+  # Update upper triangle of H with delta from changed constraints.
   if m.is_sparse:
     wp.launch(
       update_gradient_h_incremental_sparse,
@@ -3085,10 +3087,10 @@ def _update_gradient_incremental(m: types.Model, d: types.Data, ctx: SolverConte
       outputs=[ctx.h],
     )
   else:
-    lower_tri_dim = m.nv * (m.nv + 1) // 2
+    tri_dim = m.nv * (m.nv + 1) // 2
     wp.launch(
       update_gradient_h_incremental,
-      dim=(d.nworld, lower_tri_dim),
+      dim=(d.nworld, tri_dim),
       inputs=[
         d.efc.J,
         d.efc.D,

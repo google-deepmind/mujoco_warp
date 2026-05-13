@@ -271,7 +271,7 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
   jnt_limited_slide_hinge = mjm.jnt_limited & np.isin(mjm.jnt_type, (mujoco.mjtJoint.mjJNT_SLIDE, mujoco.mjtJoint.mjJNT_HINGE))
   m.jnt_limited_slide_hinge_adr = np.nonzero(jnt_limited_slide_hinge)[0]
   m.jnt_limited_ball_adr = np.nonzero(mjm.jnt_limited & (mjm.jnt_type == mujoco.mjtJoint.mjJNT_BALL))[0]
-  m.dof_tri_row, m.dof_tri_col = np.tril_indices(mjm.nv)
+  m.dof_tri_row, m.dof_tri_col = np.triu_indices(mjm.nv)
 
   # precompute body_isdofancestor: which DOFs affect each body
   # TODO: Investigate alternative approach such as bitmap
@@ -640,6 +640,12 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
       elemid += 1
       j = mjm.dof_parentid[j]
   m.qM_fullm_elemid = qM_fullm_elemid
+  upper_j, upper_i = np.triu_indices(mjm.nv)
+  upper_elemid = qM_fullm_elemid[upper_i, upper_j]
+  valid_mask = upper_elemid != -1
+  m.qM_fullm_upper_i = upper_j[valid_mask].tolist()
+  m.qM_fullm_upper_j = upper_i[valid_mask].tolist()
+  m.qM_fullm_upper_elemid = upper_elemid[valid_mask].tolist()
 
   # indices for sparse qD_fullm (used in RNE derivatives)
   # D-structure is the full square sparsity pattern (both upper and lower triangle)
@@ -1290,10 +1296,10 @@ def put_data(
     qM = np.zeros((mjm.nv, mjm.nv))
     if check_version("mujoco>=3.8.1.dev910242375"):
       mujoco.mju_sym2dense(qM, mjd.M, mjm.M_rownnz, mjm.M_rowadr, mjm.M_colind)
-      qLD = np.linalg.cholesky(qM) if (mjd.M != 0.0).any() and (mjd.qLD != 0.0).any() else np.zeros((mjm.nv, mjm.nv))
+      qLD = np.linalg.cholesky(qM).T if (mjd.M != 0.0).any() and (mjd.qLD != 0.0).any() else np.zeros((mjm.nv, mjm.nv))
     else:
       mujoco.mj_fullM(mjm, qM, mjd.qM)
-      qLD = np.linalg.cholesky(qM) if (mjd.qM != 0.0).any() and (mjd.qLD != 0.0).any() else np.zeros((mjm.nv, mjm.nv))
+      qLD = np.linalg.cholesky(qM).T if (mjd.qM != 0.0).any() and (mjd.qLD != 0.0).any() else np.zeros((mjm.nv, mjm.nv))
     padding = sizes["nv_pad"] - mjm.nv
     qM_padded = np.pad(qM, ((0, padding), (0, padding)), mode="constant", constant_values=0.0)
     d.qM = wp.array(np.full((nworld, sizes["nv_pad"], sizes["nv_pad"]), qM_padded), dtype=float)
@@ -2813,13 +2819,7 @@ def create_render_context(
   mjd = mujoco.MjData(mjm)
   mujoco.mj_forward(mjm, mjd)
 
-  constructor = "sah"
-  if check_version("warp>=1.13.0.dev20260325"):
-    # TODO: The cubql constructor and is_cubql_available exist only in
-    # recent Warp 1.13+ builds, modify this after warp is updated to 1.13+.
-    _cubql_avail = getattr(wp, "is_cubql_available", None)
-    if callable(_cubql_avail) and _cubql_avail():
-      constructor = "cubql"
+  constructor = "cubql"
 
   # Mesh BVHs – build for all meshes so per-world variants are available
   nmesh = mjm.nmesh

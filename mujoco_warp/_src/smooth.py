@@ -1082,7 +1082,7 @@ def _tile_cholesky_factorize(tile: TileSet):
 
     dofid = adr[nodeid]
     M_tile = wp.tile_load(qM_in[worldid], shape=(TILE_SIZE, TILE_SIZE), offset=(dofid, dofid))
-    L_tile = wp.tile_cholesky(M_tile)
+    L_tile = wp.tile_cholesky(M_tile, fill_mode="upper")
     wp.tile_store(L_out[worldid], L_tile, offset=(dofid, dofid))
 
   return cholesky_factorize
@@ -2842,14 +2842,14 @@ def _tile_cholesky_solve(tile: TileSet):
     dofid = adr[nodeid]
     y_slice = wp.tile_load(y[worldid], shape=(TILE_SIZE,), offset=(dofid,))
     L_tile = wp.tile_load(L[worldid], shape=(TILE_SIZE, TILE_SIZE), offset=(dofid, dofid))
-    x_slice = wp.tile_cholesky_solve(L_tile, y_slice)
+    x_slice = wp.tile_cholesky_solve(L_tile, y_slice, fill_mode="upper")
     wp.tile_store(x[worldid], x_slice, offset=(dofid,))
 
   return cholesky_solve
 
 
 def _solve_LD_dense(m: Model, d: Data, L: wp.array3d[float], x: wp.array2d[float], y: wp.array2d[float]):
-  """Computes dense backsubstitution: x = inv(L'*L)*y."""
+  """Computes dense backsubstitution: x = inv(U.T @ U) * y."""
   for tile in m.qM_tiles:
     wp.launch_tiled(
       _tile_cholesky_solve(tile),
@@ -2868,9 +2868,9 @@ def solve_LD(
   x: wp.array2d[float],
   y: wp.array2d[float],
 ):
-  """Computes backsubstitution to solve a linear system of the form x = inv(L'*D*L) * y.
+  """Computes backsubstitution for the inertia factorization.
 
-  L and D are the factors from the Cholesky factorization of the inertia matrix.
+  Sparse models use MuJoCo's L'*D*L factors; dense models use an upper Cholesky factor U.
 
   This function dispatches to either a sparse or dense solver depending on Model options.
 
@@ -2922,9 +2922,9 @@ def _tile_cholesky_factorize_solve(tile: TileSet):
     M_tile = wp.tile_load(M[worldid], shape=(TILE_SIZE, TILE_SIZE), offset=(dofid, dofid))
     y_slice = wp.tile_load(y[worldid], shape=(TILE_SIZE,), offset=(dofid,))
 
-    L_tile = wp.tile_cholesky(M_tile)
+    L_tile = wp.tile_cholesky(M_tile, fill_mode="upper")
     wp.tile_store(L[worldid], L_tile, offset=(dofid, dofid))
-    x_slice = wp.tile_cholesky_solve(L_tile, y_slice)
+    x_slice = wp.tile_cholesky_solve(L_tile, y_slice, fill_mode="upper")
     wp.tile_store(x[worldid], x_slice, offset=(dofid,))
 
   return cholesky_factorize_solve
@@ -2949,9 +2949,9 @@ def _factor_solve_i_dense(
 
 
 def factor_solve_i(m, d, M, L, D, x, y):
-  """Factorizes and solves the linear system: x = inv(L'*D*L) * y or x = inv(L'*L) * y.
+  """Factorizes and solves the inertia-like linear system.
 
-  M is an inertia-like matrix and L, D are its Cholesky-like factors.
+  Sparse models use MuJoCo's L'*D*L factors; dense models use an upper Cholesky factor U.
 
   This function first factorizes the matrix M (sparse or dense depending on model options),
   then solves the system for x given right-hand side y.
@@ -2960,7 +2960,7 @@ def factor_solve_i(m, d, M, L, D, x, y):
     m: The model containing factorization and sparsity information.
     d: The data object containing workspace and factorization results.
     M: The inertia-like matrix to factorize.
-    L: Output lower-triangular factor from the factorization (sparse or dense).
+    L: Output sparse factor or dense upper Cholesky factor.
     D: Output diagonal factor from the factorization (only used for sparse).
     x: Output array for the solution.
     y: Input right-hand side array.

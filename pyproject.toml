@@ -31,7 +31,7 @@ dependencies = [
     "etils[epath]",
     "mujoco>=3.8.0",
     "numpy",
-    "warp-lang>=1.12",
+    "warp-lang>=1.13",
 ]
 
 [[tool.uv.index]]

@@ -40,6 +40,22 @@ def _assert_eq(a, b, name):
 
 
 class SolverTest(parameterized.TestCase):
+  def test_qM_fullm_upper_indices_are_row_sorted(self):
+    """Sparse qM seeding uses upper-triangle row-sorted writes."""
+    _, _, m, _ = test_data.fixture("humanoid/humanoid.xml")
+
+    lower_row = m.qM_fullm_i.numpy()
+    lower_col = m.qM_fullm_j.numpy()
+    upper_row = m.qM_fullm_upper_i.numpy()
+    upper_col = m.qM_fullm_upper_j.numpy()
+    upper_elemid = m.qM_fullm_upper_elemid.numpy()
+
+    self.assertEqual(upper_row.size, lower_row.size)
+    self.assertTrue(np.all(upper_row <= upper_col))
+    self.assertTrue(np.all(upper_row[:-1] <= upper_row[1:]))
+    np.testing.assert_array_equal(upper_row, lower_col[upper_elemid])
+    np.testing.assert_array_equal(upper_col, lower_row[upper_elemid])
+
   @parameterized.product(
     cone=tuple(ConeType),
     solver_=tuple(SolverType),
