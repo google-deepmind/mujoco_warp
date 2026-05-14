@@ -129,7 +129,7 @@ def create_solver_context(m: types.Model, d: types.Data) -> SolverContext:
     done=wp.empty((nworld,), dtype=bool),
     grad=wp.zeros((nworld, nv_pad), dtype=float),
     grad_dot=wp.empty((nworld,), dtype=float),
-    Mgrad=wp.zeros((nworld, nv_pad), dtype=float),
+    Mgrad=wp.empty((nworld, nv_pad), dtype=float),
     search=wp.empty((nworld, nv), dtype=float),
     mv=wp.empty((nworld, nv), dtype=float),
     jv=wp.empty((nworld, njmax), dtype=float),
@@ -139,8 +139,8 @@ def create_solver_context(m: types.Model, d: types.Data) -> SolverContext:
     prev_grad=wp.empty((nworld, nv), dtype=float),
     prev_Mgrad=wp.empty((nworld, nv), dtype=float),
     beta=wp.empty((nworld,), dtype=float),
-    h=wp.zeros((nworld, nv_pad, nv_pad), dtype=float) if alloc_h else wp.empty((nworld, 0, 0), dtype=float),
-    hfactor=wp.zeros((nworld, nv_pad, nv_pad), dtype=float) if alloc_hfactor else wp.empty((nworld, 0, 0), dtype=float),
+    h=wp.empty((nworld, nv_pad, nv_pad), dtype=float) if alloc_h else wp.empty((nworld, 0, 0), dtype=float),
+    hfactor=wp.empty((nworld, nv_pad, nv_pad), dtype=float) if alloc_hfactor else wp.empty((nworld, 0, 0), dtype=float),
     changed_efc_ids=wp.empty((nworld, njmax), dtype=int) if alloc_h else wp.empty((nworld, 0), dtype=int),
     changed_efc_count=wp.empty((nworld,), dtype=int) if alloc_h else wp.empty((0,), dtype=int),
   )
@@ -2281,6 +2281,7 @@ def update_gradient_set_h_qM_lower_sparse(
 @wp.kernel
 def update_gradient_init_h_sparse(
   # Model:
+  nv: int,
   qM_fullm_elemid: wp.array2d[int],
   # Data in:
   qM_in: wp.array3d[float],
@@ -2295,6 +2296,10 @@ def update_gradient_init_h_sparse(
     return
 
   if j > i:
+    return
+
+  if i >= nv:
+    ctx_h_out[worldid, i, j] = 0.0
     return
 
   elemid = qM_fullm_elemid[i, j]
@@ -2964,8 +2969,8 @@ def _update_gradient(m: types.Model, d: types.Data, ctx: SolverContext):
     if m.is_sparse:
       wp.launch(
         update_gradient_init_h_sparse,
-        dim=(d.nworld, m.nv, m.nv),
-        inputs=[m.qM_fullm_elemid, d.qM, ctx.done],
+        dim=(d.nworld, m.nv_pad, m.nv_pad),
+        inputs=[m.nv, m.qM_fullm_elemid, d.qM, ctx.done],
         outputs=[ctx.h],
       )
 
