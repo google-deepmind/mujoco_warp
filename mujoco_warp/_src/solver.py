@@ -2295,10 +2295,8 @@ def update_gradient_init_h_sparse(
   if ctx_done_in[worldid]:
     return
 
-  if j > i:
-    return
-
-  if i >= nv:
+  # NOTE: we could early-return on j > i, but that would be a hazard for future development.
+  if i >= nv or j >= nv:
     ctx_h_out[worldid, i, j] = 0.0
     return
 
