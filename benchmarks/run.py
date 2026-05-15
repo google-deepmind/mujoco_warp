@@ -21,6 +21,7 @@ Usage: python benchmarks/run.py [flags]
 
 Example:
   python benchmarks/run.py -f humanoid
+  python benchmarks/run.py -f humanoid --view
   python benchmarks/run.py --input git@github.com:google-deepmind/mujoco_warp.git#abc123f
   python benchmarks/run.py --input .
 """
@@ -158,11 +159,31 @@ def _run_benchmark(bm: dict, input_dir: Path) -> dict:
   return data
 
 
+def _view_benchmark(bm: dict, input_dir: Path):
+  """Launch mjwarp-viewer for a single benchmark."""
+  mjcf_path = Path(_ARGS.assets_root) / bm["name"] / bm["mjcf"]
+  cmd = [
+    "mjwarp-viewer",
+    mjcf_path.as_posix(),
+    "--nworld=1",
+  ]
+  for field in ("nconmax", "njmax"):
+    if field in bm:
+      cmd.append(f"--{field}={bm[field]}")
+  if "replay" in bm:
+    replay_path = Path(_ARGS.assets_root) / bm["name"] / bm["replay"]
+    cmd.append(f"--replay={replay_path.as_posix()}")
+
+  log.info("Command: uv run %s", " ".join(cmd))
+  subprocess.run(("uv", "run") + tuple(cmd), cwd=input_dir, check=True)
+
+
 def main():
   global _ARGS
   parser = argparse.ArgumentParser(description="Run MuJoCo Warp benchmarks.")
   parser.add_argument("--input", default=".", help="git uri or path to mujoco_warp repo to benchmark")
   parser.add_argument("-f", "--filter", default=".*", help="filter benchmarks by name (regex)")
+  parser.add_argument("--view", action="store_true", help="open the benchmark in mjwarp-viewer instead of running testspeed")
   parser.add_argument("--assets_root", default="/tmp/benchmark_assets", help="root directory to assemble benchmark assets")
   parser.add_argument(
     "--clear_warp_cache",
@@ -195,14 +216,21 @@ def main():
     log.info("Discovered %d benchmarks: [%s]", len(benchmarks), ", ".join(benchmarks.keys()))
 
     for name, bm in benchmarks.items():
-      log.info("Running benchmark: %s", name)
-      try:
-        data = _run_benchmark(bm, input_dir)
-      except subprocess.CalledProcessError as e:
-        log.error("Benchmark %s failed:\n%s", name, e.stderr)
-        continue
-      for key, value in data.items():
-        print(f"{name}.{key} {value}")
+      if _ARGS.view:
+        log.info("Viewing benchmark: %s", name)
+        try:
+          _view_benchmark(bm, input_dir)
+        except subprocess.CalledProcessError as e:
+          log.error("Viewer for %s failed:\n%s", name, e.stderr)
+      else:
+        log.info("Running benchmark: %s", name)
+        try:
+          data = _run_benchmark(bm, input_dir)
+        except subprocess.CalledProcessError as e:
+          log.error("Benchmark %s failed:\n%s", name, e.stderr)
+          continue
+        for key, value in data.items():
+          print(f"{name}.{key} {value}")
   except Exception:
     log.exception("Run failed — temp dir left for diagnosis: input_dir=%s", input_dir)
     sys.exit(1)
