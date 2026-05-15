@@ -217,11 +217,14 @@ def main():
 
     for name, bm in benchmarks.items():
       if _ARGS.view:
+        if len(benchmarks) > 1:
+          log.warning("--view: multiple benchmarks matched, viewing first match: %s", name)
         log.info("Viewing benchmark: %s", name)
         try:
           _view_benchmark(bm, input_dir)
         except subprocess.CalledProcessError as e:
-          log.error("Viewer for %s failed:\n%s", name, e.stderr)
+          log.error("Viewer for %s failed with exit code %d", name, e.returncode)
+        break
       else:
         log.info("Running benchmark: %s", name)
         try:

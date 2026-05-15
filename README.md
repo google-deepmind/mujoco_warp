@@ -97,7 +97,7 @@ you open, so it's important to fix any issues it reports.
 For performance profiling MJWarp, use the `--event_trace` flag on `mjwarp-testspeed` to get a full trace on a test scene of your choice:
 
 ```bash
-mjwarp-testspeed benchmarks/humanoid/humanoid.xml --event_trace=True
+mjwarp-testspeed benchmarks/humanoid/humanoid.xml --event_trace
 ```
 
 `mjwarp-testspeed` has many configuration options, see ```mjwarp-testspeed --help``` for details.  For more details and advanced topics on using MJWarp, see the [MuJoCo Warp documentation](https://mujoco.readthedocs.io/en/latest/mjwarp/index.html).
@@ -117,12 +117,12 @@ If you prefer [PyTorch](https://pytorch.org/) for research, consider one of thes
 
 MuJoCo Warp supports the same features as MuJoCo with the following exceptions:
 
-- **Integrator**: `IMPLICIT` not yet supported
+- **Integrator**: `IMPLICIT` not yet supported ([#1339](https://github.com/google-deepmind/mujoco_warp/pull/1339))
 - **Solver**: `PGS` and `noslip` not yet supported
 - **Actuator / Sensors**: `PLUGIN` types not yet supported
-- **Flex**: flex-flex collisions, `selfcollide`, `mjEQ_FLEXVERT`, and `mjEQ_FLEXSTRAIN` not yet supported
-- **Jacobian format**: `DENSE` only (row-sparse, no islanding yet)
-- **Differentiability**: [differentiability via Warp](https://nvidia.github.io/warp/user_guide/differentiability.html) is not yet available
+- **Flex**: experimental — not all features are implemented or optimized yet
+
+[Differentiability via Warp](https://nvidia.github.io/warp/user_guide/differentiability.html) is not yet available. See [#500](https://github.com/google-deepmind/mujoco_warp/issues/500) for progress.
 
 # Batch Rendering
 
