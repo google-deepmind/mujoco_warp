@@ -206,37 +206,23 @@ def main():
     return path
 
   input_dir = clone_if_needed(_ARGS.input)
+  benchmarks = list(_discover_benchmarks(input_dir))
 
-  try:
-    benchmarks = {}
-    for bm in _discover_benchmarks(input_dir):
+  if _ARGS.view:
+    if len(benchmarks) > 1:
+      log.warning("--view: multiple benchmarks matched, truncating to first match: %s", benchmarks[0]["name"])
+    elif len(benchmarks) == 0:
+      log.error("--view: no benchmarks matched the regex filter '%s'", _ARGS.filter)
+      sys.exit(1)
+    bm = benchmarks[0]
+    _assemble_benchmark(bm)
+    _view_benchmark(bm, input_dir)
+  else:
+    log.info("Discovered %d benchmarks: [%s]", len(benchmarks), ", ".join(bm["name"] for bm in benchmarks))
+    for bm in benchmarks:
       _assemble_benchmark(bm)
-      benchmarks[bm["name"]] = bm
-
-    log.info("Discovered %d benchmarks: [%s]", len(benchmarks), ", ".join(benchmarks.keys()))
-
-    for name, bm in benchmarks.items():
-      if _ARGS.view:
-        if len(benchmarks) > 1:
-          log.warning("--view: multiple benchmarks matched, viewing first match: %s", name)
-        log.info("Viewing benchmark: %s", name)
-        try:
-          _view_benchmark(bm, input_dir)
-        except subprocess.CalledProcessError as e:
-          log.error("Viewer for %s failed with exit code %d", name, e.returncode)
-        break
-      else:
-        log.info("Running benchmark: %s", name)
-        try:
-          data = _run_benchmark(bm, input_dir)
-        except subprocess.CalledProcessError as e:
-          log.error("Benchmark %s failed:\n%s", name, e.stderr)
-          continue
-        for key, value in data.items():
-          print(f"{name}.{key} {value}")
-  except Exception:
-    log.exception("Run failed — temp dir left for diagnosis: input_dir=%s", input_dir)
-    sys.exit(1)
+      for key, value in _run_benchmark(bm, input_dir).items():
+        print(f"{bm['name']}.{key} {value}")
 
   # clean up cloned temp dir on success
   if ":" in _ARGS.input:
