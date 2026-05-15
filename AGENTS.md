@@ -15,6 +15,11 @@
 - PR and commit messages are rendered on GitHub, so don't hard-wrap them
   at 88 columns. Let each sentence flow on one line.
 - Push branches to your own fork, not to the google-deepmind/mujoco_warp repo directly.
+- Amending commits is fine before a PR has reviewers looking at it. Once a PR is under review, use new commits so reviewers can see what changed.
+- When responding to PR review comments:
+  - Reply to each comment individually confirming what you did (or why you didn't).
+  - Resolve comment threads that are addressed.
+  - Add a summary comment on the PR after responding, covering what was applied and what was intentionally skipped.
 
 # Code Style
 
