@@ -500,7 +500,6 @@ def compute_lighting(
   flex_geom_edgeid: wp.array[int],
   flex_bvh_id: wp.array[wp.uint64],
   flex_group_root: wp.array2d[int],
-  lightactive: bool,
   lighttype: int,
   lightcastshadow: bool,
   lightpos: wp.vec3,
@@ -509,11 +508,6 @@ def compute_lighting(
   hitpoint: wp.vec3,
 ) -> float:
   light_contribution = float(0.0)
-
-  # TODO: We should probably only be looping over active lights
-  # in the first place with a static loop of enabled light idx?
-  if not lightactive:
-    return light_contribution
 
   L = wp.vec3(0.0, 0.0, 0.0)
   dist_to_light = float(MJ_MAXVAL)
@@ -593,6 +587,7 @@ def render(m: Model, d: Data, rc: RenderContext):
   rc.rgb_data.fill_(rc.background_color)
   rc.depth_data.fill_(0.0)
   rc.seg_data.fill_(wp.vec2i(-1, -1))
+  nactive_light = rc.light_active_adr.size
 
   @wp.kernel(module="unique", enable_backward=False)
   def _render_megakernel(
@@ -608,7 +603,7 @@ def render(m: Model, d: Data, rc: RenderContext):
     cam_intrinsic: wp.array2d[wp.vec4],
     light_type: wp.array2d[int],
     light_castshadow: wp.array2d[bool],
-    light_active: wp.array2d[bool],
+    light_active_adr: wp.array[int],
     flex_vertadr: wp.array[int],
     flex_edge: wp.array[wp.vec2i],
     flex_radius: wp.array[float],
@@ -808,7 +803,8 @@ def render(m: Model, d: Data, rc: RenderContext):
       result = 0.5 * wp.cw_mul(base_color, ambient_color)
 
     # Apply lighting and shadows
-    for l in range(wp.static(m.nlight)):
+    for light_adrid in range(wp.static(nactive_light)):
+      l = light_active_adr[light_adrid]
       light_contribution = compute_lighting(
         geom_type,
         geom_dataid,
@@ -832,7 +828,6 @@ def render(m: Model, d: Data, rc: RenderContext):
         flex_geom_edgeid,
         flex_bvh_id,
         flex_group_root,
-        light_active[worldid % light_active.shape[0], l],
         light_type[worldid % light_type.shape[0], l],
         light_castshadow[worldid % light_castshadow.shape[0], l],
         light_xpos_in[worldid, l],
@@ -867,7 +862,7 @@ def render(m: Model, d: Data, rc: RenderContext):
       m.cam_intrinsic,
       m.light_type,
       m.light_castshadow,
-      m.light_active,
+      rc.light_active_adr,
       m.flex_vertadr,
       m.flex_edge,
       m.flex_radius,

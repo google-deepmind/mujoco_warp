@@ -2995,6 +2995,7 @@ def create_render_context(
     skybox_face_width=skybox_face_width,
     bvh_ngeom=bvh_ngeom,
     enabled_geom_ids=wp.array(geom_enabled_idx, dtype=int),
+    light_active_adr=wp.array(np.nonzero(mjm.light_active)[0], dtype=int),
     mesh_registry=mesh_registry,
     mesh_bvh_id=mesh_bvh_id_arr,
     mesh_bounds_size=mesh_bounds_size_arr,

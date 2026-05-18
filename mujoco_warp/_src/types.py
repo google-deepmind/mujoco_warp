@@ -1961,6 +1961,7 @@ class RenderContext:
     use_precomputed_rays: whether to use precomputed rays
     bvh_ngeom: number of geometries in the BVH
     enabled_geom_ids: enabled geometry ids
+    light_active_adr: active light ids
     mesh_registry: mesh BVH id to warp mesh mapping
     mesh_bvh_id: mesh BVH ids
     mesh_bounds_size: mesh bounds size
@@ -2014,6 +2015,7 @@ class RenderContext:
   skybox_face_width: int
   bvh_ngeom: int
   enabled_geom_ids: array("*", int)
+  light_active_adr: array("*", int)
   mesh_registry: dict
   mesh_bvh_id: array("nmesh", wp.uint64)
   mesh_bounds_size: array("nmesh", wp.vec3)

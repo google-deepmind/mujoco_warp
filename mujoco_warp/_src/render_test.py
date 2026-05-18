@@ -140,6 +140,29 @@ class RenderTest(parameterized.TestCase):
     self.assertGreater(np.count_nonzero(rgb), 0)
     self.assertTrue(np.any(seg[..., 1] == int(mjw.ObjType.GEOM)))
 
+  def test_render_active_light_subset(self):
+    xml = """
+    <mujoco>
+      <worldbody>
+        <camera name="cam" pos="0 -3 1" xyaxes="1 0 0 0 0.25 1" resolution="32 32" output="rgb"/>
+        <light name="off" active="false" pos="-1 0 3" dir="0 0 -1"/>
+        <light name="on" active="true" pos="1 0 3" dir="0 0 -1"/>
+        <geom type="sphere" pos="0 0 0.5" size="0.5" rgba="1 0 0 1"/>
+      </worldbody>
+    </mujoco>
+    """
+    mjm, mjd, m, d = test_data.fixture(xml=xml)
+
+    rc = mjw.create_render_context(
+      mjm,
+      cam_res=(32, 32),
+      render_rgb=True,
+    )
+    np.testing.assert_array_equal(rc.light_active_adr.numpy(), np.array([1]))
+    mjw.render(m, d, rc)
+
+    self.assertGreater(np.count_nonzero(rc.rgb_data.numpy()), 0)
+
   def test_disable_ambient_lighting(self):
     xml = """
     <mujoco>
