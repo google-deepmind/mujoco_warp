@@ -23,7 +23,7 @@ from mujoco_warp._src import math
 from mujoco_warp._src import smooth
 from mujoco_warp._src import support
 from mujoco_warp._src import types
-from mujoco_warp._src.block_cholesky import create_blocked_cholesky_func
+from mujoco_warp._src.block_cholesky import create_blocked_cholesky_factorize_solve_func
 from mujoco_warp._src.block_cholesky import create_blocked_cholesky_solve_func
 from mujoco_warp._src.warp_util import cache_kernel
 from mujoco_warp._src.warp_util import event_scope
@@ -2779,9 +2779,8 @@ def update_gradient_cholesky_blocked(tile_size: int, matrix_size: int):
     # runtime input is needed for the loop bounds, otherwise warp will unroll
     # unconditionally leading to shared memory capacity issues.
 
-    wp.static(create_blocked_cholesky_func(TILE_SIZE))(ctx_h_in[worldid], matrix_size, ctx_hfactor[worldid])
-    wp.static(create_blocked_cholesky_solve_func(TILE_SIZE, matrix_size))(
-      ctx_hfactor[worldid], ctx_grad_in[worldid], matrix_size, ctx_Mgrad_out[worldid]
+    wp.static(create_blocked_cholesky_factorize_solve_func(TILE_SIZE, matrix_size))(
+      ctx_h_in[worldid], ctx_grad_in[worldid], matrix_size, ctx_hfactor[worldid], ctx_Mgrad_out[worldid]
     )
 
   return kernel
@@ -2809,11 +2808,13 @@ def update_gradient_cholesky_blocked_skip_unchanged(tile_size: int, matrix_size:
       return
 
     if changed_count_in[worldid] > 0:
-      wp.static(create_blocked_cholesky_func(TILE_SIZE))(ctx_h_in[worldid], matrix_size, ctx_hfactor[worldid])
-
-    wp.static(create_blocked_cholesky_solve_func(TILE_SIZE, matrix_size))(
-      ctx_hfactor[worldid], ctx_grad_in[worldid], matrix_size, ctx_Mgrad_out[worldid]
-    )
+      wp.static(create_blocked_cholesky_factorize_solve_func(TILE_SIZE, matrix_size))(
+        ctx_h_in[worldid], ctx_grad_in[worldid], matrix_size, ctx_hfactor[worldid], ctx_Mgrad_out[worldid]
+      )
+    else:
+      wp.static(create_blocked_cholesky_solve_func(TILE_SIZE, matrix_size))(
+        ctx_hfactor[worldid], ctx_grad_in[worldid], matrix_size, ctx_Mgrad_out[worldid]
+      )
 
   return kernel
 

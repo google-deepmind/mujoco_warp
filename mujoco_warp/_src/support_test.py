@@ -25,8 +25,7 @@ import mujoco_warp as mjwarp
 from mujoco_warp import ConeType
 from mujoco_warp import State
 from mujoco_warp import test_data
-from mujoco_warp._src.block_cholesky import create_blocked_cholesky_func
-from mujoco_warp._src.block_cholesky import create_blocked_cholesky_solve_func
+from mujoco_warp._src.block_cholesky import create_blocked_cholesky_factorize_solve_func
 
 # tolerance for difference between MuJoCo and MJWarp support calculations - mostly
 # due to float precision
@@ -201,9 +200,8 @@ class SupportTest(parameterized.TestCase):
     nv_pad = m.nv_pad
     nworld = d.nworld
 
-    # Create combined factor and solve kernel as in solver.py
     @wp.kernel(module="unique", enable_backward=False)
-    def combined_cholesky_kernel(
+    def fused_cholesky_kernel(
       grad_in: wp.array3d[float],
       h_in: wp.array3d[float],
       done_in: wp.array[bool],
@@ -216,9 +214,8 @@ class SupportTest(parameterized.TestCase):
       if done_in[worldid]:
         return
 
-      wp.static(create_blocked_cholesky_func(TILE_SIZE))(h_in[worldid], nv_pad, hfactor_in[worldid])
-      wp.static(create_blocked_cholesky_solve_func(TILE_SIZE, nv_pad))(
-        hfactor_in[worldid], grad_in[worldid], nv_pad, Mgrad_out[worldid]
+      wp.static(create_blocked_cholesky_factorize_solve_func(TILE_SIZE, nv_pad))(
+        h_in[worldid], grad_in[worldid], nv_pad, hfactor_in[worldid], Mgrad_out[worldid]
       )
 
     # Create test vector and fill the built-in arrays
@@ -248,25 +245,24 @@ class SupportTest(parameterized.TestCase):
     # Initialize padding region to identity
     L_init[0, nv:, nv:] = np.eye(nv_pad - nv, dtype=np.float32)
 
-    hfactor = wp.array(L_init, dtype=float)
+    hfactor_fused = wp.array(L_init, dtype=float)
 
-    Mgrad = wp.zeros((nworld, nv_pad), dtype=float)
+    Mgrad_fused = wp.zeros((nworld, nv_pad), dtype=float)
 
     # Ensure done is False so kernel executes
     done = wp.zeros((nworld,), dtype=bool)
 
-    # Launch with same dimensions as solver.py, using inline arrays
     wp.launch_tiled(
-      combined_cholesky_kernel,
+      fused_cholesky_kernel,
       dim=nworld,
-      inputs=[grad.reshape(shape=(nworld, nv_pad, 1)), h, done, hfactor],
-      outputs=[Mgrad.reshape(shape=(nworld, nv_pad, 1))],
+      inputs=[grad.reshape(shape=(nworld, nv_pad, 1)), h, done, hfactor_fused],
+      outputs=[Mgrad_fused.reshape(shape=(nworld, nv_pad, 1))],
       block_dim=m.block_dim.update_gradient_cholesky,
     )
     wp.synchronize()
 
-    U_result = hfactor.numpy()[0]
-    x_result = Mgrad.numpy()[0]
+    U_result = hfactor_fused.numpy()[0]
+    x_result = Mgrad_fused.numpy()[0]
 
     # Verify padding outside active region doesn't affect active computation
     # Off-diagonal padding should be zero (active region shouldn't touch padding)
