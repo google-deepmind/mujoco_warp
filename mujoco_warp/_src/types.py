@@ -28,6 +28,7 @@ MJ_MINIMP = mujoco.mjMINIMP  # minimum constraint impedance
 MJ_MAXIMP = mujoco.mjMAXIMP  # maximum constraint impedance
 MJ_MAXCONPAIR = mujoco.mjMAXCONPAIR
 MJ_MINMU = mujoco.mjMINMU  # minimum friction
+MJ_MINAWAKE = mujoco.mjMINAWAKE  # minimum number of timesteps before sleeping
 NEW_GAP_SEMANTICS = check_version("mujoco>=3.9.0.dev914519929")
 TACTILE_DEPTH_SEMANTICS = check_version("mujoco>=3.9.0.dev921980899")
 # maximum size (by number of edges) of an horizon in EPA algorithm
@@ -236,11 +237,42 @@ class EnableBit(enum.IntFlag):
   Attributes:
     ENERGY: energy computation
     INVDISCRETE: discrete-time inverse dynamics
+    SLEEP: sleeping
   """
 
   ENERGY = mujoco.mjtEnableBit.mjENBL_ENERGY
   INVDISCRETE = mujoco.mjtEnableBit.mjENBL_INVDISCRETE
+  SLEEP = mujoco.mjtEnableBit.mjENBL_SLEEP
   # unsupported: OVERRIDE, FWDINV, ISLAND
+
+
+class SleepPolicy(enum.IntEnum):
+  """Per-tree sleep policy.
+
+  Attributes:
+    AUTO: compiler chooses sleep policy
+    AUTO_NEVER: compiler sleep policy: never
+    AUTO_ALLOWED: compiler sleep policy: allowed
+  """
+
+  AUTO = mujoco.mjtSleepPolicy.mjSLEEP_AUTO
+  AUTO_NEVER = mujoco.mjtSleepPolicy.mjSLEEP_AUTO_NEVER
+  AUTO_ALLOWED = mujoco.mjtSleepPolicy.mjSLEEP_AUTO_ALLOWED
+  # unsupported: NEVER, ALLOWED, INIT
+
+
+class SleepState(enum.IntEnum):
+  """Sleep state for bodies.
+
+  Attributes:
+    STATIC: body is static (world body or mocap)
+    ASLEEP: body is asleep
+    AWAKE: body is awake
+  """
+
+  STATIC = mujoco.mjtSleepState.mjS_STATIC
+  ASLEEP = mujoco.mjtSleepState.mjS_ASLEEP
+  AWAKE = mujoco.mjtSleepState.mjS_AWAKE
 
 
 class TrnType(enum.IntEnum):
@@ -749,6 +781,7 @@ class Option:
     tolerance: main solver tolerance
     ls_tolerance: CG/Newton linesearch tolerance
     ccd_tolerance: convex collision detection tolerance
+    sleep_tolerance: sleep velocity tolerance
     gravity: gravitational acceleration
     wind: wind (for lift, drag, and viscosity)
     magnetic: global magnetic flux
@@ -783,6 +816,7 @@ class Option:
   tolerance: array("*", float)
   ls_tolerance: array("*", float)
   ccd_tolerance: array("*", float)
+  sleep_tolerance: array("*", float)
   gravity: array("*", wp.vec3)
   wind: array("*", wp.vec3)
   magnetic: array("*", wp.vec3)
@@ -978,9 +1012,11 @@ class Model:
     dof_damping: damping coefficient                         (*, nv)
     dof_dampingpoly: high-order damping coefficients         (*, nv, 2)
     dof_invweight0: diag. inverse inertia in qpos0           (*, nv)
+    dof_length: dof length for weighting velocity norm       (nv,)
     tree_bodynum: number of bodies in tree (incl. root)      (ntree,)
     tree_dofadr: start address of tree's dofs                (ntree,)
     tree_dofnum: number of dofs in tree                      (ntree,)
+    tree_sleep_policy: tree sleep policy (SleepPolicy)       (ntree,)
     geom_type: geometric type (GeomType)                     (ngeom,)
     geom_contype: geom contact type                          (ngeom,)
     geom_conaffinity: geom contact affinity                  (ngeom,)
@@ -1411,9 +1447,11 @@ class Model:
   dof_damping: array("*", "nv", float)
   dof_dampingpoly: array("*", "nv", wp.vec2)
   dof_invweight0: array("*", "nv", float)
+  dof_length: array("nv", float)
   tree_bodynum: array("ntree", int)
   tree_dofadr: array("ntree", int)
   tree_dofnum: array("ntree", int)
+  tree_sleep_policy: array("ntree", int)
   geom_type: array("ngeom", int)
   geom_contype: array("ngeom", int)
   geom_conaffinity: array("ngeom", int)
@@ -1870,6 +1908,9 @@ class Data:
     nefc: number of constraints                                 (nworld,)
     nisland: number of constraint islands                       (nworld,)
     nidof: total DOFs in islands                                (nworld,)
+    ntree_awake: number of awake trees                          (nworld,)
+    nbody_awake: number of awake bodies                         (nworld,)
+    nv_awake: number of awake dofs                              (nworld,)
     time: simulation time                                       (nworld,)
     energy: potential, kinetic energy                           (nworld, 2)
     qpos: position                                              (nworld, nq)
@@ -1886,6 +1927,7 @@ class Data:
     qacc: acceleration                                          (nworld, nv)
     act_dot: time-derivative of actuator activation             (nworld, na)
     sensordata: sensor data array                               (nworld, nsensordata,)
+    tree_asleep: tree asleep counter; >=0: asleep cycle         (nworld, ntree)
     xpos: Cartesian position of body frame                      (nworld, nbody, 3)
     xquat: Cartesian orientation of body frame                  (nworld, nbody, 4)
     xmat: Cartesian orientation of body frame                   (nworld, nbody, 3, 3)
@@ -1924,6 +1966,10 @@ class Data:
     qLD: upper Cholesky factorization                           (nworld, nv, nv) if dense
          L'*D*L factorization of M                              (nworld, 1, nC) if sparse
     qLDiagInv: 1/diag(D)                                        (nworld, nv)
+    tree_awake: is tree awake; 0: asleep; 1: awake              (nworld, ntree)
+    body_awake: body sleep state (SleepState)                   (nworld, nbody)
+    body_awake_ind: indices of awake/static bodies              (nworld, nbody)
+    dof_awake_ind: indices of awake dofs                        (nworld, nv)
     flexedge_velocity: flex edge velocities                     (nworld, nflexedge)
     ten_velocity: tendon velocities                             (nworld, ntendon)
     actuator_velocity: actuator velocities                      (nworld, nu)
@@ -1954,6 +2000,7 @@ class Data:
     tree_island: island ID per tree (-1 if unconstrained)       (nworld, ntree)
     dof_island: island ID per DOF (-1 if unconstrained)         (nworld, nv)
     island_dofadr: island start address in dof vector           (nworld, ntree)
+    island_idofadr: island start address in idof vector          (nworld, ntree)
     island_nv: DOFs per island                                  (nworld, ntree)
     island_nefc: constraints per island                         (nworld, ntree)
     island_ne: equality constraints per island                  (nworld, ntree)
@@ -1988,6 +2035,9 @@ class Data:
   nefc: array("nworld", int)
   nisland: array("nworld", int)
   nidof: array("nworld", int)
+  ntree_awake: array("nworld", int)
+  nbody_awake: array("nworld", int)
+  nv_awake: array("nworld", int)
   time: array("nworld", float)
   energy: array("nworld", wp.vec2)
   qpos: array("nworld", "nq", float)
@@ -2004,6 +2054,7 @@ class Data:
   qacc: array("nworld", "nv", float)
   act_dot: array("nworld", "na", float)
   sensordata: array("nworld", "nsensordata", float)
+  tree_asleep: array("nworld", "ntree", int)
   xpos: array("nworld", "nbody", wp.vec3)
   xquat: array("nworld", "nbody", wp.quat)
   xmat: array("nworld", "nbody", wp.mat33)
@@ -2040,6 +2091,10 @@ class Data:
   M: wp.array3d[float]
   qLD: wp.array3d[float]
   qLDiagInv: array("nworld", "nv", float)
+  tree_awake: array("nworld", "ntree", int)
+  body_awake: array("nworld", "nbody", int)
+  body_awake_ind: array("nworld", "nbody", int)
+  dof_awake_ind: array("nworld", "nv", int)
   flexedge_velocity: array("nworld", "nflexedge", float)
   ten_velocity: array("nworld", "ntendon", float)
   actuator_velocity: array("nworld", "nu", float)
@@ -2068,6 +2123,7 @@ class Data:
   tree_island: array("nworld", "ntree", int)
   dof_island: array("nworld", "nv", int)
   island_dofadr: array("nworld", "ntree", int)
+  island_idofadr: array("nworld", "ntree", int)
   island_nv: array("nworld", "ntree", int)
   island_nefc: array("nworld", "ntree", int)
   island_ne: array("nworld", "ntree", int)

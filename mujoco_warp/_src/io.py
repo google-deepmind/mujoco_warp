@@ -154,6 +154,7 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     (mjm.geom_type, types.GeomType, mujoco.mjtGeom),
     (mjm.sensor_type, types.SensorType, mujoco.mjtSensor),
     (mjm.wrap_type, types.WrapType, mujoco.mjtWrap),
+    (mjm.tree_sleep_policy, types.SleepPolicy, mujoco.mjtSleepPolicy),
   ):
     missing = ~np.isin(field, field_type)
     if missing.any():
@@ -177,6 +178,9 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
     unsupported = field & ~np.bitwise_or.reduce(field_type)
     if unsupported:
       raise NotImplementedError(f"{mj_type(unsupported).name} is unsupported.")
+
+  if (mjm.opt.enableflags & mujoco.mjtEnableBit.mjENBL_SLEEP) and (mjm.eq_type == mujoco.mjtEq.mjEQ_FLEX).any():
+    raise NotImplementedError("Flex equality constraints are not supported with sleeping enabled.")
 
   if mjm.opt.noslip_iterations > 0:
     raise NotImplementedError(f"noslip solver not implemented.")
@@ -995,6 +999,7 @@ def _allocate_island_arrays(
   d.dof_island = wp.array(np.tile(mjd.dof_island, (nworld, 1 if island_enabled else 0)), dtype=int)
 
   d.island_dofadr = wp.empty((nworld, ntree_size), dtype=int)
+  d.island_idofadr = wp.empty((nworld, ntree_size), dtype=int)
   d.island_nv = wp.empty((nworld, ntree_size), dtype=int)
   d.island_nefc = wp.empty((nworld, ntree_size), dtype=int)
   d.island_ne = wp.empty((nworld, ntree_size), dtype=int)
@@ -1155,6 +1160,7 @@ def make_data(
     "tree_island": None,
     "dof_island": None,
     "island_dofadr": None,
+    "island_idofadr": None,
     "island_nv": None,
     "island_nefc": None,
     "island_ne": None,
@@ -1171,6 +1177,10 @@ def make_data(
     "iqacc_smooth": None,
     "iqfrc_smooth": None,
     "iqfrc_constraint": None,
+    # sleep state: all trees start fully awake
+    "tree_asleep": wp.array(np.full((nworld, mjm.ntree), -(1 + types.MJ_MINAWAKE)), dtype=int),
+    "tree_awake": wp.array(np.ones((nworld, mjm.ntree)), dtype=int),
+    "body_awake": wp.array(np.ones((nworld, mjm.nbody)), dtype=int),
   }
   for f in dataclasses.fields(types.Data):
     if f.name in d_kwargs:
@@ -1380,6 +1390,7 @@ def put_data(
     "tree_island": None,
     "dof_island": None,
     "island_dofadr": None,
+    "island_idofadr": None,
     "island_nv": None,
     "island_nefc": None,
     "island_ne": None,
@@ -1657,12 +1668,18 @@ def get_data_into(
   # sensors
   result.sensordata[:] = d.sensordata.numpy()[world_id]
 
+  # sleep
+  result.tree_asleep[:] = d.tree_asleep.numpy()[world_id]
+  result.tree_awake[:] = d.tree_awake.numpy()[world_id]
+  result.body_awake[:] = d.body_awake.numpy()[world_id]
+
   # islands
   nisland = d.nisland.numpy()[world_id]
   result.nisland = nisland
   if d.tree_island.shape[1] > 0 and nisland:
     result.tree_island[:] = d.tree_island.numpy()[world_id]
     result.dof_island[:] = d.dof_island.numpy()[world_id]
+    result.island_idofadr[:nisland] = d.island_idofadr.numpy()[world_id, :nisland]
     result.island_dofadr[:nisland] = d.island_dofadr.numpy()[world_id, :nisland]
     result.island_nv[:nisland] = d.island_nv.numpy()[world_id, :nisland]
     result.island_nefc[:nisland] = d.island_nefc.numpy()[world_id, :nisland]
@@ -1743,6 +1760,8 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
     nv: int,
     nu: int,
     na: int,
+    nbody: int,
+    ntree: int,
     neq: int,
     nsensordata: int,
     qpos0: wp.array2d[float],
@@ -1757,6 +1776,9 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
     nf_out: wp.array[int],
     nl_out: wp.array[int],
     nefc_out: wp.array[int],
+    ntree_awake_out: wp.array[int],
+    nbody_awake_out: wp.array[int],
+    nv_awake_out: wp.array[int],
     time_out: wp.array[float],
     energy_out: wp.array[wp.vec2],
     qpos_out: wp.array2d[float],
@@ -1786,6 +1808,9 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
     nefc_out[worldid] = 0
     time_out[worldid] = 0.0
     energy_out[worldid] = wp.vec2(0.0, 0.0)
+    ntree_awake_out[worldid] = ntree
+    nbody_awake_out[worldid] = nbody
+    nv_awake_out[worldid] = nv
     qpos0_id = worldid % qpos0.shape[0]
     for i in range(nq):
       qpos_out[worldid, i] = qpos0[qpos0_id, i]
@@ -1882,6 +1907,47 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
     contact_type_out[conid] = 0
     contact_geomcollisionid_out[conid] = 0
 
+  @wp.kernel(module="unique", enable_backward=False)
+  def reset_sleep(
+    # Model:
+    nv: int,
+    nbody: int,
+    ntree: int,
+    body_mocapid: wp.array[int],
+    body_treeid: wp.array[int],
+    # In:
+    mj_minawake: int,
+    reset_in: wp.array[bool],
+    # Data out:
+    tree_asleep_out: wp.array2d[int],
+    tree_awake_out: wp.array2d[int],
+    body_awake_out: wp.array2d[int],
+    body_awake_ind_out: wp.array2d[int],
+    dof_awake_ind_out: wp.array2d[int],
+  ):
+    worldid, elemid = wp.tid()
+
+    if wp.static(reset is not None):
+      if not reset_in[worldid]:
+        return
+
+    if elemid < ntree:
+      tree_asleep_out[worldid, elemid] = -(1 + mj_minawake)
+      tree_awake_out[worldid, elemid] = 1
+
+    if elemid < nbody:
+      if body_treeid[elemid] < 0:
+        if body_mocapid[elemid] >= 0:
+          body_awake_out[worldid, elemid] = int(types.SleepState.AWAKE)
+        else:
+          body_awake_out[worldid, elemid] = int(types.SleepState.STATIC)
+      else:
+        body_awake_out[worldid, elemid] = int(types.SleepState.AWAKE)
+      body_awake_ind_out[worldid, elemid] = elemid
+
+    if elemid < nv:
+      dof_awake_ind_out[worldid, elemid] = elemid
+
   reset_input = reset or wp.ones(d.nworld, dtype=bool)
 
   wp.launch(reset_xfrc_applied, dim=(d.nworld, m.nbody, 6), inputs=[reset_input], outputs=[d.xfrc_applied])
@@ -1926,15 +1992,31 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
   )
 
   wp.launch(
+    reset_sleep,
+    dim=(d.nworld, max(m.ntree, m.nbody, m.nv)),
+    inputs=[m.nv, m.nbody, m.ntree, m.body_mocapid, m.body_treeid, types.MJ_MINAWAKE, reset_input],
+    outputs=[
+      d.tree_asleep,
+      d.tree_awake,
+      d.body_awake,
+      d.body_awake_ind,
+      d.dof_awake_ind,
+    ],
+  )
+
+  wp.launch(
     reset_nworld,
     dim=d.nworld,
-    inputs=[m.nq, m.nv, m.nu, m.na, m.neq, m.nsensordata, m.qpos0, m.eq_active0, d.nworld, reset_input],
+    inputs=[m.nq, m.nv, m.nu, m.na, m.nbody, m.ntree, m.neq, m.nsensordata, m.qpos0, m.eq_active0, d.nworld, reset_input],
     outputs=[
       d.solver_niter,
       d.ne,
       d.nf,
       d.nl,
       d.nefc,
+      d.ntree_awake,
+      d.nbody_awake,
+      d.nv_awake,
       d.time,
       d.energy,
       d.qpos,

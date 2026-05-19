@@ -886,8 +886,12 @@ class IslandMappingTest(absltest.TestCase):
       mjd.island_nefc[:nisland],
     )
     np.testing.assert_array_equal(
-      d.island_dofadr.numpy()[0, :nisland],
+      d.island_idofadr.numpy()[0, :nisland],
       mjd.island_idofadr[:nisland],
+    )
+    np.testing.assert_array_equal(
+      d.island_dofadr.numpy()[0, :nisland],
+      mjd.island_dofadr[:nisland],
     )
     np.testing.assert_array_equal(
       d.island_efcadr.numpy()[0, :nisland],
