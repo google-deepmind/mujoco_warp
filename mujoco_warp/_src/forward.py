@@ -346,17 +346,18 @@ def _compute_damping_deriv(
 def _euler_damp_qfrc_sparse(
   # Model:
   opt_timestep: wp.array[float],
-  dof_Madr: wp.array[int],
+  M_rownnz: wp.array[int],
+  M_rowadr: wp.array[int],
   # In:
   damp_deriv: wp.array2d[float],
   # Out:
-  qM_integration_out: wp.array3d[float],
+  M_integration_out: wp.array3d[float],
 ):
   worldid, tid = wp.tid()
   timestep = opt_timestep[worldid % opt_timestep.shape[0]]
 
-  adr = dof_Madr[tid]
-  qM_integration_out[worldid, 0, adr] += timestep * damp_deriv[worldid, tid]
+  adr = M_rowadr[tid] + M_rownnz[tid] - 1
+  M_integration_out[worldid, 0, adr] += timestep * damp_deriv[worldid, tid]
 
 
 @cache_kernel
@@ -366,7 +367,7 @@ def _tile_euler_dense(tile: TileSet):
     # Model:
     opt_timestep: wp.array[float],
     # Data in:
-    qM_in: wp.array3d[float],
+    M_in: wp.array3d[float],
     efc_Ma_in: wp.array2d[float],
     # In:
     damp_deriv: wp.array2d[float],
@@ -379,14 +380,14 @@ def _tile_euler_dense(tile: TileSet):
     TILE_SIZE = wp.static(tile.size)
 
     dofid = adr_in[nodeid]
-    M_tile = wp.tile_load(qM_in[worldid], shape=(TILE_SIZE, TILE_SIZE), offset=(dofid, dofid))
+    M_tile = wp.tile_load(M_in[worldid], shape=(TILE_SIZE, TILE_SIZE), offset=(dofid, dofid))
     damping_tile = wp.tile_load(damp_deriv[worldid], shape=(TILE_SIZE,), offset=(dofid,))
     damping_scaled = damping_tile * timestep
     qm_integration_tile = wp.tile_diag_add(M_tile, damping_scaled)
 
     Ma_tile = wp.tile_load(efc_Ma_in[worldid], shape=(TILE_SIZE,), offset=(dofid,))
-    L_tile = wp.tile_cholesky(qm_integration_tile)
-    qacc_tile = wp.tile_cholesky_solve(L_tile, Ma_tile)
+    L_tile = wp.tile_cholesky(qm_integration_tile, fill_mode="upper")
+    qacc_tile = wp.tile_cholesky_solve(L_tile, Ma_tile, fill_mode="upper")
     wp.tile_store(qacc_out[worldid], qacc_tile, offset=(dofid))
 
   return euler_dense
@@ -409,22 +410,22 @@ def euler(m: Model, d: Data):
     )
 
     if m.is_sparse:
-      qM = wp.clone(d.qM)
+      M = wp.clone(d.M)
       qLD = wp.empty((d.nworld, 1, m.nC), dtype=float)
       qLDiagInv = wp.empty((d.nworld, m.nv), dtype=float)
       wp.launch(
         _euler_damp_qfrc_sparse,
         dim=(d.nworld, m.nv),
-        inputs=[m.opt.timestep, m.dof_Madr, damp_deriv],
-        outputs=[qM],
+        inputs=[m.opt.timestep, m.M_rownnz, m.M_rowadr, damp_deriv],
+        outputs=[M],
       )
-      smooth.factor_solve_i(m, d, qM, qLD, qLDiagInv, qacc, d.efc.Ma)
+      smooth.factor_solve_i(m, d, M, qLD, qLDiagInv, qacc, d.efc.Ma)
     else:
-      for tile in m.qM_tiles:
+      for tile in m.M_tiles:
         wp.launch_tiled(
           _tile_euler_dense(tile),
           dim=(d.nworld, tile.adr.size),
-          inputs=[m.opt.timestep, d.qM, d.efc.Ma, damp_deriv, tile.adr],
+          inputs=[m.opt.timestep, d.M, d.efc.Ma, damp_deriv, tile.adr],
           outputs=[qacc],
           block_dim=m.block_dim.euler_dense,
         )
@@ -578,11 +579,11 @@ def implicit(m: Model, d: Data):
   """Integrates fully implicit in velocity."""
   if ~(m.opt.disableflags | ~(DisableBit.ACTUATION | DisableBit.SPRING | DisableBit.DAMPER)):
     if m.is_sparse:
-      qDeriv = wp.empty((d.nworld, 1, m.nM), dtype=float)
+      qDeriv = wp.empty((d.nworld, 1, m.nC), dtype=float)
       qLD = wp.empty((d.nworld, 1, m.nC), dtype=float)
     else:
-      qDeriv = wp.empty(d.qM.shape, dtype=float)
-      qLD = wp.empty(d.qM.shape, dtype=float)
+      qDeriv = wp.empty(d.M.shape, dtype=float)
+      qLD = wp.empty(d.M.shape, dtype=float)
     qLDiagInv = wp.empty((d.nworld, m.nv), dtype=float)
     derivative.deriv_smooth_vel(m, d, qDeriv)
     qacc = wp.empty((d.nworld, m.nv), dtype=float)
@@ -1221,7 +1222,7 @@ def fwd_acceleration(m: Model, d: Data, factorize: bool = False):
   xfrc_accumulate(m, d, d.qfrc_smooth)
 
   if factorize:
-    smooth.factor_solve_i(m, d, d.qM, d.qLD, d.qLDiagInv, d.qacc_smooth, d.qfrc_smooth)
+    smooth.factor_solve_i(m, d, d.M, d.qLD, d.qLDiagInv, d.qacc_smooth, d.qfrc_smooth)
   else:
     smooth.solve_m(m, d, d.qacc_smooth, d.qfrc_smooth)
 

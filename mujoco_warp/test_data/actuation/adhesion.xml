@@ -3,7 +3,7 @@
     <geom type="plane" size="10 10 .001"/>
     <body name="body">
       <geom type="sphere" size=".1" pos=".1 0 0" margin=".01"/>
-      <geom type="sphere" size=".1" pos="0 .1 0" margin=".01" gap=".01"/>
+      <geom type="sphere" size=".1" pos="0 .1 0" gap=".01"/>
       <geom type="sphere" size=".1" pos=".1 .1 0" gap=".01"/>
       <joint type="slide" axis="0 0 1"/>
       <joint type="hinge" axis="1 0 1"/>

@@ -344,7 +344,7 @@ class ForwardTest(parameterized.TestCase):
       "ten_wrapnum",
       "wrap_obj",
       "wrap_xpos",
-      "qM",
+      "M",
       "qLD",
       "nefc",
       "efc_type",
@@ -436,7 +436,7 @@ class ForwardTest(parameterized.TestCase):
       if arr in ["xmat", "ximat", "geom_xmat", "site_xmat", "cam_xmat"]:
         mjd_arr = mjd_arr.reshape(-1)
         d_arr = d_arr.reshape(-1)
-      elif arr == "qM":
+      elif arr == "M":
         mjd_arr = np.zeros((mjm.nv, mjm.nv))
         if check_version("mujoco>=3.8.1.dev910242375"):
           mujoco.mju_sym2dense(mjd_arr, mjd.M, mjm.M_rownnz, mjm.M_rowadr, mjm.M_colind)

@@ -910,7 +910,7 @@ class IOTest(parameterized.TestCase):
       "sensordata",
       "mocap_pos",
       "mocap_quat",
-      "qM",
+      "M",
     ]
 
     mjm, mjd, m, d = test_data.fixture(xml)
@@ -941,8 +941,8 @@ class IOTest(parameterized.TestCase):
       d_arr = getattr(d, arr).numpy()
       for i in range(d_arr.shape[0]):
         di_arr = d_arr[i]
-        if arr == "qM":
-          di_arr = di_arr.reshape(-1)[: mjd.qM.size]
+        if arr == "M":
+          di_arr = di_arr.reshape(-1)[: mjd.M.size]
         _assert_eq(di_arr, getattr(mjd, arr), arr)
 
     _assert_eq(d.nacon.numpy(), 0, "nacon")
@@ -2431,6 +2431,31 @@ class IOTest(parameterized.TestCase):
           </contact>
         </mujoco>
       """)
+      )
+
+  @parameterized.parameters(*_IO_TEST_MODELS)
+  def test_kernel_recompilation(self, xml):
+    """Test that subsequent steps do not trigger kernel recompilation."""
+    _, _, m, d = test_data.fixture(xml)
+    mjwarp.step(m, d)
+    wp.synchronize()
+
+    created_kernels = []
+    original_init = wp.Kernel.__init__
+
+    def _tracking_init(self_kernel, *args, **kwargs):
+      res = original_init(self_kernel, *args, **kwargs)
+      created_kernels.append(self_kernel.key)
+      return res
+
+    # Second step: with cache enabled, should trigger zero new kernel instantiations
+    with mock.patch.object(wp.Kernel, "__init__", _tracking_init):
+      mjwarp.step(m, d)
+      wp.synchronize()
+
+      self.assertEmpty(
+        created_kernels,
+        f"Kernels were re-created on a subsequent step call: {created_kernels}",
       )
 
 

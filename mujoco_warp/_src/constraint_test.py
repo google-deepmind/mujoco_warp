@@ -26,6 +26,7 @@ from absl.testing import parameterized
 import mujoco_warp as mjw
 from mujoco_warp import ConeType
 from mujoco_warp import test_data
+from mujoco_warp._src.types import NEW_GAP_SEMANTICS
 
 # tolerance for difference between MuJoCo and MJWarp constraint calculations,
 # mostly due to float precision
@@ -270,15 +271,15 @@ class ConstraintTest(parameterized.TestCase):
   def test_efc_address_inactive_contacts(self):
     """Test that efc_address is -1 for inactive contacts in the gap zone."""
     # Sphere at z=0.35 with radius 0.1: dist ~ 0.15 to ground plane.
-    # margin=0.5, gap=0.4 => includemargin = 0.1.
-    # dist(0.15) < margin(0.5) => contact is detected.
-    # dist(0.15) >= includemargin(0.1) => contact is NOT active (in gap zone).
-    xml = """
+    # margin=0.1, gap=0.4 => detection at margin+gap=0.5, forces at margin=0.1.
+    # dist(0.15) < margin+gap(0.5) => contact is detected.
+    # dist(0.15) >= margin(0.1) => contact is NOT active (in gap zone).
+    xml = f"""
       <mujoco>
         <worldbody>
-          <geom type="plane" size="10 10 .001" margin="0.5" gap="0.4"/>
+          <geom type="plane" size="10 10 .001" margin="{0.1 if NEW_GAP_SEMANTICS else 0.5}" gap="0.4"/>
           <body pos="0 0 0.35">
-            <geom type="sphere" size=".1" margin="0.5" gap="0.4"/>
+            <geom type="sphere" size=".1" margin="{0.1 if NEW_GAP_SEMANTICS else 0.5}" gap="0.4"/>
             <freejoint/>
           </body>
         </worldbody>

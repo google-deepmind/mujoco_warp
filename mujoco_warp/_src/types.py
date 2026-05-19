@@ -20,12 +20,15 @@ import mujoco
 import numpy as np
 import warp as wp
 
+from mujoco_warp._src.util_pkg import check_version
+
 MJ_MINVAL = mujoco.mjMINVAL
 MJ_MAXVAL = mujoco.mjMAXVAL
 MJ_MINIMP = mujoco.mjMINIMP  # minimum constraint impedance
 MJ_MAXIMP = mujoco.mjMAXIMP  # maximum constraint impedance
 MJ_MAXCONPAIR = mujoco.mjMAXCONPAIR
 MJ_MINMU = mujoco.mjMINMU  # minimum friction
+NEW_GAP_SEMANTICS = check_version("mujoco>=3.9.0.dev914519929")
 # maximum size (by number of edges) of an horizon in EPA algorithm
 MJ_MAX_EPAHORIZON = 24
 # maximum average number of trianglarfaces EPA can insert at each iteration
@@ -975,7 +978,7 @@ class Model:
     geom_quat: local orientation offset rel. to body         (*, ngeom, 4)
     geom_friction: friction for (slide, spin, roll)          (*, ngeom, 3)
     geom_margin: detect contact if dist<margin               (*, ngeom,)
-    geom_gap: include in solver if dist<margin-gap           (*, ngeom,)
+    geom_gap: additional contact detection buffer            (*, ngeom,)
     geom_fluid: fluid interaction parameters                 (ngeom, mjNFLUID)
     geom_rgba: rgba when material is omitted                 (*, ngeom, 4)
     site_type: geom type for rendering (GeomType)            (nsite,)
@@ -1083,7 +1086,7 @@ class Model:
     pair_solreffriction: solver reference: contact friction  (*, npair, mjNREF)
     pair_solimp: solver impedance: contact                   (*, npair, mjNIMP)
     pair_margin: detect contact if dist<margin               (*, npair,)
-    pair_gap: include in solver if dist<margin-gap           (*, npair,)
+    pair_gap: additional contact detection buffer            (*, npair,)
     pair_friction: tangent1, 2, spin, roll1, 2               (*, npair, 5)
     exclude_signature: body1 << 16 + body2                   (nexclude,)
     eq_type: constraint type (EqType)                        (neq,)
@@ -1153,9 +1156,9 @@ class Model:
     sensor_cutoff: cutoff for real and positive; 0: ignore   (nsensor,)
     plugin: globally registered plugin slot number           (nplugin,)
     plugin_attr: config attributes of geom plugin            (nplugin, _NPLUGINATTR)
-    M_rownnz: number of non-zeros in each row of qM          (nv,)
-    M_rowadr: index of each row in qM                        (nv,)
-    M_colind: column indices of non-zeros in qM              (nM,)
+    M_rownnz: number of non-zeros in each row of M           (nv,)
+    M_rowadr: index of each row in M                         (nv,)
+    M_colind: column indices of non-zeros in M               (nC,)
     mapM2M: index mapping from M (legacy) to M (CSR)         (nC)
     flex_vertflexid: flex id for each flex vertex            (nflexvert,)
 
@@ -1185,8 +1188,8 @@ class Model:
     jnt_limited_slide_hinge_adr: limited/slide/hinge jntadr
     jnt_limited_ball_adr: limited/ball jntadr
     body_isdofancestor: precomputed mask of which DOFs affect each body
-    dof_tri_row: dof lower triangle row (used in solver)
-    dof_tri_col: dof lower triangle col (used in solver)
+    dof_tri_row: dof upper triangle row (used in solver)
+    dof_tri_col: dof upper triangle col (used in solver)
     nxn_geom_pair: collision pair geom ids [-2, ngeom-1]
     nxn_geom_pair_filtered: valid collision pair geom ids
                             [-1, ngeom - 1]
@@ -1241,18 +1244,21 @@ class Model:
     sensor_rangefinder_bodyid: bodyid for rangefinder        (nrangefinder,)
     taxel_vertadr: tactile sensor vertex address             (nsensortaxel,)
     taxel_sensorid: address for tactile sensors
-    qM_tiles: tiling configuration
+    M_tiles: tiling configuration
     qLD_updates: tuple of index triples for sparse factorization
     qLD_all_updates: tuple of all levels concatenated
     qLD_level_offsets: tuple of start offsets for each level
-    qM_fullm_i: sparse mass matrix addressing
-    qM_fullm_j: sparse mass matrix addressing
-    qM_fullm_elemid: (row, col) -> elemid into qM_fullm_i/qM_fullm_j; -1 if not a chain ancestor
+    M_fullm_i: sparse mass matrix addressing
+    M_fullm_j: sparse mass matrix addressing
+    M_elemid: (row, col) -> CSR madr addresses; -1 if not a chain ancestor
+    M_fullm_upper_i: upper-triangle row indices for solver h seeding
+    M_fullm_upper_j: upper-triangle column indices for solver h seeding
+    M_fullm_upper_elemid: source elemid into M_fullm_i/M_fullm_j
     qD_fullm_i: D-structure row indices for RNE derivatives
     qD_fullm_j: D-structure column indices for RNE derivatives
-    qM_mulm_rowadr: sparse matmul row pointers
-    qM_mulm_col: sparse matmul column indices
-    qM_mulm_madr: sparse matmul matrix addresses
+    M_mulm_rowadr: sparse matmul row pointers
+    M_mulm_col: sparse matmul column indices
+    M_mulm_madr: sparse matmul matrix addresses
   """
 
   nq: int
@@ -1637,19 +1643,24 @@ class Model:
   sensor_rangefinder_bodyid: array("nrangefinder", int)
   taxel_vertadr: array("nsensortaxel", int)
   taxel_sensorid: wp.array[int]
-  qM_tiles: tuple[TileSet, ...]
+  M_tiles: tuple[TileSet, ...]
   qLD_updates: tuple[wp.array[wp.vec3i], ...]
   qLD_all_updates: wp.array[wp.vec3i]
   qLD_level_offsets: wp.array[int]
-  qM_fullm_i: wp.array[int]
-  qM_fullm_j: wp.array[int]
-  qM_fullm_elemid: wp.array2d[int]  # (row, col) -> elemid in qM_fullm_i/j; -1 if col is not a chain ancestor of row
+  # TODO(team): Remove M_fullm_i/j and M_elemid by iterating the M CSR layout
+  # directly in the solver/derivative kernels
+  M_fullm_i: wp.array[int]
+  M_fullm_j: wp.array[int]
+  M_elemid: wp.array2d[int]  # (row, col) -> CSR madr address; -1 if col is not a chain ancestor of row
+  M_fullm_upper_i: wp.array[int]
+  M_fullm_upper_j: wp.array[int]
+  M_fullm_upper_elemid: wp.array[int]
   qD_fullm_i: wp.array[int]  # D-structure (full square) row indices for RNE derivatives
   qD_fullm_j: wp.array[int]  # D-structure (full square) column indices for RNE derivatives
   # Gather-based sparse mul_m indices (thread per DOF, no atomics)
-  qM_mulm_rowadr: wp.array[int]  # start address for each row [nv+1]
-  qM_mulm_col: wp.array[int]  # column index to gather from
-  qM_mulm_madr: wp.array[int]  # matrix address to read
+  M_mulm_rowadr: wp.array[int]  # start address for each row [nv+1]
+  M_mulm_col: wp.array[int]  # column index to gather from
+  M_mulm_madr: wp.array[int]  # matrix address to read
 
 
 class ContactType(enum.IntFlag):
@@ -1671,7 +1682,7 @@ class Contact:
     dist: distance between nearest points; neg: penetration          (naconmax,)
     pos: position of contact point: midpoint between geoms           (naconmax, 3)
     frame: normal is in [0-2], points from geom[0] to geom[1]        (naconmax, 3, 3)
-    includemargin: include if dist<includemargin=margin-gap          (naconmax,)
+    includemargin: include if dist<includemargin=margin              (naconmax,)
     friction: tangent1, 2, spin, roll1, 2                            (naconmax, 5)
     solref: constraint solver reference, normal direction            (naconmax, 2)
     solreffriction: constraint solver reference, friction directions (naconmax, 2)
@@ -1809,10 +1820,10 @@ class Data:
     moment_colind: column indices in sparse actuator_moment     (nworld, nJmom)
     actuator_moment: actuator moments                           (nworld, nJmom)
     crb: com-based composite inertia and mass                   (nworld, nbody, 10)
-    qM: total inertia                                           (nworld, nv, nv) if dense
-                                                                (nworld, 1, nM) if sparse
-    qLD: L'*D*L factorization of M                              (nworld, nv, nv) if dense
+    M: total inertia                                            (nworld, nv, nv) if dense
                                                                 (nworld, 1, nC) if sparse
+    qLD: upper Cholesky factorization                           (nworld, nv, nv) if dense
+         L'*D*L factorization of M                              (nworld, 1, nC) if sparse
     qLDiagInv: 1/diag(D)                                        (nworld, nv)
     flexedge_velocity: flex edge velocities                     (nworld, nflexedge)
     ten_velocity: tendon velocities                             (nworld, ntendon)
@@ -1907,7 +1918,7 @@ class Data:
   moment_colind: array("nworld", "nJmom", int)
   actuator_moment: array("nworld", "nJmom", float)
   crb: array("nworld", "nbody", vec10)
-  qM: wp.array3d[float]
+  M: wp.array3d[float]
   qLD: wp.array3d[float]
   qLDiagInv: array("nworld", "nv", float)
   flexedge_velocity: array("nworld", "nflexedge", float)
@@ -2000,6 +2011,11 @@ class RenderContext:
     render_skybox: whether to shade missed rays with the MuJoCo skybox texture
     skybox_tex_id: index into textures of the skybox (MuJoCo tex_type == SKYBOX), -1 if none
     skybox_face_width: pixel width of one skybox cube face (0 if no skybox)
+    enable_backface_culling: drop primitive ray hits whose normal faces away
+      from the ray (i.e. the ray origin is inside the geom). Matches MuJoCo's
+      mesh-ray rule. When False, the renderer reports inner-surface hits, which
+      is faster but causes a camera placed inside a geom to render that geom's
+      back wall.
   """
 
   nrender: int
@@ -2054,3 +2070,4 @@ class RenderContext:
   render_seg: array("ncam", bool)
   znear: float
   total_rays: int
+  enable_backface_culling: bool

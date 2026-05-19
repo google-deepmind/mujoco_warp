@@ -40,6 +40,22 @@ def _assert_eq(a, b, name):
 
 
 class SolverTest(parameterized.TestCase):
+  def test_M_fullm_upper_indices_are_row_sorted(self):
+    """Sparse M seeding uses upper-triangle row-sorted writes."""
+    _, _, m, _ = test_data.fixture("humanoid/humanoid.xml")
+
+    lower_row = np.repeat(np.arange(m.nv), m.M_rownnz.numpy())
+    lower_col = m.M_colind.numpy()
+    upper_row = m.M_fullm_upper_i.numpy()
+    upper_col = m.M_fullm_upper_j.numpy()
+    upper_elemid = m.M_fullm_upper_elemid.numpy()
+
+    self.assertEqual(upper_row.size, lower_row.size)
+    self.assertTrue(np.all(upper_row <= upper_col))
+    self.assertTrue(np.all(upper_row[:-1] <= upper_row[1:]))
+    np.testing.assert_array_equal(upper_row, lower_col[upper_elemid])
+    np.testing.assert_array_equal(upper_col, lower_row[upper_elemid])
+
   @parameterized.product(
     cone=tuple(ConeType),
     solver_=tuple(SolverType),
@@ -375,23 +391,23 @@ class SolverTest(parameterized.TestCase):
       ]
     )
 
-    qM0 = np.zeros((mjm0.nv, mjm0.nv))
-    qM1 = np.zeros((mjm1.nv, mjm1.nv))
-    qM2 = np.zeros((mjm2.nv, mjm2.nv))
+    M0 = np.zeros((mjm0.nv, mjm0.nv))
+    M1 = np.zeros((mjm1.nv, mjm1.nv))
+    M2 = np.zeros((mjm2.nv, mjm2.nv))
     if check_version("mujoco>=3.8.1.dev910242375"):
-      mujoco.mju_sym2dense(qM0, mjd0.M, mjm0.M_rownnz, mjm0.M_rowadr, mjm0.M_colind)
-      mujoco.mju_sym2dense(qM1, mjd1.M, mjm1.M_rownnz, mjm1.M_rowadr, mjm1.M_colind)
-      mujoco.mju_sym2dense(qM2, mjd2.M, mjm2.M_rownnz, mjm2.M_rowadr, mjm2.M_colind)
+      mujoco.mju_sym2dense(M0, mjd0.M, mjm0.M_rownnz, mjm0.M_rowadr, mjm0.M_colind)
+      mujoco.mju_sym2dense(M1, mjd1.M, mjm1.M_rownnz, mjm1.M_rowadr, mjm1.M_colind)
+      mujoco.mju_sym2dense(M2, mjd2.M, mjm2.M_rownnz, mjm2.M_rowadr, mjm2.M_colind)
     else:
-      mujoco.mj_fullM(mjm0, qM0, mjd0.qM)
-      mujoco.mj_fullM(mjm1, qM1, mjd1.qM)
-      mujoco.mj_fullM(mjm2, qM2, mjd2.qM)
+      mujoco.mj_fullM(mjm0, M0, mjd0.qM)
+      mujoco.mj_fullM(mjm1, M1, mjd1.qM)
+      mujoco.mj_fullM(mjm2, M2, mjd2.qM)
 
-    qM = np.vstack(
+    M = np.vstack(
       [
-        np.expand_dims(qM0, axis=0),
-        np.expand_dims(qM1, axis=0),
-        np.expand_dims(qM2, axis=0),
+        np.expand_dims(M0, axis=0),
+        np.expand_dims(M1, axis=0),
+        np.expand_dims(M2, axis=0),
       ]
     )
     qacc_smooth = np.vstack(
@@ -463,7 +479,7 @@ class SolverTest(parameterized.TestCase):
     efc_aref_fill[2, : mjd2.nefc] = efc_aref2
 
     d.qacc_warmstart = wp.from_numpy(qacc_warmstart, dtype=wp.float32)
-    d.qM = wp.from_numpy(qM, dtype=wp.float32)
+    d.M = wp.from_numpy(M, dtype=wp.float32)
     d.qacc_smooth = wp.from_numpy(qacc_smooth, dtype=wp.float32)
     d.qfrc_smooth = wp.from_numpy(qfrc_smooth, dtype=wp.float32)
     d.efc.D = wp.from_numpy(efc_D_fill, dtype=wp.float32)

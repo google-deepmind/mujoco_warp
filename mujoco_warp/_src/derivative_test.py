@@ -100,11 +100,11 @@ class DerivativeTest(parameterized.TestCase):
     mujoco.mj_step(mjm, mjd)
 
     if jacobian == mujoco.mjtJacobian.mjJAC_SPARSE:
-      out_smooth_vel = wp.zeros((1, 1, m.nM), dtype=float)
+      out_smooth_vel = wp.zeros((1, 1, m.nC), dtype=float)
     else:
-      out_smooth_vel = wp.zeros(d.qM.shape, dtype=float)
+      out_smooth_vel = wp.zeros(d.M.shape, dtype=float)
 
-    # Compute kinematics without factorizing qM to allow direct comparison
+    # Compute kinematics without factorizing M to allow direct comparison
     forward.fwd_position(m, d, factorize=False)
     forward.fwd_velocity(m, d)
 
@@ -113,8 +113,18 @@ class DerivativeTest(parameterized.TestCase):
 
     if jacobian == mujoco.mjtJacobian.mjJAC_SPARSE:
       mjw_out = np.zeros((m.nv, m.nv))
-      for elem, (i, j) in enumerate(zip(m.qM_fullm_i.numpy(), m.qM_fullm_j.numpy())):
-        mjw_out[i, j] = out_smooth_vel.numpy()[0, 0, elem]
+      if check_version("mujoco>=3.8.1.dev910242375"):
+        mujoco.mju_sym2dense(
+          mjw_out, out_smooth_vel.numpy().reshape(-1).astype(np.float64), mjm.M_rownnz, mjm.M_rowadr, mjm.M_colind
+        )
+      else:
+        for i in range(m.nv):
+          rowadr = m.M_rowadr.numpy()[i]
+          rownnz = m.M_rownnz.numpy()[i]
+          for k in range(rownnz):
+            madr = rowadr + k
+            col = m.M_colind.numpy()[madr]
+            mjw_out[i, col] = out_smooth_vel.numpy()[0, 0, madr]
     else:
       mjw_out = out_smooth_vel.numpy()[0, : m.nv, : m.nv]
 
@@ -124,14 +134,14 @@ class DerivativeTest(parameterized.TestCase):
     mj_qDeriv = np.zeros((mjm.nv, mjm.nv))
     mujoco.mju_sparse2dense(mj_qDeriv, mjd.qDeriv, mjm.D_rownnz, mjm.D_rowadr, mjm.D_colind)
 
-    mj_qM = np.zeros((m.nv, m.nv))
+    mj_M = np.zeros((m.nv, m.nv))
     if check_version("mujoco>=3.8.1.dev910242375"):
-      mujoco.mju_sym2dense(mj_qM, mjd.M, mjm.M_rownnz, mjm.M_rowadr, mjm.M_colind)
+      mujoco.mju_sym2dense(mj_M, mjd.M, mjm.M_rownnz, mjm.M_rowadr, mjm.M_colind)
     else:
-      mujoco.mj_fullM(mjm, mj_qM, mjd.qM)
-    mj_out = mj_qM - mjm.opt.timestep * mj_qDeriv
+      mujoco.mj_fullM(mjm, mj_M, mjd.qM)
+    mj_out = mj_M - mjm.opt.timestep * mj_qDeriv
 
-    _assert_eq(mjw_out, mj_out, "qM - dt * qDeriv")
+    _assert_eq(mjw_out, mj_out, "M - dt * qDeriv")
 
   _TENDON_SERIAL_CHAIN_XML = """
     <mujoco>
@@ -181,31 +191,41 @@ class DerivativeTest(parameterized.TestCase):
     mujoco.mj_step(mjm, mjd)
 
     if jacobian == mujoco.mjtJacobian.mjJAC_SPARSE:
-      out_smooth_vel = wp.zeros((1, 1, m.nM), dtype=float)
+      out_smooth_vel = wp.zeros((1, 1, m.nC), dtype=float)
     else:
-      out_smooth_vel = wp.zeros(d.qM.shape, dtype=float)
+      out_smooth_vel = wp.zeros(d.M.shape, dtype=float)
 
     mjw.deriv_smooth_vel(m, d, out_smooth_vel)
 
     if jacobian == mujoco.mjtJacobian.mjJAC_SPARSE:
       mjw_out = np.zeros((m.nv, m.nv))
-      for elem, (i, j) in enumerate(zip(m.qM_fullm_i.numpy(), m.qM_fullm_j.numpy())):
-        mjw_out[i, j] = out_smooth_vel.numpy()[0, 0, elem]
+      if check_version("mujoco>=3.8.1.dev910242375"):
+        mujoco.mju_sym2dense(
+          mjw_out, out_smooth_vel.numpy().reshape(-1).astype(np.float64), mjm.M_rownnz, mjm.M_rowadr, mjm.M_colind
+        )
+      else:
+        for i in range(m.nv):
+          rowadr = m.M_rowadr.numpy()[i]
+          rownnz = m.M_rownnz.numpy()[i]
+          for k in range(rownnz):
+            madr = rowadr + k
+            col = m.M_colind.numpy()[madr]
+            mjw_out[i, col] = out_smooth_vel.numpy()[0, 0, madr]
     else:
       mjw_out = out_smooth_vel.numpy()[0, : m.nv, : m.nv]
 
-    # Final comparison against new ground truth: qM - dt * qDeriv
+    # Final comparison against new ground truth: M - dt * qDeriv
     mj_qDeriv = np.zeros((mjm.nv, mjm.nv))
     mujoco.mju_sparse2dense(mj_qDeriv, mjd.qDeriv, mjm.D_rownnz, mjm.D_rowadr, mjm.D_colind)
-    mj_qM = np.zeros((m.nv, m.nv))
+    mj_M = np.zeros((m.nv, m.nv))
     if check_version("mujoco>=3.8.1.dev910242375"):
-      mujoco.mju_sym2dense(mj_qM, mjd.M, mjm.M_rownnz, mjm.M_rowadr, mjm.M_colind)
+      mujoco.mju_sym2dense(mj_M, mjd.M, mjm.M_rownnz, mjm.M_rowadr, mjm.M_colind)
     else:
-      mujoco.mj_fullM(mjm, mj_qM, mjd.qM)
-    mj_out = mj_qM - mjm.opt.timestep * mj_qDeriv
+      mujoco.mj_fullM(mjm, mj_M, mjd.qM)
+    mj_out = mj_M - mjm.opt.timestep * mj_qDeriv
 
     self.assertFalse(np.any(np.isnan(mjw_out)))
-    _assert_eq(mjw_out, mj_out, "qM - dt * qDeriv (tendon serial chain)")
+    _assert_eq(mjw_out, mj_out, "M - dt * qDeriv (tendon serial chain)")
 
   def test_step_tendon_serial_chain_no_nan(self):
     """Regression: implicitfast + tendon on serial chain must not NaN."""
@@ -404,34 +424,44 @@ class DerivativeTest(parameterized.TestCase):
 
     mujoco.mj_step(mjm, mjd)
 
-    out_smooth_vel = wp.zeros((1, 1, m.nM), dtype=float)
+    out_smooth_vel = wp.zeros((1, 1, m.nC), dtype=float)
     mjw.deriv_smooth_vel(m, d, out_smooth_vel)
 
     mjw_out = np.zeros((m.nv, m.nv))
-    for elem, (i, j) in enumerate(zip(m.qM_fullm_i.numpy(), m.qM_fullm_j.numpy())):
-      mjw_out[i, j] = out_smooth_vel.numpy()[0, 0, elem]
-      mjw_out[j, i] = out_smooth_vel.numpy()[0, 0, elem]
+    if check_version("mujoco>=3.8.1.dev910242375"):
+      mujoco.mju_sym2dense(
+        mjw_out, out_smooth_vel.numpy().reshape(-1).astype(np.float64), mjm.M_rownnz, mjm.M_rowadr, mjm.M_colind
+      )
+    else:
+      for i in range(m.nv):
+        rowadr = m.M_rowadr.numpy()[i]
+        rownnz = m.M_rownnz.numpy()[i]
+        for k in range(rownnz):
+          madr = rowadr + k
+          col = m.M_colind.numpy()[madr]
+          mjw_out[i, col] = out_smooth_vel.numpy()[0, 0, madr]
+          mjw_out[col, i] = out_smooth_vel.numpy()[0, 0, madr]
 
     mj_qDeriv = np.zeros((mjm.nv, mjm.nv))
     mujoco.mju_sparse2dense(mj_qDeriv, mjd.qDeriv, mjm.D_rownnz, mjm.D_rowadr, mjm.D_colind)
 
-    mj_qM = np.zeros((m.nv, m.nv))
+    mj_M = np.zeros((m.nv, m.nv))
     if check_version("mujoco>=3.8.1.dev910242375"):
-      mujoco.mju_sym2dense(mj_qM, mjd.M, mjm.M_rownnz, mjm.M_rowadr, mjm.M_colind)
+      mujoco.mju_sym2dense(mj_M, mjd.M, mjm.M_rownnz, mjm.M_rowadr, mjm.M_colind)
     else:
-      mujoco.mj_fullM(mjm, mj_qM, mjd.qM)
-    mj_out = mj_qM - mjm.opt.timestep * mj_qDeriv
+      mujoco.mj_fullM(mjm, mj_M, mjd.qM)
+    mj_out = mj_M - mjm.opt.timestep * mj_qDeriv
 
     self.assertFalse(np.any(np.isnan(mjw_out)))
-    _assert_eq(mjw_out, mj_out, "qM - dt * qDeriv (sparse tendon coupled)")
+    _assert_eq(mjw_out, mj_out, "M - dt * qDeriv (sparse tendon coupled)")
 
   def test_smooth_vel_sparse_free_joint_precedes_actuator(self):
-    """Sparse qDeriv uses chain-aware row offsets when indexing qM_fullm.
+    """Sparse qDeriv uses chain-aware row offsets when indexing M_fullm.
 
     A free joint's internal block is stored diagonal-only in the compact
     (M_rownnz, M_rowadr) layout but fully chained (1+2+...+n entries per
-    internal dof) in qM_fullm_i / qM_fullm_j. For any actuated dof that
-    follows the free joint in qvel order, indexing qM_fullm with the compact
+    internal dof) in M_fullm_i / M_fullm_j. For any actuated dof that
+    follows the free joint in qvel order, indexing M_fullm with the compact
     offsets lands in slots that belong to the free-joint block, the actuator
     contribution to qDeriv is silently dropped, and the implicit step loses
     damping for the actuated dof.
@@ -466,22 +496,32 @@ class DerivativeTest(parameterized.TestCase):
 
     mujoco.mj_step(mjm, mjd)
 
-    out_smooth_vel = wp.zeros((1, 1, m.nM), dtype=float)
+    out_smooth_vel = wp.zeros((1, 1, m.nC), dtype=float)
     mjw.deriv_smooth_vel(m, d, out_smooth_vel)
 
     mjw_out = np.zeros((m.nv, m.nv))
-    for elem, (i, j) in enumerate(zip(m.qM_fullm_i.numpy(), m.qM_fullm_j.numpy())):
-      mjw_out[i, j] = out_smooth_vel.numpy()[0, 0, elem]
-      mjw_out[j, i] = out_smooth_vel.numpy()[0, 0, elem]
+    if check_version("mujoco>=3.8.1.dev910242375"):
+      mujoco.mju_sym2dense(
+        mjw_out, out_smooth_vel.numpy().reshape(-1).astype(np.float64), mjm.M_rownnz, mjm.M_rowadr, mjm.M_colind
+      )
+    else:
+      for i in range(m.nv):
+        rowadr = m.M_rowadr.numpy()[i]
+        rownnz = m.M_rownnz.numpy()[i]
+        for k in range(rownnz):
+          madr = rowadr + k
+          col = m.M_colind.numpy()[madr]
+          mjw_out[i, col] = out_smooth_vel.numpy()[0, 0, madr]
+          mjw_out[col, i] = out_smooth_vel.numpy()[0, 0, madr]
 
     mj_qDeriv = np.zeros((mjm.nv, mjm.nv))
     mujoco.mju_sparse2dense(mj_qDeriv, mjd.qDeriv, mjm.D_rownnz, mjm.D_rowadr, mjm.D_colind)
-    mj_qM = np.zeros((m.nv, m.nv))
-    mujoco.mj_fullM(mjm, mj_qM, mjd.qM)
-    mj_out = mj_qM - mjm.opt.timestep * mj_qDeriv
+    mj_M = np.zeros((m.nv, m.nv))
+    mujoco.mj_fullM(mjm, mj_M, mjd.qM)
+    mj_out = mj_M - mjm.opt.timestep * mj_qDeriv
 
     self.assertFalse(np.any(np.isnan(mjw_out)))
-    _assert_eq(mjw_out, mj_out, "qM - dt * qDeriv (sparse, free joint precedes actuated dof)")
+    _assert_eq(mjw_out, mj_out, "M - dt * qDeriv (sparse, free joint precedes actuated dof)")
 
   def test_actearly_derivative(self):
     """Implicit derivatives should use next activation when actearly is set."""
@@ -517,7 +557,7 @@ class DerivativeTest(parameterized.TestCase):
     _assert_eq(d.act_dot.numpy()[0, 0], d.act_dot.numpy()[0, 1], "act_dot")
 
     # compute qDeriv using deriv_smooth_vel
-    out_smooth_vel = wp.zeros(d.qM.shape, dtype=float)
+    out_smooth_vel = wp.zeros(d.M.shape, dtype=float)
     mjw.deriv_smooth_vel(m, d, out_smooth_vel)
     mjw_out = out_smooth_vel.numpy()[0, : m.nv, : m.nv]
 
@@ -525,8 +565,8 @@ class DerivativeTest(parameterized.TestCase):
     # because actearly uses next activation: act + act_dot*dt
     # for our model: next_act = 0 + 1*1 = 1, current_act = 0
     # derivative adds gain_vel * act to qDeriv diagonal
-    # qDeriv = qM - dt * actuator_vel_derivative
-    # for independent bodies with mass=1: qM diagonal = 1.0
+    # qDeriv = M - dt * actuator_vel_derivative
+    # for independent bodies with mass=1: M diagonal = 1.0
     # actearly=true: vel = gain_vel * next_act = 1 * 1 = 1, out = 1 - 1*1 = 0
     # actearly=false: vel = gain_vel * current_act = 1 * 0 = 0, out = 1 - 1*0 = 1
     self.assertNotAlmostEqual(
@@ -534,8 +574,8 @@ class DerivativeTest(parameterized.TestCase):
       mjw_out[1, 1],
       msg="actearly=true should use next activation in derivative",
     )
-    _assert_eq(mjw_out[0, 0], 0.0, "actearly=true: qM - dt*gain_vel*next_act = 1 - 1*1 = 0")
-    _assert_eq(mjw_out[1, 1], 1.0, "actearly=false: qM - dt*gain_vel*current_act = 1 - 1*0 = 1")
+    _assert_eq(mjw_out[0, 0], 0.0, "actearly=true: M - dt*gain_vel*next_act = 1 - 1*1 = 0")
+    _assert_eq(mjw_out[1, 1], 1.0, "actearly=false: M - dt*gain_vel*current_act = 1 - 1*0 = 1")
 
   def test_forcerange_clamped_derivative(self):
     """Implicit integration is more accurate than Euler with active forcerange clamping."""
@@ -828,7 +868,7 @@ class DerivativeTest(parameterized.TestCase):
     if jacobian == mujoco.mjtJacobian.mjJAC_SPARSE:
       out_rne = wp.zeros((1, 1, m.nD), dtype=float)
     else:
-      out_rne = wp.zeros(d.qM.shape, dtype=float)
+      out_rne = wp.zeros(d.M.shape, dtype=float)
 
     derivative.rne_vel_deriv(m, d, out_rne)
 

@@ -263,6 +263,127 @@ class RenderTest(parameterized.TestCase):
       rtol=1e-2,
     )
 
+  # Each scene places the camera at the origin fully enclosed by a geom (a
+  # primitive or a convex mesh), with a marker box at +Y (in front of the
+  # camera) well outside the enclosure. A correctly backface-culling renderer
+  # must drop the far exit-face hit on the enclosure and "see through" to the
+  # marker.
+  _BACKFACE_CULL_SCENE = """
+    <mujoco>
+      <visual>
+        <map znear="0.001" />
+      </visual>{asset}
+      <worldbody>
+        <camera xyaxes="1 0 0 0 0 1" />
+        <geom name="enclosure" {enclosure} />
+        <geom name="marker" type="box" size="0.5 0.5 0.5" pos="0 5 0" />
+      </worldbody>
+    </mujoco>"""
+
+  _MESH_ASSET = """
+  <asset>
+    <mesh name="tetra" vertex="1 1 1  1 -1 -1  -1 1 -1  -1 -1 1" />
+  </asset>"""
+
+  _BACKFACE_CULL_PRIMITIVES = (
+    ("sphere", "", 'type="sphere" size="1"'),
+    ("ellipsoid", "", 'type="ellipsoid" size="1 1 1"'),
+    ("capsule", "", 'type="capsule" size="0.5 0.5"'),
+    ("cylinder", "", 'type="cylinder" size="1 1"'),
+    ("box", "", 'type="box" size="1 1 1"'),
+    ("mesh", _MESH_ASSET, 'type="mesh" mesh="tetra"'),
+  )
+
+  @parameterized.named_parameters(*_BACKFACE_CULL_PRIMITIVES)
+  def test_backface_cull_camera_inside_primitive(self, asset: str, enclosure: str):
+    """Camera inside a geom must not render that geom's back face."""
+    xml = self._BACKFACE_CULL_SCENE.format(asset=asset, enclosure=enclosure)
+    mjm, mjd, m, d = test_data.fixture(xml=xml, nworld=1)
+
+    cam_w, cam_h = 16, 16
+    rc = mjw.create_render_context(
+      mjm,
+      nworld=1,
+      cam_res=(cam_w, cam_h),
+      render_rgb=True,
+      render_depth=True,
+      render_seg=True,
+    )
+    mjw.render(m, d, rc)
+
+    seg = rc.seg_data.numpy()[0]
+    depth = rc.depth_data.numpy()[0]
+
+    geom_mask = seg[..., 1] == int(mjw.ObjType.GEOM)
+    hit_ids = seg[..., 0][geom_mask]
+    enclosure_id = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_GEOM, "enclosure")
+    marker_id = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_GEOM, "marker")
+
+    self.assertFalse(
+      np.any(hit_ids == enclosure_id),
+      "enclosing geom should be backface-culled but appeared in segmentation",
+    )
+
+    self.assertTrue(
+      np.any(hit_ids == marker_id),
+      "camera should see through the enclosing geom to the marker box",
+    )
+
+    # Considering the inner surface of the enclosure is culled, the depth of the marker should
+    # be ~5.0 i.e. the distance to the box surface.
+    marker_depth = depth.reshape(cam_h, cam_w)[seg[..., 0].reshape(cam_h, cam_w) == marker_id]
+    if marker_depth.size > 0:
+      self.assertGreater(float(np.min(marker_depth)), 1.0)
+
+  @absltest.skipIf(not _HAS_RENDERER, "MuJoCo rendering requires OpenGL")
+  @parameterized.named_parameters(*_BACKFACE_CULL_PRIMITIVES)
+  def test_backface_cull_matches_mujoco(self, asset: str, enclosure: str):
+    """Backface-cull behavior must match native MuJoCo for every geom type."""
+    xml = self._BACKFACE_CULL_SCENE.format(asset=asset, enclosure=enclosure)
+    mjm, mjd, m, d = test_data.fixture(xml=xml, nworld=1)
+
+    cam_w, cam_h = 16, 16
+    rc = mjw.create_render_context(
+      mjm,
+      nworld=1,
+      cam_res=(cam_w, cam_h),
+      render_seg=[True],
+    )
+    mjw.render(m, d, rc)
+    warp_seg = rc.seg_data.numpy()[0].reshape(-1, 2)
+
+    with mujoco.Renderer(mjm, height=cam_h, width=cam_w) as renderer:
+      renderer.update_scene(mjd, camera=0)
+      renderer.enable_segmentation_rendering()
+      mj_seg = renderer.render().reshape(-1, 2)
+
+    np.testing.assert_array_equal(warp_seg, mj_seg)
+
+  @parameterized.named_parameters(*_BACKFACE_CULL_PRIMITIVES)
+  def test_backface_cull_disabled_keeps_enclosure(self, asset: str, enclosure: str):
+    """When `enable_backface_culling=False`, the enclosure must reappear."""
+    xml = self._BACKFACE_CULL_SCENE.format(asset=asset, enclosure=enclosure)
+    mjm, mjd, m, d = test_data.fixture(xml=xml, nworld=1)
+
+    cam_w, cam_h = 16, 16
+    rc = mjw.create_render_context(
+      mjm,
+      nworld=1,
+      cam_res=(cam_w, cam_h),
+      render_seg=True,
+      enable_backface_culling=False,
+    )
+    mjw.render(m, d, rc)
+
+    seg = rc.seg_data.numpy()[0]
+    geom_mask = seg[..., 1] == int(mjw.ObjType.GEOM)
+    hit_ids = seg[..., 0][geom_mask]
+
+    self.assertTrue(
+      np.any(hit_ids == mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_GEOM, "enclosure")),
+      "with cull disabled, enclosing geom should appear in segmentation",
+    )
+
 
 if __name__ == "__main__":
   wp.init()

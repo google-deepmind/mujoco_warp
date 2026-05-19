@@ -52,6 +52,11 @@ RENDER_RGB = flags.DEFINE_bool("render_rgb", True, "render RGB image")
 RENDER_DEPTH = flags.DEFINE_bool("render_depth", True, "render depth image")
 RENDER_TEXTURES = flags.DEFINE_bool("render_textures", True, "use textures")
 RENDER_SHADOWS = flags.DEFINE_bool("render_shadows", False, "use shadows")
+RENDER_BACKFACE_CULLING = flags.DEFINE_bool(
+  "render_backface_culling",
+  True,
+  "enable renderer backface culling (RenderContext.enable_backface_culling)",
+)
 
 
 def load_model(path: epath.Path) -> mujoco.MjModel:
@@ -152,12 +157,13 @@ def init_structs(
 
     rc = mjw.create_render_context(
       mjm,
-      NWORLD.value,
-      (RENDER_WIDTH.value, RENDER_HEIGHT.value),
-      RENDER_RGB.value,
-      RENDER_DEPTH.value,
-      RENDER_TEXTURES.value,
-      RENDER_SHADOWS.value,
+      nworld=NWORLD.value,
+      cam_res=(RENDER_WIDTH.value, RENDER_HEIGHT.value),
+      render_rgb=RENDER_RGB.value,
+      render_depth=RENDER_DEPTH.value,
+      use_textures=RENDER_TEXTURES.value,
+      use_shadows=RENDER_SHADOWS.value,
+      enable_backface_culling=RENDER_BACKFACE_CULLING.value,
     )
 
     return m, d, rc, ctrls

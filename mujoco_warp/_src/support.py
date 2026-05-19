@@ -69,11 +69,11 @@ def mul_m_sparse(check_skip: bool):
   @wp.kernel(module="unique")
   def _mul_m_sparse(
     # Model:
-    qM_mulm_rowadr: wp.array[int],
-    qM_mulm_col: wp.array[int],
-    qM_mulm_madr: wp.array[int],
+    M_mulm_rowadr: wp.array[int],
+    M_mulm_col: wp.array[int],
+    M_mulm_madr: wp.array[int],
     # Data in:
-    qM_in: wp.array3d[float],
+    M_in: wp.array3d[float],
     # In:
     vec: wp.array2d[float],
     skip: wp.array[bool],
@@ -89,12 +89,12 @@ def mul_m_sparse(check_skip: bool):
 
     # Gather all contributions (diagonal + off-diagonal)
     acc = float(0.0)
-    start = qM_mulm_rowadr[dofid]
-    end = qM_mulm_rowadr[dofid + 1]
+    start = M_mulm_rowadr[dofid]
+    end = M_mulm_rowadr[dofid + 1]
     for k in range(start, end):
-      col = qM_mulm_col[k]
-      madr = qM_mulm_madr[k]
-      acc += qM_in[worldid, 0, madr] * vec[worldid, col]
+      col = M_mulm_col[k]
+      madr = M_mulm_madr[k]
+      acc += M_in[worldid, 0, madr] * vec[worldid, col]
 
     res[worldid, dofid] = acc
 
@@ -108,7 +108,7 @@ def mul_m_dense(nv: int, check_skip: bool):
   @wp.kernel(module="unique")
   def _mul_m_dense(
     # Data in:
-    qM_in: wp.array3d[float],
+    M_in: wp.array3d[float],
     # In:
     vec: wp.array2d[float],
     skip: wp.array[bool],
@@ -123,7 +123,7 @@ def mul_m_dense(nv: int, check_skip: bool):
 
     acc = float(0.0)
     for j in range(wp.static(nv)):
-      acc += qM_in[worldid, i, j] * vec[worldid, j]
+      acc += M_in[worldid, i, j] * vec[worldid, j]
     res[worldid, i] = acc
 
   return _mul_m_dense
@@ -143,8 +143,8 @@ def mul_m(
   Args:
     m: The model containing kinematic and dynamic information (device).
     d: The data object containing the current state and output arrays (device).
-    res: Result: qM @ vec.
-    vec: Input vector to multiply by qM.
+    res: Result: M @ vec.
+    vec: Input vector to multiply by M.
     skip: Per-world bitmask to skip computing output.
     M: Input matrix: M @ vec.
   """
@@ -152,13 +152,13 @@ def mul_m(
   skip = skip or wp.empty(0, dtype=bool)
 
   if M is None:
-    M = d.qM
+    M = d.M
 
   if m.is_sparse:
     wp.launch(
       mul_m_sparse(check_skip),
       dim=(d.nworld, m.nv),
-      inputs=[m.qM_mulm_rowadr, m.qM_mulm_col, m.qM_mulm_madr, M, vec, skip],
+      inputs=[m.M_mulm_rowadr, m.M_mulm_col, m.M_mulm_madr, M, vec, skip],
       outputs=[res],
     )
 

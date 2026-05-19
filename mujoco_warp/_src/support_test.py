@@ -265,18 +265,18 @@ class SupportTest(parameterized.TestCase):
     )
     wp.synchronize()
 
-    L_result = hfactor.numpy()[0]
+    U_result = hfactor.numpy()[0]
     x_result = Mgrad.numpy()[0]
 
     # Verify padding outside active region doesn't affect active computation
     # Off-diagonal padding should be zero (active region shouldn't touch padding)
     np.testing.assert_array_equal(
-      L_result[nv:, :nv],
+      U_result[nv:, :nv],
       0.0,
       err_msg="padding rows in active region were overwritten",
     )
     np.testing.assert_array_equal(
-      L_result[:nv, nv:],
+      U_result[:nv, nv:],
       0.0,
       err_msg="padding columns in active region were overwritten",
     )
@@ -284,7 +284,7 @@ class SupportTest(parameterized.TestCase):
     # Check that padding region remains identity after factorization
     padding_size = nv_pad - nv
     if padding_size > 0:
-      padding_square = L_result[nv:, nv:]
+      padding_square = U_result[nv:, nv:]
       expected_identity = np.eye(padding_size, dtype=np.float32)
       np.testing.assert_allclose(
         padding_square,
@@ -295,23 +295,23 @@ class SupportTest(parameterized.TestCase):
       )
 
     # Compare with numpy cholesky on symmetrized Hessian
-    L_numpy = np.linalg.cholesky(SPD_active_hessian)
+    U_numpy = np.linalg.cholesky(SPD_active_hessian).T
     np.testing.assert_allclose(
-      L_result[:nv, :nv],
-      L_numpy,
+      U_result[:nv, :nv],
+      U_numpy,
       rtol=1e-4,
       atol=1e-4,
       err_msg="Cholesky decomposition mismatch with numpy",
     )
 
-    # Verify L @ L.T = A (symmetrized Hessian)
-    A_reconstructed = L_result[:nv, :nv] @ L_result[:nv, :nv].T
+    # Verify U.T @ U = A (symmetrized Hessian)
+    A_reconstructed = U_result[:nv, :nv].T @ U_result[:nv, :nv]
     np.testing.assert_allclose(
       A_reconstructed,
       SPD_active_hessian,
       rtol=1e-5,
       atol=1e-5,
-      err_msg="L @ L.T does not equal symmetrized Hessian",
+      err_msg="U.T @ U does not equal symmetrized Hessian",
     )
 
     # Verify solution: A @ x = b using the symmetrized Hessian
