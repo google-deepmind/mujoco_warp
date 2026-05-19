@@ -590,6 +590,27 @@ def compute_lighting(
   return ndotl * attenuation * visible
 
 
+@wp.kernel
+def _update_light_active_adr(
+  # Model:
+  nlight: int,
+  light_active: wp.array2d[bool],
+  # Out:
+  light_active_adr_out: wp.array2d[int],
+  nactive_light_out: wp.array[int],
+):
+  worldid = wp.tid()
+  light_active_worldid = worldid % light_active.shape[0]
+  active_count = int(0)
+
+  for l in range(nlight):
+    if light_active[light_active_worldid, l]:
+      light_active_adr_out[worldid, active_count] = l
+      active_count += 1
+
+  nactive_light_out[worldid] = active_count
+
+
 @event_scope
 def render(m: Model, d: Data, rc: RenderContext):
   """Render the current frame.
@@ -604,7 +625,14 @@ def render(m: Model, d: Data, rc: RenderContext):
   rc.rgb_data.fill_(rc.background_color)
   rc.depth_data.fill_(0.0)
   rc.seg_data.fill_(wp.vec2i(-1, -1))
-  nactive_light = rc.light_active_adr.size
+
+  if m.nlight:
+    wp.launch(
+      kernel=_update_light_active_adr,
+      dim=d.nworld,
+      inputs=[m.nlight, m.light_active],
+      outputs=[rc.light_active_adr, rc.nactive_light],
+    )
 
   @wp.kernel(module="unique", enable_backward=False)
   def _render_megakernel(
@@ -620,7 +648,6 @@ def render(m: Model, d: Data, rc: RenderContext):
     cam_intrinsic: wp.array2d[wp.vec4],
     light_type: wp.array2d[int],
     light_castshadow: wp.array2d[bool],
-    light_active_adr: wp.array[int],
     flex_vertadr: wp.array[int],
     flex_edge: wp.array[wp.vec2i],
     flex_radius: wp.array[float],
@@ -637,6 +664,8 @@ def render(m: Model, d: Data, rc: RenderContext):
     light_xdir_in: wp.array2d[wp.vec3],
     flexvert_xpos_in: wp.array2d[wp.vec3],
     # In:
+    light_active_adr: wp.array2d[int],
+    nactive_light: wp.array[int],
     nrender: int,
     use_shadows: bool,
     bvh_ngeom: int,
@@ -821,8 +850,8 @@ def render(m: Model, d: Data, rc: RenderContext):
       result = 0.5 * wp.cw_mul(base_color, ambient_color)
 
     # Apply lighting and shadows
-    for light_adrid in range(wp.static(nactive_light)):
-      l = light_active_adr[light_adrid]
+    for light_adrid in range(nactive_light[worldid]):
+      l = light_active_adr[worldid, light_adrid]
       light_contribution = compute_lighting(
         geom_type,
         geom_dataid,
@@ -881,7 +910,6 @@ def render(m: Model, d: Data, rc: RenderContext):
       m.cam_intrinsic,
       m.light_type,
       m.light_castshadow,
-      rc.light_active_adr,
       m.flex_vertadr,
       m.flex_edge,
       m.flex_radius,
@@ -896,6 +924,8 @@ def render(m: Model, d: Data, rc: RenderContext):
       d.light_xpos,
       d.light_xdir,
       d.flexvert_xpos,
+      rc.light_active_adr,
+      rc.nactive_light,
       rc.nrender,
       rc.use_shadows,
       rc.bvh_ngeom,

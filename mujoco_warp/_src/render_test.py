@@ -140,7 +140,7 @@ class RenderTest(parameterized.TestCase):
     self.assertGreater(np.count_nonzero(rgb), 0)
     self.assertTrue(np.any(seg[..., 1] == int(mjw.ObjType.GEOM)))
 
-  def test_render_active_light_subset(self):
+  def test_render_active_light_subset_updates_per_world(self):
     xml = """
     <mujoco>
       <worldbody>
@@ -151,15 +151,23 @@ class RenderTest(parameterized.TestCase):
       </worldbody>
     </mujoco>
     """
-    mjm, mjd, m, d = test_data.fixture(xml=xml)
+    mjm, mjd, m, d = test_data.fixture(xml=xml, nworld=2)
+    m.light_active = wp.array([[True, False], [False, True]], dtype=bool)
 
     rc = mjw.create_render_context(
       mjm,
+      nworld=2,
       cam_res=(32, 32),
       render_rgb=True,
     )
-    np.testing.assert_array_equal(rc.light_active_adr.numpy(), np.array([1]))
     mjw.render(m, d, rc)
+    np.testing.assert_array_equal(rc.nactive_light.numpy(), np.array([1, 1]))
+    np.testing.assert_array_equal(rc.light_active_adr.numpy()[:, 0], np.array([0, 1]))
+
+    m.light_active.assign(wp.array([[False, True], [True, False]], dtype=bool))
+    mjw.render(m, d, rc)
+    np.testing.assert_array_equal(rc.nactive_light.numpy(), np.array([1, 1]))
+    np.testing.assert_array_equal(rc.light_active_adr.numpy()[:, 0], np.array([1, 0]))
 
     self.assertGreater(np.count_nonzero(rc.rgb_data.numpy()), 0)
 
