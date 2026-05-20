@@ -18,6 +18,6 @@ repos:
     hooks:
       - id: kernel-analyzer
         name: kernel-analyzer
-        entry: python contrib/kernel_analyzer/kernel_analyzer/cli.py
+        entry: uv run python contrib/kernel_analyzer/kernel_analyzer/cli.py
         language: system
         types: [python]
