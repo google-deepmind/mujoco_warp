@@ -19,6 +19,7 @@ BENCHMARKS = [
     "mjcf": "scene_pot.xml",
     "nworld": 8192,
     "nconmax": 24,
+    "nccdmax": 12,
     "njmax": 128,
     "replay": "lift_pot.npz",
     "assets": [(ASSETS[0], "aloha")],
@@ -36,6 +37,7 @@ BENCHMARKS = [
     "mjcf": "scene_cloth.xml",
     "nworld": 32,
     "nconmax": 4096,
+    "nccdmax": 12,
     "njmax": 40_000,
     "nstep": 100,
     "assets": [(ASSETS[0], "aloha")],
@@ -45,6 +47,7 @@ BENCHMARKS = [
     "mjcf": "scene_clutter.xml",
     "nworld": 512,
     "nconmax": 512,
+    "nccdmax": 320,
     "njmax": 1024,
     "replay": "pick_clutter.npz",
     "assets": [
