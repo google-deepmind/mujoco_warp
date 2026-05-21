@@ -303,7 +303,7 @@ class SolverTest(parameterized.TestCase):
     d.nf = wp.array([0], dtype=int)
     d.nefc = wp.array([1], dtype=int)
     d.nacon = wp.array([0], dtype=int)
-    d.qM = wp.zeros(d.qM.shape, dtype=float)
+    d.M = wp.zeros(d.M.shape, dtype=float)
     d.qacc = wp.zeros(d.qacc.shape, dtype=float)
     d.efc.Ma = wp.zeros(d.efc.Ma.shape, dtype=float)
     d.qfrc_smooth = wp.zeros(d.qfrc_smooth.shape, dtype=float)
