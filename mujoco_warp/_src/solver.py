@@ -35,8 +35,6 @@ from mujoco_warp._src.warp_util import scoped_mathdx_gemm_disabled
 wp.set_module_options({"enable_backward": False})
 
 _BLOCK_CHOLESKY_DIM = 32
-
-
 def create_inverse_context(m: types.Model, d: types.Data) -> InverseContext:
   """Create an InverseContext with allocated workspace arrays.
 
@@ -55,7 +53,6 @@ def create_inverse_context(m: types.Model, d: types.Data) -> InverseContext:
     search_dot=wp.empty((nworld,), dtype=float),
     gauss=wp.empty((nworld,), dtype=float),
     cost=wp.empty((nworld,), dtype=float),
-    prev_cost=wp.empty((nworld,), dtype=float),
     done=wp.empty((nworld,), dtype=bool),
     changed_efc_ids=wp.empty((nworld, 0), dtype=int),
     changed_efc_count=wp.empty((0,), dtype=int),
@@ -128,7 +125,6 @@ def create_solver_context(m: types.Model, d: types.Data) -> SolverContext:
     search_dot=wp.empty((nworld,), dtype=float),
     gauss=wp.empty((nworld,), dtype=float),
     cost=wp.empty((nworld,), dtype=float),
-    prev_cost=wp.empty((nworld,), dtype=float),
     done=wp.empty((nworld,), dtype=bool),
     grad=wp.zeros((nworld, nv_pad), dtype=float),
     grad_dot=wp.empty((nworld,), dtype=float),
@@ -139,6 +135,7 @@ def create_solver_context(m: types.Model, d: types.Data) -> SolverContext:
     quad=wp.empty((nworld, njmax), dtype=wp.vec3),
     quad_gauss=wp.empty((nworld,), dtype=wp.vec3),
     alpha=wp.empty((nworld,), dtype=float),
+    improvement=wp.empty((nworld,), dtype=float),
     prev_grad=wp.empty((nworld, nv), dtype=float),
     prev_Mgrad=wp.empty((nworld, nv), dtype=float),
     beta=wp.empty((nworld,), dtype=float),
@@ -175,6 +172,15 @@ def _eval_pt_direct_alpha_zero(jaref: float, jv: float, d: float) -> wp.vec3:
 
 
 @wp.func
+def _eval_pt_direct_shifted(jaref: float, jv: float, d: float, alpha: float) -> wp.vec3:
+  """Eval quadratic constraint shifted by alpha=0."""
+  jvD = jv * d
+  hessian = jv * jvD
+  alpha_h = alpha * hessian
+  return wp.vec3(alpha * (jvD * jaref + 0.5 * alpha_h), jvD * jaref + alpha_h, hessian)
+
+
+@wp.func
 def _eval_pt_direct_3alphas(
   jaref: float, jv: float, d: float, lo_alpha: float, hi_alpha: float, mid_alpha: float
 ) -> tuple[wp.vec3, wp.vec3, wp.vec3]:
@@ -189,6 +195,24 @@ def _eval_pt_direct_3alphas(
     wp.vec3(half_d * x_lo * x_lo, jvD * x_lo, hessian),
     wp.vec3(half_d * x_hi * x_hi, jvD * x_hi, hessian),
     wp.vec3(half_d * x_mid * x_mid, jvD * x_mid, hessian),
+  )
+
+
+@wp.func
+def _eval_pt_direct_shifted_3alphas(
+  jaref: float, jv: float, d: float, lo_alpha: float, hi_alpha: float, mid_alpha: float
+) -> tuple[wp.vec3, wp.vec3, wp.vec3]:
+  """Eval shifted quadratic constraint for 3 alphas."""
+  jvD = jv * d
+  grad0 = jvD * jaref
+  hessian = jv * jvD
+  lo_ah = lo_alpha * hessian
+  hi_ah = hi_alpha * hessian
+  mid_ah = mid_alpha * hessian
+  return (
+    wp.vec3(lo_alpha * (grad0 + 0.5 * lo_ah), grad0 + lo_ah, hessian),
+    wp.vec3(hi_alpha * (grad0 + 0.5 * hi_ah), grad0 + hi_ah, hessian),
+    wp.vec3(mid_alpha * (grad0 + 0.5 * mid_ah), grad0 + mid_ah, hessian),
   )
 
 
@@ -221,6 +245,11 @@ def _eval_pt_3alphas(quad: wp.vec3, lo_alpha: float, hi_alpha: float, mid_alpha:
     wp.vec3(hi_alpha * hi_aq2 + hi_alpha * q1 + q0, 2.0 * hi_aq2 + q1, hessian),
     wp.vec3(mid_alpha * mid_aq2 + mid_alpha * q1 + q0, 2.0 * mid_aq2 + q1, hessian),
   )
+
+
+@wp.func
+def _shift_cost(pt: wp.vec3, cost0: float) -> wp.vec3:
+  return wp.vec3(pt[0] - cost0, pt[1], pt[2])
 
 
 @wp.func
@@ -364,7 +393,8 @@ def linesearch_parallel_fused(
 
   alpha = _log_scale(opt_ls_parallel_min_step, 1.0, opt_ls_iterations, alphaid)
 
-  out = _eval_cost(ctx_quad_gauss_in[worldid], alpha)
+  quad_gauss = ctx_quad_gauss_in[worldid]
+  out = alpha * alpha * quad_gauss[2] + alpha * quad_gauss[1]
 
   ne = ne_in[worldid]
   nf = nf_in[worldid]
@@ -373,7 +403,8 @@ def linesearch_parallel_fused(
   for efcid in range(min(njmax_in, nefc_in[worldid])):
     # equality
     if efcid < ne:
-      out += _eval_cost(ctx_quad_in[worldid, efcid], alpha)
+      quad = ctx_quad_in[worldid, efcid]
+      out += alpha * alpha * quad[2] + alpha * quad[1]
     # friction
     elif efcid < ne + nf:
       # search point, friction loss, bound (rf)
@@ -381,19 +412,10 @@ def linesearch_parallel_fused(
       dir = ctx_jv_in[worldid, efcid]
       x = start + alpha * dir
       f = efc_frictionloss_in[worldid, efcid]
-      rf = math.safe_div(f, efc_D_in[worldid, efcid])
+      efc_D = efc_D_in[worldid, efcid]
+      rf = math.safe_div(f, efc_D)
 
-      # -bound < x < bound : quadratic
-      if (-rf < x) and (x < rf):
-        quad = ctx_quad_in[worldid, efcid]
-      # x < -bound: linear negative
-      elif x <= -rf:
-        quad = wp.vec3(f * (-0.5 * rf - start), -f * dir, 0.0)
-      # bound < x : linear positive
-      else:
-        quad = wp.vec3(f * (-0.5 * rf + start), f * dir, 0.0)
-
-      out += _eval_cost(quad, alpha)
+      out += _eval_frictionloss_pt(x, f, rf, dir, efc_D)[0] - _eval_frictionloss_pt(start, f, rf, dir, efc_D)[0]
     # limit and contact
     elif efc_type_in[worldid, efcid] == types.ConstraintType.CONTACT_ELLIPTIC:
       # extract contact info
@@ -443,13 +465,25 @@ def linesearch_parallel_fused(
         # otherwise middle zone
         else:
           out += 0.5 * dm * (N - mu * T) * (N - mu * T)
+      out -= _eval_elliptic(
+        opt_impratio_invsqrt[worldid % opt_impratio_invsqrt.shape[0]],
+        contact_friction_in[conid],
+        ctx_quad_in[worldid, efcid],
+        ctx_quad_in[worldid, efcid1],
+        ctx_quad_in[worldid, efcid2],
+        0.0,
+      )[0]
     else:
       # search point
-      x = ctx_Jaref_in[worldid, efcid] + alpha * ctx_jv_in[worldid, efcid]
+      start = ctx_Jaref_in[worldid, efcid]
+      x = start + alpha * ctx_jv_in[worldid, efcid]
+      cost0 = wp.where(start < 0.0, ctx_quad_in[worldid, efcid][0], 0.0)
 
       # active
       if x < 0.0:
-        out += _eval_cost(ctx_quad_in[worldid, efcid], alpha)
+        out += _eval_cost(ctx_quad_in[worldid, efcid], alpha) - cost0
+      else:
+        out -= cost0
 
   cost_out[worldid, alphaid] = out
 
@@ -464,6 +498,7 @@ def linesearch_parallel_best_alpha(
   cost_in: wp.array2d[float],
   # Out:
   ctx_alpha_out: wp.array[float],
+  ctx_improvement_out: wp.array[float],
 ):
   worldid = wp.tid()
 
@@ -471,14 +506,17 @@ def linesearch_parallel_best_alpha(
     return
 
   bestid = int(0)
-  best_cost = float(types.MJ_MAXVAL)
+  best_cost = float(0.0)
+  improved = bool(False)
   for i in range(opt_ls_iterations):
     cost = cost_in[worldid, i]
     if cost < best_cost:
       best_cost = cost
       bestid = i
+      improved = True
 
-  ctx_alpha_out[worldid] = _log_scale(opt_ls_parallel_min_step, 1.0, opt_ls_iterations, bestid)
+  ctx_alpha_out[worldid] = wp.where(improved, _log_scale(opt_ls_parallel_min_step, 1.0, opt_ls_iterations, bestid), 0.0)
+  ctx_improvement_out[worldid] = wp.where(improved, -best_cost, 0.0)
 
 
 def _linesearch_parallel(m: types.Model, d: types.Data, ctx: SolverContext, cost: wp.array2d[float]):
@@ -550,7 +588,7 @@ def _linesearch_parallel(m: types.Model, d: types.Data, ctx: SolverContext, cost
     linesearch_parallel_best_alpha,
     dim=(d.nworld),
     inputs=[m.opt.ls_iterations, m.opt.ls_parallel_min_step, ctx.done, cost],
-    outputs=[ctx.alpha],
+    outputs=[ctx.alpha, ctx.improvement],
   )
 
   # Teardown: update qacc, Ma, Jaref
@@ -582,23 +620,26 @@ def _compute_efc_eval_pt_pyramidal(
   ctx_Jaref: float,
   ctx_jv: float,
 ) -> wp.vec3:
-  """Compute for pyramidal cones (no elliptic contact data needed)."""
+  """Compute shifted cost, gradient, and hessian for pyramidal cones."""
   # Limit/other constraint
   if efcid >= ne + nf:
     x = ctx_Jaref + alpha * ctx_jv
+    cost0 = wp.where(ctx_Jaref < 0.0, _eval_pt_direct_alpha_zero(ctx_Jaref, ctx_jv, efc_D)[0], 0.0)
     if x < 0.0:
-      return _eval_pt_direct(ctx_Jaref, ctx_jv, efc_D, alpha)
-    return wp.vec3(0.0)
+      return _eval_pt_direct_shifted(ctx_Jaref, ctx_jv, efc_D, alpha)
+    return wp.vec3(-cost0, 0.0, 0.0)
 
   # Friction constraint - needs quad for frictionloss computation
   if efcid >= ne:
     f = efc_frictionloss[efcid]
     x = ctx_Jaref + alpha * ctx_jv
     rf = math.safe_div(f, efc_D)
-    return _eval_frictionloss_pt(x, f, rf, ctx_jv, efc_D)
+    return _shift_cost(
+      _eval_frictionloss_pt(x, f, rf, ctx_jv, efc_D), _eval_frictionloss_pt(ctx_Jaref, f, rf, ctx_jv, efc_D)[0]
+    )
 
   # Equality constraint
-  return _eval_pt_direct(ctx_Jaref, ctx_jv, efc_D, alpha)
+  return _eval_pt_direct_shifted(ctx_Jaref, ctx_jv, efc_D, alpha)
 
 
 @wp.func
@@ -621,20 +662,23 @@ def _compute_efc_eval_pt_elliptic(
   quad1: wp.vec3,
   quad2: wp.vec3,
 ) -> wp.vec3:
-  """Compute for elliptic cones (includes elliptic contact data)."""
+  """Compute shifted cost, gradient, and hessian for elliptic cones."""
   # Contact/limit/other constraints
   if efcid >= ne + nf:
     # Contact elliptic
     if efc_type == types.ConstraintType.CONTACT_ELLIPTIC:
       if efcid != efc_address0:  # Not primary row
         return wp.vec3(0.0)
-      return _eval_elliptic(impratio_invsqrt, contact_friction, ctx_quad, quad1, quad2, alpha)
+      cost0 = _eval_elliptic(impratio_invsqrt, contact_friction, ctx_quad, quad1, quad2, 0.0)[0]
+      return _shift_cost(_eval_elliptic(impratio_invsqrt, contact_friction, ctx_quad, quad1, quad2, alpha), cost0)
 
     # Limit/other constraint — direct eval (no quad read)
     x = ctx_Jaref + alpha * ctx_jv
+    efc_D = efc_D_in[efcid]
+    cost0 = wp.where(ctx_Jaref < 0.0, _eval_pt_direct_alpha_zero(ctx_Jaref, ctx_jv, efc_D)[0], 0.0)
     if x < 0.0:
-      return _eval_pt_direct(ctx_Jaref, ctx_jv, efc_D_in[efcid], alpha)
-    return wp.vec3(0.0)
+      return _eval_pt_direct_shifted(ctx_Jaref, ctx_jv, efc_D, alpha)
+    return wp.vec3(-cost0, 0.0, 0.0)
 
   # Friction constraint - load D and frictionloss only here
   if efcid >= ne:
@@ -642,10 +686,13 @@ def _compute_efc_eval_pt_elliptic(
     f = efc_frictionloss[efcid]
     x = ctx_Jaref + alpha * ctx_jv
     rf = math.safe_div(f, efc_D)
-    return _eval_frictionloss_pt(x, f, rf, ctx_jv, efc_D)
+    return _shift_cost(
+      _eval_frictionloss_pt(x, f, rf, ctx_jv, efc_D), _eval_frictionloss_pt(ctx_Jaref, f, rf, ctx_jv, efc_D)[0]
+    )
 
   # Equality constraint — direct eval (no quad read)
-  return _eval_pt_direct(ctx_Jaref, ctx_jv, efc_D_in[efcid], alpha)
+  efc_D = efc_D_in[efcid]
+  return _eval_pt_direct_shifted(ctx_Jaref, ctx_jv, efc_D, alpha)
 
 
 @wp.func
@@ -734,7 +781,7 @@ def _compute_efc_eval_pt_3alphas_pyramidal(
   ctx_Jaref: float,
   ctx_jv: float,
 ) -> tuple[wp.vec3, wp.vec3, wp.vec3]:
-  """Compute (cost, gradient, hessian) for 3 alphas, pyramidal cones.
+  """Compute shifted cost, gradient, and hessian for 3 alphas, pyramidal cones.
 
   Returns a tuple of 3 vec3s for (lo_alpha, hi_alpha, mid_alpha).
   Constraint types checked in order: limit/other -> friction -> equality.
@@ -744,11 +791,14 @@ def _compute_efc_eval_pt_3alphas_pyramidal(
     x_lo = ctx_Jaref + lo_alpha * ctx_jv
     x_hi = ctx_Jaref + hi_alpha * ctx_jv
     x_mid = ctx_Jaref + mid_alpha * ctx_jv
-    pt_lo, pt_hi, pt_mid = _eval_pt_direct_3alphas(ctx_Jaref, ctx_jv, efc_D, lo_alpha, hi_alpha, mid_alpha)
-    r_lo = wp.where(x_lo < 0.0, pt_lo, wp.vec3(0.0))
-    r_hi = wp.where(x_hi < 0.0, pt_hi, wp.vec3(0.0))
-    r_mid = wp.where(x_mid < 0.0, pt_mid, wp.vec3(0.0))
-    return (r_lo, r_hi, r_mid)
+    cost0 = wp.where(ctx_Jaref < 0.0, _eval_pt_direct_alpha_zero(ctx_Jaref, ctx_jv, efc_D)[0], 0.0)
+    pt_lo, pt_hi, pt_mid = _eval_pt_direct_shifted_3alphas(ctx_Jaref, ctx_jv, efc_D, lo_alpha, hi_alpha, mid_alpha)
+    inactive = wp.vec3(-cost0, 0.0, 0.0)
+    return (
+      wp.where(x_lo < 0.0, pt_lo, inactive),
+      wp.where(x_hi < 0.0, pt_hi, inactive),
+      wp.where(x_mid < 0.0, pt_mid, inactive),
+    )
 
   # Friction constraint - needs quad for frictionloss computation
   if efcid >= ne:
@@ -757,10 +807,12 @@ def _compute_efc_eval_pt_3alphas_pyramidal(
     x_mid = ctx_Jaref + mid_alpha * ctx_jv
     f = efc_frictionloss[efcid]
     rf = math.safe_div(f, efc_D)
-    return _eval_frictionloss_pt_3alphas(x_lo, x_hi, x_mid, f, rf, ctx_jv, efc_D)
+    cost0 = _eval_frictionloss_pt(ctx_Jaref, f, rf, ctx_jv, efc_D)[0]
+    lo, hi, mid = _eval_frictionloss_pt_3alphas(x_lo, x_hi, x_mid, f, rf, ctx_jv, efc_D)
+    return (_shift_cost(lo, cost0), _shift_cost(hi, cost0), _shift_cost(mid, cost0))
 
   # Equality constraint: always active
-  return _eval_pt_direct_3alphas(ctx_Jaref, ctx_jv, efc_D, lo_alpha, hi_alpha, mid_alpha)
+  return _eval_pt_direct_shifted_3alphas(ctx_Jaref, ctx_jv, efc_D, lo_alpha, hi_alpha, mid_alpha)
 
 
 @wp.func
@@ -785,7 +837,7 @@ def _compute_efc_eval_pt_3alphas_elliptic(
   quad1: wp.vec3,
   quad2: wp.vec3,
 ) -> tuple[wp.vec3, wp.vec3, wp.vec3]:
-  """Compute (cost, gradient, hessian) for 3 alphas, elliptic cones.
+  """Compute shifted cost, gradient, and hessian for 3 alphas, elliptic cones.
 
   Returns a tuple of 3 vec3s for (lo_alpha, hi_alpha, mid_alpha).
   Constraint types checked in order: contact elliptic/limit/other -> friction -> equality.
@@ -801,29 +853,35 @@ def _compute_efc_eval_pt_3alphas_elliptic(
     if efc_type == types.ConstraintType.CONTACT_ELLIPTIC:
       if efcid != efc_address0:  # secondary rows contribute nothing
         return (wp.vec3(0.0), wp.vec3(0.0), wp.vec3(0.0))
-      return (
-        _eval_elliptic(impratio_invsqrt, contact_friction, ctx_quad, quad1, quad2, lo_alpha),
-        _eval_elliptic(impratio_invsqrt, contact_friction, ctx_quad, quad1, quad2, hi_alpha),
-        _eval_elliptic(impratio_invsqrt, contact_friction, ctx_quad, quad1, quad2, mid_alpha),
-      )
+      cost0 = _eval_elliptic(impratio_invsqrt, contact_friction, ctx_quad, quad1, quad2, 0.0)[0]
+      lo = _eval_elliptic(impratio_invsqrt, contact_friction, ctx_quad, quad1, quad2, lo_alpha)
+      hi = _eval_elliptic(impratio_invsqrt, contact_friction, ctx_quad, quad1, quad2, hi_alpha)
+      mid = _eval_elliptic(impratio_invsqrt, contact_friction, ctx_quad, quad1, quad2, mid_alpha)
+      return (_shift_cost(lo, cost0), _shift_cost(hi, cost0), _shift_cost(mid, cost0))
 
     # Limit/other constraints — direct eval (no quad read)
     efc_D = efc_D_in[efcid]
-    pt_lo, pt_hi, pt_mid = _eval_pt_direct_3alphas(ctx_Jaref, ctx_jv, efc_D, lo_alpha, hi_alpha, mid_alpha)
-    r_lo = wp.where(x_lo < 0.0, pt_lo, wp.vec3(0.0))
-    r_hi = wp.where(x_hi < 0.0, pt_hi, wp.vec3(0.0))
-    r_mid = wp.where(x_mid < 0.0, pt_mid, wp.vec3(0.0))
-    return (r_lo, r_hi, r_mid)
+    cost0 = wp.where(ctx_Jaref < 0.0, _eval_pt_direct_alpha_zero(ctx_Jaref, ctx_jv, efc_D)[0], 0.0)
+    pt_lo, pt_hi, pt_mid = _eval_pt_direct_shifted_3alphas(ctx_Jaref, ctx_jv, efc_D, lo_alpha, hi_alpha, mid_alpha)
+    inactive = wp.vec3(-cost0, 0.0, 0.0)
+    return (
+      wp.where(x_lo < 0.0, pt_lo, inactive),
+      wp.where(x_hi < 0.0, pt_hi, inactive),
+      wp.where(x_mid < 0.0, pt_mid, inactive),
+    )
 
   # Friction constraint - load D and frictionloss only here
   if efcid >= ne:
     efc_D = efc_D_in[efcid]
     f = efc_frictionloss[efcid]
     rf = math.safe_div(f, efc_D)
-    return _eval_frictionloss_pt_3alphas(x_lo, x_hi, x_mid, f, rf, ctx_jv, efc_D)
+    cost0 = _eval_frictionloss_pt(ctx_Jaref, f, rf, ctx_jv, efc_D)[0]
+    lo, hi, mid = _eval_frictionloss_pt_3alphas(x_lo, x_hi, x_mid, f, rf, ctx_jv, efc_D)
+    return (_shift_cost(lo, cost0), _shift_cost(hi, cost0), _shift_cost(mid, cost0))
 
   # Equality constraint — direct eval (no quad read)
-  return _eval_pt_direct_3alphas(ctx_Jaref, ctx_jv, efc_D_in[efcid], lo_alpha, hi_alpha, mid_alpha)
+  efc_D = efc_D_in[efcid]
+  return _eval_pt_direct_shifted_3alphas(ctx_Jaref, ctx_jv, efc_D, lo_alpha, hi_alpha, mid_alpha)
 
 
 # kernel_analyzer: on
@@ -958,6 +1016,7 @@ def linesearch_iterative(ls_iterations: int, cone_type: types.ConeType, fuse_jv:
     ctx_Jaref_out: wp.array2d[float],
     ctx_jv_out: wp.array2d[float],
     ctx_quad_out: wp.array2d[wp.vec3],
+    ctx_improvement_out: wp.array[float],
   ):
     worldid, tid = wp.tid()
 
@@ -1125,10 +1184,11 @@ def linesearch_iterative(ls_iterations: int, cone_type: types.ConeType, fuse_jv:
     gauss_tile = wp.tile(local_gauss, preserve_type=True)
     gauss_sum = wp.tile_reduce(wp.add, gauss_tile)
     gauss_reduced = gauss_sum[0]
-    ctx_quad_gauss = wp.vec3(ctx_gauss_in[worldid], gauss_reduced[0], gauss_reduced[1])
+    ctx_quad_gauss = wp.vec3(0.0, gauss_reduced[0], gauss_reduced[1])
 
     # add quad_gauss contribution to p0
     p0 = wp.vec3(ctx_quad_gauss[0], ctx_quad_gauss[1], 2.0 * ctx_quad_gauss[2]) + p0_sum[0]
+    p0_delta = wp.vec3(0.0, p0[1], p0[2])
 
     # lo_in at lo_alpha_in = -p0[1] / p0[2]
     lo_alpha_in = -math.safe_div(p0[1], p0[2])
@@ -1189,17 +1249,18 @@ def linesearch_iterative(ls_iterations: int, cone_type: types.ConeType, fuse_jv:
     lo_in = _eval_pt(ctx_quad_gauss, lo_alpha_in) + lo_in_sum[0]
 
     # accept Newton step if derivative is small and cost improved
-    initial_converged = wp.abs(lo_in[1]) < gtol and lo_in[0] < p0[0]
+    initial_converged = wp.abs(lo_in[1]) < gtol and lo_in[0] < 0.0
 
     # main iterative loop - skip if already converged
     if not initial_converged:
       alpha = float(0.0)
+      improvement = float(0.0)
 
       # initialize bounds
       lo_less = lo_in[1] < p0[1]
-      lo = wp.where(lo_less, lo_in, p0)
+      lo = wp.where(lo_less, lo_in, p0_delta)
       lo_alpha = wp.where(lo_less, lo_alpha_in, 0.0)
-      hi = wp.where(lo_less, p0, lo_in)
+      hi = wp.where(lo_less, p0_delta, lo_in)
       hi_alpha = wp.where(lo_less, 0.0, lo_alpha_in)
 
       for _ in range(LS_ITERATIONS):
@@ -1322,15 +1383,18 @@ def linesearch_iterative(ls_iterations: int, cone_type: types.ConeType, fuse_jv:
         ls_done = (not swap_lo and not swap_hi) or (lo[1] < 0.0 and lo[1] > -gtol) or (hi[1] > 0.0 and hi[1] < gtol)
 
         # update alpha if improved
-        improved = lo[0] < p0[0] or hi[0] < p0[0]
+        improved = lo[0] < 0.0 or hi[0] < 0.0
         lo_better = lo[0] < hi[0]
-        alpha = wp.where(improved and lo_better, lo_alpha, alpha)
-        alpha = wp.where(improved and not lo_better, hi_alpha, alpha)
+        best_alpha = wp.where(lo_better, lo_alpha, hi_alpha)
+        best_delta = wp.where(lo_better, lo[0], hi[0])
+        alpha = wp.where(improved, best_alpha, alpha)
+        improvement = wp.where(improved, -best_delta, improvement)
 
         if ls_done:
           break
     else:
       alpha = lo_alpha_in
+      improvement = -lo_in[0]
 
     # qacc and Ma update
     for dofid in range(tid, nv, wp.block_dim()):
@@ -1340,6 +1404,9 @@ def linesearch_iterative(ls_iterations: int, cone_type: types.ConeType, fuse_jv:
     # Jaref update
     for efcid in range(tid, nefc, wp.block_dim()):
       ctx_Jaref_out[worldid, efcid] += alpha * ctx_jv_in[worldid, efcid]
+
+    if tid == 0:
+      ctx_improvement_out[worldid] = improvement
 
   return kernel
 
@@ -1388,7 +1455,7 @@ def _linesearch_iterative(m: types.Model, d: types.Data, ctx: SolverContext, fus
       ctx.quad,
       ctx.done,
     ],
-    outputs=[d.qacc, d.efc.Ma, ctx.Jaref, ctx.jv, ctx.quad],
+    outputs=[d.qacc, d.efc.Ma, ctx.Jaref, ctx.jv, ctx.quad, ctx.improvement],
     block_dim=m.block_dim.linesearch_iterative,
   )
 
@@ -1716,7 +1783,7 @@ def solve_init_efc(
   ctx_done_out: wp.array[bool],
 ):
   worldid = wp.tid()
-  ctx_cost_out[worldid] = types.MJ_MAXVAL
+  ctx_cost_out[worldid] = 0.0
   solver_niter_out[worldid] = 0
   ctx_done_out[worldid] = False
   ctx_search_dot_out[worldid] = 0.0
@@ -1788,12 +1855,10 @@ def solve_init_search(
 @wp.kernel
 def update_constraint_init_cost(
   # In:
-  ctx_cost_in: wp.array[float],
   ctx_done_in: wp.array[bool],
   # Out:
   ctx_gauss_out: wp.array[float],
   ctx_cost_out: wp.array[float],
-  ctx_prev_cost_out: wp.array[float],
 ):
   worldid = wp.tid()
 
@@ -1801,7 +1866,6 @@ def update_constraint_init_cost(
     return
 
   ctx_gauss_out[worldid] = 0.0
-  ctx_prev_cost_out[worldid] = ctx_cost_in[worldid]
   ctx_cost_out[worldid] = 0.0
 
 
@@ -2159,8 +2223,8 @@ def _update_constraint(m: types.Model, d: types.Data, ctx: SolverContext | Inver
   wp.launch(
     update_constraint_init_cost,
     dim=(d.nworld),
-    inputs=[ctx.cost, ctx.done],
-    outputs=[ctx.gauss, ctx.cost, ctx.prev_cost],
+    inputs=[ctx.done],
+    outputs=[ctx.gauss, ctx.cost],
   )
 
   efc_inputs = [
@@ -3206,8 +3270,7 @@ def solve_done(
   stat_meaninertia: wp.array[float],
   # In:
   ctx_grad_dot_in: wp.array[float],
-  ctx_cost_in: wp.array[float],
-  ctx_prev_cost_in: wp.array[float],
+  ctx_improvement_in: wp.array[float],
   ctx_done_in: wp.array[bool],
   # Data out:
   solver_niter_out: wp.array[int],
@@ -3224,7 +3287,7 @@ def solve_done(
   tolerance = opt_tolerance[worldid % opt_tolerance.shape[0]]
   meaninertia = stat_meaninertia[worldid % stat_meaninertia.shape[0]]
 
-  improvement = _rescale(nv, meaninertia, ctx_prev_cost_in[worldid] - ctx_cost_in[worldid])
+  improvement = _rescale(nv, meaninertia, ctx_improvement_in[worldid])
   gradient = _rescale(nv, meaninertia, wp.sqrt(ctx_grad_dot_in[worldid]))
   done = (improvement < tolerance) or (gradient < tolerance)
   if done or solver_niter_out[worldid] == opt_iterations:
@@ -3296,8 +3359,7 @@ def _solver_iteration(
       m.opt.iterations,
       m.stat.meaninertia,
       ctx.grad_dot,
-      ctx.cost,
-      ctx.prev_cost,
+      ctx.improvement,
       ctx.done,
     ],
     outputs=[d.solver_niter, nsolving, ctx.done],

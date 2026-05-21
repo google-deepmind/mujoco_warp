@@ -287,6 +287,56 @@ class SolverTest(parameterized.TestCase):
     _assert_eq(Ma_iterative, Ma_parallel, name="Ma")
     _assert_eq(Jaref_iterative, Jaref_parallel, name="Jaref")
 
+  @parameterized.parameters(False, True)
+  def test_linesearch_accepts_sub_ulp_improvement(self, ls_parallel):
+    """Line search should not lose small improvements on large absolute costs."""
+    _, _, m, d = test_data.fixture(
+      "constraints.xml",
+      overrides={
+        "opt.cone": ConeType.PYRAMIDAL,
+        "opt.jacobian": mujoco.mjtJacobian.mjJAC_DENSE,
+        "opt.iterations": 0,
+        "opt.ls_iterations": 50,
+        "opt.ls_parallel": ls_parallel,
+      },
+    )
+
+    ctx = solver.create_solver_context(m, d)
+
+    d.ne = wp.array([0], dtype=int)
+    d.nf = wp.array([0], dtype=int)
+    d.nefc = wp.array([1], dtype=int)
+    d.nacon = wp.array([0], dtype=int)
+    d.qM = wp.zeros(d.qM.shape, dtype=float)
+    d.qacc = wp.zeros(d.qacc.shape, dtype=float)
+    d.efc.Ma = wp.zeros(d.efc.Ma.shape, dtype=float)
+    d.qfrc_smooth = wp.zeros(d.qfrc_smooth.shape, dtype=float)
+
+    efc_j = np.zeros(d.efc.J.shape, dtype=np.float32)
+    efc_j[0, 0, 0] = 1.0
+    d.efc.J = wp.array(efc_j, dtype=float)
+
+    efc_d = np.zeros(d.efc.D.shape, dtype=np.float32)
+    efc_d[0, 0] = 0.004
+    d.efc.D = wp.array(efc_d, dtype=float)
+    d.efc.frictionloss = wp.zeros(d.efc.frictionloss.shape, dtype=float)
+
+    search = np.zeros(ctx.search.shape, dtype=np.float32)
+    search[0, 0] = 1.0
+    ctx.search = wp.array(search, dtype=float)
+    jaref = np.zeros(ctx.Jaref.shape, dtype=np.float32)
+    jaref[0, 0] = -1.0
+    ctx.Jaref = wp.array(jaref, dtype=float)
+    ctx.search_dot = wp.array([1.0], dtype=float)
+    ctx.gauss = wp.array([100000.0], dtype=float)
+    ctx.done = wp.array([False], dtype=bool)
+
+    step_size_cost = wp.empty((d.nworld, m.opt.ls_iterations if m.opt.ls_parallel else 0), dtype=float)
+    solver._linesearch(m, d, ctx, step_size_cost)
+
+    self.assertGreater(d.qacc.numpy()[0, 0], 0.5)
+    self.assertGreater(ctx.improvement.numpy()[0], 0.001)
+
   @parameterized.parameters(
     (ConeType.PYRAMIDAL, SolverType.CG, 10, 5, mujoco.mjtJacobian.mjJAC_DENSE, False, False),
     (ConeType.ELLIPTIC, SolverType.CG, 10, 5, mujoco.mjtJacobian.mjJAC_DENSE, False, False),
