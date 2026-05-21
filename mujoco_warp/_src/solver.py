@@ -153,18 +153,15 @@ def _in_bracket(x: wp.vec3, y: wp.vec3) -> bool:
 
 
 @wp.func
-def _eval_pt_direct(jaref: float, jv: float, d: float, alpha: float) -> wp.vec3:
-  """Eval quadratic constraint, return (cost, grad, hessian)."""
-  x = jaref + alpha * jv
-  jvD = jv * d
-  return wp.vec3(0.5 * d * x * x, jvD * x, jv * jvD)
-
-
-@wp.func
 def _eval_pt_direct_alpha_zero(jaref: float, jv: float, d: float) -> wp.vec3:
   """Eval quadratic constraint at alpha=0."""
   jvD = jv * d
   return wp.vec3(0.5 * d * jaref * jaref, jvD * jaref, jv * jvD)
+
+
+@wp.func
+def _eval_pt_direct_cost_alpha_zero(jaref: float, d: float) -> float:
+  return 0.5 * d * jaref * jaref
 
 
 @wp.func
@@ -177,21 +174,12 @@ def _eval_pt_direct_shifted(jaref: float, jv: float, d: float, alpha: float) -> 
 
 
 @wp.func
-def _eval_pt_direct_3alphas(
-  jaref: float, jv: float, d: float, lo_alpha: float, hi_alpha: float, mid_alpha: float
-) -> tuple[wp.vec3, wp.vec3, wp.vec3]:
-  """Eval quadratic constraint for 3 alphas."""
-  x_lo = jaref + lo_alpha * jv
-  x_hi = jaref + hi_alpha * jv
-  x_mid = jaref + mid_alpha * jv
+def _eval_pt_direct_shifted_offset(jaref: float, jv: float, d: float, alpha: float, offset: float) -> wp.vec3:
+  """Eval shifted quadratic constraint plus a constant cost offset."""
   jvD = jv * d
   hessian = jv * jvD
-  half_d = 0.5 * d
-  return (
-    wp.vec3(half_d * x_lo * x_lo, jvD * x_lo, hessian),
-    wp.vec3(half_d * x_hi * x_hi, jvD * x_hi, hessian),
-    wp.vec3(half_d * x_mid * x_mid, jvD * x_mid, hessian),
-  )
+  alpha_h = alpha * hessian
+  return wp.vec3(alpha * (jvD * jaref + 0.5 * alpha_h) + offset, jvD * jaref + alpha_h, hessian)
 
 
 @wp.func
@@ -209,6 +197,24 @@ def _eval_pt_direct_shifted_3alphas(
     wp.vec3(lo_alpha * (grad0 + 0.5 * lo_ah), grad0 + lo_ah, hessian),
     wp.vec3(hi_alpha * (grad0 + 0.5 * hi_ah), grad0 + hi_ah, hessian),
     wp.vec3(mid_alpha * (grad0 + 0.5 * mid_ah), grad0 + mid_ah, hessian),
+  )
+
+
+@wp.func
+def _eval_pt_direct_shifted_offset_3alphas(
+  jaref: float, jv: float, d: float, lo_alpha: float, hi_alpha: float, mid_alpha: float, offset: float
+) -> tuple[wp.vec3, wp.vec3, wp.vec3]:
+  """Eval shifted quadratic constraint for 3 alphas plus a constant cost offset."""
+  jvD = jv * d
+  grad0 = jvD * jaref
+  hessian = jv * jvD
+  lo_ah = lo_alpha * hessian
+  hi_ah = hi_alpha * hessian
+  mid_ah = mid_alpha * hessian
+  return (
+    wp.vec3(lo_alpha * (grad0 + 0.5 * lo_ah) + offset, grad0 + lo_ah, hessian),
+    wp.vec3(hi_alpha * (grad0 + 0.5 * hi_ah) + offset, grad0 + hi_ah, hessian),
+    wp.vec3(mid_alpha * (grad0 + 0.5 * mid_ah) + offset, grad0 + mid_ah, hessian),
   )
 
 
@@ -258,6 +264,15 @@ def _eval_frictionloss_pt(x: float, f: float, rf: float, jv: float, d: float) ->
     return wp.vec3(f * (-0.5 * rf - x), -f * jv, 0.0)
   else:
     return wp.vec3(f * (-0.5 * rf + x), f * jv, 0.0)
+
+
+@wp.func
+def _eval_frictionloss_cost(x: float, f: float, rf: float, d: float) -> float:
+  if (-rf < x) and (x < rf):
+    return 0.5 * d * x * x
+  elif x <= -rf:
+    return f * (-0.5 * rf - x)
+  return f * (-0.5 * rf + x)
 
 
 @wp.func
@@ -350,6 +365,43 @@ def _eval_elliptic(
 
 
 @wp.func
+def _eval_elliptic_cost(
+  # In:
+  impratio_invsqrt: float,
+  friction: types.vec5,
+  quad: wp.vec3,
+  quad1: wp.vec3,
+  quad2: wp.vec3,
+  alpha: float,
+) -> float:
+  mu = friction[0] * impratio_invsqrt
+
+  u0 = quad1[0]
+  v0 = quad1[1]
+  uu = quad1[2]
+  uv = quad2[0]
+  vv = quad2[1]
+  dm = quad2[2]
+
+  N = u0 + alpha * v0
+  Tsqr = uu + alpha * (2.0 * uv + alpha * vv)
+
+  if Tsqr <= 0.0:
+    if N < 0.0:
+      return _eval_cost(quad, alpha)
+  else:
+    T = wp.sqrt(Tsqr)
+    if N >= mu * T:
+      pass
+    elif mu * N + T <= 0.0:
+      return _eval_cost(quad, alpha)
+    else:
+      return 0.5 * dm * (N - mu * T) * (N - mu * T)
+
+  return 0.0
+
+
+@wp.func
 def _log_scale(min_value: float, max_value: float, num_values: int, i: int) -> float:
   step = (wp.log(max_value) - wp.log(min_value)) / wp.max(1.0, float(num_values - 1))
   return wp.exp(wp.log(min_value) + float(i) * step)
@@ -411,7 +463,7 @@ def linesearch_parallel_fused(
       efc_D = efc_D_in[worldid, efcid]
       rf = math.safe_div(f, efc_D)
 
-      out += _eval_frictionloss_pt(x, f, rf, dir, efc_D)[0] - _eval_frictionloss_pt(start, f, rf, dir, efc_D)[0]
+      out += _eval_frictionloss_cost(x, f, rf, efc_D) - _eval_frictionloss_cost(start, f, rf, efc_D)
     # limit and contact
     elif efc_type_in[worldid, efcid] == types.ConstraintType.CONTACT_ELLIPTIC:
       # extract contact info
@@ -424,51 +476,26 @@ def linesearch_parallel_fused(
       if efcid != efcid0:
         continue
 
-      friction = contact_friction_in[conid]
-      mu = friction[0] * opt_impratio_invsqrt[worldid % opt_impratio_invsqrt.shape[0]]
-
       # unpack quad
       efcid1 = contact_efc_address_in[conid, 1]
       efcid2 = contact_efc_address_in[conid, 2]
-      u0 = ctx_quad_in[worldid, efcid1][0]
-      v0 = ctx_quad_in[worldid, efcid1][1]
-      uu = ctx_quad_in[worldid, efcid1][2]
-      uv = ctx_quad_in[worldid, efcid2][0]
-      vv = ctx_quad_in[worldid, efcid2][1]
-      dm = ctx_quad_in[worldid, efcid2][2]
 
-      # compute N, Tsqr
-      N = u0 + alpha * v0
-      Tsqr = uu + alpha * (2.0 * uv + alpha * vv)
-
-      # no tangential force: top or bottom zone
-      if Tsqr <= 0.0:
-        # bottom zone: quadratic cost
-        if N < 0.0:
-          out += _eval_cost(ctx_quad_in[worldid, efcid], alpha)
-      # otherwise regular processing
-      else:
-        # tangential force
-        T = wp.sqrt(Tsqr)
-
-        # N >= mu * T : top zone
-        if N >= mu * T:
-          # nothing to do
-          pass
-        # mu * N + T <= 0 : bottom zone
-        elif mu * N + T <= 0.0:
-          out += _eval_cost(ctx_quad_in[worldid, efcid], alpha)
-        # otherwise middle zone
-        else:
-          out += 0.5 * dm * (N - mu * T) * (N - mu * T)
-      out -= _eval_elliptic(
+      out += _eval_elliptic_cost(
+        opt_impratio_invsqrt[worldid % opt_impratio_invsqrt.shape[0]],
+        contact_friction_in[conid],
+        ctx_quad_in[worldid, efcid],
+        ctx_quad_in[worldid, efcid1],
+        ctx_quad_in[worldid, efcid2],
+        alpha,
+      )
+      out -= _eval_elliptic_cost(
         opt_impratio_invsqrt[worldid % opt_impratio_invsqrt.shape[0]],
         contact_friction_in[conid],
         ctx_quad_in[worldid, efcid],
         ctx_quad_in[worldid, efcid1],
         ctx_quad_in[worldid, efcid2],
         0.0,
-      )[0]
+      )
     else:
       # search point
       start = ctx_Jaref_in[worldid, efcid]
@@ -620,9 +647,10 @@ def _compute_efc_eval_pt_pyramidal(
   # Limit/other constraint
   if efcid >= ne + nf:
     x = ctx_Jaref + alpha * ctx_jv
-    cost0 = wp.where(ctx_Jaref < 0.0, _eval_pt_direct_alpha_zero(ctx_Jaref, ctx_jv, efc_D)[0], 0.0)
+    quad0 = _eval_pt_direct_cost_alpha_zero(ctx_Jaref, efc_D)
+    cost0 = wp.where(ctx_Jaref < 0.0, quad0, 0.0)
     if x < 0.0:
-      return _eval_pt_direct_shifted(ctx_Jaref, ctx_jv, efc_D, alpha)
+      return _eval_pt_direct_shifted_offset(ctx_Jaref, ctx_jv, efc_D, alpha, quad0 - cost0)
     return wp.vec3(-cost0, 0.0, 0.0)
 
   # Friction constraint - needs quad for frictionloss computation
@@ -630,9 +658,7 @@ def _compute_efc_eval_pt_pyramidal(
     f = efc_frictionloss[efcid]
     x = ctx_Jaref + alpha * ctx_jv
     rf = math.safe_div(f, efc_D)
-    return _shift_cost(
-      _eval_frictionloss_pt(x, f, rf, ctx_jv, efc_D), _eval_frictionloss_pt(ctx_Jaref, f, rf, ctx_jv, efc_D)[0]
-    )
+    return _shift_cost(_eval_frictionloss_pt(x, f, rf, ctx_jv, efc_D), _eval_frictionloss_cost(ctx_Jaref, f, rf, efc_D))
 
   # Equality constraint
   return _eval_pt_direct_shifted(ctx_Jaref, ctx_jv, efc_D, alpha)
@@ -665,15 +691,16 @@ def _compute_efc_eval_pt_elliptic(
     if efc_type == types.ConstraintType.CONTACT_ELLIPTIC:
       if efcid != efc_address0:  # Not primary row
         return wp.vec3(0.0)
-      cost0 = _eval_elliptic(impratio_invsqrt, contact_friction, ctx_quad, quad1, quad2, 0.0)[0]
+      cost0 = _eval_elliptic_cost(impratio_invsqrt, contact_friction, ctx_quad, quad1, quad2, 0.0)
       return _shift_cost(_eval_elliptic(impratio_invsqrt, contact_friction, ctx_quad, quad1, quad2, alpha), cost0)
 
     # Limit/other constraint — direct eval (no quad read)
     x = ctx_Jaref + alpha * ctx_jv
     efc_D = efc_D_in[efcid]
-    cost0 = wp.where(ctx_Jaref < 0.0, _eval_pt_direct_alpha_zero(ctx_Jaref, ctx_jv, efc_D)[0], 0.0)
+    quad0 = _eval_pt_direct_cost_alpha_zero(ctx_Jaref, efc_D)
+    cost0 = wp.where(ctx_Jaref < 0.0, quad0, 0.0)
     if x < 0.0:
-      return _eval_pt_direct_shifted(ctx_Jaref, ctx_jv, efc_D, alpha)
+      return _eval_pt_direct_shifted_offset(ctx_Jaref, ctx_jv, efc_D, alpha, quad0 - cost0)
     return wp.vec3(-cost0, 0.0, 0.0)
 
   # Friction constraint - load D and frictionloss only here
@@ -682,9 +709,7 @@ def _compute_efc_eval_pt_elliptic(
     f = efc_frictionloss[efcid]
     x = ctx_Jaref + alpha * ctx_jv
     rf = math.safe_div(f, efc_D)
-    return _shift_cost(
-      _eval_frictionloss_pt(x, f, rf, ctx_jv, efc_D), _eval_frictionloss_pt(ctx_Jaref, f, rf, ctx_jv, efc_D)[0]
-    )
+    return _shift_cost(_eval_frictionloss_pt(x, f, rf, ctx_jv, efc_D), _eval_frictionloss_cost(ctx_Jaref, f, rf, efc_D))
 
   # Equality constraint — direct eval (no quad read)
   efc_D = efc_D_in[efcid]
@@ -787,8 +812,11 @@ def _compute_efc_eval_pt_3alphas_pyramidal(
     x_lo = ctx_Jaref + lo_alpha * ctx_jv
     x_hi = ctx_Jaref + hi_alpha * ctx_jv
     x_mid = ctx_Jaref + mid_alpha * ctx_jv
-    cost0 = wp.where(ctx_Jaref < 0.0, _eval_pt_direct_alpha_zero(ctx_Jaref, ctx_jv, efc_D)[0], 0.0)
-    pt_lo, pt_hi, pt_mid = _eval_pt_direct_shifted_3alphas(ctx_Jaref, ctx_jv, efc_D, lo_alpha, hi_alpha, mid_alpha)
+    quad0 = _eval_pt_direct_cost_alpha_zero(ctx_Jaref, efc_D)
+    cost0 = wp.where(ctx_Jaref < 0.0, quad0, 0.0)
+    pt_lo, pt_hi, pt_mid = _eval_pt_direct_shifted_offset_3alphas(
+      ctx_Jaref, ctx_jv, efc_D, lo_alpha, hi_alpha, mid_alpha, quad0 - cost0
+    )
     inactive = wp.vec3(-cost0, 0.0, 0.0)
     return (
       wp.where(x_lo < 0.0, pt_lo, inactive),
@@ -803,7 +831,7 @@ def _compute_efc_eval_pt_3alphas_pyramidal(
     x_mid = ctx_Jaref + mid_alpha * ctx_jv
     f = efc_frictionloss[efcid]
     rf = math.safe_div(f, efc_D)
-    cost0 = _eval_frictionloss_pt(ctx_Jaref, f, rf, ctx_jv, efc_D)[0]
+    cost0 = _eval_frictionloss_cost(ctx_Jaref, f, rf, efc_D)
     lo, hi, mid = _eval_frictionloss_pt_3alphas(x_lo, x_hi, x_mid, f, rf, ctx_jv, efc_D)
     return (_shift_cost(lo, cost0), _shift_cost(hi, cost0), _shift_cost(mid, cost0))
 
@@ -849,7 +877,7 @@ def _compute_efc_eval_pt_3alphas_elliptic(
     if efc_type == types.ConstraintType.CONTACT_ELLIPTIC:
       if efcid != efc_address0:  # secondary rows contribute nothing
         return (wp.vec3(0.0), wp.vec3(0.0), wp.vec3(0.0))
-      cost0 = _eval_elliptic(impratio_invsqrt, contact_friction, ctx_quad, quad1, quad2, 0.0)[0]
+      cost0 = _eval_elliptic_cost(impratio_invsqrt, contact_friction, ctx_quad, quad1, quad2, 0.0)
       lo = _eval_elliptic(impratio_invsqrt, contact_friction, ctx_quad, quad1, quad2, lo_alpha)
       hi = _eval_elliptic(impratio_invsqrt, contact_friction, ctx_quad, quad1, quad2, hi_alpha)
       mid = _eval_elliptic(impratio_invsqrt, contact_friction, ctx_quad, quad1, quad2, mid_alpha)
@@ -857,8 +885,11 @@ def _compute_efc_eval_pt_3alphas_elliptic(
 
     # Limit/other constraints — direct eval (no quad read)
     efc_D = efc_D_in[efcid]
-    cost0 = wp.where(ctx_Jaref < 0.0, _eval_pt_direct_alpha_zero(ctx_Jaref, ctx_jv, efc_D)[0], 0.0)
-    pt_lo, pt_hi, pt_mid = _eval_pt_direct_shifted_3alphas(ctx_Jaref, ctx_jv, efc_D, lo_alpha, hi_alpha, mid_alpha)
+    quad0 = _eval_pt_direct_cost_alpha_zero(ctx_Jaref, efc_D)
+    cost0 = wp.where(ctx_Jaref < 0.0, quad0, 0.0)
+    pt_lo, pt_hi, pt_mid = _eval_pt_direct_shifted_offset_3alphas(
+      ctx_Jaref, ctx_jv, efc_D, lo_alpha, hi_alpha, mid_alpha, quad0 - cost0
+    )
     inactive = wp.vec3(-cost0, 0.0, 0.0)
     return (
       wp.where(x_lo < 0.0, pt_lo, inactive),
@@ -871,7 +902,7 @@ def _compute_efc_eval_pt_3alphas_elliptic(
     efc_D = efc_D_in[efcid]
     f = efc_frictionloss[efcid]
     rf = math.safe_div(f, efc_D)
-    cost0 = _eval_frictionloss_pt(ctx_Jaref, f, rf, ctx_jv, efc_D)[0]
+    cost0 = _eval_frictionloss_cost(ctx_Jaref, f, rf, efc_D)
     lo, hi, mid = _eval_frictionloss_pt_3alphas(x_lo, x_hi, x_mid, f, rf, ctx_jv, efc_D)
     return (_shift_cost(lo, cost0), _shift_cost(hi, cost0), _shift_cost(mid, cost0))
 

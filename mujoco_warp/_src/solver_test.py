@@ -332,6 +332,27 @@ class SolverTest(parameterized.TestCase):
     self.assertGreater(d.qacc.numpy()[0, 0], 0.5)
     self.assertGreater(ctx.improvement.numpy()[0], 0.001)
 
+    qfrc_smooth = np.zeros(d.qfrc_smooth.shape, dtype=np.float32)
+    qfrc_smooth[0, 0] = -0.0005
+    d.qfrc_smooth = wp.array(qfrc_smooth, dtype=float)
+    d.qacc = wp.zeros(d.qacc.shape, dtype=float)
+    d.efc.Ma = wp.zeros(d.efc.Ma.shape, dtype=float)
+
+    search = np.zeros(ctx.search.shape, dtype=np.float32)
+    search[0, 0] = -2.0
+    ctx.search = wp.array(search, dtype=float)
+    jaref = np.zeros(ctx.Jaref.shape, dtype=np.float32)
+    jaref[0, 0] = 1.0
+    ctx.Jaref = wp.array(jaref, dtype=float)
+    ctx.search_dot = wp.array([4.0], dtype=float)
+    ctx.done = wp.array([False], dtype=bool)
+
+    solver._linesearch(m, d, ctx, step_size_cost)
+
+    self.assertLess(d.qacc.numpy()[0, 0], -1.0)
+    self.assertLess(ctx.improvement.numpy()[0], 0.001)
+    self.assertGreater(ctx.improvement.numpy()[0], 0.0004)
+
   @parameterized.parameters(
     (ConeType.PYRAMIDAL, SolverType.CG, 10, 5, mujoco.mjtJacobian.mjJAC_DENSE, False, False),
     (ConeType.ELLIPTIC, SolverType.CG, 10, 5, mujoco.mjtJacobian.mjJAC_DENSE, False, False),
