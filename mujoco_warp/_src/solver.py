@@ -4159,7 +4159,7 @@ def linesearch_island(
     ja = Jaref_in[worldid, iefcid]
     jv_val = jv_in[worldid, iefcid]
     if local_iefcid < ine:
-      lo_in += _eval_pt_direct(ja, jv_val, D, lo_alpha_in)
+      lo_in += _eval_pt_direct_shifted(ja, jv_val, D, lo_alpha_in)
     elif local_iefcid < ine + inf:
       f = iefc_frictionloss_in[worldid, iefcid]
       rf = math.safe_div(f, D)
@@ -4186,7 +4186,7 @@ def linesearch_island(
     else:
       x_a = ja + lo_alpha_in * jv_val
       if x_a < 0.0:
-        lo_in += _eval_pt_direct(ja, jv_val, D, lo_alpha_in)
+        lo_in += _eval_pt_direct_shifted(ja, jv_val, D, lo_alpha_in)
 
   # Accept Newton step if derivative is small and cost improved
   initial_converged = wp.abs(lo_in[1]) < gtol and lo_in[0] < p0[0]
@@ -4229,7 +4229,9 @@ def linesearch_island(
         ja = Jaref_in[worldid, iefcid]
         jv_val = jv_in[worldid, iefcid]
         if local_iefcid < ine:
-          r_lo, r_hi, r_mid = _eval_pt_direct_3alphas(ja, jv_val, D, lo_next_alpha, hi_next_alpha, mid_alpha)
+          r_lo, r_hi, r_mid = _eval_pt_direct_shifted_3alphas(
+            ja, jv_val, D, lo_next_alpha, hi_next_alpha, mid_alpha
+          )
         elif local_iefcid < ine + inf:
           f = iefc_frictionloss_in[worldid, iefcid]
           rf = math.safe_div(f, D)
@@ -4294,11 +4296,11 @@ def linesearch_island(
           r_hi = wp.vec3(0.0)
           r_mid = wp.vec3(0.0)
           if x_lo < 0.0:
-            r_lo = _eval_pt_direct(ja, jv_val, D, lo_next_alpha)
+            r_lo = _eval_pt_direct_shifted(ja, jv_val, D, lo_next_alpha)
           if x_hi < 0.0:
-            r_hi = _eval_pt_direct(ja, jv_val, D, hi_next_alpha)
+            r_hi = _eval_pt_direct_shifted(ja, jv_val, D, hi_next_alpha)
           if x_mid < 0.0:
-            r_mid = _eval_pt_direct(ja, jv_val, D, mid_alpha)
+            r_mid = _eval_pt_direct_shifted(ja, jv_val, D, mid_alpha)
         lo_next += r_lo
         hi_next += r_hi
         mid += r_mid
