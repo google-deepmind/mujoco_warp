@@ -157,7 +157,6 @@ class SolverTest(parameterized.TestCase):
         )
       else:
         efc_J_np = d.efc.J.numpy()[0, :nefc, : m.nv]
-      ctx_gauss_np = ctx.gauss.numpy()[0]
       efc_Ma_np = d.efc.Ma.numpy()[0]
       ctx_Jaref_np = ctx.Jaref.numpy()[0][:nefc]
       efc_D_np = d.efc.D.numpy()[0][:nefc]
@@ -168,7 +167,7 @@ class SolverTest(parameterized.TestCase):
       target_jv = efc_J_np @ ctx_search_np
       target_quad_gauss = np.array(
         [
-          ctx_gauss_np,
+          0.0,
           np.dot(ctx_search_np, efc_Ma_np - qfrc_smooth_np),
           0.5 * np.dot(ctx_search_np, target_mv),
         ]
@@ -325,7 +324,6 @@ class SolverTest(parameterized.TestCase):
     jaref[0, 0] = -1.0
     ctx.Jaref = wp.array(jaref, dtype=float)
     ctx.search_dot = wp.array([1.0], dtype=float)
-    ctx.gauss = wp.array([100000.0], dtype=float)
     ctx.done = wp.array([False], dtype=bool)
 
     step_size_cost = wp.empty((d.nworld, m.opt.ls_iterations if m.opt.ls_parallel else 0), dtype=float)

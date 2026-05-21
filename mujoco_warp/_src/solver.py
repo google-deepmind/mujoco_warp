@@ -51,7 +51,6 @@ def create_inverse_context(m: types.Model, d: types.Data) -> InverseContext:
   return InverseContext(
     Jaref=wp.empty((nworld, njmax), dtype=float),
     search_dot=wp.empty((nworld,), dtype=float),
-    gauss=wp.empty((nworld,), dtype=float),
     done=wp.empty((nworld,), dtype=bool),
     changed_efc_ids=wp.empty((nworld, 0), dtype=int),
     changed_efc_count=wp.empty((0,), dtype=int),
@@ -122,7 +121,6 @@ def create_solver_context(m: types.Model, d: types.Data) -> SolverContext:
   return SolverContext(
     Jaref=wp.empty((nworld, njmax), dtype=float),
     search_dot=wp.empty((nworld,), dtype=float),
-    gauss=wp.empty((nworld,), dtype=float),
     done=wp.empty((nworld,), dtype=bool),
     grad=wp.zeros((nworld, nv_pad), dtype=float),
     grad_dot=wp.empty((nworld,), dtype=float),
@@ -522,14 +520,14 @@ def _linesearch_parallel(m: types.Model, d: types.Data, ctx: SolverContext, cost
   dofs_per_thread = 20 if m.nv > 50 else 50
   threads_per_efc = ceil(m.nv / dofs_per_thread)
 
-  # quad_gauss = [gauss, search.T @ Ma - search.T @ qfrc_smooth, 0.5 * search.T @ mv]
+  # quad_gauss = [0, search.T @ Ma - search.T @ qfrc_smooth, 0.5 * search.T @ mv]
   if threads_per_efc > 1:
     ctx.quad_gauss.zero_()
 
   wp.launch(
     linesearch_prepare_gauss(m.nv, dofs_per_thread),
     dim=(d.nworld, threads_per_efc),
-    inputs=[d.qfrc_smooth, d.efc.Ma, ctx.search, ctx.gauss, ctx.mv, ctx.done],
+    inputs=[d.qfrc_smooth, d.efc.Ma, ctx.search, ctx.mv, ctx.done],
     outputs=[ctx.quad_gauss],
   )
 
@@ -1002,7 +1000,6 @@ def linesearch_iterative(ls_iterations: int, cone_type: types.ConeType, fuse_jv:
     ctx_Jaref_in: wp.array2d[float],
     ctx_search_in: wp.array2d[float],
     ctx_search_dot_in: wp.array[float],
-    ctx_gauss_in: wp.array[float],
     ctx_mv_in: wp.array2d[float],
     ctx_jv_in: wp.array2d[float],
     ctx_quad_in: wp.array2d[wp.vec3],
@@ -1170,8 +1167,8 @@ def linesearch_iterative(ls_iterations: int, cone_type: types.ConeType, fuse_jv:
     p0_tile = wp.tile(local_p0, preserve_type=True)
     p0_sum = wp.tile_reduce(wp.add, p0_tile)
 
-    # quad_gauss = [gauss, search.T @ Ma - search.T @ qfrc_smooth, 0.5 * search.T @ mv]
-    local_gauss = wp.vec2(0.0)  # vec2 since component 0 is constant (ctx_gauss_in)
+    # quad_gauss = [0, search.T @ Ma - search.T @ qfrc_smooth, 0.5 * search.T @ mv]
+    local_gauss = wp.vec2(0.0)
     for dofid in range(tid, nv, wp.block_dim()):
       search = ctx_search_in[worldid, dofid]
       local_gauss += wp.vec2(
@@ -1447,7 +1444,6 @@ def _linesearch_iterative(m: types.Model, d: types.Data, ctx: SolverContext, fus
       ctx.Jaref,
       ctx.search,
       ctx.search_dot,
-      ctx.gauss,
       ctx.mv,
       ctx.jv,
       ctx.quad,
@@ -1548,7 +1544,6 @@ def linesearch_prepare_gauss(nv: int, dofs_per_thread: int):
     efc_Ma_in: wp.array2d[float],
     # In:
     ctx_search_in: wp.array2d[float],
-    ctx_gauss_in: wp.array[float],
     ctx_mv_in: wp.array2d[float],
     ctx_done_in: wp.array[bool],
     # Out:
@@ -1568,8 +1563,7 @@ def linesearch_prepare_gauss(nv: int, dofs_per_thread: int):
         quad_gauss_1 += search * (efc_Ma_in[worldid, i] - qfrc_smooth_in[worldid, i])
         quad_gauss_2 += 0.5 * search * ctx_mv_in[worldid, i]
 
-      quad_gauss_0 = ctx_gauss_in[worldid]
-      ctx_quad_gauss_out[worldid] = wp.vec3(quad_gauss_0, quad_gauss_1, quad_gauss_2)
+      ctx_quad_gauss_out[worldid] = wp.vec3(0.0, quad_gauss_1, quad_gauss_2)
 
     else:
       for i in range(wp.static(dofs_per_thread)):
@@ -1579,11 +1573,7 @@ def linesearch_prepare_gauss(nv: int, dofs_per_thread: int):
           quad_gauss_1 += search * (efc_Ma_in[worldid, ii] - qfrc_smooth_in[worldid, ii])
           quad_gauss_2 += 0.5 * search * ctx_mv_in[worldid, ii]
 
-      if dofstart == 0:
-        quad_gauss_0 = ctx_gauss_in[worldid]
-        wp.atomic_add(ctx_quad_gauss_out, worldid, wp.vec3(quad_gauss_0, quad_gauss_1, quad_gauss_2))
-      else:
-        wp.atomic_add(ctx_quad_gauss_out, worldid, wp.vec3(0.0, quad_gauss_1, quad_gauss_2))
+      wp.atomic_add(ctx_quad_gauss_out, worldid, wp.vec3(0.0, quad_gauss_1, quad_gauss_2))
 
   return kernel
 
@@ -1848,21 +1838,6 @@ def solve_init_search(
   wp.atomic_add(ctx_search_dot_out, worldid, search * search)
 
 
-@wp.kernel
-def update_constraint_init_gauss(
-  # In:
-  ctx_done_in: wp.array[bool],
-  # Out:
-  ctx_gauss_out: wp.array[float],
-):
-  worldid = wp.tid()
-
-  if ctx_done_in[worldid]:
-    return
-
-  ctx_gauss_out[worldid] = 0.0
-
-
 @cache_kernel
 def update_constraint_efc(track_changes: bool):
   TRACK_CHANGES = track_changes
@@ -2063,44 +2038,6 @@ def update_constraint_init_qfrc_constraint_dense(
   qfrc_constraint_out[worldid, dofid] = sum_qfrc
 
 
-@cache_kernel
-def update_constraint_gauss(nv: int, dofs_per_thread: int):
-  @wp.kernel(module="unique", enable_backward=False)
-  def kernel(
-    # Data in:
-    qacc_in: wp.array2d[float],
-    qfrc_smooth_in: wp.array2d[float],
-    qacc_smooth_in: wp.array2d[float],
-    efc_Ma_in: wp.array2d[float],
-    # In:
-    ctx_done_in: wp.array[bool],
-    # Out:
-    ctx_gauss_out: wp.array[float],
-  ):
-    worldid, dofstart = wp.tid()
-
-    if ctx_done_in[worldid]:
-      return
-
-    gauss_cost = float(0.0)
-
-    if wp.static(dofs_per_thread >= nv):
-      for i in range(wp.static(min(dofs_per_thread, nv))):
-        gauss_cost += (efc_Ma_in[worldid, i] - qfrc_smooth_in[worldid, i]) * (qacc_in[worldid, i] - qacc_smooth_in[worldid, i])
-      ctx_gauss_out[worldid] += 0.5 * gauss_cost
-
-    else:
-      for i in range(wp.static(dofs_per_thread)):
-        ii = dofstart * wp.static(dofs_per_thread) + i
-        if ii < nv:
-          gauss_cost += (efc_Ma_in[worldid, ii] - qfrc_smooth_in[worldid, ii]) * (
-            qacc_in[worldid, ii] - qacc_smooth_in[worldid, ii]
-          )
-      wp.atomic_add(ctx_gauss_out, worldid, 0.5 * gauss_cost)
-
-  return kernel
-
-
 @wp.kernel
 def update_gradient_h_incremental(
   # Data in:
@@ -2203,13 +2140,6 @@ def update_gradient_h_incremental_sparse(
 
 def _update_constraint(m: types.Model, d: types.Data, ctx: SolverContext | InverseContext, track_changes: bool = False):
   """Update constraint arrays after each solve iteration."""
-  wp.launch(
-    update_constraint_init_gauss,
-    dim=(d.nworld),
-    inputs=[ctx.done],
-    outputs=[ctx.gauss],
-  )
-
   efc_inputs = [
     m.opt.impratio_invsqrt,
     d.ne,
@@ -2250,23 +2180,6 @@ def _update_constraint(m: types.Model, d: types.Data, ctx: SolverContext | Inver
       inputs=[d.nefc, d.efc.J, d.efc.force, d.njmax, ctx.done],
       outputs=[d.qfrc_constraint],
     )
-
-  # if we are only using 1 thread, it makes sense to do more dofs and skip the atomics.
-  # For more than 1 thread, dofs_per_thread is lower for better load balancing.
-  if m.nv > 50:
-    dofs_per_thread = 20
-  else:
-    dofs_per_thread = 50
-
-  threads_per_efc = ceil(m.nv / dofs_per_thread)
-
-  # gauss = 0.5 * (Ma - qfrc_smooth).T @ (qacc - qacc_smooth)
-  wp.launch(
-    update_constraint_gauss(m.nv, dofs_per_thread),
-    dim=(d.nworld, threads_per_efc),
-    inputs=[d.qacc, d.qfrc_smooth, d.qacc_smooth, d.efc.Ma, ctx.done],
-    outputs=[ctx.gauss],
-  )
 
 
 @wp.kernel
