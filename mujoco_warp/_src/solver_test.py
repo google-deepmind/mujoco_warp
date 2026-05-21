@@ -73,16 +73,15 @@ class SolverTest(parameterized.TestCase):
         overrides={"opt.solver": solver_, "opt.cone": cone, "opt.jacobian": jacobian, "opt.iterations": 0},
       )
 
-      def cost(qacc):
+      def update_mujoco_constraints(qacc):
         jaref = np.zeros(mjd.nefc, dtype=float)
         cost = np.zeros(1)
         mujoco.mj_mulJacVec(mjm, mjd, jaref, qacc)
         mujoco.mj_constraintUpdate(mjm, mjd, jaref - mjd.efc_aref, cost, 0)
-        return cost
 
-      mjd_cost = cost(mjd.qacc)
+      update_mujoco_constraints(mjd.qacc)
 
-      # solve with 0 iterations just initializes constraints and costs and then exits
+      # solve with 0 iterations just initializes constraints and then exits
       d.efc.force.fill_(wp.inf)
       d.qfrc_constraint.fill_(wp.inf)
       ctx = solver.create_solver_context(m, d)
@@ -101,7 +100,6 @@ class SolverTest(parameterized.TestCase):
       mjd_sort_indices = np.lexsort((mjd_efc_force, mjd_efc_state))
 
       solver.init_context(m, d, ctx, grad=False)
-      ctx_cost = ctx.cost.numpy()[0] - ctx.gauss.numpy()[0]
       qfrc_constraint = d.qfrc_constraint.numpy()[0]
 
       efc_sorted_force = efc_force[d_sort_indices]
@@ -111,7 +109,6 @@ class SolverTest(parameterized.TestCase):
 
       _assert_eq(efc_sorted_state, mjd_sorted_state, "efc_state")
       _assert_eq(efc_sorted_force, mjd_sorted_force, "efc_force")
-      _assert_eq(ctx_cost, mjd_cost, "cost")
       _assert_eq(qfrc_constraint, mjd.qfrc_constraint, "qfrc_constraint")
 
   @parameterized.product(

@@ -52,7 +52,6 @@ def create_inverse_context(m: types.Model, d: types.Data) -> InverseContext:
     Jaref=wp.empty((nworld, njmax), dtype=float),
     search_dot=wp.empty((nworld,), dtype=float),
     gauss=wp.empty((nworld,), dtype=float),
-    cost=wp.empty((nworld,), dtype=float),
     done=wp.empty((nworld,), dtype=bool),
     changed_efc_ids=wp.empty((nworld, 0), dtype=int),
     changed_efc_count=wp.empty((0,), dtype=int),
@@ -124,7 +123,6 @@ def create_solver_context(m: types.Model, d: types.Data) -> SolverContext:
     Jaref=wp.empty((nworld, njmax), dtype=float),
     search_dot=wp.empty((nworld,), dtype=float),
     gauss=wp.empty((nworld,), dtype=float),
-    cost=wp.empty((nworld,), dtype=float),
     done=wp.empty((nworld,), dtype=bool),
     grad=wp.zeros((nworld, nv_pad), dtype=float),
     grad_dot=wp.empty((nworld,), dtype=float),
@@ -1779,11 +1777,9 @@ def solve_init_efc(
   solver_niter_out: wp.array[int],
   # Out:
   ctx_search_dot_out: wp.array[float],
-  ctx_cost_out: wp.array[float],
   ctx_done_out: wp.array[bool],
 ):
   worldid = wp.tid()
-  ctx_cost_out[worldid] = 0.0
   solver_niter_out[worldid] = 0
   ctx_done_out[worldid] = False
   ctx_search_dot_out[worldid] = 0.0
@@ -1853,12 +1849,11 @@ def solve_init_search(
 
 
 @wp.kernel
-def update_constraint_init_cost(
+def update_constraint_init_gauss(
   # In:
   ctx_done_in: wp.array[bool],
   # Out:
   ctx_gauss_out: wp.array[float],
-  ctx_cost_out: wp.array[float],
 ):
   worldid = wp.tid()
 
@@ -1866,7 +1861,6 @@ def update_constraint_init_cost(
     return
 
   ctx_gauss_out[worldid] = 0.0
-  ctx_cost_out[worldid] = 0.0
 
 
 @cache_kernel
@@ -1896,7 +1890,6 @@ def update_constraint_efc(track_changes: bool):
     efc_force_out: wp.array2d[float],
     efc_state_out: wp.array2d[int],
     # Out:
-    ctx_cost_out: wp.array[float],
     changed_ids_out: wp.array2d[int],
     changed_count_out: wp.array[int],
   ):
@@ -1924,7 +1917,6 @@ def update_constraint_efc(track_changes: bool):
       # equality
       efc_force_out[worldid, efcid] = -efc_D * Jaref
       new_state = types.ConstraintState.QUADRATIC.value
-      wp.atomic_add(ctx_cost_out, worldid, 0.5 * efc_D * Jaref * Jaref)
     elif efcid < ne + nf:
       # friction
       f = efc_frictionloss_in[worldid, efcid]
@@ -1932,15 +1924,12 @@ def update_constraint_efc(track_changes: bool):
       if Jaref <= -rf:
         efc_force_out[worldid, efcid] = f
         new_state = types.ConstraintState.LINEARNEG.value
-        wp.atomic_add(ctx_cost_out, worldid, -f * (0.5 * rf + Jaref))
       elif Jaref >= rf:
         efc_force_out[worldid, efcid] = -f
         new_state = types.ConstraintState.LINEARPOS.value
-        wp.atomic_add(ctx_cost_out, worldid, -f * (0.5 * rf - Jaref))
       else:
         efc_force_out[worldid, efcid] = -efc_D * Jaref
         new_state = types.ConstraintState.QUADRATIC.value
-        wp.atomic_add(ctx_cost_out, worldid, 0.5 * efc_D * Jaref * Jaref)
     elif efc_type_in[worldid, efcid] != types.ConstraintType.CONTACT_ELLIPTIC:
       # limit, frictionless contact, pyramidal friction cone contact
       if Jaref >= 0.0:
@@ -1949,7 +1938,6 @@ def update_constraint_efc(track_changes: bool):
       else:
         efc_force_out[worldid, efcid] = -efc_D * Jaref
         new_state = types.ConstraintState.QUADRATIC.value
-        wp.atomic_add(ctx_cost_out, worldid, 0.5 * efc_D * Jaref * Jaref)
     else:  # elliptic friction cone contact
       conid = efc_id_in[worldid, efcid]
 
@@ -1991,7 +1979,6 @@ def update_constraint_efc(track_changes: bool):
       elif (mu * N + T <= 0.0) or ((T <= 0.0) and (N < 0.0)):
         efc_force_out[worldid, efcid] = -efc_D * Jaref
         new_state = types.ConstraintState.QUADRATIC.value
-        wp.atomic_add(ctx_cost_out, worldid, 0.5 * efc_D * Jaref * Jaref)
       # middle zone
       else:
         dm = math.safe_div(efc_D_in[worldid, efcid0], mu * mu * (1.0 + mu * mu))
@@ -2001,7 +1988,6 @@ def update_constraint_efc(track_changes: bool):
 
         if efcid == efcid0:
           efc_force_out[worldid, efcid] = force
-          wp.atomic_add(ctx_cost_out, worldid, 0.5 * dm * nmt * nmt)
         else:
           efc_force_out[worldid, efcid] = -math.safe_div(force, T) * ufrictionj
 
@@ -2078,7 +2064,7 @@ def update_constraint_init_qfrc_constraint_dense(
 
 
 @cache_kernel
-def update_constraint_gauss_cost(nv: int, dofs_per_thread: int):
+def update_constraint_gauss(nv: int, dofs_per_thread: int):
   @wp.kernel(module="unique", enable_backward=False)
   def kernel(
     # Data in:
@@ -2090,7 +2076,6 @@ def update_constraint_gauss_cost(nv: int, dofs_per_thread: int):
     ctx_done_in: wp.array[bool],
     # Out:
     ctx_gauss_out: wp.array[float],
-    ctx_cost_out: wp.array[float],
   ):
     worldid, dofstart = wp.tid()
 
@@ -2103,7 +2088,6 @@ def update_constraint_gauss_cost(nv: int, dofs_per_thread: int):
       for i in range(wp.static(min(dofs_per_thread, nv))):
         gauss_cost += (efc_Ma_in[worldid, i] - qfrc_smooth_in[worldid, i]) * (qacc_in[worldid, i] - qacc_smooth_in[worldid, i])
       ctx_gauss_out[worldid] += 0.5 * gauss_cost
-      ctx_cost_out[worldid] += 0.5 * gauss_cost
 
     else:
       for i in range(wp.static(dofs_per_thread)):
@@ -2113,7 +2097,6 @@ def update_constraint_gauss_cost(nv: int, dofs_per_thread: int):
             qacc_in[worldid, ii] - qacc_smooth_in[worldid, ii]
           )
       wp.atomic_add(ctx_gauss_out, worldid, 0.5 * gauss_cost)
-      wp.atomic_add(ctx_cost_out, worldid, 0.5 * gauss_cost)
 
   return kernel
 
@@ -2221,10 +2204,10 @@ def update_gradient_h_incremental_sparse(
 def _update_constraint(m: types.Model, d: types.Data, ctx: SolverContext | InverseContext, track_changes: bool = False):
   """Update constraint arrays after each solve iteration."""
   wp.launch(
-    update_constraint_init_cost,
+    update_constraint_init_gauss,
     dim=(d.nworld),
     inputs=[ctx.done],
-    outputs=[ctx.gauss, ctx.cost],
+    outputs=[ctx.gauss],
   )
 
   efc_inputs = [
@@ -2248,7 +2231,7 @@ def _update_constraint(m: types.Model, d: types.Data, ctx: SolverContext | Inver
     update_constraint_efc(track_changes),
     dim=(d.nworld, d.njmax),
     inputs=efc_inputs,
-    outputs=[d.efc.force, d.efc.state, ctx.cost, ctx.changed_efc_ids, ctx.changed_efc_count],
+    outputs=[d.efc.force, d.efc.state, ctx.changed_efc_ids, ctx.changed_efc_count],
   )
 
   # qfrc_constraint = efc_J.T @ efc_force
@@ -2279,10 +2262,10 @@ def _update_constraint(m: types.Model, d: types.Data, ctx: SolverContext | Inver
 
   # gauss = 0.5 * (Ma - qfrc_smooth).T @ (qacc - qacc_smooth)
   wp.launch(
-    update_constraint_gauss_cost(m.nv, dofs_per_thread),
+    update_constraint_gauss(m.nv, dofs_per_thread),
     dim=(d.nworld, threads_per_efc),
     inputs=[d.qacc, d.qfrc_smooth, d.qacc_smooth, d.efc.Ma, ctx.done],
-    outputs=[ctx.gauss, ctx.cost],
+    outputs=[ctx.gauss],
   )
 
 
@@ -3371,7 +3354,7 @@ def init_context(m: types.Model, d: types.Data, ctx: SolverContext | InverseCont
   wp.launch(
     solve_init_efc,
     dim=(d.nworld),
-    outputs=[d.solver_niter, ctx.search_dot, ctx.cost, ctx.done],
+    outputs=[d.solver_niter, ctx.search_dot, ctx.done],
   )
 
   # jaref = d.efc_J @ d.qacc - d.efc_aref
