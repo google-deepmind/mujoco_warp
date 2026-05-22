@@ -9,7 +9,7 @@ BENCHMARKS = [
   {
     "name": "primitives",
     "mjcf": "primitives.xml",
-    "function": "render",
+    "function": ["refit_bvh", "render"],
     "nworld": 8192,
     "nconmax": 100,
     "njmax": 256,
@@ -18,7 +18,7 @@ BENCHMARKS = [
   {
     "name": "mug",
     "mjcf": "mug.xml",
-    "function": "render",
+    "function": ["refit_bvh", "render"],
     "nworld": 8192,
     "nstep": 100,
     "render_width": 64,
