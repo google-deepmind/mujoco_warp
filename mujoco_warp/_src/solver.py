@@ -35,6 +35,8 @@ from mujoco_warp._src.warp_util import scoped_mathdx_gemm_disabled
 wp.set_module_options({"enable_backward": False})
 
 _BLOCK_CHOLESKY_DIM = 32
+
+
 def create_inverse_context(m: types.Model, d: types.Data) -> InverseContext:
   """Create an InverseContext with allocated workspace arrays.
 
