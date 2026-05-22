@@ -160,6 +160,14 @@ def _eval_pt_direct_alpha_zero(jaref: float, jv: float, d: float) -> wp.vec3:
 
 
 @wp.func
+def _eval_pt_direct(jaref: float, jv: float, d: float, alpha: float) -> wp.vec3:
+  """Eval quadratic constraint."""
+  x = jaref + alpha * jv
+  jvD = jv * d
+  return wp.vec3(0.5 * d * x * x, jvD * x, jv * jvD)
+
+
+@wp.func
 def _eval_pt_direct_cost_alpha_zero(jaref: float, d: float) -> float:
   return 0.5 * d * jaref * jaref
 
@@ -197,6 +205,24 @@ def _eval_pt_direct_shifted_3alphas(
     wp.vec3(lo_alpha * (grad0 + 0.5 * lo_ah), grad0 + lo_ah, hessian),
     wp.vec3(hi_alpha * (grad0 + 0.5 * hi_ah), grad0 + hi_ah, hessian),
     wp.vec3(mid_alpha * (grad0 + 0.5 * mid_ah), grad0 + mid_ah, hessian),
+  )
+
+
+@wp.func
+def _eval_pt_direct_3alphas(
+  jaref: float, jv: float, d: float, lo_alpha: float, hi_alpha: float, mid_alpha: float
+) -> tuple[wp.vec3, wp.vec3, wp.vec3]:
+  """Eval quadratic constraint for 3 alphas."""
+  x_lo = jaref + lo_alpha * jv
+  x_hi = jaref + hi_alpha * jv
+  x_mid = jaref + mid_alpha * jv
+  jvD = jv * d
+  hessian = jv * jvD
+  half_d = 0.5 * d
+  return (
+    wp.vec3(half_d * x_lo * x_lo, jvD * x_lo, hessian),
+    wp.vec3(half_d * x_hi * x_hi, jvD * x_hi, hessian),
+    wp.vec3(half_d * x_mid * x_mid, jvD * x_mid, hessian),
   )
 
 
@@ -447,7 +473,6 @@ def linesearch_parallel_fused(
   ne = ne_in[worldid]
   nf = nf_in[worldid]
 
-  # TODO(team): _eval with option to only compute cost
   for efcid in range(min(njmax_in, nefc_in[worldid])):
     # equality
     if efcid < ne:
@@ -4159,7 +4184,7 @@ def linesearch_island(
     ja = Jaref_in[worldid, iefcid]
     jv_val = jv_in[worldid, iefcid]
     if local_iefcid < ine:
-      lo_in += _eval_pt_direct_shifted(ja, jv_val, D, lo_alpha_in)
+      lo_in += _eval_pt_direct(ja, jv_val, D, lo_alpha_in)
     elif local_iefcid < ine + inf:
       f = iefc_frictionloss_in[worldid, iefcid]
       rf = math.safe_div(f, D)
@@ -4186,7 +4211,7 @@ def linesearch_island(
     else:
       x_a = ja + lo_alpha_in * jv_val
       if x_a < 0.0:
-        lo_in += _eval_pt_direct_shifted(ja, jv_val, D, lo_alpha_in)
+        lo_in += _eval_pt_direct(ja, jv_val, D, lo_alpha_in)
 
   # Accept Newton step if derivative is small and cost improved
   initial_converged = wp.abs(lo_in[1]) < gtol and lo_in[0] < p0[0]
@@ -4229,9 +4254,7 @@ def linesearch_island(
         ja = Jaref_in[worldid, iefcid]
         jv_val = jv_in[worldid, iefcid]
         if local_iefcid < ine:
-          r_lo, r_hi, r_mid = _eval_pt_direct_shifted_3alphas(
-            ja, jv_val, D, lo_next_alpha, hi_next_alpha, mid_alpha
-          )
+          r_lo, r_hi, r_mid = _eval_pt_direct_3alphas(ja, jv_val, D, lo_next_alpha, hi_next_alpha, mid_alpha)
         elif local_iefcid < ine + inf:
           f = iefc_frictionloss_in[worldid, iefcid]
           rf = math.safe_div(f, D)
@@ -4296,11 +4319,11 @@ def linesearch_island(
           r_hi = wp.vec3(0.0)
           r_mid = wp.vec3(0.0)
           if x_lo < 0.0:
-            r_lo = _eval_pt_direct_shifted(ja, jv_val, D, lo_next_alpha)
+            r_lo = _eval_pt_direct(ja, jv_val, D, lo_next_alpha)
           if x_hi < 0.0:
-            r_hi = _eval_pt_direct_shifted(ja, jv_val, D, hi_next_alpha)
+            r_hi = _eval_pt_direct(ja, jv_val, D, hi_next_alpha)
           if x_mid < 0.0:
-            r_mid = _eval_pt_direct_shifted(ja, jv_val, D, mid_alpha)
+            r_mid = _eval_pt_direct(ja, jv_val, D, mid_alpha)
         lo_next += r_lo
         hi_next += r_hi
         mid += r_mid
