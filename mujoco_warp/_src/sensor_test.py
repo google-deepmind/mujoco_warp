@@ -25,7 +25,6 @@ import mujoco_warp as mjw
 from mujoco_warp import DisableBit
 from mujoco_warp import GeomType
 from mujoco_warp import test_data
-from mujoco_warp._src.collision_core import create_collision_context
 from mujoco_warp._src.collision_driver import MJ_COLLISION_TABLE
 from mujoco_warp._src.types import CollisionType
 
@@ -105,7 +104,7 @@ class SensorTest(parameterized.TestCase):
       """
       )
 
-      ctx = create_collision_context(d.naconmax)
+      ctx = d.collision_ctx
       primitive_pairs = [key for key, value in MJ_COLLISION_TABLE.items() if value == CollisionType.PRIMITIVE]
       mjw.primitive_narrowphase(m, d, ctx, primitive_pairs)
 

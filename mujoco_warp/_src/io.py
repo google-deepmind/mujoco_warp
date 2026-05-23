@@ -1134,6 +1134,9 @@ def make_data(
     "njmax": njmax,
     "njmax_pad": sizes["njmax_pad"],
     "njmax_nnz": njmax_nnz,
+    "collision_ctx": types.CollisionContext(
+      **{f.name: _create_array(None, f.type, sizes) for f in dataclasses.fields(types.CollisionContext)}
+    ),
     "M": None,
     "qLD": None,
     # world body
@@ -1370,6 +1373,9 @@ def put_data(
     "njmax": njmax,
     "njmax_pad": sizes["njmax_pad"],
     "njmax_nnz": njmax_nnz,
+    "collision_ctx": types.CollisionContext(
+      **{f.name: _create_array(None, f.type, sizes) for f in dataclasses.fields(types.CollisionContext)}
+    ),
     # fields set after initialization:
     "solver_niter": None,
     "M": None,

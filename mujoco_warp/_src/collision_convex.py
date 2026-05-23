@@ -17,7 +17,6 @@ from typing import Tuple
 
 import warp as wp
 
-from mujoco_warp._src.collision_core import CollisionContext
 from mujoco_warp._src.collision_core import Geom
 from mujoco_warp._src.collision_core import contact_params
 from mujoco_warp._src.collision_core import geom_collision_pair
@@ -36,6 +35,7 @@ from mujoco_warp._src.types import MJ_MAX_EPAHORIZON
 from mujoco_warp._src.types import MJ_MAXCONPAIR
 from mujoco_warp._src.types import MJ_MAXVAL
 from mujoco_warp._src.types import NEW_GAP_SEMANTICS
+from mujoco_warp._src.types import CollisionContext
 from mujoco_warp._src.types import Data
 from mujoco_warp._src.types import DisableBit
 from mujoco_warp._src.types import GeomType

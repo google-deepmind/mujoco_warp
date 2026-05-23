@@ -17,7 +17,6 @@ from typing import Tuple
 
 import warp as wp
 
-from mujoco_warp._src.collision_core import CollisionContext
 from mujoco_warp._src.collision_core import Geom
 from mujoco_warp._src.collision_core import contact_params
 from mujoco_warp._src.collision_core import geom_collision_pair
@@ -37,6 +36,7 @@ from mujoco_warp._src.collision_primitive_core import sphere_sphere
 from mujoco_warp._src.math import make_frame
 from mujoco_warp._src.math import upper_trid_index
 from mujoco_warp._src.types import MJ_MAXVAL
+from mujoco_warp._src.types import CollisionContext
 from mujoco_warp._src.types import Data
 from mujoco_warp._src.types import GeomType
 from mujoco_warp._src.types import Model

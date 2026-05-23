@@ -15,7 +15,6 @@
 
 """Core collision types and utilities shared across collision modules."""
 
-import dataclasses
 from typing import Tuple
 
 import warp as wp
@@ -344,27 +343,3 @@ def contact_params(
   )
 
   return geoms, margin, gap, condim, friction, solref, solreffriction, solimp
-
-
-@dataclasses.dataclass
-class CollisionContext:
-  """Collision driver intermediate arrays.
-
-  Attributes:
-    collision_pair: collision pairs from broadphase             (naconmax, 2)
-    collision_pairid: ids from broadphase                       (naconmax, 2)
-    collision_worldid: collision world ids from broadphase      (naconmax,)
-  """
-
-  collision_pair: wp.array
-  collision_pairid: wp.array
-  collision_worldid: wp.array
-
-
-def create_collision_context(naconmax: int) -> CollisionContext:
-  """Create a CollisionContext with allocated arrays."""
-  return CollisionContext(
-    collision_pair=wp.empty(naconmax, dtype=wp.vec2i),
-    collision_pairid=wp.empty(naconmax, dtype=wp.vec2i),
-    collision_worldid=wp.empty(naconmax, dtype=int),
-  )
