@@ -23,6 +23,8 @@ from mujoco_warp._src.collision_core import contact_params
 from mujoco_warp._src.collision_core import geom_collision_pair
 from mujoco_warp._src.collision_core import write_contact
 from mujoco_warp._src.collision_gjk import ccd
+from mujoco_warp._src.collision_gjk import epa_phase
+from mujoco_warp._src.collision_gjk import gjk_phase
 from mujoco_warp._src.collision_gjk import multicontact
 from mujoco_warp._src.collision_gjk import support
 from mujoco_warp._src.collision_primitive import Geom
@@ -715,6 +717,7 @@ def ccd_kernel_builder(
     opt_ccd_tolerance: wp.array[float],
     # Data in:
     naconmax_in: int,
+    naccdmax_in: int,
     # In:
     epa_vert_in: wp.array2d[wp.vec3],
     epa_vert_index_in: wp.array2d[int],
@@ -737,7 +740,7 @@ def ccd_kernel_builder(
     geom2: Geom,
     geoms: wp.vec2i,
     worldid: int,
-    ccdid: int,
+    nccd_in: wp.array[int],
     margin: float,
     gap: float,
     condim: int,
@@ -778,24 +781,42 @@ def ccd_kernel_builder(
         cutoff = gap
       else:
         cutoff = 0.0
-    dist, ncollision, w1, w2, multiccd_idx = ccd(
+    needs_epa, dist, ncollision, w1, w2, gjk_result, geom1, geom2, is_discrete = gjk_phase(
       opt_ccd_tolerance[worldid % opt_ccd_tolerance.shape[0]],
       cutoff,
       gjk_iterations,
-      epa_iterations,
       geom1,
       geom2,
       geomtype1,
       geomtype2,
       x1,
       x2,
-      epa_vert_in[ccdid],
-      epa_vert_index_in[ccdid],
-      epa_face_in[ccdid],
-      epa_pr_in[ccdid],
-      epa_norm2_in[ccdid],
-      epa_horizon_in[ccdid],
     )
+
+    ccdid = int(-1)
+    multiccd_idx = int(-1)
+
+    if needs_epa:
+      ccdid = wp.atomic_add(nccd_in, geomgeomid, 1)
+      if ccdid >= naccdmax_in:
+        wp.printf("CCD overflow - please increase naccdmax to %u\n", ccdid)
+        return 0
+      dist, ncollision, w1, w2, multiccd_idx = epa_phase(
+        opt_ccd_tolerance[worldid % opt_ccd_tolerance.shape[0]],
+        epa_iterations,
+        gjk_result,
+        geom1,
+        geom2,
+        geomtype1,
+        geomtype2,
+        is_discrete,
+        epa_vert_in[ccdid],
+        epa_vert_index_in[ccdid],
+        epa_face_in[ccdid],
+        epa_pr_in[ccdid],
+        epa_norm2_in[ccdid],
+        epa_horizon_in[ccdid],
+      )
 
     if wp.static(NEW_GAP_SEMANTICS):
       if dist >= gap and pairid[1] == -1:
@@ -990,11 +1011,6 @@ def ccd_kernel_builder(
     if geom_type[g1] != geomtype1 or geom_type[g2] != geomtype2:
       return
 
-    ccdid = wp.atomic_add(nccd_in, wp.static(geomgeomid), 1)
-    if ccdid >= naccdmax_in:
-      wp.printf("CCD overflow - please increase naccdmax to %u\n", ccdid)
-      return
-
     worldid = collision_worldid_in[collisionid]
 
     _, margin, gap, condim, friction, solref, solreffriction, solimp = contact_params(
@@ -1046,6 +1062,7 @@ def ccd_kernel_builder(
     eval_ccd_write_contact(
       opt_ccd_tolerance,
       naconmax_in,
+      naccdmax_in,
       epa_vert_in,
       epa_vert_index_in,
       epa_face_in,
@@ -1067,7 +1084,7 @@ def ccd_kernel_builder(
       geom2,
       geoms,
       worldid,
-      ccdid,
+      nccd_in,
       margin,
       gap,
       condim,
