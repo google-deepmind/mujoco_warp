@@ -2135,8 +2135,12 @@ def multicontact(
 
   # face1 is an edge; clip face1 against face2
   if is_edge_contact_geom1:
-    approx_dir = wp.norm_l2(dir) * n2[j]
-    return _polygon_clip(plane_normal, plane_dist, face2, nface2, face1, nface1, n2[j], approx_dir, polygon, clipped)
+    approx_dir = -wp.norm_l2(dir) * n2[j]
+    nclipped, clipped1, clipped2 = _polygon_clip(
+        plane_normal, plane_dist, face2, nface2, face1, nface1, n2[j], approx_dir, polygon, clipped
+    )
+    # the faces were flipped in calling _polygon_clip so we need to flip them back
+    return nclipped, clipped2, clipped1
 
   # face2 is an edge; clip face2 against face1
   if is_edge_contact_geom2:
