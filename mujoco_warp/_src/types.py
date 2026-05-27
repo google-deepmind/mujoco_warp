@@ -29,6 +29,7 @@ MJ_MAXIMP = mujoco.mjMAXIMP  # maximum constraint impedance
 MJ_MAXCONPAIR = mujoco.mjMAXCONPAIR
 MJ_MINMU = mujoco.mjMINMU  # minimum friction
 NEW_GAP_SEMANTICS = check_version("mujoco>=3.9.0.dev914519929")
+TACTILE_DEPTH_SEMANTICS = check_version("mujoco>=3.9.0.dev921980899")
 # maximum size (by number of edges) of an horizon in EPA algorithm
 MJ_MAX_EPAHORIZON = 24
 # maximum average number of trianglarfaces EPA can insert at each iteration
