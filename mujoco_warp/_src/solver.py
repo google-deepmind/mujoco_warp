@@ -175,39 +175,12 @@ def _eval_pt_direct_cost_alpha_zero(jaref: float, d: float) -> float:
 
 
 @wp.func
-def _eval_pt_direct_shifted(jaref: float, jv: float, d: float, alpha: float) -> wp.vec3:
-  """Eval quadratic constraint shifted by alpha=0."""
-  jvD = jv * d
-  hessian = jv * jvD
-  alpha_h = alpha * hessian
-  return wp.vec3(alpha * (jvD * jaref + 0.5 * alpha_h), jvD * jaref + alpha_h, hessian)
-
-
-@wp.func
-def _eval_pt_direct_shifted_offset(jaref: float, jv: float, d: float, alpha: float, offset: float) -> wp.vec3:
-  """Eval shifted quadratic constraint plus a constant cost offset."""
+def _eval_pt_direct_shifted(jaref: float, jv: float, d: float, alpha: float, offset: float) -> wp.vec3:
+  """Eval quadratic constraint shifted by alpha=0, plus a constant cost offset."""
   jvD = jv * d
   hessian = jv * jvD
   alpha_h = alpha * hessian
   return wp.vec3(alpha * (jvD * jaref + 0.5 * alpha_h) + offset, jvD * jaref + alpha_h, hessian)
-
-
-@wp.func
-def _eval_pt_direct_shifted_3alphas(
-  jaref: float, jv: float, d: float, lo_alpha: float, hi_alpha: float, mid_alpha: float
-) -> tuple[wp.vec3, wp.vec3, wp.vec3]:
-  """Eval shifted quadratic constraint for 3 alphas."""
-  jvD = jv * d
-  grad0 = jvD * jaref
-  hessian = jv * jvD
-  lo_ah = lo_alpha * hessian
-  hi_ah = hi_alpha * hessian
-  mid_ah = mid_alpha * hessian
-  return (
-    wp.vec3(lo_alpha * (grad0 + 0.5 * lo_ah), grad0 + lo_ah, hessian),
-    wp.vec3(hi_alpha * (grad0 + 0.5 * hi_ah), grad0 + hi_ah, hessian),
-    wp.vec3(mid_alpha * (grad0 + 0.5 * mid_ah), grad0 + mid_ah, hessian),
-  )
 
 
 @wp.func
@@ -229,10 +202,10 @@ def _eval_pt_direct_3alphas(
 
 
 @wp.func
-def _eval_pt_direct_shifted_offset_3alphas(
+def _eval_pt_direct_shifted_3alphas(
   jaref: float, jv: float, d: float, lo_alpha: float, hi_alpha: float, mid_alpha: float, offset: float
 ) -> tuple[wp.vec3, wp.vec3, wp.vec3]:
-  """Eval shifted quadratic constraint for 3 alphas plus a constant cost offset."""
+  """Eval shifted quadratic constraint for 3 alphas, plus a constant cost offset."""
   jvD = jv * d
   grad0 = jvD * jaref
   hessian = jv * jvD
@@ -670,14 +643,20 @@ def _compute_efc_eval_pt_pyramidal(
   ctx_Jaref: float,
   ctx_jv: float,
 ) -> wp.vec3:
-  """Compute shifted cost, gradient, and hessian for pyramidal cones."""
+  """Compute shifted cost, gradient, and hessian for pyramidal cones.
+
+  Returns (cost(alpha) - cost(0), grad(alpha), hessian(alpha)) summed across the row.
+  """
   # Limit/other constraint
   if efcid >= ne + nf:
     x = ctx_Jaref + alpha * ctx_jv
     quad0 = _eval_pt_direct_cost_alpha_zero(ctx_Jaref, efc_D)
     cost0 = wp.where(ctx_Jaref < 0.0, quad0, 0.0)
+    # _eval_pt_direct_shifted returns quad(alpha) - quad(0); add back quad(0) when the
+    # constraint was inactive at alpha=0 (i.e. cost(0) = 0) so we get quad(alpha) - 0.
+    offset = quad0 - cost0
     if x < 0.0:
-      return _eval_pt_direct_shifted_offset(ctx_Jaref, ctx_jv, efc_D, alpha, quad0 - cost0)
+      return _eval_pt_direct_shifted(ctx_Jaref, ctx_jv, efc_D, alpha, offset)
     return wp.vec3(-cost0, 0.0, 0.0)
 
   # Friction constraint - needs quad for frictionloss computation
@@ -688,7 +667,7 @@ def _compute_efc_eval_pt_pyramidal(
     return _shift_cost(_eval_frictionloss_pt(x, f, rf, ctx_jv, efc_D), _eval_frictionloss_cost(ctx_Jaref, f, rf, efc_D))
 
   # Equality constraint
-  return _eval_pt_direct_shifted(ctx_Jaref, ctx_jv, efc_D, alpha)
+  return _eval_pt_direct_shifted(ctx_Jaref, ctx_jv, efc_D, alpha, 0.0)
 
 
 @wp.func
@@ -711,7 +690,10 @@ def _compute_efc_eval_pt_elliptic(
   quad1: wp.vec3,
   quad2: wp.vec3,
 ) -> wp.vec3:
-  """Compute shifted cost, gradient, and hessian for elliptic cones."""
+  """Compute shifted cost, gradient, and hessian for elliptic cones.
+
+  Returns (cost(alpha) - cost(0), grad(alpha), hessian(alpha)) summed across the row.
+  """
   # Contact/limit/other constraints
   if efcid >= ne + nf:
     # Contact elliptic
@@ -726,8 +708,10 @@ def _compute_efc_eval_pt_elliptic(
     efc_D = efc_D_in[efcid]
     quad0 = _eval_pt_direct_cost_alpha_zero(ctx_Jaref, efc_D)
     cost0 = wp.where(ctx_Jaref < 0.0, quad0, 0.0)
+    # See _compute_efc_eval_pt_pyramidal for the offset rationale.
+    offset = quad0 - cost0
     if x < 0.0:
-      return _eval_pt_direct_shifted_offset(ctx_Jaref, ctx_jv, efc_D, alpha, quad0 - cost0)
+      return _eval_pt_direct_shifted(ctx_Jaref, ctx_jv, efc_D, alpha, offset)
     return wp.vec3(-cost0, 0.0, 0.0)
 
   # Friction constraint - load D and frictionloss only here
@@ -740,7 +724,7 @@ def _compute_efc_eval_pt_elliptic(
 
   # Equality constraint — direct eval (no quad read)
   efc_D = efc_D_in[efcid]
-  return _eval_pt_direct_shifted(ctx_Jaref, ctx_jv, efc_D, alpha)
+  return _eval_pt_direct_shifted(ctx_Jaref, ctx_jv, efc_D, alpha, 0.0)
 
 
 @wp.func
@@ -841,8 +825,10 @@ def _compute_efc_eval_pt_3alphas_pyramidal(
     x_mid = ctx_Jaref + mid_alpha * ctx_jv
     quad0 = _eval_pt_direct_cost_alpha_zero(ctx_Jaref, efc_D)
     cost0 = wp.where(ctx_Jaref < 0.0, quad0, 0.0)
-    pt_lo, pt_hi, pt_mid = _eval_pt_direct_shifted_offset_3alphas(
-      ctx_Jaref, ctx_jv, efc_D, lo_alpha, hi_alpha, mid_alpha, quad0 - cost0
+    # See _compute_efc_eval_pt_pyramidal for the offset rationale.
+    offset = quad0 - cost0
+    pt_lo, pt_hi, pt_mid = _eval_pt_direct_shifted_3alphas(
+      ctx_Jaref, ctx_jv, efc_D, lo_alpha, hi_alpha, mid_alpha, offset
     )
     inactive = wp.vec3(-cost0, 0.0, 0.0)
     return (
@@ -863,7 +849,7 @@ def _compute_efc_eval_pt_3alphas_pyramidal(
     return (_shift_cost(lo, cost0), _shift_cost(hi, cost0), _shift_cost(mid, cost0))
 
   # Equality constraint: always active
-  return _eval_pt_direct_shifted_3alphas(ctx_Jaref, ctx_jv, efc_D, lo_alpha, hi_alpha, mid_alpha)
+  return _eval_pt_direct_shifted_3alphas(ctx_Jaref, ctx_jv, efc_D, lo_alpha, hi_alpha, mid_alpha, 0.0)
 
 
 @wp.func
@@ -914,8 +900,10 @@ def _compute_efc_eval_pt_3alphas_elliptic(
     efc_D = efc_D_in[efcid]
     quad0 = _eval_pt_direct_cost_alpha_zero(ctx_Jaref, efc_D)
     cost0 = wp.where(ctx_Jaref < 0.0, quad0, 0.0)
-    pt_lo, pt_hi, pt_mid = _eval_pt_direct_shifted_offset_3alphas(
-      ctx_Jaref, ctx_jv, efc_D, lo_alpha, hi_alpha, mid_alpha, quad0 - cost0
+    # See _compute_efc_eval_pt_pyramidal for the offset rationale.
+    offset = quad0 - cost0
+    pt_lo, pt_hi, pt_mid = _eval_pt_direct_shifted_3alphas(
+      ctx_Jaref, ctx_jv, efc_D, lo_alpha, hi_alpha, mid_alpha, offset
     )
     inactive = wp.vec3(-cost0, 0.0, 0.0)
     return (
@@ -935,7 +923,7 @@ def _compute_efc_eval_pt_3alphas_elliptic(
 
   # Equality constraint — direct eval (no quad read)
   efc_D = efc_D_in[efcid]
-  return _eval_pt_direct_shifted_3alphas(ctx_Jaref, ctx_jv, efc_D, lo_alpha, hi_alpha, mid_alpha)
+  return _eval_pt_direct_shifted_3alphas(ctx_Jaref, ctx_jv, efc_D, lo_alpha, hi_alpha, mid_alpha, 0.0)
 
 
 # kernel_analyzer: on
