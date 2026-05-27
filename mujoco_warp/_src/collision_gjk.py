@@ -2208,7 +2208,7 @@ def gjk_phase(
   geomtype2: int,
   x_1: wp.vec3,
   x_2: wp.vec3,
-) -> Tuple[bool, float, int, wp.vec3, wp.vec3, GJKResult, Geom, Geom, bool]:
+) -> Tuple[bool, float, int, wp.vec3, wp.vec3, GJKResult, Geom, Geom]:
   """Run GJK phase of CCD."""
   full_margin1 = 0.0
   full_margin2 = 0.0
@@ -2216,8 +2216,10 @@ def gjk_phase(
   size2 = 0.0
   empty = GJKResult()
 
+  # determine if the geoms being tested are discrete
   is_discrete = _discrete_geoms(geomtype1, geomtype2) and (geom1.margin == 0.0 and geom2.margin == 0.0)
 
+  # special handling for sphere and capsule (shrink to point and line respectively)
   if geomtype1 == GeomType.SPHERE or geomtype1 == GeomType.CAPSULE:
     size1 = geom1.size[0]
     full_margin1 = size1 + 0.5 * geom1.margin
@@ -2234,11 +2236,12 @@ def gjk_phase(
     cutoff += full_margin1 + full_margin2
     result = gjk(tolerance, gjk_iterations, geom1, geom2, x_1, x_2, geomtype1, geomtype2, cutoff, is_discrete)
 
+    # shallow penetration, inflate contact
     if result.dist > tolerance:
       if result.dist == FLOAT_MAX:
-        return False, result.dist, 1, result.x1, result.x2, empty, geom1, geom2, is_discrete
+        return False, result.dist, 1, result.x1, result.x2, empty, geom1, geom2
       dist, x1, x2 = _inflate(result, geom1, geom2, geomtype1, geomtype2, full_margin1, full_margin2)
-      return False, dist, 1, x1, x2, empty, geom1, geom2, is_discrete
+      return False, dist, 1, x1, x2, empty, geom1, geom2
 
     # deep penetration: reset initial conditions and rerun GJK + EPA
     geom1.margin = full_margin1 - size1
@@ -2249,10 +2252,11 @@ def gjk_phase(
 
   result = gjk(tolerance, gjk_iterations, geom1, geom2, x_1, x_2, geomtype1, geomtype2, cutoff, is_discrete)
 
+  # no penetration depth to recover
   if result.dist > tolerance or result.dim < 2:
-    return False, result.dist, 1, result.x1, result.x2, empty, geom1, geom2, is_discrete
+    return False, result.dist, 1, result.x1, result.x2, empty, geom1, geom2
 
-  return True, result.dist, 1, result.x1, result.x2, result, geom1, geom2, is_discrete
+  return True, result.dist, 1, result.x1, result.x2, result, geom1, geom2
 
 
 @wp.func
@@ -2265,7 +2269,6 @@ def epa_phase(
   geom2: Geom,
   geomtype1: int,
   geomtype2: int,
-  is_discrete: bool,
   vert: wp.array[wp.vec3],
   vert_index: wp.array[int],
   face: wp.array[int],
@@ -2342,6 +2345,7 @@ def epa_phase(
   if pt.status:
     return result.dist, 1, result.x1, result.x2, -1
 
+  is_discrete = _discrete_geoms(geomtype1, geomtype2) and (geom1.margin == 0.0 and geom2.margin == 0.0)
   dist, x1, x2, idx = _epa(tolerance, epa_iterations, pt, geom1, geom2, geomtype1, geomtype2, is_discrete)
   if idx == -1:
     return FLOAT_MAX, 0, wp.vec3(), wp.vec3(), -1
@@ -2378,7 +2382,7 @@ def ccd(
   horizon: wp.array[int],
 ) -> Tuple[float, int, wp.vec3, wp.vec3, int]:
   """General convex collision detection via GJK/EPA."""
-  needs_epa, dist, ncontact, x1, x2, result, geom1, geom2, is_discrete = gjk_phase(
+  needs_epa, dist, ncontact, x1, x2, result, geom1, geom2 = gjk_phase(
     tolerance, cutoff, gjk_iterations, geom1, geom2, geomtype1, geomtype2, x_1, x_2
   )
   if not needs_epa:
@@ -2391,7 +2395,6 @@ def ccd(
     geom2,
     geomtype1,
     geomtype2,
-    is_discrete,
     vert,
     vert_index,
     face,

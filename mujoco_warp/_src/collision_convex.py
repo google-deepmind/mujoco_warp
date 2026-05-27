@@ -781,7 +781,7 @@ def ccd_kernel_builder(
         cutoff = gap
       else:
         cutoff = 0.0
-    needs_epa, dist, ncollision, w1, w2, gjk_result, geom1, geom2, is_discrete = gjk_phase(
+    needs_epa, dist, ncollision, w1, w2, gjk_result, geom1, geom2 = gjk_phase(
       opt_ccd_tolerance[worldid % opt_ccd_tolerance.shape[0]],
       cutoff,
       gjk_iterations,
@@ -809,7 +809,6 @@ def ccd_kernel_builder(
         geom2,
         geomtype1,
         geomtype2,
-        is_discrete,
         epa_vert_in[ccdid],
         epa_vert_index_in[ccdid],
         epa_face_in[ccdid],
