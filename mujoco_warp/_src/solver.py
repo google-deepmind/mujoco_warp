@@ -827,9 +827,7 @@ def _compute_efc_eval_pt_3alphas_pyramidal(
     cost0 = wp.where(ctx_Jaref < 0.0, quad0, 0.0)
     # See _compute_efc_eval_pt_pyramidal for the offset rationale.
     offset = quad0 - cost0
-    pt_lo, pt_hi, pt_mid = _eval_pt_direct_shifted_3alphas(
-      ctx_Jaref, ctx_jv, efc_D, lo_alpha, hi_alpha, mid_alpha, offset
-    )
+    pt_lo, pt_hi, pt_mid = _eval_pt_direct_shifted_3alphas(ctx_Jaref, ctx_jv, efc_D, lo_alpha, hi_alpha, mid_alpha, offset)
     inactive = wp.vec3(-cost0, 0.0, 0.0)
     return (
       wp.where(x_lo < 0.0, pt_lo, inactive),
@@ -902,9 +900,7 @@ def _compute_efc_eval_pt_3alphas_elliptic(
     cost0 = wp.where(ctx_Jaref < 0.0, quad0, 0.0)
     # See _compute_efc_eval_pt_pyramidal for the offset rationale.
     offset = quad0 - cost0
-    pt_lo, pt_hi, pt_mid = _eval_pt_direct_shifted_3alphas(
-      ctx_Jaref, ctx_jv, efc_D, lo_alpha, hi_alpha, mid_alpha, offset
-    )
+    pt_lo, pt_hi, pt_mid = _eval_pt_direct_shifted_3alphas(ctx_Jaref, ctx_jv, efc_D, lo_alpha, hi_alpha, mid_alpha, offset)
     inactive = wp.vec3(-cost0, 0.0, 0.0)
     return (
       wp.where(x_lo < 0.0, pt_lo, inactive),
