@@ -576,8 +576,9 @@ class SmoothTest(parameterized.TestCase):
     expected_res = np.linalg.solve(A_sparse, vec.numpy()[0])
     _assert_eq(res.numpy()[0], expected_res, "qLU \\ 1 (sparse)")
 
-  def test_tendon_armature(self):
-    mjm, mjd, m, d = test_data.fixture("tendon/armature.xml", keyframe=0)
+  @parameterized.parameters(mujoco.mjtJacobian.mjJAC_SPARSE, mujoco.mjtJacobian.mjJAC_DENSE)
+  def test_tendon_armature(self, jacobian):
+    mjm, mjd, m, d = test_data.fixture("tendon/armature.xml", keyframe=0, overrides={"opt.jacobian": jacobian})
 
     # M
     d.M.fill_(wp.inf)
@@ -585,12 +586,18 @@ class SmoothTest(parameterized.TestCase):
     mjw._src.smooth.crb(m, d)
     mjw._src.smooth.tendon_armature(m, d)
 
-    M = np.zeros((mjm.nv, mjm.nv))
-    if check_version("mujoco>=3.8.1.dev910242375"):
-      mujoco.mju_sym2dense(M, mjd.M, mjm.M_rownnz, mjm.M_rowadr, mjm.M_colind)
+    if jacobian == mujoco.mjtJacobian.mjJAC_SPARSE:
+      if check_version("mujoco>=3.8.1.dev910242375"):
+        _assert_eq(d.M.numpy()[0, 0], mjd.M, "M")
+      else:
+        _assert_eq(d.M.numpy()[0, 0], mjd.qM[mjm.mapM2M], "M")
     else:
-      mujoco.mj_fullM(mjm, M, mjd.qM)
-    _assert_eq(d.M.numpy()[0, : mjm.nv, : mjm.nv], M, "M")
+      M = np.zeros((mjm.nv, mjm.nv))
+      if check_version("mujoco>=3.8.1.dev910242375"):
+        mujoco.mju_sym2dense(M, mjd.M, mjm.M_rownnz, mjm.M_rowadr, mjm.M_colind)
+      else:
+        mujoco.mj_fullM(mjm, M, mjd.qM)
+      _assert_eq(d.M.numpy()[0, : mjm.nv, : mjm.nv], M, "M")
 
     # qfrc_bias
     d.qfrc_bias.fill_(wp.inf)
