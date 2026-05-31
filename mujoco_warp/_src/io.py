@@ -3058,11 +3058,11 @@ def create_render_context(
 
   # Locate skybox texture
   skybox_tex_ids = np.nonzero(mjm.tex_type == mujoco.mjtTexture.mjTEXTURE_SKYBOX)[0] if mjm.ntex else np.array([], dtype=int)
-  if render_skybox:
-    assert skybox_tex_ids.size > 0, "render_skybox=True but the model has no texture with type mjTEXTURE_SKYBOX"
+  if render_skybox and skybox_tex_ids.size > 0:
     skybox_tex_id = int(skybox_tex_ids[0])
     skybox_face_width = int(mjm.tex_width[skybox_tex_id])
   else:
+    render_skybox = False
     skybox_tex_id = -1
     skybox_face_width = 1
 
