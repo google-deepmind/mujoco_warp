@@ -3157,6 +3157,13 @@ def create_render_context(
 
   bvh_ngeom = len(geom_enabled_idx)
 
+  # Geom types present among enabled geoms, plus FLEX when flex primitives exist.
+  # Used to statically eliminate unused intersection branches in the ray-cast kernels.
+  geom_ray_types = set(int(t) for t in mjm.geom_type[geom_enabled_idx])
+  if len(flex_geom_flexid) > 0:
+    geom_ray_types.add(int(types.GeomType.FLEX))
+  geom_ray_types = tuple(sorted(geom_ray_types))
+
   rc = types.RenderContext(
     nrender=ncam,
     cam_res=cam_res_arr,
@@ -3210,6 +3217,7 @@ def create_render_context(
     znear=znear,
     total_rays=int(total),
     enable_backface_culling=enable_backface_culling,
+    geom_ray_types=geom_ray_types,
   )
 
   bvh.build_scene_bvh(mjm, mjd, rc, nworld)

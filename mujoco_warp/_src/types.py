@@ -2209,6 +2209,8 @@ class RenderContext:
       mesh-ray rule. When False, the renderer reports inner-surface hits, which
       is faster but causes a camera placed inside a geom to render that geom's
       back wall.
+    geom_ray_types: tuple of GeomType int values present in the scene, used to
+      statically eliminate unused intersection branches in the ray-cast kernels.
   """
 
   nrender: int
@@ -2263,3 +2265,4 @@ class RenderContext:
   znear: float
   total_rays: int
   enable_backface_culling: bool
+  geom_ray_types: tuple = ()
