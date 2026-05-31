@@ -676,31 +676,31 @@ def render(m: Model, d: Data, rc: RenderContext):
   ):
     worldid, rayid = wp.tid()
 
-    # Map global rayid -> (cam_idx, rayid_local) using cumulative sizes
-    cam_idx = int(-1)
+    # Map global rayid -> (camid, rayid_local) using cumulative sizes
+    camid = int(-1)
     rayid_local = int(-1)
     accum = int(0)
     for i in range(nrender):
       num_i = cam_res[i][0] * cam_res[i][1]
       if rayid < accum + num_i:
-        cam_idx = i
+        camid = i
         rayid_local = rayid - accum
         break
       accum += num_i
-    if cam_idx == -1 or rayid_local < 0:
+    if camid == -1 or rayid_local < 0:
       return
 
-    if not render_rgb[cam_idx] and not render_depth[cam_idx] and not render_seg[cam_idx]:
+    if not render_rgb[camid] and not render_depth[camid] and not render_seg[camid]:
       return
 
     # Map active camera index to MuJoCo camera ID
-    mujoco_cam_id = cam_id_map[cam_idx]
+    mujoco_cam_id = cam_id_map[camid]
 
     if wp.static(rc.use_precomputed_rays):
       ray_dir_local_cam = ray[rayid]
     else:
-      img_w = cam_res[cam_idx][0]
-      img_h = cam_res[cam_idx][1]
+      img_w = cam_res[camid][0]
+      img_h = cam_res[camid][1]
       px = rayid_local % img_w
       py = rayid_local // img_w
       ray_dir_local_cam = compute_ray(
@@ -745,21 +745,21 @@ def render(m: Model, d: Data, rc: RenderContext):
       wp.static(rc.enable_backface_culling),
     )
 
-    if render_seg[cam_idx] and geom_id != -1:
+    if render_seg[camid] and geom_id != -1:
       if geom_id == -2:
-        seg_out[worldid, seg_adr[cam_idx] + rayid_local] = wp.vec2i(mesh_id, int(ObjType.FLEX))
+        seg_out[worldid, seg_adr[camid] + rayid_local] = wp.vec2i(mesh_id, int(ObjType.FLEX))
       else:
-        seg_out[worldid, seg_adr[cam_idx] + rayid_local] = wp.vec2i(geom_id, int(ObjType.GEOM))
+        seg_out[worldid, seg_adr[camid] + rayid_local] = wp.vec2i(geom_id, int(ObjType.GEOM))
 
     # Early Out
     if geom_id == -1:
-      if wp.static(rc.render_skybox) and render_rgb[cam_idx]:
+      if wp.static(rc.render_skybox) and render_rgb[camid]:
         skybox_color = sample_skybox(
           textures[wp.static(rc.skybox_tex_id)],
           wp.static(1.0 / float(rc.skybox_face_width)),
           ray_dir_world,
         )
-        rgb_out[worldid, rgb_adr[cam_idx] + rayid_local] = pack_rgba_to_uint32(
+        rgb_out[worldid, rgb_adr[camid] + rayid_local] = pack_rgba_to_uint32(
           skybox_color[0] * 255.0,
           skybox_color[1] * 255.0,
           skybox_color[2] * 255.0,
@@ -767,14 +767,14 @@ def render(m: Model, d: Data, rc: RenderContext):
         )
       return
 
-    if render_depth[cam_idx]:
+    if render_depth[camid]:
       # Planar depth: project Euclidean distance onto the camera's optical axis.
       # In camera-local coordinates, the optical axis is -Z. The Z-component of the
       # normalized ray direction is negative, so -ray_dir_local_cam[2] gives cos(θ)
       # between the ray and the optical axis.
-      depth_out[worldid, depth_adr[cam_idx] + rayid_local] = dist * (-ray_dir_local_cam[2])
+      depth_out[worldid, depth_adr[camid] + rayid_local] = dist * (-ray_dir_local_cam[2])
 
-    if not render_rgb[cam_idx]:
+    if not render_rgb[camid]:
       return
 
     # Shade the pixel
@@ -864,7 +864,7 @@ def render(m: Model, d: Data, rc: RenderContext):
     hit_color = wp.min(result, wp.vec3(1.0, 1.0, 1.0))
     hit_color = wp.max(hit_color, wp.vec3(0.0, 0.0, 0.0))
 
-    rgb_out[worldid, rgb_adr[cam_idx] + rayid_local] = pack_rgba_to_uint32(
+    rgb_out[worldid, rgb_adr[camid] + rayid_local] = pack_rgba_to_uint32(
       hit_color[0] * 255.0,
       hit_color[1] * 255.0,
       hit_color[2] * 255.0,
