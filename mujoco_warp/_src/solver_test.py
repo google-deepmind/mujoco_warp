@@ -84,7 +84,7 @@ class SolverTest(parameterized.TestCase):
       # solve with 0 iterations just initializes constraints and then exits
       d.efc.force.fill_(wp.inf)
       d.qfrc_constraint.fill_(wp.inf)
-      ctx = solver.create_solver_context(m, d)
+      ctx = solver._create_solver_context(m, d)
       solver._solve(m, d, ctx)
 
       # Get the ordering indices based on efc_force, efc_state for MJWarp
@@ -140,7 +140,7 @@ class SolverTest(parameterized.TestCase):
       mjw.step(m, d)
 
       # Create a SolverContext to access internal solver arrays
-      ctx = solver.create_solver_context(m, d)
+      ctx = solver._create_solver_context(m, d)
       solver._solve(m, d, ctx)
 
       # Calculate target values
@@ -219,7 +219,7 @@ class SolverTest(parameterized.TestCase):
     )
 
     # Create SolverContext and initialize
-    ctx = solver.create_solver_context(m, d)
+    ctx = solver._create_solver_context(m, d)
     solver.init_context(m, d, ctx, grad=True)
 
     # Calculate Mgrad with Mujoco C
@@ -249,7 +249,7 @@ class SolverTest(parameterized.TestCase):
     m.opt.iterations = 0
     mjw.fwd_velocity(m, d)
     mjw.fwd_acceleration(m, d, factorize=True)
-    ctx = solver.create_solver_context(m, d)
+    ctx = solver._create_solver_context(m, d)
     solver._solve(m, d, ctx)
 
     # Storing some initial values
@@ -297,7 +297,7 @@ class SolverTest(parameterized.TestCase):
       },
     )
 
-    ctx = solver.create_solver_context(m, d)
+    ctx = solver._create_solver_context(m, d)
 
     d.ne = wp.array([0], dtype=int)
     d.nf = wp.array([0], dtype=int)
@@ -371,7 +371,7 @@ class SolverTest(parameterized.TestCase):
 
     alpha_out = wp.array([[0.0]], dtype=float)
     wp.launch(
-      solver.linesearch_island,
+      solver._linesearch_kernel_island,
       dim=(1, 1),
       inputs=[
         # Model
@@ -813,9 +813,9 @@ class SolverTest(parameterized.TestCase):
         d.qacc.zero_()
         d.qfrc_constraint.zero_()
         d.efc.force.zero_()
-        ctx = solver.create_solver_context(m, d)
+        ctx = solver._create_solver_context(m, d)
         solver.init_context(m, d, ctx, grad=True)
-        wp.launch(solver.solve_init_search, dim=(d.nworld, m.nv), inputs=[ctx.Mgrad], outputs=[ctx.search, ctx.search_dot])
+        wp.launch(solver._solve_init_search, dim=(d.nworld, m.nv), inputs=[ctx.Mgrad], outputs=[ctx.search, ctx.search_dot])
         step_size_cost = wp.empty((d.nworld, 0), dtype=float)
         any_changes = False
         for _ in range(m.opt.iterations):
@@ -828,9 +828,9 @@ class SolverTest(parameterized.TestCase):
             if np.any(ctx.changed_efc_count.numpy() > 0):
               any_changes = True
           update_fn(m, d, ctx)
-          wp.launch(solver.solve_zero_search_dot, dim=(d.nworld), inputs=[ctx.done], outputs=[ctx.search_dot])
+          wp.launch(solver._solve_zero_search_dot, dim=(d.nworld), inputs=[ctx.done], outputs=[ctx.search_dot])
           wp.launch(
-            solver.solve_search_update,
+            solver._solve_search_update,
             dim=(d.nworld, m.nv),
             inputs=[m.opt.solver, ctx.Mgrad, ctx.search, ctx.beta, ctx.done],
             outputs=[ctx.search, ctx.search_dot],
