@@ -934,4 +934,5 @@ def render(m: Model, d: Data, rc: RenderContext):
       rc.depth_data,
       rc.seg_data,
     ],
+    block_dim=m.block_dim.render,
   )
