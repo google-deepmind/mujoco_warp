@@ -151,7 +151,7 @@ def sample_skybox(
   return wp.vec3(color[0], color[1], color[2])
 
 
-def _make_cast_ray(geom_ray_types, first_hit=False):
+def _make_cast_ray(geom_ray_types: Tuple[int], first_hit: bool = False) -> wp.Function:
   """Build a ray-cast func specialized to the geom types present in the scene.
 
   geom_ray_types is the set of GeomType int values that actually occur, so the
@@ -381,8 +381,8 @@ def _make_cast_ray(geom_ray_types, first_hit=False):
   return cast_ray
 
 
-def _make_compute_lighting(cast_ray_first_hit):
-  """Build compute_lighting bound to a specialized cast_ray_first_hit."""
+def _make_compute_lighting(cast_ray_first_hit: wp.Function) -> wp.Function:
+  """Build specialized compute_lighting."""
 
   @wp.func
   def compute_lighting(
@@ -439,7 +439,7 @@ def _make_compute_lighting(cast_ray_first_hit):
       if lighttype == 0:  # spot light
         spot_dir = wp.normalize(lightdir)
         cos_theta = wp.dot(-L, spot_dir)
-        spot_factor = wp.min(1.0, wp.max(0.0, (cos_theta - 0.85) / (0.95 - 0.85)))
+        spot_factor = wp.min(1.0, wp.max(0.0, (cos_theta - 0.85) * 10.0))
         attenuation = attenuation * spot_factor
 
     ndotl = wp.max(0.0, wp.dot(normal, L))
@@ -451,12 +451,11 @@ def _make_compute_lighting(cast_ray_first_hit):
     if use_shadows and lightcastshadow:
       # Nudge the origin slightly along the surface normal to avoid
       # self-intersection when casting shadow rays
-      eps = 1.0e-4
-      shadow_origin = hitpoint + normal * eps
+      shadow_origin = hitpoint + normal * 1.0e-4
       # Distance-limited shadows: cap by dist_to_light (for non-directional)
-      max_t = float(dist_to_light - 1.0e-3)
+      max_t = dist_to_light - 1.0e-3
       if lighttype == 1:  # directional light
-        max_t = float(1.0e8)
+        max_t = 1.0e8
 
       shadow_geom_id, shadow_d, shadow_n, shadow_u, shadow_v, shadow_f, shadow_mesh_id = cast_ray_first_hit(
         geom_type,
