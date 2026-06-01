@@ -132,6 +132,51 @@ def is_sparse(mjm: mujoco.MjModel) -> bool:
     return bool(mujoco.mj_isSparse(mjm))
 
 
+def _filter_tri_geoms(
+  mjm: mujoco.MjModel,
+  v0: int,
+  v1: int,
+  v2: int,
+  geomids: np.ndarray,
+  filterparent: bool,
+) -> np.ndarray:
+  """Vectorized check for a single triangle vs multiple geoms."""
+  b0 = mjm.flex_vertbodyid[v0]
+  b1 = mjm.flex_vertbodyid[v1]
+  b2 = mjm.flex_vertbodyid[v2]
+
+  w0 = mjm.body_weldid[b0]
+  w1 = mjm.body_weldid[b1]
+  w2 = mjm.body_weldid[b2]
+
+  bg = mjm.geom_bodyid[geomids]
+  wg = mjm.body_weldid[bg]
+
+  is_self = (wg == w0) | (wg == w1) | (wg == w2)
+
+  is_parent = np.zeros_like(is_self, dtype=bool)
+  if filterparent:
+    wp0 = mjm.body_weldid[mjm.body_parentid[w0]]
+    wp1 = mjm.body_weldid[mjm.body_parentid[w1]]
+    wp2 = mjm.body_weldid[mjm.body_parentid[w2]]
+    wpg = mjm.body_weldid[mjm.body_parentid[wg]]
+
+    cond0 = (wg != 0) & (w0 != 0) & ((wg == wp0) | (w0 == wpg))
+    cond1 = (wg != 0) & (w1 != 0) & ((wg == wp1) | (w1 == wpg))
+    cond2 = (wg != 0) & (w2 != 0) & ((wg == wp2) | (w2 == wpg))
+    is_parent = cond0 | cond1 | cond2
+
+  sig0 = (b0 << 16) + geomids
+  sig1 = (b1 << 16) + geomids
+  sig2 = (b2 << 16) + geomids
+
+  is_excluded = (
+    np.isin(sig0, mjm.exclude_signature) | np.isin(sig1, mjm.exclude_signature) | np.isin(sig2, mjm.exclude_signature)
+  )
+
+  return is_self | is_parent | is_excluded
+
+
 def put_model(mjm: mujoco.MjModel) -> types.Model:
   """Creates a model on device.
 
@@ -442,6 +487,101 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
   m.nxn_geom_pair_filtered = m.nxn_geom_pair[nxn_include]
   m.nxn_pairid = np.hstack([nxn_pairid_contact.reshape((-1, 1)), nxn_pairid_collision.reshape((-1, 1))])
   m.nxn_pairid_filtered = m.nxn_pairid[nxn_include]
+
+  flexelem_geom_pairs = []
+  flexshell_geom_pairs = []
+  flexvert_geom_pairs = []
+
+  if mjm.nflex > 0:
+    for fi in range(mjm.nflex):
+      fct = mjm.flex_contype[fi]
+      fca = mjm.flex_conaffinity[fi]
+      fdim = mjm.flex_dim[fi]
+
+      match = ((mjm.geom_contype & fca) != 0) | ((fct & mjm.geom_conaffinity) != 0)
+      is_prim = np.isin(
+        mjm.geom_type,
+        [
+          mujoco.mjtGeom.mjGEOM_SPHERE,
+          mujoco.mjtGeom.mjGEOM_CAPSULE,
+          mujoco.mjtGeom.mjGEOM_BOX,
+          mujoco.mjtGeom.mjGEOM_CYLINDER,
+        ],
+      )
+      is_pl = mjm.geom_type == mujoco.mjtGeom.mjGEOM_PLANE
+
+      matching_primitive_geoms = np.where(match & is_prim)[0]
+      matching_plane_geoms = np.where(match & is_pl)[0]
+
+      vert_start = mjm.flex_vertadr[fi]
+
+      if fdim == 2:
+        elem_start = mjm.flex_elemadr[fi]
+        elem_count = mjm.flex_elemnum[fi]
+        elemdata_start = mjm.flex_elemdataadr[fi]
+        for e in range(elem_count):
+          elemid = elem_start + e
+          v0 = vert_start + mjm.flex_elem[elemdata_start + e * 3]
+          v1 = vert_start + mjm.flex_elem[elemdata_start + e * 3 + 1]
+          v2 = vert_start + mjm.flex_elem[elemdata_start + e * 3 + 2]
+
+          if len(matching_primitive_geoms) > 0:
+            filtered = _filter_tri_geoms(mjm, v0, v1, v2, matching_primitive_geoms, filterparent)
+            for g in matching_primitive_geoms[~filtered]:
+              flexelem_geom_pairs.append((elemid, g))
+
+      elif fdim == 3:
+        shell_count = mjm.flex_shellnum[fi]
+        shelldata_start = mjm.flex_shelldataadr[fi]
+        shell_offset = 0
+        for prev_fi in range(fi):
+          if mjm.flex_dim[prev_fi] == 3:
+            shell_offset += mjm.flex_shellnum[prev_fi]
+
+        for s in range(shell_count):
+          v0 = vert_start + mjm.flex_shell[shelldata_start + s * 3]
+          v1 = vert_start + mjm.flex_shell[shelldata_start + s * 3 + 1]
+          v2 = vert_start + mjm.flex_shell[shelldata_start + s * 3 + 2]
+
+          if len(matching_primitive_geoms) > 0:
+            filtered = _filter_tri_geoms(mjm, v0, v1, v2, matching_primitive_geoms, filterparent)
+            for g in matching_primitive_geoms[~filtered]:
+              flexshell_geom_pairs.append((shell_offset + s, g))
+
+      # Planes vs Vertices
+      if len(matching_plane_geoms) > 0:
+        vert_count = mjm.flex_vertnum[fi]
+        for v in range(vert_count):
+          vertid = vert_start + v
+          bv = mjm.flex_vertbodyid[vertid]
+          wv = mjm.body_weldid[bv]
+
+          bg = mjm.geom_bodyid[matching_plane_geoms]
+          wg = mjm.body_weldid[bg]
+
+          mask = wg != wv
+
+          if filterparent:
+            wpv = mjm.body_weldid[mjm.body_parentid[wv]]
+            wpg = mjm.body_weldid[mjm.body_parentid[wg]]
+            mask &= ~((wg != 0) & (wv != 0) & ((wg == wpv) | (wv == wpg)))
+
+          sig = (bv << 16) + matching_plane_geoms
+          mask &= ~np.isin(sig, mjm.exclude_signature)
+
+          for g in matching_plane_geoms[mask]:
+            flexvert_geom_pairs.append((vertid, g))
+
+  if not flexelem_geom_pairs:
+    flexelem_geom_pairs = np.zeros((0, 2), dtype=np.int32)
+  if not flexshell_geom_pairs:
+    flexshell_geom_pairs = np.zeros((0, 2), dtype=np.int32)
+  if not flexvert_geom_pairs:
+    flexvert_geom_pairs = np.zeros((0, 2), dtype=np.int32)
+
+  m.flexelem_geom_pair_filtered = np.array(flexelem_geom_pairs, dtype=np.int32)
+  m.flexshell_geom_pair_filtered = np.array(flexshell_geom_pairs, dtype=np.int32)
+  m.flexvert_geom_pair_filtered = np.array(flexvert_geom_pairs, dtype=np.int32)
 
   # count contact pair types
   def geom_trid_index(i, j):

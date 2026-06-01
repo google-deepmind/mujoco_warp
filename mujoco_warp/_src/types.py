@@ -1225,6 +1225,9 @@ class Model:
     nxn_geom_pair: collision pair geom ids [-2, ngeom-1]
     nxn_geom_pair_filtered: valid collision pair geom ids
                             [-1, ngeom - 1]
+    flexelem_geom_pair_filtered: valid 2D flex element collision pair geom ids
+    flexshell_geom_pair_filtered: valid 3D flex shell collision pair geom ids
+    flexvert_geom_pair_filtered: valid flex vertex plane collision pair geom ids
     nxn_pairid: contact pair id, -1 if not predefined,
                   -2 if skipped
                 collision id, else -1
@@ -1646,6 +1649,9 @@ class Model:
   dof_tri_col: wp.array[int]
   nxn_geom_pair: wp.array[wp.vec2i]
   nxn_geom_pair_filtered: wp.array[wp.vec2i]
+  flexelem_geom_pair_filtered: wp.array[wp.vec2i]
+  flexshell_geom_pair_filtered: wp.array[wp.vec2i]
+  flexvert_geom_pair_filtered: wp.array[wp.vec2i]
   nxn_pairid: wp.array[wp.vec2i]
   nxn_pairid_filtered: wp.array[wp.vec2i]
   geom_pair_type_count: tuple[int, ...]
@@ -1958,6 +1964,8 @@ class Data:
     njmax_nnz: number of non-zeros in constraint Jacobian
     nacon: number of detected contacts (across all worlds)      (1,)
     ncollision: collision count from broadphase                 (1,)
+    flex_aabb_min: dynamic flex object bounding box min         (nworld, nflex, 3)
+    flex_aabb_max: dynamic flex object bounding box max         (nworld, nflex, 3)
   """
 
   solver_niter: array("nworld", int)
@@ -2072,6 +2080,8 @@ class Data:
   njmax_nnz: int
   nacon: array(1, int)
   ncollision: array(1, int)
+  flex_aabb_min: array("nworld", "nflex", wp.vec3)
+  flex_aabb_max: array("nworld", "nflex", wp.vec3)
 
 
 @dataclasses.dataclass

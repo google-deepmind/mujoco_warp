@@ -29,6 +29,445 @@ from mujoco_warp._src.warp_util import event_scope
 wp.set_module_options({"enable_backward": False})
 
 
+@wp.func
+def _flex_element_aabb_filter(
+  # In:
+  box1_min: wp.vec3,
+  box1_max: wp.vec3,
+  box2_min: wp.vec3,
+  box2_max: wp.vec3,
+) -> bool:
+  """Return True if the two AABBs do NOT intersect (discard pair)."""
+  if box1_max[0] < box2_min[0] or box1_min[0] > box2_max[0]:
+    return True
+  if box1_max[1] < box2_min[1] or box1_min[1] > box2_max[1]:
+    return True
+  if box1_max[2] < box2_min[2] or box1_min[2] > box2_max[2]:
+    return True
+  return False
+
+
+@wp.kernel
+def _flex_broadphase_bounds(
+  # Model:
+  flex_margin: wp.array[float],
+  flex_gap: wp.array[float],
+  flex_vertadr: wp.array[int],
+  flex_vertnum: wp.array[int],
+  flex_radius: wp.array[float],
+  # Data in:
+  flexvert_xpos_in: wp.array2d[wp.vec3],
+  # Data out:
+  flex_aabb_min_out: wp.array2d[wp.vec3],
+  flex_aabb_max_out: wp.array2d[wp.vec3],
+):
+  worldid, flexid = wp.tid()
+
+  start = flex_vertadr[flexid]
+  num = flex_vertnum[flexid]
+  if num == 0:
+    return
+
+  min_bound = wp.vec3(MJ_MAXVAL, MJ_MAXVAL, MJ_MAXVAL)
+  max_bound = wp.vec3(-MJ_MAXVAL, -MJ_MAXVAL, -MJ_MAXVAL)
+
+  for i in range(num):
+    pos = flexvert_xpos_in[worldid, start + i]
+    min_bound = wp.min(min_bound, pos)
+    max_bound = wp.max(max_bound, pos)
+
+  margin = flex_margin[flexid] + flex_gap[flexid]
+  bound = flex_radius[flexid] + margin
+  inflate = wp.vec3(bound, bound, bound)
+
+  flex_aabb_min_out[worldid, flexid] = min_bound - inflate
+  flex_aabb_max_out[worldid, flexid] = max_bound + inflate
+
+
+@wp.func
+def _flex_triangle_geom_broadphase(
+  # Model:
+  ngeom: int,
+  geom_type: wp.array[int],
+  geom_aabb: wp.array3d[wp.vec3],
+  geom_margin: wp.array2d[float],
+  # Data in:
+  geom_xpos_in: wp.array2d[wp.vec3],
+  geom_xmat_in: wp.array2d[wp.mat33],
+  naconmax_in: int,
+  # In:
+  worldid: int,
+  element_or_shell_id: int,
+  flexid: int,
+  geomid: int,
+  t1: wp.vec3,
+  t2: wp.vec3,
+  t3: wp.vec3,
+  tri_radius: float,
+  tri_margin: float,
+  flex_aabb_min_val: wp.vec3,
+  flex_aabb_max_val: wp.vec3,
+  # Data out:
+  ncollision_out: wp.array[int],
+  # Out:
+  collision_pair_out: wp.array[wp.vec2i],
+  collision_worldid_out: wp.array[int],
+):
+  gtype = geom_type[geomid]
+  if (
+    gtype != int(GeomType.SPHERE)
+    and gtype != int(GeomType.CAPSULE)
+    and gtype != int(GeomType.BOX)
+    and gtype != int(GeomType.CYLINDER)
+  ):
+    return
+
+  geom_margin_val = geom_margin[worldid % geom_margin.shape[0], geomid]
+  margin = geom_margin_val + tri_margin
+
+  aabb_id = worldid % geom_aabb.shape[0]
+  geom_center_local = geom_aabb[aabb_id, geomid, 0]
+  geom_half_size_local = geom_aabb[aabb_id, geomid, 1]
+
+  geom_pos = geom_xpos_in[worldid, geomid]
+  geom_rot = geom_xmat_in[worldid, geomid]
+
+  # Stage 1 Filter: Coarse flex AABB vs Geom world AABB check
+  # Transform center to global frame
+  geom_center_global = geom_rot @ geom_center_local + geom_pos
+
+  # Project local half-size onto world axes using absolute rotation matrix entries
+  geom_half_size_global = wp.vec3(
+    wp.abs(geom_rot[0, 0]) * geom_half_size_local[0]
+    + wp.abs(geom_rot[0, 1]) * geom_half_size_local[1]
+    + wp.abs(geom_rot[0, 2]) * geom_half_size_local[2],
+    wp.abs(geom_rot[1, 0]) * geom_half_size_local[0]
+    + wp.abs(geom_rot[1, 1]) * geom_half_size_local[1]
+    + wp.abs(geom_rot[1, 2]) * geom_half_size_local[2],
+    wp.abs(geom_rot[2, 0]) * geom_half_size_local[0]
+    + wp.abs(geom_rot[2, 1]) * geom_half_size_local[1]
+    + wp.abs(geom_rot[2, 2]) * geom_half_size_local[2],
+  )
+
+  inflate = wp.vec3(margin, margin, margin)
+  geom_box_min = geom_center_global - geom_half_size_global - inflate
+  geom_box_max = geom_center_global + geom_half_size_global + inflate
+
+  if _flex_element_aabb_filter(geom_box_min, geom_box_max, flex_aabb_min_val, flex_aabb_max_val):
+    return
+
+  # Stage 2 Filter: Tight Element AABB check in Geom Local frame
+  # Transform triangle vertices into the local frame of the geom (transposing geom_rot)
+  geom_rot_T = wp.transpose(geom_rot)
+  t1_local = geom_rot_T @ (t1 - geom_pos)
+  t2_local = geom_rot_T @ (t2 - geom_pos)
+  t3_local = geom_rot_T @ (t3 - geom_pos)
+
+  # Local Element AABB (inflated by tri_radius)
+  elem_min_local = wp.min(t1_local, wp.min(t2_local, t3_local)) - wp.vec3(tri_radius, tri_radius, tri_radius)
+  elem_max_local = wp.max(t1_local, wp.max(t2_local, t3_local)) + wp.vec3(tri_radius, tri_radius, tri_radius)
+
+  # Tight Local Geom AABB (inflated by geom_margin + tri_margin)
+  geom_box_min_local = geom_center_local - geom_half_size_local - inflate
+  geom_box_max_local = geom_center_local + geom_half_size_local + inflate
+
+  if _flex_element_aabb_filter(geom_box_min_local, geom_box_max_local, elem_min_local, elem_max_local):
+    return
+
+  # Stage 3 Filter: Triangle Face Normal Projection (SAT)
+  u = t2 - t1
+  v = t3 - t1
+  normal_unnorm = wp.cross(u, v)
+  len_norm = wp.length(normal_unnorm)
+  if len_norm > 1e-6:
+    n_tri = normal_unnorm / len_norm
+
+    # Projection distance of geom center from triangle plane
+    dist_plane = wp.dot(geom_pos - t1, n_tri)
+
+    # Compute max extent of geom along triangle normal n_tri
+    r_extent = 0.0
+    if gtype == int(GeomType.SPHERE):
+      r_extent = geom_half_size_local[0]
+    elif gtype == int(GeomType.BOX):
+      axis_x = wp.vec3(geom_rot[0, 0], geom_rot[1, 0], geom_rot[2, 0])
+      axis_y = wp.vec3(geom_rot[0, 1], geom_rot[1, 1], geom_rot[2, 1])
+      axis_z = wp.vec3(geom_rot[0, 2], geom_rot[1, 2], geom_rot[2, 2])
+      r_extent = (
+        wp.abs(wp.dot(axis_x, n_tri)) * geom_half_size_local[0]
+        + wp.abs(wp.dot(axis_y, n_tri)) * geom_half_size_local[1]
+        + wp.abs(wp.dot(axis_z, n_tri)) * geom_half_size_local[2]
+      )
+    else:  # CAPSULE or CYLINDER
+      axis_z = wp.vec3(geom_rot[0, 2], geom_rot[1, 2], geom_rot[2, 2])
+      r_extent = geom_half_size_local[0] + wp.abs(wp.dot(axis_z, n_tri)) * geom_half_size_local[2]
+
+    if wp.abs(dist_plane) > r_extent + tri_radius + margin:
+      return
+
+  # Append Candidate to Context
+  idx = wp.atomic_add(ncollision_out, 0, 1)
+  if idx < naconmax_in:
+    collision_pair_out[idx] = wp.vec2i(element_or_shell_id, geomid)
+    collision_worldid_out[idx] = worldid
+
+
+@wp.kernel
+def _flex_broadphase_dim2(
+  # Model:
+  ngeom: int,
+  nflex: int,
+  geom_type: wp.array[int],
+  geom_size: wp.array2d[wp.vec3],
+  geom_aabb: wp.array3d[wp.vec3],
+  geom_rbound: wp.array2d[float],
+  geom_margin: wp.array2d[float],
+  flex_margin: wp.array[float],
+  flex_dim: wp.array[int],
+  flex_vertadr: wp.array[int],
+  flex_elemadr: wp.array[int],
+  flex_elemnum: wp.array[int],
+  flex_elemdataadr: wp.array[int],
+  flex_elem: wp.array[int],
+  flex_radius: wp.array[float],
+  flexelem_geom_pair_filtered: wp.array[wp.vec2i],
+  # Data in:
+  geom_xpos_in: wp.array2d[wp.vec3],
+  geom_xmat_in: wp.array2d[wp.mat33],
+  flexvert_xpos_in: wp.array2d[wp.vec3],
+  naconmax_in: int,
+  flex_aabb_min_in: wp.array2d[wp.vec3],
+  flex_aabb_max_in: wp.array2d[wp.vec3],
+  # Data out:
+  ncollision_out: wp.array[int],
+  # Out:
+  collision_pair_out: wp.array[wp.vec2i],
+  collision_worldid_out: wp.array[int],
+):
+  worldid, pairid = wp.tid()
+
+  pair = flexelem_geom_pair_filtered[pairid]
+  elemid = pair[0]
+  geomid = pair[1]
+
+  flexid = int(-1)
+  for i in range(nflex):
+    if flex_dim[i] != 2:
+      continue
+    elem_adr = flex_elemadr[i]
+    elem_num = flex_elemnum[i]
+    if elemid >= elem_adr and elemid < elem_adr + elem_num:
+      flexid = i
+      break
+
+  if flexid < 0:
+    return
+
+  vert_adr = flex_vertadr[flexid]
+  tri_radius = flex_radius[flexid]
+  tri_margin = flex_margin[flexid]
+
+  elem_data_idx = flex_elemdataadr[flexid] + (elemid - flex_elemadr[flexid]) * 3
+  v0_local = flex_elem[elem_data_idx]
+  v1_local = flex_elem[elem_data_idx + 1]
+  v2_local = flex_elem[elem_data_idx + 2]
+
+  t1 = flexvert_xpos_in[worldid, vert_adr + v0_local]
+  t2 = flexvert_xpos_in[worldid, vert_adr + v1_local]
+  t3 = flexvert_xpos_in[worldid, vert_adr + v2_local]
+
+  _flex_triangle_geom_broadphase(
+    ngeom,
+    geom_type,
+    geom_aabb,
+    geom_margin,
+    geom_xpos_in,
+    geom_xmat_in,
+    naconmax_in,
+    worldid,
+    elemid,
+    flexid,
+    geomid,
+    t1,
+    t2,
+    t3,
+    tri_radius,
+    tri_margin,
+    flex_aabb_min_in[worldid, flexid],
+    flex_aabb_max_in[worldid, flexid],
+    ncollision_out,
+    collision_pair_out,
+    collision_worldid_out,
+  )
+
+
+@wp.kernel
+def _flex_broadphase_dim3(
+  # Model:
+  ngeom: int,
+  nflex: int,
+  geom_type: wp.array[int],
+  geom_size: wp.array2d[wp.vec3],
+  geom_aabb: wp.array3d[wp.vec3],
+  geom_rbound: wp.array2d[float],
+  geom_margin: wp.array2d[float],
+  flex_margin: wp.array[float],
+  flex_dim: wp.array[int],
+  flex_vertadr: wp.array[int],
+  flex_shellnum: wp.array[int],
+  flex_shelldataadr: wp.array[int],
+  flex_shell: wp.array[int],
+  flex_radius: wp.array[float],
+  flexshell_geom_pair_filtered: wp.array[wp.vec2i],
+  # Data in:
+  geom_xpos_in: wp.array2d[wp.vec3],
+  geom_xmat_in: wp.array2d[wp.mat33],
+  flexvert_xpos_in: wp.array2d[wp.vec3],
+  naconmax_in: int,
+  flex_aabb_min_in: wp.array2d[wp.vec3],
+  flex_aabb_max_in: wp.array2d[wp.vec3],
+  # Data out:
+  ncollision_out: wp.array[int],
+  # Out:
+  collision_pair_out: wp.array[wp.vec2i],
+  collision_worldid_out: wp.array[int],
+):
+  worldid, pairid = wp.tid()
+
+  pair = flexshell_geom_pair_filtered[pairid]
+  shellid = pair[0]
+  geomid = pair[1]
+
+  flexid = int(-1)
+  shell_offset = int(0)
+  for i in range(nflex):
+    if flex_dim[i] != 3:
+      continue
+    shell_num = flex_shellnum[i]
+    if shellid >= shell_offset and shellid < shell_offset + shell_num:
+      flexid = i
+      break
+    shell_offset += shell_num
+
+  if flexid < 0:
+    return
+
+  vert_adr = flex_vertadr[flexid]
+  tri_radius = flex_radius[flexid]
+  tri_margin = flex_margin[flexid]
+
+  shell_adr = flex_shelldataadr[flexid]
+  local_shellid = shellid - shell_offset
+  shell_data_idx = shell_adr + local_shellid * 3
+
+  v0_local = flex_shell[shell_data_idx]
+  v1_local = flex_shell[shell_data_idx + 1]
+  v2_local = flex_shell[shell_data_idx + 2]
+
+  t1 = flexvert_xpos_in[worldid, vert_adr + v0_local]
+  t2 = flexvert_xpos_in[worldid, vert_adr + v1_local]
+  t3 = flexvert_xpos_in[worldid, vert_adr + v2_local]
+
+  _flex_triangle_geom_broadphase(
+    ngeom,
+    geom_type,
+    geom_aabb,
+    geom_margin,
+    geom_xpos_in,
+    geom_xmat_in,
+    naconmax_in,
+    worldid,
+    shellid,
+    flexid,
+    geomid,
+    t1,
+    t2,
+    t3,
+    tri_radius,
+    tri_margin,
+    flex_aabb_min_in[worldid, flexid],
+    flex_aabb_max_in[worldid, flexid],
+    ncollision_out,
+    collision_pair_out,
+    collision_worldid_out,
+  )
+
+
+@wp.kernel
+def _flex_broadphase_plane(
+  # Model:
+  ngeom: int,
+  geom_type: wp.array[int],
+  geom_margin: wp.array2d[float],
+  flex_margin: wp.array[float],
+  flex_vertadr: wp.array[int],
+  flex_radius: wp.array[float],
+  flex_vertflexid: wp.array[int],
+  flexvert_geom_pair_filtered: wp.array[wp.vec2i],
+  # Data in:
+  geom_xpos_in: wp.array2d[wp.vec3],
+  geom_xmat_in: wp.array2d[wp.mat33],
+  flexvert_xpos_in: wp.array2d[wp.vec3],
+  naconmax_in: int,
+  flex_aabb_min_in: wp.array2d[wp.vec3],
+  flex_aabb_max_in: wp.array2d[wp.vec3],
+  # Data out:
+  ncollision_out: wp.array[int],
+  # Out:
+  collision_pair_out: wp.array[wp.vec2i],
+  collision_worldid_out: wp.array[int],
+):
+  worldid, pairid = wp.tid()
+
+  pair = flexvert_geom_pair_filtered[pairid]
+  vertid = pair[0]
+  geomid = pair[1]
+
+  flexid = flex_vertflexid[vertid]
+  radius = flex_radius[flexid]
+  flex_margin_val = flex_margin[flexid]
+
+  vert = flexvert_xpos_in[worldid, vertid]
+
+  flex_aabb_min = flex_aabb_min_in[worldid, flexid]
+  flex_aabb_max = flex_aabb_max_in[worldid, flexid]
+
+  gtype = geom_type[geomid]
+  if gtype != int(GeomType.PLANE):
+    return
+
+  margin = geom_margin[worldid % geom_margin.shape[0], geomid] + flex_margin_val
+  geom_pos = geom_xpos_in[worldid, geomid]
+  geom_rot = geom_xmat_in[worldid, geomid]
+  plane_normal = wp.vec3(geom_rot[0, 2], geom_rot[1, 2], geom_rot[2, 2])
+
+  # Stage 1 filter: Bounding box of flex vs plane
+  flex_center = 0.5 * (flex_aabb_min + flex_aabb_max)
+  flex_half_size = 0.5 * (flex_aabb_max - flex_aabb_min)
+
+  proj_half = (
+    wp.abs(flex_half_size[0] * plane_normal[0])
+    + wp.abs(flex_half_size[1] * plane_normal[1])
+    + wp.abs(flex_half_size[2] * plane_normal[2])
+  )
+
+  diff_center = flex_center - geom_pos
+  dist_center = wp.dot(diff_center, plane_normal)
+  if dist_center - proj_half > margin:
+    return
+
+  diff = vert - geom_pos
+  signed_dist = wp.dot(diff, plane_normal)
+  dist = signed_dist - radius
+
+  if dist < margin:
+    # Append Candidate to Context
+    idx = wp.atomic_add(ncollision_out, 0, 1)
+    if idx < naconmax_in:
+      collision_pair_out[idx] = wp.vec2i(vertid, geomid)
+      collision_worldid_out[idx] = worldid
+
+
 # TODO(team): generalize into a shared contact parameter mixing function
 #   (mj_contactParam) that works for both geom-geom and geom-flex contacts.
 @wp.func
@@ -376,6 +815,10 @@ def _flex_plane_narrowphase(
   flexvert_xpos_in: wp.array2d[wp.vec3],
   nworld_in: int,
   naconmax_in: int,
+  ncollision_in: wp.array[int],
+  # In:
+  collision_pair_in: wp.array[wp.vec2i],
+  collision_worldid_in: wp.array[int],
   # Data out:
   contact_dist_out: wp.array[float],
   contact_pos_out: wp.array[wp.vec3],
@@ -394,7 +837,19 @@ def _flex_plane_narrowphase(
   contact_geomcollisionid_out: wp.array[int],
   nacon_out: wp.array[int],
 ):
-  worldid, vertid = wp.tid()
+  collisionid = wp.tid()
+  if collisionid >= ncollision_in[0]:
+    return
+
+  pair = collision_pair_in[collisionid]
+  geomid = pair[1]
+
+  gtype = geom_type[geomid]
+  if gtype != int(GeomType.PLANE):
+    return
+
+  vertid = pair[0]
+  worldid = collision_worldid_in[collisionid]
 
   flexid = flex_vertflexid[vertid]
   radius = flex_radius[flexid]
@@ -404,72 +859,66 @@ def _flex_plane_narrowphase(
 
   vert = flexvert_xpos_in[worldid, vertid]
 
-  # TODO: Add a broadphase
-  for geomid in range(ngeom):
-    gtype = geom_type[geomid]
-    if gtype != int(GeomType.PLANE):
-      continue
+  plane_pos = geom_xpos_in[worldid, geomid]
+  plane_rot = geom_xmat_in[worldid, geomid]
+  plane_normal = wp.vec3(plane_rot[0, 2], plane_rot[1, 2], plane_rot[2, 2])
 
-    plane_pos = geom_xpos_in[worldid, geomid]
-    plane_rot = geom_xmat_in[worldid, geomid]
-    plane_normal = wp.vec3(plane_rot[0, 2], plane_rot[1, 2], plane_rot[2, 2])
+  margin = geom_margin[worldid % geom_margin.shape[0], geomid] + flex_margin_val
 
-    margin = geom_margin[worldid % geom_margin.shape[0], geomid] + flex_margin_val
+  diff = vert - plane_pos
+  signed_dist = wp.dot(diff, plane_normal)
+  dist = signed_dist - radius
 
-    diff = vert - plane_pos
-    signed_dist = wp.dot(diff, plane_normal)
-    dist = signed_dist - radius
+  if dist < margin:
+    condim, gap, solref, solimp, friction = _mix_flex_contact_params(
+      geom_condim[geomid],
+      geom_priority[geomid],
+      geom_solmix[worldid % geom_solmix.shape[0], geomid],
+      geom_solref[worldid % geom_solref.shape[0], geomid],
+      geom_solimp[worldid % geom_solimp.shape[0], geomid],
+      geom_friction[worldid % geom_friction.shape[0], geomid],
+      geom_gap[worldid % geom_gap.shape[0], geomid],
+      flex_condim[flexid],
+      flex_priority[flexid],
+      flex_solmix[flexid],
+      flex_solref[flexid],
+      flex_solimp[flexid],
+      flex_friction[flexid],
+      flex_gap[flexid],
+    )
 
-    if dist < margin:
-      condim, gap, solref, solimp, friction = _mix_flex_contact_params(
-        geom_condim[geomid],
-        geom_priority[geomid],
-        geom_solmix[worldid % geom_solmix.shape[0], geomid],
-        geom_solref[worldid % geom_solref.shape[0], geomid],
-        geom_solimp[worldid % geom_solimp.shape[0], geomid],
-        geom_friction[worldid % geom_friction.shape[0], geomid],
-        geom_gap[worldid % geom_gap.shape[0], geomid],
-        flex_condim[flexid],
-        flex_priority[flexid],
-        flex_solmix[flexid],
-        flex_solref[flexid],
-        flex_solimp[flexid],
-        flex_friction[flexid],
-        flex_gap[flexid],
-      )
-
-      contact_pos = vert - plane_normal * (dist * 0.5 + radius)
-      _write_flex_contact(
-        naconmax_in,
-        dist,
-        contact_pos,
-        make_frame(plane_normal),
-        margin - gap,
-        condim,
-        friction,
-        solref,
-        solimp,
-        geomid,
-        flexid,
-        local_vertid,
-        worldid,
-        contact_dist_out,
-        contact_pos_out,
-        contact_frame_out,
-        contact_includemargin_out,
-        contact_friction_out,
-        contact_solref_out,
-        contact_solreffriction_out,
-        contact_solimp_out,
-        contact_dim_out,
-        contact_geom_out,
-        contact_flex_out,
-        contact_vert_out,
-        contact_worldid_out,
-        contact_type_out,
-        contact_geomcollisionid_out,
-        nacon_out,
-      )
+    contact_pos = vert - plane_normal * (dist * 0.5 + radius)
+    _write_flex_contact(
+      naconmax_in,
+      dist,
+      contact_pos,
+      make_frame(plane_normal),
+      margin - gap,
+      condim,
+      friction,
+      solref,
+      solimp,
+      geomid,
+      flexid,
+      local_vertid,
+      worldid,
+      contact_dist_out,
+      contact_pos_out,
+      contact_frame_out,
+      contact_includemargin_out,
+      contact_friction_out,
+      contact_solref_out,
+      contact_solreffriction_out,
+      contact_solimp_out,
+      contact_dim_out,
+      contact_geom_out,
+      contact_flex_out,
+      contact_vert_out,
+      contact_worldid_out,
+      contact_type_out,
+      contact_geomcollisionid_out,
+      nacon_out,
+    )
 
 
 @wp.kernel
@@ -512,6 +961,10 @@ def _flex_narrowphase_dim2(
   flexvert_xpos_in: wp.array2d[wp.vec3],
   nworld_in: int,
   naconmax_in: int,
+  ncollision_in: wp.array[int],
+  # In:
+  collision_pair_in: wp.array[wp.vec2i],
+  collision_worldid_in: wp.array[int],
   # Data out:
   contact_dist_out: wp.array[float],
   contact_pos_out: wp.array[wp.vec3],
@@ -530,7 +983,24 @@ def _flex_narrowphase_dim2(
   contact_geomcollisionid_out: wp.array[int],
   nacon_out: wp.array[int],
 ):
-  worldid, elemid = wp.tid()
+  collisionid = wp.tid()
+  if collisionid >= ncollision_in[0]:
+    return
+
+  pair = collision_pair_in[collisionid]
+  geomid = pair[1]
+
+  gtype = geom_type[geomid]
+  if (
+    gtype != int(GeomType.SPHERE)
+    and gtype != int(GeomType.CAPSULE)
+    and gtype != int(GeomType.BOX)
+    and gtype != int(GeomType.CYLINDER)
+  ):
+    return
+
+  elemid = pair[0]
+  worldid = collision_worldid_in[collisionid]
 
   flexid = int(-1)
   for i in range(nflex):
@@ -558,84 +1028,66 @@ def _flex_narrowphase_dim2(
   t2 = flexvert_xpos_in[worldid, vert_adr + v1_local]
   t3 = flexvert_xpos_in[worldid, vert_adr + v2_local]
 
-  # TODO: Add a broadphase
-  for geomid in range(ngeom):
-    gtype = geom_type[geomid]
-    if (
-      gtype != int(GeomType.SPHERE)
-      and gtype != int(GeomType.CAPSULE)
-      and gtype != int(GeomType.BOX)
-      and gtype != int(GeomType.CYLINDER)
-    ):
-      continue
+  geom_margin_val = geom_margin[worldid % geom_margin.shape[0], geomid]
+  margin = geom_margin_val + tri_margin
 
-    g_contype = geom_contype[geomid]
-    g_conaffinity = geom_conaffinity[geomid]
-    f_contype = flex_contype[flexid]
-    f_conaffinity = flex_conaffinity[flexid]
-    if not ((g_contype & f_conaffinity) or (f_contype & g_conaffinity)):
-      continue
+  geom_pos = geom_xpos_in[worldid, geomid]
+  geom_rot = geom_xmat_in[worldid, geomid]
+  geom_size_val = geom_size[worldid % geom_size.shape[0], geomid]
 
-    geom_margin_val = geom_margin[worldid % geom_margin.shape[0], geomid]
-    margin = geom_margin_val + tri_margin
+  condim, gap, solref, solimp, friction = _mix_flex_contact_params(
+    geom_condim[geomid],
+    geom_priority[geomid],
+    geom_solmix[worldid % geom_solmix.shape[0], geomid],
+    geom_solref[worldid % geom_solref.shape[0], geomid],
+    geom_solimp[worldid % geom_solimp.shape[0], geomid],
+    geom_friction[worldid % geom_friction.shape[0], geomid],
+    geom_gap[worldid % geom_gap.shape[0], geomid],
+    flex_condim[flexid],
+    flex_priority[flexid],
+    flex_solmix[flexid],
+    flex_solref[flexid],
+    flex_solimp[flexid],
+    flex_friction[flexid],
+    flex_gap[flexid],
+  )
 
-    geom_pos = geom_xpos_in[worldid, geomid]
-    geom_rot = geom_xmat_in[worldid, geomid]
-    geom_size_val = geom_size[worldid % geom_size.shape[0], geomid]
-
-    condim, gap, solref, solimp, friction = _mix_flex_contact_params(
-      geom_condim[geomid],
-      geom_priority[geomid],
-      geom_solmix[worldid % geom_solmix.shape[0], geomid],
-      geom_solref[worldid % geom_solref.shape[0], geomid],
-      geom_solimp[worldid % geom_solimp.shape[0], geomid],
-      geom_friction[worldid % geom_friction.shape[0], geomid],
-      geom_gap[worldid % geom_gap.shape[0], geomid],
-      flex_condim[flexid],
-      flex_priority[flexid],
-      flex_solmix[flexid],
-      flex_solref[flexid],
-      flex_solimp[flexid],
-      flex_friction[flexid],
-      flex_gap[flexid],
-    )
-
-    _collide_geom_triangle(
-      naconmax_in,
-      gtype,
-      geom_pos,
-      geom_rot,
-      geom_size_val,
-      t1,
-      t2,
-      t3,
-      tri_radius,
-      margin,
-      condim,
-      friction,
-      solref,
-      solimp,
-      geomid,
-      flexid,
-      v0_local,
-      worldid,
-      contact_dist_out,
-      contact_pos_out,
-      contact_frame_out,
-      contact_includemargin_out,
-      contact_friction_out,
-      contact_solref_out,
-      contact_solreffriction_out,
-      contact_solimp_out,
-      contact_dim_out,
-      contact_geom_out,
-      contact_flex_out,
-      contact_vert_out,
-      contact_worldid_out,
-      contact_type_out,
-      contact_geomcollisionid_out,
-      nacon_out,
-    )
+  _collide_geom_triangle(
+    naconmax_in,
+    gtype,
+    geom_pos,
+    geom_rot,
+    geom_size_val,
+    t1,
+    t2,
+    t3,
+    tri_radius,
+    margin,
+    condim,
+    friction,
+    solref,
+    solimp,
+    geomid,
+    flexid,
+    v0_local,
+    worldid,
+    contact_dist_out,
+    contact_pos_out,
+    contact_frame_out,
+    contact_includemargin_out,
+    contact_friction_out,
+    contact_solref_out,
+    contact_solreffriction_out,
+    contact_solimp_out,
+    contact_dim_out,
+    contact_geom_out,
+    contact_flex_out,
+    contact_vert_out,
+    contact_worldid_out,
+    contact_type_out,
+    contact_geomcollisionid_out,
+    nacon_out,
+  )
 
 
 @wp.kernel
@@ -677,6 +1129,10 @@ def _flex_narrowphase_dim3(
   flexvert_xpos_in: wp.array2d[wp.vec3],
   nworld_in: int,
   naconmax_in: int,
+  ncollision_in: wp.array[int],
+  # In:
+  collision_pair_in: wp.array[wp.vec2i],
+  collision_worldid_in: wp.array[int],
   # Data out:
   contact_dist_out: wp.array[float],
   contact_pos_out: wp.array[wp.vec3],
@@ -695,7 +1151,24 @@ def _flex_narrowphase_dim3(
   contact_geomcollisionid_out: wp.array[int],
   nacon_out: wp.array[int],
 ):
-  worldid, shellid = wp.tid()
+  collisionid = wp.tid()
+  if collisionid >= ncollision_in[0]:
+    return
+
+  pair = collision_pair_in[collisionid]
+  geomid = pair[1]
+
+  gtype = geom_type[geomid]
+  if (
+    gtype != int(GeomType.SPHERE)
+    and gtype != int(GeomType.CAPSULE)
+    and gtype != int(GeomType.BOX)
+    and gtype != int(GeomType.CYLINDER)
+  ):
+    return
+
+  shellid = pair[0]
+  worldid = collision_worldid_in[collisionid]
 
   flexid = int(-1)
   shell_offset = int(0)
@@ -727,261 +1200,402 @@ def _flex_narrowphase_dim3(
   t2 = flexvert_xpos_in[worldid, vert_adr + v1_local]
   t3 = flexvert_xpos_in[worldid, vert_adr + v2_local]
 
-  # TODO: Add a broadphase
-  for geomid in range(ngeom):
-    gtype = geom_type[geomid]
-    if (
-      gtype != int(GeomType.SPHERE)
-      and gtype != int(GeomType.CAPSULE)
-      and gtype != int(GeomType.BOX)
-      and gtype != int(GeomType.CYLINDER)
-    ):
-      continue
+  geom_margin_val = geom_margin[worldid % geom_margin.shape[0], geomid]
+  margin = geom_margin_val + tri_margin
 
-    g_contype = geom_contype[geomid]
-    g_conaffinity = geom_conaffinity[geomid]
-    f_contype = flex_contype[flexid]
-    f_conaffinity = flex_conaffinity[flexid]
-    if not ((g_contype & f_conaffinity) or (f_contype & g_conaffinity)):
-      continue
+  geom_pos = geom_xpos_in[worldid, geomid]
+  geom_rot = geom_xmat_in[worldid, geomid]
+  geom_size_val = geom_size[worldid % geom_size.shape[0], geomid]
 
-    geom_margin_val = geom_margin[worldid % geom_margin.shape[0], geomid]
-    margin = geom_margin_val + tri_margin
+  condim, gap, solref, solimp, friction = _mix_flex_contact_params(
+    geom_condim[geomid],
+    geom_priority[geomid],
+    geom_solmix[worldid % geom_solmix.shape[0], geomid],
+    geom_solref[worldid % geom_solref.shape[0], geomid],
+    geom_solimp[worldid % geom_solimp.shape[0], geomid],
+    geom_friction[worldid % geom_friction.shape[0], geomid],
+    geom_gap[worldid % geom_gap.shape[0], geomid],
+    flex_condim[flexid],
+    flex_priority[flexid],
+    flex_solmix[flexid],
+    flex_solref[flexid],
+    flex_solimp[flexid],
+    flex_friction[flexid],
+    flex_gap[flexid],
+  )
 
-    geom_pos = geom_xpos_in[worldid, geomid]
-    geom_rot = geom_xmat_in[worldid, geomid]
-    geom_size_val = geom_size[worldid % geom_size.shape[0], geomid]
+  _collide_geom_triangle(
+    naconmax_in,
+    gtype,
+    geom_pos,
+    geom_rot,
+    geom_size_val,
+    t1,
+    t2,
+    t3,
+    tri_radius,
+    margin,
+    condim,
+    friction,
+    solref,
+    solimp,
+    geomid,
+    flexid,
+    v0_local,
+    worldid,
+    contact_dist_out,
+    contact_pos_out,
+    contact_frame_out,
+    contact_includemargin_out,
+    contact_friction_out,
+    contact_solref_out,
+    contact_solreffriction_out,
+    contact_solimp_out,
+    contact_dim_out,
+    contact_geom_out,
+    contact_flex_out,
+    contact_vert_out,
+    contact_worldid_out,
+    contact_type_out,
+    contact_geomcollisionid_out,
+    nacon_out,
+  )
 
-    condim, gap, solref, solimp, friction = _mix_flex_contact_params(
-      geom_condim[geomid],
-      geom_priority[geomid],
-      geom_solmix[worldid % geom_solmix.shape[0], geomid],
-      geom_solref[worldid % geom_solref.shape[0], geomid],
-      geom_solimp[worldid % geom_solimp.shape[0], geomid],
-      geom_friction[worldid % geom_friction.shape[0], geomid],
-      geom_gap[worldid % geom_gap.shape[0], geomid],
-      flex_condim[flexid],
-      flex_priority[flexid],
-      flex_solmix[flexid],
-      flex_solref[flexid],
-      flex_solimp[flexid],
-      flex_friction[flexid],
-      flex_gap[flexid],
-    )
 
-    _collide_geom_triangle(
-      naconmax_in,
-      gtype,
-      geom_pos,
-      geom_rot,
-      geom_size_val,
-      t1,
-      t2,
-      t3,
-      tri_radius,
-      margin,
-      condim,
-      friction,
-      solref,
-      solimp,
-      geomid,
-      flexid,
-      v0_local,
-      worldid,
-      contact_dist_out,
-      contact_pos_out,
-      contact_frame_out,
-      contact_includemargin_out,
-      contact_friction_out,
-      contact_solref_out,
-      contact_solreffriction_out,
-      contact_solimp_out,
-      contact_dim_out,
-      contact_geom_out,
-      contact_flex_out,
-      contact_vert_out,
-      contact_worldid_out,
-      contact_type_out,
-      contact_geomcollisionid_out,
-      nacon_out,
-    )
+@wp.kernel
+def _flex_ncollision(
+  # In:
+  ncollision_dim2_in: wp.array[int],
+  ncollision_dim3_in: wp.array[int],
+  ncollision_plane_in: wp.array[int],
+  # Data out:
+  ncollision_out: wp.array[int],
+):
+  # return maximum number of collisions over all broadphases
+  ncollision_out[0] = wp.max(
+    ncollision_out[0],
+    wp.max(
+      ncollision_dim2_in[0],
+      wp.max(ncollision_dim3_in[0], ncollision_plane_in[0]),
+    ),
+  )
 
 
 @event_scope
-def flex_narrowphase(m: Model, d: Data):
+def flex_broadphase(m: Model, d: Data):
+  """Precompute dynamic flex object bounding boxes."""
+  wp.launch(
+    _flex_broadphase_bounds,
+    dim=(d.nworld, m.nflex),
+    inputs=[
+      m.flex_margin,
+      m.flex_gap,
+      m.flex_vertadr,
+      m.flex_vertnum,
+      m.flex_radius,
+      d.flexvert_xpos,
+    ],
+    outputs=[
+      d.flex_aabb_min,
+      d.flex_aabb_max,
+    ],
+  )
+
+
+@event_scope
+def flex_collision(m: Model, d: Data, ctx):
   """Runs collision detection between geoms and flex elements."""
   if m.nflex == 0:
     return
 
-  wp.launch(
-    _flex_narrowphase_dim2,
-    dim=(d.nworld, m.nflexelem),
-    inputs=[
-      m.ngeom,
-      m.nflex,
-      m.geom_type,
-      m.geom_contype,
-      m.geom_conaffinity,
-      m.geom_condim,
-      m.geom_priority,
-      m.geom_solmix,
-      m.geom_solref,
-      m.geom_solimp,
-      m.geom_size,
-      m.geom_friction,
-      m.geom_margin,
-      m.geom_gap,
-      m.flex_contype,
-      m.flex_conaffinity,
-      m.flex_condim,
-      m.flex_priority,
-      m.flex_solmix,
-      m.flex_solref,
-      m.flex_solimp,
-      m.flex_friction,
-      m.flex_margin,
-      m.flex_gap,
-      m.flex_dim,
-      m.flex_vertadr,
-      m.flex_elemadr,
-      m.flex_elemnum,
-      m.flex_elemdataadr,
-      m.flex_elem,
-      m.flex_radius,
-      d.geom_xpos,
-      d.geom_xmat,
-      d.flexvert_xpos,
-      d.nworld,
-      d.naconmax,
-    ],
-    outputs=[
-      d.contact.dist,
-      d.contact.pos,
-      d.contact.frame,
-      d.contact.includemargin,
-      d.contact.friction,
-      d.contact.solref,
-      d.contact.solreffriction,
-      d.contact.solimp,
-      d.contact.dim,
-      d.contact.geom,
-      d.contact.flex,
-      d.contact.vert,
-      d.contact.worldid,
-      d.contact.type,
-      d.contact.geomcollisionid,
-      d.nacon,
-    ],
-  )
+  ncollision_dim2 = wp.zeros(1, dtype=int)
+  ncollision_dim3 = wp.zeros(1, dtype=int)
+  ncollision_plane = wp.zeros(1, dtype=int)
+
+  # Update dynamic flex object bounding boxes
+  flex_broadphase(m, d)
+
+  # 2D Flex Element Collisions
+  if m.flexelem_geom_pair_filtered.shape[0] > 0:
+    wp.launch(
+      _flex_broadphase_dim2,
+      dim=(d.nworld, m.flexelem_geom_pair_filtered.shape[0]),
+      inputs=[
+        m.ngeom,
+        m.nflex,
+        m.geom_type,
+        m.geom_size,
+        m.geom_aabb,
+        m.geom_rbound,
+        m.geom_margin,
+        m.flex_margin,
+        m.flex_dim,
+        m.flex_vertadr,
+        m.flex_elemadr,
+        m.flex_elemnum,
+        m.flex_elemdataadr,
+        m.flex_elem,
+        m.flex_radius,
+        m.flexelem_geom_pair_filtered,
+        d.geom_xpos,
+        d.geom_xmat,
+        d.flexvert_xpos,
+        d.naconmax,
+        d.flex_aabb_min,
+        d.flex_aabb_max,
+      ],
+      outputs=[
+        ncollision_dim2,
+        ctx.collision_pair,
+        ctx.collision_worldid,
+      ],
+    )
+    wp.launch(
+      _flex_narrowphase_dim2,
+      dim=d.naconmax,
+      inputs=[
+        m.ngeom,
+        m.nflex,
+        m.geom_type,
+        m.geom_contype,
+        m.geom_conaffinity,
+        m.geom_condim,
+        m.geom_priority,
+        m.geom_solmix,
+        m.geom_solref,
+        m.geom_solimp,
+        m.geom_size,
+        m.geom_friction,
+        m.geom_margin,
+        m.geom_gap,
+        m.flex_contype,
+        m.flex_conaffinity,
+        m.flex_condim,
+        m.flex_priority,
+        m.flex_solmix,
+        m.flex_solref,
+        m.flex_solimp,
+        m.flex_friction,
+        m.flex_margin,
+        m.flex_gap,
+        m.flex_dim,
+        m.flex_vertadr,
+        m.flex_elemadr,
+        m.flex_elemnum,
+        m.flex_elemdataadr,
+        m.flex_elem,
+        m.flex_radius,
+        d.geom_xpos,
+        d.geom_xmat,
+        d.flexvert_xpos,
+        d.nworld,
+        d.naconmax,
+        ncollision_dim2,
+        ctx.collision_pair,
+        ctx.collision_worldid,
+      ],
+      outputs=[
+        d.contact.dist,
+        d.contact.pos,
+        d.contact.frame,
+        d.contact.includemargin,
+        d.contact.friction,
+        d.contact.solref,
+        d.contact.solreffriction,
+        d.contact.solimp,
+        d.contact.dim,
+        d.contact.geom,
+        d.contact.flex,
+        d.contact.vert,
+        d.contact.worldid,
+        d.contact.type,
+        d.contact.geomcollisionid,
+        d.nacon,
+      ],
+    )
+
+  # 3D Flex Element Collisions
+  if m.flexshell_geom_pair_filtered.shape[0] > 0:
+    wp.launch(
+      _flex_broadphase_dim3,
+      dim=(d.nworld, m.flexshell_geom_pair_filtered.shape[0]),
+      inputs=[
+        m.ngeom,
+        m.nflex,
+        m.geom_type,
+        m.geom_size,
+        m.geom_aabb,
+        m.geom_rbound,
+        m.geom_margin,
+        m.flex_margin,
+        m.flex_dim,
+        m.flex_vertadr,
+        m.flex_shellnum,
+        m.flex_shelldataadr,
+        m.flex_shell,
+        m.flex_radius,
+        m.flexshell_geom_pair_filtered,
+        d.geom_xpos,
+        d.geom_xmat,
+        d.flexvert_xpos,
+        d.naconmax,
+        d.flex_aabb_min,
+        d.flex_aabb_max,
+      ],
+      outputs=[
+        ncollision_dim3,
+        ctx.collision_pair,
+        ctx.collision_worldid,
+      ],
+    )
+    wp.launch(
+      _flex_narrowphase_dim3,
+      dim=d.naconmax,
+      inputs=[
+        m.ngeom,
+        m.nflex,
+        m.geom_type,
+        m.geom_contype,
+        m.geom_conaffinity,
+        m.geom_condim,
+        m.geom_priority,
+        m.geom_solmix,
+        m.geom_solref,
+        m.geom_solimp,
+        m.geom_size,
+        m.geom_friction,
+        m.geom_margin,
+        m.geom_gap,
+        m.flex_contype,
+        m.flex_conaffinity,
+        m.flex_condim,
+        m.flex_priority,
+        m.flex_solmix,
+        m.flex_solref,
+        m.flex_solimp,
+        m.flex_friction,
+        m.flex_margin,
+        m.flex_gap,
+        m.flex_dim,
+        m.flex_vertadr,
+        m.flex_shellnum,
+        m.flex_shelldataadr,
+        m.flex_shell,
+        m.flex_radius,
+        d.geom_xpos,
+        d.geom_xmat,
+        d.flexvert_xpos,
+        d.nworld,
+        d.naconmax,
+        ncollision_dim3,
+        ctx.collision_pair,
+        ctx.collision_worldid,
+      ],
+      outputs=[
+        d.contact.dist,
+        d.contact.pos,
+        d.contact.frame,
+        d.contact.includemargin,
+        d.contact.friction,
+        d.contact.solref,
+        d.contact.solreffriction,
+        d.contact.solimp,
+        d.contact.dim,
+        d.contact.geom,
+        d.contact.flex,
+        d.contact.vert,
+        d.contact.worldid,
+        d.contact.type,
+        d.contact.geomcollisionid,
+        d.nacon,
+      ],
+    )
+
+  # Plane Vertex Collisions
+  if m.flexvert_geom_pair_filtered.shape[0] > 0:
+    wp.launch(
+      _flex_broadphase_plane,
+      dim=(d.nworld, m.flexvert_geom_pair_filtered.shape[0]),
+      inputs=[
+        m.ngeom,
+        m.geom_type,
+        m.geom_margin,
+        m.flex_margin,
+        m.flex_vertadr,
+        m.flex_radius,
+        m.flex_vertflexid,
+        m.flexvert_geom_pair_filtered,
+        d.geom_xpos,
+        d.geom_xmat,
+        d.flexvert_xpos,
+        d.naconmax,
+        d.flex_aabb_min,
+        d.flex_aabb_max,
+      ],
+      outputs=[
+        ncollision_plane,
+        ctx.collision_pair,
+        ctx.collision_worldid,
+      ],
+    )
+    wp.launch(
+      _flex_plane_narrowphase,
+      dim=d.naconmax,
+      inputs=[
+        m.ngeom,
+        m.nflexvert,
+        m.geom_type,
+        m.geom_condim,
+        m.geom_priority,
+        m.geom_solmix,
+        m.geom_solref,
+        m.geom_solimp,
+        m.geom_friction,
+        m.geom_margin,
+        m.geom_gap,
+        m.flex_condim,
+        m.flex_priority,
+        m.flex_solmix,
+        m.flex_solref,
+        m.flex_solimp,
+        m.flex_friction,
+        m.flex_margin,
+        m.flex_gap,
+        m.flex_vertadr,
+        m.flex_radius,
+        m.flex_vertflexid,
+        d.geom_xpos,
+        d.geom_xmat,
+        d.flexvert_xpos,
+        d.nworld,
+        d.naconmax,
+        ncollision_plane,
+        ctx.collision_pair,
+        ctx.collision_worldid,
+      ],
+      outputs=[
+        d.contact.dist,
+        d.contact.pos,
+        d.contact.frame,
+        d.contact.includemargin,
+        d.contact.friction,
+        d.contact.solref,
+        d.contact.solreffriction,
+        d.contact.solimp,
+        d.contact.dim,
+        d.contact.geom,
+        d.contact.flex,
+        d.contact.vert,
+        d.contact.worldid,
+        d.contact.type,
+        d.contact.geomcollisionid,
+        d.nacon,
+      ],
+    )
 
   wp.launch(
-    _flex_narrowphase_dim3,
-    dim=(d.nworld, m.nflexshelldata // 3),
-    inputs=[
-      m.ngeom,
-      m.nflex,
-      m.geom_type,
-      m.geom_contype,
-      m.geom_conaffinity,
-      m.geom_condim,
-      m.geom_priority,
-      m.geom_solmix,
-      m.geom_solref,
-      m.geom_solimp,
-      m.geom_size,
-      m.geom_friction,
-      m.geom_margin,
-      m.geom_gap,
-      m.flex_contype,
-      m.flex_conaffinity,
-      m.flex_condim,
-      m.flex_priority,
-      m.flex_solmix,
-      m.flex_solref,
-      m.flex_solimp,
-      m.flex_friction,
-      m.flex_margin,
-      m.flex_gap,
-      m.flex_dim,
-      m.flex_vertadr,
-      m.flex_shellnum,
-      m.flex_shelldataadr,
-      m.flex_shell,
-      m.flex_radius,
-      d.geom_xpos,
-      d.geom_xmat,
-      d.flexvert_xpos,
-      d.nworld,
-      d.naconmax,
-    ],
-    outputs=[
-      d.contact.dist,
-      d.contact.pos,
-      d.contact.frame,
-      d.contact.includemargin,
-      d.contact.friction,
-      d.contact.solref,
-      d.contact.solreffriction,
-      d.contact.solimp,
-      d.contact.dim,
-      d.contact.geom,
-      d.contact.flex,
-      d.contact.vert,
-      d.contact.worldid,
-      d.contact.type,
-      d.contact.geomcollisionid,
-      d.nacon,
-    ],
-  )
-
-  wp.launch(
-    _flex_plane_narrowphase,
-    dim=(d.nworld, m.nflexvert),
-    inputs=[
-      m.ngeom,
-      m.nflexvert,
-      m.geom_type,
-      m.geom_condim,
-      m.geom_priority,
-      m.geom_solmix,
-      m.geom_solref,
-      m.geom_solimp,
-      m.geom_friction,
-      m.geom_margin,
-      m.geom_gap,
-      m.flex_condim,
-      m.flex_priority,
-      m.flex_solmix,
-      m.flex_solref,
-      m.flex_solimp,
-      m.flex_friction,
-      m.flex_margin,
-      m.flex_gap,
-      m.flex_vertadr,
-      m.flex_radius,
-      m.flex_vertflexid,
-      d.geom_xpos,
-      d.geom_xmat,
-      d.flexvert_xpos,
-      d.nworld,
-      d.naconmax,
-    ],
-    outputs=[
-      d.contact.dist,
-      d.contact.pos,
-      d.contact.frame,
-      d.contact.includemargin,
-      d.contact.friction,
-      d.contact.solref,
-      d.contact.solreffriction,
-      d.contact.solimp,
-      d.contact.dim,
-      d.contact.geom,
-      d.contact.flex,
-      d.contact.vert,
-      d.contact.worldid,
-      d.contact.type,
-      d.contact.geomcollisionid,
-      d.nacon,
-    ],
+    _flex_ncollision,
+    dim=1,
+    inputs=[ncollision_dim2, ncollision_dim3, ncollision_plane],
+    outputs=[d.ncollision],
   )
