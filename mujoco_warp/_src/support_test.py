@@ -130,10 +130,9 @@ class SupportTest(parameterized.TestCase):
 
     _assert_eq(force.numpy()[0], mj_force, "contact force")
 
-  def test_get_state(self):
-    mjm, mjd, m, d = test_data.fixture(
-      "constraints.xml", keyframe=0, ctrl_noise=1.0, qfrc_noise=1.0, xfrc_noise=1.0, mocap_noise=1.0
-    )
+  @parameterized.parameters("constraints.xml", "pendula.xml")
+  def test_get_state(self, xml):
+    mjm, mjd, m, d = test_data.fixture(xml, keyframe=0, ctrl_noise=1.0, qfrc_noise=1.0, xfrc_noise=1.0, mocap_noise=1.0)
 
     size = mujoco.mj_stateSize(mjm, mujoco.mjtState.mjSTATE_INTEGRATION)
 
@@ -153,10 +152,9 @@ class SupportTest(parameterized.TestCase):
     _assert_eq(mjw_state2.numpy()[0], 0, "state0")
     _assert_eq(mjw_state2.numpy()[1], mj_state, "state1")
 
-  def test_set_state(self):
-    mjm, mjd, m, d = test_data.fixture(
-      "constraints.xml", keyframe=0, ctrl_noise=1.0, qfrc_noise=1.0, xfrc_noise=1.0, mocap_noise=1.0
-    )
+  @parameterized.parameters("constraints.xml", "pendula.xml")
+  def test_set_state(self, xml):
+    mjm, mjd, m, d = test_data.fixture(xml, keyframe=0, ctrl_noise=1.0, qfrc_noise=1.0, xfrc_noise=1.0, mocap_noise=1.0)
 
     size = mujoco.mj_stateSize(mjm, mujoco.mjtState.mjSTATE_INTEGRATION)
 
