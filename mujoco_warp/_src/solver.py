@@ -29,7 +29,6 @@ from mujoco_warp._src.types import IslandSolverContext
 from mujoco_warp._src.types import SolverContext
 from mujoco_warp._src.warp_util import cache_kernel
 from mujoco_warp._src.warp_util import event_scope
-from mujoco_warp._src.warp_util import scoped_mathdx_gemm_disabled
 
 wp.set_module_options({"enable_backward": False})
 
@@ -2307,7 +2306,7 @@ def update_gradient_JTDAJ_dense_tiled(nv_pad: int, tile_size: int, njmax: int):
 
   TILE_SIZE_K = tile_size
 
-  @wp.kernel(module="unique", enable_backward=False)
+  @wp.kernel(module="unique", enable_backward=False, module_options={"enable_mathdx_gemm": False})
   def kernel(
     # Data in:
     nefc_in: wp.array[int],
@@ -2692,7 +2691,7 @@ def update_gradient_cholesky(tile_size: int):
 
 @cache_kernel
 def update_gradient_cholesky_blocked(tile_size: int, matrix_size: int):
-  @wp.kernel(module="unique", enable_backward=False)
+  @wp.kernel(module="unique", enable_backward=False, module_options={"enable_mathdx_gemm": False})
   def kernel(
     # In:
     ctx_done_in: wp.array[bool],
@@ -2724,7 +2723,7 @@ def update_gradient_cholesky_blocked(tile_size: int, matrix_size: int):
 def update_gradient_cholesky_blocked_skip_unchanged(tile_size: int, matrix_size: int):
   """Blocked Cholesky that skips factorization when no constraints changed."""
 
-  @wp.kernel(module="unique", enable_backward=False)
+  @wp.kernel(module="unique", enable_backward=False, module_options={"enable_mathdx_gemm": False})
   def kernel(
     # In:
     ctx_done_in: wp.array[bool],
@@ -2888,21 +2887,20 @@ def _update_gradient(m: types.Model, d: types.Data, ctx: SolverContext):
         outputs=[ctx.h],
       )
     else:
-      with scoped_mathdx_gemm_disabled():
-        wp.launch_tiled(
-          update_gradient_JTDAJ_dense_tiled(m.nv_pad, types.TILE_SIZE_JTDAJ_DENSE, d.njmax),
-          dim=d.nworld,
-          inputs=[
-            d.nefc,
-            d.M,
-            d.efc.J,
-            d.efc.D,
-            d.efc.state,
-            ctx.done,
-          ],
-          outputs=[ctx.h],
-          block_dim=m.block_dim.update_gradient_JTDAJ_dense,
-        )
+      wp.launch_tiled(
+        update_gradient_JTDAJ_dense_tiled(m.nv_pad, types.TILE_SIZE_JTDAJ_DENSE, d.njmax),
+        dim=d.nworld,
+        inputs=[
+          d.nefc,
+          d.M,
+          d.efc.J,
+          d.efc.D,
+          d.efc.state,
+          ctx.done,
+        ],
+        outputs=[ctx.h],
+        block_dim=m.block_dim.update_gradient_JTDAJ_dense,
+      )
 
     if m.opt.cone == types.ConeType.ELLIPTIC:
       # Optimization: launching update_gradient_JTCJ with limited number of blocks on a GPU.
