@@ -30,8 +30,8 @@ To run specific benchmarks, use the `-f` or `--filter` option with a regex patte
 # Run only the humanoid benchmark
 uv run python3 benchmarks/run.py -f humanoid
 
-# Run all Apollo variants
-uv run python3 benchmarks/run.py -f apollo
+# Run all Unitree G1 variants
+uv run python3 benchmarks/run.py -f unitree_g1
 
 # Run all benchmarks with "cloth" in the name
 uv run python3 benchmarks/run.py -f cloth

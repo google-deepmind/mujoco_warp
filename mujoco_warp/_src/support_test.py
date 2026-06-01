@@ -25,8 +25,12 @@ import mujoco_warp as mjwarp
 from mujoco_warp import ConeType
 from mujoco_warp import State
 from mujoco_warp import test_data
-from mujoco_warp._src.block_cholesky import create_blocked_cholesky_func
-from mujoco_warp._src.block_cholesky import create_blocked_cholesky_solve_func
+from mujoco_warp._src import io
+from mujoco_warp._src import island
+from mujoco_warp._src import solver
+from mujoco_warp._src import support
+from mujoco_warp._src import types
+from mujoco_warp._src.block_cholesky import create_blocked_cholesky_factorize_solve_func
 
 # tolerance for difference between MuJoCo and MJWarp support calculations - mostly
 # due to float precision
@@ -40,6 +44,14 @@ def _assert_eq(a, b, name):
 
 
 class SupportTest(parameterized.TestCase):
+  def setUp(self):
+    super().setUp()
+    io.ENABLE_ISLANDS = True
+
+  def tearDown(self):
+    io.ENABLE_ISLANDS = False
+    super().tearDown()
+
   @parameterized.parameters(mujoco.mjtJacobian.mjJAC_SPARSE, mujoco.mjtJacobian.mjJAC_DENSE)
   def test_mul_m(self, jacobian):
     """Tests mul_m."""
@@ -118,10 +130,9 @@ class SupportTest(parameterized.TestCase):
 
     _assert_eq(force.numpy()[0], mj_force, "contact force")
 
-  def test_get_state(self):
-    mjm, mjd, m, d = test_data.fixture(
-      "constraints.xml", keyframe=0, ctrl_noise=1.0, qfrc_noise=1.0, xfrc_noise=1.0, mocap_noise=1.0
-    )
+  @parameterized.parameters("constraints.xml", "pendula.xml")
+  def test_get_state(self, xml):
+    mjm, mjd, m, d = test_data.fixture(xml, keyframe=0, ctrl_noise=1.0, qfrc_noise=1.0, xfrc_noise=1.0, mocap_noise=1.0)
 
     size = mujoco.mj_stateSize(mjm, mujoco.mjtState.mjSTATE_INTEGRATION)
 
@@ -141,10 +152,9 @@ class SupportTest(parameterized.TestCase):
     _assert_eq(mjw_state2.numpy()[0], 0, "state0")
     _assert_eq(mjw_state2.numpy()[1], mj_state, "state1")
 
-  def test_set_state(self):
-    mjm, mjd, m, d = test_data.fixture(
-      "constraints.xml", keyframe=0, ctrl_noise=1.0, qfrc_noise=1.0, xfrc_noise=1.0, mocap_noise=1.0
-    )
+  @parameterized.parameters("constraints.xml", "pendula.xml")
+  def test_set_state(self, xml):
+    mjm, mjd, m, d = test_data.fixture(xml, keyframe=0, ctrl_noise=1.0, qfrc_noise=1.0, xfrc_noise=1.0, mocap_noise=1.0)
 
     size = mujoco.mj_stateSize(mjm, mujoco.mjtState.mjSTATE_INTEGRATION)
 
@@ -201,9 +211,8 @@ class SupportTest(parameterized.TestCase):
     nv_pad = m.nv_pad
     nworld = d.nworld
 
-    # Create combined factor and solve kernel as in solver.py
     @wp.kernel(module="unique", enable_backward=False)
-    def combined_cholesky_kernel(
+    def fused_cholesky_kernel(
       grad_in: wp.array3d[float],
       h_in: wp.array3d[float],
       done_in: wp.array[bool],
@@ -216,9 +225,8 @@ class SupportTest(parameterized.TestCase):
       if done_in[worldid]:
         return
 
-      wp.static(create_blocked_cholesky_func(TILE_SIZE))(h_in[worldid], nv_pad, hfactor_in[worldid])
-      wp.static(create_blocked_cholesky_solve_func(TILE_SIZE, nv_pad))(
-        hfactor_in[worldid], grad_in[worldid], nv_pad, Mgrad_out[worldid]
+      wp.static(create_blocked_cholesky_factorize_solve_func(TILE_SIZE, nv_pad))(
+        h_in[worldid], grad_in[worldid], nv_pad, hfactor_in[worldid], Mgrad_out[worldid]
       )
 
     # Create test vector and fill the built-in arrays
@@ -248,25 +256,24 @@ class SupportTest(parameterized.TestCase):
     # Initialize padding region to identity
     L_init[0, nv:, nv:] = np.eye(nv_pad - nv, dtype=np.float32)
 
-    hfactor = wp.array(L_init, dtype=float)
+    hfactor_fused = wp.array(L_init, dtype=float)
 
-    Mgrad = wp.zeros((nworld, nv_pad), dtype=float)
+    Mgrad_fused = wp.zeros((nworld, nv_pad), dtype=float)
 
     # Ensure done is False so kernel executes
     done = wp.zeros((nworld,), dtype=bool)
 
-    # Launch with same dimensions as solver.py, using inline arrays
     wp.launch_tiled(
-      combined_cholesky_kernel,
+      fused_cholesky_kernel,
       dim=nworld,
-      inputs=[grad.reshape(shape=(nworld, nv_pad, 1)), h, done, hfactor],
-      outputs=[Mgrad.reshape(shape=(nworld, nv_pad, 1))],
+      inputs=[grad.reshape(shape=(nworld, nv_pad, 1)), h, done, hfactor_fused],
+      outputs=[Mgrad_fused.reshape(shape=(nworld, nv_pad, 1))],
       block_dim=m.block_dim.update_gradient_cholesky,
     )
     wp.synchronize()
 
-    U_result = hfactor.numpy()[0]
-    x_result = Mgrad.numpy()[0]
+    U_result = hfactor_fused.numpy()[0]
+    x_result = Mgrad_fused.numpy()[0]
 
     # Verify padding outside active region doesn't affect active computation
     # Off-diagonal padding should be zero (active region shouldn't touch padding)
@@ -395,6 +402,64 @@ class SupportTest(parameterized.TestCase):
     for w in range(2):
       _assert_eq(jacp_wp.numpy()[w], jacp_mj, f"jacp world {w}")
       _assert_eq(jacr_wp.numpy()[w], jacr_mj, f"jacr world {w}")
+
+  @parameterized.parameters(
+    mujoco.mjtJacobian.mjJAC_SPARSE,
+    mujoco.mjtJacobian.mjJAC_DENSE,
+  )
+  def test_mul_m_island(self, jacobian):
+    """Tests mul_m_island matches mul_m for all islands in parallel."""
+    mjm, mjd, m, d = test_data.fixture(
+      "constraints.xml",
+      overrides={"opt.jacobian": jacobian},
+    )
+    m.opt.disableflags &= ~types.DisableBit.ISLAND
+
+    ctx = solver.create_island_solver_context(m, d)
+    island.compute_island_mapping(m, d, ctx)
+
+    # Random vector in global DOF order
+    np.random.seed(0)
+    vec_np = np.random.randn(1, m.nv).astype(np.float32)
+
+    # Global mul_m
+    vec_global = wp.from_numpy(vec_np, dtype=float)
+    res_global = wp.zeros((1, m.nv), dtype=float)
+    mjwarp.mul_m(m, d, res_global, vec_global)
+    res_global_np = res_global.numpy()[0]
+
+    # Gather vec into island-local order
+    nidof = d.nidof.numpy()[0]
+    map_idof2dof = d.map_idof2dof.numpy()[0]
+    vec_island_np = np.zeros((1, m.nv), dtype=np.float32)
+    for idof in range(nidof):
+      vec_island_np[0, idof] = vec_np[0, map_idof2dof[idof]]
+
+    vec_island = wp.from_numpy(vec_island_np, dtype=float)
+    res_island = wp.zeros((1, m.nv), dtype=float)
+
+    support.mul_m_island(
+      m,
+      d,
+      res_island,
+      vec_island,
+      d.nidof,
+      d.map_idof2dof,
+      d.map_dof2idof,
+      d.dof_islandid,
+    )
+
+    # Scatter result back to global order and compare
+    res_island_np = res_island.numpy()[0]
+    for idof in range(nidof):
+      dof = map_idof2dof[idof]
+      dof_isl = d.dof_island.numpy()[0, dof]
+      if dof_isl >= 0:
+        _assert_eq(
+          res_island_np[idof],
+          res_global_np[dof],
+          f"mul_m_island idof={idof} dof={dof}",
+        )
 
 
 if __name__ == "__main__":

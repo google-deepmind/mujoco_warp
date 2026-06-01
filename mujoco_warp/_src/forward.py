@@ -20,12 +20,14 @@ import warp as wp
 from mujoco_warp._src import collision_driver
 from mujoco_warp._src import constraint
 from mujoco_warp._src import derivative
+from mujoco_warp._src import history
 from mujoco_warp._src import island
 from mujoco_warp._src import math
 from mujoco_warp._src import passive
 from mujoco_warp._src import sensor
 from mujoco_warp._src import smooth
 from mujoco_warp._src import solver
+from mujoco_warp._src import types
 from mujoco_warp._src import util_misc
 from mujoco_warp._src.support import next_act
 from mujoco_warp._src.support import xfrc_accumulate
@@ -302,6 +304,9 @@ def _advance(m: Model, d: Data, qacc: wp.array, qvel: Optional[wp.array] = None)
     outputs=[d.qpos],
   )
 
+  # advance history buffers before time advance
+  history.insert_ctrl_history(m, d)
+
   wp.launch(
     _next_time,
     dim=d.nworld,
@@ -574,10 +579,56 @@ def rungekutta4(m: Model, d: Data):
   _advance(m, d, qacc_rk, qvel_rk)
 
 
+@wp.kernel
+def _map_m2d(
+  # Model:
+  mapM2D: wp.array[int],
+  is_sparse: bool,
+  # In:
+  qDi: wp.array[int],
+  qDj: wp.array[int],
+  qH_M: wp.array3d[float],
+  # Data out:
+  qLU_out: wp.array3d[float],
+):
+  worldid, elemid = wp.tid()
+  if is_sparse:
+    m_idx = mapM2D[elemid]
+    if m_idx >= 0:
+      qLU_out[worldid, 0, elemid] = qH_M[worldid, 0, m_idx]
+    else:
+      qLU_out[worldid, 0, elemid] = 0.0
+  else:
+    i = qDi[elemid]
+    j = qDj[elemid]
+    qLU_out[worldid, 0, elemid] = qH_M[worldid, i, j]
+
+
 @event_scope
 def implicit(m: Model, d: Data):
   """Integrates fully implicit in velocity."""
-  if ~(m.opt.disableflags | ~(DisableBit.ACTUATION | DisableBit.SPRING | DisableBit.DAMPER)):
+  if m.opt.integrator == IntegratorType.IMPLICIT:
+    qH_M = wp.empty(d.M.shape, dtype=float)
+
+    # 1. Compute M - dt * qDeriv_smooth in M-structure
+    derivative.deriv_smooth_vel(m, d, qH_M)
+
+    # 2. Map M-structure to D-structure
+    wp.launch(
+      _map_m2d,
+      dim=(d.nworld, m.nD),
+      inputs=[m.mapM2D, m.is_sparse, m.qD_fullm_i, m.qD_fullm_j, qH_M],
+      outputs=[d.qLU],
+    )
+
+    # 3. Compute RNE derivatives, scale by timestep, and subtract in-place from qLU
+    derivative.deriv_rne_vel(m, d, d.qLU, flg_subtract=True)
+
+    # 4. Factorize and solve: qacc = qLU \ Ma
+    qacc = wp.empty((d.nworld, m.nv), dtype=float)
+    smooth.factor_solve_lu(m, d, d.qLU, qacc, d.efc.Ma)
+    _advance(m, d, qacc)
+  elif ~(m.opt.disableflags | ~(DisableBit.ACTUATION | DisableBit.SPRING | DisableBit.DAMPER)):
     if m.is_sparse:
       qDeriv = wp.empty((d.nworld, 1, m.nC), dtype=float)
       qLD = wp.empty((d.nworld, 1, m.nC), dtype=float)
@@ -614,8 +665,7 @@ def fwd_position(m: Model, d: Data, factorize: bool = True):
   if m.opt.run_collision_detection:
     collision_driver.collision(m, d)
   constraint.make_constraint(m, d)
-  # TODO(team): remove False after island features are more complete
-  if False and not (m.opt.disableflags & DisableBit.ISLAND):
+  if m.ntree > 1 and not (m.opt.disableflags & types.DisableBit.ISLAND):
     island.island(m, d)
   smooth.transmission(m, d)
 
@@ -1099,6 +1149,13 @@ def fwd_actuation(m: Model, d: Data):
     d.actuator_force.zero_()
     return
 
+  # read delayed ctrl (or direct copy if no delay)
+  if m.nhistory > 0:
+    ctrl = wp.empty((d.nworld, m.nu), dtype=float)
+    history.read_ctrl_delayed(m, d, ctrl)
+  else:
+    ctrl = d.ctrl
+
   wp.launch(
     _actuator_force,
     dim=(d.nworld, m.nu),
@@ -1123,7 +1180,7 @@ def fwd_actuation(m: Model, d: Data):
       m.actuator_acc0,
       m.actuator_lengthrange,
       d.act,
-      d.ctrl,
+      ctrl,
       d.actuator_length,
       d.actuator_velocity,
       m.opt.disableflags & DisableBit.CLAMPCTRL,
@@ -1267,7 +1324,7 @@ def step(m: Model, d: Data):
     euler(m, d)
   elif m.opt.integrator == IntegratorType.RK4:
     rungekutta4(m, d)
-  elif m.opt.integrator == IntegratorType.IMPLICITFAST:
+  elif m.opt.integrator in (IntegratorType.IMPLICITFAST, IntegratorType.IMPLICIT):
     implicit(m, d)
   else:
     raise NotImplementedError(f"integrator {m.opt.integrator} not implemented.")
@@ -1308,8 +1365,7 @@ def step2(m: Model, d: Data):
   sensor.sensor_acc(m, d)
 
   # integrate with Euler or implicitfast
-  # TODO(team): implicit
-  if m.opt.integrator == IntegratorType.IMPLICITFAST:
+  if m.opt.integrator in (IntegratorType.IMPLICITFAST, IntegratorType.IMPLICIT):
     implicit(m, d)
   else:
     # note: RK4 defaults to Euler

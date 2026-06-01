@@ -33,6 +33,9 @@ from mujoco_warp._src.types import TrnType
 from mujoco_warp._src.types import vec10
 from mujoco_warp._src.util_pkg import check_version
 
+# TODO(team): remove after improving island solver performance
+ENABLE_ISLANDS = False
+
 
 def _is_array_spec(typ) -> bool:
   """Check if a type annotation is an array spec (wp.array instance or bracket annotation)."""
@@ -62,6 +65,61 @@ def _create_array(data: Any, spec, sizes: dict[str, int]) -> wp.array | None:
     # also set stride 0 to 0 which is expected legacy behavior (but is deprecated)
     array.strides = (0,) + array.strides[1:]
   return array
+
+
+def _create_constraint(
+  mjm,
+  nworld: int,
+  njmax: int,
+  njmax_nnz: int,
+  sizes: dict,
+  island_enabled: bool,
+  mjd=None,
+) -> types.Constraint:
+  """Construct a types.Constraint with standard and island local fields allocated properly."""
+  efc_kwargs = {"J_rownnz": None, "J_rowadr": None, "J_colind": None, "J": None}
+  sparse = is_sparse(mjm)
+
+  for f in dataclasses.fields(types.Constraint):
+    if f.name == "itype":
+      efc_kwargs[f.name] = wp.empty((nworld, njmax if island_enabled else 0), dtype=int)
+    elif f.name == "iid":
+      efc_kwargs[f.name] = wp.empty((nworld, njmax if island_enabled else 0), dtype=int)
+    elif f.name == "iJ_rownnz":
+      efc_kwargs[f.name] = wp.empty((nworld, njmax if island_enabled else 0) if sparse else (nworld, 0), dtype=int)
+    elif f.name == "iJ_rowadr":
+      efc_kwargs[f.name] = wp.empty((nworld, njmax if island_enabled else 0) if sparse else (nworld, 0), dtype=int)
+    elif f.name == "iJ_colind":
+      efc_kwargs[f.name] = wp.empty((nworld, 1, njmax_nnz if island_enabled else 0) if sparse else (nworld, 0, 0), dtype=int)
+    elif f.name == "iJ":
+      efc_kwargs[f.name] = wp.empty(
+        (nworld, 1, njmax_nnz if island_enabled else 0) if sparse else (nworld, njmax if island_enabled else 0, mjm.nv),
+        dtype=float,
+      )
+    elif f.name == "iD":
+      efc_kwargs[f.name] = wp.empty((nworld, njmax if island_enabled else 0), dtype=float)
+    elif f.name == "iaref":
+      efc_kwargs[f.name] = wp.empty((nworld, njmax if island_enabled else 0), dtype=float)
+    elif f.name == "ifrictionloss":
+      efc_kwargs[f.name] = wp.empty((nworld, njmax if island_enabled else 0), dtype=float)
+    elif f.name == "iforce":
+      efc_kwargs[f.name] = wp.empty((nworld, njmax if island_enabled else 0), dtype=float)
+    elif f.name == "istate":
+      efc_kwargs[f.name] = wp.empty((nworld, njmax if island_enabled else 0), dtype=int)
+    else:
+      if f.name in efc_kwargs:
+        continue
+
+      if mjd is not None:
+        shape = tuple(sizes[dim] if isinstance(dim, str) else dim for dim in f.type.shape)
+        val = np.zeros(shape, dtype=f.type.dtype)
+        if f.name in ("type", "id", "pos", "margin", "D", "vel", "aref", "frictionloss", "force"):
+          val[:, : mjd.nefc] = np.tile(getattr(mjd, "efc_" + f.name), (nworld, 1))
+        efc_kwargs[f.name] = wp.array(val, dtype=f.type.dtype)
+      else:
+        efc_kwargs[f.name] = _create_array(None, f.type, sizes)
+
+  return types.Constraint(**efc_kwargs)
 
 
 def is_sparse(mjm: mujoco.MjModel) -> bool:
@@ -182,6 +240,12 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
   if hasattr(mjm.opt, "impratio"):
     opt_kwargs["impratio_invsqrt"] = 1.0 / np.sqrt(np.maximum(mjm.opt.impratio, mujoco.mjMINVAL))
   opt = types.Option(**opt_kwargs)
+
+  # islands are disabled by default while performance is being improved
+  # override by setting io.ENABLE_ISLANDS = True
+  # TODO(team): remove after improving island solver performance
+  if not ENABLE_ISLANDS:
+    opt.disableflags |= types.DisableBit.ISLAND
 
   # C MuJoCo tolerance was chosen for float64 architecture, but we default to float32 on GPU
   # adjust the tolerance for lower precision, to avoid the solver spending iterations needlessly
@@ -914,6 +978,42 @@ def _resolve_batch_size(na: int | None, n: int | None, nworld: int, default: int
   return default
 
 
+def _allocate_island_arrays(
+  mjm: mujoco.MjModel,
+  d: types.Data,
+  nworld: int,
+  njmax: int,
+  island_enabled: bool,
+  mjd: mujoco.MjData,
+):
+  ntree_size = mjm.ntree if island_enabled else 0
+  nv_size = mjm.nv if island_enabled else 0
+  njmax_size = njmax if island_enabled else 0
+
+  d.nisland = wp.array(np.full(nworld, mjd.nisland), dtype=int)
+  d.tree_island = wp.array(np.tile(mjd.tree_island, (nworld, 1 if island_enabled else 0)), dtype=int)
+  d.dof_island = wp.array(np.tile(mjd.dof_island, (nworld, 1 if island_enabled else 0)), dtype=int)
+
+  d.island_dofadr = wp.empty((nworld, ntree_size), dtype=int)
+  d.island_nv = wp.empty((nworld, ntree_size), dtype=int)
+  d.island_nefc = wp.empty((nworld, ntree_size), dtype=int)
+  d.island_ne = wp.empty((nworld, ntree_size), dtype=int)
+  d.island_nf = wp.empty((nworld, ntree_size), dtype=int)
+  d.island_efcadr = wp.empty((nworld, ntree_size), dtype=int)
+  d.nidof = wp.empty((nworld if island_enabled else 0,), dtype=int)
+  d.map_dof2idof = wp.empty((nworld, nv_size), dtype=int)
+  d.map_idof2dof = wp.empty((nworld, nv_size), dtype=int)
+  d.map_efc2iefc = wp.empty((nworld, njmax_size), dtype=int)
+  d.map_iefc2efc = wp.empty((nworld, njmax_size), dtype=int)
+
+  d.dof_islandid = wp.empty((nworld, nv_size), dtype=int)
+  d.efc_islandid = wp.empty((nworld, njmax_size), dtype=int)
+  d.iqacc = wp.empty((nworld, nv_size), dtype=float)
+  d.iqacc_smooth = wp.empty((nworld, nv_size), dtype=float)
+  d.iqfrc_smooth = wp.empty((nworld, nv_size), dtype=float)
+  d.iqfrc_constraint = wp.empty((nworld, nv_size), dtype=float)
+
+
 def make_data(
   mjm: mujoco.MjModel,
   nworld: int = 1,
@@ -995,7 +1095,8 @@ def make_data(
 
   contact = types.Contact(**{f.name: _create_array(None, f.type, sizes) for f in dataclasses.fields(types.Contact)})
   contact.efc_address = wp.array(np.full((naconmax, sizes["nmaxpyramid"]), -1, dtype=int), dtype=int)
-  efc = types.Constraint(**{f.name: _create_array(None, f.type, sizes) for f in dataclasses.fields(types.Constraint)})
+
+  efc = _create_constraint(mjm, nworld, njmax, njmax_nnz, sizes, ENABLE_ISLANDS)
 
   if is_sparse(mjm):
     efc.J_rownnz = wp.zeros((nworld, njmax), dtype=int)
@@ -1052,6 +1153,24 @@ def make_data(
     # island arrays
     "nisland": None,
     "tree_island": None,
+    "dof_island": None,
+    "island_dofadr": None,
+    "island_nv": None,
+    "island_nefc": None,
+    "island_ne": None,
+    "island_nf": None,
+    "island_efcadr": None,
+    "nidof": None,
+    "map_dof2idof": None,
+    "map_idof2dof": None,
+    "map_efc2iefc": None,
+    "map_iefc2efc": None,
+    "dof_islandid": None,
+    "efc_islandid": None,
+    "iqacc": None,
+    "iqacc_smooth": None,
+    "iqfrc_smooth": None,
+    "iqfrc_constraint": None,
   }
   for f in dataclasses.fields(types.Data):
     if f.name in d_kwargs:
@@ -1067,9 +1186,7 @@ def make_data(
     d.M = wp.zeros((nworld, sizes["nv_pad"], sizes["nv_pad"]), dtype=float)
     d.qLD = wp.zeros((nworld, mjm.nv, mjm.nv), dtype=float)
 
-  # island discovery arrays
-  d.nisland = wp.zeros((nworld,), dtype=int)
-  d.tree_island = wp.zeros((nworld, mjm.ntree), dtype=int)
+  _allocate_island_arrays(mjm, d, nworld, njmax, ENABLE_ISLANDS, mjd)
 
   return d
 
@@ -1204,16 +1321,7 @@ def put_data(
   # create efc
   efc_kwargs = {"J_rownnz": None, "J_rowadr": None, "J_colind": None, "J": None}
 
-  for f in dataclasses.fields(types.Constraint):
-    if f.name in efc_kwargs:
-      continue
-    shape = tuple(sizes[dim] if isinstance(dim, str) else dim for dim in f.type.shape)
-    val = np.zeros(shape, dtype=f.type.dtype)
-    if f.name in ("type", "id", "pos", "margin", "D", "vel", "aref", "frictionloss", "force"):
-      val[:, : mjd.nefc] = np.tile(getattr(mjd, "efc_" + f.name), (nworld, 1))
-    efc_kwargs[f.name] = wp.array(val, dtype=f.type.dtype)
-
-  efc = types.Constraint(**efc_kwargs)
+  efc = _create_constraint(mjm, nworld, njmax, njmax_nnz, sizes, ENABLE_ISLANDS, mjd)
 
   if is_sparse(mjm):
     J_rownnz = np.zeros(njmax, dtype=np.int32)
@@ -1270,6 +1378,24 @@ def put_data(
     # island arrays
     "nisland": None,
     "tree_island": None,
+    "dof_island": None,
+    "island_dofadr": None,
+    "island_nv": None,
+    "island_nefc": None,
+    "island_ne": None,
+    "island_nf": None,
+    "island_efcadr": None,
+    "nidof": None,
+    "map_dof2idof": None,
+    "map_idof2dof": None,
+    "map_efc2iefc": None,
+    "map_iefc2efc": None,
+    "dof_islandid": None,
+    "efc_islandid": None,
+    "iqacc": None,
+    "iqacc_smooth": None,
+    "iqfrc_smooth": None,
+    "iqfrc_constraint": None,
   }
   for f in dataclasses.fields(types.Data):
     if f.name in d_kwargs:
@@ -1302,9 +1428,7 @@ def put_data(
     d.M = wp.array(np.full((nworld, sizes["nv_pad"], sizes["nv_pad"]), M_padded), dtype=float)
     d.qLD = wp.array(np.full((nworld, mjm.nv, mjm.nv), qLD), dtype=float)
 
-  # island arrays
-  d.nisland = wp.array(np.full(nworld, mjd.nisland), dtype=int)
-  d.tree_island = wp.array(np.tile(mjd.tree_island, (nworld, 1)), dtype=int)
+  _allocate_island_arrays(mjm, d, nworld, njmax, ENABLE_ISLANDS, mjd)
 
   d.nacon = wp.array([mjd.ncon * nworld], dtype=int)
 
@@ -1438,6 +1562,9 @@ def get_data_into(
   result.qfrc_constraint[:] = d.qfrc_constraint.numpy()[world_id]
   result.qfrc_inverse[:] = d.qfrc_inverse.numpy()[world_id]
 
+  if mjm.nhistory > 0:
+    result.history[:] = d.history.numpy()[world_id]
+
   # contact
   result.contact.dist[:ncon] = d.contact.dist.numpy()[ncon_filter]
   result.contact.pos[:ncon] = d.contact.pos.numpy()[ncon_filter]
@@ -1511,6 +1638,7 @@ def get_data_into(
   result.efc_frictionloss[:] = d.efc.frictionloss.numpy()[world_id, efc_idx]
   result.efc_state[:] = d.efc.state.numpy()[world_id, efc_idx]
   result.efc_force[:] = d.efc.force.numpy()[world_id, efc_idx]
+  result.efc_island[:] = d.efc.island.numpy()[world_id, efc_idx]
 
   # rne_postconstraint
   result.cacc[:] = d.cacc.numpy()[world_id]
@@ -1532,8 +1660,51 @@ def get_data_into(
   # islands
   nisland = d.nisland.numpy()[world_id]
   result.nisland = nisland
-  if nisland:
+  if d.tree_island.shape[1] > 0 and nisland:
     result.tree_island[:] = d.tree_island.numpy()[world_id]
+    result.dof_island[:] = d.dof_island.numpy()[world_id]
+    result.island_dofadr[:nisland] = d.island_dofadr.numpy()[world_id, :nisland]
+    result.island_nv[:nisland] = d.island_nv.numpy()[world_id, :nisland]
+    result.island_nefc[:nisland] = d.island_nefc.numpy()[world_id, :nisland]
+    result.island_ne[:nisland] = d.island_ne.numpy()[world_id, :nisland]
+    result.island_nf[:nisland] = d.island_nf.numpy()[world_id, :nisland]
+    result.island_iefcadr[:nisland] = d.island_efcadr.numpy()[world_id, :nisland]
+    nv = mjm.nv
+    result.map_dof2idof[:nv] = d.map_dof2idof.numpy()[world_id, :nv]
+    result.map_idof2dof[:nv] = d.map_idof2dof.numpy()[world_id, :nv]
+    result.map_efc2iefc[:nefc] = d.map_efc2iefc.numpy()[world_id, :nefc]
+    result.map_iefc2efc[:nefc] = d.map_iefc2efc.numpy()[world_id, :nefc]
+
+    result.iefc_type[:nefc] = d.efc.itype.numpy()[world_id, :nefc]
+    result.iefc_id[:nefc] = d.efc.iid.numpy()[world_id, :nefc]
+    result.iefc_D[:nefc] = d.efc.iD.numpy()[world_id, :nefc]
+    result.iefc_aref[:nefc] = d.efc.iaref.numpy()[world_id, :nefc]
+    result.iefc_frictionloss[:nefc] = d.efc.ifrictionloss.numpy()[world_id, :nefc]
+    result.iefc_state[:nefc] = d.efc.istate.numpy()[world_id, :nefc]
+    result.iefc_force[:nefc] = d.efc.iforce.numpy()[world_id, :nefc]
+
+    if is_sparse(mjm):
+      iefc_J = np.zeros((nefc, mjm.nv))
+      mujoco.mju_sparse2dense(
+        iefc_J,
+        d.efc.iJ.numpy()[world_id, 0],
+        d.efc.iJ_rownnz.numpy()[world_id, :nefc],
+        d.efc.iJ_rowadr.numpy()[world_id, :nefc],
+        d.efc.iJ_colind.numpy()[world_id, 0],
+      )
+    else:
+      iefc_J = d.efc.iJ.numpy()[world_id, :nefc, : mjm.nv]
+
+    if mujoco.mj_isSparse(mjm):
+      mujoco.mju_dense2sparse(
+        result.iefc_J,
+        iefc_J,
+        result.iefc_J_rownnz,
+        result.iefc_J_rowadr,
+        result.iefc_J_colind,
+      )
+    else:
+      result.iefc_J[: nefc * mjm.nv] = iefc_J.flatten()
 
 
 def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
@@ -2671,6 +2842,9 @@ def override_model(model: types.Model | mujoco.MjModel, overrides: dict[str, Any
       else:
         val = typ(val)
 
+      if attr == "disableflags" and isinstance(obj, types.Option) and not ENABLE_ISLANDS:
+        val = int(val) | types.DisableBit.ISLAND
+
       setattr(obj, attr, val)
 
 
@@ -2884,11 +3058,11 @@ def create_render_context(
 
   # Locate skybox texture
   skybox_tex_ids = np.nonzero(mjm.tex_type == mujoco.mjtTexture.mjTEXTURE_SKYBOX)[0] if mjm.ntex else np.array([], dtype=int)
-  if render_skybox:
-    assert skybox_tex_ids.size > 0, "render_skybox=True but the model has no texture with type mjTEXTURE_SKYBOX"
+  if render_skybox and skybox_tex_ids.size > 0:
     skybox_tex_id = int(skybox_tex_ids[0])
     skybox_face_width = int(mjm.tex_width[skybox_tex_id])
   else:
+    render_skybox = False
     skybox_tex_id = -1
     skybox_face_width = 1
 
@@ -2983,6 +3157,13 @@ def create_render_context(
 
   bvh_ngeom = len(geom_enabled_idx)
 
+  # Geom types present among enabled geoms, plus FLEX when flex primitives exist.
+  # Used to statically eliminate unused intersection branches in the ray-cast kernels.
+  geom_ray_types = set(int(t) for t in mjm.geom_type[geom_enabled_idx])
+  if len(flex_geom_flexid) > 0:
+    geom_ray_types.add(int(types.GeomType.FLEX))
+  geom_ray_types = tuple(sorted(geom_ray_types))
+
   rc = types.RenderContext(
     nrender=ncam,
     cam_res=cam_res_arr,
@@ -3038,6 +3219,7 @@ def create_render_context(
     znear=znear,
     total_rays=int(total),
     enable_backface_culling=enable_backface_culling,
+    geom_ray_types=geom_ray_types,
   )
 
   bvh.build_scene_bvh(mjm, mjd, rc, nworld)

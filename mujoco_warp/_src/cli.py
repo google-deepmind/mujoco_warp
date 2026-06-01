@@ -25,6 +25,7 @@ from absl import flags
 from etils import epath
 
 import mujoco_warp as mjw
+from mujoco_warp._src import io
 from mujoco_warp._src import warp_util
 from mujoco_warp._src.io import load_trajectory
 from mujoco_warp._src.io import override_model
@@ -42,6 +43,12 @@ KEYFRAME = flags.DEFINE_integer("keyframe", 0, "keyframe to initialize simulatio
 EVENT_TRACE = flags.DEFINE_bool("event_trace", False, "print an event trace report")
 NOISE_STD = flags.DEFINE_float("noise_std", 0.01, "add noise to ctrl signal (standard deviation)")
 NOISE_RATE = flags.DEFINE_float("noise_rate", 0.1, "add noise to ctrl signal (noise rate)")
+ENABLE_ISLANDS = flags.DEFINE_bool(
+  "enable_islands",
+  False,
+  "Enable constraint islands solver",
+)
+
 
 DEVICE = flags.DEFINE_string("device", None, "override the default Warp device")
 REPLAY = flags.DEFINE_string("replay", None, "NPZ file with ctrl sequence to replay")
@@ -57,6 +64,7 @@ RENDER_BACKFACE_CULLING = flags.DEFINE_bool(
   True,
   "enable renderer backface culling (RenderContext.enable_backface_culling)",
 )
+RENDER_SKYBOX = flags.DEFINE_bool("render_skybox", True, "render skybox texture if available")
 
 
 def load_model(path: epath.Path) -> mujoco.MjModel:
@@ -133,6 +141,8 @@ def init_structs(
   fn: Callable[..., None], mjm: mujoco.MjModel
 ) -> Tuple[mjw.Model, mjw.Data, mjw.RenderContext | None, list[np.ndarray] | None]:
   """Initialize device structs."""
+  io.ENABLE_ISLANDS = ENABLE_ISLANDS.value
+
   mjd = mujoco.MjData(mjm)
   ctrls = None
   if REPLAY.value:
@@ -164,6 +174,7 @@ def init_structs(
       use_textures=RENDER_TEXTURES.value,
       use_shadows=RENDER_SHADOWS.value,
       enable_backface_culling=RENDER_BACKFACE_CULLING.value,
+      render_skybox=RENDER_SKYBOX.value,
     )
 
     return m, d, rc, ctrls

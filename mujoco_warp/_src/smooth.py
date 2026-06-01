@@ -949,7 +949,7 @@ def _tendon_armature(
     return
 
   if is_sparse:
-    madr_ij = M_rowadr[dofid] + M_rownnz[dofid] - 2
+    madr_ij = M_rowadr[dofid] + M_rownnz[dofid] - 1
 
   # sparse backward pass over ancestors
   dofidi = dofid
@@ -2961,6 +2961,132 @@ def factor_solve_i(m, d, M, L, D, x, y):
     _solve_LD_sparse(m, d, L, D, x, y)
   else:
     _factor_solve_i_dense(m, d, M, x, y, L)
+
+
+@cache_kernel
+def _factor_solve_lu_sparse_fused(nv: int):
+  """Fused sparse LU factorization and solve in a single kernel."""
+
+  @wp.kernel(module="unique", enable_backward=False)
+  def kernel(
+    # Model:
+    D_rownnz: wp.array[int],
+    D_rowadr: wp.array[int],
+    D_diag: wp.array[int],
+    D_colind: wp.array[int],
+    # In:
+    qfrc: wp.array2d[float],
+    # Data out:
+    qacc_out: wp.array2d[float],
+    qLU_out: wp.array3d[float],
+  ):
+    worldid = wp.tid()
+    NV = wp.static(nv)
+
+    # Phase 1: LU factorization (in-place on qLU_out)
+    for i in range(NV):
+      qacc_out[worldid, i] = float(D_rownnz[i])
+
+    # process diagonal elements from n-1 down to 0
+    for r_rev in range(NV):
+      i = NV - 1 - r_rev
+
+      rem_i = int(qacc_out[worldid, i])
+      rowadr_i = D_rowadr[i]
+      ii = rowadr_i + rem_i - 1
+      qacc_out[worldid, i] = float(rem_i - 1)
+
+      # cache diagonal element for row i
+      LUii = qLU_out[worldid, 0, ii]
+
+      # rows j above i (j < i), processed from i-1 down to 0
+      for c in range(i):
+        j = i - 1 - c
+
+        # get address of last remaining element of row j
+        rem_j = int(qacc_out[worldid, j])
+        rowadr_j = D_rowadr[j]
+        ji = rowadr_j + rem_j - 1
+
+        # process row j if (j,i) is non-zero
+        if D_colind[ji] == i:
+          # adjust remaining counter
+          rem_j = rem_j - 1
+          qacc_out[worldid, j] = float(rem_j)
+
+          # (j,i) = (j,i) / (i,i)
+          LUji = qLU_out[worldid, 0, ji] / LUii
+          qLU_out[worldid, 0, ji] = LUji
+
+          # (j,k) = (j,k) - (i,k) * (j,i) for k < i
+          icnt = rowadr_i
+          jcnt = rowadr_j
+          jend = rowadr_j + rem_j
+          while jcnt < jend:
+            col_i = D_colind[icnt]
+            col_j = D_colind[jcnt]
+            if col_i == col_j:
+              qLU_out[worldid, 0, jcnt] = qLU_out[worldid, 0, jcnt] - qLU_out[worldid, 0, icnt] * LUji
+              icnt = icnt + 1
+              jcnt = jcnt + 1
+            elif col_i > col_j:
+              jcnt = jcnt + 1
+            else:
+              icnt = icnt + 1
+
+    # Phase 2: LU solve (backward + forward substitution)
+
+    # Backward substitution: solve (U+I)*qacc = qfrc
+    for k_rev in range(NV):
+      i = NV - 1 - k_rev
+
+      diag_i = D_diag[i]
+      rowadr_i = D_rowadr[i]
+      d1 = diag_i + 1
+      nnz_upper = D_rownnz[i] - d1
+
+      acc = qfrc[worldid, i]
+      for j in range(nnz_upper):
+        adr_j = rowadr_i + d1 + j
+        col = D_colind[adr_j]
+        acc = acc - qLU_out[worldid, 0, adr_j] * qacc_out[worldid, col]
+      qacc_out[worldid, i] = acc
+
+    # Forward substitution: solve L*qacc = qacc
+    for i in range(NV):
+      diag_i = D_diag[i]
+      rowadr_i = D_rowadr[i]
+
+      acc = qacc_out[worldid, i]
+      for j in range(diag_i):
+        adr_j = rowadr_i + j
+        col = D_colind[adr_j]
+        acc = acc - qLU_out[worldid, 0, adr_j] * qacc_out[worldid, col]
+
+      qacc_out[worldid, i] = acc / qLU_out[worldid, 0, rowadr_i + diag_i]
+
+  return kernel
+
+
+@event_scope
+def factor_solve_lu(m: Model, d: Data, qLU: wp.array3d[float], qacc: wp.array2d[float], qfrc: wp.array2d[float]):
+  r"""Factorize and solve non-symmetric implicit system: qacc = A \\ qfrc.
+
+  qLU is overwritten in-place with the LU factors, then used to solve for qacc.
+
+  Args:
+    m: The model containing D-structure sparsity information.
+    d: The data object.
+    qLU: array containing the system matrix, overwritten with LU factors.
+    qacc: output array for the solution.
+    qfrc: input right-hand side.
+  """
+  wp.launch(
+    _factor_solve_lu_sparse_fused(m.nv),
+    dim=(d.nworld,),
+    inputs=[m.D_rownnz, m.D_rowadr, m.D_diag, m.D_colind, qfrc],
+    outputs=[qacc, qLU],
+  )
 
 
 @wp.kernel

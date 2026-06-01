@@ -25,7 +25,10 @@ import mujoco_warp as mjw
 from mujoco_warp import ConeType
 from mujoco_warp import SolverType
 from mujoco_warp import test_data
+from mujoco_warp._src import io
+from mujoco_warp._src import island
 from mujoco_warp._src import solver
+from mujoco_warp._src import types
 from mujoco_warp._src.util_pkg import check_version
 
 # tolerance for difference between MuJoCo and MJWarp solver calculations - mostly
@@ -285,32 +288,51 @@ class SolverTest(parameterized.TestCase):
     _assert_eq(Jaref_iterative, Jaref_parallel, name="Jaref")
 
   @parameterized.parameters(
-    (ConeType.PYRAMIDAL, SolverType.CG, 10, 5, mujoco.mjtJacobian.mjJAC_DENSE, False),
-    (ConeType.ELLIPTIC, SolverType.CG, 10, 5, mujoco.mjtJacobian.mjJAC_DENSE, False),
-    (ConeType.PYRAMIDAL, SolverType.CG, 10, 5, mujoco.mjtJacobian.mjJAC_SPARSE, False),
-    (ConeType.ELLIPTIC, SolverType.CG, 10, 5, mujoco.mjtJacobian.mjJAC_SPARSE, False),
-    (ConeType.PYRAMIDAL, SolverType.NEWTON, 5, 10, mujoco.mjtJacobian.mjJAC_DENSE, False),
-    (ConeType.ELLIPTIC, SolverType.NEWTON, 5, 10, mujoco.mjtJacobian.mjJAC_DENSE, False),
-    (ConeType.PYRAMIDAL, SolverType.NEWTON, 5, 10, mujoco.mjtJacobian.mjJAC_SPARSE, False),
-    (ConeType.ELLIPTIC, SolverType.NEWTON, 5, 10, mujoco.mjtJacobian.mjJAC_SPARSE, False),
-    (ConeType.PYRAMIDAL, SolverType.NEWTON, 5, 64, mujoco.mjtJacobian.mjJAC_SPARSE, True),
-    (ConeType.ELLIPTIC, SolverType.NEWTON, 5, 64, mujoco.mjtJacobian.mjJAC_SPARSE, True),
+    (ConeType.PYRAMIDAL, SolverType.CG, 10, 5, mujoco.mjtJacobian.mjJAC_DENSE, False, False),
+    (ConeType.ELLIPTIC, SolverType.CG, 10, 5, mujoco.mjtJacobian.mjJAC_DENSE, False, False),
+    (ConeType.PYRAMIDAL, SolverType.CG, 10, 5, mujoco.mjtJacobian.mjJAC_SPARSE, False, False),
+    (ConeType.ELLIPTIC, SolverType.CG, 10, 5, mujoco.mjtJacobian.mjJAC_SPARSE, False, False),
+    (ConeType.PYRAMIDAL, SolverType.NEWTON, 5, 10, mujoco.mjtJacobian.mjJAC_DENSE, False, False),
+    (ConeType.ELLIPTIC, SolverType.NEWTON, 5, 10, mujoco.mjtJacobian.mjJAC_DENSE, False, False),
+    (ConeType.PYRAMIDAL, SolverType.NEWTON, 5, 10, mujoco.mjtJacobian.mjJAC_SPARSE, False, False),
+    (ConeType.ELLIPTIC, SolverType.NEWTON, 5, 10, mujoco.mjtJacobian.mjJAC_SPARSE, False, False),
+    (ConeType.PYRAMIDAL, SolverType.NEWTON, 5, 64, mujoco.mjtJacobian.mjJAC_SPARSE, True, False),
+    (ConeType.ELLIPTIC, SolverType.NEWTON, 5, 64, mujoco.mjtJacobian.mjJAC_SPARSE, True, False),
+    # Island Solver Paths:
+    (ConeType.PYRAMIDAL, SolverType.CG, 10, 5, mujoco.mjtJacobian.mjJAC_DENSE, False, True),
+    (ConeType.ELLIPTIC, SolverType.CG, 10, 5, mujoco.mjtJacobian.mjJAC_DENSE, False, True),
+    (ConeType.PYRAMIDAL, SolverType.CG, 10, 5, mujoco.mjtJacobian.mjJAC_SPARSE, False, True),
+    (ConeType.ELLIPTIC, SolverType.CG, 10, 5, mujoco.mjtJacobian.mjJAC_SPARSE, False, True),
+    (ConeType.PYRAMIDAL, SolverType.NEWTON, 5, 10, mujoco.mjtJacobian.mjJAC_DENSE, False, True),
+    (ConeType.ELLIPTIC, SolverType.NEWTON, 5, 10, mujoco.mjtJacobian.mjJAC_DENSE, False, True),
+    (ConeType.PYRAMIDAL, SolverType.NEWTON, 5, 10, mujoco.mjtJacobian.mjJAC_SPARSE, False, True),
+    (ConeType.ELLIPTIC, SolverType.NEWTON, 5, 10, mujoco.mjtJacobian.mjJAC_SPARSE, False, True),
   )
-  def test_solve(self, cone, solver_, iterations, ls_iterations, jacobian, ls_parallel):
+  def test_solve(self, cone, solver_, iterations, ls_iterations, jacobian, ls_parallel, enable_islands):
     """Tests solve."""
     for keyframe in range(3):
-      mjm, mjd, m, d = test_data.fixture(
-        "constraints.xml",
-        keyframe=keyframe,
-        overrides={
-          "opt.jacobian": jacobian,
-          "opt.cone": cone,
-          "opt.solver": solver_,
-          "opt.iterations": iterations,
-          "opt.ls_iterations": ls_iterations,
-          "opt.ls_parallel": ls_parallel,
-        },
-      )
+      if enable_islands:
+        io.ENABLE_ISLANDS = True
+      try:
+        mjm, mjd, m, d = test_data.fixture(
+          "constraints.xml",
+          keyframe=keyframe,
+          overrides={
+            "opt.jacobian": jacobian,
+            "opt.cone": cone,
+            "opt.solver": solver_,
+            "opt.iterations": iterations,
+            "opt.ls_iterations": ls_iterations,
+            "opt.ls_parallel": ls_parallel,
+          },
+        )
+      finally:
+        if enable_islands:
+          io.ENABLE_ISLANDS = False
+
+      if enable_islands:
+        m.opt.disableflags &= ~types.DisableBit.ISLAND
+        island.island(m, d)
 
       mujoco.mj_forward(mjm, mjd)
 
@@ -558,14 +580,28 @@ class SolverTest(parameterized.TestCase):
       world2_forces = np.concatenate([world2_eq_forces, world2_ineq_forces])
       _assert_eq(world2_forces, mjd2.efc_force, "efc_force2")
 
-  @parameterized.parameters(
-    mujoco.mjtJacobian.mjJAC_DENSE,
-    mujoco.mjtJacobian.mjJAC_SPARSE,
+  @parameterized.product(
+    jacobian=(mujoco.mjtJacobian.mjJAC_DENSE, mujoco.mjtJacobian.mjJAC_SPARSE),
+    enable_islands=(True, False),
   )
-  def test_frictionloss(self, jacobian):
+  def test_frictionloss(self, jacobian, enable_islands):
     """Tests solver with frictionloss."""
     for keyframe in range(3):
-      _, mjd, m, d = test_data.fixture("constraints.xml", keyframe=keyframe, overrides={"opt.jacobian": jacobian})
+      overrides = {"opt.jacobian": jacobian}
+      if enable_islands:
+        io.ENABLE_ISLANDS = True
+      try:
+        _, mjd, m, d = test_data.fixture(
+          "constraints.xml",
+          keyframe=keyframe,
+          overrides=overrides,
+        )
+      finally:
+        if enable_islands:
+          io.ENABLE_ISLANDS = False
+      if enable_islands:
+        m.opt.disableflags &= ~types.DisableBit.ISLAND
+        island.island(m, d)
       mjw.solve(m, d)
 
       _assert_eq(d.nf.numpy()[0], mjd.nf, "nf")
@@ -677,6 +713,1563 @@ class SolverTest(parameterized.TestCase):
       _assert_eq(qacc_inc, qacc_full, f"qacc keyframe={keyframe}")
 
     self.assertTrue(total_any_changes, "no state changes detected across any keyframe")
+
+
+# Basic weld constraint model.
+_WELD_XML = """
+<mujoco>
+  <worldbody>
+    <body name="b1">
+      <joint type="free"/>
+      <geom size=".1"/>
+    </body>
+    <body name="b2" pos="1 0 0">
+      <joint type="free"/>
+      <geom size=".1"/>
+    </body>
+  </worldbody>
+  <equality>
+    <weld body1="b1" body2="b2"/>
+  </equality>
+</mujoco>"""
+
+# Mixed-constraint model (taken from mujoco's island_efc.xml C test).
+_RICH_MODEL_XML = """
+<mujoco>
+  <default>
+    <geom size=".1"/>
+  </default>
+
+  <worldbody>
+    <body>
+      <joint type="slide" axis="0 0 1" range="0 1" limited="true"/>
+      <geom/>
+    </body>
+
+    <body pos=".25 0 0">
+      <joint type="slide" axis="1 0 0"/>
+      <geom/>
+    </body>
+
+    <body pos="0 0 0.25">
+      <joint type="slide" axis="0 0 1"/>
+      <geom/>
+      <body pos="0 -.15 0">
+        <joint name="hinge1" axis="0 1 0"/>
+        <geom type="capsule" size="0.03" fromto="0 0 0 -.2 0 0"/>
+        <body pos="-.2 0 0">
+          <joint axis="0 1 0"/>
+          <geom type="capsule" size="0.03" fromto="0 0 0 -.2 0 0"/>
+        </body>
+      </body>
+    </body>
+
+    <body pos=".5 0 0">
+      <joint type="slide" axis="0 0 1" frictionloss="15"/>
+      <geom type="box" size=".08 .08 .02" euler="0 10 0"/>
+    </body>
+
+    <body pos="-.5 0 0">
+      <joint axis="0 1 0" frictionloss=".01"/>
+      <geom type="capsule" size="0.03" fromto="0 0 0 -.2 0 0"/>
+    </body>
+
+    <body pos="0 0 .5">
+      <joint name="hinge2" axis="0 1 0"/>
+      <geom type="box" size=".08 .02 .08"/>
+    </body>
+
+    <body pos=".5 0 .1">
+      <freejoint/>
+      <geom type="box" size=".03 .03 .03" pos="0.01 0.01 0.01"/>
+    </body>
+
+    <site name="0" pos="-.45 -.05 .35"/>
+    <body pos="-.5 0 .3" name="connect">
+      <freejoint/>
+      <geom type="box" size=".05 .05 .05"/>
+      <site name="1" pos=".05 -.05 .05"/>
+    </body>
+  </worldbody>
+
+  <equality>
+    <joint joint1="hinge1" joint2="hinge2"/>
+    <connect body1="connect" body2="world" anchor="-.05 -.05 .05"/>
+    <connect site1="0" site2="1"/>
+  </equality>
+</mujoco>"""
+
+# Leg & hfield model (adapted from mujoco's 2humanoid100.xml C test).
+_LEGS_HFIELD_XML = """
+<mujoco>
+  <option density="1.225" viscosity="1.8e-5" wind="0 0 1">
+    <flag energy="enable"/>
+  </option>
+
+  <asset>
+    <hfield name="hfield" nrow="3" ncol="3" size=".2 .2 .03 .03"
+            elevation="1 0 1
+                       0 1 0
+                       1 0 1"/>
+  </asset>
+
+  <default>
+    <joint armature="1" damping="10"/>
+    <default class="hip0">
+      <joint springref="30" stiffness="60"/>
+    </default>
+    <default class="hip1">
+      <joint limited="true" range="-60 60" stiffness="10"/>
+    </default>
+  </default>
+
+  <worldbody>
+    <geom name="floor" type="plane" size="4 4 .1" margin="0.01" gap="0.005"/>
+    <geom type="hfield" hfield="hfield" pos="-.4 .6 .05"/>
+    <body name="head" pos="0 0 .7" gravcomp="0.5">
+      <geom type="ellipsoid" size=".2 .2 .4" density="200"/>
+      <freejoint/>
+      <body euler="0 0 0" pos=".2 0 -.2">
+        <joint name="hipz_0" class="hip1" axis="0 0 1"/>
+        <joint name="hipy_0" class="hip0" axis="0 1 0"/>
+        <geom type="capsule" size=".04" fromto="0 0 0 .2 0 -.25"/>
+        <body pos=".2 0 -.25">
+          <joint name="knee_0" axis="0 1 0"
+                 limited="true" range="-160 -2" stiffness="40" springref="-30"/>
+          <geom type="capsule" size=".03" fromto="0 0 0 -.2 0 -.25"/>
+        </body>
+      </body>
+      <body euler="0 0 180" pos="-.2 0 -.2">
+        <joint name="hipz_1" class="hip1" axis="0 0 1"/>
+        <joint name="hipy_1" class="hip0" axis="0 1 0"/>
+        <geom type="capsule" size=".04" fromto="0 0 0 .2 0 -.25"/>
+        <body pos=".2 0 -.25">
+          <joint name="knee_1" axis="0 1 0"
+                 limited="true" range="-160 -2" stiffness="40" springref="-30"/>
+          <geom type="capsule" size=".03" fromto="0 0 0 -.2 0 -.25"/>
+        </body>
+      </body>
+    </body>
+    <body name="box1" pos=".5 0 .1">
+      <freejoint/>
+      <geom type="box" size=".05 .05 .05"/>
+    </body>
+    <body name="box2" pos="-.5 0 .1">
+      <freejoint/>
+      <geom type="box" size=".05 .05 .05"/>
+    </body>
+  </worldbody>
+</mujoco>"""
+
+
+class IslandSolverTest(parameterized.TestCase):
+  """Tests for the parallel island solver."""
+
+  def setUp(self):
+    super().setUp()
+    io.ENABLE_ISLANDS = True
+
+  def tearDown(self):
+    io.ENABLE_ISLANDS = False
+    super().tearDown()
+
+  @parameterized.parameters(
+    (ConeType.PYRAMIDAL, SolverType.CG, 10, 5, mujoco.mjtJacobian.mjJAC_DENSE, False),
+    (ConeType.ELLIPTIC, SolverType.CG, 10, 5, mujoco.mjtJacobian.mjJAC_DENSE, False),
+    (ConeType.PYRAMIDAL, SolverType.CG, 10, 5, mujoco.mjtJacobian.mjJAC_SPARSE, False),
+    (ConeType.ELLIPTIC, SolverType.CG, 10, 5, mujoco.mjtJacobian.mjJAC_SPARSE, False),
+    (ConeType.PYRAMIDAL, SolverType.NEWTON, 5, 10, mujoco.mjtJacobian.mjJAC_DENSE, False),
+    (ConeType.ELLIPTIC, SolverType.NEWTON, 5, 10, mujoco.mjtJacobian.mjJAC_DENSE, False),
+    (ConeType.PYRAMIDAL, SolverType.NEWTON, 5, 10, mujoco.mjtJacobian.mjJAC_SPARSE, False),
+    (ConeType.ELLIPTIC, SolverType.NEWTON, 5, 10, mujoco.mjtJacobian.mjJAC_SPARSE, False),
+  )
+  def test_solve(self, cone, solver_, iterations, ls_iterations, jacobian, ls_parallel):
+    """Tests solve parity with islands enabled."""
+    for keyframe in range(3):
+      mjm, mjd, m, d = test_data.fixture(
+        "constraints.xml",
+        keyframe=keyframe,
+        overrides={
+          "opt.jacobian": jacobian,
+          "opt.cone": cone,
+          "opt.solver": solver_,
+          "opt.iterations": iterations,
+          "opt.ls_iterations": ls_iterations,
+          "opt.ls_parallel": ls_parallel,
+        },
+      )
+
+      # Run island execution
+      m.opt.disableflags &= ~types.DisableBit.ISLAND
+      island.island(m, d)
+
+      mujoco.mj_forward(mjm, mjd)
+
+      d.qacc.fill_(wp.inf)
+      d.qfrc_constraint.fill_(wp.inf)
+      d.efc.force.fill_(wp.inf)
+
+      if solver_ == mujoco.mjtSolver.mjSOL_CG:
+        mjw.factor_m(m, d)
+      mjw.solve(m, d)
+
+      def cost(qacc):
+        jaref = np.zeros(mjd.nefc, dtype=float)
+        cost = np.zeros(1)
+        mujoco.mj_mulJacVec(mjm, mjd, jaref, qacc)
+        mujoco.mj_constraintUpdate(mjm, mjd, jaref - mjd.efc_aref, cost, 0)
+        return cost
+
+      mj_cost = cost(mjd.qacc)
+      mjwarp_cost = cost(d.qacc.numpy()[0])
+      self.assertLessEqual(mjwarp_cost, mj_cost * 1.025)
+
+  @parameterized.parameters(mujoco.mjtJacobian.mjJAC_DENSE, mujoco.mjtJacobian.mjJAC_SPARSE)
+  def test_frictionloss(self, jacobian):
+    """Tests solver with frictionloss under islands."""
+    for keyframe in range(3):
+      overrides = {"opt.jacobian": jacobian}
+      _, mjd, m, d = test_data.fixture(
+        "constraints.xml",
+        keyframe=keyframe,
+        overrides=overrides,
+      )
+      m.opt.disableflags &= ~types.DisableBit.ISLAND
+      island.island(m, d)
+      mjw.solve(m, d)
+
+      _assert_eq(d.nf.numpy()[0], mjd.nf, "nf")
+      _assert_eq(d.qacc.numpy()[0], mjd.qacc, "qacc")
+      _assert_eq(d.qfrc_constraint.numpy()[0], mjd.qfrc_constraint, "qfrc_constraint")
+      _assert_eq(d.efc.force.numpy()[0, : mjd.nefc], mjd.efc_force, "efc_force")
+
+  @parameterized.product(
+    solver=list(types.SolverType),
+    jacobian=(mujoco.mjtJacobian.mjJAC_DENSE, mujoco.mjtJacobian.mjJAC_SPARSE),
+  )
+  def test_single_island_weld(self, solver, jacobian):
+    """Single island: weld constraint between two free bodies."""
+    xml = _WELD_XML
+
+    overrides = {
+      "opt.solver": solver,
+      "opt.jacobian": jacobian,
+      "opt.iterations": 100,
+      "opt.tolerance": "1e-10",
+    }
+
+    _, _, m, d_monolithic = test_data.fixture(
+      xml=xml,
+      overrides=overrides,
+    )
+    m.opt.disableflags |= types.DisableBit.ISLAND
+    mjw.forward(m, d_monolithic)
+
+    _, _, m, d_island = test_data.fixture(
+      xml=xml,
+      overrides=overrides,
+    )
+    m.opt.disableflags &= ~types.DisableBit.ISLAND
+    mjw.forward(m, d_island)
+
+    np.testing.assert_allclose(d_island.qacc.numpy()[0], d_monolithic.qacc.numpy()[0], atol=1e-4)
+    np.testing.assert_allclose(d_island.qfrc_constraint.numpy()[0], d_monolithic.qfrc_constraint.numpy()[0], atol=1e-4)
+
+    nefc = d_monolithic.nefc.numpy()[0]
+    np.testing.assert_allclose(
+      d_island.efc.force.numpy()[0, :nefc],
+      d_monolithic.efc.force.numpy()[0, :nefc],
+      atol=1e-4,
+    )
+
+  @parameterized.product(
+    solver=list(types.SolverType),
+    jacobian=(mujoco.mjtJacobian.mjJAC_DENSE, mujoco.mjtJacobian.mjJAC_SPARSE),
+  )
+  def test_multi_island_weld(self, solver, jacobian):
+    """Two independent weld pairs form two separate islands."""
+    xml = """
+    <mujoco>
+      <worldbody>
+        <body name="a1">
+          <joint type="free"/>
+          <geom size=".1"/>
+        </body>
+        <body name="a2" pos="1 0 0">
+          <joint type="free"/>
+          <geom size=".1"/>
+        </body>
+        <body name="b1" pos="10 0 0">
+          <joint type="free"/>
+          <geom size=".1"/>
+        </body>
+        <body name="b2" pos="11 0 0">
+          <joint type="free"/>
+          <geom size=".1"/>
+        </body>
+      </worldbody>
+      <equality>
+        <weld body1="a1" body2="a2"/>
+        <weld body1="b1" body2="b2"/>
+      </equality>
+    </mujoco>"""
+
+    overrides = {
+      "opt.solver": solver,
+      "opt.jacobian": jacobian,
+      "opt.iterations": 100,
+      "opt.tolerance": "1e-10",
+    }
+
+    _, _, m, d_monolithic = test_data.fixture(
+      xml=xml,
+      overrides=overrides,
+    )
+    m.opt.disableflags |= types.DisableBit.ISLAND
+    mjw.forward(m, d_monolithic)
+
+    _, _, m, d_island = test_data.fixture(
+      xml=xml,
+      overrides=overrides,
+    )
+    m.opt.disableflags &= ~types.DisableBit.ISLAND
+    mjw.forward(m, d_island)
+
+    np.testing.assert_allclose(d_island.qacc.numpy()[0], d_monolithic.qacc.numpy()[0], atol=1e-4)
+    np.testing.assert_allclose(d_island.qfrc_constraint.numpy()[0], d_monolithic.qfrc_constraint.numpy()[0], atol=1e-4)
+
+  @parameterized.product(
+    solver=list(types.SolverType),
+    jacobian=(mujoco.mjtJacobian.mjJAC_DENSE, mujoco.mjtJacobian.mjJAC_SPARSE),
+  )
+  def test_three_islands(self, solver, jacobian):
+    """Three independent weld pairs form three separate islands."""
+    xml = """
+    <mujoco>
+      <worldbody>
+        <body name="a1">
+          <joint type="free"/>
+          <geom size=".1"/>
+        </body>
+        <body name="a2" pos="1 0 0">
+          <joint type="free"/>
+          <geom size=".1"/>
+        </body>
+        <body name="b1" pos="5 0 0">
+          <joint type="free"/>
+          <geom size=".1"/>
+        </body>
+        <body name="b2" pos="6 0 0">
+          <joint type="free"/>
+          <geom size=".1"/>
+        </body>
+        <body name="c1" pos="10 0 0">
+          <joint type="free"/>
+          <geom size=".1"/>
+        </body>
+        <body name="c2" pos="11 0 0">
+          <joint type="free"/>
+          <geom size=".1"/>
+        </body>
+      </worldbody>
+      <equality>
+        <weld body1="a1" body2="a2"/>
+        <weld body1="b1" body2="b2"/>
+        <weld body1="c1" body2="c2"/>
+      </equality>
+    </mujoco>"""
+
+    overrides = {
+      "opt.solver": solver,
+      "opt.jacobian": jacobian,
+      "opt.iterations": 100,
+      "opt.tolerance": "1e-10",
+    }
+
+    _, _, m, d_monolithic = test_data.fixture(
+      xml=xml,
+      overrides=overrides,
+    )
+    m.opt.disableflags |= types.DisableBit.ISLAND
+    mjw.forward(m, d_monolithic)
+
+    _, _, m, d_island = test_data.fixture(
+      xml=xml,
+      overrides=overrides,
+    )
+    m.opt.disableflags &= ~types.DisableBit.ISLAND
+    mjw.forward(m, d_island)
+
+    np.testing.assert_allclose(d_island.qacc.numpy()[0], d_monolithic.qacc.numpy()[0], atol=1e-4)
+    np.testing.assert_allclose(d_island.qfrc_constraint.numpy()[0], d_monolithic.qfrc_constraint.numpy()[0], atol=1e-4)
+
+  @parameterized.product(
+    solver=list(types.SolverType),
+    jacobian=(mujoco.mjtJacobian.mjJAC_DENSE, mujoco.mjtJacobian.mjJAC_SPARSE),
+  )
+  def test_contact_constraint(self, solver, jacobian):
+    """Contact constraints from ground plane collision."""
+    xml = """
+    <mujoco>
+      <worldbody>
+        <geom type="plane" size="10 10 .01"/>
+        <body name="box1" pos="0 0 0.15">
+          <joint type="free"/>
+          <geom type="box" size=".1 .1 .1" condim="1"/>
+        </body>
+        <body name="box2" pos="5 0 0.15">
+          <joint type="free"/>
+          <geom type="box" size=".1 .1 .1" condim="1"/>
+        </body>
+      </worldbody>
+    </mujoco>"""
+
+    overrides = {
+      "opt.solver": solver,
+      "opt.jacobian": jacobian,
+      "opt.iterations": 100,
+      "opt.tolerance": "1e-10",
+    }
+
+    _, _, m, d_monolithic = test_data.fixture(
+      xml=xml,
+      overrides=overrides,
+    )
+    m.opt.disableflags |= types.DisableBit.ISLAND
+    mjw.forward(m, d_monolithic)
+
+    _, _, m, d_island = test_data.fixture(
+      xml=xml,
+      overrides=overrides,
+    )
+    m.opt.disableflags &= ~types.DisableBit.ISLAND
+    mjw.forward(m, d_island)
+
+    np.testing.assert_allclose(d_island.qacc.numpy()[0], d_monolithic.qacc.numpy()[0], atol=1e-3)
+    np.testing.assert_allclose(d_island.qfrc_constraint.numpy()[0], d_monolithic.qfrc_constraint.numpy()[0], atol=1e-3)
+
+  @parameterized.product(
+    solver=list(types.SolverType),
+    jacobian=(mujoco.mjtJacobian.mjJAC_DENSE, mujoco.mjtJacobian.mjJAC_SPARSE),
+  )
+  def test_contact_with_friction(self, solver, jacobian):
+    """Contact constraints with friction (condim=3, pyramidal)."""
+    xml = """
+    <mujoco>
+      <worldbody>
+        <geom type="plane" size="10 10 .01"/>
+        <body name="box" pos="0 0 0.15">
+          <joint type="free"/>
+          <geom type="box" size=".1 .1 .1" condim="3" friction="0.5"/>
+        </body>
+      </worldbody>
+    </mujoco>"""
+
+    overrides = {
+      "opt.solver": solver,
+      "opt.jacobian": jacobian,
+      "opt.iterations": 100,
+      "opt.tolerance": "1e-10",
+    }
+
+    _, _, m, d_monolithic = test_data.fixture(
+      xml=xml,
+      overrides=overrides,
+    )
+    m.opt.disableflags |= types.DisableBit.ISLAND
+    mjw.forward(m, d_monolithic)
+
+    _, _, m, d_island = test_data.fixture(
+      xml=xml,
+      overrides=overrides,
+    )
+    m.opt.disableflags &= ~types.DisableBit.ISLAND
+    mjw.forward(m, d_island)
+
+    np.testing.assert_allclose(d_island.qacc.numpy()[0], d_monolithic.qacc.numpy()[0], atol=1e-3)
+    np.testing.assert_allclose(d_island.qfrc_constraint.numpy()[0], d_monolithic.qfrc_constraint.numpy()[0], atol=1e-3)
+
+  @parameterized.product(
+    solver=list(types.SolverType),
+    jacobian=(mujoco.mjtJacobian.mjJAC_DENSE, mujoco.mjtJacobian.mjJAC_SPARSE),
+  )
+  def test_friction_joint(self, solver, jacobian):
+    """Hinge joint with frictionloss generates friction constraints."""
+    xml = """
+    <mujoco>
+      <worldbody>
+        <body name="arm1">
+          <joint type="hinge" axis="0 0 1" frictionloss="0.1"/>
+          <geom type="capsule" fromto="0 0 0 0.5 0 0" size=".05"/>
+          <body name="arm2" pos="0.5 0 0">
+            <joint type="hinge" axis="0 0 1" frictionloss="0.2"/>
+            <geom type="capsule" fromto="0 0 0 0.5 0 0" size=".05"/>
+          </body>
+        </body>
+      </worldbody>
+    </mujoco>"""
+
+    overrides = {
+      "opt.solver": solver,
+      "opt.jacobian": jacobian,
+      "opt.iterations": 100,
+      "opt.tolerance": "1e-10",
+    }
+
+    _, _, m, d_monolithic = test_data.fixture(
+      xml=xml,
+      overrides=overrides,
+    )
+    m.opt.disableflags |= types.DisableBit.ISLAND
+    mjw.forward(m, d_monolithic)
+
+    _, _, m, d_island = test_data.fixture(
+      xml=xml,
+      overrides=overrides,
+    )
+    m.opt.disableflags &= ~types.DisableBit.ISLAND
+    mjw.forward(m, d_island)
+
+    np.testing.assert_allclose(d_island.qacc.numpy()[0], d_monolithic.qacc.numpy()[0], atol=1e-4)
+    np.testing.assert_allclose(d_island.qfrc_constraint.numpy()[0], d_monolithic.qfrc_constraint.numpy()[0], atol=1e-4)
+
+    nefc = d_monolithic.nefc.numpy()[0]
+    np.testing.assert_allclose(
+      d_island.efc.force.numpy()[0, :nefc],
+      d_monolithic.efc.force.numpy()[0, :nefc],
+      atol=1e-4,
+    )
+
+  @parameterized.product(
+    solver=list(types.SolverType),
+    jacobian=(mujoco.mjtJacobian.mjJAC_DENSE, mujoco.mjtJacobian.mjJAC_SPARSE),
+  )
+  def test_joint_limit(self, solver, jacobian):
+    """Joint with active limits generates inequality constraints."""
+    xml = """
+    <mujoco>
+      <compiler autolimits="true"/>
+
+      <worldbody>
+        <body name="arm">
+          <joint type="hinge" axis="0 0 1" range="-30 30" damping="0.5"/>
+          <geom type="capsule" fromto="0 0 0 0.5 0 0" size=".05"/>
+        </body>
+      </worldbody>
+    </mujoco>"""
+
+    overrides = {
+      "opt.solver": solver,
+      "opt.jacobian": jacobian,
+      "opt.iterations": 100,
+      "opt.tolerance": "1e-10",
+    }
+
+    _, _, m, d_monolithic = test_data.fixture(
+      xml=xml,
+      overrides=overrides,
+    )
+    m.opt.disableflags |= types.DisableBit.ISLAND
+    mjw.forward(m, d_monolithic)
+
+    _, _, m, d_island = test_data.fixture(
+      xml=xml,
+      overrides=overrides,
+    )
+    m.opt.disableflags &= ~types.DisableBit.ISLAND
+    mjw.forward(m, d_island)
+
+    np.testing.assert_allclose(d_island.qacc.numpy()[0], d_monolithic.qacc.numpy()[0], atol=1e-3)
+    np.testing.assert_allclose(d_island.qfrc_constraint.numpy()[0], d_monolithic.qfrc_constraint.numpy()[0], atol=1e-3)
+
+  @parameterized.product(
+    solver=list(types.SolverType),
+    jacobian=(mujoco.mjtJacobian.mjJAC_DENSE, mujoco.mjtJacobian.mjJAC_SPARSE),
+  )
+  def test_connect_constraint(self, solver, jacobian):
+    """Connect (point) constraint between two bodies."""
+    xml = """
+    <mujoco>
+      <worldbody>
+        <body name="b1">
+          <joint type="free"/>
+          <geom size=".1"/>
+        </body>
+        <body name="b2" pos="1 0 0">
+          <joint type="free"/>
+          <geom size=".1"/>
+        </body>
+      </worldbody>
+      <equality>
+        <connect body1="b1" body2="b2" anchor="0.5 0 0"/>
+      </equality>
+    </mujoco>"""
+
+    overrides = {
+      "opt.solver": solver,
+      "opt.jacobian": jacobian,
+      "opt.iterations": 100,
+      "opt.tolerance": "1e-10",
+    }
+
+    _, _, m, d_monolithic = test_data.fixture(
+      xml=xml,
+      overrides=overrides,
+    )
+    m.opt.disableflags |= types.DisableBit.ISLAND
+    mjw.forward(m, d_monolithic)
+
+    _, _, m, d_island = test_data.fixture(
+      xml=xml,
+      overrides=overrides,
+    )
+    m.opt.disableflags &= ~types.DisableBit.ISLAND
+    mjw.forward(m, d_island)
+
+    np.testing.assert_allclose(d_island.qacc.numpy()[0], d_monolithic.qacc.numpy()[0], atol=1e-4)
+    np.testing.assert_allclose(d_island.qfrc_constraint.numpy()[0], d_monolithic.qfrc_constraint.numpy()[0], atol=1e-4)
+
+    nefc = d_monolithic.nefc.numpy()[0]
+    np.testing.assert_allclose(
+      d_island.efc.force.numpy()[0, :nefc],
+      d_monolithic.efc.force.numpy()[0, :nefc],
+      atol=1e-4,
+    )
+
+  @parameterized.product(
+    solver=list(types.SolverType),
+    jacobian=(mujoco.mjtJacobian.mjJAC_DENSE, mujoco.mjtJacobian.mjJAC_SPARSE),
+  )
+  def test_mixed_constrained_unconstrained(self, solver, jacobian):
+    """Mix of constrained bodies (forming islands) and unconstrained bodies."""
+    xml = """
+    <mujoco>
+      <worldbody>
+        <body name="free1" pos="-5 0 1">
+          <joint type="free"/>
+          <geom size=".1"/>
+        </body>
+        <body name="a1">
+          <joint type="free"/>
+          <geom size=".1"/>
+        </body>
+        <body name="a2" pos="1 0 0">
+          <joint type="free"/>
+          <geom size=".1"/>
+        </body>
+        <body name="free2" pos="5 0 1">
+          <joint type="free"/>
+          <geom size=".1"/>
+        </body>
+      </worldbody>
+      <equality>
+        <weld body1="a1" body2="a2"/>
+      </equality>
+    </mujoco>"""
+
+    overrides = {
+      "opt.solver": solver,
+      "opt.jacobian": jacobian,
+      "opt.iterations": 100,
+      "opt.tolerance": "1e-10",
+    }
+
+    _, _, m, d_monolithic = test_data.fixture(
+      xml=xml,
+      overrides=overrides,
+    )
+    m.opt.disableflags |= types.DisableBit.ISLAND
+    mjw.forward(m, d_monolithic)
+
+    _, _, m, d_island = test_data.fixture(
+      xml=xml,
+      overrides=overrides,
+    )
+    m.opt.disableflags &= ~types.DisableBit.ISLAND
+    mjw.forward(m, d_island)
+
+    np.testing.assert_allclose(d_island.qacc.numpy()[0], d_monolithic.qacc.numpy()[0], atol=1e-4)
+    np.testing.assert_allclose(d_island.qfrc_constraint.numpy()[0], d_monolithic.qfrc_constraint.numpy()[0], atol=1e-4)
+
+  @parameterized.product(
+    solver=list(types.SolverType),
+    jacobian=(mujoco.mjtJacobian.mjJAC_DENSE, mujoco.mjtJacobian.mjJAC_SPARSE),
+  )
+  def test_multi_world(self, solver, jacobian):
+    """Island solver with multiple parallel worlds (nworld=4)."""
+    xml = _WELD_XML
+
+    _, _, m, d_monolithic = test_data.fixture(
+      xml=xml,
+      nworld=4,
+      overrides={
+        "opt.solver": solver,
+        "opt.jacobian": jacobian,
+        "opt.iterations": 100,
+        "opt.tolerance": "1e-10",
+      },
+    )
+    m.opt.disableflags |= types.DisableBit.ISLAND
+    mjw.forward(m, d_monolithic)
+
+    _, _, m, d_island = test_data.fixture(xml=xml, nworld=4)
+    m.opt.disableflags &= ~types.DisableBit.ISLAND
+    mjw.forward(m, d_island)
+
+    for w in range(4):
+      np.testing.assert_allclose(d_island.qacc.numpy()[w], d_monolithic.qacc.numpy()[w], atol=1e-4)
+      np.testing.assert_allclose(d_island.qfrc_constraint.numpy()[w], d_monolithic.qfrc_constraint.numpy()[w], atol=1e-4)
+
+  @parameterized.product(
+    solver=list(types.SolverType),
+    jacobian=(mujoco.mjtJacobian.mjJAC_DENSE, mujoco.mjtJacobian.mjJAC_SPARSE),
+  )
+  def test_warmstart_disabled(self, solver, jacobian):
+    """Island solver with warmstart disabled."""
+    xml = _WELD_XML
+
+    overrides = {
+      "opt.solver": solver,
+      "opt.jacobian": jacobian,
+      "opt.iterations": 100,
+      "opt.tolerance": "1e-10",
+      "opt.disableflags": types.DisableBit.WARMSTART,
+    }
+
+    _, _, m, d_monolithic = test_data.fixture(
+      xml=xml,
+      overrides=overrides,
+    )
+    m.opt.disableflags |= types.DisableBit.ISLAND
+    mjw.forward(m, d_monolithic)
+
+    _, _, m, d_island = test_data.fixture(
+      xml=xml,
+      overrides=overrides,
+    )
+    m.opt.disableflags &= ~types.DisableBit.ISLAND
+    mjw.forward(m, d_island)
+
+    np.testing.assert_allclose(d_island.qacc.numpy()[0], d_monolithic.qacc.numpy()[0], atol=1e-4)
+    np.testing.assert_allclose(d_island.qfrc_constraint.numpy()[0], d_monolithic.qfrc_constraint.numpy()[0], atol=1e-4)
+
+  @parameterized.product(
+    solver=list(types.SolverType),
+    jacobian=(mujoco.mjtJacobian.mjJAC_DENSE, mujoco.mjtJacobian.mjJAC_SPARSE),
+  )
+  def test_mujoco_c_parity(self, solver, jacobian):
+    """Island solver qacc should be close to MuJoCo C reference."""
+    xml = _WELD_XML
+
+    mjm, mjd, m, d = test_data.fixture(
+      xml=xml,
+      overrides={
+        "opt.solver": solver,
+        "opt.jacobian": jacobian,
+        "opt.iterations": 100,
+        "opt.tolerance": "1e-10",
+      },
+    )
+    m.opt.disableflags &= ~types.DisableBit.ISLAND
+
+    # MuJoCo C reference
+    mujoco.mj_forward(mjm, mjd)
+    qacc_mjc = mjd.qacc.copy()
+
+    # MuJoCo Warp island solver
+    mjw.forward(m, d)
+    qacc_warp = d.qacc.numpy()[0]
+
+    np.testing.assert_allclose(
+      qacc_warp,
+      qacc_mjc,
+      atol=1e-3,
+      err_msg="qacc mismatch between island solver and MuJoCo C",
+    )
+
+  @parameterized.product(
+    solver=list(types.SolverType),
+    jacobian=(mujoco.mjtJacobian.mjJAC_DENSE, mujoco.mjtJacobian.mjJAC_SPARSE),
+  )
+  def test_multi_step(self, solver, jacobian):
+    """Island solver produces stable multi-step simulation."""
+    xml = _WELD_XML
+
+    mjm, mjd, m, d_island = test_data.fixture(
+      xml=xml,
+      overrides={
+        "opt.solver": solver,
+        "opt.jacobian": jacobian,
+        "opt.iterations": 100,
+        "opt.tolerance": "1e-10",
+      },
+    )
+    m.opt.disableflags &= ~types.DisableBit.ISLAND
+
+    # Run 10 steps with island solver
+    for _ in range(10):
+      mjw.forward(m, d_island)
+      mjw.step(m, d_island)
+
+    qacc = d_island.qacc.numpy()[0]
+    # Check that accelerations are finite and not NaN
+    self.assertTrue(np.all(np.isfinite(qacc)), msg=f"Non-finite qacc after 10 steps: {qacc}")
+
+    # Verify reasonable magnitude (shouldn't blow up)
+    self.assertLess(np.max(np.abs(qacc)), 1e6, msg=f"qacc magnitude too large: {np.max(np.abs(qacc))}")
+
+  @parameterized.product(
+    solver=list(types.SolverType),
+    jacobian=(mujoco.mjtJacobian.mjJAC_DENSE, mujoco.mjtJacobian.mjJAC_SPARSE),
+  )
+  def test_chain_single_island(self, solver, jacobian):
+    """Three bodies in a chain form one island with two welds."""
+    xml = """
+    <mujoco>
+      <worldbody>
+        <body name="b1">
+          <joint type="free"/>
+          <geom size=".1"/>
+        </body>
+        <body name="b2" pos="1 0 0">
+          <joint type="free"/>
+          <geom size=".1"/>
+        </body>
+        <body name="b3" pos="2 0 0">
+          <joint type="free"/>
+          <geom size=".1"/>
+        </body>
+      </worldbody>
+      <equality>
+        <weld body1="b1" body2="b2"/>
+        <weld body1="b2" body2="b3"/>
+      </equality>
+    </mujoco>"""
+
+    overrides = {
+      "opt.solver": solver,
+      "opt.jacobian": jacobian,
+      "opt.iterations": 100,
+      "opt.tolerance": "1e-10",
+    }
+
+    _, _, m, d_monolithic = test_data.fixture(
+      xml=xml,
+      overrides=overrides,
+    )
+    m.opt.disableflags |= types.DisableBit.ISLAND
+    mjw.forward(m, d_monolithic)
+
+    _, _, m, d_island = test_data.fixture(
+      xml=xml,
+      overrides=overrides,
+    )
+    m.opt.disableflags &= ~types.DisableBit.ISLAND
+    mjw.forward(m, d_island)
+
+    np.testing.assert_allclose(d_island.qacc.numpy()[0], d_monolithic.qacc.numpy()[0], atol=1e-4)
+    np.testing.assert_allclose(d_island.qfrc_constraint.numpy()[0], d_monolithic.qfrc_constraint.numpy()[0], atol=1e-4)
+
+    nefc = d_monolithic.nefc.numpy()[0]
+    np.testing.assert_allclose(
+      d_island.efc.force.numpy()[0, :nefc],
+      d_monolithic.efc.force.numpy()[0, :nefc],
+      atol=1e-4,
+    )
+
+  @parameterized.product(
+    solver=list(types.SolverType),
+    jacobian=(mujoco.mjtJacobian.mjJAC_DENSE, mujoco.mjtJacobian.mjJAC_SPARSE),
+  )
+  def test_asymmetric_islands(self, solver, jacobian):
+    """Islands of different sizes: one small (1 weld) and one large (chain)."""
+    xml = """
+    <mujoco>
+      <worldbody>
+        <body name="a1">
+          <joint type="free"/>
+          <geom size=".1"/>
+        </body>
+        <body name="a2" pos="1 0 0">
+          <joint type="free"/>
+          <geom size=".1"/>
+        </body>
+        <body name="b1" pos="5 0 0">
+          <joint type="free"/>
+          <geom size=".1"/>
+        </body>
+        <body name="b2" pos="6 0 0">
+          <joint type="free"/>
+          <geom size=".1"/>
+        </body>
+        <body name="b3" pos="7 0 0">
+          <joint type="free"/>
+          <geom size=".1"/>
+        </body>
+        <body name="b4" pos="8 0 0">
+          <joint type="free"/>
+          <geom size=".1"/>
+        </body>
+      </worldbody>
+      <equality>
+        <weld body1="a1" body2="a2"/>
+        <weld body1="b1" body2="b2"/>
+        <weld body1="b2" body2="b3"/>
+        <weld body1="b3" body2="b4"/>
+      </equality>
+    </mujoco>"""
+
+    overrides = {
+      "opt.solver": solver,
+      "opt.jacobian": jacobian,
+      "opt.iterations": 100,
+      "opt.tolerance": "1e-10",
+    }
+
+    _, _, m, d_monolithic = test_data.fixture(
+      xml=xml,
+      overrides=overrides,
+    )
+    m.opt.disableflags |= types.DisableBit.ISLAND
+    mjw.forward(m, d_monolithic)
+
+    _, _, m, d_island = test_data.fixture(
+      xml=xml,
+      overrides=overrides,
+    )
+    m.opt.disableflags &= ~types.DisableBit.ISLAND
+    mjw.forward(m, d_island)
+
+    np.testing.assert_allclose(d_island.qacc.numpy()[0], d_monolithic.qacc.numpy()[0], atol=1e-4)
+    np.testing.assert_allclose(d_island.qfrc_constraint.numpy()[0], d_monolithic.qfrc_constraint.numpy()[0], atol=1e-4)
+
+  @parameterized.product(
+    solver=list(types.SolverType),
+    jacobian=(mujoco.mjtJacobian.mjJAC_DENSE, mujoco.mjtJacobian.mjJAC_SPARSE),
+  )
+  def test_hinge_chain_with_limits(self, solver, jacobian):
+    """Kinematic chain with hinge joints and active limits."""
+    xml = """
+    <mujoco>
+      <compiler autolimits="true"/>
+
+      <worldbody>
+        <body name="link1">
+          <joint type="hinge" axis="0 1 0" range="-45 45" damping="0.1"/>
+          <geom type="capsule" fromto="0 0 0 0.5 0 0" size=".03"/>
+          <body name="link2" pos="0.5 0 0">
+            <joint type="hinge" axis="0 1 0" range="-45 45" damping="0.1"/>
+            <geom type="capsule" fromto="0 0 0 0.5 0 0" size=".03"/>
+          </body>
+        </body>
+      </worldbody>
+    </mujoco>"""
+
+    overrides = {
+      "opt.solver": solver,
+      "opt.jacobian": jacobian,
+      "opt.iterations": 100,
+      "opt.tolerance": "1e-10",
+    }
+
+    _, _, m, d_monolithic = test_data.fixture(
+      xml=xml,
+      overrides=overrides,
+    )
+    m.opt.disableflags |= types.DisableBit.ISLAND
+    mjw.forward(m, d_monolithic)
+
+    _, _, m, d_island = test_data.fixture(
+      xml=xml,
+      overrides=overrides,
+    )
+    m.opt.disableflags &= ~types.DisableBit.ISLAND
+    mjw.forward(m, d_island)
+
+    np.testing.assert_allclose(d_island.qacc.numpy()[0], d_monolithic.qacc.numpy()[0], atol=1e-3)
+    np.testing.assert_allclose(d_island.qfrc_constraint.numpy()[0], d_monolithic.qfrc_constraint.numpy()[0], atol=1e-3)
+
+  @parameterized.product(
+    solver=list(types.SolverType),
+    jacobian=(mujoco.mjtJacobian.mjJAC_DENSE, mujoco.mjtJacobian.mjJAC_SPARSE),
+  )
+  def test_ball_joint_limit(self, solver, jacobian):
+    """Ball joint with active limit generates inequality constraints."""
+    xml = """
+    <mujoco>
+      <compiler autolimits="true"/>
+
+      <worldbody>
+        <body>
+          <joint type="ball" range="0 30"/>
+          <geom type="box" size=".1 .2 .3" pos=".1 .2 .3"/>
+        </body>
+      </worldbody>
+    </mujoco>"""
+
+    overrides = {
+      "opt.solver": solver,
+      "opt.jacobian": jacobian,
+      "opt.iterations": 100,
+      "opt.tolerance": "1e-10",
+    }
+
+    _, _, m, d_monolithic = test_data.fixture(
+      xml=xml,
+      overrides=overrides,
+    )
+    m.opt.disableflags |= types.DisableBit.ISLAND
+    mjw.forward(m, d_monolithic)
+
+    _, _, m, d_island = test_data.fixture(
+      xml=xml,
+      overrides=overrides,
+    )
+    m.opt.disableflags &= ~types.DisableBit.ISLAND
+    mjw.forward(m, d_island)
+
+    np.testing.assert_allclose(d_island.qacc.numpy()[0], d_monolithic.qacc.numpy()[0], atol=1e-3)
+    np.testing.assert_allclose(d_island.qfrc_constraint.numpy()[0], d_monolithic.qfrc_constraint.numpy()[0], atol=1e-3)
+
+  @parameterized.product(
+    solver=list(types.SolverType),
+    jacobian=(mujoco.mjtJacobian.mjJAC_DENSE, mujoco.mjtJacobian.mjJAC_SPARSE),
+  )
+  def test_contact_elliptic(self, solver, jacobian):
+    """Contact constraints with elliptic friction cone (condim=3)."""
+    xml = """
+    <mujoco>
+      <worldbody>
+        <geom type="plane" size="10 10 .01"/>
+        <body name="box" pos="0 0 0.15">
+          <joint type="free"/>
+          <geom type="box" size=".1 .1 .1" condim="3" friction="0.5"/>
+        </body>
+      </worldbody>
+    </mujoco>"""
+
+    overrides = {
+      "opt.cone": types.ConeType.ELLIPTIC,
+      "opt.solver": solver,
+      "opt.jacobian": jacobian,
+      "opt.iterations": 100,
+      "opt.tolerance": "1e-10",
+    }
+
+    _, _, m, d_monolithic = test_data.fixture(
+      xml=xml,
+      overrides=overrides,
+    )
+    m.opt.disableflags |= types.DisableBit.ISLAND
+    mjw.forward(m, d_monolithic)
+
+    _, _, m, d_island = test_data.fixture(
+      xml=xml,
+      overrides=overrides,
+    )
+    m.opt.disableflags &= ~types.DisableBit.ISLAND
+    mjw.forward(m, d_island)
+
+    np.testing.assert_allclose(d_island.qacc.numpy()[0], d_monolithic.qacc.numpy()[0], atol=1e-3)
+    np.testing.assert_allclose(d_island.qfrc_constraint.numpy()[0], d_monolithic.qfrc_constraint.numpy()[0], atol=1e-3)
+
+  @parameterized.product(
+    solver=list(types.SolverType),
+    jacobian=(mujoco.mjtJacobian.mjJAC_DENSE, mujoco.mjtJacobian.mjJAC_SPARSE),
+  )
+  def test_contact_elliptic_condim4(self, solver, jacobian):
+    """Elliptic friction cones with condim=4 (normal + 2 tangential + spin)."""
+    xml = """
+    <mujoco>
+      <worldbody>
+        <geom name="floor" type="plane" size="10 10 .01"/>
+        <body name="box" pos="0 0 0.15">
+          <joint type="free"/>
+          <geom name="box" type="box" size=".1 .1 .1" condim="4" friction="0.5 0.3 0.01"/>
+        </body>
+      </worldbody>
+    </mujoco>"""
+
+    overrides = {
+      "opt.cone": types.ConeType.ELLIPTIC,
+      "opt.solver": solver,
+      "opt.jacobian": jacobian,
+      "opt.iterations": 100,
+      "opt.tolerance": "1e-10",
+    }
+
+    _, _, m, d_monolithic = test_data.fixture(
+      xml=xml,
+      overrides=overrides,
+    )
+    m.opt.disableflags |= types.DisableBit.ISLAND
+    mjw.forward(m, d_monolithic)
+
+    _, _, m, d_island = test_data.fixture(
+      xml=xml,
+      overrides=overrides,
+    )
+    m.opt.disableflags &= ~types.DisableBit.ISLAND
+    mjw.forward(m, d_island)
+
+    np.testing.assert_allclose(d_island.qacc.numpy()[0], d_monolithic.qacc.numpy()[0], atol=1e-3)
+    np.testing.assert_allclose(d_island.qfrc_constraint.numpy()[0], d_monolithic.qfrc_constraint.numpy()[0], atol=1e-3)
+
+  @parameterized.product(
+    solver=list(types.SolverType),
+    jacobian=(mujoco.mjtJacobian.mjJAC_DENSE, mujoco.mjtJacobian.mjJAC_SPARSE),
+  )
+  def test_contact_elliptic_multi_island(self, solver, jacobian):
+    """Two separate bodies with elliptic contacts forming separate islands."""
+    xml = """
+    <mujoco>
+      <worldbody>
+        <geom type="plane" size="10 10 .01"/>
+        <body name="box1" pos="0 0 0.15">
+          <joint type="free"/>
+          <geom type="box" size=".1 .1 .1" condim="3" friction="0.5"/>
+        </body>
+        <body name="box2" pos="5 0 0.15">
+          <joint type="free"/>
+          <geom type="box" size=".1 .1 .1" condim="3" friction="0.5"/>
+        </body>
+      </worldbody>
+    </mujoco>"""
+
+    overrides = {
+      "opt.cone": types.ConeType.ELLIPTIC,
+      "opt.solver": solver,
+      "opt.jacobian": jacobian,
+      "opt.iterations": 100,
+      "opt.tolerance": "1e-10",
+    }
+
+    _, _, m, d_monolithic = test_data.fixture(
+      xml=xml,
+      overrides=overrides,
+    )
+    m.opt.disableflags |= types.DisableBit.ISLAND
+    mjw.forward(m, d_monolithic)
+
+    _, _, m, d_island = test_data.fixture(
+      xml=xml,
+      overrides=overrides,
+    )
+    m.opt.disableflags &= ~types.DisableBit.ISLAND
+    mjw.forward(m, d_island)
+
+    np.testing.assert_allclose(d_island.qacc.numpy()[0], d_monolithic.qacc.numpy()[0], atol=1e-3)
+    np.testing.assert_allclose(d_island.qfrc_constraint.numpy()[0], d_monolithic.qfrc_constraint.numpy()[0], atol=1e-3)
+
+  @parameterized.product(
+    warmstart=[False, True],
+    solver=list(types.SolverType),
+    cone=list(types.ConeType),
+  )
+  def test_islands_equivalent_forward(self, warmstart, solver, cone):
+    """Island vs. monolithic forward parity across solver/cone/warmstart combos.
+
+    Mirrors MuJoCo C's IslandsEquivalentForward test: a single forward call
+    comparing island and monolithic solvers across all combinations of
+    solver type, cone type, and warmstart on a rich model with mixed
+    constraint types.
+    """
+    xml = _RICH_MODEL_XML
+
+    overrides = {
+      "opt.solver": solver,
+      "opt.cone": cone,
+      "opt.iterations": 100,
+      "opt.tolerance": "0",
+      "opt.ls_iterations": 20,
+    }
+    if not warmstart:
+      overrides["opt.disableflags"] = types.DisableBit.WARMSTART
+
+    # Monolithic (islands disabled by default via DisableBit.ISLAND)
+    overrides_monolithic = dict(overrides)
+    _, _, m_monolithic, d_monolithic = test_data.fixture(
+      xml=xml,
+      overrides=overrides_monolithic,
+    )
+    m_monolithic.opt.disableflags |= types.DisableBit.ISLAND
+
+    # step once to populate warmstart, then forward
+    mjw.step(m_monolithic, d_monolithic)
+    mjw.forward(m_monolithic, d_monolithic)
+
+    # Island
+    _, _, m_island, d_island = test_data.fixture(
+      xml=xml,
+      overrides=overrides,
+    )
+    m_island.opt.disableflags &= ~types.DisableBit.ISLAND
+    mjw.step(m_island, d_island)
+    mjw.forward(m_island, d_island)
+
+    np.testing.assert_allclose(
+      d_island.qacc.numpy()[0],
+      d_monolithic.qacc.numpy()[0],
+      atol=1e-2 if solver == types.SolverType.CG else 1e-3,
+      rtol=1e-2,
+    )
+
+  @parameterized.product(
+    solver=list(types.SolverType),
+    jacobian=(mujoco.mjtJacobian.mjJAC_DENSE, mujoco.mjtJacobian.mjJAC_SPARSE),
+  )
+  def test_islands_equivalent(self, solver, jacobian):
+    """Multi-step island vs. monolithic parity with synchronized state.
+
+    Mirrors MuJoCo C's IslandsEquivalent test: runs multiple forward calls
+    comparing island and monolithic solvers while keeping the state
+    synchronized, verifying convergence agreement over time.
+    """
+    xml = _RICH_MODEL_XML
+
+    overrides = {
+      "opt.solver": solver,
+      "opt.jacobian": jacobian,
+      "opt.iterations": 60,
+      "opt.tolerance": "0",
+      "opt.ls_iterations": 60,
+    }
+
+    _, _, m_monolithic, d_monolithic = test_data.fixture(xml=xml, overrides=overrides)
+    m_monolithic.opt.disableflags |= types.DisableBit.ISLAND
+    _, _, m_island, d_island = test_data.fixture(xml=xml, overrides=overrides)
+    m_island.opt.disableflags &= ~types.DisableBit.ISLAND
+
+    nv = m_monolithic.nv
+
+    # Run 5 synchronized steps
+    for step in range(5):
+      # Synchronize state: copy monolithic qpos/qvel to island
+      d_island.qpos.assign(d_monolithic.qpos)
+      d_island.qvel.assign(d_monolithic.qvel)
+
+      mjw.forward(m_monolithic, d_monolithic)
+      mjw.forward(m_island, d_island)
+
+      np.testing.assert_allclose(
+        d_island.qacc.numpy()[0, :nv],
+        d_monolithic.qacc.numpy()[0, :nv],
+        atol=1e-2 if solver == types.SolverType.CG else 1e-3,
+        rtol=1e-2,
+        err_msg=f"qacc mismatch at step {step}, solver={solver.name}",
+      )
+
+      mjw.step(m_monolithic, d_monolithic)
+
+  @parameterized.product(
+    solver=list(types.SolverType),
+    jacobian=(mujoco.mjtJacobian.mjJAC_DENSE, mujoco.mjtJacobian.mjJAC_SPARSE),
+    keyframe=(0, 1, 2),
+  )
+  def test_constraints_xml_island_parity(self, solver, jacobian, keyframe):
+    """Complex multi-island model: constraints.xml with 5-9 islands.
+
+    Exercises tendon limits, tendon friction, joint equality, tendon equality,
+    ball joint limits, connect/weld, and mixed contact dimensions (1/3/4/6).
+    Keyframe 0: 5 islands, no contacts. Keyframe 1: 9 islands, frictionless
+    and pyramidal contacts. Keyframe 2: 9 islands, joint limits active.
+    """
+    _, _, m, d_monolithic = test_data.fixture(
+      "constraints.xml",
+      keyframe=keyframe,
+      overrides={
+        "opt.solver": solver,
+        "opt.jacobian": jacobian,
+        "opt.iterations": 100,
+        "opt.tolerance": "1e-10",
+      },
+    )
+    m.opt.disableflags |= types.DisableBit.ISLAND
+    mjw.forward(m, d_monolithic)
+
+    _, _, m, d_island = test_data.fixture(
+      "constraints.xml",
+      keyframe=keyframe,
+      overrides={
+        "opt.solver": solver,
+        "opt.jacobian": jacobian,
+        "opt.iterations": 100,
+        "opt.tolerance": "1e-10",
+      },
+    )
+    m.opt.disableflags &= ~types.DisableBit.ISLAND
+    mjw.forward(m, d_island)
+
+    qacc_island = d_island.qacc.numpy()[0]
+    qacc_monolithic = d_monolithic.qacc.numpy()[0]
+    scale = 0.5 * (np.linalg.norm(qacc_island) + np.linalg.norm(qacc_monolithic))
+    rtol = 1e-3 if solver == types.SolverType.CG else 1e-4
+    tol = max(scale * rtol, 1e-8)
+    np.testing.assert_allclose(
+      qacc_island,
+      qacc_monolithic,
+      atol=tol,
+      err_msg=f"qacc mismatch: solver={solver.name}, jacobian={jacobian}, keyframe={keyframe}",
+    )
+
+  @parameterized.product(
+    solver=list(types.SolverType),
+    jacobian=(mujoco.mjtJacobian.mjJAC_DENSE, mujoco.mjtJacobian.mjJAC_SPARSE),
+  )
+  def test_tendon_limit_and_friction(self, solver, jacobian):
+    """Tendon limits and friction exercise generic Jacobian scan in edge discovery."""
+    xml = """
+    <mujoco>
+      <compiler autolimits="true"/>
+      <worldbody>
+        <body name="b1">
+          <joint name="j1" type="hinge" axis="1 0 0"/>
+          <geom size=".1"/>
+        </body>
+        <body name="b2" pos="1 0 0">
+          <joint name="j2" type="hinge" axis="1 0 0"/>
+          <geom size=".1"/>
+        </body>
+      </worldbody>
+      <tendon>
+        <fixed name="t1" range="-0.5 0.5" frictionloss="0.1">
+          <joint joint="j1" coef="1"/>
+          <joint joint="j2" coef="-1"/>
+        </fixed>
+      </tendon>
+    </mujoco>"""
+
+    overrides = {
+      "opt.solver": solver,
+      "opt.jacobian": jacobian,
+      "opt.iterations": 100,
+      "opt.tolerance": "1e-10",
+    }
+
+    _, _, m, d_monolithic = test_data.fixture(
+      xml=xml,
+      overrides=overrides,
+    )
+    m.opt.disableflags |= types.DisableBit.ISLAND
+    mjw.forward(m, d_monolithic)
+
+    _, _, m, d_island = test_data.fixture(
+      xml=xml,
+      overrides=overrides,
+    )
+    m.opt.disableflags &= ~types.DisableBit.ISLAND
+    mjw.forward(m, d_island)
+
+    np.testing.assert_allclose(d_island.qacc.numpy()[0], d_monolithic.qacc.numpy()[0], atol=1e-4)
+    np.testing.assert_allclose(d_island.qfrc_constraint.numpy()[0], d_monolithic.qfrc_constraint.numpy()[0], atol=1e-4)
+
+    nefc = d_monolithic.nefc.numpy()[0]
+    np.testing.assert_allclose(
+      d_island.efc.force.numpy()[0, :nefc],
+      d_monolithic.efc.force.numpy()[0, :nefc],
+      atol=1e-4,
+    )
+
+  @parameterized.product(
+    solver=list(types.SolverType),
+    jacobian=(mujoco.mjtJacobian.mjJAC_DENSE, mujoco.mjtJacobian.mjJAC_SPARSE),
+  )
+  def test_contact_elliptic_condim6(self, solver, jacobian):
+    """Elliptic friction cones with condim=6 (normal + 2 tangential + torsional + 2 rolling)."""
+    xml = """
+    <mujoco>
+      <worldbody>
+        <geom type="plane" size="10 10 .01"/>
+        <body name="box" pos="0 0 0.15">
+          <joint type="free"/>
+          <geom type="box" size=".1 .1 .1" condim="6" friction="0.5 0.3 0.01"/>
+        </body>
+      </worldbody>
+    </mujoco>"""
+
+    overrides = {
+      "opt.cone": types.ConeType.ELLIPTIC,
+      "opt.solver": solver,
+      "opt.jacobian": jacobian,
+      "opt.iterations": 100,
+      "opt.tolerance": "1e-10",
+    }
+
+    _, _, m, d_monolithic = test_data.fixture(
+      xml=xml,
+      overrides=overrides,
+    )
+    m.opt.disableflags |= types.DisableBit.ISLAND
+    mjw.forward(m, d_monolithic)
+
+    _, _, m, d_island = test_data.fixture(
+      xml=xml,
+      overrides=overrides,
+    )
+    m.opt.disableflags &= ~types.DisableBit.ISLAND
+    mjw.forward(m, d_island)
+
+    np.testing.assert_allclose(d_island.qacc.numpy()[0], d_monolithic.qacc.numpy()[0], atol=1e-3)
+    np.testing.assert_allclose(d_island.qfrc_constraint.numpy()[0], d_monolithic.qfrc_constraint.numpy()[0], atol=1e-3)
+
+  @parameterized.product(
+    solver=list(types.SolverType),
+    jacobian=(mujoco.mjtJacobian.mjJAC_DENSE, mujoco.mjtJacobian.mjJAC_SPARSE),
+  )
+  def test_island_solver_no_graph_conditional(self, solver, jacobian):
+    """Island solver with graph_conditional=False uses Python for loop."""
+    xml = _WELD_XML
+
+    overrides = {
+      "opt.solver": solver,
+      "opt.jacobian": jacobian,
+      "opt.iterations": 100,
+      "opt.tolerance": "1e-10",
+    }
+
+    _, _, m, d_monolithic = test_data.fixture(
+      xml=xml,
+      overrides=overrides,
+    )
+    m.opt.disableflags |= types.DisableBit.ISLAND
+    mjw.forward(m, d_monolithic)
+
+    _, _, m, d_island = test_data.fixture(
+      xml=xml,
+      overrides={**overrides, "opt.graph_conditional": False},
+    )
+    m.opt.disableflags &= ~types.DisableBit.ISLAND
+    mjw.forward(m, d_island)
+
+    np.testing.assert_allclose(d_island.qacc.numpy()[0], d_monolithic.qacc.numpy()[0], atol=1e-4)
+    np.testing.assert_allclose(d_island.qfrc_constraint.numpy()[0], d_monolithic.qfrc_constraint.numpy()[0], atol=1e-4)
+
+  @parameterized.product(
+    solver=list(types.SolverType),
+    jacobian=(mujoco.mjtJacobian.mjJAC_DENSE, mujoco.mjtJacobian.mjJAC_SPARSE),
+    cone=list(types.ConeType),
+  )
+  def test_constraint_update_island_parity(self, solver, jacobian, cone):
+    """Per-island constraint force parity across sparsity and cone types.
+
+    Mirrors MuJoCo C's ConstraintUpdateImpl test in
+    engine_core_constraint_test.cc: simulates for several steps, then
+    verifies that the island solver produces the same qacc and efc_state
+    as the monolithic solver across all combinations of Jacobian sparsity
+    and cone type.
+    """
+    # This is the island_efc.xml model used in the C test:
+    # 7 equalities (1:joint, 6:connect), 1 limit, 2 friction constraints,
+    # 1 unconstrained dof, 4 islands, 2 with non-contiguous dofs.
+    xml = _RICH_MODEL_XML
+
+    overrides = {
+      "opt.solver": solver,
+      "opt.cone": cone,
+      "opt.jacobian": jacobian,
+      "opt.iterations": 100,
+      "opt.tolerance": "0",
+      "opt.ls_iterations": 20,
+    }
+    _, _, m_monolithic, d_monolithic = test_data.fixture(xml=xml, overrides=overrides)
+    m_monolithic.opt.disableflags |= types.DisableBit.ISLAND
+    mjw.forward(m_monolithic, d_monolithic)
+
+    _, _, m_island, d_island = test_data.fixture(xml=xml, overrides=overrides)
+    m_island.opt.disableflags &= ~types.DisableBit.ISLAND
+    mjw.forward(m_island, d_island)
+
+    np.testing.assert_allclose(
+      d_island.qacc.numpy()[0],
+      d_monolithic.qacc.numpy()[0],
+      atol=1e-3,
+      err_msg=f"qacc mismatch: solver={solver.name}, jac={jacobian}, cone={cone.name}",
+    )
+
+  @parameterized.product(
+    solver=list(types.SolverType),
+    iterations=[30, 60],
+  )
+  def test_solver_model_island_parity(self, solver, iterations):
+    """Rich model island parity with iteration count sweep.
+
+    Mirrors MuJoCo C's IslandsEquivalent test in engine_solver_test.cc:
+    uses a complex model with mesh, heightfield, fluid, gravcomp, and
+    multiple legs. Tests at different iteration counts to verify
+    convergence behavior. The C test uses model.xml with CG+Sparse.
+    """
+    xml = _LEGS_HFIELD_XML
+
+    overrides_monolithic = {
+      "opt.solver": solver,
+      "opt.tolerance": "0",
+      "opt.iterations": iterations,
+      "opt.ls_iterations": iterations,
+    }
+    # Single forward to establish contact
+    _, _, m_monolithic, d_monolithic = test_data.fixture(xml=xml, overrides=overrides_monolithic)
+    m_monolithic.opt.disableflags |= types.DisableBit.ISLAND
+    mjw.forward(m_monolithic, d_monolithic)
+
+    _, _, m_island, d_island = test_data.fixture(xml=xml, overrides=overrides_monolithic)
+    m_island.opt.disableflags &= ~types.DisableBit.ISLAND
+    mjw.forward(m_island, d_island)
+
+    np.testing.assert_allclose(
+      d_island.qacc.numpy()[0],
+      d_monolithic.qacc.numpy()[0],
+      atol=1e-3,
+      err_msg=f"qacc mismatch: solver={solver.name}, iters={iterations}",
+    )
+
+  @parameterized.product(
+    solver=list(types.SolverType),
+    jacobian=(mujoco.mjtJacobian.mjJAC_DENSE, mujoco.mjtJacobian.mjJAC_SPARSE),
+  )
+  def test_solver_model_island_multi_step(self, solver, jacobian):
+    """Multi-step island parity on a rich model with synchronized state.
+
+    Mirrors MuJoCo C's IslandsEquivalent test multi-step pattern:
+    runs multiple steps, synchronizing state between island and monolithic
+    after each step to prevent divergence. Uses the same rich model with
+    mesh, heightfield, fluid, and multiple contact islands.
+    """
+    xml = _LEGS_HFIELD_XML
+
+    nsteps = 10
+    nv = 26  # 6 (head freejoint) + 2*4 (legs) + 2*6 (boxes) = 26
+
+    overrides = {
+      "opt.solver": solver,
+      "opt.jacobian": jacobian,
+      "opt.iterations": 60,
+      "opt.tolerance": "0",
+    }
+
+    _, _, m_monolithic, d_monolithic = test_data.fixture(xml=xml, overrides=overrides)
+    m_monolithic.opt.disableflags |= types.DisableBit.ISLAND
+    _, _, m_island, d_island = test_data.fixture(xml=xml, overrides=overrides)
+    m_island.opt.disableflags &= ~types.DisableBit.ISLAND
+
+    for step in range(nsteps):
+      mjw.forward(m_monolithic, d_monolithic)
+      mjw.forward(m_island, d_island)
+
+      np.testing.assert_allclose(
+        d_island.qacc.numpy()[0, :nv],
+        d_monolithic.qacc.numpy()[0, :nv],
+        atol=1e-2 if solver == types.SolverType.CG else 1e-3,
+        rtol=1e-2,
+        err_msg=f"qacc mismatch at step {step}: solver={solver.name}",
+      )
+
+      # Integrate monolithic, then sync state to island
+      mjw.step(m_monolithic, d_monolithic)
+      d_island.qpos.assign(d_monolithic.qpos)
+      d_island.qvel.assign(d_monolithic.qvel)
+      d_island.act.assign(d_monolithic.act)
+      d_island.time.assign(d_monolithic.time)
+      d_island.qacc_warmstart.assign(d_monolithic.qacc_warmstart)
 
 
 if __name__ == "__main__":

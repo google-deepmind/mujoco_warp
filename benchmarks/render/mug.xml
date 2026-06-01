@@ -1,0 +1,34 @@
+<mujoco model="mug">
+  <option gravity="0 0 0"/>
+  <visual>
+    <map znear="0.01" zfar="200" />
+    <quality shadowsize="8192" />
+    <headlight diffuse=".8 .8 .8" ambient=".2 .2 .2" specular="1 1 1" />
+    <global azimuth="140" elevation="-20" />
+  </visual>
+
+  <asset>
+    <texture type="skybox" builtin="gradient" rgb1="1 1 1" rgb2="1 1 1" width="800" height="800" />
+    <texture name="grid" type="2d" builtin="checker" width="512" height="512" rgb1=".1 .2 .3" rgb2=".2 .3 .4"/>
+    <material name="grid" texture="grid" texrepeat="1 1" texuniform="true" reflectance=".2"/>
+
+    <texture name="mug" file="assets/mug.png" type="2d"/>
+    <material name="mug" texture="mug" specular="1" shininess="1"/>
+    <mesh name="mug" file="assets/mug.obj" scale=".01 .01 .01"/>
+  </asset>
+
+  <worldbody>
+    <geom name="floor" size="0 0 .05" type="plane" material="grid" contype="1" conaffinity="1"/>
+    <camera pos="1.0 0.0 0.74" xyaxes="0 1 0 -0.6 0 1"/>
+    <light pos="0 0 3" dir="0 0 -1" directional="true" />
+
+    <!-- A table to hold the mug -->
+    <geom name="table" pos="0.8 0.0 0.5" type="box" size="0.5 1.0 0.01" quat="1.0 0.0 0.0 0.0" contype="1" conaffinity="1"/>
+
+    <!-- A single mug above the table -->
+    <body name="mug" pos="0.8 0.0 0.6" euler="0 0 90">
+      <freejoint name="mug_joint"/>
+      <geom type="mesh" mesh="mug" material="mug" euler="90 0 0" group="1" contype="0" conaffinity="0"/>
+    </body>
+  </worldbody>
+</mujoco>

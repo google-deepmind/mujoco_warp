@@ -57,14 +57,14 @@ _INFO = flags.DEFINE_bool("info", False, "print extra Model and Data info")
 _FORMAT = flags.DEFINE_enum("format", "human", ["human", "short", "json"], "output format")
 
 
-def _dataclass_memory(dataclass, prefix: str = "") -> list[tuple[str, int]]:
-  ret = []
+def _dataclass_memory(dataclass, prefix: str = "") -> dict[str, int]:
+  ret = {}
   for field in dataclasses.fields(dataclass):
     value = getattr(dataclass, field.name)
     if dataclasses.is_dataclass(value):
-      ret.extend(_dataclass_memory(value, prefix=f"{prefix}{field.name}."))
+      ret.update(_dataclass_memory(value, prefix=f"{prefix}{field.name}."))
     elif isinstance(value, wp.array):
-      ret.append((f"{prefix}{field.name}", value.capacity))
+      ret[f"{prefix}{field.name}"] = value.capacity
   return ret
 
 
@@ -260,12 +260,30 @@ def _main(argv: Sequence[str]):
     solver_niter.append(d.solver_niter.numpy())
     trace = _sum_trace(trace, step_trace)
 
-  jit_duration = cli.unroll(_FUNCS[_FUNCTION.value], m, d, rc, callback, ctrls)
+  if _FUNCTION.value == "render":
+    with wp.ScopedCapture() as step_capture:
+      mjw.step(m, d)
+
+    def render_callback(step, step_trace, latency):
+      callback(step, step_trace, latency)
+      wp.capture_launch(step_capture.graph)
+      wp.synchronize()
+
+    # TODO(team): Support specifying multiple functions to benchmark them together,
+    # e.g., `mjwarp-testspeed --function=refit_bvh --function=render`
+    def refit_and_render(m, d, rc):
+      mjw.refit_bvh(m, d, rc)
+      mjw.render(m, d, rc)
+
+    jit_duration = cli.unroll(refit_and_render, m, d, rc, render_callback, ctrls)
+  else:
+    jit_duration = cli.unroll(_FUNCS[_FUNCTION.value], m, d, rc, callback, ctrls)
 
   nconverged = np.sum(~np.any(np.isnan(d.qpos.numpy()), axis=1))
   steps = cli.NWORLD.value * cli.NSTEP.value
   model_mem = _dataclass_memory(m)
   data_mem = _dataclass_memory(d)
+  total_mem = free_mem_at_init - wp.get_device(device).free_memory
 
   if _FORMAT.value == "human":
     print(f"""
@@ -308,31 +326,27 @@ Total converged worlds: {nconverged} / {d.nworld}""")
       _print_table(matrix, ("mean", "std", "min", "max"), "solver niter")
 
     if _MEMORY.value:
-      total_mem = wp.get_device(device).total_memory
-      used_mem = total_mem - wp.get_device(device).free_memory
-      other_mem = used_mem
+      device_mem = wp.get_device(device).total_memory
       for mem, name in [(model_mem, "\nModel"), (data_mem, "Data")]:
-        if mem is None:
-          continue
-        other_mem -= sum(c for _, c in mem)
-        other_mem_total = sum(c for _, c in mem)
-        print(f"{name} memory {other_mem_total / 1024**2:.2f} MiB ({100 * other_mem_total / used_mem:.2f}% of used memory):")
-        fields = [(f, c) for f, c in mem if c / used_mem >= 0.01]
+        mem_total = sum(mem.values())
+        print(f"{name} memory {mem_total / 1024**2:.2f} MiB ({100 * mem_total / device_mem:.2f}% of device memory):")
+        fields = [(f, c) for f, c in mem.items() if c / total_mem >= 0.01]
         for field, capacity in fields:
-          print(f" {field}: {capacity / 1024**2:.2f} MiB ({100 * capacity / used_mem:.2f}%)")
+          print(f" {field}: {capacity / 1024**2:.2f} MiB ({100 * capacity / device_mem:.2f}%)")
         if not fields:
-          print(" (no field >= 1% of used memory)")
-      print(f"Other memory: {other_mem / 1024**2:.2f} MiB ({100 * other_mem / used_mem:.2f}% of used memory)")
-      print(f"Total memory: {used_mem / 1024**2:.2f} MiB ({100 * used_mem / total_mem:.2f}% of total device memory)")
+          print(" (no field >= 1% of total memory)")
+      other_mem = total_mem - sum(model_mem.values()) - sum(data_mem.values())
+      print(f"Other memory: {other_mem / 1024**2:.2f} MiB ({100 * other_mem / device_mem:.2f}% of device memory)")
+      print(f"Total memory: {total_mem / 1024**2:.2f} MiB ({100 * total_mem / device_mem:.2f}% of device memory)")
   else:
     metrics = {
       "jit_duration": jit_duration,
       "run_time": runtime,
       "steps_per_second": steps / runtime,
       "converged_worlds": int(nconverged),
-      "model_memory": sum(c for _, c in model_mem),
-      "data_memory": sum(c for _, c in data_mem),
-      "total_memory": free_mem_at_init - wp.get_device(device).free_memory,
+      "model_memory": sum(model_mem.values()),
+      "data_memory": sum(data_mem.values()),
+      "total_memory": total_mem,
       "ncon_mean": np.mean(nacon) / cli.NWORLD.value,
       "ncon_p95": np.percentile(nacon, 95) / cli.NWORLD.value,
       "nefc_mean": np.mean(nefc),
