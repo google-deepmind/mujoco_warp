@@ -3130,6 +3130,16 @@ def solve_prev_grad_Mgrad(
 
 
 @wp.kernel
+def solve_beta_zero(
+  ctx_beta_num_out: wp.array[float],
+  ctx_beta_den_out: wp.array[float],
+):
+  worldid = wp.tid()
+  ctx_beta_num_out[worldid] = 0.0
+  ctx_beta_den_out[worldid] = 0.0
+
+
+@wp.kernel
 def solve_beta_accumulate(
   # In:
   ctx_grad_in: wp.array2d[float],
@@ -3286,8 +3296,11 @@ def _solver_iteration(
 
   # polak-ribiere
   if m.opt.solver == types.SolverType.CG:
-    ctx.beta.zero_()
-    ctx.beta_den.zero_()
+    wp.launch(
+      solve_beta_zero,
+      dim=d.nworld,
+      outputs=[ctx.beta, ctx.beta_den],
+    )
     wp.launch(
       solve_beta_accumulate,
       dim=(d.nworld, m.nv),
@@ -4468,6 +4481,22 @@ def solve_prev_grad_Mgrad_island(
 
 
 @wp.kernel
+def solve_beta_island_zero(
+  nisland_in: wp.array[int],
+  island_beta_num_out: wp.array2d[float],
+  island_beta_den_out: wp.array2d[float],
+):
+  """Zero Polak-Ribière numerator and denominator per island."""
+  worldid, islandid = wp.tid()
+
+  if islandid >= nisland_in[worldid]:
+    return
+
+  island_beta_num_out[worldid, islandid] = 0.0
+  island_beta_den_out[worldid, islandid] = 0.0
+
+
+@wp.kernel
 def solve_beta_island_accumulate(
   # Data in:
   nidof_in: wp.array[int],
@@ -5488,8 +5517,12 @@ def _solver_iteration_island(
 
   # Polak-Ribière beta (CG only)
   if is_cg:
-    ctx.beta.zero_()
-    ctx.beta_den.zero_()
+    wp.launch(
+      solve_beta_island_zero,
+      dim=(d.nworld, m.ntree),
+      inputs=[d.nisland],
+      outputs=[ctx.beta, ctx.beta_den],
+    )
     wp.launch(
       solve_beta_island_accumulate,
       dim=(d.nworld, m.nv),
