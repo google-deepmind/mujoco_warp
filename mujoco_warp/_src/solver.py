@@ -3131,6 +3131,7 @@ def solve_prev_grad_Mgrad(
 
 @wp.kernel
 def solve_beta_zero(
+  # Out:
   ctx_beta_num_out: wp.array[float],
   ctx_beta_den_out: wp.array[float],
 ):
@@ -4482,7 +4483,9 @@ def solve_prev_grad_Mgrad_island(
 
 @wp.kernel
 def solve_beta_island_zero(
+  # In:
   nisland_in: wp.array[int],
+  # Out:
   island_beta_num_out: wp.array2d[float],
   island_beta_den_out: wp.array2d[float],
 ):
