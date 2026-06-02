@@ -529,8 +529,9 @@ def _make_compute_lighting(cast_ray_first_hit: wp.Function) -> wp.Function:
         spec_rgb = lightspec * (mat_spec * wp.pow(ndoth, mat_shin_exp) * weight)
 
     return diff_rgb, spec_rgb
-  
+
   return compute_lighting
+
 
 @event_scope
 def render(m: Model, d: Data, rc: RenderContext):
