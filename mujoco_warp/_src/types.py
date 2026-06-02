@@ -2115,6 +2115,7 @@ class IslandSolverContext:
   done: wp.array2d[bool]  # per-island convergence
   solver_niter: wp.array2d[int]  # iterations per island
   beta: wp.array2d[float]
+  beta_den: wp.array2d[float]
   alpha: wp.array2d[float]
   Ma: wp.array2d[float]  # island-local Ma (nworld, nv)
 
@@ -2141,6 +2142,7 @@ class SolverContext:
   prev_grad: wp.array2d[float]
   prev_Mgrad: wp.array2d[float]
   beta: wp.array[float]
+  beta_den: wp.array[float]
   h: wp.array3d[float]
   hfactor: wp.array3d[float]
   # Incremental Hessian update (Newton only)
