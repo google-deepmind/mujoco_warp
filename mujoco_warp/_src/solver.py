@@ -1786,7 +1786,6 @@ def solve_init_search(
   wp.atomic_add(ctx_search_dot_out, worldid, search * search)
 
 
-
 @wp.kernel
 def solve_init_search_cg_tiled(
   # Model:
@@ -1819,7 +1818,6 @@ def solve_init_search_cg_tiled(
 
   if tid == 0:
     ctx_search_dot_out[worldid] = search_dot_sum[0]
-
 
 
 @wp.kernel
@@ -2328,7 +2326,6 @@ def update_gradient_grad_tiled(
 
   if tid == 0:
     ctx_grad_dot_out[worldid] = grad_dot_sum[0]
-
 
 
 @wp.kernel
@@ -2941,7 +2938,6 @@ def _update_gradient(m: types.Model, d: types.Data, ctx: SolverContext):
     block_dim=m.block_dim.cg_helpers,
   )
 
-
   if m.opt.solver == types.SolverType.CG:
     smooth.solve_m(m, d, ctx.Mgrad, ctx.grad)
   elif m.opt.solver == types.SolverType.NEWTON:
@@ -3113,7 +3109,6 @@ def _update_gradient_incremental(m: types.Model, d: types.Data, ctx: SolverConte
   _cholesky_factorize_solve(m, d, ctx, skip_unchanged=True)
 
 
-
 @wp.kernel
 def solve_beta_zero(
   # Out:
@@ -3123,7 +3118,6 @@ def solve_beta_zero(
   worldid = wp.tid()
   ctx_beta_num_out[worldid] = 0.0
   ctx_beta_den_out[worldid] = 0.0
-
 
 
 @wp.kernel
@@ -3165,8 +3159,6 @@ def solve_beta_accumulate_tiled(
   if tid == 0:
     ctx_beta_num_out[worldid] = num_sum[0]
     ctx_beta_den_out[worldid] = den_sum[0]
-
-
 
 
 @wp.kernel
@@ -3211,7 +3203,6 @@ def solve_search_update(
   wp.atomic_add(ctx_search_dot_out, worldid, search * search)
 
 
-
 @wp.kernel
 def solve_search_update_cg_tiled(
   # Model:
@@ -3252,7 +3243,6 @@ def solve_search_update_cg_tiled(
 
   if tid == 0:
     ctx_search_dot_out[worldid] = search_dot_sum[0]
-
 
 
 @wp.kernel
