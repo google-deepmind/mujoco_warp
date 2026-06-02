@@ -1032,6 +1032,12 @@ class Model:
     light_poscom0: global position rel. to sub-com in qpos0  (*, nlight, 3)
     light_pos0: global position rel. to body in qpos0        (*, nlight, 3)
     light_dir0: global direction in qpos0                    (*, nlight, 3)
+    light_attenuation: OpenGL constant/linear/quadratic      (*, nlight, 3)
+    light_cutoff: spotlight half-cone angle in degrees       (*, nlight)
+    light_exponent: spotlight angular falloff exponent       (*, nlight)
+    light_ambient: ambient RGB                               (*, nlight, 3)
+    light_diffuse: diffuse RGB                               (*, nlight, 3)
+    light_specular: specular RGB                             (*, nlight, 3)
     flex_contype: flex contact type                          (nflex,)
     flex_conaffinity: flex contact affinity                  (nflex,)
     flex_condim: contact dimensionality (1, 3, 4, 6)         (nflex,)
@@ -1100,6 +1106,9 @@ class Model:
     hfield_data: elevation data                              (nhfielddata,)
     mat_texid: texture id for rendering                      (*, nmat, mjNTEXROLE)
     mat_texrepeat: texture repeat for rendering              (*, nmat, 2)
+    mat_emission: emission scalar (self-illumination)        (*, nmat)
+    mat_specular: specular reflection scalar                 (*, nmat)
+    mat_shininess: shininess in [0, 1], mapped to GL [0, 128](*, nmat)
     mat_rgba: rgba                                           (*, nmat, 4)
     pair_dim: contact dimensionality                         (npair,)
     pair_geom1: id of geom1                                  (npair,)
@@ -1456,6 +1465,12 @@ class Model:
   light_poscom0: array("*", "nlight", wp.vec3)
   light_pos0: array("*", "nlight", wp.vec3)
   light_dir0: array("*", "nlight", wp.vec3)
+  light_attenuation: array("*", "nlight", wp.vec3)
+  light_cutoff: array("*", "nlight", float)
+  light_exponent: array("*", "nlight", float)
+  light_ambient: array("*", "nlight", wp.vec3)
+  light_diffuse: array("*", "nlight", wp.vec3)
+  light_specular: array("*", "nlight", wp.vec3)
   flex_contype: array("nflex", int)
   flex_conaffinity: array("nflex", int)
   flex_condim: array("nflex", int)
@@ -1524,6 +1539,9 @@ class Model:
   hfield_data: array("nhfielddata", float)
   mat_texid: array("*", "nmat", 10, int)
   mat_texrepeat: array("*", "nmat", wp.vec2)
+  mat_emission: array("*", "nmat", float)
+  mat_specular: array("*", "nmat", float)
+  mat_shininess: array("*", "nmat", float)
   mat_rgba: array("*", "nmat", wp.vec4)
   pair_dim: array("npair", int)
   pair_geom1: array("npair", int)
@@ -2160,8 +2178,8 @@ class RenderContext:
     cam_id_map: camera id map
     use_textures: whether to use textures
     use_shadows: whether to use shadows
-    use_ambient_lighting: whether to use ambient lighting
-    background_color: background color
+    use_ambient_lighting: top-level switch for ambient contributions
+    background_color: color used for missed rays when no skybox is rendered
     use_precomputed_rays: whether to use precomputed rays
     bvh_ngeom: number of geometries in the BVH
     enabled_geom_ids: enabled geometry ids
@@ -2206,11 +2224,38 @@ class RenderContext:
     render_skybox: whether to shade missed rays with the MuJoCo skybox texture
     skybox_tex_id: index into textures of the skybox (MuJoCo tex_type == SKYBOX), -1 if none
     skybox_face_width: pixel width of one skybox cube face (0 if no skybox)
+    headlight_active: whether to inject MuJoCo's vis.headlight as a synthetic
+      directional light at the active camera. Read from `mjm.vis.headlight.active`
+      at context creation; users disable the headlight by configuring it on the
+      MuJoCo model (e.g. `<visual><headlight active="0"/></visual>` in XML).
+    headlight_ambient: RGB ambient color of the headlight (from vis.headlight).
+    headlight_diffuse: RGB diffuse color of the headlight.
+    headlight_specular: RGB specular color of the headlight.
     enable_backface_culling: drop primitive ray hits whose normal faces away
       from the ray (i.e. the ray origin is inside the geom). Matches MuJoCo's
       mesh-ray rule. When False, the renderer reports inner-surface hits, which
       is faster but causes a camera placed inside a geom to render that geom's
       back wall.
+    light_attenuation_is_default: True iff every light in the model has the
+      MuJoCo default `attenuation = (1, 0, 0)`. Computed once at context
+      creation; when True the kernel skips the per-light polynomial
+      attenuation evaluation (a divide + 3 multiplies + an add per
+      non-directional light per pixel) via `wp.static`.
+    has_spot_lights: True iff any light in the model has `type == SPOT`.
+      When False, the kernel skips the spot-cone branch (cos cutoff +
+      pow exponent) per non-directional light per pixel via `wp.static`.
+    enable_specular: when True, evaluate the Phong specular highlight per
+      light per pixel (uses `mat_specular` / `mat_shininess`). When False,
+      the entire specular branch is removed at compile time. Useful for
+      depth/segmentation-only workflows or when materials are matte.
+    enable_emission: when True, add `mat_emission * base_color` to each
+      shaded pixel. When False the term is dropped at compile time.
+    enable_per_light_ambient: when True and `use_ambient_lighting` is also
+      True, sum the per-light `light_ambient` colors into each shaded pixel
+      even when the surface normal is perpendicular to the light direction
+      or the pixel is shadowed. When False the second per-light loop for
+      ambient is removed at compile time. Headlight ambient and the no-light
+      fallback are controlled by `use_ambient_lighting`.
     geom_ray_types: tuple of GeomType int values present in the scene, used to
       statically eliminate unused intersection branches in the ray-cast kernels.
   """
@@ -2226,6 +2271,10 @@ class RenderContext:
   render_skybox: bool
   skybox_tex_id: int
   skybox_face_width: int
+  headlight_active: bool
+  headlight_ambient: wp.vec3
+  headlight_diffuse: wp.vec3
+  headlight_specular: wp.vec3
   bvh_ngeom: int
   enabled_geom_ids: array("*", int)
   mesh_registry: dict
@@ -2267,4 +2316,9 @@ class RenderContext:
   znear: float
   total_rays: int
   enable_backface_culling: bool
+  enable_specular: bool
+  enable_emission: bool
+  enable_per_light_ambient: bool
+  light_attenuation_is_default: bool
+  has_spot_lights: bool
   geom_ray_types: tuple = ()
