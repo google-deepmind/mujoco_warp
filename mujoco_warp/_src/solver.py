@@ -14,7 +14,6 @@
 # ==============================================================================
 
 from math import ceil
-from math import sqrt
 
 import warp as wp
 
@@ -3270,12 +3269,12 @@ def solve_cg_finalize(
   ctx_cost_in: wp.array[float],
   ctx_prev_cost_in: wp.array[float],
   ctx_done_in: wp.array[bool],
-  # InOut:
-  ctx_grad_dot_inout: wp.array[float],
+  # Data out:
+  solver_niter_out: wp.array[int],
   # Out:
+  ctx_grad_dot_out: wp.array[float],
   ctx_beta_out: wp.array[float],
   ctx_search_dot_out: wp.array[float],
-  solver_niter_out: wp.array[int],
   nsolving_out: wp.array[int],
   ctx_done_out: wp.array[bool],
 ):
@@ -3295,7 +3294,7 @@ def solve_cg_finalize(
   tolerance = opt_tolerance[worldid % opt_tolerance.shape[0]]
   meaninertia = stat_meaninertia[worldid % stat_meaninertia.shape[0]]
 
-  grad_dot = ctx_grad_dot_inout[worldid]
+  grad_dot = ctx_grad_dot_out[worldid]
 
   improvement = _rescale(nv, meaninertia, ctx_prev_cost_in[worldid] - ctx_cost_in[worldid])
   gradient = _rescale(nv, meaninertia, wp.sqrt(grad_dot))
@@ -3305,7 +3304,7 @@ def solve_cg_finalize(
     wp.atomic_add(nsolving_out, 0, -1)
 
   # 4. Zero grad_dot for the next iteration's update_gradient_grad
-  ctx_grad_dot_inout[worldid] = 0.0
+  ctx_grad_dot_out[worldid] = 0.0
 
 
 @wp.kernel
@@ -3401,10 +3400,10 @@ def _solver_iteration(
         ctx.done,
       ],
       outputs=[
+        d.solver_niter,
         ctx.grad_dot,
         ctx.beta,
         ctx.search_dot,
-        d.solver_niter,
         nsolving,
         ctx.done,
       ],
