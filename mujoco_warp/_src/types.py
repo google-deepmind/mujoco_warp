@@ -90,7 +90,8 @@ class BlockDim:
   update_gradient_cholesky_blocked: int = 32
   update_gradient_JTDAJ_sparse: int = 64
   update_gradient_JTDAJ_dense: int = 96
-  linesearch_iterative: int = 32
+  linesearch_iterative: int = 256
+  cg_helpers: int = 256
   contact_jac_tiled: int = 32
   # derivative
   qderiv_actuator_dense: int = 32
