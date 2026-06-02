@@ -2371,7 +2371,6 @@ def active_check(tid: int, threshold: int) -> float:
     return 1.0
 
 
-
 @cache_kernel
 def update_gradient_JTDAJ_dense_tiled(nv_pad: int, tile_size: int, njmax: int):
   if njmax < tile_size:
