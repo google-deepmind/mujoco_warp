@@ -779,7 +779,7 @@ def render(m: Model, d: Data, rc: RenderContext):
         if mat_id_for_spec >= 0:
           if wp.static(rc.enable_specular):
             mat_spec = mat_specular[worldid % mat_specular.shape[0], mat_id_for_spec]
-            mat_shin_exp = mat_shininess[worldid % mat_shininess.shape[0], mat_id_for_spec] * 128.0
+            mat_shin_exp = mat_shininess[worldid % mat_shininess.shape[0], mat_id_for_spec] * MAX_SHININESS
           if wp.static(rc.enable_emission):
             mat_emis = mat_emission[worldid % mat_emission.shape[0], mat_id_for_spec]
 
