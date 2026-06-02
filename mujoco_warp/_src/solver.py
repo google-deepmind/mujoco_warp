@@ -100,6 +100,7 @@ def create_island_solver_context(m: types.Model, d: types.Data) -> IslandSolverC
     done=wp.empty((nworld, ntree), dtype=bool),
     solver_niter=wp.empty((nworld, ntree), dtype=int),
     beta=wp.empty((nworld, ntree), dtype=float) if alloc_island_cg else wp.empty((nworld, 0), dtype=float),
+    beta_den=wp.empty((nworld, ntree), dtype=float) if alloc_island_cg else wp.empty((nworld, 0), dtype=float),
     alpha=wp.empty((nworld, ntree), dtype=float),
     Ma=wp.empty((nworld, nv), dtype=float),
   )
@@ -142,6 +143,7 @@ def create_solver_context(m: types.Model, d: types.Data) -> SolverContext:
     prev_grad=wp.empty((nworld, nv), dtype=float),
     prev_Mgrad=wp.empty((nworld, nv), dtype=float),
     beta=wp.empty((nworld,), dtype=float),
+    beta_den=wp.empty((nworld,), dtype=float),
     h=wp.zeros((nworld, nv_pad, nv_pad), dtype=float) if alloc_h else wp.empty((nworld, 0, 0), dtype=float),
     hfactor=wp.zeros((nworld, nv_pad, nv_pad), dtype=float) if alloc_hfactor else wp.empty((nworld, 0, 0), dtype=float),
     changed_efc_ids=wp.empty((nworld, njmax), dtype=int) if alloc_h else wp.empty((nworld, 0), dtype=int),
@@ -3128,14 +3130,34 @@ def solve_prev_grad_Mgrad(
 
 
 @wp.kernel
-def solve_beta(
-  # Model:
-  nv: int,
+def solve_beta_accumulate(
   # In:
   ctx_grad_in: wp.array2d[float],
   ctx_Mgrad_in: wp.array2d[float],
   ctx_prev_grad_in: wp.array2d[float],
   ctx_prev_Mgrad_in: wp.array2d[float],
+  ctx_done_in: wp.array[bool],
+  # Out:
+  ctx_beta_num_out: wp.array[float],
+  ctx_beta_den_out: wp.array[float],
+):
+  worldid, dofid = wp.tid()
+
+  if ctx_done_in[worldid]:
+    return
+
+  prev_Mgrad = ctx_prev_Mgrad_in[worldid, dofid]
+  num = ctx_grad_in[worldid, dofid] * (ctx_Mgrad_in[worldid, dofid] - prev_Mgrad)
+  den = ctx_prev_grad_in[worldid, dofid] * prev_Mgrad
+  wp.atomic_add(ctx_beta_num_out, worldid, num)
+  wp.atomic_add(ctx_beta_den_out, worldid, den)
+
+
+@wp.kernel
+def solve_beta_finalize(
+  # In:
+  ctx_beta_num_in: wp.array[float],
+  ctx_beta_den_in: wp.array[float],
   ctx_done_in: wp.array[bool],
   # Out:
   ctx_beta_out: wp.array[float],
@@ -3145,14 +3167,7 @@ def solve_beta(
   if ctx_done_in[worldid]:
     return
 
-  beta_num = float(0.0)
-  beta_den = float(0.0)
-  for dofid in range(nv):
-    prev_Mgrad = ctx_prev_Mgrad_in[worldid][dofid]
-    beta_num += ctx_grad_in[worldid, dofid] * (ctx_Mgrad_in[worldid, dofid] - prev_Mgrad)
-    beta_den += ctx_prev_grad_in[worldid, dofid] * prev_Mgrad
-
-  ctx_beta_out[worldid] = wp.max(0.0, beta_num / wp.max(types.MJ_MINVAL, beta_den))
+  ctx_beta_out[worldid] = wp.max(0.0, ctx_beta_num_in[worldid] / wp.max(types.MJ_MINVAL, ctx_beta_den_in[worldid]))
 
 
 @wp.kernel
@@ -3271,10 +3286,18 @@ def _solver_iteration(
 
   # polak-ribiere
   if m.opt.solver == types.SolverType.CG:
+    ctx.beta.zero_()
+    ctx.beta_den.zero_()
     wp.launch(
-      solve_beta,
+      solve_beta_accumulate,
+      dim=(d.nworld, m.nv),
+      inputs=[ctx.grad, ctx.Mgrad, ctx.prev_grad, ctx.prev_Mgrad, ctx.done],
+      outputs=[ctx.beta, ctx.beta_den],
+    )
+    wp.launch(
+      solve_beta_finalize,
       dim=d.nworld,
-      inputs=[m.nv, ctx.grad, ctx.Mgrad, ctx.prev_grad, ctx.prev_Mgrad, ctx.done],
+      inputs=[ctx.beta, ctx.beta_den, ctx.done],
       outputs=[ctx.beta],
     )
 
@@ -4445,42 +4468,59 @@ def solve_prev_grad_Mgrad_island(
 
 
 @wp.kernel
-def solve_beta_island(
+def solve_beta_island_accumulate(
   # Data in:
-  nisland_in: wp.array[int],
-  island_nv_in: wp.array2d[int],
+  nidof_in: wp.array[int],
   # In:
-  island_idofadr_in: wp.array2d[int],
+  idof_islandid_in: wp.array2d[int],
   grad_in: wp.array2d[float],
   Mgrad_in: wp.array2d[float],
   prev_grad_in: wp.array2d[float],
   prev_Mgrad_in: wp.array2d[float],
   island_done_in: wp.array2d[bool],
   # Out:
+  island_beta_num_out: wp.array2d[float],
+  island_beta_den_out: wp.array2d[float],
+):
+  """Parallel Polak-Ribière beta accumulation per island DOF."""
+  worldid, idofid = wp.tid()
+
+  if idofid >= nidof_in[worldid]:
+    return
+
+  islandid = idof_islandid_in[worldid, idofid]
+  if islandid < 0:
+    return
+  if island_done_in[worldid, islandid]:
+    return
+
+  pMg = prev_Mgrad_in[worldid, idofid]
+  num = grad_in[worldid, idofid] * (Mgrad_in[worldid, idofid] - pMg)
+  den = prev_grad_in[worldid, idofid] * pMg
+  wp.atomic_add(island_beta_num_out, worldid, islandid, num)
+  wp.atomic_add(island_beta_den_out, worldid, islandid, den)
+
+
+@wp.kernel
+def solve_beta_island_finalize(
+  # Data in:
+  nisland_in: wp.array[int],
+  # In:
+  island_beta_num_in: wp.array2d[float],
+  island_beta_den_in: wp.array2d[float],
+  island_done_in: wp.array2d[bool],
+  # Out:
   island_beta_out: wp.array2d[float],
 ):
-  """Polak-Ribière beta per island."""
+  """Finalize Polak-Ribière beta per island."""
   worldid, islandid = wp.tid()
 
   if islandid >= nisland_in[worldid]:
     return
 
-  if island_done_in[worldid, islandid]:
-    island_beta_out[worldid, islandid] = 0.0
-    return
-
-  idofadr = island_idofadr_in[worldid, islandid]
-  inv = island_nv_in[worldid, islandid]
-
-  beta_num = float(0.0)
-  beta_den = float(0.0)
-  for i in range(inv):
-    idof = idofadr + i
-    pMg = prev_Mgrad_in[worldid, idof]
-    beta_num += grad_in[worldid, idof] * (Mgrad_in[worldid, idof] - pMg)
-    beta_den += prev_grad_in[worldid, idof] * pMg
-
-  island_beta_out[worldid, islandid] = wp.max(0.0, beta_num / wp.max(types.MJ_MINVAL, beta_den))
+  island_beta_out[worldid, islandid] = wp.max(
+    0.0, island_beta_num_in[worldid, islandid] / wp.max(types.MJ_MINVAL, island_beta_den_in[worldid, islandid])
+  )
 
 
 @wp.kernel
@@ -5448,19 +5488,26 @@ def _solver_iteration_island(
 
   # Polak-Ribière beta (CG only)
   if is_cg:
+    ctx.beta.zero_()
+    ctx.beta_den.zero_()
     wp.launch(
-      solve_beta_island,
-      dim=(d.nworld, m.ntree),
+      solve_beta_island_accumulate,
+      dim=(d.nworld, m.nv),
       inputs=[
-        d.nisland,
-        d.island_nv,
-        d.island_dofadr,
+        d.nidof,
+        d.dof_islandid,
         ctx.grad,
         ctx.Mgrad,
         ctx.prev_grad,
         ctx.prev_Mgrad,
         ctx.done,
       ],
+      outputs=[ctx.beta, ctx.beta_den],
+    )
+    wp.launch(
+      solve_beta_island_finalize,
+      dim=(d.nworld, m.ntree),
+      inputs=[d.nisland, ctx.beta, ctx.beta_den, ctx.done],
       outputs=[ctx.beta],
     )
 
