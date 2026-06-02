@@ -656,11 +656,15 @@ def sap_broadphase(m: Model, d: Data, ctx: CollisionContext):
 
 
 @cache_kernel
-def _nxn_broadphase(opt_broadphase_filter: int, ngeom_aabb: int, ngeom_rbound: int, ngeom_margin: int, ngeom_gap: int):
+def _nxn_broadphase(
+  opt_broadphase_filter: int, ngeom_aabb: int, ngeom_rbound: int, ngeom_margin: int, ngeom_gap: int, nv_compact: bool = False
+):
   @wp.kernel(module="unique", enable_backward=False)
   def kernel(
     # Model:
+    body_treeid: wp.array[int],
     geom_type: wp.array[int],
+    geom_bodyid: wp.array[int],
     geom_aabb: wp.array3d[wp.vec3],
     geom_rbound: wp.array2d[float],
     geom_margin: wp.array2d[float],
@@ -670,6 +674,7 @@ def _nxn_broadphase(opt_broadphase_filter: int, ngeom_aabb: int, ngeom_rbound: i
     # Data in:
     geom_xpos_in: wp.array2d[wp.vec3],
     geom_xmat_in: wp.array2d[wp.mat33],
+    tree_active_in: wp.array2d[bool],
     naconmax_in: int,
     # Data out:
     ncollision_out: wp.array[int],
@@ -683,6 +688,17 @@ def _nxn_broadphase(opt_broadphase_filter: int, ngeom_aabb: int, ngeom_rbound: i
     geom = nxn_geom_pair[elementid]
     geom1 = geom[0]
     geom2 = geom[1]
+
+    # nv_compact: skip pairs where both bodies are asleep. Neither moves, so no new contact
+    # is possible and any resting contact is moot (both frozen). A moving body contacting a
+    # sleeper is a pair with one active tree, so it is kept and wakes the sleeper.
+    if wp.static(nv_compact):
+      t1 = body_treeid[geom_bodyid[geom1]]
+      t2 = body_treeid[geom_bodyid[geom2]]
+      a1 = t1 >= 0 and tree_active_in[worldid, t1]
+      a2 = t2 >= 0 and tree_active_in[worldid, t2]
+      if not (a1 or a2):
+        return
 
     if (
       wp.static(_broadphase_filter(opt_broadphase_filter, ngeom_aabb, ngeom_rbound, ngeom_margin, ngeom_gap))(
@@ -723,11 +739,18 @@ def nxn_broadphase(m: Model, d: Data, ctx: CollisionContext):
   """
   wp.launch(
     _nxn_broadphase(
-      m.opt.broadphase_filter, m.geom_aabb.shape[0], m.geom_rbound.shape[0], m.geom_margin.shape[0], m.geom_gap.shape[0]
+      m.opt.broadphase_filter,
+      m.geom_aabb.shape[0],
+      m.geom_rbound.shape[0],
+      m.geom_margin.shape[0],
+      m.geom_gap.shape[0],
+      m.opt.nv_compact,
     ),
     dim=(d.nworld, m.nxn_geom_pair_filtered.shape[0]),
     inputs=[
+      m.body_treeid,
       m.geom_type,
+      m.geom_bodyid,
       m.geom_aabb,
       m.geom_rbound,
       m.geom_margin,
@@ -736,6 +759,7 @@ def nxn_broadphase(m: Model, d: Data, ctx: CollisionContext):
       m.nxn_pairid_filtered,
       d.geom_xpos,
       d.geom_xmat,
+      d.tree_active,
       d.naconmax,
     ],
     outputs=[

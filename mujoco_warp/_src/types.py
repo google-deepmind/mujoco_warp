@@ -777,6 +777,7 @@ class Option:
       zeros out the contacts at each step)
     contact_sensor_maxmatch: max number of contacts considered by contact sensor matching criteria
                              contacts matched after this value is exceded will be ignored
+    nv_compact: experimental - compact active DOFs into nv_max-sized arrays for factor/solve
   """
 
   timestep: array("*", float)
@@ -807,6 +808,7 @@ class Option:
   graph_conditional: bool
   run_collision_detection: bool
   contact_sensor_maxmatch: int
+  nv_compact: bool
 
 
 @dataclasses.dataclass
@@ -1951,12 +1953,17 @@ class Data:
     iqacc_smooth: island-local qacc_smooth                      (nworld, nv)
     iqfrc_smooth: island-local qfrc_smooth                      (nworld, nv)
     iqfrc_constraint: island-local qfrc_constraint              (nworld, nv)
+    ncdof: number of active (compacted) DOFs per world          (nworld,)
+    tree_active: persistent active mask per tree                (nworld, ntree)
+    dof_cdof: global DOF -> compacted DOF; -1 if inactive       (nworld, nv)
+    cdof_dof: compacted DOF -> global DOF; -1 if unused         (nworld, nv_max)
 
   warp only fields:
     nworld: number of worlds
     naconmax: maximum number of contacts (shared across all worlds)
     naccdmax: maximum number of contacts for CCD (all worlds)
     njmax: maximum number of constraints per world
+    nv_max: capacity for compacted active DOFs per world (nv_compact)
     njmax_pad: njmax rounded up to the nearest multiple of TILE_SIZE_JTDAJ
     njmax_nnz: number of non-zeros in constraint Jacobian
     nacon: number of detected contacts (across all worlds)      (1,)
@@ -2065,12 +2072,17 @@ class Data:
   iqacc_smooth: wp.array2d[float]
   iqfrc_smooth: wp.array2d[float]
   iqfrc_constraint: wp.array2d[float]
+  ncdof: array("nworld", int)
+  tree_active: array("nworld", "ntree", bool)
+  dof_cdof: array("nworld", "nv", int)
+  cdof_dof: array("nworld", "nv_max", int)
 
   # warp only fields:
   nworld: int
   naconmax: int
   naccdmax: int
   njmax: int
+  nv_max: int
   njmax_pad: int
   njmax_nnz: int
   nacon: array(1, int)

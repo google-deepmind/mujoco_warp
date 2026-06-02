@@ -36,6 +36,10 @@ from mujoco_warp._src.util_pkg import check_version
 # TODO(team): remove after improving island solver performance
 ENABLE_ISLANDS = False
 
+# experimental: compact active DOFs into nv_max-sized arrays for factor/solve
+# override by setting io.ENABLE_NV_COMPACT = True
+ENABLE_NV_COMPACT = False
+
 
 def _is_array_spec(typ) -> bool:
   """Check if a type annotation is an array spec (wp.array instance or bracket annotation)."""
@@ -260,6 +264,7 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
   opt.broadphase_filter = types.BroadphaseFilter.PLANE | types.BroadphaseFilter.SPHERE | types.BroadphaseFilter.OBB
   opt.graph_conditional = True
   opt.run_collision_detection = True
+  opt.nv_compact = ENABLE_NV_COMPACT
   contact_sensor_maxmatch_id = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_NUMERIC, "contact_sensor_maxmatch")
   if contact_sensor_maxmatch_id > -1:
     opt.contact_sensor_maxmatch = mjm.numeric_data[mjm.numeric_adr[contact_sensor_maxmatch_id]]
@@ -1014,6 +1019,28 @@ def _allocate_island_arrays(
   d.iqfrc_constraint = wp.empty((nworld, nv_size), dtype=float)
 
 
+def _tree_actuated_mask(mjm: mujoco.MjModel) -> np.ndarray:
+  """Trees that contain an actuator (always-active seeds for nv_compact)."""
+  mask = np.zeros(mjm.ntree, dtype=bool)
+  for i in range(mjm.nu):
+    trntype = mjm.actuator_trntype[i]
+    # PoC: only joint transmissions are mapped to trees; other types wake via contact/force.
+    if trntype in (mujoco.mjtTrn.mjTRN_JOINT, mujoco.mjtTrn.mjTRN_JOINTINPARENT):
+      tree = mjm.dof_treeid[mjm.jnt_dofadr[mjm.actuator_trnid[i, 0]]]
+      if tree >= 0:
+        mask[tree] = True
+  return mask
+
+
+def _init_nv_compact(mjm: mujoco.MjModel, d: types.Data, nworld: int):
+  """Seed the persistent active-tree mask and clear the compaction maps."""
+  tree_actuated = _tree_actuated_mask(mjm)
+  d.tree_active = wp.array(np.tile(tree_actuated, (nworld, 1)), shape=(nworld, mjm.ntree), dtype=bool)
+  d.ncdof.zero_()
+  d.dof_cdof.fill_(-1)
+  d.cdof_dof.fill_(-1)
+
+
 def make_data(
   mjm: mujoco.MjModel,
   nworld: int = 1,
@@ -1023,6 +1050,7 @@ def make_data(
   njmax_nnz: Optional[int] = None,
   naconmax: Optional[int] = None,
   naccdmax: Optional[int] = None,
+  nv_max: Optional[int] = None,
 ) -> types.Data:
   """Creates a data object on device.
 
@@ -1037,6 +1065,7 @@ def make_data(
     njmax_nnz: Number of non-zeros in constraint Jacobian (sparse). Defaults to njmax * nv.
     naconmax: Number of contacts to allocate for all worlds. Overrides nconmax.
     naccdmax: Maximum number of CCD contacts. Defaults to naconmax.
+    nv_max: Capacity for compacted active DOFs per world (nv_compact). Defaults to nv.
 
   Returns:
     The data object containing the current state and output arrays (device).
@@ -1048,11 +1077,17 @@ def make_data(
   if njmax is None:
     njmax = _default_njmax(mjm)
 
+  if nv_max is None:
+    nv_max = mjm.nv
+
   if nconmax < 0:
     raise ValueError("nconmax must be >= 0")
 
   if njmax < 0:
     raise ValueError("njmax must be >= 0")
+
+  if nv_max < 0 or nv_max > mjm.nv:
+    raise ValueError(f"nv_max ({nv_max}) must be in [0, nv ({mjm.nv})]")
 
   if nworld < 1:
     raise ValueError(f"nworld must be >= 1")
@@ -1086,6 +1121,7 @@ def make_data(
   sizes["nworld"] = nworld
   sizes["naconmax"] = naconmax
   sizes["njmax"] = njmax
+  sizes["nv_max"] = nv_max
 
   if njmax_nnz is None:
     if is_sparse(mjm):
@@ -1132,6 +1168,7 @@ def make_data(
     "naconmax": naconmax,
     "naccdmax": naccdmax,
     "njmax": njmax,
+    "nv_max": nv_max,
     "njmax_pad": sizes["njmax_pad"],
     "njmax_nnz": njmax_nnz,
     "M": None,
@@ -1187,6 +1224,7 @@ def make_data(
     d.qLD = wp.zeros((nworld, mjm.nv, mjm.nv), dtype=float)
 
   _allocate_island_arrays(mjm, d, nworld, njmax, ENABLE_ISLANDS, mjd)
+  _init_nv_compact(mjm, d, nworld)
 
   return d
 
@@ -1201,6 +1239,7 @@ def put_data(
   njmax_nnz: Optional[int] = None,
   naconmax: Optional[int] = None,
   naccdmax: Optional[int] = None,
+  nv_max: Optional[int] = None,
 ) -> types.Data:
   """Moves data from host to a device.
 
@@ -1216,6 +1255,7 @@ def put_data(
     njmax_nnz: Number of non-zeros in constraint Jacobian (sparse). Defaults to njmax * nv.
     naconmax: Number of contacts to allocate for all worlds. Overrides nconmax.
     naccdmax: Maximum number of CCD contacts. Defaults to naconmax.
+    nv_max: Capacity for compacted active DOFs per world (nv_compact). Defaults to nv.
 
   Returns:
     The data object containing the current state and output arrays (device).
@@ -1230,11 +1270,17 @@ def put_data(
   if njmax is None:
     njmax = _default_njmax(mjm, mjd)
 
+  if nv_max is None:
+    nv_max = mjm.nv
+
   if nconmax < 0:
     raise ValueError("nconmax must be >= 0")
 
   if njmax < 0:
     raise ValueError("njmax must be >= 0")
+
+  if nv_max < 0 or nv_max > mjm.nv:
+    raise ValueError(f"nv_max ({nv_max}) must be in [0, nv ({mjm.nv})]")
 
   if nworld < 1:
     raise ValueError(f"nworld must be >= 1")
@@ -1278,6 +1324,7 @@ def put_data(
   sizes["nworld"] = nworld
   sizes["naconmax"] = naconmax
   sizes["njmax"] = njmax
+  sizes["nv_max"] = nv_max
 
   if njmax_nnz is None:
     if is_sparse(mjm):
@@ -1368,6 +1415,7 @@ def put_data(
     "naconmax": naconmax,
     "naccdmax": naccdmax,
     "njmax": njmax,
+    "nv_max": nv_max,
     "njmax_pad": sizes["njmax_pad"],
     "njmax_nnz": njmax_nnz,
     # fields set after initialization:
@@ -1429,6 +1477,7 @@ def put_data(
     d.qLD = wp.array(np.full((nworld, mjm.nv, mjm.nv), qLD), dtype=float)
 
   _allocate_island_arrays(mjm, d, nworld, njmax, ENABLE_ISLANDS, mjd)
+  _init_nv_compact(mjm, d, nworld)
 
   d.nacon = wp.array([mjd.ncon * nworld], dtype=int)
 

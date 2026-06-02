@@ -23,6 +23,7 @@ from mujoco_warp._src import derivative
 from mujoco_warp._src import history
 from mujoco_warp._src import island
 from mujoco_warp._src import math
+from mujoco_warp._src import nvmax
 from mujoco_warp._src import passive
 from mujoco_warp._src import sensor
 from mujoco_warp._src import smooth
@@ -1278,7 +1279,12 @@ def fwd_acceleration(m: Model, d: Data, factorize: bool = False):
   )
   xfrc_accumulate(m, d, d.qfrc_smooth)
 
-  if factorize:
+  if m.opt.nv_compact:
+    # update the active-DOF set (needs contacts from fwd_position) and solve
+    # the smooth acceleration in compacted dense space.
+    nvmax.update_active_dofs(m, d)
+    nvmax.smooth_solve_compact(m, d, nvmax.get_context(m, d))
+  elif factorize:
     smooth.factor_solve_i(m, d, d.M, d.qLD, d.qLDiagInv, d.qacc_smooth, d.qfrc_smooth)
   else:
     smooth.solve_m(m, d, d.qacc_smooth, d.qfrc_smooth)
@@ -1311,7 +1317,10 @@ def forward(m: Model, d: Data):
   fwd_actuation(m, d)
   fwd_acceleration(m, d, factorize=True)
 
-  solver.solve(m, d)
+  if m.opt.nv_compact:
+    nvmax.solve_compact(m, d, nvmax.get_context(m, d))
+  else:
+    solver.solve(m, d)
   sensor.sensor_acc(m, d)
 
 
