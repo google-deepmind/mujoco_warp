@@ -353,6 +353,71 @@ class SolverTest(parameterized.TestCase):
     self.assertLess(ctx.improvement.numpy()[0], 0.001)
     self.assertGreater(ctx.improvement.numpy()[0], 0.0004)
 
+  def test_island_linesearch_accepts_sub_float32_improvement(self):
+    """Island line search should not lose small improvements on large absolute costs.
+
+    Drives the island line-search kernel directly on a single island with one
+    active inequality constraint. The island gauss cost carries a large constant
+    (1e8) whose float32 resolution (~8) dwarfs the real improvement (0.5), so a
+    line search that compares absolute costs rounds the improvement to zero and
+    refuses to step. The shifted formulation evaluates the improvement directly
+    and takes the Newton step.
+    """
+    # Scenario: 1 world, 1 island, 1 dof, 1 active inequality constraint.
+    # Constraint: D=1, Jaref=-1, jv=1 -> active at alpha=0 (cost0=0.5), reaches
+    # the boundary x=0 at the Newton step alpha=1, an improvement of 0.5.
+    one2d_f = lambda v: wp.array([[v]], dtype=float)
+    one2d_i = lambda v: wp.array([[v]], dtype=int)
+
+    alpha_out = wp.array([[0.0]], dtype=float)
+    wp.launch(
+      solver.linesearch_island,
+      dim=(1, 1),
+      inputs=[
+        # Model
+        wp.array([1e-8], dtype=float),  # opt_tolerance
+        wp.array([0.01], dtype=float),  # opt_ls_tolerance
+        50,  # opt_ls_iterations
+        wp.array([1.0], dtype=float),  # opt_impratio_invsqrt (unused, no elliptic)
+        wp.array([1.0], dtype=float),  # stat_meaninertia
+        # Data in
+        wp.array([1], dtype=int),  # nefc
+        wp.array([1], dtype=int),  # nisland
+        wp.zeros(1, dtype=types.vec5),  # contact_friction (unused)
+        wp.zeros(1, dtype=int),  # contact_dim (unused)
+        wp.zeros((1, 3), dtype=int),  # contact_efc_address (unused)
+        wp.array([1], dtype=int),  # nidof
+        one2d_i(1),  # island_nv
+        one2d_i(0),  # island_ne
+        one2d_i(0),  # island_nf
+        one2d_i(0),  # island_efcadr
+        one2d_i(1),  # island_nefc
+        one2d_i(0),  # map_efc2iefc (unused for inequality)
+        1,  # njmax
+        wp.array([0], dtype=int),  # nacon
+        one2d_i(0),  # island_idofadr
+        # In
+        one2d_i(int(types.ConstraintType.LIMIT_JOINT)),  # iefc_type -> else (inequality)
+        one2d_i(0),  # iefc_id
+        one2d_f(1.0),  # iefc_D
+        one2d_f(0.0),  # iefc_frictionloss
+        one2d_f(-1.0),  # Jaref (active: < 0)
+        one2d_f(1.0),  # jv
+        one2d_f(0.0),  # mv
+        one2d_f(0.0),  # search (gauss curvature 0)
+        one2d_f(0.0),  # ifrc_smooth
+        one2d_f(0.0),  # iMa
+        one2d_f(1.0),  # island_search_dot
+        one2d_f(1e8),  # island_gauss (large constant offset)
+        wp.array([[False]], dtype=bool),  # island_done
+      ],
+      outputs=[alpha_out],  # island_alpha
+    )
+
+    # The minimizing step is alpha=1 (constraint boundary). Absolute-cost
+    # bookkeeping loses the sub-resolution improvement and returns alpha=0.
+    self.assertGreater(alpha_out.numpy()[0, 0], 0.5)
+
   @parameterized.parameters(
     (ConeType.PYRAMIDAL, SolverType.CG, 10, 5, mujoco.mjtJacobian.mjJAC_DENSE, False, False),
     (ConeType.ELLIPTIC, SolverType.CG, 10, 5, mujoco.mjtJacobian.mjJAC_DENSE, False, False),
