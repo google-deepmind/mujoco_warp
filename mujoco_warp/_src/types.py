@@ -1859,6 +1859,21 @@ class Constraint:
 
 
 @dataclasses.dataclass
+class CollisionContext:
+  """Collision driver intermediate arrays.
+
+  Attributes:
+    collision_pair: collision pairs from broadphase             (naconmax, 2)
+    collision_pairid: ids from broadphase                       (naconmax, 2)
+    collision_worldid: collision world ids from broadphase      (naconmax,)
+  """
+
+  collision_pair: array("naconmax", wp.vec2i)
+  collision_pairid: array("naconmax", wp.vec2i)
+  collision_worldid: array("naconmax", int)
+
+
+@dataclasses.dataclass
 class Data:
   """Dynamic state that updates each step.
 
@@ -1979,6 +1994,7 @@ class Data:
     njmax_nnz: number of non-zeros in constraint Jacobian
     nacon: number of detected contacts (across all worlds)      (1,)
     ncollision: collision count from broadphase                 (1,)
+    collision_ctx: collision driver scratch buffers
   """
 
   solver_niter: array("nworld", int)
@@ -2093,6 +2109,8 @@ class Data:
   njmax_nnz: int
   nacon: array(1, int)
   ncollision: array(1, int)
+
+  collision_ctx: CollisionContext
 
 
 @dataclasses.dataclass

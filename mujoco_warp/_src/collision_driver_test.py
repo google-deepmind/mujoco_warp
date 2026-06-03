@@ -895,6 +895,39 @@ class CollisionTest(parameterized.TestCase):
 
     self.assertEqual(d.nacon.numpy()[0], mjd.ncon)
 
+  def test_collision_ctx_persistent(self):
+    """Tests that collision() reuses the persistent d.collision_ctx buffers across calls."""
+    _, _, m, d = test_data.fixture("humanoid/humanoid.xml", keyframe=0)
+
+    ctx0 = d.collision_ctx
+    self.assertIsInstance(ctx0, types.CollisionContext)
+    ptrs0 = (ctx0.collision_pair.ptr, ctx0.collision_pairid.ptr, ctx0.collision_worldid.ptr)
+
+    sentinel = -123456
+    nacon0 = None
+    for _ in range(5):
+      # Sentinel the persistent buffer: collision() must overwrite it, which proves it
+      # writes broadphase output into d.collision_ctx rather than a per-call allocation.
+      d.collision_ctx.collision_worldid.fill_(sentinel)
+
+      mjw.collision(m, d)
+      ctx = d.collision_ctx
+
+      # same context object backed by the same device buffers (no per-step reallocation)
+      self.assertIs(ctx, ctx0)
+      self.assertEqual((ctx.collision_pair.ptr, ctx.collision_pairid.ptr, ctx.collision_worldid.ptr), ptrs0)
+
+      # broadphase wrote its results into the persistent buffer (not a private one)
+      ncol = int(d.ncollision.numpy()[0])
+      self.assertGreater(ncol, 0)
+      self.assertFalse((ctx.collision_worldid.numpy()[:ncol] == sentinel).any())
+
+      # buffer reuse does not change collision results
+      nacon = int(d.nacon.numpy()[0])
+      if nacon0 is None:
+        nacon0 = nacon
+      self.assertEqual(nacon, nacon0)
+
   def test_hfield_maxconpair(self):
     _XML = """
     <mujoco>

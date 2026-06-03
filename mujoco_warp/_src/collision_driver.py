@@ -18,8 +18,6 @@ from typing import Any
 import warp as wp
 
 from mujoco_warp._src.collision_convex import convex_narrowphase
-from mujoco_warp._src.collision_core import CollisionContext
-from mujoco_warp._src.collision_core import create_collision_context
 from mujoco_warp._src.collision_flex import flex_narrowphase
 from mujoco_warp._src.collision_primitive import primitive_narrowphase
 from mujoco_warp._src.collision_sdf import sdf_narrowphase
@@ -27,6 +25,7 @@ from mujoco_warp._src.math import upper_tri_index
 from mujoco_warp._src.types import MJ_MAXVAL
 from mujoco_warp._src.types import BroadphaseFilter
 from mujoco_warp._src.types import BroadphaseType
+from mujoco_warp._src.types import CollisionContext
 from mujoco_warp._src.types import CollisionType
 from mujoco_warp._src.types import Data
 from mujoco_warp._src.types import DisableBit
@@ -789,7 +788,7 @@ def collision(m: Model, d: Data):
     d.nacon.zero_()
     return
 
-  ctx = create_collision_context(d.naconmax)
+  ctx = d.collision_ctx
 
   # zero counters
   wp.launch(_zero_nacon_ncollision, dim=1, outputs=[d.nacon, d.ncollision])

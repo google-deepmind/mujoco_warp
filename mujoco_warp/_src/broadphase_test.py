@@ -30,7 +30,7 @@ from mujoco_warp._src import collision_driver
 
 def broadphase_caller(m, d):
   """Run broadphase and return the CollisionContext with results."""
-  ctx = collision_driver.create_collision_context(d.naconmax)
+  ctx = d.collision_ctx
   d.ncollision.zero_()
   if m.opt.broadphase == BroadphaseType.NXN:
     collision_driver.nxn_broadphase(m, d, ctx)
