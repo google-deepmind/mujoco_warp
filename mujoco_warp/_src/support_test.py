@@ -415,7 +415,7 @@ class SupportTest(parameterized.TestCase):
     )
     m.opt.disableflags &= ~types.DisableBit.ISLAND
 
-    ctx = solver.create_island_solver_context(m, d)
+    ctx = solver._create_island_solver_context(m, d)
     island.compute_island_mapping(m, d, ctx)
 
     # Random vector in global DOF order
