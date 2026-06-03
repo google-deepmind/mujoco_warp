@@ -2935,7 +2935,7 @@ def _update_gradient(m: types.Model, d: types.Data, ctx: SolverContext):
     dim=d.nworld,
     inputs=[m.nv, d.qfrc_smooth, d.qfrc_constraint, d.efc.Ma, ctx.done],
     outputs=[ctx.grad, ctx.grad_dot],
-    block_dim=m.block_dim.cg_helpers,
+    block_dim=m.block_dim.update_gradient_grad,
   )
 
   if m.opt.solver == types.SolverType.CG:
@@ -3372,7 +3372,7 @@ def _solver_iteration(
       dim=d.nworld,
       inputs=[m.nv, ctx.grad, ctx.Mgrad, ctx.prev_grad, ctx.prev_Mgrad, ctx.done],
       outputs=[ctx.beta, ctx.beta_den],
-      block_dim=m.block_dim.cg_helpers,
+      block_dim=m.block_dim.solve_beta_accumulate,
     )
     wp.launch(
       solve_cg_finalize,
@@ -3402,7 +3402,7 @@ def _solver_iteration(
       dim=d.nworld,
       inputs=[m.nv, ctx.grad, ctx.Mgrad, ctx.search, ctx.beta, ctx.done],
       outputs=[ctx.search, ctx.search_dot, ctx.prev_grad, ctx.prev_Mgrad],
-      block_dim=m.block_dim.cg_helpers,
+      block_dim=m.block_dim.solve_search_update_cg,
     )
 
   else:
@@ -3433,7 +3433,7 @@ def _solver_iteration(
 
 
 def init_context(m: types.Model, d: types.Data, ctx: SolverContext | InverseContext, grad: bool = True):
-  if grad and m.opt.solver == types.SolverType.CG and hasattr(ctx, "grad_dot"):
+  if grad and m.opt.solver == types.SolverType.CG and isinstance(ctx, SolverContext):
     ctx.grad_dot.zero_()
 
   # initialize some efc arrays
@@ -3510,7 +3510,7 @@ def _solve(m: types.Model, d: types.Data, ctx: SolverContext):
       dim=d.nworld,
       inputs=[m.nv, ctx.grad, ctx.Mgrad],
       outputs=[ctx.search, ctx.search_dot, ctx.prev_grad, ctx.prev_Mgrad],
-      block_dim=m.block_dim.cg_helpers,
+      block_dim=m.block_dim.solve_init_search_cg,
     )
 
   else:
