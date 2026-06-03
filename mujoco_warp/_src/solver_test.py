@@ -73,13 +73,13 @@ class SolverTest(parameterized.TestCase):
         overrides={"opt.solver": solver_, "opt.cone": cone, "opt.jacobian": jacobian, "opt.iterations": 0},
       )
 
-      def update_mujoco_constraints(qacc):
+      def update_constraints(qacc):
         jaref = np.zeros(mjd.nefc, dtype=float)
         cost = np.zeros(1)
         mujoco.mj_mulJacVec(mjm, mjd, jaref, qacc)
         mujoco.mj_constraintUpdate(mjm, mjd, jaref - mjd.efc_aref, cost, 0)
 
-      update_mujoco_constraints(mjd.qacc)
+      update_constraints(mjd.qacc)
 
       # solve with 0 iterations just initializes constraints and then exits
       d.efc.force.fill_(wp.inf)
@@ -284,7 +284,7 @@ class SolverTest(parameterized.TestCase):
     _assert_eq(Jaref_iterative, Jaref_parallel, name="Jaref")
 
   @parameterized.parameters(False, True)
-  def test_linesearch_accepts_sub_ulp_improvement(self, ls_parallel):
+  def test_linesearch_accepts_sub_float32_improvement(self, ls_parallel):
     """Line search should not lose small improvements on large absolute costs."""
     _, _, m, d = test_data.fixture(
       "constraints.xml",

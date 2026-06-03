@@ -480,22 +480,14 @@ def linesearch_parallel_fused(
       efcid1 = contact_efc_address_in[conid, 1]
       efcid2 = contact_efc_address_in[conid, 2]
 
-      out += _eval_elliptic_cost(
-        opt_impratio_invsqrt[worldid % opt_impratio_invsqrt.shape[0]],
-        contact_friction_in[conid],
-        ctx_quad_in[worldid, efcid],
-        ctx_quad_in[worldid, efcid1],
-        ctx_quad_in[worldid, efcid2],
-        alpha,
-      )
-      out -= _eval_elliptic_cost(
-        opt_impratio_invsqrt[worldid % opt_impratio_invsqrt.shape[0]],
-        contact_friction_in[conid],
-        ctx_quad_in[worldid, efcid],
-        ctx_quad_in[worldid, efcid1],
-        ctx_quad_in[worldid, efcid2],
-        0.0,
-      )
+      impratio_invsqrt = opt_impratio_invsqrt[worldid % opt_impratio_invsqrt.shape[0]]
+      friction = contact_friction_in[conid]
+      quad = ctx_quad_in[worldid, efcid]
+      quad1 = ctx_quad_in[worldid, efcid1]
+      quad2 = ctx_quad_in[worldid, efcid2]
+
+      out += _eval_elliptic_cost(impratio_invsqrt, friction, quad, quad1, quad2, alpha)
+      out -= _eval_elliptic_cost(impratio_invsqrt, friction, quad, quad1, quad2, 0.0)
     else:
       # search point
       start = ctx_Jaref_in[worldid, efcid]
