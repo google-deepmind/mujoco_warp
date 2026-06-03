@@ -125,7 +125,7 @@ def create_solver_context(m: types.Model, d: types.Data) -> SolverContext:
     done=wp.empty((nworld,), dtype=bool),
     grad=wp.zeros((nworld, nv_pad), dtype=float),
     grad_dot=wp.empty((nworld,), dtype=float),
-    Mgrad=wp.zeros((nworld, nv_pad), dtype=float),
+    Mgrad=wp.empty((nworld, nv_pad), dtype=float),
     search=wp.empty((nworld, nv), dtype=float),
     mv=wp.empty((nworld, nv), dtype=float),
     jv=wp.empty((nworld, njmax), dtype=float),
@@ -137,8 +137,8 @@ def create_solver_context(m: types.Model, d: types.Data) -> SolverContext:
     prev_Mgrad=wp.empty((nworld, nv), dtype=float),
     beta=wp.empty((nworld,), dtype=float),
     beta_den=wp.empty((nworld,), dtype=float),
-    h=wp.zeros((nworld, nv_pad, nv_pad), dtype=float) if alloc_h else wp.empty((nworld, 0, 0), dtype=float),
-    hfactor=wp.zeros((nworld, nv_pad, nv_pad), dtype=float) if alloc_hfactor else wp.empty((nworld, 0, 0), dtype=float),
+    h=wp.empty((nworld, nv_pad, nv_pad), dtype=float) if alloc_h else wp.empty((nworld, 0, 0), dtype=float),
+    hfactor=wp.empty((nworld, nv_pad, nv_pad), dtype=float) if alloc_hfactor else wp.empty((nworld, 0, 0), dtype=float),
     changed_efc_ids=wp.empty((nworld, njmax), dtype=int) if alloc_h else wp.empty((nworld, 0), dtype=int),
     changed_efc_count=wp.empty((nworld,), dtype=int) if alloc_h else wp.empty((0,), dtype=int),
   )
@@ -2254,11 +2254,10 @@ def update_gradient_grad(
 
 
 @wp.kernel
-def update_gradient_set_h_M_upper_sparse(
+def update_gradient_init_h_sparse(
   # Model:
-  M_fullm_upper_i: wp.array[int],
-  M_fullm_upper_j: wp.array[int],
-  M_fullm_upper_elemid: wp.array[int],
+  nv: int,
+  M_elemid: wp.array2d[int],
   # Data in:
   M_in: wp.array3d[float],
   # In:
@@ -2266,15 +2265,21 @@ def update_gradient_set_h_M_upper_sparse(
   # Out:
   ctx_h_out: wp.array3d[float],
 ):
-  worldid, elementid = wp.tid()
+  worldid, i, j = wp.tid()
 
   if ctx_done_in[worldid]:
     return
 
-  i = M_fullm_upper_i[elementid]
-  j = M_fullm_upper_j[elementid]
-  madr = M_fullm_upper_elemid[elementid]
-  ctx_h_out[worldid, i, j] += M_in[worldid, 0, madr]
+  # NOTE: we could early-return on j > i, but that would be a hazard for future development.
+  if i >= nv or j >= nv:
+    ctx_h_out[worldid, i, j] = 0.0
+    return
+
+  elemid = M_elemid[i, j]
+  if elemid >= 0:
+    ctx_h_out[worldid, i, j] = M_in[worldid, 0, elemid]
+  else:
+    ctx_h_out[worldid, i, j] = 0.0
 
 
 @wp.func
@@ -2866,18 +2871,17 @@ def _update_gradient(m: types.Model, d: types.Data, ctx: SolverContext):
   elif m.opt.solver == types.SolverType.NEWTON:
     # h = M + (efc_J.T * efc_D * active) @ efc_J
     if m.is_sparse:
-      ctx.h.zero_()
       wp.launch(
-        _JTDAJ_sparse,
-        dim=(d.nworld, d.njmax),
-        inputs=[d.nefc, d.efc.J_rownnz, d.efc.J_rowadr, d.efc.J_colind, d.efc.J, d.efc.D, d.efc.state, ctx.done],
+        update_gradient_init_h_sparse,
+        dim=(d.nworld, m.nv_pad, m.nv_pad),
+        inputs=[m.nv, m.M_elemid, d.M, ctx.done],
         outputs=[ctx.h],
       )
 
       wp.launch(
-        update_gradient_set_h_M_upper_sparse,
-        dim=(d.nworld, m.M_fullm_upper_i.size),
-        inputs=[m.M_fullm_upper_i, m.M_fullm_upper_j, m.M_fullm_upper_elemid, d.M, ctx.done],
+        _JTDAJ_sparse,
+        dim=(d.nworld, d.njmax),
+        inputs=[d.nefc, d.efc.J_rownnz, d.efc.J_rowadr, d.efc.J_colind, d.efc.J, d.efc.D, d.efc.state, ctx.done],
         outputs=[ctx.h],
       )
     else:
