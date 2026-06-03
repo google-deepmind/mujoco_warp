@@ -910,7 +910,7 @@ class IOTest(parameterized.TestCase):
       "sensordata",
       "mocap_pos",
       "mocap_quat",
-      "qM",
+      "M",
     ]
 
     mjm, mjd, m, d = test_data.fixture(xml)
@@ -941,8 +941,8 @@ class IOTest(parameterized.TestCase):
       d_arr = getattr(d, arr).numpy()
       for i in range(d_arr.shape[0]):
         di_arr = d_arr[i]
-        if arr == "qM":
-          di_arr = di_arr.reshape(-1)[: mjd.qM.size]
+        if arr == "M":
+          di_arr = di_arr.reshape(-1)[: mjd.M.size]
         _assert_eq(di_arr, getattr(mjd, arr), arr)
 
     _assert_eq(d.nacon.numpy(), 0, "nacon")
@@ -1995,6 +1995,42 @@ class IOTest(parameterized.TestCase):
     self.assertTrue(rc.use_textures, "use_textures")
     self.assertEqual(rc.textures.shape, (mjm.ntex,), "textures")
 
+  def test_render_context_lighting_flags(self):
+    mjm, _, _, _ = test_data.fixture(
+      xml="""
+      <mujoco>
+        <visual>
+          <headlight active="0" ambient="0.2 0.3 0.4" diffuse="0.5 0.6 0.7" specular="0.8 0.9 1.0"/>
+        </visual>
+        <worldbody>
+          <light pos="0 0 3" dir="0 0 -1" attenuation="1 0.1 0.05" cutoff="25"/>
+          <geom type="sphere" size="0.3"/>
+        </worldbody>
+      </mujoco>
+      """
+    )
+    rc = mjwarp.create_render_context(
+      mjm,
+      cam_res=(32, 32),
+      render_rgb=True,
+      use_shadows=False,
+      use_ambient_lighting=False,
+      enable_specular=False,
+      enable_emission=False,
+      enable_per_light_ambient=False,
+    )
+    self.assertFalse(rc.use_shadows)
+    self.assertFalse(rc.use_ambient_lighting)
+    self.assertFalse(rc.enable_specular)
+    self.assertFalse(rc.enable_emission)
+    self.assertFalse(rc.enable_per_light_ambient)
+    self.assertFalse(rc.headlight_active)
+    self.assertFalse(rc.light_attenuation_is_default)
+    self.assertTrue(rc.has_spot_lights)
+    _assert_eq(np.asarray(rc.headlight_ambient), mjm.vis.headlight.ambient, "headlight_ambient")
+    _assert_eq(np.asarray(rc.headlight_diffuse), mjm.vis.headlight.diffuse, "headlight_diffuse")
+    _assert_eq(np.asarray(rc.headlight_specular), mjm.vis.headlight.specular, "headlight_specular")
+
   def test_check_toolkit_driver_warns(self):
     """Tests that check_toolkit_driver warns."""
     mock_device = mock.MagicMock()
@@ -2431,6 +2467,31 @@ class IOTest(parameterized.TestCase):
           </contact>
         </mujoco>
       """)
+      )
+
+  @parameterized.parameters(*_IO_TEST_MODELS)
+  def test_kernel_recompilation(self, xml):
+    """Test that subsequent steps do not trigger kernel recompilation."""
+    _, _, m, d = test_data.fixture(xml)
+    mjwarp.step(m, d)
+    wp.synchronize()
+
+    created_kernels = []
+    original_init = wp.Kernel.__init__
+
+    def _tracking_init(self_kernel, *args, **kwargs):
+      res = original_init(self_kernel, *args, **kwargs)
+      created_kernels.append(self_kernel.key)
+      return res
+
+    # Second step: with cache enabled, should trigger zero new kernel instantiations
+    with mock.patch.object(wp.Kernel, "__init__", _tracking_init):
+      mjwarp.step(m, d)
+      wp.synchronize()
+
+      self.assertEmpty(
+        created_kernels,
+        f"Kernels were re-created on a subsequent step call: {created_kernels}",
       )
 
 

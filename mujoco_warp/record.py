@@ -21,11 +21,11 @@ Example:
   mjwarp-record benchmarks/humanoid/humanoid.xml --video humanoid.mp4 --nworld 1
 """
 
-import inspect
 import sys
 from typing import Sequence
 
 import mujoco
+import numpy as np
 import warp as wp
 from absl import app
 from absl import flags
@@ -35,18 +35,14 @@ from PIL import Image
 import mujoco_warp as mjw
 from mujoco_warp._src import cli
 
-_FUNCS = {
-  n: f
-  for n, f in inspect.getmembers(mjw, inspect.isfunction)
-  if inspect.signature(f).parameters.keys() == {"m", "d"} or inspect.signature(f).parameters.keys() == {"m", "d", "rc"}
-}
-
 _OUTPUT = flags.DEFINE_string("output", None, "output video file path", required=True)
 _FPS = flags.DEFINE_integer("fps", 30, "frames per second for the video")
 _QUALITY = flags.DEFINE_integer("quality", 70, "quality setting for webp/gif (0-100)")
 _CAM_DISTANCE = flags.DEFINE_float("cam_distance", 1.5, "camera distance coefficient (multiplier for model extent)")
 _CAM_LOOKAT_Z = flags.DEFINE_float("cam_lookat_z", None, "camera lookat z value (absolute); default: mjm.stat.center[2]")
 _CAM_AZIMUTH_SPEED = flags.DEFINE_float("cam_azimuth_speed", 0.05, "camera azimuth orbit speed (degrees per step)")
+_RENDER_MODE = flags.DEFINE_enum("render_mode", "python", ["warp", "python"], "rendering backend to use")
+_CHANNEL = flags.DEFINE_enum("channel", "rgb", ["rgb", "depth"], "rendering channel to record in the video")
 
 
 def _main(argv: Sequence[str]):
@@ -62,40 +58,74 @@ def _main(argv: Sequence[str]):
   path = epath.Path(argv[1])
   print(f"Loading model from: {path}...\n")
   mjm = cli.load_model(path)
-  m, d, rc, ctrls = cli.init_structs(mjw.step, mjm)
+
+  if _RENDER_MODE.value == "warp":
+    # TODO(team): Add support for Warp renderer to match the MuJoCo free camera, possibly by adding
+    # it via MjSpec.
+    if mjm.ncam == 0:
+      raise ValueError(
+        "Warp rendering requested, but the model has no cameras. Please define at least one camera in the scene."
+      )
+    m, d, rc, ctrls = cli.init_structs(mjw.render, mjm)
+    if _CHANNEL.value == "depth" and not rc.render_depth.numpy()[0]:
+      raise ValueError("Depth channel requested for recording, but depth rendering is disabled.")
+  else:
+    if _CHANNEL.value == "depth":
+      raise ValueError("Depth channel recording is only supported under the 'warp' rendering mode.")
+    m, d, rc, ctrls = cli.init_structs(mjw.step, mjm)
+
+    renderer = mujoco.Renderer(mjm, height=cli.RENDER_HEIGHT.value, width=cli.RENDER_WIDTH.value)
+    cam = mujoco.MjvCamera()
+    cam.type = mujoco.mjtCamera.mjCAMERA_FREE
+    cam.lookat[:] = mjm.stat.center
+    if _CAM_LOOKAT_Z.value is not None:
+      cam.lookat[2] = _CAM_LOOKAT_Z.value
+    cam.distance = mjm.stat.extent * _CAM_DISTANCE.value
+    cam.elevation = -20
+    mjd = mujoco.MjData(mjm)
 
   frames = []
-  renderer = mujoco.Renderer(mjm, height=cli.RENDER_HEIGHT.value, width=cli.RENDER_WIDTH.value)
   render_every = max(1, int(1.0 / (_FPS.value * mjm.opt.timestep)))
-
-  cam = mujoco.MjvCamera()
-  cam.type = mujoco.mjtCamera.mjCAMERA_FREE
-  cam.lookat[:] = mjm.stat.center
-  if _CAM_LOOKAT_Z.value is not None:
-    cam.lookat[2] = _CAM_LOOKAT_Z.value
-  cam.distance = mjm.stat.extent * _CAM_DISTANCE.value
-  cam.elevation = -20
-  mjd = mujoco.MjData(mjm)
 
   def callback(step, trace, latency):
     del trace, latency
     if step % render_every != 0:
       return
-    # TODO(team): add support for rendering more than one world (overlaid or tiled)
-    mjd.qpos[:] = d.qpos.numpy()[0]
-    mjd.qvel[:] = d.qvel.numpy()[0]
-    mujoco.mj_forward(mjm, mjd)
-    # symmetric orbit
-    cam.azimuth = 90 + (step - cli.NSTEP.value / 2) * _CAM_AZIMUTH_SPEED.value
-    renderer.update_scene(mjd, camera=cam)
-    frames.append(renderer.render())
+
+    if _RENDER_MODE.value == "warp":
+      mjw.refit_bvh(m, d, rc)
+      mjw.render(m, d, rc)
+
+      res = rc.cam_res.numpy()[0]  # (width, height)
+
+      # 1. Extract and Unpack RGB via mjw.get_rgb
+      if _CHANNEL.value == "rgb":
+        rgb_dev = wp.zeros((d.nworld, res[1], res[0]), dtype=wp.vec3)
+        mjw.get_rgb(rc, 0, rgb_dev)
+        img_rgb = (rgb_dev.numpy() * 255.0).astype(np.uint8)
+        frames.append(Image.fromarray(img_rgb[0]))
+
+      # 2. Extract and Normalize Depth via mjw.get_depth
+      elif _CHANNEL.value == "depth":
+        depth_dev = wp.zeros((d.nworld, res[1], res[0]), dtype=float)
+        mjw.get_depth(rc, 0, 5.0, depth_dev)
+        # Scale to uint8 grayscale
+        img_depth = ((1.0 - depth_dev.numpy()[0]) * 255.0).astype(np.uint8)
+        frames.append(Image.fromarray(img_depth, "L"))
+    else:
+      mjd.qpos[:] = d.qpos.numpy()[0]
+      mjd.qvel[:] = d.qvel.numpy()[0]
+      mujoco.mj_forward(mjm, mjd)
+      # symmetric orbit
+      cam.azimuth = 90 + (step - cli.NSTEP.value / 2) * _CAM_AZIMUTH_SPEED.value
+      renderer.update_scene(mjd, camera=cam)
+      frames.append(Image.fromarray(renderer.render()))
 
   print(f"Recording {cli.NSTEP.value} steps...")
-  cli.unroll(mjw.step, m, d, rc, callback, ctrls)
+  cli.unroll(mjw.step, m, d, None, callback, ctrls)
 
   print(f"Saving video to {_OUTPUT.value}...")
   if _OUTPUT.value.endswith((".gif", ".webp")):
-    frames = [Image.fromarray(f) for f in frames]
     frames[0].save(
       _OUTPUT.value,
       save_all=True,

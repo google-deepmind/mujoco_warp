@@ -30,6 +30,7 @@ from mujoco_warp._src.collision_core import Geom
 from mujoco_warp._src.collision_driver import MJ_COLLISION_TABLE
 from mujoco_warp._src.collision_primitive import plane_convex
 from mujoco_warp._src.math import upper_trid_index
+from mujoco_warp._src.types import NEW_GAP_SEMANTICS
 from mujoco_warp.test_data.collision_sdf.utils import register_sdf_plugins
 
 _TOLERANCE = 5e-5
@@ -702,7 +703,7 @@ class CollisionTest(parameterized.TestCase):
 
     # 1 pair
     _, _, m, d = test_data.fixture(
-      xml="""
+      xml=f"""
       <mujoco>
         <worldbody>
           <body>
@@ -715,7 +716,7 @@ class CollisionTest(parameterized.TestCase):
           </body>
         </worldbody>
         <contact>
-          <pair geom1="geom1" geom2="geom2" margin="2" gap="3" condim="6" friction="5 4 3 2 1" solref="-.25 -.5" solreffriction="2 4" solimp=".1 .2 .3 .4 .5"/>
+          <pair geom1="geom1" geom2="geom2" margin="{-1 if NEW_GAP_SEMANTICS else 2}" gap="3" condim="6" friction="5 4 3 2 1" solref="-.25 -.5" solreffriction="2 4" solimp=".1 .2 .3 .4 .5"/>
         </contact>
       </mujoco>
     """
@@ -746,7 +747,7 @@ class CollisionTest(parameterized.TestCase):
 
     # 1 pair: override contype and conaffinity
     _, _, m, d = test_data.fixture(
-      xml="""
+      xml=f"""
       <mujoco>
         <worldbody>
           <body name="body1">
@@ -759,7 +760,7 @@ class CollisionTest(parameterized.TestCase):
           </body>
         </worldbody>
         <contact>
-          <pair geom1="geom1" geom2="geom2" margin="2" gap="3" condim="6" friction="5 4 3 2 1" solref="-.25 -.5" solreffriction="2 4" solimp=".1 .2 .3 .4 .5"/>
+          <pair geom1="geom1" geom2="geom2" margin="{-1 if NEW_GAP_SEMANTICS else 2}" gap="3" condim="6" friction="5 4 3 2 1" solref="-.25 -.5" solreffriction="2 4" solimp=".1 .2 .3 .4 .5"/>
         </contact>
       </mujoco>
     """
@@ -790,7 +791,7 @@ class CollisionTest(parameterized.TestCase):
 
     # 1 pair: override exclude
     _, _, m, d = test_data.fixture(
-      xml="""
+      xml=f"""
       <mujoco>
         <worldbody>
           <body name="body1">
@@ -804,7 +805,7 @@ class CollisionTest(parameterized.TestCase):
         </worldbody>
         <contact>
           <exclude body1="body1" body2="body2"/>
-          <pair geom1="geom1" geom2="geom2" margin="2" gap="3" condim="6" friction="5 4 3 2 1" solref="-.25 -.5" solreffriction="2 4" solimp=".1 .2 .3 .4 .5"/>
+          <pair geom1="geom1" geom2="geom2" margin="{-1 if NEW_GAP_SEMANTICS else 2}" gap="3" condim="6" friction="5 4 3 2 1" solref="-.25 -.5" solreffriction="2 4" solimp=".1 .2 .3 .4 .5"/>
         </contact>
       </mujoco>
     """
@@ -835,7 +836,7 @@ class CollisionTest(parameterized.TestCase):
 
     # 1 pair 1 exclude
     _, _, m, d = test_data.fixture(
-      xml="""
+      xml=f"""
       <mujoco>
         <worldbody>
           <body name="body1">
@@ -853,7 +854,7 @@ class CollisionTest(parameterized.TestCase):
         </worldbody>
         <contact>
           <exclude body1="body1" body2="body2"/>
-          <pair geom1="geom2" geom2="geom3" margin="2" gap="3" condim="6" friction="5 4 3 2 1" solref="-.25 -.5" solreffriction="2 4" solimp=".1 .2 .3 .4 .5"/>
+          <pair geom1="geom2" geom2="geom3" margin="{-1 if NEW_GAP_SEMANTICS else 2}" gap="3" condim="6" friction="5 4 3 2 1" solref="-.25 -.5" solreffriction="2 4" solimp=".1 .2 .3 .4 .5"/>
         </contact>
       </mujoco>
     """
@@ -1102,6 +1103,42 @@ class CollisionTest(parameterized.TestCase):
           </worldbody>
         </mujoco>
     """,
+    "sdf_capsule": """
+        <mujoco>
+          <option sdf_iterations="10" sdf_initpoints="40"/>
+          <asset>
+            <mesh name="cube"
+             vertex="1 1 1  1 1 -1  1 -1 1  1 -1 -1  -1 1 1  -1 1 -1  -1 -1 1  -1 -1 -1"/>
+          </asset>
+          <worldbody>
+            <body pos="0 0 0">
+              <geom type="capsule" size="0.3 0.6"/>
+            </body>
+            <body pos="0 0 1.5" euler="30 0 0">
+              <freejoint/>
+              <geom type="sdf" mesh="cube"/>
+            </body>
+          </worldbody>
+        </mujoco>
+    """,
+    "sdf_cylinder": """
+        <mujoco>
+          <option sdf_iterations="10" sdf_initpoints="40"/>
+          <asset>
+            <mesh name="cube"
+             vertex="1 1 1  1 1 -1  1 -1 1  1 -1 -1  -1 1 1  -1 1 -1  -1 -1 1  -1 -1 -1"/>
+          </asset>
+          <worldbody>
+            <body pos="0 0 0">
+              <geom type="cylinder" size="0.3 0.6"/>
+            </body>
+            <body pos="0 0 1.5" euler="30 0 0">
+              <freejoint/>
+              <geom type="sdf" mesh="cube"/>
+            </body>
+          </worldbody>
+        </mujoco>
+    """,
   }
 
   @parameterized.parameters(_SDF_VOLUME.keys())
@@ -1126,22 +1163,23 @@ class CollisionTest(parameterized.TestCase):
   def test_ccd_margin_dist(self):
     """Tests that CCD contact dist matches MuJoCo when margin > 0.
 
-    Two ellipsoids are placed 0.05 m apart (not touching). With margin=0.1 on
-    each geom the pair margin is 0.2, so contacts are detected within the
+    Two ellipsoids are placed 0.05 m apart (not touching). With margin=0.01
+    and gap=0.2 on each geom, the pair margin is 0.02 and pair gap is 0.4.
+    CCD inflates geometries by margin, detecting contacts within the
     speculative envelope. The reported dist must equal the true geometric
     separation (≈0.05), not the margin-biased value that the inflated
     GJK/EPA would produce.
     """
-    xml = """
+    xml = f"""
     <mujoco>
       <worldbody>
         <body pos="0 0 0">
           <freejoint/>
-          <geom type="ellipsoid" size="0.15 0.15 0.25" margin="0.1" gap="0.1"/>
+          <geom type="ellipsoid" size="0.15 0.15 0.25" margin="{0.01 if NEW_GAP_SEMANTICS else 0.1}" gap="0.2"/>
         </body>
         <body pos="0 0 0.35">
           <freejoint/>
-          <geom type="ellipsoid" size="0.1 0.1 0.05" margin="0.1" gap="0.1"/>
+          <geom type="ellipsoid" size="0.1 0.1 0.05" margin="{0.01 if NEW_GAP_SEMANTICS else 0.1}" gap="0.2"/>
         </body>
       </worldbody>
     </mujoco>
@@ -1173,7 +1211,7 @@ class CollisionTest(parameterized.TestCase):
           break
       self.assertTrue(found, f"MJ contact {i} dist={mj_dist:.4f} not matched in MJW")
 
-    # Verify no constraint forces are generated (includemargin=0, dist > 0)
+    # dist(≈0.05) > margin(0.02): contacts are in gap zone, no constraints
     self.assertEqual(mjd.nefc, 0, "Classic MuJoCo should have no active constraints")
     self.assertEqual(d.nefc.numpy()[0], 0, "MuJoCo Warp should have no active constraints")
 

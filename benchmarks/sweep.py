@@ -58,6 +58,11 @@ from typing import Iterable
 
 _ARGS = None  # module level variable that gets populated with argparse results
 
+# Ensure the active virtual environment's bin directory is in PATH so 'uv' can be found
+_venv_bin = Path(sys.executable).parent.as_posix()
+if _venv_bin not in os.environ.get("PATH", ""):
+  os.environ["PATH"] = f"{_venv_bin}{os.path.pathsep}{os.environ.get('PATH', '')}"
+
 logging.basicConfig(format="[%(asctime)s] %(message)s", datefmt="%Y-%m-%d %H:%M:%S", level=logging.INFO)
 log = logging.getLogger(__name__)
 
@@ -142,11 +147,10 @@ def _assemble_benchmark(bm: dict):
 
 def _run_benchmark(bm: dict, input_dir: Path, *, mock: bool) -> dict:
   """Run a single benchmark via uv, returning parsed JSON."""
-  mjcf_path = Path(_ARGS.assets_root) / bm["name"] / bm["mjcf"]
+  benchmark_root = Path(_ARGS.assets_root) / bm["name"]
   cmd = [
     "mjwarp-testspeed",
-    mjcf_path.as_posix(),
-    f"--nworld={1 if mock else bm['nworld']}",
+    (benchmark_root / bm["mjcf"]).as_posix(),
     f"--clear_warp_cache={not mock}",
     "--format=json",
     "--event_trace=true",
@@ -154,17 +158,15 @@ def _run_benchmark(bm: dict, input_dir: Path, *, mock: bool) -> dict:
     "--measure_solver=true",
     "--measure_alloc=true",
   ]
-  if "nconmax" in bm:
-    cmd.append(f"--nconmax={bm['nconmax']}")
-  if "njmax" in bm:
-    cmd.append(f"--njmax={bm['njmax']}")
-  if "replay" in bm:
-    replay_path = Path(_ARGS.assets_root) / bm["name"] / bm["replay"]
-    cmd.append(f"--replay={replay_path.as_posix()}")
-  if mock:
-    cmd.append("--nstep=10")
-  elif "nstep" in bm:
-    cmd.append(f"--nstep={bm['nstep']}")
+  for field in bm:
+    if field == "replay":
+      cmd.append(f"--replay={(benchmark_root / bm['replay'])}")
+    elif field == "nworld":
+      cmd.append(f"--nworld={1 if mock else bm['nworld']}")
+    elif field == "nstep":
+      cmd.append(f"--nstep={10 if mock else bm['nstep']}")
+    elif field not in ("name", "assets", "mjcf", "_dir"):
+      cmd.append(f"--{field}={bm[field]}")
 
   return json.loads(_uv_run(*cmd, cwd=input_dir).stdout)
 

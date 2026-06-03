@@ -21,6 +21,7 @@ Usage: python benchmarks/run.py [flags]
 
 Example:
   python benchmarks/run.py -f humanoid
+  python benchmarks/run.py -f humanoid --view
   python benchmarks/run.py --input git@github.com:google-deepmind/mujoco_warp.git#abc123f
   python benchmarks/run.py --input .
 """
@@ -37,6 +38,11 @@ import tempfile
 from pathlib import Path
 
 _ARGS = None  # module level variable that gets populated with argparse results
+
+# Ensure the active virtual environment's bin directory is in PATH so 'uv' can be found
+_venv_bin = Path(sys.executable).parent.as_posix()
+if _venv_bin not in os.environ.get("PATH", ""):
+  os.environ["PATH"] = f"{_venv_bin}{os.path.pathsep}{os.environ.get('PATH', '')}"
 
 logging.basicConfig(format="[%(asctime)s] %(message)s", datefmt="%Y-%m-%d %H:%M:%S", level=logging.INFO)
 log = logging.getLogger(__name__)
@@ -121,11 +127,10 @@ def _assemble_benchmark(bm: dict):
 
 def _run_benchmark(bm: dict, input_dir: Path) -> dict:
   """Run a single benchmark via uv, returning parsed JSON."""
-  mjcf_path = Path(_ARGS.assets_root) / bm["name"] / bm["mjcf"]
+  benchmark_root = Path(_ARGS.assets_root) / bm["name"]
   cmd = [
     "mjwarp-testspeed",
-    mjcf_path.as_posix(),
-    f"--nworld={bm['nworld']}",
+    (benchmark_root / bm["mjcf"]).as_posix(),
     f"--clear_warp_cache={_ARGS.clear_warp_cache}",
     "--format=short",
     "--event_trace=true",
@@ -133,15 +138,11 @@ def _run_benchmark(bm: dict, input_dir: Path) -> dict:
     "--measure_solver=true",
     "--measure_alloc=true",
   ]
-  if "nconmax" in bm:
-    cmd.append(f"--nconmax={bm['nconmax']}")
-  if "njmax" in bm:
-    cmd.append(f"--njmax={bm['njmax']}")
-  if "replay" in bm:
-    replay_path = Path(_ARGS.assets_root) / bm["name"] / bm["replay"]
-    cmd.append(f"--replay={replay_path.as_posix()}")
-  if "nstep" in bm:
-    cmd.append(f"--nstep={bm['nstep']}")
+  for field in bm:
+    if field == "replay":
+      cmd.append(f"--replay={(benchmark_root / bm['replay'])}")
+    elif field not in ("name", "assets", "mjcf", "_dir"):
+      cmd.append(f"--{field}={bm[field]}")
 
   result = _uv_run(*cmd, cwd=input_dir)
 
@@ -156,11 +157,30 @@ def _run_benchmark(bm: dict, input_dir: Path) -> dict:
   return data
 
 
+def _view_benchmark(bm: dict, input_dir: Path):
+  """Launch mjwarp-viewer for a single benchmark."""
+  benchmark_root = Path(_ARGS.assets_root) / bm["name"]
+  cmd = [
+    "mjwarp-viewer",
+    (benchmark_root / bm["mjcf"]).as_posix(),
+    "--nworld=1",
+  ]
+  for field in ("nconmax", "nccdmax", "njmax"):
+    if field in bm:
+      cmd.append(f"--{field}={bm[field]}")
+  if "replay" in bm:
+    cmd.append(f"--replay={(benchmark_root / bm['replay'])}")
+
+  log.info("Command: uv run %s", " ".join(cmd))
+  subprocess.run(("uv", "run") + tuple(cmd), cwd=input_dir, check=True)
+
+
 def main():
   global _ARGS
   parser = argparse.ArgumentParser(description="Run MuJoCo Warp benchmarks.")
   parser.add_argument("--input", default=".", help="git uri or path to mujoco_warp repo to benchmark")
   parser.add_argument("-f", "--filter", default=".*", help="filter benchmarks by name (regex)")
+  parser.add_argument("--view", action="store_true", help="open the benchmark in mjwarp-viewer instead of running testspeed")
   parser.add_argument("--assets_root", default="/tmp/benchmark_assets", help="root directory to assemble benchmark assets")
   parser.add_argument(
     "--clear_warp_cache",
@@ -183,27 +203,23 @@ def main():
     return path
 
   input_dir = clone_if_needed(_ARGS.input)
+  benchmarks = list(_discover_benchmarks(input_dir))
 
-  try:
-    benchmarks = {}
-    for bm in _discover_benchmarks(input_dir):
+  if _ARGS.view:
+    if len(benchmarks) > 1:
+      log.warning("--view: multiple benchmarks matched, truncating to first match: %s", benchmarks[0]["name"])
+    elif len(benchmarks) == 0:
+      log.error("--view: no benchmarks matched the regex filter '%s'", _ARGS.filter)
+      sys.exit(1)
+    bm = benchmarks[0]
+    _assemble_benchmark(bm)
+    _view_benchmark(bm, input_dir)
+  else:
+    log.info("Discovered %d benchmarks: [%s]", len(benchmarks), ", ".join(bm["name"] for bm in benchmarks))
+    for bm in benchmarks:
       _assemble_benchmark(bm)
-      benchmarks[bm["name"]] = bm
-
-    log.info("Discovered %d benchmarks: [%s]", len(benchmarks), ", ".join(benchmarks.keys()))
-
-    for name, bm in benchmarks.items():
-      log.info("Running benchmark: %s", name)
-      try:
-        data = _run_benchmark(bm, input_dir)
-      except subprocess.CalledProcessError as e:
-        log.error("Benchmark %s failed:\n%s", name, e.stderr)
-        continue
-      for key, value in data.items():
-        print(f"{name}.{key} {value}")
-  except Exception:
-    log.exception("Run failed — temp dir left for diagnosis: input_dir=%s", input_dir)
-    sys.exit(1)
+      for key, value in _run_benchmark(bm, input_dir).items():
+        print(f"{bm['name']}.{key} {value}")
 
   # clean up cloned temp dir on success
   if ":" in _ARGS.input:

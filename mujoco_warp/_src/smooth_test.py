@@ -25,6 +25,7 @@ import mujoco_warp as mjw
 from mujoco_warp import ConeType
 from mujoco_warp import DisableBit
 from mujoco_warp import test_data
+from mujoco_warp._src.types import NEW_GAP_SEMANTICS
 from mujoco_warp._src.util_pkg import check_version
 
 # tolerance for difference between MuJoCo and MJWarp smooth calculations - mostly
@@ -195,27 +196,30 @@ class SmoothTest(parameterized.TestCase):
 
     if jacobian == mujoco.mjtJacobian.mjJAC_SPARSE:
       if check_version("mujoco>=3.8.1.dev910242375"):
-        mjd_qM = np.zeros(mjm.nM)
-        mjd_qM[mjm.mapM2M] = mjd.M
-        _assert_eq(d.qM.numpy()[0, 0], mjd_qM, "qM")
+        _assert_eq(d.M.numpy()[0, 0], mjd.M, "M")
       else:
-        _assert_eq(d.qM.numpy()[0, 0], mjd.qM, "qM")
+        _assert_eq(d.M.numpy()[0, 0], mjd.qM[mjm.mapM2M], "M")
     else:
+      M = np.zeros((mjm.nv, mjm.nv))
+      if check_version("mujoco>=3.8.1.dev910242375"):
+        mujoco.mju_sym2dense(M, mjd.M, mjm.M_rownnz, mjm.M_rowadr, mjm.M_colind)
+      else:
+        mujoco.mj_fullM(mjm, M, mjd.qM)
+      _assert_eq(d.M.numpy()[0, : mjm.nv, : mjm.nv], M, "M")
+
+  @parameterized.parameters(mujoco.mjtJacobian.mjJAC_SPARSE, mujoco.mjtJacobian.mjJAC_DENSE)
+  def test_factor_m(self, jacobian):
+    """Tests factor_m."""
+    mjm, mjd, m, d = test_data.fixture("pendula.xml", overrides={"opt.jacobian": jacobian})
+
+    d.qLDiagInv.fill_(wp.inf)
+    if jacobian == mujoco.mjtJacobian.mjJAC_DENSE:
       qM = np.zeros((mjm.nv, mjm.nv))
       if check_version("mujoco>=3.8.1.dev910242375"):
         mujoco.mju_sym2dense(qM, mjd.M, mjm.M_rownnz, mjm.M_rowadr, mjm.M_colind)
       else:
         mujoco.mj_fullM(mjm, qM, mjd.qM)
-      _assert_eq(d.qM.numpy()[0, : mjm.nv, : mjm.nv], qM, "qM")
-
-  @parameterized.parameters(mujoco.mjtJacobian.mjJAC_SPARSE, mujoco.mjtJacobian.mjJAC_DENSE)
-  def test_factor_m(self, jacobian):
-    """Tests factor_m."""
-    _, mjd, m, d = test_data.fixture("pendula.xml", overrides={"opt.jacobian": jacobian})
-
-    qLD = d.qLD.numpy()[0].copy()
-    d.qLDiagInv.fill_(wp.inf)
-    if jacobian == mujoco.mjtJacobian.mjJAC_DENSE:
+      qLD = np.linalg.cholesky(qM).T
       wp_qLD = qLD.copy()
       wp_qLD[wp_qLD != 0.0] = np.inf
       wp.copy(d.qLD, wp.array(wp_qLD, dtype=float))
@@ -228,7 +232,7 @@ class SmoothTest(parameterized.TestCase):
       _assert_eq(d.qLD.numpy()[0, 0], mjd.qLD, "qLD (sparse)")
       _assert_eq(d.qLDiagInv.numpy()[0], mjd.qLDiagInv, "qLDiagInv")
     else:
-      _assert_eq(d.qLD.numpy()[0], qLD, "qLD (dense)")
+      _assert_eq(d.qLD.numpy()[0], qLD, "qLD (dense upper)")
 
   @parameterized.parameters(mujoco.mjtJacobian.mjJAC_SPARSE, mujoco.mjtJacobian.mjJAC_DENSE)
   def test_solve_m(self, jacobian):
@@ -376,6 +380,8 @@ class SmoothTest(parameterized.TestCase):
   )
   def test_actuator_adhesion(self, keyframe, cone, jacobian):
     """Tests adhesion actuator."""
+    if not NEW_GAP_SEMANTICS:
+      self.skipTest("Skipping due to new gap semantics")
     mjm, mjd, m, d = test_data.fixture(
       "actuation/adhesion.xml", keyframe=keyframe, overrides={"opt.cone": cone, "opt.jacobian": jacobian}
     )
@@ -496,32 +502,102 @@ class SmoothTest(parameterized.TestCase):
     res = wp.zeros((1, mjm.nv), dtype=float)
     vec = wp.ones((1, mjm.nv), dtype=float)
 
-    mjw._src.smooth.factor_solve_i(m, d, d.qM, d.qLD, d.qLDiagInv, res, vec)
+    mjw._src.smooth.factor_solve_i(m, d, d.M, d.qLD, d.qLDiagInv, res, vec)
 
-    _assert_eq(res.numpy()[0], np.linalg.solve(qM, vec.numpy()[0]), "qM \\ 1")
+    _assert_eq(res.numpy()[0], np.linalg.solve(qM, vec.numpy()[0]), "M \\ 1")
 
     if sparse:
       _assert_eq(d.qLD.numpy()[0].reshape(-1), mjd.qLD, "qLD")
       _assert_eq(d.qLDiagInv.numpy()[0], mjd.qLDiagInv, "qLDiagInv")
     else:
-      qLD = np.linalg.cholesky(qM)
-      _assert_eq(d.qLD.numpy()[0], qLD, "qLD")
+      qLD = np.linalg.cholesky(qM).T
+      _assert_eq(d.qLD.numpy()[0], qLD, "qLD upper")
 
-  def test_tendon_armature(self):
-    mjm, mjd, m, d = test_data.fixture("tendon/armature.xml", keyframe=0)
+  def test_factor_solve_lu(self):
+    """Tests factor_solve_lu with a sparse matrix representing a tree."""
+    xml = """
+    <mujoco>
+      <option>
+        <flag constraint="disable"/>
+      </option>
+      <worldbody>
+        <body>
+          <joint type="slide" axis="0 0 1"/>
+          <geom size=".03"/>
+          <body>
+            <joint axis="0 1 0"/>
+            <geom type="capsule" size=".01" fromto="0 0 0 .1 0 0"/>
+          </body>
+        </body>
+        <body pos="0 0.1 0">
+          <joint name="slide" type="slide" axis="0 0 1"/>
+          <geom size=".03"/>
+          <body>
+            <joint name="hinge" axis="0 1 0"/>
+            <geom type="capsule" size=".01" fromto="0 0 0 .1 0 0"/>
+          </body>
+        </body>
+      </worldbody>
+    </mujoco>
+    """
+    mjm, mjd, m, d = test_data.fixture(xml=xml)
 
-    # qM
-    d.qM.fill_(wp.inf)
+    nv = m.nv
+    nD = m.nD
+
+    # Create a random non-symmetric diagonally dominant matrix
+    np.random.seed(42)
+    A = np.random.rand(nv, nv)
+    A += np.diag(np.sum(np.abs(A), axis=1) + 1.0)
+
+    # Zero out elements not in D-structure to enforce sparsity
+    D_rowadr = m.D_rowadr.numpy()
+    D_rownnz = m.D_rownnz.numpy()
+    D_colind = m.D_colind.numpy()
+
+    A_sparse = np.zeros((nv, nv))
+    qLU_np = np.zeros((1, 1, nD), dtype=np.float32)
+
+    for i in range(nv):
+      row_start = D_rowadr[i]
+      row_nnz = D_rownnz[i]
+      for k in range(row_nnz):
+        j = D_colind[row_start + k]
+        A_sparse[i, j] = A[i, j]
+        qLU_np[0, 0, row_start + k] = A[i, j]
+
+    wp.copy(d.qLU, wp.array(qLU_np, dtype=float))
+
+    vec = wp.ones((1, nv), dtype=float)
+    res = wp.zeros((1, nv), dtype=float)
+
+    mjw._src.smooth.factor_solve_lu(m, d, d.qLU, res, vec)
+
+    expected_res = np.linalg.solve(A_sparse, vec.numpy()[0])
+    _assert_eq(res.numpy()[0], expected_res, "qLU \\ 1 (sparse)")
+
+  @parameterized.parameters(mujoco.mjtJacobian.mjJAC_SPARSE, mujoco.mjtJacobian.mjJAC_DENSE)
+  def test_tendon_armature(self, jacobian):
+    mjm, mjd, m, d = test_data.fixture("tendon/armature.xml", keyframe=0, overrides={"opt.jacobian": jacobian})
+
+    # M
+    d.M.fill_(wp.inf)
 
     mjw._src.smooth.crb(m, d)
     mjw._src.smooth.tendon_armature(m, d)
 
-    qM = np.zeros((mjm.nv, mjm.nv))
-    if check_version("mujoco>=3.8.1.dev910242375"):
-      mujoco.mju_sym2dense(qM, mjd.M, mjm.M_rownnz, mjm.M_rowadr, mjm.M_colind)
+    if jacobian == mujoco.mjtJacobian.mjJAC_SPARSE:
+      if check_version("mujoco>=3.8.1.dev910242375"):
+        _assert_eq(d.M.numpy()[0, 0], mjd.M, "M")
+      else:
+        _assert_eq(d.M.numpy()[0, 0], mjd.qM[mjm.mapM2M], "M")
     else:
-      mujoco.mj_fullM(mjm, qM, mjd.qM)
-    _assert_eq(d.qM.numpy()[0, : mjm.nv, : mjm.nv], qM, "qM")
+      M = np.zeros((mjm.nv, mjm.nv))
+      if check_version("mujoco>=3.8.1.dev910242375"):
+        mujoco.mju_sym2dense(M, mjd.M, mjm.M_rownnz, mjm.M_rowadr, mjm.M_colind)
+      else:
+        mujoco.mj_fullM(mjm, M, mjd.qM)
+      _assert_eq(d.M.numpy()[0, : mjm.nv, : mjm.nv], M, "M")
 
     # qfrc_bias
     d.qfrc_bias.fill_(wp.inf)

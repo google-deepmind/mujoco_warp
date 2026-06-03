@@ -32,9 +32,10 @@ class ParseVersionTest(parameterized.TestCase):
     ("3.5.0", ((0, 3), (0, 5), (0, 0), (0, 0))),
     ("1.20.0", ((0, 1), (0, 20), (0, 0), (0, 0))),
     ("3.5.0.dev869102767", ((0, 3), (0, 5), (0, 0), (-1, "dev869102767"), (0, 0))),
-    ("3.5.0-foobar", ((0, 3), (0, 5), (0, 0), (-1, "foobar"), (0, 0))),
-    ("1.0.0-alpha", ((0, 1), (0, 0), (0, 0), (-1, "alpha"), (0, 0))),
-    ("2.0.0-beta.1", ((0, 2), (0, 0), (0, 0), (-1, "beta"), (0, 1), (0, 0))),
+    # hyphen-separated suffixes are stripped as local build identifiers
+    ("3.5.0-foobar", ((0, 3), (0, 5), (0, 0), (0, 0))),
+    ("1.0.0-alpha", ((0, 1), (0, 0), (0, 0), (0, 0))),
+    ("3.9.0-newton", ((0, 3), (0, 9), (0, 0), (0, 0))),
   )
   def test_parse_version(self, version_str, expected):
     self.assertEqual(util_pkg._parse_version(version_str), expected)
@@ -67,16 +68,12 @@ class CheckVersionTest(parameterized.TestCase):
     ("pkg!=1.0.0", "1.0.0", False),
     # With dev/pre-release versions (pre-release < clean release)
     ("pkg>=3.5.0", "3.5.0.dev869102767", False),  # dev version < base
-    ("pkg>=3.5.0", "3.5.0-foobar", False),  # foobar < base
     ("pkg>3.5.0", "3.5.0.dev869102767", False),  # dev version < base
     ("pkg>=3.5.0", "3.5.0", True),  # exact match
     ("pkg>=3.5.0.dev", "3.5.0", True),  # clean release > dev
-    # Lexicographic ordering: foobar > dev
-    ("pkg>=3.5.0-foobar", "3.5.0-foobar", True),
-    ("pkg>3.5.0.dev869102767", "3.5.0-foobar", True),
-    # b >= a
-    ("pkg>=1.2.3-a", "1.2.3-b", True),
-    ("pkg>=1.2.3-b", "1.2.3-a", False),
+    # hyphen-separated suffixes are stripped (local build identifiers)
+    ("pkg>=3.5.0", "3.5.0-foobar", True),  # 3.5.0-foobar == 3.5.0
+    ("pkg>=3.9.0", "3.9.0-newton", True),  # 3.9.0-newton == 3.9.0
   )
   def test_check_version(self, spec, installed_version, expected):
     with mock.patch("importlib.metadata.version", return_value=installed_version):
