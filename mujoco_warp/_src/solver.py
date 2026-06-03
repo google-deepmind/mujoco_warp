@@ -2302,12 +2302,16 @@ def _update_gradient_init_h_sparse(
   if ctx_done_in[worldid]:
     return
 
-  # NOTE: we could early-return on j > i, but that would be a hazard for future development.
+  # only write the upper triangle; Cholesky reads the upper triangle only
+  if j < i:
+    return
+
   if i >= nv or j >= nv:
     ctx_h_out[worldid, i, j] = 0.0
     return
 
-  elemid = M_elemid[i, j]
+  # M is stored in the lower triangle, so transpose the lookup for the upper
+  elemid = M_elemid[j, i]
   if elemid >= 0:
     ctx_h_out[worldid, i, j] = M_in[worldid, 0, elemid]
   else:
