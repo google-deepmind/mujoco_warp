@@ -4064,7 +4064,9 @@ def linesearch_island(
     s = search_in[worldid, idof]
     quad_gauss_1 += s * (iMa_in[worldid, idof] - ifrc_smooth_in[worldid, idof])
     quad_gauss_2 += 0.5 * s * mv_in[worldid, idof]
-  quad_gauss = wp.vec3(island_gauss_in[worldid, islandid], quad_gauss_1, quad_gauss_2)
+  # Costs are evaluated as deltas from alpha=0 to keep float32 precision on large
+  # absolute costs, so the constant gauss cost (island_gauss_in) is dropped here.
+  quad_gauss = wp.vec3(0.0, quad_gauss_1, quad_gauss_2)
 
   # gtol
   snorm = wp.sqrt(island_search_dot_in[worldid, islandid])
@@ -4113,6 +4115,9 @@ def linesearch_island(
         jvD = jv_val * D
         p0 += wp.vec3(0.5 * D * ja * ja, jvD * ja, jv_val * jvD)
 
+  # Zero the cost component: alpha=0 is the delta reference (grad/hessian are kept).
+  p0 = wp.vec3(0.0, p0[1], p0[2])
+
   # Newton step: lo_alpha_in = -p0[1] / p0[2]
   lo_alpha_in = -math.safe_div(p0[1], p0[2])
 
@@ -4126,37 +4131,58 @@ def linesearch_island(
     ja = Jaref_in[worldid, iefcid]
     jv_val = jv_in[worldid, iefcid]
     if local_iefcid < ine:
-      lo_in += _eval_pt_direct(ja, jv_val, D, lo_alpha_in)
+      lo_in += _eval_pt_direct_shifted(ja, jv_val, D, lo_alpha_in, 0.0)
     elif local_iefcid < ine + inf:
       f = iefc_frictionloss_in[worldid, iefcid]
       rf = math.safe_div(f, D)
       x_a = ja + lo_alpha_in * jv_val
-      lo_in += _eval_frictionloss_pt(x_a, f, rf, jv_val, D)
+      lo_in += _shift_cost(_eval_frictionloss_pt(x_a, f, rf, jv_val, D), _eval_frictionloss_cost(ja, f, rf, D))
     elif iefc_type_in[worldid, iefcid] == types.ConstraintType.CONTACT_ELLIPTIC:
       conid = iefc_id_in[worldid, iefcid]
       if conid < nacon_in[0]:
         ic0 = map_efc2iefc_in[worldid, contact_efc_address_in[conid, 0]]
         if iefcid == ic0:
-          lo_in += _eval_elliptic_cost_island(
+          cost0 = _eval_elliptic_cost_island(
             impratio_invsqrt,
             contact_friction_in,
             contact_dim_in,
             contact_efc_address_in,
             map_efc2iefc_in,
-            lo_alpha_in,
+            0.0,
             conid,
             iefc_D_in,
             Jaref_in,
             jv_in,
             worldid,
+          )[0]
+          lo_in += _shift_cost(
+            _eval_elliptic_cost_island(
+              impratio_invsqrt,
+              contact_friction_in,
+              contact_dim_in,
+              contact_efc_address_in,
+              map_efc2iefc_in,
+              lo_alpha_in,
+              conid,
+              iefc_D_in,
+              Jaref_in,
+              jv_in,
+              worldid,
+            ),
+            cost0,
           )
     else:
+      # Inequality
       x_a = ja + lo_alpha_in * jv_val
+      quad0 = _eval_pt_direct_cost_alpha_zero(ja, D)
+      cost0 = wp.where(ja < 0.0, quad0, 0.0)
       if x_a < 0.0:
-        lo_in += _eval_pt_direct(ja, jv_val, D, lo_alpha_in)
+        lo_in += _eval_pt_direct_shifted(ja, jv_val, D, lo_alpha_in, quad0 - cost0)
+      else:
+        lo_in += wp.vec3(-cost0, 0.0, 0.0)
 
   # Accept Newton step if derivative is small and cost improved
-  initial_converged = wp.abs(lo_in[1]) < gtol and lo_in[0] < p0[0]
+  initial_converged = wp.abs(lo_in[1]) < gtol and lo_in[0] < 0.0
 
   if initial_converged:
     alpha = lo_alpha_in
@@ -4196,16 +4222,17 @@ def linesearch_island(
         ja = Jaref_in[worldid, iefcid]
         jv_val = jv_in[worldid, iefcid]
         if local_iefcid < ine:
-          r_lo, r_hi, r_mid = _eval_pt_direct_3alphas(ja, jv_val, D, lo_next_alpha, hi_next_alpha, mid_alpha)
+          r_lo, r_hi, r_mid = _eval_pt_direct_shifted_3alphas(ja, jv_val, D, lo_next_alpha, hi_next_alpha, mid_alpha, 0.0)
         elif local_iefcid < ine + inf:
           f = iefc_frictionloss_in[worldid, iefcid]
           rf = math.safe_div(f, D)
+          cost0 = _eval_frictionloss_cost(ja, f, rf, D)
           x_lo = ja + lo_next_alpha * jv_val
           x_hi = ja + hi_next_alpha * jv_val
           x_mid = ja + mid_alpha * jv_val
-          r_lo = _eval_frictionloss_pt(x_lo, f, rf, jv_val, D)
-          r_hi = _eval_frictionloss_pt(x_hi, f, rf, jv_val, D)
-          r_mid = _eval_frictionloss_pt(x_mid, f, rf, jv_val, D)
+          r_lo = _shift_cost(_eval_frictionloss_pt(x_lo, f, rf, jv_val, D), cost0)
+          r_hi = _shift_cost(_eval_frictionloss_pt(x_hi, f, rf, jv_val, D), cost0)
+          r_mid = _shift_cost(_eval_frictionloss_pt(x_mid, f, rf, jv_val, D), cost0)
         elif iefc_type_in[worldid, iefcid] == types.ConstraintType.CONTACT_ELLIPTIC:
           conid = iefc_id_in[worldid, iefcid]
           r_lo = wp.vec3(0.0)
@@ -4214,58 +4241,85 @@ def linesearch_island(
           if conid < nacon_in[0]:
             ic0 = map_efc2iefc_in[worldid, contact_efc_address_in[conid, 0]]
             if iefcid == ic0:
-              r_lo = _eval_elliptic_cost_island(
+              cost0 = _eval_elliptic_cost_island(
                 impratio_invsqrt,
                 contact_friction_in,
                 contact_dim_in,
                 contact_efc_address_in,
                 map_efc2iefc_in,
-                lo_next_alpha,
+                0.0,
                 conid,
                 iefc_D_in,
                 Jaref_in,
                 jv_in,
                 worldid,
+              )[0]
+              r_lo = _shift_cost(
+                _eval_elliptic_cost_island(
+                  impratio_invsqrt,
+                  contact_friction_in,
+                  contact_dim_in,
+                  contact_efc_address_in,
+                  map_efc2iefc_in,
+                  lo_next_alpha,
+                  conid,
+                  iefc_D_in,
+                  Jaref_in,
+                  jv_in,
+                  worldid,
+                ),
+                cost0,
               )
-              r_hi = _eval_elliptic_cost_island(
-                impratio_invsqrt,
-                contact_friction_in,
-                contact_dim_in,
-                contact_efc_address_in,
-                map_efc2iefc_in,
-                hi_next_alpha,
-                conid,
-                iefc_D_in,
-                Jaref_in,
-                jv_in,
-                worldid,
+              r_hi = _shift_cost(
+                _eval_elliptic_cost_island(
+                  impratio_invsqrt,
+                  contact_friction_in,
+                  contact_dim_in,
+                  contact_efc_address_in,
+                  map_efc2iefc_in,
+                  hi_next_alpha,
+                  conid,
+                  iefc_D_in,
+                  Jaref_in,
+                  jv_in,
+                  worldid,
+                ),
+                cost0,
               )
-              r_mid = _eval_elliptic_cost_island(
-                impratio_invsqrt,
-                contact_friction_in,
-                contact_dim_in,
-                contact_efc_address_in,
-                map_efc2iefc_in,
-                mid_alpha,
-                conid,
-                iefc_D_in,
-                Jaref_in,
-                jv_in,
-                worldid,
+              r_mid = _shift_cost(
+                _eval_elliptic_cost_island(
+                  impratio_invsqrt,
+                  contact_friction_in,
+                  contact_dim_in,
+                  contact_efc_address_in,
+                  map_efc2iefc_in,
+                  mid_alpha,
+                  conid,
+                  iefc_D_in,
+                  Jaref_in,
+                  jv_in,
+                  worldid,
+                ),
+                cost0,
               )
         else:
+          # Inequality
           x_lo = ja + lo_next_alpha * jv_val
           x_hi = ja + hi_next_alpha * jv_val
           x_mid = ja + mid_alpha * jv_val
-          r_lo = wp.vec3(0.0)
-          r_hi = wp.vec3(0.0)
-          r_mid = wp.vec3(0.0)
+          quad0 = _eval_pt_direct_cost_alpha_zero(ja, D)
+          cost0 = wp.where(ja < 0.0, quad0, 0.0)
+          offset = quad0 - cost0
+          neg_cost0 = wp.vec3(-cost0, 0.0, 0.0)
+          r_lo = neg_cost0
+          r_hi = neg_cost0
+          r_mid = neg_cost0
           if x_lo < 0.0:
-            r_lo = _eval_pt_direct(ja, jv_val, D, lo_next_alpha)
+            r_lo = _eval_pt_direct_shifted(ja, jv_val, D, lo_next_alpha, offset)
           if x_hi < 0.0:
-            r_hi = _eval_pt_direct(ja, jv_val, D, hi_next_alpha)
+            r_hi = _eval_pt_direct_shifted(ja, jv_val, D, hi_next_alpha, offset)
           if x_mid < 0.0:
-            r_mid = _eval_pt_direct(ja, jv_val, D, mid_alpha)
+            r_mid = _eval_pt_direct_shifted(ja, jv_val, D, mid_alpha, offset)
         lo_next += r_lo
         hi_next += r_hi
         mid += r_mid
@@ -4303,7 +4357,7 @@ def linesearch_island(
       ls_done = (swap_lo == 0 and swap_hi == 0) or (lo[1] < 0.0 and lo[1] > -gtol) or (hi[1] > 0.0 and hi[1] < gtol)
 
       # Update alpha if improved
-      if lo[0] < p0[0] or hi[0] < p0[0]:
+      if lo[0] < 0.0 or hi[0] < 0.0:
         if lo[0] < hi[0]:
           alpha = lo_alpha
         else:
