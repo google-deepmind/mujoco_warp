@@ -3382,8 +3382,11 @@ def _solve_islands(m: types.Model, d: types.Data, ctx: IslandSolverContext):
   else:
     wp.copy(d.iqacc, d.iqacc_smooth)
 
+  # nsolving tracks how many active islands still have unconverged globally
+  nsolving = wp.zeros((1,), dtype=int)
+
   # Initialize island context
-  init_context_island(m, d, ctx)
+  init_context_island(m, d, ctx, nsolving)
 
   # search = -Mgrad
   wp.launch(
@@ -3391,15 +3394,6 @@ def _solve_islands(m: types.Model, d: types.Data, ctx: IslandSolverContext):
     dim=(d.nworld, m.nv),
     inputs=[d.nidof, ctx.Mgrad, d.dof_islandid, ctx.done],
     outputs=[ctx.search, ctx.search_dot],
-  )
-
-  # nsolving tracks how many active islands still have unconverged globally
-  nsolving = wp.zeros((1,), dtype=int)
-  wp.launch(
-    solve_init_nsolving_island,
-    dim=d.nworld,
-    inputs=[d.nisland],
-    outputs=[nsolving],
   )
 
   if m.opt.iterations != 0 and m.opt.graph_conditional:
@@ -3435,26 +3429,48 @@ def gather_warmstart_island(
   iacc_out[worldid, idofid] = qacc_warmstart_in[worldid, dof]
 
 
-@wp.kernel
-def solve_init_efc_island(
-  # Data in:
-  nisland_in: wp.array[int],
-  # Out:
-  island_cost_out: wp.array2d[float],
-  island_search_dot_out: wp.array2d[float],
-  island_done_out: wp.array2d[bool],
-  island_solver_niter_out: wp.array2d[int],
-):
-  """Initialize per-island solver scalars."""
-  worldid, islandid = wp.tid()
+@cache_kernel
+def _solve_init_efc_island(enable_sleep: bool):
+  @wp.kernel(module="unique", enable_backward=False)
+  def kernel(
+    # Model:
+    ntree: int,
+    # Data in:
+    nisland_in: wp.array[int],
+    tree_awake_in: wp.array2d[int],
+    tree_island_in: wp.array2d[int],
+    # Out:
+    island_cost_out: wp.array2d[float],
+    island_search_dot_out: wp.array2d[float],
+    island_done_out: wp.array2d[bool],
+    island_solver_niter_out: wp.array2d[int],
+    nsolving_out: wp.array[int],
+  ):
+    """Initialize per-island solver scalars."""
+    worldid, islandid = wp.tid()
 
-  if islandid >= nisland_in[worldid]:
-    return
+    if islandid >= nisland_in[worldid]:
+      return
 
-  island_cost_out[worldid, islandid] = 0.0
-  island_search_dot_out[worldid, islandid] = 0.0
-  island_done_out[worldid, islandid] = False
-  island_solver_niter_out[worldid, islandid] = 0
+    is_asleep_flag = int(0)
+    if wp.static(enable_sleep):
+      has_awake_tree = int(0)
+      for t in range(ntree):
+        if tree_island_in[worldid, t] == islandid:
+          if tree_awake_in[worldid, t] == 1:
+            has_awake_tree = int(1)
+            break
+      if has_awake_tree == 0:
+        is_asleep_flag = int(1)
+
+    island_cost_out[worldid, islandid] = 0.0
+    island_search_dot_out[worldid, islandid] = 0.0
+    island_done_out[worldid, islandid] = is_asleep_flag == 1
+    island_solver_niter_out[worldid, islandid] = 0
+    if is_asleep_flag == 0:
+      wp.atomic_add(nsolving_out, 0, 1)
+
+  return kernel
 
 
 @wp.kernel
@@ -3463,10 +3479,10 @@ def solve_init_jaref_island(
   is_sparse: bool,
   # Data in:
   nefc_in: wp.array[int],
+  island_idofadr_in: wp.array2d[int],
   island_nv_in: wp.array2d[int],
   njmax_in: int,
   # In:
-  island_idofadr_in: wp.array2d[int],
   iefc_J_rownnz_in: wp.array2d[int],
   iefc_J_rowadr_in: wp.array2d[int],
   iefc_J_colind_in: wp.array3d[int],
@@ -3864,10 +3880,10 @@ def linesearch_jv_island(
   # Data in:
   nefc_in: wp.array[int],
   nidof_in: wp.array[int],
+  island_idofadr_in: wp.array2d[int],
   island_nv_in: wp.array2d[int],
   njmax_in: int,
   # In:
-  island_idofadr_in: wp.array2d[int],
   iefc_J_rownnz_in: wp.array2d[int],
   iefc_J_rowadr_in: wp.array2d[int],
   iefc_J_colind_in: wp.array3d[int],
@@ -4515,16 +4531,6 @@ def solve_search_update_island(
 
 
 @wp.kernel
-def solve_init_nsolving_island(
-  nisland_in: wp.array[int],
-  nsolving_out: wp.array[int],
-):
-  """Initialize active island count nsolving on device without CPU stalls."""
-  worldid = wp.tid()
-  wp.atomic_add(nsolving_out, 0, nisland_in[worldid])
-
-
-@wp.kernel
 def solve_done_island(
   # Model:
   opt_tolerance: wp.array[float],
@@ -4994,15 +5000,21 @@ def _cholesky_factorize_solve_island(
     Mgrad_out[worldid, adr + i] = s / wp.max(types.MJ_MINVAL, ih_in[worldid, adr + i, adr + i])
 
 
-def init_context_island(m: types.Model, d: types.Data, ctx: IslandSolverContext):
+def init_context_island(m: types.Model, d: types.Data, ctx: IslandSolverContext, nsolving: wp.array):
   """Initialize island solver context."""
   # Init per-island scalars
   d.solver_niter.zero_()
+  enable_sleep = bool(m.opt.enableflags & types.EnableBit.SLEEP)
   wp.launch(
-    solve_init_efc_island,
+    _solve_init_efc_island(enable_sleep),
     dim=(d.nworld, m.ntree),
-    inputs=[d.nisland],
-    outputs=[ctx.cost, ctx.search_dot, ctx.done, ctx.solver_niter],
+    inputs=[
+      m.ntree,
+      d.nisland,
+      d.tree_awake,
+      d.tree_island,
+    ],
+    outputs=[ctx.cost, ctx.search_dot, ctx.done, ctx.solver_niter, nsolving],
   )
 
   # Jaref = iefc_J @ iacc - iefc_aref
@@ -5012,9 +5024,9 @@ def init_context_island(m: types.Model, d: types.Data, ctx: IslandSolverContext)
     inputs=[
       m.is_sparse,
       d.nefc,
+      d.island_idofadr,
       d.island_nv,
       d.njmax,
-      d.island_dofadr,
       d.efc.iJ_rownnz,
       d.efc.iJ_rowadr,
       d.efc.iJ_colind,
@@ -5206,7 +5218,7 @@ def _update_gradient_incremental_island(m: types.Model, d: types.Data, ctx: Isla
       m.is_sparse,
       d.nefc,
       d.njmax,
-      d.island_dofadr,
+      d.island_idofadr,
       d.island_nv,
       d.efc.iJ_rownnz,
       d.efc.iJ_rowadr,
@@ -5265,7 +5277,7 @@ def _update_gradient_incremental_island(m: types.Model, d: types.Data, ctx: Isla
         d.contact.dim,
         d.contact.efc_address,
         d.contact.worldid,
-        d.island_dofadr,
+        d.island_idofadr,
         d.naconmax,
         d.nidof,
         d.map_efc2iefc,
@@ -5289,7 +5301,7 @@ def _update_gradient_incremental_island(m: types.Model, d: types.Data, ctx: Isla
     dim=(d.nworld, m.ntree),
     inputs=[
       d.nisland,
-      d.island_dofadr,
+      d.island_idofadr,
       d.island_nv,
       ctx.grad,
       ctx.h,
@@ -5323,9 +5335,9 @@ def _linesearch_island(m: types.Model, d: types.Data, ctx: IslandSolverContext):
       m.is_sparse,
       d.nefc,
       d.nidof,
+      d.island_idofadr,
       d.island_nv,
       d.njmax,
-      d.island_dofadr,
       d.efc.iJ_rownnz,
       d.efc.iJ_rowadr,
       d.efc.iJ_colind,
@@ -5361,7 +5373,7 @@ def _linesearch_island(m: types.Model, d: types.Data, ctx: IslandSolverContext):
       d.map_efc2iefc,
       d.njmax,
       d.nacon,
-      d.island_dofadr,
+      d.island_idofadr,
       d.efc.itype,
       d.efc.iid,
       d.efc.iD,

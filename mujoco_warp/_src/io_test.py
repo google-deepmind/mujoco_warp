@@ -28,6 +28,7 @@ import mujoco_warp as mjwarp
 from mujoco_warp import ConeType
 from mujoco_warp import IntegratorType
 from mujoco_warp import test_data
+from mujoco_warp._src import types
 from mujoco_warp._src import warp_util
 from mujoco_warp._src.io import put_model
 from mujoco_warp._src.io import set_length_range
@@ -911,6 +912,14 @@ class IOTest(parameterized.TestCase):
       "mocap_pos",
       "mocap_quat",
       "M",
+      "tree_asleep",
+      "tree_awake",
+      "body_awake",
+      "body_awake_ind",
+      "dof_awake_ind",
+      "ntree_awake",
+      "nbody_awake",
+      "nv_awake",
     ]
 
     mjm, mjd, m, d = test_data.fixture(xml)
@@ -2493,6 +2502,102 @@ class IOTest(parameterized.TestCase):
         created_kernels,
         f"Kernels were re-created on a subsequent step call: {created_kernels}",
       )
+
+  def test_flex_equality_sleep_error(self):
+    """Verify loading flex equality with sleep raises NotImplementedError."""
+    xml = """
+    <mujoco>
+      <worldbody>
+        <body name="b1"/>
+        <body name="b2"/>
+      </worldbody>
+      <equality>
+        <weld body1="b1" body2="b2"/>
+      </equality>
+    </mujoco>
+    """
+    mjm = mujoco.MjModel.from_xml_string(xml)
+    mjm.opt.enableflags |= mujoco.mjtEnableBit.mjENBL_SLEEP
+    mjm.eq_type[0] = mujoco.mjtEq.mjEQ_FLEX
+
+    with self.assertRaises(NotImplementedError):
+      mjwarp.put_model(mjm)
+
+  @parameterized.parameters(
+    mujoco.mjtSleepPolicy.mjSLEEP_NEVER,
+    mujoco.mjtSleepPolicy.mjSLEEP_ALLOWED,
+    mujoco.mjtSleepPolicy.mjSLEEP_INIT,
+  )
+  def test_tree_sleep_policy_error(self, policy):
+    """Verify loading a model with an unsupported sleep policy raises NotImplementedError."""
+    xml = """
+    <mujoco>
+      <worldbody>
+        <body>
+          <geom type="sphere" size="1"/>
+          <joint type="slide"/>
+        </body>
+      </worldbody>
+    </mujoco>
+    """
+    mjm, _, _, _ = test_data.fixture(xml=xml)
+    mjm.tree_sleep_policy[0] = policy
+
+    with self.assertRaises(NotImplementedError):
+      mjwarp.put_model(mjm)
+
+  def test_reset_data_sleep(self):
+    """Verify resetting sleep-related fields on a multi-world setup."""
+    mjm, _, m, d = test_data.fixture(
+      xml="""
+    <mujoco>
+      <worldbody>
+        <body>
+          <geom type="sphere" size="1"/>
+          <joint type="slide"/>
+        </body>
+      </worldbody>
+    </mujoco>
+    """,
+      nworld=2,
+    )
+
+    # Set non-default sleep states (asleep) on both worlds
+    # a tree is asleep if tree_asleep >= 0
+    # There is 1 tree in this model (since 1 body is dynamic)
+    tree_asleep = np.array([[5], [10]], dtype=np.int32)
+    wp.copy(d.tree_asleep, wp.array(tree_asleep, dtype=int))
+
+    # Set different tree_awake, body_awake
+    tree_awake = np.array([[0], [0]], dtype=np.int32)
+    wp.copy(d.tree_awake, wp.array(tree_awake, dtype=int))
+
+    body_awake = np.full((2, 2), types.SleepState.ASLEEP, dtype=np.int32)
+    wp.copy(d.body_awake, wp.array(body_awake, dtype=int))
+
+    # Reset world 0 only
+    reset0 = wp.array([True, False], dtype=bool)
+    mjwarp.reset_data(m, d, reset=reset0)
+
+    # Assert world 0 sleep fields were reset to fully awake
+    np.testing.assert_array_equal(
+      d.tree_asleep.numpy()[0],
+      [-(1 + types.MJ_MINAWAKE)],
+    )
+    np.testing.assert_array_equal(d.tree_awake.numpy()[0], [1])
+    # Body 0 is static/world body (gets STATIC). Body 1 has slide joint (gets AWAKE).
+    np.testing.assert_array_equal(
+      d.body_awake.numpy()[0],
+      [types.SleepState.STATIC, types.SleepState.AWAKE],
+    )
+
+    # Assert world 1 sleep fields were NOT modified
+    np.testing.assert_array_equal(d.tree_asleep.numpy()[1], [10])
+    np.testing.assert_array_equal(d.tree_awake.numpy()[1], [0])
+    np.testing.assert_array_equal(
+      d.body_awake.numpy()[1],
+      [types.SleepState.ASLEEP, types.SleepState.ASLEEP],
+    )
 
 
 # TODO(team): test set_const_0 sparse
