@@ -4950,14 +4950,23 @@ def _update_gradient_JTCJ_island(
             if i != jj:
               wp.atomic_add(ih_out[worldid, idofadr + jj], idofadr + i, val)
 
-            if dim1id != dim2id:
+        if dim1id != dim2id:
+          # Swap-pair contribution: hcone * J[ic2, i] * J[ic1, j].
+          # Together with the loop above this gives the full
+          # hcone * (J[ic1, i] * J[ic2, j] + J[ic2, i] * J[ic1, j])
+          # contribution to cell (i, j).
+          for i in range(inv):
+            J2i = iefc_J_in[worldid, ic2, idofadr + i]
+            if J2i == 0.0:
+              continue
+            for jj in range(i + 1):
               J1j = iefc_J_in[worldid, ic1, idofadr + jj]
-              J2i = iefc_J_in[worldid, ic2, idofadr + i]
-              if J1j != 0.0 and J2i != 0.0:
-                val2 = hcone * J1j * J2i
-                wp.atomic_add(ih_out[worldid, idofadr + i], idofadr + jj, val2)
-                if i != jj:
-                  wp.atomic_add(ih_out[worldid, idofadr + jj], idofadr + i, val2)
+              if J1j == 0.0:
+                continue
+              val = hcone * J2i * J1j
+              wp.atomic_add(ih_out[worldid, idofadr + i], idofadr + jj, val)
+              if i != jj:
+                wp.atomic_add(ih_out[worldid, idofadr + jj], idofadr + i, val)
 
 
 @wp.kernel
