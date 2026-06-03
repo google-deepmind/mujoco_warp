@@ -502,7 +502,7 @@ def solve_compact(m: types.Model, d: types.Data, ctx: NvCompactContext):
     efc=efc2,
   )
 
-  sctx = solver.create_solver_context(m2, d2)
+  sctx = solver._create_solver_context(m2, d2)
   solver._solve(m2, d2, sctx)
 
   _compact_scatter(m, d, ctx)

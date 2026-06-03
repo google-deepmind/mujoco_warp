@@ -698,7 +698,7 @@ class IslandMappingTest(absltest.TestCase):
     """Two free bodies with a weld: 1 island, all DOFs constrained."""
     mjm, mjd, m, d = test_data.fixture(xml=_WELD_XML)
     m.opt.disableflags &= ~types.DisableBit.ISLAND
-    ctx = solver.create_island_solver_context(m, d)
+    ctx = solver._create_island_solver_context(m, d)
     island.compute_island_mapping(m, d, ctx)
 
     nisland = d.nisland.numpy()[0]
@@ -747,7 +747,7 @@ class IslandMappingTest(absltest.TestCase):
       """
     )
     m.opt.disableflags &= ~types.DisableBit.ISLAND
-    ctx = solver.create_island_solver_context(m, d)
+    ctx = solver._create_island_solver_context(m, d)
     island.compute_island_mapping(m, d, ctx)
 
     nisland = d.nisland.numpy()[0]
@@ -788,7 +788,7 @@ class IslandMappingTest(absltest.TestCase):
       """
     )
     m.opt.disableflags &= ~types.DisableBit.ISLAND
-    ctx = solver.create_island_solver_context(m, d)
+    ctx = solver._create_island_solver_context(m, d)
     island.compute_island_mapping(m, d, ctx)
 
     nisland = d.nisland.numpy()[0]
@@ -808,7 +808,7 @@ class IslandMappingTest(absltest.TestCase):
     """map_dof2idof and map_idof2dof are inverses for island DOFs."""
     mjm, mjd, m, d = test_data.fixture(xml=_WELD_XML)
     m.opt.disableflags &= ~types.DisableBit.ISLAND
-    ctx = solver.create_island_solver_context(m, d)
+    ctx = solver._create_island_solver_context(m, d)
     island.compute_island_mapping(m, d, ctx)
 
     nidof = d.nidof.numpy()[0]
@@ -826,7 +826,7 @@ class IslandMappingTest(absltest.TestCase):
     """map_efc2iefc and map_iefc2efc are inverses."""
     mjm, mjd, m, d = test_data.fixture(xml=_WELD_XML)
     m.opt.disableflags &= ~types.DisableBit.ISLAND
-    ctx = solver.create_island_solver_context(m, d)
+    ctx = solver._create_island_solver_context(m, d)
     island.compute_island_mapping(m, d, ctx)
 
     nefc = d.nefc.numpy()[0]
@@ -869,7 +869,7 @@ class IslandMappingTest(absltest.TestCase):
       """
     )
     m.opt.disableflags &= ~types.DisableBit.ISLAND
-    ctx = solver.create_island_solver_context(m, d)
+    ctx = solver._create_island_solver_context(m, d)
     island.compute_island_mapping(m, d, ctx)
 
     nv = mjm.nv
@@ -886,8 +886,12 @@ class IslandMappingTest(absltest.TestCase):
       mjd.island_nefc[:nisland],
     )
     np.testing.assert_array_equal(
-      d.island_dofadr.numpy()[0, :nisland],
+      d.island_idofadr.numpy()[0, :nisland],
       mjd.island_idofadr[:nisland],
+    )
+    np.testing.assert_array_equal(
+      d.island_dofadr.numpy()[0, :nisland],
+      mjd.island_dofadr[:nisland],
     )
     np.testing.assert_array_equal(
       d.island_efcadr.numpy()[0, :nisland],
@@ -922,7 +926,7 @@ class IslandMappingTest(absltest.TestCase):
     """Gather then scatter recovers original DOF arrays."""
     mjm, mjd, m, d = test_data.fixture(xml=_WELD_XML)
     m.opt.disableflags &= ~types.DisableBit.ISLAND
-    ctx = solver.create_island_solver_context(m, d)
+    ctx = solver._create_island_solver_context(m, d)
     island.compute_island_mapping(m, d, ctx)
 
     # Save originals
@@ -957,7 +961,7 @@ class IslandMappingTest(absltest.TestCase):
     """Gathered EFC arrays preserve values via island mapping."""
     mjm, mjd, m, d = test_data.fixture(xml=_WELD_XML)
     m.opt.disableflags &= ~types.DisableBit.ISLAND
-    ctx = solver.create_island_solver_context(m, d)
+    ctx = solver._create_island_solver_context(m, d)
     island.compute_island_mapping(m, d, ctx)
     island.gather_island_inputs(m, d, ctx)
 
@@ -975,7 +979,7 @@ class IslandMappingTest(absltest.TestCase):
     """island_ne and island_nf match MuJoCo C values."""
     mjm, mjd, m, d = test_data.fixture(xml=_WELD_XML)
     m.opt.disableflags &= ~types.DisableBit.ISLAND
-    ctx = solver.create_island_solver_context(m, d)
+    ctx = solver._create_island_solver_context(m, d)
     island.compute_island_mapping(m, d, ctx)
 
     nisland = mjd.nisland

@@ -73,19 +73,18 @@ class SolverTest(parameterized.TestCase):
         overrides={"opt.solver": solver_, "opt.cone": cone, "opt.jacobian": jacobian, "opt.iterations": 0},
       )
 
-      def cost(qacc):
+      def update_constraints(qacc):
         jaref = np.zeros(mjd.nefc, dtype=float)
         cost = np.zeros(1)
         mujoco.mj_mulJacVec(mjm, mjd, jaref, qacc)
         mujoco.mj_constraintUpdate(mjm, mjd, jaref - mjd.efc_aref, cost, 0)
-        return cost
 
-      mjd_cost = cost(mjd.qacc)
+      update_constraints(mjd.qacc)
 
-      # solve with 0 iterations just initializes constraints and costs and then exits
+      # solve with 0 iterations just initializes constraints and then exits
       d.efc.force.fill_(wp.inf)
       d.qfrc_constraint.fill_(wp.inf)
-      ctx = solver.create_solver_context(m, d)
+      ctx = solver._create_solver_context(m, d)
       solver._solve(m, d, ctx)
 
       # Get the ordering indices based on efc_force, efc_state for MJWarp
@@ -101,7 +100,6 @@ class SolverTest(parameterized.TestCase):
       mjd_sort_indices = np.lexsort((mjd_efc_force, mjd_efc_state))
 
       solver.init_context(m, d, ctx, grad=False)
-      ctx_cost = ctx.cost.numpy()[0] - ctx.gauss.numpy()[0]
       qfrc_constraint = d.qfrc_constraint.numpy()[0]
 
       efc_sorted_force = efc_force[d_sort_indices]
@@ -111,7 +109,6 @@ class SolverTest(parameterized.TestCase):
 
       _assert_eq(efc_sorted_state, mjd_sorted_state, "efc_state")
       _assert_eq(efc_sorted_force, mjd_sorted_force, "efc_force")
-      _assert_eq(ctx_cost, mjd_cost, "cost")
       _assert_eq(qfrc_constraint, mjd.qfrc_constraint, "qfrc_constraint")
 
   @parameterized.product(
@@ -143,7 +140,7 @@ class SolverTest(parameterized.TestCase):
       mjw.step(m, d)
 
       # Create a SolverContext to access internal solver arrays
-      ctx = solver.create_solver_context(m, d)
+      ctx = solver._create_solver_context(m, d)
       solver._solve(m, d, ctx)
 
       # Calculate target values
@@ -160,7 +157,6 @@ class SolverTest(parameterized.TestCase):
         )
       else:
         efc_J_np = d.efc.J.numpy()[0, :nefc, : m.nv]
-      ctx_gauss_np = ctx.gauss.numpy()[0]
       efc_Ma_np = d.efc.Ma.numpy()[0]
       ctx_Jaref_np = ctx.Jaref.numpy()[0][:nefc]
       efc_D_np = d.efc.D.numpy()[0][:nefc]
@@ -171,7 +167,7 @@ class SolverTest(parameterized.TestCase):
       target_jv = efc_J_np @ ctx_search_np
       target_quad_gauss = np.array(
         [
-          ctx_gauss_np,
+          0.0,
           np.dot(ctx_search_np, efc_Ma_np - qfrc_smooth_np),
           0.5 * np.dot(ctx_search_np, target_mv),
         ]
@@ -223,7 +219,7 @@ class SolverTest(parameterized.TestCase):
     )
 
     # Create SolverContext and initialize
-    ctx = solver.create_solver_context(m, d)
+    ctx = solver._create_solver_context(m, d)
     solver.init_context(m, d, ctx, grad=True)
 
     # Calculate Mgrad with Mujoco C
@@ -253,7 +249,7 @@ class SolverTest(parameterized.TestCase):
     m.opt.iterations = 0
     mjw.fwd_velocity(m, d)
     mjw.fwd_acceleration(m, d, factorize=True)
-    ctx = solver.create_solver_context(m, d)
+    ctx = solver._create_solver_context(m, d)
     solver._solve(m, d, ctx)
 
     # Storing some initial values
@@ -286,6 +282,141 @@ class SolverTest(parameterized.TestCase):
     _assert_eq(qacc_iterative, qacc_parallel, name="qacc")
     _assert_eq(Ma_iterative, Ma_parallel, name="Ma")
     _assert_eq(Jaref_iterative, Jaref_parallel, name="Jaref")
+
+  @parameterized.parameters(False, True)
+  def test_linesearch_accepts_sub_float32_improvement(self, ls_parallel):
+    """Line search should not lose small improvements on large absolute costs."""
+    _, _, m, d = test_data.fixture(
+      "constraints.xml",
+      overrides={
+        "opt.cone": ConeType.PYRAMIDAL,
+        "opt.jacobian": mujoco.mjtJacobian.mjJAC_DENSE,
+        "opt.iterations": 0,
+        "opt.ls_iterations": 50,
+        "opt.ls_parallel": ls_parallel,
+      },
+    )
+
+    ctx = solver._create_solver_context(m, d)
+
+    d.ne = wp.array([0], dtype=int)
+    d.nf = wp.array([0], dtype=int)
+    d.nefc = wp.array([1], dtype=int)
+    d.nacon = wp.array([0], dtype=int)
+    d.M = wp.zeros(d.M.shape, dtype=float)
+    d.qacc = wp.zeros(d.qacc.shape, dtype=float)
+    d.efc.Ma = wp.zeros(d.efc.Ma.shape, dtype=float)
+    d.qfrc_smooth = wp.zeros(d.qfrc_smooth.shape, dtype=float)
+
+    efc_j = np.zeros(d.efc.J.shape, dtype=np.float32)
+    efc_j[0, 0, 0] = 1.0
+    d.efc.J = wp.array(efc_j, dtype=float)
+
+    efc_d = np.zeros(d.efc.D.shape, dtype=np.float32)
+    efc_d[0, 0] = 0.004
+    d.efc.D = wp.array(efc_d, dtype=float)
+    d.efc.frictionloss = wp.zeros(d.efc.frictionloss.shape, dtype=float)
+
+    search = np.zeros(ctx.search.shape, dtype=np.float32)
+    search[0, 0] = 1.0
+    ctx.search = wp.array(search, dtype=float)
+    jaref = np.zeros(ctx.Jaref.shape, dtype=np.float32)
+    jaref[0, 0] = -1.0
+    ctx.Jaref = wp.array(jaref, dtype=float)
+    ctx.search_dot = wp.array([1.0], dtype=float)
+    ctx.done = wp.array([False], dtype=bool)
+
+    step_size_cost = wp.empty((d.nworld, m.opt.ls_iterations if m.opt.ls_parallel else 0), dtype=float)
+    solver._linesearch(m, d, ctx, step_size_cost)
+
+    self.assertGreater(d.qacc.numpy()[0, 0], 0.5)
+    self.assertGreater(ctx.improvement.numpy()[0], 0.001)
+
+    qfrc_smooth = np.zeros(d.qfrc_smooth.shape, dtype=np.float32)
+    qfrc_smooth[0, 0] = -0.0005
+    d.qfrc_smooth = wp.array(qfrc_smooth, dtype=float)
+    d.qacc = wp.zeros(d.qacc.shape, dtype=float)
+    d.efc.Ma = wp.zeros(d.efc.Ma.shape, dtype=float)
+
+    search = np.zeros(ctx.search.shape, dtype=np.float32)
+    search[0, 0] = -2.0
+    ctx.search = wp.array(search, dtype=float)
+    jaref = np.zeros(ctx.Jaref.shape, dtype=np.float32)
+    jaref[0, 0] = 1.0
+    ctx.Jaref = wp.array(jaref, dtype=float)
+    ctx.search_dot = wp.array([4.0], dtype=float)
+    ctx.done = wp.array([False], dtype=bool)
+
+    solver._linesearch(m, d, ctx, step_size_cost)
+
+    self.assertLess(d.qacc.numpy()[0, 0], -1.0)
+    self.assertLess(ctx.improvement.numpy()[0], 0.001)
+    self.assertGreater(ctx.improvement.numpy()[0], 0.0004)
+
+  def test_island_linesearch_accepts_sub_float32_improvement(self):
+    """Island line search should not lose small improvements on large absolute costs.
+
+    Drives the island line-search kernel directly on a single island with one
+    active inequality constraint. The island gauss cost carries a large constant
+    (1e8) whose float32 resolution (~8) dwarfs the real improvement (0.5), so a
+    line search that compares absolute costs rounds the improvement to zero and
+    refuses to step. The shifted formulation evaluates the improvement directly
+    and takes the Newton step.
+    """
+    # Scenario: 1 world, 1 island, 1 dof, 1 active inequality constraint.
+    # Constraint: D=1, Jaref=-1, jv=1 -> active at alpha=0 (cost0=0.5), reaches
+    # the boundary x=0 at the Newton step alpha=1, an improvement of 0.5.
+    one2d_f = lambda v: wp.array([[v]], dtype=float)
+    one2d_i = lambda v: wp.array([[v]], dtype=int)
+
+    alpha_out = wp.array([[0.0]], dtype=float)
+    wp.launch(
+      solver._linesearch_kernel_island,
+      dim=(1, 1),
+      inputs=[
+        # Model
+        wp.array([1e-8], dtype=float),  # opt_tolerance
+        wp.array([0.01], dtype=float),  # opt_ls_tolerance
+        50,  # opt_ls_iterations
+        wp.array([1.0], dtype=float),  # opt_impratio_invsqrt (unused, no elliptic)
+        wp.array([1.0], dtype=float),  # stat_meaninertia
+        # Data in
+        wp.array([1], dtype=int),  # nefc
+        wp.array([1], dtype=int),  # nisland
+        wp.zeros(1, dtype=types.vec5),  # contact_friction (unused)
+        wp.zeros(1, dtype=int),  # contact_dim (unused)
+        wp.zeros((1, 3), dtype=int),  # contact_efc_address (unused)
+        wp.array([1], dtype=int),  # nidof
+        one2d_i(1),  # island_nv
+        one2d_i(0),  # island_ne
+        one2d_i(0),  # island_nf
+        one2d_i(0),  # island_efcadr
+        one2d_i(1),  # island_nefc
+        one2d_i(0),  # map_efc2iefc (unused for inequality)
+        1,  # njmax
+        wp.array([0], dtype=int),  # nacon
+        one2d_i(0),  # island_idofadr
+        # In
+        one2d_i(int(types.ConstraintType.LIMIT_JOINT)),  # iefc_type -> else (inequality)
+        one2d_i(0),  # iefc_id
+        one2d_f(1.0),  # iefc_D
+        one2d_f(0.0),  # iefc_frictionloss
+        one2d_f(-1.0),  # Jaref (active: < 0)
+        one2d_f(1.0),  # jv
+        one2d_f(0.0),  # mv
+        one2d_f(0.0),  # search (gauss curvature 0)
+        one2d_f(0.0),  # ifrc_smooth
+        one2d_f(0.0),  # iMa
+        one2d_f(1.0),  # island_search_dot
+        one2d_f(1e8),  # island_gauss (large constant offset)
+        wp.array([[False]], dtype=bool),  # island_done
+      ],
+      outputs=[alpha_out],  # island_alpha
+    )
+
+    # The minimizing step is alpha=1 (constraint boundary). Absolute-cost
+    # bookkeeping loses the sub-resolution improvement and returns alpha=0.
+    self.assertGreater(alpha_out.numpy()[0, 0], 0.5)
 
   @parameterized.parameters(
     (ConeType.PYRAMIDAL, SolverType.CG, 10, 5, mujoco.mjtJacobian.mjJAC_DENSE, False, False),
@@ -682,9 +813,9 @@ class SolverTest(parameterized.TestCase):
         d.qacc.zero_()
         d.qfrc_constraint.zero_()
         d.efc.force.zero_()
-        ctx = solver.create_solver_context(m, d)
+        ctx = solver._create_solver_context(m, d)
         solver.init_context(m, d, ctx, grad=True)
-        wp.launch(solver.solve_init_search, dim=(d.nworld, m.nv), inputs=[ctx.Mgrad], outputs=[ctx.search, ctx.search_dot])
+        wp.launch(solver._solve_init_search, dim=(d.nworld, m.nv), inputs=[ctx.Mgrad], outputs=[ctx.search, ctx.search_dot])
         step_size_cost = wp.empty((d.nworld, 0), dtype=float)
         any_changes = False
         for _ in range(m.opt.iterations):
@@ -697,9 +828,9 @@ class SolverTest(parameterized.TestCase):
             if np.any(ctx.changed_efc_count.numpy() > 0):
               any_changes = True
           update_fn(m, d, ctx)
-          wp.launch(solver.solve_zero_search_dot, dim=(d.nworld), inputs=[ctx.done], outputs=[ctx.search_dot])
+          wp.launch(solver._solve_zero_search_dot, dim=(d.nworld), inputs=[ctx.done], outputs=[ctx.search_dot])
           wp.launch(
-            solver.solve_search_update,
+            solver._solve_search_update,
             dim=(d.nworld, m.nv),
             inputs=[m.opt.solver, ctx.Mgrad, ctx.search, ctx.beta, ctx.done],
             outputs=[ctx.search, ctx.search_dot],
