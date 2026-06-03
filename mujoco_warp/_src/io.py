@@ -301,6 +301,8 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
   m.nmaxpyramid = np.maximum(1, 2 * (m.nmaxcondim - 1))
   m.has_sdf_geom = (mjm.geom_type == mujoco.mjtGeom.mjGEOM_SDF).any()
   m.block_dim = types.BlockDim()
+  if mjm.nv > 500:
+    m.block_dim.linesearch_iterative = 512
   m.is_sparse = is_sparse(mjm)
   m.has_fluid = mjm.opt.wind.any() or mjm.opt.density > 0 or mjm.opt.viscosity > 0
 
