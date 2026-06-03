@@ -62,13 +62,47 @@ def _qderiv_actuator_passive_vel(
   actuator_gainprm_id = worldid % actuator_gainprm.shape[0]
   actuator_biasprm_id = worldid % actuator_biasprm.shape[0]
 
+  bias = float(0.0)
+
   if actuator_gaintype[actid] == GainType.AFFINE:
     gain = actuator_gainprm[actuator_gainprm_id, actid][2]
+  elif actuator_gaintype[actid] == GainType.DCMOTOR:
+    gain = 0.0
+    dynprm = actuator_dynprm[worldid % actuator_dynprm.shape[0], actid]
+    gainprm = actuator_gainprm[actuator_gainprm_id, actid]
+    te = dynprm[0]
+
+    # controller velocity derivative: dV/dω
+    input_mode = int(gainprm[8])
+    dVdw = 0.0
+    if input_mode == 1:
+      dVdw = -gainprm[6]  # position: -kd
+    elif input_mode == 2:
+      dVdw = -gainprm[4]  # velocity: -kp
+
+    if te > 0.0:
+      # stateful current with actearly: d(K*next_act)/dω
+      # includes both back-EMF (-K) and controller (dVdw) through act_dot
+      R = wp.max(MJ_MINVAL, gainprm[0])
+      K = gainprm[1]
+      s = 1.0 - wp.exp(-opt_timestep[worldid % opt_timestep.shape[0]] / te)
+      bias += K * (dVdw - K) * s / R
+    elif dVdw != 0.0:
+      # stateless: controller terms only (back-EMF handled in bias block)
+      R = wp.max(MJ_MINVAL, gainprm[0])
+      K = gainprm[1]
+      bias += K * dVdw / R
+
+    # LuGre: force includes -sigma1*z_dot, z_dot = a*z + v
+    # d(sigma1*z_dot)/dv = sigma1*(da/dv*z + 1), ignoring higher-order da/dv*z
+    sigma1 = dynprm[6]
+    if sigma1 > 0.0:
+      bias -= sigma1
   else:
     gain = 0.0
 
   if actuator_biastype[actid] == BiasType.AFFINE:
-    bias = actuator_biasprm[actuator_biasprm_id, actid][2]
+    bias += actuator_biasprm[actuator_biasprm_id, actid][2]
   elif actuator_biastype[actid] == BiasType.DCMOTOR:
     dynprm = actuator_dynprm[worldid % actuator_dynprm.shape[0], actid]
     te = dynprm[0]
@@ -88,11 +122,7 @@ def _qderiv_actuator_passive_vel(
         Ta = dynprm[4]
         R *= 1.0 + alpha * (T + Ta - T0)
 
-      bias = -K * K / wp.max(MJ_MINVAL, R)
-    else:
-      bias = 0.0
-  else:
-    bias = 0.0
+      bias += -K * K / wp.max(MJ_MINVAL, R)
 
   if bias == 0.0 and gain == 0.0:
     vel_out[worldid, actid] = 0.0
@@ -354,7 +384,7 @@ def _qderiv_tendon_damping(
 
 
 @wp.kernel
-def rne_deriv_cvel_cdof_dot(
+def deriv_rne_cvel_cdof_dot(
   # Model:
   body_parentid: wp.array[int],
   body_jntnum: wp.array[int],
@@ -438,7 +468,7 @@ def rne_deriv_cvel_cdof_dot(
 
 
 @wp.kernel
-def rne_deriv_cacc_cfrcbody_forward(
+def deriv_rne_cacc_cfrcbody_forward(
   # Model:
   body_parentid: wp.array[int],
   body_dofnum: wp.array[int],
@@ -495,7 +525,7 @@ def rne_deriv_cacc_cfrcbody_forward(
 
 
 @wp.kernel
-def rne_deriv_cfrcbody_backward(
+def deriv_rne_cfrcbody_backward(
   # Model:
   body_parentid: wp.array[int],
   # In:
@@ -515,7 +545,7 @@ def rne_deriv_cfrcbody_backward(
 
 
 @wp.kernel
-def rne_deriv_body2jnt_sparse(
+def deriv_rne_body2jnt_sparse(
   # Model:
   dof_bodyid: wp.array[int],
   # Data in:
@@ -525,6 +555,7 @@ def rne_deriv_body2jnt_sparse(
   Di: wp.array[int],
   Dj: wp.array[int],
   Dcfrcbody_in: wp.array3d[wp.spatial_vector],
+  flg_subtract: bool,
   # Out:
   qDeriv_out: wp.array3d[float],
 ):
@@ -539,43 +570,23 @@ def rne_deriv_body2jnt_sparse(
   dcfrc = Dcfrcbody_in[worldid, body_i, j]
   term = wp.dot(cdof_in[worldid, i], dcfrc)
 
-  wp.atomic_add(qDeriv_out[worldid, 0], elemid, dt * term)
+  if flg_subtract:
+    wp.atomic_sub(qDeriv_out[worldid, 0], elemid, dt * term)
+  else:
+    wp.atomic_add(qDeriv_out[worldid, 0], elemid, dt * term)
 
 
-@wp.kernel
-def rne_deriv_body2jnt_dense(
-  # Model:
-  dof_bodyid: wp.array[int],
-  # Data in:
-  cdof_in: wp.array2d[wp.spatial_vector],
-  # In:
-  timestep: wp.array[float],
-  Dcfrcbody_in: wp.array3d[wp.spatial_vector],
-  # Out:
-  qDeriv_out: wp.array3d[float],
-):
-  """Project body-space RNE derivatives into joint-space qDeriv (dense)."""
-  worldid, i, j = wp.tid()
-  dt = timestep[worldid % timestep.shape[0]]
-
-  body_i = dof_bodyid[i]
-  dcfrc = Dcfrcbody_in[worldid, body_i, j]
-  term = wp.dot(cdof_in[worldid, i], dcfrc)
-
-  qDeriv_out[worldid, i, j] += dt * term
-
-
-def rne_vel_deriv(m: Model, d: Data, out: wp.array2d[float]):
-  """Compute RNE velocity derivatives and add to qDeriv output.
+def deriv_rne_vel(m: Model, d: Data, out: wp.array3d[float], flg_subtract: bool = False):
+  """Compute RNE velocity derivatives and add/subtract from the output.
 
   Implements the analytical derivative of inverse-dynamics Coriolis/centrifugal
-  forces with respect to joint velocities (equivalent to mjd_rne_vel in the C
-  MuJoCo engine).
+  forces with respect to joint velocities.
 
   Args:
     m: The model (device).
     d: The data (device).
-    out: qDeriv-like output array to accumulate RNE terms into.
+    out: D-structure output array (nworld, 1, nD) to accumulate RNE terms into.
+    flg_subtract: If True, subtract the RNE derivatives from output instead of adding them.
   """
   # TODO(team): consider caching these allocations
   Dcvel = wp.zeros((d.nworld, m.nbody, m.nv), dtype=wp.spatial_vector)
@@ -586,7 +597,7 @@ def rne_vel_deriv(m: Model, d: Data, out: wp.array2d[float]):
   # Forward pass 1: compute Dcvel and Dcdof_dot
   for body_tree in m.body_tree:
     wp.launch(
-      rne_deriv_cvel_cdof_dot,
+      deriv_rne_cvel_cdof_dot,
       dim=(d.nworld, body_tree.size, m.nv),
       inputs=[
         m.body_parentid,
@@ -603,7 +614,7 @@ def rne_vel_deriv(m: Model, d: Data, out: wp.array2d[float]):
   # Forward pass 2: compute Dcacc and Dcfrcbody
   for body_tree in m.body_tree:
     wp.launch(
-      rne_deriv_cacc_cfrcbody_forward,
+      deriv_rne_cacc_cfrcbody_forward,
       dim=(d.nworld, body_tree.size, m.nv),
       inputs=[
         m.body_parentid,
@@ -623,27 +634,19 @@ def rne_vel_deriv(m: Model, d: Data, out: wp.array2d[float]):
   # Backward pass: accumulate Dcfrcbody from children to parents
   for body_tree in reversed(m.body_tree):
     wp.launch(
-      rne_deriv_cfrcbody_backward,
+      deriv_rne_cfrcbody_backward,
       dim=(d.nworld, body_tree.size, m.nv),
       inputs=[m.body_parentid, body_tree],
       outputs=[Dcfrcbody],
     )
 
-  # Project body-space derivatives into joint-space qDeriv
-  if m.is_sparse:
-    wp.launch(
-      rne_deriv_body2jnt_sparse,
-      dim=(d.nworld, m.qD_fullm_i.size),
-      inputs=[m.dof_bodyid, d.cdof, m.opt.timestep, m.qD_fullm_i, m.qD_fullm_j, Dcfrcbody],
-      outputs=[out],
-    )
-  else:
-    wp.launch(
-      rne_deriv_body2jnt_dense,
-      dim=(d.nworld, m.nv, m.nv),
-      inputs=[m.dof_bodyid, d.cdof, m.opt.timestep, Dcfrcbody],
-      outputs=[out],
-    )
+  # Project body-space derivatives into joint-space qDeriv (always sparse D-structure)
+  wp.launch(
+    deriv_rne_body2jnt_sparse,
+    dim=(d.nworld, m.qD_fullm_i.size),
+    inputs=[m.dof_bodyid, d.cdof, m.opt.timestep, m.qD_fullm_i, m.qD_fullm_j, Dcfrcbody, flg_subtract],
+    outputs=[out],
+  )
 
 
 @event_scope

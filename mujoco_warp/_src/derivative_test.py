@@ -865,24 +865,303 @@ class DerivativeTest(parameterized.TestCase):
     mjm.opt.integrator = mujoco.mjtIntegrator.mjINT_IMPLICIT
     mujoco.mj_step(mjm, mjd)
 
-    if jacobian == mujoco.mjtJacobian.mjJAC_SPARSE:
-      out_rne = wp.zeros((1, 1, m.nD), dtype=float)
-    else:
-      out_rne = wp.zeros(d.M.shape, dtype=float)
+    out_rne = wp.zeros((1, 1, m.nD), dtype=float)
+    derivative.deriv_rne_vel(m, d, out_rne)
 
-    derivative.rne_vel_deriv(m, d, out_rne)
-
-    if jacobian == mujoco.mjtJacobian.mjJAC_SPARSE:
-      mjw_rne = np.zeros((m.nv, m.nv))
-      for elem, (i, j) in enumerate(zip(m.qD_fullm_i.numpy(), m.qD_fullm_j.numpy())):
-        mjw_rne[i, j] = out_rne.numpy()[0, 0, elem]
-    else:
-      mjw_rne = out_rne.numpy()[0, : m.nv, : m.nv]
+    mjw_rne = np.zeros((m.nv, m.nv))
+    for elem, (i, j) in enumerate(zip(m.qD_fullm_i.numpy(), m.qD_fullm_j.numpy())):
+      mjw_rne[i, j] = out_rne.numpy()[0, 0, elem]
 
     mj_qDeriv = np.zeros((mjm.nv, mjm.nv))
     mujoco.mju_sparse2dense(mj_qDeriv, mjd.qDeriv, mjm.D_rownnz, mjm.D_rowadr, mjm.D_colind)
 
     _assert_eq(mjw_rne, -mjm.opt.timestep * mj_qDeriv, f"RNE {xml_name}")
+
+  def test_passive_derivatives(self):
+    """Tests derivatives for passive forces (joint and tendon stiffness/damping)."""
+    xml = """
+    <mujoco>
+      <option integrator="implicitfast"/>
+      <worldbody>
+        <body name="box">
+          <joint type="hinge" axis="0 1 0" stiffness="10" damping="1"/>
+          <geom type="sphere" size=".1" mass="1"/>
+          <site name="site1" pos="0 0 0.1"/>
+        </body>
+        <site name="site2" pos="0 0 1"/>
+      </worldbody>
+      <tendon>
+        <spatial stiffness="100" damping="10">
+          <site site="site1"/>
+          <site site="site2"/>
+        </spatial>
+      </tendon>
+      <keyframe>
+        <key qpos="0.5" qvel="2.0"/>
+      </keyframe>
+    </mujoco>
+    """
+    mjm, mjd, m, d = test_data.fixture(
+      xml=xml,
+      keyframe=0,
+    )
+
+    mujoco.mj_step(mjm, mjd)
+
+    out_smooth_vel = wp.zeros(d.M.shape, dtype=float)
+    forward.fwd_position(m, d, factorize=False)
+    forward.fwd_velocity(m, d)
+    mjw.deriv_smooth_vel(m, d, out_smooth_vel)
+
+    mjw_out = out_smooth_vel.numpy()[0, : m.nv, : m.nv]
+    mjw_out = np.tril(mjw_out) + np.tril(mjw_out, -1).T
+
+    mj_qDeriv = np.zeros((mjm.nv, mjm.nv))
+    mujoco.mju_sparse2dense(mj_qDeriv, mjd.qDeriv, mjm.D_rownnz, mjm.D_rowadr, mjm.D_colind)
+
+    mj_M = np.zeros((m.nv, m.nv))
+    if check_version("mujoco>=3.8.1.dev910242375"):
+      mujoco.mju_sym2dense(mj_M, mjd.M, mjm.M_rownnz, mjm.M_rowadr, mjm.M_colind)
+    else:
+      mujoco.mj_fullM(mjm, mj_M, mjd.qM)
+    expected_out = mj_M - mjm.opt.timestep * mj_qDeriv
+
+    self.assertFalse(np.any(np.isnan(mjw_out)))
+    _assert_eq(mjw_out, expected_out, "M - dt * qDeriv")
+
+  _DCMOTOR_XML = """
+    <mujoco>
+      <worldbody>
+        <body name="motor1" pos="0 0.1 0">
+          <joint name="slide1" type="slide" axis="0 0 1"/>
+          <geom size=".03"/>
+        </body>
+        <body name="motor2" pos="0 0.2 0">
+          <joint name="slide2" type="slide" axis="0 0 1"/>
+          <geom size=".03"/>
+        </body>
+        <body name="motor3" pos="0 0.3 0">
+          <joint name="slide3" type="slide" axis="0 0 1"/>
+          <geom size=".03"/>
+        </body>
+        <body name="motor4" pos="0 0.4 0">
+          <joint name="joint4"/>
+          <geom size=".03"/>
+        </body>
+        <body name="motor5" pos="0 0.5 0">
+          <joint name="slide5" type="slide" axis="0 0 1"/>
+          <geom size=".03"/>
+        </body>
+        <body name="motor6" pos="0 0.6 0">
+          <joint name="slide6" type="slide" axis="0 0 1"/>
+          <geom size=".03"/>
+        </body>
+        <body name="motor7" pos="0 0.7 0">
+          <joint name="slide7" type="slide" axis="0 0 1"/>
+          <geom size=".03"/>
+        </body>
+      </worldbody>
+      <actuator>
+        <dcmotor name="dc_bias" joint="slide1"
+                 motorconst="2.0" resistance="0.5"/>
+        <dcmotor name="dc_vel" joint="slide2"
+                 motorconst="1.0" resistance="1.0"
+                 input="velocity" controller="0 5"/>
+        <dcmotor name="dc_pos" joint="slide3"
+                 motorconst="1.0" resistance="1.0"
+                 input="position" controller="10 0 5"/>
+        <dcmotor name="dc_lugre" joint="joint4"
+                 motorconst="0.05" resistance="2.0"
+                 damping="0.001"
+                 lugre="1e4 100 0.005 0.008 0.1"/>
+        <dcmotor name="dc_stateful_v" joint="slide5"
+                 motorconst="2.0" resistance="0.5"
+                 inductance="0 0.001"/>
+        <dcmotor name="dc_stateful_pos" joint="slide6"
+                 motorconst="1.0" resistance="1.0"
+                 inductance="0 0.001"
+                 input="position" controller="10 0 5"/>
+        <dcmotor name="dc_stateful_vel" joint="slide7"
+                 motorconst="1.0" resistance="1.0"
+                 inductance="0 0.001"
+                 input="velocity" controller="5 0"/>
+      </actuator>
+      <keyframe>
+        <key qvel="1 2 3 4 5 6 7" ctrl=".1 .2 .3 .4 .5 .6 .7"/>
+      </keyframe>
+    </mujoco>
+  """
+
+  @parameterized.parameters(
+    mujoco.mjtJacobian.mjJAC_DENSE,
+    mujoco.mjtJacobian.mjJAC_SPARSE,
+  )
+  def test_smooth_vel_dcmotor(self, jacobian):
+    """Tests qDeriv parity with MuJoCo C for all DCMotor modes."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml=self._DCMOTOR_XML,
+      keyframe=0,
+      overrides={"opt.jacobian": jacobian},
+    )
+
+    mjm.opt.integrator = mujoco.mjtIntegrator.mjINT_IMPLICITFAST
+    mujoco.mj_step(mjm, mjd)
+
+    if jacobian == mujoco.mjtJacobian.mjJAC_SPARSE:
+      out = wp.zeros((1, 1, m.nC), dtype=float)
+    else:
+      out = wp.zeros(d.M.shape, dtype=float)
+
+    forward.fwd_position(m, d, factorize=False)
+    forward.fwd_velocity(m, d)
+    derivative.deriv_smooth_vel(m, d, out)
+
+    if jacobian == mujoco.mjtJacobian.mjJAC_SPARSE:
+      mjw_out = np.zeros((m.nv, m.nv))
+      qi = m.M_fullm_i.numpy()
+      qj = m.M_fullm_j.numpy()
+      for elem, (i, j) in enumerate(zip(qi, qj)):
+        mjw_out[i, j] = out.numpy()[0, 0, elem]
+    else:
+      mjw_out = out.numpy()[0, : m.nv, : m.nv]
+
+    mjw_out = np.tril(mjw_out) + np.tril(mjw_out, -1).T
+
+    mj_qDeriv = np.zeros((mjm.nv, mjm.nv))
+    mujoco.mju_sparse2dense(
+      mj_qDeriv,
+      mjd.qDeriv,
+      mjm.D_rownnz,
+      mjm.D_rowadr,
+      mjm.D_colind,
+    )
+
+    mj_M = np.zeros((m.nv, m.nv))
+    if check_version("mujoco>=3.8.1.dev910242375"):
+      mujoco.mju_sym2dense(mj_M, mjd.M, mjm.M_rownnz, mjm.M_rowadr, mjm.M_colind)
+    else:
+      mujoco.mj_fullM(mjm, mj_M, mjd.qM)
+    expected_out = mj_M - mjm.opt.timestep * mj_qDeriv
+
+    _assert_eq(mjw_out, expected_out, "M - dt * qDeriv DCMotor")
+
+  def test_dcmotor_stateful_analytical(self):
+    """Stateful DCMotor derivative matches analytical formula."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+    <mujoco>
+      <option timestep="0.002"/>
+      <worldbody>
+        <body>
+          <joint name="j" type="slide"/>
+          <geom type="sphere" size="0.1" mass="1"/>
+        </body>
+      </worldbody>
+      <actuator>
+        <dcmotor name="dc" joint="j" motorconst="2.0"
+                 resistance="0.5" inductance="0 0.001"
+                 input="position" controller="10 0 5"/>
+      </actuator>
+    </mujoco>
+    """,
+    )
+
+    # Set nonzero velocity and ctrl
+    mjd.qvel[0] = 1.0
+    mjd.ctrl[0] = 0.5
+    mujoco.mj_forward(mjm, mjd)
+    d = mjw.put_data(mjm, mjd)
+
+    out = wp.zeros((1, 1, m.nC), dtype=float)
+    forward.fwd_position(m, d, factorize=False)
+    forward.fwd_velocity(m, d)
+    derivative.deriv_smooth_vel(m, d, out)
+
+    # Expected: K*(dVdw - K)*(1 - exp(-h/te))/R
+    # K=2, R=0.5, te=0.001, h=0.002, kd=5, dVdw=-kd=-5
+    K, R, te, h, kd = 2.0, 0.5, 0.001, 0.002, 5.0
+    expected = K * (-kd - K) * (1 - np.exp(-h / te)) / R
+
+    # Extract diagonal
+    out_diag = out.numpy()[0, 0, 0]
+    dt = mjm.opt.timestep
+    qDeriv_diag = (1.0 - out_diag) / dt
+
+    np.testing.assert_allclose(
+      qDeriv_diag,
+      expected,
+      atol=1e-4,
+      err_msg="stateful DCMotor derivative vs formula",
+    )
+
+  def test_dcmotor_stateful_converges_to_stateless(self):
+    """Stateful DCMotor derivative converges to stateless as te->0."""
+    xml_stateless = """
+    <mujoco>
+      <option timestep="0.002"/>
+      <worldbody>
+        <body>
+          <joint name="j" type="slide"/>
+          <geom type="sphere" size="0.1" mass="1"/>
+        </body>
+      </worldbody>
+      <actuator>
+        <dcmotor name="dc" joint="j" motorconst="1.0"
+                 resistance="1.0" input="position"
+                 controller="10 0 5"/>
+      </actuator>
+    </mujoco>
+    """
+
+    xml_stateful = """
+    <mujoco>
+      <option timestep="0.002"/>
+      <worldbody>
+        <body>
+          <joint name="j" type="slide"/>
+          <geom type="sphere" size="0.1" mass="1"/>
+        </body>
+      </worldbody>
+      <actuator>
+        <dcmotor name="dc" joint="j" motorconst="1.0"
+                 resistance="1.0" inductance="0 1e-8"
+                 input="position" controller="10 0 5"/>
+      </actuator>
+    </mujoco>
+    """
+
+    # Stateless
+    mjm_sl, mjd_sl, m_sl, d_sl = test_data.fixture(xml=xml_stateless)
+    mjd_sl.qvel[0] = 1.0
+    mjd_sl.ctrl[0] = 0.5
+    mujoco.mj_forward(mjm_sl, mjd_sl)
+    d_sl = mjw.put_data(mjm_sl, mjd_sl)
+    out_sl = wp.zeros((1, 1, m_sl.nC), dtype=float)
+    forward.fwd_position(m_sl, d_sl, factorize=False)
+    forward.fwd_velocity(m_sl, d_sl)
+    derivative.deriv_smooth_vel(m_sl, d_sl, out_sl)
+
+    # Stateful (te ≈ 0)
+    mjm_sf, mjd_sf, m_sf, d_sf = test_data.fixture(xml=xml_stateful)
+    mjd_sf.qvel[0] = 1.0
+    mjd_sf.ctrl[0] = 0.5
+    mujoco.mj_forward(mjm_sf, mjd_sf)
+    d_sf = mjw.put_data(mjm_sf, mjd_sf)
+    out_sf = wp.zeros((1, 1, m_sf.nC), dtype=float)
+    forward.fwd_position(m_sf, d_sf, factorize=False)
+    forward.fwd_velocity(m_sf, d_sf)
+    derivative.deriv_smooth_vel(m_sf, d_sf, out_sf)
+
+    # Extract diagonals
+    val_sl = out_sl.numpy()[0, 0, 0]
+    val_sf = out_sf.numpy()[0, 0, 0]
+
+    np.testing.assert_allclose(
+      val_sf,
+      val_sl,
+      atol=1e-4,
+      err_msg="stateful should converge to stateless as te->0",
+    )
 
 
 if __name__ == "__main__":

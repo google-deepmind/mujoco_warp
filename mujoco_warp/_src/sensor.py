@@ -27,6 +27,7 @@ from mujoco_warp._src.collision_sdf import sdf
 from mujoco_warp._src.types import MJ_MAXCONPAIR
 from mujoco_warp._src.types import MJ_MAXVAL
 from mujoco_warp._src.types import MJ_MINVAL
+from mujoco_warp._src.types import TACTILE_DEPTH_SEMANTICS
 from mujoco_warp._src.types import ConeType
 from mujoco_warp._src.types import ConstraintType
 from mujoco_warp._src.types import ContactType
@@ -2261,18 +2262,24 @@ def _sensor_tactile(
     )
     vel_rel = vel_sensor - vel_other
 
-    kMaxDepth = 0.05
-    pressure = depth / wp.max(kMaxDepth - depth, MJ_MINVAL)
-    force = wp.mul(normal, pressure)
-
     forceT = wp.vec3(0.0, 0.0, 0.0)
-    forceT[0] = wp.dot(force, normal)
+    if wp.static(TACTILE_DEPTH_SEMANTICS):
+      forceT[0] = -depth
+    else:
+      kMaxDepth = 0.05
+      pressure = depth / wp.max(kMaxDepth - depth, MJ_MINVAL)
+      force = wp.mul(normal, pressure)
+      forceT[0] = wp.dot(force, normal)
+
     if has_frame:
       forceT[1] = wp.abs(wp.dot(vel_rel, tang1))
       forceT[2] = wp.abs(wp.dot(vel_rel, tang2))
 
     dim = sensor_dim[sensor_id] // 3
-    wp.atomic_add(sensordata_out, worldid, sensor_adr[sensor_id] + 0 * dim + vertid, forceT[0])
+    if wp.static(TACTILE_DEPTH_SEMANTICS):
+      wp.atomic_max(sensordata_out, worldid, sensor_adr[sensor_id] + 0 * dim + vertid, forceT[0])
+    else:
+      wp.atomic_add(sensordata_out, worldid, sensor_adr[sensor_id] + 0 * dim + vertid, forceT[0])
     wp.atomic_add(sensordata_out, worldid, sensor_adr[sensor_id] + 1 * dim + vertid, forceT[1])
     wp.atomic_add(sensordata_out, worldid, sensor_adr[sensor_id] + 2 * dim + vertid, forceT[2])
 

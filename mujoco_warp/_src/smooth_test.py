@@ -513,8 +513,72 @@ class SmoothTest(parameterized.TestCase):
       qLD = np.linalg.cholesky(qM).T
       _assert_eq(d.qLD.numpy()[0], qLD, "qLD upper")
 
-  def test_tendon_armature(self):
-    mjm, mjd, m, d = test_data.fixture("tendon/armature.xml", keyframe=0)
+  def test_factor_solve_lu(self):
+    """Tests factor_solve_lu with a sparse matrix representing a tree."""
+    xml = """
+    <mujoco>
+      <option>
+        <flag constraint="disable"/>
+      </option>
+      <worldbody>
+        <body>
+          <joint type="slide" axis="0 0 1"/>
+          <geom size=".03"/>
+          <body>
+            <joint axis="0 1 0"/>
+            <geom type="capsule" size=".01" fromto="0 0 0 .1 0 0"/>
+          </body>
+        </body>
+        <body pos="0 0.1 0">
+          <joint name="slide" type="slide" axis="0 0 1"/>
+          <geom size=".03"/>
+          <body>
+            <joint name="hinge" axis="0 1 0"/>
+            <geom type="capsule" size=".01" fromto="0 0 0 .1 0 0"/>
+          </body>
+        </body>
+      </worldbody>
+    </mujoco>
+    """
+    mjm, mjd, m, d = test_data.fixture(xml=xml)
+
+    nv = m.nv
+    nD = m.nD
+
+    # Create a random non-symmetric diagonally dominant matrix
+    np.random.seed(42)
+    A = np.random.rand(nv, nv)
+    A += np.diag(np.sum(np.abs(A), axis=1) + 1.0)
+
+    # Zero out elements not in D-structure to enforce sparsity
+    D_rowadr = m.D_rowadr.numpy()
+    D_rownnz = m.D_rownnz.numpy()
+    D_colind = m.D_colind.numpy()
+
+    A_sparse = np.zeros((nv, nv))
+    qLU_np = np.zeros((1, 1, nD), dtype=np.float32)
+
+    for i in range(nv):
+      row_start = D_rowadr[i]
+      row_nnz = D_rownnz[i]
+      for k in range(row_nnz):
+        j = D_colind[row_start + k]
+        A_sparse[i, j] = A[i, j]
+        qLU_np[0, 0, row_start + k] = A[i, j]
+
+    wp.copy(d.qLU, wp.array(qLU_np, dtype=float))
+
+    vec = wp.ones((1, nv), dtype=float)
+    res = wp.zeros((1, nv), dtype=float)
+
+    mjw._src.smooth.factor_solve_lu(m, d, d.qLU, res, vec)
+
+    expected_res = np.linalg.solve(A_sparse, vec.numpy()[0])
+    _assert_eq(res.numpy()[0], expected_res, "qLU \\ 1 (sparse)")
+
+  @parameterized.parameters(mujoco.mjtJacobian.mjJAC_SPARSE, mujoco.mjtJacobian.mjJAC_DENSE)
+  def test_tendon_armature(self, jacobian):
+    mjm, mjd, m, d = test_data.fixture("tendon/armature.xml", keyframe=0, overrides={"opt.jacobian": jacobian})
 
     # M
     d.M.fill_(wp.inf)
@@ -522,12 +586,18 @@ class SmoothTest(parameterized.TestCase):
     mjw._src.smooth.crb(m, d)
     mjw._src.smooth.tendon_armature(m, d)
 
-    M = np.zeros((mjm.nv, mjm.nv))
-    if check_version("mujoco>=3.8.1.dev910242375"):
-      mujoco.mju_sym2dense(M, mjd.M, mjm.M_rownnz, mjm.M_rowadr, mjm.M_colind)
+    if jacobian == mujoco.mjtJacobian.mjJAC_SPARSE:
+      if check_version("mujoco>=3.8.1.dev910242375"):
+        _assert_eq(d.M.numpy()[0, 0], mjd.M, "M")
+      else:
+        _assert_eq(d.M.numpy()[0, 0], mjd.qM[mjm.mapM2M], "M")
     else:
-      mujoco.mj_fullM(mjm, M, mjd.qM)
-    _assert_eq(d.M.numpy()[0, : mjm.nv, : mjm.nv], M, "M")
+      M = np.zeros((mjm.nv, mjm.nv))
+      if check_version("mujoco>=3.8.1.dev910242375"):
+        mujoco.mju_sym2dense(M, mjd.M, mjm.M_rownnz, mjm.M_rowadr, mjm.M_colind)
+      else:
+        mujoco.mj_fullM(mjm, M, mjd.qM)
+      _assert_eq(d.M.numpy()[0, : mjm.nv, : mjm.nv], M, "M")
 
     # qfrc_bias
     d.qfrc_bias.fill_(wp.inf)

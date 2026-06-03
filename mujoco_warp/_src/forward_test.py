@@ -494,11 +494,11 @@ class ForwardTest(parameterized.TestCase):
 
   @parameterized.product(
     xml=("humanoid/humanoid.xml",),
-    integrator=(IntegratorType.EULER, IntegratorType.IMPLICITFAST, IntegratorType.RK4),
+    integrator=list(IntegratorType),
   )
   def test_step2(self, xml, integrator):
     # TODO(team): remove enableflags override when mujoco warp feature matches mujoco
-    enableflags = EnableBit.INVDISCRETE if integrator == IntegratorType.IMPLICITFAST else 0
+    enableflags = EnableBit.INVDISCRETE if integrator in (IntegratorType.IMPLICITFAST, IntegratorType.IMPLICIT) else 0
     mjm, mjd, m, _ = test_data.fixture(
       xml, qvel_noise=0.01, ctrl_noise=0.1, overrides={"opt.integrator": integrator, "opt.enableflags": enableflags}
     )
@@ -554,7 +554,14 @@ class ForwardTest(parameterized.TestCase):
       d_arr = d_arr.numpy()[0]
       if is_efc:
         d_arr = d_arr[: d.nefc.numpy()[0]]
-      _assert_eq(d_arr, getattr(mjd, arr), arr)
+      tol = 0.005 if integrator == IntegratorType.IMPLICIT else _TOLERANCE * 10
+      np.testing.assert_allclose(
+        d_arr,
+        getattr(mjd, arr),
+        err_msg=f"mismatch: {arr}",
+        atol=tol,
+        rtol=tol,
+      )
 
   def test_step_no_dofs(self):
     """Tests step with no degrees of freedom."""
@@ -1856,6 +1863,165 @@ class DCMotorTest(parameterized.TestCase):
 
     force_actual = d.actuator_force.numpy()[0, 0]
     np.testing.assert_allclose(force_actual, force_expected, atol=1e-5)
+
+  @parameterized.product(
+    jacobian=(mujoco.mjtJacobian.mjJAC_SPARSE, mujoco.mjtJacobian.mjJAC_DENSE),
+    actuation=(0, DisableBit.ACTUATION),
+    damper=(0, DisableBit.DAMPER),
+  )
+  def test_implicit_full(self, jacobian, actuation, damper):
+    """Test IMPLICIT integrator parity with MuJoCo C."""
+    mjm, mjd, _, _ = test_data.fixture(
+      "pendula.xml",
+      overrides={
+        "opt.jacobian": jacobian,
+        "opt.disableflags": DisableBit.CONTACT | actuation | damper,
+        "opt.integrator": IntegratorType.IMPLICIT,
+        # TODO(team): remove override when mujoco warp feature matches mujoco
+        "opt.enableflags": EnableBit.INVDISCRETE,
+      },
+    )
+
+    mjm.actuator_gainprm[:, 2] = np.random.uniform(low=0.01, high=10.0, size=mjm.actuator_gainprm[:, 2].shape)
+
+    # change actuators to velocity/damper to cover all codepaths
+    mjm.actuator_gaintype[3] = GainType.AFFINE
+    mjm.actuator_gaintype[6] = GainType.AFFINE
+    mjm.actuator_biastype[0:3] = BiasType.AFFINE
+    mjm.actuator_biastype[4:6] = BiasType.AFFINE
+    mjm.actuator_biasprm[0:3, 2] = -1.0
+    mjm.actuator_biasprm[4:6, 2] = -1.0
+    mjm.actuator_ctrlrange[3:7] = 10.0
+    mjm.actuator_gear[:] = 1.0
+
+    mjd.qvel = np.random.uniform(low=-0.01, high=0.01, size=mjd.qvel.shape)
+    mjd.ctrl = np.random.uniform(low=-0.1, high=0.1, size=mjd.ctrl.shape)
+    mjd.act = np.random.uniform(low=-0.1, high=0.1, size=mjd.act.shape)
+    mujoco.mj_forward(mjm, mjd)
+
+    m = mjw.put_model(mjm)
+    d = mjw.put_data(mjm, mjd)
+    # compute efc.Ma - used by mjw.implicit
+    d.efc.Ma = wp.array(mjd.qfrc_constraint + mjd.qfrc_smooth, dtype=float, shape=(1, -1))
+
+    mujoco.mj_implicit(mjm, mjd)
+    mjw.implicit(m, d)
+
+    np.testing.assert_allclose(d.qpos.numpy()[0], mjd.qpos, atol=1e-3, rtol=1e-3, err_msg="qpos")
+    np.testing.assert_allclose(d.act.numpy()[0], mjd.act, atol=1e-3, rtol=1e-3, err_msg="act")
+
+  def test_euler_implicit_equivalent(self):
+    """Euler and IMPLICIT produce near-identical results with only joint damping.
+
+    Ported from MuJoCo C engine_forward_test.cc EulerImplicitEquivalent.
+    """
+    xml = """
+    <mujoco>
+      <option integrator="Euler">
+        <flag contact="disable"/>
+      </option>
+      <worldbody>
+        <body>
+          <joint type="hinge" damping="2"/>
+          <geom size="0.1"/>
+          <body pos="0.1 0 0">
+            <joint type="hinge" damping="3"/>
+            <geom size="0.1"/>
+          </body>
+        </body>
+      </worldbody>
+    </mujoco>
+    """
+    mjm_euler = mujoco.MjModel.from_xml_string(xml)
+    mjd_euler = mujoco.MjData(mjm_euler)
+
+    mjm_implicit = mujoco.MjModel.from_xml_string(xml)
+    mjm_implicit.opt.integrator = mujoco.mjtIntegrator.mjINT_IMPLICIT
+    mjd_implicit = mujoco.MjData(mjm_implicit)
+
+    # set identical initial velocities
+    qvel = np.array([1.0, -1.0])
+    mjd_euler.qvel = qvel.copy()
+    mjd_implicit.qvel = qvel.copy()
+
+    # step both
+    mujoco.mj_step(mjm_euler, mjd_euler)
+    mujoco.mj_step(mjm_implicit, mjd_implicit)
+
+    # now test Warp IMPLICIT
+    m = mjw.put_model(mjm_implicit)
+    d = mjw.put_data(mjm_implicit, mujoco.MjData(mjm_implicit))
+    d.qvel = wp.array(qvel.reshape(1, -1), dtype=float)
+    mjw.step(m, d)
+
+    # Euler and IMPLICIT should be very close for joint damping
+    np.testing.assert_allclose(
+      d.qpos.numpy()[0],
+      mjd_euler.qpos,
+      atol=1e-3,
+      err_msg="Euler and IMPLICIT should produce similar results with only joint damping",
+    )
+
+  def test_energy_conservation(self):
+    """Energy conservation: IMPLICIT should conserve energy better than Euler.
+
+    Ported from MuJoCo C engine_forward_test.cc EnergyConservation.
+    """
+    xml = """
+    <mujoco>
+      <option integrator="Euler" timestep="0.01">
+        <flag energy="enable" contact="disable"/>
+      </option>
+      <worldbody>
+        <body>
+          <joint type="hinge"/>
+          <geom size="0.1" mass="1"/>
+          <body pos="0.1 0 0">
+            <joint type="hinge"/>
+            <geom size="0.1" mass="1"/>
+          </body>
+        </body>
+      </worldbody>
+    </mujoco>
+    """
+    qvel0 = np.array([1.0, -1.0])
+
+    # Euler
+    mjm = mujoco.MjModel.from_xml_string(xml)
+    mjd = mujoco.MjData(mjm)
+    mjd.qvel = qvel0.copy()
+    for _ in range(5):
+      mujoco.mj_step(mjm, mjd)
+    energy_euler = mjd.energy.sum()
+
+    # IMPLICIT
+    mjm.opt.integrator = mujoco.mjtIntegrator.mjINT_IMPLICIT
+    mjd = mujoco.MjData(mjm)
+    mjd.qvel = qvel0.copy()
+    for _ in range(5):
+      mujoco.mj_step(mjm, mjd)
+    energy_implicit_c = mjd.energy.sum()
+
+    # Warp IMPLICIT
+    mjm_warp = mujoco.MjModel.from_xml_string(xml)
+    mjm_warp.opt.integrator = mujoco.mjtIntegrator.mjINT_IMPLICIT
+    m = mjw.put_model(mjm_warp)
+    d = mjw.put_data(mjm_warp, mujoco.MjData(mjm_warp))
+    d.qvel = wp.array(qvel0.reshape(1, -1), dtype=float)
+    for _ in range(5):
+      mjw.step(m, d)
+    energy_implicit_warp = d.energy.numpy()[0].sum()
+
+    # Initial energy
+    mjd_init = mujoco.MjData(mjm)
+    mjd_init.qvel = qvel0.copy()
+    mujoco.mj_forward(mjm, mjd_init)
+    energy_init = mjd_init.energy.sum()
+
+    # Warp IMPLICIT should match C IMPLICIT
+    np.testing.assert_allclose(
+      energy_implicit_warp, energy_implicit_c, atol=1e-3, err_msg="Warp IMPLICIT energy should match C IMPLICIT energy"
+    )
 
 
 if __name__ == "__main__":

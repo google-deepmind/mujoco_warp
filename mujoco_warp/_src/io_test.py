@@ -1995,6 +1995,42 @@ class IOTest(parameterized.TestCase):
     self.assertTrue(rc.use_textures, "use_textures")
     self.assertEqual(rc.textures.shape, (mjm.ntex,), "textures")
 
+  def test_render_context_lighting_flags(self):
+    mjm, _, _, _ = test_data.fixture(
+      xml="""
+      <mujoco>
+        <visual>
+          <headlight active="0" ambient="0.2 0.3 0.4" diffuse="0.5 0.6 0.7" specular="0.8 0.9 1.0"/>
+        </visual>
+        <worldbody>
+          <light pos="0 0 3" dir="0 0 -1" attenuation="1 0.1 0.05" cutoff="25"/>
+          <geom type="sphere" size="0.3"/>
+        </worldbody>
+      </mujoco>
+      """
+    )
+    rc = mjwarp.create_render_context(
+      mjm,
+      cam_res=(32, 32),
+      render_rgb=True,
+      use_shadows=False,
+      use_ambient_lighting=False,
+      enable_specular=False,
+      enable_emission=False,
+      enable_per_light_ambient=False,
+    )
+    self.assertFalse(rc.use_shadows)
+    self.assertFalse(rc.use_ambient_lighting)
+    self.assertFalse(rc.enable_specular)
+    self.assertFalse(rc.enable_emission)
+    self.assertFalse(rc.enable_per_light_ambient)
+    self.assertFalse(rc.headlight_active)
+    self.assertFalse(rc.light_attenuation_is_default)
+    self.assertTrue(rc.has_spot_lights)
+    _assert_eq(np.asarray(rc.headlight_ambient), mjm.vis.headlight.ambient, "headlight_ambient")
+    _assert_eq(np.asarray(rc.headlight_diffuse), mjm.vis.headlight.diffuse, "headlight_diffuse")
+    _assert_eq(np.asarray(rc.headlight_specular), mjm.vis.headlight.specular, "headlight_specular")
+
   def test_check_toolkit_driver_warns(self):
     """Tests that check_toolkit_driver warns."""
     mock_device = mock.MagicMock()

@@ -14,7 +14,6 @@
 # ==============================================================================
 
 from math import ceil
-from math import sqrt
 
 import warp as wp
 
@@ -97,6 +96,7 @@ def create_island_solver_context(m: types.Model, d: types.Data) -> IslandSolverC
     done=wp.empty((nworld, ntree), dtype=bool),
     solver_niter=wp.empty((nworld, ntree), dtype=int),
     beta=wp.empty((nworld, ntree), dtype=float) if alloc_island_cg else wp.empty((nworld, 0), dtype=float),
+    beta_den=wp.empty((nworld, ntree), dtype=float) if alloc_island_cg else wp.empty((nworld, 0), dtype=float),
     alpha=wp.empty((nworld, ntree), dtype=float),
     Ma=wp.empty((nworld, nv), dtype=float),
   )
@@ -137,6 +137,7 @@ def create_solver_context(m: types.Model, d: types.Data) -> SolverContext:
     prev_grad=wp.empty((nworld, nv), dtype=float),
     prev_Mgrad=wp.empty((nworld, nv), dtype=float),
     beta=wp.empty((nworld,), dtype=float),
+    beta_den=wp.empty((nworld,), dtype=float),
     h=wp.zeros((nworld, nv_pad, nv_pad), dtype=float) if alloc_h else wp.empty((nworld, 0, 0), dtype=float),
     hfactor=wp.zeros((nworld, nv_pad, nv_pad), dtype=float) if alloc_hfactor else wp.empty((nworld, 0, 0), dtype=float),
     changed_efc_ids=wp.empty((nworld, njmax), dtype=int) if alloc_h else wp.empty((nworld, 0), dtype=int),
@@ -2294,76 +2295,6 @@ def active_check(tid: int, threshold: int) -> float:
 
 
 @cache_kernel
-def update_gradient_JTDAJ_sparse_tiled(tile_size: int, njmax: int):
-  TILE_SIZE = tile_size
-
-  @wp.kernel(module="unique", enable_backward=False)
-  def kernel(
-    # Data in:
-    nefc_in: wp.array[int],
-    efc_J_in: wp.array3d[float],
-    efc_D_in: wp.array2d[float],
-    efc_state_in: wp.array2d[int],
-    # In:
-    ctx_done_in: wp.array[bool],
-    # Out:
-    ctx_h_out: wp.array3d[float],
-  ):
-    worldid, elementid = wp.tid()
-
-    if ctx_done_in[worldid]:
-      return
-
-    nefc = nefc_in[worldid]
-
-    # Upper-triangle tile index: elementid -> (row, col) where row <= col.
-    col = (int(sqrt(float(1 + 8 * elementid))) - 1) // 2
-    row = elementid - (col * (col + 1)) // 2
-
-    offset_row = row * TILE_SIZE
-    offset_col = col * TILE_SIZE
-
-    sum_val = wp.tile_zeros(shape=(TILE_SIZE, TILE_SIZE), dtype=wp.float32)
-
-    # Each tile processes looping over all constraints, producing 1 output tile
-    for k in range(0, njmax, TILE_SIZE):
-      if k >= nefc:
-        break
-
-      # AD: leaving bounds-check disabled here because I'm not entirely sure that
-      # everything always hits the fast path. The padding takes care of any
-      # potential OOB accesses.
-      J_krow = wp.tile_load(efc_J_in[worldid], shape=(TILE_SIZE, TILE_SIZE), offset=(k, offset_row), bounds_check=False)
-
-      if offset_row != offset_col:
-        J_kcol = wp.tile_load(efc_J_in[worldid], shape=(TILE_SIZE, TILE_SIZE), offset=(k, offset_col), bounds_check=False)
-      else:
-        wp.tile_assign(J_kcol, J_krow, (0, 0))
-
-      D_k = wp.tile_load(efc_D_in[worldid], shape=TILE_SIZE, offset=k, bounds_check=False)
-      state = wp.tile_load(efc_state_in[worldid], shape=TILE_SIZE, offset=k, bounds_check=False)
-
-      D_k = wp.tile_map(state_check, D_k, state)
-
-      # force unused elements to be zero
-      tid_tile = wp.tile_arange(TILE_SIZE, dtype=int)
-      threshold_tile = wp.tile_ones(shape=TILE_SIZE, dtype=int) * (nefc - k)
-
-      active_tile = wp.tile_map(active_check, tid_tile, threshold_tile)
-      D_k = wp.tile_map(wp.mul, active_tile, D_k)
-
-      J_krow = wp.tile_map(wp.mul, wp.tile_transpose(J_krow), wp.tile_broadcast(D_k, shape=(TILE_SIZE, TILE_SIZE)))
-
-      sum_val += wp.tile_matmul(J_krow, J_kcol)
-
-    # AD: setting bounds_check to True explicitly here because for some reason it was
-    # slower to disable it.
-    wp.tile_store(ctx_h_out[worldid], sum_val, offset=(offset_row, offset_col), bounds_check=True)
-
-  return kernel
-
-
-@cache_kernel
 def update_gradient_JTDAJ_dense_tiled(nv_pad: int, tile_size: int, njmax: int):
   if njmax < tile_size:
     tile_size = njmax
@@ -3122,14 +3053,45 @@ def solve_prev_grad_Mgrad(
 
 
 @wp.kernel
-def solve_beta(
-  # Model:
-  nv: int,
+def solve_beta_zero(
+  # Out:
+  ctx_beta_num_out: wp.array[float],
+  ctx_beta_den_out: wp.array[float],
+):
+  worldid = wp.tid()
+  ctx_beta_num_out[worldid] = 0.0
+  ctx_beta_den_out[worldid] = 0.0
+
+
+@wp.kernel
+def solve_beta_accumulate(
   # In:
   ctx_grad_in: wp.array2d[float],
   ctx_Mgrad_in: wp.array2d[float],
   ctx_prev_grad_in: wp.array2d[float],
   ctx_prev_Mgrad_in: wp.array2d[float],
+  ctx_done_in: wp.array[bool],
+  # Out:
+  ctx_beta_num_out: wp.array[float],
+  ctx_beta_den_out: wp.array[float],
+):
+  worldid, dofid = wp.tid()
+
+  if ctx_done_in[worldid]:
+    return
+
+  prev_Mgrad = ctx_prev_Mgrad_in[worldid, dofid]
+  num = ctx_grad_in[worldid, dofid] * (ctx_Mgrad_in[worldid, dofid] - prev_Mgrad)
+  den = ctx_prev_grad_in[worldid, dofid] * prev_Mgrad
+  wp.atomic_add(ctx_beta_num_out, worldid, num)
+  wp.atomic_add(ctx_beta_den_out, worldid, den)
+
+
+@wp.kernel
+def solve_beta_finalize(
+  # In:
+  ctx_beta_num_in: wp.array[float],
+  ctx_beta_den_in: wp.array[float],
   ctx_done_in: wp.array[bool],
   # Out:
   ctx_beta_out: wp.array[float],
@@ -3139,14 +3101,7 @@ def solve_beta(
   if ctx_done_in[worldid]:
     return
 
-  beta_num = float(0.0)
-  beta_den = float(0.0)
-  for dofid in range(nv):
-    prev_Mgrad = ctx_prev_Mgrad_in[worldid][dofid]
-    beta_num += ctx_grad_in[worldid, dofid] * (ctx_Mgrad_in[worldid, dofid] - prev_Mgrad)
-    beta_den += ctx_prev_grad_in[worldid, dofid] * prev_Mgrad
-
-  ctx_beta_out[worldid] = wp.max(0.0, beta_num / wp.max(types.MJ_MINVAL, beta_den))
+  ctx_beta_out[worldid] = wp.max(0.0, ctx_beta_num_in[worldid] / wp.max(types.MJ_MINVAL, ctx_beta_den_in[worldid]))
 
 
 @wp.kernel
@@ -3265,9 +3220,20 @@ def _solver_iteration(
   # polak-ribiere
   if m.opt.solver == types.SolverType.CG:
     wp.launch(
-      solve_beta,
+      solve_beta_zero,
       dim=d.nworld,
-      inputs=[m.nv, ctx.grad, ctx.Mgrad, ctx.prev_grad, ctx.prev_Mgrad, ctx.done],
+      outputs=[ctx.beta, ctx.beta_den],
+    )
+    wp.launch(
+      solve_beta_accumulate,
+      dim=(d.nworld, m.nv),
+      inputs=[ctx.grad, ctx.Mgrad, ctx.prev_grad, ctx.prev_Mgrad, ctx.done],
+      outputs=[ctx.beta, ctx.beta_den],
+    )
+    wp.launch(
+      solve_beta_finalize,
+      dim=d.nworld,
+      inputs=[ctx.beta, ctx.beta_den, ctx.done],
       outputs=[ctx.beta],
     )
 
@@ -4437,42 +4403,77 @@ def solve_prev_grad_Mgrad_island(
 
 
 @wp.kernel
-def solve_beta_island(
-  # Data in:
-  nisland_in: wp.array[int],
-  island_nv_in: wp.array2d[int],
+def solve_beta_island_zero(
   # In:
-  island_idofadr_in: wp.array2d[int],
+  nisland_in: wp.array[int],
+  # Out:
+  island_beta_num_out: wp.array2d[float],
+  island_beta_den_out: wp.array2d[float],
+):
+  """Zero Polak-Ribière numerator and denominator per island."""
+  worldid, islandid = wp.tid()
+
+  if islandid >= nisland_in[worldid]:
+    return
+
+  island_beta_num_out[worldid, islandid] = 0.0
+  island_beta_den_out[worldid, islandid] = 0.0
+
+
+@wp.kernel
+def solve_beta_island_accumulate(
+  # Data in:
+  nidof_in: wp.array[int],
+  # In:
+  idof_islandid_in: wp.array2d[int],
   grad_in: wp.array2d[float],
   Mgrad_in: wp.array2d[float],
   prev_grad_in: wp.array2d[float],
   prev_Mgrad_in: wp.array2d[float],
   island_done_in: wp.array2d[bool],
   # Out:
+  island_beta_num_out: wp.array2d[float],
+  island_beta_den_out: wp.array2d[float],
+):
+  """Parallel Polak-Ribière beta accumulation per island DOF."""
+  worldid, idofid = wp.tid()
+
+  if idofid >= nidof_in[worldid]:
+    return
+
+  islandid = idof_islandid_in[worldid, idofid]
+  if islandid < 0:
+    return
+  if island_done_in[worldid, islandid]:
+    return
+
+  pMg = prev_Mgrad_in[worldid, idofid]
+  num = grad_in[worldid, idofid] * (Mgrad_in[worldid, idofid] - pMg)
+  den = prev_grad_in[worldid, idofid] * pMg
+  wp.atomic_add(island_beta_num_out, worldid, islandid, num)
+  wp.atomic_add(island_beta_den_out, worldid, islandid, den)
+
+
+@wp.kernel
+def solve_beta_island_finalize(
+  # Data in:
+  nisland_in: wp.array[int],
+  # In:
+  island_beta_num_in: wp.array2d[float],
+  island_beta_den_in: wp.array2d[float],
+  island_done_in: wp.array2d[bool],
+  # Out:
   island_beta_out: wp.array2d[float],
 ):
-  """Polak-Ribière beta per island."""
+  """Finalize Polak-Ribière beta per island."""
   worldid, islandid = wp.tid()
 
   if islandid >= nisland_in[worldid]:
     return
 
-  if island_done_in[worldid, islandid]:
-    island_beta_out[worldid, islandid] = 0.0
-    return
-
-  idofadr = island_idofadr_in[worldid, islandid]
-  inv = island_nv_in[worldid, islandid]
-
-  beta_num = float(0.0)
-  beta_den = float(0.0)
-  for i in range(inv):
-    idof = idofadr + i
-    pMg = prev_Mgrad_in[worldid, idof]
-    beta_num += grad_in[worldid, idof] * (Mgrad_in[worldid, idof] - pMg)
-    beta_den += prev_grad_in[worldid, idof] * pMg
-
-  island_beta_out[worldid, islandid] = wp.max(0.0, beta_num / wp.max(types.MJ_MINVAL, beta_den))
+  island_beta_out[worldid, islandid] = wp.max(
+    0.0, island_beta_num_in[worldid, islandid] / wp.max(types.MJ_MINVAL, island_beta_den_in[worldid, islandid])
+  )
 
 
 @wp.kernel
@@ -5441,18 +5442,29 @@ def _solver_iteration_island(
   # Polak-Ribière beta (CG only)
   if is_cg:
     wp.launch(
-      solve_beta_island,
+      solve_beta_island_zero,
       dim=(d.nworld, m.ntree),
+      inputs=[d.nisland],
+      outputs=[ctx.beta, ctx.beta_den],
+    )
+    wp.launch(
+      solve_beta_island_accumulate,
+      dim=(d.nworld, m.nv),
       inputs=[
-        d.nisland,
-        d.island_nv,
-        d.island_dofadr,
+        d.nidof,
+        d.dof_islandid,
         ctx.grad,
         ctx.Mgrad,
         ctx.prev_grad,
         ctx.prev_Mgrad,
         ctx.done,
       ],
+      outputs=[ctx.beta, ctx.beta_den],
+    )
+    wp.launch(
+      solve_beta_island_finalize,
+      dim=(d.nworld, m.ntree),
+      inputs=[d.nisland, ctx.beta, ctx.beta_den, ctx.done],
       outputs=[ctx.beta],
     )
 

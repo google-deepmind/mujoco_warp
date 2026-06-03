@@ -127,11 +127,10 @@ def _assemble_benchmark(bm: dict):
 
 def _run_benchmark(bm: dict, input_dir: Path) -> dict:
   """Run a single benchmark via uv, returning parsed JSON."""
-  mjcf_path = Path(_ARGS.assets_root) / bm["name"] / bm["mjcf"]
+  benchmark_root = Path(_ARGS.assets_root) / bm["name"]
   cmd = [
     "mjwarp-testspeed",
-    mjcf_path.as_posix(),
-    f"--nworld={bm['nworld']}",
+    (benchmark_root / bm["mjcf"]).as_posix(),
     f"--clear_warp_cache={_ARGS.clear_warp_cache}",
     "--format=short",
     "--event_trace=true",
@@ -139,12 +138,11 @@ def _run_benchmark(bm: dict, input_dir: Path) -> dict:
     "--measure_solver=true",
     "--measure_alloc=true",
   ]
-  for field in ("nconmax", "njmax", "function", "nstep", "render_width", "render_height", "render_rgb", "render_depth"):
-    if field in bm:
+  for field in bm:
+    if field == "replay":
+      cmd.append(f"--replay={(benchmark_root / bm['replay'])}")
+    elif field not in ("name", "assets", "mjcf", "_dir"):
       cmd.append(f"--{field}={bm[field]}")
-  if "replay" in bm:
-    replay_path = Path(_ARGS.assets_root) / bm["name"] / bm["replay"]
-    cmd.append(f"--replay={replay_path.as_posix()}")
 
   result = _uv_run(*cmd, cwd=input_dir)
 
@@ -161,18 +159,17 @@ def _run_benchmark(bm: dict, input_dir: Path) -> dict:
 
 def _view_benchmark(bm: dict, input_dir: Path):
   """Launch mjwarp-viewer for a single benchmark."""
-  mjcf_path = Path(_ARGS.assets_root) / bm["name"] / bm["mjcf"]
+  benchmark_root = Path(_ARGS.assets_root) / bm["name"]
   cmd = [
     "mjwarp-viewer",
-    mjcf_path.as_posix(),
+    (benchmark_root / bm["mjcf"]).as_posix(),
     "--nworld=1",
   ]
-  for field in ("nconmax", "njmax"):
+  for field in ("nconmax", "nccdmax", "njmax"):
     if field in bm:
       cmd.append(f"--{field}={bm[field]}")
   if "replay" in bm:
-    replay_path = Path(_ARGS.assets_root) / bm["name"] / bm["replay"]
-    cmd.append(f"--replay={replay_path.as_posix()}")
+    cmd.append(f"--replay={(benchmark_root / bm['replay'])}")
 
   log.info("Command: uv run %s", " ".join(cmd))
   subprocess.run(("uv", "run") + tuple(cmd), cwd=input_dir, check=True)
