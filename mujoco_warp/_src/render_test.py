@@ -240,7 +240,7 @@ class RenderTest(parameterized.TestCase):
   @absltest.skipIf(not _HAS_RENDERER, "MuJoCo rendering requires OpenGL")
   def test_segmentation_matches_mujoco(self):
     """Segmentation should match native MuJoCo's `(object_id, object_type)` output."""
-    mjm, mjd, m, d = test_data.fixture("primitives.xml", nworld=1)
+    mjm, mjd, m, d = test_data.fixture("primitives.xml", nworld=1, overrides={"vis.quality.offsamples": 0})
     cam_w, cam_h = 32, 32
 
     rc = mjw.create_render_context(
@@ -263,7 +263,7 @@ class RenderTest(parameterized.TestCase):
   @absltest.skipIf(not _HAS_RENDERER, "MuJoCo rendering requires OpenGL")
   def test_depth_matches_mujoco(self):
     """Depth values should match native MuJoCo (planar depth, not Euclidean)."""
-    mjm, mjd, m, d = test_data.fixture("primitives.xml", nworld=1)
+    mjm, mjd, m, d = test_data.fixture("primitives.xml", nworld=1, overrides={"vis.quality.offsamples": 0})
     cam_w, cam_h = 32, 32
 
     # mjwarp depth
@@ -369,7 +369,7 @@ class RenderTest(parameterized.TestCase):
   def test_backface_cull_matches_mujoco(self, asset: str, enclosure: str):
     """Backface-cull behavior must match native MuJoCo for every geom type."""
     xml = self._BACKFACE_CULL_SCENE.format(asset=asset, enclosure=enclosure)
-    mjm, mjd, m, d = test_data.fixture(xml=xml, nworld=1)
+    mjm, mjd, m, d = test_data.fixture(xml=xml, nworld=1, overrides={"vis.quality.offsamples": 0})
 
     cam_w, cam_h = 16, 16
     rc = mjw.create_render_context(
