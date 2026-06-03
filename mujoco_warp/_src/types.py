@@ -2101,9 +2101,6 @@ class InverseContext:
 
   Jaref: wp.array2d[float]
   search_dot: wp.array[float]
-  gauss: wp.array[float]
-  cost: wp.array[float]
-  prev_cost: wp.array[float]
   done: wp.array[bool]
   changed_efc_ids: wp.array2d[int]
   changed_efc_count: wp.array[int]
@@ -2144,9 +2141,6 @@ class SolverContext:
 
   Jaref: wp.array2d[float]
   search_dot: wp.array[float]
-  gauss: wp.array[float]
-  cost: wp.array[float]
-  prev_cost: wp.array[float]
   done: wp.array[bool]
   grad: wp.array2d[float]
   grad_dot: wp.array[float]
@@ -2157,6 +2151,7 @@ class SolverContext:
   quad: wp.array2d[wp.vec3]
   quad_gauss: wp.array[wp.vec3]
   alpha: wp.array[float]
+  improvement: wp.array[float]
   prev_grad: wp.array2d[float]
   prev_Mgrad: wp.array2d[float]
   beta: wp.array[float]

@@ -73,16 +73,15 @@ class SolverTest(parameterized.TestCase):
         overrides={"opt.solver": solver_, "opt.cone": cone, "opt.jacobian": jacobian, "opt.iterations": 0},
       )
 
-      def cost(qacc):
+      def update_constraints(qacc):
         jaref = np.zeros(mjd.nefc, dtype=float)
         cost = np.zeros(1)
         mujoco.mj_mulJacVec(mjm, mjd, jaref, qacc)
         mujoco.mj_constraintUpdate(mjm, mjd, jaref - mjd.efc_aref, cost, 0)
-        return cost
 
-      mjd_cost = cost(mjd.qacc)
+      update_constraints(mjd.qacc)
 
-      # solve with 0 iterations just initializes constraints and costs and then exits
+      # solve with 0 iterations just initializes constraints and then exits
       d.efc.force.fill_(wp.inf)
       d.qfrc_constraint.fill_(wp.inf)
       ctx = solver.create_solver_context(m, d)
@@ -101,7 +100,6 @@ class SolverTest(parameterized.TestCase):
       mjd_sort_indices = np.lexsort((mjd_efc_force, mjd_efc_state))
 
       solver.init_context(m, d, ctx, grad=False)
-      ctx_cost = ctx.cost.numpy()[0] - ctx.gauss.numpy()[0]
       qfrc_constraint = d.qfrc_constraint.numpy()[0]
 
       efc_sorted_force = efc_force[d_sort_indices]
@@ -111,7 +109,6 @@ class SolverTest(parameterized.TestCase):
 
       _assert_eq(efc_sorted_state, mjd_sorted_state, "efc_state")
       _assert_eq(efc_sorted_force, mjd_sorted_force, "efc_force")
-      _assert_eq(ctx_cost, mjd_cost, "cost")
       _assert_eq(qfrc_constraint, mjd.qfrc_constraint, "qfrc_constraint")
 
   @parameterized.product(
@@ -160,7 +157,6 @@ class SolverTest(parameterized.TestCase):
         )
       else:
         efc_J_np = d.efc.J.numpy()[0, :nefc, : m.nv]
-      ctx_gauss_np = ctx.gauss.numpy()[0]
       efc_Ma_np = d.efc.Ma.numpy()[0]
       ctx_Jaref_np = ctx.Jaref.numpy()[0][:nefc]
       efc_D_np = d.efc.D.numpy()[0][:nefc]
@@ -171,7 +167,7 @@ class SolverTest(parameterized.TestCase):
       target_jv = efc_J_np @ ctx_search_np
       target_quad_gauss = np.array(
         [
-          ctx_gauss_np,
+          0.0,
           np.dot(ctx_search_np, efc_Ma_np - qfrc_smooth_np),
           0.5 * np.dot(ctx_search_np, target_mv),
         ]
@@ -286,6 +282,76 @@ class SolverTest(parameterized.TestCase):
     _assert_eq(qacc_iterative, qacc_parallel, name="qacc")
     _assert_eq(Ma_iterative, Ma_parallel, name="Ma")
     _assert_eq(Jaref_iterative, Jaref_parallel, name="Jaref")
+
+  @parameterized.parameters(False, True)
+  def test_linesearch_accepts_sub_float32_improvement(self, ls_parallel):
+    """Line search should not lose small improvements on large absolute costs."""
+    _, _, m, d = test_data.fixture(
+      "constraints.xml",
+      overrides={
+        "opt.cone": ConeType.PYRAMIDAL,
+        "opt.jacobian": mujoco.mjtJacobian.mjJAC_DENSE,
+        "opt.iterations": 0,
+        "opt.ls_iterations": 50,
+        "opt.ls_parallel": ls_parallel,
+      },
+    )
+
+    ctx = solver.create_solver_context(m, d)
+
+    d.ne = wp.array([0], dtype=int)
+    d.nf = wp.array([0], dtype=int)
+    d.nefc = wp.array([1], dtype=int)
+    d.nacon = wp.array([0], dtype=int)
+    d.M = wp.zeros(d.M.shape, dtype=float)
+    d.qacc = wp.zeros(d.qacc.shape, dtype=float)
+    d.efc.Ma = wp.zeros(d.efc.Ma.shape, dtype=float)
+    d.qfrc_smooth = wp.zeros(d.qfrc_smooth.shape, dtype=float)
+
+    efc_j = np.zeros(d.efc.J.shape, dtype=np.float32)
+    efc_j[0, 0, 0] = 1.0
+    d.efc.J = wp.array(efc_j, dtype=float)
+
+    efc_d = np.zeros(d.efc.D.shape, dtype=np.float32)
+    efc_d[0, 0] = 0.004
+    d.efc.D = wp.array(efc_d, dtype=float)
+    d.efc.frictionloss = wp.zeros(d.efc.frictionloss.shape, dtype=float)
+
+    search = np.zeros(ctx.search.shape, dtype=np.float32)
+    search[0, 0] = 1.0
+    ctx.search = wp.array(search, dtype=float)
+    jaref = np.zeros(ctx.Jaref.shape, dtype=np.float32)
+    jaref[0, 0] = -1.0
+    ctx.Jaref = wp.array(jaref, dtype=float)
+    ctx.search_dot = wp.array([1.0], dtype=float)
+    ctx.done = wp.array([False], dtype=bool)
+
+    step_size_cost = wp.empty((d.nworld, m.opt.ls_iterations if m.opt.ls_parallel else 0), dtype=float)
+    solver._linesearch(m, d, ctx, step_size_cost)
+
+    self.assertGreater(d.qacc.numpy()[0, 0], 0.5)
+    self.assertGreater(ctx.improvement.numpy()[0], 0.001)
+
+    qfrc_smooth = np.zeros(d.qfrc_smooth.shape, dtype=np.float32)
+    qfrc_smooth[0, 0] = -0.0005
+    d.qfrc_smooth = wp.array(qfrc_smooth, dtype=float)
+    d.qacc = wp.zeros(d.qacc.shape, dtype=float)
+    d.efc.Ma = wp.zeros(d.efc.Ma.shape, dtype=float)
+
+    search = np.zeros(ctx.search.shape, dtype=np.float32)
+    search[0, 0] = -2.0
+    ctx.search = wp.array(search, dtype=float)
+    jaref = np.zeros(ctx.Jaref.shape, dtype=np.float32)
+    jaref[0, 0] = 1.0
+    ctx.Jaref = wp.array(jaref, dtype=float)
+    ctx.search_dot = wp.array([4.0], dtype=float)
+    ctx.done = wp.array([False], dtype=bool)
+
+    solver._linesearch(m, d, ctx, step_size_cost)
+
+    self.assertLess(d.qacc.numpy()[0, 0], -1.0)
+    self.assertLess(ctx.improvement.numpy()[0], 0.001)
+    self.assertGreater(ctx.improvement.numpy()[0], 0.0004)
 
   @parameterized.parameters(
     (ConeType.PYRAMIDAL, SolverType.CG, 10, 5, mujoco.mjtJacobian.mjJAC_DENSE, False, False),
