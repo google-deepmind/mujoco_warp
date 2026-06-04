@@ -1932,7 +1932,7 @@ def _solve_init_search(
 
 
 @wp.kernel
-def solve_init_search_cg_tiled(
+def _solve_init_search_cg_tiled(
   # Model:
   nv: int,
   # In:
@@ -2320,7 +2320,7 @@ def _update_gradient_grad(
 
 
 @wp.kernel
-def update_gradient_grad_tiled(
+def _update_gradient_grad_tiled(
   # Model:
   nv: int,
   # Data in:
@@ -2963,7 +2963,7 @@ def _update_gradient(m: types.Model, d: types.Data, ctx: SolverContext):
   # grad = Ma - qfrc_smooth - qfrc_constraint
   if m.opt.solver == types.SolverType.CG:
     wp.launch_tiled(
-      update_gradient_grad_tiled,
+      _update_gradient_grad_tiled,
       dim=d.nworld,
       inputs=[m.nv, d.qfrc_smooth, d.qfrc_constraint, d.efc.Ma, ctx.done],
       outputs=[ctx.grad, ctx.grad_dot],
@@ -3179,7 +3179,7 @@ def _solve_beta_zero(
 
 
 @wp.kernel
-def solve_beta_accumulate_tiled(
+def _solve_beta_accumulate_tiled(
   # Model:
   nv: int,
   # In:
@@ -3303,7 +3303,7 @@ def _solve_search_update(
 
 
 @wp.kernel
-def solve_search_update_cg_tiled(
+def _solve_search_update_cg_tiled(
   # Model:
   nv: int,
   # In:
@@ -3465,7 +3465,7 @@ def _solver_iteration(
       outputs=[ctx.beta, ctx.beta_den],
     )
     wp.launch_tiled(
-      solve_beta_accumulate_tiled,
+      _solve_beta_accumulate_tiled,
       dim=d.nworld,
       inputs=[m.nv, ctx.grad, ctx.Mgrad, ctx.prev_grad, ctx.prev_Mgrad, ctx.done],
       outputs=[ctx.beta, ctx.beta_den],
@@ -3494,7 +3494,7 @@ def _solver_iteration(
       ],
     )
     wp.launch_tiled(
-      solve_search_update_cg_tiled,
+      _solve_search_update_cg_tiled,
       dim=d.nworld,
       inputs=[m.nv, ctx.grad, ctx.Mgrad, ctx.search, ctx.beta, ctx.done],
       outputs=[ctx.search, ctx.search_dot, ctx.prev_grad, ctx.prev_Mgrad],
@@ -3528,7 +3528,7 @@ def _solver_iteration(
 
 
 def init_context(m: types.Model, d: types.Data, ctx: SolverContext | InverseContext, grad: bool = True):
-  if grad and m.opt.solver == types.SolverType.CG and isinstance(ctx, (SolverContext, IslandSolverContext)):
+  if grad and m.opt.solver == types.SolverType.CG:
     ctx.grad_dot.zero_()
 
   # initialize some efc arrays
@@ -3601,7 +3601,7 @@ def _solve(m: types.Model, d: types.Data, ctx: SolverContext):
   # search = -Mgrad
   if m.opt.solver == types.SolverType.CG:
     wp.launch_tiled(
-      solve_init_search_cg_tiled,
+      _solve_init_search_cg_tiled,
       dim=d.nworld,
       inputs=[m.nv, ctx.grad, ctx.Mgrad],
       outputs=[ctx.search, ctx.search_dot, ctx.prev_grad, ctx.prev_Mgrad],
