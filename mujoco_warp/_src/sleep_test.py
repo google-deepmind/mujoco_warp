@@ -23,6 +23,7 @@ from absl.testing import parameterized
 
 import mujoco_warp as mjwarp
 from mujoco_warp import test_data
+from mujoco_warp._src import forward
 from mujoco_warp._src import io
 from mujoco_warp._src import sleep
 from mujoco_warp._src import types
@@ -814,6 +815,72 @@ class SleepTest(parameterized.TestCase):
     # Verify that World 0 remained awake and World 1 remained asleep
     self.assertEqual(d.tree_awake.numpy()[0, 0], 1, "World 0 should remain awake")
     self.assertEqual(d.tree_awake.numpy()[1, 0], 0, "World 1 should remain asleep")
+
+  def test_wake_collision_cross_world(self):
+    """Verify that collisions in one world do not wake up islands in another world."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option>
+          <flag sleep="enable" island="enable"/>
+        </option>
+        <worldbody>
+          <geom name="floor" type="plane" size="10 10 .1"/>
+          <body name="box1" pos="0 0 0.1">
+            <joint type="free"/>
+            <geom name="box1_geom" type="box" size=".1 .1 .1" mass="1.0"/>
+          </body>
+          <body name="box2" pos="1.5 0 0.1">
+            <joint type="free"/>
+            <geom name="box2_geom" type="box" size=".1 .1 .1" mass="1.0"/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=2,
+    )
+
+    # World 0: box1 is awake, box2 is asleep. They are far apart (no collision).
+    # World 1: box1 is awake, box2 is asleep. But they are close to each other (colliding!).
+    qpos = d.qpos.numpy()
+
+    # World 0 positions: box1 at (0, 0, 0.1), box2 at (1.5, 0, 0.1) -> no collision
+    qpos[0, 0:3] = [0.0, 0.0, 0.1]
+    qpos[0, 7:10] = [1.5, 0.0, 0.1]
+
+    # World 1 positions: box1 at (0, 0, 0.1), box2 at (0.15, 0, 0.1) -> colliding!
+    qpos[1, 0:3] = [0.0, 0.0, 0.1]
+    qpos[1, 7:10] = [0.15, 0.0, 0.1]
+
+    d.qpos = wp.array(qpos, dtype=float)
+
+    # Manually put box2 (tree 1) to sleep in both worlds.
+    # box1 (tree 0) is awake.
+    tree_asleep = d.tree_asleep.numpy()
+    tree_asleep[0, 0] = -1  # awake
+    tree_asleep[0, 1] = 1  # asleep (self-cycle 1)
+
+    tree_asleep[1, 0] = -1  # awake
+    tree_asleep[1, 1] = 1  # asleep (self-cycle 1)
+
+    d.tree_asleep = wp.array(tree_asleep, dtype=int)
+    sleep.update_sleep(m, d)
+
+    # Verify starting states:
+    self.assertEqual(d.tree_awake.numpy()[0, 0], 1, "World 0 box1 should start awake")
+    self.assertEqual(d.tree_awake.numpy()[0, 1], 0, "World 0 box2 should start asleep")
+    self.assertEqual(d.tree_awake.numpy()[1, 0], 1, "World 1 box1 should start awake")
+    self.assertEqual(d.tree_awake.numpy()[1, 1], 0, "World 1 box2 should start asleep")
+
+    # Step position-dependent phase (kinematics, collision, wake_collision, etc.)
+    forward.fwd_position(m, d)
+
+    # Verification:
+    # World 1: box1 (awake) and box2 (asleep) collide. So box2 MUST wake up!
+    self.assertEqual(d.tree_awake.numpy()[1, 1], 1, "World 1 box2 should wake up due to collision with box1")
+
+    # World 0: box1 (awake) and box2 (asleep) do NOT collide. So box2 MUST remain asleep!
+    self.assertEqual(d.tree_awake.numpy()[0, 1], 0, "World 0 box2 should remain asleep (no collision with box1)")
 
 
 if __name__ == "__main__":
