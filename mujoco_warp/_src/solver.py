@@ -3527,7 +3527,7 @@ def _solver_iteration(
 
 
 def init_context(m: types.Model, d: types.Data, ctx: SolverContext | InverseContext, grad: bool = True):
-  if grad and m.opt.solver == types.SolverType.CG and isinstance(ctx, SolverContext):
+  if grad and m.opt.solver == types.SolverType.CG and isinstance(ctx, (SolverContext, IslandSolverContext)):
     ctx.grad_dot.zero_()
 
   # initialize some efc arrays
