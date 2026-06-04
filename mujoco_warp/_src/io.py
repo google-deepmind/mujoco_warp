@@ -2869,7 +2869,7 @@ def override_model(model: types.Model | mujoco.MjModel, overrides: dict[str, Any
     "opt.graph_conditional",
     "opt.contact_sensor_maxmatch",
   }
-  mj_only_fields = {"opt.jacobian"}
+  mj_only_fields = {"opt.jacobian", "vis.quality.offsamples"}
 
   if not isinstance(overrides, dict):
     overrides_dict = {}
