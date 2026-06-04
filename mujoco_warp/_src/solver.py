@@ -1963,6 +1963,8 @@ def solve_init_search_cg_tiled(
 
   if tid == 0:
     ctx_search_dot_out[worldid] = search_dot_sum[0]
+
+
 @cache_kernel
 def _update_constraint_efc(track_changes: bool):
   TRACK_CHANGES = track_changes
@@ -2973,9 +2975,9 @@ def _update_gradient(m: types.Model, d: types.Data, ctx: SolverContext):
       _update_gradient_grad,
       dim=(d.nworld, m.nv),
       inputs=[d.qfrc_smooth, d.qfrc_constraint, d.efc.Ma, ctx.done],
-    outputs=[ctx.grad, ctx.grad_dot],
-    block_dim=m.block_dim.update_gradient_grad,
-  )
+      outputs=[ctx.grad, ctx.grad_dot],
+      block_dim=m.block_dim.update_gradient_grad,
+    )
 
   if m.opt.solver == types.SolverType.CG:
     smooth.solve_m(m, d, ctx.Mgrad, ctx.grad)
@@ -3437,7 +3439,6 @@ def _solver_iteration(
   nsolving: wp.array[int],
 ):
   _linesearch(m, d, ctx, step_size_cost)
-
 
   # Incremental H is only valid for non-elliptic cones. The elliptic cone
   # path in _update_constraint_efc has early returns that skip state change
