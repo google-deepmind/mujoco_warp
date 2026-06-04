@@ -301,6 +301,12 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
   m.nmaxpyramid = np.maximum(1, 2 * (m.nmaxcondim - 1))
   m.has_sdf_geom = (mjm.geom_type == mujoco.mjtGeom.mjGEOM_SDF).any()
   m.block_dim = types.BlockDim()
+  # Derive CG solver block_dim from nv: clamp(round_up_to_32(nv), 32, 256)
+  _nv_block = max(32, min(256, ((mjm.nv + 31) // 32) * 32))
+  m.block_dim.update_gradient_grad = _nv_block
+  m.block_dim.solve_beta_accumulate = _nv_block
+  m.block_dim.solve_search_update_cg = _nv_block
+  m.block_dim.solve_init_search_cg = _nv_block
   if mjm.nv > 500:
     m.block_dim.linesearch_iterative = 512
   m.is_sparse = is_sparse(mjm)

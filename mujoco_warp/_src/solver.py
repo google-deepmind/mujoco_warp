@@ -3148,24 +3148,6 @@ def _update_gradient_incremental(m: types.Model, d: types.Data, ctx: SolverConte
   _cholesky_factorize_solve(m, d, ctx, skip_unchanged=True)
 
 
-@wp.kernel
-def _solve_prev_grad_Mgrad(
-  # In:
-  ctx_grad_in: wp.array2d[float],
-  ctx_Mgrad_in: wp.array2d[float],
-  ctx_done_in: wp.array[bool],
-  # Out:
-  ctx_prev_grad_out: wp.array2d[float],
-  ctx_prev_Mgrad_out: wp.array2d[float],
-):
-  worldid, dofid = wp.tid()
-
-  if ctx_done_in[worldid]:
-    return
-
-  ctx_prev_grad_out[worldid, dofid] = ctx_grad_in[worldid, dofid]
-  ctx_prev_Mgrad_out[worldid, dofid] = ctx_Mgrad_in[worldid, dofid]
-
 
 @wp.kernel
 def _solve_beta_zero(
@@ -3242,22 +3224,6 @@ def _solve_beta_accumulate(
   wp.atomic_add(ctx_beta_num_out, worldid, num)
   wp.atomic_add(ctx_beta_den_out, worldid, den)
 
-
-@wp.kernel
-def _solve_beta_finalize(
-  # In:
-  ctx_beta_num_in: wp.array[float],
-  ctx_beta_den_in: wp.array[float],
-  ctx_done_in: wp.array[bool],
-  # Out:
-  ctx_beta_out: wp.array[float],
-):
-  worldid = wp.tid()
-
-  if ctx_done_in[worldid]:
-    return
-
-  ctx_beta_out[worldid] = wp.max(0.0, ctx_beta_num_in[worldid] / wp.max(types.MJ_MINVAL, ctx_beta_den_in[worldid]))
 
 
 @wp.kernel
@@ -3345,7 +3311,7 @@ def _solve_search_update_cg_tiled(
 
 
 @wp.kernel
-def solve_cg_finalize(
+def _solve_cg_finalize(
   # Model:
   nv: int,
   opt_tolerance: wp.array[float],
@@ -3356,12 +3322,11 @@ def solve_cg_finalize(
   ctx_beta_den_in: wp.array[float],
   ctx_improvement_in: wp.array[float],
   ctx_done_in: wp.array[bool],
+  ctx_grad_dot_in: wp.array[float],
   # Data out:
   solver_niter_out: wp.array[int],
   # Out:
-  ctx_grad_dot_out: wp.array[float],
   ctx_beta_out: wp.array[float],
-  ctx_search_dot_out: wp.array[float],
   nsolving_out: wp.array[int],
   ctx_done_out: wp.array[bool],
 ):
@@ -3373,15 +3338,12 @@ def solve_cg_finalize(
   # 1. solve_beta_finalize
   ctx_beta_out[worldid] = wp.max(0.0, ctx_beta_num_in[worldid] / wp.max(types.MJ_MINVAL, ctx_beta_den_in[worldid]))
 
-  # 2. solve_zero_search_dot
-  ctx_search_dot_out[worldid] = 0.0
-
-  # 3. solve_done
+  # 2. solve_done
   solver_niter_out[worldid] += 1
   tolerance = opt_tolerance[worldid % opt_tolerance.shape[0]]
   meaninertia = stat_meaninertia[worldid % stat_meaninertia.shape[0]]
 
-  grad_dot = ctx_grad_dot_out[worldid]
+  grad_dot = ctx_grad_dot_in[worldid]
 
   improvement = _rescale(nv, meaninertia, ctx_improvement_in[worldid])
   gradient = _rescale(nv, meaninertia, wp.sqrt(grad_dot))
@@ -3390,8 +3352,6 @@ def solve_cg_finalize(
     ctx_done_out[worldid] = True
     wp.atomic_add(nsolving_out, 0, -1)
 
-  # 4. Zero grad_dot for the next iteration's update_gradient_grad
-  ctx_grad_dot_out[worldid] = 0.0
 
 
 @wp.kernel
@@ -3472,7 +3432,7 @@ def _solver_iteration(
       block_dim=m.block_dim.solve_beta_accumulate,
     )
     wp.launch(
-      solve_cg_finalize,
+      _solve_cg_finalize,
       dim=d.nworld,
       inputs=[
         m.nv,
@@ -3483,12 +3443,11 @@ def _solver_iteration(
         ctx.beta_den,
         ctx.improvement,
         ctx.done,
+        ctx.grad_dot,
       ],
       outputs=[
         d.solver_niter,
-        ctx.grad_dot,
         ctx.beta,
-        ctx.search_dot,
         nsolving,
         ctx.done,
       ],
@@ -3528,9 +3487,6 @@ def _solver_iteration(
 
 
 def init_context(m: types.Model, d: types.Data, ctx: SolverContext | InverseContext, grad: bool = True):
-  if grad and m.opt.solver == types.SolverType.CG:
-    ctx.grad_dot.zero_()
-
   # initialize some efc arrays
   wp.launch(
     _solve_init_efc,
