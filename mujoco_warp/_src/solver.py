@@ -3148,7 +3148,6 @@ def _update_gradient_incremental(m: types.Model, d: types.Data, ctx: SolverConte
   _cholesky_factorize_solve(m, d, ctx, skip_unchanged=True)
 
 
-
 @wp.kernel
 def _solve_beta_zero(
   # Out:
@@ -3223,7 +3222,6 @@ def _solve_beta_accumulate(
   den = ctx_prev_grad_in[worldid, dofid] * prev_Mgrad
   wp.atomic_add(ctx_beta_num_out, worldid, num)
   wp.atomic_add(ctx_beta_den_out, worldid, den)
-
 
 
 @wp.kernel
@@ -3351,7 +3349,6 @@ def _solve_cg_finalize(
   if done or solver_niter_out[worldid] == opt_iterations:
     ctx_done_out[worldid] = True
     wp.atomic_add(nsolving_out, 0, -1)
-
 
 
 @wp.kernel
