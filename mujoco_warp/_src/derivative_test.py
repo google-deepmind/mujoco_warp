@@ -517,7 +517,10 @@ class DerivativeTest(parameterized.TestCase):
     mj_qDeriv = np.zeros((mjm.nv, mjm.nv))
     mujoco.mju_sparse2dense(mj_qDeriv, mjd.qDeriv, mjm.D_rownnz, mjm.D_rowadr, mjm.D_colind)
     mj_M = np.zeros((m.nv, m.nv))
-    mujoco.mj_fullM(mjm, mj_M, mjd.qM)
+    if check_version("mujoco>=3.8.1.dev910242375"):
+      mujoco.mju_sym2dense(mj_M, mjd.M, mjm.M_rownnz, mjm.M_rowadr, mjm.M_colind)
+    else:
+      mujoco.mj_fullM(mjm, mj_M, mjd.qM)
     mj_out = mj_M - mjm.opt.timestep * mj_qDeriv
 
     self.assertFalse(np.any(np.isnan(mjw_out)))
