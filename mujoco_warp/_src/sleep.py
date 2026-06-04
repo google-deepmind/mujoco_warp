@@ -374,12 +374,13 @@ def _wake_collision_kernel(
   # Data in:
   tree_awake_in: wp.array2d[int],
   contact_geom_in: wp.array[wp.vec2i],
+  contact_worldid_in: wp.array[int],
   nacon_in: wp.array[int],
   # Out:
   tree_asleep_out: wp.array2d[int],  # kernel_analyzer: ignore
   skip_out: wp.array[int],  # kernel_analyzer: ignore
 ):
-  worldid, conid = wp.tid()
+  conid = wp.tid()
   if conid >= nacon_in[0]:
     return
 
@@ -398,6 +399,7 @@ def _wake_collision_kernel(
   if tree1 < 0 or tree2 < 0:
     return
 
+  worldid = contact_worldid_in[conid]
   awake1 = tree_awake_in[worldid, tree1]
   awake2 = tree_awake_in[worldid, tree2]
 
@@ -405,7 +407,6 @@ def _wake_collision_kernel(
     return
 
   if awake1 == 0 and awake2 == 0:
-    wp.printf("contact between sleeping bodies %d and %d\n", b1, b2)
     return
 
   # wake sleeping tree
@@ -768,13 +769,14 @@ def wake_collision(m: types.Model, d: types.Data, skip: Optional[wp.array] = Non
   skip_out = skip if skip is not None else wp.zeros(1, dtype=int)
   wp.launch(
     _wake_collision_kernel,
-    dim=(d.nworld, d.naconmax),
+    dim=d.naconmax,
     inputs=[
       m.ntree,
       m.body_treeid,
       m.geom_bodyid,
       d.tree_awake,
       d.contact.geom,
+      d.contact.worldid,
       d.nacon,
       d.tree_asleep,
     ],
