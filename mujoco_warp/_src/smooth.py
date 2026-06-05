@@ -949,7 +949,7 @@ def _tendon_armature(
     return
 
   if is_sparse:
-    madr_ij = M_rowadr[dofid] + M_rownnz[dofid] - 2
+    madr_ij = M_rowadr[dofid] + M_rownnz[dofid] - 1
 
   # sparse backward pass over ancestors
   dofidi = dofid

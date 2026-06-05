@@ -202,7 +202,7 @@ def _geom_dist(
     )
 
     if wp.static(multiccd):
-      ncon, _, _ = multicontact(
+      ncon, witness1, witness2 = multicontact(
         polygon,
         clipped,
         pnormal,
@@ -224,11 +224,15 @@ def _geom_dist(
         geomtype1,
         geomtype2,
       )
-
-    dist_out[0] = dist
-    ncon_out[0] = ncon
-    pos_out[0] = x1
-    pos_out[1] = x2
+      dist_out[0] = dist
+      ncon_out[0] = ncon
+      pos_out[0] = witness1[0]
+      pos_out[1] = witness2[0]
+    else:
+      dist_out[0] = dist
+      ncon_out[0] = ncon
+      pos_out[0] = x1
+      pos_out[1] = x2
 
   dist_out = wp.array(shape=(1,), dtype=float)
   ncon_out = wp.array(shape=(1,), dtype=int)
@@ -807,6 +811,24 @@ class GJKTest(parameterized.TestCase):
 
     dist, _, _, _ = _geom_dist(m, d, 0, 1, multiccd=True, pos2=pos2, mat2=rot2)
     self.assertAlmostEqual(dist, 1.3900499e-06)
+
+  def test_box_edge_flipped(self):
+    """Test flipped box edge contact points."""
+    _, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <geom name="geom1" pos="1.10164554 -0.11389316 0.74"
+                quat="-0.348312918 0 0 0.937378318" type="box" size="0.65 0.48 0.04"/>
+          <geom name="geom2" type="box" size="0.1 1.2 1.4" pos="1.4 0 1.425"/>
+        </worldbody>
+      </mujoco>
+      """
+    )
+    _, ncon, x1, x2 = _geom_dist(m, d, 0, 1, multiccd=True)
+    self.assertEqual(ncon, 2)
+    np.testing.assert_allclose(x1, np.array([1.907368, -0.052973, 0.700000]), atol=1e-4)
+    np.testing.assert_allclose(x2, np.array([1.30000, -0.052973, 0.700000]), atol=1e-4)
 
   @parameterized.parameters(0.0, 0.1)
   def test_hfield_support(self, margin: float):

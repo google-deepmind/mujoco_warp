@@ -28,7 +28,9 @@ MJ_MINIMP = mujoco.mjMINIMP  # minimum constraint impedance
 MJ_MAXIMP = mujoco.mjMAXIMP  # maximum constraint impedance
 MJ_MAXCONPAIR = mujoco.mjMAXCONPAIR
 MJ_MINMU = mujoco.mjMINMU  # minimum friction
+MJ_MINAWAKE = mujoco.mjMINAWAKE  # minimum number of timesteps before sleeping
 NEW_GAP_SEMANTICS = check_version("mujoco>=3.9.0.dev914519929")
+TACTILE_DEPTH_SEMANTICS = check_version("mujoco>=3.9.0.dev921980899")
 # maximum size (by number of edges) of an horizon in EPA algorithm
 MJ_MAX_EPAHORIZON = 24
 # maximum average number of trianglarfaces EPA can insert at each iteration
@@ -64,8 +66,13 @@ class BlockDim:
     update_gradient_JTDAJ_sparse: update gradient JTDAJ sparse block dimension (solver)
     update_gradient_JTDAJ_dense: update gradient JTDAJ dense block dimension (solver)
     linesearch_iterative: linesearch iterative block dimension (solver)
+    update_gradient_grad: update gradient grad block dimension (solver)
+    solve_beta_accumulate: solve beta accumulate block dimension (solver)
+    solve_search_update_cg: solve search update CG block dimension (solver)
+    solve_init_search_cg: solve init search CG block dimension (solver)
     contact_jac_tiled: contact Jacobian tiled block dimension (solver)
     qderiv_actuator_dense: qderiv actuator dense block dimension (derivative)
+    render: render block dimension (render)
   """
 
   # collision_driver
@@ -87,11 +94,17 @@ class BlockDim:
   update_gradient_cholesky: int = 64
   update_gradient_cholesky_blocked: int = 32
   update_gradient_JTDAJ_sparse: int = 64
-  update_gradient_JTDAJ_dense: int = 96
+  update_gradient_JTDAJ_dense: int = 128
   linesearch_iterative: int = 32
+  update_gradient_grad: int = 256
+  solve_beta_accumulate: int = 256
+  solve_search_update_cg: int = 256
+  solve_init_search_cg: int = 256
   contact_jac_tiled: int = 32
   # derivative
   qderiv_actuator_dense: int = 32
+  # render
+  render: int = 64
 
 
 class BroadphaseType(enum.IntEnum):
@@ -232,11 +245,42 @@ class EnableBit(enum.IntFlag):
   Attributes:
     ENERGY: energy computation
     INVDISCRETE: discrete-time inverse dynamics
+    SLEEP: sleeping
   """
 
   ENERGY = mujoco.mjtEnableBit.mjENBL_ENERGY
   INVDISCRETE = mujoco.mjtEnableBit.mjENBL_INVDISCRETE
+  SLEEP = mujoco.mjtEnableBit.mjENBL_SLEEP
   # unsupported: OVERRIDE, FWDINV, ISLAND
+
+
+class SleepPolicy(enum.IntEnum):
+  """Per-tree sleep policy.
+
+  Attributes:
+    AUTO: compiler chooses sleep policy
+    AUTO_NEVER: compiler sleep policy: never
+    AUTO_ALLOWED: compiler sleep policy: allowed
+  """
+
+  AUTO = mujoco.mjtSleepPolicy.mjSLEEP_AUTO
+  AUTO_NEVER = mujoco.mjtSleepPolicy.mjSLEEP_AUTO_NEVER
+  AUTO_ALLOWED = mujoco.mjtSleepPolicy.mjSLEEP_AUTO_ALLOWED
+  # unsupported: NEVER, ALLOWED, INIT
+
+
+class SleepState(enum.IntEnum):
+  """Sleep state for bodies.
+
+  Attributes:
+    STATIC: body is static (world body or mocap)
+    ASLEEP: body is asleep
+    AWAKE: body is awake
+  """
+
+  STATIC = mujoco.mjtSleepState.mjS_STATIC
+  ASLEEP = mujoco.mjtSleepState.mjS_ASLEEP
+  AWAKE = mujoco.mjtSleepState.mjS_AWAKE
 
 
 class TrnType(enum.IntEnum):
@@ -745,6 +789,7 @@ class Option:
     tolerance: main solver tolerance
     ls_tolerance: CG/Newton linesearch tolerance
     ccd_tolerance: convex collision detection tolerance
+    sleep_tolerance: sleep velocity tolerance
     gravity: gravitational acceleration
     wind: wind (for lift, drag, and viscosity)
     magnetic: global magnetic flux
@@ -779,6 +824,7 @@ class Option:
   tolerance: array("*", float)
   ls_tolerance: array("*", float)
   ccd_tolerance: array("*", float)
+  sleep_tolerance: array("*", float)
   gravity: array("*", wp.vec3)
   wind: array("*", wp.vec3)
   magnetic: array("*", wp.vec3)
@@ -974,9 +1020,11 @@ class Model:
     dof_damping: damping coefficient                         (*, nv)
     dof_dampingpoly: high-order damping coefficients         (*, nv, 2)
     dof_invweight0: diag. inverse inertia in qpos0           (*, nv)
+    dof_length: dof length for weighting velocity norm       (nv,)
     tree_bodynum: number of bodies in tree (incl. root)      (ntree,)
     tree_dofadr: start address of tree's dofs                (ntree,)
     tree_dofnum: number of dofs in tree                      (ntree,)
+    tree_sleep_policy: tree sleep policy (SleepPolicy)       (ntree,)
     geom_type: geometric type (GeomType)                     (ngeom,)
     geom_contype: geom contact type                          (ngeom,)
     geom_conaffinity: geom contact affinity                  (ngeom,)
@@ -1028,6 +1076,12 @@ class Model:
     light_poscom0: global position rel. to sub-com in qpos0  (*, nlight, 3)
     light_pos0: global position rel. to body in qpos0        (*, nlight, 3)
     light_dir0: global direction in qpos0                    (*, nlight, 3)
+    light_attenuation: OpenGL constant/linear/quadratic      (*, nlight, 3)
+    light_cutoff: spotlight half-cone angle in degrees       (*, nlight)
+    light_exponent: spotlight angular falloff exponent       (*, nlight)
+    light_ambient: ambient RGB                               (*, nlight, 3)
+    light_diffuse: diffuse RGB                               (*, nlight, 3)
+    light_specular: specular RGB                             (*, nlight, 3)
     flex_contype: flex contact type                          (nflex,)
     flex_conaffinity: flex contact affinity                  (nflex,)
     flex_condim: contact dimensionality (1, 3, 4, 6)         (nflex,)
@@ -1096,6 +1150,9 @@ class Model:
     hfield_data: elevation data                              (nhfielddata,)
     mat_texid: texture id for rendering                      (*, nmat, mjNTEXROLE)
     mat_texrepeat: texture repeat for rendering              (*, nmat, 2)
+    mat_emission: emission scalar (self-illumination)        (*, nmat)
+    mat_specular: specular reflection scalar                 (*, nmat)
+    mat_shininess: shininess in [0, 1], mapped to GL [0, 128](*, nmat)
     mat_rgba: rgba                                           (*, nmat, 4)
     pair_dim: contact dimensionality                         (npair,)
     pair_geom1: id of geom1                                  (npair,)
@@ -1399,9 +1456,11 @@ class Model:
   dof_damping: array("*", "nv", float)
   dof_dampingpoly: array("*", "nv", wp.vec2)
   dof_invweight0: array("*", "nv", float)
+  dof_length: array("nv", float)
   tree_bodynum: array("ntree", int)
   tree_dofadr: array("ntree", int)
   tree_dofnum: array("ntree", int)
+  tree_sleep_policy: array("ntree", int)
   geom_type: array("ngeom", int)
   geom_contype: array("ngeom", int)
   geom_conaffinity: array("ngeom", int)
@@ -1453,6 +1512,12 @@ class Model:
   light_poscom0: array("*", "nlight", wp.vec3)
   light_pos0: array("*", "nlight", wp.vec3)
   light_dir0: array("*", "nlight", wp.vec3)
+  light_attenuation: array("*", "nlight", wp.vec3)
+  light_cutoff: array("*", "nlight", float)
+  light_exponent: array("*", "nlight", float)
+  light_ambient: array("*", "nlight", wp.vec3)
+  light_diffuse: array("*", "nlight", wp.vec3)
+  light_specular: array("*", "nlight", wp.vec3)
   flex_contype: array("nflex", int)
   flex_conaffinity: array("nflex", int)
   flex_condim: array("nflex", int)
@@ -1521,6 +1586,9 @@ class Model:
   hfield_data: array("nhfielddata", float)
   mat_texid: array("*", "nmat", 10, int)
   mat_texrepeat: array("*", "nmat", wp.vec2)
+  mat_emission: array("*", "nmat", float)
+  mat_specular: array("*", "nmat", float)
+  mat_shininess: array("*", "nmat", float)
   mat_rgba: array("*", "nmat", wp.vec4)
   pair_dim: array("npair", int)
   pair_geom1: array("npair", int)
@@ -1850,6 +1918,9 @@ class Data:
     nefc: number of constraints                                 (nworld,)
     nisland: number of constraint islands                       (nworld,)
     nidof: total DOFs in islands                                (nworld,)
+    ntree_awake: number of awake trees                          (nworld,)
+    nbody_awake: number of awake bodies                         (nworld,)
+    nv_awake: number of awake dofs                              (nworld,)
     time: simulation time                                       (nworld,)
     energy: potential, kinetic energy                           (nworld, 2)
     qpos: position                                              (nworld, nq)
@@ -1866,6 +1937,7 @@ class Data:
     qacc: acceleration                                          (nworld, nv)
     act_dot: time-derivative of actuator activation             (nworld, na)
     sensordata: sensor data array                               (nworld, nsensordata,)
+    tree_asleep: tree asleep counter; >=0: asleep cycle         (nworld, ntree)
     xpos: Cartesian position of body frame                      (nworld, nbody, 3)
     xquat: Cartesian orientation of body frame                  (nworld, nbody, 4)
     xmat: Cartesian orientation of body frame                   (nworld, nbody, 3, 3)
@@ -1904,6 +1976,10 @@ class Data:
     qLD: upper Cholesky factorization                           (nworld, nv, nv) if dense
          L'*D*L factorization of M                              (nworld, 1, nC) if sparse
     qLDiagInv: 1/diag(D)                                        (nworld, nv)
+    tree_awake: is tree awake; 0: asleep; 1: awake              (nworld, ntree)
+    body_awake: body sleep state (SleepState)                   (nworld, nbody)
+    body_awake_ind: indices of awake/static bodies              (nworld, nbody)
+    dof_awake_ind: indices of awake dofs                        (nworld, nv)
     flexedge_velocity: flex edge velocities                     (nworld, nflexedge)
     ten_velocity: tendon velocities                             (nworld, ntendon)
     actuator_velocity: actuator velocities                      (nworld, nu)
@@ -1934,6 +2010,7 @@ class Data:
     tree_island: island ID per tree (-1 if unconstrained)       (nworld, ntree)
     dof_island: island ID per DOF (-1 if unconstrained)         (nworld, nv)
     island_dofadr: island start address in dof vector           (nworld, ntree)
+    island_idofadr: island start address in idof vector          (nworld, ntree)
     island_nv: DOFs per island                                  (nworld, ntree)
     island_nefc: constraints per island                         (nworld, ntree)
     island_ne: equality constraints per island                  (nworld, ntree)
@@ -1968,6 +2045,9 @@ class Data:
   nefc: array("nworld", int)
   nisland: array("nworld", int)
   nidof: array("nworld", int)
+  ntree_awake: array("nworld", int)
+  nbody_awake: array("nworld", int)
+  nv_awake: array("nworld", int)
   time: array("nworld", float)
   energy: array("nworld", wp.vec2)
   qpos: array("nworld", "nq", float)
@@ -1984,6 +2064,7 @@ class Data:
   qacc: array("nworld", "nv", float)
   act_dot: array("nworld", "na", float)
   sensordata: array("nworld", "nsensordata", float)
+  tree_asleep: array("nworld", "ntree", int)
   xpos: array("nworld", "nbody", wp.vec3)
   xquat: array("nworld", "nbody", wp.quat)
   xmat: array("nworld", "nbody", wp.mat33)
@@ -2020,6 +2101,10 @@ class Data:
   M: wp.array3d[float]
   qLD: wp.array3d[float]
   qLDiagInv: array("nworld", "nv", float)
+  tree_awake: array("nworld", "ntree", int)
+  body_awake: array("nworld", "nbody", int)
+  body_awake_ind: array("nworld", "nbody", int)
+  dof_awake_ind: array("nworld", "nv", int)
   flexedge_velocity: array("nworld", "nflexedge", float)
   ten_velocity: array("nworld", "ntendon", float)
   actuator_velocity: array("nworld", "nu", float)
@@ -2048,6 +2133,7 @@ class Data:
   tree_island: array("nworld", "ntree", int)
   dof_island: array("nworld", "nv", int)
   island_dofadr: array("nworld", "ntree", int)
+  island_idofadr: array("nworld", "ntree", int)
   island_nv: array("nworld", "ntree", int)
   island_nefc: array("nworld", "ntree", int)
   island_ne: array("nworld", "ntree", int)
@@ -2081,9 +2167,6 @@ class InverseContext:
 
   Jaref: wp.array2d[float]
   search_dot: wp.array[float]
-  gauss: wp.array[float]
-  cost: wp.array[float]
-  prev_cost: wp.array[float]
   done: wp.array[bool]
   changed_efc_ids: wp.array2d[int]
   changed_efc_count: wp.array[int]
@@ -2113,6 +2196,7 @@ class IslandSolverContext:
   done: wp.array2d[bool]  # per-island convergence
   solver_niter: wp.array2d[int]  # iterations per island
   beta: wp.array2d[float]
+  beta_den: wp.array2d[float]
   alpha: wp.array2d[float]
   Ma: wp.array2d[float]  # island-local Ma (nworld, nv)
 
@@ -2123,9 +2207,6 @@ class SolverContext:
 
   Jaref: wp.array2d[float]
   search_dot: wp.array[float]
-  gauss: wp.array[float]
-  cost: wp.array[float]
-  prev_cost: wp.array[float]
   done: wp.array[bool]
   grad: wp.array2d[float]
   grad_dot: wp.array[float]
@@ -2136,9 +2217,11 @@ class SolverContext:
   quad: wp.array2d[wp.vec3]
   quad_gauss: wp.array[wp.vec3]
   alpha: wp.array[float]
+  improvement: wp.array[float]
   prev_grad: wp.array2d[float]
   prev_Mgrad: wp.array2d[float]
   beta: wp.array[float]
+  beta_den: wp.array[float]
   h: wp.array3d[float]
   hfactor: wp.array3d[float]
   # Incremental Hessian update (Newton only)
@@ -2156,8 +2239,8 @@ class RenderContext:
     cam_id_map: camera id map
     use_textures: whether to use textures
     use_shadows: whether to use shadows
-    use_ambient_lighting: whether to use ambient lighting
-    background_color: background color
+    use_ambient_lighting: top-level switch for ambient contributions
+    background_color: color used for missed rays when no skybox is rendered
     use_precomputed_rays: whether to use precomputed rays
     bvh_ngeom: number of geometries in the BVH
     enabled_geom_ids: enabled geometry ids
@@ -2202,11 +2285,40 @@ class RenderContext:
     render_skybox: whether to shade missed rays with the MuJoCo skybox texture
     skybox_tex_id: index into textures of the skybox (MuJoCo tex_type == SKYBOX), -1 if none
     skybox_face_width: pixel width of one skybox cube face (0 if no skybox)
+    headlight_active: whether to inject MuJoCo's vis.headlight as a synthetic
+      directional light at the active camera. Read from `mjm.vis.headlight.active`
+      at context creation; users disable the headlight by configuring it on the
+      MuJoCo model (e.g. `<visual><headlight active="0"/></visual>` in XML).
+    headlight_ambient: RGB ambient color of the headlight (from vis.headlight).
+    headlight_diffuse: RGB diffuse color of the headlight.
+    headlight_specular: RGB specular color of the headlight.
     enable_backface_culling: drop primitive ray hits whose normal faces away
       from the ray (i.e. the ray origin is inside the geom). Matches MuJoCo's
       mesh-ray rule. When False, the renderer reports inner-surface hits, which
       is faster but causes a camera placed inside a geom to render that geom's
       back wall.
+    light_attenuation_is_default: True iff every light in the model has the
+      MuJoCo default `attenuation = (1, 0, 0)`. Computed once at context
+      creation; when True the kernel skips the per-light polynomial
+      attenuation evaluation (a divide + 3 multiplies + an add per
+      non-directional light per pixel) via `wp.static`.
+    has_spot_lights: True iff any light in the model has `type == SPOT`.
+      When False, the kernel skips the spot-cone branch (cos cutoff +
+      pow exponent) per non-directional light per pixel via `wp.static`.
+    enable_specular: when True, evaluate the Phong specular highlight per
+      light per pixel (uses `mat_specular` / `mat_shininess`). When False,
+      the entire specular branch is removed at compile time. Useful for
+      depth/segmentation-only workflows or when materials are matte.
+    enable_emission: when True, add `mat_emission * base_color` to each
+      shaded pixel. When False the term is dropped at compile time.
+    enable_per_light_ambient: when True and `use_ambient_lighting` is also
+      True, sum the per-light `light_ambient` colors into each shaded pixel
+      even when the surface normal is perpendicular to the light direction
+      or the pixel is shadowed. When False the second per-light loop for
+      ambient is removed at compile time. Headlight ambient and the no-light
+      fallback are controlled by `use_ambient_lighting`.
+    geom_ray_types: tuple of GeomType int values present in the scene, used to
+      statically eliminate unused intersection branches in the ray-cast kernels.
   """
 
   nrender: int
@@ -2220,6 +2332,10 @@ class RenderContext:
   render_skybox: bool
   skybox_tex_id: int
   skybox_face_width: int
+  headlight_active: bool
+  headlight_ambient: wp.vec3
+  headlight_diffuse: wp.vec3
+  headlight_specular: wp.vec3
   bvh_ngeom: int
   enabled_geom_ids: array("*", int)
   mesh_registry: dict
@@ -2261,3 +2377,9 @@ class RenderContext:
   znear: float
   total_rays: int
   enable_backface_culling: bool
+  enable_specular: bool
+  enable_emission: bool
+  enable_per_light_ambient: bool
+  light_attenuation_is_default: bool
+  has_spot_lights: bool
+  geom_ray_types: tuple = ()

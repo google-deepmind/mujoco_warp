@@ -140,6 +140,58 @@ class RenderTest(parameterized.TestCase):
     self.assertGreater(np.count_nonzero(rgb), 0)
     self.assertTrue(np.any(seg[..., 1] == int(mjw.ObjType.GEOM)))
 
+  def test_render_spot_light_with_attenuation(self):
+    """Kernel runs under `has_spot_lights=True` and non-default attenuation."""
+    xml = """
+    <mujoco>
+      <visual>
+        <headlight active="0"/>
+      </visual>
+      <worldbody>
+        <camera pos="0 -2 0.8" xyaxes="1 0 0 0 0.5 1" resolution="32 32"/>
+        <light pos="0 0 2.5" dir="0 0 -1" cutoff="25" exponent="10"
+               attenuation="1 0.1 0.05" diffuse="1 0.9 0.7"/>
+        <geom type="plane" size="2 2 0.1" rgba="0.7 0.7 0.7 1"/>
+        <geom pos="0 0 0.3" size="0.3" rgba="0.8 0.8 0.8 1"/>
+      </worldbody>
+    </mujoco>
+    """
+    mjm, _, m, d = test_data.fixture(xml=xml)
+    rc = mjw.create_render_context(mjm, cam_res=(32, 32), render_rgb=True)
+    self.assertTrue(rc.has_spot_lights, "fixture must trigger `has_spot_lights`")
+    self.assertFalse(rc.light_attenuation_is_default, "fixture must trigger non-default attenuation")
+    mjw.render(m, d, rc)
+    rgb = _unpack_rgb(rc.rgb_data.numpy()[0]).reshape(32, 32, 3)
+    self.assertGreater(int(rgb.max()), 10, "spot light should illuminate the floor cone")
+
+  def test_render_with_features_disabled(self):
+    """Kernel compiles + runs with static options disabled."""
+    xml = """
+    <mujoco>
+      <asset>
+        <material name="m" specular="0.7" emission="0.3" rgba="0.4 0.5 0.8 1"/>
+      </asset>
+      <worldbody>
+        <camera pos="0 -2 0.5" xyaxes="1 0 0 0 0.3 1" resolution="32 32"/>
+        <light pos="0 0 3" dir="0 0 -1" directional="true"
+               diffuse="0.6 0.6 0.6" ambient="0.15 0.15 0.15"/>
+        <geom type="sphere" pos="0 0 0.3" size="0.3" material="m"/>
+      </worldbody>
+    </mujoco>
+    """
+    mjm, _, m, d = test_data.fixture(xml=xml)
+    rc = mjw.create_render_context(
+      mjm,
+      cam_res=(32, 32),
+      render_rgb=True,
+      enable_specular=False,
+      enable_emission=False,
+      enable_per_light_ambient=False,
+    )
+    mjw.render(m, d, rc)
+    rgb = _unpack_rgb(rc.rgb_data.numpy()[0]).reshape(32, 32, 3)
+    self.assertGreater(int(rgb.max()), 10, "directional light + headlight should still light the scene")
+
   def test_disable_ambient_lighting(self):
     xml = """
     <mujoco>
@@ -188,7 +240,7 @@ class RenderTest(parameterized.TestCase):
   @absltest.skipIf(not _HAS_RENDERER, "MuJoCo rendering requires OpenGL")
   def test_segmentation_matches_mujoco(self):
     """Segmentation should match native MuJoCo's `(object_id, object_type)` output."""
-    mjm, mjd, m, d = test_data.fixture("primitives.xml", nworld=1)
+    mjm, mjd, m, d = test_data.fixture("primitives.xml", nworld=1, overrides={"vis.quality.offsamples": 0})
     cam_w, cam_h = 32, 32
 
     rc = mjw.create_render_context(
@@ -211,7 +263,7 @@ class RenderTest(parameterized.TestCase):
   @absltest.skipIf(not _HAS_RENDERER, "MuJoCo rendering requires OpenGL")
   def test_depth_matches_mujoco(self):
     """Depth values should match native MuJoCo (planar depth, not Euclidean)."""
-    mjm, mjd, m, d = test_data.fixture("primitives.xml", nworld=1)
+    mjm, mjd, m, d = test_data.fixture("primitives.xml", nworld=1, overrides={"vis.quality.offsamples": 0})
     cam_w, cam_h = 32, 32
 
     # mjwarp depth
@@ -317,7 +369,7 @@ class RenderTest(parameterized.TestCase):
   def test_backface_cull_matches_mujoco(self, asset: str, enclosure: str):
     """Backface-cull behavior must match native MuJoCo for every geom type."""
     xml = self._BACKFACE_CULL_SCENE.format(asset=asset, enclosure=enclosure)
-    mjm, mjd, m, d = test_data.fixture(xml=xml, nworld=1)
+    mjm, mjd, m, d = test_data.fixture(xml=xml, nworld=1, overrides={"vis.quality.offsamples": 0})
 
     cam_w, cam_h = 16, 16
     rc = mjw.create_render_context(
