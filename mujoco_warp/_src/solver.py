@@ -2976,7 +2976,6 @@ def _update_gradient(m: types.Model, d: types.Data, ctx: SolverContext):
       dim=(d.nworld, m.nv),
       inputs=[d.qfrc_smooth, d.qfrc_constraint, d.efc.Ma, ctx.done],
       outputs=[ctx.grad, ctx.grad_dot],
-      block_dim=m.block_dim.update_gradient_grad,
     )
 
   if m.opt.solver == types.SolverType.CG:
