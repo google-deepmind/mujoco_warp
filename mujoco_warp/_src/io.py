@@ -302,6 +302,26 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
 
   m.max_ten_J_rownnz = int(mjm.ten_J_rownnz.max()) if mjm.ntendon else 0
 
+  # Upper bound on a contact's Jacobian support, to size the elliptic-cone JTCJ launch (one
+  # thread per (contact, support-pair)). A contact's row spans the dof chains of weld(b1) and
+  # weld(b2) (see _efc_contact_jac_sparse in constraint.py); take the largest union over all
+  # geom-carrying bodies -- a safe superset, since over-estimating only adds skipped threads.
+  # A body's dof chain is exactly the sparsity of its deepest dof's row in the (ancestor-
+  # structured) mass matrix, so reuse MuJoCo's precomputed M_colind rather than re-walking.
+  def _dof_chain(body):
+    if mjm.body_dofnum[body] == 0:
+      return frozenset()
+    dof = int(mjm.body_dofadr[body] + mjm.body_dofnum[body] - 1)
+    adr = int(mjm.M_rowadr[dof])
+    return frozenset(int(mjm.M_colind[adr + k]) for k in range(int(mjm.M_rownnz[dof])))
+
+  chains = list({_dof_chain(int(mjm.body_weldid[b])) for b in mjm.geom_bodyid})
+  max_rownnz = 0
+  for i, chain_i in enumerate(chains):
+    for chain_j in chains[i:]:
+      max_rownnz = max(max_rownnz, len(chain_i | chain_j))
+  m.jtcj_max_pairs = max(max_rownnz * (max_rownnz + 1) // 2, 1)
+
   # body ids grouped by tree level (depth-based traversal)
   bodies, body_depth = {}, np.zeros(mjm.nbody, dtype=int) - 1
   for i in range(mjm.nbody):

@@ -2435,8 +2435,6 @@ def update_gradient_JTDAJ_dense_tiled(nv_pad: int, tile_size: int, njmax: int):
 def update_gradient_JTCJ_sparse(
   # Model:
   opt_impratio_invsqrt: wp.array[float],
-  dof_tri_row: wp.array[int],
-  dof_tri_col: wp.array[int],
   # Data in:
   contact_dist_in: wp.array[float],
   contact_includemargin_in: wp.array[float],
@@ -2460,10 +2458,7 @@ def update_gradient_JTCJ_sparse(
   # Out:
   ctx_h_out: wp.array3d[float],
 ):
-  conid_start, elementid = wp.tid()
-
-  dof1id = dof_tri_row[elementid]
-  dof2id = dof_tri_col[elementid]
+  conid_start, pairid = wp.tid()
 
   for i in range(nblocks_perblock):
     conid = conid_start + i * dim_block
@@ -2488,22 +2483,24 @@ def update_gradient_JTCJ_sparse(
     if efc_state_in[worldid, efcid0] != types.ConstraintState.CONE:
       continue
 
-    # All dims share the same sparsity pattern. Scan colind once to find
-    # the sparse positions of dof1id and dof2id. Skip if either is absent.
+    # One thread per (contact, support-pair): the support dofs are exactly the colind entries,
+    # so decode pairid -> (pos1, pos2) with pos1 <= pos2 directly. No colind scan, and no
+    # membership skip (which the all-dof-pairs version wasted on ~99% absent dofs).
     rownnz = efc_J_rownnz_in[worldid, efcid0]
-    rowadr0 = efc_J_rowadr_in[worldid, efcid0]
-    pos1 = int(-1)
-    pos2 = int(-1)
-    for k in range(rownnz):
-      col = efc_J_colind_in[worldid, 0, rowadr0 + k]
-      if col == dof1id:
-        pos1 = k
-      if col == dof2id:
-        pos2 = k
-      if pos1 >= 0 and pos2 >= 0:
-        break
-    if pos1 < 0 or pos2 < 0:
+    npairs = rownnz * (rownnz + 1) // 2
+    if pairid >= npairs:
       continue
+    rowadr0 = efc_J_rowadr_in[worldid, efcid0]
+    pos1 = int(0)
+    rem = pairid
+    while rem >= rownnz - pos1:
+      rem -= rownnz - pos1
+      pos1 += 1
+    pos2 = pos1 + rem
+    dofa = efc_J_colind_in[worldid, 0, rowadr0 + pos1]
+    dofb = efc_J_colind_in[worldid, 0, rowadr0 + pos2]
+    dof1id = wp.min(dofa, dofb)
+    dof2id = wp.max(dofa, dofb)
 
     fri = contact_friction_in[conid]
     mu = fri[0] * opt_impratio_invsqrt[worldid % opt_impratio_invsqrt.shape[0]]
@@ -2590,7 +2587,8 @@ def update_gradient_JTCJ_sparse(
           if dim1id != dim2id:
             h += hcone * efc_J12 * efc_J21
 
-    ctx_h_out[worldid, dof1id, dof2id] += h
+    # multiple contacts can contribute to the same (dof1id, dof2id); atomic_add is exact
+    wp.atomic_add(ctx_h_out[worldid, dof1id], dof2id, h)
 
 
 @wp.kernel
@@ -2981,8 +2979,11 @@ def _update_gradient(m: types.Model, d: types.Data, ctx: SolverContext):
       # of SMs on the GPU. We can now query the SM count:
       # https://github.com/NVIDIA/warp/commit/f3814e7e5459e5fd13032cf0fddb3daddd510f30
 
-      # make dim_block and nblocks_perblock static for update_gradient_JTCJ to allow
-      # loop unrolling
+      # Block-limit the launch: cap the grid near SM-filling width and stride over contacts, so
+      # we don't over-launch naconmax (capacity) threads when active contacts are far fewer. The
+      # sparse kernel uses one thread per (contact, support-pair) (jtcj_max_pairs), the dense one
+      # per (contact, dof-pair) (dof_tri_row.size).
+      jtcj_second_dim = m.jtcj_max_pairs if m.is_sparse else m.dof_tri_row.size
       if wp.get_device().is_cuda:
         sm_count = wp.get_device().sm_count
 
@@ -2990,7 +2991,7 @@ def _update_gradient(m: types.Model, d: types.Data, ctx: SolverContext):
         # can be changed in the future to fine-tune the perf. The optimal factor will
         # depend on the kernel's occupancy, which determines how many blocks can
         # simultaneously run on the SM. TODO: This factor can be tuned further.
-        dim_block = ceil((sm_count * 6 * 256) / m.dof_tri_row.size)
+        dim_block = ceil((sm_count * 6 * 256) / jtcj_second_dim)
       else:
         # fall back for CPU
         dim_block = d.naconmax
@@ -3000,11 +3001,9 @@ def _update_gradient(m: types.Model, d: types.Data, ctx: SolverContext):
       if m.is_sparse:
         wp.launch(
           update_gradient_JTCJ_sparse,
-          dim=(dim_block, m.dof_tri_row.size),
+          dim=(dim_block, m.jtcj_max_pairs),
           inputs=[
             m.opt.impratio_invsqrt,
-            m.dof_tri_row,
-            m.dof_tri_col,
             d.contact.dist,
             d.contact.includemargin,
             d.contact.friction,
