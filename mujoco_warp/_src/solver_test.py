@@ -112,17 +112,11 @@ class SolverTest(parameterized.TestCase):
       _assert_eq(qfrc_constraint, mjd.qfrc_constraint, "qfrc_constraint")
 
   @parameterized.product(
-    ls_parallel=(True, False),
     cone=(ConeType.PYRAMIDAL, ConeType.ELLIPTIC),
     jacobian=(mujoco.mjtJacobian.mjJAC_DENSE, mujoco.mjtJacobian.mjJAC_SPARSE),
   )
-  def test_init_linesearch(self, ls_parallel, cone, jacobian):
-    """Test linesearch initialization.
-
-    Parallel linesearch has separate prep kernels that write quad, quad_gauss, jv.
-    Iterative linesearch fuses these in-kernel: quad_gauss is internal, quad is
-    only written for elliptic cones.
-    """
+  def test_init_linesearch(self, cone, jacobian):
+    """Test linesearch initialization."""
     for keyframe in range(3):
       mjm, mjd, m, d = test_data.fixture(
         "constraints.xml",
@@ -130,7 +124,6 @@ class SolverTest(parameterized.TestCase):
         overrides={
           "opt.iterations": 0,
           "opt.ls_iterations": 1,
-          "opt.ls_parallel": ls_parallel,
           "opt.cone": cone,
           "opt.jacobian": jacobian,
         },
@@ -184,28 +177,13 @@ class SolverTest(parameterized.TestCase):
 
       # Reset and launch linesearch
       ctx.jv.fill_(wp.inf)
-      ctx.quad.fill_(wp.inf)
-      ctx.quad_gauss.fill_(wp.inf)
-      step_size_cost = wp.empty((d.nworld, m.opt.ls_iterations), dtype=float)
-      solver._linesearch(m, d, ctx, step_size_cost)
+      solver._linesearch(m, d, ctx)
 
       # mv and jv are always written
       ctx_mv = ctx.mv.numpy()[0]
       ctx_jv = ctx.jv.numpy()[0]
       _assert_eq(ctx_mv, target_mv, "mv")
       _assert_eq(ctx_jv[:nefc], target_jv[:nefc], "jv")
-
-      if ls_parallel and cone == ConeType.PYRAMIDAL:
-        # Parallel pyramidal has separate prep kernels that write quad_gauss and quad
-        # (Elliptic quad uses special quad1/quad2 format that target_quad doesn't compute)
-        ctx_quad_gauss = ctx.quad_gauss.numpy()[0]
-        ctx_quad = ctx.quad.numpy()[0]
-        _assert_eq(ctx_quad_gauss, target_quad_gauss, "quad_gauss")
-        _assert_eq(ctx_quad[:nefc], target_quad[:nefc], "quad")
-      elif ls_parallel and cone == ConeType.ELLIPTIC:
-        # Parallel elliptic: only check quad_gauss (quad uses special format)
-        ctx_quad_gauss = ctx.quad_gauss.numpy()[0]
-        _assert_eq(ctx_quad_gauss, target_quad_gauss, "quad_gauss")
 
   @parameterized.product(
     cone=(ConeType.PYRAMIDAL, ConeType.ELLIPTIC), jacobian=(mujoco.mjtJacobian.mjJAC_SPARSE, mujoco.mjtJacobian.mjJAC_DENSE)
@@ -230,61 +208,7 @@ class SolverTest(parameterized.TestCase):
     ctx_Mgrad = ctx.Mgrad.numpy()[0, : mjm.nv]
     _assert_eq(ctx_Mgrad, mj_Mgrad[0], name="Mgrad")
 
-  @parameterized.product(
-    cone=(ConeType.PYRAMIDAL, ConeType.ELLIPTIC),
-    jacobian=(mujoco.mjtJacobian.mjJAC_DENSE, mujoco.mjtJacobian.mjJAC_SPARSE),
-  )
-  def test_parallel_linesearch(self, cone, jacobian):
-    """Test that iterative and parallel linesearch leads to equivalent results."""
-    _, _, m, d = test_data.fixture(
-      "humanoid/humanoid.xml",
-      qpos_noise=0.01,
-      overrides={"opt.cone": cone, "opt.jacobian": jacobian, "opt.iterations": 50, "opt.ls_iterations": 50},
-    )
-
-    # One step to obtain more non-zeros results
-    mjw.step(m, d)
-
-    # Preparing for linesearch
-    m.opt.iterations = 0
-    mjw.fwd_velocity(m, d)
-    mjw.fwd_acceleration(m, d, factorize=True)
-    ctx = solver._create_solver_context(m, d)
-    solver._solve(m, d, ctx)
-
-    # Storing some initial values
-    d_efc_Ma = d.efc.Ma.numpy().copy()
-    ctx_Jaref = ctx.Jaref.numpy().copy()
-    d_qacc = d.qacc.numpy().copy()
-
-    # Launching iterative linesearch
-    m.opt.ls_parallel = False
-    step_size_cost = wp.empty((d.nworld, 0), dtype=float)
-    solver._linesearch(m, d, ctx, step_size_cost)
-    # Iterative computes alpha internally and directly updates outputs
-    qacc_iterative = d.qacc.numpy().copy()
-    Ma_iterative = d.efc.Ma.numpy().copy()
-    Jaref_iterative = ctx.Jaref.numpy().copy()
-
-    # Launching parallel linesearch with 50 testing points
-    m.opt.ls_parallel = True
-    m.opt.ls_iterations = 50
-    d.efc.Ma = wp.array2d(d_efc_Ma)
-    ctx.Jaref = wp.array2d(ctx_Jaref)
-    d.qacc = wp.array2d(d_qacc)
-    step_size_cost = wp.empty((d.nworld, m.opt.ls_iterations), dtype=float)
-    solver._linesearch(m, d, ctx, step_size_cost)
-    qacc_parallel = d.qacc.numpy().copy()
-    Ma_parallel = d.efc.Ma.numpy().copy()
-    Jaref_parallel = ctx.Jaref.numpy().copy()
-
-    # Check that iterative and parallel linesearch produce equivalent outputs
-    _assert_eq(qacc_iterative, qacc_parallel, name="qacc")
-    _assert_eq(Ma_iterative, Ma_parallel, name="Ma")
-    _assert_eq(Jaref_iterative, Jaref_parallel, name="Jaref")
-
-  @parameterized.parameters(False, True)
-  def test_linesearch_accepts_sub_float32_improvement(self, ls_parallel):
+  def test_linesearch_accepts_sub_float32_improvement(self):
     """Line search should not lose small improvements on large absolute costs."""
     _, _, m, d = test_data.fixture(
       "constraints.xml",
@@ -293,7 +217,6 @@ class SolverTest(parameterized.TestCase):
         "opt.jacobian": mujoco.mjtJacobian.mjJAC_DENSE,
         "opt.iterations": 0,
         "opt.ls_iterations": 50,
-        "opt.ls_parallel": ls_parallel,
       },
     )
 
@@ -326,8 +249,7 @@ class SolverTest(parameterized.TestCase):
     ctx.search_dot = wp.array([1.0], dtype=float)
     ctx.done = wp.array([False], dtype=bool)
 
-    step_size_cost = wp.empty((d.nworld, m.opt.ls_iterations if m.opt.ls_parallel else 0), dtype=float)
-    solver._linesearch(m, d, ctx, step_size_cost)
+    solver._linesearch(m, d, ctx)
 
     self.assertGreater(d.qacc.numpy()[0, 0], 0.5)
     self.assertGreater(ctx.improvement.numpy()[0], 0.001)
@@ -347,7 +269,7 @@ class SolverTest(parameterized.TestCase):
     ctx.search_dot = wp.array([4.0], dtype=float)
     ctx.done = wp.array([False], dtype=bool)
 
-    solver._linesearch(m, d, ctx, step_size_cost)
+    solver._linesearch(m, d, ctx)
 
     self.assertLess(d.qacc.numpy()[0, 0], -1.0)
     self.assertLess(ctx.improvement.numpy()[0], 0.001)
@@ -419,27 +341,25 @@ class SolverTest(parameterized.TestCase):
     self.assertGreater(alpha_out.numpy()[0, 0], 0.5)
 
   @parameterized.parameters(
-    (ConeType.PYRAMIDAL, SolverType.CG, 10, 5, mujoco.mjtJacobian.mjJAC_DENSE, False, False),
-    (ConeType.ELLIPTIC, SolverType.CG, 10, 5, mujoco.mjtJacobian.mjJAC_DENSE, False, False),
-    (ConeType.PYRAMIDAL, SolverType.CG, 10, 5, mujoco.mjtJacobian.mjJAC_SPARSE, False, False),
-    (ConeType.ELLIPTIC, SolverType.CG, 10, 5, mujoco.mjtJacobian.mjJAC_SPARSE, False, False),
-    (ConeType.PYRAMIDAL, SolverType.NEWTON, 5, 10, mujoco.mjtJacobian.mjJAC_DENSE, False, False),
-    (ConeType.ELLIPTIC, SolverType.NEWTON, 5, 10, mujoco.mjtJacobian.mjJAC_DENSE, False, False),
-    (ConeType.PYRAMIDAL, SolverType.NEWTON, 5, 10, mujoco.mjtJacobian.mjJAC_SPARSE, False, False),
-    (ConeType.ELLIPTIC, SolverType.NEWTON, 5, 10, mujoco.mjtJacobian.mjJAC_SPARSE, False, False),
-    (ConeType.PYRAMIDAL, SolverType.NEWTON, 5, 64, mujoco.mjtJacobian.mjJAC_SPARSE, True, False),
-    (ConeType.ELLIPTIC, SolverType.NEWTON, 5, 64, mujoco.mjtJacobian.mjJAC_SPARSE, True, False),
+    (ConeType.PYRAMIDAL, SolverType.CG, 10, 5, mujoco.mjtJacobian.mjJAC_DENSE, False),
+    (ConeType.ELLIPTIC, SolverType.CG, 10, 5, mujoco.mjtJacobian.mjJAC_DENSE, False),
+    (ConeType.PYRAMIDAL, SolverType.CG, 10, 5, mujoco.mjtJacobian.mjJAC_SPARSE, False),
+    (ConeType.ELLIPTIC, SolverType.CG, 10, 5, mujoco.mjtJacobian.mjJAC_SPARSE, False),
+    (ConeType.PYRAMIDAL, SolverType.NEWTON, 5, 10, mujoco.mjtJacobian.mjJAC_DENSE, False),
+    (ConeType.ELLIPTIC, SolverType.NEWTON, 5, 10, mujoco.mjtJacobian.mjJAC_DENSE, False),
+    (ConeType.PYRAMIDAL, SolverType.NEWTON, 5, 10, mujoco.mjtJacobian.mjJAC_SPARSE, False),
+    (ConeType.ELLIPTIC, SolverType.NEWTON, 5, 10, mujoco.mjtJacobian.mjJAC_SPARSE, False),
     # Island Solver Paths:
-    (ConeType.PYRAMIDAL, SolverType.CG, 10, 5, mujoco.mjtJacobian.mjJAC_DENSE, False, True),
-    (ConeType.ELLIPTIC, SolverType.CG, 10, 5, mujoco.mjtJacobian.mjJAC_DENSE, False, True),
-    (ConeType.PYRAMIDAL, SolverType.CG, 10, 5, mujoco.mjtJacobian.mjJAC_SPARSE, False, True),
-    (ConeType.ELLIPTIC, SolverType.CG, 10, 5, mujoco.mjtJacobian.mjJAC_SPARSE, False, True),
-    (ConeType.PYRAMIDAL, SolverType.NEWTON, 5, 10, mujoco.mjtJacobian.mjJAC_DENSE, False, True),
-    (ConeType.ELLIPTIC, SolverType.NEWTON, 5, 10, mujoco.mjtJacobian.mjJAC_DENSE, False, True),
-    (ConeType.PYRAMIDAL, SolverType.NEWTON, 5, 10, mujoco.mjtJacobian.mjJAC_SPARSE, False, True),
-    (ConeType.ELLIPTIC, SolverType.NEWTON, 5, 10, mujoco.mjtJacobian.mjJAC_SPARSE, False, True),
+    (ConeType.PYRAMIDAL, SolverType.CG, 10, 5, mujoco.mjtJacobian.mjJAC_DENSE, True),
+    (ConeType.ELLIPTIC, SolverType.CG, 10, 5, mujoco.mjtJacobian.mjJAC_DENSE, True),
+    (ConeType.PYRAMIDAL, SolverType.CG, 10, 5, mujoco.mjtJacobian.mjJAC_SPARSE, True),
+    (ConeType.ELLIPTIC, SolverType.CG, 10, 5, mujoco.mjtJacobian.mjJAC_SPARSE, True),
+    (ConeType.PYRAMIDAL, SolverType.NEWTON, 5, 10, mujoco.mjtJacobian.mjJAC_DENSE, True),
+    (ConeType.ELLIPTIC, SolverType.NEWTON, 5, 10, mujoco.mjtJacobian.mjJAC_DENSE, True),
+    (ConeType.PYRAMIDAL, SolverType.NEWTON, 5, 10, mujoco.mjtJacobian.mjJAC_SPARSE, True),
+    (ConeType.ELLIPTIC, SolverType.NEWTON, 5, 10, mujoco.mjtJacobian.mjJAC_SPARSE, True),
   )
-  def test_solve(self, cone, solver_, iterations, ls_iterations, jacobian, ls_parallel, enable_islands):
+  def test_solve(self, cone, solver_, iterations, ls_iterations, jacobian, enable_islands):
     """Tests solve."""
     for keyframe in range(3):
       if enable_islands:
@@ -454,7 +374,6 @@ class SolverTest(parameterized.TestCase):
             "opt.solver": solver_,
             "opt.iterations": iterations,
             "opt.ls_iterations": ls_iterations,
-            "opt.ls_parallel": ls_parallel,
           },
         )
       finally:
@@ -740,59 +659,6 @@ class SolverTest(parameterized.TestCase):
       _assert_eq(d.qfrc_constraint.numpy()[0], mjd.qfrc_constraint, "qfrc_constraint")
       _assert_eq(d.efc.force.numpy()[0, : mjd.nefc], mjd.efc_force, "efc_force")
 
-  def test_parallel_linesearch_threads_per_efc_gt_1(self):
-    """Test parallel linesearch with threads_per_efc > 1."""
-    xml = """
-    <mujoco>
-      <worldbody>
-        <body>
-          <freejoint/>
-          <geom size="0.1"/>
-        </body>
-        <body>
-          <freejoint/>
-          <geom size="0.1"/>
-        </body>
-        <body>
-          <freejoint/>
-          <geom size="0.1"/>
-        </body>
-        <body>
-          <freejoint/>
-          <geom size="0.1"/>
-        </body>
-        <body>
-          <freejoint/>
-          <geom size="0.1"/>
-        </body>
-        <body>
-          <freejoint/>
-          <geom size="0.1"/>
-        </body>
-        <body>
-          <freejoint/>
-          <geom size="0.1"/>
-        </body>
-        <body>
-          <freejoint/>
-          <geom size="0.1"/>
-        </body>
-        <body>
-          <freejoint/>
-          <geom size="0.1"/>
-        </body>
-      </worldbody>
-    </mujoco>
-    """
-    mjm, mjd, m, d = test_data.fixture(xml=xml)
-    self.assertEqual(mjm.nv, 54)  # 9 freejoints * 6 dofs each
-
-    # parallel linesearch path with nv > 50 -> threads_per_efc > 1
-    m.opt.ls_parallel = True
-    m.opt.iterations = 1
-    m.opt.ls_iterations = 1
-    mjw.step(m, d)
-
   def test_incremental_vs_full_hessian(self):
     """Tests that incremental Hessian updates produce same result as full recomputation."""
     total_any_changes = False
@@ -816,10 +682,9 @@ class SolverTest(parameterized.TestCase):
         ctx = solver._create_solver_context(m, d)
         solver.init_context(m, d, ctx, grad=True)
         wp.launch(solver._solve_init_search, dim=(d.nworld, m.nv), inputs=[ctx.Mgrad], outputs=[ctx.search, ctx.search_dot])
-        step_size_cost = wp.empty((d.nworld, 0), dtype=float)
         any_changes = False
         for _ in range(m.opt.iterations):
-          solver._linesearch(m, d, ctx, step_size_cost)
+          solver._linesearch(m, d, ctx)
           if track:
             ctx.changed_efc_count.zero_()
           solver._update_constraint(m, d, ctx, track_changes=track)
@@ -1005,16 +870,16 @@ class IslandSolverTest(parameterized.TestCase):
     super().tearDown()
 
   @parameterized.parameters(
-    (ConeType.PYRAMIDAL, SolverType.CG, 10, 5, mujoco.mjtJacobian.mjJAC_DENSE, False),
-    (ConeType.ELLIPTIC, SolverType.CG, 10, 5, mujoco.mjtJacobian.mjJAC_DENSE, False),
-    (ConeType.PYRAMIDAL, SolverType.CG, 10, 5, mujoco.mjtJacobian.mjJAC_SPARSE, False),
-    (ConeType.ELLIPTIC, SolverType.CG, 10, 5, mujoco.mjtJacobian.mjJAC_SPARSE, False),
-    (ConeType.PYRAMIDAL, SolverType.NEWTON, 5, 10, mujoco.mjtJacobian.mjJAC_DENSE, False),
-    (ConeType.ELLIPTIC, SolverType.NEWTON, 5, 10, mujoco.mjtJacobian.mjJAC_DENSE, False),
-    (ConeType.PYRAMIDAL, SolverType.NEWTON, 5, 10, mujoco.mjtJacobian.mjJAC_SPARSE, False),
-    (ConeType.ELLIPTIC, SolverType.NEWTON, 5, 10, mujoco.mjtJacobian.mjJAC_SPARSE, False),
+    (ConeType.PYRAMIDAL, SolverType.CG, 10, 5, mujoco.mjtJacobian.mjJAC_DENSE),
+    (ConeType.ELLIPTIC, SolverType.CG, 10, 5, mujoco.mjtJacobian.mjJAC_DENSE),
+    (ConeType.PYRAMIDAL, SolverType.CG, 10, 5, mujoco.mjtJacobian.mjJAC_SPARSE),
+    (ConeType.ELLIPTIC, SolverType.CG, 10, 5, mujoco.mjtJacobian.mjJAC_SPARSE),
+    (ConeType.PYRAMIDAL, SolverType.NEWTON, 5, 10, mujoco.mjtJacobian.mjJAC_DENSE),
+    (ConeType.ELLIPTIC, SolverType.NEWTON, 5, 10, mujoco.mjtJacobian.mjJAC_DENSE),
+    (ConeType.PYRAMIDAL, SolverType.NEWTON, 5, 10, mujoco.mjtJacobian.mjJAC_SPARSE),
+    (ConeType.ELLIPTIC, SolverType.NEWTON, 5, 10, mujoco.mjtJacobian.mjJAC_SPARSE),
   )
-  def test_solve(self, cone, solver_, iterations, ls_iterations, jacobian, ls_parallel):
+  def test_solve(self, cone, solver_, iterations, ls_iterations, jacobian):
     """Tests solve parity with islands enabled."""
     for keyframe in range(3):
       mjm, mjd, m, d = test_data.fixture(
@@ -1026,7 +891,6 @@ class IslandSolverTest(parameterized.TestCase):
           "opt.solver": solver_,
           "opt.iterations": iterations,
           "opt.ls_iterations": ls_iterations,
-          "opt.ls_parallel": ls_parallel,
         },
       )
 
