@@ -202,7 +202,6 @@ def _main(argv: Sequence[str]):
         f"  enableflags: [{mjw.EnableBit(m.opt.enableflags).name or 'none'}]\n"
         f"  impratio: {1.0 / np.square(m.opt.impratio_invsqrt.numpy()[0]):g}\n"
         f"  is_sparse: {m.is_sparse}\n"
-        f"  ls_parallel: {m.opt.ls_parallel} ls_parallel_min_step: {m.opt.ls_parallel_min_step:g}\n"
         f"  has_fluid: {m.has_fluid}\n"
         f"  broadphase: {m.opt.broadphase.name} broadphase_filter: {m.opt.broadphase_filter.name}\n"
         f"  graph_conditional: {m.opt.graph_conditional}\n"
@@ -239,7 +238,6 @@ def _main(argv: Sequence[str]):
         f"  cone: {mjw.ConeType(m.opt.cone).name}\n"
         f"  solver: {mjw.SolverType(m.opt.solver).name} iterations: {m.opt.iterations} ls_iterations: {m.opt.ls_iterations}\n"
         f"  is_sparse: {m.is_sparse}\n"
-        f"  ls_parallel: {m.opt.ls_parallel}\n"
         f"  broadphase: {m.opt.broadphase.name} broadphase_filter: {m.opt.broadphase_filter.name}"
       )
 

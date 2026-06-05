@@ -1076,28 +1076,6 @@ class IOTest(parameterized.TestCase):
       """
       )
 
-  def test_ls_parallel(self):
-    _, _, m, _ = test_data.fixture(
-      xml="""
-    <mujoco>
-    </mujoco>
-    """
-    )
-
-    self.assertEqual(m.opt.ls_parallel, False)
-
-    _, _, m, _ = test_data.fixture(
-      xml="""
-    <mujoco>
-      <custom>
-        <numeric data="1" name="ls_parallel"/>
-      </custom>
-    </mujoco>
-    """
-    )
-
-    self.assertEqual(m.opt.ls_parallel, True)
-
   def test_contact_sensor_maxmatch(self):
     _, _, m, _ = test_data.fixture(
       xml="""
@@ -2598,6 +2576,33 @@ class IOTest(parameterized.TestCase):
       d.body_awake.numpy()[1],
       [types.SleepState.ASLEEP, types.SleepState.ASLEEP],
     )
+
+  def test_ls_parallel_deprecation(self):
+    _, _, m, _ = test_data.fixture(xml="<mujoco/>")
+
+    # Constructor with ls_parallel argument raises TypeError (unrecognized parameter)
+    with self.assertRaises(TypeError):
+      types.Option(timestep=wp.array([0.01], dtype=float), ls_parallel=True)
+
+    # Accessing (reading) the fields raises AttributeError
+    with self.assertRaises(AttributeError):
+      _ = m.opt.ls_parallel
+    with self.assertRaises(AttributeError):
+      _ = m.opt.ls_parallel_min_step
+
+    # Directly setting any value raises AttributeError
+    with self.assertRaises(AttributeError):
+      m.opt.ls_parallel = False
+    with self.assertRaises(AttributeError):
+      m.opt.ls_parallel_min_step = 0.0
+
+    # Test that override_model raises ValueError with helpful message
+    from mujoco_warp._src.io import override_model
+
+    with self.assertRaisesRegex(ValueError, "ls_parallel was removed in MuJoCo Warp 3.9.1"):
+      override_model(m, {"opt.ls_parallel": True})
+    with self.assertRaisesRegex(ValueError, "ls_parallel_min_step was removed in MuJoCo Warp 3.9.1"):
+      override_model(m, {"opt.ls_parallel_min_step": 0.01})
 
 
 # TODO(team): test set_const_0 sparse

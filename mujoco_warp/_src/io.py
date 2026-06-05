@@ -257,9 +257,6 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
   opt.tolerance = max(opt.tolerance, 1e-6)
 
   # warp only fields
-  ls_parallel_id = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_NUMERIC, "ls_parallel")
-  opt.ls_parallel = (ls_parallel_id > -1) and (mjm.numeric_data[mjm.numeric_adr[ls_parallel_id]] == 1)
-  opt.ls_parallel_min_step = 1.0e-6  # TODO(team): determine good default setting
   opt.broadphase = types.BroadphaseType.NXN
   opt.broadphase_filter = types.BroadphaseFilter.PLANE | types.BroadphaseFilter.SPHERE | types.BroadphaseFilter.OBB
   opt.graph_conditional = True
@@ -2841,7 +2838,6 @@ def override_model(model: types.Model | mujoco.MjModel, overrides: dict[str, Any
 
   Overrides are of the format:
     opt.iterations = 1
-    opt.ls_parallel = True
     opt.cone = pyramidal
     opt.disableflags = contact | spring
   """
@@ -2865,7 +2861,6 @@ def override_model(model: types.Model | mujoco.MjModel, overrides: dict[str, Any
   mjw_only_fields = {
     "opt.broadphase",
     "opt.broadphase_filter",
-    "opt.ls_parallel",
     "opt.graph_conditional",
     "opt.contact_sensor_maxmatch",
   }
@@ -2881,6 +2876,11 @@ def override_model(model: types.Model | mujoco.MjModel, overrides: dict[str, Any
     overrides = overrides_dict
 
   for key, val in overrides.items():
+    if key == "opt.ls_parallel":
+      raise ValueError("ls_parallel was removed in MuJoCo Warp 3.9.1.")
+    if key == "opt.ls_parallel_min_step":
+      raise ValueError("ls_parallel_min_step was removed in MuJoCo Warp 3.9.1.")
+
     # skip overrides on MjModel for properties that are only on mjw.Model
     if key in mjw_only_fields and isinstance(model, mujoco.MjModel):
       continue

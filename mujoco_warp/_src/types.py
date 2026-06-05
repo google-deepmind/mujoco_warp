@@ -800,8 +800,6 @@ class Option:
 
   warp only fields:
     impratio_invsqrt: ratio of friction-to-normal contact impedance (stored as inverse square root)
-    ls_parallel: evaluate engine solver step sizes in parallel
-    ls_parallel_min_step: minimum step size for solver linesearch
     broadphase: broadphase type (BroadphaseType)
     broadphase_filter: broadphase filter bitflag (BroadphaseFilter)
     graph_conditional: flag to use cuda graph conditional
@@ -834,13 +832,28 @@ class Option:
   sdf_iterations: int
   # warp only fields:
   impratio_invsqrt: array("*", float)
-  ls_parallel: bool
-  ls_parallel_min_step: float
   broadphase: BroadphaseType
   broadphase_filter: BroadphaseFilter
   graph_conditional: bool
   run_collision_detection: bool
   contact_sensor_maxmatch: int
+
+  # TODO(team): remove in future version
+  @property
+  def ls_parallel(self) -> bool:
+    raise AttributeError("ls_parallel was removed in MuJoCo Warp 3.9.1.")
+
+  @ls_parallel.setter
+  def ls_parallel(self, value: bool):
+    raise AttributeError("ls_parallel was removed in MuJoCo Warp 3.9.1.")
+
+  @property
+  def ls_parallel_min_step(self) -> float:
+    raise AttributeError("ls_parallel_min_step was removed in MuJoCo Warp 3.9.1.")
+
+  @ls_parallel_min_step.setter
+  def ls_parallel_min_step(self, value: float):
+    raise AttributeError("ls_parallel_min_step was removed in MuJoCo Warp 3.9.1.")
 
 
 @dataclasses.dataclass
@@ -2205,7 +2218,6 @@ class SolverContext:
   mv: wp.array2d[float]
   jv: wp.array2d[float]
   quad: wp.array2d[wp.vec3]
-  quad_gauss: wp.array[wp.vec3]
   alpha: wp.array[float]
   improvement: wp.array[float]
   prev_grad: wp.array2d[float]
