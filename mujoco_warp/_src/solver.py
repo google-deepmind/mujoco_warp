@@ -1931,6 +1931,40 @@ def _solve_init_search(
   wp.atomic_add(ctx_search_dot_out, worldid, search * search)
 
 
+@wp.kernel
+def _solve_init_search_cg_tiled(
+  # Model:
+  nv: int,
+  # In:
+  ctx_grad_in: wp.array2d[float],
+  ctx_Mgrad_in: wp.array2d[float],
+  # Out:
+  ctx_search_out: wp.array2d[float],
+  ctx_search_dot_out: wp.array[float],
+  ctx_prev_grad_out: wp.array2d[float],
+  ctx_prev_Mgrad_out: wp.array2d[float],
+):
+  worldid, tid = wp.tid()
+
+  local_search_dot = float(0.0)
+  BLOCK_DIM = wp.block_dim()
+
+  for dofid in range(tid, nv, BLOCK_DIM):
+    mgrad = ctx_Mgrad_in[worldid, dofid]
+    search = -1.0 * mgrad
+    ctx_search_out[worldid, dofid] = search
+    local_search_dot += search * search
+
+    ctx_prev_grad_out[worldid, dofid] = ctx_grad_in[worldid, dofid]
+    ctx_prev_Mgrad_out[worldid, dofid] = mgrad
+
+  search_dot_tile = wp.tile(local_search_dot, preserve_type=True)
+  search_dot_sum = wp.tile_reduce(wp.add, search_dot_tile)
+
+  if tid == 0:
+    ctx_search_dot_out[worldid] = search_dot_sum[0]
+
+
 @cache_kernel
 def _update_constraint_efc(track_changes: bool):
   TRACK_CHANGES = track_changes
@@ -2283,6 +2317,40 @@ def _update_gradient_grad(
   grad = efc_Ma_in[worldid, dofid] - qfrc_smooth_in[worldid, dofid] - qfrc_constraint_in[worldid, dofid]
   ctx_grad_out[worldid, dofid] = grad
   wp.atomic_add(ctx_grad_dot_out, worldid, grad * grad)
+
+
+@wp.kernel
+def _update_gradient_grad_tiled(
+  # Model:
+  nv: int,
+  # Data in:
+  qfrc_smooth_in: wp.array2d[float],
+  qfrc_constraint_in: wp.array2d[float],
+  efc_Ma_in: wp.array2d[float],
+  # In:
+  ctx_done_in: wp.array[bool],
+  # Out:
+  ctx_grad_out: wp.array2d[float],
+  ctx_grad_dot_out: wp.array[float],
+):
+  worldid, tid = wp.tid()
+
+  if ctx_done_in[worldid]:
+    return
+
+  local_grad_dot = float(0.0)
+  BLOCK_DIM = wp.block_dim()
+
+  for dofid in range(tid, nv, BLOCK_DIM):
+    grad = efc_Ma_in[worldid, dofid] - qfrc_smooth_in[worldid, dofid] - qfrc_constraint_in[worldid, dofid]
+    ctx_grad_out[worldid, dofid] = grad
+    local_grad_dot += grad * grad
+
+  grad_dot_tile = wp.tile(local_grad_dot, preserve_type=True)
+  grad_dot_sum = wp.tile_reduce(wp.add, grad_dot_tile)
+
+  if tid == 0:
+    ctx_grad_dot_out[worldid] = grad_dot_sum[0]
 
 
 @wp.kernel
@@ -2893,14 +2961,22 @@ def _JTDAJ_sparse(
 
 def _update_gradient(m: types.Model, d: types.Data, ctx: SolverContext):
   # grad = Ma - qfrc_smooth - qfrc_constraint
-  wp.launch(_update_gradient_zero_grad_dot, dim=d.nworld, inputs=[ctx.done], outputs=[ctx.grad_dot])
-
-  wp.launch(
-    _update_gradient_grad,
-    dim=(d.nworld, m.nv),
-    inputs=[d.qfrc_smooth, d.qfrc_constraint, d.efc.Ma, ctx.done],
-    outputs=[ctx.grad, ctx.grad_dot],
-  )
+  if m.opt.solver == types.SolverType.CG:
+    wp.launch_tiled(
+      _update_gradient_grad_tiled,
+      dim=d.nworld,
+      inputs=[m.nv, d.qfrc_smooth, d.qfrc_constraint, d.efc.Ma, ctx.done],
+      outputs=[ctx.grad, ctx.grad_dot],
+      block_dim=m.block_dim.update_gradient_grad,
+    )
+  else:
+    wp.launch(_update_gradient_zero_grad_dot, dim=d.nworld, inputs=[ctx.done], outputs=[ctx.grad_dot])
+    wp.launch(
+      _update_gradient_grad,
+      dim=(d.nworld, m.nv),
+      inputs=[d.qfrc_smooth, d.qfrc_constraint, d.efc.Ma, ctx.done],
+      outputs=[ctx.grad, ctx.grad_dot],
+    )
 
   if m.opt.solver == types.SolverType.CG:
     smooth.solve_m(m, d, ctx.Mgrad, ctx.grad)
@@ -3072,25 +3148,6 @@ def _update_gradient_incremental(m: types.Model, d: types.Data, ctx: SolverConte
 
 
 @wp.kernel
-def _solve_prev_grad_Mgrad(
-  # In:
-  ctx_grad_in: wp.array2d[float],
-  ctx_Mgrad_in: wp.array2d[float],
-  ctx_done_in: wp.array[bool],
-  # Out:
-  ctx_prev_grad_out: wp.array2d[float],
-  ctx_prev_Mgrad_out: wp.array2d[float],
-):
-  worldid, dofid = wp.tid()
-
-  if ctx_done_in[worldid]:
-    return
-
-  ctx_prev_grad_out[worldid, dofid] = ctx_grad_in[worldid, dofid]
-  ctx_prev_Mgrad_out[worldid, dofid] = ctx_Mgrad_in[worldid, dofid]
-
-
-@wp.kernel
 def _solve_beta_zero(
   # Out:
   ctx_beta_num_out: wp.array[float],
@@ -3099,6 +3156,47 @@ def _solve_beta_zero(
   worldid = wp.tid()
   ctx_beta_num_out[worldid] = 0.0
   ctx_beta_den_out[worldid] = 0.0
+
+
+@wp.kernel
+def _solve_beta_accumulate_tiled(
+  # Model:
+  nv: int,
+  # In:
+  ctx_grad_in: wp.array2d[float],
+  ctx_Mgrad_in: wp.array2d[float],
+  ctx_prev_grad_in: wp.array2d[float],
+  ctx_prev_Mgrad_in: wp.array2d[float],
+  ctx_done_in: wp.array[bool],
+  # Out:
+  ctx_beta_num_out: wp.array[float],
+  ctx_beta_den_out: wp.array[float],
+):
+  worldid, tid = wp.tid()
+
+  if ctx_done_in[worldid]:
+    return
+
+  local_num = float(0.0)
+  local_den = float(0.0)
+  BLOCK_DIM = wp.block_dim()
+
+  for dofid in range(tid, nv, BLOCK_DIM):
+    prev_Mgrad = ctx_prev_Mgrad_in[worldid, dofid]
+    num = ctx_grad_in[worldid, dofid] * (ctx_Mgrad_in[worldid, dofid] - prev_Mgrad)
+    den = ctx_prev_grad_in[worldid, dofid] * prev_Mgrad
+    local_num += num
+    local_den += den
+
+  num_tile = wp.tile(local_num, preserve_type=True)
+  num_sum = wp.tile_reduce(wp.add, num_tile)
+
+  den_tile = wp.tile(local_den, preserve_type=True)
+  den_sum = wp.tile_reduce(wp.add, den_tile)
+
+  if tid == 0:
+    ctx_beta_num_out[worldid] = num_sum[0]
+    ctx_beta_den_out[worldid] = den_sum[0]
 
 
 @wp.kernel
@@ -3123,23 +3221,6 @@ def _solve_beta_accumulate(
   den = ctx_prev_grad_in[worldid, dofid] * prev_Mgrad
   wp.atomic_add(ctx_beta_num_out, worldid, num)
   wp.atomic_add(ctx_beta_den_out, worldid, den)
-
-
-@wp.kernel
-def _solve_beta_finalize(
-  # In:
-  ctx_beta_num_in: wp.array[float],
-  ctx_beta_den_in: wp.array[float],
-  ctx_done_in: wp.array[bool],
-  # Out:
-  ctx_beta_out: wp.array[float],
-):
-  worldid = wp.tid()
-
-  if ctx_done_in[worldid]:
-    return
-
-  ctx_beta_out[worldid] = wp.max(0.0, ctx_beta_num_in[worldid] / wp.max(types.MJ_MINVAL, ctx_beta_den_in[worldid]))
 
 
 @wp.kernel
@@ -3182,6 +3263,91 @@ def _solve_search_update(
 
   ctx_search_out[worldid, dofid] = search
   wp.atomic_add(ctx_search_dot_out, worldid, search * search)
+
+
+@wp.kernel
+def _solve_search_update_cg_tiled(
+  # Model:
+  nv: int,
+  # In:
+  ctx_grad_in: wp.array2d[float],
+  ctx_Mgrad_in: wp.array2d[float],
+  ctx_search_in: wp.array2d[float],
+  ctx_beta_in: wp.array[float],
+  ctx_done_in: wp.array[bool],
+  # Out:
+  ctx_search_out: wp.array2d[float],
+  ctx_search_dot_out: wp.array[float],
+  ctx_prev_grad_out: wp.array2d[float],
+  ctx_prev_Mgrad_out: wp.array2d[float],
+):
+  worldid, tid = wp.tid()
+
+  if ctx_done_in[worldid]:
+    return
+
+  local_search_dot = float(0.0)
+  BLOCK_DIM = wp.block_dim()
+  beta = ctx_beta_in[worldid]
+
+  for dofid in range(tid, nv, BLOCK_DIM):
+    mgrad = ctx_Mgrad_in[worldid, dofid]
+    search = -1.0 * mgrad + beta * ctx_search_in[worldid, dofid]
+
+    ctx_search_out[worldid, dofid] = search
+    local_search_dot += search * search
+
+    ctx_prev_grad_out[worldid, dofid] = ctx_grad_in[worldid, dofid]
+    ctx_prev_Mgrad_out[worldid, dofid] = mgrad
+
+  search_dot_tile = wp.tile(local_search_dot, preserve_type=True)
+  search_dot_sum = wp.tile_reduce(wp.add, search_dot_tile)
+
+  if tid == 0:
+    ctx_search_dot_out[worldid] = search_dot_sum[0]
+
+
+@wp.kernel
+def _solve_cg_finalize(
+  # Model:
+  nv: int,
+  opt_tolerance: wp.array[float],
+  opt_iterations: int,
+  stat_meaninertia: wp.array[float],
+  # In:
+  ctx_beta_num_in: wp.array[float],
+  ctx_beta_den_in: wp.array[float],
+  ctx_improvement_in: wp.array[float],
+  ctx_done_in: wp.array[bool],
+  ctx_grad_dot_in: wp.array[float],
+  # Data out:
+  solver_niter_out: wp.array[int],
+  # Out:
+  ctx_beta_out: wp.array[float],
+  nsolving_out: wp.array[int],
+  ctx_done_out: wp.array[bool],
+):
+  worldid = wp.tid()
+
+  if ctx_done_in[worldid]:
+    return
+
+  # 1. solve_beta_finalize
+  ctx_beta_out[worldid] = wp.max(0.0, ctx_beta_num_in[worldid] / wp.max(types.MJ_MINVAL, ctx_beta_den_in[worldid]))
+
+  # 2. solve_done
+  solver_niter_out[worldid] += 1
+  tolerance = opt_tolerance[worldid % opt_tolerance.shape[0]]
+  meaninertia = stat_meaninertia[worldid % stat_meaninertia.shape[0]]
+
+  grad_dot = ctx_grad_dot_in[worldid]
+
+  improvement = _rescale(nv, meaninertia, ctx_improvement_in[worldid])
+  gradient = _rescale(nv, meaninertia, wp.sqrt(grad_dot))
+  done = (improvement < tolerance) or (gradient < tolerance)
+  if done or solver_niter_out[worldid] == opt_iterations:
+    ctx_done_out[worldid] = True
+    wp.atomic_add(nsolving_out, 0, -1)
 
 
 @wp.kernel
@@ -3230,14 +3396,6 @@ def _solver_iteration(
 ):
   _linesearch(m, d, ctx, step_size_cost)
 
-  if m.opt.solver == types.SolverType.CG:
-    wp.launch(
-      _solve_prev_grad_Mgrad,
-      dim=(d.nworld, m.nv),
-      inputs=[ctx.grad, ctx.Mgrad, ctx.done],
-      outputs=[ctx.prev_grad, ctx.prev_Mgrad],
-    )
-
   # Incremental H is only valid for non-elliptic cones. The elliptic cone
   # path in _update_constraint_efc has early returns that skip state change
   # tracking, and the additional JTCJ Hessian term depends on Jaref which
@@ -3262,42 +3420,66 @@ def _solver_iteration(
       dim=d.nworld,
       outputs=[ctx.beta, ctx.beta_den],
     )
-    wp.launch(
-      _solve_beta_accumulate,
-      dim=(d.nworld, m.nv),
-      inputs=[ctx.grad, ctx.Mgrad, ctx.prev_grad, ctx.prev_Mgrad, ctx.done],
-      outputs=[ctx.beta, ctx.beta_den],
-    )
-    wp.launch(
-      _solve_beta_finalize,
+    wp.launch_tiled(
+      _solve_beta_accumulate_tiled,
       dim=d.nworld,
-      inputs=[ctx.beta, ctx.beta_den, ctx.done],
-      outputs=[ctx.beta],
+      inputs=[m.nv, ctx.grad, ctx.Mgrad, ctx.prev_grad, ctx.prev_Mgrad, ctx.done],
+      outputs=[ctx.beta, ctx.beta_den],
+      block_dim=m.block_dim.solve_beta_accumulate,
+    )
+    wp.launch(
+      _solve_cg_finalize,
+      dim=d.nworld,
+      inputs=[
+        m.nv,
+        m.opt.tolerance,
+        m.opt.iterations,
+        m.stat.meaninertia,
+        ctx.beta,
+        ctx.beta_den,
+        ctx.improvement,
+        ctx.done,
+        ctx.grad_dot,
+      ],
+      outputs=[
+        d.solver_niter,
+        ctx.beta,
+        nsolving,
+        ctx.done,
+      ],
+    )
+    wp.launch_tiled(
+      _solve_search_update_cg_tiled,
+      dim=d.nworld,
+      inputs=[m.nv, ctx.grad, ctx.Mgrad, ctx.search, ctx.beta, ctx.done],
+      outputs=[ctx.search, ctx.search_dot, ctx.prev_grad, ctx.prev_Mgrad],
+      block_dim=m.block_dim.solve_search_update_cg,
     )
 
-  wp.launch(_solve_zero_search_dot, dim=d.nworld, inputs=[ctx.done], outputs=[ctx.search_dot])
+  else:
+    wp.launch(_solve_zero_search_dot, dim=d.nworld, inputs=[ctx.done], outputs=[ctx.search_dot])
 
-  wp.launch(
-    _solve_search_update,
-    dim=(d.nworld, m.nv),
-    inputs=[m.opt.solver, ctx.Mgrad, ctx.search, ctx.beta, ctx.done],
-    outputs=[ctx.search, ctx.search_dot],
-  )
+    wp.launch(
+      _solve_search_update,
+      dim=(d.nworld, m.nv),
+      inputs=[m.opt.solver, ctx.Mgrad, ctx.search, ctx.beta, ctx.done],
+      outputs=[ctx.search, ctx.search_dot],
+    )
 
-  wp.launch(
-    _solve_done,
-    dim=d.nworld,
-    inputs=[
-      m.nv,
-      m.opt.tolerance,
-      m.opt.iterations,
-      m.stat.meaninertia,
-      ctx.grad_dot,
-      ctx.improvement,
-      ctx.done,
-    ],
-    outputs=[d.solver_niter, nsolving, ctx.done],
-  )
+    wp.launch(
+      _solve_done,
+      dim=d.nworld,
+      inputs=[
+        m.nv,
+        m.opt.tolerance,
+        m.opt.iterations,
+        m.stat.meaninertia,
+        ctx.grad_dot,
+        ctx.improvement,
+        ctx.done,
+      ],
+      outputs=[d.solver_niter, nsolving, ctx.done],
+    )
 
 
 def init_context(m: types.Model, d: types.Data, ctx: SolverContext | InverseContext, grad: bool = True):
@@ -3369,12 +3551,22 @@ def _solve(m: types.Model, d: types.Data, ctx: SolverContext):
   init_context(m, d, ctx, grad=True)
 
   # search = -Mgrad
-  wp.launch(
-    _solve_init_search,
-    dim=(d.nworld, m.nv),
-    inputs=[ctx.Mgrad],
-    outputs=[ctx.search, ctx.search_dot],
-  )
+  if m.opt.solver == types.SolverType.CG:
+    wp.launch_tiled(
+      _solve_init_search_cg_tiled,
+      dim=d.nworld,
+      inputs=[m.nv, ctx.grad, ctx.Mgrad],
+      outputs=[ctx.search, ctx.search_dot, ctx.prev_grad, ctx.prev_Mgrad],
+      block_dim=m.block_dim.solve_init_search_cg,
+    )
+
+  else:
+    wp.launch(
+      _solve_init_search,
+      dim=(d.nworld, m.nv),
+      inputs=[ctx.Mgrad],
+      outputs=[ctx.search, ctx.search_dot],
+    )
 
   step_size_cost = wp.empty((d.nworld, m.opt.ls_iterations if m.opt.ls_parallel else 0), dtype=float)
 
@@ -4508,6 +4700,10 @@ def _solve_beta_island_finalize(
   worldid, islandid = wp.tid()
 
   if islandid >= nisland_in[worldid]:
+    return
+
+  if island_done_in[worldid, islandid]:
+    island_beta_out[worldid, islandid] = 0.0
     return
 
   island_beta_out[worldid, islandid] = wp.max(
