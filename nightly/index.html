@@ -296,14 +296,14 @@
 
   <div id="charts-container" style="display: none;">
     <div class="chart-container">
-      <div class="chart-title">Step Time Breakdown (ns/step)</div>
+      <div class="chart-title" id="step-chart-title">Step Time Breakdown (ns/step)</div>
       <div class="chart-canvas"><canvas id="step-chart"></canvas></div>
     </div>
-    <div class="chart-container">
+    <div class="chart-container" id="fwd-position-container">
       <div class="chart-title">fwd_position Breakdown (ns/step)</div>
       <div class="chart-canvas"><canvas id="fwd-position-chart"></canvas></div>
     </div>
-    <div class="chart-container">
+    <div class="chart-container" id="fwd-velocity-container">
       <div class="chart-title">fwd_velocity Breakdown (ns/step)</div>
       <div class="chart-canvas"><canvas id="fwd-velocity-chart"></canvas></div>
     </div>
@@ -326,7 +326,7 @@
       '#6B8E7C', '#9B6B6B', '#5D8AA6', '#A08662', '#7A8E77'
     ];
 
-    // Benchmark metadata: [name, description, nbody, nv, ngeom, nu]
+    // Benchmark metadata: [name, description, nbody, nv, ngeom, nu, isRender]
     const BENCHMARK_DATA = {
       aloha_pot: ['Aloha Pot', 'Lifting a pot off a work table. Exercises convex mesh collision pipeline.', 26, 23, 204, 14],
       aloha_sdf: ['Aloha SDF', 'An SDF cow on the table. Exercises signed distance function queries.', 22, 22, 96, 14],
@@ -338,7 +338,11 @@
       three_humanoids: ['Three Humanoids', 'Three humanoids on flat ground. Tests dense vs sparse matrix solver crossover.', 49, 81, 58, 63],
       myoarm: ['MyoArm', 'Musculoskeletal model of the human arm with 63 muscle-tendon actuators.', 40, 38, 161, 63],
       unitree_g1_flat: ['Unitree G1 Flat', 'Unitree G1 humanoid replaying a shuffle dance on flat terrain.', 31, 35, 69, 29],
-      unitree_g1_hfield: ['Unitree G1 Hfield', 'Unitree G1 humanoid on randomized heightfield terrain.', 31, 35, 69, 29]
+      unitree_g1_hfield: ['Unitree G1 Hfield', 'Unitree G1 humanoid on randomized heightfield terrain.', 31, 35, 69, 29],
+      primitives: ['Primitives', 'Rendering of primitive shapes.', 126, 750, 127, 0, true],
+      mug: ['Mug', 'Mesh rendering of a mug.', 2, 6, 3, 0, true],
+      cloth_render: ['Cloth', 'Rendering a large cloth simulation.', 918, 2706, 21, 0, true],
+      unitree_g1_hfield_render: ['Unitree G1 Hfield', 'Rendering of Unitree G1 humanoid on terrain.', 31, 35, 69, 29, true]
     };
 
     // Execution orders for breakdown charts (matching forward.py)
@@ -356,7 +360,9 @@
     Object.keys(BENCHMARK_DATA).forEach(name => {
       const btn = document.createElement('button');
       btn.className = 'benchmark-btn';
-      btn.textContent = name.replace(/_/g, ' ');
+      const meta = BENCHMARK_DATA[name];
+      const isRender = meta[6] || false;
+      btn.textContent = (isRender ? '📷 ' : '') + meta[0];
       btn.dataset.benchmark = name;
       btn.addEventListener('click', () => loadBenchmark(name));
       buttonsContainer.appendChild(btn);
@@ -367,7 +373,7 @@
       const meta = BENCHMARK_DATA[benchmarkName];
       if (!meta) { header.classList.remove('visible'); return; }
 
-      const [name, desc, nbody, nv, ngeom, nu, solver] = meta;
+      const [name, desc, nbody, nv, ngeom, nu, isRender] = meta;
 
       document.getElementById('benchmark-name').textContent = name;
       document.getElementById('benchmark-description').textContent = desc || 'No description available.';
@@ -409,7 +415,9 @@
         document.getElementById('loading').style.display = 'none';
         document.getElementById('charts-container').style.display = 'block';
 
-        renderCharts(data);
+        const meta = BENCHMARK_DATA[benchmarkName];
+        const isRender = meta ? (meta[6] || false) : false;
+        renderCharts(data, isRender);
       } catch (error) {
         document.getElementById('loading').style.display = 'none';
         const errorDiv = document.getElementById('error-message');
@@ -516,7 +524,7 @@
       };
     }
 
-    function renderCharts(data) {
+    function renderCharts(data, isRender) {
       allCharts.forEach(c => c.destroy());
       allCharts = [];
 
@@ -524,57 +532,75 @@
       const timestamps = data.map(d => new Date(d.timestamp));
       const commits = data.map(d => d.commit);
 
-      renderStepChart(data, timestamps, commits, textDim, border);
-      renderBreakdownChart(data, timestamps, commits, textDim, border, 'fwd_position');
-      renderBreakdownChart(data, timestamps, commits, textDim, border, 'fwd_velocity');
+      // Show/hide fwd_position and fwd_velocity breakdown charts
+      const posContainer = document.getElementById('fwd-position-container');
+      const velContainer = document.getElementById('fwd-velocity-container');
+      if (posContainer) posContainer.style.display = isRender ? 'none' : 'block';
+      if (velContainer) velContainer.style.display = isRender ? 'none' : 'block';
+
+      // Update Step Chart title
+      const stepTitle = document.getElementById('step-chart-title');
+      if (stepTitle) {
+        stepTitle.textContent = isRender ? 'Render Time Breakdown (ns/frame)' : 'Step Time Breakdown (ns/step)';
+      }
+
+      renderStepChart(data, timestamps, commits, textDim, border, isRender);
+      if (!isRender) {
+        renderBreakdownChart(data, timestamps, commits, textDim, border, 'fwd_position');
+        renderBreakdownChart(data, timestamps, commits, textDim, border, 'fwd_velocity');
+      }
       renderMemoryChart(data, timestamps, commits, textDim, border);
       renderJitChart(data, timestamps, commits, textDim, border);
     }
 
-    function renderStepChart(data, timestamps, commits, textDimColor, borderColor) {
-      const sampleData = data[0];
-
-      // Get forward children (excluding sensors)
-      const forwardChildren = Object.keys(sampleData)
-        .filter(k => k.startsWith('step.forward.') && !k.substring(13).includes('.'))
-        .sort();
-      const sensorKeys = forwardChildren.filter(k => k.includes('sensor_'));
-      const nonSensorKeys = forwardChildren.filter(k => !k.includes('sensor_'));
-
-      const executionOrder = [
-        'step.forward.fwd_position', 'step.forward.fwd_velocity',
-        'step.forward.fwd_actuation', 'step.forward.fwd_acceleration', 'step.forward.solve'
-      ];
-
+    function renderStepChart(data, timestamps, commits, textDimColor, borderColor, isRender) {
       const datasets = [];
 
-      // Forward children in execution order
-      executionOrder.forEach((key, idx) => {
-        if (nonSensorKeys.includes(key)) {
-          datasets.push(createStackedDataset(key.replace('step.forward.', ''), data, key, timestamps, commits, COLORS[idx], 'step'));
-        }
-      });
+      if (isRender) {
+        datasets.push(createStackedDataset('refit_bvh', data, 'refit_bvh', timestamps, commits, COLORS[0], 'render'));
+        datasets.push(createStackedDataset('render', data, 'render', timestamps, commits, COLORS[1], 'render'));
+      } else {
+        const sampleData = data[0];
+        // Get forward children (excluding sensors)
+        const forwardChildren = Object.keys(sampleData)
+          .filter(k => k.startsWith('step.forward.') && !k.substring(13).includes('.'))
+          .sort();
+        const sensorKeys = forwardChildren.filter(k => k.includes('sensor_'));
+        const nonSensorKeys = forwardChildren.filter(k => !k.includes('sensor_'));
 
-      // Combined sensors
-      if (sensorKeys.length > 0) {
-        const sensorValues = data.map(d => sensorKeys.reduce((sum, k) => sum + (d[k] || 0), 0));
-        datasets.push({
-          label: 'sensor', data: timestamps.map((t, i) => ({ x: t, y: sensorValues[i], commit: commits[i] })),
-          backgroundColor: COLORS[5], borderColor: COLORS[5], borderWidth: 0, pointRadius: 0, fill: true, stack: 'step'
+        const executionOrder = [
+          'step.forward.fwd_position', 'step.forward.fwd_velocity',
+          'step.forward.fwd_actuation', 'step.forward.fwd_acceleration', 'step.forward.solve'
+        ];
+
+        // Forward children in execution order
+        executionOrder.forEach((key, idx) => {
+          if (nonSensorKeys.includes(key)) {
+            datasets.push(createStackedDataset(key.replace('step.forward.', ''), data, key, timestamps, commits, COLORS[idx], 'step'));
+          }
+        });
+
+        // Combined sensors
+        if (sensorKeys.length > 0) {
+          const sensorValues = data.map(d => sensorKeys.reduce((sum, k) => sum + (d[k] || 0), 0));
+          datasets.push({
+            label: 'sensor', data: timestamps.map((t, i) => ({ x: t, y: sensorValues[i], commit: commits[i] })),
+            backgroundColor: COLORS[5], borderColor: COLORS[5], borderWidth: 0, pointRadius: 0, fill: true, stack: 'step'
+          });
+        }
+
+        // Integrators
+        const integratorKeys = Object.keys(sampleData)
+          .filter(k => k.startsWith('step.') && k !== 'step' && !k.startsWith('step.forward') && !k.substring(5).includes('.'))
+          .sort();
+        integratorKeys.forEach((key, idx) => {
+          datasets.push(createStackedDataset(key.replace('step.', ''), data, key, timestamps, commits, COLORS[(6 + idx) % COLORS.length], 'step'));
         });
       }
 
-      // Integrators
-      const integratorKeys = Object.keys(sampleData)
-        .filter(k => k.startsWith('step.') && k !== 'step' && !k.startsWith('step.forward') && !k.substring(5).includes('.'))
-        .sort();
-      integratorKeys.forEach((key, idx) => {
-        datasets.push(createStackedDataset(key.replace('step.', ''), data, key, timestamps, commits, COLORS[(6 + idx) % COLORS.length], 'step'));
-      });
-
       const opts = baseChartOptions(commits, textDimColor, borderColor, true);
       opts.scales.x.title = { display: true, text: 'Date', color: textDimColor };
-      opts.scales.y.title = { display: true, text: 'Time (ns/step)', color: textDimColor };
+      opts.scales.y.title = { display: true, text: isRender ? 'Time (ns/frame)' : 'Time (ns/step)', color: textDimColor };
       opts.scales.y.ticks.callback = v => v.toLocaleString();
 
       allCharts.push(new Chart(document.getElementById('step-chart'), { type: 'line', data: { datasets }, options: opts }));
