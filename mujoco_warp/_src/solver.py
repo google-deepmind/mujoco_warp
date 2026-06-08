@@ -122,13 +122,14 @@ def _init_dof_to_block(nv: int, dof_to_block_out: wp.array[int]):
 
 @wp.kernel
 def _build_block_mapping(
-    nbody: int,
-    body_dofadr_in: wp.array[int],
-    body_dofnum_in: wp.array[int],
-    # Out:
-    block_dof_adr_out: wp.array[int],
-    block_dof_num_out: wp.array[int],
-    dof_to_block_out: wp.array[int],
+  # Model:
+  nbody: int,
+  body_dofnum: wp.array[int],
+  body_dofadr: wp.array[int],
+  # Out:
+  block_dof_adr_out: wp.array[int],
+  block_dof_num_out: wp.array[int],
+  dof_to_block_out: wp.array[int],
 ):
   """Build block mapping on device. Single-threaded kernel.
 
@@ -141,8 +142,8 @@ def _build_block_mapping(
 
   block_count = int(0)
   for b in range(nbody):
-    ndof = body_dofnum_in[b]
-    dof0 = body_dofadr_in[b]
+    ndof = body_dofnum[b]
+    dof0 = body_dofadr[b]
     if ndof == 0:
       continue
     remaining = ndof
@@ -189,10 +190,10 @@ def _create_solver_context(m: types.Model, d: types.Data) -> SolverContext:
 
     wp.launch(_init_dof_to_block, dim=nv, inputs=[nv], outputs=[dof_to_block])
     wp.launch(
-        _build_block_mapping,
-        dim=1,
-        inputs=[m.nbody, m.body_dofadr, m.body_dofnum],
-        outputs=[block_dof_adr, block_dof_num, dof_to_block],
+      _build_block_mapping,
+      dim=1,
+      inputs=[m.nbody, m.body_dofnum, m.body_dofadr],
+      outputs=[block_dof_adr, block_dof_num, dof_to_block],
     )
     nblocks = max_blocks
   else:
@@ -2858,21 +2859,21 @@ def _cholesky_factorize_solve(m: types.Model, d: types.Data, ctx: SolverContext,
 
 @wp.kernel
 def _block_jacobi_JTDJ(
-    # Data in:
-    nefc_in: wp.array[int],
-    efc_J_rownnz_in: wp.array2d[int],
-    efc_J_rowadr_in: wp.array2d[int],
-    efc_J_colind_in: wp.array3d[int],
-    efc_J_in: wp.array3d[float],
-    efc_D_in: wp.array2d[float],
-    efc_state_in: wp.array2d[int],
-    # Block mapping:
-    dof_to_block_in: wp.array[int],
-    block_dof_adr_in: wp.array[int],
-    # In:
-    ctx_done_in: wp.array[bool],
-    # Out:
-    inv_H_blocks_out: wp.array3d[float],
+  # Data in:
+  nefc_in: wp.array[int],
+  efc_J_rownnz_in: wp.array2d[int],
+  efc_J_rowadr_in: wp.array2d[int],
+  efc_J_colind_in: wp.array3d[int],
+  efc_J_in: wp.array3d[float],
+  efc_D_in: wp.array2d[float],
+  efc_state_in: wp.array2d[int],
+  # In:
+  dof_to_block_in: wp.array[int],
+  block_dof_adr_in: wp.array[int],
+  # In:
+  ctx_done_in: wp.array[bool],
+  # Out:
+  inv_H_blocks_out: wp.array3d[float],
 ):
   """Accumulate block-diagonal of J^T D J into inv_H_blocks."""
   worldid, efcid = wp.tid()
@@ -2931,20 +2932,19 @@ def _block_jacobi_JTDJ(
 
 @wp.kernel
 def _block_jacobi_add_M(
-    # Model in:
-    nv: int,
-    M_mulm_rowadr_in: wp.array[int],
-    M_mulm_col_in: wp.array[int],
-    M_mulm_madr_in: wp.array[int],
-    # Block mapping:
-    dof_to_block_in: wp.array[int],
-    block_dof_adr_in: wp.array[int],
-    # Data in:
-    M_in: wp.array3d[float],
-    # In:
-    ctx_done_in: wp.array[bool],
-    # Out:
-    inv_H_blocks_out: wp.array3d[float],
+  # Model:
+  nv: int,
+  M_mulm_rowadr: wp.array[int],
+  M_mulm_col: wp.array[int],
+  M_mulm_madr: wp.array[int],
+  # Data in:
+  M_in: wp.array3d[float],
+  # In:
+  dof_to_block_in: wp.array[int],
+  block_dof_adr_in: wp.array[int],
+  ctx_done_in: wp.array[bool],
+  # Out:
+  inv_H_blocks_out: wp.array3d[float],
 ):
   """Add mass matrix entries within each block."""
   worldid, di = wp.tid()
@@ -2959,16 +2959,16 @@ def _block_jacobi_add_M(
   li = di - block_dof_adr_in[bi]
 
   # Walk sparse M row for this DOF, accumulating entries within same block
-  start = M_mulm_rowadr_in[di]
-  end = M_mulm_rowadr_in[di + 1]
+  start = M_mulm_rowadr[di]
+  end = M_mulm_rowadr[di + 1]
   for k in range(start, end):
-    dj = M_mulm_col_in[k]
+    dj = M_mulm_col[k]
     if di > dj:
       continue
     bj = dof_to_block_in[dj]
     if bj == bi:
       lj = dj - block_dof_adr_in[bj]
-      madr = M_mulm_madr_in[k]
+      madr = M_mulm_madr[k]
       M_val = M_in[worldid, 0, madr]
       lmin = wp.min(li, lj)
       lmax = wp.max(li, lj)
@@ -2978,13 +2978,12 @@ def _block_jacobi_add_M(
 
 @wp.kernel
 def _block_jacobi_invert(
-    # Block mapping:
-    nblocks: int,
-    block_dof_num_in: wp.array[int],
-    # In:
-    ctx_done_in: wp.array[bool],
-    # In/Out:
-    inv_H_blocks_io: wp.array3d[float],
+  # In:
+  nblocks: int,
+  block_dof_num_in: wp.array[int],
+  ctx_done_in: wp.array[bool],
+  # Out:
+  inv_H_blocks_out: wp.array3d[float],
 ):
   """Invert each block in-place: H_bb -> H_bb^{-1}."""
   worldid, blockid = wp.tid()
@@ -2998,12 +2997,12 @@ def _block_jacobi_invert(
   ndof = block_dof_num_in[blockid]
 
   # Read block entries
-  H00 = inv_H_blocks_io[worldid, 0, blockid]
-  H01 = inv_H_blocks_io[worldid, 1, blockid]
-  H02 = inv_H_blocks_io[worldid, 2, blockid]
-  H11 = inv_H_blocks_io[worldid, 3, blockid]
-  H12 = inv_H_blocks_io[worldid, 4, blockid]
-  H22 = inv_H_blocks_io[worldid, 5, blockid]
+  H00 = inv_H_blocks_out[worldid, 0, blockid]
+  H01 = inv_H_blocks_out[worldid, 1, blockid]
+  H02 = inv_H_blocks_out[worldid, 2, blockid]
+  H11 = inv_H_blocks_out[worldid, 3, blockid]
+  H12 = inv_H_blocks_out[worldid, 4, blockid]
+  H22 = inv_H_blocks_out[worldid, 5, blockid]
 
   # Regularization for numerical safety
   reg = 1.0e-12
@@ -3013,20 +3012,20 @@ def _block_jacobi_invert(
 
   if ndof == 1:
     if H00 > 0.0:
-      inv_H_blocks_io[worldid, 0, blockid] = 1.0 / H00
+      inv_H_blocks_out[worldid, 0, blockid] = 1.0 / H00
     else:
-      inv_H_blocks_io[worldid, 0, blockid] = 0.0
+      inv_H_blocks_out[worldid, 0, blockid] = 0.0
   elif ndof == 2:
     det = H00 * H11 - H01 * H01
     if wp.abs(det) > 1.0e-30:
       inv_det = 1.0 / det
-      inv_H_blocks_io[worldid, 0, blockid] = H11 * inv_det
-      inv_H_blocks_io[worldid, 1, blockid] = -H01 * inv_det
-      inv_H_blocks_io[worldid, 3, blockid] = H00 * inv_det
+      inv_H_blocks_out[worldid, 0, blockid] = H11 * inv_det
+      inv_H_blocks_out[worldid, 1, blockid] = -H01 * inv_det
+      inv_H_blocks_out[worldid, 3, blockid] = H00 * inv_det
     else:
-      inv_H_blocks_io[worldid, 0, blockid] = 0.0
-      inv_H_blocks_io[worldid, 1, blockid] = 0.0
-      inv_H_blocks_io[worldid, 3, blockid] = 0.0
+      inv_H_blocks_out[worldid, 0, blockid] = 0.0
+      inv_H_blocks_out[worldid, 1, blockid] = 0.0
+      inv_H_blocks_out[worldid, 3, blockid] = 0.0
   elif ndof == 3:
     # 3x3 symmetric matrix inversion via cofactors
     c00 = H11 * H22 - H12 * H12
@@ -3039,29 +3038,29 @@ def _block_jacobi_invert(
     det = H00 * c00 + H01 * c01 + H02 * c02
     if wp.abs(det) > 1.0e-30:
       inv_det = 1.0 / det
-      inv_H_blocks_io[worldid, 0, blockid] = c00 * inv_det
-      inv_H_blocks_io[worldid, 1, blockid] = c01 * inv_det
-      inv_H_blocks_io[worldid, 2, blockid] = c02 * inv_det
-      inv_H_blocks_io[worldid, 3, blockid] = c11 * inv_det
-      inv_H_blocks_io[worldid, 4, blockid] = c12 * inv_det
-      inv_H_blocks_io[worldid, 5, blockid] = c22 * inv_det
+      inv_H_blocks_out[worldid, 0, blockid] = c00 * inv_det
+      inv_H_blocks_out[worldid, 1, blockid] = c01 * inv_det
+      inv_H_blocks_out[worldid, 2, blockid] = c02 * inv_det
+      inv_H_blocks_out[worldid, 3, blockid] = c11 * inv_det
+      inv_H_blocks_out[worldid, 4, blockid] = c12 * inv_det
+      inv_H_blocks_out[worldid, 5, blockid] = c22 * inv_det
     else:
       for i in range(6):
-        inv_H_blocks_io[worldid, i, blockid] = 0.0
+        inv_H_blocks_out[worldid, i, blockid] = 0.0
 
 
 @wp.kernel
 def _apply_block_preconditioner(
-    # Block mapping:
-    nblocks: int,
-    block_dof_adr_in: wp.array[int],
-    block_dof_num_in: wp.array[int],
-    # In:
-    inv_H_blocks_in: wp.array3d[float],
-    grad_in: wp.array2d[float],
-    done_in: wp.array[bool],
-    # Out:
-    Mgrad_out: wp.array2d[float],
+  # In:
+  nblocks: int,
+  block_dof_adr_in: wp.array[int],
+  block_dof_num_in: wp.array[int],
+  # In:
+  inv_H_blocks_in: wp.array3d[float],
+  grad_in: wp.array2d[float],
+  done_in: wp.array[bool],
+  # Out:
+  Mgrad_out: wp.array2d[float],
 ):
   """Mgrad = H_block^{-1} * grad for each block."""
   worldid, blockid = wp.tid()
@@ -3102,42 +3101,52 @@ def _apply_block_preconditioner(
     Mgrad_out[worldid, dof0 + 2] = I02 * g0 + I12 * g1 + I22 * g2
 
 
-def _build_block_jacobi_preconditioner(
-    m: types.Model, d: types.Data, ctx: SolverContext
-):
+def _build_block_jacobi_preconditioner(m: types.Model, d: types.Data, ctx: SolverContext):
   """Build and invert block-diagonal preconditioner using block mapping."""
   ctx.inv_H_blocks.zero_()
 
   # Accumulate block-diagonal of J^T D J
   wp.launch(
-      _block_jacobi_JTDJ,
-      dim=(d.nworld, d.njmax),
-      inputs=[
-          d.nefc, d.efc.J_rownnz, d.efc.J_rowadr, d.efc.J_colind,
-          d.efc.J, d.efc.D, d.efc.state,
-          ctx.dof_to_block, ctx.block_dof_adr, ctx.done,
-      ],
-      outputs=[ctx.inv_H_blocks],
+    _block_jacobi_JTDJ,
+    dim=(d.nworld, d.njmax),
+    inputs=[
+      d.nefc,
+      d.efc.J_rownnz,
+      d.efc.J_rowadr,
+      d.efc.J_colind,
+      d.efc.J,
+      d.efc.D,
+      d.efc.state,
+      ctx.dof_to_block,
+      ctx.block_dof_adr,
+      ctx.done,
+    ],
+    outputs=[ctx.inv_H_blocks],
   )
 
   # Add mass matrix entries within each block
   wp.launch(
-      _block_jacobi_add_M,
-      dim=(d.nworld, m.nv),
-      inputs=[
-          m.nv, m.M_mulm_rowadr, m.M_mulm_col, m.M_mulm_madr,
-          ctx.dof_to_block, ctx.block_dof_adr,
-          d.M, ctx.done,
-      ],
-      outputs=[ctx.inv_H_blocks],
+    _block_jacobi_add_M,
+    dim=(d.nworld, m.nv),
+    inputs=[
+      m.nv,
+      m.M_mulm_rowadr,
+      m.M_mulm_col,
+      m.M_mulm_madr,
+      d.M,
+      ctx.dof_to_block,
+      ctx.block_dof_adr,
+      ctx.done,
+    ],
+    outputs=[ctx.inv_H_blocks],
   )
 
   # Invert blocks in-place
   wp.launch(
-      _block_jacobi_invert,
-      dim=(d.nworld, ctx.nblocks),
-      inputs=[ctx.nblocks, ctx.block_dof_num, ctx.done],
-      outputs=[ctx.inv_H_blocks],
+    _block_jacobi_invert,
+    dim=(d.nworld, ctx.nblocks),
+    inputs=[ctx.nblocks, ctx.block_dof_num, ctx.done],
+    outputs=[ctx.inv_H_blocks],
   )
 
 
@@ -3216,17 +3225,17 @@ def _update_gradient(m: types.Model, d: types.Data, ctx: SolverContext, compact:
     if m.is_sparse:
       _build_block_jacobi_preconditioner(m, d, ctx)
       wp.launch(
-          _apply_block_preconditioner,
-          dim=(d.nworld, ctx.nblocks),
-          inputs=[
-              ctx.nblocks,
-              ctx.block_dof_adr,
-              ctx.block_dof_num,
-              ctx.inv_H_blocks,
-              ctx.grad,
-              ctx.done,
-          ],
-          outputs=[ctx.Mgrad],
+        _apply_block_preconditioner,
+        dim=(d.nworld, ctx.nblocks),
+        inputs=[
+          ctx.nblocks,
+          ctx.block_dof_adr,
+          ctx.block_dof_num,
+          ctx.inv_H_blocks,
+          ctx.grad,
+          ctx.done,
+        ],
+        outputs=[ctx.Mgrad],
       )
     else:
       smooth.solve_m(m, d, ctx.Mgrad, ctx.grad)
