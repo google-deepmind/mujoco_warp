@@ -176,6 +176,32 @@ def _write_flex_contact(
 
 
 @wp.func
+def _closest_vertex(
+  # In:
+  pos: wp.vec3,
+  t1: wp.vec3,
+  t2: wp.vec3,
+  t3: wp.vec3,
+  v0: int,
+  v1: int,
+  v2: int,
+) -> int:
+  d1 = wp.length_sq(pos - t1)
+  d2 = wp.length_sq(pos - t2)
+  d3 = wp.length_sq(pos - t3)
+  if d1 < d2:
+    if d1 < d3:
+      return v0
+    else:
+      return v2
+  else:
+    if d2 < d3:
+      return v1
+    else:
+      return v2
+
+
+@wp.func
 def _collide_geom_triangle(
   # Data in:
   naconmax_in: int,
@@ -195,8 +221,11 @@ def _collide_geom_triangle(
   solimp: vec5,
   geomid: int,
   flexid: int,
-  vertex_id: int,
+  v0: int,
+  v1: int,
+  v2: int,
   worldid: int,
+  flex_contact_id: wp.array3d[int],
   # Data out:
   contact_dist_out: wp.array[float],
   contact_pos_out: wp.array[wp.vec3],
@@ -219,37 +248,40 @@ def _collide_geom_triangle(
     sphere_radius = size_val[0]
     dist, contact_pos, nrm = collision_primitive_core.sphere_triangle(pos, sphere_radius, t1, t2, t3, tri_radius)
     if dist < margin:
-      _write_flex_contact(
-        naconmax_in,
-        dist,
-        contact_pos,
-        make_frame(nrm),
-        margin,
-        condim,
-        friction,
-        solref,
-        solimp,
-        geomid,
-        flexid,
-        vertex_id,
-        worldid,
-        contact_dist_out,
-        contact_pos_out,
-        contact_frame_out,
-        contact_includemargin_out,
-        contact_friction_out,
-        contact_solref_out,
-        contact_solreffriction_out,
-        contact_solimp_out,
-        contact_dim_out,
-        contact_geom_out,
-        contact_flex_out,
-        contact_vert_out,
-        contact_worldid_out,
-        contact_type_out,
-        contact_geomcollisionid_out,
-        nacon_out,
-      )
+      vert_id = _closest_vertex(contact_pos, t1, t2, t3, v0, v1, v2)
+      old_val = wp.atomic_cas(flex_contact_id, worldid, geomid, vert_id, -1, 0)
+      if old_val == -1:
+        _write_flex_contact(
+          naconmax_in,
+          dist,
+          contact_pos,
+          make_frame(nrm),
+          margin,
+          condim,
+          friction,
+          solref,
+          solimp,
+          geomid,
+          flexid,
+          vert_id,
+          worldid,
+          contact_dist_out,
+          contact_pos_out,
+          contact_frame_out,
+          contact_includemargin_out,
+          contact_friction_out,
+          contact_solref_out,
+          contact_solreffriction_out,
+          contact_solimp_out,
+          contact_dim_out,
+          contact_geom_out,
+          contact_flex_out,
+          contact_vert_out,
+          contact_worldid_out,
+          contact_type_out,
+          contact_geomcollisionid_out,
+          nacon_out,
+        )
     return
 
   # Capsule, box, cylinder all return up to 2 contacts - compute then share writing code
@@ -278,71 +310,77 @@ def _collide_geom_triangle(
   if dists[0] < margin:
     p1 = wp.vec3(poss[0, 0], poss[0, 1], poss[0, 2])
     n1 = wp.vec3(nrms[0, 0], nrms[0, 1], nrms[0, 2])
-    _write_flex_contact(
-      naconmax_in,
-      dists[0],
-      p1,
-      make_frame(n1),
-      margin,
-      condim,
-      friction,
-      solref,
-      solimp,
-      geomid,
-      flexid,
-      vertex_id,
-      worldid,
-      contact_dist_out,
-      contact_pos_out,
-      contact_frame_out,
-      contact_includemargin_out,
-      contact_friction_out,
-      contact_solref_out,
-      contact_solreffriction_out,
-      contact_solimp_out,
-      contact_dim_out,
-      contact_geom_out,
-      contact_flex_out,
-      contact_vert_out,
-      contact_worldid_out,
-      contact_type_out,
-      contact_geomcollisionid_out,
-      nacon_out,
-    )
+    vert_id1 = _closest_vertex(p1, t1, t2, t3, v0, v1, v2)
+    old_val1 = wp.atomic_cas(flex_contact_id, worldid, geomid, vert_id1, -1, 0)
+    if old_val1 == -1:
+      _write_flex_contact(
+        naconmax_in,
+        dists[0],
+        p1,
+        make_frame(n1),
+        margin,
+        condim,
+        friction,
+        solref,
+        solimp,
+        geomid,
+        flexid,
+        vert_id1,
+        worldid,
+        contact_dist_out,
+        contact_pos_out,
+        contact_frame_out,
+        contact_includemargin_out,
+        contact_friction_out,
+        contact_solref_out,
+        contact_solreffriction_out,
+        contact_solimp_out,
+        contact_dim_out,
+        contact_geom_out,
+        contact_flex_out,
+        contact_vert_out,
+        contact_worldid_out,
+        contact_type_out,
+        contact_geomcollisionid_out,
+        nacon_out,
+      )
   if dists[1] < margin:
     p2 = wp.vec3(poss[1, 0], poss[1, 1], poss[1, 2])
     n2 = wp.vec3(nrms[1, 0], nrms[1, 1], nrms[1, 2])
-    _write_flex_contact(
-      naconmax_in,
-      dists[1],
-      p2,
-      make_frame(n2),
-      margin,
-      condim,
-      friction,
-      solref,
-      solimp,
-      geomid,
-      flexid,
-      vertex_id,
-      worldid,
-      contact_dist_out,
-      contact_pos_out,
-      contact_frame_out,
-      contact_includemargin_out,
-      contact_friction_out,
-      contact_solref_out,
-      contact_solreffriction_out,
-      contact_solimp_out,
-      contact_dim_out,
-      contact_geom_out,
-      contact_flex_out,
-      contact_vert_out,
-      contact_worldid_out,
-      contact_type_out,
-      contact_geomcollisionid_out,
-      nacon_out,
-    )
+    vert_id2 = _closest_vertex(p2, t1, t2, t3, v0, v1, v2)
+    old_val2 = wp.atomic_cas(flex_contact_id, worldid, geomid, vert_id2, -1, 0)
+    if old_val2 == -1:
+      _write_flex_contact(
+        naconmax_in,
+        dists[1],
+        p2,
+        make_frame(n2),
+        margin,
+        condim,
+        friction,
+        solref,
+        solimp,
+        geomid,
+        flexid,
+        vert_id2,
+        worldid,
+        contact_dist_out,
+        contact_pos_out,
+        contact_frame_out,
+        contact_includemargin_out,
+        contact_friction_out,
+        contact_solref_out,
+        contact_solreffriction_out,
+        contact_solimp_out,
+        contact_dim_out,
+        contact_geom_out,
+        contact_flex_out,
+        contact_vert_out,
+        contact_worldid_out,
+        contact_type_out,
+        contact_geomcollisionid_out,
+        nacon_out,
+      )
 
 
 @wp.kernel
@@ -512,6 +550,8 @@ def _flex_narrowphase_dim2(
   flexvert_xpos_in: wp.array2d[wp.vec3],
   nworld_in: int,
   naconmax_in: int,
+  # In:
+  flex_contact_id: wp.array3d[int],
   # Data out:
   contact_dist_out: wp.array[float],
   contact_pos_out: wp.array[wp.vec3],
@@ -618,7 +658,10 @@ def _flex_narrowphase_dim2(
       geomid,
       flexid,
       v0_local,
+      v1_local,
+      v2_local,
       worldid,
+      flex_contact_id,
       contact_dist_out,
       contact_pos_out,
       contact_frame_out,
@@ -677,6 +720,8 @@ def _flex_narrowphase_dim3(
   flexvert_xpos_in: wp.array2d[wp.vec3],
   nworld_in: int,
   naconmax_in: int,
+  # In:
+  flex_contact_id: wp.array3d[int],
   # Data out:
   contact_dist_out: wp.array[float],
   contact_pos_out: wp.array[wp.vec3],
@@ -787,7 +832,10 @@ def _flex_narrowphase_dim3(
       geomid,
       flexid,
       v0_local,
+      v1_local,
+      v2_local,
       worldid,
+      flex_contact_id,
       contact_dist_out,
       contact_pos_out,
       contact_frame_out,
@@ -813,6 +861,11 @@ def flex_narrowphase(m: Model, d: Data):
   if m.nflex == 0:
     return
 
+  # Allocate contact lookup helper array and initialize to -1
+  flex_contact_id = wp.empty((d.nworld, m.ngeom, m.nflexvert), dtype=int)
+  flex_contact_id.fill_(-1)
+
+  # Launch narrowphase kernels writing directly to d.contact
   wp.launch(
     _flex_narrowphase_dim2,
     dim=(d.nworld, m.nflexelem),
@@ -853,6 +906,7 @@ def flex_narrowphase(m: Model, d: Data):
       d.flexvert_xpos,
       d.nworld,
       d.naconmax,
+      flex_contact_id,
     ],
     outputs=[
       d.contact.dist,
@@ -913,6 +967,7 @@ def flex_narrowphase(m: Model, d: Data):
       d.flexvert_xpos,
       d.nworld,
       d.naconmax,
+      flex_contact_id,
     ],
     outputs=[
       d.contact.dist,
