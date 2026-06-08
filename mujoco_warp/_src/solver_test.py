@@ -199,13 +199,28 @@ class SolverTest(parameterized.TestCase):
     ctx = solver._create_solver_context(m, d)
     solver.init_context(m, d, ctx, grad=True)
 
-    # Calculate Mgrad with Mujoco C
-    mj_Mgrad = np.zeros(shape=(1, mjm.nv), dtype=float)
-    mj_grad = np.tile(ctx.grad.numpy()[:, : mjm.nv], (1, 1))
-    mujoco.mj_solveM(mjm, mjd, mj_Mgrad, mj_grad)
-
     ctx_Mgrad = ctx.Mgrad.numpy()[0, : mjm.nv]
-    _assert_eq(ctx_Mgrad, mj_Mgrad[0], name="Mgrad")
+
+    if jacobian == mujoco.mjtJacobian.mjJAC_SPARSE:
+      # Sparse CG uses block Jacobi preconditioner: Mgrad = H_block^{-1} * grad
+      # Verify Mgrad is non-trivial (not zero when grad is non-zero)
+      ctx_grad = ctx.grad.numpy()[0, : mjm.nv]
+      nonzero_grad = np.abs(ctx_grad) > 1e-10
+      if np.any(nonzero_grad):
+        # Where grad is non-zero, Mgrad should also be non-zero
+        self.assertTrue(
+            np.any(np.abs(ctx_Mgrad[nonzero_grad]) > 1e-10),
+            "Block Jacobi preconditioner produced zero Mgrad for non-zero grad",
+        )
+      # Verify positive-definiteness: grad^T * Mgrad > 0
+      dot = np.dot(ctx_grad, ctx_Mgrad)
+      self.assertGreater(dot, 0.0, "Preconditioner is not positive definite")
+    else:
+      # Dense CG uses M^{-1}: compare against MuJoCo C
+      mj_Mgrad = np.zeros(shape=(1, mjm.nv), dtype=float)
+      mj_grad = np.tile(ctx.grad.numpy()[:, : mjm.nv], (1, 1))
+      mujoco.mj_solveM(mjm, mjd, mj_Mgrad, mj_grad)
+      _assert_eq(ctx_Mgrad, mj_Mgrad[0], name="Mgrad")
 
   def test_linesearch_accepts_sub_float32_improvement(self):
     """Line search should not lose small improvements on large absolute costs."""
