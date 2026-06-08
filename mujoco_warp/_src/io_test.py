@@ -1846,6 +1846,38 @@ class IOTest(parameterized.TestCase):
     cl_read = m.actuator_cranklength.numpy()
     np.testing.assert_allclose(cl_read[0, 0], 0.42, atol=1e-6)
 
+  def test_expand_mat_texid(self):
+    """Test per-world material texture ids can be prepared and reset in-place."""
+    mjm, _, m, _ = test_data.fixture(
+      xml="""
+    <mujoco>
+      <asset>
+        <texture name="red" type="2d" builtin="flat" width="4" height="4" rgb1="1 0 0" rgb2="1 0 0"/>
+        <texture name="green" type="2d" builtin="flat" width="4" height="4" rgb1="0 1 0" rgb2="0 1 0"/>
+        <material name="mat" texture="red"/>
+      </asset>
+      <worldbody>
+        <geom type="sphere" size="0.1" material="mat"/>
+      </worldbody>
+    </mujoco>
+    """
+    )
+
+    red_id = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_TEXTURE, "red")
+    green_id = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_TEXTURE, "green")
+    mat_id = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_MATERIAL, "mat")
+    rgb_role = int(mujoco.mjtTextureRole.mjTEXROLE_RGB)
+
+    self.assertEqual(tuple(m.mat_texid.shape), (1, mjm.nmat, int(mujoco.mjtTextureRole.mjNTEXROLE)))
+    mat_texid = mjwarp.expand_mat_texid(m, nworld=3)
+    self.assertEqual(tuple(mat_texid.shape), (3, mjm.nmat, int(mujoco.mjtTextureRole.mjNTEXROLE)))
+    self.assertGreater(mat_texid.strides[0], 0)
+
+    mat_texid_np = mat_texid.numpy()
+    mat_texid_np[:, mat_id, rgb_role] = [red_id, green_id, red_id]
+    m.mat_texid.assign(mat_texid_np)
+    np.testing.assert_array_equal(m.mat_texid.numpy()[:, mat_id, rgb_role], [red_id, green_id, red_id])
+
   @parameterized.parameters(1, 4)
   def test_bvh_creation(self, nworld):
     """Test that the BVH is created correctly for single world and multiple worlds."""

@@ -798,6 +798,44 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
   return m
 
 
+def expand_mat_texid(m: types.Model, nworld: int) -> wp.array:
+  """Expands material texture ids to allow per-world texture assignment.
+
+  `put_model` initializes `mat_texid` with one shared material texture table.
+  Call this once before CUDA graph capture when different worlds need different
+  material texture ids. Reset-time changes should then assign into
+  `m.mat_texid` directly.
+
+  Texture ids must refer to textures already present in the compiled
+  `mujoco.MjModel` used to create the render context.
+
+  Args:
+    m: The model containing kinematic and dynamic information (device).
+    nworld: The number of per-world material texture tables to allocate.
+
+  Returns:
+    The expanded `m.mat_texid` array.
+  """
+  if nworld < 1:
+    raise ValueError(f"nworld must be positive, got {nworld}.")
+
+  expected_shape = (nworld, m.nmat, int(mujoco.mjtTextureRole.mjNTEXROLE))
+  current_shape = tuple(m.mat_texid.shape)
+  if current_shape == expected_shape:
+    return m.mat_texid
+
+  if current_shape[0] != 1:
+    raise ValueError(
+      f"m.mat_texid already has {current_shape[0]} world tables; expected 1 or {nworld}. "
+      "Assign into m.mat_texid to update existing per-world storage."
+    )
+
+  old_mat_texid = m.mat_texid
+  mat_texid = np.repeat(old_mat_texid.numpy(), nworld, axis=0)
+  m.mat_texid = wp.array(mat_texid, dtype=old_mat_texid.dtype, device=old_mat_texid.device)
+  return m.mat_texid
+
+
 def _get_padded_sizes(nv: int, njmax: int, is_sparse: bool, tile_size: int):
   # if dense - we just pad to the next multiple of 4 for nv, to get the fast load path.
   #            we pad to the next multiple of tile_size for njmax to avoid out of bounds accesses.

@@ -43,6 +43,29 @@ def _unpack_rgb(packed):
   return np.stack([r, g, b], axis=-1)
 
 
+_TEXTURE_SWAP_XML = """
+<mujoco>
+  <asset>
+    <texture name="red" type="2d" builtin="flat" width="4" height="4" rgb1="1 0 0" rgb2="1 0 0"/>
+    <texture name="green" type="2d" builtin="flat" width="4" height="4" rgb1="0 1 0" rgb2="0 1 0"/>
+    <material name="mat" texture="red" rgba="1 1 1 1" texrepeat="1 1"/>
+  </asset>
+  <worldbody>
+    <camera name="cam" pos="0 0 2" xyaxes="1 0 0 0 1 0"/>
+    <geom name="plane" type="plane" size="2 2 0.1" material="mat"/>
+  </worldbody>
+</mujoco>
+"""
+
+
+def _assert_channel_dominates(testcase, rgb, worldid, channel, other_channel):
+  testcase.assertGreater(
+    float(rgb[worldid, channel]),
+    float(rgb[worldid, other_channel]) + 50.0,
+    f"world {worldid} channel {channel} should dominate",
+  )
+
+
 class RenderTest(parameterized.TestCase):
   @parameterized.parameters(2, 512)
   def test_render(self, nworld: int):
@@ -139,6 +162,45 @@ class RenderTest(parameterized.TestCase):
 
     self.assertGreater(np.count_nonzero(rgb), 0)
     self.assertTrue(np.any(seg[..., 1] == int(mjw.ObjType.GEOM)))
+
+  def test_render_per_world_mat_texid_reset(self):
+    nworld = 2
+    mjm, _, m, d = test_data.fixture(xml=_TEXTURE_SWAP_XML, nworld=nworld)
+    rc = mjw.create_render_context(
+      mjm,
+      nworld=nworld,
+      cam_res=(16, 16),
+      render_rgb=True,
+      use_textures=True,
+      enable_specular=False,
+      enable_emission=False,
+    )
+
+    red_id = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_TEXTURE, "red")
+    green_id = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_TEXTURE, "green")
+    mat_id = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_MATERIAL, "mat")
+    rgb_role = int(mujoco.mjtTextureRole.mjTEXROLE_RGB)
+
+    mjw.expand_mat_texid(m, nworld)
+    mat_texid = m.mat_texid.numpy()
+    mat_texid[0, mat_id, rgb_role] = red_id
+    mat_texid[1, mat_id, rgb_role] = green_id
+    storage = m.mat_texid
+    m.mat_texid.assign(mat_texid)
+
+    mjw.render(m, d, rc)
+    rgb = _unpack_rgb(rc.rgb_data.numpy()).mean(axis=1)
+    _assert_channel_dominates(self, rgb, 0, 0, 1)
+    _assert_channel_dominates(self, rgb, 1, 1, 0)
+
+    mat_texid[:, mat_id, rgb_role] = [green_id, red_id]
+    m.mat_texid.assign(mat_texid)
+    self.assertIs(m.mat_texid, storage)
+
+    mjw.render(m, d, rc)
+    rgb = _unpack_rgb(rc.rgb_data.numpy()).mean(axis=1)
+    _assert_channel_dominates(self, rgb, 0, 1, 0)
+    _assert_channel_dominates(self, rgb, 1, 0, 1)
 
   def test_render_spot_light_with_attenuation(self):
     """Kernel runs under `has_spot_lights=True` and non-default attenuation."""
