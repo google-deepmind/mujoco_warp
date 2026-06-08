@@ -2358,6 +2358,13 @@ class SolverContext:
   beta_den: wp.array[float]
   h: wp.array3d[float]
   hfactor: wp.array3d[float]
+  # Block Jacobi preconditioner (CG only): pre-inverted block Hessian
+  inv_H_blocks: wp.array3d[float]
+  # Block mapping: split bodies with >3 DOFs into ≤3-DOF blocks
+  block_dof_adr: wp.array[int]
+  block_dof_num: wp.array[int]
+  dof_to_block: wp.array[int]
+  nblocks: int
   # Incremental Hessian update (Newton only)
   changed_efc_ids: wp.array2d[int]
   changed_efc_count: wp.array[int]
