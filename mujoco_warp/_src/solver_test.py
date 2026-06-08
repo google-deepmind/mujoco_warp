@@ -207,8 +207,8 @@ class SolverTest(parameterized.TestCase):
       if np.any(nonzero_grad):
         # Where grad is non-zero, Mgrad should also be non-zero
         self.assertTrue(
-            np.any(np.abs(ctx_Mgrad[nonzero_grad]) > 1e-10),
-            "Block Jacobi preconditioner produced zero Mgrad for non-zero grad",
+          np.any(np.abs(ctx_Mgrad[nonzero_grad]) > 1e-10),
+          "Block Jacobi preconditioner produced zero Mgrad for non-zero grad",
         )
       # Verify positive-definiteness: grad^T * Mgrad > 0
       dot = np.dot(ctx_grad, ctx_Mgrad)
