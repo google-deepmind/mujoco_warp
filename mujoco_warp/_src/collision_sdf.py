@@ -352,16 +352,17 @@ def find_oct(
     # check if the node is a leaf
     # child indices are relative to root (mesh_octadr offset)
     child0 = oct_child[node][0]
+    # Evaluate this hot leaf predicate eagerly to avoid branch-heavy codegen.
     if (
-      child0 == -1
-      and oct_child[node][1] == -1
-      and oct_child[node][2] == -1
-      and oct_child[node][3] == -1
-      and oct_child[node][4] == -1
-      and oct_child[node][5] == -1
-      and oct_child[node][6] == -1
-      and oct_child[node][7] == -1
-    ):
+      int(child0 == -1)
+      & int(oct_child[node][1] == -1)
+      & int(oct_child[node][2] == -1)
+      & int(oct_child[node][3] == -1)
+      & int(oct_child[node][4] == -1)
+      & int(oct_child[node][5] == -1)
+      & int(oct_child[node][6] == -1)
+      & int(oct_child[node][7] == -1)
+    ) != 0:
       for j in range(8):
         if not grad:
           rx[j] = (

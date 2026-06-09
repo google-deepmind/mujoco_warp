@@ -107,14 +107,12 @@
     <light name="spotlight" mode="targetbodycom" target="torso" diffuse=".8 .8 .8" specular="0.3 0.3 0.3" pos="0 -6 4" cutoff="30"/>
     <body name="torso" pos="0 0 1.282" childclass="body">
       <light name="top" pos="0 0 2" mode="trackcom"/>
-      <camera name="back" pos="-3 0 1" xyaxes="0 -1 0 1 0 2" mode="trackcom"/>
-      <camera name="side" pos="0 -3 1" xyaxes="1 0 0 0 1 2" mode="trackcom"/>
+      <camera pos="3 0 1" xyaxes="0 1 0 -1 0 2" mode="trackcom"/>
       <freejoint name="root"/>
       <geom name="torso" fromto="0 -.07 0 0 .07 0" size=".07"/>
       <geom name="waist_upper" fromto="-.01 -.06 -.12 -.01 .06 -.12" size=".06"/>
       <body name="head" pos="0 0 .19">
         <geom name="head" type="sphere" size=".09"/>
-        <camera name="egocentric" pos=".09 0 0" xyaxes="0 -1 0 .1 0 1" fovy="80"/>
       </body>
       <body name="neck">
         <geom type="cylinder" size=".03" fromto="0 0 .07 0 0 .1"/>

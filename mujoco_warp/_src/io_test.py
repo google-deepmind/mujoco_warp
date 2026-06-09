@@ -910,7 +910,7 @@ class IOTest(parameterized.TestCase):
       "sensordata",
       "mocap_pos",
       "mocap_quat",
-      "qM",
+      "M",
     ]
 
     mjm, mjd, m, d = test_data.fixture(xml)
@@ -941,8 +941,8 @@ class IOTest(parameterized.TestCase):
       d_arr = getattr(d, arr).numpy()
       for i in range(d_arr.shape[0]):
         di_arr = d_arr[i]
-        if arr == "qM":
-          di_arr = di_arr.reshape(-1)[: mjd.qM.size]
+        if arr == "M":
+          di_arr = di_arr.reshape(-1)[: mjd.M.size]
         _assert_eq(di_arr, getattr(mjd, arr), arr)
 
     _assert_eq(d.nacon.numpy(), 0, "nacon")

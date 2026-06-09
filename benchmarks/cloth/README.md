@@ -20,3 +20,19 @@ A soft-body simulation benchmark featuring a cloth draped over the MuJoCo humano
 
 ![cloth](rollout.webp)
 
+### cloth_render
+
+This benchmark measures rendering performance of deformable meshes and soft-body grids on the GPU.
+
+| Property | Value |
+|----------|-------|
+| Bodies | 918 |
+| DoFs | 2706 |
+| Actuators | 0 |
+| Geoms | 21 |
+| Cameras | 1 |
+| Resolution | 64×64 |
+| Worlds | 2048 |
+
+![cloth_render](rollout_cloth_render.webp)
+

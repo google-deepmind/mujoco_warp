@@ -39,3 +39,19 @@ Replaying the same shuffle dance sequence on randomized heightfield terrain.  Th
 | Matrix Format | Sparse |
 
 ![unitree_g1_hfield](rollout_hfield.webp)
+
+### unitree_g1_hfield_render
+
+GPU ray-traced rendering of the `scene_hfield.xml` scene with a shuffle dance rollout. This benchmark measures RGB rendering performance of heightfield terrain and robot meshes.
+
+| Property | Value |
+|----------|-------|
+| Bodies | 31 |
+| DoFs | 35 |
+| Actuators | 29 |
+| Geoms | 69 |
+| Cameras | 2 |
+| Resolution | 64×64 |
+| Worlds | 8192 |
+
+![unitree_g1_hfield_render](rollout_hfield_render.webp)
