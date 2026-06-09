@@ -31,7 +31,6 @@ dependencies = [
     "etils[epath]",
     "mujoco>=3.8.0",
     "numpy",
-    "warp-lang>=1.12",
 ]
 
 [[tool.uv.index]]
@@ -57,16 +56,20 @@ dev = [
     "pygls>=1.0.0,<2.0.0",
     "lsprotocol>=2023.0.1,<2024.0.0",
     "mujoco>=3.8.0.dev0",
-    "warp-lang>=1.11.0.dev0",
     "mjviser>=0.0.10",
     "pillow",
 ]
-# TODO(team): cpu and cuda JAX optional dependencies are temporary, remove after we land MJX:Warp
+# TODO(team): cpu and rocm JAX optional dependencies are temporary, remove after we land MJX:Warp
 cpu = [
     "jax"
 ]
-cuda = [
-    "jax[cuda12]"
+# AMD/ROCm: JAX with ROCm GPU support. The `jax[rocm]` extra requires installing the
+# ROCm PJRT plugin wheel (jax-rocm*-plugin / jax-rocm*-pjrt) from AMD's index, e.g.:
+#     pip install -e .[rocm] \
+#         --extra-index-url https://repo.radeon.com/rocm/manylinux/rocm-rel-7.0/
+# Use the index that matches your installed ROCm version.
+rocm = [
+    "jax[rocm]"
 ]
 
 [project.scripts]

@@ -64,7 +64,11 @@ def _git(*args, cwd: Path | None = None, check: bool = True):
 def _uv_run(*args, cwd: Path | None = None):
   """Run a uv command, returning CompletedProcess."""
   log.info("Command: uv run %s", " ".join(args))
-  return subprocess.run(("uv", "run") + args, cwd=cwd, check=True, capture_output=True, text=True)
+  result = subprocess.run(("uv", "run") + args, cwd=cwd, capture_output=True, text=True)
+  if result.returncode != 0:
+    log.error("uv run failed (exit %d). stdout:\n%s\nstderr:\n%s", result.returncode, result.stdout, result.stderr)
+    result.check_returncode()
+  return result
 
 
 # benchmark discovery, assembly, and execution

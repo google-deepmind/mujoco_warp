@@ -143,17 +143,34 @@ def cache_kernel(func):
 
 def check_toolkit_driver():
   wp.init()
-  if wp.get_device().is_cuda:
+  device = wp.get_device()
+  if not device.is_cuda:
+    return
+
+  # HIP/ROCm devices do not (yet) expose conditional graph nodes; this is an
+  # architectural limitation rather than a misconfigured CUDA toolkit. Warn
+  # informationally and let io.put_model() default graph_conditional to False.
+  if getattr(device, "is_hip", False):
     if not wp.is_conditional_graph_supported():
       warnings.warn(
-        """
-        CUDA version < 12.4 detected
-        - graph capture may be unreliable for < 12.3
-        - conditional graph nodes are not available for < 12.4
-          Model.opt.graph_conditional should be set to False
-        """,
+        "HIP/ROCm device detected: CUDA graph conditional nodes are not "
+        "supported on this backend. Model.opt.graph_conditional will be "
+        "disabled automatically; the solver falls back to a Python for-loop "
+        "around the iteration kernel.",
         stacklevel=2,
       )
+    return
+
+  if not wp.is_conditional_graph_supported():
+    warnings.warn(
+      """
+      CUDA version < 12.4 detected
+      - graph capture may be unreliable for < 12.3
+      - conditional graph nodes are not available for < 12.4
+        Model.opt.graph_conditional should be set to False
+      """,
+      stacklevel=2,
+    )
 
 
 class scoped_mathdx_gemm_disabled:
