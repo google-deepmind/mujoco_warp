@@ -1895,6 +1895,26 @@ def _polygon_clip(
   if npolygon < 1:
     return 0, witness1, witness2
 
+  # if the face is an edge, remove potential duplicates
+  if nface2 == 2 and npolygon > 2:
+    best1 = int(0)
+    best2 = int(1)
+    max_d = float(0.0)
+    for i in range(npolygon):
+      for j in range(i + 1, npolygon):
+        diff = polygon_out[j] - polygon_out[i]
+        d2 = wp.dot(diff, diff)
+        if d2 > max_d:
+          max_d = d2
+          best1 = i
+          best2 = j
+
+    witness2[0] = polygon_out[best1]
+    witness1[0] = witness2[0] - dir
+    witness2[1] = polygon_out[best2]
+    witness1[1] = witness2[1] - dir
+    return 2, witness1, witness2
+
   if npolygon > 4:
     quad = _polygon_quad(polygon_out, npolygon)
     for i in range(4):
