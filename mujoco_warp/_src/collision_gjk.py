@@ -1901,8 +1901,9 @@ def _polygon_clip(
     best2 = int(1)
     max_d = float(0.0)
     for i in range(npolygon):
+      polygon_out_i = polygon_out[i]
       for j in range(i + 1, npolygon):
-        diff = polygon_out[j] - polygon_out[i]
+        diff = polygon_out[j] - polygon_out_i
         d2 = wp.dot(diff, diff)
         if d2 > max_d:
           max_d = d2
