@@ -819,14 +819,18 @@ def expand_mat_texid(m: types.Model, nworld: int) -> wp.array:
   if nworld < 1:
     raise ValueError(f"nworld must be positive, got {nworld}.")
 
-  expected_shape = (nworld, m.nmat, int(mujoco.mjtTextureRole.mjNTEXROLE))
   current_shape = tuple(m.mat_texid.shape)
+  if len(current_shape) != 3:
+    raise ValueError(f"m.mat_texid has shape {current_shape}; expected (1, {m.nmat}, nrole) or ({nworld}, {m.nmat}, nrole).")
+
+  expected_shape = (nworld, m.nmat, current_shape[-1])
   if current_shape == expected_shape:
     return m.mat_texid
 
   if current_shape[0] != 1:
     raise ValueError(
-      f"m.mat_texid already has {current_shape[0]} world tables; expected 1 or {nworld}. "
+      f"m.mat_texid already has {current_shape[0]} world tables; expected 1 "
+      f"or {nworld}. "
       "Assign into m.mat_texid to update existing per-world storage."
     )
 

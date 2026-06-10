@@ -1868,15 +1868,44 @@ class IOTest(parameterized.TestCase):
     mat_id = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_MATERIAL, "mat")
     rgb_role = int(mujoco.mjtTextureRole.mjTEXROLE_RGB)
 
-    self.assertEqual(tuple(m.mat_texid.shape), (1, mjm.nmat, int(mujoco.mjtTextureRole.mjNTEXROLE)))
+    nrole = int(mujoco.mjtTextureRole.mjNTEXROLE)
+    self.assertEqual(tuple(m.mat_texid.shape), (1, mjm.nmat, nrole))
     mat_texid = mjwarp.expand_mat_texid(m, nworld=3)
-    self.assertEqual(tuple(mat_texid.shape), (3, mjm.nmat, int(mujoco.mjtTextureRole.mjNTEXROLE)))
+    self.assertEqual(tuple(mat_texid.shape), (3, mjm.nmat, nrole))
     self.assertGreater(mat_texid.strides[0], 0)
 
     mat_texid_np = mat_texid.numpy()
     mat_texid_np[:, mat_id, rgb_role] = [red_id, green_id, red_id]
     m.mat_texid.assign(mat_texid_np)
     np.testing.assert_array_equal(m.mat_texid.numpy()[:, mat_id, rgb_role], [red_id, green_id, red_id])
+
+  def test_expand_mat_texid_errors(self):
+    """Test invalid material texture id expansion requests are rejected."""
+    mjm, _, m, _ = test_data.fixture(
+      xml="""
+    <mujoco>
+      <asset>
+        <texture name="red" type="2d" builtin="flat" width="4" height="4"/>
+        <material name="mat" texture="red"/>
+      </asset>
+      <worldbody>
+        <geom type="sphere" size="0.1" material="mat"/>
+      </worldbody>
+    </mujoco>
+    """
+    )
+
+    with self.assertRaisesRegex(ValueError, "nworld must be positive"):
+      mjwarp.expand_mat_texid(m, nworld=0)
+
+    mat_texid = mjwarp.expand_mat_texid(m, nworld=3)
+    self.assertEqual(tuple(mat_texid.shape[:2]), (3, mjm.nmat))
+    with self.assertRaisesRegex(ValueError, "already has 3 world tables"):
+      mjwarp.expand_mat_texid(m, nworld=2)
+
+    m.mat_texid = wp.array(mat_texid.numpy()[0], dtype=mat_texid.dtype, device=mat_texid.device)
+    with self.assertRaisesRegex(ValueError, "expected \\(1,"):
+      mjwarp.expand_mat_texid(m, nworld=2)
 
   @parameterized.parameters(1, 4)
   def test_bvh_creation(self, nworld):
