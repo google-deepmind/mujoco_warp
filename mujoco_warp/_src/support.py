@@ -33,6 +33,22 @@ from mujoco_warp._src.warp_util import event_scope
 wp.set_module_options({"enable_backward": False})
 
 
+# Copy kernel that never participates in the tape backward, for cases where a
+# manual adjoint callback (e.g. record_func) already handles the backward path.
+# wp.copy is a Warp built-in whose backward IS tracked regardless of
+# module-level enable_backward, causing double-counting with the manual adjoint.
+@wp.kernel(enable_backward=False)
+def _nograd_copy(
+  # In:
+  src: wp.array2d[float],
+  # Out:
+  dst_out: wp.array2d[float],
+):
+  worldid, idx = wp.tid()
+  if idx < src.shape[1]:
+    dst_out[worldid, idx] = src[worldid, idx]
+
+
 # TODO(team): kernel analyzer array slice?
 @wp.func
 def next_act(

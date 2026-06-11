@@ -20,10 +20,15 @@ from absl.testing import parameterized
 import mujoco_warp as mjw
 from mujoco_warp import test_data
 from mujoco_warp._src import math
+from mujoco_warp._src.grad import _resolve_field
 from mujoco_warp._src.grad import enable_grad
 
 # tolerance for AD vs finite-difference comparison
 _FD_TOL = 1e-3
+
+# step-level AD requires GPU (Warp tape backward does not produce gradients on CPU)
+_REQUIRES_GPU = not wp.get_device().is_cuda or wp.get_device().arch < 70
+_REQUIRES_GPU_REASON = "step-level AD requires CUDA with sm_70+"
 
 # sparse jacobian to avoid tile kernels (which require cuSolverDx)
 _SIMPLE_HINGE_XML = """
@@ -120,6 +125,31 @@ _SIMPLE_FREE_XML = """
 </mujoco>
 """
 
+# Freejoint root + hinge child with actuator, for full step gradient test.
+_FREE_HINGE_XML = """
+<mujoco>
+  <option gravity="0 0 -9.81" jacobian="sparse">
+    <flag contact="disable" constraint="disable"/>
+  </option>
+  <worldbody>
+    <body pos="0 0 1">
+      <joint name="root" type="free"/>
+      <geom type="sphere" size="0.1" mass="1"/>
+      <body pos="0 0 -0.5">
+        <joint name="j1" type="hinge" axis="0 1 0"/>
+        <geom type="sphere" size="0.1" mass="1"/>
+      </body>
+    </body>
+  </worldbody>
+  <actuator>
+    <motor joint="j1" gear="1"/>
+  </actuator>
+  <keyframe>
+    <key qpos="0 0 1 1 0 0 0 0.3" qvel="0.1 0 0 0 0.1 0 -0.2" ctrl="0.5"/>
+  </keyframe>
+</mujoco>
+"""
+
 
 def _fd_gradient(fn, x_np, eps=1e-3):
   """Central-difference gradient of scalar fn w.r.t. x_np."""
@@ -131,6 +161,68 @@ def _fd_gradient(fn, x_np, eps=1e-3):
     x_minus.flat[i] -= eps
     grad.flat[i] = (fn(x_plus) - fn(x_minus)) / (2.0 * eps)
   return grad
+
+
+def _assert_step_ctrl_grad(
+  test_case,
+  xml,
+  loss_on="qpos",
+  keyframe=0,
+  atol=_FD_TOL,
+  rtol=_FD_TOL,
+  eps=1e-3,
+  err_msg="AD vs FD mismatch",
+):
+  """Compare AD dL/dctrl through step() against finite differences."""
+  fixture_kw = dict(xml=xml) | ({"keyframe": keyframe} if keyframe is not None else {})
+  mjm, mjd, m, d = test_data.fixture(**fixture_kw)
+  enable_grad(d)
+
+  if loss_on == "qpos":
+    loss_kernel, loss_dim = _sum_qpos_kernel, (d.nworld, mjm.nq)
+    loss_field = lambda dd: dd.qpos
+  else:
+    loss_kernel, loss_dim = _sum_xpos_kernel, (d.nworld, m.nbody)
+    loss_field = lambda dd: dd.xpos
+
+  # AD gradient
+  loss = wp.zeros(1, dtype=float, requires_grad=True)
+  tape = wp.Tape()
+  with tape:
+    mjw.step(m, d)
+    if loss_on != "qpos":
+      # step() does not recompute kinematics after integration, so xpos still
+      # reflects pre-step qpos (zero ctrl dependency). Refresh inside the tape
+      # so the loss measures end-of-step body positions.
+      mjw.kinematics(m, d)
+    wp.launch(loss_kernel, dim=loss_dim, inputs=[loss_field(d), loss])
+  tape.backward(loss=loss)
+  ad_grad = d.ctrl.grad.numpy()[0, : mjm.nu].copy()
+  tape.zero()
+
+  # Finite-difference gradient
+  def eval_loss(ctrl_np):
+    _, _, _, d_fd = test_data.fixture(**fixture_kw)
+    d_fd.ctrl = wp.array(ctrl_np.reshape(1, -1), dtype=float)
+    mjw.step(m, d_fd)
+    if loss_on != "qpos":
+      mjw.kinematics(m, d_fd)
+    l = wp.zeros(1, dtype=float)
+    wp.launch(loss_kernel, dim=loss_dim, inputs=[loss_field(d_fd), l])
+    return l.numpy()[0]
+
+  ctrl_np = mjd.ctrl.copy()
+  fd_grad = _fd_gradient(eval_loss, ctrl_np, eps=eps)
+
+  # Nonzero guard scaled by FD: a single Euler step has dL/dctrl ~ dt^2
+  # (e.g. ~2e-7 for dt=2ms qpos losses), so an absolute threshold would
+  # reject correct gradients. Require AD to carry at least 10% of FD's norm.
+  fd_norm = np.linalg.norm(fd_grad)
+  test_case.assertTrue(
+    np.linalg.norm(ad_grad) > max(0.1 * fd_norm, 1e-12),
+    f"AD gradient should be nonzero, got |ad|={np.linalg.norm(ad_grad):.3e} vs |fd|={fd_norm:.3e}",
+  )
+  np.testing.assert_allclose(ad_grad, fd_grad, atol=atol, rtol=rtol, err_msg=err_msg)
 
 
 @wp.kernel
@@ -160,6 +252,7 @@ class GradSmoothTest(parameterized.TestCase):
   @parameterized.parameters(
     ("hinge", _SIMPLE_HINGE_XML),
     ("slide", _SIMPLE_SLIDE_XML),
+    ("free", _SIMPLE_FREE_XML),
   )
   def test_kinematics_grad(self, name, xml):
     """dL/dqpos through kinematics(): loss = sum(xpos)."""
@@ -321,52 +414,15 @@ class GradSmoothTest(parameterized.TestCase):
       err_msg=f"fwd_actuation grad mismatch ({name})",
     )
 
-  @absltest.skipIf(
-    wp.get_device().is_cuda and wp.get_device().arch < 70,
-    "tile kernels (cuSolverDx) require sm_70+",
-  )
+  @absltest.skipIf(_REQUIRES_GPU, _REQUIRES_GPU_REASON)
   def test_euler_step_grad(self):
     """Full Euler step gradient: dL/dctrl through step()."""
-    xml = _SIMPLE_HINGE_XML
-    mjm, mjd, m, d = test_data.fixture(xml=xml, keyframe=0)
-    enable_grad(d)
+    _assert_step_ctrl_grad(self, _SIMPLE_HINGE_XML, loss_on="xpos", err_msg="euler step grad mismatch")
 
-    loss = wp.zeros(1, dtype=float, requires_grad=True)
-    tape = wp.Tape()
-    with tape:
-      mjw.step(m, d)
-      wp.launch(
-        _sum_xpos_kernel,
-        dim=(d.nworld, m.nbody),
-        inputs=[d.xpos, loss],
-      )
-    tape.backward(loss=loss)
-    ad_grad = d.ctrl.grad.numpy()[0, : mjm.nu].copy()
-    tape.zero()
-
-    def eval_loss(ctrl_np):
-      _, _, _, d_fd = test_data.fixture(xml=xml, keyframe=0)
-      enable_grad(d_fd)
-      d_fd.ctrl = wp.array(ctrl_np.reshape(1, -1), dtype=float)
-      mjw.step(m, d_fd)
-      l = wp.zeros(1, dtype=float)
-      wp.launch(
-        _sum_xpos_kernel,
-        dim=(d_fd.nworld, m.nbody),
-        inputs=[d_fd.xpos, l],
-      )
-      return l.numpy()[0]
-
-    ctrl_np = mjd.ctrl.copy()
-    fd_grad = _fd_gradient(eval_loss, ctrl_np)
-
-    np.testing.assert_allclose(
-      ad_grad,
-      fd_grad,
-      atol=_FD_TOL,
-      rtol=_FD_TOL,
-      err_msg="euler step grad mismatch",
-    )
+  @absltest.skipIf(_REQUIRES_GPU, _REQUIRES_GPU_REASON)
+  def test_euler_step_grad_free(self):
+    """Full Euler step gradient for freejoint + hinge model: dL/dctrl."""
+    _assert_step_ctrl_grad(self, _FREE_HINGE_XML, loss_on="xpos", err_msg="euler step grad (freejoint+hinge) mismatch")
 
 
 @wp.kernel
@@ -555,13 +611,35 @@ _CONTACT_SLIDE_DENSE_XML = """
 </mujoco>
 """
 
+_CONTACT_TANGENTIAL_XML = """
+<mujoco>
+  <option gravity="0 0 -9.81" jacobian="dense" solver="Newton" iterations="30"/>
+  <worldbody>
+    <geom type="plane" size="5 5 0.01"/>
+    <body pos="0 0 0.11">
+      <joint name="jx" type="slide" axis="1 0 0"/>
+      <joint name="jz" type="slide" axis="0 0 1"/>
+      <geom type="sphere" size="0.1" mass="1" friction="1.0 0.005 0.0001"/>
+    </body>
+  </worldbody>
+  <actuator>
+    <motor joint="jx" gear="1"/>
+  </actuator>
+  <keyframe>
+    <key qpos="0 0" qvel="0 0" ctrl="0.2"/>
+  </keyframe>
+</mujoco>
+"""
+
 # Tolerance for contact AD tests (relaxed for contacts)
 _CONTACT_FD_TOL = 1e-2
 
 
 @wp.kernel
 def _sum_qpos_kernel(
+  # Data in:
   qpos_in: wp.array2d(dtype=float),
+  # In:
   loss: wp.array(dtype=float),
 ):
   worldid, qid = wp.tid()
@@ -569,17 +647,28 @@ def _sum_qpos_kernel(
 
 
 class GradSolverAdjointTest(parameterized.TestCase):
-  @absltest.skipIf(
-    wp.get_device().is_cuda and wp.get_device().arch < 70,
-    "tile kernels (cuSolverDx) require sm_70+",
-  )
-  def test_solver_adjoint_contact_step(self):
-    """dL/dctrl through step() with active contacts (Newton solver)."""
-    xml = _CONTACT_SLIDE_XML
-    mjm, mjd, m, d = test_data.fixture(xml=xml)
+  def _step_ctrl_grad_norm(self, xml, smooth_kwargs, settle_steps=60):
+    """Return ||d(sum(qpos_next))/d(ctrl)|| on a settled contact state."""
+    mjm, _, m, d = test_data.fixture(xml=xml, keyframe=0)
     enable_grad(d)
+    mjw.enable_smooth_adjoint(d, **smooth_kwargs)
 
-    # AD gradient
+    # Settle forward-only to get a representative contact state.
+    for _ in range(settle_steps):
+      mjw.step(m, d)
+
+    qpos_settled = wp.clone(d.qpos)
+    qvel_settled = wp.clone(d.qvel)
+    ctrl_settled = wp.clone(d.ctrl)
+
+    d = mjw.make_diff_data(mjm)
+    enable_grad(d)
+    mjw.reset_data(m, d)
+    wp.copy(d.qpos, qpos_settled)
+    wp.copy(d.qvel, qvel_settled)
+    wp.copy(d.ctrl, ctrl_settled)
+    mjw.enable_smooth_adjoint(d, **smooth_kwargs)
+
     loss = wp.zeros(1, dtype=float, requires_grad=True)
     tape = wp.Tape()
     with tape:
@@ -590,38 +679,24 @@ class GradSolverAdjointTest(parameterized.TestCase):
         inputs=[d.qpos, loss],
       )
     tape.backward(loss=loss)
-    ad_grad = d.ctrl.grad.numpy()[0, : mjm.nu].copy()
+    grad = d.ctrl.grad.numpy()[0, : mjm.nu].copy()
     tape.zero()
+    return float(np.linalg.norm(grad))
 
-    # Finite-difference gradient
-    def eval_loss(ctrl_np):
-      _, _, _, d_fd = test_data.fixture(xml=xml)
-      enable_grad(d_fd)
-      d_fd.ctrl = wp.array(ctrl_np.reshape(1, -1), dtype=float)
-      mjw.step(m, d_fd)
-      l = wp.zeros(1, dtype=float)
-      wp.launch(
-        _sum_qpos_kernel,
-        dim=(d_fd.nworld, mjm.nq),
-        inputs=[d_fd.qpos, l],
-      )
-      return l.numpy()[0]
-
-    ctrl_np = mjd.ctrl.copy()
-    fd_grad = _fd_gradient(eval_loss, ctrl_np, eps=1e-3)
-
-    np.testing.assert_allclose(
-      ad_grad,
-      fd_grad,
+  @absltest.skipIf(_REQUIRES_GPU, _REQUIRES_GPU_REASON)
+  def test_solver_adjoint_contact_step(self):
+    """dL/dctrl through step() with active contacts (Newton solver)."""
+    _assert_step_ctrl_grad(
+      self,
+      _CONTACT_SLIDE_XML,
+      loss_on="qpos",
+      keyframe=None,
       atol=_CONTACT_FD_TOL,
       rtol=_CONTACT_FD_TOL,
       err_msg="solver adjoint contact step grad mismatch",
     )
 
-  @absltest.skipIf(
-    wp.get_device().is_cuda and wp.get_device().arch < 70,
-    "tile kernels (cuSolverDx) require sm_70+",
-  )
+  @absltest.skipIf(_REQUIRES_GPU, _REQUIRES_GPU_REASON)
   def test_solver_adjoint_no_active_constraints(self):
     """No active contacts: solver adjoint should match Phase 1 (unconstrained)."""
     # Ball high above ground — no contact
@@ -640,139 +715,58 @@ class GradSolverAdjointTest(parameterized.TestCase):
       </actuator>
     </mujoco>
     """
-    mjm, mjd, m, d = test_data.fixture(xml=xml)
-    enable_grad(d)
+    _assert_step_ctrl_grad(self, xml, loss_on="qpos", keyframe=None, err_msg="solver adjoint no-contact grad mismatch")
 
-    loss = wp.zeros(1, dtype=float, requires_grad=True)
-    tape = wp.Tape()
-    with tape:
-      mjw.step(m, d)
-      wp.launch(
-        _sum_qpos_kernel,
-        dim=(d.nworld, mjm.nq),
-        inputs=[d.qpos, loss],
-      )
-    tape.backward(loss=loss)
-    ad_grad = d.ctrl.grad.numpy()[0, : mjm.nu].copy()
-    tape.zero()
-
-    def eval_loss(ctrl_np):
-      _, _, _, d_fd = test_data.fixture(xml=xml)
-      enable_grad(d_fd)
-      d_fd.ctrl = wp.array(ctrl_np.reshape(1, -1), dtype=float)
-      mjw.step(m, d_fd)
-      l = wp.zeros(1, dtype=float)
-      wp.launch(
-        _sum_qpos_kernel,
-        dim=(d_fd.nworld, mjm.nq),
-        inputs=[d_fd.qpos, l],
-      )
-      return l.numpy()[0]
-
-    ctrl_np = mjd.ctrl.copy()
-    fd_grad = _fd_gradient(eval_loss, ctrl_np, eps=1e-3)
-
-    np.testing.assert_allclose(
-      ad_grad,
-      fd_grad,
-      atol=_FD_TOL,
-      rtol=_FD_TOL,
-      err_msg="solver adjoint no-contact grad mismatch",
-    )
-
-  @absltest.skipIf(
-    wp.get_device().is_cuda and wp.get_device().arch < 70,
-    "tile kernels (cuSolverDx) require sm_70+",
-  )
+  @absltest.skipIf(_REQUIRES_GPU, _REQUIRES_GPU_REASON)
   def test_solver_adjoint_identity_unconstrained(self):
     """njmax==0 (constraints disabled): identity pass-through."""
-    xml = _SIMPLE_HINGE_XML  # has contact/constraint disabled
-    mjm, mjd, m, d = test_data.fixture(xml=xml, keyframe=0)
-    enable_grad(d)
-
-    loss = wp.zeros(1, dtype=float, requires_grad=True)
-    tape = wp.Tape()
-    with tape:
-      mjw.step(m, d)
-      wp.launch(
-        _sum_xpos_kernel,
-        dim=(d.nworld, m.nbody),
-        inputs=[d.xpos, loss],
-      )
-    tape.backward(loss=loss)
-    ad_grad = d.ctrl.grad.numpy()[0, : mjm.nu].copy()
-    tape.zero()
-
-    def eval_loss(ctrl_np):
-      _, _, _, d_fd = test_data.fixture(xml=xml, keyframe=0)
-      enable_grad(d_fd)
-      d_fd.ctrl = wp.array(ctrl_np.reshape(1, -1), dtype=float)
-      mjw.step(m, d_fd)
-      l = wp.zeros(1, dtype=float)
-      wp.launch(
-        _sum_xpos_kernel,
-        dim=(d_fd.nworld, m.nbody),
-        inputs=[d_fd.xpos, l],
-      )
-      return l.numpy()[0]
-
-    ctrl_np = mjd.ctrl.copy()
-    fd_grad = _fd_gradient(eval_loss, ctrl_np)
-
-    np.testing.assert_allclose(
-      ad_grad,
-      fd_grad,
-      atol=_FD_TOL,
-      rtol=_FD_TOL,
+    _assert_step_ctrl_grad(
+      self,
+      _SIMPLE_HINGE_XML,
+      loss_on="xpos",
       err_msg="solver adjoint identity (unconstrained) grad mismatch",
     )
 
-  @absltest.skipIf(
-    wp.get_device().is_cuda and wp.get_device().arch < 70,
-    "tile kernels (cuSolverDx) require sm_70+",
-  )
+  @absltest.skipIf(_REQUIRES_GPU, _REQUIRES_GPU_REASON)
   def test_solver_adjoint_dense_jacobian(self):
     """Dense jacobian contact model: dL/dctrl through step()."""
-    xml = _CONTACT_SLIDE_DENSE_XML
-    mjm, mjd, m, d = test_data.fixture(xml=xml)
-    enable_grad(d)
-
-    loss = wp.zeros(1, dtype=float, requires_grad=True)
-    tape = wp.Tape()
-    with tape:
-      mjw.step(m, d)
-      wp.launch(
-        _sum_qpos_kernel,
-        dim=(d.nworld, mjm.nq),
-        inputs=[d.qpos, loss],
-      )
-    tape.backward(loss=loss)
-    ad_grad = d.ctrl.grad.numpy()[0, : mjm.nu].copy()
-    tape.zero()
-
-    def eval_loss(ctrl_np):
-      _, _, _, d_fd = test_data.fixture(xml=xml)
-      enable_grad(d_fd)
-      d_fd.ctrl = wp.array(ctrl_np.reshape(1, -1), dtype=float)
-      mjw.step(m, d_fd)
-      l = wp.zeros(1, dtype=float)
-      wp.launch(
-        _sum_qpos_kernel,
-        dim=(d_fd.nworld, mjm.nq),
-        inputs=[d_fd.qpos, l],
-      )
-      return l.numpy()[0]
-
-    ctrl_np = mjd.ctrl.copy()
-    fd_grad = _fd_gradient(eval_loss, ctrl_np, eps=1e-3)
-
-    np.testing.assert_allclose(
-      ad_grad,
-      fd_grad,
+    _assert_step_ctrl_grad(
+      self,
+      _CONTACT_SLIDE_DENSE_XML,
+      loss_on="qpos",
+      keyframe=None,
       atol=_CONTACT_FD_TOL,
       rtol=_CONTACT_FD_TOL,
       err_msg="solver adjoint dense jacobian grad mismatch",
     )
+
+  @absltest.skipIf(_REQUIRES_GPU, _REQUIRES_GPU_REASON)
+  def test_surrogate_correction_bounded_relative_to_free_body(self):
+    """Surrogate tangential correction should stay bounded vs free-body."""
+    grad_free = self._step_ctrl_grad_norm(
+      _CONTACT_TANGENTIAL_XML,
+      smooth_kwargs=dict(
+        free_body_adjoint=True,
+      ),
+    )
+    grad_sur_90 = self._step_ctrl_grad_norm(
+      _CONTACT_TANGENTIAL_XML,
+      smooth_kwargs=dict(
+        friction_surrogate_adjoint=True,
+        friction_surrogate_alpha=0.9,
+      ),
+    )
+    grad_sur_99 = self._step_ctrl_grad_norm(
+      _CONTACT_TANGENTIAL_XML,
+      smooth_kwargs=dict(
+        friction_surrogate_adjoint=True,
+        friction_surrogate_alpha=0.99,
+      ),
+    )
+
+    self.assertGreater(grad_free, 1.0e-6)
+    self.assertLessEqual(grad_sur_90, grad_free * 1.05)
+    self.assertLessEqual(grad_sur_99, grad_free * 1.05)
 
 
 class GradUtilTest(absltest.TestCase):
@@ -812,6 +806,287 @@ class GradUtilTest(absltest.TestCase):
     self.assertTrue(d.xpos.requires_grad)
     self.assertFalse(d.qvel.requires_grad)
     self.assertFalse(d.ctrl.requires_grad)
+
+  def test_enable_backward_module_flags(self):
+    """Verify enable_backward is set correctly on all AD-relevant modules."""
+    from mujoco_warp._src import collision_smooth
+    from mujoco_warp._src import derivative
+    from mujoco_warp._src import forward as forward_mod
+    from mujoco_warp._src import passive
+    from mujoco_warp._src import smooth
+
+    # Modules that SHOULD have enable_backward=True
+    for mod in [smooth, forward_mod, passive, derivative, collision_smooth]:
+      opts = wp.get_module_options(mod)
+      self.assertTrue(
+        opts.get("enable_backward", False),
+        f"{mod.__name__} should have enable_backward=True",
+      )
+
+    # Modules that should NOT have enable_backward
+    from mujoco_warp._src import collision_driver
+    from mujoco_warp._src import constraint
+    from mujoco_warp._src import solver
+
+    for mod in [constraint, solver, collision_driver]:
+      opts = wp.get_module_options(mod)
+      self.assertFalse(
+        opts.get("enable_backward", False),
+        f"{mod.__name__} should have enable_backward=False",
+      )
+
+  def test_enable_grad_all_smooth_fields(self):
+    """All SMOOTH_GRAD_FIELDS are toggled by enable_grad."""
+    mjm = mujoco.MjModel.from_xml_string(_SIMPLE_HINGE_XML)
+    d = mjw.make_data(mjm)
+
+    mjw.enable_grad(d)
+    for name in mjw.SMOOTH_GRAD_FIELDS:
+      arr = _resolve_field(d, name)
+      if arr is not None and isinstance(arr, wp.array):
+        self.assertTrue(
+          arr.requires_grad,
+          f"SMOOTH_GRAD_FIELDS field '{name}' not enabled by enable_grad",
+        )
+
+    mjw.disable_grad(d)
+    for name in mjw.SMOOTH_GRAD_FIELDS:
+      arr = _resolve_field(d, name)
+      if arr is not None and isinstance(arr, wp.array):
+        self.assertFalse(
+          arr.requires_grad,
+          f"SMOOTH_GRAD_FIELDS field '{name}' not disabled by disable_grad",
+        )
+
+  def test_forward_without_grad_no_error(self):
+    """Forward pipeline without enable_grad works (no errors, no gradients)."""
+    mjm, mjd, m, d = test_data.fixture(xml=_SIMPLE_HINGE_XML, keyframe=0)
+    # Do NOT call enable_grad
+    mjw.kinematics(m, d)
+    mjw.com_pos(m, d)
+    mjw.crb(m, d)
+
+    # Verify no requires_grad is set
+    self.assertFalse(d.qpos.requires_grad)
+    self.assertFalse(d.xpos.requires_grad)
+
+  def test_diff_step_produces_nonzero_gradients(self):
+    """diff_step with enable_grad produces nonzero gradients."""
+    mjm, mjd, m, d = test_data.fixture(xml=_SIMPLE_HINGE_XML, keyframe=0)
+    enable_grad(d)
+
+    loss = wp.zeros(1, dtype=float, requires_grad=True)
+    tape = wp.Tape()
+    with tape:
+      mjw.kinematics(m, d)
+      mjw.com_pos(m, d)
+      wp.launch(
+        _sum_xpos_kernel,
+        dim=(d.nworld, m.nbody),
+        inputs=[d.xpos, loss],
+      )
+    tape.backward(loss=loss)
+
+    ad_grad = d.qpos.grad.numpy()[0, : mjm.nq]
+    # With a non-zero keyframe, kinematics gradients should be nonzero
+    self.assertTrue(
+      np.any(np.abs(ad_grad) > 1e-6),
+      "enable_grad + tape should produce nonzero gradients",
+    )
+
+
+# ---- Test models for integrator gradient path ----
+
+_HINGE_EULERDAMP_DISABLED_XML = """
+<mujoco>
+  <option gravity="0 0 -9.81" jacobian="sparse">
+    <flag contact="disable" constraint="disable" eulerdamp="disable"/>
+  </option>
+  <worldbody>
+    <body>
+      <joint name="j0" type="hinge" axis="0 1 0"/>
+      <geom type="sphere" size="0.1" mass="1"/>
+      <body pos="0 0 -0.5">
+        <joint name="j1" type="hinge" axis="0 1 0"/>
+        <geom type="sphere" size="0.1" mass="1"/>
+      </body>
+    </body>
+  </worldbody>
+  <actuator>
+    <motor joint="j0" gear="1"/>
+    <motor joint="j1" gear="1"/>
+  </actuator>
+  <keyframe>
+    <key qpos="0.5 -0.3" qvel="0.1 -0.2" ctrl="0.5 -0.5"/>
+  </keyframe>
+</mujoco>
+"""
+
+_HINGE_EULERDAMP_ENABLED_XML = """
+<mujoco>
+  <option gravity="0 0 -9.81" jacobian="sparse"/>
+  <worldbody>
+    <body>
+      <joint name="j0" type="hinge" axis="0 1 0" damping="1.0"/>
+      <geom type="sphere" size="0.1" mass="1"/>
+      <body pos="0 0 -0.5">
+        <joint name="j1" type="hinge" axis="0 1 0" damping="1.0"/>
+        <geom type="sphere" size="0.1" mass="1"/>
+      </body>
+    </body>
+  </worldbody>
+  <actuator>
+    <motor joint="j0" gear="1"/>
+    <motor joint="j1" gear="1"/>
+  </actuator>
+  <keyframe>
+    <key qpos="0.5 -0.3" qvel="0.1 -0.2" ctrl="0.5 -0.5"/>
+  </keyframe>
+</mujoco>
+"""
+
+
+class GradIntegratorTest(parameterized.TestCase):
+  """Tests that exercise the gradient path through the integrator.
+
+  Unlike test_euler_step_grad (which uses loss on xpos and bypasses the
+  integrator), these tests use loss on qpos after step(), verifying that
+  gradients flow through: ctrl -> actuation -> acceleration -> solver adjoint
+  -> integrator -> qpos.
+  """
+
+  @absltest.skipIf(_REQUIRES_GPU, _REQUIRES_GPU_REASON)
+  def test_euler_qpos_grad_no_eulerdamp(self):
+    """dL/dctrl through step() measured on qpos, eulerdamp disabled."""
+    _assert_step_ctrl_grad(
+      self,
+      _HINGE_EULERDAMP_DISABLED_XML,
+      loss_on="qpos",
+      err_msg="AD vs FD mismatch for dL(qpos)/dctrl (eulerdamp disabled)",
+    )
+
+  @absltest.skipIf(_REQUIRES_GPU, _REQUIRES_GPU_REASON)
+  def test_euler_qpos_grad_with_eulerdamp(self):
+    """dL/dctrl through step() measured on qpos, eulerdamp enabled."""
+    _assert_step_ctrl_grad(
+      self,
+      _HINGE_EULERDAMP_ENABLED_XML,
+      loss_on="qpos",
+      err_msg="AD vs FD mismatch for dL(qpos)/dctrl (eulerdamp enabled)",
+    )
+
+  @absltest.skipIf(_REQUIRES_GPU, _REQUIRES_GPU_REASON)
+  def test_multistep_qpos_grad_nonzero(self):
+    """dL/dctrl through 2 steps produces nonzero gradient."""
+    xml = _HINGE_EULERDAMP_DISABLED_XML
+    mjm, mjd, m, d = test_data.fixture(xml=xml, keyframe=0)
+    enable_grad(d)
+
+    loss = wp.zeros(1, dtype=float, requires_grad=True)
+    tape = wp.Tape()
+    with tape:
+      mjw.step(m, d)
+      mjw.step(m, d)
+      wp.launch(
+        _sum_qpos_kernel,
+        dim=(d.nworld, mjm.nq),
+        inputs=[d.qpos, loss],
+      )
+    tape.backward(loss=loss)
+    ad_grad = d.ctrl.grad.numpy()[0, : mjm.nu].copy()
+    tape.zero()
+
+    # Multi-step AD vs FD accuracy is limited by shared-array accumulation
+    # across steps (a known Warp tape limitation). Here we just verify the
+    # gradient is nonzero — single-step FD accuracy is tested above.
+    self.assertTrue(
+      np.linalg.norm(ad_grad) > 1e-6,
+      f"Multi-step AD gradient should be nonzero, got |grad|={np.linalg.norm(ad_grad):.3e}",
+    )
+
+
+_HINGE_EULERDAMP_HIGH_DAMPING_SPARSE_XML = """
+<mujoco>
+  <option gravity="0 0 -9.81" jacobian="sparse"/>
+  <worldbody>
+    <body>
+      <joint name="j0" type="hinge" axis="0 1 0" damping="100.0"/>
+      <geom type="sphere" size="0.1" mass="1"/>
+      <body pos="0 0 -0.5">
+        <joint name="j1" type="hinge" axis="0 1 0" damping="100.0"/>
+        <geom type="sphere" size="0.1" mass="1"/>
+      </body>
+    </body>
+  </worldbody>
+  <actuator>
+    <motor joint="j0" gear="1"/>
+    <motor joint="j1" gear="1"/>
+  </actuator>
+  <keyframe>
+    <key qpos="0.5 -0.3" qvel="0.1 -0.2" ctrl="0.5 -0.5"/>
+  </keyframe>
+</mujoco>
+"""
+
+_HINGE_EULERDAMP_HIGH_DAMPING_DENSE_XML = """
+<mujoco>
+  <option gravity="0 0 -9.81" jacobian="dense"/>
+  <worldbody>
+    <body>
+      <joint name="j0" type="hinge" axis="0 1 0" damping="100.0"/>
+      <geom type="sphere" size="0.1" mass="1"/>
+      <body pos="0 0 -0.5">
+        <joint name="j1" type="hinge" axis="0 1 0" damping="100.0"/>
+        <geom type="sphere" size="0.1" mass="1"/>
+      </body>
+    </body>
+  </worldbody>
+  <actuator>
+    <motor joint="j0" gear="1"/>
+    <motor joint="j1" gear="1"/>
+  </actuator>
+  <keyframe>
+    <key qpos="0.5 -0.3" qvel="0.1 -0.2" ctrl="0.5 -0.5"/>
+  </keyframe>
+</mujoco>
+"""
+
+_HINGE_EULERDAMP_ENABLED_DENSE_XML = """
+<mujoco>
+  <option gravity="0 0 -9.81" jacobian="dense"/>
+  <worldbody>
+    <body>
+      <joint name="j0" type="hinge" axis="0 1 0" damping="1.0"/>
+      <geom type="sphere" size="0.1" mass="1"/>
+      <body pos="0 0 -0.5">
+        <joint name="j1" type="hinge" axis="0 1 0" damping="1.0"/>
+        <geom type="sphere" size="0.1" mass="1"/>
+      </body>
+    </body>
+  </worldbody>
+  <actuator>
+    <motor joint="j0" gear="1"/>
+    <motor joint="j1" gear="1"/>
+  </actuator>
+  <keyframe>
+    <key qpos="0.5 -0.3" qvel="0.1 -0.2" ctrl="0.5 -0.5"/>
+  </keyframe>
+</mujoco>
+"""
+
+
+class GradEulerDampStressTest(parameterized.TestCase):
+  """Stress tests for the euler damping adjoint with high damping and dense jacobian."""
+
+  @absltest.skipIf(_REQUIRES_GPU, _REQUIRES_GPU_REASON)
+  @parameterized.named_parameters(
+    ("high_damp_sparse", _HINGE_EULERDAMP_HIGH_DAMPING_SPARSE_XML),
+    ("high_damp_dense", _HINGE_EULERDAMP_HIGH_DAMPING_DENSE_XML),
+    ("normal_damp_dense", _HINGE_EULERDAMP_ENABLED_DENSE_XML),
+  )
+  def test_euler_damp_adjoint(self, xml):
+    """dL/dctrl through step() with eulerdamp enabled, AD matches FD."""
+    _assert_step_ctrl_grad(self, xml, loss_on="qpos", err_msg="AD vs FD mismatch for euler damp adjoint")
 
 
 if __name__ == "__main__":

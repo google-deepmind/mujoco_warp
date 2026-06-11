@@ -42,7 +42,47 @@ def _assert_eq(a, b, name):
   np.testing.assert_allclose(a, b, err_msg=err_msg, atol=tol, rtol=tol)
 
 
+_STATIC_WORLD_GEOM_XML = """
+<mujoco>
+  <option timestep="0.01" gravity="0 0 -9.81" solver="Newton" jacobian="dense"/>
+  <worldbody>
+    <geom name="floor" type="plane" size="2 2 1"/>
+    <body name="ball" pos="0 0 1">
+      <freejoint/>
+      <geom type="sphere" size="0.1"/>
+    </body>
+  </worldbody>
+</mujoco>
+"""
+
+
 class ForwardTest(parameterized.TestCase):
+  @parameterized.parameters(False, True)
+  def test_step_preserves_static_world_geom_transforms(self, use_tape):
+    """Static world geoms must keep their initialized transforms on diff data."""
+    mjm = mujoco.MjModel.from_xml_string(_STATIC_WORLD_GEOM_XML)
+    m = mjw.put_model(mjm)
+    d = mjw.make_diff_data(mjm)
+    mjw.reset_data(m, d)
+    wp.synchronize()
+
+    floor_id = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_GEOM, "floor")
+    eye = np.eye(3, dtype=np.float32)
+    _assert_eq(d.geom_xmat.numpy()[0, floor_id], eye, "geom_xmat init")
+    self.assertEqual(int(d.nacon.numpy()[0]), 0)
+
+    if use_tape:
+      tape = wp.Tape()
+      with tape:
+        mjw.step(m, d)
+      tape.zero()
+    else:
+      mjw.step(m, d)
+    wp.synchronize()
+
+    _assert_eq(d.geom_xmat.numpy()[0, floor_id], eye, "geom_xmat after step")
+    self.assertEqual(int(d.nacon.numpy()[0]), 0)
+
   @parameterized.product(xml=["humanoid/humanoid.xml", "pendula.xml"])
   def test_fwd_velocity(self, xml):
     _, mjd, m, d = test_data.fixture(xml, qvel_noise=0.01, ctrl_noise=0.1)

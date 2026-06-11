@@ -3135,7 +3135,12 @@ def init_context(m: types.Model, d: types.Data, ctx: SolverContext | InverseCont
 @event_scope
 def solve(m: types.Model, d: types.Data):
   if d.njmax == 0 or m.nv == 0:
-    wp.copy(d.qacc, d.qacc_smooth)
+    wp.launch(
+      support._nograd_copy,
+      dim=(d.nworld, m.nv),
+      inputs=[d.qacc_smooth],
+      outputs=[d.qacc],
+    )
     d.solver_niter.fill_(0)
   else:
     if m.ntree > 1 and not (m.opt.disableflags & types.DisableBit.ISLAND):
@@ -3154,9 +3159,19 @@ def solve(m: types.Model, d: types.Data):
 def _solve(m: types.Model, d: types.Data, ctx: SolverContext):
   """Finds forces that satisfy constraints."""
   if not (m.opt.disableflags & types.DisableBit.WARMSTART):
-    wp.copy(d.qacc, d.qacc_warmstart)
+    wp.launch(
+      support._nograd_copy,
+      dim=(d.nworld, m.nv),
+      inputs=[d.qacc_warmstart],
+      outputs=[d.qacc],
+    )
   else:
-    wp.copy(d.qacc, d.qacc_smooth)
+    wp.launch(
+      support._nograd_copy,
+      dim=(d.nworld, m.nv),
+      inputs=[d.qacc_smooth],
+      outputs=[d.qacc],
+    )
 
   #  context
   init_context(m, d, ctx, grad=True)

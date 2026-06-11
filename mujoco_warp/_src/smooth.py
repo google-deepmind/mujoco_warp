@@ -41,6 +41,9 @@ from mujoco_warp._src.warp_util import event_scope
 wp.set_module_options({"enable_backward": True})
 
 
+_nograd_copy_2d = support._nograd_copy
+
+
 # kernel_analyzer: off
 @wp.func
 def _process_joint(
@@ -126,94 +129,113 @@ def _kinematics_branch(
     jntadr = body_jntadr[bodyid]
     jntnum = body_jntnum[bodyid]
 
+    # Check for freejoint — handled separately because it reads position and
+    # quaternion directly from qpos rather than composing with the parent
+    # transform.  We use an integer flag instead of ``continue`` because
+    # Warp's AD replay for ``continue`` inside a dynamic for-loop emits a
+    # goto that skips all adjoint code for that iteration, zeroing gradients.
+    is_free = int(0)
     if jntnum == 1:
       jnt_type_ = jnt_type[jntadr]
       if jnt_type_ == JointType.FREE:
-        qadr = jnt_qposadr[jntadr]
-        xpos = wp.vec3(qpos[qadr], qpos[qadr + 1], qpos[qadr + 2])
-        xquat = wp.quat(qpos[qadr + 3], qpos[qadr + 4], qpos[qadr + 5], qpos[qadr + 6])
-        xquat = wp.normalize(xquat)
+        is_free = int(1)
 
-        xpos_out[worldid, bodyid] = xpos
-        xquat_out[worldid, bodyid] = xquat
-        xanchor_out[worldid, jntadr] = xpos
-        xaxis_out[worldid, jntadr] = jnt_axis[worldid % jnt_axis.shape[0], jntadr]
-        continue
+    if is_free == int(1):
+      qadr = jnt_qposadr[jntadr]
+      xpos = wp.vec3(qpos[qadr], qpos[qadr + 1], qpos[qadr + 2])
+      xquat = wp.quat(qpos[qadr + 3], qpos[qadr + 4], qpos[qadr + 5], qpos[qadr + 6])
+      xquat = wp.normalize(xquat)
 
-    # regular or no joints
-    # apply fixed translation and rotation relative to parent
-    jnt_pos_id = worldid % jnt_pos.shape[0]
-    pid = body_parentid[bodyid]
-
-    # mocap bodies have world body as parent
-    mocapid = body_mocapid[bodyid]
-    if mocapid >= 0:
-      xpos = mocap_pos_in[worldid, mocapid]
-      xquat = mocap_quat_in[worldid, mocapid]
+      xanchor_out[worldid, jntadr] = xpos
+      xaxis_out[worldid, jntadr] = jnt_axis[worldid % jnt_axis.shape[0], jntadr]
     else:
-      xpos = body_pos[worldid % body_pos.shape[0], bodyid]
-      xquat = body_quat[worldid % body_quat.shape[0], bodyid]
+      # regular or no joints
+      # apply fixed translation and rotation relative to parent
+      jnt_pos_id = worldid % jnt_pos.shape[0]
+      pid = body_parentid[bodyid]
 
-    if pid >= 0:
-      xpos = math.rot_vec_quat(xpos, xquat_out[worldid, pid]) + xpos_out[worldid, pid]
-      xquat = math.mul_quat(xquat_out[worldid, pid], xquat)
+      # mocap bodies have world body as parent
+      mocapid = body_mocapid[bodyid]
+      if mocapid >= 0:
+        xpos = mocap_pos_in[worldid, mocapid]
+        xquat = mocap_quat_in[worldid, mocapid]
+      else:
+        xpos = body_pos[worldid % body_pos.shape[0], bodyid]
+        xquat = body_quat[worldid % body_quat.shape[0], bodyid]
 
-    # Unrolled joint processing — avoids nested dynamic-range loop which
-    # produces incorrect gradients in Warp's AD.
-    if jntnum >= 1:
-      xpos, xquat = _process_joint(
-        xpos, xquat, jntadr, jnt_pos_id, worldid, qpos0, jnt_type, jnt_qposadr, jnt_pos, jnt_axis, qpos, xanchor_out, xaxis_out
-      )
-    if jntnum >= 2:
-      xpos, xquat = _process_joint(
-        xpos,
-        xquat,
-        jntadr + 1,
-        jnt_pos_id,
-        worldid,
-        qpos0,
-        jnt_type,
-        jnt_qposadr,
-        jnt_pos,
-        jnt_axis,
-        qpos,
-        xanchor_out,
-        xaxis_out,
-      )
-    if jntnum >= 3:
-      xpos, xquat = _process_joint(
-        xpos,
-        xquat,
-        jntadr + 2,
-        jnt_pos_id,
-        worldid,
-        qpos0,
-        jnt_type,
-        jnt_qposadr,
-        jnt_pos,
-        jnt_axis,
-        qpos,
-        xanchor_out,
-        xaxis_out,
-      )
-    if jntnum >= 4:
-      xpos, xquat = _process_joint(
-        xpos,
-        xquat,
-        jntadr + 3,
-        jnt_pos_id,
-        worldid,
-        qpos0,
-        jnt_type,
-        jnt_qposadr,
-        jnt_pos,
-        jnt_axis,
-        qpos,
-        xanchor_out,
-        xaxis_out,
-      )
+      if pid >= 0:
+        xpos = math.rot_vec_quat(xpos, xquat_out[worldid, pid]) + xpos_out[worldid, pid]
+        xquat = math.mul_quat(xquat_out[worldid, pid], xquat)
 
-    xquat = wp.normalize(xquat)
+      # Unrolled joint processing — avoids nested dynamic-range loop which
+      # produces incorrect gradients in Warp's AD.
+      if jntnum >= 1:
+        xpos, xquat = _process_joint(
+          xpos,
+          xquat,
+          jntadr,
+          jnt_pos_id,
+          worldid,
+          qpos0,
+          jnt_type,
+          jnt_qposadr,
+          jnt_pos,
+          jnt_axis,
+          qpos,
+          xanchor_out,
+          xaxis_out,
+        )
+      if jntnum >= 2:
+        xpos, xquat = _process_joint(
+          xpos,
+          xquat,
+          jntadr + 1,
+          jnt_pos_id,
+          worldid,
+          qpos0,
+          jnt_type,
+          jnt_qposadr,
+          jnt_pos,
+          jnt_axis,
+          qpos,
+          xanchor_out,
+          xaxis_out,
+        )
+      if jntnum >= 3:
+        xpos, xquat = _process_joint(
+          xpos,
+          xquat,
+          jntadr + 2,
+          jnt_pos_id,
+          worldid,
+          qpos0,
+          jnt_type,
+          jnt_qposadr,
+          jnt_pos,
+          jnt_axis,
+          qpos,
+          xanchor_out,
+          xaxis_out,
+        )
+      if jntnum >= 4:
+        xpos, xquat = _process_joint(
+          xpos,
+          xquat,
+          jntadr + 3,
+          jnt_pos_id,
+          worldid,
+          qpos0,
+          jnt_type,
+          jnt_qposadr,
+          jnt_pos,
+          jnt_axis,
+          qpos,
+          xanchor_out,
+          xaxis_out,
+        )
+
+      xquat = wp.normalize(xquat)
+
     xpos_out[worldid, bodyid] = xpos
     xquat_out[worldid, bodyid] = xquat
 
@@ -2144,20 +2166,18 @@ def _comvel_branch(
     jntid = body_jntadr[bodyid]
     jntnum = body_jntnum[bodyid]
 
-    if jntnum == 0:
-      cvel_out[worldid, bodyid] = cvel
-      continue
-
-    # unrolled joint processing — avoids nested dynamic-range loop which
-    # produces incorrect gradients in warp's AD
+    # Use if/else instead of ``continue`` — Warp's AD replay for
+    # ``continue`` inside a dynamic for-loop skips adjoint code.
     if jntnum >= 1:
+      # unrolled joint processing — avoids nested dynamic-range loop which
+      # produces incorrect gradients in warp's AD
       cvel, dofid = _process_joint_vel(cvel, dofid, jntid, worldid, jnt_type, qvel, cdof, cdof_dot_out)
-    if jntnum >= 2:
-      cvel, dofid = _process_joint_vel(cvel, dofid, jntid + 1, worldid, jnt_type, qvel, cdof, cdof_dot_out)
-    if jntnum >= 3:
-      cvel, dofid = _process_joint_vel(cvel, dofid, jntid + 2, worldid, jnt_type, qvel, cdof, cdof_dot_out)
-    if jntnum >= 4:
-      cvel, dofid = _process_joint_vel(cvel, dofid, jntid + 3, worldid, jnt_type, qvel, cdof, cdof_dot_out)
+      if jntnum >= 2:
+        cvel, dofid = _process_joint_vel(cvel, dofid, jntid + 1, worldid, jnt_type, qvel, cdof, cdof_dot_out)
+      if jntnum >= 3:
+        cvel, dofid = _process_joint_vel(cvel, dofid, jntid + 2, worldid, jnt_type, qvel, cdof, cdof_dot_out)
+      if jntnum >= 4:
+        cvel, dofid = _process_joint_vel(cvel, dofid, jntid + 3, worldid, jnt_type, qvel, cdof, cdof_dot_out)
 
     cvel_out[worldid, bodyid] = cvel
 
@@ -2885,7 +2905,13 @@ def transmission(m: Model, d: Data):
     )
 
 
-@wp.kernel
+# Sparse solve kernels have enable_backward=False because Warp's auto-AD
+# for in-place operations (x used as both input and output) accumulates
+# rather than replaces gradients, producing ~2x the correct result.
+# The manual _record_fwd_accel_adjoint callback handles the correct backward
+# (qacc_smooth.grad -> qfrc_smooth.grad via M^{-1}) for both sparse and dense.
+# This matches the dense Cholesky kernels which also have enable_backward=False.
+@wp.kernel(enable_backward=False)
 def _solve_LD_sparse_x_acc_up(
   # In:
   L: wp.array3d(dtype=float),
@@ -2899,7 +2925,7 @@ def _solve_LD_sparse_x_acc_up(
   wp.atomic_sub(x[worldid], i, L[worldid, 0, Madr_ki] * x[worldid, k])
 
 
-@wp.kernel
+@wp.kernel(enable_backward=False)
 def _solve_LD_sparse_qLDiag_mul(
   # In:
   D: wp.array2d(dtype=float),
@@ -2910,7 +2936,7 @@ def _solve_LD_sparse_qLDiag_mul(
   out[worldid, dofid] = out[worldid, dofid] * D[worldid, dofid]
 
 
-@wp.kernel
+@wp.kernel(enable_backward=False)
 def _solve_LD_sparse_x_acc_down(
   # In:
   L: wp.array3d(dtype=float),
@@ -2993,11 +3019,18 @@ def _solve_LD_sparse(
   x: wp.array2d[float],
   y: wp.array2d[float],
 ):
-  """Computes sparse backsubstitution: x = inv(L'*D*L)*y."""
+  """Computes sparse backsubstitution: x = inv(L'*D*L)*y.
+
+  When gradients are requested, the solve runs on unfused kernels with
+  enable_backward=False to avoid Warp's auto-AD accumulation bug with
+  in-place operations (x used as both input and output gives ~2x the
+  correct gradient). The manual _record_fwd_accel_adjoint callback handles
+  the qacc_smooth -> qfrc_smooth gradient path instead.
+  """
   if x.requires_grad or y.requires_grad:
-    # differentiable path: unfused kernels (the fused kernel has
-    # enable_backward=False and in-place updates that break warp's AD)
-    wp.copy(x, y)
+    # Use _nograd_copy_2d so the initial y->x copy doesn't create an auto-AD
+    # gradient path (the manual adjoint handles qacc_smooth -> qfrc_smooth).
+    wp.launch(_nograd_copy_2d, dim=(d.nworld, m.nv), inputs=[y], outputs=[x])
     for qLD_updates in reversed(m.qLD_updates):
       wp.launch(_solve_LD_sparse_x_acc_up, dim=(d.nworld, qLD_updates.size), inputs=[L, qLD_updates], outputs=[x])
 
