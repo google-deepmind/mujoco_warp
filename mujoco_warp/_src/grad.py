@@ -16,6 +16,7 @@ Usage::
     grad_ctrl = d.ctrl.grad
 """
 
+import warnings
 from typing import Callable, Optional, Sequence
 
 import warp as wp
@@ -26,6 +27,7 @@ from mujoco_warp._src.forward import forward
 from mujoco_warp._src.forward import step
 from mujoco_warp._src.types import Data
 from mujoco_warp._src.types import Model
+from mujoco_warp._src.types import SolverType
 
 SMOOTH_GRAD_FIELDS: tuple = (
   # primary state, user-controlled inputs
@@ -91,6 +93,8 @@ SMOOTH_GRAD_FIELDS: tuple = (
   "sensordata",
 )
 
+SOLVER_GRAD_FIELDS: tuple = ("qfrc_constraint",)
+
 
 def enable_grad(d: Data, fields: Optional[Sequence[str]] = None) -> None:
   """Enables gradient tracking on Data arrays."""
@@ -122,12 +126,22 @@ def make_diff_data(
   return d
 
 
+def _warn_if_cg_solver(m: Model, d: Data):
+  """Warn if CG solver is used with constraints (gradients will be zero)."""
+  if d.njmax > 0 and m.opt.solver != SolverType.NEWTON:
+    warnings.warn(
+      "Differentiable solver requires Newton. CG solver gradients through constraints will be zero.",
+      stacklevel=3,
+    )
+
+
 def diff_step(
   m: Model,
   d: Data,
   loss_fn: Callable[[Model, Data], wp.array],
 ) -> wp.Tape:
   """Runs a differentiable physics step."""
+  _warn_if_cg_solver(m, d)
   tape = wp.Tape()
   with tape:
     step(m, d)
@@ -142,6 +156,7 @@ def diff_forward(
   loss_fn: Callable[[Model, Data], wp.array],
 ) -> wp.Tape:
   """Runs differentiable forward dynamics (no integration)."""
+  _warn_if_cg_solver(m, d)
   tape = wp.Tape()
   with tape:
     forward(m, d)

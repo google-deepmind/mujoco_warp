@@ -1007,6 +1007,26 @@ def _resolve_batch_size(na: int | None, n: int | None, nworld: int, default: int
   return default
 
 
+def _allocate_solver_retained(mjm: mujoco.MjModel, d: types.Data, nworld: int, njmax: int, sizes: dict):
+  """Allocates solver retained state used by the implicit-diff backward pass.
+
+  solver_h / solver_hfactor persist the Newton Hessian (and its blocked
+  Cholesky factor for nv > 32) past the solve so solver_implicit_adjoint can
+  reuse them; solver_Jaref persists the constraint residual.
+  """
+  alloc_h = mjm.opt.solver == mujoco.mjtSolver.mjSOL_NEWTON
+  alloc_hfactor = alloc_h and mjm.nv > 32  # _BLOCK_CHOLESKY_DIM
+  d.solver_h = (
+    wp.zeros((nworld, sizes["nv_pad"], sizes["nv_pad"]), dtype=float) if alloc_h else wp.empty((nworld, 0, 0), dtype=float)
+  )
+  d.solver_hfactor = (
+    wp.zeros((nworld, sizes["nv_pad"], sizes["nv_pad"]), dtype=float)
+    if alloc_hfactor
+    else wp.empty((nworld, 0, 0), dtype=float)
+  )
+  d.solver_Jaref = wp.empty((nworld, njmax), dtype=float)
+
+
 def _allocate_island_arrays(
   mjm: mujoco.MjModel,
   d: types.Data,
@@ -1166,6 +1186,9 @@ def make_data(
     "njmax_nnz": njmax_nnz,
     "M": None,
     "qLD": None,
+    "solver_h": None,
+    "solver_hfactor": None,
+    "solver_Jaref": None,
     # world body
     "xquat": wp.array(np.tile(mjd.xquat, (nworld, 1)), shape=(nworld, mjm.nbody), dtype=wp.quat),
     "xmat": wp.array(np.tile(mjd.xmat, (nworld, 1)), shape=(nworld, mjm.nbody), dtype=wp.mat33),
@@ -1220,6 +1243,8 @@ def make_data(
   else:
     d.M = wp.zeros((nworld, sizes["nv_pad"], sizes["nv_pad"]), dtype=float)
     d.qLD = wp.zeros((nworld, mjm.nv, mjm.nv), dtype=float)
+
+  _allocate_solver_retained(mjm, d, nworld, njmax, sizes)
 
   _allocate_island_arrays(mjm, d, nworld, njmax, ENABLE_ISLANDS, mjd)
 
@@ -1409,6 +1434,9 @@ def put_data(
     "solver_niter": None,
     "M": None,
     "qLD": None,
+    "solver_h": None,
+    "solver_hfactor": None,
+    "solver_Jaref": None,
     "nacon": None,
     # island arrays
     "nisland": None,
@@ -1463,6 +1491,8 @@ def put_data(
     M_padded = np.pad(M, ((0, padding), (0, padding)), mode="constant", constant_values=0.0)
     d.M = wp.array(np.full((nworld, sizes["nv_pad"], sizes["nv_pad"]), M_padded), dtype=float)
     d.qLD = wp.array(np.full((nworld, mjm.nv, mjm.nv), qLD), dtype=float)
+
+  _allocate_solver_retained(mjm, d, nworld, njmax, sizes)
 
   _allocate_island_arrays(mjm, d, nworld, njmax, ENABLE_ISLANDS, mjd)
 

@@ -2049,6 +2049,9 @@ class Data:
     njmax_nnz: number of non-zeros in constraint Jacobian
     nacon: number of detected contacts (across all worlds)      (1,)
     ncollision: collision count from broadphase                 (1,)
+    solver_h: retained Newton Hessian for implicit diff         (nworld, nv_pad, nv_pad) or (nworld, 0, 0)
+    solver_hfactor: retained Cholesky factor of solver_h        (nworld, nv_pad, nv_pad) or (nworld, 0, 0)
+    solver_Jaref: retained constraint residual J qacc - aref    (nworld, njmax)
   """
 
   solver_niter: array("nworld", int)
@@ -2172,6 +2175,13 @@ class Data:
   njmax_nnz: int
   nacon: array(1, int)
   ncollision: array(1, int)
+  # solver retained state for the implicit-differentiation backward pass:
+  # solver_h persists the Newton Hessian H = M + J_A^T D_A J_A, solver_hfactor
+  # its blocked Cholesky factor (nv > 32 only), solver_Jaref the constraint
+  # residual J qacc - aref. Zero-sized unless allocated for AD.
+  solver_h: wp.array3d[float]
+  solver_hfactor: wp.array3d[float]
+  solver_Jaref: wp.array2d[float]
 
 
 @dataclasses.dataclass

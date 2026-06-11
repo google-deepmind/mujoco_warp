@@ -1,8 +1,7 @@
 """custom adjoint definitions for MuJoCo Warp autodifferentiation.
 
-This module centralizes all ``@wp.func_grad`` registrations. It must be
-imported before any tape recording so that custom gradients are registered
-with Warp's AD system.
+This module centralizes all ``@wp.func_grad`` registrations and the
+implicit differentiation adjoint for the constraint solver.
 
 Import this module via ``grad.py`` dont import it directly
 """
@@ -10,6 +9,11 @@ Import this module via ``grad.py`` dont import it directly
 import warp as wp
 
 from mujoco_warp._src import math
+from mujoco_warp._src import support
+from mujoco_warp._src import types
+from mujoco_warp._src.block_cholesky import create_blocked_cholesky_factorize_solve_func
+from mujoco_warp._src.block_cholesky import create_blocked_cholesky_solve_func
+from mujoco_warp._src.warp_util import cache_kernel
 
 
 @wp.func_grad(math.quat_integrate)
@@ -105,3 +109,174 @@ def _quat_integrate_grad(q: wp.quat, v: wp.vec3, dt: float, adj_ret: wp.quat):
   wp.adjoint[q] += adj_q_val
   wp.adjoint[v] += adj_v_val
   wp.adjoint[dt] += adj_dt_val
+
+
+# ---------------------------------------------------------------------------
+# Solver implicit differentiation adjoint
+# ---------------------------------------------------------------------------
+
+_BLOCK_CHOLESKY_DIM = 32
+
+
+@wp.kernel
+def _copy_grad_kernel(
+  # In:
+  src: wp.array2d(dtype=float),
+  # Out:
+  dst: wp.array2d(dtype=float),
+):
+  worldid, dofid = wp.tid()
+  dst[worldid, dofid] = src[worldid, dofid]
+
+
+@cache_kernel
+def _adjoint_cholesky_tile(nv: int):
+  @wp.kernel(module="unique", enable_backward=False)
+  def kernel(
+    # In:
+    H: wp.array3d(dtype=float),
+    b: wp.array2d(dtype=float),
+    # Out:
+    out: wp.array2d(dtype=float),
+  ):
+    worldid = wp.tid()
+    TILE_SIZE = wp.static(nv)
+    H_tile = wp.tile_load(H[worldid], shape=(TILE_SIZE, TILE_SIZE))
+    b_tile = wp.tile_load(b[worldid], shape=(TILE_SIZE,))
+    L = wp.tile_cholesky(H_tile)
+    x = wp.tile_cholesky_solve(L, b_tile)
+    wp.tile_store(out[worldid], x)
+
+  return kernel
+
+
+@cache_kernel
+def _adjoint_cholesky_blocked(tile_size: int, matrix_size: int):
+  @wp.kernel(module="unique", enable_backward=False)
+  def kernel(
+    # In:
+    hfactor: wp.array3d(dtype=float),
+    b: wp.array3d(dtype=float),
+    nv_runtime: int,
+    # Out:
+    out: wp.array3d(dtype=float),
+  ):
+    worldid = wp.tid()
+    wp.static(create_blocked_cholesky_solve_func(tile_size, matrix_size))(
+      hfactor[worldid], b[worldid], nv_runtime, out[worldid]
+    )
+
+  return kernel
+
+
+@cache_kernel
+def _adjoint_cholesky_full_blocked(tile_size: int, matrix_size: int):
+  @wp.kernel(module="unique", enable_backward=False)
+  def kernel(
+    # In:
+    H: wp.array3d(dtype=float),
+    b: wp.array3d(dtype=float),
+    nv_runtime: int,
+    hfactor_tmp: wp.array3d(dtype=float),
+    # Out:
+    out: wp.array3d(dtype=float),
+  ):
+    worldid = wp.tid()
+    # Fused factorize+solve (upstream replaced the separate factorize func);
+    # hfactor_tmp receives the factor as a side effect.
+    wp.static(create_blocked_cholesky_factorize_solve_func(tile_size, matrix_size))(
+      H[worldid], b[worldid], nv_runtime, hfactor_tmp[worldid], out[worldid]
+    )
+
+  return kernel
+
+
+@wp.kernel
+def _padding_h_adjoint(
+  nv: int,
+  H_out: wp.array3d(dtype=float),
+):
+  worldid, elementid = wp.tid()
+  dofid = nv + elementid
+  H_out[worldid, dofid, dofid] = 1.0
+
+
+def _solve_hessian_system(m: types.Model, d: types.Data, b, out):
+  """Solve H * x = b using stored solver Hessian."""
+  if m.nv <= _BLOCK_CHOLESKY_DIM:
+    wp.launch_tiled(
+      _adjoint_cholesky_tile(m.nv),
+      dim=d.nworld,
+      inputs=[d.solver_h, b],
+      outputs=[out],
+      block_dim=m.block_dim.update_gradient_cholesky,
+    )
+  else:
+    b_3d = b.reshape((d.nworld, m.nv_pad, 1))
+    out_3d = out.reshape((d.nworld, m.nv_pad, 1))
+
+    if d.solver_hfactor.shape[1] > 0:
+      # Solve-only using stored Cholesky factor
+      wp.launch_tiled(
+        _adjoint_cholesky_blocked(types.TILE_SIZE_JTDAJ_DENSE, m.nv_pad),
+        dim=d.nworld,
+        inputs=[d.solver_hfactor, b_3d, m.nv],
+        outputs=[out_3d],
+        block_dim=m.block_dim.update_gradient_cholesky_blocked,
+      )
+    else:
+      # Full factorize + solve (no stored factor)
+      # Pad diagonal for stability
+      if m.nv_pad > m.nv:
+        wp.launch(
+          _padding_h_adjoint,
+          dim=(d.nworld, m.nv_pad - m.nv),
+          inputs=[m.nv],
+          outputs=[d.solver_h],
+        )
+      hfactor_tmp = wp.zeros((d.nworld, m.nv_pad, m.nv_pad), dtype=float)
+      wp.launch_tiled(
+        _adjoint_cholesky_full_blocked(types.TILE_SIZE_JTDAJ_DENSE, m.nv_pad),
+        dim=d.nworld,
+        inputs=[d.solver_h, b_3d, m.nv, hfactor_tmp],
+        outputs=[out_3d],
+        block_dim=m.block_dim.update_gradient_cholesky_blocked,
+      )
+
+
+def solver_implicit_adjoint(m: types.Model, d: types.Data):
+  """Implicit differentiation adjoint for constraint solver.
+
+  Called during tape backward. Reads d.qacc.grad (set by downstream),
+  solves H*v = adj_qacc, writes d.qacc_smooth.grad = M*v.
+  """
+  nv = m.nv
+  if nv == 0:
+    return
+
+  if d.njmax == 0:
+    # Solver was identity (qacc = qacc_smooth), copy adjoint through
+    wp.launch(
+      _copy_grad_kernel,
+      dim=(d.nworld, nv),
+      inputs=[d.qacc.grad],
+      outputs=[d.qacc_smooth.grad],
+    )
+    return
+
+  if m.opt.solver != types.SolverType.NEWTON:
+    # CG solver: no Hessian stored, fall back to identity
+    wp.launch(
+      _copy_grad_kernel,
+      dim=(d.nworld, nv),
+      inputs=[d.qacc.grad],
+      outputs=[d.qacc_smooth.grad],
+    )
+    return
+
+  # Solve H * v = adj_qacc
+  v = wp.zeros((d.nworld, m.nv_pad), dtype=float)
+  _solve_hessian_system(m, d, d.qacc.grad, v)
+
+  # adj_qacc_smooth = M * v
+  support.mul_m(m, d, d.qacc_smooth.grad, v)

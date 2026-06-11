@@ -523,6 +523,258 @@ class GradQuaternionTest(parameterized.TestCase):
     )
 
 
+_CONTACT_SLIDE_XML = """
+<mujoco>
+  <option gravity="0 0 -9.81" jacobian="sparse" solver="Newton" iterations="30"/>
+  <worldbody>
+    <geom type="plane" size="5 5 0.01"/>
+    <body pos="0 0 0.05">
+      <joint name="slide" type="slide" axis="0 0 1"/>
+      <geom type="sphere" size="0.1" mass="1"/>
+    </body>
+  </worldbody>
+  <actuator>
+    <motor joint="slide" gear="1"/>
+  </actuator>
+</mujoco>
+"""
+
+_CONTACT_SLIDE_DENSE_XML = """
+<mujoco>
+  <option gravity="0 0 -9.81" jacobian="dense" solver="Newton" iterations="30"/>
+  <worldbody>
+    <geom type="plane" size="5 5 0.01"/>
+    <body pos="0 0 0.05">
+      <joint name="slide" type="slide" axis="0 0 1"/>
+      <geom type="sphere" size="0.1" mass="1"/>
+    </body>
+  </worldbody>
+  <actuator>
+    <motor joint="slide" gear="1"/>
+  </actuator>
+</mujoco>
+"""
+
+# Tolerance for contact AD tests (relaxed for contacts)
+_CONTACT_FD_TOL = 1e-2
+
+
+@wp.kernel
+def _sum_qpos_kernel(
+  qpos_in: wp.array2d(dtype=float),
+  loss: wp.array(dtype=float),
+):
+  worldid, qid = wp.tid()
+  wp.atomic_add(loss, 0, qpos_in[worldid, qid])
+
+
+class GradSolverAdjointTest(parameterized.TestCase):
+  @absltest.skipIf(
+    wp.get_device().is_cuda and wp.get_device().arch < 70,
+    "tile kernels (cuSolverDx) require sm_70+",
+  )
+  def test_solver_adjoint_contact_step(self):
+    """dL/dctrl through step() with active contacts (Newton solver)."""
+    xml = _CONTACT_SLIDE_XML
+    mjm, mjd, m, d = test_data.fixture(xml=xml)
+    enable_grad(d)
+
+    # AD gradient
+    loss = wp.zeros(1, dtype=float, requires_grad=True)
+    tape = wp.Tape()
+    with tape:
+      mjw.step(m, d)
+      wp.launch(
+        _sum_qpos_kernel,
+        dim=(d.nworld, mjm.nq),
+        inputs=[d.qpos, loss],
+      )
+    tape.backward(loss=loss)
+    ad_grad = d.ctrl.grad.numpy()[0, : mjm.nu].copy()
+    tape.zero()
+
+    # Finite-difference gradient
+    def eval_loss(ctrl_np):
+      _, _, _, d_fd = test_data.fixture(xml=xml)
+      enable_grad(d_fd)
+      d_fd.ctrl = wp.array(ctrl_np.reshape(1, -1), dtype=float)
+      mjw.step(m, d_fd)
+      l = wp.zeros(1, dtype=float)
+      wp.launch(
+        _sum_qpos_kernel,
+        dim=(d_fd.nworld, mjm.nq),
+        inputs=[d_fd.qpos, l],
+      )
+      return l.numpy()[0]
+
+    ctrl_np = mjd.ctrl.copy()
+    fd_grad = _fd_gradient(eval_loss, ctrl_np, eps=1e-3)
+
+    np.testing.assert_allclose(
+      ad_grad,
+      fd_grad,
+      atol=_CONTACT_FD_TOL,
+      rtol=_CONTACT_FD_TOL,
+      err_msg="solver adjoint contact step grad mismatch",
+    )
+
+  @absltest.skipIf(
+    wp.get_device().is_cuda and wp.get_device().arch < 70,
+    "tile kernels (cuSolverDx) require sm_70+",
+  )
+  def test_solver_adjoint_no_active_constraints(self):
+    """No active contacts: solver adjoint should match Phase 1 (unconstrained)."""
+    # Ball high above ground — no contact
+    xml = """
+    <mujoco>
+      <option gravity="0 0 -9.81" jacobian="sparse" solver="Newton" iterations="30"/>
+      <worldbody>
+        <geom type="plane" size="5 5 0.01"/>
+        <body pos="0 0 2.0">
+          <joint name="slide" type="slide" axis="0 0 1"/>
+          <geom type="sphere" size="0.1" mass="1"/>
+        </body>
+      </worldbody>
+      <actuator>
+        <motor joint="slide" gear="1"/>
+      </actuator>
+    </mujoco>
+    """
+    mjm, mjd, m, d = test_data.fixture(xml=xml)
+    enable_grad(d)
+
+    loss = wp.zeros(1, dtype=float, requires_grad=True)
+    tape = wp.Tape()
+    with tape:
+      mjw.step(m, d)
+      wp.launch(
+        _sum_qpos_kernel,
+        dim=(d.nworld, mjm.nq),
+        inputs=[d.qpos, loss],
+      )
+    tape.backward(loss=loss)
+    ad_grad = d.ctrl.grad.numpy()[0, : mjm.nu].copy()
+    tape.zero()
+
+    def eval_loss(ctrl_np):
+      _, _, _, d_fd = test_data.fixture(xml=xml)
+      enable_grad(d_fd)
+      d_fd.ctrl = wp.array(ctrl_np.reshape(1, -1), dtype=float)
+      mjw.step(m, d_fd)
+      l = wp.zeros(1, dtype=float)
+      wp.launch(
+        _sum_qpos_kernel,
+        dim=(d_fd.nworld, mjm.nq),
+        inputs=[d_fd.qpos, l],
+      )
+      return l.numpy()[0]
+
+    ctrl_np = mjd.ctrl.copy()
+    fd_grad = _fd_gradient(eval_loss, ctrl_np, eps=1e-3)
+
+    np.testing.assert_allclose(
+      ad_grad,
+      fd_grad,
+      atol=_FD_TOL,
+      rtol=_FD_TOL,
+      err_msg="solver adjoint no-contact grad mismatch",
+    )
+
+  @absltest.skipIf(
+    wp.get_device().is_cuda and wp.get_device().arch < 70,
+    "tile kernels (cuSolverDx) require sm_70+",
+  )
+  def test_solver_adjoint_identity_unconstrained(self):
+    """njmax==0 (constraints disabled): identity pass-through."""
+    xml = _SIMPLE_HINGE_XML  # has contact/constraint disabled
+    mjm, mjd, m, d = test_data.fixture(xml=xml, keyframe=0)
+    enable_grad(d)
+
+    loss = wp.zeros(1, dtype=float, requires_grad=True)
+    tape = wp.Tape()
+    with tape:
+      mjw.step(m, d)
+      wp.launch(
+        _sum_xpos_kernel,
+        dim=(d.nworld, m.nbody),
+        inputs=[d.xpos, loss],
+      )
+    tape.backward(loss=loss)
+    ad_grad = d.ctrl.grad.numpy()[0, : mjm.nu].copy()
+    tape.zero()
+
+    def eval_loss(ctrl_np):
+      _, _, _, d_fd = test_data.fixture(xml=xml, keyframe=0)
+      enable_grad(d_fd)
+      d_fd.ctrl = wp.array(ctrl_np.reshape(1, -1), dtype=float)
+      mjw.step(m, d_fd)
+      l = wp.zeros(1, dtype=float)
+      wp.launch(
+        _sum_xpos_kernel,
+        dim=(d_fd.nworld, m.nbody),
+        inputs=[d_fd.xpos, l],
+      )
+      return l.numpy()[0]
+
+    ctrl_np = mjd.ctrl.copy()
+    fd_grad = _fd_gradient(eval_loss, ctrl_np)
+
+    np.testing.assert_allclose(
+      ad_grad,
+      fd_grad,
+      atol=_FD_TOL,
+      rtol=_FD_TOL,
+      err_msg="solver adjoint identity (unconstrained) grad mismatch",
+    )
+
+  @absltest.skipIf(
+    wp.get_device().is_cuda and wp.get_device().arch < 70,
+    "tile kernels (cuSolverDx) require sm_70+",
+  )
+  def test_solver_adjoint_dense_jacobian(self):
+    """Dense jacobian contact model: dL/dctrl through step()."""
+    xml = _CONTACT_SLIDE_DENSE_XML
+    mjm, mjd, m, d = test_data.fixture(xml=xml)
+    enable_grad(d)
+
+    loss = wp.zeros(1, dtype=float, requires_grad=True)
+    tape = wp.Tape()
+    with tape:
+      mjw.step(m, d)
+      wp.launch(
+        _sum_qpos_kernel,
+        dim=(d.nworld, mjm.nq),
+        inputs=[d.qpos, loss],
+      )
+    tape.backward(loss=loss)
+    ad_grad = d.ctrl.grad.numpy()[0, : mjm.nu].copy()
+    tape.zero()
+
+    def eval_loss(ctrl_np):
+      _, _, _, d_fd = test_data.fixture(xml=xml)
+      enable_grad(d_fd)
+      d_fd.ctrl = wp.array(ctrl_np.reshape(1, -1), dtype=float)
+      mjw.step(m, d_fd)
+      l = wp.zeros(1, dtype=float)
+      wp.launch(
+        _sum_qpos_kernel,
+        dim=(d_fd.nworld, mjm.nq),
+        inputs=[d_fd.qpos, l],
+      )
+      return l.numpy()[0]
+
+    ctrl_np = mjd.ctrl.copy()
+    fd_grad = _fd_gradient(eval_loss, ctrl_np, eps=1e-3)
+
+    np.testing.assert_allclose(
+      ad_grad,
+      fd_grad,
+      atol=_CONTACT_FD_TOL,
+      rtol=_CONTACT_FD_TOL,
+      err_msg="solver adjoint dense jacobian grad mismatch",
+    )
+
+
 class GradUtilTest(absltest.TestCase):
   def test_enable_disable_grad(self):
     """enable_grad / disable_grad toggle requires_grad on Data fields."""

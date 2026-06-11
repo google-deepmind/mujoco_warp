@@ -710,6 +710,51 @@ class SolverTest(parameterized.TestCase):
 
     self.assertTrue(total_any_changes, "no state changes detected across any keyframe")
 
+  @parameterized.product(
+    solver_=(SolverType.NEWTON,),
+    jacobian=(mujoco.mjtJacobian.mjJAC_DENSE, mujoco.mjtJacobian.mjJAC_SPARSE),
+  )
+  def test_solver_retained_state(self, solver_, jacobian):
+    """Verify solver Hessian and Jaref are retained on Data after solve."""
+    mjm, mjd, m, d = test_data.fixture(
+      "constraints.xml",
+      keyframe=0,
+      overrides={"opt.solver": solver_, "opt.jacobian": jacobian},
+    )
+    mjw.step(m, d)
+
+    nefc = d.nefc.numpy()[0]
+    if nefc == 0:
+      return  # no constraints active, nothing to verify
+
+    nv = m.nv
+    qacc = d.qacc.numpy()[0]
+
+    # Verify Jaref = efc_J @ qacc - efc_aref
+    if m.is_sparse:
+      efc_J_raw = d.efc.J.numpy()[0, 0]
+      colind = d.efc.J_colind.numpy()[0, 0]
+      rownnz = d.efc.J_rownnz.numpy()[0]
+      rowadr = d.efc.J_rowadr.numpy()[0]
+      efc_J = np.zeros((nefc, nv))
+      for i in range(nefc):
+        for k in range(rownnz[i]):
+          col = colind[rowadr[i] + k]
+          efc_J[i, col] = efc_J_raw[rowadr[i] + k]
+    else:
+      efc_J = d.efc.J.numpy()[0, :nefc, :nv]
+
+    efc_aref = d.efc.aref.numpy()[0, :nefc]
+    expected_jaref = efc_J @ qacc - efc_aref
+    actual_jaref = d.solver_Jaref.numpy()[0, :nefc]
+    np.testing.assert_allclose(actual_jaref, expected_jaref, atol=1e-4, rtol=1e-4)
+
+    # Verify h is stored and has positive diagonal (Newton only)
+    # Note: h may be stored as lower triangle only depending on code path.
+    h = d.solver_h.numpy()[0, :nv, :nv]
+    self.assertTrue(np.any(h != 0), "Hessian is all zeros")
+    self.assertTrue(np.all(np.diag(h) > 0), "Hessian diagonal should be positive")
+
 
 # Basic weld constraint model.
 _WELD_XML = """
