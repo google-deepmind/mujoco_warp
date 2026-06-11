@@ -1704,6 +1704,160 @@ def _update_constraint_init_qfrc_constraint_sparse(
 
 
 @wp.kernel
+def _det_col_index_count(
+  # Data in:
+  nefc_in: wp.array[int],
+  efc_J_rownnz_in: wp.array2d[int],
+  efc_J_rowadr_in: wp.array2d[int],
+  efc_J_colind_in: wp.array3d[int],
+  # Out:
+  col_nnz_out: wp.array2d[int],  # (nworld, nv), zeroed
+):
+  """Counts J entries per dof column. Integer atomics: order-independent."""
+  worldid, efcid = wp.tid()
+
+  if efcid >= nefc_in[worldid]:
+    return
+
+  rownnz = efc_J_rownnz_in[worldid, efcid]
+  rowadr = efc_J_rowadr_in[worldid, efcid]
+  for i in range(rownnz):
+    wp.atomic_add(col_nnz_out[worldid], efc_J_colind_in[worldid, 0, rowadr + i], 1)
+
+
+@wp.kernel
+def _det_col_index_scan(
+  # Model:
+  nv: int,
+  # In:
+  col_nnz_in: wp.array2d[int],
+  # Out:
+  col_adr_out: wp.array2d[int],  # (nworld, nv)
+):
+  """Per-world exclusive scan of column counts into column start addresses."""
+  worldid = wp.tid()
+
+  acc = int(0)
+  for dofid in range(nv):
+    col_adr_out[worldid, dofid] = acc
+    acc += col_nnz_in[worldid, dofid]
+
+
+@wp.kernel
+def _det_col_index_emit(
+  # Data in:
+  nefc_in: wp.array[int],
+  efc_J_rownnz_in: wp.array2d[int],
+  efc_J_rowadr_in: wp.array2d[int],
+  efc_J_colind_in: wp.array3d[int],
+  # In:
+  col_adr_in: wp.array2d[int],
+  # Out:
+  col_sparseid_out: wp.array2d[int],  # (nworld, njmax_nnz)
+  col_efcid_out: wp.array2d[int],  # (nworld, njmax_nnz)
+):
+  """Emits per-dof entry lists in ascending efc row order (deterministic).
+
+  One thread per (world, dof) scans rows serially so each column's entries are
+  stored in efc index order; downstream gathers then sum floats in a fixed order.
+  """
+  worldid, dofid = wp.tid()
+
+  k = col_adr_in[worldid, dofid]
+  nefc = nefc_in[worldid]
+  for efcid in range(nefc):
+    rownnz = efc_J_rownnz_in[worldid, efcid]
+    rowadr = efc_J_rowadr_in[worldid, efcid]
+    for i in range(rownnz):
+      if efc_J_colind_in[worldid, 0, rowadr + i] == dofid:
+        col_sparseid_out[worldid, k] = rowadr + i
+        col_efcid_out[worldid, k] = efcid
+        k += 1
+        break
+
+
+def _ensure_det_solver_scratch(m: types.Model, d: types.Data) -> dict:
+  """Lazily allocate the persisted column-index scratch for deterministic mode."""
+  scratch = getattr(d, "_det_solver_scratch", None)
+  if scratch is not None:
+    return scratch
+
+  scratch = {
+    "col_nnz": wp.empty((d.nworld, m.nv), dtype=int),
+    "col_adr": wp.empty((d.nworld, m.nv), dtype=int),
+    "col_sparseid": wp.empty((d.nworld, d.njmax_nnz), dtype=int),
+    "col_efcid": wp.empty((d.nworld, d.njmax_nnz), dtype=int),
+  }
+  d._det_solver_scratch = scratch
+  return scratch
+
+
+def _build_det_col_index(m: types.Model, d: types.Data):
+  """Builds the per-dof (column) index over sparse J, once per solve.
+
+  J is fixed for the duration of the solve (computed in make_constraint), so
+  the index built here serves every solver iteration's deterministic gathers.
+  """
+  s = _ensure_det_solver_scratch(m, d)
+  s["col_nnz"].zero_()
+  wp.launch(
+    _det_col_index_count,
+    dim=(d.nworld, d.njmax),
+    inputs=[d.nefc, d.efc.J_rownnz, d.efc.J_rowadr, d.efc.J_colind],
+    outputs=[s["col_nnz"]],
+  )
+  wp.launch(
+    _det_col_index_scan,
+    dim=d.nworld,
+    inputs=[m.nv, s["col_nnz"]],
+    outputs=[s["col_adr"]],
+  )
+  wp.launch(
+    _det_col_index_emit,
+    dim=(d.nworld, m.nv),
+    inputs=[d.nefc, d.efc.J_rownnz, d.efc.J_rowadr, d.efc.J_colind, s["col_adr"]],
+    outputs=[s["col_sparseid"], s["col_efcid"]],
+  )
+
+
+@wp.kernel
+def _update_constraint_init_qfrc_constraint_sparse_det(
+  # In:
+  col_nnz_in: wp.array2d[int],
+  col_adr_in: wp.array2d[int],
+  col_sparseid_in: wp.array2d[int],
+  col_efcid_in: wp.array2d[int],
+  # Data in:
+  efc_J_in: wp.array3d[float],
+  efc_force_in: wp.array2d[float],
+  # In:
+  ctx_done_in: wp.array[bool],
+  # Data out:
+  qfrc_constraint_out: wp.array2d[float],
+):
+  """Deterministic sparse qfrc_constraint: per-dof gather over the column index.
+
+  Replaces the racy per-row `wp.atomic_add` scatter (float addition order
+  across efc rows hitting the same dof is unordered, so rounding differs
+  between runs). Entries are pre-indexed per dof in ascending efc row order
+  by _build_det_col_index, so each (world, dof) thread sums O(col_nnz)
+  floats in a fixed order.
+  """
+  worldid, dofid = wp.tid()
+
+  if ctx_done_in[worldid]:
+    return
+
+  sum_qfrc = float(0.0)
+  adr = col_adr_in[worldid, dofid]
+  nnz = col_nnz_in[worldid, dofid]
+  for k in range(adr, adr + nnz):
+    sum_qfrc += efc_J_in[worldid, 0, col_sparseid_in[worldid, k]] * efc_force_in[worldid, col_efcid_in[worldid, k]]
+
+  qfrc_constraint_out[worldid, dofid] = sum_qfrc
+
+
+@wp.kernel
 def _update_constraint_init_qfrc_constraint_dense(
   # Data in:
   nefc_in: wp.array[int],
@@ -1857,13 +2011,24 @@ def _update_constraint(m: types.Model, d: types.Data, ctx: SolverContext | Inver
 
   # qfrc_constraint = efc_J.T @ efc_force
   if m.is_sparse:
-    d.qfrc_constraint.zero_()
-    wp.launch(
-      _update_constraint_init_qfrc_constraint_sparse,
-      dim=(d.nworld, d.njmax),
-      inputs=[d.nefc, d.efc.J_rownnz, d.efc.J_rowadr, d.efc.J_colind, d.efc.J, d.efc.force, ctx.done],
-      outputs=[d.qfrc_constraint],
-    )
+    if m.opt.deterministic:
+      # Deterministic gather over the persisted column index (float addition
+      # order fixed: ascending efc rows). No zero_() needed: full assignment.
+      s = _ensure_det_solver_scratch(m, d)
+      wp.launch(
+        _update_constraint_init_qfrc_constraint_sparse_det,
+        dim=(d.nworld, m.nv),
+        inputs=[s["col_nnz"], s["col_adr"], s["col_sparseid"], s["col_efcid"], d.efc.J, d.efc.force, ctx.done],
+        outputs=[d.qfrc_constraint],
+      )
+    else:
+      d.qfrc_constraint.zero_()
+      wp.launch(
+        _update_constraint_init_qfrc_constraint_sparse,
+        dim=(d.nworld, d.njmax),
+        inputs=[d.nefc, d.efc.J_rownnz, d.efc.J_rowadr, d.efc.J_colind, d.efc.J, d.efc.force, ctx.done],
+        outputs=[d.qfrc_constraint],
+      )
   else:
     wp.launch(
       _update_constraint_init_qfrc_constraint_dense,
@@ -2548,6 +2713,72 @@ def _JTDAJ_sparse(
       wp.atomic_add(h_out[worldid, row], col, h)
 
 
+@wp.kernel
+def _JTDAJ_sparse_det(
+  # In:
+  col_nnz_in: wp.array2d[int],
+  col_adr_in: wp.array2d[int],
+  col_sparseid_in: wp.array2d[int],
+  col_efcid_in: wp.array2d[int],
+  # Data in:
+  efc_J_rownnz_in: wp.array2d[int],
+  efc_J_rowadr_in: wp.array2d[int],
+  efc_J_colind_in: wp.array3d[int],
+  efc_J_in: wp.array3d[float],
+  efc_D_in: wp.array2d[float],
+  efc_state_in: wp.array2d[int],
+  # In:
+  ctx_done_in: wp.array[bool],
+  # Out:
+  h_out: wp.array3d[float],
+):
+  """Deterministic sparse JTDAJ: per upper-triangle element gather over the column index.
+
+  Replaces the racy per-row `wp.atomic_add` scatter into h[row, col] (float
+  addition order across efc rows touching the same element is unordered).
+  One thread owns each unique (row, col) element and iterates only the efc
+  rows listed in `row`'s column index (ascending efc order — deterministic),
+  intersecting with `col` via a row-local scan. h must already hold the M
+  contribution from _update_gradient_init_h_sparse.
+  """
+  worldid, elementid = wp.tid()
+
+  if ctx_done_in[worldid]:
+    return
+
+  # Upper-triangle enumeration: elementid -> (row, col) with row <= col.
+  col = (int(wp.sqrt(float(1 + 8 * elementid))) - 1) // 2
+  row = elementid - (col * (col + 1)) // 2
+
+  acc = float(0.0)
+  adr = col_adr_in[worldid, row]
+  nnz = col_nnz_in[worldid, row]
+  for k in range(adr, adr + nnz):
+    efcid = col_efcid_in[worldid, k]
+    if efc_state_in[worldid, efcid] != types.ConstraintState.QUADRATIC.value:
+      continue
+    efc_D = efc_D_in[worldid, efcid]
+    if efc_D == 0.0:
+      continue
+    Ji = efc_J_in[worldid, 0, col_sparseid_in[worldid, k]]
+    if Ji == 0.0:
+      continue
+    # Find J[efcid, col] within the row's entries. No sortedness assumption on
+    # colind: scan the full row (rownnz is small — bounded by dof chain depth).
+    Jj = float(0.0)
+    rownnz = efc_J_rownnz_in[worldid, efcid]
+    rowadr = efc_J_rowadr_in[worldid, efcid]
+    for i in range(rownnz):
+      if efc_J_colind_in[worldid, 0, rowadr + i] == col:
+        Jj = efc_J_in[worldid, 0, rowadr + i]
+        break
+    if Jj != 0.0:
+      acc += Ji * Jj * efc_D
+
+  if acc != 0.0:
+    h_out[worldid, row, col] += acc
+
+
 def _update_gradient(m: types.Model, d: types.Data, ctx: SolverContext):
   # grad = Ma - qfrc_smooth - qfrc_constraint
   if m.opt.solver == types.SolverType.CG:
@@ -2579,12 +2810,37 @@ def _update_gradient(m: types.Model, d: types.Data, ctx: SolverContext):
         outputs=[ctx.h],
       )
 
-      wp.launch(
-        _JTDAJ_sparse,
-        dim=(d.nworld, d.njmax),
-        inputs=[d.nefc, d.efc.J_rownnz, d.efc.J_rowadr, d.efc.J_colind, d.efc.J, d.efc.D, d.efc.state, ctx.done],
-        outputs=[ctx.h],
-      )
+      if m.opt.deterministic:
+        # Deterministic gather: one thread per upper-triangle element, efc rows
+        # visited via the persisted column index (ascending efc order) on top
+        # of the M init above.
+        s = _ensure_det_solver_scratch(m, d)
+        tri_dim = m.nv * (m.nv + 1) // 2
+        wp.launch(
+          _JTDAJ_sparse_det,
+          dim=(d.nworld, tri_dim),
+          inputs=[
+            s["col_nnz"],
+            s["col_adr"],
+            s["col_sparseid"],
+            s["col_efcid"],
+            d.efc.J_rownnz,
+            d.efc.J_rowadr,
+            d.efc.J_colind,
+            d.efc.J,
+            d.efc.D,
+            d.efc.state,
+            ctx.done,
+          ],
+          outputs=[ctx.h],
+        )
+      else:
+        wp.launch(
+          _JTDAJ_sparse,
+          dim=(d.nworld, d.njmax),
+          inputs=[d.nefc, d.efc.J_rownnz, d.efc.J_rowadr, d.efc.J_colind, d.efc.J, d.efc.D, d.efc.state, ctx.done],
+          outputs=[ctx.h],
+        )
     else:
       wp.launch_tiled(
         _update_gradient_JTDAJ_dense_tiled(m.nv_pad, types.TILE_SIZE_JTDAJ_DENSE, d.njmax),
@@ -2990,6 +3246,11 @@ def _solver_iteration(
   # tracking, and the additional JTCJ Hessian term depends on Jaref which
   # changes every iteration.
   incremental = m.opt.solver == types.SolverType.NEWTON and m.opt.cone != types.ConeType.ELLIPTIC
+  # The incremental H update scatters with racing float atomics
+  # (_update_gradient_h_incremental_sparse) and its changed_efc_ids ordering is
+  # nondeterministic; force the full deterministic rebuild instead.
+  if m.opt.deterministic and m.is_sparse:
+    incremental = False
 
   if incremental:
     # Must complete before _update_constraint_efc which atomically increments.
@@ -3078,6 +3339,12 @@ def init_context(m: types.Model, d: types.Data, ctx: SolverContext | InverseCont
     dim=d.nworld,
     outputs=[d.solver_niter, ctx.search_dot, ctx.done],
   )
+
+  # Deterministic mode: build the per-dof column index over sparse J once per
+  # solve. J is fixed across solver iterations, so every subsequent
+  # deterministic gather (qfrc_constraint, JTDAJ) reuses it.
+  if m.opt.deterministic and m.is_sparse:
+    _build_det_col_index(m, d)
 
   # jaref = d.efc_J @ d.qacc - d.efc_aref
 

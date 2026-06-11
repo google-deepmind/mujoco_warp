@@ -459,5 +459,65 @@ class ConstraintAllocationDeterminismTest(parameterized.TestCase):
     mjw.step(m, d)
 
 
+class SolverDeterminismTest(parameterized.TestCase):
+  """Phase 3: tests that solver state (qacc/qpos/qvel) is bitwise stable across runs.
+
+  Covers the deterministic sparse qfrc_constraint and JTDAJ/H assembly that
+  replace racing float atomic scatters when opt.deterministic=True.
+  """
+
+  @parameterized.parameters(
+    ("humanoid/humanoid.xml", 1, "SPARSE"),
+    ("humanoid/humanoid.xml", 4, "SPARSE"),
+    ("collision.xml", 1, "SPARSE"),
+    ("collision.xml", 4, "SPARSE"),
+    ("humanoid/humanoid.xml", 1, "DENSE"),
+    ("collision.xml", 1, "DENSE"),
+  )
+  def test_solver_state_deterministic(self, path, nworld, jacobian):
+    """qacc/qpos/qvel are bitwise identical across repeated runs with opt.deterministic."""
+    nruns = 3
+    nsteps = 100
+
+    def run():
+      overrides = {"opt.jacobian": jacobian}
+      _, _, m, d = test_data.fixture(path=path, nworld=nworld, overrides=overrides)
+      m.opt.deterministic = True
+      for _ in range(nsteps):
+        mjw.step(m, d)
+      return {
+        "qacc": d.qacc.numpy().copy(),
+        "qpos": d.qpos.numpy().copy(),
+        "qvel": d.qvel.numpy().copy(),
+      }
+
+    results = [run() for _ in range(nruns)]
+    for run_idx in range(1, nruns):
+      for field in ("qacc", "qpos", "qvel"):
+        np.testing.assert_array_equal(
+          results[0][field],
+          results[run_idx][field],
+          err_msg=f"{field} differs: run 0 vs run {run_idx} ({path}, nworld={nworld}, {jacobian}, {nsteps} steps)",
+        )
+
+  def test_deterministic_solver_matches_nondeterministic_tolerance(self):
+    """Deterministic solver path stays within solver tolerance of the default path."""
+    nsteps = 50
+
+    def run(det):
+      _, _, m, d = test_data.fixture(path="humanoid/humanoid.xml", nworld=1, overrides={"opt.jacobian": "SPARSE"})
+      m.opt.deterministic = det
+      for _ in range(nsteps):
+        mjw.step(m, d)
+      return d.qpos.numpy().copy()
+
+    qpos_det = run(True)
+    qpos_nondet = run(False)
+    # Both compute the same math with different float summation order; allow
+    # divergence consistent with reordered rounding amplified by contact
+    # dynamics, but catch gross algorithmic errors.
+    self.assertLess(np.max(np.abs(qpos_det - qpos_nondet)), 1.0)
+
+
 if __name__ == "__main__":
   absltest.main()
