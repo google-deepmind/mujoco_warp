@@ -1282,10 +1282,13 @@ class Model:
     is_sparse: constraint Jacobian/Hessian layout (sparse vs dense). Does not affect M, whose
       factorization is a per-block decision -- see qLD_* and m_block_layout
     qLD_has_dense: any M block factors as a packed dense block
+    qLD_has_simple: any M block is simple (diagonal -> 1/diag, no factorization)
     qLD_has_sparse: any M block factors via sparse LDL (oversized block / tendon armature)
     qLD_block_total: packed length of the dense region per world (also the offset of the LDL region)
     qLD_block_adr: packed offset of each dof's diagonal block in the dense region; 0 if sparse (nv,)
-    qLD_dof_dense: per-dof flag, 1 if the dof's block is dense (packed), else sparse (LDL) (nv,)
+    qLD_dof_dense: per-dof flag, 1 if the dof's block is dense (packed)             (nv,)
+    qLD_dof_simple: per-dof flag, 1 if the dof's block is simple (diagonal)          (nv,)
+    qLD_simple_dofs: indices of the simple (diagonal) dofs                           (nsimple,)
     has_fluid: True if wind, density, or viscosity are non-zero at put_model time
     has_sdf_geom: whether the model contains SDF geoms
     block_dim: block dim options
@@ -1722,10 +1725,13 @@ class Model:
   nmaxmeshdeg: int
   is_sparse: bool
   qLD_has_dense: bool
+  qLD_has_simple: bool
   qLD_has_sparse: bool
   qLD_block_total: int
   qLD_block_adr: wp.array[int]
   qLD_dof_dense: wp.array[int]
+  qLD_dof_simple: wp.array[int]
+  qLD_simple_dofs: wp.array[int]
   has_fluid: bool
   has_sdf_geom: bool
   block_dim: BlockDim

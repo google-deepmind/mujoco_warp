@@ -493,23 +493,37 @@ class SmoothTest(parameterized.TestCase):
 
     _assert_eq(res.numpy()[0], np.linalg.solve(qM, vec.numpy()[0]), "M \\ 1")
 
-    # A packed dense region uses a Cholesky layout that the M \ 1 check above already verifies;
-    # only a pure sparse model (no dense block) can compare the CSR-LDL factor directly.
-    if not m.qLD_has_dense:
+    # The M \ 1 check above verifies the solve regardless of layout. The raw factor matches MuJoCo's
+    # only in specific cases: a pure sparse-LDL model stores the L'DL factor in qLD, while a pure
+    # simple (diagonal) model stores nothing in qLD and just 1/diag in qLDiagInv.
+    if m.qLD_has_sparse and not m.qLD_has_dense and not m.qLD_has_simple:
       _assert_eq(d.qLD.numpy()[0].reshape(-1), mjd.qLD, "qLD")
+      _assert_eq(d.qLDiagInv.numpy()[0], mjd.qLDiagInv, "qLDiagInv")
+    elif m.qLD_has_simple and not m.qLD_has_dense and not m.qLD_has_sparse:
       _assert_eq(d.qLDiagInv.numpy()[0], mjd.qLDiagInv, "qLDiagInv")
 
   def test_factor_solve_mixed_blocks(self):
     """Per-block factor/solve: one oversized block (sparse LDL) plus small blocks (packed dense)."""
-    # A 70-dof hinge chain (one block > M_BLOCK_DENSE_MAX -> sparse LDL) and three free joints
-    # (6-dof blocks -> packed dense): factor_m/solve_m must run both passes into one qLD.
+
+    # A 70-dof hinge chain (one block > M_BLOCK_DENSE_MAX -> sparse LDL) and three short hinge
+    # chains (6-dof coupled blocks -> packed dense): factor_m/solve_m must run both passes into one
+    # qLD. (Coupled blocks, not free joints: a free joint on a sphere has diagonal M and would take
+    # the trivial sparse path, so it would not exercise the packed-dense factor.)
+    def _hinge_chain(k):
+      return (
+        "".join(
+          '<body pos="0 0 .05"><joint type="hinge" axis="0 1 0"/><geom type="capsule" size=".02 .025"/>' for _ in range(k)
+        )
+        + "</body>" * k
+      )
+
     n = 70
     chain = (
       "".join('<body pos="0 0 .05"><joint type="hinge" axis="1 0 0"/><geom type="capsule" size=".02 .025"/>' for _ in range(n))
       + "</body>" * n
     )
-    free = "".join(f'<body pos="{i} 0 1"><freejoint/><geom type="sphere" size=".1"/></body>' for i in range(3))
-    xml = f"<mujoco><worldbody><body pos='0 0 2'>{chain}</body>{free}</worldbody></mujoco>"
+    small = "".join(f'<body pos="{i} 0 1">{_hinge_chain(6)}</body>' for i in range(3))
+    xml = f"<mujoco><worldbody><body pos='0 0 2'>{chain}</body>{small}</worldbody></mujoco>"
 
     mjm, mjd, m, d = test_data.fixture(xml=xml)
     # genuinely mixed: both factor paths active in one model

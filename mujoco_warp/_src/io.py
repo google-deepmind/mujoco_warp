@@ -148,39 +148,53 @@ def _m_allow_dense(mjm: mujoco.MjModel) -> bool:
 def m_block_layout(mjm: mujoco.MjModel) -> dict:
   """Per-block dense/sparse layout for M's diagonal blocks.
 
-  Blocks (connected sub-trees, each a contiguous dof range) are classified per-block: a block small
-  enough for a dense tile-Cholesky (size <= M_BLOCK_DENSE_MAX) factors as a packed dense block, the
-  rest fall back to the sparse LDL factor. Dense block factors are packed back to back (block k's
-  b*b factor at the prefix sum of preceding dense block areas). Returns:
+  Blocks (connected sub-trees, each a contiguous dof range) are classified into three per-block
+  categories by coupling and size:
+    - simple: a decoupled block (M is diagonal -- a "simple body" like a point mass on orthogonal
+      slides) needs no factorization, just D = 1/diag, so it bypasses both factor paths.
+    - dense: a coupled block small enough for a dense tile-Cholesky (size <= M_BLOCK_DENSE_MAX).
+    - sparse: a coupled block too large for a tile, via the sparse LDL factor.
+  Dense block factors are packed back to back (block k's b*b factor at the prefix sum of preceding
+  dense block areas). Returns:
     total:      packed length of the dense region (also the offset of the LDL region)
-    dof_adr:    per-dof packed offset within the dense region (0 for sparse-block dofs)
+    dof_adr:    per-dof packed offset within the dense region (0 for non-dense dofs)
     blocks:     all (start, size) blocks
     dense_blocks: (start, size) blocks using the packed dense layout
-    dof_dense:  per-dof flag, 1 if the dof's block is dense, else 0
-    has_dense:  any dense block
-    has_sparse: any sparse block
+    dof_dense:  per-dof flag, 1 if the dof's block is dense
+    dof_simple: per-dof flag, 1 if the dof's block is simple (diagonal)
+    has_dense / has_simple / has_sparse: whether any block falls in that category
   """
   nv = mjm.nv
   blocks = _m_blocks(mjm)
   allow_dense = _m_allow_dense(mjm)
+  rownnz = mjm.M_rownnz
   dof_adr = np.zeros(nv, dtype=np.int32)
   dof_dense = np.zeros(nv, dtype=np.int32)
+  dof_simple = np.zeros(nv, dtype=np.int32)
   dense_blocks = []
   off = 0
+  has_sparse = False
   for start, size in blocks:
-    if allow_dense and size <= types.M_BLOCK_DENSE_MAX:
+    coupled = bool(np.max(rownnz[start : start + size]) > 1)
+    if not coupled:
+      dof_simple[start : start + size] = 1
+    elif allow_dense and size <= types.M_BLOCK_DENSE_MAX:
       dense_blocks.append((start, size))
       dof_adr[start : start + size] = off
       dof_dense[start : start + size] = 1
       off += size * size
+    else:
+      has_sparse = True
   return {
     "total": off,
     "dof_adr": dof_adr,
     "blocks": blocks,
     "dense_blocks": dense_blocks,
     "dof_dense": dof_dense,
+    "dof_simple": dof_simple,
     "has_dense": len(dense_blocks) > 0,
-    "has_sparse": any(s > 0 for _, s in blocks) and len(dense_blocks) < len(blocks),
+    "has_simple": bool(dof_simple.any()),
+    "has_sparse": has_sparse,
   }
 
 
@@ -734,11 +748,15 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
   # size; a model may use both paths at once (e.g. one large tree + many small free joints).
   _lay = m_block_layout(mjm)
   dof_dense = _lay["dof_dense"]
+  dof_simple = _lay["dof_simple"]
   m.qLD_has_dense = _lay["has_dense"]
+  m.qLD_has_simple = _lay["has_simple"]
   m.qLD_has_sparse = _lay["has_sparse"]
   m.qLD_block_total = _lay["total"]  # packed dense region length / offset of the LDL region
   m.qLD_block_adr = _lay["dof_adr"]
-  m.qLD_dof_dense = dof_dense  # per-dof: 1 if the dof's block is dense (packed), else sparse (LDL)
+  m.qLD_dof_dense = dof_dense  # per-dof: 1 if the dof's block is dense (packed)
+  m.qLD_dof_simple = dof_simple  # per-dof: 1 if the dof's block is simple (diagonal -> 1/diag)
+  m.qLD_simple_dofs = np.nonzero(dof_simple)[0].astype(np.int32)  # the simple dof indices
 
   tiles = {}
   for start, size in _lay["dense_blocks"]:
@@ -1711,8 +1729,10 @@ def get_data_into(
     # slots are structural zeros, so zero qM first, then scatter the nonzeros.
     result.qM[:] = 0.0
     result.qM[mjm.mapM2M] = d.M.numpy()[world_id, 0]
-  if m_block_layout(mjm)["has_dense"]:
-    # Some blocks are stored as packed dense Cholesky, not MuJoCo's LDL; recompute from M.
+  _lay = m_block_layout(mjm)
+  if _lay["has_dense"] or _lay["has_simple"]:
+    # d.qLD is not MuJoCo's LDL: dense blocks are a packed Cholesky and simple blocks are factored
+    # into qLDiagInv (their LDL slots are never written). Recompute the LDL factor from M.
     mujoco.mj_factorM(mjm, result)
   else:
     # Pure sparse: qLD is exactly MuJoCo's nC LDL factor.

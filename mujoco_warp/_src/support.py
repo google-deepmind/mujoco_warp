@@ -257,6 +257,7 @@ def _solve_LD_sparse_island(nv: int, nlevels: int):
     map_idof2dof_in: wp.array2d[int],
     # In:
     dof_dense: wp.array[int],
+    dof_simple: wp.array[int],
     L: wp.array3d[float],
     D: wp.array2d[float],
     all_updates: wp.array[wp.vec3i],
@@ -270,9 +271,10 @@ def _solve_LD_sparse_island(nv: int, nlevels: int):
     BLOCK_DIM = wp.block_dim()
     nid = nidof_in[worldid]
 
-    # Copy y to x_out for sparse-block dofs only (island-local); dense dofs use the packed pass.
+    # Copy y to x_out for coupled-sparse dofs only; dense and simple dofs use their own passes.
     for idof in range(tid, nid, BLOCK_DIM):
-      if dof_dense[map_idof2dof_in[worldid, idof]] == 0:
+      dofid = map_idof2dof_in[worldid, idof]
+      if dof_dense[dofid] == 0 and dof_simple[dofid] == 0:
         x_out[worldid, idof] = y[worldid, idof]
     _syncthreads()
 
@@ -291,10 +293,10 @@ def _solve_LD_sparse_island(nv: int, nlevels: int):
           wp.atomic_sub(x_out[worldid], idof_i, L[worldid, 0, Madr_ki] * x_out[worldid, idof_k])
       _syncthreads()
 
-    # Diagonal multiply (sparse-block dofs only)
+    # Diagonal multiply (coupled-sparse dofs only)
     for idof in range(tid, nid, BLOCK_DIM):
       dofid = map_idof2dof_in[worldid, idof]
-      if dof_dense[dofid] == 0:
+      if dof_dense[dofid] == 0 and dof_simple[dofid] == 0:
         x_out[worldid, idof] *= D[worldid, dofid]
     _syncthreads()
 
@@ -314,6 +316,27 @@ def _solve_LD_sparse_island(nv: int, nlevels: int):
       _syncthreads()
 
   return kernel
+
+
+@wp.kernel
+def _solve_simple_island(
+  # Data in:
+  nidof_in: wp.array[int],
+  map_dof2idof_in: wp.array2d[int],
+  # In:
+  simple_dofs: wp.array[int],
+  D: wp.array2d[float],
+  vec: wp.array2d[float],
+  # Out:
+  res: wp.array2d[float],
+):
+  # A simple (decoupled) dof's island solve is res = (1/diag) * vec, in island-local order.
+  # Unconstrained simple dofs map to idof >= nidof and are skipped (solved by the smooth pass).
+  worldid, s = wp.tid()
+  dofid = simple_dofs[s]
+  idof = map_dof2idof_in[worldid, dofid]
+  if idof < nidof_in[worldid]:
+    res[worldid, idof] = D[worldid, dofid] * vec[worldid, idof]
 
 
 @cache_kernel
@@ -378,9 +401,10 @@ def solve_m_island(
     nidof: Number of island DOFs per world.
     map_idof2dof: Island-local DOF -> global DOF map.
   """
-  # qLD layout is per-block (is_sparse only selects the constraint J/H layout): dense blocks are a
-  # packed block-dense Cholesky, sparse blocks an LDL region at offset qLD_block_total. As in
-  # solve_LD, the dense and sparse passes write disjoint dofs; the sparse pass skips dense dofs.
+  # qLD layout is per-block (is_sparse only selects the constraint J/H layout). Three disjoint
+  # passes, mirroring smooth.solve_LD: dense blocks back-substitute from the packed block-dense
+  # Cholesky, coupled-sparse blocks from the LDL region (offset qLD_block_total), and simple
+  # (diagonal) blocks via res = (1/diag) * vec. The LDL pass skips dense and simple dofs.
   if m.qLD_has_dense:
     for tile in m.M_tiles:
       # large blocks prefer fewer threads for the sequential solve; see smooth._solve_block_dense
@@ -407,6 +431,7 @@ def solve_m_island(
         d.map_dof2idof,
         map_idof2dof,
         m.qLD_dof_dense,
+        m.qLD_dof_simple,
         d.qLD[:, :, m.qLD_block_total :],
         d.qLDiagInv,
         m.qLD_all_updates,
@@ -415,6 +440,13 @@ def solve_m_island(
       ],
       outputs=[res],
       block_dim=dim_block,
+    )
+  if m.qLD_has_simple:
+    wp.launch(
+      _solve_simple_island,
+      dim=(d.nworld, m.qLD_simple_dofs.size),
+      inputs=[d.nidof, d.map_dof2idof, m.qLD_simple_dofs, d.qLDiagInv, vec],
+      outputs=[res],
     )
 
 

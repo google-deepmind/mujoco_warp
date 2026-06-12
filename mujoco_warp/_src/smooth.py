@@ -1005,6 +1005,25 @@ def _qLDiag_div(
   D_out[worldid, dofid] = 1.0 / L_in[worldid, 0, diag_i]
 
 
+@wp.kernel
+def _factor_simple(
+  # Model:
+  M_rownnz: wp.array[int],
+  M_rowadr: wp.array[int],
+  # Data in:
+  M_in: wp.array3d[float],
+  # In:
+  simple_dofs: wp.array[int],
+  # Out:
+  D_out: wp.array2d[float],
+):
+  # A simple (decoupled) dof's whole factorization is D = 1/M(i,i): no L entries, no elimination.
+  worldid, s = wp.tid()
+  dofid = simple_dofs[s]
+  diag_i = M_rowadr[dofid] + M_rownnz[dofid] - 1
+  D_out[worldid, dofid] = 1.0 / M_in[worldid, 0, diag_i]
+
+
 def _factor_i_sparse(m: Model, d: Data, M: wp.array3d[float], L: wp.array3d[float], D: wp.array2d[float]):
   """Sparse L'*D*L factorization of inertia-like matrix M, assumed spd."""
   wp.copy(L, M)
@@ -1068,14 +1087,21 @@ def _factor_block_dense(m: Model, d: Data, M: wp.array3d[float], L: wp.array3d[f
 def factor_m(m: Model, d: Data):
   """Factorization of inertia-like matrix M, assumed spd.
 
-  The dense/sparse choice is per-block. qLD = [packed dense region | nC LDL region]: dense blocks
-  factor as a packed tile-Cholesky (M_tiles), sparse blocks via the LDL factor over the LDL region
-  (offset qLD_block_total). The two passes write disjoint dofs and may both run for a mixed model.
+  The factor is a per-block decision: dense blocks factor as a packed tile-Cholesky (M_tiles),
+  sparse blocks via the LDL factor over the LDL region (offset qLD_block_total), and simple
+  (diagonal) blocks need only D = 1/diag. The passes write disjoint dofs and may all run at once.
   """
   if m.qLD_has_dense:
     _factor_block_dense(m, d, d.M, d.qLD)
   if m.qLD_has_sparse:
     _factor_i_sparse(m, d, d.M, d.qLD[:, :, m.qLD_block_total :], d.qLDiagInv)
+  if m.qLD_has_simple:
+    wp.launch(
+      _factor_simple,
+      dim=(d.nworld, m.qLD_simple_dofs.size),
+      inputs=[m.M_rownnz, m.M_rowadr, d.M, m.qLD_simple_dofs],
+      outputs=[d.qLDiagInv],
+    )
 
 
 @wp.kernel
@@ -2718,6 +2744,7 @@ def _solve_LD_sparse_fused(nv: int, nlevels: int):
   def kernel(
     # In:
     dof_dense: wp.array[int],
+    dof_simple: wp.array[int],
     L: wp.array3d[float],
     D: wp.array2d[float],
     all_updates: wp.array[wp.vec3i],
@@ -2731,9 +2758,10 @@ def _solve_LD_sparse_fused(nv: int, nlevels: int):
     NLEVELS = wp.static(nlevels)
     BLOCK_DIM = wp.block_dim()
 
-    # Copy y to x_out for sparse-block dofs only; dense-block dofs are solved by the packed pass.
+    # Copy y to x_out for sparse-block dofs only; dense blocks use the packed pass and simple
+    # (diagonal) blocks use the dedicated 1/diag solve.
     for dofid in range(tid, NV, BLOCK_DIM):
-      if dof_dense[dofid] == 0:
+      if dof_dense[dofid] == 0 and dof_simple[dofid] == 0:
         x_out[worldid, dofid] = y[worldid, dofid]
     _syncthreads()
 
@@ -2751,7 +2779,7 @@ def _solve_LD_sparse_fused(nv: int, nlevels: int):
 
     # Diagonal multiply (sparse-block dofs only)
     for dofid in range(tid, NV, BLOCK_DIM):
-      if dof_dense[dofid] == 0:
+      if dof_dense[dofid] == 0 and dof_simple[dofid] == 0:
         x_out[worldid, dofid] *= D[worldid, dofid]
     _syncthreads()
 
@@ -2789,10 +2817,48 @@ def _solve_LD_sparse(
   wp.launch(
     _solve_LD_sparse_fused(m.nv, nlevels),
     dim=(d.nworld, dim_block),
-    inputs=[m.qLD_dof_dense, L, D, m.qLD_all_updates, m.qLD_level_offsets, y],
+    inputs=[m.qLD_dof_dense, m.qLD_dof_simple, L, D, m.qLD_all_updates, m.qLD_level_offsets, y],
     outputs=[x],
     block_dim=dim_block,
   )
+
+
+@wp.kernel
+def _solve_simple(
+  # In:
+  simple_dofs: wp.array[int],
+  D: wp.array2d[float],
+  y: wp.array2d[float],
+  # Out:
+  x_out: wp.array2d[float],
+):
+  # A simple (decoupled) dof's solve is just x = (1/diag) * y.
+  worldid, s = wp.tid()
+  dofid = simple_dofs[s]
+  x_out[worldid, dofid] = D[worldid, dofid] * y[worldid, dofid]
+
+
+@wp.kernel
+def _factor_solve_simple(
+  # Model:
+  M_rownnz: wp.array[int],
+  M_rowadr: wp.array[int],
+  # Data in:
+  M_in: wp.array3d[float],
+  # In:
+  simple_dofs: wp.array[int],
+  y: wp.array2d[float],
+  # Out:
+  D_out: wp.array2d[float],
+  x_out: wp.array2d[float],
+):
+  # Fused factor+solve for a simple dof: read M(i,i) once, emit D = 1/diag and x = D * y.
+  worldid, s = wp.tid()
+  dofid = simple_dofs[s]
+  diag_i = M_rowadr[dofid] + M_rownnz[dofid] - 1
+  d_inv = 1.0 / M_in[worldid, 0, diag_i]
+  D_out[worldid, dofid] = d_inv
+  x_out[worldid, dofid] = d_inv * y[worldid, dofid]
 
 
 @cache_kernel
@@ -2849,15 +2915,16 @@ def solve_LD(
 ):
   """Computes backsubstitution for the inertia factorization.
 
-  The dense/sparse choice is per-block. Dense blocks back-substitute from the packed Cholesky region
-  of L; sparse blocks from the LDL region (offset qLD_block_total). The two passes write disjoint
-  dofs; the sparse pass skips dense dofs (qLD_dof_dense) so it does not clobber the dense result.
+  The choice is per-block. Dense blocks back-substitute from the packed Cholesky region of L; sparse
+  blocks from the LDL region (offset qLD_block_total); simple (diagonal) blocks are a plain x = D*y.
+  The passes write disjoint dofs; the sparse pass skips dense and simple dofs so it does not clobber
+  their results.
 
   Args:
     m: The model containing factorization and sparsity information.
     d: The data object containing workspace and factorization results.
     L: The factor: packed dense region followed by the nC LDL region.
-    D: Diagonal factor (1/diag) for the sparse LDL region.
+    D: Diagonal factor (1/diag) for the sparse LDL and simple regions.
     x: Output array for the solution.
     y: Input right-hand side array.
   """
@@ -2865,6 +2932,8 @@ def solve_LD(
     _solve_block_dense(m, d, L, x, y)
   if m.qLD_has_sparse:
     _solve_LD_sparse(m, d, L[:, :, m.qLD_block_total :], D, x, y)
+  if m.qLD_has_simple:
+    wp.launch(_solve_simple, dim=(d.nworld, m.qLD_simple_dofs.size), inputs=[m.qLD_simple_dofs, D, y], outputs=[x])
 
 
 @event_scope
@@ -2936,26 +3005,33 @@ def _factor_solve_block_dense(
 def factor_solve_i(m, d, M, L, D, x, y):
   """Factorizes and solves the inertia-like linear system.
 
-  The dense/sparse choice is per-block (see factor_m): dense blocks factor+solve via the packed
-  Cholesky, sparse blocks via the LDL region. Factorizes M, then solves for x given rhs y.
+  The choice is per-block (see factor_m): dense blocks factor+solve via the packed Cholesky, sparse
+  blocks via the LDL region, simple (diagonal) blocks via D = 1/diag. Factorizes M, solves for x.
 
   Args:
     m: The model containing factorization and sparsity information.
     d: The data object containing workspace and factorization results.
     M: The inertia-like matrix to factorize (CSR, length nC).
     L: Output factor: packed dense region followed by the nC LDL region (sized like d.qLD).
-    D: Output diagonal factor (1/diag) for the sparse LDL region.
+    D: Output diagonal factor (1/diag) for the sparse LDL and simple regions.
     x: Output array for the solution.
     y: Input right-hand side array.
   """
   # Per-block: dense blocks factor+solve via the packed Cholesky; sparse blocks via the LDL region
-  # (offset qLD_block_total). The two passes write disjoint dofs.
+  # (offset qLD_block_total); simple blocks via 1/diag. The passes write disjoint dofs.
   if m.qLD_has_dense:
     _factor_solve_block_dense(m, d, M, x, y, L)
   if m.qLD_has_sparse:
     L_ldl = L[:, :, m.qLD_block_total :]
     _factor_i_sparse(m, d, M, L_ldl, D)
     _solve_LD_sparse(m, d, L_ldl, D, x, y)
+  if m.qLD_has_simple:
+    wp.launch(
+      _factor_solve_simple,
+      dim=(d.nworld, m.qLD_simple_dofs.size),
+      inputs=[m.M_rownnz, m.M_rowadr, M, m.qLD_simple_dofs, y],
+      outputs=[D, x],
+    )
 
 
 @cache_kernel
