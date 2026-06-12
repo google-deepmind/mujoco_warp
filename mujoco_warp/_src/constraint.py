@@ -135,15 +135,14 @@ def _per_world_exclusive_scan_2d(
   efc_nnz_out[worldid] += acc_nnz
 
 
-# Deterministic contact rows (opt.deterministic=True): contacts keep the fast
-# atomic row allocation, then the freshly emitted contact rows are sorted into
-# canonical order within each world. Constraint rows are already per-world
-# (nworld, njmax), so no contact boundary scan over naconmax is needed; the
-# sort itself is a rank computation (canonical slot = number of smaller keys in
-# the world's contact row range), which beats a segmented radix sort for these
-# tiny per-world segments. Only int metadata (efc.id, J_rownnz) moves: the sort
-# runs before the Jacobian/update kernels, which then write all floats directly
-# into canonical slots via the remapped contact.efc_address.
+# Deterministic contact rows (opt.deterministic=True): contacts are already
+# sorted into canonical per-world order (contacts of a world are contiguous),
+# so each contact's canonical row slot is simply row_base[world] plus the row
+# count of its same-world predecessors. A first pass counts rows (and sparse
+# nnz) per contact; the init pass then computes each contact's prefix with a
+# short backward scan over its same-world predecessors and writes rows directly
+# into canonical slots. No sort, no rank, no remap: nothing ever moves, and no
+# loop over naconmax beyond the same kernels the default path launches.
 
 
 @wp.kernel
@@ -162,121 +161,262 @@ def _contact_row_bases(
   nnz_base_out[worldid] = efc_nnz_in[worldid]
 
 
+@cache_kernel
+def _contact_row_counts(cone_type: types.ConeType, is_sparse: bool):
+  IS_ELLIPTIC = cone_type == types.ConeType.ELLIPTIC
+  IS_SPARSE = is_sparse
+
+  @wp.kernel(module="unique", enable_backward=False)
+  def kernel(
+    # Model:
+    body_weldid: wp.array[int],
+    body_dofnum: wp.array[int],
+    body_dofadr: wp.array[int],
+    dof_parentid: wp.array[int],
+    geom_bodyid: wp.array[int],
+    flex_vertadr: wp.array[int],
+    flex_vertbodyid: wp.array[int],
+    # Data in:
+    nacon_in: wp.array[int],
+    # In:
+    dist_in: wp.array[float],
+    condim_in: wp.array[int],
+    includemargin_in: wp.array[float],
+    geom_in: wp.array[wp.vec2i],
+    flex_in: wp.array[wp.vec2i],
+    vert_in: wp.array[wp.vec2i],
+    type_in: wp.array[int],
+    # Out:
+    counts_out: wp.array[int],  # (naconmax,)
+    nnz_counts_out: wp.array[int],  # (naconmax,)
+    rownnz_out: wp.array[int],  # (naconmax,)
+  ):
+    """Counts efc rows (and sparse nnz) each contact will emit.
+
+    Mirrors the activity/ndim/rownnz logic of `_efc_contact_init`; the counts
+    feed an exclusive scan that assigns each contact its canonical row slots.
+    """
+    conid = wp.tid()
+    counts_out[conid] = 0
+    if wp.static(IS_SPARSE):
+      nnz_counts_out[conid] = 0
+
+    if conid >= nacon_in[0]:
+      return
+
+    if not type_in[conid] & ContactType.CONSTRAINT:
+      return
+
+    condim = condim_in[conid]
+
+    if dist_in[conid] - includemargin_in[conid] >= 0.0:
+      return
+
+    if wp.static(IS_ELLIPTIC):
+      ndim = condim
+    else:
+      if condim == 1:
+        ndim = 1
+      else:
+        ndim = 2 * (condim - 1)
+
+    counts_out[conid] = ndim
+
+    if wp.static(IS_SPARSE):
+      geom = geom_in[conid]
+
+      if geom[0] >= 0:
+        body1 = geom_bodyid[geom[0]]
+      else:
+        flex = flex_in[conid]
+        vert = vert_in[conid]
+        body1 = flex_vertbodyid[flex_vertadr[flex[0]] + vert[0]]
+
+      if geom[1] >= 0:
+        body2 = geom_bodyid[geom[1]]
+      else:
+        flex = flex_in[conid]
+        vert = vert_in[conid]
+        body2 = flex_vertbodyid[flex_vertadr[flex[1]] + vert[1]]
+
+      # skip fixed bodies
+      body1 = body_weldid[body1]
+      body2 = body_weldid[body2]
+
+      da1 = int(body_dofadr[body1] + body_dofnum[body1] - 1)
+      da2 = int(body_dofadr[body2] + body_dofnum[body2] - 1)
+
+      # count non-zeros
+      rownnz = int(0)
+      while da1 >= 0 or da2 >= 0:
+        da = wp.max(da1, da2)
+        # skip common dofs
+        if da1 == da and da2 == da:
+          break
+        if da1 == da:
+          da1 = dof_parentid[da1]
+        if da2 == da:
+          da2 = dof_parentid[da2]
+        rownnz += 1
+
+      rownnz_out[conid] = rownnz
+      nnz_counts_out[conid] = rownnz * ndim
+
+  return kernel
+
+
 @wp.kernel
-def _contact_row_keys(
+def _contact_world_starts(
   # Model:
   is_sparse: bool,
-  # Data in:
-  nefc_in: wp.array[int],
-  contact_efc_address_in: wp.array2d[int],
-  efc_id_in: wp.array2d[int],
-  efc_J_rownnz_in: wp.array2d[int],
-  njmax_in: int,
-  # In:
-  nmaxdim: int,
-  row_base_in: wp.array[int],  # (nworld,)
-  # Out:
-  keys_out: wp.array2d[int],  # (nworld, njmax)
-  rownnz_stage_out: wp.array2d[int],  # (nworld, njmax)
-):
-  """Builds canonical ordering keys for the contact efc rows of each world.
-
-  Key is (conid * nmaxdim + dim): contacts are already sorted deterministically,
-  so ordering rows by contact then cone dimension reproduces a canonical layout.
-  Keys are unique within a world, so the canonical order is unique as well.
-  rownnz is staged into scratch so the rank kernel can rewrite efc.J_rownnz
-  in canonical order without reading and writing the same array.
-  """
-  worldid, efcid = wp.tid()
-  if efcid < row_base_in[worldid] or efcid >= wp.min(nefc_in[worldid], njmax_in):
-    return
-  conid = efc_id_in[worldid, efcid]
-  keys_out[worldid, efcid] = conid * nmaxdim + (efcid - contact_efc_address_in[conid, 0])
-  if is_sparse:
-    rownnz_stage_out[worldid, efcid] = efc_J_rownnz_in[worldid, efcid]
-
-
-@wp.kernel
-def _contact_row_rank(
-  # Model:
-  is_sparse: bool,
-  # Data in:
-  nefc_in: wp.array[int],
-  njmax_in: int,
-  njmax_nnz_in: int,
-  # In:
-  row_base_in: wp.array[int],  # (nworld,)
-  nnz_base_in: wp.array[int],  # (nworld,)
-  keys_in: wp.array2d[int],  # (nworld, njmax)
-  rownnz_stage_in: wp.array2d[int],  # (nworld, njmax)
-  # Data out:
-  efc_J_rownnz_out: wp.array2d[int],
-  efc_J_rowadr_out: wp.array2d[int],
-  # Out:
-  invperm_out: wp.array2d[int],  # (nworld, njmax)
-):
-  """Ranks each contact row by its key within the world's contact row range.
-
-  Keys are unique within a world, so rank (count of smaller keys) is a
-  permutation: canonical slot = row_base + rank. The same scan accumulates the
-  nnz prefix of smaller-keyed rows, so canonical rownnz/rowadr are written here
-  in parallel with no serial per-world pass. The O(n) scan per row over the
-  small per-world contact row range needs no sort buffers or boundary scans.
-  """
-  worldid, efcid = wp.tid()
-  base = row_base_in[worldid]
-  end = wp.min(nefc_in[worldid], njmax_in)
-  if efcid < base or efcid >= end:
-    return
-  key = keys_in[worldid, efcid]
-  rank = int(0)
-  nnz_off = int(0)
-  if is_sparse:
-    for i in range(base, end):
-      if keys_in[worldid, i] < key:
-        rank += 1
-        nnz_off += rownnz_stage_in[worldid, i]
-  else:
-    for i in range(base, end):
-      if keys_in[worldid, i] < key:
-        rank += 1
-  new_efcid = base + rank
-  invperm_out[worldid, efcid] = new_efcid
-  if is_sparse:
-    rownnz = rownnz_stage_in[worldid, efcid]
-    rowadr = nnz_base_in[worldid] + nnz_off
-    if rowadr + rownnz <= njmax_nnz_in:
-      efc_J_rownnz_out[worldid, new_efcid] = rownnz
-      efc_J_rowadr_out[worldid, new_efcid] = rowadr
-
-
-@wp.kernel
-def _contact_row_remap(
   # Data in:
   nacon_in: wp.array[int],
   # In:
   worldid_in: wp.array[int],
-  invperm_in: wp.array2d[int],  # (nworld, njmax)
-  # Data out:
-  contact_efc_address_out: wp.array2d[int],
-  efc_id_out: wp.array2d[int],
+  row_prefix_in: wp.array[int],  # (naconmax,) exclusive scan of counts
+  nnz_prefix_in: wp.array[int],  # (naconmax,) exclusive scan of nnz counts
+  # Out:
+  world_row_start_out: wp.array[int],  # (nworld,)
+  world_nnz_start_out: wp.array[int],  # (nworld,)
 ):
-  """Remaps contact.efc_address to canonical rows and rewrites efc.id.
+  """Records the scan value at each world's first contact.
 
-  The permutation is a bijection on the contact row slots, so every canonical
-  slot's efc.id is written exactly once; downstream Jacobian/update kernels then
-  write all remaining row data (J, type, pos, D, ...) straight into canonical slots.
+  Contacts are sorted world-major in deterministic mode, so each world's
+  contacts are contiguous; the exclusive prefix at the first contact is the
+  offset subtracted to localize the scan to the world.
   """
-  conid, dimid = wp.tid()
+  conid = wp.tid()
   if conid >= nacon_in[0]:
     return
-  efcid = contact_efc_address_out[conid, dimid]
-  if efcid < 0:
+  worldid = worldid_in[conid]
+  if conid == 0 or worldid_in[conid - 1] != worldid:
+    world_row_start_out[worldid] = row_prefix_in[conid]
+    if is_sparse:
+      world_nnz_start_out[worldid] = nnz_prefix_in[conid]
+
+
+@wp.kernel
+def _contact_world_totals(
+  # Model:
+  is_sparse: bool,
+  # Data in:
+  nacon_in: wp.array[int],
+  # In:
+  worldid_in: wp.array[int],
+  counts_in: wp.array[int],  # (naconmax,)
+  nnz_counts_in: wp.array[int],  # (naconmax,)
+  row_prefix_in: wp.array[int],  # (naconmax,)
+  nnz_prefix_in: wp.array[int],  # (naconmax,)
+  world_row_start_in: wp.array[int],  # (nworld,)
+  world_nnz_start_in: wp.array[int],  # (nworld,)
+  # Data out:
+  nefc_out: wp.array[int],
+  # Out:
+  efc_nnz_out: wp.array[int],
+):
+  """Bumps per-world row/nnz totals by the world's contact row count.
+
+  The thread of each world's last contact adds the world-local inclusive scan
+  total, replacing the per-contact atomic bumps of the default allocation.
+  """
+  conid = wp.tid()
+  nacon = wp.min(nacon_in[0], counts_in.shape[0])
+  if conid >= nacon:
     return
   worldid = worldid_in[conid]
-  new_efcid = invperm_in[worldid, efcid]
-  contact_efc_address_out[conid, dimid] = new_efcid
-  efc_id_out[worldid, new_efcid] = conid
+  if conid == nacon - 1 or worldid_in[conid + 1] != worldid:
+    nefc_out[worldid] += row_prefix_in[conid] + counts_in[conid] - world_row_start_in[worldid]
+    if is_sparse:
+      efc_nnz_out[worldid] += nnz_prefix_in[conid] + nnz_counts_in[conid] - world_nnz_start_in[worldid]
+
+
+@cache_kernel
+def _efc_contact_init_det(cone_type: types.ConeType, is_sparse: bool):
+  IS_ELLIPTIC = cone_type == types.ConeType.ELLIPTIC
+  IS_SPARSE = is_sparse
+
+  @wp.kernel(module="unique", enable_backward=False)
+  def kernel(
+    # Data in:
+    njmax_in: int,
+    njmax_nnz_in: int,
+    nacon_in: wp.array[int],
+    # In:
+    dist_in: wp.array[float],
+    condim_in: wp.array[int],
+    includemargin_in: wp.array[float],
+    worldid_in: wp.array[int],
+    type_in: wp.array[int],
+    row_base_in: wp.array[int],  # (nworld,)
+    nnz_base_in: wp.array[int],  # (nworld,)
+    counts_rownnz_in: wp.array[int],  # (naconmax,)
+    row_prefix_in: wp.array[int],  # (naconmax,)
+    nnz_prefix_in: wp.array[int],  # (naconmax,)
+    world_row_start_in: wp.array[int],  # (nworld,)
+    world_nnz_start_in: wp.array[int],  # (nworld,)
+    # Data out:
+    contact_efc_address_out: wp.array2d[int],
+    efc_id_out: wp.array2d[int],
+    efc_J_rownnz_out: wp.array2d[int],
+    efc_J_rowadr_out: wp.array2d[int],
+  ):
+    """Deterministic variant of `_efc_contact_init`.
+
+    Identical row layout logic, but the atomic slot allocation is replaced by
+    the contact's exclusive-scan offset: rows land directly in canonical
+    per-world order and nothing is ever moved. Per-world totals are bumped by
+    `_contact_world_totals` instead of per-contact atomics.
+    """
+    conid = wp.tid()
+
+    if conid >= nacon_in[0]:
+      return
+
+    if not type_in[conid] & ContactType.CONSTRAINT:
+      return
+
+    condim = condim_in[conid]
+
+    includemargin = includemargin_in[conid]
+    pos = dist_in[conid] - includemargin
+    active = pos < 0
+
+    if not active:
+      return
+
+    if wp.static(IS_ELLIPTIC):
+      ndim = condim
+    else:
+      if condim == 1:
+        ndim = 1
+      else:
+        ndim = 2 * (condim - 1)
+
+    worldid = worldid_in[conid]
+
+    # Canonical contiguous block of efcids for all dimids
+    base_efcid = row_base_in[worldid] + row_prefix_in[conid] - world_row_start_in[worldid]
+    for dim in range(ndim):
+      efcid = base_efcid + dim
+      if efcid >= njmax_in:
+        contact_efc_address_out[conid, dim] = -1
+      else:
+        contact_efc_address_out[conid, dim] = efcid
+        # This is redundant with the _efc_row call later but needed for the jac calculation
+        efc_id_out[worldid, efcid] = conid
+
+    if wp.static(IS_SPARSE):
+      rownnz = counts_rownnz_in[conid]
+      rowadr = nnz_base_in[worldid] + nnz_prefix_in[conid] - world_nnz_start_in[worldid]
+      if rowadr + rownnz * ndim > njmax_nnz_in:
+        return
+      for dim in range(ndim):
+        efcid = base_efcid + dim
+        if efcid < njmax_in:
+          efc_J_rowadr_out[worldid, efcid] = rowadr + dim * rownnz
+          efc_J_rownnz_out[worldid, efcid] = rownnz
+
+  return kernel
 
 
 @wp.func
@@ -4143,12 +4283,16 @@ def _ensure_det_scratch(m: types.Model, d: types.Data) -> dict:
   _alloc("limit_slide_hinge", (d.nworld, m.jnt_limited_slide_hinge_adr.size))
   _alloc("limit_tendon", (d.nworld, m.tendon_limited_adr.size))
 
-  # Contact row sort scratch (rank-based, per-world).
+  # Contact row allocation scratch (scan-based, contacts are world-major).
   scratch["contact_row_base"] = wp.empty((d.nworld,), dtype=int)
   scratch["contact_nnz_base"] = wp.empty((d.nworld,), dtype=int)
-  scratch["contact_row_keys"] = wp.empty((d.nworld, d.njmax), dtype=int)
-  scratch["contact_row_invperm"] = wp.empty((d.nworld, d.njmax), dtype=int)
-  scratch["contact_rownnz_stage"] = wp.empty((d.nworld, d.njmax), dtype=int)
+  scratch["contact_counts"] = wp.empty((d.naconmax,), dtype=int)
+  scratch["contact_row_prefix"] = wp.empty((d.naconmax,), dtype=int)
+  scratch["contact_nnz_counts"] = wp.empty((d.naconmax,), dtype=int)
+  scratch["contact_nnz_prefix"] = wp.empty((d.naconmax,), dtype=int)
+  scratch["contact_rownnz"] = wp.empty((d.naconmax,), dtype=int)
+  scratch["contact_world_row_start"] = wp.empty((d.nworld,), dtype=int)
+  scratch["contact_world_nnz_start"] = wp.empty((d.nworld,), dtype=int)
 
   d._det_scratch = scratch
   return scratch
@@ -5050,7 +5194,96 @@ def make_constraint(m: types.Model, d: types.Data):
 
       has_flex = m.nflex > 0
 
-      if has_flex:
+      if det and not has_flex:
+        # Contacts are sorted world-major, so canonical row slots follow from
+        # an exclusive scan of per-contact row counts: count rows per contact,
+        # scan, localize the scan per world via the first contact's prefix,
+        # bump per-world totals at the last contact, then write rows directly
+        # into canonical slots. Same layout logic as _efc_contact_init, with
+        # the atomic slot allocation replaced by the scan offset. The scan
+        # kernels mirror the non-flex body resolution only, so flex models fall
+        # back to the plain atomic flex init below.
+        wp.launch(
+          _contact_row_counts(m.opt.cone, m.is_sparse),
+          dim=d.naconmax,
+          inputs=[
+            m.body_weldid,
+            m.body_dofnum,
+            m.body_dofadr,
+            m.dof_parentid,
+            m.geom_bodyid,
+            m.flex_vertadr,
+            m.flex_vertbodyid,
+            d.nacon,
+            d.contact.dist,
+            d.contact.dim,
+            d.contact.includemargin,
+            d.contact.geom,
+            d.contact.flex,
+            d.contact.vert,
+            d.contact.type,
+          ],
+          outputs=[s["contact_counts"], s["contact_nnz_counts"], s["contact_rownnz"]],
+        )
+        wp.utils.array_scan(s["contact_counts"], s["contact_row_prefix"], inclusive=False)
+        if m.is_sparse:
+          wp.utils.array_scan(s["contact_nnz_counts"], s["contact_nnz_prefix"], inclusive=False)
+        wp.launch(
+          _contact_world_starts,
+          dim=d.naconmax,
+          inputs=[
+            m.is_sparse,
+            d.nacon,
+            d.contact.worldid,
+            s["contact_row_prefix"],
+            s["contact_nnz_prefix"],
+          ],
+          outputs=[s["contact_world_row_start"], s["contact_world_nnz_start"]],
+        )
+        wp.launch(
+          _contact_world_totals,
+          dim=d.naconmax,
+          inputs=[
+            m.is_sparse,
+            d.nacon,
+            d.contact.worldid,
+            s["contact_counts"],
+            s["contact_nnz_counts"],
+            s["contact_row_prefix"],
+            s["contact_nnz_prefix"],
+            s["contact_world_row_start"],
+            s["contact_world_nnz_start"],
+          ],
+          outputs=[d.nefc, efc_nnz],
+        )
+        wp.launch(
+          _efc_contact_init_det(m.opt.cone, m.is_sparse),
+          dim=d.naconmax,
+          inputs=[
+            d.njmax,
+            d.njmax_nnz,
+            d.nacon,
+            d.contact.dist,
+            d.contact.dim,
+            d.contact.includemargin,
+            d.contact.worldid,
+            d.contact.type,
+            s["contact_row_base"],
+            s["contact_nnz_base"],
+            s["contact_rownnz"],
+            s["contact_row_prefix"],
+            s["contact_nnz_prefix"],
+            s["contact_world_row_start"],
+            s["contact_world_nnz_start"],
+          ],
+          outputs=[
+            d.contact.efc_address,
+            d.efc.id,
+            d.efc.J_rownnz,
+            d.efc.J_rowadr,
+          ],
+        )
+      elif has_flex:
         wp.launch(
           _efc_contact_init_flex(m.opt.cone, m.is_sparse),
           dim=d.naconmax,
@@ -5124,51 +5357,6 @@ def make_constraint(m: types.Model, d: types.Data):
             d.efc.J_rowadr,
             efc_nnz,
           ],
-        )
-
-      if det:
-        # Sort the freshly allocated contact rows into canonical per-world order
-        # via per-row rank over the world's contact row range. Constraint rows
-        # are per-world already, so no contact boundary scan over naconmax is
-        # needed. The sort runs before the Jacobian/update kernels, so only int
-        # row metadata is permuted; canonical sparse rownnz/rowadr are written
-        # by the rank kernel itself.
-        keys = s["contact_row_keys"]
-        wp.launch(
-          _contact_row_keys,
-          dim=(d.nworld, d.njmax),
-          inputs=[
-            m.is_sparse,
-            d.nefc,
-            d.contact.efc_address,
-            d.efc.id,
-            d.efc.J_rownnz,
-            d.njmax,
-            nmaxdim,
-            s["contact_row_base"],
-          ],
-          outputs=[keys, s["contact_rownnz_stage"]],
-        )
-        wp.launch(
-          _contact_row_rank,
-          dim=(d.nworld, d.njmax),
-          inputs=[
-            m.is_sparse,
-            d.nefc,
-            d.njmax,
-            d.njmax_nnz,
-            s["contact_row_base"],
-            s["contact_nnz_base"],
-            keys,
-            s["contact_rownnz_stage"],
-          ],
-          outputs=[d.efc.J_rownnz, d.efc.J_rowadr, s["contact_row_invperm"]],
-        )
-        wp.launch(
-          _contact_row_remap,
-          dim=(d.naconmax, nmaxdim),
-          inputs=[d.nacon, d.contact.worldid, s["contact_row_invperm"]],
-          outputs=[d.contact.efc_address, d.efc.id],
         )
 
       if m.is_sparse:
