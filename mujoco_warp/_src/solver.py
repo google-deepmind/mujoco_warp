@@ -3143,15 +3143,29 @@ def init_context(m: types.Model, d: types.Data, ctx: SolverContext | InverseCont
     _update_gradient(m, d, ctx)
 
 
-@event_scope
-def solve(m: types.Model, d: types.Data):
-  if d.njmax == 0 or m.nv == 0:
+def _copy_nograd(m: types.Model, d: types.Data, dst: wp.array2d, src: wp.array2d):
+  """Copy src to dst without creating a tape gradient path.
+
+  Forward-only data uses wp.copy (a device memcpy, cheaper than a kernel);
+  gradient-tracked data uses the _nograd_copy kernel because wp.copy on
+  requires_grad arrays is recorded on the tape and would create spurious
+  gradient flow (e.g. cross-substep leaks through qacc_warmstart).
+  """
+  if dst.requires_grad or src.requires_grad:
     wp.launch(
       support._nograd_copy,
       dim=(d.nworld, m.nv),
-      inputs=[d.qacc_smooth],
-      outputs=[d.qacc],
+      inputs=[src],
+      outputs=[dst],
     )
+  else:
+    wp.copy(dst, src)
+
+
+@event_scope
+def solve(m: types.Model, d: types.Data):
+  if d.njmax == 0 or m.nv == 0:
+    _copy_nograd(m, d, d.qacc, d.qacc_smooth)
     d.solver_niter.fill_(0)
   else:
     if m.ntree > 1 and not (m.opt.disableflags & types.DisableBit.ISLAND):
@@ -3170,19 +3184,9 @@ def solve(m: types.Model, d: types.Data):
 def _solve(m: types.Model, d: types.Data, ctx: SolverContext):
   """Finds forces that satisfy constraints."""
   if not (m.opt.disableflags & types.DisableBit.WARMSTART):
-    wp.launch(
-      support._nograd_copy,
-      dim=(d.nworld, m.nv),
-      inputs=[d.qacc_warmstart],
-      outputs=[d.qacc],
-    )
+    _copy_nograd(m, d, d.qacc, d.qacc_warmstart)
   else:
-    wp.launch(
-      support._nograd_copy,
-      dim=(d.nworld, m.nv),
-      inputs=[d.qacc_smooth],
-      outputs=[d.qacc],
-    )
+    _copy_nograd(m, d, d.qacc, d.qacc_smooth)
 
   #  context
   init_context(m, d, ctx, grad=True)

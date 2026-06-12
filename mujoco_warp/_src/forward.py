@@ -348,12 +348,15 @@ def _advance(m: Model, d: Data, qacc: wp.array, qvel: Optional[wp.array] = None)
   # NOTE: warmstart must come from d.qacc (the constraint-solver solution),
   # not the integrator-local qacc (e.g. euler's damped solve) — matches
   # upstream semantics and MuJoCo's mj_advance.
-  wp.launch(
-    support._nograd_copy,
-    dim=(d.nworld, m.nv),
-    inputs=[d.qacc],
-    outputs=[d.qacc_warmstart],
-  )
+  if d.qacc.requires_grad or d.qacc_warmstart.requires_grad:
+    wp.launch(
+      support._nograd_copy,
+      dim=(d.nworld, m.nv),
+      inputs=[d.qacc],
+      outputs=[d.qacc_warmstart],
+    )
+  else:
+    wp.copy(d.qacc_warmstart, d.qacc)
 
   if not (m.opt.disableflags & DisableBit.ISLAND) and (m.opt.enableflags & EnableBit.SLEEP):
     sleep.sleep(m, d)

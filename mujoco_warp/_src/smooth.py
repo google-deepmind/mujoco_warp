@@ -1364,9 +1364,37 @@ def _cfrc_backward_level(
   cfrc_int_out[worldid, bodyid] = val
 
 
+@wp.kernel
+def _cfrc_backward(
+  # Model:
+  body_parentid: wp.array[int],
+  # Data in:
+  cfrc_int_in: wp.array2d[wp.spatial_vector],
+  # In:
+  body_tree_: wp.array(dtype=int),
+  # Data out:
+  cfrc_int_out: wp.array2d[wp.spatial_vector],
+):
+  worldid, nodeid = wp.tid()
+  bodyid = body_tree_[nodeid]
+  pid = body_parentid[bodyid]
+  if bodyid != 0:
+    wp.atomic_add(cfrc_int_out[worldid], pid, cfrc_int_in[worldid, bodyid])
+
+
 def _rne_cfrc_backward(m: Model, d: Data):
-  # accumulate child forces to parents using separate arrays at each level
-  # to avoid warp AD output-gradient zeroing issue (an array that is the
+  if not d.cfrc_int.requires_grad:
+    # Forward-only fast path (matches upstream): accumulate child forces to
+    # parents in place with atomics, one launch per tree level, no
+    # per-level allocations.
+    for body_tree in reversed(m.body_tree):
+      wp.launch(
+        _cfrc_backward, dim=[d.nworld, body_tree.size], inputs=[m.body_parentid, d.cfrc_int, body_tree], outputs=[d.cfrc_int]
+      )
+    return d.cfrc_int
+
+  # AD path: accumulate child forces to parents using separate arrays at each
+  # level to avoid warp AD output-gradient zeroing issue (an array that is the
   # output of multiple wp.launch / wp.copy calls loses gradient from all
   # but the last operation during backward)
   current = d.cfrc_int
