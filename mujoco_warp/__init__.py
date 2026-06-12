@@ -47,6 +47,9 @@ from mujoco_warp._src.forward import implicit as implicit
 from mujoco_warp._src.forward import rungekutta4 as rungekutta4
 from mujoco_warp._src.forward import step1 as step1
 from mujoco_warp._src.forward import step2 as step2
+from mujoco_warp._src.ad_flags import ad_enabled as ad_enabled
+from mujoco_warp._src.ad_flags import disable_ad as disable_ad
+from mujoco_warp._src.ad_flags import enable_ad as enable_ad
 from mujoco_warp._src.grad import COLLISION_GRAD_FIELDS as COLLISION_GRAD_FIELDS
 from mujoco_warp._src.grad import SMOOTH_GRAD_FIELDS as SMOOTH_GRAD_FIELDS
 from mujoco_warp._src.grad import diff_forward as diff_forward

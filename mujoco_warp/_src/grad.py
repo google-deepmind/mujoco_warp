@@ -21,6 +21,7 @@ from typing import Callable, Optional, Sequence
 
 import warp as wp
 
+from mujoco_warp._src import ad_flags
 from mujoco_warp._src import adjoint as _adjoint  # noqa: F401 (register custom adjoints)
 from mujoco_warp._src import io
 from mujoco_warp._src.forward import forward
@@ -124,7 +125,11 @@ def enable_grad(d: Data, fields: Optional[Sequence[str]] = None, mjm=None) -> No
   When mjm is provided, also eagerly allocates the solver retained state
   (Newton Hessian, Cholesky factor, Jaref) used by the implicit-diff
   backward pass; otherwise it is lazily allocated on the first solve.
+  Also enables backward-kernel compilation for gradient-path modules
+  (see ad_flags.enable_ad); call this before the first step to avoid a
+  module recompile.
   """
+  ad_flags.enable_ad()
   if fields is None:
     fields = SMOOTH_GRAD_FIELDS
   for name in fields:

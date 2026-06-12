@@ -36,7 +36,11 @@ from mujoco_warp._src import types
 from mujoco_warp._src.types import MJ_MINVAL
 from mujoco_warp._src.types import DisableBit
 
-wp.set_module_options({"enable_backward": True})
+from mujoco_warp._src import ad_flags as _ad_flags
+
+# Backward-enabled kernels generate slower forward code, so AD compilation is
+# opt-in: off by default, enabled by mjw.enable_ad() / make_diff_data().
+wp.set_module_options({"enable_backward": _ad_flags.ad_enabled()})
 
 
 # ============================================================================

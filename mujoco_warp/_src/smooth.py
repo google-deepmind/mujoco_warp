@@ -38,7 +38,11 @@ from mujoco_warp._src.types import vec11
 from mujoco_warp._src.warp_util import cache_kernel
 from mujoco_warp._src.warp_util import event_scope
 
-wp.set_module_options({"enable_backward": True})
+from mujoco_warp._src import ad_flags as _ad_flags
+
+# Backward-enabled kernels generate slower forward code, so AD compilation is
+# opt-in: off by default, enabled by mjw.enable_ad() / make_diff_data().
+wp.set_module_options({"enable_backward": _ad_flags.ad_enabled()})
 
 
 _nograd_copy_2d = support._nograd_copy
