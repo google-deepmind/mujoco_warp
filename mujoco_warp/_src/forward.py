@@ -268,10 +268,12 @@ def _advance(m: Model, d: Data, qacc: wp.array, qvel: Optional[wp.array] = None)
   # TODO(team): can we assume static timesteps?
 
   # Clone arrays used as both input and output so that Warp's tape retains the
-  # original values for correct reverse-mode AD.
-  act_in = wp.clone(d.act)
-  qvel_prev = wp.clone(d.qvel)
-  qpos_prev = wp.clone(d.qpos)
+  # original values for correct reverse-mode AD. Only needed when gradients
+  # are being tracked; the forward-only path reads the arrays in place.
+  ad_active = d.qpos.requires_grad
+  act_in = wp.clone(d.act) if ad_active else d.act
+  qvel_prev = wp.clone(d.qvel) if ad_active else d.qvel
+  qpos_prev = wp.clone(d.qpos) if ad_active else d.qpos
 
   # advance activations
   wp.launch(

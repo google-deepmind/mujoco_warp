@@ -118,24 +118,37 @@ def _resolve_field(d: Data, name: str):
   return getattr(d, name, None)
 
 
-def enable_grad(d: Data, fields: Optional[Sequence[str]] = None) -> None:
-  """Enables gradient tracking on Data arrays."""
+def enable_grad(d: Data, fields: Optional[Sequence[str]] = None, mjm=None) -> None:
+  """Enables gradient tracking on Data arrays.
+
+  When mjm is provided, also eagerly allocates the solver retained state
+  (Newton Hessian, Cholesky factor, Jaref) used by the implicit-diff
+  backward pass; otherwise it is lazily allocated on the first solve.
+  """
   if fields is None:
     fields = SMOOTH_GRAD_FIELDS
   for name in fields:
     arr = _resolve_field(d, name)
     if arr is not None and isinstance(arr, wp.array):
       arr.requires_grad = True
+  if mjm is not None:
+    io.allocate_solver_retained_for_model(mjm, d, grad=True)
 
 
-def disable_grad(d: Data, fields: Optional[Sequence[str]] = None) -> None:
-  """Disables gradient tracking on Data arrays."""
+def disable_grad(d: Data, fields: Optional[Sequence[str]] = None, mjm=None) -> None:
+  """Disables gradient tracking on Data arrays.
+
+  When mjm is provided, also frees the solver retained AD state so the
+  forward-only path carries no extra memory.
+  """
   if fields is None:
     fields = SMOOTH_GRAD_FIELDS + SOLVER_GRAD_FIELDS + COLLISION_GRAD_FIELDS
   for name in fields:
     arr = _resolve_field(d, name)
     if arr is not None and isinstance(arr, wp.array):
       arr.requires_grad = False
+  if mjm is not None:
+    io.allocate_solver_retained_for_model(mjm, d, grad=False)
 
 
 def make_diff_data(
@@ -146,7 +159,7 @@ def make_diff_data(
 ) -> Data:
   """Creates a Data object with gradient tracking enabled."""
   d = io.make_data(mjm, nworld=nworld, **kwargs)
-  enable_grad(d, fields=grad_fields)
+  enable_grad(d, fields=grad_fields, mjm=mjm)
   return d
 
 

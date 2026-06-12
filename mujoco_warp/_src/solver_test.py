@@ -715,12 +715,17 @@ class SolverTest(parameterized.TestCase):
     jacobian=(mujoco.mjtJacobian.mjJAC_DENSE, mujoco.mjtJacobian.mjJAC_SPARSE),
   )
   def test_solver_retained_state(self, solver_, jacobian):
-    """Verify solver Hessian and Jaref are retained on Data after solve."""
+    """Verify solver Hessian and Jaref are retained on Data after a diff solve."""
     mjm, mjd, m, d = test_data.fixture(
       "constraints.xml",
       keyframe=0,
       overrides={"opt.solver": solver_, "opt.jacobian": jacobian},
     )
+    # Retained state is only kept when gradient tracking is enabled; the
+    # forward-only path leaves these arrays zero-sized.
+    self.assertEqual(d.solver_h.shape[1], 0)
+    self.assertEqual(d.solver_Jaref.shape[0], 0)
+    mjw.enable_grad(d, mjm=mjm)
     mjw.step(m, d)
 
     nefc = d.nefc.numpy()[0]

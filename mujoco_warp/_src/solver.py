@@ -121,7 +121,18 @@ def _create_solver_context(m: types.Model, d: types.Data) -> SolverContext:
 
   # Alias Data's retained arrays when allocated (shape > 0 means real alloc)
   # so the implicit-diff backward pass can reuse H / its factor / Jaref;
-  # fall back to local allocation otherwise.
+  # fall back to local allocation otherwise. The retained arrays are
+  # zero-sized by default and lazily allocated here the first time a solve
+  # runs with gradient tracking enabled, so the forward-only path carries no
+  # extra memory or copies.
+  ad_active = d.qpos.requires_grad
+  if ad_active and alloc_h and d.solver_h.shape[1] == 0:
+    d.solver_h = wp.zeros((nworld, nv_pad, nv_pad), dtype=float)
+  if ad_active and alloc_hfactor and d.solver_hfactor.shape[1] == 0:
+    d.solver_hfactor = wp.zeros((nworld, nv_pad, nv_pad), dtype=float)
+  if ad_active and d.solver_Jaref.shape[0] == 0:
+    d.solver_Jaref = wp.empty((nworld, njmax), dtype=float)
+
   if alloc_h and d.solver_h.shape[1] > 0:
     h = d.solver_h
   elif alloc_h:
