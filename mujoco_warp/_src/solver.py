@@ -1557,8 +1557,9 @@ def _solve_init_search_cg_tiled(
 
 
 @cache_kernel
-def _update_constraint_efc(track_changes: bool):
+def _update_constraint_efc(track_changes: bool, det: bool = False):
   TRACK_CHANGES = track_changes
+  DET = det
 
   @wp.kernel(module="unique", enable_backward=False)
   def kernel(
@@ -1664,8 +1665,16 @@ def _update_constraint_efc(track_changes: bool):
     if wp.static(TRACK_CHANGES):
       new_quad = new_state == types.ConstraintState.QUADRATIC.value
       if old_quad != new_quad:
-        idx = wp.atomic_add(changed_count_out, worldid, 1)
-        changed_ids_out[worldid, idx] = efcid
+        if wp.static(DET):
+          # Deterministic mode: mark a per-efcid flag instead of appending to
+          # a list (atomic append order is nondeterministic). The count is
+          # still bumped atomically: integer sums are order-invariant, and
+          # downstream only uses count for "any changes?" tests.
+          changed_ids_out[worldid, efcid] = 1
+          wp.atomic_add(changed_count_out, worldid, 1)
+        else:
+          idx = wp.atomic_add(changed_count_out, worldid, 1)
+          changed_ids_out[worldid, idx] = efcid
 
   return kernel
 
@@ -1982,7 +1991,9 @@ def _update_gradient_h_incremental_sparse(
         wp.atomic_add(ctx_h_out[worldid, colindj], colindi, h)
 
 
-def _update_constraint(m: types.Model, d: types.Data, ctx: SolverContext | InverseContext, track_changes: bool = False):
+def _update_constraint(
+  m: types.Model, d: types.Data, ctx: SolverContext | InverseContext, track_changes: bool = False, det: bool = False
+):
   """Update constraint arrays after each solve iteration."""
   efc_inputs = [
     m.opt.impratio_invsqrt,
@@ -2002,7 +2013,7 @@ def _update_constraint(m: types.Model, d: types.Data, ctx: SolverContext | Inver
   ]
 
   wp.launch(
-    _update_constraint_efc(track_changes),
+    _update_constraint_efc(track_changes, det),
     dim=(d.nworld, d.njmax),
     inputs=efc_inputs,
     outputs=[d.efc.force, d.efc.state, ctx.changed_efc_ids, ctx.changed_efc_count],
@@ -2776,6 +2787,79 @@ def _JTDAJ_sparse_det(
     h_out[worldid, row, col] += acc
 
 
+@wp.kernel
+def _update_gradient_h_incremental_sparse_det(
+  # Data in:
+  efc_J_in: wp.array3d[float],
+  efc_D_in: wp.array2d[float],
+  efc_state_in: wp.array2d[int],
+  # In:
+  col_nnz_in: wp.array2d[int],
+  col_adr_in: wp.array2d[int],
+  col_sparseid_in: wp.array2d[int],
+  col_efcid_in: wp.array2d[int],
+  changed_flags_in: wp.array2d[int],
+  changed_count_in: wp.array[int],
+  ctx_done_in: wp.array[bool],
+  # Out:
+  h_out: wp.array3d[float],
+):
+  """Deterministic incremental H update: per upper-triangle element gather over changed rows.
+
+  Replaces the racy per-changed-row `wp.atomic_add` scatter
+  (_update_gradient_h_incremental_sparse). One thread owns each (row, col)
+  element and merge-intersects the two per-dof entry lists exactly like
+  _JTDAJ_sparse_det, but only accumulates rows flagged as changed this
+  iteration, signed by their new state (+D entering QUADRATIC, -D leaving).
+  Accumulation order is ascending efcid — fixed across runs — so h stays
+  bitwise reproducible across iterations.
+  """
+  worldid, elementid = wp.tid()
+
+  if ctx_done_in[worldid]:
+    return
+
+  if changed_count_in[worldid] == 0:
+    return
+
+  # Upper-triangle enumeration: elementid -> (row, col) with row <= col.
+  col = (int(wp.sqrt(float(1 + 8 * elementid))) - 1) // 2
+  row = elementid - (col * (col + 1)) // 2
+
+  acc = float(0.0)
+  adr_i = col_adr_in[worldid, row]
+  end_i = adr_i + col_nnz_in[worldid, row]
+  adr_j = col_adr_in[worldid, col]
+  end_j = adr_j + col_nnz_in[worldid, col]
+
+  a = adr_i
+  b = adr_j
+  while a < end_i and b < end_j:
+    efc_a = col_efcid_in[worldid, a]
+    efc_b = col_efcid_in[worldid, b]
+    if efc_a < efc_b:
+      a += 1
+    elif efc_b < efc_a:
+      b += 1
+    else:
+      if changed_flags_in[worldid, efc_a] != 0:
+        efc_D = efc_D_in[worldid, efc_a]
+        if efc_D != 0.0:
+          sign = float(0.0)
+          if efc_state_in[worldid, efc_a] == types.ConstraintState.QUADRATIC.value:
+            sign = efc_D
+          else:
+            sign = -efc_D
+          Ji = efc_J_in[worldid, 0, col_sparseid_in[worldid, a]]
+          Jj = efc_J_in[worldid, 0, col_sparseid_in[worldid, b]]
+          acc += sign * Ji * Jj
+      a += 1
+      b += 1
+
+  if acc != 0.0:
+    h_out[worldid, row, col] += acc
+
+
 def _update_gradient(m: types.Model, d: types.Data, ctx: SolverContext):
   # grad = Ma - qfrc_smooth - qfrc_constraint
   if m.opt.solver == types.SolverType.CG:
@@ -2954,21 +3038,45 @@ def _update_gradient_incremental(m: types.Model, d: types.Data, ctx: SolverConte
 
   # Update upper triangle of H with delta from changed constraints.
   if m.is_sparse:
-    wp.launch(
-      _update_gradient_h_incremental_sparse,
-      dim=(d.nworld, ctx.changed_efc_ids.shape[1]),
-      inputs=[
-        d.efc.J_rownnz,
-        d.efc.J_rowadr,
-        d.efc.J_colind,
-        d.efc.J,
-        d.efc.D,
-        d.efc.state,
-        ctx.changed_efc_ids,
-        ctx.changed_efc_count,
-      ],
-      outputs=[ctx.h],
-    )
+    if m.opt.deterministic:
+      # Deterministic gather over the persisted column index, restricted to
+      # rows whose QUADRATIC state changed (changed_efc_ids holds per-efcid
+      # flags in deterministic mode, not a list).
+      s = _ensure_det_solver_scratch(m, d)
+      tri_dim = m.nv * (m.nv + 1) // 2
+      wp.launch(
+        _update_gradient_h_incremental_sparse_det,
+        dim=(d.nworld, tri_dim),
+        inputs=[
+          d.efc.J,
+          d.efc.D,
+          d.efc.state,
+          s["col_nnz"],
+          s["col_adr"],
+          s["col_sparseid"],
+          s["col_efcid"],
+          ctx.changed_efc_ids,
+          ctx.changed_efc_count,
+          ctx.done,
+        ],
+        outputs=[ctx.h],
+      )
+    else:
+      wp.launch(
+        _update_gradient_h_incremental_sparse,
+        dim=(d.nworld, ctx.changed_efc_ids.shape[1]),
+        inputs=[
+          d.efc.J_rownnz,
+          d.efc.J_rowadr,
+          d.efc.J_colind,
+          d.efc.J,
+          d.efc.D,
+          d.efc.state,
+          ctx.changed_efc_ids,
+          ctx.changed_efc_count,
+        ],
+        outputs=[ctx.h],
+      )
   else:
     tri_dim = m.nv * (m.nv + 1) // 2
     wp.launch(
@@ -3240,17 +3348,19 @@ def _solver_iteration(
   # tracking, and the additional JTCJ Hessian term depends on Jaref which
   # changes every iteration.
   incremental = m.opt.solver == types.SolverType.NEWTON and m.opt.cone != types.ConeType.ELLIPTIC
-  # The incremental H update scatters with racing float atomics
-  # (_update_gradient_h_incremental_sparse) and its changed_efc_ids ordering is
-  # nondeterministic; force the full deterministic rebuild instead.
-  if m.opt.deterministic and m.is_sparse:
-    incremental = False
+  # In deterministic sparse mode the incremental update uses per-efcid change
+  # flags plus an ordered gather (_update_gradient_h_incremental_sparse_det)
+  # instead of the racy atomic scatter, so it stays enabled.
+  det_incremental = incremental and m.opt.deterministic and m.is_sparse
 
   if incremental:
     # Must complete before _update_constraint_efc which atomically increments.
     ctx.changed_efc_count.zero_()
+    if det_incremental:
+      # Flags (not a compacted list) in deterministic mode: clear them all.
+      ctx.changed_efc_ids.zero_()
 
-  _update_constraint(m, d, ctx, track_changes=incremental)
+  _update_constraint(m, d, ctx, track_changes=incremental, det=det_incremental)
 
   if incremental:
     _update_gradient_incremental(m, d, ctx)
