@@ -1822,15 +1822,14 @@ def _build_det_col_index(m: types.Model, d: types.Data):
 
 @wp.kernel
 def _update_constraint_init_qfrc_constraint_sparse_det(
+  # Data in:
+  efc_J_in: wp.array3d[float],
+  efc_force_in: wp.array2d[float],
   # In:
   col_nnz_in: wp.array2d[int],
   col_adr_in: wp.array2d[int],
   col_sparseid_in: wp.array2d[int],
   col_efcid_in: wp.array2d[int],
-  # Data in:
-  efc_J_in: wp.array3d[float],
-  efc_force_in: wp.array2d[float],
-  # In:
   ctx_done_in: wp.array[bool],
   # Data out:
   qfrc_constraint_out: wp.array2d[float],
@@ -2018,7 +2017,7 @@ def _update_constraint(m: types.Model, d: types.Data, ctx: SolverContext | Inver
       wp.launch(
         _update_constraint_init_qfrc_constraint_sparse_det,
         dim=(d.nworld, m.nv),
-        inputs=[s["col_nnz"], s["col_adr"], s["col_sparseid"], s["col_efcid"], d.efc.J, d.efc.force, ctx.done],
+        inputs=[d.efc.J, d.efc.force, s["col_nnz"], s["col_adr"], s["col_sparseid"], s["col_efcid"], ctx.done],
         outputs=[d.qfrc_constraint],
       )
     else:
@@ -2715,11 +2714,6 @@ def _JTDAJ_sparse(
 
 @wp.kernel
 def _JTDAJ_sparse_det(
-  # In:
-  col_nnz_in: wp.array2d[int],
-  col_adr_in: wp.array2d[int],
-  col_sparseid_in: wp.array2d[int],
-  col_efcid_in: wp.array2d[int],
   # Data in:
   efc_J_rownnz_in: wp.array2d[int],
   efc_J_rowadr_in: wp.array2d[int],
@@ -2728,6 +2722,10 @@ def _JTDAJ_sparse_det(
   efc_D_in: wp.array2d[float],
   efc_state_in: wp.array2d[int],
   # In:
+  col_nnz_in: wp.array2d[int],
+  col_adr_in: wp.array2d[int],
+  col_sparseid_in: wp.array2d[int],
+  col_efcid_in: wp.array2d[int],
   ctx_done_in: wp.array[bool],
   # Out:
   h_out: wp.array3d[float],
@@ -2820,16 +2818,16 @@ def _update_gradient(m: types.Model, d: types.Data, ctx: SolverContext):
           _JTDAJ_sparse_det,
           dim=(d.nworld, tri_dim),
           inputs=[
-            s["col_nnz"],
-            s["col_adr"],
-            s["col_sparseid"],
-            s["col_efcid"],
             d.efc.J_rownnz,
             d.efc.J_rowadr,
             d.efc.J_colind,
             d.efc.J,
             d.efc.D,
             d.efc.state,
+            s["col_nnz"],
+            s["col_adr"],
+            s["col_sparseid"],
+            s["col_efcid"],
             ctx.done,
           ],
           outputs=[ctx.h],

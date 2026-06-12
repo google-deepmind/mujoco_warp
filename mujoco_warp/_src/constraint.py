@@ -457,7 +457,7 @@ def _equality_connect(is_sparse: bool, deterministic: bool):
     subtree_linvel_in: wp.array2d[wp.vec3],
     njmax_in: int,
     njmax_nnz_in: int,
-    # In (deterministic):
+    # In:
     nefc_base_in: wp.array[int],
     efcid_offsets_in: wp.array2d[int],
     nnz_base_in: wp.array[int],
@@ -1225,7 +1225,7 @@ def _equality_flex(is_sparse: bool, deterministic: bool):
     flexedge_length_in: wp.array2d[float],
     njmax_in: int,
     njmax_nnz_in: int,
-    # In (deterministic):
+    # In:
     nefc_base_in: wp.array[int],
     efcid_offsets_in: wp.array2d[int],
     nnz_base_in: wp.array[int],
@@ -1422,7 +1422,7 @@ def _equality_weld(is_sparse: bool, deterministic: bool):
     subtree_linvel_in: wp.array2d[wp.vec3],
     njmax_in: int,
     njmax_nnz_in: int,
-    # In (deterministic):
+    # In:
     nefc_base_in: wp.array[int],
     efcid_offsets_in: wp.array2d[int],
     nnz_base_in: wp.array[int],
@@ -2752,7 +2752,7 @@ def _efc_contact_init(cone_type: types.ConeType, is_sparse: bool, deterministic:
     flex_in: wp.array[wp.vec2i],
     vert_in: wp.array[wp.vec2i],
     type_in: wp.array[int],
-    # In (deterministic):
+    # In:
     nefc_base_in: wp.array[int],
     efcid_offsets_in: wp.array2d[int],
     nnz_base_in: wp.array[int],
@@ -4232,7 +4232,7 @@ def make_constraint(m: types.Model, d: types.Data):
         ],
       )
 
-  if det and not wp.get_stream().is_capturing:
+  if det and not (wp.get_device().is_cuda and wp.get_stream().is_capturing):
     # Host-side overflow validation. Skipped during CUDA graph capture (host
     # readback is not capture-safe); the existing "nefc overflow" device-side
     # warning path still reports overflow on capture replays.
