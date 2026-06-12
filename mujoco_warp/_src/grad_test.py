@@ -228,9 +228,9 @@ def _assert_step_ctrl_grad(
 @wp.kernel
 def _sum_xpos_kernel(
   # Data in:
-  xpos_in: wp.array2d(dtype=wp.vec3),
+  xpos_in: wp.array2d[wp.vec3],
   # In:
-  loss: wp.array(dtype=float),
+  loss: wp.array[float],
 ):
   worldid, bodyid = wp.tid()
   v = xpos_in[worldid, bodyid]
@@ -240,9 +240,9 @@ def _sum_xpos_kernel(
 @wp.kernel
 def _sum_qacc_kernel(
   # Data in:
-  qacc_in: wp.array2d(dtype=float),
+  qacc_in: wp.array2d[float],
   # In:
-  loss: wp.array(dtype=float),
+  loss: wp.array[float],
 ):
   worldid, dofid = wp.tid()
   wp.atomic_add(loss, 0, qacc_in[worldid, dofid])
@@ -428,11 +428,11 @@ class GradSmoothTest(parameterized.TestCase):
 @wp.kernel
 def _quat_integrate_kernel(
   # In:
-  q_in: wp.array(dtype=wp.quat),
-  v_in: wp.array(dtype=wp.vec3),
-  dt_in: wp.array(dtype=float),
+  q_in: wp.array[wp.quat],
+  v_in: wp.array[wp.vec3],
+  dt_in: wp.array[float],
   # Out:
-  q_out: wp.array(dtype=wp.quat),
+  q_out: wp.array[wp.quat],
 ):
   i = wp.tid()
   q_out[i] = math.quat_integrate(q_in[i], v_in[i], dt_in[i])
@@ -441,8 +441,8 @@ def _quat_integrate_kernel(
 @wp.kernel
 def _quat_loss_kernel(
   # In:
-  q: wp.array(dtype=wp.quat),
-  loss: wp.array(dtype=float),
+  q: wp.array[wp.quat],
+  loss: wp.array[float],
 ):
   i = wp.tid()
   v = q[i]
@@ -638,9 +638,9 @@ _CONTACT_FD_TOL = 1e-2
 @wp.kernel
 def _sum_qpos_kernel(
   # Data in:
-  qpos_in: wp.array2d(dtype=float),
+  qpos_in: wp.array2d[float],
   # In:
-  loss: wp.array(dtype=float),
+  loss: wp.array[float],
 ):
   worldid, qid = wp.tid()
   wp.atomic_add(loss, 0, qpos_in[worldid, qid])

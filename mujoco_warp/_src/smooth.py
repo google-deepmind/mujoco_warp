@@ -16,6 +16,7 @@
 
 import warp as wp
 
+from mujoco_warp._src import ad_flags as _ad_flags
 from mujoco_warp._src import math
 from mujoco_warp._src import support
 from mujoco_warp._src import util_misc
@@ -38,8 +39,6 @@ from mujoco_warp._src.types import vec11
 from mujoco_warp._src.warp_util import cache_kernel
 from mujoco_warp._src.warp_util import event_scope
 
-from mujoco_warp._src import ad_flags as _ad_flags
-
 # Backward-enabled kernels generate slower forward code, so AD compilation is
 # opt-in: off by default, enabled by mjw.enable_ad() / make_diff_data().
 wp.set_module_options({"enable_backward": _ad_flags.ad_enabled()})
@@ -56,14 +55,14 @@ def _process_joint(
   jntadr: int,
   jnt_pos_id: int,
   worldid: int,
-  qpos0: wp.array2d(dtype=float),
-  jnt_type: wp.array(dtype=int),
-  jnt_qposadr: wp.array(dtype=int),
-  jnt_pos: wp.array2d(dtype=wp.vec3),
-  jnt_axis: wp.array2d(dtype=wp.vec3),
-  qpos: wp.array(dtype=float),
-  xanchor_out: wp.array2d(dtype=wp.vec3),
-  xaxis_out: wp.array2d(dtype=wp.vec3),
+  qpos0: wp.array2d[float],
+  jnt_type: wp.array[int],
+  jnt_qposadr: wp.array[int],
+  jnt_pos: wp.array2d[wp.vec3],
+  jnt_axis: wp.array2d[wp.vec3],
+  qpos: wp.array[float],
+  xanchor_out: wp.array2d[wp.vec3],
+  xaxis_out: wp.array2d[wp.vec3],
 ):
   """Process a single joint and return updated xpos, xquat."""
   qadr = jnt_qposadr[jntadr]
@@ -1224,10 +1223,10 @@ def _process_dof_cacc(
   local_cacc: wp.spatial_vector,
   dofadr: int,
   worldid: int,
-  qvel_in: wp.array2d(dtype=float),
-  qacc_in: wp.array2d(dtype=float),
-  cdof_in: wp.array2d(dtype=wp.spatial_vector),
-  cdof_dot_in: wp.array2d(dtype=wp.spatial_vector),
+  qvel_in: wp.array2d[float],
+  qacc_in: wp.array2d[float],
+  cdof_in: wp.array2d[wp.spatial_vector],
+  cdof_dot_in: wp.array2d[wp.spatial_vector],
   flg_acc: bool,
 ):
   """Accumulate one DOF contribution to body acceleration."""
@@ -1347,7 +1346,7 @@ def _cfrc_backward_level(
   # Data in:
   cfrc_int_in: wp.array2d[wp.spatial_vector],
   # In:
-  body_tree_: wp.array(dtype=int),
+  body_tree_: wp.array[int],
   nbody_tree: int,
   # Data out:
   cfrc_int_out: wp.array2d[wp.spatial_vector],
@@ -1371,7 +1370,7 @@ def _cfrc_backward(
   # Data in:
   cfrc_int_in: wp.array2d[wp.spatial_vector],
   # In:
-  body_tree_: wp.array(dtype=int),
+  body_tree_: wp.array[int],
   # Data out:
   cfrc_int_out: wp.array2d[wp.spatial_vector],
 ):
@@ -2118,10 +2117,10 @@ def _process_joint_vel(
   dofid: int,
   jntadr: int,
   worldid: int,
-  jnt_type: wp.array(dtype=int),
-  qvel: wp.array(dtype=float),
-  cdof: wp.array(dtype=wp.spatial_vector),
-  cdof_dot_out: wp.array2d(dtype=wp.spatial_vector),
+  jnt_type: wp.array[int],
+  qvel: wp.array[float],
+  cdof: wp.array[wp.spatial_vector],
+  cdof_dot_out: wp.array2d[wp.spatial_vector],
 ):
   """Process a single joint for velocity propagation, return updated cvel and dofid."""
   jnttype = jnt_type[jntadr]
@@ -2946,10 +2945,10 @@ def transmission(m: Model, d: Data):
 @wp.kernel(enable_backward=False)
 def _solve_LD_sparse_x_acc_up(
   # In:
-  L: wp.array3d(dtype=float),
-  qLD_updates_: wp.array(dtype=wp.vec3i),
+  L: wp.array3d[float],
+  qLD_updates_: wp.array[wp.vec3i],
   # Out:
-  x: wp.array2d(dtype=float),
+  x: wp.array2d[float],
 ):
   worldid, nodeid = wp.tid()
   update = qLD_updates_[nodeid]
@@ -2960,9 +2959,9 @@ def _solve_LD_sparse_x_acc_up(
 @wp.kernel(enable_backward=False)
 def _solve_LD_sparse_qLDiag_mul(
   # In:
-  D: wp.array2d(dtype=float),
+  D: wp.array2d[float],
   # Out:
-  out: wp.array2d(dtype=float),
+  out: wp.array2d[float],
 ):
   worldid, dofid = wp.tid()
   out[worldid, dofid] = out[worldid, dofid] * D[worldid, dofid]
@@ -2971,10 +2970,10 @@ def _solve_LD_sparse_qLDiag_mul(
 @wp.kernel(enable_backward=False)
 def _solve_LD_sparse_x_acc_down(
   # In:
-  L: wp.array3d(dtype=float),
-  qLD_updates_: wp.array(dtype=wp.vec3i),
+  L: wp.array3d[float],
+  qLD_updates_: wp.array[wp.vec3i],
   # Out:
-  x: wp.array2d(dtype=float),
+  x: wp.array2d[float],
 ):
   worldid, nodeid = wp.tid()
   update = qLD_updates_[nodeid]

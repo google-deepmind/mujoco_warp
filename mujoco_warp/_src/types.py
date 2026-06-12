@@ -2049,8 +2049,8 @@ class Data:
     njmax_nnz: number of non-zeros in constraint Jacobian
     nacon: number of detected contacts (across all worlds)      (1,)
     ncollision: collision count from broadphase                 (1,)
-    solver_h: retained Newton Hessian for implicit diff         (nworld, nv_pad, nv_pad) or (nworld, 0, 0)
-    solver_hfactor: retained Cholesky factor of solver_h        (nworld, nv_pad, nv_pad) or (nworld, 0, 0)
+    solver_h: retained Newton Hessian for implicit diff         (nworld, nv_pad, nv_pad)
+    solver_hfactor: retained Cholesky factor of solver_h        (nworld, nv_pad, nv_pad)
     solver_Jaref: retained constraint residual J qacc - aref    (nworld, njmax)
   """
 

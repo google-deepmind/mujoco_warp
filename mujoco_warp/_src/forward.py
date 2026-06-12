@@ -17,6 +17,7 @@ from typing import Optional
 
 import warp as wp
 
+from mujoco_warp._src import ad_flags as _ad_flags
 from mujoco_warp._src import collision_driver
 from mujoco_warp._src import collision_smooth
 from mujoco_warp._src import constraint
@@ -49,8 +50,6 @@ from mujoco_warp._src.types import TrnType
 from mujoco_warp._src.types import vec10f
 from mujoco_warp._src.warp_util import cache_kernel
 from mujoco_warp._src.warp_util import event_scope
-
-from mujoco_warp._src import ad_flags as _ad_flags
 
 # Backward-enabled kernels generate slower forward code, so AD compilation is
 # opt-in: off by default, enabled by mjw.enable_ad() / make_diff_data().
@@ -402,10 +401,10 @@ def _euler_damp_qfrc_sparse(
 @wp.kernel
 def _euler_damp_qfrc_dense(
   # Model:
-  opt_timestep: wp.array(dtype=float),
-  dof_damping: wp.array2d(dtype=float),
+  opt_timestep: wp.array[float],
+  dof_damping: wp.array2d[float],
   # Out:
-  qM_integration_out: wp.array3d(dtype=float),
+  qM_integration_out: wp.array3d[float],
 ):
   """Add dt * damping to diagonal of dense (nworld, nv, nv) mass matrix."""
   worldid, tid = wp.tid()

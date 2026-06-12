@@ -1019,9 +1019,7 @@ def allocate_solver_retained(d: types.Data, nworld: int, njmax: int, nv: int, nv
   alloc_h = grad and is_newton
   alloc_hfactor = alloc_h and nv > 32  # _BLOCK_CHOLESKY_DIM
   d.solver_h = wp.zeros((nworld, nv_pad, nv_pad), dtype=float) if alloc_h else wp.empty((nworld, 0, 0), dtype=float)
-  d.solver_hfactor = (
-    wp.zeros((nworld, nv_pad, nv_pad), dtype=float) if alloc_hfactor else wp.empty((nworld, 0, 0), dtype=float)
-  )
+  d.solver_hfactor = wp.zeros((nworld, nv_pad, nv_pad), dtype=float) if alloc_hfactor else wp.empty((nworld, 0, 0), dtype=float)
   d.solver_Jaref = wp.empty((nworld, njmax), dtype=float) if grad else wp.empty((0, 0), dtype=float)
 
 

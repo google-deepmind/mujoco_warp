@@ -31,12 +31,11 @@ from typing import Tuple
 
 import warp as wp
 
+from mujoco_warp._src import ad_flags as _ad_flags
 from mujoco_warp._src import support
 from mujoco_warp._src import types
 from mujoco_warp._src.types import MJ_MINVAL
 from mujoco_warp._src.types import DisableBit
-
-from mujoco_warp._src import ad_flags as _ad_flags
 
 # Backward-enabled kernels generate slower forward code, so AD compilation is
 # opt-in: off by default, enabled by mjw.enable_ad() / make_diff_data().
@@ -348,20 +347,20 @@ def smooth_make_frame(normal: wp.vec3) -> wp.mat33:
 @wp.kernel
 def _smooth_recompute_kernel(
   # Model:
-  geom_type: wp.array(dtype=int),
-  geom_bodyid: wp.array(dtype=int),
-  geom_size: wp.array2d(dtype=wp.vec3),
+  geom_type: wp.array[int],
+  geom_bodyid: wp.array[int],
+  geom_size: wp.array2d[wp.vec3],
   # Data in:
-  geom_xpos_in: wp.array2d(dtype=wp.vec3),
-  geom_xmat_in: wp.array2d(dtype=wp.mat33),
-  contact_geom_in: wp.array(dtype=wp.vec2i),
-  contact_worldid_in: wp.array(dtype=int),
-  contact_geomcollisionid_in: wp.array(dtype=int),
-  nacon_in: wp.array(dtype=int),
+  geom_xpos_in: wp.array2d[wp.vec3],
+  geom_xmat_in: wp.array2d[wp.mat33],
+  contact_geom_in: wp.array[wp.vec2i],
+  contact_worldid_in: wp.array[int],
+  contact_geomcollisionid_in: wp.array[int],
+  nacon_in: wp.array[int],
   # Data out:
-  contact_dist_out: wp.array(dtype=float),
-  contact_pos_out: wp.array(dtype=wp.vec3),
-  contact_frame_out: wp.array(dtype=wp.mat33),
+  contact_dist_out: wp.array[float],
+  contact_pos_out: wp.array[wp.vec3],
+  contact_frame_out: wp.array[wp.mat33],
 ):
   cid = wp.tid()
 
@@ -544,10 +543,10 @@ def _smooth_efc_row(
   margin: float,
   vel: float,
   # Out:
-  pos_out: wp.array2d(dtype=float),
-  D_out: wp.array2d(dtype=float),
-  aref_out: wp.array2d(dtype=float),
-  vel_out: wp.array2d(dtype=float),
+  pos_out: wp.array2d[float],
+  D_out: wp.array2d[float],
+  aref_out: wp.array2d[float],
+  vel_out: wp.array2d[float],
 ):
   """Smooth reimplementation of _efc_row for differentiable constraint params."""
   k_imp = compute_k_imp(opt_disableflags, solref, solimp, pos_imp, timestep)
@@ -572,43 +571,43 @@ def _smooth_efc_row(
 def _smooth_contact_to_efc_kernel(
   # Model:
   nv: int,
-  opt_timestep: wp.array(dtype=float),
+  opt_timestep: wp.array[float],
   opt_disableflags: int,
-  opt_impratio_invsqrt: wp.array(dtype=float),
-  body_parentid: wp.array(dtype=int),
-  body_rootid: wp.array(dtype=int),
-  body_weldid: wp.array(dtype=int),
-  body_dofnum: wp.array(dtype=int),
-  body_dofadr: wp.array(dtype=int),
-  body_invweight0: wp.array2d(dtype=wp.vec2),
-  dof_bodyid: wp.array(dtype=int),
-  dof_parentid: wp.array(dtype=int),
-  body_isdofancestor: wp.array2d(dtype=int),
-  geom_bodyid: wp.array(dtype=int),
+  opt_impratio_invsqrt: wp.array[float],
+  body_parentid: wp.array[int],
+  body_rootid: wp.array[int],
+  body_weldid: wp.array[int],
+  body_dofnum: wp.array[int],
+  body_dofadr: wp.array[int],
+  body_invweight0: wp.array2d[wp.vec2],
+  dof_bodyid: wp.array[int],
+  dof_parentid: wp.array[int],
+  geom_bodyid: wp.array[int],
+  body_isdofancestor: wp.array2d[int],
   # Data in:
-  qvel_in: wp.array2d(dtype=float),
-  subtree_com_in: wp.array2d(dtype=wp.vec3),
-  cdof_in: wp.array2d(dtype=wp.spatial_vector),
-  contact_dist_in: wp.array(dtype=float),
-  contact_pos_in: wp.array(dtype=wp.vec3),
-  contact_frame_in: wp.array(dtype=wp.mat33),
-  contact_includemargin_in: wp.array(dtype=float),
-  contact_friction_in: wp.array(dtype=types.vec5),
-  contact_solref_in: wp.array(dtype=wp.vec2),
-  contact_solimp_in: wp.array(dtype=types.vec5),
-  contact_dim_in: wp.array(dtype=int),
-  contact_geom_in: wp.array(dtype=wp.vec2i),
-  contact_efc_address_in: wp.array2d(dtype=int),
-  contact_worldid_in: wp.array(dtype=int),
-  contact_type_in: wp.array(dtype=int),
+  qvel_in: wp.array2d[float],
+  subtree_com_in: wp.array2d[wp.vec3],
+  cdof_in: wp.array2d[wp.spatial_vector],
+  contact_dist_in: wp.array[float],
+  contact_pos_in: wp.array[wp.vec3],
+  contact_frame_in: wp.array[wp.mat33],
+  contact_includemargin_in: wp.array[float],
+  contact_friction_in: wp.array[types.vec5],
+  contact_solref_in: wp.array[wp.vec2],
+  contact_solimp_in: wp.array[types.vec5],
+  contact_dim_in: wp.array[int],
+  contact_geom_in: wp.array[wp.vec2i],
+  contact_efc_address_in: wp.array2d[int],
+  contact_worldid_in: wp.array[int],
+  contact_type_in: wp.array[int],
   njmax_in: int,
-  nacon_in: wp.array(dtype=int),
+  nacon_in: wp.array[int],
   # Data out:
-  efc_J_out: wp.array3d(dtype=float),
-  efc_pos_out: wp.array2d(dtype=float),
-  efc_D_out: wp.array2d(dtype=float),
-  efc_vel_out: wp.array2d(dtype=float),
-  efc_aref_out: wp.array2d(dtype=float),
+  efc_J_out: wp.array3d[float],
+  efc_pos_out: wp.array2d[float],
+  efc_D_out: wp.array2d[float],
+  efc_vel_out: wp.array2d[float],
+  efc_aref_out: wp.array2d[float],
 ):
   conid, dimid = wp.tid()
 
@@ -812,8 +811,8 @@ def smooth_contact_to_efc(m: types.Model, d: types.Data):
       m.body_invweight0,
       m.dof_bodyid,
       m.dof_parentid,
-      m.body_isdofancestor,
       m.geom_bodyid,
+      m.body_isdofancestor,
       # Data in
       d.qvel,
       d.subtree_com,

@@ -29,13 +29,13 @@ def _efc_J_grad_kernel(
   # Model:
   nv: int,
   # Data in:
-  nefc_in: wp.array(dtype=int),
-  efc_force_in: wp.array2d(dtype=float),
+  nefc_in: wp.array[int],
+  efc_force_in: wp.array2d[float],
   njmax_in: int,
   # In:
-  v_in: wp.array2d(dtype=float),
+  v_in: wp.array2d[float],
   # Out:
-  efc_J_grad_out: wp.array3d(dtype=float),
+  efc_J_grad_out: wp.array3d[float],
 ):
   """Compute adj_efc_J[i, j] = v[j] * efc_force[i].
 
@@ -51,21 +51,21 @@ def _efc_J_grad_kernel(
 @wp.kernel
 def _efc_pos_grad_kernel(
   # Model:
-  opt_timestep: wp.array(dtype=float),
+  opt_timestep: wp.array[float],
   opt_disableflags: int,
   # Data in:
-  contact_dist_in: wp.array(dtype=float),
-  contact_includemargin_in: wp.array(dtype=float),
-  contact_solref_in: wp.array(dtype=wp.vec2),
-  contact_solimp_in: wp.array(dtype=types.vec5),
-  contact_efc_address_in: wp.array2d(dtype=int),
-  contact_worldid_in: wp.array(dtype=int),
-  contact_type_in: wp.array(dtype=int),
-  nacon_in: wp.array(dtype=int),
+  contact_dist_in: wp.array[float],
+  contact_includemargin_in: wp.array[float],
+  contact_solref_in: wp.array[wp.vec2],
+  contact_solimp_in: wp.array[types.vec5],
+  contact_efc_address_in: wp.array2d[int],
+  contact_worldid_in: wp.array[int],
+  contact_type_in: wp.array[int],
+  nacon_in: wp.array[int],
   # In:
-  efc_aref_grad_in: wp.array2d(dtype=float),
+  efc_aref_grad_in: wp.array2d[float],
   # Out:
-  efc_pos_grad_out: wp.array2d(dtype=float),
+  efc_pos_grad_out: wp.array2d[float],
 ):
   """Compute adj_efc_pos from adj_efc_aref.
 
@@ -109,21 +109,20 @@ def _efc_pos_grad_kernel(
 def _smooth_hessian_friction_correction(
   # Model:
   nv: int,
-  # Contact data:
-  contact_efc_address_in: wp.array2d(dtype=int),
-  contact_dim_in: wp.array(dtype=int),
-  contact_type_in: wp.array(dtype=int),
-  contact_worldid_in: wp.array(dtype=int),
-  nacon_in: wp.array(dtype=int),
-  # Constraint data:
-  efc_J_in: wp.array3d(dtype=float),
-  efc_D_in: wp.array2d(dtype=float),
-  efc_state_in: wp.array2d(dtype=int),
-  # Parameters:
+  # Data in:
+  contact_dim_in: wp.array[int],
+  contact_efc_address_in: wp.array2d[int],
+  contact_worldid_in: wp.array[int],
+  contact_type_in: wp.array[int],
+  efc_J_in: wp.array3d[float],
+  efc_D_in: wp.array2d[float],
+  efc_state_in: wp.array2d[int],
+  nacon_in: wp.array[int],
+  # In:
   friction_viscosity: float,
   friction_scale: float,
   # Out:
-  H_out: wp.array3d(dtype=float),
+  H_out: wp.array3d[float],
 ):
   """Apply friction smoothing correction to the Hessian.
 
@@ -194,21 +193,19 @@ def _smooth_hessian_friction_correction(
 def _friction_bypass_correction(
   # Model:
   nv: int,
-  # Contact data:
-  contact_efc_address_in: wp.array2d(dtype=int),
-  contact_dim_in: wp.array(dtype=int),
-  contact_type_in: wp.array(dtype=int),
-  contact_worldid_in: wp.array(dtype=int),
-  nacon_in: wp.array(dtype=int),
-  # Constraint data:
-  efc_J_in: wp.array3d(dtype=float),
-  # Solve results:
-  v_hessian_in: wp.array2d(dtype=float),
-  v_free_in: wp.array2d(dtype=float),
-  # Parameters:
+  # Data in:
+  contact_dim_in: wp.array[int],
+  contact_efc_address_in: wp.array2d[int],
+  contact_worldid_in: wp.array[int],
+  contact_type_in: wp.array[int],
+  efc_J_in: wp.array3d[float],
+  nacon_in: wp.array[int],
+  # In:
+  v_hessian_in: wp.array2d[float],
+  v_free_in: wp.array2d[float],
   bypass_kf: float,
   # Out:
-  v_out: wp.array2d(dtype=float),
+  v_out: wp.array2d[float],
 ):
   """Friction gradient bypass: restore tangential gradients attenuated by H^{-1}.
 
@@ -267,23 +264,21 @@ def _friction_bypass_correction(
 def _friction_bypass_correction_normalized(
   # Model:
   nv: int,
-  # Contact data:
-  contact_efc_address_in: wp.array2d(dtype=int),
-  contact_dim_in: wp.array(dtype=int),
-  contact_type_in: wp.array(dtype=int),
-  contact_worldid_in: wp.array(dtype=int),
-  nacon_in: wp.array(dtype=int),
-  # Constraint data:
-  efc_J_in: wp.array3d(dtype=float),
-  # Solve results:
-  v_hessian_in: wp.array2d(dtype=float),
-  v_free_in: wp.array2d(dtype=float),
-  # Parameters:
+  # Data in:
+  contact_dim_in: wp.array[int],
+  contact_efc_address_in: wp.array2d[int],
+  contact_worldid_in: wp.array[int],
+  contact_type_in: wp.array[int],
+  efc_J_in: wp.array3d[float],
+  nacon_in: wp.array[int],
+  # In:
+  v_hessian_in: wp.array2d[float],
+  v_free_in: wp.array2d[float],
   bypass_kf: float,
   max_ratio: float,
   norm_eps: float,
   # Out:
-  v_out: wp.array2d(dtype=float),
+  v_out: wp.array2d[float],
 ):
   """Normalized and capped friction bypass correction.
 
@@ -356,20 +351,18 @@ def _friction_bypass_correction_normalized(
 def _penalty_friction_damping(
   # Model:
   nv: int,
-  # Contact data:
-  contact_efc_address_in: wp.array2d(dtype=int),
-  contact_dim_in: wp.array(dtype=int),
-  contact_type_in: wp.array(dtype=int),
-  contact_worldid_in: wp.array(dtype=int),
-  nacon_in: wp.array(dtype=int),
-  # Constraint data:
-  efc_J_in: wp.array3d(dtype=float),
-  # Input:
-  v_free_in: wp.array2d(dtype=float),
-  # Parameters:
+  # Data in:
+  contact_dim_in: wp.array[int],
+  contact_efc_address_in: wp.array2d[int],
+  contact_worldid_in: wp.array[int],
+  contact_type_in: wp.array[int],
+  efc_J_in: wp.array3d[float],
+  nacon_in: wp.array[int],
+  # In:
+  v_free_in: wp.array2d[float],
   damping_alpha: float,
   # Out:
-  v_out: wp.array2d(dtype=float),
+  v_out: wp.array2d[float],
 ):
   """Apply penalty-model friction damping to the free-body adjoint.
 
@@ -525,9 +518,9 @@ _BLOCK_CHOLESKY_DIM = 32
 @wp.kernel
 def _copy_grad_kernel(
   # In:
-  src: wp.array2d(dtype=float),
+  src: wp.array2d[float],
   # Out:
-  dst_out: wp.array2d(dtype=float),
+  dst_out: wp.array2d[float],
 ):
   worldid, dofid = wp.tid()
   dst_out[worldid, dofid] = src[worldid, dofid]
@@ -536,9 +529,9 @@ def _copy_grad_kernel(
 @wp.kernel
 def _accumulate_grad_kernel(
   # In:
-  src: wp.array2d(dtype=float),
+  src: wp.array2d[float],
   # Out:
-  dst_out: wp.array2d(dtype=float),
+  dst_out: wp.array2d[float],
 ):
   worldid, dofid = wp.tid()
   dst_out[worldid, dofid] = dst_out[worldid, dofid] + src[worldid, dofid]
@@ -549,10 +542,10 @@ def _adjoint_cholesky_tile(nv: int):
   @wp.kernel(module="unique", enable_backward=False)
   def kernel(
     # In:
-    H: wp.array3d(dtype=float),
-    b: wp.array2d(dtype=float),
+    H: wp.array3d[float],
+    b: wp.array2d[float],
     # Out:
-    out: wp.array2d(dtype=float),
+    out: wp.array2d[float],
   ):
     worldid = wp.tid()
     TILE_SIZE = wp.static(nv)
@@ -570,11 +563,11 @@ def _adjoint_cholesky_blocked(tile_size: int, matrix_size: int):
   @wp.kernel(module="unique", enable_backward=False)
   def kernel(
     # In:
-    hfactor: wp.array3d(dtype=float),
-    b: wp.array3d(dtype=float),
+    hfactor: wp.array3d[float],
+    b: wp.array3d[float],
     nv_runtime: int,
     # Out:
-    out: wp.array3d(dtype=float),
+    out: wp.array3d[float],
   ):
     worldid = wp.tid()
     wp.static(create_blocked_cholesky_solve_func(tile_size, matrix_size))(
@@ -589,12 +582,12 @@ def _adjoint_cholesky_full_blocked(tile_size: int, matrix_size: int):
   @wp.kernel(module="unique", enable_backward=False)
   def kernel(
     # In:
-    H: wp.array3d(dtype=float),
-    b: wp.array3d(dtype=float),
+    H: wp.array3d[float],
+    b: wp.array3d[float],
     nv_runtime: int,
-    hfactor_tmp: wp.array3d(dtype=float),
+    hfactor_tmp: wp.array3d[float],
     # Out:
-    out: wp.array3d(dtype=float),
+    out: wp.array3d[float],
   ):
     worldid = wp.tid()
     # Fused factorize+solve (upstream replaced the separate factorize func);
@@ -611,7 +604,7 @@ def _padding_h_adjoint(
   # Model:
   nv: int,
   # Out:
-  H_out: wp.array3d(dtype=float),
+  H_out: wp.array3d[float],
 ):
   worldid, elementid = wp.tid()
   dofid = nv + elementid
@@ -623,7 +616,7 @@ def _symmetrize_upper_kernel(
   # Model:
   nv: int,
   # Out:
-  H_out: wp.array3d(dtype=float),
+  H_out: wp.array3d[float],
 ):
   """Mirror the upper triangle of H into the lower triangle.
 
@@ -933,14 +926,14 @@ def solver_smooth_adjoint(
         dim=(d.naconmax, m.nmaxpyramid),
         inputs=[
           m.nv,
-          d.contact.efc_address,
           d.contact.dim,
-          d.contact.type,
+          d.contact.efc_address,
           d.contact.worldid,
-          d.nacon,
+          d.contact.type,
           d.efc.J,
           d.efc.D,
           d.efc.state,
+          d.nacon,
           friction_viscosity,
           friction_scale,
         ],
@@ -967,12 +960,12 @@ def solver_smooth_adjoint(
         dim=(d.naconmax, m.nmaxpyramid),
         inputs=[
           m.nv,
-          d.contact.efc_address,
           d.contact.dim,
-          d.contact.type,
+          d.contact.efc_address,
           d.contact.worldid,
-          d.nacon,
+          d.contact.type,
           d.efc.J,
+          d.nacon,
           v_hessian,
           v_free,
           correction_scale,
@@ -1000,12 +993,12 @@ def solver_smooth_adjoint(
         dim=(d.naconmax, m.nmaxpyramid),
         inputs=[
           m.nv,
-          d.contact.efc_address,
           d.contact.dim,
-          d.contact.type,
+          d.contact.efc_address,
           d.contact.worldid,
-          d.nacon,
+          d.contact.type,
           d.efc.J,
+          d.nacon,
           v_free,
           penalty_alpha,
         ],
@@ -1027,14 +1020,14 @@ def solver_smooth_adjoint(
         dim=(d.naconmax, m.nmaxpyramid),
         inputs=[
           m.nv,
-          d.contact.efc_address,
           d.contact.dim,
-          d.contact.type,
+          d.contact.efc_address,
           d.contact.worldid,
-          d.nacon,
+          d.contact.type,
           d.efc.J,
           d.efc.D,
           d.efc.state,
+          d.nacon,
           friction_viscosity,
           friction_scale,
         ],
@@ -1075,12 +1068,12 @@ def solver_smooth_adjoint(
         dim=(d.naconmax, m.nmaxpyramid),
         inputs=[
           m.nv,
-          d.contact.efc_address,
           d.contact.dim,
-          d.contact.type,
+          d.contact.efc_address,
           d.contact.worldid,
-          d.nacon,
+          d.contact.type,
           d.efc.J,
+          d.nacon,
           v,
           v_free,
           bypass_kf,
