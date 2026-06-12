@@ -136,6 +136,17 @@ def _per_world_exclusive_scan_2d(
 
 
 @wp.kernel
+def _contact_world_boundaries_zero(
+  # Out:
+  world_start_out: wp.array[int],  # (nworld,)
+  world_end_out: wp.array[int],  # (nworld,)
+):
+  worldid = wp.tid()
+  world_start_out[worldid] = 0
+  world_end_out[worldid] = 0
+
+
+@wp.kernel
 def _contact_world_boundaries(
   # Data in:
   contact_worldid_in: wp.array[int],
@@ -144,21 +155,21 @@ def _contact_world_boundaries(
   world_start_out: wp.array[int],  # (nworld,)
   world_end_out: wp.array[int],  # (nworld,)
 ):
-  worldid = wp.tid()
+  """Finds per-world contact ranges by neighbor comparison.
+
+  Contacts are sorted by (worldid, ...) in deterministic mode, so each world's
+  contacts are contiguous: one thread per contact writes the boundary it owns.
+  Worlds without contacts keep start=end=0 from _contact_world_boundaries_zero.
+  """
+  cid = wp.tid()
   nacon = nacon_in[0]
-  start = int(-1)
-  end = int(0)
-  for cid in range(nacon):
-    w = contact_worldid_in[cid]
-    if w == worldid:
-      if start < 0:
-        start = cid
-      end = cid + 1
-  if start < 0:
-    start = 0
-    end = 0
-  world_start_out[worldid] = start
-  world_end_out[worldid] = end
+  if cid >= nacon:
+    return
+  w = contact_worldid_in[cid]
+  if cid == 0 or contact_worldid_in[cid - 1] != w:
+    world_start_out[w] = cid
+  if cid == nacon - 1 or contact_worldid_in[cid + 1] != w:
+    world_end_out[w] = cid + 1
 
 
 @wp.kernel
@@ -5101,8 +5112,13 @@ def make_constraint(m: types.Model, d: types.Data):
           outputs=[counts, nnz_counts],
         )
         wp.launch(
-          _contact_world_boundaries,
+          _contact_world_boundaries_zero,
           dim=d.nworld,
+          outputs=[world_start, world_end],
+        )
+        wp.launch(
+          _contact_world_boundaries,
+          dim=d.naconmax,
           inputs=[d.contact.worldid, d.nacon],
           outputs=[world_start, world_end],
         )

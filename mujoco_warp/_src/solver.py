@@ -2715,9 +2715,6 @@ def _JTDAJ_sparse(
 @wp.kernel
 def _JTDAJ_sparse_det(
   # Data in:
-  efc_J_rownnz_in: wp.array2d[int],
-  efc_J_rowadr_in: wp.array2d[int],
-  efc_J_colind_in: wp.array3d[int],
   efc_J_in: wp.array3d[float],
   efc_D_in: wp.array2d[float],
   efc_state_in: wp.array2d[int],
@@ -2734,9 +2731,11 @@ def _JTDAJ_sparse_det(
 
   Replaces the racy per-row `wp.atomic_add` scatter into h[row, col] (float
   addition order across efc rows touching the same element is unordered).
-  One thread owns each unique (row, col) element and iterates only the efc
-  rows listed in `row`'s column index (ascending efc order — deterministic),
-  intersecting with `col` via a row-local scan. h must already hold the M
+  One thread owns each unique (row, col) element. Both per-dof entry lists are
+  emitted in ascending efc row order, so the rows touching both dofs are found
+  with a two-pointer merge-intersection over the `row` and `col` lists —
+  O(nnz_row + nnz_col) per element instead of O(nnz_row * rownnz) — and the
+  accumulation order (ascending efcid) stays fixed. h must already hold the M
   contribution from _update_gradient_init_h_sparse.
   """
   worldid, elementid = wp.tid()
@@ -2749,29 +2748,29 @@ def _JTDAJ_sparse_det(
   row = elementid - (col * (col + 1)) // 2
 
   acc = float(0.0)
-  adr = col_adr_in[worldid, row]
-  nnz = col_nnz_in[worldid, row]
-  for k in range(adr, adr + nnz):
-    efcid = col_efcid_in[worldid, k]
-    if efc_state_in[worldid, efcid] != types.ConstraintState.QUADRATIC.value:
-      continue
-    efc_D = efc_D_in[worldid, efcid]
-    if efc_D == 0.0:
-      continue
-    Ji = efc_J_in[worldid, 0, col_sparseid_in[worldid, k]]
-    if Ji == 0.0:
-      continue
-    # Find J[efcid, col] within the row's entries. No sortedness assumption on
-    # colind: scan the full row (rownnz is small — bounded by dof chain depth).
-    Jj = float(0.0)
-    rownnz = efc_J_rownnz_in[worldid, efcid]
-    rowadr = efc_J_rowadr_in[worldid, efcid]
-    for i in range(rownnz):
-      if efc_J_colind_in[worldid, 0, rowadr + i] == col:
-        Jj = efc_J_in[worldid, 0, rowadr + i]
-        break
-    if Jj != 0.0:
-      acc += Ji * Jj * efc_D
+  adr_i = col_adr_in[worldid, row]
+  end_i = adr_i + col_nnz_in[worldid, row]
+  adr_j = col_adr_in[worldid, col]
+  end_j = adr_j + col_nnz_in[worldid, col]
+
+  a = adr_i
+  b = adr_j
+  while a < end_i and b < end_j:
+    efc_a = col_efcid_in[worldid, a]
+    efc_b = col_efcid_in[worldid, b]
+    if efc_a < efc_b:
+      a += 1
+    elif efc_b < efc_a:
+      b += 1
+    else:
+      if efc_state_in[worldid, efc_a] == types.ConstraintState.QUADRATIC.value:
+        efc_D = efc_D_in[worldid, efc_a]
+        if efc_D != 0.0:
+          Ji = efc_J_in[worldid, 0, col_sparseid_in[worldid, a]]
+          Jj = efc_J_in[worldid, 0, col_sparseid_in[worldid, b]]
+          acc += Ji * Jj * efc_D
+      a += 1
+      b += 1
 
   if acc != 0.0:
     h_out[worldid, row, col] += acc
@@ -2818,9 +2817,6 @@ def _update_gradient(m: types.Model, d: types.Data, ctx: SolverContext):
           _JTDAJ_sparse_det,
           dim=(d.nworld, tri_dim),
           inputs=[
-            d.efc.J_rownnz,
-            d.efc.J_rowadr,
-            d.efc.J_colind,
             d.efc.J,
             d.efc.D,
             d.efc.state,
