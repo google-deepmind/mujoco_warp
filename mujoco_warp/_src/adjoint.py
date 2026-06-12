@@ -618,6 +618,35 @@ def _padding_h_adjoint(
   H_out[worldid, dofid, dofid] = 1.0
 
 
+@wp.kernel
+def _symmetrize_upper_kernel(
+  # Model:
+  nv: int,
+  # Out:
+  H_out: wp.array3d(dtype=float),
+):
+  """Mirror the upper triangle of H into the lower triangle.
+
+  The Newton solver's dense JTDAJ kernels (full tiled build and the
+  incremental active-set update) maintain only the UPPER triangle of the
+  Hessian; the lower triangle can hold stale values from earlier solves.
+  The adjoint Cholesky consumes the full matrix, so without this the
+  factorization sees an asymmetric (possibly indefinite) matrix and
+  produces NaNs (observed with contact-rich scenes, e.g. multi-leg ant).
+  """
+  worldid, elementid = wp.tid()
+  # Strict lower-triangle element (row > col) via triangular indexing.
+  row = int(0)
+  rem = elementid
+  size = nv - 1
+  while rem >= size and size > 0:
+    rem -= size
+    size -= 1
+    row += 1
+  col = row + 1 + rem
+  H_out[worldid, col, row] = H_out[worldid, row, col]
+
+
 def _solve_hessian_system(m: types.Model, d: types.Data, b, out, H=None):
   """Solve H * x = b using stored solver Hessian or a provided H.
 
@@ -632,6 +661,17 @@ def _solve_hessian_system(m: types.Model, d: types.Data, b, out, H=None):
   use_stored = H is None
   if use_stored:
     H = d.solver_h
+
+  # The solver only maintains the upper triangle (see kernel docstring).
+  # Skip when a stored factor will be used instead of refactorizing.
+  will_factorize = m.nv <= _BLOCK_CHOLESKY_DIM or not (use_stored and d.solver_hfactor.shape[1] > 0)
+  if will_factorize and m.nv > 1:
+    wp.launch(
+      _symmetrize_upper_kernel,
+      dim=(d.nworld, m.nv * (m.nv - 1) // 2),
+      inputs=[m.nv],
+      outputs=[H],
+    )
 
   if m.nv <= _BLOCK_CHOLESKY_DIM:
     wp.launch_tiled(

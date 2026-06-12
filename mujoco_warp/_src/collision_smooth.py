@@ -43,6 +43,13 @@ from mujoco_warp._src import ad_flags as _ad_flags
 wp.set_module_options({"enable_backward": _ad_flags.ad_enabled()})
 
 
+# Large finite "no contact" sentinel. Must NOT be wp.inf: expressions like
+# alpha * wp.inf produce 0 * inf = NaN in both the forward blend (alpha == 0)
+# and the reverse-mode adjoint, poisoning gradients of every input the blend
+# factor depends on (capsule axes via det). 1e10 is far above any margin.
+_FAR = 1.0e10
+
+
 # ============================================================================
 # Custom types (matching collision_primitive_core.py)
 # ============================================================================
@@ -81,9 +88,12 @@ def smooth_sphere_sphere(
 ) -> Tuple[float, wp.vec3, wp.vec3]:
   """Sphere-sphere distance with smooth normalization at coincident centers."""
   dir = pos2 - pos1
-  raw_dist = wp.length(dir)
-  # Smooth normalization: replaces if dist==0 branch
-  n = dir / wp.max(raw_dist, 1e-8)
+  # Softened norm: wp.length has a NaN adjoint at dir == 0 (0/0), which occurs
+  # for capsules whose closest points coincide (e.g. sibling capsules sharing a
+  # joint anchor). sqrt(|dir|^2 + eps^2) keeps both the value and the gradient
+  # finite everywhere; the forward error is at most eps.
+  raw_dist = wp.sqrt(wp.dot(dir, dir) + 1e-12)
+  n = dir / raw_dist
   dist = raw_dist - (radius1 + radius2)
   pos = pos1 + n * (radius1 + 0.5 * dist)
   return dist, pos, n
@@ -126,7 +136,7 @@ def smooth_capsule_capsule(
   margin: float,
 ) -> Tuple[wp.vec2, mat23f, mat23f]:
   """Capsule-capsule distance returning 2 contacts, regularized for parallel axes."""
-  contact_dist = wp.vec2(wp.inf, wp.inf)
+  contact_dist = wp.vec2(_FAR, _FAR)
   contact_pos = mat23f()
   contact_normal = mat23f()
 
@@ -213,7 +223,7 @@ def smooth_capsule_capsule(
     par_normal0 = normal_d
 
   # Contact 1: second best
-  par_dist1 = wp.inf
+  par_dist1 = _FAR
   par_pos1 = wp.vec3(0.0)
   par_normal1 = wp.vec3(1.0, 0.0, 0.0)
 
@@ -247,7 +257,7 @@ def smooth_capsule_capsule(
   blend_normal0 = blend_normal0 / wp.max(wp.length(blend_normal0), 1e-8)
 
   # Contact 1: only from parallel path (non-parallel has 1 contact)
-  blend_dist1 = (1.0 - alpha) * par_dist1 + alpha * wp.inf
+  blend_dist1 = (1.0 - alpha) * par_dist1 + alpha * _FAR
 
   if blend_dist0 <= margin:
     contact_dist[0] = blend_dist0
