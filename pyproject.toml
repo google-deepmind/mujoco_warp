@@ -57,7 +57,7 @@ dev = [
     "pygls>=1.0.0,<2.0.0",
     "lsprotocol>=2023.0.1,<2024.0.0",
     "mujoco>=3.8.0.dev0",
-    "warp-lang>=1.14.0.dev0",
+    "warp-lang>=1.14",
     "mjviser>=0.0.10",
     "pillow",
 ]

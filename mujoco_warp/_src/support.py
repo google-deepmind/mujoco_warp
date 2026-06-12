@@ -340,14 +340,14 @@ def _solve_simple_island(
 
 
 @cache_kernel
-def _tile_cholesky_solve_block_island(block_size: int):
-  """Packed block-dense Cholesky backsubstitution with island-local index remapping.
+def _tile_cholesky_solve_block_island(tile):
+  """Dense Cholesky backsubstitution with island-local index remapping.
 
-  L is the packed block-dense factor (nworld, 1, total); each diagonal block is read
-  from its packed offset qLD_block_adr[start] (factorization in global DOF order).
-  y/x are loaded/stored at island-local DOF offsets via map_dof2idof.
+  L is now the packed block-dense factor, so the diagonal block is read from its packed offset
+  qLD_block_adr[dofid] (factorization stays in global DOF order); y/x use island-local offsets.
   """
-  block_area = block_size * block_size
+  TILE_SIZE = tile.size
+  block_area = TILE_SIZE * TILE_SIZE
 
   @wp.kernel(module="unique", enable_backward=False)
   def cholesky_solve(
@@ -357,27 +357,27 @@ def _tile_cholesky_solve_block_island(block_size: int):
     nidof_in: wp.array[int],
     map_dof2idof_in: wp.array2d[int],
     # In:
-    block_dof: wp.array[int],
-    L_in: wp.array3d[float],
+    L: wp.array3d[float],
     y: wp.array2d[float],
+    adr: wp.array[int],
     # Out:
     x: wp.array2d[float],
   ):
-    worldid, blk = wp.tid()
-    start = block_dof[blk]
-    idofid = map_dof2idof_in[worldid, start]
+    worldid, nodeid = wp.tid()
+    dofid = adr[nodeid]
+    idofid = map_dof2idof_in[worldid, dofid]
 
     # Skip unconstrained trees (uniform branch — all threads in block agree)
     if idofid >= nidof_in[worldid]:
       return
 
-    # L is packed in global block order; the rhs/solution use island-local offsets.
-    L = wp.tile_reshape(
-      wp.tile_load(L_in[worldid, 0], shape=(block_area,), offset=(qLD_block_adr[start],)), (block_size, block_size)
+    # L is packed in global block order; y and x use island-local offsets.
+    L_tile = wp.tile_reshape(
+      wp.tile_load(L[worldid, 0], shape=(block_area,), offset=(qLD_block_adr[dofid],)), (TILE_SIZE, TILE_SIZE)
     )
-    rhs = wp.tile_load(y[worldid], shape=(block_size,), offset=(idofid,))
-    sol = wp.tile_cholesky_solve(L, rhs, fill_mode="upper")
-    wp.tile_store(x[worldid], sol, offset=(idofid,))
+    y_slice = wp.tile_load(y[worldid], shape=(TILE_SIZE,), offset=(idofid,))
+    x_slice = wp.tile_cholesky_solve(L_tile, y_slice, fill_mode="upper")
+    wp.tile_store(x[worldid], x_slice, offset=(idofid,))
 
   return cholesky_solve
 
@@ -410,9 +410,9 @@ def solve_m_island(
       # large blocks prefer fewer threads for the sequential solve; see smooth._solve_block_dense
       block_dim = m.block_dim.cholesky_solve if tile.size <= 40 else 32
       wp.launch_tiled(
-        _tile_cholesky_solve_block_island(tile.size),
+        _tile_cholesky_solve_block_island(tile),
         dim=(d.nworld, tile.adr.size),
-        inputs=[m.qLD_block_adr, d.nidof, d.map_dof2idof, tile.adr, d.qLD, vec],
+        inputs=[m.qLD_block_adr, d.nidof, d.map_dof2idof, d.qLD, vec, tile.adr],
         outputs=[res],
         block_dim=block_dim,
       )
