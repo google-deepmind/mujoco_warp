@@ -99,10 +99,8 @@ class DerivativeTest(parameterized.TestCase):
     mjm.opt.integrator = mujoco.mjtIntegrator.mjINT_IMPLICITFAST
     mujoco.mj_step(mjm, mjd)
 
-    if jacobian == mujoco.mjtJacobian.mjJAC_SPARSE:
-      out_smooth_vel = wp.zeros((1, 1, m.nC), dtype=float)
-    else:
-      out_smooth_vel = wp.zeros(d.M.shape, dtype=float)
+    # deriv_smooth_vel outputs in M's CSR layout (nC entries).
+    out_smooth_vel = wp.zeros((1, 1, m.nC), dtype=float)
 
     # Compute kinematics without factorizing M to allow direct comparison
     forward.fwd_position(m, d, factorize=False)
@@ -111,22 +109,19 @@ class DerivativeTest(parameterized.TestCase):
     # 1. Test with RNE Disabled (Matches MuJoCo's ImplicitFast)
     mjw.deriv_smooth_vel(m, d, out_smooth_vel)
 
-    if jacobian == mujoco.mjtJacobian.mjJAC_SPARSE:
-      mjw_out = np.zeros((m.nv, m.nv))
-      if check_version("mujoco>=3.8.1.dev910242375"):
-        mujoco.mju_sym2dense(
-          mjw_out, out_smooth_vel.numpy().reshape(-1).astype(np.float64), mjm.M_rownnz, mjm.M_rowadr, mjm.M_colind
-        )
-      else:
-        for i in range(m.nv):
-          rowadr = m.M_rowadr.numpy()[i]
-          rownnz = m.M_rownnz.numpy()[i]
-          for k in range(rownnz):
-            madr = rowadr + k
-            col = m.M_colind.numpy()[madr]
-            mjw_out[i, col] = out_smooth_vel.numpy()[0, 0, madr]
+    mjw_out = np.zeros((m.nv, m.nv))
+    if check_version("mujoco>=3.8.1.dev910242375"):
+      mujoco.mju_sym2dense(
+        mjw_out, out_smooth_vel.numpy().reshape(-1).astype(np.float64), mjm.M_rownnz, mjm.M_rowadr, mjm.M_colind
+      )
     else:
-      mjw_out = out_smooth_vel.numpy()[0, : m.nv, : m.nv]
+      for i in range(m.nv):
+        rowadr = m.M_rowadr.numpy()[i]
+        rownnz = m.M_rownnz.numpy()[i]
+        for k in range(rownnz):
+          madr = rowadr + k
+          col = m.M_colind.numpy()[madr]
+          mjw_out[i, col] = out_smooth_vel.numpy()[0, 0, madr]
 
     # Symmetrize mjw_out (use lower triangle)
     mjw_out = np.tril(mjw_out) + np.tril(mjw_out, -1).T
@@ -190,29 +185,24 @@ class DerivativeTest(parameterized.TestCase):
 
     mujoco.mj_step(mjm, mjd)
 
-    if jacobian == mujoco.mjtJacobian.mjJAC_SPARSE:
-      out_smooth_vel = wp.zeros((1, 1, m.nC), dtype=float)
-    else:
-      out_smooth_vel = wp.zeros(d.M.shape, dtype=float)
+    # deriv_smooth_vel outputs in M's CSR layout (nC entries).
+    out_smooth_vel = wp.zeros((1, 1, m.nC), dtype=float)
 
     mjw.deriv_smooth_vel(m, d, out_smooth_vel)
 
-    if jacobian == mujoco.mjtJacobian.mjJAC_SPARSE:
-      mjw_out = np.zeros((m.nv, m.nv))
-      if check_version("mujoco>=3.8.1.dev910242375"):
-        mujoco.mju_sym2dense(
-          mjw_out, out_smooth_vel.numpy().reshape(-1).astype(np.float64), mjm.M_rownnz, mjm.M_rowadr, mjm.M_colind
-        )
-      else:
-        for i in range(m.nv):
-          rowadr = m.M_rowadr.numpy()[i]
-          rownnz = m.M_rownnz.numpy()[i]
-          for k in range(rownnz):
-            madr = rowadr + k
-            col = m.M_colind.numpy()[madr]
-            mjw_out[i, col] = out_smooth_vel.numpy()[0, 0, madr]
+    mjw_out = np.zeros((m.nv, m.nv))
+    if check_version("mujoco>=3.8.1.dev910242375"):
+      mujoco.mju_sym2dense(
+        mjw_out, out_smooth_vel.numpy().reshape(-1).astype(np.float64), mjm.M_rownnz, mjm.M_rowadr, mjm.M_colind
+      )
     else:
-      mjw_out = out_smooth_vel.numpy()[0, : m.nv, : m.nv]
+      for i in range(m.nv):
+        rowadr = m.M_rowadr.numpy()[i]
+        rownnz = m.M_rownnz.numpy()[i]
+        for k in range(rownnz):
+          madr = rowadr + k
+          col = m.M_colind.numpy()[madr]
+          mjw_out[i, col] = out_smooth_vel.numpy()[0, 0, madr]
 
     # Final comparison against new ground truth: M - dt * qDeriv
     mj_qDeriv = np.zeros((mjm.nv, mjm.nv))
@@ -559,10 +549,14 @@ class DerivativeTest(parameterized.TestCase):
     # both should have same act_dot (ctrl = 1 for integrator dynamics)
     _assert_eq(d.act_dot.numpy()[0, 0], d.act_dot.numpy()[0, 1], "act_dot")
 
-    # compute qDeriv using deriv_smooth_vel
-    out_smooth_vel = wp.zeros(d.M.shape, dtype=float)
+    # compute qDeriv using deriv_smooth_vel (M's CSR layout, nC entries)
+    out_smooth_vel = wp.zeros((1, 1, m.nC), dtype=float)
     mjw.deriv_smooth_vel(m, d, out_smooth_vel)
-    mjw_out = out_smooth_vel.numpy()[0, : m.nv, : m.nv]
+    mjw_out = np.zeros((m.nv, m.nv))
+    qi = m.M_fullm_i.numpy()
+    qj = m.M_fullm_j.numpy()
+    for elem, (i, j) in enumerate(zip(qi, qj)):
+      mjw_out[i, j] = out_smooth_vel.numpy()[0, 0, elem]
 
     # with actearly=true and nonzero act_dot, derivative should differ
     # because actearly uses next activation: act + act_dot*dt
@@ -911,12 +905,17 @@ class DerivativeTest(parameterized.TestCase):
 
     mujoco.mj_step(mjm, mjd)
 
-    out_smooth_vel = wp.zeros(d.M.shape, dtype=float)
+    # deriv_smooth_vel outputs in M's CSR layout (nC entries).
+    out_smooth_vel = wp.zeros((1, 1, m.nC), dtype=float)
     forward.fwd_position(m, d, factorize=False)
     forward.fwd_velocity(m, d)
     mjw.deriv_smooth_vel(m, d, out_smooth_vel)
 
-    mjw_out = out_smooth_vel.numpy()[0, : m.nv, : m.nv]
+    mjw_out = np.zeros((m.nv, m.nv))
+    qi = m.M_fullm_i.numpy()
+    qj = m.M_fullm_j.numpy()
+    for elem, (i, j) in enumerate(zip(qi, qj)):
+      mjw_out[i, j] = out_smooth_vel.numpy()[0, 0, elem]
     mjw_out = np.tril(mjw_out) + np.tril(mjw_out, -1).T
 
     mj_qDeriv = np.zeros((mjm.nv, mjm.nv))
@@ -1010,23 +1009,18 @@ class DerivativeTest(parameterized.TestCase):
     mjm.opt.integrator = mujoco.mjtIntegrator.mjINT_IMPLICITFAST
     mujoco.mj_step(mjm, mjd)
 
-    if jacobian == mujoco.mjtJacobian.mjJAC_SPARSE:
-      out = wp.zeros((1, 1, m.nC), dtype=float)
-    else:
-      out = wp.zeros(d.M.shape, dtype=float)
+    # deriv_smooth_vel outputs in M's CSR layout (nC entries).
+    out = wp.zeros((1, 1, m.nC), dtype=float)
 
     forward.fwd_position(m, d, factorize=False)
     forward.fwd_velocity(m, d)
     derivative.deriv_smooth_vel(m, d, out)
 
-    if jacobian == mujoco.mjtJacobian.mjJAC_SPARSE:
-      mjw_out = np.zeros((m.nv, m.nv))
-      qi = m.M_fullm_i.numpy()
-      qj = m.M_fullm_j.numpy()
-      for elem, (i, j) in enumerate(zip(qi, qj)):
-        mjw_out[i, j] = out.numpy()[0, 0, elem]
-    else:
-      mjw_out = out.numpy()[0, : m.nv, : m.nv]
+    mjw_out = np.zeros((m.nv, m.nv))
+    qi = m.M_fullm_i.numpy()
+    qj = m.M_fullm_j.numpy()
+    for elem, (i, j) in enumerate(zip(qi, qj)):
+      mjw_out[i, j] = out.numpy()[0, 0, elem]
 
     mjw_out = np.tril(mjw_out) + np.tril(mjw_out, -1).T
 

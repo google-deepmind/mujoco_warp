@@ -823,7 +823,7 @@ def _crb_accumulate(
 
 
 @wp.kernel
-def _M_sparse(
+def _M(
   # Model:
   dof_bodyid: wp.array[int],
   dof_parentid: wp.array[int],
@@ -853,39 +853,6 @@ def _M_sparse(
     dofid = dof_parentid[dofid]
 
 
-@wp.kernel
-def _M_dense(
-  # Model:
-  dof_bodyid: wp.array[int],
-  dof_parentid: wp.array[int],
-  dof_armature: wp.array2d[float],
-  # Data in:
-  cdof_in: wp.array2d[wp.spatial_vector],
-  crb_in: wp.array2d[vec10],
-  # Data out:
-  M_out: wp.array3d[float],
-):
-  worldid, dofid = wp.tid()
-  bodyid = dof_bodyid[dofid]
-  # init M(i,i) with armature inertia.
-  M = dof_armature[worldid % dof_armature.shape[0], dofid]
-
-  # precompute buf = crb_body_i * cdof_i
-  buf = math.inert_vec(crb_in[worldid, bodyid], cdof_in[worldid, dofid])
-  M += wp.dot(cdof_in[worldid, dofid], buf)
-
-  M_out[worldid, dofid, dofid] = M
-
-  # sparse backward pass over ancestors
-  dofidi = dofid
-  dofid = dof_parentid[dofid]
-  while dofid >= 0:
-    Mij = wp.dot(cdof_in[worldid, dofid], buf)
-    M_out[worldid, dofidi, dofid] += Mij
-    M_out[worldid, dofid, dofidi] += Mij
-    dofid = dof_parentid[dofid]
-
-
 @event_scope
 def crb(m: Model, d: Data):
   """Computes composite rigid body inertias for each body and the joint-space inertia matrix.
@@ -900,17 +867,12 @@ def crb(m: Model, d: Data):
     wp.launch(_crb_accumulate, dim=(d.nworld, body_tree.size), inputs=[m.body_parentid, d.crb, body_tree], outputs=[d.crb])
 
   d.M.zero_()
-  if m.is_sparse:
-    wp.launch(
-      _M_sparse,
-      dim=(d.nworld, m.nv),
-      inputs=[m.dof_bodyid, m.dof_parentid, m.dof_armature, m.M_rownnz, m.M_rowadr, d.cdof, d.crb],
-      outputs=[d.M],
-    )
-  else:
-    wp.launch(
-      _M_dense, dim=(d.nworld, m.nv), inputs=[m.dof_bodyid, m.dof_parentid, m.dof_armature, d.cdof, d.crb], outputs=[d.M]
-    )
+  wp.launch(
+    _M,
+    dim=(d.nworld, m.nv),
+    inputs=[m.dof_bodyid, m.dof_parentid, m.dof_armature, m.M_rownnz, m.M_rowadr, d.cdof, d.crb],
+    outputs=[d.M],
+  )
 
 
 @wp.kernel
@@ -1055,48 +1017,65 @@ def _factor_i_sparse(m: Model, d: Data, M: wp.array3d[float], L: wp.array3d[floa
 
 
 @cache_kernel
-def _tile_cholesky_factorize(tile: TileSet):
-  """Returns a kernel for dense Cholesky factorization of a tile."""
+def _tile_cholesky_factorize_block(tile: TileSet):
+  # One diagonal block of `block_size` dofs per (world, block) tile group. tile_load_indexed gathers
+  # the block's dense slots from CSR via a precomputed per-slot index tile (block_elemid, laid out
+  # [block, slot]); structurally absent pairs carry an out-of-bounds index that reads as 0.
+  # Tile shapes must be compile-time constants, so the densify is inlined per kernel (sharing via a
+  # wp.func is not possible) -- keep it in sync with _tile_cholesky_factorize_solve_block.
+  block_size = tile.size
+  block_area = block_size * block_size
 
   @wp.kernel(module="unique", enable_backward=False)
-  def cholesky_factorize(
+  def kernel(
+    # Model:
+    qLD_block_adr: wp.array[int],
     # Data in:
     M_in: wp.array3d[float],
     # In:
-    adr: wp.array[int],
+    block_elemid: wp.array[int],
+    block_dof: wp.array[int],
     # Out:
     L_out: wp.array3d[float],
   ):
-    worldid, nodeid = wp.tid()
-    TILE_SIZE = wp.static(tile.size)
+    worldid, blk = wp.tid()
+    start = block_dof[blk]
 
-    dofid = adr[nodeid]
-    M_tile = wp.tile_load(M_in[worldid], shape=(TILE_SIZE, TILE_SIZE), offset=(dofid, dofid))
-    L_tile = wp.tile_cholesky(M_tile, fill_mode="upper")
-    wp.tile_store(L_out[worldid], L_tile, offset=(dofid, dofid))
+    idx = wp.tile_load(block_elemid, shape=(block_area,), offset=(blk * block_area,), storage="shared")
+    block = wp.tile_load_indexed(M_in[worldid, 0], idx, shape=(block_area,), storage="shared")
 
-  return cholesky_factorize
+    L = wp.tile_cholesky(wp.tile_reshape(block, (block_size, block_size)), fill_mode="upper")
+    wp.tile_store(L_out[worldid, 0], wp.tile_reshape(L, (block_area,)), offset=(qLD_block_adr[start],))
+
+  return kernel
 
 
-def _factor_i_dense(m: Model, d: Data, M: wp.array, L: wp.array):
-  """Dense Cholesky factorization of inertia-like matrix M, assumed spd."""
+def _factor_block_dense(m: Model, d: Data, M: wp.array3d[float], L: wp.array3d[float]):
   for tile in m.M_tiles:
+    # Tiny blocks (<=16 dofs) underutilize extra warps and lose occupancy, so use a single warp;
+    # larger blocks expose more tile_cholesky parallelism (measured optima: 9->32, 27->96, 60->128).
+    block_dim = 32 if tile.size <= 16 else m.block_dim.cholesky_factorize
     wp.launch_tiled(
-      _tile_cholesky_factorize(tile),
+      _tile_cholesky_factorize_block(tile),
       dim=(d.nworld, tile.adr.size),
-      inputs=[M, tile.adr],
+      inputs=[m.qLD_block_adr, M, tile.elemid, tile.adr],
       outputs=[L],
-      block_dim=m.block_dim.cholesky_factorize,
+      block_dim=block_dim,
     )
 
 
 @event_scope
 def factor_m(m: Model, d: Data):
-  """Factorization of inertia-like matrix M, assumed spd."""
-  if m.is_sparse:
-    _factor_i_sparse(m, d, d.M, d.qLD, d.qLDiagInv)
-  else:
-    _factor_i_dense(m, d, d.M, d.qLD)
+  """Factorization of inertia-like matrix M, assumed spd.
+
+  The dense/sparse choice is per-block. qLD = [packed dense region | nC LDL region]: dense blocks
+  factor as a packed tile-Cholesky (M_tiles), sparse blocks via the LDL factor over the LDL region
+  (offset qLD_block_total). The two passes write disjoint dofs and may both run for a mixed model.
+  """
+  if m.qLD_has_dense:
+    _factor_block_dense(m, d, d.M, d.qLD)
+  if m.qLD_has_sparse:
+    _factor_i_sparse(m, d, d.M, d.qLD[:, :, m.qLD_block_total :], d.qLDiagInv)
 
 
 @wp.kernel
@@ -2738,6 +2717,7 @@ def _solve_LD_sparse_fused(nv: int, nlevels: int):
   @wp.kernel(module="unique", enable_backward=False)
   def kernel(
     # In:
+    dof_dense: wp.array[int],
     L: wp.array3d[float],
     D: wp.array2d[float],
     all_updates: wp.array[wp.vec3i],
@@ -2751,12 +2731,13 @@ def _solve_LD_sparse_fused(nv: int, nlevels: int):
     NLEVELS = wp.static(nlevels)
     BLOCK_DIM = wp.block_dim()
 
-    # Copy y to x_out
+    # Copy y to x_out for sparse-block dofs only; dense-block dofs are solved by the packed pass.
     for dofid in range(tid, NV, BLOCK_DIM):
-      x_out[worldid, dofid] = y[worldid, dofid]
+      if dof_dense[dofid] == 0:
+        x_out[worldid, dofid] = y[worldid, dofid]
     _syncthreads()
 
-    # Forward substitution
+    # Forward substitution (all_updates only references sparse-block dofs)
     for level in range(NLEVELS):
       level_idx = NLEVELS - 1 - level
       level_offset = level_offsets[level_idx]
@@ -2768,9 +2749,10 @@ def _solve_LD_sparse_fused(nv: int, nlevels: int):
         wp.atomic_sub(x_out[worldid], i, L[worldid, 0, Madr_ki] * x_out[worldid, k])
       _syncthreads()
 
-    # Diagonal multiply
+    # Diagonal multiply (sparse-block dofs only)
     for dofid in range(tid, NV, BLOCK_DIM):
-      x_out[worldid, dofid] *= D[worldid, dofid]
+      if dof_dense[dofid] == 0:
+        x_out[worldid, dofid] *= D[worldid, dofid]
     _syncthreads()
 
     # Backward substitution
@@ -2807,46 +2789,53 @@ def _solve_LD_sparse(
   wp.launch(
     _solve_LD_sparse_fused(m.nv, nlevels),
     dim=(d.nworld, dim_block),
-    inputs=[L, D, m.qLD_all_updates, m.qLD_level_offsets, y],
+    inputs=[m.qLD_dof_dense, L, D, m.qLD_all_updates, m.qLD_level_offsets, y],
     outputs=[x],
     block_dim=dim_block,
   )
 
 
 @cache_kernel
-def _tile_cholesky_solve(tile: TileSet):
-  """Returns a kernel for dense Cholesky backsubstitution of a tile."""
+def _tile_cholesky_solve_block(tile: TileSet):
+  # One diagonal block per (world, block) thread group; no densify, so a 2D grid suffices.
+  block_size = tile.size
+  block_area = block_size * block_size
 
   @wp.kernel(module="unique", enable_backward=False)
-  def cholesky_solve(
+  def kernel(
+    # Model:
+    qLD_block_adr: wp.array[int],
     # In:
-    L: wp.array3d[float],
+    block_dof: wp.array[int],
+    L_in: wp.array3d[float],
     y: wp.array2d[float],
-    adr: wp.array[int],
     # Out:
     x: wp.array2d[float],
   ):
-    worldid, nodeid = wp.tid()
-    TILE_SIZE = wp.static(tile.size)
+    worldid, blk = wp.tid()
+    start = block_dof[blk]
 
-    dofid = adr[nodeid]
-    y_slice = wp.tile_load(y[worldid], shape=(TILE_SIZE,), offset=(dofid,))
-    L_tile = wp.tile_load(L[worldid], shape=(TILE_SIZE, TILE_SIZE), offset=(dofid, dofid))
-    x_slice = wp.tile_cholesky_solve(L_tile, y_slice, fill_mode="upper")
-    wp.tile_store(x[worldid], x_slice, offset=(dofid,))
+    L = wp.tile_reshape(
+      wp.tile_load(L_in[worldid, 0], shape=(block_area,), offset=(qLD_block_adr[start],)), (block_size, block_size)
+    )
+    rhs = wp.tile_load(y[worldid], shape=(block_size,), offset=(start,))
+    sol = wp.tile_cholesky_solve(L, rhs, fill_mode="upper")
+    wp.tile_store(x[worldid], sol, offset=(start,))
 
-  return cholesky_solve
+  return kernel
 
 
-def _solve_LD_dense(m: Model, d: Data, L: wp.array3d[float], x: wp.array2d[float], y: wp.array2d[float]):
-  """Computes dense backsubstitution: x = inv(U.T @ U) * y."""
+def _solve_block_dense(m: Model, d: Data, L: wp.array3d[float], x: wp.array2d[float], y: wp.array2d[float]):
   for tile in m.M_tiles:
+    # The triangular back-substitution is largely sequential, so large blocks prefer fewer threads
+    # for better occupancy while moderate blocks still want a couple warps (16/27->64, 60->32).
+    block_dim = m.block_dim.cholesky_solve if tile.size <= 40 else 32
     wp.launch_tiled(
-      _tile_cholesky_solve(tile),
+      _tile_cholesky_solve_block(tile),
       dim=(d.nworld, tile.adr.size),
-      inputs=[L, y, tile.adr],
+      inputs=[m.qLD_block_adr, tile.adr, L, y],
       outputs=[x],
-      block_dim=m.block_dim.cholesky_solve,
+      block_dim=block_dim,
     )
 
 
@@ -2860,22 +2849,22 @@ def solve_LD(
 ):
   """Computes backsubstitution for the inertia factorization.
 
-  Sparse models use MuJoCo's L'*D*L factors; dense models use an upper Cholesky factor U.
-
-  This function dispatches to either a sparse or dense solver depending on Model options.
+  The dense/sparse choice is per-block. Dense blocks back-substitute from the packed Cholesky region
+  of L; sparse blocks from the LDL region (offset qLD_block_total). The two passes write disjoint
+  dofs; the sparse pass skips dense dofs (qLD_dof_dense) so it does not clobber the dense result.
 
   Args:
     m: The model containing factorization and sparsity information.
     d: The data object containing workspace and factorization results.
-    L: Lower-triangular factor from the factorization (sparse or dense).
-    D: Diagonal factor from the factorization (only used for sparse).
+    L: The factor: packed dense region followed by the nC LDL region.
+    D: Diagonal factor (1/diag) for the sparse LDL region.
     x: Output array for the solution.
     y: Input right-hand side array.
   """
-  if m.is_sparse:
-    _solve_LD_sparse(m, d, L, D, x, y)
-  else:
-    _solve_LD_dense(m, d, L, x, y)
+  if m.qLD_has_dense:
+    _solve_block_dense(m, d, L, x, y)
+  if m.qLD_has_sparse:
+    _solve_LD_sparse(m, d, L[:, :, m.qLD_block_total :], D, x, y)
 
 
 @event_scope
@@ -2892,75 +2881,81 @@ def solve_m(m: Model, d: Data, x: wp.array2d[float], y: wp.array2d[float]):
 
 
 @cache_kernel
-def _tile_cholesky_factorize_solve(tile: TileSet):
-  """Returns a kernel for dense Cholesky factorization and backsubstitution of a tile."""
+def _tile_cholesky_factorize_solve_block(tile: TileSet):
+  # Fused factor+solve: densify the block, factor it, and back-substitute in one launch (avoids
+  # re-loading the factor). Grid/densify structure matches _tile_cholesky_factorize_block.
+  block_size = tile.size
+  block_area = block_size * block_size
 
   @wp.kernel(module="unique", enable_backward=False)
-  def cholesky_factorize_solve(
+  def kernel(
+    # Model:
+    qLD_block_adr: wp.array[int],
     # Data in:
     M_in: wp.array3d[float],
     # In:
+    block_elemid: wp.array[int],
+    block_dof: wp.array[int],
     y: wp.array2d[float],
-    adr: wp.array[int],
-    # Out:
     x: wp.array2d[float],
-    L: wp.array3d[float],
+    # Out:
+    L_out: wp.array3d[float],
   ):
-    worldid, nodeid = wp.tid()
-    TILE_SIZE = wp.static(tile.size)
+    worldid, blk = wp.tid()
+    start = block_dof[blk]
 
-    dofid = adr[nodeid]
-    M_tile = wp.tile_load(M_in[worldid], shape=(TILE_SIZE, TILE_SIZE), offset=(dofid, dofid))
-    y_slice = wp.tile_load(y[worldid], shape=(TILE_SIZE,), offset=(dofid,))
+    # Densify the block (see _tile_cholesky_factorize_block for the gather rationale).
+    idx = wp.tile_load(block_elemid, shape=(block_area,), offset=(blk * block_area,), storage="shared")
+    block = wp.tile_load_indexed(M_in[worldid, 0], idx, shape=(block_area,), storage="shared")
 
-    L_tile = wp.tile_cholesky(M_tile, fill_mode="upper")
-    wp.tile_store(L[worldid], L_tile, offset=(dofid, dofid))
-    x_slice = wp.tile_cholesky_solve(L_tile, y_slice, fill_mode="upper")
-    wp.tile_store(x[worldid], x_slice, offset=(dofid,))
+    L = wp.tile_cholesky(wp.tile_reshape(block, (block_size, block_size)), fill_mode="upper")
+    wp.tile_store(L_out[worldid, 0], wp.tile_reshape(L, (block_area,)), offset=(qLD_block_adr[start],))
 
-  return cholesky_factorize_solve
+    rhs = wp.tile_load(y[worldid], shape=(block_size,), offset=(start,))
+    sol = wp.tile_cholesky_solve(L, rhs, fill_mode="upper")
+    wp.tile_store(x[worldid], sol, offset=(start,))
+
+  return kernel
 
 
-def _factor_solve_i_dense(
-  m: Model,
-  d: Data,
-  M: wp.array3d[float],
-  x: wp.array2d[float],
-  y: wp.array2d[float],
-  L: wp.array3d[float],
+def _factor_solve_block_dense(
+  m: Model, d: Data, M: wp.array3d[float], x: wp.array2d[float], y: wp.array2d[float], L: wp.array3d[float]
 ):
   for tile in m.M_tiles:
+    # Tiny blocks (<=16 dofs) use a single warp; see _factor_block_dense.
+    block_dim = 32 if tile.size <= 16 else m.block_dim.cholesky_factorize_solve
     wp.launch_tiled(
-      _tile_cholesky_factorize_solve(tile),
+      _tile_cholesky_factorize_solve_block(tile),
       dim=(d.nworld, tile.adr.size),
-      inputs=[M, y, tile.adr],
+      inputs=[m.qLD_block_adr, M, tile.elemid, tile.adr, y],
       outputs=[x, L],
-      block_dim=m.block_dim.cholesky_factorize_solve,
+      block_dim=block_dim,
     )
 
 
 def factor_solve_i(m, d, M, L, D, x, y):
   """Factorizes and solves the inertia-like linear system.
 
-  Sparse models use MuJoCo's L'*D*L factors; dense models use an upper Cholesky factor U.
-
-  This function first factorizes the matrix M (sparse or dense depending on model options),
-  then solves the system for x given right-hand side y.
+  The dense/sparse choice is per-block (see factor_m): dense blocks factor+solve via the packed
+  Cholesky, sparse blocks via the LDL region. Factorizes M, then solves for x given rhs y.
 
   Args:
     m: The model containing factorization and sparsity information.
     d: The data object containing workspace and factorization results.
-    M: The inertia-like matrix to factorize.
-    L: Output sparse factor or dense upper Cholesky factor.
-    D: Output diagonal factor from the factorization (only used for sparse).
+    M: The inertia-like matrix to factorize (CSR, length nC).
+    L: Output factor: packed dense region followed by the nC LDL region (sized like d.qLD).
+    D: Output diagonal factor (1/diag) for the sparse LDL region.
     x: Output array for the solution.
     y: Input right-hand side array.
   """
-  if m.is_sparse:
-    _factor_i_sparse(m, d, M, L, D)
-    _solve_LD_sparse(m, d, L, D, x, y)
-  else:
-    _factor_solve_i_dense(m, d, M, x, y, L)
+  # Per-block: dense blocks factor+solve via the packed Cholesky; sparse blocks via the LDL region
+  # (offset qLD_block_total). The two passes write disjoint dofs.
+  if m.qLD_has_dense:
+    _factor_solve_block_dense(m, d, M, x, y, L)
+  if m.qLD_has_sparse:
+    L_ldl = L[:, :, m.qLD_block_total :]
+    _factor_i_sparse(m, d, M, L_ldl, D)
+    _solve_LD_sparse(m, d, L_ldl, D, x, y)
 
 
 @cache_kernel

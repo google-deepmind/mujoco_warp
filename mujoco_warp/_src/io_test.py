@@ -798,7 +798,13 @@ class IOTest(parameterized.TestCase):
     self.assertTrue((d.qLD.numpy() == 0.0).all())
 
     mujoco.mj_forward(mjm, mjd)
+    # For block-dense models d.qLD is the packed Cholesky factor recomputed from M, so
+    # zero the mass matrix as well as qLD to drive the factor to zero on both paths.
     mjd.qLD[:] = 0.0
+    if check_version("mujoco>=3.8.1.dev910242375"):
+      mjd.M[:] = 0.0
+    else:
+      mjd.qM[:] = 0.0
     d = mjwarp.put_data(mjm, mjd)
     self.assertTrue((d.qLD.numpy() == 0.0).all())
 

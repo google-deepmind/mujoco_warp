@@ -1969,7 +1969,7 @@ def _update_gradient_init_h_sparse(
     ctx_h_out[worldid, i, j] = 0.0
     return
 
-  # M is stored in the lower triangle, so transpose the lookup for the upper
+  # sparse M is stored in the lower triangle, so transpose the lookup for the upper
   elemid = M_elemid[j, i]
   if elemid >= 0:
     ctx_h_out[worldid, i, j] = M_in[worldid, 0, elemid]
@@ -1994,17 +1994,21 @@ def _active_check(tid: int, threshold: int) -> float:
 
 
 @cache_kernel
-def _update_gradient_JTDAJ_dense_tiled(nv_pad: int, tile_size: int, njmax: int):
+def _update_gradient_JTDAJ_dense_tiled(nv_pad: int, tile_size: int, njmax: int, nC: int, block_dim: int):
   if njmax < tile_size:
     tile_size = njmax
 
   TILE_SIZE_K = tile_size
+  M_SCATTER_ITERS = (nC + block_dim - 1) // block_dim
 
   @wp.kernel(module="unique", enable_backward=False, module_options={"enable_mathdx_gemm": False})
   def kernel(
+    # Model:
+    M_colind: wp.array[int],  # column index of each CSR entry
+    M_hinit_i: wp.array[int],  # row index of each CSR entry
     # Data in:
     nefc_in: wp.array[int],
-    M_in: wp.array3d[float],
+    M_in: wp.array3d[float],  # CSR M (nworld, 1, nC)
     efc_J_in: wp.array3d[float],
     efc_D_in: wp.array2d[float],
     efc_state_in: wp.array2d[int],
@@ -2013,14 +2017,23 @@ def _update_gradient_JTDAJ_dense_tiled(nv_pad: int, tile_size: int, njmax: int):
     # Out:
     ctx_h_out: wp.array3d[float],
   ):
-    worldid = wp.tid()
+    worldid, rank = wp.tid()
 
     if ctx_done_in[worldid]:
       return
 
     nefc = nefc_in[worldid]
 
-    sum_val = wp.tile_load(M_in[worldid], shape=(nv_pad, nv_pad), bounds_check=True)
+    # Densify M's upper triangle from CSR into the shared H tile (Cholesky reads fill_mode="upper").
+    # Entry (i, col<=i) of M goes to the upper position (col, i); the lower triangle stays zero.
+    m_tile = wp.tile_zeros(shape=(wp.static(nv_pad * nv_pad),), dtype=float, storage="shared")
+    for it in range(M_SCATTER_ITERS):
+      e = it * block_dim + rank
+      enable = e < nC
+      ec = wp.where(enable, e, 0)
+      pos = M_colind[ec] * nv_pad + M_hinit_i[ec]
+      wp.tile_scatter_add(m_tile, pos, wp.where(enable, M_in[worldid, 0, ec], 0.0), enable)
+    sum_val = wp.tile_reshape(m_tile, (nv_pad, nv_pad))
 
     # Each tile processes one output tile by looping over all constraints
     for k in range(0, njmax, TILE_SIZE_K):
@@ -2587,9 +2600,13 @@ def _update_gradient(m: types.Model, d: types.Data, ctx: SolverContext):
       )
     else:
       wp.launch_tiled(
-        _update_gradient_JTDAJ_dense_tiled(m.nv_pad, types.TILE_SIZE_JTDAJ_DENSE, d.njmax),
+        _update_gradient_JTDAJ_dense_tiled(
+          m.nv_pad, types.TILE_SIZE_JTDAJ_DENSE, d.njmax, m.M_colind.shape[0], m.block_dim.update_gradient_JTDAJ_dense
+        ),
         dim=d.nworld,
         inputs=[
+          m.M_colind,
+          m.M_hinit_i,
           d.nefc,
           d.M,
           d.efc.J,
@@ -4508,6 +4525,7 @@ def _update_gradient_set_h_M_sparse_island(
 def _update_gradient_set_h_M_dense_island(
   # Model:
   nv: int,
+  M_elemid: wp.array2d[int],
   # Data in:
   nidof_in: wp.array[int],
   M_in: wp.array3d[float],
@@ -4518,7 +4536,7 @@ def _update_gradient_set_h_M_dense_island(
   # Out:
   ih_out: wp.array3d[float],
 ):
-  """Add dense mass matrix to island Hessian."""
+  """Add the (CSR) mass matrix to the dense island Hessian."""
   worldid, idofid = wp.tid()
 
   if idofid >= nidof_in[worldid]:
@@ -4532,11 +4550,13 @@ def _update_gradient_set_h_M_dense_island(
 
   dof_i = map_idof2dof_in[worldid, idofid]
 
-  # Copy row from M to ih, mapping columns
+  # Copy row from M (CSR, read via M_elemid) to ih, mapping columns
   nid = nidof_in[worldid]
   for jdof in range(nid):
     dof_j = map_idof2dof_in[worldid, jdof]
-    ih_out[worldid, idofid, jdof] += M_in[worldid, dof_i, dof_j]
+    elemid = M_elemid[wp.max(dof_i, dof_j), wp.min(dof_i, dof_j)]  # M stored lower-triangular CSR
+    if elemid >= 0:
+      ih_out[worldid, idofid, jdof] += M_in[worldid, 0, elemid]
 
 
 @wp.kernel
@@ -5047,7 +5067,7 @@ def _update_gradient_incremental_island(m: types.Model, d: types.Data, ctx: Isla
     outputs=[ctx.h],
   )
 
-  # Add mass matrix
+  # Add mass matrix. Both island variants read M via M_elemid; is_sparse selects the H layout.
   if m.is_sparse:
     wp.launch(
       _update_gradient_set_h_M_sparse_island,
@@ -5070,6 +5090,7 @@ def _update_gradient_incremental_island(m: types.Model, d: types.Data, ctx: Isla
       dim=(d.nworld, m.nv),
       inputs=[
         m.nv,
+        m.M_elemid,
         d.nidof,
         d.M,
         d.map_idof2dof,
