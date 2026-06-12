@@ -1721,8 +1721,15 @@ def _det_col_index_count(
   efc_J_colind_in: wp.array3d[int],
   # Out:
   col_nnz_out: wp.array2d[int],  # (nworld, nv), zeroed
+  row_lo_out: wp.array2d[int],  # (nworld, njmax)
+  row_hi_out: wp.array2d[int],  # (nworld, njmax)
 ):
-  """Counts J entries per dof column. Integer atomics: order-independent."""
+  """Counts J entries per dof column and records each row's colind range.
+
+  Integer atomics: order-independent. row_lo/row_hi give the exact min/max
+  dof touched by each row (no monotonicity assumption on colind), letting
+  the emit kernel skip rows from other kinematic trees in O(1).
+  """
   worldid, efcid = wp.tid()
 
   if efcid >= nefc_in[worldid]:
@@ -1730,8 +1737,15 @@ def _det_col_index_count(
 
   rownnz = efc_J_rownnz_in[worldid, efcid]
   rowadr = efc_J_rowadr_in[worldid, efcid]
+  lo = int(2147483647)
+  hi = int(-1)
   for i in range(rownnz):
-    wp.atomic_add(col_nnz_out[worldid], efc_J_colind_in[worldid, 0, rowadr + i], 1)
+    c = efc_J_colind_in[worldid, 0, rowadr + i]
+    lo = wp.min(lo, c)
+    hi = wp.max(hi, c)
+    wp.atomic_add(col_nnz_out[worldid], c, 1)
+  row_lo_out[worldid, efcid] = lo
+  row_hi_out[worldid, efcid] = hi
 
 
 @wp.kernel
@@ -1761,6 +1775,8 @@ def _det_col_index_emit(
   efc_J_colind_in: wp.array3d[int],
   # In:
   col_adr_in: wp.array2d[int],
+  row_lo_in: wp.array2d[int],
+  row_hi_in: wp.array2d[int],
   # Out:
   col_sparseid_out: wp.array2d[int],  # (nworld, njmax_nnz)
   col_efcid_out: wp.array2d[int],  # (nworld, njmax_nnz)
@@ -1769,12 +1785,17 @@ def _det_col_index_emit(
 
   One thread per (world, dof) scans rows serially so each column's entries are
   stored in efc index order; downstream gathers then sum floats in a fixed order.
+  Rows whose [row_lo, row_hi] dof range excludes this dof (other kinematic
+  trees) are skipped in O(1); no ordering assumption on colind within a row
+  (contact rows are descending but tendon/two-joint-equality rows are not).
   """
   worldid, dofid = wp.tid()
 
   k = col_adr_in[worldid, dofid]
   nefc = nefc_in[worldid]
   for efcid in range(nefc):
+    if dofid < row_lo_in[worldid, efcid] or dofid > row_hi_in[worldid, efcid]:
+      continue
     rownnz = efc_J_rownnz_in[worldid, efcid]
     rowadr = efc_J_rowadr_in[worldid, efcid]
     for i in range(rownnz):
@@ -1796,6 +1817,9 @@ def _ensure_det_solver_scratch(m: types.Model, d: types.Data) -> dict:
     "col_adr": wp.empty((d.nworld, m.nv), dtype=int),
     "col_sparseid": wp.empty((d.nworld, d.njmax_nnz), dtype=int),
     "col_efcid": wp.empty((d.nworld, d.njmax_nnz), dtype=int),
+    "changed_dof": wp.empty((d.nworld, m.nv), dtype=int),
+    "row_lo": wp.empty((d.nworld, d.njmax), dtype=int),
+    "row_hi": wp.empty((d.nworld, d.njmax), dtype=int),
   }
   d._det_solver_scratch = scratch
   return scratch
@@ -1813,7 +1837,7 @@ def _build_det_col_index(m: types.Model, d: types.Data):
     _det_col_index_count,
     dim=(d.nworld, d.njmax),
     inputs=[d.nefc, d.efc.J_rownnz, d.efc.J_rowadr, d.efc.J_colind],
-    outputs=[s["col_nnz"]],
+    outputs=[s["col_nnz"], s["row_lo"], s["row_hi"]],
   )
   wp.launch(
     _det_col_index_scan,
@@ -1824,7 +1848,7 @@ def _build_det_col_index(m: types.Model, d: types.Data):
   wp.launch(
     _det_col_index_emit,
     dim=(d.nworld, m.nv),
-    inputs=[d.nefc, d.efc.J_rownnz, d.efc.J_rowadr, d.efc.J_colind, s["col_adr"]],
+    inputs=[d.nefc, d.efc.J_rownnz, d.efc.J_rowadr, d.efc.J_colind, s["col_adr"], s["row_lo"], s["row_hi"]],
     outputs=[s["col_sparseid"], s["col_efcid"]],
   )
 
@@ -2764,6 +2788,17 @@ def _JTDAJ_sparse_det(
   adr_j = col_adr_in[worldid, col]
   end_j = adr_j + col_nnz_in[worldid, col]
 
+  if adr_i == end_i or adr_j == end_j:
+    return
+
+  # Disjoint-range early out: dofs from independent kinematic trees never
+  # share efc rows, and each dof's list is sorted by efcid, so if the ranges
+  # do not overlap the intersection is empty without walking the lists.
+  if col_efcid_in[worldid, adr_i] > col_efcid_in[worldid, end_j - 1]:
+    return
+  if col_efcid_in[worldid, adr_j] > col_efcid_in[worldid, end_i - 1]:
+    return
+
   a = adr_i
   b = adr_j
   while a < end_i and b < end_j:
@@ -2788,6 +2823,44 @@ def _JTDAJ_sparse_det(
 
 
 @wp.kernel
+def _det_mark_changed_dofs(
+  # Data in:
+  nefc_in: wp.array[int],
+  efc_J_rownnz_in: wp.array2d[int],
+  efc_J_rowadr_in: wp.array2d[int],
+  efc_J_colind_in: wp.array3d[int],
+  # In:
+  changed_flags_in: wp.array2d[int],
+  changed_count_in: wp.array[int],
+  ctx_done_in: wp.array[bool],
+  # Out:
+  changed_dof_out: wp.array2d[int],  # (nworld, nv), zeroed
+):
+  """Marks dofs touched by constraint rows whose state changed this iteration.
+
+  Lets the deterministic incremental H gather exit immediately for (row, col)
+  elements where neither dof is touched by a changed row — the common case,
+  since few rows change state per Newton iteration. Integer stores of the
+  same value: order-independent.
+  """
+  worldid, efcid = wp.tid()
+
+  if ctx_done_in[worldid]:
+    return
+  if changed_count_in[worldid] == 0:
+    return
+  if efcid >= nefc_in[worldid]:
+    return
+  if changed_flags_in[worldid, efcid] == 0:
+    return
+
+  rownnz = efc_J_rownnz_in[worldid, efcid]
+  rowadr = efc_J_rowadr_in[worldid, efcid]
+  for i in range(rownnz):
+    changed_dof_out[worldid, efc_J_colind_in[worldid, 0, rowadr + i]] = 1
+
+
+@wp.kernel
 def _update_gradient_h_incremental_sparse_det(
   # Data in:
   efc_J_in: wp.array3d[float],
@@ -2800,6 +2873,7 @@ def _update_gradient_h_incremental_sparse_det(
   col_efcid_in: wp.array2d[int],
   changed_flags_in: wp.array2d[int],
   changed_count_in: wp.array[int],
+  changed_dof_in: wp.array2d[int],
   ctx_done_in: wp.array[bool],
   # Out:
   h_out: wp.array3d[float],
@@ -2812,7 +2886,9 @@ def _update_gradient_h_incremental_sparse_det(
   _JTDAJ_sparse_det, but only accumulates rows flagged as changed this
   iteration, signed by their new state (+D entering QUADRATIC, -D leaving).
   Accumulation order is ascending efcid — fixed across runs — so h stays
-  bitwise reproducible across iterations.
+  bitwise reproducible across iterations. Elements where neither dof is
+  touched by a changed row (changed_dof_in, from _det_mark_changed_dofs)
+  exit before walking the lists.
   """
   worldid, elementid = wp.tid()
 
@@ -2826,11 +2902,25 @@ def _update_gradient_h_incremental_sparse_det(
   col = (int(wp.sqrt(float(1 + 8 * elementid))) - 1) // 2
   row = elementid - (col * (col + 1)) // 2
 
+  # Only elements where BOTH dofs are touched by a changed row can receive a
+  # nonzero delta (the delta term is Ji * Jj * D over changed rows).
+  if changed_dof_in[worldid, row] == 0 or changed_dof_in[worldid, col] == 0:
+    return
+
   acc = float(0.0)
   adr_i = col_adr_in[worldid, row]
   end_i = adr_i + col_nnz_in[worldid, row]
   adr_j = col_adr_in[worldid, col]
   end_j = adr_j + col_nnz_in[worldid, col]
+
+  if adr_i == end_i or adr_j == end_j:
+    return
+
+  # Disjoint-range early out (see _JTDAJ_sparse_det).
+  if col_efcid_in[worldid, adr_i] > col_efcid_in[worldid, end_j - 1]:
+    return
+  if col_efcid_in[worldid, adr_j] > col_efcid_in[worldid, end_i - 1]:
+    return
 
   a = adr_i
   b = adr_j
@@ -3043,6 +3133,21 @@ def _update_gradient_incremental(m: types.Model, d: types.Data, ctx: SolverConte
       # rows whose QUADRATIC state changed (changed_efc_ids holds per-efcid
       # flags in deterministic mode, not a list).
       s = _ensure_det_solver_scratch(m, d)
+      s["changed_dof"].zero_()
+      wp.launch(
+        _det_mark_changed_dofs,
+        dim=(d.nworld, d.njmax),
+        inputs=[
+          d.nefc,
+          d.efc.J_rownnz,
+          d.efc.J_rowadr,
+          d.efc.J_colind,
+          ctx.changed_efc_ids,
+          ctx.changed_efc_count,
+          ctx.done,
+        ],
+        outputs=[s["changed_dof"]],
+      )
       tri_dim = m.nv * (m.nv + 1) // 2
       wp.launch(
         _update_gradient_h_incremental_sparse_det,
@@ -3057,6 +3162,7 @@ def _update_gradient_incremental(m: types.Model, d: types.Data, ctx: SolverConte
           s["col_efcid"],
           ctx.changed_efc_ids,
           ctx.changed_efc_count,
+          s["changed_dof"],
           ctx.done,
         ],
         outputs=[ctx.h],
