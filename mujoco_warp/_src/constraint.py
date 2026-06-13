@@ -1906,10 +1906,9 @@ def _limit_tendon(
 
 
 @cache_kernel
-def _efc_contact_init(cone_type: types.ConeType, is_sparse: bool, nv_compact: bool = False):
+def _efc_contact_init(cone_type: types.ConeType, is_sparse: bool):
   IS_ELLIPTIC = cone_type == types.ConeType.ELLIPTIC
   IS_SPARSE = is_sparse
-  NV_COMPACT = nv_compact
 
   @wp.kernel(module="unique", enable_backward=False)
   def kernel(
@@ -1923,7 +1922,6 @@ def _efc_contact_init(cone_type: types.ConeType, is_sparse: bool, nv_compact: bo
     flex_vertadr: wp.array[int],
     flex_vertbodyid: wp.array[int],
     # Data in:
-    tree_active_in: wp.array2d[bool],
     njmax_in: int,
     njmax_nnz_in: int,
     nacon_in: wp.array[int],
@@ -1971,30 +1969,6 @@ def _efc_contact_init(cone_type: types.ConeType, is_sparse: bool, nv_compact: bo
         ndim = 2 * (condim - 1)
 
     worldid = worldid_in[conid]
-
-    # nv_compact: skip contacts whose bodies are all inactive. Such a row would have
-    # an all-zero compacted Jacobian but a nonzero residual, injecting an irreducible
-    # cost the Newton solver cannot reduce (it never converges). A geom on the static
-    # world (tree -1) counts as inactive; flex contacts are always kept.
-    if wp.static(NV_COMPACT):
-      cgeom = geom_in[conid]
-      keep = False
-      if cgeom[0] >= 0:
-        t = body_treeid[geom_bodyid[cgeom[0]]]
-        if t >= 0 and tree_active_in[worldid, t]:
-          keep = True
-      else:
-        keep = True
-      if cgeom[1] >= 0:
-        t = body_treeid[geom_bodyid[cgeom[1]]]
-        if t >= 0 and tree_active_in[worldid, t]:
-          keep = True
-      else:
-        keep = True
-      if not keep:
-        for dim in range(ndim):
-          contact_efc_address_out[conid, dim] = -1
-        return
 
     # Allocate contiguous block of efcids for all dimids
     base_efcid = wp.atomic_add(nefc_out, worldid, ndim)
@@ -3012,7 +2986,7 @@ def make_constraint(m: types.Model, d: types.Data):
       )
 
       wp.launch(
-        _efc_contact_init(m.opt.cone, m.is_sparse, m.opt.nv_compact),
+        _efc_contact_init(m.opt.cone, m.is_sparse),
         dim=d.naconmax,
         inputs=[
           m.body_weldid,
@@ -3023,7 +2997,6 @@ def make_constraint(m: types.Model, d: types.Data):
           m.geom_bodyid,
           m.flex_vertadr,
           m.flex_vertbodyid,
-          d.tree_active,
           d.njmax,
           d.njmax_nnz,
           d.nacon,

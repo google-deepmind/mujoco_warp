@@ -331,7 +331,8 @@ def _advance(m: Model, d: Data, qacc: wp.array, qvel: Optional[wp.array] = None)
 
   wp.copy(d.qacc_warmstart, d.qacc)
 
-  if not (m.opt.disableflags & DisableBit.ISLAND) and (m.opt.enableflags & EnableBit.SLEEP):
+  sleep_enabled = (d.nvmax < m.nv) or (not (m.opt.disableflags & DisableBit.ISLAND) and (m.opt.enableflags & EnableBit.SLEEP))
+  if sleep_enabled:
     sleep.sleep(m, d)
     fwd_velocity(m, d)
     sleep.update_sleep(m, d)
@@ -666,7 +667,7 @@ def fwd_position(m: Model, d: Data, factorize: bool = True):
   smooth.flex(m, d)
   smooth.tendon(m, d)
 
-  sleep_enabled = not (m.opt.disableflags & DisableBit.ISLAND) and (m.opt.enableflags & EnableBit.SLEEP)
+  sleep_enabled = (d.nvmax < m.nv) or (not (m.opt.disableflags & DisableBit.ISLAND) and (m.opt.enableflags & EnableBit.SLEEP))
 
   if sleep_enabled and m.ntendon > 0:
     sleep.wake_tendon(m, d)
@@ -696,7 +697,7 @@ def fwd_position(m: Model, d: Data, factorize: bool = True):
       sleep.wake_equality(m, d)
     sleep.update_sleep(m, d)
 
-  if m.ntree > 1 and not (m.opt.disableflags & types.DisableBit.ISLAND):
+  if (d.nvmax < m.nv) or (m.ntree > 1 and not (m.opt.disableflags & types.DisableBit.ISLAND)):
     island.island(m, d)
   smooth.transmission(m, d)
 
@@ -1334,7 +1335,7 @@ def fwd_acceleration(m: Model, d: Data, factorize: bool = False):
   )
   xfrc_accumulate(m, d, d.qfrc_smooth)
 
-  if m.opt.nv_compact:
+  if d.nvmax < m.nv:
     # update the active-DOF set (needs contacts from fwd_position) and solve
     # the smooth acceleration in compacted dense space.
     nvmax.update_active_dofs(m, d)
@@ -1348,7 +1349,8 @@ def fwd_acceleration(m: Model, d: Data, factorize: bool = False):
 @event_scope
 def forward(m: Model, d: Data):
   """Forward dynamics."""
-  if not (m.opt.disableflags & DisableBit.ISLAND) and (m.opt.enableflags & EnableBit.SLEEP):
+  sleep_enabled = (d.nvmax < m.nv) or (not (m.opt.disableflags & DisableBit.ISLAND) and (m.opt.enableflags & EnableBit.SLEEP))
+  if sleep_enabled:
     sleep.wake(m, d)
     sleep.update_sleep(m, d)
 
@@ -1376,10 +1378,7 @@ def forward(m: Model, d: Data):
   fwd_actuation(m, d)
   fwd_acceleration(m, d, factorize=True)
 
-  if m.opt.nv_compact:
-    nvmax.solve_compact(m, d, nvmax.get_context(m, d))
-  else:
-    solver.solve(m, d)
+  solver.solve(m, d)
   sensor.sensor_acc(m, d)
 
 

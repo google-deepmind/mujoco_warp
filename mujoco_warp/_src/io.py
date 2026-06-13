@@ -24,6 +24,7 @@ import warp as wp
 from mujoco_warp._src import bvh
 from mujoco_warp._src import math as mjmath
 from mujoco_warp._src import render_util
+from mujoco_warp._src import sleep
 from mujoco_warp._src import smooth
 from mujoco_warp._src import types
 from mujoco_warp._src import warp_util
@@ -35,10 +36,6 @@ from mujoco_warp._src.util_pkg import check_version
 
 # TODO(team): remove after improving island solver performance
 ENABLE_ISLANDS = False
-
-# experimental: compact active DOFs into nv_max-sized arrays for factor/solve
-# override by setting io.ENABLE_NV_COMPACT = True
-ENABLE_NV_COMPACT = False
 
 
 def _is_array_spec(typ) -> bool:
@@ -268,7 +265,6 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
   opt.broadphase_filter = types.BroadphaseFilter.PLANE | types.BroadphaseFilter.SPHERE | types.BroadphaseFilter.OBB
   opt.graph_conditional = True
   opt.run_collision_detection = True
-  opt.nv_compact = ENABLE_NV_COMPACT
   contact_sensor_maxmatch_id = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_NUMERIC, "contact_sensor_maxmatch")
   if contact_sensor_maxmatch_id > -1:
     opt.contact_sensor_maxmatch = mjm.numeric_data[mjm.numeric_adr[contact_sensor_maxmatch_id]]
@@ -1052,26 +1048,21 @@ def _allocate_island_arrays(
   d.iqfrc_constraint = wp.empty((nworld, nv_size), dtype=float)
 
 
-def _tree_actuated_mask(mjm: mujoco.MjModel) -> np.ndarray:
-  """Trees that contain an actuator (always-active seeds for nv_compact)."""
-  mask = np.zeros(mjm.ntree, dtype=bool)
-  for i in range(mjm.nu):
-    trntype = mjm.actuator_trntype[i]
-    # PoC: only joint transmissions are mapped to trees; other types wake via contact/force.
-    if trntype in (mujoco.mjtTrn.mjTRN_JOINT, mujoco.mjtTrn.mjTRN_JOINTINPARENT):
-      tree = mjm.dof_treeid[mjm.jnt_dofadr[mjm.actuator_trnid[i, 0]]]
-      if tree >= 0:
-        mask[tree] = True
-  return mask
-
-
-def _init_nv_compact(mjm: mujoco.MjModel, d: types.Data, nworld: int):
-  """Seed the persistent active-tree mask and clear the compaction maps."""
-  tree_actuated = _tree_actuated_mask(mjm)
-  d.tree_active = wp.array(np.tile(tree_actuated, (nworld, 1)), shape=(nworld, mjm.ntree), dtype=bool)
-  d.ncdof.zero_()
-  d.dof_cdof.fill_(-1)
-  d.cdof_dof.fill_(-1)
+def _initial_body_awake(mjm: mujoco.MjModel, nworld: int, init_asleep: bool) -> np.ndarray:
+  """Returns the initial body awake array."""
+  body_awake_np = np.zeros((nworld, mjm.nbody), dtype=np.int32)
+  for b in range(mjm.nbody):
+    tree = mjm.body_treeid[b]
+    if tree < 0:
+      root = mjm.body_rootid[b]
+      mocap = mjm.body_mocapid[root]
+      if mocap >= 0:
+        body_awake_np[:, b] = int(types.SleepState.AWAKE)
+      else:
+        body_awake_np[:, b] = int(types.SleepState.STATIC)
+    else:
+      body_awake_np[:, b] = int(types.SleepState.ASLEEP) if init_asleep else int(types.SleepState.AWAKE)
+  return body_awake_np
 
 
 def make_data(
@@ -1083,7 +1074,7 @@ def make_data(
   njmax_nnz: Optional[int] = None,
   naconmax: Optional[int] = None,
   naccdmax: Optional[int] = None,
-  nv_max: Optional[int] = None,
+  nvmax: Optional[int] = None,
 ) -> types.Data:
   """Creates a data object on device.
 
@@ -1098,7 +1089,7 @@ def make_data(
     njmax_nnz: Number of non-zeros in constraint Jacobian (sparse). Defaults to njmax * nv.
     naconmax: Number of contacts to allocate for all worlds. Overrides nconmax.
     naccdmax: Maximum number of CCD contacts. Defaults to naconmax.
-    nv_max: Capacity for compacted active DOFs per world (nv_compact). Defaults to nv.
+    nvmax: Capacity for compacted active DOFs per world. Defaults to nv.
 
   Returns:
     The data object containing the current state and output arrays (device).
@@ -1110,8 +1101,8 @@ def make_data(
   if njmax is None:
     njmax = _default_njmax(mjm)
 
-  if nv_max is None:
-    nv_max = mjm.nv
+  if nvmax is None:
+    nvmax = mjm.nv
 
   if nconmax < 0:
     raise ValueError("nconmax must be >= 0")
@@ -1119,8 +1110,8 @@ def make_data(
   if njmax < 0:
     raise ValueError("njmax must be >= 0")
 
-  if nv_max < 0 or nv_max > mjm.nv:
-    raise ValueError(f"nv_max ({nv_max}) must be in [0, nv ({mjm.nv})]")
+  if nvmax < 0 or nvmax > mjm.nv:
+    raise ValueError(f"nvmax ({nvmax}) must be in [0, nv ({mjm.nv})]")
 
   if nworld < 1:
     raise ValueError(f"nworld must be >= 1")
@@ -1143,6 +1134,9 @@ def make_data(
     elif nccdmax > nconmax:
       raise ValueError(f"nccdmax ({nccdmax}) must be <= nconmax ({nconmax})")
 
+  nv_compact = nvmax < mjm.nv
+  island_enabled = nv_compact or ENABLE_ISLANDS
+
   sizes = dict({"*": 1}, **{f.name: getattr(mjm, f.name, None) for f in dataclasses.fields(types.Model) if f.type is int})
   condim_arrays = [np.array([0]), mjm.geom_condim, mjm.pair_dim]
   if mjm.nflex > 0:
@@ -1154,7 +1148,7 @@ def make_data(
   sizes["nworld"] = nworld
   sizes["naconmax"] = naconmax
   sizes["njmax"] = njmax
-  sizes["nv_max"] = nv_max
+  sizes["nvmax"] = nvmax
 
   if njmax_nnz is None:
     if is_sparse(mjm):
@@ -1165,7 +1159,7 @@ def make_data(
   contact = types.Contact(**{f.name: _create_array(None, f.type, sizes) for f in dataclasses.fields(types.Contact)})
   contact.efc_address = wp.array(np.full((naconmax, sizes["nmaxpyramid"]), -1, dtype=int), dtype=int)
 
-  efc = _create_constraint(mjm, nworld, njmax, njmax_nnz, sizes, ENABLE_ISLANDS)
+  efc = _create_constraint(mjm, nworld, njmax, njmax_nnz, sizes, island_enabled)
 
   if is_sparse(mjm):
     efc.J_rownnz = wp.zeros((nworld, njmax), dtype=int)
@@ -1201,7 +1195,7 @@ def make_data(
     "naconmax": naconmax,
     "naccdmax": naccdmax,
     "njmax": njmax,
-    "nv_max": nv_max,
+    "nvmax": nvmax,
     "njmax_pad": sizes["njmax_pad"],
     "njmax_nnz": njmax_nnz,
     "M": None,
@@ -1242,10 +1236,14 @@ def make_data(
     "iqacc_smooth": None,
     "iqfrc_smooth": None,
     "iqfrc_constraint": None,
-    # sleep state: all trees start fully awake
-    "tree_asleep": wp.array(np.full((nworld, mjm.ntree), -(1 + types.MJ_MINAWAKE)), dtype=int),
-    "tree_awake": wp.array(np.ones((nworld, mjm.ntree)), dtype=int),
-    "body_awake": wp.array(np.ones((nworld, mjm.nbody)), dtype=int),
+    "tree_asleep": wp.array(
+      np.tile(np.arange(mjm.ntree, dtype=np.int32), (nworld, 1))
+      if nv_compact
+      else np.full((nworld, mjm.ntree), -(1 + types.MJ_MINAWAKE)),
+      dtype=int,
+    ),
+    "tree_awake": wp.array(np.zeros((nworld, mjm.ntree)) if nv_compact else np.ones((nworld, mjm.ntree)), dtype=int),
+    "body_awake": wp.array(_initial_body_awake(mjm, nworld, nv_compact), dtype=int),
   }
   for f in dataclasses.fields(types.Data):
     if f.name in d_kwargs:
@@ -1261,8 +1259,10 @@ def make_data(
     d.M = wp.zeros((nworld, sizes["nv_pad"], sizes["nv_pad"]), dtype=float)
     d.qLD = wp.zeros((nworld, mjm.nv, mjm.nv), dtype=float)
 
-  _allocate_island_arrays(mjm, d, nworld, njmax, ENABLE_ISLANDS, mjd)
-  _init_nv_compact(mjm, d, nworld)
+  _allocate_island_arrays(mjm, d, nworld, njmax, island_enabled, mjd)
+  d.ncdof.zero_()
+  d.dof_cdof.fill_(-1)
+  d.cdof_dof.fill_(-1)
 
   return d
 
@@ -1277,7 +1277,7 @@ def put_data(
   njmax_nnz: Optional[int] = None,
   naconmax: Optional[int] = None,
   naccdmax: Optional[int] = None,
-  nv_max: Optional[int] = None,
+  nvmax: Optional[int] = None,
 ) -> types.Data:
   """Moves data from host to a device.
 
@@ -1293,7 +1293,7 @@ def put_data(
     njmax_nnz: Number of non-zeros in constraint Jacobian (sparse). Defaults to njmax * nv.
     naconmax: Number of contacts to allocate for all worlds. Overrides nconmax.
     naccdmax: Maximum number of CCD contacts. Defaults to naconmax.
-    nv_max: Capacity for compacted active DOFs per world (nv_compact). Defaults to nv.
+    nvmax: Capacity for compacted active DOFs per world. Defaults to nv.
 
   Returns:
     The data object containing the current state and output arrays (device).
@@ -1308,8 +1308,8 @@ def put_data(
   if njmax is None:
     njmax = _default_njmax(mjm, mjd)
 
-  if nv_max is None:
-    nv_max = mjm.nv
+  if nvmax is None:
+    nvmax = mjm.nv
 
   if nconmax < 0:
     raise ValueError("nconmax must be >= 0")
@@ -1317,8 +1317,8 @@ def put_data(
   if njmax < 0:
     raise ValueError("njmax must be >= 0")
 
-  if nv_max < 0 or nv_max > mjm.nv:
-    raise ValueError(f"nv_max ({nv_max}) must be in [0, nv ({mjm.nv})]")
+  if nvmax < 0 or nvmax > mjm.nv:
+    raise ValueError(f"nvmax ({nvmax}) must be in [0, nv ({mjm.nv})]")
 
   if nworld < 1:
     raise ValueError(f"nworld must be >= 1")
@@ -1351,6 +1351,9 @@ def put_data(
   if mjd.nefc > njmax:
     raise ValueError(f"njmax overflow (njmax must be >= {mjd.nefc})")
 
+  nv_compact = nvmax < mjm.nv
+  island_enabled = nv_compact or ENABLE_ISLANDS
+
   sizes = dict({"*": 1}, **{f.name: getattr(mjm, f.name, None) for f in dataclasses.fields(types.Model) if f.type is int})
   condim_arrays = [np.array([0]), mjm.geom_condim, mjm.pair_dim]
   if mjm.nflex > 0:
@@ -1362,7 +1365,7 @@ def put_data(
   sizes["nworld"] = nworld
   sizes["naconmax"] = naconmax
   sizes["njmax"] = njmax
-  sizes["nv_max"] = nv_max
+  sizes["nvmax"] = nvmax
 
   if njmax_nnz is None:
     if is_sparse(mjm):
@@ -1406,7 +1409,7 @@ def put_data(
   # create efc
   efc_kwargs = {"J_rownnz": None, "J_rowadr": None, "J_colind": None, "J": None}
 
-  efc = _create_constraint(mjm, nworld, njmax, njmax_nnz, sizes, ENABLE_ISLANDS, mjd)
+  efc = _create_constraint(mjm, nworld, njmax, njmax_nnz, sizes, island_enabled, mjd)
 
   if is_sparse(mjm):
     J_rownnz = np.zeros(njmax, dtype=np.int32)
@@ -1453,7 +1456,7 @@ def put_data(
     "naconmax": naconmax,
     "naccdmax": naccdmax,
     "njmax": njmax,
-    "nv_max": nv_max,
+    "nvmax": nvmax,
     "njmax_pad": sizes["njmax_pad"],
     "njmax_nnz": njmax_nnz,
     # fields set after initialization:
@@ -1483,6 +1486,14 @@ def put_data(
     "iqacc_smooth": None,
     "iqfrc_smooth": None,
     "iqfrc_constraint": None,
+    "tree_asleep": wp.array(
+      np.tile(np.arange(mjm.ntree, dtype=np.int32), (nworld, 1))
+      if nv_compact
+      else np.full((nworld, mjm.ntree), -(1 + types.MJ_MINAWAKE)),
+      dtype=int,
+    ),
+    "tree_awake": wp.array(np.zeros((nworld, mjm.ntree)) if nv_compact else np.ones((nworld, mjm.ntree)), dtype=int),
+    "body_awake": wp.array(_initial_body_awake(mjm, nworld, nv_compact), dtype=int),
   }
   for f in dataclasses.fields(types.Data):
     if f.name in d_kwargs:
@@ -1515,8 +1526,10 @@ def put_data(
     d.M = wp.array(np.full((nworld, sizes["nv_pad"], sizes["nv_pad"]), M_padded), dtype=float)
     d.qLD = wp.array(np.full((nworld, mjm.nv, mjm.nv), qLD), dtype=float)
 
-  _allocate_island_arrays(mjm, d, nworld, njmax, ENABLE_ISLANDS, mjd)
-  _init_nv_compact(mjm, d, nworld)
+  _allocate_island_arrays(mjm, d, nworld, njmax, island_enabled, mjd)
+  d.ncdof.zero_()
+  d.dof_cdof.fill_(-1)
+  d.cdof_dof.fill_(-1)
 
   d.nacon = wp.array([mjd.ncon * nworld], dtype=int)
 
@@ -1809,6 +1822,9 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
     d: The data object containing the current state and output arrays (device).
     reset: Per-world bitmask. Reset if True.
   """
+  sleep_enabled = (d.nvmax < m.nv) or (
+    not (m.opt.disableflags & types.DisableBit.ISLAND) and (m.opt.enableflags & types.EnableBit.SLEEP)
+  )
 
   @wp.kernel(module="unique", enable_backward=False)
   def reset_xfrc_applied(reset_in: wp.array[bool], xfrc_applied_out: wp.array2d[wp.spatial_vector]):
@@ -1994,6 +2010,7 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
     body_treeid: wp.array[int],
     # In:
     mj_minawake: int,
+    sleep_enabled: int,
     reset_in: wp.array[bool],
     # Data out:
     tree_asleep_out: wp.array2d[int],
@@ -2009,8 +2026,12 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
         return
 
     if elemid < ntree:
-      tree_asleep_out[worldid, elemid] = -(1 + mj_minawake)
-      tree_awake_out[worldid, elemid] = 1
+      if sleep_enabled == 1:
+        tree_asleep_out[worldid, elemid] = elemid
+        tree_awake_out[worldid, elemid] = 0
+      else:
+        tree_asleep_out[worldid, elemid] = -(1 + mj_minawake)
+        tree_awake_out[worldid, elemid] = 1
 
     if elemid < nbody:
       if body_treeid[elemid] < 0:
@@ -2019,7 +2040,10 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
         else:
           body_awake_out[worldid, elemid] = int(types.SleepState.STATIC)
       else:
-        body_awake_out[worldid, elemid] = int(types.SleepState.AWAKE)
+        if sleep_enabled == 1:
+          body_awake_out[worldid, elemid] = int(types.SleepState.ASLEEP)
+        else:
+          body_awake_out[worldid, elemid] = int(types.SleepState.AWAKE)
       body_awake_ind_out[worldid, elemid] = elemid
 
     if elemid < nv:
@@ -2071,7 +2095,7 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
   wp.launch(
     reset_sleep,
     dim=(d.nworld, max(m.ntree, m.nbody, m.nv)),
-    inputs=[m.nv, m.nbody, m.ntree, m.body_mocapid, m.body_treeid, types.MJ_MINAWAKE, reset_input],
+    inputs=[m.nv, m.nbody, m.ntree, m.body_mocapid, m.body_treeid, types.MJ_MINAWAKE, int(sleep_enabled), reset_input],
     outputs=[
       d.tree_asleep,
       d.tree_awake,
@@ -2109,6 +2133,9 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
       d.nacon,
     ],
   )
+
+  if sleep_enabled:
+    sleep.update_sleep(m, d)
 
 
 # kernel_analyzer: off

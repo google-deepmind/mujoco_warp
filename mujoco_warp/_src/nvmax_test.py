@@ -13,7 +13,7 @@
 # limitations under the License.
 # ==============================================================================
 
-"""Tests for nv_compact active-DOF bookkeeping."""
+"""Tests for active-DOF bookkeeping."""
 
 import mujoco
 import numpy as np
@@ -21,7 +21,10 @@ import warp as wp
 from absl.testing import absltest
 
 import mujoco_warp as mjwarp
+from mujoco_warp import test_data
 from mujoco_warp._src import nvmax
+from mujoco_warp._src import sleep
+from mujoco_warp._src.sleep import K_AWAKE_VAL
 
 # An actuated 2-hinge arm (tree 0, dofs 0-1) plus two free bodies
 # (tree 1, dofs 2-7 and tree 2, dofs 8-13).
@@ -48,15 +51,6 @@ _XML = """
 """
 
 
-def _setup(nworld=1, nv_max=None, sparse=False):
-  mjm = mujoco.MjModel.from_xml_string(_XML)
-  if sparse:
-    mjm.opt.jacobian = mujoco.mjtJacobian.mjJAC_SPARSE
-  m = mjwarp.put_model(mjm)
-  d = mjwarp.make_data(mjm, nworld=nworld, nv_max=nv_max)
-  return mjm, m, d
-
-
 # Two free spheres resting (penetrating) on a floor, plus an actuated hinge arm.
 # Generates contacts so the constrained solver does real work.
 _CONTACT_XML = """
@@ -76,19 +70,11 @@ _CONTACT_XML = """
 """
 
 
-def _setup_contact(nv_max=None):
-  mjm = mujoco.MjModel.from_xml_string(_CONTACT_XML)
-  m = mjwarp.put_model(mjm)
-  d = mjwarp.make_data(mjm, nv_max=nv_max)
-  return mjm, m, d
-
-
 class NvCompactBookkeepingTest(absltest.TestCase):
   def test_actuated_tree_seeded(self):
     """Only the actuated arm tree is active at construction; maps are compact."""
-    _, m, d = _setup()
-    np.testing.assert_array_equal(d.tree_active.numpy()[0], [True, False, False])
-
+    _, _, m, d = test_data.fixture(xml=_XML)
+    d.tree_awake = wp.array([[1, 0, 0]], dtype=int)
     nvmax.update_active_dofs(m, d)
 
     self.assertEqual(d.ncdof.numpy()[0], 2)
@@ -100,14 +86,24 @@ class NvCompactBookkeepingTest(absltest.TestCase):
 
   def test_applied_force_wakes_tree_per_world(self):
     """qfrc_applied on a free-body DOF wakes its whole tree, independently per world."""
-    _, m, d = _setup(nworld=2)
+    _, _, m, d = test_data.fixture(xml=_XML, nworld=2)
+
+    # 1. Set all trees asleep initially
+    d.tree_awake.fill_(0)
+    d.tree_asleep.fill_(0)
+
+    # 2. Apply force to dof 2 (belongs to tree 1) in world 0
     qfrc = d.qfrc_applied.numpy()
-    qfrc[0, 2] = 1.0  # dof 2 belongs to tree 1 (first free body) in world 0
+    qfrc[0, 2] = 1.0
     d.qfrc_applied = wp.array(qfrc, dtype=float)
+
+    # 3. Run sleep.wake to wake up trees with forces
+    sleep.wake(m, d)
+    sleep.update_sleep(m, d)
 
     nvmax.update_active_dofs(m, d)
 
-    # world 0: arm (2) + free body (6) = 8; world 1: arm only = 2
+    # world 0: arm (2) + free body 1 (6) = 8; world 1: arm only = 2
     np.testing.assert_array_equal(d.ncdof.numpy(), [8, 2])
     np.testing.assert_array_equal(d.dof_cdof.numpy()[0][:8], np.arange(8))
     self.assertTrue((d.dof_cdof.numpy()[1][2:] == -1).all())
@@ -127,64 +123,75 @@ class NvCompactBookkeepingTest(absltest.TestCase):
 
   def test_moving_contact_wakes_both_trees(self):
     """A contact with a moving body activates the trees of both involved geoms."""
-    mjm, m, d = _setup()
+    mjm, _, m, d = test_data.fixture(xml=_XML)
     ball0 = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_GEOM, "ball0")
     ball1 = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_GEOM, "ball1")
+
+    # 1. Set tree 1 (ball0) awake initially, tree 0 and 2 asleep (pointing to themselves)
+    asleep = np.array([[0, K_AWAKE_VAL, 2]], dtype=np.int32)
+    d.tree_asleep = wp.array(asleep, dtype=int)
+    sleep.update_sleep(m, d)
 
     self._fake_contact(d, ball0, ball1)
-    self._set_body_moving(m, d, ball0)  # ball0 is moving into ball1
+
+    sleep.wake_collision(m, d)
+    sleep.update_sleep(m, d)
+
     nvmax.update_active_dofs(m, d)
 
-    # arm (seeded) + both free bodies = 2 + 6 + 6 = 14
-    np.testing.assert_array_equal(d.tree_active.numpy()[0], [True, True, True])
-    self.assertEqual(d.ncdof.numpy()[0], 14)
+    # both free bodies awake = 6 + 6 = 12 DOFs
+    self.assertEqual(d.ncdof.numpy()[0], 12)
 
   def test_resting_contact_does_not_wake(self):
-    """A contact where both bodies are at rest does not wake them (velocity gate)."""
-    mjm, m, d = _setup()
+    """A contact where both bodies are at rest does not wake them."""
+    mjm, _, m, d = test_data.fixture(xml=_XML)
     ball0 = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_GEOM, "ball0")
     ball1 = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_GEOM, "ball1")
 
-    self._fake_contact(d, ball0, ball1)  # both at rest (cvel = 0)
+    # 1. Set all trees asleep initially
+    asleep = np.array([[0, 1, 2]], dtype=np.int32)
+    d.tree_asleep = wp.array(asleep, dtype=int)
+    sleep.update_sleep(m, d)
+
+    self._fake_contact(d, ball0, ball1)
+
+    sleep.wake_collision(m, d)
+    sleep.update_sleep(m, d)
+
     nvmax.update_active_dofs(m, d)
 
-    # only the actuated arm stays active; the resting balls remain asleep
-    np.testing.assert_array_equal(d.tree_active.numpy()[0], [True, False, False])
-    self.assertEqual(d.ncdof.numpy()[0], 2)
+    # both stay asleep
+    self.assertEqual(d.ncdof.numpy()[0], 0)
 
   def test_static_geom_does_not_wake(self):
-    """A contact with a static (world) geom only wakes the moving dynamic side."""
-    mjm, m, d = _setup()
+    """A contact with a static (world) geom only wakes the dynamic side."""
+    mjm, _, m, d = test_data.fixture(xml=_XML)
     floor = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_GEOM, "floor")
     ball0 = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_GEOM, "ball0")
 
+    # 1. Set ball0 (tree 1) awake, tree 0 and 2 asleep
+    asleep = np.array([[0, K_AWAKE_VAL, 2]], dtype=np.int32)
+    d.tree_asleep = wp.array(asleep, dtype=int)
+    sleep.update_sleep(m, d)
+
     self._fake_contact(d, floor, ball0)
-    self._set_body_moving(m, d, ball0)  # ball0 dropping onto the floor
+
+    sleep.wake_collision(m, d)
+    sleep.update_sleep(m, d)
+
     nvmax.update_active_dofs(m, d)
 
-    # floor is static (tree -1): only ball0's tree wakes, alongside the arm.
-    np.testing.assert_array_equal(d.tree_active.numpy()[0], [True, True, False])
-    self.assertEqual(d.ncdof.numpy()[0], 8)
-
-  def test_monotonic(self):
-    """Once active, a tree stays active after the triggering force is removed."""
-    _, m, d = _setup()
-    qfrc = d.qfrc_applied.numpy()
-    qfrc[0, 8] = 1.0  # wake tree 2
-    d.qfrc_applied = wp.array(qfrc, dtype=float)
-    nvmax.update_active_dofs(m, d)
-    self.assertEqual(d.ncdof.numpy()[0], 8)
-
-    d.qfrc_applied = wp.array(np.zeros_like(qfrc), dtype=float)
-    nvmax.update_active_dofs(m, d)
-    self.assertEqual(d.ncdof.numpy()[0], 8)  # still active
+    # only tree 1 (ball0) wakes -> 6 DOFs
+    self.assertEqual(d.ncdof.numpy()[0], 6)
 
   def test_overflow_clamps_and_warns(self):
-    """When active DOFs exceed nv_max, ncdof is clamped to nv_max."""
-    _, m, d = _setup(nv_max=4)
-    ta = d.tree_active.numpy()
-    ta[0, :] = True
-    d.tree_active = wp.array(ta, dtype=bool)
+    """When active DOFs exceed nvmax, ncdof is clamped to nvmax."""
+    mjm = mujoco.MjModel.from_xml_string(_XML)
+    mjd = mujoco.MjData(mjm)
+    mujoco.mj_forward(mjm, mjd)
+    m = mjwarp.put_model(mjm)
+    d = mjwarp.put_data(mjm, mjd, nvmax=4)
+    d.tree_awake = wp.array([[1, 1, 1]], dtype=int)
 
     nvmax.update_active_dofs(m, d)
 
@@ -193,13 +200,13 @@ class NvCompactBookkeepingTest(absltest.TestCase):
 
 class NvCompactSmoothSolveTest(absltest.TestCase):
   def test_smooth_solve_equivalence_all_active(self):
-    """With every tree active and nv_max=nv, compacted qacc_smooth matches baseline."""
-    _, m, d = _setup(sparse=True)
+    """With every tree active and nvmax=nv, compacted qacc_smooth matches baseline."""
+    _, _, m, d = test_data.fixture(xml=_XML, overrides={"opt.jacobian": "SPARSE"})
     self.assertTrue(m.is_sparse)
     mjwarp.forward(m, d)
     baseline = d.qacc_smooth.numpy().copy()
 
-    d.tree_active = wp.array(np.ones((d.nworld, m.ntree), dtype=bool), dtype=bool)
+    d.tree_awake = wp.array(np.ones((d.nworld, m.ntree), dtype=int), dtype=int)
     nvmax.update_active_dofs(m, d)
     self.assertEqual(d.ncdof.numpy()[0], m.nv)
 
@@ -210,11 +217,12 @@ class NvCompactSmoothSolveTest(absltest.TestCase):
 
   def test_smooth_solve_partial_active_freezes_rest(self):
     """Active trees match baseline (M is block-diagonal); inactive DOFs are frozen to 0."""
-    _, m, d = _setup(sparse=True)
+    _, _, m, d = test_data.fixture(xml=_XML, overrides={"opt.jacobian": "SPARSE"})
     mjwarp.forward(m, d)
     baseline = d.qacc_smooth.numpy().copy()
 
     # only the actuated arm tree (dofs 0-1) is active
+    d.tree_awake = wp.array([[1, 0, 0]], dtype=int)
     nvmax.update_active_dofs(m, d)
     self.assertEqual(d.ncdof.numpy()[0], 2)
 
@@ -228,14 +236,14 @@ class NvCompactSmoothSolveTest(absltest.TestCase):
 
 class NvCompactConstrainedSolveTest(absltest.TestCase):
   def test_constrained_solve_equivalence_all_active(self):
-    """With every tree active and nv_max=nv, the compacted Newton solve matches baseline qacc."""
-    _, m, d = _setup_contact()
+    """With every tree active and nvmax=nv, the compacted Newton solve matches baseline qacc."""
+    _, _, m, d = test_data.fixture(xml=_CONTACT_XML)
     self.assertTrue(m.is_sparse)
     mjwarp.forward(m, d)  # full baseline solve (also builds efc.J, M)
     self.assertGreater(d.nacon.numpy()[0], 0)  # contacts exist
     baseline_qacc = d.qacc.numpy().copy()
 
-    d.tree_active = wp.array(np.ones((d.nworld, m.ntree), dtype=bool), dtype=bool)
+    d.tree_awake = wp.array(np.ones((d.nworld, m.ntree), dtype=int), dtype=int)
     nvmax.update_active_dofs(m, d)
     self.assertEqual(d.ncdof.numpy()[0], m.nv)
 
@@ -243,6 +251,32 @@ class NvCompactConstrainedSolveTest(absltest.TestCase):
     nvmax.solve_compact(m, d, ctx)
 
     np.testing.assert_allclose(d.qacc.numpy(), baseline_qacc, rtol=1e-3, atol=1e-4)
+
+  def test_solve_compact_populates_islands(self):
+    """When using the compact solver via mjwarp.solve, island mapping fields are updated."""
+    mjm = mujoco.MjModel.from_xml_string(_CONTACT_XML)
+    mjd = mujoco.MjData(mjm)
+    mujoco.mj_forward(mjm, mjd)
+    m = mjwarp.put_model(mjm)
+    # nv = 13. We set nvmax = 8 (which is < 13, so compact solver is triggered)
+    d = mjwarp.put_data(mjm, mjd, nvmax=8)
+
+    # Artificially set tree_island map on device
+    d.tree_island = wp.array([[2, 2, 2]], dtype=int)
+    d.nisland = wp.array([3], dtype=int)
+
+    # Run solver which triggers solve_compact
+    mjwarp.solve(m, d)
+
+    # Assert that d.dof_island and d.efc.island are updated based on the new tree_island
+    dof_island = d.dof_island.numpy()[0]
+    np.testing.assert_array_equal(dof_island, [2] * m.nv)
+
+    nefc = d.nefc.numpy()[0]
+    efc_island = d.efc.island.numpy()[0]
+    self.assertGreater(nefc, 0)
+    np.testing.assert_array_equal(efc_island[:nefc], [2] * nefc)
+    np.testing.assert_array_equal(efc_island[nefc:], [-1] * (d.njmax - nefc))
 
 
 if __name__ == "__main__":

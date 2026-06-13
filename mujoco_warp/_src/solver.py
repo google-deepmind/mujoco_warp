@@ -19,6 +19,7 @@ import warp as wp
 
 from mujoco_warp._src import island
 from mujoco_warp._src import math
+from mujoco_warp._src import nvmax
 from mujoco_warp._src import smooth
 from mujoco_warp._src import support
 from mujoco_warp._src import types
@@ -2513,6 +2514,8 @@ def _update_gradient_JTCJ_sparse(
       continue
 
     efcid0 = contact_efc_address_in[conid, 0]
+    if efcid0 < 0:
+      continue
     if efc_state_in[worldid, efcid0] != types.ConstraintState.CONE:
       continue
 
@@ -2550,7 +2553,10 @@ def _update_gradient_JTCJ_sparse(
     tt = float(0.0)
     for j in range(1, condim):
       efcidj = contact_efc_address_in[conid, j]
-      uj = ctx_Jaref_in[worldid, efcidj] * fri[j - 1]
+      if efcidj >= 0:
+        uj = ctx_Jaref_in[worldid, efcidj] * fri[j - 1]
+      else:
+        uj = 0.0
       tt += uj * uj
       u[j] = uj
 
@@ -2574,6 +2580,8 @@ def _update_gradient_JTCJ_sparse(
         dm_fri1 = dm * mu
       else:
         efcid1 = contact_efc_address_in[conid, dim1id]
+        if efcid1 < 0:
+          continue
         rowadr1 = efc_J_rowadr_in[worldid, efcid1]
         dm_fri1 = dm * fri[dim1id - 1]
 
@@ -2589,6 +2597,8 @@ def _update_gradient_JTCJ_sparse(
           dm_fri12 = dm_fri1 * mu
         else:
           efcid2 = contact_efc_address_in[conid, dim2id]
+          if efcid2 < 0:
+            continue
           rowadr2 = efc_J_rowadr_in[worldid, efcid2]
           dm_fri12 = dm_fri1 * fri[dim2id - 1]
 
@@ -2674,6 +2684,8 @@ def _update_gradient_JTCJ_compact(
       continue
 
     efcid0 = contact_efc_address_in[conid, 0]
+    if efcid0 < 0:
+      continue
     if efc_state_in[worldid, efcid0] != types.ConstraintState.CONE:
       continue
 
@@ -2718,7 +2730,10 @@ def _update_gradient_JTCJ_compact(
     tt = float(0.0)
     for j in range(1, condim):
       efcidj = contact_efc_address_in[conid, j]
-      uj = ctx_Jaref_in[worldid, efcidj] * fri[j - 1]
+      if efcidj >= 0:
+        uj = ctx_Jaref_in[worldid, efcidj] * fri[j - 1]
+      else:
+        uj = 0.0
       tt += uj * uj
       u[j] = uj
 
@@ -2742,6 +2757,8 @@ def _update_gradient_JTCJ_compact(
         dm_fri1 = dm * mu
       else:
         efcid1 = contact_efc_address_in[conid, dim1id]
+        if efcid1 < 0:
+          continue
         dm_fri1 = dm * fri[dim1id - 1]
 
       # Read from the compacted dense Jacobian (efc_J_in) using the mapped compacted DOFs
@@ -2756,6 +2773,8 @@ def _update_gradient_JTCJ_compact(
           dm_fri12 = dm_fri1 * mu
         else:
           efcid2 = contact_efc_address_in[conid, dim2id]
+          if efcid2 < 0:
+            continue
           dm_fri12 = dm_fri1 * fri[dim2id - 1]
 
         # Read from the compacted dense Jacobian using the mapped compacted DOFs
@@ -2841,6 +2860,8 @@ def _update_gradient_JTCJ_dense(
       continue
 
     efcid0 = contact_efc_address_in[conid, 0]
+    if efcid0 < 0:
+      continue
     if efc_state_in[worldid, efcid0] != types.ConstraintState.CONE:
       continue
 
@@ -2859,7 +2880,10 @@ def _update_gradient_JTCJ_dense(
     tt = float(0.0)
     for j in range(1, condim):
       efcidj = contact_efc_address_in[conid, j]
-      uj = ctx_Jaref_in[worldid, efcidj] * fri[j - 1]
+      if efcidj >= 0:
+        uj = ctx_Jaref_in[worldid, efcidj] * fri[j - 1]
+      else:
+        uj = 0.0
       tt += uj * uj
       u[j] = uj
 
@@ -2877,6 +2901,8 @@ def _update_gradient_JTCJ_dense(
         efcid1 = efcid0
       else:
         efcid1 = contact_efc_address_in[conid, dim1id]
+        if efcid1 < 0:
+          continue
 
       efc_J11 = efc_J_in[worldid, efcid1, dof1id]
       efc_J12 = efc_J_in[worldid, efcid1, dof2id]
@@ -2888,6 +2914,8 @@ def _update_gradient_JTCJ_dense(
           efcid2 = efcid0
         else:
           efcid2 = contact_efc_address_in[conid, dim2id]
+          if efcid2 < 0:
+            continue
 
         efc_J21 = efc_J_in[worldid, efcid2, dof1id]
         efc_J22 = efc_J_in[worldid, efcid2, dof2id]
@@ -3188,7 +3216,8 @@ def _update_gradient(m: types.Model, d: types.Data, ctx: SolverContext):
       # we don't over-launch naconmax (capacity) threads when active contacts are far fewer. The
       # sparse kernel uses one thread per (contact, support-pair) (jtcj_max_pairs), the dense one
       # per (contact, dof-pair) (dof_tri_row.size).
-      jtcj_second_dim = m.jtcj_max_pairs if (m.is_sparse or m.opt.nv_compact) else m.dof_tri_row.size
+      is_sparse_compact = (d.nvmax < m.nv) and (d.efc.J_colind.shape[1] > 0)
+      jtcj_second_dim = m.jtcj_max_pairs if (m.is_sparse or is_sparse_compact) else m.dof_tri_row.size
       if wp.get_device().is_cuda:
         sm_count = wp.get_device().sm_count
 
@@ -3231,7 +3260,7 @@ def _update_gradient(m: types.Model, d: types.Data, ctx: SolverContext):
           outputs=[ctx.h],
         )
       else:
-        if m.opt.nv_compact:
+        if is_sparse_compact:
           wp.launch(
             _update_gradient_JTCJ_compact,
             dim=(dim_block, m.jtcj_max_pairs),
@@ -3717,6 +3746,12 @@ def init_context(m: types.Model, d: types.Data, ctx: SolverContext | InverseCont
 
 @event_scope
 def solve(m: types.Model, d: types.Data):
+  if d.nvmax < m.nv:
+    nvmax.solve_compact(m, d, nvmax.get_context(m, d))
+    if m.ntree > 1:
+      island.compute_island_mapping(m, d, None)
+    return
+
   if d.njmax == 0 or m.nv == 0:
     wp.copy(d.qacc, d.qacc_smooth)
     d.solver_niter.fill_(0)

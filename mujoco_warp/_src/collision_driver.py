@@ -625,7 +625,9 @@ def sap_broadphase(m: Model, d: Data, ctx: CollisionContext, skip: Optional[wp.a
   """
   nworldgeom = d.nworld * m.ngeom
   skip_in = skip if skip is not None else wp.ones(1, dtype=int)
-  enable_sleep = bool(m.opt.enableflags & EnableBit.SLEEP)
+  enable_sleep = (d.nvmax < m.nv) or bool(
+    not (m.opt.disableflags & DisableBit.ISLAND) and (m.opt.enableflags & EnableBit.SLEEP)
+  )
 
   # TODO(team): direction
 
@@ -719,7 +721,6 @@ def _nxn_broadphase(
   ngeom_margin: int,
   ngeom_gap: int,
   enable_sleep: bool = False,
-  nv_compact: bool = False,
 ):
   @wp.kernel(module="unique", enable_backward=False)
   def kernel(
@@ -737,7 +738,6 @@ def _nxn_broadphase(
     geom_xpos_in: wp.array2d[wp.vec3],
     geom_xmat_in: wp.array2d[wp.mat33],
     body_awake_in: wp.array2d[int],
-    tree_active_in: wp.array2d[bool],
     naconmax_in: int,
     # In:
     skip_in: wp.array[int],
@@ -757,17 +757,6 @@ def _nxn_broadphase(
     geom = nxn_geom_pair[elementid]
     geom1 = geom[0]
     geom2 = geom[1]
-
-    # nv_compact: skip pairs where both bodies are asleep. Neither moves, so no new contact
-    # is possible and any resting contact is moot (both frozen). A moving body contacting a
-    # sleeper is a pair with one active tree, so it is kept and wakes the sleeper.
-    if wp.static(nv_compact):
-      t1 = body_treeid[geom_bodyid[geom1]]
-      t2 = body_treeid[geom_bodyid[geom2]]
-      a1 = t1 >= 0 and tree_active_in[worldid, t1]
-      a2 = t2 >= 0 and tree_active_in[worldid, t2]
-      if not (a1 or a2):
-        return
 
     if wp.static(enable_sleep):
       b1 = geom_bodyid[geom1]
@@ -816,7 +805,9 @@ def nxn_broadphase(m: Model, d: Data, ctx: CollisionContext, skip: Optional[wp.a
   The initial list of pairs is filtered at model creation time to exclude pairs based on
   `contype`/`conaffinity`, parent-child relationships, and explicit `<exclude>` tags.
   """
-  enable_sleep = bool(m.opt.enableflags & EnableBit.SLEEP)
+  enable_sleep = (d.nvmax < m.nv) or bool(
+    not (m.opt.disableflags & DisableBit.ISLAND) and (m.opt.enableflags & EnableBit.SLEEP)
+  )
   skip_in = skip if skip is not None else wp.ones(1, dtype=int)
   wp.launch(
     _nxn_broadphase(
@@ -826,7 +817,6 @@ def nxn_broadphase(m: Model, d: Data, ctx: CollisionContext, skip: Optional[wp.a
       m.geom_margin.shape[0],
       m.geom_gap.shape[0],
       enable_sleep,
-      m.opt.nv_compact,
     ),
     dim=(d.nworld, m.nxn_geom_pair_filtered.shape[0]),
     inputs=[
@@ -842,7 +832,6 @@ def nxn_broadphase(m: Model, d: Data, ctx: CollisionContext, skip: Optional[wp.a
       d.geom_xpos,
       d.geom_xmat,
       d.body_awake,
-      d.tree_active,
       d.naconmax,
       skip_in,
     ],
@@ -900,7 +889,9 @@ def collision(m: Model, d: Data, skip: Optional[wp.array] = None):
   # TODO(team): create context outside collision?
   ctx = create_collision_context(d.naconmax)
   skip_in = skip if skip is not None else wp.ones(1, dtype=int)
-  enable_sleep = bool(m.opt.enableflags & EnableBit.SLEEP)
+  enable_sleep = (d.nvmax < m.nv) or bool(
+    not (m.opt.disableflags & DisableBit.ISLAND) and (m.opt.enableflags & EnableBit.SLEEP)
+  )
 
   # zero counters
   wp.launch(_zero_nacon_ncollision(enable_sleep), dim=1, inputs=[skip_in], outputs=[d.nacon, d.ncollision])
