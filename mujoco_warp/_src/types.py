@@ -20,8 +20,6 @@ import mujoco
 import numpy as np
 import warp as wp
 
-from mujoco_warp._src.util_pkg import check_version
-
 MJ_MINVAL = mujoco.mjMINVAL
 MJ_MAXVAL = mujoco.mjMAXVAL
 MJ_MINIMP = mujoco.mjMINIMP  # minimum constraint impedance
@@ -29,8 +27,6 @@ MJ_MAXIMP = mujoco.mjMAXIMP  # maximum constraint impedance
 MJ_MAXCONPAIR = mujoco.mjMAXCONPAIR
 MJ_MINMU = mujoco.mjMINMU  # minimum friction
 MJ_MINAWAKE = mujoco.mjMINAWAKE  # minimum number of timesteps before sleeping
-NEW_GAP_SEMANTICS = check_version("mujoco>=3.9.0.dev914519929")
-TACTILE_DEPTH_SEMANTICS = check_version("mujoco>=3.9.0.dev921980899")
 # maximum size (by number of edges) of an horizon in EPA algorithm
 MJ_MAX_EPAHORIZON = 24
 # maximum average number of trianglarfaces EPA can insert at each iteration
@@ -951,6 +947,7 @@ class Model:
     nflexbending: number of bending parameters in all flexes
     nflexelemedge: number of element edge ids in all flexes
     nflexshelldata: number of shell fragment vertex ids in all flexes
+    nflexevpair: number of element-vertex pairs in all flexes
     nJfe: number of non-zeros in sparse flexedge Jacobian
     nmesh: number of meshes
     nmeshvert: number of vertices for all meshes
@@ -1105,6 +1102,8 @@ class Model:
     flex_friction: friction for (slide, spin, roll)          (nflex, 3)
     flex_margin: detect contact if dist<margin               (nflex,)
     flex_gap: include in solver if dist<margin-gap           (nflex,)
+    flex_internal: internal collision enabled                (nflex,)
+    flex_selfcollide: self-collision mode                    (nflex,)
     flex_dim: 1: lines, 2: triangles, 3: tetrahedra          (nflex,)
     flex_vertadr: first vertex address                       (nflex,)
     flex_vertnum: number of vertices                         (nflex,)
@@ -1118,12 +1117,15 @@ class Model:
     flex_bendingadr: first bending data address              (nflex,)
     flex_shellnum: number of shells                          (nflex,)
     flex_shelldataadr: first shell data address              (nflex,)
+    flex_evpairadr: first element-vertex pair address        (nflex,)
+    flex_evpairnum: number of element-vertex pairs           (nflex,)
     flex_vertbodyid: vertex body ids                         (nflexvert,)
     flex_edge: edge vertex ids (2 per edge)                  (nflexedge, 2)
     flex_edgeflap: adjacent vertex ids (dim=2 only)          (nflexedge, 2)
     flex_elem: element vertex ids (dim+1 per elem)           (nflexelemdata,)
     flex_elemedge: element edge ids                          (nflexelemedge,)
     flex_shell: shell fragment vertex ids (dim per frag)     (nflexshelldata,)
+    flex_evpair: element-vertex pair indices                 (nflexevpair, 2)
     flex_vert: vertex local positions                        (nflexvert, 3)
     flexedge_length0: edge lengths in qpos0                  (nflexedge,)
     flexedge_invweight0: inv. inertia for the edge           (nflexedge,)
@@ -1280,6 +1282,8 @@ class Model:
     is_sparse: whether to use sparse representations
     has_fluid: True if wind, density, or viscosity are non-zero at put_model time
     has_sdf_geom: whether the model contains SDF geoms
+    has_flex_selfcollide: whether any flex has self-collision enabled
+    max_flex_dim: maximum flex dimension in the model
     block_dim: block dim options
     body_tree: list of body ids by tree level
     body_branches: flattened body ids for all branches
@@ -1387,6 +1391,7 @@ class Model:
   nflexbending: int
   nflexelemedge: int
   nflexshelldata: int
+  nflexevpair: int
   nJfe: int
   nmesh: int
   nmeshvert: int
@@ -1541,6 +1546,8 @@ class Model:
   flex_friction: array("nflex", wp.vec3)
   flex_margin: array("nflex", float)
   flex_gap: array("nflex", float)
+  flex_internal: array("nflex", int)
+  flex_selfcollide: array("nflex", int)
   flex_dim: array("nflex", int)
   flex_vertadr: array("nflex", int)
   flex_vertnum: array("nflex", int)
@@ -1554,12 +1561,15 @@ class Model:
   flex_bendingadr: array("nflex", int)
   flex_shellnum: array("nflex", int)
   flex_shelldataadr: array("nflex", int)
+  flex_evpairadr: array("nflex", int)
+  flex_evpairnum: array("nflex", int)
   flex_vertbodyid: array("nflexvert", int)
   flex_edge: array("nflexedge", wp.vec2i)
   flex_edgeflap: array("nflexedge", wp.vec2i)
   flex_elem: array("nflexelemdata", int)
   flex_elemedge: array("nflexelemedge", int)
   flex_shell: array("nflexshelldata", int)
+  flex_evpair: array("nflexevpair", wp.vec2i)
   flex_vert: array("nflexvert", wp.vec3)
   flexedge_length0: array("nflexedge", float)
   flexedge_invweight0: array("nflexedge", float)
@@ -1714,6 +1724,8 @@ class Model:
   is_sparse: bool
   has_fluid: bool
   has_sdf_geom: bool
+  has_flex_selfcollide: bool
+  max_flex_dim: int
   block_dim: BlockDim
   body_tree: tuple[wp.array[int], ...]
   body_branches: wp.array[int]
@@ -1819,6 +1831,7 @@ class Contact:
     dim: contact space dimensionality: 1, 3, 4 or 6                  (naconmax,)
     geom: geom ids; -1 for flex                                      (naconmax, 2)
     flex: flex ids; -1 for geom                                      (naconmax, 2)
+    elem: element ids; -1 for geom or flex vertex                    (naconmax, 2)
     vert: vertex ids for flex/mesh contact                           (naconmax, 2)
     efc_address: address in efc; -1: not included                    (naconmax, nmaxpyramid)
     worldid: world id                                                (naconmax,)
@@ -1839,6 +1852,7 @@ class Contact:
   dim: array("naconmax", int)
   geom: array("naconmax", wp.vec2i)
   flex: array("naconmax", wp.vec2i)
+  elem: array("naconmax", wp.vec2i)
   vert: array("naconmax", wp.vec2i)
   efc_address: array("naconmax", "nmaxpyramid", int)
   worldid: array("naconmax", int)

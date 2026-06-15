@@ -29,7 +29,6 @@ from mujoco_warp._src import io
 from mujoco_warp._src import island
 from mujoco_warp._src import solver
 from mujoco_warp._src import types
-from mujoco_warp._src.util_pkg import check_version
 
 # tolerance for difference between MuJoCo and MJWarp solver calculations - mostly
 # due to float precision
@@ -466,14 +465,9 @@ class SolverTest(parameterized.TestCase):
     M0 = np.zeros((mjm0.nv, mjm0.nv))
     M1 = np.zeros((mjm1.nv, mjm1.nv))
     M2 = np.zeros((mjm2.nv, mjm2.nv))
-    if check_version("mujoco>=3.8.1.dev910242375"):
-      mujoco.mju_sym2dense(M0, mjd0.M, mjm0.M_rownnz, mjm0.M_rowadr, mjm0.M_colind)
-      mujoco.mju_sym2dense(M1, mjd1.M, mjm1.M_rownnz, mjm1.M_rowadr, mjm1.M_colind)
-      mujoco.mju_sym2dense(M2, mjd2.M, mjm2.M_rownnz, mjm2.M_rowadr, mjm2.M_colind)
-    else:
-      mujoco.mj_fullM(mjm0, M0, mjd0.qM)
-      mujoco.mj_fullM(mjm1, M1, mjd1.qM)
-      mujoco.mj_fullM(mjm2, M2, mjd2.qM)
+    mujoco.mju_sym2dense(M0, mjd0.M, mjm0.M_rownnz, mjm0.M_rowadr, mjm0.M_colind)
+    mujoco.mju_sym2dense(M1, mjd1.M, mjm1.M_rownnz, mjm1.M_rowadr, mjm1.M_colind)
+    mujoco.mju_sym2dense(M2, mjd2.M, mjm2.M_rownnz, mjm2.M_rowadr, mjm2.M_colind)
 
     M = np.vstack(
       [
