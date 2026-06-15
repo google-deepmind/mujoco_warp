@@ -25,8 +25,6 @@ import mujoco_warp as mjw
 from mujoco_warp import ConeType
 from mujoco_warp import DisableBit
 from mujoco_warp import test_data
-from mujoco_warp._src.types import NEW_GAP_SEMANTICS
-from mujoco_warp._src.util_pkg import check_version
 
 # tolerance for difference between MuJoCo and MJWarp smooth calculations - mostly
 # due to float precision
@@ -195,16 +193,10 @@ class SmoothTest(parameterized.TestCase):
     _assert_eq(d.crb.numpy()[0], mjd.crb, "crb")
 
     if jacobian == mujoco.mjtJacobian.mjJAC_SPARSE:
-      if check_version("mujoco>=3.8.1.dev910242375"):
-        _assert_eq(d.M.numpy()[0, 0], mjd.M, "M")
-      else:
-        _assert_eq(d.M.numpy()[0, 0], mjd.qM[mjm.mapM2M], "M")
+      _assert_eq(d.M.numpy()[0, 0], mjd.M, "M")
     else:
       M = np.zeros((mjm.nv, mjm.nv))
-      if check_version("mujoco>=3.8.1.dev910242375"):
-        mujoco.mju_sym2dense(M, mjd.M, mjm.M_rownnz, mjm.M_rowadr, mjm.M_colind)
-      else:
-        mujoco.mj_fullM(mjm, M, mjd.qM)
+      mujoco.mju_sym2dense(M, mjd.M, mjm.M_rownnz, mjm.M_rowadr, mjm.M_colind)
       _assert_eq(d.M.numpy()[0, : mjm.nv, : mjm.nv], M, "M")
 
   @parameterized.parameters(mujoco.mjtJacobian.mjJAC_SPARSE, mujoco.mjtJacobian.mjJAC_DENSE)
@@ -215,10 +207,7 @@ class SmoothTest(parameterized.TestCase):
     d.qLDiagInv.fill_(wp.inf)
     if jacobian == mujoco.mjtJacobian.mjJAC_DENSE:
       qM = np.zeros((mjm.nv, mjm.nv))
-      if check_version("mujoco>=3.8.1.dev910242375"):
-        mujoco.mju_sym2dense(qM, mjd.M, mjm.M_rownnz, mjm.M_rowadr, mjm.M_colind)
-      else:
-        mujoco.mj_fullM(mjm, qM, mjd.qM)
+      mujoco.mju_sym2dense(qM, mjd.M, mjm.M_rownnz, mjm.M_rowadr, mjm.M_colind)
       qLD = np.linalg.cholesky(qM).T
       wp_qLD = qLD.copy()
       wp_qLD[wp_qLD != 0.0] = np.inf
@@ -380,8 +369,6 @@ class SmoothTest(parameterized.TestCase):
   )
   def test_actuator_adhesion(self, keyframe, cone, jacobian):
     """Tests adhesion actuator."""
-    if not NEW_GAP_SEMANTICS:
-      self.skipTest("Skipping due to new gap semantics")
     mjm, mjd, m, d = test_data.fixture(
       "actuation/adhesion.xml", keyframe=keyframe, overrides={"opt.cone": cone, "opt.jacobian": jacobian}
     )
@@ -488,10 +475,7 @@ class SmoothTest(parameterized.TestCase):
     )
 
     qM = np.zeros((mjm.nv, mjm.nv))
-    if check_version("mujoco>=3.8.1.dev910242375"):
-      mujoco.mju_sym2dense(qM, mjd.M, mjm.M_rownnz, mjm.M_rowadr, mjm.M_colind)
-    else:
-      mujoco.mj_fullM(mjm, qM, mjd.qM)
+    mujoco.mju_sym2dense(qM, mjd.M, mjm.M_rownnz, mjm.M_rowadr, mjm.M_colind)
 
     sparse = jacobian == mujoco.mjtJacobian.mjJAC_SPARSE
 
@@ -587,16 +571,10 @@ class SmoothTest(parameterized.TestCase):
     mjw._src.smooth.tendon_armature(m, d)
 
     if jacobian == mujoco.mjtJacobian.mjJAC_SPARSE:
-      if check_version("mujoco>=3.8.1.dev910242375"):
-        _assert_eq(d.M.numpy()[0, 0], mjd.M, "M")
-      else:
-        _assert_eq(d.M.numpy()[0, 0], mjd.qM[mjm.mapM2M], "M")
+      _assert_eq(d.M.numpy()[0, 0], mjd.M, "M")
     else:
       M = np.zeros((mjm.nv, mjm.nv))
-      if check_version("mujoco>=3.8.1.dev910242375"):
-        mujoco.mju_sym2dense(M, mjd.M, mjm.M_rownnz, mjm.M_rowadr, mjm.M_colind)
-      else:
-        mujoco.mj_fullM(mjm, M, mjd.qM)
+      mujoco.mju_sym2dense(M, mjd.M, mjm.M_rownnz, mjm.M_rowadr, mjm.M_colind)
       _assert_eq(d.M.numpy()[0, : mjm.nv, : mjm.nv], M, "M")
 
     # qfrc_bias

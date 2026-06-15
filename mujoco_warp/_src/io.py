@@ -31,7 +31,6 @@ from mujoco_warp._src.types import MJ_MINVAL
 from mujoco_warp._src.types import BiasType
 from mujoco_warp._src.types import TrnType
 from mujoco_warp._src.types import vec10
-from mujoco_warp._src.util_pkg import check_version
 
 # TODO(team): remove after improving island solver performance
 ENABLE_ISLANDS = False
@@ -781,14 +780,6 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
   m.flexedge_J_rowadr = mjm.flexedge_J_rowadr
   m.flexedge_J_colind = mjm.flexedge_J_colind.reshape(-1)
 
-  # flex_bendingadr backward compat: flatten old (nflexedge, 17) to 1D
-  if not check_version("mujoco>=3.8.1.dev909088123"):
-    m.flex_bendingadr = (
-      np.array([mjm.flex_edgeadr[i] * 17 for i in range(mjm.nflex)], dtype=int) if mjm.nflex else np.zeros(0, dtype=int)
-    )
-    m.flex_bending = mjm.flex_bending.ravel()
-    m.nflexbending = len(m.flex_bending)
-
   # place m on device
   sizes = dict({"*": 1}, **{f.name: getattr(m, f.name) for f in dataclasses.fields(types.Model) if f.type is int})
   for f in dataclasses.fields(types.Model):
@@ -1446,19 +1437,12 @@ def put_data(
   d.solver_niter = wp.full((nworld,), mjd.solver_niter[0], dtype=int)
 
   if is_sparse(mjm):
-    if check_version("mujoco>=3.8.1.dev910242375"):
-      d.M = wp.array(np.full((nworld, 1, mjm.nC), mjd.M), dtype=float)
-    else:
-      d.M = wp.array(np.full((nworld, 1, mjm.nC), mjd.qM[mjm.mapM2M]), dtype=float)
+    d.M = wp.array(np.full((nworld, 1, mjm.nC), mjd.M), dtype=float)
     d.qLD = wp.array(np.full((nworld, 1, mjm.nC), mjd.qLD), dtype=float)
   else:
     M = np.zeros((mjm.nv, mjm.nv))
-    if check_version("mujoco>=3.8.1.dev910242375"):
-      mujoco.mju_sym2dense(M, mjd.M, mjm.M_rownnz, mjm.M_rowadr, mjm.M_colind)
-      qLD = np.linalg.cholesky(M).T if (mjd.M != 0.0).any() and (mjd.qLD != 0.0).any() else np.zeros((mjm.nv, mjm.nv))
-    else:
-      mujoco.mj_fullM(mjm, M, mjd.qM)
-      qLD = np.linalg.cholesky(M).T if (mjd.qM != 0.0).any() and (mjd.qLD != 0.0).any() else np.zeros((mjm.nv, mjm.nv))
+    mujoco.mju_sym2dense(M, mjd.M, mjm.M_rownnz, mjm.M_rowadr, mjm.M_colind)
+    qLD = np.linalg.cholesky(M).T if (mjd.M != 0.0).any() and (mjd.qLD != 0.0).any() else np.zeros((mjm.nv, mjm.nv))
     padding = sizes["nv_pad"] - mjm.nv
     M_padded = np.pad(M, ((0, padding), (0, padding)), mode="constant", constant_values=0.0)
     d.M = wp.array(np.full((nworld, sizes["nv_pad"], sizes["nv_pad"]), M_padded), dtype=float)
@@ -1615,27 +1599,15 @@ def get_data_into(
   result.contact.efc_address[:ncon] = contact_efc_address_ordered[:ncon]
 
   if is_sparse(mjm):
-    if check_version("mujoco>=3.8.1.dev910242375"):
-      result.M[:] = d.M.numpy()[world_id, 0]
-    else:
-      result.qM[mjm.mapM2M] = d.M.numpy()[world_id, 0]
+    result.M[:] = d.M.numpy()[world_id, 0]
     result.qLD[:] = d.qLD.numpy()[world_id, 0]
   else:
     M = d.M.numpy()[world_id]
-    if check_version("mujoco>=3.8.1.dev910242375"):
-      for i in range(mjm.nv):
-        adr = mjm.M_rowadr[i]
-        for k in range(mjm.M_rownnz[i]):
-          col = mjm.M_colind[adr + k]
-          result.M[adr + k] = M[i, col]
-    else:
-      adr = 0
-      for i in range(mjm.nv):
-        j = i
-        while j >= 0:
-          result.qM[adr] = M[i, j]
-          j = mjm.dof_parentid[j]
-          adr += 1
+    for i in range(mjm.nv):
+      adr = mjm.M_rowadr[i]
+      for k in range(mjm.M_rownnz[i]):
+        col = mjm.M_colind[adr + k]
+        result.M[adr + k] = M[i, col]
     mujoco.mj_factorM(mjm, result)
 
   if nefc > 0:
