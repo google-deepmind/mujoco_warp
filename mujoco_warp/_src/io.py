@@ -42,6 +42,44 @@ def _is_array_spec(typ) -> bool:
   return isinstance(typ, wp.array) or type(typ).__name__ == "_ArrayAnnotation"
 
 
+def _is_batched_array_spec(spec) -> bool:
+  spec_shape = getattr(spec, "shape", (0,))
+  return bool(spec_shape) and spec_shape[0] == "*"
+
+
+def _array_data_shape(shape: tuple[int, ...], dtype) -> tuple[int, ...]:
+  return shape + tuple(getattr(dtype, "_shape_", ()) or ())
+
+
+def _broadcast_batch_data(data: Any, shape: tuple[int, ...], dtype) -> np.ndarray:
+  """Broadcasts host data to a requested leading batch dimension."""
+  data = np.array(data)
+  target_shape = _array_data_shape(shape, dtype)
+
+  if data.shape == target_shape:
+    return data
+
+  tail_shape = target_shape[1:]
+  if data.shape != tail_shape and data.size == np.prod(tail_shape):
+    data = data.reshape(tail_shape)
+  return np.broadcast_to(data, target_shape).copy()
+
+
+def _validate_model_batch_sizes(batch_sizes: dict[str, int] | None) -> dict[str, int]:
+  if batch_sizes is None:
+    return {}
+
+  model_fields = {f.name: f for f in dataclasses.fields(types.Model) if _is_array_spec(f.type)}
+  for field_name, batch_size in batch_sizes.items():
+    field = model_fields.get(field_name)
+    if field is None or not _is_batched_array_spec(field.type):
+      raise ValueError(f"Model field {field_name!r} is not a batched array field.")
+    if batch_size < 1:
+      raise ValueError(f"batch_sizes[{field_name!r}] must be positive, got {batch_size}.")
+
+  return batch_sizes
+
+
 def _create_array(data: Any, spec, sizes: dict[str, int]) -> wp.array | None:
   """Creates a warp array and populates it with data.
 
@@ -57,13 +95,16 @@ def _create_array(data: Any, spec, sizes: dict[str, int]) -> wp.array | None:
   elif data is None:
     array = wp.zeros(shape, dtype=spec.dtype)
   else:
+    if _is_batched_array_spec(spec) and shape[0] != 1:
+      data = _broadcast_batch_data(data, shape, spec.dtype)
     array = wp.array(np.array(data), dtype=spec.dtype, shape=shape)
 
-  if spec_shape and spec_shape[0] == "*":
+  if _is_batched_array_spec(spec):
     # add private attribute for JAX to determine which fields are batched
     array._is_batched = True
-    # also set stride 0 to 0 which is expected legacy behavior (but is deprecated)
-    array.strides = (0,) + array.strides[1:]
+    if array.shape[0] == 1:
+      # also set stride 0 to 0 which is expected legacy behavior (but is deprecated)
+      array.strides = (0,) + array.strides[1:]
   return array
 
 
@@ -132,17 +173,21 @@ def is_sparse(mjm: mujoco.MjModel) -> bool:
     return bool(mujoco.mj_isSparse(mjm))
 
 
-def put_model(mjm: mujoco.MjModel) -> types.Model:
+def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) -> types.Model:
   """Creates a model on device.
 
   Args:
     mjm: The model containing kinematic and dynamic information (host).
+    batch_sizes: Optional per-field leading batch sizes for `Model` fields whose
+      array spec starts with `*`. Fields not listed here keep the default shared
+      leading dimension of 1.
 
   Returns:
     The model containing kinematic and dynamic information (device).
   """
   # check for compatible cuda toolkit and driver versions
   warp_util.check_toolkit_driver()
+  batch_sizes = _validate_model_batch_sizes(batch_sizes)
 
   # model: check supported features in array types
   for field, field_type, mj_type in (
@@ -793,7 +838,11 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
   sizes = dict({"*": 1}, **{f.name: getattr(m, f.name) for f in dataclasses.fields(types.Model) if f.type is int})
   for f in dataclasses.fields(types.Model):
     if _is_array_spec(f.type):
-      setattr(m, f.name, _create_array(getattr(m, f.name), f.type, sizes))
+      field_sizes = sizes
+      if f.name in batch_sizes:
+        field_sizes = dict(sizes)
+        field_sizes["*"] = batch_sizes[f.name]
+      setattr(m, f.name, _create_array(getattr(m, f.name), f.type, field_sizes))
 
   return m
 
