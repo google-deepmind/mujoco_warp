@@ -29,7 +29,6 @@ from mujoco_warp import EnableBit
 from mujoco_warp import GainType
 from mujoco_warp import IntegratorType
 from mujoco_warp import test_data
-from mujoco_warp._src.util_pkg import check_version
 
 # tolerance for difference between MuJoCo and mjwarp smooth calculations - mostly
 # due to float precision
@@ -438,10 +437,7 @@ class ForwardTest(parameterized.TestCase):
         d_arr = d_arr.reshape(-1)
       elif arr == "M":
         mjd_arr = np.zeros((mjm.nv, mjm.nv))
-        if check_version("mujoco>=3.8.1.dev910242375"):
-          mujoco.mju_sym2dense(mjd_arr, mjd.M, mjm.M_rownnz, mjm.M_rowadr, mjm.M_colind)
-        else:
-          mujoco.mj_fullM(mjm, mjd_arr, mjd.qM)
+        mujoco.mju_sym2dense(mjd_arr, mjd.M, mjm.M_rownnz, mjm.M_rowadr, mjm.M_colind)
         d_arr = d_arr[: mjm.nv, : mjm.nv]
       elif arr == "actuator_moment":
         actuator_moment = np.zeros((mjm.nu, mjm.nv))

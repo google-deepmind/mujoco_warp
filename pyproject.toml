@@ -29,7 +29,7 @@ requires-python = ">=3.10"
 dependencies = [
     "absl-py",
     "etils[epath]",
-    "mujoco>=3.8.0",
+    "mujoco>=3.9.0",
     "numpy",
     "warp-lang>=1.13",
 ]

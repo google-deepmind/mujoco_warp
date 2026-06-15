@@ -26,7 +26,6 @@ from absl.testing import parameterized
 import mujoco_warp as mjw
 from mujoco_warp import ConeType
 from mujoco_warp import test_data
-from mujoco_warp._src.types import NEW_GAP_SEMANTICS
 
 # tolerance for difference between MuJoCo and MJWarp constraint calculations,
 # mostly due to float precision
@@ -277,9 +276,9 @@ class ConstraintTest(parameterized.TestCase):
     xml = f"""
       <mujoco>
         <worldbody>
-          <geom type="plane" size="10 10 .001" margin="{0.1 if NEW_GAP_SEMANTICS else 0.5}" gap="0.4"/>
+          <geom type="plane" size="10 10 .001" margin="0.1" gap="0.4"/>
           <body pos="0 0 0.35">
-            <geom type="sphere" size=".1" margin="{0.1 if NEW_GAP_SEMANTICS else 0.5}" gap="0.4"/>
+            <geom type="sphere" size=".1" margin="0.1" gap="0.4"/>
             <freejoint/>
           </body>
         </worldbody>
