@@ -3175,12 +3175,12 @@ def create_render_context(
   # Locate skybox texture
   skybox_tex_ids = np.nonzero(mjm.tex_type == mujoco.mjtTexture.mjTEXTURE_SKYBOX)[0] if mjm.ntex else np.array([], dtype=int)
   if render_skybox and skybox_tex_ids.size > 0:
-    skybox_tex_id = int(skybox_tex_ids[0])
-    skybox_face_width = int(mjm.tex_width[skybox_tex_id])
+    skybox_tex_id_np = np.array([skybox_tex_ids[0]], dtype=int)
+    skybox_face_width_np = np.array([mjm.tex_width[skybox_tex_ids[0]]], dtype=int)
   else:
     render_skybox = False
-    skybox_tex_id = -1
-    skybox_face_width = 1
+    skybox_tex_id_np = np.array([-1], dtype=int)
+    skybox_face_width_np = np.array([1], dtype=int)
 
   # Filter active cameras
   if cam_active is not None:
@@ -3299,8 +3299,8 @@ def create_render_context(
     ),
     use_precomputed_rays=use_precomputed_rays,
     render_skybox=render_skybox,
-    skybox_tex_id=skybox_tex_id,
-    skybox_face_width=skybox_face_width,
+    skybox_tex_id=wp.array(skybox_tex_id_np, dtype=int),
+    skybox_face_width=wp.array(skybox_face_width_np, dtype=int),
     headlight_active=bool(mjm.vis.headlight.active),
     headlight_ambient=wp.vec3(mjm.vis.headlight.ambient),
     headlight_diffuse=wp.vec3(mjm.vis.headlight.diffuse),

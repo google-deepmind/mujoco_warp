@@ -2308,9 +2308,9 @@ class RenderContext:
     render_seg: per-camera segmentation render flags
     znear: near plane distance
     total_rays: total number of rays
-    render_skybox: whether to shade missed rays with the MuJoCo skybox texture
-    skybox_tex_id: index into textures of the skybox (MuJoCo tex_type == SKYBOX), -1 if none
-    skybox_face_width: pixel width of one skybox cube face (0 if no skybox)
+    render_skybox: whether to shade missed rays with a MuJoCo skybox texture
+    skybox_tex_id: per-world indices into textures of the skybox
+    skybox_face_width: per-world pixel widths of the skybox cube face
     headlight_active: whether to inject MuJoCo's vis.headlight as a synthetic
       directional light at the active camera. Read from `mjm.vis.headlight.active`
       at context creation; users disable the headlight by configuring it on the
@@ -2356,8 +2356,8 @@ class RenderContext:
   background_color: wp.uint32
   use_precomputed_rays: bool
   render_skybox: bool
-  skybox_tex_id: int
-  skybox_face_width: int
+  skybox_tex_id: array("*", int)
+  skybox_face_width: array("*", int)
   headlight_active: bool
   headlight_ambient: wp.vec3
   headlight_diffuse: wp.vec3
