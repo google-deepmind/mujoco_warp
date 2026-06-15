@@ -621,6 +621,8 @@ def render(m: Model, d: Data, rc: RenderContext):
     flex_rgba: wp.array[wp.vec4],
     flex_geom_flexid: wp.array[int],
     flex_geom_edgeid: wp.array[int],
+    skybox_tex_id: wp.array[int],
+    skybox_face_width: wp.array[int],
     textures: wp.array[wp.Texture2D],
     # Out:
     rgb_out: wp.array2d[wp.uint32],
@@ -709,9 +711,10 @@ def render(m: Model, d: Data, rc: RenderContext):
     # Early Out
     if geom_id == -1:
       if wp.static(rc.render_skybox) and render_rgb[camid]:
+        skybox_id = skybox_tex_id[worldid % skybox_tex_id.shape[0]]
         skybox_color = sample_skybox(
-          textures[wp.static(rc.skybox_tex_id)],
-          wp.static(1.0 / float(rc.skybox_face_width)),
+          textures[skybox_id],
+          1.0 / float(skybox_face_width[worldid % skybox_face_width.shape[0]]),
           ray_dir_world,
         )
         rgb_out[worldid, rgb_adr[camid] + rayid_local] = pack_rgba_to_uint32(
@@ -980,6 +983,8 @@ def render(m: Model, d: Data, rc: RenderContext):
       rc.flex_rgba,
       rc.flex_geom_flexid,
       rc.flex_geom_edgeid,
+      rc.skybox_tex_id,
+      rc.skybox_face_width,
       rc.textures,
     ],
     outputs=[
