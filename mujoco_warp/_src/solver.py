@@ -1994,12 +1994,11 @@ def _active_check(tid: int, threshold: int) -> float:
 
 
 @cache_kernel
-def _update_gradient_JTDAJ_dense_tiled(nv_pad: int, tile_size: int, njmax: int, nC: int, block_dim: int):
+def _update_gradient_JTDAJ_dense_tiled(nv_pad: int, tile_size: int, njmax: int, nC: int):
   if njmax < tile_size:
     tile_size = njmax
 
   TILE_SIZE_K = tile_size
-  M_SCATTER_ITERS = (nC + block_dim - 1) // block_dim
 
   @wp.kernel(module="unique", enable_backward=False, module_options={"enable_mathdx_gemm": False})
   def kernel(
@@ -2027,8 +2026,13 @@ def _update_gradient_JTDAJ_dense_tiled(nv_pad: int, tile_size: int, njmax: int, 
     # Densify M's upper triangle from CSR into the shared H tile (Cholesky reads fill_mode="upper").
     # Entry (i, col<=i) of M goes to the upper position (col, i); the lower triangle stays zero.
     m_tile = wp.tile_zeros(shape=(wp.static(nv_pad * nv_pad),), dtype=float, storage="shared")
-    for it in range(M_SCATTER_ITERS):
-      e = it * block_dim + rank
+    # Uniform trip count from the RUNTIME lane count: every lane iterates iters times (so the
+    # collective tile_scatter_add is always called by all lanes -- a divergent range(rank, nC, bd)
+    # deadlocks). wp.block_dim() is 1 on the CPU backend, so lane 0 then covers every entry.
+    lanes = wp.block_dim()
+    iters = (nC + lanes - 1) // lanes
+    for it in range(iters):
+      e = it * lanes + rank
       enable = e < nC
       ec = wp.where(enable, e, 0)
       pos = M_colind[ec] * nv_pad + M_hinit_i[ec]
@@ -2600,9 +2604,7 @@ def _update_gradient(m: types.Model, d: types.Data, ctx: SolverContext):
       )
     else:
       wp.launch_tiled(
-        _update_gradient_JTDAJ_dense_tiled(
-          m.nv_pad, types.TILE_SIZE_JTDAJ_DENSE, d.njmax, m.M_colind.shape[0], m.block_dim.update_gradient_JTDAJ_dense
-        ),
+        _update_gradient_JTDAJ_dense_tiled(m.nv_pad, types.TILE_SIZE_JTDAJ_DENSE, d.njmax, m.M_colind.shape[0]),
         dim=d.nworld,
         inputs=[
           m.M_colind,
