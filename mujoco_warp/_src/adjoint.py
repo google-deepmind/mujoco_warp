@@ -690,11 +690,18 @@ def _solve_hessian_system(m: types.Model, d: types.Data, b, out, H=None):
     out_3d = out.reshape((d.nworld, m.nv_pad, 1))
 
     if use_stored and d.solver_hfactor.shape[1] > 0:
-      # Solve-only using stored Cholesky factor (original H only)
+      # Solve-only using stored Cholesky factor (original H only).
+      # Pass nv_pad (not nv) as the runtime matrix size: the blocked kernels
+      # load tiles at block_size-aligned offsets, so a runtime size that is not
+      # a multiple of the tile size produces unaligned tile loads and an illegal
+      # memory access (CUDA 719). The forward factorization (_padding_h plus
+      # _update_gradient_cholesky_blocked) already pads H to nv_pad with an
+      # identity block and runs the solve at nv_pad, so the stored factor is
+      # nv_pad-wide and the padding rows resolve to zero.
       wp.launch_tiled(
         _adjoint_cholesky_blocked(types.TILE_SIZE_JTDAJ_DENSE, m.nv_pad),
         dim=d.nworld,
-        inputs=[d.solver_hfactor, b_3d, m.nv],
+        inputs=[d.solver_hfactor, b_3d, m.nv_pad],
         outputs=[out_3d],
         block_dim=m.block_dim.update_gradient_cholesky_blocked,
       )
@@ -708,10 +715,13 @@ def _solve_hessian_system(m: types.Model, d: types.Data, b, out, H=None):
           outputs=[H],
         )
       hfactor_tmp = wp.zeros((d.nworld, m.nv_pad, m.nv_pad), dtype=float)
+      # Pass nv_pad (not nv): see the note above on tile alignment. H is padded
+      # to nv_pad with an identity block by _padding_h_adjoint, so factorizing
+      # and solving the full nv_pad system is exact for the leading nv rows.
       wp.launch_tiled(
         _adjoint_cholesky_full_blocked(types.TILE_SIZE_JTDAJ_DENSE, m.nv_pad),
         dim=d.nworld,
-        inputs=[H, b_3d, m.nv, hfactor_tmp],
+        inputs=[H, b_3d, m.nv_pad, hfactor_tmp],
         outputs=[out_3d],
         block_dim=m.block_dim.update_gradient_cholesky_blocked,
       )

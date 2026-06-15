@@ -631,6 +631,7 @@ _CONTACT_TANGENTIAL_XML = """
 </mujoco>
 """
 
+
 def _multi_ball_contact_xml(n_bodies, jacobian="dense"):
   """N independent slide-z balls in contact, each with its own motor.
 
@@ -641,8 +642,7 @@ def _multi_ball_contact_xml(n_bodies, jacobian="dense"):
   for i in range(n_bodies):
     x = 0.5 * i
     bodies.append(
-      f'<body pos="{x} 0 0.05"><joint name="s{i}" type="slide" axis="0 0 1"/>'
-      f'<geom type="sphere" size="0.1" mass="1"/></body>'
+      f'<body pos="{x} 0 0.05"><joint name="s{i}" type="slide" axis="0 0 1"/><geom type="sphere" size="0.1" mass="1"/></body>'
     )
     acts.append(f'<motor joint="s{i}" gear="1"/>')
   return f"""
@@ -650,9 +650,9 @@ def _multi_ball_contact_xml(n_bodies, jacobian="dense"):
     <option gravity="0 0 -9.81" jacobian="{jacobian}" solver="Newton" iterations="30"/>
     <worldbody>
       <geom type="plane" size="50 50 0.01"/>
-      {''.join(bodies)}
+      {"".join(bodies)}
     </worldbody>
-    <actuator>{''.join(acts)}</actuator>
+    <actuator>{"".join(acts)}</actuator>
   </mujoco>
   """
 
@@ -830,6 +830,66 @@ class GradSolverAdjointTest(parameterized.TestCase):
 
     self.assertTrue(np.all(np.isfinite(ad_grad)), f"blocked-Cholesky adjoint produced non-finite gradients: {ad_grad}")
     self.assertGreater(np.linalg.norm(ad_grad), 1e-12, "blocked-Cholesky adjoint produced an all-zero gradient")
+
+
+class BlockedCholeskySolveTest(parameterized.TestCase):
+  """Unit tests for the blocked Cholesky factorize+solve kernel used by the adjoint.
+
+  These exercise the kernel directly with a known SPD matrix so correctness is
+  checked against numpy without the noise of a full step() finite-difference.
+  The key regression is nv that is not a multiple of the tile size: the blocked
+  kernels load tiles at tile-aligned offsets, so passing nv (rather than nv_pad)
+  as the runtime matrix size gives unaligned loads and an illegal memory access.
+  """
+
+  @parameterized.named_parameters(
+    ("nv_33", 33),
+    ("nv_40", 40),
+    ("nv_48", 48),
+    ("nv_64", 64),
+    ("nv_81", 81),
+  )
+  @absltest.skipIf(_REQUIRES_GPU, _REQUIRES_GPU_REASON)
+  def test_full_blocked_solve_matches_numpy(self, nv):
+    from mujoco_warp._src import types as mjw_types
+    from mujoco_warp._src.adjoint import _adjoint_cholesky_full_blocked
+
+    tile = mjw_types.TILE_SIZE_JTDAJ_DENSE
+    nv_pad = ((nv + tile - 1) // tile) * tile
+
+    rng = np.random.default_rng(0)
+    a = rng.standard_normal((nv, nv)).astype(np.float64)
+    h = a @ a.T + nv * np.eye(nv)  # well-conditioned SPD
+    rhs = rng.standard_normal(nv).astype(np.float64)
+    x_ref = np.linalg.solve(h, rhs)
+
+    # Pad to nv_pad with an identity block on the padding diagonal and zero rhs,
+    # mirroring _padding_h_adjoint. The padded system is SPD and its leading nv
+    # entries equal the original solution.
+    h_pad = np.zeros((nv_pad, nv_pad), dtype=np.float32)
+    h_pad[:nv, :nv] = h.astype(np.float32)
+    for i in range(nv, nv_pad):
+      h_pad[i, i] = 1.0
+    b_pad = np.zeros((nv_pad, 1), dtype=np.float32)
+    b_pad[:nv, 0] = rhs.astype(np.float32)
+
+    h_w = wp.array(h_pad.reshape(1, nv_pad, nv_pad), dtype=float)
+    b_w = wp.array(b_pad.reshape(1, nv_pad, 1), dtype=float)
+    out_w = wp.zeros((1, nv_pad, 1), dtype=float)
+    hfactor_tmp = wp.zeros((1, nv_pad, nv_pad), dtype=float)
+
+    wp.launch_tiled(
+      _adjoint_cholesky_full_blocked(tile, nv_pad),
+      dim=1,
+      inputs=[h_w, b_w, nv_pad, hfactor_tmp],
+      outputs=[out_w],
+      block_dim=32,
+    )
+    wp.synchronize()
+
+    x_kernel = out_w.numpy()[0, :nv, 0].astype(np.float64)
+    self.assertTrue(np.all(np.isfinite(x_kernel)), f"blocked solve produced non-finite output at nv={nv}")
+    np.testing.assert_allclose(x_kernel, x_ref, atol=1e-4, rtol=1e-4, err_msg=f"blocked solve mismatch at nv={nv}")
 
 
 class GradUtilTest(absltest.TestCase):
