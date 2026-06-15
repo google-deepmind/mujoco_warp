@@ -43,14 +43,6 @@ def _unpack_rgb(packed):
   return np.stack([r, g, b], axis=-1)
 
 
-def _assert_channel_dominates(testcase, rgb, worldid, channel, other_channel):
-  testcase.assertGreater(
-    float(rgb[worldid, channel]),
-    float(rgb[worldid, other_channel]) + 0.1,
-    f"world {worldid} channel {channel} should dominate",
-  )
-
-
 class RenderTest(parameterized.TestCase):
   @parameterized.parameters(2, 512)
   def test_render(self, nworld: int):
@@ -211,11 +203,11 @@ class RenderTest(parameterized.TestCase):
             rgb1="1 0 0" rgb2="1 0 0"/>
           <texture name="green" type="2d" builtin="flat" width="4" height="4"
             rgb1="0 1 0" rgb2="0 1 0"/>
-          <material name="mat" texture="red" rgba="1 1 1 1" texrepeat="1 1"/>
+          <material name="mat" texture="red" rgba="1 1 1 1"/>
         </asset>
         <worldbody>
           <camera name="cam" pos="0 0 2" xyaxes="1 0 0 0 1 0"/>
-          <geom name="plane" type="plane" size="2 2 0.1" material="mat"/>
+          <geom type="plane" size="2 2 0.1" material="mat"/>
         </worldbody>
       </mujoco>
       """
@@ -227,11 +219,8 @@ class RenderTest(parameterized.TestCase):
 
     red_id = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_TEXTURE, "red")
     green_id = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_TEXTURE, "green")
-    mat_id = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_MATERIAL, "mat")
-    rgb_role = int(mujoco.mjtTextureRole.mjTEXROLE_RGB)
-
     mat_texid = m.mat_texid.numpy()
-    mat_texid[:, mat_id, rgb_role] = [red_id, green_id]
+    mat_texid[:, 0, 1] = [red_id, green_id]
     m.mat_texid.assign(mat_texid)
 
     rc = mjw.create_render_context(
@@ -245,15 +234,20 @@ class RenderTest(parameterized.TestCase):
     )
     mjw.render(m, d, rc)
     rgb = _unpack_rgb(rc.rgb_data.numpy()).reshape(nworld, 16, 16, 3).mean(axis=(1, 2))
-    _assert_channel_dominates(self, rgb, 0, 0, 1)
-    _assert_channel_dominates(self, rgb, 1, 1, 0)
 
-    mat_texid[:, mat_id, rgb_role] = [green_id, red_id]
+    # Assert world 0 is red (channel 0 dominates), world 1 is green (channel 1 dominates)
+    self.assertGreater(rgb[0, 0], rgb[0, 1] + 0.1)
+    self.assertGreater(rgb[1, 1], rgb[1, 0] + 0.1)
+
+    # Swap textures and re-render to verify dynamic updates
+    mat_texid[:, 0, 1] = [green_id, red_id]
     m.mat_texid.assign(mat_texid)
     mjw.render(m, d, rc)
     rgb = _unpack_rgb(rc.rgb_data.numpy()).reshape(nworld, 16, 16, 3).mean(axis=(1, 2))
-    _assert_channel_dominates(self, rgb, 0, 1, 0)
-    _assert_channel_dominates(self, rgb, 1, 0, 1)
+
+    # Assert world 0 is green (channel 1 dominates), world 1 is red (channel 0 dominates)
+    self.assertGreater(rgb[0, 1], rgb[0, 0] + 0.1)
+    self.assertGreater(rgb[1, 0], rgb[1, 1] + 0.1)
 
   def test_disable_ambient_lighting(self):
     xml = """
