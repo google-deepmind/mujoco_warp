@@ -3625,7 +3625,6 @@ def _accumulate_jac_chain(
   ten_J_out: wp.array2d[float],
 ):
   """Walk body chain from bodyid to root, accumulate Jacobian contributions."""
-  ptr = rownnz - 1
   bid = bodyid
   while bid > 0:
     bdofadr = body_dofadr[bid]
@@ -3633,13 +3632,12 @@ def _accumulate_jac_chain(
     # iterate DOFs in this body in descending order
     for k_rev in range(bdofnum):
       dof = bdofadr + bdofnum - 1 - k_rev
-      # scan pointer backward to find matching colind entry
-      while ptr >= 0:
-        sparseid = rowadr + ptr
-        if ten_J_colind[sparseid] <= dof:
-          break
-        ptr -= 1
-      if ptr >= 0 and ten_J_colind[sparseid] == dof:
+      # find the sparse entry matching this dof by scanning the row
+      sparseid = int(-1)
+      for k in range(rownnz):
+        if ten_J_colind[rowadr + k] == dof:
+          sparseid = rowadr + k
+      if sparseid >= 0:
         cdof = cdof_in[worldid, dof]
         cdof_ang = wp.spatial_top(cdof)
         cdof_lin = wp.spatial_bottom(cdof)

@@ -1255,6 +1255,90 @@ class GradFlexTest(parameterized.TestCase):
     self.assertTrue(np.all(np.isfinite(qvel_grad)), "flex backward produced non-finite gradients")
     self.assertGreater(np.linalg.norm(qvel_grad), 1e-12, "flex backward produced an all-zero gradient")
 
+  _SPATIAL_TENDON_XML = """
+<mujoco>
+  <option gravity="0 0 -9.81"/>
+  <worldbody>
+    <site name="anchor" pos="0 0 1"/>
+    <body pos="0.2 0 0.7">
+      <joint name="j0" type="hinge" axis="0 1 0"/>
+      <geom type="capsule" size="0.04" fromto="0 0 0 0 0 -0.3" mass="1"/>
+      <body pos="0 0 -0.3">
+        <joint name="j1" type="hinge" axis="0 1 0"/>
+        <geom type="capsule" size="0.04" fromto="0 0 0 0 0 -0.3" mass="1"/>
+        <site name="tip" pos="0 0 -0.3"/>
+      </body>
+    </body>
+  </worldbody>
+  <tendon>
+    <spatial stiffness="20" damping="2">
+      <site site="anchor"/>
+      <site site="tip"/>
+    </spatial>
+  </tendon>
+  <actuator>
+    <motor joint="j0" gear="1"/>
+    <motor joint="j1" gear="1"/>
+  </actuator>
+  <keyframe>
+    <key qpos="0.4 -0.3" qvel="0.1 -0.05" ctrl="0.2 -0.1"/>
+  </keyframe>
+</mujoco>
+"""
+
+  @absltest.skipIf(_REQUIRES_GPU, _REQUIRES_GPU_REASON)
+  def test_spatial_site_tendon_backward_runs(self):
+    """Backward through a spatial site tendon must not fault and must give finite gradients.
+
+    The _spatial_site_tendon Jacobian walked the body chain with a pointer that decremented
+    across nested loops and read a sparse index defined inside an inner while loop. The
+    autodiff-generated backward kernel faulted with an illegal memory access on that pointer
+    arithmetic. This exercises the full backward pass over a two-link chain spanned by a
+    spatial tendon and checks the gradient matches finite differences.
+    """
+    mjm, mjd, m, d = test_data.fixture(xml=self._SPATIAL_TENDON_XML, keyframe=0)
+    self.assertGreater(mjm.ntendon, 0, "model must contain a tendon")
+    enable_grad(d)
+    mjw.enable_smooth_adjoint(d)
+
+    # Capture the keyframe state before stepping so the FD check evaluates at the same point.
+    qpos0 = wp.clone(d.qpos)
+    qvel0 = wp.clone(d.qvel)
+
+    loss = wp.zeros(1, dtype=float, requires_grad=True)
+    tape = wp.Tape()
+    with tape:
+      mjw.step(m, d)
+      wp.launch(_sum_qpos_kernel, dim=(d.nworld, mjm.nq), inputs=[d.qpos, loss])
+    tape.backward(loss=loss)
+    ad_grad = d.ctrl.grad.numpy()[0, : mjm.nu].copy()
+    tape.zero()
+
+    self.assertTrue(np.all(np.isfinite(ad_grad)), "spatial tendon backward produced non-finite gradients")
+
+    # Finite-difference check on dL/dctrl, evaluated at the same keyframe state.
+    def eval_loss(ctrl_np):
+      d_fd = mjw.make_diff_data(mjm)
+      enable_grad(d_fd)
+      mjw.reset_data(m, d_fd)
+      wp.copy(d_fd.qpos, qpos0)
+      wp.copy(d_fd.qvel, qvel0)
+      d_fd.ctrl = wp.array(ctrl_np.reshape(1, -1), dtype=float)
+      mjw.enable_smooth_adjoint(d_fd)
+      mjw.step(m, d_fd)
+      return float(d_fd.qpos.numpy().sum())
+
+    c0 = mjd.ctrl[: mjm.nu].copy()
+    eps = 1e-4
+    fd_grad = np.zeros(mjm.nu)
+    for i in range(mjm.nu):
+      cp = c0.copy()
+      cp[i] += eps
+      cm = c0.copy()
+      cm[i] -= eps
+      fd_grad[i] = (eval_loss(cp) - eval_loss(cm)) / (2 * eps)
+    np.testing.assert_allclose(ad_grad, fd_grad, atol=1e-3, rtol=1e-3, err_msg="spatial tendon grad mismatch")
+
 
 if __name__ == "__main__":
   absltest.main()
