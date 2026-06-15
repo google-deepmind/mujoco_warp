@@ -470,6 +470,22 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
   if mjm.nv > 500:
     m.block_dim.linesearch_iterative = 512
   m.is_sparse = is_sparse(mjm)
+  # Active-DOF compaction is the default sleeping solver: it pays off only when most DOFs are
+  # asleep, so it's keyed on the SLEEP flag (a dense full solve would otherwise just be slower
+  # than the sparse solver). It's a dense-Newton method, and ENABLE_ISLANDS forces the old
+  # island solver instead. nvmax only sizes the compacted block; it does not toggle compaction.
+  m.is_compact = (
+    mjm.opt.solver == mujoco.mjtSolver.mjSOL_NEWTON
+    and bool(mjm.opt.enableflags & mujoco.mjtEnableBit.mjENBL_SLEEP)
+    and not ENABLE_ISLANDS
+  )
+  # Sleeping is only honored by a sleep-aware solver (compact for Newton, or the island solver
+  # via enable_islands). Reject SLEEP without one rather than silently ignoring it.
+  if bool(mjm.opt.enableflags & mujoco.mjtEnableBit.mjENBL_SLEEP) and not m.is_compact and not ENABLE_ISLANDS:
+    raise ValueError(
+      f"sleeping requires the Newton solver or enable_islands (got solver={types.SolverType(mjm.opt.solver).name})"
+    )
+  m.tree_total_nnz_int = int(sum(int(n) ** 2 for n in mjm.tree_dofnum))
   m.has_fluid = mjm.opt.wind.any() or mjm.opt.density > 0 or mjm.opt.viscosity > 0
 
   m.nflexintcell = _get_nflexintcell(mjm)
