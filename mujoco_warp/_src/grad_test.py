@@ -1212,5 +1212,49 @@ class GradEulerDampStressTest(parameterized.TestCase):
     _assert_step_ctrl_grad(self, xml, loss_on="qpos", err_msg="AD vs FD mismatch for euler damp adjoint")
 
 
+class GradFlexTest(parameterized.TestCase):
+  """Regression tests for differentiating through flex (cloth / soft body) dynamics."""
+
+  _CLOTH_XML = """
+<mujoco>
+  <option gravity="0 0 -9.81" solver="Newton" iterations="10"/>
+  <worldbody>
+    <flexcomp name="cloth" type="grid" count="4 4 1" spacing="0.1 0.1 0.1" pos="0 0 1" dim="2" mass="1">
+      <elasticity young="1e3" poisson="0.3" thickness="0.01"/>
+    </flexcomp>
+  </worldbody>
+</mujoco>
+"""
+
+  @absltest.skipIf(_REQUIRES_GPU, _REQUIRES_GPU_REASON)
+  def test_flex_cloth_backward_runs(self):
+    """Backward through a cloth step must not fault and must give finite gradients.
+
+    The flex force kernels (_flex_vertices, _flex_edges, _flex_elasticity,
+    _flex_bending) scan the flexes to find the one owning each vertex/edge/element.
+    When the owning flex id was left uninitialized the autodiff-generated backward
+    kernel indexed adjoint arrays with a stale/negative id, faulting with an illegal
+    memory access. This exercises the full backward pass over a cloth grid.
+    """
+    mjm = mujoco.MjModel.from_xml_string(self._CLOTH_XML)
+    m = mjw.put_model(mjm)
+    self.assertGreater(mjm.nflex, 0, "model must contain a flex")
+
+    d = mjw.make_diff_data(mjm)
+    enable_grad(d)
+
+    loss = wp.zeros(1, dtype=float, requires_grad=True)
+    tape = wp.Tape()
+    with tape:
+      mjw.step(m, d)
+      wp.launch(_sum_qpos_kernel, dim=(d.nworld, mjm.nq), inputs=[d.qpos, loss])
+    tape.backward(loss=loss)
+    qvel_grad = d.qvel.grad.numpy()
+    tape.zero()
+
+    self.assertTrue(np.all(np.isfinite(qvel_grad)), "flex backward produced non-finite gradients")
+    self.assertGreater(np.linalg.norm(qvel_grad), 1e-12, "flex backward produced an all-zero gradient")
+
+
 if __name__ == "__main__":
   absltest.main()

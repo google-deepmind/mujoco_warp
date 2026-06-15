@@ -627,11 +627,17 @@ def _flex_elasticity(
   worldid, elemid = wp.tid()
   timestep = opt_timestep[worldid % opt_timestep.shape[0]]
 
+  f = int(-1)
   for i in range(nflex):
     locid = elemid - flex_elemadr[i]
     if locid >= 0 and locid < flex_elemnum[i]:
       f = i
       break
+
+  # No owning flex found for this element: bail out before indexing with f, to
+  # avoid a negative flex id reaching the autodiff-generated backward kernel.
+  if f < 0:
+    return
 
   stiffness_adr_base = flex_stiffnessadr[f]
   if stiffness_adr_base < 0:
@@ -724,11 +730,19 @@ def _flex_bending(
   worldid, edgeid = wp.tid()
   nvert = 4
 
+  f = int(-1)
   for i in range(nflex):
     locid = edgeid - flex_edgeadr[i]
     if locid >= 0 and locid < flex_edgenum[i]:
       f = i
       break
+
+  # No owning flex found for this edge: bail out before indexing with f. Without
+  # this the forward reads flex_bendingadr[-1] and the autodiff-generated backward
+  # kernel indexes adjoint arrays with a negative flex id, causing an illegal
+  # memory access (observed as an out-of-bounds read far below any allocation).
+  if f < 0:
+    return
 
   bendingadr = flex_bendingadr[f]
   if bendingadr < 0:

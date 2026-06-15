@@ -341,10 +341,17 @@ def _flex_vertices(
 ):
   worldid, vertid = wp.tid()
 
-  for f in range(nflex):
-    locid = vertid - flex_vertadr[f]
-    if locid >= 0 and locid < flex_vertnum[f]:
+  f = int(-1)
+  for i in range(nflex):
+    locid = vertid - flex_vertadr[i]
+    if locid >= 0 and locid < flex_vertnum[i]:
+      f = i
       break
+
+  # No owning flex found for this vertex: bail out before indexing with f, to
+  # avoid a stale/negative flex id reaching the autodiff-generated backward kernel.
+  if f < 0:
+    return
 
   bodyid = flex_vertbodyid[vertid]
   xpos = xpos_in[worldid, bodyid]
@@ -382,11 +389,17 @@ def _flex_edges(
   flexedge_velocity_out: wp.array2d[float],
 ):
   worldid, edgeid = wp.tid()
+  f = int(-1)
   for i in range(nflex):
     locid = edgeid - flex_edgeadr[i]
     if locid >= 0 and locid < flex_edgenum[i]:
       f = i
       break
+
+  # No owning flex found for this edge: bail out before indexing with f, to avoid
+  # a negative flex id reaching the autodiff-generated backward kernel.
+  if f < 0:
+    return
 
   vbase = flex_vertadr[f]
   v = flex_edge[edgeid]
