@@ -631,6 +631,32 @@ _CONTACT_TANGENTIAL_XML = """
 </mujoco>
 """
 
+def _multi_ball_contact_xml(n_bodies, jacobian="dense"):
+  """N independent slide-z balls in contact, each with its own motor.
+
+  With n_bodies>32 this drives nv past the tile-kernel cutoff so the backward
+  Hessian solve takes the blocked-Cholesky path in _solve_hessian_system.
+  """
+  bodies, acts = [], []
+  for i in range(n_bodies):
+    x = 0.5 * i
+    bodies.append(
+      f'<body pos="{x} 0 0.05"><joint name="s{i}" type="slide" axis="0 0 1"/>'
+      f'<geom type="sphere" size="0.1" mass="1"/></body>'
+    )
+    acts.append(f'<motor joint="s{i}" gear="1"/>')
+  return f"""
+  <mujoco>
+    <option gravity="0 0 -9.81" jacobian="{jacobian}" solver="Newton" iterations="30"/>
+    <worldbody>
+      <geom type="plane" size="50 50 0.01"/>
+      {''.join(bodies)}
+    </worldbody>
+    <actuator>{''.join(acts)}</actuator>
+  </mujoco>
+  """
+
+
 # Tolerance for contact AD tests (relaxed for contacts)
 _CONTACT_FD_TOL = 1e-2
 
@@ -767,6 +793,43 @@ class GradSolverAdjointTest(parameterized.TestCase):
     self.assertGreater(grad_free, 1.0e-6)
     self.assertLessEqual(grad_sur_90, grad_free * 1.05)
     self.assertLessEqual(grad_sur_99, grad_free * 1.05)
+
+  @parameterized.named_parameters(
+    ("dense", "dense"),
+    ("sparse", "sparse"),
+  )
+  @absltest.skipIf(_REQUIRES_GPU, _REQUIRES_GPU_REASON)
+  def test_solver_adjoint_blocked_cholesky_nv_gt_32(self, jacobian):
+    """Backward Hessian solve must run for nv>32 (blocked-Cholesky path).
+
+    With more than 32 DOFs the adjoint Hessian solve in _solve_hessian_system
+    leaves the per-world tile kernels and takes the blocked-Cholesky branch,
+    where the right-hand side is reshaped to nv_pad width. The incoming adjoint
+    is only nv wide, so without padding the reshape raises "Reshaped array must
+    have the same total size". This regression test exercises that branch (no
+    coverage existed for nv>32 before) and asserts the backward pass completes
+    and produces finite gradients with nonzero signal.
+    """
+    n_bodies = 40  # nv = 40 > 32
+    xml = _multi_ball_contact_xml(n_bodies, jacobian=jacobian)
+    mjm = mujoco.MjModel.from_xml_string(xml)
+    m = mjw.put_model(mjm)
+    self.assertGreater(m.nv, 32, "model must exceed the tile-kernel cutoff")
+
+    d = mjw.make_diff_data(mjm, nconmax=256, njmax=256)
+    enable_grad(d)
+
+    loss = wp.zeros(1, dtype=float, requires_grad=True)
+    tape = wp.Tape()
+    with tape:
+      mjw.step(m, d)
+      wp.launch(_sum_qpos_kernel, dim=(d.nworld, mjm.nq), inputs=[d.qpos, loss])
+    tape.backward(loss=loss)
+    ad_grad = d.ctrl.grad.numpy()[0, : mjm.nu].copy()
+    tape.zero()
+
+    self.assertTrue(np.all(np.isfinite(ad_grad)), f"blocked-Cholesky adjoint produced non-finite gradients: {ad_grad}")
+    self.assertGreater(np.linalg.norm(ad_grad), 1e-12, "blocked-Cholesky adjoint produced an all-zero gradient")
 
 
 class GradUtilTest(absltest.TestCase):

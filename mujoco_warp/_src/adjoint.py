@@ -675,6 +675,17 @@ def _solve_hessian_system(m: types.Model, d: types.Data, b, out, H=None):
       block_dim=m.block_dim.update_gradient_cholesky,
     )
   else:
+    # The blocked Cholesky kernels operate on nv_pad-sized tiles, so the
+    # right-hand side must be nv_pad wide. The incoming adjoint b is only nv
+    # wide (e.g. nv=81, nv_pad=96 for a sparse model), so a direct reshape to
+    # (nworld, nv_pad, 1) fails the same-total-size check. Copy b into a padded
+    # zero buffer first; the trailing padding rows stay zero (they correspond to
+    # the padding DOFs handled by _padding_h_adjoint).
+    if b.shape[1] != m.nv_pad:
+      nv_b = b.shape[1]
+      b_pad = wp.zeros((d.nworld, m.nv_pad), dtype=float)
+      wp.launch(_copy_grad_kernel, dim=(d.nworld, nv_b), inputs=[b], outputs=[b_pad])
+      b = b_pad
     b_3d = b.reshape((d.nworld, m.nv_pad, 1))
     out_3d = out.reshape((d.nworld, m.nv_pad, 1))
 
