@@ -834,21 +834,21 @@ def _M(
   cdof_in: wp.array2d[wp.spatial_vector],
   crb_in: wp.array2d[vec10],
   # Data out:
-  M_out: wp.array3d[float],
+  M_out: wp.array2d[float],
 ):
   worldid, dofid = wp.tid()
   bodyid = dof_bodyid[dofid]
   madr_ij = M_rowadr[dofid] + M_rownnz[dofid] - 1
 
   # init M(i,i) with armature inertia
-  M_out[worldid, 0, madr_ij] = dof_armature[worldid % dof_armature.shape[0], dofid]
+  M_out[worldid, madr_ij] = dof_armature[worldid % dof_armature.shape[0], dofid]
 
   # precompute buf = crb_body_i * cdof_i
   buf = math.inert_vec(crb_in[worldid, bodyid], cdof_in[worldid, dofid])
 
   # sparse backward pass over ancestors
   while dofid >= 0:
-    M_out[worldid, 0, madr_ij] += wp.dot(cdof_in[worldid, dofid], buf)
+    M_out[worldid, madr_ij] += wp.dot(cdof_in[worldid, dofid], buf)
     madr_ij -= 1
     dofid = dof_parentid[dofid]
 
@@ -885,11 +885,10 @@ def _tendon_armature(
   tendon_armature: wp.array2d[float],
   M_rownnz: wp.array[int],
   M_rowadr: wp.array[int],
-  is_sparse: bool,
   # Data in:
   ten_J_in: wp.array2d[float],
   # Data out:
-  M_out: wp.array3d[float],
+  M_out: wp.array2d[float],
 ):
   worldid, tenid, dofid = wp.tid()
 
@@ -910,8 +909,8 @@ def _tendon_armature(
   if ten_Ji == 0.0:
     return
 
-  if is_sparse:
-    madr_ij = M_rowadr[dofid] + M_rownnz[dofid] - 1
+  # Walk the row's entries from the diagonal backward over ancestors.
+  madr_ij = M_rowadr[dofid] + M_rownnz[dofid] - 1
 
   # sparse backward pass over ancestors
   dofidi = dofid
@@ -933,13 +932,8 @@ def _tendon_armature(
 
     Mij = armature * ten_Jj * ten_Ji
 
-    if is_sparse:
-      wp.atomic_add(M_out[worldid, 0], madr_ij, Mij)
-      madr_ij -= 1
-    else:
-      wp.atomic_add(M_out[worldid, dofidi], dofid, Mij)
-      if dofidi != dofid:
-        wp.atomic_add(M_out[worldid, dofid], dofidi, Mij)
+    wp.atomic_add(M_out[worldid], madr_ij, Mij)
+    madr_ij -= 1
 
     dofid = dof_parentid[dofid]
 
@@ -958,7 +952,6 @@ def tendon_armature(m: Model, d: Data):
       m.tendon_armature,
       m.M_rownnz,
       m.M_rowadr,
-      m.is_sparse,
       d.ten_J,
     ],
     outputs=[d.M],
@@ -972,9 +965,9 @@ def _qLD_acc(
   M_rowadr: wp.array[int],
   # In:
   qLD_updates_: wp.array[wp.vec3i],
-  L_in: wp.array3d[float],
+  L_in: wp.array2d[float],
   # Out:
-  L_out: wp.array3d[float],
+  L_out: wp.array2d[float],
 ):
   worldid, nodeid = wp.tid()
   update = qLD_updates_[nodeid]
@@ -982,12 +975,12 @@ def _qLD_acc(
   Madr_i = M_rowadr[i]  # Address of row being updated
   diag_k = M_rowadr[k] + M_rownnz[k] - 1  # Address of diagonal element of k
   # tmp = M(k,i) / M(k,k)
-  tmp = L_out[worldid, 0, Madr_ki] / L_out[worldid, 0, diag_k]
+  tmp = L_out[worldid, Madr_ki] / L_out[worldid, diag_k]
   for j in range(M_rownnz[i]):
     # M(i,j) -= M(k,j) * tmp
-    wp.atomic_sub(L_out[worldid, 0], Madr_i + j, L_in[worldid, 0, M_rowadr[k] + j] * tmp)
+    wp.atomic_sub(L_out[worldid], Madr_i + j, L_in[worldid, M_rowadr[k] + j] * tmp)
   # M(k,i) = tmp
-  L_out[worldid, 0, Madr_ki] = tmp
+  L_out[worldid, Madr_ki] = tmp
 
 
 @wp.kernel
@@ -996,13 +989,13 @@ def _qLDiag_div(
   M_rownnz: wp.array[int],
   M_rowadr: wp.array[int],
   # In:
-  L_in: wp.array3d[float],
+  L_in: wp.array2d[float],
   # Out:
   D_out: wp.array2d[float],
 ):
   worldid, dofid = wp.tid()
   diag_i = M_rowadr[dofid] + M_rownnz[dofid] - 1  # Address of diagonal element of i
-  D_out[worldid, dofid] = 1.0 / L_in[worldid, 0, diag_i]
+  D_out[worldid, dofid] = 1.0 / L_in[worldid, diag_i]
 
 
 @wp.kernel
@@ -1011,7 +1004,7 @@ def _factor_simple(
   M_rownnz: wp.array[int],
   M_rowadr: wp.array[int],
   # Data in:
-  M_in: wp.array3d[float],
+  M_in: wp.array2d[float],
   # In:
   simple_dofs: wp.array[int],
   # Out:
@@ -1021,10 +1014,10 @@ def _factor_simple(
   worldid, s = wp.tid()
   dofid = simple_dofs[s]
   diag_i = M_rowadr[dofid] + M_rownnz[dofid] - 1
-  D_out[worldid, dofid] = 1.0 / M_in[worldid, 0, diag_i]
+  D_out[worldid, dofid] = 1.0 / M_in[worldid, diag_i]
 
 
-def _factor_i_sparse(m: Model, d: Data, M: wp.array3d[float], L: wp.array3d[float], D: wp.array2d[float]):
+def _factor_i_sparse(m: Model, d: Data, M: wp.array2d[float], L: wp.array2d[float], D: wp.array2d[float]):
   """Sparse L'*D*L factorization of inertia-like matrix M, assumed spd."""
   wp.copy(L, M)
 
@@ -1050,26 +1043,26 @@ def _tile_cholesky_factorize_block(tile: TileSet):
     # Model:
     qLD_block_adr: wp.array[int],
     # Data in:
-    M_in: wp.array3d[float],
+    M_in: wp.array2d[float],
     # In:
     block_elemid: wp.array[int],
     block_dof: wp.array[int],
     # Out:
-    L_out: wp.array3d[float],
+    L_out: wp.array2d[float],
   ):
     worldid, blk = wp.tid()
     start = block_dof[blk]
 
     idx = wp.tile_load(block_elemid, shape=(block_area,), offset=(blk * block_area,), storage="shared")
-    block = wp.tile_load_indexed(M_in[worldid, 0], idx, shape=(block_area,), storage="shared")
+    block = wp.tile_load_indexed(M_in[worldid], idx, shape=(block_area,), storage="shared")
 
     L = wp.tile_cholesky(wp.tile_reshape(block, (block_size, block_size)), fill_mode="upper")
-    wp.tile_store(L_out[worldid, 0], wp.tile_reshape(L, (block_area,)), offset=(qLD_block_adr[start],))
+    wp.tile_store(L_out[worldid], wp.tile_reshape(L, (block_area,)), offset=(qLD_block_adr[start],))
 
   return kernel
 
 
-def _factor_block_dense(m: Model, d: Data, M: wp.array3d[float], L: wp.array3d[float]):
+def _factor_block_dense(m: Model, d: Data, M: wp.array2d[float], L: wp.array2d[float]):
   for tile in m.M_tiles:
     # Tiny blocks (<=16 dofs) underutilize extra warps and lose occupancy, so use a single warp;
     # larger blocks expose more tile_cholesky parallelism (measured optima: 9->32, 27->96, 60->128).
@@ -1094,7 +1087,7 @@ def factor_m(m: Model, d: Data):
   if m.qLD_has_dense:
     _factor_block_dense(m, d, d.M, d.qLD)
   if m.qLD_has_sparse:
-    _factor_i_sparse(m, d, d.M, d.qLD[:, :, m.qLD_block_total :], d.qLDiagInv)
+    _factor_i_sparse(m, d, d.M, d.qLD[:, m.qLD_block_total :], d.qLDiagInv)
   if m.qLD_has_simple:
     wp.launch(
       _factor_simple,
@@ -2745,7 +2738,7 @@ def _solve_LD_sparse_fused(nv: int, nlevels: int):
     # In:
     dof_dense: wp.array[int],
     dof_simple: wp.array[int],
-    L: wp.array3d[float],
+    L: wp.array2d[float],
     D: wp.array2d[float],
     all_updates: wp.array[wp.vec3i],
     level_offsets: wp.array[int],
@@ -2774,7 +2767,7 @@ def _solve_LD_sparse_fused(nv: int, nlevels: int):
       for u in range(tid, level_size, BLOCK_DIM):
         update = all_updates[level_offset + u]
         i, k, Madr_ki = update[0], update[1], update[2]
-        wp.atomic_sub(x_out[worldid], i, L[worldid, 0, Madr_ki] * x_out[worldid, k])
+        wp.atomic_sub(x_out[worldid], i, L[worldid, Madr_ki] * x_out[worldid, k])
       _syncthreads()
 
     # Diagonal multiply (sparse-block dofs only)
@@ -2792,7 +2785,7 @@ def _solve_LD_sparse_fused(nv: int, nlevels: int):
       for u in range(tid, level_size, BLOCK_DIM):
         update = all_updates[level_offset + u]
         i, k, Madr_ki = update[0], update[1], update[2]
-        wp.atomic_sub(x_out[worldid], k, L[worldid, 0, Madr_ki] * x_out[worldid, i])
+        wp.atomic_sub(x_out[worldid], k, L[worldid, Madr_ki] * x_out[worldid, i])
       _syncthreads()
 
   return kernel
@@ -2801,7 +2794,7 @@ def _solve_LD_sparse_fused(nv: int, nlevels: int):
 def _solve_LD_sparse(
   m: Model,
   d: Data,
-  L: wp.array3d[float],
+  L: wp.array2d[float],
   D: wp.array2d[float],
   x: wp.array2d[float],
   y: wp.array2d[float],
@@ -2844,7 +2837,7 @@ def _factor_solve_simple(
   M_rownnz: wp.array[int],
   M_rowadr: wp.array[int],
   # Data in:
-  M_in: wp.array3d[float],
+  M_in: wp.array2d[float],
   # In:
   simple_dofs: wp.array[int],
   y: wp.array2d[float],
@@ -2856,7 +2849,7 @@ def _factor_solve_simple(
   worldid, s = wp.tid()
   dofid = simple_dofs[s]
   diag_i = M_rowadr[dofid] + M_rownnz[dofid] - 1
-  d_inv = 1.0 / M_in[worldid, 0, diag_i]
+  d_inv = 1.0 / M_in[worldid, diag_i]
   D_out[worldid, dofid] = d_inv
   x_out[worldid, dofid] = d_inv * y[worldid, dofid]
 
@@ -2873,7 +2866,7 @@ def _tile_cholesky_solve_block(tile: TileSet):
     qLD_block_adr: wp.array[int],
     # In:
     block_dof: wp.array[int],
-    L_in: wp.array3d[float],
+    L_in: wp.array2d[float],
     y: wp.array2d[float],
     # Out:
     x: wp.array2d[float],
@@ -2882,7 +2875,7 @@ def _tile_cholesky_solve_block(tile: TileSet):
     start = block_dof[blk]
 
     L = wp.tile_reshape(
-      wp.tile_load(L_in[worldid, 0], shape=(block_area,), offset=(qLD_block_adr[start],)), (block_size, block_size)
+      wp.tile_load(L_in[worldid], shape=(block_area,), offset=(qLD_block_adr[start],)), (block_size, block_size)
     )
     rhs = wp.tile_load(y[worldid], shape=(block_size,), offset=(start,))
     sol = wp.tile_cholesky_solve(L, rhs, fill_mode="upper")
@@ -2891,7 +2884,7 @@ def _tile_cholesky_solve_block(tile: TileSet):
   return kernel
 
 
-def _solve_block_dense(m: Model, d: Data, L: wp.array3d[float], x: wp.array2d[float], y: wp.array2d[float]):
+def _solve_block_dense(m: Model, d: Data, L: wp.array2d[float], x: wp.array2d[float], y: wp.array2d[float]):
   for tile in m.M_tiles:
     # The triangular back-substitution is largely sequential, so large blocks prefer fewer threads
     # for better occupancy while moderate blocks still want a couple warps (16/27->64, 60->32).
@@ -2908,7 +2901,7 @@ def _solve_block_dense(m: Model, d: Data, L: wp.array3d[float], x: wp.array2d[fl
 def solve_LD(
   m: Model,
   d: Data,
-  L: wp.array3d[float],
+  L: wp.array2d[float],
   D: wp.array2d[float],
   x: wp.array2d[float],
   y: wp.array2d[float],
@@ -2931,7 +2924,7 @@ def solve_LD(
   if m.qLD_has_dense:
     _solve_block_dense(m, d, L, x, y)
   if m.qLD_has_sparse:
-    _solve_LD_sparse(m, d, L[:, :, m.qLD_block_total :], D, x, y)
+    _solve_LD_sparse(m, d, L[:, m.qLD_block_total :], D, x, y)
   if m.qLD_has_simple:
     wp.launch(_solve_simple, dim=(d.nworld, m.qLD_simple_dofs.size), inputs=[m.qLD_simple_dofs, D, y], outputs=[x])
 
@@ -2961,24 +2954,24 @@ def _tile_cholesky_factorize_solve_block(tile: TileSet):
     # Model:
     qLD_block_adr: wp.array[int],
     # Data in:
-    M_in: wp.array3d[float],
+    M_in: wp.array2d[float],
     # In:
     block_elemid: wp.array[int],
     block_dof: wp.array[int],
     y: wp.array2d[float],
     x: wp.array2d[float],
     # Out:
-    L_out: wp.array3d[float],
+    L_out: wp.array2d[float],
   ):
     worldid, blk = wp.tid()
     start = block_dof[blk]
 
     # Densify the block (see _tile_cholesky_factorize_block for the gather rationale).
     idx = wp.tile_load(block_elemid, shape=(block_area,), offset=(blk * block_area,), storage="shared")
-    block = wp.tile_load_indexed(M_in[worldid, 0], idx, shape=(block_area,), storage="shared")
+    block = wp.tile_load_indexed(M_in[worldid], idx, shape=(block_area,), storage="shared")
 
     L = wp.tile_cholesky(wp.tile_reshape(block, (block_size, block_size)), fill_mode="upper")
-    wp.tile_store(L_out[worldid, 0], wp.tile_reshape(L, (block_area,)), offset=(qLD_block_adr[start],))
+    wp.tile_store(L_out[worldid], wp.tile_reshape(L, (block_area,)), offset=(qLD_block_adr[start],))
 
     rhs = wp.tile_load(y[worldid], shape=(block_size,), offset=(start,))
     sol = wp.tile_cholesky_solve(L, rhs, fill_mode="upper")
@@ -2988,7 +2981,7 @@ def _tile_cholesky_factorize_solve_block(tile: TileSet):
 
 
 def _factor_solve_block_dense(
-  m: Model, d: Data, M: wp.array3d[float], x: wp.array2d[float], y: wp.array2d[float], L: wp.array3d[float]
+  m: Model, d: Data, M: wp.array2d[float], x: wp.array2d[float], y: wp.array2d[float], L: wp.array2d[float]
 ):
   for tile in m.M_tiles:
     # Tiny blocks (<=16 dofs) use a single warp; see _factor_block_dense.
@@ -3022,7 +3015,7 @@ def factor_solve_i(m, d, M, L, D, x, y):
   if m.qLD_has_dense:
     _factor_solve_block_dense(m, d, M, x, y, L)
   if m.qLD_has_sparse:
-    L_ldl = L[:, :, m.qLD_block_total :]
+    L_ldl = L[:, m.qLD_block_total :]
     _factor_i_sparse(m, d, M, L_ldl, D)
     _solve_LD_sparse(m, d, L_ldl, D, x, y)
   if m.qLD_has_simple:
@@ -3049,7 +3042,7 @@ def _factor_solve_lu_sparse_fused(nv: int):
     qfrc: wp.array2d[float],
     # Data out:
     qacc_out: wp.array2d[float],
-    qLU_out: wp.array3d[float],
+    qLU_out: wp.array2d[float],
   ):
     worldid = wp.tid()
     NV = wp.static(nv)
@@ -3068,7 +3061,7 @@ def _factor_solve_lu_sparse_fused(nv: int):
       qacc_out[worldid, i] = float(rem_i - 1)
 
       # cache diagonal element for row i
-      LUii = qLU_out[worldid, 0, ii]
+      LUii = qLU_out[worldid, ii]
 
       # rows j above i (j < i), processed from i-1 down to 0
       for c in range(i):
@@ -3086,8 +3079,8 @@ def _factor_solve_lu_sparse_fused(nv: int):
           qacc_out[worldid, j] = float(rem_j)
 
           # (j,i) = (j,i) / (i,i)
-          LUji = qLU_out[worldid, 0, ji] / LUii
-          qLU_out[worldid, 0, ji] = LUji
+          LUji = qLU_out[worldid, ji] / LUii
+          qLU_out[worldid, ji] = LUji
 
           # (j,k) = (j,k) - (i,k) * (j,i) for k < i
           icnt = rowadr_i
@@ -3097,7 +3090,7 @@ def _factor_solve_lu_sparse_fused(nv: int):
             col_i = D_colind[icnt]
             col_j = D_colind[jcnt]
             if col_i == col_j:
-              qLU_out[worldid, 0, jcnt] = qLU_out[worldid, 0, jcnt] - qLU_out[worldid, 0, icnt] * LUji
+              qLU_out[worldid, jcnt] = qLU_out[worldid, jcnt] - qLU_out[worldid, icnt] * LUji
               icnt = icnt + 1
               jcnt = jcnt + 1
             elif col_i > col_j:
@@ -3120,7 +3113,7 @@ def _factor_solve_lu_sparse_fused(nv: int):
       for j in range(nnz_upper):
         adr_j = rowadr_i + d1 + j
         col = D_colind[adr_j]
-        acc = acc - qLU_out[worldid, 0, adr_j] * qacc_out[worldid, col]
+        acc = acc - qLU_out[worldid, adr_j] * qacc_out[worldid, col]
       qacc_out[worldid, i] = acc
 
     # Forward substitution: solve L*qacc = qacc
@@ -3132,15 +3125,15 @@ def _factor_solve_lu_sparse_fused(nv: int):
       for j in range(diag_i):
         adr_j = rowadr_i + j
         col = D_colind[adr_j]
-        acc = acc - qLU_out[worldid, 0, adr_j] * qacc_out[worldid, col]
+        acc = acc - qLU_out[worldid, adr_j] * qacc_out[worldid, col]
 
-      qacc_out[worldid, i] = acc / qLU_out[worldid, 0, rowadr_i + diag_i]
+      qacc_out[worldid, i] = acc / qLU_out[worldid, rowadr_i + diag_i]
 
   return kernel
 
 
 @event_scope
-def factor_solve_lu(m: Model, d: Data, qLU: wp.array3d[float], qacc: wp.array2d[float], qfrc: wp.array2d[float]):
+def factor_solve_lu(m: Model, d: Data, qLU: wp.array2d[float], qacc: wp.array2d[float], qfrc: wp.array2d[float]):
   r"""Factorize and solve non-symmetric implicit system: qacc = A \\ qfrc.
 
   qLU is overwritten in-place with the LU factors, then used to solve for qacc.

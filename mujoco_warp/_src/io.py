@@ -1303,13 +1303,13 @@ def make_data(
 
   d = types.Data(**d_kwargs)
 
-  # M is stored compact CSR. qLD holds the factor: a packed dense region for dense blocks followed
+  # qLD holds the factor: a packed dense region for dense blocks followed
   # by an nC-length LDL region for sparse blocks (present only when some block is sparse). Either
   # region may be empty (pure dense / pure sparse).
-  d.M = wp.zeros((nworld, 1, mjm.nC), dtype=float)
+  d.M = wp.zeros((nworld, mjm.nC), dtype=float)
   _lay = m_block_layout(mjm)
   qld_total = _lay["total"] + (mjm.nC if _lay["has_sparse"] else 0)
-  d.qLD = wp.zeros((nworld, 1, qld_total), dtype=float)
+  d.qLD = wp.zeros((nworld, qld_total), dtype=float)
 
   _allocate_island_arrays(mjm, d, nworld, njmax, ENABLE_ISLANDS, mjd)
 
@@ -1535,8 +1535,7 @@ def put_data(
   d = types.Data(**d_kwargs)
   d.solver_niter = wp.full((nworld,), mjd.solver_niter[0], dtype=int)
 
-  # M is stored compact CSR (min mujoco is 3.9.0, so always the new CSR API).
-  d.M = wp.array(np.full((nworld, 1, mjm.nC), mjd.M), dtype=float)
+  d.M = wp.array(np.full((nworld, mjm.nC), mjd.M), dtype=float)
   # qLD = [packed dense-block Cholesky | nC LDL region]. Dense blocks store their upper Cholesky
   # packed; the LDL region (present iff some block is sparse) holds MuJoCo's full L'DL factor (only
   # its sparse-block entries are read by the solve).
@@ -1553,7 +1552,7 @@ def put_data(
         qLD[off : off + size * size] = np.linalg.cholesky(blk).T.reshape(-1)
   if lay["has_sparse"]:
     qLD[lay["total"] :] = mjd.qLD
-  d.qLD = wp.array(np.full((nworld, 1, qld_total), qLD), dtype=float)
+  d.qLD = wp.array(np.full((nworld, qld_total), qLD), dtype=float)
 
   _allocate_island_arrays(mjm, d, nworld, njmax, ENABLE_ISLANDS, mjd)
 
@@ -1705,8 +1704,7 @@ def get_data_into(
   result.contact.geom[:ncon] = d.contact.geom.numpy()[ncon_filter]
   result.contact.efc_address[:ncon] = contact_efc_address_ordered[:ncon]
 
-  # M is stored CSR (min mujoco is 3.9.0).
-  result.M[:] = d.M.numpy()[world_id, 0]
+  result.M[:] = d.M.numpy()[world_id]
   _lay = m_block_layout(mjm)
   if _lay["has_dense"] or _lay["has_simple"]:
     # d.qLD is not MuJoCo's LDL: dense blocks are a packed Cholesky and simple blocks are factored
@@ -1714,7 +1712,7 @@ def get_data_into(
     mujoco.mj_factorM(mjm, result)
   else:
     # Pure sparse: qLD is exactly MuJoCo's nC LDL factor.
-    result.qLD[:] = d.qLD.numpy()[world_id, 0]
+    result.qLD[:] = d.qLD.numpy()[world_id]
 
   if nefc > 0:
     if is_sparse(mjm):
@@ -1847,14 +1845,14 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
     xfrc_applied_out[worldid, bodyid][elemid] = 0.0
 
   @wp.kernel(module="unique", enable_backward=False)
-  def reset_M(reset_in: wp.array[bool], M_out: wp.array3d[float]):
-    worldid, elemid1, elemid2 = wp.tid()
+  def reset_M(reset_in: wp.array[bool], M_out: wp.array2d[float]):
+    worldid, elemid = wp.tid()
 
     if wp.static(reset is not None):
       if not reset_in[worldid]:
         return
 
-    M_out[worldid, elemid1, elemid2] = 0.0
+    M_out[worldid, elemid] = 0.0
 
   @wp.kernel(module="unique", enable_backward=False)
   def reset_nworld(
@@ -2056,7 +2054,7 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
   wp.launch(reset_xfrc_applied, dim=(d.nworld, m.nbody, 6), inputs=[reset_input], outputs=[d.xfrc_applied])
   wp.launch(
     reset_M,
-    dim=(d.nworld, d.M.shape[1], d.M.shape[2]),
+    dim=(d.nworld, d.M.shape[1]),
     inputs=[reset_input],
     outputs=[d.M],
   )
@@ -2188,7 +2186,7 @@ def _compute_meaninertia(
   nv: int,
   M_rownnz_in: wp.array[int],
   M_rowadr_in: wp.array[int],
-  M_in: wp.array3d[float],
+  M_in: wp.array2d[float],
   meaninertia_out: wp.array[float],
 ):
   """Compute mean diagonal inertia from M at qpos0."""
@@ -2202,7 +2200,7 @@ def _compute_meaninertia(
   for i in range(nv):
     # CSR row diagonal is the last entry: M_rowadr_in[i] + M_rownnz_in[i] - 1
     madr = M_rowadr_in[i] + M_rownnz_in[i] - 1
-    total += M_in[worldid, 0, madr]
+    total += M_in[worldid, madr]
 
   meaninertia_out[worldid % meaninertia_out.shape[0]] = total / float(nv)
 

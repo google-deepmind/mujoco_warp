@@ -462,11 +462,10 @@ class SolverTest(parameterized.TestCase):
       ]
     )
 
-    # M is always stored CSR (nworld, 1, nC); is_sparse governs only the constraint J/H.
     def _csr_M(mjmw, mjdw):
       return np.asarray(mjdw.M, dtype=np.float32)
 
-    M = np.stack([_csr_M(mjm0, mjd0), _csr_M(mjm1, mjd1), _csr_M(mjm2, mjd2)])[:, None, :]
+    M = np.stack([_csr_M(mjm0, mjd0), _csr_M(mjm1, mjd1), _csr_M(mjm2, mjd2)])
     qacc_smooth = np.vstack(
       [
         np.expand_dims(mjd0.qacc_smooth, axis=0),

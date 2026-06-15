@@ -436,9 +436,7 @@ class ForwardTest(parameterized.TestCase):
         mjd_arr = mjd_arr.reshape(-1)
         d_arr = d_arr.reshape(-1)
       elif arr == "M":
-        # M is always stored CSR (is_sparse governs only the constraint Jacobian/Hessian).
         mjd_arr = mjd.M
-        d_arr = d_arr[0]
       elif arr == "actuator_moment":
         actuator_moment = np.zeros((mjm.nu, mjm.nv))
         mujoco.mju_sparse2dense(actuator_moment, mjd.actuator_moment, mjd.moment_rownnz, mjd.moment_rowadr, mjd.moment_colind)

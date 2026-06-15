@@ -361,13 +361,13 @@ def _euler_damp_qfrc(
   # In:
   damp_deriv: wp.array2d[float],
   # Out:
-  M_integration_out: wp.array3d[float],
+  M_integration_out: wp.array2d[float],
 ):
   worldid, tid = wp.tid()
   timestep = opt_timestep[worldid % opt_timestep.shape[0]]
 
   adr = M_rowadr[tid] + M_rownnz[tid] - 1
-  M_integration_out[worldid, 0, adr] += timestep * damp_deriv[worldid, tid]
+  M_integration_out[worldid, adr] += timestep * damp_deriv[worldid, tid]
 
 
 @event_scope
@@ -548,17 +548,17 @@ def _map_m2d(
   # Model:
   mapM2D: wp.array[int],
   # In:
-  qH_M: wp.array3d[float],
+  qH_M: wp.array2d[float],
   # Data out:
-  qLU_out: wp.array3d[float],
+  qLU_out: wp.array2d[float],
 ):
   # Scatter qH_M (M-structure) into the D-structure qLU via mapM2D.
   worldid, elemid = wp.tid()
   m_idx = mapM2D[elemid]
   if m_idx >= 0:
-    qLU_out[worldid, 0, elemid] = qH_M[worldid, 0, m_idx]
+    qLU_out[worldid, elemid] = qH_M[worldid, m_idx]
   else:
-    qLU_out[worldid, 0, elemid] = 0.0
+    qLU_out[worldid, elemid] = 0.0
 
 
 @event_scope
@@ -587,7 +587,7 @@ def implicit(m: Model, d: Data):
     _advance(m, d, qacc)
   elif ~(m.opt.disableflags | ~(DisableBit.ACTUATION | DisableBit.SPRING | DisableBit.DAMPER)):
     # qDeriv is in M-structure; the scratch qLD matches d.qLD (per-block).
-    qDeriv = wp.empty((d.nworld, 1, m.nC), dtype=float)
+    qDeriv = wp.empty((d.nworld, m.nC), dtype=float)
     qLD = wp.empty_like(d.qLD)
     qLDiagInv = wp.empty((d.nworld, m.nv), dtype=float)
     derivative.deriv_smooth_vel(m, d, qDeriv)

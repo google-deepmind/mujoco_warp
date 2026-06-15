@@ -192,8 +192,7 @@ class SmoothTest(parameterized.TestCase):
     mjw.crb(m, d)
     _assert_eq(d.crb.numpy()[0], mjd.crb, "crb")
 
-    # M is always stored CSR (is_sparse governs only the constraint Jacobian/Hessian).
-    _assert_eq(d.M.numpy()[0, 0], mjd.M, "M")
+    _assert_eq(d.M.numpy()[0], mjd.M, "M")
 
   @parameterized.parameters(mujoco.mjtJacobian.mjJAC_SPARSE, mujoco.mjtJacobian.mjJAC_DENSE)
   def test_factor_m(self, jacobian):
@@ -216,7 +215,7 @@ class SmoothTest(parameterized.TestCase):
       mjw.solve_m(m, d, res, d.qfrc_smooth)
       _assert_eq(res.numpy()[0], ref[0], "M \\ qfrc_smooth (block-dense)")
     else:
-      _assert_eq(d.qLD.numpy()[0, 0], mjd.qLD, "qLD (sparse)")
+      _assert_eq(d.qLD.numpy()[0], mjd.qLD, "qLD (sparse)")
       _assert_eq(d.qLDiagInv.numpy()[0], mjd.qLDiagInv, "qLDiagInv")
 
   @parameterized.parameters(mujoco.mjtJacobian.mjJAC_SPARSE, mujoco.mjtJacobian.mjJAC_DENSE)
@@ -603,8 +602,7 @@ class SmoothTest(parameterized.TestCase):
     mjw._src.smooth.crb(m, d)
     mjw._src.smooth.tendon_armature(m, d)
 
-    # M is always stored CSR (is_sparse governs only the constraint Jacobian/Hessian).
-    _assert_eq(d.M.numpy()[0, 0], mjd.M, "M")
+    _assert_eq(d.M.numpy()[0], mjd.M, "M")
 
     # qfrc_bias
     d.qfrc_bias.fill_(wp.inf)

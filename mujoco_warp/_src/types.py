@@ -2001,8 +2001,8 @@ class Data:
     moment_colind: column indices in sparse actuator_moment     (nworld, nJmom)
     actuator_moment: actuator moments                           (nworld, nJmom)
     crb: com-based composite inertia and mass                   (nworld, nbody, 10)
-    M: total inertia, CSR                                       (nworld, 1, nC)
-    qLD: per-block factor: packed dense region, then the nC     (nworld, 1, qLD_block_total + nC)
+    M: total inertia, CSR                                       (nworld, nC)
+    qLD: per-block factor: packed dense region, then the nC     (nworld, qLD_block_total + nC)
          L'*D*L region at offset qLD_block_total (nC=0 if no sparse block)
     qLDiagInv: 1/diag(D) for the sparse LDL region              (nworld, nv)
     tree_awake: is tree awake; 0: asleep; 1: awake              (nworld, ntree)
@@ -2022,7 +2022,7 @@ class Data:
     qfrc_passive: total passive force                           (nworld, nv)
     subtree_linvel: linear velocity of subtree com              (nworld, nbody, 3)
     subtree_angmom: angular momentum about subtree com          (nworld, nbody, 3)
-    qLU: sparse LU factorization of (M - dt*qDeriv)             (nworld, 1, nD)
+    qLU: sparse LU factorization of (M - dt*qDeriv)             (nworld, nD)
     actuator_force: actuator force in actuation space           (nworld, nu)
     qfrc_actuator: actuator force                               (nworld, nv)
     qfrc_smooth: net unconstrained force                        (nworld, nv)
@@ -2127,8 +2127,8 @@ class Data:
   moment_colind: array("nworld", "nJmom", int)
   actuator_moment: array("nworld", "nJmom", float)
   crb: array("nworld", "nbody", vec10)
-  M: wp.array3d[float]
-  qLD: wp.array3d[float]
+  M: wp.array2d[float]
+  qLD: wp.array2d[float]
   qLDiagInv: array("nworld", "nv", float)
   tree_awake: array("nworld", "ntree", int)
   body_awake: array("nworld", "nbody", int)
@@ -2147,7 +2147,7 @@ class Data:
   qfrc_passive: array("nworld", "nv", float)
   subtree_linvel: array("nworld", "nbody", wp.vec3)
   subtree_angmom: array("nworld", "nbody", wp.vec3)
-  qLU: array("nworld", 1, "nD", float)
+  qLU: array("nworld", "nD", float)
   actuator_force: array("nworld", "nu", float)
   qfrc_actuator: array("nworld", "nv", float)
   qfrc_smooth: array("nworld", "nv", float)

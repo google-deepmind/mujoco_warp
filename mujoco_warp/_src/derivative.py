@@ -184,7 +184,7 @@ def _qderiv_actuator_passive_actuation_sparse(
   # In:
   vel_in: wp.array2d[float],
   # Out:
-  qDeriv_out: wp.array3d[float],
+  qDeriv_out: wp.array2d[float],
 ):
   worldid, actid = wp.tid()
 
@@ -212,7 +212,7 @@ def _qderiv_actuator_passive_actuation_sparse(
       elemid = M_elemid[dofi, dofj]
       if elemid >= 0:
         contrib = moment_i * moment_j * vel
-        wp.atomic_add(qDeriv_out[worldid, 0], elemid, contrib)
+        wp.atomic_add(qDeriv_out[worldid], elemid, contrib)
 
 
 @wp.kernel
@@ -225,13 +225,13 @@ def _qderiv_actuator_passive(
   M_elemid: wp.array2d[int],
   # Data in:
   qvel_in: wp.array2d[float],
-  M_in: wp.array3d[float],
+  M_in: wp.array2d[float],
   # In:
   Mi: wp.array[int],
   Mj: wp.array[int],
-  qDeriv_in: wp.array3d[float],
+  qDeriv_in: wp.array2d[float],
   # Out:
-  qDeriv_out: wp.array3d[float],
+  qDeriv_out: wp.array2d[float],
 ):
   worldid, elemid = wp.tid()
 
@@ -243,7 +243,7 @@ def _qderiv_actuator_passive(
   if madr < 0:
     return
 
-  qderiv = qDeriv_in[worldid, 0, madr]
+  qderiv = qDeriv_in[worldid, madr]
 
   if not (opt_disableflags & DisableBit.DAMPER) and dofiid == dofjid:
     damping = dof_damping[worldid % dof_damping.shape[0], dofiid]
@@ -253,7 +253,7 @@ def _qderiv_actuator_passive(
 
   qderiv *= opt_timestep[worldid % opt_timestep.shape[0]]
 
-  qDeriv_out[worldid, 0, madr] = M_in[worldid, 0, madr] - qderiv
+  qDeriv_out[worldid, madr] = M_in[worldid, madr] - qderiv
 
 
 # TODO(team): improve performance with tile operations?
@@ -275,7 +275,7 @@ def _qderiv_tendon_damping(
   Mi: wp.array[int],
   Mj: wp.array[int],
   # Out:
-  qDeriv_out: wp.array3d[float],
+  qDeriv_out: wp.array2d[float],
 ):
   worldid, elemid = wp.tid()
   dofiid = Mi[elemid]
@@ -313,7 +313,7 @@ def _qderiv_tendon_damping(
 
   qderiv *= opt_timestep[worldid % opt_timestep.shape[0]]
 
-  qDeriv_out[worldid, 0, madr] -= qderiv
+  qDeriv_out[worldid, madr] -= qderiv
 
 
 @wp.kernel
@@ -490,7 +490,7 @@ def deriv_rne_body2jnt_sparse(
   Dcfrcbody_in: wp.array3d[wp.spatial_vector],
   flg_subtract: bool,
   # Out:
-  qDeriv_out: wp.array3d[float],
+  qDeriv_out: wp.array2d[float],
 ):
   """Project body-space RNE derivatives into joint-space qDeriv (sparse)."""
   worldid, elemid = wp.tid()
@@ -504,12 +504,12 @@ def deriv_rne_body2jnt_sparse(
   term = wp.dot(cdof_in[worldid, i], dcfrc)
 
   if flg_subtract:
-    wp.atomic_sub(qDeriv_out[worldid, 0], elemid, dt * term)
+    wp.atomic_sub(qDeriv_out[worldid], elemid, dt * term)
   else:
-    wp.atomic_add(qDeriv_out[worldid, 0], elemid, dt * term)
+    wp.atomic_add(qDeriv_out[worldid], elemid, dt * term)
 
 
-def deriv_rne_vel(m: Model, d: Data, out: wp.array3d[float], flg_subtract: bool = False):
+def deriv_rne_vel(m: Model, d: Data, out: wp.array2d[float], flg_subtract: bool = False):
   """Compute RNE velocity derivatives and add/subtract from the output.
 
   Implements the analytical derivative of inverse-dynamics Coriolis/centrifugal
@@ -518,7 +518,7 @@ def deriv_rne_vel(m: Model, d: Data, out: wp.array3d[float], flg_subtract: bool 
   Args:
     m: The model (device).
     d: The data (device).
-    out: D-structure output array (nworld, 1, nD) to accumulate RNE terms into.
+    out: D-structure output array (nworld, nD) to accumulate RNE terms into.
     flg_subtract: If True, subtract the RNE derivatives from output instead of adding them.
   """
   # TODO(team): consider caching these allocations

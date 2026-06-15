@@ -73,7 +73,7 @@ def mul_m_kernel(check_skip: bool):
     M_mulm_col: wp.array[int],
     M_mulm_madr: wp.array[int],
     # Data in:
-    M_in: wp.array3d[float],
+    M_in: wp.array2d[float],
     # In:
     vec: wp.array2d[float],
     skip: wp.array[bool],
@@ -94,7 +94,7 @@ def mul_m_kernel(check_skip: bool):
     for k in range(start, end):
       col = M_mulm_col[k]
       madr = M_mulm_madr[k]
-      acc += M_in[worldid, 0, madr] * vec[worldid, col]
+      acc += M_in[worldid, madr] * vec[worldid, col]
 
     res[worldid, dofid] = acc
 
@@ -142,7 +142,7 @@ def _mul_m_island(
   M_mulm_madr: wp.array[int],
   # Data in:
   nidof_in: wp.array[int],
-  M_in: wp.array3d[float],
+  M_in: wp.array2d[float],
   map_dof2idof_in: wp.array2d[int],
   map_idof2dof_in: wp.array2d[int],
   # In:
@@ -179,7 +179,7 @@ def _mul_m_island(
     col_idof = map_dof2idof_in[worldid, col]
     # skip unconstrained DOFs
     if col_idof < nidof:
-      acc += M_in[worldid, 0, madr] * vec[worldid, col_idof]
+      acc += M_in[worldid, madr] * vec[worldid, col_idof]
 
   res[worldid, idofid] = acc
 
@@ -258,7 +258,7 @@ def _solve_LD_sparse_island(nv: int, nlevels: int):
     # In:
     dof_dense: wp.array[int],
     dof_simple: wp.array[int],
-    L: wp.array3d[float],
+    L: wp.array2d[float],
     D: wp.array2d[float],
     all_updates: wp.array[wp.vec3i],
     level_offsets: wp.array[int],
@@ -290,7 +290,7 @@ def _solve_LD_sparse_island(nv: int, nlevels: int):
         idof_i = map_dof2idof_in[worldid, i]
         if idof_i < nid:
           idof_k = map_dof2idof_in[worldid, k]
-          wp.atomic_sub(x_out[worldid], idof_i, L[worldid, 0, Madr_ki] * x_out[worldid, idof_k])
+          wp.atomic_sub(x_out[worldid], idof_i, L[worldid, Madr_ki] * x_out[worldid, idof_k])
       _syncthreads()
 
     # Diagonal multiply (coupled-sparse dofs only)
@@ -312,7 +312,7 @@ def _solve_LD_sparse_island(nv: int, nlevels: int):
         idof_k = map_dof2idof_in[worldid, k]
         if idof_k < nid:
           idof_i = map_dof2idof_in[worldid, i]
-          wp.atomic_sub(x_out[worldid], idof_k, L[worldid, 0, Madr_ki] * x_out[worldid, idof_i])
+          wp.atomic_sub(x_out[worldid], idof_k, L[worldid, Madr_ki] * x_out[worldid, idof_i])
       _syncthreads()
 
   return kernel
@@ -357,7 +357,7 @@ def _tile_cholesky_solve_block_island(tile):
     nidof_in: wp.array[int],
     map_dof2idof_in: wp.array2d[int],
     # In:
-    L: wp.array3d[float],
+    L: wp.array2d[float],
     y: wp.array2d[float],
     adr: wp.array[int],
     # Out:
@@ -373,7 +373,7 @@ def _tile_cholesky_solve_block_island(tile):
 
     # L is packed in global block order; y and x use island-local offsets.
     L_tile = wp.tile_reshape(
-      wp.tile_load(L[worldid, 0], shape=(block_area,), offset=(qLD_block_adr[dofid],)), (TILE_SIZE, TILE_SIZE)
+      wp.tile_load(L[worldid], shape=(block_area,), offset=(qLD_block_adr[dofid],)), (TILE_SIZE, TILE_SIZE)
     )
     y_slice = wp.tile_load(y[worldid], shape=(TILE_SIZE,), offset=(idofid,))
     x_slice = wp.tile_cholesky_solve(L_tile, y_slice, fill_mode="upper")
@@ -432,7 +432,7 @@ def solve_m_island(
         map_idof2dof,
         m.qLD_dof_dense,
         m.qLD_dof_simple,
-        d.qLD[:, :, m.qLD_block_total :],
+        d.qLD[:, m.qLD_block_total :],
         d.qLDiagInv,
         m.qLD_all_updates,
         m.qLD_level_offsets,
