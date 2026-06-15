@@ -25,7 +25,6 @@ import mujoco_warp as mjw
 from mujoco_warp import test_data
 from mujoco_warp._src import derivative
 from mujoco_warp._src import forward
-from mujoco_warp._src.util_pkg import check_version
 
 # tolerance for difference between MuJoCo and mjwarp smooth calculations - mostly
 # due to float precision
@@ -110,18 +109,9 @@ class DerivativeTest(parameterized.TestCase):
     mjw.deriv_smooth_vel(m, d, out_smooth_vel)
 
     mjw_out = np.zeros((m.nv, m.nv))
-    if check_version("mujoco>=3.8.1.dev910242375"):
-      mujoco.mju_sym2dense(
-        mjw_out, out_smooth_vel.numpy().reshape(-1).astype(np.float64), mjm.M_rownnz, mjm.M_rowadr, mjm.M_colind
-      )
-    else:
-      for i in range(m.nv):
-        rowadr = m.M_rowadr.numpy()[i]
-        rownnz = m.M_rownnz.numpy()[i]
-        for k in range(rownnz):
-          madr = rowadr + k
-          col = m.M_colind.numpy()[madr]
-          mjw_out[i, col] = out_smooth_vel.numpy()[0, 0, madr]
+    mujoco.mju_sym2dense(
+      mjw_out, out_smooth_vel.numpy().reshape(-1).astype(np.float64), mjm.M_rownnz, mjm.M_rowadr, mjm.M_colind
+    )
 
     # Symmetrize mjw_out (use lower triangle)
     mjw_out = np.tril(mjw_out) + np.tril(mjw_out, -1).T
@@ -130,10 +120,7 @@ class DerivativeTest(parameterized.TestCase):
     mujoco.mju_sparse2dense(mj_qDeriv, mjd.qDeriv, mjm.D_rownnz, mjm.D_rowadr, mjm.D_colind)
 
     mj_M = np.zeros((m.nv, m.nv))
-    if check_version("mujoco>=3.8.1.dev910242375"):
-      mujoco.mju_sym2dense(mj_M, mjd.M, mjm.M_rownnz, mjm.M_rowadr, mjm.M_colind)
-    else:
-      mujoco.mj_fullM(mjm, mj_M, mjd.qM)
+    mujoco.mju_sym2dense(mj_M, mjd.M, mjm.M_rownnz, mjm.M_rowadr, mjm.M_colind)
     mj_out = mj_M - mjm.opt.timestep * mj_qDeriv
 
     _assert_eq(mjw_out, mj_out, "M - dt * qDeriv")
@@ -191,27 +178,15 @@ class DerivativeTest(parameterized.TestCase):
     mjw.deriv_smooth_vel(m, d, out_smooth_vel)
 
     mjw_out = np.zeros((m.nv, m.nv))
-    if check_version("mujoco>=3.8.1.dev910242375"):
-      mujoco.mju_sym2dense(
-        mjw_out, out_smooth_vel.numpy().reshape(-1).astype(np.float64), mjm.M_rownnz, mjm.M_rowadr, mjm.M_colind
-      )
-    else:
-      for i in range(m.nv):
-        rowadr = m.M_rowadr.numpy()[i]
-        rownnz = m.M_rownnz.numpy()[i]
-        for k in range(rownnz):
-          madr = rowadr + k
-          col = m.M_colind.numpy()[madr]
-          mjw_out[i, col] = out_smooth_vel.numpy()[0, 0, madr]
+    mujoco.mju_sym2dense(
+      mjw_out, out_smooth_vel.numpy().reshape(-1).astype(np.float64), mjm.M_rownnz, mjm.M_rowadr, mjm.M_colind
+    )
 
     # Final comparison against new ground truth: M - dt * qDeriv
     mj_qDeriv = np.zeros((mjm.nv, mjm.nv))
     mujoco.mju_sparse2dense(mj_qDeriv, mjd.qDeriv, mjm.D_rownnz, mjm.D_rowadr, mjm.D_colind)
     mj_M = np.zeros((m.nv, m.nv))
-    if check_version("mujoco>=3.8.1.dev910242375"):
-      mujoco.mju_sym2dense(mj_M, mjd.M, mjm.M_rownnz, mjm.M_rowadr, mjm.M_colind)
-    else:
-      mujoco.mj_fullM(mjm, mj_M, mjd.qM)
+    mujoco.mju_sym2dense(mj_M, mjd.M, mjm.M_rownnz, mjm.M_rowadr, mjm.M_colind)
     mj_out = mj_M - mjm.opt.timestep * mj_qDeriv
 
     self.assertFalse(np.any(np.isnan(mjw_out)))
@@ -418,28 +393,15 @@ class DerivativeTest(parameterized.TestCase):
     mjw.deriv_smooth_vel(m, d, out_smooth_vel)
 
     mjw_out = np.zeros((m.nv, m.nv))
-    if check_version("mujoco>=3.8.1.dev910242375"):
-      mujoco.mju_sym2dense(
-        mjw_out, out_smooth_vel.numpy().reshape(-1).astype(np.float64), mjm.M_rownnz, mjm.M_rowadr, mjm.M_colind
-      )
-    else:
-      for i in range(m.nv):
-        rowadr = m.M_rowadr.numpy()[i]
-        rownnz = m.M_rownnz.numpy()[i]
-        for k in range(rownnz):
-          madr = rowadr + k
-          col = m.M_colind.numpy()[madr]
-          mjw_out[i, col] = out_smooth_vel.numpy()[0, 0, madr]
-          mjw_out[col, i] = out_smooth_vel.numpy()[0, 0, madr]
+    mujoco.mju_sym2dense(
+      mjw_out, out_smooth_vel.numpy().reshape(-1).astype(np.float64), mjm.M_rownnz, mjm.M_rowadr, mjm.M_colind
+    )
 
     mj_qDeriv = np.zeros((mjm.nv, mjm.nv))
     mujoco.mju_sparse2dense(mj_qDeriv, mjd.qDeriv, mjm.D_rownnz, mjm.D_rowadr, mjm.D_colind)
 
     mj_M = np.zeros((m.nv, m.nv))
-    if check_version("mujoco>=3.8.1.dev910242375"):
-      mujoco.mju_sym2dense(mj_M, mjd.M, mjm.M_rownnz, mjm.M_rowadr, mjm.M_colind)
-    else:
-      mujoco.mj_fullM(mjm, mj_M, mjd.qM)
+    mujoco.mju_sym2dense(mj_M, mjd.M, mjm.M_rownnz, mjm.M_rowadr, mjm.M_colind)
     mj_out = mj_M - mjm.opt.timestep * mj_qDeriv
 
     self.assertFalse(np.any(np.isnan(mjw_out)))
@@ -490,27 +452,14 @@ class DerivativeTest(parameterized.TestCase):
     mjw.deriv_smooth_vel(m, d, out_smooth_vel)
 
     mjw_out = np.zeros((m.nv, m.nv))
-    if check_version("mujoco>=3.8.1.dev910242375"):
-      mujoco.mju_sym2dense(
-        mjw_out, out_smooth_vel.numpy().reshape(-1).astype(np.float64), mjm.M_rownnz, mjm.M_rowadr, mjm.M_colind
-      )
-    else:
-      for i in range(m.nv):
-        rowadr = m.M_rowadr.numpy()[i]
-        rownnz = m.M_rownnz.numpy()[i]
-        for k in range(rownnz):
-          madr = rowadr + k
-          col = m.M_colind.numpy()[madr]
-          mjw_out[i, col] = out_smooth_vel.numpy()[0, 0, madr]
-          mjw_out[col, i] = out_smooth_vel.numpy()[0, 0, madr]
+    mujoco.mju_sym2dense(
+      mjw_out, out_smooth_vel.numpy().reshape(-1).astype(np.float64), mjm.M_rownnz, mjm.M_rowadr, mjm.M_colind
+    )
 
     mj_qDeriv = np.zeros((mjm.nv, mjm.nv))
     mujoco.mju_sparse2dense(mj_qDeriv, mjd.qDeriv, mjm.D_rownnz, mjm.D_rowadr, mjm.D_colind)
     mj_M = np.zeros((m.nv, m.nv))
-    if check_version("mujoco>=3.8.1.dev910242375"):
-      mujoco.mju_sym2dense(mj_M, mjd.M, mjm.M_rownnz, mjm.M_rowadr, mjm.M_colind)
-    else:
-      mujoco.mj_fullM(mjm, mj_M, mjd.qM)
+    mujoco.mju_sym2dense(mj_M, mjd.M, mjm.M_rownnz, mjm.M_rowadr, mjm.M_colind)
     mj_out = mj_M - mjm.opt.timestep * mj_qDeriv
 
     self.assertFalse(np.any(np.isnan(mjw_out)))
@@ -922,10 +871,7 @@ class DerivativeTest(parameterized.TestCase):
     mujoco.mju_sparse2dense(mj_qDeriv, mjd.qDeriv, mjm.D_rownnz, mjm.D_rowadr, mjm.D_colind)
 
     mj_M = np.zeros((m.nv, m.nv))
-    if check_version("mujoco>=3.8.1.dev910242375"):
-      mujoco.mju_sym2dense(mj_M, mjd.M, mjm.M_rownnz, mjm.M_rowadr, mjm.M_colind)
-    else:
-      mujoco.mj_fullM(mjm, mj_M, mjd.qM)
+    mujoco.mju_sym2dense(mj_M, mjd.M, mjm.M_rownnz, mjm.M_rowadr, mjm.M_colind)
     expected_out = mj_M - mjm.opt.timestep * mj_qDeriv
 
     self.assertFalse(np.any(np.isnan(mjw_out)))
@@ -1034,10 +980,7 @@ class DerivativeTest(parameterized.TestCase):
     )
 
     mj_M = np.zeros((m.nv, m.nv))
-    if check_version("mujoco>=3.8.1.dev910242375"):
-      mujoco.mju_sym2dense(mj_M, mjd.M, mjm.M_rownnz, mjm.M_rowadr, mjm.M_colind)
-    else:
-      mujoco.mj_fullM(mjm, mj_M, mjd.qM)
+    mujoco.mju_sym2dense(mj_M, mjd.M, mjm.M_rownnz, mjm.M_rowadr, mjm.M_colind)
     expected_out = mj_M - mjm.opt.timestep * mj_qDeriv
 
     _assert_eq(mjw_out, expected_out, "M - dt * qDeriv DCMotor")

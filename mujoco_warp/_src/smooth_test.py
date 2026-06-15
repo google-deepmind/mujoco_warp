@@ -25,8 +25,6 @@ import mujoco_warp as mjw
 from mujoco_warp import ConeType
 from mujoco_warp import DisableBit
 from mujoco_warp import test_data
-from mujoco_warp._src.types import NEW_GAP_SEMANTICS
-from mujoco_warp._src.util_pkg import check_version
 
 # tolerance for difference between MuJoCo and MJWarp smooth calculations - mostly
 # due to float precision
@@ -195,10 +193,7 @@ class SmoothTest(parameterized.TestCase):
     _assert_eq(d.crb.numpy()[0], mjd.crb, "crb")
 
     # M is always stored CSR (is_sparse governs only the constraint Jacobian/Hessian).
-    if check_version("mujoco>=3.8.1.dev910242375"):
-      _assert_eq(d.M.numpy()[0, 0], mjd.M, "M")
-    else:
-      _assert_eq(d.M.numpy()[0, 0], mjd.qM[mjm.mapM2M], "M")
+    _assert_eq(d.M.numpy()[0, 0], mjd.M, "M")
 
   @parameterized.parameters(mujoco.mjtJacobian.mjJAC_SPARSE, mujoco.mjtJacobian.mjJAC_DENSE)
   def test_factor_m(self, jacobian):
@@ -370,8 +365,6 @@ class SmoothTest(parameterized.TestCase):
   )
   def test_actuator_adhesion(self, keyframe, cone, jacobian):
     """Tests adhesion actuator."""
-    if not NEW_GAP_SEMANTICS:
-      self.skipTest("Skipping due to new gap semantics")
     mjm, mjd, m, d = test_data.fixture(
       "actuation/adhesion.xml", keyframe=keyframe, overrides={"opt.cone": cone, "opt.jacobian": jacobian}
     )
@@ -478,10 +471,7 @@ class SmoothTest(parameterized.TestCase):
     )
 
     qM = np.zeros((mjm.nv, mjm.nv))
-    if check_version("mujoco>=3.8.1.dev910242375"):
-      mujoco.mju_sym2dense(qM, mjd.M, mjm.M_rownnz, mjm.M_rowadr, mjm.M_colind)
-    else:
-      mujoco.mj_fullM(mjm, qM, mjd.qM)
+    mujoco.mju_sym2dense(qM, mjd.M, mjm.M_rownnz, mjm.M_rowadr, mjm.M_colind)
 
     d.qLD.fill_(wp.inf)
     d.qLDiagInv.fill_(wp.inf)
@@ -614,10 +604,7 @@ class SmoothTest(parameterized.TestCase):
     mjw._src.smooth.tendon_armature(m, d)
 
     # M is always stored CSR (is_sparse governs only the constraint Jacobian/Hessian).
-    if check_version("mujoco>=3.8.1.dev910242375"):
-      _assert_eq(d.M.numpy()[0, 0], mjd.M, "M")
-    else:
-      _assert_eq(d.M.numpy()[0, 0], mjd.qM[mjm.mapM2M], "M")
+    _assert_eq(d.M.numpy()[0, 0], mjd.M, "M")
 
     # qfrc_bias
     d.qfrc_bias.fill_(wp.inf)

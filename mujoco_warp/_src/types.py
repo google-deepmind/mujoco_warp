@@ -20,8 +20,6 @@ import mujoco
 import numpy as np
 import warp as wp
 
-from mujoco_warp._src.util_pkg import check_version
-
 MJ_MINVAL = mujoco.mjMINVAL
 MJ_MAXVAL = mujoco.mjMAXVAL
 MJ_MINIMP = mujoco.mjMINIMP  # minimum constraint impedance
@@ -29,8 +27,6 @@ MJ_MAXIMP = mujoco.mjMAXIMP  # maximum constraint impedance
 MJ_MAXCONPAIR = mujoco.mjMAXCONPAIR
 MJ_MINMU = mujoco.mjMINMU  # minimum friction
 MJ_MINAWAKE = mujoco.mjMINAWAKE  # minimum number of timesteps before sleeping
-NEW_GAP_SEMANTICS = check_version("mujoco>=3.9.0.dev914519929")
-TACTILE_DEPTH_SEMANTICS = check_version("mujoco>=3.9.0.dev921980899")
 # maximum size (by number of edges) of an horizon in EPA algorithm
 MJ_MAX_EPAHORIZON = 24
 # maximum average number of trianglarfaces EPA can insert at each iteration

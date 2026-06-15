@@ -29,7 +29,6 @@ from mujoco_warp._src import io
 from mujoco_warp._src import island
 from mujoco_warp._src import solver
 from mujoco_warp._src import types
-from mujoco_warp._src.util_pkg import check_version
 
 # tolerance for difference between MuJoCo and MJWarp solver calculations - mostly
 # due to float precision
@@ -465,9 +464,7 @@ class SolverTest(parameterized.TestCase):
 
     # M is always stored CSR (nworld, 1, nC); is_sparse governs only the constraint J/H.
     def _csr_M(mjmw, mjdw):
-      if check_version("mujoco>=3.8.1.dev910242375"):
-        return np.asarray(mjdw.M, dtype=np.float32)
-      return np.asarray(mjdw.qM[mjmw.mapM2M], dtype=np.float32)
+      return np.asarray(mjdw.M, dtype=np.float32)
 
     M = np.stack([_csr_M(mjm0, mjd0), _csr_M(mjm1, mjd1), _csr_M(mjm2, mjd2)])[:, None, :]
     qacc_smooth = np.vstack(

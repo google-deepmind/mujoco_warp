@@ -31,7 +31,6 @@ from mujoco_warp._src.types import MJ_MINVAL
 from mujoco_warp._src.types import BiasType
 from mujoco_warp._src.types import TrnType
 from mujoco_warp._src.types import vec10
-from mujoco_warp._src.util_pkg import check_version
 
 # TODO(team): remove after improving island solver performance
 ENABLE_ISLANDS = False
@@ -879,14 +878,6 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
   m.flexedge_J_rowadr = mjm.flexedge_J_rowadr
   m.flexedge_J_colind = mjm.flexedge_J_colind.reshape(-1)
 
-  # flex_bendingadr backward compat: flatten old (nflexedge, 17) to 1D
-  if not check_version("mujoco>=3.8.1.dev909088123"):
-    m.flex_bendingadr = (
-      np.array([mjm.flex_edgeadr[i] * 17 for i in range(mjm.nflex)], dtype=int) if mjm.nflex else np.zeros(0, dtype=int)
-    )
-    m.flex_bending = mjm.flex_bending.ravel()
-    m.nflexbending = len(m.flex_bending)
-
   # place m on device
   sizes = dict({"*": 1}, **{f.name: getattr(m, f.name) for f in dataclasses.fields(types.Model) if f.type is int})
   for f in dataclasses.fields(types.Model):
@@ -1544,11 +1535,8 @@ def put_data(
   d = types.Data(**d_kwargs)
   d.solver_niter = wp.full((nworld,), mjd.solver_niter[0], dtype=int)
 
-  # M is stored compact CSR.
-  if check_version("mujoco>=3.8.1.dev910242375"):
-    d.M = wp.array(np.full((nworld, 1, mjm.nC), mjd.M), dtype=float)
-  else:
-    d.M = wp.array(np.full((nworld, 1, mjm.nC), mjd.qM[mjm.mapM2M]), dtype=float)
+  # M is stored compact CSR (min mujoco is 3.9.0, so always the new CSR API).
+  d.M = wp.array(np.full((nworld, 1, mjm.nC), mjd.M), dtype=float)
   # qLD = [packed dense-block Cholesky | nC LDL region]. Dense blocks store their upper Cholesky
   # packed; the LDL region (present iff some block is sparse) holds MuJoCo's full L'DL factor (only
   # its sparse-block entries are read by the solve).
@@ -1557,10 +1545,7 @@ def put_data(
   qLD = np.zeros(qld_total, dtype=np.float32)
   if lay["has_dense"]:
     Mfull = np.zeros((mjm.nv, mjm.nv))
-    if check_version("mujoco>=3.8.1.dev910242375"):
-      mujoco.mju_sym2dense(Mfull, mjd.M, mjm.M_rownnz, mjm.M_rowadr, mjm.M_colind)
-    else:
-      mujoco.mj_fullM(mjm, Mfull, mjd.qM)
+    mujoco.mju_sym2dense(Mfull, mjd.M, mjm.M_rownnz, mjm.M_rowadr, mjm.M_colind)
     for start, size in lay["dense_blocks"]:
       off = lay["dof_adr"][start]
       blk = Mfull[start : start + size, start : start + size]
@@ -1720,15 +1705,8 @@ def get_data_into(
   result.contact.geom[:ncon] = d.contact.geom.numpy()[ncon_filter]
   result.contact.efc_address[:ncon] = contact_efc_address_ordered[:ncon]
 
-  # M is stored CSR.
-  if check_version("mujoco>=3.8.1.dev910242375"):
-    result.M[:] = d.M.numpy()[world_id, 0]
-  else:
-    # Legacy qM (length nM) is the dof-tree layout; the compact CSR M (length nC) holds
-    # only the true nonzeros. mapM2M maps each CSR entry to its qM slot; the remaining qM
-    # slots are structural zeros, so zero qM first, then scatter the nonzeros.
-    result.qM[:] = 0.0
-    result.qM[mjm.mapM2M] = d.M.numpy()[world_id, 0]
+  # M is stored CSR (min mujoco is 3.9.0).
+  result.M[:] = d.M.numpy()[world_id, 0]
   _lay = m_block_layout(mjm)
   if _lay["has_dense"] or _lay["has_simple"]:
     # d.qLD is not MuJoCo's LDL: dense blocks are a packed Cholesky and simple blocks are factored

@@ -29,7 +29,6 @@ from mujoco_warp import EnableBit
 from mujoco_warp import GainType
 from mujoco_warp import IntegratorType
 from mujoco_warp import test_data
-from mujoco_warp._src.util_pkg import check_version
 
 # tolerance for difference between MuJoCo and mjwarp smooth calculations - mostly
 # due to float precision
@@ -438,10 +437,7 @@ class ForwardTest(parameterized.TestCase):
         d_arr = d_arr.reshape(-1)
       elif arr == "M":
         # M is always stored CSR (is_sparse governs only the constraint Jacobian/Hessian).
-        if check_version("mujoco>=3.8.1.dev910242375"):
-          mjd_arr = mjd.M
-        else:
-          mjd_arr = mjd.qM[mjm.mapM2M]
+        mjd_arr = mjd.M
         d_arr = d_arr[0]
       elif arr == "actuator_moment":
         actuator_moment = np.zeros((mjm.nu, mjm.nv))
