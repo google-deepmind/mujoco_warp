@@ -236,6 +236,38 @@ def _kinematics_branch(
           xanchor_out,
           xaxis_out,
         )
+      if jntnum >= 5:
+        xpos, xquat = _process_joint(
+          xpos,
+          xquat,
+          jntadr + 4,
+          jnt_pos_id,
+          worldid,
+          qpos0,
+          jnt_type,
+          jnt_qposadr,
+          jnt_pos,
+          jnt_axis,
+          qpos,
+          xanchor_out,
+          xaxis_out,
+        )
+      if jntnum >= 6:
+        xpos, xquat = _process_joint(
+          xpos,
+          xquat,
+          jntadr + 5,
+          jnt_pos_id,
+          worldid,
+          qpos0,
+          jnt_type,
+          jnt_qposadr,
+          jnt_pos,
+          jnt_axis,
+          qpos,
+          xanchor_out,
+          xaxis_out,
+        )
 
       xquat = wp.normalize(xquat)
 
