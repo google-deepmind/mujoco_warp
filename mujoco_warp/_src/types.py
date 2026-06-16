@@ -704,7 +704,8 @@ class State(enum.IntEnum):
   FULLPHYSICS = mujoco.mjtState.mjSTATE_FULLPHYSICS
   USER = mujoco.mjtState.mjSTATE_USER
   INTEGRATION = mujoco.mjtState.mjSTATE_INTEGRATION
-  # unsupported: USERDATA, PLUGIN
+  USERDATA = mujoco.mjtState.mjSTATE_USERDATA
+  # unsupported: PLUGIN
 
 
 class vec5f(wp.types.vector(length=5, dtype=float)):
@@ -971,6 +972,7 @@ class Model:
     nplugin: number of plugin instances
     nJmom: number of non-zeros in actuator_moment
     ngravcomp: number of bodies with nonzero gravcomp
+    nuserdata: number of custom user parameters
     nsensordata: number of elements in sensor data vector
     nhistory: number of history buffer entries
     opt: physics options
@@ -1415,6 +1417,7 @@ class Model:
   nplugin: int
   nJmom: int
   ngravcomp: int
+  nuserdata: int
   nsensordata: int
   nhistory: int
   opt: Option
@@ -1963,6 +1966,7 @@ class Data:
     mocap_quat: orientation of mocap bodies                     (nworld, nmocap, 4)
     qacc: acceleration                                          (nworld, nv)
     act_dot: time-derivative of actuator activation             (nworld, na)
+    userdata: custom user data                                  (nworld, nuserdata)
     sensordata: sensor data array                               (nworld, nsensordata,)
     tree_asleep: tree asleep counter; >=0: asleep cycle         (nworld, ntree)
     xpos: Cartesian position of body frame                      (nworld, nbody, 3)
@@ -2090,6 +2094,7 @@ class Data:
   mocap_quat: array("nworld", "nmocap", wp.quat)
   qacc: array("nworld", "nv", float)
   act_dot: array("nworld", "na", float)
+  userdata: array("nworld", "nuserdata", float)
   sensordata: array("nworld", "nsensordata", float)
   tree_asleep: array("nworld", "ntree", int)
   xpos: array("nworld", "nbody", wp.vec3)

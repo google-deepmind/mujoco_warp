@@ -1591,6 +1591,9 @@ def get_data_into(
   if mjm.nhistory > 0:
     result.history[:] = d.history.numpy()[world_id]
 
+  if mjm.nuserdata > 0:
+    result.userdata[:] = d.userdata.numpy()[world_id]
+
   # contact
   result.contact.dist[:ncon] = d.contact.dist.numpy()[ncon_filter]
   result.contact.pos[:ncon] = d.contact.pos.numpy()[ncon_filter]
@@ -1770,6 +1773,7 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
     nbody: int,
     ntree: int,
     neq: int,
+    nuserdata: int,
     nsensordata: int,
     qpos0: wp.array2d[float],
     eq_active0: wp.array[bool],
@@ -1797,6 +1801,7 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
     eq_active_out: wp.array2d[bool],
     qacc_out: wp.array2d[float],
     act_dot_out: wp.array2d[float],
+    userdata_out: wp.array2d[float],
     sensordata_out: wp.array2d[float],
     nacon_out: wp.array[int],
   ):
@@ -1835,6 +1840,8 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
       eq_active_out[worldid, i] = eq_active0[i]
     for i in range(nsensordata):
       sensordata_out[worldid, i] = 0.0
+    for i in range(nuserdata):
+      userdata_out[worldid, i] = 0.0
 
   @wp.kernel(module="unique", enable_backward=False)
   def reset_mocap(
@@ -2020,7 +2027,21 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
   wp.launch(
     reset_nworld,
     dim=d.nworld,
-    inputs=[m.nq, m.nv, m.nu, m.na, m.nbody, m.ntree, m.neq, m.nsensordata, m.qpos0, m.eq_active0, d.nworld, reset_input],
+    inputs=[
+      m.nq,
+      m.nv,
+      m.nu,
+      m.na,
+      m.nbody,
+      m.ntree,
+      m.neq,
+      m.nuserdata,
+      m.nsensordata,
+      m.qpos0,
+      m.eq_active0,
+      d.nworld,
+      reset_input,
+    ],
     outputs=[
       d.solver_niter,
       d.ne,
@@ -2041,6 +2062,7 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
       d.eq_active,
       d.qacc,
       d.act_dot,
+      d.userdata,
       d.sensordata,
       d.nacon,
     ],
