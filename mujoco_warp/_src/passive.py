@@ -430,12 +430,8 @@ def _fluid_force(
       proj_denom = _pow4(s12) * _pow2(l_lin[0]) + _pow4(s20) * _pow2(l_lin[1]) + _pow4(s01) * _pow2(l_lin[2])
       proj_num = _pow2(s12 * l_lin[0]) + _pow2(s20 * l_lin[1]) + _pow2(s01 * l_lin[2])
 
-      A_proj = 0.0
-      cos_alpha = 0.0
-      if proj_num > MJ_MINVAL and proj_denom > MJ_MINVAL:
-        A_proj = wp.pi * wp.sqrt(proj_denom / wp.max(MJ_MINVAL, proj_num))
-        if lin_speed > MJ_MINVAL:
-          cos_alpha = proj_num / wp.max(MJ_MINVAL, lin_speed * proj_denom)
+      A_proj = wp.pi * wp.sqrt(proj_denom / wp.max(MJ_MINVAL, proj_num))
+      cos_alpha = proj_num / wp.max(MJ_MINVAL, lin_speed * proj_denom)
 
       norm = wp.vec3(
         _pow2(s12) * l_lin[0],
