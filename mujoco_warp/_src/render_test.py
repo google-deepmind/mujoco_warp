@@ -413,6 +413,35 @@ class RenderTest(parameterized.TestCase):
       "with cull disabled, enclosing geom should appear in segmentation",
     )
 
+  def test_per_world_skybox_textures(self):
+    """Verifies that different skybox textures can be assigned to different worlds."""
+    # Load checkerboard skybox fixture (contains skybox and grid textures)
+    mjm, mjd, m, d = test_data.fixture("skybox/checker.xml", nworld=2)
+
+    rc = mjw.create_render_context(
+      mjm,
+      nworld=2,
+      cam_res=(32, 32),
+      render_rgb=True,
+      render_skybox=True,
+    )
+
+    # Manually configure world 0 to use the skybox texture,
+    # and world 1 to use a different texture (e.g. the checkerboard grid texture)
+    tex_ids = np.array([0, 1], dtype=np.int32)
+    widths = np.array([mjm.tex_width[0], mjm.tex_width[1]], dtype=np.int32)
+    rc.skybox_tex_id = wp.array(tex_ids, dtype=int)
+    rc.skybox_face_width = wp.array(widths, dtype=int)
+
+    mjw.render(m, d, rc)
+
+    rgb = rc.rgb_data.numpy()
+    rgb_w0 = _unpack_rgb(rgb[0])
+    rgb_w1 = _unpack_rgb(rgb[1])
+
+    # Verify that the two worlds rendered different skybox backgrounds
+    self.assertFalse(np.array_equal(rgb_w0, rgb_w1))
+
 
 if __name__ == "__main__":
   wp.init()

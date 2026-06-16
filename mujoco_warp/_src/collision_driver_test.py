@@ -30,7 +30,6 @@ from mujoco_warp._src.collision_core import Geom
 from mujoco_warp._src.collision_driver import MJ_COLLISION_TABLE
 from mujoco_warp._src.collision_primitive import plane_convex
 from mujoco_warp._src.math import upper_trid_index
-from mujoco_warp._src.types import NEW_GAP_SEMANTICS
 from mujoco_warp.test_data.collision_sdf.utils import register_sdf_plugins
 
 _TOLERANCE = 5e-5
@@ -716,7 +715,7 @@ class CollisionTest(parameterized.TestCase):
           </body>
         </worldbody>
         <contact>
-          <pair geom1="geom1" geom2="geom2" margin="{-1 if NEW_GAP_SEMANTICS else 2}" gap="3" condim="6" friction="5 4 3 2 1" solref="-.25 -.5" solreffriction="2 4" solimp=".1 .2 .3 .4 .5"/>
+          <pair geom1="geom1" geom2="geom2" margin="-1" gap="3" condim="6" friction="5 4 3 2 1" solref="-.25 -.5" solreffriction="2 4" solimp=".1 .2 .3 .4 .5"/>
         </contact>
       </mujoco>
     """
@@ -760,7 +759,7 @@ class CollisionTest(parameterized.TestCase):
           </body>
         </worldbody>
         <contact>
-          <pair geom1="geom1" geom2="geom2" margin="{-1 if NEW_GAP_SEMANTICS else 2}" gap="3" condim="6" friction="5 4 3 2 1" solref="-.25 -.5" solreffriction="2 4" solimp=".1 .2 .3 .4 .5"/>
+          <pair geom1="geom1" geom2="geom2" margin="-1" gap="3" condim="6" friction="5 4 3 2 1" solref="-.25 -.5" solreffriction="2 4" solimp=".1 .2 .3 .4 .5"/>
         </contact>
       </mujoco>
     """
@@ -805,7 +804,7 @@ class CollisionTest(parameterized.TestCase):
         </worldbody>
         <contact>
           <exclude body1="body1" body2="body2"/>
-          <pair geom1="geom1" geom2="geom2" margin="{-1 if NEW_GAP_SEMANTICS else 2}" gap="3" condim="6" friction="5 4 3 2 1" solref="-.25 -.5" solreffriction="2 4" solimp=".1 .2 .3 .4 .5"/>
+          <pair geom1="geom1" geom2="geom2" margin="-1" gap="3" condim="6" friction="5 4 3 2 1" solref="-.25 -.5" solreffriction="2 4" solimp=".1 .2 .3 .4 .5"/>
         </contact>
       </mujoco>
     """
@@ -854,7 +853,7 @@ class CollisionTest(parameterized.TestCase):
         </worldbody>
         <contact>
           <exclude body1="body1" body2="body2"/>
-          <pair geom1="geom2" geom2="geom3" margin="{-1 if NEW_GAP_SEMANTICS else 2}" gap="3" condim="6" friction="5 4 3 2 1" solref="-.25 -.5" solreffriction="2 4" solimp=".1 .2 .3 .4 .5"/>
+          <pair geom1="geom2" geom2="geom3" margin="-1" gap="3" condim="6" friction="5 4 3 2 1" solref="-.25 -.5" solreffriction="2 4" solimp=".1 .2 .3 .4 .5"/>
         </contact>
       </mujoco>
     """
@@ -1175,11 +1174,11 @@ class CollisionTest(parameterized.TestCase):
       <worldbody>
         <body pos="0 0 0">
           <freejoint/>
-          <geom type="ellipsoid" size="0.15 0.15 0.25" margin="{0.01 if NEW_GAP_SEMANTICS else 0.1}" gap="0.2"/>
+          <geom type="ellipsoid" size="0.15 0.15 0.25" margin="0.01" gap="0.2"/>
         </body>
         <body pos="0 0 0.35">
           <freejoint/>
-          <geom type="ellipsoid" size="0.1 0.1 0.05" margin="{0.01 if NEW_GAP_SEMANTICS else 0.1}" gap="0.2"/>
+          <geom type="ellipsoid" size="0.1 0.1 0.05" margin="0.01" gap="0.2"/>
         </body>
       </worldbody>
     </mujoco>
