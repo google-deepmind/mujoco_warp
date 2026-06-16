@@ -904,6 +904,7 @@ def _permute_contacts(
   src_dim_in: wp.array[int],
   src_geom_in: wp.array[wp.vec2i],
   src_flex_in: wp.array[wp.vec2i],
+  src_elem_in: wp.array[wp.vec2i],
   src_vert_in: wp.array[wp.vec2i],
   src_worldid_in: wp.array[int],
   src_type_in: wp.array[int],
@@ -921,6 +922,7 @@ def _permute_contacts(
   dst_dim_out: wp.array[int],
   dst_geom_out: wp.array[wp.vec2i],
   dst_flex_out: wp.array[wp.vec2i],
+  dst_elem_out: wp.array[wp.vec2i],
   dst_vert_out: wp.array[wp.vec2i],
   dst_worldid_out: wp.array[int],
   dst_type_out: wp.array[int],
@@ -942,8 +944,12 @@ def _permute_contacts(
   dst_solimp_out[cid] = src_solimp_in[src]
   dst_dim_out[cid] = src_dim_in[src]
   dst_geom_out[cid] = src_geom_in[src]
-  dst_flex_out[cid] = src_flex_in[src]
-  dst_vert_out[cid] = src_vert_in[src]
+  # flex, elem and vert are only allocated when flex contacts are present; skip the
+  # gather when they are empty so the kernel does not dereference a null array.
+  if src_flex_in.shape[0] > 0:
+    dst_flex_out[cid] = src_flex_in[src]
+    dst_elem_out[cid] = src_elem_in[src]
+    dst_vert_out[cid] = src_vert_in[src]
   dst_worldid_out[cid] = src_worldid_in[src]
   dst_type_out[cid] = src_type_in[src]
   dst_gcid_out[cid] = src_gcid_in[src]
@@ -996,6 +1002,7 @@ def _sort_contacts(m: Model, d: Data):
   tmp_dim = wp.empty_like(d.contact.dim)
   tmp_geom = wp.empty_like(d.contact.geom)
   tmp_flex = wp.empty_like(d.contact.flex)
+  tmp_elem = wp.empty_like(d.contact.elem)
   tmp_vert = wp.empty_like(d.contact.vert)
   tmp_worldid = wp.empty_like(d.contact.worldid)
   tmp_type = wp.empty_like(d.contact.type)
@@ -1013,6 +1020,7 @@ def _sort_contacts(m: Model, d: Data):
   wp.copy(tmp_dim, d.contact.dim)
   wp.copy(tmp_geom, d.contact.geom)
   wp.copy(tmp_flex, d.contact.flex)
+  wp.copy(tmp_elem, d.contact.elem)
   wp.copy(tmp_vert, d.contact.vert)
   wp.copy(tmp_worldid, d.contact.worldid)
   wp.copy(tmp_type, d.contact.type)
@@ -1037,6 +1045,7 @@ def _sort_contacts(m: Model, d: Data):
       tmp_dim,
       tmp_geom,
       tmp_flex,
+      tmp_elem,
       tmp_vert,
       tmp_worldid,
       tmp_type,
@@ -1055,6 +1064,7 @@ def _sort_contacts(m: Model, d: Data):
       d.contact.dim,
       d.contact.geom,
       d.contact.flex,
+      d.contact.elem,
       d.contact.vert,
       d.contact.worldid,
       d.contact.type,

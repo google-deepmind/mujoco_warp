@@ -36,6 +36,7 @@ _CONTACT_FIELDS = (
   "dim",
   "geom",
   "flex",
+  "elem",
   "vert",
   "efc_address",
   "worldid",
@@ -84,6 +85,10 @@ def _permute_active_contacts(contact_fields, nacon, perm):
   """Return a copy with the active contacts permuted by `perm`."""
   permuted = {field: values.copy() for field, values in contact_fields.items()}
   for field, values in permuted.items():
+    # flex, elem and vert are only allocated when flex contacts are present; an
+    # empty array has no active contacts to permute.
+    if values.shape[0] == 0:
+      continue
     values[:nacon] = values[perm]
   return permuted
 
