@@ -48,12 +48,7 @@ ENABLE_ISLANDS = flags.DEFINE_bool(
   False,
   "Enable constraint islands solver",
 )
-NV_COMPACT = flags.DEFINE_bool(
-  "nv_compact",
-  False,
-  "Enable experimental nv_compact (compact active DOFs into nv_max-sized factor/solve)",
-)
-NV_MAX = flags.DEFINE_integer("nv_max", None, "capacity for compacted active DOFs per world (nv_compact)")
+NVMAX = flags.DEFINE_integer("nvmax", None, "maximum active DOFs per world")
 
 
 DEVICE = flags.DEFINE_string("device", None, "override the default Warp device")
@@ -148,7 +143,6 @@ def init_structs(
 ) -> Tuple[mjw.Model, mjw.Data, mjw.RenderContext | None, list[np.ndarray] | None]:
   """Initialize device structs."""
   io.ENABLE_ISLANDS = ENABLE_ISLANDS.value
-  io.ENABLE_NV_COMPACT = NV_COMPACT.value
 
   mjd = mujoco.MjData(mjm)
   ctrls = None
@@ -173,7 +167,7 @@ def init_structs(
       njmax=NJMAX.value,
       njmax_nnz=NJMAX_NNZ.value,
       nccdmax=NCCDMAX.value,
-      nv_max=NV_MAX.value,
+      nvmax=NVMAX.value,
     )
 
     if mjw.RenderContext not in get_type_hints(fn).values():
