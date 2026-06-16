@@ -42,20 +42,6 @@ def _is_array_spec(typ) -> bool:
   return isinstance(typ, wp.array) or type(typ).__name__ == "_ArrayAnnotation"
 
 
-def _broadcast_batch_data(data: Any, shape: tuple[int, ...], dtype) -> np.ndarray:
-  """Broadcasts host data to a requested leading batch dimension."""
-  data = np.array(data)
-  target_shape = shape + tuple(getattr(dtype, "_shape_", ()) or ())
-
-  if data.shape == target_shape:
-    return data
-
-  tail_shape = target_shape[1:]
-  if data.shape != tail_shape and data.size == np.prod(tail_shape):
-    data = data.reshape(tail_shape)
-  return np.broadcast_to(data, target_shape).copy()
-
-
 def _create_array(data: Any, spec, sizes: dict[str, int], batch_size: int = 1) -> wp.array | None:
   """Creates a warp array and populates it with data.
 
@@ -69,14 +55,20 @@ def _create_array(data: Any, spec, sizes: dict[str, int], batch_size: int = 1) -
 
   shape = tuple(batch_size if dim == "*" else (sizes[dim] if isinstance(dim, str) else dim) for dim in spec_shape)
 
-  is_batched = spec_shape[0] == "*"
+  is_batched = spec_shape[0] in ("*", "nworld")
 
   if data is None:
     array = wp.zeros(shape, dtype=spec.dtype)
   else:
+    data = np.array(data)
     if is_batched and shape[0] != 1:
-      data = _broadcast_batch_data(data, shape, spec.dtype)
-    array = wp.array(np.array(data), dtype=spec.dtype, shape=shape)
+      target_shape = shape + getattr(spec.dtype, "_shape_", ())
+      if data.shape != target_shape:
+        tail_shape = target_shape[1:]
+        if data.size == np.prod(tail_shape):
+          data = data.reshape(tail_shape)
+        data = np.broadcast_to(data, target_shape).copy()
+    array = wp.array(data, dtype=spec.dtype, shape=shape)
 
   if is_batched:
     # add private attribute for JAX to determine which fields are batched
@@ -1471,9 +1463,6 @@ def put_data(
     if f.name in d_kwargs:
       continue
     val = getattr(mjd, f.name, None)
-    if val is not None:
-      shape = val.shape if hasattr(val, "shape") else ()
-      val = np.full((nworld,) + shape, val)
     d_kwargs[f.name] = _create_array(val, f.type, sizes)
 
   d = types.Data(**d_kwargs)
