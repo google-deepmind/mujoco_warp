@@ -836,6 +836,7 @@ def nxn_broadphase(m: Model, d: Data, ctx: CollisionContext, skip: Optional[wp.a
 def _narrowphase(m: Model, d: Data, ctx: CollisionContext):
   collision_table = MJ_COLLISION_TABLE
   if m.opt.disableflags & DisableBit.NATIVECCD:
+    collision_table = collision_table.copy()
     collision_table[(GeomType.BOX, GeomType.BOX)] = CollisionType.PRIMITIVE
 
   convex_pairs = [key for key, value in collision_table.items() if value == CollisionType.CONVEX]
