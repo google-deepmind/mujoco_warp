@@ -1775,7 +1775,7 @@ def put_data(
       contact_kwargs[f.name] = wp.empty(0, dtype=wp.vec2i)
       continue
     val = getattr(mjd.contact, f.name)
-    val = np.repeat(val, nworld, axis=0)
+    val = np.tile(val, (nworld,) + (1,) * (val.ndim - 1))
     width = ((0, naconmax - val.shape[0]),) + ((0, 0),) * (val.ndim - 1)
     val = np.pad(val, width)
     contact_kwargs[f.name] = _create_array(val, f.type, sizes)

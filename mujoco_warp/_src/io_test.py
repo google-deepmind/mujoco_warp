@@ -2663,6 +2663,33 @@ class IOTest(parameterized.TestCase):
     with self.assertRaisesRegex(ValueError, "ls_parallel_min_step was removed in MuJoCo Warp 3.9.1"):
       override_model(m, {"opt.ls_parallel_min_step": 0.01})
 
+  def test_put_data_contact_batching(self):
+    """Tests that contacts are batched correctly (tiled, not repeated) across worlds."""
+    nworld = 2
+    mjm, mjd, _, d = test_data.fixture("humanoid/humanoid.xml", keyframe=0, nworld=nworld)
+    self.assertGreater(mjd.ncon, 1, "The test model must have at least 2 contacts")
+
+    # For each contact field, verify that it is tiled correctly
+    ncon = mjd.ncon
+    for field in [
+      "dist",
+      "pos",
+      "frame",
+      "includemargin",
+      "friction",
+      "solref",
+      "solreffriction",
+      "solimp",
+      "dim",
+      "geom",
+    ]:
+      val_device = getattr(d.contact, field).numpy()
+      val_host = getattr(mjd.contact, field)
+      for w in range(nworld):
+        device_slice = val_device[w * ncon : (w + 1) * ncon].reshape(-1)
+        host_slice = val_host[:ncon].reshape(-1)
+        _assert_eq(device_slice, host_slice, f"{field} mismatch in world {w}")
+
 
 # TODO(team): test set_const_0 sparse
 
