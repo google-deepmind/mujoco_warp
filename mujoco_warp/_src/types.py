@@ -2366,10 +2366,8 @@ class SolverContext:
   dof_to_block: wp.array[int]
   nblocks: int
   # Tree-level IC preconditioner (CG sparse only)
-  H_tree: wp.array2d[float]  # (nworld, total_tree_nnz) dense tree blocks
-  tree_mat_adr: wp.array[int]  # offset into H_tree for each tree [ntree+1]
-  total_tree_nnz: wp.array[int]  # single-element: total nnz across all trees
-  ntrees: int  # number of trees with DOFs
+  qLD_precond: wp.array3d[float]  # (nworld, 1, nC) IC(0) preconditioner factors
+  qLDiagInv_precond: wp.array2d[float]  # (nworld, nv) IC(0) diagonal inverse
   # Incremental Hessian update (Newton only)
   changed_efc_ids: wp.array2d[int]
   changed_efc_count: wp.array[int]

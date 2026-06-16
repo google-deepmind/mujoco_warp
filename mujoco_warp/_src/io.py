@@ -486,6 +486,7 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
       f"sleeping requires the Newton solver or enable_islands (got solver={types.SolverType(mjm.opt.solver).name})"
     )
   m.tree_total_nnz_int = int(sum(int(n) ** 2 for n in mjm.tree_dofnum))
+  m.has_articulated_trees = bool(any(int(n) > 6 for n in mjm.tree_dofnum))
   m.has_fluid = mjm.opt.wind.any() or mjm.opt.density > 0 or mjm.opt.viscosity > 0
 
   m.nflexintcell = _get_nflexintcell(mjm)

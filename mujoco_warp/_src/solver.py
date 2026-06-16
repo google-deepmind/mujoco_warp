@@ -104,30 +104,6 @@ def _build_block_mapping(
       block_count += 1
 
 
-@wp.kernel
-def _build_tree_mat_adr(
-  # Model:
-  tree_dofnum: wp.array[int],
-  # In:
-  ntrees: int,
-  # Out:
-  tree_mat_adr_out: wp.array[int],
-  total_tree_nnz_out: wp.array[int],
-):
-  """Build tree_mat_adr (cumulative sum of ndof^2) on device. Single-threaded."""
-  tid = wp.tid()
-  if tid > 0:
-    return
-
-  cumsum = int(0)
-  tree_mat_adr_out[0] = 0
-  for t in range(ntrees):
-    ndof = tree_dofnum[t]
-    cumsum += ndof * ndof
-    tree_mat_adr_out[t + 1] = cumsum
-  total_tree_nnz_out[0] = cumsum
-
-
 def _create_solver_context(m: types.Model, d: types.Data) -> SolverContext:
   """Create a SolverContext with allocated workspace arrays.
 
@@ -171,26 +147,15 @@ def _create_solver_context(m: types.Model, d: types.Data) -> SolverContext:
     block_dof_num = wp.empty(0, dtype=int)
     dof_to_block = wp.empty(0, dtype=int)
 
-  # Tree IC preconditioner: compute offsets and allocate storage.
-  # _create_solver_context runs once during setup (not during graph capture),
-  # so .numpy() is safe here.
-  alloc_tree_ic = alloc_block_jacobi and m.is_sparse
-  if alloc_tree_ic:
-    ntrees_ic = int(m.ntree)
-    total_tree_nnz_bound = m.tree_total_nnz_int
-    tree_mat_adr_ic = wp.zeros(ntrees_ic + 1, dtype=int)
-    total_tree_nnz_arr = wp.zeros(1, dtype=int)
-    wp.launch(
-      _build_tree_mat_adr,
-      dim=1,
-      inputs=[m.tree_dofnum, ntrees_ic],
-      outputs=[tree_mat_adr_ic, total_tree_nnz_arr],
-    )
+  # IC(0) preconditioner: sparse LDL^T for articulated bodies.
+  has_articulated = m.is_sparse and m.has_articulated_trees
+  alloc_ic = alloc_block_jacobi and has_articulated
+  if alloc_ic:
+    qLD_precond = wp.zeros((nworld, 1, m.nC), dtype=float)
+    qLDiagInv_precond = wp.zeros((nworld, nv), dtype=float)
   else:
-    ntrees_ic = 0
-    total_tree_nnz_bound = 0
-    tree_mat_adr_ic = wp.empty(0, dtype=int)
-    total_tree_nnz_arr = wp.empty(0, dtype=int)
+    qLD_precond = wp.empty((0, 0, 0), dtype=float)
+    qLDiagInv_precond = wp.empty((0, 0), dtype=float)
 
   return SolverContext(
     Jaref=wp.empty((nworld, njmax), dtype=float),
@@ -216,12 +181,8 @@ def _create_solver_context(m: types.Model, d: types.Data) -> SolverContext:
     block_dof_num=block_dof_num,
     dof_to_block=dof_to_block,
     nblocks=nblocks,
-    H_tree=wp.zeros((nworld, max(total_tree_nnz_bound, 1)), dtype=float)
-    if alloc_tree_ic
-    else wp.empty((nworld, 0), dtype=float),
-    tree_mat_adr=tree_mat_adr_ic,
-    total_tree_nnz=total_tree_nnz_arr,
-    ntrees=ntrees_ic,
+    qLD_precond=qLD_precond,
+    qLDiagInv_precond=qLDiagInv_precond,
     changed_efc_ids=wp.empty((nworld, njmax), dtype=int) if alloc_h else wp.empty((nworld, 0), dtype=int),
     changed_efc_count=wp.empty((nworld,), dtype=int) if alloc_h else wp.empty((0,), dtype=int),
   )
@@ -3124,89 +3085,12 @@ def _apply_block_preconditioner(
 # =============================================================================
 
 
-# kernel_analyzer: off
-@wp.func
-def _ic_inv3(
-  H: wp.array2d[float],
-  w: int,
-  adr: int,
-  ndof: int,
-  stride: int,
-):
-  """Analytically invert an ndof x ndof block (ndof <= 3) in-place.
-
-  Block is stored in row-major at H[w, adr + i*stride + j].
-  """
-  reg = 1.0e-12
-  if ndof == 1:
-    v = H[w, adr] + reg
-    if v > 0.0:
-      H[w, adr] = 1.0 / v
-    else:
-      H[w, adr] = 0.0
-  elif ndof == 2:
-    a00 = H[w, adr] + reg
-    a01 = H[w, adr + 1]
-    a10 = H[w, adr + stride]
-    a11 = H[w, adr + stride + 1] + reg
-    det = a00 * a11 - a01 * a10
-    if wp.abs(det) > 1.0e-30:
-      inv_det = 1.0 / det
-      H[w, adr] = a11 * inv_det
-      H[w, adr + 1] = -a01 * inv_det
-      H[w, adr + stride] = -a10 * inv_det
-      H[w, adr + stride + 1] = a00 * inv_det
-    else:
-      H[w, adr] = 0.0
-      H[w, adr + 1] = 0.0
-      H[w, adr + stride] = 0.0
-      H[w, adr + stride + 1] = 0.0
-  elif ndof == 3:
-    a00 = H[w, adr] + reg
-    a01 = H[w, adr + 1]
-    a02 = H[w, adr + 2]
-    a10 = H[w, adr + stride]
-    a11 = H[w, adr + stride + 1] + reg
-    a12 = H[w, adr + stride + 2]
-    a20 = H[w, adr + 2 * stride]
-    a21 = H[w, adr + 2 * stride + 1]
-    a22 = H[w, adr + 2 * stride + 2] + reg
-    c00 = a11 * a22 - a12 * a21
-    c01 = a02 * a21 - a01 * a22
-    c02 = a01 * a12 - a02 * a11
-    c10 = a12 * a20 - a10 * a22
-    c11 = a00 * a22 - a02 * a20
-    c12 = a02 * a10 - a00 * a12
-    c20 = a10 * a21 - a11 * a20
-    c21 = a01 * a20 - a00 * a21
-    c22 = a00 * a11 - a01 * a10
-    det = a00 * c00 + a01 * c10 + a02 * c20
-    if wp.abs(det) > 1.0e-30:
-      inv_det = 1.0 / det
-      H[w, adr] = c00 * inv_det
-      H[w, adr + 1] = c01 * inv_det
-      H[w, adr + 2] = c02 * inv_det
-      H[w, adr + stride] = c10 * inv_det
-      H[w, adr + stride + 1] = c11 * inv_det
-      H[w, adr + stride + 2] = c12 * inv_det
-      H[w, adr + 2 * stride] = c20 * inv_det
-      H[w, adr + 2 * stride + 1] = c21 * inv_det
-      H[w, adr + 2 * stride + 2] = c22 * inv_det
-    else:
-      for rr in range(3):
-        for cc in range(3):
-          H[w, adr + rr * stride + cc] = 0.0
-
-
-# kernel_analyzer: on
-
-
 @wp.kernel
-def _ic_tree_JTDJ(
+def _add_JTDJ_to_M_sparse(
   # Model:
-  dof_treeid: wp.array[int],
-  tree_dofadr: wp.array[int],
-  tree_dofnum: wp.array[int],
+  M_rownnz: wp.array[int],
+  M_rowadr: wp.array[int],
+  M_colind: wp.array[int],
   # Data in:
   nefc_in: wp.array[int],
   efc_J_rownnz_in: wp.array2d[int],
@@ -3216,227 +3100,104 @@ def _ic_tree_JTDJ(
   efc_D_in: wp.array2d[float],
   efc_state_in: wp.array2d[int],
   # In:
-  tree_mat_adr_in: wp.array[int],
   ctx_done_in: wp.array[bool],
   # Out:
-  H_tree_out: wp.array2d[float],
+  H_out: wp.array3d[float],
 ):
-  """Accumulate J^T D J into dense tree blocks."""
+  """Add J^T D J entries at positions matching M's sparsity pattern."""
   worldid, efcid = wp.tid()
-
   if ctx_done_in[worldid]:
     return
-
   if efcid >= nefc_in[worldid]:
     return
-
   efc_D = efc_D_in[worldid, efcid]
   efc_state = efc_state_in[worldid, efcid]
-
   if _state_check(efc_D, efc_state) == 0.0:
     return
-
   rownnz = efc_J_rownnz_in[worldid, efcid]
   rowadr = efc_J_rowadr_in[worldid, efcid]
-
-  for i in range(rownnz):
-    sparseidi = rowadr + i
-    Ji = efc_J_in[worldid, 0, sparseidi]
-    colindi = efc_J_colind_in[worldid, 0, sparseidi]
-    treei = dof_treeid[colindi]
-
-    for j in range(rownnz):
-      sparseidj = rowadr + j
-      Jj = efc_J_in[worldid, 0, sparseidj]
-      colindj = efc_J_colind_in[worldid, 0, sparseidj]
-      treej = dof_treeid[colindj]
-
-      if treei != treej:
-        continue
-
-      dof0 = tree_dofadr[treei]
-      ndof = tree_dofnum[treei]
-      base = tree_mat_adr_in[treei]
-
-      local_i = colindi - dof0
-      local_j = colindj - dof0
-
+  for k1 in range(rownnz):
+    Ji = efc_J_in[worldid, 0, rowadr + k1]
+    colindi = efc_J_colind_in[worldid, 0, rowadr + k1]
+    for k2 in range(k1 + 1):
+      Jj = efc_J_in[worldid, 0, rowadr + k2]
+      colindj = efc_J_colind_in[worldid, 0, rowadr + k2]
+      row = wp.max(colindi, colindj)
+      col = wp.min(colindi, colindj)
       h = Ji * Jj * efc_D
-      wp.atomic_add(H_tree_out[worldid], base + local_i * ndof + local_j, h)
+      row_start = M_rowadr[row]
+      row_nnz = M_rownnz[row]
+      for idx in range(row_nnz):
+        if M_colind[row_start + idx] == col:
+          wp.atomic_add(H_out[worldid, 0], row_start + idx, h)
+          break
 
 
 @wp.kernel
-def _ic_tree_add_M(
+def _apply_block_preconditioner_flex(
   # Model:
-  nv: int,
   dof_treeid: wp.array[int],
-  tree_dofadr: wp.array[int],
-  tree_dofnum: wp.array[int],
-  M_mulm_rowadr: wp.array[int],
-  M_mulm_col: wp.array[int],
-  M_mulm_madr: wp.array[int],
-  # Data in:
-  M_in: wp.array3d[float],
-  # In:
-  tree_mat_adr_in: wp.array[int],
-  ctx_done_in: wp.array[bool],
-  # Out:
-  H_tree_out: wp.array2d[float],
-):
-  """Add mass matrix entries into dense tree blocks."""
-  worldid, di = wp.tid()
-  if di >= nv:
-    return
-  if ctx_done_in[worldid]:
-    return
-
-  treei = dof_treeid[di]
-  dof0 = tree_dofadr[treei]
-  ndof = tree_dofnum[treei]
-  base = tree_mat_adr_in[treei]
-  local_i = di - dof0
-
-  start = M_mulm_rowadr[di]
-  end = M_mulm_rowadr[di + 1]
-  for k in range(start, end):
-    dj = M_mulm_col[k]
-    treej = dof_treeid[dj]
-    if treej == treei:
-      local_j = dj - dof0
-      madr = M_mulm_madr[k]
-      M_val = M_in[worldid, 0, madr]
-      wp.atomic_add(H_tree_out[worldid], base + local_i * ndof + local_j, M_val)
-
-
-@wp.kernel
-def _ic_tree_factorize(
-  # Model:
   tree_dofnum: wp.array[int],
   # In:
-  ntrees: int,
-  tree_mat_adr_in: wp.array[int],
-  ctx_done_in: wp.array[bool],
-  # Out:
-  H_tree_out: wp.array2d[float],
-):
-  """Factorize each tree block.
-
-  nv_t <= 3: analytic inverse in-place.
-  nv_t > 3:  full dense Cholesky factorization.
-
-  After factorization, the dense nv_t x nv_t block stores:
-  - nv_t <= 3: the inverted block (from _ic_inv3).
-  - nv_t > 3: L in the lower triangle (H = L L^T).
-  """
-  worldid, treeid = wp.tid()
-
-  if ctx_done_in[worldid]:
-    return
-  if treeid >= ntrees:
-    return
-
-  nv_t = tree_dofnum[treeid]
-  adr = tree_mat_adr_in[treeid]
-
-  if nv_t == 0:
-    return
-
-  if nv_t <= 3:
-    _ic_inv3(H_tree_out, worldid, adr, nv_t, nv_t)
-    return
-
-  # Full dense Cholesky factorization (in-place, lower triangle).
-  # Stores L in lower triangle: H = L L^T.
-  reg = 1.0e-10
-  for j in range(nv_t):
-    # Diagonal: L[j,j] = sqrt(H[j,j] - sum(L[j,k]^2, k<j))
-    s = H_tree_out[worldid, adr + j * nv_t + j]
-    for k in range(j):
-      ljk = H_tree_out[worldid, adr + j * nv_t + k]
-      s -= ljk * ljk
-    s = wp.max(s, reg)
-    ljj = wp.sqrt(s)
-    H_tree_out[worldid, adr + j * nv_t + j] = ljj
-    inv_ljj = 1.0 / ljj
-
-    # Off-diagonal: L[i,j] = (H[i,j] - sum(L[i,k]*L[j,k], k<j)) / L[j,j]
-    for i in range(j + 1, nv_t):
-      s = H_tree_out[worldid, adr + i * nv_t + j]
-      for k in range(j):
-        s -= H_tree_out[worldid, adr + i * nv_t + k] * H_tree_out[worldid, adr + j * nv_t + k]
-      H_tree_out[worldid, adr + i * nv_t + j] = s * inv_ljj
-
-
-@wp.kernel
-def _ic_tree_apply(
-  # Model:
-  tree_dofadr: wp.array[int],
-  tree_dofnum: wp.array[int],
-  # In:
-  ntrees: int,
-  tree_mat_adr_in: wp.array[int],
-  ctx_done_in: wp.array[bool],
+  nblocks: int,
+  block_dof_adr_in: wp.array[int],
+  block_dof_num_in: wp.array[int],
+  inv_H_blocks_in: wp.array3d[float],
   grad_in: wp.array2d[float],
-  H_tree_in: wp.array2d[float],
+  done_in: wp.array[bool],
   # Out:
   Mgrad_out: wp.array2d[float],
 ):
-  """Apply IC preconditioner: Mgrad = (LDL^T)^{-1} grad.
-
-  Small trees (nv_t <= 3): direct inverse-times-vector.
-  Larger trees: forward/diagonal/backward substitution.
-  """
-  worldid, treeid = wp.tid()
-
-  if ctx_done_in[worldid]:
+  """Block Jacobi apply for simple trees only (nv_tree <= 3)."""
+  worldid, blockid = wp.tid()
+  if blockid >= nblocks:
     return
-  if treeid >= ntrees:
+  if done_in[worldid]:
     return
-
-  nv_t = tree_dofnum[treeid]
-  dof0 = tree_dofadr[treeid]
-  adr = tree_mat_adr_in[treeid]
-
-  if nv_t == 0:
+  ndof = block_dof_num_in[blockid]
+  dof0 = block_dof_adr_in[blockid]
+  if ndof == 0:
     return
-
-  if nv_t <= 3:
-    # Direct H_inv * grad
-    for ii in range(nv_t):
-      val = float(0.0)
-      for jj in range(nv_t):
-        val += H_tree_in[worldid, adr + ii * nv_t + jj] * grad_in[worldid, dof0 + jj]
-      Mgrad_out[worldid, dof0 + ii] = val
+  treeid = dof_treeid[dof0]
+  if tree_dofnum[treeid] > 3:
     return
-
-  # Full Cholesky solve: L L^T x = b
-  # Forward substitution: L y = b
-  for i in range(nv_t):
-    s = grad_in[worldid, dof0 + i]
-    for k in range(i):
-      s -= H_tree_in[worldid, adr + i * nv_t + k] * Mgrad_out[worldid, dof0 + k]
-    Mgrad_out[worldid, dof0 + i] = s / H_tree_in[worldid, adr + i * nv_t + i]
-
-  # Backward substitution: L^T x = y
-  for i_rev in range(nv_t):
-    i = nv_t - 1 - i_rev
-    s = Mgrad_out[worldid, dof0 + i]
-    for k in range(i + 1, nv_t):
-      s -= H_tree_in[worldid, adr + k * nv_t + i] * Mgrad_out[worldid, dof0 + k]
-    Mgrad_out[worldid, dof0 + i] = s / H_tree_in[worldid, adr + i * nv_t + i]
+  I00 = inv_H_blocks_in[worldid, 0, blockid]
+  I01 = inv_H_blocks_in[worldid, 1, blockid]
+  I02 = inv_H_blocks_in[worldid, 2, blockid]
+  I11 = inv_H_blocks_in[worldid, 3, blockid]
+  I12 = inv_H_blocks_in[worldid, 4, blockid]
+  I22 = inv_H_blocks_in[worldid, 5, blockid]
+  g0 = grad_in[worldid, dof0]
+  g1 = float(0.0)
+  g2 = float(0.0)
+  if ndof >= 2:
+    g1 = grad_in[worldid, dof0 + 1]
+  if ndof >= 3:
+    g2 = grad_in[worldid, dof0 + 2]
+  if ndof == 1:
+    Mgrad_out[worldid, dof0] = I00 * g0
+  elif ndof == 2:
+    Mgrad_out[worldid, dof0] = I00 * g0 + I01 * g1
+    Mgrad_out[worldid, dof0 + 1] = I01 * g0 + I11 * g1
+  elif ndof == 3:
+    Mgrad_out[worldid, dof0] = I00 * g0 + I01 * g1 + I02 * g2
+    Mgrad_out[worldid, dof0 + 1] = I01 * g0 + I11 * g1 + I12 * g2
+    Mgrad_out[worldid, dof0 + 2] = I02 * g0 + I12 * g1 + I22 * g2
 
 
 def _build_ic_preconditioner(m, d, ctx):
-  """Build tree-level IC preconditioner: accumulate H, factorize."""
-  ctx.H_tree.zero_()
-
+  """Build hybrid preconditioner: block Jacobi for flex, IC(0) for articulated."""
+  _build_block_jacobi_preconditioner(m, d, ctx)
+  if ctx.qLD_precond.shape[2] == 0:
+    return  # No articulated trees
+  wp.copy(ctx.qLD_precond, d.M)
   wp.launch(
-    _ic_tree_JTDJ,
+    _add_JTDJ_to_M_sparse,
     dim=(d.nworld, d.njmax),
     inputs=[
-      m.dof_treeid,
-      m.tree_dofadr,
-      m.tree_dofnum,
+      m.M_rownnz,
+      m.M_rowadr,
+      m.M_colind,
       d.nefc,
       d.efc.J_rownnz,
       d.efc.J_rowadr,
@@ -3444,56 +3205,56 @@ def _build_ic_preconditioner(m, d, ctx):
       d.efc.J,
       d.efc.D,
       d.efc.state,
-      ctx.tree_mat_adr,
       ctx.done,
     ],
-    outputs=[ctx.H_tree],
+    outputs=[ctx.qLD_precond],
   )
-
+  for i in reversed(range(len(m.qLD_updates))):
+    wp.launch(
+      smooth._qLD_acc,
+      dim=(d.nworld, m.qLD_updates[i].size),
+      inputs=[m.M_rownnz, m.M_rowadr, m.qLD_updates[i], ctx.qLD_precond],
+      outputs=[ctx.qLD_precond],
+    )
   wp.launch(
-    _ic_tree_add_M,
+    smooth._qLDiag_div,
     dim=(d.nworld, m.nv),
-    inputs=[
-      m.nv,
-      m.dof_treeid,
-      m.tree_dofadr,
-      m.tree_dofnum,
-      m.M_mulm_rowadr,
-      m.M_mulm_col,
-      m.M_mulm_madr,
-      d.M,
-      ctx.tree_mat_adr,
-      ctx.done,
-    ],
-    outputs=[ctx.H_tree],
-  )
-
-  wp.launch(
-    _ic_tree_factorize,
-    dim=(d.nworld, ctx.ntrees),
-    inputs=[
-      m.tree_dofnum,
-      ctx.ntrees,
-      ctx.tree_mat_adr,
-      ctx.done,
-    ],
-    outputs=[ctx.H_tree],
+    inputs=[m.M_rownnz, m.M_rowadr, ctx.qLD_precond],
+    outputs=[ctx.qLDiagInv_precond],
   )
 
 
 def _apply_ic_preconditioner(m, d, ctx):
-  """Apply IC preconditioner: Mgrad = precond^{-1} @ grad."""
+  """Apply hybrid preconditioner: IC(0) for all, then block Jacobi for flex."""
+  if ctx.qLD_precond.shape[2] == 0:
+    # No articulated trees: block Jacobi only
+    wp.launch(
+      _apply_block_preconditioner,
+      dim=(d.nworld, ctx.nblocks),
+      inputs=[
+        ctx.nblocks,
+        ctx.block_dof_adr,
+        ctx.block_dof_num,
+        ctx.inv_H_blocks,
+        ctx.grad,
+        ctx.done,
+      ],
+      outputs=[ctx.Mgrad],
+    )
+    return
+  smooth._solve_LD_sparse(m, d, ctx.qLD_precond, ctx.qLDiagInv_precond, ctx.Mgrad, ctx.grad)
   wp.launch(
-    _ic_tree_apply,
-    dim=(d.nworld, ctx.ntrees),
+    _apply_block_preconditioner_flex,
+    dim=(d.nworld, ctx.nblocks),
     inputs=[
-      m.tree_dofadr,
+      m.dof_treeid,
       m.tree_dofnum,
-      ctx.ntrees,
-      ctx.tree_mat_adr,
-      ctx.done,
+      ctx.nblocks,
+      ctx.block_dof_adr,
+      ctx.block_dof_num,
+      ctx.inv_H_blocks,
       ctx.grad,
-      ctx.H_tree,
+      ctx.done,
     ],
     outputs=[ctx.Mgrad],
   )
