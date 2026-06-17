@@ -1287,6 +1287,7 @@ class Model:
     is_sparse: constraint Jacobian/Hessian layout (sparse vs dense). Does not affect M, whose
       factorization is a per-block decision -- see qLD_* and m_block_layout
     is_compact: solve via active-DOF compaction (Newton + sleeping, unless islands forced)
+    has_articulated_trees: whether any tree has more than 6 DOFs
     qLD_has_dense: any M block factors as a packed dense block
     qLD_has_simple: any M block is simple (diagonal -> 1/diag, no factorization)
     qLD_has_sparse: any M block factors via sparse LDL (oversized block / tendon armature)
@@ -1748,6 +1749,7 @@ class Model:
   nmaxmeshdeg: int
   is_sparse: bool
   is_compact: bool
+  has_articulated_trees: bool
   qLD_has_dense: bool
   qLD_has_simple: bool
   qLD_has_sparse: bool
@@ -2343,7 +2345,7 @@ class SolverContext:
   dof_to_block: wp.array[int]
   nblocks: int
   # Tree-level IC preconditioner (CG sparse only)
-  qLD_precond: wp.array3d[float]  # (nworld, 1, nC) IC(0) preconditioner factors
+  qLD_precond: wp.array2d[float]  # (nworld, nC) IC(0) preconditioner factors
   qLDiagInv_precond: wp.array2d[float]  # (nworld, nv) IC(0) diagonal inverse
   # Incremental Hessian update (Newton only)
   changed_efc_ids: wp.array2d[int]
