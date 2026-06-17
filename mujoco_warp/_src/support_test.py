@@ -461,6 +461,50 @@ class SupportTest(parameterized.TestCase):
           f"mul_m_island idof={idof} dof={dof}",
         )
 
+  def test_userdata_get_set_reset(self):
+    # XML defining a model with nuserdata=4
+    xml = """
+    <mujoco>
+      <size nuserdata="4"/>
+      <worldbody>
+        <body name="body">
+          <joint type="free"/>
+          <geom size="0.1" type="sphere"/>
+        </body>
+      </worldbody>
+    </mujoco>
+    """
+    mjm, mjd, m, d = test_data.fixture(xml=xml, nworld=2)
+    self.assertEqual(m.nuserdata, 4)
+    self.assertEqual(d.userdata.shape, (2, 4))
+
+    # Initialize userdata on host MjData
+    userdata_val = np.array([1.2, 3.4, 5.6, 7.8])
+    mjd.userdata[:] = userdata_val
+
+    # Copy to device and verify
+    d = mjwarp.put_data(mjm, mjd, nworld=2)
+    _assert_eq(d.userdata.numpy()[0], userdata_val, "put_data userdata")
+
+    # Serialize state with State.INTEGRATION (which includes State.USERDATA)
+    size = mujoco.mj_stateSize(mjm, mujoco.mjtState.mjSTATE_INTEGRATION)
+    mjw_state = wp.zeros((d.nworld, size), dtype=float)
+    mjwarp.get_state(m, d, mjw_state, State.INTEGRATION)
+
+    # Deserialize state using set_state on a fresh Data object
+    d2 = mjwarp.make_data(mjm, nworld=2)
+    mjwarp.set_state(m, d2, mjw_state, State.INTEGRATION)
+    _assert_eq(d2.userdata.numpy()[0], userdata_val, "set_state userdata")
+
+    # Copy back to host and verify via get_data_into
+    mjd2 = mujoco.MjData(mjm)
+    mjwarp.get_data_into(mjd2, mjm, d2, world_id=0)
+    _assert_eq(mjd2.userdata, userdata_val, "get_data_into userdata")
+
+    # Reset data and verify userdata is zeroed
+    mjwarp.reset_data(m, d2)
+    _assert_eq(d2.userdata.numpy()[0], np.zeros(4), "reset_data userdata")
+
 
 if __name__ == "__main__":
   wp.init()

@@ -30,6 +30,7 @@ from mujoco_warp._src.collision_core import Geom
 from mujoco_warp._src.collision_driver import MJ_COLLISION_TABLE
 from mujoco_warp._src.collision_primitive import plane_convex
 from mujoco_warp._src.math import upper_trid_index
+from mujoco_warp._src.types import CollisionType
 from mujoco_warp.test_data.collision_sdf.utils import register_sdf_plugins
 
 _TOLERANCE = 5e-5
@@ -521,6 +522,34 @@ class CollisionTest(parameterized.TestCase):
         in_order = False
       prev_idx = idx
     self.assertTrue(in_order)
+
+  def test_native_ccd_disable_does_not_mutate_global_table(self):
+    initial_type = MJ_COLLISION_TABLE[(GeomType.BOX, GeomType.BOX)]
+    self.assertEqual(initial_type, CollisionType.CONVEX)
+
+    mjm = mujoco.MjModel.from_xml_string("""
+    <mujoco>
+      <option gravity="0 0 -9.81"/>
+      <worldbody>
+        <body name="body1" pos="0 0 0.51">
+          <freejoint/>
+          <geom name="box1" type="box" size="0.5 0.5 0.5"/>
+        </body>
+        <body name="body2" pos="0 0 1.49">
+          <freejoint/>
+          <geom name="box2" type="box" size="0.5 0.5 0.5"/>
+        </body>
+      </worldbody>
+    </mujoco>
+    """)
+    mjm.opt.disableflags |= mujoco.mjtDisableBit.mjDSBL_NATIVECCD
+
+    m = mjw.put_model(mjm)
+    d = mjw.put_data(mjm, mujoco.MjData(mjm))
+
+    mjw.collision(m, d)
+
+    self.assertEqual(MJ_COLLISION_TABLE[(GeomType.BOX, GeomType.BOX)], initial_type)
 
   @parameterized.parameters(_SDF_SDF.keys())
   def test_sdf_collision(self, fixture):

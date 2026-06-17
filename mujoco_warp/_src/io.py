@@ -362,6 +362,8 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
   m.nmaxcondim = np.concatenate(condim_arrays).max()
   m.nmaxpyramid = np.maximum(1, 2 * (m.nmaxcondim - 1))
   m.has_sdf_geom = (mjm.geom_type == mujoco.mjtGeom.mjGEOM_SDF).any()
+  m.has_flex_selfcollide = bool(mjm.nflex > 0 and np.any(mjm.flex_selfcollide != 0))
+  m.max_flex_dim = int(np.max(mjm.flex_dim)) if mjm.nflex > 0 else 0
   m.block_dim = types.BlockDim()
   # Derive CG solver block_dim from nv: clamp(round_up_to_32(nv), 32, 256)
   _nv_block = max(32, min(256, ((mjm.nv + 31) // 32) * 32))
@@ -1212,7 +1214,13 @@ def make_data(
     else:
       njmax_nnz = njmax * mjm.nv
 
-  contact = types.Contact(**{f.name: _create_array(None, f.type, sizes) for f in dataclasses.fields(types.Contact)})
+  contact_kwargs = {}
+  for f in dataclasses.fields(types.Contact):
+    if f.name in ["flex", "elem", "vert"] and mjm.nflex == 0:
+      contact_kwargs[f.name] = wp.empty(0, dtype=wp.vec2i)
+    else:
+      contact_kwargs[f.name] = _create_array(None, f.type, sizes)
+  contact = types.Contact(**contact_kwargs)
   contact.efc_address = wp.array(np.full((naconmax, sizes["nmaxpyramid"]), -1, dtype=int), dtype=int)
 
   efc = _create_constraint(mjm, nworld, njmax, njmax_nnz, sizes, ENABLE_ISLANDS)
@@ -1227,11 +1235,6 @@ def make_data(
     efc.J_rowadr = wp.zeros((nworld, 0), dtype=int)
     efc.J_colind = wp.zeros((nworld, 0, 0), dtype=int)
     efc.J = wp.zeros((nworld, sizes["njmax_pad"], sizes["nv_pad"]), dtype=float)
-
-  contact_kwargs = {}
-  for f in dataclasses.fields(types.Contact):
-    contact_kwargs[f.name] = _create_array(None, f.type, sizes)
-  contact = types.Contact(**contact_kwargs)
 
   # world body and static geom (attached to the world) poses are precomputed
   # this speeds up scenes with many static geoms (e.g. terrains)
@@ -1418,6 +1421,9 @@ def put_data(
   contact_kwargs = {"efc_address": None, "worldid": None, "type": None, "geomcollisionid": None}
   for f in dataclasses.fields(types.Contact):
     if f.name in contact_kwargs:
+      continue
+    if f.name in ["flex", "elem", "vert"] and mjm.nflex == 0:
+      contact_kwargs[f.name] = wp.empty(0, dtype=wp.vec2i)
       continue
     val = getattr(mjd.contact, f.name)
     val = np.repeat(val, nworld, axis=0)
@@ -1691,6 +1697,9 @@ def get_data_into(
   if mjm.nhistory > 0:
     result.history[:] = d.history.numpy()[world_id]
 
+  if mjm.nuserdata > 0:
+    result.userdata[:] = d.userdata.numpy()[world_id]
+
   # contact
   result.contact.dist[:ncon] = d.contact.dist.numpy()[ncon_filter]
   result.contact.pos[:ncon] = d.contact.pos.numpy()[ncon_filter]
@@ -1702,6 +1711,10 @@ def get_data_into(
   result.contact.solimp[:ncon] = d.contact.solimp.numpy()[ncon_filter]
   result.contact.dim[:ncon] = d.contact.dim.numpy()[ncon_filter]
   result.contact.geom[:ncon] = d.contact.geom.numpy()[ncon_filter]
+  if mjm.nflex > 0:
+    result.contact.flex[:ncon] = d.contact.flex.numpy()[ncon_filter]
+    result.contact.elem[:ncon] = d.contact.elem.numpy()[ncon_filter]
+    result.contact.vert[:ncon] = d.contact.vert.numpy()[ncon_filter]
   result.contact.efc_address[:ncon] = contact_efc_address_ordered[:ncon]
 
   result.M[:] = d.M.numpy()[world_id]
@@ -1864,6 +1877,7 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
     nbody: int,
     ntree: int,
     neq: int,
+    nuserdata: int,
     nsensordata: int,
     qpos0: wp.array2d[float],
     eq_active0: wp.array[bool],
@@ -1891,6 +1905,7 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
     eq_active_out: wp.array2d[bool],
     qacc_out: wp.array2d[float],
     act_dot_out: wp.array2d[float],
+    userdata_out: wp.array2d[float],
     sensordata_out: wp.array2d[float],
     nacon_out: wp.array[int],
   ):
@@ -1929,6 +1944,8 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
       eq_active_out[worldid, i] = eq_active0[i]
     for i in range(nsensordata):
       sensordata_out[worldid, i] = 0.0
+    for i in range(nuserdata):
+      userdata_out[worldid, i] = 0.0
 
   @wp.kernel(module="unique", enable_backward=False)
   def reset_mocap(
@@ -1973,6 +1990,7 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
     contact_dim_out: wp.array[int],
     contact_geom_out: wp.array[wp.vec2i],
     contact_flex_out: wp.array[wp.vec2i],
+    contact_elem_out: wp.array[wp.vec2i],
     contact_vert_out: wp.array[wp.vec2i],
     contact_efc_address_out: wp.array2d[int],
     contact_worldid_out: wp.array[int],
@@ -2000,8 +2018,12 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
     contact_solimp_out[conid] = types.vec5(0.0, 0.0, 0.0, 0.0, 0.0)
     contact_dim_out[conid] = 0
     contact_geom_out[conid] = wp.vec2i(0, 0)
-    contact_flex_out[conid] = wp.vec2i(0, 0)
-    contact_vert_out[conid] = wp.vec2i(0, 0)
+    if contact_flex_out.shape[0] > 0:
+      contact_flex_out[conid] = wp.vec2i(0, 0)
+    if contact_elem_out.shape[0] > 0:
+      contact_elem_out[conid] = wp.vec2i(0, 0)
+    if contact_vert_out.shape[0] > 0:
+      contact_vert_out[conid] = wp.vec2i(0, 0)
     for i in range(nefcaddress):
       contact_efc_address_out[conid, i] = -1
     contact_worldid_out[conid] = 0
@@ -2084,6 +2106,7 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
       d.contact.dim,
       d.contact.geom,
       d.contact.flex,
+      d.contact.elem,
       d.contact.vert,
       d.contact.efc_address,
       d.contact.worldid,
@@ -2108,7 +2131,21 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
   wp.launch(
     reset_nworld,
     dim=d.nworld,
-    inputs=[m.nq, m.nv, m.nu, m.na, m.nbody, m.ntree, m.neq, m.nsensordata, m.qpos0, m.eq_active0, d.nworld, reset_input],
+    inputs=[
+      m.nq,
+      m.nv,
+      m.nu,
+      m.na,
+      m.nbody,
+      m.ntree,
+      m.neq,
+      m.nuserdata,
+      m.nsensordata,
+      m.qpos0,
+      m.eq_active0,
+      d.nworld,
+      reset_input,
+    ],
     outputs=[
       d.solver_niter,
       d.ne,
@@ -2129,6 +2166,7 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
       d.eq_active,
       d.qacc,
       d.act_dot,
+      d.userdata,
       d.sensordata,
       d.nacon,
     ],
@@ -3258,12 +3296,12 @@ def create_render_context(
   # Locate skybox texture
   skybox_tex_ids = np.nonzero(mjm.tex_type == mujoco.mjtTexture.mjTEXTURE_SKYBOX)[0] if mjm.ntex else np.array([], dtype=int)
   if render_skybox and skybox_tex_ids.size > 0:
-    skybox_tex_id = int(skybox_tex_ids[0])
-    skybox_face_width = int(mjm.tex_width[skybox_tex_id])
+    skybox_tex_id_np = np.array([skybox_tex_ids[0]], dtype=int)
+    skybox_face_width_np = np.array([mjm.tex_width[skybox_tex_ids[0]]], dtype=int)
   else:
     render_skybox = False
-    skybox_tex_id = -1
-    skybox_face_width = 1
+    skybox_tex_id_np = np.array([-1], dtype=int)
+    skybox_face_width_np = np.array([1], dtype=int)
 
   # Filter active cameras
   if cam_active is not None:
@@ -3382,8 +3420,8 @@ def create_render_context(
     ),
     use_precomputed_rays=use_precomputed_rays,
     render_skybox=render_skybox,
-    skybox_tex_id=skybox_tex_id,
-    skybox_face_width=skybox_face_width,
+    skybox_tex_id=wp.array(skybox_tex_id_np, dtype=int),
+    skybox_face_width=wp.array(skybox_face_width_np, dtype=int),
     headlight_active=bool(mjm.vis.headlight.active),
     headlight_ambient=wp.vec3(mjm.vis.headlight.ambient),
     headlight_diffuse=wp.vec3(mjm.vis.headlight.diffuse),

@@ -883,6 +883,7 @@ def get_state(m: Model, d: Data, state: wp.array2d[float], sig: int, active: Opt
     nbody: int,
     neq: int,
     nmocap: int,
+    nuserdata: int,
     nhistory: int,
     # Data in:
     time_in: wp.array[float],
@@ -897,6 +898,7 @@ def get_state(m: Model, d: Data, state: wp.array2d[float], sig: int, active: Opt
     eq_active_in: wp.array2d[bool],
     mocap_pos_in: wp.array2d[wp.vec3],
     mocap_quat_in: wp.array2d[wp.quat],
+    userdata_in: wp.array2d[float],
     # In:
     sig_in: int,
     active_in: wp.array[bool],
@@ -973,6 +975,10 @@ def get_state(m: Model, d: Data, state: wp.array2d[float], sig: int, active: Opt
             state_out[worldid, adr + 2] = quat[2]
             state_out[worldid, adr + 3] = quat[3]
             adr += 4
+        elif element == State.USERDATA:
+          for j in range(nuserdata):
+            state_out[worldid, adr + j] = userdata_in[worldid, j]
+          adr += nuserdata
 
   wp.launch(
     _get_state,
@@ -985,6 +991,7 @@ def get_state(m: Model, d: Data, state: wp.array2d[float], sig: int, active: Opt
       m.nbody,
       m.neq,
       m.nmocap,
+      m.nuserdata,
       m.nhistory,
       d.time,
       d.qpos,
@@ -998,6 +1005,7 @@ def get_state(m: Model, d: Data, state: wp.array2d[float], sig: int, active: Opt
       d.eq_active,
       d.mocap_pos,
       d.mocap_quat,
+      d.userdata,
       int(sig),
       active or wp.ones(d.nworld, dtype=bool),
     ],
@@ -1030,6 +1038,7 @@ def set_state(m: Model, d: Data, state: wp.array2d[float], sig: int, active: Opt
     nbody: int,
     neq: int,
     nmocap: int,
+    nuserdata: int,
     nhistory: int,
     # In:
     sig_in: int,
@@ -1048,6 +1057,7 @@ def set_state(m: Model, d: Data, state: wp.array2d[float], sig: int, active: Opt
     eq_active_out: wp.array2d[bool],
     mocap_pos_out: wp.array2d[wp.vec3],
     mocap_quat_out: wp.array2d[wp.quat],
+    userdata_out: wp.array2d[float],
   ):
     worldid = wp.tid()
 
@@ -1125,6 +1135,10 @@ def set_state(m: Model, d: Data, state: wp.array2d[float], sig: int, active: Opt
             )
             mocap_quat_out[worldid, j] = quat
             adr += 4
+        elif element == State.USERDATA:
+          for j in range(nuserdata):
+            userdata_out[worldid, j] = state_in[worldid, adr + j]
+          adr += nuserdata
 
   wp.launch(
     _set_state,
@@ -1137,6 +1151,7 @@ def set_state(m: Model, d: Data, state: wp.array2d[float], sig: int, active: Opt
       m.nbody,
       m.neq,
       m.nmocap,
+      m.nuserdata,
       m.nhistory,
       int(sig),
       active or wp.ones(d.nworld, dtype=bool),
@@ -1155,5 +1170,6 @@ def set_state(m: Model, d: Data, state: wp.array2d[float], sig: int, active: Opt
       d.eq_active,
       d.mocap_pos,
       d.mocap_quat,
+      d.userdata,
     ],
   )
