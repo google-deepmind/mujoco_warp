@@ -151,10 +151,10 @@ def _create_solver_context(m: types.Model, d: types.Data) -> SolverContext:
   has_articulated = m.is_sparse and m.has_articulated_trees
   alloc_ic = alloc_block_jacobi and has_articulated
   if alloc_ic:
-    qLD_precond = wp.zeros((nworld, 1, m.nC), dtype=float)
+    qLD_precond = wp.zeros((nworld, m.nC), dtype=float)
     qLDiagInv_precond = wp.zeros((nworld, nv), dtype=float)
   else:
-    qLD_precond = wp.empty((0, 0, 0), dtype=float)
+    qLD_precond = wp.empty((0, 0), dtype=float)
     qLDiagInv_precond = wp.empty((0, 0), dtype=float)
 
   return SolverContext(
@@ -2917,7 +2917,7 @@ def _block_jacobi_add_M(
   M_mulm_col: wp.array[int],
   M_mulm_madr: wp.array[int],
   # Data in:
-  M_in: wp.array3d[float],
+  M_in: wp.array2d[float],
   # In:
   dof_to_block_in: wp.array[int],
   block_dof_adr_in: wp.array[int],
@@ -2948,7 +2948,7 @@ def _block_jacobi_add_M(
     if bj == bi:
       lj = dj - block_dof_adr_in[bj]
       madr = M_mulm_madr[k]
-      M_val = M_in[worldid, 0, madr]
+      M_val = M_in[worldid, madr]
       lmin = wp.min(li, lj)
       lmax = wp.max(li, lj)
       offset = lmin * (5 - lmin) / 2 + lmax
@@ -3085,9 +3085,15 @@ def _apply_block_preconditioner(
 # =============================================================================
 
 
+# =============================================================================
+# Per-tree IC(0) Preconditioner
+
+
 @wp.kernel
 def _add_JTDJ_to_M_sparse(
   # Model:
+  dof_treeid: wp.array[int],
+  tree_dofnum: wp.array[int],
   M_rownnz: wp.array[int],
   M_rowadr: wp.array[int],
   M_colind: wp.array[int],
@@ -3102,9 +3108,9 @@ def _add_JTDJ_to_M_sparse(
   # In:
   ctx_done_in: wp.array[bool],
   # Out:
-  H_out: wp.array3d[float],
+  H_out: wp.array2d[float],
 ):
-  """Add J^T D J entries at positions matching M's sparsity pattern."""
+  """Add J^T D J at M sparsity positions for articulated trees only."""
   worldid, efcid = wp.tid()
   if ctx_done_in[worldid]:
     return
@@ -3119,9 +3125,14 @@ def _add_JTDJ_to_M_sparse(
   for k1 in range(rownnz):
     Ji = efc_J_in[worldid, 0, rowadr + k1]
     colindi = efc_J_colind_in[worldid, 0, rowadr + k1]
+    treei = dof_treeid[colindi]
+    if tree_dofnum[treei] <= 6:
+      continue
     for k2 in range(k1 + 1):
       Jj = efc_J_in[worldid, 0, rowadr + k2]
       colindj = efc_J_colind_in[worldid, 0, rowadr + k2]
+      if dof_treeid[colindj] != treei:
+        continue
       row = wp.max(colindi, colindj)
       col = wp.min(colindi, colindj)
       h = Ji * Jj * efc_D
@@ -3129,7 +3140,7 @@ def _add_JTDJ_to_M_sparse(
       row_nnz = M_rownnz[row]
       for idx in range(row_nnz):
         if M_colind[row_start + idx] == col:
-          wp.atomic_add(H_out[worldid, 0], row_start + idx, h)
+          wp.atomic_add(H_out, worldid, row_start + idx, h)
           break
 
 
@@ -3148,7 +3159,7 @@ def _apply_block_preconditioner_flex(
   # Out:
   Mgrad_out: wp.array2d[float],
 ):
-  """Block Jacobi apply for simple trees only (nv_tree <= 3)."""
+  """Block Jacobi apply for simple trees only (nv_tree <= 6)."""
   worldid, blockid = wp.tid()
   if blockid >= nblocks:
     return
@@ -3159,7 +3170,7 @@ def _apply_block_preconditioner_flex(
   if ndof == 0:
     return
   treeid = dof_treeid[dof0]
-  if tree_dofnum[treeid] > 3:
+  if tree_dofnum[treeid] > 6:
     return
   I00 = inv_H_blocks_in[worldid, 0, blockid]
   I01 = inv_H_blocks_in[worldid, 1, blockid]
@@ -3188,13 +3199,15 @@ def _apply_block_preconditioner_flex(
 def _build_ic_preconditioner(m, d, ctx):
   """Build hybrid preconditioner: block Jacobi for flex, IC(0) for articulated."""
   _build_block_jacobi_preconditioner(m, d, ctx)
-  if ctx.qLD_precond.shape[2] == 0:
-    return  # No articulated trees
+  if ctx.qLD_precond.shape[1] == 0:
+    return
   wp.copy(ctx.qLD_precond, d.M)
   wp.launch(
     _add_JTDJ_to_M_sparse,
     dim=(d.nworld, d.njmax),
     inputs=[
+      m.dof_treeid,
+      m.tree_dofnum,
       m.M_rownnz,
       m.M_rowadr,
       m.M_colind,
@@ -3225,24 +3238,26 @@ def _build_ic_preconditioner(m, d, ctx):
 
 
 def _apply_ic_preconditioner(m, d, ctx):
-  """Apply hybrid preconditioner: IC(0) for all, then block Jacobi for flex."""
-  if ctx.qLD_precond.shape[2] == 0:
-    # No articulated trees: block Jacobi only
+  """Apply preconditioner based on model structure.
+
+  Pure flex (no articulated trees): block Jacobi (M+JTDJ)^{-1} per body.
+  Mixed with no sparse blocks: fall back to M^{-1} (block Jacobi hurts robots).
+  Mixed with sparse blocks: M^{-1} baseline, IC(0) overwrites sparse DOFs.
+  """
+  if not m.has_articulated_trees:
+    # Pure flex model: block Jacobi is best
     wp.launch(
       _apply_block_preconditioner,
       dim=(d.nworld, ctx.nblocks),
-      inputs=[
-        ctx.nblocks,
-        ctx.block_dof_adr,
-        ctx.block_dof_num,
-        ctx.inv_H_blocks,
-        ctx.grad,
-        ctx.done,
-      ],
+      inputs=[ctx.nblocks, ctx.block_dof_adr, ctx.block_dof_num, ctx.inv_H_blocks, ctx.grad, ctx.done],
       outputs=[ctx.Mgrad],
     )
     return
-  smooth._solve_LD_sparse(m, d, ctx.qLD_precond, ctx.qLDiagInv_precond, ctx.Mgrad, ctx.grad)
+  # Has articulated trees: use M^{-1} as baseline
+  smooth.solve_m(m, d, ctx.Mgrad, ctx.grad)
+  if m.qLD_has_sparse:
+    # Overwrite sparse-block articulated DOFs with IC(0) solve
+    smooth._solve_LD_sparse(m, d, ctx.qLD_precond, ctx.qLDiagInv_precond, ctx.Mgrad, ctx.grad)
   wp.launch(
     _apply_block_preconditioner_flex,
     dim=(d.nworld, ctx.nblocks),
@@ -3385,10 +3400,16 @@ def _update_gradient(m: types.Model, d: types.Data, ctx: SolverContext, compact:
       outputs=[ctx.grad, ctx.grad_dot],
     )
   if m.opt.solver == types.SolverType.CG:
-    if m.is_sparse:
+    if m.is_sparse and not m.has_articulated_trees:
+      # Pure flex model: block Jacobi helps
+      _build_ic_preconditioner(m, d, ctx)
+      _apply_ic_preconditioner(m, d, ctx)
+    elif m.is_sparse and m.qLD_has_sparse:
+      # Articulated model with sparse LDL blocks: IC(0) helps
       _build_ic_preconditioner(m, d, ctx)
       _apply_ic_preconditioner(m, d, ctx)
     else:
+      # Default: M^{-1} (aloha_cloth, dense-only models)
       smooth.solve_m(m, d, ctx.Mgrad, ctx.grad)
   elif m.opt.solver == types.SolverType.NEWTON:
     # h = M + (efc_J.T * efc_D * active) @ efc_J
