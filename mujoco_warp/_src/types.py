@@ -1281,10 +1281,10 @@ class Model:
     qLD_has_simple: any M block is simple (diagonal -> 1/diag, no factorization)
     qLD_has_sparse: any M block factors via sparse LDL (oversized block / tendon armature)
     qLD_block_total: packed length of the dense region per world (also the offset of the LDL region)
-    qLD_block_adr: packed offset of each dof's diagonal block in the dense region; 0 if sparse (nv,)
-    qLD_dof_dense: per-dof flag, 1 if the dof's block is dense (packed)             (nv,)
-    qLD_dof_simple: per-dof flag, 1 if the dof's block is simple (diagonal)          (nv,)
-    qLD_simple_dofs: indices of the simple (diagonal) dofs                           (nsimple,)
+    qLD_block_adr: packed offset of each dof's diagonal block; 0 if sparse  (nv,)
+    qLD_dof_dense: per-dof flag, 1 if the dof's block is dense (packed)     (nv,)
+    qLD_dof_simple: per-dof flag, 1 if the dof's block is simple (diagonal) (nv,)
+    qLD_simple_dofs: indices of the simple (diagonal) dofs                  (nsimple,)
     has_fluid: True if wind, density, or viscosity are non-zero at put_model time
     has_sdf_geom: whether the model contains SDF geoms
     block_dim: block dim options
