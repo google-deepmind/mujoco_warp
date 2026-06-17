@@ -569,7 +569,7 @@ def _qfrc_passive(
   qfrc_gravcomp_in: wp.array2d[float],
   qfrc_fluid_in: wp.array2d[float],
   # In:
-  gravcomp: bool,
+  gravity_enabled: bool,
   # Data out:
   qfrc_passive_out: wp.array2d[float],
 ):
@@ -578,7 +578,7 @@ def _qfrc_passive(
   qfrc_passive += qfrc_damper_in[worldid, dofid]
 
   # add gravcomp unless added by actuators
-  if gravcomp and not jnt_actgravcomp[dof_jntid[dofid]]:
+  if gravity_enabled and not jnt_actgravcomp[dof_jntid[dofid]]:
     qfrc_passive += qfrc_gravcomp_in[worldid, dofid]
 
   # add fluid force
@@ -872,10 +872,9 @@ def passive(m: Model, d: Data):
       outputs=[d.qfrc_spring],
     )
 
-  gravcomp = m.ngravcomp and not (m.opt.disableflags & DisableBit.GRAVITY)
-
-  if gravcomp:
-    d.qfrc_gravcomp.zero_()
+  gravity_enabled = not (m.opt.disableflags & DisableBit.GRAVITY)
+  d.qfrc_gravcomp.zero_()
+  if gravity_enabled:
     wp.launch(
       _gravity_force,
       dim=(d.nworld, m.nbody - 1, m.nv),
@@ -908,7 +907,7 @@ def passive(m: Model, d: Data):
       d.qfrc_damper,
       d.qfrc_gravcomp,
       d.qfrc_fluid,
-      gravcomp,
+      gravity_enabled,
     ],
     outputs=[
       d.qfrc_passive,

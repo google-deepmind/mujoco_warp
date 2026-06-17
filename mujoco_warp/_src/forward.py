@@ -1091,7 +1091,6 @@ def _qfrc_actuator(
 @wp.kernel
 def _qfrc_actuator_gravcomp_limits(
   # Model:
-  ngravcomp: int,
   jnt_actfrclimited: wp.array[bool],
   jnt_actgravcomp: wp.array[int],
   jnt_actfrcrange: wp.array2d[wp.vec2],
@@ -1099,6 +1098,8 @@ def _qfrc_actuator_gravcomp_limits(
   # Data in:
   qfrc_gravcomp_in: wp.array2d[float],
   qfrc_actuator_in: wp.array2d[float],
+  # In:
+  gravity_enabled: bool,
   # Data out:
   qfrc_actuator_out: wp.array2d[float],
 ):
@@ -1108,7 +1109,7 @@ def _qfrc_actuator_gravcomp_limits(
   qfrc = qfrc_actuator_in[worldid, dofid]
 
   # actuator-level gravity compensation, skip if added as passive force
-  if ngravcomp and jnt_actgravcomp[jntid]:
+  if gravity_enabled and jnt_actgravcomp[jntid]:
     qfrc += qfrc_gravcomp_in[worldid, dofid]
 
   # limits
@@ -1205,17 +1206,18 @@ def fwd_actuation(m: Model, d: Data):
     ],
     outputs=[d.qfrc_actuator],
   )
+  gravity_enabled = not (m.opt.disableflags & DisableBit.GRAVITY)
   wp.launch(
     _qfrc_actuator_gravcomp_limits,
     dim=(d.nworld, m.nv),
     inputs=[
-      m.ngravcomp,
       m.jnt_actfrclimited,
       m.jnt_actgravcomp,
       m.jnt_actfrcrange,
       m.dof_jntid,
       d.qfrc_gravcomp,
       d.qfrc_actuator,
+      gravity_enabled,
     ],
     outputs=[d.qfrc_actuator],
   )
