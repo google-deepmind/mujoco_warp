@@ -825,7 +825,7 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
   # reads slice (block_size^2,) at offset blk * block_size^2.
   for tile in m.M_tiles:
     sz = tile.size
-    starts = tile.adr.numpy()
+    starts = np.array(tiles[sz], dtype=np.int32)  # host block starts; no device round-trip
     dofs = starts[:, None] + np.arange(sz)[None, :]  # (nblock, sz) global dof per block row
     gi = dofs[:, :, None]  # (nblock, sz, 1)
     gj = dofs[:, None, :]  # (nblock, 1, sz)
