@@ -167,6 +167,9 @@ def _equality_connect(
   nefc_out: wp.array[int],
   efc_type_out: wp.array2d[int],
   efc_id_out: wp.array2d[int],
+  efc_jtdaj_group_head_out: wp.array2d[int],
+  efc_jtdaj_group_size_out: wp.array2d[int],
+  efc_jtdaj_group_count_out: wp.array[int],
   efc_J_rownnz_out: wp.array2d[int],
   efc_J_rowadr_out: wp.array2d[int],
   efc_J_colind_out: wp.array3d[int],
@@ -192,6 +195,10 @@ def _equality_connect(
 
   if efcid >= njmax_in - 3:
     return
+
+  jgid = wp.atomic_add(efc_jtdaj_group_count_out, worldid, 1)
+  efc_jtdaj_group_head_out[worldid, jgid] = efcid
+  efc_jtdaj_group_size_out[worldid, jgid] = 3
 
   efcid0 = efcid + 0
   efcid1 = efcid + 1
@@ -482,6 +489,9 @@ def _equality_joint(
   nefc_out: wp.array[int],
   efc_type_out: wp.array2d[int],
   efc_id_out: wp.array2d[int],
+  efc_jtdaj_group_head_out: wp.array2d[int],
+  efc_jtdaj_group_size_out: wp.array2d[int],
+  efc_jtdaj_group_count_out: wp.array[int],
   efc_J_rownnz_out: wp.array2d[int],
   efc_J_rowadr_out: wp.array2d[int],
   efc_J_colind_out: wp.array3d[int],
@@ -506,6 +516,10 @@ def _equality_joint(
 
   if efcid >= njmax_in:
     return
+
+  jgid = wp.atomic_add(efc_jtdaj_group_count_out, worldid, 1)
+  efc_jtdaj_group_head_out[worldid, jgid] = efcid
+  efc_jtdaj_group_size_out[worldid, jgid] = 1
 
   jntid_1 = eq_obj1id[eqid]
   jntid_2 = eq_obj2id[eqid]
@@ -615,6 +629,9 @@ def _equality_tendon(
   nefc_out: wp.array[int],
   efc_type_out: wp.array2d[int],
   efc_id_out: wp.array2d[int],
+  efc_jtdaj_group_head_out: wp.array2d[int],
+  efc_jtdaj_group_size_out: wp.array2d[int],
+  efc_jtdaj_group_count_out: wp.array[int],
   efc_J_rownnz_out: wp.array2d[int],
   efc_J_rowadr_out: wp.array2d[int],
   efc_J_colind_out: wp.array3d[int],
@@ -639,6 +656,10 @@ def _equality_tendon(
 
   if efcid >= njmax_in:
     return
+
+  jgid = wp.atomic_add(efc_jtdaj_group_count_out, worldid, 1)
+  efc_jtdaj_group_head_out[worldid, jgid] = efcid
+  efc_jtdaj_group_size_out[worldid, jgid] = 1
 
   obj1id = eq_obj1id[eqid]
   obj2id = eq_obj2id[eqid]
@@ -794,6 +815,9 @@ def _equality_flex(is_sparse: bool):
     nefc_out: wp.array[int],
     efc_type_out: wp.array2d[int],
     efc_id_out: wp.array2d[int],
+    efc_jtdaj_group_head_out: wp.array2d[int],
+    efc_jtdaj_group_size_out: wp.array2d[int],
+    efc_jtdaj_group_count_out: wp.array[int],
     efc_J_rownnz_out: wp.array2d[int],
     efc_J_rowadr_out: wp.array2d[int],
     efc_J_colind_out: wp.array3d[int],
@@ -822,6 +846,10 @@ def _equality_flex(is_sparse: bool):
 
     if efcid >= njmax_in:
       return
+
+    jgid = wp.atomic_add(efc_jtdaj_group_count_out, worldid, 1)
+    efc_jtdaj_group_head_out[worldid, jgid] = efcid
+    efc_jtdaj_group_size_out[worldid, jgid] = 1
 
     pos = flexedge_length_in[worldid, edgeid] - flexedge_length0[edgeid]
     solref = eq_solref[worldid % eq_solref.shape[0], eqid]
@@ -932,6 +960,9 @@ def _equality_weld(
   nefc_out: wp.array[int],
   efc_type_out: wp.array2d[int],
   efc_id_out: wp.array2d[int],
+  efc_jtdaj_group_head_out: wp.array2d[int],
+  efc_jtdaj_group_size_out: wp.array2d[int],
+  efc_jtdaj_group_count_out: wp.array[int],
   efc_J_rownnz_out: wp.array2d[int],
   efc_J_rowadr_out: wp.array2d[int],
   efc_J_colind_out: wp.array3d[int],
@@ -956,6 +987,10 @@ def _equality_weld(
 
   if efcid >= njmax_in - 6:
     return
+
+  jgid = wp.atomic_add(efc_jtdaj_group_count_out, worldid, 1)
+  efc_jtdaj_group_head_out[worldid, jgid] = efcid
+  efc_jtdaj_group_size_out[worldid, jgid] = 6
 
   efcid0 = efcid + 0
   efcid1 = efcid + 1
@@ -1370,6 +1405,9 @@ def _friction_dof(
   nefc_out: wp.array[int],
   efc_type_out: wp.array2d[int],
   efc_id_out: wp.array2d[int],
+  efc_jtdaj_group_head_out: wp.array2d[int],
+  efc_jtdaj_group_size_out: wp.array2d[int],
+  efc_jtdaj_group_count_out: wp.array[int],
   efc_J_rownnz_out: wp.array2d[int],
   efc_J_rowadr_out: wp.array2d[int],
   efc_J_colind_out: wp.array3d[int],
@@ -1395,6 +1433,10 @@ def _friction_dof(
 
   if efcid >= njmax_in:
     return
+
+  jgid = wp.atomic_add(efc_jtdaj_group_count_out, worldid, 1)
+  efc_jtdaj_group_head_out[worldid, jgid] = efcid
+  efc_jtdaj_group_size_out[worldid, jgid] = 1
 
   if is_sparse:
     efc_J_rownnz_out[worldid, efcid] = 1
@@ -1464,6 +1506,9 @@ def _friction_tendon(
   nefc_out: wp.array[int],
   efc_type_out: wp.array2d[int],
   efc_id_out: wp.array2d[int],
+  efc_jtdaj_group_head_out: wp.array2d[int],
+  efc_jtdaj_group_size_out: wp.array2d[int],
+  efc_jtdaj_group_count_out: wp.array[int],
   efc_J_rownnz_out: wp.array2d[int],
   efc_J_rowadr_out: wp.array2d[int],
   efc_J_colind_out: wp.array3d[int],
@@ -1490,6 +1535,10 @@ def _friction_tendon(
 
   if efcid >= njmax_in:
     return
+
+  jgid = wp.atomic_add(efc_jtdaj_group_count_out, worldid, 1)
+  efc_jtdaj_group_head_out[worldid, jgid] = efcid
+  efc_jtdaj_group_size_out[worldid, jgid] = 1
 
   Jqvel = float(0.0)
 
@@ -1578,6 +1627,9 @@ def _limit_slide_hinge(
   nefc_out: wp.array[int],
   efc_type_out: wp.array2d[int],
   efc_id_out: wp.array2d[int],
+  efc_jtdaj_group_head_out: wp.array2d[int],
+  efc_jtdaj_group_size_out: wp.array2d[int],
+  efc_jtdaj_group_count_out: wp.array[int],
   efc_J_rownnz_out: wp.array2d[int],
   efc_J_rowadr_out: wp.array2d[int],
   efc_J_colind_out: wp.array3d[int],
@@ -1609,6 +1661,10 @@ def _limit_slide_hinge(
 
     if efcid >= njmax_in:
       return
+
+    jgid = wp.atomic_add(efc_jtdaj_group_count_out, worldid, 1)
+    efc_jtdaj_group_head_out[worldid, jgid] = efcid
+    efc_jtdaj_group_size_out[worldid, jgid] = 1
 
     dofadr = jnt_dofadr[jntid]
 
@@ -1683,6 +1739,9 @@ def _limit_ball(
   nefc_out: wp.array[int],
   efc_type_out: wp.array2d[int],
   efc_id_out: wp.array2d[int],
+  efc_jtdaj_group_head_out: wp.array2d[int],
+  efc_jtdaj_group_size_out: wp.array2d[int],
+  efc_jtdaj_group_count_out: wp.array[int],
   efc_J_rownnz_out: wp.array2d[int],
   efc_J_rowadr_out: wp.array2d[int],
   efc_J_colind_out: wp.array3d[int],
@@ -1719,6 +1778,10 @@ def _limit_ball(
 
     if efcid >= njmax_in:
       return
+
+    jgid = wp.atomic_add(efc_jtdaj_group_count_out, worldid, 1)
+    efc_jtdaj_group_head_out[worldid, jgid] = efcid
+    efc_jtdaj_group_size_out[worldid, jgid] = 1
 
     dofadr = jnt_dofadr[jntid]
     dof0 = dofadr + 0
@@ -1810,6 +1873,9 @@ def _limit_tendon(
   nefc_out: wp.array[int],
   efc_type_out: wp.array2d[int],
   efc_id_out: wp.array2d[int],
+  efc_jtdaj_group_head_out: wp.array2d[int],
+  efc_jtdaj_group_size_out: wp.array2d[int],
+  efc_jtdaj_group_count_out: wp.array[int],
   efc_J_rownnz_out: wp.array2d[int],
   efc_J_rowadr_out: wp.array2d[int],
   efc_J_colind_out: wp.array3d[int],
@@ -1841,6 +1907,10 @@ def _limit_tendon(
 
     if efcid >= njmax_in:
       return
+
+    jgid = wp.atomic_add(efc_jtdaj_group_count_out, worldid, 1)
+    efc_jtdaj_group_head_out[worldid, jgid] = efcid
+    efc_jtdaj_group_size_out[worldid, jgid] = 1
 
     Jqvel = float(0.0)
     scl = float(dist_min < dist_max) * 2.0 - 1.0
@@ -1937,6 +2007,9 @@ def _efc_contact_init(cone_type: types.ConeType, is_sparse: bool):
     nefc_out: wp.array[int],
     contact_efc_address_out: wp.array2d[int],
     efc_id_out: wp.array2d[int],
+    efc_jtdaj_group_head_out: wp.array2d[int],
+    efc_jtdaj_group_size_out: wp.array2d[int],
+    efc_jtdaj_group_count_out: wp.array[int],
     efc_J_rownnz_out: wp.array2d[int],
     efc_J_rowadr_out: wp.array2d[int],
     # Out:
@@ -1979,6 +2052,11 @@ def _efc_contact_init(cone_type: types.ConeType, is_sparse: bool):
         contact_efc_address_out[conid, dim] = efcid
         # This is redundant with the _efc_row call later but needed for the jac calculation
         efc_id_out[worldid, efcid] = conid
+
+    if base_efcid < njmax_in:
+      jgid = wp.atomic_add(efc_jtdaj_group_count_out, worldid, 1)
+      efc_jtdaj_group_head_out[worldid, jgid] = base_efcid
+      efc_jtdaj_group_size_out[worldid, jgid] = wp.min(ndim, njmax_in - base_efcid)
 
     if wp.static(IS_SPARSE):
       geom = geom_in[conid]
@@ -2510,6 +2588,8 @@ def make_constraint(m: types.Model, d: types.Data):
     inputs=[d.ne, d.nf, d.nl, d.nefc, efc_nnz],
   )
 
+  d.efc.jtdaj_group_count.zero_()
+
   if not (m.opt.disableflags & types.DisableBit.CONSTRAINT):
     if not (m.opt.disableflags & types.DisableBit.EQUALITY):
       wp.launch(
@@ -2559,6 +2639,9 @@ def make_constraint(m: types.Model, d: types.Data):
           d.nefc,
           d.efc.type,
           d.efc.id,
+          d.efc.jtdaj_group_head,
+          d.efc.jtdaj_group_size,
+          d.efc.jtdaj_group_count,
           d.efc.J_rownnz,
           d.efc.J_rowadr,
           d.efc.J_colind,
@@ -2621,6 +2704,9 @@ def make_constraint(m: types.Model, d: types.Data):
           d.nefc,
           d.efc.type,
           d.efc.id,
+          d.efc.jtdaj_group_head,
+          d.efc.jtdaj_group_size,
+          d.efc.jtdaj_group_count,
           d.efc.J_rownnz,
           d.efc.J_rowadr,
           d.efc.J_colind,
@@ -2663,6 +2749,9 @@ def make_constraint(m: types.Model, d: types.Data):
           d.nefc,
           d.efc.type,
           d.efc.id,
+          d.efc.jtdaj_group_head,
+          d.efc.jtdaj_group_size,
+          d.efc.jtdaj_group_count,
           d.efc.J_rownnz,
           d.efc.J_rowadr,
           d.efc.J_colind,
@@ -2707,6 +2796,9 @@ def make_constraint(m: types.Model, d: types.Data):
           d.nefc,
           d.efc.type,
           d.efc.id,
+          d.efc.jtdaj_group_head,
+          d.efc.jtdaj_group_size,
+          d.efc.jtdaj_group_count,
           d.efc.J_rownnz,
           d.efc.J_rowadr,
           d.efc.J_colind,
@@ -2751,6 +2843,9 @@ def make_constraint(m: types.Model, d: types.Data):
           d.nefc,
           d.efc.type,
           d.efc.id,
+          d.efc.jtdaj_group_head,
+          d.efc.jtdaj_group_size,
+          d.efc.jtdaj_group_count,
           d.efc.J_rownnz,
           d.efc.J_rowadr,
           d.efc.J_colind,
@@ -2787,6 +2882,9 @@ def make_constraint(m: types.Model, d: types.Data):
           d.nefc,
           d.efc.type,
           d.efc.id,
+          d.efc.jtdaj_group_head,
+          d.efc.jtdaj_group_size,
+          d.efc.jtdaj_group_count,
           d.efc.J_rownnz,
           d.efc.J_rowadr,
           d.efc.J_colind,
@@ -2826,6 +2924,9 @@ def make_constraint(m: types.Model, d: types.Data):
           d.nefc,
           d.efc.type,
           d.efc.id,
+          d.efc.jtdaj_group_head,
+          d.efc.jtdaj_group_size,
+          d.efc.jtdaj_group_count,
           d.efc.J_rownnz,
           d.efc.J_rowadr,
           d.efc.J_colind,
@@ -2868,6 +2969,9 @@ def make_constraint(m: types.Model, d: types.Data):
           d.nefc,
           d.efc.type,
           d.efc.id,
+          d.efc.jtdaj_group_head,
+          d.efc.jtdaj_group_size,
+          d.efc.jtdaj_group_count,
           d.efc.J_rownnz,
           d.efc.J_rowadr,
           d.efc.J_colind,
@@ -2908,6 +3012,9 @@ def make_constraint(m: types.Model, d: types.Data):
           d.nefc,
           d.efc.type,
           d.efc.id,
+          d.efc.jtdaj_group_head,
+          d.efc.jtdaj_group_size,
+          d.efc.jtdaj_group_count,
           d.efc.J_rownnz,
           d.efc.J_rowadr,
           d.efc.J_colind,
@@ -2950,6 +3057,9 @@ def make_constraint(m: types.Model, d: types.Data):
           d.nefc,
           d.efc.type,
           d.efc.id,
+          d.efc.jtdaj_group_head,
+          d.efc.jtdaj_group_size,
+          d.efc.jtdaj_group_count,
           d.efc.J_rownnz,
           d.efc.J_rowadr,
           d.efc.J_colind,
@@ -3011,6 +3121,9 @@ def make_constraint(m: types.Model, d: types.Data):
           d.nefc,
           d.contact.efc_address,
           d.efc.id,
+          d.efc.jtdaj_group_head,
+          d.efc.jtdaj_group_size,
+          d.efc.jtdaj_group_count,
           d.efc.J_rownnz,
           d.efc.J_rowadr,
           efc_nnz,

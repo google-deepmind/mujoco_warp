@@ -93,7 +93,7 @@ class BlockDim:
   # solver
   update_gradient_cholesky: int = 64
   update_gradient_cholesky_blocked: int = 32
-  update_gradient_JTDAJ_sparse: int = 64
+  update_gradient_JTDAJ_sparse: int = 128
   update_gradient_JTDAJ_dense: int = 128
   linesearch_iterative: int = 32
   update_gradient_grad: int = 256
@@ -1853,6 +1853,9 @@ class Constraint:
   Attributes:
     type: constraint type (ConstraintType)            (nworld, njmax)
     id: id of object of specific type                 (nworld, njmax)
+    jtdaj_group_head: first efc row of each JTDAJ block   (nworld, njmax)
+    jtdaj_group_size: efc rows per JTDAJ block            (nworld, njmax)
+    jtdaj_group_count: number of JTDAJ blocks             (nworld,)
     J_rownnz: number of non-zeros in J row            (nworld, 0) dense
                                                       (nworld, njmax) sparse
     J_rowadr: row start address in colind array       (nworld, 0) dense
@@ -1890,6 +1893,9 @@ class Constraint:
 
   type: array("nworld", "njmax", int)
   id: array("nworld", "njmax", int)
+  jtdaj_group_head: array("nworld", "njmax", int)
+  jtdaj_group_size: array("nworld", "njmax", int)
+  jtdaj_group_count: array("nworld", int)
   J_rownnz: array("nworld", "njmax", int)
   J_rowadr: array("nworld", "njmax", int)
   J_colind: wp.array3d[int]
