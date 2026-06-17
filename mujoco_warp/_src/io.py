@@ -132,10 +132,13 @@ def is_sparse(mjm: mujoco.MjModel) -> bool:
 
 
 def _m_blocks(mjm: mujoco.MjModel):
-  """The (start, size) diagonal blocks of M (connected sub-trees, contiguous dof ranges)."""
-  nv = mjm.nv
-  corners = [i for i in range(nv) if mjm.dof_parentid[i] == -1]
-  return [(corners[k], (corners[k + 1] if k + 1 < len(corners) else nv) - corners[k]) for k in range(len(corners))]
+  """The (start, size) diagonal blocks of M: the kinematic trees, each a contiguous dof range.
+
+  M couples a dof only with its tree ancestors, so its diagonal blocks are exactly the trees.
+  (dof_simplenum is not used to classify blocks: it is a contiguous-suffix run-length, so it
+  misses interspersed decoupled dofs; the M_rownnz coupling check in m_block_layout catches those.)
+  """
+  return [(int(adr), int(num)) for adr, num in zip(mjm.tree_dofadr, mjm.tree_dofnum) if num > 0]
 
 
 def _m_allow_dense(mjm: mujoco.MjModel) -> bool:
