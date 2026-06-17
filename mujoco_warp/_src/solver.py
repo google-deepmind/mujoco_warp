@@ -2007,7 +2007,7 @@ def _update_gradient_JTDAJ_dense_tiled(nv_pad: int, tile_size: int, njmax: int, 
     M_hinit_i: wp.array[int],  # row index of each CSR entry
     # Data in:
     nefc_in: wp.array[int],
-    M_in: wp.array2d[float],  # CSR M (nworld, 1, nC)
+    M_in: wp.array2d[float],  # CSR M (nworld, nC)
     efc_J_in: wp.array3d[float],
     efc_D_in: wp.array2d[float],
     efc_state_in: wp.array2d[int],
