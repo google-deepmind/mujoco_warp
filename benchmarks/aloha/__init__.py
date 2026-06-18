@@ -36,7 +36,7 @@ BENCHMARKS = [
     "name": "aloha_cloth",
     "mjcf": "scene_cloth.xml",
     "nworld": 32,
-    "nconmax": 1024,
+    "nconmax": 3600,
     "nccdmax": 1,
     "njmax": 8192,
     "nstep": 100,
