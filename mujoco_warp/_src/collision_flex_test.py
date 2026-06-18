@@ -342,6 +342,63 @@ class FlexCollisionTest(absltest.TestCase):
     nacon = int(d.nacon.numpy()[0])
     self.assertEqual(nacon, 0, f"Expected 0 self-collision contacts on a flat cloth, but got {nacon}")
 
+  def test_flex_mesh(self):
+    """Test that contacts are generated between mesh and cloth."""
+    xml = """
+    <mujoco>
+      <option solver="CG" tolerance="1e-6" timestep=".001"/>
+      <size memory="10M"/>
+
+      <asset>
+        <mesh name="box" scale="0.1 0.1 0.1"
+              vertex="-1 -1 -1
+                       1 -1 -1
+                       1  1 -1
+                       1  1  1
+                       1 -1  1
+                      -1  1 -1
+                      -1  1  1
+                      -1 -1  1"/>
+      </asset>
+
+      <worldbody>
+        <light pos="0 0 3" dir="0 0 -1"/>
+
+        <!-- Ground plane -->
+        <geom type="plane" size="5 5 .1" pos="0 0 0"/>
+
+        <!-- Mesh positioned just above the cloth -->
+        <body pos="0 0 0.12">
+          <freejoint/>
+          <geom type="mesh" mesh="box" mass="1"/>
+        </body>
+
+        <!-- Cloth (dim=2 flex) -->
+        <flexcomp type="grid" count="4 4 1" spacing=".2 .2 .1" pos="-.3 -.3 0"
+                  radius=".02" name="cloth" dim="2" mass=".5">
+          <contact condim="3" solref="0.01 1" solimp=".95 .99 .0001"
+                   selfcollide="none" conaffinity="1" contype="1"/>
+          <edge damping="0.01"/>
+        </flexcomp>
+      </worldbody>
+    </mujoco>
+    """
+    mjm, _, m, d = test_data.fixture(xml=xml)
+
+    self.assertEqual(mjm.nflex, 1)
+    self.assertEqual(mjm.flex_dim[0], 2)
+
+    self.assertEqual(m.nflex, 1)
+    self.assertGreater(m.flex_elemnum.numpy()[0], 0)
+
+    mjwarp.kinematics(m, d)
+    mjwarp.collision(m, d)
+
+    nacon = int(d.nacon.numpy()[0])
+
+    # Mesh is just above the cloth, so there should be contacts
+    self.assertGreater(nacon, 0, "Expected contacts between mesh and cloth")
+
 
 if __name__ == "__main__":
   absltest.main()
