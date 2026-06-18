@@ -1370,6 +1370,9 @@ class Model:
     M_mulm_rowadr: sparse matmul row pointers
     M_mulm_col: sparse matmul column indices
     M_mulm_madr: sparse matmul matrix addresses
+    flex_elemflexid: maps each element index directly to its flexid       (nflexelem,)
+    flex_shellflexid: maps each shell index directly to its flexid        (nflexshelldata,)
+    flex_evpairflexid: maps each element-vertex pair directly to its flexid (nflexevpair,)
   """
 
   nq: int
@@ -1808,6 +1811,9 @@ class Model:
   M_mulm_rowadr: wp.array[int]  # start address for each row [nv+1]
   M_mulm_col: wp.array[int]  # column index to gather from
   M_mulm_madr: wp.array[int]  # matrix address to read
+  flex_elemflexid: array("nflexelem", int)
+  flex_shellflexid: array("nflexshelldata", int)
+  flex_evpairflexid: array("nflexevpair", int)
 
 
 class ContactType(enum.IntFlag):

@@ -742,6 +742,7 @@ def _flex_internal_collisions_detect(
   flex_elem: wp.array[int],
   flex_evpair: wp.array[wp.vec2i],
   flex_radius: wp.array[float],
+  flex_evpairflexid: wp.array[int],
   # Data in:
   flexvert_xpos_in: wp.array2d[wp.vec3],
   # In:
@@ -761,15 +762,8 @@ def _flex_internal_collisions_detect(
 ):
   worldid, pair_idx = wp.tid()
 
-  flexid = int(-1)
-  for i in range(nflex):
-    start = flex_evpairadr[i]
-    num = flex_evpairnum[i]
-    if pair_idx >= start and pair_idx < start + num:
-      flexid = i
-      break
-
-  if flexid < 0 or flex_internal[flexid] == 0:
+  flexid = flex_evpairflexid[pair_idx]
+  if flex_internal[flexid] == 0:
     return
 
   ev = flex_evpair[pair_idx]
@@ -851,6 +845,7 @@ def _flex_tet_internal_collisions_detect(
   flex_elemdataadr: wp.array[int],
   flex_elem: wp.array[int],
   flex_radius: wp.array[float],
+  flex_elemflexid: wp.array[int],
   # Data in:
   flexvert_xpos_in: wp.array2d[wp.vec3],
   # In:
@@ -870,17 +865,8 @@ def _flex_tet_internal_collisions_detect(
 ):
   worldid, elemid = wp.tid()
 
-  flexid = int(-1)
-  for i in range(nflex):
-    if flex_dim[i] != 3:
-      continue
-    elem_adr = flex_elemadr[i]
-    elem_num = flex_elemnum[i]
-    if elemid >= elem_adr and elemid < elem_adr + elem_num:
-      flexid = i
-      break
-
-  if flexid < 0:
+  flexid = flex_elemflexid[elemid]
+  if flex_dim[flexid] != 3:
     return
 
   radius = flex_radius[flexid]
@@ -1117,6 +1103,7 @@ def _flex_active_element_collisions_detect(
   flex_vertbodyid: wp.array[int],
   flex_elem: wp.array[int],
   flex_radius: wp.array[float],
+  flex_elemflexid: wp.array[int],
   # Data in:
   flexvert_xpos_in: wp.array2d[wp.vec3],
   # In:
@@ -1146,17 +1133,8 @@ def _flex_active_element_collisions_detect(
 ):
   worldid, elem1_global = wp.tid()
 
-  flexid = int(-1)
-  for i in range(nflex):
-    if flex_selfcollide[i] == 0:
-      continue
-    elem_adr = flex_elemadr[i]
-    elem_num = flex_elemnum[i]
-    if elem1_global >= elem_adr and elem1_global < elem_adr + elem_num:
-      flexid = i
-      break
-
-  if flexid < 0:
+  flexid = flex_elemflexid[elem1_global]
+  if flex_selfcollide[flexid] == 0:
     return
 
   radius = flex_radius[flexid]
@@ -1347,6 +1325,7 @@ def _flex_narrowphase_dim2_detect(
   mesh_vert: wp.array[wp.vec3],
   mesh_graph: wp.array[int],
   mesh_pos: wp.array[wp.vec3],
+  flex_elemflexid: wp.array[int],
   # Data in:
   geom_xpos_in: wp.array2d[wp.vec3],
   geom_xmat_in: wp.array2d[wp.mat33],
@@ -1378,17 +1357,8 @@ def _flex_narrowphase_dim2_detect(
 ):
   worldid, elemid = wp.tid()
 
-  flexid = int(-1)
-  for i in range(nflex):
-    if flex_dim[i] != 2:
-      continue
-    elem_adr = flex_elemadr[i]
-    elem_num = flex_elemnum[i]
-    if elemid >= elem_adr and elemid < elem_adr + elem_num:
-      flexid = i
-      break
-
-  if flexid < 0:
+  flexid = flex_elemflexid[elemid]
+  if flex_dim[flexid] != 2:
     return
 
   vert_adr = flex_vertadr[flexid]
@@ -1551,6 +1521,7 @@ def _flex_narrowphase_dim3_detect(
   mesh_vert: wp.array[wp.vec3],
   mesh_graph: wp.array[int],
   mesh_pos: wp.array[wp.vec3],
+  flex_shellflexid: wp.array[int],
   # Data in:
   geom_xpos_in: wp.array2d[wp.vec3],
   geom_xmat_in: wp.array2d[wp.mat33],
@@ -1582,19 +1553,11 @@ def _flex_narrowphase_dim3_detect(
 ):
   worldid, shellid = wp.tid()
 
-  flexid = int(-1)
-  shell_offset = int(0)
-  for i in range(nflex):
-    if flex_dim[i] != 3:
-      continue
-    shell_num = flex_shellnum[i]
-    if shellid >= shell_offset and shellid < shell_offset + shell_num:
-      flexid = i
-      break
-    shell_offset += shell_num
-
-  if flexid < 0:
+  flexid = flex_shellflexid[shellid]
+  if flex_dim[flexid] != 3:
     return
+
+  shell_offset = flex_shelldataadr[flexid] // 3
 
   vert_adr = flex_vertadr[flexid]
   tri_radius = flex_radius[flexid]
@@ -1998,6 +1961,7 @@ def flex_narrowphase(m: Model, d: Data):
       m.mesh_vert,
       m.mesh_graph,
       m.mesh_pos,
+      m.flex_elemflexid,
       d.geom_xpos,
       d.geom_xmat,
       d.flexvert_xpos,
@@ -2058,6 +2022,7 @@ def flex_narrowphase(m: Model, d: Data):
       m.mesh_vert,
       m.mesh_graph,
       m.mesh_pos,
+      m.flex_shellflexid,
       d.geom_xpos,
       d.geom_xmat,
       d.flexvert_xpos,
@@ -2176,6 +2141,7 @@ def flex_narrowphase(m: Model, d: Data):
         m.flex_elem,
         m.flex_evpair,
         m.flex_radius,
+        m.flex_evpairflexid,
         d.flexvert_xpos,
         d.naconmax,
       ],
@@ -2207,6 +2173,7 @@ def flex_narrowphase(m: Model, d: Data):
         m.flex_elemdataadr,
         m.flex_elem,
         m.flex_radius,
+        m.flex_elemflexid,
         d.flexvert_xpos,
         d.naconmax,
       ],
@@ -2262,6 +2229,7 @@ def flex_narrowphase(m: Model, d: Data):
           m.flex_vertbodyid,
           m.flex_elem,
           m.flex_radius,
+          m.flex_elemflexid,
           d.flexvert_xpos,
           d.naconmax,
           m.opt.ccd_iterations,

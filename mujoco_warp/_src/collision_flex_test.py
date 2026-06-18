@@ -399,6 +399,64 @@ class FlexCollisionTest(absltest.TestCase):
     # Mesh is just above the cloth, so there should be contacts
     self.assertGreater(nacon, 0, "Expected contacts between mesh and cloth")
 
+  def test_flex_lookup_maps(self):
+    """Test that precomputed flex lookup maps are correctly populated."""
+    xml = """
+    <mujoco>
+      <worldbody>
+        <!-- Two distinct grid flex comps to test multi-flex models -->
+        <flexcomp name="cloth1" type="grid" count="3 3 1" spacing=".2 .2 .1" pos="0 0 0"
+                  radius=".02" dim="2" mass=".5">
+          <contact selfcollide="none" internal="true"/>
+        </flexcomp>
+        <flexcomp name="cloth2" type="grid" count="4 4 1" spacing=".2 .2 .1" pos="1 1 0"
+                  radius=".02" dim="2" mass=".5">
+          <contact selfcollide="none" internal="true"/>
+        </flexcomp>
+      </worldbody>
+    </mujoco>
+    """
+    _, _, m, _ = test_data.fixture(xml=xml)
+
+    self.assertEqual(m.nflex, 2)
+
+    flex_elemflexid = m.flex_elemflexid.numpy()
+    flex_evpairflexid = m.flex_evpairflexid.numpy()
+    flex_shellflexid = m.flex_shellflexid.numpy()
+
+    self.assertEqual(len(flex_elemflexid), m.nflexelem)
+    self.assertEqual(len(flex_evpairflexid), m.nflexevpair)
+    self.assertEqual(len(flex_shellflexid), m.nflexshelldata)
+
+    shell_offset = 0
+    for i in range(m.nflex):
+      # Elem mapping
+      elem_start = m.flex_elemadr.numpy()[i]
+      elem_num = m.flex_elemnum.numpy()[i]
+      np.testing.assert_array_equal(
+        flex_elemflexid[elem_start : elem_start + elem_num],
+        i,
+        err_msg=f"Element mapping mismatch for flex {i}",
+      )
+
+      # EV pair mapping
+      evpair_start = m.flex_evpairadr.numpy()[i]
+      evpair_num = m.flex_evpairnum.numpy()[i]
+      np.testing.assert_array_equal(
+        flex_evpairflexid[evpair_start : evpair_start + evpair_num],
+        i,
+        err_msg=f"Element-vertex pair mapping mismatch for flex {i}",
+      )
+
+      # Shell mapping
+      shell_num = m.flex_shellnum.numpy()[i]
+      np.testing.assert_array_equal(
+        flex_shellflexid[shell_offset : shell_offset + shell_num],
+        i,
+        err_msg=f"Shell mapping mismatch for flex {i}",
+      )
+      shell_offset += shell_num
+
 
 if __name__ == "__main__":
   absltest.main()
