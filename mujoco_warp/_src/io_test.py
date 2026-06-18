@@ -1445,7 +1445,7 @@ class IOTest(parameterized.TestCase):
           <material name="mat" texture="red" rgba="0.5 0.6 0.7 1"/>
         </asset>
         <worldbody>
-          <geom name="g" type="sphere" size="0.1" material="mat"/>
+          <geom type="sphere" size="0.1" material="mat"/>
         </worldbody>
       </mujoco>
       """
@@ -1485,12 +1485,8 @@ class IOTest(parameterized.TestCase):
     mjm = mujoco.MjModel.from_xml_string(
       """
       <mujoco>
-        <asset>
-          <texture name="red" type="2d" builtin="flat" width="4" height="4"/>
-          <material name="mat" texture="red"/>
-        </asset>
         <worldbody>
-          <geom type="sphere" size="0.1" material="mat"/>
+          <geom type="sphere" size="0.1"/>
         </worldbody>
       </mujoco>
       """

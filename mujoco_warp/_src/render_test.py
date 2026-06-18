@@ -206,7 +206,7 @@ class RenderTest(parameterized.TestCase):
           <material name="mat" texture="red" rgba="1 1 1 1"/>
         </asset>
         <worldbody>
-          <camera name="cam" pos="0 0 2" xyaxes="1 0 0 0 1 0"/>
+          <camera pos="0 0 2" xyaxes="1 0 0 0 1 0"/>
           <geom type="plane" size="2 2 0.1" material="mat"/>
         </worldbody>
       </mujoco>
