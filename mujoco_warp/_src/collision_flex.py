@@ -315,6 +315,154 @@ def _collide_geom_triangle_detect(
     )
 
 
+@wp.func
+def _collide_mesh_triangle(
+  # Model:
+  mesh_vertadr: wp.array[int],
+  mesh_vertnum: wp.array[int],
+  mesh_graphadr: wp.array[int],
+  mesh_vert: wp.array[wp.vec3],
+  mesh_graph: wp.array[int],
+  mesh_pos: wp.array[wp.vec3],
+  # In:
+  max_candidates: int,
+  mesh_geom_pos: wp.vec3,
+  geom_rot: wp.mat33,
+  geom_size_val: wp.vec3,
+  t1: wp.vec3,
+  t2: wp.vec3,
+  t3: wp.vec3,
+  tri_radius: float,
+  margin: float,
+  geomid: int,
+  flexid: int,
+  elemid: int,
+  v0_local: int,
+  v1_local: int,
+  v2_local: int,
+  worldid: int,
+  did: int,
+  epa_vert: wp.array[wp.vec3],
+  epa_vert_index: wp.array[int],
+  epa_face: wp.array[int],
+  epa_pr: wp.array[wp.vec3],
+  epa_norm2: wp.array[float],
+  epa_horizon: wp.array[int],
+  tolerance: float,
+  ccd_iterations: int,
+  # Out:
+  cand_dist_out: wp.array[float],
+  cand_pos_out: wp.array[wp.vec3],
+  cand_nrm_out: wp.array[wp.vec3],
+  cand_geom_out: wp.array[wp.vec2i],
+  cand_flex_out: wp.array[wp.vec2i],
+  cand_elem_out: wp.array[wp.vec2i],
+  cand_vert_out: wp.array[wp.vec2i],
+  cand_worldid_out: wp.array[int],
+  cand_type_out: wp.array[int],
+  cand_geomcollisionid_out: wp.array[int],
+  ncand_out: wp.array[int],
+):
+  # Construct Mesh Geom (geom1)
+  geom1 = Geom()
+  geom1.pos = mesh_geom_pos
+  geom1.rot = geom_rot
+  geom1.size = geom_size_val
+  geom1.margin = 0.0
+  geom1.index = -1
+
+  geom1.vertadr = wp.where(did >= 0, mesh_vertadr[did], -1)
+  geom1.vertnum = wp.where(did >= 0, mesh_vertnum[did], -1)
+  geom1.graphadr = wp.where(did >= 0, mesh_graphadr[did], -1)
+  geom1.vert = mesh_vert
+  geom1.graph = mesh_graph
+
+  # Construct Triangle Geom (geom2)
+  geom2 = Geom()
+  geom2.pos = wp.vec3(0.0, 0.0, 0.0)
+  geom2.rot = wp.mat33(t1[0], t1[1], t1[2], t2[0], t2[1], t2[2], t3[0], t3[1], t3[2])
+  geom2.margin = 0.0
+  geom2.index = -1
+
+  centroid = (t1 + t2 + t3) * (1.0 / 3.0)
+  r_geom = wp.length(geom_size_val)
+  d1 = wp.length(t1 - centroid)
+  d2 = wp.length(t2 - centroid)
+  d3 = wp.length(t3 - centroid)
+  r_tri = wp.max(d1, wp.max(d2, d3))
+
+  geom_center = mesh_geom_pos
+  if did >= 0:
+    geom_center = mesh_geom_pos + geom_rot @ mesh_pos[did]
+
+  if wp.length(centroid - geom_center) <= r_geom + r_tri + margin + tri_radius + 0.04:
+    dist, ncontact, w1, w2, idx = ccd(
+      tolerance,
+      margin + tri_radius,
+      ccd_iterations,
+      ccd_iterations,
+      geom1,
+      geom2,
+      int(GeomType.MESH),
+      int(GeomType.TRIANGLE),
+      mesh_geom_pos,
+      centroid,
+      epa_vert,
+      epa_vert_index,
+      epa_face,
+      epa_pr,
+      epa_norm2,
+      epa_horizon,
+    )
+
+    if ncontact > 0 and dist < margin + tri_radius:
+      if dist < 0.0:
+        normal = wp.normalize(w1 - w2)
+      else:
+        normal = wp.normalize(w2 - w1)
+      contact_pos = 0.5 * (w1 + w2)
+
+      dist_v0 = wp.dot(t1 - w1, normal) - tri_radius
+      dist_v1 = wp.dot(t2 - w1, normal) - tri_radius
+      dist_v2 = wp.dot(t3 - w1, normal) - tri_radius
+
+      min_dist = wp.min(dist_v0, wp.min(dist_v1, dist_v2))
+      if min_dist < margin:
+        deepest_vert = v0_local
+        pos = t1 - normal * (tri_radius + 0.5 * dist_v0)
+        if dist_v1 < dist_v0 and dist_v1 < dist_v2:
+          deepest_vert = v1_local
+          pos = t2 - normal * (tri_radius + 0.5 * dist_v1)
+        elif dist_v2 < dist_v0 and dist_v2 < dist_v1:
+          deepest_vert = v2_local
+          pos = t3 - normal * (tri_radius + 0.5 * dist_v2)
+
+        _write_candidate_contact(
+          max_candidates,
+          min_dist,
+          pos,
+          normal,
+          geomid,
+          flexid,
+          elemid,
+          deepest_vert,
+          worldid,
+          cand_dist_out,
+          cand_pos_out,
+          cand_nrm_out,
+          cand_geom_out,
+          cand_flex_out,
+          cand_elem_out,
+          cand_vert_out,
+          cand_worldid_out,
+          cand_type_out,
+          cand_geomcollisionid_out,
+          ncand_out,
+        )
+
+  return
+
+
 @wp.kernel
 def _flex_plane_narrowphase_detect(
   # Model:
@@ -379,6 +527,128 @@ def _flex_plane_narrowphase_detect(
         dist,
         contact_pos,
         plane_normal,
+        geomid,
+        flexid,
+        -1,
+        local_vertid,
+        worldid,
+        cand_dist_out,
+        cand_pos_out,
+        cand_nrm_out,
+        cand_geom_out,
+        cand_flex_out,
+        cand_elem_out,
+        cand_vert_out,
+        cand_worldid_out,
+        cand_type_out,
+        cand_geomcollisionid_out,
+        ncand_out,
+      )
+
+
+@wp.kernel
+def _flex_geom_vertex_narrowphase_detect(
+  # Model:
+  ngeom: int,
+  nflexvert: int,
+  geom_type: wp.array[int],
+  geom_contype: wp.array[int],
+  geom_conaffinity: wp.array[int],
+  geom_size: wp.array2d[wp.vec3],
+  geom_margin: wp.array2d[float],
+  flex_contype: wp.array[int],
+  flex_conaffinity: wp.array[int],
+  flex_margin: wp.array[float],
+  flex_dim: wp.array[int],
+  flex_vertadr: wp.array[int],
+  flex_radius: wp.array[float],
+  flex_vertflexid: wp.array[int],
+  # Data in:
+  geom_xpos_in: wp.array2d[wp.vec3],
+  geom_xmat_in: wp.array2d[wp.mat33],
+  flexvert_xpos_in: wp.array2d[wp.vec3],
+  nworld_in: int,
+  # In:
+  max_candidates: int,
+  # Out:
+  cand_dist_out: wp.array[float],
+  cand_pos_out: wp.array[wp.vec3],
+  cand_nrm_out: wp.array[wp.vec3],
+  cand_geom_out: wp.array[wp.vec2i],
+  cand_flex_out: wp.array[wp.vec2i],
+  cand_elem_out: wp.array[wp.vec2i],
+  cand_vert_out: wp.array[wp.vec2i],
+  cand_worldid_out: wp.array[int],
+  cand_type_out: wp.array[int],
+  cand_geomcollisionid_out: wp.array[int],
+  ncand_out: wp.array[int],
+):
+  worldid, vertid = wp.tid()
+
+  flexid = flex_vertflexid[vertid]
+  if flex_dim[flexid] >= 2:
+    return
+
+  radius = flex_radius[flexid]
+  flex_margin_val = flex_margin[flexid]
+  local_vertid = vertid - flex_vertadr[flexid]
+
+  v_pos = flexvert_xpos_in[worldid, vertid]
+
+  for geomid in range(ngeom):
+    gtype = geom_type[geomid]
+    if (
+      gtype != int(GeomType.SPHERE)
+      and gtype != int(GeomType.CAPSULE)
+      and gtype != int(GeomType.BOX)
+      and gtype != int(GeomType.CYLINDER)
+    ):
+      continue
+
+    g_contype = geom_contype[geomid]
+    g_conaffinity = geom_conaffinity[geomid]
+    f_contype = flex_contype[flexid]
+    f_conaffinity = flex_conaffinity[flexid]
+    if not ((g_contype & f_conaffinity) or (f_contype & g_conaffinity)):
+      continue
+
+    geom_margin_val = geom_margin[worldid % geom_margin.shape[0], geomid]
+    margin = geom_margin_val + flex_margin_val
+
+    geom_pos = geom_xpos_in[worldid, geomid]
+    geom_rot = geom_xmat_in[worldid, geomid]
+    geom_size_val = geom_size[worldid % geom_size.shape[0], geomid]
+
+    dist = collision_primitive_core.MJ_MAXVAL
+    contact_pos = wp.vec3(0.0)
+    nrm = wp.vec3(0.0)
+
+    if gtype == int(GeomType.SPHERE):
+      sphere_radius = geom_size_val[0]
+      dist, contact_pos, nrm = collision_primitive_core.sphere_sphere(v_pos, radius, geom_pos, sphere_radius)
+    elif gtype == int(GeomType.CAPSULE):
+      cap_radius = geom_size_val[0]
+      cap_half_len = geom_size_val[1]
+      cap_axis = wp.vec3(geom_rot[0, 2], geom_rot[1, 2], geom_rot[2, 2])
+      dist, contact_pos, nrm = collision_primitive_core.sphere_capsule(
+        v_pos, radius, geom_pos, cap_axis, cap_radius, cap_half_len
+      )
+    elif gtype == int(GeomType.BOX):
+      dist, contact_pos, nrm = collision_primitive_core.sphere_box(v_pos, radius, geom_pos, geom_rot, geom_size_val)
+    elif gtype == int(GeomType.CYLINDER):
+      cyl_radius = geom_size_val[0]
+      cyl_half_height = geom_size_val[1]
+      cyl_axis = wp.vec3(geom_rot[0, 2], geom_rot[1, 2], geom_rot[2, 2])
+      dist, contact_pos, nrm = collision_primitive_core.sphere_cylinder(
+        v_pos, radius, geom_pos, cyl_axis, cyl_radius, cyl_half_height
+      )
+
+    if dist < margin:
+      _write_candidate_contact(
+        max_candidates,
+        dist,
+        contact_pos,
+        nrm,
         geomid,
         flexid,
         -1,
@@ -1052,9 +1322,12 @@ def _flex_narrowphase_dim2_detect(
   # Model:
   ngeom: int,
   nflex: int,
+  opt_ccd_tolerance: wp.array[float],
   geom_type: wp.array[int],
   geom_contype: wp.array[int],
   geom_conaffinity: wp.array[int],
+  geom_bodyid: wp.array[int],
+  geom_dataid: wp.array2d[int],
   geom_size: wp.array2d[wp.vec3],
   geom_margin: wp.array2d[float],
   flex_contype: wp.array[int],
@@ -1065,14 +1338,30 @@ def _flex_narrowphase_dim2_detect(
   flex_elemadr: wp.array[int],
   flex_elemnum: wp.array[int],
   flex_elemdataadr: wp.array[int],
+  flex_vertbodyid: wp.array[int],
   flex_elem: wp.array[int],
   flex_radius: wp.array[float],
+  mesh_vertadr: wp.array[int],
+  mesh_vertnum: wp.array[int],
+  mesh_graphadr: wp.array[int],
+  mesh_vert: wp.array[wp.vec3],
+  mesh_graph: wp.array[int],
+  mesh_pos: wp.array[wp.vec3],
   # Data in:
   geom_xpos_in: wp.array2d[wp.vec3],
   geom_xmat_in: wp.array2d[wp.mat33],
   flexvert_xpos_in: wp.array2d[wp.vec3],
   nworld_in: int,
+  naccdmax_in: int,
   # In:
+  epa_vert: wp.array2d[wp.vec3],
+  epa_vert_index: wp.array2d[int],
+  epa_face: wp.array2d[int],
+  epa_pr: wp.array2d[wp.vec3],
+  epa_norm2: wp.array2d[float],
+  epa_horizon: wp.array2d[int],
+  nccd: wp.array[int],
+  ccd_iterations: int,
   max_candidates: int,
   # Out:
   cand_dist_out: wp.array[float],
@@ -1120,7 +1409,8 @@ def _flex_narrowphase_dim2_detect(
   for geomid in range(ngeom):
     gtype = geom_type[geomid]
     if (
-      gtype != int(GeomType.SPHERE)
+      gtype != int(GeomType.MESH)
+      and gtype != int(GeomType.SPHERE)
       and gtype != int(GeomType.CAPSULE)
       and gtype != int(GeomType.BOX)
       and gtype != int(GeomType.CYLINDER)
@@ -1134,6 +1424,15 @@ def _flex_narrowphase_dim2_detect(
     if not ((g_contype & f_conaffinity) or (f_contype & g_conaffinity)):
       continue
 
+    # Skip if geom resides on same body as any vertex of the colliding element
+    b_geom = geom_bodyid[geomid]
+    if b_geom >= 0:
+      b0 = flex_vertbodyid[vert_adr + v0_local]
+      b1 = flex_vertbodyid[vert_adr + v1_local]
+      b2 = flex_vertbodyid[vert_adr + v2_local]
+      if b_geom == b0 or b_geom == b1 or b_geom == b2:
+        continue
+
     geom_margin_val = geom_margin[worldid % geom_margin.shape[0], geomid]
     margin = geom_margin_val + tri_margin
 
@@ -1141,34 +1440,86 @@ def _flex_narrowphase_dim2_detect(
     geom_rot = geom_xmat_in[worldid, geomid]
     geom_size_val = geom_size[worldid % geom_size.shape[0], geomid]
 
-    _collide_geom_triangle_detect(
-      max_candidates,
-      gtype,
-      geom_pos,
-      geom_rot,
-      geom_size_val,
-      t1,
-      t2,
-      t3,
-      tri_radius,
-      margin,
-      geomid,
-      flexid,
-      local_elemid,
-      -1,
-      worldid,
-      cand_dist_out,
-      cand_pos_out,
-      cand_nrm_out,
-      cand_geom_out,
-      cand_flex_out,
-      cand_elem_out,
-      cand_vert_out,
-      cand_worldid_out,
-      cand_type_out,
-      cand_geomcollisionid_out,
-      ncand_out,
-    )
+    if gtype == int(GeomType.MESH):
+      ccdid = wp.atomic_add(nccd, 0, 1)
+      if ccdid >= naccdmax_in:
+        wp.printf("CCD overflow in flex narrowphase - please increase naccdmax to %u\n", ccdid)
+      else:
+        did = geom_dataid[worldid % geom_dataid.shape[0], geomid]
+        tolerance = opt_ccd_tolerance[worldid % opt_ccd_tolerance.shape[0]]
+        _collide_mesh_triangle(
+          mesh_vertadr,
+          mesh_vertnum,
+          mesh_graphadr,
+          mesh_vert,
+          mesh_graph,
+          mesh_pos,
+          max_candidates,
+          geom_pos,
+          geom_rot,
+          geom_size_val,
+          t1,
+          t2,
+          t3,
+          tri_radius,
+          margin,
+          geomid,
+          flexid,
+          local_elemid,
+          v0_local,
+          v1_local,
+          v2_local,
+          worldid,
+          did,
+          epa_vert[ccdid],
+          epa_vert_index[ccdid],
+          epa_face[ccdid],
+          epa_pr[ccdid],
+          epa_norm2[ccdid],
+          epa_horizon[ccdid],
+          tolerance,
+          ccd_iterations,
+          cand_dist_out,
+          cand_pos_out,
+          cand_nrm_out,
+          cand_geom_out,
+          cand_flex_out,
+          cand_elem_out,
+          cand_vert_out,
+          cand_worldid_out,
+          cand_type_out,
+          cand_geomcollisionid_out,
+          ncand_out,
+        )
+    else:
+      _collide_geom_triangle_detect(
+        max_candidates,
+        gtype,
+        geom_pos,
+        geom_rot,
+        geom_size_val,
+        t1,
+        t2,
+        t3,
+        tri_radius,
+        margin,
+        geomid,
+        flexid,
+        local_elemid,
+        -1,
+        worldid,
+        cand_dist_out,
+        cand_pos_out,
+        cand_nrm_out,
+        cand_geom_out,
+        cand_flex_out,
+        cand_elem_out,
+        cand_vert_out,
+        cand_worldid_out,
+        cand_type_out,
+        cand_geomcollisionid_out,
+        ncand_out,
+      )
 
 
 @wp.kernel
@@ -1176,9 +1527,12 @@ def _flex_narrowphase_dim3_detect(
   # Model:
   ngeom: int,
   nflex: int,
+  opt_ccd_tolerance: wp.array[float],
   geom_type: wp.array[int],
   geom_contype: wp.array[int],
   geom_conaffinity: wp.array[int],
+  geom_bodyid: wp.array[int],
+  geom_dataid: wp.array2d[int],
   geom_size: wp.array2d[wp.vec3],
   geom_margin: wp.array2d[float],
   flex_contype: wp.array[int],
@@ -1188,14 +1542,30 @@ def _flex_narrowphase_dim3_detect(
   flex_vertadr: wp.array[int],
   flex_shellnum: wp.array[int],
   flex_shelldataadr: wp.array[int],
+  flex_vertbodyid: wp.array[int],
   flex_shell: wp.array[int],
   flex_radius: wp.array[float],
+  mesh_vertadr: wp.array[int],
+  mesh_vertnum: wp.array[int],
+  mesh_graphadr: wp.array[int],
+  mesh_vert: wp.array[wp.vec3],
+  mesh_graph: wp.array[int],
+  mesh_pos: wp.array[wp.vec3],
   # Data in:
   geom_xpos_in: wp.array2d[wp.vec3],
   geom_xmat_in: wp.array2d[wp.mat33],
   flexvert_xpos_in: wp.array2d[wp.vec3],
   nworld_in: int,
+  naccdmax_in: int,
   # In:
+  epa_vert: wp.array2d[wp.vec3],
+  epa_vert_index: wp.array2d[int],
+  epa_face: wp.array2d[int],
+  epa_pr: wp.array2d[wp.vec3],
+  epa_norm2: wp.array2d[float],
+  epa_horizon: wp.array2d[int],
+  nccd: wp.array[int],
+  ccd_iterations: int,
   max_candidates: int,
   # Out:
   cand_dist_out: wp.array[float],
@@ -1246,7 +1616,8 @@ def _flex_narrowphase_dim3_detect(
   for geomid in range(ngeom):
     gtype = geom_type[geomid]
     if (
-      gtype != int(GeomType.SPHERE)
+      gtype != int(GeomType.MESH)
+      and gtype != int(GeomType.SPHERE)
       and gtype != int(GeomType.CAPSULE)
       and gtype != int(GeomType.BOX)
       and gtype != int(GeomType.CYLINDER)
@@ -1260,6 +1631,15 @@ def _flex_narrowphase_dim3_detect(
     if not ((g_contype & f_conaffinity) or (f_contype & g_conaffinity)):
       continue
 
+    # Skip if geom resides on same body as any vertex of the colliding element
+    b_geom = geom_bodyid[geomid]
+    if b_geom >= 0:
+      b0 = flex_vertbodyid[vert_adr + v0_local]
+      b1 = flex_vertbodyid[vert_adr + v1_local]
+      b2 = flex_vertbodyid[vert_adr + v2_local]
+      if b_geom == b0 or b_geom == b1 or b_geom == b2:
+        continue
+
     geom_margin_val = geom_margin[worldid % geom_margin.shape[0], geomid]
     margin = geom_margin_val + tri_margin
 
@@ -1267,34 +1647,86 @@ def _flex_narrowphase_dim3_detect(
     geom_rot = geom_xmat_in[worldid, geomid]
     geom_size_val = geom_size[worldid % geom_size.shape[0], geomid]
 
-    _collide_geom_triangle_detect(
-      max_candidates,
-      gtype,
-      geom_pos,
-      geom_rot,
-      geom_size_val,
-      t1,
-      t2,
-      t3,
-      tri_radius,
-      margin,
-      geomid,
-      flexid,
-      local_shellid,
-      -1,
-      worldid,
-      cand_dist_out,
-      cand_pos_out,
-      cand_nrm_out,
-      cand_geom_out,
-      cand_flex_out,
-      cand_elem_out,
-      cand_vert_out,
-      cand_worldid_out,
-      cand_type_out,
-      cand_geomcollisionid_out,
-      ncand_out,
-    )
+    if gtype == int(GeomType.MESH):
+      ccdid = wp.atomic_add(nccd, 0, 1)
+      if ccdid >= naccdmax_in:
+        wp.printf("CCD overflow in flex narrowphase - please increase naccdmax to %u\n", ccdid)
+      else:
+        did = geom_dataid[worldid % geom_dataid.shape[0], geomid]
+        tolerance = opt_ccd_tolerance[worldid % opt_ccd_tolerance.shape[0]]
+        _collide_mesh_triangle(
+          mesh_vertadr,
+          mesh_vertnum,
+          mesh_graphadr,
+          mesh_vert,
+          mesh_graph,
+          mesh_pos,
+          max_candidates,
+          geom_pos,
+          geom_rot,
+          geom_size_val,
+          t1,
+          t2,
+          t3,
+          tri_radius,
+          margin,
+          geomid,
+          flexid,
+          local_shellid,
+          v0_local,
+          v1_local,
+          v2_local,
+          worldid,
+          did,
+          epa_vert[ccdid],
+          epa_vert_index[ccdid],
+          epa_face[ccdid],
+          epa_pr[ccdid],
+          epa_norm2[ccdid],
+          epa_horizon[ccdid],
+          tolerance,
+          ccd_iterations,
+          cand_dist_out,
+          cand_pos_out,
+          cand_nrm_out,
+          cand_geom_out,
+          cand_flex_out,
+          cand_elem_out,
+          cand_vert_out,
+          cand_worldid_out,
+          cand_type_out,
+          cand_geomcollisionid_out,
+          ncand_out,
+        )
+    else:
+      _collide_geom_triangle_detect(
+        max_candidates,
+        gtype,
+        geom_pos,
+        geom_rot,
+        geom_size_val,
+        t1,
+        t2,
+        t3,
+        tri_radius,
+        margin,
+        geomid,
+        flexid,
+        local_shellid,
+        -1,
+        worldid,
+        cand_dist_out,
+        cand_pos_out,
+        cand_nrm_out,
+        cand_geom_out,
+        cand_flex_out,
+        cand_elem_out,
+        cand_vert_out,
+        cand_worldid_out,
+        cand_type_out,
+        cand_geomcollisionid_out,
+        ncand_out,
+      )
 
 
 @wp.kernel
@@ -1517,15 +1949,36 @@ def flex_narrowphase(m: Model, d: Data):
 
   ncand = wp.zeros(1, dtype=int)
 
+  epa_iterations = m.opt.ccd_iterations
+  if m.nmesh > 0:
+    mesh_epa_vert = wp.empty(shape=(d.naccdmax, 10 + 2 * epa_iterations), dtype=wp.vec3)
+    mesh_epa_vert_index = wp.empty(shape=(d.naccdmax, 10 + 2 * epa_iterations), dtype=int)
+    mesh_epa_face = wp.empty(shape=(d.naccdmax, 6 + MJ_MAX_EPAFACES * epa_iterations), dtype=int)
+    mesh_epa_pr = wp.empty(shape=(d.naccdmax, 6 + MJ_MAX_EPAFACES * epa_iterations), dtype=wp.vec3)
+    mesh_epa_norm2 = wp.empty(shape=(d.naccdmax, 6 + MJ_MAX_EPAFACES * epa_iterations), dtype=float)
+    mesh_epa_horizon = wp.empty(shape=(d.naccdmax, MJ_MAX_EPAHORIZON), dtype=int)
+    mesh_nccd = wp.zeros(1, dtype=int)
+  else:
+    mesh_epa_vert = wp.empty(shape=(1, 1), dtype=wp.vec3)
+    mesh_epa_vert_index = wp.empty(shape=(1, 1), dtype=int)
+    mesh_epa_face = wp.empty(shape=(1, 1), dtype=int)
+    mesh_epa_pr = wp.empty(shape=(1, 1), dtype=wp.vec3)
+    mesh_epa_norm2 = wp.empty(shape=(1, 1), dtype=float)
+    mesh_epa_horizon = wp.empty(shape=(1, 1), dtype=int)
+    mesh_nccd = wp.zeros(1, dtype=int)
+
   wp.launch(
     _flex_narrowphase_dim2_detect,
     dim=(d.nworld, m.nflexelem),
     inputs=[
       m.ngeom,
       m.nflex,
+      m.opt.ccd_tolerance,
       m.geom_type,
       m.geom_contype,
       m.geom_conaffinity,
+      m.geom_bodyid,
+      m.geom_dataid,
       m.geom_size,
       m.geom_margin,
       m.flex_contype,
@@ -1536,12 +1989,28 @@ def flex_narrowphase(m: Model, d: Data):
       m.flex_elemadr,
       m.flex_elemnum,
       m.flex_elemdataadr,
+      m.flex_vertbodyid,
       m.flex_elem,
       m.flex_radius,
+      m.mesh_vertadr,
+      m.mesh_vertnum,
+      m.mesh_graphadr,
+      m.mesh_vert,
+      m.mesh_graph,
+      m.mesh_pos,
       d.geom_xpos,
       d.geom_xmat,
       d.flexvert_xpos,
       d.nworld,
+      d.naccdmax,
+      mesh_epa_vert,
+      mesh_epa_vert_index,
+      mesh_epa_face,
+      mesh_epa_pr,
+      mesh_epa_norm2,
+      mesh_epa_horizon,
+      mesh_nccd,
+      epa_iterations,
       d.naconmax,
     ],
     outputs=[
@@ -1565,9 +2034,12 @@ def flex_narrowphase(m: Model, d: Data):
     inputs=[
       m.ngeom,
       m.nflex,
+      m.opt.ccd_tolerance,
       m.geom_type,
       m.geom_contype,
       m.geom_conaffinity,
+      m.geom_bodyid,
+      m.geom_dataid,
       m.geom_size,
       m.geom_margin,
       m.flex_contype,
@@ -1577,12 +2049,28 @@ def flex_narrowphase(m: Model, d: Data):
       m.flex_vertadr,
       m.flex_shellnum,
       m.flex_shelldataadr,
+      m.flex_vertbodyid,
       m.flex_shell,
       m.flex_radius,
+      m.mesh_vertadr,
+      m.mesh_vertnum,
+      m.mesh_graphadr,
+      m.mesh_vert,
+      m.mesh_graph,
+      m.mesh_pos,
       d.geom_xpos,
       d.geom_xmat,
       d.flexvert_xpos,
       d.nworld,
+      d.naccdmax,
+      mesh_epa_vert,
+      mesh_epa_vert_index,
+      mesh_epa_face,
+      mesh_epa_pr,
+      mesh_epa_norm2,
+      mesh_epa_horizon,
+      mesh_nccd,
+      epa_iterations,
       d.naconmax,
     ],
     outputs=[
@@ -1609,6 +2097,45 @@ def flex_narrowphase(m: Model, d: Data):
       m.geom_type,
       m.geom_margin,
       m.flex_margin,
+      m.flex_vertadr,
+      m.flex_radius,
+      m.flex_vertflexid,
+      d.geom_xpos,
+      d.geom_xmat,
+      d.flexvert_xpos,
+      d.nworld,
+      d.naconmax,
+    ],
+    outputs=[
+      cand_dist,
+      cand_pos,
+      cand_nrm,
+      cand_geom,
+      cand_flex,
+      cand_elem,
+      cand_vert,
+      cand_worldid,
+      cand_type,
+      cand_geomcollisionid,
+      ncand,
+    ],
+  )
+
+  wp.launch(
+    _flex_geom_vertex_narrowphase_detect,
+    dim=(d.nworld, m.nflexvert),
+    inputs=[
+      m.ngeom,
+      m.nflexvert,
+      m.geom_type,
+      m.geom_contype,
+      m.geom_conaffinity,
+      m.geom_size,
+      m.geom_margin,
+      m.flex_contype,
+      m.flex_conaffinity,
+      m.flex_margin,
+      m.flex_dim,
       m.flex_vertadr,
       m.flex_radius,
       m.flex_vertflexid,

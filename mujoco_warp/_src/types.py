@@ -427,6 +427,8 @@ class GeomType(enum.IntEnum):
   MESH = mujoco.mjtGeom.mjGEOM_MESH
   SDF = mujoco.mjtGeom.mjGEOM_SDF
   FLEX = mujoco.mjtGeom.mjGEOM_FLEX
+  # warp only
+  TRIANGLE = 999
   # unsupported: NGEOMTYPES, ARROW*, LINE, SKIN, LABEL, NONE
 
 
@@ -1150,6 +1152,7 @@ class Model:
     mesh_normal: normals for all meshes                      (nmeshnormal, 3)
     mesh_face: face indices for all meshes                   (nface, 3)
     mesh_graph: convex graph data                            (nmeshgraph,)
+    mesh_pos: translation applied to asset vertices          (nmesh, 3)
     mesh_quat: rotation applied to asset vertices            (nmesh, 4)
     mesh_polynum: number of polygons per mesh                (nmesh,)
     mesh_polyadr: first polygon address per mesh             (nmesh,)
@@ -1595,6 +1598,7 @@ class Model:
   mesh_normal: array("nmeshnormal", wp.vec3)
   mesh_face: array("nmeshface", wp.vec3i)
   mesh_graph: array("nmeshgraph", int)
+  mesh_pos: array("nmesh", wp.vec3)
   mesh_quat: array("nmesh", wp.quat)
   mesh_polynum: array("nmesh", int)
   mesh_polyadr: array("nmesh", int)

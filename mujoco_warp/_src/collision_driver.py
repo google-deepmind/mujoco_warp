@@ -79,6 +79,20 @@ MJ_COLLISION_TABLE = {
 }
 
 
+# TODO(team): Implement narrowphase flex collision support for:
+#             - HFIELD
+#             - ELLIPSOID
+#             - SDF
+MJ_FLEX_COLLISION_TABLE = {
+  (GeomType.PLANE, GeomType.FLEX): CollisionType.PRIMITIVE,
+  (GeomType.SPHERE, GeomType.FLEX): CollisionType.PRIMITIVE,
+  (GeomType.CAPSULE, GeomType.FLEX): CollisionType.PRIMITIVE,
+  (GeomType.BOX, GeomType.FLEX): CollisionType.PRIMITIVE,
+  (GeomType.CYLINDER, GeomType.FLEX): CollisionType.PRIMITIVE,
+  (GeomType.MESH, GeomType.FLEX): CollisionType.CONVEX,
+}
+
+
 @cache_kernel
 def _zero_nacon_ncollision(enable_sleep: bool = False):
   @wp.kernel(module="unique", enable_backward=False)

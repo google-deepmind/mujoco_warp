@@ -185,6 +185,19 @@ def support(geom: Geom, geomtype: int, dir: wp.vec3) -> SupportPoint:
       if dist > max_dist:
         max_dist = dist
         sp.point = vert
+  elif geomtype == GeomType.TRIANGLE:
+    t1 = geom.rot[0, :]
+    t2 = geom.rot[1, :]
+    t3 = geom.rot[2, :]
+    d1 = wp.dot(t1, dir)
+    d2 = wp.dot(t2, dir)
+    d3 = wp.dot(t3, dir)
+    if d1 > d2 and d1 > d3:
+      sp.point = t1
+    elif d2 > d3:
+      sp.point = t2
+    else:
+      sp.point = t3
 
   if geom.margin > 0.0:
     sp.point += dir * (0.5 * geom.margin)
