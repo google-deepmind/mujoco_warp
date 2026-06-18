@@ -2968,7 +2968,7 @@ def _solve_done(
 
   improvement = _rescale(nv, meaninertia, ctx_improvement_in[worldid])
   gradient = _rescale(nv, meaninertia, wp.sqrt(ctx_grad_dot_in[worldid]))
-  done = (improvement < tolerance) or (gradient < tolerance)
+  done = ((improvement > 0.0) and (improvement < tolerance)) or (gradient < tolerance)
   if done or solver_niter_out[worldid] == opt_iterations:
     # if the solver has converged or the maximum number of iterations has been reached then
     # mark this world as done and remove it from the number of unconverged worlds
@@ -4374,7 +4374,7 @@ def _solve_done_island(
   inv = island_nv_in[worldid, islandid]
   improvement = _rescale(inv, meaninertia, island_prev_cost_in[worldid, islandid] - island_cost_in[worldid, islandid])
   gradient = _rescale(inv, meaninertia, wp.sqrt(island_grad_dot_in[worldid, islandid]))
-  done = (improvement < tolerance) or (gradient < tolerance)
+  done = ((improvement > 0.0) and (improvement < tolerance)) or (gradient < tolerance)
   if done or niter >= opt_iterations:
     island_done_out[worldid, islandid] = True
     wp.atomic_sub(nsolving_out, 0, 1)
