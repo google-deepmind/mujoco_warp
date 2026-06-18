@@ -153,7 +153,7 @@ def _write_candidate_contact(
   candid = wp.atomic_add(ncand_out, 0, 1)
   if candid >= max_candidates:
     wp.printf(
-      "flex candidate overflow - please increase nconmax or naconmax to %u\n",
+      "flex candidate overflow - please increase naconmax to %u\n",
       candid + 1,
     )
     return
@@ -1472,7 +1472,7 @@ def _write_filtered_contacts(
   id_ = wp.atomic_add(nacon_out, 0, 1)
   if id_ >= naconmax_in:
     wp.printf(
-      "flex candidate overflow - please increase naconmax to %u\n",
+      "flex contact overflow - please increase naconmax to %u\n",
       id_ + 1,
     )
     return
