@@ -807,6 +807,32 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
   m.flexedge_J_rowadr = mjm.flexedge_J_rowadr
   m.flexedge_J_colind = mjm.flexedge_J_colind.reshape(-1)
 
+  # Precompute lookup maps for flex objects
+  flex_elemflexid = np.zeros(mjm.nflexelem, dtype=np.int32)
+  flex_shellflexid = np.zeros(mjm.nflexshelldata, dtype=np.int32)
+  flex_evpairflexid = np.zeros(mjm.nflexevpair, dtype=np.int32)
+
+  shell_offset = 0
+  for i in range(mjm.nflex):
+    # Elem mapping
+    elem_start = mjm.flex_elemadr[i]
+    elem_num = mjm.flex_elemnum[i]
+    flex_elemflexid[elem_start : elem_start + elem_num] = i
+
+    # Shell mapping
+    shell_num = mjm.flex_shellnum[i]
+    flex_shellflexid[shell_offset : shell_offset + shell_num] = i
+    shell_offset += shell_num
+
+    # EV pair mapping
+    evpair_start = mjm.flex_evpairadr[i]
+    evpair_num = mjm.flex_evpairnum[i]
+    flex_evpairflexid[evpair_start : evpair_start + evpair_num] = i
+
+  m.flex_elemflexid = flex_elemflexid
+  m.flex_shellflexid = flex_shellflexid
+  m.flex_evpairflexid = flex_evpairflexid
+
   # place m on device
   sizes = {f.name: getattr(m, f.name) for f in dataclasses.fields(types.Model) if f.type is int}
   for f in dataclasses.fields(types.Model):
