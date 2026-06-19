@@ -23,7 +23,6 @@ from mujoco_warp._src import derivative
 from mujoco_warp._src import history
 from mujoco_warp._src import island
 from mujoco_warp._src import math
-from mujoco_warp._src import nvmax
 from mujoco_warp._src import passive
 from mujoco_warp._src import sensor
 from mujoco_warp._src import sleep
@@ -1338,8 +1337,8 @@ def fwd_acceleration(m: Model, d: Data, factorize: bool = False):
   if d.nvmax < m.nv:
     # update the active-DOF set (needs contacts from fwd_position) and solve
     # the smooth acceleration in compacted dense space.
-    nvmax.update_active_dofs(m, d)
-    nvmax.smooth_solve_compact(m, d, nvmax.get_context(m, d))
+    island.update_active_dofs(m, d)
+    solver.smooth_solve_compact(m, d)
   elif factorize:
     smooth.factor_solve_i(m, d, d.M, d.qLD, d.qLDiagInv, d.qacc_smooth, d.qfrc_smooth)
   else:

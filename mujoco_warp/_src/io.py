@@ -832,6 +832,12 @@ def _get_padded_sizes(nv: int, njmax: int, is_sparse: bool, tile_size: int):
   return njmax_padded, nv_padded
 
 
+def _nvmax_pad(nvmax: int) -> int:
+  """Round nvmax up to the dense tile size so the blocked Cholesky never overruns its tile."""
+  t = types.TILE_SIZE_JTDAJ_DENSE
+  return ((max(nvmax, 1) + t - 1) // t) * t
+
+
 def _default_nconmax(mjm: mujoco.MjModel, mjd: Optional[mujoco.MjData] = None) -> int:
   """Returns a default guess for an ideal nconmax given a Model and optional Data.
 
@@ -1064,6 +1070,62 @@ def _allocate_island_arrays(
   d.iqfrc_constraint = wp.empty((nworld, nv_size), dtype=float)
 
 
+def _allocate_compact_arrays(
+  mjm: mujoco.MjModel,
+  d: types.Data,
+  nworld: int,
+  nvmax_pad: int,
+  njmax_pad: int,
+  compact: bool,
+):
+  """Allocate workspace for the compacted dense factor/solve (when nvmax is requested).
+
+  Mirrors the island-local ``i*`` Data fields with a ``c*`` (compact) prefix. The
+  constant model-shadows (tolerances, dof-pair indices) are derived on the host since
+  they depend only on nvmax_pad; the workspace shadows are sized by nvmax_pad so the
+  blocked Cholesky never reads out of bounds on its partial tile. When the user does not
+  request compaction (nvmax is None) everything is allocated empty.
+
+  TODO(team): once the compact path replaces the island solver, the whole forward
+  pipeline can run in compacted space and ``d.M`` / ``d.qacc`` etc. become nvmax-sized
+  directly, collapsing these ``c*`` shadows into the primary Data fields.
+  """
+  nw = nworld if compact else 0
+  nvp = nvmax_pad if compact else 0
+  njp = njmax_pad if compact else 0
+
+  if compact:
+    # match the float32 tolerance clamp applied in put_model; rescale by nv/nvmax_pad so
+    # the solver's nv-normalized convergence test matches the full-model baseline.
+    scale = float(mjm.nv) / float(nvmax_pad)
+    tol = max(float(mjm.opt.tolerance), 1e-6)
+    ls_tol = float(mjm.opt.ls_tolerance)
+    d.ctol = wp.array([tol * scale], dtype=float)
+    d.cls_tol = wp.array([ls_tol * scale], dtype=float)
+    # all (i, j) DOF pairs of the nvmax_pad-wide compacted Hessian (the global dof_tri,
+    # triu over full nv, would index out of bounds).
+    idx = np.arange(nvmax_pad, dtype=np.int32)
+    d.cdof_tri_row = wp.array(np.repeat(idx, nvmax_pad), dtype=int)
+    d.cdof_tri_col = wp.array(np.tile(idx, nvmax_pad), dtype=int)
+  else:
+    d.ctol = wp.empty(0, dtype=float)
+    d.cls_tol = wp.empty(0, dtype=float)
+    d.cdof_tri_row = wp.empty(0, dtype=int)
+    d.cdof_tri_col = wp.empty(0, dtype=int)
+
+  d.cM = wp.empty((nw, nvp, nvp), dtype=float)
+  d.cqLD = wp.empty((nw, nvp, nvp), dtype=float)
+  d.crhs = wp.empty((nw, nvp, 1), dtype=float)
+  d.cx = wp.empty((nw, nvp, 1), dtype=float)
+  d.cJ = wp.empty((nw, njp, nvp), dtype=float)
+  d.cMa = wp.empty((nw, nvp), dtype=float)
+  d.cqfrc_smooth = wp.empty((nw, nvp), dtype=float)
+  d.cqacc_smooth = wp.empty((nw, nvp), dtype=float)
+  d.cqacc_warmstart = wp.empty((nw, nvp), dtype=float)
+  d.cqacc = wp.empty((nw, nvp), dtype=float)
+  d.cqfrc_constraint = wp.empty((nw, nvp), dtype=float)
+
+
 def _initial_body_awake(mjm: mujoco.MjModel, nworld: int, init_asleep: bool) -> np.ndarray:
   """Returns the initial body awake array."""
   body_awake_np = np.zeros((nworld, mjm.nbody), dtype=np.int32)
@@ -1117,6 +1179,9 @@ def make_data(
   if njmax is None:
     njmax = _default_njmax(mjm)
 
+  # passing nvmax (even == nv) opts into the compact workspace; the solver only
+  # auto-dispatches to the compact path at runtime when nvmax < nv.
+  compact_requested = nvmax is not None
   if nvmax is None:
     nvmax = mjm.nv
 
@@ -1165,6 +1230,7 @@ def make_data(
   sizes["naconmax"] = naconmax
   sizes["njmax"] = njmax
   sizes["nvmax"] = nvmax
+  sizes["nvmax_pad"] = _nvmax_pad(nvmax)
 
   if njmax_nnz is None:
     if is_sparse(mjm):
@@ -1213,6 +1279,7 @@ def make_data(
     "naccdmax": naccdmax,
     "njmax": njmax,
     "nvmax": nvmax,
+    "nvmax_pad": sizes["nvmax_pad"],
     "njmax_pad": sizes["njmax_pad"],
     "njmax_nnz": njmax_nnz,
     "M": None,
@@ -1277,6 +1344,7 @@ def make_data(
     d.qLD = wp.zeros((nworld, mjm.nv, mjm.nv), dtype=float)
 
   _allocate_island_arrays(mjm, d, nworld, njmax, island_enabled, mjd)
+  _allocate_compact_arrays(mjm, d, nworld, sizes["nvmax_pad"], sizes["njmax_pad"], compact_requested)
   d.ncdof.zero_()
   d.dof_cdof.fill_(-1)
   d.cdof_dof.fill_(-1)
@@ -1325,6 +1393,9 @@ def put_data(
   if njmax is None:
     njmax = _default_njmax(mjm, mjd)
 
+  # passing nvmax (even == nv) opts into the compact workspace; the solver only
+  # auto-dispatches to the compact path at runtime when nvmax < nv.
+  compact_requested = nvmax is not None
   if nvmax is None:
     nvmax = mjm.nv
 
@@ -1383,6 +1454,7 @@ def put_data(
   sizes["naconmax"] = naconmax
   sizes["njmax"] = njmax
   sizes["nvmax"] = nvmax
+  sizes["nvmax_pad"] = _nvmax_pad(nvmax)
 
   if njmax_nnz is None:
     if is_sparse(mjm):
@@ -1477,6 +1549,7 @@ def put_data(
     "naccdmax": naccdmax,
     "njmax": njmax,
     "nvmax": nvmax,
+    "nvmax_pad": sizes["nvmax_pad"],
     "njmax_pad": sizes["njmax_pad"],
     "njmax_nnz": njmax_nnz,
     # fields set after initialization:
@@ -1537,6 +1610,7 @@ def put_data(
     d.qLD = wp.array(np.full((nworld, mjm.nv, mjm.nv), qLD), dtype=float)
 
   _allocate_island_arrays(mjm, d, nworld, njmax, island_enabled, mjd)
+  _allocate_compact_arrays(mjm, d, nworld, sizes["nvmax_pad"], sizes["njmax_pad"], compact_requested)
   d.ncdof.zero_()
   d.dof_cdof.fill_(-1)
   d.cdof_dof.fill_(-1)

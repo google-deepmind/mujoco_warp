@@ -1069,3 +1069,84 @@ def scatter_island_results(m: types.Model, d: types.Data, ctx: IslandSolverConte
       d.efc.state,
     ],
   )
+
+
+# Active-DOF compaction (nvmax < nv).
+#
+# The active set is tracked per kinematic tree (the unit of coupling in the mass matrix)
+# via the same tree_awake bookkeeping used by the sleep solver. Each step the active trees'
+# DOFs are packed into a contiguous [0, ncdof) range so the dense factor/solve can run at
+# size nvmax instead of nv. This is the active-set analog of compute_island_mapping.
+
+
+@wp.kernel
+def _reset_compact_maps(
+  # Model:
+  nv: int,
+  # Data in:
+  nvmax_in: int,
+  # Data out:
+  dof_cdof_out: wp.array2d[int],
+  cdof_dof_out: wp.array2d[int],
+):
+  worldid, idx = wp.tid()
+  if idx < nv:
+    dof_cdof_out[worldid, idx] = -1
+  if idx < nvmax_in:
+    cdof_dof_out[worldid, idx] = -1
+
+
+@wp.kernel
+def _compact_dofs(
+  # Model:
+  ntree: int,
+  tree_dofadr: wp.array[int],
+  tree_dofnum: wp.array[int],
+  # Data in:
+  tree_awake_in: wp.array2d[int],
+  nvmax_in: int,
+  # Data out:
+  ncdof_out: wp.array[int],
+  dof_cdof_out: wp.array2d[int],
+  cdof_dof_out: wp.array2d[int],
+):
+  worldid = wp.tid()
+  count = int(0)
+  for t in range(ntree):
+    if tree_awake_in[worldid, t] == 1:
+      adr = tree_dofadr[t]
+      num = tree_dofnum[t]
+      for j in range(num):
+        dof = adr + j
+        if count < nvmax_in:
+          dof_cdof_out[worldid, dof] = count
+          cdof_dof_out[worldid, count] = dof
+        count += 1
+
+  if count > nvmax_in:
+    wp.printf(
+      "nvmax overflow: world %d needs %d active DOFs but nvmax = %d (behavior undefined)\n",
+      worldid,
+      count,
+      nvmax_in,
+    )
+    ncdof_out[worldid] = nvmax_in
+  else:
+    ncdof_out[worldid] = count
+
+
+@event_scope
+def update_active_dofs(m: types.Model, d: types.Data):
+  """Rebuild the compaction maps (dof_cdof / cdof_dof) from tree_awake."""
+  wp.launch(
+    _reset_compact_maps,
+    dim=(d.nworld, m.nv),
+    inputs=[m.nv, d.nvmax],
+    outputs=[d.dof_cdof, d.cdof_dof],
+  )
+  wp.launch(
+    _compact_dofs,
+    dim=(d.nworld,),
+    inputs=[m.ntree, m.tree_dofadr, m.tree_dofnum, d.tree_awake, d.nvmax],
+    outputs=[d.ncdof, d.dof_cdof, d.cdof_dof],
+  )

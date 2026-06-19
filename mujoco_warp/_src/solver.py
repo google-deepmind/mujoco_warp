@@ -13,13 +13,13 @@
 # limitations under the License.
 # ==============================================================================
 
+import dataclasses
 from math import ceil
 
 import warp as wp
 
 from mujoco_warp._src import island
 from mujoco_warp._src import math
-from mujoco_warp._src import nvmax
 from mujoco_warp._src import smooth
 from mujoco_warp._src import support
 from mujoco_warp._src import types
@@ -3337,7 +3337,7 @@ def init_context(m: types.Model, d: types.Data, ctx: SolverContext | InverseCont
 @event_scope
 def solve(m: types.Model, d: types.Data):
   if d.nvmax < m.nv:
-    nvmax.solve_compact(m, d, nvmax.get_context(m, d))
+    solve_compact(m, d)
     if m.ntree > 1:
       island.compute_island_mapping(m, d, None)
     return
@@ -5569,3 +5569,364 @@ def _solver_iteration_island(
     ],
     outputs=[d.solver_niter, ctx.done, ctx.solver_niter, nsolving],
   )
+
+
+# Active-DOF compaction solve (nvmax < nv).
+#
+# When fewer than nv DOFs are active, the active set is packed into a contiguous
+# [0, ncdof) range (see island.update_active_dofs) and the dense factor/solve runs at
+# size nvmax_pad instead of nv. The compacted workspace lives on Data as c* fields
+# (mirroring the island-local i* fields). The constrained solve gathers into compacted
+# arrays, shallow-replaces (m, d) so the stock dense Newton solver runs at nvmax_pad,
+# then scatters qacc/qfrc_constraint back, freezing inactive DOFs to 0.
+
+
+@wp.kernel
+def _init_compact_inertia(
+  # Data in:
+  ncdof_in: wp.array[int],
+  # Out:
+  M_c_out: wp.array3d[float],
+):
+  worldid, i, j = wp.tid()
+  val = 0.0
+  if i == j and i >= ncdof_in[worldid]:
+    val = 1.0
+  M_c_out[worldid, i, j] = val
+
+
+@wp.kernel
+def _gather_M_sparse(
+  # Model:
+  M_rownnz: wp.array[int],
+  M_rowadr: wp.array[int],
+  M_colind: wp.array[int],
+  # Data in:
+  M_in: wp.array3d[float],
+  dof_cdof_in: wp.array2d[int],
+  # Out:
+  M_c_out: wp.array3d[float],
+):
+  worldid, i = wp.tid()
+  ci = dof_cdof_in[worldid, i]
+  if ci < 0:
+    return
+  rowadr = M_rowadr[i]
+  for k in range(M_rownnz[i]):
+    adr = rowadr + k
+    cj = dof_cdof_in[worldid, M_colind[adr]]
+    if cj >= 0:
+      val = M_in[worldid, 0, adr]
+      M_c_out[worldid, ci, cj] = val
+      M_c_out[worldid, cj, ci] = val
+
+
+@wp.kernel
+def _gather_M_dense(
+  # Data in:
+  M_in: wp.array3d[float],
+  dof_cdof_in: wp.array2d[int],
+  # Out:
+  M_c_out: wp.array3d[float],
+):
+  worldid, i = wp.tid()
+  ci = dof_cdof_in[worldid, i]
+  if ci < 0:
+    return
+  nv = dof_cdof_in.shape[1]
+  for j in range(nv):
+    cj = dof_cdof_in[worldid, j]
+    if cj >= 0:
+      val = M_in[worldid, i, j]
+      M_c_out[worldid, ci, cj] = val
+
+
+@wp.kernel
+def _gather_rhs_compact(
+  # Data in:
+  cdof_dof_in: wp.array2d[int],
+  # In:
+  vec_in: wp.array2d[float],
+  # Out:
+  rhs_out: wp.array3d[float],
+):
+  worldid, ci = wp.tid()
+  dof = cdof_dof_in[worldid, ci]
+  if dof >= 0:
+    rhs_out[worldid, ci, 0] = vec_in[worldid, dof]
+  else:
+    rhs_out[worldid, ci, 0] = 0.0
+
+
+@wp.kernel
+def _scatter_solution(
+  # Data in:
+  dof_cdof_in: wp.array2d[int],
+  # In:
+  x_in: wp.array3d[float],
+  # Out:
+  vec_out: wp.array2d[float],
+):
+  worldid, i = wp.tid()
+  ci = dof_cdof_in[worldid, i]
+  if ci >= 0:
+    vec_out[worldid, i] = x_in[worldid, ci, 0]
+  else:
+    vec_out[worldid, i] = 0.0  # frozen inactive DOF
+
+
+@cache_kernel
+def _blocked_factor_solve(matrix_size: int):
+  @wp.kernel(module="unique", enable_backward=False)
+  def kernel(
+    # Data in:
+    M_in: wp.array3d[float],
+    # In:
+    rhs_in: wp.array3d[float],
+    msize: int,
+    # Out:
+    U_out: wp.array3d[float],
+    x_out: wp.array3d[float],
+  ):
+    worldid = wp.tid()
+    wp.static(create_blocked_cholesky_factorize_solve_func(types.TILE_SIZE_JTDAJ_DENSE, matrix_size))(
+      M_in[worldid], rhs_in[worldid], msize, U_out[worldid], x_out[worldid]
+    )
+
+  return kernel
+
+
+@event_scope
+def smooth_solve_compact(m: types.Model, d: types.Data):
+  """Compacted equivalent of solve_m: qacc_smooth[active] = cM^-1 qfrc_smooth[active].
+
+  Inactive DOFs are frozen (qacc_smooth set to 0). Reads the sparse Model inertia.
+  """
+  wp.launch(
+    _init_compact_inertia,
+    dim=(d.nworld, d.nvmax_pad, d.nvmax_pad),
+    inputs=[d.ncdof],
+    outputs=[d.cM],
+  )
+  wp.launch(
+    _gather_M_sparse,
+    dim=(d.nworld, m.nv),
+    inputs=[m.M_rownnz, m.M_rowadr, m.M_colind, d.M, d.dof_cdof],
+    outputs=[d.cM],
+  )
+  wp.launch(
+    _gather_rhs_compact,
+    dim=(d.nworld, d.nvmax_pad),
+    inputs=[d.cdof_dof, d.qfrc_smooth],
+    outputs=[d.crhs],
+  )
+  wp.launch_tiled(
+    _blocked_factor_solve(d.nvmax_pad),
+    dim=d.nworld,
+    inputs=[d.cM, d.crhs, d.nvmax_pad],
+    outputs=[d.cqLD, d.cx],
+    block_dim=m.block_dim.update_gradient_cholesky_blocked,
+  )
+  wp.launch(_scatter_solution, dim=(d.nworld, m.nv), inputs=[d.dof_cdof, d.cx], outputs=[d.qacc_smooth])
+
+
+@wp.kernel
+def _gather_dof_vecs_compact(
+  # Data in:
+  qacc_warmstart_in: wp.array2d[float],
+  qfrc_smooth_in: wp.array2d[float],
+  qacc_smooth_in: wp.array2d[float],
+  cdof_dof_in: wp.array2d[int],
+  # Out:
+  qfrc_smooth_c_out: wp.array2d[float],
+  qacc_smooth_c_out: wp.array2d[float],
+  qacc_warmstart_c_out: wp.array2d[float],
+):
+  worldid, ci = wp.tid()
+  dof = cdof_dof_in[worldid, ci]
+  if dof >= 0:
+    qfrc_smooth_c_out[worldid, ci] = qfrc_smooth_in[worldid, dof]
+    qacc_smooth_c_out[worldid, ci] = qacc_smooth_in[worldid, dof]
+    qacc_warmstart_c_out[worldid, ci] = qacc_warmstart_in[worldid, dof]
+  else:
+    qfrc_smooth_c_out[worldid, ci] = 0.0
+    qacc_smooth_c_out[worldid, ci] = 0.0
+    qacc_warmstart_c_out[worldid, ci] = 0.0
+
+
+@wp.kernel
+def _scatter_dof_vecs(
+  # Data in:
+  dof_cdof_in: wp.array2d[int],
+  # In:
+  qacc_c_in: wp.array2d[float],
+  qfrc_constraint_c_in: wp.array2d[float],
+  # Data out:
+  qacc_out: wp.array2d[float],
+  qfrc_constraint_out: wp.array2d[float],
+):
+  worldid, i = wp.tid()
+  ci = dof_cdof_in[worldid, i]
+  if ci >= 0:
+    qacc_out[worldid, i] = qacc_c_in[worldid, ci]
+    qfrc_constraint_out[worldid, i] = qfrc_constraint_c_in[worldid, ci]
+  else:
+    qacc_out[worldid, i] = 0.0
+    qfrc_constraint_out[worldid, i] = 0.0
+
+
+@wp.kernel
+def _gather_J_sparse(
+  # Data in:
+  nefc_in: wp.array[int],
+  dof_cdof_in: wp.array2d[int],
+  # In:
+  J_rownnz_in: wp.array2d[int],
+  J_rowadr_in: wp.array2d[int],
+  J_colind_in: wp.array3d[int],
+  J_in: wp.array3d[float],
+  # Out:
+  J_c_out: wp.array3d[float],
+):
+  worldid, efcid = wp.tid()
+  if efcid >= nefc_in[worldid]:
+    return
+  rowadr = J_rowadr_in[worldid, efcid]
+  for k in range(J_rownnz_in[worldid, efcid]):
+    adr = rowadr + k
+    cj = dof_cdof_in[worldid, J_colind_in[worldid, 0, adr]]
+    if cj >= 0:
+      J_c_out[worldid, efcid, cj] = J_in[worldid, 0, adr]
+
+
+@wp.kernel
+def _gather_J_dense(
+  # Data in:
+  nefc_in: wp.array[int],
+  dof_cdof_in: wp.array2d[int],
+  # In:
+  J_in: wp.array3d[float],
+  # Out:
+  J_c_out: wp.array3d[float],
+):
+  worldid, efcid = wp.tid()
+  if efcid >= nefc_in[worldid]:
+    return
+  nv = dof_cdof_in.shape[1]
+  for j in range(nv):
+    cj = dof_cdof_in[worldid, j]
+    if cj >= 0:
+      J_c_out[worldid, efcid, cj] = J_in[worldid, efcid, j]
+
+
+@event_scope
+def solve_compact(m: types.Model, d: types.Data):
+  """Run the dense Newton constraint solver in compacted DOF space.
+
+  Gathers the active-DOF inertia, constraint Jacobian, and smooth/warmstart vectors
+  into nvmax_pad-sized dense workspaces, runs the stock dense Newton solver on a
+  shallow-replaced (m, d) at nvmax_pad, then scatters qacc/qfrc_constraint back.
+  Inactive DOFs are frozen to 0. Reads the sparse Model inertia and constraint J.
+  """
+  _compact_gather(m, d)
+
+  # shallow-replace (m, d) so the stock dense Newton solver runs at nvmax_pad.
+  # Keep graph-conditional early-exit on CUDA (matches baseline: stops at convergence
+  # instead of running all iterations); fall back to the plain loop on CPU.
+  nvp = d.nvmax_pad
+  gc = m.opt.graph_conditional and wp.get_device().is_cuda
+  opt2 = dataclasses.replace(m.opt, graph_conditional=gc, tolerance=d.ctol, ls_tolerance=d.cls_tol)
+  m2 = dataclasses.replace(
+    m, opt=opt2, nv=nvp, nv_pad=nvp, is_sparse=False, dof_tri_row=d.cdof_tri_row, dof_tri_col=d.cdof_tri_col
+  )
+  efc2 = dataclasses.replace(d.efc, J=d.cJ, Ma=d.cMa)
+  d2 = dataclasses.replace(
+    d,
+    M=d.cM,
+    qfrc_smooth=d.cqfrc_smooth,
+    qacc_smooth=d.cqacc_smooth,
+    qacc_warmstart=d.cqacc_warmstart,
+    qacc=d.cqacc,
+    qfrc_constraint=d.cqfrc_constraint,
+    efc=efc2,
+  )
+
+  sctx = _create_solver_context(m2, d2)
+  _solve(m2, d2, sctx)
+
+  _compact_scatter(m, d)
+
+
+@event_scope
+def _compact_gather(m: types.Model, d: types.Data):
+  nvp = d.nvmax_pad
+  # gather compacted dense inertia (identity-padded tail)
+  wp.launch(
+    _init_compact_inertia,
+    dim=(d.nworld, nvp, nvp),
+    inputs=[d.ncdof],
+    outputs=[d.cM],
+  )
+
+  if m.is_sparse:
+    wp.launch(
+      _gather_M_sparse,
+      dim=(d.nworld, m.nv),
+      inputs=[m.M_rownnz, m.M_rowadr, m.M_colind, d.M, d.dof_cdof],
+      outputs=[d.cM],
+    )
+  else:
+    wp.launch(
+      _gather_M_dense,
+      dim=(d.nworld, m.nv),
+      inputs=[d.M, d.dof_cdof],
+      outputs=[d.cM],
+    )
+  # gather compacted dense constraint Jacobian (active columns only)
+  d.cJ.zero_()
+  if m.is_sparse:
+    wp.launch(
+      _gather_J_sparse,
+      dim=(d.nworld, d.njmax),
+      inputs=[d.nefc, d.dof_cdof, d.efc.J_rownnz, d.efc.J_rowadr, d.efc.J_colind, d.efc.J],
+      outputs=[d.cJ],
+    )
+  else:
+    wp.launch(
+      _gather_J_dense,
+      dim=(d.nworld, d.njmax),
+      inputs=[d.nefc, d.dof_cdof, d.efc.J],
+      outputs=[d.cJ],
+    )
+  # gather compacted DOF-space vectors in a single launch
+  wp.launch(
+    _gather_dof_vecs_compact,
+    dim=(d.nworld, nvp),
+    inputs=[
+      d.qacc_warmstart,
+      d.qfrc_smooth,
+      d.qacc_smooth,
+      d.cdof_dof,
+    ],
+    outputs=[
+      d.cqfrc_smooth,
+      d.cqacc_smooth,
+      d.cqacc_warmstart,
+    ],
+  )
+
+
+@event_scope
+def _compact_scatter(m: types.Model, d: types.Data):
+  # scatter results back to full DOF space (inactive frozen to 0) in one launch
+  wp.launch(
+    _scatter_dof_vecs,
+    dim=(d.nworld, m.nv),
+    inputs=[d.dof_cdof, d.cqacc, d.cqfrc_constraint],
+    outputs=[d.qacc, d.qfrc_constraint],
+  )
+
+  # Refresh full d.efc.Ma = M @ qacc. The integrators (Euler/implicit damping) use Ma as
+  # the RHS; the compact solve only populated the compacted Ma, so recompute it in full
+  # space. Inactive DOFs have qacc=0 so their Ma is 0 and they stay frozen.
+  support.mul_m(m, d, d.efc.Ma, d.qacc)

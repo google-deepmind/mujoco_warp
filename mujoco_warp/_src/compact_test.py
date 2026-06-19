@@ -13,7 +13,7 @@
 # limitations under the License.
 # ==============================================================================
 
-"""Tests for active-DOF bookkeeping."""
+"""Tests for active-DOF compaction (nvmax < nv): bookkeeping and compacted solves."""
 
 import mujoco
 import numpy as np
@@ -22,8 +22,9 @@ from absl.testing import absltest
 
 import mujoco_warp as mjwarp
 from mujoco_warp import test_data
-from mujoco_warp._src import nvmax
+from mujoco_warp._src import island
 from mujoco_warp._src import sleep
+from mujoco_warp._src import solver
 from mujoco_warp._src.sleep import K_AWAKE_VAL
 
 # An actuated 2-hinge arm (tree 0, dofs 0-1) plus two free bodies
@@ -70,12 +71,29 @@ _CONTACT_XML = """
 """
 
 
+def _put_compact(xml: str, nvmax: int | None = None, sparse: bool = False):
+  """Build (mjm, mjd, m, d) requesting the compact workspace.
+
+  ``nvmax=None`` allocates the compact arrays at full size (nvmax == nv) so an
+  all-active compacted solve can be compared directly against the full baseline.
+  ``test_data.fixture`` does not expose nvmax, so the solve tests build directly.
+  """
+  mjm = mujoco.MjModel.from_xml_string(xml)
+  if sparse:
+    mjm.opt.jacobian = mujoco.mjtJacobian.mjJAC_SPARSE
+  mjd = mujoco.MjData(mjm)
+  mujoco.mj_forward(mjm, mjd)
+  m = mjwarp.put_model(mjm)
+  d = mjwarp.put_data(mjm, mjd, nvmax=mjm.nv if nvmax is None else nvmax)
+  return mjm, mjd, m, d
+
+
 class NvCompactBookkeepingTest(absltest.TestCase):
   def test_actuated_tree_seeded(self):
     """Only the actuated arm tree is active at construction; maps are compact."""
     _, _, m, d = test_data.fixture(xml=_XML)
     d.tree_awake = wp.array([[1, 0, 0]], dtype=int)
-    nvmax.update_active_dofs(m, d)
+    island.update_active_dofs(m, d)
 
     self.assertEqual(d.ncdof.numpy()[0], 2)
     # arm dofs 0,1 map to compacted 0,1; the rest are inactive (-1).
@@ -101,7 +119,7 @@ class NvCompactBookkeepingTest(absltest.TestCase):
     sleep.wake(m, d)
     sleep.update_sleep(m, d)
 
-    nvmax.update_active_dofs(m, d)
+    island.update_active_dofs(m, d)
 
     # world 0: arm (2) + free body 1 (6) = 8; world 1: arm only = 2
     np.testing.assert_array_equal(d.ncdof.numpy(), [8, 2])
@@ -137,7 +155,7 @@ class NvCompactBookkeepingTest(absltest.TestCase):
     sleep.wake_collision(m, d)
     sleep.update_sleep(m, d)
 
-    nvmax.update_active_dofs(m, d)
+    island.update_active_dofs(m, d)
 
     # both free bodies awake = 6 + 6 = 12 DOFs
     self.assertEqual(d.ncdof.numpy()[0], 12)
@@ -158,7 +176,7 @@ class NvCompactBookkeepingTest(absltest.TestCase):
     sleep.wake_collision(m, d)
     sleep.update_sleep(m, d)
 
-    nvmax.update_active_dofs(m, d)
+    island.update_active_dofs(m, d)
 
     # both stay asleep
     self.assertEqual(d.ncdof.numpy()[0], 0)
@@ -179,7 +197,7 @@ class NvCompactBookkeepingTest(absltest.TestCase):
     sleep.wake_collision(m, d)
     sleep.update_sleep(m, d)
 
-    nvmax.update_active_dofs(m, d)
+    island.update_active_dofs(m, d)
 
     # only tree 1 (ball0) wakes -> 6 DOFs
     self.assertEqual(d.ncdof.numpy()[0], 6)
@@ -193,7 +211,7 @@ class NvCompactBookkeepingTest(absltest.TestCase):
     d = mjwarp.put_data(mjm, mjd, nvmax=4)
     d.tree_awake = wp.array([[1, 1, 1]], dtype=int)
 
-    nvmax.update_active_dofs(m, d)
+    island.update_active_dofs(m, d)
 
     self.assertEqual(d.ncdof.numpy()[0], 4)
 
@@ -201,33 +219,31 @@ class NvCompactBookkeepingTest(absltest.TestCase):
 class NvCompactSmoothSolveTest(absltest.TestCase):
   def test_smooth_solve_equivalence_all_active(self):
     """With every tree active and nvmax=nv, compacted qacc_smooth matches baseline."""
-    _, _, m, d = test_data.fixture(xml=_XML, overrides={"opt.jacobian": "SPARSE"})
+    _, _, m, d = _put_compact(_XML, sparse=True)
     self.assertTrue(m.is_sparse)
     mjwarp.forward(m, d)
     baseline = d.qacc_smooth.numpy().copy()
 
     d.tree_awake = wp.array(np.ones((d.nworld, m.ntree), dtype=int), dtype=int)
-    nvmax.update_active_dofs(m, d)
+    island.update_active_dofs(m, d)
     self.assertEqual(d.ncdof.numpy()[0], m.nv)
 
-    ctx = nvmax.create_nvcompact_context(m, d)
-    nvmax.smooth_solve_compact(m, d, ctx)
+    solver.smooth_solve_compact(m, d)
 
     np.testing.assert_allclose(d.qacc_smooth.numpy(), baseline, rtol=1e-4, atol=1e-5)
 
   def test_smooth_solve_partial_active_freezes_rest(self):
     """Active trees match baseline (M is block-diagonal); inactive DOFs are frozen to 0."""
-    _, _, m, d = test_data.fixture(xml=_XML, overrides={"opt.jacobian": "SPARSE"})
+    _, _, m, d = _put_compact(_XML, sparse=True)
     mjwarp.forward(m, d)
     baseline = d.qacc_smooth.numpy().copy()
 
     # only the actuated arm tree (dofs 0-1) is active
     d.tree_awake = wp.array([[1, 0, 0]], dtype=int)
-    nvmax.update_active_dofs(m, d)
+    island.update_active_dofs(m, d)
     self.assertEqual(d.ncdof.numpy()[0], 2)
 
-    ctx = nvmax.create_nvcompact_context(m, d)
-    nvmax.smooth_solve_compact(m, d, ctx)
+    solver.smooth_solve_compact(m, d)
 
     out = d.qacc_smooth.numpy()
     np.testing.assert_allclose(out[0, :2], baseline[0, :2], rtol=1e-4, atol=1e-5)
@@ -237,18 +253,17 @@ class NvCompactSmoothSolveTest(absltest.TestCase):
 class NvCompactConstrainedSolveTest(absltest.TestCase):
   def test_constrained_solve_equivalence_all_active(self):
     """With every tree active and nvmax=nv, the compacted Newton solve matches baseline qacc."""
-    _, _, m, d = test_data.fixture(xml=_CONTACT_XML)
+    _, _, m, d = _put_compact(_CONTACT_XML)
     self.assertTrue(m.is_sparse)
     mjwarp.forward(m, d)  # full baseline solve (also builds efc.J, M)
     self.assertGreater(d.nacon.numpy()[0], 0)  # contacts exist
     baseline_qacc = d.qacc.numpy().copy()
 
     d.tree_awake = wp.array(np.ones((d.nworld, m.ntree), dtype=int), dtype=int)
-    nvmax.update_active_dofs(m, d)
+    island.update_active_dofs(m, d)
     self.assertEqual(d.ncdof.numpy()[0], m.nv)
 
-    ctx = nvmax.create_nvcompact_context(m, d)
-    nvmax.solve_compact(m, d, ctx)
+    solver.solve_compact(m, d)
 
     np.testing.assert_allclose(d.qacc.numpy(), baseline_qacc, rtol=1e-3, atol=1e-4)
 

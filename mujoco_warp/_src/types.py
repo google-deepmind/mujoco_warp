@@ -2064,6 +2064,21 @@ class Data:
     ncdof: number of active (compacted) DOFs per world          (nworld,)
     dof_cdof: global DOF -> compacted DOF; -1 if inactive       (nworld, nv)
     cdof_dof: compacted DOF -> global DOF; -1 if unused         (nworld, nvmax)
+    ctol: compacted-solve main tolerance (nv/nvmax_pad scaled)  (1,)
+    cls_tol: compacted-solve linesearch tolerance               (1,)
+    cdof_tri_row: row index of compacted Hessian dof-pairs      (nvmax_pad^2,)
+    cdof_tri_col: col index of compacted Hessian dof-pairs      (nvmax_pad^2,)
+    cM: compacted dense inertia                                 (nworld, nvmax_pad, nvmax_pad)
+    cqLD: compacted upper Cholesky factor                       (nworld, nvmax_pad, nvmax_pad)
+    crhs: compacted smooth-solve right-hand side                (nworld, nvmax_pad, 1)
+    cx: compacted smooth-solve solution                         (nworld, nvmax_pad, 1)
+    cJ: compacted dense constraint Jacobian                     (nworld, njmax_pad, nvmax_pad)
+    cMa: compacted M @ qacc workspace                           (nworld, nvmax_pad)
+    cqfrc_smooth: compacted net unconstrained force             (nworld, nvmax_pad)
+    cqacc_smooth: compacted unconstrained acceleration          (nworld, nvmax_pad)
+    cqacc_warmstart: compacted warmstart acceleration           (nworld, nvmax_pad)
+    cqacc: compacted acceleration (solve output)                (nworld, nvmax_pad)
+    cqfrc_constraint: compacted constraint force                (nworld, nvmax_pad)
 
   warp only fields:
     nworld: number of worlds
@@ -2071,6 +2086,7 @@ class Data:
     naccdmax: maximum number of contacts for CCD (all worlds)
     njmax: maximum number of constraints per world
     nvmax: capacity for compacted active DOFs per world
+    nvmax_pad: nvmax rounded up to the nearest multiple of TILE_SIZE_JTDAJ_DENSE
     njmax_pad: njmax rounded up to the nearest multiple of TILE_SIZE_JTDAJ
     njmax_nnz: number of non-zeros in constraint Jacobian
     nacon: number of detected contacts (across all worlds)      (1,)
@@ -2192,6 +2208,21 @@ class Data:
   ncdof: array("nworld", int)
   dof_cdof: array("nworld", "nv", int)
   cdof_dof: array("nworld", "nvmax", int)
+  ctol: wp.array[float]
+  cls_tol: wp.array[float]
+  cdof_tri_row: wp.array[int]
+  cdof_tri_col: wp.array[int]
+  cM: wp.array3d[float]
+  cqLD: wp.array3d[float]
+  crhs: wp.array3d[float]
+  cx: wp.array3d[float]
+  cJ: wp.array3d[float]
+  cMa: wp.array2d[float]
+  cqfrc_smooth: wp.array2d[float]
+  cqacc_smooth: wp.array2d[float]
+  cqacc_warmstart: wp.array2d[float]
+  cqacc: wp.array2d[float]
+  cqfrc_constraint: wp.array2d[float]
 
   # warp only fields:
   nworld: int
@@ -2199,6 +2230,7 @@ class Data:
   naccdmax: int
   njmax: int
   nvmax: int
+  nvmax_pad: int
   njmax_pad: int
   njmax_nnz: int
   nacon: array(1, int)
