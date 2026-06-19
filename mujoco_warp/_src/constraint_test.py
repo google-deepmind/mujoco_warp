@@ -26,7 +26,6 @@ from absl.testing import parameterized
 import mujoco_warp as mjw
 from mujoco_warp import ConeType
 from mujoco_warp import test_data
-from mujoco_warp._src.types import NEW_GAP_SEMANTICS
 
 # tolerance for difference between MuJoCo and MJWarp constraint calculations,
 # mostly due to float precision
@@ -277,9 +276,9 @@ class ConstraintTest(parameterized.TestCase):
     xml = f"""
       <mujoco>
         <worldbody>
-          <geom type="plane" size="10 10 .001" margin="{0.1 if NEW_GAP_SEMANTICS else 0.5}" gap="0.4"/>
+          <geom type="plane" size="10 10 .001" margin="0.1" gap="0.4"/>
           <body pos="0 0 0.35">
-            <geom type="sphere" size=".1" margin="{0.1 if NEW_GAP_SEMANTICS else 0.5}" gap="0.4"/>
+            <geom type="sphere" size=".1" margin="0.1" gap="0.4"/>
             <freejoint/>
           </body>
         </worldbody>
@@ -331,6 +330,58 @@ class ConstraintTest(parameterized.TestCase):
     _assert_eq(d.ne.numpy()[0], mjd.ne, "ne")
     _assert_eq(d.nefc.numpy()[0], mjd.nefc, "nefc")
     _assert_efc_eq(mjm, m, d, mjd, mjd.nefc, "efc", m.nv)
+
+  @parameterized.product(
+    xml=(
+      """
+      <mujoco>
+        <option solver="CG" tolerance="1e-6" timestep=".001"/>
+        <worldbody>
+          <!-- Sphere positioned to press into the cloth -->
+          <body pos="0 0 0.05">
+            <freejoint/>
+            <geom type="sphere" size=".1" mass="1"/>
+          </body>
+          <!-- Cloth (dim=2 flex) -->
+          <flexcomp name="cloth" type="grid" count="3 3 1" spacing=".3 .3 .1" pos="-.3 -.3 0"
+                    radius=".02" dim="2" mass=".5">
+            <contact condim="3" selfcollide="none"/>
+          </flexcomp>
+        </worldbody>
+      </mujoco>
+      """,
+      """
+      <mujoco>
+        <option solver="CG" tolerance="1e-6" timestep=".001"/>
+        <worldbody>
+          <!-- Box positioned to press into the soft body -->
+          <body pos="0 0 0.1">
+            <freejoint/>
+            <geom type="box" size=".05 .05 .05" mass="1"/>
+          </body>
+          <!-- Soft body (dim=3 flex) -->
+          <flexcomp name="softbody" type="grid" count="2 2 2" spacing=".15 .15 .15" pos="-.075 -.075 0"
+                    radius=".01" dim="3" mass=".5">
+            <contact condim="3" selfcollide="none"/>
+          </flexcomp>
+        </worldbody>
+      </mujoco>
+      """,
+    ),
+    cone=(ConeType.PYRAMIDAL, ConeType.ELLIPTIC),
+    jacobian=(mujoco.mjtJacobian.mjJAC_DENSE, mujoco.mjtJacobian.mjJAC_SPARSE),
+  )
+  def test_flex_barycentric_jacobian(self, xml, cone, jacobian):
+    """Test barycentric contact Jacobian calculation for flex."""
+    mjm, mjd, m, d = test_data.fixture(xml=xml, overrides={"opt.cone": cone, "opt.jacobian": jacobian})
+
+    mjw.kinematics(m, d)
+    mjw.make_constraint(m, d)
+
+    self.assertGreater(mjd.nefc, 0, "Expected active contacts")
+    self.assertEqual(d.nefc.numpy()[0], mjd.nefc, "nefc mismatch")
+
+    _assert_efc_eq(mjm, m, d, mjd, mjd.nefc, f"efc_flex_dim{m.flex_dim.numpy()[0]}", m.nv)
 
 
 if __name__ == "__main__":

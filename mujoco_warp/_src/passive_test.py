@@ -395,6 +395,30 @@ class PassiveTest(parameterized.TestCase):
       e = d.energy.numpy()[0]
       self.assertAlmostEqual(e[0] + e[1], total_energy, delta=0.005)
 
+  def test_thin_ellipsoid_fluid(self):
+    """Verify that thin ellipsoid geoms do not diverge due to underflow in proj_denom."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option gravity="0 0 0" density="1000" viscosity="0.0013"/>
+        <worldbody>
+          <body>
+            <freejoint/>
+            <geom type="ellipsoid" size="0.0035 0.0005 0.03" mass="1" fluidshape="ellipsoid" fluidcoef="0.4 7.79 2.81 3.84 0.27"/>
+          </body>
+        </worldbody>
+        <keyframe>
+          <key qvel="2.0 1.0 0.5 0.0 0.0 0.0"/>
+        </keyframe>
+      </mujoco>
+      """,
+      keyframe=0,
+    )
+
+    d.qfrc_fluid.zero_()
+    mjw.forward(m, d)
+    np.testing.assert_allclose(d.qfrc_fluid.numpy()[0], mjd.qfrc_fluid, atol=5e-4, rtol=5e-4)
+
 
 if __name__ == "__main__":
   wp.init()

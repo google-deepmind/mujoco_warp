@@ -430,12 +430,8 @@ def _fluid_force(
       proj_denom = _pow4(s12) * _pow2(l_lin[0]) + _pow4(s20) * _pow2(l_lin[1]) + _pow4(s01) * _pow2(l_lin[2])
       proj_num = _pow2(s12 * l_lin[0]) + _pow2(s20 * l_lin[1]) + _pow2(s01 * l_lin[2])
 
-      A_proj = 0.0
-      cos_alpha = 0.0
-      if proj_num > MJ_MINVAL and proj_denom > MJ_MINVAL:
-        A_proj = wp.pi * wp.sqrt(proj_denom / wp.max(MJ_MINVAL, proj_num))
-        if lin_speed > MJ_MINVAL:
-          cos_alpha = proj_num / wp.max(MJ_MINVAL, lin_speed * proj_denom)
+      A_proj = wp.pi * wp.sqrt(proj_denom / wp.max(MJ_MINVAL, proj_num))
+      cos_alpha = proj_num / wp.max(MJ_MINVAL, lin_speed * proj_denom)
 
       norm = wp.vec3(
         _pow2(s12) * l_lin[0],
@@ -630,6 +626,12 @@ def _flex_elasticity(
       f = i
       break
 
+  stiffness_adr_base = flex_stiffnessadr[f]
+  if stiffness_adr_base < 0:
+    return
+  if flex_stiffness[stiffness_adr_base] == 0.0:
+    return
+
   local_elemid = elemid - flex_elemadr[f]
   dim = flex_dim[f]
   nvert = dim + 1
@@ -671,7 +673,7 @@ def _flex_elasticity(
 
   metric = wp.matrix(0.0, shape=(6, 6))
   stiffness_size = nedge * (nedge + 1) / 2
-  stiffness_adr = flex_stiffnessadr[f] + local_elemid * stiffness_size
+  stiffness_adr = stiffness_adr_base + local_elemid * stiffness_size
   id = int(0)
   for ed1 in range(nedge):
     for ed2 in range(ed1, nedge):
@@ -721,6 +723,10 @@ def _flex_bending(
       f = i
       break
 
+  bendingadr = flex_bendingadr[f]
+  if bendingadr < 0:
+    return
+
   if flex_dim[f] != 2:
     return
 
@@ -734,10 +740,8 @@ def _flex_bending(
     flex_vertadr[f] + flex_edgeflap[edgeid][1],
   )
 
-  adr = flex_bendingadr[f]
-
   frc = wp.matrix(0.0, shape=(4, 3))
-  if flex_bending[adr + 16]:
+  if flex_bending[bendingadr + 16]:
     v0 = flexvert_xpos_in[worldid, v[0]]
     v1 = flexvert_xpos_in[worldid, v[1]]
     v2 = flexvert_xpos_in[worldid, v[2]]
@@ -752,8 +756,8 @@ def _flex_bending(
     for x in range(3):
       acc = float(0.0)
       for j in range(nvert):
-        acc += flex_bending[adr + 4 * i + j] * flexvert_xpos_in[worldid, v[j]][x]
-      force[i, x] = -(acc + flex_bending[adr + 16] * frc[i, x])
+        acc += flex_bending[bendingadr + 4 * i + j] * flexvert_xpos_in[worldid, v[j]][x]
+      force[i, x] = -(acc + flex_bending[bendingadr + 16] * frc[i, x])
 
   for i in range(nvert):
     bodyid = flex_vertbodyid[v[i]]

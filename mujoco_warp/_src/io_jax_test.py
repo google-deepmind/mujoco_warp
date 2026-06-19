@@ -214,6 +214,12 @@ class IOTest(parameterized.TestCase):
     self.assertGreater(m1.body_parentid.strides[0], 0)
     self.assertLen(m1.body_parentid.strides, m1.body_parentid.ndim)
 
+    m2 = mjw.put_model(mjm, batch_sizes={"geom_pos": 2})
+    self.assertTrue(hasattr(m2.geom_pos, "_is_batched"))
+    self.assertEqual(m2.geom_pos.shape[0], 2)
+    self.assertGreater(m2.geom_pos.strides[0], 0)
+    self.assertLen(m2.geom_pos.strides, m2.geom_pos.ndim)
+
   @parameterized.parameters(*_IO_TEST_MODELS)
   def test_put_data_nworld_array(self, xml):
     """Tests that put_data arrays that scale with nworld have leading dim nworld."""

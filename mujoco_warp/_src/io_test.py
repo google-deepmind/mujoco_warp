@@ -32,7 +32,6 @@ from mujoco_warp._src import types
 from mujoco_warp._src import warp_util
 from mujoco_warp._src.io import put_model
 from mujoco_warp._src.io import set_length_range
-from mujoco_warp._src.util_pkg import check_version
 
 
 def _allocate_worlds(
@@ -510,18 +509,11 @@ class IOTest(parameterized.TestCase):
     m = mjwarp.put_model(mjm)
     d = mjwarp.put_data(mjm, mjd)
 
-    mjd.qLD.fill(-123)
-    if check_version("mujoco>=3.8.1.dev910242375"):
-      mjd.M.fill(-123)
-    else:
-      mjd.qM.fill(-123)
+    mjd.M.fill(-123)
 
     mjwarp.get_data_into(mjd, mjm, d)
     np.testing.assert_allclose(mjd.qLD, mjd_ref.qLD)
-    if check_version("mujoco>=3.8.1.dev910242375"):
-      np.testing.assert_allclose(mjd.M, mjd_ref.M)
-    else:
-      np.testing.assert_allclose(mjd.qM, mjd_ref.qM)
+    np.testing.assert_allclose(mjd.M, mjd_ref.M)
 
   @parameterized.named_parameters(
     dict(testcase_name="nworld=1", nworld=1, world_id=0),
@@ -790,10 +782,7 @@ class IOTest(parameterized.TestCase):
     self.assertTrue((d.qLD.numpy() == 0.0).all())
 
     mujoco.mj_forward(mjm, mjd)
-    if check_version("mujoco>=3.8.1.dev910242375"):
-      mjd.M[:] = 0.0
-    else:
-      mjd.qM[:] = 0.0
+    mjd.M[:] = 0.0
     d = mjwarp.put_data(mjm, mjd)
     self.assertTrue((d.qLD.numpy() == 0.0).all())
 
@@ -1075,28 +1064,6 @@ class IOTest(parameterized.TestCase):
       </mujoco>
       """
       )
-
-  def test_ls_parallel(self):
-    _, _, m, _ = test_data.fixture(
-      xml="""
-    <mujoco>
-    </mujoco>
-    """
-    )
-
-    self.assertEqual(m.opt.ls_parallel, False)
-
-    _, _, m, _ = test_data.fixture(
-      xml="""
-    <mujoco>
-      <custom>
-        <numeric data="1" name="ls_parallel"/>
-      </custom>
-    </mujoco>
-    """
-    )
-
-    self.assertEqual(m.opt.ls_parallel, True)
 
   def test_contact_sensor_maxmatch(self):
     _, _, m, _ = test_data.fixture(
@@ -1455,6 +1422,73 @@ class IOTest(parameterized.TestCase):
     mjwarp.forward(m, d)
     mjwarp.reset_data(m, d)
     mjwarp.forward(m, d)
+
+  def test_put_model_batch_sizes(self):
+    """Test put_model can allocate selected batched Model fields per world."""
+    mjm = mujoco.MjModel.from_xml_string(
+      """
+      <mujoco>
+        <asset>
+          <texture name="red" type="2d" builtin="flat" width="4" height="4" rgb1="1 0 0" rgb2="1 0 0"/>
+          <texture name="green" type="2d" builtin="flat" width="4" height="4" rgb1="0 1 0" rgb2="0 1 0"/>
+          <material name="mat" texture="red" rgba="0.5 0.6 0.7 1"/>
+        </asset>
+        <worldbody>
+          <geom type="sphere" size="0.1" material="mat"/>
+        </worldbody>
+      </mujoco>
+      """
+    )
+
+    m_default = mjwarp.put_model(mjm)
+    m = mjwarp.put_model(mjm, batch_sizes={"mat_texid": 3, "geom_size": 2, "mat_rgba": 4})
+
+    nrole = int(mujoco.mjtTextureRole.mjNTEXROLE)
+    self.assertEqual(tuple(m.mat_texid.shape), (3, mjm.nmat, nrole))
+    self.assertEqual(tuple(m.geom_size.shape), (2, mjm.ngeom))
+    self.assertEqual(tuple(m.mat_rgba.shape), (4, mjm.nmat))
+    self.assertGreater(m.mat_texid.strides[0], 0)
+    self.assertGreater(m.geom_size.strides[0], 0)
+    self.assertGreater(m.mat_rgba.strides[0], 0)
+
+    np.testing.assert_array_equal(m.mat_texid.numpy(), np.repeat(m_default.mat_texid.numpy(), 3, axis=0))
+    np.testing.assert_allclose(m.geom_size.numpy(), np.repeat(m_default.geom_size.numpy(), 2, axis=0))
+    np.testing.assert_allclose(m.mat_rgba.numpy(), np.repeat(m_default.mat_rgba.numpy(), 4, axis=0))
+
+    # Fields not listed in batch_sizes keep the shared legacy allocation.
+    self.assertEqual(m.geom_pos.shape[0], 1)
+    self.assertEqual(m.geom_pos.strides[0], 0)
+
+    red_id = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_TEXTURE, "red")
+    green_id = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_TEXTURE, "green")
+    mat_id = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_MATERIAL, "mat")
+    rgb_role = int(mujoco.mjtTextureRole.mjTEXROLE_RGB)
+
+    mat_texid = m.mat_texid.numpy()
+    mat_texid[:, mat_id, rgb_role] = [red_id, green_id, red_id]
+    m.mat_texid.assign(mat_texid)
+    np.testing.assert_array_equal(m.mat_texid.numpy()[:, mat_id, rgb_role], [red_id, green_id, red_id])
+
+  def test_put_model_batch_sizes_errors(self):
+    """Test invalid put_model batch_sizes requests are rejected."""
+    mjm = mujoco.MjModel.from_xml_string(
+      """
+      <mujoco>
+        <worldbody>
+          <geom type="sphere" size="0.1"/>
+        </worldbody>
+      </mujoco>
+      """
+    )
+
+    with self.assertRaisesRegex(ValueError, "not a batched array field"):
+      mjwarp.put_model(mjm, batch_sizes={"missing": 2})
+    with self.assertRaisesRegex(ValueError, "not a batched array field"):
+      mjwarp.put_model(mjm, batch_sizes={"nmat": 2})
+    with self.assertRaisesRegex(ValueError, "not a batched array field"):
+      mjwarp.put_model(mjm, batch_sizes={"geom_type": 2})
+    with self.assertRaisesRegex(ValueError, "must be positive"):
+      mjwarp.put_model(mjm, batch_sizes={"mat_texid": 0})
 
   def test_set_fixed_body_subtreemass(self):
     """Test body_subtreemass accumulation for multi-level tree."""
@@ -2598,6 +2632,33 @@ class IOTest(parameterized.TestCase):
       d.body_awake.numpy()[1],
       [types.SleepState.ASLEEP, types.SleepState.ASLEEP],
     )
+
+  def test_ls_parallel_deprecation(self):
+    _, _, m, _ = test_data.fixture(xml="<mujoco/>")
+
+    # Constructor with ls_parallel argument raises TypeError (unrecognized parameter)
+    with self.assertRaises(TypeError):
+      types.Option(timestep=wp.array([0.01], dtype=float), ls_parallel=True)
+
+    # Accessing (reading) the fields raises AttributeError
+    with self.assertRaises(AttributeError):
+      _ = m.opt.ls_parallel
+    with self.assertRaises(AttributeError):
+      _ = m.opt.ls_parallel_min_step
+
+    # Directly setting any value raises AttributeError
+    with self.assertRaises(AttributeError):
+      m.opt.ls_parallel = False
+    with self.assertRaises(AttributeError):
+      m.opt.ls_parallel_min_step = 0.0
+
+    # Test that override_model raises ValueError with helpful message
+    from mujoco_warp._src.io import override_model
+
+    with self.assertRaisesRegex(ValueError, "ls_parallel was removed in MuJoCo Warp 3.9.1"):
+      override_model(m, {"opt.ls_parallel": True})
+    with self.assertRaisesRegex(ValueError, "ls_parallel_min_step was removed in MuJoCo Warp 3.9.1"):
+      override_model(m, {"opt.ls_parallel_min_step": 0.01})
 
 
 # TODO(team): test set_const_0 sparse

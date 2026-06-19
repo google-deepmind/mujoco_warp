@@ -20,8 +20,6 @@ import mujoco
 import numpy as np
 import warp as wp
 
-from mujoco_warp._src.util_pkg import check_version
-
 MJ_MINVAL = mujoco.mjMINVAL
 MJ_MAXVAL = mujoco.mjMAXVAL
 MJ_MINIMP = mujoco.mjMINIMP  # minimum constraint impedance
@@ -29,8 +27,6 @@ MJ_MAXIMP = mujoco.mjMAXIMP  # maximum constraint impedance
 MJ_MAXCONPAIR = mujoco.mjMAXCONPAIR
 MJ_MINMU = mujoco.mjMINMU  # minimum friction
 MJ_MINAWAKE = mujoco.mjMINAWAKE  # minimum number of timesteps before sleeping
-NEW_GAP_SEMANTICS = check_version("mujoco>=3.9.0.dev914519929")
-TACTILE_DEPTH_SEMANTICS = check_version("mujoco>=3.9.0.dev921980899")
 # maximum size (by number of edges) of an horizon in EPA algorithm
 MJ_MAX_EPAHORIZON = 24
 # maximum average number of trianglarfaces EPA can insert at each iteration
@@ -431,6 +427,8 @@ class GeomType(enum.IntEnum):
   MESH = mujoco.mjtGeom.mjGEOM_MESH
   SDF = mujoco.mjtGeom.mjGEOM_SDF
   FLEX = mujoco.mjtGeom.mjGEOM_FLEX
+  # warp only
+  TRIANGLE = 999
   # unsupported: NGEOMTYPES, ARROW*, LINE, SKIN, LABEL, NONE
 
 
@@ -708,7 +706,8 @@ class State(enum.IntEnum):
   FULLPHYSICS = mujoco.mjtState.mjSTATE_FULLPHYSICS
   USER = mujoco.mjtState.mjSTATE_USER
   INTEGRATION = mujoco.mjtState.mjSTATE_INTEGRATION
-  # unsupported: USERDATA, PLUGIN
+  USERDATA = mujoco.mjtState.mjSTATE_USERDATA
+  # unsupported: PLUGIN
 
 
 class vec5f(wp.types.vector(length=5, dtype=float)):
@@ -808,8 +807,6 @@ class Option:
 
   warp only fields:
     impratio_invsqrt: ratio of friction-to-normal contact impedance (stored as inverse square root)
-    ls_parallel: evaluate engine solver step sizes in parallel
-    ls_parallel_min_step: minimum step size for solver linesearch
     broadphase: broadphase type (BroadphaseType)
     broadphase_filter: broadphase filter bitflag (BroadphaseFilter)
     graph_conditional: flag to use cuda graph conditional
@@ -842,13 +839,28 @@ class Option:
   sdf_iterations: int
   # warp only fields:
   impratio_invsqrt: array("*", float)
-  ls_parallel: bool
-  ls_parallel_min_step: float
   broadphase: BroadphaseType
   broadphase_filter: BroadphaseFilter
   graph_conditional: bool
   run_collision_detection: bool
   contact_sensor_maxmatch: int
+
+  # TODO(team): remove in future version
+  @property
+  def ls_parallel(self) -> bool:
+    raise AttributeError("ls_parallel was removed in MuJoCo Warp 3.9.1.")
+
+  @ls_parallel.setter
+  def ls_parallel(self, value: bool):
+    raise AttributeError("ls_parallel was removed in MuJoCo Warp 3.9.1.")
+
+  @property
+  def ls_parallel_min_step(self) -> float:
+    raise AttributeError("ls_parallel_min_step was removed in MuJoCo Warp 3.9.1.")
+
+  @ls_parallel_min_step.setter
+  def ls_parallel_min_step(self, value: float):
+    raise AttributeError("ls_parallel_min_step was removed in MuJoCo Warp 3.9.1.")
 
 
 @dataclasses.dataclass
@@ -938,6 +950,7 @@ class Model:
     nflexbending: number of bending parameters in all flexes
     nflexelemedge: number of element edge ids in all flexes
     nflexshelldata: number of shell fragment vertex ids in all flexes
+    nflexevpair: number of element-vertex pairs in all flexes
     nJfe: number of non-zeros in sparse flexedge Jacobian
     nmesh: number of meshes
     nmeshvert: number of vertices for all meshes
@@ -961,6 +974,7 @@ class Model:
     nplugin: number of plugin instances
     nJmom: number of non-zeros in actuator_moment
     ngravcomp: number of bodies with nonzero gravcomp
+    nuserdata: number of custom user parameters
     nsensordata: number of elements in sensor data vector
     nhistory: number of history buffer entries
     opt: physics options
@@ -1092,6 +1106,8 @@ class Model:
     flex_friction: friction for (slide, spin, roll)          (nflex, 3)
     flex_margin: detect contact if dist<margin               (nflex,)
     flex_gap: include in solver if dist<margin-gap           (nflex,)
+    flex_internal: internal collision enabled                (nflex,)
+    flex_selfcollide: self-collision mode                    (nflex,)
     flex_dim: 1: lines, 2: triangles, 3: tetrahedra          (nflex,)
     flex_vertadr: first vertex address                       (nflex,)
     flex_vertnum: number of vertices                         (nflex,)
@@ -1105,12 +1121,15 @@ class Model:
     flex_bendingadr: first bending data address              (nflex,)
     flex_shellnum: number of shells                          (nflex,)
     flex_shelldataadr: first shell data address              (nflex,)
+    flex_evpairadr: first element-vertex pair address        (nflex,)
+    flex_evpairnum: number of element-vertex pairs           (nflex,)
     flex_vertbodyid: vertex body ids                         (nflexvert,)
     flex_edge: edge vertex ids (2 per edge)                  (nflexedge, 2)
     flex_edgeflap: adjacent vertex ids (dim=2 only)          (nflexedge, 2)
     flex_elem: element vertex ids (dim+1 per elem)           (nflexelemdata,)
     flex_elemedge: element edge ids                          (nflexelemedge,)
     flex_shell: shell fragment vertex ids (dim per frag)     (nflexshelldata,)
+    flex_evpair: element-vertex pair indices                 (nflexevpair, 2)
     flex_vert: vertex local positions                        (nflexvert, 3)
     flexedge_length0: edge lengths in qpos0                  (nflexedge,)
     flexedge_invweight0: inv. inertia for the edge           (nflexedge,)
@@ -1133,6 +1152,7 @@ class Model:
     mesh_normal: normals for all meshes                      (nmeshnormal, 3)
     mesh_face: face indices for all meshes                   (nface, 3)
     mesh_graph: convex graph data                            (nmeshgraph,)
+    mesh_pos: translation applied to asset vertices          (nmesh, 3)
     mesh_quat: rotation applied to asset vertices            (nmesh, 4)
     mesh_polynum: number of polygons per mesh                (nmesh,)
     mesh_polyadr: first polygon address per mesh             (nmesh,)
@@ -1267,6 +1287,8 @@ class Model:
     is_sparse: whether to use sparse representations
     has_fluid: True if wind, density, or viscosity are non-zero at put_model time
     has_sdf_geom: whether the model contains SDF geoms
+    has_flex_selfcollide: whether any flex has self-collision enabled
+    max_flex_dim: maximum flex dimension in the model
     block_dim: block dim options
     body_tree: list of body ids by tree level
     body_branches: flattened body ids for all branches
@@ -1374,6 +1396,7 @@ class Model:
   nflexbending: int
   nflexelemedge: int
   nflexshelldata: int
+  nflexevpair: int
   nJfe: int
   nmesh: int
   nmeshvert: int
@@ -1397,6 +1420,7 @@ class Model:
   nplugin: int
   nJmom: int
   ngravcomp: int
+  nuserdata: int
   nsensordata: int
   nhistory: int
   opt: Option
@@ -1528,6 +1552,8 @@ class Model:
   flex_friction: array("nflex", wp.vec3)
   flex_margin: array("nflex", float)
   flex_gap: array("nflex", float)
+  flex_internal: array("nflex", int)
+  flex_selfcollide: array("nflex", int)
   flex_dim: array("nflex", int)
   flex_vertadr: array("nflex", int)
   flex_vertnum: array("nflex", int)
@@ -1541,12 +1567,15 @@ class Model:
   flex_bendingadr: array("nflex", int)
   flex_shellnum: array("nflex", int)
   flex_shelldataadr: array("nflex", int)
+  flex_evpairadr: array("nflex", int)
+  flex_evpairnum: array("nflex", int)
   flex_vertbodyid: array("nflexvert", int)
   flex_edge: array("nflexedge", wp.vec2i)
   flex_edgeflap: array("nflexedge", wp.vec2i)
   flex_elem: array("nflexelemdata", int)
   flex_elemedge: array("nflexelemedge", int)
   flex_shell: array("nflexshelldata", int)
+  flex_evpair: array("nflexevpair", wp.vec2i)
   flex_vert: array("nflexvert", wp.vec3)
   flexedge_length0: array("nflexedge", float)
   flexedge_invweight0: array("nflexedge", float)
@@ -1569,6 +1598,7 @@ class Model:
   mesh_normal: array("nmeshnormal", wp.vec3)
   mesh_face: array("nmeshface", wp.vec3i)
   mesh_graph: array("nmeshgraph", int)
+  mesh_pos: array("nmesh", wp.vec3)
   mesh_quat: array("nmesh", wp.quat)
   mesh_polynum: array("nmesh", int)
   mesh_polyadr: array("nmesh", int)
@@ -1701,6 +1731,8 @@ class Model:
   is_sparse: bool
   has_fluid: bool
   has_sdf_geom: bool
+  has_flex_selfcollide: bool
+  max_flex_dim: int
   block_dim: BlockDim
   body_tree: tuple[wp.array[int], ...]
   body_branches: wp.array[int]
@@ -1806,6 +1838,7 @@ class Contact:
     dim: contact space dimensionality: 1, 3, 4 or 6                  (naconmax,)
     geom: geom ids; -1 for flex                                      (naconmax, 2)
     flex: flex ids; -1 for geom                                      (naconmax, 2)
+    elem: element ids; -1 for geom or flex vertex                    (naconmax, 2)
     vert: vertex ids for flex/mesh contact                           (naconmax, 2)
     efc_address: address in efc; -1: not included                    (naconmax, nmaxpyramid)
     worldid: world id                                                (naconmax,)
@@ -1826,6 +1859,7 @@ class Contact:
   dim: array("naconmax", int)
   geom: array("naconmax", wp.vec2i)
   flex: array("naconmax", wp.vec2i)
+  elem: array("naconmax", wp.vec2i)
   vert: array("naconmax", wp.vec2i)
   efc_address: array("naconmax", "nmaxpyramid", int)
   worldid: array("naconmax", int)
@@ -1936,6 +1970,7 @@ class Data:
     mocap_quat: orientation of mocap bodies                     (nworld, nmocap, 4)
     qacc: acceleration                                          (nworld, nv)
     act_dot: time-derivative of actuator activation             (nworld, na)
+    userdata: custom user data                                  (nworld, nuserdata)
     sensordata: sensor data array                               (nworld, nsensordata,)
     tree_asleep: tree asleep counter; >=0: asleep cycle         (nworld, ntree)
     xpos: Cartesian position of body frame                      (nworld, nbody, 3)
@@ -2067,6 +2102,7 @@ class Data:
   mocap_quat: array("nworld", "nmocap", wp.quat)
   qacc: array("nworld", "nv", float)
   act_dot: array("nworld", "na", float)
+  userdata: array("nworld", "nuserdata", float)
   sensordata: array("nworld", "nsensordata", float)
   tree_asleep: array("nworld", "ntree", int)
   xpos: array("nworld", "nbody", wp.vec3)
@@ -2223,7 +2259,6 @@ class SolverContext:
   mv: wp.array2d[float]
   jv: wp.array2d[float]
   quad: wp.array2d[wp.vec3]
-  quad_gauss: wp.array[wp.vec3]
   alpha: wp.array[float]
   improvement: wp.array[float]
   prev_grad: wp.array2d[float]
@@ -2290,9 +2325,9 @@ class RenderContext:
     render_seg: per-camera segmentation render flags
     znear: near plane distance
     total_rays: total number of rays
-    render_skybox: whether to shade missed rays with the MuJoCo skybox texture
-    skybox_tex_id: index into textures of the skybox (MuJoCo tex_type == SKYBOX), -1 if none
-    skybox_face_width: pixel width of one skybox cube face (0 if no skybox)
+    render_skybox: whether to shade missed rays with a MuJoCo skybox texture
+    skybox_tex_id: per-world indices into textures of the skybox
+    skybox_face_width: per-world pixel widths of the skybox cube face
     headlight_active: whether to inject MuJoCo's vis.headlight as a synthetic
       directional light at the active camera. Read from `mjm.vis.headlight.active`
       at context creation; users disable the headlight by configuring it on the
@@ -2338,8 +2373,8 @@ class RenderContext:
   background_color: wp.uint32
   use_precomputed_rays: bool
   render_skybox: bool
-  skybox_tex_id: int
-  skybox_face_width: int
+  skybox_tex_id: array("*", int)
+  skybox_face_width: array("*", int)
   headlight_active: bool
   headlight_ambient: wp.vec3
   headlight_diffuse: wp.vec3
