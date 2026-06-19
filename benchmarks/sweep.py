@@ -166,7 +166,12 @@ def _run_benchmark(bm: dict, input_dir: Path, *, mock: bool) -> dict:
     elif field == "nstep":
       cmd.append(f"--nstep={10 if mock else bm['nstep']}")
     elif field not in ("name", "assets", "mjcf", "_dir"):
-      cmd.append(f"--{field}={bm[field]}")
+      val = bm[field]
+      if isinstance(val, list):
+        for v in val:
+          cmd.append(f"--{field}={v}")
+      else:
+        cmd.append(f"--{field}={val}")
 
   return json.loads(_uv_run(*cmd, cwd=input_dir).stdout)
 

@@ -26,7 +26,7 @@ import inspect
 import json
 import shutil
 import sys
-from typing import Sequence
+from typing import Sequence, get_type_hints
 
 import numpy as np
 import warp as wp
@@ -47,7 +47,7 @@ _FUNCS = {
   if inspect.signature(f).parameters.keys() == {"m", "d"} or inspect.signature(f).parameters.keys() == {"m", "d", "rc"}
 }
 
-_FUNCTION = flags.DEFINE_enum("function", "step", _FUNCS.keys(), "the function to benchmark")
+_FUNCTIONS = flags.DEFINE_multi_enum("function", ["step"], list(_FUNCS.keys()), "the function(s) to benchmark")
 _CLEAR_WARP_CACHE = flags.DEFINE_bool("clear_warp_cache", False, "clear warp caches (kernel, LTO, CUDA compute)")
 _MEASURE_ALLOC = flags.DEFINE_bool("measure_alloc", False, "print a report of contacts and constraints per step")
 _MEASURE_SOLVER = flags.DEFINE_bool("measure_solver", False, "print a report of solver iterations per step")
@@ -140,8 +140,10 @@ def _main(argv: Sequence[str]):
   elif len(argv) > 2:
     raise app.UsageError("Too many command-line arguments.")
 
-  if _FUNCTION.value not in _FUNCS:
-    raise ValueError(f"Unknown function: {_FUNCTION.value}")
+  fn_names = _FUNCTIONS.value
+  for fn_name in fn_names:
+    if fn_name not in _FUNCS:
+      raise ValueError(f"Unknown function: {fn_name}")
 
   wp.config.quiet = flags.FLAGS["verbosity"].value < 1
   wp.init()
@@ -164,7 +166,27 @@ def _main(argv: Sequence[str]):
 
   mjm = cli.load_model(path)
   free_mem_at_init = wp.get_device(device).free_memory
-  m, d, rc, ctrls = cli.init_structs(_FUNCS[_FUNCTION.value], mjm)
+
+  if len(fn_names) == 1:
+    composite_fn = _FUNCS[fn_names[0]]
+  else:
+    # Pre-resolve functions and whether they need rc
+    funcs_to_run = [(_FUNCS[name], mjw.RenderContext in get_type_hints(_FUNCS[name]).values()) for name in fn_names]
+    needs_rc = any(takes_rc for _, takes_rc in funcs_to_run)
+
+    if needs_rc:
+
+      def composite_fn(m: mjw.Model, d: mjw.Data, rc: mjw.RenderContext):
+        for fn, takes_rc in funcs_to_run:
+          fn(m, d, rc) if takes_rc else fn(m, d)
+
+    else:
+
+      def composite_fn(m: mjw.Model, d: mjw.Data):
+        for fn, _ in funcs_to_run:
+          fn(m, d)
+
+  m, d, rc, ctrls = cli.init_structs(composite_fn, mjm)
   timestep = m.opt.timestep.numpy()[0]
 
   if _FORMAT.value == "human":
@@ -242,9 +264,8 @@ def _main(argv: Sequence[str]):
       )
 
     print(f"Data\n  nworld: {d.nworld} naconmax: {d.naconmax} njmax: {d.njmax}")
-    print(
-      f"Rolling out {cli.NSTEP.value} {_FUNCTION.value}s at dt = {f'{timestep:g}' if timestep < 0.001 else f'{timestep:.3f}'}..."
-    )
+    funcs_str = "+".join(fn_names)
+    print(f"Rolling out {cli.NSTEP.value} {funcs_str} at dt = {f'{timestep:g}' if timestep < 0.001 else f'{timestep:.3f}'}...")
 
   nacon, nefc, solver_niter = [], [], []
   runtime = 0.0
@@ -258,24 +279,20 @@ def _main(argv: Sequence[str]):
     solver_niter.append(d.solver_niter.numpy())
     trace = _sum_trace(trace, step_trace)
 
-  if _FUNCTION.value == "render":
+  if "step" not in fn_names:
     with wp.ScopedCapture() as step_capture:
       mjw.step(m, d)
 
-    def render_callback(step, step_trace, latency):
+    def step_callback(step, step_trace, latency):
       callback(step, step_trace, latency)
       wp.capture_launch(step_capture.graph)
       wp.synchronize()
 
-    # TODO(team): Support specifying multiple functions to benchmark them together,
-    # e.g., `mjwarp-testspeed --function=refit_bvh --function=render`
-    def refit_and_render(m, d, rc):
-      mjw.refit_bvh(m, d, rc)
-      mjw.render(m, d, rc)
-
-    jit_duration = cli.unroll(refit_and_render, m, d, rc, render_callback, ctrls)
+    active_callback = step_callback
   else:
-    jit_duration = cli.unroll(_FUNCS[_FUNCTION.value], m, d, rc, callback, ctrls)
+    active_callback = callback
+
+  jit_duration = cli.unroll(composite_fn, m, d, rc, active_callback, ctrls)
 
   nconverged = np.sum(~np.any(np.isnan(d.qpos.numpy()), axis=1))
   steps = cli.NWORLD.value * cli.NSTEP.value
@@ -284,14 +301,15 @@ def _main(argv: Sequence[str]):
   total_mem = free_mem_at_init - wp.get_device(device).free_memory
 
   if _FORMAT.value == "human":
+    funcs_str = "+".join(fn_names)
     print(f"""
 Summary for {d.nworld} parallel rollouts
 
 Total JIT time: {jit_duration:.2f} s
 Total simulation time: {runtime:.2f} s
-Total steps per second: {steps / runtime:,.0f}
+Total {funcs_str} per second: {steps / runtime:,.0f}
 Total realtime factor: {steps * timestep / runtime:,.2f} x
-Total time per step: {1e9 * runtime / steps:.2f} ns
+Total time per {funcs_str}: {1e9 * runtime / steps:.2f} ns
 Total converged worlds: {nconverged} / {d.nworld}""")
 
     if trace:
