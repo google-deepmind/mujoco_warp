@@ -1270,7 +1270,6 @@ class Model:
     D_colind: column indices in D-structure                  (nD,)
     mapM2D: index mapping from M to D                        (nD,)
     mapD2M: index mapping from D to M                        (nC,)
-    flex_vertflexid: flex id for each flex vertex            (nflexvert,)
 
   warp only fields:
     callback: custom physics callbacks
@@ -1382,9 +1381,14 @@ class Model:
     M_mulm_rowadr: sparse matmul row pointers
     M_mulm_col: sparse matmul column indices
     M_mulm_madr: sparse matmul matrix addresses
-    flex_elemflexid: maps each element index directly to its flexid       (nflexelem,)
-    flex_shellflexid: maps each shell index directly to its flexid        (nflexshelldata,)
+    flexelem_geom_pair_filtered: conaffinity-filtered element vs geom pairs (*, 2)
+    flexshell_geom_pair_filtered: conaffinity-filtered shell vs geom pairs  (*, 2)
+    flexvert_geom_pair_filtered: conaffinity-filtered vertex vs geom pairs  (*, 2)
+    flex_elemflexid: maps each element index directly to its flexid         (nflexelem,)
+    flex_shellflexid: maps each shell index directly to its flexid          (nflexshelldata,)
     flex_evpairflexid: maps each element-vertex pair directly to its flexid (nflexevpair,)
+    flex_vertflexid: maps each vertex index directly to its flexid          (nflexvert,)
+    flex_shelladr: maps each flex to its start shell index                  (nflex,)
   """
 
   nq: int
@@ -1729,7 +1733,6 @@ class Model:
   D_colind: array("nD", int)
   mapM2D: array("nD", int)
   mapD2M: array("nC", int)
-  flex_vertflexid: array("nflexvert", int)
   # warp only fields:
   callback: Callback
   nbranch: int
@@ -1832,9 +1835,14 @@ class Model:
   M_mulm_rowadr: wp.array[int]  # start address for each row [nv+1]
   M_mulm_col: wp.array[int]  # column index to gather from
   M_mulm_madr: wp.array[int]  # matrix address to read
+  flexelem_geom_pair_filtered: wp.array[wp.vec2i]
+  flexshell_geom_pair_filtered: wp.array[wp.vec2i]
+  flexvert_geom_pair_filtered: wp.array[wp.vec2i]
   flex_elemflexid: array("nflexelem", int)
   flex_shellflexid: array("nflexshelldata", int)
   flex_evpairflexid: array("nflexevpair", int)
+  flex_vertflexid: array("nflexvert", int)
+  flex_shelladr: array("nflex", int)
 
 
 class ContactType(enum.IntFlag):
@@ -2097,6 +2105,8 @@ class Data:
     njmax_nnz: number of non-zeros in constraint Jacobian
     nacon: number of detected contacts (across all worlds)      (1,)
     ncollision: collision count from broadphase                 (1,)
+    flex_aabb_min: dynamic flex object bounding box min         (nworld, nflex, 3)
+    flex_aabb_max: dynamic flex object bounding box max         (nworld, nflex, 3)
   """
 
   solver_niter: array("nworld", int)
@@ -2221,6 +2231,8 @@ class Data:
   njmax_nnz: int
   nacon: array(1, int)
   ncollision: array(1, int)
+  flex_aabb_min: array("nworld", "nflex", wp.vec3)
+  flex_aabb_max: array("nworld", "nflex", wp.vec3)
 
 
 @dataclasses.dataclass

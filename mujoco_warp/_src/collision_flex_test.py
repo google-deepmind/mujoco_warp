@@ -423,10 +423,12 @@ class FlexCollisionTest(absltest.TestCase):
     flex_elemflexid = m.flex_elemflexid.numpy()
     flex_evpairflexid = m.flex_evpairflexid.numpy()
     flex_shellflexid = m.flex_shellflexid.numpy()
+    flex_vertflexid = m.flex_vertflexid.numpy()
 
     self.assertEqual(len(flex_elemflexid), m.nflexelem)
     self.assertEqual(len(flex_evpairflexid), m.nflexevpair)
     self.assertEqual(len(flex_shellflexid), m.nflexshelldata)
+    self.assertEqual(len(flex_vertflexid), m.nflexvert)
 
     shell_offset = 0
     for i in range(m.nflex):
@@ -448,6 +450,9 @@ class FlexCollisionTest(absltest.TestCase):
         err_msg=f"Element-vertex pair mapping mismatch for flex {i}",
       )
 
+      # Shell address mapping
+      self.assertEqual(m.flex_shelladr.numpy()[i], shell_offset)
+
       # Shell mapping
       shell_num = m.flex_shellnum.numpy()[i]
       np.testing.assert_array_equal(
@@ -456,6 +461,163 @@ class FlexCollisionTest(absltest.TestCase):
         err_msg=f"Shell mapping mismatch for flex {i}",
       )
       shell_offset += shell_num
+
+      # Vert mapping
+      vert_start = m.flex_vertadr.numpy()[i]
+      vert_num = m.flex_vertnum.numpy()[i]
+      np.testing.assert_array_equal(
+        flex_vertflexid[vert_start : vert_start + vert_num],
+        i,
+        err_msg=f"Vertex mapping mismatch for flex {i}",
+      )
+
+  def test_sphere_cloth_pruned_by_broadphase(self):
+    """Test that far-away geoms are successfully pruned by broadphase (yielding 0 contacts)."""
+    xml = """
+    <mujoco>
+      <option solver="CG" tolerance="1e-6" timestep=".001"/>
+      <size memory="10M"/>
+
+      <worldbody>
+        <light pos="0 0 3" dir="0 0 -1"/>
+
+        <!-- Sphere positioned very far away from the cloth -->
+        <body pos="10.0 10.0 10.0">
+          <freejoint/>
+          <geom type="sphere" size=".1" mass="1"/>
+        </body>
+
+        <!-- Cloth (dim=2 flex) -->
+        <flexcomp type="grid" count="4 4 1" spacing=".2 .2 .1" pos="-.3 -.3 0"
+                  radius=".02" name="cloth" dim="2" mass=".5">
+          <contact condim="3" solref="0.01 1" solimp=".95 .99 .0001"
+                   selfcollide="none" conaffinity="1" contype="1"/>
+          <edge damping="0.01"/>
+        </flexcomp>
+      </worldbody>
+    </mujoco>
+    """
+    _, _, m, d = test_data.fixture(xml=xml)
+
+    d.nacon.zero_()
+    mjwarp.kinematics(m, d)
+    mjwarp.collision(m, d)
+
+    self.assertEqual(d.nacon.numpy()[0], 0, "Expected 0 contacts because the sphere is very far away")
+
+  def test_sphere_cloth_exact_bounds(self):
+    """Test that the dynamic flex AABB calculation computes the exact expected bounding box."""
+    xml = """
+    <mujoco>
+      <worldbody>
+        <!-- Cloth (dim=2 flex) -->
+        <flexcomp type="grid" count="4 4 1" spacing=".2 .2 .1" pos="-.3 -.3 0"
+                  radius=".02" name="cloth" dim="2" mass=".5">
+          <contact selfcollide="none"/>
+        </flexcomp>
+      </worldbody>
+    </mujoco>
+    """
+    _, _, m, d = test_data.fixture(xml=xml)
+
+    mjwarp.kinematics(m, d)
+    mjwarp.collision(m, d)
+
+    # Fetch computed AABB bounds
+    aabb_min = d.flex_aabb_min.numpy()[0, 0]
+    aabb_max = d.flex_aabb_max.numpy()[0, 0]
+
+    # Fetch the actual vertices from flexvert_xpos
+    vert_adr = m.flex_vertadr.numpy()[0]
+    vert_num = m.flex_vertnum.numpy()[0]
+    verts = d.flexvert_xpos.numpy()[0, vert_adr : vert_adr + vert_num]
+
+    # Compute the expected bounds from actual vertices
+    v_min = np.min(verts, axis=0)
+    v_max = np.max(verts, axis=0)
+
+    # Inflation
+    radius = m.flex_radius.numpy()[0]
+    margin = m.flex_margin.numpy()[0] + m.flex_gap.numpy()[0]
+    inflate = radius + margin
+
+    expected_min = v_min - inflate
+    expected_max = v_max + inflate
+
+    np.testing.assert_allclose(aabb_min, expected_min, atol=1e-5)
+    np.testing.assert_allclose(aabb_max, expected_max, atol=1e-5)
+
+  def test_plane_cloth_contact_generated(self):
+    """Test that contacts are generated between plane and cloth vertices."""
+    xml = """
+    <mujoco>
+      <option solver="CG" tolerance="1e-6" timestep=".001"/>
+      <size memory="10M"/>
+
+      <worldbody>
+        <light pos="0 0 3" dir="0 0 -1"/>
+
+        <!-- Ground plane -->
+        <geom type="plane" size="5 5 .1" pos="0 0 0"/>
+
+        <!-- Cloth (dim=2 flex) placed just above the plane -->
+        <flexcomp type="grid" count="4 4 1" spacing=".2 .2 .1" pos="-.3 -.3 0.01"
+                  radius=".02" name="cloth" dim="2" mass=".5">
+          <contact condim="3" solref="0.01 1" solimp=".95 .99 .0001"
+                   selfcollide="none" conaffinity="1" contype="1"/>
+          <edge damping="0.01"/>
+        </flexcomp>
+      </worldbody>
+    </mujoco>
+    """
+    _, _, m, d = test_data.fixture(xml=xml)
+
+    mjwarp.kinematics(m, d)
+    mjwarp.collision(m, d)
+
+    nacon = int(d.nacon.numpy()[0])
+    self.assertGreater(nacon, 0, "Expected contacts between plane and cloth vertices")
+
+    # Verify that contact geom is the plane
+    contact_geom = d.contact.geom.numpy()[:nacon]
+    # Check that at least one contact involves geom 0 (the plane)
+    plane_contacts = np.sum(contact_geom[:, 0] == 0)
+    self.assertGreater(plane_contacts, 0, "Expected at least one contact with the plane")
+
+  def test_mixed_flex_broadphase_and_narrowphase(self):
+    """Test that broadphase and narrowphase run correctly with mixed 2D and 3D flexes."""
+    xml = """
+    <mujoco>
+      <worldbody>
+        <!-- 2D Cloth -->
+        <flexcomp name="cloth" type="grid" count="3 3 1" spacing=".2 .2 .1" pos="0 0 0"
+                  radius=".02" dim="2" mass=".5">
+          <contact selfcollide="none" internal="true"/>
+        </flexcomp>
+        <!-- 3D Softbody -->
+        <flexcomp name="softbody" type="grid" count="3 3 3" spacing=".2 .2 .2" pos="1 1 0"
+                  radius=".02" dim="3" mass="1.0">
+          <contact selfcollide="none" internal="true"/>
+        </flexcomp>
+        <!-- A sphere positioned near the cloth to generate contact -->
+        <body pos="0 0 0.05">
+          <joint type="free"/>
+          <geom type="sphere" size="0.05"/>
+        </body>
+      </worldbody>
+    </mujoco>
+    """
+    _, _, m, d = test_data.fixture(xml=xml)
+
+    self.assertEqual(m.nflex, 2)
+    self.assertEqual(m.flex_dim.numpy()[0], 2)
+    self.assertEqual(m.flex_dim.numpy()[1], 3)
+
+    mjwarp.kinematics(m, d)
+    mjwarp.collision(m, d)
+
+    nacon = int(d.nacon.numpy()[0])
+    self.assertGreater(nacon, 0, "Expected contacts to be generated")
 
 
 if __name__ == "__main__":
