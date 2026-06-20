@@ -45,10 +45,12 @@ BENCHMARKS = [
   {
     "name": "aloha_clutter",
     "mjcf": "scene_clutter.xml",
-    "nworld": 512,
+    "nworld": 2048,
     "nconmax": 512,
     "nccdmax": 64,
     "njmax": 1024,
+    "nvmax": 64,
+    "override": "opt.enableflags=SLEEP",
     "replay": "pick_clutter.npz",
     "assets": [
       (ASSETS[0], "aloha"),
