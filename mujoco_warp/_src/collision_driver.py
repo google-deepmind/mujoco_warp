@@ -727,17 +727,11 @@ def sap_broadphase(m: Model, d: Data, ctx: CollisionContext, skip: Optional[wp.a
 
 @cache_kernel
 def _nxn_broadphase(
-  opt_broadphase_filter: int,
-  ngeom_aabb: int,
-  ngeom_rbound: int,
-  ngeom_margin: int,
-  ngeom_gap: int,
-  enable_sleep: bool = False,
+  opt_broadphase_filter: int, ngeom_aabb: int, ngeom_rbound: int, ngeom_margin: int, ngeom_gap: int, enable_sleep: bool = False
 ):
   @wp.kernel(module="unique", enable_backward=False)
   def kernel(
     # Model:
-    body_treeid: wp.array[int],
     geom_type: wp.array[int],
     geom_bodyid: wp.array[int],
     geom_aabb: wp.array3d[wp.vec3],
@@ -830,7 +824,6 @@ def nxn_broadphase(m: Model, d: Data, ctx: CollisionContext, skip: Optional[wp.a
     ),
     dim=(d.nworld, m.nxn_geom_pair_filtered.shape[0]),
     inputs=[
-      m.body_treeid,
       m.geom_type,
       m.geom_bodyid,
       m.geom_aabb,
