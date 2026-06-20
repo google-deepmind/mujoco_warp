@@ -2742,7 +2742,7 @@ def _JTDAJ_sparse(
       wp.atomic_add(h_out[worldid, row], col, h)
 
 
-def _update_gradient(m: types.Model, d: types.Data, ctx: SolverContext):
+def _update_gradient(m: types.Model, d: types.Data, ctx: SolverContext, compact: bool = False):
   # grad = Ma - qfrc_smooth - qfrc_constraint
   if m.opt.solver == types.SolverType.CG:
     wp.launch_tiled(
@@ -2807,7 +2807,12 @@ def _update_gradient(m: types.Model, d: types.Data, ctx: SolverContext):
       # we don't over-launch naconmax (capacity) threads when active contacts are far fewer. The
       # sparse kernel uses one thread per (contact, support-pair) (jtcj_max_pairs), the dense one
       # per (contact, dof-pair) (dof_tri_row.size).
-      is_sparse_compact = (d.nvmax < m.nv) and (d.efc.J_colind.shape[1] > 0)
+      # `compact` is set by solve_compact's inner solve, which runs the dense factor/solve on
+      # the nvmax_pad block but maps sparse contact support-pairs to compacted DOFs via dof_cdof.
+      # (Don't infer it from `d.nvmax < m.nv`: after solve_compact's shallow m2/d2 replace that
+      # reduces to `nvmax < nvmax_pad`, which is false whenever nvmax is a tile multiple and
+      # silently falls back to the O(nvmax_pad^2) dense cone scan.)
+      is_sparse_compact = compact and (d.efc.J_colind.shape[1] > 0)
       jtcj_second_dim = m.jtcj_max_pairs if (m.is_sparse or is_sparse_compact) else m.dof_tri_row.size
       if wp.get_device().is_cuda:
         sm_count = wp.get_device().sm_count
@@ -3206,6 +3211,7 @@ def _solver_iteration(
   d: types.Data,
   ctx: SolverContext,
   nsolving: wp.array[int],
+  compact: bool = False,
 ):
   _linesearch(m, d, ctx)
 
@@ -3224,7 +3230,7 @@ def _solver_iteration(
   if incremental:
     _update_gradient_incremental(m, d, ctx)
   else:
-    _update_gradient(m, d, ctx)
+    _update_gradient(m, d, ctx, compact=compact)
 
   # polak-ribiere
   if m.opt.solver == types.SolverType.CG:
@@ -3295,7 +3301,7 @@ def _solver_iteration(
     )
 
 
-def init_context(m: types.Model, d: types.Data, ctx: SolverContext | InverseContext, grad: bool = True):
+def init_context(m: types.Model, d: types.Data, ctx: SolverContext | InverseContext, grad: bool = True, compact: bool = False):
   # initialize some efc arrays
   wp.launch(
     _solve_init_efc,
@@ -3331,12 +3337,15 @@ def init_context(m: types.Model, d: types.Data, ctx: SolverContext | InverseCont
   _update_constraint(m, d, ctx)
 
   if grad:
-    _update_gradient(m, d, ctx)
+    _update_gradient(m, d, ctx, compact=compact)
 
 
 @event_scope
 def solve(m: types.Model, d: types.Data):
-  if d.nvmax < m.nv:
+  if m.is_compact:
+    # Self-contained like the island branch below: rebuild the active-DOF mapping from
+    # tree_awake so solve() works when called directly (not only via fwd_acceleration).
+    island.update_active_dofs(m, d)
     solve_compact(m, d)
     if m.ntree > 1:
       island.compute_island_mapping(m, d, None)
@@ -3359,7 +3368,7 @@ def solve(m: types.Model, d: types.Data):
       _solve(m, d, ctx)
 
 
-def _solve(m: types.Model, d: types.Data, ctx: SolverContext):
+def _solve(m: types.Model, d: types.Data, ctx: SolverContext, compact: bool = False):
   """Finds forces that satisfy constraints."""
   if not (m.opt.disableflags & types.DisableBit.WARMSTART):
     wp.copy(d.qacc, d.qacc_warmstart)
@@ -3367,7 +3376,7 @@ def _solve(m: types.Model, d: types.Data, ctx: SolverContext):
     wp.copy(d.qacc, d.qacc_smooth)
 
   #  context
-  init_context(m, d, ctx, grad=True)
+  init_context(m, d, ctx, grad=True, compact=compact)
 
   # search = -Mgrad
   if m.opt.solver == types.SolverType.CG:
@@ -3396,13 +3405,13 @@ def _solve(m: types.Model, d: types.Data, ctx: SolverContext):
     # When the number of iterations reaches m.opt.iterations, solver_niter
     # becomes zero and all worlds are marked as converged to avoid an infinite loop.
     # note: we only launch the iteration kernel if everything is not done
-    wp.capture_while(nsolving, while_body=_solver_iteration, m=m, d=d, ctx=ctx, nsolving=nsolving)
+    wp.capture_while(nsolving, while_body=_solver_iteration, m=m, d=d, ctx=ctx, nsolving=nsolving, compact=compact)
   else:
     # This branch is mostly for when JAX is used as it is currently not compatible
     # with CUDA graph conditional.
     # It should be removed when JAX becomes compatible.
     for _ in range(m.opt.iterations):
-      _solver_iteration(m, d, ctx, nsolving)
+      _solver_iteration(m, d, ctx, nsolving, compact=compact)
 
 
 # TODO(team): Consolidate monolithic and island solver code where possible
@@ -5852,7 +5861,7 @@ def solve_compact(m: types.Model, d: types.Data):
   )
 
   sctx = _create_solver_context(m2, d2)
-  _solve(m2, d2, sctx)
+  _solve(m2, d2, sctx, compact=True)
 
   _compact_scatter(m, d)
 

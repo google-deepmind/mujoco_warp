@@ -270,10 +270,12 @@ class NvCompactConstrainedSolveTest(absltest.TestCase):
   def test_solve_compact_populates_islands(self):
     """When using the compact solver via mjwarp.solve, island mapping fields are updated."""
     mjm = mujoco.MjModel.from_xml_string(_CONTACT_XML)
+    mjm.opt.enableflags |= mujoco.mjtEnableBit.mjENBL_SLEEP  # Newton + sleeping -> m.is_compact
     mjd = mujoco.MjData(mjm)
     mujoco.mj_forward(mjm, mjd)
     m = mjwarp.put_model(mjm)
-    # nv = 13. We set nvmax = 8 (which is < 13, so compact solver is triggered)
+    self.assertTrue(m.is_compact)
+    # nv = 13. We set nvmax = 8 to size the compacted block below nv.
     d = mjwarp.put_data(mjm, mjd, nvmax=8)
 
     # Artificially set tree_island map on device

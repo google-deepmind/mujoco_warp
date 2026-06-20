@@ -1084,7 +1084,7 @@ def _reset_compact_maps(
   # Model:
   nv: int,
   # Data in:
-  nvmax_in: int,
+  nvmax_pad_in: int,
   # Data out:
   dof_cdof_out: wp.array2d[int],
   cdof_dof_out: wp.array2d[int],
@@ -1092,7 +1092,9 @@ def _reset_compact_maps(
   worldid, idx = wp.tid()
   if idx < nv:
     dof_cdof_out[worldid, idx] = -1
-  if idx < nvmax_in:
+  # cdof_dof is nvmax_pad-wide: clear the whole row so the padded tail [ncdof, nvmax_pad)
+  # reads as -1 (the gather/solve run over nvmax_pad, not just the active ncdof).
+  if idx < nvmax_pad_in:
     cdof_dof_out[worldid, idx] = -1
 
 
@@ -1140,8 +1142,8 @@ def update_active_dofs(m: types.Model, d: types.Data):
   """Rebuild the compaction maps (dof_cdof / cdof_dof) from tree_awake."""
   wp.launch(
     _reset_compact_maps,
-    dim=(d.nworld, m.nv),
-    inputs=[m.nv, d.nvmax],
+    dim=(d.nworld, max(m.nv, d.nvmax_pad)),
+    inputs=[m.nv, d.nvmax_pad],
     outputs=[d.dof_cdof, d.cdof_dof],
   )
   wp.launch(

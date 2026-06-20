@@ -334,6 +334,21 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
   if mjm.nv > 500:
     m.block_dim.linesearch_iterative = 512
   m.is_sparse = is_sparse(mjm)
+  # Active-DOF compaction is the default sleeping solver: it pays off only when most DOFs are
+  # asleep, so it's keyed on the SLEEP flag (a dense full solve would otherwise just be slower
+  # than the sparse solver). It's a dense-Newton method, and ENABLE_ISLANDS forces the old
+  # island solver instead. nvmax only sizes the compacted block; it does not toggle compaction.
+  m.is_compact = (
+    mjm.opt.solver == mujoco.mjtSolver.mjSOL_NEWTON
+    and bool(mjm.opt.enableflags & mujoco.mjtEnableBit.mjENBL_SLEEP)
+    and not ENABLE_ISLANDS
+  )
+  # Sleeping is only honored by a sleep-aware solver (compact for Newton, or the island solver
+  # via enable_islands). Reject SLEEP without one rather than silently ignoring it.
+  if bool(mjm.opt.enableflags & mujoco.mjtEnableBit.mjENBL_SLEEP) and not m.is_compact and not ENABLE_ISLANDS:
+    raise ValueError(
+      f"sleeping requires the Newton solver or enable_islands (got solver={types.SolverType(mjm.opt.solver).name})"
+    )
   m.has_fluid = mjm.opt.wind.any() or mjm.opt.density > 0 or mjm.opt.viscosity > 0
 
   m.max_ten_J_rownnz = int(mjm.ten_J_rownnz.max()) if mjm.ntendon else 0
@@ -1179,9 +1194,17 @@ def make_data(
   if njmax is None:
     njmax = _default_njmax(mjm)
 
-  # passing nvmax (even == nv) opts into the compact workspace; the solver only
-  # auto-dispatches to the compact path at runtime when nvmax < nv.
-  compact_requested = nvmax is not None
+  # Compact workspace is allocated for the same models put_model marks m.is_compact (kept in
+  # sync here since put_data does not take the warp Model). nvmax only sizes the block.
+  compact = (
+    mjm.opt.solver == mujoco.mjtSolver.mjSOL_NEWTON
+    and bool(mjm.opt.enableflags & mujoco.mjtEnableBit.mjENBL_SLEEP)
+    and not ENABLE_ISLANDS
+  )
+  # Allocate the compact workspace whenever compaction is the solver (compact) OR nvmax is
+  # explicitly provided -- the latter lets callers/tests size and exercise the compact arrays
+  # directly without is_compact dispatching in the forward pipeline.
+  compact_alloc = compact or (nvmax is not None)
   if nvmax is None:
     nvmax = mjm.nv
 
@@ -1216,7 +1239,7 @@ def make_data(
       raise ValueError(f"nccdmax ({nccdmax}) must be <= nconmax ({nconmax})")
 
   nv_compact = nvmax < mjm.nv
-  island_enabled = nv_compact or ENABLE_ISLANDS
+  island_enabled = compact_alloc or ENABLE_ISLANDS
 
   sizes = dict({"*": 1}, **{f.name: getattr(mjm, f.name, None) for f in dataclasses.fields(types.Model) if f.type is int})
   condim_arrays = [np.array([0]), mjm.geom_condim, mjm.pair_dim]
@@ -1344,7 +1367,7 @@ def make_data(
     d.qLD = wp.zeros((nworld, mjm.nv, mjm.nv), dtype=float)
 
   _allocate_island_arrays(mjm, d, nworld, njmax, island_enabled, mjd)
-  _allocate_compact_arrays(mjm, d, nworld, sizes["nvmax_pad"], sizes["njmax_pad"], compact_requested)
+  _allocate_compact_arrays(mjm, d, nworld, sizes["nvmax_pad"], sizes["njmax_pad"], compact_alloc)
   d.ncdof.zero_()
   d.dof_cdof.fill_(-1)
   d.cdof_dof.fill_(-1)
@@ -1393,9 +1416,17 @@ def put_data(
   if njmax is None:
     njmax = _default_njmax(mjm, mjd)
 
-  # passing nvmax (even == nv) opts into the compact workspace; the solver only
-  # auto-dispatches to the compact path at runtime when nvmax < nv.
-  compact_requested = nvmax is not None
+  # Compact workspace is allocated for the same models put_model marks m.is_compact (kept in
+  # sync here since put_data does not take the warp Model). nvmax only sizes the block.
+  compact = (
+    mjm.opt.solver == mujoco.mjtSolver.mjSOL_NEWTON
+    and bool(mjm.opt.enableflags & mujoco.mjtEnableBit.mjENBL_SLEEP)
+    and not ENABLE_ISLANDS
+  )
+  # Allocate the compact workspace whenever compaction is the solver (compact) OR nvmax is
+  # explicitly provided -- the latter lets callers/tests size and exercise the compact arrays
+  # directly without is_compact dispatching in the forward pipeline.
+  compact_alloc = compact or (nvmax is not None)
   if nvmax is None:
     nvmax = mjm.nv
 
@@ -1440,7 +1471,7 @@ def put_data(
     raise ValueError(f"njmax overflow (njmax must be >= {mjd.nefc})")
 
   nv_compact = nvmax < mjm.nv
-  island_enabled = nv_compact or ENABLE_ISLANDS
+  island_enabled = compact_alloc or ENABLE_ISLANDS
 
   sizes = dict({"*": 1}, **{f.name: getattr(mjm, f.name, None) for f in dataclasses.fields(types.Model) if f.type is int})
   condim_arrays = [np.array([0]), mjm.geom_condim, mjm.pair_dim]
@@ -1610,7 +1641,7 @@ def put_data(
     d.qLD = wp.array(np.full((nworld, mjm.nv, mjm.nv), qLD), dtype=float)
 
   _allocate_island_arrays(mjm, d, nworld, njmax, island_enabled, mjd)
-  _allocate_compact_arrays(mjm, d, nworld, sizes["nvmax_pad"], sizes["njmax_pad"], compact_requested)
+  _allocate_compact_arrays(mjm, d, nworld, sizes["nvmax_pad"], sizes["njmax_pad"], compact_alloc)
   d.ncdof.zero_()
   d.dof_cdof.fill_(-1)
   d.cdof_dof.fill_(-1)
@@ -1901,9 +1932,7 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
     d: The data object containing the current state and output arrays (device).
     reset: Per-world bitmask. Reset if True.
   """
-  sleep_enabled = (d.nvmax < m.nv) or (
-    not (m.opt.disableflags & types.DisableBit.ISLAND) and (m.opt.enableflags & types.EnableBit.SLEEP)
-  )
+  sleep_enabled = bool(m.opt.enableflags & types.EnableBit.SLEEP)
 
   @wp.kernel(module="unique", enable_backward=False)
   def reset_xfrc_applied(reset_in: wp.array[bool], xfrc_applied_out: wp.array2d[wp.spatial_vector]):

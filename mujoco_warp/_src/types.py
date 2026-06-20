@@ -1285,6 +1285,7 @@ class Model:
     nmaxpolygon: maximum number of verts per polygon
     nmaxmeshdeg: maximum number of polygons per vert
     is_sparse: whether to use sparse representations
+    is_compact: solve via active-DOF compaction (Newton + sleeping, unless islands forced)
     has_fluid: True if wind, density, or viscosity are non-zero at put_model time
     has_sdf_geom: whether the model contains SDF geoms
     has_flex_selfcollide: whether any flex has self-collision enabled
@@ -1729,6 +1730,7 @@ class Model:
   nmaxpolygon: int
   nmaxmeshdeg: int
   is_sparse: bool
+  is_compact: bool
   has_fluid: bool
   has_sdf_geom: bool
   has_flex_selfcollide: bool
@@ -2063,7 +2065,7 @@ class Data:
     iqfrc_constraint: island-local qfrc_constraint              (nworld, nv)
     ncdof: number of active (compacted) DOFs per world          (nworld,)
     dof_cdof: global DOF -> compacted DOF; -1 if inactive       (nworld, nv)
-    cdof_dof: compacted DOF -> global DOF; -1 if unused         (nworld, nvmax)
+    cdof_dof: compacted DOF -> global DOF; -1 if unused         (nworld, nvmax_pad)
     ctol: compacted-solve main tolerance (nv/nvmax_pad scaled)  (1,)
     cls_tol: compacted-solve linesearch tolerance               (1,)
     cdof_tri_row: row index of compacted Hessian dof-pairs      (nvmax_pad^2,)
@@ -2207,7 +2209,7 @@ class Data:
   iqfrc_constraint: wp.array2d[float]
   ncdof: array("nworld", int)
   dof_cdof: array("nworld", "nv", int)
-  cdof_dof: array("nworld", "nvmax", int)
+  cdof_dof: array("nworld", "nvmax_pad", int)
   ctol: wp.array[float]
   cls_tol: wp.array[float]
   cdof_tri_row: wp.array[int]

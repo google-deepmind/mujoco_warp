@@ -639,9 +639,7 @@ def sap_broadphase(m: Model, d: Data, ctx: CollisionContext, skip: Optional[wp.a
   """
   nworldgeom = d.nworld * m.ngeom
   skip_in = skip if skip is not None else wp.ones(1, dtype=int)
-  enable_sleep = (d.nvmax < m.nv) or bool(
-    not (m.opt.disableflags & DisableBit.ISLAND) and (m.opt.enableflags & EnableBit.SLEEP)
-  )
+  enable_sleep = bool(m.opt.enableflags & EnableBit.SLEEP)
 
   # TODO(team): direction
 
@@ -819,9 +817,7 @@ def nxn_broadphase(m: Model, d: Data, ctx: CollisionContext, skip: Optional[wp.a
   The initial list of pairs is filtered at model creation time to exclude pairs based on
   `contype`/`conaffinity`, parent-child relationships, and explicit `<exclude>` tags.
   """
-  enable_sleep = (d.nvmax < m.nv) or bool(
-    not (m.opt.disableflags & DisableBit.ISLAND) and (m.opt.enableflags & EnableBit.SLEEP)
-  )
+  enable_sleep = bool(m.opt.enableflags & EnableBit.SLEEP)
   skip_in = skip if skip is not None else wp.ones(1, dtype=int)
   wp.launch(
     _nxn_broadphase(
@@ -904,9 +900,7 @@ def collision(m: Model, d: Data, skip: Optional[wp.array] = None):
   # TODO(team): create context outside collision?
   ctx = create_collision_context(d.naconmax)
   skip_in = skip if skip is not None else wp.ones(1, dtype=int)
-  enable_sleep = (d.nvmax < m.nv) or bool(
-    not (m.opt.disableflags & DisableBit.ISLAND) and (m.opt.enableflags & EnableBit.SLEEP)
-  )
+  enable_sleep = bool(m.opt.enableflags & EnableBit.SLEEP)
 
   # zero counters
   wp.launch(_zero_nacon_ncollision(enable_sleep), dim=1, inputs=[skip_in], outputs=[d.nacon, d.ncollision])
