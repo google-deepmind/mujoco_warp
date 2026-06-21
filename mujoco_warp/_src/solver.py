@@ -2012,7 +2012,7 @@ def _update_gradient_JTDAJ_dense_tiled_compact(nv_pad: int, tile_size: int, njma
   def kernel(
     # Data in:
     nefc_in: wp.array[int],
-    M_in: wp.array3d[float],  # compact dense inertia (nworld, nv_pad, nv_pad)
+    M_in: wp.array3d[float],  # kernel_analyzer: ignore; compact dense inertia (nworld, nv_pad, nv_pad)
     efc_J_in: wp.array3d[float],
     efc_D_in: wp.array2d[float],
     efc_state_in: wp.array2d[int],

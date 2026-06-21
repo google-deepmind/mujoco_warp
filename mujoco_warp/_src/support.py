@@ -106,7 +106,7 @@ def mul_m_dense(nv: int, check_skip: bool):
   @wp.kernel(module="unique")
   def _mul_m_dense(
     # Data in:
-    M_in: wp.array3d[float],
+    M_in: wp.array3d[float],  # kernel_analyzer: ignore
     # In:
     vec: wp.array2d[float],
     skip: wp.array[bool],
