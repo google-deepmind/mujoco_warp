@@ -101,6 +101,33 @@ def mul_m_kernel(check_skip: bool):
   return _mul_m
 
 
+@cache_kernel
+def mul_m_dense(nv: int, check_skip: bool):
+  @wp.kernel(module="unique")
+  def _mul_m_dense(
+    # Data in:
+    M_in: wp.array3d[float],
+    # In:
+    vec: wp.array2d[float],
+    skip: wp.array[bool],
+    # Out:
+    res: wp.array2d[float],
+  ):
+    """Dense matmul for the compact active-DOF inertia block (nworld, nv, nv)."""
+    worldid, i = wp.tid()
+
+    if wp.static(check_skip):
+      if skip[worldid]:
+        return
+
+    acc = float(0.0)
+    for j in range(wp.static(nv)):
+      acc += M_in[worldid, i, j] * vec[worldid, j]
+    res[worldid, i] = acc
+
+  return _mul_m_dense
+
+
 @event_scope
 def mul_m(
   m: Model,
@@ -126,12 +153,21 @@ def mul_m(
   if M is None:
     M = d.M
 
-  wp.launch(
-    mul_m_kernel(check_skip),
-    dim=(d.nworld, m.nv),
-    inputs=[m.M_mulm_rowadr, m.M_mulm_col, m.M_mulm_madr, M, vec, skip],
-    outputs=[res],
-  )
+  if M.ndim == 3:
+    # Dense compact active-DOF block (nworld, nv, nv) used by the compact solver.
+    wp.launch(
+      mul_m_dense(m.nv, check_skip),
+      dim=(d.nworld, m.nv),
+      inputs=[M, vec, skip],
+      outputs=[res],
+    )
+  else:
+    wp.launch(
+      mul_m_kernel(check_skip),
+      dim=(d.nworld, m.nv),
+      inputs=[m.M_mulm_rowadr, m.M_mulm_col, m.M_mulm_madr, M, vec, skip],
+      outputs=[res],
+    )
 
 
 @wp.kernel

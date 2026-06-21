@@ -1995,6 +1995,69 @@ def _active_check(tid: int, threshold: int) -> float:
 
 
 @cache_kernel
+def _update_gradient_JTDAJ_dense_tiled_compact(nv_pad: int, tile_size: int, njmax: int):
+  """Compact-path variant of _update_gradient_JTDAJ_dense_tiled.
+
+  Takes M_in as a dense 3D array (nworld, nv_pad, nv_pad) -- the compacted active-DOF
+  inertia block cM -- instead of a 2D CSR array.  Cholesky reads fill_mode="upper";
+  cM is full-symmetric so the tile_load covers both triangles and the upper triangle
+  of the result is correct.
+  """
+  if njmax < tile_size:
+    tile_size = njmax
+
+  TILE_SIZE_K = tile_size
+
+  @wp.kernel(module="unique", enable_backward=False, module_options={"enable_mathdx_gemm": False})
+  def kernel(
+    # Data in:
+    nefc_in: wp.array[int],
+    M_in: wp.array3d[float],  # compact dense inertia (nworld, nv_pad, nv_pad)
+    efc_J_in: wp.array3d[float],
+    efc_D_in: wp.array2d[float],
+    efc_state_in: wp.array2d[int],
+    # In:
+    ctx_done_in: wp.array[bool],
+    # Out:
+    ctx_h_out: wp.array3d[float],
+  ):
+    worldid, rank = wp.tid()
+
+    if ctx_done_in[worldid]:
+      return
+
+    nefc = nefc_in[worldid]
+
+    # Load full symmetric compact inertia tile (Cholesky only reads upper triangle).
+    sum_val = wp.tile_load(M_in[worldid], shape=(wp.static(nv_pad), wp.static(nv_pad)), bounds_check=True)
+
+    for k in range(0, njmax, TILE_SIZE_K):
+      if k >= nefc:
+        break
+
+      J_kj = wp.tile_load(efc_J_in[worldid], shape=(TILE_SIZE_K, nv_pad), offset=(k, 0), bounds_check=False)
+
+      D_k = wp.tile_load(efc_D_in[worldid], shape=TILE_SIZE_K, offset=k, bounds_check=False)
+      state = wp.tile_load(efc_state_in[worldid], shape=TILE_SIZE_K, offset=k, bounds_check=False)
+
+      D_k = wp.tile_map(_state_check, D_k, state)
+
+      tid_tile = wp.tile_arange(TILE_SIZE_K, dtype=int)
+      threshold_tile = wp.tile_ones(shape=TILE_SIZE_K, dtype=int) * (nefc - k)
+
+      active_tile = wp.tile_map(_active_check, tid_tile, threshold_tile)
+      D_k = wp.tile_map(wp.mul, active_tile, D_k)
+
+      J_ki = wp.tile_map(wp.mul, wp.tile_transpose(J_kj), wp.tile_broadcast(D_k, shape=(nv_pad, TILE_SIZE_K)))
+
+      sum_val += wp.tile_matmul(J_ki, J_kj)
+
+    wp.tile_store(ctx_h_out[worldid], sum_val, bounds_check=False)
+
+  return kernel
+
+
+@cache_kernel
 def _update_gradient_JTDAJ_dense_tiled(nv_pad: int, tile_size: int, njmax: int, nC: int):
   if njmax < tile_size:
     tile_size = njmax
@@ -2797,22 +2860,39 @@ def _update_gradient(m: types.Model, d: types.Data, ctx: SolverContext, compact:
         outputs=[ctx.h],
       )
     else:
-      wp.launch_tiled(
-        _update_gradient_JTDAJ_dense_tiled(m.nv_pad, types.TILE_SIZE_JTDAJ_DENSE, d.njmax, m.M_colind.shape[0]),
-        dim=d.nworld,
-        inputs=[
-          m.M_colind,
-          m.M_hinit_i,
-          d.nefc,
-          d.M,
-          d.efc.J,
-          d.efc.D,
-          d.efc.state,
-          ctx.done,
-        ],
-        outputs=[ctx.h],
-        block_dim=m.block_dim.update_gradient_JTDAJ_dense,
-      )
+      if compact:
+        # compact path: d.M is the dense 3D compact inertia block (nworld, nv_pad, nv_pad)
+        wp.launch_tiled(
+          _update_gradient_JTDAJ_dense_tiled_compact(m.nv_pad, types.TILE_SIZE_JTDAJ_DENSE, d.njmax),
+          dim=d.nworld,
+          inputs=[
+            d.nefc,
+            d.M,
+            d.efc.J,
+            d.efc.D,
+            d.efc.state,
+            ctx.done,
+          ],
+          outputs=[ctx.h],
+          block_dim=m.block_dim.update_gradient_JTDAJ_dense,
+        )
+      else:
+        wp.launch_tiled(
+          _update_gradient_JTDAJ_dense_tiled(m.nv_pad, types.TILE_SIZE_JTDAJ_DENSE, d.njmax, m.M_colind.shape[0]),
+          dim=d.nworld,
+          inputs=[
+            m.M_colind,
+            m.M_hinit_i,
+            d.nefc,
+            d.M,
+            d.efc.J,
+            d.efc.D,
+            d.efc.state,
+            ctx.done,
+          ],
+          outputs=[ctx.h],
+          block_dim=m.block_dim.update_gradient_JTDAJ_dense,
+        )
 
     if m.opt.cone == types.ConeType.ELLIPTIC:
       # Optimization: launching update_gradient_JTCJ with limited number of blocks on a GPU.
@@ -5578,7 +5658,7 @@ def _gather_M_sparse(
   M_rowadr: wp.array[int],
   M_colind: wp.array[int],
   # Data in:
-  M_in: wp.array3d[float],
+  M_in: wp.array2d[float],
   dof_cdof_in: wp.array2d[int],
   # Out:
   M_c_out: wp.array3d[float],
@@ -5592,29 +5672,9 @@ def _gather_M_sparse(
     adr = rowadr + k
     cj = dof_cdof_in[worldid, M_colind[adr]]
     if cj >= 0:
-      val = M_in[worldid, 0, adr]
+      val = M_in[worldid, adr]
       M_c_out[worldid, ci, cj] = val
       M_c_out[worldid, cj, ci] = val
-
-
-@wp.kernel
-def _gather_M_dense(
-  # Data in:
-  M_in: wp.array3d[float],
-  dof_cdof_in: wp.array2d[int],
-  # Out:
-  M_c_out: wp.array3d[float],
-):
-  worldid, i = wp.tid()
-  ci = dof_cdof_in[worldid, i]
-  if ci < 0:
-    return
-  nv = dof_cdof_in.shape[1]
-  for j in range(nv):
-    cj = dof_cdof_in[worldid, j]
-    if cj >= 0:
-      val = M_in[worldid, i, j]
-      M_c_out[worldid, ci, cj] = val
 
 
 @wp.kernel
@@ -5844,20 +5904,12 @@ def _compact_gather(m: types.Model, d: types.Data):
     outputs=[d.cM],
   )
 
-  if m.is_sparse:
-    wp.launch(
-      _gather_M_sparse,
-      dim=(d.nworld, m.nv),
-      inputs=[m.M_rownnz, m.M_rowadr, m.M_colind, d.M, d.dof_cdof],
-      outputs=[d.cM],
-    )
-  else:
-    wp.launch(
-      _gather_M_dense,
-      dim=(d.nworld, m.nv),
-      inputs=[d.M, d.dof_cdof],
-      outputs=[d.cM],
-    )
+  wp.launch(
+    _gather_M_sparse,
+    dim=(d.nworld, m.nv),
+    inputs=[m.M_rownnz, m.M_rowadr, m.M_colind, d.M, d.dof_cdof],
+    outputs=[d.cM],
+  )
   # gather compacted dense constraint Jacobian (active columns only)
   d.cJ.zero_()
   if m.is_sparse:
