@@ -2656,7 +2656,7 @@ def _update_gradient_cholesky(tile_size: int):
 
 
 @cache_kernel
-def _update_gradient_cholesky_blocked(tile_size: int, matrix_size: int):
+def _update_gradient_cholesky_blocked(tile_size: int, matrix_size: int, check_skip: bool = True):
   @wp.kernel(module="unique", enable_backward=False, module_options={"enable_mathdx_gemm": False})
   def kernel(
     # In:
@@ -2670,8 +2670,9 @@ def _update_gradient_cholesky_blocked(tile_size: int, matrix_size: int):
     worldid = wp.tid()
     TILE_SIZE = wp.static(tile_size)
 
-    if ctx_done_in[worldid]:
-      return
+    if wp.static(check_skip):
+      if ctx_done_in[worldid]:
+        return
 
     # We need matrix size both as a runtime input as well as a static input:
     # static input is needed to specify the tile sizes for the compiler
@@ -5711,27 +5712,6 @@ def _scatter_solution(
     vec_out[worldid, i] = 0.0  # frozen inactive DOF
 
 
-@cache_kernel
-def _blocked_factor_solve(matrix_size: int):
-  @wp.kernel(module="unique", enable_backward=False)
-  def kernel(
-    # Data in:
-    M_in: wp.array3d[float],
-    # In:
-    rhs_in: wp.array3d[float],
-    msize: int,
-    # Out:
-    U_out: wp.array3d[float],
-    x_out: wp.array3d[float],
-  ):
-    worldid = wp.tid()
-    wp.static(create_blocked_cholesky_factorize_solve_func(types.TILE_SIZE_JTDAJ_DENSE, matrix_size))(
-      M_in[worldid], rhs_in[worldid], msize, U_out[worldid], x_out[worldid]
-    )
-
-  return kernel
-
-
 @event_scope
 def smooth_solve_compact(m: types.Model, d: types.Data):
   """Compacted equivalent of solve_m: qacc_smooth[active] = cM^-1 qfrc_smooth[active].
@@ -5757,10 +5737,10 @@ def smooth_solve_compact(m: types.Model, d: types.Data):
     outputs=[d.crhs],
   )
   wp.launch_tiled(
-    _blocked_factor_solve(d.nvmax_pad),
+    _update_gradient_cholesky_blocked(types.TILE_SIZE_JTDAJ_DENSE, d.nvmax_pad, False),
     dim=d.nworld,
-    inputs=[d.cM, d.crhs, d.nvmax_pad],
-    outputs=[d.cqLD, d.cx],
+    inputs=[wp.empty(0, dtype=bool), d.crhs, d.cM, d.cqLD],
+    outputs=[d.cx],
     block_dim=m.block_dim.update_gradient_cholesky_blocked,
   )
   wp.launch(_scatter_solution, dim=(d.nworld, m.nv), inputs=[d.dof_cdof, d.cx], outputs=[d.qacc_smooth])
