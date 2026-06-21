@@ -1950,7 +1950,7 @@ def _update_gradient_init_h_sparse(
   nv: int,
   M_elemid: wp.array2d[int],
   # Data in:
-  M_in: wp.array3d[float],
+  M_in: wp.array2d[float],
   # In:
   ctx_done_in: wp.array[bool],
   # Out:
@@ -1969,10 +1969,10 @@ def _update_gradient_init_h_sparse(
     ctx_h_out[worldid, i, j] = 0.0
     return
 
-  # M is stored in the lower triangle, so transpose the lookup for the upper
+  # sparse M is stored in the lower triangle, so transpose the lookup for the upper
   elemid = M_elemid[j, i]
   if elemid >= 0:
-    ctx_h_out[worldid, i, j] = M_in[worldid, 0, elemid]
+    ctx_h_out[worldid, i, j] = M_in[worldid, elemid]
   else:
     ctx_h_out[worldid, i, j] = 0.0
 
@@ -1994,7 +1994,7 @@ def _active_check(tid: int, threshold: int) -> float:
 
 
 @cache_kernel
-def _update_gradient_JTDAJ_dense_tiled(nv_pad: int, tile_size: int, njmax: int):
+def _update_gradient_JTDAJ_dense_tiled(nv_pad: int, tile_size: int, njmax: int, nC: int):
   if njmax < tile_size:
     tile_size = njmax
 
@@ -2002,9 +2002,12 @@ def _update_gradient_JTDAJ_dense_tiled(nv_pad: int, tile_size: int, njmax: int):
 
   @wp.kernel(module="unique", enable_backward=False, module_options={"enable_mathdx_gemm": False})
   def kernel(
+    # Model:
+    M_colind: wp.array[int],  # column index of each CSR entry
+    M_hinit_i: wp.array[int],  # row index of each CSR entry
     # Data in:
     nefc_in: wp.array[int],
-    M_in: wp.array3d[float],
+    M_in: wp.array2d[float],  # CSR M (nworld, nC)
     efc_J_in: wp.array3d[float],
     efc_D_in: wp.array2d[float],
     efc_state_in: wp.array2d[int],
@@ -2013,14 +2016,28 @@ def _update_gradient_JTDAJ_dense_tiled(nv_pad: int, tile_size: int, njmax: int):
     # Out:
     ctx_h_out: wp.array3d[float],
   ):
-    worldid = wp.tid()
+    worldid, rank = wp.tid()
 
     if ctx_done_in[worldid]:
       return
 
     nefc = nefc_in[worldid]
 
-    sum_val = wp.tile_load(M_in[worldid], shape=(nv_pad, nv_pad), bounds_check=True)
+    # Densify M's upper triangle from CSR into the shared H tile (Cholesky reads fill_mode="upper").
+    # Entry (i, col<=i) of M goes to the upper position (col, i); the lower triangle stays zero.
+    m_tile = wp.tile_zeros(shape=(wp.static(nv_pad * nv_pad),), dtype=float, storage="shared")
+    # Uniform trip count from the RUNTIME lane count: every lane iterates iters times (so the
+    # collective tile_scatter_add is always called by all lanes -- a divergent range(rank, nC, bd)
+    # deadlocks). wp.block_dim() is 1 on the CPU backend, so lane 0 then covers every entry.
+    lanes = wp.block_dim()
+    iters = (nC + lanes - 1) // lanes
+    for it in range(iters):
+      e = it * lanes + rank
+      enable = e < nC
+      ec = wp.where(enable, e, 0)
+      pos = M_colind[ec] * nv_pad + M_hinit_i[ec]
+      wp.tile_scatter_add(m_tile, pos, wp.where(enable, M_in[worldid, ec], 0.0), enable)
+    sum_val = wp.tile_reshape(m_tile, (nv_pad, nv_pad))
 
     # Each tile processes one output tile by looping over all constraints
     for k in range(0, njmax, TILE_SIZE_K):
@@ -2587,9 +2604,11 @@ def _update_gradient(m: types.Model, d: types.Data, ctx: SolverContext):
       )
     else:
       wp.launch_tiled(
-        _update_gradient_JTDAJ_dense_tiled(m.nv_pad, types.TILE_SIZE_JTDAJ_DENSE, d.njmax),
+        _update_gradient_JTDAJ_dense_tiled(m.nv_pad, types.TILE_SIZE_JTDAJ_DENSE, d.njmax, m.M_colind.shape[0]),
         dim=d.nworld,
         inputs=[
+          m.M_colind,
+          m.M_hinit_i,
           d.nefc,
           d.M,
           d.efc.J,
@@ -4461,8 +4480,7 @@ def _update_gradient_set_h_M_sparse_island(
   M_fullm_j: wp.array[int],
   M_elemid: wp.array2d[int],
   # Data in:
-  nidof_in: wp.array[int],
-  M_in: wp.array3d[float],
+  M_in: wp.array2d[float],
   dof_island_in: wp.array2d[int],
   map_dof2idof_in: wp.array2d[int],
   # In:
@@ -4498,45 +4516,10 @@ def _update_gradient_set_h_M_sparse_island(
   idof_i = map_dof2idof_in[worldid, i_global]
   idof_j = map_dof2idof_in[worldid, j_global]
 
-  val = M_in[worldid, 0, madr]
+  val = M_in[worldid, madr]
   ih_out[worldid, idof_i, idof_j] += val
   if idof_i != idof_j:
     ih_out[worldid, idof_j, idof_i] += val
-
-
-@wp.kernel
-def _update_gradient_set_h_M_dense_island(
-  # Model:
-  nv: int,
-  # Data in:
-  nidof_in: wp.array[int],
-  M_in: wp.array3d[float],
-  map_idof2dof_in: wp.array2d[int],
-  # In:
-  idof_islandid_in: wp.array2d[int],
-  island_done_in: wp.array2d[bool],
-  # Out:
-  ih_out: wp.array3d[float],
-):
-  """Add dense mass matrix to island Hessian."""
-  worldid, idofid = wp.tid()
-
-  if idofid >= nidof_in[worldid]:
-    return
-
-  islandid = idof_islandid_in[worldid, idofid]
-  if islandid < 0:
-    return
-  if island_done_in[worldid, islandid]:
-    return
-
-  dof_i = map_idof2dof_in[worldid, idofid]
-
-  # Copy row from M to ih, mapping columns
-  nid = nidof_in[worldid]
-  for jdof in range(nid):
-    dof_j = map_idof2dof_in[worldid, jdof]
-    ih_out[worldid, idofid, jdof] += M_in[worldid, dof_i, dof_j]
 
 
 @wp.kernel
@@ -5047,37 +5030,21 @@ def _update_gradient_incremental_island(m: types.Model, d: types.Data, ctx: Isla
     outputs=[ctx.h],
   )
 
-  # Add mass matrix
-  if m.is_sparse:
-    wp.launch(
-      _update_gradient_set_h_M_sparse_island,
-      dim=(d.nworld, m.M_fullm_i.shape[0]),
-      inputs=[
-        m.M_fullm_i,
-        m.M_fullm_j,
-        m.M_elemid,
-        d.nidof,
-        d.M,
-        d.dof_island,
-        d.map_dof2idof,
-        ctx.done,
-      ],
-      outputs=[ctx.h],
-    )
-  else:
-    wp.launch(
-      _update_gradient_set_h_M_dense_island,
-      dim=(d.nworld, m.nv),
-      inputs=[
-        m.nv,
-        d.nidof,
-        d.M,
-        d.map_idof2dof,
-        d.dof_islandid,
-        ctx.done,
-      ],
-      outputs=[ctx.h],
-    )
+  # Add the mass matrix to the dense island Hessian: one element-parallel pass over its nonzeros.
+  wp.launch(
+    _update_gradient_set_h_M_sparse_island,
+    dim=(d.nworld, m.M_fullm_i.shape[0]),
+    inputs=[
+      m.M_fullm_i,
+      m.M_fullm_j,
+      m.M_elemid,
+      d.M,
+      d.dof_island,
+      d.map_dof2idof,
+      ctx.done,
+    ],
+    outputs=[ctx.h],
+  )
 
   # Elliptic cone correction: JTCJ
   if m.opt.cone == types.ConeType.ELLIPTIC and d.naconmax > 0:

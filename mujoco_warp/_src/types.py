@@ -35,6 +35,9 @@ MJ_MAX_EPAFACES = 5
 TILE_SIZE_JTDAJ_SPARSE = 16
 TILE_SIZE_JTDAJ_DENSE = 16
 
+# max M block size where dense tile-Cholesky beats sparse LDL (wins to ~64, degrades past ~80)
+M_BLOCK_DENSE_MAX = 64
+
 # maximum number of plugin attributes
 _NPLUGINATTR = 128
 
@@ -48,14 +51,12 @@ class BlockDim:
 
   Attributes:
     segmented_sort: segmented sort block dimension (collision_driver)
-    euler_dense: Euler dense block dimension (forward)
     actuator_velocity: actuator velocity block dimension (forward)
     ray: ray block dimension (ray)
     contact_sort: contact sort block dimension (sensor)
     energy_vel_kinetic: energy velocity kinetic block dimension (sensor)
-    cholesky_factorize: Cholesky factorize block dimension (smooth)
+    cholesky_factorize: block-dense Cholesky factorize block dimension (smooth)
     cholesky_solve: Cholesky solve block dimension (smooth)
-    cholesky_factorize_solve: Cholesky factorize and solve block dimension (smooth)
     solve_LD_sparse_fused: solve LD sparse fused block dimension (smooth)
     update_gradient_cholesky: update gradient Cholesky block dimension (solver)
     update_gradient_cholesky_blocked: update gradient Cholesky blocked block dimension (solver)
@@ -74,18 +75,17 @@ class BlockDim:
   # collision_driver
   segmented_sort: int = 128
   # forward
-  euler_dense: int = 32
   actuator_velocity: int = 32
   # ray
   ray: int = 64
   # sensor
   contact_sort: int = 64
   energy_vel_kinetic: int = 32
-  # smooth
-  cholesky_factorize: int = 32
-  cholesky_solve: int = 32
-  cholesky_factorize_solve: int = 32
-  solve_LD_sparse_fused: int = 64
+  # smooth -- block tile-Cholesky widths for non-tiny blocks; the launchers clamp by block size
+  cholesky_factorize: int = 96
+  cholesky_factorize_solve: int = 128
+  cholesky_solve: int = 64
+  solve_LD_sparse_fused: int = 128
   # solver
   update_gradient_cholesky: int = 64
   update_gradient_cholesky_blocked: int = 32
@@ -883,10 +883,12 @@ class TileSet:
   Attributes:
     adr: address of each tile in the set
     size: size of all the tiles in this set
+    elemid: flat per-block gather indices into CSR M for tile_load_indexed (absent -> nC sentinel)
   """
 
   adr: wp.array[int]
   size: int
+  elemid: wp.array[int] = None
 
   def __eq__(self, other) -> bool:
     if self.__class__ is not other.__class__:
@@ -1284,7 +1286,16 @@ class Model:
     nmaxpyramid: maximum number of pyramid directions
     nmaxpolygon: maximum number of verts per polygon
     nmaxmeshdeg: maximum number of polygons per vert
-    is_sparse: whether to use sparse representations
+    is_sparse: constraint Jacobian/Hessian layout (sparse vs dense). Does not affect M, whose
+      factorization is a per-block decision -- see qLD_* and m_block_layout
+    qLD_has_dense: any M block factors as a packed dense block
+    qLD_has_simple: any M block is simple (diagonal -> 1/diag, no factorization)
+    qLD_has_sparse: any M block factors via sparse LDL (oversized block / tendon armature)
+    qLD_block_total: packed length of the dense region per world (also the offset of the LDL region)
+    qLD_block_adr: packed offset of each dof's diagonal block; 0 if sparse  (nv,)
+    qLD_dof_dense: per-dof flag, 1 if the dof's block is dense (packed)     (nv,)
+    qLD_dof_simple: per-dof flag, 1 if the dof's block is simple (diagonal) (nv,)
+    qLD_simple_dofs: indices of the simple (diagonal) dofs                  (nsimple,)
     has_fluid: True if wind, density, or viscosity are non-zero at put_model time
     has_sdf_geom: whether the model contains SDF geoms
     has_flex_selfcollide: whether any flex has self-collision enabled
@@ -1362,6 +1373,7 @@ class Model:
     M_fullm_i: sparse mass matrix addressing
     M_fullm_j: sparse mass matrix addressing
     M_elemid: (row, col) -> CSR madr addresses; -1 if not a chain ancestor
+    M_hinit_i: row index of each CSR M entry; for densifying M into the dense Newton H (nC,)
     M_fullm_upper_i: upper-triangle row indices for solver h seeding
     M_fullm_upper_j: upper-triangle column indices for solver h seeding
     M_fullm_upper_elemid: source elemid into M_fullm_i/M_fullm_j
@@ -1732,6 +1744,14 @@ class Model:
   nmaxpolygon: int
   nmaxmeshdeg: int
   is_sparse: bool
+  qLD_has_dense: bool
+  qLD_has_simple: bool
+  qLD_has_sparse: bool
+  qLD_block_total: int
+  qLD_block_adr: wp.array[int]
+  qLD_dof_dense: wp.array[int]
+  qLD_dof_simple: wp.array[int]
+  qLD_simple_dofs: wp.array[int]
   has_fluid: bool
   has_sdf_geom: bool
   has_flex_selfcollide: bool
@@ -1802,6 +1822,7 @@ class Model:
   M_fullm_i: wp.array[int]
   M_fullm_j: wp.array[int]
   M_elemid: wp.array2d[int]  # (row, col) -> CSR madr address; -1 if col is not a chain ancestor of row
+  M_hinit_i: wp.array[int]  # row index of each CSR M entry (for densifying M into the dense Newton H)
   M_fullm_upper_i: wp.array[int]
   M_fullm_upper_j: wp.array[int]
   M_fullm_upper_elemid: wp.array[int]
@@ -2012,11 +2033,10 @@ class Data:
     moment_colind: column indices in sparse actuator_moment     (nworld, nJmom)
     actuator_moment: actuator moments                           (nworld, nJmom)
     crb: com-based composite inertia and mass                   (nworld, nbody, 10)
-    M: total inertia                                            (nworld, nv_pad, nv_pad) if dense
-                                                                (nworld, 1, nC) if sparse
-    qLD: upper Cholesky factorization                           (nworld, nv, nv) if dense
-         L'*D*L factorization of M                              (nworld, 1, nC) if sparse
-    qLDiagInv: 1/diag(D)                                        (nworld, nv)
+    M: total inertia, CSR                                       (nworld, nC)
+    qLD: per-block factor: packed dense region, then the nC     (nworld, qLD_block_total + nC)
+         L'*D*L region at offset qLD_block_total (nC=0 if no sparse block)
+    qLDiagInv: 1/diag(D) for the sparse LDL region              (nworld, nv)
     tree_awake: is tree awake; 0: asleep; 1: awake              (nworld, ntree)
     body_awake: body sleep state (SleepState)                   (nworld, nbody)
     body_awake_ind: indices of awake/static bodies              (nworld, nbody)
@@ -2034,7 +2054,7 @@ class Data:
     qfrc_passive: total passive force                           (nworld, nv)
     subtree_linvel: linear velocity of subtree com              (nworld, nbody, 3)
     subtree_angmom: angular momentum about subtree com          (nworld, nbody, 3)
-    qLU: sparse LU factorization of (M - dt*qDeriv)             (nworld, 1, nD)
+    qLU: sparse LU factorization of (M - dt*qDeriv)             (nworld, nD)
     actuator_force: actuator force in actuation space           (nworld, nu)
     qfrc_actuator: actuator force                               (nworld, nv)
     qfrc_smooth: net unconstrained force                        (nworld, nv)
@@ -2140,8 +2160,8 @@ class Data:
   moment_colind: array("nworld", "nJmom", int)
   actuator_moment: array("nworld", "nJmom", float)
   crb: array("nworld", "nbody", vec10)
-  M: wp.array3d[float]
-  qLD: wp.array3d[float]
+  M: wp.array2d[float]
+  qLD: wp.array2d[float]
   qLDiagInv: array("nworld", "nv", float)
   tree_awake: array("nworld", "ntree", int)
   body_awake: array("nworld", "nbody", int)
@@ -2160,7 +2180,7 @@ class Data:
   qfrc_passive: array("nworld", "nv", float)
   subtree_linvel: array("nworld", "nbody", wp.vec3)
   subtree_angmom: array("nworld", "nbody", wp.vec3)
-  qLU: array("nworld", 1, "nD", float)
+  qLU: array("nworld", "nD", float)
   actuator_force: array("nworld", "nu", float)
   qfrc_actuator: array("nworld", "nv", float)
   qfrc_smooth: array("nworld", "nv", float)
