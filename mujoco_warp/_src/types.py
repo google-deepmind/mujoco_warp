@@ -427,6 +427,8 @@ class GeomType(enum.IntEnum):
   MESH = mujoco.mjtGeom.mjGEOM_MESH
   SDF = mujoco.mjtGeom.mjGEOM_SDF
   FLEX = mujoco.mjtGeom.mjGEOM_FLEX
+  # warp only
+  TRIANGLE = 999
   # unsupported: NGEOMTYPES, ARROW*, LINE, SKIN, LABEL, NONE
 
 
@@ -1152,6 +1154,7 @@ class Model:
     mesh_normal: normals for all meshes                      (nmeshnormal, 3)
     mesh_face: face indices for all meshes                   (nface, 3)
     mesh_graph: convex graph data                            (nmeshgraph,)
+    mesh_pos: translation applied to asset vertices          (nmesh, 3)
     mesh_quat: rotation applied to asset vertices            (nmesh, 4)
     mesh_polynum: number of polygons per mesh                (nmesh,)
     mesh_polyadr: first polygon address per mesh             (nmesh,)
@@ -1379,6 +1382,9 @@ class Model:
     M_mulm_rowadr: sparse matmul row pointers
     M_mulm_col: sparse matmul column indices
     M_mulm_madr: sparse matmul matrix addresses
+    flex_elemflexid: maps each element index directly to its flexid       (nflexelem,)
+    flex_shellflexid: maps each shell index directly to its flexid        (nflexshelldata,)
+    flex_evpairflexid: maps each element-vertex pair directly to its flexid (nflexevpair,)
   """
 
   nq: int
@@ -1607,6 +1613,7 @@ class Model:
   mesh_normal: array("nmeshnormal", wp.vec3)
   mesh_face: array("nmeshface", wp.vec3i)
   mesh_graph: array("nmeshgraph", int)
+  mesh_pos: array("nmesh", wp.vec3)
   mesh_quat: array("nmesh", wp.quat)
   mesh_polynum: array("nmesh", int)
   mesh_polyadr: array("nmesh", int)
@@ -1825,6 +1832,9 @@ class Model:
   M_mulm_rowadr: wp.array[int]  # start address for each row [nv+1]
   M_mulm_col: wp.array[int]  # column index to gather from
   M_mulm_madr: wp.array[int]  # matrix address to read
+  flex_elemflexid: array("nflexelem", int)
+  flex_shellflexid: array("nflexshelldata", int)
+  flex_evpairflexid: array("nflexevpair", int)
 
 
 class ContactType(enum.IntFlag):

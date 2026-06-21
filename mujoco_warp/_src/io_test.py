@@ -1426,6 +1426,73 @@ class IOTest(parameterized.TestCase):
     mjwarp.reset_data(m, d)
     mjwarp.forward(m, d)
 
+  def test_put_model_batch_sizes(self):
+    """Test put_model can allocate selected batched Model fields per world."""
+    mjm = mujoco.MjModel.from_xml_string(
+      """
+      <mujoco>
+        <asset>
+          <texture name="red" type="2d" builtin="flat" width="4" height="4" rgb1="1 0 0" rgb2="1 0 0"/>
+          <texture name="green" type="2d" builtin="flat" width="4" height="4" rgb1="0 1 0" rgb2="0 1 0"/>
+          <material name="mat" texture="red" rgba="0.5 0.6 0.7 1"/>
+        </asset>
+        <worldbody>
+          <geom type="sphere" size="0.1" material="mat"/>
+        </worldbody>
+      </mujoco>
+      """
+    )
+
+    m_default = mjwarp.put_model(mjm)
+    m = mjwarp.put_model(mjm, batch_sizes={"mat_texid": 3, "geom_size": 2, "mat_rgba": 4})
+
+    nrole = int(mujoco.mjtTextureRole.mjNTEXROLE)
+    self.assertEqual(tuple(m.mat_texid.shape), (3, mjm.nmat, nrole))
+    self.assertEqual(tuple(m.geom_size.shape), (2, mjm.ngeom))
+    self.assertEqual(tuple(m.mat_rgba.shape), (4, mjm.nmat))
+    self.assertGreater(m.mat_texid.strides[0], 0)
+    self.assertGreater(m.geom_size.strides[0], 0)
+    self.assertGreater(m.mat_rgba.strides[0], 0)
+
+    np.testing.assert_array_equal(m.mat_texid.numpy(), np.repeat(m_default.mat_texid.numpy(), 3, axis=0))
+    np.testing.assert_allclose(m.geom_size.numpy(), np.repeat(m_default.geom_size.numpy(), 2, axis=0))
+    np.testing.assert_allclose(m.mat_rgba.numpy(), np.repeat(m_default.mat_rgba.numpy(), 4, axis=0))
+
+    # Fields not listed in batch_sizes keep the shared legacy allocation.
+    self.assertEqual(m.geom_pos.shape[0], 1)
+    self.assertEqual(m.geom_pos.strides[0], 0)
+
+    red_id = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_TEXTURE, "red")
+    green_id = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_TEXTURE, "green")
+    mat_id = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_MATERIAL, "mat")
+    rgb_role = int(mujoco.mjtTextureRole.mjTEXROLE_RGB)
+
+    mat_texid = m.mat_texid.numpy()
+    mat_texid[:, mat_id, rgb_role] = [red_id, green_id, red_id]
+    m.mat_texid.assign(mat_texid)
+    np.testing.assert_array_equal(m.mat_texid.numpy()[:, mat_id, rgb_role], [red_id, green_id, red_id])
+
+  def test_put_model_batch_sizes_errors(self):
+    """Test invalid put_model batch_sizes requests are rejected."""
+    mjm = mujoco.MjModel.from_xml_string(
+      """
+      <mujoco>
+        <worldbody>
+          <geom type="sphere" size="0.1"/>
+        </worldbody>
+      </mujoco>
+      """
+    )
+
+    with self.assertRaisesRegex(ValueError, "not a batched array field"):
+      mjwarp.put_model(mjm, batch_sizes={"missing": 2})
+    with self.assertRaisesRegex(ValueError, "not a batched array field"):
+      mjwarp.put_model(mjm, batch_sizes={"nmat": 2})
+    with self.assertRaisesRegex(ValueError, "not a batched array field"):
+      mjwarp.put_model(mjm, batch_sizes={"geom_type": 2})
+    with self.assertRaisesRegex(ValueError, "must be positive"):
+      mjwarp.put_model(mjm, batch_sizes={"mat_texid": 0})
+
   def test_set_fixed_body_subtreemass(self):
     """Test body_subtreemass accumulation for multi-level tree."""
     mjm, mjd, m, d = test_data.fixture(
