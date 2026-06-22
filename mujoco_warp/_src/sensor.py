@@ -151,46 +151,27 @@ def _cam_projection(
   xpos = cam_xpos_in[worldid, refid]
   xmat = cam_xmat_in[worldid, refid]
 
-  translation = wp.mat44f(1.0, 0.0, 0.0, -xpos[0], 0.0, 1.0, 0.0, -xpos[1], 0.0, 0.0, 1.0, -xpos[2], 0.0, 0.0, 0.0, 1.0)
-  rotation = wp.mat44f(
-    xmat[0, 0], xmat[1, 0], xmat[2, 0], 0.0,
-    xmat[0, 1], xmat[1, 1], xmat[2, 1], 0.0,
-    xmat[0, 2], xmat[1, 2], xmat[2, 2], 0.0,
-    0.0, 0.0, 0.0, 1.0,
-  )  # fmt: skip
+  # Transform target position into camera-local frame: v = xmat^T @ (target - cam_pos)
+  v = wp.transpose(xmat) @ (target_xpos - xpos)
 
-  # focal transformation matrix (3 x 4)
+  # Compute focal lengths
   if sensorsize[0] != 0.0 and sensorsize[1] != 0.0:
     fx = intrinsic[0] / (sensorsize[0] + MJ_MINVAL) * float(res[0])
     fy = intrinsic[1] / (sensorsize[1] + MJ_MINVAL) * float(res[1])
-    focal = wp.mat44f(-fx, 0.0, 0.0, 0.0, 0.0, fy, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0)
   else:
     f = 0.5 / wp.tan(fovy * wp.static(wp.pi / 360.0)) * float(res[1])
-    focal = wp.mat44f(-f, 0.0, 0.0, 0.0, 0.0, f, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+    fx = f
+    fy = f
 
-  # image matrix (3 x 3)
-  image = wp.mat44f(
-    1.0, 0.0, 0.5 * float(res[0]), 0.0, 0.0, 1.0, 0.5 * float(res[1]), 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0
-  )
+  # Compute homogeneous coordinates
+  pixel_x = -fx * v[0]
+  pixel_y = fy * v[1]
 
-  # projection matrix (3 x 4): product of all 4 matrices
-  # TODO(team): compute proj directly
-  proj = image @ focal @ rotation @ translation
-
-  # projection matrix multiples homogeneous [x, y, z, 1] vectors
-  pos_hom = wp.vec4(target_xpos[0], target_xpos[1], target_xpos[2], 1.0)
-
-  # project world coordinates into pixel space, see:
-  # https://en.wikipedia.org/wiki/3D_projection#Mathematical_formula
-  pixel_coord_hom = proj @ pos_hom
-
-  # avoid dividing by tiny numbers
-  denom = pixel_coord_hom[2]
+  denom = v[2]
   if wp.abs(denom) < MJ_MINVAL:
     denom = wp.clamp(denom, -MJ_MINVAL, MJ_MINVAL)
 
-  # compute projection
-  return wp.vec2f(pixel_coord_hom[0], pixel_coord_hom[1]) / denom
+  return wp.vec2(pixel_x, pixel_y) / denom + 0.5 * wp.vec2(float(res[0]), float(res[1]))
 
 
 @wp.kernel
