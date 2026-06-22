@@ -311,7 +311,7 @@ class SolverTest(parameterized.TestCase):
         one2d_i(1),  # island_nv
         one2d_i(0),  # island_ne
         one2d_i(0),  # island_nf
-        one2d_i(0),  # island_efcadr
+        one2d_i(0),  # island_iefcadr
         one2d_i(1),  # island_nefc
         one2d_i(0),  # map_efc2iefc (unused for inequality)
         1,  # njmax

@@ -77,6 +77,9 @@ def _create_island_solver_context(m: types.Model, d: types.Data) -> IslandSolver
   alloc_h = m.opt.solver == types.SolverType.NEWTON
   alloc_island_cg = m.opt.solver == types.SolverType.CG
 
+  sparse = m.is_sparse
+  njmax_nnz = d.njmax_nnz
+
   return IslandSolverContext(
     Jaref=wp.empty((nworld, njmax), dtype=float),
     jv=wp.empty((nworld, njmax), dtype=float),
@@ -87,7 +90,7 @@ def _create_island_solver_context(m: types.Model, d: types.Data) -> IslandSolver
     prev_grad=wp.empty((nworld, nv), dtype=float) if alloc_island_cg else wp.empty((nworld, 0), dtype=float),
     prev_Mgrad=wp.empty((nworld, nv), dtype=float) if alloc_island_cg else wp.empty((nworld, 0), dtype=float),
     h=wp.zeros((nworld, nv_pad, nv_pad), dtype=float) if alloc_h else wp.empty((nworld, 0, 0), dtype=float),
-    # Per-island solver scalars
+    # Per-island solver fields
     cost=wp.empty((nworld, ntree), dtype=float),
     prev_cost=wp.empty((nworld, ntree), dtype=float),
     gauss=wp.empty((nworld, ntree), dtype=float),
@@ -99,6 +102,13 @@ def _create_island_solver_context(m: types.Model, d: types.Data) -> IslandSolver
     beta_den=wp.empty((nworld, ntree), dtype=float) if alloc_island_cg else wp.empty((nworld, 0), dtype=float),
     alpha=wp.empty((nworld, ntree), dtype=float),
     Ma=wp.empty((nworld, nv), dtype=float),
+    iJ_rownnz=wp.empty((nworld, njmax) if sparse else (nworld, 0), dtype=int),
+    iJ_rowadr=wp.empty((nworld, njmax) if sparse else (nworld, 0), dtype=int),
+    iJ_colind=wp.empty((nworld, 1, njmax_nnz) if sparse else (nworld, 0, 0), dtype=int),
+    iJ=wp.empty(
+      (nworld, 1, njmax_nnz) if sparse else (nworld, njmax, nv),
+      dtype=float,
+    ),
   )
 
 
@@ -3738,7 +3748,7 @@ def _update_constraint_efc_island(
   island_nefc_in: wp.array2d[int],
   island_ne_in: wp.array2d[int],
   island_nf_in: wp.array2d[int],
-  island_efcadr_in: wp.array2d[int],
+  island_iefcadr_in: wp.array2d[int],
   map_efc2iefc_in: wp.array2d[int],
   njmax_in: int,
   nacon_in: wp.array[int],
@@ -3768,7 +3778,7 @@ def _update_constraint_efc_island(
     return
 
   # Local position within island
-  iefcadr = island_efcadr_in[worldid, islandid]
+  iefcadr = island_iefcadr_in[worldid, islandid]
   local_iefcid = iefcid - iefcadr
   ine = island_ne_in[worldid, islandid]
   inf = island_nf_in[worldid, islandid]
@@ -3844,7 +3854,7 @@ def _update_constraint_init_qfrc_constraint_dense_island(
   nefc_in: wp.array[int],
   nidof_in: wp.array[int],
   island_nefc_in: wp.array2d[int],
-  island_efcadr_in: wp.array2d[int],
+  island_iefcadr_in: wp.array2d[int],
   njmax_in: int,
   # In:
   iefc_J_in: wp.array3d[float],
@@ -3868,7 +3878,7 @@ def _update_constraint_init_qfrc_constraint_dense_island(
   if island_done_in[worldid, islandid]:
     return
 
-  iefcadr = island_efcadr_in[worldid, islandid]
+  iefcadr = island_iefcadr_in[worldid, islandid]
   inefc = island_nefc_in[worldid, islandid]
   acc = float(0.0)
   for iefcid in range(iefcadr, iefcadr + inefc):
@@ -4111,7 +4121,7 @@ def _linesearch_kernel_island(
   island_nv_in: wp.array2d[int],
   island_ne_in: wp.array2d[int],
   island_nf_in: wp.array2d[int],
-  island_efcadr_in: wp.array2d[int],
+  island_iefcadr_in: wp.array2d[int],
   island_nefc_in: wp.array2d[int],
   map_efc2iefc_in: wp.array2d[int],
   njmax_in: int,
@@ -4150,7 +4160,7 @@ def _linesearch_kernel_island(
     island_alpha_out[worldid, islandid] = 0.0
     return
 
-  iefcadr = island_efcadr_in[worldid, islandid]
+  iefcadr = island_iefcadr_in[worldid, islandid]
   ine = island_ne_in[worldid, islandid]
   inf = island_nf_in[worldid, islandid]
   inv = island_nv_in[worldid, islandid]
@@ -5141,10 +5151,10 @@ def _init_context_island(m: types.Model, d: types.Data, ctx: IslandSolverContext
       d.island_idofadr,
       d.island_nv,
       d.njmax,
-      d.efc.iJ_rownnz,
-      d.efc.iJ_rowadr,
-      d.efc.iJ_colind,
-      d.efc.iJ,
+      ctx.iJ_rownnz,
+      ctx.iJ_rowadr,
+      ctx.iJ_colind,
+      ctx.iJ,
       d.iqacc,
       d.efc.iaref,
       d.efc_islandid,
@@ -5203,7 +5213,7 @@ def _update_constraint_island(m: types.Model, d: types.Data, ctx: IslandSolverCo
       d.island_nefc,
       d.island_ne,
       d.island_nf,
-      d.island_efcadr,
+      d.island_iefcadr,
       d.map_efc2iefc,
       d.njmax,
       d.nacon,
@@ -5227,10 +5237,10 @@ def _update_constraint_island(m: types.Model, d: types.Data, ctx: IslandSolverCo
       inputs=[
         d.nefc,
         d.njmax,
-        d.efc.iJ_rownnz,
-        d.efc.iJ_rowadr,
-        d.efc.iJ_colind,
-        d.efc.iJ,
+        ctx.iJ_rownnz,
+        ctx.iJ_rowadr,
+        ctx.iJ_colind,
+        ctx.iJ,
         d.efc.iforce,
         d.efc_islandid,
         ctx.done,
@@ -5245,9 +5255,9 @@ def _update_constraint_island(m: types.Model, d: types.Data, ctx: IslandSolverCo
         d.nefc,
         d.nidof,
         d.island_nefc,
-        d.island_efcadr,
+        d.island_iefcadr,
         d.njmax,
-        d.efc.iJ,
+        ctx.iJ,
         d.efc.iforce,
         d.dof_islandid,
         ctx.done,
@@ -5338,10 +5348,10 @@ def _update_gradient_incremental_island(m: types.Model, d: types.Data, ctx: Isla
       d.njmax,
       d.island_idofadr,
       d.island_nv,
-      d.efc.iJ_rownnz,
-      d.efc.iJ_rowadr,
-      d.efc.iJ_colind,
-      d.efc.iJ,
+      ctx.iJ_rownnz,
+      ctx.iJ_rowadr,
+      ctx.iJ_colind,
+      ctx.iJ,
       d.efc.iD,
       d.efc.istate,
       d.efc_islandid,
@@ -5384,10 +5394,10 @@ def _update_gradient_incremental_island(m: types.Model, d: types.Data, ctx: Isla
         d.nidof,
         d.map_efc2iefc,
         d.island_nv,
-        d.efc.iJ_rownnz,
-        d.efc.iJ_rowadr,
-        d.efc.iJ_colind,
-        d.efc.iJ,
+        ctx.iJ_rownnz,
+        ctx.iJ_rowadr,
+        ctx.iJ_colind,
+        ctx.iJ,
         d.efc.iD,
         d.efc.istate,
         ctx.Jaref,
@@ -5440,10 +5450,10 @@ def _linesearch_island(m: types.Model, d: types.Data, ctx: IslandSolverContext):
       d.island_idofadr,
       d.island_nv,
       d.njmax,
-      d.efc.iJ_rownnz,
-      d.efc.iJ_rowadr,
-      d.efc.iJ_colind,
-      d.efc.iJ,
+      ctx.iJ_rownnz,
+      ctx.iJ_rowadr,
+      ctx.iJ_colind,
+      ctx.iJ,
       ctx.search,
       d.efc_islandid,
       ctx.done,
@@ -5470,7 +5480,7 @@ def _linesearch_island(m: types.Model, d: types.Data, ctx: IslandSolverContext):
       d.island_nv,
       d.island_ne,
       d.island_nf,
-      d.island_efcadr,
+      d.island_iefcadr,
       d.island_nefc,
       d.map_efc2iefc,
       d.njmax,
