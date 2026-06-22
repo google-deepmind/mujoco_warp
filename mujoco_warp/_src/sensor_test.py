@@ -234,6 +234,7 @@ class SensorTest(parameterized.TestCase):
           <framepos objtype="body" objname="body1" reftype="site" refname="site0"/>
           <framepos objtype="body" objname="body1" reftype="cam" refname="cam0"/>
           <framepos objtype="xbody" objname="body1"/>
+          <framepos objtype="body" objname="body1" reftype="xbody" refname="body0"/>
           <framepos objtype="geom" objname="geom0"/>
           <framepos objtype="site" objname="site0"/>
           <framepos objtype="camera" objname="cam0"/>
