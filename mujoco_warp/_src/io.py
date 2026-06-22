@@ -24,6 +24,7 @@ import warp as wp
 from mujoco_warp._src import bvh
 from mujoco_warp._src import math as mjmath
 from mujoco_warp._src import render_util
+from mujoco_warp._src import sleep
 from mujoco_warp._src import smooth
 from mujoco_warp._src import types
 from mujoco_warp._src import warp_util
@@ -447,6 +448,21 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
   if mjm.nv > 500:
     m.block_dim.linesearch_iterative = 512
   m.is_sparse = is_sparse(mjm)
+  # Active-DOF compaction is the default sleeping solver: it pays off only when most DOFs are
+  # asleep, so it's keyed on the SLEEP flag (a dense full solve would otherwise just be slower
+  # than the sparse solver). It's a dense-Newton method, and ENABLE_ISLANDS forces the old
+  # island solver instead. nvmax only sizes the compacted block; it does not toggle compaction.
+  m.is_compact = (
+    mjm.opt.solver == mujoco.mjtSolver.mjSOL_NEWTON
+    and bool(mjm.opt.enableflags & mujoco.mjtEnableBit.mjENBL_SLEEP)
+    and not ENABLE_ISLANDS
+  )
+  # Sleeping is only honored by a sleep-aware solver (compact for Newton, or the island solver
+  # via enable_islands). Reject SLEEP without one rather than silently ignoring it.
+  if bool(mjm.opt.enableflags & mujoco.mjtEnableBit.mjENBL_SLEEP) and not m.is_compact and not ENABLE_ISLANDS:
+    raise ValueError(
+      f"sleeping requires the Newton solver or enable_islands (got solver={types.SolverType(mjm.opt.solver).name})"
+    )
   m.has_fluid = mjm.opt.wind.any() or mjm.opt.density > 0 or mjm.opt.viscosity > 0
 
   m.max_ten_J_rownnz = int(mjm.ten_J_rownnz.max()) if mjm.ntendon else 0
@@ -1099,6 +1115,12 @@ def _get_padded_sizes(nv: int, njmax: int, is_sparse: bool, tile_size: int):
   return njmax_padded, nv_padded
 
 
+def _nvmax_pad(nvmax: int) -> int:
+  """Round nvmax up to the dense tile size so the blocked Cholesky never overruns its tile."""
+  t = types.TILE_SIZE_JTDAJ_DENSE
+  return ((max(nvmax, 1) + t - 1) // t) * t
+
+
 def _default_nconmax(mjm: mujoco.MjModel, mjd: Optional[mujoco.MjData] = None) -> int:
   """Returns a default guess for an ideal nconmax given a Model and optional Data.
 
@@ -1331,6 +1353,79 @@ def _allocate_island_arrays(
   d.iqfrc_constraint = wp.empty((nworld, nv_size), dtype=float)
 
 
+def _allocate_compact_arrays(
+  mjm: mujoco.MjModel,
+  d: types.Data,
+  nworld: int,
+  nvmax_pad: int,
+  njmax_pad: int,
+  compact: bool,
+):
+  """Allocate workspace for the compacted dense factor/solve (when nvmax is requested).
+
+  Mirrors the island-local ``i*`` Data fields with a ``c*`` (compact) prefix. The
+  constant model-shadows (tolerances, dof-pair indices) are derived on the host since
+  they depend only on nvmax_pad; the workspace shadows are sized by nvmax_pad so the
+  blocked Cholesky never reads out of bounds on its partial tile. When the user does not
+  request compaction (nvmax is None) everything is allocated empty.
+
+  TODO(team): once the compact path replaces the island solver, the whole forward
+  pipeline can run in compacted space and ``d.M`` / ``d.qacc`` etc. become nvmax-sized
+  directly, collapsing these ``c*`` shadows into the primary Data fields.
+  """
+  nw = nworld if compact else 0
+  nvp = nvmax_pad if compact else 0
+  njp = njmax_pad if compact else 0
+
+  if compact:
+    # match the float32 tolerance clamp applied in put_model; rescale by nv/nvmax_pad so
+    # the solver's nv-normalized convergence test matches the full-model baseline.
+    scale = float(mjm.nv) / float(nvmax_pad)
+    tol = max(float(mjm.opt.tolerance), 1e-6)
+    ls_tol = float(mjm.opt.ls_tolerance)
+    d.ctol = wp.array([tol * scale], dtype=float)
+    d.cls_tol = wp.array([ls_tol * scale], dtype=float)
+    # all (i, j) DOF pairs of the nvmax_pad-wide compacted Hessian (the global dof_tri,
+    # triu over full nv, would index out of bounds).
+    idx = np.arange(nvmax_pad, dtype=np.int32)
+    d.cdof_tri_row = wp.array(np.repeat(idx, nvmax_pad), dtype=int)
+    d.cdof_tri_col = wp.array(np.tile(idx, nvmax_pad), dtype=int)
+  else:
+    d.ctol = wp.empty(0, dtype=float)
+    d.cls_tol = wp.empty(0, dtype=float)
+    d.cdof_tri_row = wp.empty(0, dtype=int)
+    d.cdof_tri_col = wp.empty(0, dtype=int)
+
+  d.cM = wp.empty((nw, nvp, nvp), dtype=float)
+  d.cqLD = wp.empty((nw, nvp, nvp), dtype=float)
+  d.crhs = wp.empty((nw, nvp, 1), dtype=float)
+  d.cx = wp.empty((nw, nvp, 1), dtype=float)
+  d.cJ = wp.empty((nw, njp, nvp), dtype=float)
+  d.cMa = wp.empty((nw, nvp), dtype=float)
+  d.cqfrc_smooth = wp.empty((nw, nvp), dtype=float)
+  d.cqacc_smooth = wp.empty((nw, nvp), dtype=float)
+  d.cqacc_warmstart = wp.empty((nw, nvp), dtype=float)
+  d.cqacc = wp.empty((nw, nvp), dtype=float)
+  d.cqfrc_constraint = wp.empty((nw, nvp), dtype=float)
+
+
+def _initial_body_awake(mjm: mujoco.MjModel, nworld: int, init_asleep: bool) -> np.ndarray:
+  """Returns the initial body awake array."""
+  body_awake_np = np.zeros((nworld, mjm.nbody), dtype=np.int32)
+  for b in range(mjm.nbody):
+    tree = mjm.body_treeid[b]
+    if tree < 0:
+      root = mjm.body_rootid[b]
+      mocap = mjm.body_mocapid[root]
+      if mocap >= 0:
+        body_awake_np[:, b] = int(types.SleepState.AWAKE)
+      else:
+        body_awake_np[:, b] = int(types.SleepState.STATIC)
+    else:
+      body_awake_np[:, b] = int(types.SleepState.ASLEEP) if init_asleep else int(types.SleepState.AWAKE)
+  return body_awake_np
+
+
 def make_data(
   mjm: mujoco.MjModel,
   nworld: int = 1,
@@ -1340,6 +1435,7 @@ def make_data(
   njmax_nnz: Optional[int] = None,
   naconmax: Optional[int] = None,
   naccdmax: Optional[int] = None,
+  nvmax: Optional[int] = None,
 ) -> types.Data:
   """Creates a data object on device.
 
@@ -1354,6 +1450,7 @@ def make_data(
     njmax_nnz: Number of non-zeros in constraint Jacobian (sparse). Defaults to njmax * nv.
     naconmax: Number of contacts to allocate for all worlds. Overrides nconmax.
     naccdmax: Maximum number of CCD contacts. Defaults to naconmax.
+    nvmax: Capacity for compacted active DOFs per world. Defaults to nv.
 
   Returns:
     The data object containing the current state and output arrays (device).
@@ -1365,11 +1462,28 @@ def make_data(
   if njmax is None:
     njmax = _default_njmax(mjm)
 
+  # Compact workspace is allocated for the same models put_model marks m.is_compact (kept in
+  # sync here since put_data does not take the warp Model). nvmax only sizes the block.
+  compact = (
+    mjm.opt.solver == mujoco.mjtSolver.mjSOL_NEWTON
+    and bool(mjm.opt.enableflags & mujoco.mjtEnableBit.mjENBL_SLEEP)
+    and not ENABLE_ISLANDS
+  )
+  # Allocate the compact workspace whenever compaction is the solver (compact) OR nvmax is
+  # explicitly provided -- the latter lets callers/tests size and exercise the compact arrays
+  # directly without is_compact dispatching in the forward pipeline.
+  compact_alloc = compact or (nvmax is not None)
+  if nvmax is None:
+    nvmax = mjm.nv
+
   if nconmax < 0:
     raise ValueError("nconmax must be >= 0")
 
   if njmax < 0:
     raise ValueError("njmax must be >= 0")
+
+  if nvmax < 0 or nvmax > mjm.nv:
+    raise ValueError(f"nvmax ({nvmax}) must be in [0, nv ({mjm.nv})]")
 
   if nworld < 1:
     raise ValueError(f"nworld must be >= 1")
@@ -1392,6 +1506,9 @@ def make_data(
     elif nccdmax > nconmax:
       raise ValueError(f"nccdmax ({nccdmax}) must be <= nconmax ({nconmax})")
 
+  nv_compact = nvmax < mjm.nv
+  island_enabled = compact_alloc or ENABLE_ISLANDS
+
   sizes = dict({"*": 1}, **{f.name: getattr(mjm, f.name, None) for f in dataclasses.fields(types.Model) if f.type is int})
   condim_arrays = [np.array([0]), mjm.geom_condim, mjm.pair_dim]
   if mjm.nflex > 0:
@@ -1403,6 +1520,8 @@ def make_data(
   sizes["nworld"] = nworld
   sizes["naconmax"] = naconmax
   sizes["njmax"] = njmax
+  sizes["nvmax"] = nvmax
+  sizes["nvmax_pad"] = _nvmax_pad(nvmax)
 
   if njmax_nnz is None:
     if is_sparse(mjm):
@@ -1419,7 +1538,7 @@ def make_data(
   contact = types.Contact(**contact_kwargs)
   contact.efc_address = wp.array(np.full((naconmax, sizes["nmaxpyramid"]), -1, dtype=int), dtype=int)
 
-  efc = _create_constraint(mjm, nworld, njmax, njmax_nnz, sizes, ENABLE_ISLANDS)
+  efc = _create_constraint(mjm, nworld, njmax, njmax_nnz, sizes, island_enabled)
 
   if is_sparse(mjm):
     efc.J_rownnz = wp.zeros((nworld, njmax), dtype=int)
@@ -1450,6 +1569,8 @@ def make_data(
     "naconmax": naconmax,
     "naccdmax": naccdmax,
     "njmax": njmax,
+    "nvmax": nvmax,
+    "nvmax_pad": sizes["nvmax_pad"],
     "njmax_pad": sizes["njmax_pad"],
     "njmax_nnz": njmax_nnz,
     "M": None,
@@ -1490,10 +1611,14 @@ def make_data(
     "iqacc_smooth": None,
     "iqfrc_smooth": None,
     "iqfrc_constraint": None,
-    # sleep state: all trees start fully awake
-    "tree_asleep": wp.array(np.full((nworld, mjm.ntree), -(1 + types.MJ_MINAWAKE)), dtype=int),
-    "tree_awake": wp.array(np.ones((nworld, mjm.ntree)), dtype=int),
-    "body_awake": wp.array(np.ones((nworld, mjm.nbody)), dtype=int),
+    "tree_asleep": wp.array(
+      np.tile(np.arange(mjm.ntree, dtype=np.int32), (nworld, 1))
+      if nv_compact
+      else np.full((nworld, mjm.ntree), -(1 + types.MJ_MINAWAKE)),
+      dtype=int,
+    ),
+    "tree_awake": wp.array(np.zeros((nworld, mjm.ntree)) if nv_compact else np.ones((nworld, mjm.ntree)), dtype=int),
+    "body_awake": wp.array(_initial_body_awake(mjm, nworld, nv_compact), dtype=int),
   }
   for f in dataclasses.fields(types.Data):
     if f.name in d_kwargs:
@@ -1510,7 +1635,11 @@ def make_data(
   qld_total = _lay["total"] + (mjm.nC if _lay["has_sparse"] else 0)
   d.qLD = wp.zeros((nworld, qld_total), dtype=float)
 
-  _allocate_island_arrays(mjm, d, nworld, njmax, ENABLE_ISLANDS, mjd)
+  _allocate_island_arrays(mjm, d, nworld, njmax, island_enabled, mjd)
+  _allocate_compact_arrays(mjm, d, nworld, sizes["nvmax_pad"], sizes["njmax_pad"], compact_alloc)
+  d.ncdof.zero_()
+  d.dof_cdof.fill_(-1)
+  d.cdof_dof.fill_(-1)
 
   return d
 
@@ -1525,6 +1654,7 @@ def put_data(
   njmax_nnz: Optional[int] = None,
   naconmax: Optional[int] = None,
   naccdmax: Optional[int] = None,
+  nvmax: Optional[int] = None,
 ) -> types.Data:
   """Moves data from host to a device.
 
@@ -1540,6 +1670,7 @@ def put_data(
     njmax_nnz: Number of non-zeros in constraint Jacobian (sparse). Defaults to njmax * nv.
     naconmax: Number of contacts to allocate for all worlds. Overrides nconmax.
     naccdmax: Maximum number of CCD contacts. Defaults to naconmax.
+    nvmax: Capacity for compacted active DOFs per world. Defaults to nv.
 
   Returns:
     The data object containing the current state and output arrays (device).
@@ -1554,11 +1685,28 @@ def put_data(
   if njmax is None:
     njmax = _default_njmax(mjm, mjd)
 
+  # Compact workspace is allocated for the same models put_model marks m.is_compact (kept in
+  # sync here since put_data does not take the warp Model). nvmax only sizes the block.
+  compact = (
+    mjm.opt.solver == mujoco.mjtSolver.mjSOL_NEWTON
+    and bool(mjm.opt.enableflags & mujoco.mjtEnableBit.mjENBL_SLEEP)
+    and not ENABLE_ISLANDS
+  )
+  # Allocate the compact workspace whenever compaction is the solver (compact) OR nvmax is
+  # explicitly provided -- the latter lets callers/tests size and exercise the compact arrays
+  # directly without is_compact dispatching in the forward pipeline.
+  compact_alloc = compact or (nvmax is not None)
+  if nvmax is None:
+    nvmax = mjm.nv
+
   if nconmax < 0:
     raise ValueError("nconmax must be >= 0")
 
   if njmax < 0:
     raise ValueError("njmax must be >= 0")
+
+  if nvmax < 0 or nvmax > mjm.nv:
+    raise ValueError(f"nvmax ({nvmax}) must be in [0, nv ({mjm.nv})]")
 
   if nworld < 1:
     raise ValueError(f"nworld must be >= 1")
@@ -1591,6 +1739,9 @@ def put_data(
   if mjd.nefc > njmax:
     raise ValueError(f"njmax overflow (njmax must be >= {mjd.nefc})")
 
+  nv_compact = nvmax < mjm.nv
+  island_enabled = compact_alloc or ENABLE_ISLANDS
+
   sizes = dict({"*": 1}, **{f.name: getattr(mjm, f.name, None) for f in dataclasses.fields(types.Model) if f.type is int})
   condim_arrays = [np.array([0]), mjm.geom_condim, mjm.pair_dim]
   if mjm.nflex > 0:
@@ -1602,6 +1753,8 @@ def put_data(
   sizes["nworld"] = nworld
   sizes["naconmax"] = naconmax
   sizes["njmax"] = njmax
+  sizes["nvmax"] = nvmax
+  sizes["nvmax_pad"] = _nvmax_pad(nvmax)
 
   if njmax_nnz is None:
     if is_sparse(mjm):
@@ -1648,7 +1801,7 @@ def put_data(
   # create efc
   efc_kwargs = {"J_rownnz": None, "J_rowadr": None, "J_colind": None, "J": None}
 
-  efc = _create_constraint(mjm, nworld, njmax, njmax_nnz, sizes, ENABLE_ISLANDS, mjd)
+  efc = _create_constraint(mjm, nworld, njmax, njmax_nnz, sizes, island_enabled, mjd)
 
   if is_sparse(mjm):
     J_rownnz = np.zeros(njmax, dtype=np.int32)
@@ -1695,6 +1848,8 @@ def put_data(
     "naconmax": naconmax,
     "naccdmax": naccdmax,
     "njmax": njmax,
+    "nvmax": nvmax,
+    "nvmax_pad": sizes["nvmax_pad"],
     "njmax_pad": sizes["njmax_pad"],
     "njmax_nnz": njmax_nnz,
     # fields set after initialization:
@@ -1724,6 +1879,14 @@ def put_data(
     "iqacc_smooth": None,
     "iqfrc_smooth": None,
     "iqfrc_constraint": None,
+    "tree_asleep": wp.array(
+      np.tile(np.arange(mjm.ntree, dtype=np.int32), (nworld, 1))
+      if nv_compact
+      else np.full((nworld, mjm.ntree), -(1 + types.MJ_MINAWAKE)),
+      dtype=int,
+    ),
+    "tree_awake": wp.array(np.zeros((nworld, mjm.ntree)) if nv_compact else np.ones((nworld, mjm.ntree)), dtype=int),
+    "body_awake": wp.array(_initial_body_awake(mjm, nworld, nv_compact), dtype=int),
   }
   for f in dataclasses.fields(types.Data):
     if f.name in d_kwargs:
@@ -1753,7 +1916,11 @@ def put_data(
     qLD[lay["total"] :] = mjd.qLD
   d.qLD = wp.array(np.full((nworld, qld_total), qLD), dtype=float)
 
-  _allocate_island_arrays(mjm, d, nworld, njmax, ENABLE_ISLANDS, mjd)
+  _allocate_island_arrays(mjm, d, nworld, njmax, island_enabled, mjd)
+  _allocate_compact_arrays(mjm, d, nworld, sizes["nvmax_pad"], sizes["njmax_pad"], compact_alloc)
+  d.ncdof.zero_()
+  d.dof_cdof.fill_(-1)
+  d.cdof_dof.fill_(-1)
 
   d.nacon = wp.array([mjd.ncon * nworld], dtype=int)
 
@@ -2039,6 +2206,7 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
     d: The data object containing the current state and output arrays (device).
     reset: Per-world bitmask. Reset if True.
   """
+  sleep_enabled = bool(m.opt.enableflags & types.EnableBit.SLEEP)
 
   @wp.kernel(module="unique", enable_backward=False)
   def reset_xfrc_applied(reset_in: wp.array[bool], xfrc_applied_out: wp.array2d[wp.spatial_vector]):
@@ -2233,6 +2401,7 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
     body_treeid: wp.array[int],
     # In:
     mj_minawake: int,
+    sleep_enabled: int,
     reset_in: wp.array[bool],
     # Data out:
     tree_asleep_out: wp.array2d[int],
@@ -2248,8 +2417,12 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
         return
 
     if elemid < ntree:
-      tree_asleep_out[worldid, elemid] = -(1 + mj_minawake)
-      tree_awake_out[worldid, elemid] = 1
+      if sleep_enabled == 1:
+        tree_asleep_out[worldid, elemid] = elemid
+        tree_awake_out[worldid, elemid] = 0
+      else:
+        tree_asleep_out[worldid, elemid] = -(1 + mj_minawake)
+        tree_awake_out[worldid, elemid] = 1
 
     if elemid < nbody:
       if body_treeid[elemid] < 0:
@@ -2258,7 +2431,10 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
         else:
           body_awake_out[worldid, elemid] = int(types.SleepState.STATIC)
       else:
-        body_awake_out[worldid, elemid] = int(types.SleepState.AWAKE)
+        if sleep_enabled == 1:
+          body_awake_out[worldid, elemid] = int(types.SleepState.ASLEEP)
+        else:
+          body_awake_out[worldid, elemid] = int(types.SleepState.AWAKE)
       body_awake_ind_out[worldid, elemid] = elemid
 
     if elemid < nv:
@@ -2311,7 +2487,7 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
   wp.launch(
     reset_sleep,
     dim=(d.nworld, max(m.ntree, m.nbody, m.nv)),
-    inputs=[m.nv, m.nbody, m.ntree, m.body_mocapid, m.body_treeid, types.MJ_MINAWAKE, reset_input],
+    inputs=[m.nv, m.nbody, m.ntree, m.body_mocapid, m.body_treeid, types.MJ_MINAWAKE, int(sleep_enabled), reset_input],
     outputs=[
       d.tree_asleep,
       d.tree_awake,
@@ -2364,6 +2540,9 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
       d.nacon,
     ],
   )
+
+  if sleep_enabled:
+    sleep.update_sleep(m, d)
 
 
 # kernel_analyzer: off

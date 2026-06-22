@@ -1287,6 +1287,7 @@ class Model:
     nmaxmeshdeg: maximum number of polygons per vert
     is_sparse: constraint Jacobian/Hessian layout (sparse vs dense). Does not affect M, whose
       factorization is a per-block decision -- see qLD_* and m_block_layout
+    is_compact: solve via active-DOF compaction (Newton + sleeping, unless islands forced)
     qLD_has_dense: any M block factors as a packed dense block
     qLD_has_simple: any M block is simple (diagonal -> 1/diag, no factorization)
     qLD_has_sparse: any M block factors via sparse LDL (oversized block / tendon armature)
@@ -1747,6 +1748,7 @@ class Model:
   nmaxpolygon: int
   nmaxmeshdeg: int
   is_sparse: bool
+  is_compact: bool
   qLD_has_dense: bool
   qLD_has_simple: bool
   qLD_has_sparse: bool
@@ -2095,12 +2097,32 @@ class Data:
     iqacc_smooth: island-local qacc_smooth                      (nworld, nv)
     iqfrc_smooth: island-local qfrc_smooth                      (nworld, nv)
     iqfrc_constraint: island-local qfrc_constraint              (nworld, nv)
+    ncdof: number of active (compacted) DOFs per world          (nworld,)
+    dof_cdof: global DOF -> compacted DOF; -1 if inactive       (nworld, nv)
+    cdof_dof: compacted DOF -> global DOF; -1 if unused         (nworld, nvmax_pad)
+    ctol: compacted-solve main tolerance (nv/nvmax_pad scaled)  (1,)
+    cls_tol: compacted-solve linesearch tolerance               (1,)
+    cdof_tri_row: row index of compacted Hessian dof-pairs      (nvmax_pad^2,)
+    cdof_tri_col: col index of compacted Hessian dof-pairs      (nvmax_pad^2,)
+    cM: compacted dense inertia                                 (nworld, nvmax_pad, nvmax_pad)
+    cqLD: compacted upper Cholesky factor                       (nworld, nvmax_pad, nvmax_pad)
+    crhs: compacted smooth-solve right-hand side                (nworld, nvmax_pad, 1)
+    cx: compacted smooth-solve solution                         (nworld, nvmax_pad, 1)
+    cJ: compacted dense constraint Jacobian                     (nworld, njmax_pad, nvmax_pad)
+    cMa: compacted M @ qacc workspace                           (nworld, nvmax_pad)
+    cqfrc_smooth: compacted net unconstrained force             (nworld, nvmax_pad)
+    cqacc_smooth: compacted unconstrained acceleration          (nworld, nvmax_pad)
+    cqacc_warmstart: compacted warmstart acceleration           (nworld, nvmax_pad)
+    cqacc: compacted acceleration (solve output)                (nworld, nvmax_pad)
+    cqfrc_constraint: compacted constraint force                (nworld, nvmax_pad)
 
   warp only fields:
     nworld: number of worlds
     naconmax: maximum number of contacts (shared across all worlds)
     naccdmax: maximum number of contacts for CCD (all worlds)
     njmax: maximum number of constraints per world
+    nvmax: capacity for compacted active DOFs per world
+    nvmax_pad: nvmax rounded up to the nearest multiple of TILE_SIZE_JTDAJ_DENSE
     njmax_pad: njmax rounded up to the nearest multiple of TILE_SIZE_JTDAJ
     njmax_nnz: number of non-zeros in constraint Jacobian
     nacon: number of detected contacts (across all worlds)      (1,)
@@ -2221,12 +2243,32 @@ class Data:
   iqacc_smooth: wp.array2d[float]
   iqfrc_smooth: wp.array2d[float]
   iqfrc_constraint: wp.array2d[float]
+  ncdof: array("nworld", int)
+  dof_cdof: array("nworld", "nv", int)
+  cdof_dof: array("nworld", "nvmax_pad", int)
+  ctol: wp.array[float]
+  cls_tol: wp.array[float]
+  cdof_tri_row: wp.array[int]
+  cdof_tri_col: wp.array[int]
+  cM: wp.array3d[float]
+  cqLD: wp.array3d[float]
+  crhs: wp.array3d[float]
+  cx: wp.array3d[float]
+  cJ: wp.array3d[float]
+  cMa: wp.array2d[float]
+  cqfrc_smooth: wp.array2d[float]
+  cqacc_smooth: wp.array2d[float]
+  cqacc_warmstart: wp.array2d[float]
+  cqacc: wp.array2d[float]
+  cqfrc_constraint: wp.array2d[float]
 
   # warp only fields:
   nworld: int
   naconmax: int
   naccdmax: int
   njmax: int
+  nvmax: int
+  nvmax_pad: int
   njmax_pad: int
   njmax_nnz: int
   nacon: array(1, int)

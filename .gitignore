@@ -224,3 +224,6 @@ node_modules
 
 # VS Code
 .vscode/
+
+# Claude Code local files
+.claude/

@@ -13,6 +13,7 @@
 # limitations under the License.
 # ==============================================================================
 
+import dataclasses
 from math import ceil
 
 import warp as wp
@@ -1994,6 +1995,69 @@ def _active_check(tid: int, threshold: int) -> float:
 
 
 @cache_kernel
+def _update_gradient_JTDAJ_dense_tiled_compact(nv_pad: int, tile_size: int, njmax: int):
+  """Compact-path variant of _update_gradient_JTDAJ_dense_tiled.
+
+  Takes M_in as a dense 3D array (nworld, nv_pad, nv_pad) -- the compacted active-DOF
+  inertia block cM -- instead of a 2D CSR array.  Cholesky reads fill_mode="upper";
+  cM is full-symmetric so the tile_load covers both triangles and the upper triangle
+  of the result is correct.
+  """
+  if njmax < tile_size:
+    tile_size = njmax
+
+  TILE_SIZE_K = tile_size
+
+  @wp.kernel(module="unique", enable_backward=False, module_options={"enable_mathdx_gemm": False})
+  def kernel(
+    # Data in:
+    nefc_in: wp.array[int],
+    M_in: wp.array3d[float],  # kernel_analyzer: ignore; compact dense inertia (nworld, nv_pad, nv_pad)
+    efc_J_in: wp.array3d[float],
+    efc_D_in: wp.array2d[float],
+    efc_state_in: wp.array2d[int],
+    # In:
+    ctx_done_in: wp.array[bool],
+    # Out:
+    ctx_h_out: wp.array3d[float],
+  ):
+    worldid, rank = wp.tid()
+
+    if ctx_done_in[worldid]:
+      return
+
+    nefc = nefc_in[worldid]
+
+    # Load full symmetric compact inertia tile (Cholesky only reads upper triangle).
+    sum_val = wp.tile_load(M_in[worldid], shape=(wp.static(nv_pad), wp.static(nv_pad)), bounds_check=True)
+
+    for k in range(0, njmax, TILE_SIZE_K):
+      if k >= nefc:
+        break
+
+      J_kj = wp.tile_load(efc_J_in[worldid], shape=(TILE_SIZE_K, nv_pad), offset=(k, 0), bounds_check=False)
+
+      D_k = wp.tile_load(efc_D_in[worldid], shape=TILE_SIZE_K, offset=k, bounds_check=False)
+      state = wp.tile_load(efc_state_in[worldid], shape=TILE_SIZE_K, offset=k, bounds_check=False)
+
+      D_k = wp.tile_map(_state_check, D_k, state)
+
+      tid_tile = wp.tile_arange(TILE_SIZE_K, dtype=int)
+      threshold_tile = wp.tile_ones(shape=TILE_SIZE_K, dtype=int) * (nefc - k)
+
+      active_tile = wp.tile_map(_active_check, tid_tile, threshold_tile)
+      D_k = wp.tile_map(wp.mul, active_tile, D_k)
+
+      J_ki = wp.tile_map(wp.mul, wp.tile_transpose(J_kj), wp.tile_broadcast(D_k, shape=(nv_pad, TILE_SIZE_K)))
+
+      sum_val += wp.tile_matmul(J_ki, J_kj)
+
+    wp.tile_store(ctx_h_out[worldid], sum_val, bounds_check=False)
+
+  return kernel
+
+
+@cache_kernel
 def _update_gradient_JTDAJ_dense_tiled(nv_pad: int, tile_size: int, njmax: int, nC: int):
   if njmax < tile_size:
     tile_size = njmax
@@ -2121,6 +2185,8 @@ def _update_gradient_JTCJ_sparse(
       continue
 
     efcid0 = contact_efc_address_in[conid, 0]
+    if efcid0 < 0:
+      continue
     if efc_state_in[worldid, efcid0] != types.ConstraintState.CONE:
       continue
 
@@ -2158,7 +2224,10 @@ def _update_gradient_JTCJ_sparse(
     tt = float(0.0)
     for j in range(1, condim):
       efcidj = contact_efc_address_in[conid, j]
-      uj = ctx_Jaref_in[worldid, efcidj] * fri[j - 1]
+      if efcidj >= 0:
+        uj = ctx_Jaref_in[worldid, efcidj] * fri[j - 1]
+      else:
+        uj = 0.0
       tt += uj * uj
       u[j] = uj
 
@@ -2182,6 +2251,8 @@ def _update_gradient_JTCJ_sparse(
         dm_fri1 = dm * mu
       else:
         efcid1 = contact_efc_address_in[conid, dim1id]
+        if efcid1 < 0:
+          continue
         rowadr1 = efc_J_rowadr_in[worldid, efcid1]
         dm_fri1 = dm * fri[dim1id - 1]
 
@@ -2197,6 +2268,8 @@ def _update_gradient_JTCJ_sparse(
           dm_fri12 = dm_fri1 * mu
         else:
           efcid2 = contact_efc_address_in[conid, dim2id]
+          if efcid2 < 0:
+            continue
           rowadr2 = efc_J_rowadr_in[worldid, efcid2]
           dm_fri12 = dm_fri1 * fri[dim2id - 1]
 
@@ -2230,6 +2303,181 @@ def _update_gradient_JTCJ_sparse(
 
     # multiple contacts can contribute to the same (dof1id, dof2id); atomic_add is exact
     wp.atomic_add(ctx_h_out[worldid, dof1id], dof2id, h)
+
+
+@wp.kernel
+def _update_gradient_JTCJ_compact(
+  # Model:
+  opt_impratio_invsqrt: wp.array[float],
+  # Data in:
+  contact_dist_in: wp.array[float],
+  contact_includemargin_in: wp.array[float],
+  contact_friction_in: wp.array[types.vec5],
+  contact_dim_in: wp.array[int],
+  contact_efc_address_in: wp.array2d[int],
+  contact_worldid_in: wp.array[int],
+  efc_J_rownnz_in: wp.array2d[int],
+  efc_J_rowadr_in: wp.array2d[int],
+  efc_J_colind_in: wp.array3d[int],
+  efc_J_in: wp.array3d[float],
+  efc_D_in: wp.array2d[float],
+  efc_state_in: wp.array2d[int],
+  dof_cdof_in: wp.array2d[int],
+  naconmax_in: int,
+  nacon_in: wp.array[int],
+  # In:
+  ctx_Jaref_in: wp.array2d[float],
+  ctx_done_in: wp.array[bool],
+  nblocks_perblock: int,
+  dim_block: int,
+  # Out:
+  ctx_h_out: wp.array3d[float],
+):
+  conid_start, pairid = wp.tid()
+
+  for i in range(nblocks_perblock):
+    conid = conid_start + i * dim_block
+
+    if conid >= min(nacon_in[0], naconmax_in):
+      return
+
+    worldid = contact_worldid_in[conid]
+    if ctx_done_in[worldid]:
+      continue
+
+    condim = contact_dim_in[conid]
+
+    if condim == 1:
+      continue
+
+    # check contact status
+    if contact_dist_in[conid] - contact_includemargin_in[conid] >= 0.0:
+      continue
+
+    efcid0 = contact_efc_address_in[conid, 0]
+    if efcid0 < 0:
+      continue
+    if efc_state_in[worldid, efcid0] != types.ConstraintState.CONE:
+      continue
+
+    rownnz = efc_J_rownnz_in[worldid, efcid0]
+    npairs = rownnz * (rownnz + 1) // 2
+    if pairid >= npairs:
+      continue
+
+    rowadr0 = efc_J_rowadr_in[worldid, efcid0]
+    pos1 = int(0)
+    rem = pairid
+    while rem >= rownnz - pos1:
+      rem -= rownnz - pos1
+      pos1 += 1
+    pos2 = pos1 + rem
+
+    dofa = efc_J_colind_in[worldid, 0, rowadr0 + pos1]
+    dofb = efc_J_colind_in[worldid, 0, rowadr0 + pos2]
+
+    # Map to compacted DOFs
+    dof1id = dof_cdof_in[worldid, dofa]
+    dof2id = dof_cdof_in[worldid, dofb]
+
+    if dof1id < 0 or dof2id < 0:
+      continue
+
+    c_dof1 = wp.min(dof1id, dof2id)
+    c_dof2 = wp.max(dof1id, dof2id)
+
+    fri = contact_friction_in[conid]
+    mu = fri[0] * opt_impratio_invsqrt[worldid % opt_impratio_invsqrt.shape[0]]
+
+    mu2 = mu * mu
+    dm = math.safe_div(efc_D_in[worldid, efcid0], mu2 * (1.0 + mu2))
+
+    if dm == 0.0:
+      continue
+
+    n = ctx_Jaref_in[worldid, efcid0] * mu
+    u = types.vec6(n, 0.0, 0.0, 0.0, 0.0, 0.0)
+
+    tt = float(0.0)
+    for j in range(1, condim):
+      efcidj = contact_efc_address_in[conid, j]
+      if efcidj >= 0:
+        uj = ctx_Jaref_in[worldid, efcidj] * fri[j - 1]
+      else:
+        uj = 0.0
+      tt += uj * uj
+      u[j] = uj
+
+    if tt <= 0.0:
+      t = 0.0
+    else:
+      t = wp.sqrt(tt)
+    t = wp.max(t, types.MJ_MINVAL)
+    ttt = wp.max(t * t * t, types.MJ_MINVAL)
+
+    # Precompute common subexpressions.
+    mu_over_t = math.safe_div(mu, t)
+    mu_n_over_ttt = mu * math.safe_div(n, ttt)
+    mu2_minus_mu_n_over_t = mu2 - mu * math.safe_div(n, t)
+
+    h = float(0.0)
+
+    for dim1id in range(condim):
+      if dim1id == 0:
+        efcid1 = efcid0
+        dm_fri1 = dm * mu
+      else:
+        efcid1 = contact_efc_address_in[conid, dim1id]
+        if efcid1 < 0:
+          continue
+        dm_fri1 = dm * fri[dim1id - 1]
+
+      # Read from the compacted dense Jacobian (efc_J_in) using the mapped compacted DOFs
+      efc_J11 = efc_J_in[worldid, efcid1, c_dof1]
+      efc_J12 = efc_J_in[worldid, efcid1, c_dof2]
+
+      ui = u[dim1id]
+
+      for dim2id in range(0, dim1id + 1):
+        if dim2id == 0:
+          efcid2 = efcid0
+          dm_fri12 = dm_fri1 * mu
+        else:
+          efcid2 = contact_efc_address_in[conid, dim2id]
+          if efcid2 < 0:
+            continue
+          dm_fri12 = dm_fri1 * fri[dim2id - 1]
+
+        # Read from the compacted dense Jacobian using the mapped compacted DOFs
+        efc_J21 = efc_J_in[worldid, efcid2, c_dof1]
+        efc_J22 = efc_J_in[worldid, efcid2, c_dof2]
+
+        uj = u[dim2id]
+
+        # set first row/column: (1, -mu/t * u)
+        if dim1id == 0 and dim2id == 0:
+          hcone = 1.0
+        elif dim1id == 0:
+          hcone = -mu_over_t * uj
+        elif dim2id == 0:
+          hcone = -mu_over_t * ui
+        else:
+          hcone = mu_n_over_ttt * ui * uj
+
+          # add to diagonal: mu^2 - mu * n / t
+          if dim1id == dim2id:
+            hcone += mu2_minus_mu_n_over_t
+
+        hcone *= dm_fri12
+
+        if hcone != 0.0:
+          h += hcone * efc_J11 * efc_J22
+
+          if dim1id != dim2id:
+            h += hcone * efc_J12 * efc_J21
+
+    # multiple contacts can contribute to the same (c_dof1, c_dof2); atomic_add is exact
+    wp.atomic_add(ctx_h_out[worldid, c_dof1], c_dof2, h)
 
 
 @wp.kernel
@@ -2283,6 +2531,8 @@ def _update_gradient_JTCJ_dense(
       continue
 
     efcid0 = contact_efc_address_in[conid, 0]
+    if efcid0 < 0:
+      continue
     if efc_state_in[worldid, efcid0] != types.ConstraintState.CONE:
       continue
 
@@ -2301,7 +2551,10 @@ def _update_gradient_JTCJ_dense(
     tt = float(0.0)
     for j in range(1, condim):
       efcidj = contact_efc_address_in[conid, j]
-      uj = ctx_Jaref_in[worldid, efcidj] * fri[j - 1]
+      if efcidj >= 0:
+        uj = ctx_Jaref_in[worldid, efcidj] * fri[j - 1]
+      else:
+        uj = 0.0
       tt += uj * uj
       u[j] = uj
 
@@ -2319,6 +2572,8 @@ def _update_gradient_JTCJ_dense(
         efcid1 = efcid0
       else:
         efcid1 = contact_efc_address_in[conid, dim1id]
+        if efcid1 < 0:
+          continue
 
       efc_J11 = efc_J_in[worldid, efcid1, dof1id]
       efc_J12 = efc_J_in[worldid, efcid1, dof2id]
@@ -2330,6 +2585,8 @@ def _update_gradient_JTCJ_dense(
           efcid2 = efcid0
         else:
           efcid2 = contact_efc_address_in[conid, dim2id]
+          if efcid2 < 0:
+            continue
 
         efc_J21 = efc_J_in[worldid, efcid2, dof1id]
         efc_J22 = efc_J_in[worldid, efcid2, dof2id]
@@ -2399,7 +2656,7 @@ def _update_gradient_cholesky(tile_size: int):
 
 
 @cache_kernel
-def _update_gradient_cholesky_blocked(tile_size: int, matrix_size: int):
+def _update_gradient_cholesky_blocked(tile_size: int, matrix_size: int, check_skip: bool = True):
   @wp.kernel(module="unique", enable_backward=False, module_options={"enable_mathdx_gemm": False})
   def kernel(
     # In:
@@ -2413,8 +2670,9 @@ def _update_gradient_cholesky_blocked(tile_size: int, matrix_size: int):
     worldid = wp.tid()
     TILE_SIZE = wp.static(tile_size)
 
-    if ctx_done_in[worldid]:
-      return
+    if wp.static(check_skip):
+      if ctx_done_in[worldid]:
+        return
 
     # We need matrix size both as a runtime input as well as a static input:
     # static input is needed to specify the tile sizes for the compiler
@@ -2565,7 +2823,7 @@ def _JTDAJ_sparse(
       wp.atomic_add(h_out[worldid, row], col, h)
 
 
-def _update_gradient(m: types.Model, d: types.Data, ctx: SolverContext):
+def _update_gradient(m: types.Model, d: types.Data, ctx: SolverContext, compact: bool = False):
   # grad = Ma - qfrc_smooth - qfrc_constraint
   if m.opt.solver == types.SolverType.CG:
     wp.launch_tiled(
@@ -2603,22 +2861,39 @@ def _update_gradient(m: types.Model, d: types.Data, ctx: SolverContext):
         outputs=[ctx.h],
       )
     else:
-      wp.launch_tiled(
-        _update_gradient_JTDAJ_dense_tiled(m.nv_pad, types.TILE_SIZE_JTDAJ_DENSE, d.njmax, m.M_colind.shape[0]),
-        dim=d.nworld,
-        inputs=[
-          m.M_colind,
-          m.M_hinit_i,
-          d.nefc,
-          d.M,
-          d.efc.J,
-          d.efc.D,
-          d.efc.state,
-          ctx.done,
-        ],
-        outputs=[ctx.h],
-        block_dim=m.block_dim.update_gradient_JTDAJ_dense,
-      )
+      if compact:
+        # compact path: d.M is the dense 3D compact inertia block (nworld, nv_pad, nv_pad)
+        wp.launch_tiled(
+          _update_gradient_JTDAJ_dense_tiled_compact(m.nv_pad, types.TILE_SIZE_JTDAJ_DENSE, d.njmax),
+          dim=d.nworld,
+          inputs=[
+            d.nefc,
+            d.M,
+            d.efc.J,
+            d.efc.D,
+            d.efc.state,
+            ctx.done,
+          ],
+          outputs=[ctx.h],
+          block_dim=m.block_dim.update_gradient_JTDAJ_dense,
+        )
+      else:
+        wp.launch_tiled(
+          _update_gradient_JTDAJ_dense_tiled(m.nv_pad, types.TILE_SIZE_JTDAJ_DENSE, d.njmax, m.M_colind.shape[0]),
+          dim=d.nworld,
+          inputs=[
+            m.M_colind,
+            m.M_hinit_i,
+            d.nefc,
+            d.M,
+            d.efc.J,
+            d.efc.D,
+            d.efc.state,
+            ctx.done,
+          ],
+          outputs=[ctx.h],
+          block_dim=m.block_dim.update_gradient_JTDAJ_dense,
+        )
 
     if m.opt.cone == types.ConeType.ELLIPTIC:
       # Optimization: launching update_gradient_JTCJ with limited number of blocks on a GPU.
@@ -2632,7 +2907,13 @@ def _update_gradient(m: types.Model, d: types.Data, ctx: SolverContext):
       # we don't over-launch naconmax (capacity) threads when active contacts are far fewer. The
       # sparse kernel uses one thread per (contact, support-pair) (jtcj_max_pairs), the dense one
       # per (contact, dof-pair) (dof_tri_row.size).
-      jtcj_second_dim = m.jtcj_max_pairs if m.is_sparse else m.dof_tri_row.size
+      # `compact` is set by solve_compact's inner solve, which runs the dense factor/solve on
+      # the nvmax_pad block but maps sparse contact support-pairs to compacted DOFs via dof_cdof.
+      # (Don't infer it from `d.nvmax < m.nv`: after solve_compact's shallow m2/d2 replace that
+      # reduces to `nvmax < nvmax_pad`, which is false whenever nvmax is a tile multiple and
+      # silently falls back to the O(nvmax_pad^2) dense cone scan.)
+      is_sparse_compact = compact and (d.efc.J_colind.shape[1] > 0)
+      jtcj_second_dim = m.jtcj_max_pairs if (m.is_sparse or is_sparse_compact) else m.dof_tri_row.size
       if wp.get_device().is_cuda:
         sm_count = wp.get_device().sm_count
 
@@ -2675,31 +2956,60 @@ def _update_gradient(m: types.Model, d: types.Data, ctx: SolverContext):
           outputs=[ctx.h],
         )
       else:
-        wp.launch(
-          _update_gradient_JTCJ_dense,
-          dim=(dim_block, m.dof_tri_row.size),
-          inputs=[
-            m.opt.impratio_invsqrt,
-            m.dof_tri_row,
-            m.dof_tri_col,
-            d.contact.dist,
-            d.contact.includemargin,
-            d.contact.friction,
-            d.contact.dim,
-            d.contact.efc_address,
-            d.contact.worldid,
-            d.efc.J,
-            d.efc.D,
-            d.efc.state,
-            d.naconmax,
-            d.nacon,
-            ctx.Jaref,
-            ctx.done,
-            nblocks_perblock,
-            dim_block,
-          ],
-          outputs=[ctx.h],
-        )
+        if is_sparse_compact:
+          wp.launch(
+            _update_gradient_JTCJ_compact,
+            dim=(dim_block, m.jtcj_max_pairs),
+            inputs=[
+              m.opt.impratio_invsqrt,
+              d.contact.dist,
+              d.contact.includemargin,
+              d.contact.friction,
+              d.contact.dim,
+              d.contact.efc_address,
+              d.contact.worldid,
+              d.efc.J_rownnz,
+              d.efc.J_rowadr,
+              d.efc.J_colind,
+              d.efc.J,
+              d.efc.D,
+              d.efc.state,
+              d.dof_cdof,
+              d.naconmax,
+              d.nacon,
+              ctx.Jaref,
+              ctx.done,
+              nblocks_perblock,
+              dim_block,
+            ],
+            outputs=[ctx.h],
+          )
+        else:
+          wp.launch(
+            _update_gradient_JTCJ_dense,
+            dim=(dim_block, m.dof_tri_row.size),
+            inputs=[
+              m.opt.impratio_invsqrt,
+              m.dof_tri_row,
+              m.dof_tri_col,
+              d.contact.dist,
+              d.contact.includemargin,
+              d.contact.friction,
+              d.contact.dim,
+              d.contact.efc_address,
+              d.contact.worldid,
+              d.efc.J,
+              d.efc.D,
+              d.efc.state,
+              d.naconmax,
+              d.nacon,
+              ctx.Jaref,
+              ctx.done,
+              nblocks_perblock,
+              dim_block,
+            ],
+            outputs=[ctx.h],
+          )
 
     _cholesky_factorize_solve(m, d, ctx)
   else:
@@ -3001,6 +3311,7 @@ def _solver_iteration(
   d: types.Data,
   ctx: SolverContext,
   nsolving: wp.array[int],
+  compact: bool = False,
 ):
   _linesearch(m, d, ctx)
 
@@ -3019,7 +3330,7 @@ def _solver_iteration(
   if incremental:
     _update_gradient_incremental(m, d, ctx)
   else:
-    _update_gradient(m, d, ctx)
+    _update_gradient(m, d, ctx, compact=compact)
 
   # polak-ribiere
   if m.opt.solver == types.SolverType.CG:
@@ -3090,7 +3401,7 @@ def _solver_iteration(
     )
 
 
-def init_context(m: types.Model, d: types.Data, ctx: SolverContext | InverseContext, grad: bool = True):
+def init_context(m: types.Model, d: types.Data, ctx: SolverContext | InverseContext, grad: bool = True, compact: bool = False):
   # initialize some efc arrays
   wp.launch(
     _solve_init_efc,
@@ -3126,11 +3437,20 @@ def init_context(m: types.Model, d: types.Data, ctx: SolverContext | InverseCont
   _update_constraint(m, d, ctx)
 
   if grad:
-    _update_gradient(m, d, ctx)
+    _update_gradient(m, d, ctx, compact=compact)
 
 
 @event_scope
 def solve(m: types.Model, d: types.Data):
+  if m.is_compact:
+    # Self-contained like the island branch below: rebuild the active-DOF mapping from
+    # tree_awake so solve() works when called directly (not only via fwd_acceleration).
+    island.update_active_dofs(m, d)
+    solve_compact(m, d)
+    if m.ntree > 1:
+      island.compute_island_mapping(m, d, None)
+    return
+
   if d.njmax == 0 or m.nv == 0:
     wp.copy(d.qacc, d.qacc_smooth)
     d.solver_niter.fill_(0)
@@ -3148,7 +3468,7 @@ def solve(m: types.Model, d: types.Data):
       _solve(m, d, ctx)
 
 
-def _solve(m: types.Model, d: types.Data, ctx: SolverContext):
+def _solve(m: types.Model, d: types.Data, ctx: SolverContext, compact: bool = False):
   """Finds forces that satisfy constraints."""
   if not (m.opt.disableflags & types.DisableBit.WARMSTART):
     wp.copy(d.qacc, d.qacc_warmstart)
@@ -3156,7 +3476,7 @@ def _solve(m: types.Model, d: types.Data, ctx: SolverContext):
     wp.copy(d.qacc, d.qacc_smooth)
 
   #  context
-  init_context(m, d, ctx, grad=True)
+  init_context(m, d, ctx, grad=True, compact=compact)
 
   # search = -Mgrad
   if m.opt.solver == types.SolverType.CG:
@@ -3185,13 +3505,13 @@ def _solve(m: types.Model, d: types.Data, ctx: SolverContext):
     # When the number of iterations reaches m.opt.iterations, solver_niter
     # becomes zero and all worlds are marked as converged to avoid an infinite loop.
     # note: we only launch the iteration kernel if everything is not done
-    wp.capture_while(nsolving, while_body=_solver_iteration, m=m, d=d, ctx=ctx, nsolving=nsolving)
+    wp.capture_while(nsolving, while_body=_solver_iteration, m=m, d=d, ctx=ctx, nsolving=nsolving, compact=compact)
   else:
     # This branch is mostly for when JAX is used as it is currently not compatible
     # with CUDA graph conditional.
     # It should be removed when JAX becomes compatible.
     for _ in range(m.opt.iterations):
-      _solver_iteration(m, d, ctx, nsolving)
+      _solver_iteration(m, d, ctx, nsolving, compact=compact)
 
 
 # TODO(team): Consolidate monolithic and island solver code where possible
@@ -5306,3 +5626,315 @@ def _solver_iteration_island(
     ],
     outputs=[d.solver_niter, ctx.done, ctx.solver_niter, nsolving],
   )
+
+
+# Active-DOF compaction solve (nvmax < nv).
+#
+# When fewer than nv DOFs are active, the active set is packed into a contiguous
+# [0, ncdof) range (see island.update_active_dofs) and the dense factor/solve runs at
+# size nvmax_pad instead of nv. The compacted workspace lives on Data as c* fields
+# (mirroring the island-local i* fields). The constrained solve gathers into compacted
+# arrays, shallow-replaces (m, d) so the stock dense Newton solver runs at nvmax_pad,
+# then scatters qacc/qfrc_constraint back, freezing inactive DOFs to 0.
+
+
+@wp.kernel
+def _init_compact_inertia(
+  # Data in:
+  ncdof_in: wp.array[int],
+  # Out:
+  M_c_out: wp.array3d[float],
+):
+  worldid, i, j = wp.tid()
+  val = 0.0
+  if i == j and i >= ncdof_in[worldid]:
+    val = 1.0
+  M_c_out[worldid, i, j] = val
+
+
+@wp.kernel
+def _gather_M_sparse(
+  # Model:
+  M_rownnz: wp.array[int],
+  M_rowadr: wp.array[int],
+  M_colind: wp.array[int],
+  # Data in:
+  M_in: wp.array2d[float],
+  dof_cdof_in: wp.array2d[int],
+  # Out:
+  M_c_out: wp.array3d[float],
+):
+  worldid, i = wp.tid()
+  ci = dof_cdof_in[worldid, i]
+  if ci < 0:
+    return
+  rowadr = M_rowadr[i]
+  for k in range(M_rownnz[i]):
+    adr = rowadr + k
+    cj = dof_cdof_in[worldid, M_colind[adr]]
+    if cj >= 0:
+      val = M_in[worldid, adr]
+      M_c_out[worldid, ci, cj] = val
+      M_c_out[worldid, cj, ci] = val
+
+
+@wp.kernel
+def _gather_rhs_compact(
+  # Data in:
+  cdof_dof_in: wp.array2d[int],
+  # In:
+  vec_in: wp.array2d[float],
+  # Out:
+  rhs_out: wp.array3d[float],
+):
+  worldid, ci = wp.tid()
+  dof = cdof_dof_in[worldid, ci]
+  if dof >= 0:
+    rhs_out[worldid, ci, 0] = vec_in[worldid, dof]
+  else:
+    rhs_out[worldid, ci, 0] = 0.0
+
+
+@wp.kernel
+def _scatter_solution(
+  # Data in:
+  dof_cdof_in: wp.array2d[int],
+  # In:
+  x_in: wp.array3d[float],
+  # Out:
+  vec_out: wp.array2d[float],
+):
+  worldid, i = wp.tid()
+  ci = dof_cdof_in[worldid, i]
+  if ci >= 0:
+    vec_out[worldid, i] = x_in[worldid, ci, 0]
+  else:
+    vec_out[worldid, i] = 0.0  # frozen inactive DOF
+
+
+@event_scope
+def smooth_solve_compact(m: types.Model, d: types.Data):
+  """Compacted equivalent of solve_m: qacc_smooth[active] = cM^-1 qfrc_smooth[active].
+
+  Inactive DOFs are frozen (qacc_smooth set to 0). Reads the sparse Model inertia.
+  """
+  wp.launch(
+    _init_compact_inertia,
+    dim=(d.nworld, d.nvmax_pad, d.nvmax_pad),
+    inputs=[d.ncdof],
+    outputs=[d.cM],
+  )
+  wp.launch(
+    _gather_M_sparse,
+    dim=(d.nworld, m.nv),
+    inputs=[m.M_rownnz, m.M_rowadr, m.M_colind, d.M, d.dof_cdof],
+    outputs=[d.cM],
+  )
+  wp.launch(
+    _gather_rhs_compact,
+    dim=(d.nworld, d.nvmax_pad),
+    inputs=[d.cdof_dof, d.qfrc_smooth],
+    outputs=[d.crhs],
+  )
+  wp.launch_tiled(
+    _update_gradient_cholesky_blocked(types.TILE_SIZE_JTDAJ_DENSE, d.nvmax_pad, False),
+    dim=d.nworld,
+    inputs=[wp.empty(0, dtype=bool), d.crhs, d.cM, d.cqLD],
+    outputs=[d.cx],
+    block_dim=m.block_dim.update_gradient_cholesky_blocked,
+  )
+  wp.launch(_scatter_solution, dim=(d.nworld, m.nv), inputs=[d.dof_cdof, d.cx], outputs=[d.qacc_smooth])
+
+
+@wp.kernel
+def _gather_dof_vecs_compact(
+  # Data in:
+  qacc_warmstart_in: wp.array2d[float],
+  qfrc_smooth_in: wp.array2d[float],
+  qacc_smooth_in: wp.array2d[float],
+  cdof_dof_in: wp.array2d[int],
+  # Out:
+  qfrc_smooth_c_out: wp.array2d[float],
+  qacc_smooth_c_out: wp.array2d[float],
+  qacc_warmstart_c_out: wp.array2d[float],
+):
+  worldid, ci = wp.tid()
+  dof = cdof_dof_in[worldid, ci]
+  if dof >= 0:
+    qfrc_smooth_c_out[worldid, ci] = qfrc_smooth_in[worldid, dof]
+    qacc_smooth_c_out[worldid, ci] = qacc_smooth_in[worldid, dof]
+    qacc_warmstart_c_out[worldid, ci] = qacc_warmstart_in[worldid, dof]
+  else:
+    qfrc_smooth_c_out[worldid, ci] = 0.0
+    qacc_smooth_c_out[worldid, ci] = 0.0
+    qacc_warmstart_c_out[worldid, ci] = 0.0
+
+
+@wp.kernel
+def _scatter_dof_vecs(
+  # Data in:
+  dof_cdof_in: wp.array2d[int],
+  # In:
+  qacc_c_in: wp.array2d[float],
+  qfrc_constraint_c_in: wp.array2d[float],
+  # Data out:
+  qacc_out: wp.array2d[float],
+  qfrc_constraint_out: wp.array2d[float],
+):
+  worldid, i = wp.tid()
+  ci = dof_cdof_in[worldid, i]
+  if ci >= 0:
+    qacc_out[worldid, i] = qacc_c_in[worldid, ci]
+    qfrc_constraint_out[worldid, i] = qfrc_constraint_c_in[worldid, ci]
+  else:
+    qacc_out[worldid, i] = 0.0
+    qfrc_constraint_out[worldid, i] = 0.0
+
+
+@wp.kernel
+def _gather_J_sparse(
+  # Data in:
+  nefc_in: wp.array[int],
+  dof_cdof_in: wp.array2d[int],
+  # In:
+  J_rownnz_in: wp.array2d[int],
+  J_rowadr_in: wp.array2d[int],
+  J_colind_in: wp.array3d[int],
+  J_in: wp.array3d[float],
+  # Out:
+  J_c_out: wp.array3d[float],
+):
+  worldid, efcid = wp.tid()
+  if efcid >= nefc_in[worldid]:
+    return
+  rowadr = J_rowadr_in[worldid, efcid]
+  for k in range(J_rownnz_in[worldid, efcid]):
+    adr = rowadr + k
+    cj = dof_cdof_in[worldid, J_colind_in[worldid, 0, adr]]
+    if cj >= 0:
+      J_c_out[worldid, efcid, cj] = J_in[worldid, 0, adr]
+
+
+@wp.kernel
+def _gather_J_dense(
+  # Data in:
+  nefc_in: wp.array[int],
+  dof_cdof_in: wp.array2d[int],
+  # In:
+  J_in: wp.array3d[float],
+  # Out:
+  J_c_out: wp.array3d[float],
+):
+  worldid, efcid = wp.tid()
+  if efcid >= nefc_in[worldid]:
+    return
+  nv = dof_cdof_in.shape[1]
+  for j in range(nv):
+    cj = dof_cdof_in[worldid, j]
+    if cj >= 0:
+      J_c_out[worldid, efcid, cj] = J_in[worldid, efcid, j]
+
+
+@event_scope
+def solve_compact(m: types.Model, d: types.Data):
+  """Run the dense Newton constraint solver in compacted DOF space.
+
+  Gathers the active-DOF inertia, constraint Jacobian, and smooth/warmstart vectors
+  into nvmax_pad-sized dense workspaces, runs the stock dense Newton solver on a
+  shallow-replaced (m, d) at nvmax_pad, then scatters qacc/qfrc_constraint back.
+  Inactive DOFs are frozen to 0. Reads the sparse Model inertia and constraint J.
+  """
+  _compact_gather(m, d)
+
+  # shallow-replace (m, d) so the stock dense Newton solver runs at nvmax_pad.
+  # Keep graph-conditional early-exit on CUDA (matches baseline: stops at convergence
+  # instead of running all iterations); fall back to the plain loop on CPU.
+  nvp = d.nvmax_pad
+  gc = m.opt.graph_conditional and wp.get_device().is_cuda
+  opt2 = dataclasses.replace(m.opt, graph_conditional=gc, tolerance=d.ctol, ls_tolerance=d.cls_tol)
+  m2 = dataclasses.replace(
+    m, opt=opt2, nv=nvp, nv_pad=nvp, is_sparse=False, dof_tri_row=d.cdof_tri_row, dof_tri_col=d.cdof_tri_col
+  )
+  efc2 = dataclasses.replace(d.efc, J=d.cJ, Ma=d.cMa)
+  d2 = dataclasses.replace(
+    d,
+    M=d.cM,
+    qfrc_smooth=d.cqfrc_smooth,
+    qacc_smooth=d.cqacc_smooth,
+    qacc_warmstart=d.cqacc_warmstart,
+    qacc=d.cqacc,
+    qfrc_constraint=d.cqfrc_constraint,
+    efc=efc2,
+  )
+
+  sctx = _create_solver_context(m2, d2)
+  _solve(m2, d2, sctx, compact=True)
+
+  _compact_scatter(m, d)
+
+
+@event_scope
+def _compact_gather(m: types.Model, d: types.Data):
+  nvp = d.nvmax_pad
+  # gather compacted dense inertia (identity-padded tail)
+  wp.launch(
+    _init_compact_inertia,
+    dim=(d.nworld, nvp, nvp),
+    inputs=[d.ncdof],
+    outputs=[d.cM],
+  )
+
+  wp.launch(
+    _gather_M_sparse,
+    dim=(d.nworld, m.nv),
+    inputs=[m.M_rownnz, m.M_rowadr, m.M_colind, d.M, d.dof_cdof],
+    outputs=[d.cM],
+  )
+  # gather compacted dense constraint Jacobian (active columns only)
+  d.cJ.zero_()
+  if m.is_sparse:
+    wp.launch(
+      _gather_J_sparse,
+      dim=(d.nworld, d.njmax),
+      inputs=[d.nefc, d.dof_cdof, d.efc.J_rownnz, d.efc.J_rowadr, d.efc.J_colind, d.efc.J],
+      outputs=[d.cJ],
+    )
+  else:
+    wp.launch(
+      _gather_J_dense,
+      dim=(d.nworld, d.njmax),
+      inputs=[d.nefc, d.dof_cdof, d.efc.J],
+      outputs=[d.cJ],
+    )
+  # gather compacted DOF-space vectors in a single launch
+  wp.launch(
+    _gather_dof_vecs_compact,
+    dim=(d.nworld, nvp),
+    inputs=[
+      d.qacc_warmstart,
+      d.qfrc_smooth,
+      d.qacc_smooth,
+      d.cdof_dof,
+    ],
+    outputs=[
+      d.cqfrc_smooth,
+      d.cqacc_smooth,
+      d.cqacc_warmstart,
+    ],
+  )
+
+
+@event_scope
+def _compact_scatter(m: types.Model, d: types.Data):
+  # scatter results back to full DOF space (inactive frozen to 0) in one launch
+  wp.launch(
+    _scatter_dof_vecs,
+    dim=(d.nworld, m.nv),
+    inputs=[d.dof_cdof, d.cqacc, d.cqfrc_constraint],
+    outputs=[d.qacc, d.qfrc_constraint],
+  )
+
+  # Refresh full d.efc.Ma = M @ qacc. The integrators (Euler/implicit damping) use Ma as
+  # the RHS; the compact solve only populated the compacted Ma, so recompute it in full
+  # space. Inactive DOFs have qacc=0 so their Ma is 0 and they stay frozen.
+  support.mul_m(m, d, d.efc.Ma, d.qacc)
