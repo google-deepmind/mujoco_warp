@@ -1820,7 +1820,7 @@ def _plane_normal(v1: wp.vec3, v2: wp.vec3, n: wp.vec3) -> Tuple[float, wp.vec3]
 
 @wp.func
 def _halfspace(a: wp.vec3, n: wp.vec3, p: wp.vec3) -> bool:
-  return wp.dot(p - a, n) > -1e-15
+  return wp.dot(p - a, n) > -MINVAL
 
 
 @wp.func
@@ -1829,7 +1829,7 @@ def _plane_intersect(pn: wp.vec3, pd: float, a: wp.vec3, b: wp.vec3) -> float:
   dot = wp.dot(pn, b - a)
 
   # parallel; no intersection
-  if wp.abs(dot) < 1e-10:
+  if wp.abs(dot) == 0.0:
     return FLOAT_MAX
 
   return (pd - wp.dot(pn, a)) / dot
