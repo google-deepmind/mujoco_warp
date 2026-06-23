@@ -628,12 +628,16 @@ def fwd_position(m: Model, d: Data, factorize: bool = True):
     if sleep_enabled:
       # pass 1
       collision_driver.collision(m, d)
-      # check for newly awake
-      skip = wp.zeros(1, dtype=int)
-      sleep.wake_collision(m, d, skip)
+      # wake any sleeping tree touched by an awake one
+      sleep.wake_collision(m, d)
+      # snapshot the awake state pass 1 used, before update_sleep overwrites it. a body is "newly
+      # awakened" if it was asleep here but awake after update_sleep below.
+      awake_prev = wp.clone(d.body_awake)
       sleep.update_sleep(m, d)
-      # pass 2: broadphase kernels early-return if skip[0] is 0
-      collision_driver.collision(m, d, skip)
+      # pass 2: passing awake_prev runs the incremental pass, emitting only pairs involving a
+      # newly-awakened body and appending them to the pass-1 buffer. collision() skips the
+      # broadphase entirely via a CUDA graph conditional on steps where nothing woke.
+      collision_driver.collision(m, d, awake_prev=awake_prev)
     else:
       collision_driver.collision(m, d)
 
