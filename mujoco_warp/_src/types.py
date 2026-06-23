@@ -975,7 +975,6 @@ class Model:
     nmocap: number of mocap bodies
     nplugin: number of plugin instances
     nJmom: number of non-zeros in actuator_moment
-    ngravcomp: number of bodies with nonzero gravcomp
     nuserdata: number of custom user parameters
     nsensordata: number of elements in sensor data vector
     nhistory: number of history buffer entries
@@ -1439,7 +1438,6 @@ class Model:
   nmocap: int
   nplugin: int
   nJmom: int
-  ngravcomp: int
   nuserdata: int
   nsensordata: int
   nhistory: int

@@ -3040,7 +3040,6 @@ def set_const_fixed(m: types.Model, d: types.Data):
 
   Computes:
     - body_subtreemass: mass of body and all descendants (depends on body_mass)
-    - ngravcomp: count of bodies with gravity compensation (depends on body_gravcomp)
 
   Args:
     m: The model containing kinematic and dynamic information (device).
@@ -3054,10 +3053,6 @@ def set_const_fixed(m: types.Model, d: types.Data):
       dim=(d.nworld, body_tree.size),
       inputs=[m.body_parentid, m.body_subtreemass, body_tree],
     )
-
-  # TODO(team): refactor for graph capture compatibility
-  body_gravcomp_np = m.body_gravcomp.numpy()
-  m.ngravcomp = int((body_gravcomp_np > 0.0).any(axis=0).sum())
 
 
 def set_const_0(m: types.Model, d: types.Data):
@@ -3286,7 +3281,6 @@ def set_const(m: types.Model, d: types.Data):
   Computes:
     - Fixed quantities (via set_const_fixed):
       - body_subtreemass: mass of body and all descendants
-      - ngravcomp: count of bodies with gravity compensation
     - qpos0-dependent quantities (via set_const_0):
       - tendon_length0: tendon resting lengths
       - dof_invweight0: inverse inertia for DOFs

@@ -1407,6 +1407,9 @@ class IOTest(parameterized.TestCase):
         arr = getattr(m, f.name)
         mj_arr = getattr(mjm, f.name)
 
+        if not hasattr(mj_arr, "shape"):
+          continue
+
         # check that field is not empty
         if 0 in mj_arr.shape + arr.shape:
           continue
@@ -1544,35 +1547,6 @@ class IOTest(parameterized.TestCase):
     np.testing.assert_allclose(m.body_subtreemass.numpy()[0, 3], 30.0, rtol=1e-6)
     np.testing.assert_allclose(m.body_subtreemass.numpy()[0, 4], 40.0, rtol=1e-6)
 
-  def test_set_fixed_ngravcomp(self):
-    """Test ngravcomp counting with gravcomp bodies."""
-    mjm, mjd, m, d = test_data.fixture(
-      xml="""
-    <mujoco>
-      <worldbody>
-        <body name="body1" gravcomp="1">
-          <joint name="j1" type="hinge" axis="0 0 1"/>
-          <geom name="g1" type="sphere" size="0.1" mass="1.0"/>
-        </body>
-        <body name="body2" pos="1 0 0" gravcomp="0">
-          <joint name="j2" type="hinge" axis="0 0 1"/>
-          <geom name="g2" type="sphere" size="0.1" mass="1.0"/>
-        </body>
-        <body name="body3" pos="2 0 0" gravcomp="1">
-          <joint name="j3" type="hinge" axis="0 0 1"/>
-          <geom name="g3" type="sphere" size="0.1" mass="1.0"/>
-        </body>
-      </worldbody>
-    </mujoco>
-    """
-    )
-
-    mujoco.mj_setConst(mjm, mjd)
-    mjwarp.set_const(m, d)
-
-    self.assertEqual(m.ngravcomp, mjm.ngravcomp)
-    self.assertEqual(m.ngravcomp, 2)  # body1 and body3
-
   def test_set_const_camera_light_positions(self):
     """Test camera and light reference position computations."""
     mjm, mjd, m, d = test_data.fixture(
@@ -1701,12 +1675,11 @@ class IOTest(parameterized.TestCase):
 
   @absltest.skipIf(not wp.get_device().is_cuda, "Skipping test that requires GPU.")
   def test_set_const_graph_capture(self):
-    """Test that set_const_0 is compatible with CUDA graph capture."""
+    """Test that set_const is compatible with CUDA graph capture."""
     _, _, m, d = test_data.fixture("humanoid/humanoid.xml", keyframe=0)
 
     with wp.ScopedCapture() as capture:
-      mjwarp.set_const_0(m, d)
-      # TODO(team): set_const_fixed
+      mjwarp.set_const(m, d)
 
     wp.capture_launch(capture.graph)
 
