@@ -1246,7 +1246,7 @@ def _epa(
   # so iterations must be cap to limit the number of generated vertices
   # (one new vertex per iteration)
   epa_iterations = wp.min(epa_iterations, 1000)
-  for _ in range(epa_iterations):
+  for k in range(epa_iterations):
     pidx = idx
     idx = int(-1)
     lower2 = float(FLOAT_MAX)
@@ -1283,6 +1283,9 @@ def _epa(
       upper2 = upper * upper
 
     if upper - lower < epsilon:
+      # terminate without contact when upper < lower on first iteration
+      if k == 0 and upper < lower - 1e-10:
+        idx = -1
       break
 
     # check if vertex wi is a repeated support point
