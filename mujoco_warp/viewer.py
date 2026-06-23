@@ -49,7 +49,12 @@ class EngineOptions(enum.IntEnum):
 _ENGINE = flags.DEFINE_enum_class("engine", EngineOptions.WARP, EngineOptions, "Simulation engine")
 from mujoco_warp._src import cli
 
-_VIEWER = flags.DEFINE_enum("viewer", "mujoco", ["mujoco", "viser"], "Viewer backend (mujoco native or mjviser web)")
+_VIEWER = flags.DEFINE_enum(
+  "viewer",
+  "mujoco",
+  ["mujoco", "studio", "viser"],
+  "Viewer backend (mujoco native, mujoco studio, or mjviser web)",
+)
 
 _VIEWER_GLOBAL_STATE = {"running": True, "step_once": False}
 
@@ -137,6 +142,33 @@ def _run_passive_viewer(mjm, mjd, step_fn):
         time.sleep(mjm.opt.timestep - elapsed)
 
 
+def _run_studio_viewer(mjm, mjd, step_fn):
+  from mujoco_warp._src.util_pkg import check_version
+
+  if check_version("mujoco<3.10.1.dev941727670"):
+    raise RuntimeError("Studio viewer is not available. Please install mujoco>=3.10.1.dev941727670")
+
+  from mujoco.experimental.studio import native_viewer
+  from mujoco.experimental.studio import studio_app
+  from mujoco.experimental.studio import viewer_protocol
+
+  app = studio_app.StudioApp(mjm, mjd)
+  config = viewer_protocol.ViewerConfig(
+    width=1200,
+    height=800,
+    gfx=None,
+  )
+  viewer = native_viewer.NativeViewer(config)
+
+  while viewer.is_running() and app.is_running():
+    if not app.update_from_viewer(viewer, step_fn=step_fn):
+      break
+    app.build_gui(viewer.camera, viewer.vis_options, viewer.render_flags)
+    viewer.sync(app.model, app.data)
+
+  viewer.stop()
+
+
 def _main(argv: Sequence[str]) -> None:
   """Runs viewer app."""
   if len(argv) < 2:
@@ -188,6 +220,8 @@ def _main(argv: Sequence[str]) -> None:
   mjw.get_data_into(mjd, mjm, d)
   if _VIEWER.value == "viser":
     _run_viser_viewer(mjm, mjd, step_fn)
+  elif _VIEWER.value == "studio":
+    _run_studio_viewer(mjm, mjd, step_fn)
   else:
     _run_passive_viewer(mjm, mjd, step_fn)
 
