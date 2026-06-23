@@ -800,7 +800,7 @@ def _init_efc_arrays(
 
 
 @event_scope
-def compute_island_mapping(m: types.Model, d: types.Data, ctx: IslandSolverContext):
+def compute_island_mapping(m: types.Model, d: types.Data, ctx: IslandSolverContext | None = None):
   """Compute DOF/constraint island mappings after island discovery.
 
   Populates island solver context arrays via ctx: nv, nefc, ne, nf,
@@ -838,7 +838,7 @@ def compute_island_mapping(m: types.Model, d: types.Data, ctx: IslandSolverConte
       d.island_nefc,
       d.island_ne,
       d.island_nf,
-      d.island_efcadr,
+      d.island_iefcadr,
       d.nidof,
     ],
   )
@@ -905,7 +905,7 @@ def compute_island_mapping(m: types.Model, d: types.Data, ctx: IslandSolverConte
     _island_scan_sizes,
     dim=d.nworld,
     inputs=[d.nisland],
-    outputs=[d.island_idofadr, d.island_nv, d.island_nefc, d.island_efcadr, d.nidof],
+    outputs=[d.island_idofadr, d.island_nv, d.island_nefc, d.island_iefcadr, d.nidof],
   )
 
   # 4. Map DOFs
@@ -930,7 +930,7 @@ def compute_island_mapping(m: types.Model, d: types.Data, ctx: IslandSolverConte
       d.nefc,
       d.njmax,
       d.efc.island,
-      d.island_efcadr,
+      d.island_iefcadr,
       d.island_ne,
       d.island_nf,
       d.efc.type,
@@ -942,12 +942,12 @@ def compute_island_mapping(m: types.Model, d: types.Data, ctx: IslandSolverConte
   )
 
   # 6. Scan Sparse Rows (if sparse)
-  if m.is_sparse:
+  if m.is_sparse and ctx is not None:
     wp.launch(
       _island_scan_sparse_rows,
       dim=d.nworld,
-      inputs=[d.nisland, d.efc.J_rownnz, d.island_nefc, d.island_efcadr, d.map_iefc2efc],
-      outputs=[d.efc.iJ_rownnz, d.efc.iJ_rowadr],
+      inputs=[d.nisland, d.efc.J_rownnz, d.island_nefc, d.island_iefcadr, d.map_iefc2efc],
+      outputs=[ctx.iJ_rownnz, ctx.iJ_rowadr],
     )
 
 
@@ -981,7 +981,7 @@ def gather_island_inputs(m: types.Model, d: types.Data, ctx: IslandSolverContext
       d.efc.J_rownnz,
       d.efc.J_rowadr,
       d.efc.J_colind,
-      d.efc.iJ_rowadr,
+      ctx.iJ_rowadr,
       d.njmax,
       d.map_iefc2efc,
       d.map_idof2dof,
@@ -994,8 +994,8 @@ def gather_island_inputs(m: types.Model, d: types.Data, ctx: IslandSolverContext
       d.efc.iid,
       d.efc.ifrictionloss,
       d.efc.iaref,
-      d.efc.iJ,
-      d.efc.iJ_colind,
+      ctx.iJ,
+      ctx.iJ_colind,
     ],
   )
 

@@ -97,17 +97,6 @@ def _create_constraint(
       efc_kwargs[f.name] = wp.empty((nworld, njmax if island_enabled else 0), dtype=int)
     elif f.name == "iid":
       efc_kwargs[f.name] = wp.empty((nworld, njmax if island_enabled else 0), dtype=int)
-    elif f.name == "iJ_rownnz":
-      efc_kwargs[f.name] = wp.empty((nworld, njmax if island_enabled else 0) if sparse else (nworld, 0), dtype=int)
-    elif f.name == "iJ_rowadr":
-      efc_kwargs[f.name] = wp.empty((nworld, njmax if island_enabled else 0) if sparse else (nworld, 0), dtype=int)
-    elif f.name == "iJ_colind":
-      efc_kwargs[f.name] = wp.empty((nworld, 1, njmax_nnz if island_enabled else 0) if sparse else (nworld, 0, 0), dtype=int)
-    elif f.name == "iJ":
-      efc_kwargs[f.name] = wp.empty(
-        (nworld, 1, njmax_nnz if island_enabled else 0) if sparse else (nworld, njmax if island_enabled else 0, mjm.nv),
-        dtype=float,
-      )
     elif f.name == "iD":
       efc_kwargs[f.name] = wp.empty((nworld, njmax if island_enabled else 0), dtype=float)
     elif f.name == "iaref":
@@ -1338,7 +1327,7 @@ def _allocate_island_arrays(
   d.island_nefc = wp.empty((nworld, ntree_size), dtype=int)
   d.island_ne = wp.empty((nworld, ntree_size), dtype=int)
   d.island_nf = wp.empty((nworld, ntree_size), dtype=int)
-  d.island_efcadr = wp.empty((nworld, ntree_size), dtype=int)
+  d.island_iefcadr = wp.empty((nworld, ntree_size), dtype=int)
   d.nidof = wp.empty((nworld if island_enabled else 0,), dtype=int)
   d.map_dof2idof = wp.empty((nworld, nv_size), dtype=int)
   d.map_idof2dof = wp.empty((nworld, nv_size), dtype=int)
@@ -1599,7 +1588,7 @@ def make_data(
     "island_nefc": None,
     "island_ne": None,
     "island_nf": None,
-    "island_efcadr": None,
+    "island_iefcadr": None,
     "nidof": None,
     "map_dof2idof": None,
     "map_idof2dof": None,
@@ -1867,7 +1856,7 @@ def put_data(
     "island_nefc": None,
     "island_ne": None,
     "island_nf": None,
-    "island_efcadr": None,
+    "island_iefcadr": None,
     "nidof": None,
     "map_dof2idof": None,
     "map_idof2dof": None,
@@ -2159,7 +2148,7 @@ def get_data_into(
     result.island_nefc[:nisland] = d.island_nefc.numpy()[world_id, :nisland]
     result.island_ne[:nisland] = d.island_ne.numpy()[world_id, :nisland]
     result.island_nf[:nisland] = d.island_nf.numpy()[world_id, :nisland]
-    result.island_iefcadr[:nisland] = d.island_efcadr.numpy()[world_id, :nisland]
+    result.island_iefcadr[:nisland] = d.island_iefcadr.numpy()[world_id, :nisland]
     nv = mjm.nv
     result.map_dof2idof[:nv] = d.map_dof2idof.numpy()[world_id, :nv]
     result.map_idof2dof[:nv] = d.map_idof2dof.numpy()[world_id, :nv]
@@ -2173,29 +2162,6 @@ def get_data_into(
     result.iefc_frictionloss[:nefc] = d.efc.ifrictionloss.numpy()[world_id, :nefc]
     result.iefc_state[:nefc] = d.efc.istate.numpy()[world_id, :nefc]
     result.iefc_force[:nefc] = d.efc.iforce.numpy()[world_id, :nefc]
-
-    if is_sparse(mjm):
-      iefc_J = np.zeros((nefc, mjm.nv))
-      mujoco.mju_sparse2dense(
-        iefc_J,
-        d.efc.iJ.numpy()[world_id, 0],
-        d.efc.iJ_rownnz.numpy()[world_id, :nefc],
-        d.efc.iJ_rowadr.numpy()[world_id, :nefc],
-        d.efc.iJ_colind.numpy()[world_id, 0],
-      )
-    else:
-      iefc_J = d.efc.iJ.numpy()[world_id, :nefc, : mjm.nv]
-
-    if mujoco.mj_isSparse(mjm):
-      mujoco.mju_dense2sparse(
-        result.iefc_J,
-        iefc_J,
-        result.iefc_J_rownnz,
-        result.iefc_J_rowadr,
-        result.iefc_J_colind,
-      )
-    else:
-      result.iefc_J[: nefc * mjm.nv] = iefc_J.flatten()
 
 
 def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):

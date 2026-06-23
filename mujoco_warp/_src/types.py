@@ -1928,12 +1928,6 @@ class Constraint:
     island: island ID per constraint                  (nworld, njmax)
     itype: island constraint type                     (nworld, njmax)
     iid: island constraint id                         (nworld, njmax)
-    iJ_rownnz: island J_rownnz                        (nworld, njmax)
-    iJ_rowadr: island J_rowadr                        (nworld, njmax)
-    iJ_colind: island J_colind                        (nworld, 0, 0) dense
-                                                      (nworld, 1, njmax_nnz) sparse
-    iJ: island J                                      (nworld, njmax, nv) dense
-                                                      (nworld, 1, njmax_nnz) sparse
     iD: island constraint mass                        (nworld, njmax_pad)
     iaref: island aref                                (nworld, njmax)
     ifrictionloss: island frictionloss                (nworld, njmax)
@@ -1964,10 +1958,6 @@ class Constraint:
 
   itype: array("nworld", "njmax", int)
   iid: array("nworld", "njmax", int)
-  iJ_rownnz: array("nworld", "njmax", int)
-  iJ_rowadr: array("nworld", "njmax", int)
-  iJ_colind: wp.array3d[int]
-  iJ: wp.array3d[float]
   iD: array("nworld", "njmax_pad", float)
   iaref: array("nworld", "njmax", float)
   ifrictionloss: array("nworld", "njmax", float)
@@ -2084,7 +2074,7 @@ class Data:
     island_nefc: constraints per island                         (nworld, ntree)
     island_ne: equality constraints per island                  (nworld, ntree)
     island_nf: friction constraints per island                  (nworld, ntree)
-    island_efcadr: island start address in efc vector           (nworld, ntree)
+    island_iefcadr: island start address in efc vector          (nworld, ntree)
     map_dof2idof: global DOF -> island-local DOF                (nworld, nv)
     map_idof2dof: island-local DOF -> global DOF                (nworld, nv)
     map_efc2iefc: global EFC -> island-local EFC                (nworld, njmax)
@@ -2230,7 +2220,7 @@ class Data:
   island_nefc: array("nworld", "ntree", int)
   island_ne: array("nworld", "ntree", int)
   island_nf: array("nworld", "ntree", int)
-  island_efcadr: array("nworld", "ntree", int)
+  island_iefcadr: array("nworld", "ntree", int)
   map_dof2idof: array("nworld", "nv", int)
   map_idof2dof: array("nworld", "nv", int)
   map_efc2iefc: array("nworld", "njmax", int)
@@ -2313,6 +2303,12 @@ class IslandSolverContext:
   beta_den: wp.array2d[float]
   alpha: wp.array2d[float]
   Ma: wp.array2d[float]  # island-local Ma (nworld, nv)
+
+  # Re-ordered sparse Jacobian arrays
+  iJ_rownnz: wp.array2d[int]
+  iJ_rowadr: wp.array2d[int]
+  iJ_colind: wp.array3d[int]
+  iJ: wp.array3d[float]
 
 
 @dataclasses.dataclass
