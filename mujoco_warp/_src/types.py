@@ -28,8 +28,8 @@ MJ_MAXCONPAIR = mujoco.mjMAXCONPAIR
 MJ_MINMU = mujoco.mjMINMU  # minimum friction
 MJ_MINAWAKE = mujoco.mjMINAWAKE  # minimum number of timesteps before sleeping
 # maximum size (by number of edges) of an horizon in EPA algorithm
-MJ_MAX_EPAHORIZON = 24
-# maximum average number of trianglarfaces EPA can insert at each iteration
+MJ_MAX_EPAHORIZON = 30
+# maximum average number of triangular faces EPA can insert at each iteration
 MJ_MAX_EPAFACES = 5
 
 TILE_SIZE_JTDAJ_SPARSE = 16
