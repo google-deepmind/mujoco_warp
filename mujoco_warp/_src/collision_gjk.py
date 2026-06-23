@@ -28,14 +28,23 @@ wp.set_module_options({"enable_backward": False})
 
 FLOAT_MIN = -1e30
 FLOAT_MAX = 1e30
+
 MINVAL = 1e-15
-MIN_DIST = 1e-10
+MINVAL2 = 1e-30
+MAXVAL = 1e15
+MAXVAL2 = 1e30
+
+# polytope minimal interior distance to origin
+MIN_DIST2 = 1e-10
+MIN_DIST3 = 1e-10
+MIN_DIST4 = 1e-17
+
+# minimal tolerance for EPA
+MIN_EPATOL = 1e-7
 
 FACE_TOL = wp.static(math.cos(0.0016))
 EDGE_TOL = wp.static(math.sin(0.0016))
 
-# tolarance used by multicontact for intersecting a plane and a line segment
-INTERSECT_TOL = 0.0000003
 
 # Bit flags for face status in EPA polytope.
 # Defined at module scope to avoid Warp's intermediate type issues with literals.
@@ -185,19 +194,6 @@ def support(geom: Geom, geomtype: int, dir: wp.vec3) -> SupportPoint:
       if dist > max_dist:
         max_dist = dist
         sp.point = vert
-  elif geomtype == GeomType.TRIANGLE:
-    t1 = geom.rot[0, :]
-    t2 = geom.rot[1, :]
-    t3 = geom.rot[2, :]
-    d1 = wp.dot(t1, dir)
-    d2 = wp.dot(t2, dir)
-    d3 = wp.dot(t3, dir)
-    if d1 > d2 and d1 > d3:
-      sp.point = t1
-    elif d2 > d3:
-      sp.point = t2
-    else:
-      sp.point = t3
 
   if geom.margin > 0.0:
     sp.point += dir * (0.5 * geom.margin)
@@ -594,20 +590,18 @@ def gjk(
   simplex_index1 = wp.vec4i()
   simplex_index2 = wp.vec4i()
   n = int(0)
-  coordinates = wp.vec4()  # barycentric coordinates
+  coordinates = wp.vec4(1.0, 0.0, 0.0, 0.0)  # barycentric coordinates
   tol2 = tolerance * tolerance
   epsilon = wp.where(is_discrete, 0.0, 0.5 * tol2)
+  min_norm2 = wp.where(is_discrete, MINVAL * MINVAL, tol2)
 
   # set initial guess
   x_k = x1_0 - x2_0
-  xnorm_old = FLOAT_MAX
 
   for _ in range(gjk_iterations):
     xnorm = wp.dot(x_k, x_k)
-    # TODO(kbayes): determine new constant here
-    if xnorm < tol2 or wp.abs(xnorm_old - xnorm) < tol2:
+    if xnorm < min_norm2:
       break
-    xnorm_old = xnorm
     dir_neg = x_k / wp.sqrt(xnorm)
 
     # compute kth support point in geom1
@@ -625,6 +619,15 @@ def gjk(
     # compute the kth support point
     simplex[n] = simplex1[n] - simplex2[n]
 
+    # stopping criteria using the Frank-Wolfe duality gap given by
+    #  |f(x_k) - f(x_min)|^2 <= < grad f(x_k), (x_k - simplex[n]) >
+    if wp.dot(x_k, x_k - simplex[n]) < epsilon:
+      if n == 0:
+        n = 1
+      break
+
+    # if the hyperplane separates the Minkowski difference and origin, the
+    # objects don't collide; if geom distance isn't requested, return early
     if cutoff == 0.0:
       if wp.dot(x_k, simplex[n]) > 0.0:
         result = GJKResult()
@@ -638,11 +641,6 @@ def gjk(
         result.dim = 0
         result.dist = FLOAT_MAX
         return result
-
-    # stopping criteria using the Frank-Wolfe duality gap given by
-    #  |f(x_k) - f(x_min)|^2 <= < grad f(x_k), (x_k - simplex[n]) >
-    if wp.dot(x_k, x_k - simplex[n]) < epsilon:
-      break
 
     # run the distance subalgorithm to compute the barycentric coordinates
     # of the closest point to the origin in the simplex
@@ -997,27 +995,27 @@ def _polytope2(
   _epa_support(pt, 4, geom1, geom2, geomtype1, geomtype2, d3 / wp.norm_l2(d3))
 
   # build hexahedron
-  if _attach_face(pt, 0, 0, 2, 3) < MIN_DIST:
+  if _attach_face(pt, 0, 0, 2, 3) < MIN_DIST2:
     pt.status = -1
     return pt, _replace_simplex3(pt, 0, 2, 3)
 
-  if _attach_face(pt, 1, 0, 4, 2) < MIN_DIST:
+  if _attach_face(pt, 1, 0, 4, 2) < MIN_DIST2:
     pt.status = -1
     return pt, _replace_simplex3(pt, 0, 4, 2)
 
-  if _attach_face(pt, 2, 0, 3, 4) < MIN_DIST:
+  if _attach_face(pt, 2, 0, 3, 4) < MIN_DIST2:
     pt.status = -1
     return pt, _replace_simplex3(pt, 0, 3, 4)
 
-  if _attach_face(pt, 3, 1, 3, 2) < MIN_DIST:
+  if _attach_face(pt, 3, 1, 3, 2) < MIN_DIST2:
     pt.status = -1
     return pt, _replace_simplex3(pt, 1, 3, 2)
 
-  if _attach_face(pt, 4, 1, 2, 4) < MIN_DIST:
+  if _attach_face(pt, 4, 1, 2, 4) < MIN_DIST2:
     pt.status = -1
     return pt, _replace_simplex3(pt, 1, 2, 4)
 
-  if _attach_face(pt, 5, 1, 4, 3) < MIN_DIST:
+  if _attach_face(pt, 5, 1, 4, 3) < MIN_DIST2:
     pt.status = -1
     return pt, _replace_simplex3(pt, 1, 4, 3)
 
@@ -1098,22 +1096,22 @@ def _polytope3(
     return pt
 
   # create hexahedron for EPA
-  if _attach_face(pt, 0, 4, 0, 1) < MIN_DIST:
+  if _attach_face(pt, 0, 4, 0, 1) < MIN_DIST3:
     pt.status = 6
     return pt
-  if _attach_face(pt, 1, 4, 2, 0) < MIN_DIST:
+  if _attach_face(pt, 1, 4, 2, 0) < MIN_DIST3:
     pt.status = 7
     return pt
-  if _attach_face(pt, 2, 4, 1, 2) < MIN_DIST:
+  if _attach_face(pt, 2, 4, 1, 2) < MIN_DIST3:
     pt.status = 8
     return pt
-  if _attach_face(pt, 3, 3, 1, 0) < MIN_DIST:
+  if _attach_face(pt, 3, 3, 1, 0) < MIN_DIST3:
     pt.status = 9
     return pt
-  if _attach_face(pt, 4, 3, 0, 2) < MIN_DIST:
+  if _attach_face(pt, 4, 3, 0, 2) < MIN_DIST3:
     pt.status = 10
     return pt
-  if _attach_face(pt, 5, 3, 2, 1) < MIN_DIST:
+  if _attach_face(pt, 5, 3, 2, 1) < MIN_DIST3:
     pt.status = 11
     return pt
 
@@ -1154,19 +1152,19 @@ def _polytope4(
   pt.vert_index[7] = simplex_index2[3]
 
   # if the origin is on a face, replace the 3-simplex with a 2-simplex
-  if _attach_face(pt, 0, 0, 1, 2) < MIN_DIST:
+  if _attach_face(pt, 0, 0, 1, 2) < MIN_DIST4:
     pt.status = -1
     return pt, _replace_simplex3(pt, 0, 1, 2)
 
-  if _attach_face(pt, 1, 0, 3, 1) < MIN_DIST:
+  if _attach_face(pt, 1, 0, 3, 1) < MIN_DIST4:
     pt.status = -1
     return pt, _replace_simplex3(pt, 0, 3, 1)
 
-  if _attach_face(pt, 2, 0, 2, 3) < MIN_DIST:
+  if _attach_face(pt, 2, 0, 2, 3) < MIN_DIST4:
     pt.status = -1
     return pt, _replace_simplex3(pt, 0, 2, 3)
 
-  if _attach_face(pt, 3, 3, 2, 1) < MIN_DIST:
+  if _attach_face(pt, 3, 3, 2, 1) < MIN_DIST4:
     pt.status = -1
     return pt, _replace_simplex3(pt, 3, 2, 1)
 
@@ -1228,7 +1226,7 @@ def _epa(
   upper2 = FLOAT_MAX
   idx = int(-1)
   pidx = int(-1)
-  epsilon = wp.where(is_discrete, 1e-15, tolerance)
+  epsilon = wp.where(is_discrete, MIN_EPATOL, tolerance)
   nvalid = pt.nface  # number of potential faces for expanding the polytope
 
   # the face vertices are encoded in 10-bits that index the vertex array,
@@ -1803,13 +1801,13 @@ def _mesh_face(
 @wp.func
 def _plane_normal(v1: wp.vec3, v2: wp.vec3, n: wp.vec3) -> Tuple[float, wp.vec3]:
   v3 = v1 + n
-  res = wp.cross(v2 - v1, v3 - v1)
+  res = wp.normalize(wp.cross(v2 - v1, v3 - v1))
   return wp.dot(res, v1), res
 
 
 @wp.func
 def _halfspace(a: wp.vec3, n: wp.vec3, p: wp.vec3) -> bool:
-  return wp.dot(p - a, n) > -1e-10
+  return wp.dot(p - a, n) > -1e-15
 
 
 @wp.func
@@ -1888,7 +1886,7 @@ def _polygon_clip(
 
       # add new vertex to clipped polygon where PQ intersects the clipping edge
       t = _plane_intersect(pn[e], pd[e], P, Q)
-      if t > -INTERSECT_TOL and t < 1.0 + INTERSECT_TOL:
+      if t >= 0.0 and t <= 1.0:
         t = wp.clamp(t, 0.0, 1.0)
         clipped_out[nclipped] = P + t * (Q - P)
         nclipped += 1
