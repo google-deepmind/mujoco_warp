@@ -1295,6 +1295,20 @@ def fwd_acceleration(m: Model, d: Data, factorize: bool = False):
     smooth.solve_m(m, d, d.qacc_smooth, d.qfrc_smooth)
 
 
+def _energy_pos(m: Model, d: Data):
+  if m.opt.enableflags & EnableBit.ENERGY:
+    if m.sensor_e_potential == 0:  # not computed by sensor
+      sensor.energy_pos(m, d)
+  else:
+    d.energy.zero_()
+
+
+def _energy_vel(m: Model, d: Data):
+  if m.opt.enableflags & EnableBit.ENERGY:
+    if m.sensor_e_kinetic == 0:  # not computed by sensor
+      sensor.energy_vel(m, d)
+
+
 @event_scope
 def forward(m: Model, d: Data):
   """Forward dynamics."""
@@ -1303,23 +1317,14 @@ def forward(m: Model, d: Data):
     sleep.wake(m, d)
     sleep.update_sleep(m, d)
 
-  energy = m.opt.enableflags & EnableBit.ENERGY
-
   fwd_position(m, d, factorize=False)
   d.sensordata.zero_()
   sensor.sensor_pos(m, d)
-  if energy:
-    if m.sensor_e_potential == 0:  # not computed by sensor
-      sensor.energy_pos(m, d)
-  else:
-    d.energy.zero_()
+  _energy_pos(m, d)
 
   fwd_velocity(m, d)
   sensor.sensor_vel(m, d)
-
-  if energy:
-    if m.sensor_e_kinetic == 0:  # not computed by sensor
-      sensor.energy_vel(m, d)
+  _energy_vel(m, d)
 
   if not (m.opt.disableflags & DisableBit.ACTUATION):
     if m.callback.control:
@@ -1349,23 +1354,16 @@ def step(m: Model, d: Data):
 @event_scope
 def step1(m: Model, d: Data):
   """Advance simulation in two phases: before input is set by user."""
-  energy = m.opt.enableflags & EnableBit.ENERGY
   fwd_position(m, d)
   d.sensordata.zero_()
   sensor.sensor_pos(m, d)
 
-  if energy:
-    if m.sensor_e_potential == 0:  # not computed by sensor
-      sensor.energy_pos(m, d)
-  else:
-    d.energy.zero_()
+  _energy_pos(m, d)
 
   fwd_velocity(m, d)
   sensor.sensor_vel(m, d)
 
-  if energy:
-    if m.sensor_e_kinetic == 0:  # not computed by sensor
-      sensor.energy_vel(m, d)
+  _energy_vel(m, d)
 
   if not (m.opt.disableflags & DisableBit.ACTUATION):
     if m.callback.control:
