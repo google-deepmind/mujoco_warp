@@ -41,7 +41,7 @@ def _pow4(val: float) -> float:
 
 
 @wp.func
-def _geom_semiaxes(size: wp.vec3, geom_type: int) -> wp.vec3:  # kernel_analyzer: ignore
+def geom_semiaxes(size: wp.vec3, geom_type: int) -> wp.vec3:  # kernel_analyzer: ignore
   if geom_type == GeomType.SPHERE:
     r = size[0]
     return wp.vec3(r, r, r)
@@ -61,7 +61,7 @@ def _geom_semiaxes(size: wp.vec3, geom_type: int) -> wp.vec3:  # kernel_analyzer
 
 
 @wp.func
-def _ellipsoid_max_moment(size: wp.vec3, dir: int) -> float:
+def ellipsoid_max_moment(size: wp.vec3, dir: int) -> float:
   d0 = size[dir]
   d1 = size[(dir + 1) % 3]
   d2 = size[(dir + 2) % 3]
@@ -368,7 +368,7 @@ def _fluid_force(
         continue
 
       size = geom_size[worldid % geom_size.shape[0], geomid]
-      semiaxes = _geom_semiaxes(size, geom_type[geomid])
+      semiaxes = geom_semiaxes(size, geom_type[geomid])
       geom_rot = geom_xmat_in[worldid, geomid]
       geom_rotT = wp.transpose(geom_rot)
       geom_pos = geom_xpos_in[worldid, geomid]
@@ -449,9 +449,9 @@ def _fluid_force(
       lin_visc_torq_coef = wp.pi * eq_sphere_D * eq_sphere_D * eq_sphere_D
 
       I_max = wp.static(8.0 / 15.0 * wp.pi) * d_mid * _pow4(d_max)
-      II0 = _ellipsoid_max_moment(semiaxes, 0)
-      II1 = _ellipsoid_max_moment(semiaxes, 1)
-      II2 = _ellipsoid_max_moment(semiaxes, 2)
+      II0 = ellipsoid_max_moment(semiaxes, 0)
+      II1 = ellipsoid_max_moment(semiaxes, 1)
+      II2 = ellipsoid_max_moment(semiaxes, 2)
 
       mom_visc = wp.vec3(
         l_ang[0] * (ang_drag_coef * II0 + slender_drag_coef * (I_max - II0)),
