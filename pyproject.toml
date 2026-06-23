@@ -26,6 +26,12 @@ classifiers = [
     "Topic :: Scientific/Engineering",
 ]
 requires-python = ">=3.10"
+# NOTE: `warp-lang` is intentionally not listed as a dependency. On AMD/ROCm,
+# MJWarp runs against the ROCm fork of Warp (https://github.com/ROCm/warp),
+# which must be built and installed from source (the PyPI `warp-lang` wheels are
+# NVIDIA/CUDA-only). See the "Running on AMD / ROCm" section of the README for
+# build instructions. Installing MJWarp will not pull or overwrite your
+# source-built Warp.
 dependencies = [
     "absl-py",
     "etils[epath]",
@@ -34,17 +40,11 @@ dependencies = [
 ]
 
 [[tool.uv.index]]
-name = "nvidia"
-url = "https://pypi.nvidia.com/"
-explicit = true
-
-[[tool.uv.index]]
 name = "mujoco"
 url = "https://py.mujoco.org/"
 explicit = true
 
 [tool.uv.sources]
-warp-lang = {index = "nvidia"}
 mujoco = {index = "mujoco"}
 
 [project.optional-dependencies]

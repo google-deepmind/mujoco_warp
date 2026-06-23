@@ -43,6 +43,12 @@ def _unpack_rgb(packed):
   return np.stack([r, g, b], axis=-1)
 
 
+# The GPU batch renderer relies on CUDA textures (for materials) and the cuBQL
+# BVH builder, neither of which is available on HIP/ROCm. Skip the whole suite
+# on devices without texture support.
+@absltest.skipUnless(
+  test_data.supports_texture(), "Skipping render tests that require CUDA textures (unsupported on HIP/ROCm)."
+)
 class RenderTest(parameterized.TestCase):
   @parameterized.parameters(2, 512)
   def test_render(self, nworld: int):

@@ -19,10 +19,40 @@ from typing import Any, Optional, Sequence, Tuple
 
 import mujoco
 import numpy as np
+import warp as wp
 from etils import epath
 
 import mujoco_warp as mjw
 from mujoco_warp._src.io import override_model
+
+
+def supports_graph_capture() -> bool:
+  """Whether the active Warp device supports native graph capture.
+
+  This is False on HIP/ROCm devices, where native CUDA graph capture is not
+  available. Tests that wrap kernels in `wp.ScopedCapture` should be guarded
+  with this helper.
+  """
+  return wp.get_device().supports_graph_capture
+
+
+def supports_cubql() -> bool:
+  """Whether the active Warp device supports the cuBQL BVH builder.
+
+  This is False on HIP/ROCm devices (and on builds without cuBQL support).
+  Tests that build a render context / BVH (e.g. via `create_render_context`)
+  should be guarded with this helper.
+  """
+  return wp.get_device().supports_cubql
+
+
+def supports_texture() -> bool:
+  """Whether the active Warp device supports CUDA textures.
+
+  CUDA textures are unsupported on HIP/ROCm devices, so the GPU batch renderer
+  and any test creating Warp textures should be guarded with this helper.
+  """
+  return not wp.get_device().is_hip
 
 
 def fixture(

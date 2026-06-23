@@ -102,6 +102,42 @@ mjwarp-testspeed benchmarks/humanoid/humanoid.xml --event_trace
 
 `mjwarp-testspeed` has many configuration options, see ```mjwarp-testspeed --help``` for details.  For more details and advanced topics on using MJWarp, see the [MuJoCo Warp documentation](https://mujoco.readthedocs.io/en/latest/mjwarp/index.html).
 
+# Running on AMD / ROCm
+
+This fork targets AMD Instinct GPUs (e.g. MI300X / MI350 / MI355X, `gfx94x`/`gfx95x`) via the ROCm fork of Warp. MJWarp itself is backend-agnostic, but it relies on Warp for kernel compilation and execution, and the upstream `warp-lang` wheels on PyPI are CUDA-only. For this reason MJWarp does **not** declare `warp-lang` as a dependency: on ROCm you build and install Warp from source first, and then install MJWarp against that build.
+
+1. Build and install the ROCm fork of Warp from source (this produces the native `warp.so` for your ROCm install):
+
+```bash
+git clone --branch amd-integration https://github.com/ROCm/warp.git && cd warp
+python build_lib.py        # compiles the native Warp library against your ROCm toolchain
+pip install -e .           # installs warp-lang (e.g. 1.x+rocm) in editable mode
+```
+
+2. Install MJWarp into the same environment without disturbing your source-built Warp:
+
+```bash
+git clone https://github.com/ROCm/mujoco_warp.git && cd mujoco_warp
+pip install -e . --no-deps                       # MJWarp itself (won't touch Warp)
+pip install absl-py "etils[epath]" "mujoco>=3.8.0" numpy   # runtime deps
+```
+
+3. Verify Warp sees your AMD GPUs and run the tests:
+
+```python
+import warp as wp
+print(wp.get_devices())  # should list your AMD GPUs as cuda:N
+```
+
+```bash
+pip install pytest pytest-xdist
+pytest mujoco_warp -n 8
+```
+
+Some Warp features are not yet available on the HIP/ROCm backend, and the corresponding tests are skipped automatically based on the active device's capabilities (`device.supports_graph_capture`, `device.supports_cubql`, and texture support). These cover native CUDA graph capture, the cuBQL BVH builder, and CUDA textures (used by the GPU batch renderer).
+
+Avoid `uv sync` on ROCm: it provisions an isolated environment and would not pick up your source-built Warp. Use the source build above instead.
+
 # Integrating MuJoCo Warp
 
 There are many ways to use MuJoCo Warp in your projects. In many cases, you can directly install and use MJWarp as a drop-in replacement for MuJoCo.

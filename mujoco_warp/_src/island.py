@@ -351,21 +351,30 @@ def _island_map_dofs(
   idof_islandid_out: wp.array2d[int],
   unconstrained_cnt_inout: wp.array2d[int],
 ):
-  worldid, dofid = wp.tid()
+  # One thread per world walks DOFs in ascending index order. This makes the
+  # island-local DOF ordering deterministic and identical to MuJoCo C's serial
+  # enumeration. A per-DOF launch with atomic counters would instead assign
+  # island-local indices in (nondeterministic) thread-scheduling order, which
+  # produces a valid but permuted mapping that breaks MuJoCo parity on GPU.
+  worldid = wp.tid()
 
   nidof = nidof_in[worldid]
-  island_id = dof_island_in[worldid, dofid]
 
-  if island_id >= 0:
-    local_idx = wp.atomic_add(island_nv_inout, worldid, island_id, 1)
-    idof = island_idofadr_in[worldid, island_id] + local_idx
-    idof_islandid_out[worldid, idof] = island_id
-  else:
-    cnt = wp.atomic_add(unconstrained_cnt_inout, worldid, 0, 1)
-    idof = nidof + cnt
+  for dofid in range(nv):
+    island_id = dof_island_in[worldid, dofid]
 
-  map_dof2idof_out[worldid, dofid] = idof
-  map_idof2dof_out[worldid, idof] = dofid
+    if island_id >= 0:
+      local_idx = island_nv_inout[worldid, island_id]
+      island_nv_inout[worldid, island_id] = local_idx + 1
+      idof = island_idofadr_in[worldid, island_id] + local_idx
+      idof_islandid_out[worldid, idof] = island_id
+    else:
+      cnt = unconstrained_cnt_inout[worldid, 0]
+      unconstrained_cnt_inout[worldid, 0] = cnt + 1
+      idof = nidof + cnt
+
+    map_dof2idof_out[worldid, dofid] = idof
+    map_idof2dof_out[worldid, idof] = dofid
 
 
 @wp.kernel
@@ -420,34 +429,46 @@ def _island_map_constraints(
   map_iefc2efc_out: wp.array2d[int],
   iefc_islandid_out: wp.array2d[int],
 ):
-  worldid, efcid = wp.tid()
-  if efcid >= wp.min(njmax_in, nefc_in[worldid]):
-    return
+  # One thread per world walks constraints in ascending EFC index order so the
+  # island-local constraint ordering is deterministic and matches MuJoCo C's
+  # serial enumeration (constraints grouped per island as equality, then
+  # friction, then everything else, each category in ascending EFC order). A
+  # per-EFC launch with atomic counters would assign island-local indices in
+  # nondeterministic thread-scheduling order, breaking MuJoCo parity on GPU.
+  worldid = wp.tid()
 
-  island_id = efc_island_in[worldid, efcid]
-  if island_id >= 0:
-    efc_type = efc_type_in[worldid, efcid]
+  n = wp.min(njmax_in, nefc_in[worldid])
+  for efcid in range(n):
+    island_id = efc_island_in[worldid, efcid]
+    if island_id >= 0:
+      efc_type = efc_type_in[worldid, efcid]
 
-    # 1. Determine local index and absolute index ic based on category
-    if efc_type == ConstraintType.EQUALITY:
-      local_idx = wp.atomic_add(island_ne_mapped_inout, worldid, island_id, 1)
-      ic = island_iefcadr_in[worldid, island_id] + local_idx
-    elif efc_type == ConstraintType.FRICTION_DOF or efc_type == ConstraintType.FRICTION_TENDON:
-      local_idx = wp.atomic_add(island_nf_mapped_inout, worldid, island_id, 1)
-      ic = island_iefcadr_in[worldid, island_id] + island_ne_in[worldid, island_id] + local_idx
-    else:
-      local_idx = wp.atomic_add(island_nother_mapped_inout, worldid, island_id, 1)
-      ic = (
-        island_iefcadr_in[worldid, island_id] + island_ne_in[worldid, island_id] + island_nf_in[worldid, island_id] + local_idx
-      )
+      # 1. Determine local index and absolute index ic based on category
+      if efc_type == ConstraintType.EQUALITY:
+        local_idx = island_ne_mapped_inout[worldid, island_id]
+        island_ne_mapped_inout[worldid, island_id] = local_idx + 1
+        ic = island_iefcadr_in[worldid, island_id] + local_idx
+      elif efc_type == ConstraintType.FRICTION_DOF or efc_type == ConstraintType.FRICTION_TENDON:
+        local_idx = island_nf_mapped_inout[worldid, island_id]
+        island_nf_mapped_inout[worldid, island_id] = local_idx + 1
+        ic = island_iefcadr_in[worldid, island_id] + island_ne_in[worldid, island_id] + local_idx
+      else:
+        local_idx = island_nother_mapped_inout[worldid, island_id]
+        island_nother_mapped_inout[worldid, island_id] = local_idx + 1
+        ic = (
+          island_iefcadr_in[worldid, island_id]
+          + island_ne_in[worldid, island_id]
+          + island_nf_in[worldid, island_id]
+          + local_idx
+        )
 
-    # 2. Increment overall island_nefc counter to reconstruct d.island_nefc
-    wp.atomic_add(island_nefc_inout, worldid, island_id, 1)
+      # 2. Increment overall island_nefc counter to reconstruct d.island_nefc
+      island_nefc_inout[worldid, island_id] = island_nefc_inout[worldid, island_id] + 1
 
-    # 3. Store mappings
-    map_efc2iefc_out[worldid, efcid] = ic
-    map_iefc2efc_out[worldid, ic] = efcid
-    iefc_islandid_out[worldid, ic] = island_id
+      # 3. Store mappings
+      map_efc2iefc_out[worldid, efcid] = ic
+      map_iefc2efc_out[worldid, ic] = efcid
+      iefc_islandid_out[worldid, ic] = island_id
 
 
 @wp.kernel
@@ -908,7 +929,7 @@ def compute_island_mapping(m: types.Model, d: types.Data, ctx: IslandSolverConte
   unconstrained_cnt = wp.zeros((d.nworld, 1), dtype=int)
   wp.launch(
     _island_map_dofs,
-    dim=(d.nworld, m.nv),
+    dim=d.nworld,
     inputs=[m.nv, d.dof_island, d.island_dofadr, d.nidof],
     outputs=[d.island_nv, d.map_dof2idof, d.map_idof2dof, d.dof_islandid, unconstrained_cnt],
   )
@@ -920,7 +941,7 @@ def compute_island_mapping(m: types.Model, d: types.Data, ctx: IslandSolverConte
 
   wp.launch(
     _island_map_constraints,
-    dim=(d.nworld, d.njmax),
+    dim=d.nworld,
     inputs=[
       d.nefc,
       d.njmax,

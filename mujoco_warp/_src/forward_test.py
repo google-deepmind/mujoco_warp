@@ -273,7 +273,9 @@ class ForwardTest(parameterized.TestCase):
     _assert_eq(d.qpos.numpy()[0], mjd.qpos, "qpos")
     _assert_eq(d.qvel.numpy()[0], mjd.qvel, "qvel")
 
-  @absltest.skipIf(not wp.get_device().is_cuda, "Skipping test that requires GPU.")
+  @absltest.skipUnless(
+    test_data.supports_graph_capture(), "Skipping test that requires native graph capture (unsupported on HIP/ROCm)."
+  )
   @parameterized.product(
     xml=("humanoid/humanoid.xml", "pendula.xml", "constraints.xml", "collision.xml"), graph_conditional=(True, False)
   )
