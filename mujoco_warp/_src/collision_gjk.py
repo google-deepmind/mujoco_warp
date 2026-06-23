@@ -1104,7 +1104,7 @@ def _polytope3(
 
   # if origin does not lie on simplex then we need to check that the hexahedron contains the
   # origin
-  if dist > 1e-5 and not _test_tetra(v1, v2, v3, v4) and not _test_tetra(v1, v2, v3, v5):
+  if dist > 10.0 * MINVAL and not _test_tetra(v1, v2, v3, v4) and not _test_tetra(v1, v2, v3, v5):
     pt.status = 5
     return pt
 
@@ -1311,7 +1311,7 @@ def _epa(
       if _is_face_deleted(pt.face[i]):
         continue
 
-      if wp.dot(pt.face_pr[i], w) - pt.face_norm2[i] > 1e-10:
+      if wp.dot(pt.face_pr[i], w) - pt.face_norm2[i] > MINVAL:
         nvalid = wp.where(_is_invalid_face(pt.face[i]), nvalid, nvalid - 1)
         pt.face[i] = _delete_face(pt.face[i])
         face = _get_face_verts(pt.face[i])
