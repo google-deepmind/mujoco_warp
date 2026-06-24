@@ -3034,18 +3034,24 @@ def _block_jacobi_invert(
 
 @wp.kernel
 def _apply_block_preconditioner(
+  # Model:
+  dof_treeid: wp.array[int],
+  tree_dofnum: wp.array[int],
   # In:
+  flex_only: int,
   nblocks: int,
   block_dof_adr_in: wp.array[int],
   block_dof_num_in: wp.array[int],
-  # In:
   inv_H_blocks_in: wp.array3d[float],
   grad_in: wp.array2d[float],
   done_in: wp.array[bool],
   # Out:
   Mgrad_out: wp.array2d[float],
 ):
-  """Mgrad = H_block^{-1} * grad for each block."""
+  """Mgrad = H_block^{-1} * grad for each block.
+
+  When flex_only=1, only applies to blocks in simple trees (nv_tree <= 6).
+  """
   worldid, blockid = wp.tid()
 
   if blockid >= nblocks:
@@ -3056,6 +3062,15 @@ def _apply_block_preconditioner(
 
   ndof = block_dof_num_in[blockid]
   dof0 = block_dof_adr_in[blockid]
+
+  if ndof == 0:
+    return
+
+  # When flex_only, skip articulated trees (handled by solve_LD)
+  if flex_only:
+    treeid = dof_treeid[dof0]
+    if tree_dofnum[treeid] > 6:
+      return
 
   # Read inverse block
   I00 = inv_H_blocks_in[worldid, 0, blockid]
@@ -3146,58 +3161,6 @@ def _add_JTDJ_to_M_sparse(
           break
 
 
-@wp.kernel
-def _apply_block_preconditioner_flex(
-  # Model:
-  dof_treeid: wp.array[int],
-  tree_dofnum: wp.array[int],
-  # In:
-  nblocks: int,
-  block_dof_adr_in: wp.array[int],
-  block_dof_num_in: wp.array[int],
-  inv_H_blocks_in: wp.array3d[float],
-  grad_in: wp.array2d[float],
-  done_in: wp.array[bool],
-  # Out:
-  Mgrad_out: wp.array2d[float],
-):
-  """Block Jacobi apply for simple trees only (nv_tree <= 6)."""
-  worldid, blockid = wp.tid()
-  if blockid >= nblocks:
-    return
-  if done_in[worldid]:
-    return
-  ndof = block_dof_num_in[blockid]
-  dof0 = block_dof_adr_in[blockid]
-  if ndof == 0:
-    return
-  treeid = dof_treeid[dof0]
-  if tree_dofnum[treeid] > 6:
-    return
-  I00 = inv_H_blocks_in[worldid, 0, blockid]
-  I01 = inv_H_blocks_in[worldid, 1, blockid]
-  I02 = inv_H_blocks_in[worldid, 2, blockid]
-  I11 = inv_H_blocks_in[worldid, 3, blockid]
-  I12 = inv_H_blocks_in[worldid, 4, blockid]
-  I22 = inv_H_blocks_in[worldid, 5, blockid]
-  g0 = grad_in[worldid, dof0]
-  g1 = float(0.0)
-  g2 = float(0.0)
-  if ndof >= 2:
-    g1 = grad_in[worldid, dof0 + 1]
-  if ndof >= 3:
-    g2 = grad_in[worldid, dof0 + 2]
-  if ndof == 1:
-    Mgrad_out[worldid, dof0] = I00 * g0
-  elif ndof == 2:
-    Mgrad_out[worldid, dof0] = I00 * g0 + I01 * g1
-    Mgrad_out[worldid, dof0 + 1] = I01 * g0 + I11 * g1
-  elif ndof == 3:
-    Mgrad_out[worldid, dof0] = I00 * g0 + I01 * g1 + I02 * g2
-    Mgrad_out[worldid, dof0 + 1] = I01 * g0 + I11 * g1 + I12 * g2
-    Mgrad_out[worldid, dof0 + 2] = I02 * g0 + I12 * g1 + I22 * g2
-
-
 def _build_ic_preconditioner(m, d, ctx):
   """Build hybrid preconditioner: block Jacobi for flex, (M+JTDJ)^{-1} for articulated."""
   _build_block_jacobi_preconditioner(m, d, ctx)
@@ -3251,7 +3214,17 @@ def _apply_ic_preconditioner(m, d, ctx):
     wp.launch(
       _apply_block_preconditioner,
       dim=(d.nworld, ctx.nblocks),
-      inputs=[ctx.nblocks, ctx.block_dof_adr, ctx.block_dof_num, ctx.inv_H_blocks, ctx.grad, ctx.done],
+      inputs=[
+        m.dof_treeid,
+        m.tree_dofnum,
+        0,
+        ctx.nblocks,
+        ctx.block_dof_adr,
+        ctx.block_dof_num,
+        ctx.inv_H_blocks,
+        ctx.grad,
+        ctx.done,
+      ],
       outputs=[ctx.Mgrad],
     )
     return
@@ -3259,26 +3232,12 @@ def _apply_ic_preconditioner(m, d, ctx):
   smooth.solve_LD(m, d, ctx.qLD_precond, ctx.qLDiagInv_precond, ctx.Mgrad, ctx.grad)
   # Overwrite flex DOFs with better block Jacobi (captures off-diagonal JTDJ)
   wp.launch(
-    _apply_block_preconditioner_flex,
+    _apply_block_preconditioner,
     dim=(d.nworld, ctx.nblocks),
     inputs=[
       m.dof_treeid,
       m.tree_dofnum,
-      ctx.nblocks,
-      ctx.block_dof_adr,
-      ctx.block_dof_num,
-      ctx.inv_H_blocks,
-      ctx.grad,
-      ctx.done,
-    ],
-    outputs=[ctx.Mgrad],
-  )
-  wp.launch(
-    _apply_block_preconditioner_flex,
-    dim=(d.nworld, ctx.nblocks),
-    inputs=[
-      m.dof_treeid,
-      m.tree_dofnum,
+      1,
       ctx.nblocks,
       ctx.block_dof_adr,
       ctx.block_dof_num,
