@@ -227,7 +227,7 @@ def _attach_face(pt: Polytope, idx: int, v1: int, v2: int, v3: int) -> float:
   r, ret = _project_origin_plane(p3, p2, p1)
   if ret:
     return 0.0
-
+  
   # ensure projection points outward from the polytope
   if wp.dot(r, p1 - pt.center) < 0.0:
     r = -r
