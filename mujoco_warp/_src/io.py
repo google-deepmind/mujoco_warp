@@ -313,7 +313,6 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
   if mjm.opt.noslip_iterations > 0:
     raise NotImplementedError(f"noslip solver not implemented.")
 
-
   if (mjm.body_plugin != -1).any():
     raise NotImplementedError("Body plugins not supported.")
 

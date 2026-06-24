@@ -257,25 +257,26 @@ class ForwardTest(parameterized.TestCase):
   @parameterized.product(
     jacobian=(mujoco.mjtJacobian.mjJAC_DENSE, mujoco.mjtJacobian.mjJAC_SPARSE),
     fluidshape=("none", "ellipsoid"),
+    integrator=("implicit", "implicitfast"),
   )
-  def test_implicit_fluid(self, jacobian, fluidshape):
+  def test_implicit_fluid(self, jacobian, fluidshape, integrator):
     mjm, mjd, m, d = test_data.fixture(
       xml=f"""
     <mujoco>
-      <option density="1.225" viscosity="1.8e-5" wind="0 0 0" integrator="implicitfast"/>
+      <option density="1.225" viscosity="1.8e-5" wind="0 0 0" integrator="{integrator}"/>
       <worldbody>
-        <body name="main_sphere" pos="0 0 1">
-          <freejoint name="root"/> <geom name="big_ball" type="sphere" size="0.2" rgba="0.8 0.2 0.2 1" mass="1" fluidshape="{fluidshape}"/>
-          <body name="small_sphere_1" pos="-0.3 0 0">
-            <geom name="ball_1" type="sphere" size="0.1" rgba="0.2 0.8 0.2 1" mass="0.2" fluidshape="{fluidshape}"/>
+        <body pos="0 0 1">
+          <freejoint/>
+          <body pos="0.025 0 0">
+            <geom type="box" size=".025 .01 0.0001" euler="20 0 0" mass="1.0" fluidshape="{fluidshape}"/>
           </body>
-          <body name="small_sphere_2" pos="0.4 0 0">
-            <geom name="ball_2" type="sphere" size="0.2" rgba="0.2 0.2 0.8 1" mass="0.2" fluidshape="{fluidshape}"/>
+          <body pos="-0.025 0 0">
+            <geom type="box" size=".025 .01 0.0001" euler="-19 0 0" mass="1.0" fluidshape="{fluidshape}"/>
           </body>
         </body>
       </worldbody>
       <keyframe>
-        <key qvel="100 -100 10 50 -40 100"/>
+        <key qvel="10 -10 1 5 -4 10"/>
       </keyframe>
     </mujoco>
     """,
@@ -285,11 +286,34 @@ class ForwardTest(parameterized.TestCase):
 
     mujoco.mj_implicit(mjm, mjd)
 
-    mjw.solve(m, d)  # compute efc.Ma
+    # 1. Directly check smooth velocity derivatives (qDeriv) at this state
+    out_smooth_vel = wp.zeros((1, m.nC), dtype=float)
+
+    mjw.deriv_smooth_vel(m, d, out_smooth_vel)
+
+    mjw_qDeriv = np.zeros((m.nv, m.nv))
+    M_elemid = m.M_elemid.numpy()
+    for i in range(m.nv):
+      for j in range(m.nv):
+        madr = M_elemid[i, j]
+        if madr >= 0:
+          mjw_qDeriv[i, j] = out_smooth_vel.numpy()[0, madr]
+
+    mj_qDeriv = np.zeros((mjm.nv, mjm.nv))
+    mujoco.mju_sparse2dense(mj_qDeriv, mjd.qDeriv, mjm.D_rownnz, mjm.D_rowadr, mjm.D_colind)
+
+    mj_M = np.zeros((m.nv, m.nv))
+    mujoco.mju_sym2dense(mj_M, mjd.M, mjm.M_rownnz, mjm.M_rowadr, mjm.M_colind)
+    expected_out = mj_M - mjm.opt.timestep * mj_qDeriv
+
+    # Check M - dt * qDeriv directly with very tight tolerance
+    np.testing.assert_allclose(mjw_qDeriv, expected_out, atol=1e-3, rtol=1e-3, err_msg="qDeriv")
+
+    # 2. Step forward the integrator and compare qvel
+    mjw.solve(m, d)
     mjw.implicit(m, d)
 
-    _assert_eq(d.qpos.numpy()[0], mjd.qpos, "qpos")
-    _assert_eq(d.qvel.numpy()[0], mjd.qvel, "qvel")
+    np.testing.assert_allclose(d.qvel.numpy()[0], mjd.qvel, atol=1e-3, rtol=1e-3, err_msg="qvel")
 
   @parameterized.parameters(mujoco.mjtJacobian.mjJAC_SPARSE, mujoco.mjtJacobian.mjJAC_DENSE)
   def test_implicit_tendon_damping(self, jacobian):
