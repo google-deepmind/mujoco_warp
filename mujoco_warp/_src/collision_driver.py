@@ -430,7 +430,7 @@ def _sap_project(opt_broadphase: int):
   return sap_project
 
 
-@wp.kernel(enable_backward=False)
+@wp.kernel
 def _sap_range(
   # Model:
   ngeom: int,
@@ -805,7 +805,7 @@ def _nxn_broadphase(
   return kernel
 
 
-@wp.kernel(enable_backward=False)
+@wp.kernel
 def _any_awake_changed(
   # Data in:
   body_awake_in: wp.array2d[int],
@@ -956,11 +956,9 @@ def collision(
   # its launch wholesale via a graph conditional when nothing woke; pre-zeroing ncollision here
   # keeps the narrowphase below a no-op in that case. SAP cannot use a conditional (its sort/scan
   # allocate internally), so it relies on the per-pair incremental filter instead.
-  if incremental:
-    d.ncollision.zero_()
-  else:
+  d.ncollision.zero_()
+  if not incremental:
     d.nacon.zero_()
-    d.ncollision.zero_()
 
   if m.opt.broadphase == BroadphaseType.NXN:
     nxn_broadphase(m, d, ctx, awake_prev)
