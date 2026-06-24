@@ -352,6 +352,96 @@
       fwd_velocity: ['actuator_velocity', 'tendon_velocity', 'com_vel', 'passive', 'rne', 'tendon_bias']
     };
 
+    // Custom interaction mode to snap to points with largest delta in the neighborhood
+    Chart.Interaction.modes.snapToDelta = function(chart, e, options, useFinalPosition) {
+      const position = Chart.helpers.getRelativePosition(e, chart);
+      const meta = chart.getDatasetMeta(0);
+      if (!meta || !meta.data.length) return [];
+
+      let nearestIndex = -1;
+      let minDist = Infinity;
+
+      // Find the nearest point first
+      for (let j = 0; j < meta.data.length; j++) {
+        const pt = meta.data[j];
+        if (!pt) continue;
+        const dist = Math.abs(pt.x - position.x);
+        if (dist < minDist) {
+          minDist = dist;
+          nearestIndex = j;
+        }
+      }
+
+      if (nearestIndex === -1) return [];
+
+      // Calculate average delta for the chart to serve as a baseline for "significant" changes
+      if (chart.avgDelta === undefined) {
+        let totalDelta = 0;
+        let count = 0;
+        const numPoints = chart.data.datasets[0]?.data?.length || 0;
+        for (let idx = 1; idx < numPoints; idx++) {
+          let pointDelta = 0;
+          chart.data.datasets.forEach(dataset => {
+            const valCurr = dataset.data[idx]?.y || 0;
+            const valPrev = dataset.data[idx - 1]?.y || 0;
+            pointDelta += Math.abs(valCurr - valPrev);
+          });
+          totalDelta += pointDelta;
+          count++;
+        }
+        chart.avgDelta = count > 0 ? (totalDelta / count) : 0;
+      }
+      const avgDelta = chart.avgDelta;
+
+      // Calculate deltas and find the best snapped index based on score
+      let bestIndex = nearestIndex;
+      let maxScore = -1;
+      const snapWindow = 50; // pixels
+
+      for (let j = 0; j < meta.data.length; j++) {
+        const pt = meta.data[j];
+        if (!pt) continue;
+        const dist = Math.abs(pt.x - position.x);
+        if (dist <= snapWindow) {
+          // Compute delta at index j (sum of absolute differences across all datasets)
+          let delta = 0;
+          if (j > 0) {
+            chart.data.datasets.forEach(dataset => {
+              const valCurr = dataset.data[j]?.y || 0;
+              const valPrev = dataset.data[j - 1]?.y || 0;
+              delta += Math.abs(valCurr - valPrev);
+            });
+          }
+
+          // Only snap if the delta is significant (at least 3.0x the baseline average delta)
+          if (delta >= 3.0 * avgDelta) {
+            // score = delta / (distance + 15)
+            const score = delta / (dist + 15);
+            if (score > maxScore) {
+              maxScore = score;
+              bestIndex = j;
+            }
+          }
+        }
+      }
+
+      if (maxScore <= 0) {
+        bestIndex = nearestIndex;
+      }
+
+      const items = [];
+      for (let i = 0; i < chart.data.datasets.length; i++) {
+        if (chart.isDatasetVisible(i)) {
+          const datasetMeta = chart.getDatasetMeta(i);
+          const element = datasetMeta.data[bestIndex];
+          if (element) {
+            items.push({ element, datasetIndex: i, index: bestIndex });
+          }
+        }
+      }
+      return items;
+    };
+
     let allCharts = [];
 
     // --- UI Setup ---
@@ -410,7 +500,20 @@
         if (!response.ok) throw new Error(`Failed to load ${benchmarkName}.jsonl`);
 
         const text = await response.text();
-        const data = text.trim().split('\n').filter(l => l.trim()).map(line => JSON.parse(line));
+        const data = text.trim().split('\n').filter(l => l.trim()).map(line => {
+          const raw = JSON.parse(line);
+          const processed = {};
+          for (const [key, value] of Object.entries(raw)) {
+            const match = key.match(/^(.*)\[\d+\]$/);
+            if (match) {
+              const baseKey = match[1];
+              processed[baseKey] = (processed[baseKey] || 0) + value;
+            } else {
+              processed[key] = value;
+            }
+          }
+          return processed;
+        });
 
         document.getElementById('loading').style.display = 'none';
         document.getElementById('charts-container').style.display = 'block';
@@ -495,10 +598,10 @@
       return {
         responsive: true,
         maintainAspectRatio: false,
-        interaction: { mode: 'index', intersect: false },
+        interaction: { mode: 'snapToDelta', intersect: false },
         plugins: {
           legend: { display: true, position: 'top', labels: { boxWidth: 12, font: { size: 11 }, padding: 10 } },
-          tooltip: { mode: 'index', callbacks: { footer: () => 'Click to view commit on GitHub' } }
+          tooltip: { mode: 'snapToDelta', callbacks: { footer: () => 'Click to view commit on GitHub' } }
         },
         onClick: (event, elements) => {
           if (elements.length > 0) {
@@ -664,9 +767,11 @@
       const opts = {
         responsive: true,
         maintainAspectRatio: false,
+        interaction: { mode: 'snapToDelta', intersect: false },
         plugins: {
           legend: { display: false },
           tooltip: {
+            mode: 'snapToDelta',
             callbacks: {
               title: items => items[0]?.raw ? new Date(items[0].raw.x).toLocaleDateString() : '',
               label: item => `${item.raw.y.toFixed(2)} seconds`,
