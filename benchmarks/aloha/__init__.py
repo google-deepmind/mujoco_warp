@@ -40,6 +40,8 @@ BENCHMARKS = [
     "nccdmax": 256,
     "njmax": 8192,
     "replay": "lift_cloth.npz",
+    "nstep": 100,
+    "override": "opt.jac_preconditioner=true",
     "assets": [(ASSETS[0], "aloha")],
   },
   {

@@ -846,6 +846,7 @@ class Option:
     contact_sensor_maxmatch: max number of contacts considered by contact sensor matching criteria
                              contacts matched after this value is exceded will be ignored
     warn_overflow: warn if overflow is encountered
+    jac_preconditioner: enable block Jacobi + IC(0) preconditioner for sparse CG solver
   """
 
   timestep: array("*", float)
@@ -876,6 +877,7 @@ class Option:
   run_collision_detection: bool
   contact_sensor_maxmatch: int
   warn_overflow: bool
+  jac_preconditioner: bool
 
   # TODO(team): remove in future version
   @property
