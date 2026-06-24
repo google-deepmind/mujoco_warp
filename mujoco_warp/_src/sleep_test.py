@@ -25,6 +25,7 @@ import mujoco_warp as mjwarp
 from mujoco_warp import test_data
 from mujoco_warp._src import forward
 from mujoco_warp._src import io
+from mujoco_warp._src import island
 from mujoco_warp._src import sleep
 from mujoco_warp._src import types
 from mujoco_warp._src.types import SleepState
@@ -881,6 +882,161 @@ class SleepTest(parameterized.TestCase):
 
     # World 0: box1 (awake) and box2 (asleep) do NOT collide. So box2 MUST remain asleep!
     self.assertEqual(d.tree_awake.numpy()[0, 1], 0, "World 0 box2 should remain asleep (no collision with box1)")
+
+
+# An actuated 2-hinge arm (tree 0, dofs 0-1) plus two free bodies
+# (tree 1, dofs 2-7 and tree 2, dofs 8-13).
+_ARM_XML = """
+<mujoco>
+  <worldbody>
+    <geom name="floor" type="plane" size="5 5 .1"/>
+    <body>
+      <joint name="j0" type="hinge"/>
+      <geom type="capsule" fromto="0 0 0 0 0 .3" size=".05"/>
+      <body pos="0 0 .3">
+        <joint name="j1" type="hinge"/>
+        <geom type="capsule" fromto="0 0 0 0 0 .3" size=".05"/>
+      </body>
+    </body>
+    <body pos="1 0 1"><freejoint/><geom name="ball0" type="sphere" size=".1"/></body>
+    <body pos="2 0 1"><freejoint/><geom name="ball1" type="sphere" size=".1"/></body>
+  </worldbody>
+  <actuator>
+    <motor joint="j0"/>
+    <motor joint="j1"/>
+  </actuator>
+</mujoco>
+"""
+
+
+class ActiveDofTest(absltest.TestCase):
+  """Tests that the sleep/wake state drives island.update_active_dofs (the active-DOF maps)."""
+
+  def test_actuated_tree_seeded(self):
+    """Only the actuated arm tree is active at construction; maps are compact."""
+    _, _, m, d = test_data.fixture(xml=_ARM_XML)
+    d.tree_awake = wp.array([[1, 0, 0]], dtype=int)
+    island.update_active_dofs(m, d)
+
+    self.assertEqual(d.ncdof.numpy()[0], 2)
+    # arm dofs 0,1 map to compacted 0,1; the rest are inactive (-1).
+    dof_cdof = d.dof_cdof.numpy()[0]
+    np.testing.assert_array_equal(dof_cdof[:2], [0, 1])
+    self.assertTrue((dof_cdof[2:] == -1).all())
+    np.testing.assert_array_equal(d.cdof_dof.numpy()[0][:2], [0, 1])
+
+  def test_applied_force_wakes_tree_per_world(self):
+    """qfrc_applied on a free-body DOF wakes its whole tree, independently per world."""
+    _, _, m, d = test_data.fixture(xml=_ARM_XML, nworld=2)
+
+    # 1. Set all trees asleep initially
+    d.tree_awake.fill_(0)
+    d.tree_asleep.fill_(0)
+
+    # 2. Apply force to dof 2 (belongs to tree 1) in world 0
+    qfrc = d.qfrc_applied.numpy()
+    qfrc[0, 2] = 1.0
+    d.qfrc_applied = wp.array(qfrc, dtype=float)
+
+    # 3. Run sleep.wake to wake up trees with forces
+    sleep.wake(m, d)
+    sleep.update_sleep(m, d)
+
+    island.update_active_dofs(m, d)
+
+    # world 0: arm (2) + free body 1 (6) = 8; world 1: arm only = 2
+    np.testing.assert_array_equal(d.ncdof.numpy(), [8, 2])
+    np.testing.assert_array_equal(d.dof_cdof.numpy()[0][:8], np.arange(8))
+    self.assertTrue((d.dof_cdof.numpy()[1][2:] == -1).all())
+
+  def _fake_contact(self, d, g0, g1):
+    d.nacon = wp.array([1], dtype=int)
+    geom = d.contact.geom.numpy()
+    geom[0] = (g0, g1)
+    d.contact.geom = wp.array(geom, dtype=wp.vec2i)
+    d.contact.worldid = wp.array(np.zeros(d.naconmax, dtype=int), dtype=int)
+
+  def _set_body_moving(self, m, d, geomid, speed=1.0):
+    bodyid = m.geom_bodyid.numpy()[geomid]
+    cvel = d.cvel.numpy()
+    cvel[0, bodyid, 3] = speed  # linear-x component of spatial velocity
+    d.cvel = wp.array(cvel, dtype=wp.spatial_vector)
+
+  def test_moving_contact_wakes_both_trees(self):
+    """A contact with a moving body activates the trees of both involved geoms."""
+    mjm, _, m, d = test_data.fixture(xml=_ARM_XML)
+    ball0 = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_GEOM, "ball0")
+    ball1 = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_GEOM, "ball1")
+
+    # 1. Set tree 1 (ball0) awake initially, tree 0 and 2 asleep (pointing to themselves)
+    asleep = np.array([[0, sleep.K_AWAKE_VAL, 2]], dtype=np.int32)
+    d.tree_asleep = wp.array(asleep, dtype=int)
+    sleep.update_sleep(m, d)
+
+    self._fake_contact(d, ball0, ball1)
+
+    sleep.wake_collision(m, d)
+    sleep.update_sleep(m, d)
+
+    island.update_active_dofs(m, d)
+
+    # both free bodies awake = 6 + 6 = 12 DOFs
+    self.assertEqual(d.ncdof.numpy()[0], 12)
+
+  def test_resting_contact_does_not_wake(self):
+    """A contact where both bodies are at rest does not wake them."""
+    mjm, _, m, d = test_data.fixture(xml=_ARM_XML)
+    ball0 = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_GEOM, "ball0")
+    ball1 = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_GEOM, "ball1")
+
+    # 1. Set all trees asleep initially
+    asleep = np.array([[0, 1, 2]], dtype=np.int32)
+    d.tree_asleep = wp.array(asleep, dtype=int)
+    sleep.update_sleep(m, d)
+
+    self._fake_contact(d, ball0, ball1)
+
+    sleep.wake_collision(m, d)
+    sleep.update_sleep(m, d)
+
+    island.update_active_dofs(m, d)
+
+    # both stay asleep
+    self.assertEqual(d.ncdof.numpy()[0], 0)
+
+  def test_static_geom_does_not_wake(self):
+    """A contact with a static (world) geom only wakes the dynamic side."""
+    mjm, _, m, d = test_data.fixture(xml=_ARM_XML)
+    floor = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_GEOM, "floor")
+    ball0 = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_GEOM, "ball0")
+
+    # 1. Set ball0 (tree 1) awake, tree 0 and 2 asleep
+    asleep = np.array([[0, sleep.K_AWAKE_VAL, 2]], dtype=np.int32)
+    d.tree_asleep = wp.array(asleep, dtype=int)
+    sleep.update_sleep(m, d)
+
+    self._fake_contact(d, floor, ball0)
+
+    sleep.wake_collision(m, d)
+    sleep.update_sleep(m, d)
+
+    island.update_active_dofs(m, d)
+
+    # only tree 1 (ball0) wakes -> 6 DOFs
+    self.assertEqual(d.ncdof.numpy()[0], 6)
+
+  def test_overflow_clamps_and_warns(self):
+    """When active DOFs exceed nvmax, ncdof is clamped to nvmax."""
+    mjm = mujoco.MjModel.from_xml_string(_ARM_XML)
+    mjd = mujoco.MjData(mjm)
+    mujoco.mj_forward(mjm, mjd)
+    m = mjwarp.put_model(mjm)
+    d = mjwarp.put_data(mjm, mjd, nvmax=4)
+    d.tree_awake = wp.array([[1, 1, 1]], dtype=int)
+
+    island.update_active_dofs(m, d)
+
+    self.assertEqual(d.ncdof.numpy()[0], 4)
 
 
 if __name__ == "__main__":

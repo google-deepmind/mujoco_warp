@@ -35,6 +35,9 @@ MJ_MAX_EPAFACES = 5
 TILE_SIZE_JTDAJ_SPARSE = 16
 TILE_SIZE_JTDAJ_DENSE = 16
 
+# max M block size where dense tile-Cholesky beats sparse LDL (wins to ~64, degrades past ~80)
+M_BLOCK_DENSE_MAX = 64
+
 # maximum number of plugin attributes
 _NPLUGINATTR = 128
 
@@ -48,14 +51,12 @@ class BlockDim:
 
   Attributes:
     segmented_sort: segmented sort block dimension (collision_driver)
-    euler_dense: Euler dense block dimension (forward)
     actuator_velocity: actuator velocity block dimension (forward)
     ray: ray block dimension (ray)
     contact_sort: contact sort block dimension (sensor)
     energy_vel_kinetic: energy velocity kinetic block dimension (sensor)
-    cholesky_factorize: Cholesky factorize block dimension (smooth)
+    cholesky_factorize: block-dense Cholesky factorize block dimension (smooth)
     cholesky_solve: Cholesky solve block dimension (smooth)
-    cholesky_factorize_solve: Cholesky factorize and solve block dimension (smooth)
     solve_LD_sparse_fused: solve LD sparse fused block dimension (smooth)
     update_gradient_cholesky: update gradient Cholesky block dimension (solver)
     update_gradient_cholesky_blocked: update gradient Cholesky blocked block dimension (solver)
@@ -74,18 +75,17 @@ class BlockDim:
   # collision_driver
   segmented_sort: int = 128
   # forward
-  euler_dense: int = 32
   actuator_velocity: int = 32
   # ray
   ray: int = 64
   # sensor
   contact_sort: int = 64
   energy_vel_kinetic: int = 32
-  # smooth
-  cholesky_factorize: int = 32
-  cholesky_solve: int = 32
-  cholesky_factorize_solve: int = 32
-  solve_LD_sparse_fused: int = 64
+  # smooth -- block tile-Cholesky widths for non-tiny blocks; the launchers clamp by block size
+  cholesky_factorize: int = 96
+  cholesky_factorize_solve: int = 128
+  cholesky_solve: int = 64
+  solve_LD_sparse_fused: int = 128
   # solver
   update_gradient_cholesky: int = 64
   update_gradient_cholesky_blocked: int = 32
@@ -427,6 +427,8 @@ class GeomType(enum.IntEnum):
   MESH = mujoco.mjtGeom.mjGEOM_MESH
   SDF = mujoco.mjtGeom.mjGEOM_SDF
   FLEX = mujoco.mjtGeom.mjGEOM_FLEX
+  # warp only
+  TRIANGLE = 999
   # unsupported: NGEOMTYPES, ARROW*, LINE, SKIN, LABEL, NONE
 
 
@@ -704,7 +706,8 @@ class State(enum.IntEnum):
   FULLPHYSICS = mujoco.mjtState.mjSTATE_FULLPHYSICS
   USER = mujoco.mjtState.mjSTATE_USER
   INTEGRATION = mujoco.mjtState.mjSTATE_INTEGRATION
-  # unsupported: USERDATA, PLUGIN
+  USERDATA = mujoco.mjtState.mjSTATE_USERDATA
+  # unsupported: PLUGIN
 
 
 class vec5f(wp.types.vector(length=5, dtype=float)):
@@ -884,10 +887,12 @@ class TileSet:
   Attributes:
     adr: address of each tile in the set
     size: size of all the tiles in this set
+    elemid: flat per-block gather indices into CSR M for tile_load_indexed (absent -> nC sentinel)
   """
 
   adr: wp.array[int]
   size: int
+  elemid: wp.array[int] = None
 
   def __eq__(self, other) -> bool:
     if self.__class__ is not other.__class__:
@@ -974,7 +979,7 @@ class Model:
     nmocap: number of mocap bodies
     nplugin: number of plugin instances
     nJmom: number of non-zeros in actuator_moment
-    ngravcomp: number of bodies with nonzero gravcomp
+    nuserdata: number of custom user parameters
     nsensordata: number of elements in sensor data vector
     nhistory: number of history buffer entries
     opt: physics options
@@ -1152,6 +1157,7 @@ class Model:
     mesh_normal: normals for all meshes                      (nmeshnormal, 3)
     mesh_face: face indices for all meshes                   (nface, 3)
     mesh_graph: convex graph data                            (nmeshgraph,)
+    mesh_pos: translation applied to asset vertices          (nmesh, 3)
     mesh_quat: rotation applied to asset vertices            (nmesh, 4)
     mesh_polynum: number of polygons per mesh                (nmesh,)
     mesh_polyadr: first polygon address per mesh             (nmesh,)
@@ -1267,7 +1273,6 @@ class Model:
     D_colind: column indices in D-structure                  (nD,)
     mapM2D: index mapping from M to D                        (nD,)
     mapD2M: index mapping from D to M                        (nC,)
-    flex_vertflexid: flex id for each flex vertex            (nflexvert,)
 
   warp only fields:
     callback: custom physics callbacks
@@ -1283,7 +1288,17 @@ class Model:
     nmaxpyramid: maximum number of pyramid directions
     nmaxpolygon: maximum number of verts per polygon
     nmaxmeshdeg: maximum number of polygons per vert
-    is_sparse: whether to use sparse representations
+    is_sparse: constraint Jacobian/Hessian layout (sparse vs dense). Does not affect M, whose
+      factorization is a per-block decision -- see qLD_* and m_block_layout
+    is_compact: solve via active-DOF compaction (Newton + sleeping, unless islands forced)
+    qLD_has_dense: any M block factors as a packed dense block
+    qLD_has_simple: any M block is simple (diagonal -> 1/diag, no factorization)
+    qLD_has_sparse: any M block factors via sparse LDL (oversized block / tendon armature)
+    qLD_block_total: packed length of the dense region per world (also the offset of the LDL region)
+    qLD_block_adr: packed offset of each dof's diagonal block; 0 if sparse  (nv,)
+    qLD_dof_dense: per-dof flag, 1 if the dof's block is dense (packed)     (nv,)
+    qLD_dof_simple: per-dof flag, 1 if the dof's block is simple (diagonal) (nv,)
+    qLD_simple_dofs: indices of the simple (diagonal) dofs                  (nsimple,)
     has_fluid: True if wind, density, or viscosity are non-zero at put_model time
     has_sdf_geom: whether the model contains SDF geoms
     has_flex_selfcollide: whether any flex has self-collision enabled
@@ -1294,6 +1309,7 @@ class Model:
     body_branch_start: start index in body_branches for each branch   (nbranch + 1,)
     mocap_bodyid: id of body for mocap                       (nmocap,)
     body_fluid_ellipsoid: does body use ellipsoid fluid      (nbody,)
+    body_fluid_ellipsoid_adr: body ids with ellipsoid fluid  (nbody_fluid_ellipsoid,)
     jnt_limited_slide_hinge_adr: limited/slide/hinge jntadr
     jnt_limited_ball_adr: limited/ball jntadr
     body_isdofancestor: precomputed mask of which DOFs affect each body
@@ -1361,6 +1377,7 @@ class Model:
     M_fullm_i: sparse mass matrix addressing
     M_fullm_j: sparse mass matrix addressing
     M_elemid: (row, col) -> CSR madr addresses; -1 if not a chain ancestor
+    M_hinit_i: row index of each CSR M entry; for densifying M into the dense Newton H (nC,)
     M_fullm_upper_i: upper-triangle row indices for solver h seeding
     M_fullm_upper_j: upper-triangle column indices for solver h seeding
     M_fullm_upper_elemid: source elemid into M_fullm_i/M_fullm_j
@@ -1369,6 +1386,14 @@ class Model:
     M_mulm_rowadr: sparse matmul row pointers
     M_mulm_col: sparse matmul column indices
     M_mulm_madr: sparse matmul matrix addresses
+    flexelem_geom_pair_filtered: conaffinity-filtered element vs geom pairs (*, 2)
+    flexshell_geom_pair_filtered: conaffinity-filtered shell vs geom pairs  (*, 2)
+    flexvert_geom_pair_filtered: conaffinity-filtered vertex vs geom pairs  (*, 2)
+    flex_elemflexid: maps each element index directly to its flexid         (nflexelem,)
+    flex_shellflexid: maps each shell index directly to its flexid          (nflexshelldata,)
+    flex_evpairflexid: maps each element-vertex pair directly to its flexid (nflexevpair,)
+    flex_vertflexid: maps each vertex index directly to its flexid          (nflexvert,)
+    flex_shelladr: maps each flex to its start shell index                  (nflex,)
   """
 
   nq: int
@@ -1418,7 +1443,7 @@ class Model:
   nmocap: int
   nplugin: int
   nJmom: int
-  ngravcomp: int
+  nuserdata: int
   nsensordata: int
   nhistory: int
   opt: Option
@@ -1596,6 +1621,7 @@ class Model:
   mesh_normal: array("nmeshnormal", wp.vec3)
   mesh_face: array("nmeshface", wp.vec3i)
   mesh_graph: array("nmeshgraph", int)
+  mesh_pos: array("nmesh", wp.vec3)
   mesh_quat: array("nmesh", wp.quat)
   mesh_polynum: array("nmesh", int)
   mesh_polyadr: array("nmesh", int)
@@ -1711,7 +1737,6 @@ class Model:
   D_colind: array("nD", int)
   mapM2D: array("nD", int)
   mapD2M: array("nC", int)
-  flex_vertflexid: array("nflexvert", int)
   # warp only fields:
   callback: Callback
   nbranch: int
@@ -1726,6 +1751,15 @@ class Model:
   nmaxpolygon: int
   nmaxmeshdeg: int
   is_sparse: bool
+  is_compact: bool
+  qLD_has_dense: bool
+  qLD_has_simple: bool
+  qLD_has_sparse: bool
+  qLD_block_total: int
+  qLD_block_adr: wp.array[int]
+  qLD_dof_dense: wp.array[int]
+  qLD_dof_simple: wp.array[int]
+  qLD_simple_dofs: wp.array[int]
   has_fluid: bool
   has_sdf_geom: bool
   has_flex_selfcollide: bool
@@ -1736,6 +1770,7 @@ class Model:
   body_branch_start: wp.array[int]
   mocap_bodyid: array("nmocap", int)
   body_fluid_ellipsoid: array("nbody", bool)
+  body_fluid_ellipsoid_adr: wp.array[int]
   jnt_limited_slide_hinge_adr: wp.array[int]
   jnt_limited_ball_adr: wp.array[int]
   body_isdofancestor: array("nbody", "nv_pad", int)
@@ -1796,6 +1831,7 @@ class Model:
   M_fullm_i: wp.array[int]
   M_fullm_j: wp.array[int]
   M_elemid: wp.array2d[int]  # (row, col) -> CSR madr address; -1 if col is not a chain ancestor of row
+  M_hinit_i: wp.array[int]  # row index of each CSR M entry (for densifying M into the dense Newton H)
   M_fullm_upper_i: wp.array[int]
   M_fullm_upper_j: wp.array[int]
   M_fullm_upper_elemid: wp.array[int]
@@ -1805,6 +1841,14 @@ class Model:
   M_mulm_rowadr: wp.array[int]  # start address for each row [nv+1]
   M_mulm_col: wp.array[int]  # column index to gather from
   M_mulm_madr: wp.array[int]  # matrix address to read
+  flexelem_geom_pair_filtered: wp.array[wp.vec2i]
+  flexshell_geom_pair_filtered: wp.array[wp.vec2i]
+  flexvert_geom_pair_filtered: wp.array[wp.vec2i]
+  flex_elemflexid: array("nflexelem", int)
+  flex_shellflexid: array("nflexshelldata", int)
+  flex_evpairflexid: array("nflexevpair", int)
+  flex_vertflexid: array("nflexvert", int)
+  flex_shelladr: array("nflex", int)
 
 
 class ContactType(enum.IntFlag):
@@ -1890,12 +1934,6 @@ class Constraint:
     island: island ID per constraint                  (nworld, njmax)
     itype: island constraint type                     (nworld, njmax)
     iid: island constraint id                         (nworld, njmax)
-    iJ_rownnz: island J_rownnz                        (nworld, njmax)
-    iJ_rowadr: island J_rowadr                        (nworld, njmax)
-    iJ_colind: island J_colind                        (nworld, 0, 0) dense
-                                                      (nworld, 1, njmax_nnz) sparse
-    iJ: island J                                      (nworld, njmax, nv) dense
-                                                      (nworld, 1, njmax_nnz) sparse
     iD: island constraint mass                        (nworld, njmax_pad)
     iaref: island aref                                (nworld, njmax)
     ifrictionloss: island frictionloss                (nworld, njmax)
@@ -1926,10 +1964,6 @@ class Constraint:
 
   itype: array("nworld", "njmax", int)
   iid: array("nworld", "njmax", int)
-  iJ_rownnz: array("nworld", "njmax", int)
-  iJ_rowadr: array("nworld", "njmax", int)
-  iJ_colind: wp.array3d[int]
-  iJ: wp.array3d[float]
   iD: array("nworld", "njmax_pad", float)
   iaref: array("nworld", "njmax", float)
   ifrictionloss: array("nworld", "njmax", float)
@@ -1967,6 +2001,7 @@ class Data:
     mocap_quat: orientation of mocap bodies                     (nworld, nmocap, 4)
     qacc: acceleration                                          (nworld, nv)
     act_dot: time-derivative of actuator activation             (nworld, na)
+    userdata: custom user data                                  (nworld, nuserdata)
     sensordata: sensor data array                               (nworld, nsensordata,)
     tree_asleep: tree asleep counter; >=0: asleep cycle         (nworld, ntree)
     xpos: Cartesian position of body frame                      (nworld, nbody, 3)
@@ -2002,11 +2037,10 @@ class Data:
     moment_colind: column indices in sparse actuator_moment     (nworld, nJmom)
     actuator_moment: actuator moments                           (nworld, nJmom)
     crb: com-based composite inertia and mass                   (nworld, nbody, 10)
-    M: total inertia                                            (nworld, nv_pad, nv_pad) if dense
-                                                                (nworld, 1, nC) if sparse
-    qLD: upper Cholesky factorization                           (nworld, nv, nv) if dense
-         L'*D*L factorization of M                              (nworld, 1, nC) if sparse
-    qLDiagInv: 1/diag(D)                                        (nworld, nv)
+    M: total inertia, CSR                                       (nworld, nC)
+    qLD: per-block factor: packed dense region, then the nC     (nworld, qLD_block_total + nC)
+         L'*D*L region at offset qLD_block_total (nC=0 if no sparse block)
+    qLDiagInv: 1/diag(D) for the sparse LDL region              (nworld, nv)
     tree_awake: is tree awake; 0: asleep; 1: awake              (nworld, ntree)
     body_awake: body sleep state (SleepState)                   (nworld, nbody)
     body_awake_ind: indices of awake/static bodies              (nworld, nbody)
@@ -2024,7 +2058,7 @@ class Data:
     qfrc_passive: total passive force                           (nworld, nv)
     subtree_linvel: linear velocity of subtree com              (nworld, nbody, 3)
     subtree_angmom: angular momentum about subtree com          (nworld, nbody, 3)
-    qLU: sparse LU factorization of (M - dt*qDeriv)             (nworld, 1, nD)
+    qLU: sparse LU factorization of (M - dt*qDeriv)             (nworld, nD)
     actuator_force: actuator force in actuation space           (nworld, nu)
     qfrc_actuator: actuator force                               (nworld, nv)
     qfrc_smooth: net unconstrained force                        (nworld, nv)
@@ -2046,7 +2080,7 @@ class Data:
     island_nefc: constraints per island                         (nworld, ntree)
     island_ne: equality constraints per island                  (nworld, ntree)
     island_nf: friction constraints per island                  (nworld, ntree)
-    island_efcadr: island start address in efc vector           (nworld, ntree)
+    island_iefcadr: island start address in efc vector          (nworld, ntree)
     map_dof2idof: global DOF -> island-local DOF                (nworld, nv)
     map_idof2dof: island-local DOF -> global DOF                (nworld, nv)
     map_efc2iefc: global EFC -> island-local EFC                (nworld, njmax)
@@ -2057,16 +2091,38 @@ class Data:
     iqacc_smooth: island-local qacc_smooth                      (nworld, nv)
     iqfrc_smooth: island-local qfrc_smooth                      (nworld, nv)
     iqfrc_constraint: island-local qfrc_constraint              (nworld, nv)
+    ncdof: number of active (compacted) DOFs per world          (nworld,)
+    dof_cdof: global DOF -> compacted DOF; -1 if inactive       (nworld, nv)
+    cdof_dof: compacted DOF -> global DOF; -1 if unused         (nworld, nvmax_pad)
+    ctol: compacted-solve main tolerance (nv/nvmax_pad scaled)  (1,)
+    cls_tol: compacted-solve linesearch tolerance               (1,)
+    cdof_tri_row: row index of compacted Hessian dof-pairs      (nvmax_pad^2,)
+    cdof_tri_col: col index of compacted Hessian dof-pairs      (nvmax_pad^2,)
+    cM: compacted dense inertia                                 (nworld, nvmax_pad, nvmax_pad)
+    cqLD: compacted upper Cholesky factor                       (nworld, nvmax_pad, nvmax_pad)
+    crhs: compacted smooth-solve right-hand side                (nworld, nvmax_pad, 1)
+    cx: compacted smooth-solve solution                         (nworld, nvmax_pad, 1)
+    cJ: compacted dense constraint Jacobian                     (nworld, njmax_pad, nvmax_pad)
+    cMa: compacted M @ qacc workspace                           (nworld, nvmax_pad)
+    cqfrc_smooth: compacted net unconstrained force             (nworld, nvmax_pad)
+    cqacc_smooth: compacted unconstrained acceleration          (nworld, nvmax_pad)
+    cqacc_warmstart: compacted warmstart acceleration           (nworld, nvmax_pad)
+    cqacc: compacted acceleration (solve output)                (nworld, nvmax_pad)
+    cqfrc_constraint: compacted constraint force                (nworld, nvmax_pad)
 
   warp only fields:
     nworld: number of worlds
     naconmax: maximum number of contacts (shared across all worlds)
     naccdmax: maximum number of contacts for CCD (all worlds)
     njmax: maximum number of constraints per world
+    nvmax: capacity for compacted active DOFs per world
+    nvmax_pad: nvmax rounded up to the nearest multiple of TILE_SIZE_JTDAJ_DENSE
     njmax_pad: njmax rounded up to the nearest multiple of TILE_SIZE_JTDAJ
     njmax_nnz: number of non-zeros in constraint Jacobian
     nacon: number of detected contacts (across all worlds)      (1,)
     ncollision: collision count from broadphase                 (1,)
+    flex_aabb_min: dynamic flex object bounding box min         (nworld, nflex, 3)
+    flex_aabb_max: dynamic flex object bounding box max         (nworld, nflex, 3)
   """
 
   solver_niter: array("nworld", int)
@@ -2094,6 +2150,7 @@ class Data:
   mocap_quat: array("nworld", "nmocap", wp.quat)
   qacc: array("nworld", "nv", float)
   act_dot: array("nworld", "na", float)
+  userdata: array("nworld", "nuserdata", float)
   sensordata: array("nworld", "nsensordata", float)
   tree_asleep: array("nworld", "ntree", int)
   xpos: array("nworld", "nbody", wp.vec3)
@@ -2129,8 +2186,8 @@ class Data:
   moment_colind: array("nworld", "nJmom", int)
   actuator_moment: array("nworld", "nJmom", float)
   crb: array("nworld", "nbody", vec10)
-  M: wp.array3d[float]
-  qLD: wp.array3d[float]
+  M: wp.array2d[float]
+  qLD: wp.array2d[float]
   qLDiagInv: array("nworld", "nv", float)
   tree_awake: array("nworld", "ntree", int)
   body_awake: array("nworld", "nbody", int)
@@ -2149,7 +2206,7 @@ class Data:
   qfrc_passive: array("nworld", "nv", float)
   subtree_linvel: array("nworld", "nbody", wp.vec3)
   subtree_angmom: array("nworld", "nbody", wp.vec3)
-  qLU: array("nworld", 1, "nD", float)
+  qLU: array("nworld", "nD", float)
   actuator_force: array("nworld", "nu", float)
   qfrc_actuator: array("nworld", "nv", float)
   qfrc_smooth: array("nworld", "nv", float)
@@ -2169,7 +2226,7 @@ class Data:
   island_nefc: array("nworld", "ntree", int)
   island_ne: array("nworld", "ntree", int)
   island_nf: array("nworld", "ntree", int)
-  island_efcadr: array("nworld", "ntree", int)
+  island_iefcadr: array("nworld", "ntree", int)
   map_dof2idof: array("nworld", "nv", int)
   map_idof2dof: array("nworld", "nv", int)
   map_efc2iefc: array("nworld", "njmax", int)
@@ -2180,16 +2237,38 @@ class Data:
   iqacc_smooth: wp.array2d[float]
   iqfrc_smooth: wp.array2d[float]
   iqfrc_constraint: wp.array2d[float]
+  ncdof: array("nworld", int)
+  dof_cdof: array("nworld", "nv", int)
+  cdof_dof: array("nworld", "nvmax_pad", int)
+  ctol: wp.array[float]
+  cls_tol: wp.array[float]
+  cdof_tri_row: wp.array[int]
+  cdof_tri_col: wp.array[int]
+  cM: wp.array3d[float]
+  cqLD: wp.array3d[float]
+  crhs: wp.array3d[float]
+  cx: wp.array3d[float]
+  cJ: wp.array3d[float]
+  cMa: wp.array2d[float]
+  cqfrc_smooth: wp.array2d[float]
+  cqacc_smooth: wp.array2d[float]
+  cqacc_warmstart: wp.array2d[float]
+  cqacc: wp.array2d[float]
+  cqfrc_constraint: wp.array2d[float]
 
   # warp only fields:
   nworld: int
   naconmax: int
   naccdmax: int
   njmax: int
+  nvmax: int
+  nvmax_pad: int
   njmax_pad: int
   njmax_nnz: int
   nacon: array(1, int)
   ncollision: array(1, int)
+  flex_aabb_min: array("nworld", "nflex", wp.vec3)
+  flex_aabb_max: array("nworld", "nflex", wp.vec3)
 
 
 @dataclasses.dataclass
@@ -2230,6 +2309,12 @@ class IslandSolverContext:
   beta_den: wp.array2d[float]
   alpha: wp.array2d[float]
   Ma: wp.array2d[float]  # island-local Ma (nworld, nv)
+
+  # Re-ordered sparse Jacobian arrays
+  iJ_rownnz: wp.array2d[int]
+  iJ_rowadr: wp.array2d[int]
+  iJ_colind: wp.array3d[int]
+  iJ: wp.array3d[float]
 
 
 @dataclasses.dataclass

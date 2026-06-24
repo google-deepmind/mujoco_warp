@@ -185,6 +185,19 @@ def support(geom: Geom, geomtype: int, dir: wp.vec3) -> SupportPoint:
       if dist > max_dist:
         max_dist = dist
         sp.point = vert
+  elif geomtype == GeomType.TRIANGLE:
+    t1 = geom.rot[0, :]
+    t2 = geom.rot[1, :]
+    t3 = geom.rot[2, :]
+    d1 = wp.dot(t1, dir)
+    d2 = wp.dot(t2, dir)
+    d3 = wp.dot(t3, dir)
+    if d1 > d2 and d1 > d3:
+      sp.point = t1
+    elif d2 > d3:
+      sp.point = t2
+    else:
+      sp.point = t3
 
   if geom.margin > 0.0:
     sp.point += dir * (0.5 * geom.margin)
@@ -1894,6 +1907,27 @@ def _polygon_clip(
 
   if npolygon < 1:
     return 0, witness1, witness2
+
+  # if the face is an edge, remove potential duplicates
+  if nface2 == 2 and npolygon > 2:
+    best1 = int(0)
+    best2 = int(1)
+    max_d = float(0.0)
+    for i in range(npolygon):
+      polygon_out_i = polygon_out[i]
+      for j in range(i + 1, npolygon):
+        diff = polygon_out[j] - polygon_out_i
+        d2 = wp.dot(diff, diff)
+        if d2 > max_d:
+          max_d = d2
+          best1 = i
+          best2 = j
+
+    witness2[0] = polygon_out[best1]
+    witness1[0] = witness2[0] - dir
+    witness2[1] = polygon_out[best2]
+    witness1[1] = witness2[1] - dir
+    return 2, witness1, witness2
 
   if npolygon > 4:
     quad = _polygon_quad(polygon_out, npolygon)
