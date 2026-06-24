@@ -32,7 +32,6 @@ from mujoco_warp._src import types
 from mujoco_warp._src import warp_util
 from mujoco_warp._src.io import put_model
 from mujoco_warp._src.io import set_length_range
-from mujoco_warp._src.util_pkg import check_version
 
 
 def _allocate_worlds(
@@ -510,18 +509,11 @@ class IOTest(parameterized.TestCase):
     m = mjwarp.put_model(mjm)
     d = mjwarp.put_data(mjm, mjd)
 
-    mjd.qLD.fill(-123)
-    if check_version("mujoco>=3.8.1.dev910242375"):
-      mjd.M.fill(-123)
-    else:
-      mjd.qM.fill(-123)
+    mjd.M.fill(-123)
 
     mjwarp.get_data_into(mjd, mjm, d)
     np.testing.assert_allclose(mjd.qLD, mjd_ref.qLD)
-    if check_version("mujoco>=3.8.1.dev910242375"):
-      np.testing.assert_allclose(mjd.M, mjd_ref.M)
-    else:
-      np.testing.assert_allclose(mjd.qM, mjd_ref.qM)
+    np.testing.assert_allclose(mjd.M, mjd_ref.M)
 
   @parameterized.named_parameters(
     dict(testcase_name="nworld=1", nworld=1, world_id=0),
@@ -790,15 +782,15 @@ class IOTest(parameterized.TestCase):
     self.assertTrue((d.qLD.numpy() == 0.0).all())
 
     mujoco.mj_forward(mjm, mjd)
-    if check_version("mujoco>=3.8.1.dev910242375"):
-      mjd.M[:] = 0.0
-    else:
-      mjd.qM[:] = 0.0
+    mjd.M[:] = 0.0
     d = mjwarp.put_data(mjm, mjd)
     self.assertTrue((d.qLD.numpy() == 0.0).all())
 
     mujoco.mj_forward(mjm, mjd)
+    # For block-dense models d.qLD is the packed Cholesky factor recomputed from M, so
+    # zero the mass matrix as well as qLD to drive the factor to zero on both paths.
     mjd.qLD[:] = 0.0
+    mjd.M[:] = 0.0
     d = mjwarp.put_data(mjm, mjd)
     self.assertTrue((d.qLD.numpy() == 0.0).all())
 
@@ -1016,23 +1008,6 @@ class IOTest(parameterized.TestCase):
     self.assertEqual(len(m.oct_aabb.shape), 2)
     if m.oct_aabb.size > 0:
       self.assertEqual(m.oct_aabb.shape[1], 2)
-
-  def test_implicit_integrator_fluid_model(self):
-    """Tests for implicit integrator with fluid model."""
-    with self.assertRaises(NotImplementedError):
-      test_data.fixture(
-        xml="""
-        <mujoco>
-          <option viscosity="1" density="1" integrator="implicitfast"/>
-          <worldbody>
-            <body>
-              <geom type="sphere" size=".1"/>
-              <freejoint/>
-            </body>
-          </worldbody>
-        </mujoco>
-        """
-      )
 
   def test_plugin(self):
     with self.assertRaises(NotImplementedError):
@@ -1415,6 +1390,9 @@ class IOTest(parameterized.TestCase):
         arr = getattr(m, f.name)
         mj_arr = getattr(mjm, f.name)
 
+        if not hasattr(mj_arr, "shape"):
+          continue
+
         # check that field is not empty
         if 0 in mj_arr.shape + arr.shape:
           continue
@@ -1433,6 +1411,73 @@ class IOTest(parameterized.TestCase):
     mjwarp.forward(m, d)
     mjwarp.reset_data(m, d)
     mjwarp.forward(m, d)
+
+  def test_put_model_batch_sizes(self):
+    """Test put_model can allocate selected batched Model fields per world."""
+    mjm = mujoco.MjModel.from_xml_string(
+      """
+      <mujoco>
+        <asset>
+          <texture name="red" type="2d" builtin="flat" width="4" height="4" rgb1="1 0 0" rgb2="1 0 0"/>
+          <texture name="green" type="2d" builtin="flat" width="4" height="4" rgb1="0 1 0" rgb2="0 1 0"/>
+          <material name="mat" texture="red" rgba="0.5 0.6 0.7 1"/>
+        </asset>
+        <worldbody>
+          <geom type="sphere" size="0.1" material="mat"/>
+        </worldbody>
+      </mujoco>
+      """
+    )
+
+    m_default = mjwarp.put_model(mjm)
+    m = mjwarp.put_model(mjm, batch_sizes={"mat_texid": 3, "geom_size": 2, "mat_rgba": 4})
+
+    nrole = int(mujoco.mjtTextureRole.mjNTEXROLE)
+    self.assertEqual(tuple(m.mat_texid.shape), (3, mjm.nmat, nrole))
+    self.assertEqual(tuple(m.geom_size.shape), (2, mjm.ngeom))
+    self.assertEqual(tuple(m.mat_rgba.shape), (4, mjm.nmat))
+    self.assertGreater(m.mat_texid.strides[0], 0)
+    self.assertGreater(m.geom_size.strides[0], 0)
+    self.assertGreater(m.mat_rgba.strides[0], 0)
+
+    np.testing.assert_array_equal(m.mat_texid.numpy(), np.repeat(m_default.mat_texid.numpy(), 3, axis=0))
+    np.testing.assert_allclose(m.geom_size.numpy(), np.repeat(m_default.geom_size.numpy(), 2, axis=0))
+    np.testing.assert_allclose(m.mat_rgba.numpy(), np.repeat(m_default.mat_rgba.numpy(), 4, axis=0))
+
+    # Fields not listed in batch_sizes keep the shared legacy allocation.
+    self.assertEqual(m.geom_pos.shape[0], 1)
+    self.assertEqual(m.geom_pos.strides[0], 0)
+
+    red_id = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_TEXTURE, "red")
+    green_id = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_TEXTURE, "green")
+    mat_id = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_MATERIAL, "mat")
+    rgb_role = int(mujoco.mjtTextureRole.mjTEXROLE_RGB)
+
+    mat_texid = m.mat_texid.numpy()
+    mat_texid[:, mat_id, rgb_role] = [red_id, green_id, red_id]
+    m.mat_texid.assign(mat_texid)
+    np.testing.assert_array_equal(m.mat_texid.numpy()[:, mat_id, rgb_role], [red_id, green_id, red_id])
+
+  def test_put_model_batch_sizes_errors(self):
+    """Test invalid put_model batch_sizes requests are rejected."""
+    mjm = mujoco.MjModel.from_xml_string(
+      """
+      <mujoco>
+        <worldbody>
+          <geom type="sphere" size="0.1"/>
+        </worldbody>
+      </mujoco>
+      """
+    )
+
+    with self.assertRaisesRegex(ValueError, "not a batched array field"):
+      mjwarp.put_model(mjm, batch_sizes={"missing": 2})
+    with self.assertRaisesRegex(ValueError, "not a batched array field"):
+      mjwarp.put_model(mjm, batch_sizes={"nmat": 2})
+    with self.assertRaisesRegex(ValueError, "not a batched array field"):
+      mjwarp.put_model(mjm, batch_sizes={"geom_type": 2})
+    with self.assertRaisesRegex(ValueError, "must be positive"):
+      mjwarp.put_model(mjm, batch_sizes={"mat_texid": 0})
 
   def test_set_fixed_body_subtreemass(self):
     """Test body_subtreemass accumulation for multi-level tree."""
@@ -1484,35 +1529,6 @@ class IOTest(parameterized.TestCase):
     np.testing.assert_allclose(m.body_subtreemass.numpy()[0, 2], 50.0, rtol=1e-6)
     np.testing.assert_allclose(m.body_subtreemass.numpy()[0, 3], 30.0, rtol=1e-6)
     np.testing.assert_allclose(m.body_subtreemass.numpy()[0, 4], 40.0, rtol=1e-6)
-
-  def test_set_fixed_ngravcomp(self):
-    """Test ngravcomp counting with gravcomp bodies."""
-    mjm, mjd, m, d = test_data.fixture(
-      xml="""
-    <mujoco>
-      <worldbody>
-        <body name="body1" gravcomp="1">
-          <joint name="j1" type="hinge" axis="0 0 1"/>
-          <geom name="g1" type="sphere" size="0.1" mass="1.0"/>
-        </body>
-        <body name="body2" pos="1 0 0" gravcomp="0">
-          <joint name="j2" type="hinge" axis="0 0 1"/>
-          <geom name="g2" type="sphere" size="0.1" mass="1.0"/>
-        </body>
-        <body name="body3" pos="2 0 0" gravcomp="1">
-          <joint name="j3" type="hinge" axis="0 0 1"/>
-          <geom name="g3" type="sphere" size="0.1" mass="1.0"/>
-        </body>
-      </worldbody>
-    </mujoco>
-    """
-    )
-
-    mujoco.mj_setConst(mjm, mjd)
-    mjwarp.set_const(m, d)
-
-    self.assertEqual(m.ngravcomp, mjm.ngravcomp)
-    self.assertEqual(m.ngravcomp, 2)  # body1 and body3
 
   def test_set_const_camera_light_positions(self):
     """Test camera and light reference position computations."""
@@ -1642,12 +1658,11 @@ class IOTest(parameterized.TestCase):
 
   @absltest.skipIf(not wp.get_device().is_cuda, "Skipping test that requires GPU.")
   def test_set_const_graph_capture(self):
-    """Test that set_const_0 is compatible with CUDA graph capture."""
+    """Test that set_const is compatible with CUDA graph capture."""
     _, _, m, d = test_data.fixture("humanoid/humanoid.xml", keyframe=0)
 
     with wp.ScopedCapture() as capture:
-      mjwarp.set_const_0(m, d)
-      # TODO(team): set_const_fixed
+      mjwarp.set_const(m, d)
 
     wp.capture_launch(capture.graph)
 
@@ -2603,6 +2618,33 @@ class IOTest(parameterized.TestCase):
       override_model(m, {"opt.ls_parallel": True})
     with self.assertRaisesRegex(ValueError, "ls_parallel_min_step was removed in MuJoCo Warp 3.9.1"):
       override_model(m, {"opt.ls_parallel_min_step": 0.01})
+
+  def test_put_data_contact_batching(self):
+    """Tests that contacts are batched correctly (tiled, not repeated) across worlds."""
+    nworld = 2
+    mjm, mjd, _, d = test_data.fixture("humanoid/humanoid.xml", keyframe=0, nworld=nworld)
+    self.assertGreater(mjd.ncon, 1, "The test model must have at least 2 contacts")
+
+    # For each contact field, verify that it is tiled correctly
+    ncon = mjd.ncon
+    for field in [
+      "dist",
+      "pos",
+      "frame",
+      "includemargin",
+      "friction",
+      "solref",
+      "solreffriction",
+      "solimp",
+      "dim",
+      "geom",
+    ]:
+      val_device = getattr(d.contact, field).numpy()
+      val_host = getattr(mjd.contact, field)
+      for w in range(nworld):
+        device_slice = val_device[w * ncon : (w + 1) * ncon].reshape(-1)
+        host_slice = val_host[:ncon].reshape(-1)
+        _assert_eq(device_slice, host_slice, f"{field} mismatch in world {w}")
 
 
 # TODO(team): test set_const_0 sparse

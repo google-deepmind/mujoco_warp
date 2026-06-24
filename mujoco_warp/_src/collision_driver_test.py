@@ -30,7 +30,7 @@ from mujoco_warp._src.collision_core import Geom
 from mujoco_warp._src.collision_driver import MJ_COLLISION_TABLE
 from mujoco_warp._src.collision_primitive import plane_convex
 from mujoco_warp._src.math import upper_trid_index
-from mujoco_warp._src.types import NEW_GAP_SEMANTICS
+from mujoco_warp._src.types import CollisionType
 from mujoco_warp.test_data.collision_sdf.utils import register_sdf_plugins
 
 _TOLERANCE = 5e-5
@@ -523,6 +523,34 @@ class CollisionTest(parameterized.TestCase):
       prev_idx = idx
     self.assertTrue(in_order)
 
+  def test_native_ccd_disable_does_not_mutate_global_table(self):
+    initial_type = MJ_COLLISION_TABLE[(GeomType.BOX, GeomType.BOX)]
+    self.assertEqual(initial_type, CollisionType.CONVEX)
+
+    mjm = mujoco.MjModel.from_xml_string("""
+    <mujoco>
+      <option gravity="0 0 -9.81"/>
+      <worldbody>
+        <body name="body1" pos="0 0 0.51">
+          <freejoint/>
+          <geom name="box1" type="box" size="0.5 0.5 0.5"/>
+        </body>
+        <body name="body2" pos="0 0 1.49">
+          <freejoint/>
+          <geom name="box2" type="box" size="0.5 0.5 0.5"/>
+        </body>
+      </worldbody>
+    </mujoco>
+    """)
+    mjm.opt.disableflags |= mujoco.mjtDisableBit.mjDSBL_NATIVECCD
+
+    m = mjw.put_model(mjm)
+    d = mjw.put_data(mjm, mujoco.MjData(mjm))
+
+    mjw.collision(m, d)
+
+    self.assertEqual(MJ_COLLISION_TABLE[(GeomType.BOX, GeomType.BOX)], initial_type)
+
   @parameterized.parameters(_SDF_SDF.keys())
   def test_sdf_collision(self, fixture):
     """Tests collisions with different geometries."""
@@ -716,7 +744,7 @@ class CollisionTest(parameterized.TestCase):
           </body>
         </worldbody>
         <contact>
-          <pair geom1="geom1" geom2="geom2" margin="{-1 if NEW_GAP_SEMANTICS else 2}" gap="3" condim="6" friction="5 4 3 2 1" solref="-.25 -.5" solreffriction="2 4" solimp=".1 .2 .3 .4 .5"/>
+          <pair geom1="geom1" geom2="geom2" margin="-1" gap="3" condim="6" friction="5 4 3 2 1" solref="-.25 -.5" solreffriction="2 4" solimp=".1 .2 .3 .4 .5"/>
         </contact>
       </mujoco>
     """
@@ -760,7 +788,7 @@ class CollisionTest(parameterized.TestCase):
           </body>
         </worldbody>
         <contact>
-          <pair geom1="geom1" geom2="geom2" margin="{-1 if NEW_GAP_SEMANTICS else 2}" gap="3" condim="6" friction="5 4 3 2 1" solref="-.25 -.5" solreffriction="2 4" solimp=".1 .2 .3 .4 .5"/>
+          <pair geom1="geom1" geom2="geom2" margin="-1" gap="3" condim="6" friction="5 4 3 2 1" solref="-.25 -.5" solreffriction="2 4" solimp=".1 .2 .3 .4 .5"/>
         </contact>
       </mujoco>
     """
@@ -805,7 +833,7 @@ class CollisionTest(parameterized.TestCase):
         </worldbody>
         <contact>
           <exclude body1="body1" body2="body2"/>
-          <pair geom1="geom1" geom2="geom2" margin="{-1 if NEW_GAP_SEMANTICS else 2}" gap="3" condim="6" friction="5 4 3 2 1" solref="-.25 -.5" solreffriction="2 4" solimp=".1 .2 .3 .4 .5"/>
+          <pair geom1="geom1" geom2="geom2" margin="-1" gap="3" condim="6" friction="5 4 3 2 1" solref="-.25 -.5" solreffriction="2 4" solimp=".1 .2 .3 .4 .5"/>
         </contact>
       </mujoco>
     """
@@ -854,7 +882,7 @@ class CollisionTest(parameterized.TestCase):
         </worldbody>
         <contact>
           <exclude body1="body1" body2="body2"/>
-          <pair geom1="geom2" geom2="geom3" margin="{-1 if NEW_GAP_SEMANTICS else 2}" gap="3" condim="6" friction="5 4 3 2 1" solref="-.25 -.5" solreffriction="2 4" solimp=".1 .2 .3 .4 .5"/>
+          <pair geom1="geom2" geom2="geom3" margin="-1" gap="3" condim="6" friction="5 4 3 2 1" solref="-.25 -.5" solreffriction="2 4" solimp=".1 .2 .3 .4 .5"/>
         </contact>
       </mujoco>
     """
@@ -1175,11 +1203,11 @@ class CollisionTest(parameterized.TestCase):
       <worldbody>
         <body pos="0 0 0">
           <freejoint/>
-          <geom type="ellipsoid" size="0.15 0.15 0.25" margin="{0.01 if NEW_GAP_SEMANTICS else 0.1}" gap="0.2"/>
+          <geom type="ellipsoid" size="0.15 0.15 0.25" margin="0.01" gap="0.2"/>
         </body>
         <body pos="0 0 0.35">
           <freejoint/>
-          <geom type="ellipsoid" size="0.1 0.1 0.05" margin="{0.01 if NEW_GAP_SEMANTICS else 0.1}" gap="0.2"/>
+          <geom type="ellipsoid" size="0.1 0.1 0.05" margin="0.01" gap="0.2"/>
         </body>
       </worldbody>
     </mujoco>

@@ -29,7 +29,6 @@ from mujoco_warp import EnableBit
 from mujoco_warp import GainType
 from mujoco_warp import IntegratorType
 from mujoco_warp import test_data
-from mujoco_warp._src.util_pkg import check_version
 
 # tolerance for difference between MuJoCo and mjwarp smooth calculations - mostly
 # due to float precision
@@ -255,6 +254,67 @@ class ForwardTest(parameterized.TestCase):
     _assert_eq(d.qpos.numpy()[0], mjd.qpos, "qpos")
     _assert_eq(d.qvel.numpy()[0], mjd.qvel, "qvel")
 
+  @parameterized.product(
+    jacobian=(mujoco.mjtJacobian.mjJAC_DENSE, mujoco.mjtJacobian.mjJAC_SPARSE),
+    fluidshape=("none", "ellipsoid"),
+    integrator=("implicit", "implicitfast"),
+  )
+  def test_implicit_fluid(self, jacobian, fluidshape, integrator):
+    mjm, mjd, m, d = test_data.fixture(
+      xml=f"""
+    <mujoco>
+      <option density="1.225" viscosity="1.8e-5" wind="0 0 0" integrator="{integrator}"/>
+      <worldbody>
+        <body pos="0 0 1">
+          <freejoint/>
+          <body pos="0.025 0 0">
+            <geom type="box" size=".025 .01 0.0001" euler="20 0 0" mass="1.0" fluidshape="{fluidshape}"/>
+          </body>
+          <body pos="-0.025 0 0">
+            <geom type="box" size=".025 .01 0.0001" euler="-19 0 0" mass="1.0" fluidshape="{fluidshape}"/>
+          </body>
+        </body>
+      </worldbody>
+      <keyframe>
+        <key qvel="10 -10 1 5 -4 10"/>
+      </keyframe>
+    </mujoco>
+    """,
+      keyframe=0,
+      overrides={"opt.jacobian": jacobian},
+    )
+
+    mujoco.mj_implicit(mjm, mjd)
+
+    # 1. Directly check smooth velocity derivatives (qDeriv) at this state
+    out_smooth_vel = wp.zeros((1, m.nC), dtype=float)
+
+    mjw.deriv_smooth_vel(m, d, out_smooth_vel)
+
+    mjw_qDeriv = np.zeros((m.nv, m.nv))
+    M_elemid = m.M_elemid.numpy()
+    for i in range(m.nv):
+      for j in range(m.nv):
+        madr = M_elemid[i, j]
+        if madr >= 0:
+          mjw_qDeriv[i, j] = out_smooth_vel.numpy()[0, madr]
+
+    mj_qDeriv = np.zeros((mjm.nv, mjm.nv))
+    mujoco.mju_sparse2dense(mj_qDeriv, mjd.qDeriv, mjm.D_rownnz, mjm.D_rowadr, mjm.D_colind)
+
+    mj_M = np.zeros((m.nv, m.nv))
+    mujoco.mju_sym2dense(mj_M, mjd.M, mjm.M_rownnz, mjm.M_rowadr, mjm.M_colind)
+    expected_out = mj_M - mjm.opt.timestep * mj_qDeriv
+
+    # Check M - dt * qDeriv directly with very tight tolerance
+    np.testing.assert_allclose(mjw_qDeriv, expected_out, atol=1e-3, rtol=1e-3, err_msg="qDeriv")
+
+    # 2. Step forward the integrator and compare qvel
+    mjw.solve(m, d)
+    mjw.implicit(m, d)
+
+    np.testing.assert_allclose(d.qvel.numpy()[0], mjd.qvel, atol=1e-3, rtol=1e-3, err_msg="qvel")
+
   @parameterized.parameters(mujoco.mjtJacobian.mjJAC_SPARSE, mujoco.mjtJacobian.mjJAC_DENSE)
   def test_implicit_tendon_damping(self, jacobian):
     mjm, mjd, m, d = test_data.fixture(
@@ -437,12 +497,7 @@ class ForwardTest(parameterized.TestCase):
         mjd_arr = mjd_arr.reshape(-1)
         d_arr = d_arr.reshape(-1)
       elif arr == "M":
-        mjd_arr = np.zeros((mjm.nv, mjm.nv))
-        if check_version("mujoco>=3.8.1.dev910242375"):
-          mujoco.mju_sym2dense(mjd_arr, mjd.M, mjm.M_rownnz, mjm.M_rowadr, mjm.M_colind)
-        else:
-          mujoco.mj_fullM(mjm, mjd_arr, mjd.qM)
-        d_arr = d_arr[: mjm.nv, : mjm.nv]
+        mjd_arr = mjd.M
       elif arr == "actuator_moment":
         actuator_moment = np.zeros((mjm.nu, mjm.nv))
         mujoco.mju_sparse2dense(actuator_moment, mjd.actuator_moment, mjd.moment_rownnz, mjd.moment_rowadr, mjd.moment_colind)

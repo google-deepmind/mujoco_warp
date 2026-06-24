@@ -25,8 +25,6 @@ import mujoco_warp as mjw
 from mujoco_warp import ConeType
 from mujoco_warp import DisableBit
 from mujoco_warp import test_data
-from mujoco_warp._src.types import NEW_GAP_SEMANTICS
-from mujoco_warp._src.util_pkg import check_version
 
 # tolerance for difference between MuJoCo and MJWarp smooth calculations - mostly
 # due to float precision
@@ -194,18 +192,7 @@ class SmoothTest(parameterized.TestCase):
     mjw.crb(m, d)
     _assert_eq(d.crb.numpy()[0], mjd.crb, "crb")
 
-    if jacobian == mujoco.mjtJacobian.mjJAC_SPARSE:
-      if check_version("mujoco>=3.8.1.dev910242375"):
-        _assert_eq(d.M.numpy()[0, 0], mjd.M, "M")
-      else:
-        _assert_eq(d.M.numpy()[0, 0], mjd.qM[mjm.mapM2M], "M")
-    else:
-      M = np.zeros((mjm.nv, mjm.nv))
-      if check_version("mujoco>=3.8.1.dev910242375"):
-        mujoco.mju_sym2dense(M, mjd.M, mjm.M_rownnz, mjm.M_rowadr, mjm.M_colind)
-      else:
-        mujoco.mj_fullM(mjm, M, mjd.qM)
-      _assert_eq(d.M.numpy()[0, : mjm.nv, : mjm.nv], M, "M")
+    _assert_eq(d.M.numpy()[0], mjd.M, "M")
 
   @parameterized.parameters(mujoco.mjtJacobian.mjJAC_SPARSE, mujoco.mjtJacobian.mjJAC_DENSE)
   def test_factor_m(self, jacobian):
@@ -213,26 +200,23 @@ class SmoothTest(parameterized.TestCase):
     mjm, mjd, m, d = test_data.fixture("pendula.xml", overrides={"opt.jacobian": jacobian})
 
     d.qLDiagInv.fill_(wp.inf)
-    if jacobian == mujoco.mjtJacobian.mjJAC_DENSE:
-      qM = np.zeros((mjm.nv, mjm.nv))
-      if check_version("mujoco>=3.8.1.dev910242375"):
-        mujoco.mju_sym2dense(qM, mjd.M, mjm.M_rownnz, mjm.M_rowadr, mjm.M_colind)
-      else:
-        mujoco.mj_fullM(mjm, qM, mjd.qM)
-      qLD = np.linalg.cholesky(qM).T
-      wp_qLD = qLD.copy()
-      wp_qLD[wp_qLD != 0.0] = np.inf
-      wp.copy(d.qLD, wp.array(wp_qLD, dtype=float))
-    else:
-      d.qLD.fill_(wp.inf)
+    d.qLD.fill_(wp.inf)
 
     mjw.factor_m(m, d)
 
-    if jacobian == mujoco.mjtJacobian.mjJAC_SPARSE:
-      _assert_eq(d.qLD.numpy()[0, 0], mjd.qLD, "qLD (sparse)")
-      _assert_eq(d.qLDiagInv.numpy()[0], mjd.qLDiagInv, "qLDiagInv")
+    # qLD layout is per-block, independent of is_sparse (which selects only the constraint
+    # Jacobian/Hessian layout). A packed dense region is not MuJoCo's LDL, so verify via solve;
+    # a pure sparse model can compare the LDL factor directly.
+    if m.qLD_has_dense:
+      # packed dense-block Cholesky: factor layout differs from LDL, so verify it solves correctly
+      ref = np.zeros((1, mjm.nv))
+      mujoco.mj_solveM(mjm, mjd, ref, np.tile(mjd.qfrc_smooth, (1, 1)))
+      res = wp.zeros((1, mjm.nv), dtype=float)
+      mjw.solve_m(m, d, res, d.qfrc_smooth)
+      _assert_eq(res.numpy()[0], ref[0], "M \\ qfrc_smooth (block-dense)")
     else:
-      _assert_eq(d.qLD.numpy()[0], qLD, "qLD (dense upper)")
+      _assert_eq(d.qLD.numpy()[0], mjd.qLD, "qLD (sparse)")
+      _assert_eq(d.qLDiagInv.numpy()[0], mjd.qLDiagInv, "qLDiagInv")
 
   @parameterized.parameters(mujoco.mjtJacobian.mjJAC_SPARSE, mujoco.mjtJacobian.mjJAC_DENSE)
   def test_solve_m(self, jacobian):
@@ -380,8 +364,6 @@ class SmoothTest(parameterized.TestCase):
   )
   def test_actuator_adhesion(self, keyframe, cone, jacobian):
     """Tests adhesion actuator."""
-    if not NEW_GAP_SEMANTICS:
-      self.skipTest("Skipping due to new gap semantics")
     mjm, mjd, m, d = test_data.fixture(
       "actuation/adhesion.xml", keyframe=keyframe, overrides={"opt.cone": cone, "opt.jacobian": jacobian}
     )
@@ -488,16 +470,10 @@ class SmoothTest(parameterized.TestCase):
     )
 
     qM = np.zeros((mjm.nv, mjm.nv))
-    if check_version("mujoco>=3.8.1.dev910242375"):
-      mujoco.mju_sym2dense(qM, mjd.M, mjm.M_rownnz, mjm.M_rowadr, mjm.M_colind)
-    else:
-      mujoco.mj_fullM(mjm, qM, mjd.qM)
-
-    sparse = jacobian == mujoco.mjtJacobian.mjJAC_SPARSE
+    mujoco.mju_sym2dense(qM, mjd.M, mjm.M_rownnz, mjm.M_rowadr, mjm.M_colind)
 
     d.qLD.fill_(wp.inf)
-    if sparse:
-      d.qLDiagInv.fill_(wp.inf)
+    d.qLDiagInv.fill_(wp.inf)
 
     res = wp.zeros((1, mjm.nv), dtype=float)
     vec = wp.ones((1, mjm.nv), dtype=float)
@@ -506,12 +482,52 @@ class SmoothTest(parameterized.TestCase):
 
     _assert_eq(res.numpy()[0], np.linalg.solve(qM, vec.numpy()[0]), "M \\ 1")
 
-    if sparse:
+    # The M \ 1 check above verifies the solve regardless of layout. The raw factor matches MuJoCo's
+    # only in specific cases: a pure sparse-LDL model stores the L'DL factor in qLD, while a pure
+    # simple (diagonal) model stores nothing in qLD and just 1/diag in qLDiagInv.
+    if m.qLD_has_sparse and not m.qLD_has_dense and not m.qLD_has_simple:
       _assert_eq(d.qLD.numpy()[0].reshape(-1), mjd.qLD, "qLD")
       _assert_eq(d.qLDiagInv.numpy()[0], mjd.qLDiagInv, "qLDiagInv")
-    else:
-      qLD = np.linalg.cholesky(qM).T
-      _assert_eq(d.qLD.numpy()[0], qLD, "qLD upper")
+    elif m.qLD_has_simple and not m.qLD_has_dense and not m.qLD_has_sparse:
+      _assert_eq(d.qLDiagInv.numpy()[0], mjd.qLDiagInv, "qLDiagInv")
+
+  def test_factor_solve_mixed_blocks(self):
+    """Per-block factor/solve: one oversized block (sparse LDL) plus small blocks (packed dense)."""
+
+    # A 70-dof hinge chain (one block > M_BLOCK_DENSE_MAX -> sparse LDL) and three short hinge
+    # chains (6-dof coupled blocks -> packed dense): factor_m/solve_m must run both passes into one
+    # qLD. (Coupled blocks, not free joints: a free joint on a sphere has diagonal M and would take
+    # the trivial sparse path, so it would not exercise the packed-dense factor.)
+    def _hinge_chain(k):
+      return (
+        "".join(
+          '<body pos="0 0 .05"><joint type="hinge" axis="0 1 0"/><geom type="capsule" size=".02 .025"/>' for _ in range(k)
+        )
+        + "</body>" * k
+      )
+
+    n = 70
+    chain = (
+      "".join('<body pos="0 0 .05"><joint type="hinge" axis="1 0 0"/><geom type="capsule" size=".02 .025"/>' for _ in range(n))
+      + "</body>" * n
+    )
+    small = "".join(f'<body pos="{i} 0 1">{_hinge_chain(6)}</body>' for i in range(3))
+    xml = f"<mujoco><worldbody><body pos='0 0 2'>{chain}</body>{small}</worldbody></mujoco>"
+
+    mjm, mjd, m, d = test_data.fixture(xml=xml)
+    # genuinely mixed: both factor paths active in one model
+    self.assertTrue(m.qLD_has_dense)
+    self.assertTrue(m.qLD_has_sparse)
+
+    # M^{-1} @ qfrc_smooth parity against MuJoCo exercises both the packed and the LDL solve.
+    ref = np.zeros((1, mjm.nv))
+    mujoco.mj_solveM(mjm, mjd, ref, np.tile(mjd.qfrc_smooth, (1, 1)))
+
+    mjw.crb(m, d)
+    mjw.factor_m(m, d)
+    res = wp.zeros((1, mjm.nv), dtype=float)
+    mjw.solve_m(m, d, res, d.qfrc_smooth)
+    _assert_eq(res.numpy()[0], ref[0], "M \\ qfrc_smooth (mixed blocks)")
 
   def test_factor_solve_lu(self):
     """Tests factor_solve_lu with a sparse matrix representing a tree."""
@@ -586,18 +602,7 @@ class SmoothTest(parameterized.TestCase):
     mjw._src.smooth.crb(m, d)
     mjw._src.smooth.tendon_armature(m, d)
 
-    if jacobian == mujoco.mjtJacobian.mjJAC_SPARSE:
-      if check_version("mujoco>=3.8.1.dev910242375"):
-        _assert_eq(d.M.numpy()[0, 0], mjd.M, "M")
-      else:
-        _assert_eq(d.M.numpy()[0, 0], mjd.qM[mjm.mapM2M], "M")
-    else:
-      M = np.zeros((mjm.nv, mjm.nv))
-      if check_version("mujoco>=3.8.1.dev910242375"):
-        mujoco.mju_sym2dense(M, mjd.M, mjm.M_rownnz, mjm.M_rowadr, mjm.M_colind)
-      else:
-        mujoco.mj_fullM(mjm, M, mjd.qM)
-      _assert_eq(d.M.numpy()[0, : mjm.nv, : mjm.nv], M, "M")
+    _assert_eq(d.M.numpy()[0], mjd.M, "M")
 
     # qfrc_bias
     d.qfrc_bias.fill_(wp.inf)
