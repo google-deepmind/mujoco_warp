@@ -152,10 +152,14 @@ def _main(argv: Sequence[str]):
   if _CLEAR_WARP_CACHE.value:
     wp.clear_kernel_cache()
     wp.clear_lto_cache()
-    compute_cache = epath.Path("~/.nv/ComputeCache").expanduser()
-    if compute_cache.exists():
-      shutil.rmtree(compute_cache)
-      compute_cache.mkdir()
+    # ~/.nv/ComputeCache is NVIDIA's PTX/cubin JIT cache; only clear it on
+    # actual NVIDIA devices. HIP/ROCm uses its own cache (managed by ROCm)
+    # and Warp's clear_*_cache calls above cover the Warp-managed parts.
+    if not getattr(device, "is_hip", False):
+      compute_cache = epath.Path("~/.nv/ComputeCache").expanduser()
+      if compute_cache.exists():
+        shutil.rmtree(compute_cache)
+        compute_cache.mkdir()
 
   path = epath.Path(argv[1])
 

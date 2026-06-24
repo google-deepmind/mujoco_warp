@@ -2013,6 +2013,26 @@ def update_constraint_init_qfrc_constraint_dense(
   qfrc_constraint_out[worldid, dofid] = sum_qfrc
 
 
+@wp.kernel
+def update_constraint_zero_qfrc_constraint(
+  # In:
+  ctx_done_in: wp.array[bool],
+  # Data out:
+  qfrc_constraint_out: wp.array2d[float],
+):
+  worldid, dofid = wp.tid()
+
+  # Mirror the dense path: leave converged worlds untouched so their final
+  # qfrc_constraint is retained. Only clear worlds that will be recomputed by
+  # the (atomic-accumulating) sparse kernel below. Unconditionally zeroing the
+  # whole array would wipe converged worlds, which then get skipped by the
+  # sparse kernel's done-check, leaving qfrc_constraint stuck at zero.
+  if ctx_done_in[worldid]:
+    return
+
+  qfrc_constraint_out[worldid, dofid] = 0.0
+
+
 @cache_kernel
 def update_constraint_gauss_cost(nv: int, dofs_per_thread: int):
   @wp.kernel(module="unique", enable_backward=False)
@@ -2189,7 +2209,12 @@ def _update_constraint(m: types.Model, d: types.Data, ctx: SolverContext | Inver
 
   # qfrc_constraint = efc_J.T @ efc_force
   if m.is_sparse:
-    d.qfrc_constraint.zero_()
+    wp.launch(
+      update_constraint_zero_qfrc_constraint,
+      dim=(d.nworld, m.nv),
+      inputs=[ctx.done],
+      outputs=[d.qfrc_constraint],
+    )
     wp.launch(
       update_constraint_init_qfrc_constraint_sparse,
       dim=(d.nworld, d.njmax),

@@ -35,6 +35,10 @@ def _assert_eq(a, b, name):
 
 
 # TODO: Add tests comparing normal to engine implementation once available.
+# Every test below also exercises the BVH-accelerated raycast path via
+# `create_render_context`, which relies on the cuBQL BVH builder. cuBQL is
+# unavailable on HIP/ROCm, so the whole suite is skipped on those devices.
+@absltest.skipUnless(test_data.supports_cubql(), "Skipping ray tests that require cuBQL BVH (unsupported on HIP/ROCm).")
 class RayTest(absltest.TestCase):
   def test_ray_nothing(self):
     """Tests that ray returns -1 when nothing is hit."""

@@ -201,12 +201,19 @@ def unroll(
   Returns:
     jit_duration: Time to JIT capture the function.
   """
+  fn_args = (m, d) if rc is None else (m, d, rc)
   with wp.ScopedDevice(wp.get_device(DEVICE.value)):
     with warp_util.EventTracer(enabled=EVENT_TRACE.value) as tracer:
       jit_beg = time.perf_counter()
       with wp.ScopedCapture() as capture:
-        fn(*(m, d) if rc is None else (m, d, rc))
+        fn(*fn_args)
       jit_end = time.perf_counter()
+
+      # ROCm/HIP: wp.ScopedCapture is a no-op (capture.graph is None) because
+      # the ROCm Warp fork does not implement CUDA-graph capture. Fall back to
+      # re-invoking fn each iteration in Python; this costs per-step launch
+      # overhead but keeps the benchmark functional on HIP devices.
+      use_graph_replay = capture.graph is not None
 
       for i in range(NSTEP.value):
         with wp.ScopedStream(wp.get_stream()):
@@ -230,7 +237,10 @@ def unroll(
             wp.synchronize()
 
           run_beg = time.perf_counter()
-          wp.capture_launch(capture.graph)
+          if use_graph_replay:
+            wp.capture_launch(capture.graph)
+          else:
+            fn(*fn_args)
           wp.synchronize()
           run_end = time.perf_counter()
 

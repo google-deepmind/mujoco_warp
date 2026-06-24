@@ -25,6 +25,7 @@ from mujoco_warp._src import types
 
 
 class RenderUtilTest(absltest.TestCase):
+  @absltest.skipUnless(test_data.supports_texture(), "Skipping test that requires CUDA textures (unsupported on HIP/ROCm).")
   def test_create_warp_texture(self):
     """Tests that create_warp_texture creates a valid texture."""
     mjm, mjd, m, d = test_data.fixture("ray.xml")
@@ -77,6 +78,7 @@ class RenderUtilTest(absltest.TestCase):
       "perspective != orthographic raydir",
     )
 
+  @absltest.skipUnless(test_data.supports_cubql(), "Skipping test that requires cuBQL BVH (unsupported on HIP/ROCm).")
   def test_get_segmentation(self):
     """Tests that get_segmentation extracts MuJoCo-style typed IDs."""
     mjm, mjd, m, d = test_data.fixture("primitives.xml", nworld=2)
@@ -104,6 +106,7 @@ class RenderUtilTest(absltest.TestCase):
     background_mask = seg_np[..., 1] == -1
     np.testing.assert_array_equal(seg_np[..., 0][background_mask], -1)
 
+  @absltest.skipUnless(test_data.supports_cubql(), "Skipping test that requires cuBQL BVH (unsupported on HIP/ROCm).")
   def test_get_segmentation_preserves_flex_ids(self):
     """Tests that flex hits keep their real flex ids and type tags."""
     mjm, mjd, m, d = test_data.fixture("flex/multiflex.xml", nworld=1)

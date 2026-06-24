@@ -1653,7 +1653,9 @@ class IOTest(parameterized.TestCase):
     for i in range(mjm.nbody):
       _assert_eq(m.body_invweight0.numpy()[0, i], mjm.body_invweight0[i], f"body_invweight0[{i}]")
 
-  @absltest.skipIf(not wp.get_device().is_cuda, "Skipping test that requires GPU.")
+  @absltest.skipUnless(
+    test_data.supports_graph_capture(), "Skipping test that requires native graph capture (unsupported on HIP/ROCm)."
+  )
   def test_set_const_graph_capture(self):
     """Test that set_const_0 is compatible with CUDA graph capture."""
     _, _, m, d = test_data.fixture("humanoid/humanoid.xml", keyframe=0)
@@ -1859,6 +1861,7 @@ class IOTest(parameterized.TestCase):
     cl_read = m.actuator_cranklength.numpy()
     np.testing.assert_allclose(cl_read[0, 0], 0.42, atol=1e-6)
 
+  @absltest.skipUnless(test_data.supports_cubql(), "Skipping test that requires cuBQL BVH (unsupported on HIP/ROCm).")
   @parameterized.parameters(1, 4)
   def test_bvh_creation(self, nworld):
     """Test that the BVH is created correctly for single world and multiple worlds."""
@@ -1989,6 +1992,7 @@ class IOTest(parameterized.TestCase):
     _assert_eq(rc.seg_adr.numpy(), [0], "seg_adr")
     _assert_eq(rc.render_seg.numpy(), [True], "render_seg")
 
+  @absltest.skipUnless(test_data.supports_texture(), "Skipping test that requires CUDA textures (unsupported on HIP/ROCm).")
   def test_render_context_with_textures(self):
     mjm, mjd, m, d = test_data.fixture("mug/mug.xml")
     rc = mjwarp.create_render_context(mjm, render_rgb=True, render_depth=True, use_textures=True)

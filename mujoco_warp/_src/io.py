@@ -258,7 +258,9 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
   opt.ls_parallel_min_step = 1.0e-6  # TODO(team): determine good default setting
   opt.broadphase = types.BroadphaseType.NXN
   opt.broadphase_filter = types.BroadphaseFilter.PLANE | types.BroadphaseFilter.SPHERE | types.BroadphaseFilter.OBB
-  opt.graph_conditional = True
+  # CUDA graph conditional nodes are unavailable on HIP/ROCm and on CUDA toolkits < 12.4.
+  # Default to True only when Warp reports the feature is supported on the active device.
+  opt.graph_conditional = bool(wp.is_conditional_graph_supported())
   opt.run_collision_detection = True
   contact_sensor_maxmatch_id = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_NUMERIC, "contact_sensor_maxmatch")
   if contact_sensor_maxmatch_id > -1:
