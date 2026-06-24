@@ -98,10 +98,8 @@ class DerivativeTest(parameterized.TestCase):
     mjm.opt.integrator = mujoco.mjtIntegrator.mjINT_IMPLICITFAST
     mujoco.mj_step(mjm, mjd)
 
-    if jacobian == mujoco.mjtJacobian.mjJAC_SPARSE:
-      out_smooth_vel = wp.zeros((1, 1, m.nC), dtype=float)
-    else:
-      out_smooth_vel = wp.zeros(d.M.shape, dtype=float)
+    # deriv_smooth_vel outputs in M's CSR layout (nC entries).
+    out_smooth_vel = wp.zeros((1, m.nC), dtype=float)
 
     # Compute kinematics without factorizing M to allow direct comparison
     forward.fwd_position(m, d, factorize=False)
@@ -110,13 +108,10 @@ class DerivativeTest(parameterized.TestCase):
     # 1. Test with RNE Disabled (Matches MuJoCo's ImplicitFast)
     mjw.deriv_smooth_vel(m, d, out_smooth_vel)
 
-    if jacobian == mujoco.mjtJacobian.mjJAC_SPARSE:
-      mjw_out = np.zeros((m.nv, m.nv))
-      mujoco.mju_sym2dense(
-        mjw_out, out_smooth_vel.numpy().reshape(-1).astype(np.float64), mjm.M_rownnz, mjm.M_rowadr, mjm.M_colind
-      )
-    else:
-      mjw_out = out_smooth_vel.numpy()[0, : m.nv, : m.nv]
+    mjw_out = np.zeros((m.nv, m.nv))
+    mujoco.mju_sym2dense(
+      mjw_out, out_smooth_vel.numpy().reshape(-1).astype(np.float64), mjm.M_rownnz, mjm.M_rowadr, mjm.M_colind
+    )
 
     # Symmetrize mjw_out (use lower triangle)
     mjw_out = np.tril(mjw_out) + np.tril(mjw_out, -1).T
@@ -177,20 +172,15 @@ class DerivativeTest(parameterized.TestCase):
 
     mujoco.mj_step(mjm, mjd)
 
-    if jacobian == mujoco.mjtJacobian.mjJAC_SPARSE:
-      out_smooth_vel = wp.zeros((1, 1, m.nC), dtype=float)
-    else:
-      out_smooth_vel = wp.zeros(d.M.shape, dtype=float)
+    # deriv_smooth_vel outputs in M's CSR layout (nC entries).
+    out_smooth_vel = wp.zeros((1, m.nC), dtype=float)
 
     mjw.deriv_smooth_vel(m, d, out_smooth_vel)
 
-    if jacobian == mujoco.mjtJacobian.mjJAC_SPARSE:
-      mjw_out = np.zeros((m.nv, m.nv))
-      mujoco.mju_sym2dense(
-        mjw_out, out_smooth_vel.numpy().reshape(-1).astype(np.float64), mjm.M_rownnz, mjm.M_rowadr, mjm.M_colind
-      )
-    else:
-      mjw_out = out_smooth_vel.numpy()[0, : m.nv, : m.nv]
+    mjw_out = np.zeros((m.nv, m.nv))
+    mujoco.mju_sym2dense(
+      mjw_out, out_smooth_vel.numpy().reshape(-1).astype(np.float64), mjm.M_rownnz, mjm.M_rowadr, mjm.M_colind
+    )
 
     # Final comparison against new ground truth: M - dt * qDeriv
     mj_qDeriv = np.zeros((mjm.nv, mjm.nv))
@@ -399,7 +389,7 @@ class DerivativeTest(parameterized.TestCase):
 
     mujoco.mj_step(mjm, mjd)
 
-    out_smooth_vel = wp.zeros((1, 1, m.nC), dtype=float)
+    out_smooth_vel = wp.zeros((1, m.nC), dtype=float)
     mjw.deriv_smooth_vel(m, d, out_smooth_vel)
 
     mjw_out = np.zeros((m.nv, m.nv))
@@ -458,7 +448,7 @@ class DerivativeTest(parameterized.TestCase):
 
     mujoco.mj_step(mjm, mjd)
 
-    out_smooth_vel = wp.zeros((1, 1, m.nC), dtype=float)
+    out_smooth_vel = wp.zeros((1, m.nC), dtype=float)
     mjw.deriv_smooth_vel(m, d, out_smooth_vel)
 
     mjw_out = np.zeros((m.nv, m.nv))
@@ -508,10 +498,14 @@ class DerivativeTest(parameterized.TestCase):
     # both should have same act_dot (ctrl = 1 for integrator dynamics)
     _assert_eq(d.act_dot.numpy()[0, 0], d.act_dot.numpy()[0, 1], "act_dot")
 
-    # compute qDeriv using deriv_smooth_vel
-    out_smooth_vel = wp.zeros(d.M.shape, dtype=float)
+    # compute qDeriv using deriv_smooth_vel (M's CSR layout, nC entries)
+    out_smooth_vel = wp.zeros((1, m.nC), dtype=float)
     mjw.deriv_smooth_vel(m, d, out_smooth_vel)
-    mjw_out = out_smooth_vel.numpy()[0, : m.nv, : m.nv]
+    mjw_out = np.zeros((m.nv, m.nv))
+    qi = m.M_fullm_i.numpy()
+    qj = m.M_fullm_j.numpy()
+    for elem, (i, j) in enumerate(zip(qi, qj)):
+      mjw_out[i, j] = out_smooth_vel.numpy()[0, elem]
 
     # with actearly=true and nonzero act_dot, derivative should differ
     # because actearly uses next activation: act + act_dot*dt
@@ -817,12 +811,12 @@ class DerivativeTest(parameterized.TestCase):
     mjm.opt.integrator = mujoco.mjtIntegrator.mjINT_IMPLICIT
     mujoco.mj_step(mjm, mjd)
 
-    out_rne = wp.zeros((1, 1, m.nD), dtype=float)
+    out_rne = wp.zeros((1, m.nD), dtype=float)
     derivative.deriv_rne_vel(m, d, out_rne)
 
     mjw_rne = np.zeros((m.nv, m.nv))
     for elem, (i, j) in enumerate(zip(m.qD_fullm_i.numpy(), m.qD_fullm_j.numpy())):
-      mjw_rne[i, j] = out_rne.numpy()[0, 0, elem]
+      mjw_rne[i, j] = out_rne.numpy()[0, elem]
 
     mj_qDeriv = np.zeros((mjm.nv, mjm.nv))
     mujoco.mju_sparse2dense(mj_qDeriv, mjd.qDeriv, mjm.D_rownnz, mjm.D_rowadr, mjm.D_colind)
@@ -860,12 +854,17 @@ class DerivativeTest(parameterized.TestCase):
 
     mujoco.mj_step(mjm, mjd)
 
-    out_smooth_vel = wp.zeros(d.M.shape, dtype=float)
+    # deriv_smooth_vel outputs in M's CSR layout (nC entries).
+    out_smooth_vel = wp.zeros((1, m.nC), dtype=float)
     forward.fwd_position(m, d, factorize=False)
     forward.fwd_velocity(m, d)
     mjw.deriv_smooth_vel(m, d, out_smooth_vel)
 
-    mjw_out = out_smooth_vel.numpy()[0, : m.nv, : m.nv]
+    mjw_out = np.zeros((m.nv, m.nv))
+    qi = m.M_fullm_i.numpy()
+    qj = m.M_fullm_j.numpy()
+    for elem, (i, j) in enumerate(zip(qi, qj)):
+      mjw_out[i, j] = out_smooth_vel.numpy()[0, elem]
     mjw_out = np.tril(mjw_out) + np.tril(mjw_out, -1).T
 
     mj_qDeriv = np.zeros((mjm.nv, mjm.nv))
@@ -956,23 +955,18 @@ class DerivativeTest(parameterized.TestCase):
     mjm.opt.integrator = mujoco.mjtIntegrator.mjINT_IMPLICITFAST
     mujoco.mj_step(mjm, mjd)
 
-    if jacobian == mujoco.mjtJacobian.mjJAC_SPARSE:
-      out = wp.zeros((1, 1, m.nC), dtype=float)
-    else:
-      out = wp.zeros(d.M.shape, dtype=float)
+    # deriv_smooth_vel outputs in M's CSR layout (nC entries).
+    out = wp.zeros((1, m.nC), dtype=float)
 
     forward.fwd_position(m, d, factorize=False)
     forward.fwd_velocity(m, d)
     derivative.deriv_smooth_vel(m, d, out)
 
-    if jacobian == mujoco.mjtJacobian.mjJAC_SPARSE:
-      mjw_out = np.zeros((m.nv, m.nv))
-      qi = m.M_fullm_i.numpy()
-      qj = m.M_fullm_j.numpy()
-      for elem, (i, j) in enumerate(zip(qi, qj)):
-        mjw_out[i, j] = out.numpy()[0, 0, elem]
-    else:
-      mjw_out = out.numpy()[0, : m.nv, : m.nv]
+    mjw_out = np.zeros((m.nv, m.nv))
+    qi = m.M_fullm_i.numpy()
+    qj = m.M_fullm_j.numpy()
+    for elem, (i, j) in enumerate(zip(qi, qj)):
+      mjw_out[i, j] = out.numpy()[0, elem]
 
     mjw_out = np.tril(mjw_out) + np.tril(mjw_out, -1).T
 
@@ -1018,7 +1012,7 @@ class DerivativeTest(parameterized.TestCase):
     mujoco.mj_forward(mjm, mjd)
     d = mjw.put_data(mjm, mjd)
 
-    out = wp.zeros((1, 1, m.nC), dtype=float)
+    out = wp.zeros((1, m.nC), dtype=float)
     forward.fwd_position(m, d, factorize=False)
     forward.fwd_velocity(m, d)
     derivative.deriv_smooth_vel(m, d, out)
@@ -1029,7 +1023,7 @@ class DerivativeTest(parameterized.TestCase):
     expected = K * (-kd - K) * (1 - np.exp(-h / te)) / R
 
     # Extract diagonal
-    out_diag = out.numpy()[0, 0, 0]
+    out_diag = out.numpy()[0, 0]
     dt = mjm.opt.timestep
     qDeriv_diag = (1.0 - out_diag) / dt
 
@@ -1082,7 +1076,7 @@ class DerivativeTest(parameterized.TestCase):
     mjd_sl.ctrl[0] = 0.5
     mujoco.mj_forward(mjm_sl, mjd_sl)
     d_sl = mjw.put_data(mjm_sl, mjd_sl)
-    out_sl = wp.zeros((1, 1, m_sl.nC), dtype=float)
+    out_sl = wp.zeros((1, m_sl.nC), dtype=float)
     forward.fwd_position(m_sl, d_sl, factorize=False)
     forward.fwd_velocity(m_sl, d_sl)
     derivative.deriv_smooth_vel(m_sl, d_sl, out_sl)
@@ -1093,14 +1087,14 @@ class DerivativeTest(parameterized.TestCase):
     mjd_sf.ctrl[0] = 0.5
     mujoco.mj_forward(mjm_sf, mjd_sf)
     d_sf = mjw.put_data(mjm_sf, mjd_sf)
-    out_sf = wp.zeros((1, 1, m_sf.nC), dtype=float)
+    out_sf = wp.zeros((1, m_sf.nC), dtype=float)
     forward.fwd_position(m_sf, d_sf, factorize=False)
     forward.fwd_velocity(m_sf, d_sf)
     derivative.deriv_smooth_vel(m_sf, d_sf, out_sf)
 
     # Extract diagonals
-    val_sl = out_sl.numpy()[0, 0, 0]
-    val_sf = out_sf.numpy()[0, 0, 0]
+    val_sl = out_sl.numpy()[0, 0]
+    val_sf = out_sf.numpy()[0, 0]
 
     np.testing.assert_allclose(
       val_sf,
@@ -1108,6 +1102,173 @@ class DerivativeTest(parameterized.TestCase):
       atol=1e-4,
       err_msg="stateful should converge to stateless as te->0",
     )
+
+  _FLUID_SCENARIOS = {
+    "basic": """
+      <mujoco>
+        <option integrator="implicitfast" density="1000" viscosity="0.002"/>
+        <worldbody>
+          <body>
+            <joint type="free"/>
+            <geom type="ellipsoid" size="0.1 0.15 0.2" pos="0.05 0.05 0.05"
+                  euler="10 20 30" fluidshape="ellipsoid"
+                  fluidcoef="1.0 1.5 2.0 0.5 0.8"/>
+          </body>
+        </worldbody>
+        <keyframe>
+          <key qvel="1 2 3 0.5 0.8 1.2"/>
+        </keyframe>
+      </mujoco>
+      """,
+    "chain": """
+      <mujoco>
+        <option integrator="implicitfast" density="1000" viscosity="0.002"/>
+        <worldbody>
+          <body>
+            <joint type="hinge" axis="0 1 0"/>
+            <geom type="sphere" size="0.05" pos="0.01 0.02 0.03" euler="5 10 15"
+                  fluidshape="ellipsoid"/>
+            <body pos="0.2 0 0">
+              <joint type="hinge" axis="0 1 0"/>
+              <geom type="ellipsoid" size="0.1 0.15 0.2" pos="0.02 0.03 0.04"
+                    euler="10 15 20" fluidshape="ellipsoid"
+                    fluidcoef="1.0 1.5 2.0 0.5 0.8"/>
+            </body>
+          </body>
+        </worldbody>
+        <keyframe>
+          <key qpos="0.5 1.0" qvel="1.0 2.0"/>
+        </keyframe>
+      </mujoco>
+      """,
+    "multi_geom": """
+      <mujoco>
+        <option integrator="implicitfast" density="1.225" viscosity="1.8e-5"/>
+        <worldbody>
+          <body>
+            <freejoint/>
+            <geom type="box" size=".025 .01 0.0001" pos=".025 0 0"
+                  euler="20 0 0" mass="1e-4" fluidshape="ellipsoid"/>
+            <geom type="box" size=".025 .01 0.0001" pos="-.025 0 0"
+                  euler="-19 0 0" mass="1e-4" fluidshape="ellipsoid"/>
+          </body>
+        </worldbody>
+        <keyframe>
+          <key qvel="0.1 -0.2 0.3 0.5 0.8 -0.4"/>
+        </keyframe>
+      </mujoco>
+      """,
+    "wind": """
+      <mujoco>
+        <option integrator="implicitfast" density="1000" viscosity="0.002"
+                wind="1 0.5 0"/>
+        <worldbody>
+          <body>
+            <joint type="free"/>
+            <geom type="ellipsoid" size="0.1 0.15 0.2" pos="-0.05 0.05 -0.05"
+                  euler="-10 20 -30" fluidshape="ellipsoid"
+                  fluidcoef="1.0 1.5 2.0 0.5 0.8"/>
+          </body>
+        </worldbody>
+        <keyframe>
+          <key qvel="1 2 3 0.5 0.8 1.2"/>
+        </keyframe>
+      </mujoco>
+      """,
+    "density_only": """
+      <mujoco>
+        <option integrator="implicitfast" density="1000" viscosity="0"/>
+        <worldbody>
+          <body>
+            <joint type="free"/>
+            <geom type="ellipsoid" size="0.1 0.15 0.2" pos="0.05 -0.05 0.05"
+                  euler="10 -20 30" fluidshape="ellipsoid"
+                  fluidcoef="1.0 1.5 2.0 0.5 0.8"/>
+          </body>
+        </worldbody>
+        <keyframe>
+          <key qvel="1 2 3 0.5 0.8 1.2"/>
+        </keyframe>
+      </mujoco>
+      """,
+    "viscosity_only": """
+      <mujoco>
+        <option integrator="implicitfast" density="0" viscosity="0.01"/>
+        <worldbody>
+          <body>
+            <joint type="free"/>
+            <geom type="ellipsoid" size="0.1 0.15 0.2" pos="-0.05 -0.05 0.05"
+                  euler="-10 -20 30" fluidshape="ellipsoid"
+                  fluidcoef="1.0 1.5 2.0 0.5 0.8"/>
+          </body>
+        </worldbody>
+        <keyframe>
+          <key qvel="1 2 3 0.5 0.8 1.2"/>
+        </keyframe>
+      </mujoco>
+      """,
+    "capsule": """
+      <mujoco>
+        <option integrator="implicitfast" density="1000" viscosity="0.002"/>
+        <worldbody>
+          <body>
+            <joint type="free"/>
+            <geom type="capsule" size="0.05 0.15" pos="0.03 0.04 0.05"
+                  euler="15 25 35" fluidshape="ellipsoid"
+                  fluidcoef="1.0 1.5 2.0 0.5 0.8"/>
+          </body>
+        </worldbody>
+        <keyframe>
+          <key qvel="1 2 3 0.5 0.8 1.2"/>
+        </keyframe>
+      </mujoco>
+      """,
+  }
+
+  @parameterized.product(
+    scenario=list(_FLUID_SCENARIOS.keys()),
+    jacobian=[mujoco.mjtJacobian.mjJAC_DENSE, mujoco.mjtJacobian.mjJAC_SPARSE],
+  )
+  def test_smooth_vel_fluid(self, scenario, jacobian):
+    """Tests qDeriv with various ellipsoid fluid force configurations."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml=self._FLUID_SCENARIOS[scenario],
+      keyframe=0,
+      overrides={"opt.jacobian": jacobian},
+    )
+    mujoco.mj_step(mjm, mjd)
+
+    out_smooth_vel = wp.zeros(d.M.shape, dtype=float)
+    mjw.deriv_smooth_vel(m, d, out_smooth_vel)
+
+    mjw_out = np.zeros((m.nv, m.nv))
+    mujoco.mju_sym2dense(
+      mjw_out,
+      out_smooth_vel.numpy().reshape(-1).astype(np.float64),
+      mjm.M_rownnz,
+      mjm.M_rowadr,
+      mjm.M_colind,
+    )
+
+    mj_qDeriv = np.zeros((mjm.nv, mjm.nv))
+    mujoco.mju_sparse2dense(mj_qDeriv, mjd.qDeriv, mjm.D_rownnz, mjm.D_rowadr, mjm.D_colind)
+
+    mj_M = np.zeros((m.nv, m.nv))
+    mujoco.mju_sym2dense(
+      mj_M,
+      mjd.M,
+      mjm.M_rownnz,
+      mjm.M_rowadr,
+      mjm.M_colind,
+    )
+    mj_out = mj_M - mjm.opt.timestep * mj_qDeriv
+
+    name = f"M - dt * qDeriv (fluid {scenario})"
+    if jacobian == mujoco.mjtJacobian.mjJAC_SPARSE:
+      mask = m.M_elemid.numpy() >= 0
+      _assert_eq(mjw_out[mask], mj_out[mask], name)
+    else:
+      _assert_eq(mjw_out, mj_out, name)
 
 
 if __name__ == "__main__":

@@ -45,7 +45,6 @@ from mujoco_warp._src.types import GainType
 from mujoco_warp._src.types import IntegratorType
 from mujoco_warp._src.types import JointType
 from mujoco_warp._src.types import Model
-from mujoco_warp._src.types import TileSet
 from mujoco_warp._src.types import TrnType
 from mujoco_warp._src.types import vec10f
 from mujoco_warp._src.warp_util import cache_kernel
@@ -357,7 +356,8 @@ def _advance(m: Model, d: Data, qacc: wp.array, qvel: Optional[wp.array] = None)
   else:
     wp.copy(d.qacc_warmstart, d.qacc)
 
-  if not (m.opt.disableflags & DisableBit.ISLAND) and (m.opt.enableflags & EnableBit.SLEEP):
+  sleep_enabled = bool(m.opt.enableflags & EnableBit.SLEEP)
+  if sleep_enabled:
     sleep.sleep(m, d)
     fwd_velocity(m, d)
     sleep.update_sleep(m, d)
@@ -381,7 +381,7 @@ def _compute_damping_deriv(
 
 
 @wp.kernel
-def _euler_damp_qfrc_sparse(
+def _euler_damp_qfrc(
   # Model:
   opt_timestep: wp.array[float],
   M_rownnz: wp.array[int],
@@ -389,60 +389,13 @@ def _euler_damp_qfrc_sparse(
   # In:
   damp_deriv: wp.array2d[float],
   # Out:
-  M_integration_out: wp.array3d[float],
+  M_integration_out: wp.array2d[float],
 ):
   worldid, tid = wp.tid()
   timestep = opt_timestep[worldid % opt_timestep.shape[0]]
 
   adr = M_rowadr[tid] + M_rownnz[tid] - 1
-  M_integration_out[worldid, 0, adr] += timestep * damp_deriv[worldid, tid]
-
-
-@wp.kernel
-def _euler_damp_qfrc_dense(
-  # Model:
-  opt_timestep: wp.array[float],
-  dof_damping: wp.array2d[float],
-  # Out:
-  qM_integration_out: wp.array3d[float],
-):
-  """Add dt * damping to diagonal of dense (nworld, nv, nv) mass matrix."""
-  worldid, tid = wp.tid()
-  timestep = opt_timestep[worldid % opt_timestep.shape[0]]
-  qM_integration_out[worldid, tid, tid] += timestep * dof_damping[worldid % dof_damping.shape[0], tid]
-
-
-@cache_kernel
-def _tile_euler_dense(tile: TileSet):
-  @wp.kernel(module="unique", enable_backward=False)
-  def euler_dense(
-    # Model:
-    opt_timestep: wp.array[float],
-    # Data in:
-    M_in: wp.array3d[float],
-    efc_Ma_in: wp.array2d[float],
-    # In:
-    damp_deriv: wp.array2d[float],
-    adr_in: wp.array[int],
-    # Data out:
-    qacc_out: wp.array2d[float],
-  ):
-    worldid, nodeid = wp.tid()
-    timestep = opt_timestep[worldid % opt_timestep.shape[0]]
-    TILE_SIZE = wp.static(tile.size)
-
-    dofid = adr_in[nodeid]
-    M_tile = wp.tile_load(M_in[worldid], shape=(TILE_SIZE, TILE_SIZE), offset=(dofid, dofid))
-    damping_tile = wp.tile_load(damp_deriv[worldid], shape=(TILE_SIZE,), offset=(dofid,))
-    damping_scaled = damping_tile * timestep
-    qm_integration_tile = wp.tile_diag_add(M_tile, damping_scaled)
-
-    Ma_tile = wp.tile_load(efc_Ma_in[worldid], shape=(TILE_SIZE,), offset=(dofid,))
-    L_tile = wp.tile_cholesky(qm_integration_tile, fill_mode="upper")
-    qacc_tile = wp.tile_cholesky_solve(L_tile, Ma_tile, fill_mode="upper")
-    wp.tile_store(qacc_out[worldid], qacc_tile, offset=(dofid))
-
-  return euler_dense
+  M_integration_out[worldid, adr] += timestep * damp_deriv[worldid, tid]
 
 
 @event_scope
@@ -462,26 +415,18 @@ def euler(m: Model, d: Data):
       outputs=[damp_deriv],
     )
 
-    if m.is_sparse:
-      M = wp.clone(d.M)
-      qLD = wp.empty((d.nworld, 1, m.nC), dtype=float, requires_grad=ad_active)
-      qLDiagInv = wp.empty((d.nworld, m.nv), dtype=float, requires_grad=ad_active)
-      wp.launch(
-        _euler_damp_qfrc_sparse,
-        dim=(d.nworld, m.nv),
-        inputs=[m.opt.timestep, m.M_rownnz, m.M_rowadr, damp_deriv],
-        outputs=[M],
-      )
-      smooth.factor_solve_i(m, d, M, qLD, qLDiagInv, qacc, d.efc.Ma)
-    else:
-      for tile in m.M_tiles:
-        wp.launch_tiled(
-          _tile_euler_dense(tile),
-          dim=(d.nworld, tile.adr.size),
-          inputs=[m.opt.timestep, d.M, d.efc.Ma, damp_deriv, tile.adr],
-          outputs=[qacc],
-          block_dim=m.block_dim.euler_dense,
-        )
+    # Clone M, add the damping to the diagonal, and factor-solve. factor_solve_i factors each block
+    # per-block (packed dense and/or sparse LDL); the scratch qLD matches d.qLD.
+    M = wp.clone(d.M)
+    qLD = wp.empty_like(d.qLD)
+    qLDiagInv = wp.empty((d.nworld, m.nv), dtype=float, requires_grad=ad_active)
+    wp.launch(
+      _euler_damp_qfrc,
+      dim=(d.nworld, m.nv),
+      inputs=[m.opt.timestep, m.M_rownnz, m.M_rowadr, damp_deriv],
+      outputs=[M],
+    )
+    smooth.factor_solve_i(m, d, M, qLD, qLDiagInv, qacc, d.efc.Ma)
     _record_solver_adjoint(m, d, qacc_array=qacc)
     _record_euler_damp_adjoint(m, d, qacc)
     _advance(m, d, qacc)
@@ -636,25 +581,18 @@ def rungekutta4(m: Model, d: Data):
 def _map_m2d(
   # Model:
   mapM2D: wp.array[int],
-  is_sparse: bool,
   # In:
-  qDi: wp.array[int],
-  qDj: wp.array[int],
-  qH_M: wp.array3d[float],
+  qH_M: wp.array2d[float],
   # Data out:
-  qLU_out: wp.array3d[float],
+  qLU_out: wp.array2d[float],
 ):
+  # Scatter qH_M (M-structure) into the D-structure qLU via mapM2D.
   worldid, elemid = wp.tid()
-  if is_sparse:
-    m_idx = mapM2D[elemid]
-    if m_idx >= 0:
-      qLU_out[worldid, 0, elemid] = qH_M[worldid, 0, m_idx]
-    else:
-      qLU_out[worldid, 0, elemid] = 0.0
+  m_idx = mapM2D[elemid]
+  if m_idx >= 0:
+    qLU_out[worldid, elemid] = qH_M[worldid, m_idx]
   else:
-    i = qDi[elemid]
-    j = qDj[elemid]
-    qLU_out[worldid, 0, elemid] = qH_M[worldid, i, j]
+    qLU_out[worldid, elemid] = 0.0
 
 
 @event_scope
@@ -671,7 +609,7 @@ def implicit(m: Model, d: Data):
     wp.launch(
       _map_m2d,
       dim=(d.nworld, m.nD),
-      inputs=[m.mapM2D, m.is_sparse, m.qD_fullm_i, m.qD_fullm_j, qH_M],
+      inputs=[m.mapM2D, qH_M],
       outputs=[d.qLU],
     )
 
@@ -683,12 +621,9 @@ def implicit(m: Model, d: Data):
     smooth.factor_solve_lu(m, d, d.qLU, qacc, d.efc.Ma)
     _advance(m, d, qacc)
   elif ~(m.opt.disableflags | ~(DisableBit.ACTUATION | DisableBit.SPRING | DisableBit.DAMPER)):
-    if m.is_sparse:
-      qDeriv = wp.empty((d.nworld, 1, m.nC), dtype=float)
-      qLD = wp.empty((d.nworld, 1, m.nC), dtype=float)
-    else:
-      qDeriv = wp.empty(d.M.shape, dtype=float)
-      qLD = wp.empty(d.M.shape, dtype=float)
+    # qDeriv is in M-structure; the scratch qLD matches d.qLD (per-block).
+    qDeriv = wp.empty((d.nworld, m.nC), dtype=float)
+    qLD = wp.empty_like(d.qLD)
     qLDiagInv = wp.empty((d.nworld, m.nv), dtype=float)
     derivative.deriv_smooth_vel(m, d, qDeriv)
     qacc = wp.empty((d.nworld, m.nv), dtype=float, requires_grad=ad_active)
@@ -715,7 +650,7 @@ def fwd_position(m: Model, d: Data, factorize: bool = True):
   smooth.flex(m, d)
   smooth.tendon(m, d)
 
-  sleep_enabled = not (m.opt.disableflags & DisableBit.ISLAND) and (m.opt.enableflags & EnableBit.SLEEP)
+  sleep_enabled = bool(m.opt.enableflags & EnableBit.SLEEP)
 
   if sleep_enabled and m.ntendon > 0:
     sleep.wake_tendon(m, d)
@@ -757,7 +692,7 @@ def fwd_position(m: Model, d: Data, factorize: bool = True):
       sleep.wake_equality(m, d)
     sleep.update_sleep(m, d)
 
-  if m.ntree > 1 and not (m.opt.disableflags & types.DisableBit.ISLAND):
+  if m.is_compact or (m.ntree > 1 and not (m.opt.disableflags & types.DisableBit.ISLAND)):
     island.island(m, d)
   smooth.transmission(m, d)
 
@@ -1204,7 +1139,6 @@ def _qfrc_actuator(
 @wp.kernel
 def _qfrc_actuator_gravcomp_limits(
   # Model:
-  ngravcomp: int,
   jnt_actfrclimited: wp.array[bool],
   jnt_actgravcomp: wp.array[int],
   jnt_actfrcrange: wp.array2d[wp.vec2],
@@ -1212,6 +1146,8 @@ def _qfrc_actuator_gravcomp_limits(
   # Data in:
   qfrc_gravcomp_in: wp.array2d[float],
   qfrc_actuator_in: wp.array2d[float],
+  # In:
+  gravity_enabled: bool,
   # Data out:
   qfrc_actuator_out: wp.array2d[float],
 ):
@@ -1221,7 +1157,7 @@ def _qfrc_actuator_gravcomp_limits(
   qfrc = qfrc_actuator_in[worldid, dofid]
 
   # actuator-level gravity compensation, skip if added as passive force
-  if ngravcomp and jnt_actgravcomp[jntid]:
+  if gravity_enabled and jnt_actgravcomp[jntid]:
     qfrc += qfrc_gravcomp_in[worldid, dofid]
 
   # limits
@@ -1321,17 +1257,18 @@ def fwd_actuation(m: Model, d: Data):
   # clone to break input/output aliasing for correct AD; skip when not
   # recording a backward tape to avoid unnecessary allocation + copy.
   qfrc_actuator_in = wp.clone(d.qfrc_actuator) if d.qfrc_actuator.requires_grad else d.qfrc_actuator
+  gravity_enabled = not (m.opt.disableflags & DisableBit.GRAVITY)
   wp.launch(
     _qfrc_actuator_gravcomp_limits,
     dim=(d.nworld, m.nv),
     inputs=[
-      m.ngravcomp,
       m.jnt_actfrclimited,
       m.jnt_actgravcomp,
       m.jnt_actfrcrange,
       m.dof_jntid,
       d.qfrc_gravcomp,
       qfrc_actuator_in,
+      gravity_enabled,
     ],
     outputs=[d.qfrc_actuator],
   )
@@ -1401,7 +1338,12 @@ def fwd_acceleration(m: Model, d: Data, factorize: bool = False):
   )
   xfrc_accumulate(m, d, d.qfrc_smooth)
 
-  if factorize:
+  if m.is_compact:
+    # update the active-DOF set (needs contacts from fwd_position) and solve
+    # the smooth acceleration in compacted dense space.
+    island.update_active_dofs(m, d)
+    solver.smooth_solve_compact(m, d)
+  elif factorize:
     smooth.factor_solve_i(m, d, d.M, d.qLD, d.qLDiagInv, d.qacc_smooth, d.qfrc_smooth)
   else:
     smooth.solve_m(m, d, d.qacc_smooth, d.qfrc_smooth)
@@ -1519,7 +1461,7 @@ def _record_euler_damp_adjoint(m: Model, d: Data, qacc: wp.array):
   # adjoint applies exactly the same M + dt*D transform. Computed at record
   # time from the substep's qvel (current main supports polynomial damping;
   # for constant damping this equals dof_damping, matching the original
-  # adjoint). Sparse path needs it explicitly; dense reuses _euler_damp_qfrc_dense.
+  # adjoint). Applies the same M + dt*D transform via _euler_damp_qfrc.
   damp_deriv_ref = wp.empty((d.nworld, m.nv), dtype=float)
   wp.launch(
     _compute_damping_deriv,
@@ -1535,22 +1477,15 @@ def _record_euler_damp_adjoint(m: Model, d: Data, qacc: wp.array):
 
     nv = m.nv
 
-    # Step 1: Construct M_damp = M + dt*D
+    # Step 1: Construct M_damp = M + dt*D. _euler_damp_qfrc adds dt*damp_deriv to the
+    # diagonal of the packed block-layout mass matrix (matches the forward Euler solve).
     qM_damp = wp.clone(qM)
-    if m.is_sparse:
-      wp.launch(
-        _euler_damp_qfrc_sparse,
-        dim=(d.nworld, nv),
-        inputs=[m.opt.timestep, m.M_rownnz, m.M_rowadr, damp_deriv],
-        outputs=[qM_damp],
-      )
-    else:
-      wp.launch(
-        _euler_damp_qfrc_dense,
-        dim=(d.nworld, nv),
-        inputs=[m.opt.timestep, damp_deriv],
-        outputs=[qM_damp],
-      )
+    wp.launch(
+      _euler_damp_qfrc,
+      dim=(d.nworld, nv),
+      inputs=[m.opt.timestep, m.M_rownnz, m.M_rowadr, damp_deriv],
+      outputs=[qM_damp],
+    )
 
     # Step 2: Solve (M + dt*D) * tmp = adj_qacc
     qLD_tmp = wp.zeros_like(d.qLD)
@@ -1579,7 +1514,8 @@ def forward(m: Model, d: Data, record_solver_adjoint: bool = True):
         adjoint on the tape. Set to False when called from step() since the
         integrator records its own adjoint at the correct tape position.
   """
-  if not (m.opt.disableflags & DisableBit.ISLAND) and (m.opt.enableflags & EnableBit.SLEEP):
+  sleep_enabled = bool(m.opt.enableflags & EnableBit.SLEEP)
+  if sleep_enabled:
     sleep.wake(m, d)
     sleep.update_sleep(m, d)
 
