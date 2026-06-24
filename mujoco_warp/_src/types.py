@@ -815,6 +815,7 @@ class Option:
       zeros out the contacts at each step)
     contact_sensor_maxmatch: max number of contacts considered by contact sensor matching criteria
                              contacts matched after this value is exceded will be ignored
+    jac_preconditioner: enable block Jacobi + IC(0) preconditioner for sparse CG solver
   """
 
   timestep: array("*", float)
@@ -844,6 +845,7 @@ class Option:
   graph_conditional: bool
   run_collision_detection: bool
   contact_sensor_maxmatch: int
+  jac_preconditioner: bool
 
   # TODO(team): remove in future version
   @property

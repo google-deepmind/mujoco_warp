@@ -204,7 +204,7 @@ def _create_solver_context(m: types.Model, d: types.Data) -> SolverContext:
 
   # IC(0) preconditioner: (M + JTDJ) factored for articulated bodies.
   has_articulated = m.is_sparse and m.has_articulated_trees
-  alloc_ic = alloc_block_jacobi and has_articulated
+  alloc_ic = alloc_block_jacobi and has_articulated and m.opt.jac_preconditioner
   if alloc_ic:
     M_precond = wp.zeros((nworld, m.nC), dtype=float)
     qld_total = d.qLD.shape[1]
@@ -3444,7 +3444,7 @@ def _update_gradient(m: types.Model, d: types.Data, ctx: SolverContext, compact:
       outputs=[ctx.grad, ctx.grad_dot],
     )
   if m.opt.solver == types.SolverType.CG:
-    if m.is_sparse:
+    if m.is_sparse and m.opt.jac_preconditioner:
       _build_ic_preconditioner(m, d, ctx)
       _apply_ic_preconditioner(m, d, ctx)
     else:

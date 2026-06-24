@@ -5,6 +5,7 @@ BENCHMARKS = [
     "nworld": 32,
     "nconmax": 2200,
     "njmax": 8000,
+    "override": "opt.jac_preconditioner=true",
   },
   {
     "name": "cloth_render",

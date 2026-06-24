@@ -40,6 +40,7 @@ BENCHMARKS = [
     "nccdmax": 1,
     "njmax": 8192,
     "nstep": 100,
+    "override": "opt.jac_preconditioner=true",
     "assets": [(ASSETS[0], "aloha")],
   },
   {
