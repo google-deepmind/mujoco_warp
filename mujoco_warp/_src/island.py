@@ -800,7 +800,7 @@ def _init_efc_arrays(
 
 
 @event_scope
-def compute_island_mapping(m: types.Model, d: types.Data, ctx: IslandSolverContext):
+def compute_island_mapping(m: types.Model, d: types.Data, ctx: IslandSolverContext | None = None):
   """Compute DOF/constraint island mappings after island discovery.
 
   Populates island solver context arrays via ctx: nv, nefc, ne, nf,
@@ -838,7 +838,7 @@ def compute_island_mapping(m: types.Model, d: types.Data, ctx: IslandSolverConte
       d.island_nefc,
       d.island_ne,
       d.island_nf,
-      d.island_efcadr,
+      d.island_iefcadr,
       d.nidof,
     ],
   )
@@ -905,7 +905,7 @@ def compute_island_mapping(m: types.Model, d: types.Data, ctx: IslandSolverConte
     _island_scan_sizes,
     dim=d.nworld,
     inputs=[d.nisland],
-    outputs=[d.island_idofadr, d.island_nv, d.island_nefc, d.island_efcadr, d.nidof],
+    outputs=[d.island_idofadr, d.island_nv, d.island_nefc, d.island_iefcadr, d.nidof],
   )
 
   # 4. Map DOFs
@@ -930,7 +930,7 @@ def compute_island_mapping(m: types.Model, d: types.Data, ctx: IslandSolverConte
       d.nefc,
       d.njmax,
       d.efc.island,
-      d.island_efcadr,
+      d.island_iefcadr,
       d.island_ne,
       d.island_nf,
       d.efc.type,
@@ -942,12 +942,12 @@ def compute_island_mapping(m: types.Model, d: types.Data, ctx: IslandSolverConte
   )
 
   # 6. Scan Sparse Rows (if sparse)
-  if m.is_sparse:
+  if m.is_sparse and ctx is not None:
     wp.launch(
       _island_scan_sparse_rows,
       dim=d.nworld,
-      inputs=[d.nisland, d.efc.J_rownnz, d.island_nefc, d.island_efcadr, d.map_iefc2efc],
-      outputs=[d.efc.iJ_rownnz, d.efc.iJ_rowadr],
+      inputs=[d.nisland, d.efc.J_rownnz, d.island_nefc, d.island_iefcadr, d.map_iefc2efc],
+      outputs=[ctx.iJ_rownnz, ctx.iJ_rowadr],
     )
 
 
@@ -981,7 +981,7 @@ def gather_island_inputs(m: types.Model, d: types.Data, ctx: IslandSolverContext
       d.efc.J_rownnz,
       d.efc.J_rowadr,
       d.efc.J_colind,
-      d.efc.iJ_rowadr,
+      ctx.iJ_rowadr,
       d.njmax,
       d.map_iefc2efc,
       d.map_idof2dof,
@@ -994,8 +994,8 @@ def gather_island_inputs(m: types.Model, d: types.Data, ctx: IslandSolverContext
       d.efc.iid,
       d.efc.ifrictionloss,
       d.efc.iaref,
-      d.efc.iJ,
-      d.efc.iJ_colind,
+      ctx.iJ,
+      ctx.iJ_colind,
     ],
   )
 
@@ -1068,4 +1068,87 @@ def scatter_island_results(m: types.Model, d: types.Data, ctx: IslandSolverConte
       d.efc.force,
       d.efc.state,
     ],
+  )
+
+
+# Active-DOF compaction (nvmax < nv).
+#
+# The active set is tracked per kinematic tree (the unit of coupling in the mass matrix)
+# via the same tree_awake bookkeeping used by the sleep solver. Each step the active trees'
+# DOFs are packed into a contiguous [0, ncdof) range so the dense factor/solve can run at
+# size nvmax instead of nv. This is the active-set analog of compute_island_mapping.
+
+
+@wp.kernel
+def _reset_compact_maps(
+  # Model:
+  nv: int,
+  # Data in:
+  nvmax_pad_in: int,
+  # Data out:
+  dof_cdof_out: wp.array2d[int],
+  cdof_dof_out: wp.array2d[int],
+):
+  worldid, idx = wp.tid()
+  if idx < nv:
+    dof_cdof_out[worldid, idx] = -1
+  # cdof_dof is nvmax_pad-wide: clear the whole row so the padded tail [ncdof, nvmax_pad)
+  # reads as -1 (the gather/solve run over nvmax_pad, not just the active ncdof).
+  if idx < nvmax_pad_in:
+    cdof_dof_out[worldid, idx] = -1
+
+
+@wp.kernel
+def _compact_dofs(
+  # Model:
+  ntree: int,
+  tree_dofadr: wp.array[int],
+  tree_dofnum: wp.array[int],
+  # Data in:
+  tree_awake_in: wp.array2d[int],
+  nvmax_in: int,
+  # Data out:
+  ncdof_out: wp.array[int],
+  dof_cdof_out: wp.array2d[int],
+  cdof_dof_out: wp.array2d[int],
+):
+  worldid = wp.tid()
+  count = int(0)
+  for t in range(ntree):
+    if tree_awake_in[worldid, t] == 1:
+      adr = tree_dofadr[t]
+      num = tree_dofnum[t]
+      for j in range(num):
+        dof = adr + j
+        if count < nvmax_in:
+          dof_cdof_out[worldid, dof] = count
+          cdof_dof_out[worldid, count] = dof
+        count += 1
+
+  if count > nvmax_in:
+    wp.printf(
+      "nvmax overflow: world %d needs %d active DOFs but nvmax = %d (behavior undefined)\n",
+      worldid,
+      count,
+      nvmax_in,
+    )
+    ncdof_out[worldid] = nvmax_in
+  else:
+    ncdof_out[worldid] = count
+
+
+@event_scope
+def update_active_dofs(m: types.Model, d: types.Data):
+  """Rebuild the compaction maps (dof_cdof / cdof_dof) from tree_awake."""
+  wp.launch(
+    _reset_compact_maps,
+    dim=(d.nworld, max(m.nv, d.nvmax_pad)),
+    inputs=[m.nv, d.nvmax_pad],
+    outputs=[d.dof_cdof, d.cdof_dof],
+  )
+  wp.launch(
+    _compact_dofs,
+    dim=(d.nworld,),
+    inputs=[m.ntree, m.tree_dofadr, m.tree_dofnum, d.tree_awake, d.nvmax],
+    outputs=[d.ncdof, d.dof_cdof, d.cdof_dof],
   )

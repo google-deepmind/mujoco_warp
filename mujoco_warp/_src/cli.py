@@ -48,6 +48,7 @@ ENABLE_ISLANDS = flags.DEFINE_bool(
   False,
   "Enable constraint islands solver",
 )
+NVMAX = flags.DEFINE_integer("nvmax", None, "maximum active DOFs per world")
 
 
 DEVICE = flags.DEFINE_string("device", None, "override the default Warp device")
@@ -159,7 +160,14 @@ def init_structs(
     if OVERRIDE.value:
       override_model(m, OVERRIDE.value)
     d = mjw.put_data(
-      mjm, mjd, nworld=NWORLD.value, nconmax=NCONMAX.value, njmax=NJMAX.value, njmax_nnz=NJMAX_NNZ.value, nccdmax=NCCDMAX.value
+      mjm,
+      mjd,
+      nworld=NWORLD.value,
+      nconmax=NCONMAX.value,
+      njmax=NJMAX.value,
+      njmax_nnz=NJMAX_NNZ.value,
+      nccdmax=NCCDMAX.value,
+      nvmax=NVMAX.value,
     )
 
     if mjw.RenderContext not in get_type_hints(fn).values():

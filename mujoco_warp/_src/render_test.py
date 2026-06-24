@@ -192,6 +192,63 @@ class RenderTest(parameterized.TestCase):
     rgb = _unpack_rgb(rc.rgb_data.numpy()[0]).reshape(32, 32, 3)
     self.assertGreater(int(rgb.max()), 10, "directional light + headlight should still light the scene")
 
+  def test_render_per_world_mat_texid_batch_size(self):
+    """Tests render uses per-world material texture IDs allocated by put_model."""
+    nworld = 2
+    mjm = mujoco.MjModel.from_xml_string(
+      """
+      <mujoco>
+        <asset>
+          <texture name="red" type="2d" builtin="flat" width="4" height="4"
+            rgb1="1 0 0" rgb2="1 0 0"/>
+          <texture name="green" type="2d" builtin="flat" width="4" height="4"
+            rgb1="0 1 0" rgb2="0 1 0"/>
+          <material name="mat" texture="red" rgba="1 1 1 1"/>
+        </asset>
+        <worldbody>
+          <camera pos="0 0 2" xyaxes="1 0 0 0 1 0"/>
+          <geom type="plane" size="2 2 0.1" material="mat"/>
+        </worldbody>
+      </mujoco>
+      """
+    )
+    mjd = mujoco.MjData(mjm)
+    mujoco.mj_forward(mjm, mjd)
+    m = mjw.put_model(mjm, batch_sizes={"mat_texid": nworld})
+    d = mjw.put_data(mjm, mjd, nworld=nworld)
+
+    red_id = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_TEXTURE, "red")
+    green_id = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_TEXTURE, "green")
+    mat_texid = m.mat_texid.numpy()
+    mat_texid[:, 0, 1] = [red_id, green_id]
+    m.mat_texid.assign(mat_texid)
+
+    rc = mjw.create_render_context(
+      mjm,
+      nworld=nworld,
+      cam_res=(16, 16),
+      render_rgb=True,
+      use_textures=True,
+      enable_specular=False,
+      enable_emission=False,
+    )
+    mjw.render(m, d, rc)
+    rgb = _unpack_rgb(rc.rgb_data.numpy()).reshape(nworld, 16, 16, 3).mean(axis=(1, 2))
+
+    # Assert world 0 is red (channel 0 dominates), world 1 is green (channel 1 dominates)
+    self.assertGreater(rgb[0, 0], rgb[0, 1] + 0.1)
+    self.assertGreater(rgb[1, 1], rgb[1, 0] + 0.1)
+
+    # Swap textures and re-render to verify dynamic updates
+    mat_texid[:, 0, 1] = [green_id, red_id]
+    m.mat_texid.assign(mat_texid)
+    mjw.render(m, d, rc)
+    rgb = _unpack_rgb(rc.rgb_data.numpy()).reshape(nworld, 16, 16, 3).mean(axis=(1, 2))
+
+    # Assert world 0 is green (channel 1 dominates), world 1 is red (channel 0 dominates)
+    self.assertGreater(rgb[0, 1], rgb[0, 0] + 0.1)
+    self.assertGreater(rgb[1, 0], rgb[1, 1] + 0.1)
+
   def test_disable_ambient_lighting(self):
     xml = """
     <mujoco>

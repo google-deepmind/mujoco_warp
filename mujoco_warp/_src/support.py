@@ -65,15 +65,15 @@ def next_act(
 
 
 @cache_kernel
-def mul_m_sparse(check_skip: bool):
+def mul_m_kernel(check_skip: bool):
   @wp.kernel(module="unique")
-  def _mul_m_sparse(
+  def _mul_m(
     # Model:
     M_mulm_rowadr: wp.array[int],
     M_mulm_col: wp.array[int],
     M_mulm_madr: wp.array[int],
     # Data in:
-    M_in: wp.array3d[float],
+    M_in: wp.array2d[float],
     # In:
     vec: wp.array2d[float],
     skip: wp.array[bool],
@@ -87,34 +87,33 @@ def mul_m_sparse(check_skip: bool):
       if skip[worldid]:
         return
 
-    # Gather all contributions (diagonal + off-diagonal)
+    # Gather all contributions (diagonal + off-diagonal).
     acc = float(0.0)
     start = M_mulm_rowadr[dofid]
     end = M_mulm_rowadr[dofid + 1]
     for k in range(start, end):
       col = M_mulm_col[k]
       madr = M_mulm_madr[k]
-      acc += M_in[worldid, 0, madr] * vec[worldid, col]
+      acc += M_in[worldid, madr] * vec[worldid, col]
 
     res[worldid, dofid] = acc
 
-  return _mul_m_sparse
+  return _mul_m
 
 
 @cache_kernel
 def mul_m_dense(nv: int, check_skip: bool):
-  """Simple SIMT dense matmul: one thread per output element."""
-
   @wp.kernel(module="unique")
   def _mul_m_dense(
     # Data in:
-    M_in: wp.array3d[float],
+    M_in: wp.array3d[float],  # kernel_analyzer: ignore
     # In:
     vec: wp.array2d[float],
     skip: wp.array[bool],
     # Out:
     res: wp.array2d[float],
   ):
+    """Dense matmul for the compact active-DOF inertia block (nworld, nv, nv)."""
     worldid, i = wp.tid()
 
     if wp.static(check_skip):
@@ -154,32 +153,32 @@ def mul_m(
   if M is None:
     M = d.M
 
-  if m.is_sparse:
-    wp.launch(
-      mul_m_sparse(check_skip),
-      dim=(d.nworld, m.nv),
-      inputs=[m.M_mulm_rowadr, m.M_mulm_col, m.M_mulm_madr, M, vec, skip],
-      outputs=[res],
-    )
-
-  else:
+  if M.ndim == 3:
+    # Dense compact active-DOF block (nworld, nv, nv) used by the compact solver.
     wp.launch(
       mul_m_dense(m.nv, check_skip),
       dim=(d.nworld, m.nv),
       inputs=[M, vec, skip],
       outputs=[res],
     )
+  else:
+    wp.launch(
+      mul_m_kernel(check_skip),
+      dim=(d.nworld, m.nv),
+      inputs=[m.M_mulm_rowadr, m.M_mulm_col, m.M_mulm_madr, M, vec, skip],
+      outputs=[res],
+    )
 
 
 @wp.kernel
-def _mul_m_island_sparse(
+def _mul_m_island(
   # Model:
   M_mulm_rowadr: wp.array[int],
   M_mulm_col: wp.array[int],
   M_mulm_madr: wp.array[int],
   # Data in:
   nidof_in: wp.array[int],
-  M_in: wp.array3d[float],
+  M_in: wp.array2d[float],
   map_dof2idof_in: wp.array2d[int],
   map_idof2dof_in: wp.array2d[int],
   # In:
@@ -216,51 +215,7 @@ def _mul_m_island_sparse(
     col_idof = map_dof2idof_in[worldid, col]
     # skip unconstrained DOFs
     if col_idof < nidof:
-      acc += M_in[worldid, 0, madr] * vec[worldid, col_idof]
-
-  res[worldid, idofid] = acc
-
-
-@wp.kernel
-def _mul_m_island_dense(
-  # Model:
-  nv: int,
-  # Data in:
-  nidof_in: wp.array[int],
-  M_in: wp.array3d[float],
-  map_dof2idof_in: wp.array2d[int],
-  map_idof2dof_in: wp.array2d[int],
-  # In:
-  idof_islandid_in: wp.array2d[int],
-  vec: wp.array2d[float],
-  island_done_in: wp.array2d[bool],
-  check_skip: int,
-  # Out:
-  res: wp.array2d[float],
-):
-  """Dense island mul_m for ALL islands in parallel."""
-  worldid, idofid = wp.tid()
-
-  nidof = nidof_in[worldid]
-  if idofid >= nidof:
-    return
-
-  islandid = idof_islandid_in[worldid, idofid]
-  if islandid < 0:
-    return
-
-  if check_skip:
-    if island_done_in[worldid, islandid]:
-      return
-
-  dof = map_idof2dof_in[worldid, idofid]
-
-  acc = float(0.0)
-  for j in range(nv):
-    col_idof = map_dof2idof_in[worldid, j]
-    # skip unconstrained DOFs
-    if col_idof < nidof:
-      acc += M_in[worldid, dof, j] * vec[worldid, col_idof]
+      acc += M_in[worldid, madr] * vec[worldid, col_idof]
 
   res[worldid, idofid] = acc
 
@@ -298,42 +253,24 @@ def mul_m_island(
   if M is None:
     M = d.M
 
-  if m.is_sparse:
-    wp.launch(
-      _mul_m_island_sparse,
-      dim=(d.nworld, m.nv),
-      inputs=[
-        m.M_mulm_rowadr,
-        m.M_mulm_col,
-        m.M_mulm_madr,
-        nidof,
-        M,
-        map_dof2idof,
-        map_idof2dof,
-        idof_islandid,
-        vec,
-        island_done,
-        check_skip,
-      ],
-      outputs=[res],
-    )
-  else:
-    wp.launch(
-      _mul_m_island_dense,
-      dim=(d.nworld, m.nv),
-      inputs=[
-        m.nv,
-        nidof,
-        M,
-        map_dof2idof,
-        map_idof2dof,
-        idof_islandid,
-        vec,
-        island_done,
-        check_skip,
-      ],
-      outputs=[res],
-    )
+  wp.launch(
+    _mul_m_island,
+    dim=(d.nworld, m.nv),
+    inputs=[
+      m.M_mulm_rowadr,
+      m.M_mulm_col,
+      m.M_mulm_madr,
+      nidof,
+      M,
+      map_dof2idof,
+      map_idof2dof,
+      idof_islandid,
+      vec,
+      island_done,
+      check_skip,
+    ],
+    outputs=[res],
+  )
 
 
 @cache_kernel
@@ -355,7 +292,9 @@ def _solve_LD_sparse_island(nv: int, nlevels: int):
     map_dof2idof_in: wp.array2d[int],
     map_idof2dof_in: wp.array2d[int],
     # In:
-    L: wp.array3d[float],
+    dof_dense: wp.array[int],
+    dof_simple: wp.array[int],
+    L: wp.array2d[float],
     D: wp.array2d[float],
     all_updates: wp.array[wp.vec3i],
     level_offsets: wp.array[int],
@@ -368,9 +307,11 @@ def _solve_LD_sparse_island(nv: int, nlevels: int):
     BLOCK_DIM = wp.block_dim()
     nid = nidof_in[worldid]
 
-    # Copy y to x_out (island-local, only iterate up to nid)
+    # Copy y to x_out for coupled-sparse dofs only; dense and simple dofs use their own passes.
     for idof in range(tid, nid, BLOCK_DIM):
-      x_out[worldid, idof] = y[worldid, idof]
+      dofid = map_idof2dof_in[worldid, idof]
+      if dof_dense[dofid] == 0 and dof_simple[dofid] == 0:
+        x_out[worldid, idof] = y[worldid, idof]
     _syncthreads()
 
     # Forward substitution
@@ -385,13 +326,14 @@ def _solve_LD_sparse_island(nv: int, nlevels: int):
         idof_i = map_dof2idof_in[worldid, i]
         if idof_i < nid:
           idof_k = map_dof2idof_in[worldid, k]
-          wp.atomic_sub(x_out[worldid], idof_i, L[worldid, 0, Madr_ki] * x_out[worldid, idof_k])
+          wp.atomic_sub(x_out[worldid], idof_i, L[worldid, Madr_ki] * x_out[worldid, idof_k])
       _syncthreads()
 
-    # Diagonal multiply (only iterate up to nid)
+    # Diagonal multiply (coupled-sparse dofs only)
     for idof in range(tid, nid, BLOCK_DIM):
       dofid = map_idof2dof_in[worldid, idof]
-      x_out[worldid, idof] *= D[worldid, dofid]
+      if dof_dense[dofid] == 0 and dof_simple[dofid] == 0:
+        x_out[worldid, idof] *= D[worldid, dofid]
     _syncthreads()
 
     # Backward substitution
@@ -406,35 +348,58 @@ def _solve_LD_sparse_island(nv: int, nlevels: int):
         idof_k = map_dof2idof_in[worldid, k]
         if idof_k < nid:
           idof_i = map_dof2idof_in[worldid, i]
-          wp.atomic_sub(x_out[worldid], idof_k, L[worldid, 0, Madr_ki] * x_out[worldid, idof_i])
+          wp.atomic_sub(x_out[worldid], idof_k, L[worldid, Madr_ki] * x_out[worldid, idof_i])
       _syncthreads()
 
   return kernel
 
 
+@wp.kernel
+def _solve_simple_island(
+  # Data in:
+  nidof_in: wp.array[int],
+  map_dof2idof_in: wp.array2d[int],
+  # In:
+  simple_dofs: wp.array[int],
+  D: wp.array2d[float],
+  vec: wp.array2d[float],
+  # Out:
+  res: wp.array2d[float],
+):
+  # A simple (decoupled) dof's island solve is res = (1/diag) * vec, in island-local order.
+  # Unconstrained simple dofs map to idof >= nidof and are skipped (solved by the smooth pass).
+  worldid, s = wp.tid()
+  dofid = simple_dofs[s]
+  idof = map_dof2idof_in[worldid, dofid]
+  if idof < nidof_in[worldid]:
+    res[worldid, idof] = D[worldid, dofid] * vec[worldid, idof]
+
+
 @cache_kernel
-def _tile_cholesky_solve_island(tile):
+def _tile_cholesky_solve_block_island(tile):
   """Dense Cholesky backsubstitution with island-local index remapping.
 
-  L is loaded from global DOF offsets (factorization unchanged).
-  y/x are loaded/stored at island-local DOF offsets via map_dof2idof.
+  L is now the packed block-dense factor, so the diagonal block is read from its packed offset
+  qLD_block_adr[dofid] (factorization stays in global DOF order); y/x use island-local offsets.
   """
+  TILE_SIZE = tile.size
+  block_area = TILE_SIZE * TILE_SIZE
 
   @wp.kernel(module="unique", enable_backward=False)
   def cholesky_solve(
+    # Model:
+    qLD_block_adr: wp.array[int],
     # Data in:
     nidof_in: wp.array[int],
     map_dof2idof_in: wp.array2d[int],
     # In:
-    L: wp.array3d[float],
+    L: wp.array2d[float],
     y: wp.array2d[float],
     adr: wp.array[int],
     # Out:
     x: wp.array2d[float],
   ):
     worldid, nodeid = wp.tid()
-    TILE_SIZE = wp.static(tile.size)
-
     dofid = adr[nodeid]
     idofid = map_dof2idof_in[worldid, dofid]
 
@@ -442,11 +407,12 @@ def _tile_cholesky_solve_island(tile):
     if idofid >= nidof_in[worldid]:
       return
 
-    # L stays in global order
-    L_tile = wp.tile_load(L[worldid], shape=(TILE_SIZE, TILE_SIZE), offset=(dofid, dofid))
-    # y and x use island-local offsets
+    # L is packed in global block order; y and x use island-local offsets.
+    L_tile = wp.tile_reshape(
+      wp.tile_load(L[worldid], shape=(block_area,), offset=(qLD_block_adr[dofid],)), (TILE_SIZE, TILE_SIZE)
+    )
     y_slice = wp.tile_load(y[worldid], shape=(TILE_SIZE,), offset=(idofid,))
-    x_slice = wp.tile_cholesky_solve(L_tile, y_slice)
+    x_slice = wp.tile_cholesky_solve(L_tile, y_slice, fill_mode="upper")
     wp.tile_store(x[worldid], x_slice, offset=(idofid,))
 
   return cholesky_solve
@@ -471,7 +437,22 @@ def solve_m_island(
     nidof: Number of island DOFs per world.
     map_idof2dof: Island-local DOF -> global DOF map.
   """
-  if m.is_sparse:
+  # qLD layout is per-block (is_sparse only selects the constraint J/H layout). Three disjoint
+  # passes, mirroring smooth.solve_LD: dense blocks back-substitute from the packed block-dense
+  # Cholesky, coupled-sparse blocks from the LDL region (offset qLD_block_total), and simple
+  # (diagonal) blocks via res = (1/diag) * vec. The LDL pass skips dense and simple dofs.
+  if m.qLD_has_dense:
+    for tile in m.M_tiles:
+      # large blocks prefer fewer threads for the sequential solve; see smooth._solve_block_dense
+      block_dim = m.block_dim.cholesky_solve if tile.size <= 40 else 32
+      wp.launch_tiled(
+        _tile_cholesky_solve_block_island(tile),
+        dim=(d.nworld, tile.adr.size),
+        inputs=[m.qLD_block_adr, d.nidof, d.map_dof2idof, d.qLD, vec, tile.adr],
+        outputs=[res],
+        block_dim=block_dim,
+      )
+  if m.qLD_has_sparse:
     nlevels = len(m.qLD_updates)
     if wp.get_device().is_cuda:
       dim_block = m.block_dim.solve_LD_sparse_fused
@@ -485,7 +466,9 @@ def solve_m_island(
         d.nidof,
         d.map_dof2idof,
         map_idof2dof,
-        d.qLD,
+        m.qLD_dof_dense,
+        m.qLD_dof_simple,
+        d.qLD[:, m.qLD_block_total :],
         d.qLDiagInv,
         m.qLD_all_updates,
         m.qLD_level_offsets,
@@ -494,15 +477,13 @@ def solve_m_island(
       outputs=[res],
       block_dim=dim_block,
     )
-  else:
-    for tile in m.M_tiles:
-      wp.launch_tiled(
-        _tile_cholesky_solve_island(tile),
-        dim=(d.nworld, tile.adr.size),
-        inputs=[d.nidof, d.map_dof2idof, d.qLD, vec, tile.adr],
-        outputs=[res],
-        block_dim=m.block_dim.cholesky_solve,
-      )
+  if m.qLD_has_simple:
+    wp.launch(
+      _solve_simple_island,
+      dim=(d.nworld, m.qLD_simple_dofs.size),
+      inputs=[d.nidof, d.map_dof2idof, m.qLD_simple_dofs, d.qLDiagInv, vec],
+      outputs=[res],
+    )
 
 
 @wp.kernel
@@ -938,6 +919,7 @@ def get_state(m: Model, d: Data, state: wp.array2d[float], sig: int, active: Opt
     nbody: int,
     neq: int,
     nmocap: int,
+    nuserdata: int,
     nhistory: int,
     # Data in:
     time_in: wp.array[float],
@@ -952,6 +934,7 @@ def get_state(m: Model, d: Data, state: wp.array2d[float], sig: int, active: Opt
     eq_active_in: wp.array2d[bool],
     mocap_pos_in: wp.array2d[wp.vec3],
     mocap_quat_in: wp.array2d[wp.quat],
+    userdata_in: wp.array2d[float],
     # In:
     sig_in: int,
     active_in: wp.array[bool],
@@ -1028,6 +1011,10 @@ def get_state(m: Model, d: Data, state: wp.array2d[float], sig: int, active: Opt
             state_out[worldid, adr + 2] = quat[2]
             state_out[worldid, adr + 3] = quat[3]
             adr += 4
+        elif element == State.USERDATA:
+          for j in range(nuserdata):
+            state_out[worldid, adr + j] = userdata_in[worldid, j]
+          adr += nuserdata
 
   wp.launch(
     _get_state,
@@ -1040,6 +1027,7 @@ def get_state(m: Model, d: Data, state: wp.array2d[float], sig: int, active: Opt
       m.nbody,
       m.neq,
       m.nmocap,
+      m.nuserdata,
       m.nhistory,
       d.time,
       d.qpos,
@@ -1053,6 +1041,7 @@ def get_state(m: Model, d: Data, state: wp.array2d[float], sig: int, active: Opt
       d.eq_active,
       d.mocap_pos,
       d.mocap_quat,
+      d.userdata,
       int(sig),
       active or wp.ones(d.nworld, dtype=bool),
     ],
@@ -1085,6 +1074,7 @@ def set_state(m: Model, d: Data, state: wp.array2d[float], sig: int, active: Opt
     nbody: int,
     neq: int,
     nmocap: int,
+    nuserdata: int,
     nhistory: int,
     # In:
     sig_in: int,
@@ -1103,6 +1093,7 @@ def set_state(m: Model, d: Data, state: wp.array2d[float], sig: int, active: Opt
     eq_active_out: wp.array2d[bool],
     mocap_pos_out: wp.array2d[wp.vec3],
     mocap_quat_out: wp.array2d[wp.quat],
+    userdata_out: wp.array2d[float],
   ):
     worldid = wp.tid()
 
@@ -1180,6 +1171,10 @@ def set_state(m: Model, d: Data, state: wp.array2d[float], sig: int, active: Opt
             )
             mocap_quat_out[worldid, j] = quat
             adr += 4
+        elif element == State.USERDATA:
+          for j in range(nuserdata):
+            userdata_out[worldid, j] = state_in[worldid, adr + j]
+          adr += nuserdata
 
   wp.launch(
     _set_state,
@@ -1192,6 +1187,7 @@ def set_state(m: Model, d: Data, state: wp.array2d[float], sig: int, active: Opt
       m.nbody,
       m.neq,
       m.nmocap,
+      m.nuserdata,
       m.nhistory,
       int(sig),
       active or wp.ones(d.nworld, dtype=bool),
@@ -1210,5 +1206,6 @@ def set_state(m: Model, d: Data, state: wp.array2d[float], sig: int, active: Opt
       d.eq_active,
       d.mocap_pos,
       d.mocap_quat,
+      d.userdata,
     ],
   )

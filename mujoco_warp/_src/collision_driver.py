@@ -20,7 +20,7 @@ import warp as wp
 from mujoco_warp._src.collision_convex import convex_narrowphase
 from mujoco_warp._src.collision_core import CollisionContext
 from mujoco_warp._src.collision_core import create_collision_context
-from mujoco_warp._src.collision_flex import flex_narrowphase
+from mujoco_warp._src.collision_flex import flex_collision
 from mujoco_warp._src.collision_primitive import primitive_narrowphase
 from mujoco_warp._src.collision_sdf import sdf_narrowphase
 from mujoco_warp._src.math import upper_tri_index
@@ -77,6 +77,20 @@ MJ_COLLISION_TABLE = {
   (GeomType.BOX, GeomType.BOX): CollisionType.CONVEX,  # overwritten by NATIVECCD disable flag
   (GeomType.BOX, GeomType.MESH): CollisionType.CONVEX,
   (GeomType.MESH, GeomType.MESH): CollisionType.CONVEX,
+}
+
+
+# TODO(team): Implement narrowphase flex collision support for:
+#             - HFIELD
+#             - ELLIPSOID
+#             - SDF
+MJ_FLEX_COLLISION_TABLE = {
+  (GeomType.PLANE, GeomType.FLEX): CollisionType.PRIMITIVE,
+  (GeomType.SPHERE, GeomType.FLEX): CollisionType.PRIMITIVE,
+  (GeomType.CAPSULE, GeomType.FLEX): CollisionType.PRIMITIVE,
+  (GeomType.BOX, GeomType.FLEX): CollisionType.PRIMITIVE,
+  (GeomType.CYLINDER, GeomType.FLEX): CollisionType.PRIMITIVE,
+  (GeomType.MESH, GeomType.FLEX): CollisionType.CONVEX,
 }
 
 
@@ -837,6 +851,7 @@ def nxn_broadphase(m: Model, d: Data, ctx: CollisionContext, skip: Optional[wp.a
 def _narrowphase(m: Model, d: Data, ctx: CollisionContext):
   collision_table = MJ_COLLISION_TABLE
   if m.opt.disableflags & DisableBit.NATIVECCD:
+    collision_table = collision_table.copy()
     collision_table[(GeomType.BOX, GeomType.BOX)] = CollisionType.PRIMITIVE
 
   convex_pairs = [key for key, value in collision_table.items() if value == CollisionType.CONVEX]
@@ -849,9 +864,6 @@ def _narrowphase(m: Model, d: Data, ctx: CollisionContext):
 
   if m.has_sdf_geom:
     sdf_narrowphase(m, d, ctx)
-
-  if m.nflex > 0:
-    flex_narrowphase(m, d)
 
 
 # Maximum geomcollisionid packed into sort key. Primitive box<>box generates at
@@ -1110,6 +1122,9 @@ def collision(m: Model, d: Data, skip: Optional[wp.array] = None):
     sap_broadphase(m, d, ctx, skip)
 
   _narrowphase(m, d, ctx)
+
+  if m.nflex > 0:
+    flex_collision(m, d, ctx)
 
   if m.opt.deterministic:
     _sort_contacts(m, d)

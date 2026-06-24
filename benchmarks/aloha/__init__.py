@@ -36,7 +36,7 @@ BENCHMARKS = [
     "name": "aloha_cloth",
     "mjcf": "scene_cloth.xml",
     "nworld": 32,
-    "nconmax": 1024,
+    "nconmax": 3600,
     "nccdmax": 1,
     "njmax": 8192,
     "nstep": 100,
@@ -45,10 +45,12 @@ BENCHMARKS = [
   {
     "name": "aloha_clutter",
     "mjcf": "scene_clutter.xml",
-    "nworld": 512,
+    "nworld": 2048,
     "nconmax": 512,
     "nccdmax": 64,
     "njmax": 1024,
+    "nvmax": 64,
+    "override": "opt.enableflags=SLEEP",
     "replay": "pick_clutter.npz",
     "assets": [
       (ASSETS[0], "aloha"),
