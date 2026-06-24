@@ -227,7 +227,7 @@ def _attach_face(pt: Polytope, idx: int, v1: int, v2: int, v3: int) -> float:
   r, ret = _project_origin_plane(p3, p2, p1)
   if ret:
     return 0.0
-  
+
   # ensure projection points outward from the polytope
   if wp.dot(r, p1 - pt.center) < 0.0:
     r = -r
@@ -569,13 +569,19 @@ def _S1D(s1: wp.vec3, s2: wp.vec3) -> wp.vec2:
   p_o = _project_origin_line(s1, s2)
 
   # find the axis with the largest projection "shadow" of the simplex
-  mu_max = 0.0
+  mu = s1[0] - s2[0]
+  mu_max = mu
   index = 0
-  for i in range(3):
-    mu = s1[i] - s2[i]
-    if wp.abs(mu) >= wp.abs(mu_max):
-      mu_max = mu
-      index = i
+
+  mu = s1[1] - s2[1]
+  if wp.abs(mu) >= wp.abs(mu_max):
+    mu_max = mu
+    index = 1
+
+  mu = s1[2] - s2[2]
+  if wp.abs(mu) >= wp.abs(mu_max):
+    mu_max = mu
+    index = 2
 
   C1 = p_o[index] - s2[index]
   C2 = s1[index] - p_o[index]
@@ -620,7 +626,8 @@ def gjk(
     xnorm = wp.dot(x_k, x_k)
     if xnorm < min_norm2:
       break
-    dir_neg = x_k / wp.sqrt(xnorm)
+    xnorm = wp.sqrt(xnorm)
+    dir_neg = x_k / xnorm
 
     # compute kth support point in geom1
     sp = support(geom1, geomtype1, -dir_neg)
@@ -694,6 +701,7 @@ def gjk(
 
     # we have a tetrahedron containing the origin so return early
     if n == 4:
+      x_norm = 0.0
       break
 
   result = GJKResult()
@@ -703,7 +711,7 @@ def gjk(
   # are the witness points
   result.x1 = wp.where(n == 0, x1_0, _linear_combine(n, coordinates, simplex1))
   result.x2 = wp.where(n == 0, x2_0, _linear_combine(n, coordinates, simplex2))
-  result.dist = wp.norm_l2(x_k)
+  result.dist = x_norm
 
   result.dim = n
   result.simplex1 = simplex1
@@ -1094,6 +1102,7 @@ def _polytope3(
   pt.vert_index[4] = simplex_index1[2]
   pt.vert_index[5] = simplex_index2[2]
 
+  n = wp.normalize(n)
   _epa_support(pt, 3, geom1, geom2, geomtype1, geomtype2, -n)
   _epa_support(pt, 4, geom1, geom2, geomtype1, geomtype2, n)
 
