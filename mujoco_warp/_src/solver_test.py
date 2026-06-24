@@ -419,14 +419,14 @@ class SolverTest(parameterized.TestCase):
     )
     xml = f"""
     <mujoco>
-      <option cone="elliptic" solver="Newton" iterations="20" ls_iterations="20" integrator="implicitfast"/>
+      <option cone="elliptic" solver="Newton" jacobian="sparse" iterations="20" ls_iterations="20" integrator="implicitfast"/>
       <worldbody>
         <geom name="floor" type="plane" size="5 5 .1" friction="1 0.01 0.001"/>
         {bodies}
       </worldbody>
     </mujoco>
     """
-    mjm, mjd, m, _ = test_data.fixture(xml=xml, overrides={"opt.jacobian": mujoco.mjtJacobian.mjJAC_SPARSE})
+    mjm, mjd, m, _ = test_data.fixture(xml=xml)
     self.assertTrue(m.is_sparse)
 
     mjd.qvel[0::6] = 1.5  # slide -> cone middle zone
