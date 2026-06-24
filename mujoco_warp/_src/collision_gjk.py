@@ -227,7 +227,7 @@ def _attach_face(pt: Polytope, idx: int, v1: int, v2: int, v3: int) -> float:
   r, ret = _project_origin_plane(p3, p2, p1)
   if ret:
     return 0.0
-  
+
   # ensure projection points outward from the polytope
   if wp.dot(r, p1 - pt.center) < 0.0:
     r = -r
@@ -617,16 +617,18 @@ def gjk(
   coordinates = wp.vec4(1.0, 0.0, 0.0, 0.0)  # barycentric coordinates
   tol2 = tolerance * tolerance
   epsilon = wp.where(is_discrete, 0.0, 0.5 * tol2)
-  min_norm2 = wp.where(is_discrete, MINVAL * MINVAL, tol2)
+  min_norm2 = wp.where(is_discrete, MINVAL2, tol2)
 
   # set initial guess
   x_k = x1_0 - x2_0
+  xnorm = float(0.0)
 
   for _ in range(gjk_iterations):
-    xnorm = wp.dot(x_k, x_k)
-    if xnorm < min_norm2:
+    xnorm2 = wp.dot(x_k, x_k)
+    if xnorm2 < min_norm2:
+      xnorm = 0.0
       break
-    xnorm = wp.sqrt(xnorm)
+    xnorm = wp.sqrt(xnorm2)
     dir_neg = x_k / xnorm
 
     # compute kth support point in geom1
@@ -661,7 +663,7 @@ def gjk(
         return result
     elif cutoff < FLOAT_MAX:
       vs = wp.dot(x_k, simplex[n])
-      if wp.dot(x_k, simplex[n]) > 0.0 and (vs * vs / xnorm) >= cutoff2:
+      if wp.dot(x_k, simplex[n]) > 0.0 and (vs * vs / xnorm2) >= cutoff2:
         result = GJKResult()
         result.dim = 0
         result.dist = FLOAT_MAX
@@ -701,7 +703,7 @@ def gjk(
 
     # we have a tetrahedron containing the origin so return early
     if n == 4:
-      x_norm = 0.0
+      xnorm = 0.0
       break
 
   result = GJKResult()
@@ -711,7 +713,7 @@ def gjk(
   # are the witness points
   result.x1 = wp.where(n == 0, x1_0, _linear_combine(n, coordinates, simplex1))
   result.x2 = wp.where(n == 0, x2_0, _linear_combine(n, coordinates, simplex2))
-  result.dist = x_norm
+  result.dist = xnorm
 
   result.dim = n
   result.simplex1 = simplex1
