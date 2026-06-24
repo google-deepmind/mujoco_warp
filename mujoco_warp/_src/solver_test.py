@@ -409,6 +409,40 @@ class SolverTest(parameterized.TestCase):
         _assert_eq(d.qfrc_constraint.numpy()[0], mjd.qfrc_constraint, "qfrc_constraint")
         _assert_eq(d.efc.force.numpy()[0, : mjd.nefc], mjd.efc_force, "efc_force")
 
+  def test_solve_elliptic_sparse_diagonal_inertia(self):
+    """Sparse elliptic Newton solve over diagonal-inertia bodies must not NaN (jtcj sizing)."""
+    n = 12  # 72 dofs -> sparse path
+    bodies = "".join(
+      f'<body pos="{(i % 4) * 0.25 - 0.4:.3f} {(i // 4) * 0.25 - 0.3:.3f} 0.020">'
+      f'<freejoint/><geom type="box" size="0.04 0.05 0.03" mass="0.5"/></body>'
+      for i in range(n)
+    )
+    xml = f"""
+    <mujoco>
+      <option cone="elliptic" solver="Newton" iterations="20" ls_iterations="20" integrator="implicitfast"/>
+      <worldbody>
+        <geom name="floor" type="plane" size="5 5 .1" friction="1 0.01 0.001"/>
+        {bodies}
+      </worldbody>
+    </mujoco>
+    """
+    mjm, mjd, m, _ = test_data.fixture(xml=xml, overrides={"opt.jacobian": mujoco.mjtJacobian.mjJAC_SPARSE})
+    self.assertTrue(m.is_sparse)
+
+    mjd.qvel[0::6] = 1.5  # slide -> cone middle zone
+    mujoco.mj_forward(mjm, mjd)
+    self.assertGreater(mjd.nefc, 0)
+
+    d = mjw.put_data(mjm, mjd)
+    d.qacc.fill_(wp.inf)
+    d.qfrc_constraint.fill_(wp.inf)
+    d.efc.force.fill_(wp.inf)
+    mjw.solve(m, d)
+
+    qacc = d.qacc.numpy()[0]
+    self.assertTrue(np.all(np.isfinite(qacc)), "Newton solve produced non-finite qacc")
+    _assert_eq(qacc, mjd.qacc, "qacc")
+
   @parameterized.parameters(
     (ConeType.PYRAMIDAL, SolverType.CG, 25, 5),
     (ConeType.PYRAMIDAL, SolverType.NEWTON, 2, 4),
