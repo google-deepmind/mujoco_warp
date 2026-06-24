@@ -2370,7 +2370,8 @@ class SolverContext:
   dof_to_block: wp.array[int]
   nblocks: int
   # Tree-level IC preconditioner (CG sparse only)
-  qLD_precond: wp.array2d[float]  # (nworld, nC) IC(0) preconditioner factors
+  M_precond: wp.array2d[float]  # (nworld, nC) M + JTDJ in CSR format (unfactored)
+  qLD_precond: wp.array2d[float]  # (nworld, qld_total) factored preconditioner
   qLDiagInv_precond: wp.array2d[float]  # (nworld, nv) IC(0) diagonal inverse
   # Incremental Hessian update (Newton only)
   changed_efc_ids: wp.array2d[int]
