@@ -2783,7 +2783,7 @@ def _cholesky_factorize_solve(m: types.Model, d: types.Data, ctx: SolverContext,
 # ---------------------------------------------------------------------------
 # H += J^T D J.  D diagonal, so each efc row adds one rank-1 outer product.  make_constraint
 # groups a constraint's contiguous efc rows (shared colind = dof support S) into one |S|x|S|
-# block, stored densely per world in efc.jtdaj_group_{head,size,count}.  The launch fills the
+# block, stored densely per world in efc.jtdaj_{adr,nrow,nblock}.  The launch fills the
 # GPU once (groups_per_world slots/world) then grid-strides the rest, so no thread lands on a
 # non-head efc row.  A block's upper-triangular entries split across THREADS_PER_GROUP threads
 # (one warp -> coalesced J reads); entry -> (block_row, block_col) is the triangular-number
@@ -2796,9 +2796,9 @@ _JTDAJ_OVERSUBSCRIBE_WAVES = 6  # grid-stride depth; short per-warp chains load-
 @wp.kernel
 def _JTDAJ_sparse(
   # Data in:
-  efc_jtdaj_group_head_in: wp.array2d[int],
-  efc_jtdaj_group_size_in: wp.array2d[int],
-  efc_jtdaj_group_count_in: wp.array[int],
+  efc_jtdaj_adr_in: wp.array2d[int],
+  efc_jtdaj_nrow_in: wp.array2d[int],
+  efc_jtdaj_nblock_in: wp.array[int],
   efc_J_rownnz_in: wp.array2d[int],
   efc_J_rowadr_in: wp.array2d[int],
   efc_J_colind_in: wp.array3d[int],
@@ -2814,10 +2814,10 @@ def _JTDAJ_sparse(
   worldid, slot, lane = wp.tid()
   if ctx_done_in[worldid]:
     return
-  count = efc_jtdaj_group_count_in[worldid]
+  count = efc_jtdaj_nblock_in[worldid]
   for groupid in range(slot, count, groups_per_world):  # grid-stride this world's group list
-    head_row = efc_jtdaj_group_head_in[worldid, groupid]
-    block_rows = efc_jtdaj_group_size_in[worldid, groupid]
+    head_row = efc_jtdaj_adr_in[worldid, groupid]
+    block_rows = efc_jtdaj_nrow_in[worldid, groupid]
     head_adr = efc_J_rowadr_in[worldid, head_row]
     support = efc_J_rownnz_in[worldid, head_row]  # dofs the constraint touches = block dimension
     n_entries = support * (support + 1) // 2  # upper-triangular entries of the |S|x|S| block
@@ -2886,9 +2886,9 @@ def _update_gradient(m: types.Model, d: types.Data, ctx: SolverContext, compact:
         _JTDAJ_sparse,
         dim=(d.nworld, groups_per_world, _JTDAJ_THREADS_PER_GROUP),
         inputs=[
-          d.efc.jtdaj_group_head,
-          d.efc.jtdaj_group_size,
-          d.efc.jtdaj_group_count,
+          d.efc.jtdaj_adr,
+          d.efc.jtdaj_nrow,
+          d.efc.jtdaj_nblock,
           d.efc.J_rownnz,
           d.efc.J_rowadr,
           d.efc.J_colind,

@@ -1913,9 +1913,9 @@ class Constraint:
   Attributes:
     type: constraint type (ConstraintType)            (nworld, njmax)
     id: id of object of specific type                 (nworld, njmax)
-    jtdaj_group_head: first efc row of each JTDAJ block   (nworld, njmax)
-    jtdaj_group_size: efc rows per JTDAJ block            (nworld, njmax)
-    jtdaj_group_count: number of JTDAJ blocks             (nworld,)
+    jtdaj_adr: first efc row of each JTDAJ block   (nworld, njmax)
+    jtdaj_nrow: efc rows per JTDAJ block            (nworld, njmax)
+    jtdaj_nblock: number of JTDAJ blocks             (nworld,)
     J_rownnz: number of non-zeros in J row            (nworld, 0) dense
                                                       (nworld, njmax) sparse
     J_rowadr: row start address in colind array       (nworld, 0) dense
@@ -1947,9 +1947,9 @@ class Constraint:
 
   type: array("nworld", "njmax", int)
   id: array("nworld", "njmax", int)
-  jtdaj_group_head: array("nworld", "njmax", int)
-  jtdaj_group_size: array("nworld", "njmax", int)
-  jtdaj_group_count: array("nworld", int)
+  jtdaj_adr: array("nworld", "njmax", int)
+  jtdaj_nrow: array("nworld", "njmax", int)
+  jtdaj_nblock: array("nworld", int)
   J_rownnz: array("nworld", "njmax", int)
   J_rowadr: array("nworld", "njmax", int)
   J_colind: wp.array3d[int]
