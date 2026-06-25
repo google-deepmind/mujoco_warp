@@ -614,7 +614,7 @@ def gjk(
   simplex_index1 = wp.vec4i()
   simplex_index2 = wp.vec4i()
   n = int(0)
-  coordinates = wp.vec4(1.0, 0.0, 0.0, 0.0)  # barycentric coordinates
+  coefs = wp.vec4(1.0, 0.0, 0.0, 0.0)  # barycentric coordinates
   tol2 = tolerance * tolerance
   epsilon = wp.where(is_discrete, 0.0, 0.5 * tol2)
   min_norm2 = wp.where(is_discrete, MINVAL2, tol2)
@@ -623,13 +623,24 @@ def gjk(
   x_k = x1_0 - x2_0
   xnorm = float(0.0)
 
+  # track last 4 xnorm2 values for cycle detection
+  prev_xnorms = wp.vec4(-1.0, -1.0, -1.0, -1.0)
+
   for _ in range(gjk_iterations):
     xnorm2 = wp.dot(x_k, x_k)
     if xnorm2 < min_norm2:
-      xnorm = 0.0
+      xnorm = xnorm2
       break
     xnorm = wp.sqrt(xnorm2)
     dir_neg = x_k / xnorm
+
+    # cycle detection: break if xnorm2 matches any previous value
+    if xnorm2 == prev_xnorms[0] or xnorm2 == prev_xnorms[1] or xnorm2 == prev_xnorms[2] or xnorm2 == prev_xnorms[3]:
+      result = GJKResult()
+      result.dim = 0
+      result.dist = FLOAT_MAX
+      return result
+    prev_xnorms = wp.vec4(xnorm2, prev_xnorms[0], prev_xnorms[1], prev_xnorms[2])
 
     # compute kth support point in geom1
     sp = support(geom1, geomtype1, -dir_neg)
@@ -671,12 +682,14 @@ def gjk(
 
     # run the distance subalgorithm to compute the barycentric coordinates
     # of the closest point to the origin in the simplex
-    coordinates = _subdistance(n + 1, simplex)
+    coefs = _subdistance(n + 1, simplex)
 
     # remove vertices from the simplex no longer needed
     n = int(0)
+    coefmax = float(-1.0)
+    imax = int(-1)
     for i in range(4):
-      if coordinates[i] == 0.0:
+      if coefs[i] == 0.0:
         continue
 
       simplex[n] = simplex[i]
@@ -684,15 +697,24 @@ def gjk(
       simplex2[n] = simplex2[i]
       simplex_index1[n] = simplex_index1[i]
       simplex_index2[n] = simplex_index2[i]
-      coordinates[n] = coordinates[i]
+      coefs[n] = coefs[i]
+      imax = wp.where(coefs[n] > coefmax, n, imax)
+      coefmax = wp.where(coefs[n] > coefmax, coefs[n], coefmax)
       n += int(1)
 
     # SHOULD NOT OCCUR
     if n < 1:
       break
 
+    coefs[imax] = 1.0
+    acc = float(0.0)
+    for i in range(n):
+      if i != imax:
+        acc += coefs[i]
+    coefs[imax] -= acc
+
     # get the next iteration of x_k
-    x_next = _linear_combine(n, coordinates, simplex)
+    x_next = _linear_combine(n, coefs, simplex)
 
     # x_k has converged to minimum
     if _almost_equal(x_next, x_k):
@@ -711,8 +733,8 @@ def gjk(
   # compute the approximate witness points
   # if n is zero, then there was an immediate return meaning the initial points
   # are the witness points
-  result.x1 = wp.where(n == 0, x1_0, _linear_combine(n, coordinates, simplex1))
-  result.x2 = wp.where(n == 0, x2_0, _linear_combine(n, coordinates, simplex2))
+  result.x1 = wp.where(n == 0, x1_0, _linear_combine(n, coefs, simplex1))
+  result.x2 = wp.where(n == 0, x2_0, _linear_combine(n, coefs, simplex2))
   result.dist = xnorm
 
   result.dim = n
