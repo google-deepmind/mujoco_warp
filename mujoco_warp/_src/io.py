@@ -365,9 +365,6 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
   opt_kwargs = {f.name: getattr(mjm.opt, f.name, None) for f in dataclasses.fields(types.Option)}
   if hasattr(mjm.opt, "impratio"):
     opt_kwargs["impratio_invsqrt"] = 1.0 / np.sqrt(np.maximum(mjm.opt.impratio, mujoco.mjMINVAL))
-  for f in dataclasses.fields(types.Option):
-    if f.default is not dataclasses.MISSING and opt_kwargs.get(f.name) is None:
-      opt_kwargs.pop(f.name, None)
   opt = types.Option(**opt_kwargs)
 
   # islands are disabled by default while performance is being improved
