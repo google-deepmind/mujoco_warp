@@ -646,7 +646,7 @@ def fwd_position(m: Model, d: Data, factorize: bool = True):
       sleep.wake_equality(m, d)
     sleep.update_sleep(m, d)
 
-  if m.is_compact:
+  if m.opt.enableflags & EnableBit.SLEEP:
     island.island(m, d)
   smooth.transmission(m, d)
 
@@ -1286,7 +1286,7 @@ def fwd_acceleration(m: Model, d: Data, factorize: bool = False):
   )
   xfrc_accumulate(m, d, d.qfrc_smooth)
 
-  if m.is_compact:
+  if m.opt.enableflags & EnableBit.SLEEP:
     # update the active-DOF set (needs contacts from fwd_position) and solve
     # the smooth acceleration in compacted dense space.
     island.update_active_dofs(m, d)

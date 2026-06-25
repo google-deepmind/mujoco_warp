@@ -1287,7 +1287,6 @@ class Model:
     nmaxmeshdeg: maximum number of polygons per vert
     is_sparse: constraint Jacobian/Hessian layout (sparse vs dense). Does not affect M, whose
       factorization is a per-block decision -- see qLD_* and m_block_layout
-    is_compact: solve via active-DOF compaction (Newton + sleeping, unless islands forced)
     qLD_has_dense: any M block factors as a packed dense block
     qLD_has_simple: any M block is simple (diagonal -> 1/diag, no factorization)
     qLD_has_sparse: any M block factors via sparse LDL (oversized block / tendon armature)
@@ -1749,7 +1748,6 @@ class Model:
   nmaxpolygon: int
   nmaxmeshdeg: int
   is_sparse: bool
-  is_compact: bool
   qLD_has_dense: bool
   qLD_has_simple: bool
   qLD_has_sparse: bool

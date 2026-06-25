@@ -3397,7 +3397,7 @@ def init_context(m: types.Model, d: types.Data, ctx: SolverContext | InverseCont
 
 @event_scope
 def solve(m: types.Model, d: types.Data):
-  if m.is_compact:
+  if m.opt.enableflags & types.EnableBit.SLEEP:
     # Self-contained like the island branch below: rebuild the active-DOF mapping from
     # tree_awake so solve() works when called directly (not only via fwd_acceleration).
     island.update_active_dofs(m, d)

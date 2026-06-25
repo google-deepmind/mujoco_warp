@@ -826,10 +826,9 @@ _COMPACT_CONTACT_XML = """
 def _put_compact(xml: str, nvmax: int | None = None, sparse: bool = False):
   """Build (mjm, mjd, m, d) with the compact workspace allocated via nvmax.
 
-  The model has no SLEEP flag, so m.is_compact is False and forward() runs the full
-  baseline solve; passing nvmax still allocates the compact arrays (nvmax defaults to nv)
-  so the compacted smooth/constrained solves can be invoked directly and compared against
-  that baseline.
+  The model has no SLEEP flag, so forward() runs the full baseline solve; passing nvmax
+  still allocates the compact arrays (nvmax defaults to nv) so the compacted smooth/constrained
+  solves can be invoked directly and compared against that baseline.
   """
   mjm = mujoco.MjModel.from_xml_string(xml)
   if sparse:
@@ -895,11 +894,10 @@ class CompactSolverTest(absltest.TestCase):
   def test_solve_compact_populates_islands(self):
     """When using the compact solver via mjw.solve, island mapping fields are updated."""
     mjm = mujoco.MjModel.from_xml_string(_COMPACT_CONTACT_XML)
-    mjm.opt.enableflags |= mujoco.mjtEnableBit.mjENBL_SLEEP  # Newton + sleeping -> m.is_compact
+    mjm.opt.enableflags |= mujoco.mjtEnableBit.mjENBL_SLEEP  # compact newton solver
     mjd = mujoco.MjData(mjm)
     mujoco.mj_forward(mjm, mjd)
     m = mjw.put_model(mjm)
-    self.assertTrue(m.is_compact)
     # nv = 13. We set nvmax = 8 to size the compacted block below nv.
     d = mjw.put_data(mjm, mjd, nvmax=8)
 
