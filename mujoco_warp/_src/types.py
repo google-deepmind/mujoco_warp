@@ -2282,41 +2282,6 @@ class InverseContext:
 
 
 @dataclasses.dataclass
-class IslandSolverContext:
-  """Workspace arrays for island constraint solver."""
-
-  # Re-ordered workspace arrays (sized per-dof / per-constraint)
-  Jaref: wp.array2d[float]
-  jv: wp.array2d[float]
-  search: wp.array2d[float]
-  mv: wp.array2d[float]
-  grad: wp.array2d[float]
-  Mgrad: wp.array2d[float]
-  prev_grad: wp.array2d[float]
-  prev_Mgrad: wp.array2d[float]
-  h: wp.array3d[float]
-
-  # Per-island solver scalars (nworld, ntree)
-  cost: wp.array2d[float]
-  prev_cost: wp.array2d[float]
-  gauss: wp.array2d[float]
-  search_dot: wp.array2d[float]
-  grad_dot: wp.array2d[float]
-  done: wp.array2d[bool]  # per-island convergence
-  solver_niter: wp.array2d[int]  # iterations per island
-  beta: wp.array2d[float]
-  beta_den: wp.array2d[float]
-  alpha: wp.array2d[float]
-  Ma: wp.array2d[float]  # island-local Ma (nworld, nv)
-
-  # Re-ordered sparse Jacobian arrays
-  iJ_rownnz: wp.array2d[int]
-  iJ_rowadr: wp.array2d[int]
-  iJ_colind: wp.array3d[int]
-  iJ: wp.array3d[float]
-
-
-@dataclasses.dataclass
 class SolverContext:
   """Workspace arrays for constraint solver."""
 

@@ -28,7 +28,6 @@ from mujoco_warp._src import sensor
 from mujoco_warp._src import sleep
 from mujoco_warp._src import smooth
 from mujoco_warp._src import solver
-from mujoco_warp._src import types
 from mujoco_warp._src import util_misc
 from mujoco_warp._src.support import next_act
 from mujoco_warp._src.support import xfrc_accumulate
@@ -647,7 +646,7 @@ def fwd_position(m: Model, d: Data, factorize: bool = True):
       sleep.wake_equality(m, d)
     sleep.update_sleep(m, d)
 
-  if m.is_compact or (m.ntree > 1 and not (m.opt.disableflags & types.DisableBit.ISLAND)):
+  if m.is_compact:
     island.island(m, d)
   smooth.transmission(m, d)
 

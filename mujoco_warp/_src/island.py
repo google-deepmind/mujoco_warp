@@ -18,7 +18,6 @@ import warp as wp
 from mujoco_warp._src import types
 from mujoco_warp._src.types import ConstraintType
 from mujoco_warp._src.types import EqType
-from mujoco_warp._src.types import IslandSolverContext
 from mujoco_warp._src.types import ObjType
 from mujoco_warp._src.warp_util import event_scope
 
@@ -800,18 +799,17 @@ def _init_efc_arrays(
 
 
 @event_scope
-def compute_island_mapping(m: types.Model, d: types.Data, ctx: IslandSolverContext | None = None):
+def compute_island_mapping(m: types.Model, d: types.Data):
   """Compute DOF/constraint island mappings after island discovery.
 
-  Populates island solver context arrays via ctx: nv, nefc, ne, nf,
-  iefcadr, nidof, map_dof2idof, map_idof2dof, dof_islandid, map_efc2iefc,
-  map_iefc2efc, efc_islandid. Also populates d.dof_island, d.efc.island,
-  d.island_idofadr, and d.island_dofadr.
+  Populates d.dof_island, d.efc.island, d.island_idofadr, d.island_dofadr,
+  d.island_nv, d.island_nefc, d.island_ne, d.island_nf, d.island_iefcadr,
+  d.nidof, d.map_dof2idof, d.map_idof2dof, d.dof_islandid, d.map_efc2iefc,
+  d.map_iefc2efc, d.efc_islandid.
 
   Args:
     m: Model.
     d: Data.
-    ctx: IslandSolverContext.
   """
   # Ensure dof_islandid / efc_islandid are allocated at the right shape
   if d.dof_islandid.shape[1] != m.nv:
@@ -939,135 +937,6 @@ def compute_island_mapping(m: types.Model, d: types.Data, ctx: IslandSolverConte
       nother_mapped,
     ],
     outputs=[d.island_nefc, d.map_efc2iefc, d.map_iefc2efc, d.efc_islandid],
-  )
-
-  # 6. Scan Sparse Rows (if sparse)
-  if m.is_sparse and ctx is not None:
-    wp.launch(
-      _island_scan_sparse_rows,
-      dim=d.nworld,
-      inputs=[d.nisland, d.efc.J_rownnz, d.island_nefc, d.island_iefcadr, d.map_iefc2efc],
-      outputs=[ctx.iJ_rownnz, ctx.iJ_rowadr],
-    )
-
-
-@event_scope
-def gather_island_inputs(m: types.Model, d: types.Data, ctx: IslandSolverContext):
-  """Gather constraint and DOF arrays into island-local order.
-
-  Populates d.iefc (D, type, id, frictionloss, aref, J, J_colind) and
-  d.iqacc, d.iqacc_smooth, d.iqfrc_smooth.
-
-  Must be called after compute_island_mapping() and before per-island solving.
-
-  Args:
-    m: Model.
-    d: Data.
-    ctx: IslandSolverContext whose arrays are populated.
-  """
-  # Gather constraint arrays and dense Jacobian (fused)
-  wp.launch(
-    _gather_efc_and_jacobian,
-    dim=(d.nworld, d.njmax),
-    inputs=[
-      m.is_sparse,
-      d.nefc,
-      d.efc.D,
-      d.efc.type,
-      d.efc.id,
-      d.efc.frictionloss,
-      d.efc.aref,
-      d.efc.J,
-      d.efc.J_rownnz,
-      d.efc.J_rowadr,
-      d.efc.J_colind,
-      ctx.iJ_rowadr,
-      d.njmax,
-      d.map_iefc2efc,
-      d.map_idof2dof,
-      d.map_dof2idof,
-      d.nidof,
-    ],
-    outputs=[
-      d.efc.iD,
-      d.efc.itype,
-      d.efc.iid,
-      d.efc.ifrictionloss,
-      d.efc.iaref,
-      ctx.iJ,
-      ctx.iJ_colind,
-    ],
-  )
-
-  # Gather DOF arrays
-  wp.launch(
-    _gather_dof_arrays,
-    dim=(d.nworld, m.nv),
-    inputs=[
-      d.qacc,
-      d.qacc_smooth,
-      d.qfrc_smooth,
-      d.nidof,
-      d.map_idof2dof,
-    ],
-    outputs=[
-      d.iqacc,
-      d.iqacc_smooth,
-      d.iqfrc_smooth,
-    ],
-  )
-
-
-@event_scope
-def scatter_island_results(m: types.Model, d: types.Data, ctx: IslandSolverContext, scatter_Ma: bool):
-  """Scatter island-local solver results back to global arrays.
-
-  Reads ctx qacc, qfrc_constraint, Ma, d.efc iforce, istate and
-  writes them back to d.qacc, d.qfrc_constraint, d.efc.Ma, d.efc.force,
-  d.efc.state. Unconstrained DOFs receive qacc_smooth and zero qfrc.
-
-  Args:
-    m: Model.
-    d: Data.
-    ctx: IslandSolverContext which contains results.
-    scatter_Ma: Whether to scatter Ma for Euler/implicit integrators.
-  """
-  # Scatter DOF results (and optionally Ma for Euler/implicit integrators)
-  wp.launch(
-    _scatter_dof_arrays,
-    dim=(d.nworld, m.nv),
-    inputs=[
-      d.qacc_smooth,
-      d.qfrc_smooth,
-      d.dof_island,
-      d.iqacc,
-      d.iqfrc_constraint,
-      ctx.Ma,
-      d.map_dof2idof,
-      scatter_Ma,
-    ],
-    outputs=[
-      d.qacc,
-      d.qfrc_constraint,
-      d.efc.Ma,
-    ],
-  )
-
-  # Scatter constraint results (force and state from island-local arrays)
-  wp.launch(
-    _scatter_efc_arrays,
-    dim=(d.nworld, d.njmax),
-    inputs=[
-      d.nefc,
-      d.njmax,
-      d.map_iefc2efc,
-      d.efc.iforce,
-      d.efc.istate,
-    ],
-    outputs=[
-      d.efc.force,
-      d.efc.state,
-    ],
   )
 
 

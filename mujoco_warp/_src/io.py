@@ -33,9 +33,6 @@ from mujoco_warp._src.types import BiasType
 from mujoco_warp._src.types import TrnType
 from mujoco_warp._src.types import vec10
 
-# TODO(team): remove after improving island solver performance
-ENABLE_ISLANDS = False
-
 
 def _is_array_spec(typ) -> bool:
   """Check if a type annotation is an array spec (wp.array instance or bracket annotation)."""
@@ -367,12 +364,6 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
     opt_kwargs["impratio_invsqrt"] = 1.0 / np.sqrt(np.maximum(mjm.opt.impratio, mujoco.mjMINVAL))
   opt = types.Option(**opt_kwargs)
 
-  # islands are disabled by default while performance is being improved
-  # override by setting io.ENABLE_ISLANDS = True
-  # TODO(team): remove after improving island solver performance
-  if not ENABLE_ISLANDS:
-    opt.disableflags |= types.DisableBit.ISLAND
-
   # C MuJoCo tolerance was chosen for float64 architecture, but we default to float32 on GPU
   # adjust the tolerance for lower precision, to avoid the solver spending iterations needlessly
   # bouncing around the optimal solution
@@ -433,19 +424,15 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
   m.is_sparse = is_sparse(mjm)
   # Active-DOF compaction is the default sleeping solver: it pays off only when most DOFs are
   # asleep, so it's keyed on the SLEEP flag (a dense full solve would otherwise just be slower
-  # than the sparse solver). It's a dense-Newton method, and ENABLE_ISLANDS forces the old
-  # island solver instead. nvmax only sizes the compacted block; it does not toggle compaction.
-  m.is_compact = (
-    mjm.opt.solver == mujoco.mjtSolver.mjSOL_NEWTON
-    and bool(mjm.opt.enableflags & mujoco.mjtEnableBit.mjENBL_SLEEP)
-    and not ENABLE_ISLANDS
+  # than the sparse solver). It's a dense-Newton method. nvmax only sizes the compacted block;
+  # it does not toggle compaction.
+  m.is_compact = mjm.opt.solver == mujoco.mjtSolver.mjSOL_NEWTON and bool(
+    mjm.opt.enableflags & mujoco.mjtEnableBit.mjENBL_SLEEP
   )
-  # Sleeping is only honored by a sleep-aware solver (compact for Newton, or the island solver
-  # via enable_islands). Reject SLEEP without one rather than silently ignoring it.
-  if bool(mjm.opt.enableflags & mujoco.mjtEnableBit.mjENBL_SLEEP) and not m.is_compact and not ENABLE_ISLANDS:
-    raise ValueError(
-      f"sleeping requires the Newton solver or enable_islands (got solver={types.SolverType(mjm.opt.solver).name})"
-    )
+  # Sleeping is only honored by a sleep-aware solver (compact for Newton). Reject SLEEP without
+  # one rather than silently ignoring it.
+  if bool(mjm.opt.enableflags & mujoco.mjtEnableBit.mjENBL_SLEEP) and not m.is_compact:
+    raise ValueError(f"sleeping requires the Newton solver (got solver={types.SolverType(mjm.opt.solver).name})")
   m.has_fluid = mjm.opt.wind.any() or mjm.opt.density > 0 or mjm.opt.viscosity > 0
 
   m.max_ten_J_rownnz = int(mjm.ten_J_rownnz.max()) if mjm.ntendon else 0
@@ -1440,11 +1427,7 @@ def make_data(
 
   # Compact workspace is allocated for the same models put_model marks m.is_compact (kept in
   # sync here since put_data does not take the warp Model). nvmax only sizes the block.
-  compact = (
-    mjm.opt.solver == mujoco.mjtSolver.mjSOL_NEWTON
-    and bool(mjm.opt.enableflags & mujoco.mjtEnableBit.mjENBL_SLEEP)
-    and not ENABLE_ISLANDS
-  )
+  compact = mjm.opt.solver == mujoco.mjtSolver.mjSOL_NEWTON and bool(mjm.opt.enableflags & mujoco.mjtEnableBit.mjENBL_SLEEP)
   # Allocate the compact workspace whenever compaction is the solver (compact) OR nvmax is
   # explicitly provided -- the latter lets callers/tests size and exercise the compact arrays
   # directly without is_compact dispatching in the forward pipeline.
@@ -1483,7 +1466,7 @@ def make_data(
       raise ValueError(f"nccdmax ({nccdmax}) must be <= nconmax ({nconmax})")
 
   nv_compact = nvmax < mjm.nv
-  island_enabled = compact_alloc or ENABLE_ISLANDS
+  island_enabled = compact_alloc
 
   sizes = dict({"*": 1}, **{f.name: getattr(mjm, f.name, None) for f in dataclasses.fields(types.Model) if f.type is int})
   condim_arrays = [np.array([0]), mjm.geom_condim, mjm.pair_dim]
@@ -1663,11 +1646,7 @@ def put_data(
 
   # Compact workspace is allocated for the same models put_model marks m.is_compact (kept in
   # sync here since put_data does not take the warp Model). nvmax only sizes the block.
-  compact = (
-    mjm.opt.solver == mujoco.mjtSolver.mjSOL_NEWTON
-    and bool(mjm.opt.enableflags & mujoco.mjtEnableBit.mjENBL_SLEEP)
-    and not ENABLE_ISLANDS
-  )
+  compact = mjm.opt.solver == mujoco.mjtSolver.mjSOL_NEWTON and bool(mjm.opt.enableflags & mujoco.mjtEnableBit.mjENBL_SLEEP)
   # Allocate the compact workspace whenever compaction is the solver (compact) OR nvmax is
   # explicitly provided -- the latter lets callers/tests size and exercise the compact arrays
   # directly without is_compact dispatching in the forward pipeline.
@@ -1716,7 +1695,7 @@ def put_data(
     raise ValueError(f"njmax overflow (njmax must be >= {mjd.nefc})")
 
   nv_compact = nvmax < mjm.nv
-  island_enabled = compact_alloc or ENABLE_ISLANDS
+  island_enabled = compact_alloc
 
   sizes = dict({"*": 1}, **{f.name: getattr(mjm, f.name, None) for f in dataclasses.fields(types.Model) if f.type is int})
   condim_arrays = [np.array([0]), mjm.geom_condim, mjm.pair_dim]
@@ -3451,9 +3430,6 @@ def override_model(model: types.Model | mujoco.MjModel, overrides: dict[str, Any
         val = np.array([float(p) for p in val.strip("[]").split()], dtype=arr.dtype)
       else:
         val = typ(val)
-
-      if attr == "disableflags" and isinstance(obj, types.Option) and not ENABLE_ISLANDS:
-        val = int(val) | types.DisableBit.ISLAND
 
       setattr(obj, attr, val)
 
