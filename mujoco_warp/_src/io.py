@@ -82,7 +82,6 @@ def _create_constraint(
   njmax: int,
   njmax_nnz: int,
   sizes: dict,
-  sleep_enabled: bool,
   mjd=None,
 ) -> types.Constraint:
   """Construct a types.Constraint with standard and island local fields allocated properly."""
@@ -1466,7 +1465,7 @@ def make_data(
   contact = types.Contact(**contact_kwargs)
   contact.efc_address = wp.array(np.full((naconmax, sizes["nmaxpyramid"]), -1, dtype=int), dtype=int)
 
-  efc = _create_constraint(mjm, nworld, njmax, njmax_nnz, sizes, compact_alloc)
+  efc = _create_constraint(mjm, nworld, njmax, njmax_nnz, sizes)
 
   if is_sparse(mjm):
     efc.J_rownnz = wp.zeros((nworld, njmax), dtype=int)
@@ -1715,7 +1714,7 @@ def put_data(
   # create efc
   efc_kwargs = {"J_rownnz": None, "J_rowadr": None, "J_colind": None, "J": None}
 
-  efc = _create_constraint(mjm, nworld, njmax, njmax_nnz, sizes, compact_alloc, mjd)
+  efc = _create_constraint(mjm, nworld, njmax, njmax_nnz, sizes, mjd)
 
   if is_sparse(mjm):
     J_rownnz = np.zeros(njmax, dtype=np.int32)
