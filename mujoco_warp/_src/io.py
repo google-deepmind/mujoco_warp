@@ -90,32 +90,17 @@ def _create_constraint(
   sparse = is_sparse(mjm)
 
   for f in dataclasses.fields(types.Constraint):
-    if f.name == "itype":
-      efc_kwargs[f.name] = wp.empty((nworld, njmax if sleep_enabled else 0), dtype=int)
-    elif f.name == "iid":
-      efc_kwargs[f.name] = wp.empty((nworld, njmax if sleep_enabled else 0), dtype=int)
-    elif f.name == "iD":
-      efc_kwargs[f.name] = wp.empty((nworld, njmax if sleep_enabled else 0), dtype=float)
-    elif f.name == "iaref":
-      efc_kwargs[f.name] = wp.empty((nworld, njmax if sleep_enabled else 0), dtype=float)
-    elif f.name == "ifrictionloss":
-      efc_kwargs[f.name] = wp.empty((nworld, njmax if sleep_enabled else 0), dtype=float)
-    elif f.name == "iforce":
-      efc_kwargs[f.name] = wp.empty((nworld, njmax if sleep_enabled else 0), dtype=float)
-    elif f.name == "istate":
-      efc_kwargs[f.name] = wp.empty((nworld, njmax if sleep_enabled else 0), dtype=int)
-    else:
-      if f.name in efc_kwargs:
-        continue
+    if f.name in efc_kwargs:
+      continue
 
-      if mjd is not None:
-        shape = tuple(sizes[dim] if isinstance(dim, str) else dim for dim in f.type.shape)
-        val = np.zeros(shape, dtype=f.type.dtype)
-        if f.name in ("type", "id", "pos", "margin", "D", "vel", "aref", "frictionloss", "force"):
-          val[:, : mjd.nefc] = np.tile(getattr(mjd, "efc_" + f.name), (nworld, 1))
-        efc_kwargs[f.name] = wp.array(val, dtype=f.type.dtype)
-      else:
-        efc_kwargs[f.name] = _create_array(None, f.type, sizes)
+    if mjd is not None:
+      shape = tuple(sizes[dim] if isinstance(dim, str) else dim for dim in f.type.shape)
+      val = np.zeros(shape, dtype=f.type.dtype)
+      if f.name in ("type", "id", "pos", "margin", "D", "vel", "aref", "frictionloss", "force"):
+        val[:, : mjd.nefc] = np.tile(getattr(mjd, "efc_" + f.name), (nworld, 1))
+      efc_kwargs[f.name] = wp.array(val, dtype=f.type.dtype)
+    else:
+      efc_kwargs[f.name] = _create_array(None, f.type, sizes)
 
   return types.Constraint(**efc_kwargs)
 
@@ -1304,10 +1289,6 @@ def _allocate_island_arrays(
 
   d.dof_islandid = wp.empty((nworld, nv_size), dtype=int)
   d.efc_islandid = wp.empty((nworld, njmax_size), dtype=int)
-  d.iqacc = wp.empty((nworld, nv_size), dtype=float)
-  d.iqacc_smooth = wp.empty((nworld, nv_size), dtype=float)
-  d.iqfrc_smooth = wp.empty((nworld, nv_size), dtype=float)
-  d.iqfrc_constraint = wp.empty((nworld, nv_size), dtype=float)
 
 
 def _allocate_compact_arrays(
@@ -1554,10 +1535,6 @@ def make_data(
     "map_iefc2efc": None,
     "dof_islandid": None,
     "efc_islandid": None,
-    "iqacc": None,
-    "iqacc_smooth": None,
-    "iqfrc_smooth": None,
-    "iqfrc_constraint": None,
     "tree_asleep": wp.array(
       np.tile(np.arange(mjm.ntree, dtype=np.int32), (nworld, 1))
       if nv_compact
@@ -1812,10 +1789,6 @@ def put_data(
     "map_iefc2efc": None,
     "dof_islandid": None,
     "efc_islandid": None,
-    "iqacc": None,
-    "iqacc_smooth": None,
-    "iqfrc_smooth": None,
-    "iqfrc_constraint": None,
     "tree_asleep": wp.array(
       np.tile(np.arange(mjm.ntree, dtype=np.int32), (nworld, 1))
       if nv_compact
@@ -2102,14 +2075,6 @@ def get_data_into(
     result.map_idof2dof[:nv] = d.map_idof2dof.numpy()[world_id, :nv]
     result.map_efc2iefc[:nefc] = d.map_efc2iefc.numpy()[world_id, :nefc]
     result.map_iefc2efc[:nefc] = d.map_iefc2efc.numpy()[world_id, :nefc]
-
-    result.iefc_type[:nefc] = d.efc.itype.numpy()[world_id, :nefc]
-    result.iefc_id[:nefc] = d.efc.iid.numpy()[world_id, :nefc]
-    result.iefc_D[:nefc] = d.efc.iD.numpy()[world_id, :nefc]
-    result.iefc_aref[:nefc] = d.efc.iaref.numpy()[world_id, :nefc]
-    result.iefc_frictionloss[:nefc] = d.efc.ifrictionloss.numpy()[world_id, :nefc]
-    result.iefc_state[:nefc] = d.efc.istate.numpy()[world_id, :nefc]
-    result.iefc_force[:nefc] = d.efc.iforce.numpy()[world_id, :nefc]
 
 
 def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):

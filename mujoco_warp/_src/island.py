@@ -819,13 +819,6 @@ def compute_island_mapping(m: types.Model, d: types.Data):
   if d.island_idofadr.shape[1] != m.ntree:
     d.island_idofadr = wp.empty((d.nworld, m.ntree), dtype=int)
 
-  # Ensure island-local DOF arrays are allocated at the right shape
-  if d.iqacc.shape[1] != m.nv:
-    nw = d.nworld
-    d.iqacc = wp.empty((nw, m.nv), dtype=float)
-    d.iqacc_smooth = wp.empty((nw, m.nv), dtype=float)
-    d.iqfrc_smooth = wp.empty((nw, m.nv), dtype=float)
-    d.iqfrc_constraint = wp.empty((nw, m.nv), dtype=float)
   wp.launch(
     _init_island_arrays,
     dim=(d.nworld, m.ntree),

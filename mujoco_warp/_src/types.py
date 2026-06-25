@@ -1929,13 +1929,7 @@ class Constraint:
     force: constraint force in constraint space       (nworld, njmax)
     state: constraint state                           (nworld, njmax_pad)
     island: island ID per constraint                  (nworld, njmax)
-    itype: island constraint type                     (nworld, njmax)
-    iid: island constraint id                         (nworld, njmax)
-    iD: island constraint mass                        (nworld, njmax_pad)
-    iaref: island aref                                (nworld, njmax)
-    ifrictionloss: island frictionloss                (nworld, njmax)
-    iforce: island force                              (nworld, njmax)
-    istate: island state                              (nworld, njmax_pad)
+
   warp only fields:
     Ma: M*qacc                                        (nworld, nv)
     Jqvel: J*qvel                                     (nworld, njmax)
@@ -1958,14 +1952,6 @@ class Constraint:
   island: array("nworld", "njmax", int)
   Ma: array("nworld", "nv", float)
   Jqvel: array("nworld", "njmax", float)
-
-  itype: array("nworld", "njmax", int)
-  iid: array("nworld", "njmax", int)
-  iD: array("nworld", "njmax_pad", float)
-  iaref: array("nworld", "njmax", float)
-  ifrictionloss: array("nworld", "njmax", float)
-  iforce: array("nworld", "njmax", float)
-  istate: array("nworld", "njmax_pad", int)
 
 
 @dataclasses.dataclass
@@ -2084,10 +2070,7 @@ class Data:
     map_iefc2efc: island-local EFC -> global EFC                (nworld, njmax)
     dof_islandid: island ID per island-DOF                      (nworld, nv)
     efc_islandid: island ID per island-EFC                      (nworld, njmax)
-    iqacc: island-local qacc                                    (nworld, nv)
-    iqacc_smooth: island-local qacc_smooth                      (nworld, nv)
-    iqfrc_smooth: island-local qfrc_smooth                      (nworld, nv)
-    iqfrc_constraint: island-local qfrc_constraint              (nworld, nv)
+
     ncdof: number of active (compacted) DOFs per world          (nworld,)
     dof_cdof: global DOF -> compacted DOF; -1 if inactive       (nworld, nv)
     cdof_dof: compacted DOF -> global DOF; -1 if unused         (nworld, nvmax_pad)
@@ -2230,10 +2213,7 @@ class Data:
   map_iefc2efc: array("nworld", "njmax", int)
   dof_islandid: array("nworld", "nv", int)
   efc_islandid: array("nworld", "njmax", int)
-  iqacc: wp.array2d[float]
-  iqacc_smooth: wp.array2d[float]
-  iqfrc_smooth: wp.array2d[float]
-  iqfrc_constraint: wp.array2d[float]
+
   ncdof: array("nworld", int)
   dof_cdof: array("nworld", "nv", int)
   cdof_dof: array("nworld", "nvmax_pad", int)
