@@ -41,6 +41,7 @@ from mujoco_warp._src.types import Data
 from mujoco_warp._src.types import DisableBit
 from mujoco_warp._src.types import GeomType
 from mujoco_warp._src.types import Model
+from mujoco_warp._src.types import OverflowType
 from mujoco_warp._src.types import mat43
 from mujoco_warp._src.types import mat63
 from mujoco_warp._src.types import vec5
@@ -171,6 +172,7 @@ def ccd_hfield_kernel_builder(
   def ccd_hfield_kernel(
     # Model:
     opt_ccd_tolerance: wp.array[float],
+    opt_warn_overflow: bool,
     geom_type: wp.array[int],
     geom_condim: wp.array[int],
     geom_dataid: wp.array2d[int],
@@ -242,6 +244,8 @@ def ccd_hfield_kernel_builder(
     contact_type_out: wp.array[int],
     contact_geomcollisionid_out: wp.array[int],
     nacon_out: wp.array[int],
+    # Data out:
+    overflow_out: wp.array[int],
   ):
     collisionid = wp.tid()
     if collisionid >= ncollision_in[0]:
@@ -280,7 +284,9 @@ def ccd_hfield_kernel_builder(
 
     ccdid = wp.atomic_add(nccd_in, wp.static(geomgeomid), 1)
     if ccdid >= naccdmax_in:
-      wp.printf("CCD overflow - please increase naccdmax to %u\n", ccdid)
+      if opt_warn_overflow:
+        wp.printf("CCD overflow - please increase naccdmax to %u\n", ccdid)
+      wp.atomic_or(overflow_out, worldid, wp.static(OverflowType.CCD))
       return
 
     _, margin, gap, condim, friction, solref, solreffriction, solimp = contact_params(
@@ -414,11 +420,13 @@ def ccd_hfield_kernel_builder(
       for c in range(cmin + 1, cmax + 1):
         # add both triangles from this cell
         for i in range(2):
-          if count >= MJ_MAXCONPAIR:
-            wp.printf(
-              "height field collision overflow, number of collisions >= %u - please adjust resolution: \n decrease the number of hfield rows/cols or modify size of colliding geom\n",
-              MJ_MAXCONPAIR,
-            )
+          if ncollision_in[0] + count > MJ_MAXCONPAIR:
+            if worldid == 0 and opt_warn_overflow:
+              wp.printf(
+                "height field collision overflow, number of collisions >= %u - please adjust resolution: \n decrease the number of hfield rows/cols or modify size of colliding geom\n",
+                MJ_MAXCONPAIR,
+              )
+            wp.atomic_or(overflow_out, worldid, wp.static(OverflowType.HFIELD))
             continue
 
           # add vert
@@ -714,6 +722,7 @@ def ccd_kernel_builder(
   def eval_ccd_write_contact(
     # Model:
     opt_ccd_tolerance: wp.array[float],
+    opt_warn_overflow: bool,
     # Data in:
     naconmax_in: int,
     naccdmax_in: int,
@@ -766,6 +775,8 @@ def ccd_kernel_builder(
     contact_type_out: wp.array[int],
     contact_geomcollisionid_out: wp.array[int],
     nacon_out: wp.array[int],
+    # Data out:
+    overflow_out: wp.array[int],
   ) -> int:
     points = mat43()
     witness1 = mat43()
@@ -795,7 +806,9 @@ def ccd_kernel_builder(
     if needs_epa:
       ccdid = wp.atomic_add(nccd_in, geomgeomid, 1)
       if ccdid >= naccdmax_in:
-        wp.printf("CCD overflow - please increase naccdmax to %u\n", ccdid)
+        if opt_warn_overflow:
+          wp.printf("CCD overflow - please increase naccdmax to %u\n", ccdid)
+        wp.atomic_or(overflow_out, worldid, wp.static(OverflowType.CCD))
         return 0
       dist, ncollision, w1, w2, multiccd_idx = epa_phase(
         opt_ccd_tolerance[worldid % opt_ccd_tolerance.shape[0]],
@@ -914,6 +927,7 @@ def ccd_kernel_builder(
   def ccd_kernel(
     # Model:
     opt_ccd_tolerance: wp.array[float],
+    opt_warn_overflow: bool,
     geom_type: wp.array[int],
     geom_condim: wp.array[int],
     geom_dataid: wp.array2d[int],
@@ -990,6 +1004,8 @@ def ccd_kernel_builder(
     contact_type_out: wp.array[int],
     contact_geomcollisionid_out: wp.array[int],
     nacon_out: wp.array[int],
+    # Data out:
+    overflow_out: wp.array[int],
   ):
     collisionid = wp.tid()
     if collisionid >= ncollision_in[0]:
@@ -1052,6 +1068,7 @@ def ccd_kernel_builder(
 
     eval_ccd_write_contact(
       opt_ccd_tolerance,
+      opt_warn_overflow,
       naconmax_in,
       naccdmax_in,
       epa_vert_in,
@@ -1101,6 +1118,7 @@ def ccd_kernel_builder(
       contact_type_out,
       contact_geomcollisionid_out,
       nacon_out,
+      overflow_out,
     )
 
   return ccd_kernel
@@ -1201,6 +1219,7 @@ def convex_narrowphase(m: Model, d: Data, ctx: CollisionContext, collision_table
         dim=d.naconmax,
         inputs=[
           m.opt.ccd_tolerance,
+          m.opt.warn_overflow,
           m.geom_type,
           m.geom_condim,
           m.geom_dataid,
@@ -1255,7 +1274,7 @@ def convex_narrowphase(m: Model, d: Data, ctx: CollisionContext, collision_table
           epa_horizon,
           nccd,
         ],
-        outputs=contact_outputs,
+        outputs=contact_outputs + [d.overflow],
       )
 
   # Allocate multiccd arrays only for non-heightfield collisions
@@ -1293,6 +1312,7 @@ def convex_narrowphase(m: Model, d: Data, ctx: CollisionContext, collision_table
         dim=d.naconmax,
         inputs=[
           m.opt.ccd_tolerance,
+          m.opt.warn_overflow,
           m.geom_type,
           m.geom_condim,
           m.geom_dataid,
@@ -1352,5 +1372,5 @@ def convex_narrowphase(m: Model, d: Data, ctx: CollisionContext, collision_table
           multiccd_face2,
           nccd,
         ],
-        outputs=contact_outputs,
+        outputs=contact_outputs + [d.overflow],
       )

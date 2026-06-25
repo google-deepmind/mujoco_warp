@@ -365,6 +365,9 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
   opt_kwargs = {f.name: getattr(mjm.opt, f.name, None) for f in dataclasses.fields(types.Option)}
   if hasattr(mjm.opt, "impratio"):
     opt_kwargs["impratio_invsqrt"] = 1.0 / np.sqrt(np.maximum(mjm.opt.impratio, mujoco.mjMINVAL))
+  for f in dataclasses.fields(types.Option):
+    if f.default is not dataclasses.MISSING and opt_kwargs.get(f.name) is None:
+      opt_kwargs.pop(f.name, None)
   opt = types.Option(**opt_kwargs)
 
   # islands are disabled by default while performance is being improved
@@ -383,6 +386,7 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
   opt.broadphase_filter = types.BroadphaseFilter.PLANE | types.BroadphaseFilter.SPHERE | types.BroadphaseFilter.OBB
   opt.graph_conditional = True
   opt.run_collision_detection = True
+  opt.warn_overflow = True
   contact_sensor_maxmatch_id = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_NUMERIC, "contact_sensor_maxmatch")
   if contact_sensor_maxmatch_id > -1:
     opt.contact_sensor_maxmatch = mjm.numeric_data[mjm.numeric_adr[contact_sensor_maxmatch_id]]
@@ -2222,6 +2226,7 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
     userdata_out: wp.array2d[float],
     sensordata_out: wp.array2d[float],
     nacon_out: wp.array[int],
+    overflow_out: wp.array[int],
   ):
     worldid = wp.tid()
 
@@ -2260,6 +2265,7 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
       sensordata_out[worldid, i] = 0.0
     for i in range(nuserdata):
       userdata_out[worldid, i] = 0.0
+    overflow_out[worldid] = 0
 
   @wp.kernel(module="unique", enable_backward=False)
   def reset_mocap(
@@ -2491,6 +2497,7 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
       d.userdata,
       d.sensordata,
       d.nacon,
+      d.overflow,
     ],
   )
 

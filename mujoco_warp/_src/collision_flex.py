@@ -30,6 +30,7 @@ from mujoco_warp._src.types import ContactType
 from mujoco_warp._src.types import Data
 from mujoco_warp._src.types import GeomType
 from mujoco_warp._src.types import Model
+from mujoco_warp._src.types import OverflowType
 from mujoco_warp._src.types import vec5
 from mujoco_warp._src.warp_util import event_scope
 
@@ -95,6 +96,7 @@ def _flex_broadphase_bounds(
 def _flex_triangle_geom_broadphase(
   # Model:
   ngeom: int,
+  opt_warn_overflow: bool,
   geom_type: wp.array[int],
   geom_aabb: wp.array3d[wp.vec3],
   geom_margin: wp.array2d[float],
@@ -116,6 +118,8 @@ def _flex_triangle_geom_broadphase(
   flex_aabb_max_val: wp.vec3,
   # Data out:
   ncollision_out: wp.array[int],
+  # Data out:
+  overflow_out: wp.array[int],
   # Out:
   collision_pair_out: wp.array[wp.vec2i],
   collision_worldid_out: wp.array[int],
@@ -193,7 +197,9 @@ def _flex_triangle_geom_broadphase(
   # Overlap found! Save candidate.
   idx = wp.atomic_add(ncollision_out, 0, 1)
   if idx >= naconmax_in:
-    wp.printf("Collision buffer overflow in flex broadphase - please increase naconmax to %u\n", idx + 1)
+    if opt_warn_overflow:
+      wp.printf("Collision buffer overflow in flex broadphase - please increase naconmax to %u\n", idx + 1)
+    wp.atomic_or(overflow_out, worldid, wp.static(OverflowType.BROADPHASE))
     return
   collision_pair_out[idx] = wp.vec2i(element_or_shell_id, geomid)
   collision_worldid_out[idx] = worldid
@@ -204,6 +210,7 @@ def _flex_broadphase_unified(
   # Model:
   ngeom: int,
   nflex: int,
+  opt_warn_overflow: bool,
   geom_type: wp.array[int],
   geom_size: wp.array2d[wp.vec3],
   geom_aabb: wp.array3d[wp.vec3],
@@ -228,6 +235,8 @@ def _flex_broadphase_unified(
   triflexid: wp.array[int],
   # Data out:
   ncollision_out: wp.array[int],
+  # Data out:
+  overflow_out: wp.array[int],
   # Out:
   collision_pair_out: wp.array[wp.vec2i],
   collision_worldid_out: wp.array[int],
@@ -255,6 +264,7 @@ def _flex_broadphase_unified(
 
   _flex_triangle_geom_broadphase(
     ngeom,
+    opt_warn_overflow,
     geom_type,
     geom_aabb,
     geom_margin,
@@ -272,7 +282,9 @@ def _flex_broadphase_unified(
     tri_margin,
     flex_aabb_min_in[worldid, flexid],
     flex_aabb_max_in[worldid, flexid],
+    # Data out:
     ncollision_out,
+    overflow_out,
     collision_pair_out,
     collision_worldid_out,
   )
@@ -282,6 +294,7 @@ def _flex_broadphase_unified(
 def _flex_broadphase_plane(
   # Model:
   ngeom: int,
+  opt_warn_overflow: bool,
   geom_type: wp.array[int],
   geom_margin: wp.array2d[float],
   flex_margin: wp.array[float],
@@ -298,6 +311,8 @@ def _flex_broadphase_plane(
   flex_aabb_max_in: wp.array2d[wp.vec3],
   # Data out:
   ncollision_out: wp.array[int],
+  # Data out:
+  overflow_out: wp.array[int],
   # Out:
   collision_pair_out: wp.array[wp.vec2i],
   collision_worldid_out: wp.array[int],
@@ -349,7 +364,9 @@ def _flex_broadphase_plane(
     # Append Candidate to Context
     idx = wp.atomic_add(ncollision_out, 0, 1)
     if idx >= naconmax_in:
-      wp.printf("Collision buffer overflow in flex plane broadphase - please increase naconmax to %u\n", idx + 1)
+      if opt_warn_overflow:
+        wp.printf("Collision buffer overflow in flex plane broadphase - please increase naconmax to %u\n", idx + 1)
+      wp.atomic_or(overflow_out, worldid, wp.static(OverflowType.BROADPHASE))
       return
     collision_pair_out[idx] = wp.vec2i(vertid, geomid)
     collision_worldid_out[idx] = worldid
@@ -1852,6 +1869,7 @@ def _flex_narrowphase_unified(
   ngeom: int,
   nflex: int,
   opt_ccd_tolerance: wp.array[float],
+  opt_warn_overflow: bool,
   geom_type: wp.array[int],
   geom_condim: wp.array[int],
   geom_dataid: wp.array2d[int],
@@ -1910,6 +1928,8 @@ def _flex_narrowphase_unified(
   nccd: wp.array[int],
   ccd_iterations: int,
   max_candidates: int,
+  # Data out:
+  overflow_out: wp.array[int],
   # Out:
   cand_dist_out: wp.array[float],
   cand_pos_out: wp.array[wp.vec3],
@@ -1969,7 +1989,9 @@ def _flex_narrowphase_unified(
   if gtype == int(GeomType.MESH):
     ccdid = wp.atomic_add(nccd, 0, 1)
     if ccdid >= naccdmax_in:
-      wp.printf("CCD overflow in flex narrowphase - please increase naccdmax to %u\n", ccdid)
+      if opt_warn_overflow:
+        wp.printf("CCD overflow in flex narrowphase - please increase naccdmax to %u\n", ccdid)
+      wp.atomic_or(overflow_out, worldid, wp.static(OverflowType.CCD))
     else:
       did = geom_dataid[worldid % geom_dataid.shape[0], geomid]
       tolerance = opt_ccd_tolerance[worldid % opt_ccd_tolerance.shape[0]]
@@ -2107,6 +2129,7 @@ def _filter_flex_candidates(
 @wp.kernel
 def _write_filtered_contacts(
   # Model:
+  opt_warn_overflow: bool,
   geom_type: wp.array[int],
   geom_condim: wp.array[int],
   geom_priority: wp.array[int],
@@ -2126,6 +2149,7 @@ def _write_filtered_contacts(
   flex_gap: wp.array[float],
   flex_dim: wp.array[int],
   # Data in:
+  nworld_in: int,
   naconmax_in: int,
   # In:
   ncand: wp.array[int],
@@ -2158,6 +2182,8 @@ def _write_filtered_contacts(
   contact_type_out: wp.array[int],
   contact_geomcollisionid_out: wp.array[int],
   nacon_out: wp.array[int],
+  # Data out:
+  overflow_out: wp.array[int],
 ):
   i = wp.tid()
   if i >= ncand[0]:
@@ -2226,15 +2252,26 @@ def _write_filtered_contacts(
     else:
       condim = mixed_condim
 
+  if i == 0 and ncand[0] > naconmax_in:
+    if opt_warn_overflow:
+      wp.printf(
+        "flex candidate overflow - please increase naconmax to %u\n",
+        ncand[0],
+      )
+    for w in range(nworld_in):
+      wp.atomic_or(overflow_out, w, wp.static(OverflowType.BROADPHASE))
+
   if cand_dist[i] >= margin:
     return
 
   id_ = wp.atomic_add(nacon_out, 0, 1)
   if id_ >= naconmax_in:
-    wp.printf(
-      "flex contact overflow - please increase naconmax to %u\n",
-      id_ + 1,
-    )
+    if opt_warn_overflow:
+      wp.printf(
+        "flex contact overflow - please increase naconmax to %u\n",
+        id_ + 1,
+      )
+    wp.atomic_or(overflow_out, worldid, wp.static(OverflowType.NARROWPHASE))
     return
 
   contact_dist_out[id_] = cand_dist[i]
@@ -2332,6 +2369,7 @@ def flex_collision(m: Model, d: Data, ctx):
       inputs=[
         m.ngeom,
         m.nflex,
+        m.opt.warn_overflow,
         m.geom_type,
         m.geom_size,
         m.geom_aabb,
@@ -2355,6 +2393,7 @@ def flex_collision(m: Model, d: Data, ctx):
       ],
       outputs=[
         ncollision_dim2,
+        d.overflow,
         ctx.collision_pair,
         ctx.collision_worldid,
       ],
@@ -2367,6 +2406,7 @@ def flex_collision(m: Model, d: Data, ctx):
         m.ngeom,
         m.nflex,
         m.opt.ccd_tolerance,
+        m.opt.warn_overflow,
         m.geom_type,
         m.geom_condim,
         m.geom_dataid,
@@ -2425,6 +2465,7 @@ def flex_collision(m: Model, d: Data, ctx):
         d.naconmax,
       ],
       outputs=[
+        d.overflow,
         cand_dist,
         cand_pos,
         cand_nrm,
@@ -2447,6 +2488,7 @@ def flex_collision(m: Model, d: Data, ctx):
       inputs=[
         m.ngeom,
         m.nflex,
+        m.opt.warn_overflow,
         m.geom_type,
         m.geom_size,
         m.geom_aabb,
@@ -2470,6 +2512,7 @@ def flex_collision(m: Model, d: Data, ctx):
       ],
       outputs=[
         ncollision_dim3,
+        d.overflow,
         ctx.collision_pair,
         ctx.collision_worldid,
       ],
@@ -2482,6 +2525,7 @@ def flex_collision(m: Model, d: Data, ctx):
         m.ngeom,
         m.nflex,
         m.opt.ccd_tolerance,
+        m.opt.warn_overflow,
         m.geom_type,
         m.geom_condim,
         m.geom_dataid,
@@ -2540,6 +2584,7 @@ def flex_collision(m: Model, d: Data, ctx):
         d.naconmax,
       ],
       outputs=[
+        d.overflow,
         cand_dist,
         cand_pos,
         cand_nrm,
@@ -2561,6 +2606,7 @@ def flex_collision(m: Model, d: Data, ctx):
       dim=(d.nworld, m.flexvert_geom_pair_filtered.shape[0]),
       inputs=[
         m.ngeom,
+        m.opt.warn_overflow,
         m.geom_type,
         m.geom_margin,
         m.flex_margin,
@@ -2577,6 +2623,7 @@ def flex_collision(m: Model, d: Data, ctx):
       ],
       outputs=[
         ncollision_plane,
+        d.overflow,
         ctx.collision_pair,
         ctx.collision_worldid,
       ],
@@ -2835,6 +2882,7 @@ def flex_collision(m: Model, d: Data, ctx):
     _write_filtered_contacts,
     dim=d.naconmax,
     inputs=[
+      m.opt.warn_overflow,
       m.geom_type,
       m.geom_condim,
       m.geom_priority,
@@ -2853,6 +2901,7 @@ def flex_collision(m: Model, d: Data, ctx):
       m.flex_margin,
       m.flex_gap,
       m.flex_dim,
+      d.nworld,
       d.naconmax,
       ncand,
       cand_dist,
@@ -2885,5 +2934,6 @@ def flex_collision(m: Model, d: Data, ctx):
       d.contact.type,
       d.contact.geomcollisionid,
       d.nacon,
+      d.overflow,
     ],
   )

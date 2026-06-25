@@ -134,6 +134,30 @@ class BroadphaseFilter(enum.IntFlag):
   OBB = 8
 
 
+class OverflowType(enum.IntFlag):
+  """Bitmask for physics and collision overflows.
+
+  Attributes:
+    NEFC: nefc > njmax
+    NJMAX_NNZ: njmax_nnz overflow
+    BROADPHASE: broadphase overflow / flex broadphase overflow
+    NARROWPHASE: narrowphase overflow / flex narrowphase / contact overflow
+    CCD: CCD overflow / flex CCD overflow
+    HFIELD: height field collision overflow
+    CONTACT_MATCH: contact match sensor overflow
+    NVMAX: nvmax overflow (islands)
+  """
+
+  NEFC = 1
+  NJMAX_NNZ = 2
+  BROADPHASE = 4
+  NARROWPHASE = 8
+  CCD = 16
+  HFIELD = 32
+  CONTACT_MATCH = 64
+  NVMAX = 128
+
+
 class CamLightType(enum.IntEnum):
   """Type of camera light.
 
@@ -816,6 +840,7 @@ class Option:
       zeros out the contacts at each step)
     contact_sensor_maxmatch: max number of contacts considered by contact sensor matching criteria
                              contacts matched after this value is exceded will be ignored
+    warn_overflow: warn if overflow is encountered
   """
 
   timestep: array("*", float)
@@ -845,6 +870,7 @@ class Option:
   graph_conditional: bool
   run_collision_detection: bool
   contact_sensor_maxmatch: int
+  warn_overflow: bool
 
   # TODO(team): remove in future version
   @property
@@ -2122,6 +2148,7 @@ class Data:
     ncollision: collision count from broadphase                 (1,)
     flex_aabb_min: dynamic flex object bounding box min         (nworld, nflex, 3)
     flex_aabb_max: dynamic flex object bounding box max         (nworld, nflex, 3)
+    overflow: overflow bitmask (OverflowType)                   (nworld,)
   """
 
   solver_niter: array("nworld", int)
@@ -2268,6 +2295,7 @@ class Data:
   ncollision: array(1, int)
   flex_aabb_min: array("nworld", "nflex", wp.vec3)
   flex_aabb_max: array("nworld", "nflex", wp.vec3)
+  overflow: array("nworld", int)
 
 
 @dataclasses.dataclass

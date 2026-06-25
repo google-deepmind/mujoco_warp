@@ -36,6 +36,7 @@ from mujoco_warp._src.types import DisableBit
 from mujoco_warp._src.types import JointType
 from mujoco_warp._src.types import Model
 from mujoco_warp._src.types import ObjType
+from mujoco_warp._src.types import OverflowType
 from mujoco_warp._src.types import SensorType
 from mujoco_warp._src.types import Stage
 from mujoco_warp._src.types import TrnType
@@ -2331,6 +2332,7 @@ def _contact_match(
   # Model:
   opt_cone: int,
   opt_contact_sensor_maxmatch: int,
+  opt_warn_overflow: bool,
   body_parentid: wp.array[int],
   geom_bodyid: wp.array[int],
   site_type: wp.array[int],
@@ -2356,6 +2358,8 @@ def _contact_match(
   efc_force_in: wp.array2d[float],
   njmax_in: int,
   nacon_in: wp.array[int],
+  # Data out:
+  overflow_out: wp.array[int],
   # Out:
   sensor_contact_nmatch_out: wp.array2d[int],
   sensor_contact_matchid_out: wp.array3d[int],
@@ -2430,8 +2434,10 @@ def _contact_match(
   contactmatchid = wp.atomic_add(sensor_contact_nmatch_out[worldid], contactsensorid, 1)
 
   if contactmatchid >= opt_contact_sensor_maxmatch:
-    # TODO(team): alternative to wp.printf for reporting overflow?
-    wp.printf("contact match overflow: please increase Option.contact_sensor_maxmatch to %u\n", contactmatchid)
+    if opt_warn_overflow:
+      # TODO(team): alternative to wp.printf for reporting overflow?
+      wp.printf("contact match overflow: please increase Option.contact_sensor_maxmatch to %u\n", contactmatchid)
+    wp.atomic_or(overflow_out, worldid, wp.static(OverflowType.CONTACT_MATCH))
     return
 
   sensor_contact_matchid_out[worldid, contactsensorid, contactmatchid] = contactid
@@ -2608,6 +2614,7 @@ def sensor_acc(m: Model, d: Data):
       inputs=[
         m.opt.cone,
         m.opt.contact_sensor_maxmatch,
+        m.opt.warn_overflow,
         m.body_parentid,
         m.geom_bodyid,
         m.site_type,
@@ -2633,7 +2640,7 @@ def sensor_acc(m: Model, d: Data):
         d.njmax,
         d.nacon,
       ],
-      outputs=[sensor_contact_nmatch, sensor_contact_matchid, sensor_contact_criteria, sensor_contact_direction],
+      outputs=[d.overflow, sensor_contact_nmatch, sensor_contact_matchid, sensor_contact_criteria, sensor_contact_direction],
     )
 
     # sorting
