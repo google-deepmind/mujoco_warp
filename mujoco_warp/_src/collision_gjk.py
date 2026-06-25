@@ -629,6 +629,7 @@ def gjk(
   for _ in range(gjk_iterations):
     xnorm2 = wp.dot(x_k, x_k)
     if xnorm2 < min_norm2:
+      # TODO(kbayes): Investigate why setting 0.0 here gives poor stability
       xnorm = xnorm2
       break
     xnorm = wp.sqrt(xnorm2)
