@@ -2657,9 +2657,9 @@ def _update_gradient_cholesky(tile_size: int):
       return
 
     mat_tile = wp.tile_load(h_in[worldid], shape=(TILE_SIZE, TILE_SIZE))
-    fact_tile = wp.tile_cholesky(mat_tile, fill_mode="upper")
+    wp.tile_cholesky_inplace(mat_tile, fill_mode="upper")
     input_tile = wp.tile_load(ctx_grad_in[worldid], shape=TILE_SIZE)
-    output_tile = wp.tile_cholesky_solve(fact_tile, input_tile, fill_mode="upper")
+    output_tile = wp.tile_cholesky_solve(mat_tile, input_tile, fill_mode="upper")
     wp.tile_store(ctx_Mgrad_out[worldid], output_tile)
 
   return kernel
