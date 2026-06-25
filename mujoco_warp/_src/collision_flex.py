@@ -558,6 +558,8 @@ def _write_candidate_contact(
   elemid: int,
   vertid: int,
   worldid: int,
+  # Data out:
+  overflow_out: wp.array[int],
   # Out:
   cand_dist_out: wp.array[float],
   cand_pos_out: wp.array[wp.vec3],
@@ -580,6 +582,7 @@ def _write_candidate_contact(
       "flex candidate overflow - please increase naconmax to %u\n",
       candid + 1,
     )
+    wp.atomic_or(overflow_out, worldid, wp.static(OverflowType.BROADPHASE))
     return
 
   cand_dist_out[candid] = dist
@@ -623,6 +626,8 @@ def _collide_geom_triangle_detect(
   elemid: int,
   vertex_id: int,
   worldid: int,
+  # Data out:
+  overflow_out: wp.array[int],
   # Out:
   cand_dist_out: wp.array[float],
   cand_pos_out: wp.array[wp.vec3],
@@ -650,6 +655,7 @@ def _collide_geom_triangle_detect(
         elemid,
         vertex_id,
         worldid,
+        overflow_out,
         cand_dist_out,
         cand_pos_out,
         cand_nrm_out,
@@ -700,6 +706,7 @@ def _collide_geom_triangle_detect(
       elemid,
       vertex_id,
       worldid,
+      overflow_out,
       cand_dist_out,
       cand_pos_out,
       cand_nrm_out,
@@ -725,6 +732,7 @@ def _collide_geom_triangle_detect(
       elemid,
       vertex_id,
       worldid,
+      overflow_out,
       cand_dist_out,
       cand_pos_out,
       cand_nrm_out,
@@ -780,6 +788,8 @@ def _collide_mesh_triangle(
   epa_horizon: wp.array[int],
   tolerance: float,
   ccd_iterations: int,
+  # Data out:
+  overflow_out: wp.array[int],
   # Out:
   cand_dist_out: wp.array[float],
   cand_pos_out: wp.array[wp.vec3],
@@ -930,6 +940,7 @@ def _collide_mesh_triangle(
           elemid,
           -1,
           worldid,
+          overflow_out,
           cand_dist_out,
           cand_pos_out,
           cand_nrm_out,
@@ -1103,6 +1114,8 @@ def _flex_geom_vertex_narrowphase_detect(
   nworld_in: int,
   # In:
   max_candidates: int,
+  # Data out:
+  overflow_out: wp.array[int],
   # Out:
   cand_dist_out: wp.array[float],
   cand_pos_out: wp.array[wp.vec3],
@@ -1187,6 +1200,7 @@ def _flex_geom_vertex_narrowphase_detect(
         -1,
         local_vertid,
         worldid,
+        overflow_out,
         cand_dist_out,
         cand_pos_out,
         cand_nrm_out,
@@ -1280,6 +1294,8 @@ def _flex_internal_collisions_detect(
   flexvert_xpos_in: wp.array2d[wp.vec3],
   # In:
   max_candidates: int,
+  # Data out:
+  overflow_out: wp.array[int],
   # Out:
   cand_dist_out: wp.array[float],
   cand_pos_out: wp.array[wp.vec3],
@@ -1353,6 +1369,7 @@ def _flex_internal_collisions_detect(
       e,
       v,
       worldid,
+      overflow_out,
       cand_dist_out,
       cand_pos_out,
       cand_nrm_out,
@@ -1383,6 +1400,8 @@ def _flex_tet_internal_collisions_detect(
   flexvert_xpos_in: wp.array2d[wp.vec3],
   # In:
   max_candidates: int,
+  # Data out:
+  overflow_out: wp.array[int],
   # Out:
   cand_dist_out: wp.array[float],
   cand_pos_out: wp.array[wp.vec3],
@@ -1431,6 +1450,7 @@ def _flex_tet_internal_collisions_detect(
       local_elemid,
       v3,
       worldid,
+      overflow_out,
       cand_dist_out,
       cand_pos_out,
       cand_nrm_out,
@@ -1457,6 +1477,7 @@ def _flex_tet_internal_collisions_detect(
       local_elemid,
       v1,
       worldid,
+      overflow_out,
       cand_dist_out,
       cand_pos_out,
       cand_nrm_out,
@@ -1483,6 +1504,7 @@ def _flex_tet_internal_collisions_detect(
       local_elemid,
       v2,
       worldid,
+      overflow_out,
       cand_dist_out,
       cand_pos_out,
       cand_nrm_out,
@@ -1509,6 +1531,7 @@ def _flex_tet_internal_collisions_detect(
       local_elemid,
       v0,
       worldid,
+      overflow_out,
       cand_dist_out,
       cand_pos_out,
       cand_nrm_out,
@@ -1670,6 +1693,8 @@ def _flex_active_element_collisions_detect(
   gjk_iterations: int,
   epa_iterations: int,
   n_total_elems: int,
+  # Data out:
+  overflow_out: wp.array[int],
   # Out:
   workspace_verts_out: wp.array[wp.vec3],
   epa_vert_out: wp.array2d[wp.vec3],
@@ -1756,6 +1781,7 @@ def _flex_active_element_collisions_detect(
             e1,
             e2,
             worldid,
+            overflow_out,
             cand_dist_out,
             cand_pos_out,
             cand_nrm_out,
@@ -1849,6 +1875,7 @@ def _flex_active_element_collisions_detect(
           e1,
           e2,
           worldid,
+          overflow_out,
           cand_dist_out,
           cand_pos_out,
           cand_nrm_out,
@@ -2033,6 +2060,7 @@ def _flex_narrowphase_unified(
         epa_horizon[ccdid],
         tolerance,
         ccd_iterations,
+        overflow_out,
         cand_dist_out,
         cand_pos_out,
         cand_nrm_out,
@@ -2062,6 +2090,7 @@ def _flex_narrowphase_unified(
       local_tri_id,
       -1,
       worldid,
+      overflow_out,
       cand_dist_out,
       cand_pos_out,
       cand_nrm_out,
@@ -2149,7 +2178,6 @@ def _write_filtered_contacts(
   flex_gap: wp.array[float],
   flex_dim: wp.array[int],
   # Data in:
-  nworld_in: int,
   naconmax_in: int,
   # In:
   ncand: wp.array[int],
@@ -2251,15 +2279,6 @@ def _write_filtered_contacts(
       condim = 1
     else:
       condim = mixed_condim
-
-  if i == 0 and ncand[0] > naconmax_in:
-    if opt_warn_overflow:
-      wp.printf(
-        "flex candidate overflow - please increase naconmax to %u\n",
-        ncand[0],
-      )
-    for w in range(nworld_in):
-      wp.atomic_or(overflow_out, w, wp.static(OverflowType.BROADPHASE))
 
   if cand_dist[i] >= margin:
     return
@@ -2711,6 +2730,7 @@ def flex_collision(m: Model, d: Data, ctx):
         d.naconmax,
       ],
       outputs=[
+        d.overflow,
         cand_dist,
         cand_pos,
         cand_nrm,
@@ -2746,6 +2766,7 @@ def flex_collision(m: Model, d: Data, ctx):
         d.naconmax,
       ],
       outputs=[
+        d.overflow,
         cand_dist,
         cand_pos,
         cand_nrm,
@@ -2778,6 +2799,7 @@ def flex_collision(m: Model, d: Data, ctx):
         d.naconmax,
       ],
       outputs=[
+        d.overflow,
         cand_dist,
         cand_pos,
         cand_nrm,
@@ -2836,6 +2858,7 @@ def flex_collision(m: Model, d: Data, ctx):
         m.nflexelem,
       ],
       outputs=[
+        d.overflow,
         workspace_verts,
         epa_vert,
         epa_vert_index,
@@ -2901,7 +2924,6 @@ def flex_collision(m: Model, d: Data, ctx):
       m.flex_margin,
       m.flex_gap,
       m.flex_dim,
-      d.nworld,
       d.naconmax,
       ncand,
       cand_dist,
