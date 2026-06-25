@@ -32,7 +32,7 @@ _TOLERANCE = 5e-5
 
 
 def _assert_eq(a, b, name):
-  tol = _TOLERANCE * 10  # avoid test noise
+  tol = _TOLERANCE * 10
   err_msg = f"mismatch: {name}"
   np.testing.assert_allclose(a, b, err_msg=err_msg, atol=tol, rtol=tol)
 
@@ -1216,6 +1216,20 @@ class DerivativeTest(parameterized.TestCase):
             <geom type="capsule" size="0.05 0.15" pos="0.03 0.04 0.05"
                   euler="15 25 35" fluidshape="ellipsoid"
                   fluidcoef="1.0 1.5 2.0 0.5 0.8"/>
+          </body>
+        </worldbody>
+        <keyframe>
+          <key qvel="1 2 3 0.5 0.8 1.2"/>
+        </keyframe>
+      </mujoco>
+      """,
+    "inertia_box": """
+      <mujoco>
+        <option integrator="implicitfast" density="1.225" viscosity="1.8e-5"/>
+        <worldbody>
+          <body>
+            <freejoint/>
+            <geom type="box" size="0.1 0.15 0.2" pos="0.05 0.05 0.05" euler="10 20 30" mass="1"/>
           </body>
         </worldbody>
         <keyframe>
