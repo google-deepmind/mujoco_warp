@@ -38,6 +38,7 @@ def _zero_constraint_counts(
   nf_out: wp.array[int],
   nl_out: wp.array[int],
   nefc_out: wp.array[int],
+  efc_jtdaj_nblock_out: wp.array[int],
   # Out:
   efc_nnz_out: wp.array[int],
 ):
@@ -48,43 +49,7 @@ def _zero_constraint_counts(
   nf_out[worldid] = 0
   nl_out[worldid] = 0
   nefc_out[worldid] = 0
-  efc_nnz_out[worldid] = 0
-
-
-# ==============================================================================
-
-import warp as wp
-
-from mujoco_warp._src import math
-from mujoco_warp._src import support
-from mujoco_warp._src import types
-from mujoco_warp._src.types import ConstraintType
-from mujoco_warp._src.types import ContactType
-from mujoco_warp._src.types import DisableBit
-from mujoco_warp._src.types import vec5
-from mujoco_warp._src.types import vec11
-from mujoco_warp._src.warp_util import event_scope
-
-wp.set_module_options({"enable_backward": False})
-
-
-@wp.kernel
-def _zero_constraint_counts(
-  # Data out:
-  ne_out: wp.array[int],
-  nf_out: wp.array[int],
-  nl_out: wp.array[int],
-  nefc_out: wp.array[int],
-  # Out:
-  efc_nnz_out: wp.array[int],
-):
-  worldid = wp.tid()
-
-  # Zero all constraint counters
-  ne_out[worldid] = 0
-  nf_out[worldid] = 0
-  nl_out[worldid] = 0
-  nefc_out[worldid] = 0
+  efc_jtdaj_nblock_out[worldid] = 0
   efc_nnz_out[worldid] = 0
 
 
@@ -418,7 +383,7 @@ def _equality_connect_count(
 
 
 @cache_kernel
-def _equality_connect(is_sparse: bool, deterministic: bool):
+def _equality_connect(is_sparse: bool, deterministic: bool, newton: bool):
   @wp.kernel(module="unique", enable_backward=False)
   def kernel(
     # Model:
@@ -469,6 +434,9 @@ def _equality_connect(is_sparse: bool, deterministic: bool):
     nefc_out: wp.array[int],
     efc_type_out: wp.array2d[int],
     efc_id_out: wp.array2d[int],
+    efc_jtdaj_adr_out: wp.array2d[int],
+    efc_jtdaj_nrow_out: wp.array2d[int],
+    efc_jtdaj_nblock_out: wp.array[int],
     efc_J_rownnz_out: wp.array2d[int],
     efc_J_rowadr_out: wp.array2d[int],
     efc_J_colind_out: wp.array3d[int],
@@ -497,6 +465,11 @@ def _equality_connect(is_sparse: bool, deterministic: bool):
 
     if efcid >= njmax_in - 3:
       return
+
+    if wp.static(is_sparse and newton):
+      jgid = wp.atomic_add(efc_jtdaj_nblock_out, worldid, 1)
+      efc_jtdaj_adr_out[worldid, jgid] = efcid
+      efc_jtdaj_nrow_out[worldid, jgid] = 3
 
     efcid0 = efcid + 0
     efcid1 = efcid + 1
@@ -792,8 +765,10 @@ def _equality_joint_count(
     nnz_count_out[worldid, eqjntid] = 0
 
 
+
+
 @cache_kernel
-def _equality_joint(is_sparse: bool, deterministic: bool):
+def _equality_joint(is_sparse: bool, deterministic: bool, newton: bool):
   @wp.kernel(module="unique", enable_backward=False)
   def kernel(
     # Model:
@@ -826,6 +801,9 @@ def _equality_joint(is_sparse: bool, deterministic: bool):
     nefc_out: wp.array[int],
     efc_type_out: wp.array2d[int],
     efc_id_out: wp.array2d[int],
+    efc_jtdaj_adr_out: wp.array2d[int],
+    efc_jtdaj_nrow_out: wp.array2d[int],
+    efc_jtdaj_nblock_out: wp.array[int],
     efc_J_rownnz_out: wp.array2d[int],
     efc_J_rowadr_out: wp.array2d[int],
     efc_J_colind_out: wp.array3d[int],
@@ -846,7 +824,6 @@ def _equality_joint(is_sparse: bool, deterministic: bool):
       return
 
     wp.atomic_add(ne_out, worldid, 1)
-
     if wp.static(deterministic):
       efcid = nefc_base_in[worldid] + efcid_offsets_in[worldid, eqjntid]
     else:
@@ -854,6 +831,11 @@ def _equality_joint(is_sparse: bool, deterministic: bool):
 
     if efcid >= njmax_in:
       return
+
+    if wp.static(is_sparse and newton):
+      jgid = wp.atomic_add(efc_jtdaj_nblock_out, worldid, 1)
+      efc_jtdaj_adr_out[worldid, jgid] = efcid
+      efc_jtdaj_nrow_out[worldid, jgid] = 1
 
     jntid_1 = eq_obj1id[eqid]
     jntid_2 = eq_obj2id[eqid]
@@ -974,7 +956,7 @@ def _equality_tendon_count(
 
 
 @cache_kernel
-def _equality_tendon(is_sparse: bool, deterministic: bool):
+def _equality_tendon(is_sparse: bool, deterministic: bool, newton: bool):
   @wp.kernel(module="unique", enable_backward=False)
   def kernel(
     # Model:
@@ -1009,6 +991,9 @@ def _equality_tendon(is_sparse: bool, deterministic: bool):
     nefc_out: wp.array[int],
     efc_type_out: wp.array2d[int],
     efc_id_out: wp.array2d[int],
+    efc_jtdaj_adr_out: wp.array2d[int],
+    efc_jtdaj_nrow_out: wp.array2d[int],
+    efc_jtdaj_nblock_out: wp.array[int],
     efc_J_rownnz_out: wp.array2d[int],
     efc_J_rowadr_out: wp.array2d[int],
     efc_J_colind_out: wp.array3d[int],
@@ -1037,6 +1022,11 @@ def _equality_tendon(is_sparse: bool, deterministic: bool):
 
     if efcid >= njmax_in:
       return
+
+    if wp.static(is_sparse and newton):
+      jgid = wp.atomic_add(efc_jtdaj_nblock_out, worldid, 1)
+      efc_jtdaj_adr_out[worldid, jgid] = efcid
+      efc_jtdaj_nrow_out[worldid, jgid] = 1
 
     obj1id = eq_obj1id[eqid]
     obj2id = eq_obj2id[eqid]
@@ -1075,7 +1065,8 @@ def _equality_tendon(is_sparse: bool, deterministic: bool):
       rowadr2 = ten_J_rowadr[obj2id]
 
     if wp.static(is_sparse):
-      # count unique dofs (upper bound for slot reservation)
+      # TODO(team): pre-compute rownnz
+      # count unique dofs
       p1, p2 = int(0), int(0)
       rownnz_upper = int(0)
       while p1 < rownnz1 or p2 < rownnz2:
@@ -1202,7 +1193,7 @@ def _equality_flex_count(
 
 
 @cache_kernel
-def _equality_flex(is_sparse: bool, deterministic: bool):
+def _equality_flex(is_sparse: bool, deterministic: bool, newton: bool):
   @wp.kernel(module="unique", enable_backward=False)
   def kernel(
     # Model:
@@ -1237,6 +1228,9 @@ def _equality_flex(is_sparse: bool, deterministic: bool):
     nefc_out: wp.array[int],
     efc_type_out: wp.array2d[int],
     efc_id_out: wp.array2d[int],
+    efc_jtdaj_adr_out: wp.array2d[int],
+    efc_jtdaj_nrow_out: wp.array2d[int],
+    efc_jtdaj_nblock_out: wp.array[int],
     efc_J_rownnz_out: wp.array2d[int],
     efc_J_rowadr_out: wp.array2d[int],
     efc_J_colind_out: wp.array3d[int],
@@ -1273,6 +1267,11 @@ def _equality_flex(is_sparse: bool, deterministic: bool):
 
     if efcid >= njmax_in:
       return
+
+    if wp.static(is_sparse and newton):
+      jgid = wp.atomic_add(efc_jtdaj_nblock_out, worldid, 1)
+      efc_jtdaj_adr_out[worldid, jgid] = efcid
+      efc_jtdaj_nrow_out[worldid, jgid] = 1
 
     pos = flexedge_length_in[worldid, edgeid] - flexedge_length0[edgeid]
     solref = eq_solref[worldid % eq_solref.shape[0], eqid]
@@ -1381,7 +1380,7 @@ def _equality_weld_count(
 
 
 @cache_kernel
-def _equality_weld(is_sparse: bool, deterministic: bool):
+def _equality_weld(is_sparse: bool, deterministic: bool, newton: bool):
   @wp.kernel(module="unique", enable_backward=False)
   def kernel(
     # Model:
@@ -1434,6 +1433,9 @@ def _equality_weld(is_sparse: bool, deterministic: bool):
     nefc_out: wp.array[int],
     efc_type_out: wp.array2d[int],
     efc_id_out: wp.array2d[int],
+    efc_jtdaj_adr_out: wp.array2d[int],
+    efc_jtdaj_nrow_out: wp.array2d[int],
+    efc_jtdaj_nblock_out: wp.array[int],
     efc_J_rownnz_out: wp.array2d[int],
     efc_J_rowadr_out: wp.array2d[int],
     efc_J_colind_out: wp.array3d[int],
@@ -1461,6 +1463,11 @@ def _equality_weld(is_sparse: bool, deterministic: bool):
 
     if efcid >= njmax_in - 6:
       return
+
+    if wp.static(is_sparse and newton):
+      jgid = wp.atomic_add(efc_jtdaj_nblock_out, worldid, 1)
+      efc_jtdaj_adr_out[worldid, jgid] = efcid
+      efc_jtdaj_nrow_out[worldid, jgid] = 6
 
     efcid0 = efcid + 0
     efcid1 = efcid + 1
@@ -1883,7 +1890,7 @@ def _friction_dof_count(
 
 
 @cache_kernel
-def _friction_dof(is_sparse: bool, deterministic: bool):
+def _friction_dof(is_sparse: bool, deterministic: bool, newton: bool):
   @wp.kernel(module="unique", enable_backward=False)
   def kernel(
     # Model:
@@ -1908,6 +1915,9 @@ def _friction_dof(is_sparse: bool, deterministic: bool):
     nefc_out: wp.array[int],
     efc_type_out: wp.array2d[int],
     efc_id_out: wp.array2d[int],
+    efc_jtdaj_adr_out: wp.array2d[int],
+    efc_jtdaj_nrow_out: wp.array2d[int],
+    efc_jtdaj_nblock_out: wp.array[int],
     efc_J_rownnz_out: wp.array2d[int],
     efc_J_rowadr_out: wp.array2d[int],
     efc_J_colind_out: wp.array3d[int],
@@ -1929,7 +1939,6 @@ def _friction_dof(is_sparse: bool, deterministic: bool):
       return
 
     wp.atomic_add(nf_out, worldid, 1)
-
     if wp.static(deterministic):
       efcid = nefc_base_in[worldid] + efcid_offsets_in[worldid, dofid]
     else:
@@ -1937,6 +1946,11 @@ def _friction_dof(is_sparse: bool, deterministic: bool):
 
     if efcid >= njmax_in:
       return
+
+    if wp.static(is_sparse and newton):
+      jgid = wp.atomic_add(efc_jtdaj_nblock_out, worldid, 1)
+      efc_jtdaj_adr_out[worldid, jgid] = efcid
+      efc_jtdaj_nrow_out[worldid, jgid] = 1
 
     if wp.static(is_sparse):
       efc_J_rownnz_out[worldid, efcid] = 1
@@ -2011,8 +2025,10 @@ def _friction_tendon_count(
     nnz_count_out[worldid, tenid] = 0
 
 
+
+
 @cache_kernel
-def _friction_tendon(is_sparse: bool, deterministic: bool):
+def _friction_tendon(is_sparse: bool, deterministic: bool, newton: bool):
   @wp.kernel(module="unique", enable_backward=False)
   def kernel(
     # Model:
@@ -2041,6 +2057,9 @@ def _friction_tendon(is_sparse: bool, deterministic: bool):
     nefc_out: wp.array[int],
     efc_type_out: wp.array2d[int],
     efc_id_out: wp.array2d[int],
+    efc_jtdaj_adr_out: wp.array2d[int],
+    efc_jtdaj_nrow_out: wp.array2d[int],
+    efc_jtdaj_nblock_out: wp.array[int],
     efc_J_rownnz_out: wp.array2d[int],
     efc_J_rowadr_out: wp.array2d[int],
     efc_J_colind_out: wp.array3d[int],
@@ -2063,7 +2082,6 @@ def _friction_tendon(is_sparse: bool, deterministic: bool):
       return
 
     wp.atomic_add(nf_out, worldid, 1)
-
     if wp.static(deterministic):
       efcid = nefc_base_in[worldid] + efcid_offsets_in[worldid, tenid]
     else:
@@ -2071,6 +2089,10 @@ def _friction_tendon(is_sparse: bool, deterministic: bool):
 
     if efcid >= njmax_in:
       return
+    if wp.static(is_sparse and newton):
+      jgid = wp.atomic_add(efc_jtdaj_nblock_out, worldid, 1)
+      efc_jtdaj_adr_out[worldid, jgid] = efcid
+      efc_jtdaj_nrow_out[worldid, jgid] = 1
 
     Jqvel = float(0.0)
 
@@ -2173,6 +2195,421 @@ def _limit_slide_hinge_count(
   else:
     efcid_count_out[worldid, jntlimitedid] = 0
     nnz_count_out[worldid, jntlimitedid] = 0
+
+
+@cache_kernel
+def _limit_slide_hinge(is_sparse: bool, deterministic: bool, newton: bool):
+  @wp.kernel(module="unique", enable_backward=False)
+  def kernel(
+    # Model:
+    nv: int,
+    opt_timestep: wp.array[float],
+    opt_disableflags: int,
+    jnt_qposadr: wp.array[int],
+    jnt_dofadr: wp.array[int],
+    jnt_solref: wp.array2d[wp.vec2],
+    jnt_solimp: wp.array2d[vec5],
+    jnt_range: wp.array2d[wp.vec2],
+    jnt_margin: wp.array2d[float],
+    dof_invweight0: wp.array2d[float],
+    jnt_limited_slide_hinge_adr: wp.array[int],
+    # Data in:
+    qpos_in: wp.array2d[float],
+    qvel_in: wp.array2d[float],
+    njmax_in: int,
+    njmax_nnz_in: int,
+    # In:
+    nefc_base_in: wp.array[int],
+    efcid_offsets_in: wp.array2d[int],
+    nnz_base_in: wp.array[int],
+    nnz_offsets_in: wp.array2d[int],
+    # Data out:
+    nl_out: wp.array[int],
+    nefc_out: wp.array[int],
+    efc_type_out: wp.array2d[int],
+    efc_id_out: wp.array2d[int],
+    efc_jtdaj_adr_out: wp.array2d[int],
+    efc_jtdaj_nrow_out: wp.array2d[int],
+    efc_jtdaj_nblock_out: wp.array[int],
+    efc_J_rownnz_out: wp.array2d[int],
+    efc_J_rowadr_out: wp.array2d[int],
+    efc_J_colind_out: wp.array3d[int],
+    efc_J_out: wp.array3d[float],
+    efc_pos_out: wp.array2d[float],
+    efc_margin_out: wp.array2d[float],
+    efc_D_out: wp.array2d[float],
+    efc_vel_out: wp.array2d[float],
+    efc_aref_out: wp.array2d[float],
+    efc_frictionloss_out: wp.array2d[float],
+    # Out:
+    efc_nnz_out: wp.array[int],
+  ):
+    worldid, jntlimitedid = wp.tid()
+    jntid = jnt_limited_slide_hinge_adr[jntlimitedid]
+    jnt_range_id = worldid % jnt_range.shape[0]
+    jntrange = jnt_range[jnt_range_id, jntid]
+
+    qpos = qpos_in[worldid, jnt_qposadr[jntid]]
+    jnt_margin_id = worldid % jnt_margin.shape[0]
+    jntmargin = jnt_margin[jnt_margin_id, jntid]
+    dist_min, dist_max = qpos - jntrange[0], jntrange[1] - qpos
+    pos = wp.min(dist_min, dist_max) - jntmargin
+    active = pos < 0
+
+    if active:
+      wp.atomic_add(nl_out, worldid, 1)
+      if wp.static(deterministic):
+        efcid = nefc_base_in[worldid] + efcid_offsets_in[worldid, jntlimitedid]
+      else:
+        efcid = wp.atomic_add(nefc_out, worldid, 1)
+
+      if efcid >= njmax_in:
+        return
+
+      if wp.static(is_sparse and newton):
+        jgid = wp.atomic_add(efc_jtdaj_nblock_out, worldid, 1)
+        efc_jtdaj_adr_out[worldid, jgid] = efcid
+        efc_jtdaj_nrow_out[worldid, jgid] = 1
+
+      dofadr = jnt_dofadr[jntid]
+
+      J = float(dist_min < dist_max) * 2.0 - 1.0
+
+      if wp.static(is_sparse):
+        efc_J_rownnz_out[worldid, efcid] = 1
+        if wp.static(deterministic):
+          rowadr = nnz_base_in[worldid] + nnz_offsets_in[worldid, jntlimitedid]
+        else:
+          rowadr = wp.atomic_add(efc_nnz_out, worldid, 1)
+        if rowadr + 1 > njmax_nnz_in:
+          return
+        efc_J_rowadr_out[worldid, efcid] = rowadr
+        efc_J_colind_out[worldid, 0, rowadr] = dofadr
+        efc_J_out[worldid, 0, rowadr] = J
+      else:
+        for i in range(nv):
+          efc_J_out[worldid, efcid, i] = 0.0
+        efc_J_out[worldid, efcid, dofadr] = J
+
+      Jqvel = J * qvel_in[worldid, dofadr]
+
+      dof_invweight0_id = worldid % dof_invweight0.shape[0]
+      jnt_solref_id = worldid % jnt_solref.shape[0]
+      jnt_solimp_id = worldid % jnt_solimp.shape[0]
+      _efc_row(
+        opt_disableflags,
+        worldid,
+        opt_timestep[worldid % opt_timestep.shape[0]],
+        efcid,
+        pos,
+        pos,
+        dof_invweight0[dof_invweight0_id, dofadr],
+        jnt_solref[jnt_solref_id, jntid],
+        jnt_solimp[jnt_solimp_id, jntid],
+        jntmargin,
+        Jqvel,
+        0.0,
+        ConstraintType.LIMIT_JOINT,
+        jntid,
+        efc_type_out,
+        efc_id_out,
+        efc_pos_out,
+        efc_margin_out,
+        efc_D_out,
+        efc_vel_out,
+        efc_aref_out,
+        efc_frictionloss_out,
+      )
+
+  return kernel
+
+
+@cache_kernel
+def _limit_ball(is_sparse: bool, deterministic: bool, newton: bool):
+  @wp.kernel(module="unique", enable_backward=False)
+  def kernel(
+    # Model:
+    nv: int,
+    opt_timestep: wp.array[float],
+    opt_disableflags: int,
+    jnt_qposadr: wp.array[int],
+    jnt_dofadr: wp.array[int],
+    jnt_solref: wp.array2d[wp.vec2],
+    jnt_solimp: wp.array2d[vec5],
+    jnt_range: wp.array2d[wp.vec2],
+    jnt_margin: wp.array2d[float],
+    dof_invweight0: wp.array2d[float],
+    jnt_limited_ball_adr: wp.array[int],
+    # Data in:
+    qpos_in: wp.array2d[float],
+    qvel_in: wp.array2d[float],
+    njmax_in: int,
+    njmax_nnz_in: int,
+    # In:
+    nefc_base_in: wp.array[int],
+    efcid_offsets_in: wp.array2d[int],
+    nnz_base_in: wp.array[int],
+    nnz_offsets_in: wp.array2d[int],
+    # Data out:
+    nl_out: wp.array[int],
+    nefc_out: wp.array[int],
+    efc_type_out: wp.array2d[int],
+    efc_id_out: wp.array2d[int],
+    efc_jtdaj_adr_out: wp.array2d[int],
+    efc_jtdaj_nrow_out: wp.array2d[int],
+    efc_jtdaj_nblock_out: wp.array[int],
+    efc_J_rownnz_out: wp.array2d[int],
+    efc_J_rowadr_out: wp.array2d[int],
+    efc_J_colind_out: wp.array3d[int],
+    efc_J_out: wp.array3d[float],
+    efc_pos_out: wp.array2d[float],
+    efc_margin_out: wp.array2d[float],
+    efc_D_out: wp.array2d[float],
+    efc_vel_out: wp.array2d[float],
+    efc_aref_out: wp.array2d[float],
+    efc_frictionloss_out: wp.array2d[float],
+    # Out:
+    efc_nnz_out: wp.array[int],
+  ):
+    worldid, jntlimitedid = wp.tid()
+    jntid = jnt_limited_ball_adr[jntlimitedid]
+    qposadr = jnt_qposadr[jntid]
+
+    qpos = qpos_in[worldid]
+    jnt_quat = wp.quat(qpos[qposadr + 0], qpos[qposadr + 1], qpos[qposadr + 2], qpos[qposadr + 3])
+    jnt_quat = wp.normalize(jnt_quat)
+    axis_angle = math.quat_to_vel(jnt_quat)
+    jnt_range_id = worldid % jnt_range.shape[0]
+    jntrange = jnt_range[jnt_range_id, jntid]
+    axis, angle = math.normalize_with_norm(axis_angle)
+    jnt_margin_id = worldid % jnt_margin.shape[0]
+    jntmargin = jnt_margin[jnt_margin_id, jntid]
+
+    pos = wp.max(jntrange[0], jntrange[1]) - angle - jntmargin
+    active = pos < 0
+
+    if active:
+      wp.atomic_add(nl_out, worldid, 1)
+      if wp.static(deterministic):
+        efcid = nefc_base_in[worldid] + efcid_offsets_in[worldid, jntlimitedid]
+      else:
+        efcid = wp.atomic_add(nefc_out, worldid, 1)
+
+      if efcid >= njmax_in:
+        return
+
+      if wp.static(is_sparse and newton):
+        jgid = wp.atomic_add(efc_jtdaj_nblock_out, worldid, 1)
+        efc_jtdaj_adr_out[worldid, jgid] = efcid
+        efc_jtdaj_nrow_out[worldid, jgid] = 1
+
+      dofadr = jnt_dofadr[jntid]
+      dof0 = dofadr + 0
+      dof1 = dofadr + 1
+      dof2 = dofadr + 2
+
+      if wp.static(is_sparse):
+        efc_J_rownnz_out[worldid, efcid] = 3
+        if wp.static(deterministic):
+          rowadr = nnz_base_in[worldid] + nnz_offsets_in[worldid, jntlimitedid]
+        else:
+          rowadr = wp.atomic_add(efc_nnz_out, worldid, 3)
+        if rowadr + 3 > njmax_nnz_in:
+          return
+        efc_J_rowadr_out[worldid, efcid] = rowadr
+
+        sparseid0 = rowadr + 0
+        sparseid1 = rowadr + 1
+        sparseid2 = rowadr + 2
+
+        efc_J_colind_out[worldid, 0, sparseid0] = dof0
+        efc_J_colind_out[worldid, 0, sparseid1] = dof1
+        efc_J_colind_out[worldid, 0, sparseid2] = dof2
+
+        efc_J_out[worldid, 0, sparseid0] = -axis[0]
+        efc_J_out[worldid, 0, sparseid1] = -axis[1]
+        efc_J_out[worldid, 0, sparseid2] = -axis[2]
+      else:
+        for i in range(nv):
+          efc_J_out[worldid, efcid, i] = 0.0
+        efc_J_out[worldid, efcid, dof0] = -axis[0]
+        efc_J_out[worldid, efcid, dof1] = -axis[1]
+        efc_J_out[worldid, efcid, dof2] = -axis[2]
+
+      Jqvel = -axis[0] * qvel_in[worldid, dof0]
+      Jqvel -= axis[1] * qvel_in[worldid, dof1]
+      Jqvel -= axis[2] * qvel_in[worldid, dof2]
+
+      dof_invweight0_id = worldid % dof_invweight0.shape[0]
+      jnt_solref_id = worldid % jnt_solref.shape[0]
+      jnt_solimp_id = worldid % jnt_solimp.shape[0]
+      _efc_row(
+        opt_disableflags,
+        worldid,
+        opt_timestep[worldid % opt_timestep.shape[0]],
+        efcid,
+        pos,
+        pos,
+        dof_invweight0[dof_invweight0_id, dofadr],
+        jnt_solref[jnt_solref_id, jntid],
+        jnt_solimp[jnt_solimp_id, jntid],
+        jntmargin,
+        Jqvel,
+        0.0,
+        ConstraintType.LIMIT_JOINT,
+        jntid,
+        efc_type_out,
+        efc_id_out,
+        efc_pos_out,
+        efc_margin_out,
+        efc_D_out,
+        efc_vel_out,
+        efc_aref_out,
+        efc_frictionloss_out,
+      )
+
+  return kernel
+
+
+@cache_kernel
+def _limit_tendon(is_sparse: bool, deterministic: bool, newton: bool):
+  @wp.kernel(module="unique", enable_backward=False)
+  def kernel(
+    # Model:
+    nv: int,
+    opt_timestep: wp.array[float],
+    opt_disableflags: int,
+    ten_J_rownnz: wp.array[int],
+    ten_J_rowadr: wp.array[int],
+    ten_J_colind: wp.array[int],
+    tendon_solref_lim: wp.array2d[wp.vec2],
+    tendon_solimp_lim: wp.array2d[vec5],
+    tendon_range: wp.array2d[wp.vec2],
+    tendon_margin: wp.array2d[float],
+    tendon_invweight0: wp.array2d[float],
+    tendon_limited_adr: wp.array[int],
+    # Data in:
+    qvel_in: wp.array2d[float],
+    ten_J_in: wp.array2d[float],
+    ten_length_in: wp.array2d[float],
+    njmax_in: int,
+    njmax_nnz_in: int,
+    # In:
+    nefc_base_in: wp.array[int],
+    efcid_offsets_in: wp.array2d[int],
+    nnz_base_in: wp.array[int],
+    nnz_offsets_in: wp.array2d[int],
+    # Data out:
+    nl_out: wp.array[int],
+    nefc_out: wp.array[int],
+    efc_type_out: wp.array2d[int],
+    efc_id_out: wp.array2d[int],
+    efc_jtdaj_adr_out: wp.array2d[int],
+    efc_jtdaj_nrow_out: wp.array2d[int],
+    efc_jtdaj_nblock_out: wp.array[int],
+    efc_J_rownnz_out: wp.array2d[int],
+    efc_J_rowadr_out: wp.array2d[int],
+    efc_J_colind_out: wp.array3d[int],
+    efc_J_out: wp.array3d[float],
+    efc_pos_out: wp.array2d[float],
+    efc_margin_out: wp.array2d[float],
+    efc_D_out: wp.array2d[float],
+    efc_vel_out: wp.array2d[float],
+    efc_aref_out: wp.array2d[float],
+    efc_frictionloss_out: wp.array2d[float],
+    # Out:
+    efc_nnz_out: wp.array[int],
+  ):
+    worldid, tenlimitedid = wp.tid()
+    tenid = tendon_limited_adr[tenlimitedid]
+
+    tendon_range_id = worldid % tendon_range.shape[0]
+    tenrange = tendon_range[tendon_range_id, tenid]
+    length = ten_length_in[worldid, tenid]
+    dist_min, dist_max = length - tenrange[0], tenrange[1] - length
+    tendon_margin_id = worldid % tendon_margin.shape[0]
+    tenmargin = tendon_margin[tendon_margin_id, tenid]
+    pos = wp.min(dist_min, dist_max) - tenmargin
+    active = pos < 0
+
+    if active:
+      wp.atomic_add(nl_out, worldid, 1)
+      if wp.static(deterministic):
+        efcid = nefc_base_in[worldid] + efcid_offsets_in[worldid, tenlimitedid]
+      else:
+        efcid = wp.atomic_add(nefc_out, worldid, 1)
+
+      if efcid >= njmax_in:
+        return
+
+      if wp.static(is_sparse and newton):
+        jgid = wp.atomic_add(efc_jtdaj_nblock_out, worldid, 1)
+        efc_jtdaj_adr_out[worldid, jgid] = efcid
+        efc_jtdaj_nrow_out[worldid, jgid] = 1
+
+      Jqvel = float(0.0)
+      scl = float(dist_min < dist_max) * 2.0 - 1.0
+
+      rownnz_tenJ = ten_J_rownnz[tenid]
+      rowadr_tenJ = ten_J_rowadr[tenid]
+      if wp.static(is_sparse):
+        efc_J_rownnz_out[worldid, efcid] = rownnz_tenJ
+        rowadr_efc = wp.atomic_add(efc_nnz_out, worldid, rownnz_tenJ)
+        if rowadr_efc + rownnz_tenJ > njmax_nnz_in:
+          return
+        efc_J_rowadr_out[worldid, efcid] = rowadr_efc
+
+        for i in range(rownnz_tenJ):
+          sparseid_ten = rowadr_tenJ + i
+          sparseid_efc = rowadr_efc + i
+          colind = ten_J_colind[sparseid_ten]
+          J = scl * ten_J_in[worldid, sparseid_ten]
+          efc_J_colind_out[worldid, 0, sparseid_efc] = colind
+          efc_J_out[worldid, 0, sparseid_efc] = J
+          Jqvel += J * qvel_in[worldid, colind]
+      else:
+        nnz = int(0)
+        colind = ten_J_colind[rowadr_tenJ]
+        for i in range(nv):
+          if nnz < rownnz_tenJ and i == colind:
+            J = scl * ten_J_in[worldid, rowadr_tenJ + nnz]
+            efc_J_out[worldid, efcid, i] = J
+            Jqvel += J * qvel_in[worldid, i]
+            nnz += 1
+            if nnz < rownnz_tenJ:
+              colind = ten_J_colind[rowadr_tenJ + nnz]
+          else:
+            efc_J_out[worldid, efcid, i] = 0.0
+
+      tendon_invweight0_id = worldid % tendon_invweight0.shape[0]
+      tendon_solref_lim_id = worldid % tendon_solref_lim.shape[0]
+      tendon_solimp_lim_id = worldid % tendon_solimp_lim.shape[0]
+      _efc_row(
+        opt_disableflags,
+        worldid,
+        opt_timestep[worldid % opt_timestep.shape[0]],
+        efcid,
+        pos,
+        pos,
+        tendon_invweight0[tendon_invweight0_id, tenid],
+        tendon_solref_lim[tendon_solref_lim_id, tenid],
+        tendon_solimp_lim[tendon_solimp_lim_id, tenid],
+        tenmargin,
+        Jqvel,
+        0.0,
+        ConstraintType.LIMIT_TENDON,
+        tenid,
+        efc_type_out,
+        efc_id_out,
+        efc_pos_out,
+        efc_margin_out,
+        efc_D_out,
+        efc_vel_out,
+        efc_aref_out,
+        efc_frictionloss_out,
+      )
+
+  return kernel
 
 
 @wp.func
@@ -2284,126 +2721,6 @@ def _get_contact_bodies_and_weights(
     return wp.vec4i(-1, -1, -1, -1), wp.vec4(0.0, 0.0, 0.0, 0.0)
 
 
-@cache_kernel
-def _limit_slide_hinge(is_sparse: bool, deterministic: bool):
-  @wp.kernel(module="unique", enable_backward=False)
-  def kernel(
-    # Model:
-    nv: int,
-    opt_timestep: wp.array[float],
-    opt_disableflags: int,
-    jnt_qposadr: wp.array[int],
-    jnt_dofadr: wp.array[int],
-    jnt_solref: wp.array2d[wp.vec2],
-    jnt_solimp: wp.array2d[vec5],
-    jnt_range: wp.array2d[wp.vec2],
-    jnt_margin: wp.array2d[float],
-    dof_invweight0: wp.array2d[float],
-    jnt_limited_slide_hinge_adr: wp.array[int],
-    # Data in:
-    qpos_in: wp.array2d[float],
-    qvel_in: wp.array2d[float],
-    njmax_in: int,
-    njmax_nnz_in: int,
-    # In:
-    nefc_base_in: wp.array[int],
-    efcid_offsets_in: wp.array2d[int],
-    nnz_base_in: wp.array[int],
-    nnz_offsets_in: wp.array2d[int],
-    # Data out:
-    nl_out: wp.array[int],
-    nefc_out: wp.array[int],
-    efc_type_out: wp.array2d[int],
-    efc_id_out: wp.array2d[int],
-    efc_J_rownnz_out: wp.array2d[int],
-    efc_J_rowadr_out: wp.array2d[int],
-    efc_J_colind_out: wp.array3d[int],
-    efc_J_out: wp.array3d[float],
-    efc_pos_out: wp.array2d[float],
-    efc_margin_out: wp.array2d[float],
-    efc_D_out: wp.array2d[float],
-    efc_vel_out: wp.array2d[float],
-    efc_aref_out: wp.array2d[float],
-    efc_frictionloss_out: wp.array2d[float],
-    # Out:
-    efc_nnz_out: wp.array[int],
-  ):
-    worldid, jntlimitedid = wp.tid()
-    jntid = jnt_limited_slide_hinge_adr[jntlimitedid]
-    jnt_range_id = worldid % jnt_range.shape[0]
-    jntrange = jnt_range[jnt_range_id, jntid]
-
-    qpos = qpos_in[worldid, jnt_qposadr[jntid]]
-    jnt_margin_id = worldid % jnt_margin.shape[0]
-    jntmargin = jnt_margin[jnt_margin_id, jntid]
-    dist_min, dist_max = qpos - jntrange[0], jntrange[1] - qpos
-    pos = wp.min(dist_min, dist_max) - jntmargin
-    active = pos < 0
-
-    if active:
-      wp.atomic_add(nl_out, worldid, 1)
-
-      if wp.static(deterministic):
-        efcid = nefc_base_in[worldid] + efcid_offsets_in[worldid, jntlimitedid]
-      else:
-        efcid = wp.atomic_add(nefc_out, worldid, 1)
-
-      if efcid >= njmax_in:
-        return
-
-      dofadr = jnt_dofadr[jntid]
-
-      J = float(dist_min < dist_max) * 2.0 - 1.0
-
-      if wp.static(is_sparse):
-        efc_J_rownnz_out[worldid, efcid] = 1
-        if wp.static(deterministic):
-          rowadr = nnz_base_in[worldid] + nnz_offsets_in[worldid, jntlimitedid]
-        else:
-          rowadr = wp.atomic_add(efc_nnz_out, worldid, 1)
-        if rowadr + 1 > njmax_nnz_in:
-          return
-        efc_J_rowadr_out[worldid, efcid] = rowadr
-        efc_J_colind_out[worldid, 0, rowadr] = dofadr
-        efc_J_out[worldid, 0, rowadr] = J
-      else:
-        for i in range(nv):
-          efc_J_out[worldid, efcid, i] = 0.0
-        efc_J_out[worldid, efcid, dofadr] = J
-
-      Jqvel = J * qvel_in[worldid, dofadr]
-
-      dof_invweight0_id = worldid % dof_invweight0.shape[0]
-      jnt_solref_id = worldid % jnt_solref.shape[0]
-      jnt_solimp_id = worldid % jnt_solimp.shape[0]
-      _efc_row(
-        opt_disableflags,
-        worldid,
-        opt_timestep[worldid % opt_timestep.shape[0]],
-        efcid,
-        pos,
-        pos,
-        dof_invweight0[dof_invweight0_id, dofadr],
-        jnt_solref[jnt_solref_id, jntid],
-        jnt_solimp[jnt_solimp_id, jntid],
-        jntmargin,
-        Jqvel,
-        0.0,
-        ConstraintType.LIMIT_JOINT,
-        jntid,
-        efc_type_out,
-        efc_id_out,
-        efc_pos_out,
-        efc_margin_out,
-        efc_D_out,
-        efc_vel_out,
-        efc_aref_out,
-        efc_frictionloss_out,
-      )
-
-  return kernel
-
-
 @wp.kernel
 def _limit_ball_count(
   # Model:
@@ -2442,146 +2759,6 @@ def _limit_ball_count(
     nnz_count_out[worldid, jntlimitedid] = 0
 
 
-@cache_kernel
-def _limit_ball(is_sparse: bool, deterministic: bool):
-  @wp.kernel(module="unique", enable_backward=False)
-  def kernel(
-    # Model:
-    nv: int,
-    opt_timestep: wp.array[float],
-    opt_disableflags: int,
-    jnt_qposadr: wp.array[int],
-    jnt_dofadr: wp.array[int],
-    jnt_solref: wp.array2d[wp.vec2],
-    jnt_solimp: wp.array2d[vec5],
-    jnt_range: wp.array2d[wp.vec2],
-    jnt_margin: wp.array2d[float],
-    dof_invweight0: wp.array2d[float],
-    jnt_limited_ball_adr: wp.array[int],
-    # Data in:
-    qpos_in: wp.array2d[float],
-    qvel_in: wp.array2d[float],
-    njmax_in: int,
-    njmax_nnz_in: int,
-    # In:
-    nefc_base_in: wp.array[int],
-    efcid_offsets_in: wp.array2d[int],
-    nnz_base_in: wp.array[int],
-    nnz_offsets_in: wp.array2d[int],
-    # Data out:
-    nl_out: wp.array[int],
-    nefc_out: wp.array[int],
-    efc_type_out: wp.array2d[int],
-    efc_id_out: wp.array2d[int],
-    efc_J_rownnz_out: wp.array2d[int],
-    efc_J_rowadr_out: wp.array2d[int],
-    efc_J_colind_out: wp.array3d[int],
-    efc_J_out: wp.array3d[float],
-    efc_pos_out: wp.array2d[float],
-    efc_margin_out: wp.array2d[float],
-    efc_D_out: wp.array2d[float],
-    efc_vel_out: wp.array2d[float],
-    efc_aref_out: wp.array2d[float],
-    efc_frictionloss_out: wp.array2d[float],
-    # Out:
-    efc_nnz_out: wp.array[int],
-  ):
-    worldid, jntlimitedid = wp.tid()
-    jntid = jnt_limited_ball_adr[jntlimitedid]
-    qposadr = jnt_qposadr[jntid]
-
-    qpos = qpos_in[worldid]
-    jnt_quat = wp.quat(qpos[qposadr + 0], qpos[qposadr + 1], qpos[qposadr + 2], qpos[qposadr + 3])
-    jnt_quat = wp.normalize(jnt_quat)
-    axis_angle = math.quat_to_vel(jnt_quat)
-    jnt_range_id = worldid % jnt_range.shape[0]
-    jntrange = jnt_range[jnt_range_id, jntid]
-    axis, angle = math.normalize_with_norm(axis_angle)
-    jnt_margin_id = worldid % jnt_margin.shape[0]
-    jntmargin = jnt_margin[jnt_margin_id, jntid]
-
-    pos = wp.max(jntrange[0], jntrange[1]) - angle - jntmargin
-    active = pos < 0
-
-    if active:
-      wp.atomic_add(nl_out, worldid, 1)
-
-      if wp.static(deterministic):
-        efcid = nefc_base_in[worldid] + efcid_offsets_in[worldid, jntlimitedid]
-      else:
-        efcid = wp.atomic_add(nefc_out, worldid, 1)
-
-      if efcid >= njmax_in:
-        return
-
-      dofadr = jnt_dofadr[jntid]
-      dof0 = dofadr + 0
-      dof1 = dofadr + 1
-      dof2 = dofadr + 2
-
-      if wp.static(is_sparse):
-        efc_J_rownnz_out[worldid, efcid] = 3
-        if wp.static(deterministic):
-          rowadr = nnz_base_in[worldid] + nnz_offsets_in[worldid, jntlimitedid]
-        else:
-          rowadr = wp.atomic_add(efc_nnz_out, worldid, 3)
-        if rowadr + 3 > njmax_nnz_in:
-          return
-        efc_J_rowadr_out[worldid, efcid] = rowadr
-
-        sparseid0 = rowadr + 0
-        sparseid1 = rowadr + 1
-        sparseid2 = rowadr + 2
-
-        efc_J_colind_out[worldid, 0, sparseid0] = dof0
-        efc_J_colind_out[worldid, 0, sparseid1] = dof1
-        efc_J_colind_out[worldid, 0, sparseid2] = dof2
-
-        efc_J_out[worldid, 0, sparseid0] = -axis[0]
-        efc_J_out[worldid, 0, sparseid1] = -axis[1]
-        efc_J_out[worldid, 0, sparseid2] = -axis[2]
-      else:
-        for i in range(nv):
-          efc_J_out[worldid, efcid, i] = 0.0
-        efc_J_out[worldid, efcid, dof0] = -axis[0]
-        efc_J_out[worldid, efcid, dof1] = -axis[1]
-        efc_J_out[worldid, efcid, dof2] = -axis[2]
-
-      Jqvel = -axis[0] * qvel_in[worldid, dof0]
-      Jqvel -= axis[1] * qvel_in[worldid, dof1]
-      Jqvel -= axis[2] * qvel_in[worldid, dof2]
-
-      dof_invweight0_id = worldid % dof_invweight0.shape[0]
-      jnt_solref_id = worldid % jnt_solref.shape[0]
-      jnt_solimp_id = worldid % jnt_solimp.shape[0]
-      _efc_row(
-        opt_disableflags,
-        worldid,
-        opt_timestep[worldid % opt_timestep.shape[0]],
-        efcid,
-        pos,
-        pos,
-        dof_invweight0[dof_invweight0_id, dofadr],
-        jnt_solref[jnt_solref_id, jntid],
-        jnt_solimp[jnt_solimp_id, jntid],
-        jntmargin,
-        Jqvel,
-        0.0,
-        ConstraintType.LIMIT_JOINT,
-        jntid,
-        efc_type_out,
-        efc_id_out,
-        efc_pos_out,
-        efc_margin_out,
-        efc_D_out,
-        efc_vel_out,
-        efc_aref_out,
-        efc_frictionloss_out,
-      )
-
-  return kernel
-
-
 @wp.kernel
 def _limit_tendon_count(
   # Model:
@@ -2614,143 +2791,6 @@ def _limit_tendon_count(
   else:
     efcid_count_out[worldid, tenlimitedid] = 0
     nnz_count_out[worldid, tenlimitedid] = 0
-
-
-@cache_kernel
-def _limit_tendon(is_sparse: bool, deterministic: bool):
-  @wp.kernel(module="unique", enable_backward=False)
-  def kernel(
-    # Model:
-    nv: int,
-    opt_timestep: wp.array[float],
-    opt_disableflags: int,
-    ten_J_rownnz: wp.array[int],
-    ten_J_rowadr: wp.array[int],
-    ten_J_colind: wp.array[int],
-    tendon_solref_lim: wp.array2d[wp.vec2],
-    tendon_solimp_lim: wp.array2d[vec5],
-    tendon_range: wp.array2d[wp.vec2],
-    tendon_margin: wp.array2d[float],
-    tendon_invweight0: wp.array2d[float],
-    tendon_limited_adr: wp.array[int],
-    # Data in:
-    qvel_in: wp.array2d[float],
-    ten_J_in: wp.array2d[float],
-    ten_length_in: wp.array2d[float],
-    njmax_in: int,
-    njmax_nnz_in: int,
-    # In:
-    nefc_base_in: wp.array[int],
-    efcid_offsets_in: wp.array2d[int],
-    nnz_base_in: wp.array[int],
-    nnz_offsets_in: wp.array2d[int],
-    # Data out:
-    nl_out: wp.array[int],
-    nefc_out: wp.array[int],
-    efc_type_out: wp.array2d[int],
-    efc_id_out: wp.array2d[int],
-    efc_J_rownnz_out: wp.array2d[int],
-    efc_J_rowadr_out: wp.array2d[int],
-    efc_J_colind_out: wp.array3d[int],
-    efc_J_out: wp.array3d[float],
-    efc_pos_out: wp.array2d[float],
-    efc_margin_out: wp.array2d[float],
-    efc_D_out: wp.array2d[float],
-    efc_vel_out: wp.array2d[float],
-    efc_aref_out: wp.array2d[float],
-    efc_frictionloss_out: wp.array2d[float],
-    # Out:
-    efc_nnz_out: wp.array[int],
-  ):
-    worldid, tenlimitedid = wp.tid()
-    tenid = tendon_limited_adr[tenlimitedid]
-
-    tendon_range_id = worldid % tendon_range.shape[0]
-    tenrange = tendon_range[tendon_range_id, tenid]
-    length = ten_length_in[worldid, tenid]
-    dist_min, dist_max = length - tenrange[0], tenrange[1] - length
-    tendon_margin_id = worldid % tendon_margin.shape[0]
-    tenmargin = tendon_margin[tendon_margin_id, tenid]
-    pos = wp.min(dist_min, dist_max) - tenmargin
-    active = pos < 0
-
-    if active:
-      wp.atomic_add(nl_out, worldid, 1)
-
-      if wp.static(deterministic):
-        efcid = nefc_base_in[worldid] + efcid_offsets_in[worldid, tenlimitedid]
-      else:
-        efcid = wp.atomic_add(nefc_out, worldid, 1)
-
-      if efcid >= njmax_in:
-        return
-
-      Jqvel = float(0.0)
-      scl = float(dist_min < dist_max) * 2.0 - 1.0
-
-      rownnz_tenJ = ten_J_rownnz[tenid]
-      rowadr_tenJ = ten_J_rowadr[tenid]
-      if wp.static(is_sparse):
-        efc_J_rownnz_out[worldid, efcid] = rownnz_tenJ
-        if wp.static(deterministic):
-          rowadr_efc = nnz_base_in[worldid] + nnz_offsets_in[worldid, tenlimitedid]
-        else:
-          rowadr_efc = wp.atomic_add(efc_nnz_out, worldid, rownnz_tenJ)
-        if rowadr_efc + rownnz_tenJ > njmax_nnz_in:
-          return
-        efc_J_rowadr_out[worldid, efcid] = rowadr_efc
-
-        for i in range(rownnz_tenJ):
-          sparseid_ten = rowadr_tenJ + i
-          sparseid_efc = rowadr_efc + i
-          colind = ten_J_colind[sparseid_ten]
-          J = scl * ten_J_in[worldid, sparseid_ten]
-          efc_J_colind_out[worldid, 0, sparseid_efc] = colind
-          efc_J_out[worldid, 0, sparseid_efc] = J
-          Jqvel += J * qvel_in[worldid, colind]
-      else:
-        nnz = int(0)
-        colind = ten_J_colind[rowadr_tenJ]
-        for i in range(nv):
-          if nnz < rownnz_tenJ and i == colind:
-            J = scl * ten_J_in[worldid, rowadr_tenJ + nnz]
-            efc_J_out[worldid, efcid, i] = J
-            Jqvel += J * qvel_in[worldid, i]
-            nnz += 1
-            if nnz < rownnz_tenJ:
-              colind = ten_J_colind[rowadr_tenJ + nnz]
-          else:
-            efc_J_out[worldid, efcid, i] = 0.0
-
-      tendon_invweight0_id = worldid % tendon_invweight0.shape[0]
-      tendon_solref_lim_id = worldid % tendon_solref_lim.shape[0]
-      tendon_solimp_lim_id = worldid % tendon_solimp_lim.shape[0]
-      _efc_row(
-        opt_disableflags,
-        worldid,
-        opt_timestep[worldid % opt_timestep.shape[0]],
-        efcid,
-        pos,
-        pos,
-        tendon_invweight0[tendon_invweight0_id, tenid],
-        tendon_solref_lim[tendon_solref_lim_id, tenid],
-        tendon_solimp_lim[tendon_solimp_lim_id, tenid],
-        tenmargin,
-        Jqvel,
-        0.0,
-        ConstraintType.LIMIT_TENDON,
-        tenid,
-        efc_type_out,
-        efc_id_out,
-        efc_pos_out,
-        efc_margin_out,
-        efc_D_out,
-        efc_vel_out,
-        efc_aref_out,
-        efc_frictionloss_out,
-      )
-
-  return kernel
 
 
 @cache_kernel
@@ -2836,7 +2876,7 @@ def _efc_contact_count(cone_type: types.ConeType, is_sparse: bool):
 
 
 @cache_kernel
-def _efc_contact_init(cone_type: types.ConeType, is_sparse: bool, deterministic: bool = False):
+def _efc_contact_init(cone_type: types.ConeType, is_sparse: bool, deterministic: bool, newton: bool):
   IS_ELLIPTIC = cone_type == types.ConeType.ELLIPTIC
   IS_SPARSE = is_sparse
 
@@ -2848,8 +2888,6 @@ def _efc_contact_init(cone_type: types.ConeType, is_sparse: bool, deterministic:
     body_dofadr: wp.array[int],
     dof_parentid: wp.array[int],
     geom_bodyid: wp.array[int],
-    flex_vertadr: wp.array[int],
-    flex_vertbodyid: wp.array[int],
     # Data in:
     njmax_in: int,
     njmax_nnz_in: int,
@@ -2860,8 +2898,6 @@ def _efc_contact_init(cone_type: types.ConeType, is_sparse: bool, deterministic:
     includemargin_in: wp.array[float],
     worldid_in: wp.array[int],
     geom_in: wp.array[wp.vec2i],
-    flex_in: wp.array[wp.vec2i],
-    vert_in: wp.array[wp.vec2i],
     type_in: wp.array[int],
     # In:
     nefc_base_in: wp.array[int],
@@ -2872,6 +2908,9 @@ def _efc_contact_init(cone_type: types.ConeType, is_sparse: bool, deterministic:
     nefc_out: wp.array[int],
     contact_efc_address_out: wp.array2d[int],
     efc_id_out: wp.array2d[int],
+    efc_jtdaj_adr_out: wp.array2d[int],
+    efc_jtdaj_nrow_out: wp.array2d[int],
+    efc_jtdaj_nblock_out: wp.array[int],
     efc_J_rownnz_out: wp.array2d[int],
     efc_J_rowadr_out: wp.array2d[int],
     # Out:
@@ -2918,26 +2957,16 @@ def _efc_contact_init(cone_type: types.ConeType, is_sparse: bool, deterministic:
         # This is redundant with the _efc_row call later but needed for the jac calculation
         efc_id_out[worldid, efcid] = conid
 
+    if wp.static(is_sparse and newton):
+      if base_efcid < njmax_in:
+        jgid = wp.atomic_add(efc_jtdaj_nblock_out, worldid, 1)
+        efc_jtdaj_adr_out[worldid, jgid] = base_efcid
+        efc_jtdaj_nrow_out[worldid, jgid] = wp.min(ndim, njmax_in - base_efcid)
+
     if wp.static(IS_SPARSE):
       geom = geom_in[conid]
-
-      if geom[0] >= 0:
-        body1 = geom_bodyid[geom[0]]
-      else:
-        flex = flex_in[conid]
-        vert = vert_in[conid]
-        body1 = flex_vertbodyid[flex_vertadr[flex[0]] + vert[0]]
-
-      if geom[1] >= 0:
-        body2 = geom_bodyid[geom[1]]
-      else:
-        flex = flex_in[conid]
-        vert = vert_in[conid]
-        body2 = flex_vertbodyid[flex_vertadr[flex[1]] + vert[1]]
-
-      # skip fixed bodies
-      body1 = body_weldid[body1]
-      body2 = body_weldid[body2]
+      body1 = body_weldid[geom_bodyid[geom[0]]]
+      body2 = body_weldid[geom_bodyid[geom[1]]]
 
       da1 = int(body_dofadr[body1] + body_dofnum[body1] - 1)
       da2 = int(body_dofadr[body2] + body_dofnum[body2] - 1)
@@ -2971,7 +3000,7 @@ def _efc_contact_init(cone_type: types.ConeType, is_sparse: bool, deterministic:
 
 
 @cache_kernel
-def _efc_contact_init_flex(cone_type: types.ConeType, is_sparse: bool, deterministic: bool = False):
+def _efc_contact_init_flex(cone_type: types.ConeType, is_sparse: bool, deterministic: bool, newton: bool):
   IS_ELLIPTIC = cone_type == types.ConeType.ELLIPTIC
   IS_SPARSE = is_sparse
 
@@ -3016,6 +3045,9 @@ def _efc_contact_init_flex(cone_type: types.ConeType, is_sparse: bool, determini
     nefc_out: wp.array[int],
     contact_efc_address_out: wp.array2d[int],
     efc_id_out: wp.array2d[int],
+    efc_jtdaj_adr_out: wp.array2d[int],
+    efc_jtdaj_nrow_out: wp.array2d[int],
+    efc_jtdaj_nblock_out: wp.array[int],
     efc_J_rownnz_out: wp.array2d[int],
     efc_J_rowadr_out: wp.array2d[int],
     # Out:
@@ -3061,6 +3093,12 @@ def _efc_contact_init_flex(cone_type: types.ConeType, is_sparse: bool, determini
         contact_efc_address_out[conid, dim] = efcid
         # This is redundant with the _efc_row call later but needed for the jac calculation
         efc_id_out[worldid, efcid] = conid
+
+    if wp.static(is_sparse and newton):
+      if base_efcid < njmax_in:
+        jgid = wp.atomic_add(efc_jtdaj_nblock_out, worldid, 1)
+        efc_jtdaj_adr_out[worldid, jgid] = base_efcid
+        efc_jtdaj_nrow_out[worldid, jgid] = wp.min(ndim, njmax_in - base_efcid)
 
     if wp.static(IS_SPARSE):
       geom = geom_in[conid]
@@ -4436,11 +4474,13 @@ def make_constraint(m: types.Model, d: types.Data):
   else:
     s = None
     efc_nnz = wp.empty((d.nworld,), dtype=int)
+  newton = m.opt.solver == types.SolverType.NEWTON
+  efc_nnz = wp.empty((d.nworld,), dtype=int)
 
   wp.launch(
     _zero_constraint_counts,
     dim=d.nworld,
-    inputs=[d.ne, d.nf, d.nl, d.nefc, efc_nnz],
+    inputs=[d.ne, d.nf, d.nl, d.nefc, d.efc.jtdaj_nblock, efc_nnz],
   )
 
   # Dummy arrays for deterministic-only kernel params in non-det mode.
@@ -4454,6 +4494,9 @@ def make_constraint(m: types.Model, d: types.Data):
       d.nefc,
       d.efc.type,
       d.efc.id,
+      d.efc.jtdaj_adr,
+      d.efc.jtdaj_nrow,
+      d.efc.jtdaj_nblock,
       d.efc.J_rownnz,
       d.efc.J_rowadr,
       d.efc.J_colind,
@@ -4515,7 +4558,7 @@ def make_constraint(m: types.Model, d: types.Data):
         else:
           nefc_base, offsets, nnz_base, nnz_offsets = _d1, _d2, _d1, _d2
         wp.launch(
-          _equality_connect(m.is_sparse, det),
+          _equality_connect(m.is_sparse, det, newton),
           dim=(d.nworld, m.eq_connect_adr.size),
           inputs=[
             m.nv,
@@ -4564,6 +4607,9 @@ def make_constraint(m: types.Model, d: types.Data):
             d.nefc,
             d.efc.type,
             d.efc.id,
+            d.efc.jtdaj_adr,
+            d.efc.jtdaj_nrow,
+            d.efc.jtdaj_nblock,
             d.efc.J_rownnz,
             d.efc.J_rowadr,
             d.efc.J_colind,
@@ -4606,7 +4652,7 @@ def make_constraint(m: types.Model, d: types.Data):
         else:
           nefc_base, offsets, nnz_base, nnz_offsets = _d1, _d2, _d1, _d2
         wp.launch(
-          _equality_weld(m.is_sparse, det),
+          _equality_weld(m.is_sparse, det, newton),
           dim=(d.nworld, m.eq_wld_adr.size),
           inputs=[
             m.nv,
@@ -4657,6 +4703,9 @@ def make_constraint(m: types.Model, d: types.Data):
             d.nefc,
             d.efc.type,
             d.efc.id,
+            d.efc.jtdaj_adr,
+            d.efc.jtdaj_nrow,
+            d.efc.jtdaj_nblock,
             d.efc.J_rownnz,
             d.efc.J_rowadr,
             d.efc.J_colind,
@@ -4691,7 +4740,7 @@ def make_constraint(m: types.Model, d: types.Data):
         else:
           nefc_base, offsets, nnz_base, nnz_offsets = _d1, _d2, _d1, _d2
         wp.launch(
-          _equality_joint(m.is_sparse, det),
+          _equality_joint(m.is_sparse, det, newton),
           dim=_dim,
           inputs=[
             m.nv,
@@ -4745,7 +4794,7 @@ def make_constraint(m: types.Model, d: types.Data):
         else:
           nefc_base, offsets, nnz_base, nnz_offsets = _d1, _d2, _d1, _d2
         wp.launch(
-          _equality_tendon(m.is_sparse, det),
+          _equality_tendon(m.is_sparse, det, newton),
           dim=_dim,
           inputs=[
             m.nv,
@@ -4800,7 +4849,7 @@ def make_constraint(m: types.Model, d: types.Data):
         else:
           nefc_base, offsets, nnz_base, nnz_offsets = _d1, _d2, _d1, _d2
         wp.launch(
-          _equality_flex(m.is_sparse, det),
+          _equality_flex(m.is_sparse, det, newton),
           dim=(d.nworld, m.eq_flex_adr.size, m.nflexedge),
           inputs=[
             m.nv,
@@ -4833,6 +4882,9 @@ def make_constraint(m: types.Model, d: types.Data):
             d.nefc,
             d.efc.type,
             d.efc.id,
+            d.efc.jtdaj_adr,
+            d.efc.jtdaj_nrow,
+            d.efc.jtdaj_nblock,
             d.efc.J_rownnz,
             d.efc.J_rowadr,
             d.efc.J_colind,
@@ -4863,7 +4915,7 @@ def make_constraint(m: types.Model, d: types.Data):
         else:
           nefc_base, offsets, nnz_base, nnz_offsets = _d1, _d2, _d1, _d2
         wp.launch(
-          _friction_dof(m.is_sparse, det),
+          _friction_dof(m.is_sparse, det, newton),
           dim=_dim,
           inputs=[
             m.nv,
@@ -4899,7 +4951,7 @@ def make_constraint(m: types.Model, d: types.Data):
         else:
           nefc_base, offsets, nnz_base, nnz_offsets = _d1, _d2, _d1, _d2
         wp.launch(
-          _friction_tendon(m.is_sparse, det),
+          _friction_tendon(m.is_sparse, det, newton),
           dim=_dim,
           inputs=[
             m.nv,
@@ -4948,7 +5000,7 @@ def make_constraint(m: types.Model, d: types.Data):
         else:
           nefc_base, offsets, nnz_base, nnz_offsets = _d1, _d2, _d1, _d2
         wp.launch(
-          _limit_ball(m.is_sparse, det),
+          _limit_ball(m.is_sparse, det, newton),
           dim=_dim,
           inputs=[
             m.nv,
@@ -4996,7 +5048,7 @@ def make_constraint(m: types.Model, d: types.Data):
         else:
           nefc_base, offsets, nnz_base, nnz_offsets = _d1, _d2, _d1, _d2
         wp.launch(
-          _limit_slide_hinge(m.is_sparse, det),
+          _limit_slide_hinge(m.is_sparse, det, newton),
           dim=_dim,
           inputs=[
             m.nv,
@@ -5044,7 +5096,7 @@ def make_constraint(m: types.Model, d: types.Data):
         else:
           nefc_base, offsets, nnz_base, nnz_offsets = _d1, _d2, _d1, _d2
         wp.launch(
-          _limit_tendon(m.is_sparse, det),
+          _limit_tendon(m.is_sparse, det, newton),
           dim=_dim,
           inputs=[
             m.nv,
@@ -5137,7 +5189,7 @@ def make_constraint(m: types.Model, d: types.Data):
 
       if has_flex:
         wp.launch(
-          _efc_contact_init_flex(m.opt.cone, m.is_sparse, det),
+          _efc_contact_init_flex(m.opt.cone, m.is_sparse, det, newton),
           dim=d.naconmax,
           inputs=[
             m.body_parentid,
@@ -5176,6 +5228,9 @@ def make_constraint(m: types.Model, d: types.Data):
             d.nefc,
             d.contact.efc_address,
             d.efc.id,
+            d.efc.jtdaj_adr,
+            d.efc.jtdaj_nrow,
+            d.efc.jtdaj_nblock,
             d.efc.J_rownnz,
             d.efc.J_rowadr,
             efc_nnz,
@@ -5183,7 +5238,7 @@ def make_constraint(m: types.Model, d: types.Data):
         )
       else:
         wp.launch(
-          _efc_contact_init(m.opt.cone, m.is_sparse, det),
+          _efc_contact_init(m.opt.cone, m.is_sparse, det, newton),
           dim=d.naconmax,
           inputs=[
             m.body_weldid,
@@ -5191,8 +5246,6 @@ def make_constraint(m: types.Model, d: types.Data):
             m.body_dofadr,
             m.dof_parentid,
             m.geom_bodyid,
-            m.flex_vertadr,
-            m.flex_vertbodyid,
             d.njmax,
             d.njmax_nnz,
             d.nacon,
@@ -5201,8 +5254,6 @@ def make_constraint(m: types.Model, d: types.Data):
             d.contact.includemargin,
             d.contact.worldid,
             d.contact.geom,
-            d.contact.flex,
-            d.contact.vert,
             d.contact.type,
             nefc_base,
             offsets,
@@ -5213,6 +5264,9 @@ def make_constraint(m: types.Model, d: types.Data):
             d.nefc,
             d.contact.efc_address,
             d.efc.id,
+            d.efc.jtdaj_adr,
+            d.efc.jtdaj_nrow,
+            d.efc.jtdaj_nblock,
             d.efc.J_rownnz,
             d.efc.J_rowadr,
             efc_nnz,

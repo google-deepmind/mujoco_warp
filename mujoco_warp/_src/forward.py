@@ -28,7 +28,6 @@ from mujoco_warp._src import sensor
 from mujoco_warp._src import sleep
 from mujoco_warp._src import smooth
 from mujoco_warp._src import solver
-from mujoco_warp._src import types
 from mujoco_warp._src import util_misc
 from mujoco_warp._src.support import next_act
 from mujoco_warp._src.support import xfrc_accumulate
@@ -329,7 +328,7 @@ def _advance(m: Model, d: Data, qacc: wp.array, qvel: Optional[wp.array] = None)
 
   wp.copy(d.qacc_warmstart, d.qacc)
 
-  sleep_enabled = bool(m.opt.enableflags & EnableBit.SLEEP)
+  sleep_enabled = bool(m.opt.enableflags & EnableBit.SLEEP) and not bool(m.opt.disableflags & DisableBit.ISLAND)
   if sleep_enabled:
     sleep.sleep(m, d)
     fwd_velocity(m, d)
@@ -614,7 +613,7 @@ def fwd_position(m: Model, d: Data, factorize: bool = True):
   smooth.flex(m, d)
   smooth.tendon(m, d)
 
-  sleep_enabled = bool(m.opt.enableflags & EnableBit.SLEEP)
+  sleep_enabled = bool(m.opt.enableflags & EnableBit.SLEEP) and not bool(m.opt.disableflags & DisableBit.ISLAND)
 
   if sleep_enabled and m.ntendon > 0:
     sleep.wake_tendon(m, d)
@@ -647,7 +646,7 @@ def fwd_position(m: Model, d: Data, factorize: bool = True):
       sleep.wake_equality(m, d)
     sleep.update_sleep(m, d)
 
-  if m.is_compact or (m.ntree > 1 and not (m.opt.disableflags & types.DisableBit.ISLAND)):
+  if sleep_enabled:
     island.island(m, d)
   smooth.transmission(m, d)
 
@@ -1270,7 +1269,7 @@ def fwd_acceleration(m: Model, d: Data, factorize: bool = False):
     d: The data object containing the current state and output arrays.
     factorize: Flag to factorize inertia matrix.
   """
-  enable_sleep = bool(m.opt.enableflags & EnableBit.SLEEP)
+  enable_sleep = bool(m.opt.enableflags & EnableBit.SLEEP) and not bool(m.opt.disableflags & DisableBit.ISLAND)
   wp.launch(
     _qfrc_smooth(enable_sleep),
     dim=(d.nworld, m.nv),
@@ -1287,7 +1286,7 @@ def fwd_acceleration(m: Model, d: Data, factorize: bool = False):
   )
   xfrc_accumulate(m, d, d.qfrc_smooth)
 
-  if m.is_compact:
+  if enable_sleep:
     # update the active-DOF set (needs contacts from fwd_position) and solve
     # the smooth acceleration in compacted dense space.
     island.update_active_dofs(m, d)
@@ -1301,7 +1300,7 @@ def fwd_acceleration(m: Model, d: Data, factorize: bool = False):
 @event_scope
 def forward(m: Model, d: Data):
   """Forward dynamics."""
-  sleep_enabled = bool(m.opt.enableflags & EnableBit.SLEEP)
+  sleep_enabled = bool(m.opt.enableflags & EnableBit.SLEEP) and not bool(m.opt.disableflags & DisableBit.ISLAND)
   if sleep_enabled:
     sleep.wake(m, d)
     sleep.update_sleep(m, d)
