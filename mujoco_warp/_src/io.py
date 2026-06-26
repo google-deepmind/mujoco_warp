@@ -1262,16 +1262,16 @@ def _allocate_island_arrays(
   d: types.Data,
   nworld: int,
   njmax: int,
-  sleep_enabled: bool,
+  enabled: bool,
   mjd: mujoco.MjData,
 ):
-  ntree_size = mjm.ntree if sleep_enabled else 0
-  nv_size = mjm.nv if sleep_enabled else 0
-  njmax_size = njmax if sleep_enabled else 0
+  ntree_size = mjm.ntree if enabled else 0
+  nv_size = mjm.nv if enabled else 0
+  njmax_size = njmax if enabled else 0
 
   d.nisland = wp.array(np.full(nworld, mjd.nisland), dtype=int)
-  d.tree_island = wp.array(np.tile(mjd.tree_island, (nworld, 1 if sleep_enabled else 0)), dtype=int)
-  d.dof_island = wp.array(np.tile(mjd.dof_island, (nworld, 1 if sleep_enabled else 0)), dtype=int)
+  d.tree_island = wp.array(np.tile(mjd.tree_island, (nworld, 1 if enabled else 0)), dtype=int)
+  d.dof_island = wp.array(np.tile(mjd.dof_island, (nworld, 1 if enabled else 0)), dtype=int)
 
   d.island_dofadr = wp.empty((nworld, ntree_size), dtype=int)
   d.island_idofadr = wp.empty((nworld, ntree_size), dtype=int)
@@ -1280,7 +1280,7 @@ def _allocate_island_arrays(
   d.island_ne = wp.empty((nworld, ntree_size), dtype=int)
   d.island_nf = wp.empty((nworld, ntree_size), dtype=int)
   d.island_iefcadr = wp.empty((nworld, ntree_size), dtype=int)
-  d.nidof = wp.empty((nworld if sleep_enabled else 0,), dtype=int)
+  d.nidof = wp.empty((nworld if enabled else 0,), dtype=int)
   d.map_dof2idof = wp.empty((nworld, nv_size), dtype=int)
   d.map_idof2dof = wp.empty((nworld, nv_size), dtype=int)
   d.map_efc2iefc = wp.empty((nworld, njmax_size), dtype=int)
@@ -1399,6 +1399,9 @@ def make_data(
   if njmax is None:
     njmax = _default_njmax(mjm)
 
+  sleep_enabled = bool(mjm.opt.enableflags & mujoco.mjtEnableBit.mjENBL_SLEEP)
+  compact_alloc = sleep_enabled or (nvmax is not None)
+
   if nvmax is None:
     nvmax = mjm.nv
 
@@ -1433,8 +1436,6 @@ def make_data(
       raise ValueError(f"nccdmax ({nccdmax}) must be <= nconmax ({nconmax})")
 
   nv_compact = nvmax < mjm.nv
-  sleep_enabled = bool(mjm.opt.enableflags & mujoco.mjtEnableBit.mjENBL_SLEEP)
-  compact_alloc = sleep_enabled or (nvmax is not None)
 
   sizes = dict({"*": 1}, **{f.name: getattr(mjm, f.name, None) for f in dataclasses.fields(types.Model) if f.type is int})
   condim_arrays = [np.array([0]), mjm.geom_condim, mjm.pair_dim]
@@ -1608,6 +1609,9 @@ def put_data(
   if njmax is None:
     njmax = _default_njmax(mjm, mjd)
 
+  sleep_enabled = bool(mjm.opt.enableflags & mujoco.mjtEnableBit.mjENBL_SLEEP)
+  compact_alloc = sleep_enabled or (nvmax is not None)
+
   if nvmax is None:
     nvmax = mjm.nv
 
@@ -1652,8 +1656,6 @@ def put_data(
     raise ValueError(f"njmax overflow (njmax must be >= {mjd.nefc})")
 
   nv_compact = nvmax < mjm.nv
-  sleep_enabled = bool(mjm.opt.enableflags & mujoco.mjtEnableBit.mjENBL_SLEEP)
-  compact_alloc = sleep_enabled or (nvmax is not None)
 
   sizes = dict({"*": 1}, **{f.name: getattr(mjm, f.name, None) for f in dataclasses.fields(types.Model) if f.type is int})
   condim_arrays = [np.array([0]), mjm.geom_condim, mjm.pair_dim]

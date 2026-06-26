@@ -1929,7 +1929,6 @@ class Constraint:
     force: constraint force in constraint space       (nworld, njmax)
     state: constraint state                           (nworld, njmax_pad)
     island: island ID per constraint                  (nworld, njmax)
-
   warp only fields:
     Ma: M*qacc                                        (nworld, nv)
     Jqvel: J*qvel                                     (nworld, njmax)
@@ -2070,7 +2069,6 @@ class Data:
     map_iefc2efc: island-local EFC -> global EFC                (nworld, njmax)
     dof_islandid: island ID per island-DOF                      (nworld, nv)
     efc_islandid: island ID per island-EFC                      (nworld, njmax)
-
     ncdof: number of active (compacted) DOFs per world          (nworld,)
     dof_cdof: global DOF -> compacted DOF; -1 if inactive       (nworld, nv)
     cdof_dof: compacted DOF -> global DOF; -1 if unused         (nworld, nvmax_pad)
@@ -2213,7 +2211,6 @@ class Data:
   map_iefc2efc: array("nworld", "njmax", int)
   dof_islandid: array("nworld", "nv", int)
   efc_islandid: array("nworld", "njmax", int)
-
   ncdof: array("nworld", int)
   dof_cdof: array("nworld", "nv", int)
   cdof_dof: array("nworld", "nvmax_pad", int)

@@ -42,7 +42,6 @@ KEYFRAME = flags.DEFINE_integer("keyframe", 0, "keyframe to initialize simulatio
 EVENT_TRACE = flags.DEFINE_bool("event_trace", False, "print an event trace report")
 NOISE_STD = flags.DEFINE_float("noise_std", 0.01, "add noise to ctrl signal (standard deviation)")
 NOISE_RATE = flags.DEFINE_float("noise_rate", 0.1, "add noise to ctrl signal (noise rate)")
-
 NVMAX = flags.DEFINE_integer("nvmax", None, "maximum active DOFs per world")
 
 
