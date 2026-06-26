@@ -851,7 +851,7 @@ def _efc_level_gradients(m: types.Model, d: types.Data, v, cap=None):
       wp.launch(
         _efc_aref_grad_kernel,
         dim=(d.nworld, d.njmax),
-        inputs=[cap["nefc"], cap["J_rownnz"], cap["J_rowadr"], cap["J_colind"], cap["J"], cap["D"], cap["pos"], v],
+        inputs=[cap["nefc"], cap["J_rownnz"], cap["J_rowadr"], cap["J_colind"], cap["J"], cap["D"], cap["state"], v],
         outputs=[efc_aref.grad],
       )
 
@@ -1148,15 +1148,16 @@ def _jtdaj_geom_kernel(
   efc_J_colind_in: wp.array3d(dtype=int),
   efc_J_in: wp.array3d(dtype=float),
   efc_D_in: wp.array2d(dtype=float),
-  efc_pos_in: wp.array2d(dtype=float),
+  efc_state_in: wp.array2d(dtype=int),
   h_out: wp.array3d(dtype=float),
 ):
-  """h += sum_{active efc} D * J^T J, active = penetrating (pos<0) and stiff (D>0)."""
+  """h += sum_{active efc} D * J^T J. Active = QUADRATIC state, matching the forward solver's
+  _state_check so pyramidal friction rows enter the Hessian exactly as in the forward solve."""
   worldid, efcid = wp.tid()
   if efcid >= nefc_in[worldid]:
     return
   dd = efc_D_in[worldid, efcid]
-  if not ((efc_pos_in[worldid, efcid] < 0.0) and (dd > 0.0)):
+  if efc_state_in[worldid, efcid] != int(types.ConstraintState.QUADRATIC.value) or dd <= 0.0:
     return
   rownnz = efc_J_rownnz_in[worldid, efcid]
   rowadr = efc_J_rowadr_in[worldid, efcid]
@@ -1182,7 +1183,7 @@ def capture_contact_adjoint_state(m: types.Model, d: types.Data):
   wp.launch(_S._update_gradient_init_h_sparse, dim=(d.nworld, m.nv_pad, m.nv_pad),
             inputs=[m.nv, m.M_elemid, d.M, done], outputs=[H])
   wp.launch(_jtdaj_geom_kernel, dim=(d.nworld, d.njmax),
-            inputs=[d.nefc, d.efc.J_rownnz, d.efc.J_rowadr, d.efc.J_colind, d.efc.J, d.efc.D, d.efc.pos],
+            inputs=[d.nefc, d.efc.J_rownnz, d.efc.J_rowadr, d.efc.J_colind, d.efc.J, d.efc.D, d.efc.state],
             outputs=[H])
   return {
     "H": H,
@@ -1190,6 +1191,7 @@ def capture_contact_adjoint_state(m: types.Model, d: types.Data):
     "J": wp.clone(d.efc.J),
     "D": wp.clone(d.efc.D),
     "pos": wp.clone(d.efc.pos),
+    "state": wp.clone(d.efc.state),
     "J_rownnz": wp.clone(d.efc.J_rownnz),
     "J_rowadr": wp.clone(d.efc.J_rowadr),
     "J_colind": wp.clone(d.efc.J_colind),
@@ -1204,16 +1206,16 @@ def _efc_aref_grad_kernel(
   efc_J_colind_in: wp.array3d(dtype=int),
   efc_J_in: wp.array3d(dtype=float),
   efc_D_in: wp.array2d(dtype=float),
-  efc_pos_in: wp.array2d(dtype=float),
+  efc_state_in: wp.array2d(dtype=int),
   v_in: wp.array2d(dtype=float),
   efc_aref_grad_out: wp.array2d(dtype=float),
 ):
-  """adj_aref[i] = D[i] * (J[i,:] . v) on the active set (penetrating, D>0)."""
+  """adj_aref[i] = D[i] * (J[i,:] . v) on the QUADRATIC active set (matches forward solver)."""
   worldid, efcid = wp.tid()
   if efcid >= nefc_in[worldid]:
     return
   dd = efc_D_in[worldid, efcid]
-  if not ((efc_pos_in[worldid, efcid] < 0.0) and (dd > 0.0)):
+  if efc_state_in[worldid, efcid] != int(types.ConstraintState.QUADRATIC.value) or dd <= 0.0:
     efc_aref_grad_out[worldid, efcid] = 0.0
     return
   rownnz = efc_J_rownnz_in[worldid, efcid]
