@@ -46,7 +46,7 @@ FACE_TOL = wp.static(math.cos(0.0016))
 EDGE_TOL = wp.static(math.sin(0.0016))
 
 # tolarance used by multicontact for intersecting a plane and a line segment
-INTERSECT_TOL = 1e-10
+INTERSECT_TOL = 1e-8
 
 # Bit flags for face status in EPA polytope.
 # Defined at module scope to avoid Warp's intermediate type issues with literals.
