@@ -707,6 +707,7 @@ def ccd_kernel_builder(
   epa_iterations: int,
   use_multiccd: bool,
   geomgeomid: int,
+  block_dim: int,
 ):
   """Kernel builder for non-heightfield CCD collisions (no hfield args)."""
 
@@ -910,7 +911,7 @@ def ccd_kernel_builder(
     return nactive
 
   # runs convex collision on a set of geom pairs to recover contact info (non-heightfield)
-  @wp.kernel(module="unique", enable_backward=False, launch_bounds=(_CCD_BLOCK_DIM, _CCD_MIN_BLOCKS))
+  @wp.kernel(module="unique", enable_backward=False, launch_bounds=(block_dim, _CCD_MIN_BLOCKS))
   def ccd_kernel(
     # Model:
     opt_ccd_tolerance: wp.array[float],
@@ -952,8 +953,8 @@ def ccd_kernel_builder(
     naconmax_in: int,
     naccdmax_in: int,
     ncollision_in: wp.array[int],
-    grid_stride_in: int,
     # In:
+    grid_stride_in: int,
     collision_pair_in: wp.array[wp.vec2i],
     collision_pairid_in: wp.array[wp.vec2i],
     collision_worldid_in: wp.array[int],
@@ -1106,7 +1107,6 @@ def ccd_kernel_builder(
 
 
 _CCD_OVERSUBSCRIBE_WAVES = 4
-_CCD_BLOCK_DIM = 256
 _CCD_MIN_BLOCKS = 2
 
 
@@ -1300,12 +1300,12 @@ def convex_narrowphase(m: Model, d: Data, ctx: CollisionContext, collision_table
     g2 = geom_pair[1].value
     count, geomgeomid = _pair_count(g1, g2)
     if g1 != GeomType.HFIELD and g2 != GeomType.HFIELD and count:
-      ccd_k = ccd_kernel_builder(g1, g2, m.opt.ccd_iterations, epa_iterations, use_multiccd, geomgeomid)
+      ccd_k = ccd_kernel_builder(g1, g2, m.opt.ccd_iterations, epa_iterations, use_multiccd, geomgeomid, m.block_dim.convex_ccd)
       ccd_grid = _ccd_grid_size(ccd_k, d.naconmax)
       wp.launch(
         ccd_k,
         dim=ccd_grid,
-        block_dim=_CCD_BLOCK_DIM,
+        block_dim=m.block_dim.convex_ccd,
         inputs=[
           m.opt.ccd_tolerance,
           m.geom_type,
