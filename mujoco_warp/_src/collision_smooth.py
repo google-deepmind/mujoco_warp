@@ -602,7 +602,10 @@ def _smooth_contact_to_efc_kernel(
   contact_type_in: wp.array[int],
   njmax_in: int,
   nacon_in: wp.array[int],
+  is_sparse_in: bool,
+  efc_J_rowadr_in: wp.array2d[int],
   # Data out:
+  efc_J_colind_out: wp.array3d[int],
   efc_J_out: wp.array3d[float],
   efc_pos_out: wp.array2d[float],
   efc_D_out: wp.array2d[float],
@@ -668,9 +671,13 @@ def _smooth_contact_to_efc_kernel(
   da1 = int(body_dofadr[body1] + body_dofnum[body1] - 1)
   da2 = int(body_dofadr[body2] + body_dofnum[body2] - 1)
 
-  # Dense Jacobian computation (AD requires dense)
   da = wp.max(da1, da2)
   dofid = int(nv - 1)
+  # Sparse write cursor: contact rows are stored compressed at efc_J[worldid, 0, rowadr + k].
+  rowadr = int(0)
+  if is_sparse_in:
+    rowadr = efc_J_rowadr_in[worldid, efcid]
+  nnz = int(0)
 
   while True:
     if dofid < 0:
@@ -721,7 +728,12 @@ def _smooth_contact_to_efc_kernel(
         else:
           J -= Ji * frii
 
-      efc_J_out[worldid, efcid, dofid] = J
+      if is_sparse_in:
+        efc_J_colind_out[worldid, 0, rowadr + nnz] = dofid
+        efc_J_out[worldid, 0, rowadr + nnz] = J
+        nnz += 1
+      else:
+        efc_J_out[worldid, efcid, dofid] = J
       Jqvel += J * qvel_in[worldid, dofid]
 
       # Advance tree pointers
@@ -732,7 +744,8 @@ def _smooth_contact_to_efc_kernel(
       da = wp.max(da1, da2)
       dofid -= 1
     else:
-      efc_J_out[worldid, efcid, dofid] = 0.0
+      if not is_sparse_in:
+        efc_J_out[worldid, efcid, dofid] = 0.0
       dofid -= 1
 
   # Compute constraint equation row
@@ -831,8 +844,11 @@ def smooth_contact_to_efc(m: types.Model, d: types.Data):
       d.contact.type,
       d.njmax,
       d.nacon,
+      m.is_sparse,
+      d.efc.J_rowadr,
     ],
     outputs=[
+      d.efc.J_colind,
       d.efc.J,
       d.efc.pos,
       d.efc.D,
