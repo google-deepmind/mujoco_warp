@@ -91,6 +91,8 @@ def _create_constraint(
   """Construct a types.Constraint with standard and island local fields allocated properly."""
   efc_kwargs = {"J_rownnz": None, "J_rowadr": None, "J_colind": None, "J": None}
   sparse = is_sparse(mjm)
+  # The JTDAJ block list is only consumed by the sparse Newton Hessian assembly (_JTDAJ_sparse).
+  jtdaj_active = sparse and mjm.opt.solver == mujoco.mjtSolver.mjSOL_NEWTON
 
   for f in dataclasses.fields(types.Constraint):
     if f.name == "itype":
@@ -107,6 +109,10 @@ def _create_constraint(
       efc_kwargs[f.name] = wp.empty((nworld, njmax if island_enabled else 0), dtype=float)
     elif f.name == "istate":
       efc_kwargs[f.name] = wp.empty((nworld, njmax if island_enabled else 0), dtype=int)
+    elif f.name in ("jtdaj_adr", "jtdaj_nrow"):
+      efc_kwargs[f.name] = wp.empty((nworld, njmax if jtdaj_active else 0), dtype=int)
+    elif f.name == "jtdaj_nblock":
+      efc_kwargs[f.name] = wp.empty((nworld,), dtype=int)
     else:
       if f.name in efc_kwargs:
         continue
@@ -121,6 +127,24 @@ def _create_constraint(
         efc_kwargs[f.name] = _create_array(None, f.type, sizes)
 
   return types.Constraint(**efc_kwargs)
+
+
+def _jtdaj_groups(mjd: mujoco.MjData) -> tuple[np.ndarray, np.ndarray]:
+  """Group loaded efc rows into JTDAJ blocks: maximal runs sharing (efc_type, efc_id).
+
+  MuJoCo lays each constraint's rows out contiguously, so this reproduces the block list
+  make_constraint builds in-kernel. Returns block start rows (adr) and lengths (nrow).
+  """
+  nefc = mjd.nefc
+  if nefc == 0:
+    return np.zeros(0, dtype=int), np.zeros(0, dtype=int)
+  etype = mjd.efc_type[:nefc]
+  eid = mjd.efc_id[:nefc]
+  boundary = np.ones(nefc, dtype=bool)
+  boundary[1:] = (etype[1:] != etype[:-1]) | (eid[1:] != eid[:-1])
+  adr = np.flatnonzero(boundary)
+  nrow = np.diff(np.append(adr, nefc))
+  return adr, nrow
 
 
 def is_sparse(mjm: mujoco.MjModel) -> bool:
@@ -313,12 +337,6 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
   if mjm.opt.noslip_iterations > 0:
     raise NotImplementedError(f"noslip solver not implemented.")
 
-  if (mjm.opt.viscosity > 0 or mjm.opt.density > 0) and mjm.opt.integrator in (
-    mujoco.mjtIntegrator.mjINT_IMPLICITFAST,
-    mujoco.mjtIntegrator.mjINT_IMPLICIT,
-  ):
-    raise NotImplementedError(f"Implicit integrators and fluid model not implemented.")
-
   if (mjm.body_plugin != -1).any():
     raise NotImplementedError("Body plugins not supported.")
 
@@ -456,26 +474,6 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
 
   m.max_ten_J_rownnz = int(mjm.ten_J_rownnz.max()) if mjm.ntendon else 0
 
-  # Upper bound on a contact's Jacobian support, to size the elliptic-cone JTCJ launch (one
-  # thread per (contact, support-pair)). A contact's row spans the dof chains of weld(b1) and
-  # weld(b2) (see _efc_contact_jac_sparse in constraint.py); take the largest union over all
-  # geom-carrying bodies -- a safe superset, since over-estimating only adds skipped threads.
-  # A body's dof chain is exactly the sparsity of its deepest dof's row in the (ancestor-
-  # structured) mass matrix, so reuse MuJoCo's precomputed M_colind rather than re-walking.
-  def _dof_chain(body):
-    if mjm.body_dofnum[body] == 0:
-      return frozenset()
-    dof = int(mjm.body_dofadr[body] + mjm.body_dofnum[body] - 1)
-    adr = int(mjm.M_rowadr[dof])
-    return frozenset(int(mjm.M_colind[adr + k]) for k in range(int(mjm.M_rownnz[dof])))
-
-  chains = list({_dof_chain(int(mjm.body_weldid[b])) for b in mjm.geom_bodyid})
-  max_rownnz = 0
-  for i, chain_i in enumerate(chains):
-    for chain_j in chains[i:]:
-      max_rownnz = max(max_rownnz, len(chain_i | chain_j))
-  m.jtcj_max_pairs = max(max_rownnz * (max_rownnz + 1) // 2, 1)
-
   # body ids grouped by tree level (depth-based traversal)
   bodies, body_depth = {}, np.zeros(mjm.nbody, dtype=int) - 1
   for i in range(mjm.nbody):
@@ -506,6 +504,12 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
   m.mocap_bodyid = m.mocap_bodyid[mjm.body_mocapid[mjm.body_mocapid >= 0].argsort()]
   m.body_fluid_ellipsoid = np.zeros(mjm.nbody, dtype=bool)
   m.body_fluid_ellipsoid[mjm.geom_bodyid[mjm.geom_fluid.reshape(mjm.ngeom, mujoco.mjNFLUID)[:, 0] > 0]] = True
+  m.body_fluid_ellipsoid_adr = np.nonzero(m.body_fluid_ellipsoid)[0]
+  body_fluid_box = np.zeros(mjm.nbody, dtype=bool)
+  for b in range(1, mjm.nbody):
+    if not m.body_fluid_ellipsoid[b] and mjm.body_mass[b] > 0.0:
+      body_fluid_box[b] = True
+  m.body_fluid_box_adr = np.nonzero(body_fluid_box)[0]
   jnt_limited_slide_hinge = mjm.jnt_limited & np.isin(mjm.jnt_type, (mujoco.mjtJoint.mjJNT_SLIDE, mujoco.mjtJoint.mjJNT_HINGE))
   m.jnt_limited_slide_hinge_adr = np.nonzero(jnt_limited_slide_hinge)[0]
   m.jnt_limited_ball_adr = np.nonzero(mjm.jnt_limited & (mjm.jnt_type == mujoco.mjtJoint.mjJNT_BALL))[0]
@@ -525,6 +529,13 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
       body_isdofancestor[bodyid, dofid] = 1
       dofid = mjm.dof_parentid[dofid]
   m.body_isdofancestor = body_isdofancestor
+
+  # Upper bound on a contact's Jacobian support-pair count, to size the elliptic-cone JTCJ
+  # launch. Use body_isdofancestor (the full dof tree), not the mass-matrix sparsity, which the
+  # simple-dof optimization diagonalizes -- that undercounts the support and NaNs the solve.
+  support_chains = [set(np.flatnonzero(row).tolist()) for row in np.unique(body_isdofancestor[mjm.geom_bodyid], axis=0)]
+  max_support = max((len(ci | cj) for i, ci in enumerate(support_chains) for cj in support_chains[i:]), default=0)
+  m.jtcj_max_pairs = max(max_support * (max_support + 1) // 2, 1)
 
   # precalculated geom pairs
   filterparent = not (mjm.opt.disableflags & types.DisableBit.FILTERPARENT)
@@ -1792,6 +1803,19 @@ def put_data(
 
   efc = _create_constraint(mjm, nworld, njmax, njmax_nnz, sizes, island_enabled, mjd)
 
+  # make_constraint builds the block list in-kernel; put_data does not run it, so build it here
+  # -- otherwise solving a put_data state would assemble an empty J^T D J.
+  if is_sparse(mjm) and mjm.opt.solver == mujoco.mjtSolver.mjSOL_NEWTON:
+    jtdaj_adr, jtdaj_nrow = _jtdaj_groups(mjd)
+    nblock = jtdaj_adr.shape[0]
+    adr_row = np.zeros(njmax, dtype=int)
+    nrow_row = np.zeros(njmax, dtype=int)
+    adr_row[:nblock] = jtdaj_adr
+    nrow_row[:nblock] = jtdaj_nrow
+    efc.jtdaj_adr = wp.array(np.tile(adr_row, (nworld, 1)), dtype=int)
+    efc.jtdaj_nrow = wp.array(np.tile(nrow_row, (nworld, 1)), dtype=int)
+    efc.jtdaj_nblock = wp.array(np.full(nworld, nblock, dtype=int), dtype=int)
+
   if is_sparse(mjm):
     J_rownnz = np.zeros(njmax, dtype=np.int32)
     J_rowadr = np.zeros(njmax, dtype=np.int32)
@@ -2558,6 +2582,19 @@ def _copy_tendon_length0(
 
 
 @wp.kernel
+def _resolve_tendon_lengthspring(
+  ten_length_in: wp.array2d[float],
+  tendon_lengthspring_out: wp.array2d[wp.vec2],
+):
+  worldid, tenid = wp.tid()
+  tendon_lengthspring_id = worldid % tendon_lengthspring_out.shape[0]
+  val = tendon_lengthspring_out[tendon_lengthspring_id, tenid]
+  if val[0] == -1.0 and val[1] == -1.0:
+    l = ten_length_in[worldid, tenid]
+    tendon_lengthspring_out[tendon_lengthspring_id, tenid] = wp.vec2(l, l)
+
+
+@wp.kernel
 def _compute_meaninertia(
   nv: int,
   M_rownnz_in: wp.array[int],
@@ -3021,7 +3058,7 @@ def set_const_fixed(m: types.Model, d: types.Data):
     )
 
 
-def set_const_0(m: types.Model, d: types.Data):
+def set_const_0(m: types.Model, d: types.Data, restore: bool = True):
   """Compute quantities that depend on qpos0.
 
   Computes:
@@ -3039,6 +3076,7 @@ def set_const_0(m: types.Model, d: types.Data):
   Args:
     m: The model containing kinematic and dynamic information (device).
     d: The data object containing the current state and output arrays (device).
+    restore: Whether to restore state fields to correspond to d.qpos.
   """
   qpos_saved = wp.clone(d.qpos)
 
@@ -3208,8 +3246,53 @@ def set_const_0(m: types.Model, d: types.Data):
 
   wp.copy(d.qpos, qpos_saved)
 
+  if restore:
+    smooth.kinematics(m, d)
+    smooth.com_pos(m, d)
+    smooth.camlight(m, d)
+    smooth.flex(m, d)
+    smooth.tendon(m, d)
+    smooth.crb(m, d)
+    smooth.tendon_armature(m, d)
+    smooth.factor_m(m, d)
+    smooth.transmission(m, d)
 
-def set_const(m: types.Model, d: types.Data):
+
+def set_const_spring(m: types.Model, d: types.Data, restore: bool = True):
+  """Compute quantities that depend on qpos_spring.
+
+  Computes:
+    - tendon_lengthspring: spring resting length range
+  """
+  if m.ntendon == 0:
+    return
+
+  qpos_saved = wp.clone(d.qpos)
+
+  wp.launch(_copy_qpos0_to_qpos, dim=(d.nworld, m.nq), inputs=[m.qpos_spring], outputs=[d.qpos])
+
+  smooth.kinematics(m, d)
+  smooth.com_pos(m, d)
+  smooth.tendon(m, d)
+  smooth.transmission(m, d)
+
+  wp.launch(
+    _resolve_tendon_lengthspring,
+    dim=(d.nworld, m.ntendon),
+    inputs=[d.ten_length],
+    outputs=[m.tendon_lengthspring],
+  )
+
+  wp.copy(d.qpos, qpos_saved)
+
+  if restore:
+    smooth.kinematics(m, d)
+    smooth.com_pos(m, d)
+    smooth.tendon(m, d)
+    smooth.transmission(m, d)
+
+
+def set_const(m: types.Model, d: types.Data, restore: bool = True):
   """Recomputes qpos0-dependent constant model fields.
 
   This function propagates changes from some model fields to derived fields,
@@ -3262,9 +3345,22 @@ def set_const(m: types.Model, d: types.Data):
   Args:
     m: The model containing kinematic and dynamic information (device).
     d: The data object containing the current state and output arrays (device).
+    restore: Whether to restore state fields to correspond to d.qpos.
   """
   set_const_fixed(m, d)
-  set_const_0(m, d)
+  set_const_0(m, d, restore=False)
+  set_const_spring(m, d, restore=False)
+
+  if restore:
+    smooth.kinematics(m, d)
+    smooth.com_pos(m, d)
+    smooth.camlight(m, d)
+    smooth.flex(m, d)
+    smooth.tendon(m, d)
+    smooth.crb(m, d)
+    smooth.tendon_armature(m, d)
+    smooth.factor_m(m, d)
+    smooth.transmission(m, d)
 
 
 def set_length_range(m: types.Model, d: types.Data, index: int = -1):

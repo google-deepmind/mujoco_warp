@@ -56,6 +56,7 @@ class BlockDim:
     contact_sort: contact sort block dimension (sensor)
     energy_vel_kinetic: energy velocity kinetic block dimension (sensor)
     cholesky_factorize: block-dense Cholesky factorize block dimension (smooth)
+    cholesky_factorize_solve: block-dense Cholesky factorize+solve block dimension (smooth)
     cholesky_solve: Cholesky solve block dimension (smooth)
     solve_LD_sparse_fused: solve LD sparse fused block dimension (smooth)
     update_gradient_cholesky: update gradient Cholesky block dimension (solver)
@@ -81,15 +82,15 @@ class BlockDim:
   # sensor
   contact_sort: int = 64
   energy_vel_kinetic: int = 32
-  # smooth -- block tile-Cholesky widths for non-tiny blocks; the launchers clamp by block size
-  cholesky_factorize: int = 96
-  cholesky_factorize_solve: int = 128
+  # smooth -- block tile-Cholesky widths
+  cholesky_factorize: int = 32
+  cholesky_factorize_solve: int = 32
   cholesky_solve: int = 64
   solve_LD_sparse_fused: int = 128
   # solver
   update_gradient_cholesky: int = 64
   update_gradient_cholesky_blocked: int = 32
-  update_gradient_JTDAJ_sparse: int = 64
+  update_gradient_JTDAJ_sparse: int = 128
   update_gradient_JTDAJ_dense: int = 128
   linesearch_iterative: int = 32
   update_gradient_grad: int = 256
@@ -1305,6 +1306,8 @@ class Model:
     body_branch_start: start index in body_branches for each branch   (nbranch + 1,)
     mocap_bodyid: id of body for mocap                       (nmocap,)
     body_fluid_ellipsoid: does body use ellipsoid fluid      (nbody,)
+    body_fluid_ellipsoid_adr: body ids with ellipsoid fluid  (nbody_fluid_ellipsoid,)
+    body_fluid_box_adr: body ids with box fluid              (nbody_fluid_box,)
     jnt_limited_slide_hinge_adr: limited/slide/hinge jntadr
     jnt_limited_ball_adr: limited/ball jntadr
     body_isdofancestor: precomputed mask of which DOFs affect each body
@@ -1765,6 +1768,8 @@ class Model:
   body_branch_start: wp.array[int]
   mocap_bodyid: array("nmocap", int)
   body_fluid_ellipsoid: array("nbody", bool)
+  body_fluid_ellipsoid_adr: wp.array[int]
+  body_fluid_box_adr: wp.array[int]
   jnt_limited_slide_hinge_adr: wp.array[int]
   jnt_limited_ball_adr: wp.array[int]
   body_isdofancestor: array("nbody", "nv_pad", int)
@@ -1909,6 +1914,9 @@ class Constraint:
   Attributes:
     type: constraint type (ConstraintType)            (nworld, njmax)
     id: id of object of specific type                 (nworld, njmax)
+    jtdaj_adr: first efc row of each JTDAJ block   (nworld, njmax)
+    jtdaj_nrow: efc rows per JTDAJ block            (nworld, njmax)
+    jtdaj_nblock: number of JTDAJ blocks             (nworld,)
     J_rownnz: number of non-zeros in J row            (nworld, 0) dense
                                                       (nworld, njmax) sparse
     J_rowadr: row start address in colind array       (nworld, 0) dense
@@ -1940,6 +1948,9 @@ class Constraint:
 
   type: array("nworld", "njmax", int)
   id: array("nworld", "njmax", int)
+  jtdaj_adr: array("nworld", "njmax", int)
+  jtdaj_nrow: array("nworld", "njmax", int)
+  jtdaj_nblock: array("nworld", int)
   J_rownnz: array("nworld", "njmax", int)
   J_rowadr: array("nworld", "njmax", int)
   J_colind: wp.array3d[int]
