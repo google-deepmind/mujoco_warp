@@ -1631,6 +1631,216 @@ class IOTest(parameterized.TestCase):
     _assert_eq(m.body_subtreemass.numpy(), body_subtreemass_1, "body_subtreemass")
     _assert_eq(m.actuator_acc0.numpy(), actuator_acc0_1, "actuator_acc0")
 
+  def test_set_const_spring(self):
+    """Test set_const_spring resolves tendon_lengthspring."""
+    xml = """
+    <mujoco>
+      <worldbody>
+        <body pos="0 0 1">
+          <freejoint/>
+          <geom type="box" size="0.1 0.2 0.3" mass="10.0"/>
+          <body pos="0.2 0 0">
+            <joint type="ball"/>
+            <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.05" mass="2.0"/>
+            <site name="arm_site" pos="0.15 0 0"/>
+            <body pos="0.3 0 0">
+              <joint type="hinge" axis="0 1 0"/>
+              <geom type="capsule" fromto="0 0 0 0.25 0 0" size="0.04" mass="1.0"/>
+              <site name="hand_site" pos="0.25 0 0"/>
+            </body>
+          </body>
+        </body>
+      </worldbody>
+      <tendon>
+        <spatial>
+          <site site="arm_site"/>
+          <site site="hand_site"/>
+        </spatial>
+      </tendon>
+    </mujoco>
+    """
+
+    # Run with default qpos_spring
+    mjm_default, mjd_default, m_default, d_default = test_data.fixture(xml=xml)
+    mjm_default.tendon_lengthspring[:] = -1.0
+    m_default.tendon_lengthspring.assign(
+      np.full((m_default.tendon_lengthspring.shape[0], m_default.tendon_lengthspring.shape[1], 2), -1.0)
+    )
+    mujoco.mj_setConst(mjm_default, mjd_default)
+    mjwarp.set_const(m_default, d_default)
+    lengthspring_default = m_default.tendon_lengthspring.numpy().copy()
+
+    # Run with modified qpos_spring
+    mjm, mjd, m, d = test_data.fixture(xml=xml)
+    mjm.qpos_spring[11] = 0.5
+
+    qpos_spring_np = m.qpos_spring.numpy()
+    qpos_spring_np[0, 11] = 0.5
+    m.qpos_spring.assign(qpos_spring_np)
+
+    mjm.tendon_lengthspring[:] = -1.0
+    m.tendon_lengthspring.assign(np.full((m.tendon_lengthspring.shape[0], m.tendon_lengthspring.shape[1], 2), -1.0))
+
+    mujoco.mj_setConst(mjm, mjd)
+    mjwarp.set_const(m, d)
+
+    # Verify matching with MuJoCo
+    _assert_eq(m.tendon_lengthspring.numpy()[0], mjm.tendon_lengthspring, "tendon_lengthspring")
+
+    # Verify that modified spring length differs from the default spring length
+    self.assertFalse(np.allclose(lengthspring_default, m.tendon_lengthspring.numpy()))
+
+  @parameterized.named_parameters(
+    dict(
+      testcase_name="set_const",
+      func_name="set_const",
+      fields=[
+        "xpos",
+        "xquat",
+        "xmat",
+        "xipos",
+        "ximat",
+        "xanchor",
+        "xaxis",
+        "geom_xpos",
+        "geom_xmat",
+        "site_xpos",
+        "site_xmat",
+        "cam_xpos",
+        "cam_xmat",
+        "light_xpos",
+        "light_xdir",
+        "flexvert_xpos",
+        "flexedge_J",
+        "flexedge_length",
+        "flexedge_velocity",
+        "subtree_com",
+        "cinert",
+        "cdof",
+        "ten_length",
+        "ten_J",
+        "wrap_obj",
+        "wrap_xpos",
+        "ten_wrapadr",
+        "ten_wrapnum",
+        "crb",
+        "M",
+        "qLD",
+        "qLDiagInv",
+        "actuator_length",
+        "actuator_moment",
+        "moment_rownnz",
+        "moment_rowadr",
+        "moment_colind",
+      ],
+    ),
+    dict(
+      testcase_name="set_const_0",
+      func_name="set_const_0",
+      fields=[
+        "xpos",
+        "xquat",
+        "xmat",
+        "xipos",
+        "ximat",
+        "xanchor",
+        "xaxis",
+        "geom_xpos",
+        "geom_xmat",
+        "site_xpos",
+        "site_xmat",
+        "cam_xpos",
+        "cam_xmat",
+        "light_xpos",
+        "light_xdir",
+        "flexvert_xpos",
+        "flexedge_J",
+        "flexedge_length",
+        "flexedge_velocity",
+        "subtree_com",
+        "cinert",
+        "cdof",
+        "ten_length",
+        "ten_J",
+        "wrap_obj",
+        "wrap_xpos",
+        "ten_wrapadr",
+        "ten_wrapnum",
+        "crb",
+        "M",
+        "qLD",
+        "qLDiagInv",
+        "actuator_length",
+        "actuator_moment",
+        "moment_rownnz",
+        "moment_rowadr",
+        "moment_colind",
+      ],
+    ),
+    dict(
+      testcase_name="set_const_spring",
+      func_name="set_const_spring",
+      fields=[
+        "xpos",
+        "xquat",
+        "xmat",
+        "xanchor",
+        "xaxis",
+        "geom_xpos",
+        "geom_xmat",
+        "site_xpos",
+        "site_xmat",
+        "subtree_com",
+        "cdof",
+        "ten_length",
+        "ten_J",
+        "actuator_length",
+        "actuator_moment",
+        "moment_rownnz",
+        "moment_rowadr",
+        "moment_colind",
+      ],
+    ),
+  )
+  def test_set_const_restore(self, func_name, fields):
+    """Test set_const functions restore Data fields to correspond to d.qpos."""
+    _, _, m, d = test_data.fixture(
+      xml="""
+    <mujoco>
+      <worldbody>
+        <site name="site1" pos="0.2 0 1"/>
+        <body pos="0 0 1">
+          <joint name="joint1" type="hinge" axis="0 1 0"/>
+          <geom type="capsule" fromto="0 0 0 0 0 0.5" size="0.04" mass="1.0"/>
+          <site name="site2" pos="0 0 0.5"/>
+        </body>
+      </worldbody>
+      <tendon>
+        <spatial>
+          <site site="site1"/>
+          <site site="site2"/>
+        </spatial>
+      </tendon>
+      <actuator>
+        <motor joint="joint1" ctrlrange="-10 10" ctrllimited="true"/>
+      </actuator>
+    </mujoco>
+    """
+    )
+
+    qpos_custom = np.array([[1.23]], dtype=np.float32)
+    wp.copy(d.qpos, wp.array(qpos_custom))
+    mjwarp.forward(m, d)
+
+    saved_states = {f: getattr(d, f).numpy().copy() for f in fields}
+
+    # Execute the target function
+    getattr(mjwarp, func_name)(m, d)
+
+    # Verify matching with initial state
+    for f in fields:
+      _assert_eq(getattr(d, f).numpy(), saved_states[f], f"{f} after {func_name}")
+
   def test_set_const_full_pipeline(self):
     """Test complete set_const matches MuJoCo for complex model."""
     mjm, mjd, m, d = test_data.fixture(
@@ -1688,6 +1898,7 @@ class IOTest(parameterized.TestCase):
     _assert_eq(m.tendon_invweight0.numpy()[0], mjm.tendon_invweight0, "tendon_invweight0")
     _assert_eq(m.tendon_length0.numpy()[0], mjm.tendon_length0, "tendon_length0")
     _assert_eq(m.actuator_acc0.numpy()[0], mjm.actuator_acc0, "actuator_acc0")
+    _assert_eq(m.tendon_lengthspring.numpy()[0], mjm.tendon_lengthspring, "tendon_lengthspring")
 
     for i in range(mjm.nbody):
       _assert_eq(m.body_invweight0.numpy()[0, i], mjm.body_invweight0[i], f"body_invweight0[{i}]")

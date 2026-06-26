@@ -1056,7 +1056,8 @@ def _tile_cholesky_factorize_block(tile: TileSet):
     idx = wp.tile_load(block_elemid, shape=(block_area,), offset=(blk * block_area,), storage="shared")
     block = wp.tile_load_indexed(M_in[worldid], idx, shape=(block_area,), storage="shared")
 
-    L = wp.tile_cholesky(wp.tile_reshape(block, (block_size, block_size)), fill_mode="upper")
+    L = wp.tile_reshape(block, (block_size, block_size))
+    wp.tile_cholesky_inplace(L, fill_mode="upper")
     wp.tile_store(L_out[worldid], wp.tile_reshape(L, (block_area,)), offset=(qLD_block_adr[start],))
 
   return kernel
@@ -1064,15 +1065,12 @@ def _tile_cholesky_factorize_block(tile: TileSet):
 
 def _factor_block_dense(m: Model, d: Data, M: wp.array2d[float], L: wp.array2d[float]):
   for tile in m.M_tiles:
-    # Tiny blocks (<=16 dofs) underutilize extra warps and lose occupancy, so use a single warp;
-    # larger blocks expose more tile_cholesky parallelism (measured optima: 9->32, 27->96, 60->128).
-    block_dim = 32 if tile.size <= 16 else m.block_dim.cholesky_factorize
     wp.launch_tiled(
       _tile_cholesky_factorize_block(tile),
       dim=(d.nworld, tile.adr.size),
       inputs=[m.qLD_block_adr, M, tile.elemid, tile.adr],
       outputs=[L],
-      block_dim=block_dim,
+      block_dim=m.block_dim.cholesky_factorize,
     )
 
 
@@ -2970,7 +2968,8 @@ def _tile_cholesky_factorize_solve_block(tile: TileSet):
     idx = wp.tile_load(block_elemid, shape=(block_area,), offset=(blk * block_area,), storage="shared")
     block = wp.tile_load_indexed(M_in[worldid], idx, shape=(block_area,), storage="shared")
 
-    L = wp.tile_cholesky(wp.tile_reshape(block, (block_size, block_size)), fill_mode="upper")
+    L = wp.tile_reshape(block, (block_size, block_size))
+    wp.tile_cholesky_inplace(L, fill_mode="upper")
     wp.tile_store(L_out[worldid], wp.tile_reshape(L, (block_area,)), offset=(qLD_block_adr[start],))
 
     rhs = wp.tile_load(y[worldid], shape=(block_size,), offset=(start,))
@@ -2984,14 +2983,12 @@ def _factor_solve_block_dense(
   m: Model, d: Data, M: wp.array2d[float], x: wp.array2d[float], y: wp.array2d[float], L: wp.array2d[float]
 ):
   for tile in m.M_tiles:
-    # Tiny blocks (<=16 dofs) use a single warp; see _factor_block_dense.
-    block_dim = 32 if tile.size <= 16 else m.block_dim.cholesky_factorize_solve
     wp.launch_tiled(
       _tile_cholesky_factorize_solve_block(tile),
       dim=(d.nworld, tile.adr.size),
       inputs=[m.qLD_block_adr, M, tile.elemid, tile.adr, y],
       outputs=[x, L],
-      block_dim=block_dim,
+      block_dim=m.block_dim.cholesky_factorize_solve,
     )
 
 

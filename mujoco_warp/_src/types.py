@@ -56,6 +56,7 @@ class BlockDim:
     contact_sort: contact sort block dimension (sensor)
     energy_vel_kinetic: energy velocity kinetic block dimension (sensor)
     cholesky_factorize: block-dense Cholesky factorize block dimension (smooth)
+    cholesky_factorize_solve: block-dense Cholesky factorize+solve block dimension (smooth)
     cholesky_solve: Cholesky solve block dimension (smooth)
     solve_LD_sparse_fused: solve LD sparse fused block dimension (smooth)
     update_gradient_cholesky: update gradient Cholesky block dimension (solver)
@@ -81,9 +82,9 @@ class BlockDim:
   # sensor
   contact_sort: int = 64
   energy_vel_kinetic: int = 32
-  # smooth -- block tile-Cholesky widths for non-tiny blocks; the launchers clamp by block size
-  cholesky_factorize: int = 96
-  cholesky_factorize_solve: int = 128
+  # smooth -- block tile-Cholesky widths
+  cholesky_factorize: int = 32
+  cholesky_factorize_solve: int = 32
   cholesky_solve: int = 64
   solve_LD_sparse_fused: int = 128
   # solver
