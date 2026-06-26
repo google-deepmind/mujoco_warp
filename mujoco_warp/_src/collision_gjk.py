@@ -28,8 +28,19 @@ wp.set_module_options({"enable_backward": False})
 
 FLOAT_MIN = -1e30
 FLOAT_MAX = 1e30
+
 MINVAL = 1e-15
-MIN_DIST = 1e-10
+MINVAL2 = 1e-30
+MAXVAL = 1e15
+MAXVAL2 = 1e30
+
+# polytope minimal interior distance to origin
+MIN_DIST2 = 1e-10
+MIN_DIST3 = 1e-10
+MIN_DIST4 = 1e-17
+
+# minimal tolerance for EPA
+MIN_EPATOL = 1e-7
 
 FACE_TOL = wp.static(math.cos(0.0016))
 EDGE_TOL = wp.static(math.sin(0.0016))
@@ -997,27 +1008,27 @@ def _polytope2(
   _epa_support(pt, 4, geom1, geom2, geomtype1, geomtype2, d3 / wp.norm_l2(d3))
 
   # build hexahedron
-  if _attach_face(pt, 0, 0, 2, 3) < MIN_DIST:
+  if _attach_face(pt, 0, 0, 2, 3) < MIN_DIST2:
     pt.status = -1
     return pt, _replace_simplex3(pt, 0, 2, 3)
 
-  if _attach_face(pt, 1, 0, 4, 2) < MIN_DIST:
+  if _attach_face(pt, 1, 0, 4, 2) < MIN_DIST2:
     pt.status = -1
     return pt, _replace_simplex3(pt, 0, 4, 2)
 
-  if _attach_face(pt, 2, 0, 3, 4) < MIN_DIST:
+  if _attach_face(pt, 2, 0, 3, 4) < MIN_DIST2:
     pt.status = -1
     return pt, _replace_simplex3(pt, 0, 3, 4)
 
-  if _attach_face(pt, 3, 1, 3, 2) < MIN_DIST:
+  if _attach_face(pt, 3, 1, 3, 2) < MIN_DIST2:
     pt.status = -1
     return pt, _replace_simplex3(pt, 1, 3, 2)
 
-  if _attach_face(pt, 4, 1, 2, 4) < MIN_DIST:
+  if _attach_face(pt, 4, 1, 2, 4) < MIN_DIST2:
     pt.status = -1
     return pt, _replace_simplex3(pt, 1, 2, 4)
 
-  if _attach_face(pt, 5, 1, 4, 3) < MIN_DIST:
+  if _attach_face(pt, 5, 1, 4, 3) < MIN_DIST2:
     pt.status = -1
     return pt, _replace_simplex3(pt, 1, 4, 3)
 
@@ -1098,22 +1109,22 @@ def _polytope3(
     return pt
 
   # create hexahedron for EPA
-  if _attach_face(pt, 0, 4, 0, 1) < MIN_DIST:
+  if _attach_face(pt, 0, 4, 0, 1) < MIN_DIST3:
     pt.status = 6
     return pt
-  if _attach_face(pt, 1, 4, 2, 0) < MIN_DIST:
+  if _attach_face(pt, 1, 4, 2, 0) < MIN_DIST3:
     pt.status = 7
     return pt
-  if _attach_face(pt, 2, 4, 1, 2) < MIN_DIST:
+  if _attach_face(pt, 2, 4, 1, 2) < MIN_DIST3:
     pt.status = 8
     return pt
-  if _attach_face(pt, 3, 3, 1, 0) < MIN_DIST:
+  if _attach_face(pt, 3, 3, 1, 0) < MIN_DIST3:
     pt.status = 9
     return pt
-  if _attach_face(pt, 4, 3, 0, 2) < MIN_DIST:
+  if _attach_face(pt, 4, 3, 0, 2) < MIN_DIST3:
     pt.status = 10
     return pt
-  if _attach_face(pt, 5, 3, 2, 1) < MIN_DIST:
+  if _attach_face(pt, 5, 3, 2, 1) < MIN_DIST3:
     pt.status = 11
     return pt
 
@@ -1154,19 +1165,19 @@ def _polytope4(
   pt.vert_index[7] = simplex_index2[3]
 
   # if the origin is on a face, replace the 3-simplex with a 2-simplex
-  if _attach_face(pt, 0, 0, 1, 2) < MIN_DIST:
+  if _attach_face(pt, 0, 0, 1, 2) < MIN_DIST4:
     pt.status = -1
     return pt, _replace_simplex3(pt, 0, 1, 2)
 
-  if _attach_face(pt, 1, 0, 3, 1) < MIN_DIST:
+  if _attach_face(pt, 1, 0, 3, 1) < MIN_DIST4:
     pt.status = -1
     return pt, _replace_simplex3(pt, 0, 3, 1)
 
-  if _attach_face(pt, 2, 0, 2, 3) < MIN_DIST:
+  if _attach_face(pt, 2, 0, 2, 3) < MIN_DIST4:
     pt.status = -1
     return pt, _replace_simplex3(pt, 0, 2, 3)
 
-  if _attach_face(pt, 3, 3, 2, 1) < MIN_DIST:
+  if _attach_face(pt, 3, 3, 2, 1) < MIN_DIST4:
     pt.status = -1
     return pt, _replace_simplex3(pt, 3, 2, 1)
 
@@ -1228,7 +1239,7 @@ def _epa(
   upper2 = FLOAT_MAX
   idx = int(-1)
   pidx = int(-1)
-  epsilon = wp.where(is_discrete, 1e-15, tolerance)
+  epsilon = wp.where(is_discrete, MIN_EPATOL, tolerance)
   nvalid = pt.nface  # number of potential faces for expanding the polytope
 
   # the face vertices are encoded in 10-bits that index the vertex array,
