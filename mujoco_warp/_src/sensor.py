@@ -2435,7 +2435,6 @@ def _contact_match(
 
   if contactmatchid >= opt_contact_sensor_maxmatch:
     if opt_warn_overflow:
-      # TODO(team): alternative to wp.printf for reporting overflow?
       wp.printf("contact match overflow: please increase Option.contact_sensor_maxmatch to %u\n", contactmatchid)
     wp.atomic_or(overflow_out, worldid, wp.static(OverflowType.CONTACT_MATCH))
     return
