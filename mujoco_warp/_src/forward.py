@@ -42,6 +42,7 @@ from mujoco_warp._src.types import GainType
 from mujoco_warp._src.types import IntegratorType
 from mujoco_warp._src.types import JointType
 from mujoco_warp._src.types import Model
+from mujoco_warp._src.types import OverflowType
 from mujoco_warp._src.types import TrnType
 from mujoco_warp._src.types import vec10f
 from mujoco_warp._src.warp_util import cache_kernel
@@ -247,28 +248,28 @@ def _next_time_builder(warn_overflow: bool):
     if nefc > njmax_in:
       if wp.static(warn_overflow):
         wp.printf("nefc overflow - please increase njmax to %u\n", nefc)
-      overflow_out[worldid] = overflow_out[worldid] | wp.static(types.OverflowType.NEFC)
+      overflow_out[worldid] = overflow_out[worldid] | wp.static(OverflowType.NEFC)
     elif nefc > 0 and is_sparse:
       efcid = wp.min(nefc, njmax_in) - 1
       efc_nnz = efc_J_rowadr_in[worldid, efcid] + efc_J_rownnz_in[worldid, efcid]
       if efc_nnz > njmax_nnz_in:
         if wp.static(warn_overflow):
           wp.printf("njmax_nnz overflow - please increase njmax_nnz to %u\n", efc_nnz)
-        overflow_out[worldid] = overflow_out[worldid] | wp.static(types.OverflowType.NJMAX_NNZ)
+        overflow_out[worldid] = overflow_out[worldid] | wp.static(OverflowType.NJMAX_NNZ)
 
     ncollision = ncollision_in[0]
     if ncollision > naconmax_in:
       if worldid == 0 and wp.static(warn_overflow):
         nconmax = int(wp.ceil(float(ncollision) / float(nworld_in)))
         wp.printf("broadphase overflow - please increase nconmax to %u or naconmax to %u\n", nconmax, ncollision)
-      overflow_out[worldid] = overflow_out[worldid] | wp.static(types.OverflowType.BROADPHASE)
+      overflow_out[worldid] = overflow_out[worldid] | wp.static(OverflowType.BROADPHASE)
 
     nacon = nacon_in[0]
     if nacon > naconmax_in:
       if worldid == 0 and wp.static(warn_overflow):
         nconmax = int(wp.ceil(float(nacon) / float(nworld_in)))
         wp.printf("narrowphase overflow - please increase nconmax to %u or naconmax to %u\n", nconmax, nacon)
-      overflow_out[worldid] = overflow_out[worldid] | wp.static(types.OverflowType.NARROWPHASE)
+      overflow_out[worldid] = overflow_out[worldid] | wp.static(OverflowType.NARROWPHASE)
 
   return _next_time
 
