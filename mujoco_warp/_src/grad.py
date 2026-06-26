@@ -131,7 +131,12 @@ def enable_grad(d: Data, fields: Optional[Sequence[str]] = None, mjm=None) -> No
   """
   ad_flags.enable_ad()
   if fields is None:
-    fields = SMOOTH_GRAD_FIELDS
+    # Include the collision/solver fields so contact gradients work out of the box: the
+    # implicit-diff backward needs efc.{J,D,aref,vel,pos} and qfrc_constraint gradient-tracked
+    # to propagate dL/dctrl through an active contact (the aref term carries the Baumgarte
+    # velocity, i.e. the contact's dissipation of qvel). Smooth-only tracking silently drops
+    # that path and returns a free-body gradient through contact.
+    fields = SMOOTH_GRAD_FIELDS + SOLVER_GRAD_FIELDS + COLLISION_GRAD_FIELDS
   for name in fields:
     arr = _resolve_field(d, name)
     if arr is not None and isinstance(arr, wp.array):

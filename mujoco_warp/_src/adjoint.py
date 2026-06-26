@@ -727,7 +727,7 @@ def _solve_hessian_system(m: types.Model, d: types.Data, b, out, H=None):
       )
 
 
-def solver_implicit_adjoint(m: types.Model, d: types.Data, qacc_array=None, qacc_smooth_ref=None):
+def solver_implicit_adjoint(m: types.Model, d: types.Data, qacc_array=None, qacc_smooth_ref=None, cap=None):
   """Implicit differentiation adjoint for constraint solver.
 
   Called during tape backward. Reads qacc_array.grad (set by downstream
@@ -805,9 +805,13 @@ def solver_implicit_adjoint(m: types.Model, d: types.Data, qacc_array=None, qacc
     )
     return
 
-  # Solve H * v = adj_qacc
+  # Solve H * v = adj_qacc. Prefer the record-time captured active-set Hessian (correct contact
+  # active set at the fixed point); fall back to the stored d.solver_h otherwise.
   v = wp.zeros((d.nworld, m.nv_pad), dtype=float)
-  _solve_hessian_system(m, d, adj_qacc, v)
+  if cap is not None:
+    _solve_hessian_system(m, d, adj_qacc, v, H=cap["H"])
+  else:
+    _solve_hessian_system(m, d, adj_qacc, v)
 
   # adj_qacc_smooth += M * v  (accumulate, not overwrite)
   tmp = wp.zeros((d.nworld, m.nv_pad), dtype=float)
@@ -819,12 +823,16 @@ def solver_implicit_adjoint(m: types.Model, d: types.Data, qacc_array=None, qacc
     outputs=[qacc_smooth_ref.grad],
   )
 
-  # Phase 3: compute efc-level gradients for collision chain
-  _efc_level_gradients(m, d, v)
+  # Phase 3: efc-level gradients for the collision chain (use the captured snapshot when
+  # available so J grad and the aref->vel->qvel path use the fixed-point active set).
+  _efc_level_gradients(m, d, v, cap=cap)
 
 
-def _efc_level_gradients(m: types.Model, d: types.Data, v):
-  """Compute efc-level gradients for collision chain (shared by both adjoints)."""
+def _efc_level_gradients(m: types.Model, d: types.Data, v, cap=None):
+  """Compute efc-level gradients for collision chain (shared by both adjoints).
+
+  When cap (a record-time snapshot) is provided, the contact active set / J / D / pos come from
+  the fixed point rather than the cleared backward-time buffers."""
   if d.njmax > 0:
     efc_J = d.efc.J
     if hasattr(efc_J, "grad") and efc_J.grad is not None:
@@ -837,6 +845,16 @@ def _efc_level_gradients(m: types.Model, d: types.Data, v):
 
     efc_aref = d.efc.aref
     efc_pos = d.efc.pos
+    # Populate efc.aref.grad = D * (J . v) on the active set (the contact-velocity gradient
+    # path: aref carries the Baumgarte -b*vel term). Uses the captured fixed-point J/D/pos.
+    if cap is not None and hasattr(efc_aref, "grad") and efc_aref.grad is not None:
+      wp.launch(
+        _efc_aref_grad_kernel,
+        dim=(d.nworld, d.njmax),
+        inputs=[cap["nefc"], cap["J_rownnz"], cap["J_rowadr"], cap["J_colind"], cap["J"], cap["D"], cap["pos"], v],
+        outputs=[efc_aref.grad],
+      )
+
     if hasattr(efc_aref, "grad") and efc_aref.grad is not None and hasattr(efc_pos, "grad") and efc_pos.grad is not None:
       wp.launch(
         _efc_pos_grad_kernel,
@@ -1120,3 +1138,89 @@ def solver_smooth_adjoint(
 
   # Phase 3: efc-level gradients for collision chain
   _efc_level_gradients(m, d, v)
+
+
+@wp.kernel
+def _jtdaj_geom_kernel(
+  nefc_in: wp.array(dtype=int),
+  efc_J_rownnz_in: wp.array2d(dtype=int),
+  efc_J_rowadr_in: wp.array2d(dtype=int),
+  efc_J_colind_in: wp.array3d(dtype=int),
+  efc_J_in: wp.array3d(dtype=float),
+  efc_D_in: wp.array2d(dtype=float),
+  efc_pos_in: wp.array2d(dtype=float),
+  h_out: wp.array3d(dtype=float),
+):
+  """h += sum_{active efc} D * J^T J, active = penetrating (pos<0) and stiff (D>0)."""
+  worldid, efcid = wp.tid()
+  if efcid >= nefc_in[worldid]:
+    return
+  dd = efc_D_in[worldid, efcid]
+  if not ((efc_pos_in[worldid, efcid] < 0.0) and (dd > 0.0)):
+    return
+  rownnz = efc_J_rownnz_in[worldid, efcid]
+  rowadr = efc_J_rowadr_in[worldid, efcid]
+  for a in range(rownnz):
+    ia = efc_J_colind_in[worldid, 0, rowadr + a]
+    va = efc_J_in[worldid, 0, rowadr + a]
+    for b in range(rownnz):
+      ib = efc_J_colind_in[worldid, 0, rowadr + b]
+      vb = efc_J_in[worldid, 0, rowadr + b]
+      wp.atomic_add(h_out, worldid, ia, ib, dd * va * vb)
+
+
+def capture_contact_adjoint_state(m: types.Model, d: types.Data):
+  """Rebuild and snapshot the active-set Hessian + efc quantities at record time (forward).
+
+  Returns None when not applicable (no constraints, non-Newton, dense path, or H not retained),
+  in which case the backward falls back to d.solver_h."""
+  if not (m.is_sparse and d.njmax > 0 and m.opt.solver == types.SolverType.NEWTON and d.solver_h.shape[1] > 0):
+    return None
+  from mujoco_warp._src import solver as _S
+  done = wp.zeros(d.nworld, dtype=bool)
+  H = wp.zeros((d.nworld, m.nv_pad, m.nv_pad), dtype=float)
+  wp.launch(_S._update_gradient_init_h_sparse, dim=(d.nworld, m.nv_pad, m.nv_pad),
+            inputs=[m.nv, m.M_elemid, d.M, done], outputs=[H])
+  wp.launch(_jtdaj_geom_kernel, dim=(d.nworld, d.njmax),
+            inputs=[d.nefc, d.efc.J_rownnz, d.efc.J_rowadr, d.efc.J_colind, d.efc.J, d.efc.D, d.efc.pos],
+            outputs=[H])
+  return {
+    "H": H,
+    "nefc": wp.clone(d.nefc),
+    "J": wp.clone(d.efc.J),
+    "D": wp.clone(d.efc.D),
+    "pos": wp.clone(d.efc.pos),
+    "J_rownnz": wp.clone(d.efc.J_rownnz),
+    "J_rowadr": wp.clone(d.efc.J_rowadr),
+    "J_colind": wp.clone(d.efc.J_colind),
+  }
+
+
+@wp.kernel
+def _efc_aref_grad_kernel(
+  nefc_in: wp.array(dtype=int),
+  efc_J_rownnz_in: wp.array2d(dtype=int),
+  efc_J_rowadr_in: wp.array2d(dtype=int),
+  efc_J_colind_in: wp.array3d(dtype=int),
+  efc_J_in: wp.array3d(dtype=float),
+  efc_D_in: wp.array2d(dtype=float),
+  efc_pos_in: wp.array2d(dtype=float),
+  v_in: wp.array2d(dtype=float),
+  efc_aref_grad_out: wp.array2d(dtype=float),
+):
+  """adj_aref[i] = D[i] * (J[i,:] . v) on the active set (penetrating, D>0)."""
+  worldid, efcid = wp.tid()
+  if efcid >= nefc_in[worldid]:
+    return
+  dd = efc_D_in[worldid, efcid]
+  if not ((efc_pos_in[worldid, efcid] < 0.0) and (dd > 0.0)):
+    efc_aref_grad_out[worldid, efcid] = 0.0
+    return
+  rownnz = efc_J_rownnz_in[worldid, efcid]
+  rowadr = efc_J_rowadr_in[worldid, efcid]
+  jv = float(0.0)
+  for k in range(rownnz):
+    col = efc_J_colind_in[worldid, 0, rowadr + k]
+    jv += efc_J_in[worldid, 0, rowadr + k] * v_in[worldid, col]
+  efc_aref_grad_out[worldid, efcid] = dd * jv
+

@@ -689,6 +689,8 @@ def fwd_position(m: Model, d: Data, factorize: bool = True):
   tape = wp._src.context.runtime.tape
   if tape is not None and d.qpos.requires_grad:
     collision_smooth.smooth_contact_to_efc(m, d)
+    from mujoco_warp._src.adjoint import capture_contact_adjoint_state
+    d._contact_adjoint_cap = capture_contact_adjoint_state(m, d)
 
   if sleep_enabled:
     if m.neq > 0:
@@ -1431,8 +1433,11 @@ def _record_solver_adjoint(m: Model, d: Data, qacc_array=None):
     else:
       from mujoco_warp._src.adjoint import solver_implicit_adjoint
 
+      cap = getattr(d, "_contact_adjoint_cap", None)
       tape.record_func(
-        lambda m=m, d=d, qa=qacc_array, qs=qacc_smooth_ref: solver_implicit_adjoint(m, d, qacc_array=qa, qacc_smooth_ref=qs),
+        lambda m=m, d=d, qa=qacc_array, qs=qacc_smooth_ref, cap=cap: solver_implicit_adjoint(
+          m, d, qacc_array=qa, qacc_smooth_ref=qs, cap=cap
+        ),
         [qacc_array, qacc_smooth_ref],
       )
 

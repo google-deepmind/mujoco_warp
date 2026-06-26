@@ -13,7 +13,6 @@ if _src_dir in _sys.path:
 
 import mujoco
 import numpy as np
-import pytest
 import warp as wp
 from absl.testing import absltest
 from absl.testing import parameterized
@@ -1379,13 +1378,12 @@ _CONTACT_MULTISTEP_XML = """
 class GradContactMultiStepTest(parameterized.TestCase):
   """Regression: dL/dctrl through a multi-step rollout with an active contact.
 
-  Tracks the known issue that reverse-mode gradients through a persistent contact over a
-  multi-step rollout disagree with finite differences (direction and magnitude), which
-  breaks first-order policy optimization (SHAC-style) on contact-rich tasks like hopper or
-  cheetah, even though single-step contact gradients (the tests above) pass. See the
-  diagnosis writeup accompanying this branch. Marked xfail (non-strict) so it documents the
-  regression without breaking CI, and so it will start passing automatically once the
-  contact/integrator adjoint is fixed.
+  Reverse-mode gradients through a persistent contact over a multi-step rollout must match
+  finite differences in sign and magnitude. This is what first-order policy optimization
+  (SHAC-style) on contact-rich tasks like hopper or cheetah relies on. The fix is the contact
+  active-set Hessian capture plus the efc.aref adjoint (which carries the Baumgarte velocity
+  term, i.e. the contact's dissipation of qvel); without them the backward returned a
+  free-body gradient through contact, off by 10-100x over a 20-step rollout.
   """
 
   @absltest.skipIf(_REQUIRES_GPU, _REQUIRES_GPU_REASON)
@@ -1431,14 +1429,12 @@ class GradContactMultiStepTest(parameterized.TestCase):
       fd_grad[i] = (eval_loss(cp) - eval_loss(cm)) / (2 * eps)
 
     # Require the AD gradient to point the same way as FD and be similarly scaled.
-    cos = float(np.dot(ad_grad, fd_grad) / (np.linalg.norm(ad_grad) * np.linalg.norm(fd_grad) + 1e-12))
-    ratio = float(np.linalg.norm(ad_grad) / (np.linalg.norm(fd_grad) + 1e-12))
-    ok = cos > 0.9 and 0.5 < ratio < 2.0
-    if not ok:
-      # Known regression: contact/integrator adjoint gives wrong multi-step gradients.
-      # Documented as xfail so CI stays green; will xpass once fixed.
-      pytest.xfail(f"contact multi-step AD/FD mismatch (nsteps={nsteps}, cos={cos:.3f}, ratio={ratio:.2f})")
-    np.testing.assert_allclose(ad_grad, fd_grad, atol=1e-3, rtol=0.5, err_msg="multi-step contact grad mismatch")
+    # Require the AD gradient to match FD in sign and magnitude. The model has a single DOF,
+    # so a cosine test is degenerate; compare component-wise (relative + small absolute floor).
+    np.testing.assert_allclose(
+      ad_grad, fd_grad, rtol=0.2, atol=1e-9,
+      err_msg=f"multi-step contact grad mismatch (nsteps={nsteps}): AD={ad_grad} FD={fd_grad}",
+    )
 
 
 # Analytic integrator gradient: for a 1-DOF unit-mass slider with a unit-gear motor and no
