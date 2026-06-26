@@ -45,6 +45,8 @@ MIN_EPATOL = 1e-7
 FACE_TOL = wp.static(math.cos(0.0016))
 EDGE_TOL = wp.static(math.sin(0.0016))
 
+# tolarance used by multicontact for intersecting a plane and a line segment
+INTERSECT_TOL = 1e-10
 
 # Bit flags for face status in EPA polytope.
 # Defined at module scope to avoid Warp's intermediate type issues with literals.
@@ -1950,7 +1952,7 @@ def _polygon_clip(
 
       # add new vertex to clipped polygon where PQ intersects the clipping edge
       t = _plane_intersect(pn[e], pd[e], P, Q)
-      if t >= 0.0 and t <= 1.0:
+      if t > -INTERSECT_TOL and t < 1.0 + INTERSECT_TOL:
         t = wp.clamp(t, 0.0, 1.0)
         clipped_out[nclipped] = P + t * (Q - P)
         nclipped += 1
