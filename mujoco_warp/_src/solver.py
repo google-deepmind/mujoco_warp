@@ -2813,10 +2813,25 @@ def _cholesky_factorize_solve(m: types.Model, d: types.Data, ctx: SolverContext,
       )
 
 
+# ---------------------------------------------------------------------------
+# H += J^T D J.  D diagonal, so each efc row adds one rank-1 outer product.  make_constraint
+# groups a constraint's contiguous efc rows (shared colind = dof support S) into one |S|x|S|
+# block, stored densely per world in efc.jtdaj_{adr,nrow,nblock}.  The launch fills the
+# GPU once (groups_per_world slots/world) then grid-strides the rest, so no thread lands on a
+# non-head efc row.  A block's upper-triangular entries split across THREADS_PER_GROUP threads
+# (one warp -> coalesced J reads); entry -> (block_row, block_col) is the triangular-number
+# inverse, exact in float32 since column boundaries are perfect squares (8*entry+1 = (2c+1)^2).
+# ---------------------------------------------------------------------------
+_JTDAJ_THREADS_PER_GROUP = 32  # one warp per group, so its J reads coalesce
+_JTDAJ_OVERSUBSCRIBE_WAVES = 6  # grid-stride depth; short per-warp chains load-balance groups
+
+
 @wp.kernel
 def _JTDAJ_sparse(
   # Data in:
-  nefc_in: wp.array[int],
+  efc_jtdaj_adr_in: wp.array2d[int],
+  efc_jtdaj_nrow_in: wp.array2d[int],
+  efc_jtdaj_nblock_in: wp.array[int],
   efc_J_rownnz_in: wp.array2d[int],
   efc_J_rowadr_in: wp.array2d[int],
   efc_J_colind_in: wp.array3d[int],
@@ -2825,45 +2840,47 @@ def _JTDAJ_sparse(
   efc_state_in: wp.array2d[int],
   # In:
   ctx_done_in: wp.array[bool],
+  groups_per_world: int,
   # Out:
   h_out: wp.array3d[float],
 ):
-  worldid, efcid = wp.tid()
-
+  worldid, slot, lane = wp.tid()
   if ctx_done_in[worldid]:
     return
+  count = efc_jtdaj_nblock_in[worldid]
+  for groupid in range(slot, count, groups_per_world):  # grid-stride this world's group list
+    head_row = efc_jtdaj_adr_in[worldid, groupid]
+    block_rows = efc_jtdaj_nrow_in[worldid, groupid]
+    head_adr = efc_J_rowadr_in[worldid, head_row]
+    support = efc_J_rownnz_in[worldid, head_row]  # dofs the constraint touches = block dimension
+    n_entries = support * (support + 1) // 2  # upper-triangular entries of the |S|x|S| block
+    for entry in range(lane, n_entries, wp.static(_JTDAJ_THREADS_PER_GROUP)):
+      block_col = int((wp.sqrt(float(8 * entry + 1)) - 1.0) * 0.5)
+      block_row = entry - block_col * (block_col + 1) // 2
+      dof_row = efc_J_colind_in[worldid, 0, head_adr + block_row]
+      dof_col = efc_J_colind_in[worldid, 0, head_adr + block_col]
+      hval = float(0.0)
+      for member in range(block_rows):
+        member_row = head_row + member
+        if efc_state_in[worldid, member_row] == types.ConstraintState.QUADRATIC.value:
+          member_adr = efc_J_rowadr_in[worldid, member_row]
+          j_row = efc_J_in[worldid, 0, member_adr + block_row]
+          j_col = efc_J_in[worldid, 0, member_adr + block_col]
+          hval += j_row * efc_D_in[worldid, member_row] * j_col
+      if hval != 0.0:  # skip the atomic when no member row is active
+        wp.atomic_add(h_out[worldid, wp.min(dof_row, dof_col)], wp.max(dof_row, dof_col), hval)
 
-  if efcid >= nefc_in[worldid]:
-    return
 
-  efc_D = efc_D_in[worldid, efcid]
-  efc_state = efc_state_in[worldid, efcid]
-
-  if _state_check(efc_D, efc_state) == 0.0:
-    return
-
-  rownnz = efc_J_rownnz_in[worldid, efcid]
-  rowadr = efc_J_rowadr_in[worldid, efcid]
-
-  for i in range(rownnz):
-    sparseidi = rowadr + i
-    Ji = efc_J_in[worldid, 0, sparseidi]
-    colindi = efc_J_colind_in[worldid, 0, sparseidi]
-    for j in range(i, rownnz):
-      if j == i:
-        sparseidj = sparseidi
-        Jj = Ji
-        colindj = colindi
-      else:
-        sparseidj = rowadr + j
-        Jj = efc_J_in[worldid, 0, sparseidj]
-        colindj = efc_J_colind_in[worldid, 0, sparseidj]
-
-      h = Ji * Jj * efc_D
-      # Store in upper triangle only: ensure row <= col.
-      row = wp.min(colindi, colindj)
-      col = wp.max(colindi, colindj)
-      wp.atomic_add(h_out[worldid, row], col, h)
+def _jtdaj_groups_per_world(nworld: int, njmax: int) -> int:
+  # Per-world width of the grid stride.  Target one warp per group-slot (njmax), but cap the grid at
+  # _JTDAJ_OVERSUBSCRIBE_WAVES device waves -- else high-njmax worlds dispatch many idle tail warps
+  # (njmax >> actual groups).  A few waves of oversubscription keep each warp's serial chain short,
+  # load-balancing the variable group sizes (measured plateau: ~4-8 waves).
+  block_size, min_grid_size = wp.get_suggested_block_size(_JTDAJ_sparse)
+  # block_size * min_grid_size = full-device thread count (block_size cancels): the kernel's max
+  # resident threads (one wave), a device property independent of nworld and our launch block_dim.
+  device_warps = max(1, block_size * min_grid_size // _JTDAJ_THREADS_PER_GROUP)
+  return max(1, min(njmax, _JTDAJ_OVERSUBSCRIBE_WAVES * device_warps // nworld))
 
 
 def _update_gradient(m: types.Model, d: types.Data, ctx: SolverContext, compact: bool = False):
@@ -2897,11 +2914,25 @@ def _update_gradient(m: types.Model, d: types.Data, ctx: SolverContext, compact:
         outputs=[ctx.h],
       )
 
+      groups_per_world = _jtdaj_groups_per_world(d.nworld, d.njmax)
       wp.launch(
         _JTDAJ_sparse,
-        dim=(d.nworld, d.njmax),
-        inputs=[d.nefc, d.efc.J_rownnz, d.efc.J_rowadr, d.efc.J_colind, d.efc.J, d.efc.D, d.efc.state, ctx.done],
+        dim=(d.nworld, groups_per_world, _JTDAJ_THREADS_PER_GROUP),
+        inputs=[
+          d.efc.jtdaj_adr,
+          d.efc.jtdaj_nrow,
+          d.efc.jtdaj_nblock,
+          d.efc.J_rownnz,
+          d.efc.J_rowadr,
+          d.efc.J_colind,
+          d.efc.J,
+          d.efc.D,
+          d.efc.state,
+          ctx.done,
+          groups_per_world,
+        ],
         outputs=[ctx.h],
+        block_dim=m.block_dim.update_gradient_JTDAJ_sparse,
       )
     else:
       if compact:
