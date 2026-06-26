@@ -3148,7 +3148,7 @@ def _solve_simple(
   x_out[worldid, dofid] = D[worldid, dofid] * y[worldid, dofid]
 
 
-@wp.kernel
+@wp.kernel(enable_backward=False)
 def _factor_solve_simple(
   # Model:
   M_rownnz: wp.array[int],
