@@ -33,9 +33,6 @@ from mujoco_warp._src.types import BiasType
 from mujoco_warp._src.types import TrnType
 from mujoco_warp._src.types import vec10
 
-# TODO(team): remove after improving island solver performance
-ENABLE_ISLANDS = False
-
 
 def _is_array_spec(typ) -> bool:
   """Check if a type annotation is an array spec (wp.array instance or bracket annotation)."""
@@ -85,42 +82,51 @@ def _create_constraint(
   njmax: int,
   njmax_nnz: int,
   sizes: dict,
-  island_enabled: bool,
   mjd=None,
 ) -> types.Constraint:
   """Construct a types.Constraint with standard and island local fields allocated properly."""
   efc_kwargs = {"J_rownnz": None, "J_rowadr": None, "J_colind": None, "J": None}
   sparse = is_sparse(mjm)
+  # The JTDAJ block list is only consumed by the sparse Newton Hessian assembly (_JTDAJ_sparse).
+  jtdaj_active = sparse and mjm.opt.solver == mujoco.mjtSolver.mjSOL_NEWTON
 
   for f in dataclasses.fields(types.Constraint):
-    if f.name == "itype":
-      efc_kwargs[f.name] = wp.empty((nworld, njmax if island_enabled else 0), dtype=int)
-    elif f.name == "iid":
-      efc_kwargs[f.name] = wp.empty((nworld, njmax if island_enabled else 0), dtype=int)
-    elif f.name == "iD":
-      efc_kwargs[f.name] = wp.empty((nworld, njmax if island_enabled else 0), dtype=float)
-    elif f.name == "iaref":
-      efc_kwargs[f.name] = wp.empty((nworld, njmax if island_enabled else 0), dtype=float)
-    elif f.name == "ifrictionloss":
-      efc_kwargs[f.name] = wp.empty((nworld, njmax if island_enabled else 0), dtype=float)
-    elif f.name == "iforce":
-      efc_kwargs[f.name] = wp.empty((nworld, njmax if island_enabled else 0), dtype=float)
-    elif f.name == "istate":
-      efc_kwargs[f.name] = wp.empty((nworld, njmax if island_enabled else 0), dtype=int)
+    if f.name in ("jtdaj_adr", "jtdaj_nrow"):
+      efc_kwargs[f.name] = wp.empty((nworld, njmax if jtdaj_active else 0), dtype=int)
+    elif f.name == "jtdaj_nblock":
+      efc_kwargs[f.name] = wp.empty((nworld,), dtype=int)
     else:
       if f.name in efc_kwargs:
         continue
 
-      if mjd is not None:
-        shape = tuple(sizes[dim] if isinstance(dim, str) else dim for dim in f.type.shape)
-        val = np.zeros(shape, dtype=f.type.dtype)
-        if f.name in ("type", "id", "pos", "margin", "D", "vel", "aref", "frictionloss", "force"):
-          val[:, : mjd.nefc] = np.tile(getattr(mjd, "efc_" + f.name), (nworld, 1))
-        efc_kwargs[f.name] = wp.array(val, dtype=f.type.dtype)
-      else:
-        efc_kwargs[f.name] = _create_array(None, f.type, sizes)
+    if mjd is not None:
+      shape = tuple(sizes[dim] if isinstance(dim, str) else dim for dim in f.type.shape)
+      val = np.zeros(shape, dtype=f.type.dtype)
+      if f.name in ("type", "id", "pos", "margin", "D", "vel", "aref", "frictionloss", "force"):
+        val[:, : mjd.nefc] = np.tile(getattr(mjd, "efc_" + f.name), (nworld, 1))
+      efc_kwargs[f.name] = wp.array(val, dtype=f.type.dtype)
+    else:
+      efc_kwargs[f.name] = _create_array(None, f.type, sizes)
 
   return types.Constraint(**efc_kwargs)
+
+
+def _jtdaj_groups(mjd: mujoco.MjData) -> tuple[np.ndarray, np.ndarray]:
+  """Group loaded efc rows into JTDAJ blocks: maximal runs sharing (efc_type, efc_id).
+
+  MuJoCo lays each constraint's rows out contiguously, so this reproduces the block list
+  make_constraint builds in-kernel. Returns block start rows (adr) and lengths (nrow).
+  """
+  nefc = mjd.nefc
+  if nefc == 0:
+    return np.zeros(0, dtype=int), np.zeros(0, dtype=int)
+  etype = mjd.efc_type[:nefc]
+  eid = mjd.efc_id[:nefc]
+  boundary = np.ones(nefc, dtype=bool)
+  boundary[1:] = (etype[1:] != etype[:-1]) | (eid[1:] != eid[:-1])
+  adr = np.flatnonzero(boundary)
+  nrow = np.diff(np.append(adr, nefc))
+  return adr, nrow
 
 
 def is_sparse(mjm: mujoco.MjModel) -> bool:
@@ -331,6 +337,12 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
   if mjm.nv > nv_max and mjm.opt.jacobian == mujoco.mjtJacobian.mjJAC_DENSE:
     raise ValueError(f"Dense is unsupported for nv > {nv_max} (nv = {mjm.nv}).")
 
+  # sleeping is supported via a dof-compaction approach.  awake dofs are compacted into dense
+  # nvmax-sized arrays.  nvmax is chosen to fit the worst-case active dof set. sleeping is only
+  # supported for Newton solver and requires nv <= nvmax.
+  if (mjm.opt.enableflags & mujoco.mjtEnableBit.mjENBL_SLEEP) and mjm.opt.solver != mujoco.mjtSolver.mjSOL_NEWTON:
+    raise ValueError(f"sleeping requires the Newton solver (got solver={types.SolverType(mjm.opt.solver).name})")
+
   collision_sensors = (mujoco.mjtSensor.mjSENS_GEOMDIST, mujoco.mjtSensor.mjSENS_GEOMNORMAL, mujoco.mjtSensor.mjSENS_GEOMFROMTO)
   is_collision_sensor = np.isin(mjm.sensor_type, collision_sensors)
 
@@ -367,12 +379,6 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
     opt_kwargs["impratio_invsqrt"] = 1.0 / np.sqrt(np.maximum(mjm.opt.impratio, mujoco.mjMINVAL))
   opt = types.Option(**opt_kwargs)
 
-  # islands are disabled by default while performance is being improved
-  # override by setting io.ENABLE_ISLANDS = True
-  # TODO(team): remove after improving island solver performance
-  if not ENABLE_ISLANDS:
-    opt.disableflags |= types.DisableBit.ISLAND
-
   # C MuJoCo tolerance was chosen for float64 architecture, but we default to float32 on GPU
   # adjust the tolerance for lower precision, to avoid the solver spending iterations needlessly
   # bouncing around the optimal solution
@@ -383,6 +389,7 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
   opt.broadphase_filter = types.BroadphaseFilter.PLANE | types.BroadphaseFilter.SPHERE | types.BroadphaseFilter.OBB
   opt.graph_conditional = True
   opt.run_collision_detection = True
+  opt.warn_overflow = True
   contact_sensor_maxmatch_id = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_NUMERIC, "contact_sensor_maxmatch")
   if contact_sensor_maxmatch_id > -1:
     opt.contact_sensor_maxmatch = mjm.numeric_data[mjm.numeric_adr[contact_sensor_maxmatch_id]]
@@ -432,23 +439,7 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
   if mjm.nv > 500:
     m.block_dim.linesearch_iterative = 512
   m.is_sparse = is_sparse(mjm)
-  # Active-DOF compaction is the default sleeping solver: it pays off only when most DOFs are
-  # asleep, so it's keyed on the SLEEP flag (a dense full solve would otherwise just be slower
-  # than the sparse solver). It's a dense-Newton method, and ENABLE_ISLANDS forces the old
-  # island solver instead. nvmax only sizes the compacted block; it does not toggle compaction.
-  m.is_compact = (
-    mjm.opt.solver == mujoco.mjtSolver.mjSOL_NEWTON
-    and bool(mjm.opt.enableflags & mujoco.mjtEnableBit.mjENBL_SLEEP)
-    and not ENABLE_ISLANDS
-  )
-  # Sleeping is only honored by a sleep-aware solver (compact for Newton, or the island solver
-  # via enable_islands). Reject SLEEP without one rather than silently ignoring it.
-  if bool(mjm.opt.enableflags & mujoco.mjtEnableBit.mjENBL_SLEEP) and not m.is_compact and not ENABLE_ISLANDS:
-    raise ValueError(
-      f"sleeping requires the Newton solver or enable_islands (got solver={types.SolverType(mjm.opt.solver).name})"
-    )
   m.has_fluid = mjm.opt.wind.any() or mjm.opt.density > 0 or mjm.opt.viscosity > 0
-
   m.max_ten_J_rownnz = int(mjm.ten_J_rownnz.max()) if mjm.ntendon else 0
 
   # body ids grouped by tree level (depth-based traversal)
@@ -1298,16 +1289,16 @@ def _allocate_island_arrays(
   d: types.Data,
   nworld: int,
   njmax: int,
-  island_enabled: bool,
+  enabled: bool,
   mjd: mujoco.MjData,
 ):
-  ntree_size = mjm.ntree if island_enabled else 0
-  nv_size = mjm.nv if island_enabled else 0
-  njmax_size = njmax if island_enabled else 0
+  ntree_size = mjm.ntree if enabled else 0
+  nv_size = mjm.nv if enabled else 0
+  njmax_size = njmax if enabled else 0
 
   d.nisland = wp.array(np.full(nworld, mjd.nisland), dtype=int)
-  d.tree_island = wp.array(np.tile(mjd.tree_island, (nworld, 1 if island_enabled else 0)), dtype=int)
-  d.dof_island = wp.array(np.tile(mjd.dof_island, (nworld, 1 if island_enabled else 0)), dtype=int)
+  d.tree_island = wp.array(np.tile(mjd.tree_island, (nworld, 1 if enabled else 0)), dtype=int)
+  d.dof_island = wp.array(np.tile(mjd.dof_island, (nworld, 1 if enabled else 0)), dtype=int)
 
   d.island_dofadr = wp.empty((nworld, ntree_size), dtype=int)
   d.island_idofadr = wp.empty((nworld, ntree_size), dtype=int)
@@ -1316,7 +1307,7 @@ def _allocate_island_arrays(
   d.island_ne = wp.empty((nworld, ntree_size), dtype=int)
   d.island_nf = wp.empty((nworld, ntree_size), dtype=int)
   d.island_iefcadr = wp.empty((nworld, ntree_size), dtype=int)
-  d.nidof = wp.empty((nworld if island_enabled else 0,), dtype=int)
+  d.nidof = wp.empty((nworld if enabled else 0,), dtype=int)
   d.map_dof2idof = wp.empty((nworld, nv_size), dtype=int)
   d.map_idof2dof = wp.empty((nworld, nv_size), dtype=int)
   d.map_efc2iefc = wp.empty((nworld, njmax_size), dtype=int)
@@ -1324,10 +1315,6 @@ def _allocate_island_arrays(
 
   d.dof_islandid = wp.empty((nworld, nv_size), dtype=int)
   d.efc_islandid = wp.empty((nworld, njmax_size), dtype=int)
-  d.iqacc = wp.empty((nworld, nv_size), dtype=float)
-  d.iqacc_smooth = wp.empty((nworld, nv_size), dtype=float)
-  d.iqfrc_smooth = wp.empty((nworld, nv_size), dtype=float)
-  d.iqfrc_constraint = wp.empty((nworld, nv_size), dtype=float)
 
 
 def _allocate_compact_arrays(
@@ -1439,17 +1426,12 @@ def make_data(
   if njmax is None:
     njmax = _default_njmax(mjm)
 
-  # Compact workspace is allocated for the same models put_model marks m.is_compact (kept in
-  # sync here since put_data does not take the warp Model). nvmax only sizes the block.
-  compact = (
-    mjm.opt.solver == mujoco.mjtSolver.mjSOL_NEWTON
-    and bool(mjm.opt.enableflags & mujoco.mjtEnableBit.mjENBL_SLEEP)
-    and not ENABLE_ISLANDS
+  island_alloc = True
+  sleep_enabled = bool(mjm.opt.enableflags & mujoco.mjtEnableBit.mjENBL_SLEEP) and not bool(
+    mjm.opt.disableflags & mujoco.mjtDisableBit.mjDSBL_ISLAND
   )
-  # Allocate the compact workspace whenever compaction is the solver (compact) OR nvmax is
-  # explicitly provided -- the latter lets callers/tests size and exercise the compact arrays
-  # directly without is_compact dispatching in the forward pipeline.
-  compact_alloc = compact or (nvmax is not None)
+  compact_alloc = sleep_enabled or (nvmax is not None)
+
   if nvmax is None:
     nvmax = mjm.nv
 
@@ -1484,7 +1466,6 @@ def make_data(
       raise ValueError(f"nccdmax ({nccdmax}) must be <= nconmax ({nconmax})")
 
   nv_compact = nvmax < mjm.nv
-  island_enabled = compact_alloc or ENABLE_ISLANDS
 
   sizes = dict({"*": 1}, **{f.name: getattr(mjm, f.name, None) for f in dataclasses.fields(types.Model) if f.type is int})
   condim_arrays = [np.array([0]), mjm.geom_condim, mjm.pair_dim]
@@ -1515,7 +1496,7 @@ def make_data(
   contact = types.Contact(**contact_kwargs)
   contact.efc_address = wp.array(np.full((naconmax, sizes["nmaxpyramid"]), -1, dtype=int), dtype=int)
 
-  efc = _create_constraint(mjm, nworld, njmax, njmax_nnz, sizes, island_enabled)
+  efc = _create_constraint(mjm, nworld, njmax, njmax_nnz, sizes)
 
   if is_sparse(mjm):
     efc.J_rownnz = wp.zeros((nworld, njmax), dtype=int)
@@ -1584,10 +1565,6 @@ def make_data(
     "map_iefc2efc": None,
     "dof_islandid": None,
     "efc_islandid": None,
-    "iqacc": None,
-    "iqacc_smooth": None,
-    "iqfrc_smooth": None,
-    "iqfrc_constraint": None,
     "tree_asleep": wp.array(
       np.tile(np.arange(mjm.ntree, dtype=np.int32), (nworld, 1))
       if nv_compact
@@ -1612,7 +1589,7 @@ def make_data(
   qld_total = _lay["total"] + (mjm.nC if _lay["has_sparse"] else 0)
   d.qLD = wp.zeros((nworld, qld_total), dtype=float)
 
-  _allocate_island_arrays(mjm, d, nworld, njmax, island_enabled, mjd)
+  _allocate_island_arrays(mjm, d, nworld, njmax, island_alloc, mjd)
   _allocate_compact_arrays(mjm, d, nworld, sizes["nvmax_pad"], sizes["njmax_pad"], compact_alloc)
   d.ncdof.zero_()
   d.dof_cdof.fill_(-1)
@@ -1662,17 +1639,12 @@ def put_data(
   if njmax is None:
     njmax = _default_njmax(mjm, mjd)
 
-  # Compact workspace is allocated for the same models put_model marks m.is_compact (kept in
-  # sync here since put_data does not take the warp Model). nvmax only sizes the block.
-  compact = (
-    mjm.opt.solver == mujoco.mjtSolver.mjSOL_NEWTON
-    and bool(mjm.opt.enableflags & mujoco.mjtEnableBit.mjENBL_SLEEP)
-    and not ENABLE_ISLANDS
+  island_alloc = True
+  sleep_enabled = bool(mjm.opt.enableflags & mujoco.mjtEnableBit.mjENBL_SLEEP) and not bool(
+    mjm.opt.disableflags & mujoco.mjtDisableBit.mjDSBL_ISLAND
   )
-  # Allocate the compact workspace whenever compaction is the solver (compact) OR nvmax is
-  # explicitly provided -- the latter lets callers/tests size and exercise the compact arrays
-  # directly without is_compact dispatching in the forward pipeline.
-  compact_alloc = compact or (nvmax is not None)
+  compact_alloc = sleep_enabled or (nvmax is not None)
+
   if nvmax is None:
     nvmax = mjm.nv
 
@@ -1717,7 +1689,6 @@ def put_data(
     raise ValueError(f"njmax overflow (njmax must be >= {mjd.nefc})")
 
   nv_compact = nvmax < mjm.nv
-  island_enabled = compact_alloc or ENABLE_ISLANDS
 
   sizes = dict({"*": 1}, **{f.name: getattr(mjm, f.name, None) for f in dataclasses.fields(types.Model) if f.type is int})
   condim_arrays = [np.array([0]), mjm.geom_condim, mjm.pair_dim]
@@ -1778,7 +1749,20 @@ def put_data(
   # create efc
   efc_kwargs = {"J_rownnz": None, "J_rowadr": None, "J_colind": None, "J": None}
 
-  efc = _create_constraint(mjm, nworld, njmax, njmax_nnz, sizes, island_enabled, mjd)
+  efc = _create_constraint(mjm, nworld, njmax, njmax_nnz, sizes, mjd)
+
+  # make_constraint builds the block list in-kernel; put_data does not run it, so build it here
+  # -- otherwise solving a put_data state would assemble an empty J^T D J.
+  if is_sparse(mjm) and mjm.opt.solver == mujoco.mjtSolver.mjSOL_NEWTON:
+    jtdaj_adr, jtdaj_nrow = _jtdaj_groups(mjd)
+    nblock = jtdaj_adr.shape[0]
+    adr_row = np.zeros(njmax, dtype=int)
+    nrow_row = np.zeros(njmax, dtype=int)
+    adr_row[:nblock] = jtdaj_adr
+    nrow_row[:nblock] = jtdaj_nrow
+    efc.jtdaj_adr = wp.array(np.tile(adr_row, (nworld, 1)), dtype=int)
+    efc.jtdaj_nrow = wp.array(np.tile(nrow_row, (nworld, 1)), dtype=int)
+    efc.jtdaj_nblock = wp.array(np.full(nworld, nblock, dtype=int), dtype=int)
 
   if is_sparse(mjm):
     J_rownnz = np.zeros(njmax, dtype=np.int32)
@@ -1852,10 +1836,6 @@ def put_data(
     "map_iefc2efc": None,
     "dof_islandid": None,
     "efc_islandid": None,
-    "iqacc": None,
-    "iqacc_smooth": None,
-    "iqfrc_smooth": None,
-    "iqfrc_constraint": None,
     "tree_asleep": wp.array(
       np.tile(np.arange(mjm.ntree, dtype=np.int32), (nworld, 1))
       if nv_compact
@@ -1893,7 +1873,7 @@ def put_data(
     qLD[lay["total"] :] = mjd.qLD
   d.qLD = wp.array(np.full((nworld, qld_total), qLD), dtype=float)
 
-  _allocate_island_arrays(mjm, d, nworld, njmax, island_enabled, mjd)
+  _allocate_island_arrays(mjm, d, nworld, njmax, island_alloc, mjd)
   _allocate_compact_arrays(mjm, d, nworld, sizes["nvmax_pad"], sizes["njmax_pad"], compact_alloc)
   d.ncdof.zero_()
   d.dof_cdof.fill_(-1)
@@ -2143,14 +2123,6 @@ def get_data_into(
     result.map_efc2iefc[:nefc] = d.map_efc2iefc.numpy()[world_id, :nefc]
     result.map_iefc2efc[:nefc] = d.map_iefc2efc.numpy()[world_id, :nefc]
 
-    result.iefc_type[:nefc] = d.efc.itype.numpy()[world_id, :nefc]
-    result.iefc_id[:nefc] = d.efc.iid.numpy()[world_id, :nefc]
-    result.iefc_D[:nefc] = d.efc.iD.numpy()[world_id, :nefc]
-    result.iefc_aref[:nefc] = d.efc.iaref.numpy()[world_id, :nefc]
-    result.iefc_frictionloss[:nefc] = d.efc.ifrictionloss.numpy()[world_id, :nefc]
-    result.iefc_state[:nefc] = d.efc.istate.numpy()[world_id, :nefc]
-    result.iefc_force[:nefc] = d.efc.iforce.numpy()[world_id, :nefc]
-
 
 def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
   """Clear data, set defaults; optionally by world.
@@ -2223,6 +2195,7 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
     userdata_out: wp.array2d[float],
     sensordata_out: wp.array2d[float],
     nacon_out: wp.array[int],
+    overflow_out: wp.array[int],
   ):
     worldid = wp.tid()
 
@@ -2261,6 +2234,7 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
       sensordata_out[worldid, i] = 0.0
     for i in range(nuserdata):
       userdata_out[worldid, i] = 0.0
+    overflow_out[worldid] = 0
 
   @wp.kernel(module="unique", enable_backward=False)
   def reset_mocap(
@@ -2492,6 +2466,7 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
       d.userdata,
       d.sensordata,
       d.nacon,
+      d.overflow,
     ],
   )
 
@@ -3453,9 +3428,6 @@ def override_model(model: types.Model | mujoco.MjModel, overrides: dict[str, Any
         val = np.array([float(p) for p in val.strip("[]").split()], dtype=arr.dtype)
       else:
         val = typ(val)
-
-      if attr == "disableflags" and isinstance(obj, types.Option) and not ENABLE_ISLANDS:
-        val = int(val) | types.DisableBit.ISLAND
 
       setattr(obj, attr, val)
 
