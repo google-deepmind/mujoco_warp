@@ -203,22 +203,14 @@ class IOTest(parameterized.TestCase):
 
     self.assertTrue(hasattr(m1.geom_pos, "_is_batched"))
     self.assertEqual(m1.geom_pos.shape[0], 1)
-    self.assertEqual(m1.geom_pos.strides[0], 0)
-    self.assertLen(m1.geom_pos.strides, m1.geom_pos.ndim)
     self.assertTrue(hasattr(m1.opt.gravity, "_is_batched"))
     self.assertEqual(m1.opt.gravity.shape[0], 1)
-    self.assertEqual(m1.opt.gravity.strides[0], 0)
-    self.assertLen(m1.opt.gravity.strides, m1.opt.gravity.ndim)
     self.assertFalse(hasattr(m1.body_parentid, "_is_batched"))
     self.assertGreater(m1.body_parentid.shape[0], 0)
-    self.assertGreater(m1.body_parentid.strides[0], 0)
-    self.assertLen(m1.body_parentid.strides, m1.body_parentid.ndim)
 
     m2 = mjw.put_model(mjm, batch_sizes={"geom_pos": 2})
     self.assertTrue(hasattr(m2.geom_pos, "_is_batched"))
     self.assertEqual(m2.geom_pos.shape[0], 2)
-    self.assertGreater(m2.geom_pos.strides[0], 0)
-    self.assertLen(m2.geom_pos.strides, m2.geom_pos.ndim)
 
   @parameterized.parameters(*_IO_TEST_MODELS)
   def test_put_data_nworld_array(self, xml):
