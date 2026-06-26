@@ -46,7 +46,7 @@ FACE_TOL = wp.static(math.cos(0.0016))
 EDGE_TOL = wp.static(math.sin(0.0016))
 
 # tolarance used by multicontact for intersecting a plane and a line segment
-INTERSECT_TOL = 0.0000003
+INTERSECT_TOL = 1e-10
 
 # Bit flags for face status in EPA polytope.
 # Defined at module scope to avoid Warp's intermediate type issues with literals.
@@ -1814,13 +1814,13 @@ def _mesh_face(
 @wp.func
 def _plane_normal(v1: wp.vec3, v2: wp.vec3, n: wp.vec3) -> Tuple[float, wp.vec3]:
   v3 = v1 + n
-  res = wp.cross(v2 - v1, v3 - v1)
+  res = wp.normalize(wp.cross(v2 - v1, v3 - v1))
   return wp.dot(res, v1), res
 
 
 @wp.func
 def _halfspace(a: wp.vec3, n: wp.vec3, p: wp.vec3) -> bool:
-  return wp.dot(p - a, n) > -1e-10
+  return wp.dot(p - a, n) > -MINVAL
 
 
 @wp.func
@@ -1829,7 +1829,7 @@ def _plane_intersect(pn: wp.vec3, pd: float, a: wp.vec3, b: wp.vec3) -> float:
   dot = wp.dot(pn, b - a)
 
   # parallel; no intersection
-  if wp.abs(dot) < 1e-10:
+  if wp.abs(dot) < MINVAL:
     return FLOAT_MAX
 
   return (pd - wp.dot(pn, a)) / dot
@@ -1899,7 +1899,7 @@ def _polygon_clip(
 
       # add new vertex to clipped polygon where PQ intersects the clipping edge
       t = _plane_intersect(pn[e], pd[e], P, Q)
-      if t > -INTERSECT_TOL and t < 1.0 + INTERSECT_TOL:
+      if t > -1e-10 and t < 1.0 + 1e10:
         t = wp.clamp(t, 0.0, 1.0)
         clipped_out[nclipped] = P + t * (Q - P)
         nclipped += 1
