@@ -646,7 +646,7 @@ def fwd_position(m: Model, d: Data, factorize: bool = True):
       sleep.wake_equality(m, d)
     sleep.update_sleep(m, d)
 
-  if sleep_enabled:
+  if m.ntree > 1 and not (m.opt.disableflags & DisableBit.ISLAND):
     island.island(m, d)
   smooth.transmission(m, d)
 
