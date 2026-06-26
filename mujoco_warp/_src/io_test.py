@@ -458,7 +458,7 @@ _MESH_RANDOMIZE_XML = """
 class IOTest(parameterized.TestCase):
   def test_make_put_data(self):
     """Tests that make_data and put_data are producing the same shapes for all arrays."""
-    mjm, _, _, d = test_data.fixture("pendula.xml")
+    mjm, _, _, d = test_data.fixture("pendula.xml", nvmax=None)
     md = mjwarp.make_data(mjm)
 
     # same number of fields
