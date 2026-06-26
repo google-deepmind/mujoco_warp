@@ -41,6 +41,7 @@ from mujoco_warp._src.types import GainType
 from mujoco_warp._src.types import IntegratorType
 from mujoco_warp._src.types import JointType
 from mujoco_warp._src.types import Model
+from mujoco_warp._src.types import OverflowType
 from mujoco_warp._src.types import TrnType
 from mujoco_warp._src.types import vec10f
 from mujoco_warp._src.warp_util import cache_kernel
@@ -217,46 +218,59 @@ def _next_activation(
       act_out[worldid, j] = act
 
 
-@wp.kernel
-def _next_time(
-  # Model:
-  opt_timestep: wp.array[float],
-  is_sparse: bool,
-  # Data in:
-  nefc_in: wp.array[int],
-  time_in: wp.array[float],
-  efc_J_rownnz_in: wp.array2d[int],
-  efc_J_rowadr_in: wp.array2d[int],
-  nworld_in: int,
-  naconmax_in: int,
-  njmax_in: int,
-  njmax_nnz_in: int,
-  nacon_in: wp.array[int],
-  ncollision_in: wp.array[int],
-  # Data out:
-  time_out: wp.array[float],
-):
-  worldid = wp.tid()
-  time_out[worldid] = time_in[worldid] + opt_timestep[worldid % opt_timestep.shape[0]]
-  nefc = nefc_in[worldid]
+@cache_kernel
+def _next_time_builder(warn_overflow: bool):
+  @wp.kernel(module="unique", enable_backward=False)
+  def _next_time(
+    # Model:
+    opt_timestep: wp.array[float],
+    is_sparse: bool,
+    # Data in:
+    nefc_in: wp.array[int],
+    time_in: wp.array[float],
+    efc_J_rownnz_in: wp.array2d[int],
+    efc_J_rowadr_in: wp.array2d[int],
+    nworld_in: int,
+    naconmax_in: int,
+    njmax_in: int,
+    njmax_nnz_in: int,
+    nacon_in: wp.array[int],
+    ncollision_in: wp.array[int],
+    # Data out:
+    time_out: wp.array[float],
+    overflow_out: wp.array[int],
+  ):
+    worldid = wp.tid()
+    time_out[worldid] = time_in[worldid] + opt_timestep[worldid % opt_timestep.shape[0]]
+    nefc = nefc_in[worldid]
 
-  if nefc > njmax_in:
-    wp.printf("nefc overflow - please increase njmax to %u\n", nefc)
-  elif nefc > 0 and is_sparse:
-    efcid = wp.min(nefc, njmax_in) - 1
-    efc_nnz = efc_J_rowadr_in[worldid, efcid] + efc_J_rownnz_in[worldid, efcid]
-    if efc_nnz > njmax_nnz_in:
-      wp.printf("njmax_nnz overflow - please increase njmax_nnz to %u\n", efc_nnz)
+    if nefc > njmax_in:
+      if wp.static(warn_overflow):
+        wp.printf("nefc overflow - please increase njmax to %u\n", nefc)
+      overflow_out[worldid] = overflow_out[worldid] | OverflowType.NEFC
+    elif nefc > 0 and is_sparse:
+      efcid = wp.min(nefc, njmax_in) - 1
+      efc_nnz = efc_J_rowadr_in[worldid, efcid] + efc_J_rownnz_in[worldid, efcid]
+      if efc_nnz > njmax_nnz_in:
+        if wp.static(warn_overflow):
+          wp.printf("njmax_nnz overflow - please increase njmax_nnz to %u\n", efc_nnz)
+        overflow_out[worldid] = overflow_out[worldid] | OverflowType.NJMAX_NNZ
 
-  if worldid == 0:
     ncollision = ncollision_in[0]
     if ncollision > naconmax_in:
-      nconmax = int(wp.ceil(float(ncollision) / float(nworld_in)))
-      wp.printf("broadphase overflow - please increase nconmax to %u or naconmax to %u\n", nconmax, ncollision)
+      if worldid == 0 and wp.static(warn_overflow):
+        nconmax = int(wp.ceil(float(ncollision) / float(nworld_in)))
+        wp.printf("broadphase overflow - please increase nconmax to %u or naconmax to %u\n", nconmax, ncollision)
+      overflow_out[worldid] = overflow_out[worldid] | OverflowType.BROADPHASE
 
-    if nacon_in[0] > naconmax_in:
-      nconmax = int(wp.ceil(float(nacon_in[0]) / float(nworld_in)))
-      wp.printf("narrowphase overflow - please increase nconmax to %u or naconmax to %u\n", nconmax, nacon_in[0])
+    nacon = nacon_in[0]
+    if nacon > naconmax_in:
+      if worldid == 0 and wp.static(warn_overflow):
+        nconmax = int(wp.ceil(float(nacon) / float(nworld_in)))
+        wp.printf("narrowphase overflow - please increase nconmax to %u or naconmax to %u\n", nconmax, nacon)
+      overflow_out[worldid] = overflow_out[worldid] | OverflowType.NARROWPHASE
+
+  return _next_time
 
 
 def _advance(m: Model, d: Data, qacc: wp.array, qvel: Optional[wp.array] = None):
@@ -307,7 +321,7 @@ def _advance(m: Model, d: Data, qacc: wp.array, qvel: Optional[wp.array] = None)
   history.insert_ctrl_history(m, d)
 
   wp.launch(
-    _next_time,
+    _next_time_builder(bool(m.opt.warn_overflow)),
     dim=d.nworld,
     inputs=[
       m.opt.timestep,
@@ -323,7 +337,7 @@ def _advance(m: Model, d: Data, qacc: wp.array, qvel: Optional[wp.array] = None)
       d.nacon,
       d.ncollision,
     ],
-    outputs=[d.time],
+    outputs=[d.time, d.overflow],
   )
 
   wp.copy(d.qacc_warmstart, d.qacc)
