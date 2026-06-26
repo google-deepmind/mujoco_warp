@@ -13,6 +13,7 @@ if _src_dir in _sys.path:
 
 import mujoco
 import numpy as np
+import pytest
 import warp as wp
 from absl.testing import absltest
 from absl.testing import parameterized
@@ -681,6 +682,29 @@ def _sum_qpos_sq_kernel(
 ):
   worldid, qid = wp.tid()
   v = qpos_in[worldid, qid]
+  wp.atomic_add(loss, 0, v * v)
+
+
+@wp.kernel
+def _sum_qvel_kernel(
+  # Data in:
+  qvel_in: wp.array2d[float],
+  # In:
+  loss: wp.array[float],
+):
+  worldid, vid = wp.tid()
+  wp.atomic_add(loss, 0, qvel_in[worldid, vid])
+
+
+@wp.kernel
+def _sum_qpos_x_sq_kernel(
+  # Data in:
+  qpos_in: wp.array2d[float],
+  # In:
+  loss: wp.array[float],
+):
+  # squared x-position of world 0 (qpos index 0), for the tangential-friction test
+  v = qpos_in[0, 0]
   wp.atomic_add(loss, 0, v * v)
 
 
@@ -1480,6 +1504,217 @@ class GradIntegratorAnalyticTest(parameterized.TestCase):
     # closed form: d(sum qpos)/d(ctrl) = dt^2
     np.testing.assert_allclose(ad, dt * dt, rtol=1e-3, atol=1e-12,
                                err_msg=f"integrator ctrl gradient {ad:.3e} != analytic dt^2 {dt*dt:.3e}")
+
+
+# Single-step contact dissipation: a body falling onto the floor. One step contracts an
+# initial vertical velocity perturbation by the contact, so d(qvel1)/d(qvel0) < 1. The
+# free-body (contact-free) adjoint returns 1.0; the contact-adjoint Hessian capture must
+# reproduce the finite-difference value. This is the per-step Jacobian whose error compounds
+# over a rollout, and it specifically exercises the small-nv path where solver_h is empty.
+_CONTACT_DISSIPATION_XML = """
+<mujoco>
+  <option timestep="0.004" gravity="0 0 -9.81" jacobian="sparse" solver="Newton" iterations="50">
+    <flag eulerdamp="disable"/>
+  </option>
+  <worldbody>
+    <geom type="plane" size="5 5 0.01"/>
+    <body pos="0 0 0.095">
+      <joint name="slide" type="slide" axis="0 0 1"/>
+      <geom type="sphere" size="0.1" mass="1"/>
+    </body>
+  </worldbody>
+  <actuator><motor joint="slide" gear="1"/></actuator>
+</mujoco>
+"""
+
+
+class GradContactDissipationTest(absltest.TestCase):
+  """Regression: the single-step contact Jacobian d(qvel1)/d(qvel0) must match FD (not 1.0).
+
+  A penetrating contact dissipates a velocity perturbation in one step. Without the
+  contact-adjoint Hessian (built unconditionally from M + J^T D J, including the small-nv path
+  where the solver keeps no explicit Hessian) the backward returns the free-body value 1.0.
+  """
+
+  @absltest.skipIf(_REQUIRES_GPU, _REQUIRES_GPU_REASON)
+  def test_single_step_qvel_jacobian_matches_fd(self):
+    q0 = np.array([-0.005], np.float32)
+    v0 = np.array([-0.1], np.float32)
+
+    def step_vz(vz):
+      _, _, m, d = test_data.fixture(xml=_CONTACT_DISSIPATION_XML)
+      mjw.reset_data(m, d)
+      d.qpos = wp.array(q0.reshape(1, -1), dtype=float)
+      d.qvel = wp.array(np.array([[vz]], np.float32), dtype=float)
+      mjw.step(m, d)
+      return float(d.qvel.numpy()[0, 0])
+
+    eps = 1e-4
+    fd = (step_vz(v0[0] + eps) - step_vz(v0[0] - eps)) / (2 * eps)
+
+    _, _, m, d = test_data.fixture(xml=_CONTACT_DISSIPATION_XML)
+    enable_grad(d)
+    qp = wp.array(q0.reshape(1, -1), dtype=float, requires_grad=True)
+    qv = wp.array(v0.reshape(1, -1), dtype=float, requires_grad=True)
+    d.qpos = qp
+    d.qvel = qv
+    loss = wp.zeros(1, dtype=float, requires_grad=True)
+    tape = wp.Tape()
+    with tape:
+      mjw.step(m, d)
+      wp.launch(_sum_qvel_kernel, dim=(d.nworld, m.nv), inputs=[d.qvel, loss])
+    tape.backward(loss=loss)
+    ad = float(np.nan_to_num(qv.grad.numpy()[0, 0]))
+    self.assertLess(ad, 0.95, f"AD d(vz1)/d(vz0)={ad:.4f} looks like the free-body value (no contact dissipation)")
+    np.testing.assert_allclose(ad, fd, rtol=0.05, atol=1e-4,
+                               err_msg=f"contact dissipation Jacobian mismatch: AD={ad:.4f} FD={fd:.4f}")
+
+
+# Multi-body multi-contact: two independent spheres resting on the floor, each actuated. The
+# AD path previously corrupted device memory here (the differentiable contact assembly wrote a
+# dense Jacobian index into the sparse efc.J array, which for any second contact row scribbled
+# over adjacent buffers, resetting nefc to 0 and dropping all contact rows). The gradient was
+# then off by ~600x over a 20-step rollout. Guards the sparse efc.J write.
+_MULTI_CONTACT_XML = """
+<mujoco>
+  <option timestep="0.004" gravity="0 0 -9.81" jacobian="sparse" solver="Newton" iterations="30">
+    <flag eulerdamp="disable"/>
+  </option>
+  <worldbody>
+    <geom type="plane" size="5 5 0.01"/>
+    <body pos="0 0 0.09"><joint name="ja" type="slide" axis="0 0 1"/><geom type="sphere" size="0.1" mass="1"/></body>
+    <body pos="0.5 0 0.09"><joint name="jb" type="slide" axis="0 0 1"/><geom type="sphere" size="0.1" mass="1"/></body>
+  </worldbody>
+  <actuator>
+    <motor joint="ja" gear="1"/>
+    <motor joint="jb" gear="1"/>
+  </actuator>
+</mujoco>
+"""
+
+
+class GradMultiContactTest(parameterized.TestCase):
+  """Regression: dL/dctrl through multiple simultaneous contacts must match FD.
+
+  Exercises the multi-body case (multiple efc contact rows) that the single-contact tests miss.
+  The bug was a dense-into-sparse Jacobian write in the differentiable contact assembly that
+  corrupted nefc for any scene with more than one contact row.
+  """
+
+  @absltest.skipIf(_REQUIRES_GPU, _REQUIRES_GPU_REASON)
+  @parameterized.parameters(5, 20)
+  def test_multibody_contact_grad_matches_fd(self, nsteps):
+    mjm = mujoco.MjModel.from_xml_string(_MULTI_CONTACT_XML)
+    nu = mjm.nu
+    ctrl0 = np.array([0.3, 0.2], dtype=np.float32)
+
+    def eval_loss(ctrl_np):
+      _, _, m_fd, d_fd = test_data.fixture(xml=_MULTI_CONTACT_XML)
+      mjw.reset_data(m_fd, d_fd)
+      for _ in range(nsteps):
+        wp.copy(d_fd.ctrl, wp.array(ctrl_np.reshape(1, -1), dtype=float))
+        mjw.step(m_fd, d_fd)
+      q = d_fd.qpos.numpy()[0]
+      return float(np.sum(q * q))
+
+    _, _, m, d = test_data.fixture(xml=_MULTI_CONTACT_XML)
+    enable_grad(d)
+    ctrl = wp.array(ctrl0.reshape(1, -1), dtype=float, requires_grad=True)
+    loss = wp.zeros(1, dtype=float, requires_grad=True)
+    tape = wp.Tape()
+    with tape:
+      for _ in range(nsteps):
+        wp.copy(d.ctrl, ctrl)
+        mjw.step(m, d)
+      wp.launch(_sum_qpos_sq_kernel, dim=(d.nworld, mjm.nq), inputs=[d.qpos, loss])
+    tape.backward(loss=loss)
+    ad_grad = np.nan_to_num(ctrl.grad.numpy()[0, :nu].copy())
+    tape.zero()
+
+    eps = 1e-3
+    fd_grad = np.zeros(nu)
+    for i in range(nu):
+      cp = ctrl0.copy(); cp[i] += eps
+      cm = ctrl0.copy(); cm[i] -= eps
+      fd_grad[i] = (eval_loss(cp) - eval_loss(cm)) / (2 * eps)
+
+    np.testing.assert_allclose(
+      ad_grad, fd_grad, rtol=0.2, atol=1e-9,
+      err_msg=f"multi-contact grad mismatch (nsteps={nsteps}): AD={ad_grad} FD={fd_grad}",
+    )
+
+
+# Tangential friction over a rollout. KNOWN GAP: the pyramidal friction rows route their
+# velocity-dissipation gradient antisymmetrically and cancel, so the tangential
+# d(qvel1)/d(qvel0) is not yet dissipated by the backward (it stays at the free-body 1.0) and
+# the multi-step tangential control gradient is off. The normal-direction gradient in the same
+# scene is correct. Marked xfail so the regime is tracked without failing the suite.
+_FRICTION_XML = """
+<mujoco>
+  <option timestep="0.004" gravity="0 0 -9.81" jacobian="sparse" solver="Newton" iterations="50">
+    <flag eulerdamp="disable"/>
+  </option>
+  <worldbody>
+    <geom type="plane" size="5 5 0.01" friction="2 0 0"/>
+    <body pos="0 0 0.095">
+      <joint name="jx" type="slide" axis="1 0 0"/>
+      <joint name="jz" type="slide" axis="0 0 1"/>
+      <geom type="sphere" size="0.1" mass="1" friction="2 0 0"/>
+    </body>
+  </worldbody>
+  <actuator>
+    <motor joint="jx" gear="1"/>
+    <motor joint="jz" gear="1"/>
+  </actuator>
+</mujoco>
+"""
+
+
+class GradFrictionTangentialTest(absltest.TestCase):
+  """Tracks the tangential-friction multi-step gradient (known gap, xfail).
+
+  The normal contact gradient is correct; the tangential (pyramidal friction) gradient is not
+  yet dissipated over a rollout. See the antisymmetric pyramidal-row cancellation in the aref
+  adjoint. This test documents the regime so it is not silently forgotten.
+  """
+
+  @absltest.skipIf(_REQUIRES_GPU, _REQUIRES_GPU_REASON)
+  def test_tangential_friction_multistep_grad_matches_fd(self):
+    nsteps = 20
+    ctrl0 = np.array([0.5, 0.0], dtype=np.float32)
+
+    def eval_loss(ctrl_np):
+      _, _, m_fd, d_fd = test_data.fixture(xml=_FRICTION_XML)
+      mjw.reset_data(m_fd, d_fd)
+      for _ in range(nsteps):
+        wp.copy(d_fd.ctrl, wp.array(ctrl_np.reshape(1, -1), dtype=float))
+        mjw.step(m_fd, d_fd)
+      return float(d_fd.qpos.numpy()[0, 0] ** 2)
+
+    _, _, m, d = test_data.fixture(xml=_FRICTION_XML)
+    enable_grad(d)
+    ctrl = wp.array(ctrl0.reshape(1, -1), dtype=float, requires_grad=True)
+    loss = wp.zeros(1, dtype=float, requires_grad=True)
+    tape = wp.Tape()
+    with tape:
+      for _ in range(nsteps):
+        wp.copy(d.ctrl, ctrl)
+        mjw.step(m, d)
+      wp.launch(_sum_qpos_x_sq_kernel, dim=1, inputs=[d.qpos, loss])
+    tape.backward(loss=loss)
+    ad = float(np.nan_to_num(ctrl.grad.numpy()[0, 0]))
+    tape.zero()
+
+    eps = 1e-3
+    cp = ctrl0.copy(); cp[0] += eps
+    cm = ctrl0.copy(); cm[0] -= eps
+    fd = (eval_loss(cp) - eval_loss(cm)) / (2 * eps)
+
+    try:
+      np.testing.assert_allclose(ad, fd, rtol=0.2, atol=1e-10,
+                                 err_msg=f"tangential friction grad: AD={ad:.3e} FD={fd:.3e}")
+    except AssertionError:
+      pytest.xfail("tangential pyramidal-friction multi-step gradient not yet dissipated (known gap)")
 
 
 if __name__ == "__main__":
