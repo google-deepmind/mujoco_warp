@@ -1899,7 +1899,7 @@ def _polygon_clip(
 
       # add new vertex to clipped polygon where PQ intersects the clipping edge
       t = _plane_intersect(pn[e], pd[e], P, Q)
-      if t > -1e-10 and t < 1.0 + 1e10:
+      if t > -INTERSECT_TOL and t < 1.0 + INTERSECT_TOL:
         t = wp.clamp(t, 0.0, 1.0)
         clipped_out[nclipped] = P + t * (Q - P)
         nclipped += 1
