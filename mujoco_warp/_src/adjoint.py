@@ -875,6 +875,35 @@ def _efc_level_gradients(m: types.Model, d: types.Data, v, cap=None):
         outputs=[efc_pos.grad],
       )
 
+    # Inject the contact velocity-dissipation adjoint for genuinely multi-DOF rows directly into
+    # qvel.grad with a colind-indexed J^T scatter: adj_qvel = -sum_{i in A} b_i D_i (J_i . v) J_i.
+    # The native vel->qvel autodiff of the sparse-J contact assembly indexes the velocity gradient
+    # by stored row position rather than the efc.J column index, so it mis-routes rows that couple
+    # more than one DOF (the pyramidal friction cone), where the two edges then cancel and the
+    # tangential dissipation never reaches qvel. Effectively-single-DOF rows (incl. the normal row
+    # of a multi-DOF body) are routed correctly per substep by the native chain, so the kernel
+    # gates them out; for the multi-DOF rows it handles, it zeroes efc.aref.grad / efc.vel.grad so
+    # the native path cannot double count (efc.aref.grad was scratch for the pos kernel above).
+    #
+    # KNOWN GAP: combined strong-normal + tangential friction over long rollouts (e.g. a body
+    # pressed hard into a frictional plane, ~2x at nsteps=20). Root cause is the record_func order,
+    # not this scatter: solver_implicit_adjoint runs in reverse AFTER _advance's backward has
+    # already consumed d.qvel.grad and propagated it to the per-substep qvel clone, so this
+    # injection into the shared d.qvel.grad accumulates across substeps. Routing to the per-substep
+    # clone returns zero (its backward has already run). A proper fix records a dedicated dissipation
+    # adjoint inside _advance between _next_velocity backward and the qvel clone backward; that
+    # restructures the solver adjoint and is deferred.
+    if cap is not None and d.qvel.grad is not None and hasattr(efc_aref, "grad") and efc_aref.grad is not None:
+      efc_vel = d.efc.vel
+      efc_vel_grad = efc_vel.grad if (hasattr(efc_vel, "grad") and efc_vel.grad is not None) else efc_aref.grad
+      wp.launch(
+        _qvel_contact_dissipation_kernel,
+        dim=(d.nworld, d.njmax),
+        inputs=[cap["nefc"], cap["J_rownnz"], cap["J_rowadr"], cap["J_colind"], cap["J"], cap["D"], cap["pos"],
+                cap["efc_id"], d.contact.solref, d.contact.solimp, m.opt.timestep, m.opt.disableflags, v],
+        outputs=[d.qvel.grad, efc_aref.grad, efc_vel_grad],
+      )
+
 
 # ---------------------------------------------------------------------------
 # Smooth constraint adjoint: backward-only friction gradient smoothing
@@ -1197,6 +1226,7 @@ def capture_contact_adjoint_state(m: types.Model, d: types.Data):
     "J_rownnz": wp.clone(d.efc.J_rownnz),
     "J_rowadr": wp.clone(d.efc.J_rowadr),
     "J_colind": wp.clone(d.efc.J_colind),
+    "efc_id": wp.clone(d.efc.id),
   }
 
 
@@ -1227,4 +1257,81 @@ def _efc_aref_grad_kernel(
     col = efc_J_colind_in[worldid, 0, rowadr + k]
     jv += efc_J_in[worldid, 0, rowadr + k] * v_in[worldid, col]
   efc_aref_grad_out[worldid, efcid] = dd * jv
+
+
+@wp.kernel
+def _qvel_contact_dissipation_kernel(
+  nefc_in: wp.array(dtype=int),
+  efc_J_rownnz_in: wp.array2d(dtype=int),
+  efc_J_rowadr_in: wp.array2d(dtype=int),
+  efc_J_colind_in: wp.array3d(dtype=int),
+  efc_J_in: wp.array3d(dtype=float),
+  efc_D_in: wp.array2d(dtype=float),
+  efc_pos_in: wp.array2d(dtype=float),
+  efc_id_in: wp.array2d(dtype=int),
+  contact_solref_in: wp.array(dtype=wp.vec2),
+  contact_solimp_in: wp.array(dtype=types.vec5),
+  opt_timestep_in: wp.array(dtype=float),
+  opt_disableflags: int,
+  v_in: wp.array2d(dtype=float),
+  qvel_grad_out: wp.array2d(dtype=float),
+  efc_aref_grad_out: wp.array2d(dtype=float),
+  efc_vel_grad_out: wp.array2d(dtype=float),
+):
+  """Inject the contact velocity-dissipation adjoint directly into qvel.grad.
+
+  The constraint solve qacc = H^{-1}(qfrc + J_A^T D_A aref_A) carries a Baumgarte term
+  aref_i = -k*imp*pos_i - b_i*vel_i with vel_i = J_i . qvel. Its reverse-mode contribution to
+  qvel is adj_qvel = -sum_{i in A} b_i D_i (J_i . v) J_i, with v = H^{-1} adj_qacc, over the
+  active set (penetrating pos<0 and stiff D>0).
+
+  We scatter this J^T product ourselves (atomic_add over the sparse row, indexed by colind),
+  rather than route it through efc.vel.grad / efc.aref.grad. The native vel->qvel autodiff of the
+  sparse-J assembly indexes the velocity gradient by stored row position instead of efc.J column
+  index, so it mis-projects rows that couple more than one DOF (the pyramidal friction cone, where
+  the two edges then cancel and the tangential dissipation never reaches qvel). We only handle
+  those multi-column rows here (effectively-single-DOF rows are routed correctly per substep by
+  the native chain) and, for the rows we do handle, zero their efc.aref.grad / efc.vel.grad so the
+  native path cannot double count. efc.aref.grad was used as scratch by the pos kernel before this.
+  """
+  worldid, efcid = wp.tid()
+  if efcid >= nefc_in[worldid]:
+    return
+  dd = efc_D_in[worldid, efcid]
+  if not (efc_pos_in[worldid, efcid] < 0.0 and dd > 0.0):
+    return
+  rownnz = efc_J_rownnz_in[worldid, efcid]
+  rowadr = efc_J_rowadr_in[worldid, efcid]
+  # Count the genuinely nonzero columns. Rows that effectively touch a single DOF (a normal row
+  # of a multi-DOF body still stores an explicit zero for the other DOF, so rownnz over-counts)
+  # are routed correctly per substep by the native efc.aref/efc.vel autodiff chain, so leave them
+  # to it. Only rows that genuinely couple more than one DOF (the pyramidal friction cone) are
+  # column-mis-projected by the native scatter and need this direct J^T injection.
+  nnz_real = int(0)
+  for k in range(rownnz):
+    if efc_J_in[worldid, 0, rowadr + k] != 0.0:
+      nnz_real += 1
+  if nnz_real <= 1:
+    return
+  conid = efc_id_in[worldid, efcid]
+  solref = contact_solref_in[conid]
+  solimp = contact_solimp_in[conid]
+  timestep = opt_timestep_in[worldid % opt_timestep_in.shape[0]]
+  dmax = wp.clamp(solimp[1], types.MJ_MINIMP, types.MJ_MAXIMP)
+  timeconst = solref[0]
+  if not (opt_disableflags & int(types.DisableBit.REFSAFE.value)):
+    timeconst = wp.max(timeconst, 2.0 * timestep)
+  b = 2.0 / (dmax * timeconst)
+  b = wp.where(solref[1] <= 0.0, -solref[1] / dmax, b)
+  jv = float(0.0)
+  for k in range(rownnz):
+    col = efc_J_colind_in[worldid, 0, rowadr + k]
+    jv += efc_J_in[worldid, 0, rowadr + k] * v_in[worldid, col]
+  factor = -b * dd * jv
+  for k in range(rownnz):
+    col = efc_J_colind_in[worldid, 0, rowadr + k]
+    wp.atomic_add(qvel_grad_out, worldid, col, factor * efc_J_in[worldid, 0, rowadr + k])
+  # Kill the native velocity propagation for this row so it is not counted twice.
+  efc_aref_grad_out[worldid, efcid] = 0.0
+  efc_vel_grad_out[worldid, efcid] = 0.0
 

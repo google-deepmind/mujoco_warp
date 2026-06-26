@@ -13,7 +13,6 @@ if _src_dir in _sys.path:
 
 import mujoco
 import numpy as np
-import pytest
 import warp as wp
 from absl.testing import absltest
 from absl.testing import parameterized
@@ -1644,11 +1643,12 @@ class GradMultiContactTest(parameterized.TestCase):
     )
 
 
-# Tangential friction over a rollout. KNOWN GAP: the pyramidal friction rows route their
-# velocity-dissipation gradient antisymmetrically and cancel, so the tangential
-# d(qvel1)/d(qvel0) is not yet dissipated by the backward (it stays at the free-body 1.0) and
-# the multi-step tangential control gradient is off. The normal-direction gradient in the same
-# scene is correct. Marked xfail so the regime is tracked without failing the suite.
+# Tangential friction over a rollout. The pyramidal friction rows carry the contact's
+# velocity-dissipation gradient. The native sparse-J autodiff mis-projects these multi-column
+# rows (the two pyramid edges cancel antisymmetrically), so the tangential d(qvel1)/d(qvel0)
+# used to stay at the free-body 1.0. The backward now scatters the dissipation adjoint
+# (-b*D*(J.v)*J) for multi-column rows directly into qvel.grad, so the tangential control
+# gradient matches finite differences.
 _FRICTION_XML = """
 <mujoco>
   <option timestep="0.004" gravity="0 0 -9.81" jacobian="sparse" solver="Newton" iterations="50">
@@ -1671,11 +1671,12 @@ _FRICTION_XML = """
 
 
 class GradFrictionTangentialTest(absltest.TestCase):
-  """Tracks the tangential-friction multi-step gradient (known gap, xfail).
+  """Reverse-mode tangential (pyramidal friction) control gradient matches finite differences.
 
-  The normal contact gradient is correct; the tangential (pyramidal friction) gradient is not
-  yet dissipated over a rollout. See the antisymmetric pyramidal-row cancellation in the aref
-  adjoint. This test documents the regime so it is not silently forgotten.
+  The pyramidal friction cone produces multi-column efc rows whose native velocity-dissipation
+  autodiff cancels antisymmetrically, which previously left the tangential gradient at the
+  free-body value over a rollout. The backward injects the dissipation adjoint for those rows
+  directly into qvel.grad, recovering the correct tangential gradient.
   """
 
   @absltest.skipIf(_REQUIRES_GPU, _REQUIRES_GPU_REASON)
@@ -1710,11 +1711,8 @@ class GradFrictionTangentialTest(absltest.TestCase):
     cm = ctrl0.copy(); cm[0] -= eps
     fd = (eval_loss(cp) - eval_loss(cm)) / (2 * eps)
 
-    try:
-      np.testing.assert_allclose(ad, fd, rtol=0.2, atol=1e-10,
-                                 err_msg=f"tangential friction grad: AD={ad:.3e} FD={fd:.3e}")
-    except AssertionError:
-      pytest.xfail("tangential pyramidal-friction multi-step gradient not yet dissipated (known gap)")
+    np.testing.assert_allclose(ad, fd, rtol=0.2, atol=1e-10,
+                               err_msg=f"tangential friction grad: AD={ad:.3e} FD={fd:.3e}")
 
 
 if __name__ == "__main__":
