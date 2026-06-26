@@ -426,7 +426,7 @@ def ccd_hfield_kernel_builder(
                 "height field collision overflow, number of collisions >= %u - please adjust resolution: \n decrease the number of hfield rows/cols or modify size of colliding geom\n",
                 MJ_MAXCONPAIR,
               )
-            wp.atomic_or(overflow_out, worldid, wp.static(OverflowType.HFIELD))
+            wp.atomic_or(overflow_out, worldid, OverflowType.HFIELD)
             continue
 
           # add vert
@@ -808,7 +808,7 @@ def ccd_kernel_builder(
       if ccdid >= naccdmax_in:
         if wp.static(warn_overflow):
           wp.printf("CCD overflow - please increase naccdmax to %u\n", ccdid)
-        wp.atomic_or(overflow_out, worldid, wp.static(OverflowType.CCD))
+        wp.atomic_or(overflow_out, worldid, OverflowType.CCD)
         return 0
       dist, ncollision, w1, w2, multiccd_idx = epa_phase(
         opt_ccd_tolerance[worldid % opt_ccd_tolerance.shape[0]],

@@ -20,6 +20,7 @@ from mujoco_warp._src.types import ConstraintType
 from mujoco_warp._src.types import EqType
 from mujoco_warp._src.types import IslandSolverContext
 from mujoco_warp._src.types import ObjType
+from mujoco_warp._src.types import OverflowType
 from mujoco_warp._src.warp_util import event_scope
 
 
@@ -1135,7 +1136,7 @@ def _compact_dofs(
         count,
         nvmax_in,
       )
-    overflow_out[worldid] = overflow_out[worldid] | wp.static(types.OverflowType.NVMAX)
+    overflow_out[worldid] = overflow_out[worldid] | OverflowType.NVMAX
     ncdof_out[worldid] = nvmax_in
   else:
     ncdof_out[worldid] = count
