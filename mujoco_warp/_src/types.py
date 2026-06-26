@@ -128,10 +128,10 @@ class BroadphaseFilter(enum.IntFlag):
     OBB: collision between oriented bounding boxes
   """
 
-  PLANE = 1
-  SPHERE = 2
-  AABB = 4
-  OBB = 8
+  PLANE = 1 << 0
+  SPHERE = 1 << 1
+  AABB = 1 << 2
+  OBB = 1 << 3
 
 
 class OverflowType(enum.IntFlag):
@@ -148,14 +148,14 @@ class OverflowType(enum.IntFlag):
     NVMAX: nvmax overflow (islands)
   """
 
-  NEFC = 1
-  NJMAX_NNZ = 2
-  BROADPHASE = 4
-  NARROWPHASE = 8
-  CCD = 16
-  HFIELD = 32
-  CONTACT_MATCH = 64
-  NVMAX = 128
+  NEFC = 1 << 0
+  NJMAX_NNZ = 1 << 1
+  BROADPHASE = 1 << 2
+  NARROWPHASE = 1 << 3
+  CCD = 1 << 4
+  HFIELD = 1 << 5
+  CONTACT_MATCH = 1 << 6
+  NVMAX = 1 << 7
 
 
 class CamLightType(enum.IntEnum):
@@ -1884,8 +1884,8 @@ class ContactType(enum.IntFlag):
     SENSOR: contact for collision sensor (GEOMDIST, GEOMNORMAL, GEOMFROMTO)
   """
 
-  CONSTRAINT = 1
-  SENSOR = 2
+  CONSTRAINT = 1 << 0
+  SENSOR = 1 << 1
 
 
 @dataclasses.dataclass
