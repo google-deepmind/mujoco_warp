@@ -469,6 +469,42 @@ class IOTest(parameterized.TestCase):
       if isinstance(val, wp.array):
         self.assertEqual(val.shape, getattr(d, attr).shape, f"{attr} shape mismatch")
 
+  def test_put_data_builds_jtdaj_block_list(self):
+    """put_data builds the sparse-Newton JTDAJ block list straight from the loaded efc.
+
+    make_constraint builds efc.jtdaj_* while assembling constraints, but put_data does not run it;
+    it must populate the list so a put_data state is directly solvable, matching make_constraint.
+    """
+    mjm, mjd, m, d = test_data.fixture(
+      "constraints.xml",
+      keyframe=2,
+      overrides={
+        "opt.jacobian": mujoco.mjtJacobian.mjJAC_SPARSE,
+        "opt.solver": mujoco.mjtSolver.mjSOL_NEWTON,
+      },
+    )
+    self.assertTrue(m.is_sparse)
+    self.assertGreater(mjd.nefc, 0)
+
+    nblock = int(d.efc.jtdaj_nblock.numpy()[0])
+    adr = d.efc.jtdaj_adr.numpy()[0, :nblock].copy()
+    nrow = d.efc.jtdaj_nrow.numpy()[0, :nblock].copy()
+
+    # the blocks partition the active rows exactly (contiguous, no gaps, covering [0, nefc))
+    self.assertGreater(nblock, 0)
+    self.assertEqual(adr[0], 0)
+    np.testing.assert_array_equal(adr[1:], np.cumsum(nrow)[:-1])
+    self.assertEqual(int(nrow.sum()), mjd.nefc)
+
+    # each block is one constraint instance: a maximal run of rows sharing (efc_type, efc_id)
+    etype = mjd.efc_type[: mjd.nefc]
+    eid = mjd.efc_id[: mjd.nefc]
+    for a, n in zip(adr.tolist(), nrow.tolist()):
+      self.assertTrue((etype[a : a + n] == etype[a]).all())
+      self.assertTrue((eid[a : a + n] == eid[a]).all())
+      if a > 0:  # maximal: the preceding row belongs to a different instance
+        self.assertTrue(etype[a - 1] != etype[a] or eid[a - 1] != eid[a])
+
   @parameterized.parameters(*_IO_TEST_MODELS)
   def test_put_data_sizes(self, xml):
     EXPECTED_SIZES = {
