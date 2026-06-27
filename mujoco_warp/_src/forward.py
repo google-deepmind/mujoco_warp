@@ -1333,19 +1333,77 @@ def forward(m: Model, d: Data):
   sensor.sensor_acc(m, d)
 
 
-@event_scope
-def step(m: Model, d: Data):
-  """Advance simulation."""
-  forward(m, d)
+# Minimal step-input state copied d -> d_out on step()'s out-of-place path; forward(m, d_out)
+# recomputes everything else. wp.copy (no alloc / no sync) keeps the path graph-capture safe.
+_STEP_STATE_FIELDS = (
+  "qpos", "qvel", "act", "ctrl", "qfrc_applied", "xfrc_applied",
+  "mocap_pos", "mocap_quat", "qacc_warmstart", "eq_active", "time",
+)
 
-  if m.opt.integrator == IntegratorType.EULER:
-    euler(m, d)
-  elif m.opt.integrator == IntegratorType.RK4:
-    rungekutta4(m, d)
-  elif m.opt.integrator in (IntegratorType.IMPLICITFAST, IntegratorType.IMPLICIT):
-    implicit(m, d)
-  else:
-    raise NotImplementedError(f"integrator {m.opt.integrator} not implemented.")
+# Analytic-gradient hook, set by adjoint.py via register_backward_hook (None = off). Only consulted
+# on the out-of-place (d_out is not d) path under an active wp.Tape; never affects in-place step.
+_backward_hook = None
+
+
+def register_backward_hook(fn):
+  """Register adjoint.py's analytic step backward (pass None to disable)."""
+  global _backward_hook
+  _backward_hook = fn
+
+
+def _copy_state(d: Data, d_out: Data):
+  """Copy the minimal step-input state d -> d_out; forward(m, d_out) recomputes the rest."""
+  for name in _STEP_STATE_FIELDS:
+    src = getattr(d, name, None)
+    dst = getattr(d_out, name, None)
+    if src is not None and dst is not None and src.size:
+      wp.copy(dst, src)
+
+
+@event_scope
+def step(m: Model, d: Data, d_out: Data = None):
+  """Advance simulation.
+
+  d_out is None: advance d in place (default; unchanged from before).
+  d_out given: copy d's input state into d_out and advance d_out (forward + integrator) in place,
+    leaving d untouched -- Newton solver.step(state_in, state_out) style. d_out then holds the
+    next state AND this step's intermediates (qacc/efc/M). Under a wp.Tape with adjoint.py's backward
+    registered, records ONE analytic adjoint (d_out.grad -> d.grad); distinct in/out buffers per
+    step let the tape chain multi-step BPTT without in-place hazards. See MJPLAN.md §6.3.
+  """
+  inplace = d_out is None
+  if inplace:
+    d_out = d
+
+  rt = wp._src.context.runtime
+  tape = rt.tape if rt is not None else None
+  # Out-of-place under a tape with an analytic backward: pause recording across the WHOLE forward
+  # (state copy + the ~90 forward-only physics kernels) so none of it lands on the tape -- the
+  # copy's wp.copy adjoints would otherwise double-count against adjoint.py's analytic record_func,
+  # which alone owns the step's VJP (d_out.grad -> d.grad). See MJPLAN.md §6.3.
+  record = (not inplace) and (tape is not None) and (_backward_hook is not None)
+  if record:
+    rt.tape = None
+  try:
+    if not inplace:
+      _copy_state(d, d_out)
+    forward(m, d_out)
+    if m.opt.integrator == IntegratorType.EULER:
+      euler(m, d_out)
+    elif m.opt.integrator == IntegratorType.RK4:
+      rungekutta4(m, d_out)
+    elif m.opt.integrator in (IntegratorType.IMPLICITFAST, IntegratorType.IMPLICIT):
+      implicit(m, d_out)
+    else:
+      raise NotImplementedError(f"integrator {m.opt.integrator} not implemented.")
+  finally:
+    if record:
+      rt.tape = tape
+
+  if record:
+    hook = _backward_hook
+    arrays = [a for a in (d.qpos, d.qvel, d.ctrl, d_out.qpos, d_out.qvel) if a.grad]
+    tape.record_func(lambda: hook(m, d, d_out), arrays=arrays)
 
 
 @event_scope
