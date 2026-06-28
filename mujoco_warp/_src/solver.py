@@ -357,7 +357,7 @@ def _eval_elliptic_cone(N: float, T: float, D0: float, mu: float, ufrictionj: fl
 
   ``N = jaref0*mu``; ``T = sqrt(sum_j (jaref_j*friction_j)^2)``; ``ufrictionj = jaref_j*friction_j^2``
   is the row's friction-scaled tangent (ignored for the normal row).  Returns ``vec2(force, cost)``
-  (cost is 0 on tangent rows).  Shared by ``_eval_constraint`` (forward) and ``adjoint._resid_contact``
+  (cost is 0 on tangent rows).  Shared by ``_eval_constraint`` (forward) and ``adjoint._residual_contact``
   (backward, frozen active set; it uses only the force).  Warp inlines ``@wp.func`` so the forward
   stays bit-identical.
   """

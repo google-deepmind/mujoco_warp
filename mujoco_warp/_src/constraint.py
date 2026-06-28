@@ -63,7 +63,7 @@ def _contact_kbimp(
 ) -> wp.vec3:
   """Constraint (k, b, impedance) from solref/solimp at impedance position ``pos_imp``.
 
-  Shared by ``_efc_row`` (forward) and ``adjoint._resid_contact`` (backward).  Warp inlines
+  Shared by ``_efc_row`` (forward) and ``adjoint._residual_contact`` (backward).  Warp inlines
   ``@wp.func``, so factoring this out of ``_efc_row`` leaves the forward codegen bit-identical.
   """
   timeconst = solref[0]
