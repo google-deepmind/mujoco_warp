@@ -54,34 +54,18 @@ def _zero_constraint_counts(
 
 
 @wp.func
-def _efc_row(
-  # Model:
+def _contact_kbimp(
   opt_disableflags: int,
-  # In:
-  worldid: int,
   timestep: float,
-  efcid: int,
-  pos_aref: float,
-  pos_imp: float,
-  invweight: float,
   solref: wp.vec2,
   solimp: vec5,
-  margin: float,
-  vel: float,
-  frictionloss: float,
-  type: int,
-  id: int,
-  # Out:
-  type_out: wp.array2d[int],
-  id_out: wp.array2d[int],
-  pos_out: wp.array2d[float],
-  margin_out: wp.array2d[float],
-  D_out: wp.array2d[float],
-  vel_out: wp.array2d[float],
-  aref_out: wp.array2d[float],
-  frictionloss_out: wp.array2d[float],
-):
-  # calculate kbi
+  pos_imp: float,
+) -> wp.vec3:
+  """Constraint (k, b, impedance) from solref/solimp at impedance position ``pos_imp``.
+
+  Shared by ``_efc_row`` (forward) and ``adjoint._resid_contact`` (backward).  Warp inlines
+  ``@wp.func``, so factoring this out of ``_efc_row`` leaves the forward codegen bit-identical.
+  """
   timeconst = solref[0]
   dampratio = solref[1]
   dmin = solimp[0]
@@ -113,6 +97,43 @@ def _efc_row(
   imp = dmin + imp_y * (dmax - dmin)
   imp = wp.clamp(imp, dmin, dmax)
   imp = wp.where(imp_x > 1.0, dmax, imp)
+
+  return wp.vec3(k, b, imp)
+
+
+@wp.func
+def _efc_row(
+  # Model:
+  opt_disableflags: int,
+  # In:
+  worldid: int,
+  timestep: float,
+  efcid: int,
+  pos_aref: float,
+  pos_imp: float,
+  invweight: float,
+  solref: wp.vec2,
+  solimp: vec5,
+  margin: float,
+  vel: float,
+  frictionloss: float,
+  type: int,
+  id: int,
+  # Out:
+  type_out: wp.array2d[int],
+  id_out: wp.array2d[int],
+  pos_out: wp.array2d[float],
+  margin_out: wp.array2d[float],
+  D_out: wp.array2d[float],
+  vel_out: wp.array2d[float],
+  aref_out: wp.array2d[float],
+  frictionloss_out: wp.array2d[float],
+):
+  # k, b, impedance from solref/solimp at pos_imp (shared @wp.func; Warp inlines it => bit-identical).
+  kbimp = _contact_kbimp(opt_disableflags, timestep, solref, solimp, pos_imp)
+  k = kbimp[0]
+  b = kbimp[1]
+  imp = kbimp[2]
 
   # set outputs
   D_out[worldid, efcid] = 1.0 / wp.max(invweight * (1.0 - imp) / imp, types.MJ_MINVAL)

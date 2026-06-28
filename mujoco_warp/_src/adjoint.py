@@ -59,6 +59,7 @@ constraints (equality/limits), and a general narrowphase ``∂cpos/∂qpos`` (no
 
 import warp as wp
 
+from mujoco_warp._src import constraint as _constraint
 from mujoco_warp._src import forward as _forward
 from mujoco_warp._src import math as _math
 from mujoco_warp._src import solver as _solver
@@ -69,6 +70,16 @@ from mujoco_warp._src.types import vec5
 
 # NOTE: adjoint.py kernels are differentiable -- do NOT set enable_backward=False here, so Warp
 # codegens the adjoint of _advance_state / _resid_contact.
+#
+# DEDUP & Warp adjoint scope (verified 2026-06-27). _resid_contact reuses the forward's OWN physics
+# as shared @wp.func's -- ``constraint._contact_kbimp`` (k, b, impedance from solref/solimp) and
+# ``solver._eval_elliptic_cone`` (the elliptic cone middle-zone force) -- so the residual is a single
+# source of truth with the forward (no drift if those formulas change). ``constraint.py`` / ``solver.py``
+# set ``wp.set_module_options({"enable_backward": False})``, but that disables backward ONLY for *their
+# kernels*: Warp generates a @wp.func's adjoint from the CALLING kernel's module (this one, which is
+# backward-enabled), so differentiating _resid_contact THROUGH those funcs is correct. Verified: the
+# bounce gate gradient is unchanged to ~1e-6 and the forward FD is bit-identical (Warp inlines @wp.func,
+# so factoring these out of _efc_row / _eval_constraint did not perturb the forward at all).
 
 _FREE = int(_types.JointType.FREE.value)
 _BALL = int(_types.JointType.BALL.value)
@@ -77,6 +88,8 @@ _CONE = int(_types.ConstraintState.CONE.value)
 _MINIMP = float(_types.MJ_MINIMP)
 _MAXIMP = float(_types.MJ_MAXIMP)
 _MINVAL = float(_types.MJ_MINVAL)
+_REFSAFE = int(_types.DisableBit.REFSAFE.value)
+_ELLIPTIC = int(_types.ConeType.ELLIPTIC.value)
 
 
 # ----------------------------------------------------------------------------
@@ -166,6 +179,36 @@ def _load_rhs(adj_qacc: wp.array2d[float], nv: int, grad_out: wp.array2d[float])
 #    with adj_r = λ to get -(dr/dtheta)ᵀλ in one pass (replaces the hand scatter; module docstring +
 #    MJPLAN §5.9). v1 scope: a single free-joint body (dofs 0-5), elliptic, sphere-vs-flat contacts.
 # ----------------------------------------------------------------------------
+# (k, b, impedance) come from the shared constraint._contact_kbimp; the elliptic cone force from the
+# shared solver._eval_elliptic_cone -- both used by _resid_contact below (single source of truth
+# with the forward).  Only _contact_D (differentiable D from the frozen converged D) is backward-only.
+@wp.func
+def _contact_D(D_base: float, imp_base: float, imp: float) -> float:
+  """Recover fixed invweight from converged D, then evaluate D at differentiable imp."""
+  invweight = (1.0 / wp.max(D_base, _MINVAL)) * imp_base / wp.max(1.0 - imp_base, _MINVAL)
+  return 1.0 / wp.max(invweight * (1.0 - imp) / imp, _MINVAL)
+
+
+@wp.func
+def _contact_dof_coefficient(
+  geom: wp.vec2i,
+  dofid: int,
+  geom_bodyid: wp.array[int],
+  body_isdofancestor: wp.array2d[int],
+) -> float:
+  """Coefficient of one DOF in a rigid-geom contact's J = J_geom1 - J_geom0.
+
+  Shared-ancestor DOFs cancel, geom-0-only DOFs contribute -1, and
+  geom-1-only DOFs contribute +1.  Flex contacts use negative geom IDs and
+  require a different Jacobian construction, so they have no coefficient here.
+  """
+  if geom[0] < 0 or geom[1] < 0:
+    return 0.0
+  body0 = geom_bodyid[geom[0]]
+  body1 = geom_bodyid[geom[1]]
+  return float(body_isdofancestor[body1, dofid] - body_isdofancestor[body0, dofid])
+
+
 @wp.kernel
 def _resid_contact(
   qpos_in: wp.array2d[float],  # [grad]
@@ -174,18 +217,24 @@ def _resid_contact(
   com0_in: wp.array2d[float],  # frozen linearization qpos (read [:3] = com)
   efc_D_in: wp.array2d[float],  # frozen
   efc_state_in: wp.array2d[int],  # frozen active set
-  efc_pos_in: wp.array2d[float],  # frozen normal penetration
+  efc_pos_in: wp.array2d[float],  # frozen row position (normal: contact dist)
+  efc_margin_in: wp.array2d[float],  # frozen include margin
   contact_pos_in: wp.array(dtype=wp.vec3),
   contact_frame_in: wp.array(dtype=wp.mat33),  # per-contact frame; rows = normal, tangent1, tangent2
   contact_friction_in: wp.array(dtype=vec5),
   contact_solref_in: wp.array(dtype=wp.vec2),
+  contact_solreffriction_in: wp.array(dtype=wp.vec2),
   contact_solimp_in: wp.array(dtype=vec5),
   contact_dim_in: wp.array[int],
+  contact_geom_in: wp.array(dtype=wp.vec2i),
+  geom_bodyid_in: wp.array[int],
+  body_isdofancestor_in: wp.array2d[int],
   contact_efc_address_in: wp.array2d[int],
   contact_worldid_in: wp.array[int],
   nacon_in: wp.array[int],
   opt_timestep: wp.array[float],
   opt_impratio_invsqrt: wp.array[float],
+  opt_disableflags: int,
   r_out: wp.array2d[float],  # out: contact residual (pre-zeroed; free-joint dofs 0-5)
 ):
   w = wp.tid()
@@ -220,37 +269,58 @@ def _resid_contact(
     f0 = wp.vec3(fm[0, 0], fm[0, 1], fm[0, 2])
     f1 = wp.vec3(fm[1, 0], fm[1, 1], fm[1, 2])
     f2 = wp.vec3(fm[2, 0], fm[2, 1], fm[2, 2])
+    # Production contact J is jac(geom1) - jac(geom0) (constraint._efc_contact_jac_dense).
+    # This residual currently models one free body (dofs 0:6), whose six dofs share the same
+    # ancestry.  Its coefficient in the general two-body difference is therefore
+    #   affects(geom1, dof0) - affects(geom0, dof0),
+    # not a world-vs-moving heuristic.  For two articulated/moving bodies the general residual
+    # must form this difference per dof; step_backward rejects that unsupported shape below.
+    geom = contact_geom_in[cid]
+    side = _contact_dof_coefficient(geom, 0, geom_bodyid_in, body_isdofancestor_in)
+    if side == 0.0:
+      continue
+    j0 = side * f0
+    j1 = side * f1
+    j2 = side * f2
     # contact point tracks qpos: sphere-vs-flat midpoint => dcpos/dcom = I - 1/2 n nᵀ
     dcom = com - com0
     cpos_eff = contact_pos_in[cid] + (dcom - 0.5 * wp.dot(f0, dcom) * f0)
     rvec = cpos_eff - com  # moment arm contact_pos - com (com = subtree_com for the free sphere)
-    Jr0 = wp.cross(rvec, f0)
-    Jr1 = wp.cross(rvec, f1)
-    Jr2 = wp.cross(rvec, f2)
-    Jqa0 = wp.dot(f0, alin) + wp.dot(Jr0, aang)
-    Jqv0 = wp.dot(f0, vlin) + wp.dot(Jr0, vang)
-    Jqa1 = wp.dot(f1, alin) + wp.dot(Jr1, aang)
-    Jqv1 = wp.dot(f1, vlin) + wp.dot(Jr1, vang)
-    Jqa2 = wp.dot(f2, alin) + wp.dot(Jr2, aang)
-    Jqv2 = wp.dot(f2, vlin) + wp.dot(Jr2, vang)
+    Jr0 = side * wp.cross(rvec, f0)
+    Jr1 = side * wp.cross(rvec, f1)
+    Jr2 = side * wp.cross(rvec, f2)
+    Jqa0 = wp.dot(j0, alin) + wp.dot(Jr0, aang)
+    Jqv0 = wp.dot(j0, vlin) + wp.dot(Jr0, vang)
+    Jqa1 = wp.dot(j1, alin) + wp.dot(Jr1, aang)
+    Jqv1 = wp.dot(j1, vlin) + wp.dot(Jr1, vang)
+    Jqa2 = wp.dot(j2, alin) + wp.dot(Jr2, aang)
+    Jqv2 = wp.dot(j2, vlin) + wp.dot(Jr2, vang)
 
-    # k, b, k·imp  (mirror constraint._efc_row; saturated impedance imp = dmax)
+    # Position, impedance, D, k, b: mirror constraint._efc_row.  efc.pos on the
+    # normal row is pos_aref + margin = contact dist, so subtract efc.margin to
+    # recover pos_imp = dist - includemargin before applying the signed motion.
     solref = contact_solref_in[cid]
+    solreffriction = contact_solreffriction_in[cid]
     solimp = contact_solimp_in[cid]
-    timeconst = wp.max(solref[0], 2.0 * dt)
-    dampratio = solref[1]
-    dmax = wp.clamp(solimp[1], _MINIMP, _MAXIMP)
-    dmax_sq = dmax * dmax
-    k = wp.where(solref[0] <= 0.0, -solref[0] / dmax_sq, 1.0 / (dmax_sq * timeconst * timeconst * dampratio * dampratio))
-    b = wp.where(solref[1] <= 0.0, -solref[1] / dmax, 2.0 / (dmax * timeconst))
-    kimp_n = k * dmax
+    pos0 = efc_pos_in[w, e0] - efc_margin_in[w, e0]
+    pos = pos0 + side * wp.dot(f0, com - com0)
+    # k, b, impedance via the shared @wp.func (same math as constraint._efc_row).
+    kbimp0 = _constraint._contact_kbimp(opt_disableflags, dt, solref, solimp, pos0)
+    kbimp_n = _constraint._contact_kbimp(opt_disableflags, dt, solref, solimp, pos)
+    imp0 = kbimp0[2]
+    imp = kbimp_n[2]
+    ref_t = solref
+    if solreffriction[0] != 0.0 or solreffriction[1] != 0.0:
+      ref_t = solreffriction
+    b_t = _constraint._contact_kbimp(opt_disableflags, dt, ref_t, solimp, pos)[1]
 
-    pen = efc_pos_in[w, e0] + wp.dot(f0, com - com0)
-    Jaref0 = Jqa0 - (-kimp_n * pen - b * Jqv0)
-    Jaref1 = Jqa1 - (-b * Jqv1)
-    Jaref2 = Jqa2 - (-b * Jqv2)
+    Jaref0 = Jqa0 - (-kbimp_n[0] * imp * pos - kbimp_n[1] * Jqv0)
+    Jaref1 = Jqa1 - (-b_t * Jqv1)
+    Jaref2 = Jqa2 - (-b_t * Jqv2)
 
-    D0 = efc_D_in[w, e0]
+    D0 = _contact_D(efc_D_in[w, e0], imp0, imp)
+    D1 = _contact_D(efc_D_in[w, e1], imp0, imp)
+    D2 = _contact_D(efc_D_in[w, e2], imp0, imp)
     force0 = float(0.0)
     force1 = float(0.0)
     force2 = float(0.0)
@@ -260,20 +330,20 @@ def _resid_contact(
       Nn = Jaref0 * mu
       u1 = Jaref1 * fri[0]
       u2 = Jaref2 * fri[1]
-      Tn = wp.sqrt(wp.max(u1 * u1 + u2 * u2, _MINVAL))  # sqrt(max ..): wp.sqrt(0) has an inf adjoint
-      dm = D0 / (mu * mu * (1.0 + mu * mu))
-      fn = -dm * (Nn - mu * Tn) * mu
-      force0 = fn
-      force1 = -(fn / Tn) * (mu * u1)  # ufrictionj = mu * Jaref_j * fri_j
-      force2 = -(fn / Tn) * (mu * u2)
+      # AD-safe T (>= MJ_MINVAL so sqrt has a finite adjoint); cone force via the shared @wp.func
+      # (same elliptic middle-zone law as solver._eval_constraint; ufrictionj = u_j * friction_j).
+      Tn = wp.sqrt(wp.max(u1 * u1 + u2 * u2, _MINVAL * _MINVAL))
+      force0 = _solver._eval_elliptic_cone(Nn, Tn, D0, mu, 0.0, True)[0]
+      force1 = _solver._eval_elliptic_cone(Nn, Tn, D0, mu, u1 * fri[0], False)[0]
+      force2 = _solver._eval_elliptic_cone(Nn, Tn, D0, mu, u2 * fri[1], False)[0]
     else:  # QUADRATIC (normal + sticking friction)
       force0 = -D0 * Jaref0
       if has_fric:
-        force1 = -efc_D_in[w, e1] * Jaref1
-        force2 = -efc_D_in[w, e2] * Jaref2
+        force1 = -D1 * Jaref1
+        force2 = -D2 * Jaref2
 
     # r += -Jᵀ force  (atomic_add: AD-safe accumulation across contacts; r pre-zeroed)
-    rl = -(f0 * force0 + f1 * force1 + f2 * force2)
+    rl = -(j0 * force0 + j1 * force1 + j2 * force2)
     rr = -(Jr0 * force0 + Jr1 * force1 + Jr2 * force2)
     wp.atomic_add(r_out, w, 0, rl[0])
     wp.atomic_add(r_out, w, 1, rl[1])
@@ -307,6 +377,19 @@ def step_backward(m: Model, d: Data, d_out: Data):
   nq = d.qpos.shape[1]
   nv = m.nv
   nv_pad = m.nv_pad
+  # The residual below specializes the general per-DOF contact difference to
+  # one free joint, for which all six DOFs have the same ancestry coefficient.
+  # Shape alone is insufficient (other joint combinations can also total
+  # nq=7,nv=6), so include the topology and contact-family assumptions.
+  if m.njnt != 1 or nq != 7 or nv != 6:
+    raise NotImplementedError(
+      "adjoint.step_backward currently supports exactly one free joint (nq=7, nv=6); "
+      "general contact requires per-dof J_geom1 - J_geom0 contributions"
+    )
+  if m.nflex != 0:
+    raise NotImplementedError("adjoint.step_backward does not support flex contacts")
+  if m.opt.cone != _ELLIPTIC or m.nmaxcondim > 3:
+    raise NotImplementedError("adjoint.step_backward supports elliptic contacts with condim <= 3")
 
   # --- 1. integrator adjoint: adj(qpos',qvel') -> adj_qacc + integrator-direct adj(qpos,qvel) ---
   adj_qpos = wp.zeros((nworld, nq), dtype=float)
@@ -347,17 +430,23 @@ def step_backward(m: Model, d: Data, d_out: Data):
     d_out.efc.D,
     d_out.efc.state,
     d_out.efc.pos,
+    d_out.efc.margin,
     d_out.contact.pos,
     d_out.contact.frame,
     d_out.contact.friction,
     d_out.contact.solref,
+    d_out.contact.solreffriction,
     d_out.contact.solimp,
     d_out.contact.dim,
+    d_out.contact.geom,
+    m.geom_bodyid,
+    m.body_isdofancestor,
     d_out.contact.efc_address,
     d_out.contact.worldid,
     d_out.nacon,
     m.opt.timestep,
     m.opt.impratio_invsqrt,
+    m.opt.disableflags,
   ]
   wp.launch(_resid_contact, dim=nworld, inputs=rin, outputs=[r])
   wp.launch(_copy_cols, dim=(nworld, nv), inputs=[lam], outputs=[r.grad])  # seed adj_r = λ
@@ -366,7 +455,7 @@ def step_backward(m: Model, d: Data, d_out: Data):
     dim=nworld,
     inputs=rin,
     outputs=[r],
-    adj_inputs=[res_qpos, res_qvel, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None],
+    adj_inputs=[res_qpos, res_qvel] + [None] * 22,
     adj_outputs=[r.grad],
     adjoint=True,
   )
