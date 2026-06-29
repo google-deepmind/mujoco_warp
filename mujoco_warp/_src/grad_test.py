@@ -686,6 +686,44 @@ _HOPPER_CONTACT_XML = """
 """
 
 
+_CONSTRAINT_STATE_XMLS = {
+  "equality_joint": """
+<mujoco>
+  <option timestep="0.005" gravity="0 0 0" jacobian="{jacobian}" solver="Newton" iterations="50"/>
+  <worldbody>
+    <body><joint name="j0" type="slide" axis="1 0 0" damping="20"/><geom type="sphere" size="0.05" mass="1" contype="0" conaffinity="0"/></body>
+    <body><joint name="j1" type="slide" axis="0 1 0" damping="20"/><geom type="sphere" size="0.05" mass="1.2" contype="0" conaffinity="0"/></body>
+  </worldbody>
+  <equality><joint joint1="j0" joint2="j1" polycoef="0 1 0 0 0" solref="0.02 1" solimp="0.2 0.9 0.8 0.5 2"/></equality>
+  <actuator><motor joint="j0" gear="1"/><motor joint="j1" gear="1"/></actuator>
+  <keyframe><key qpos="0.2 -0.1" qvel="0.3 -0.2" ctrl="0.1 -0.05"/></keyframe>
+</mujoco>
+""",
+  "limit_tendon": """
+<mujoco>
+  <option timestep="0.005" gravity="0 0 0" jacobian="{jacobian}" solver="Newton" iterations="50"/>
+  <worldbody>
+    <body><joint name="j0" type="slide" axis="1 0 0" damping="20"/><geom type="sphere" size="0.05" mass="1" contype="0" conaffinity="0"/></body>
+    <body><joint name="j1" type="slide" axis="0 1 0" damping="20"/><geom type="sphere" size="0.05" mass="1" contype="0" conaffinity="0"/></body>
+  </worldbody>
+  <tendon><fixed name="t0" limited="true" range="0 0.2" solreflimit="0.02 1" solimplimit="0.2 0.9 0.8 0.5 2"><joint joint="j0" coef="1"/><joint joint="j1" coef="1"/></fixed></tendon>
+  <actuator><motor joint="j0" gear="1"/><motor joint="j1" gear="1"/></actuator>
+  <keyframe><key qpos="0.3 0.2" qvel="0.2 0.1" ctrl="0.05 -0.02"/></keyframe>
+</mujoco>
+""",
+  "limit_ball": """
+<mujoco>
+  <compiler angle="radian"/>
+  <option timestep="0.005" gravity="0 0 0" jacobian="{jacobian}" solver="Newton" iterations="50"/>
+  <worldbody>
+    <body><joint name="ball" type="ball" limited="true" range="0 0.3" solreflimit="0.02 1" solimplimit="0.2 0.9 0.8 0.5 2"/><geom type="ellipsoid" size="0.08 0.05 0.04" mass="1" contype="0" conaffinity="0"/></body>
+  </worldbody>
+  <keyframe><key qpos="0.95533649 0.29552021 0 0" qvel="0.2 -0.1 0.05"/></keyframe>
+</mujoco>
+""",
+}
+
+
 def _multi_ball_contact_xml(n_bodies, jacobian="dense"):
   """N independent slide-z balls in contact, each with its own motor.
 
@@ -941,6 +979,193 @@ class GradSolverAdjointTest(parameterized.TestCase):
       fd[:, col] = (eval_state(qpos_p, qvel_p) - eval_state(qpos_m, qvel_m)) / (2.0 * eps)
 
     np.testing.assert_allclose(ad, fd, atol=2.0e-5, rtol=2.0e-5, err_msg=f"active {jacobian} limit state VJP mismatch")
+
+  @parameterized.named_parameters(
+    ("equality_dense", "equality_joint", "dense"),
+    ("equality_sparse", "equality_joint", "sparse"),
+    ("tendon_limit_dense", "limit_tendon", "dense"),
+    ("tendon_limit_sparse", "limit_tendon", "sparse"),
+    ("ball_limit_dense", "limit_ball", "dense"),
+    ("ball_limit_sparse", "limit_ball", "sparse"),
+  )
+  @absltest.skipIf(_REQUIRES_GPU, _REQUIRES_GPU_REASON)
+  def test_constraint_family_state_vjp(self, family, jacobian):
+    """Fixed-active equality, tendon, and ball-limit state VJPs must match FD."""
+    xml = _CONSTRAINT_STATE_XMLS[family].format(jacobian=jacobian)
+    mjm = mujoco.MjModel.from_xml_string(xml)
+    mjd = mujoco.MjData(mjm)
+    mujoco.mj_resetDataKeyframe(mjm, mjd, 0)
+    mujoco.mj_forward(mjm, mjd)
+    self.assertGreater(mjd.nefc, 0, f"{family} must have an active constraint")
+
+    q0 = mjd.qpos.copy()
+    v0 = mjd.qvel.copy()
+    ctrl0 = mjd.ctrl.copy()
+    qpos_weight = np.linspace(0.15, 0.85, mjm.nq, dtype=np.float32)
+    qvel_weight = np.linspace(-0.55, 0.65, mjm.nv, dtype=np.float32)
+    expected_type = {
+      "equality_joint": mujoco.mjtConstraint.mjCNSTR_EQUALITY,
+      "limit_tendon": mujoco.mjtConstraint.mjCNSTR_LIMIT_TENDON,
+      "limit_ball": mujoco.mjtConstraint.mjCNSTR_LIMIT_JOINT,
+    }[family]
+
+    def assert_fixed_active_set(d):
+      nefc = int(d.nefc.numpy()[0])
+      efc_type = d.efc.type.numpy()[0, :nefc]
+      efc_state = d.efc.state.numpy()[0, :nefc]
+      family_rows = efc_type == int(expected_type)
+      self.assertEqual(int(np.count_nonzero(family_rows)), 1)
+      self.assertTrue(np.all(efc_state[family_rows] == int(mujoco.mjtConstraintState.mjCNSTRSTATE_QUADRATIC)))
+
+    def eval_loss(qpos, qvel):
+      _, _, m_fd, d_fd = test_data.fixture(xml=xml, keyframe=0)
+      d_fd.qpos.assign(qpos.reshape(1, -1))
+      d_fd.qvel.assign(qvel.reshape(1, -1))
+      if mjm.nu:
+        d_fd.ctrl.assign(ctrl0.reshape(1, -1))
+      mjw.step(m_fd, d_fd)
+      assert_fixed_active_set(d_fd)
+      return float(d_fd.qpos.numpy()[0, : mjm.nq] @ qpos_weight + d_fd.qvel.numpy()[0, : mjm.nv] @ qvel_weight)
+
+    _, _, m_ad, d_ad = test_data.fixture(xml=xml, keyframe=0)
+    enable_grad(d_ad)
+    qpos_in = wp.array(q0.reshape(1, -1), dtype=float, requires_grad=True)
+    qvel_in = wp.array(v0.reshape(1, -1), dtype=float, requires_grad=True)
+    d_ad.qpos = qpos_in
+    d_ad.qvel = qvel_in
+    if mjm.nu:
+      d_ad.ctrl.assign(ctrl0.reshape(1, -1))
+    loss = wp.zeros(1, dtype=float, requires_grad=True)
+    qpos_weight_wp = wp.array(qpos_weight, dtype=float)
+    qvel_weight_wp = wp.array(qvel_weight, dtype=float)
+    tape = wp.Tape()
+    with tape:
+      mjw.step(m_ad, d_ad)
+      wp.launch(
+        _hopper_state_loss_kernel,
+        dim=max(mjm.nq, mjm.nv),
+        inputs=[d_ad.qpos, d_ad.qvel, qpos_weight_wp, qvel_weight_wp, loss],
+      )
+    assert_fixed_active_set(d_ad)
+    tape.backward(loss=loss)
+
+    qpos_grad = qpos_in.grad.numpy()[0, : mjm.nq].astype(np.float64)
+    qvel_grad = qvel_in.grad.numpy()[0, : mjm.nv].astype(np.float64)
+    ad = np.empty(2 * mjm.nv, dtype=np.float64)
+    projection_eps = 1.0e-5
+    for i in range(mjm.nv):
+      direction = np.zeros(mjm.nv)
+      direction[i] = projection_eps
+      q_plus, q_minus = q0.copy(), q0.copy()
+      mujoco.mj_integratePos(mjm, q_plus, direction, 1.0)
+      mujoco.mj_integratePos(mjm, q_minus, direction, -1.0)
+      ad[i] = qpos_grad @ ((q_plus - q_minus) / (2.0 * projection_eps))
+    ad[mjm.nv :] = qvel_grad
+    tape.zero()
+
+    eps = 1.0e-3
+    fd = np.empty_like(ad)
+    for i in range(mjm.nv):
+      direction = np.zeros(mjm.nv)
+      direction[i] = eps
+      q_plus, q_minus = q0.copy(), q0.copy()
+      mujoco.mj_integratePos(mjm, q_plus, direction, 1.0)
+      mujoco.mj_integratePos(mjm, q_minus, direction, -1.0)
+      fd[i] = (eval_loss(q_plus, v0) - eval_loss(q_minus, v0)) / (2.0 * eps)
+
+      v_plus, v_minus = v0.copy(), v0.copy()
+      v_plus[i] += eps
+      v_minus[i] -= eps
+      fd[mjm.nv + i] = (eval_loss(q0, v_plus) - eval_loss(q0, v_minus)) / (2.0 * eps)
+
+    np.testing.assert_allclose(
+      ad,
+      fd,
+      atol=2.0e-3,
+      rtol=2.0e-3,
+      err_msg=f"{family} {jacobian} fixed-active state VJP mismatch",
+    )
+
+  @parameterized.named_parameters(("dense", "dense"), ("sparse", "sparse"))
+  @absltest.skipIf(_REQUIRES_GPU, _REQUIRES_GPU_REASON)
+  def test_tendon_limit_multistep_state_vjp(self, jacobian):
+    """Per-step tendon intermediates preserve a three-step fixed-active VJP."""
+    xml = _CONSTRAINT_STATE_XMLS["limit_tendon"].format(jacobian=jacobian)
+    mjm = mujoco.MjModel.from_xml_string(xml)
+    mjd = mujoco.MjData(mjm)
+    mujoco.mj_resetDataKeyframe(mjm, mjd, 0)
+    mujoco.mj_forward(mjm, mjd)
+    q0 = mjd.qpos.astype(np.float32).copy()
+    v0 = mjd.qvel.astype(np.float32).copy()
+    ctrl0 = mjd.ctrl.astype(np.float32).copy()
+    qpos_weight_np = np.array([0.35, -0.6], dtype=np.float32)
+    qvel_weight_np = np.array([-0.45, 0.8], dtype=np.float32)
+    nsteps = 3
+
+    def assert_fixed_active_set(d):
+      nefc = int(d.nefc.numpy()[0])
+      efc_type = d.efc.type.numpy()[0, :nefc]
+      efc_state = d.efc.state.numpy()[0, :nefc]
+      rows = efc_type == int(mujoco.mjtConstraint.mjCNSTR_LIMIT_TENDON)
+      self.assertEqual(int(np.count_nonzero(rows)), 1)
+      self.assertTrue(np.all(efc_state[rows] == int(mujoco.mjtConstraintState.mjCNSTRSTATE_QUADRATIC)))
+
+    def eval_loss(qpos, qvel):
+      _, _, m_fd, d_fd = test_data.fixture(xml=xml, keyframe=0)
+      d_fd.qpos.assign(qpos.reshape(1, -1))
+      d_fd.qvel.assign(qvel.reshape(1, -1))
+      d_fd.ctrl.assign(ctrl0.reshape(1, -1))
+      for _ in range(nsteps):
+        mjw.step(m_fd, d_fd)
+        assert_fixed_active_set(d_fd)
+      return float(d_fd.qpos.numpy()[0, : mjm.nq] @ qpos_weight_np + d_fd.qvel.numpy()[0, : mjm.nv] @ qvel_weight_np)
+
+    _, _, m_ad, d_ad = test_data.fixture(xml=xml, keyframe=0)
+    enable_grad(d_ad)
+    qpos_ref = wp.array(q0.reshape(1, -1), dtype=float, requires_grad=True)
+    qvel_ref = wp.array(v0.reshape(1, -1), dtype=float, requires_grad=True)
+    d_ad.qpos = qpos_ref
+    d_ad.qvel = qvel_ref
+    d_ad.ctrl.assign(ctrl0.reshape(1, -1))
+    qpos_weight = wp.array(qpos_weight_np, dtype=float)
+    qvel_weight = wp.array(qvel_weight_np, dtype=float)
+    loss = wp.zeros(1, dtype=float, requires_grad=True)
+    tape = wp.Tape()
+    with tape:
+      for _ in range(nsteps):
+        mjw.step(m_ad, d_ad)
+      wp.launch(
+        _hopper_state_loss_kernel,
+        dim=max(mjm.nq, mjm.nv),
+        inputs=[d_ad.qpos, d_ad.qvel, qpos_weight, qvel_weight, loss],
+      )
+    assert_fixed_active_set(d_ad)
+    tape.backward(loss=loss)
+    ad = np.concatenate(
+      [qpos_ref.grad.numpy()[0, : mjm.nq].astype(np.float64), qvel_ref.grad.numpy()[0, : mjm.nv].astype(np.float64)]
+    )
+    tape.zero()
+
+    eps = 1.0e-3
+    fd = np.empty_like(ad)
+    for i in range(mjm.nq):
+      qpos_p, qpos_m = q0.copy(), q0.copy()
+      qpos_p[i] += eps
+      qpos_m[i] -= eps
+      fd[i] = (eval_loss(qpos_p, v0) - eval_loss(qpos_m, v0)) / (2.0 * eps)
+    for i in range(mjm.nv):
+      qvel_p, qvel_m = v0.copy(), v0.copy()
+      qvel_p[i] += eps
+      qvel_m[i] -= eps
+      fd[mjm.nq + i] = (eval_loss(q0, qvel_p) - eval_loss(q0, qvel_m)) / (2.0 * eps)
+
+    np.testing.assert_allclose(
+      ad,
+      fd,
+      atol=3.0e-3,
+      rtol=3.0e-3,
+      err_msg=f"three-step tendon-limit VJP mismatch ({jacobian}): AD={ad} FD={fd}",
+    )
 
   @absltest.skipIf(_REQUIRES_GPU, _REQUIRES_GPU_REASON)
   def test_surrogate_correction_bounded_relative_to_free_body(self):
@@ -1795,7 +2020,7 @@ class GradMultiContactTest(parameterized.TestCase):
     )
 
 
-class GradHopperPersistentContactTest(absltest.TestCase):
+class GradHopperPersistentContactTest(parameterized.TestCase):
   """Temporal contact adjoints compose correctly on an articulated control task."""
 
   @absltest.skipIf(_REQUIRES_GPU, _REQUIRES_GPU_REASON)
@@ -1864,6 +2089,111 @@ class GradHopperPersistentContactTest(absltest.TestCase):
         atol=5.0e-4,
         err_msg=f"Hopper local qpos VJP mismatch ({jacobian}): AD={ad} FD={fd}",
       )
+
+  @parameterized.named_parameters(
+    ("condim3_dense", "dense", 3, "1.41421356 1.41421356 0.005 0.0001 0.0001", 1.0e-3, 1.0e-3, 5.0e-3),
+    ("condim3_sparse", "sparse", 3, "1.41421356 1.41421356 0.005 0.0001 0.0001", 1.0e-3, 1.0e-3, 5.0e-3),
+    ("condim6_dense", "dense", 6, "1.41421356 1.1 0.7 0.4 0.25", 5.0e-4, 3.0e-3, 0.0),
+    ("condim6_sparse", "sparse", 6, "1.41421356 1.1 0.7 0.4 0.25", 5.0e-4, 3.0e-3, 0.0),
+  )
+  @absltest.skipIf(_REQUIRES_GPU, _REQUIRES_GPU_REASON)
+  def test_hopper_elliptic_state_vjp_matches_fd(self, jacobian, condim, friction, eps, atol, rtol):
+    """Fixed CONE-state Hopper qpos/qvel VJPs match central finite differences."""
+    xml = _HOPPER_CONTACT_XML.replace('jacobian="sparse"', f'jacobian="{jacobian}"').replace(
+      'solver="Newton"', 'solver="Newton" cone="elliptic"'
+    )
+    xml = xml.replace(
+      '<geom size="0.06 0.195" pos="0.06 0 0"',
+      '<geom name="foot_elliptic" size="0.06 0.195" pos="0.06 0 0"',
+    ).replace(
+      "  <actuator>",
+      f'  <contact>\n    <pair geom1="floor" geom2="foot_elliptic" condim="{condim}" '
+      f'friction="{friction}" solreffriction="0.03 1"/>\n  </contact>\n  <actuator>',
+      1,
+    )
+    mjm = mujoco.MjModel.from_xml_string(xml)
+    mjd = mujoco.MjData(mjm)
+    for _ in range(24):
+      mujoco.mj_step(mjm, mjd)
+    qpos0 = mjd.qpos.astype(np.float32).copy()
+    qvel0 = mjd.qvel.astype(np.float32).copy()
+    qvel0[0] = 1.0
+    if condim == 6:
+      qvel0[2] = 0.35
+      qvel0[-1] = 0.4
+    qpos_indices = tuple(range(mjm.nq)) if condim == 6 else (0, 1, 2, 5)
+    ctrl0 = mjd.ctrl.astype(np.float32).copy()
+    qpos_weight_np = np.linspace(0.2, 1.1, mjm.nq, dtype=np.float32)
+    qvel_weight_np = np.linspace(-0.7, 0.9, mjm.nv, dtype=np.float32)
+
+    def assert_coupled_active_set(d):
+      self.assertEqual(int(d.nacon.numpy()[0]), 2)
+      solreffriction = d.contact.solreffriction.numpy()[:2]
+      self.assertTrue(np.all(solreffriction[:, 0] == np.float32(0.03)))
+      nefc = int(d.nefc.numpy()[0])
+      efc_type = d.efc.type.numpy()[0, :nefc]
+      efc_state = d.efc.state.numpy()[0, :nefc]
+      cone_rows = efc_type == int(mujoco.mjtConstraint.mjCNSTR_CONTACT_ELLIPTIC)
+      self.assertEqual(int(np.count_nonzero(cone_rows)), 2 * condim)
+      self.assertTrue(np.all(efc_state[cone_rows] == int(mujoco.mjtConstraintState.mjCNSTRSTATE_CONE)))
+
+    def eval_loss(qpos, qvel):
+      _, _, m_fd, d_fd = test_data.fixture(xml=xml)
+      d_fd.qpos.assign(qpos.reshape(1, -1))
+      d_fd.qvel.assign(qvel.reshape(1, -1))
+      d_fd.ctrl.assign(ctrl0.reshape(1, -1))
+      mjw.step(m_fd, d_fd)
+      assert_coupled_active_set(d_fd)
+      return float(d_fd.qpos.numpy()[0, : mjm.nq] @ qpos_weight_np + d_fd.qvel.numpy()[0, : mjm.nv] @ qvel_weight_np)
+
+    _, _, m_ad, d_ad = test_data.fixture(xml=xml)
+    enable_grad(d_ad)
+    qpos_ref = wp.array(qpos0.reshape(1, -1), dtype=float, requires_grad=True)
+    qvel_ref = wp.array(qvel0.reshape(1, -1), dtype=float, requires_grad=True)
+    d_ad.qpos = qpos_ref
+    d_ad.qvel = qvel_ref
+    d_ad.ctrl.assign(ctrl0.reshape(1, -1))
+    qpos_weight = wp.array(qpos_weight_np, dtype=float)
+    qvel_weight = wp.array(qvel_weight_np, dtype=float)
+    loss = wp.zeros(1, dtype=float, requires_grad=True)
+    tape = wp.Tape()
+    with tape:
+      mjw.step(m_ad, d_ad)
+      wp.launch(
+        _hopper_state_loss_kernel,
+        dim=max(mjm.nq, mjm.nv),
+        inputs=[d_ad.qpos, d_ad.qvel, qpos_weight, qvel_weight, loss],
+      )
+    self.assertEqual(mjm.opt.cone, mujoco.mjtCone.mjCONE_ELLIPTIC)
+    assert_coupled_active_set(d_ad)
+    tape.backward(loss=loss)
+    ad = np.concatenate(
+      [
+        qpos_ref.grad.numpy()[0, list(qpos_indices)].astype(np.float64),
+        qvel_ref.grad.numpy()[0, : mjm.nv].astype(np.float64),
+      ]
+    )
+    tape.zero()
+
+    fd = np.empty_like(ad)
+    for fdid, i in enumerate(qpos_indices):
+      qpos_p, qpos_m = qpos0.copy(), qpos0.copy()
+      qpos_p[i] += eps
+      qpos_m[i] -= eps
+      fd[fdid] = (eval_loss(qpos_p, qvel0) - eval_loss(qpos_m, qvel0)) / (2.0 * eps)
+    for i in range(mjm.nv):
+      qvel_p, qvel_m = qvel0.copy(), qvel0.copy()
+      qvel_p[i] += eps
+      qvel_m[i] -= eps
+      fd[len(qpos_indices) + i] = (eval_loss(qpos0, qvel_p) - eval_loss(qpos0, qvel_m)) / (2.0 * eps)
+
+    np.testing.assert_allclose(
+      ad,
+      fd,
+      rtol=rtol,
+      atol=atol,
+      err_msg=f"Hopper elliptic condim={condim} state VJP mismatch ({jacobian}): AD={ad} FD={fd}",
+    )
 
   @absltest.skipIf(_REQUIRES_GPU, _REQUIRES_GPU_REASON)
   def test_hopper_persistent_contact_multistep_grad_matches_fd(self):

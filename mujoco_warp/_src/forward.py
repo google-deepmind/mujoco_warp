@@ -707,8 +707,10 @@ def fwd_position(m: Model, d: Data, factorize: bool = True):
   tape = wp._src.context.runtime.tape
   if tape is not None and d.qpos.requires_grad:
     collision_smooth.smooth_contact_to_efc(m, d)
+    from mujoco_warp._src import constraint_smooth
     from mujoco_warp._src.adjoint import capture_contact_adjoint_state
 
+    constraint_smooth.smooth_noncontact_to_efc(m, d)
     d._contact_adjoint_cap = capture_contact_adjoint_state(m, d)
 
   if sleep_enabled:
@@ -1512,7 +1514,10 @@ def _record_solver_adjoint(m: Model, d: Data, qacc_array=None):
         cap["H"] = wp.clone(d.solver_h, requires_grad=False)
         cap["state"] = wp.clone(d.efc.state, requires_grad=False)
         cap["force"] = wp.clone(d.efc.force, requires_grad=False)
-        cap["qacc"] = wp.clone(qacc_array, requires_grad=False)
+        # The incoming adjoint belongs to qacc_array, but the solver fixed point
+        # itself is defined at the raw acceleration produced by solver.solve.
+        cap["qacc"] = wp.clone(d.qacc, requires_grad=False)
+        cap["Jaref"] = wp.clone(d.solver_Jaref, requires_grad=False)
       M_ref = d.M
       H_ref = None if cap is not None else wp.clone(d.solver_h)
       tape.record_func(
@@ -1753,6 +1758,13 @@ def _isolate_intermediates_for_ad(m: Model, d: Data):
   d.xaxis = wp.zeros_like(d.xaxis, requires_grad=True)
   d.subtree_linvel = wp.zeros_like(d.subtree_linvel, requires_grad=True)
   d.subtree_angmom = wp.zeros_like(d.subtree_angmom, requires_grad=True)
+
+  # --- Tendon arrays ---
+  # smooth.tendon() overwrites these every step, while the fixed-active tendon
+  # replay consumes them during backward. Keep each substep's values and
+  # cotangents isolated just like the constraint arrays below.
+  d.ten_J = wp.zeros_like(d.ten_J, requires_grad=True)
+  d.ten_length = wp.zeros_like(d.ten_length, requires_grad=True)
 
   # --- Constraint/contact arrays ---
   # These are overwritten by every step but participate in the native smooth

@@ -572,6 +572,7 @@ def _smooth_contact_to_efc_kernel(
   # Model:
   nv: int,
   opt_timestep: wp.array[float],
+  opt_cone: int,
   opt_disableflags: int,
   opt_impratio_invsqrt: wp.array[float],
   body_parentid: wp.array[int],
@@ -583,6 +584,7 @@ def _smooth_contact_to_efc_kernel(
   dof_bodyid: wp.array[int],
   dof_parentid: wp.array[int],
   geom_bodyid: wp.array[int],
+  is_sparse: bool,
   body_isdofancestor: wp.array2d[int],
   # Data in:
   qvel_in: wp.array2d[float],
@@ -594,16 +596,16 @@ def _smooth_contact_to_efc_kernel(
   contact_includemargin_in: wp.array[float],
   contact_friction_in: wp.array[types.vec5],
   contact_solref_in: wp.array[wp.vec2],
+  contact_solreffriction_in: wp.array[wp.vec2],
   contact_solimp_in: wp.array[types.vec5],
   contact_dim_in: wp.array[int],
   contact_geom_in: wp.array[wp.vec2i],
   contact_efc_address_in: wp.array2d[int],
   contact_worldid_in: wp.array[int],
   contact_type_in: wp.array[int],
+  efc_J_rowadr_in: wp.array2d[int],
   njmax_in: int,
   nacon_in: wp.array[int],
-  is_sparse_in: bool,
-  efc_J_rowadr_in: wp.array2d[int],
   # Data out:
   efc_J_colind_out: wp.array3d[int],
   efc_J_out: wp.array3d[float],
@@ -622,10 +624,15 @@ def _smooth_contact_to_efc_kernel(
     return
 
   condim = contact_dim_in[conid]
-  if condim == 1 and dimid > 0:
-    return
-  elif condim > 1 and dimid >= 2 * (condim - 1):
-    return
+  is_elliptic = opt_cone == int(types.ConeType.ELLIPTIC.value)
+  if is_elliptic:
+    if dimid >= condim:
+      return
+  else:
+    if condim == 1 and dimid > 0:
+      return
+    elif condim > 1 and dimid >= 2 * (condim - 1):
+      return
 
   # Read efc_address — skip if -1 (not active)
   efcid = contact_efc_address_in[conid, dimid]
@@ -654,7 +661,15 @@ def _smooth_contact_to_efc_kernel(
   fri0 = float(0.0)
   frii = float(0.0)
   dimid2 = int(0)
-  if condim > 1:
+  if is_elliptic:
+    if dimid > 0:
+      invweight = invweight * impratio_invsqrt * impratio_invsqrt
+      friction = contact_friction_in[conid]
+      if dimid > 1:
+        fri0 = friction[0]
+        frii = friction[dimid - 1]
+        invweight = invweight * fri0 * fri0 / (frii * frii)
+  elif condim > 1:
     dimid2 = dimid / 2 + 1
     friction = contact_friction_in[conid]
     fri0 = friction[0]
@@ -675,7 +690,7 @@ def _smooth_contact_to_efc_kernel(
   dofid = int(nv - 1)
   # Sparse write cursor: contact rows are stored compressed at efc_J[worldid, 0, rowadr + k].
   rowadr = int(0)
-  if is_sparse_in:
+  if is_sparse:
     rowadr = efc_J_rowadr_in[worldid, efcid]
   nnz = int(0)
 
@@ -710,25 +725,31 @@ def _smooth_contact_to_efc_kernel(
       )
 
       J = float(0.0)
-      Ji = float(0.0)
-
-      for xyz in range(3):
-        jacp_dif = jac2p[xyz] - jac1p[xyz]
-        J += frame[0, xyz] * jacp_dif
+      if is_elliptic:
+        if dimid < 3:
+          frame_row = wp.vec3(frame[dimid, 0], frame[dimid, 1], frame[dimid, 2])
+          J = wp.dot(frame_row, jac2p - jac1p)
+        else:
+          frame_row = wp.vec3(frame[dimid - 3, 0], frame[dimid - 3, 1], frame[dimid - 3, 2])
+          J = wp.dot(frame_row, jac2r - jac1r)
+      else:
+        Ji = float(0.0)
+        for xyz in range(3):
+          jacp_dif = jac2p[xyz] - jac1p[xyz]
+          J += frame[0, xyz] * jacp_dif
+          if condim > 1:
+            if dimid2 < 3:
+              Ji += frame[dimid2, xyz] * jacp_dif
+            else:
+              Ji += frame[dimid2 - 3, xyz] * (jac2r[xyz] - jac1r[xyz])
 
         if condim > 1:
-          if dimid2 < 3:
-            Ji += frame[dimid2, xyz] * jacp_dif
+          if dimid % 2 == 0:
+            J += Ji * frii
           else:
-            Ji += frame[dimid2 - 3, xyz] * (jac2r[xyz] - jac1r[xyz])
+            J -= Ji * frii
 
-      if condim > 1:
-        if dimid % 2 == 0:
-          J += Ji * frii
-        else:
-          J -= Ji * frii
-
-      if is_sparse_in:
+      if is_sparse:
         efc_J_colind_out[worldid, 0, rowadr + nnz] = dofid
         efc_J_out[worldid, 0, rowadr + nnz] = J
         nnz += 1
@@ -744,9 +765,17 @@ def _smooth_contact_to_efc_kernel(
       da = wp.max(da1, da2)
       dofid -= 1
     else:
-      if not is_sparse_in:
+      if not is_sparse:
         efc_J_out[worldid, efcid, dofid] = 0.0
       dofid -= 1
+
+  ref = contact_solref_in[conid]
+  pos_aref = pos
+  if is_elliptic and dimid > 0:
+    friction_ref = contact_solreffriction_in[conid]
+    if friction_ref[0] != 0.0 or friction_ref[1] != 0.0:
+      ref = friction_ref
+    pos_aref = 0.0
 
   # Compute constraint equation row
   _smooth_efc_row(
@@ -754,10 +783,10 @@ def _smooth_contact_to_efc_kernel(
     worldid,
     timestep,
     efcid,
-    pos,
+    pos_aref,
     pos,
     invweight,
-    contact_solref_in[conid],
+    ref,
     contact_solimp_in[conid],
     includemargin,
     Jqvel,
@@ -814,6 +843,7 @@ def smooth_contact_to_efc(m: types.Model, d: types.Data):
       # Model
       m.nv,
       m.opt.timestep,
+      m.opt.cone,
       m.opt.disableflags,
       m.opt.impratio_invsqrt,
       m.body_parentid,
@@ -825,6 +855,7 @@ def smooth_contact_to_efc(m: types.Model, d: types.Data):
       m.dof_bodyid,
       m.dof_parentid,
       m.geom_bodyid,
+      m.is_sparse,
       m.body_isdofancestor,
       # Data in
       d.qvel,
@@ -836,16 +867,16 @@ def smooth_contact_to_efc(m: types.Model, d: types.Data):
       d.contact.includemargin,
       d.contact.friction,
       d.contact.solref,
+      d.contact.solreffriction,
       d.contact.solimp,
       d.contact.dim,
       d.contact.geom,
       d.contact.efc_address,
       d.contact.worldid,
       d.contact.type,
+      d.efc.J_rowadr,
       d.njmax,
       d.nacon,
-      m.is_sparse,
-      d.efc.J_rowadr,
     ],
     outputs=[
       d.efc.J_colind,
