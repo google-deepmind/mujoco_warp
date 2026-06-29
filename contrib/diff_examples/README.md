@@ -20,12 +20,14 @@ python contrib/diff_examples/contact_hopper_torch.py \
   --output viz_out/contact_hopper_control_run.npz
 ```
 
-The committed videos under `media/` show:
+The renderers generate MP4 evidence locally; binary media is intentionally not versioned in this repository. For example:
 
-- `control_convergence.mp4`: two-link trajectory optimization;
-- `control_humanoid.mp4`: smooth-dynamics control on the 21-actuator humanoid benchmark;
-- `contact_hopper_control.mp4`: contact-rich Hopper policy optimization and its AD-vs-FD action check;
-- `gradient_validation.mp4`: the dense/sparse contact, Euler-damping, active-limit, and 32-substep validation matrix.
+```bash
+MUJOCO_GL=egl uv run python contrib/diff_examples/render_contact_hopper.py \
+  viz_out/contact_hopper_control_run.npz viz_out/contact_hopper_control.mp4
+uv run python contrib/diff_examples/render_gradient_validation.py \
+  contrib/diff_examples/gradient_validation.json viz_out/gradient_validation.mp4
+```
 
 Scope:
 
