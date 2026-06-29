@@ -1202,7 +1202,11 @@ def _linesearch_iterative_kernel(ls_iterations: int, cone_type: types.ConeType, 
         swap_hi = swap_hi_hi_next or swap_hi_mid or swap_hi_lo_next
 
         # check for convergence
-        ls_done = (not swap_lo and not swap_hi) or (lo[1] < 0.0 and lo[1] > -gtol) or (hi[1] > 0.0 and hi[1] < gtol)
+        ls_done = (
+          (not swap_lo and not swap_hi)
+          or (lo[0] < 0.0 and lo[1] < 0.0 and lo[1] > -gtol)
+          or (hi[0] < 0.0 and hi[1] > 0.0 and hi[1] < gtol)
+        )
 
         # update alpha if improved
         improved = lo[0] < 0.0 or hi[0] < 0.0
