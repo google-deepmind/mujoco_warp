@@ -51,6 +51,7 @@ BENCHMARKS = [
     "njmax": 1024,
     "nvmax": 64,
     "override": "opt.enableflags=SLEEP",
+    "init_asleep": True,
     "replay": "pick_clutter.npz",
     "assets": [
       (ASSETS[0], "aloha"),
