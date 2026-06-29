@@ -24,7 +24,6 @@ from absl.testing import parameterized
 import mujoco_warp as mjwarp
 from mujoco_warp import test_data
 from mujoco_warp._src import forward
-from mujoco_warp._src import io
 from mujoco_warp._src import island
 from mujoco_warp._src import sleep
 from mujoco_warp._src import types
@@ -34,14 +33,6 @@ wp.set_module_options({"enable_backward": False})
 
 
 class SleepTest(parameterized.TestCase):
-  def setUp(self):
-    super().setUp()
-    io.ENABLE_ISLANDS = True
-
-  def tearDown(self):
-    io.ENABLE_ISLANDS = False
-    super().tearDown()
-
   @parameterized.parameters(1, 2)
   def test_sleep_initiation(self, nworld):
     """Verify that a stationary body on a flat plane goes to sleep."""
@@ -605,6 +596,7 @@ class SleepTest(parameterized.TestCase):
       </mujoco>
       """,
       nworld=nworld,
+      nvmax=4,
     )
 
     # Enable sleep programmatically

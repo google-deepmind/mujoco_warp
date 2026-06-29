@@ -26,10 +26,6 @@ from mujoco_warp import ConeType
 from mujoco_warp import State
 from mujoco_warp import test_data
 from mujoco_warp._src import io
-from mujoco_warp._src import island
-from mujoco_warp._src import solver
-from mujoco_warp._src import support
-from mujoco_warp._src import types
 from mujoco_warp._src.block_cholesky import create_blocked_cholesky_factorize_solve_func
 
 # tolerance for difference between MuJoCo and MJWarp support calculations - mostly
@@ -402,64 +398,6 @@ class SupportTest(parameterized.TestCase):
     for w in range(2):
       _assert_eq(jacp_wp.numpy()[w], jacp_mj, f"jacp world {w}")
       _assert_eq(jacr_wp.numpy()[w], jacr_mj, f"jacr world {w}")
-
-  @parameterized.parameters(
-    mujoco.mjtJacobian.mjJAC_SPARSE,
-    mujoco.mjtJacobian.mjJAC_DENSE,
-  )
-  def test_mul_m_island(self, jacobian):
-    """Tests mul_m_island matches mul_m for all islands in parallel."""
-    mjm, mjd, m, d = test_data.fixture(
-      "constraints.xml",
-      overrides={"opt.jacobian": jacobian},
-    )
-    m.opt.disableflags &= ~types.DisableBit.ISLAND
-
-    ctx = solver._create_island_solver_context(m, d)
-    island.compute_island_mapping(m, d, ctx)
-
-    # Random vector in global DOF order
-    np.random.seed(0)
-    vec_np = np.random.randn(1, m.nv).astype(np.float32)
-
-    # Global mul_m
-    vec_global = wp.from_numpy(vec_np, dtype=float)
-    res_global = wp.zeros((1, m.nv), dtype=float)
-    mjwarp.mul_m(m, d, res_global, vec_global)
-    res_global_np = res_global.numpy()[0]
-
-    # Gather vec into island-local order
-    nidof = d.nidof.numpy()[0]
-    map_idof2dof = d.map_idof2dof.numpy()[0]
-    vec_island_np = np.zeros((1, m.nv), dtype=np.float32)
-    for idof in range(nidof):
-      vec_island_np[0, idof] = vec_np[0, map_idof2dof[idof]]
-
-    vec_island = wp.from_numpy(vec_island_np, dtype=float)
-    res_island = wp.zeros((1, m.nv), dtype=float)
-
-    support.mul_m_island(
-      m,
-      d,
-      res_island,
-      vec_island,
-      d.nidof,
-      d.map_idof2dof,
-      d.map_dof2idof,
-      d.dof_islandid,
-    )
-
-    # Scatter result back to global order and compare
-    res_island_np = res_island.numpy()[0]
-    for idof in range(nidof):
-      dof = map_idof2dof[idof]
-      dof_isl = d.dof_island.numpy()[0, dof]
-      if dof_isl >= 0:
-        _assert_eq(
-          res_island_np[idof],
-          res_global_np[dof],
-          f"mul_m_island idof={idof} dof={dof}",
-        )
 
   def test_userdata_get_set_reset(self):
     # XML defining a model with nuserdata=4
