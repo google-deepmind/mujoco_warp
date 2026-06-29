@@ -707,6 +707,10 @@ def ccd_hfield_kernel_builder(
   return ccd_hfield_kernel
 
 
+_CCD_OVERSUBSCRIBE_WAVES = 4
+_CCD_MIN_BLOCKS = 2
+
+
 @cache_kernel
 def ccd_kernel_builder(
   geomtype1: int,
@@ -1120,10 +1124,6 @@ def ccd_kernel_builder(
       )
 
   return ccd_kernel
-
-
-_CCD_OVERSUBSCRIBE_WAVES = 4
-_CCD_MIN_BLOCKS = 2
 
 
 def _ccd_grid_size(kernel, naconmax: int) -> int:
