@@ -530,6 +530,54 @@ def implicit(m: Model, d: Data):
     _advance(m, d, d.qacc)
 
 
+# Analytic position-gradient hook, set by adjoint.py via register_position_backward_hook (None = off).
+# Consulted in fwd_kinematics under an active wp.Tape (so NOT inside step, which pauses the tape).
+_position_backward_hook = None
+
+
+def register_position_backward_hook(fn):
+  """Register adjoint.py's analytic fwd_kinematics backward (pass None to disable)."""
+  global _position_backward_hook
+  _position_backward_hook = fn
+
+
+@event_scope
+def fwd_kinematics(m: Model, d: Data):
+  """Kinematic position computations (mj_fwdKinematics): body/site/geom poses (kinematics), subtree
+  COM + cdof (com_pos), camera/light, flex, tendon lengths. NO collision / inertia / constraints --
+  the collision-free smooth kinematic subset shared with fwd_position.
+
+  Differentiable-observation entry point: call after step() to refresh site_xpos / xpos / xquat at the
+  new qpos, then read them into a loss. Under a wp.Tape with adjoint.py's position backward registered
+  (and NOT nested inside a tape-paused step), records ONE analytic record_func mapping the derived
+  position quantities' grads back to qpos via the analytic point Jacobian (support.jac) -- never AD-ing
+  the kinematics tree or the sharp collision/constraint stages.
+  """
+  rt = wp._src.context.runtime
+  tape = rt.tape if rt is not None else None
+  record = (tape is not None) and (_position_backward_hook is not None)
+  if record:
+    rt.tape = None  # pause: kinematics kernels run forward-only; the analytic record_func owns the VJP
+  try:
+    smooth.kinematics(m, d)
+    smooth.com_pos(m, d)
+    smooth.camlight(m, d)
+    smooth.flex(m, d)
+    smooth.tendon(m, d)
+    sleep_enabled = bool(m.opt.enableflags & EnableBit.SLEEP) and not bool(m.opt.disableflags & DisableBit.ISLAND)
+    if sleep_enabled and m.ntendon > 0:
+      sleep.wake_tendon(m, d)
+      sleep.update_sleep_trees(m, d)
+  finally:
+    if record:
+      rt.tape = tape
+  if record:
+    hook = _position_backward_hook
+    arrays = [a for a in (d.qpos, d.site_xpos, d.xpos, d.xquat) if a is not None and a.grad]
+    if len(arrays) > 1:  # qpos + at least one differentiated output
+      tape.record_func(lambda: hook(m, d), arrays=arrays)
+
+
 @event_scope
 def fwd_position(m: Model, d: Data, factorize: bool = True):
   """Position-dependent computations.
@@ -539,17 +587,9 @@ def fwd_position(m: Model, d: Data, factorize: bool = True):
     d: The data object containing the current state and output arrays.
     factorize: Flag to factorize interia matrix.
   """
-  smooth.kinematics(m, d)
-  smooth.com_pos(m, d)
-  smooth.camlight(m, d)
-  smooth.flex(m, d)
-  smooth.tendon(m, d)
+  fwd_kinematics(m, d)
 
   sleep_enabled = bool(m.opt.enableflags & EnableBit.SLEEP) and not bool(m.opt.disableflags & DisableBit.ISLAND)
-
-  if sleep_enabled and m.ntendon > 0:
-    sleep.wake_tendon(m, d)
-    sleep.update_sleep_trees(m, d)
 
   smooth.crb(m, d)
   smooth.tendon_armature(m, d)

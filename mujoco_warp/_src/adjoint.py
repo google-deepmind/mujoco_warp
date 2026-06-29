@@ -78,16 +78,23 @@ per-dof J_geom1 - J_geom0 difference), the ``∂cdof/∂qpos`` orientation term,
 ctrl paths, and non-contact constraints (equality/limits); §5.6/§5.9.
 """
 
+import dataclasses
+
 import warp as wp
 
 from mujoco_warp._src import constraint as _constraint
+from mujoco_warp._src import derivative as _derivative
 from mujoco_warp._src import forward as _forward
 from mujoco_warp._src import forward_next as _forward_next
 from mujoco_warp._src import math as _math
+from mujoco_warp._src import passive as _passive
+from mujoco_warp._src import smooth as _smooth
 from mujoco_warp._src import solver as _solver
+from mujoco_warp._src import support as _support
 from mujoco_warp._src import types as _types
 from mujoco_warp._src.types import Data
 from mujoco_warp._src.types import Model
+from mujoco_warp._src.types import vec10f
 from mujoco_warp._src.types import vec5
 from mujoco_warp._src.warp_util import cache_kernel
 
@@ -114,6 +121,9 @@ _MINVAL = float(_types.MJ_MINVAL)
 _REFSAFE = int(_types.DisableBit.REFSAFE.value)
 _ELLIPTIC = int(_types.ConeType.ELLIPTIC.value)
 _PYRAMIDAL = int(_types.ConeType.PYRAMIDAL.value)
+_EULER = int(_types.IntegratorType.EULER.value)
+_EULERDAMP = int(_types.DisableBit.EULERDAMP.value)
+_DAMPER = int(_types.DisableBit.DAMPER.value)
 
 # Static loop bounds (the residual is gated to one free joint, nv=6, valid condim {1,3,4,6}). Used as
 # compile-time literals so Warp UNROLLS the loops inside the @wp.func's and stores each iteration's
@@ -520,6 +530,126 @@ def _sub_write(a: wp.array2d[float], b: wp.array2d[float], out: wp.array2d[float
 
 
 # ----------------------------------------------------------------------------
+# 4. Smooth residual r_smooth = M·qacc - qfrc_smooth, contracted with the SAME IFT λ (the VJP is linear
+#    in r = r_smooth + r_contact, so the two share λ and their input-adjoints sum). ∂qvel and ∂ctrl are
+#    ANALYTIC (exact, cheap, capturable); ∂qpos is FD-of-rne (no analytic form -- added separately).
+#    adj_θ_smooth = -(∂r_smooth/∂θ)ᵀλ.
+# ----------------------------------------------------------------------------
+@wp.kernel
+def _smooth_qvel_vjp(
+  qD_fullm_i: wp.array[int],  # D-structure (full square) row index of entry e
+  qD_fullm_j: wp.array[int],  # D-structure column index of entry e
+  M_D: wp.array2d[float],  # mass matrix in D-structure (M mapped via mapM2D)
+  qLU: wp.array2d[float],  # assembled so (M_D - qLU)/dt = ∂qfrc_smooth/∂qvel (deriv_smooth_vel + rne, no subtract)
+  lam: wp.array2d[float],  # IFT multiplier λ (cols 0:nv valid)
+  opt_timestep: wp.array[float],
+  adj_qvel: wp.array2d[float],  # += Gᵀλ  (G = ∂qfrc_smooth/∂qvel = (M_D - qLU)/dt)
+):
+  """Add adj_qvel_smooth = -(∂r_smooth/∂qvel)ᵀλ = +Gᵀλ to adj_qvel, with G = ∂qfrc_smooth/∂qvel =
+  (M_D - qLU)/dt. The D-structure (qD_fullm) stores the full asymmetric square, so the transpose
+  (Gᵀλ)[col] += G[row,col]·λ[row] is exact even though the Coriolis block is non-symmetric."""
+  w, e = wp.tid()
+  dt = opt_timestep[w % opt_timestep.shape[0]]
+  g = (M_D[w, e] - qLU[w, e]) / dt
+  wp.atomic_add(adj_qvel[w], qD_fullm_j[e], g * lam[w, qD_fullm_i[e]])
+
+
+@wp.kernel
+def _smooth_ctrl_vjp(
+  moment_rownnz: wp.array2d[int],
+  moment_rowadr: wp.array2d[int],
+  moment_colind: wp.array2d[int],
+  actuator_moment: wp.array2d[float],  # sparse actuator_moment (frozen)
+  actuator_gainprm: wp.array2d[vec10f],  # gain = prm[0] for FIXED gaintype (motor/position)
+  lam: wp.array2d[float],
+  adj_ctrl: wp.array2d[float],  # = (∂qfrc_actuator/∂ctrl)ᵀλ = gain·(momentᵀλ)
+):
+  """∂ctrl actuation leaf. qfrc_actuator = momentᵀ·force, force = gain·ctrl (FIXED gaintype), so
+  adj_ctrl_smooth = -(∂r_smooth/∂ctrl)ᵀλ = +(∂qfrc_actuator/∂ctrl)ᵀλ = gain·(momentᵀλ). AFFINE-gain
+  actuators (gain depends on length/vel) are not yet handled (S1 = motors)."""
+  w, actid = wp.tid()
+  rownnz = moment_rownnz[w, actid]
+  rowadr = moment_rowadr[w, actid]
+  mtl = float(0.0)
+  for i in range(rownnz):
+    sparseid = rowadr + i
+    mtl += actuator_moment[w, sparseid] * lam[w, moment_colind[w, sparseid]]
+  gain = actuator_gainprm[w % actuator_gainprm.shape[0], actid][0]
+  adj_ctrl[w, actid] = gain * mtl
+
+
+# ----------------------------------------------------------------------------
+# 5. Smooth ∂qpos via FD-of-rne (no analytic ∂qfrc_smooth/∂qpos exists; AD-ing the CRB/RNE tree is biased,
+#    Re-run the smooth force sub-pipeline at qpos ± eps and central-difference the residual
+#    value r_smooth = M·qacc - qfrc_smooth = rne(flg_acc).qfrc_bias - qfrc_passive - qfrc_actuator.
+# ----------------------------------------------------------------------------
+def _clone_for_fd(d: Data) -> Data:
+  """Deep-clone a Data's wp.arrays (requires_grad OFF) for a forward-only FD scratch -- nested dataclasses
+  recursed, scalars/None shared. The ∂qpos FD must NOT mutate d_out (a grad-tracked array in the tape
+  chain): clobbering it corrupts the cross-step BPTT gradient (Warp reverse-mode + in-place overwrite)."""
+
+  def cl(o):
+    if isinstance(o, wp.array):
+      c = wp.clone(o)
+      c.requires_grad = False
+      return c
+    if dataclasses.is_dataclass(o) and not isinstance(o, type):
+      return dataclasses.replace(o, **{f.name: cl(getattr(o, f.name)) for f in dataclasses.fields(o)})
+    return o
+
+  return cl(d)
+
+
+def _recompute_smooth_forces(m: Model, d: Data):
+  """Recompute qfrc_bias (= M·qacc + Coriolis, via rne flg_acc using the FROZEN d.qacc), qfrc_passive, and
+  qfrc_actuator from d.qpos/qvel/ctrl -- the smooth-force subset of the forward (no collision/constraint/
+  factor/crb; crb is unneeded since rne yields M·qacc directly)."""
+  _smooth.kinematics(m, d)
+  _smooth.com_pos(m, d)
+  _smooth.tendon(m, d)
+  _smooth.transmission(m, d)
+  _smooth.com_vel(m, d)
+  _passive.passive(m, d)
+  _smooth.rne(m, d, flg_acc=True)
+  _smooth.tendon_bias(m, d, d.qfrc_bias)
+  _forward.fwd_actuation(m, d)
+
+
+@wp.kernel
+def _perturb_col(base: wp.array2d[float], col: int, delta: float, out: wp.array2d[float]):
+  """out = base with column `col` shifted by delta (one qpos coordinate, raw -- kinematics renormalizes
+  quaternions, so the raw perturbation is self-consistent with the forward and the integrator adjoint)."""
+  w, j = wp.tid()
+  v = base[w, j]
+  if j == col:
+    v += delta
+  out[w, j] = v
+
+
+@wp.kernel
+def _rsmooth_value(
+  qfrc_bias: wp.array2d[float], qfrc_passive: wp.array2d[float], qfrc_actuator: wp.array2d[float],
+  r_out: wp.array2d[float],
+):
+  """r_smooth = M·qacc - qfrc_smooth = rne(flg_acc).qfrc_bias - qfrc_passive - qfrc_actuator."""
+  w, i = wp.tid()
+  r_out[w, i] = qfrc_bias[w, i] - qfrc_passive[w, i] - qfrc_actuator[w, i]
+
+
+@wp.kernel
+def _fd_qpos_contract(
+  r_plus: wp.array2d[float], r_minus: wp.array2d[float], lam: wp.array2d[float], nv: int, two_eps: float,
+  col: int, adj_qpos: wp.array2d[float],
+):
+  """adj_qpos[:,col] += -(∂r_smooth/∂qpos_col)ᵀλ via central FD: -Σ_i (r_plus_i - r_minus_i)/(2eps)·λ_i."""
+  w = wp.tid()
+  s = float(0.0)
+  for i in range(nv):
+    s += (r_plus[w, i] - r_minus[w, i]) * lam[w, i]
+  adj_qpos[w, col] += -s / two_eps
+
+
+# ----------------------------------------------------------------------------
 # The analytic step backward (registered with forward.py).
 # ----------------------------------------------------------------------------
 def step_backward(m: Model, d: Data, d_out: Data):
@@ -529,19 +659,21 @@ def step_backward(m: Model, d: Data, d_out: Data):
   nq = d.qpos.shape[1]
   nv = m.nv
   nv_pad = m.nv_pad
-  # The residual below specializes the general per-DOF contact difference to
-  # one free joint, for which all six DOFs have the same ancestry coefficient.
-  # Shape alone is insufficient (other joint combinations can also total
-  # nq=7,nv=6), so include the topology and contact-family assumptions.
-  if m.njnt != 1 or nq != 7 or nv != 6:
-    raise NotImplementedError(
-      "adjoint.step_backward currently supports exactly one free joint (nq=7, nv=6); "
-      "general contact requires per-dof J_geom1 - J_geom0 contributions"
-    )
+  # Capability gate (was: one-free-joint-only). _residual_smooth is general over any articulation
+  # (the 4 MuJoCo joint types are all handled by _advance_state, so no joint-type check is needed).
+  # The CONTACT residual is still specialized to a single free body (one global wrench, com = qpos[:3],
+  # dof-0-5 scatter), so it is launched ONLY for that topology (`single_free_body` below); articulated/
+  # multi-body contact awaits the general per-dof jac_dof scatter (S2/S3), and its spec scenes
+  # (hopper/multi_body/...) stay red until then -- a VISIBLE gap, not a silent miscompute.
+  #
+  # All gating here is host-side Model metadata (njnt, nq, nv, cone, nflex). step_backward is the
+  # registered per-step backward hook, so it must stay sync-free / graph-capturable: NO `.numpy()` on
+  # device arrays (e.g. nacon is per-world batched -- a host read both syncs AND only sees world 0).
   if m.nflex != 0:
     raise NotImplementedError("adjoint.step_backward does not support flex contacts")
   if m.opt.cone != _ELLIPTIC and m.opt.cone != _PYRAMIDAL:
     raise NotImplementedError("adjoint.step_backward supports only elliptic/pyramidal cones")
+  single_free_body = m.njnt == 1 and nq == 7 and nv == 6  # the only contact topology supported today
   # condim is mirrored generically (1/3/4/6 -- the valid MuJoCo set; 2/5 cannot be loaded), so no
   # nmaxcondim gate is needed: rotational rows (dimid>=3) are handled in both cone branches.
   residual_contact_kernel = _residual_contact(int(m.opt.cone))  # cone-specialized kernel (cached)
@@ -563,6 +695,34 @@ def step_backward(m: Model, d: Data, d_out: Data):
     adj_outputs=[d_out.qpos.grad, d_out.qvel.grad],
     adjoint=True,
   )
+
+  # --- 1b. damped-Euler integrator adjoint (eulerdamp). forward.euler solved the implicit-damping
+  # velocity update a_damped = (M + dt*D)^{-1} (M*a) before _advance, so the integrator adjoint above
+  # produced adj(a_damped), NOT adj(a) -- a is the solver's PRE-damping root (the IFT residual's qacc).
+  # Since a_damped = (M+dt*D)^{-1} M a, the transpose maps adj(a) = M (M+dt*D)^{-1} adj(a_damped) (M and
+  # M+dt*D are both symmetric; D = diag damping deriv). Rebuild M+dt*D EXACTLY as forward.euler:
+  # _compute_damping_deriv at the INPUT velocity d.qvel (d_out.qvel was overwritten to the integrated
+  # next velocity) then _euler_damp_qfrc adds dt*D to M's diagonal; reuse smooth.factor_solve_i (it
+  # writes only the scratch L/D/x, never a persistent d_out array). No double-count with the smooth-qvel
+  # VJP: the damping force is in qfrc_smooth -> r -> H/λ as before; this factor is the SEPARATE post-solve
+  # remap of the integrated accel. Only the EULER integrator uses this solve (implicitfast folds damping
+  # into its own matrix; those scenes disable eulerdamp), so gate on it.
+  eulerdamp = int(m.opt.integrator) == _EULER and (int(m.opt.disableflags) & (_EULERDAMP | _DAMPER)) == 0
+  if eulerdamp:
+    damp_deriv = wp.empty((nworld, nv), dtype=float)
+    wp.launch(_forward._compute_damping_deriv, dim=(nworld, nv),
+              inputs=[m.dof_damping, m.dof_dampingpoly, d.qvel], outputs=[damp_deriv])
+    MOD = wp.clone(d_out.M)  # M + dt*D, in M's CSR layout
+    wp.launch(_forward._euler_damp_qfrc, dim=(nworld, nv),
+              inputs=[m.opt.timestep, m.M_rownnz, m.M_rowadr, damp_deriv], outputs=[MOD])
+    y_damp = wp.empty((nworld, nv), dtype=float)
+    qLD_s = wp.empty_like(d_out.qLD)
+    qLDiagInv_s = wp.empty((nworld, nv), dtype=float)
+    # y = (M+dt*D)^{-1} adj(a_damped); then adj_qacc <- M y = adj(a).
+    _smooth.factor_solve_i(m, d_out, MOD, qLD_s, qLDiagInv_s, y_damp, adj_qacc)
+    adj_a = wp.empty((nworld, nv), dtype=float)
+    _support.mul_m(m, d_out, adj_a, y_damp)
+    adj_qacc = adj_a
 
   # --- 2. IFT: solve H λ = adj_qacc, reusing the solver's assembly + Cholesky at converged qacc ---
   ctx = _solver._create_solver_context(m, d_out)
@@ -604,17 +764,86 @@ def step_backward(m: Model, d: Data, d_out: Data):
     m.opt.impratio_invsqrt,
     m.opt.disableflags,
   ]
-  wp.launch(residual_contact_kernel, dim=nworld, inputs=rin, outputs=[r])
-  wp.launch(_copy_cols, dim=(nworld, nv), inputs=[lam], outputs=[r.grad])  # seed adj_r = λ
+  if single_free_body:  # contact residual is nv=6-specialized; articulations skip it (res_* stay zero,
+    # handled on-device via the kernel's range(nacon) loop -- no host nacon read)
+    wp.launch(residual_contact_kernel, dim=nworld, inputs=rin, outputs=[r])
+    wp.launch(_copy_cols, dim=(nworld, nv), inputs=[lam], outputs=[r.grad])  # seed adj_r = λ
+    wp.launch(
+      residual_contact_kernel,
+      dim=nworld,
+      inputs=rin,
+      outputs=[r],
+      adj_inputs=[res_qpos, res_qvel] + [None] * 23,
+      adj_outputs=[r.grad],
+      adjoint=True,
+    )
+
+  # --- 4. smooth residual: ∂qvel (analytic) + ∂ctrl (actuation leaf), same λ; sum into adj_qvel/ctrl ---
+  # ∂qvel: G = ∂qfrc_smooth/∂qvel = (M_D - qLU)/dt, with qLU assembled from deriv_smooth_vel (the
+  # passive+actuator part, M - dt·∂(qfrc_passive+qfrc_actuator)/∂qvel, M-structure) -> map_m2d ->
+  # deriv_rne_vel(flg_subtract=FALSE, the Coriolis ∂qfrc_bias/∂qvel). flg_subtract is FALSE -- NOT the
+  # forward `implicit` integrator's True: qfrc_smooth = qfrc_passive + qfrc_actuator - qfrc_bias, so the
+  # bias term must ADD so that (M_D - qLU)/dt = pa - ∂qfrc_bias/∂qvel = ∂qfrc_smooth/∂qvel. (The True
+  # convention gives pa + bias -- right sign for Coriolis ONLY by accident; FD-verified exact for both
+  # Coriolis and damping in _scratch/probe_qderiv_accuracy.py.) Evaluate at the step's linearization
+  # (d.qpos, d.qvel): d_out carries the linearization intermediates (M, cvel, cdof, cinert) but d_out.qvel
+  # was overwritten to the integrated next velocity, so alias d_out.qvel -> d.qvel for the (read-only)
+  # deriv_* calls, then restore.
+  saved_qvel = d_out.qvel
+  d_out.qvel = d.qvel
+  qH_M = wp.empty(d_out.M.shape, dtype=float)
+  _derivative.deriv_smooth_vel(m, d_out, qH_M)  # M - dt·∂(qfrc_passive+qfrc_actuator)/∂qvel (M-structure)
+  qLU = wp.empty((nworld, m.nD), dtype=float)
+  M_D = wp.empty((nworld, m.nD), dtype=float)
+  wp.launch(_forward._map_m2d, dim=(nworld, m.nD), inputs=[m.mapM2D, qH_M], outputs=[qLU])
+  _derivative.deriv_rne_vel(m, d_out, qLU, flg_subtract=False)  # += dt·∂qfrc_bias/∂qvel -> (M_D-qLU)/dt = ∂qfrc_smooth/∂qvel
+  wp.launch(_forward._map_m2d, dim=(nworld, m.nD), inputs=[m.mapM2D, d_out.M], outputs=[M_D])
+  d_out.qvel = saved_qvel
+  # Assemble the ∂qvel VJP by contracting the sparse (D-structure) velocity Jacobian G against λ:
+  # adj_qvel += Gᵀλ, scattered over the nD nonzeros (mujoco_warp has no transpose-apply for this layout).
   wp.launch(
-    residual_contact_kernel,
-    dim=nworld,
-    inputs=rin,
-    outputs=[r],
-    adj_inputs=[res_qpos, res_qvel] + [None] * 23,
-    adj_outputs=[r.grad],
-    adjoint=True,
+    _smooth_qvel_vjp,
+    dim=(nworld, m.nD),
+    inputs=[m.qD_fullm_i, m.qD_fullm_j, M_D, qLU, lam, m.opt.timestep],
+    outputs=[adj_qvel],  # adj_qvel += Gᵀλ
   )
+  if m.nu > 0 and d.ctrl.requires_grad:
+    wp.launch(
+      _smooth_ctrl_vjp,
+      dim=(nworld, m.nu),
+      inputs=[d_out.moment_rownnz, d_out.moment_rowadr, d_out.moment_colind, d_out.actuator_moment,
+              m.actuator_gainprm, lam],
+      outputs=[d.ctrl.grad],
+    )
+
+  # --- 5. smooth ∂qpos via FD-of-rne (no analytic form; AD-rne replaces it at G1). Re-run the smooth
+  # force sub-pipeline at qpos ± eps (qvel/qacc/ctrl frozen at the linearization), central-difference
+  # r_smooth, contract with λ: adj_qpos += -(∂r_smooth/∂qpos)ᵀλ. d_out is TRANSIENT scratch -- this is the
+  # last op and d_out's intermediates have no later reader in one tape.backward (step_{t+1} already
+  # consumed d_out as its input). NOT capture-safe (host eps loop over nq); fine for the FD-validation
+  # stage. nworld is batched within each column; the loop is over the nq coordinates.
+  eps = 1.0e-4
+  # Run the FD on a SEPARATE, non-grad-tracked scratch clone -- never mutate d_out (grad-tracked, in the
+  # tape chain; clobbering it corrupts the cross-step BPTT gradient). Freeze the linearization: scratch
+  # qvel = d.qvel, ctrl = d.ctrl, qacc = d_out.qacc (converged accel; already in the clone). (Cloning a
+  # full Data per step is wasteful -- fine for the FD-validation stage; AD-rne removes the FD at G1.)
+  fd = _clone_for_fd(d_out)
+  wp.copy(fd.qvel, d.qvel)
+  if m.nu > 0:
+    wp.copy(fd.ctrl, d.ctrl)
+  r_plus = wp.empty((nworld, nv), dtype=float)
+  r_minus = wp.empty((nworld, nv), dtype=float)
+  for col in range(nq):
+    wp.launch(_perturb_col, dim=(nworld, nq), inputs=[d.qpos, col, eps], outputs=[fd.qpos])
+    _recompute_smooth_forces(m, fd)
+    wp.launch(_rsmooth_value, dim=(nworld, nv),
+              inputs=[fd.qfrc_bias, fd.qfrc_passive, fd.qfrc_actuator], outputs=[r_plus])
+    wp.launch(_perturb_col, dim=(nworld, nq), inputs=[d.qpos, col, -eps], outputs=[fd.qpos])
+    _recompute_smooth_forces(m, fd)
+    wp.launch(_rsmooth_value, dim=(nworld, nv),
+              inputs=[fd.qfrc_bias, fd.qfrc_passive, fd.qfrc_actuator], outputs=[r_minus])
+    wp.launch(_fd_qpos_contract, dim=nworld,
+              inputs=[r_plus, r_minus, lam, nv, 2.0 * eps, col], outputs=[adj_qpos])
 
   # --- write input adjoints (each d == datas[t] is the d_in of exactly one step) ---
   wp.launch(_sub_write, dim=(nworld, nq), inputs=[adj_qpos, res_qpos], outputs=[d.qpos.grad])
@@ -623,8 +852,75 @@ def step_backward(m: Model, d: Data, d_out: Data):
   # mass/inertia/damping, ∂M/∂qpos, ∂qfrc_bias/∂qpos): a planned SEPARATE kernel `_residual_smooth`. The
   # IFT VJP is linear in r = r_smooth + r_contact, so AD it with the SAME λ and SUM its adj_{qpos,qvel,...}
   # into the writes above (λ already uses the full H = M + JᵀG_sJ; no double-count -- M in H is ∂r/∂qacc,
-  # ∂(M·qacc)/∂θ in r_smooth is w.r.t. θ). Omitted now: qpos/qvel-independent for the gravity-only free
-  # body. See MJPLAN §5.4 / §5.9.
+  # ∂(M·qacc)/∂θ in r_smooth is w.r.t. θ). Omitted now: qpos/qvel-independent for gravity-only free body.
 
 
 _forward.register_backward_hook(step_backward)
+
+
+# ============================================================================================
+# Analytic position backward for forward.fwd_kinematics (differentiable observations).
+#
+# fwd_kinematics maps qpos -> {site_xpos, xpos, xquat, ...} via the (smooth) kinematics tree. We do
+# NOT AD that tree (dynamic-loop bug); instead the VJP is the analytic point Jacobian
+# J = ∂x_site/∂q (support.jac_dof: jacp = cdof_lin + cdof_ang x (point - subtree_com[root])), built
+# from cdof/subtree_com recomputed fresh at qpos on a non-grad scratch clone. adj_qpos = Σ_site Jᵀ·adj.
+# This is the SHAC-ready differentiable-observation primitive; Stage 1 covers site_xpos. NOTE: assumes
+# qpos index == dof index (hinge/slide); free/ball nq!=nv tangent mapping is the quaternion follow-up.
+# ============================================================================================
+
+
+@wp.kernel(enable_backward=False)
+def _site_jac_vjp(
+  # Model:
+  body_parentid: wp.array[int],
+  body_rootid: wp.array[int],
+  dof_bodyid: wp.array[int],
+  body_isdofancestor: wp.array2d[int],
+  site_bodyid: wp.array[int],
+  # Data (scratch, fresh at qpos):
+  subtree_com: wp.array2d[wp.vec3],
+  cdof: wp.array2d[wp.spatial_vector],
+  site_xpos: wp.array2d[wp.vec3],
+  # adjoint of site_xpos (= d.site_xpos.grad):
+  adj_site: wp.array2d[wp.vec3],
+  nsite: int,
+  # Out (accumulate):
+  adj_qpos: wp.array2d[float],
+):
+  """adj_qpos[w, i] += Σ_site (∂site_xpos/∂q_i)ᵀ · adj_site[w, site]. Forward kernel (enable_backward
+  off): the site loop is dynamic but runs in FORWARD mode (manual VJP), so it is safe."""
+  w, i = wp.tid()
+  acc = float(0.0)
+  for s in range(nsite):
+    jacp, jacr = _support.jac_dof(
+      body_parentid, body_rootid, dof_bodyid, body_isdofancestor,
+      subtree_com, cdof, site_xpos[w, s], site_bodyid[s], i, w,
+    )
+    acc += wp.dot(jacp, adj_site[w, s])
+  adj_qpos[w, i] += acc
+
+
+def fwd_kinematics_backward(m: Model, d: Data):
+  """Analytic position VJP for forward.fwd_kinematics: adj(site_xpos) -> adj(qpos) via the analytic
+  site Jacobian. Recompute kinematics+com_pos on a non-grad scratch clone at d.qpos (fresh
+  site_xpos/cdof/subtree_com -- no staleness, no kinematics-tree AD), then scatter Jᵀ·adj into
+  d.qpos.grad. Registered as forward's position backward hook (consulted by fwd_kinematics under a
+  tape; step pauses the tape so its internal fwd_kinematics never double-records)."""
+  if m.nsite == 0 or d.qpos.grad is None or d.site_xpos.grad is None:
+    return
+  fd = _clone_for_fd(d)  # value-only scratch; refresh kinematics state at qpos
+  _smooth.kinematics(m, fd)
+  _smooth.com_pos(m, fd)
+  wp.launch(
+    _site_jac_vjp,
+    dim=(d.nworld, m.nv),
+    inputs=[
+      m.body_parentid, m.body_rootid, m.dof_bodyid, m.body_isdofancestor, m.site_bodyid,
+      fd.subtree_com, fd.cdof, fd.site_xpos, d.site_xpos.grad, m.nsite,
+    ],
+    outputs=[d.qpos.grad],
+  )
+
+
+_forward.register_position_backward_hook(fwd_kinematics_backward)
