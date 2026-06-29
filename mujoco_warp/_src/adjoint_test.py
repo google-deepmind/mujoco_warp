@@ -1345,6 +1345,352 @@ class SmoothGradientTest(parameterized.TestCase):
     _assert_smooth_grad(self, analytic, fd, cos_min=0.99, rel_max=5e-2, tag="gyroscopic")
 
 
+# Contact-free 2-hinge arm with per-joint armature + viscous damping (the PACE-clean smooth-param subset),
+# EULER + eulerdamp off (so damping is EXPLICIT in qfrc_passive, matching _residual_smooth_local), excited
+# by gravity (qacc) + an initial joint velocity (qvel) so both params are observable.
+_SYSID_ARM = """
+<mujoco>
+  <option timestep="0.004" integrator="Euler" gravity="0 0 -9.81"><flag eulerdamp="disable"/></option>
+  <worldbody>
+    <body pos="0 0 1"><joint name="j0" type="hinge" axis="0 1 0" armature="0.10" damping="0.50"/>
+      <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.04" mass="1"/>
+      <body pos="0.3 0 0"><joint name="j1" type="hinge" axis="0 1 0" armature="0.08" damping="0.40"/>
+        <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.04" mass="1"/></body></body>
+  </worldbody>
+  <keyframe><key qpos="0.5 -0.3" qvel="1.5 -1.0"/></keyframe>
+</mujoco>
+"""
+
+# 1-DOF slide joint with joint Coulomb friction (dof_frictionloss), gravity off, launched with a velocity
+# so it SLIDES -> the friction-loss constraint saturates (force = ±frictionloss, the identifiable regime).
+_FRICTIONLOSS_SLIDE = """
+<mujoco>
+  <option timestep="0.004" integrator="Euler" gravity="0 0 0"><flag eulerdamp="disable"/></option>
+  <worldbody>
+    <body><joint name="s" type="slide" axis="1 0 0" frictionloss="2.0"/>
+      <geom type="box" size="0.1 0.1 0.1" mass="1"/></body>
+  </worldbody>
+  <keyframe><key qvel="3.0"/></keyframe>
+</mujoco>
+"""
+
+
+@wp.kernel
+def _sumsq_qvel_kernel(qvel: wp.array2d[float], loss: wp.array[float]):
+  i = wp.tid()
+  wp.atomic_add(loss, 0, qvel[0, i] * qvel[0, i])
+
+
+def _sysid_taped_grad(mjm, mjd, H, field):
+  """Analytic d(||qvel_H||^2)/d(m.<field>) through the taped rollout (adjoint.py). The param adjoint falls
+  out of the residual-VJP and ACCUMULATES into m.<field>.grad over the rollout (a shared leaf)."""
+  m = mjw.put_model(mjm)
+  arr = getattr(m, field)  # put_model stores it broadcast (stride-0); rebuild contiguous for a clean grad
+  setattr(m, field, wp.array(arr.numpy(), dtype=wp.float32, requires_grad=True))
+  getattr(m, field).grad.zero_()
+  datas = [mjw.put_data(mjm, mjd) for _ in range(H + 1)]
+  for d in datas:
+    d.qpos.requires_grad = True
+    d.qvel.requires_grad = True
+  loss = wp.zeros(1, dtype=wp.float32, requires_grad=True)
+  tape = wp.Tape()
+  with tape:
+    for t in range(H):
+      mjw.step(m, datas[t], datas[t + 1])
+    wp.launch(_sumsq_qvel_kernel, dim=mjm.nv, inputs=[datas[H].qvel], outputs=[loss])
+  tape.backward(loss=loss)
+  return np.nan_to_num(getattr(m, field).grad.numpy()[0].astype(np.float64).copy())
+
+
+def _sysid_mjc_fd_grad(mjm, mjd, H, field, xml=_SYSID_ARM, eps=1e-5):
+  """Float64 MuJoCo-C central FD of ||qvel_H||^2 w.r.t. each component of model.<field> -- the param
+  analog of mjd_transitionFD (which has no model-param mode): a clean, engine-independent oracle."""
+
+  def rollout(vals):
+    m2 = mujoco.MjModel.from_xml_string(xml)
+    getattr(m2, field)[:] = vals
+    md = mujoco.MjData(m2)
+    md.qpos[:] = mjd.qpos
+    md.qvel[:] = mjd.qvel
+    mujoco.mj_forward(m2, md)
+    for _ in range(H):
+      mujoco.mj_step(m2, md)
+    return float(np.dot(md.qvel, md.qvel))
+
+  x0 = getattr(mjm, field).astype(np.float64).copy()
+  g = np.zeros(len(x0))
+  for i in range(len(x0)):
+    xp, xm = x0.copy(), x0.copy()
+    xp[i] += eps
+    xm[i] -= eps
+    g[i] = (rollout(xp) - rollout(xm)) / (2.0 * eps)
+  return g
+
+
+class SysidGradientTest(parameterized.TestCase):
+  """System-identification gradients: dL/d(Model param) via the SAME IFT λ (residual-VJP, §5.11). The
+  param adjoints FALL OUT of the AD'd residual -- no per-param hand VJP. Stage 1: dof_armature, dof_damping
+  (the AD-clean, contact-free PACE subset). Validated vs float64 MuJoCo-C param FD."""
+
+  @parameterized.named_parameters(("armature", "dof_armature"), ("damping", "dof_damping"))
+  def test_smooth_param_grad_matches_fd(self, field):
+    """Excited 2-hinge arm: analytic d(||qvel_H||^2)/d(m.<field>) (taped BPTT through the local smooth
+    residual) vs float64 MuJoCo-C param FD. Both per-joint armature and viscous damping are AD-clean
+    (local; no RNE tree), so the residual-VJP reproduces FD to machine precision."""
+    if not _grad_available():
+      self.skipTest("pending adjoint.py: differentiable step (MJPLAN.md Stage 1/3)")
+    from mujoco_warp._src import adjoint  # noqa: F401
+
+    mjm = mujoco.MjModel.from_xml_string(_SYSID_ARM)
+    mjd = mujoco.MjData(mjm)
+    mujoco.mj_resetDataKeyframe(mjm, mjd, 0)
+    mujoco.mj_forward(mjm, mjd)
+    analytic = _sysid_taped_grad(mjm, mjd, 20, field)
+    fd = _sysid_mjc_fd_grad(mjm, mjd, 20, field)
+    _assert_smooth_grad(self, analytic, fd, cos_min=0.999, rel_max=2e-2, tag=f"sysid:{field}")
+
+  def test_param_grad_observability(self):
+    """The gradient honestly reflects identifiability (§5.11). Starting at REST (qvel0=0), the viscous
+    damping force is 0 over a single step, so d/d(dof_damping) ~ 0; armature stays observable (gravity
+    drives qacc != 0). A nonzero damping grad here would be a bug (un-excited DOF)."""
+    if not _grad_available():
+      self.skipTest("pending adjoint.py: differentiable step (MJPLAN.md Stage 1/3)")
+    from mujoco_warp._src import adjoint  # noqa: F401
+
+    mjm = mujoco.MjModel.from_xml_string(_SYSID_ARM)
+    mjd = mujoco.MjData(mjm)
+    mujoco.mj_resetDataKeyframe(mjm, mjd, 0)
+    mjd.qvel[:] = 0.0  # at rest: damping un-excited, armature still sees gravity-driven qacc
+    mujoco.mj_forward(mjm, mjd)
+    g_arm = _sysid_taped_grad(mjm, mjd, 1, "dof_armature")
+    g_dmp = _sysid_taped_grad(mjm, mjd, 1, "dof_damping")
+    print(f"\n[sysid:observability] H=1 at rest  g_armature={g_arm}  g_damping={g_dmp}")
+    self.assertLess(np.linalg.norm(g_dmp), 1e-9, f"damping grad should be ~0 at rest, got {g_dmp}")
+    self.assertGreater(np.linalg.norm(g_arm), 1e-6, f"armature grad should be nonzero (gravity), got {g_arm}")
+
+  def test_frictionloss_grad_matches_fd(self):
+    """Joint Coulomb friction (dof_frictionloss) via the AD'd NON-CONTACT constraint residual. A sliding
+    slide-joint whose friction-loss constraint is SATURATED (force = ±frictionloss): analytic
+    d(||qvel_H||^2)/d(dof_frictionloss) vs float64 MuJoCo-C param FD. Identifiable only while slipping --
+    the saturated zone is the only frictionloss-dependent one (the gradient honestly reflects it)."""
+    if not _grad_available():
+      self.skipTest("pending adjoint.py: differentiable step (MJPLAN.md Stage 1/3)")
+    from mujoco_warp._src import adjoint  # noqa: F401
+
+    mjm = mujoco.MjModel.from_xml_string(_FRICTIONLOSS_SLIDE)
+    mjd = mujoco.MjData(mjm)
+    mujoco.mj_resetDataKeyframe(mjm, mjd, 0)
+    mujoco.mj_forward(mjm, mjd)
+    analytic = _sysid_taped_grad(mjm, mjd, 20, "dof_frictionloss")
+    fd = _sysid_mjc_fd_grad(mjm, mjd, 20, "dof_frictionloss", xml=_FRICTIONLOSS_SLIDE, eps=1e-3)
+    _assert_smooth_grad(self, analytic, fd, cos_min=0.999, rel_max=2e-2, tag="sysid:frictionloss")
+
+
+# Slide joint pressed against a SOFT lower limit by gravity (settle so it rests on the limit -> the limit
+# constraint is active with a FIXED active set; a stiff transient bounce would instead cross the non-diff
+# make/break boundary). Soft jnt_solimp dmin=0 set at load (like contact dmin=0).
+_LIMIT_SLIDE = """
+<mujoco>
+  <option timestep="0.004" integrator="Euler" gravity="0 0 -9.81"><flag eulerdamp="disable"/></option>
+  <worldbody>
+    <body><joint name="z" type="slide" axis="0 0 1" limited="true" range="0 1.0"/>
+      <geom type="box" size="0.1 0.1 0.1" mass="1"/></body>
+  </worldbody>
+  <keyframe><key qpos="0.05" qvel="-0.5"/></keyframe>
+</mujoco>
+"""
+
+# HINGE limit (scalar LIMIT_JOINT, 1:1 lift): arm pressed against a soft limit by gravity (range upper kept
+# small so the arm rests near-horizontal where the gravity torque firmly holds it on the limit).
+_HINGE_LIMIT = """
+<mujoco>
+  <option timestep="0.004" integrator="Euler" gravity="0 0 -9.81"><flag eulerdamp="disable"/></option>
+  <worldbody>
+    <body pos="0 0 1"><joint name="h" type="hinge" axis="0 1 0" limited="true" range="-2.0 0.3"/>
+      <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.04" mass="1"/></body>
+  </worldbody>
+  <keyframe><key qpos="0" qvel="0"/></keyframe>
+</mujoco>
+"""
+
+# BALL limit (LIMIT_JOINT on a quaternion joint -> the -axis angular Jacobian + the quaternion ∂qpos LIFT):
+# the capsule swings down under gravity until the ball's rotation angle hits the range limit.
+_BALL_LIMIT = """
+<mujoco>
+  <option timestep="0.004" integrator="Euler" gravity="0 0 -9.81"><flag eulerdamp="disable"/></option>
+  <worldbody>
+    <body pos="0 0 1"><joint name="b" type="ball" range="0 0.6"/>
+      <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.04" mass="1"/></body>
+  </worldbody>
+  <keyframe><key qpos="1 0 0 0" qvel="0 0 0"/></keyframe>
+</mujoco>
+"""
+
+# Two hinges coupled by a JOINT equality (j1 follows j0) -> bilateral, always-active constraint coupling.
+_EQUALITY_COUPLE = """
+<mujoco>
+  <option timestep="0.004" integrator="Euler" gravity="0 0 -9.81"><flag eulerdamp="disable"/></option>
+  <worldbody>
+    <body pos="0 0 1"><joint name="j0" type="hinge" axis="0 1 0"/>
+      <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.04" mass="1"/></body>
+    <body pos="0 0.3 1"><joint name="j1" type="hinge" axis="0 1 0"/>
+      <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.04" mass="1"/></body>
+  </worldbody>
+  <equality><joint joint1="j0" joint2="j1"/></equality>
+  <keyframe><key qpos="0.3 0.3" qvel="1.0 1.0"/></keyframe>
+</mujoco>
+"""
+
+
+def _constraint_qvel_grad(mjm, mjd, T, qvel0):
+  """Analytic d(||qvel_T||^2)/d(qvel0) through the taped rollout: exercises the constraint residual's ∂qpos
+  (stiffness) + ∂qvel (velocity-coupling) state-grads for the active equality/limit rows."""
+  m = mjw.put_model(mjm)
+  datas = [mjw.put_data(mjm, mjd) for _ in range(T + 1)]
+  for dd in datas:
+    dd.qpos.requires_grad = True
+    dd.qvel.requires_grad = True
+  datas[0].qvel = wp.array(qvel0.reshape(1, -1).astype(np.float32), dtype=float, requires_grad=True)
+  loss = wp.zeros(1, dtype=float, requires_grad=True)
+  tape = wp.Tape()
+  with tape:
+    for t in range(T):
+      mjw.step(m, datas[t], datas[t + 1])
+    wp.launch(_sumsq_qvel_kernel, dim=mjm.nv, inputs=[datas[T].qvel], outputs=[loss])
+  tape.backward(loss=loss)
+  return np.nan_to_num(datas[0].qvel.grad.numpy()[0].astype(np.float64))
+
+
+def _constraint_fd_qvel(mjm, mjd, T, qvel0, eps=1e-6):
+  """Float64 MuJoCo-C central FD of ||qvel_T||^2 wrt qvel0 (clean engine-independent state-grad oracle)."""
+
+  def L(qv):
+    d = mujoco.MjData(mjm)
+    d.qpos[:] = mjd.qpos
+    d.qvel[:] = qv
+    mujoco.mj_forward(mjm, d)
+    for _ in range(T):
+      mujoco.mj_step(mjm, d)
+    return float(np.dot(d.qvel, d.qvel))
+
+  g = np.zeros(mjm.nv)
+  for i in range(mjm.nv):
+    vp, vm = qvel0.copy(), qvel0.copy()
+    vp[i] += eps
+    vm[i] -= eps
+    g[i] = (L(vp) - L(vm)) / (2 * eps)
+  return g
+
+
+class ConstraintGradientTest(parameterized.TestCase):
+  """NON-CONTACT constraint residual (_residual_constraint) STATE grad: d(||qvel_T||^2)/d(qvel0) through
+  equality + joint-limit rows vs float64 MuJoCo-C FD. Validates the constraint STIFFNESS ∂qpos (k·imp·J)
+  + velocity coupling ∂qvel (b·J) -- the Task-2 non-contact-constraint grads -- at a FIXED active set."""
+
+  @parameterized.named_parameters(
+    ("slide", _LIMIT_SLIDE, 60, [-0.5]),
+    ("hinge", _HINGE_LIMIT, 80, [0.4]),
+    ("ball", _BALL_LIMIT, 90, [0.0, 0.3, 0.0]),
+  )
+  def test_joint_limit_state_grad(self, xml, settle, kick):
+    """LIMIT_JOINT state-grad -- slide/hinge (scalar, 1:1 dof->qpos) and BALL (the -axis angular Jacobian +
+    the quaternion ∂qpos LIFT, _dof_to_qpos's 2·q⊗[0,g]). Analytic d(||qvel_T||^2)/d(qvel0) vs float64
+    MuJoCo-C FD, FIXED active set (settled pressed against a soft limit). Without the constraint residual's
+    ∂qpos stiffness term the grad is ~0/wrong -- a limit's restoring force IS the penetration stiffness."""
+    if not _grad_available():
+      self.skipTest("pending adjoint.py: differentiable step (MJPLAN.md Stage 1/3)")
+    from mujoco_warp._src import adjoint  # noqa: F401
+
+    mjm = mujoco.MjModel.from_xml_string(xml)
+    mjm.jnt_solimp[:, 0] = 0.0  # soft (unsaturated) limit -> smooth, like contact dmin=0
+    mjd = mujoco.MjData(mjm)
+    mujoco.mj_resetDataKeyframe(mjm, mjd, 0)
+    for _ in range(settle):  # settle: rest on the limit (active throughout the short test horizon)
+      mujoco.mj_step(mjm, mjd)
+    mujoco.mj_forward(mjm, mjd)
+    qvel0 = np.array(kick)  # kick into the limit -> stays pressed (no active-set change)
+    analytic = _constraint_qvel_grad(mjm, mjd, 8, qvel0)
+    fd = _constraint_fd_qvel(mjm, mjd, 8, qvel0)
+    _assert_smooth_grad(self, analytic, fd, cos_min=0.999, rel_max=2e-2, tag="constraint:limit")
+
+  def test_equality_state_grad(self):
+    """Two hinges coupled by a joint equality (bilateral, always active): analytic
+    d(||qvel_T||^2)/d(qvel0) vs float64 MuJoCo-C FD -- locks the equality constraint's ∂qpos/∂qvel."""
+    if not _grad_available():
+      self.skipTest("pending adjoint.py: differentiable step (MJPLAN.md Stage 1/3)")
+    from mujoco_warp._src import adjoint  # noqa: F401
+
+    mjm = mujoco.MjModel.from_xml_string(_EQUALITY_COUPLE)
+    mjd = mujoco.MjData(mjm)
+    mujoco.mj_resetDataKeyframe(mjm, mjd, 0)
+    mujoco.mj_forward(mjm, mjd)
+    qvel0 = mjd.qvel.astype(np.float64).copy()
+    analytic = _constraint_qvel_grad(mjm, mjd, 20, qvel0)
+    fd = _constraint_fd_qvel(mjm, mjd, 20, qvel0)
+    _assert_smooth_grad(self, analytic, fd, cos_min=0.999, rel_max=2e-2, tag="constraint:equality")
+
+  def test_jnt_solref_sysid(self):
+    """Joint-limit solref sys-id: jnt_solref (the limit's solver-reference timeconst/dampratio) falls out
+    of the SAME constraint residual by exposing its input-adjoint -- it is fed through _contact_kbimp, so
+    its adjoint is auto-computed (no per-param kernel). Analytic d(||qvel_T||^2)/d(jnt_solref) vs float64
+    MuJoCo-C FD on the settled soft-limit scene. (eq_solref on a near-rigid equality is correctly ~0 --
+    not identifiable -- so jnt_solref is the validatable case.)"""
+    if not _grad_available():
+      self.skipTest("pending adjoint.py: differentiable step (MJPLAN.md Stage 1/3)")
+    from mujoco_warp._src import adjoint  # noqa: F401
+
+    def _settled():
+      mjm = mujoco.MjModel.from_xml_string(_LIMIT_SLIDE)
+      mjm.jnt_solimp[:, 0] = 0.0
+      mjd = mujoco.MjData(mjm)
+      mujoco.mj_resetDataKeyframe(mjm, mjd, 0)
+      for _ in range(60):
+        mujoco.mj_step(mjm, mjd)
+      mujoco.mj_forward(mjm, mjd)
+      return mjm, mjd
+
+    T, qvel0 = 8, np.array([-0.5])
+    mjm, mjd = _settled()
+    m = mjw.put_model(mjm)
+    m.jnt_solref = wp.array(m.jnt_solref.numpy(), dtype=wp.vec2, requires_grad=True)  # vec2; contiguous grad
+    m.jnt_solref.grad.zero_()
+    datas = [mjw.put_data(mjm, mjd) for _ in range(T + 1)]
+    for dd in datas:
+      dd.qpos.requires_grad = True
+      dd.qvel.requires_grad = True
+    datas[0].qvel = wp.array(qvel0.reshape(1, -1).astype(np.float32), dtype=float, requires_grad=True)
+    loss = wp.zeros(1, dtype=float, requires_grad=True)
+    tape = wp.Tape()
+    with tape:
+      for t in range(T):
+        mjw.step(m, datas[t], datas[t + 1])
+      wp.launch(_sumsq_qvel_kernel, dim=mjm.nv, inputs=[datas[T].qvel], outputs=[loss])
+    tape.backward(loss=loss)
+    analytic = m.jnt_solref.grad.numpy()[0].astype(np.float64)  # the limited joint's (timeconst, dampratio)
+
+    base = mjm.jnt_solref.reshape(-1).astype(np.float64).copy()
+
+    def L(vals):
+      m2 = mujoco.MjModel.from_xml_string(_LIMIT_SLIDE)
+      m2.jnt_solimp[:, 0] = 0.0
+      m2.jnt_solref.reshape(-1)[:] = vals
+      d = mujoco.MjData(m2)
+      d.qpos[:] = mjd.qpos
+      d.qvel[:] = qvel0
+      mujoco.mj_forward(m2, d)
+      for _ in range(T):
+        mujoco.mj_step(m2, d)
+      return float(np.dot(d.qvel, d.qvel))
+
+    fd = np.zeros(base.size)
+    for i in range(base.size):
+      vp, vm = base.copy(), base.copy()
+      vp[i] += 1e-6
+      vm[i] -= 1e-6
+      fd[i] = (L(vp) - L(vm)) / 2e-6
+    _assert_smooth_grad(self, analytic, fd, cos_min=0.999, rel_max=2e-2, tag="sysid:jnt_solref")
+
+
 if __name__ == "__main__":
   wp.init()
   absltest.main()
