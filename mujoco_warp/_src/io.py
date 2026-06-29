@@ -39,6 +39,26 @@ def _is_array_spec(typ) -> bool:
   return isinstance(typ, wp.array) or type(typ).__name__ == "_ArrayAnnotation"
 
 
+def _mark_batched(obj):
+  """Recursively set _is_batched = True on all batched warp arrays within obj."""
+  if not dataclasses.is_dataclass(obj):
+    return
+  for f in dataclasses.fields(obj):
+    val = getattr(obj, f.name, None)
+    if val is None:
+      continue
+    if dataclasses.is_dataclass(val):
+      _mark_batched(val)
+      continue
+    if not isinstance(val, wp.array):
+      continue
+    if not _is_array_spec(f.type):
+      continue
+    spec_shape = getattr(f.type, "shape", ())
+    if spec_shape and spec_shape[0] in ("*", "nworld"):
+      val._is_batched = True
+
+
 def _create_array(data: Any, spec, sizes: dict[str, int], batch_size: int = 1) -> wp.array | None:
   """Creates a warp array and populates it with data.
 
@@ -67,12 +87,6 @@ def _create_array(data: Any, spec, sizes: dict[str, int], batch_size: int = 1) -
         data = np.broadcast_to(data, target_shape).copy()
     array = wp.array(data, dtype=spec.dtype, shape=shape)
 
-  if is_batched:
-    # add private attribute for JAX to determine which fields are batched
-    array._is_batched = True
-    if array.shape[0] == 1:
-      # also set stride 0 to 0 which is expected legacy behavior (but is deprecated)
-      array.strides = (0,) + array.strides[1:]
   return array
 
 
@@ -1065,6 +1079,7 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
       batch_size = batch_sizes.get(f.name, 1)
       setattr(m, f.name, _create_array(getattr(m, f.name), f.type, sizes, batch_size))
 
+  _mark_batched(m)
   return m
 
 
@@ -1594,6 +1609,7 @@ def make_data(
   d.dof_cdof.fill_(-1)
   d.cdof_dof.fill_(-1)
 
+  _mark_batched(d)
   return d
 
 
@@ -1880,6 +1896,7 @@ def put_data(
 
   d.nacon = wp.array([mjd.ncon * nworld], dtype=int)
 
+  _mark_batched(d)
   return d
 
 
@@ -3840,4 +3857,5 @@ def create_render_context(
 
   bvh.build_scene_bvh(mjm, mjd, rc, nworld)
 
+  _mark_batched(rc)
   return rc
