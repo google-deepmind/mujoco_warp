@@ -660,6 +660,39 @@ class CollisionTest(parameterized.TestCase):
 
     self.assertEqual(mjd.ncon > 0, d.nacon.numpy()[0] > 0, "If MJ collides, MJW should too")
 
+  def test_per_world_hfield_data(self):
+    """Per-world hfield_data gives each world its own heightfield from one asset."""
+    nworld = 2
+    mjm, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <asset>
+          <hfield name="terrain" nrow="4" ncol="4" size="1 1 0.3 0.1"/>
+        </asset>
+        <worldbody>
+          <geom type="hfield" hfield="terrain"/>
+          <body pos="0 0 0.15">
+            <freejoint/>
+            <geom type="sphere" size="0.1"/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=nworld,
+    )
+
+    # world 0 stays flat (ball clears it), world 1 is raised to full height (ball hits it)
+    heights = np.zeros((nworld, mjm.hfield_data.shape[0]), dtype=np.float32)
+    heights[1] = 1.0
+    m.hfield_data = wp.array(heights, dtype=float)
+
+    mjw.collision(m, d)
+
+    nacon = int(d.nacon.numpy()[0])
+    worldid = d.contact.worldid.numpy()[:nacon]
+    self.assertEqual((worldid == 0).sum(), 0)
+    self.assertGreater((worldid == 1).sum(), 0)
+
   def test_contact_exclude(self):
     """Tests contact exclude."""
     _, _, m, _ = test_data.fixture(

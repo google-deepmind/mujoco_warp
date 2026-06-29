@@ -1659,7 +1659,7 @@ class Model:
   hfield_nrow: array("nhfield", int)
   hfield_ncol: array("nhfield", int)
   hfield_adr: array("nhfield", int)
-  hfield_data: array("nhfielddata", float)
+  hfield_data: array("*", "nhfielddata", float)
   mat_texid: array("*", "nmat", 10, int)
   mat_texrepeat: array("*", "nmat", wp.vec2)
   mat_emission: array("*", "nmat", float)

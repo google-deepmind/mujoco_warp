@@ -203,7 +203,7 @@ def ccd_hfield_kernel_builder(
     hfield_nrow: wp.array[int],
     hfield_ncol: wp.array[int],
     hfield_adr: wp.array[int],
-    hfield_data: wp.array[float],
+    hfield_data: wp.array2d[float],
     pair_dim: wp.array[int],
     pair_solref: wp.array2d[wp.vec2],
     pair_solreffriction: wp.array2d[wp.vec2],
@@ -375,6 +375,7 @@ def ccd_hfield_kernel_builder(
     prism[2, 2] = -size[3]
 
     adr = hfield_adr[geom1_dataid]
+    hfdata_worldid = worldid % hfield_data.shape[0]
 
     hfield_contact_dist = vec_maxconpair()
     hfield_contact_pos = mat_maxconpair()
@@ -404,7 +405,7 @@ def ccd_hfield_kernel_builder(
       for init_i in range(2):
         x = dx * float(cmin) - size[0]
         y = dy * float(r + dr[init_i]) - size[1]
-        z = hfield_data[adr + (r + dr[init_i]) * ncol + cmin] * size[2] + margin
+        z = hfield_data[hfdata_worldid, adr + (r + dr[init_i]) * ncol + cmin] * size[2] + margin
 
         prism[0] = prism[1]
         prism[1] = prism[2]
@@ -432,7 +433,7 @@ def ccd_hfield_kernel_builder(
           # add vert
           x = dx * float(c) - size[0]
           y = dy * float(r + dr[i]) - size[1]
-          z = hfield_data[adr + (r + dr[i]) * ncol + c] * size[2] + margin
+          z = hfield_data[hfdata_worldid, adr + (r + dr[i]) * ncol + c] * size[2] + margin
 
           prism[0] = prism[1]
           prism[1] = prism[2]

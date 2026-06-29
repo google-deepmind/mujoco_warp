@@ -457,7 +457,7 @@ def ray_hfield(
   hfield_nrow: wp.array[int],
   hfield_ncol: wp.array[int],
   hfield_adr: wp.array[int],
-  hfield_data: wp.array[float],
+  hfield_data: wp.array2d[float],
   # In:
   pos: wp.vec3,
   mat: wp.mat33,
@@ -477,6 +477,7 @@ def ray_hfield(
 
   size = hfield_size[hid]
   adr = hfield_adr[hid]
+  hfdata_worldid = worldid % hfield_data.shape[0]
 
   mat_col = wp.vec3(mat[0, 2], mat[1, 2], mat[2, 2])
 
@@ -553,17 +554,17 @@ def ray_hfield(
       v0 = wp.vec3(
         dx * float(c) - size[0],
         dy * float(r) - size[1],
-        hfield_data[adr + r * ncol + c] * size[2],
+        hfield_data[hfdata_worldid, adr + r * ncol + c] * size[2],
       )
       v1 = wp.vec3(
         dx * float(c + 1) - size[0],
         dy * float(r) - size[1],
-        hfield_data[adr + r * ncol + (c + 1)] * size[2],
+        hfield_data[hfdata_worldid, adr + r * ncol + (c + 1)] * size[2],
       )
       v2 = wp.vec3(
         dx * float(c + 1) - size[0],
         dy * float(r + 1) - size[1],
-        hfield_data[adr + (r + 1) * ncol + (c + 1)] * size[2],
+        hfield_data[hfdata_worldid, adr + (r + 1) * ncol + (c + 1)] * size[2],
       )
       sol, normal_tri = _ray_triangle(v0, v1, v2, lpnt, lvec, b0, b1)
       if sol >= 0.0 and (x < 0.0 or sol < x):
@@ -571,11 +572,15 @@ def ray_hfield(
         normal_local = normal_tri
 
       # second triangle
-      v0 = wp.vec3(dx * float(c) - size[0], dy * float(r) - size[1], hfield_data[adr + r * ncol + c] * size[2])
+      v0 = wp.vec3(dx * float(c) - size[0], dy * float(r) - size[1], hfield_data[hfdata_worldid, adr + r * ncol + c] * size[2])
       v1 = wp.vec3(
-        dx * float(c + 1) - size[0], dy * float(r + 1) - size[1], hfield_data[adr + (r + 1) * ncol + (c + 1)] * size[2]
+        dx * float(c + 1) - size[0],
+        dy * float(r + 1) - size[1],
+        hfield_data[hfdata_worldid, adr + (r + 1) * ncol + (c + 1)] * size[2],
       )
-      v2 = wp.vec3(dx * float(c) - size[0], dy * float(r + 1) - size[1], hfield_data[adr + (r + 1) * ncol + c] * size[2])
+      v2 = wp.vec3(
+        dx * float(c) - size[0], dy * float(r + 1) - size[1], hfield_data[hfdata_worldid, adr + (r + 1) * ncol + c] * size[2]
+      )
       sol, normal_tri = _ray_triangle(v0, v1, v2, lpnt, lvec, b0, b1)
       if sol >= 0.0 and (x < 0.0 or sol < x):
         x = sol
@@ -593,21 +598,21 @@ def ray_hfield(
         y = safe_div(lpnt[1] + all[i] * lvec[1] + size[1], dy)
         y0 = wp.max(0.0, wp.min(float(nrow - 2), wp.floor(y)))
         if i == 1:
-          z0 = hfield_data[adr + int(wp.round(y0 + 0.0)) * ncol + ncol - 1]
-          z1 = hfield_data[adr + int(wp.round(y0 + 1.0)) * ncol + ncol - 1]
+          z0 = hfield_data[hfdata_worldid, adr + int(wp.round(y0 + 0.0)) * ncol + ncol - 1]
+          z1 = hfield_data[hfdata_worldid, adr + int(wp.round(y0 + 1.0)) * ncol + ncol - 1]
         else:
-          z0 = hfield_data[adr + int(wp.round(y0 + 0.0)) * ncol]
-          z1 = hfield_data[adr + int(wp.round(y0 + 1.0)) * ncol]
+          z0 = hfield_data[hfdata_worldid, adr + int(wp.round(y0 + 0.0)) * ncol]
+          z1 = hfield_data[hfdata_worldid, adr + int(wp.round(y0 + 1.0)) * ncol]
       # side normal to y-axis
       else:
         y = safe_div(lpnt[0] + all[i] * lvec[0] + size[0], dx)
         y0 = wp.max(0.0, wp.min(float(ncol - 2), wp.floor(y)))
         if i == 3:
-          z0 = hfield_data[adr + int(wp.round(y0 + 0.0)) + (nrow - 1) * ncol]
-          z1 = hfield_data[adr + int(wp.round(y0 + 1.0)) + (nrow - 1) * ncol]
+          z0 = hfield_data[hfdata_worldid, adr + int(wp.round(y0 + 0.0)) + (nrow - 1) * ncol]
+          z1 = hfield_data[hfdata_worldid, adr + int(wp.round(y0 + 1.0)) + (nrow - 1) * ncol]
         else:
-          z0 = hfield_data[adr + int(wp.round(y0 + 0.0))]
-          z1 = hfield_data[adr + int(wp.round(y0 + 1.0))]
+          z0 = hfield_data[hfdata_worldid, adr + int(wp.round(y0 + 0.0))]
+          z1 = hfield_data[hfdata_worldid, adr + int(wp.round(y0 + 1.0))]
 
       # check if point is below line segments
       if z < z0 * (y0 + 1.0 - y) + z1 * (y - y0):
@@ -849,7 +854,7 @@ def _ray_geom_mesh(
   hfield_nrow: wp.array[int],
   hfield_ncol: wp.array[int],
   hfield_adr: wp.array[int],
-  hfield_data: wp.array[float],
+  hfield_data: wp.array2d[float],
   mat_rgba: wp.array2d[wp.vec4],
   # Data in:
   geom_xpos_in: wp.array2d[wp.vec3],
@@ -936,7 +941,7 @@ def _ray(
   hfield_nrow: wp.array[int],
   hfield_ncol: wp.array[int],
   hfield_adr: wp.array[int],
-  hfield_data: wp.array[float],
+  hfield_data: wp.array2d[float],
   mat_rgba: wp.array2d[wp.vec4],
   # Data in:
   geom_xpos_in: wp.array2d[wp.vec3],
