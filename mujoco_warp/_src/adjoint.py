@@ -116,6 +116,12 @@ _FREE = int(_types.JointType.FREE.value)
 _BALL = int(_types.JointType.BALL.value)
 _SATISFIED = int(_types.ConstraintState.SATISFIED.value)
 _CONE = int(_types.ConstraintState.CONE.value)
+_QUADRATIC = int(_types.ConstraintState.QUADRATIC.value)
+_LINEARNEG = int(_types.ConstraintState.LINEARNEG.value)  # saturated friction, force = +frictionloss
+_LINEARPOS = int(_types.ConstraintState.LINEARPOS.value)  # saturated friction, force = -frictionloss
+_FRICTION_DOF = int(_types.ConstraintType.FRICTION_DOF.value)
+_EQUALITY = int(_types.ConstraintType.EQUALITY.value)
+_LIMIT_JOINT = int(_types.ConstraintType.LIMIT_JOINT.value)
 _MINIMP = float(_types.MJ_MINIMP)
 _MAXIMP = float(_types.MJ_MAXIMP)
 _MINVAL = float(_types.MJ_MINVAL)
@@ -637,6 +643,132 @@ def _smooth_ctrl_vjp(
   adj_ctrl[w, actid] = gain * mtl
 
 
+@wp.kernel
+def _neg_cols(src: wp.array2d[float], dst: wp.array2d[float]):
+  """dst[w,i] = -src[w,i] over dst's columns (seed adj_r = -λ for the smooth-param residual, so its
+  adjoint launch drops -(∂r/∂θ)ᵀλ straight into m.<param>.grad)."""
+  w, i = wp.tid()
+  dst[w, i] = -src[w, i]
+
+
+@wp.kernel
+def _accum_neg(res: wp.array2d[float], grad: wp.array2d[float]):
+  """grad -= res over a per-(world,dof) FLOAT model param: the IFT minus (residual seeded with +λ), summed
+  across steps/worlds. Generic over the param (NOT per-param), e.g. dof_frictionloss."""
+  w, i = wp.tid()
+  grad[w, i] -= res[w, i]
+
+
+@wp.kernel
+def _accum_neg_vec2(res: wp.array2d[wp.vec2], grad: wp.array2d[wp.vec2]):
+  """grad -= res over a per-constraint wp.vec2 model param (e.g. *_solref); the vec2 IFT minus-accumulate."""
+  w, i = wp.tid()
+  grad[w, i] -= res[w, i]
+
+
+@wp.kernel(module="unique", enable_backward=True)
+def _residual_smooth_local(
+  qvel_in: wp.array2d[float],  # frozen input velocity (the EULER passive-force linearization point)
+  qacc_in: wp.array2d[float],  # frozen converged acceleration
+  dof_armature_in: wp.array2d[float],  # [grad target] reflected rotor inertia (added to the M diagonal)
+  dof_damping_in: wp.array2d[float],  # [grad target] viscous joint damping
+  r_out: wp.array2d[float],
+):
+  """LOCAL smooth residual ``r[i] = dof_armature[i]·qacc[i] + dof_damping[i]·qvel[i]`` -- exactly the terms
+  of ``r_smooth = M·qacc - qfrc_smooth`` that depend on armature/damping (armature adds to the M diagonal,
+  so ∂(M·qacc)[i]/∂armature[i] = qacc[i]; the viscous passive force is -damping·qvel (passive.py), so
+  -qfrc_passive contributes +damping·qvel ⇒ ∂r[i]/∂damping[i] = qvel[i]). The RNE rigid-body M·qacc,
+  springs, and actuator do NOT depend on these two params, so they are excluded -- no RNE/CRB tree.
+  AD'd with the same IFT λ: the param adjoints adj_θ = -(∂r/∂θ)ᵀλ fall out of one launch
+  (§5.11 near-free rider). Gains/springs are the next terms here (Stage 2);
+  mass/inertia (the RNE tree) are the AD-of-rne follow-up."""
+  w, i = wp.tid()
+  arm = dof_armature_in[w % dof_armature_in.shape[0], i]
+  dmp = dof_damping_in[w % dof_damping_in.shape[0], i]
+  r_out[w, i] = arm * qacc_in[w, i] + dmp * qvel_in[w, i]
+
+
+@wp.kernel(module="unique", enable_backward=True)
+def _residual_constraint(
+  dpos_in: wp.array2d[float],  # [grad: TANGENT ∂qpos] dof-space perturbation seed (zeros); lifted via _dof_to_qpos
+  qvel_in: wp.array2d[float],  # [grad: ∂qvel state] input velocity
+  qacc_in: wp.array2d[float],  # frozen converged accel
+  efc_J_in: wp.array3d[float],  # frozen constraint Jacobian (dense)
+  efc_D_in: wp.array2d[float],  # frozen constraint mass
+  efc_pos_in: wp.array2d[float],  # frozen efc position (= pos_aref + margin)
+  efc_margin_in: wp.array2d[float],  # frozen efc margin
+  efc_state_in: wp.array2d[int],  # frozen active set
+  efc_type_in: wp.array2d[int],  # ConstraintType per row
+  efc_id_in: wp.array2d[int],  # source id (dofid / eqid / jntid)
+  dof_frictionloss_in: wp.array2d[float],  # [grad target] joint Coulomb friction
+  dof_solref_in: wp.array2d[wp.vec2],
+  dof_solimp_in: wp.array2d[vec5],
+  eq_solref_in: wp.array2d[wp.vec2],
+  eq_solimp_in: wp.array2d[vec5],
+  jnt_solref_in: wp.array2d[wp.vec2],
+  jnt_solimp_in: wp.array2d[vec5],
+  nefc_in: wp.array[int],
+  opt_timestep: wp.array[float],
+  opt_disableflags: int,
+  nv: int,
+  r_out: wp.array2d[float],
+):
+  """NON-CONTACT constraint residual ``r += -Jᵀf`` over the frozen efc rows -- equality, joint limit
+  (slide/hinge/BALL), dof Coulomb friction -- mirroring the forward force law (``solver._eval_constraint``)
+  gated by the FROZEN ``efc.state``: SATISFIED -> 0; QUADRATIC -> ``-D·jaref`` (equality / active limit /
+  stuck friction); LINEARNEG/LINEARPOS -> ``±frictionloss`` (saturated friction). The QUADRATIC ``jaref`` is
+  ``J·qacc + k·imp·pos_aref + b·(J·qvel)``, with the constraint violation tracked in TANGENT space:
+  ``pos_aref = pos0 + J·δθ`` where ``δθ = dpos_in`` is the per-dof perturbation (J = frozen ``efc.J``;
+  impedance ``k,imp,b`` frozen @ ``pos0``). So the STIFFNESS ∂(tangent) (``k·imp·J``), velocity coupling
+  ``b·J``, and ``J`` all fall out -- and ``∂r/∂δθ`` (``res_dof``) is lifted to ``∂r/∂qpos`` OUTSIDE the
+  kernel by ``collision_adjoint._dof_to_qpos`` (1:1 for slide/hinge/free-translation, ``2·q⊗[0,g]`` for the
+  free/BALL quaternion), so this is correct for EVERY joint type incl. the nq!=nv quaternion joints. The
+  force is piecewise-LINEAR (no nonlinear reduction, unlike the contact cone) -> AD-safe in the dynamic row
+  loop. AD'd with the SAME IFT λ: ``dof_frictionloss``'s adjoint (Coulomb sys-id) + the per-class
+  solref/solimp adjoints + the rows' tangent ∂qpos/∂qvel state-grad fall out of one launch. (frictionloss
+  read from the MODEL param; the dof_frictionloss->efc copy is unrecorded, like geom_friction->contact.)
+  FRICTION_TENDON / LIMIT_TENDON extend the type filter."""
+  w = wp.tid()
+  dt = opt_timestep[w % opt_timestep.shape[0]]
+  for row in range(nefc_in[w]):  # dynamic loop over this world's efc rows (PIECEWISE-LINEAR -> AD-safe)
+    ty = efc_type_in[w, row]
+    if ty != _EQUALITY and ty != _LIMIT_JOINT and ty != _FRICTION_DOF:
+      continue  # contact rows -> _residual_contact; LIMIT_TENDON / FRICTION_TENDON -> TODO
+    st = efc_state_in[w, row]
+    if st == _SATISFIED:
+      continue
+    cid = efc_id_in[w, row]  # source id: dofid (FRICTION_DOF) / eqid (EQUALITY) / jntid (LIMIT_JOINT)
+    if ty == _FRICTION_DOF and st == _LINEARNEG:  # saturated friction: force = +frictionloss
+      f = dof_frictionloss_in[w % dof_frictionloss_in.shape[0], cid]
+    elif ty == _FRICTION_DOF and st == _LINEARPOS:  # saturated friction: force = -frictionloss
+      f = -dof_frictionloss_in[w % dof_frictionloss_in.shape[0], cid]
+    else:  # QUADRATIC: equality (bilateral) / active limit / stuck friction -> force = -D·jaref
+      pos_aref0 = efc_pos_in[w, row] - efc_margin_in[w, row]  # frozen signed violation (impedance ref)
+      if ty == _FRICTION_DOF:  # per-type solref/solimp -> (k, b, imp) at the frozen pos
+        sid = w % dof_solref_in.shape[0]
+        kbi = _constraint._contact_kbimp(opt_disableflags, dt, dof_solref_in[sid, cid], dof_solimp_in[sid, cid], pos_aref0)
+      elif ty == _EQUALITY:
+        sid = w % eq_solref_in.shape[0]
+        kbi = _constraint._contact_kbimp(opt_disableflags, dt, eq_solref_in[sid, cid], eq_solimp_in[sid, cid], pos_aref0)
+      else:  # _LIMIT_JOINT (slide/hinge: scalar J; ball: the 3-dof angular -axis J)
+        sid = w % jnt_solref_in.shape[0]
+        kbi = _constraint._contact_kbimp(opt_disableflags, dt, jnt_solref_in[sid, cid], jnt_solimp_in[sid, cid], pos_aref0)
+      Jqa = float(0.0)
+      Jqv = float(0.0)
+      pos_d = float(0.0)
+      for i in range(_MAX_NV):
+        if i < nv:
+          jj = efc_J_in[w, row, i]
+          Jqa += jj * qacc_in[w, i]
+          Jqv += jj * qvel_in[w, i]
+          pos_d += jj * dpos_in[w, i]  # ∂pos_aref/∂δθ = efc.J (TANGENT; lifted to qpos by _dof_to_qpos)
+      jaref = Jqa + kbi[0] * kbi[2] * (pos_aref0 + pos_d) + kbi[1] * Jqv
+      f = -efc_D_in[w, row] * jaref
+    for i in range(_MAX_NV):
+      if i < nv:
+        r_out[w, i] += -f * efc_J_in[w, row, i]
+
+
 # ----------------------------------------------------------------------------
 # 5. Smooth ∂qpos via FD-of-rne (no analytic ∂qfrc_smooth/∂qpos exists; AD-ing the CRB/RNE tree is biased,
 #    Re-run the smooth force sub-pipeline at qpos ± eps and central-difference the residual
@@ -903,6 +1035,71 @@ def step_backward(m: Model, d: Data, d_out: Data):
               m.actuator_gainprm, lam],
       outputs=[d.ctrl.grad],
     )
+
+  # --- 4b. smooth-PARAM sys-id (armature, viscous damping): AD the LOCAL smooth residual
+  # r_local = dof_armature⊙qacc + dof_damping⊙qvel with the SAME IFT λ. Marking the Model arrays
+  # requires_grad and seeding adj_r = -λ drops adj_θ = -(∂r/∂θ)ᵀλ straight into m.<param>.grad -- one
+  # launch, no per-param hand VJP (§5.11 near-free rider). A model param is one leaf shared across the
+  # trajectory, so its grad ACCUMULATES (the adjoint launch += into the persistent m.<param>.grad each
+  # step/world; caller zeros it once per trajectory). No RNE tree here -> AD-clean (mass/inertia are the
+  # AD-of-rne follow-up; gains/springs the next terms of this residual).
+  if m.dof_armature.requires_grad or m.dof_damping.requires_grad:
+    r_s = wp.zeros((nworld, nv), dtype=float, requires_grad=True)
+    _rs_inputs = [d.qvel, d_out.qacc, m.dof_armature, m.dof_damping]
+    wp.launch(_residual_smooth_local, dim=(nworld, nv), inputs=_rs_inputs, outputs=[r_s])
+    wp.launch(_neg_cols, dim=(nworld, nv), inputs=[lam], outputs=[r_s.grad])  # seed adj_r = -λ
+    wp.launch(
+      _residual_smooth_local,
+      dim=(nworld, nv),
+      inputs=_rs_inputs,
+      outputs=[r_s],
+      adj_inputs=[None, None,  # qvel/qacc frozen
+                  m.dof_armature.grad if m.dof_armature.requires_grad else None,
+                  m.dof_damping.grad if m.dof_damping.requires_grad else None],
+      adj_outputs=[r_s.grad],
+      adjoint=True,
+    )
+
+  # --- 4c. NON-CONTACT constraint residual (equality / joint-limit slide-hinge-BALL / dof Coulomb friction):
+  # ONE forward + ONE +λ adjoint launch yields every input-adjoint as +(∂r/∂·)ᵀλ into its own res buffer;
+  # the IFT MINUS is applied at WRITE-BACK -- STATE via _sub_write (grad = direct − res), PARAMS via
+  # _accum_neg (grad −= res). ∂qpos is computed in TANGENT (dof) space (res_dof) and lifted to qpos by
+  # collision_adjoint._dof_to_qpos (1:1 slide/hinge, 2·q⊗[0,g] for free/BALL) -- correct for every joint
+  # type incl. the nq!=nv quaternion joints. PARAMS (dof_frictionloss + per-class solref) fall out of the
+  # same launch by exposing their input-adjoints (fed through _contact_kbimp -> auto-diffed; no per-param
+  # kernel). Launched UNCONDITIONALLY (a no-op when no active non-contact row).
+  r_c = wp.zeros((nworld, nv), dtype=float, requires_grad=True)
+  dpos = wp.zeros((nworld, nv), dtype=float, requires_grad=True)  # TANGENT seed (zeros); ∂r/∂δθ -> res_dof
+  res_dof = wp.zeros((nworld, nv), dtype=float)  # per-dof tangent ∂qpos (lifted to res_qpos below)
+  _rc_inputs = [dpos, d.qvel, d_out.qacc, d_out.efc.J, d_out.efc.D, d_out.efc.pos, d_out.efc.margin,
+                d_out.efc.state, d_out.efc.type, d_out.efc.id, m.dof_frictionloss, m.dof_solref, m.dof_solimp,
+                m.eq_solref, m.eq_solimp, m.jnt_solref, m.jnt_solimp, d_out.nefc, m.opt.timestep,
+                m.opt.disableflags, nv]
+  wp.launch(_residual_constraint, dim=nworld, inputs=_rc_inputs, outputs=[r_c])
+  wp.launch(_copy_cols, dim=(nworld, nv), inputs=[lam], outputs=[r_c.grad])  # seed adj_r = +λ
+  _adj_rc = [None] * len(_rc_inputs)
+  _adj_rc[0] = res_dof  # tangent ∂qpos (lifted to res_qpos by _dof_to_qpos below)
+  _adj_rc[1] = res_qvel  # ∂qvel state-grad -> res_qvel (accumulates with contact; subtracted by _sub_write)
+  _res_fl = None  # PARAM sys-id: expose input-adjoints (dof_frictionloss float; per-class *_solref vec2)
+  if m.dof_frictionloss.requires_grad:
+    _res_fl = wp.zeros_like(m.dof_frictionloss)
+    _adj_rc[10] = _res_fl
+  _res_solref = []  # (param_grad, res_buffer) for the vec2 solref params
+  for _slot, _arr in ((11, m.dof_solref), (13, m.eq_solref), (15, m.jnt_solref)):
+    if _arr.requires_grad:
+      _rb = wp.zeros_like(_arr)
+      _adj_rc[_slot] = _rb
+      _res_solref.append((_arr.grad, _rb))
+  wp.launch(_residual_constraint, dim=nworld, inputs=_rc_inputs, outputs=[r_c],
+            adj_inputs=_adj_rc, adj_outputs=[r_c.grad], adjoint=True)
+  # lift the per-dof TANGENT ∂qpos to qpos (quaternion-aware: free/BALL via 2·q⊗[0,g]); accumulates into
+  # res_qpos alongside the contact ∂qpos, then both flow through _sub_write.
+  wp.launch(_collision_adjoint._dof_to_qpos, dim=(nworld, m.njnt),
+            inputs=[m.jnt_type, m.jnt_qposadr, m.jnt_dofadr, d.qpos, res_dof], outputs=[res_qpos])
+  if _res_fl is not None:  # -(∂r/∂fl)ᵀλ into the shared param grad
+    wp.launch(_accum_neg, dim=_res_fl.shape, inputs=[_res_fl], outputs=[m.dof_frictionloss.grad])
+  for _pg, _rb in _res_solref:
+    wp.launch(_accum_neg_vec2, dim=_rb.shape, inputs=[_rb], outputs=[_pg])
 
   # --- 5. smooth ∂qpos via FD-of-rne (no analytic form; AD-rne replaces it at G1). Re-run the smooth
   # force sub-pipeline at qpos ± eps (qvel/qacc/ctrl frozen at the linearization), central-difference
