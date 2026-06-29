@@ -611,6 +611,22 @@ _CONTACT_SLIDE_DENSE_XML = """
 </mujoco>
 """
 
+_ACTIVE_LIMIT_XML = """
+<mujoco>
+  <option timestep="0.005" gravity="0 0 0" jacobian="{jacobian}" solver="Newton" iterations="30">
+    <flag eulerdamp="disable"/>
+  </option>
+  <worldbody>
+    <body>
+      <joint name="slide" type="slide" axis="1 0 0" limited="true" range="-0.1 0.1"/>
+      <geom type="sphere" size="0.05" mass="1" contype="0" conaffinity="0"/>
+    </body>
+  </worldbody>
+  <actuator><motor joint="slide" gear="1"/></actuator>
+</mujoco>
+"""
+
+
 _CONTACT_TANGENTIAL_XML = """
 <mujoco>
   <option gravity="0 0 -9.81" jacobian="dense" solver="Newton" iterations="30"/>
@@ -628,6 +644,44 @@ _CONTACT_TANGENTIAL_XML = """
   <keyframe>
     <key qpos="0 0" qvel="0 0" ctrl="0.2"/>
   </keyframe>
+</mujoco>
+"""
+
+_HOPPER_CONTACT_XML = """
+<mujoco model="hopper-contact-grad">
+  <compiler angle="radian"/>
+  <option timestep="0.005" integrator="Euler" jacobian="sparse" solver="Newton" iterations="30"/>
+  <default>
+    <joint limited="true" armature="1" damping="1"/>
+    <geom condim="3" solimp="0.8 0.8 0.01 0.5 2" margin="0.001" friction="0.9 0.005 0.0001"/>
+    <general ctrllimited="true" ctrlrange="-1 1"/>
+  </default>
+  <worldbody>
+    <geom name="floor" size="20 20 0.125" type="plane"/>
+    <body name="torso" pos="0 0 1.25">
+      <joint name="rootx" pos="0 0 -1.25" axis="1 0 0" type="slide" limited="false" armature="0" damping="0"/>
+      <joint name="rootz" axis="0 0 1" type="slide" ref="1.25" limited="false" armature="0" damping="0"/>
+      <joint name="rooty" axis="0 1 0" type="hinge" limited="false" armature="0" damping="0"/>
+      <geom size="0.05 0.2" type="capsule"/>
+      <body name="thigh" pos="0 0 -0.2">
+        <joint name="thigh_joint" type="hinge" axis="0 -1 0" range="-2.61799 0"/>
+        <geom size="0.05 0.225" pos="0 0 -0.225" type="capsule"/>
+        <body name="leg" pos="0 0 -0.7">
+          <joint name="leg_joint" pos="0 0 0.25" type="hinge" axis="0 -1 0" range="-2.61799 0"/>
+          <geom size="0.04 0.25" type="capsule"/>
+          <body name="foot" pos="0 0 -0.25">
+            <joint name="foot_joint" type="hinge" axis="0 -1 0" range="-0.785398 0.785398"/>
+            <geom size="0.06 0.195" pos="0.06 0 0" quat="0.707107 0 -0.707107 0" type="capsule" friction="2 0.005 0.0001"/>
+          </body>
+        </body>
+      </body>
+    </body>
+  </worldbody>
+  <actuator>
+    <general joint="thigh_joint" gear="200 0 0 0 0 0"/>
+    <general joint="leg_joint" gear="200 0 0 0 0 0"/>
+    <general joint="foot_joint" gear="200 0 0 0 0 0"/>
+  </actuator>
 </mujoco>
 """
 
@@ -705,6 +759,39 @@ def _sum_qpos_x_sq_kernel(
   # squared x-position of world 0 (qpos index 0), for the tangential-friction test
   v = qpos_in[0, 0]
   wp.atomic_add(loss, 0, v * v)
+
+
+@wp.kernel
+def _hopper_control_loss_kernel(
+  # Data in:
+  qpos_in: wp.array2d[float],
+  qvel_in: wp.array2d[float],
+  # In:
+  loss: wp.array[float],
+):
+  """Negative one-step control reward used by the persistent-contact Hopper test."""
+  height_error = qpos_in[0, 1] - 1.25
+  angle = qpos_in[0, 2]
+  reward = qvel_in[0, 0] + 1.0 - 0.25 * height_error * height_error - 0.25 * angle * angle
+  wp.atomic_add(loss, 0, -reward)
+
+
+@wp.kernel
+def _hopper_state_loss_kernel(
+  # Data in:
+  qpos_in: wp.array2d[float],
+  qvel_in: wp.array2d[float],
+  # In:
+  qpos_weight: wp.array[float],
+  qvel_weight: wp.array[float],
+  loss: wp.array[float],
+):
+  """Linear one-step state loss for articulated-contact transition VJPs."""
+  i = wp.tid()
+  if i < qpos_in.shape[1]:
+    wp.atomic_add(loss, 0, qpos_in[0, i] * qpos_weight[i])
+  if i < qvel_in.shape[1]:
+    wp.atomic_add(loss, 0, qvel_in[0, i] * qvel_weight[i])
 
 
 class GradSolverAdjointTest(parameterized.TestCase):
@@ -800,6 +887,60 @@ class GradSolverAdjointTest(parameterized.TestCase):
       rtol=_CONTACT_FD_TOL,
       err_msg="solver adjoint dense jacobian grad mismatch",
     )
+
+  @parameterized.named_parameters(("dense", "dense"), ("sparse", "sparse"))
+  @absltest.skipIf(_REQUIRES_GPU, _REQUIRES_GPU_REASON)
+  def test_active_joint_limit_state_jacobian(self, jacobian):
+    """Active slide-limit state Jacobian must match FD in dense and sparse modes."""
+    xml = _ACTIVE_LIMIT_XML.format(jacobian=jacobian)
+    q0 = np.array([[0.15]], dtype=np.float32)
+    v0 = np.array([[0.2]], dtype=np.float32)
+    ctrl0 = np.array([[0.1]], dtype=np.float32)
+
+    def eval_state(qpos, qvel):
+      _, _, m_fd, d_fd = test_data.fixture(xml=xml)
+      d_fd.qpos.assign(qpos)
+      d_fd.qvel.assign(qvel)
+      d_fd.ctrl.assign(ctrl0)
+      mjw.step(m_fd, d_fd)
+      return np.array([d_fd.qpos.numpy()[0, 0], d_fd.qvel.numpy()[0, 0]])
+
+    def ad_row(loss_on_qpos):
+      mjm, _, m_ad, d_ad = test_data.fixture(xml=xml)
+      enable_grad(d_ad)
+      qpos_ref = d_ad.qpos
+      qvel_ref = d_ad.qvel
+      qpos_ref.assign(q0)
+      qvel_ref.assign(v0)
+      d_ad.ctrl.assign(ctrl0)
+      loss = wp.zeros(1, dtype=float, requires_grad=True)
+      tape = wp.Tape()
+      with tape:
+        mjw.step(m_ad, d_ad)
+        kernel = _sum_qpos_kernel if loss_on_qpos else _sum_qvel_kernel
+        dim = (d_ad.nworld, mjm.nq if loss_on_qpos else mjm.nv)
+        state = d_ad.qpos if loss_on_qpos else d_ad.qvel
+        wp.launch(kernel, dim=dim, inputs=[state, loss])
+      tape.backward(loss=loss)
+      row = np.array([qpos_ref.grad.numpy()[0, 0], qvel_ref.grad.numpy()[0, 0]])
+      tape.zero()
+      return row
+
+    ad = np.stack([ad_row(True), ad_row(False)])
+    eps = 1.0e-3
+    fd = np.zeros((2, 2))
+    for col in range(2):
+      qpos_p, qpos_m = q0.copy(), q0.copy()
+      qvel_p, qvel_m = v0.copy(), v0.copy()
+      if col == 0:
+        qpos_p[0, 0] += eps
+        qpos_m[0, 0] -= eps
+      else:
+        qvel_p[0, 0] += eps
+        qvel_m[0, 0] -= eps
+      fd[:, col] = (eval_state(qpos_p, qvel_p) - eval_state(qpos_m, qvel_m)) / (2.0 * eps)
+
+    np.testing.assert_allclose(ad, fd, atol=2.0e-5, rtol=2.0e-5, err_msg=f"active {jacobian} limit state VJP mismatch")
 
   @absltest.skipIf(_REQUIRES_GPU, _REQUIRES_GPU_REASON)
   def test_surrogate_correction_bounded_relative_to_free_body(self):
@@ -1277,6 +1418,7 @@ class GradFlexTest(parameterized.TestCase):
 
     d = mjw.make_diff_data(mjm)
     enable_grad(d)
+    qvel0 = d.qvel
 
     loss = wp.zeros(1, dtype=float, requires_grad=True)
     tape = wp.Tape()
@@ -1284,7 +1426,7 @@ class GradFlexTest(parameterized.TestCase):
       mjw.step(m, d)
       wp.launch(_sum_qpos_kernel, dim=(d.nworld, mjm.nq), inputs=[d.qpos, loss])
     tape.backward(loss=loss)
-    qvel_grad = d.qvel.grad.numpy()
+    qvel_grad = qvel0.grad.numpy()
     tape.zero()
 
     self.assertTrue(np.all(np.isfinite(qvel_grad)), "flex backward produced non-finite gradients")
@@ -1455,7 +1597,10 @@ class GradContactMultiStepTest(parameterized.TestCase):
     # Require the AD gradient to match FD in sign and magnitude. The model has a single DOF,
     # so a cosine test is degenerate; compare component-wise (relative + small absolute floor).
     np.testing.assert_allclose(
-      ad_grad, fd_grad, rtol=0.2, atol=1e-9,
+      ad_grad,
+      fd_grad,
+      rtol=0.2,
+      atol=1e-9,
       err_msg=f"multi-step contact grad mismatch (nsteps={nsteps}): AD={ad_grad} FD={fd_grad}",
     )
 
@@ -1501,8 +1646,9 @@ class GradIntegratorAnalyticTest(parameterized.TestCase):
     tape.backward(loss=loss)
     ad = float(np.nan_to_num(ctrl.grad.numpy()[0, 0]))
     # closed form: d(sum qpos)/d(ctrl) = dt^2
-    np.testing.assert_allclose(ad, dt * dt, rtol=1e-3, atol=1e-12,
-                               err_msg=f"integrator ctrl gradient {ad:.3e} != analytic dt^2 {dt*dt:.3e}")
+    np.testing.assert_allclose(
+      ad, dt * dt, rtol=1e-3, atol=1e-12, err_msg=f"integrator ctrl gradient {ad:.3e} != analytic dt^2 {dt * dt:.3e}"
+    )
 
 
 # Single-step contact dissipation: a body falling onto the floor. One step contracts an
@@ -1565,8 +1711,9 @@ class GradContactDissipationTest(absltest.TestCase):
     tape.backward(loss=loss)
     ad = float(np.nan_to_num(qv.grad.numpy()[0, 0]))
     self.assertLess(ad, 0.95, f"AD d(vz1)/d(vz0)={ad:.4f} looks like the free-body value (no contact dissipation)")
-    np.testing.assert_allclose(ad, fd, rtol=0.05, atol=1e-4,
-                               err_msg=f"contact dissipation Jacobian mismatch: AD={ad:.4f} FD={fd:.4f}")
+    np.testing.assert_allclose(
+      ad, fd, rtol=0.05, atol=1e-4, err_msg=f"contact dissipation Jacobian mismatch: AD={ad:.4f} FD={fd:.4f}"
+    )
 
 
 # Multi-body multi-contact: two independent spheres resting on the floor, each actuated. The
@@ -1633,13 +1780,135 @@ class GradMultiContactTest(parameterized.TestCase):
     eps = 1e-3
     fd_grad = np.zeros(nu)
     for i in range(nu):
-      cp = ctrl0.copy(); cp[i] += eps
-      cm = ctrl0.copy(); cm[i] -= eps
+      cp = ctrl0.copy()
+      cp[i] += eps
+      cm = ctrl0.copy()
+      cm[i] -= eps
       fd_grad[i] = (eval_loss(cp) - eval_loss(cm)) / (2 * eps)
 
     np.testing.assert_allclose(
-      ad_grad, fd_grad, rtol=0.2, atol=1e-9,
+      ad_grad,
+      fd_grad,
+      rtol=0.2,
+      atol=1e-9,
       err_msg=f"multi-contact grad mismatch (nsteps={nsteps}): AD={ad_grad} FD={fd_grad}",
+    )
+
+
+class GradHopperPersistentContactTest(absltest.TestCase):
+  """Temporal contact adjoints compose correctly on an articulated control task."""
+
+  @absltest.skipIf(_REQUIRES_GPU, _REQUIRES_GPU_REASON)
+  def test_hopper_local_qpos_vjp_matches_fd_dense_and_sparse(self):
+    """One-step qpos VJP covers mass and contact-J geometry in both J layouts."""
+    _, _, m_pre, d_pre = test_data.fixture(xml=_HOPPER_CONTACT_XML)
+    for _ in range(24):
+      mjw.step(m_pre, d_pre)
+    qpos0 = d_pre.qpos.numpy().copy()
+    qvel0 = d_pre.qvel.numpy().copy()
+    self.assertGreater(int(d_pre.nacon.numpy()[0]), 0)
+
+    rng = np.random.default_rng(17)
+    qpos_weight_np = rng.normal(size=m_pre.nq).astype(np.float32)
+    qvel_weight_np = rng.normal(size=m_pre.nv).astype(np.float32)
+    qpos_weight = wp.array(qpos_weight_np, dtype=float)
+    qvel_weight = wp.array(qvel_weight_np, dtype=float)
+    safe_cols = (0, 1, 2, 5)
+    eps = 1.0e-3
+
+    for jacobian in ("dense", "sparse"):
+      xml = _HOPPER_CONTACT_XML.replace('jacobian="sparse"', f'jacobian="{jacobian}"')
+
+      def eval_loss(qpos_np):
+        _, _, m_fd, d_fd = test_data.fixture(xml=xml)
+        d_fd.qpos.assign(qpos_np)
+        d_fd.qvel.assign(qvel0)
+        mjw.step(m_fd, d_fd)
+        loss_fd = wp.zeros(1, dtype=float)
+        wp.launch(
+          _hopper_state_loss_kernel,
+          dim=max(m_fd.nq, m_fd.nv),
+          inputs=[d_fd.qpos, d_fd.qvel, qpos_weight, qvel_weight, loss_fd],
+        )
+        return float(loss_fd.numpy()[0])
+
+      mjm, _, m_ad, d_ad = test_data.fixture(xml=xml)
+      enable_grad(d_ad)
+      qpos_ref = d_ad.qpos
+      qpos_ref.assign(qpos0)
+      d_ad.qvel.assign(qvel0)
+      loss = wp.zeros(1, dtype=float, requires_grad=True)
+      tape = wp.Tape()
+      with tape:
+        mjw.step(m_ad, d_ad)
+        wp.launch(
+          _hopper_state_loss_kernel,
+          dim=max(mjm.nq, mjm.nv),
+          inputs=[d_ad.qpos, d_ad.qvel, qpos_weight, qvel_weight, loss],
+        )
+      tape.backward(loss=loss)
+      ad = qpos_ref.grad.numpy()[0, list(safe_cols)].copy()
+
+      fd = np.zeros(len(safe_cols))
+      for i, col in enumerate(safe_cols):
+        qpos_p = qpos0.copy()
+        qpos_m = qpos0.copy()
+        qpos_p[0, col] += eps
+        qpos_m[0, col] -= eps
+        fd[i] = (eval_loss(qpos_p) - eval_loss(qpos_m)) / (2.0 * eps)
+
+      np.testing.assert_allclose(
+        ad,
+        fd,
+        rtol=5.0e-3,
+        atol=5.0e-4,
+        err_msg=f"Hopper local qpos VJP mismatch ({jacobian}): AD={ad} FD={fd}",
+      )
+
+  @absltest.skipIf(_REQUIRES_GPU, _REQUIRES_GPU_REASON)
+  def test_hopper_persistent_contact_multistep_grad_matches_fd(self):
+    _, _, m_pre, d_pre = test_data.fixture(xml=_HOPPER_CONTACT_XML)
+    for _ in range(24):
+      mjw.step(m_pre, d_pre)
+    qpos0 = d_pre.qpos.numpy().copy()
+    qvel0 = d_pre.qvel.numpy().copy()
+    self.assertGreater(int(d_pre.nacon.numpy()[0]), 0)
+
+    ctrl0 = np.zeros(3, dtype=np.float32)
+
+    def eval_loss(ctrl_np):
+      _, _, m_fd, d_fd = test_data.fixture(xml=_HOPPER_CONTACT_XML)
+      wp.copy(d_fd.qpos, wp.array(qpos0, dtype=float))
+      wp.copy(d_fd.qvel, wp.array(qvel0, dtype=float))
+      wp.copy(d_fd.ctrl, wp.array(ctrl_np.reshape(1, -1), dtype=float))
+      for _ in range(4):
+        mjw.step(m_fd, d_fd)
+      loss_fd = wp.zeros(1, dtype=float)
+      wp.launch(_hopper_control_loss_kernel, dim=1, inputs=[d_fd.qpos, d_fd.qvel, loss_fd])
+      return float(loss_fd.numpy()[0])
+
+    _, _, m, d = test_data.fixture(xml=_HOPPER_CONTACT_XML)
+    enable_grad(d)
+    wp.copy(d.qpos, wp.array(qpos0, dtype=float))
+    wp.copy(d.qvel, wp.array(qvel0, dtype=float))
+    ctrl = wp.array(ctrl0.reshape(1, -1), dtype=float, requires_grad=True)
+    loss = wp.zeros(1, dtype=float, requires_grad=True)
+    tape = wp.Tape()
+    with tape:
+      wp.copy(d.ctrl, ctrl)
+      for _ in range(4):
+        mjw.step(m, d)
+      wp.launch(_hopper_control_loss_kernel, dim=1, inputs=[d.qpos, d.qvel, loss])
+    tape.backward(loss=loss)
+    ad = np.nan_to_num(ctrl.grad.numpy()[0].copy())
+
+    fd = _fd_gradient(eval_loss, ctrl0, eps=1e-3)
+    np.testing.assert_allclose(
+      ad,
+      fd,
+      rtol=0.03,
+      atol=1e-3,
+      err_msg=f"persistent-contact Hopper control grad mismatch: AD={ad} FD={fd}",
     )
 
 
@@ -1707,12 +1976,13 @@ class GradFrictionTangentialTest(absltest.TestCase):
     tape.zero()
 
     eps = 1e-3
-    cp = ctrl0.copy(); cp[0] += eps
-    cm = ctrl0.copy(); cm[0] -= eps
+    cp = ctrl0.copy()
+    cp[0] += eps
+    cm = ctrl0.copy()
+    cm[0] -= eps
     fd = (eval_loss(cp) - eval_loss(cm)) / (2 * eps)
 
-    np.testing.assert_allclose(ad, fd, rtol=0.2, atol=1e-10,
-                               err_msg=f"tangential friction grad: AD={ad:.3e} FD={fd:.3e}")
+    np.testing.assert_allclose(ad, fd, rtol=0.2, atol=1e-10, err_msg=f"tangential friction grad: AD={ad:.3e} FD={fd:.3e}")
 
 
 if __name__ == "__main__":

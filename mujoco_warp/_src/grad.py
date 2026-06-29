@@ -81,7 +81,7 @@ SMOOTH_GRAD_FIELDS: tuple = (
   "actuator_force",
   "act_dot",
   # inertia matrix
-  "qM",
+  "M",
   "qLD",
   "qLDiagInv",
   # Tendon

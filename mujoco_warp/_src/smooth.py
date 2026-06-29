@@ -670,32 +670,84 @@ def _cinert(
   inert = body_inertia[worldid % body_inertia.shape[0], bodyid]
   mass = body_mass[worldid % body_mass.shape[0], bodyid]
   dif = xipos_in[worldid, bodyid] - subtree_com_in[worldid, body_rootid[bodyid]]
-  # express inertia in com-based frame (mju_inertCom)
-
-  res = vec10()
-  # res_rot = mat * diag(inert) * mat'
+  # express inertia in com-based frame (mju_inertCom).  Build the vector
+  # functionally: Warp's adjoint does not propagate through indexed writes to
+  # a local custom vector (``res[k] = ...``), which silently detached cinert.
   tmp = mat @ wp.diag(inert) @ wp.transpose(mat)
-  res[0] = tmp[0, 0]
-  res[1] = tmp[1, 1]
-  res[2] = tmp[2, 2]
-  res[3] = tmp[0, 1]
-  res[4] = tmp[0, 2]
-  res[5] = tmp[1, 2]
-  # res_rot -= mass * dif_cross * dif_cross
-  res[0] += mass * (dif[1] * dif[1] + dif[2] * dif[2])
-  res[1] += mass * (dif[0] * dif[0] + dif[2] * dif[2])
-  res[2] += mass * (dif[0] * dif[0] + dif[1] * dif[1])
-  res[3] -= mass * dif[0] * dif[1]
-  res[4] -= mass * dif[0] * dif[2]
-  res[5] -= mass * dif[1] * dif[2]
-  # res_tran = mass * dif
-  res[6] = mass * dif[0]
-  res[7] = mass * dif[1]
-  res[8] = mass * dif[2]
-  # res_mass = mass
-  res[9] = mass
+  res0 = tmp[0, 0] + mass * (dif[1] * dif[1] + dif[2] * dif[2])
+  res1 = tmp[1, 1] + mass * (dif[0] * dif[0] + dif[2] * dif[2])
+  res2 = tmp[2, 2] + mass * (dif[0] * dif[0] + dif[1] * dif[1])
+  res3 = tmp[0, 1] - mass * dif[0] * dif[1]
+  res4 = tmp[0, 2] - mass * dif[0] * dif[2]
+  res5 = tmp[1, 2] - mass * dif[1] * dif[2]
+  res6 = mass * dif[0]
+  res7 = mass * dif[1]
+  res8 = mass * dif[2]
+  cinert_out[worldid, bodyid] = vec10(res0, res1, res2, res3, res4, res5, res6, res7, res8, mass)
 
-  cinert_out[worldid, bodyid] = res
+
+@wp.kernel
+def _cinert_adjoint(
+  # Model:
+  body_rootid: wp.array[int],
+  body_mass: wp.array2d[float],
+  body_inertia: wp.array2d[wp.vec3],
+  # Data in:
+  xipos_in: wp.array2d[wp.vec3],
+  ximat_in: wp.array2d[wp.mat33],
+  subtree_com_in: wp.array2d[wp.vec3],
+  # In:
+  cinert_grad: wp.array2d[vec10],
+  # Out:
+  xipos_grad_out: wp.array2d[wp.vec3],
+  ximat_grad_out: wp.array2d[wp.mat33],
+  subtree_com_grad_out: wp.array2d[wp.vec3],
+):
+  """Analytic VJP for :func:`_cinert` (Warp cannot AD custom ``vec10`` outputs)."""
+  worldid, bodyid = wp.tid()
+  param_worldid = worldid % body_mass.shape[0]
+  mass = body_mass[param_worldid, bodyid]
+  inert = body_inertia[worldid % body_inertia.shape[0], bodyid]
+  rootid = body_rootid[bodyid]
+  dif = xipos_in[worldid, bodyid] - subtree_com_in[worldid, rootid]
+  g = cinert_grad[worldid, bodyid]
+
+  grad_dif = wp.vec3(
+    mass * (2.0 * (g[1] + g[2]) * dif[0] - g[3] * dif[1] - g[4] * dif[2] + g[6]),
+    mass * (2.0 * (g[0] + g[2]) * dif[1] - g[3] * dif[0] - g[5] * dif[2] + g[7]),
+    mass * (2.0 * (g[0] + g[1]) * dif[2] - g[4] * dif[0] - g[5] * dif[1] + g[8]),
+  )
+  xipos_grad_out[worldid, bodyid] += grad_dif
+  wp.atomic_sub(subtree_com_grad_out, worldid, rootid, grad_dif)
+
+  sym_grad = wp.mat33(2.0 * g[0], g[3], g[4], g[3], 2.0 * g[1], g[5], g[4], g[5], 2.0 * g[2])
+  grad_mat = sym_grad @ ximat_in[worldid, bodyid] @ wp.diag(inert)
+  ximat_grad_out[worldid, bodyid] += grad_mat
+
+
+def _record_cinert_adjoint(m: Model, d: Data, xipos, ximat, subtree_com, cinert):
+  tape = wp._src.context.runtime.tape
+  if tape is None or not d.qpos.requires_grad:
+    return
+
+  def _adjoint(
+    m=m,
+    d=d,
+    xipos=xipos,
+    ximat=ximat,
+    subtree_com=subtree_com,
+    cinert=cinert,
+  ):
+    if cinert.grad is None:
+      return
+    wp.launch(
+      _cinert_adjoint,
+      dim=(d.nworld, m.nbody),
+      inputs=[m.body_rootid, m.body_mass, m.body_inertia, xipos, ximat, subtree_com, cinert.grad],
+      outputs=[xipos.grad, ximat.grad, subtree_com.grad],
+    )
+
+  tape.record_func(_adjoint, [cinert, xipos, ximat, subtree_com])
 
 
 @wp.kernel
@@ -743,6 +795,28 @@ def _cdof(
     res[dofid] = wp.spatial_vector(xaxis, wp.cross(xaxis, offset))
 
 
+@wp.kernel
+def _subtree_com_acc_level(
+  # Model:
+  body_parentid: wp.array[int],
+  # Data in:
+  subtree_com_in: wp.array2d[wp.vec3],
+  # In:
+  body_tree_: wp.array[int],
+  nbody_tree: int,
+  # Data out:
+  subtree_com_out: wp.array2d[wp.vec3],
+):
+  """AD-safe child-to-parent accumulation using distinct input/output arrays."""
+  worldid, bodyid = wp.tid()
+  val = subtree_com_in[worldid, bodyid]
+  for k in range(nbody_tree):
+    child = body_tree_[k]
+    if body_parentid[child] == bodyid and child != 0:
+      val += subtree_com_in[worldid, child]
+  subtree_com_out[worldid, bodyid] = val
+
+
 @event_scope
 def com_pos(m: Model, d: Data):
   """Computes subtree center of mass positions.
@@ -753,16 +827,30 @@ def com_pos(m: Model, d: Data):
   """
   wp.launch(_subtree_com_init, dim=(d.nworld, m.nbody), inputs=[m.body_mass, d.xipos], outputs=[d.subtree_com])
 
-  for i in reversed(range(len(m.body_tree))):
-    body_tree = m.body_tree[i]
-    wp.launch(
-      _subtree_com_acc,
-      dim=(d.nworld, body_tree.size),
-      inputs=[m.body_parentid, d.subtree_com, body_tree],
-      outputs=[d.subtree_com],
-    )
-
-  wp.launch(_subtree_div, dim=(d.nworld, m.nbody), inputs=[m.body_subtreemass, d.subtree_com], outputs=[d.subtree_com])
+  if d.subtree_com.requires_grad:
+    current = d.subtree_com
+    for body_tree in reversed(m.body_tree):
+      next_com = wp.zeros_like(current, requires_grad=True)
+      wp.launch(
+        _subtree_com_acc_level,
+        dim=(d.nworld, m.nbody),
+        inputs=[m.body_parentid, current, body_tree, body_tree.shape[0]],
+        outputs=[next_com],
+      )
+      current = next_com
+    subtree_com = wp.zeros_like(current, requires_grad=True)
+    wp.launch(_subtree_div, dim=(d.nworld, m.nbody), inputs=[m.body_subtreemass, current], outputs=[subtree_com])
+    d.subtree_com = subtree_com
+  else:
+    for i in reversed(range(len(m.body_tree))):
+      body_tree = m.body_tree[i]
+      wp.launch(
+        _subtree_com_acc,
+        dim=(d.nworld, body_tree.size),
+        inputs=[m.body_parentid, d.subtree_com, body_tree],
+        outputs=[d.subtree_com],
+      )
+    wp.launch(_subtree_div, dim=(d.nworld, m.nbody), inputs=[m.body_subtreemass, d.subtree_com], outputs=[d.subtree_com])
   wp.launch(
     _cinert,
     dim=(d.nworld, m.nbody),
@@ -967,7 +1055,7 @@ def _crb_accumulate(
   wp.atomic_add(crb_out, worldid, pid, crb_in[worldid, bodyid])
 
 
-@wp.kernel
+@wp.kernel(enable_backward=False)
 def _M(
   # Model:
   dof_bodyid: wp.array[int],
@@ -996,6 +1084,101 @@ def _M(
     M_out[worldid, madr_ij] += wp.dot(cdof_in[worldid, dofid], buf)
     madr_ij -= 1
     dofid = dof_parentid[dofid]
+
+
+@wp.kernel
+def _M_adjoint(
+  # Model:
+  dof_bodyid: wp.array[int],
+  dof_parentid: wp.array[int],
+  M_rownnz: wp.array[int],
+  M_rowadr: wp.array[int],
+  # Data in:
+  cdof_in: wp.array2d[wp.spatial_vector],
+  crb_in: wp.array2d[vec10],
+  # In:
+  M_grad: wp.array2d[float],
+  # Out:
+  cdof_grad_out: wp.array2d[wp.spatial_vector],
+  crb_grad_out: wp.array2d[vec10],
+):
+  """Analytic VJP for the packed composite-rigid-body mass matrix."""
+  worldid, row = wp.tid()
+  bodyid = dof_bodyid[row]
+  inertia = crb_in[worldid, bodyid]
+  dof = cdof_in[worldid, row]
+  buf = math.inert_vec(inertia, dof)
+  adj_buf = wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+
+  madr = M_rowadr[row] + M_rownnz[row] - 1
+  ancestor_dof = row
+  while ancestor_dof >= 0:
+    g = M_grad[worldid, madr]
+    wp.atomic_add(cdof_grad_out, worldid, ancestor_dof, buf * g)
+    adj_buf += cdof_in[worldid, ancestor_dof] * g
+    madr -= 1
+    ancestor_dof = dof_parentid[ancestor_dof]
+
+  wp.atomic_add(cdof_grad_out, worldid, row, math.inert_vec(inertia, adj_buf))
+  a = adj_buf
+  v = dof
+  grad_inertia = vec10(
+    a[0] * v[0],
+    a[1] * v[1],
+    a[2] * v[2],
+    a[0] * v[1] + a[1] * v[0],
+    a[0] * v[2] + a[2] * v[0],
+    a[1] * v[2] + a[2] * v[1],
+    -a[1] * v[5] + a[2] * v[4] + a[4] * v[2] - a[5] * v[1],
+    a[0] * v[5] - a[2] * v[3] - a[3] * v[2] + a[5] * v[0],
+    -a[0] * v[4] + a[1] * v[3] + a[3] * v[1] - a[4] * v[0],
+    a[3] * v[3] + a[4] * v[4] + a[5] * v[5],
+  )
+  wp.atomic_add(crb_grad_out, worldid, bodyid, grad_inertia)
+
+
+@wp.kernel
+def _crb_to_cinert_adjoint(
+  # Model:
+  body_parentid: wp.array[int],
+  # In:
+  crb_grad: wp.array2d[vec10],
+  # Out:
+  cinert_grad_out: wp.array2d[vec10],
+):
+  """Reverse the composite-body sum without relying on in-place copy AD."""
+  worldid, bodyid = wp.tid()
+  grad = vec10()
+  ancestor = bodyid
+  while ancestor > 0:
+    grad += crb_grad[worldid, ancestor]
+    ancestor = body_parentid[ancestor]
+  cinert_grad_out[worldid, bodyid] += grad
+
+
+def _record_M_adjoint(m: Model, d: Data, cdof, crb, M, cinert):
+  tape = wp._src.context.runtime.tape
+  if tape is None or not d.qpos.requires_grad:
+    return
+
+  def _adjoint(m=m, d=d, cdof=cdof, crb=crb, M=M, cinert=cinert):
+    if M.grad is None:
+      return
+    crb_grad = wp.zeros_like(crb)
+    wp.launch(
+      _M_adjoint,
+      dim=(d.nworld, m.nv),
+      inputs=[m.dof_bodyid, m.dof_parentid, m.M_rownnz, m.M_rowadr, cdof, crb, M.grad],
+      outputs=[cdof.grad, crb_grad],
+    )
+    wp.launch(
+      _crb_to_cinert_adjoint,
+      dim=(d.nworld, m.nbody),
+      inputs=[m.body_parentid, crb_grad],
+      outputs=[cinert.grad],
+    )
+
+  tape.record_func(_adjoint, [M, cdof, cinert])
 
 
 @event_scope

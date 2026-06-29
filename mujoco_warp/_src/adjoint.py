@@ -19,33 +19,338 @@ from mujoco_warp._src.block_cholesky import create_blocked_cholesky_solve_func
 from mujoco_warp._src.collision_smooth import compute_k_imp
 from mujoco_warp._src.warp_util import cache_kernel
 
+# Custom adjoint kernels read, accumulate, and consume cotangent buffers in
+# place. The forward-kernel analyzer models arrays as read-only inputs or
+# write-only outputs and cannot represent that VJP contract.
+# kernel_analyzer: off
+
 # ---------------------------------------------------------------------------
 # Phase 3: efc-level gradient kernels for collision chain
 # ---------------------------------------------------------------------------
 
 
 @wp.kernel
-def _efc_J_grad_kernel(
-  # Model:
+def _efc_J_grad_dense_full_kernel(
   nv: int,
-  # Data in:
   nefc_in: wp.array[int],
   efc_force_in: wp.array2d[float],
-  njmax_in: int,
-  # In:
+  efc_type_in: wp.array2d[int],
+  efc_id_in: wp.array2d[int],
+  contact_solref_in: wp.array[wp.vec2],
+  contact_solimp_in: wp.array[types.vec5],
+  opt_timestep_in: wp.array[float],
+  opt_disableflags: int,
   v_in: wp.array2d[float],
-  # Out:
+  efc_aref_grad_in: wp.array2d[float],
+  qacc_in: wp.array2d[float],
+  qvel_in: wp.array2d[float],
   efc_J_grad_out: wp.array3d[float],
 ):
-  """Compute adj_efc_J[i, j] = v[j] * efc_force[i].
-
-  From KKT: F(qacc) = M*qacc - qfrc_smooth - J^T*f = 0
-  The derivative of J^T*f w.r.t. J[i,j] is f[i] * delta, and the
-  adjoint vector v gives the sensitivity: adj_J[i,j] = v[j] * f[i].
-  """
   worldid, efcid, dofid = wp.tid()
-  if efcid < nefc_in[worldid] and dofid < nv:
-    efc_J_grad_out[worldid, efcid, dofid] = v_in[worldid, dofid] * efc_force_in[worldid, efcid]
+  if efcid >= nefc_in[worldid] or dofid >= nv:
+    return
+  b = float(0.0)
+  if efc_type_in[worldid, efcid] >= int(types.ConstraintType.CONTACT_FRICTIONLESS.value):
+    conid = efc_id_in[worldid, efcid]
+    solref = contact_solref_in[conid]
+    solimp = contact_solimp_in[conid]
+    timestep = opt_timestep_in[worldid % opt_timestep_in.shape[0]]
+    dmax = wp.clamp(solimp[1], types.MJ_MINIMP, types.MJ_MAXIMP)
+    timeconst = solref[0]
+    if not (opt_disableflags & int(types.DisableBit.REFSAFE.value)):
+      timeconst = wp.max(timeconst, 2.0 * timestep)
+    b = 2.0 / (dmax * timeconst)
+    b = wp.where(solref[1] <= 0.0, -solref[1] / dmax, b)
+  efc_J_grad_out[worldid, efcid, dofid] = v_in[worldid, dofid] * efc_force_in[worldid, efcid] - efc_aref_grad_in[
+    worldid, efcid
+  ] * (qacc_in[worldid, dofid] + b * qvel_in[worldid, dofid])
+
+
+@wp.kernel
+def _efc_J_grad_sparse_full_kernel(
+  nv: int,
+  nefc_in: wp.array[int],
+  efc_J_rownnz_in: wp.array2d[int],
+  efc_J_rowadr_in: wp.array2d[int],
+  efc_J_colind_in: wp.array3d[int],
+  efc_force_in: wp.array2d[float],
+  efc_type_in: wp.array2d[int],
+  efc_id_in: wp.array2d[int],
+  contact_solref_in: wp.array[wp.vec2],
+  contact_solimp_in: wp.array[types.vec5],
+  opt_timestep_in: wp.array[float],
+  opt_disableflags: int,
+  v_in: wp.array2d[float],
+  efc_aref_grad_in: wp.array2d[float],
+  qacc_in: wp.array2d[float],
+  qvel_in: wp.array2d[float],
+  efc_J_grad_out: wp.array3d[float],
+):
+  worldid, efcid, k = wp.tid()
+  if efcid >= nefc_in[worldid] or k >= efc_J_rownnz_in[worldid, efcid]:
+    return
+  sparseid = efc_J_rowadr_in[worldid, efcid] + k
+  dofid = efc_J_colind_in[worldid, 0, sparseid]
+  if dofid >= nv:
+    return
+  b = float(0.0)
+  if efc_type_in[worldid, efcid] >= int(types.ConstraintType.CONTACT_FRICTIONLESS.value):
+    conid = efc_id_in[worldid, efcid]
+    solref = contact_solref_in[conid]
+    solimp = contact_solimp_in[conid]
+    timestep = opt_timestep_in[worldid % opt_timestep_in.shape[0]]
+    dmax = wp.clamp(solimp[1], types.MJ_MINIMP, types.MJ_MAXIMP)
+    timeconst = solref[0]
+    if not (opt_disableflags & int(types.DisableBit.REFSAFE.value)):
+      timeconst = wp.max(timeconst, 2.0 * timestep)
+    b = 2.0 / (dmax * timeconst)
+    b = wp.where(solref[1] <= 0.0, -solref[1] / dmax, b)
+  efc_J_grad_out[worldid, 0, sparseid] = v_in[worldid, dofid] * efc_force_in[worldid, efcid] - efc_aref_grad_in[
+    worldid, efcid
+  ] * (qacc_in[worldid, dofid] + b * qvel_in[worldid, dofid])
+
+
+@wp.kernel
+def _sparse_J_grad_to_dense_kernel(
+  nv: int,
+  nefc_in: wp.array[int],
+  efc_J_rownnz_in: wp.array2d[int],
+  efc_J_rowadr_in: wp.array2d[int],
+  efc_J_colind_in: wp.array3d[int],
+  sparse_grad_inout: wp.array3d[float],
+  dense_grad_out: wp.array3d[float],
+):
+  worldid, efcid, k = wp.tid()
+  if efcid >= nefc_in[worldid] or k >= efc_J_rownnz_in[worldid, efcid]:
+    return
+  sparseid = efc_J_rowadr_in[worldid, efcid] + k
+  dofid = efc_J_colind_in[worldid, 0, sparseid]
+  if dofid < nv:
+    dense_grad_out[worldid, efcid, dofid] = sparse_grad_inout[worldid, 0, sparseid]
+    sparse_grad_inout[worldid, 0, sparseid] = 0.0
+
+
+@wp.kernel
+def _sparse_J_to_dense_kernel(
+  nv: int,
+  nefc_in: wp.array[int],
+  efc_J_rownnz_in: wp.array2d[int],
+  efc_J_rowadr_in: wp.array2d[int],
+  efc_J_colind_in: wp.array3d[int],
+  sparse_J_in: wp.array3d[float],
+  dense_J_out: wp.array3d[float],
+):
+  worldid, efcid, k = wp.tid()
+  if efcid >= nefc_in[worldid] or k >= efc_J_rownnz_in[worldid, efcid]:
+    return
+  sparseid = efc_J_rowadr_in[worldid, efcid] + k
+  dofid = efc_J_colind_in[worldid, 0, sparseid]
+  if dofid < nv:
+    dense_J_out[worldid, efcid, dofid] = sparse_J_in[worldid, 0, sparseid]
+
+
+@wp.kernel
+def _solver_mass_matrix_adjoint(
+  M_rownnz: wp.array[int],
+  M_rowadr: wp.array[int],
+  M_colind: wp.array[int],
+  qacc: wp.array2d[float],
+  v: wp.array2d[float],
+  M_grad: wp.array2d[float],
+):
+  """VJP -sym(v qacc.T) for the packed symmetric inertia in H qacc = rhs."""
+  worldid, row = wp.tid()
+  rowadr = M_rowadr[row]
+  rownnz = M_rownnz[row]
+  for k in range(rownnz):
+    madr = rowadr + k
+    col = M_colind[madr]
+    grad = -v[worldid, row] * qacc[worldid, col]
+    if col != row:
+      grad -= v[worldid, col] * qacc[worldid, row]
+    wp.atomic_add(M_grad, worldid, madr, grad)
+
+
+@wp.kernel
+def _efc_J_to_geometry_dense_kernel(
+  nv: int,
+  body_rootid: wp.array[int],
+  body_weldid: wp.array[int],
+  body_isdofancestor: wp.array2d[int],
+  geom_bodyid: wp.array[int],
+  subtree_com_in: wp.array2d[wp.vec3],
+  cdof_in: wp.array2d[wp.spatial_vector],
+  contact_pos_in: wp.array[wp.vec3],
+  contact_frame_in: wp.array[wp.mat33],
+  contact_friction_in: wp.array[types.vec5],
+  contact_dim_in: wp.array[int],
+  contact_geom_in: wp.array[wp.vec2i],
+  contact_efc_address_in: wp.array2d[int],
+  contact_worldid_in: wp.array[int],
+  contact_type_in: wp.array[int],
+  nacon_in: wp.array[int],
+  efc_J_grad_inout: wp.array3d[float],
+  subtree_com_grad_out: wp.array2d[wp.vec3],
+  cdof_grad_out: wp.array2d[wp.spatial_vector],
+  contact_pos_grad_out: wp.array[wp.vec3],
+  contact_frame_grad_out: wp.array[wp.mat33],
+):
+  """Route a dense contact-J cotangent to geometry without the dynamic assembly loop."""
+  conid, dimid, dofid = wp.tid()
+  if conid >= nacon_in[0] or dofid >= nv or not (contact_type_in[conid] & 1):
+    return
+  condim = contact_dim_in[conid]
+  if (condim == 1 and dimid > 0) or (condim > 1 and dimid >= 2 * (condim - 1)):
+    return
+  efcid = contact_efc_address_in[conid, dimid]
+  if efcid < 0:
+    return
+  worldid = contact_worldid_in[conid]
+  gJ = efc_J_grad_inout[worldid, efcid, dofid]
+  efc_J_grad_inout[worldid, efcid, dofid] = 0.0
+  if gJ == 0.0:
+    return
+
+  frame = contact_frame_in[conid]
+  gp = wp.vec3(frame[0, 0], frame[0, 1], frame[0, 2]) * gJ
+  gr = wp.vec3(0.0)
+  dimid2 = int(0)
+  s = float(0.0)
+  if condim > 1:
+    dimid2 = dimid / 2 + 1
+    frii = contact_friction_in[conid][dimid2 - 1]
+    s = wp.where(dimid % 2 == 0, 1.0, -1.0) * frii * gJ
+    if dimid2 < 3:
+      gp += wp.vec3(frame[dimid2, 0], frame[dimid2, 1], frame[dimid2, 2]) * s
+    else:
+      gr += wp.vec3(frame[dimid2 - 3, 0], frame[dimid2 - 3, 1], frame[dimid2 - 3, 2]) * s
+
+  geom = contact_geom_in[conid]
+  body1 = body_weldid[geom_bodyid[geom[0]]]
+  body2 = body_weldid[geom_bodyid[geom[1]]]
+  point = contact_pos_in[conid]
+  point_grad = wp.vec3(0.0)
+  jacp1 = wp.vec3(0.0)
+  jacp2 = wp.vec3(0.0)
+  jacr1 = wp.vec3(0.0)
+  jacr2 = wp.vec3(0.0)
+
+  if body_isdofancestor[body2, dofid] != 0:
+    root2 = body_rootid[body2]
+    off2 = point - subtree_com_in[worldid, root2]
+    ang2 = wp.spatial_top(cdof_in[worldid, dofid])
+    lin2 = wp.spatial_bottom(cdof_in[worldid, dofid])
+    jacp2 = lin2 + wp.cross(ang2, off2)
+    jacr2 = ang2
+    off_grad2 = wp.cross(gp, ang2)
+    cdof_grad2 = wp.spatial_vector(wp.cross(off2, gp) + gr, gp)
+    wp.atomic_add(cdof_grad_out, worldid, dofid, cdof_grad2)
+    wp.atomic_add(subtree_com_grad_out, worldid, root2, -off_grad2)
+    point_grad += off_grad2
+
+  if body_isdofancestor[body1, dofid] != 0:
+    root1 = body_rootid[body1]
+    off1 = point - subtree_com_in[worldid, root1]
+    ang1 = wp.spatial_top(cdof_in[worldid, dofid])
+    lin1 = wp.spatial_bottom(cdof_in[worldid, dofid])
+    jacp1 = lin1 + wp.cross(ang1, off1)
+    jacr1 = ang1
+    ngp = -gp
+    ngr = -gr
+    off_grad1 = wp.cross(ngp, ang1)
+    cdof_grad1 = wp.spatial_vector(wp.cross(off1, ngp) + ngr, ngp)
+    wp.atomic_add(cdof_grad_out, worldid, dofid, cdof_grad1)
+    wp.atomic_add(subtree_com_grad_out, worldid, root1, -off_grad1)
+    point_grad += off_grad1
+
+  wp.atomic_add(contact_pos_grad_out, conid, point_grad)
+  jacp_dif = jacp2 - jacp1
+  jacr_dif = jacr2 - jacr1
+  frame_grad = wp.mat33(0.0)
+  for xyz in range(3):
+    frame_grad[0, xyz] += gJ * jacp_dif[xyz]
+    if condim > 1:
+      if dimid2 < 3:
+        frame_grad[dimid2, xyz] += s * jacp_dif[xyz]
+      else:
+        frame_grad[dimid2 - 3, xyz] += s * jacr_dif[xyz]
+  wp.atomic_add(contact_frame_grad_out, conid, frame_grad)
+
+
+@wp.kernel
+def _limit_joint_state_grad_dense_kernel(
+  timestep: wp.array[float],
+  opt_disableflags: int,
+  nefc_in: wp.array[int],
+  efc_type_in: wp.array2d[int],
+  efc_id_in: wp.array2d[int],
+  efc_J_in: wp.array3d[float],
+  efc_D_in: wp.array2d[float],
+  efc_pos_in: wp.array2d[float],
+  efc_D_grad_in: wp.array2d[float],
+  jnt_type: wp.array[int],
+  jnt_qposadr: wp.array[int],
+  jnt_dofadr: wp.array[int],
+  jnt_margin: wp.array2d[float],
+  jnt_solref: wp.array2d[wp.vec2],
+  jnt_solimp: wp.array2d[types.vec5],
+  efc_aref_grad_inout: wp.array2d[float],
+  qpos_grad_out: wp.array2d[float],
+  qvel_grad_out: wp.array2d[float],
+):
+  """Route active slide/hinge limit aref/D cotangents to qpos and qvel."""
+  worldid, efcid = wp.tid()
+  if efcid >= nefc_in[worldid] or efc_type_in[worldid, efcid] != types.ConstraintType.LIMIT_JOINT:
+    return
+  jntid = efc_id_in[worldid, efcid]
+  joint_type = jnt_type[jntid]
+  if joint_type != types.JointType.SLIDE and joint_type != types.JointType.HINGE:
+    return
+  qposadr = jnt_qposadr[jntid]
+  dofadr = jnt_dofadr[jntid]
+  J = efc_J_in[worldid, efcid, dofadr]
+  if J == 0.0:
+    return
+
+  margin_id = worldid % jnt_margin.shape[0]
+  solref_id = worldid % jnt_solref.shape[0]
+  solimp_id = worldid % jnt_solimp.shape[0]
+  pos_val = efc_pos_in[worldid, efcid] - jnt_margin[margin_id, jntid]
+  solref = jnt_solref[solref_id, jntid]
+  solimp = jnt_solimp[solimp_id, jntid]
+  dt = timestep[worldid % timestep.shape[0]]
+  k_imp = compute_k_imp(opt_disableflags, solref, solimp, pos_val, dt)
+  k = k_imp[0]
+  imp = k_imp[1]
+
+  width = wp.max(types.MJ_MINVAL, solimp[2])
+  mid = wp.clamp(solimp[3], types.MJ_MINIMP, types.MJ_MAXIMP)
+  power = wp.max(1.0, solimp[4])
+  imp_x = wp.abs(pos_val) / width
+  dimp_dpos = float(0.0)
+  if imp_x < 1.0:
+    dy_dx = float(0.0)
+    if imp_x < mid:
+      dy_dx = power * wp.pow(imp_x, power - 1.0) / wp.pow(mid, power - 1.0)
+    else:
+      dy_dx = power * wp.pow(1.0 - imp_x, power - 1.0) / wp.pow(1.0 - mid, power - 1.0)
+    sign_pos = wp.where(pos_val > 0.0, 1.0, wp.where(pos_val < 0.0, -1.0, 0.0))
+    dimp_dpos = (solimp[1] - solimp[0]) * dy_dx * sign_pos / width
+
+  daref_dpos = -k * (imp + pos_val * dimp_dpos)
+  D = efc_D_in[worldid, efcid]
+  dD_dpos = D * (1.0 / wp.max(imp, types.MJ_MINVAL) + 1.0 / wp.max(1.0 - imp, types.MJ_MINVAL)) * dimp_dpos
+  aref_grad = efc_aref_grad_inout[worldid, efcid]
+  wp.atomic_add(qpos_grad_out, worldid, qposadr, (aref_grad * daref_dpos + efc_D_grad_in[worldid, efcid] * dD_dpos) * J)
+
+  dmax = wp.clamp(solimp[1], types.MJ_MINIMP, types.MJ_MAXIMP)
+  timeconst = solref[0]
+  if not (opt_disableflags & types.DisableBit.REFSAFE.value):
+    timeconst = wp.max(timeconst, 2.0 * dt)
+  b = 2.0 / (dmax * timeconst)
+  b = wp.where(solref[1] <= 0.0, -solref[1] / dmax, b)
+  wp.atomic_add(qvel_grad_out, worldid, dofadr, -b * aref_grad * J)
+  efc_aref_grad_inout[worldid, efcid] = 0.0
 
 
 @wp.kernel
@@ -58,12 +363,15 @@ def _efc_pos_grad_kernel(
   contact_includemargin_in: wp.array[float],
   contact_solref_in: wp.array[wp.vec2],
   contact_solimp_in: wp.array[types.vec5],
+  contact_dim_in: wp.array[int],
   contact_efc_address_in: wp.array2d[int],
   contact_worldid_in: wp.array[int],
   contact_type_in: wp.array[int],
   nacon_in: wp.array[int],
   # In:
   efc_aref_grad_in: wp.array2d[float],
+  efc_D_in: wp.array2d[float],
+  efc_D_grad_in: wp.array2d[float],
   # Out:
   efc_pos_grad_out: wp.array2d[float],
 ):
@@ -73,13 +381,18 @@ def _efc_pos_grad_kernel(
   So adj_efc_pos = adj_efc_aref * (-k * imp).
   We iterate over contacts and their first dimension (normal direction).
   """
-  conid = wp.tid()
+  conid, dimid = wp.tid()
   if conid >= nacon_in[0]:
     return
   if not (contact_type_in[conid] & 1):  # ContactType.CONSTRAINT
     return
 
-  efcid = contact_efc_address_in[conid, 0]
+  condim = contact_dim_in[conid]
+  if condim == 1 and dimid > 0:
+    return
+  if condim > 1 and dimid >= 2 * (condim - 1):
+    return
+  efcid = contact_efc_address_in[conid, dimid]
   if efcid < 0:
     return
 
@@ -93,12 +406,33 @@ def _efc_pos_grad_kernel(
 
   k_imp = compute_k_imp(opt_disableflags, solref, solimp, pos_val, timestep)
 
-  # d(aref)/d(pos) = -k * imp
-  daref_dpos = -k_imp[0] * k_imp[1]
+  k = k_imp[0]
+  imp = k_imp[1]
+  dmin = wp.clamp(solimp[0], types.MJ_MINIMP, types.MJ_MAXIMP)
+  dmax = wp.clamp(solimp[1], types.MJ_MINIMP, types.MJ_MAXIMP)
+  width = wp.max(types.MJ_MINVAL, solimp[2])
+  mid = wp.clamp(solimp[3], types.MJ_MINIMP, types.MJ_MAXIMP)
+  power = wp.max(1.0, solimp[4])
+  imp_x = wp.abs(pos_val) / width
+  dimp_dpos = float(0.0)
+  if imp_x < 1.0:
+    dy_dx = float(0.0)
+    if imp_x < mid:
+      dy_dx = power * wp.pow(imp_x, power - 1.0) / wp.pow(mid, power - 1.0)
+    else:
+      dy_dx = power * wp.pow(1.0 - imp_x, power - 1.0) / wp.pow(1.0 - mid, power - 1.0)
+    pos_sign = wp.where(pos_val < 0.0, -1.0, wp.where(pos_val > 0.0, 1.0, 0.0))
+    dimp_dpos = (dmax - dmin) * dy_dx * pos_sign / width
+
+  daref_dpos = -k * (imp + pos_val * dimp_dpos)
+  D = efc_D_in[worldid, efcid]
+  dD_dpos = D * (1.0 / wp.max(imp, types.MJ_MINVAL) + 1.0 / wp.max(1.0 - imp, types.MJ_MINVAL)) * dimp_dpos
 
   adj_aref = efc_aref_grad_in[worldid, efcid]
-  efc_pos_grad_out[worldid, efcid] = adj_aref * daref_dpos
+  efc_pos_grad_out[worldid, efcid] = adj_aref * daref_dpos + efc_D_grad_in[worldid, efcid] * dD_dpos
 
+
+# kernel_analyzer: on
 
 # ---------------------------------------------------------------------------
 # Smooth constraint adjoint: friction Hessian correction kernel
@@ -727,7 +1061,16 @@ def _solve_hessian_system(m: types.Model, d: types.Data, b, out, H=None):
       )
 
 
-def solver_implicit_adjoint(m: types.Model, d: types.Data, qacc_array=None, qacc_smooth_ref=None, cap=None):
+def solver_implicit_adjoint(
+  m: types.Model,
+  d: types.Data,
+  qacc_array=None,
+  qacc_smooth_ref=None,
+  qfrc_smooth_ref=None,
+  cap=None,
+  M_ref=None,
+  H_ref=None,
+):
   """Implicit differentiation adjoint for constraint solver.
 
   Called during tape backward. Reads qacc_array.grad (set by downstream
@@ -741,10 +1084,11 @@ def solver_implicit_adjoint(m: types.Model, d: types.Data, qacc_array=None, qacc
                 Defaults to d.qacc when called from diff_forward().
                 Integrators pass their local qacc array when it differs
                 from d.qacc (e.g. euler with implicit damping).
-    qacc_smooth_ref: The qacc_smooth array whose .grad receives the
-                     accumulated adjoint. Captured at record time for
-                     correct gradient isolation when intermediate arrays
-                     are cloned between substeps. Defaults to d.qacc_smooth.
+    qacc_smooth_ref: The record-time qacc_smooth array used by the unconstrained fallback.
+    qfrc_smooth_ref: The record-time smooth-force array that receives the direct M*v adjoint.
+    cap: Record-time constraint/contact snapshot used to reconstruct the fixed-point VJP.
+    M_ref: Record-time mass matrix array; its cotangent receives -v*qacc^T.
+    H_ref: Retained post-solve Hessian used by the implicit linear solve.
   """
   nv = m.nv
   if nv == 0:
@@ -755,6 +1099,10 @@ def solver_implicit_adjoint(m: types.Model, d: types.Data, qacc_array=None, qacc
 
   if qacc_smooth_ref is None:
     qacc_smooth_ref = d.qacc_smooth
+  if qfrc_smooth_ref is None:
+    qfrc_smooth_ref = d.qfrc_smooth
+  if M_ref is None:
+    M_ref = d.M
 
   adj_qacc = qacc_array.grad
   if adj_qacc is None:
@@ -810,99 +1158,354 @@ def solver_implicit_adjoint(m: types.Model, d: types.Data, qacc_array=None, qacc
   v = wp.zeros((d.nworld, m.nv_pad), dtype=float)
   if cap is not None:
     _solve_hessian_system(m, d, adj_qacc, v, H=cap["H"])
+  elif H_ref is not None:
+    _solve_hessian_system(m, d, adj_qacc, v, H=H_ref)
   else:
     _solve_hessian_system(m, d, adj_qacc, v)
 
-  # adj_qacc_smooth += M * v  (accumulate, not overwrite)
-  tmp = wp.zeros((d.nworld, m.nv_pad), dtype=float)
-  support.mul_m(m, d, tmp, v)
+  # Differentiate the fixed-point equation directly:
+  #   (M + J.T D J) qacc = qfrc_smooth + J.T D aref.
+  # This avoids a fragile handoff through qacc_smooth.grad and the separate
+  # mass-solve callback.
   wp.launch(
     _accumulate_grad_kernel,
     dim=(d.nworld, nv),
-    inputs=[tmp],
-    outputs=[qacc_smooth_ref.grad],
+    inputs=[v],
+    outputs=[qfrc_smooth_ref.grad],
   )
+  qacc_values = cap["qacc"] if cap is not None and "qacc" in cap else qacc_array
+  if M_ref.grad is not None:
+    wp.launch(
+      _solver_mass_matrix_adjoint,
+      dim=(d.nworld, nv),
+      inputs=[m.M_rownnz, m.M_rowadr, m.M_colind, qacc_values, v],
+      outputs=[M_ref.grad],
+    )
+    if cap is not None and cap["cdof_ref"].grad is not None and cap["cinert_ref"].grad is not None:
+      from mujoco_warp._src import smooth as smooth_module
+
+      crb_grad = wp.zeros_like(cap["crb_ref"])
+      wp.launch(
+        smooth_module._M_adjoint,
+        dim=(d.nworld, nv),
+        inputs=[m.dof_bodyid, m.dof_parentid, m.M_rownnz, m.M_rowadr, cap["cdof_ref"], cap["crb_ref"], M_ref.grad],
+        outputs=[cap["cdof_ref"].grad, crb_grad],
+      )
+      wp.launch(
+        smooth_module._crb_to_cinert_adjoint,
+        dim=(d.nworld, m.nbody),
+        inputs=[m.body_parentid, crb_grad],
+        outputs=[cap["cinert_ref"].grad],
+      )
+      M_ref.grad.zero_()
 
   # Phase 3: efc-level gradients for the collision chain (use the captured snapshot when
   # available so J grad and the aref->vel->qvel path use the fixed-point active set).
-  _efc_level_gradients(m, d, v, cap=cap)
+  _efc_level_gradients(m, d, v, qacc_array, cap=cap)
 
 
-def _efc_level_gradients(m: types.Model, d: types.Data, v, cap=None):
+def _efc_level_gradients(m: types.Model, d: types.Data, v, qacc_array, cap=None):
   """Compute efc-level gradients for collision chain (shared by both adjoints).
 
   When cap (a record-time snapshot) is provided, the contact active set / J / D / pos come from
-  the fixed point rather than the cleared backward-time buffers."""
-  if d.njmax > 0:
-    efc_J = d.efc.J
-    if hasattr(efc_J, "grad") and efc_J.grad is not None:
-      wp.launch(
-        _efc_J_grad_kernel,
-        dim=(d.nworld, d.njmax_pad, m.nv_pad),
-        inputs=[m.nv, d.nefc, d.efc.force, d.njmax, v],
-        outputs=[efc_J.grad],
-      )
+  the fixed point rather than the cleared backward-time buffers.
 
-    efc_aref = d.efc.aref
-    efc_pos = d.efc.pos
+  Contact-specific terms currently linearize MuJoCo's default pyramidal cone, where the active
+  response is row-separable (K=diag(D)). Elliptic cones require their coupled per-contact K block
+  for adj_aref=K*(J*v) and are not covered by these contact kernels.
+  """
+  if d.njmax > 0:
+    efc_J = cap["J_ref"] if cap is not None else d.efc.J
+    qacc_values = cap["qacc"] if cap is not None and "qacc" in cap else qacc_array
+    efc_aref = cap["aref_ref"] if cap is not None else d.efc.aref
+    efc_pos = cap["pos_ref"] if cap is not None else d.efc.pos
     # Populate efc.aref.grad = D * (J . v) on the active set (the contact-velocity gradient
     # path: aref carries the Baumgarte -b*vel term). Uses the captured fixed-point J/D/pos.
     if cap is not None and hasattr(efc_aref, "grad") and efc_aref.grad is not None:
+      if cap["is_sparse"]:
+        wp.launch(
+          _efc_aref_grad_kernel,
+          dim=(d.nworld, d.njmax),
+          inputs=[
+            cap["nefc"],
+            cap["J_rownnz"],
+            cap["J_rowadr"],
+            cap["J_colind"],
+            cap["J"],
+            cap["D"],
+            cap["pos"],
+            cap["state"],
+            v,
+          ],
+          outputs=[efc_aref.grad],
+        )
+      else:
+        wp.launch(
+          _efc_aref_grad_dense_kernel,
+          dim=(d.nworld, d.njmax),
+          inputs=[m.nv, cap["nefc"], cap["J"], cap["D"], cap["pos"], cap["state"], v],
+          outputs=[efc_aref.grad],
+        )
+
+    geometry_J_grad = None
+    if (
+      cap is not None
+      and hasattr(efc_J, "grad")
+      and efc_J.grad is not None
+      and hasattr(efc_aref, "grad")
+      and efc_aref.grad is not None
+    ):
+      if cap["is_sparse"]:
+        wp.launch(
+          _efc_J_grad_sparse_full_kernel,
+          dim=(d.nworld, d.njmax, m.nv),
+          inputs=[
+            m.nv,
+            cap["nefc"],
+            cap["J_rownnz"],
+            cap["J_rowadr"],
+            cap["J_colind"],
+            cap["force"],
+            cap["efc_type"],
+            cap["efc_id"],
+            cap["contact_solref"],
+            cap["contact_solimp"],
+            m.opt.timestep,
+            m.opt.disableflags,
+            v,
+            efc_aref.grad,
+            qacc_values,
+            cap["qvel"],
+          ],
+          outputs=[efc_J.grad],
+        )
+        geometry_J_grad = wp.zeros((d.nworld, d.njmax_pad, m.nv_pad), dtype=float)
+        wp.launch(
+          _sparse_J_grad_to_dense_kernel,
+          dim=(d.nworld, d.njmax, m.nv),
+          inputs=[m.nv, cap["nefc"], cap["J_rownnz"], cap["J_rowadr"], cap["J_colind"]],
+          outputs=[efc_J.grad, geometry_J_grad],
+        )
+      else:
+        wp.launch(
+          _efc_J_grad_dense_full_kernel,
+          dim=(d.nworld, d.njmax_pad, m.nv_pad),
+          inputs=[
+            m.nv,
+            cap["nefc"],
+            cap["force"],
+            cap["efc_type"],
+            cap["efc_id"],
+            cap["contact_solref"],
+            cap["contact_solimp"],
+            m.opt.timestep,
+            m.opt.disableflags,
+            v,
+            efc_aref.grad,
+            qacc_values,
+            cap["qvel"],
+          ],
+          outputs=[efc_J.grad],
+        )
+        geometry_J_grad = efc_J.grad
+
+    if (
+      cap is not None
+      and geometry_J_grad is not None
+      and hasattr(efc_J, "grad")
+      and efc_J.grad is not None
+      and cap["subtree_com_ref"].grad is not None
+      and cap["cdof_ref"].grad is not None
+      and cap["contact_pos_ref"].grad is not None
+      and cap["contact_frame_ref"].grad is not None
+    ):
       wp.launch(
-        _efc_aref_grad_kernel,
-        dim=(d.nworld, d.njmax),
-        inputs=[cap["nefc"], cap["J_rownnz"], cap["J_rowadr"], cap["J_colind"], cap["J"], cap["D"], cap["pos"], v],
-        outputs=[efc_aref.grad],
+        _efc_J_to_geometry_dense_kernel,
+        dim=(d.naconmax, m.nmaxpyramid, m.nv),
+        inputs=[
+          m.nv,
+          m.body_rootid,
+          m.body_weldid,
+          m.body_isdofancestor,
+          m.geom_bodyid,
+          cap["subtree_com_ref"],
+          cap["cdof_ref"],
+          cap["contact_pos_ref"],
+          cap["contact_frame"],
+          cap["contact_friction"],
+          cap["contact_dim"],
+          cap["contact_geom"],
+          cap["contact_efc_address"],
+          cap["contact_worldid"],
+          cap["contact_type"],
+          cap["nacon"],
+        ],
+        outputs=[
+          geometry_J_grad,
+          cap["subtree_com_ref"].grad,
+          cap["cdof_ref"].grad,
+          cap["contact_pos_ref"].grad,
+          cap["contact_frame_ref"].grad,
+        ],
       )
 
-    if hasattr(efc_aref, "grad") and efc_aref.grad is not None and hasattr(efc_pos, "grad") and efc_pos.grad is not None:
+    efc_D_grad = wp.zeros_like(cap["D"]) if cap is not None else None
+    if cap is not None and efc_D_grad is not None and hasattr(efc_aref, "grad") and efc_aref.grad is not None:
+      if cap["is_sparse"]:
+        wp.launch(
+          _efc_D_grad_sparse_kernel,
+          dim=(d.nworld, d.njmax),
+          inputs=[
+            cap["nefc"],
+            cap["J_rownnz"],
+            cap["J_rowadr"],
+            cap["J_colind"],
+            cap["J"],
+            cap["D"],
+            cap["pos"],
+            cap["aref"],
+            qacc_values,
+            efc_aref.grad,
+          ],
+          outputs=[efc_D_grad],
+        )
+      else:
+        wp.launch(
+          _efc_D_grad_dense_kernel,
+          dim=(d.nworld, d.njmax),
+          inputs=[m.nv, cap["nefc"], cap["J"], cap["D"], cap["pos"], cap["aref"], qacc_values, efc_aref.grad],
+          outputs=[efc_D_grad],
+        )
+
+    if (
+      cap is not None
+      and efc_D_grad is not None
+      and cap["qpos_ref"].grad is not None
+      and cap["qvel_ref"].grad is not None
+      and hasattr(efc_aref, "grad")
+      and efc_aref.grad is not None
+    ):
+      limit_J = cap["J"]
+      if cap["is_sparse"]:
+        limit_J = wp.zeros((d.nworld, d.njmax_pad, m.nv_pad), dtype=float)
+        wp.launch(
+          _sparse_J_to_dense_kernel,
+          dim=(d.nworld, d.njmax, m.nv),
+          inputs=[m.nv, cap["nefc"], cap["J_rownnz"], cap["J_rowadr"], cap["J_colind"], cap["J"]],
+          outputs=[limit_J],
+        )
       wp.launch(
-        _efc_pos_grad_kernel,
-        dim=d.naconmax,
+        _limit_joint_state_grad_dense_kernel,
+        dim=(d.nworld, d.njmax),
         inputs=[
           m.opt.timestep,
           m.opt.disableflags,
-          d.contact.dist,
-          d.contact.includemargin,
-          d.contact.solref,
-          d.contact.solimp,
-          d.contact.efc_address,
-          d.contact.worldid,
-          d.contact.type,
-          d.nacon,
+          cap["nefc"],
+          cap["efc_type"],
+          cap["efc_id"],
+          limit_J,
+          cap["D"],
+          cap["pos"],
+          efc_D_grad,
+          m.jnt_type,
+          m.jnt_qposadr,
+          m.jnt_dofadr,
+          m.jnt_margin,
+          m.jnt_solref,
+          m.jnt_solimp,
+        ],
+        outputs=[efc_aref.grad, cap["qpos_ref"].grad, cap["qvel_ref"].grad],
+      )
+
+    if (
+      cap is not None
+      and efc_D_grad is not None
+      and hasattr(efc_aref, "grad")
+      and efc_aref.grad is not None
+      and hasattr(efc_pos, "grad")
+      and efc_pos.grad is not None
+    ):
+      wp.launch(
+        _efc_pos_grad_kernel,
+        dim=(d.naconmax, m.nmaxpyramid),
+        inputs=[
+          m.opt.timestep,
+          m.opt.disableflags,
+          cap["contact_dist"],
+          cap["contact_includemargin"],
+          cap["contact_solref"],
+          cap["contact_solimp"],
+          cap["contact_dim"],
+          cap["contact_efc_address"],
+          cap["contact_worldid"],
+          cap["contact_type"],
+          cap["nacon"],
           efc_aref.grad,
+          cap["D"],
+          efc_D_grad,
         ],
         outputs=[efc_pos.grad],
       )
 
-    # Inject the contact velocity-dissipation adjoint for genuinely multi-DOF rows directly into
-    # qvel.grad with a colind-indexed J^T scatter: adj_qvel = -sum_{i in A} b_i D_i (J_i . v) J_i.
-    # The native vel->qvel autodiff of the sparse-J contact assembly indexes the velocity gradient
-    # by stored row position rather than the efc.J column index, so it mis-routes rows that couple
-    # more than one DOF (the pyramidal friction cone), where the two edges then cancel and the
-    # tangential dissipation never reaches qvel. Effectively-single-DOF rows (incl. the normal row
-    # of a multi-DOF body) are routed correctly per substep by the native chain, so the kernel
-    # gates them out; for the multi-DOF rows it handles, it zeroes efc.aref.grad / efc.vel.grad so
-    # the native path cannot double count (efc.aref.grad was scratch for the pos kernel above).
-    #
-    # KNOWN GAP: combined strong-normal + tangential friction over long rollouts (e.g. a body
-    # pressed hard into a frictional plane, ~2x at nsteps=20). Root cause is the record_func order,
-    # not this scatter: solver_implicit_adjoint runs in reverse AFTER _advance's backward has
-    # already consumed d.qvel.grad and propagated it to the per-substep qvel clone, so this
-    # injection into the shared d.qvel.grad accumulates across substeps. Routing to the per-substep
-    # clone returns zero (its backward has already run). A proper fix records a dedicated dissipation
-    # adjoint inside _advance between _next_velocity backward and the qvel clone backward; that
-    # restructures the solver adjoint and is deferred.
-    if cap is not None and d.qvel.grad is not None and hasattr(efc_aref, "grad") and efc_aref.grad is not None:
-      efc_vel = d.efc.vel
+    # Route the contact velocity-dissipation adjoint directly to qvel with a
+    # colind-indexed J^T scatter: adj_qvel = -sum_i b_i D_i (J_i . v) J_i.
+    # The sparse native assembly can mis-route stored row positions, and leaving
+    # efc.aref.grad live would also duplicate the position VJP already emitted by
+    # _efc_pos_grad_kernel.  Therefore both dense and sparse paths handle every
+    # active contact row here and consume efc.aref/efc.vel cotangents.
+    qvel_ref = cap.get("qvel_ref") if cap is not None else None
+    if (
+      cap is not None
+      and qvel_ref is not None
+      and qvel_ref.grad is not None
+      and hasattr(efc_aref, "grad")
+      and efc_aref.grad is not None
+    ):
+      efc_vel = cap["vel_ref"]
       efc_vel_grad = efc_vel.grad if (hasattr(efc_vel, "grad") and efc_vel.grad is not None) else efc_aref.grad
-      wp.launch(
-        _qvel_contact_dissipation_kernel,
-        dim=(d.nworld, d.njmax),
-        inputs=[cap["nefc"], cap["J_rownnz"], cap["J_rowadr"], cap["J_colind"], cap["J"], cap["D"], cap["pos"],
-                cap["efc_id"], d.contact.solref, d.contact.solimp, m.opt.timestep, m.opt.disableflags, v],
-        outputs=[d.qvel.grad, efc_aref.grad, efc_vel_grad],
-      )
+      if cap["is_sparse"]:
+        wp.launch(
+          _qvel_contact_dissipation_kernel,
+          dim=(d.nworld, d.njmax),
+          inputs=[
+            cap["nefc"],
+            cap["J_rownnz"],
+            cap["J_rowadr"],
+            cap["J_colind"],
+            cap["J"],
+            cap["D"],
+            cap["pos"],
+            cap["state"],
+            cap["efc_id"],
+            cap["contact_solref"],
+            cap["contact_solimp"],
+            m.opt.timestep,
+            m.opt.disableflags,
+            v,
+          ],
+          outputs=[qvel_ref.grad, efc_aref.grad, efc_vel_grad],
+        )
+      else:
+        wp.launch(
+          _qvel_contact_dissipation_dense_kernel,
+          dim=(d.nworld, d.njmax),
+          inputs=[
+            m.nv,
+            cap["nefc"],
+            cap["J"],
+            cap["D"],
+            cap["pos"],
+            cap["state"],
+            cap["efc_type"],
+            cap["efc_id"],
+            cap["contact_solref"],
+            cap["contact_solimp"],
+            m.opt.timestep,
+            m.opt.disableflags,
+            v,
+          ],
+          outputs=[qvel_ref.grad, efc_aref.grad, efc_vel_grad],
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -1166,68 +1769,99 @@ def solver_smooth_adjoint(
   )
 
   # Phase 3: efc-level gradients for collision chain
-  _efc_level_gradients(m, d, v)
-
-
-@wp.kernel
-def _jtdaj_geom_kernel(
-  nefc_in: wp.array(dtype=int),
-  efc_J_rownnz_in: wp.array2d(dtype=int),
-  efc_J_rowadr_in: wp.array2d(dtype=int),
-  efc_J_colind_in: wp.array3d(dtype=int),
-  efc_J_in: wp.array3d(dtype=float),
-  efc_D_in: wp.array2d(dtype=float),
-  efc_pos_in: wp.array2d(dtype=float),
-  h_out: wp.array3d(dtype=float),
-):
-  """h += sum_{active efc} D * J^T J. Active = penetrating (pos<0) and stiff (D>0).
-
-  Captured before the solve, where efc.state is not yet populated; the geometric test
-  (penetration and nonzero stiffness) is the active set available at that point."""
-  worldid, efcid = wp.tid()
-  if efcid >= nefc_in[worldid]:
-    return
-  dd = efc_D_in[worldid, efcid]
-  if not (efc_pos_in[worldid, efcid] < 0.0 and dd > 0.0):
-    return
-  rownnz = efc_J_rownnz_in[worldid, efcid]
-  rowadr = efc_J_rowadr_in[worldid, efcid]
-  for a in range(rownnz):
-    ia = efc_J_colind_in[worldid, 0, rowadr + a]
-    va = efc_J_in[worldid, 0, rowadr + a]
-    for b in range(rownnz):
-      ib = efc_J_colind_in[worldid, 0, rowadr + b]
-      vb = efc_J_in[worldid, 0, rowadr + b]
-      wp.atomic_add(h_out, worldid, ia, ib, dd * va * vb)
+  _efc_level_gradients(m, d, v, qacc_array)
 
 
 def capture_contact_adjoint_state(m: types.Model, d: types.Data):
-  """Rebuild and snapshot the active-set Hessian + efc quantities at record time (forward).
-
-  Returns None when not applicable (no constraints, non-Newton, dense path, or H not retained),
-  in which case the backward falls back to d.solver_h."""
-  if not (m.is_sparse and d.njmax > 0 and m.opt.solver == types.SolverType.NEWTON):
+  """Snapshot constraint inputs before solve; post-solve state/H/force replace them later."""
+  if not (d.njmax > 0 and m.opt.solver == types.SolverType.NEWTON):
     return None
-  from mujoco_warp._src import solver as _S
-  done = wp.zeros(d.nworld, dtype=bool)
-  H = wp.zeros((d.nworld, m.nv_pad, m.nv_pad), dtype=float)
-  wp.launch(_S._update_gradient_init_h_sparse, dim=(d.nworld, m.nv_pad, m.nv_pad),
-            inputs=[m.nv, m.M_elemid, d.M, done], outputs=[H])
-  wp.launch(_jtdaj_geom_kernel, dim=(d.nworld, d.njmax),
-            inputs=[d.nefc, d.efc.J_rownnz, d.efc.J_rowadr, d.efc.J_colind, d.efc.J, d.efc.D, d.efc.pos],
-            outputs=[H])
+  if not m.is_sparse:
+    return {
+      "is_sparse": False,
+      "H": None,
+      "nefc": wp.clone(d.nefc, requires_grad=False),
+      "J": wp.clone(d.efc.J, requires_grad=False),
+      "D": wp.clone(d.efc.D, requires_grad=False),
+      "aref": wp.clone(d.efc.aref, requires_grad=False),
+      "force": wp.clone(d.efc.force, requires_grad=False),
+      "qvel": wp.clone(d.qvel, requires_grad=False),
+      "qvel_ref": d.qvel,
+      "qpos_ref": d.qpos,
+      "J_ref": d.efc.J,
+      "D_ref": d.efc.D,
+      "aref_ref": d.efc.aref,
+      "pos_ref": d.efc.pos,
+      "vel_ref": d.efc.vel,
+      "contact_dist": wp.clone(d.contact.dist, requires_grad=False),
+      "contact_pos_ref": d.contact.pos,
+      "contact_frame_ref": d.contact.frame,
+      "contact_frame": wp.clone(d.contact.frame, requires_grad=False),
+      "contact_friction": wp.clone(d.contact.friction, requires_grad=False),
+      "contact_geom": wp.clone(d.contact.geom, requires_grad=False),
+      "subtree_com_ref": d.subtree_com,
+      "cdof_ref": d.cdof,
+      "crb_ref": d.crb,
+      "cinert_ref": d.cinert,
+      "contact_includemargin": wp.clone(d.contact.includemargin, requires_grad=False),
+      "contact_solref": wp.clone(d.contact.solref, requires_grad=False),
+      "contact_solimp": wp.clone(d.contact.solimp, requires_grad=False),
+      "contact_dim": wp.clone(d.contact.dim, requires_grad=False),
+      "contact_efc_address": wp.clone(d.contact.efc_address, requires_grad=False),
+      "contact_worldid": wp.clone(d.contact.worldid, requires_grad=False),
+      "contact_type": wp.clone(d.contact.type, requires_grad=False),
+      "nacon": wp.clone(d.nacon, requires_grad=False),
+      "pos": wp.clone(d.efc.pos, requires_grad=False),
+      "state": wp.clone(d.efc.state, requires_grad=False),
+      "efc_id": wp.clone(d.efc.id, requires_grad=False),
+      "efc_type": wp.clone(d.efc.type, requires_grad=False),
+    }
   return {
-    "H": H,
-    "nefc": wp.clone(d.nefc),
-    "J": wp.clone(d.efc.J),
-    "D": wp.clone(d.efc.D),
-    "pos": wp.clone(d.efc.pos),
-    "state": wp.clone(d.efc.state),
-    "J_rownnz": wp.clone(d.efc.J_rownnz),
-    "J_rowadr": wp.clone(d.efc.J_rowadr),
-    "J_colind": wp.clone(d.efc.J_colind),
-    "efc_id": wp.clone(d.efc.id),
+    "is_sparse": True,
+    "H": None,
+    "nefc": wp.clone(d.nefc, requires_grad=False),
+    "J": wp.clone(d.efc.J, requires_grad=False),
+    "D": wp.clone(d.efc.D, requires_grad=False),
+    "aref": wp.clone(d.efc.aref, requires_grad=False),
+    "force": wp.clone(d.efc.force, requires_grad=False),
+    "qvel": wp.clone(d.qvel, requires_grad=False),
+    "qvel_ref": d.qvel,
+    "qpos_ref": d.qpos,
+    "J_ref": d.efc.J,
+    "D_ref": d.efc.D,
+    "aref_ref": d.efc.aref,
+    "pos_ref": d.efc.pos,
+    "vel_ref": d.efc.vel,
+    "contact_dist": wp.clone(d.contact.dist, requires_grad=False),
+    "contact_pos_ref": d.contact.pos,
+    "contact_frame_ref": d.contact.frame,
+    "contact_frame": wp.clone(d.contact.frame, requires_grad=False),
+    "contact_friction": wp.clone(d.contact.friction, requires_grad=False),
+    "contact_geom": wp.clone(d.contact.geom, requires_grad=False),
+    "subtree_com_ref": d.subtree_com,
+    "cdof_ref": d.cdof,
+    "crb_ref": d.crb,
+    "cinert_ref": d.cinert,
+    "contact_includemargin": wp.clone(d.contact.includemargin, requires_grad=False),
+    "contact_solref": wp.clone(d.contact.solref, requires_grad=False),
+    "contact_solimp": wp.clone(d.contact.solimp, requires_grad=False),
+    "contact_dim": wp.clone(d.contact.dim, requires_grad=False),
+    "contact_efc_address": wp.clone(d.contact.efc_address, requires_grad=False),
+    "contact_worldid": wp.clone(d.contact.worldid, requires_grad=False),
+    "contact_type": wp.clone(d.contact.type, requires_grad=False),
+    "nacon": wp.clone(d.nacon, requires_grad=False),
+    "pos": wp.clone(d.efc.pos, requires_grad=False),
+    "state": wp.clone(d.efc.state, requires_grad=False),
+    "J_rownnz": wp.clone(d.efc.J_rownnz, requires_grad=False),
+    "J_rowadr": wp.clone(d.efc.J_rowadr, requires_grad=False),
+    "J_colind": wp.clone(d.efc.J_colind, requires_grad=False),
+    "efc_id": wp.clone(d.efc.id, requires_grad=False),
+    "efc_type": wp.clone(d.efc.type, requires_grad=False),
   }
+
+
+# These kernels consume retained cotangents in place; see the module note.
+# kernel_analyzer: off
 
 
 @wp.kernel
@@ -1239,15 +1873,18 @@ def _efc_aref_grad_kernel(
   efc_J_in: wp.array3d(dtype=float),
   efc_D_in: wp.array2d(dtype=float),
   efc_pos_in: wp.array2d(dtype=float),
+  efc_state_in: wp.array2d(dtype=int),
   v_in: wp.array2d(dtype=float),
   efc_aref_grad_out: wp.array2d(dtype=float),
 ):
-  """adj_aref[i] = D[i] * (J[i,:] . v) on the penetrating active set (pos<0, D>0)."""
+  """adj_aref[i] = D[i] * (J[i,:] . v) on the quadratic active set."""
   worldid, efcid = wp.tid()
   if efcid >= nefc_in[worldid]:
     return
   dd = efc_D_in[worldid, efcid]
-  if not (efc_pos_in[worldid, efcid] < 0.0 and dd > 0.0):
+  if not (
+    efc_pos_in[worldid, efcid] < 0.0 and dd > 0.0 and efc_state_in[worldid, efcid] == types.ConstraintState.QUADRATIC.value
+  ):
     efc_aref_grad_out[worldid, efcid] = 0.0
     return
   rownnz = efc_J_rownnz_in[worldid, efcid]
@@ -1260,6 +1897,137 @@ def _efc_aref_grad_kernel(
 
 
 @wp.kernel
+def _efc_aref_grad_dense_kernel(
+  nv: int,
+  nefc_in: wp.array(dtype=int),
+  efc_J_in: wp.array3d(dtype=float),
+  efc_D_in: wp.array2d(dtype=float),
+  efc_pos_in: wp.array2d(dtype=float),
+  efc_state_in: wp.array2d(dtype=int),
+  v_in: wp.array2d(dtype=float),
+  efc_aref_grad_out: wp.array2d(dtype=float),
+):
+  worldid, efcid = wp.tid()
+  if efcid >= nefc_in[worldid]:
+    return
+  dd = efc_D_in[worldid, efcid]
+  if not (
+    efc_pos_in[worldid, efcid] < 0.0 and dd > 0.0 and efc_state_in[worldid, efcid] == types.ConstraintState.QUADRATIC.value
+  ):
+    efc_aref_grad_out[worldid, efcid] = 0.0
+    return
+  jv = float(0.0)
+  for dofid in range(nv):
+    jv += efc_J_in[worldid, efcid, dofid] * v_in[worldid, dofid]
+  efc_aref_grad_out[worldid, efcid] = dd * jv
+
+
+@wp.kernel
+def _efc_D_grad_dense_kernel(
+  nv: int,
+  nefc_in: wp.array(dtype=int),
+  efc_J_in: wp.array3d(dtype=float),
+  efc_D_in: wp.array2d(dtype=float),
+  efc_pos_in: wp.array2d(dtype=float),
+  efc_aref_in: wp.array2d(dtype=float),
+  qacc_in: wp.array2d(dtype=float),
+  efc_aref_grad_in: wp.array2d(dtype=float),
+  efc_D_grad_out: wp.array2d(dtype=float),
+):
+  worldid, efcid = wp.tid()
+  if efcid >= nefc_in[worldid]:
+    return
+  dd = efc_D_in[worldid, efcid]
+  if not (efc_pos_in[worldid, efcid] < 0.0 and dd > 0.0):
+    return
+  jqacc = float(0.0)
+  for dofid in range(nv):
+    jqacc += efc_J_in[worldid, efcid, dofid] * qacc_in[worldid, dofid]
+  jv = efc_aref_grad_in[worldid, efcid] / dd
+  efc_D_grad_out[worldid, efcid] = jv * (efc_aref_in[worldid, efcid] - jqacc)
+
+
+@wp.kernel
+def _efc_D_grad_sparse_kernel(
+  nefc_in: wp.array(dtype=int),
+  efc_J_rownnz_in: wp.array2d(dtype=int),
+  efc_J_rowadr_in: wp.array2d(dtype=int),
+  efc_J_colind_in: wp.array3d(dtype=int),
+  efc_J_in: wp.array3d(dtype=float),
+  efc_D_in: wp.array2d(dtype=float),
+  efc_pos_in: wp.array2d(dtype=float),
+  efc_aref_in: wp.array2d(dtype=float),
+  qacc_in: wp.array2d(dtype=float),
+  efc_aref_grad_in: wp.array2d(dtype=float),
+  efc_D_grad_out: wp.array2d(dtype=float),
+):
+  worldid, efcid = wp.tid()
+  if efcid >= nefc_in[worldid]:
+    return
+  dd = efc_D_in[worldid, efcid]
+  if not (efc_pos_in[worldid, efcid] < 0.0 and dd > 0.0):
+    return
+  rownnz = efc_J_rownnz_in[worldid, efcid]
+  rowadr = efc_J_rowadr_in[worldid, efcid]
+  jqacc = float(0.0)
+  for k in range(rownnz):
+    col = efc_J_colind_in[worldid, 0, rowadr + k]
+    jqacc += efc_J_in[worldid, 0, rowadr + k] * qacc_in[worldid, col]
+  jv = efc_aref_grad_in[worldid, efcid] / dd
+  efc_D_grad_out[worldid, efcid] = jv * (efc_aref_in[worldid, efcid] - jqacc)
+
+
+@wp.kernel
+def _qvel_contact_dissipation_dense_kernel(
+  nv: int,
+  nefc_in: wp.array(dtype=int),
+  efc_J_in: wp.array3d(dtype=float),
+  efc_D_in: wp.array2d(dtype=float),
+  efc_pos_in: wp.array2d(dtype=float),
+  efc_state_in: wp.array2d(dtype=int),
+  efc_type_in: wp.array2d(dtype=int),
+  efc_id_in: wp.array2d(dtype=int),
+  contact_solref_in: wp.array(dtype=wp.vec2),
+  contact_solimp_in: wp.array(dtype=types.vec5),
+  opt_timestep_in: wp.array(dtype=float),
+  opt_disableflags: int,
+  v_in: wp.array2d(dtype=float),
+  qvel_grad_out: wp.array2d(dtype=float),
+  efc_aref_grad_out: wp.array2d(dtype=float),
+  efc_vel_grad_out: wp.array2d(dtype=float),
+):
+  """Dense-J contact velocity VJP, injected before native intermediates can erase it."""
+  worldid, efcid = wp.tid()
+  if efcid >= nefc_in[worldid]:
+    return
+  if efc_type_in[worldid, efcid] < int(types.ConstraintType.CONTACT_FRICTIONLESS.value):
+    return
+  dd = efc_D_in[worldid, efcid]
+  if not (
+    efc_pos_in[worldid, efcid] < 0.0 and dd > 0.0 and efc_state_in[worldid, efcid] == types.ConstraintState.QUADRATIC.value
+  ):
+    return
+  conid = efc_id_in[worldid, efcid]
+  solref = contact_solref_in[conid]
+  solimp = contact_solimp_in[conid]
+  timestep = opt_timestep_in[worldid % opt_timestep_in.shape[0]]
+  dmax = wp.clamp(solimp[1], types.MJ_MINIMP, types.MJ_MAXIMP)
+  timeconst = solref[0]
+  if not (opt_disableflags & int(types.DisableBit.REFSAFE.value)):
+    timeconst = wp.max(timeconst, 2.0 * timestep)
+  b = 2.0 / (dmax * timeconst)
+  b = wp.where(solref[1] <= 0.0, -solref[1] / dmax, b)
+  jv = float(0.0)
+  for dofid in range(nv):
+    jv += efc_J_in[worldid, efcid, dofid] * v_in[worldid, dofid]
+  factor = -b * dd * jv
+  for dofid in range(nv):
+    wp.atomic_add(qvel_grad_out, worldid, dofid, factor * efc_J_in[worldid, efcid, dofid])
+  efc_aref_grad_out[worldid, efcid] = 0.0
+  efc_vel_grad_out[worldid, efcid] = 0.0
+
+
+@wp.kernel
 def _qvel_contact_dissipation_kernel(
   nefc_in: wp.array(dtype=int),
   efc_J_rownnz_in: wp.array2d(dtype=int),
@@ -1268,6 +2036,7 @@ def _qvel_contact_dissipation_kernel(
   efc_J_in: wp.array3d(dtype=float),
   efc_D_in: wp.array2d(dtype=float),
   efc_pos_in: wp.array2d(dtype=float),
+  efc_state_in: wp.array2d(dtype=int),
   efc_id_in: wp.array2d(dtype=int),
   contact_solref_in: wp.array(dtype=wp.vec2),
   contact_solimp_in: wp.array(dtype=types.vec5),
@@ -1288,31 +2057,20 @@ def _qvel_contact_dissipation_kernel(
   We scatter this J^T product ourselves (atomic_add over the sparse row, indexed by colind),
   rather than route it through efc.vel.grad / efc.aref.grad. The native vel->qvel autodiff of the
   sparse-J assembly indexes the velocity gradient by stored row position instead of efc.J column
-  index, so it mis-projects rows that couple more than one DOF (the pyramidal friction cone, where
-  the two edges then cancel and the tangential dissipation never reaches qvel). We only handle
-  those multi-column rows here (effectively-single-DOF rows are routed correctly per substep by
-  the native chain) and, for the rows we do handle, zero their efc.aref.grad / efc.vel.grad so the
-  native path cannot double count. efc.aref.grad was used as scratch by the pos kernel before this.
+  index. We therefore handle every active contact row here and zero its efc.aref.grad /
+  efc.vel.grad after the explicit J^T scatter. This also prevents the native aref backward from
+  duplicating the position contribution already written by _efc_pos_grad_kernel.
   """
   worldid, efcid = wp.tid()
   if efcid >= nefc_in[worldid]:
     return
   dd = efc_D_in[worldid, efcid]
-  if not (efc_pos_in[worldid, efcid] < 0.0 and dd > 0.0):
+  if not (
+    efc_pos_in[worldid, efcid] < 0.0 and dd > 0.0 and efc_state_in[worldid, efcid] == types.ConstraintState.QUADRATIC.value
+  ):
     return
   rownnz = efc_J_rownnz_in[worldid, efcid]
   rowadr = efc_J_rowadr_in[worldid, efcid]
-  # Count the genuinely nonzero columns. Rows that effectively touch a single DOF (a normal row
-  # of a multi-DOF body still stores an explicit zero for the other DOF, so rownnz over-counts)
-  # are routed correctly per substep by the native efc.aref/efc.vel autodiff chain, so leave them
-  # to it. Only rows that genuinely couple more than one DOF (the pyramidal friction cone) are
-  # column-mis-projected by the native scatter and need this direct J^T injection.
-  nnz_real = int(0)
-  for k in range(rownnz):
-    if efc_J_in[worldid, 0, rowadr + k] != 0.0:
-      nnz_real += 1
-  if nnz_real <= 1:
-    return
   conid = efc_id_in[worldid, efcid]
   solref = contact_solref_in[conid]
   solimp = contact_solimp_in[conid]
@@ -1335,3 +2093,5 @@ def _qvel_contact_dissipation_kernel(
   efc_aref_grad_out[worldid, efcid] = 0.0
   efc_vel_grad_out[worldid, efcid] = 0.0
 
+
+# kernel_analyzer: on
