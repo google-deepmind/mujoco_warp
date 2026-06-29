@@ -710,8 +710,8 @@ def ccd_hfield_kernel_builder(
   return ccd_hfield_kernel
 
 
-_CCD_OVERSUBSCRIBE_WAVES = 4
-_CCD_MIN_BLOCKS = 2
+_CCD_OVERSUBSCRIBE_WAVES = 2
+_CCD_MIN_BLOCKS = 8
 
 
 @cache_kernel

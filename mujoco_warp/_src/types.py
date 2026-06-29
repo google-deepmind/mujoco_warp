@@ -77,7 +77,7 @@ class BlockDim:
   # collision_driver
   segmented_sort: int = 128
   # collision_convex
-  convex_ccd: int = 256
+  convex_ccd: int = 64
   # forward
   actuator_velocity: int = 32
   # ray
