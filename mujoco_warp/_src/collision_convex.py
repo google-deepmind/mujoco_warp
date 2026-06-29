@@ -1137,11 +1137,15 @@ def ccd_kernel_builder(
   return ccd_kernel
 
 
-def _ccd_grid_size(kernel, naconmax: int) -> int:
+def _ccd_grid_size(kernel, naconmax: int, device) -> int:
   # Grid-stride launch width for the CCD kernel: a few device waves, capped at the contact
   # capacity. The kernel strides over the actual candidate count, so we avoid launching one
   # (mostly idle) thread per naconmax slot.
-  block_size, min_grid_size = wp.get_suggested_block_size(kernel)
+  if device.is_cpu:
+    # Warp forces CPU block_dim to 1 and has no CUDA occupancy information.
+    return naconmax
+
+  block_size, min_grid_size = wp.get_suggested_block_size(kernel, device)
   return max(1, min(naconmax, _CCD_OVERSUBSCRIBE_WAVES * block_size * min_grid_size))
 
 
@@ -1337,7 +1341,7 @@ def convex_narrowphase(m: Model, d: Data, ctx: CollisionContext, collision_table
         m.block_dim.convex_ccd,
         bool(m.opt.warn_overflow),
       )
-      ccd_grid = _ccd_grid_size(ccd_k, d.naconmax)
+      ccd_grid = _ccd_grid_size(ccd_k, d.naconmax, d.ncollision.device)
       wp.launch(
         ccd_k,
         dim=ccd_grid,
