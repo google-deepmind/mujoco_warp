@@ -394,7 +394,11 @@ class DerivativeTest(parameterized.TestCase):
 
     mjw_out = np.zeros((m.nv, m.nv))
     mujoco.mju_sym2dense(
-      mjw_out, out_smooth_vel.numpy().reshape(-1).astype(np.float64), mjm.M_rownnz, mjm.M_rowadr, mjm.M_colind
+      mjw_out,
+      out_smooth_vel.numpy().reshape(-1).astype(np.float64),
+      m.M_rownnz.numpy(),
+      m.M_rowadr.numpy(),
+      m.M_colind.numpy(),
     )
 
     mj_qDeriv = np.zeros((mjm.nv, mjm.nv))
@@ -453,7 +457,11 @@ class DerivativeTest(parameterized.TestCase):
 
     mjw_out = np.zeros((m.nv, m.nv))
     mujoco.mju_sym2dense(
-      mjw_out, out_smooth_vel.numpy().reshape(-1).astype(np.float64), mjm.M_rownnz, mjm.M_rowadr, mjm.M_colind
+      mjw_out,
+      out_smooth_vel.numpy().reshape(-1).astype(np.float64),
+      m.M_rownnz.numpy(),
+      m.M_rowadr.numpy(),
+      m.M_colind.numpy(),
     )
 
     mj_qDeriv = np.zeros((mjm.nv, mjm.nv))

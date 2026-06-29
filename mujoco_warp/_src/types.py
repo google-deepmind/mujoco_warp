@@ -885,20 +885,28 @@ class TileSet:
     adr: address of each tile in the set
     size: size of all the tiles in this set
     elemid: flat per-block gather indices into CSR M for tile_load_indexed (absent -> nC sentinel)
+    diag_elemid: flat per-block gather indices for diagonal entries
+    group_size: number of matrix blocks processed by each CUDA tile group
   """
 
   adr: wp.array[int]
   size: int
   elemid: wp.array[int] = None
+  diag_elemid: wp.array[int] = None
+  group_size: int = 1
 
   def __eq__(self, other) -> bool:
     if self.__class__ is not other.__class__:
       return NotImplemented
-    return self.size == other.size and np.array_equal(np.asarray(self.adr.numpy()), np.asarray(other.adr.numpy()))
+    return (
+      self.size == other.size
+      and self.group_size == other.group_size
+      and np.array_equal(np.asarray(self.adr.numpy()), np.asarray(other.adr.numpy()))
+    )
 
   def __hash__(self) -> int:
     adr = np.asarray(self.adr.numpy())
-    return hash((self.size, adr.dtype.str, adr.shape, adr.tobytes()))
+    return hash((self.size, self.group_size, adr.dtype.str, adr.shape, adr.tobytes()))
 
 
 @dataclasses.dataclass
@@ -1296,6 +1304,9 @@ class Model:
     qLD_dof_dense: per-dof flag, 1 if the dof's block is dense (packed)     (nv,)
     qLD_dof_simple: per-dof flag, 1 if the dof's block is simple (diagonal) (nv,)
     qLD_simple_dofs: indices of the simple (diagonal) dofs                  (nsimple,)
+    qLD_has_runtime_simple: whether any dense block can use the runtime diagonal fast path
+    qLD_runtime_simple_block_adr: first dof of each runtime-simple candidate block
+    qLD_runtime_simple_block_num: number of dofs in each runtime-simple candidate block
     has_fluid: True if wind, density, or viscosity are non-zero at put_model time
     has_sdf_geom: whether the model contains SDF geoms
     has_flex_selfcollide: whether any flex has self-collision enabled
@@ -1368,7 +1379,8 @@ class Model:
     sensor_rangefinder_bodyid: bodyid for rangefinder        (nrangefinder,)
     taxel_vertadr: tactile sensor vertex address             (nsensortaxel,)
     taxel_sensorid: address for tactile sensors
-    M_tiles: tiling configuration
+    M_tiles: tiling configuration for guaranteed-dense blocks
+    M_runtime_tiles: tiling configuration for runtime-simple candidate blocks
     qLD_updates: tuple of index triples for sparse factorization
     qLD_all_updates: tuple of all levels concatenated
     qLD_level_offsets: tuple of start offsets for each level
@@ -1758,6 +1770,9 @@ class Model:
   qLD_dof_dense: wp.array[int]
   qLD_dof_simple: wp.array[int]
   qLD_simple_dofs: wp.array[int]
+  qLD_has_runtime_simple: bool
+  qLD_runtime_simple_block_adr: wp.array[int]
+  qLD_runtime_simple_block_num: wp.array[int]
   has_fluid: bool
   has_sdf_geom: bool
   has_flex_selfcollide: bool
@@ -1822,6 +1837,7 @@ class Model:
   taxel_vertadr: array("nsensortaxel", int)
   taxel_sensorid: wp.array[int]
   M_tiles: tuple[TileSet, ...]
+  M_runtime_tiles: tuple[TileSet, ...]
   qLD_updates: tuple[wp.array[wp.vec3i], ...]
   qLD_all_updates: wp.array[wp.vec3i]
   qLD_level_offsets: wp.array[int]
@@ -2075,6 +2091,7 @@ class Data:
     cacc: com-based acceleration                                (nworld, nbody, 6)
     cfrc_int: com-based interaction force with parent           (nworld, nbody, 6)
     cfrc_ext: com-based external force on body                  (nworld, nbody, 6)
+    M_dof_simple: runtime diagonal-block flags, repeated per DOF (nworld, nv)
     contact: contact data
     efc: constraint data
     tree_island: island ID per tree (-1 if unconstrained)       (nworld, ntree)
@@ -2221,6 +2238,7 @@ class Data:
   cacc: array("nworld", "nbody", wp.spatial_vector)
   cfrc_int: array("nworld", "nbody", wp.spatial_vector)
   cfrc_ext: array("nworld", "nbody", wp.spatial_vector)
+  M_dof_simple: array("nworld", "nv", bool)
   contact: Contact
   efc: Constraint
   tree_island: array("nworld", "ntree", int)

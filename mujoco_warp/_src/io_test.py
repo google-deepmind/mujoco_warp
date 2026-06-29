@@ -1261,6 +1261,155 @@ class IOTest(parameterized.TestCase):
     _assert_eq(m.dof_invweight0.numpy()[0], mjm.dof_invweight0, "dof_invweight0")
     _assert_eq(m.body_invweight0.numpy()[0, 1], mjm.body_invweight0[1], "body_invweight0")
 
+  def test_set_const_freejoint_per_world_com(self):
+    """An initially simple free body supports a coupled per-world inertia."""
+    xml = """
+    <mujoco>
+      <worldbody>
+        <body name="floating" pos="0 0 1">
+          <freejoint/>
+          <inertial pos="0 0 0" mass="1" diaginertia="0.1 0.1 0.1"/>
+        </body>
+      </worldbody>
+    </mujoco>
+    """
+    mjm = mujoco.MjModel.from_xml_string(xml)
+    mjd = mujoco.MjData(mjm)
+    m = mjwarp.put_model(mjm)
+    d = mjwarp.put_data(mjm, mjd, nworld=2)
+
+    self.assertEqual(m.nC, mjm.nM)
+    self.assertLen(m.M_runtime_tiles, 1)
+    self.assertEqual(m.M_runtime_tiles[0].group_size, 5)
+
+    body_ipos = np.tile(mjm.body_ipos, (2, 1, 1))
+    body_ipos[1, 1] = (0.05, 0.0, -0.02)
+    m.body_ipos = wp.array(body_ipos, dtype=wp.vec3)
+    m.body_invweight0 = wp.array(np.tile(mjm.body_invweight0, (2, 1, 1)), dtype=wp.vec2)
+    m.dof_invweight0 = wp.array(np.tile(mjm.dof_invweight0, (2, 1)), dtype=float)
+
+    mjwarp.set_const_0(m, d)
+
+    np.testing.assert_array_equal(d.M_dof_simple.numpy()[:, 0], [True, False])
+
+    M = d.M.numpy()
+    rownnz = m.M_rownnz.numpy()
+    rowadr = m.M_rowadr.numpy()
+    colind = m.M_colind.numpy()
+    dense = np.zeros((2, m.nv, m.nv))
+    for i in range(m.nv):
+      for k in range(rownnz[i]):
+        madr = rowadr[i] + k
+        j = colind[madr]
+        dense[:, i, j] = M[:, madr]
+        dense[:, j, i] = M[:, madr]
+
+    ref_m = mujoco.MjModel.from_xml_string(xml.replace('pos="0 0 0"', 'pos="0.05 0 -0.02"'))
+    ref_d = mujoco.MjData(ref_m)
+    mujoco.mj_forward(ref_m, ref_d)
+    ref_M = np.zeros((ref_m.nv, ref_m.nv))
+    mujoco.mju_sym2dense(ref_M, ref_d.M, ref_m.M_rownnz, ref_m.M_rowadr, ref_m.M_colind)
+
+    np.testing.assert_allclose(dense[0], np.diag(np.diag(dense[0])), atol=1e-6)
+    np.testing.assert_allclose(dense[1], ref_M, atol=1e-6)
+
+    native_d = mujoco.MjData(mjm)
+    with self.assertWarnsRegex(RuntimeWarning, "projected to the native compact layout"):
+      mjwarp.get_data_into(native_d, mjm, d, world_id=1)
+    np.testing.assert_allclose(native_d.M, np.diag(dense[1]), atol=1e-6)
+
+    rhs = wp.ones((2, m.nv), dtype=float)
+    result = wp.zeros_like(rhs)
+    mjwarp.solve_m(m, d, result, rhs)
+    np.testing.assert_allclose(result.numpy()[0], np.linalg.solve(dense[0], np.ones(m.nv)), atol=1e-5)
+    np.testing.assert_allclose(result.numpy()[1], np.linalg.solve(dense[1], np.ones(m.nv)), atol=1e-5)
+
+    body_ipos[1, 1] = (0.0, 0.0, 0.0)
+    m.body_ipos = wp.array(body_ipos, dtype=wp.vec3)
+    mjwarp.set_const_0(m, d)
+
+    self.assertTrue(np.all(d.M_dof_simple.numpy()))
+    M = d.M.numpy()
+    for i in range(m.nv):
+      row = M[:, rowadr[i] : rowadr[i] + rownnz[i] - 1]
+      np.testing.assert_array_equal(row, 0.0)
+
+    body_ipos[:, 1] = (0.05, 0.0, -0.02)
+    m.body_ipos = wp.array(body_ipos, dtype=wp.vec3)
+    mjwarp.set_const_0(m, d)
+
+    self.assertFalse(np.any(d.M_dof_simple.numpy()))
+
+    M = d.M.numpy()
+    for i in range(m.nv):
+      for k in range(rownnz[i]):
+        madr = rowadr[i] + k
+        j = colind[madr]
+        dense[:, i, j] = M[:, madr]
+        dense[:, j, i] = M[:, madr]
+    mjwarp.solve_m(m, d, result, rhs)
+    result_np = result.numpy()
+    for worldid in range(2):
+      np.testing.assert_allclose(result_np[worldid], np.linalg.solve(dense[worldid], np.ones(m.nv)), atol=1e-5)
+
+  def test_runtime_simple_grouped_factor_solve(self):
+    """Runtime-simple blocks share a tile group without sharing their classification."""
+    bodies = "".join(
+      f"""
+      <body name="body{i}" pos="{i} 0 1">
+        <freejoint/>
+        <inertial pos="0 0 0" mass="1" diaginertia="0.1 0.2 0.3"/>
+      </body>
+      """
+      for i in range(10)
+    )
+    mjm = mujoco.MjModel.from_xml_string(f"<mujoco><worldbody>{bodies}</worldbody></mujoco>")
+    mjd = mujoco.MjData(mjm)
+    m = mjwarp.put_model(mjm)
+    d = mjwarp.put_data(mjm, mjd, nworld=2)
+
+    grouped = [tile for tile in m.M_runtime_tiles if tile.group_size > 1]
+    self.assertLen(grouped, 1)
+    self.assertEqual(grouped[0].group_size, 5)
+    self.assertEqual(grouped[0].adr.size, 10)
+
+    body_ipos = np.tile(mjm.body_ipos, (2, 1, 1))
+    body_ipos[0, 1] = (0.05, 0.0, -0.02)
+    body_ipos[1, 3] = (-0.02, 0.04, 0.0)
+    body_ipos[1, 8] = (0.0, -0.03, 0.06)
+    m.body_ipos = wp.array(body_ipos, dtype=wp.vec3)
+    m.body_invweight0 = wp.array(np.tile(mjm.body_invweight0, (2, 1, 1)), dtype=wp.vec2)
+    m.dof_invweight0 = wp.array(np.tile(mjm.dof_invweight0, (2, 1)), dtype=float)
+    mjwarp.set_const_0(m, d)
+
+    simple = d.M_dof_simple.numpy()
+    np.testing.assert_array_equal(simple[0, ::6], [False] + [True] * 9)
+    np.testing.assert_array_equal(simple[1, ::6], [True, True, False, True, True, True, True, False, True, True])
+
+    rownnz = m.M_rownnz.numpy()
+    rowadr = m.M_rowadr.numpy()
+    colind = m.M_colind.numpy()
+    M = d.M.numpy()
+    dense = np.zeros((2, m.nv, m.nv))
+    for i in range(m.nv):
+      for k in range(rownnz[i]):
+        madr = rowadr[i] + k
+        j = colind[madr]
+        dense[:, i, j] = M[:, madr]
+        dense[:, j, i] = M[:, madr]
+
+    rhs = wp.ones((2, m.nv), dtype=float)
+    expected = np.stack([np.linalg.solve(dense[worldid], np.ones(m.nv)) for worldid in range(2)])
+    result = wp.zeros_like(rhs)
+    mjwarp.solve_m(m, d, result, rhs)
+    np.testing.assert_allclose(result.numpy(), expected, atol=1e-5)
+
+    result.zero_()
+    qLD = wp.empty_like(d.qLD)
+    qLDiagInv = wp.empty_like(d.qLDiagInv)
+    mjwarp._src.smooth.factor_solve_i(m, d, d.M, qLD, qLDiagInv, result, rhs, use_runtime_simple=True)
+    np.testing.assert_allclose(result.numpy(), expected, atol=1e-5)
+
   def test_set_const_balljoint(self):
     """Test set_const with ball joint (3 DOFs with averaging)."""
     mjm, mjd, m, d = test_data.fixture(

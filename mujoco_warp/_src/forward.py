@@ -398,7 +398,7 @@ def euler(m: Model, d: Data):
       inputs=[m.opt.timestep, m.M_rownnz, m.M_rowadr, damp_deriv],
       outputs=[M],
     )
-    smooth.factor_solve_i(m, d, M, qLD, qLDiagInv, qacc, d.efc.Ma)
+    smooth.factor_solve_i(m, d, M, qLD, qLDiagInv, qacc, d.efc.Ma, use_runtime_simple=True)
     _advance(m, d, qacc)
   else:
     _advance(m, d, d.qacc)
@@ -1293,7 +1293,7 @@ def fwd_acceleration(m: Model, d: Data, factorize: bool = False):
     island.update_active_dofs(m, d)
     solver.smooth_solve_compact(m, d)
   elif factorize:
-    smooth.factor_solve_i(m, d, d.M, d.qLD, d.qLDiagInv, d.qacc_smooth, d.qfrc_smooth)
+    smooth.factor_solve_i(m, d, d.M, d.qLD, d.qLDiagInv, d.qacc_smooth, d.qfrc_smooth, use_runtime_simple=True)
   else:
     smooth.solve_m(m, d, d.qacc_smooth, d.qfrc_smooth)
 

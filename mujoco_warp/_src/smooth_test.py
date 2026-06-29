@@ -15,6 +15,8 @@
 
 """Tests for smooth dynamics functions."""
 
+import inspect
+
 import mujoco
 import numpy as np
 import warp as wp
@@ -38,6 +40,9 @@ def _assert_eq(a, b, name):
 
 
 class SmoothTest(parameterized.TestCase):
+  def test_crb_public_signature(self):
+    self.assertEqual(set(inspect.signature(mjw.crb).parameters), {"m", "d"})
+
   def test_mocap_kinematics(self):
     """Tests that mocap bodies and child bodies are correctly updated after mocap_pos changes.
 
@@ -490,6 +495,52 @@ class SmoothTest(parameterized.TestCase):
       _assert_eq(d.qLDiagInv.numpy()[0], mjd.qLDiagInv, "qLDiagInv")
     elif m.qLD_has_simple and not m.qLD_has_dense and not m.qLD_has_sparse:
       _assert_eq(d.qLDiagInv.numpy()[0], mjd.qLDiagInv, "qLDiagInv")
+
+  def test_factor_solve_i_coupled_runtime_simple_input(self):
+    """An arbitrary coupled matrix does not reuse the simple classification of d.M."""
+    mjm, _, m, d = test_data.fixture(
+      xml="""
+    <mujoco>
+      <option integrator="implicitfast" gravity="0 0 0"/>
+      <worldbody>
+        <site name="anchor" pos="0 0 0"/>
+        <body pos="0.4 0.2 0.1">
+          <freejoint/>
+          <inertial pos="0 0 0" mass="1" diaginertia="0.1 0.2 0.3"/>
+          <site name="tip" pos="0.2 0.3 0.4"/>
+        </body>
+      </worldbody>
+      <tendon>
+        <spatial damping="10">
+          <site site="anchor"/>
+          <site site="tip"/>
+        </spatial>
+      </tendon>
+    </mujoco>
+    """
+    )
+
+    self.assertTrue(np.all(d.M_dof_simple.numpy()))
+
+    qH = wp.empty((d.nworld, m.nC), dtype=float)
+    mjw.deriv_smooth_vel(m, d, qH)
+    qH_dense = np.zeros((m.nv, m.nv))
+    mujoco.mju_sym2dense(
+      qH_dense,
+      qH.numpy()[0].astype(np.float64),
+      m.M_rownnz.numpy(),
+      m.M_rowadr.numpy(),
+      m.M_colind.numpy(),
+    )
+    self.assertGreater(np.max(np.abs(qH_dense - np.diag(np.diag(qH_dense)))), 1e-4)
+
+    rhs = wp.ones((d.nworld, m.nv), dtype=float)
+    result = wp.zeros_like(rhs)
+    qLD = wp.empty_like(d.qLD)
+    qLDiagInv = wp.empty_like(d.qLDiagInv)
+    mjw._src.smooth.factor_solve_i(m, d, qH, qLD, qLDiagInv, result, rhs)
+
+    _assert_eq(result.numpy()[0], np.linalg.solve(qH_dense, np.ones(m.nv)), "coupled M - dt * qDeriv solve")
 
   def test_factor_solve_mixed_blocks(self):
     """Per-block factor/solve: one oversized block (sparse LDL) plus small blocks (packed dense)."""

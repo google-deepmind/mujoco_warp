@@ -376,7 +376,7 @@ def _solve_simple_island(
 
 
 @cache_kernel
-def _tile_cholesky_solve_block_island(tile):
+def _tile_cholesky_solve_block_island(tile, use_runtime_simple: bool, group_size: int, block_count: int):
   """Dense Cholesky backsubstitution with island-local index remapping.
 
   L is now the packed block-dense factor, so the diagonal block is read from its packed offset
@@ -384,6 +384,7 @@ def _tile_cholesky_solve_block_island(tile):
   """
   TILE_SIZE = tile.size
   block_area = TILE_SIZE * TILE_SIZE
+  group_dof_count = group_size * TILE_SIZE
 
   @wp.kernel(module="unique", enable_backward=False)
   def cholesky_solve(
@@ -393,27 +394,47 @@ def _tile_cholesky_solve_block_island(tile):
     nidof_in: wp.array[int],
     map_dof2idof_in: wp.array2d[int],
     # In:
+    dof_simple_in: wp.array2d[bool],
     L: wp.array2d[float],
+    D: wp.array2d[float],
     y: wp.array2d[float],
     adr: wp.array[int],
     # Out:
-    x: wp.array2d[float],
+    x_out: wp.array2d[float],
   ):
-    worldid, nodeid = wp.tid()
-    dofid = adr[nodeid]
-    idofid = map_dof2idof_in[worldid, dofid]
+    worldid, groupid, threadid = wp.tid()
+    block_begin = groupid
+    if wp.static(use_runtime_simple):
+      block_begin = groupid * group_size
+      if threadid < group_dof_count:
+        slot = threadid // TILE_SIZE
+        nodeid = block_begin + slot
+        if nodeid < block_count:
+          start = adr[nodeid]
+          dofid = start + threadid - slot * TILE_SIZE
+          idofid = map_dof2idof_in[worldid, dofid]
+          if dof_simple_in[worldid, start] and idofid < nidof_in[worldid]:
+            x_out[worldid, idofid] = D[worldid, dofid] * y[worldid, idofid]
 
-    # Skip unconstrained trees (uniform branch — all threads in block agree)
-    if idofid >= nidof_in[worldid]:
-      return
-
-    # L is packed in global block order; y and x use island-local offsets.
-    L_tile = wp.tile_reshape(
-      wp.tile_load(L[worldid], shape=(block_area,), offset=(qLD_block_adr[dofid],)), (TILE_SIZE, TILE_SIZE)
-    )
-    y_slice = wp.tile_load(y[worldid], shape=(TILE_SIZE,), offset=(idofid,))
-    x_slice = wp.tile_cholesky_solve(L_tile, y_slice, fill_mode="upper")
-    wp.tile_store(x[worldid], x_slice, offset=(idofid,))
+    for slot in range(group_size):
+      nodeid = block_begin + slot
+      run_dense = True
+      if wp.static(use_runtime_simple):
+        run_dense = False
+        if nodeid < block_count:
+          dofid = adr[nodeid]
+          idofid = map_dof2idof_in[worldid, dofid]
+          run_dense = idofid < nidof_in[worldid] and not dof_simple_in[worldid, dofid]
+      if run_dense:
+        dofid = adr[nodeid]
+        idofid = map_dof2idof_in[worldid, dofid]
+        L_tile = wp.tile_reshape(
+          wp.tile_load(L[worldid], shape=(block_area,), offset=(qLD_block_adr[dofid],)),
+          (TILE_SIZE, TILE_SIZE),
+        )
+        y_slice = wp.tile_load(y[worldid], shape=(TILE_SIZE,), offset=(idofid,))
+        x_slice = wp.tile_cholesky_solve(L_tile, y_slice, fill_mode="upper")
+        wp.tile_store(x_out[worldid], x_slice, offset=(idofid,))
 
   return cholesky_solve
 
@@ -441,14 +462,27 @@ def solve_m_island(
   # passes, mirroring smooth.solve_LD: dense blocks back-substitute from the packed block-dense
   # Cholesky, coupled-sparse blocks from the LDL region (offset qLD_block_total), and simple
   # (diagonal) blocks via res = (1/diag) * vec. The LDL pass skips dense and simple dofs.
-  if m.qLD_has_dense:
-    for tile in m.M_tiles:
+  for tiles, use_runtime_simple in (
+    (m.M_tiles, False),
+    (m.M_runtime_tiles, True),
+  ):
+    for tile in tiles:
       # large blocks prefer fewer threads for the sequential solve; see smooth._solve_block_dense
-      block_dim = m.block_dim.cholesky_solve if tile.size <= 40 else 32
+      block_dim = 32 if use_runtime_simple else (m.block_dim.cholesky_solve if tile.size <= 40 else 32)
+      group_size = tile.group_size if use_runtime_simple else 1
       wp.launch_tiled(
-        _tile_cholesky_solve_block_island(tile),
-        dim=(d.nworld, tile.adr.size),
-        inputs=[m.qLD_block_adr, d.nidof, d.map_dof2idof, d.qLD, vec, tile.adr],
+        _tile_cholesky_solve_block_island(tile, use_runtime_simple, group_size, tile.adr.size),
+        dim=(d.nworld, (tile.adr.size + group_size - 1) // group_size),
+        inputs=[
+          m.qLD_block_adr,
+          d.nidof,
+          d.map_dof2idof,
+          d.M_dof_simple,
+          d.qLD,
+          d.qLDiagInv,
+          vec,
+          tile.adr,
+        ],
         outputs=[res],
         block_dim=block_dim,
       )

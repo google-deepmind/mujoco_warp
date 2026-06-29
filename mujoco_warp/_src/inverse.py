@@ -111,7 +111,7 @@ def discrete_acc(m: Model, d: Data, qacc: wp.array2d[float]):
     qDeriv = wp.empty((d.nworld, m.nC), dtype=float)
     derivative.deriv_smooth_vel(m, d, qDeriv)
     mul_m(m, d, qfrc, d.qacc, M=qDeriv)
-    smooth.factor_solve_i(m, d, d.M, d.qLD, d.qLDiagInv, qacc, qfrc)
+    smooth.factor_solve_i(m, d, d.M, d.qLD, d.qLDiagInv, qacc, qfrc, use_runtime_simple=True)
   else:
     raise NotImplementedError(f"integrator {m.opt.integrator} not implemented.")
 
