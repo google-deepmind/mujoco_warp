@@ -22,13 +22,16 @@ from mujoco_warp._src import constraint
 from mujoco_warp._src import derivative
 from mujoco_warp._src import history
 from mujoco_warp._src import island
-from mujoco_warp._src import math
 from mujoco_warp._src import passive
 from mujoco_warp._src import sensor
 from mujoco_warp._src import sleep
 from mujoco_warp._src import smooth
 from mujoco_warp._src import solver
 from mujoco_warp._src import util_misc
+from mujoco_warp._src.forward_next import next_activation
+from mujoco_warp._src.forward_next import next_position
+from mujoco_warp._src.forward_next import next_time
+from mujoco_warp._src.forward_next import next_velocity
 from mujoco_warp._src.support import next_act
 from mujoco_warp._src.support import xfrc_accumulate
 from mujoco_warp._src.types import MJ_MINVAL
@@ -70,47 +73,20 @@ def _next_position(
   jnttype = jnt_type[jntid]
   qpos_adr = jnt_qposadr[jntid]
   dof_adr = jnt_dofadr[jntid]
-  qpos = qpos_in[worldid]
-  qpos_next = qpos_out[worldid]
   qvel = qvel_in[worldid]
 
+  # extract the (scaled) per-joint velocity as values, then integrate via the shared func.
+  qvel_lin = wp.vec3(0.0, 0.0, 0.0)
+  qvel_ang = wp.vec3(0.0, 0.0, 0.0)
   if jnttype == JointType.FREE:
-    qpos_pos = wp.vec3(qpos[qpos_adr], qpos[qpos_adr + 1], qpos[qpos_adr + 2])
     qvel_lin = wp.vec3(qvel[dof_adr], qvel[dof_adr + 1], qvel[dof_adr + 2]) * qvel_scale_in
-
-    qpos_new = qpos_pos + timestep * qvel_lin
-
-    qpos_quat = wp.quat(
-      qpos[qpos_adr + 3],
-      qpos[qpos_adr + 4],
-      qpos[qpos_adr + 5],
-      qpos[qpos_adr + 6],
-    )
     qvel_ang = wp.vec3(qvel[dof_adr + 3], qvel[dof_adr + 4], qvel[dof_adr + 5]) * qvel_scale_in
-
-    qpos_quat_new = math.quat_integrate(qpos_quat, qvel_ang, timestep)
-
-    qpos_next[qpos_adr + 0] = qpos_new[0]
-    qpos_next[qpos_adr + 1] = qpos_new[1]
-    qpos_next[qpos_adr + 2] = qpos_new[2]
-    qpos_next[qpos_adr + 3] = qpos_quat_new[0]
-    qpos_next[qpos_adr + 4] = qpos_quat_new[1]
-    qpos_next[qpos_adr + 5] = qpos_quat_new[2]
-    qpos_next[qpos_adr + 6] = qpos_quat_new[3]
-
   elif jnttype == JointType.BALL:
-    qpos_quat = wp.quat(qpos[qpos_adr + 0], qpos[qpos_adr + 1], qpos[qpos_adr + 2], qpos[qpos_adr + 3])
     qvel_ang = wp.vec3(qvel[dof_adr], qvel[dof_adr + 1], qvel[dof_adr + 2]) * qvel_scale_in
+  else:  # HINGE / SLIDE
+    qvel_lin = wp.vec3(qvel[dof_adr] * qvel_scale_in, 0.0, 0.0)
 
-    qpos_quat_new = math.quat_integrate(qpos_quat, qvel_ang, timestep)
-
-    qpos_next[qpos_adr + 0] = qpos_quat_new[0]
-    qpos_next[qpos_adr + 1] = qpos_quat_new[1]
-    qpos_next[qpos_adr + 2] = qpos_quat_new[2]
-    qpos_next[qpos_adr + 3] = qpos_quat_new[3]
-
-  else:  # if jnt_type in (JointType.HINGE, JointType.SLIDE):
-    qpos_next[qpos_adr] = qpos[qpos_adr] + timestep * qvel[dof_adr] * qvel_scale_in
+  next_position(jnttype, qpos_adr, timestep, qpos_in, worldid, qvel_lin, qvel_ang, qpos_out)
 
 
 @wp.kernel
@@ -126,8 +102,7 @@ def _next_velocity(
   qvel_out: wp.array2d[float],
 ):
   worldid, dofid = wp.tid()
-  timestep = opt_timestep[worldid % opt_timestep.shape[0]]
-  qvel_out[worldid, dofid] = qvel_in[worldid, dofid] + qacc_scale_in * qacc_in[worldid, dofid] * timestep
+  qvel_out[worldid, dofid] = next_velocity(worldid, dofid, opt_timestep, qvel_in, qacc_in, qacc_scale_in)
 
 
 @wp.kernel
@@ -153,68 +128,25 @@ def _next_activation(
   act_out: wp.array2d[float],
 ):
   worldid, uid = wp.tid()
-  opt_timestep_id = worldid % opt_timestep.shape[0]
-  actuator_dynprm_id = worldid % actuator_dynprm.shape[0]
-  actuator_actrange_id = worldid % actuator_actrange.shape[0]
-  actuator_gainprm_id = worldid % actuator_gainprm.shape[0]
-  actuator_biasprm_id = worldid % actuator_biasprm.shape[0]
-
-  actadr = actuator_actadr[uid]
-  actnum = actuator_actnum[uid]
-  dyntype = actuator_dyntype[uid]
-
-  if dyntype == DynType.DCMOTOR:
-    dynprm = actuator_dynprm[actuator_dynprm_id, uid]
-    gainprm = actuator_gainprm[actuator_gainprm_id, uid]
-    biasprm = actuator_biasprm[actuator_biasprm_id, uid]
-    slots = util_misc.dcmotor_slots(dynprm, gainprm)
-
-    for j in range(actadr, actadr + actnum):
-      offset = j - actadr
-      act = act_in[worldid, j]
-      act_dot = act_dot_in[worldid, j]
-
-      if offset == slots[4]:  # current
-        R = gainprm[0]
-        te = wp.max(MJ_MINVAL, dynprm[0])
-        act = act + act_dot * te * (1.0 - wp.exp(-opt_timestep[opt_timestep_id] / te))
-      elif offset == slots[3]:  # bristle
-        F_C = biasprm[3]
-        F_S = biasprm[4]
-        v_S = biasprm[5]
-        sigma0 = dynprm[5]
-        velocity = actuator_velocity_in[worldid, uid]
-        g = util_misc.lugre_stribeck(velocity, F_C, F_S, v_S)
-
-        a = -sigma0 * wp.abs(velocity) / wp.max(MJ_MINVAL, g)
-        h = opt_timestep[opt_timestep_id]
-        exp_ah = wp.exp(a * h)
-        int_h = h
-        if wp.abs(a) > MJ_MINVAL:
-          int_h = (exp_ah - 1.0) / a
-        act = exp_ah * act + int_h * velocity
-      elif offset == slots[1]:  # integral
-        act = act + act_dot * opt_timestep[opt_timestep_id]
-        Imax = dynprm[8]
-        if Imax > 0.0:
-          act = wp.clamp(act, -Imax, Imax)
-      else:  # temperature and slew
-        act = act + act_dot * opt_timestep[opt_timestep_id]
-
-      act_out[worldid, j] = act
-  else:
-    for j in range(actadr, actadr + actnum):
-      act = next_act(
-        opt_timestep[opt_timestep_id],
-        dyntype,
-        actuator_dynprm[actuator_dynprm_id, uid],
-        actuator_actrange[actuator_actrange_id, uid],
-        act_in[worldid, j],
-        act_dot_in[worldid, j],
-        act_dot_scale,
-        limit and actuator_actlimited[uid],
-      )
-      act_out[worldid, j] = act
+  next_activation(
+    worldid,
+    uid,
+    opt_timestep,
+    actuator_dyntype,
+    actuator_actadr,
+    actuator_actnum,
+    actuator_actlimited,
+    actuator_dynprm,
+    actuator_gainprm,
+    actuator_biasprm,
+    actuator_actrange,
+    act_in,
+    act_dot_in,
+    actuator_velocity_in,
+    act_dot_scale,
+    limit,
+    act_out,
+  )
 
 
 @wp.kernel
@@ -237,7 +169,7 @@ def _next_time(
   time_out: wp.array[float],
 ):
   worldid = wp.tid()
-  time_out[worldid] = time_in[worldid] + opt_timestep[worldid % opt_timestep.shape[0]]
+  next_time(worldid, opt_timestep, time_in, time_out)
   nefc = nefc_in[worldid]
 
   if nefc > njmax_in:
