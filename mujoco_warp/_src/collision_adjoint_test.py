@@ -46,6 +46,7 @@ import mujoco_warp as mjw
 from mujoco_warp._src import adjoint  # noqa: F401  registers the analytic step backward
 from mujoco_warp._src import collision_adjoint
 from mujoco_warp._src import collision_driver_test as _cdt  # import as module so pytest doesn't re-collect its TestCase
+from mujoco_warp._src import support as _support
 from mujoco_warp._src.types import GeomType
 from mujoco_warp._src.types import JointType
 
@@ -200,6 +201,7 @@ def _analytic_geom_vjp(mjm, m, d, cid, w, e0, seed_kind, u, qpos0):
   nworld, nq, nv = d.qpos.shape[0], m.nq, m.nv
   res_qpos = wp.zeros((nworld, nq), dtype=float)
   res_subtree_com = wp.zeros((nworld, m.nbody), dtype=wp.vec3)
+  res_cdof = wp.zeros((nworld, nv), dtype=wp.spatial_vector)
   res_efc_pos = wp.zeros_like(d.efc.pos)
   res_contact_pos = wp.zeros_like(d.contact.pos)
   res_contact_frame = wp.zeros_like(d.contact.frame)
@@ -211,7 +213,9 @@ def _analytic_geom_vjp(mjm, m, d, cid, w, e0, seed_kind, u, qpos0):
     a = np.zeros((d.contact.pos.shape[0], 3), dtype=np.float32)
     a[cid] = u
     res_contact_pos = wp.array(a, dtype=wp.vec3)
-  collision_adjoint.contact_qpos_vjp(m, d, res_contact_pos, res_contact_frame, res_efc_pos, res_subtree_com, res_qpos)
+  collision_adjoint.contact_qpos_vjp(
+    m, d, res_contact_pos, res_contact_frame, res_efc_pos, res_subtree_com, res_cdof, res_qpos
+  )
   rq = res_qpos.numpy()[w]
   g = np.zeros(nv)
   for j in range(mjm.njnt):
@@ -387,6 +391,134 @@ class ContactQposVJPTest(parameterized.TestCase):
     self.assertGreater(angfrac, 0.02, f"{name}: rotation barely exercised (ang_frac={angfrac:.3f}); weak lift gate")
     self.assertGreater(cos, 0.99, f"{name}: gradient DIRECTION off, cos={cos:.4f}")
     self.assertLess(rel, 0.15, f"{name}: gradient MAGNITUDE off, rel={rel:.4f}")
+
+
+# --- Articulated contact-Jacobian ∂qpos: cdof screw commutator + subtree-COM Jacobian (MJPLAN_ADRNE §7) ---
+# Surgical gate (§14.2), the decisive isolated test of the cdof/subtree VJP: build a random J-functional
+# L = Σ_i w_i·J_p,i (J_p,i = jac_dof column i for the FIXED world contact point on the contacting body), get
+# the residual-style seeds res_cdof = ∂L/∂cdof, res_subtree_com = ∂L/∂subtree_com via warp AUTODIFF of
+# jac_dof (correct by construction), drive contact_qpos_vjp with the narrowphase seeds ZEROED, and require
+# the resulting res_qpos = ∂L/∂q to match the float64 MuJoCo mj_jac central difference. Covers an articulated
+# HINGE chain (foot loaded on the floor) and a FREE-base + internal-BALL worm (the full quaternion blocks).
+
+# 3-hinge "hopper" leg, sphere foot LOADED on the floor (joint stiffness/damping hold a stable bent pose).
+_HOPPER_HINGE = """
+<mujoco>
+  <option timestep="0.004" cone="elliptic" gravity="0 0 -9.81"><flag eulerdamp="disable"/></option>
+  <default><geom condim="3" friction="1.0 0.05 0.05" solimp="0 0.95 0.001"/><joint damping="3" stiffness="40"/></default>
+  <worldbody>
+    <geom type="plane" size="5 5 0.1"/>
+    <body pos="0 0 0.71"><joint type="hinge" axis="0 1 0"/>
+      <geom type="box" size="0.08 0.06 0.1" mass="3.0"/>
+      <body pos="0 0 -0.1"><joint type="hinge" axis="0 1 0"/>
+        <geom type="capsule" fromto="0 0 0 0 0 -0.3" size="0.035" mass="0.6"/>
+        <body pos="0 0 -0.3"><joint type="hinge" axis="0 1 0"/>
+          <geom type="capsule" fromto="0 0 0 0 0 -0.25" size="0.03" mass="0.4"/>
+          <geom type="sphere" size="0.05" pos="0 0 -0.27" mass="0.2"/></body></body></body>
+  </worldbody>
+</mujoco>
+"""
+_CDOF_SCENES = {"hopper_hinge": (_HOPPER_HINGE, 40), "free_ball_worm": (_FREE_BALL_WORM, 12)}
+
+_LOSS_KERNELS = {}
+
+
+def _make_loss_kernel(nv):
+  if nv not in _LOSS_KERNELS:
+    @wp.kernel(enable_backward=True)
+    def _jp_loss(
+      body_parentid: wp.array[int], body_rootid: wp.array[int], dof_bodyid: wp.array[int],
+      body_isdofancestor: wp.array2d[int], subtree_com_in: wp.array2d[wp.vec3],
+      cdof_in: wp.array2d[wp.spatial_vector], point: wp.array[wp.vec3], bodyid: wp.array[int],
+      w_in: wp.array2d[wp.vec3], loss: wp.array[float],
+    ):
+      for i in range(nv):
+        jp, _jr = _support.jac_dof(body_parentid, body_rootid, dof_bodyid, body_isdofancestor,
+                                   subtree_com_in, cdof_in, point[0], bodyid[0], i, 0)
+        wp.atomic_add(loss, 0, wp.dot(jp, w_in[0, i]))
+    _LOSS_KERNELS[nv] = _jp_loss
+  return _LOSS_KERNELS[nv]
+
+
+class ArticContactJacQposVJPTest(parameterized.TestCase):
+  """Surgical FD gate for the articulated contact-Jacobian ∂qpos VJP (cdof + subtree_com), MJPLAN_ADRNE §7."""
+
+  @parameterized.parameters(*_CDOF_SCENES.keys())
+  def test_contact_jacobian_qpos_vjp(self, name):
+    xml, settle = _CDOF_SCENES[name]
+    mjm, mjd = _load(xml, settle)
+    nv = mjm.nv
+    m, d = mjw.put_model(mjm), mjw.put_data(mjm, mjd)
+    mjw.forward(m, d)
+    self.assertGreater(int(d.nacon.numpy()[0]), 0, f"{name}: no contact after settle")
+
+    g0, g1 = d.contact.geom.numpy()[0]
+    body = int(max(mjm.geom_bodyid[g0], mjm.geom_bodyid[g1]))
+    point = d.contact.pos.numpy()[0].astype(np.float64).copy()
+    par = mjm.body_parentid
+    chain, b = set(), body
+    while b > 0:
+      chain.add(b); b = par[b]
+    rng = np.random.default_rng(0)
+    w = np.zeros((nv, 3), dtype=np.float64)
+    for i in range(nv):
+      if mjm.dof_bodyid[i] in chain:
+        w[i] = rng.standard_normal(3)
+
+    # seeds res_cdof = ∂L/∂cdof, res_subtree_com = ∂L/∂subtree_com via warp autodiff of jac_dof
+    d.cdof.requires_grad = True
+    d.subtree_com.requires_grad = True
+    loss = wp.zeros(1, dtype=float, requires_grad=True)
+    tape = wp.Tape()
+    with tape:
+      wp.launch(_make_loss_kernel(nv), dim=1,
+                inputs=[m.body_parentid, m.body_rootid, m.dof_bodyid, m.body_isdofancestor,
+                        d.subtree_com, d.cdof, wp.array(point.reshape(1, 3).astype(np.float32), dtype=wp.vec3),
+                        wp.array(np.array([body], np.int32), dtype=int),
+                        wp.array(w.reshape(1, nv, 3).astype(np.float32), dtype=wp.vec3)],
+                outputs=[loss])
+    tape.backward(loss=loss)
+    res_cdof, res_subtree_com = wp.clone(d.cdof.grad), wp.clone(d.subtree_com.grad)
+
+    # wired VJP with narrowphase seeds zeroed -> res_qpos = ∂L/∂q (cdof + subtree_com only)
+    res_qpos = wp.zeros((1, mjm.nq), dtype=float)
+    collision_adjoint.contact_qpos_vjp(
+      m, d, wp.zeros_like(d.contact.pos), wp.zeros_like(d.contact.frame), wp.zeros_like(d.efc.pos),
+      res_subtree_com, res_cdof, res_qpos)
+    rq = res_qpos.numpy()[0]
+    ana = np.zeros(nv)  # lift res_qpos -> per-dof tangent (un-lift free/ball quaternion blocks)
+    for j in range(mjm.njnt):
+      jt, qa, da = int(mjm.jnt_type[j]), mjm.jnt_qposadr[j], mjm.jnt_dofadr[j]
+      if jt == _FREE:
+        ana[da:da + 3] = rq[qa:qa + 3]
+        ana[da + 3:da + 6] = _unlift_quat(mjd.qpos[qa + 3:qa + 7], rq[qa + 3:qa + 7])
+      elif jt == _BALL:
+        ana[da:da + 3] = _unlift_quat(mjd.qpos[qa:qa + 4], rq[qa:qa + 4])
+      else:
+        ana[da] = rq[qa]
+
+    # FD oracle: L(q) = Σ_i w_i · mj_jac column i at the FIXED world point (float64)
+    def Lq(qp):
+      dd = mujoco.MjData(mjm); dd.qpos[:] = qp
+      mujoco.mj_kinematics(mjm, dd); mujoco.mj_comPos(mjm, dd)
+      J = np.zeros((3, nv)); mujoco.mj_jac(mjm, dd, J, None, point, body)
+      return float(sum(w[i] @ J[:, i] for i in range(nv)))
+    fd = np.zeros(nv)
+    for k in range(nv):
+      e = np.zeros(nv); e[k] = 1.0
+      qp, qm = mjd.qpos.copy(), mjd.qpos.copy()
+      mujoco.mj_integratePos(mjm, qp, e, 1e-7); mujoco.mj_integratePos(mjm, qm, e, -1e-7)
+      fd[k] = (Lq(qp) - Lq(qm)) / 2e-7
+
+    na, nf = np.linalg.norm(ana), np.linalg.norm(fd)
+    cos = float(ana @ fd / (na * nf)) if na > 1e-12 and nf > 1e-12 else float("nan")
+    rel = float(np.linalg.norm(ana - fd) / (nf + 1e-12))
+    print(f"\n[{name}] nv={nv} cos={cos:+.6f} rel={rel:.2e}"
+          f"\n  ana={np.array2string(ana, precision=4, max_line_width=140)}"
+          f"\n  fd ={np.array2string(fd, precision=4, max_line_width=140)}")
+    self.assertGreater(nf, 1e-6, f"{name}: FD ~0 (scene not exercising the contact Jacobian)")
+    self.assertGreater(cos, 0.99, f"{name}: contact-Jacobian ∂qpos DIRECTION off, cos={cos:.4f}")
+    self.assertLess(rel, 0.02, f"{name}: contact-Jacobian ∂qpos MAGNITUDE off, rel={rel:.4f}")
 
 
 if __name__ == "__main__":
