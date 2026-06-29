@@ -37,7 +37,7 @@ BENCHMARKS = [
     "mjcf": "scene_cloth.xml",
     "nworld": 32,
     "nconmax": 3600,
-    "nccdmax": 1,
+    "nccdmax": 256,
     "njmax": 8192,
     "replay": "lift_cloth.npz",
     "assets": [(ASSETS[0], "aloha")],
