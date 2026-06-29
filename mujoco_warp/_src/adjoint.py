@@ -82,6 +82,7 @@ import warp as wp
 
 from mujoco_warp._src import constraint as _constraint
 from mujoco_warp._src import forward as _forward
+from mujoco_warp._src import forward_next as _forward_next
 from mujoco_warp._src import math as _math
 from mujoco_warp._src import solver as _solver
 from mujoco_warp._src import types as _types
@@ -144,51 +145,39 @@ def _advance_state(
   qadr = jnt_qposadr[jntid]
   dadr = jnt_dofadr[jntid]
 
-  # NOTE: index qpos_in[worldid, k] directly -- do NOT take a row view (`row = qpos_in[worldid]`
-  # then `row[k]`): the row view's adjoint does not accumulate back into qpos_in.grad in Warp.
+  # semi-implicit: update qvel, then integrate qpos with it, via the shared forward_next funcs.
+  # next_velocity returns the value (held as a local) so qpos uses it without reading qvel_out back.
+  qvel_lin = wp.vec3(0.0, 0.0, 0.0)
+  qvel_ang = wp.vec3(0.0, 0.0, 0.0)
   if jt == _FREE:
-    vlx = qvel_in[worldid, dadr + 0] + dt * qacc_in[worldid, dadr + 0]
-    vly = qvel_in[worldid, dadr + 1] + dt * qacc_in[worldid, dadr + 1]
-    vlz = qvel_in[worldid, dadr + 2] + dt * qacc_in[worldid, dadr + 2]
-    vax = qvel_in[worldid, dadr + 3] + dt * qacc_in[worldid, dadr + 3]
-    vay = qvel_in[worldid, dadr + 4] + dt * qacc_in[worldid, dadr + 4]
-    vaz = qvel_in[worldid, dadr + 5] + dt * qacc_in[worldid, dadr + 5]
+    vlx = _forward_next.next_velocity(worldid, dadr + 0, opt_timestep, qvel_in, qacc_in, 1.0)
+    vly = _forward_next.next_velocity(worldid, dadr + 1, opt_timestep, qvel_in, qacc_in, 1.0)
+    vlz = _forward_next.next_velocity(worldid, dadr + 2, opt_timestep, qvel_in, qacc_in, 1.0)
+    vax = _forward_next.next_velocity(worldid, dadr + 3, opt_timestep, qvel_in, qacc_in, 1.0)
+    vay = _forward_next.next_velocity(worldid, dadr + 4, opt_timestep, qvel_in, qacc_in, 1.0)
+    vaz = _forward_next.next_velocity(worldid, dadr + 5, opt_timestep, qvel_in, qacc_in, 1.0)
     qvel_out[worldid, dadr + 0] = vlx
     qvel_out[worldid, dadr + 1] = vly
     qvel_out[worldid, dadr + 2] = vlz
     qvel_out[worldid, dadr + 3] = vax
     qvel_out[worldid, dadr + 4] = vay
     qvel_out[worldid, dadr + 5] = vaz
-    qpos_out[worldid, qadr + 0] = qpos_in[worldid, qadr + 0] + dt * vlx
-    qpos_out[worldid, qadr + 1] = qpos_in[worldid, qadr + 1] + dt * vly
-    qpos_out[worldid, qadr + 2] = qpos_in[worldid, qadr + 2] + dt * vlz
-    q = wp.quat(
-      qpos_in[worldid, qadr + 3], qpos_in[worldid, qadr + 4], qpos_in[worldid, qadr + 5], qpos_in[worldid, qadr + 6]
-    )
-    qn = _math.quat_integrate(q, wp.vec3(vax, vay, vaz), dt)
-    qpos_out[worldid, qadr + 3] = qn[0]
-    qpos_out[worldid, qadr + 4] = qn[1]
-    qpos_out[worldid, qadr + 5] = qn[2]
-    qpos_out[worldid, qadr + 6] = qn[3]
+    qvel_lin = wp.vec3(vlx, vly, vlz)
+    qvel_ang = wp.vec3(vax, vay, vaz)
   elif jt == _BALL:
-    vx = qvel_in[worldid, dadr + 0] + dt * qacc_in[worldid, dadr + 0]
-    vy = qvel_in[worldid, dadr + 1] + dt * qacc_in[worldid, dadr + 1]
-    vz = qvel_in[worldid, dadr + 2] + dt * qacc_in[worldid, dadr + 2]
+    vx = _forward_next.next_velocity(worldid, dadr + 0, opt_timestep, qvel_in, qacc_in, 1.0)
+    vy = _forward_next.next_velocity(worldid, dadr + 1, opt_timestep, qvel_in, qacc_in, 1.0)
+    vz = _forward_next.next_velocity(worldid, dadr + 2, opt_timestep, qvel_in, qacc_in, 1.0)
     qvel_out[worldid, dadr + 0] = vx
     qvel_out[worldid, dadr + 1] = vy
     qvel_out[worldid, dadr + 2] = vz
-    q = wp.quat(
-      qpos_in[worldid, qadr + 0], qpos_in[worldid, qadr + 1], qpos_in[worldid, qadr + 2], qpos_in[worldid, qadr + 3]
-    )
-    qn = _math.quat_integrate(q, wp.vec3(vx, vy, vz), dt)
-    qpos_out[worldid, qadr + 0] = qn[0]
-    qpos_out[worldid, qadr + 1] = qn[1]
-    qpos_out[worldid, qadr + 2] = qn[2]
-    qpos_out[worldid, qadr + 3] = qn[3]
+    qvel_ang = wp.vec3(vx, vy, vz)
   else:  # HINGE / SLIDE
-    v = qvel_in[worldid, dadr] + dt * qacc_in[worldid, dadr]
+    v = _forward_next.next_velocity(worldid, dadr, opt_timestep, qvel_in, qacc_in, 1.0)
     qvel_out[worldid, dadr] = v
-    qpos_out[worldid, qadr] = qpos_in[worldid, qadr] + dt * v
+    qvel_lin = wp.vec3(v, 0.0, 0.0)
+
+  _forward_next.next_position(jt, qadr, dt, qpos_in, worldid, qvel_lin, qvel_ang, qpos_out)
 
 
 # ----------------------------------------------------------------------------
