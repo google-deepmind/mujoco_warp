@@ -210,34 +210,123 @@ def _gather_efc_to_contact(
 
 
 @wp.kernel(enable_backward=False)
-def _subtree_com_qpos_vjp(
+def _cdof_qpos_vjp(
+  dof_parentid: wp.array[int],
+  dof_jntid: wp.array[int],
   jnt_type: wp.array[int],
-  jnt_qposadr: wp.array[int],
-  body_jntadr: wp.array[int],
-  body_jntnum: wp.array[int],
-  body_rootid: wp.array[int],
-  res_subtree_com: wp.array2d[wp.vec3],  # ∂r/∂subtree_com · λ
-  res_qpos: wp.array2d[float],  # += res_subtree_com[b] · ∂subtree_com[b]/∂qpos
+  jnt_dofadr: wp.array[int],
+  cdof_in: wp.array2d[wp.spatial_vector],
+  res_cdof: wp.array2d[wp.spatial_vector],  # ∂r/∂cdof · λ (per dof)
+  nv: int,
+  res_dof: wp.array2d[float],  # OUT: += per-dof TANGENT gradient ∂c/∂(dof k)
 ):
-  """∂r/∂subtree_com chained to qpos. The contact Jacobian's moment arm is offset = contact_pos -
-  subtree_com[root], so a moving com shifts J even when the contact point is handled separately -- this
-  is the term that matters for a SPINNING free body (λ's rotational rows make res_subtree_com nonzero).
-  FREE-body case: a leaf body that is its own root (com offset 0) has subtree_com[b] = the free-joint
-  translation qpos[qadr:qadr+3] -> ∂/∂qpos = identity on the 3 translation coords. The articulated
-  com-Jacobian (mass-weighted Σ jac_dof at body coms, for HINGE/SLIDE chains) is the follow-up."""
+  """Fixed-reference part of ∂r/∂cdof → qpos: the screw-axis commutator
+
+      ∂cdof_i/∂q_k |_fixed-COM = χ(k,i) · motion_cross(cdof_k, cdof_i),
+
+  with χ the EXACT stored-cdof transport mask (MJPLAN_ADRNE §3): (a) k is a transitive dof_parentid
+  ancestor of i (covers inter-body chains AND the free-joint translation→rotation predecessors); PLUS the
+  FULL same-quaternion angular block -- (b) i a BALL row and k any of that ball's 3 angular dofs, (c) i a
+  FREE-rotation row and k any of that free joint's 3 rotation dofs. The same-quaternion block is the full
+  3×3 (NOT triangular): a free/ball basis derivative ∂a_i/∂q_k = a_k×a_i for every (k,i) in the triplet,
+  which dof_parentid (k<i only) misses. FREE-translation target rows are skipped (∂(stored cdof)/∂q = 0
+  there). The MOVING-COM reference term (0, a_i × ∂C/∂q) is NOT here -- it is folded into the subtree-COM
+  seed (_build_ceff) so the validated mass-weighted COM Jacobian carries it. The two together = the honest
+  ∂(stored cdof)/∂q (MJPLAN_ADRNE §2/§6; FD-verified vs mj_comPos central diff, cos=1.0 hinge + free+ball).
+  enable_backward=False -> the dynamic loops are a manual VJP (no tape replay)."""
+  w, k = wp.tid()
+  cdof_k = cdof_in[w, k]
+  jk = dof_jntid[k]
+  acc = float(0.0)
+  for i in range(nv):
+    ji = dof_jntid[i]
+    jti = jnt_type[ji]
+    ofs = jnt_dofadr[ji]
+    if jti == _FREE and (i - ofs) < 3:
+      continue  # FREE-translation target row: ∂(stored cdof_i)/∂q = 0
+    chi = bool(False)
+    p = dof_parentid[i]  # (a) transitive dof_parentid ancestry: is k a predecessor of i?
+    while p >= 0:
+      if p == k:
+        chi = True
+        break
+      p = dof_parentid[p]
+    if (not chi) and ji == jk:  # (b)/(c) full same-BALL / same-FREE-rotation angular block
+      if jti == _BALL:
+        chi = True
+      elif jti == _FREE and (k - ofs) >= 3:
+        chi = True
+    if chi:
+      acc += wp.dot(res_cdof[w, i], _math.motion_cross(cdof_k, cdof_in[w, i]))
+  res_dof[w, k] += acc
+
+
+@wp.kernel(enable_backward=False)
+def _build_ceff(
+  body_rootid: wp.array[int],
+  dof_bodyid: wp.array[int],
+  cdof_in: wp.array2d[wp.spatial_vector],
+  res_cdof: wp.array2d[wp.spatial_vector],
+  res_subtree_com: wp.array2d[wp.vec3],
+  nv: int,
+  ceff_out: wp.array2d[wp.vec3],  # OUT: effective subtree-COM cotangent
+):
+  """Effective subtree-COM seed (MJPLAN_ADRNE §7): fold the moving-COM part of ∂r/∂cdof into the COM seed so
+  ONE pass of the validated subtree-COM Jacobian VJP carries both. Using G_lin,i·(a_i×∂C) = ∂C·(G_lin,i×a_i),
+
+      ceff[r] = res_subtree_com[r] + Σ_{i: root(dof_bodyid[i]) = r} G_lin,i × a_i,
+
+  with G_lin,i = spatial_bottom(res_cdof_i), a_i = spatial_top(cdof_i) (the row's angular axis; zero for
+  slide / free-translation, so only rotational rows contribute)."""
   w, b = wp.tid()
-  if b == 0:
-    return
-  if body_rootid[b] != b:
-    return  # non-root subtree -> articulated com-Jacobian (follow-up)
-  ja = body_jntadr[b]
-  if body_jntnum[b] != 1 or jnt_type[ja] != _FREE:
-    return  # not a single free joint -> articulated (follow-up)
-  qadr = jnt_qposadr[ja]
-  rsc = res_subtree_com[w, b]
-  wp.atomic_add(res_qpos[w], qadr + 0, rsc[0])
-  wp.atomic_add(res_qpos[w], qadr + 1, rsc[1])
-  wp.atomic_add(res_qpos[w], qadr + 2, rsc[2])
+  c = res_subtree_com[w, b]
+  if body_rootid[b] == b and b > 0:  # tree root -> accumulate the rotational rows' moving-COM cotangent
+    for i in range(nv):
+      if body_rootid[dof_bodyid[i]] == b:
+        ri = res_cdof[w, i]
+        c += wp.cross(wp.spatial_bottom(ri), wp.spatial_top(cdof_in[w, i]))
+  ceff_out[w, b] = c
+
+
+@wp.kernel(enable_backward=False)
+def _subtree_com_qpos_vjp(
+  body_parentid: wp.array[int],
+  body_rootid: wp.array[int],
+  dof_bodyid: wp.array[int],
+  body_isdofancestor: wp.array2d[int],
+  body_mass: wp.array2d[float],
+  body_subtreemass: wp.array2d[float],
+  subtree_com_in: wp.array2d[wp.vec3],
+  cdof_in: wp.array2d[wp.spatial_vector],
+  xipos_in: wp.array2d[wp.vec3],
+  res_subtree_com: wp.array2d[wp.vec3],  # ∂r/∂subtree_com · λ
+  nbody: int,
+  res_dof: wp.array2d[float],  # OUT: += per-dof TANGENT gradient ∂c/∂(dof k)
+):
+  """∂r/∂subtree_com chained to qpos via the mass-weighted subtree-com Jacobian (mj_jacSubtreeCom):
+
+      ∂subtree_com[b]/∂q_k = (1/Msub[b]) Σ_{c∈subtree(b)} m_c · jacp(xipos_c, c, k)
+
+  contracted with res_subtree_com and accumulated per dof:
+  res_dof[k] += Σ_c (m_c/Msub[root[c]]) · jacp(xipos_c, c, k) · res_subtree_com[root[c]]. The contact
+  Jacobian's moment arm is offset = contact_pos - subtree_com[root], so a moving com shifts J even when the
+  contact point is handled separately. General over articulations; reproduces the single-free-body identity
+  (own-com translation 1:1, rotation 0) so free-body scenes are unchanged. The residual only reads
+  subtree_com at TREE-ROOT indices (jac_dof's offset uses subtree_com[body_rootid]), so res_subtree_com is
+  nonzero only there -> summing over bodies c by their root[c] covers it. MUST PAIR with _cdof_qpos_vjp."""
+  w, k = wp.tid()
+  wm = w % body_mass.shape[0]
+  acc = float(0.0)
+  for c in range(1, nbody):
+    if body_isdofancestor[c, k] == 0:  # dof k does not move body c -> jacp = 0
+      continue
+    r = body_rootid[c]
+    jp, _jr = _support.jac_dof(
+      body_parentid, body_rootid, dof_bodyid, body_isdofancestor,
+      subtree_com_in, cdof_in, xipos_in[w, c], c, k, w,
+    )
+    acc += (body_mass[wm, c] / body_subtreemass[wm, r]) * wp.dot(jp, res_subtree_com[w, r])
+  res_dof[w, k] += acc
 
 
 @wp.kernel(enable_backward=False)
@@ -338,11 +427,14 @@ def contact_qpos_vjp(
   res_contact_frame: wp.array,  # ∂r/∂contact_frame · λ (per-contact mat33)
   res_efc_pos: wp.array2d[float],  # ∂r/∂efc_pos · λ (nworld, njmax)
   res_subtree_com: wp.array2d[wp.vec3],  # ∂r/∂subtree_com · λ (nworld, nbody)
+  res_cdof: wp.array2d[wp.spatial_vector],  # ∂r/∂cdof · λ (nworld, nv)
   res_qpos: wp.array2d[float],  # OUT: += -(∂r_contact/∂qpos)ᵀλ-worth of the contraction (sign per _sub_write)
 ):
   """Accumulate the contact residual's ∂qpos into ``res_qpos`` from the exposed input-adjoints: replay the
-  narrowphase geometry (auto-diff the forward pure funcs) -> adj(geom poses) -> qpos via jac_dof, plus the
-  free-body subtree_com term. ``adjoint.step_backward`` calls this, then ``_sub_write`` subtracts res_qpos
+  narrowphase geometry (auto-diff the forward pure funcs) -> adj(geom poses) -> qpos via jac_dof, PLUS the
+  articulated contact-Jacobian terms ∂cdof/∂q (screw commutator) and ∂subtree_com/∂q (mass-weighted com
+  Jacobian) -- both chained into the same per-dof TANGENT buffer res_dof, then lifted once by _dof_to_qpos
+  (free/ball quaternion). ``adjoint.step_backward`` calls this, then ``_sub_write`` subtracts res_qpos
   -> the -(∂r/∂qpos)ᵀλ contribution. nacon=0 / unsupported geom pairs -> no-op."""
   nworld = d_out.qpos.shape[0]
   nv = m.nv
@@ -370,18 +462,30 @@ def contact_qpos_vjp(
   adj_np[3] = res_geom_xmat  # geom_xmat_in
   wp.launch(_narrowphase_recompute, dim=ncon_max, inputs=np_in, outputs=[cpos_o, dist_o, frame_o],
             adj_inputs=adj_np, adj_outputs=[cpos_o.grad, dist_o.grad, frame_o.grad], adjoint=True)
-  # geom-pose adjoints -> per-dof TANGENT gradient (jac_dof), then dof -> qpos with the free/ball
-  # quaternion lift (_dof_to_qpos): the nq!=nv quaternion-tangent fix for rotation-dependent contacts.
+  # All contact-Jacobian ∂qpos terms accumulate into ONE per-dof TANGENT buffer res_dof, lifted once to qpos
+  # by _dof_to_qpos (free/ball quaternion). The articulated contact-Jacobian-rotation terms are the honest
+  # ∂(stored cdof)/∂q + ∂(subtree_com)/∂q chain (MJPLAN_ADRNE §2/§7): (1) narrowphase geom-pose adjoints via
+  # jac_dof; (2) the fixed-COM screw commutator (_cdof_qpos_vjp); (3) the mass-weighted COM Jacobian VJP
+  # (_subtree_com_qpos_vjp) seeded with the EFFECTIVE COM cotangent (_build_ceff), which folds in the
+  # moving-COM reference part of ∂r/∂cdof so one COM-Jacobian pass carries both.
   res_dof = wp.zeros((nworld, nv), dtype=float)
   wp.launch(_geom_pose_dof_vjp, dim=(nworld, nv),
             inputs=[m.body_parentid, m.body_rootid, m.dof_bodyid,
                     m.body_isdofancestor, m.geom_bodyid, d_out.subtree_com, d_out.cdof,
                     d_out.geom_xpos, d_out.geom_xmat, res_geom_xpos, res_geom_xmat, m.ngeom],
             outputs=[res_dof])
+  wp.launch(_cdof_qpos_vjp, dim=(nworld, nv),
+            inputs=[m.dof_parentid, m.dof_jntid, m.jnt_type, m.jnt_dofadr, d_out.cdof, res_cdof, nv],
+            outputs=[res_dof])
+  ceff = wp.empty_like(res_subtree_com)
+  wp.launch(_build_ceff, dim=(nworld, m.nbody),
+            inputs=[m.body_rootid, m.dof_bodyid, d_out.cdof, res_cdof, res_subtree_com, nv],
+            outputs=[ceff])
+  wp.launch(_subtree_com_qpos_vjp, dim=(nworld, nv),
+            inputs=[m.body_parentid, m.body_rootid, m.dof_bodyid, m.body_isdofancestor,
+                    m.body_mass, m.body_subtreemass, d_out.subtree_com, d_out.cdof, d_out.xipos,
+                    ceff, m.nbody],
+            outputs=[res_dof])
   wp.launch(_dof_to_qpos, dim=(nworld, m.njnt),
             inputs=[m.jnt_type, m.jnt_qposadr, m.jnt_dofadr, d_out.qpos, res_dof],
-            outputs=[res_qpos])
-  # ∂r/∂subtree_com chained to qpos (the moving-com moment-arm term; matters for spinning free bodies).
-  wp.launch(_subtree_com_qpos_vjp, dim=(nworld, m.nbody),
-            inputs=[m.jnt_type, m.jnt_qposadr, m.body_jntadr, m.body_jntnum, m.body_rootid, res_subtree_com],
             outputs=[res_qpos])

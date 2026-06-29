@@ -995,7 +995,7 @@ def step_backward(m: Model, d: Data, d_out: Data):
   # free-body subtree_com term. Accumulates into res_qpos (which _sub_write subtracts). nacon=0 / unsupported
   # geom pairs -> no-op. (See collision_adjoint.py; FD-gated by collision_adjoint_test.py.)
   _collision_adjoint.contact_qpos_vjp(
-    m, d_out, res_contact_pos, res_contact_frame, res_efc_pos, res_subtree_com, res_qpos
+    m, d_out, res_contact_pos, res_contact_frame, res_efc_pos, res_subtree_com, res_cdof, res_qpos
   )
 
   # --- 4. smooth residual: ∂qvel (analytic) + ∂ctrl (actuation leaf), same λ; sum into adj_qvel/ctrl ---
