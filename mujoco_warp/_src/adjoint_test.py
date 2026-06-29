@@ -702,15 +702,23 @@ class ContactGradientTest(parameterized.TestCase):
     """Spike 3: IFT<->FD error as a function of opt.tolerance / iterations."""
     raise NotImplementedError
 
-  @absltest.skip("pending adjoint.py: cartpole smooth transition Jacobian + BPTT (MJPLAN.md Stage 3)")
   def test_cartpole_transition_jacobian(self):
-    """Spike 4: smooth transition Jacobian vs mjd_transitionFD + short BPTT.
+    """Spike 4 (LANDED): cartpole (slider+hinge, both damped -> the eulerdamp implicit-damping solve)
+    smooth BPTT gradient vs a float64 MuJoCo-C FD of the same loss. The successor to
+    ``test_step_not_yet_differentiable`` -- same model, now asserting the analytic grad MATCHES the
+    reference instead of being zero. (Stronger-damping eulerdamp + the quaternion path: see
+    ``SmoothGradientTest``.)"""
+    if not _grad_available():
+      self.skipTest("pending adjoint.py: differentiable step (MJPLAN.md Stage 3)")
+    from mujoco_warp._src import adjoint  # noqa: F401  (registers the analytic step backward)
 
-    NOTE: once adjoint.py lands, this is the natural successor to
-    ``test_step_not_yet_differentiable`` -- same model, but asserting the
-    analytic Jacobian *matches* ``mjd_transition_fd`` instead of being zero.
-    """
-    raise NotImplementedError
+    mjm = mujoco.MjModel.from_xml_string(_CARTPOLE)
+    mjd = mujoco.MjData(mjm)
+    mujoco.mj_forward(mjm, mjd)
+    ctrl = np.full(mjm.nu, 0.2, np.float32)
+    analytic = _smooth_taped_grad(mjm, mjd, 4, "ctrl", ctrl, _sumsq_qpos_kernel, (1, mjm.nq))
+    fd = _smooth_mjc_fd_grad(mjm, mjd, 4, "ctrl", ctrl, lambda q: float(np.dot(q, q)))
+    _assert_smooth_grad(self, analytic, fd, cos_min=0.999, rel_max=2e-2, tag="cartpole(eulerdamp)")
 
 
 # ----------------------------------------------------------------------------
@@ -1156,6 +1164,185 @@ class ContactCondimTest(parameterized.TestCase):
     self.assertGreater(max_nacon, 0, "rollout never made contact -- contact gradient not on path")
     self.assertGreater(cos, 0.99, f"gradient direction off: cos={cos:.4f}")
     self.assertLess(rel, 0.05, f"relative-L2 error {rel:.4f} too large")
+
+
+# ----------------------------------------------------------------------------
+# S1 smooth-path step-gradient regressions: the analytic backward matches a FLOAT64 MuJoCo-C central
+# FD of the scalar rollout loss. Locks the implicit-damping (eulerdamp) integrator adjoint -- the
+# adj(a) = M (M+dt*D)^-1 adj(a_damped) remap -- and the free-body quaternion d(quat)/d(omega) path.
+# Same BPTT-vs-FD shape as ContactCondimTest; the float64 mjC FD (vs mjw's float32 step FD) gives
+# tight (rel < 2e-2) bounds, so a regressed eulerdamp adjoint (rel ~ 0.085 at damping=1) is caught.
+# ----------------------------------------------------------------------------
+
+# Two damped hinges (damping=1.0) -> the implicit eulerdamp velocity solve is non-trivially engaged
+# (this is the scene where a missing (M+dt*D)^-1 remap shows rel ~ 0.085 vs FD).
+_EULERDAMP_ARM = """
+<mujoco>
+  <option gravity="0 0 -9.81" jacobian="sparse"/>
+  <worldbody>
+    <body><joint name="j0" type="hinge" axis="0 1 0" damping="1.0"/><geom type="capsule" fromto="0 0 0 0 0 -0.5" size="0.04" mass="1"/>
+      <body pos="0 0 -0.5"><joint name="j1" type="hinge" axis="0 1 0" damping="1.0"/><geom type="capsule" fromto="0 0 0 0 0 -0.5" size="0.04" mass="1"/></body>
+    </body>
+  </worldbody>
+  <actuator><motor joint="j0" gear="1"/><motor joint="j1" gear="1"/></actuator>
+  <keyframe><key qpos="0.5 -0.3" qvel="0.1 -0.2" ctrl="0.5 -0.5"/></keyframe>
+</mujoco>
+"""
+
+# Dzhanibekov / tennis-racket body (3 distinct principal inertias); spun about the INTERMEDIATE axis
+# (free body, gravity off, no contact) -> pure asymmetric-inertia rotation + quaternion integration.
+_GYRO = """
+<mujoco>
+  <option timestep="0.005" gravity="0 0 0"><flag contact="disable" constraint="disable"/></option>
+  <worldbody>
+    <body pos="0 0 0"><freejoint/>
+      <geom type="box" pos="0.15 0 0" size="0.125 0.05 0.05" density="100"/>
+      <geom type="box" pos="0 0 0" size="0.025 0.1 0.5" density="100"/>
+    </body>
+  </worldbody>
+  <keyframe><key qvel="0 0 0 15 0.1 0.1"/></keyframe>
+</mujoco>
+"""
+
+
+@wp.kernel
+def _sumsq_qpos_kernel(qpos: wp.array2d[float], loss: wp.array[float]):
+  i, j = wp.tid()
+  wp.atomic_add(loss, 0, qpos[i, j] * qpos[i, j])
+
+
+@wp.kernel
+def _quatvec_kernel(qpos: wp.array2d[float], loss: wp.array[float]):
+  """loss = qx^2 + qy^2 + qz^2 = 1 - qw^2 (the free body's unit quaternion, qpos[4:7]); orientation-
+  sensitive, unlike sum(qpos^2) where |quat|=1 contributes a constant 1 -> exercises d(quat)/d(omega)."""
+  loss[0] = qpos[0, 4] * qpos[0, 4] + qpos[0, 5] * qpos[0, 5] + qpos[0, 6] * qpos[0, 6]
+
+
+@wp.kernel
+def _assign_shared_ctrl(src: wp.array2d[float], dst: wp.array2d[float]):
+  """Apply a shared control to a step via a copy KERNEL (NOT wp.copy): the kernel adjoint ACCUMULATES
+  src.grad across the rollout, whereas wp.copy's adjoint overwrites -> a shared-leaf BPTT under-count."""
+  i, j = wp.tid()
+  dst[i, j] = src[i, j]
+
+
+def _smooth_taped_grad(mjm, mjd, H, wrt, ctrl, loss_kernel, loss_dim):
+  """Analytic d(loss)/d(`wrt`) through the out-of-place taped rollout (adjoint.py). wrt='ctrl' (one
+  shared control applied every step) or 'qvel' (initial velocity); base state read from mjd."""
+  m = mjw.put_model(mjm)
+  datas = [mjw.put_data(mjm, mjd) for _ in range(H + 1)]
+  for d in datas:
+    d.qpos.requires_grad = True
+    d.qvel.requires_grad = True
+    if mjm.nu:
+      d.ctrl.requires_grad = True
+  ctrl_src = None
+  if mjm.nu:
+    ctrl_src = wp.array(ctrl.reshape(1, -1).astype(np.float32), dtype=wp.float32, requires_grad=(wrt == "ctrl"))
+  if wrt == "qvel":
+    datas[0].qvel = wp.array(mjd.qvel.reshape(1, -1).astype(np.float32), dtype=wp.float32, requires_grad=True)
+
+  loss = wp.zeros(1, dtype=wp.float32, requires_grad=True)
+  tape = wp.Tape()
+  with tape:
+    for t in range(H):
+      if mjm.nu:
+        wp.launch(_assign_shared_ctrl, dim=ctrl_src.shape, inputs=[ctrl_src], outputs=[datas[t].ctrl])
+      mjw.step(m, datas[t], datas[t + 1])
+    wp.launch(loss_kernel, dim=loss_dim, inputs=[datas[H].qpos], outputs=[loss])
+  tape.backward(loss=loss)
+
+  leaf = ctrl_src if wrt == "ctrl" else datas[0].qvel
+  return np.nan_to_num(leaf.grad.numpy()[0].astype(np.float64).copy())
+
+
+def _smooth_mjc_fd_grad(mjm, mjd, H, wrt, ctrl, loss_fn, eps=1e-6):
+  """Float64 MuJoCo-C central FD of the scalar loss w.r.t. qvel0 (wrt='qvel') or the per-step ctrl.
+  Differentiating the flat qvel0/ctrl vector avoids any qpos tangent-space map; float64 mj_step (vs
+  mjw's float32) removes the FD-truncation floor -> a clean, tight reference for the smooth path."""
+
+  def rollout(qv, c):
+    md = mujoco.MjData(mjm)
+    md.qpos[:] = mjd.qpos
+    md.qvel[:] = qv
+    for _ in range(H):
+      if mjm.nu:
+        md.ctrl[:] = c
+      mujoco.mj_step(mjm, md)
+    return loss_fn(md.qpos)
+
+  if wrt == "qvel":
+    x0 = mjd.qvel.astype(np.float64).copy()
+    g = np.zeros(mjm.nv)
+    for i in range(mjm.nv):
+      xp, xm = x0.copy(), x0.copy()
+      xp[i] += eps
+      xm[i] -= eps
+      g[i] = (rollout(xp, ctrl) - rollout(xm, ctrl)) / (2.0 * eps)
+    return g
+  x0 = ctrl.astype(np.float64).copy()
+  g = np.zeros(mjm.nu)
+  for i in range(mjm.nu):
+    xp, xm = x0.copy(), x0.copy()
+    xp[i] += eps
+    xm[i] -= eps
+    g[i] = (rollout(mjd.qvel, xp) - rollout(mjd.qvel, xm)) / (2.0 * eps)
+  return g
+
+
+def _assert_smooth_grad(testcase, analytic, fd, cos_min, rel_max, tag):
+  analytic = np.asarray(analytic, float)
+  fd = np.asarray(fd, float)
+  na, nf = np.linalg.norm(analytic), np.linalg.norm(fd)
+  cos = float(analytic @ fd / (na * nf)) if na > 0 and nf > 0 else 1.0
+  rel = float(np.linalg.norm(analytic - fd) / (nf + 1e-12))
+  print(f"\n[{tag}] cos={cos:.5f} relL2={rel:.4f}\n  analytic={analytic}\n  fd      ={fd}")
+  testcase.assertGreater(nf, 1e-9, f"{tag}: FD gradient ~0 (loss not excited)")
+  testcase.assertGreater(cos, cos_min, f"{tag}: gradient direction off, cos={cos:.5f}")
+  testcase.assertLess(rel, rel_max, f"{tag}: relative-L2 error {rel:.4f} too large")
+
+
+class SmoothGradientTest(parameterized.TestCase):
+  """S1 smooth-path (no-contact) step gradient: analytic adjoint.py BPTT grad vs float64 MuJoCo-C FD.
+  Locks the eulerdamp implicit-damping integrator adjoint and the free-body quaternion path."""
+
+  @parameterized.named_parameters(
+    ("eulerdamp_arm_ctrl", "ctrl"),
+    ("eulerdamp_arm_qvel", "qvel"),
+  )
+  def test_eulerdamp_arm_grad_matches_fd(self, wrt):
+    """Damped 2-hinge arm (damping=1.0 -> the implicit (M+dt*D)^-1 eulerdamp solve). Analytic
+    d(sum qpos^2)/d(`wrt`) vs float64 FD: a regressed eulerdamp adjoint shows rel ~ 0.085 here."""
+    if not _grad_available():
+      self.skipTest("pending adjoint.py: differentiable step (MJPLAN.md Stage 1/3)")
+    from mujoco_warp._src import adjoint  # noqa: F401
+
+    mjm = mujoco.MjModel.from_xml_string(_EULERDAMP_ARM)
+    mjd = mujoco.MjData(mjm)
+    mujoco.mj_resetDataKeyframe(mjm, mjd, 0)
+    mujoco.mj_forward(mjm, mjd)
+    ctrl = mjd.ctrl.astype(np.float32).copy()
+    analytic = _smooth_taped_grad(mjm, mjd, 4, wrt, ctrl, _sumsq_qpos_kernel, (1, mjm.nq))
+    fd = _smooth_mjc_fd_grad(mjm, mjd, 4, wrt, ctrl, lambda q: float(np.dot(q, q)))
+    _assert_smooth_grad(self, analytic, fd, cos_min=0.999, rel_max=2e-2, tag=f"eulerdamp:{wrt}")
+
+  def test_gyroscopic_orientation_grad_matches_fd(self):
+    """Dzhanibekov body (3 distinct inertias) spun about the intermediate axis: analytic
+    d(sum quat_vec^2)/d(qvel0) vs float64 FD -> locks the asymmetric-inertia rotational dynamics AND
+    the quaternion-integration adjoint (the historical free_body_quat gap, here truly exercised since
+    the quat-vec loss is orientation-sensitive)."""
+    if not _grad_available():
+      self.skipTest("pending adjoint.py: differentiable step (MJPLAN.md Stage 1/3)")
+    from mujoco_warp._src import adjoint  # noqa: F401
+
+    mjm = mujoco.MjModel.from_xml_string(_GYRO)
+    mjd = mujoco.MjData(mjm)
+    mujoco.mj_resetDataKeyframe(mjm, mjd, 0)
+    mujoco.mj_forward(mjm, mjd)
+    analytic = _smooth_taped_grad(mjm, mjd, 10, "qvel", np.zeros(0, np.float32), _quatvec_kernel, 1)
+    fd = _smooth_mjc_fd_grad(mjm, mjd, 10, "qvel", np.zeros(0, np.float32),
+                             lambda q: float(q[4] ** 2 + q[5] ** 2 + q[6] ** 2))
+    _assert_smooth_grad(self, analytic, fd, cos_min=0.99, rel_max=5e-2, tag="gyroscopic")
 
 
 if __name__ == "__main__":
