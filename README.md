@@ -63,8 +63,8 @@ MuJoCo Warp simulates many kinds of physical systems, from rigid bodies with con
   </tr>
   <tr>
     <td align="center" width="33%">
-      <img width="320" src="benchmarks/humanoid/rollout_humanoid.webp" alt="Humanoid">
-      <br><b>python benchmarks/run.py -f humanoid --view</b>
+      <img width="320" src="benchmarks/aloha/rollout_cloth.webp" alt="ALOHA Cloth">
+      <br><b>python benchmarks/run.py -f aloha_cloth --view</b>
     </td>
     <td align="center" width="33%">
       <img width="320" src="benchmarks/humanoid/rollout_three_humanoids.webp" alt="Three Humanoids">
