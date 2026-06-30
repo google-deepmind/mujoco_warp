@@ -88,11 +88,13 @@ from mujoco_warp._src import constraint as _constraint
 from mujoco_warp._src import derivative as _derivative
 from mujoco_warp._src import forward as _forward
 from mujoco_warp._src import forward_next as _forward_next
+from mujoco_warp._src import math as _math
 from mujoco_warp._src import passive as _passive
 from mujoco_warp._src import smooth as _smooth
 from mujoco_warp._src import solver as _solver
 from mujoco_warp._src import support as _support
 from mujoco_warp._src import types as _types
+from mujoco_warp._src import util_misc as _util_misc
 from mujoco_warp._src.types import Data
 from mujoco_warp._src.types import Model
 from mujoco_warp._src.types import vec10f
@@ -139,6 +141,15 @@ _FREE_NV = 6  # free-joint dof count
 _MAXCONDIM = 6  # max valid MuJoCo condim; elliptic friction rows = dimid 1..condim-1
 _MAX_PYRAMID_EDGES = 10  # 2*(_MAXCONDIM - 1) pyramidal edges at condim 6
 _MAX_NV = 16  # static unroll bound for the per-dof contact reductions (nv<=16; G1 nv>16 = S4/sparse walk)
+
+# When True, step_backward §5 uses the ANALYTIC reduced smooth-force replay (smooth_adjoint.py, MJPLAN_ADRNE
+# §0/§10): rigid-body RNE bias + joint springs (all joint types) + AFFINE joint actuators. It RAISES
+# (assert_smooth_supported) on any enabled smooth feature without an analytic leaf -- NO silent FD fallback.
+# When False, step_backward uses FD-of-rne, retained as the explicit TEST oracle (FD is validation-only,
+# never an automatic production substitute -- §0). Default OFF so existing scenes are unchanged and FD stays
+# available for A/B testing; flipping the default on is gated on the §14 end-to-end + CUDA/graph-capture
+# gates (P8). The analytic vs FD A/B + float64 end-to-end gates live in smooth_adjoint_test / adjoint_test.
+_USE_ANALYTIC_RNE_QPOS = False
 
 
 # ----------------------------------------------------------------------------
@@ -592,6 +603,13 @@ def _sub_write(a: wp.array2d[float], b: wp.array2d[float], out: wp.array2d[float
   """out = a - b: integrator-direct adjoint minus the residual-VJP scatter (dr/dtheta)ᵀλ."""
   w, i = wp.tid()
   out[w, i] = a[w, i] - b[w, i]
+
+
+@wp.kernel
+def _accum_cols(a: wp.array2d[float], out: wp.array2d[float]):
+  """out += a (accumulate the analytic RNE-bias ∂qpos into the residual buffer that _sub_write subtracts)."""
+  w, i = wp.tid()
+  out[w, i] = out[w, i] + a[w, i]
 
 
 # ----------------------------------------------------------------------------
@@ -1101,34 +1119,61 @@ def step_backward(m: Model, d: Data, d_out: Data):
   for _pg, _rb in _res_solref:
     wp.launch(_accum_neg_vec2, dim=_rb.shape, inputs=[_rb], outputs=[_pg])
 
-  # --- 5. smooth ∂qpos via FD-of-rne (no analytic form; AD-rne replaces it at G1). Re-run the smooth
-  # force sub-pipeline at qpos ± eps (qvel/qacc/ctrl frozen at the linearization), central-difference
-  # r_smooth, contract with λ: adj_qpos += -(∂r_smooth/∂qpos)ᵀλ. d_out is TRANSIENT scratch -- this is the
-  # last op and d_out's intermediates have no later reader in one tape.backward (step_{t+1} already
-  # consumed d_out as its input). NOT capture-safe (host eps loop over nq); fine for the FD-validation
-  # stage. nworld is batched within each column; the loop is over the nq coordinates.
-  eps = 1.0e-4
-  # Run the FD on a SEPARATE, non-grad-tracked scratch clone -- never mutate d_out (grad-tracked, in the
-  # tape chain; clobbering it corrupts the cross-step BPTT gradient). Freeze the linearization: scratch
-  # qvel = d.qvel, ctrl = d.ctrl, qacc = d_out.qacc (converged accel; already in the clone). (Cloning a
-  # full Data per step is wasteful -- fine for the FD-validation stage; AD-rne removes the FD at G1.)
-  fd = _clone_for_fd(d_out)
-  wp.copy(fd.qvel, d.qvel)
-  if m.nu > 0:
-    wp.copy(fd.ctrl, d.ctrl)
-  r_plus = wp.empty((nworld, nv), dtype=float)
-  r_minus = wp.empty((nworld, nv), dtype=float)
-  for col in range(nq):
-    wp.launch(_perturb_col, dim=(nworld, nq), inputs=[d.qpos, col, eps], outputs=[fd.qpos])
-    _recompute_smooth_forces(m, fd)
-    wp.launch(_rsmooth_value, dim=(nworld, nv),
-              inputs=[fd.qfrc_bias, fd.qfrc_passive, fd.qfrc_actuator], outputs=[r_plus])
-    wp.launch(_perturb_col, dim=(nworld, nq), inputs=[d.qpos, col, -eps], outputs=[fd.qpos])
-    _recompute_smooth_forces(m, fd)
-    wp.launch(_rsmooth_value, dim=(nworld, nv),
-              inputs=[fd.qfrc_bias, fd.qfrc_passive, fd.qfrc_actuator], outputs=[r_minus])
-    wp.launch(_fd_qpos_contract, dim=nworld,
-              inputs=[r_plus, r_minus, lam, nv, 2.0 * eps, col], outputs=[adj_qpos])
+  # --- 5. smooth ∂qpos. ANALYTIC reduced replay (smooth_adjoint) when _USE_ANALYTIC_RNE_QPOS, else FD-of-rne.
+  if _USE_ANALYTIC_RNE_QPOS:
+    # Analytic smooth-residual ∂qpos via the reduced backward-only replay (MJPLAN_ADRNE §0/§10): rigid-body
+    # RNE bias (smooth_force_backward) + joint springs (spring_qpos_vjp) + AFFINE joint actuators
+    # (actuator_qpos_vjp). Each returns (∂(λᵀr_smooth_term)/∂qpos); accumulate into res_qpos (subtracted by
+    # _sub_write = the IFT minus -(∂r/∂qpos)ᵀλ). NO finite-difference fallback: assert_smooth_supported
+    # RAISES on any enabled smooth feature without an analytic leaf (tendon/gravcomp/fluid/muscle/...);
+    # FD is the explicit test-only path below (flag False), never an automatic substitute (§0). Local import
+    # breaks the smooth_adjoint<->adjoint cycle (smooth_adjoint reuses this module's reverse kernels).
+    from mujoco_warp._src import smooth_adjoint as _smooth_adjoint
+
+    _smooth_adjoint.assert_smooth_supported(m)
+    # CRITICAL: recompute the smooth forces on a NON-GRAD scratch at the SAME linearization FD-of-rne uses
+    # -- (d.qpos, d.qvel, d_out.qacc) with rne(flg_acc=True). The live d_out has qfrc_bias = Coriolis only
+    # (forward solves for qacc -> flg_acc=False, so d_out.cacc/cfrc_int miss the M·qacc term) AND its
+    # qpos/qvel are the INTEGRATED next state, not the linearization point. Skipping this drops
+    # ∂(M·qacc)/∂qpos (verified: BPTT rel 0.14 vs FD-of-rne -> 0 after this recompute).
+    s = _clone_for_fd(d_out)
+    wp.copy(s.qpos, d.qpos)
+    wp.copy(s.qvel, d.qvel)
+    if m.nu > 0:
+      wp.copy(s.ctrl, d.ctrl)
+    _recompute_smooth_forces(m, s)  # flg_acc=True intermediates at (d.qpos, d.qvel, d_out.qacc)
+    res_q = _smooth_adjoint.smooth_force_backward(m, s, lam, flg_acc=True)  # rigid-body RNE bias
+    wp.launch(_accum_cols, dim=(nworld, nq), inputs=[res_q], outputs=[res_qpos])
+    res_sp = _smooth_adjoint.spring_qpos_vjp(m, s, lam)  # joint springs (all joint types)
+    wp.launch(_accum_cols, dim=(nworld, nq), inputs=[res_sp], outputs=[res_qpos])
+    res_ac = _smooth_adjoint.actuator_qpos_vjp(m, s, lam)  # affine joint-transmission actuators
+    wp.launch(_accum_cols, dim=(nworld, nq), inputs=[res_ac], outputs=[res_qpos])
+    res_gc = _smooth_adjoint.gravcomp_qpos_vjp(m, s, lam)  # gravity compensation (passive bucket)
+    wp.launch(_accum_cols, dim=(nworld, nq), inputs=[res_gc], outputs=[res_qpos])
+  else:
+    # FD-of-rne (default; the full-r_smooth reference). Re-run the smooth force sub-pipeline at qpos ± eps
+    # (qvel/qacc/ctrl frozen at the linearization), central-difference r_smooth = qfrc_bias - qfrc_passive
+    # - qfrc_actuator, contract with λ: adj_qpos += -(∂r_smooth/∂qpos)ᵀλ. Covers bias + passive + actuator
+    # + tendon. NOT capture-safe (host eps loop over nq). Runs on a SEPARATE non-grad scratch clone --
+    # never mutate d_out (grad-tracked; clobbering corrupts the cross-step BPTT gradient).
+    eps = 1.0e-4
+    fd = _clone_for_fd(d_out)
+    wp.copy(fd.qvel, d.qvel)
+    if m.nu > 0:
+      wp.copy(fd.ctrl, d.ctrl)
+    r_plus = wp.empty((nworld, nv), dtype=float)
+    r_minus = wp.empty((nworld, nv), dtype=float)
+    for col in range(nq):
+      wp.launch(_perturb_col, dim=(nworld, nq), inputs=[d.qpos, col, eps], outputs=[fd.qpos])
+      _recompute_smooth_forces(m, fd)
+      wp.launch(_rsmooth_value, dim=(nworld, nv),
+                inputs=[fd.qfrc_bias, fd.qfrc_passive, fd.qfrc_actuator], outputs=[r_plus])
+      wp.launch(_perturb_col, dim=(nworld, nq), inputs=[d.qpos, col, -eps], outputs=[fd.qpos])
+      _recompute_smooth_forces(m, fd)
+      wp.launch(_rsmooth_value, dim=(nworld, nv),
+                inputs=[fd.qfrc_bias, fd.qfrc_passive, fd.qfrc_actuator], outputs=[r_minus])
+      wp.launch(_fd_qpos_contract, dim=nworld,
+                inputs=[r_plus, r_minus, lam, nv, 2.0 * eps, col], outputs=[adj_qpos])
 
   # --- write input adjoints (each d == datas[t] is the d_in of exactly one step) ---
   wp.launch(_sub_write, dim=(nworld, nq), inputs=[adj_qpos, res_qpos], outputs=[d.qpos.grad])
@@ -1209,3 +1254,4 @@ def fwd_kinematics_backward(m: Model, d: Data):
 
 
 _forward.register_position_backward_hook(fwd_kinematics_backward)
+
