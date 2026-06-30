@@ -8,24 +8,45 @@
   <link rel="icon" href="data:,">
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns"></script>
+  
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+
   <style>
     :root {
-      --bg: #ffffff;
-      --bg-card: #f6f8fa;
-      --text: #1f2328;
-      --text-dim: #656d76;
-      --border: #d0d7de;
-      --accent: #0969da;
+      --bg: #f8fafc;
+      --bg-card: #ffffff;
+      --text: #0f172a;
+      --text-dim: #64748b;
+      --border: #e2e8f0;
+      --accent: #2563eb;
+      --accent-hover: #1d4ed8;
+      --accent-rgb: 37, 99, 235;
+      --card-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.05), 0 2px 4px -2px rgb(0 0 0 / 0.05);
+      --card-shadow-hover: 0 20px 25px -5px rgb(0 0 0 / 0.08), 0 8px 10px -6px rgb(0 0 0 / 0.08);
+      --badge-render-bg: rgba(147, 51, 234, 0.08);
+      --badge-render-text: #9333ea;
+      --badge-physics-bg: rgba(37, 99, 235, 0.08);
+      --badge-physics-text: #2563eb;
     }
 
     @media (prefers-color-scheme: dark) {
       :root {
-        --bg: #0d1117;
-        --bg-card: #161b22;
-        --text: #c9d1d9;
-        --text-dim: #8b949e;
-        --border: #30363d;
-        --accent: #58a6ff;
+        --bg: #090d16;
+        --bg-card: #111827;
+        --text: #f3f4f6;
+        --text-dim: #9ca3af;
+        --border: #1f2937;
+        --accent: #3b82f6;
+        --accent-hover: #60a5fa;
+        --accent-rgb: 59, 130, 246;
+        --card-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.3), 0 2px 4px -2px rgb(0 0 0 / 0.3);
+        --card-shadow-hover: 0 20px 25px -5px rgb(0 0 0 / 0.5), 0 8px 10px -6px rgb(0 0 0 / 0.5);
+        --badge-render-bg: rgba(168, 85, 247, 0.15);
+        --badge-render-text: #c084fc;
+        --badge-physics-bg: rgba(59, 130, 246, 0.15);
+        --badge-physics-text: #60a5fa;
       }
     }
 
@@ -36,121 +57,332 @@
     }
 
     body {
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
       background: var(--bg);
       color: var(--text);
-      padding: 2rem;
+      padding: 2.5rem 2rem;
       max-width: 1400px;
       margin: 0 auto;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
     }
 
     header {
-      margin-bottom: 2rem;
-      padding-bottom: 1rem;
+      margin-bottom: 2.5rem;
+      padding-bottom: 1.25rem;
       border-bottom: 1px solid var(--border);
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-end;
     }
 
-    h1 {
-      font-size: 1.5rem;
-      margin-bottom: 0.5rem;
+    .header-left h1 {
+      font-size: 1.85rem;
+      font-weight: 700;
+      margin-bottom: 0.35rem;
+      letter-spacing: -0.025em;
     }
 
     .subtitle {
       color: var(--text-dim);
-      font-size: 0.875rem;
+      font-size: 0.925rem;
     }
 
-    .benchmark-buttons {
+    .view-container {
+      flex: 1;
+    }
+
+    /* Index View Grid */
+    .search-filter-bar {
       display: flex;
-      gap: 0.5rem;
-      margin-bottom: 2rem;
+      justify-content: space-between;
+      align-items: center;
+      gap: 1.5rem;
+      margin-bottom: 2.5rem;
       flex-wrap: wrap;
     }
 
-    .benchmark-btn {
+    #search-input {
       background: var(--bg-card);
       border: 1px solid var(--border);
-      border-radius: 6px;
-      padding: 0.5rem 1rem;
-      cursor: pointer;
       color: var(--text);
-      font-size: 0.875rem;
-      font-weight: 500;
-      transition: all 0.2s;
+      padding: 0.65rem 1.1rem;
+      border-radius: 10px;
+      font-size: 0.925rem;
+      width: 100%;
+      max-width: 340px;
+      outline: none;
+      transition: border-color 0.2s, box-shadow 0.2s;
     }
 
-    .benchmark-btn:hover {
+    #search-input:focus {
       border-color: var(--accent);
+      box-shadow: 0 0 0 3px rgba(var(--accent-rgb), 0.12);
     }
 
-    .benchmark-btn.active {
+    .filter-pills {
+      display: flex;
+      gap: 0.5rem;
+    }
+
+    .filter-pill {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      color: var(--text-dim);
+      padding: 0.5rem 1.15rem;
+      border-radius: 24px;
+      cursor: pointer;
+      font-size: 0.875rem;
+      font-weight: 600;
+      transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+    }
+
+    .filter-pill:hover {
+      border-color: var(--accent);
+      color: var(--text);
+    }
+
+    .filter-pill.active {
       background: var(--accent);
       border-color: var(--accent);
-      color: white;
+      color: #ffffff;
     }
 
-    .chart-container {
+    .grid-container {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+      gap: 2rem;
+      margin-bottom: 3.5rem;
+    }
+
+    .benchmark-card {
       background: var(--bg-card);
       border: 1px solid var(--border);
-      border-radius: 8px;
-      padding: 1.5rem;
-      margin-bottom: 2rem;
+      border-radius: 14px;
+      overflow: hidden;
+      cursor: pointer;
+      box-shadow: var(--card-shadow);
+      transition: transform 0.25s cubic-bezier(0.4, 0, 0.2, 1), 
+                  box-shadow 0.25s cubic-bezier(0.4, 0, 0.2, 1), 
+                  border-color 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+      display: flex;
+      flex-direction: column;
+      height: 100%;
     }
 
-    .chart-title {
-      font-size: 1.1rem;
-      font-weight: 600;
-      margin-bottom: 1rem;
+    .benchmark-card:hover {
+      transform: translateY(-5px);
+      box-shadow: var(--card-shadow-hover);
+      border-color: var(--accent);
     }
 
-    .chart-canvas {
-      height: 400px;
+    .card-image-container {
+      width: 100%;
+      height: 210px;
+      overflow: hidden;
+      position: relative;
+      background: var(--bg);
+      border-bottom: 1px solid var(--border);
     }
 
-    .loading {
-      text-align: center;
-      padding: 2rem;
+    .card-image {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      transition: transform 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+    }
+
+    .card-image-myoarm {
+      object-position: top;
+    }
+
+    .benchmark-card:hover .card-image {
+      transform: scale(1.04);
+    }
+
+    .card-content {
+      padding: 1.4rem;
+      display: flex;
+      flex-direction: column;
+      flex-grow: 1;
+    }
+
+    .card-title-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 0.65rem;
+      gap: 0.75rem;
+    }
+
+    .card-title {
+      font-size: 1.15rem;
+      font-weight: 700;
+      color: var(--text);
+      letter-spacing: -0.01em;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .card-badge {
+      font-size: 0.725rem;
+      padding: 0.25rem 0.65rem;
+      border-radius: 20px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      flex-shrink: 0;
+    }
+
+    .card-badge.render {
+      background: var(--badge-render-bg);
+      color: var(--badge-render-text);
+    }
+
+    .card-badge.physics {
+      background: var(--badge-physics-bg);
+      color: var(--badge-physics-text);
+    }
+
+    .card-description {
+      font-size: 0.875rem;
       color: var(--text-dim);
+      line-height: 1.5;
+      margin-bottom: 1.25rem;
+      flex-grow: 1;
+      display: -webkit-box;
+      -webkit-line-clamp: 2;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
+      text-overflow: ellipsis;
     }
 
-    .error {
-      background: #fef2f2;
-      border: 1px solid #fecaca;
-      color: #991b1b;
-      padding: 1rem;
-      border-radius: 8px;
+    .card-stats {
+      display: flex;
+      gap: 0.85rem;
+      font-size: 0.75rem;
+      color: var(--text-dim);
+      border-top: 1px solid var(--border);
+      padding-top: 0.85rem;
+      flex-wrap: wrap;
+    }
+
+    .card-stat {
+      display: flex;
+      gap: 0.3rem;
+    }
+
+    .card-stat-label {
+      opacity: 0.85;
+    }
+
+    .card-stat-val {
+      font-weight: 700;
+      color: var(--text);
+    }
+
+    /* Detail View Styling */
+    .detail-header-nav {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
       margin-bottom: 2rem;
+      flex-wrap: wrap;
+      gap: 1.25rem;
     }
 
-    @media (prefers-color-scheme: dark) {
-      .error {
-        background: #451a03;
-        border-color: #7c2d12;
-        color: #fca5a5;
-      }
+    .back-link {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.6rem;
+      color: var(--text);
+      text-decoration: none;
+      font-weight: 600;
+      font-size: 0.95rem;
+      padding: 0.5rem 1rem;
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+      box-shadow: 0 1px 2px rgba(0,0,0,0.02);
+    }
+
+    .back-link:hover {
+      background: var(--border);
+      border-color: var(--text-dim);
+      transform: translateX(-2px);
+    }
+
+    .back-link svg {
+      transition: transform 0.2s;
+    }
+
+    .back-link:hover svg {
+      transform: translateX(-2px);
+    }
+
+    .range-selector-container {
+      display: flex;
+      align-items: center;
+      gap: 0.85rem;
+    }
+
+    .range-label {
+      font-size: 0.875rem;
+      color: var(--text-dim);
+      font-weight: 600;
+    }
+
+    .range-pills {
+      display: flex;
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 3px;
+      box-shadow: 0 1px 2px rgba(0,0,0,0.02);
+    }
+
+    .range-pill {
+      background: transparent;
+      border: none;
+      color: var(--text-dim);
+      padding: 0.45rem 1rem;
+      border-radius: 8px;
+      cursor: pointer;
+      font-size: 0.875rem;
+      font-weight: 600;
+      transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+    }
+
+    .range-pill:hover {
+      color: var(--text);
+    }
+
+    .range-pill.active {
+      background: var(--accent);
+      color: #ffffff;
     }
 
     .benchmark-header {
       background: var(--bg-card);
       border: 1px solid var(--border);
-      border-radius: 8px;
-      padding: 1.5rem;
-      margin-bottom: 2rem;
-      display: none;
-    }
-
-    .benchmark-header.visible {
+      border-radius: 14px;
+      padding: 1.75rem;
+      margin-bottom: 2.5rem;
       display: flex;
-      gap: 2rem;
-      align-items: flex-start;
+      gap: 2.25rem;
+      align-items: center;
+      box-shadow: var(--card-shadow);
     }
 
     .benchmark-screenshot {
-      width: 200px;
-      height: 150px;
+      width: 240px;
+      height: 180px;
       background: var(--bg);
       border: 1px solid var(--border);
-      border-radius: 6px;
+      border-radius: 10px;
       display: flex;
       align-items: center;
       justify-content: center;
@@ -171,42 +403,100 @@
     }
 
     .benchmark-name {
-      font-size: 1.5rem;
-      font-weight: 600;
+      font-size: 1.65rem;
+      font-weight: 700;
       margin-bottom: 0.5rem;
+      letter-spacing: -0.02em;
     }
 
     .benchmark-description {
       color: var(--text-dim);
-      margin-bottom: 1rem;
-      font-size: 0.9rem;
+      margin-bottom: 1.25rem;
+      font-size: 0.95rem;
+      line-height: 1.5;
     }
 
     .benchmark-properties {
       display: flex;
-      gap: 1.5rem;
+      gap: 2rem;
       flex-wrap: wrap;
     }
 
     .benchmark-property {
-      text-align: center;
+      display: flex;
+      flex-direction: column;
     }
 
     .benchmark-property-value {
-      font-size: 1.25rem;
-      font-weight: 600;
+      font-size: 1.35rem;
+      font-weight: 700;
       color: var(--accent);
     }
 
     .benchmark-property-label {
-      font-size: 0.75rem;
+      font-size: 0.725rem;
+      font-weight: 700;
       color: var(--text-dim);
       text-transform: uppercase;
+      letter-spacing: 0.05em;
+      margin-top: 0.15rem;
+    }
+
+    .chart-grid {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 2rem;
+    }
+
+    .chart-container {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 1.75rem;
+      box-shadow: var(--card-shadow);
+    }
+
+    .chart-title {
+      font-size: 1.15rem;
+      font-weight: 700;
+      margin-bottom: 1.25rem;
+      letter-spacing: -0.01em;
+    }
+
+    .chart-canvas {
+      height: 420px;
+      position: relative;
+    }
+
+    .loading {
+      text-align: center;
+      padding: 4rem;
+      color: var(--text-dim);
+      font-size: 1.1rem;
+      font-weight: 500;
+    }
+
+    .error {
+      background: #fef2f2;
+      border: 1px solid #fecaca;
+      color: #991b1b;
+      padding: 1.25rem;
+      border-radius: 10px;
+      margin-bottom: 2.5rem;
+      font-weight: 500;
+    }
+
+    @media (prefers-color-scheme: dark) {
+      .error {
+        background: #270f0f;
+        border-color: #451a1a;
+        color: #fca5a5;
+      }
     }
 
     footer {
-      margin-top: 3rem;
-      padding-top: 1.5rem;
+      margin-top: auto;
+      padding-top: 2.5rem;
       border-top: 1px solid var(--border);
       text-align: center;
       color: var(--text-dim);
@@ -214,7 +504,7 @@
     }
 
     footer p {
-      margin-bottom: 0.75rem;
+      margin-bottom: 0.85rem;
     }
 
     footer .system-info {
@@ -231,40 +521,75 @@
     }
 
     footer .system-label {
-      font-weight: 600;
+      font-weight: 700;
       text-transform: uppercase;
-      font-size: 0.7rem;
+      font-size: 0.725rem;
+      letter-spacing: 0.05em;
     }
 
     /* Mobile responsive styles */
-    @media (max-width: 768px) {
+    @media (max-width: 868px) {
       body {
-        padding: 1rem;
+        padding: 1.5rem 1rem;
       }
 
-      .benchmark-header.visible {
+      header {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 1rem;
+      }
+
+      .search-filter-bar {
+        flex-direction: column;
+        align-items: stretch;
+      }
+
+      #search-input {
+        max-width: none;
+      }
+
+      .filter-pills {
+        justify-content: flex-start;
+        overflow-x: auto;
+        padding-bottom: 0.5rem;
+        -webkit-overflow-scrolling: touch;
+      }
+
+      .detail-header-nav {
+        flex-direction: column;
+        align-items: stretch;
+        gap: 1.25rem;
+      }
+
+      .back-link {
+        align-self: flex-start;
+      }
+
+      .range-selector-container {
+        justify-content: space-between;
+      }
+
+      .benchmark-header {
         flex-direction: column;
         align-items: center;
-        gap: 1rem;
+        gap: 1.5rem;
         text-align: center;
       }
 
       .benchmark-screenshot {
-        width: 160px;
-        height: 120px;
-      }
-
-      .benchmark-info {
         width: 100%;
+        max-width: 320px;
+        height: 200px;
       }
 
       .benchmark-properties {
         justify-content: center;
+        gap: 1.5rem;
       }
 
       footer .system-info {
         flex-direction: column;
-        gap: 0.5rem;
+        gap: 0.65rem;
         align-items: center;
       }
 
@@ -277,45 +602,93 @@
 
 <body>
   <header>
-    <h1>MuJoCo Warp Nightly Benchmarks</h1>
-    <div class="subtitle">Performance tracking over time</div>
+    <div class="header-left">
+      <h1>MuJoCo Warp Nightly Benchmarks</h1>
+      <div class="subtitle">Performance tracking over time</div>
+    </div>
   </header>
 
-  <div class="benchmark-buttons" id="benchmark-buttons"></div>
-  <div id="error-message" class="error" style="display: none;"></div>
-  <div id="loading" class="loading">Select a benchmark to view data</div>
+  <!-- Index View -->
+  <div id="index-view" class="view-container">
+    <div class="search-filter-bar">
+      <input type="text" id="search-input" placeholder="Search benchmarks..." aria-label="Search benchmarks">
+      <div class="filter-pills">
+        <button class="filter-pill active" data-filter="all">All</button>
+        <button class="filter-pill" data-filter="physics">Physics</button>
+        <button class="filter-pill" data-filter="render">Render</button>
+      </div>
+    </div>
+    <div class="grid-container" id="index-grid"></div>
+  </div>
 
-  <div id="benchmark-header" class="benchmark-header">
-    <div class="benchmark-screenshot" id="benchmark-screenshot"><span>No screenshot</span></div>
-    <div class="benchmark-info">
-      <div class="benchmark-name" id="benchmark-name"></div>
-      <div class="benchmark-description" id="benchmark-description"></div>
-      <div class="benchmark-properties" id="benchmark-properties"></div>
+  <!-- Detail View -->
+  <div id="detail-view" class="view-container" style="display: none;">
+    <div class="detail-header-nav">
+      <a href="#" class="back-link">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+          <line x1="19" y1="12" x2="5" y2="12"></line>
+          <polyline points="12 19 5 12 12 5"></polyline>
+        </svg>
+        Back to Benchmarks
+      </a>
+      
+      <div class="range-selector-container">
+        <span class="range-label">Time Range:</span>
+        <div class="range-pills">
+          <button class="range-pill" data-days="30">30d</button>
+          <button class="range-pill" data-days="60">60d</button>
+          <button class="range-pill active" data-days="90">90d</button>
+          <button class="range-pill" data-days="all">All</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="error-message" class="error" style="display: none;"></div>
+    <div id="loading" class="loading">Loading benchmark data...</div>
+
+    <div id="benchmark-detail-content" style="display: none;">
+      <div id="benchmark-header" class="benchmark-header">
+        <div class="benchmark-screenshot" id="benchmark-screenshot"></div>
+        <div class="benchmark-info">
+          <div class="benchmark-name" id="benchmark-name"></div>
+          <div class="benchmark-description" id="benchmark-description"></div>
+          <div class="benchmark-properties" id="benchmark-properties"></div>
+        </div>
+      </div>
+
+      <div class="chart-grid">
+        <div class="chart-container">
+          <div class="chart-title" id="step-chart-title">Step Time Breakdown (ns/step)</div>
+          <div class="chart-canvas"><canvas id="step-chart"></canvas></div>
+        </div>
+        <div class="chart-container" id="fwd-position-container">
+          <div class="chart-title">fwd_position Breakdown (ns/step)</div>
+          <div class="chart-canvas"><canvas id="fwd-position-chart"></canvas></div>
+        </div>
+        <div class="chart-container" id="fwd-velocity-container">
+          <div class="chart-title">fwd_velocity Breakdown (ns/step)</div>
+          <div class="chart-canvas"><canvas id="fwd-velocity-chart"></canvas></div>
+        </div>
+        <div class="chart-container">
+          <div class="chart-title">Memory Usage</div>
+          <div class="chart-canvas"><canvas id="memory-chart"></canvas></div>
+        </div>
+        <div class="chart-container">
+          <div class="chart-title">JIT Compilation Time</div>
+          <div class="chart-canvas"><canvas id="jit-chart"></canvas></div>
+        </div>
+      </div>
     </div>
   </div>
 
-  <div id="charts-container" style="display: none;">
-    <div class="chart-container">
-      <div class="chart-title" id="step-chart-title">Step Time Breakdown (ns/step)</div>
-      <div class="chart-canvas"><canvas id="step-chart"></canvas></div>
+  <footer>
+    <p>These benchmarks were recorded on a workstation with the following specifications:</p>
+    <div class="system-info">
+      <span><span class="system-label">GPU:</span> NVIDIA RTX 6000 Ada Generation</span>
+      <span><span class="system-label">VRAM:</span> 48 GB</span>
+      <span><span class="system-label">CPU:</span> AMD Ryzen Threadripper PRO 5995WX 64-Cores</span>
     </div>
-    <div class="chart-container" id="fwd-position-container">
-      <div class="chart-title">fwd_position Breakdown (ns/step)</div>
-      <div class="chart-canvas"><canvas id="fwd-position-chart"></canvas></div>
-    </div>
-    <div class="chart-container" id="fwd-velocity-container">
-      <div class="chart-title">fwd_velocity Breakdown (ns/step)</div>
-      <div class="chart-canvas"><canvas id="fwd-velocity-chart"></canvas></div>
-    </div>
-    <div class="chart-container">
-      <div class="chart-title">Memory Usage (bytes)</div>
-      <div class="chart-canvas"><canvas id="memory-chart"></canvas></div>
-    </div>
-    <div class="chart-container">
-      <div class="chart-title">JIT Compilation Time (seconds)</div>
-      <div class="chart-canvas"><canvas id="jit-chart"></canvas></div>
-    </div>
-  </div>
+  </footer>
 
   <script>
     const GITHUB_REPO = 'https://github.com/google-deepmind/mujoco_warp';
@@ -352,118 +725,154 @@
       fwd_velocity: ['actuator_velocity', 'tendon_velocity', 'com_vel', 'passive', 'rne', 'tendon_bias']
     };
 
-    // Custom interaction mode to snap to points with largest delta in the neighborhood
-    Chart.Interaction.modes.snapToDelta = function(chart, e, options, useFinalPosition) {
-      const position = Chart.helpers.getRelativePosition(e, chart);
-      const meta = chart.getDatasetMeta(0);
-      if (!meta || !meta.data.length) return [];
-
-      let nearestIndex = -1;
-      let minDist = Infinity;
-
-      // Find the nearest point first
-      for (let j = 0; j < meta.data.length; j++) {
-        const pt = meta.data[j];
-        if (!pt) continue;
-        const dist = Math.abs(pt.x - position.x);
-        if (dist < minDist) {
-          minDist = dist;
-          nearestIndex = j;
+    const topHoverPlugin = {
+      id: 'topHoverPlugin',
+      afterDatasetsDraw(chart) {
+        const activeElements = chart.getActiveElements();
+        if (activeElements.length === 0) return;
+        
+        const sorted = [...activeElements].sort((a, b) => b.datasetIndex - a.datasetIndex);
+        const topElement = sorted[0];
+        if (!topElement) return;
+        
+        const dataset = chart.data.datasets[topElement.datasetIndex];
+        if (dataset.customHover) {
+          const { x, y } = topElement.element;
+          const ctx = chart.ctx;
+          ctx.save();
+          
+          ctx.beginPath();
+          ctx.arc(x, y, dataset.customHover.radius, 0, 2 * Math.PI);
+          ctx.fillStyle = dataset.customHover.backgroundColor;
+          ctx.fill();
+          
+          ctx.lineWidth = dataset.customHover.borderWidth;
+          ctx.strokeStyle = dataset.customHover.borderColor;
+          ctx.stroke();
+          
+          ctx.restore();
         }
       }
-
-      if (nearestIndex === -1) return [];
-
-      // Calculate average delta for the chart to serve as a baseline for "significant" changes
-      if (chart.avgDelta === undefined) {
-        let totalDelta = 0;
-        let count = 0;
-        const numPoints = chart.data.datasets[0]?.data?.length || 0;
-        for (let idx = 1; idx < numPoints; idx++) {
-          let pointDelta = 0;
-          chart.data.datasets.forEach(dataset => {
-            const valCurr = dataset.data[idx]?.y || 0;
-            const valPrev = dataset.data[idx - 1]?.y || 0;
-            pointDelta += Math.abs(valCurr - valPrev);
-          });
-          totalDelta += pointDelta;
-          count++;
-        }
-        chart.avgDelta = count > 0 ? (totalDelta / count) : 0;
-      }
-      const avgDelta = chart.avgDelta;
-
-      // Calculate deltas and find the best snapped index based on score
-      let bestIndex = nearestIndex;
-      let maxScore = -1;
-      const snapWindow = 50; // pixels
-
-      for (let j = 0; j < meta.data.length; j++) {
-        const pt = meta.data[j];
-        if (!pt) continue;
-        const dist = Math.abs(pt.x - position.x);
-        if (dist <= snapWindow) {
-          // Compute delta at index j (sum of absolute differences across all datasets)
-          let delta = 0;
-          if (j > 0) {
-            chart.data.datasets.forEach(dataset => {
-              const valCurr = dataset.data[j]?.y || 0;
-              const valPrev = dataset.data[j - 1]?.y || 0;
-              delta += Math.abs(valCurr - valPrev);
-            });
-          }
-
-          // Only snap if the delta is significant (at least 3.0x the baseline average delta)
-          if (delta >= 3.0 * avgDelta) {
-            // score = delta / (distance + 15)
-            const score = delta / (dist + 15);
-            if (score > maxScore) {
-              maxScore = score;
-              bestIndex = j;
-            }
-          }
-        }
-      }
-
-      if (maxScore <= 0) {
-        bestIndex = nearestIndex;
-      }
-
-      const items = [];
-      for (let i = 0; i < chart.data.datasets.length; i++) {
-        if (chart.isDatasetVisible(i)) {
-          const datasetMeta = chart.getDatasetMeta(i);
-          const element = datasetMeta.data[bestIndex];
-          if (element) {
-            items.push({ element, datasetIndex: i, index: bestIndex });
-          }
-        }
-      }
-      return items;
     };
 
-    let allCharts = [];
+    let charts = {
+      step: null,
+      fwdPosition: null,
+      fwdVelocity: null,
+      memory: null,
+      jit: null
+    };
 
-    // --- UI Setup ---
+    let currentTimeRange = '90'; // Default to 90 days
+    let currentBenchmarkName = null;
+    let currentBenchmarkRawData = null;
 
-    const buttonsContainer = document.getElementById('benchmark-buttons');
-    Object.keys(BENCHMARK_DATA).forEach(name => {
-      const btn = document.createElement('button');
-      btn.className = 'benchmark-btn';
-      const meta = BENCHMARK_DATA[name];
-      const isRender = meta[6] || false;
-      btn.textContent = (isRender ? '📷 ' : '') + meta[0];
-      btn.dataset.benchmark = name;
-      btn.addEventListener('click', () => loadBenchmark(name));
-      buttonsContainer.appendChild(btn);
+    function destroyAllCharts() {
+      Object.keys(charts).forEach(key => {
+        if (charts[key]) {
+          charts[key].destroy();
+          charts[key] = null;
+        }
+      });
+    }
+
+    // --- Routing & State ---
+
+    function handleRouting() {
+      const hash = window.location.hash;
+      if (hash && hash.startsWith('#')) {
+        const benchmarkName = hash.substring(1);
+        if (BENCHMARK_DATA[benchmarkName]) {
+          showDetailView(benchmarkName);
+          return;
+        }
+      }
+      showIndexView();
+    }
+
+    window.addEventListener('hashchange', handleRouting);
+    window.addEventListener('load', handleRouting);
+
+    // --- Index View ---
+
+    function renderIndexView() {
+      const grid = document.getElementById('index-grid');
+      grid.innerHTML = '';
+      
+      const searchQuery = document.getElementById('search-input').value.toLowerCase();
+      const activeFilter = document.querySelector('.filter-pill.active').dataset.filter;
+
+      Object.entries(BENCHMARK_DATA).forEach(([key, meta]) => {
+        const [name, desc, nbody, nv, ngeom, nu, isRender] = meta;
+        const type = isRender ? 'render' : 'physics';
+
+        if (activeFilter !== 'all' && activeFilter !== type) return;
+        if (searchQuery && !name.toLowerCase().includes(searchQuery) && !desc.toLowerCase().includes(searchQuery)) return;
+
+        const card = document.createElement('div');
+        card.className = 'benchmark-card';
+        card.addEventListener('click', () => {
+          window.location.hash = key;
+        });
+
+        card.innerHTML = `
+          <div class="card-image-container">
+            <img class="card-image card-image-${key}" src="screenshots/${key}.webp" alt="${name}" onerror="this.src='data:image/svg+xml;utf8,<svg xmlns=%22http://www.w3.org/2000/svg%22 width=%22100%22 height=%22100%22 viewBox=%220 0 100 100%22><rect width=%22100%22 height=%22100%22 fill=%22%23eaeef2%22/><text x=%2250%%22 y=%2250%%22 font-family=%22sans-serif%22 font-size=%2212%22 fill=%22%23656d76%22 text-anchor=%22middle%22 dominant-baseline=%22middle%22>No screenshot</text></svg>'">
+          </div>
+          <div class="card-content">
+            <div class="card-title-row">
+              <span class="card-title">${name}</span>
+              <span class="card-badge ${type}">${type}</span>
+            </div>
+            <p class="card-description">${desc || 'No description available.'}</p>
+            <div class="card-stats">
+              <div class="card-stat">
+                <span class="card-stat-label">Bodies:</span>
+                <span class="card-stat-val">${nbody}</span>
+              </div>
+              <div class="card-stat">
+                <span class="card-stat-label">DoFs:</span>
+                <span class="card-stat-val">${nv}</span>
+              </div>
+              <div class="card-stat">
+                <span class="card-stat-label">Geoms:</span>
+                <span class="card-stat-val">${ngeom}</span>
+              </div>
+              <div class="card-stat">
+                <span class="card-stat-label">Actuators:</span>
+                <span class="card-stat-val">${nu}</span>
+              </div>
+            </div>
+          </div>
+        `;
+        grid.appendChild(card);
+      });
+    }
+
+    function showIndexView() {
+      document.getElementById('index-view').style.display = 'block';
+      document.getElementById('detail-view').style.display = 'none';
+      renderIndexView();
+    }
+
+    // Set up Index View Search & Filters
+    document.getElementById('search-input').addEventListener('input', renderIndexView);
+    document.querySelectorAll('.filter-pill').forEach(pill => {
+      pill.addEventListener('click', (e) => {
+        document.querySelectorAll('.filter-pill').forEach(p => p.classList.remove('active'));
+        e.currentTarget.classList.add('active');
+        renderIndexView();
+      });
     });
+
+    // --- Detail View ---
 
     function updateBenchmarkHeader(benchmarkName) {
       const header = document.getElementById('benchmark-header');
       const meta = BENCHMARK_DATA[benchmarkName];
-      if (!meta) { header.classList.remove('visible'); return; }
+      if (!meta) { return; }
 
-      const [name, desc, nbody, nv, ngeom, nu, isRender] = meta;
+      const [name, desc, nbody, nv, ngeom, nu] = meta;
 
       document.getElementById('benchmark-name').textContent = name;
       document.getElementById('benchmark-description').textContent = desc || 'No description available.';
@@ -480,19 +889,22 @@
           <div class="benchmark-property-label">${label}</div>
         </div>
       `).join('');
-
-      header.classList.add('visible');
     }
 
-    async function loadBenchmark(benchmarkName) {
-      document.querySelectorAll('.benchmark-btn').forEach(btn => {
-        btn.classList.toggle('active', btn.dataset.benchmark === benchmarkName);
-      });
+    async function showDetailView(benchmarkName) {
+      document.getElementById('index-view').style.display = 'none';
+      document.getElementById('detail-view').style.display = 'block';
+      
+      // Clean up previous charts if switching benchmarks
+      if (currentBenchmarkName !== benchmarkName) {
+        destroyAllCharts();
+      }
 
+      currentBenchmarkName = benchmarkName;
       updateBenchmarkHeader(benchmarkName);
 
       document.getElementById('loading').style.display = 'block';
-      document.getElementById('charts-container').style.display = 'none';
+      document.getElementById('benchmark-detail-content').style.display = 'none';
       document.getElementById('error-message').style.display = 'none';
 
       try {
@@ -500,7 +912,7 @@
         if (!response.ok) throw new Error(`Failed to load ${benchmarkName}.jsonl`);
 
         const text = await response.text();
-        const data = text.trim().split('\n').filter(l => l.trim()).map(line => {
+        currentBenchmarkRawData = text.trim().split('\n').filter(l => l.trim()).map(line => {
           const raw = JSON.parse(line);
           const processed = {};
           for (const [key, value] of Object.entries(raw)) {
@@ -516,11 +928,16 @@
         });
 
         document.getElementById('loading').style.display = 'none';
-        document.getElementById('charts-container').style.display = 'block';
+        document.getElementById('benchmark-detail-content').style.display = 'block';
 
         const meta = BENCHMARK_DATA[benchmarkName];
         const isRender = meta ? (meta[6] || false) : false;
-        renderCharts(data, isRender);
+        
+        // Render charts with full data
+        renderCharts(currentBenchmarkRawData, isRender);
+        
+        // Apply range selection via scale viewport limits
+        updateRange(currentTimeRange);
       } catch (error) {
         document.getElementById('loading').style.display = 'none';
         const errorDiv = document.getElementById('error-message');
@@ -528,6 +945,46 @@
         errorDiv.style.display = 'block';
       }
     }
+
+    function updateRange(range) {
+      currentTimeRange = range;
+      document.querySelectorAll('.range-pill').forEach(pill => {
+        pill.classList.toggle('active', pill.dataset.days === range);
+      });
+
+      if (!currentBenchmarkRawData || currentBenchmarkRawData.length === 0) return;
+
+      let minDate = undefined;
+      let maxDate = undefined;
+
+      if (range !== 'all') {
+        const days = parseInt(range, 10);
+        let latestDate = new Date(currentBenchmarkRawData[currentBenchmarkRawData.length - 1].timestamp);
+        if (isNaN(latestDate.getTime())) {
+          latestDate = new Date();
+        }
+        
+        const cutoffDate = new Date(latestDate.getTime());
+        cutoffDate.setDate(cutoffDate.getDate() - days);
+        minDate = cutoffDate;
+        maxDate = latestDate;
+      }
+
+      Object.values(charts).forEach(c => {
+        if (c) {
+          c.options.scales.x.min = minDate;
+          c.options.scales.x.max = maxDate;
+          c.update();
+        }
+      });
+    }
+
+    // Set up Range Selector Pills
+    document.querySelectorAll('.range-pill').forEach(pill => {
+      pill.addEventListener('click', (e) => {
+        updateRange(e.currentTarget.dataset.days);
+      });
+    });
 
     // --- Chart Rendering ---
 
@@ -546,7 +1003,6 @@
           const meta = chart.getDatasetMeta(i);
           if (meta.hidden) return;
 
-          // Find closest point to center
           let closestIdx = 0, closestDist = Infinity;
           meta.data.forEach((pt, j) => {
             const dist = Math.abs(pt.x - centerX);
@@ -595,13 +1051,57 @@
     }
 
     function baseChartOptions(commits, textDimColor, borderColor, stacked = false) {
+      let minDate = undefined;
+      let maxDate = undefined;
+      if (currentTimeRange !== 'all' && currentBenchmarkRawData && currentBenchmarkRawData.length > 0) {
+        const days = parseInt(currentTimeRange, 10);
+        let latestDate = new Date(currentBenchmarkRawData[currentBenchmarkRawData.length - 1].timestamp);
+        if (isNaN(latestDate.getTime())) {
+          latestDate = new Date();
+        }
+        const cutoffDate = new Date(latestDate.getTime());
+        cutoffDate.setDate(cutoffDate.getDate() - days);
+        minDate = cutoffDate;
+        maxDate = latestDate;
+      }
+
       return {
         responsive: true,
         maintainAspectRatio: false,
-        interaction: { mode: 'snapToDelta', intersect: false },
+        interaction: { mode: 'index', intersect: false },
         plugins: {
-          legend: { display: true, position: 'top', labels: { boxWidth: 12, font: { size: 11 }, padding: 10 } },
-          tooltip: { mode: 'snapToDelta', callbacks: { footer: () => 'Click to view commit on GitHub' } }
+          legend: { display: true, position: 'bottom', labels: { boxWidth: 12, font: { size: 11, family: "'Plus Jakarta Sans', sans-serif" }, padding: 24 } },
+          tooltip: {
+            mode: 'index',
+            intersect: false,
+            callbacks: {
+              beforeBody: (tooltipItems) => {
+                let total = 0;
+                let hasStacked = false;
+                tooltipItems.forEach(item => {
+                  if (item.dataset.stack) {
+                    total += item.raw.y;
+                    hasStacked = true;
+                  }
+                });
+                if (!hasStacked) {
+                  tooltipItems.forEach(item => {
+                    total += item.raw.y;
+                  });
+                }
+                const chart = tooltipItems[0].chart;
+                const yTitle = chart.options.scales.y.title?.text || '';
+                let formatted = '';
+                if (yTitle.toLowerCase().includes('memory')) {
+                  formatted = `Total: ${(total / 1e9).toFixed(2)} GB`;
+                } else {
+                  formatted = `Total: ${Math.round(total).toLocaleString()} ns`;
+                }
+                return [formatted, ''];
+              },
+              footer: () => 'Click to view commit on GitHub'
+            }
+          }
         },
         onClick: (event, elements) => {
           if (elements.length > 0) {
@@ -613,12 +1113,14 @@
           x: {
             type: 'time',
             time: { unit: 'day', displayFormats: { day: 'MMM d' }, tooltipFormat: 'MMM d, yyyy' },
-            ticks: { color: textDimColor },
+            ticks: { color: textDimColor, font: { family: "'Plus Jakarta Sans', sans-serif" } },
             grid: { color: borderColor },
-            stacked
+            stacked,
+            min: minDate,
+            max: maxDate
           },
           y: {
-            ticks: { color: textDimColor },
+            ticks: { color: textDimColor, font: { family: "'Plus Jakarta Sans', sans-serif" } },
             grid: { color: borderColor },
             stacked,
             beginAtZero: true
@@ -628,9 +1130,6 @@
     }
 
     function renderCharts(data, isRender) {
-      allCharts.forEach(c => c.destroy());
-      allCharts = [];
-
       const { textDim, border } = getChartColors();
       const timestamps = data.map(d => new Date(d.timestamp));
       const commits = data.map(d => d.commit);
@@ -657,14 +1156,46 @@
     }
 
     function renderStepChart(data, timestamps, commits, textDimColor, borderColor, isRender) {
-      const datasets = [];
+      if (charts.step) {
+        const datasets = charts.step.data.datasets;
+        if (isRender) {
+          datasets.forEach(ds => {
+            ds.data = timestamps.map((t, i) => ({ x: t, y: data[i][ds.key] || 0, commit: commits[i] }));
+          });
+        } else {
+          if (data.length === 0) return;
+          const sampleData = data[0];
+          const forwardChildren = Object.keys(sampleData)
+            .filter(k => k.startsWith('step.forward.') && !k.substring(13).includes('.'))
+            .sort();
+          const sensorKeys = forwardChildren.filter(k => k.includes('sensor_'));
 
+          datasets.forEach(ds => {
+            if (ds.key === 'sensor') {
+              const sensorValues = data.map(d => sensorKeys.reduce((sum, k) => sum + (d[k] || 0), 0));
+              ds.data = timestamps.map((t, i) => ({ x: t, y: sensorValues[i], commit: commits[i] }));
+            } else {
+              ds.data = timestamps.map((t, i) => ({ x: t, y: data[i][ds.key] || 0, commit: commits[i] }));
+            }
+          });
+        }
+        charts.step.options.onClick = (event, elements) => {
+          if (elements.length > 0) {
+            const commit = commits[elements[0].index];
+            if (commit) window.open(`${GITHUB_REPO}/commit/${commit}`, '_blank');
+          }
+        };
+        charts.step.update();
+        return;
+      }
+
+      const datasets = [];
       if (isRender) {
         datasets.push(createStackedDataset('refit_bvh', data, 'refit_bvh', timestamps, commits, COLORS[0], 'render'));
         datasets.push(createStackedDataset('render', data, 'render', timestamps, commits, COLORS[1], 'render'));
       } else {
+        if (data.length === 0) return;
         const sampleData = data[0];
-        // Get forward children (excluding sensors)
         const forwardChildren = Object.keys(sampleData)
           .filter(k => k.startsWith('step.forward.') && !k.substring(13).includes('.'))
           .sort();
@@ -676,23 +1207,21 @@
           'step.forward.fwd_actuation', 'step.forward.fwd_acceleration', 'step.forward.solve'
         ];
 
-        // Forward children in execution order
         executionOrder.forEach((key, idx) => {
           if (nonSensorKeys.includes(key)) {
             datasets.push(createStackedDataset(key.replace('step.forward.', ''), data, key, timestamps, commits, COLORS[idx], 'step'));
           }
         });
 
-        // Combined sensors
         if (sensorKeys.length > 0) {
           const sensorValues = data.map(d => sensorKeys.reduce((sum, k) => sum + (d[k] || 0), 0));
-          datasets.push({
-            label: 'sensor', data: timestamps.map((t, i) => ({ x: t, y: sensorValues[i], commit: commits[i] })),
+          const ds = {
+            label: 'sensor', key: 'sensor', data: timestamps.map((t, i) => ({ x: t, y: sensorValues[i], commit: commits[i] })),
             backgroundColor: COLORS[5], borderColor: COLORS[5], borderWidth: 0, pointRadius: 0, fill: true, stack: 'step'
-          });
+          };
+          datasets.push(ds);
         }
 
-        // Integrators
         const integratorKeys = Object.keys(sampleData)
           .filter(k => k.startsWith('step.') && k !== 'step' && !k.startsWith('step.forward') && !k.substring(5).includes('.'))
           .sort();
@@ -701,19 +1230,49 @@
         });
       }
 
+      // Configure hover point only for the top-most dataset using customHover properties
+      datasets.forEach((ds, idx) => {
+        const isTop = idx === datasets.length - 1;
+        ds.pointHoverRadius = 0;
+        if (isTop) {
+          ds.customHover = {
+            radius: 8,
+            backgroundColor: ds.borderColor || ds.backgroundColor,
+            borderColor: '#ffffff',
+            borderWidth: 3
+          };
+        }
+      });
+
       const opts = baseChartOptions(commits, textDimColor, borderColor, true);
-      opts.scales.x.title = { display: true, text: 'Date', color: textDimColor };
-      opts.scales.y.title = { display: true, text: isRender ? 'Time (ns/frame)' : 'Time (ns/step)', color: textDimColor };
+      opts.scales.y.title = { display: true, text: isRender ? 'Time (ns/frame)' : 'Time (ns/step)', color: textDimColor, font: { family: "'Plus Jakarta Sans', sans-serif" } };
       opts.scales.y.ticks.callback = v => v.toLocaleString();
 
-      allCharts.push(new Chart(document.getElementById('step-chart'), { type: 'line', data: { datasets }, options: opts }));
+      charts.step = new Chart(document.getElementById('step-chart'), { type: 'line', data: { datasets }, options: opts, plugins: [topHoverPlugin] });
     }
 
     function renderBreakdownChart(data, timestamps, commits, textDimColor, borderColor, phaseName) {
+      const chartKey = phaseName === 'fwd_position' ? 'fwdPosition' : 'fwdVelocity';
       const prefix = `step.forward.${phaseName}.`;
+      
+      if (charts[chartKey]) {
+        const datasets = charts[chartKey].data.datasets;
+        datasets.forEach(ds => {
+          ds.data = timestamps.map((t, i) => ({ x: t, y: data[i][ds.key] || 0, commit: commits[i] }));
+        });
+        charts[chartKey].options.onClick = (event, elements) => {
+          if (elements.length > 0) {
+            const commit = commits[elements[0].index];
+            if (commit) window.open(`${GITHUB_REPO}/commit/${commit}`, '_blank');
+          }
+        };
+        charts[chartKey].update();
+        return;
+      }
+
       const chartId = `${phaseName.replace(/_/g, '-')}-chart`;
       const ctx = document.getElementById(chartId);
-      if (!ctx) return;
+      if (!ctx || data.length === 0) return;
 
       const sampleData = data[0];
       const availableKeys = Object.keys(sampleData).filter(k => k.startsWith(prefix) && !k.substring(prefix.length).includes('.'));
@@ -726,12 +1285,27 @@
         createStackedDataset(key.replace(prefix, ''), data, key, timestamps, commits, COLORS[idx % COLORS.length], phaseName)
       );
 
-      allCharts.push(new Chart(ctx, { type: 'line', data: { datasets }, options: baseChartOptions(commits, textDimColor, borderColor, true) }));
+      // Configure hover point only for the top-most dataset using customHover properties
+      datasets.forEach((ds, idx) => {
+        const isTop = idx === datasets.length - 1;
+        ds.pointHoverRadius = 0;
+        if (isTop) {
+          ds.customHover = {
+            radius: 8,
+            backgroundColor: ds.borderColor || ds.backgroundColor,
+            borderColor: '#ffffff',
+            borderWidth: 3
+          };
+        }
+      });
+
+      charts[chartKey] = new Chart(ctx, { type: 'line', data: { datasets }, options: baseChartOptions(commits, textDimColor, borderColor, true), plugins: [topHoverPlugin] });
     }
 
     function createStackedDataset(label, data, key, timestamps, commits, color, stack) {
       return {
         label,
+        key,
         data: timestamps.map((t, i) => ({ x: t, y: data[i][key] || 0, commit: commits[i] })),
         backgroundColor: color,
         borderColor: color,
@@ -743,35 +1317,89 @@
     }
 
     function renderMemoryChart(data, timestamps, commits, textDimColor, borderColor) {
+      if (charts.memory) {
+        const datasets = charts.memory.data.datasets;
+        datasets.forEach(ds => {
+          ds.data = data.map((d, i) => ({ x: timestamps[i], y: d[ds.key], commit: commits[i] }));
+        });
+        charts.memory.options.onClick = (event, elements) => {
+          if (elements.length > 0) {
+            const commit = commits[elements[0].index];
+            if (commit) window.open(`${GITHUB_REPO}/commit/${commit}`, '_blank');
+          }
+        };
+        charts.memory.update();
+        return;
+      }
+
       const datasets = [
         { label: 'Model Memory', key: 'model_memory', bg: '#3fb95080', border: '#3fb950', stack: 'memory' },
         { label: 'Data Memory', key: 'data_memory', bg: '#58a6ff80', border: '#58a6ff', stack: 'memory' },
         { label: 'Total Memory', key: 'total_memory', bg: 'transparent', border: '#f85149', stack: null, dash: [5, 5] }
-      ].map(({ label, key, bg, border, stack, dash }) => ({
-        label, data: data.map((d, i) => ({ x: timestamps[i], y: d[key], commit: commits[i] })),
-        backgroundColor: bg, borderColor: border, borderWidth: stack ? 1 : 2,
-        ...(stack && { stack }), ...(dash && { borderDash: dash, pointRadius: 3, fill: false })
-      }));
+      ].map(({ label, key, bg, border, stack, dash }, idx, arr) => {
+        const isTop = idx === arr.length - 1;
+        return {
+          label, key, data: data.map((d, i) => ({ x: timestamps[i], y: d[key], commit: commits[i] })),
+          backgroundColor: bg, borderColor: border, borderWidth: stack ? 1 : 2,
+          pointRadius: isTop ? 1.5 : 0,
+          pointHoverRadius: 0,
+          ...(isTop && {
+            customHover: {
+              radius: 8,
+              backgroundColor: border,
+              borderColor: '#ffffff',
+              borderWidth: 3
+            }
+          }),
+          ...(stack && { stack }), ...(dash && { borderDash: dash, fill: false })
+        };
+      });
 
       const opts = baseChartOptions(commits, textDimColor, borderColor);
-      opts.scales.x.title = { display: true, text: 'Date', color: textDimColor };
-      opts.scales.y.title = { display: true, text: 'Memory (bytes)', color: textDimColor };
-      opts.scales.y.ticks.callback = v => (v / 1e9).toFixed(1) + ' GB';
+      opts.scales.y.title = { display: true, text: 'Memory (bytes)', color: textDimColor, font: { family: "'Plus Jakarta Sans', sans-serif" } };
+      opts.scales.y.ticks.callback = v => (v / 1e9).toFixed(2) + ' GB';
 
-      allCharts.push(new Chart(document.getElementById('memory-chart'), { type: 'line', data: { datasets }, options: opts }));
+      charts.memory = new Chart(document.getElementById('memory-chart'), { type: 'line', data: { datasets }, options: opts, plugins: [topHoverPlugin] });
     }
 
     function renderJitChart(data, timestamps, commits, textDimColor, borderColor) {
       const jitData = data.map((d, i) => ({ x: timestamps[i], y: d.jit_duration, commit: commits[i] }));
 
+      let minDate = undefined;
+      let maxDate = undefined;
+      if (currentTimeRange !== 'all' && data && data.length > 0) {
+        const days = parseInt(currentTimeRange, 10);
+        let latestDate = new Date(data[data.length - 1].timestamp);
+        if (isNaN(latestDate.getTime())) {
+          latestDate = new Date();
+        }
+        const cutoffDate = new Date(latestDate.getTime());
+        cutoffDate.setDate(cutoffDate.getDate() - days);
+        minDate = cutoffDate;
+        maxDate = latestDate;
+      }
+
+      if (charts.jit) {
+        charts.jit.data.datasets[0].data = jitData;
+        charts.jit.options.onClick = (event, elements) => {
+          if (elements.length > 0) {
+            const commit = jitData[elements[0].index].commit;
+            if (commit) window.open(`${GITHUB_REPO}/commit/${commit}`, '_blank');
+          }
+        };
+        charts.jit.update();
+        return;
+      }
+
       const opts = {
         responsive: true,
         maintainAspectRatio: false,
-        interaction: { mode: 'snapToDelta', intersect: false },
+        interaction: { mode: 'index', intersect: false },
         plugins: {
           legend: { display: false },
           tooltip: {
-            mode: 'snapToDelta',
+            mode: 'index',
+            intersect: false,
             callbacks: {
               title: items => items[0]?.raw ? new Date(items[0].raw.x).toLocaleDateString() : '',
               label: item => `${item.raw.y.toFixed(2)} seconds`,
@@ -787,30 +1415,44 @@
           }
         },
         scales: {
-          x: { type: 'time', time: { unit: 'day', displayFormats: { day: 'MMM d' } }, title: { display: true, text: 'Date', color: textDimColor }, ticks: { color: textDimColor }, grid: { color: borderColor } },
-          y: { title: { display: true, text: 'Seconds', color: textDimColor }, ticks: { color: textDimColor }, grid: { color: borderColor } }
+          x: { 
+            type: 'time', 
+            time: { unit: 'day', displayFormats: { day: 'MMM d' } }, 
+            ticks: { color: textDimColor, font: { family: "'Plus Jakarta Sans', sans-serif" } }, 
+            grid: { color: borderColor },
+            min: minDate,
+            max: maxDate
+          },
+          y: { title: { display: true, text: 'Seconds', color: textDimColor, font: { family: "'Plus Jakarta Sans', sans-serif" } }, ticks: { color: textDimColor, font: { family: "'Plus Jakarta Sans', sans-serif" } }, grid: { color: borderColor } }
         }
       };
 
-      allCharts.push(new Chart(document.getElementById('jit-chart'), {
+      charts.jit = new Chart(document.getElementById('jit-chart'), {
         type: 'line',
-        data: { datasets: [{ label: 'JIT Duration', data: jitData, borderColor: '#a371f7', backgroundColor: '#a371f720', borderWidth: 2, pointRadius: 5, pointHoverRadius: 7, tension: 0.1, fill: true }] },
-        options: opts
-      }));
+        data: { 
+          datasets: [{ 
+            label: 'JIT Duration', 
+            data: jitData, 
+            borderColor: '#a371f7', 
+            backgroundColor: '#a371f720', 
+            borderWidth: 2, 
+            pointRadius: 1.5, 
+            pointHoverRadius: 0,
+            customHover: {
+              radius: 8,
+              backgroundColor: '#a371f7',
+              borderColor: '#ffffff',
+              borderWidth: 3
+            },
+            tension: 0.1, 
+            fill: true 
+          }] 
+        },
+        options: opts,
+        plugins: [topHoverPlugin]
+      });
     }
-
-    // Load default benchmark
-    loadBenchmark('aloha_pot');
   </script>
-
-  <footer>
-    <p>These benchmarks were recorded on a workstation with the following specifications:</p>
-    <div class="system-info">
-      <span><span class="system-label">GPU:</span> NVIDIA RTX 6000 Ada Generation</span>
-      <span><span class="system-label">VRAM:</span> 48 GB</span>
-      <span><span class="system-label">CPU:</span> AMD Ryzen Threadripper PRO 5995WX 64-Cores</span>
-    </div>
-  </footer>
 </body>
 
 </html>
