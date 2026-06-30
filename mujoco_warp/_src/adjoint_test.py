@@ -1691,6 +1691,367 @@ class ConstraintGradientTest(parameterized.TestCase):
     _assert_smooth_grad(self, analytic, fd, cos_min=0.999, rel_max=2e-2, tag="sysid:jnt_solref")
 
 
+# ============================================================================================
+# AD-RNE (MJPLAN_ADRNE §15.3): analytic VJP of smooth.rne (RNE-proper reverse: adjoint.rne_backward)
+# + the com_vel reverse (adjoint.comvel_backward), gated vs float64 mj_rne. Swept over randomly-bent
+# configs (mj_integratePos -> quaternion-safe) x seeds so no single degenerate config (e.g. a planar
+# hopper at qpos=0 whose dL/dqvel is genuinely 0) can mask a coverage gap. NOT wired into
+# step_backward yet (FD-of-rne stays the live ∂qpos path; the kinematic ∂qpos reverse is steps 5-7).
+# ============================================================================================
+from mujoco_warp._src import adjoint as _adjoint  # noqa: E402
+from mujoco_warp._src import smooth_adjoint as _smooth_adjoint  # noqa: E402  (rne_backward / comvel_backward / rne_qpos_vjp moved here)
+from mujoco_warp._src import smooth as _smooth  # noqa: E402
+from mujoco_warp._src.types import vec10f as _vec10f  # noqa: E402
+
+_RNE_FREE = """
+<mujoco><option timestep="0.004" gravity="0 0 -9.81"/>
+  <worldbody><body pos="0 0 1"><freejoint/>
+    <geom type="box" size="0.10 0.20 0.15" mass="1.5"/></body></worldbody></mujoco>
+"""
+_RNE_HOPPER = """
+<mujoco><option timestep="0.004" gravity="0 0 -9.81"/>
+  <worldbody>
+    <body pos="0 0 0.71"><joint type="hinge" axis="0 1 0"/>
+      <geom type="box" size="0.08 0.06 0.1" mass="3.0"/>
+      <body pos="0 0 -0.1"><joint type="hinge" axis="0 1 0"/>
+        <geom type="capsule" fromto="0 0 0 0 0 -0.3" size="0.035" mass="0.6"/>
+        <body pos="0 0 -0.3"><joint type="hinge" axis="0 1 0"/>
+          <geom type="capsule" fromto="0 0 0 0 0 -0.25" size="0.03" mass="0.4"/></body></body></body>
+  </worldbody></mujoco>
+"""
+_RNE_WORM = """
+<mujoco><option timestep="0.004" gravity="0 0 -9.81"/>
+  <worldbody>
+    <body pos="0 0 0.5" euler="0 0 5"><freejoint/>
+      <geom type="capsule" fromto="-0.22 0 0 -0.02 0 0" size="0.1" mass="1"/>
+      <body pos="0 0 0"><joint type="ball"/>
+        <geom type="capsule" fromto="0.02 0 0 0.22 0 0" size="0.1" mass="1"/></body></body>
+  </worldbody></mujoco>
+"""
+# BRANCHING: fixed-base torso with TWO 2-hinge legs -> torso is a shared ancestor of two child
+# subtrees (the only scene that exposes duplicate shared-ancestor reverse writers in the cfrc/cacc
+# tree reductions). Mixed hinge axes.
+_RNE_BRANCHING = """
+<mujoco><option timestep="0.004" gravity="0 0 -9.81"/>
+  <worldbody>
+    <body name="torso" pos="0 0 1"><joint type="hinge" axis="0 1 0"/>
+      <geom type="box" size="0.12 0.10 0.05" mass="2.0"/>
+      <body name="legL" pos="0.1 0 -0.05"><joint type="hinge" axis="0 1 0"/>
+        <geom type="capsule" fromto="0 0 0 0 0 -0.3" size="0.03" mass="0.5"/>
+        <body pos="0 0 -0.3"><joint type="hinge" axis="0 1 0"/>
+          <geom type="capsule" fromto="0 0 0 0 0 -0.3" size="0.025" mass="0.3"/></body></body>
+      <body name="legR" pos="-0.1 0 -0.05"><joint type="hinge" axis="1 0 0"/>
+        <geom type="capsule" fromto="0 0 0 0 0 -0.3" size="0.03" mass="0.5"/>
+        <body pos="0 0 -0.3"><joint type="hinge" axis="1 0 0"/>
+          <geom type="capsule" fromto="0 0 0 0 0 -0.3" size="0.025" mass="0.3"/></body></body></body>
+  </worldbody></mujoco>
+"""
+_RNE_SCENES = {"free": _RNE_FREE, "hopper": _RNE_HOPPER, "worm": _RNE_WORM, "branching": _RNE_BRANCHING}
+
+
+def _rne_metrics(ana, fd):
+  ana, fd = ana.ravel().astype(np.float64), fd.ravel().astype(np.float64)
+  na, nf = np.linalg.norm(ana), np.linalg.norm(fd)
+  cos = float(ana @ fd / (na * nf)) if na > 1e-12 and nf > 1e-12 else float("nan")
+  rel = float(np.linalg.norm(ana - fd) / (nf + 1e-12))
+  return cos, rel, nf
+
+
+def _rne_fwd_mjw(m, d, qpos, qvel, qacc):
+  """Set state and run the smooth forward up through rne (flg_acc) -> qfrc_bias + intermediates."""
+  wp.copy(d.qpos, wp.array(qpos.reshape(1, -1).astype(np.float32), dtype=wp.float32))
+  wp.copy(d.qvel, wp.array(qvel.reshape(1, -1).astype(np.float32), dtype=wp.float32))
+  wp.copy(d.qacc, wp.array(qacc.reshape(1, -1).astype(np.float32), dtype=wp.float32))
+  _smooth.kinematics(m, d)
+  _smooth.com_pos(m, d)
+  _smooth.com_vel(m, d)
+  _smooth.rne(m, d, flg_acc=True)
+
+
+def _rne_fd_mj(mjm, qpos, qvel, qacc, lam, wrt, eps=1e-6):
+  """float64 MuJoCo-C FD of L=λᵀ(M·qacc+C) wrt qvel or qacc (qpos fixed -> plain R^nv FD)."""
+  nv = mjm.nv
+  out = np.zeros(nv)
+  for k in range(nv):
+    vals = []
+    for s in (+1.0, -1.0):
+      d2 = mujoco.MjData(mjm)
+      d2.qpos[:] = qpos
+      qv, qa = qvel.copy(), qacc.copy()
+      (qv if wrt == "qvel" else qa)[k] += s * eps
+      d2.qvel[:] = qv; d2.qacc[:] = qa
+      mujoco.mj_kinematics(mjm, d2); mujoco.mj_comPos(mjm, d2); mujoco.mj_comVel(mjm, d2)
+      r = np.zeros(nv); mujoco.mj_rne(mjm, d2, 1, r); vals.append(lam @ r)
+    out[k] = (vals[0] - vals[1]) / (2.0 * eps)
+  return out
+
+
+def _rne_fd_intermediate(m, d, name, dtype, lam, eps=1e-3):
+  """FD of L=λᵀqfrc_bias wrt each component of an rne INPUT intermediate (re-run smooth.rne only,
+  cvel/cdof_dot FROZEN as inputs) -> isolates the rne-PROPER reverse."""
+  arr = getattr(d, name)
+  base = arr.numpy().copy()
+  flat = base.reshape(base.shape[1], -1)
+  n, comp = flat.shape
+  out = np.zeros((n, comp))
+  for i in range(n):
+    for c in range(comp):
+      pp = base.copy(); pp.reshape(n, comp)[i, c] += eps
+      setattr(d, name, wp.array(pp.astype(np.float32), dtype=dtype)); _smooth.rne(m, d, flg_acc=True)
+      Lp = float(lam @ d.qfrc_bias.numpy()[0])
+      pm = base.copy(); pm.reshape(n, comp)[i, c] -= eps
+      setattr(d, name, wp.array(pm.astype(np.float32), dtype=dtype)); _smooth.rne(m, d, flg_acc=True)
+      Lm = float(lam @ d.qfrc_bias.numpy()[0])
+      out[i, c] = (Lp - Lm) / (2.0 * eps)
+  setattr(d, name, arr)  # restore
+  return out
+
+
+def _rne_fd_comvel(m, d, name, dtype, A, G, eps=1e-3):
+  """§10.1A.9 isolated com_vel gate: FD of L_cv = Σ A_b·cvel_b + Σ G_i·cdof_dot_i wrt qvel or cdof
+  (re-run smooth.com_vel only) -- directly gates comvel_backward incl. the cdof channel."""
+  arr = getattr(d, name)
+  base = arr.numpy().copy()
+  flat = base.reshape(base.shape[1], -1)
+  n, comp = flat.shape
+  out = np.zeros((n, comp))
+
+  def Lcv():
+    _smooth.com_vel(m, d)
+    return float((A * d.cvel.numpy()[0]).sum() + (G * d.cdof_dot.numpy()[0]).sum())
+
+  for i in range(n):
+    for c in range(comp):
+      pp = base.copy(); pp.reshape(n, comp)[i, c] += eps
+      setattr(d, name, wp.array(pp.astype(np.float32), dtype=dtype)); Lp = Lcv()
+      pm = base.copy(); pm.reshape(n, comp)[i, c] -= eps
+      setattr(d, name, wp.array(pm.astype(np.float32), dtype=dtype)); Lm = Lcv()
+      out[i, c] = (Lp - Lm) / (2.0 * eps)
+  setattr(d, name, arr)
+  return out
+
+
+_RNE_FREE = int(mujoco.mjtJoint.mjJNT_FREE)
+_RNE_BALL = int(mujoco.mjtJoint.mjJNT_BALL)
+
+
+def _rne_qmul(a, b):  # Hamilton product, w-first
+  return np.array([
+    a[0] * b[0] - a[1] * b[1] - a[2] * b[2] - a[3] * b[3],
+    a[0] * b[1] + a[1] * b[0] + a[2] * b[3] - a[3] * b[2],
+    a[0] * b[2] - a[1] * b[3] + a[2] * b[0] + a[3] * b[1],
+    a[0] * b[3] + a[1] * b[2] - a[2] * b[1] + a[3] * b[0],
+  ])
+
+
+def _rne_unlift(q, dq):  # invert _dof_to_qpos's dq = 2 q⊗[0,g]: g = 1/2 vec(conj(q)⊗dq)
+  return 0.5 * _rne_qmul(np.array([q[0], -q[1], -q[2], -q[3]]), dq)[1:]
+
+
+def _rne_fd_qpos_mj(mjm, qpos, qvel, qacc, lam, eps=1e-6):
+  """float64 mj_rne FD of L=λᵀqfrc_bias wrt qpos in TANGENT space (mj_integratePos, quaternion-safe),
+  recomputing the whole chain mj_kinematics -> mj_comPos -> mj_comVel -> mj_rne."""
+  nv = mjm.nv
+  out = np.zeros(nv)
+  for k in range(nv):
+    vals = []
+    for s in (+1.0, -1.0):
+      qp = qpos.copy(); e = np.zeros(nv); e[k] = 1.0
+      mujoco.mj_integratePos(mjm, qp, e, s * eps)
+      dd = mujoco.MjData(mjm); dd.qpos[:] = qp; dd.qvel[:] = qvel; dd.qacc[:] = qacc
+      mujoco.mj_kinematics(mjm, dd); mujoco.mj_comPos(mjm, dd); mujoco.mj_comVel(mjm, dd)
+      r = np.zeros(nv); mujoco.mj_rne(mjm, dd, 1, r); vals.append(lam @ r)
+    out[k] = (vals[0] - vals[1]) / (2.0 * eps)
+  return out
+
+
+class RneBackwardTest(parameterized.TestCase):
+  """Analytic RNE-proper reverse (adjoint.rne_backward) + com_vel reverse (adjoint.comvel_backward)
+  vs float64 mj_rne, MJPLAN_ADRNE §15.3. Swept over randomly-bent configs so a degenerate config
+  cannot mask a coverage gap (a planar hopper at qpos=0 has dL/dqvel==0; bending it exposes the
+  real derivative -- |fd| up to ~0.1 with cos=1.0)."""
+
+  @parameterized.parameters(*_RNE_SCENES.keys())
+  def test_rne_backward(self, name):
+    mjm = mujoco.MjModel.from_xml_string(_RNE_SCENES[name])
+    mjm.opt.integrator = mujoco.mjtIntegrator.mjINT_EULER
+    mjd = mujoco.MjData(mjm); mujoco.mj_forward(mjm, mjd)
+    nv = mjm.nv
+    m = mjw.put_model(mjm)
+    rng = np.random.default_rng(0)
+    qpos0 = mjd.qpos.copy()
+    ndraw = 4
+    cos_qvel, cos_qacc = [], []
+
+    for t in range(ndraw):
+      qpos = qpos0.copy()
+      mujoco.mj_integratePos(mjm, qpos, rng.standard_normal(nv) * 0.6, 1.0)  # quaternion-safe bend
+      qvel = rng.standard_normal(nv) * 0.8
+      qacc = rng.standard_normal(nv) * 0.8
+      lam = rng.standard_normal(nv)
+
+      d = mjw.put_data(mjm, mjd)
+      _rne_fwd_mjw(m, d, qpos, qvel, qacc)
+
+      # forward equivalence: the reconstructed/recomputed qfrc_bias must match mj_rne (linearization pt)
+      mjd.qpos[:] = qpos; mjd.qvel[:] = qvel; mjd.qacc[:] = qacc
+      mujoco.mj_kinematics(mjm, mjd); mujoco.mj_comPos(mjm, mjd); mujoco.mj_comVel(mjm, mjd)
+      r_ref = np.zeros(nv); mujoco.mj_rne(mjm, mjd, 1, r_ref)
+      fwd_rel = np.linalg.norm(d.qfrc_bias.numpy()[0] - r_ref) / (np.linalg.norm(r_ref) + 1e-9)
+      self.assertLess(fwd_rel, 1e-4, f"{name}[{t}]: qfrc_bias != mj_rne (rel={fwd_rel:.2e})")
+
+      # analytic reverse: rne-proper + com_vel (Coriolis path) -> TOTAL qvel adjoint
+      lam_wp = wp.array(lam.reshape(1, -1).astype(np.float32), dtype=wp.float32)
+      adj = _smooth_adjoint.rne_backward(m, d, lam_wp, flg_acc=True)
+      cv = _smooth_adjoint.comvel_backward(m, d, adj["cvel"], adj["cdof_dot"])
+      total_qvel = adj["qvel"].numpy()[0] + cv["qvel"].numpy()[0]
+
+      # Gate 2a: TOTAL dL/dqvel + dL/dqacc vs float64 mj_rne (the §14.3 physics gate)
+      for wrt, ana, store in (("qvel", total_qvel, cos_qvel), ("qacc", adj["qacc"].numpy()[0], cos_qacc)):
+        cos, rel, nf = _rne_metrics(ana, _rne_fd_mj(mjm, qpos, qvel, qacc, lam, wrt))
+        self.assertGreater(nf, 1e-4, f"{name}[{t}]: dL/d{wrt} ~0 (degenerate config -- not exercising it)")
+        self.assertGreater(cos, 0.999, f"{name}[{t}]: dL/d{wrt} direction off, cos={cos:.5f}")
+        self.assertLess(rel, 1e-2, f"{name}[{t}]: dL/d{wrt} magnitude off, rel={rel:.2e}")
+        store.append(cos)
+
+      # Gate 2b: intermediate seeds vs FD-through smooth.rne (first bent config only -- expensive)
+      if t == 0:
+        for ni, dt in (("cdof", wp.spatial_vector), ("cdof_dot", wp.spatial_vector),
+                       ("cinert", _vec10f), ("cvel", wp.spatial_vector)):
+          ana_i = adj[ni].numpy()[0].copy()
+          cos, rel, _nf = _rne_metrics(ana_i, _rne_fd_intermediate(m, d, ni, dt, lam))
+          self.assertGreater(cos, 0.999, f"{name}: adj_{ni} direction off, cos={cos:.5f}")
+          self.assertLess(rel, 1e-2, f"{name}: adj_{ni} magnitude off, rel={rel:.2e}")
+        # §10.1A.9 isolated com_vel VJP gate (random seeds; gates BOTH the qvel and the cdof channels,
+        # the latter consumed by the qpos kinematic reverse). Bound-free: no _CV_MAX_* assumptions.
+        A = rng.standard_normal((mjm.nbody, 6)); G = rng.standard_normal((nv, 6))
+        cvb = _smooth_adjoint.comvel_backward(
+          m, d, wp.array(A[None].astype(np.float32), dtype=wp.spatial_vector),
+          wp.array(G[None].astype(np.float32), dtype=wp.spatial_vector))
+        for ch, dt in (("qvel", wp.float32), ("cdof", wp.spatial_vector)):
+          cos, rel, _nf = _rne_metrics(cvb[ch].numpy()[0], _rne_fd_comvel(m, d, ch, dt, A, G))
+          self.assertGreater(cos, 0.999, f"{name}: com_vel dLcv/d{ch} direction off, cos={cos:.5f}")
+          self.assertLess(rel, 1e-2, f"{name}: com_vel dLcv/d{ch} magnitude off, rel={rel:.2e}")
+
+        # Full RNE-bias ∂qpos (§14.3 qpos column): rne_qpos_vjp (rne_backward + comvel_backward + cinert
+        # + the done cdof/subtree VJPs) vs float64 mj_rne FD, un-lifted to tangent. A single free body
+        # has qfrc_bias exactly q-invariant -> true dL/dq=0 (degenerate): gate |ana| absolute instead.
+        rq = _smooth_adjoint.rne_qpos_vjp(m, d, lam_wp, flg_acc=True).numpy()[0]
+        ana_q = np.zeros(nv)
+        for j in range(mjm.njnt):
+          jt, qa, da = int(mjm.jnt_type[j]), mjm.jnt_qposadr[j], mjm.jnt_dofadr[j]
+          if jt == _RNE_FREE:
+            ana_q[da:da + 3] = rq[qa:qa + 3]
+            ana_q[da + 3:da + 6] = _rne_unlift(qpos[qa + 3:qa + 7], rq[qa + 3:qa + 7])
+          elif jt == _RNE_BALL:
+            ana_q[da:da + 3] = _rne_unlift(qpos[qa:qa + 4], rq[qa:qa + 4])
+          else:
+            ana_q[da] = rq[qa]
+        fd_q = _rne_fd_qpos_mj(mjm, qpos, qvel, qacc, lam)
+        nf_q = float(np.linalg.norm(fd_q))
+        if nf_q < 1e-6:  # degenerate: true dL/dq ~ 0 (single free body) -> roundoff floor
+          self.assertLess(float(np.linalg.norm(ana_q)), 1e-4, f"{name}: dL/dq should be ~0, got {np.linalg.norm(ana_q):.2e}")
+        else:
+          cos, rel, _nf = _rne_metrics(ana_q, fd_q)
+          self.assertGreater(cos, 0.999, f"{name}: dL/dq direction off, cos={cos:.5f}")
+          self.assertLess(rel, 1e-2, f"{name}: dL/dq magnitude off, rel={rel:.2e}")
+
+    print(f"[{name}] nv={nv} ({ndraw} bent configs)  qvel cos.min={min(cos_qvel):+.6f}"
+          f"  qacc cos.min={min(cos_qacc):+.6f}")
+
+
+@wp.kernel
+def _rne_sumsq_qvel(qvel: wp.array2d[float], loss: wp.array[float]):
+  i = wp.tid()
+  wp.atomic_add(loss, 0, qvel[0, i] * qvel[0, i])
+
+
+def _rne_bptt_analytic(mjm, mjd, T, qpos0):
+  """d(Σ qvel_T²)/dqpos0 via the analytic multi-step BPTT (tape over T mjw.step + step_backward)."""
+  m = mjw.put_model(mjm)
+  datas = [mjw.put_data(mjm, mjd) for _ in range(T + 1)]
+  for dd in datas:
+    dd.qpos.requires_grad = True
+    dd.qvel.requires_grad = True
+  datas[0].qpos = wp.array(qpos0.reshape(1, -1).astype(np.float32), dtype=float, requires_grad=True)
+  loss = wp.zeros(1, dtype=float, requires_grad=True)
+  tape = wp.Tape()
+  with tape:
+    for t in range(T):
+      mjw.step(m, datas[t], datas[t + 1])
+    wp.launch(_rne_sumsq_qvel, dim=mjm.nv, inputs=[datas[T].qvel, loss])
+  tape.backward(loss=loss)
+  return np.nan_to_num(datas[0].qpos.grad.numpy()[0].astype(np.float64))
+
+
+def _rne_bptt_fd(mjm, mjd, T, qpos0, eps=1e-4):
+  """float64-tangent FD of the real mjw.step rollout (mj_integratePos perturbation of qpos0)."""
+  def L(qp):
+    m = mjw.put_model(mjm)
+    d = mjw.put_data(mjm, mjd)
+    d.qpos = wp.array(qp.reshape(1, -1).astype(np.float32), dtype=float)
+    for _ in range(T):
+      mjw.step(m, d)
+    qv = d.qvel.numpy()[0]
+    return float(qv @ qv)
+
+  g = np.zeros(mjm.nv)
+  for i in range(mjm.nv):
+    e = np.zeros(mjm.nv); e[i] = 1.0
+    qp, qm = qpos0.copy(), qpos0.copy()
+    mujoco.mj_integratePos(mjm, qp, e, eps); mujoco.mj_integratePos(mjm, qm, e, -eps)
+    g[i] = (L(qp) - L(qm)) / (2.0 * eps)
+  return g
+
+
+class RneQposBpttTest(parameterized.TestCase):
+  """Multi-step FD-of-mjw.step BPTT gate for the ANALYTIC RNE-bias ∂qpos (the definitive accumulation
+  test, MJPLAN_ADRNE §14.6). Pure-RNE pendulum (gravity-driven 3-hinge chain, NO contact / passive /
+  actuator) so the smooth ∂qpos is fully analytic (rne_qpos_vjp, via _USE_ANALYTIC_RNE_QPOS). Validates
+  d(Σ qvel_T²)/dqpos0 over a horizon vs a float64-tangent FD of the real mjw.step rollout -- a per-step
+  bias would show as cos degrading with the horizon T."""
+
+  def test_rne_qpos_bptt(self):
+    mjm = mujoco.MjModel.from_xml_string(_RNE_HOPPER)  # 3-hinge chain, NO ground plane -> pure-RNE pendulum
+    mjm.opt.integrator = mujoco.mjtIntegrator.mjINT_EULER
+    mjm.opt.disableflags |= int(mujoco.mjtDisableBit.mjDSBL_EULERDAMP)
+    mjd = mujoco.MjData(mjm); mujoco.mj_forward(mjm, mjd)
+    nv = mjm.nv
+    rng = np.random.default_rng(0)
+    qpos0 = mjd.qpos.copy() + rng.standard_normal(nv) * 0.3  # bend (hinges: qpos == tangent)
+
+    prev = _adjoint._USE_ANALYTIC_RNE_QPOS
+    try:
+      horizons = (8, 16, 32, 64)
+      fd_step = {T: _rne_bptt_fd(mjm, mjd, T, qpos0) for T in horizons}  # ground truth (flag-independent)
+      for T in horizons:
+        _adjoint._USE_ANALYTIC_RNE_QPOS = True
+        ana = _rne_bptt_analytic(mjm, mjd, T, qpos0)  # analytic RNE-bias ∂qpos
+        _adjoint._USE_ANALYTIC_RNE_QPOS = False
+        ref = _rne_bptt_analytic(mjm, mjd, T, qpos0)  # FD-of-rne ∂qpos (same machinery -> the reference)
+        fd = fd_step[T]
+
+        # PRIMARY gate: AD-RNE vs FD-of-rne -- identical step_backward except the ∂qpos method, so a
+        # per-step AD-RNE bias would show as drift here (no FD-of-mjw.step truncation noise to hide it).
+        nar, nrr = np.linalg.norm(ana), np.linalg.norm(ref)
+        cos_r = float(ana @ ref / (nar * nrr)) if nar > 1e-12 and nrr > 1e-12 else float("nan")
+        rel_r = float(np.linalg.norm(ana - ref) / (nrr + 1e-12))
+        # sanity vs the real rollout FD (looser: f32 multi-step central-diff truncation over a nonlinear
+        # pendulum). Both analytic paths share whatever residual this has.
+        nf = np.linalg.norm(fd)
+        cos_f = float(ana @ fd / (nar * nf)) if nar > 1e-12 and nf > 1e-12 else float("nan")
+        rel_f_ad = float(np.linalg.norm(ana - fd) / (nf + 1e-12))
+        rel_f_ref = float(np.linalg.norm(ref - fd) / (nf + 1e-12))
+        print(f"[bptt T={T:2d}] AD-RNE vs FD-of-rne: cos={cos_r:+.6f} rel={rel_r:.2e}  | "
+              f"vs FD-of-step: cos={cos_f:+.4f} rel(ad)={rel_f_ad:.3f} rel(fdrne)={rel_f_ref:.3f}  |ana|={nar:.2e}")
+        self.assertGreater(nrr, 1e-6, f"T={T}: gradient ~0 (scene not exercising qpos)")
+        self.assertGreater(cos_r, 0.9999, f"T={T}: AD-RNE != FD-of-rne reference, cos={cos_r:.6f} (per-step bias)")
+        self.assertLess(rel_r, 1e-2, f"T={T}: AD-RNE != FD-of-rne reference, rel={rel_r:.2e} (per-step bias)")
+        self.assertGreater(cos_f, 0.99, f"T={T}: BPTT direction off vs real rollout, cos={cos_f:.4f}")
+    finally:
+      _adjoint._USE_ANALYTIC_RNE_QPOS = prev
+
+
 if __name__ == "__main__":
   wp.init()
   absltest.main()
