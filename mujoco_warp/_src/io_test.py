@@ -387,6 +387,18 @@ def _assert_eq(a, b, name):
   np.testing.assert_allclose(a, b, err_msg=err_msg, atol=tol, rtol=tol)
 
 
+def _dense_m(m, d):
+  """Returns each world's CSR inertia matrix in dense form."""
+  values = d.M.numpy()
+  dense = np.zeros((d.nworld, m.nv, m.nv))
+  rownnz = m.M_rownnz.numpy()
+  rowadr = m.M_rowadr.numpy()
+  colind = m.M_colind.numpy()
+  for worldid in range(d.nworld):
+    mujoco.mju_sym2dense(dense[worldid], values[worldid], rownnz, rowadr, colind)
+  return dense
+
+
 # NOTE: modify io_jax_test _IO_TEST_MODELS if changed here.
 _IO_TEST_MODELS = (
   "pendula.xml",
@@ -1279,8 +1291,9 @@ class IOTest(parameterized.TestCase):
     d = mjwarp.put_data(mjm, mjd, nworld=2)
 
     self.assertEqual(m.nC, mjm.nM)
-    self.assertLen(m.M_runtime_tiles, 1)
-    self.assertEqual(m.M_runtime_tiles[0].group_size, 5)
+    self.assertLen(m.M_scalar_tiles, 1)
+    self.assertEqual(m.M_scalar_tiles[0].size, 6)
+    self.assertEqual(m.M_scalar_tiles[0].adr.size, 1)
 
     body_ipos = np.tile(mjm.body_ipos, (2, 1, 1))
     body_ipos[1, 1] = (0.05, 0.0, -0.02)
@@ -1290,19 +1303,7 @@ class IOTest(parameterized.TestCase):
 
     mjwarp.set_const_0(m, d)
 
-    np.testing.assert_array_equal(d.M_dof_simple.numpy()[:, 0], [True, False])
-
-    M = d.M.numpy()
-    rownnz = m.M_rownnz.numpy()
-    rowadr = m.M_rowadr.numpy()
-    colind = m.M_colind.numpy()
-    dense = np.zeros((2, m.nv, m.nv))
-    for i in range(m.nv):
-      for k in range(rownnz[i]):
-        madr = rowadr[i] + k
-        j = colind[madr]
-        dense[:, i, j] = M[:, madr]
-        dense[:, j, i] = M[:, madr]
+    dense = _dense_m(m, d)
 
     ref_m = mujoco.MjModel.from_xml_string(xml.replace('pos="0 0 0"', 'pos="0.05 0 -0.02"'))
     ref_d = mujoco.MjData(ref_m)
@@ -1328,32 +1329,21 @@ class IOTest(parameterized.TestCase):
     m.body_ipos = wp.array(body_ipos, dtype=wp.vec3)
     mjwarp.set_const_0(m, d)
 
-    self.assertTrue(np.all(d.M_dof_simple.numpy()))
-    M = d.M.numpy()
-    for i in range(m.nv):
-      row = M[:, rowadr[i] : rowadr[i] + rownnz[i] - 1]
-      np.testing.assert_array_equal(row, 0.0)
+    dense = _dense_m(m, d)
+    np.testing.assert_array_equal(dense, dense * np.eye(m.nv))
 
     body_ipos[:, 1] = (0.05, 0.0, -0.02)
     m.body_ipos = wp.array(body_ipos, dtype=wp.vec3)
     mjwarp.set_const_0(m, d)
 
-    self.assertFalse(np.any(d.M_dof_simple.numpy()))
-
-    M = d.M.numpy()
-    for i in range(m.nv):
-      for k in range(rownnz[i]):
-        madr = rowadr[i] + k
-        j = colind[madr]
-        dense[:, i, j] = M[:, madr]
-        dense[:, j, i] = M[:, madr]
+    dense = _dense_m(m, d)
     mjwarp.solve_m(m, d, result, rhs)
     result_np = result.numpy()
     for worldid in range(2):
       np.testing.assert_allclose(result_np[worldid], np.linalg.solve(dense[worldid], np.ones(m.nv)), atol=1e-5)
 
-  def test_runtime_simple_grouped_factor_solve(self):
-    """Runtime-simple blocks share a tile group without sharing their classification."""
+  def test_scalar_candidate_factor_solve(self):
+    """Scalar candidate blocks handle different per-world coupling patterns."""
     bodies = "".join(
       f"""
       <body name="body{i}" pos="{i} 0 1">
@@ -1368,10 +1358,9 @@ class IOTest(parameterized.TestCase):
     m = mjwarp.put_model(mjm)
     d = mjwarp.put_data(mjm, mjd, nworld=2)
 
-    grouped = [tile for tile in m.M_runtime_tiles if tile.group_size > 1]
-    self.assertLen(grouped, 1)
-    self.assertEqual(grouped[0].group_size, 5)
-    self.assertEqual(grouped[0].adr.size, 10)
+    self.assertLen(m.M_scalar_tiles, 1)
+    self.assertEqual(m.M_scalar_tiles[0].size, 6)
+    self.assertEqual(m.M_scalar_tiles[0].adr.size, 10)
 
     body_ipos = np.tile(mjm.body_ipos, (2, 1, 1))
     body_ipos[0, 1] = (0.05, 0.0, -0.02)
@@ -1382,21 +1371,16 @@ class IOTest(parameterized.TestCase):
     m.dof_invweight0 = wp.array(np.tile(mjm.dof_invweight0, (2, 1)), dtype=float)
     mjwarp.set_const_0(m, d)
 
-    simple = d.M_dof_simple.numpy()
-    np.testing.assert_array_equal(simple[0, ::6], [False] + [True] * 9)
-    np.testing.assert_array_equal(simple[1, ::6], [True, True, False, True, True, True, True, False, True, True])
-
-    rownnz = m.M_rownnz.numpy()
-    rowadr = m.M_rowadr.numpy()
-    colind = m.M_colind.numpy()
-    M = d.M.numpy()
-    dense = np.zeros((2, m.nv, m.nv))
-    for i in range(m.nv):
-      for k in range(rownnz[i]):
-        madr = rowadr[i] + k
-        j = colind[madr]
-        dense[:, i, j] = M[:, madr]
-        dense[:, j, i] = M[:, madr]
+    dense = _dense_m(m, d)
+    coupled = ({0}, {2, 7})
+    for worldid in range(2):
+      for bodyid in range(10):
+        block = dense[worldid, bodyid * 6 : (bodyid + 1) * 6, bodyid * 6 : (bodyid + 1) * 6]
+        off_diagonal = block - np.diag(np.diag(block))
+        if bodyid in coupled[worldid]:
+          self.assertGreater(np.max(np.abs(off_diagonal)), 1e-6)
+        else:
+          np.testing.assert_allclose(off_diagonal, 0.0, atol=1e-6)
 
     rhs = wp.ones((2, m.nv), dtype=float)
     expected = np.stack([np.linalg.solve(dense[worldid], np.ones(m.nv)) for worldid in range(2)])
@@ -1407,7 +1391,7 @@ class IOTest(parameterized.TestCase):
     result.zero_()
     qLD = wp.empty_like(d.qLD)
     qLDiagInv = wp.empty_like(d.qLDiagInv)
-    mjwarp._src.smooth.factor_solve_i(m, d, d.M, qLD, qLDiagInv, result, rhs, use_runtime_simple=True)
+    mjwarp._src.smooth.factor_solve_i(m, d, d.M, qLD, qLDiagInv, result, rhs)
     np.testing.assert_allclose(result.numpy(), expected, atol=1e-5)
 
   def test_set_const_balljoint(self):

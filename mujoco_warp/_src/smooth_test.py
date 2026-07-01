@@ -15,8 +15,6 @@
 
 """Tests for smooth dynamics functions."""
 
-import inspect
-
 import mujoco
 import numpy as np
 import warp as wp
@@ -40,9 +38,6 @@ def _assert_eq(a, b, name):
 
 
 class SmoothTest(parameterized.TestCase):
-  def test_crb_public_signature(self):
-    self.assertEqual(set(inspect.signature(mjw.crb).parameters), {"m", "d"})
-
   def test_mocap_kinematics(self):
     """Tests that mocap bodies and child bodies are correctly updated after mocap_pos changes.
 
@@ -496,8 +491,8 @@ class SmoothTest(parameterized.TestCase):
     elif m.qLD_has_simple and not m.qLD_has_dense and not m.qLD_has_sparse:
       _assert_eq(d.qLDiagInv.numpy()[0], mjd.qLDiagInv, "qLDiagInv")
 
-  def test_factor_solve_i_coupled_runtime_simple_input(self):
-    """An arbitrary coupled matrix does not reuse the simple classification of d.M."""
+  def test_factor_solve_i_coupled_candidate_input(self):
+    """A scalar candidate handles an arbitrary coupled input matrix."""
     mjm, _, m, d = test_data.fixture(
       xml="""
     <mujoco>
@@ -519,8 +514,6 @@ class SmoothTest(parameterized.TestCase):
     </mujoco>
     """
     )
-
-    self.assertTrue(np.all(d.M_dof_simple.numpy()))
 
     qH = wp.empty((d.nworld, m.nC), dtype=float)
     mjw.deriv_smooth_vel(m, d, qH)
