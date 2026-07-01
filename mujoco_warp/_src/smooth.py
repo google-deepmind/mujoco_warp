@@ -16,6 +16,7 @@
 
 import warp as wp
 
+from mujoco_warp._src import ad_flags as _ad_flags
 from mujoco_warp._src import math
 from mujoco_warp._src import support
 from mujoco_warp._src import util_misc
@@ -38,7 +39,58 @@ from mujoco_warp._src.types import vec11
 from mujoco_warp._src.warp_util import cache_kernel
 from mujoco_warp._src.warp_util import event_scope
 
-wp.set_module_options({"enable_backward": False})
+# Backward-enabled kernels generate slower forward code, so AD compilation is
+# opt-in: off by default, enabled by mjw.enable_ad() / make_diff_data().
+wp.set_module_options({"enable_backward": _ad_flags.ad_enabled()})
+
+
+_nograd_copy_2d = support._nograd_copy
+
+
+# kernel_analyzer: off
+@wp.func
+def _process_joint(
+  xpos: wp.vec3,
+  xquat: wp.quat,
+  jntadr: int,
+  jnt_pos_id: int,
+  worldid: int,
+  qpos0: wp.array2d[float],
+  jnt_type: wp.array[int],
+  jnt_qposadr: wp.array[int],
+  jnt_pos: wp.array2d[wp.vec3],
+  jnt_axis: wp.array2d[wp.vec3],
+  qpos: wp.array[float],
+  xanchor_out: wp.array2d[wp.vec3],
+  xaxis_out: wp.array2d[wp.vec3],
+):
+  """Process a single joint and return updated xpos, xquat."""
+  qadr = jnt_qposadr[jntadr]
+  jnt_type_ = jnt_type[jntadr]
+  jnt_axis_ = jnt_axis[worldid % jnt_axis.shape[0], jntadr]
+  xanchor = math.rot_vec_quat(jnt_pos[jnt_pos_id, jntadr], xquat) + xpos
+  xaxis = math.rot_vec_quat(jnt_axis_, xquat)
+
+  if jnt_type_ == JointType.BALL:
+    qloc = wp.quat(qpos[qadr + 0], qpos[qadr + 1], qpos[qadr + 2], qpos[qadr + 3])
+    qloc = wp.normalize(qloc)
+    xquat = math.mul_quat(xquat, qloc)
+    xpos = xanchor - math.rot_vec_quat(jnt_pos[jnt_pos_id, jntadr], xquat)
+  elif jnt_type_ == JointType.SLIDE:
+    xpos = xpos + xaxis * (qpos[qadr] - qpos0[worldid % qpos0.shape[0], qadr])
+  elif jnt_type_ == JointType.HINGE:
+    qpos0_ = qpos0[worldid % qpos0.shape[0], qadr]
+    qloc_ = math.axis_angle_to_quat(jnt_axis_, qpos[qadr] - qpos0_)
+    xquat = math.mul_quat(xquat, qloc_)
+    xpos = xanchor - math.rot_vec_quat(jnt_pos[jnt_pos_id, jntadr], xquat)
+
+  xanchor_out[worldid, jntadr] = xanchor
+  xaxis_out[worldid, jntadr] = xaxis
+
+  return xpos, xquat
+
+
+# kernel_analyzer: on
 
 
 @wp.kernel
@@ -80,65 +132,145 @@ def _kinematics_branch(
     jntadr = body_jntadr[bodyid]
     jntnum = body_jntnum[bodyid]
 
+    # Check for freejoint — handled separately because it reads position and
+    # quaternion directly from qpos rather than composing with the parent
+    # transform.  We use an integer flag instead of ``continue`` because
+    # Warp's AD replay for ``continue`` inside a dynamic for-loop emits a
+    # goto that skips all adjoint code for that iteration, zeroing gradients.
+    is_free = int(0)
     if jntnum == 1:
       jnt_type_ = jnt_type[jntadr]
       if jnt_type_ == JointType.FREE:
-        qadr = jnt_qposadr[jntadr]
-        xpos = wp.vec3(qpos[qadr], qpos[qadr + 1], qpos[qadr + 2])
-        xquat = wp.quat(qpos[qadr + 3], qpos[qadr + 4], qpos[qadr + 5], qpos[qadr + 6])
-        xquat = wp.normalize(xquat)
+        is_free = int(1)
 
-        xpos_out[worldid, bodyid] = xpos
-        xquat_out[worldid, bodyid] = xquat
-        xanchor_out[worldid, jntadr] = xpos
-        xaxis_out[worldid, jntadr] = jnt_axis[worldid % jnt_axis.shape[0], jntadr]
-        continue
-
-    # regular or no joints
-    # apply fixed translation and rotation relative to parent
-    jnt_pos_id = worldid % jnt_pos.shape[0]
-    pid = body_parentid[bodyid]
-
-    # mocap bodies have world body as parent
-    mocapid = body_mocapid[bodyid]
-    if mocapid >= 0:
-      xpos = mocap_pos_in[worldid, mocapid]
-      xquat = mocap_quat_in[worldid, mocapid]
-    else:
-      xpos = body_pos[worldid % body_pos.shape[0], bodyid]
-      xquat = body_quat[worldid % body_quat.shape[0], bodyid]
-
-    if pid >= 0:
-      xpos = math.rot_vec_quat(xpos, xquat_out[worldid, pid]) + xpos_out[worldid, pid]
-      xquat = math.mul_quat(xquat_out[worldid, pid], xquat)
-
-    for _ in range(jntnum):
+    if is_free == int(1):
       qadr = jnt_qposadr[jntadr]
-      jnt_type_ = jnt_type[jntadr]
-      jnt_axis_ = jnt_axis[worldid % jnt_axis.shape[0], jntadr]
-      xanchor = math.rot_vec_quat(jnt_pos[jnt_pos_id, jntadr], xquat) + xpos
-      xaxis = math.rot_vec_quat(jnt_axis_, xquat)
+      xpos = wp.vec3(qpos[qadr], qpos[qadr + 1], qpos[qadr + 2])
+      xquat = wp.quat(qpos[qadr + 3], qpos[qadr + 4], qpos[qadr + 5], qpos[qadr + 6])
+      xquat = wp.normalize(xquat)
 
-      if jnt_type_ == JointType.BALL:
-        qloc = wp.quat(qpos[qadr + 0], qpos[qadr + 1], qpos[qadr + 2], qpos[qadr + 3])
-        qloc = wp.normalize(qloc)
-        xquat = math.mul_quat(xquat, qloc)
-        # correct for off-center rotation
-        xpos = xanchor - math.rot_vec_quat(jnt_pos[jnt_pos_id, jntadr], xquat)
-      elif jnt_type_ == JointType.SLIDE:
-        xpos += xaxis * (qpos[qadr] - qpos0[worldid % qpos0.shape[0], qadr])
-      elif jnt_type_ == JointType.HINGE:
-        qpos0_ = qpos0[worldid % qpos0.shape[0], qadr]
-        qloc_ = math.axis_angle_to_quat(jnt_axis_, qpos[qadr] - qpos0_)
-        xquat = math.mul_quat(xquat, qloc_)
-        # correct for off-center rotation
-        xpos = xanchor - math.rot_vec_quat(jnt_pos[jnt_pos_id, jntadr], xquat)
+      xanchor_out[worldid, jntadr] = xpos
+      xaxis_out[worldid, jntadr] = jnt_axis[worldid % jnt_axis.shape[0], jntadr]
+    else:
+      # regular or no joints
+      # apply fixed translation and rotation relative to parent
+      jnt_pos_id = worldid % jnt_pos.shape[0]
+      pid = body_parentid[bodyid]
 
-      xanchor_out[worldid, jntadr] = xanchor
-      xaxis_out[worldid, jntadr] = xaxis
-      jntadr += 1
+      # mocap bodies have world body as parent
+      mocapid = body_mocapid[bodyid]
+      if mocapid >= 0:
+        xpos = mocap_pos_in[worldid, mocapid]
+        xquat = mocap_quat_in[worldid, mocapid]
+      else:
+        xpos = body_pos[worldid % body_pos.shape[0], bodyid]
+        xquat = body_quat[worldid % body_quat.shape[0], bodyid]
 
-    xquat = wp.normalize(xquat)
+      if pid >= 0:
+        xpos = math.rot_vec_quat(xpos, xquat_out[worldid, pid]) + xpos_out[worldid, pid]
+        xquat = math.mul_quat(xquat_out[worldid, pid], xquat)
+
+      # Unrolled joint processing — avoids nested dynamic-range loop which
+      # produces incorrect gradients in Warp's AD.
+      if jntnum >= 1:
+        xpos, xquat = _process_joint(
+          xpos,
+          xquat,
+          jntadr,
+          jnt_pos_id,
+          worldid,
+          qpos0,
+          jnt_type,
+          jnt_qposadr,
+          jnt_pos,
+          jnt_axis,
+          qpos,
+          xanchor_out,
+          xaxis_out,
+        )
+      if jntnum >= 2:
+        xpos, xquat = _process_joint(
+          xpos,
+          xquat,
+          jntadr + 1,
+          jnt_pos_id,
+          worldid,
+          qpos0,
+          jnt_type,
+          jnt_qposadr,
+          jnt_pos,
+          jnt_axis,
+          qpos,
+          xanchor_out,
+          xaxis_out,
+        )
+      if jntnum >= 3:
+        xpos, xquat = _process_joint(
+          xpos,
+          xquat,
+          jntadr + 2,
+          jnt_pos_id,
+          worldid,
+          qpos0,
+          jnt_type,
+          jnt_qposadr,
+          jnt_pos,
+          jnt_axis,
+          qpos,
+          xanchor_out,
+          xaxis_out,
+        )
+      if jntnum >= 4:
+        xpos, xquat = _process_joint(
+          xpos,
+          xquat,
+          jntadr + 3,
+          jnt_pos_id,
+          worldid,
+          qpos0,
+          jnt_type,
+          jnt_qposadr,
+          jnt_pos,
+          jnt_axis,
+          qpos,
+          xanchor_out,
+          xaxis_out,
+        )
+      if jntnum >= 5:
+        xpos, xquat = _process_joint(
+          xpos,
+          xquat,
+          jntadr + 4,
+          jnt_pos_id,
+          worldid,
+          qpos0,
+          jnt_type,
+          jnt_qposadr,
+          jnt_pos,
+          jnt_axis,
+          qpos,
+          xanchor_out,
+          xaxis_out,
+        )
+      if jntnum >= 6:
+        xpos, xquat = _process_joint(
+          xpos,
+          xquat,
+          jntadr + 5,
+          jnt_pos_id,
+          worldid,
+          qpos0,
+          jnt_type,
+          jnt_qposadr,
+          jnt_pos,
+          jnt_axis,
+          qpos,
+          xanchor_out,
+          xaxis_out,
+        )
+
+      xquat = wp.normalize(xquat)
+
     xpos_out[worldid, bodyid] = xpos
     xquat_out[worldid, bodyid] = xquat
 
@@ -241,10 +373,17 @@ def _flex_vertices(
 ):
   worldid, vertid = wp.tid()
 
-  for f in range(nflex):
-    locid = vertid - flex_vertadr[f]
-    if locid >= 0 and locid < flex_vertnum[f]:
+  f = int(-1)
+  for i in range(nflex):
+    locid = vertid - flex_vertadr[i]
+    if locid >= 0 and locid < flex_vertnum[i]:
+      f = i
       break
+
+  # No owning flex found for this vertex: bail out before indexing with f, to
+  # avoid a stale/negative flex id reaching the autodiff-generated backward kernel.
+  if f < 0:
+    return
 
   bodyid = flex_vertbodyid[vertid]
   xpos = xpos_in[worldid, bodyid]
@@ -282,11 +421,17 @@ def _flex_edges(
   flexedge_velocity_out: wp.array2d[float],
 ):
   worldid, edgeid = wp.tid()
+  f = int(-1)
   for i in range(nflex):
     locid = edgeid - flex_edgeadr[i]
     if locid >= 0 and locid < flex_edgenum[i]:
       f = i
       break
+
+  # No owning flex found for this edge: bail out before indexing with f, to avoid
+  # a negative flex id reaching the autodiff-generated backward kernel.
+  if f < 0:
+    return
 
   vbase = flex_vertadr[f]
   v = flex_edge[edgeid]
@@ -525,32 +670,84 @@ def _cinert(
   inert = body_inertia[worldid % body_inertia.shape[0], bodyid]
   mass = body_mass[worldid % body_mass.shape[0], bodyid]
   dif = xipos_in[worldid, bodyid] - subtree_com_in[worldid, body_rootid[bodyid]]
-  # express inertia in com-based frame (mju_inertCom)
-
-  res = vec10()
-  # res_rot = mat * diag(inert) * mat'
+  # express inertia in com-based frame (mju_inertCom).  Build the vector
+  # functionally: Warp's adjoint does not propagate through indexed writes to
+  # a local custom vector (``res[k] = ...``), which silently detached cinert.
   tmp = mat @ wp.diag(inert) @ wp.transpose(mat)
-  res[0] = tmp[0, 0]
-  res[1] = tmp[1, 1]
-  res[2] = tmp[2, 2]
-  res[3] = tmp[0, 1]
-  res[4] = tmp[0, 2]
-  res[5] = tmp[1, 2]
-  # res_rot -= mass * dif_cross * dif_cross
-  res[0] += mass * (dif[1] * dif[1] + dif[2] * dif[2])
-  res[1] += mass * (dif[0] * dif[0] + dif[2] * dif[2])
-  res[2] += mass * (dif[0] * dif[0] + dif[1] * dif[1])
-  res[3] -= mass * dif[0] * dif[1]
-  res[4] -= mass * dif[0] * dif[2]
-  res[5] -= mass * dif[1] * dif[2]
-  # res_tran = mass * dif
-  res[6] = mass * dif[0]
-  res[7] = mass * dif[1]
-  res[8] = mass * dif[2]
-  # res_mass = mass
-  res[9] = mass
+  res0 = tmp[0, 0] + mass * (dif[1] * dif[1] + dif[2] * dif[2])
+  res1 = tmp[1, 1] + mass * (dif[0] * dif[0] + dif[2] * dif[2])
+  res2 = tmp[2, 2] + mass * (dif[0] * dif[0] + dif[1] * dif[1])
+  res3 = tmp[0, 1] - mass * dif[0] * dif[1]
+  res4 = tmp[0, 2] - mass * dif[0] * dif[2]
+  res5 = tmp[1, 2] - mass * dif[1] * dif[2]
+  res6 = mass * dif[0]
+  res7 = mass * dif[1]
+  res8 = mass * dif[2]
+  cinert_out[worldid, bodyid] = vec10(res0, res1, res2, res3, res4, res5, res6, res7, res8, mass)
 
-  cinert_out[worldid, bodyid] = res
+
+@wp.kernel
+def _cinert_adjoint(
+  # Model:
+  body_rootid: wp.array[int],
+  body_mass: wp.array2d[float],
+  body_inertia: wp.array2d[wp.vec3],
+  # Data in:
+  xipos_in: wp.array2d[wp.vec3],
+  ximat_in: wp.array2d[wp.mat33],
+  subtree_com_in: wp.array2d[wp.vec3],
+  # In:
+  cinert_grad: wp.array2d[vec10],
+  # Out:
+  xipos_grad_out: wp.array2d[wp.vec3],
+  ximat_grad_out: wp.array2d[wp.mat33],
+  subtree_com_grad_out: wp.array2d[wp.vec3],
+):
+  """Analytic VJP for :func:`_cinert` (Warp cannot AD custom ``vec10`` outputs)."""
+  worldid, bodyid = wp.tid()
+  param_worldid = worldid % body_mass.shape[0]
+  mass = body_mass[param_worldid, bodyid]
+  inert = body_inertia[worldid % body_inertia.shape[0], bodyid]
+  rootid = body_rootid[bodyid]
+  dif = xipos_in[worldid, bodyid] - subtree_com_in[worldid, rootid]
+  g = cinert_grad[worldid, bodyid]
+
+  grad_dif = wp.vec3(
+    mass * (2.0 * (g[1] + g[2]) * dif[0] - g[3] * dif[1] - g[4] * dif[2] + g[6]),
+    mass * (2.0 * (g[0] + g[2]) * dif[1] - g[3] * dif[0] - g[5] * dif[2] + g[7]),
+    mass * (2.0 * (g[0] + g[1]) * dif[2] - g[4] * dif[0] - g[5] * dif[1] + g[8]),
+  )
+  xipos_grad_out[worldid, bodyid] += grad_dif
+  wp.atomic_sub(subtree_com_grad_out, worldid, rootid, grad_dif)
+
+  sym_grad = wp.mat33(2.0 * g[0], g[3], g[4], g[3], 2.0 * g[1], g[5], g[4], g[5], 2.0 * g[2])
+  grad_mat = sym_grad @ ximat_in[worldid, bodyid] @ wp.diag(inert)
+  ximat_grad_out[worldid, bodyid] += grad_mat
+
+
+def _record_cinert_adjoint(m: Model, d: Data, xipos, ximat, subtree_com, cinert):
+  tape = wp._src.context.runtime.tape
+  if tape is None or not d.qpos.requires_grad:
+    return
+
+  def _adjoint(
+    m=m,
+    d=d,
+    xipos=xipos,
+    ximat=ximat,
+    subtree_com=subtree_com,
+    cinert=cinert,
+  ):
+    if cinert.grad is None:
+      return
+    wp.launch(
+      _cinert_adjoint,
+      dim=(d.nworld, m.nbody),
+      inputs=[m.body_rootid, m.body_mass, m.body_inertia, xipos, ximat, subtree_com, cinert.grad],
+      outputs=[xipos.grad, ximat.grad, subtree_com.grad],
+    )
+
+  tape.record_func(_adjoint, [cinert, xipos, ximat, subtree_com])
 
 
 @wp.kernel
@@ -598,6 +795,28 @@ def _cdof(
     res[dofid] = wp.spatial_vector(xaxis, wp.cross(xaxis, offset))
 
 
+@wp.kernel
+def _subtree_com_acc_level(
+  # Model:
+  body_parentid: wp.array[int],
+  # Data in:
+  subtree_com_in: wp.array2d[wp.vec3],
+  # In:
+  body_tree_: wp.array[int],
+  nbody_tree: int,
+  # Data out:
+  subtree_com_out: wp.array2d[wp.vec3],
+):
+  """AD-safe child-to-parent accumulation using distinct input/output arrays."""
+  worldid, bodyid = wp.tid()
+  val = subtree_com_in[worldid, bodyid]
+  for k in range(nbody_tree):
+    child = body_tree_[k]
+    if body_parentid[child] == bodyid and child != 0:
+      val += subtree_com_in[worldid, child]
+  subtree_com_out[worldid, bodyid] = val
+
+
 @event_scope
 def com_pos(m: Model, d: Data):
   """Computes subtree center of mass positions.
@@ -608,16 +827,30 @@ def com_pos(m: Model, d: Data):
   """
   wp.launch(_subtree_com_init, dim=(d.nworld, m.nbody), inputs=[m.body_mass, d.xipos], outputs=[d.subtree_com])
 
-  for i in reversed(range(len(m.body_tree))):
-    body_tree = m.body_tree[i]
-    wp.launch(
-      _subtree_com_acc,
-      dim=(d.nworld, body_tree.size),
-      inputs=[m.body_parentid, d.subtree_com, body_tree],
-      outputs=[d.subtree_com],
-    )
-
-  wp.launch(_subtree_div, dim=(d.nworld, m.nbody), inputs=[m.body_subtreemass, d.subtree_com], outputs=[d.subtree_com])
+  if d.subtree_com.requires_grad:
+    current = d.subtree_com
+    for body_tree in reversed(m.body_tree):
+      next_com = wp.zeros_like(current, requires_grad=True)
+      wp.launch(
+        _subtree_com_acc_level,
+        dim=(d.nworld, m.nbody),
+        inputs=[m.body_parentid, current, body_tree, body_tree.shape[0]],
+        outputs=[next_com],
+      )
+      current = next_com
+    subtree_com = wp.zeros_like(current, requires_grad=True)
+    wp.launch(_subtree_div, dim=(d.nworld, m.nbody), inputs=[m.body_subtreemass, current], outputs=[subtree_com])
+    d.subtree_com = subtree_com
+  else:
+    for i in reversed(range(len(m.body_tree))):
+      body_tree = m.body_tree[i]
+      wp.launch(
+        _subtree_com_acc,
+        dim=(d.nworld, body_tree.size),
+        inputs=[m.body_parentid, d.subtree_com, body_tree],
+        outputs=[d.subtree_com],
+      )
+    wp.launch(_subtree_div, dim=(d.nworld, m.nbody), inputs=[m.body_subtreemass, d.subtree_com], outputs=[d.subtree_com])
   wp.launch(
     _cinert,
     dim=(d.nworld, m.nbody),
@@ -822,7 +1055,7 @@ def _crb_accumulate(
   wp.atomic_add(crb_out, worldid, pid, crb_in[worldid, bodyid])
 
 
-@wp.kernel
+@wp.kernel(enable_backward=False)
 def _M(
   # Model:
   dof_bodyid: wp.array[int],
@@ -851,6 +1084,101 @@ def _M(
     M_out[worldid, madr_ij] += wp.dot(cdof_in[worldid, dofid], buf)
     madr_ij -= 1
     dofid = dof_parentid[dofid]
+
+
+@wp.kernel
+def _M_adjoint(
+  # Model:
+  dof_bodyid: wp.array[int],
+  dof_parentid: wp.array[int],
+  M_rownnz: wp.array[int],
+  M_rowadr: wp.array[int],
+  # Data in:
+  cdof_in: wp.array2d[wp.spatial_vector],
+  crb_in: wp.array2d[vec10],
+  # In:
+  M_grad: wp.array2d[float],
+  # Out:
+  cdof_grad_out: wp.array2d[wp.spatial_vector],
+  crb_grad_out: wp.array2d[vec10],
+):
+  """Analytic VJP for the packed composite-rigid-body mass matrix."""
+  worldid, row = wp.tid()
+  bodyid = dof_bodyid[row]
+  inertia = crb_in[worldid, bodyid]
+  dof = cdof_in[worldid, row]
+  buf = math.inert_vec(inertia, dof)
+  adj_buf = wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+
+  madr = M_rowadr[row] + M_rownnz[row] - 1
+  ancestor_dof = row
+  while ancestor_dof >= 0:
+    g = M_grad[worldid, madr]
+    wp.atomic_add(cdof_grad_out, worldid, ancestor_dof, buf * g)
+    adj_buf += cdof_in[worldid, ancestor_dof] * g
+    madr -= 1
+    ancestor_dof = dof_parentid[ancestor_dof]
+
+  wp.atomic_add(cdof_grad_out, worldid, row, math.inert_vec(inertia, adj_buf))
+  a = adj_buf
+  v = dof
+  grad_inertia = vec10(
+    a[0] * v[0],
+    a[1] * v[1],
+    a[2] * v[2],
+    a[0] * v[1] + a[1] * v[0],
+    a[0] * v[2] + a[2] * v[0],
+    a[1] * v[2] + a[2] * v[1],
+    -a[1] * v[5] + a[2] * v[4] + a[4] * v[2] - a[5] * v[1],
+    a[0] * v[5] - a[2] * v[3] - a[3] * v[2] + a[5] * v[0],
+    -a[0] * v[4] + a[1] * v[3] + a[3] * v[1] - a[4] * v[0],
+    a[3] * v[3] + a[4] * v[4] + a[5] * v[5],
+  )
+  wp.atomic_add(crb_grad_out, worldid, bodyid, grad_inertia)
+
+
+@wp.kernel
+def _crb_to_cinert_adjoint(
+  # Model:
+  body_parentid: wp.array[int],
+  # In:
+  crb_grad: wp.array2d[vec10],
+  # Out:
+  cinert_grad_out: wp.array2d[vec10],
+):
+  """Reverse the composite-body sum without relying on in-place copy AD."""
+  worldid, bodyid = wp.tid()
+  grad = vec10()
+  ancestor = bodyid
+  while ancestor > 0:
+    grad += crb_grad[worldid, ancestor]
+    ancestor = body_parentid[ancestor]
+  cinert_grad_out[worldid, bodyid] += grad
+
+
+def _record_M_adjoint(m: Model, d: Data, cdof, crb, M, cinert):
+  tape = wp._src.context.runtime.tape
+  if tape is None or not d.qpos.requires_grad:
+    return
+
+  def _adjoint(m=m, d=d, cdof=cdof, crb=crb, M=M, cinert=cinert):
+    if M.grad is None:
+      return
+    crb_grad = wp.zeros_like(crb)
+    wp.launch(
+      _M_adjoint,
+      dim=(d.nworld, m.nv),
+      inputs=[m.dof_bodyid, m.dof_parentid, m.M_rownnz, m.M_rowadr, cdof, crb, M.grad],
+      outputs=[cdof.grad, crb_grad],
+    )
+    wp.launch(
+      _crb_to_cinert_adjoint,
+      dim=(d.nworld, m.nbody),
+      inputs=[m.body_parentid, crb_grad],
+      outputs=[cinert.grad],
+    )
+
+  tape.record_func(_adjoint, [M, cdof, cinert])
 
 
 @event_scope
@@ -1113,6 +1441,28 @@ def _rne_cacc_world(m: Model, d: Data):
     wp.launch(_cacc_world, dim=[d.nworld], inputs=[m.opt.gravity], outputs=[d.cacc])
 
 
+# kernel_analyzer: off
+@wp.func
+def _process_dof_cacc(
+  local_cacc: wp.spatial_vector,
+  dofadr: int,
+  worldid: int,
+  qvel_in: wp.array2d[float],
+  qacc_in: wp.array2d[float],
+  cdof_in: wp.array2d[wp.spatial_vector],
+  cdof_dot_in: wp.array2d[wp.spatial_vector],
+  flg_acc: bool,
+):
+  """Accumulate one DOF contribution to body acceleration."""
+  local_cacc += cdof_dot_in[worldid, dofadr] * qvel_in[worldid, dofadr]
+  if flg_acc:
+    local_cacc += cdof_in[worldid, dofadr] * qacc_in[worldid, dofadr]
+  return local_cacc
+
+
+# kernel_analyzer: on
+
+
 @wp.kernel
 def _cacc_branch(
   # Model:
@@ -1143,10 +1493,22 @@ def _cacc_branch(
     bodyid = body_branches[i]
     dofnum = body_dofnum[bodyid]
     dofadr = body_dofadr[bodyid]
-    for j in range(dofnum):
-      local_cacc += cdof_dot_in[worldid, dofadr + j] * qvel_in[worldid, dofadr + j]
-      if flg_acc:
-        local_cacc += cdof_in[worldid, dofadr + j] * qacc_in[worldid, dofadr + j]
+
+    # unrolled dof processing — avoids nested dynamic-range loop which
+    # produces incorrect gradients in warp's AD
+    if dofnum >= 1:
+      local_cacc = _process_dof_cacc(local_cacc, dofadr, worldid, qvel_in, qacc_in, cdof_in, cdof_dot_in, flg_acc)
+    if dofnum >= 2:
+      local_cacc = _process_dof_cacc(local_cacc, dofadr + 1, worldid, qvel_in, qacc_in, cdof_in, cdof_dot_in, flg_acc)
+    if dofnum >= 3:
+      local_cacc = _process_dof_cacc(local_cacc, dofadr + 2, worldid, qvel_in, qacc_in, cdof_in, cdof_dot_in, flg_acc)
+    if dofnum >= 4:
+      local_cacc = _process_dof_cacc(local_cacc, dofadr + 3, worldid, qvel_in, qacc_in, cdof_in, cdof_dot_in, flg_acc)
+    if dofnum >= 5:
+      local_cacc = _process_dof_cacc(local_cacc, dofadr + 4, worldid, qvel_in, qacc_in, cdof_in, cdof_dot_in, flg_acc)
+    if dofnum >= 6:
+      local_cacc = _process_dof_cacc(local_cacc, dofadr + 5, worldid, qvel_in, qacc_in, cdof_in, cdof_dot_in, flg_acc)
+
     cacc_out[worldid, bodyid] = local_cacc
 
 
@@ -1202,6 +1564,30 @@ def _rne_cfrc(m: Model, d: Data, flg_cfrc_ext: bool = False):
 
 
 @wp.kernel
+def _cfrc_backward_level(
+  # Model:
+  body_parentid: wp.array[int],
+  # Data in:
+  cfrc_int_in: wp.array2d[wp.spatial_vector],
+  # In:
+  body_tree_: wp.array[int],
+  nbody_tree: int,
+  # Data out:
+  cfrc_int_out: wp.array2d[wp.spatial_vector],
+):
+  # copy input and accumulate child forces to parents in a single kernel
+  # to avoid warp AD output-gradient zeroing when separate copy + atomic_add
+  # target the same array
+  worldid, bodyid = wp.tid()
+  val = cfrc_int_in[worldid, bodyid]
+  for k in range(nbody_tree):
+    child = body_tree_[k]
+    if body_parentid[child] == bodyid and child != 0:
+      val = val + cfrc_int_in[worldid, child]
+  cfrc_int_out[worldid, bodyid] = val
+
+
+@wp.kernel
 def _cfrc_backward(
   # Model:
   body_parentid: wp.array[int],
@@ -1220,10 +1606,32 @@ def _cfrc_backward(
 
 
 def _rne_cfrc_backward(m: Model, d: Data):
+  if not d.cfrc_int.requires_grad:
+    # Forward-only fast path (matches upstream): accumulate child forces to
+    # parents in place with atomics, one launch per tree level, no
+    # per-level allocations.
+    for body_tree in reversed(m.body_tree):
+      wp.launch(
+        _cfrc_backward, dim=[d.nworld, body_tree.size], inputs=[m.body_parentid, d.cfrc_int, body_tree], outputs=[d.cfrc_int]
+      )
+    return d.cfrc_int
+
+  # AD path: accumulate child forces to parents using separate arrays at each
+  # level to avoid warp AD output-gradient zeroing issue (an array that is the
+  # output of multiple wp.launch / wp.copy calls loses gradient from all
+  # but the last operation during backward)
+  current = d.cfrc_int
   for body_tree in reversed(m.body_tree):
+    next_cfrc = wp.zeros_like(current)
+    next_cfrc.requires_grad = True
     wp.launch(
-      _cfrc_backward, dim=[d.nworld, body_tree.size], inputs=[m.body_parentid, d.cfrc_int, body_tree], outputs=[d.cfrc_int]
+      _cfrc_backward_level,
+      dim=[d.nworld, m.nbody],
+      inputs=[m.body_parentid, current, body_tree, body_tree.shape[0]],
+      outputs=[next_cfrc],
     )
+    current = next_cfrc
+  return current
 
 
 @wp.kernel
@@ -1256,8 +1664,10 @@ def rne(m: Model, d: Data, flg_acc: bool = False):
   _rne_cacc_world(m, d)
   _rne_cacc_forward(m, d, flg_acc=flg_acc)
   _rne_cfrc(m, d)
-  _rne_cfrc_backward(m, d)
-  wp.launch(_qfrc_bias, dim=[d.nworld, m.nv], inputs=[m.dof_bodyid, d.cdof, d.cfrc_int], outputs=[d.qfrc_bias])
+  cfrc_total = _rne_cfrc_backward(m, d)
+  wp.launch(_qfrc_bias, dim=[d.nworld, m.nv], inputs=[m.dof_bodyid, d.cdof, cfrc_total], outputs=[d.qfrc_bias])
+  # update d.cfrc_int with accumulated forces for downstream consumers
+  d.cfrc_int = cfrc_total
 
 
 @wp.kernel
@@ -1564,7 +1974,7 @@ def rne_postconstraint(m: Model, d: Data):
   _rne_cfrc(m, d, flg_cfrc_ext=True)
 
   # backward pass over bodies: accumulate cfrc_int from children
-  _rne_cfrc_backward(m, d)
+  d.cfrc_int = _rne_cfrc_backward(m, d)
 
 
 @wp.func
@@ -1734,7 +2144,7 @@ def _tendon_dot(
       dot = wp.dot(dpnt, dvel)
       dvel += dpnt * (-dot)
       if norm > MJ_MINVAL:
-        dvel /= norm
+        dvel = dvel / norm
       else:
         dvel = wp.vec3(0.0)
 
@@ -1924,6 +2334,60 @@ def _comvel_root(cvel_out: wp.array2d[wp.spatial_vector]):
   cvel_out[worldid, 0][elementid] = 0.0
 
 
+# kernel_analyzer: off
+@wp.func
+def _process_joint_vel(
+  cvel: wp.spatial_vector,
+  dofid: int,
+  jntadr: int,
+  worldid: int,
+  jnt_type: wp.array[int],
+  qvel: wp.array[float],
+  cdof: wp.array[wp.spatial_vector],
+  cdof_dot_out: wp.array2d[wp.spatial_vector],
+):
+  """Process a single joint for velocity propagation, return updated cvel and dofid."""
+  jnttype = jnt_type[jntadr]
+
+  if jnttype == JointType.FREE:
+    cvel += cdof[dofid + 0] * qvel[dofid + 0]
+    cvel += cdof[dofid + 1] * qvel[dofid + 1]
+    cvel += cdof[dofid + 2] * qvel[dofid + 2]
+
+    cdof_dot_out[worldid, dofid + 0] = wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+    cdof_dot_out[worldid, dofid + 1] = wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+    cdof_dot_out[worldid, dofid + 2] = wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+    cdof_dot_out[worldid, dofid + 3] = math.motion_cross(cvel, cdof[dofid + 3])
+    cdof_dot_out[worldid, dofid + 4] = math.motion_cross(cvel, cdof[dofid + 4])
+    cdof_dot_out[worldid, dofid + 5] = math.motion_cross(cvel, cdof[dofid + 5])
+
+    cvel += cdof[dofid + 3] * qvel[dofid + 3]
+    cvel += cdof[dofid + 4] * qvel[dofid + 4]
+    cvel += cdof[dofid + 5] * qvel[dofid + 5]
+
+    dofid += 6
+  elif jnttype == JointType.BALL:
+    cdof_dot_out[worldid, dofid + 0] = math.motion_cross(cvel, cdof[dofid + 0])
+    cdof_dot_out[worldid, dofid + 1] = math.motion_cross(cvel, cdof[dofid + 1])
+    cdof_dot_out[worldid, dofid + 2] = math.motion_cross(cvel, cdof[dofid + 2])
+
+    cvel += cdof[dofid + 0] * qvel[dofid + 0]
+    cvel += cdof[dofid + 1] * qvel[dofid + 1]
+    cvel += cdof[dofid + 2] * qvel[dofid + 2]
+
+    dofid += 3
+  else:
+    cdof_dot_out[worldid, dofid] = math.motion_cross(cvel, cdof[dofid])
+    cvel += cdof[dofid] * qvel[dofid]
+
+    dofid += 1
+
+  return cvel, dofid
+
+
+# kernel_analyzer: on
+
+
 @wp.kernel
 def _comvel_branch(
   # Model:
@@ -1957,45 +2421,18 @@ def _comvel_branch(
     jntid = body_jntadr[bodyid]
     jntnum = body_jntnum[bodyid]
 
-    if jntnum == 0:
-      cvel_out[worldid, bodyid] = cvel
-      continue
-
-    for j in range(jntid, jntid + jntnum):
-      jnttype = jnt_type[j]
-
-      if jnttype == JointType.FREE:
-        cvel += cdof[dofid + 0] * qvel[dofid + 0]
-        cvel += cdof[dofid + 1] * qvel[dofid + 1]
-        cvel += cdof[dofid + 2] * qvel[dofid + 2]
-
-        cdof_dot_out[worldid, dofid + 0] = wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
-        cdof_dot_out[worldid, dofid + 1] = wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
-        cdof_dot_out[worldid, dofid + 2] = wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
-        cdof_dot_out[worldid, dofid + 3] = math.motion_cross(cvel, cdof[dofid + 3])
-        cdof_dot_out[worldid, dofid + 4] = math.motion_cross(cvel, cdof[dofid + 4])
-        cdof_dot_out[worldid, dofid + 5] = math.motion_cross(cvel, cdof[dofid + 5])
-
-        cvel += cdof[dofid + 3] * qvel[dofid + 3]
-        cvel += cdof[dofid + 4] * qvel[dofid + 4]
-        cvel += cdof[dofid + 5] * qvel[dofid + 5]
-
-        dofid += 6
-      elif jnttype == JointType.BALL:
-        cdof_dot_out[worldid, dofid + 0] = math.motion_cross(cvel, cdof[dofid + 0])
-        cdof_dot_out[worldid, dofid + 1] = math.motion_cross(cvel, cdof[dofid + 1])
-        cdof_dot_out[worldid, dofid + 2] = math.motion_cross(cvel, cdof[dofid + 2])
-
-        cvel += cdof[dofid + 0] * qvel[dofid + 0]
-        cvel += cdof[dofid + 1] * qvel[dofid + 1]
-        cvel += cdof[dofid + 2] * qvel[dofid + 2]
-
-        dofid += 3
-      else:
-        cdof_dot_out[worldid, dofid] = math.motion_cross(cvel, cdof[dofid])
-        cvel += cdof[dofid] * qvel[dofid]
-
-        dofid += 1
+    # Use if/else instead of ``continue`` — Warp's AD replay for
+    # ``continue`` inside a dynamic for-loop skips adjoint code.
+    if jntnum >= 1:
+      # unrolled joint processing — avoids nested dynamic-range loop which
+      # produces incorrect gradients in warp's AD
+      cvel, dofid = _process_joint_vel(cvel, dofid, jntid, worldid, jnt_type, qvel, cdof, cdof_dot_out)
+      if jntnum >= 2:
+        cvel, dofid = _process_joint_vel(cvel, dofid, jntid + 1, worldid, jnt_type, qvel, cdof, cdof_dot_out)
+      if jntnum >= 3:
+        cvel, dofid = _process_joint_vel(cvel, dofid, jntid + 2, worldid, jnt_type, qvel, cdof, cdof_dot_out)
+      if jntnum >= 4:
+        cvel, dofid = _process_joint_vel(cvel, dofid, jntid + 3, worldid, jnt_type, qvel, cdof, cdof_dot_out)
 
     cvel_out[worldid, bodyid] = cvel
 
@@ -2626,7 +3063,7 @@ def _transmission_body_moment_scale(
   if ncon > 0:
     actid = actuator_trntype_body_adr[trnbodyid]
     rowadr = moment_rowadr_in[worldid, actid]
-    actuator_moment_out[worldid, rowadr + dofid] /= -float(ncon)
+    actuator_moment_out[worldid, rowadr + dofid] = actuator_moment_out[worldid, rowadr + dofid] / -float(ncon)
 
 
 @event_scope
@@ -2723,6 +3160,51 @@ def transmission(m: Model, d: Data):
     )
 
 
+# Sparse solve kernels have enable_backward=False because Warp's auto-AD
+# for in-place operations (x used as both input and output) accumulates
+# rather than replaces gradients, producing ~2x the correct result.
+# The manual _record_fwd_accel_adjoint callback handles the correct backward
+# (qacc_smooth.grad -> qfrc_smooth.grad via M^{-1}) for both sparse and dense.
+# This matches the dense Cholesky kernels which also have enable_backward=False.
+@wp.kernel(enable_backward=False)
+def _solve_LD_sparse_x_acc_up(
+  # In:
+  L: wp.array3d[float],
+  qLD_updates_: wp.array[wp.vec3i],
+  # Out:
+  x: wp.array2d[float],
+):
+  worldid, nodeid = wp.tid()
+  update = qLD_updates_[nodeid]
+  i, k, Madr_ki = update[0], update[1], update[2]
+  wp.atomic_sub(x[worldid], i, L[worldid, 0, Madr_ki] * x[worldid, k])
+
+
+@wp.kernel(enable_backward=False)
+def _solve_LD_sparse_qLDiag_mul(
+  # In:
+  D: wp.array2d[float],
+  # Out:
+  out: wp.array2d[float],
+):
+  worldid, dofid = wp.tid()
+  out[worldid, dofid] = out[worldid, dofid] * D[worldid, dofid]
+
+
+@wp.kernel(enable_backward=False)
+def _solve_LD_sparse_x_acc_down(
+  # In:
+  L: wp.array3d[float],
+  qLD_updates_: wp.array[wp.vec3i],
+  # Out:
+  x: wp.array2d[float],
+):
+  worldid, nodeid = wp.tid()
+  update = qLD_updates_[nodeid]
+  i, k, Madr_ki = update[0], update[1], update[2]
+  wp.atomic_sub(x[worldid], k, L[worldid, 0, Madr_ki] * x[worldid, i])
+
+
 @cache_kernel
 def _solve_LD_sparse_fused(nv: int, nlevels: int):
   """Fused sparse backsubstitution: UP + diag + DOWN in one kernel."""
@@ -2797,7 +3279,27 @@ def _solve_LD_sparse(
   x: wp.array2d[float],
   y: wp.array2d[float],
 ):
-  """Computes sparse backsubstitution: x = inv(L'*D*L)*y."""
+  """Computes sparse backsubstitution: x = inv(L'*D*L)*y.
+
+  When gradients are requested, the solve runs on unfused kernels with
+  enable_backward=False to avoid Warp's auto-AD accumulation bug with
+  in-place operations (x used as both input and output gives ~2x the
+  correct gradient). The manual _record_fwd_accel_adjoint callback handles
+  the qacc_smooth -> qfrc_smooth gradient path instead.
+  """
+  if x.requires_grad or y.requires_grad:
+    # Use _nograd_copy_2d so the initial y->x copy doesn't create an auto-AD
+    # gradient path (the manual adjoint handles qacc_smooth -> qfrc_smooth).
+    wp.launch(_nograd_copy_2d, dim=(d.nworld, m.nv), inputs=[y], outputs=[x])
+    for qLD_updates in reversed(m.qLD_updates):
+      wp.launch(_solve_LD_sparse_x_acc_up, dim=(d.nworld, qLD_updates.size), inputs=[L, qLD_updates], outputs=[x])
+
+    wp.launch(_solve_LD_sparse_qLDiag_mul, dim=(d.nworld, m.nv), inputs=[D], outputs=[x])
+
+    for qLD_updates in m.qLD_updates:
+      wp.launch(_solve_LD_sparse_x_acc_down, dim=(d.nworld, qLD_updates.size), inputs=[L, qLD_updates], outputs=[x])
+    return
+
   nlevels = len(m.qLD_updates)
   if wp.get_device().is_cuda:
     dim_block = m.block_dim.solve_LD_sparse_fused
@@ -2829,7 +3331,7 @@ def _solve_simple(
   x_out[worldid, dofid] = D[worldid, dofid] * y[worldid, dofid]
 
 
-@wp.kernel
+@wp.kernel(enable_backward=False)
 def _factor_solve_simple(
   # Model:
   M_rownnz: wp.array[int],
@@ -3183,9 +3685,8 @@ def _subtree_vel_forward(
 
   subtree_linvel_out[worldid, bodyid] = body_mass[body_mass_id, bodyid] * lin
   dv = wp.transpose(ximat) @ ang
-  dv[0] *= body_inertia[body_inertia_id, bodyid][0]
-  dv[1] *= body_inertia[body_inertia_id, bodyid][1]
-  dv[2] *= body_inertia[body_inertia_id, bodyid][2]
+  inertia = body_inertia[body_inertia_id, bodyid]
+  dv = wp.vec3(dv[0] * inertia[0], dv[1] * inertia[1], dv[2] * inertia[2])
   subtree_angmom_out[worldid, bodyid] = ximat @ dv
   subtree_bodyvel_out[worldid, bodyid] = wp.spatial_vector(ang, lin)
 
@@ -3207,7 +3708,9 @@ def _linear_momentum(
   if bodyid:
     pid = body_parentid[bodyid]
     wp.atomic_add(subtree_linvel_out[worldid], pid, subtree_linvel_in[worldid, bodyid])
-  subtree_linvel_out[worldid, bodyid] /= wp.max(MJ_MINVAL, body_subtreemass[worldid % body_subtreemass.shape[0], bodyid])
+  subtree_linvel_out[worldid, bodyid] = subtree_linvel_out[worldid, bodyid] / wp.max(
+    MJ_MINVAL, body_subtreemass[worldid % body_subtreemass.shape[0], bodyid]
+  )
 
 
 @wp.kernel
@@ -3258,7 +3761,7 @@ def _angular_momentum(
   # momentum wrt parent
   dx = com - com_parent
   dv = linvel - linvel_parent
-  dv *= subtreemass
+  dv = dv * subtreemass
   dL = wp.cross(dx, dv)
   wp.atomic_add(subtree_angmom_out[worldid], pid, dL)
 
@@ -3366,7 +3869,6 @@ def _accumulate_jac_chain(
   ten_J_out: wp.array2d[float],
 ):
   """Walk body chain from bodyid to root, accumulate Jacobian contributions."""
-  ptr = rownnz - 1
   bid = bodyid
   while bid > 0:
     bdofadr = body_dofadr[bid]
@@ -3374,13 +3876,12 @@ def _accumulate_jac_chain(
     # iterate DOFs in this body in descending order
     for k_rev in range(bdofnum):
       dof = bdofadr + bdofnum - 1 - k_rev
-      # scan pointer backward to find matching colind entry
-      while ptr >= 0:
-        sparseid = rowadr + ptr
-        if ten_J_colind[sparseid] <= dof:
-          break
-        ptr -= 1
-      if ptr >= 0 and ten_J_colind[sparseid] == dof:
+      # find the sparse entry matching this dof by scanning the row
+      sparseid = int(-1)
+      for k in range(rownnz):
+        if ten_J_colind[rowadr + k] == dof:
+          sparseid = rowadr + k
+      if sparseid >= 0:
         cdof = cdof_in[worldid, dof]
         cdof_ang = wp.spatial_top(cdof)
         cdof_lin = wp.spatial_bottom(cdof)

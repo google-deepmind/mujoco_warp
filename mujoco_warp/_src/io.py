@@ -1298,6 +1298,30 @@ def _resolve_batch_size(na: int | None, n: int | None, nworld: int, default: int
   return default
 
 
+def allocate_solver_retained(d: types.Data, nworld: int, njmax: int, nv: int, nv_pad: int, is_newton: bool, grad: bool):
+  """Allocates solver retained state used by the implicit-diff backward pass.
+
+  solver_h / solver_hfactor persist the Newton Hessian (and its blocked
+  Cholesky factor for nv > 32) past the solve so solver_implicit_adjoint can
+  reuse them; solver_Jaref persists the constraint residual. When grad is
+  False all arrays are zero-sized and the solver falls back to context-local
+  workspace allocation, so the forward-only path carries no memory overhead.
+  """
+  alloc_h = grad and is_newton
+  alloc_hfactor = alloc_h and nv > 32  # _BLOCK_CHOLESKY_DIM
+  d.solver_h = wp.zeros((nworld, nv_pad, nv_pad), dtype=float) if alloc_h else wp.empty((nworld, 0, 0), dtype=float)
+  d.solver_hfactor = wp.zeros((nworld, nv_pad, nv_pad), dtype=float) if alloc_hfactor else wp.empty((nworld, 0, 0), dtype=float)
+  d.solver_Jaref = wp.empty((nworld, njmax), dtype=float) if grad else wp.empty((0, 0), dtype=float)
+
+
+def allocate_solver_retained_for_model(mjm: mujoco.MjModel, d: types.Data, grad: bool):
+  """(Re)allocates solver retained AD state for an existing Data object."""
+  tile_size = types.TILE_SIZE_JTDAJ_SPARSE if is_sparse(mjm) else types.TILE_SIZE_JTDAJ_DENSE
+  nv_pad = _get_padded_sizes(mjm.nv, 0, is_sparse(mjm), tile_size)[1]
+  is_newton = mjm.opt.solver == mujoco.mjtSolver.mjSOL_NEWTON
+  allocate_solver_retained(d, d.nworld, d.njmax, mjm.nv, nv_pad, is_newton, grad=grad)
+
+
 def _allocate_island_arrays(
   mjm: mujoco.MjModel,
   d: types.Data,
@@ -1547,6 +1571,9 @@ def make_data(
     "njmax_nnz": njmax_nnz,
     "M": None,
     "qLD": None,
+    "solver_h": None,
+    "solver_hfactor": None,
+    "solver_Jaref": None,
     # world body
     "xquat": wp.array(np.tile(mjd.xquat, (nworld, 1)), shape=(nworld, mjm.nbody), dtype=wp.quat),
     "xmat": wp.array(np.tile(mjd.xmat, (nworld, 1)), shape=(nworld, mjm.nbody), dtype=wp.mat33),
@@ -1597,6 +1624,12 @@ def make_data(
   _lay = m_block_layout(mjm)
   qld_total = _lay["total"] + (mjm.nC if _lay["has_sparse"] else 0)
   d.qLD = wp.zeros((nworld, qld_total), dtype=float)
+
+  # Retained solver state for the implicit-diff backward pass is zero-sized
+  # by default; enable_grad()/make_diff_data() allocate it on demand.
+  allocate_solver_retained(
+    d, nworld, njmax, mjm.nv, sizes["nv_pad"], mjm.opt.solver == mujoco.mjtSolver.mjSOL_NEWTON, grad=False
+  )
 
   _allocate_island_arrays(mjm, d, nworld, njmax, island_alloc, mjd)
   _allocate_compact_arrays(mjm, d, nworld, sizes["nvmax_pad"], sizes["njmax_pad"], compact_alloc)
@@ -1832,6 +1865,9 @@ def put_data(
     "solver_niter": None,
     "M": None,
     "qLD": None,
+    "solver_h": None,
+    "solver_hfactor": None,
+    "solver_Jaref": None,
     "nacon": None,
     # island arrays
     "nisland": None,
@@ -1882,6 +1918,12 @@ def put_data(
   if lay["has_sparse"]:
     qLD[lay["total"] :] = mjd.qLD
   d.qLD = wp.array(np.full((nworld, qld_total), qLD), dtype=float)
+
+  # Retained solver state for the implicit-diff backward pass is zero-sized
+  # by default; enable_grad()/make_diff_data() allocate it on demand.
+  allocate_solver_retained(
+    d, nworld, njmax, mjm.nv, sizes["nv_pad"], mjm.opt.solver == mujoco.mjtSolver.mjSOL_NEWTON, grad=False
+  )
 
   _allocate_island_arrays(mjm, d, nworld, njmax, island_alloc, mjd)
   _allocate_compact_arrays(mjm, d, nworld, sizes["nvmax_pad"], sizes["njmax_pad"], compact_alloc)
