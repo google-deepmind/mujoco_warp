@@ -78,6 +78,9 @@ class Polytope:
   vert_index: wp.array[int]
   nvert: int
 
+  # center point of polytope
+  center: wp.vec3
+
   # faces in polytope
   # 10 bits per each vertex index, while the last significant bits are for
   # invalid and deleted face
@@ -228,6 +231,10 @@ def _attach_face(pt: Polytope, idx: int, v1: int, v2: int, v3: int) -> float:
   r, ret = _project_origin_plane(p3, p2, p1)
   if ret:
     return 0.0
+
+  # ensure projection points outward from the polytope
+  if wp.dot(r, p1 - pt.center) < 0.0:
+    r = -r
 
   face = v1 + (v2 << 10) + (v3 << 20)
   pt.face[idx] = face
@@ -974,6 +981,9 @@ def _polytope2(
   """Create polytope for EPA given a 1-simplex from GJK."""
   diff = simplex[1] - simplex[0]
 
+  # set the polytope center
+  pt.center = 0.5 * (simplex[0] + simplex[1])
+
   # find component with smallest magnitude (so cross product is largest)
   value = FLOAT_MAX
   index = 0
@@ -1063,6 +1073,9 @@ def _polytope3(
   geomtype2: int,
 ) -> Polytope:
   """Create polytope for EPA given a 2-simplex from GJK."""
+  # set the polytope center
+  pt.center = (simplex[0] + simplex[1] + simplex[2]) * wp.static(1.0 / 3.0)
+
   # get normals in both directions
   n = wp.cross(simplex[1] - simplex[0], simplex[2] - simplex[0])
   if wp.norm_l2(n) < MINVAL:
@@ -1146,6 +1159,9 @@ def _polytope4(
   simplex_index2: wp.vec4i,
 ) -> Tuple[Polytope, GJKResult]:
   """Create polytope for EPA given a 3-simplex from GJK."""
+  # set the polytope center
+  pt.center = 0.25 * (simplex[0] + simplex[1] + simplex[2] + simplex[3])
+
   pt.vert[0] = simplex1[0]
   pt.vert[1] = simplex2[0]
   pt.vert[2] = simplex1[1]
