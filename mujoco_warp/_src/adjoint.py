@@ -102,6 +102,44 @@ from mujoco_warp._src.types import vec10f
 from mujoco_warp._src.types import vec5
 from mujoco_warp._src.warp_util import cache_kernel
 
+# --- Safe sqrt for the contact adjoint (active whenever this adjoint module is imported) ----------
+# wp.sqrt's reverse is 0.5/sqrt(x) -> inf at x=0. Warp reverse-mode differentiates BOTH arms of a
+# wp.where, so `wp.where(cond, ...wp.sqrt(0)..., safe)` yields 0*inf = NaN in the adjoint even when the
+# FORWARD picks the safe arm -- e.g. collision_primitive_core.plane_cylinder's degenerate len_sqr=0 (a
+# cylinder face resting flat on a plane, axis || plane normal), which made the cylinder<->plane contact
+# gradient all-NaN while the forward + FD were finite. We swap wp.sqrt -> safe_sqrt: forward is
+# byte-identical (returns wp.sqrt(x)), but its custom grad is 0 at x<=0 (a 0-at-0 sqrt grad is always the
+# desired value; inf never is). @wp.func_grad rejects generic (Any) args, so we register one concrete
+# overload per float dtype. Global + import-time: it applies wherever the differentiated kernels compile
+# (adjoint is imported before any tape.backward) and leaves the forward untouched. Fixes any
+# sqrt(0)-in-a-where-branch degeneracy, not just cylinder-plane.
+_wp_sqrt = wp.sqrt
+
+
+@wp.func
+def safe_sqrt(x: wp.float32):
+  return _wp_sqrt(x)
+
+
+@wp.func_grad(safe_sqrt)
+def _adj_safe_sqrt_f32(x: wp.float32, adj_ret: wp.float32):
+  if x > wp.float32(0.0):
+    wp.adjoint[x] += adj_ret / (wp.float32(2.0) * _wp_sqrt(x))
+
+
+@wp.func
+def safe_sqrt(x: wp.float64):  # concrete overload (same name) so float64 sqrt still works
+  return _wp_sqrt(x)
+
+
+@wp.func_grad(safe_sqrt)
+def _adj_safe_sqrt_f64(x: wp.float64, adj_ret: wp.float64):
+  if x > wp.float64(0.0):
+    wp.adjoint[x] += adj_ret / (wp.float64(2.0) * _wp_sqrt(x))
+
+
+wp.sqrt = safe_sqrt
+
 # NOTE: adjoint.py kernels are differentiable -- do NOT set enable_backward=False here, so Warp
 # codegens the adjoint of _advance_state / _residual_contact.
 #
