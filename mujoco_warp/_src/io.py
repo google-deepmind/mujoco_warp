@@ -2992,7 +2992,7 @@ def create_render_context(
   mjd = mujoco.MjData(mjm)
   mujoco.mj_forward(mjm, mjd)
 
-  constructor = "cubql"
+  constructor = "lbvh"
 
   # Mesh BVHs – build for all meshes so per-world variants are available
   nmesh = mjm.nmesh
@@ -3054,8 +3054,9 @@ def create_render_context(
       flex_group_root[:, f] = group_root.numpy()
 
   textures_registry = []
-  for i in range(mjm.ntex):
-    textures_registry.append(render_util.create_warp_texture(mjm, i))
+  if use_textures:
+    for i in range(mjm.ntex):
+      textures_registry.append(render_util.create_warp_texture(mjm, i))
   textures = wp.array(textures_registry, dtype=wp.Texture2D)
 
   # Locate skybox texture
