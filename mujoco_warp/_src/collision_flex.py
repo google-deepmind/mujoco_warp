@@ -13,7 +13,7 @@
 # limitations under the License.
 """Flex collision detection (geom vs flex triangles)."""
 
-from typing import Tuple
+from typing import Optional, Tuple
 
 import warp as wp
 
@@ -31,10 +31,51 @@ from mujoco_warp._src.types import Data
 from mujoco_warp._src.types import GeomType
 from mujoco_warp._src.types import Model
 from mujoco_warp._src.types import OverflowType
+from mujoco_warp._src.types import SleepState
 from mujoco_warp._src.types import vec5
 from mujoco_warp._src.warp_util import event_scope
 
 wp.set_module_options({"enable_backward": False})
+
+
+@wp.func
+def _flex_asleep(
+  # Model:
+  body_treeid: wp.array[int],
+  flex_interp: wp.array[int],
+  flex_nodeadr: wp.array[int],
+  flex_nodenum: wp.array[int],
+  flex_vertadr: wp.array[int],
+  flex_vertnum: wp.array[int],
+  flex_nodebodyid: wp.array[int],
+  flex_vertbodyid: wp.array[int],
+  # Data in:
+  body_awake_in: wp.array2d[int],
+  # In:
+  worldid: int,
+  flex_id: int,
+) -> bool:
+  f = flex_id
+  num = int(0)
+  adr = int(0)
+  if flex_interp[f] != 0:
+    num = flex_nodenum[f]
+    adr = flex_nodeadr[f]
+  else:
+    num = flex_vertnum[f]
+    adr = flex_vertadr[f]
+
+  for j in range(num):
+    b = int(-1)
+    if flex_interp[f] != 0:
+      b = flex_nodebodyid[adr + j]
+    else:
+      b = flex_vertbodyid[adr + j]
+
+    if b >= 0 and body_treeid[b] >= 0:
+      return body_awake_in[worldid, b] == SleepState.ASLEEP
+
+  return False
 
 
 @wp.func
@@ -211,23 +252,35 @@ def _flex_broadphase_unified(
   ngeom: int,
   nflex: int,
   opt_warn_overflow: bool,
+  body_treeid: wp.array[int],
   geom_type: wp.array[int],
+  geom_bodyid: wp.array[int],
   geom_size: wp.array2d[wp.vec3],
   geom_aabb: wp.array3d[wp.vec3],
   geom_rbound: wp.array2d[float],
   geom_margin: wp.array2d[float],
   flex_margin: wp.array[float],
   flex_dim: wp.array[int],
+  flex_interp: wp.array[int],
+  flex_nodeadr: wp.array[int],
+  flex_nodenum: wp.array[int],
   flex_vertadr: wp.array[int],
+  flex_vertnum: wp.array[int],
+  flex_nodebodyid: wp.array[int],
+  flex_vertbodyid: wp.array[int],
   flex_radius: wp.array[float],
   # Data in:
   geom_xpos_in: wp.array2d[wp.vec3],
   geom_xmat_in: wp.array2d[wp.mat33],
   flexvert_xpos_in: wp.array2d[wp.vec3],
+  body_awake_in: wp.array2d[int],
   naconmax_in: int,
   flex_aabb_min_in: wp.array2d[wp.vec3],
   flex_aabb_max_in: wp.array2d[wp.vec3],
   # In:
+  enable_sleep: bool,
+  incremental: bool,
+  body_awake_prev_in: wp.array2d[int],
   triadr: wp.array[int],
   tridataadr: wp.array[int],
   tri: wp.array[int],
@@ -235,7 +288,6 @@ def _flex_broadphase_unified(
   triflexid: wp.array[int],
   # Data out:
   ncollision_out: wp.array[int],
-  # Data out:
   overflow_out: wp.array[int],
   # Out:
   collision_pair_out: wp.array[wp.vec2i],
@@ -248,6 +300,46 @@ def _flex_broadphase_unified(
   geomid = pair[1]
 
   flexid = triflexid[tri_id]
+
+  if enable_sleep:
+    geom_body = geom_bodyid[geomid]
+    geom_state = body_awake_in[worldid, geom_body]
+
+    flex_asleep = _flex_asleep(
+      body_treeid,
+      flex_interp,
+      flex_nodeadr,
+      flex_nodenum,
+      flex_vertadr,
+      flex_vertnum,
+      flex_nodebodyid,
+      flex_vertbodyid,
+      body_awake_in,
+      worldid,
+      flexid,
+    )
+
+    if flex_asleep and (geom_state == SleepState.ASLEEP or geom_state == SleepState.STATIC):
+      return
+
+    if incremental:
+      geom_state_prev = body_awake_prev_in[worldid, geom_body]
+      flex_asleep_prev = _flex_asleep(
+        body_treeid,
+        flex_interp,
+        flex_nodeadr,
+        flex_nodenum,
+        flex_vertadr,
+        flex_vertnum,
+        flex_nodebodyid,
+        flex_vertbodyid,
+        body_awake_prev_in,
+        worldid,
+        flexid,
+      )
+      skipped_pass1 = flex_asleep_prev and (geom_state_prev == SleepState.ASLEEP or geom_state_prev == SleepState.STATIC)
+      if not skipped_pass1:
+        return
 
   vert_adr = flex_vertadr[flexid]
   tri_radius = flex_radius[flexid]
@@ -295,10 +387,17 @@ def _flex_broadphase_plane(
   # Model:
   ngeom: int,
   opt_warn_overflow: bool,
+  body_treeid: wp.array[int],
   geom_type: wp.array[int],
   geom_margin: wp.array2d[float],
   flex_margin: wp.array[float],
+  flex_interp: wp.array[int],
+  flex_nodeadr: wp.array[int],
+  flex_nodenum: wp.array[int],
   flex_vertadr: wp.array[int],
+  flex_vertnum: wp.array[int],
+  flex_nodebodyid: wp.array[int],
+  flex_vertbodyid: wp.array[int],
   flex_radius: wp.array[float],
   flexvert_geom_pair_filtered: wp.array[wp.vec2i],
   flex_vertflexid: wp.array[int],
@@ -306,12 +405,16 @@ def _flex_broadphase_plane(
   geom_xpos_in: wp.array2d[wp.vec3],
   geom_xmat_in: wp.array2d[wp.mat33],
   flexvert_xpos_in: wp.array2d[wp.vec3],
+  body_awake_in: wp.array2d[int],
   naconmax_in: int,
   flex_aabb_min_in: wp.array2d[wp.vec3],
   flex_aabb_max_in: wp.array2d[wp.vec3],
+  # In:
+  enable_sleep: bool,
+  incremental: bool,
+  body_awake_prev_in: wp.array2d[int],
   # Data out:
   ncollision_out: wp.array[int],
-  # Data out:
   overflow_out: wp.array[int],
   # Out:
   collision_pair_out: wp.array[wp.vec2i],
@@ -324,6 +427,41 @@ def _flex_broadphase_plane(
   geomid = pair[1]
 
   flexid = flex_vertflexid[vertid]
+
+  if enable_sleep:
+    flex_asleep = _flex_asleep(
+      body_treeid,
+      flex_interp,
+      flex_nodeadr,
+      flex_nodenum,
+      flex_vertadr,
+      flex_vertnum,
+      flex_nodebodyid,
+      flex_vertbodyid,
+      body_awake_in,
+      worldid,
+      flexid,
+    )
+    if flex_asleep:
+      return
+
+    if incremental:
+      flex_asleep_prev = _flex_asleep(
+        body_treeid,
+        flex_interp,
+        flex_nodeadr,
+        flex_nodenum,
+        flex_vertadr,
+        flex_vertnum,
+        flex_nodebodyid,
+        flex_vertbodyid,
+        body_awake_prev_in,
+        worldid,
+        flexid,
+      )
+      if not flex_asleep_prev:
+        return
+
   radius = flex_radius[flexid]
   flex_margin_val = flex_margin[flexid]
 
@@ -1095,24 +1233,36 @@ def _flex_geom_vertex_narrowphase_detect(
   # Model:
   ngeom: int,
   nflexvert: int,
+  body_treeid: wp.array[int],
   geom_type: wp.array[int],
   geom_contype: wp.array[int],
   geom_conaffinity: wp.array[int],
+  geom_bodyid: wp.array[int],
   geom_size: wp.array2d[wp.vec3],
   geom_margin: wp.array2d[float],
   flex_contype: wp.array[int],
   flex_conaffinity: wp.array[int],
   flex_margin: wp.array[float],
   flex_dim: wp.array[int],
+  flex_interp: wp.array[int],
+  flex_nodeadr: wp.array[int],
+  flex_nodenum: wp.array[int],
   flex_vertadr: wp.array[int],
+  flex_vertnum: wp.array[int],
+  flex_nodebodyid: wp.array[int],
+  flex_vertbodyid: wp.array[int],
   flex_radius: wp.array[float],
   flex_vertflexid: wp.array[int],
   # Data in:
   geom_xpos_in: wp.array2d[wp.vec3],
   geom_xmat_in: wp.array2d[wp.mat33],
   flexvert_xpos_in: wp.array2d[wp.vec3],
+  body_awake_in: wp.array2d[int],
   nworld_in: int,
   # In:
+  enable_sleep: bool,
+  incremental: bool,
+  body_awake_prev_in: wp.array2d[int],
   max_candidates: int,
   # Data out:
   overflow_out: wp.array[int],
@@ -1132,6 +1282,23 @@ def _flex_geom_vertex_narrowphase_detect(
   worldid, vertid = wp.tid()
 
   flexid = flex_vertflexid[vertid]
+
+  flex_asleep = False
+  if enable_sleep:
+    flex_asleep = _flex_asleep(
+      body_treeid,
+      flex_interp,
+      flex_nodeadr,
+      flex_nodenum,
+      flex_vertadr,
+      flex_vertnum,
+      flex_nodebodyid,
+      flex_vertbodyid,
+      body_awake_in,
+      worldid,
+      flexid,
+    )
+
   if flex_dim[flexid] >= 2:
     return
 
@@ -1142,6 +1309,31 @@ def _flex_geom_vertex_narrowphase_detect(
   v_pos = flexvert_xpos_in[worldid, vertid]
 
   for geomid in range(ngeom):
+    if enable_sleep:
+      geom_body = geom_bodyid[geomid]
+      geom_state = body_awake_in[worldid, geom_body]
+      if flex_asleep and (geom_state == SleepState.ASLEEP or geom_state == SleepState.STATIC):
+        continue
+
+      if incremental:
+        geom_state_prev = body_awake_prev_in[worldid, geom_body]
+        flex_asleep_prev = _flex_asleep(
+          body_treeid,
+          flex_interp,
+          flex_nodeadr,
+          flex_nodenum,
+          flex_vertadr,
+          flex_vertnum,
+          flex_nodebodyid,
+          flex_vertbodyid,
+          body_awake_prev_in,
+          worldid,
+          flexid,
+        )
+        skipped_pass1 = flex_asleep_prev and (geom_state_prev == SleepState.ASLEEP or geom_state_prev == SleepState.STATIC)
+        if not skipped_pass1:
+          continue
+
     gtype = geom_type[geomid]
     if (
       gtype != int(GeomType.SPHERE)
@@ -1279,20 +1471,31 @@ def _plane_vertex(
 def _flex_internal_collisions_detect(
   # Model:
   nflex: int,
+  body_treeid: wp.array[int],
   flex_margin: wp.array[float],
   flex_internal: wp.array[int],
   flex_dim: wp.array[int],
+  flex_interp: wp.array[int],
+  flex_nodeadr: wp.array[int],
+  flex_nodenum: wp.array[int],
   flex_vertadr: wp.array[int],
+  flex_vertnum: wp.array[int],
   flex_elemdataadr: wp.array[int],
   flex_evpairadr: wp.array[int],
   flex_evpairnum: wp.array[int],
+  flex_nodebodyid: wp.array[int],
+  flex_vertbodyid: wp.array[int],
   flex_elem: wp.array[int],
   flex_evpair: wp.array[wp.vec2i],
   flex_radius: wp.array[float],
   flex_evpairflexid: wp.array[int],
   # Data in:
   flexvert_xpos_in: wp.array2d[wp.vec3],
+  body_awake_in: wp.array2d[int],
   # In:
+  enable_sleep: bool,
+  incremental: bool,
+  body_awake_prev_in: wp.array2d[int],
   max_candidates: int,
   # Data out:
   overflow_out: wp.array[int],
@@ -1312,6 +1515,41 @@ def _flex_internal_collisions_detect(
   worldid, pair_idx = wp.tid()
 
   flexid = flex_evpairflexid[pair_idx]
+
+  if enable_sleep:
+    flex_asleep = _flex_asleep(
+      body_treeid,
+      flex_interp,
+      flex_nodeadr,
+      flex_nodenum,
+      flex_vertadr,
+      flex_vertnum,
+      flex_nodebodyid,
+      flex_vertbodyid,
+      body_awake_in,
+      worldid,
+      flexid,
+    )
+    if flex_asleep:
+      return
+
+    if incremental:
+      flex_asleep_prev = _flex_asleep(
+        body_treeid,
+        flex_interp,
+        flex_nodeadr,
+        flex_nodenum,
+        flex_vertadr,
+        flex_vertnum,
+        flex_nodebodyid,
+        flex_vertbodyid,
+        body_awake_prev_in,
+        worldid,
+        flexid,
+      )
+      if not flex_asleep_prev:
+        return
+
   if flex_internal[flexid] == 0:
     return
 
@@ -1388,17 +1626,28 @@ def _flex_internal_collisions_detect(
 def _flex_tet_internal_collisions_detect(
   # Model:
   nflex: int,
+  body_treeid: wp.array[int],
   flex_dim: wp.array[int],
+  flex_interp: wp.array[int],
+  flex_nodeadr: wp.array[int],
+  flex_nodenum: wp.array[int],
   flex_vertadr: wp.array[int],
+  flex_vertnum: wp.array[int],
   flex_elemadr: wp.array[int],
   flex_elemnum: wp.array[int],
   flex_elemdataadr: wp.array[int],
+  flex_nodebodyid: wp.array[int],
+  flex_vertbodyid: wp.array[int],
   flex_elem: wp.array[int],
   flex_radius: wp.array[float],
   flex_elemflexid: wp.array[int],
   # Data in:
   flexvert_xpos_in: wp.array2d[wp.vec3],
+  body_awake_in: wp.array2d[int],
   # In:
+  enable_sleep: bool,
+  incremental: bool,
+  body_awake_prev_in: wp.array2d[int],
   max_candidates: int,
   # Data out:
   overflow_out: wp.array[int],
@@ -1418,6 +1667,41 @@ def _flex_tet_internal_collisions_detect(
   worldid, elemid = wp.tid()
 
   flexid = flex_elemflexid[elemid]
+
+  if enable_sleep:
+    flex_asleep = _flex_asleep(
+      body_treeid,
+      flex_interp,
+      flex_nodeadr,
+      flex_nodenum,
+      flex_vertadr,
+      flex_vertnum,
+      flex_nodebodyid,
+      flex_vertbodyid,
+      body_awake_in,
+      worldid,
+      flexid,
+    )
+    if flex_asleep:
+      return
+
+    if incremental:
+      flex_asleep_prev = _flex_asleep(
+        body_treeid,
+        flex_interp,
+        flex_nodeadr,
+        flex_nodenum,
+        flex_vertadr,
+        flex_vertnum,
+        flex_nodebodyid,
+        flex_vertbodyid,
+        body_awake_prev_in,
+        worldid,
+        flexid,
+      )
+      if not flex_asleep_prev:
+        return
+
   if flex_dim[flexid] != 3:
     return
 
@@ -1676,19 +1960,29 @@ def _flex_active_element_collisions_detect(
   # Model:
   nflex: int,
   opt_ccd_tolerance: wp.array[float],
+  body_treeid: wp.array[int],
   flex_selfcollide: wp.array[int],
   flex_dim: wp.array[int],
+  flex_interp: wp.array[int],
+  flex_nodeadr: wp.array[int],
+  flex_nodenum: wp.array[int],
   flex_vertadr: wp.array[int],
+  flex_vertnum: wp.array[int],
   flex_elemadr: wp.array[int],
   flex_elemnum: wp.array[int],
   flex_elemdataadr: wp.array[int],
+  flex_nodebodyid: wp.array[int],
   flex_vertbodyid: wp.array[int],
   flex_elem: wp.array[int],
   flex_radius: wp.array[float],
   flex_elemflexid: wp.array[int],
   # Data in:
   flexvert_xpos_in: wp.array2d[wp.vec3],
+  body_awake_in: wp.array2d[int],
   # In:
+  enable_sleep: bool,
+  incremental: bool,
+  body_awake_prev_in: wp.array2d[int],
   max_candidates: int,
   gjk_iterations: int,
   epa_iterations: int,
@@ -1718,6 +2012,41 @@ def _flex_active_element_collisions_detect(
   worldid, elem1_global = wp.tid()
 
   flexid = flex_elemflexid[elem1_global]
+
+  if enable_sleep:
+    flex_asleep = _flex_asleep(
+      body_treeid,
+      flex_interp,
+      flex_nodeadr,
+      flex_nodenum,
+      flex_vertadr,
+      flex_vertnum,
+      flex_nodebodyid,
+      flex_vertbodyid,
+      body_awake_in,
+      worldid,
+      flexid,
+    )
+    if flex_asleep:
+      return
+
+    if incremental:
+      flex_asleep_prev = _flex_asleep(
+        body_treeid,
+        flex_interp,
+        flex_nodeadr,
+        flex_nodenum,
+        flex_vertadr,
+        flex_vertnum,
+        flex_nodebodyid,
+        flex_vertbodyid,
+        body_awake_prev_in,
+        worldid,
+        flexid,
+      )
+      if not flex_asleep_prev:
+        return
+
   if flex_selfcollide[flexid] == 0:
     return
 
@@ -2335,10 +2664,19 @@ def flex_broadphase(m: Model, d: Data):
 
 
 @event_scope
-def flex_collision(m: Model, d: Data, ctx):
+def flex_collision(
+  m: Model,
+  d: Data,
+  ctx,
+  enable_sleep: bool = False,
+  awake_prev: Optional[wp.array] = None,
+):
   """Runs collision detection between geoms and flex elements."""
   if m.nflex == 0:
     return
+
+  incremental = awake_prev is not None
+  awake_prev_in = awake_prev if awake_prev is not None else d.body_awake
 
   # Deduplicated candidate buffers (allocated on GPU)
   cand_dist = wp.empty(d.naconmax, dtype=float)
@@ -2389,21 +2727,36 @@ def flex_collision(m: Model, d: Data, ctx):
         m.ngeom,
         m.nflex,
         m.opt.warn_overflow,
+        m.body_treeid,
         m.geom_type,
+        m.geom_bodyid,
         m.geom_size,
         m.geom_aabb,
         m.geom_rbound,
         m.geom_margin,
         m.flex_margin,
         m.flex_dim,
+        m.flex_interp,
+        m.flex_nodeadr,
+        m.flex_nodenum,
         m.flex_vertadr,
+        m.flex_vertnum,
+        m.flex_nodebodyid,
+        m.flex_vertbodyid,
         m.flex_radius,
+        # Data in:
         d.geom_xpos,
         d.geom_xmat,
         d.flexvert_xpos,
+        d.body_awake,
         d.naconmax,
         d.flex_aabb_min,
         d.flex_aabb_max,
+        # In:
+        enable_sleep,
+        incremental,
+        awake_prev_in,
+        # Trailing 2D Flex:
         m.flex_elemadr,
         m.flex_elemdataadr,
         m.flex_elem,
@@ -2508,21 +2861,36 @@ def flex_collision(m: Model, d: Data, ctx):
         m.ngeom,
         m.nflex,
         m.opt.warn_overflow,
+        m.body_treeid,
         m.geom_type,
+        m.geom_bodyid,
         m.geom_size,
         m.geom_aabb,
         m.geom_rbound,
         m.geom_margin,
         m.flex_margin,
         m.flex_dim,
+        m.flex_interp,
+        m.flex_nodeadr,
+        m.flex_nodenum,
         m.flex_vertadr,
+        m.flex_vertnum,
+        m.flex_nodebodyid,
+        m.flex_vertbodyid,
         m.flex_radius,
+        # Data in:
         d.geom_xpos,
         d.geom_xmat,
         d.flexvert_xpos,
+        d.body_awake,
         d.naconmax,
         d.flex_aabb_min,
         d.flex_aabb_max,
+        # In:
+        enable_sleep,
+        incremental,
+        awake_prev_in,
+        # Trailing 3D Flex:
         m.flex_shelladr,
         m.flex_shelldataadr,
         m.flex_shell,
@@ -2626,19 +2994,32 @@ def flex_collision(m: Model, d: Data, ctx):
       inputs=[
         m.ngeom,
         m.opt.warn_overflow,
+        m.body_treeid,
         m.geom_type,
         m.geom_margin,
         m.flex_margin,
+        m.flex_interp,
+        m.flex_nodeadr,
+        m.flex_nodenum,
         m.flex_vertadr,
+        m.flex_vertnum,
+        m.flex_nodebodyid,
+        m.flex_vertbodyid,
         m.flex_radius,
         m.flexvert_geom_pair_filtered,
         m.flex_vertflexid,
+        # Data in:
         d.geom_xpos,
         d.geom_xmat,
         d.flexvert_xpos,
+        d.body_awake,
         d.naconmax,
         d.flex_aabb_min,
         d.flex_aabb_max,
+        # In:
+        enable_sleep,
+        incremental,
+        awake_prev_in,
       ],
       outputs=[
         ncollision_plane,
@@ -2711,22 +3092,34 @@ def flex_collision(m: Model, d: Data, ctx):
       inputs=[
         m.ngeom,
         m.nflexvert,
+        m.body_treeid,
         m.geom_type,
         m.geom_contype,
         m.geom_conaffinity,
+        m.geom_bodyid,
         m.geom_size,
         m.geom_margin,
         m.flex_contype,
         m.flex_conaffinity,
         m.flex_margin,
         m.flex_dim,
+        m.flex_interp,
+        m.flex_nodeadr,
+        m.flex_nodenum,
         m.flex_vertadr,
+        m.flex_vertnum,
+        m.flex_nodebodyid,
+        m.flex_vertbodyid,
         m.flex_radius,
         m.flex_vertflexid,
         d.geom_xpos,
         d.geom_xmat,
         d.flexvert_xpos,
+        d.body_awake,
         d.nworld,
+        enable_sleep,
+        incremental,
+        awake_prev_in,
         d.naconmax,
       ],
       outputs=[
@@ -2751,18 +3144,29 @@ def flex_collision(m: Model, d: Data, ctx):
       dim=(d.nworld, m.nflexevpair),
       inputs=[
         m.nflex,
+        m.body_treeid,
         m.flex_margin,
         m.flex_internal,
         m.flex_dim,
+        m.flex_interp,
+        m.flex_nodeadr,
+        m.flex_nodenum,
         m.flex_vertadr,
+        m.flex_vertnum,
         m.flex_elemdataadr,
         m.flex_evpairadr,
         m.flex_evpairnum,
+        m.flex_nodebodyid,
+        m.flex_vertbodyid,
         m.flex_elem,
         m.flex_evpair,
         m.flex_radius,
         m.flex_evpairflexid,
         d.flexvert_xpos,
+        d.body_awake,
+        enable_sleep,
+        incremental,
+        awake_prev_in,
         d.naconmax,
       ],
       outputs=[
@@ -2787,15 +3191,26 @@ def flex_collision(m: Model, d: Data, ctx):
       dim=(d.nworld, m.nflexelem),
       inputs=[
         m.nflex,
+        m.body_treeid,
         m.flex_dim,
+        m.flex_interp,
+        m.flex_nodeadr,
+        m.flex_nodenum,
         m.flex_vertadr,
+        m.flex_vertnum,
         m.flex_elemadr,
         m.flex_elemnum,
         m.flex_elemdataadr,
+        m.flex_nodebodyid,
+        m.flex_vertbodyid,
         m.flex_elem,
         m.flex_radius,
         m.flex_elemflexid,
         d.flexvert_xpos,
+        d.body_awake,
+        enable_sleep,
+        incremental,
+        awake_prev_in,
         d.naconmax,
       ],
       outputs=[
@@ -2841,17 +3256,27 @@ def flex_collision(m: Model, d: Data, ctx):
       inputs=[
         m.nflex,
         m.opt.ccd_tolerance,
+        m.body_treeid,
         m.flex_selfcollide,
         m.flex_dim,
+        m.flex_interp,
+        m.flex_nodeadr,
+        m.flex_nodenum,
         m.flex_vertadr,
+        m.flex_vertnum,
         m.flex_elemadr,
         m.flex_elemnum,
         m.flex_elemdataadr,
+        m.flex_nodebodyid,
         m.flex_vertbodyid,
         m.flex_elem,
         m.flex_radius,
         m.flex_elemflexid,
         d.flexvert_xpos,
+        d.body_awake,
+        enable_sleep,
+        incremental,
+        awake_prev_in,
         d.naconmax,
         m.opt.ccd_iterations,
         epa_iterations,

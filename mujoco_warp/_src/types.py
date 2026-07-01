@@ -974,6 +974,7 @@ class Model:
     ncam: number of cameras
     nlight: number of lights
     nflex: number of flexes
+    nflexnode: number of nodes in all flexes
     nflexvert: number of vertices in all flexes
     nflexedge: number of edges in all flexes
     nflexelem: number of elements in all flexes
@@ -1140,6 +1141,9 @@ class Model:
     flex_internal: internal collision enabled                (nflex,)
     flex_selfcollide: self-collision mode                    (nflex,)
     flex_dim: 1: lines, 2: triangles, 3: tetrahedra          (nflex,)
+    flex_interp: flex interpolation mode                     (nflex,)
+    flex_nodeadr: first node address                         (nflex,)
+    flex_nodenum: number of nodes                            (nflex,)
     flex_vertadr: first vertex address                       (nflex,)
     flex_vertnum: number of vertices                         (nflex,)
     flex_edgeadr: first edge address                         (nflex,)
@@ -1154,6 +1158,7 @@ class Model:
     flex_shelldataadr: first shell data address              (nflex,)
     flex_evpairadr: first element-vertex pair address        (nflex,)
     flex_evpairnum: number of element-vertex pairs           (nflex,)
+    flex_nodebodyid: node body ids                           (nflexnode,)
     flex_vertbodyid: vertex body ids                         (nflexvert,)
     flex_edge: edge vertex ids (2 per edge)                  (nflexedge, 2)
     flex_edgeflap: adjacent vertex ids (dim=2 only)          (nflexedge, 2)
@@ -1168,6 +1173,7 @@ class Model:
     flex_stiffness: finite element stiffness matrix          (nflexstiffness,)
     flex_bending: bending stiffness                          (nflexbending,)
     flex_damping: Rayleigh's damping coefficient             (nflex,)
+    flex_edgeequality: edge equality constraint index        (nflex,)
     flex_centered: flex vertices are centered at body origin (nflex,)
     flexedge_J_rownnz: number of nonzeros in Jacobian row    (nflexedge,)
     flexedge_J_rowadr: row start address in colind array     (nflexedge,)
@@ -1438,6 +1444,7 @@ class Model:
   ncam: int
   nlight: int
   nflex: int
+  nflexnode: int
   nflexvert: int
   nflexedge: int
   nflexelem: int
@@ -1604,6 +1611,9 @@ class Model:
   flex_internal: array("nflex", int)
   flex_selfcollide: array("nflex", int)
   flex_dim: array("nflex", int)
+  flex_interp: array("nflex", int)
+  flex_nodeadr: array("nflex", int)
+  flex_nodenum: array("nflex", int)
   flex_vertadr: array("nflex", int)
   flex_vertnum: array("nflex", int)
   flex_edgeadr: array("nflex", int)
@@ -1618,6 +1628,7 @@ class Model:
   flex_shelldataadr: array("nflex", int)
   flex_evpairadr: array("nflex", int)
   flex_evpairnum: array("nflex", int)
+  flex_nodebodyid: array("nflexnode", int)
   flex_vertbodyid: array("nflexvert", int)
   flex_edge: array("nflexedge", wp.vec2i)
   flex_edgeflap: array("nflexedge", wp.vec2i)
@@ -1632,6 +1643,7 @@ class Model:
   flex_stiffness: array("nflexstiffness", float)
   flex_bending: array("nflexbending", float)
   flex_damping: array("nflex", float)
+  flex_edgeequality: array("nflex", int)
   flex_centered: array("nflex", bool)
   flexedge_J_rownnz: array("nflexedge", int)
   flexedge_J_rowadr: array("nflexedge", int)

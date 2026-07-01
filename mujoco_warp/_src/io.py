@@ -327,7 +327,9 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
     if unsupported:
       raise NotImplementedError(f"{mj_type(unsupported).name} is unsupported.")
 
-  if (mjm.opt.enableflags & mujoco.mjtEnableBit.mjENBL_SLEEP) and (mjm.eq_type == mujoco.mjtEq.mjEQ_FLEX).any():
+  if (mjm.opt.enableflags & mujoco.mjtEnableBit.mjENBL_SLEEP) and (
+    (mjm.eq_type == mujoco.mjtEq.mjEQ_FLEXSTRAIN).any() or (mjm.eq_type == mujoco.mjtEq.mjEQ_FLEXVERT).any()
+  ):
     raise NotImplementedError("Flex equality constraints are not supported with sleeping enabled.")
 
   if mjm.opt.noslip_iterations > 0:

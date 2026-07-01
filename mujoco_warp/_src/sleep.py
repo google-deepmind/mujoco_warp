@@ -360,15 +360,106 @@ def _wake_kernel(
     _wake_tree(ntree, worldid, treeid, K_AWAKE_VAL, tree_asleep_out)
 
 
+@wp.func
+def _flex_asleep(
+  # Model:
+  body_treeid: wp.array[int],
+  flex_interp: wp.array[int],
+  flex_nodeadr: wp.array[int],
+  flex_nodenum: wp.array[int],
+  flex_vertadr: wp.array[int],
+  flex_vertnum: wp.array[int],
+  flex_nodebodyid: wp.array[int],
+  flex_vertbodyid: wp.array[int],
+  # Data in:
+  body_awake_in: wp.array2d[int],
+  # In:
+  worldid: int,
+  flex_id: int,
+) -> bool:
+  f = flex_id
+  num = int(0)
+  adr = int(0)
+  if flex_interp[f] != 0:
+    num = flex_nodenum[f]
+    adr = flex_nodeadr[f]
+  else:
+    num = flex_vertnum[f]
+    adr = flex_vertadr[f]
+
+  for j in range(num):
+    b = int(-1)
+    if flex_interp[f] != 0:
+      b = flex_nodebodyid[adr + j]
+    else:
+      b = flex_vertbodyid[adr + j]
+
+    if b >= 0 and body_treeid[b] >= 0:
+      return body_awake_in[worldid, b] == SleepState.ASLEEP
+
+  return False
+
+
+@wp.func
+def _flex_body(
+  # Model:
+  flex_dim: wp.array[int],
+  flex_interp: wp.array[int],
+  flex_nodeadr: wp.array[int],
+  flex_nodenum: wp.array[int],
+  flex_vertadr: wp.array[int],
+  flex_vertnum: wp.array[int],
+  flex_elemdataadr: wp.array[int],
+  flex_nodebodyid: wp.array[int],
+  flex_vertbodyid: wp.array[int],
+  flex_elem: wp.array[int],
+  # In:
+  flex_id: int,
+  elem_id: int,
+  vert_id: int,
+) -> int:
+  f = flex_id
+
+  # flex vertex contact (non-interpolated)
+  if vert_id >= 0 and flex_interp[f] == 0:
+    return flex_vertbodyid[flex_vertadr[f] + vert_id]
+
+  # flex element contact
+  if elem_id >= 0:
+    if flex_interp[f] == 0:
+      dim = flex_dim[f]
+      v0 = flex_elem[flex_elemdataadr[f] + elem_id * (dim + 1)]
+      return flex_vertbodyid[flex_vertadr[f] + v0]
+    else:
+      return flex_nodebodyid[flex_nodeadr[f]]
+
+  # flex vertex contact (interpolated): use first node
+  return flex_nodebodyid[flex_nodeadr[f]]
+
+
 @wp.kernel
 def _wake_collision_kernel(
   # Model:
   ntree: int,
+  nflex: int,
   body_treeid: wp.array[int],
   geom_bodyid: wp.array[int],
+  flex_dim: wp.array[int],
+  flex_interp: wp.array[int],
+  flex_nodeadr: wp.array[int],
+  flex_nodenum: wp.array[int],
+  flex_vertadr: wp.array[int],
+  flex_vertnum: wp.array[int],
+  flex_elemdataadr: wp.array[int],
+  flex_nodebodyid: wp.array[int],
+  flex_vertbodyid: wp.array[int],
+  flex_elem: wp.array[int],
   # Data in:
   tree_awake_in: wp.array2d[int],
   contact_geom_in: wp.array[wp.vec2i],
+  contact_flex_in: wp.array[wp.vec2i],
+  contact_elem_in: wp.array[wp.vec2i],
+  contact_vert_in: wp.array[wp.vec2i],
   contact_worldid_in: wp.array[int],
   nacon_in: wp.array[int],
   # Out:
@@ -382,11 +473,61 @@ def _wake_collision_kernel(
   g1 = geom_pair[0]
   g2 = geom_pair[1]
 
-  if g1 < 0 or g2 < 0:
+  f1 = int(-1)
+  f2 = int(-1)
+  elem_pair = wp.vec2i(-1, -1)
+  vert_pair = wp.vec2i(-1, -1)
+
+  if nflex > 0:
+    flex_pair = contact_flex_in[conid]
+    f1 = flex_pair[0]
+    f2 = flex_pair[1]
+    elem_pair = contact_elem_in[conid]
+    vert_pair = contact_vert_in[conid]
+
+  b1 = int(-1)
+  if g1 >= 0:
+    b1 = geom_bodyid[g1]
+  elif f1 >= 0:
+    b1 = _flex_body(
+      flex_dim,
+      flex_interp,
+      flex_nodeadr,
+      flex_nodenum,
+      flex_vertadr,
+      flex_vertnum,
+      flex_elemdataadr,
+      flex_nodebodyid,
+      flex_vertbodyid,
+      flex_elem,
+      f1,
+      elem_pair[0],
+      vert_pair[0],
+    )
+
+  b2 = int(-1)
+  if g2 >= 0:
+    b2 = geom_bodyid[g2]
+  elif f2 >= 0:
+    b2 = _flex_body(
+      flex_dim,
+      flex_interp,
+      flex_nodeadr,
+      flex_nodenum,
+      flex_vertadr,
+      flex_vertnum,
+      flex_elemdataadr,
+      flex_nodebodyid,
+      flex_vertbodyid,
+      flex_elem,
+      f2,
+      elem_pair[1],
+      vert_pair[1],
+    )
+
+  if b1 < 0 or b2 < 0:
     return
 
-  b1 = geom_bodyid[g1]
-  b2 = geom_bodyid[g2]
   tree1 = body_treeid[b1]
   tree2 = body_treeid[b2]
 
@@ -581,6 +722,13 @@ def _wake_equality_kernel(
   jnt_bodyid: wp.array[int],
   geom_bodyid: wp.array[int],
   site_bodyid: wp.array[int],
+  flex_interp: wp.array[int],
+  flex_nodeadr: wp.array[int],
+  flex_nodenum: wp.array[int],
+  flex_vertadr: wp.array[int],
+  flex_vertnum: wp.array[int],
+  flex_nodebodyid: wp.array[int],
+  flex_vertbodyid: wp.array[int],
   eq_type: wp.array[int],
   eq_obj1id: wp.array[int],
   eq_obj2id: wp.array[int],
@@ -711,7 +859,48 @@ def _wake_equality_kernel(
         tree_asleep_out,
       )
 
-  # TODO(team): Implement waking for EqType.FLEX constraints.
+  elif eqtype == EqType.FLEX:
+    f = id1
+    num = int(0)
+    adr = int(0)
+    if flex_interp[f] != 0:
+      num = flex_nodenum[f]
+      adr = flex_nodeadr[f]
+    else:
+      num = flex_vertnum[f]
+      adr = flex_vertadr[f]
+
+    # find the first awake tree, if any
+    awake_tree = int(-1)
+    for j in range(num):
+      bodyid = int(-1)
+      if flex_interp[f] != 0:
+        bodyid = flex_nodebodyid[adr + j]
+      else:
+        bodyid = flex_vertbodyid[adr + j]
+
+      if bodyid >= 0:
+        treeid = body_treeid[bodyid]
+        if treeid >= 0 and tree_awake_in[worldid, treeid] == 1:
+          awake_tree = treeid
+          break
+
+    if awake_tree >= 0:
+      wakeval = tree_asleep_out[worldid, awake_tree]
+      for j in range(num):
+        bodyid = int(-1)
+        if flex_interp[f] != 0:
+          bodyid = flex_nodebodyid[adr + j]
+        else:
+          bodyid = flex_vertbodyid[adr + j]
+
+        if bodyid >= 0:
+          treeid = body_treeid[bodyid]
+          if treeid >= 0 and tree_awake_in[worldid, treeid] == 0:
+            _wake_tree(ntree, worldid, treeid, wakeval, tree_asleep_out)
+            break
+
+  # TODO(team): Implement waking for EqType.FLEXVERT and EqType.FLEXSTRAIN constraints.
 
 
 @event_scope
@@ -745,10 +934,24 @@ def wake_collision(m: types.Model, d: types.Data):
     dim=d.naconmax,
     inputs=[
       m.ntree,
+      m.nflex,
       m.body_treeid,
       m.geom_bodyid,
+      m.flex_dim,
+      m.flex_interp,
+      m.flex_nodeadr,
+      m.flex_nodenum,
+      m.flex_vertadr,
+      m.flex_vertnum,
+      m.flex_elemdataadr,
+      m.flex_nodebodyid,
+      m.flex_vertbodyid,
+      m.flex_elem,
       d.tree_awake,
       d.contact.geom,
+      d.contact.flex,
+      d.contact.elem,
+      d.contact.vert,
       d.contact.worldid,
       d.nacon,
     ],
@@ -802,6 +1005,13 @@ def wake_equality(m: types.Model, d: types.Data):
       m.jnt_bodyid,
       m.geom_bodyid,
       m.site_bodyid,
+      m.flex_interp,
+      m.flex_nodeadr,
+      m.flex_nodenum,
+      m.flex_vertadr,
+      m.flex_vertnum,
+      m.flex_nodebodyid,
+      m.flex_vertbodyid,
       m.eq_type,
       m.eq_obj1id,
       m.eq_obj2id,
