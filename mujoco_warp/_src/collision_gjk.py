@@ -46,7 +46,7 @@ FACE_TOL = wp.static(math.cos(0.0016))
 EDGE_TOL = wp.static(math.sin(0.0016))
 
 # tolarance used by multicontact for intersecting a plane and a line segment
-INTERSECT_TOL = 0.0000003
+INTERSECT_TOL = 1e-10
 
 # Bit flags for face status in EPA polytope.
 # Defined at module scope to avoid Warp's intermediate type issues with literals.
@@ -72,6 +72,7 @@ class GJKResult:
 @wp.struct
 class Polytope:
   status: int
+  center: wp.vec3
 
   # vertices in polytope (packed geom1 followed by geom2)
   vert: wp.array[wp.vec3]
@@ -228,6 +229,10 @@ def _attach_face(pt: Polytope, idx: int, v1: int, v2: int, v3: int) -> float:
   r, ret = _project_origin_plane(p3, p2, p1)
   if ret:
     return 0.0
+
+  # ensure projection points outward from the polytope
+  if wp.dot(r, p1 - pt.center) < 0.0:
+    r = -r
 
   face = v1 + (v2 << 10) + (v3 << 20)
   pt.face[idx] = face
@@ -566,13 +571,19 @@ def _S1D(s1: wp.vec3, s2: wp.vec3) -> wp.vec2:
   p_o = _project_origin_line(s1, s2)
 
   # find the axis with the largest projection "shadow" of the simplex
-  mu_max = 0.0
+  mu = s1[0] - s2[0]
+  mu_max = mu
   index = 0
-  for i in range(3):
-    mu = s1[i] - s2[i]
-    if wp.abs(mu) >= wp.abs(mu_max):
-      mu_max = mu
-      index = i
+
+  mu = s1[1] - s2[1]
+  if wp.abs(mu) >= wp.abs(mu_max):
+    mu_max = mu
+    index = 1
+
+  mu = s1[2] - s2[2]
+  if wp.abs(mu) >= wp.abs(mu_max):
+    mu_max = mu
+    index = 2
 
   C1 = p_o[index] - s2[index]
   C2 = s1[index] - p_o[index]
@@ -605,21 +616,34 @@ def gjk(
   simplex_index1 = wp.vec4i()
   simplex_index2 = wp.vec4i()
   n = int(0)
-  coordinates = wp.vec4()  # barycentric coordinates
+  coefs = wp.vec4(1.0, 0.0, 0.0, 0.0)  # barycentric coordinates
   tol2 = tolerance * tolerance
   epsilon = wp.where(is_discrete, 0.0, 0.5 * tol2)
+  min_norm2 = wp.where(is_discrete, MINVAL2, tol2)
 
   # set initial guess
   x_k = x1_0 - x2_0
-  xnorm_old = FLOAT_MAX
+  xnorm = float(0.0)
+
+  # track last 4 xnorm2 values for cycle detection
+  prev_xnorms = wp.vec4(-1.0, -1.0, -1.0, -1.0)
 
   for _ in range(gjk_iterations):
-    xnorm = wp.dot(x_k, x_k)
-    # TODO(kbayes): determine new constant here
-    if xnorm < tol2 or wp.abs(xnorm_old - xnorm) < tol2:
+    xnorm2 = wp.dot(x_k, x_k)
+    if xnorm2 < min_norm2:
+      # TODO(kbayes): Investigate why setting 0.0 here gives poor stability
+      xnorm = xnorm2
       break
-    xnorm_old = xnorm
-    dir_neg = x_k / wp.sqrt(xnorm)
+    xnorm = wp.sqrt(xnorm2)
+    dir_neg = x_k / xnorm
+
+    # cycle detection: break if xnorm2 matches any previous value
+    if xnorm2 == prev_xnorms[0] or xnorm2 == prev_xnorms[1] or xnorm2 == prev_xnorms[2] or xnorm2 == prev_xnorms[3]:
+      result = GJKResult()
+      result.dim = 0
+      result.dist = FLOAT_MAX
+      return result
+    prev_xnorms = wp.vec4(xnorm2, prev_xnorms[0], prev_xnorms[1], prev_xnorms[2])
 
     # compute kth support point in geom1
     sp = support(geom1, geomtype1, -dir_neg)
@@ -636,6 +660,15 @@ def gjk(
     # compute the kth support point
     simplex[n] = simplex1[n] - simplex2[n]
 
+    # stopping criteria using the Frank-Wolfe duality gap given by
+    #  |f(x_k) - f(x_min)|^2 <= < grad f(x_k), (x_k - simplex[n]) >
+    if wp.dot(x_k, x_k - simplex[n]) < epsilon:
+      if n == 0:
+        n = 1
+      break
+
+    # if the hyperplane separates the Minkowski difference and origin, the
+    # objects don't collide; if geom distance isn't requested, return early
     if cutoff == 0.0:
       if wp.dot(x_k, simplex[n]) > 0.0:
         result = GJKResult()
@@ -644,25 +677,22 @@ def gjk(
         return result
     elif cutoff < FLOAT_MAX:
       vs = wp.dot(x_k, simplex[n])
-      if wp.dot(x_k, simplex[n]) > 0.0 and (vs * vs / xnorm) >= cutoff2:
+      if wp.dot(x_k, simplex[n]) > 0.0 and (vs * vs / xnorm2) >= cutoff2:
         result = GJKResult()
         result.dim = 0
         result.dist = FLOAT_MAX
         return result
 
-    # stopping criteria using the Frank-Wolfe duality gap given by
-    #  |f(x_k) - f(x_min)|^2 <= < grad f(x_k), (x_k - simplex[n]) >
-    if wp.dot(x_k, x_k - simplex[n]) < epsilon:
-      break
-
     # run the distance subalgorithm to compute the barycentric coordinates
     # of the closest point to the origin in the simplex
-    coordinates = _subdistance(n + 1, simplex)
+    coefs = _subdistance(n + 1, simplex)
 
     # remove vertices from the simplex no longer needed
     n = int(0)
+    coefmax = float(-1.0)
+    imax = int(-1)
     for i in range(4):
-      if coordinates[i] == 0.0:
+      if coefs[i] == 0.0:
         continue
 
       simplex[n] = simplex[i]
@@ -670,15 +700,24 @@ def gjk(
       simplex2[n] = simplex2[i]
       simplex_index1[n] = simplex_index1[i]
       simplex_index2[n] = simplex_index2[i]
-      coordinates[n] = coordinates[i]
+      coefs[n] = coefs[i]
+      imax = wp.where(coefs[n] > coefmax, n, imax)
+      coefmax = wp.where(coefs[n] > coefmax, coefs[n], coefmax)
       n += int(1)
 
     # SHOULD NOT OCCUR
     if n < 1:
       break
 
+    coefs[imax] = 1.0
+    acc = float(0.0)
+    for i in range(n):
+      if i != imax:
+        acc += coefs[i]
+    coefs[imax] -= acc
+
     # get the next iteration of x_k
-    x_next = _linear_combine(n, coordinates, simplex)
+    x_next = _linear_combine(n, coefs, simplex)
 
     # x_k has converged to minimum
     if _almost_equal(x_next, x_k):
@@ -689,6 +728,7 @@ def gjk(
 
     # we have a tetrahedron containing the origin so return early
     if n == 4:
+      xnorm = 0.0
       break
 
   result = GJKResult()
@@ -696,9 +736,9 @@ def gjk(
   # compute the approximate witness points
   # if n is zero, then there was an immediate return meaning the initial points
   # are the witness points
-  result.x1 = wp.where(n == 0, x1_0, _linear_combine(n, coordinates, simplex1))
-  result.x2 = wp.where(n == 0, x2_0, _linear_combine(n, coordinates, simplex2))
-  result.dist = wp.norm_l2(x_k)
+  result.x1 = wp.where(n == 0, x1_0, _linear_combine(n, coefs, simplex1))
+  result.x2 = wp.where(n == 0, x2_0, _linear_combine(n, coefs, simplex2))
+  result.dist = xnorm
 
   result.dim = n
   result.simplex1 = simplex1
@@ -974,6 +1014,9 @@ def _polytope2(
   """Create polytope for EPA given a 1-simplex from GJK."""
   diff = simplex[1] - simplex[0]
 
+  # set the polytope center
+  pt.center = 0.5 * (simplex[0] + simplex[1])
+
   # find component with smallest magnitude (so cross product is largest)
   value = FLOAT_MAX
   index = 0
@@ -1063,6 +1106,9 @@ def _polytope3(
   geomtype2: int,
 ) -> Polytope:
   """Create polytope for EPA given a 2-simplex from GJK."""
+  # set the polytope center
+  pt.center = (simplex[0] + simplex[1] + simplex[2]) / 3.0
+
   # get normals in both directions
   n = wp.cross(simplex[1] - simplex[0], simplex[2] - simplex[0])
   if wp.norm_l2(n) < MINVAL:
@@ -1083,6 +1129,7 @@ def _polytope3(
   pt.vert_index[4] = simplex_index1[2]
   pt.vert_index[5] = simplex_index2[2]
 
+  n = wp.normalize(n)
   _epa_support(pt, 3, geom1, geom2, geomtype1, geomtype2, -n)
   _epa_support(pt, 4, geom1, geom2, geomtype1, geomtype2, n)
 
@@ -1104,7 +1151,7 @@ def _polytope3(
 
   # if origin does not lie on simplex then we need to check that the hexahedron contains the
   # origin
-  if dist > 1e-5 and not _test_tetra(v1, v2, v3, v4) and not _test_tetra(v1, v2, v3, v5):
+  if dist > 10.0 * MINVAL and not _test_tetra(v1, v2, v3, v4) and not _test_tetra(v1, v2, v3, v5):
     pt.status = 5
     return pt
 
@@ -1146,6 +1193,9 @@ def _polytope4(
   simplex_index2: wp.vec4i,
 ) -> Tuple[Polytope, GJKResult]:
   """Create polytope for EPA given a 3-simplex from GJK."""
+  # set the polytope center
+  pt.center = 0.25 * (simplex[0] + simplex[1] + simplex[2] + simplex[3])
+
   pt.vert[0] = simplex1[0]
   pt.vert[1] = simplex2[0]
   pt.vert[2] = simplex1[1]
@@ -1246,7 +1296,7 @@ def _epa(
   # so iterations must be cap to limit the number of generated vertices
   # (one new vertex per iteration)
   epa_iterations = wp.min(epa_iterations, 1000)
-  for _ in range(epa_iterations):
+  for k in range(epa_iterations):
     pidx = idx
     idx = int(-1)
     lower2 = float(FLOAT_MAX)
@@ -1283,6 +1333,9 @@ def _epa(
       upper2 = upper * upper
 
     if upper - lower < epsilon:
+      # terminate without contact when upper < lower on first iteration
+      if k == 0 and upper < lower - 1e-10:
+        idx = -1
       break
 
     # check if vertex wi is a repeated support point
@@ -1311,7 +1364,7 @@ def _epa(
       if _is_face_deleted(pt.face[i]):
         continue
 
-      if wp.dot(pt.face_pr[i], w) - pt.face_norm2[i] > 1e-10:
+      if wp.dot(pt.face_pr[i], w) - pt.face_norm2[i] > MINVAL:
         nvalid = wp.where(_is_invalid_face(pt.face[i]), nvalid, nvalid - 1)
         pt.face[i] = _delete_face(pt.face[i])
         face = _get_face_verts(pt.face[i])
@@ -1814,13 +1867,13 @@ def _mesh_face(
 @wp.func
 def _plane_normal(v1: wp.vec3, v2: wp.vec3, n: wp.vec3) -> Tuple[float, wp.vec3]:
   v3 = v1 + n
-  res = wp.cross(v2 - v1, v3 - v1)
+  res = wp.normalize(wp.cross(v2 - v1, v3 - v1))
   return wp.dot(res, v1), res
 
 
 @wp.func
 def _halfspace(a: wp.vec3, n: wp.vec3, p: wp.vec3) -> bool:
-  return wp.dot(p - a, n) > -1e-10
+  return wp.dot(p - a, n) > -MINVAL
 
 
 @wp.func
@@ -1829,7 +1882,7 @@ def _plane_intersect(pn: wp.vec3, pd: float, a: wp.vec3, b: wp.vec3) -> float:
   dot = wp.dot(pn, b - a)
 
   # parallel; no intersection
-  if wp.abs(dot) < 1e-10:
+  if wp.abs(dot) == 0.0:
     return FLOAT_MAX
 
   return (pd - wp.dot(pn, a)) / dot
