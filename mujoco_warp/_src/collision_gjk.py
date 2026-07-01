@@ -1074,7 +1074,7 @@ def _polytope3(
 ) -> Polytope:
   """Create polytope for EPA given a 2-simplex from GJK."""
   # set the polytope center
-  pt.center = (simplex[0] + simplex[1] + simplex[2]) / 3.0
+  pt.center = (simplex[0] + simplex[1] + simplex[2]) * wp.static(1.0 / 3.0)
 
   # get normals in both directions
   n = wp.cross(simplex[1] - simplex[0], simplex[2] - simplex[0])
