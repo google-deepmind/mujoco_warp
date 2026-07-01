@@ -2776,7 +2776,11 @@ class IOTest(parameterized.TestCase):
         f"Kernels were re-created on a subsequent step call: {created_kernels}",
       )
 
-  def test_flex_equality_sleep_error(self):
+  @parameterized.parameters(
+    mujoco.mjtEq.mjEQ_FLEXSTRAIN,
+    mujoco.mjtEq.mjEQ_FLEXVERT,
+  )
+  def test_flex_equality_sleep_error(self, eq_type):
     """Verify loading flex equality with sleep raises NotImplementedError."""
     xml = """
     <mujoco>
@@ -2791,7 +2795,7 @@ class IOTest(parameterized.TestCase):
     """
     mjm = mujoco.MjModel.from_xml_string(xml)
     mjm.opt.enableflags |= mujoco.mjtEnableBit.mjENBL_SLEEP
-    mjm.eq_type[0] = mujoco.mjtEq.mjEQ_FLEX
+    mjm.eq_type[0] = eq_type
 
     with self.assertRaises(NotImplementedError):
       mjwarp.put_model(mjm)

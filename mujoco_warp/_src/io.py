@@ -327,7 +327,9 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
     if unsupported:
       raise NotImplementedError(f"{mj_type(unsupported).name} is unsupported.")
 
-  if (mjm.opt.enableflags & mujoco.mjtEnableBit.mjENBL_SLEEP) and (mjm.eq_type == mujoco.mjtEq.mjEQ_FLEX).any():
+  if (mjm.opt.enableflags & mujoco.mjtEnableBit.mjENBL_SLEEP) and (
+    (mjm.eq_type == mujoco.mjtEq.mjEQ_FLEXSTRAIN).any() or (mjm.eq_type == mujoco.mjtEq.mjEQ_FLEXVERT).any()
+  ):
     raise NotImplementedError("Flex equality constraints are not supported with sleeping enabled.")
 
   if mjm.opt.noslip_iterations > 0:
@@ -959,6 +961,7 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
   flex_shellflexid = np.zeros(mjm.nflexshelldata, dtype=np.int32)
   flex_evpairflexid = np.zeros(mjm.nflexevpair, dtype=np.int32)
   flex_vertflexid = np.zeros(mjm.nflexvert, dtype=np.int32)
+  flex_nodeflexid = np.zeros(mjm.nflexnode, dtype=np.int32)
   flex_shelladr = np.zeros(mjm.nflex, dtype=np.int32)
 
   if mjm.nflex > 0:
@@ -985,6 +988,10 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
       vert_start = mjm.flex_vertadr[fi]
       vert_num = mjm.flex_vertnum[fi]
       flex_vertflexid[vert_start : vert_start + vert_num] = fi
+
+      node_start = mjm.flex_nodeadr[fi]
+      node_num = mjm.flex_nodenum[fi]
+      flex_nodeflexid[node_start : node_start + node_num] = fi
 
       # Candidate pairs loop
       match = ((mjm.geom_contype & fca) != 0) | ((fct & mjm.geom_conaffinity) != 0)
@@ -1070,7 +1077,33 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
   m.flex_shellflexid = flex_shellflexid
   m.flex_evpairflexid = flex_evpairflexid
   m.flex_vertflexid = flex_vertflexid
+  m.flex_nodeflexid = flex_nodeflexid
   m.flex_shelladr = flex_shelladr
+
+  body_isflex = np.full(mjm.nbody, -1, dtype=np.int32)
+  flex_has_dynamic_body = np.zeros(mjm.nflex, dtype=np.int32)
+  if mjm.nflex > 0:
+    for fi in range(mjm.nflex):
+      vert_start = mjm.flex_vertadr[fi]
+      vert_num = mjm.flex_vertnum[fi]
+      for v in range(vert_start, vert_start + vert_num):
+        b = mjm.flex_vertbodyid[v]
+        if b >= 0:
+          body_isflex[b] = fi
+          if mjm.body_treeid[b] >= 0:
+            flex_has_dynamic_body[fi] = 1
+
+      node_start = mjm.flex_nodeadr[fi]
+      node_num = mjm.flex_nodenum[fi]
+      for n in range(node_start, node_start + node_num):
+        b = mjm.flex_nodebodyid[n]
+        if b >= 0:
+          body_isflex[b] = fi
+          if mjm.body_treeid[b] >= 0:
+            flex_has_dynamic_body[fi] = 1
+
+  m.body_isflex = body_isflex
+  m.flex_has_dynamic_body = flex_has_dynamic_body
 
   # place m on device
   sizes = {f.name: getattr(m, f.name) for f in dataclasses.fields(types.Model) if f.type is int}

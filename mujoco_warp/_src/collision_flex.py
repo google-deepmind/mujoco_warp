@@ -13,7 +13,7 @@
 # limitations under the License.
 """Flex collision detection (geom vs flex triangles)."""
 
-from typing import Tuple
+from typing import Optional, Tuple
 
 import warp as wp
 
@@ -21,6 +21,8 @@ from mujoco_warp._src import collision_primitive_core
 from mujoco_warp._src.collision_core import Geom
 from mujoco_warp._src.collision_gjk import ccd
 from mujoco_warp._src.math import make_frame
+from mujoco_warp._src.sleep import init_sleep_flex
+from mujoco_warp._src.sleep import update_sleep_flex_from_bodies
 from mujoco_warp._src.types import MJ_MAX_EPAFACES
 from mujoco_warp._src.types import MJ_MAX_EPAHORIZON
 from mujoco_warp._src.types import MJ_MAXVAL
@@ -31,7 +33,9 @@ from mujoco_warp._src.types import Data
 from mujoco_warp._src.types import GeomType
 from mujoco_warp._src.types import Model
 from mujoco_warp._src.types import OverflowType
+from mujoco_warp._src.types import SleepState
 from mujoco_warp._src.types import vec5
+from mujoco_warp._src.warp_util import cache_kernel
 from mujoco_warp._src.warp_util import event_scope
 
 wp.set_module_options({"enable_backward": False})
@@ -205,171 +209,228 @@ def _flex_triangle_geom_broadphase(
   collision_worldid_out[idx] = worldid
 
 
-@wp.kernel
-def _flex_broadphase_unified(
-  # Model:
-  ngeom: int,
-  nflex: int,
-  opt_warn_overflow: bool,
-  geom_type: wp.array[int],
-  geom_size: wp.array2d[wp.vec3],
-  geom_aabb: wp.array3d[wp.vec3],
-  geom_rbound: wp.array2d[float],
-  geom_margin: wp.array2d[float],
-  flex_margin: wp.array[float],
-  flex_dim: wp.array[int],
-  flex_vertadr: wp.array[int],
-  flex_radius: wp.array[float],
-  # Data in:
-  geom_xpos_in: wp.array2d[wp.vec3],
-  geom_xmat_in: wp.array2d[wp.mat33],
-  flexvert_xpos_in: wp.array2d[wp.vec3],
-  naconmax_in: int,
-  flex_aabb_min_in: wp.array2d[wp.vec3],
-  flex_aabb_max_in: wp.array2d[wp.vec3],
-  # In:
-  triadr: wp.array[int],
-  tridataadr: wp.array[int],
-  tri: wp.array[int],
-  pairs_filtered: wp.array[wp.vec2i],
-  triflexid: wp.array[int],
-  # Data out:
-  ncollision_out: wp.array[int],
-  # Data out:
-  overflow_out: wp.array[int],
-  # Out:
-  collision_pair_out: wp.array[wp.vec2i],
-  collision_worldid_out: wp.array[int],
-):
-  worldid, pairid = wp.tid()
-
-  pair = pairs_filtered[pairid]
-  tri_id = pair[0]
-  geomid = pair[1]
-
-  flexid = triflexid[tri_id]
-
-  vert_adr = flex_vertadr[flexid]
-  tri_radius = flex_radius[flexid]
-  tri_margin = flex_margin[flexid]
-
-  tri_data_idx = tridataadr[flexid] + (tri_id - triadr[flexid]) * 3
-  v0_local = tri[tri_data_idx]
-  v1_local = tri[tri_data_idx + 1]
-  v2_local = tri[tri_data_idx + 2]
-
-  t1 = flexvert_xpos_in[worldid, vert_adr + v0_local]
-  t2 = flexvert_xpos_in[worldid, vert_adr + v1_local]
-  t3 = flexvert_xpos_in[worldid, vert_adr + v2_local]
-
-  _flex_triangle_geom_broadphase(
-    ngeom,
-    opt_warn_overflow,
-    geom_type,
-    geom_aabb,
-    geom_margin,
-    geom_xpos_in,
-    geom_xmat_in,
-    naconmax_in,
-    worldid,
-    tri_id,
-    flexid,
-    geomid,
-    t1,
-    t2,
-    t3,
-    tri_radius,
-    tri_margin,
-    flex_aabb_min_in[worldid, flexid],
-    flex_aabb_max_in[worldid, flexid],
+@cache_kernel
+def _flex_broadphase_unified(enable_sleep: bool = False, incremental: bool = False):
+  @wp.kernel(module="unique", enable_backward=False)
+  def kernel(
+    # Model:
+    ngeom: int,
+    nflex: int,
+    opt_warn_overflow: bool,
+    body_treeid: wp.array[int],
+    geom_type: wp.array[int],
+    geom_bodyid: wp.array[int],
+    geom_size: wp.array2d[wp.vec3],
+    geom_aabb: wp.array3d[wp.vec3],
+    geom_rbound: wp.array2d[float],
+    geom_margin: wp.array2d[float],
+    flex_margin: wp.array[float],
+    flex_dim: wp.array[int],
+    flex_interp: wp.array[int],
+    flex_nodeadr: wp.array[int],
+    flex_nodenum: wp.array[int],
+    flex_vertadr: wp.array[int],
+    flex_vertnum: wp.array[int],
+    flex_nodebodyid: wp.array[int],
+    flex_vertbodyid: wp.array[int],
+    flex_radius: wp.array[float],
+    # Data in:
+    geom_xpos_in: wp.array2d[wp.vec3],
+    geom_xmat_in: wp.array2d[wp.mat33],
+    flexvert_xpos_in: wp.array2d[wp.vec3],
+    body_awake_in: wp.array2d[int],
+    naconmax_in: int,
+    flex_aabb_min_in: wp.array2d[wp.vec3],
+    flex_aabb_max_in: wp.array2d[wp.vec3],
+    flex_awake_in: wp.array2d[int],
+    flex_awake_prev_in: wp.array2d[int],
+    # In:
+    body_awake_prev_in: wp.array2d[int],
+    triadr: wp.array[int],
+    tridataadr: wp.array[int],
+    tri: wp.array[int],
+    pairs_filtered: wp.array[wp.vec2i],
+    triflexid: wp.array[int],
     # Data out:
-    ncollision_out,
-    overflow_out,
-    collision_pair_out,
-    collision_worldid_out,
-  )
+    ncollision_out: wp.array[int],
+    overflow_out: wp.array[int],
+    # Out:
+    collision_pair_out: wp.array[wp.vec2i],
+    collision_worldid_out: wp.array[int],
+  ):
+    worldid, pairid = wp.tid()
+
+    pair = pairs_filtered[pairid]
+    tri_id = pair[0]
+    geomid = pair[1]
+
+    flexid = triflexid[tri_id]
+
+    if wp.static(enable_sleep):
+      geom_body = geom_bodyid[geomid]
+      geom_state = body_awake_in[worldid, geom_body]
+
+      flex_asleep = flex_awake_in[worldid, flexid] == 0
+
+      if flex_asleep and (geom_state == SleepState.ASLEEP or geom_state == SleepState.STATIC):
+        return
+
+      if wp.static(incremental):
+        geom_state_prev = body_awake_prev_in[worldid, geom_body]
+        flex_asleep_prev = flex_awake_prev_in[worldid, flexid] == 0
+        skipped_pass1 = flex_asleep_prev and (geom_state_prev == SleepState.ASLEEP or geom_state_prev == SleepState.STATIC)
+        if not skipped_pass1:
+          return
+
+    vert_adr = flex_vertadr[flexid]
+    tri_radius = flex_radius[flexid]
+    tri_margin = flex_margin[flexid]
+
+    tri_data_idx = tridataadr[flexid] + (tri_id - triadr[flexid]) * 3
+    v0_local = tri[tri_data_idx]
+    v1_local = tri[tri_data_idx + 1]
+    v2_local = tri[tri_data_idx + 2]
+
+    t1 = flexvert_xpos_in[worldid, vert_adr + v0_local]
+    t2 = flexvert_xpos_in[worldid, vert_adr + v1_local]
+    t3 = flexvert_xpos_in[worldid, vert_adr + v2_local]
+
+    _flex_triangle_geom_broadphase(
+      ngeom,
+      opt_warn_overflow,
+      geom_type,
+      geom_aabb,
+      geom_margin,
+      geom_xpos_in,
+      geom_xmat_in,
+      naconmax_in,
+      worldid,
+      tri_id,
+      flexid,
+      geomid,
+      t1,
+      t2,
+      t3,
+      tri_radius,
+      tri_margin,
+      flex_aabb_min_in[worldid, flexid],
+      flex_aabb_max_in[worldid, flexid],
+      # Data out:
+      ncollision_out,
+      overflow_out,
+      collision_pair_out,
+      collision_worldid_out,
+    )
+
+  return kernel
 
 
-@wp.kernel
-def _flex_broadphase_plane(
-  # Model:
-  ngeom: int,
-  opt_warn_overflow: bool,
-  geom_type: wp.array[int],
-  geom_margin: wp.array2d[float],
-  flex_margin: wp.array[float],
-  flex_vertadr: wp.array[int],
-  flex_radius: wp.array[float],
-  flexvert_geom_pair_filtered: wp.array[wp.vec2i],
-  flex_vertflexid: wp.array[int],
-  # Data in:
-  geom_xpos_in: wp.array2d[wp.vec3],
-  geom_xmat_in: wp.array2d[wp.mat33],
-  flexvert_xpos_in: wp.array2d[wp.vec3],
-  naconmax_in: int,
-  flex_aabb_min_in: wp.array2d[wp.vec3],
-  flex_aabb_max_in: wp.array2d[wp.vec3],
-  # Data out:
-  ncollision_out: wp.array[int],
-  # Data out:
-  overflow_out: wp.array[int],
-  # Out:
-  collision_pair_out: wp.array[wp.vec2i],
-  collision_worldid_out: wp.array[int],
-):
-  worldid, pairid = wp.tid()
+@cache_kernel
+def _flex_broadphase_plane(enable_sleep: bool = False, incremental: bool = False):
+  @wp.kernel(module="unique", enable_backward=False)
+  def kernel(
+    # Model:
+    ngeom: int,
+    opt_warn_overflow: bool,
+    body_treeid: wp.array[int],
+    geom_type: wp.array[int],
+    geom_margin: wp.array2d[float],
+    flex_margin: wp.array[float],
+    flex_interp: wp.array[int],
+    flex_nodeadr: wp.array[int],
+    flex_nodenum: wp.array[int],
+    flex_vertadr: wp.array[int],
+    flex_vertnum: wp.array[int],
+    flex_nodebodyid: wp.array[int],
+    flex_vertbodyid: wp.array[int],
+    flex_radius: wp.array[float],
+    flexvert_geom_pair_filtered: wp.array[wp.vec2i],
+    flex_vertflexid: wp.array[int],
+    # Data in:
+    geom_xpos_in: wp.array2d[wp.vec3],
+    geom_xmat_in: wp.array2d[wp.mat33],
+    flexvert_xpos_in: wp.array2d[wp.vec3],
+    body_awake_in: wp.array2d[int],
+    naconmax_in: int,
+    flex_aabb_min_in: wp.array2d[wp.vec3],
+    flex_aabb_max_in: wp.array2d[wp.vec3],
+    flex_awake_in: wp.array2d[int],
+    flex_awake_prev_in: wp.array2d[int],
+    # In:
+    body_awake_prev_in: wp.array2d[int],
+    # Data out:
+    ncollision_out: wp.array[int],
+    overflow_out: wp.array[int],
+    # Out:
+    collision_pair_out: wp.array[wp.vec2i],
+    collision_worldid_out: wp.array[int],
+  ):
+    worldid, pairid = wp.tid()
 
-  pair = flexvert_geom_pair_filtered[pairid]
-  vertid = pair[0]
-  geomid = pair[1]
+    pair = flexvert_geom_pair_filtered[pairid]
+    vertid = pair[0]
+    geomid = pair[1]
 
-  flexid = flex_vertflexid[vertid]
-  radius = flex_radius[flexid]
-  flex_margin_val = flex_margin[flexid]
+    flexid = flex_vertflexid[vertid]
 
-  vert = flexvert_xpos_in[worldid, vertid]
+    if wp.static(enable_sleep):
+      flex_asleep = flex_awake_in[worldid, flexid] == 0
+      if flex_asleep:
+        return
 
-  flex_aabb_min = flex_aabb_min_in[worldid, flexid]
-  flex_aabb_max = flex_aabb_max_in[worldid, flexid]
+      if wp.static(incremental):
+        flex_asleep_prev = flex_awake_prev_in[worldid, flexid] == 0
+        if not flex_asleep_prev:
+          return
 
-  gtype = geom_type[geomid]
-  if gtype != int(GeomType.PLANE):
-    return
+    radius = flex_radius[flexid]
+    flex_margin_val = flex_margin[flexid]
 
-  margin = geom_margin[worldid % geom_margin.shape[0], geomid] + flex_margin_val
-  geom_pos = geom_xpos_in[worldid, geomid]
-  geom_rot = geom_xmat_in[worldid, geomid]
-  plane_normal = wp.vec3(geom_rot[0, 2], geom_rot[1, 2], geom_rot[2, 2])
+    vert = flexvert_xpos_in[worldid, vertid]
 
-  # Stage 1 filter: Bounding box of flex vs plane
-  flex_center = 0.5 * (flex_aabb_min + flex_aabb_max)
-  flex_half_size = 0.5 * (flex_aabb_max - flex_aabb_min)
+    flex_aabb_min = flex_aabb_min_in[worldid, flexid]
+    flex_aabb_max = flex_aabb_max_in[worldid, flexid]
 
-  proj_half = (
-    wp.abs(flex_half_size[0] * plane_normal[0])
-    + wp.abs(flex_half_size[1] * plane_normal[1])
-    + wp.abs(flex_half_size[2] * plane_normal[2])
-  )
-
-  diff_center = flex_center - geom_pos
-  dist_center = wp.dot(diff_center, plane_normal)
-  if dist_center - proj_half > margin:
-    return
-
-  diff = vert - geom_pos
-  signed_dist = wp.dot(diff, plane_normal)
-  dist = signed_dist - radius
-
-  if dist < margin:
-    # Append Candidate to Context
-    idx = wp.atomic_add(ncollision_out, 0, 1)
-    if idx >= naconmax_in:
-      if opt_warn_overflow:
-        wp.printf("Collision buffer overflow in flex plane broadphase - please increase naconmax to %u\n", idx + 1)
-      wp.atomic_or(overflow_out, worldid, wp.static(OverflowType.BROADPHASE))
+    gtype = geom_type[geomid]
+    if gtype != int(GeomType.PLANE):
       return
-    collision_pair_out[idx] = wp.vec2i(vertid, geomid)
-    collision_worldid_out[idx] = worldid
+
+    margin = geom_margin[worldid % geom_margin.shape[0], geomid] + flex_margin_val
+    geom_pos = geom_xpos_in[worldid, geomid]
+    geom_rot = geom_xmat_in[worldid, geomid]
+    plane_normal = wp.vec3(geom_rot[0, 2], geom_rot[1, 2], geom_rot[2, 2])
+
+    # Stage 1 filter: Bounding box of flex vs plane
+    flex_center = 0.5 * (flex_aabb_min + flex_aabb_max)
+    flex_half_size = 0.5 * (flex_aabb_max - flex_aabb_min)
+
+    proj_half = (
+      wp.abs(flex_half_size[0] * plane_normal[0])
+      + wp.abs(flex_half_size[1] * plane_normal[1])
+      + wp.abs(flex_half_size[2] * plane_normal[2])
+    )
+
+    diff_center = flex_center - geom_pos
+    dist_center = wp.dot(diff_center, plane_normal)
+    if dist_center - proj_half > margin:
+      return
+
+    diff = vert - geom_pos
+    signed_dist = wp.dot(diff, plane_normal)
+    dist = signed_dist - radius
+
+    if dist < margin:
+      # Append Candidate to Context
+      idx = wp.atomic_add(ncollision_out, 0, 1)
+      if idx >= naconmax_in:
+        if opt_warn_overflow:
+          wp.printf("Collision buffer overflow in flex plane broadphase - please increase naconmax to %u\n", idx + 1)
+        wp.atomic_or(overflow_out, worldid, wp.static(OverflowType.BROADPHASE))
+        return
+      collision_pair_out[idx] = wp.vec2i(vertid, geomid)
+      collision_worldid_out[idx] = worldid
+
+  return kernel
 
 
 @wp.func
@@ -1090,129 +1151,163 @@ def _flex_plane_narrowphase(
     )
 
 
-@wp.kernel
-def _flex_geom_vertex_narrowphase_detect(
-  # Model:
-  ngeom: int,
-  nflexvert: int,
-  geom_type: wp.array[int],
-  geom_contype: wp.array[int],
-  geom_conaffinity: wp.array[int],
-  geom_size: wp.array2d[wp.vec3],
-  geom_margin: wp.array2d[float],
-  flex_contype: wp.array[int],
-  flex_conaffinity: wp.array[int],
-  flex_margin: wp.array[float],
-  flex_dim: wp.array[int],
-  flex_vertadr: wp.array[int],
-  flex_radius: wp.array[float],
-  flex_vertflexid: wp.array[int],
-  # Data in:
-  geom_xpos_in: wp.array2d[wp.vec3],
-  geom_xmat_in: wp.array2d[wp.mat33],
-  flexvert_xpos_in: wp.array2d[wp.vec3],
-  nworld_in: int,
-  # In:
-  max_candidates: int,
-  # Data out:
-  overflow_out: wp.array[int],
-  # Out:
-  cand_dist_out: wp.array[float],
-  cand_pos_out: wp.array[wp.vec3],
-  cand_nrm_out: wp.array[wp.vec3],
-  cand_geom_out: wp.array[wp.vec2i],
-  cand_flex_out: wp.array[wp.vec2i],
-  cand_elem_out: wp.array[wp.vec2i],
-  cand_vert_out: wp.array[wp.vec2i],
-  cand_worldid_out: wp.array[int],
-  cand_type_out: wp.array[int],
-  cand_geomcollisionid_out: wp.array[int],
-  ncand_out: wp.array[int],
-):
-  worldid, vertid = wp.tid()
+@cache_kernel
+def _flex_geom_vertex_narrowphase_detect(enable_sleep: bool = False, incremental: bool = False):
+  @wp.kernel(module="unique", enable_backward=False)
+  def kernel(
+    # Model:
+    ngeom: int,
+    nflexvert: int,
+    body_treeid: wp.array[int],
+    geom_type: wp.array[int],
+    geom_contype: wp.array[int],
+    geom_conaffinity: wp.array[int],
+    geom_bodyid: wp.array[int],
+    geom_size: wp.array2d[wp.vec3],
+    geom_margin: wp.array2d[float],
+    flex_contype: wp.array[int],
+    flex_conaffinity: wp.array[int],
+    flex_margin: wp.array[float],
+    flex_dim: wp.array[int],
+    flex_interp: wp.array[int],
+    flex_nodeadr: wp.array[int],
+    flex_nodenum: wp.array[int],
+    flex_vertadr: wp.array[int],
+    flex_vertnum: wp.array[int],
+    flex_nodebodyid: wp.array[int],
+    flex_vertbodyid: wp.array[int],
+    flex_radius: wp.array[float],
+    flex_vertflexid: wp.array[int],
+    # Data in:
+    geom_xpos_in: wp.array2d[wp.vec3],
+    geom_xmat_in: wp.array2d[wp.mat33],
+    flexvert_xpos_in: wp.array2d[wp.vec3],
+    body_awake_in: wp.array2d[int],
+    nworld_in: int,
+    flex_awake_in: wp.array2d[int],
+    flex_awake_prev_in: wp.array2d[int],
+    # In:
+    body_awake_prev_in: wp.array2d[int],
+    max_candidates: int,
+    # Data out:
+    overflow_out: wp.array[int],
+    # Out:
+    cand_dist_out: wp.array[float],
+    cand_pos_out: wp.array[wp.vec3],
+    cand_nrm_out: wp.array[wp.vec3],
+    cand_geom_out: wp.array[wp.vec2i],
+    cand_flex_out: wp.array[wp.vec2i],
+    cand_elem_out: wp.array[wp.vec2i],
+    cand_vert_out: wp.array[wp.vec2i],
+    cand_worldid_out: wp.array[int],
+    cand_type_out: wp.array[int],
+    cand_geomcollisionid_out: wp.array[int],
+    ncand_out: wp.array[int],
+  ):
+    worldid, vertid = wp.tid()
 
-  flexid = flex_vertflexid[vertid]
-  if flex_dim[flexid] >= 2:
-    return
+    flexid = flex_vertflexid[vertid]
 
-  radius = flex_radius[flexid]
-  flex_margin_val = flex_margin[flexid]
-  local_vertid = vertid - flex_vertadr[flexid]
+    flex_asleep = False
+    if wp.static(enable_sleep):
+      flex_asleep = flex_awake_in[worldid, flexid] == 0
 
-  v_pos = flexvert_xpos_in[worldid, vertid]
+    if flex_dim[flexid] >= 2:
+      return
 
-  for geomid in range(ngeom):
-    gtype = geom_type[geomid]
-    if (
-      gtype != int(GeomType.SPHERE)
-      and gtype != int(GeomType.CAPSULE)
-      and gtype != int(GeomType.BOX)
-      and gtype != int(GeomType.CYLINDER)
-    ):
-      continue
+    radius = flex_radius[flexid]
+    flex_margin_val = flex_margin[flexid]
+    local_vertid = vertid - flex_vertadr[flexid]
 
-    g_contype = geom_contype[geomid]
-    g_conaffinity = geom_conaffinity[geomid]
-    f_contype = flex_contype[flexid]
-    f_conaffinity = flex_conaffinity[flexid]
-    if not ((g_contype & f_conaffinity) or (f_contype & g_conaffinity)):
-      continue
+    v_pos = flexvert_xpos_in[worldid, vertid]
 
-    geom_margin_val = geom_margin[worldid % geom_margin.shape[0], geomid]
-    margin = geom_margin_val + flex_margin_val
+    for geomid in range(ngeom):
+      if wp.static(enable_sleep):
+        geom_body = geom_bodyid[geomid]
+        geom_state = body_awake_in[worldid, geom_body]
+        if flex_asleep and (geom_state == SleepState.ASLEEP or geom_state == SleepState.STATIC):
+          continue
 
-    geom_pos = geom_xpos_in[worldid, geomid]
-    geom_rot = geom_xmat_in[worldid, geomid]
-    geom_size_val = geom_size[worldid % geom_size.shape[0], geomid]
+        if wp.static(incremental):
+          geom_state_prev = body_awake_prev_in[worldid, geom_body]
+          flex_asleep_prev = flex_awake_prev_in[worldid, flexid] == 0
+          skipped_pass1 = flex_asleep_prev and (geom_state_prev == SleepState.ASLEEP or geom_state_prev == SleepState.STATIC)
+          if not skipped_pass1:
+            continue
 
-    dist = collision_primitive_core.MJ_MAXVAL
-    contact_pos = wp.vec3(0.0)
-    nrm = wp.vec3(0.0)
+      gtype = geom_type[geomid]
+      if (
+        gtype != int(GeomType.SPHERE)
+        and gtype != int(GeomType.CAPSULE)
+        and gtype != int(GeomType.BOX)
+        and gtype != int(GeomType.CYLINDER)
+      ):
+        continue
 
-    if gtype == int(GeomType.SPHERE):
-      sphere_radius = geom_size_val[0]
-      dist, contact_pos, nrm = collision_primitive_core.sphere_sphere(v_pos, radius, geom_pos, sphere_radius)
-    elif gtype == int(GeomType.CAPSULE):
-      cap_radius = geom_size_val[0]
-      cap_half_len = geom_size_val[1]
-      cap_axis = wp.vec3(geom_rot[0, 2], geom_rot[1, 2], geom_rot[2, 2])
-      dist, contact_pos, nrm = collision_primitive_core.sphere_capsule(
-        v_pos, radius, geom_pos, cap_axis, cap_radius, cap_half_len
-      )
-    elif gtype == int(GeomType.BOX):
-      dist, contact_pos, nrm = collision_primitive_core.sphere_box(v_pos, radius, geom_pos, geom_rot, geom_size_val)
-    elif gtype == int(GeomType.CYLINDER):
-      cyl_radius = geom_size_val[0]
-      cyl_half_height = geom_size_val[1]
-      cyl_axis = wp.vec3(geom_rot[0, 2], geom_rot[1, 2], geom_rot[2, 2])
-      dist, contact_pos, nrm = collision_primitive_core.sphere_cylinder(
-        v_pos, radius, geom_pos, cyl_axis, cyl_radius, cyl_half_height
-      )
+      g_contype = geom_contype[geomid]
+      g_conaffinity = geom_conaffinity[geomid]
+      f_contype = flex_contype[flexid]
+      f_conaffinity = flex_conaffinity[flexid]
+      if not ((g_contype & f_conaffinity) or (f_contype & g_conaffinity)):
+        continue
 
-    if dist < margin:
-      _write_candidate_contact(
-        max_candidates,
-        dist,
-        contact_pos,
-        nrm,
-        geomid,
-        flexid,
-        -1,
-        local_vertid,
-        worldid,
-        overflow_out,
-        cand_dist_out,
-        cand_pos_out,
-        cand_nrm_out,
-        cand_geom_out,
-        cand_flex_out,
-        cand_elem_out,
-        cand_vert_out,
-        cand_worldid_out,
-        cand_type_out,
-        cand_geomcollisionid_out,
-        ncand_out,
-      )
+      geom_margin_val = geom_margin[worldid % geom_margin.shape[0], geomid]
+      margin = geom_margin_val + flex_margin_val
+
+      geom_pos = geom_xpos_in[worldid, geomid]
+      geom_rot = geom_xmat_in[worldid, geomid]
+      geom_size_val = geom_size[worldid % geom_size.shape[0], geomid]
+
+      dist = collision_primitive_core.MJ_MAXVAL
+      contact_pos = wp.vec3(0.0)
+      nrm = wp.vec3(0.0)
+
+      if gtype == int(GeomType.SPHERE):
+        sphere_radius = geom_size_val[0]
+        dist, contact_pos, nrm = collision_primitive_core.sphere_sphere(v_pos, radius, geom_pos, sphere_radius)
+      elif gtype == int(GeomType.CAPSULE):
+        cap_radius = geom_size_val[0]
+        cap_half_len = geom_size_val[1]
+        cap_axis = wp.vec3(geom_rot[0, 2], geom_rot[1, 2], geom_rot[2, 2])
+        dist, contact_pos, nrm = collision_primitive_core.sphere_capsule(
+          v_pos, radius, geom_pos, cap_axis, cap_radius, cap_half_len
+        )
+      elif gtype == int(GeomType.BOX):
+        dist, contact_pos, nrm = collision_primitive_core.sphere_box(v_pos, radius, geom_pos, geom_rot, geom_size_val)
+      elif gtype == int(GeomType.CYLINDER):
+        cyl_radius = geom_size_val[0]
+        cyl_half_height = geom_size_val[1]
+        cyl_axis = wp.vec3(geom_rot[0, 2], geom_rot[1, 2], geom_rot[2, 2])
+        dist, contact_pos, nrm = collision_primitive_core.sphere_cylinder(
+          v_pos, radius, geom_pos, cyl_axis, cyl_radius, cyl_half_height
+        )
+
+      if dist < margin:
+        _write_candidate_contact(
+          max_candidates,
+          dist,
+          contact_pos,
+          nrm,
+          geomid,
+          flexid,
+          -1,
+          local_vertid,
+          worldid,
+          overflow_out,
+          cand_dist_out,
+          cand_pos_out,
+          cand_nrm_out,
+          cand_geom_out,
+          cand_flex_out,
+          cand_elem_out,
+          cand_vert_out,
+          cand_worldid_out,
+          cand_type_out,
+          cand_geomcollisionid_out,
+          ncand_out,
+        )
+
+  return kernel
 
 
 @wp.func
@@ -1275,275 +1370,327 @@ def _plane_vertex(
   return True, dist, contact_pos, nrm_out
 
 
-@wp.kernel(module="unique", enable_backward=False)
-def _flex_internal_collisions_detect(
-  # Model:
-  nflex: int,
-  flex_margin: wp.array[float],
-  flex_internal: wp.array[int],
-  flex_dim: wp.array[int],
-  flex_vertadr: wp.array[int],
-  flex_elemdataadr: wp.array[int],
-  flex_evpairadr: wp.array[int],
-  flex_evpairnum: wp.array[int],
-  flex_elem: wp.array[int],
-  flex_evpair: wp.array[wp.vec2i],
-  flex_radius: wp.array[float],
-  flex_evpairflexid: wp.array[int],
-  # Data in:
-  flexvert_xpos_in: wp.array2d[wp.vec3],
-  # In:
-  max_candidates: int,
-  # Data out:
-  overflow_out: wp.array[int],
-  # Out:
-  cand_dist_out: wp.array[float],
-  cand_pos_out: wp.array[wp.vec3],
-  cand_nrm_out: wp.array[wp.vec3],
-  cand_geom_out: wp.array[wp.vec2i],
-  cand_flex_out: wp.array[wp.vec2i],
-  cand_elem_out: wp.array[wp.vec2i],
-  cand_vert_out: wp.array[wp.vec2i],
-  cand_worldid_out: wp.array[int],
-  cand_type_out: wp.array[int],
-  cand_geomcollisionid_out: wp.array[int],
-  ncand_out: wp.array[int],
-):
-  worldid, pair_idx = wp.tid()
+@cache_kernel
+def _flex_internal_collisions_detect(enable_sleep: bool = False, incremental: bool = False):
+  @wp.kernel(module="unique", enable_backward=False)
+  def kernel(
+    # Model:
+    nflex: int,
+    body_treeid: wp.array[int],
+    flex_margin: wp.array[float],
+    flex_internal: wp.array[int],
+    flex_dim: wp.array[int],
+    flex_interp: wp.array[int],
+    flex_nodeadr: wp.array[int],
+    flex_nodenum: wp.array[int],
+    flex_vertadr: wp.array[int],
+    flex_vertnum: wp.array[int],
+    flex_elemdataadr: wp.array[int],
+    flex_evpairadr: wp.array[int],
+    flex_evpairnum: wp.array[int],
+    flex_nodebodyid: wp.array[int],
+    flex_vertbodyid: wp.array[int],
+    flex_elem: wp.array[int],
+    flex_evpair: wp.array[wp.vec2i],
+    flex_radius: wp.array[float],
+    flex_evpairflexid: wp.array[int],
+    # Data in:
+    flexvert_xpos_in: wp.array2d[wp.vec3],
+    body_awake_in: wp.array2d[int],
+    flex_awake_in: wp.array2d[int],
+    flex_awake_prev_in: wp.array2d[int],
+    # In:
+    body_awake_prev_in: wp.array2d[int],
+    max_candidates: int,
+    # Data out:
+    overflow_out: wp.array[int],
+    # Out:
+    cand_dist_out: wp.array[float],
+    cand_pos_out: wp.array[wp.vec3],
+    cand_nrm_out: wp.array[wp.vec3],
+    cand_geom_out: wp.array[wp.vec2i],
+    cand_flex_out: wp.array[wp.vec2i],
+    cand_elem_out: wp.array[wp.vec2i],
+    cand_vert_out: wp.array[wp.vec2i],
+    cand_worldid_out: wp.array[int],
+    cand_type_out: wp.array[int],
+    cand_geomcollisionid_out: wp.array[int],
+    ncand_out: wp.array[int],
+  ):
+    worldid, pair_idx = wp.tid()
 
-  flexid = flex_evpairflexid[pair_idx]
-  if flex_internal[flexid] == 0:
-    return
+    flexid = flex_evpairflexid[pair_idx]
 
-  ev = flex_evpair[pair_idx]
-  e = ev[0]
-  v = ev[1]
+    if wp.static(enable_sleep):
+      flex_asleep = flex_awake_in[worldid, flexid] == 0
+      if flex_asleep:
+        return
 
-  dim = flex_dim[flexid]
-  radius = flex_radius[flexid]
-  margin = flex_margin[flexid]
-  vert_adr = flex_vertadr[flexid]
+      if wp.static(incremental):
+        flex_asleep_prev = flex_awake_prev_in[worldid, flexid] == 0
+        if not flex_asleep_prev:
+          return
 
-  sphere_pos = flexvert_xpos_in[worldid, vert_adr + v]
+    if flex_internal[flexid] == 0:
+      return
 
-  elem_data_idx = flex_elemdataadr[flexid] + e * (dim + 1)
-  v0_local = flex_elem[elem_data_idx]
-  p0 = flexvert_xpos_in[worldid, vert_adr + v0_local]
+    ev = flex_evpair[pair_idx]
+    e = ev[0]
+    v = ev[1]
 
-  dist = float(MJ_MAXVAL)
-  contact_pos = wp.vec3(0.0)
-  nrm = wp.vec3(0.0)
+    dim = flex_dim[flexid]
+    radius = flex_radius[flexid]
+    margin = flex_margin[flexid]
+    vert_adr = flex_vertadr[flexid]
 
-  if dim == 1:
-    v1_local = flex_elem[elem_data_idx + 1]
-    p1 = flexvert_xpos_in[worldid, vert_adr + v1_local]
-    capsule_pos = 0.5 * (p0 + p1)
-    capsule_axis = wp.normalize(p1 - p0)
-    capsule_half_len = 0.5 * wp.length(p1 - p0)
-    dist, contact_pos, nrm = collision_primitive_core.sphere_capsule(
-      sphere_pos, radius, capsule_pos, capsule_axis, radius, capsule_half_len
-    )
-  elif dim == 2:
-    v1_local = flex_elem[elem_data_idx + 1]
-    v2_local = flex_elem[elem_data_idx + 2]
-    p1 = flexvert_xpos_in[worldid, vert_adr + v1_local]
-    p2 = flexvert_xpos_in[worldid, vert_adr + v2_local]
-    dist, contact_pos, nrm = collision_primitive_core.sphere_triangle(sphere_pos, radius, p0, p1, p2, radius)
-  elif dim == 3:
-    v1_local = flex_elem[elem_data_idx + 1]
-    v2_local = flex_elem[elem_data_idx + 2]
-    v3_local = flex_elem[elem_data_idx + 3]
-    p1 = flexvert_xpos_in[worldid, vert_adr + v1_local]
-    p2 = flexvert_xpos_in[worldid, vert_adr + v2_local]
-    p3 = flexvert_xpos_in[worldid, vert_adr + v3_local]
-    dist, contact_pos, nrm = _sphere_tetrahedron(sphere_pos, radius, p0, p1, p2, p3, radius)
+    sphere_pos = flexvert_xpos_in[worldid, vert_adr + v]
 
-  if dist < margin:
-    _write_candidate_contact(
-      max_candidates,
-      dist,
-      contact_pos,
-      nrm,
-      -1,
-      flexid,
-      e,
-      v,
-      worldid,
-      overflow_out,
-      cand_dist_out,
-      cand_pos_out,
-      cand_nrm_out,
-      cand_geom_out,
-      cand_flex_out,
-      cand_elem_out,
-      cand_vert_out,
-      cand_worldid_out,
-      cand_type_out,
-      cand_geomcollisionid_out,
-      ncand_out,
-    )
+    elem_data_idx = flex_elemdataadr[flexid] + e * (dim + 1)
+    v0_local = flex_elem[elem_data_idx]
+    p0 = flexvert_xpos_in[worldid, vert_adr + v0_local]
+
+    dist = float(MJ_MAXVAL)
+    contact_pos = wp.vec3(0.0)
+    nrm = wp.vec3(0.0)
+
+    if dim == 1:
+      v1_local = flex_elem[elem_data_idx + 1]
+      p1 = flexvert_xpos_in[worldid, vert_adr + v1_local]
+      capsule_pos = 0.5 * (p0 + p1)
+      capsule_axis = wp.normalize(p1 - p0)
+      capsule_half_len = 0.5 * wp.length(p1 - p0)
+      dist, contact_pos, nrm = collision_primitive_core.sphere_capsule(
+        sphere_pos, radius, capsule_pos, capsule_axis, radius, capsule_half_len
+      )
+    elif dim == 2:
+      v1_local = flex_elem[elem_data_idx + 1]
+      v2_local = flex_elem[elem_data_idx + 2]
+      p1 = flexvert_xpos_in[worldid, vert_adr + v1_local]
+      p2 = flexvert_xpos_in[worldid, vert_adr + v2_local]
+      dist, contact_pos, nrm = collision_primitive_core.sphere_triangle(sphere_pos, radius, p0, p1, p2, radius)
+    elif dim == 3:
+      v1_local = flex_elem[elem_data_idx + 1]
+      v2_local = flex_elem[elem_data_idx + 2]
+      v3_local = flex_elem[elem_data_idx + 3]
+      p1 = flexvert_xpos_in[worldid, vert_adr + v1_local]
+      p2 = flexvert_xpos_in[worldid, vert_adr + v2_local]
+      p3 = flexvert_xpos_in[worldid, vert_adr + v3_local]
+      dist, contact_pos, nrm = _sphere_tetrahedron(sphere_pos, radius, p0, p1, p2, p3, radius)
+
+    if dist < margin:
+      _write_candidate_contact(
+        max_candidates,
+        dist,
+        contact_pos,
+        nrm,
+        -1,
+        flexid,
+        e,
+        v,
+        worldid,
+        overflow_out,
+        cand_dist_out,
+        cand_pos_out,
+        cand_nrm_out,
+        cand_geom_out,
+        cand_flex_out,
+        cand_elem_out,
+        cand_vert_out,
+        cand_worldid_out,
+        cand_type_out,
+        cand_geomcollisionid_out,
+        ncand_out,
+      )
+
+  return kernel
 
 
-@wp.kernel(module="unique", enable_backward=False)
-def _flex_tet_internal_collisions_detect(
-  # Model:
-  nflex: int,
-  flex_dim: wp.array[int],
-  flex_vertadr: wp.array[int],
-  flex_elemadr: wp.array[int],
-  flex_elemnum: wp.array[int],
-  flex_elemdataadr: wp.array[int],
-  flex_elem: wp.array[int],
-  flex_radius: wp.array[float],
-  flex_elemflexid: wp.array[int],
-  # Data in:
-  flexvert_xpos_in: wp.array2d[wp.vec3],
-  # In:
-  max_candidates: int,
-  # Data out:
-  overflow_out: wp.array[int],
-  # Out:
-  cand_dist_out: wp.array[float],
-  cand_pos_out: wp.array[wp.vec3],
-  cand_nrm_out: wp.array[wp.vec3],
-  cand_geom_out: wp.array[wp.vec2i],
-  cand_flex_out: wp.array[wp.vec2i],
-  cand_elem_out: wp.array[wp.vec2i],
-  cand_vert_out: wp.array[wp.vec2i],
-  cand_worldid_out: wp.array[int],
-  cand_type_out: wp.array[int],
-  cand_geomcollisionid_out: wp.array[int],
-  ncand_out: wp.array[int],
-):
-  worldid, elemid = wp.tid()
+@cache_kernel
+def _flex_tet_internal_collisions_detect(enable_sleep: bool = False, incremental: bool = False):
+  @wp.kernel(module="unique", enable_backward=False)
+  def kernel(
+    # Model:
+    nflex: int,
+    body_treeid: wp.array[int],
+    flex_dim: wp.array[int],
+    flex_interp: wp.array[int],
+    flex_nodeadr: wp.array[int],
+    flex_nodenum: wp.array[int],
+    flex_vertadr: wp.array[int],
+    flex_vertnum: wp.array[int],
+    flex_elemadr: wp.array[int],
+    flex_elemnum: wp.array[int],
+    flex_elemdataadr: wp.array[int],
+    flex_nodebodyid: wp.array[int],
+    flex_vertbodyid: wp.array[int],
+    flex_elem: wp.array[int],
+    flex_radius: wp.array[float],
+    flex_elemflexid: wp.array[int],
+    # Data in:
+    flexvert_xpos_in: wp.array2d[wp.vec3],
+    body_awake_in: wp.array2d[int],
+    flex_awake_in: wp.array2d[int],
+    flex_awake_prev_in: wp.array2d[int],
+    # In:
+    body_awake_prev_in: wp.array2d[int],
+    max_candidates: int,
+    # Data out:
+    overflow_out: wp.array[int],
+    # Out:
+    cand_dist_out: wp.array[float],
+    cand_pos_out: wp.array[wp.vec3],
+    cand_nrm_out: wp.array[wp.vec3],
+    cand_geom_out: wp.array[wp.vec2i],
+    cand_flex_out: wp.array[wp.vec2i],
+    cand_elem_out: wp.array[wp.vec2i],
+    cand_vert_out: wp.array[wp.vec2i],
+    cand_worldid_out: wp.array[int],
+    cand_type_out: wp.array[int],
+    cand_geomcollisionid_out: wp.array[int],
+    ncand_out: wp.array[int],
+  ):
+    worldid, elemid = wp.tid()
 
-  flexid = flex_elemflexid[elemid]
-  if flex_dim[flexid] != 3:
-    return
+    flexid = flex_elemflexid[elemid]
 
-  radius = flex_radius[flexid]
-  vert_adr = flex_vertadr[flexid]
+    if wp.static(enable_sleep):
+      flex_asleep = flex_awake_in[worldid, flexid] == 0
+      if flex_asleep:
+        return
 
-  local_elemid = elemid - flex_elemadr[flexid]
-  elem_data_idx = flex_elemdataadr[flexid] + local_elemid * 4
+      if wp.static(incremental):
+        flex_asleep_prev = flex_awake_prev_in[worldid, flexid] == 0
+        if not flex_asleep_prev:
+          return
 
-  v0 = flex_elem[elem_data_idx]
-  v1 = flex_elem[elem_data_idx + 1]
-  v2 = flex_elem[elem_data_idx + 2]
-  v3 = flex_elem[elem_data_idx + 3]
+    if flex_dim[flexid] != 3:
+      return
 
-  p0 = flexvert_xpos_in[worldid, vert_adr + v0]
-  p1 = flexvert_xpos_in[worldid, vert_adr + v1]
-  p2 = flexvert_xpos_in[worldid, vert_adr + v2]
-  p3 = flexvert_xpos_in[worldid, vert_adr + v3]
+    radius = flex_radius[flexid]
+    vert_adr = flex_vertadr[flexid]
 
-  # Test face (0,1,2) vs Vertex 3
-  ok0, dist0, pos0, nrm0 = _plane_vertex(p3, radius, p0, p1, p2)
-  if ok0:
-    _write_candidate_contact(
-      max_candidates,
-      dist0,
-      pos0,
-      nrm0,
-      -1,
-      flexid,
-      local_elemid,
-      v3,
-      worldid,
-      overflow_out,
-      cand_dist_out,
-      cand_pos_out,
-      cand_nrm_out,
-      cand_geom_out,
-      cand_flex_out,
-      cand_elem_out,
-      cand_vert_out,
-      cand_worldid_out,
-      cand_type_out,
-      cand_geomcollisionid_out,
-      ncand_out,
-    )
+    local_elemid = elemid - flex_elemadr[flexid]
+    elem_data_idx = flex_elemdataadr[flexid] + local_elemid * 4
 
-  # Test face (0,2,3) vs Vertex 1
-  ok1, dist1, pos1, nrm1 = _plane_vertex(p1, radius, p0, p2, p3)
-  if ok1:
-    _write_candidate_contact(
-      max_candidates,
-      dist1,
-      pos1,
-      nrm1,
-      -1,
-      flexid,
-      local_elemid,
-      v1,
-      worldid,
-      overflow_out,
-      cand_dist_out,
-      cand_pos_out,
-      cand_nrm_out,
-      cand_geom_out,
-      cand_flex_out,
-      cand_elem_out,
-      cand_vert_out,
-      cand_worldid_out,
-      cand_type_out,
-      cand_geomcollisionid_out,
-      ncand_out,
-    )
+    v0 = flex_elem[elem_data_idx]
+    v1 = flex_elem[elem_data_idx + 1]
+    v2 = flex_elem[elem_data_idx + 2]
+    v3 = flex_elem[elem_data_idx + 3]
 
-  # Test face (0,3,1) vs Vertex 2
-  ok2, dist2, pos2, nrm2 = _plane_vertex(p2, radius, p0, p3, p1)
-  if ok2:
-    _write_candidate_contact(
-      max_candidates,
-      dist2,
-      pos2,
-      nrm2,
-      -1,
-      flexid,
-      local_elemid,
-      v2,
-      worldid,
-      overflow_out,
-      cand_dist_out,
-      cand_pos_out,
-      cand_nrm_out,
-      cand_geom_out,
-      cand_flex_out,
-      cand_elem_out,
-      cand_vert_out,
-      cand_worldid_out,
-      cand_type_out,
-      cand_geomcollisionid_out,
-      ncand_out,
-    )
+    p0 = flexvert_xpos_in[worldid, vert_adr + v0]
+    p1 = flexvert_xpos_in[worldid, vert_adr + v1]
+    p2 = flexvert_xpos_in[worldid, vert_adr + v2]
+    p3 = flexvert_xpos_in[worldid, vert_adr + v3]
 
-  # Test face (1,3,2) vs Vertex 0
-  ok3, dist3, pos3, nrm3 = _plane_vertex(p0, radius, p1, p3, p2)
-  if ok3:
-    _write_candidate_contact(
-      max_candidates,
-      dist3,
-      pos3,
-      nrm3,
-      -1,
-      flexid,
-      local_elemid,
-      v0,
-      worldid,
-      overflow_out,
-      cand_dist_out,
-      cand_pos_out,
-      cand_nrm_out,
-      cand_geom_out,
-      cand_flex_out,
-      cand_elem_out,
-      cand_vert_out,
-      cand_worldid_out,
-      cand_type_out,
-      cand_geomcollisionid_out,
-      ncand_out,
-    )
+    # Test face (0,1,2) vs Vertex 3
+    ok0, dist0, pos0, nrm0 = _plane_vertex(p3, radius, p0, p1, p2)
+    if ok0:
+      _write_candidate_contact(
+        max_candidates,
+        dist0,
+        pos0,
+        nrm0,
+        -1,
+        flexid,
+        local_elemid,
+        v3,
+        worldid,
+        overflow_out,
+        cand_dist_out,
+        cand_pos_out,
+        cand_nrm_out,
+        cand_geom_out,
+        cand_flex_out,
+        cand_elem_out,
+        cand_vert_out,
+        cand_worldid_out,
+        cand_type_out,
+        cand_geomcollisionid_out,
+        ncand_out,
+      )
+
+    # Test face (0,2,3) vs Vertex 1
+    ok1, dist1, pos1, nrm1 = _plane_vertex(p1, radius, p0, p2, p3)
+    if ok1:
+      _write_candidate_contact(
+        max_candidates,
+        dist1,
+        pos1,
+        nrm1,
+        -1,
+        flexid,
+        local_elemid,
+        v1,
+        worldid,
+        overflow_out,
+        cand_dist_out,
+        cand_pos_out,
+        cand_nrm_out,
+        cand_geom_out,
+        cand_flex_out,
+        cand_elem_out,
+        cand_vert_out,
+        cand_worldid_out,
+        cand_type_out,
+        cand_geomcollisionid_out,
+        ncand_out,
+      )
+
+    # Test face (0,3,1) vs Vertex 2
+    ok2, dist2, pos2, nrm2 = _plane_vertex(p2, radius, p0, p3, p1)
+    if ok2:
+      _write_candidate_contact(
+        max_candidates,
+        dist2,
+        pos2,
+        nrm2,
+        -1,
+        flexid,
+        local_elemid,
+        v2,
+        worldid,
+        overflow_out,
+        cand_dist_out,
+        cand_pos_out,
+        cand_nrm_out,
+        cand_geom_out,
+        cand_flex_out,
+        cand_elem_out,
+        cand_vert_out,
+        cand_worldid_out,
+        cand_type_out,
+        cand_geomcollisionid_out,
+        ncand_out,
+      )
+
+    # Test face (1,3,2) vs Vertex 0
+    ok3, dist3, pos3, nrm3 = _plane_vertex(p0, radius, p1, p3, p2)
+    if ok3:
+      _write_candidate_contact(
+        max_candidates,
+        dist3,
+        pos3,
+        nrm3,
+        -1,
+        flexid,
+        local_elemid,
+        v0,
+        worldid,
+        overflow_out,
+        cand_dist_out,
+        cand_pos_out,
+        cand_nrm_out,
+        cand_geom_out,
+        cand_flex_out,
+        cand_elem_out,
+        cand_vert_out,
+        cand_worldid_out,
+        cand_type_out,
+        cand_geomcollisionid_out,
+        ncand_out,
+      )
+
+  return kernel
 
 
 @wp.func
@@ -1671,111 +1818,228 @@ def _elements_overlap(
   return True
 
 
-@wp.kernel(module="unique", enable_backward=False)
-def _flex_active_element_collisions_detect(
-  # Model:
-  nflex: int,
-  opt_ccd_tolerance: wp.array[float],
-  flex_selfcollide: wp.array[int],
-  flex_dim: wp.array[int],
-  flex_vertadr: wp.array[int],
-  flex_elemadr: wp.array[int],
-  flex_elemnum: wp.array[int],
-  flex_elemdataadr: wp.array[int],
-  flex_vertbodyid: wp.array[int],
-  flex_elem: wp.array[int],
-  flex_radius: wp.array[float],
-  flex_elemflexid: wp.array[int],
-  # Data in:
-  flexvert_xpos_in: wp.array2d[wp.vec3],
-  # In:
-  max_candidates: int,
-  gjk_iterations: int,
-  epa_iterations: int,
-  n_total_elems: int,
-  # Data out:
-  overflow_out: wp.array[int],
-  # Out:
-  workspace_verts_out: wp.array[wp.vec3],
-  epa_vert_out: wp.array2d[wp.vec3],
-  epa_vert_index_out: wp.array2d[int],
-  epa_face_out: wp.array2d[int],
-  epa_pr_out: wp.array2d[wp.vec3],
-  epa_norm2_out: wp.array2d[float],
-  epa_horizon_out: wp.array2d[int],
-  cand_dist_out: wp.array[float],
-  cand_pos_out: wp.array[wp.vec3],
-  cand_nrm_out: wp.array[wp.vec3],
-  cand_geom_out: wp.array[wp.vec2i],
-  cand_flex_out: wp.array[wp.vec2i],
-  cand_elem_out: wp.array[wp.vec2i],
-  cand_vert_out: wp.array[wp.vec2i],
-  cand_worldid_out: wp.array[int],
-  cand_type_out: wp.array[int],
-  cand_geomcollisionid_out: wp.array[int],
-  ncand_out: wp.array[int],
-):
-  worldid, elem1_global = wp.tid()
+@cache_kernel
+def _flex_active_element_collisions_detect(enable_sleep: bool = False, incremental: bool = False):
+  @wp.kernel(module="unique", enable_backward=False)
+  def kernel(
+    # Model:
+    nflex: int,
+    opt_ccd_tolerance: wp.array[float],
+    body_treeid: wp.array[int],
+    flex_selfcollide: wp.array[int],
+    flex_dim: wp.array[int],
+    flex_interp: wp.array[int],
+    flex_nodeadr: wp.array[int],
+    flex_nodenum: wp.array[int],
+    flex_vertadr: wp.array[int],
+    flex_vertnum: wp.array[int],
+    flex_elemadr: wp.array[int],
+    flex_elemnum: wp.array[int],
+    flex_elemdataadr: wp.array[int],
+    flex_nodebodyid: wp.array[int],
+    flex_vertbodyid: wp.array[int],
+    flex_elem: wp.array[int],
+    flex_radius: wp.array[float],
+    flex_elemflexid: wp.array[int],
+    # Data in:
+    flexvert_xpos_in: wp.array2d[wp.vec3],
+    body_awake_in: wp.array2d[int],
+    flex_awake_in: wp.array2d[int],
+    flex_awake_prev_in: wp.array2d[int],
+    # In:
+    body_awake_prev_in: wp.array2d[int],
+    max_candidates: int,
+    gjk_iterations: int,
+    epa_iterations: int,
+    n_total_elems: int,
+    # Data out:
+    overflow_out: wp.array[int],
+    # Out:
+    workspace_verts_out: wp.array[wp.vec3],
+    epa_vert_out: wp.array2d[wp.vec3],
+    epa_vert_index_out: wp.array2d[int],
+    epa_face_out: wp.array2d[int],
+    epa_pr_out: wp.array2d[wp.vec3],
+    epa_norm2_out: wp.array2d[float],
+    epa_horizon_out: wp.array2d[int],
+    cand_dist_out: wp.array[float],
+    cand_pos_out: wp.array[wp.vec3],
+    cand_nrm_out: wp.array[wp.vec3],
+    cand_geom_out: wp.array[wp.vec2i],
+    cand_flex_out: wp.array[wp.vec2i],
+    cand_elem_out: wp.array[wp.vec2i],
+    cand_vert_out: wp.array[wp.vec2i],
+    cand_worldid_out: wp.array[int],
+    cand_type_out: wp.array[int],
+    cand_geomcollisionid_out: wp.array[int],
+    ncand_out: wp.array[int],
+  ):
+    worldid, elem1_global = wp.tid()
 
-  flexid = flex_elemflexid[elem1_global]
-  if flex_selfcollide[flexid] == 0:
-    return
+    flexid = flex_elemflexid[elem1_global]
 
-  radius = flex_radius[flexid]
-  dim = flex_dim[flexid]
-  vert_adr = flex_vertadr[flexid]
-  elem_adr = flex_elemadr[flexid]
-  elem_num = flex_elemnum[flexid]
+    if wp.static(enable_sleep):
+      flex_asleep = flex_awake_in[worldid, flexid] == 0
+      if flex_asleep:
+        return
 
-  e1 = elem1_global - elem_adr
-  elem_data_idx1 = flex_elemdataadr[flexid] + e1 * (dim + 1)
+      if wp.static(incremental):
+        flex_asleep_prev = flex_awake_prev_in[worldid, flexid] == 0
+        if not flex_asleep_prev:
+          return
 
-  v1_indices = _get_element_vertices(flex_elem, dim, elem_data_idx1)
+    if flex_selfcollide[flexid] == 0:
+      return
 
-  unique_thread_id = worldid * n_total_elems + elem1_global
+    radius = flex_radius[flexid]
+    dim = flex_dim[flexid]
+    vert_adr = flex_vertadr[flexid]
+    elem_adr = flex_elemadr[flexid]
+    elem_num = flex_elemnum[flexid]
 
-  offset1 = unique_thread_id * 8
-  for idx in range(dim + 1):
-    workspace_verts_out[offset1 + idx] = flexvert_xpos_in[worldid, vert_adr + v1_indices[idx]]
+    e1 = elem1_global - elem_adr
+    elem_data_idx1 = flex_elemdataadr[flexid] + e1 * (dim + 1)
 
-  for e2 in range(e1 + 1, elem_num):
-    elem_data_idx2 = flex_elemdataadr[flexid] + e2 * (dim + 1)
-    v2_indices = _get_element_vertices(flex_elem, dim, elem_data_idx2)
+    v1_indices = _get_element_vertices(flex_elem, dim, elem_data_idx1)
 
-    if _exclude_self_collision(flex_vertbodyid, v1_indices, dim + 1, v2_indices, dim + 1, vert_adr):
-      continue
+    unique_thread_id = worldid * n_total_elems + elem1_global
 
-    overlap = _elements_overlap(flexvert_xpos_in, dim, radius, v1_indices, v2_indices, vert_adr, worldid)
-    if not overlap:
-      continue
+    offset1 = unique_thread_id * 8
+    for idx in range(dim + 1):
+      workspace_verts_out[offset1 + idx] = flexvert_xpos_in[worldid, vert_adr + v1_indices[idx]]
 
-    if dim == 1:
-      p0 = workspace_verts_out[offset1]
-      p1 = workspace_verts_out[offset1 + 1]
-      cap1_pos = 0.5 * (p0 + p1)
-      cap1_axis = wp.normalize(p1 - p0)
-      cap1_half_len = 0.5 * wp.length(p1 - p0)
+    for e2 in range(e1 + 1, elem_num):
+      elem_data_idx2 = flex_elemdataadr[flexid] + e2 * (dim + 1)
+      v2_indices = _get_element_vertices(flex_elem, dim, elem_data_idx2)
 
-      p2_0 = flexvert_xpos_in[worldid, vert_adr + v2_indices[0]]
-      p2_1 = flexvert_xpos_in[worldid, vert_adr + v2_indices[1]]
-      cap2_pos = 0.5 * (p2_0 + p2_1)
-      cap2_axis = wp.normalize(p2_1 - p2_0)
-      cap2_half_len = 0.5 * wp.length(p2_1 - p2_0)
+      if _exclude_self_collision(flex_vertbodyid, v1_indices, dim + 1, v2_indices, dim + 1, vert_adr):
+        continue
 
-      margin = 0.0
+      overlap = _elements_overlap(flexvert_xpos_in, dim, radius, v1_indices, v2_indices, vert_adr, worldid)
+      if not overlap:
+        continue
 
-      contact_dist, contact_pos, contact_normal = collision_primitive_core.capsule_capsule(
-        cap1_pos, cap1_axis, radius, cap1_half_len, cap2_pos, cap2_axis, radius, cap2_half_len, margin
-      )
+      if dim == 1:
+        p0 = workspace_verts_out[offset1]
+        p1 = workspace_verts_out[offset1 + 1]
+        cap1_pos = 0.5 * (p0 + p1)
+        cap1_axis = wp.normalize(p1 - p0)
+        cap1_half_len = 0.5 * wp.length(p1 - p0)
 
-      for c in range(2):
-        d_val = contact_dist[c]
-        if d_val < 0.0:
+        p2_0 = flexvert_xpos_in[worldid, vert_adr + v2_indices[0]]
+        p2_1 = flexvert_xpos_in[worldid, vert_adr + v2_indices[1]]
+        cap2_pos = 0.5 * (p2_0 + p2_1)
+        cap2_axis = wp.normalize(p2_1 - p2_0)
+        cap2_half_len = 0.5 * wp.length(p2_1 - p2_0)
+
+        margin = 0.0
+
+        contact_dist, contact_pos, contact_normal = collision_primitive_core.capsule_capsule(
+          cap1_pos, cap1_axis, radius, cap1_half_len, cap2_pos, cap2_axis, radius, cap2_half_len, margin
+        )
+
+        for c in range(2):
+          d_val = contact_dist[c]
+          if d_val < 0.0:
+            _write_candidate_contact(
+              max_candidates,
+              d_val,
+              contact_pos[c],
+              contact_normal[c],
+              -2,
+              flexid,
+              e1,
+              e2,
+              worldid,
+              overflow_out,
+              cand_dist_out,
+              cand_pos_out,
+              cand_nrm_out,
+              cand_geom_out,
+              cand_flex_out,
+              cand_elem_out,
+              cand_vert_out,
+              cand_worldid_out,
+              cand_type_out,
+              cand_geomcollisionid_out,
+              ncand_out,
+            )
+      else:
+        offset2 = unique_thread_id * 8 + 4
+        for idx in range(dim + 1):
+          workspace_verts_out[offset2 + idx] = flexvert_xpos_in[worldid, vert_adr + v2_indices[idx]]
+
+        geom1 = Geom()
+        geom1.pos = wp.vec3(0.0)
+        geom1.rot = wp.mat33(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0)
+        geom1.size = wp.vec3(0.0)
+        geom1.margin = 2.0 * radius
+        geom1.vert = workspace_verts_out
+        geom1.vertadr = offset1
+        geom1.vertnum = dim + 1
+        geom1.graphadr = -1
+        geom1.index = -1
+
+        geom2 = Geom()
+        geom2.pos = wp.vec3(0.0)
+        geom2.rot = wp.mat33(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0)
+        geom2.size = wp.vec3(0.0)
+        geom2.margin = 2.0 * radius
+        geom2.vert = workspace_verts_out
+        geom2.vertadr = offset2
+        geom2.vertnum = dim + 1
+        geom2.graphadr = -1
+        geom2.index = -1
+
+        center1 = wp.vec3(0.0)
+        for idx in range(dim + 1):
+          center1 += workspace_verts_out[offset1 + idx]
+        center1 = center1 / float(dim + 1)
+
+        center2 = wp.vec3(0.0)
+        for idx in range(dim + 1):
+          center2 += workspace_verts_out[offset2 + idx]
+        center2 = center2 / float(dim + 1)
+
+        tol = opt_ccd_tolerance[worldid % opt_ccd_tolerance.shape[0]]
+
+        dist, ncontact, w1, w2, _ = ccd(
+          tol,
+          2.0 * radius,
+          gjk_iterations,
+          epa_iterations,
+          geom1,
+          geom2,
+          int(GeomType.MESH),
+          int(GeomType.MESH),
+          center1,
+          center2,
+          epa_vert_out[unique_thread_id],
+          epa_vert_index_out[unique_thread_id],
+          epa_face_out[unique_thread_id],
+          epa_pr_out[unique_thread_id],
+          epa_norm2_out[unique_thread_id],
+          epa_horizon_out[unique_thread_id],
+        )
+
+        phys_dist = dist
+        if ncontact > 0 and phys_dist < 0.0:
+          p1_0 = workspace_verts_out[offset1]
+          p1_1 = workspace_verts_out[offset1 + 1]
+          p1_2 = workspace_verts_out[offset1 + 2]
+          p2_0 = workspace_verts_out[offset2]
+          p2_1 = workspace_verts_out[offset2 + 1]
+          p2_2 = workspace_verts_out[offset2 + 2]
+          if not (_inside_triangle(w1, p1_0, p1_1, p1_2, 0.2) and _inside_triangle(w2, p2_0, p2_1, p2_2, 0.2)):
+            continue
+
+          pos = 0.5 * (w1 + w2)
+          nrm = wp.normalize(w1 - w2)
           _write_candidate_contact(
             max_candidates,
-            d_val,
-            contact_pos[c],
-            contact_normal[c],
+            phys_dist,
+            pos,
+            nrm,
             -2,
             flexid,
             e1,
@@ -1794,100 +2058,8 @@ def _flex_active_element_collisions_detect(
             cand_geomcollisionid_out,
             ncand_out,
           )
-    else:
-      offset2 = unique_thread_id * 8 + 4
-      for idx in range(dim + 1):
-        workspace_verts_out[offset2 + idx] = flexvert_xpos_in[worldid, vert_adr + v2_indices[idx]]
 
-      geom1 = Geom()
-      geom1.pos = wp.vec3(0.0)
-      geom1.rot = wp.mat33(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0)
-      geom1.size = wp.vec3(0.0)
-      geom1.margin = 2.0 * radius
-      geom1.vert = workspace_verts_out
-      geom1.vertadr = offset1
-      geom1.vertnum = dim + 1
-      geom1.graphadr = -1
-      geom1.index = -1
-
-      geom2 = Geom()
-      geom2.pos = wp.vec3(0.0)
-      geom2.rot = wp.mat33(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0)
-      geom2.size = wp.vec3(0.0)
-      geom2.margin = 2.0 * radius
-      geom2.vert = workspace_verts_out
-      geom2.vertadr = offset2
-      geom2.vertnum = dim + 1
-      geom2.graphadr = -1
-      geom2.index = -1
-
-      center1 = wp.vec3(0.0)
-      for idx in range(dim + 1):
-        center1 += workspace_verts_out[offset1 + idx]
-      center1 = center1 / float(dim + 1)
-
-      center2 = wp.vec3(0.0)
-      for idx in range(dim + 1):
-        center2 += workspace_verts_out[offset2 + idx]
-      center2 = center2 / float(dim + 1)
-
-      tol = opt_ccd_tolerance[worldid % opt_ccd_tolerance.shape[0]]
-
-      dist, ncontact, w1, w2, _ = ccd(
-        tol,
-        2.0 * radius,
-        gjk_iterations,
-        epa_iterations,
-        geom1,
-        geom2,
-        int(GeomType.MESH),
-        int(GeomType.MESH),
-        center1,
-        center2,
-        epa_vert_out[unique_thread_id],
-        epa_vert_index_out[unique_thread_id],
-        epa_face_out[unique_thread_id],
-        epa_pr_out[unique_thread_id],
-        epa_norm2_out[unique_thread_id],
-        epa_horizon_out[unique_thread_id],
-      )
-
-      phys_dist = dist
-      if ncontact > 0 and phys_dist < 0.0:
-        p1_0 = workspace_verts_out[offset1]
-        p1_1 = workspace_verts_out[offset1 + 1]
-        p1_2 = workspace_verts_out[offset1 + 2]
-        p2_0 = workspace_verts_out[offset2]
-        p2_1 = workspace_verts_out[offset2 + 1]
-        p2_2 = workspace_verts_out[offset2 + 2]
-        if not (_inside_triangle(w1, p1_0, p1_1, p1_2, 0.2) and _inside_triangle(w2, p2_0, p2_1, p2_2, 0.2)):
-          continue
-
-        pos = 0.5 * (w1 + w2)
-        nrm = wp.normalize(w1 - w2)
-        _write_candidate_contact(
-          max_candidates,
-          phys_dist,
-          pos,
-          nrm,
-          -2,
-          flexid,
-          e1,
-          e2,
-          worldid,
-          overflow_out,
-          cand_dist_out,
-          cand_pos_out,
-          cand_nrm_out,
-          cand_geom_out,
-          cand_flex_out,
-          cand_elem_out,
-          cand_vert_out,
-          cand_worldid_out,
-          cand_type_out,
-          cand_geomcollisionid_out,
-          ncand_out,
-        )
+  return kernel
 
 
 @wp.kernel
@@ -2335,10 +2507,42 @@ def flex_broadphase(m: Model, d: Data):
 
 
 @event_scope
-def flex_collision(m: Model, d: Data, ctx):
+def flex_collision(
+  m: Model,
+  d: Data,
+  ctx,
+  enable_sleep: bool = False,
+  awake_prev: Optional[wp.array] = None,
+):
   """Runs collision detection between geoms and flex elements."""
   if m.nflex == 0:
     return
+
+  incremental = awake_prev is not None
+  awake_prev_in = awake_prev if awake_prev is not None else d.body_awake
+
+  flex_awake = d.body_awake
+  if enable_sleep:
+    flex_awake = d.flex_awake
+
+  flex_awake_prev = awake_prev_in
+  if enable_sleep and incremental:
+    flex_awake_prev = d.flex_awake_prev
+    wp.launch(
+      init_sleep_flex,
+      dim=(d.nworld, m.nflex),
+      inputs=[m.flex_has_dynamic_body],
+      outputs=[flex_awake_prev],
+    )
+    wp.launch(
+      update_sleep_flex_from_bodies,
+      dim=(d.nworld, m.nbody),
+      inputs=[
+        m.body_isflex,
+        awake_prev_in,
+      ],
+      outputs=[flex_awake_prev],
+    )
 
   # Deduplicated candidate buffers (allocated on GPU)
   cand_dist = wp.empty(d.naconmax, dtype=float)
@@ -2383,27 +2587,42 @@ def flex_collision(m: Model, d: Data, ctx):
   # 2D Flex Element Collisions
   if m.flexelem_geom_pair_filtered.shape[0] > 0:
     wp.launch(
-      _flex_broadphase_unified,
+      _flex_broadphase_unified(enable_sleep, incremental),
       dim=(d.nworld, m.flexelem_geom_pair_filtered.shape[0]),
       inputs=[
         m.ngeom,
         m.nflex,
         m.opt.warn_overflow,
+        m.body_treeid,
         m.geom_type,
+        m.geom_bodyid,
         m.geom_size,
         m.geom_aabb,
         m.geom_rbound,
         m.geom_margin,
         m.flex_margin,
         m.flex_dim,
+        m.flex_interp,
+        m.flex_nodeadr,
+        m.flex_nodenum,
         m.flex_vertadr,
+        m.flex_vertnum,
+        m.flex_nodebodyid,
+        m.flex_vertbodyid,
         m.flex_radius,
+        # Data in:
         d.geom_xpos,
         d.geom_xmat,
         d.flexvert_xpos,
+        d.body_awake,
         d.naconmax,
         d.flex_aabb_min,
         d.flex_aabb_max,
+        flex_awake,
+        flex_awake_prev,
+        # In:
+        awake_prev_in,
+        # Trailing 2D Flex:
         m.flex_elemadr,
         m.flex_elemdataadr,
         m.flex_elem,
@@ -2502,27 +2721,42 @@ def flex_collision(m: Model, d: Data, ctx):
   # 3D Flex Element Collisions
   if m.flexshell_geom_pair_filtered.shape[0] > 0:
     wp.launch(
-      _flex_broadphase_unified,
+      _flex_broadphase_unified(enable_sleep, incremental),
       dim=(d.nworld, m.flexshell_geom_pair_filtered.shape[0]),
       inputs=[
         m.ngeom,
         m.nflex,
         m.opt.warn_overflow,
+        m.body_treeid,
         m.geom_type,
+        m.geom_bodyid,
         m.geom_size,
         m.geom_aabb,
         m.geom_rbound,
         m.geom_margin,
         m.flex_margin,
         m.flex_dim,
+        m.flex_interp,
+        m.flex_nodeadr,
+        m.flex_nodenum,
         m.flex_vertadr,
+        m.flex_vertnum,
+        m.flex_nodebodyid,
+        m.flex_vertbodyid,
         m.flex_radius,
+        # Data in:
         d.geom_xpos,
         d.geom_xmat,
         d.flexvert_xpos,
+        d.body_awake,
         d.naconmax,
         d.flex_aabb_min,
         d.flex_aabb_max,
+        flex_awake,
+        flex_awake_prev,
+        # In:
+        awake_prev_in,
+        # Trailing 3D Flex:
         m.flex_shelladr,
         m.flex_shelldataadr,
         m.flex_shell,
@@ -2621,24 +2855,37 @@ def flex_collision(m: Model, d: Data, ctx):
   # Plane Vertex Collisions
   if m.flexvert_geom_pair_filtered.shape[0] > 0:
     wp.launch(
-      _flex_broadphase_plane,
+      _flex_broadphase_plane(enable_sleep, incremental),
       dim=(d.nworld, m.flexvert_geom_pair_filtered.shape[0]),
       inputs=[
         m.ngeom,
         m.opt.warn_overflow,
+        m.body_treeid,
         m.geom_type,
         m.geom_margin,
         m.flex_margin,
+        m.flex_interp,
+        m.flex_nodeadr,
+        m.flex_nodenum,
         m.flex_vertadr,
+        m.flex_vertnum,
+        m.flex_nodebodyid,
+        m.flex_vertbodyid,
         m.flex_radius,
         m.flexvert_geom_pair_filtered,
         m.flex_vertflexid,
+        # Data in:
         d.geom_xpos,
         d.geom_xmat,
         d.flexvert_xpos,
+        d.body_awake,
         d.naconmax,
         d.flex_aabb_min,
         d.flex_aabb_max,
+        flex_awake,
+        flex_awake_prev,
+        # In:
+        awake_prev_in,
       ],
       outputs=[
         ncollision_plane,
@@ -2706,27 +2953,39 @@ def flex_collision(m: Model, d: Data, ctx):
   # Geom Vertex Collisions (Candidate-based deduplicated narrowphase)
   if m.nflexvert > 0:
     wp.launch(
-      _flex_geom_vertex_narrowphase_detect,
+      _flex_geom_vertex_narrowphase_detect(enable_sleep, incremental),
       dim=(d.nworld, m.nflexvert),
       inputs=[
         m.ngeom,
         m.nflexvert,
+        m.body_treeid,
         m.geom_type,
         m.geom_contype,
         m.geom_conaffinity,
+        m.geom_bodyid,
         m.geom_size,
         m.geom_margin,
         m.flex_contype,
         m.flex_conaffinity,
         m.flex_margin,
         m.flex_dim,
+        m.flex_interp,
+        m.flex_nodeadr,
+        m.flex_nodenum,
         m.flex_vertadr,
+        m.flex_vertnum,
+        m.flex_nodebodyid,
+        m.flex_vertbodyid,
         m.flex_radius,
         m.flex_vertflexid,
         d.geom_xpos,
         d.geom_xmat,
         d.flexvert_xpos,
+        d.body_awake,
         d.nworld,
+        flex_awake,
+        flex_awake_prev,
+        awake_prev_in,
         d.naconmax,
       ],
       outputs=[
@@ -2747,22 +3006,33 @@ def flex_collision(m: Model, d: Data, ctx):
 
   if m.nflexevpair > 0:
     wp.launch(
-      _flex_internal_collisions_detect,
+      _flex_internal_collisions_detect(enable_sleep, incremental),
       dim=(d.nworld, m.nflexevpair),
       inputs=[
         m.nflex,
+        m.body_treeid,
         m.flex_margin,
         m.flex_internal,
         m.flex_dim,
+        m.flex_interp,
+        m.flex_nodeadr,
+        m.flex_nodenum,
         m.flex_vertadr,
+        m.flex_vertnum,
         m.flex_elemdataadr,
         m.flex_evpairadr,
         m.flex_evpairnum,
+        m.flex_nodebodyid,
+        m.flex_vertbodyid,
         m.flex_elem,
         m.flex_evpair,
         m.flex_radius,
         m.flex_evpairflexid,
         d.flexvert_xpos,
+        d.body_awake,
+        flex_awake,
+        flex_awake_prev,
+        awake_prev_in,
         d.naconmax,
       ],
       outputs=[
@@ -2783,19 +3053,30 @@ def flex_collision(m: Model, d: Data, ctx):
 
   if m.nflexelem > 0:
     wp.launch(
-      _flex_tet_internal_collisions_detect,
+      _flex_tet_internal_collisions_detect(enable_sleep, incremental),
       dim=(d.nworld, m.nflexelem),
       inputs=[
         m.nflex,
+        m.body_treeid,
         m.flex_dim,
+        m.flex_interp,
+        m.flex_nodeadr,
+        m.flex_nodenum,
         m.flex_vertadr,
+        m.flex_vertnum,
         m.flex_elemadr,
         m.flex_elemnum,
         m.flex_elemdataadr,
+        m.flex_nodebodyid,
+        m.flex_vertbodyid,
         m.flex_elem,
         m.flex_radius,
         m.flex_elemflexid,
         d.flexvert_xpos,
+        d.body_awake,
+        flex_awake,
+        flex_awake_prev,
+        awake_prev_in,
         d.naconmax,
       ],
       outputs=[
@@ -2836,22 +3117,32 @@ def flex_collision(m: Model, d: Data, ctx):
       epa_horizon = wp.empty(shape=(1, 1), dtype=int)
 
     wp.launch(
-      _flex_active_element_collisions_detect,
+      _flex_active_element_collisions_detect(enable_sleep, incremental),
       dim=(d.nworld, m.nflexelem),
       inputs=[
         m.nflex,
         m.opt.ccd_tolerance,
+        m.body_treeid,
         m.flex_selfcollide,
         m.flex_dim,
+        m.flex_interp,
+        m.flex_nodeadr,
+        m.flex_nodenum,
         m.flex_vertadr,
+        m.flex_vertnum,
         m.flex_elemadr,
         m.flex_elemnum,
         m.flex_elemdataadr,
+        m.flex_nodebodyid,
         m.flex_vertbodyid,
         m.flex_elem,
         m.flex_radius,
         m.flex_elemflexid,
         d.flexvert_xpos,
+        d.body_awake,
+        flex_awake,
+        flex_awake_prev,
+        awake_prev_in,
         d.naconmax,
         m.opt.ccd_iterations,
         epa_iterations,

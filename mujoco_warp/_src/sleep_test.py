@@ -23,6 +23,7 @@ from absl.testing import parameterized
 
 import mujoco_warp as mjwarp
 from mujoco_warp import test_data
+from mujoco_warp._src import collision_driver
 from mujoco_warp._src import forward
 from mujoco_warp._src import island
 from mujoco_warp._src import sleep
@@ -1029,6 +1030,125 @@ class ActiveDofTest(absltest.TestCase):
     island.update_active_dofs(m, d)
 
     self.assertEqual(d.ncdof.numpy()[0], 4)
+
+
+class FlexSleepTest(parameterized.TestCase):
+  def test_flex_sleep_waking(self):
+    """Verify that a falling ball colliding with a sleeping flex wakes it up."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option>
+          <flag sleep="enable" island="enable"/>
+        </option>
+        <worldbody>
+          <geom name="floor" type="plane" size="10 10 .1"/>
+          <flexcomp name="cloth" type="grid" count="2 2 1" spacing=".2 .2 .1" pos="0 0 0.1">
+            <edge equality="true"/>
+          </flexcomp>
+          <body name="bullet" pos="0 0 0.25">
+            <joint type="free"/>
+            <geom name="bullet_geom" type="sphere" size=".05" mass="1.0"/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=1,
+    )
+
+    # Put flex trees to sleep manually
+    # Find flex vertex body IDs
+    vert_body_ids = m.flex_vertbodyid.numpy()
+    tree_asleep = d.tree_asleep.numpy()
+
+    # The flex vertices should all start asleep
+    for b in vert_body_ids:
+      if b >= 0 and (treeid := m.body_treeid.numpy()[b]) >= 0:
+        tree_asleep[0, treeid] = treeid  # self-cycle for target
+
+    d.tree_asleep = wp.array(tree_asleep, dtype=int)
+    sleep.update_sleep(m, d)
+
+    # Set bullet downward velocity
+    qvel = d.qvel.numpy()
+    qvel[0, -4] = -5.0
+    d.qvel = wp.array(qvel, dtype=float)
+
+    # Verify flex vertices are asleep
+    for b in vert_body_ids:
+      if b >= 0 and (treeid := m.body_treeid.numpy()[b]) >= 0:
+        self.assertEqual(d.tree_awake.numpy()[0, treeid], 0)
+
+    # Let the bullet fall. In less than 15 steps it should collide with the flex
+    # and wake it up.
+    for _ in range(12):
+      mjwarp.step(m, d)
+
+    # Verify that all flex trees are now awake!
+    for b in vert_body_ids:
+      if b >= 0 and (treeid := m.body_treeid.numpy()[b]) >= 0:
+        self.assertEqual(d.tree_awake.numpy()[0, treeid], 1)
+
+  def test_flex_incremental_collision(self):
+    """Verify that incremental collision pass detects contacts for newly-awakened bodies."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option>
+          <flag sleep="enable" island="enable"/>
+        </option>
+        <worldbody>
+          <geom name="floor" type="plane" size="10 10 .1"/>
+          <flexcomp name="cloth" type="grid" count="2 2 1" spacing=".2 .2 .1" pos="0 0 0.1">
+            <edge equality="true"/>
+          </flexcomp>
+          <body name="bullet" pos="0 0 0.12">
+            <joint type="free"/>
+            <geom name="bullet_geom" type="sphere" size=".05" mass="1.0"/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=1,
+    )
+
+    mjwarp.kinematics(m, d)
+
+    # 1. Put both flex and bullet trees to sleep initially
+    vert_body_ids = m.flex_vertbodyid.numpy()
+    tree_asleep = d.tree_asleep.numpy()
+
+    for b in vert_body_ids:
+      if b >= 0 and (treeid := m.body_treeid.numpy()[b]) >= 0:
+        tree_asleep[0, treeid] = treeid
+
+    bullet_body = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_BODY, "bullet")
+    bullet_tree = m.body_treeid.numpy()[bullet_body]
+    tree_asleep[0, bullet_tree] = bullet_tree
+
+    d.tree_asleep = wp.array(tree_asleep, dtype=int)
+    sleep.update_sleep(m, d)
+
+    # Snapshot awake state before waking (both are asleep)
+    awake_prev = wp.array(d.body_awake.numpy(), dtype=int)
+
+    # Verify that first pass collision detects no contacts
+    collision_driver.collision(m, d)
+    self.assertEqual(d.nacon.numpy()[0], 0)
+
+    # 2. Wake up the bullet tree
+    body_awake = d.body_awake.numpy()
+    body_awake[0, bullet_body] = 1
+    tree_awake = d.tree_awake.numpy()
+    tree_awake[0, bullet_tree] = 1
+    d.body_awake = wp.array(body_awake, dtype=int)
+    d.tree_awake = wp.array(tree_awake, dtype=int)
+
+    # Run incremental collision detection pass
+    collision_driver.collision(m, d, awake_prev=awake_prev)
+
+    # Contact should now be detected!
+    self.assertGreater(d.nacon.numpy()[0], 0)
 
 
 if __name__ == "__main__":

@@ -950,6 +950,7 @@ def collision(
   ctx = create_collision_context(d.naconmax)
 
   incremental = awake_prev is not None
+  enable_sleep = bool(m.opt.enableflags & EnableBit.SLEEP)
 
   # The incremental sleeping pass appends newly-awakened contacts to the pass-1 buffer, so nacon is
   # preserved and only ncollision (the broadphase pair counter) is reset. nxn_broadphase also skips
@@ -970,8 +971,8 @@ def collision(
   # Flex collision is not sleeping-aware: pass 1 emits every flex contact regardless of awake state,
   # so the incremental pass has nothing to add (and re-running it would duplicate those contacts).
   # It therefore only runs on the full pass.
-  if m.nflex > 0 and not incremental:
-    flex_collision(m, d, ctx)
+  if m.nflex > 0:
+    flex_collision(m, d, ctx, enable_sleep=enable_sleep, awake_prev=awake_prev)
 
   if m.callback.contactfilter:
     m.callback.contactfilter(m, d)
