@@ -1433,7 +1433,7 @@ class IOTest(parameterized.TestCase):
     np.testing.assert_allclose(result.numpy(), expected, atol=1e-5)
 
   def test_set_const_balljoint(self):
-    """Test set_const with ball joint (3 DOFs with averaging)."""
+    """A runtime ball-joint inertia rotation produces and solves a coupled 3x3 block."""
     mjm, mjd, m, d = test_data.fixture(
       xml="""
     <mujoco>
@@ -1453,10 +1453,41 @@ class IOTest(parameterized.TestCase):
     body_inertia_np[0, 1] = new_inertia
     wp.copy(m.body_inertia, wp.array(body_inertia_np, dtype=m.body_inertia.dtype))
 
+    new_iquat = np.array([0.9238795, 0.2209424, 0.2209424, 0.2209424])
+    mjm.body_iquat[1] = new_iquat
+    body_iquat_np = m.body_iquat.numpy()
+    body_iquat_np[0, 1] = new_iquat
+    wp.copy(m.body_iquat, wp.array(body_iquat_np, dtype=m.body_iquat.dtype))
+
     mujoco.mj_setConst(mjm, mjd)
+    mujoco.mj_forward(mjm, mjd)
     mjwarp.set_const(m, d)
 
     _assert_eq(m.dof_invweight0.numpy()[0], mjm.dof_invweight0, "dof_invweight0")
+    dense = _dense_m(m, d)[0]
+    ref_m = mujoco.MjModel.from_xml_string(
+      f"""
+      <mujoco>
+        <worldbody>
+          <body>
+            <joint type="ball"/>
+            <inertial pos="0 0 0" mass="2" diaginertia="0.1 0.2 0.3" quat="{" ".join(map(str, new_iquat))}"/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """
+    )
+    ref_d = mujoco.MjData(ref_m)
+    mujoco.mj_forward(ref_m, ref_d)
+    reference = np.zeros_like(dense)
+    mujoco.mju_sym2dense(reference, ref_d.M, ref_m.M_rownnz, ref_m.M_rowadr, ref_m.M_colind)
+    self.assertGreater(np.max(np.abs(dense - np.diag(np.diag(dense)))), 1e-4)
+    np.testing.assert_allclose(dense, reference, atol=1e-6)
+
+    rhs = wp.ones((1, m.nv), dtype=float)
+    result = wp.zeros_like(rhs)
+    mjwarp.solve_m(m, d, result, rhs)
+    np.testing.assert_allclose(result.numpy()[0], np.linalg.solve(reference, np.ones(m.nv)), atol=1e-5)
 
   def test_set_const_static_body(self):
     """Test set_const with static body (welded to world)."""

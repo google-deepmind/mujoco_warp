@@ -922,8 +922,8 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
     for j in range(mjm.mesh_vertnum[mjm.sensor_objid[i]])
   ]
 
-  # Per-block dense/sparse layout (see m_block_layout). M_tiles holds the dense blocks grouped by
-  # size; a model may use both paths at once (e.g. one large tree + many small free joints).
+  # Per-block dense/sparse layout (see m_block_layout). Dense blocks are grouped by size and split
+  # between the ordinary tile path and the runtime-classified scalar candidate path.
   _lay = m_block_layout(mjm, m.M_rownnz)
   dof_dense = _lay["dof_dense"]
   dof_simple = _lay["dof_simple"]

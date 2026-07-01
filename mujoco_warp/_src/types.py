@@ -1396,7 +1396,7 @@ class Model:
     sensor_rangefinder_bodyid: bodyid for rangefinder        (nrangefinder,)
     taxel_vertadr: tactile sensor vertex address             (nsensortaxel,)
     taxel_sensorid: address for tactile sensors
-    M_tiles: tiling configuration for guaranteed-dense blocks
+    M_tiles: tiling configuration for blocks that always use tile Cholesky
     M_scalar_tiles: block metadata for small, potentially coupled simple bodies, grouped by size
     qLD_updates: tuple of index triples for sparse factorization
     qLD_all_updates: tuple of all levels concatenated
@@ -2056,10 +2056,11 @@ class Data:
     moment_colind: column indices in sparse actuator_moment     (nworld, nJmom)
     actuator_moment: actuator moments                           (nworld, nJmom)
     crb: com-based composite inertia and mass                   (nworld, nbody, 10)
-    M: total inertia, CSR                                       (nworld, nC)
-    qLD: per-block factor: packed dense region, then the nC     (nworld, qLD_block_total + nC)
-         L'*D*L region at offset qLD_block_total (nC=0 if no sparse block)
-    qLDiagInv: 1/diag(D) for the sparse LDL region              (nworld, nv)
+    M: total inertia, maximal-ancestor CSR                      (nworld, nC)
+    qLD: packed Cholesky blocks, then an optional nC            (nworld, qLD_block_total + nC)
+         L'*D*L region at offset qLD_block_total
+    qLDiagInv: inverse diagonal for sparse and diagonal blocks; (nworld, nv)
+                candidate first entry 0 selects qLD
     tree_awake: is tree awake; 0: asleep; 1: awake              (nworld, ntree)
     body_awake: body sleep state (SleepState)                   (nworld, nbody)
     body_awake_ind: indices of awake/static bodies              (nworld, nbody)

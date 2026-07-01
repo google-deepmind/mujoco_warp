@@ -1209,7 +1209,7 @@ def _scalar_cholesky_solve(
 
 
 @cache_kernel
-def _scalar_cholesky_factorize_block(block_size: int):
+def _scalar_candidate_factorize_block(block_size: int):
   @wp.kernel(module="unique", enable_backward=False)
   def kernel(
     # Model:
@@ -1245,7 +1245,7 @@ def _factor_block_dense(m: Model, d: Data, tiles: tuple[TileSet, ...], M: wp.arr
 def _factor_block_scalar(m: Model, d: Data, M: wp.array2d[float], L: wp.array2d[float], D: wp.array2d[float]):
   for tile in m.M_scalar_tiles:
     wp.launch(
-      _scalar_cholesky_factorize_block(tile.size),
+      _scalar_candidate_factorize_block(tile.size),
       dim=(d.nworld, tile.adr.size),
       inputs=[m.qLD_block_adr, M, tile.elemid, tile.adr],
       outputs=[D, L],
@@ -3061,7 +3061,7 @@ def _tile_cholesky_solve_block(tile: TileSet):
 
 
 @cache_kernel
-def _scalar_cholesky_solve_block(block_size: int):
+def _scalar_candidate_solve_block(block_size: int):
   @wp.kernel(module="unique", enable_backward=False)
   def kernel(
     # Model:
@@ -3106,7 +3106,7 @@ def _solve_block_scalar(
 ):
   for tile in m.M_scalar_tiles:
     wp.launch(
-      _scalar_cholesky_solve_block(tile.size),
+      _scalar_candidate_solve_block(tile.size),
       dim=(d.nworld, tile.adr.size),
       inputs=[m.qLD_block_adr, tile.adr, D, L, y],
       outputs=[x],
@@ -3131,7 +3131,8 @@ def solve_LD(
     m: The model containing factorization and sparsity information.
     d: The data object containing workspace and factorization results.
     L: The factor: packed dense region followed by the nC LDL region.
-    D: Diagonal factor (1/diag) for the sparse LDL and simple regions.
+    D: Diagonal factor for sparse and diagonal blocks. A zero at a scalar candidate's first DOF
+      marks that its factor is instead stored in L.
     x: Output array for the solution.
     y: Input right-hand side array.
   """
@@ -3199,7 +3200,7 @@ def _tile_cholesky_factorize_solve_block(tile: TileSet):
 
 
 @cache_kernel
-def _scalar_cholesky_factorize_solve_block(block_size: int):
+def _scalar_candidate_factorize_solve_block(block_size: int):
   @wp.kernel(module="unique", enable_backward=False)
   def kernel(
     # Model:
@@ -3251,7 +3252,7 @@ def _factor_solve_block_scalar(
 ):
   for tile in m.M_scalar_tiles:
     wp.launch(
-      _scalar_cholesky_factorize_solve_block(tile.size),
+      _scalar_candidate_factorize_solve_block(tile.size),
       dim=(d.nworld, tile.adr.size),
       inputs=[m.qLD_block_adr, M, tile.elemid, tile.adr, y],
       outputs=[D, x, L],
@@ -3270,7 +3271,8 @@ def factor_solve_i(m, d, M, L, D, x, y):
     d: The data object containing workspace and factorization results.
     M: The inertia-like matrix to factorize (CSR, length nC).
     L: Output factor: packed dense region followed by the nC LDL region (sized like d.qLD).
-    D: Output diagonal factor (1/diag) for the sparse LDL and simple regions.
+    D: Output diagonal factor for sparse and diagonal blocks. A zero at a scalar candidate's first
+      DOF marks that its factor is instead stored in L.
     x: Output array for the solution.
     y: Input right-hand side array.
   """
