@@ -68,6 +68,7 @@ import warp as wp
 from mujoco_warp._src import adjoint as _adjoint
 from mujoco_warp._src import collision_adjoint as _collision_adjoint
 from mujoco_warp._src import math as _math
+from mujoco_warp._src import smooth as _smooth
 from mujoco_warp._src import support as _support
 from mujoco_warp._src import types as _types
 from mujoco_warp._src import util_misc as _util_misc
@@ -260,6 +261,34 @@ def smooth_force_backward(m: Model, d: Data, lam: wp.array2d, flg_acc: bool = Tr
   wp.launch(_collision_adjoint._dof_to_qpos, dim=(nworld, m.njnt),
             inputs=[m.jnt_type, m.jnt_qposadr, m.jnt_dofadr, d.qpos, res_dof], outputs=[res_qpos])
   return res_qpos
+
+
+def mass_matrix_qpos_vjp(m: Model, d: Data, y: wp.array2d, w: wp.array2d):
+  """MASS-MATRIX-DERIVATIVE VJP: res_qpos (nworld, nq) = ∂_q[ yᵀ M(q) w ], holding y and w fixed.
+
+  This is the state-direct term the implicit-integrator (implicitfast / eulerdamp) backward needs:
+  advance_backward maps the solver root (ā_s = M Q⁻¹ ā_u) but must ALSO differentiate the integration
+  operator itself.  For Q = M(q) + dt·D that direct term is ∂_q[ yᵀ M(q)(a_s − a_u) ] (+ a qvel term for
+  state-dependent D); this primitive is the ∂_q[ yᵀ M(q) w ] piece with w = a_s − a_u.
+
+  Mechanism (REUSE the RNE-bias reverse, no hand-derived ∂M/∂q): recompute a MASS-ONLY RNE bias on a
+  NON-GRAD scratch at the step linearization d.qpos -- qvel = 0 (no Coriolis), qacc = w, ZERO root
+  acceleration (no gravity) -- so qfrc_bias = M(q)·w exactly, then reverse it with smooth_force_backward
+  seeded by lam = y.  Kinematics is re-run on the scratch: the cloned cinert/cdof sit at the PREVIOUS
+  step's config, but d.qpos is THIS step's linearization.  A dedicated scratch (not d/d_out) leaves the
+  live forward intermediates intact for the §3 contact residual VJP that runs afterward."""
+  s = _adjoint._clone_for_fd(d)  # non-grad scratch; s.qpos = d.qpos
+  s.qvel.zero_()
+  s.qacc = w
+  _smooth.kinematics(m, s)  # fresh xipos/ximat/cdof at d.qpos (the cloned kinematics are a step stale)
+  _smooth.com_pos(m, s)     # fresh subtree_com/cinert/cdof at d.qpos
+  s.cvel.zero_()            # qvel = 0 -> no cvel / cdof_dot (skip com_vel); mass-only has no Coriolis
+  s.cdof_dot.zero_()
+  s.cacc.zero_()            # root cacc = 0 -> NO gravity injected (mass-only)
+  _smooth._rne_cacc_forward(m, s, flg_acc=True)  # cacc = Σ cdof·w  (the cdof_dot·qvel term is 0)
+  _smooth._rne_cfrc(m, s)                         # cfrc_int_local = cinert·cacc  (cvel = 0 -> no gyroscopic)
+  _smooth._rne_cfrc_backward(m, s)                # subtree-accumulate cfrc_int up the tree
+  return smooth_force_backward(m, s, y, flg_acc=True)  # = ∂_q[ yᵀ M(q) w ]
 
 
 # ----------------------------------------------------------------------------
@@ -568,11 +597,10 @@ def gravcomp_qpos_vjp(m: Model, d: Data, lam: wp.array2d):
 
 
 # ============================================================================================
-# AD-RNE: analytic backward of smooth.rne (MJPLAN_ADRNE §9-10). Replaces the FD-of-rne ∂qpos
-# (§5 above) once the kinematic ∂qpos reverse lands (steps 5-7); this stage (step 3) is the
-# RNE-PROPER reverse only -- it produces adj_qvel / adj_qacc (the direct §14.3 gate targets) and
-# the intermediate seeds adj_{cdof, cdof_dot, cinert, cvel} that the kinematic reverse will later
-# chain to qpos. NOT wired into step_backward yet; FD-of-rne stays the live ∂qpos path.
+# AD-RNE: analytic backward of smooth.rne (MJPLAN_ADRNE §9-10), now wired into step_backward as the
+# production ∂qpos path. The RNE-PROPER reverse produces adj_qvel / adj_qacc and the intermediate seeds
+# adj_{cdof, cdof_dot, cinert, cvel}; the kinematic reverse below chains those seeds to qpos. FD-of-rne is
+# retained only as an explicitly selected validation oracle in adjoint.py.
 #
 # smooth.rne is compiled enable_backward=False (smooth.py:41), so tape.backward cannot reverse it
 # and we do NOT want to flip that global (it would regen every forward kernel + risk forward byte-
@@ -1129,6 +1157,38 @@ def cinert_qpos_vjp(m: Model, d: Data, adj_cinert: wp.array2d, res_dof: wp.array
   return adj_subtree
 
 
+def inertia_param_vjp(m: Model, d: Data, lam: wp.array2d):
+  """Inertial system-id (body_mass / body_inertia): accumulate -(∂(λᵀqfrc_bias)/∂{body_mass,body_inertia})
+  into m.body_mass.grad / m.body_inertia.grad (the IFT minus, matching adjoint.smooth_param_backward's
+  armature/damping sign). body_mass/body_inertia enter the dynamics ONLY through cinert (the c-frame spatial
+  inertia: the M·qacc CRB contraction, the RNE Coriolis term, AND gravity -- via the cacc-world seed -- all
+  flow through it), so adj_cinert from the rne-proper reverse (rne_backward, flg_acc=True -- the irreducible
+  dynamic-depth tree transpose, a manual VJP with NO unroll/DOF dependency) routed through the SOURCE-AD
+  cinert leaf (_cinert_recompute: loop-free + alias-free -> exact, body_mass/body_inertia are direct inputs)
+  yields the inertia derivative with NO hand-written inertia VJP -- exactly the autodiff path. ``d`` holds the
+  converged smooth intermediates (kinematics->com_pos->com_vel->rne(flg_acc=True) at the linearization);
+  read-only. No-op unless body_mass / body_inertia are requires_grad. FD-gated vs float64 mj_rne."""
+  nworld = d.qpos.shape[0]
+  nbody = m.nbody
+  # adj_cinert = ∂(λᵀqfrc_bias)/∂cinert (captures M·qacc + Coriolis + gravity, qacc frozen).
+  adj = rne_backward(m, d, lam, flg_acc=True)
+  adj_cinert = adj["cinert"]
+  # SOURCE-AD the cinert leaf wrt body_mass/body_inertia (the autodiff inertia derivative; no hand VJP).
+  cinert_rec = wp.zeros((nworld, nbody), dtype=vec10f, requires_grad=True)
+  cin = [m.body_rootid, m.body_mass, m.body_inertia, d.xipos, d.ximat, d.subtree_com]
+  wp.launch(_cinert_recompute, dim=(nworld, nbody), inputs=cin, outputs=[cinert_rec])
+  adj_mass = wp.zeros_like(m.body_mass) if m.body_mass.requires_grad else None
+  adj_inertia = wp.zeros_like(m.body_inertia) if m.body_inertia.requires_grad else None
+  wp.launch(_cinert_recompute, dim=(nworld, nbody), inputs=cin, outputs=[cinert_rec],
+            adj_inputs=[None, adj_mass, adj_inertia, None, None, None],
+            adj_outputs=[adj_cinert], adjoint=True)
+  # IFT minus into the shared (trajectory-accumulated) model param grads.
+  if adj_mass is not None:
+    wp.launch(_adjoint._accum_neg, dim=adj_mass.shape, inputs=[adj_mass], outputs=[m.body_mass.grad])
+  if adj_inertia is not None:
+    wp.launch(_adjoint._accum_neg_vec3, dim=adj_inertia.shape, inputs=[adj_inertia], outputs=[m.body_inertia.grad])
+
+
 @wp.kernel(enable_backward=False)
 def _add_spatial(a: wp.array2d[wp.spatial_vector], b: wp.array2d[wp.spatial_vector],
                  out: wp.array2d[wp.spatial_vector]):
@@ -1144,7 +1204,7 @@ def rne_qpos_vjp(m: Model, d: Data, lam: wp.array2d, flg_acc: bool = True):
   weighted subtree-COM Jacobian (_subtree_com_qpos_vjp), and the free/ball quaternion lift
   (_dof_to_qpos). cvel/cdof_dot have no direct qpos path -> their qpos dependence is the TOTAL adj_cdof
   (rne-proper + com_vel) routed through _cdof_qpos_vjp. Reads converged d; never mutates it. This is
-  the analytic replacement for FD-of-rne's ∂qpos (wired into step_backward at the next stage)."""
+  the analytic replacement for FD-of-rne's ∂qpos used by step_backward's production path."""
   nworld = d.qpos.shape[0]
   nv = m.nv
   nq = d.qpos.shape[1]

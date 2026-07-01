@@ -423,6 +423,7 @@ def _dof_to_qpos(
 def contact_qpos_vjp(
   m: Model,
   d_out: Data,
+  qpos_in: wp.array2d[float],  # input/linearization qpos (d.qpos), not integrated d_out.qpos
   res_contact_pos: wp.array,  # ∂r/∂contact_pos · λ (per-contact vec3)
   res_contact_frame: wp.array,  # ∂r/∂contact_frame · λ (per-contact mat33)
   res_efc_pos: wp.array2d[float],  # ∂r/∂efc_pos · λ (nworld, njmax)
@@ -487,5 +488,5 @@ def contact_qpos_vjp(
                     ceff, m.nbody],
             outputs=[res_dof])
   wp.launch(_dof_to_qpos, dim=(nworld, m.njnt),
-            inputs=[m.jnt_type, m.jnt_qposadr, m.jnt_dofadr, d_out.qpos, res_dof],
+            inputs=[m.jnt_type, m.jnt_qposadr, m.jnt_dofadr, qpos_in, res_dof],
             outputs=[res_qpos])

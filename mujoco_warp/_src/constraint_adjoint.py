@@ -978,3 +978,57 @@ def _contact_scatter(
   res_contact_pos[cid] = cpos_acc
 
 
+@wp.kernel(enable_backward=False)
+def _contact_friction_geom_vjp(
+  # Model:
+  geom_priority: wp.array[int],
+  geom_friction: wp.array2d[wp.vec3],
+  # Data in (frozen):
+  contact_geom_in: wp.array(dtype=wp.vec2i),
+  contact_worldid_in: wp.array[int],
+  contact_efc_address_in: wp.array2d[int],
+  efc_state_in: wp.array2d[int],
+  nacon_in: wp.array[int],
+  adj_friction_in: wp.array(dtype=vec5),  # ∂φ/∂contact.friction (the leaf's input-adjoint)
+  # Out (accumulate, IFT minus):
+  geom_friction_grad: wp.array2d[wp.vec3],
+):
+  """CONTACT-PARAM sys-id: chain ∂φ/∂contact.friction -> ∂φ/∂geom_friction via the forward friction combine
+  (collision_core.contact_params, geom-geom / no explicit pair): contact.friction (vec5) =
+  (mgf0, mgf0, mgf1, mgf2, mgf2) with mgf (vec3) = elementwise wp.max(geom_friction[g1], geom_friction[g2])
+  for equal priority, else the higher-priority geom's geom_friction. So adj_mgf = (acf0+acf1, acf2, acf3+acf4)
+  and each component routes to the geom the forward max/priority selected (wp.max -> the >= arg, g1 at ties).
+  IFT minus: geom_friction.grad -= ∂φ/∂geom_friction (matches the _accum_neg convention for param sys-id).
+  enable_backward=False: a manual VJP mirroring contact_params; explicit-pair contacts (pairid>-1) take
+  pair_friction not geom_friction -> NOT handled here (geom_friction grad correctly stays 0 for them)."""
+  cid = wp.tid()
+  if cid >= nacon_in[0]:
+    return
+  w = contact_worldid_in[cid]
+  e0 = contact_efc_address_in[cid, 0]
+  if e0 < 0 or efc_state_in[w, e0] == _SATISFIED:
+    return
+  geom = contact_geom_in[cid]
+  g1 = geom[0]
+  g2 = geom[1]
+  if g1 < 0 or g2 < 0:
+    return  # flex (negative geom ids) -- no geom_friction
+  acf = adj_friction_in[cid]
+  adj_mgf = wp.vec3(acf[0] + acf[1], acf[2], acf[3] + acf[4])  # de-duplicate the vec5 -> vec3 layout
+  fid = w % geom_friction.shape[0]
+  p1 = geom_priority[g1]
+  p2 = geom_priority[g2]
+  gf1 = geom_friction[fid, g1]
+  gf2 = geom_friction[fid, g2]
+  ag1 = wp.vec3(0.0, 0.0, 0.0)  # enable_backward=False -> component writes are safe (no adjoint of THIS kernel)
+  ag2 = wp.vec3(0.0, 0.0, 0.0)
+  for c in range(3):  # static-unrolled; priority is per-geom, the equal-priority max is per-component
+    win1 = (p1 > p2) or ((p1 == p2) and (gf1[c] >= gf2[c]))  # wp.max routes to g1 (the >= arg) at ties
+    if win1:
+      ag1[c] = adj_mgf[c]
+    else:
+      ag2[c] = adj_mgf[c]
+  wp.atomic_add(geom_friction_grad, fid, g1, -ag1)  # -= (IFT minus)
+  wp.atomic_add(geom_friction_grad, fid, g2, -ag2)
+
+
