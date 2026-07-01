@@ -169,6 +169,11 @@ def _m_allow_dense(mjm: mujoco.MjModel) -> bool:
   return not (mjm.ntendon and np.any(mjm.tendon_armature))
 
 
+def _m_full_rownnz(mjm: mujoco.MjModel) -> np.ndarray:
+  """Return row lengths in MuJoCo's maximal ancestor storage."""
+  return np.diff(np.append(mjm.dof_Madr, mjm.nM)).astype(np.int32)
+
+
 def _m_full_layout(mjm: mujoco.MjModel) -> dict[str, np.ndarray | int]:
   """Build the maximal ancestor CSR layout for M.
 
@@ -176,70 +181,45 @@ def _m_full_layout(mjm: mujoco.MjModel) -> dict[str, np.ndarray | int]:
   can become nonzero after a runtime inertial-frame update, so MJWarp keeps storage for every
   kinematically possible ancestor coupling.
   """
-  rownnz = np.zeros(mjm.nv, dtype=np.int32)
-  rowadr = np.zeros(mjm.nv, dtype=np.int32)
-  colind = []
-  mapM2M = []
-  elemid = np.full((mjm.nv, mjm.nv), -1, dtype=np.int32)
-
+  rowadr = np.asarray(mjm.dof_Madr, dtype=np.int32).copy()
+  rownnz = _m_full_rownnz(mjm)
+  colind = np.empty(mjm.nM, dtype=np.int32)
   for i in range(mjm.nv):
-    ancestors = []
-    legacy_adrs = []
     j = i
-    legacy_adr = int(mjm.dof_Madr[i])
+    madr = int(rowadr[i] + rownnz[i] - 1)
     while j >= 0:
-      ancestors.append(j)
-      legacy_adrs.append(legacy_adr)
-      legacy_adr += 1
+      colind[madr] = j
+      madr -= 1
       j = int(mjm.dof_parentid[j])
+    if madr != rowadr[i] - 1:
+      raise ValueError(f"maximal M row {i} has inconsistent dof_Madr and dof_parentid")
 
-    ancestors.reverse()
-    legacy_adrs.reverse()
-    rowadr[i] = len(colind)
-    rownnz[i] = len(ancestors)
-    for j, legacy_adr in zip(ancestors, legacy_adrs):
-      elemid[i, j] = len(colind)
-      colind.append(j)
-      mapM2M.append(legacy_adr)
+  rowind = np.repeat(np.arange(mjm.nv, dtype=np.int32), rownnz)
+  row_offset = np.arange(mjm.nM, dtype=np.int32) - rowadr[rowind]
+  mapM2M = rowadr[rowind] + rownnz[rowind] - 1 - row_offset
 
-  colind = np.asarray(colind, dtype=np.int32)
-  mapM2M = np.asarray(mapM2M, dtype=np.int32)
-  if len(colind) != mjm.nM:
-    raise ValueError(f"maximal M layout has {len(colind)} entries, expected nM={mjm.nM}")
+  elemid = np.full((mjm.nv, mjm.nv), -1, dtype=np.int32)
+  elemid[rowind, colind] = np.arange(mjm.nM, dtype=np.int32)
 
-  D_elemid = {}
-  for i in range(mjm.nv):
-    for k in range(int(mjm.D_rownnz[i])):
-      dadr = int(mjm.D_rowadr[i] + k)
-      D_elemid[i, int(mjm.D_colind[dadr])] = dadr
+  D_rowind = np.repeat(np.arange(mjm.nv, dtype=np.int32), mjm.D_rownnz)
+  D_colind = np.asarray(mjm.D_colind, dtype=np.int32)
+  mapM2D = elemid[np.maximum(D_rowind, D_colind), np.minimum(D_rowind, D_colind)]
+  mapD2M = np.full(mjm.nM, -1, dtype=np.int32)
+  D_lower = (mapM2D >= 0) & (D_rowind >= D_colind)
+  mapD2M[mapM2D[D_lower]] = np.flatnonzero(D_lower)
 
-  mapM2D = np.empty(mjm.nD, dtype=np.int32)
-  for i in range(mjm.nv):
-    for k in range(int(mjm.D_rownnz[i])):
-      dadr = int(mjm.D_rowadr[i] + k)
-      j = int(mjm.D_colind[dadr])
-      mapM2D[dadr] = elemid[max(i, j), min(i, j)]
-
-  mapD2M = np.empty(len(colind), dtype=np.int32)
-  for i in range(mjm.nv):
-    for k in range(rownnz[i]):
-      madr = int(rowadr[i] + k)
-      j = int(colind[madr])
-      mapD2M[madr] = D_elemid.get((i, j), -1)
-
-  native_elemid = np.empty(int(np.sum(mjm.M_rownnz)), dtype=np.int32)
-  for i in range(mjm.nv):
-    for k in range(int(mjm.M_rownnz[i])):
-      native_madr = int(mjm.M_rowadr[i] + k)
-      j = int(mjm.M_colind[native_madr])
-      native_elemid[native_madr] = elemid[i, j]
+  legacy_to_elemid = np.empty(mjm.nM, dtype=np.int32)
+  legacy_to_elemid[mapM2M] = np.arange(mjm.nM, dtype=np.int32)
+  native_elemid = legacy_to_elemid[mjm.mapM2M]
 
   return {
-    "nC": len(colind),
+    "nC": mjm.nM,
     "rownnz": rownnz,
     "rowadr": rowadr,
+    "rowind": rowind,
     "colind": colind,
     "elemid": elemid,
+    "D_rowind": D_rowind,
     "mapM2D": mapM2D,
     "mapD2M": mapD2M,
     "mapM2M": mapM2M,
@@ -276,7 +256,7 @@ def m_block_layout(mjm: mujoco.MjModel, M_rownnz: np.ndarray | None = None) -> d
   nv = mjm.nv
   blocks = _m_blocks(mjm)
   allow_dense = _m_allow_dense(mjm)
-  rownnz = _m_full_layout(mjm)["rownnz"] if M_rownnz is None else M_rownnz
+  rownnz = _m_full_rownnz(mjm) if M_rownnz is None else M_rownnz
   dof_adr = np.zeros(nv, dtype=np.int32)
   dof_dense = np.zeros(nv, dtype=np.int32)
   dof_simple = np.zeros(nv, dtype=np.int32)
@@ -984,32 +964,17 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
   m.qLD_all_updates = all_updates_flat if all_updates_flat else [(0, 0, 0)]
   m.qLD_level_offsets = level_offsets
 
-  # Indices for sparse M_fullm (used in solver). M_fullm_i/j are built by
-  # walking dof_parentid for each dof, so for joint types whose internal block
-  # MuJoCo stores diagonal-only in the compact (M_rownnz, M_rowadr) layout
-  # (e.g. free joints), the chain-aware layout here has more entries per row
-  # than the compact layout.
-  m.M_fullm_i, m.M_fullm_j = [], []
-  for i in range(mjm.nv):
-    j = i
-    while j > -1:
-      m.M_fullm_i.append(i)
-      m.M_fullm_j.append(j)
-      j = mjm.dof_parentid[j]
+  # Sparse M_fullm uses MuJoCo's legacy qM ordering (diagonal, then ancestors). Reorder the maximal
+  # CSR columns with mapM2M instead of walking the dof tree a second time.
+  m.M_fullm_i = M_layout["rowind"]
+  m.M_fullm_j = np.empty(m.nC, dtype=np.int32)
+  m.M_fullm_j[M_layout["mapM2M"]] = M_layout["colind"]
   # M_elemid maps (row, col) -> madr index in MJWarp's maximal CSR M layout.
   M_elemid = M_layout["elemid"]
   # M_hinit_i: row index of each CSR entry (its madr is the flat index). The dense Newton H-init
   # uses (M_hinit_i, M_colind) to scatter M's upper triangle into the dense H tile from CSR.
-  M_hinit_i = np.zeros(m.nC, dtype=np.int32)
-  for i in range(mjm.nv):
-    rowadr = m.M_rowadr[i]
-    rownnz = m.M_rownnz[i]
-    for k in range(rownnz):
-      madr = rowadr + k
-      col = int(m.M_colind[madr])
-      M_hinit_i[madr] = i
   m.M_elemid = M_elemid
-  m.M_hinit_i = M_hinit_i
+  m.M_hinit_i = M_layout["rowind"]
 
   # Precompute per-block gather indices for the dense-block densify (tile_load_indexed). For each
   # dense block and flat slot (row, col), store the CSR address of M[max(i,j), min(i,j)], or nC
@@ -1033,13 +998,8 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
 
   # indices for sparse qD_fullm (used in RNE derivatives)
   # D-structure is the full square sparsity pattern (both upper and lower triangle)
-  m.qD_fullm_i, m.qD_fullm_j = [], []
-  for i in range(mjm.nv):
-    rowadr = mjm.D_rowadr[i]
-    rownnz = mjm.D_rownnz[i]
-    for k in range(rownnz):
-      m.qD_fullm_i.append(i)
-      m.qD_fullm_j.append(int(mjm.D_colind[rowadr + k]))
+  m.qD_fullm_i = M_layout["D_rowind"]
+  m.qD_fullm_j = mjm.D_colind
   m.nD = mjm.nD
 
   # Gather-based sparse mul_m: for each row, all (col, madr) including diagonal
@@ -1986,7 +1946,8 @@ def put_data(
   d.solver_niter = wp.full((nworld,), mjd.solver_niter[0], dtype=int)
 
   M_layout = _m_full_layout(mjm)
-  M_values = _m_values_in_layout(mjd.M, M_layout)
+  # qM already has maximal ancestor storage; only its legacy ordering differs from MJWarp's CSR.
+  M_values = mjd.qM[M_layout["mapM2M"]]
   d.M = wp.array(np.tile(M_values, (nworld, 1)), dtype=float)
   # qLD = [packed dense-block Cholesky | nC LDL region]. Dense blocks store their upper Cholesky
   # packed; the LDL region (present iff some block is sparse) holds MuJoCo's full L'DL factor (only
@@ -2180,7 +2141,7 @@ def get_data_into(
   result.contact.efc_address[:ncon] = contact_efc_address_ordered[:ncon]
 
   result.M[:] = M_values[M_layout["native_elemid"]]
-  _lay = m_block_layout(mjm)
+  _lay = m_block_layout(mjm, M_layout["rownnz"])
   if _lay["has_dense"] or _lay["has_simple"]:
     # d.qLD is not MuJoCo's LDL: dense blocks are a packed Cholesky and simple blocks are factored
     # into qLDiagInv (their LDL slots are never written). Recompute the LDL factor from M.
