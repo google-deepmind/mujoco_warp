@@ -376,6 +376,22 @@ def _solve_simple_island(
 
 
 @wp.func
+def _scalar_diagonal_solve(
+  # In:
+  block_size: int,
+  worldid: int,
+  dof_adr: int,
+  vector_adr: int,
+  D: wp.array2d[float],
+  y: wp.array2d[float],
+  # Out:
+  x_out: wp.array2d[float],
+):
+  for i in range(block_size):
+    x_out[worldid, vector_adr + i] = D[worldid, dof_adr + i] * y[worldid, vector_adr + i]
+
+
+@wp.func
 def _scalar_cholesky_solve(
   # In:
   block_size: int,
@@ -455,6 +471,7 @@ def _scalar_cholesky_solve_block_island(block_size: int):
     nidof_in: wp.array[int],
     map_dof2idof_in: wp.array2d[int],
     # In:
+    D: wp.array2d[float],
     L: wp.array2d[float],
     y: wp.array2d[float],
     block_dof: wp.array[int],
@@ -465,7 +482,11 @@ def _scalar_cholesky_solve_block_island(block_size: int):
     dofid = block_dof[blk]
     idofid = map_dof2idof_in[worldid, dofid]
     if idofid < nidof_in[worldid]:
-      _scalar_cholesky_solve(wp.static(block_size), worldid, qLD_block_adr[dofid], idofid, L, y, x)
+      size = wp.static(block_size)
+      if D[worldid, dofid] != 0.0:
+        _scalar_diagonal_solve(size, worldid, dofid, idofid, D, y, x)
+      else:
+        _scalar_cholesky_solve(size, worldid, qLD_block_adr[dofid], idofid, L, y, x)
 
   return kernel
 
@@ -489,8 +510,9 @@ def solve_m_island(
     nidof: Number of island DOFs per world.
     map_idof2dof: Island-local DOF -> global DOF map.
   """
-  # Disjoint passes mirror smooth.solve_LD: dense and scalar-candidate blocks use packed Cholesky,
-  # coupled-sparse blocks use LDL, and guaranteed diagonal blocks use res = (1/diag) * vec.
+  # Disjoint passes mirror smooth.solve_LD: dense blocks use packed Cholesky, scalar candidates use
+  # their runtime-selected factor, coupled-sparse blocks use LDL, and guaranteed diagonal blocks
+  # use res = (1/diag) * vec.
   for tile in m.M_tiles:
     # large blocks prefer fewer threads for the sequential solve; see smooth._solve_block_dense
     block_dim = m.block_dim.cholesky_solve if tile.size <= 40 else 32
@@ -505,7 +527,7 @@ def solve_m_island(
     wp.launch(
       _scalar_cholesky_solve_block_island(tile.size),
       dim=(d.nworld, tile.adr.size),
-      inputs=[m.qLD_block_adr, d.nidof, d.map_dof2idof, d.qLD, vec, tile.adr],
+      inputs=[m.qLD_block_adr, d.nidof, d.map_dof2idof, d.qLDiagInv, d.qLD, vec, tile.adr],
       outputs=[res],
     )
   if m.qLD_has_sparse:

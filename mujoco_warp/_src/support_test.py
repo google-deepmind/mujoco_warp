@@ -461,6 +461,48 @@ class SupportTest(parameterized.TestCase):
           f"mul_m_island idof={idof} dof={dof}",
         )
 
+  def test_solve_m_island_runtime_candidate(self):
+    """Island solve selects diagonal or Cholesky per world for one candidate block."""
+    xml = """
+    <mujoco>
+      <worldbody>
+        <body pos="0 0 1">
+          <freejoint/>
+          <inertial pos="0 0 0" mass="1" diaginertia="0.1 0.2 0.3"/>
+        </body>
+      </worldbody>
+    </mujoco>
+    """
+    mjm = mujoco.MjModel.from_xml_string(xml)
+    mjd = mujoco.MjData(mjm)
+    m = mjwarp.put_model(mjm)
+    d = mjwarp.put_data(mjm, mjd, nworld=2)
+
+    body_ipos = np.tile(mjm.body_ipos, (2, 1, 1))
+    body_ipos[1, 1] = (0.05, 0.0, -0.02)
+    m.body_ipos = wp.array(body_ipos, dtype=wp.vec3)
+    m.body_invweight0 = wp.array(np.tile(mjm.body_invweight0, (2, 1, 1)), dtype=wp.vec2)
+    m.dof_invweight0 = wp.array(np.tile(mjm.dof_invweight0, (2, 1)), dtype=float)
+    mjwarp.set_const_0(m, d)
+
+    identity = np.tile(np.arange(m.nv, dtype=np.int32), (2, 1))
+    d.nidof = wp.array([m.nv, m.nv], dtype=int)
+    d.map_dof2idof = wp.array(identity, dtype=int)
+    d.map_idof2dof = wp.array(identity, dtype=int)
+
+    rhs = wp.ones((2, m.nv), dtype=float)
+    result = wp.zeros_like(rhs)
+    support.solve_m_island(m, d, result, rhs, d.nidof, d.map_idof2dof)
+
+    M = d.M.numpy()
+    rownnz = m.M_rownnz.numpy()
+    rowadr = m.M_rowadr.numpy()
+    colind = m.M_colind.numpy()
+    for worldid in range(2):
+      dense = np.zeros((m.nv, m.nv))
+      mujoco.mju_sym2dense(dense, M[worldid], rownnz, rowadr, colind)
+      np.testing.assert_allclose(result.numpy()[worldid], np.linalg.solve(dense, np.ones(m.nv)), atol=1e-5)
+
   def test_userdata_get_set_reset(self):
     # XML defining a model with nuserdata=4
     xml = """

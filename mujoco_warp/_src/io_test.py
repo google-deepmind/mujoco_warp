@@ -1304,6 +1304,9 @@ class IOTest(parameterized.TestCase):
     mjwarp.set_const_0(m, d)
 
     dense = _dense_m(m, d)
+    mode = d.qLDiagInv.numpy()[:, 0]
+    self.assertGreater(mode[0], 0.0)
+    self.assertEqual(mode[1], 0.0)
 
     ref_m = mujoco.MjModel.from_xml_string(xml.replace('pos="0 0 0"', 'pos="0.05 0 -0.02"'))
     ref_d = mujoco.MjData(ref_m)
@@ -1331,12 +1334,17 @@ class IOTest(parameterized.TestCase):
 
     dense = _dense_m(m, d)
     np.testing.assert_array_equal(dense, dense * np.eye(m.nv))
+    self.assertTrue(np.all(d.qLDiagInv.numpy()[:, 0] > 0.0))
+    mjwarp.solve_m(m, d, result, rhs)
+    for worldid in range(2):
+      np.testing.assert_allclose(result.numpy()[worldid], np.linalg.solve(dense[worldid], np.ones(m.nv)), atol=1e-5)
 
     body_ipos[:, 1] = (0.05, 0.0, -0.02)
     m.body_ipos = wp.array(body_ipos, dtype=wp.vec3)
     mjwarp.set_const_0(m, d)
 
     dense = _dense_m(m, d)
+    np.testing.assert_array_equal(d.qLDiagInv.numpy()[:, 0], 0.0)
     mjwarp.solve_m(m, d, result, rhs)
     result_np = result.numpy()
     for worldid in range(2):
@@ -1373,14 +1381,17 @@ class IOTest(parameterized.TestCase):
 
     dense = _dense_m(m, d)
     coupled = ({0}, {2, 7})
+    mode = d.qLDiagInv.numpy()[:, ::6]
     for worldid in range(2):
       for bodyid in range(10):
         block = dense[worldid, bodyid * 6 : (bodyid + 1) * 6, bodyid * 6 : (bodyid + 1) * 6]
         off_diagonal = block - np.diag(np.diag(block))
         if bodyid in coupled[worldid]:
           self.assertGreater(np.max(np.abs(off_diagonal)), 1e-6)
+          self.assertEqual(mode[worldid, bodyid], 0.0)
         else:
           np.testing.assert_allclose(off_diagonal, 0.0, atol=1e-6)
+          self.assertGreater(mode[worldid, bodyid], 0.0)
 
     rhs = wp.ones((2, m.nv), dtype=float)
     expected = np.stack([np.linalg.solve(dense[worldid], np.ones(m.nv)) for worldid in range(2)])
