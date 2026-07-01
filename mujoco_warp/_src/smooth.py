@@ -25,6 +25,7 @@ from mujoco_warp._src.types import CamLightType
 from mujoco_warp._src.types import ConeType
 from mujoco_warp._src.types import Data
 from mujoco_warp._src.types import DisableBit
+from mujoco_warp._src.types import EnableBit
 from mujoco_warp._src.types import EqType
 from mujoco_warp._src.types import JointType
 from mujoco_warp._src.types import Model
@@ -2724,8 +2725,9 @@ def transmission(m: Model, d: Data):
 
 
 @cache_kernel
-def _solve_LD_sparse_fused(nv: int, nlevels: int):
+def _solve_LD_sparse_fused(nv: int, nlevels: int, sleep_enabled: bool = False):
   """Fused sparse backsubstitution: UP + diag + DOWN in one kernel."""
+  SLEEP_ENABLED = sleep_enabled
 
   @wp.func_native(snippet="WP_TILE_SYNC();")
   def _syncthreads():
@@ -2733,6 +2735,11 @@ def _solve_LD_sparse_fused(nv: int, nlevels: int):
 
   @wp.kernel(module="unique", enable_backward=False)
   def kernel(
+    # Model:
+    body_treeid: wp.array[int],
+    dof_bodyid: wp.array[int],
+    # Data in:
+    tree_awake_in: wp.array2d[int],
     # In:
     dof_dense: wp.array[int],
     dof_simple: wp.array[int],
@@ -2753,7 +2760,14 @@ def _solve_LD_sparse_fused(nv: int, nlevels: int):
     # (diagonal) blocks use the dedicated 1/diag solve.
     for dofid in range(tid, NV, BLOCK_DIM):
       if dof_dense[dofid] == 0 and dof_simple[dofid] == 0:
-        x_out[worldid, dofid] = y[worldid, dofid]
+        if wp.static(SLEEP_ENABLED):
+          treeid = body_treeid[dof_bodyid[dofid]]
+          if tree_awake_in[worldid, treeid] != 0:
+            x_out[worldid, dofid] = y[worldid, dofid]
+          else:
+            x_out[worldid, dofid] = 0.0
+        else:
+          x_out[worldid, dofid] = y[worldid, dofid]
     _syncthreads()
 
     # Forward substitution (all_updates only references sparse-block dofs)
@@ -2765,13 +2779,23 @@ def _solve_LD_sparse_fused(nv: int, nlevels: int):
       for u in range(tid, level_size, BLOCK_DIM):
         update = all_updates[level_offset + u]
         i, k, Madr_ki = update[0], update[1], update[2]
-        wp.atomic_sub(x_out[worldid], i, L[worldid, Madr_ki] * x_out[worldid, k])
+        if wp.static(SLEEP_ENABLED):
+          treeid = body_treeid[dof_bodyid[i]]
+          if tree_awake_in[worldid, treeid] != 0:
+            wp.atomic_sub(x_out[worldid], i, L[worldid, Madr_ki] * x_out[worldid, k])
+        else:
+          wp.atomic_sub(x_out[worldid], i, L[worldid, Madr_ki] * x_out[worldid, k])
       _syncthreads()
 
     # Diagonal multiply (sparse-block dofs only)
     for dofid in range(tid, NV, BLOCK_DIM):
       if dof_dense[dofid] == 0 and dof_simple[dofid] == 0:
-        x_out[worldid, dofid] *= D[worldid, dofid]
+        if wp.static(SLEEP_ENABLED):
+          treeid = body_treeid[dof_bodyid[dofid]]
+          if tree_awake_in[worldid, treeid] != 0:
+            x_out[worldid, dofid] *= D[worldid, dofid]
+        else:
+          x_out[worldid, dofid] *= D[worldid, dofid]
     _syncthreads()
 
     # Backward substitution
@@ -2783,7 +2807,12 @@ def _solve_LD_sparse_fused(nv: int, nlevels: int):
       for u in range(tid, level_size, BLOCK_DIM):
         update = all_updates[level_offset + u]
         i, k, Madr_ki = update[0], update[1], update[2]
-        wp.atomic_sub(x_out[worldid], k, L[worldid, Madr_ki] * x_out[worldid, i])
+        if wp.static(SLEEP_ENABLED):
+          treeid = body_treeid[dof_bodyid[i]]
+          if tree_awake_in[worldid, treeid] != 0:
+            wp.atomic_sub(x_out[worldid], k, L[worldid, Madr_ki] * x_out[worldid, i])
+        else:
+          wp.atomic_sub(x_out[worldid], k, L[worldid, Madr_ki] * x_out[worldid, i])
       _syncthreads()
 
   return kernel
@@ -2796,6 +2825,7 @@ def _solve_LD_sparse(
   D: wp.array2d[float],
   x: wp.array2d[float],
   y: wp.array2d[float],
+  sleep_enabled: bool = False,
 ):
   """Computes sparse backsubstitution: x = inv(L'*D*L)*y."""
   nlevels = len(m.qLD_updates)
@@ -2806,27 +2836,56 @@ def _solve_LD_sparse(
     dim_block = 1
 
   wp.launch(
-    _solve_LD_sparse_fused(m.nv, nlevels),
+    _solve_LD_sparse_fused(m.nv, nlevels, sleep_enabled),
     dim=(d.nworld, dim_block),
-    inputs=[m.qLD_dof_dense, m.qLD_dof_simple, L, D, m.qLD_all_updates, m.qLD_level_offsets, y],
+    inputs=[
+      m.body_treeid,
+      m.dof_bodyid,
+      d.tree_awake,
+      m.qLD_dof_dense,
+      m.qLD_dof_simple,
+      L,
+      D,
+      m.qLD_all_updates,
+      m.qLD_level_offsets,
+      y,
+    ],
     outputs=[x],
     block_dim=dim_block,
   )
 
 
-@wp.kernel
-def _solve_simple(
-  # In:
-  simple_dofs: wp.array[int],
-  D: wp.array2d[float],
-  y: wp.array2d[float],
-  # Out:
-  x_out: wp.array2d[float],
-):
-  # A simple (decoupled) dof's solve is just x = (1/diag) * y.
-  worldid, s = wp.tid()
-  dofid = simple_dofs[s]
-  x_out[worldid, dofid] = D[worldid, dofid] * y[worldid, dofid]
+@cache_kernel
+def _solve_simple_kernel(sleep_enabled: bool = False):
+  SLEEP_ENABLED = sleep_enabled
+
+  @wp.kernel(module="unique", enable_backward=False)
+  def kernel(
+    # Model:
+    body_treeid: wp.array[int],
+    dof_bodyid: wp.array[int],
+    # Data in:
+    tree_awake_in: wp.array2d[int],
+    # In:
+    simple_dofs: wp.array[int],
+    D: wp.array2d[float],
+    y: wp.array2d[float],
+    # Out:
+    x_out: wp.array2d[float],
+  ):
+    # A simple (decoupled) dof's solve is just x = (1/diag) * y.
+    worldid, s = wp.tid()
+    dofid = simple_dofs[s]
+    if wp.static(SLEEP_ENABLED):
+      treeid = body_treeid[dof_bodyid[dofid]]
+      if tree_awake_in[worldid, treeid] != 0:
+        x_out[worldid, dofid] = D[worldid, dofid] * y[worldid, dofid]
+      else:
+        x_out[worldid, dofid] = 0.0
+    else:
+      x_out[worldid, dofid] = D[worldid, dofid] * y[worldid, dofid]
+
+  return kernel
 
 
 @wp.kernel
@@ -2853,44 +2912,58 @@ def _factor_solve_simple(
 
 
 @cache_kernel
-def _tile_cholesky_solve_block(tile: TileSet):
+def _tile_cholesky_solve_block(tile: TileSet, sleep_enabled: bool = False):
   # One diagonal block per (world, block) thread group; no densify, so a 2D grid suffices.
   block_size = tile.size
   block_area = block_size * block_size
+  SLEEP_ENABLED = sleep_enabled
 
   @wp.kernel(module="unique", enable_backward=False)
   def kernel(
     # Model:
+    body_treeid: wp.array[int],
+    dof_bodyid: wp.array[int],
     qLD_block_adr: wp.array[int],
+    # Data in:
+    tree_awake_in: wp.array2d[int],
     # In:
     block_dof: wp.array[int],
     L_in: wp.array2d[float],
     y: wp.array2d[float],
     # Out:
-    x: wp.array2d[float],
+    x_out: wp.array2d[float],
   ):
     worldid, blk = wp.tid()
     start = block_dof[blk]
+
+    if wp.static(SLEEP_ENABLED):
+      treeid = body_treeid[dof_bodyid[start]]
+      if tree_awake_in[worldid, treeid] == 0:
+        for i in range(block_size):
+          x_out[worldid, start + i] = 0.0
+        return
 
     L = wp.tile_reshape(
       wp.tile_load(L_in[worldid], shape=(block_area,), offset=(qLD_block_adr[start],)), (block_size, block_size)
     )
     rhs = wp.tile_load(y[worldid], shape=(block_size,), offset=(start,))
     sol = wp.tile_cholesky_solve(L, rhs, fill_mode="upper")
-    wp.tile_store(x[worldid], sol, offset=(start,))
+    wp.tile_store(x_out[worldid], sol, offset=(start,))
 
   return kernel
 
 
-def _solve_block_dense(m: Model, d: Data, L: wp.array2d[float], x: wp.array2d[float], y: wp.array2d[float]):
+def _solve_block_dense(
+  m: Model, d: Data, L: wp.array2d[float], x: wp.array2d[float], y: wp.array2d[float], sleep_enabled: bool = False
+):
   for tile in m.M_tiles:
     # The triangular back-substitution is largely sequential, so large blocks prefer fewer threads
     # for better occupancy while moderate blocks still want a couple warps (16/27->64, 60->32).
     block_dim = m.block_dim.cholesky_solve if tile.size <= 40 else 32
     wp.launch_tiled(
-      _tile_cholesky_solve_block(tile),
+      _tile_cholesky_solve_block(tile, sleep_enabled),
       dim=(d.nworld, tile.adr.size),
-      inputs=[m.qLD_block_adr, tile.adr, L, y],
+      inputs=[m.body_treeid, m.dof_bodyid, m.qLD_block_adr, d.tree_awake, tile.adr, L, y],
       outputs=[x],
       block_dim=block_dim,
     )
@@ -2903,6 +2976,7 @@ def solve_LD(
   D: wp.array2d[float],
   x: wp.array2d[float],
   y: wp.array2d[float],
+  sleep_enabled: bool = False,
 ):
   """Computes backsubstitution for the inertia factorization.
 
@@ -2918,13 +2992,19 @@ def solve_LD(
     D: Diagonal factor (1/diag) for the sparse LDL and simple regions.
     x: Output array for the solution.
     y: Input right-hand side array.
+    sleep_enabled: Whether to skip calculation for asleep trees.
   """
   if m.qLD_has_dense:
-    _solve_block_dense(m, d, L, x, y)
+    _solve_block_dense(m, d, L, x, y, sleep_enabled)
   if m.qLD_has_sparse:
-    _solve_LD_sparse(m, d, L[:, m.qLD_block_total :], D, x, y)
+    _solve_LD_sparse(m, d, L[:, m.qLD_block_total :], D, x, y, sleep_enabled)
   if m.qLD_has_simple:
-    wp.launch(_solve_simple, dim=(d.nworld, m.qLD_simple_dofs.size), inputs=[m.qLD_simple_dofs, D, y], outputs=[x])
+    wp.launch(
+      _solve_simple_kernel(sleep_enabled),
+      dim=(d.nworld, m.qLD_simple_dofs.size),
+      inputs=[m.body_treeid, m.dof_bodyid, d.tree_awake, m.qLD_simple_dofs, D, y],
+      outputs=[x],
+    )
 
 
 @event_scope
@@ -2937,7 +3017,8 @@ def solve_m(m: Model, d: Data, x: wp.array2d[float], y: wp.array2d[float]):
     x: Output array for the solution.
     y: Input right-hand side array.
   """
-  solve_LD(m, d, d.qLD, d.qLDiagInv, x, y)
+  sleep_enabled = bool(m.opt.enableflags & EnableBit.SLEEP)
+  solve_LD(m, d, d.qLD, d.qLDiagInv, x, y, sleep_enabled)
 
 
 @cache_kernel

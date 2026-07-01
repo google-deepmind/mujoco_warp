@@ -351,12 +351,6 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
   if mjm.nv > nv_max and mjm.opt.jacobian == mujoco.mjtJacobian.mjJAC_DENSE:
     raise ValueError(f"Dense is unsupported for nv > {nv_max} (nv = {mjm.nv}).")
 
-  # sleeping is supported via a dof-compaction approach.  awake dofs are compacted into dense
-  # nvmax-sized arrays.  nvmax is chosen to fit the worst-case active dof set. sleeping is only
-  # supported for Newton solver and requires nv <= nvmax.
-  if (mjm.opt.enableflags & mujoco.mjtEnableBit.mjENBL_SLEEP) and mjm.opt.solver != mujoco.mjtSolver.mjSOL_NEWTON:
-    raise ValueError(f"sleeping requires the Newton solver (got solver={types.SolverType(mjm.opt.solver).name})")
-
   collision_sensors = (mujoco.mjtSensor.mjSENS_GEOMDIST, mujoco.mjtSensor.mjSENS_GEOMNORMAL, mujoco.mjtSensor.mjSENS_GEOMFROMTO)
   is_collision_sensor = np.isin(mjm.sensor_type, collision_sensors)
 
