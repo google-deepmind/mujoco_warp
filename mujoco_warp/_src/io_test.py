@@ -28,6 +28,7 @@ import mujoco_warp as mjwarp
 from mujoco_warp import ConeType
 from mujoco_warp import IntegratorType
 from mujoco_warp import test_data
+from mujoco_warp._src import io
 from mujoco_warp._src import types
 from mujoco_warp._src import warp_util
 from mujoco_warp._src.io import put_model
@@ -470,7 +471,7 @@ _MESH_RANDOMIZE_XML = """
 class IOTest(parameterized.TestCase):
   def test_make_put_data(self):
     """Tests that make_data and put_data are producing the same shapes for all arrays."""
-    mjm, _, _, d = test_data.fixture("pendula.xml")
+    mjm, _, _, d = test_data.fixture("pendula.xml", nvmax=None)
     md = mjwarp.make_data(mjm)
 
     # same number of fields
@@ -516,6 +517,32 @@ class IOTest(parameterized.TestCase):
       self.assertTrue((eid[a : a + n] == eid[a]).all())
       if a > 0:  # maximal: the preceding row belongs to a different instance
         self.assertTrue(etype[a - 1] != etype[a] or eid[a - 1] != eid[a])
+
+  @parameterized.parameters(types.Model, types.Data, types.RenderContext)
+  def test_is_batched_metadata(self, dataclass_type):
+    """Verify that all fields specified with 'nworld' or '*' are marked with _is_batched=True."""
+    fixture_outputs = test_data.fixture("pendula.xml")
+    if dataclass_type is types.RenderContext:
+      obj = io.create_render_context(fixture_outputs[0], nworld=1)
+    else:
+      obj = next(o for o in fixture_outputs if isinstance(o, dataclass_type))
+
+    for f in dataclasses.fields(dataclass_type):
+      if not io._is_array_spec(f.type):
+        continue
+      spec_shape = getattr(f.type, "shape", ())
+      if not (spec_shape and spec_shape[0] in ("*", "nworld")):
+        continue
+      arr = getattr(obj, f.name)
+      if arr is None:
+        continue
+      self.assertTrue(
+        getattr(arr, "_is_batched", False),
+        msg=(
+          f"{dataclass_type.__name__} field '{f.name}' has shape spec {spec_shape} "
+          "but its instantiated array does not have _is_batched=True"
+        ),
+      )
 
   @parameterized.parameters(*_IO_TEST_MODELS)
   def test_put_data_sizes(self, xml):
@@ -1610,23 +1637,29 @@ class IOTest(parameterized.TestCase):
     )
 
     m_default = mjwarp.put_model(mjm)
-    m = mjwarp.put_model(mjm, batch_sizes={"mat_texid": 3, "geom_size": 2, "mat_rgba": 4})
+    batch_sizes = {"mat_texid": 3, "geom_size": 2, "mat_rgba": 4}
+    m = mjwarp.put_model(mjm, batch_sizes=batch_sizes)
 
     nrole = int(mujoco.mjtTextureRole.mjNTEXROLE)
     self.assertEqual(tuple(m.mat_texid.shape), (3, mjm.nmat, nrole))
     self.assertEqual(tuple(m.geom_size.shape), (2, mjm.ngeom))
     self.assertEqual(tuple(m.mat_rgba.shape), (4, mjm.nmat))
-    self.assertGreater(m.mat_texid.strides[0], 0)
-    self.assertGreater(m.geom_size.strides[0], 0)
-    self.assertGreater(m.mat_rgba.strides[0], 0)
 
     np.testing.assert_array_equal(m.mat_texid.numpy(), np.repeat(m_default.mat_texid.numpy(), 3, axis=0))
     np.testing.assert_allclose(m.geom_size.numpy(), np.repeat(m_default.geom_size.numpy(), 2, axis=0))
     np.testing.assert_allclose(m.mat_rgba.numpy(), np.repeat(m_default.mat_rgba.numpy(), 4, axis=0))
 
-    # Fields not listed in batch_sizes keep the shared legacy allocation.
-    self.assertEqual(m.geom_pos.shape[0], 1)
-    self.assertEqual(m.geom_pos.strides[0], 0)
+    # field has batched dimension and defaults to batch size 1
+    for f in dataclasses.fields(types.Model):
+      if not io._is_array_spec(f.type):
+        continue
+      spec_shape = getattr(f.type, "shape", ())
+      if not spec_shape or spec_shape[0] != "*":
+        continue
+      val = getattr(m, f.name)
+      if val is not None:
+        expected = batch_sizes.get(f.name, 1)
+        self.assertEqual(val.shape[0], expected, f"Field {f.name} does not have batch dimension {expected}")
 
     red_id = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_TEXTURE, "red")
     green_id = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_TEXTURE, "green")

@@ -1191,6 +1191,49 @@ def _scalar_candidate_factorize(
   return diagonal
 
 
+@wp.func
+def _scalar_diagonal_solve(
+  # In:
+  block_size: int,
+  worldid: int,
+  start: int,
+  D: wp.array2d[float],
+  y: wp.array2d[float],
+  # Out:
+  x_out: wp.array2d[float],
+):
+  for i in range(block_size):
+    x_out[worldid, start + i] = D[worldid, start + i] * y[worldid, start + i]
+
+
+@wp.func
+def _scalar_cholesky_solve(
+  # In:
+  block_size: int,
+  worldid: int,
+  factor_adr: int,
+  start: int,
+  L: wp.array2d[float],
+  y: wp.array2d[float],
+  # Out:
+  x_out: wp.array2d[float],
+):
+  # Forward substitution U.T * z = y, using x as storage for z.
+  for i in range(block_size):
+    value = y[worldid, start + i]
+    for k in range(i):
+      value -= L[worldid, factor_adr + k * block_size + i] * x_out[worldid, start + k]
+    x_out[worldid, start + i] = value / L[worldid, factor_adr + i * block_size + i]
+
+  # Backward substitution U * x = z, overwriting z with the solution.
+  for reverse_i in range(block_size):
+    i = block_size - 1 - reverse_i
+    value = x_out[worldid, start + i]
+    for k in range(i + 1, block_size):
+      value -= L[worldid, factor_adr + i * block_size + k] * x_out[worldid, start + k]
+    x_out[worldid, start + i] = value / L[worldid, factor_adr + i * block_size + i]
+
+
 @cache_kernel
 def _scalar_cholesky_factorize_block(block_size: int):
   @wp.kernel(module="unique", enable_backward=False)
@@ -3061,9 +3104,9 @@ def _scalar_cholesky_solve_block(block_size: int):
     start = block_dof[blk]
     size = wp.static(block_size)
     if D[worldid, start] != 0.0:
-      support._scalar_diagonal_solve(size, worldid, start, start, D, y, x)
+      _scalar_diagonal_solve(size, worldid, start, D, y, x)
     else:
-      support._scalar_cholesky_solve(size, worldid, qLD_block_adr[start], start, L, y, x)
+      _scalar_cholesky_solve(size, worldid, qLD_block_adr[start], start, L, y, x)
 
   return kernel
 
@@ -3203,9 +3246,9 @@ def _scalar_cholesky_factorize_solve_block(block_size: int):
     size = wp.static(block_size)
     diagonal = _scalar_candidate_factorize(qLD_block_adr, M_in, size, worldid, blk, start, block_elemid, D_out, L_out)
     if diagonal:
-      support._scalar_diagonal_solve(size, worldid, start, start, D_out, y, x_out)
+      _scalar_diagonal_solve(size, worldid, start, D_out, y, x_out)
     else:
-      support._scalar_cholesky_solve(size, worldid, qLD_block_adr[start], start, L_out, y, x_out)
+      _scalar_cholesky_solve(size, worldid, qLD_block_adr[start], start, L_out, y, x_out)
 
   return kernel
 

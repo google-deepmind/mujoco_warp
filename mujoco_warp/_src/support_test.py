@@ -26,10 +26,6 @@ from mujoco_warp import ConeType
 from mujoco_warp import State
 from mujoco_warp import test_data
 from mujoco_warp._src import io
-from mujoco_warp._src import island
-from mujoco_warp._src import solver
-from mujoco_warp._src import support
-from mujoco_warp._src import types
 from mujoco_warp._src.block_cholesky import create_blocked_cholesky_factorize_solve_func
 
 # tolerance for difference between MuJoCo and MJWarp support calculations - mostly
@@ -402,106 +398,6 @@ class SupportTest(parameterized.TestCase):
     for w in range(2):
       _assert_eq(jacp_wp.numpy()[w], jacp_mj, f"jacp world {w}")
       _assert_eq(jacr_wp.numpy()[w], jacr_mj, f"jacr world {w}")
-
-  @parameterized.parameters(
-    mujoco.mjtJacobian.mjJAC_SPARSE,
-    mujoco.mjtJacobian.mjJAC_DENSE,
-  )
-  def test_mul_m_island(self, jacobian):
-    """Tests mul_m_island matches mul_m for all islands in parallel."""
-    mjm, mjd, m, d = test_data.fixture(
-      "constraints.xml",
-      overrides={"opt.jacobian": jacobian},
-    )
-    m.opt.disableflags &= ~types.DisableBit.ISLAND
-
-    ctx = solver._create_island_solver_context(m, d)
-    island.compute_island_mapping(m, d, ctx)
-
-    # Random vector in global DOF order
-    np.random.seed(0)
-    vec_np = np.random.randn(1, m.nv).astype(np.float32)
-
-    # Global mul_m
-    vec_global = wp.from_numpy(vec_np, dtype=float)
-    res_global = wp.zeros((1, m.nv), dtype=float)
-    mjwarp.mul_m(m, d, res_global, vec_global)
-    res_global_np = res_global.numpy()[0]
-
-    # Gather vec into island-local order
-    nidof = d.nidof.numpy()[0]
-    map_idof2dof = d.map_idof2dof.numpy()[0]
-    vec_island_np = np.zeros((1, m.nv), dtype=np.float32)
-    for idof in range(nidof):
-      vec_island_np[0, idof] = vec_np[0, map_idof2dof[idof]]
-
-    vec_island = wp.from_numpy(vec_island_np, dtype=float)
-    res_island = wp.zeros((1, m.nv), dtype=float)
-
-    support.mul_m_island(
-      m,
-      d,
-      res_island,
-      vec_island,
-      d.nidof,
-      d.map_idof2dof,
-      d.map_dof2idof,
-      d.dof_islandid,
-    )
-
-    # Scatter result back to global order and compare
-    res_island_np = res_island.numpy()[0]
-    for idof in range(nidof):
-      dof = map_idof2dof[idof]
-      dof_isl = d.dof_island.numpy()[0, dof]
-      if dof_isl >= 0:
-        _assert_eq(
-          res_island_np[idof],
-          res_global_np[dof],
-          f"mul_m_island idof={idof} dof={dof}",
-        )
-
-  def test_solve_m_island_runtime_candidate(self):
-    """Island solve selects diagonal or Cholesky per world for one candidate block."""
-    xml = """
-    <mujoco>
-      <worldbody>
-        <body pos="0 0 1">
-          <freejoint/>
-          <inertial pos="0 0 0" mass="1" diaginertia="0.1 0.2 0.3"/>
-        </body>
-      </worldbody>
-    </mujoco>
-    """
-    mjm = mujoco.MjModel.from_xml_string(xml)
-    mjd = mujoco.MjData(mjm)
-    m = mjwarp.put_model(mjm)
-    d = mjwarp.put_data(mjm, mjd, nworld=2)
-
-    body_ipos = np.tile(mjm.body_ipos, (2, 1, 1))
-    body_ipos[1, 1] = (0.05, 0.0, -0.02)
-    m.body_ipos = wp.array(body_ipos, dtype=wp.vec3)
-    m.body_invweight0 = wp.array(np.tile(mjm.body_invweight0, (2, 1, 1)), dtype=wp.vec2)
-    m.dof_invweight0 = wp.array(np.tile(mjm.dof_invweight0, (2, 1)), dtype=float)
-    mjwarp.set_const_0(m, d)
-
-    identity = np.tile(np.arange(m.nv, dtype=np.int32), (2, 1))
-    d.nidof = wp.array([m.nv, m.nv], dtype=int)
-    d.map_dof2idof = wp.array(identity, dtype=int)
-    d.map_idof2dof = wp.array(identity, dtype=int)
-
-    rhs = wp.ones((2, m.nv), dtype=float)
-    result = wp.zeros_like(rhs)
-    support.solve_m_island(m, d, result, rhs, d.nidof, d.map_idof2dof)
-
-    M = d.M.numpy()
-    rownnz = m.M_rownnz.numpy()
-    rowadr = m.M_rowadr.numpy()
-    colind = m.M_colind.numpy()
-    for worldid in range(2):
-      dense = np.zeros((m.nv, m.nv))
-      mujoco.mju_sym2dense(dense, M[worldid], rownnz, rowadr, colind)
-      np.testing.assert_allclose(result.numpy()[worldid], np.linalg.solve(dense, np.ones(m.nv)), atol=1e-5)
 
   def test_userdata_get_set_reset(self):
     # XML defining a model with nuserdata=4

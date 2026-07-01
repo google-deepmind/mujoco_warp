@@ -40,6 +40,7 @@ import mujoco_warp as mjw
 from mujoco_warp._src import cli
 from mujoco_warp._src.collision_driver import MJ_COLLISION_TABLE
 from mujoco_warp._src.types import CollisionType
+from mujoco_warp._src.types import OverflowType
 
 _FUNCS = {
   n: f
@@ -55,6 +56,9 @@ _NUM_BUCKETS = flags.DEFINE_integer("num_buckets", 10, "number of buckets to sum
 _MEMORY = flags.DEFINE_bool("memory", False, "print memory report")
 _INFO = flags.DEFINE_bool("info", False, "print extra Model and Data info")
 _FORMAT = flags.DEFINE_enum("format", "human", ["human", "short", "json"], "output format")
+_OVERFLOW_BEHAVIOR = flags.DEFINE_enum(
+  "overflow_behavior", "error", ["error", "continue"], "behavior when simulation overflow occurs"
+)
 
 
 def _dataclass_memory(dataclass, prefix: str = "") -> dict[str, int]:
@@ -165,6 +169,7 @@ def _main(argv: Sequence[str]):
   mjm = cli.load_model(path)
   free_mem_at_init = wp.get_device(device).free_memory
   m, d, rc, ctrls = cli.init_structs(_FUNCS[_FUNCTION.value], mjm)
+  m.opt.warn_overflow = _OVERFLOW_BEHAVIOR.value == "continue"
   timestep = m.opt.timestep.numpy()[0]
 
   if _FORMAT.value == "human":
@@ -257,6 +262,20 @@ def _main(argv: Sequence[str]):
     nefc.append(np.max(d.nefc.numpy()))
     solver_niter.append(d.solver_niter.numpy())
     trace = _sum_trace(trace, step_trace)
+
+    if _OVERFLOW_BEHAVIOR.value == "error":
+      overflows = d.overflow.numpy()
+      if np.any(overflows != 0):
+        world_ids = np.where(overflows != 0)[0]
+        n_worlds = len(world_ids)
+        print(f"\nSimulation aborted: overflow detected in {n_worlds} world{'s' if n_worlds > 1 else ''}:")
+        for wid in world_ids[:10]:
+          mask = overflows[wid]
+          active_flags = [f.name for f in OverflowType if mask & f.value]
+          print(f"  World {wid}: {', '.join(active_flags)}")
+        if n_worlds > 10:
+          print(f"  ... and {n_worlds - 10} more worlds (reporting truncated to first 10)")
+        sys.exit(1)
 
   if _FUNCTION.value == "render":
     with wp.ScopedCapture() as step_capture:

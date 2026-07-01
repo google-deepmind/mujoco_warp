@@ -51,6 +51,7 @@ class BlockDim:
 
   Attributes:
     segmented_sort: segmented sort block dimension (collision_driver)
+    convex_ccd: convex CCD kernel block dimension (collision_convex)
     actuator_velocity: actuator velocity block dimension (forward)
     ray: ray block dimension (ray)
     contact_sort: contact sort block dimension (sensor)
@@ -75,6 +76,8 @@ class BlockDim:
 
   # collision_driver
   segmented_sort: int = 128
+  # collision_convex
+  convex_ccd: int = 64
   # forward
   actuator_velocity: int = 32
   # ray
@@ -128,10 +131,34 @@ class BroadphaseFilter(enum.IntFlag):
     OBB: collision between oriented bounding boxes
   """
 
-  PLANE = 1
-  SPHERE = 2
-  AABB = 4
-  OBB = 8
+  PLANE = 1 << 0
+  SPHERE = 1 << 1
+  AABB = 1 << 2
+  OBB = 1 << 3
+
+
+class OverflowType(enum.IntFlag):
+  """Bitmask for physics and collision overflows.
+
+  Attributes:
+    NEFC: nefc > njmax
+    NJMAX_NNZ: njmax_nnz overflow
+    BROADPHASE: broadphase overflow / flex broadphase overflow
+    NARROWPHASE: narrowphase overflow / flex narrowphase / contact overflow
+    CCD: CCD overflow / flex CCD overflow
+    HFIELD: height field collision overflow
+    CONTACT_MATCH: contact match sensor overflow
+    NVMAX: nvmax overflow (islands)
+  """
+
+  NEFC = 1 << 0
+  NJMAX_NNZ = 1 << 1
+  BROADPHASE = 1 << 2
+  NARROWPHASE = 1 << 3
+  CCD = 1 << 4
+  HFIELD = 1 << 5
+  CONTACT_MATCH = 1 << 6
+  NVMAX = 1 << 7
 
 
 class CamLightType(enum.IntEnum):
@@ -816,6 +843,7 @@ class Option:
       zeros out the contacts at each step)
     contact_sensor_maxmatch: max number of contacts considered by contact sensor matching criteria
                              contacts matched after this value is exceded will be ignored
+    warn_overflow: warn if overflow is encountered
   """
 
   timestep: array("*", float)
@@ -845,6 +873,7 @@ class Option:
   graph_conditional: bool
   run_collision_detection: bool
   contact_sensor_maxmatch: int
+  warn_overflow: bool
 
   # TODO(team): remove in future version
   @property
@@ -1287,7 +1316,6 @@ class Model:
     nmaxmeshdeg: maximum number of polygons per vert
     is_sparse: constraint Jacobian/Hessian layout (sparse vs dense). Does not affect M, whose
       factorization is a per-block decision -- see qLD_* and m_block_layout
-    is_compact: solve via active-DOF compaction (Newton + sleeping, unless islands forced)
     qLD_has_dense: any M block factors as a packed dense block
     qLD_has_simple: any M block is simple (diagonal -> 1/diag, no factorization)
     qLD_has_sparse: any M block factors via sparse LDL (oversized block / tendon armature)
@@ -1750,7 +1778,6 @@ class Model:
   nmaxpolygon: int
   nmaxmeshdeg: int
   is_sparse: bool
-  is_compact: bool
   qLD_has_dense: bool
   qLD_has_simple: bool
   qLD_has_sparse: bool
@@ -1860,8 +1887,8 @@ class ContactType(enum.IntFlag):
     SENSOR: contact for collision sensor (GEOMDIST, GEOMNORMAL, GEOMFROMTO)
   """
 
-  CONSTRAINT = 1
-  SENSOR = 2
+  CONSTRAINT = 1 << 0
+  SENSOR = 1 << 1
 
 
 @dataclasses.dataclass
@@ -1936,13 +1963,6 @@ class Constraint:
     force: constraint force in constraint space       (nworld, njmax)
     state: constraint state                           (nworld, njmax_pad)
     island: island ID per constraint                  (nworld, njmax)
-    itype: island constraint type                     (nworld, njmax)
-    iid: island constraint id                         (nworld, njmax)
-    iD: island constraint mass                        (nworld, njmax_pad)
-    iaref: island aref                                (nworld, njmax)
-    ifrictionloss: island frictionloss                (nworld, njmax)
-    iforce: island force                              (nworld, njmax)
-    istate: island state                              (nworld, njmax_pad)
   warp only fields:
     Ma: M*qacc                                        (nworld, nv)
     Jqvel: J*qvel                                     (nworld, njmax)
@@ -1968,14 +1988,6 @@ class Constraint:
   island: array("nworld", "njmax", int)
   Ma: array("nworld", "nv", float)
   Jqvel: array("nworld", "njmax", float)
-
-  itype: array("nworld", "njmax", int)
-  iid: array("nworld", "njmax", int)
-  iD: array("nworld", "njmax_pad", float)
-  iaref: array("nworld", "njmax", float)
-  ifrictionloss: array("nworld", "njmax", float)
-  iforce: array("nworld", "njmax", float)
-  istate: array("nworld", "njmax_pad", int)
 
 
 @dataclasses.dataclass
@@ -2094,10 +2106,6 @@ class Data:
     map_iefc2efc: island-local EFC -> global EFC                (nworld, njmax)
     dof_islandid: island ID per island-DOF                      (nworld, nv)
     efc_islandid: island ID per island-EFC                      (nworld, njmax)
-    iqacc: island-local qacc                                    (nworld, nv)
-    iqacc_smooth: island-local qacc_smooth                      (nworld, nv)
-    iqfrc_smooth: island-local qfrc_smooth                      (nworld, nv)
-    iqfrc_constraint: island-local qfrc_constraint              (nworld, nv)
     ncdof: number of active (compacted) DOFs per world          (nworld,)
     dof_cdof: global DOF -> compacted DOF; -1 if inactive       (nworld, nv)
     cdof_dof: compacted DOF -> global DOF; -1 if unused         (nworld, nvmax_pad)
@@ -2130,6 +2138,7 @@ class Data:
     ncollision: collision count from broadphase                 (1,)
     flex_aabb_min: dynamic flex object bounding box min         (nworld, nflex, 3)
     flex_aabb_max: dynamic flex object bounding box max         (nworld, nflex, 3)
+    overflow: overflow bitmask (OverflowType)                   (nworld,)
   """
 
   solver_niter: array("nworld", int)
@@ -2240,10 +2249,6 @@ class Data:
   map_iefc2efc: array("nworld", "njmax", int)
   dof_islandid: array("nworld", "nv", int)
   efc_islandid: array("nworld", "njmax", int)
-  iqacc: wp.array2d[float]
-  iqacc_smooth: wp.array2d[float]
-  iqfrc_smooth: wp.array2d[float]
-  iqfrc_constraint: wp.array2d[float]
   ncdof: array("nworld", int)
   dof_cdof: array("nworld", "nv", int)
   cdof_dof: array("nworld", "nvmax_pad", int)
@@ -2276,6 +2281,7 @@ class Data:
   ncollision: array(1, int)
   flex_aabb_min: array("nworld", "nflex", wp.vec3)
   flex_aabb_max: array("nworld", "nflex", wp.vec3)
+  overflow: array("nworld", int)
 
 
 @dataclasses.dataclass
@@ -2287,41 +2293,6 @@ class InverseContext:
   done: wp.array[bool]
   changed_efc_ids: wp.array2d[int]
   changed_efc_count: wp.array[int]
-
-
-@dataclasses.dataclass
-class IslandSolverContext:
-  """Workspace arrays for island constraint solver."""
-
-  # Re-ordered workspace arrays (sized per-dof / per-constraint)
-  Jaref: wp.array2d[float]
-  jv: wp.array2d[float]
-  search: wp.array2d[float]
-  mv: wp.array2d[float]
-  grad: wp.array2d[float]
-  Mgrad: wp.array2d[float]
-  prev_grad: wp.array2d[float]
-  prev_Mgrad: wp.array2d[float]
-  h: wp.array3d[float]
-
-  # Per-island solver scalars (nworld, ntree)
-  cost: wp.array2d[float]
-  prev_cost: wp.array2d[float]
-  gauss: wp.array2d[float]
-  search_dot: wp.array2d[float]
-  grad_dot: wp.array2d[float]
-  done: wp.array2d[bool]  # per-island convergence
-  solver_niter: wp.array2d[int]  # iterations per island
-  beta: wp.array2d[float]
-  beta_den: wp.array2d[float]
-  alpha: wp.array2d[float]
-  Ma: wp.array2d[float]  # island-local Ma (nworld, nv)
-
-  # Re-ordered sparse Jacobian arrays
-  iJ_rownnz: wp.array2d[int]
-  iJ_rowadr: wp.array2d[int]
-  iJ_colind: wp.array3d[int]
-  iJ: wp.array3d[float]
 
 
 @dataclasses.dataclass
