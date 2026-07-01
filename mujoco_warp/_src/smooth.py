@@ -1075,12 +1075,11 @@ def _scalar_block_is_diagonal(
 ):
   block_area = block_size * block_size
   elemid_adr = blk * block_area
-  diagonal = bool(True)
   for i in range(block_size):
     for j in range(i + 1, block_size):
       if M_in[worldid, block_elemid[elemid_adr + i * block_size + j]] != 0.0:
-        diagonal = False
-  return diagonal
+        return False
+  return True
 
 
 @wp.func
