@@ -3163,7 +3163,7 @@ def set_const_0(m: types.Model, d: types.Data, restore: bool = True):
   smooth.camlight(m, d)
   smooth.flex(m, d)
   smooth.tendon(m, d)
-  smooth._crb(m, d)
+  smooth.crb(m, d)
   smooth.tendon_armature(m, d)
   smooth.factor_m(m, d)
   smooth.transmission(m, d)

@@ -846,22 +846,19 @@ def _M(
   # precompute buf = crb_body_i * cdof_i
   buf = math.inert_vec(crb_in[worldid, bodyid], cdof_in[worldid, dofid])
 
-  M_out[worldid, madr_ij] += wp.dot(cdof_in[worldid, dofid], buf)
-
   # sparse backward pass over ancestors
-  madr_ij -= 1
-  dofid = dof_parentid[dofid]
   while dofid >= 0:
     M_out[worldid, madr_ij] += wp.dot(cdof_in[worldid, dofid], buf)
     madr_ij -= 1
     dofid = dof_parentid[dofid]
 
 
-def _crb(m: Model, d: Data):
+@event_scope
+def crb(m: Model, d: Data):
   """Computes composite rigid body inertias for each body and the joint-space inertia matrix.
 
-  Accumulates composite rigid body inertias up the kinematic tree and computes the joint-space
-  inertia matrix in the model's maximal CSR layout.
+  Accumulates composite rigid body inertias up the kinematic tree and computes the
+  joint-space inertia matrix in either sparse or dense format, depending on model options.
   """
   wp.copy(d.crb, d.cinert)
 
@@ -873,27 +870,9 @@ def _crb(m: Model, d: Data):
   wp.launch(
     _M,
     dim=(d.nworld, m.nv),
-    inputs=[
-      m.dof_bodyid,
-      m.dof_parentid,
-      m.dof_armature,
-      m.M_rownnz,
-      m.M_rowadr,
-      d.cdof,
-      d.crb,
-    ],
+    inputs=[m.dof_bodyid, m.dof_parentid, m.dof_armature, m.M_rownnz, m.M_rowadr, d.cdof, d.crb],
     outputs=[d.M],
   )
-
-
-@event_scope
-def crb(m: Model, d: Data):
-  """Computes composite rigid body inertias for each body and the joint-space inertia matrix.
-
-  Accumulates composite rigid body inertias up the kinematic tree and computes the
-  joint-space inertia matrix in either sparse or dense format, depending on model options.
-  """
-  _crb(m, d)
 
 
 @wp.kernel
@@ -1036,11 +1015,6 @@ def _factor_simple(
   dofid = simple_dofs[s]
   diag_i = M_rowadr[dofid] + M_rownnz[dofid] - 1
   D_out[worldid, dofid] = 1.0 / M_in[worldid, diag_i]
-
-
-@wp.func
-def _reciprocal(value: float):
-  return 1.0 / value
 
 
 def _factor_i_sparse(m: Model, d: Data, M: wp.array2d[float], L: wp.array2d[float], D: wp.array2d[float]):
