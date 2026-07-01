@@ -52,13 +52,96 @@ _BALL_RGBA = ["0.85 0.2 0.2 1"] + ["0.7 0.7 0.75 1"] * (N - 2) + ["0.2 0.4 0.85 
 # parallel-env layout (a COLS-wide grid of cradles; default 4 envs = 2x2) + per-env v4 fan width
 NUM_ENVS = int(os.environ.get("MJW_CRADLE_NUM_ENVS", "4"))
 ENV_COLS = int(os.environ.get("MJW_CRADLE_COLS", "2"))
-ENV_SPACING = float(os.environ.get("MJW_CRADLE_ENV_SPACING", "1.6"))  # grid pitch (> cradle width)
+ENV_SPACING = float(os.environ.get("MJW_CRADLE_ENV_SPACING", "2.2"))  # grid pitch (> cradle width)
 V4_SPREAD = float(os.environ.get("MJW_CRADLE_V4_SPREAD", "0.6"))
+
+# --- viz frame (decorative only; contype=0/conaffinity=0, so it never touches the physics) ---
+FRAME_HALF_Y = 0.22    # front/back rail spacing -> width of the V-string suspension (swing stays in x-z)
+FRAME_MARGIN_X = 0.10  # top/bottom rails run this far past the end pivots
+BASE_Z = -0.18         # frame base: posts stand from here up to the pivot rail at z=L
+FLOOR_Z = -0.20        # grid floor just under the base so each cradle stands on it
 
 ASSETS = os.path.join(os.path.dirname(__file__), "reports", "assets")  # default output dir
 
 
-def cradle_xml(physics_only=True):
+def _viz_assets():
+  """<asset> for the viz scenes: our dark-blue skybox + checker grid, plus metallic materials that
+  keep our palette -- red/gray/blue balls (specular so they read as polished), a brushed-steel frame,
+  and light emissive strings that stay visible even as thin capsules."""
+  return f"""
+  <asset>
+    <texture type="skybox" builtin="gradient" rgb1="0.3 0.5 0.7" rgb2="0 0 0" width="512" height="512"/>
+    <texture type="2d" name="grid" builtin="checker" mark="edge" rgb1="0.2 0.3 0.4"
+             rgb2="0.1 0.2 0.3" markrgb="0.8 0.8 0.8" width="300" height="300"/>
+    <material name="grid" texture="grid" texuniform="true" texrepeat="8 8" reflectance="0.2"/>
+    <material name="ball_red"  rgba="0.85 0.2 0.2 1"  specular="0.5" shininess="0.5" reflectance="0.1"/>
+    <material name="ball_gray" rgba="0.7 0.7 0.75 1" specular="0.5" shininess="0.5" reflectance="0.15"/>
+    <material name="ball_blue" rgba="0.2 0.4 0.85 1" specular="0.5" shininess="0.5" reflectance="0.1"/>
+    <material name="frame_mat" rgba="0.5 0.5 0.55 1" specular="0.8" shininess="0.6" reflectance="0.35"/>
+    <material name="string_mat" rgba="0.82 0.82 0.88 1" specular="0.4" shininess="0.3" emission="0.3"/>
+  </asset>"""
+
+
+def _viz_visual():
+  """<visual> for the viz scenes (unchanged from our theme): soft headlight, haze, offscreen size."""
+  return f"""
+  <visual>
+    <headlight diffuse="0.6 0.6 0.6" ambient="0.4 0.4 0.4" specular="0.2 0.2 0.2"/>
+    <rgba haze="0.15 0.25 0.35 1"/>
+    <global offwidth="{W}" offheight="{H}"/>
+  </visual>"""
+
+
+def _ball_mat(i):
+  """Our colors: red left end, blue right end, gray in between."""
+  if i == 0:
+    return "ball_red"
+  if i == N - 1:
+    return "ball_blue"
+  return "ball_gray"
+
+
+def _frame_geoms(ox, oy, oz):
+  """A standing cradle frame: two U-rails (front/back at y=+-FRAME_HALF_Y) plus bottom rails, so the
+  posts rise from BASE_Z to the pivot rail at z=L and the whole thing sits on the floor. Decorative
+  (contype=0/conaffinity=0) -- purely the thing the balls visibly hang from."""
+  x0 = PIVOT_X[0] - FRAME_MARGIN_X + ox
+  x1 = PIVOT_X[-1] + FRAME_MARGIN_X + ox
+  zt, zb = L + oz, BASE_Z + oz
+  segs = []
+  for fy in (-FRAME_HALF_Y, FRAME_HALF_Y):
+    y = fy + oy
+    segs += [
+      (x0, y, zb, x0, y, zt),  # left post
+      (x1, y, zb, x1, y, zt),  # right post
+      (x0, y, zt, x1, y, zt),  # top rail (the balls' V-strings pin here)
+      (x0, y, zb, x1, y, zb),  # bottom rail (foot)
+    ]
+  return "".join(
+    f'<geom type="capsule" size="0.012" material="frame_mat" contype="0" conaffinity="0" '
+    f'fromto="{a:.4f} {b:.4f} {c:.4f} {d:.4f} {e:.4f} {f:.4f}"/>'
+    for (a, b, c, d, e, f) in segs
+  )
+
+
+def _ball_body_viz(prefix, i, px, oy, oz):
+  """One suspended ball for the viz: the SAME hinge DOF as the physics scene + our-colored ball +
+  a V of two strings to the front/back rails (replacing the physics rod). The string tops sit on the
+  hinge axis (body-local (0, +-FRAME_HALF_Y, 0)), so they stay pinned to the rails as the ball swings."""
+  return (
+    f'<body name="{prefix}b{i}" pos="{px:.4f} {oy:.4f} {L + oz:.4f}">'
+    f'<joint name="{prefix}h{i}" type="hinge" axis="0 1 0"/>'
+    f'<geom name="{prefix}ball{i}" type="sphere" size="{R_BALL}" pos="0 0 -{L}" material="{_ball_mat(i)}" mass="1"/>'
+    f'<geom type="capsule" size="0.0045" material="string_mat" contype="0" conaffinity="0" fromto="0 0 -{L}  0 {-FRAME_HALF_Y:.4f} 0"/>'
+    f'<geom type="capsule" size="0.0045" material="string_mat" contype="0" conaffinity="0" fromto="0 0 -{L}  0 {FRAME_HALF_Y:.4f} 0"/>'
+    f"</body>"
+  )
+
+
+def cradle_xml():
+  """The minimal PHYSICS model: 5 balls on hinge rods, elastic ball<->ball contact. This is the only
+  scene that gets stepped/differentiated (rollout + the batched nworld backward); rendering uses
+  _cradle_xml_multi instead. No frame/floor/lights here on purpose -- keep the diff'd model minimal."""
   bodies = ""
   for i in range(N):
     rod_rgba = "0.15 0.15 0.17 1"
@@ -74,38 +157,7 @@ def cradle_xml(physics_only=True):
     f'solver="Newton" iterations="100" ls_iterations="50" tolerance="1e-10"><flag eulerdamp="disable"/></option>'
   )
   default = f'<default><geom condim="1" solref="{SOLREF}" solimp="0 0.95 0.001"/></default>'
-  if physics_only:
-    return f"<mujoco>{opt}{default}<worldbody>{bodies}</worldbody></mujoco>"
-
-  bar_x = 0.5 * (PIVOT_X[0] + PIVOT_X[-1])
-  bar_half = 0.5 * (PIVOT_X[-1] - PIVOT_X[0]) + 0.05
-  mx = PIVOT_X[MID]  # middle ball rest position (where it should stay) -> the "target" marker
-  return f"""
-<mujoco>
-  {opt}
-  {default}
-  <visual>
-    <headlight diffuse="0.6 0.6 0.6" ambient="0.4 0.4 0.4" specular="0.2 0.2 0.2"/>
-    <rgba haze="0.15 0.25 0.35 1"/>
-    <global offwidth="{W}" offheight="{H}"/>
-  </visual>
-  <asset>
-    <texture type="skybox" builtin="gradient" rgb1="0.3 0.5 0.7" rgb2="0 0 0" width="512" height="512"/>
-    <texture type="2d" name="grid" builtin="checker" mark="edge" rgb1="0.2 0.3 0.4"
-             rgb2="0.1 0.2 0.3" markrgb="0.8 0.8 0.8" width="300" height="300"/>
-    <material name="grid" texture="grid" texuniform="true" texrepeat="8 8" reflectance="0.2"/>
-  </asset>
-  <worldbody>
-    <light pos="0.4 -1 2" dir="0 0.4 -1" diffuse="0.8 0.8 0.8" specular="0.3 0.3 0.3"/>
-    <geom name="floor" type="plane" pos="0.4 0 -0.85" size="3 3 .05" material="grid" contype="0" conaffinity="0"/>
-    <geom name="frame" type="box" pos="{bar_x:.4f} 0 {L:.4f}" size="{bar_half:.4f} 0.02 0.02"
-          rgba="0.3 0.3 0.32 1" contype="0" conaffinity="0"/>
-    <geom name="target" type="sphere" size="0.045" pos="{mx:.4f} 0 0" rgba="0.5 0 0.5 0.8"
-          contype="0" conaffinity="0"/>
-    {bodies}
-  </worldbody>
-</mujoco>
-"""
+  return f"<mujoco>{opt}{default}<worldbody>{bodies}</worldbody></mujoco>"
 
 
 def rollout(v4):
@@ -240,53 +292,36 @@ def _env_offsets(num_envs, cols=ENV_COLS, spacing=ENV_SPACING):
 
 
 def _cradle_xml_multi(offsets):
-  """Cradle viz scene REPLICATED per env (each lane: 5-ball cradle + frame bar + rest-target),
-  one shared ground plane, default-MuJoCo lighting (matches cradle_xml)."""
+  """Cradle viz scene REPLICATED per env: each lane is a standing frame (two U-rails + posts + feet)
+  with five V-string-suspended balls in our colors (red/gray/blue ends) and a purple rest-target,
+  over one shared checker floor. contype=0 throughout -- the render only plays back qpos, never steps."""
   opt = (
     f'<option timestep="{DT}" cone="elliptic" integrator="implicitfast" gravity="0 0 -9.81" '
     f'solver="Newton" iterations="100" ls_iterations="50" tolerance="1e-10"><flag eulerdamp="disable"/></option>'
   )
   default = f'<default><geom condim="1" solref="{SOLREF}" solimp="0 0.95 0.001"/></default>'
-  bar_half = 0.5 * (PIVOT_X[-1] - PIVOT_X[0]) + 0.05
   bar_cx = 0.5 * (PIVOT_X[0] + PIVOT_X[-1])
   mx = PIVOT_X[MID]
   lanes = ""
   for e, (ox, oy, oz) in enumerate(offsets):
+    lanes += _frame_geoms(ox, oy, oz)
     lanes += (
-      f'<geom type="box" pos="{bar_cx + ox:.4f} {oy:.4f} {L + oz:.4f}" size="{bar_half:.4f} 0.02 0.02" '
-      f'rgba="0.3 0.3 0.32 1" contype="0" conaffinity="0"/>'
       f'<geom type="sphere" size="0.045" pos="{mx + ox:.4f} {oy:.4f} {oz:.4f}" rgba="0.5 0 0.5 0.8" '
       f'contype="0" conaffinity="0"/>'
     )
     for i in range(N):
-      lanes += (
-        f'<body name="e{e}b{i}" pos="{PIVOT_X[i] + ox:.4f} {oy:.4f} {L + oz:.4f}">'
-        f'<joint name="e{e}h{i}" type="hinge" axis="0 1 0"/>'
-        f'<geom type="capsule" fromto="0 0 0 0 0 -{L}" size="0.006" rgba="0.15 0.15 0.17 1" '
-        f'contype="0" conaffinity="0" mass="0.02"/>'
-        f'<geom name="e{e}ball{i}" type="sphere" size="{R_BALL}" pos="0 0 -{L}" mass="1" '
-        f'rgba="{_BALL_RGBA[i]}"/>'
-        f"</body>"
-      )
-  fsize = max(3.0, bar_half + float(np.abs(offsets).max()) + 1.0)
+      lanes += _ball_body_viz(f"e{e}", i, PIVOT_X[i] + ox, oy, oz)
+  fsize = max(8.0, 0.5 * (PIVOT_X[-1] - PIVOT_X[0]) + FRAME_MARGIN_X + float(np.abs(offsets).max()) + 5.0)
   return f"""
 <mujoco>
   {opt}
   {default}
-  <visual>
-    <headlight diffuse="0.6 0.6 0.6" ambient="0.4 0.4 0.4" specular="0.2 0.2 0.2"/>
-    <rgba haze="0.15 0.25 0.35 1"/>
-    <global offwidth="{W}" offheight="{H}"/>
-  </visual>
-  <asset>
-    <texture type="skybox" builtin="gradient" rgb1="0.3 0.5 0.7" rgb2="0 0 0" width="512" height="512"/>
-    <texture type="2d" name="grid" builtin="checker" mark="edge" rgb1="0.2 0.3 0.4"
-             rgb2="0.1 0.2 0.3" markrgb="0.8 0.8 0.8" width="300" height="300"/>
-    <material name="grid" texture="grid" texuniform="true" texrepeat="8 8" reflectance="0.2"/>
-  </asset>
+  {_viz_visual()}
+  {_viz_assets()}
   <worldbody>
     <light pos="0.4 -1 2" dir="0 0.4 -1" diffuse="0.8 0.8 0.8" specular="0.3 0.3 0.3"/>
-    <geom name="floor" type="plane" pos="{bar_cx:.4f} 0 -0.85" size="{fsize:.3f} {fsize:.3f} .05"
+    <light pos="1.5 1 1.5" dir="-0.6 -0.4 -1" diffuse="0.35 0.35 0.4" specular="0.2 0.2 0.2"/>
+    <geom name="floor" type="plane" pos="{bar_cx:.4f} 0 {FLOOR_Z}" size="{fsize:.3f} {fsize:.3f} .05"
           material="grid" contype="0" conaffinity="0"/>
     {lanes}
   </worldbody>
@@ -314,7 +349,7 @@ def render_video(history, best, out_path, sample_every=4, label="ADJOINT (cradle
   ext_x = ENV_SPACING * (ENV_COLS - 1) + (PIVOT_X[-1] - PIVOT_X[0])
   ext_y = ENV_SPACING * (rows - 1)
   cam.lookat = [0.5 * (PIVOT_X[0] + PIVOT_X[-1]), 0.0, 0.2]  # grid is centered on 0
-  cam.distance = max(2.7, 1.1 * max(ext_x, ext_y) + 2.0)
+  cam.distance = max(2.8, 1.1 * max(ext_x, ext_y) + 2.2)
   cam.azimuth = 60.0  # 3/4 view so the grid's depth (rows) reads, not a flat row
   cam.elevation = -22.0
 

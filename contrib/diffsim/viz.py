@@ -70,6 +70,48 @@ def add_sphere(scene, pos, rgba, size=0.1):
   scene.ngeom += 1
 
 
+def add_frame(scene, pos, mat, length=0.06, radius=0.0045, alpha=1.0):
+  """IsaacLab-style body-frame marker: RGB arrows (X=red, Y=green, Z=blue) from `pos` along the world
+  axes given by the columns of the 3x3 rotation matrix `mat`."""
+  import mujoco
+
+  colors = ((0.90, 0.15, 0.15), (0.15, 0.80, 0.15), (0.20, 0.35, 0.95))
+  pos = np.asarray(pos, dtype=np.float64)
+  mat = np.asarray(mat, dtype=np.float64).reshape(3, 3)
+  for k in range(3):
+    if scene.ngeom >= scene.maxgeom:
+      return
+    g = scene.geoms[scene.ngeom]
+    rgba = np.array([*colors[k], alpha], dtype=np.float32)
+    mujoco.mjv_initGeom(g, mujoco.mjtGeom.mjGEOM_ARROW, np.zeros(3), np.zeros(3), np.eye(3).flatten(), rgba)
+    mujoco.mjv_connector(g, mujoco.mjtGeom.mjGEOM_ARROW, radius, pos, pos + length * mat[:, k])
+    scene.ngeom += 1
+
+
+def add_geom_deco(scene, gtype, size, pos, mat, rgba):
+  """Append one decorative geom (no collision, casts NO shadow) with an explicit pose."""
+  import mujoco
+
+  if scene.ngeom >= scene.maxgeom:
+    return
+  g = scene.geoms[scene.ngeom]
+  mujoco.mjv_initGeom(g, gtype, np.asarray(size, dtype=np.float64),
+                      np.asarray(pos, dtype=np.float64),
+                      np.asarray(mat, dtype=np.float64).flatten(),
+                      np.asarray(rgba, dtype=np.float32))
+  scene.ngeom += 1
+
+
+def quat_to_mat(q):
+  """3x3 rotation matrix (columns = body axes in world) from a wxyz quaternion."""
+  w, x, y, z = q
+  return np.array([
+    [1 - 2 * (y * y + z * z), 2 * (x * y - w * z), 2 * (x * z + w * y)],
+    [2 * (x * y + w * z), 1 - 2 * (x * x + z * z), 2 * (y * z - w * x)],
+    [2 * (x * z - w * y), 2 * (y * z + w * x), 1 - 2 * (x * x + y * y)],
+  ])
+
+
 def add_disk(scene, pos, rgba, radius=0.15, alpha=0.35, thickness=0.003):
   """Append a thin translucent disk (a decorative cylinder lying flat, axis along world z) centered at
   `pos`. Built with mjv_connector -- the same well-defined path add_polyline uses -- so it doesn't depend
@@ -187,10 +229,13 @@ def emit(viz_model, vd, cam, frames, *, out_path=None, label="", w=1024, h=768, 
 def render_video(
   viz_model, history, *, cam, n_steps, out_path, label, w=1024, h=768, fps=30, bourke_hi=None,
   sample_every=4, best=None, show=None, traj_width=0.014, persist_width=0.008, subtext=None, live=None,
+  extra_draw=None, trace=True,
 ):
   """Animate an optimization history (single tracked trajectory per iteration) to mp4 or live viewer.
-  `history[k]` needs keys it/loss/xyz/qpos (see module doc). `subtext(h, best)` -> str customizes the
-  banner. Set `live=True` (or `MJW_VIEWER=1`) for the live viewer instead of an mp4."""
+  `history[k]` needs keys it/loss/qpos -- plus xyz when `trace` is on (see module doc). `subtext(h, best)`
+  -> str customizes the banner. `extra_draw(scene, qpos)` (optional) appends decorative geoms per frame
+  (e.g. body-frame markers). `trace=False` skips the loss-colored marker polylines entirely (current AND
+  persisted prior iterations). Set `live=True` (or `MJW_VIEWER=1`) for the live viewer instead of an mp4."""
   import mujoco
 
   vd = mujoco.MjData(viz_model)
@@ -214,15 +259,20 @@ def render_video(
     sub = subtext(hk, best)
     for t in steps_idx + [n_steps] * hold:
       snap = list(persisted)  # snapshot so each frame's draw shows the persisted set at that time
-      cur = hk["xyz"][: t + 1]
+      cur = hk["xyz"][: t + 1] if trace else None
+      qp_t = hk["qpos"][t]
 
-      def draw(scene, snap=snap, cur=cur, rgba=rgba):
+      def draw(scene, snap=snap, cur=cur, rgba=rgba, qp_t=qp_t):
         for xyz_p, c in snap:
           add_polyline(scene, xyz_p, c, width=persist_width)
-        add_polyline(scene, cur, rgba, width=traj_width)
+        if cur is not None:
+          add_polyline(scene, cur, rgba, width=traj_width)
+        if extra_draw is not None:
+          extra_draw(scene, qp_t)
 
-      frames.append((hk["qpos"][t], draw, sub))
-    persisted.append((hk["xyz"], rgba))
+      frames.append((qp_t, draw, sub))
+    if trace:
+      persisted.append((hk["xyz"], rgba))
   if frames:
     frames += [frames[-1]] * 20  # final hold
 
