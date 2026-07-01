@@ -551,7 +551,7 @@ class SmoothContactMergeTest(parameterized.TestCase):
     ncon = d.contact.pos.shape[0]
     res_qpos_oracle = wp.zeros((1, nq), dtype=float)
     _collision_adjoint.contact_qpos_vjp(
-      m, d,
+      m, d, d.qpos,
       wp.zeros(ncon, dtype=wp.vec3),  # res_contact_pos
       wp.zeros(ncon, dtype=wp.mat33),  # res_contact_frame
       wp.zeros_like(d.efc.pos),  # res_efc_pos

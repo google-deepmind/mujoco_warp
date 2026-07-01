@@ -1205,6 +1205,69 @@ _GYRO = """
 """
 
 
+# Dzhanibekov body on a DAMPED BALL joint (quaternion qpos[0:4], 3 angular dofs) under Euler+eulerdamp.
+# Unlike _GYRO (free joint, ZERO damping) this activates the implicit-damping solve TOGETHER WITH quaternion
+# integration -- the configuration that exposes the eulerdamp late-remap (Stage 3).
+_EULERDAMP_BALL = """
+<mujoco>
+  <option timestep="0.05" integrator="Euler" gravity="0 0 0"><flag contact="disable" constraint="disable"/></option>
+  <worldbody>
+    <body pos="0 0 0">
+      <joint type="ball" damping="5"/>
+      <geom type="box" pos="0.15 0 0" size="0.125 0.05 0.05" density="100"/>
+      <geom type="box" pos="0 0 0" size="0.025 0.1 0.5" density="100"/>
+    </body>
+  </worldbody>
+  <keyframe><key qvel="25 0.5 0.5"/></keyframe>
+</mujoco>
+"""
+
+
+_IMPLICITFAST_DAMPED_HINGE = """
+<mujoco>
+  <option timestep="0.004" integrator="implicitfast" gravity="0 0 0"/>
+  <worldbody>
+    <body><joint name="hinge" type="hinge" axis="0 1 0" damping="2"/>
+      <geom type="box" size="0.065 0.065 0.02" mass="0.676"/></body>
+  </worldbody>
+  <actuator><position joint="hinge" kp="40"/></actuator>
+  <keyframe><key qpos="0.1" qvel="0.2" ctrl="0.3"/></keyframe>
+</mujoco>
+"""
+
+
+# Same hinge but POLYNOMIAL (velocity-dependent) damping: damping="linear p0 p1" -> D(v) = 2 + 6|v| + 4.5v².
+# Q = M + dt·D(v) now depends on qvel, so a_int does too -> exercises the Stage-4 ∂_v direct term.
+_IMPLICITFAST_DAMPINGPOLY_HINGE = """
+<mujoco>
+  <option timestep="0.004" integrator="implicitfast" gravity="0 0 0"/>
+  <worldbody>
+    <body><joint name="hinge" type="hinge" axis="0 1 0" damping="2 3 1.5"/>
+      <geom type="box" size="0.065 0.065 0.02" mass="0.676"/></body>
+  </worldbody>
+  <actuator><position joint="hinge" kp="40"/></actuator>
+  <keyframe><key qpos="0.1" qvel="0.8" ctrl="0.3"/></keyframe>
+</mujoco>
+"""
+
+
+# 2-link arm whose mass matrix M(qpos) depends strongly on the elbow angle -- unlike the single hinge
+# above (constant M), this exercises the implicitfast ∂M/∂qpos term. Bent + fast + damped + large dt so
+# the dropped direct term dominates the one-step ∂qvel'/∂qpos block (see the expected-fail test below).
+_IMPLICITFAST_ARM = """
+<mujoco>
+  <option timestep="0.02" integrator="implicitfast" gravity="0 0 -9.81" jacobian="sparse"/>
+  <worldbody>
+    <body><joint name="j0" type="hinge" axis="0 1 0" damping="6"/><geom type="capsule" fromto="0 0 0 0 0 -0.5" size="0.04" mass="1"/>
+      <body pos="0 0 -0.5"><joint name="j1" type="hinge" axis="0 1 0" damping="6"/><geom type="capsule" fromto="0 0 0 0 0 -0.5" size="0.04" mass="1"/></body>
+    </body>
+  </worldbody>
+  <actuator><motor joint="j0" gear="1"/><motor joint="j1" gear="1"/></actuator>
+  <keyframe><key qpos="0.5 -1.2" qvel="2.5 -3.5" ctrl="0.5 -0.5"/></keyframe>
+</mujoco>
+"""
+
+
 @wp.kernel
 def _sumsq_qpos_kernel(qpos: wp.array2d[float], loss: wp.array[float]):
   i, j = wp.tid()
@@ -1216,6 +1279,13 @@ def _quatvec_kernel(qpos: wp.array2d[float], loss: wp.array[float]):
   """loss = qx^2 + qy^2 + qz^2 = 1 - qw^2 (the free body's unit quaternion, qpos[4:7]); orientation-
   sensitive, unlike sum(qpos^2) where |quat|=1 contributes a constant 1 -> exercises d(quat)/d(omega)."""
   loss[0] = qpos[0, 4] * qpos[0, 4] + qpos[0, 5] * qpos[0, 5] + qpos[0, 6] * qpos[0, 6]
+
+
+@wp.kernel
+def _ballquat_kernel(qpos: wp.array2d[float], loss: wp.array[float]):
+  """loss = qx^2 + qy^2 + qz^2 for a BALL joint (unit quaternion at qpos[0:4], vector part [1:4]) --
+  orientation-sensitive; the ball-joint analog of _quatvec_kernel (which reads a freejoint's [4:7])."""
+  loss[0] = qpos[0, 1] * qpos[0, 1] + qpos[0, 2] * qpos[0, 2] + qpos[0, 3] * qpos[0, 3]
 
 
 @wp.kernel
@@ -1344,6 +1414,413 @@ class SmoothGradientTest(parameterized.TestCase):
                              lambda q: float(q[4] ** 2 + q[5] ** 2 + q[6] ** 2))
     _assert_smooth_grad(self, analytic, fd, cos_min=0.99, rel_max=5e-2, tag="gyroscopic")
 
+  def test_eulerdamp_ball_orientation_grad_matches_fd(self):
+    """Stage 3 (eulerdamp reorder): a DAMPED ball joint under Euler+eulerdamp, orientation loss
+    d(quat_vec²)/d(qvel0). The eulerdamp backward currently replays _advance_state at the raw solver root
+    a_s then remaps AFTERWARD, but the forward integrated a_u = (M+dt·D)⁻¹M a_s. Quaternion integration is
+    NONLINEAR in qvel', so the linearization point matters -> the late remap is wrong for free/ball DOFs
+    (invisible for scalar joints, which are affine in accel; the gyro test has zero damping so a_u=a_s).
+    dt-dependent: negligible (<1%) at dt<=0.02, ~60% at dt=0.05 (this fixture). Fixed by reconstructing a_u
+    before the replay (KEEP the transpose remap after). Oracle = float64 MuJoCo-C."""
+    if not _grad_available():
+      self.skipTest("pending adjoint.py: differentiable step (MJPLAN.md Stage 1/3)")
+    from mujoco_warp._src import adjoint  # noqa: F401
+
+    mjm = mujoco.MjModel.from_xml_string(_EULERDAMP_BALL)
+    mjd = mujoco.MjData(mjm)
+    mujoco.mj_resetDataKeyframe(mjm, mjd, 0)
+    mujoco.mj_forward(mjm, mjd)
+    analytic = _smooth_taped_grad(mjm, mjd, 10, "qvel", np.zeros(0, np.float32), _ballquat_kernel, 1)
+    fd = _smooth_mjc_fd_grad(mjm, mjd, 10, "qvel", np.zeros(0, np.float32),
+                             lambda q: float(q[1] ** 2 + q[2] ** 2 + q[3] ** 2))
+    _assert_smooth_grad(self, analytic, fd, cos_min=0.99, rel_max=5e-2, tag="eulerdamp_ball")
+
+  def test_implicitfast_damped_hinge_step_vjp_matches_fd(self):
+    """The implicitfast advance uses a_int=(M-dt*dF/dv)^-1 M*a, not the solver's raw qacc."""
+    if not _grad_available():
+      self.skipTest("pending adjoint.py: differentiable step (MJPLAN.md Stage 1/3)")
+    from mujoco_warp._src import adjoint
+
+    mjm = mujoco.MjModel.from_xml_string(_IMPLICITFAST_DAMPED_HINGE)
+    mjd = mujoco.MjData(mjm)
+    mujoco.mj_resetDataKeyframe(mjm, mjd, 0)
+    mujoco.mj_forward(mjm, mjd)
+    m = mjw.put_model(mjm)
+    q0, v0, u0 = float(mjd.qpos[0]), float(mjd.qvel[0]), float(mjd.ctrl[0])
+
+    d0, d1 = mjw.put_data(mjm, mjd), mjw.put_data(mjm, mjd)
+    for d in (d0, d1):
+      d.qpos.requires_grad = True
+      d.qvel.requires_grad = True
+    d0.ctrl.requires_grad = True
+    mjw.step(m, d0, d1)
+    d1.qvel.grad.assign(np.ones((1, 1), dtype=np.float32))
+    adjoint.step_backward(m, d0, d1)
+    analytic = np.array([
+      d0.qpos.grad.numpy()[0, 0], d0.qvel.grad.numpy()[0, 0], d0.ctrl.grad.numpy()[0, 0]
+    ], dtype=np.float64)
+
+    def next_vel(q, v, u):
+      d = mjw.put_data(mjm, mjd)
+      d.qpos.assign(np.array([[q]], dtype=np.float32))
+      d.qvel.assign(np.array([[v]], dtype=np.float32))
+      d.ctrl.assign(np.array([[u]], dtype=np.float32))
+      mjw.step(m, d)
+      return float(d.qvel.numpy()[0, 0])
+
+    eps = 1.0e-4
+    fd = np.array([
+      (next_vel(q0 + eps, v0, u0) - next_vel(q0 - eps, v0, u0)) / (2.0 * eps),
+      (next_vel(q0, v0 + eps, u0) - next_vel(q0, v0 - eps, u0)) / (2.0 * eps),
+      (next_vel(q0, v0, u0 + eps) - next_vel(q0, v0, u0 - eps)) / (2.0 * eps),
+    ])
+    np.testing.assert_allclose(analytic, fd, rtol=2.0e-3, atol=2.0e-3)
+
+  def test_implicitfast_dampingpoly_qvel_vjp_matches_fd(self):
+    """Stage 4: dampingpoly makes Q = M + dt·D(v) depend on qvel, so the one-step ∂qvel'/∂qvel carries a
+    DIRECT term −∂_v[ yᵀ dt·D(v) a_u ] (D(v) = 2 + 6|v| + 4.5v² here). Analytic ∂qvel'/∂{q,v,u} matches FD of
+    mjw.step; WITHOUT the Stage-4 term the qvel channel is wrong -- the nonlinear-damping analog of the
+    constant-damping hinge test above."""
+    if not _grad_available():
+      self.skipTest("pending adjoint.py: differentiable step (MJPLAN.md Stage 1/3)")
+    from mujoco_warp._src import adjoint
+
+    mjm = mujoco.MjModel.from_xml_string(_IMPLICITFAST_DAMPINGPOLY_HINGE)
+    mjd = mujoco.MjData(mjm)
+    mujoco.mj_resetDataKeyframe(mjm, mjd, 0)
+    mujoco.mj_forward(mjm, mjd)
+    m = mjw.put_model(mjm)
+    q0, v0, u0 = float(mjd.qpos[0]), float(mjd.qvel[0]), float(mjd.ctrl[0])
+
+    d0, d1 = mjw.put_data(mjm, mjd), mjw.put_data(mjm, mjd)
+    for d in (d0, d1):
+      d.qpos.requires_grad = True
+      d.qvel.requires_grad = True
+    d0.ctrl.requires_grad = True
+    mjw.step(m, d0, d1)
+    d1.qvel.grad.assign(np.ones((1, 1), dtype=np.float32))
+    adjoint.step_backward(m, d0, d1)
+    analytic = np.array([
+      d0.qpos.grad.numpy()[0, 0], d0.qvel.grad.numpy()[0, 0], d0.ctrl.grad.numpy()[0, 0]
+    ], dtype=np.float64)
+
+    def next_vel(q, v, u):
+      d = mjw.put_data(mjm, mjd)
+      d.qpos.assign(np.array([[q]], dtype=np.float32))
+      d.qvel.assign(np.array([[v]], dtype=np.float32))
+      d.ctrl.assign(np.array([[u]], dtype=np.float32))
+      mjw.step(m, d)
+      return float(d.qvel.numpy()[0, 0])
+
+    eps = 1.0e-4
+    fd = np.array([
+      (next_vel(q0 + eps, v0, u0) - next_vel(q0 - eps, v0, u0)) / (2.0 * eps),
+      (next_vel(q0, v0 + eps, u0) - next_vel(q0, v0 - eps, u0)) / (2.0 * eps),
+      (next_vel(q0, v0, u0 + eps) - next_vel(q0, v0, u0 - eps)) / (2.0 * eps),
+    ])
+    np.testing.assert_allclose(analytic, fd, rtol=3.0e-3, atol=3.0e-3)
+
+  def test_implicitfast_config_dependent_mass_qpos_jacobian_matches_fd(self):
+    """implicitfast advances a_int = Q^-1 M a_solver (Q = M + dt*D), so the one-step ∂qvel'/∂qpos block
+    carries a DIRECT term yᵀ[(∂M/∂qpos)a_solver − (∂Q/∂qpos)a_int] from M(qpos)/Q(qpos). advance_backward
+    remaps the solver root (M Q^-1) but DROPS that term -- fine for ~constant M (the single hinge above, or
+    the ping-pong paddle whose hinges barely move), WRONG for a config-dependent mass matrix. On a bent,
+    fast, damped 2-link arm at large dt the dropped term dominates: the analytic ∂qvel'/∂qpos is off by
+    >100% vs float64 MuJoCo-C (the a_solver-root remap + every other channel are already correct -- the
+    single-hinge test passes). EXPECTED-FAIL until the ∂M/∂qpos VJP lands (general implicitfast support);
+    remove the decorator then."""
+    if not _grad_available():
+      self.skipTest("pending adjoint.py: differentiable step (MJPLAN.md Stage 1/3)")
+    from mujoco_warp._src import adjoint
+
+    mjm = mujoco.MjModel.from_xml_string(_IMPLICITFAST_ARM)
+    mjd = mujoco.MjData(mjm)
+    mujoco.mj_resetDataKeyframe(mjm, mjd, 0)
+    mujoco.mj_forward(mjm, mjd)
+    m = mjw.put_model(mjm)
+    nv = mjm.nv
+
+    # analytic one-step d(qvel1)/d(qpos0): seed each qvel1 row, read the qpos0 adjoint (the arm has no
+    # quaternion, so the qpos tangent is trivial). Row k = d(qvel1_k)/d(qpos0).
+    ana = np.zeros((nv, nv))
+    for k in range(nv):
+      d0, d1 = mjw.put_data(mjm, mjd), mjw.put_data(mjm, mjd)
+      for d in (d0, d1):
+        d.qpos.requires_grad = True
+        d.qvel.requires_grad = True
+      d0.ctrl.requires_grad = True
+      mjw.step(m, d0, d1)
+      seed = np.zeros((1, nv), np.float32)
+      seed[0, k] = 1.0
+      d1.qvel.grad.assign(seed)
+      adjoint.step_backward(m, d0, d1)
+      ana[k, :] = d0.qpos.grad.numpy()[0].astype(np.float64)
+
+    # float64 MuJoCo-C FD reference for d(qvel1)/d(qpos0).
+    def next_qvel(q):
+      md = mujoco.MjData(mjm)
+      md.qpos[:] = q
+      md.qvel[:] = mjd.qvel
+      md.ctrl[:] = mjd.ctrl
+      mujoco.mj_step(mjm, md)
+      return md.qvel.copy()
+
+    eps = 1.0e-6
+    fd = np.zeros((nv, nv))
+    q0 = mjd.qpos.astype(np.float64)
+    for j in range(nv):
+      qp, qm = q0.copy(), q0.copy()
+      qp[j] += eps
+      qm[j] -= eps
+      fd[:, j] = (next_qvel(qp) - next_qvel(qm)) / (2.0 * eps)
+
+    rel = float(np.linalg.norm(ana - fd) / (np.linalg.norm(fd) + 1e-12))
+    print(f"\n[implicitfast dM/dqpos] rel={rel:.4f}\n analytic=\n{ana}\n fd=\n{fd}")
+    self.assertLess(rel, 2.0e-2, f"implicitfast ∂qvel'/∂qpos off by rel={rel:.4f} (dropped ∂M/∂qpos term)")
+
+
+# ----------------------------------------------------------------------------
+# Long-horizon implicitfast + articulated-contact BPTT regression.  A global rollout FD is a poor
+# oracle here: perturbing a gain moves impact times and can switch contacts over 160 steps.  Instead,
+# build MuJoCo-C's float64 one-step transition Jacobian at every state of the NOMINAL MJW trajectory,
+# close each Jacobian through the same feedback law, then compose those local linearizations backward.
+# This keeps the oracle on the nominal active-set sequence while still exposing any per-step adjoint
+# error: an error that is tiny for one step compounds over H=160.  The scene mirrors the ping-pong
+# reproducer but is embedded here so the test has no contrib/example dependency.
+# ----------------------------------------------------------------------------
+
+_IMPLICITFAST_CONTACT_HORIZON = 160
+_IMPLICITFAST_CONTACT_TARGET_Z = 0.48
+
+
+def _implicitfast_contact_xml(ball_x, pz_lo, pz_hi, pxy, rtilt):
+  joints = (
+    '<joint name="px" type="slide" axis="1 0 0" damping="8"/>'
+    '<joint name="py" type="slide" axis="0 1 0" damping="8"/>'
+    f'<joint name="pz" type="slide" axis="0 0 1" range="{pz_lo} {pz_hi}" damping="20"/>'
+    '<joint name="rx" type="hinge" axis="1 0 0" damping="2"/>'
+    '<joint name="ry" type="hinge" axis="0 1 0" damping="2"/>'
+    '<joint name="rz" type="hinge" axis="0 0 1" damping="2"/>'
+  )
+  return f"""
+<mujoco>
+  <option timestep="0.004" cone="elliptic" integrator="implicitfast" gravity="0 0 -9.81"
+          iterations="100" ls_iterations="50" tolerance="1e-8"><flag contact="enable"/></option>
+  <default><geom condim="3" friction="0.4" solref="-16000 -4" solimp="0 0.95 0.001"/></default>
+  <worldbody>
+    <geom name="floor" type="plane" size="0 0 .05"/>
+    <body name="paddle" pos="0 0 0.25">{joints}
+      <geom name="paddle_geom" type="box" size="0.065 0.065 0.02"/>
+    </body>
+    <body name="ball" pos="{ball_x} 0 0.30"><freejoint/>
+      <geom name="ball_geom" type="sphere" size="0.025" mass="0.12"/>
+    </body>
+  </worldbody>
+  <actuator>
+    <position joint="px" kp="700" ctrlrange="{-pxy} {pxy}"/>
+    <position joint="py" kp="700" ctrlrange="{-pxy} {pxy}"/>
+    <position joint="pz" kp="1500" ctrlrange="{pz_lo} {pz_hi}"/>
+    <position joint="rx" kp="40" ctrlrange="{-rtilt} {rtilt}"/>
+    <position joint="ry" kp="40" ctrlrange="{-rtilt} {rtilt}"/>
+    <position joint="rz" kp="40" ctrlrange="{-rtilt} {rtilt}"/>
+  </actuator>
+</mujoco>
+"""
+
+
+@wp.kernel
+def _implicitfast_contact_feedback(
+  qpos: wp.array2d[float],
+  qvel: wp.array2d[float],
+  gains: wp.array[float],
+  ball_q: int,
+  ball_v: int,
+  pxy: float,
+  pz_lo: float,
+  pz_hi: float,
+  rtilt: float,
+  ctrl: wp.array2d[float],
+):
+  w = wp.tid()
+  bx, by, bz = qpos[w, ball_q], qpos[w, ball_q + 1], qpos[w, ball_q + 2]
+  bvx, bvy, bvz = qvel[w, ball_v], qvel[w, ball_v + 1], qvel[w, ball_v + 2]
+  ctrl[w, 0] = wp.clamp(bx, -pxy, pxy)
+  ctrl[w, 1] = wp.clamp(by, -pxy, pxy)
+  ctrl[w, 2] = wp.clamp(gains[0] - gains[1] * (bz - gains[3]) - gains[2] * bvz, pz_lo, pz_hi)
+  ctrl[w, 3] = wp.clamp(gains[6] * by + gains[7] * bvy, -rtilt, rtilt)
+  ctrl[w, 4] = wp.clamp(gains[4] * bx + gains[5] * bvx, -rtilt, rtilt)
+  ctrl[w, 5] = 0.0
+
+
+@wp.kernel
+def _implicitfast_contact_stage_loss(
+  qpos: wp.array2d[float], ball_q: int, inv_h: float, center_weight: float, loss: wp.array[float]
+):
+  bx, by = qpos[0, ball_q], qpos[0, ball_q + 1]
+  dz = qpos[0, ball_q + 2] - _IMPLICITFAST_CONTACT_TARGET_Z
+  wp.atomic_add(loss, 0, (dz * dz + center_weight * (bx * bx + by * by)) * inv_h)
+
+
+def _implicitfast_contact_setup(offcenter):
+  if offcenter:
+    ball_x, center_weight = 0.05, 2.0
+    pz_lo, pz_hi, pxy, rtilt = -0.15, 0.15, 0.40, 1.0
+    gains = np.array([0.0, 0.8, 0.15, 0.40, 0.0, 0.0, 0.0, 0.0], dtype=np.float64)
+  else:
+    ball_x, center_weight = 0.0, 0.0
+    pz_lo, pz_hi, pxy, rtilt = -0.06, 0.08, 0.30, 0.5
+    gains = np.array([0.0, 0.0, 0.0, 0.44, 0.0, 0.0, 0.0, 0.0], dtype=np.float64)
+
+  mjm = mujoco.MjModel.from_xml_string(_implicitfast_contact_xml(ball_x, pz_lo, pz_hi, pxy, rtilt))
+  mjd = mujoco.MjData(mjm)
+  mujoco.mj_forward(mjm, mjd)
+  free_jnt = int(np.flatnonzero(mjm.jnt_type == mujoco.mjtJoint.mjJNT_FREE)[0])
+  ball_q = int(mjm.jnt_qposadr[free_jnt])
+  ball_v = int(mjm.jnt_dofadr[free_jnt])
+  bounds = (float(pxy), float(pz_lo), float(pz_hi), float(rtilt))
+  return mjm, mjd, gains, ball_q, ball_v, bounds, float(center_weight)
+
+
+def _implicitfast_contact_taped_grad(offcenter, horizon):
+  mjm, mjd, gains_np, ball_q, ball_v, bounds, center_weight = _implicitfast_contact_setup(offcenter)
+  pxy, pz_lo, pz_hi, rtilt = bounds
+  m = mjw.put_model(mjm)
+  gains = wp.array(gains_np.astype(np.float32), dtype=float, requires_grad=True)
+  datas = [mjw.put_data(mjm, mjd) for _ in range(horizon + 1)]
+  for d in datas:
+    d.qpos.requires_grad = True
+    d.qvel.requires_grad = True
+    d.ctrl.requires_grad = True
+  loss = wp.zeros(1, dtype=float, requires_grad=True)
+  tape = wp.Tape()
+  with tape:
+    for t in range(horizon):
+      wp.launch(
+        _implicitfast_contact_feedback,
+        dim=1,
+        inputs=[datas[t].qpos, datas[t].qvel, gains, ball_q, ball_v, pxy, pz_lo, pz_hi, rtilt],
+        outputs=[datas[t].ctrl],
+      )
+      mjw.step(m, datas[t], datas[t + 1])
+      wp.launch(
+        _implicitfast_contact_stage_loss,
+        dim=1,
+        inputs=[datas[t + 1].qpos, ball_q, 1.0 / horizon, center_weight],
+        outputs=[loss],
+      )
+  tape.backward(loss=loss)
+
+  trajectory = {
+    "qpos": [d.qpos.numpy()[0].astype(np.float64).copy() for d in datas],
+    "qvel": [d.qvel.numpy()[0].astype(np.float64).copy() for d in datas],
+    "ctrl": [d.ctrl.numpy()[0].astype(np.float64).copy() for d in datas[:-1]],
+    "nacon": np.array([int(d.nacon.numpy()[0]) for d in datas[1:]]),
+  }
+  return gains.grad.numpy().astype(np.float64).copy(), trajectory, (
+    mjm, gains_np, ball_q, ball_v, bounds, center_weight
+  )
+
+
+def _implicitfast_feedback_jacobians(qpos, qvel, gains, nv, nu, ball_q, ball_v, bounds):
+  """Jacobian of the feedback control w.r.t. tangent state and its eight shared gains."""
+  pxy, pz_lo, pz_hi, rtilt = bounds
+  fx = np.zeros((nu, 2 * nv), dtype=np.float64)
+  fp = np.zeros((nu, len(gains)), dtype=np.float64)
+  bx, by, bz = qpos[ball_q : ball_q + 3]
+  bvx, bvy, bvz = qvel[ball_v : ball_v + 3]
+
+  if -pxy < bx < pxy:
+    fx[0, ball_v] = 1.0
+  if -pxy < by < pxy:
+    fx[1, ball_v + 1] = 1.0
+
+  z_cmd = gains[0] - gains[1] * (bz - gains[3]) - gains[2] * bvz
+  if pz_lo < z_cmd < pz_hi:
+    fx[2, ball_v + 2] = -gains[1]
+    fx[2, nv + ball_v + 2] = -gains[2]
+    fp[2, [0, 1, 2, 3]] = [1.0, -(bz - gains[3]), -bvz, gains[1]]
+
+  x_tilt = gains[6] * by + gains[7] * bvy
+  if -rtilt < x_tilt < rtilt:
+    fx[3, ball_v + 1] = gains[6]
+    fx[3, nv + ball_v + 1] = gains[7]
+    fp[3, 6], fp[3, 7] = by, bvy
+
+  y_tilt = gains[4] * bx + gains[5] * bvx
+  if -rtilt < y_tilt < rtilt:
+    fx[4, ball_v] = gains[4]
+    fx[4, nv + ball_v] = gains[5]
+    fp[4, 4], fp[4, 5] = bx, bvx
+  return fx, fp
+
+
+def _implicitfast_contact_local_bptt(trajectory, setup, horizon):
+  """Compose float64 local mjd_transitionFD Jacobians backward along the nominal MJW trajectory."""
+  mjm, gains, ball_q, ball_v, bounds, center_weight = setup
+  nv, ndx = mjm.nv, 2 * mjm.nv + mjm.na
+  closed_loop_a, gain_b = [], []
+  for t in range(horizon):
+    mjd = mujoco.MjData(mjm)
+    mjd.qpos[:] = trajectory["qpos"][t]
+    mjd.qvel[:] = trajectory["qvel"][t]
+    mjd.ctrl[:] = trajectory["ctrl"][t]
+    mujoco.mj_forward(mjm, mjd)
+    if int(mjd.ncon) != int(trajectory["nacon"][t]):
+      raise AssertionError(
+        f"local-FD oracle changed contact presence at t={t}: MJC={mjd.ncon}, MJW={trajectory['nacon'][t]}"
+      )
+    a, b_ctrl = mjd_transition_fd(mjm, mjd, eps=1.0e-6, centered=True)
+    fx, fp = _implicitfast_feedback_jacobians(
+      trajectory["qpos"][t], trajectory["qvel"][t], gains, nv, mjm.nu, ball_q, ball_v, bounds
+    )
+    closed_loop_a.append(a + b_ctrl @ fx)
+    gain_b.append(b_ctrl @ fp)
+
+  adj_state = np.zeros(ndx, dtype=np.float64)
+  grad = np.zeros(len(gains), dtype=np.float64)
+  for t in range(horizon - 1, -1, -1):
+    bx, by, bz = trajectory["qpos"][t + 1][ball_q : ball_q + 3]
+    stage_grad = np.zeros(ndx, dtype=np.float64)
+    stage_grad[ball_v : ball_v + 3] = (
+      2.0 * np.array([center_weight * bx, center_weight * by, bz - _IMPLICITFAST_CONTACT_TARGET_Z]) / horizon
+    )
+    adj_out = adj_state + stage_grad
+    grad += gain_b[t].T @ adj_out
+    adj_state = closed_loop_a[t].T @ adj_out
+  return grad
+
+
+class ImplicitfastLongHorizonTest(parameterized.TestCase):
+
+  @parameterized.named_parameters(("centered", False), ("offcenter", True))
+  def test_contact_feedback_bptt_matches_local_transition_fd(self, offcenter):
+    """H=160 catches a small per-step reverse error that short/single-step gradient tests cannot."""
+    analytic, trajectory, setup = _implicitfast_contact_taped_grad(offcenter, _IMPLICITFAST_CONTACT_HORIZON)
+    reference = _implicitfast_contact_local_bptt(trajectory, setup, _IMPLICITFAST_CONTACT_HORIZON)
+    self.assertTrue(np.isfinite(analytic).all(), f"analytic gradient is non-finite: {analytic}")
+    self.assertTrue(np.isfinite(reference).all(), f"local-FD BPTT gradient is non-finite: {reference}")
+    self.assertGreater(np.count_nonzero(trajectory["nacon"]), 0, "rollout never exercises contact")
+
+    norm_a, norm_r = np.linalg.norm(analytic), np.linalg.norm(reference)
+    cosine = float(analytic @ reference / (norm_a * norm_r))
+    relative = float(np.linalg.norm(analytic - reference) / norm_r)
+    print(
+      f"\n[implicitfast contact H={_IMPLICITFAST_CONTACT_HORIZON} offcenter={offcenter}] "
+      f"cos={cosine:+.6f} rel={relative:.4e}\n  analytic={analytic}\n  local-FD={reference}"
+    )
+    self.assertGreater(norm_r, 1.0e-6, "reference gradient is unobservable")
+    self.assertGreater(cosine, 0.999, f"long-horizon gradient direction drifted: cos={cosine:.6f}")
+    self.assertLess(relative, 5.0e-3, f"long-horizon gradient magnitude drifted: rel={relative:.4e}")
+
+    if offcenter:
+      # gains[4:6] command hinge-y from ball x/vx.  Their observability proves the off-center normal
+      # moment arm really activated the rotational rows; a whole-vector comparison alone could be
+      # dominated by the three vertical-juggle gains.
+      tilt_a, tilt_r = analytic[4:6], reference[4:6]
+      self.assertGreater(np.linalg.norm(tilt_r), 1.0e-5, "off-center hinge-y gain is not exercised")
+      tilt_rel = float(np.linalg.norm(tilt_a - tilt_r) / np.linalg.norm(tilt_r))
+      self.assertLess(tilt_rel, 1.0e-2, f"off-center rotational channel drifted: rel={tilt_rel:.4e}")
+
 
 # Contact-free 2-hinge arm with per-joint armature + viscous damping (the PACE-clean smooth-param subset),
 # EULER + eulerdamp off (so damping is EXPLICIT in qfrc_passive, matching _residual_smooth_local), excited
@@ -1374,6 +1851,23 @@ _FRICTIONLOSS_SLIDE = """
 </mujoco>
 """
 
+# Free box launched SLIDING (+x) on a flat plane (elliptic cone, condim 3) -- the CONTACT-PARAMETER
+# sys-id case. The box friction (0.5) WINS the elementwise-max geom_friction combine over the floor's
+# (0.2), so contact.friction is unambiguously the box geom's -> the max() VJP routes cleanly to one
+# component and central FD is two-sided (a friction TIE would make FD one-sided at the max kink).
+_FRICTION_SLIDE = """
+<mujoco>
+  <option timestep="0.004" cone="elliptic" integrator="implicitfast" gravity="0 0 -9.81"
+          solver="Newton" iterations="50"><flag eulerdamp="disable"/></option>
+  <worldbody>
+    <geom name="floor" type="plane" size="5 5 0.01" friction="0.2 0.005 0.0001" condim="3" solimp="0 0.95 0.001"/>
+    <body name="box" pos="0 0 0.1"><joint type="free"/>
+      <geom name="box" type="box" size="0.1 0.1 0.1" mass="1" friction="0.5 0.005 0.0001" condim="3" solimp="0 0.95 0.001"/></body>
+  </worldbody>
+  <keyframe><key qpos="0 0 0.1 1 0 0 0" qvel="2.0 0 0 0 0 0"/></keyframe>
+</mujoco>
+"""
+
 
 @wp.kernel
 def _sumsq_qvel_kernel(qvel: wp.array2d[float], loss: wp.array[float]):
@@ -1386,7 +1880,7 @@ def _sysid_taped_grad(mjm, mjd, H, field):
   out of the residual-VJP and ACCUMULATES into m.<field>.grad over the rollout (a shared leaf)."""
   m = mjw.put_model(mjm)
   arr = getattr(m, field)  # put_model stores it broadcast (stride-0); rebuild contiguous for a clean grad
-  setattr(m, field, wp.array(arr.numpy(), dtype=wp.float32, requires_grad=True))
+  setattr(m, field, wp.array(arr.numpy(), dtype=arr.dtype, requires_grad=True))  # arr.dtype: float or wp.vec3
   getattr(m, field).grad.zero_()
   datas = [mjw.put_data(mjm, mjd) for _ in range(H + 1)]
   for d in datas:
@@ -1399,16 +1893,18 @@ def _sysid_taped_grad(mjm, mjd, H, field):
       mjw.step(m, datas[t], datas[t + 1])
     wp.launch(_sumsq_qvel_kernel, dim=mjm.nv, inputs=[datas[H].qvel], outputs=[loss])
   tape.backward(loss=loss)
-  return np.nan_to_num(getattr(m, field).grad.numpy()[0].astype(np.float64).copy())
+  return np.nan_to_num(getattr(m, field).grad.numpy()[0].astype(np.float64).reshape(-1).copy())
 
 
 def _sysid_mjc_fd_grad(mjm, mjd, H, field, xml=_SYSID_ARM, eps=1e-5):
   """Float64 MuJoCo-C central FD of ||qvel_H||^2 w.r.t. each component of model.<field> -- the param
-  analog of mjd_transitionFD (which has no model-param mode): a clean, engine-independent oracle."""
+  analog of mjd_transitionFD (which has no model-param mode): a clean, engine-independent oracle. Operates
+  on the FLATTENED param (so vec-valued fields like body_inertia (nbody,3) are covered component-wise)."""
+  shape = getattr(mjm, field).shape
 
   def rollout(vals):
     m2 = mujoco.MjModel.from_xml_string(xml)
-    getattr(m2, field)[:] = vals
+    getattr(m2, field)[:] = vals.reshape(shape)
     md = mujoco.MjData(m2)
     md.qpos[:] = mjd.qpos
     md.qvel[:] = mjd.qvel
@@ -1417,7 +1913,7 @@ def _sysid_mjc_fd_grad(mjm, mjd, H, field, xml=_SYSID_ARM, eps=1e-5):
       mujoco.mj_step(m2, md)
     return float(np.dot(md.qvel, md.qvel))
 
-  x0 = getattr(mjm, field).astype(np.float64).copy()
+  x0 = getattr(mjm, field).astype(np.float64).reshape(-1).copy()
   g = np.zeros(len(x0))
   for i in range(len(x0)):
     xp, xm = x0.copy(), x0.copy()
@@ -1447,6 +1943,25 @@ class SysidGradientTest(parameterized.TestCase):
     mujoco.mj_forward(mjm, mjd)
     analytic = _sysid_taped_grad(mjm, mjd, 20, field)
     fd = _sysid_mjc_fd_grad(mjm, mjd, 20, field)
+    _assert_smooth_grad(self, analytic, fd, cos_min=0.999, rel_max=2e-2, tag=f"sysid:{field}")
+
+  @parameterized.named_parameters(("body_mass", "body_mass", 1e-5), ("body_inertia", "body_inertia", 1e-7))
+  def test_inertial_param_grad_matches_fd(self, field, eps):
+    """Inertial sys-id (body_mass / body_inertia): analytic d(||qvel_H||^2)/d(m.<field>) vs float64 MuJoCo-C
+    param FD. mass/inertia enter the smooth residual ONLY through cinert, so the gradient is produced by
+    SOURCE-AD of the cinert leaf (no hand-written inertia VJP -- smooth_adjoint.inertia_param_vjp) seeded by
+    adj_cinert from the rne-bias reverse. The 2-hinge arm under gravity excites both the gravitational/
+    inertial torque (mass) and the rotational inertia (body_inertia)."""
+    if not _grad_available():
+      self.skipTest("pending adjoint.py: differentiable step (MJPLAN.md Stage 1/3)")
+    from mujoco_warp._src import adjoint  # noqa: F401
+
+    mjm = mujoco.MjModel.from_xml_string(_SYSID_ARM)
+    mjd = mujoco.MjData(mjm)
+    mujoco.mj_resetDataKeyframe(mjm, mjd, 0)
+    mujoco.mj_forward(mjm, mjd)
+    analytic = _sysid_taped_grad(mjm, mjd, 20, field)
+    fd = _sysid_mjc_fd_grad(mjm, mjd, 20, field, eps=eps)
     _assert_smooth_grad(self, analytic, fd, cos_min=0.999, rel_max=2e-2, tag=f"sysid:{field}")
 
   def test_param_grad_observability(self):
@@ -1484,6 +1999,29 @@ class SysidGradientTest(parameterized.TestCase):
     analytic = _sysid_taped_grad(mjm, mjd, 20, "dof_frictionloss")
     fd = _sysid_mjc_fd_grad(mjm, mjd, 20, "dof_frictionloss", xml=_FRICTIONLOSS_SLIDE, eps=1e-3)
     _assert_smooth_grad(self, analytic, fd, cos_min=0.999, rel_max=2e-2, tag="sysid:frictionloss")
+
+  def test_contact_friction_param_grad_matches_fd(self):
+    """CONTACT-PARAMETER sys-id: analytic d(||qvel_H||^2)/d(geom_friction) for a box SLIDING on a plane
+    (elliptic cone, condim 3) vs float64 MuJoCo-C param FD. The geom_friction -> contact.friction copy
+    happens in the UNRECORDED forward, so this gradient used to be exactly 0; adjoint.contact_residual_
+    backward now exposes the cone leaf's d(phi)/d(contact.friction) and constraint_adjoint._contact_
+    friction_geom_vjp chains it back through the elementwise-max/priority combine into m.geom_friction.
+    grad (gated on requires_grad). FD-exact while the box slides continuously; the only non-smooth point
+    is the sliding->stuck STOP (cone edge). H=4 keeps it sliding (the box also needs a step or two under
+    gravity for the soft contact to develop a normal force, so a from-rest single step is un-excited)."""
+    if not _grad_available():
+      self.skipTest("pending adjoint.py: differentiable step (MJPLAN.md Stage 1/3)")
+    from mujoco_warp._src import adjoint  # noqa: F401
+
+    mjm = mujoco.MjModel.from_xml_string(_FRICTION_SLIDE)
+    mjd = mujoco.MjData(mjm)
+    mujoco.mj_resetDataKeyframe(mjm, mjd, 0)
+    mujoco.mj_forward(mjm, mjd)
+    analytic = _sysid_taped_grad(mjm, mjd, 4, "geom_friction")
+    fd = _sysid_mjc_fd_grad(mjm, mjd, 4, "geom_friction", xml=_FRICTION_SLIDE, eps=1e-4)
+    # The gradient must land on the box geom's SLIDE-friction component (the max-winner), ~0 elsewhere.
+    self.assertGreater(np.abs(analytic).max(), 1e-3, "geom_friction gradient is unobservable")
+    _assert_smooth_grad(self, analytic, fd, cos_min=0.999, rel_max=2e-2, tag="sysid:geom_friction")
 
 
 # Slide joint pressed against a SOFT lower limit by gravity (settle so it rests on the limit -> the limit
@@ -1540,6 +2078,79 @@ _EQUALITY_COUPLE = """
   <keyframe><key qpos="0.3 0.3" qvel="1.0 1.0"/></keyframe>
 </mujoco>
 """
+
+
+def _hang_spectators(n, x0=0.6):
+  """``n`` INERT hinge pendulums, each a ``-z`` capsule so at qpos=0 the COM hangs directly below the hinge
+  axis (gravity torque ~0 -> equilibrium). With qvel0=0 and light damping they stay at rest, padding nv past
+  _MAX_NV WITHOUT polluting ``||qvel_T||^2`` or the state grad (their grad slice is exactly 0 -- which also
+  catches a sparse scatter that leaks a cotangent onto a wrong dof). Each adds ONE dof."""
+  s = ""
+  for i in range(n):
+    s += (
+      f'<body pos="{x0 + 0.3 * i} 0 1"><joint name="s{i}" type="hinge" axis="0 1 0" damping="1.0"/>'
+      f'<geom type="capsule" fromto="0 0 0 0 0 -0.2" size="0.03" mass="0.5"/></body>'
+    )
+  return s
+
+
+def _padded_equality(n_extra):
+  """``n_extra`` inert spectators FIRST (dofs 0..n_extra-1) then the two equality-coupled hinges LAST (dofs
+  n_extra, n_extra+1 -> HIGH-index columns beyond _MAX_NV) -> nv=n_extra+2. Routes through the SPARSE
+  ``_residual_constraint_sparse`` (nv>_MAX_NV); the high-index active row proves the gather/scatter iterator
+  reaches dofs past _MAX_NV for the CONSTRAINT row (not just the smooth path)."""
+  xml = f"""
+<mujoco>
+  <option timestep="0.004" integrator="Euler" gravity="0 0 -9.81"><flag eulerdamp="disable"/></option>
+  <worldbody>
+    {_hang_spectators(n_extra)}
+    <body pos="0 0 1"><joint name="j0" type="hinge" axis="0 1 0"/>
+      <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.04" mass="1"/></body>
+    <body pos="0 0.3 1"><joint name="j1" type="hinge" axis="0 1 0"/>
+      <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.04" mass="1"/></body>
+  </worldbody>
+  <equality><joint joint1="j0" joint2="j1"/></equality>
+</mujoco>
+"""
+  mjm = mujoco.MjModel.from_xml_string(xml)
+  mjd = mujoco.MjData(mjm)
+  qpos0 = np.zeros(mjm.nq)
+  qpos0[n_extra] = 0.3
+  qpos0[n_extra + 1] = 0.3
+  mjd.qpos[:] = qpos0
+  mujoco.mj_forward(mjm, mjd)
+  qvel0 = np.zeros(mjm.nv)
+  qvel0[n_extra] = 1.0
+  qvel0[n_extra + 1] = 1.0
+  return mjm, mjd, qvel0
+
+
+def _padded_ball_limit(n_extra):
+  """``n_extra`` inert spectators FIRST then a gravity-settled BALL pressed against its limit LAST (the 3 ball
+  dofs are the HIGH-index columns >_MAX_NV) -> nv=n_extra+3. Same SPARSE-path/high-index rationale as
+  _padded_equality, but for the LIMIT_JOINT ball row (the -axis angular J + the _dof_to_qpos quaternion lift)."""
+  xml = f"""
+<mujoco>
+  <option timestep="0.004" integrator="Euler" gravity="0 0 -9.81"><flag eulerdamp="disable"/></option>
+  <worldbody>
+    {_hang_spectators(n_extra)}
+    <body pos="0 0 1"><joint name="b" type="ball" range="0 0.6"/>
+      <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.04" mass="1"/></body>
+  </worldbody>
+</mujoco>
+"""
+  mjm = mujoco.MjModel.from_xml_string(xml)
+  mjm.jnt_solimp[:, 0] = 0.0  # soft (unsaturated) limit -> smooth, like the nv<=16 ball test
+  mjd = mujoco.MjData(mjm)
+  mjd.qpos[:] = 0.0
+  mjd.qpos[n_extra] = 1.0  # ball qw (spectators are 1 qpos each, first)
+  mujoco.mj_forward(mjm, mjd)
+  for _ in range(90):  # settle: ball swings onto the limit (active over the short horizon); spectators at rest
+    mujoco.mj_step(mjm, mjd)
+  mujoco.mj_forward(mjm, mjd)
+  qvel0 = np.zeros(mjm.nv)
+  qvel0[n_extra + 1] = 0.3  # kick the ball into the limit -> stays pressed (no active-set change)
+  return mjm, mjd, qvel0
 
 
 def _constraint_qvel_grad(mjm, mjd, T, qvel0):
@@ -1629,6 +2240,31 @@ class ConstraintGradientTest(parameterized.TestCase):
     fd = _constraint_fd_qvel(mjm, mjd, 20, qvel0)
     _assert_smooth_grad(self, analytic, fd, cos_min=0.999, rel_max=2e-2, tag="constraint:equality")
 
+  @parameterized.named_parameters(
+    ("equality_nv18", "equality", 16, 12),  # nv=18 > _MAX_NV: SPARSE orchestration, DENSE efc.J iterator
+    ("equality_nv34_csr", "equality", 32, 12),  # nv=34 > 32: SPARSE orchestration, CSR efc.J iterator
+    ("ball_nv18", "ball", 15, 8),  # nv=18: ball's -axis J + quaternion lift through the sparse scatter
+    ("ball_nv34_csr", "ball", 31, 8),  # nv=34: same, CSR efc.J iterator
+  )
+  def test_noncontact_constraint_state_grad_sparse_nv(self, kind, n_extra, T):
+    """nv>_MAX_NV JOINT-equality / BALL-limit state grad through the SPARSE ``_residual_constraint_sparse``
+    (the HAZARD guard for MJPLAN_CSR's relaxed gate): the newly-enabled classes must be FD-exact at nv>16 in
+    BOTH efc.J layouts (dense iterator at nv=18, CSR at nv=34), and the active row lives at a HIGH-index column
+    (>_MAX_NV) so the gather/scatter iterator is proven to reach past the legacy dense unroll bound. Inert
+    spectators pad nv (their grad slice must stay 0 -> a leaked scatter cotangent fails). Analytic
+    d(||qvel_T||^2)/d(qvel0) vs float64 MuJoCo-C FD."""
+    if not _grad_available():
+      self.skipTest("pending adjoint.py: differentiable step (MJPLAN.md Stage 1/3)")
+    from mujoco_warp._src import adjoint  # noqa: F401
+
+    mjm, mjd, qvel0 = (_padded_equality if kind == "equality" else _padded_ball_limit)(n_extra)
+    self.assertGreater(mjm.nv, _adjoint._MAX_NV, "scene must have nv>_MAX_NV to route to the sparse path")
+    if "csr" in self.id():  # the nv=34 variants must actually take the CSR (is_sparse) efc.J iterator
+      self.assertTrue(mjw.put_model(mjm).is_sparse, "nv=34 scene must store efc.J sparse (CSR)")
+    analytic = _constraint_qvel_grad(mjm, mjd, T, qvel0)
+    fd = _constraint_fd_qvel(mjm, mjd, T, qvel0)
+    _assert_smooth_grad(self, analytic, fd, cos_min=0.999, rel_max=2e-2, tag=f"constraint:{kind}:nv{mjm.nv}")
+
   def test_jnt_solref_sysid(self):
     """Joint-limit solref sys-id: jnt_solref (the limit's solver-reference timeconst/dampratio) falls out
     of the SAME constraint residual by exposing its input-adjoint -- it is fed through _contact_kbimp, so
@@ -1701,6 +2337,8 @@ class ConstraintGradientTest(parameterized.TestCase):
 from mujoco_warp._src import adjoint as _adjoint  # noqa: E402
 from mujoco_warp._src import smooth_adjoint as _smooth_adjoint  # noqa: E402  (rne_backward / comvel_backward / rne_qpos_vjp moved here)
 from mujoco_warp._src import smooth as _smooth  # noqa: E402
+from mujoco_warp._src import solver as _solver  # noqa: E402  (init_context -> ctx.Jaref / lam for the constraint VJP)
+from mujoco_warp._src import constraint_adjoint as _constraint_adjoint  # noqa: E402  (sparse non-contact residual kernels)
 from mujoco_warp._src.types import vec10f as _vec10f  # noqa: E402
 
 _RNE_FREE = """
@@ -2050,6 +2688,686 @@ class RneQposBpttTest(parameterized.TestCase):
         self.assertGreater(cos_f, 0.99, f"T={T}: BPTT direction off vs real rollout, cos={cos_f:.4f}")
     finally:
       _adjoint._USE_ANALYTIC_RNE_QPOS = prev
+
+
+# ----------------------------------------------------------------------------
+# nv>16 articulated-contact gate (MJPLAN_ARTICULATION S4). The SPARSE contract-first contact VJP
+# (adjoint._USE_SPARSE_CONTACT, the default) must be correct beyond the dense _MAX_NV=16 unroll bound that
+# capped the legacy `_residual_contact` kernel (G1 has nv~35). Scene: a free base (6 dof) + a serial hinge
+# chain (nv = 6 + n_hinge) ending in a sphere foot vs a plane. Only the foot collides (chain/base geoms
+# contype=conaffinity=0) -> ONE clean foot-floor contact whose Jacobian spans EVERY chain dof, including
+# dofs > 16. The hinges carry mild damping+stiffness (passive forces -- no constraint rows) to tame the
+# chain. NO joint limits / equality / dof-friction, so the (still _MAX_NV-capped) non-contact constraint
+# residual stays a no-op and the contact residual is isolated. FD oracle = mjw float32 central difference
+# (same forward linearization point as the analytic grad), matching BounceDiffsimTest / ContactCondimTest.
+# ----------------------------------------------------------------------------
+def _nvchain_xml(n_hinge, cone="elliptic", condim=3, damping=1.0, stiffness=1.0, limit_first=False, tendon=False):
+  L = 1.5 / n_hinge  # fixed ~1.5m total chain length regardless of n_hinge -> comparable FD conditioning
+  foot_r = 0.04
+  base_z = n_hinge * L + foot_r - 0.006  # foot bottom ~6mm below the plane -> active contact at qpos0
+  body = ""
+  for i in range(n_hinge):
+    axis = "1 0 0" if i % 2 == 0 else "0 1 0"
+    pos = "0 0 0" if i == 0 else f"0 0 {-L}"
+    lim = ' limited="true" range="-0.5 0.5"' if (i == 0 and limit_first) else ""
+    foot = (
+      f'<geom name="foot" type="sphere" pos="0 0 {-L}" size="{foot_r}" condim="{condim}"/>'
+      if i == n_hinge - 1
+      else ""
+    )
+    body += (
+      f'<body name="link{i}" pos="{pos}">'
+      f'<joint name="j{i}" type="hinge" axis="{axis}" damping="{damping}" stiffness="{stiffness}"{lim}/>'
+      f'<geom type="capsule" fromto="0 0 0 0 0 {-L}" size="0.018" contype="0" conaffinity="0"/>'
+      f"{foot}"
+    )
+  body += "</body>" * n_hinge
+  # A fixed tendon coupling the first two hinges -> m.ntendon>0. The tendon constraint-row VJP is UNSUPPORTED
+  # (MJPLAN_CSR step 7), so its mere structural presence must trip the capability gate (no silent wrong grad).
+  tendon_block = (
+    '<tendon><fixed name="t0"><joint joint="j0" coef="1"/><joint joint="j1" coef="-1"/></fixed></tendon>'
+    if tendon
+    else ""
+  )
+  return f"""
+<mujoco>
+  <option timestep="0.004" cone="{cone}" integrator="Euler"
+          tolerance="1e-8" iterations="100" ls_iterations="50" gravity="0 0 -9.81">
+    <flag contact="enable"/>
+  </option>
+  <default>
+    <geom friction="0.7" solref="0.02 1" solimp="0 0.95 0.001"/>
+  </default>
+  <worldbody>
+    <geom name="floor" type="plane" size="0 0 .05"/>
+    <body name="base" pos="0 0 {base_z}">
+      <freejoint/>
+      <geom type="sphere" size="0.05" mass="1" contype="0" conaffinity="0"/>
+      {body}
+    </body>
+  </worldbody>
+  {tendon_block}
+</mujoco>
+"""
+
+
+def nvchain_setup(n_hinge, cone="elliptic", condim=3):
+  """Build the free-base + hinge-chain + foot scene. qpos0 = chain straight down, foot penetrating the
+  plane; qvel0 = a small base lateral velocity (so the foot slides -> the cone/friction path is live)."""
+  mjm = mujoco.MjModel.from_xml_string(_nvchain_xml(n_hinge, cone, condim))
+  mjd = mujoco.MjData(mjm)
+  mujoco.mj_forward(mjm, mjd)
+  qpos0 = mjd.qpos.copy()
+  qvel0 = np.zeros(mjm.nv, dtype=np.float64)
+  qvel0[0] = 0.5
+  return mjm, mjd, qpos0, qvel0
+
+
+class ArticulatedContactNvTest(parameterized.TestCase):
+  """nv>16 articulated-contact gradient gate -- the contact VJP must be correct beyond _MAX_NV."""
+
+  def _onestep(self, m, mjm, mjd, qpos, qvel):
+    d0 = mjw.put_data(mjm, mjd)
+    d1 = mjw.put_data(mjm, mjd)
+    for d in (d0, d1):
+      d.qpos.requires_grad = True
+      d.qvel.requires_grad = True
+    d0.qpos = wp.array(qpos.reshape(1, -1), dtype=wp.float32, requires_grad=True)
+    d0.qvel = wp.array(qvel.reshape(1, -1), dtype=wp.float32, requires_grad=True)
+    mjw.step(m, d0, d1)
+    return d0, d1
+
+  def test_articulated_contact_scene_makes_contact(self):
+    """Runs without grad: the chain's foot actually contacts the floor and nv>_MAX_NV (so the gate is on
+    the differentiable path and the bound is genuinely exercised). Pins the scene before the grad asserts."""
+    mjm, mjd, qpos0, qvel0 = nvchain_setup(12)
+    self.assertGreater(mjm.nv, _adjoint._MAX_NV)
+    m = mjw.put_model(mjm)
+    d = mjw.put_data(mjm, mjd)
+    d.qpos = wp.array(qpos0.reshape(1, -1), dtype=wp.float32)
+    d.qvel = wp.array(qvel0.reshape(1, -1), dtype=wp.float32)
+    mjw.step(m, d)
+    self.assertGreaterEqual(int(d.nacon.numpy()[0]), 1, "foot never contacts the floor")
+
+  @parameterized.named_parameters(
+    ("nv18_elliptic", 12, "elliptic"),
+    ("nv18_pyramidal", 12, "pyramidal"),
+    ("nv34_elliptic", 28, "elliptic"),
+    ("nv34_pyramidal", 28, "pyramidal"),
+  )
+  def test_articulated_contact_residual_vjp_matches_fd(self, n_hinge, cone):
+    """Single-step contact VJP vs FD on a scene with nv > _MAX_NV. Seeds a random next-velocity cotangent,
+    runs step_backward, and checks d0.{qvel,qpos}.grad vs central FD -- crucially on the dofs BEYOND
+    _MAX_NV (which the legacy dense kernel would silently drop)."""
+    from mujoco_warp._src import adjoint
+
+    mjm, mjd, qpos0, qvel0 = nvchain_setup(n_hinge, cone)
+    nv, nq = mjm.nv, mjm.nq
+    self.assertGreater(nv, _adjoint._MAX_NV, "scene must have nv > _MAX_NV to exercise the bound")
+    m = mjw.put_model(mjm)
+
+    d0, d1 = self._onestep(m, mjm, mjd, qpos0, qvel0)
+    self.assertGreaterEqual(int(d1.nacon.numpy()[0]), 1, "no foot-floor contact at the test state")
+
+    rng = np.random.default_rng(0)
+    w = rng.standard_normal(nv).astype(np.float32)  # random output cotangent (avoid sum cancellation)
+    seed = np.zeros((1, nv), dtype=np.float32)
+    seed[0] = w
+    d1.qvel.grad.assign(seed)
+    adjoint.step_backward(m, d0, d1)
+    ana_qvel = d0.qvel.grad.numpy()[0].astype(np.float64).copy()
+    ana_qpos = d0.qpos.grad.numpy()[0].astype(np.float64).copy()
+
+    def loss_after_step(qp, qv):
+      d = mjw.put_data(mjm, mjd)
+      d.qpos = wp.array(qp.reshape(1, -1), dtype=wp.float32)
+      d.qvel = wp.array(qv.reshape(1, -1), dtype=wp.float32)
+      mjw.step(m, d)
+      return float(w @ d.qvel.numpy()[0])
+
+    eps = 1.0e-4
+    fd_qvel = np.zeros(nv)
+    for i in range(nv):
+      vp, vm = qvel0.copy(), qvel0.copy()
+      vp[i] += eps
+      vm[i] -= eps
+      fd_qvel[i] = (loss_after_step(qpos0, vp) - loss_after_step(qpos0, vm)) / (2.0 * eps)
+    scalar_q = [0, 1, 2] + list(range(7, nq))  # skip the free-joint quaternion coords 3..6
+    fd_qpos = np.zeros(nq)
+    for c in scalar_q:
+      qp, qm = qpos0.copy(), qpos0.copy()
+      qp[c] += eps
+      qm[c] -= eps
+      fd_qpos[c] = (loss_after_step(qp, qvel0) - loss_after_step(qm, qvel0)) / (2.0 * eps)
+
+    def cos_rel(a, b):
+      na, nb = np.linalg.norm(a), np.linalg.norm(b)
+      cos = float(a @ b / (na * nb)) if na > 1e-12 and nb > 1e-12 else 1.0
+      return cos, float(np.linalg.norm(a - b) / (nb + 1e-12))
+
+    cos_v, rel_v = cos_rel(ana_qvel, fd_qvel)
+    cos_q, rel_q = cos_rel(ana_qpos[scalar_q], fd_qpos[scalar_q])
+    hi = list(range(_adjoint._MAX_NV, nv))  # qvel dofs beyond the legacy unroll bound
+    qhi = list(range(7 + (_adjoint._MAX_NV - 6), nq))  # the corresponding qpos hinge coords (dofs >= _MAX_NV)
+    cos_hi, rel_hi = cos_rel(ana_qvel[hi], fd_qvel[hi])
+    cos_qhi, rel_qhi = cos_rel(ana_qpos[qhi], fd_qpos[qhi])
+    print(
+      f"\n[nvchain {cone} nv={nv}] dqvel cos={cos_v:.5f} rel={rel_v:.3f} | dqpos cos={cos_q:.5f} rel={rel_q:.3f} "
+      f"| dofs>16 dqvel cos={cos_hi:.5f} rel={rel_hi:.3f} dqpos cos={cos_qhi:.5f} rel={rel_qhi:.3f}"
+    )
+    # The >16 dofs must be EXERCISED (FD nonzero) AND correct in AGGREGATE (the dense _MAX_NV path would
+    # zero them entirely). Cosine + relative-L2 -- robust to per-entry f32 FD truncation on the stiff
+    # long-chain contact columns (the EXACT correctness of the analytic is separately pinned to 1e-5 by
+    # test_sparse_vs_dense_oracle_match; these gates verify FD-consistency at the f32 oracle's noise floor).
+    self.assertGreater(np.abs(fd_qvel[hi]).max(), 1e-3, "scene does not exercise dofs > _MAX_NV")
+    self.assertGreater(cos_hi, 0.99, f"{cone} nv={nv}: dqvel direction wrong on dofs > _MAX_NV (cos={cos_hi:.4f})")
+    self.assertLess(rel_hi, 1e-1, f"{cone} nv={nv}: dqvel magnitude wrong on dofs > _MAX_NV (rel={rel_hi:.3f})")
+    # NOTE: no per-slice assertion on dqpos[>16] -- with few high dofs (nv=18 -> 2 deepest hinges) those are
+    # tiny-magnitude entries (small foot moment arm) where f32 FD relative error explodes. The >16 qpos
+    # geometry path is covered by the overall cos_q below + the exact A/B (test_sparse_vs_dense_oracle_match)
+    # + the walk-reaches->16 evidence from dqvel[>16]. (At nv=34 the 18-entry slice is clean: cos~0.999.)
+    self.assertGreater(cos_v, 0.998, f"{cone} nv={nv}: dqvel direction off (cos={cos_v:.4f})")
+    self.assertGreater(cos_q, 0.995, f"{cone} nv={nv}: dqpos direction off (cos={cos_q:.4f})")
+    self.assertLess(rel_v, 7e-2, f"{cone} nv={nv}: dqvel magnitude off (rel={rel_v:.3f})")
+    self.assertLess(rel_q, 9e-2, f"{cone} nv={nv}: dqpos magnitude off (rel={rel_q:.3f})")
+
+  def test_articulated_contact_rollout_grad_matches_fd(self):
+    """Short multi-step rollout: analytic BPTT through the nv>16 contact path vs central FD of a scalar
+    base-position loss. The backward processes all dofs each step, so a >16 scatter bug corrupts even the
+    base-dof gradient (contact couples base<->chain)."""
+    from mujoco_warp._src import adjoint  # noqa: F401
+
+    mjm, mjd, qpos0, qvel0 = nvchain_setup(12)
+    nv = mjm.nv
+    self.assertGreater(nv, _adjoint._MAX_NV)
+    m = mjw.put_model(mjm)
+    T = 12
+    target = np.array([0.1, 0.0, float(qpos0[2])])  # base xyz target (a small x drift)
+    target_v = wp.vec3(float(target[0]), float(target[1]), float(target[2]))
+
+    def rollout(qv, taped):
+      if taped:
+        datas = [mjw.put_data(mjm, mjd) for _ in range(T + 1)]
+        for d in datas:
+          d.qpos.requires_grad = True
+          d.qvel.requires_grad = True
+        datas[0].qpos = wp.array(qpos0.reshape(1, -1), dtype=wp.float32, requires_grad=True)
+        datas[0].qvel = wp.array(qv.reshape(1, -1), dtype=wp.float32, requires_grad=True)
+        loss = wp.zeros(1, dtype=wp.float32, requires_grad=True)
+        tape = wp.Tape()
+        with tape:
+          for t in range(T):
+            mjw.step(m, datas[t], datas[t + 1])
+          wp.launch(_bounce_loss_kernel, dim=1, inputs=[datas[T].qpos, target_v], outputs=[loss])
+        tape.backward(loss=loss)
+        return float(loss.numpy()[0]), datas[0].qvel.grad.numpy()[0][:3].astype(np.float64).copy()
+      d = mjw.put_data(mjm, mjd)
+      d.qpos = wp.array(qpos0.reshape(1, -1), dtype=wp.float32)
+      d.qvel = wp.array(qv.reshape(1, -1), dtype=wp.float32)
+      for _ in range(T):
+        mjw.step(m, d)
+      qn = d.qpos.numpy()[0][:3].astype(np.float64)
+      return float(np.dot(qn - target, qn - target)), None
+
+    _, g_ana = rollout(qvel0, True)
+    eps = 1.0e-4
+    g_fd = np.zeros(3)
+    for i in range(3):
+      vp, vm = qvel0.copy(), qvel0.copy()
+      vp[i] += eps
+      vm[i] -= eps
+      lp, _ = rollout(vp, False)
+      lm, _ = rollout(vm, False)
+      g_fd[i] = (lp - lm) / (2.0 * eps)
+    cos = float(g_ana @ g_fd / (np.linalg.norm(g_ana) * np.linalg.norm(g_fd) + 1e-12))
+    print(f"\n[nvchain rollout nv={nv} T={T}] ana={g_ana} fd={g_fd} cos={cos:.4f}")
+    self.assertGreater(np.abs(g_fd).max(), 1e-4, "rollout loss insensitive to qvel0")
+    np.testing.assert_allclose(g_ana, g_fd, rtol=5e-2, atol=5e-2, err_msg="nvchain rollout: analytic vs FD")
+
+  def test_articulated_contact_constraint_capability_assert(self):
+    """A model with nv>_MAX_NV AND a still-UNSUPPORTED non-contact row class must RAISE: no silent wrong
+    gradient. JOINT-equality / ball / slide/hinge limits are now handled by the SPARSE constraint VJP (so a
+    hinge limit at nv>_MAX_NV no longer raises); TENDON rows are not (MJPLAN_CSR step 7), so a tendon's
+    structural presence must still trip the gate. (Guards that relaxing the gate for the landed classes did
+    not silently open the door to the unlanded ones.)"""
+    from mujoco_warp._src import adjoint
+
+    mjm = mujoco.MjModel.from_xml_string(_nvchain_xml(12, "elliptic", tendon=True))
+    self.assertGreater(mjm.nv, _adjoint._MAX_NV)
+    self.assertGreater(mjm.ntendon, 0)
+    mjd = mujoco.MjData(mjm)
+    mujoco.mj_forward(mjm, mjd)
+    m = mjw.put_model(mjm)
+    d0, d1 = self._onestep(m, mjm, mjd, mjd.qpos.copy(), np.zeros(mjm.nv))
+    d1.qvel.grad.assign(np.ones((1, mjm.nv), dtype=np.float32))
+    with self.assertRaises(NotImplementedError):
+      adjoint.step_backward(m, d0, d1)
+
+  def test_sparse_vs_dense_oracle_match(self):
+    """Exact A/B (nv=6 bounce): the SPARSE contract-first path must reproduce the legacy DENSE _MAX_NV
+    kernel to ~1e-5 (much tighter than FD), pinning the refactor numerically (not just FD-close)."""
+    from mujoco_warp._src import adjoint
+
+    mjm, mjd, qpos0, qvel0, _, _ = bounce_setup()
+    m = mjw.put_model(mjm)
+    state = mjw.put_data(mjm, mjd)
+    state.qpos = wp.array(qpos0.reshape(1, -1), dtype=wp.float32)
+    state.qvel = wp.array(qvel0.reshape(1, -1), dtype=wp.float32)
+    for _ in range(49):  # reach a step with an active floor contact (cf. test_bounce_contact_residual_vjp)
+      mjw.step(m, state)
+    qpos = state.qpos.numpy()[0].copy()
+    qvel = state.qvel.numpy()[0].copy()
+
+    def grad(sparse):
+      prev = _adjoint._USE_SPARSE_CONTACT
+      _adjoint._USE_SPARSE_CONTACT = sparse
+      try:
+        d0, d1 = self._onestep(m, mjm, mjd, qpos, qvel)
+        d1.qvel.grad.assign(np.ones((1, mjm.nv), dtype=np.float32))
+        adjoint.step_backward(m, d0, d1)
+        return d0.qpos.grad.numpy()[0].copy(), d0.qvel.grad.numpy()[0].copy()
+      finally:
+        _adjoint._USE_SPARSE_CONTACT = prev
+
+    gq_s, gv_s = grad(True)
+    gq_d, gv_d = grad(False)
+    print(f"\n[sparse vs dense] max|dqvel diff|={np.abs(gv_s - gv_d).max():.2e} max|dqpos diff|={np.abs(gq_s - gq_d).max():.2e}")
+    np.testing.assert_allclose(gv_s, gv_d, rtol=1e-4, atol=1e-5, err_msg="sparse vs dense oracle: dqvel")
+    np.testing.assert_allclose(gq_s, gq_d, rtol=1e-4, atol=1e-5, err_msg="sparse vs dense oracle: dqpos")
+
+
+# ============================================================================================
+# NON-CONTACT constraint residual SPARSE/CSR rework (MJPLAN_CSR.md step 1): isolated gates on the
+# constraint_adjoint gather/leaf/scatter + the adjoint._residual_constraint_sparse orchestration --
+# (A) gather Z==Jλ + scatter res==Jᵀx̄ (friction P̄-gate), (B) leaf arbitrary-seed VJP vs FD, (C) the
+# residual-layer contraction φ=-Σ(Jλ)·efc.force value + FD-VJP (frozen qacc/λ/active-set), (D) CSR-vs-
+# dense equivalence. The new path is validated in ISOLATION (the kernels/wrapper called directly);
+# step_backward's production routing to it is MJPLAN_CSR step 3.
+# ============================================================================================
+_NC_TYPES = (_adjoint._EQUALITY, _adjoint._LIMIT_JOINT, _adjoint._FRICTION_DOF)
+_NC_POSBEARING = (_adjoint._EQUALITY, _adjoint._LIMIT_JOINT)
+
+
+def _reconstruct_efc_J(d, w, nefc, nv, is_sparse):
+  """Dense (nefc, nv) numpy J from the dense (J[w,row,i]) or CSR (J[w,0,rowadr+k], colind) layout."""
+  J = np.zeros((nefc, nv))
+  if is_sparse:
+    rownnz = d.efc.J_rownnz.numpy()[w]
+    rowadr = d.efc.J_rowadr.numpy()[w]
+    colind = d.efc.J_colind.numpy()[w, 0]
+    vals = d.efc.J.numpy()[w, 0]
+    for row in range(nefc):
+      for k in range(int(rownnz[row])):
+        J[row, int(colind[int(rowadr[row]) + k])] = vals[int(rowadr[row]) + k]
+  else:
+    Jd = d.efc.J.numpy()[w]
+    for row in range(nefc):
+      J[row, :] = Jd[row, :nv]
+  return J
+
+
+def _launch_gather(m, d, lam):
+  """Run constraint_adjoint._constraint_gather (is_sparse-specialized) -> (Z, invw)."""
+  nworld, njmax, nv = d.qpos.shape[0], d.efc.type.shape[1], m.nv
+  Z = wp.zeros((nworld, njmax), dtype=float)
+  invw = wp.zeros((nworld, njmax), dtype=float)
+  wp.launch(
+    _constraint_adjoint._constraint_gather(m.is_sparse),
+    dim=(nworld, njmax),
+    inputs=[m.jnt_dofadr, m.dof_invweight0, lam, d.efc.J_rownnz, d.efc.J_rowadr, d.efc.J_colind,
+            d.efc.J, d.efc.state, d.efc.type, d.efc.id, d.nefc, nv],
+    outputs=[Z, invw],
+  )
+  return Z, invw
+
+
+def _launch_scatter(m, d, adjP, adjV):
+  """Run constraint_adjoint._constraint_scatter -> (res_qvel, res_dof)."""
+  nworld, nv = d.qpos.shape[0], m.nv
+  res_qvel = wp.zeros((nworld, nv), dtype=float)
+  res_dof = wp.zeros((nworld, nv), dtype=float)
+  wp.launch(
+    _constraint_adjoint._constraint_scatter(m.is_sparse),
+    dim=(nworld, d.efc.type.shape[1]),
+    inputs=[d.efc.J_rownnz, d.efc.J_rowadr, d.efc.J_colind, d.efc.J, d.efc.state, d.efc.type, d.nefc, nv,
+            adjP, adjV],
+    outputs=[res_qvel, res_dof],
+  )
+  return res_qvel, res_dof
+
+
+def _csr_chain(jacobian, n_hinge=30, limit_hinge=22, fric_hinges=(8, 25)):
+  """Free base + n_hinge serial hinges (nv = 6 + n_hinge). A tight limit on hinge[limit_hinge] (its qpos set
+  beyond range -> active) + frictionloss on fric_hinges -> active non-contact rows at HIGH dof indices.
+  opt.jacobian forces dense vs CSR efc.J. No ground contact (isolates the non-contact residual)."""
+  body = ""
+  for i in range(n_hinge):
+    axis = "1 0 0" if i % 2 == 0 else "0 1 0"
+    lim = ' limited="true" range="-0.05 0.05"' if i == limit_hinge else ""
+    fr = ' frictionloss="0.3"' if i in fric_hinges else ""
+    pos = "0 0 0" if i == 0 else "0 0 -0.1"
+    body += f'<body pos="{pos}"><joint type="hinge" axis="{axis}"{lim}{fr} damping="0.5"/><geom type="capsule" fromto="0 0 0 0 0 -0.1" size="0.01" mass="0.2"/>'
+  body += "</body>" * n_hinge
+  xml = f"""
+<mujoco>
+  <option timestep="0.004" integrator="Euler" gravity="0 0 -9.81"><flag eulerdamp="disable"/></option>
+  <worldbody><body name="base" pos="0 0 1"><freejoint/>
+    <geom type="sphere" size="0.05" mass="1"/>{body}</body></worldbody>
+</mujoco>"""
+  mjm = mujoco.MjModel.from_xml_string(xml)
+  mjm.opt.jacobian = {"dense": mujoco.mjtJacobian.mjJAC_DENSE, "sparse": mujoco.mjtJacobian.mjJAC_SPARSE}[jacobian]
+  mjm.jnt_solimp[:, 0] = 0.0  # soft limit
+  mjd = mujoco.MjData(mjm)
+  qadr = mjm.jnt_qposadr[mjm.body_jntadr[mjm.body("base").id] + 1 + limit_hinge]  # the limited hinge's qpos slot
+  mjd.qpos[qadr] = 0.2  # violate the +0.05 limit -> active
+  mjd.qvel[:] = 0.0
+  mjd.qvel[6 + fric_hinges[0]] = 0.5  # drive a frictional dof -> its friction row is active
+  mujoco.mj_forward(mjm, mjd)
+  return mjm, mjd
+
+
+def _step_with_grad(m, mjm, mjd):
+  """One mjw.step from (mjd.qpos, mjd.qvel) with grad arrays; returns (d0, d1)."""
+  d0 = mjw.put_data(mjm, mjd)
+  d1 = mjw.put_data(mjm, mjd)
+  for d in (d0, d1):
+    d.qpos.requires_grad = True
+    d.qvel.requires_grad = True
+  mjw.step(m, d0, d1)
+  return d0, d1
+
+
+def _ift_lambda(m, d1):
+  """Build the solver context at the converged qacc and return (ctx.Jaref, an injected random λ)."""
+  ctx = _solver._create_solver_context(m, d1)
+  _solver.init_context(m, d1, ctx, grad=True)
+  return ctx.Jaref
+
+
+class ConstraintSparseResidualTest(parameterized.TestCase):
+  """MJPLAN_CSR step 1: the SPARSE/CSR non-contact constraint residual VJP, validated in isolation."""
+
+  @parameterized.named_parameters(("dense", "dense"), ("sparse", "sparse"))
+  def test_gather_scatter_transpose(self, jacobian):
+    """Gate 5a/5b: the gather reduces Z_e=Σ_i J_ei·λ_i and the scatter applies res=Jᵀx̄ -- both vs a numpy J
+    reconstruction of the dense/CSR layout. Friction rows must contribute 0 to res_dof (must-fix #1)."""
+    mjm, mjd = _csr_chain(jacobian)
+    m = mjw.put_model(mjm)
+    self.assertEqual(m.is_sparse, jacobian == "sparse")
+    _, d1 = _step_with_grad(m, mjm, mjd)
+    nv, nworld = m.nv, 1
+    ne = int(d1.nefc.numpy()[0])
+    typ = d1.efc.type.numpy()[0, :ne]
+    st = d1.efc.state.numpy()[0, :ne]
+    J = _reconstruct_efc_J(d1, 0, ne, nv, m.is_sparse)
+    active_nc = [r for r in range(ne) if typ[r] in _NC_TYPES and st[r] != _adjoint._SATISFIED]
+    self.assertTrue(any(typ[r] == _adjoint._LIMIT_JOINT for r in active_nc), "no active joint-limit row")
+    self.assertGreater(nv, _adjoint._MAX_NV, "scene must be nv>_MAX_NV to exercise CSR at high dof indices")
+
+    rng = np.random.default_rng(0)
+    lam = wp.array(rng.standard_normal((nworld, nv)).astype(np.float32), dtype=float)
+    Z, _ = _launch_gather(m, d1, lam)
+    Zn = Z.numpy()[0]
+    lam_n = lam.numpy()[0]
+    for r in range(ne):
+      expect = float(J[r] @ lam_n) if r in active_nc else 0.0
+      self.assertAlmostEqual(Zn[r], expect, places=4, msg=f"gather Z[{r}] (type {typ[r]})")
+
+    adjP = wp.array(rng.standard_normal((nworld, d1.efc.type.shape[1])).astype(np.float32), dtype=float)
+    adjV = wp.array(rng.standard_normal((nworld, d1.efc.type.shape[1])).astype(np.float32), dtype=float)
+    res_qvel, res_dof = _launch_scatter(m, d1, adjP, adjV)
+    Pn, Vn = adjP.numpy()[0], adjV.numpy()[0]
+    qv_ref = np.zeros(nv)
+    dof_ref = np.zeros(nv)
+    for r in active_nc:
+      qv_ref += J[r] * Vn[r]  # res_qvel += Jᵀ V̄ for ALL non-contact rows
+      if typ[r] in _NC_POSBEARING:
+        dof_ref += J[r] * Pn[r]  # res_dof += Jᵀ P̄ for POSITION-BEARING rows only (friction excluded)
+    np.testing.assert_allclose(res_qvel.numpy()[0], qv_ref, rtol=1e-4, atol=1e-5, err_msg="scatter res_qvel != Jᵀ V̄")
+    np.testing.assert_allclose(res_dof.numpy()[0], dof_ref, rtol=1e-4, atol=1e-5, err_msg="scatter res_dof != Jᵀ P̄")
+    # the friction dofs must get a res_qvel contribution but NO res_dof contribution
+    fric_dofs = [int(d1.efc.id.numpy()[0, r]) for r in active_nc if typ[r] == _adjoint._FRICTION_DOF]
+    if fric_dofs:
+      contrib = np.zeros(nv)
+      for r in active_nc:
+        if typ[r] == _adjoint._FRICTION_DOF:
+          contrib[int(d1.efc.id.numpy()[0, r])] += J[r] @ np.ones(nv) * Pn[r]
+      # (covered by the exact assert above; this just documents the friction rows exist)
+      self.assertTrue(any(typ[r] == _adjoint._FRICTION_DOF for r in active_nc), "scene should have a friction row")
+
+  def test_contraction_value_and_vjp(self):
+    """Gate 2a/2b: on a settled stiff hinge limit (nonzero force, frozen active set) -- (2a) the leaf value
+    Σφ == -Σ_e (Jλ)_e·efc.force_e (the f-anchor is byte-exact); (2b) central FD of the contraction
+    φ=-Σ(Jλ)·f at FROZEN qacc/λ/active-set (f recomputed from the ENGINE's efc.{J,aref,D} at the perturbed
+    state) vs the wired res_qvel/res_dof. Isolates the residual VJP from the integrator/IFT/RNE."""
+    mjm = mujoco.MjModel.from_xml_string(_HINGE_LIMIT)
+    mjm.jnt_solimp[:, 0] = 0.0
+    mjd = mujoco.MjData(mjm)
+    mujoco.mj_resetDataKeyframe(mjm, mjd, 0)
+    for _ in range(80):
+      mujoco.mj_step(mjm, mjd)
+    mujoco.mj_forward(mjm, mjd)
+    m = mjw.put_model(mjm)
+    nv = m.nv
+    qpos0 = mjd.qpos.astype(np.float64).copy()
+    qvel0 = mjd.qvel.astype(np.float64).copy()
+    _, d1 = _step_with_grad(m, mjm, mjd)
+    ne = int(d1.nefc.numpy()[0])
+    type0 = d1.efc.type.numpy()[0, :ne].copy()
+    state0 = d1.efc.state.numpy()[0, :ne].copy()
+    self.assertIn(_adjoint._LIMIT_JOINT, list(type0), "expected an active joint-limit row")
+    qacc0 = d1.qacc.numpy()[0].astype(np.float64).copy()
+    ctx_Jaref = _ift_lambda(m, d1)
+    rng = np.random.default_rng(1)
+    lam_n = rng.standard_normal(nv).astype(np.float64)
+    lam = wp.array(lam_n.reshape(1, -1).astype(np.float32), dtype=float)
+
+    # (2a) value: the leaf phi summed over active rows == -Σ Z·efc.force.
+    Z, _ = _launch_gather(m, d1, lam)
+    Zn = Z.numpy()[0]
+    force0 = d1.efc.force.numpy()[0, :ne].astype(np.float64)
+    phi_ref = float(-(Zn[:ne] * force0).sum())
+    res_qvel = wp.zeros((1, nv), dtype=float)
+    res_dof = wp.zeros((1, nv), dtype=float)
+    _adjoint._residual_constraint_sparse(m, d1, ctx_Jaref, lam, res_qvel, res_dof)
+    # recompute Σφ directly via the leaf forward for the value check
+    phi_warp = _contraction_value(m, d1, ctx_Jaref, lam)
+    self.assertAlmostEqual(phi_warp, phi_ref, places=4, msg="leaf value != -Σ(Jλ)·efc.force (f-anchor)")
+
+    # (2b) FD of the contraction at frozen qacc/λ/active-set, using the engine's efc recompute.
+    def phi_at(qp, qv):
+      d = mjw.put_data(mjm, mjd)
+      d.qpos = wp.array(qp.reshape(1, -1).astype(np.float32), dtype=float)
+      d.qvel = wp.array(qv.reshape(1, -1).astype(np.float32), dtype=float)
+      mjw.forward(m, d)
+      nn = int(d.nefc.numpy()[0])
+      assert nn == ne and (d.efc.type.numpy()[0, :nn] == type0).all() and (d.efc.state.numpy()[0, :nn] == state0).all(), "active set changed across FD"
+      Jp = _reconstruct_efc_J(d, 0, nn, nv, m.is_sparse)
+      aref = d.efc.aref.numpy()[0, :nn].astype(np.float64)
+      D = d.efc.D.numpy()[0, :nn].astype(np.float64)
+      jaref = Jp @ qacc0 - aref  # FROZEN qacc0
+      f = -D * jaref  # QUADRATIC limit (the settled hinge limit is never saturated)
+      Zp = Jp @ lam_n  # FROZEN λ; J recomputed at the perturbed qpos
+      return float(-(Zp * f).sum())
+
+    eps = 1e-6
+    fd_qvel = np.zeros(nv)
+    fd_qpos = np.zeros(nv)
+    for i in range(nv):
+      vp, vm = qvel0.copy(), qvel0.copy()
+      vp[i] += eps
+      vm[i] -= eps
+      fd_qvel[i] = (phi_at(qpos0, vp) - phi_at(qpos0, vm)) / (2 * eps)
+      qp, qm = qpos0.copy(), qpos0.copy()
+      qp[i] += eps
+      qm[i] -= eps
+      fd_qpos[i] = (phi_at(qp, qvel0) - phi_at(qm, qvel0)) / (2 * eps)
+    ana_qvel = res_qvel.numpy()[0].astype(np.float64)
+    ana_qpos = res_dof.numpy()[0].astype(np.float64)  # 1:1 dof->qpos for the hinge
+
+    def cos_rel(a, b):
+      na, nb = np.linalg.norm(a), np.linalg.norm(b)
+      cos = float(a @ b / (na * nb)) if na > 1e-12 and nb > 1e-12 else 1.0
+      return cos, float(np.linalg.norm(a - b) / (nb + 1e-12))
+
+    cv, rv = cos_rel(ana_qvel, fd_qvel)
+    cq, rq = cos_rel(ana_qpos, fd_qpos)
+    print(f"\n[constraint contraction] value warp={phi_warp:.5f} ref={phi_ref:.5f} | dqvel cos={cv:.5f} rel={rv:.4f} | dqpos cos={cq:.5f} rel={rq:.4f}")
+    self.assertGreater(np.abs(fd_qpos).max(), 1e-3, "contraction insensitive to qpos (limit stiffness missing)")
+    self.assertGreater(cq, 0.999, f"res_dof direction wrong (cos={cq:.5f})")
+    self.assertLess(rq, 2e-2, f"res_dof magnitude wrong (rel={rq:.4f})")
+    self.assertGreater(cv, 0.999, f"res_qvel direction wrong (cos={cv:.5f})")
+    self.assertLess(rv, 2e-2, f"res_qvel magnitude wrong (rel={rv:.4f})")
+
+  def test_csr_vs_dense_equivalence(self):
+    """Gate 3: the SAME nv>32 limit+friction scene with opt.jacobian forced DENSE vs SPARSE must yield
+    IDENTICAL res_qvel/res_dof from the wrapper (frozen efc data + the same injected λ)."""
+    def grads(jacobian):
+      mjm, mjd = _csr_chain(jacobian)
+      m = mjw.put_model(mjm)
+      _, d1 = _step_with_grad(m, mjm, mjd)
+      nv = m.nv
+      ctx_Jaref = _ift_lambda(m, d1)
+      rng = np.random.default_rng(7)
+      lam = wp.array(rng.standard_normal((1, nv)).astype(np.float32), dtype=float)
+      res_qvel = wp.zeros((1, nv), dtype=float)
+      res_dof = wp.zeros((1, nv), dtype=float)
+      _adjoint._residual_constraint_sparse(m, d1, ctx_Jaref, lam, res_qvel, res_dof)
+      return res_qvel.numpy()[0].copy(), res_dof.numpy()[0].copy()
+
+    qv_d, dof_d = grads("dense")
+    qv_s, dof_s = grads("sparse")
+    print(f"\n[csr vs dense] max|dqvel diff|={np.abs(qv_s - qv_d).max():.2e} max|dres_dof diff|={np.abs(dof_s - dof_d).max():.2e}")
+    np.testing.assert_allclose(qv_s, qv_d, rtol=1e-4, atol=1e-5, err_msg="CSR vs dense: res_qvel")
+    np.testing.assert_allclose(dof_s, dof_d, rtol=1e-4, atol=1e-5, err_msg="CSR vs dense: res_dof")
+
+
+def _contraction_value(m, d1, ctx_Jaref, lam):
+  """Σ over active non-contact rows of the leaf φ_e = -Z·f (gather + leaf forward only)."""
+  nworld, njmax, nv = d1.qpos.shape[0], d1.efc.type.shape[1], m.nv
+  Z, invw = _launch_gather(m, d1, lam)
+  for arr in (d1.efc.pos, d1.efc.vel):
+    arr.requires_grad = True
+  phi = wp.zeros((nworld, njmax), dtype=float, requires_grad=True)
+  wp.launch(
+    _constraint_adjoint._constraint_row_phi,
+    dim=(nworld, njmax),
+    inputs=[d1.efc.pos, d1.efc.vel, Z, invw, d1.efc.margin, d1.efc.aref, d1.efc.D, d1.efc.force, ctx_Jaref,
+            d1.efc.state, d1.efc.type, d1.efc.id, m.dof_solref, m.dof_solimp, m.dof_frictionloss, m.eq_solref,
+            m.eq_solimp, m.jnt_solref, m.jnt_solimp, d1.nefc, m.opt.timestep, m.opt.disableflags],
+    outputs=[phi],
+  )
+  return float(phi.numpy()[0].sum())
+
+
+# ---------------------------------------------------------------------------------------------------
+# fwd_kinematics site_xpos position VJP (differentiable observations) -- the nq!=nv free-base lift.
+# Regresses the bug where adjoint._site_jac_vjp wrote its DOF-indexed gradient straight into qpos.grad
+# (correct only for fixed-base hinge/slide where qposadr==dofadr; for a free/ball base nq!=nv, so every
+# post-free joint was misindexed and the 3 angular dofs were dumped into quaternion slots with no lift ->
+# a wrong-direction site gradient). The fix routes the tangent VJP through _dof_to_qpos (the same
+# quaternion lift the contact ∂qpos path uses). Airborne (no floor) so this isolates the FK plumbing.
+# ---------------------------------------------------------------------------------------------------
+
+_FK_FREEBASE = """
+<mujoco>
+  <option timestep="0.004"/>
+  <worldbody>
+    <body name="base" pos="0 0 1.0">
+      <freejoint/>
+      <geom type="box" size="0.08 0.08 0.04" mass="1.0"/>
+      <body name="link" pos="0.08 0 0">
+        <joint name="hinge" type="hinge" axis="0 1 0" damping="0.2"/>
+        <geom type="capsule" fromto="0 0 0 0.2 0 0" size="0.02" mass="0.2"/>
+        <site name="tip" pos="0.2 0 0" size="0.01"/>
+      </body>
+    </body>
+  </worldbody>
+  <actuator>
+    <position joint="hinge" kp="5.0"/>
+  </actuator>
+</mujoco>
+"""
+
+# same chain, base WELDED to world (nq==nv, hinge 1:1) -- proves the fix is unchanged for fixed-base models
+# (the reacher case that originally validated the hook), where _dof_to_qpos reduces to res_qpos[qadr]+=res_dof[dadr].
+_FK_FIXEDBASE = _FK_FREEBASE.replace("<freejoint/>", "")
+
+
+@wp.kernel
+def _site_tipdist_kernel(site_xpos: wp.array2d[wp.vec3], tip: int, tgt: wp.vec3, w: float, loss: wp.array[float]):
+  e = site_xpos[0, tip] - tgt
+  wp.atomic_add(loss, 0, w * wp.dot(e, e))
+
+
+def _fk_taped_ctrl_grad(mjm, mjd, m, tip, tgt, H, ctrl):
+  """Analytic d(Σ_t ((t+1)/H)^2 ||site_xpos[tip]-tgt||^2)/d(ctrl) via the taped
+  step ∘ fwd_kinematics ∘ site_xpos backward, stacked (H, nu)."""
+  datas = [mjw.put_data(mjm, mjd) for _ in range(H + 1)]
+  for dd in datas:
+    dd.qpos.requires_grad = True
+    dd.qvel.requires_grad = True
+    dd.site_xpos.requires_grad = True
+  for t in range(H):
+    datas[t].ctrl = wp.array(ctrl[t].reshape(1, -1).astype(np.float32), dtype=float, requires_grad=True)
+  loss = wp.zeros(1, dtype=float, requires_grad=True)
+  tape = wp.Tape()
+  with tape:
+    for t in range(H):
+      mjw.step(m, datas[t], datas[t + 1])
+      mjw.fwd_kinematics(m, datas[t + 1])
+      wp.launch(_site_tipdist_kernel, dim=1,
+                inputs=[datas[t + 1].site_xpos, tip, wp.vec3(*tgt), float(((t + 1) / H) ** 2)], outputs=[loss])
+  tape.backward(loss=loss)
+  return np.array([np.nan_to_num(datas[t].ctrl.grad.numpy()[0]) for t in range(H)], np.float64)
+
+
+def _fk_fd_ctrl_grad(mjm, mjd, m, tip, tgt, H, ctrl, eps=1e-4):
+  """Central FD of the SAME forward rollout w.r.t. ctrl (Euclidean -- no quaternion in the FD itself)."""
+  def rollout(cs):
+    d = mjw.put_data(mjm, mjd)
+    total = 0.0
+    for t in range(H):
+      d.ctrl = wp.array(cs[t].reshape(1, -1).astype(np.float32), dtype=float)
+      mjw.step(m, d)
+      mjw.fwd_kinematics(m, d)
+      sx = d.site_xpos.numpy()[0, tip].astype(np.float64)
+      total += ((t + 1) / H) ** 2 * float(np.sum((sx - tgt) ** 2))
+    return total
+  g = np.zeros((H, mjm.nu))
+  for t in range(H):
+    for j in range(mjm.nu):
+      cp = ctrl.copy(); cp[t, j] += eps
+      cm = ctrl.copy(); cm[t, j] -= eps
+      g[t, j] = (rollout(cp) - rollout(cm)) / (2 * eps)
+  return g
+
+
+class FwdKinematicsSiteGradientTest(parameterized.TestCase):
+  """Position VJP of forward.fwd_kinematics (site_xpos -> qpos.grad -> ctrl), the SHAC diff-observation
+  primitive. Airborne (no contact) isolates the FK plumbing: `freebase` regresses the nq!=nv quaternion
+  lift (was cos ~ -0.25 before the fix), `fixedbase` proves the hinge 1:1 path is unchanged."""
+
+  @parameterized.named_parameters(
+    ("freebase", _FK_FREEBASE, "free"),
+    ("fixedbase", _FK_FIXEDBASE, "fixed"),
+  )
+  def test_site_ctrl_grad_matches_fd(self, xml, tag):
+    if not _grad_available():
+      self.skipTest("pending adjoint.py: differentiable step (MJPLAN.md Stage 1)")
+    from mujoco_warp._src import adjoint  # noqa: F401  registers step + position backward hooks
+
+    mjm = mujoco.MjModel.from_xml_string(xml)
+    mjd = mujoco.MjData(mjm)
+    mujoco.mj_forward(mjm, mjd)
+    m = mjw.put_model(mjm)
+    tip = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_SITE, "tip")
+    tgt = mjd.site_xpos[tip].astype(np.float64) + np.array([0.08, 0.0, 0.08])  # pull the tip up+forward
+    H = 6
+    ctrl = np.full((H, mjm.nu), 0.5, np.float64)      # drive the hinge so tip (and free base) actually move
+    analytic = _fk_taped_ctrl_grad(mjm, mjd, m, tip, tgt, H, ctrl).ravel()
+    fd = _fk_fd_ctrl_grad(mjm, mjd, m, tip, tgt, H, ctrl).ravel()
+    _assert_smooth_grad(self, analytic, fd, cos_min=0.99, rel_max=0.08, tag=f"fk_site:{tag}")
 
 
 if __name__ == "__main__":

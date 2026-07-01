@@ -52,7 +52,23 @@ from mujoco_warp._src.types import JointType
 
 _EULER = int(mujoco.mjtIntegrator.mjINT_EULER)
 _ELLIPTIC = int(mujoco.mjtCone.mjCONE_ELLIPTIC)
-_FIXTURES = _cdt.CollisionTest._FIXTURES  # reuse the forward-narrowphase scenes
+# plane_cylinder_flat: a FLAT disk (radius >> half-height) resting axis-vertical (axis || plane normal) on
+# a flat plane -> the plane_cylinder narrowphase's DEGENERATE len_sqr=0 branch (vec = axis*prjaxis - n = 0).
+# The driver's plane_cylinder_1/2/3 (tall cyl, tilted planes) all roll/tip and DODGE len_sqr=0, so this is
+# the regression guarding the adjoint.py wp.sqrt(0) safe-grad fix: pre-fix the cylinder<->plane ∂qpos VJP is
+# all-NaN here (reverse-mode 0*inf from sqrt(0) in the not-taken wp.where arm); post-fix it FD-matches.
+_FLAT_CYL = """
+    <mujoco>
+      <worldbody>
+        <geom size="40 40 40" type="plane"/>
+        <body pos="0 0 0.014">
+          <freejoint/>
+          <geom size="0.05 0.015" type="cylinder"/>
+        </body>
+      </worldbody>
+    </mujoco>
+    """
+_FIXTURES = {**_cdt.CollisionTest._FIXTURES, "plane_cylinder_flat": _FLAT_CYL}  # + the flat-disk regression scene
 
 _PLANE = GeomType.PLANE
 _SPHERE = GeomType.SPHERE
@@ -73,6 +89,7 @@ _PAIR = {
   "plane_cylinder_1": (_PLANE, _CYLINDER),
   "plane_cylinder_2": (_PLANE, _CYLINDER),
   "plane_cylinder_3": (_PLANE, _CYLINDER),
+  "plane_cylinder_flat": (_PLANE, _CYLINDER),  # flat disk, axis||normal, len_sqr=0 -> guards the wp.sqrt fix
   "sphere_sphere": (_SPHERE, _SPHERE),
   "sphere_capsule": (_SPHERE, _CAPSULE),
   "sphere_cylinder_cap": (_SPHERE, _CYLINDER),
@@ -96,6 +113,10 @@ _MULTISTEP = {
   "plane_cylinder_1": (8, 30),  # rolls -> gates the quaternion lift
   "plane_cylinder_2": (8, 30),
   "plane_cylinder_3": (8, 30),  # rolls -> gates the quaternion lift
+  # NOTE: plane_cylinder_flat is a SURGICAL-only gate (in _PAIR, not here). Its ∂qpos VJP is FD-exact
+  # (guards the wp.sqrt fix), but a flat disk's END-TO-END ‖qvel_T‖²-loss BPTT decelerating to rest hits
+  # the genuine friction stick/slip NON-SMOOTHNESS (cos~0.87, unrelated to the sqrt fix) -- the tall
+  # plane_cylinder_1/2/3 roll (smoother) and pass here; a sliding-to-stop disk doesn't.
   "sphere_box_shallow": (8, 30),
 }
 
@@ -190,7 +211,7 @@ def _unlift_quat(q, dq):
   return 0.5 * _qmul(conj, dq)[1:]
 
 
-def _analytic_geom_vjp(mjm, m, d, cid, w, e0, seed_kind, u, qpos0):
+def _analytic_geom_vjp(mjm, m, d, cid, w, e0, seed_kind, u, qpos0, qpos_in=None):
   """∂(contact geometry)/∂qpos via contact_qpos_vjp seeded on ONE contact's geometry intermediate.
 
   seed_kind 'dist': seed res_efc_pos[w,e0]=1 (∂efc_pos/∂dist=1) -> res_qpos = ∂dist/∂qpos.
@@ -214,7 +235,8 @@ def _analytic_geom_vjp(mjm, m, d, cid, w, e0, seed_kind, u, qpos0):
     a[cid] = u
     res_contact_pos = wp.array(a, dtype=wp.vec3)
   collision_adjoint.contact_qpos_vjp(
-    m, d, res_contact_pos, res_contact_frame, res_efc_pos, res_subtree_com, res_cdof, res_qpos
+    m, d, d.qpos if qpos_in is None else qpos_in,
+    res_contact_pos, res_contact_frame, res_efc_pos, res_subtree_com, res_cdof, res_qpos
   )
   rq = res_qpos.numpy()[w]
   g = np.zeros(nv)
@@ -338,6 +360,47 @@ class ContactQposVJPTest(parameterized.TestCase):
         continue  # this geometry quantity is qpos-insensitive at this config (e.g. pos·n flat) -> nothing to gate
       self.assertGreater(cos, 0.99, f"{name}/{seed_kind}: ∂qpos DIRECTION off, cos={cos:.4f}")
       self.assertLess(rel, 0.1, f"{name}/{seed_kind}: ∂qpos MAGNITUDE off, rel={rel:.4f}")
+
+  def test_step_contact_lift_uses_input_quaternion(self):
+    """A step's contact tangent VJP must be lifted with q_t, not integrated q_{t+1}.
+
+    The ordinary surgical tests call ``forward``, where the stored qpos and contact intermediates share the
+    same configuration.  This regression calls ``step`` with a large angular velocity so d1.qpos is far from
+    the configuration that produced d1's contact geometry, then isolates the free joint's rotational gradient.
+    """
+    name = "plane_capsule"
+    type0, type1 = _PAIR[name]
+    mjm, mjd = _load(_FIXTURES[name])
+    m = mjw.put_model(mjm)
+    qpos0 = mjd.qpos.astype(np.float64).copy()
+    qvel0 = mjd.qvel.astype(np.float64).copy()
+    qvel0[3:6] = [100.0, -150.0, 200.0]
+
+    d0, d1 = mjw.put_data(mjm, mjd), mjw.put_data(mjm, mjd)
+    d0.qpos = wp.array(qpos0.reshape(1, -1).astype(np.float32), dtype=float)
+    d0.qvel = wp.array(qvel0.reshape(1, -1).astype(np.float32), dtype=float)
+    mjw.step(m, d0, d1)
+    self.assertGreater(np.linalg.norm(d1.qpos.numpy()[0, 3:7] - qpos0[3:7]), 0.2)
+
+    cid = _find_contact(d1, type0, type1, mjm.geom_type)
+    self.assertGreaterEqual(cid, 0, "plane-capsule contact disappeared")
+    w = int(d1.contact.worldid.numpy()[cid])
+    e0 = int(d1.contact.efc_address.numpy()[cid, 0])
+    slot = int(d1.contact.geomcollisionid.numpy()[cid])
+    analytic = _analytic_geom_vjp(
+      mjm, m, d1, cid, w, e0, "dist", None, qpos0, qpos_in=d0.qpos
+    )[3:6]
+    finite_diff = _fd_geom_vjp(
+      mjm, mjd, m, type0, type1, mjm.geom_type, slot, "dist", None, 1.0e-4
+    )[3:6]
+    self.assertTrue(np.isfinite(finite_diff).all(), "contact-mode change made the rotational FD undefined")
+    na, nf = np.linalg.norm(analytic), np.linalg.norm(finite_diff)
+    cos = float(analytic @ finite_diff / (na * nf))
+    rel = float(np.linalg.norm(analytic - finite_diff) / nf)
+    print(f"\n[input-q lift] rotational dist gradient cos={cos:+.7f} rel={rel:.3e}")
+    self.assertGreater(nf, 1.0e-3, "rotation barely affects contact distance; weak quaternion-lift gate")
+    self.assertGreater(cos, 0.999, f"input-quaternion lift direction off, cos={cos:.6f}")
+    self.assertLess(rel, 1.0e-2, f"input-quaternion lift magnitude off, rel={rel:.3e}")
 
   @parameterized.parameters(*_MULTISTEP.keys())
   def test_step_qvel_grad(self, name):
@@ -483,7 +546,7 @@ class ArticContactJacQposVJPTest(parameterized.TestCase):
     # wired VJP with narrowphase seeds zeroed -> res_qpos = ∂L/∂q (cdof + subtree_com only)
     res_qpos = wp.zeros((1, mjm.nq), dtype=float)
     collision_adjoint.contact_qpos_vjp(
-      m, d, wp.zeros_like(d.contact.pos), wp.zeros_like(d.contact.frame), wp.zeros_like(d.efc.pos),
+      m, d, d.qpos, wp.zeros_like(d.contact.pos), wp.zeros_like(d.contact.frame), wp.zeros_like(d.efc.pos),
       res_subtree_com, res_cdof, res_qpos)
     rq = res_qpos.numpy()[0]
     ana = np.zeros(nv)  # lift res_qpos -> per-dof tangent (un-lift free/ball quaternion blocks)
