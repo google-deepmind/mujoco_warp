@@ -1246,7 +1246,7 @@ def factor_m(m: Model, d: Data):
   Small blocks select diagonal or scalar Cholesky at runtime, larger dense blocks use tile
   Cholesky, and oversized blocks use sparse LDL.
   """
-  if m.qLD_has_small or m.qLD_has_dense:
+  if m.M_tiles:
     _factor_blocks(m, d, d.M, d.qLD, d.qLDiagInv)
   if m.qLD_has_sparse:
     _factor_i_sparse(m, d, d.M, d.qLD[:, m.qLD_block_total :], d.qLDiagInv)
@@ -3102,7 +3102,7 @@ def solve_LD(
     x: Output array for the solution.
     y: Input right-hand side array.
   """
-  if m.qLD_has_small or m.qLD_has_dense:
+  if m.M_tiles:
     _solve_blocks(m, d, L, D, x, y)
   if m.qLD_has_sparse:
     _solve_LD_sparse(m, d, L[:, m.qLD_block_total :], D, x, y)
@@ -3276,7 +3276,7 @@ def factor_solve_i(m, d, M, L, D, x, y):
     x: Output array for the solution.
     y: Input right-hand side array.
   """
-  if m.qLD_has_small or m.qLD_has_dense:
+  if m.M_tiles:
     _factor_solve_blocks(m, d, M, L, D, x, y)
   if m.qLD_has_sparse:
     L_ldl = L[:, m.qLD_block_total :]

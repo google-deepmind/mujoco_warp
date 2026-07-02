@@ -1332,9 +1332,7 @@ class Model:
     nmaxpolygon: maximum number of verts per polygon
     nmaxmeshdeg: maximum number of polygons per vert
     is_sparse: constraint Jacobian/Hessian layout (sparse vs dense). Does not affect M, whose
-      factorization is a per-block decision -- see qLD_* and m_block_layout
-    qLD_has_small: any M block uses the scalar small-block path
-    qLD_has_dense: any M block factors with tile Cholesky
+      factorization is a per-block decision -- see M_tiles, qLD_has_sparse, and m_block_layout
     qLD_has_sparse: any M block factors via sparse LDL (oversized block / tendon armature)
     qLD_block_total: packed length of the dense region per world (also the offset of the LDL region)
     qLD_block_adr: packed offset of each dof's diagonal block; 0 if sparse  (nv,)
@@ -1811,8 +1809,6 @@ class Model:
   nmaxpolygon: int
   nmaxmeshdeg: int
   is_sparse: bool
-  qLD_has_small: bool
-  qLD_has_dense: bool
   qLD_has_sparse: bool
   qLD_block_total: int
   qLD_block_adr: wp.array[int]

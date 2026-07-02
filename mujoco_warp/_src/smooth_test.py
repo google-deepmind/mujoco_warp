@@ -207,7 +207,7 @@ class SmoothTest(parameterized.TestCase):
     # qLD layout is per-block, independent of is_sparse (which selects only the constraint
     # Jacobian/Hessian layout). A packed dense region is not MuJoCo's LDL, so verify via solve;
     # a pure sparse model can compare the LDL factor directly.
-    if m.qLD_has_small or m.qLD_has_dense:
+    if m.M_tiles:
       # packed block Cholesky: factor layout differs from LDL, so verify it solves correctly
       ref = np.zeros((1, mjm.nv))
       mujoco.mj_solveM(mjm, mjd, ref, np.tile(mjd.qfrc_smooth, (1, 1)))
@@ -485,10 +485,10 @@ class SmoothTest(parameterized.TestCase):
     # The M \ 1 check above verifies the solve regardless of layout. The raw factor matches MuJoCo's
     # only in specific cases: a pure sparse-LDL model stores the L'DL factor in qLD, while a
     # compact diagonal model stores nothing in qLD and just 1/diag in qLDiagInv.
-    if m.qLD_has_sparse and not m.qLD_has_small and not m.qLD_has_dense:
+    if m.qLD_has_sparse and not m.M_tiles:
       _assert_eq(d.qLD.numpy()[0].reshape(-1), mjd.qLD, "qLD")
       _assert_eq(d.qLDiagInv.numpy()[0], mjd.qLDiagInv, "qLDiagInv")
-    elif m.qLD_has_small and not m.qLD_has_dense and not m.qLD_has_sparse and d.qLD.shape[1] == 0:
+    elif m.M_tiles and not m.qLD_has_sparse and d.qLD.shape[1] == 0:
       _assert_eq(d.qLDiagInv.numpy()[0], mjd.qLDiagInv, "qLDiagInv")
 
   def test_factor_solve_i_coupled_small_block(self):
@@ -586,7 +586,7 @@ class SmoothTest(parameterized.TestCase):
 
     mjm, mjd, m, d = test_data.fixture(xml=xml)
     # genuinely mixed: both factor paths active in one model
-    self.assertTrue(m.qLD_has_small)
+    self.assertTrue(any(tile.elemid is None for tile in m.M_tiles))
     self.assertTrue(m.qLD_has_sparse)
 
     # M^{-1} @ qfrc_smooth parity against MuJoCo exercises both the packed and the LDL solve.
