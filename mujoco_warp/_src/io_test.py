@@ -388,18 +388,6 @@ def _assert_eq(a, b, name):
   np.testing.assert_allclose(a, b, err_msg=err_msg, atol=tol, rtol=tol)
 
 
-def _dense_m(m, d):
-  """Returns each world's CSR inertia matrix in dense form."""
-  values = d.M.numpy()
-  dense = np.zeros((d.nworld, m.nv, m.nv))
-  rownnz = m.M_rownnz.numpy()
-  rowadr = m.M_rowadr.numpy()
-  colind = m.M_colind.numpy()
-  for worldid in range(d.nworld):
-    mujoco.mju_sym2dense(dense[worldid], values[worldid], rownnz, rowadr, colind)
-  return dense
-
-
 # NOTE: modify io_jax_test _IO_TEST_MODELS if changed here.
 _IO_TEST_MODELS = (
   "pendula.xml",
@@ -1300,27 +1288,25 @@ class IOTest(parameterized.TestCase):
     _assert_eq(m.dof_invweight0.numpy()[0], mjm.dof_invweight0, "dof_invweight0")
     _assert_eq(m.body_invweight0.numpy()[0, 1], mjm.body_invweight0[1], "body_invweight0")
 
-  def test_set_const_freejoint_per_world_com(self):
-    """An initially simple free body supports a coupled per-world inertia."""
-    xml = """
+  def test_set_const_full_freejoint_per_world_com(self):
+    """A full free-joint block selects diagonal or coupled factors per world."""
+    mjm = mujoco.MjModel.from_xml_string("""
     <mujoco>
       <worldbody>
         <body name="floating" pos="0 0 1">
           <freejoint/>
-          <inertial pos="0 0 0" mass="1" diaginertia="0.1 0.1 0.1"/>
+          <inertial pos="0 0 0" quat="0 1 0 0" mass="1" diaginertia="0.1 0.2 0.3"/>
         </body>
       </worldbody>
     </mujoco>
-    """
-    mjm = mujoco.MjModel.from_xml_string(xml)
+    """)
     mjd = mujoco.MjData(mjm)
     m = mjwarp.put_model(mjm)
     d = mjwarp.put_data(mjm, mjd, nworld=2)
 
-    self.assertEqual(m.nC, mjm.nM)
-    self.assertLen(m.M_scalar_tiles, 1)
-    self.assertEqual(m.M_scalar_tiles[0].size, 6)
-    self.assertEqual(m.M_scalar_tiles[0].adr.size, 1)
+    self.assertEqual(mjm.nC, 21)
+    self.assertLen(m.M_small_blocks, 1)
+    np.testing.assert_array_equal(m.M_small_blocks[0].nnz.numpy(), [21])
 
     body_ipos = np.tile(mjm.body_ipos, (2, 1, 1))
     body_ipos[1, 1] = (0.05, 0.0, -0.02)
@@ -1330,110 +1316,22 @@ class IOTest(parameterized.TestCase):
 
     mjwarp.set_const_0(m, d)
 
-    dense = _dense_m(m, d)
-    mode = d.qLDiagInv.numpy()[:, 0]
-    self.assertGreater(mode[0], 0.0)
-    self.assertEqual(mode[1], 0.0)
-
-    ref_m = mujoco.MjModel.from_xml_string(xml.replace('pos="0 0 0"', 'pos="0.05 0 -0.02"'))
-    ref_d = mujoco.MjData(ref_m)
-    mujoco.mj_forward(ref_m, ref_d)
-    ref_M = np.zeros((ref_m.nv, ref_m.nv))
-    mujoco.mju_sym2dense(ref_M, ref_d.M, ref_m.M_rownnz, ref_m.M_rowadr, ref_m.M_colind)
-
+    dense = np.zeros((2, m.nv, m.nv))
+    for worldid in range(2):
+      mujoco.mju_sym2dense(dense[worldid], d.M.numpy()[worldid], mjm.M_rownnz, mjm.M_rowadr, mjm.M_colind)
     np.testing.assert_allclose(dense[0], np.diag(np.diag(dense[0])), atol=1e-6)
-    np.testing.assert_allclose(dense[1], ref_M, atol=1e-6)
-
-    native_d = mujoco.MjData(mjm)
-    with self.assertWarnsRegex(RuntimeWarning, "projected to the native compact layout"):
-      mjwarp.get_data_into(native_d, mjm, d, world_id=1)
-    np.testing.assert_allclose(native_d.M, np.diag(dense[1]), atol=1e-6)
+    self.assertGreater(np.max(np.abs(dense[1] - np.diag(np.diag(dense[1])))), 1e-6)
+    self.assertGreater(d.qLDiagInv.numpy()[0, 0], 0.0)
+    self.assertEqual(d.qLDiagInv.numpy()[1, 0], 0.0)
 
     rhs = wp.ones((2, m.nv), dtype=float)
     result = wp.zeros_like(rhs)
     mjwarp.solve_m(m, d, result, rhs)
-    np.testing.assert_allclose(result.numpy()[0], np.linalg.solve(dense[0], np.ones(m.nv)), atol=1e-5)
-    np.testing.assert_allclose(result.numpy()[1], np.linalg.solve(dense[1], np.ones(m.nv)), atol=1e-5)
-
-    body_ipos[1, 1] = (0.0, 0.0, 0.0)
-    m.body_ipos = wp.array(body_ipos, dtype=wp.vec3)
-    mjwarp.set_const_0(m, d)
-
-    dense = _dense_m(m, d)
-    np.testing.assert_array_equal(dense, dense * np.eye(m.nv))
-    self.assertTrue(np.all(d.qLDiagInv.numpy()[:, 0] > 0.0))
-    mjwarp.solve_m(m, d, result, rhs)
-    for worldid in range(2):
-      np.testing.assert_allclose(result.numpy()[worldid], np.linalg.solve(dense[worldid], np.ones(m.nv)), atol=1e-5)
-
-    body_ipos[:, 1] = (0.05, 0.0, -0.02)
-    m.body_ipos = wp.array(body_ipos, dtype=wp.vec3)
-    mjwarp.set_const_0(m, d)
-
-    dense = _dense_m(m, d)
-    np.testing.assert_array_equal(d.qLDiagInv.numpy()[:, 0], 0.0)
-    mjwarp.solve_m(m, d, result, rhs)
-    result_np = result.numpy()
-    for worldid in range(2):
-      np.testing.assert_allclose(result_np[worldid], np.linalg.solve(dense[worldid], np.ones(m.nv)), atol=1e-5)
-
-  def test_scalar_candidate_factor_solve(self):
-    """Scalar candidate blocks handle different per-world coupling patterns."""
-    bodies = "".join(
-      f"""
-      <body name="body{i}" pos="{i} 0 1">
-        <freejoint/>
-        <inertial pos="0 0 0" mass="1" diaginertia="0.1 0.2 0.3"/>
-      </body>
-      """
-      for i in range(10)
-    )
-    mjm = mujoco.MjModel.from_xml_string(f"<mujoco><worldbody>{bodies}</worldbody></mujoco>")
-    mjd = mujoco.MjData(mjm)
-    m = mjwarp.put_model(mjm)
-    d = mjwarp.put_data(mjm, mjd, nworld=2)
-
-    self.assertLen(m.M_scalar_tiles, 1)
-    self.assertEqual(m.M_scalar_tiles[0].size, 6)
-    self.assertEqual(m.M_scalar_tiles[0].adr.size, 10)
-
-    body_ipos = np.tile(mjm.body_ipos, (2, 1, 1))
-    body_ipos[0, 1] = (0.05, 0.0, -0.02)
-    body_ipos[1, 3] = (-0.02, 0.04, 0.0)
-    body_ipos[1, 8] = (0.0, -0.03, 0.06)
-    m.body_ipos = wp.array(body_ipos, dtype=wp.vec3)
-    m.body_invweight0 = wp.array(np.tile(mjm.body_invweight0, (2, 1, 1)), dtype=wp.vec2)
-    m.dof_invweight0 = wp.array(np.tile(mjm.dof_invweight0, (2, 1)), dtype=float)
-    mjwarp.set_const_0(m, d)
-
-    dense = _dense_m(m, d)
-    coupled = ({0}, {2, 7})
-    mode = d.qLDiagInv.numpy()[:, ::6]
-    for worldid in range(2):
-      for bodyid in range(10):
-        block = dense[worldid, bodyid * 6 : (bodyid + 1) * 6, bodyid * 6 : (bodyid + 1) * 6]
-        off_diagonal = block - np.diag(np.diag(block))
-        if bodyid in coupled[worldid]:
-          self.assertGreater(np.max(np.abs(off_diagonal)), 1e-6)
-          self.assertEqual(mode[worldid, bodyid], 0.0)
-        else:
-          np.testing.assert_allclose(off_diagonal, 0.0, atol=1e-6)
-          self.assertGreater(mode[worldid, bodyid], 0.0)
-
-    rhs = wp.ones((2, m.nv), dtype=float)
     expected = np.stack([np.linalg.solve(dense[worldid], np.ones(m.nv)) for worldid in range(2)])
-    result = wp.zeros_like(rhs)
-    mjwarp.solve_m(m, d, result, rhs)
-    np.testing.assert_allclose(result.numpy(), expected, atol=1e-5)
-
-    result.zero_()
-    qLD = wp.empty_like(d.qLD)
-    qLDiagInv = wp.empty_like(d.qLDiagInv)
-    mjwarp._src.smooth.factor_solve_i(m, d, d.M, qLD, qLDiagInv, result, rhs)
     np.testing.assert_allclose(result.numpy(), expected, atol=1e-5)
 
   def test_set_const_balljoint(self):
-    """A runtime ball-joint inertia rotation produces and solves a coupled 3x3 block."""
+    """Test set_const with ball joint (3 DOFs with averaging)."""
     mjm, mjd, m, d = test_data.fixture(
       xml="""
     <mujoco>
@@ -1453,41 +1351,10 @@ class IOTest(parameterized.TestCase):
     body_inertia_np[0, 1] = new_inertia
     wp.copy(m.body_inertia, wp.array(body_inertia_np, dtype=m.body_inertia.dtype))
 
-    new_iquat = np.array([0.9238795, 0.2209424, 0.2209424, 0.2209424])
-    mjm.body_iquat[1] = new_iquat
-    body_iquat_np = m.body_iquat.numpy()
-    body_iquat_np[0, 1] = new_iquat
-    wp.copy(m.body_iquat, wp.array(body_iquat_np, dtype=m.body_iquat.dtype))
-
     mujoco.mj_setConst(mjm, mjd)
-    mujoco.mj_forward(mjm, mjd)
     mjwarp.set_const(m, d)
 
     _assert_eq(m.dof_invweight0.numpy()[0], mjm.dof_invweight0, "dof_invweight0")
-    dense = _dense_m(m, d)[0]
-    ref_m = mujoco.MjModel.from_xml_string(
-      f"""
-      <mujoco>
-        <worldbody>
-          <body>
-            <joint type="ball"/>
-            <inertial pos="0 0 0" mass="2" diaginertia="0.1 0.2 0.3" quat="{" ".join(map(str, new_iquat))}"/>
-          </body>
-        </worldbody>
-      </mujoco>
-      """
-    )
-    ref_d = mujoco.MjData(ref_m)
-    mujoco.mj_forward(ref_m, ref_d)
-    reference = np.zeros_like(dense)
-    mujoco.mju_sym2dense(reference, ref_d.M, ref_m.M_rownnz, ref_m.M_rowadr, ref_m.M_colind)
-    self.assertGreater(np.max(np.abs(dense - np.diag(np.diag(dense)))), 1e-4)
-    np.testing.assert_allclose(dense, reference, atol=1e-6)
-
-    rhs = wp.ones((1, m.nv), dtype=float)
-    result = wp.zeros_like(rhs)
-    mjwarp.solve_m(m, d, result, rhs)
-    np.testing.assert_allclose(result.numpy()[0], np.linalg.solve(reference, np.ones(m.nv)), atol=1e-5)
 
   def test_set_const_static_body(self):
     """Test set_const with static body (welded to world)."""

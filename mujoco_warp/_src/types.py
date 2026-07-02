@@ -38,6 +38,9 @@ TILE_SIZE_JTDAJ_DENSE = 16
 # max M block size where dense tile-Cholesky beats sparse LDL (wins to ~64, degrades past ~80)
 M_BLOCK_DENSE_MAX = 64
 
+# max M block size where scalar Cholesky beats dense tile-Cholesky
+M_BLOCK_SCALAR_MAX = 6
+
 # maximum number of plugin attributes
 _NPLUGINATTR = 128
 
@@ -913,7 +916,7 @@ class TileSet:
   Attributes:
     adr: address of each tile in the set
     size: size of all the tiles in this set
-    elemid: flat per-block gather indices into CSR M (absent -> nC sentinel)
+    elemid: flat per-block gather indices into CSR M for tile_load_indexed (absent -> nC sentinel)
   """
 
   adr: wp.array[int]
@@ -928,6 +931,23 @@ class TileSet:
   def __hash__(self) -> int:
     adr = np.asarray(self.adr.numpy())
     return hash((self.size, adr.dtype.str, adr.shape, adr.tobytes()))
+
+
+@dataclasses.dataclass
+class SmallBlockSet:
+  """Native CSR metadata for inertia blocks sharing a size.
+
+  Attributes:
+    adr: first DOF of each block
+    madr: first M address of each block
+    nnz: number of stored M entries in each block
+    size: number of DOFs in each block
+  """
+
+  adr: wp.array[int]
+  madr: wp.array[int]
+  nnz: wp.array[int]
+  size: int
 
 
 @dataclasses.dataclass
@@ -1316,14 +1336,12 @@ class Model:
     nmaxmeshdeg: maximum number of polygons per vert
     is_sparse: constraint Jacobian/Hessian layout (sparse vs dense). Does not affect M, whose
       factorization is a per-block decision -- see qLD_* and m_block_layout
-    qLD_has_dense: any M block factors as a packed dense block
-    qLD_has_simple: any M block is simple (diagonal -> 1/diag, no factorization)
+    qLD_has_small: any M block uses the scalar small-block path
+    qLD_has_dense: any M block factors with tile Cholesky
     qLD_has_sparse: any M block factors via sparse LDL (oversized block / tendon armature)
     qLD_block_total: packed length of the dense region per world (also the offset of the LDL region)
     qLD_block_adr: packed offset of each dof's diagonal block; 0 if sparse  (nv,)
-    qLD_dof_dense: per-dof flag, 1 if the dof's block is dense (packed)     (nv,)
-    qLD_dof_simple: per-dof flag, 1 if the dof's block is simple (diagonal) (nv,)
-    qLD_simple_dofs: indices of the simple (diagonal) dofs                  (nsimple,)
+    qLD_dof_dense: per-dof flag, 1 if the dof uses a block path            (nv,)
     has_fluid: True if wind, density, or viscosity are non-zero at put_model time
     has_sdf_geom: whether the model contains SDF geoms
     has_flex_selfcollide: whether any flex has self-collision enabled
@@ -1396,8 +1414,8 @@ class Model:
     sensor_rangefinder_bodyid: bodyid for rangefinder        (nrangefinder,)
     taxel_vertadr: tactile sensor vertex address             (nsensortaxel,)
     taxel_sensorid: address for tactile sensors
-    M_tiles: tiling configuration for blocks that always use tile Cholesky
-    M_scalar_tiles: block metadata for small, potentially coupled simple bodies, grouped by size
+    M_small_blocks: native CSR metadata for scalar blocks, grouped by size
+    M_tiles: tiling configuration for dense blocks
     qLD_updates: tuple of index triples for sparse factorization
     qLD_all_updates: tuple of all levels concatenated
     qLD_level_offsets: tuple of start offsets for each level
@@ -1778,14 +1796,12 @@ class Model:
   nmaxpolygon: int
   nmaxmeshdeg: int
   is_sparse: bool
+  qLD_has_small: bool
   qLD_has_dense: bool
-  qLD_has_simple: bool
   qLD_has_sparse: bool
   qLD_block_total: int
   qLD_block_adr: wp.array[int]
   qLD_dof_dense: wp.array[int]
-  qLD_dof_simple: wp.array[int]
-  qLD_simple_dofs: wp.array[int]
   has_fluid: bool
   has_sdf_geom: bool
   has_flex_selfcollide: bool
@@ -1849,8 +1865,8 @@ class Model:
   sensor_rangefinder_bodyid: array("nrangefinder", int)
   taxel_vertadr: array("nsensortaxel", int)
   taxel_sensorid: wp.array[int]
+  M_small_blocks: tuple[SmallBlockSet, ...]
   M_tiles: tuple[TileSet, ...]
-  M_scalar_tiles: tuple[TileSet, ...]
   qLD_updates: tuple[wp.array[wp.vec3i], ...]
   qLD_all_updates: wp.array[wp.vec3i]
   qLD_level_offsets: wp.array[int]
@@ -2056,11 +2072,10 @@ class Data:
     moment_colind: column indices in sparse actuator_moment     (nworld, nJmom)
     actuator_moment: actuator moments                           (nworld, nJmom)
     crb: com-based composite inertia and mass                   (nworld, nbody, 10)
-    M: total inertia, maximal-ancestor CSR                      (nworld, nC)
-    qLD: packed Cholesky blocks, then an optional nC            (nworld, qLD_block_total + nC)
-         L'*D*L region at offset qLD_block_total
-    qLDiagInv: inverse diagonal for sparse and diagonal blocks; (nworld, nv)
-                candidate first entry 0 selects qLD
+    M: total inertia, CSR                                       (nworld, nC)
+    qLD: per-block factor: packed dense region, then the nC     (nworld, qLD_block_total + nC)
+         L'*D*L region at offset qLD_block_total (nC=0 if no sparse block)
+    qLDiagInv: 1/diag(D) for the sparse LDL region              (nworld, nv)
     tree_awake: is tree awake; 0: asleep; 1: awake              (nworld, ntree)
     body_awake: body sleep state (SleepState)                   (nworld, nbody)
     body_awake_ind: indices of awake/static bodies              (nworld, nbody)

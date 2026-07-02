@@ -169,106 +169,39 @@ def _m_allow_dense(mjm: mujoco.MjModel) -> bool:
   return not (mjm.ntendon and np.any(mjm.tendon_armature))
 
 
-def _m_full_rownnz(mjm: mujoco.MjModel) -> np.ndarray:
-  """Return row lengths in MuJoCo's maximal ancestor storage."""
-  return np.diff(np.append(mjm.dof_Madr, mjm.nM)).astype(np.int32)
-
-
-def _m_full_layout(mjm: mujoco.MjModel) -> dict[str, np.ndarray | int]:
-  """Build the maximal ancestor CSR layout for M.
-
-  MuJoCo removes off-diagonal entries for bodies that are simple at compile time. Those entries
-  can become nonzero after a runtime inertial-frame update, so MJWarp keeps storage for every
-  kinematically possible ancestor coupling.
-  """
-  rowadr = np.asarray(mjm.dof_Madr, dtype=np.int32).copy()
-  rownnz = _m_full_rownnz(mjm)
-  colind = np.empty(mjm.nM, dtype=np.int32)
-  for i in range(mjm.nv):
-    j = i
-    madr = int(rowadr[i] + rownnz[i] - 1)
-    while j >= 0:
-      colind[madr] = j
-      madr -= 1
-      j = int(mjm.dof_parentid[j])
-    if madr != rowadr[i] - 1:
-      raise ValueError(f"maximal M row {i} has inconsistent dof_Madr and dof_parentid")
-
-  rowind = np.repeat(np.arange(mjm.nv, dtype=np.int32), rownnz)
-  row_offset = np.arange(mjm.nM, dtype=np.int32) - rowadr[rowind]
-  mapM2M = rowadr[rowind] + rownnz[rowind] - 1 - row_offset
-
-  elemid = np.full((mjm.nv, mjm.nv), -1, dtype=np.int32)
-  elemid[rowind, colind] = np.arange(mjm.nM, dtype=np.int32)
-
-  D_rowind = np.repeat(np.arange(mjm.nv, dtype=np.int32), mjm.D_rownnz)
-  D_colind = np.asarray(mjm.D_colind, dtype=np.int32)
-  mapM2D = elemid[np.maximum(D_rowind, D_colind), np.minimum(D_rowind, D_colind)]
-  mapD2M = np.full(mjm.nM, -1, dtype=np.int32)
-  D_lower = (mapM2D >= 0) & (D_rowind >= D_colind)
-  mapD2M[mapM2D[D_lower]] = np.flatnonzero(D_lower)
-
-  legacy_to_elemid = np.empty(mjm.nM, dtype=np.int32)
-  legacy_to_elemid[mapM2M] = np.arange(mjm.nM, dtype=np.int32)
-  native_elemid = legacy_to_elemid[mjm.mapM2M]
-
-  return {
-    "nC": mjm.nM,
-    "rownnz": rownnz,
-    "rowadr": rowadr,
-    "rowind": rowind,
-    "colind": colind,
-    "elemid": elemid,
-    "D_rowind": D_rowind,
-    "mapM2D": mapM2D,
-    "mapD2M": mapD2M,
-    "mapM2M": mapM2M,
-    "native_elemid": native_elemid,
-  }
-
-
-def _m_values_in_layout(values: np.ndarray, layout: dict) -> np.ndarray:
-  """Map native compact M values into an MJWarp M layout."""
-  result = np.zeros(layout["nC"])
-  result[layout["native_elemid"]] = values
-  return result
-
-
 def m_block_layout(mjm: mujoco.MjModel) -> dict:
   """Per-block dense/sparse layout for M's diagonal blocks.
 
-  Blocks (connected sub-trees, each a contiguous dof range) are classified into three per-block
-  categories by coupling and size:
-    - simple: a decoupled block (M is diagonal -- a "simple body" like a point mass on orthogonal
-      slides) needs no factorization, just D = 1/diag, so it bypasses both factor paths.
-    - dense: a coupled block small enough for a dense tile-Cholesky (size <= M_BLOCK_DENSE_MAX).
-    - sparse: a coupled block too large for a tile, via the sparse LDL factor.
-  Dense block factors are packed back to back (block k's b*b factor at the prefix sum of preceding
-  dense block areas). Returns:
-    total:      packed length of the dense region (also the offset of the LDL region)
-    dof_adr:    per-dof packed offset within the dense region (0 for non-dense dofs)
-    blocks:     all (start, size) blocks
-    dense_blocks: (start, size) blocks using the packed dense layout
-    dof_dense:  per-dof flag, 1 if the dof's block is dense
-    dof_simple: per-dof flag, 1 if the dof's block is simple (diagonal)
-    has_dense / has_simple / has_sparse: whether any block falls in that category
+  Blocks use scalar Cholesky through six DOFs, tile Cholesky through M_BLOCK_DENSE_MAX, and sparse
+  LDL beyond that. Compact diagonal blocks also use the scalar path without allocating a factor.
   """
   nv = mjm.nv
   blocks = _m_blocks(mjm)
   allow_dense = _m_allow_dense(mjm)
-  rownnz = _m_full_rownnz(mjm)
   dof_adr = np.zeros(nv, dtype=np.int32)
   dof_dense = np.zeros(nv, dtype=np.int32)
-  dof_simple = np.zeros(nv, dtype=np.int32)
+  small_blocks = []
   dense_blocks = []
+  factor_blocks = []
   off = 0
   has_sparse = False
   for start, size in blocks:
-    coupled = bool(np.max(rownnz[start : start + size]) > 1)
-    if not coupled:
-      dof_simple[start : start + size] = 1
+    last = start + size - 1
+    madr = int(mjm.M_rowadr[start])
+    nnz = int(mjm.M_rowadr[last] + mjm.M_rownnz[last] - madr)
+    compact = nnz == size
+    triangular = nnz == size * (size + 1) // 2
+
+    if size <= types.M_BLOCK_SCALAR_MAX and (compact or (allow_dense and triangular)):
+      small_blocks.append((start, size, madr, nnz))
+      dof_dense[start : start + size] = 1
+      if not compact:
+        factor_blocks.append((start, size))
+        dof_adr[start : start + size] = off
+        off += size * size
     elif allow_dense and size <= types.M_BLOCK_DENSE_MAX:
       dense_blocks.append((start, size))
+      factor_blocks.append((start, size))
       dof_adr[start : start + size] = off
       dof_dense[start : start + size] = 1
       off += size * size
@@ -278,26 +211,14 @@ def m_block_layout(mjm: mujoco.MjModel) -> dict:
     "total": off,
     "dof_adr": dof_adr,
     "blocks": blocks,
+    "small_blocks": small_blocks,
     "dense_blocks": dense_blocks,
+    "factor_blocks": factor_blocks,
     "dof_dense": dof_dense,
-    "dof_simple": dof_simple,
+    "has_small": len(small_blocks) > 0,
     "has_dense": len(dense_blocks) > 0,
-    "has_simple": bool(dof_simple.any()),
     "has_sparse": has_sparse,
   }
-
-
-def _m_scalar_candidate_blocks(mjm: mujoco.MjModel, layout: dict) -> list[tuple[int, int]]:
-  """Return small dense blocks that MuJoCo compiled as diagonal.
-
-  MuJoCo limits each body to six DOFs, so potentially coupled simple-body blocks fit in a
-  single-thread Cholesky. Any unexpected larger block stays on the ordinary dense tile path.
-  """
-  result = []
-  for start, size in layout["dense_blocks"]:
-    if size <= 6 and np.max(mjm.M_rownnz[start : start + size]) == 1:
-      result.append((start, size))
-  return result
 
 
 def _filter_tri_geoms(
@@ -500,20 +421,6 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
 
   # create model
   m = types.Model(**{f.name: getattr(mjm, f.name, None) for f in dataclasses.fields(types.Model)})
-
-  M_layout = _m_full_layout(mjm)
-  nC = M_layout["nC"]
-  M_rownnz = M_layout["rownnz"]
-  M_rowadr = M_layout["rowadr"]
-  M_colind = M_layout["colind"]
-  mapM2M = M_layout["mapM2M"]
-  m.nC = nC
-  m.M_rownnz = M_rownnz
-  m.M_rowadr = M_rowadr
-  m.M_colind = M_colind
-  m.mapM2D = M_layout["mapM2D"]
-  m.mapD2M = M_layout["mapD2M"]
-  m.mapM2M = mapM2M
 
   m.opt = opt
   m.stat = stat
@@ -907,52 +814,49 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
     for j in range(mjm.mesh_vertnum[mjm.sensor_objid[i]])
   ]
 
-  # Per-block dense/sparse layout (see m_block_layout). Dense blocks are grouped by size and split
-  # between the ordinary tile path and the runtime-classified scalar candidate path.
+  # Per-block scalar/tile/sparse layout (see m_block_layout).
   _lay = m_block_layout(mjm)
   dof_dense = _lay["dof_dense"]
-  dof_simple = _lay["dof_simple"]
+  m.qLD_has_small = _lay["has_small"]
   m.qLD_has_dense = _lay["has_dense"]
-  m.qLD_has_simple = _lay["has_simple"]
   m.qLD_has_sparse = _lay["has_sparse"]
   m.qLD_block_total = _lay["total"]  # packed dense region length / offset of the LDL region
   m.qLD_block_adr = _lay["dof_adr"]
-  m.qLD_dof_dense = dof_dense  # per-dof: 1 if the dof's block is dense (packed)
-  m.qLD_dof_simple = dof_simple  # per-dof: 1 if the dof's block is simple (diagonal -> 1/diag)
-  m.qLD_simple_dofs = np.nonzero(dof_simple)[0].astype(np.int32)  # the simple dof indices
-  scalar_starts = {start for start, _ in _m_scalar_candidate_blocks(mjm, _lay)}
+  m.qLD_dof_dense = dof_dense  # per-dof: 1 if the dof uses a block path
+
+  small_blocks = {}
+  for start, size, madr, nnz in _lay["small_blocks"]:
+    small_blocks.setdefault(size, []).append((start, madr, nnz))
+  for size, blocks in small_blocks.items():
+    blocks.sort(key=lambda block: block[2] != size)
+  m.M_small_blocks = tuple(
+    types.SmallBlockSet(
+      adr=wp.array([block[0] for block in small_blocks[sz]], dtype=int),
+      madr=wp.array([block[1] for block in small_blocks[sz]], dtype=int),
+      nnz=wp.array([block[2] for block in small_blocks[sz]], dtype=int),
+      size=sz,
+    )
+    for sz in sorted(small_blocks)
+  )
+
   tiles = {}
-  scalar_tiles = {}
   for start, size in _lay["dense_blocks"]:
-    target = scalar_tiles if start in scalar_starts else tiles
-    target.setdefault(size, []).append(start)
+    tiles.setdefault(size, []).append(start)
+  m.M_tiles = tuple(types.TileSet(adr=wp.array(tiles[sz], dtype=int), size=sz) for sz in sorted(tiles.keys()))
 
-  def make_tile_sets(blocks_by_size):
-    tile_sets = []
-    tile_specs = []
-    for sz in sorted(blocks_by_size):
-      starts = np.asarray(blocks_by_size[sz], dtype=np.int32)
-      tile = types.TileSet(adr=wp.array(starts, dtype=int), size=sz)
-      tile_sets.append(tile)
-      tile_specs.append((tile, starts))
-    return tuple(tile_sets), tile_specs
-
-  m.M_tiles, tile_specs = make_tile_sets(tiles)
-  m.M_scalar_tiles, scalar_tile_specs = make_tile_sets(scalar_tiles)
-
-  # qLD_updates has dof tree ordering of qLD updates for the sparse LDL factor. Only sparse-block
-  # dofs are included; dense blocks use the packed Cholesky and never touch the LDL region.
+  # qLD_updates has dof tree ordering of qLD updates for the sparse LDL factor. Block-path DOFs
+  # never touch the LDL region.
   qLD_updates, dof_depth = {}, np.zeros(mjm.nv, dtype=int) - 1
 
   for k in range(mjm.nv):
     # skip diagonal rows
-    if M_rownnz[k] == 1:
+    if mjm.M_rownnz[k] == 1:
       continue
     dof_depth[k] = dof_depth[mjm.dof_parentid[k]] + 1
     if dof_dense[k]:
-      continue  # dense block: handled by the packed Cholesky, not the LDL factor
+      continue
     i = mjm.dof_parentid[k]
-    diag_k = M_rowadr[k] + M_rownnz[k] - 1
+    diag_k = mjm.M_rowadr[k] + mjm.M_rownnz[k] - 1
     Madr_ki = diag_k - 1
     while i > -1:
       qLD_updates.setdefault(dof_depth[i], []).append((i, k, Madr_ki))
@@ -969,29 +873,46 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
   m.qLD_all_updates = all_updates_flat if all_updates_flat else [(0, 0, 0)]
   m.qLD_level_offsets = level_offsets
 
-  # Sparse M_fullm uses MuJoCo's legacy qM ordering (diagonal, then ancestors). Reorder the maximal
-  # CSR columns with mapM2M instead of walking the dof tree a second time.
-  m.M_fullm_i = M_layout["rowind"]
-  m.M_fullm_j = np.empty(nC, dtype=np.int32)
-  m.M_fullm_j[mapM2M] = M_colind
-  # M_elemid maps (row, col) -> madr index in MJWarp's maximal CSR M layout.
-  M_elemid = M_layout["elemid"]
+  # Indices for sparse M_fullm (used in solver). M_fullm_i/j are built by
+  # walking dof_parentid for each dof, so for joint types whose internal block
+  # MuJoCo stores diagonal-only in the compact (M_rownnz, M_rowadr) layout
+  # (e.g. free joints), the chain-aware layout here has more entries per row
+  # than the compact layout.
+  m.M_fullm_i, m.M_fullm_j = [], []
+  for i in range(mjm.nv):
+    j = i
+    while j > -1:
+      m.M_fullm_i.append(i)
+      m.M_fullm_j.append(j)
+      j = mjm.dof_parentid[j]
+  # M_elemid maps (row, col) -> madr index in the native CSR M layout
+  M_elemid = np.full((mjm.nv, mjm.nv), -1, dtype=np.int32)
   # M_hinit_i: row index of each CSR entry (its madr is the flat index). The dense Newton H-init
   # uses (M_hinit_i, M_colind) to scatter M's upper triangle into the dense H tile from CSR.
+  M_hinit_i = np.zeros(mjm.nC, dtype=np.int32)
+  for i in range(mjm.nv):
+    rowadr = mjm.M_rowadr[i]
+    rownnz = mjm.M_rownnz[i]
+    for k in range(rownnz):
+      madr = rowadr + k
+      col = int(mjm.M_colind[madr])
+      M_elemid[i, col] = madr
+      M_hinit_i[madr] = i
   m.M_elemid = M_elemid
-  m.M_hinit_i = M_layout["rowind"]
+  m.M_hinit_i = M_hinit_i
 
   # Precompute per-block gather indices for the dense-block densify (tile_load_indexed). For each
   # dense block and flat slot (row, col), store the CSR address of M[max(i,j), min(i,j)], or nC
   # (out of bounds -> read as 0) for structurally absent pairs. Laid out [block, slot] so the kernel
   # reads slice (block_size^2,) at offset blk * block_size^2.
-  for tile, starts in tile_specs + scalar_tile_specs:
+  for tile in m.M_tiles:
     sz = tile.size
+    starts = np.array(tiles[sz], dtype=np.int32)  # host block starts; no device round-trip
     dofs = starts[:, None] + np.arange(sz)[None, :]  # (nblock, sz) global dof per block row
     gi = dofs[:, :, None]  # (nblock, sz, 1)
     gj = dofs[:, None, :]  # (nblock, 1, sz)
     elemid = M_elemid[np.maximum(gi, gj), np.minimum(gi, gj)]  # (nblock, sz, sz), -1 if absent
-    elemid = np.where(elemid >= 0, elemid, nC)
+    elemid = np.where(elemid >= 0, elemid, mjm.nC)
     tile.elemid = wp.array(elemid.reshape(-1).astype(np.int32), dtype=int)
 
   upper_j, upper_i = np.triu_indices(mjm.nv)
@@ -1003,19 +924,24 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
 
   # indices for sparse qD_fullm (used in RNE derivatives)
   # D-structure is the full square sparsity pattern (both upper and lower triangle)
-  m.qD_fullm_i = M_layout["D_rowind"]
-  m.qD_fullm_j = mjm.D_colind
+  m.qD_fullm_i, m.qD_fullm_j = [], []
+  for i in range(mjm.nv):
+    rowadr = mjm.D_rowadr[i]
+    rownnz = mjm.D_rownnz[i]
+    for k in range(rownnz):
+      m.qD_fullm_i.append(i)
+      m.qD_fullm_j.append(int(mjm.D_colind[rowadr + k]))
   m.nD = mjm.nD
 
   # Gather-based sparse mul_m: for each row, all (col, madr) including diagonal
   row_elements = [[] for _ in range(mjm.nv)]
 
   for i in range(mjm.nv):
-    rowadr = M_rowadr[i]
-    rownnz = M_rownnz[i]
+    rowadr = mjm.M_rowadr[i]
+    rownnz = mjm.M_rownnz[i]
     for k in range(rownnz):
       madr = rowadr + k
-      col = int(M_colind[madr])
+      col = int(mjm.M_colind[madr])
       row_elements[i].append((col, madr))  # row i gathers M[i,col] * vec[col]
       if i != col:
         row_elements[col].append((i, madr))  # row col gathers M[i,col] * vec[i]
@@ -1674,14 +1600,12 @@ def make_data(
 
   d = types.Data(**d_kwargs)
 
-  M_layout = _m_full_layout(mjm)
-
   # qLD holds the factor: a packed dense region for dense blocks followed
   # by an nC-length LDL region for sparse blocks (present only when some block is sparse). Either
   # region may be empty (pure dense / pure sparse).
-  d.M = wp.zeros((nworld, M_layout["nC"]), dtype=float)
+  d.M = wp.zeros((nworld, mjm.nC), dtype=float)
   _lay = m_block_layout(mjm)
-  qld_total = _lay["total"] + (M_layout["nC"] if _lay["has_sparse"] else 0)
+  qld_total = _lay["total"] + (mjm.nC if _lay["has_sparse"] else 0)
   d.qLD = wp.zeros((nworld, qld_total), dtype=float)
 
   _allocate_island_arrays(mjm, d, nworld, njmax, island_alloc, mjd)
@@ -1950,27 +1874,29 @@ def put_data(
   d = types.Data(**d_kwargs)
   d.solver_niter = wp.full((nworld,), mjd.solver_niter[0], dtype=int)
 
-  M_layout = _m_full_layout(mjm)
-  # qM already has maximal ancestor storage; only its legacy ordering differs from MJWarp's CSR.
-  M_values = mjd.qM[M_layout["mapM2M"]]
-  d.M = wp.array(np.tile(M_values, (nworld, 1)), dtype=float)
-  # qLD = [packed dense-block Cholesky | nC LDL region]. Dense blocks store their upper Cholesky
+  d.M = wp.array(np.full((nworld, mjm.nC), mjd.M), dtype=float)
+  # qLD = [packed block Cholesky | nC LDL region]. Block factors store their upper Cholesky
   # packed; the LDL region (present iff some block is sparse) holds MuJoCo's full L'DL factor (only
   # its sparse-block entries are read by the solve).
   lay = m_block_layout(mjm)
-  qld_total = lay["total"] + (M_layout["nC"] if lay["has_sparse"] else 0)
+  qld_total = lay["total"] + (mjm.nC if lay["has_sparse"] else 0)
   qLD = np.zeros(qld_total, dtype=np.float32)
-  if lay["has_dense"]:
+  if lay["factor_blocks"]:
     Mfull = np.zeros((mjm.nv, mjm.nv))
     mujoco.mju_sym2dense(Mfull, mjd.M, mjm.M_rownnz, mjm.M_rowadr, mjm.M_colind)
-    for start, size in lay["dense_blocks"]:
+    for start, size in lay["factor_blocks"]:
       off = lay["dof_adr"][start]
       blk = Mfull[start : start + size, start : start + size]
       if blk.any():
         qLD[off : off + size * size] = np.linalg.cholesky(blk).T.reshape(-1)
   if lay["has_sparse"]:
-    qLD[lay["total"] :] = _m_values_in_layout(mjd.qLD, M_layout)
+    qLD[lay["total"] :] = mjd.qLD
   d.qLD = wp.array(np.full((nworld, qld_total), qLD), dtype=float)
+  qLDiagInv = d.qLDiagInv.numpy()
+  for start, size, _, nnz in lay["small_blocks"]:
+    if nnz != size:
+      qLDiagInv[:, start] = 0.0
+  d.qLDiagInv = wp.array(qLDiagInv, dtype=float)
 
   _allocate_island_arrays(mjm, d, nworld, njmax, island_alloc, mjd)
   _allocate_compact_arrays(mjm, d, nworld, sizes["nvmax_pad"], sizes["njmax_pad"], compact_alloc)
@@ -1998,17 +1924,6 @@ def get_data_into(
     d: The data object containing the current state and output arrays (device).
     world_id: The id of the world to get the data from.
   """
-  M_layout = _m_full_layout(mjm)
-  M_values = d.M.numpy()[world_id]
-  native_M = np.zeros(M_layout["nC"], dtype=bool)
-  native_M[M_layout["native_elemid"]] = True
-  if np.any(M_values[~native_M] != 0.0):
-    warnings.warn(
-      f"world {world_id} inertia has couplings absent from the MjModel M layout; "
-      "M and qLD will be projected to the native compact layout",
-      RuntimeWarning,
-    )
-
   # nacon and nefc can overflow.  in that case, only pull up to the max contacts and constraints
   nacon = min(d.nacon.numpy()[0], d.naconmax)
   nefc = min(d.nefc.numpy()[world_id], d.njmax)
@@ -2145,11 +2060,10 @@ def get_data_into(
     result.contact.vert[:ncon] = d.contact.vert.numpy()[ncon_filter]
   result.contact.efc_address[:ncon] = contact_efc_address_ordered[:ncon]
 
-  result.M[:] = M_values[M_layout["native_elemid"]]
+  result.M[:] = d.M.numpy()[world_id]
   _lay = m_block_layout(mjm)
-  if _lay["has_dense"] or _lay["has_simple"]:
-    # d.qLD is not MuJoCo's LDL: dense blocks are a packed Cholesky and simple blocks are factored
-    # into qLDiagInv (their LDL slots are never written). Recompute the LDL factor from M.
+  if _lay["has_small"] or _lay["has_dense"]:
+    # Block factors do not use MuJoCo's LDL representation.
     mujoco.mj_factorM(mjm, result)
   else:
     # Pure sparse: qLD is exactly MuJoCo's nC LDL factor.

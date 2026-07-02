@@ -207,8 +207,8 @@ class SmoothTest(parameterized.TestCase):
     # qLD layout is per-block, independent of is_sparse (which selects only the constraint
     # Jacobian/Hessian layout). A packed dense region is not MuJoCo's LDL, so verify via solve;
     # a pure sparse model can compare the LDL factor directly.
-    if m.qLD_has_dense:
-      # packed dense-block Cholesky: factor layout differs from LDL, so verify it solves correctly
+    if m.qLD_has_small or m.qLD_has_dense:
+      # packed block Cholesky: factor layout differs from LDL, so verify it solves correctly
       ref = np.zeros((1, mjm.nv))
       mujoco.mj_solveM(mjm, mjd, ref, np.tile(mjd.qfrc_smooth, (1, 1)))
       res = wp.zeros((1, mjm.nv), dtype=float)
@@ -483,16 +483,16 @@ class SmoothTest(parameterized.TestCase):
     _assert_eq(res.numpy()[0], np.linalg.solve(qM, vec.numpy()[0]), "M \\ 1")
 
     # The M \ 1 check above verifies the solve regardless of layout. The raw factor matches MuJoCo's
-    # only in specific cases: a pure sparse-LDL model stores the L'DL factor in qLD, while a pure
-    # simple (diagonal) model stores nothing in qLD and just 1/diag in qLDiagInv.
-    if m.qLD_has_sparse and not m.qLD_has_dense and not m.qLD_has_simple:
+    # only in specific cases: a pure sparse-LDL model stores the L'DL factor in qLD, while a
+    # compact diagonal model stores nothing in qLD and just 1/diag in qLDiagInv.
+    if m.qLD_has_sparse and not m.qLD_has_small and not m.qLD_has_dense:
       _assert_eq(d.qLD.numpy()[0].reshape(-1), mjd.qLD, "qLD")
       _assert_eq(d.qLDiagInv.numpy()[0], mjd.qLDiagInv, "qLDiagInv")
-    elif m.qLD_has_simple and not m.qLD_has_dense and not m.qLD_has_sparse:
+    elif m.qLD_has_small and not m.qLD_has_dense and not m.qLD_has_sparse and d.qLD.shape[1] == 0:
       _assert_eq(d.qLDiagInv.numpy()[0], mjd.qLDiagInv, "qLDiagInv")
 
-  def test_factor_solve_i_coupled_candidate_input(self):
-    """A scalar candidate handles an arbitrary coupled input matrix."""
+  def test_factor_solve_i_coupled_small_block(self):
+    """A full small block handles coupling introduced outside rigid-body inertia."""
     mjm, _, m, d = test_data.fixture(
       xml="""
     <mujoco>
@@ -501,7 +501,7 @@ class SmoothTest(parameterized.TestCase):
         <site name="anchor" pos="0 0 0"/>
         <body pos="0.4 0.2 0.1">
           <freejoint/>
-          <inertial pos="0 0 0" mass="1" diaginertia="0.1 0.2 0.3"/>
+          <inertial pos="0 0 0" quat="0 1 0 0" mass="1" diaginertia="0.1 0.2 0.3"/>
           <site name="tip" pos="0.2 0.3 0.4"/>
         </body>
       </worldbody>
@@ -515,16 +515,11 @@ class SmoothTest(parameterized.TestCase):
     """
     )
 
+    self.assertEqual(mjm.nC, 21)
     qH = wp.empty((d.nworld, m.nC), dtype=float)
     mjw.deriv_smooth_vel(m, d, qH)
     qH_dense = np.zeros((m.nv, m.nv))
-    mujoco.mju_sym2dense(
-      qH_dense,
-      qH.numpy()[0].astype(np.float64),
-      m.M_rownnz.numpy(),
-      m.M_rowadr.numpy(),
-      m.M_colind.numpy(),
-    )
+    mujoco.mju_sym2dense(qH_dense, qH.numpy()[0].astype(np.float64), mjm.M_rownnz, mjm.M_rowadr, mjm.M_colind)
     self.assertGreater(np.max(np.abs(qH_dense - np.diag(np.diag(qH_dense)))), 1e-4)
 
     rhs = wp.ones((d.nworld, m.nv), dtype=float)
@@ -533,15 +528,46 @@ class SmoothTest(parameterized.TestCase):
     qLDiagInv = wp.empty_like(d.qLDiagInv)
     mjw._src.smooth.factor_solve_i(m, d, qH, qLD, qLDiagInv, result, rhs)
 
-    _assert_eq(result.numpy()[0], np.linalg.solve(qH_dense, np.ones(m.nv)), "coupled M - dt * qDeriv solve")
+    _assert_eq(result.numpy()[0], np.linalg.solve(qH_dense, np.ones(m.nv)), "coupled small-block solve")
+
+  def test_factor_solve_i_partial_small_block(self):
+    """A branched small tree densifies its partial native CSR block."""
+    mjm, _, m, d = test_data.fixture(
+      xml="""
+    <mujoco>
+      <worldbody>
+        <body>
+          <joint axis="0 0 1"/>
+          <geom size="0.1" mass="1"/>
+          <body pos="0.2 0 0">
+            <joint axis="0 1 0"/>
+            <geom size="0.1" mass="1"/>
+          </body>
+          <body pos="0 0.2 0">
+            <joint axis="1 0 0"/>
+            <geom size="0.1" mass="1"/>
+          </body>
+        </body>
+      </worldbody>
+    </mujoco>
+    """
+    )
+
+    self.assertEqual(mjm.nC, 5)
+    matrix = np.zeros((m.nv, m.nv))
+    mujoco.mju_sym2dense(matrix, d.M.numpy()[0], mjm.M_rownnz, mjm.M_rowadr, mjm.M_colind)
+    rhs = wp.ones((1, m.nv), dtype=float)
+    result = wp.zeros_like(rhs)
+    mjw._src.smooth.factor_solve_i(m, d, d.M, d.qLD, d.qLDiagInv, result, rhs)
+    _assert_eq(result.numpy()[0], np.linalg.solve(matrix, np.ones(m.nv)), "partial small-block solve")
 
   def test_factor_solve_mixed_blocks(self):
     """Per-block factor/solve: one oversized block (sparse LDL) plus small blocks (packed dense)."""
 
     # A 70-dof hinge chain (one block > M_BLOCK_DENSE_MAX -> sparse LDL) and three short hinge
-    # chains (6-dof coupled blocks -> packed dense): factor_m/solve_m must run both passes into one
-    # qLD. (Coupled blocks, not free joints: a free joint on a sphere has diagonal M and would take
-    # the trivial sparse path, so it would not exercise the packed-dense factor.)
+    # chains (6-dof coupled blocks -> scalar Cholesky): factor_m/solve_m must run both passes into
+    # one qLD. (Coupled blocks, not free joints: a free joint on a sphere has diagonal M and would
+    # take the trivial sparse path, so it would not exercise the packed-dense factor.)
     def _hinge_chain(k):
       return (
         "".join(
@@ -560,7 +586,7 @@ class SmoothTest(parameterized.TestCase):
 
     mjm, mjd, m, d = test_data.fixture(xml=xml)
     # genuinely mixed: both factor paths active in one model
-    self.assertTrue(m.qLD_has_dense)
+    self.assertTrue(m.qLD_has_small)
     self.assertTrue(m.qLD_has_sparse)
 
     # M^{-1} @ qfrc_smooth parity against MuJoCo exercises both the packed and the LDL solve.
