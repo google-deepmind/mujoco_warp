@@ -16,7 +16,7 @@
 """Core collision types and utilities shared across collision modules."""
 
 import dataclasses
-from typing import Tuple
+from typing import Any, Tuple
 
 import warp as wp
 
@@ -468,6 +468,111 @@ class CollisionContext:
   collision_pair: wp.array
   collision_pairid: wp.array
   collision_worldid: wp.array
+
+
+@wp.func
+def sap_binary_search(values: wp.array[Any], value: Any, lower: int, upper: int) -> int:
+  """Binary search for the first element > value in sorted array."""
+  while lower < upper:
+    mid = (lower + upper) >> 1
+    if values[mid] > value:
+      upper = mid
+    else:
+      lower = mid + 1
+  return upper
+
+
+@wp.kernel
+def sap_range(
+  # In:
+  n: int,
+  lower_in: wp.array2d[float],
+  upper_in: wp.array2d[float],
+  sort_index_in: wp.array2d[int],
+  # Out:
+  range_out: wp.array2d[int],
+):
+  """Compute the sweep range for each sorted element."""
+  worldid, sortedid = wp.tid()
+
+  idx = sort_index_in[worldid, sortedid]
+  upper = upper_in[worldid, idx]
+
+  limit = sap_binary_search(lower_in[worldid], upper, sortedid + 1, n)
+  limit = wp.min(n - 1, limit)
+
+  range_out[worldid, sortedid] = limit - sortedid
+
+
+@wp.kernel
+def sap_sweep(
+  # In:
+  n: int,
+  sort_index_in: wp.array2d[int],
+  cumulative_sum_in: wp.array[int],
+  nsweep_in: int,
+  aabb_lower_in: wp.array2d[wp.vec3],
+  aabb_upper_in: wp.array2d[wp.vec3],
+  max_pairs: int,
+  # Out:
+  npairs_out: wp.array[int],
+  pair_id1_out: wp.array[int],
+  pair_id2_out: wp.array[int],
+  pair_worldid_out: wp.array[int],
+):
+  """Generic SAP sweep: output AABB-overlapping pairs.
+
+  This is the GPU equivalent of MuJoCo's mj_SAP function. It takes
+  axis-aligned bounding boxes and outputs pairs whose AABBs overlap
+  on all 3 axes. Domain-specific filtering is done by the caller.
+  """
+  worldelemid = wp.tid()
+
+  nworldelem = cumulative_sum_in.shape[0]
+  nworkpackages = cumulative_sum_in[nworldelem - 1]
+
+  while worldelemid < nworkpackages:
+    # Binary search to find sortedid (i) and partner sortedid (j)
+    i = sap_binary_search(cumulative_sum_in, worldelemid, 0, nworldelem)
+    j = i + worldelemid + 1
+    if i > 0:
+      j -= cumulative_sum_in[i - 1]
+
+    worldid = i // n
+    i = i % n
+    j = j % n
+
+    # Get actual element indices from sorted order
+    elem1 = sort_index_in[worldid, i]
+    elem2 = sort_index_in[worldid, j]
+
+    # Ensure elem1 < elem2 for consistent ordering
+    if elem1 > elem2:
+      tmp = elem1
+      elem1 = elem2
+      elem2 = tmp
+
+    worldelemid += nsweep_in
+
+    # AABB overlap test on all 3 axes
+    lower1 = aabb_lower_in[worldid, elem1]
+    upper1 = aabb_upper_in[worldid, elem1]
+    lower2 = aabb_lower_in[worldid, elem2]
+    upper2 = aabb_upper_in[worldid, elem2]
+
+    if lower1[0] > upper2[0] or lower2[0] > upper1[0]:
+      continue
+    if lower1[1] > upper2[1] or lower2[1] > upper1[1]:
+      continue
+    if lower1[2] > upper2[2] or lower2[2] > upper1[2]:
+      continue
+
+    # Output this pair
+    idx = wp.atomic_add(npairs_out, 0, 1)
+    if idx < max_pairs:
+      pair_id1_out[idx] = elem1
+      pair_id2_out[idx] = elem2
+      pair_worldid_out[idx] = worldid
 
 
 def create_collision_context(naconmax: int) -> CollisionContext:
