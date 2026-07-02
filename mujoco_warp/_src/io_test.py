@@ -737,6 +737,33 @@ class IOTest(parameterized.TestCase):
         field,
       )
 
+  def test_get_data_into_realloc_island(self):
+    mjm, mjd, _, d = test_data.fixture("humanoid/humanoid.xml", keyframe=0, nworld=1)
+
+    # Set nisland and nidof on d to be > 0
+    d.nisland.fill_(5)
+    d.nidof.fill_(10)
+
+    # Trigger a mismatch in ncon/nefc to force _realloc_con_efc
+    mjd.ncon = 0
+
+    with (
+      mock.patch("mujoco_warp._src.io.check_version", return_value=True) as mock_check_version,
+      mock.patch("mujoco._functions._realloc_island", create=True) as mock_realloc_island,
+    ):
+      mjwarp.get_data_into(mjd, mjm, d, world_id=0)
+
+      mock_check_version.assert_called_once_with("mujoco>=3.10.1.dev941628625")
+      mock_realloc_island.assert_called_once_with(mjd, nisland=5, nidof=10)
+
+    # Reset ncon to different value
+    mjd.ncon = 0
+    with mock.patch("mujoco_warp._src.io.check_version", return_value=False), mock.patch("warnings.warn") as mock_warn:
+      mjwarp.get_data_into(mjd, mjm, d, world_id=0)
+
+      mock_warn.assert_called_once()
+      self.assertIn("_realloc_island could not be called", mock_warn.call_args[0][0])
+
   @parameterized.product(
     xml=_IO_TEST_MODELS,
     cone=list(ConeType),
