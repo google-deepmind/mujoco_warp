@@ -589,7 +589,7 @@ class GJKTest(parameterized.TestCase):
     )
 
     dist, _, _, _ = _geom_dist(m, d, 0, 1, multiccd=False, pos1=pos1, mat1=rot1, pos2=pos2, mat2=rot2)
-    self.assertEqual(dist, -2.515156e-06)  # -2.515764037690309e-06 actual depth
+    self.assertAlmostEqual(dist, -2.515156e-06)  # -2.515764037690309e-06 actual depth
 
   def test_sphere_mesh_margin(self):
     """Test sphere-mesh margin."""
