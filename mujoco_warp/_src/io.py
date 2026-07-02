@@ -194,7 +194,7 @@ def m_block_layout(mjm: mujoco.MjModel) -> dict:
   allow_dense = _m_allow_dense(mjm)
   dof_adr = np.full(nv, types.Q_LD_BLOCK_SPARSE, dtype=np.int32)
   scalar_tiles = {}
-  dense_tiles = {}
+  gather_tiles = {}
   off = 0
   for start, size in blocks:
     last = start + size - 1
@@ -204,21 +204,23 @@ def m_block_layout(mjm: mujoco.MjModel) -> dict:
     triangular = nnz == size * (size + 1) // 2
 
     if size <= types.M_BLOCK_SCALAR_MAX and (compact or (allow_dense and triangular)):
-      category = "compact" if compact else "full"
-      scalar_tiles.setdefault(size, {"compact": [], "full": []})[category].append(start)
-      dof_adr[start : start + size] = types.Q_LD_BLOCK_COMPACT
-      if not compact:
+      scalar_tiles.setdefault(size, []).append(start)
+      if compact:
+        dof_adr[start : start + size] = types.Q_LD_BLOCK_COMPACT
+      else:
         dof_adr[start : start + size] = off
         off += size * size
     elif allow_dense and size <= types.M_BLOCK_DENSE_MAX:
-      dense_tiles.setdefault(size, []).append(start)
+      gather_tiles.setdefault(size, []).append(start)
       dof_adr[start : start + size] = off
       off += size * size
+  for starts in scalar_tiles.values():
+    starts.sort(key=lambda start: dof_adr[start] >= 0)
   return {
     "total": off,
     "dof_adr": dof_adr,
     "scalar_tiles": scalar_tiles,
-    "dense_tiles": dense_tiles,
+    "gather_tiles": gather_tiles,
     "has_sparse": bool(np.any(dof_adr == types.Q_LD_BLOCK_SPARSE)),
   }
 
@@ -892,16 +894,15 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
 
   scalar_tiles = [
     types.TileSet(
-      adr=wp.array(_lay["scalar_tiles"][size]["compact"] + _lay["scalar_tiles"][size]["full"], dtype=int),
+      adr=wp.array(_lay["scalar_tiles"][size], dtype=int),
       size=size,
-      elemid=wp.array([], dtype=int),
     )
     for size in sorted(_lay["scalar_tiles"])
   ]
-  dense_tiles = [
-    types.TileSet(adr=wp.array(_lay["dense_tiles"][size], dtype=int), size=size) for size in sorted(_lay["dense_tiles"])
+  gather_tiles = [
+    types.TileSet(adr=wp.array(_lay["gather_tiles"][size], dtype=int), size=size) for size in sorted(_lay["gather_tiles"])
   ]
-  m.M_tiles = tuple(scalar_tiles + dense_tiles)
+  m.M_tiles = tuple(scalar_tiles + gather_tiles)
 
   # Group sparse LDL updates by tree depth. Block-path DOFs never touch the LDL region.
   sparse_updates, dof_depth = {}, np.zeros(mjm.nv, dtype=int) - 1
@@ -963,9 +964,9 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
   # dense block and flat slot (row, col), store the CSR address of M[max(i,j), min(i,j)], or nC
   # (out of bounds -> read as 0) for structurally absent pairs. Laid out [block, slot] so the kernel
   # reads slice (block_size^2,) at offset blk * block_size^2.
-  for tile in dense_tiles:
+  for tile in gather_tiles:
     sz = tile.size
-    starts = np.array(_lay["dense_tiles"][sz], dtype=np.int32)
+    starts = np.array(_lay["gather_tiles"][sz], dtype=np.int32)
     dofs = starts[:, None] + np.arange(sz)[None, :]  # (nblock, sz) global dof per block row
     gi = dofs[:, :, None]  # (nblock, sz, 1)
     gj = dofs[:, None, :]  # (nblock, 1, sz)
@@ -1949,15 +1950,14 @@ def put_data(
   lay = m_block_layout(mjm)
   qld_total = lay["total"] + (mjm.nC if lay["has_sparse"] else 0)
   qLD = np.zeros(qld_total, dtype=np.float32)
-  factor_tiles = [(size, blocks["full"]) for size, blocks in lay["scalar_tiles"].items() if blocks["full"]] + list(
-    lay["dense_tiles"].items()
-  )
-  if factor_tiles:
+  if lay["total"]:
     Mfull = np.zeros((mjm.nv, mjm.nv))
     mujoco.mju_sym2dense(Mfull, mjd.M, mjm.M_rownnz, mjm.M_rowadr, mjm.M_colind)
-    for size, starts in factor_tiles:
+    for size, starts in list(lay["scalar_tiles"].items()) + list(lay["gather_tiles"].items()):
       for start in starts:
         off = lay["dof_adr"][start]
+        if off < 0:
+          continue
         blk = Mfull[start : start + size, start : start + size]
         if blk.any():
           qLD[off : off + size * size] = np.linalg.cholesky(blk).T.reshape(-1)
@@ -2129,7 +2129,7 @@ def get_data_into(
 
   result.M[:] = d.M.numpy()[world_id]
   _lay = m_block_layout(mjm)
-  if _lay["scalar_tiles"] or _lay["dense_tiles"]:
+  if _lay["scalar_tiles"] or _lay["gather_tiles"]:
     # Block factors do not use MuJoCo's LDL representation.
     mujoco.mj_factorM(mjm, result)
   else:

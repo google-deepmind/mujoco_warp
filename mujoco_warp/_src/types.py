@@ -41,6 +41,7 @@ M_BLOCK_DENSE_MAX = 64
 # max M block size where scalar Cholesky beats dense tile-Cholesky
 M_BLOCK_SCALAR_MAX = 6
 
+# qLD_block_adr sentinels for factorless block layouts
 Q_LD_BLOCK_COMPACT = -2
 Q_LD_BLOCK_SPARSE = -1
 
@@ -926,7 +927,7 @@ class TileSet:
 
   adr: wp.array[int]
   size: int
-  elemid: wp.array[int] = None
+  elemid: wp.array[int] = dataclasses.field(default_factory=lambda: wp.array([], dtype=int))
 
   def __eq__(self, other) -> bool:
     if self.__class__ is not other.__class__:
