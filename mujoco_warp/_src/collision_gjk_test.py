@@ -507,6 +507,90 @@ class GJKTest(parameterized.TestCase):
     _, ncon, _, _ = _geom_dist(m, d, 0, 1, multiccd=True)
     self.assertEqual(ncon, 4)
 
+  def test_box_box_early(self):
+    """Test box-box with EPA early termination (first iteration) with upper < lower bound."""
+    _, _, m, d = test_data.fixture(
+      xml="""
+       <mujoco>
+         <worldbody>
+          <geom size=".025 .025 .025" type="box"/>
+          <geom size=".025 .025 .025" type="box"/>
+         </worldbody>
+       </mujoco>
+       """
+    )
+
+    pos1 = wp.vec3(0.07524700462818145752, -0.13524700701236724854, 0.12491077929735183716)
+    rot1 = wp.mat33(
+      1.00000000000000000000,
+      0.00000000006837434091,
+      0.00000000080494955146,
+      -0.00000000006837435479,
+      1.00000000000000000000,
+      0.00000002552030764491,
+      -0.00000000080494955146,
+      -0.00000002552030764491,
+      1.00000000000000000000,
+    )
+
+    pos2 = wp.vec3(0.07524700462818145752, -0.13524700701236724854, 0.17094630002975463867)
+    rot2 = wp.mat33(
+      1.00000000000000000000,
+      0.00000000006837435479,
+      -0.00000000018000903546,
+      -0.00000000006837434091,
+      1.00000000000000000000,
+      0.00000004174798817758,
+      0.00000000018000903546,
+      -0.00000004174798817758,
+      1.00000000000000000000,
+    )
+
+    dist, _, _, _ = _geom_dist(m, d, 0, 1, multiccd=False, pos1=pos1, mat1=rot1, pos2=pos2, mat2=rot2)
+    self.assertAlmostEqual(dist, -0.00396448, 6)  # -0.0039644796979132323 actual depth
+
+  def test_box_box_early2(self):
+    """Test box-box with EPA early termination (first iteration) with upper < lower bound."""
+    _, _, m, d = test_data.fixture(
+      xml="""
+       <mujoco>
+         <worldbody>
+          <geom size=".025 .025 .025" type="box"/>
+          <geom size=".025 .025 .025" type="box"/>
+         </worldbody>
+       </mujoco>
+       """
+    )
+
+    pos1 = wp.vec3(0.07122065126895904541, -0.19126638770103454590, 0.29129269719123840332)
+    rot1 = wp.mat33(
+      0.99999558925628662109,
+      0.00258362153545022011,
+      0.00148368685040622950,
+      -0.00258197076618671417,
+      0.99999606609344482422,
+      -0.00111339206341654062,
+      -0.00148655765224248171,
+      0.00110955617856234312,
+      0.99999833106994628906,
+    )
+
+    pos2 = wp.vec3(0.07183132320642471313, -0.13260576128959655762, 0.30987158417701721191)
+    rot2 = wp.mat33(
+      0.99827724695205688477,
+      0.02493947930634021759,
+      0.05311207473278045654,
+      0.00605074502527713776,
+      0.85659545660018920898,
+      -0.51595354080200195312,
+      -0.05836316198110580444,
+      0.51538598537445068359,
+      0.85496860742568969727,
+    )
+
+    dist, _, _, _ = _geom_dist(m, d, 0, 1, multiccd=False, pos1=pos1, mat1=rot1, pos2=pos2, mat2=rot2)
+    self.assertEqual(dist, -2.515156e-06)  # -2.515764037690309e-06 actual depth
+
   def test_sphere_mesh_margin(self):
     """Test sphere-mesh margin."""
     _, _, m, d = test_data.fixture(

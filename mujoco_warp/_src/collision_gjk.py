@@ -1262,7 +1262,7 @@ def _epa(
   # so iterations must be cap to limit the number of generated vertices
   # (one new vertex per iteration)
   epa_iterations = wp.min(epa_iterations, 1000)
-  for k in range(epa_iterations):
+  for _ in range(epa_iterations):
     pidx = idx
     idx = int(-1)
     lower2 = float(FLOAT_MAX)
@@ -1285,23 +1285,20 @@ def _epa(
     # compute support point w from the closest face's normal
     lower = wp.sqrt(lower2)
     wi = pt.nvert
-    face_pr_normalized = pt.face_pr[idx] / lower
-    i1, i2 = _epa_support(pt, wi, geom1, geom2, geomtype1, geomtype2, face_pr_normalized)
+    face_pr = pt.face_pr[idx]
+    i1, i2 = _epa_support(pt, wi, geom1, geom2, geomtype1, geomtype2, face_pr / lower)
     w = pt.vert[2 * wi] - pt.vert[2 * wi + 1]
     geom1.index = i1
     geom2.index = i2
     pt.nvert += 1
 
-    # upper bound for kth iteration
-    upper_k = wp.dot(face_pr_normalized, w)
+    # upper bound for kth iteration (dot product before normalizing for better precision)
+    upper_k = wp.dot(face_pr, w) / lower
     if upper_k < upper:
       upper = upper_k
       upper2 = upper * upper
 
     if upper - lower < epsilon:
-      # terminate without contact when upper < lower on first iteration
-      if k == 0 and upper < lower - 1e-10:
-        idx = -1
       break
 
     # check if vertex wi is a repeated support point
