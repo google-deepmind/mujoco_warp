@@ -1124,7 +1124,6 @@ def _small_cholesky_factorize_block(block_size: int):
   @wp.kernel(module="unique", enable_backward=False)
   def kernel(
     # Model:
-    M_rownnz: wp.array[int],
     M_rowadr: wp.array[int],
     qLD_block_adr: wp.array[int],
     # Data in:
@@ -1139,26 +1138,12 @@ def _small_cholesky_factorize_block(block_size: int):
     start = block_dof[blk]
     size = wp.static(block_size)
     matrix_adr = M_rowadr[start]
-    last = start + size - 1
-    matrix_nnz = M_rowadr[last] + M_rownnz[last] - matrix_adr
-    triangular_nnz = wp.static(block_size * (block_size + 1) // 2)
 
-    diagonal = bool(True)
-    if matrix_nnz != size:
+    factor_adr = qLD_block_adr[start]
+    if factor_adr < 0:
       for i in range(wp.static(block_size)):
-        for j in range(i):
-          if diagonal and M_in[worldid, matrix_adr + i * (i + 1) // 2 + j] != 0.0:
-            diagonal = False
-
-    if diagonal:
-      for i in range(wp.static(block_size)):
-        diag_adr = matrix_adr + i
-        if matrix_nnz == triangular_nnz:
-          diag_adr = matrix_adr + i * (i + 1) // 2 + i
-        D_out[worldid, start + i] = 1.0 / M_in[worldid, diag_adr]
+        D_out[worldid, start + i] = 1.0 / M_in[worldid, matrix_adr + i]
     else:
-      D_out[worldid, start] = 0.0
-      factor_adr = qLD_block_adr[start]
       for i in range(wp.static(block_size)):
         value = M_in[worldid, matrix_adr + i * (i + 1) // 2 + i]
         for k in range(i):
@@ -1225,7 +1210,7 @@ def _factor_blocks(
       wp.launch(
         _small_cholesky_factorize_block(tile.size),
         dim=(d.nworld, tile.adr.size),
-        inputs=[m.M_rownnz, m.M_rowadr, m.qLD_block_adr, M, tile.adr],
+        inputs=[m.M_rowadr, m.qLD_block_adr, M, tile.adr],
         outputs=[D, L],
         block_dim=64,
       )
@@ -1243,8 +1228,8 @@ def _factor_blocks(
 def factor_m(m: Model, d: Data):
   """Factorization of inertia-like matrix M, assumed spd.
 
-  Small blocks select diagonal or scalar Cholesky at runtime, larger dense blocks use tile
-  Cholesky, and oversized blocks use sparse LDL.
+  Compact blocks use reciprocal diagonals, full small blocks use scalar Cholesky, larger dense
+  blocks use tile Cholesky, and oversized blocks use sparse LDL.
   """
   if m.M_tiles:
     _factor_blocks(m, d, d.M, d.qLD, d.qLDiagInv)
@@ -2908,7 +2893,7 @@ def _solve_LD_sparse_fused(nv: int, nlevels: int):
 
     # Copy y to x_out for sparse-block dofs only.
     for dofid in range(tid, NV, BLOCK_DIM):
-      if qLD_block_adr[dofid] < 0:
+      if qLD_block_adr[dofid] == -1:
         x_out[worldid, dofid] = y[worldid, dofid]
     _syncthreads()
 
@@ -2926,7 +2911,7 @@ def _solve_LD_sparse_fused(nv: int, nlevels: int):
 
     # Diagonal multiply (sparse-block dofs only)
     for dofid in range(tid, NV, BLOCK_DIM):
-      if qLD_block_adr[dofid] < 0:
+      if qLD_block_adr[dofid] == -1:
         x_out[worldid, dofid] *= D[worldid, dofid]
     _syncthreads()
 
@@ -3013,11 +2998,12 @@ def _small_cholesky_solve_block(block_size: int):
     worldid, blk = wp.tid()
     start = block_dof[blk]
     size = wp.static(block_size)
-    if D_in[worldid, start] != 0.0:
+    factor_adr = qLD_block_adr[start]
+    if factor_adr < 0:
       for i in range(wp.static(block_size)):
         x_out[worldid, start + i] = D_in[worldid, start + i] * y_in[worldid, start + i]
     else:
-      _small_cholesky_solve(size, worldid, qLD_block_adr[start], start, L_in, y_in, x_out)
+      _small_cholesky_solve(size, worldid, factor_adr, start, L_in, y_in, x_out)
 
   return kernel
 
@@ -3092,14 +3078,14 @@ def solve_LD(
 ):
   """Computes backsubstitution for the inertia factorization.
 
-  Small blocks select diagonal or scalar Cholesky, dense blocks use tile Cholesky, and sparse blocks
-  use the LDL region.
+  Compact blocks use reciprocal diagonals, full small blocks use scalar Cholesky, dense blocks use
+  tile Cholesky, and sparse blocks use the LDL region.
 
   Args:
     m: The model containing factorization and sparsity information.
     d: The data object containing workspace and factorization results.
     L: The factor: packed dense region followed by the nC LDL region.
-    D: Diagonal factor and small-block runtime mode.
+    D: Reciprocal diagonal for compact and sparse blocks.
     x: Output array for the solution.
     y: Input right-hand side array.
   """
@@ -3166,7 +3152,6 @@ def _small_cholesky_factorize_solve_block(block_size: int):
   @wp.kernel(module="unique", enable_backward=False)
   def kernel(
     # Model:
-    M_rownnz: wp.array[int],
     M_rowadr: wp.array[int],
     qLD_block_adr: wp.array[int],
     # Data in:
@@ -3183,28 +3168,14 @@ def _small_cholesky_factorize_solve_block(block_size: int):
     start = block_dof[blk]
     size = wp.static(block_size)
     matrix_adr = M_rowadr[start]
-    last = start + size - 1
-    matrix_nnz = M_rowadr[last] + M_rownnz[last] - matrix_adr
-    triangular_nnz = wp.static(block_size * (block_size + 1) // 2)
 
-    diagonal = bool(True)
-    if matrix_nnz != size:
+    factor_adr = qLD_block_adr[start]
+    if factor_adr < 0:
       for i in range(wp.static(block_size)):
-        for j in range(i):
-          if diagonal and M_in[worldid, matrix_adr + i * (i + 1) // 2 + j] != 0.0:
-            diagonal = False
-
-    if diagonal:
-      for i in range(wp.static(block_size)):
-        diag_adr = matrix_adr + i
-        if matrix_nnz == triangular_nnz:
-          diag_adr = matrix_adr + i * (i + 1) // 2 + i
-        inverse = 1.0 / M_in[worldid, diag_adr]
+        inverse = 1.0 / M_in[worldid, matrix_adr + i]
         D_out[worldid, start + i] = inverse
         x_out[worldid, start + i] = inverse * y[worldid, start + i]
     else:
-      D_out[worldid, start] = 0.0
-      factor_adr = qLD_block_adr[start]
       for i in range(wp.static(block_size)):
         diagonal_value = M_in[worldid, matrix_adr + i * (i + 1) // 2 + i]
         rhs_value = y[worldid, start + i]
@@ -3248,7 +3219,7 @@ def _factor_solve_blocks(
       wp.launch(
         _small_cholesky_factorize_solve_block(tile.size),
         dim=(d.nworld, tile.adr.size),
-        inputs=[m.M_rownnz, m.M_rowadr, m.qLD_block_adr, M, tile.adr, y],
+        inputs=[m.M_rowadr, m.qLD_block_adr, M, tile.adr, y],
         outputs=[D, x, L],
         block_dim=64,
       )
@@ -3265,15 +3236,15 @@ def _factor_solve_blocks(
 def factor_solve_i(m, d, M, L, D, x, y):
   """Factorizes and solves the inertia-like linear system.
 
-  Small blocks select diagonal or scalar Cholesky, dense blocks use tile Cholesky, and sparse blocks
-  use LDL. Factorizes M and solves for x.
+  Compact blocks use reciprocal diagonals, full small blocks use scalar Cholesky, dense blocks use
+  tile Cholesky, and sparse blocks use LDL. Factorizes M and solves for x.
 
   Args:
     m: The model containing factorization and sparsity information.
     d: The data object containing workspace and factorization results.
     M: The inertia-like matrix to factorize (CSR, length nC).
     L: Output factor: packed dense region followed by the nC LDL region (sized like d.qLD).
-    D: Output diagonal factor and small-block runtime mode.
+    D: Output reciprocal diagonal for compact and sparse blocks.
     x: Output array for the solution.
     y: Input right-hand side array.
   """

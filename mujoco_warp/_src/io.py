@@ -192,7 +192,7 @@ def m_block_layout(mjm: mujoco.MjModel) -> dict:
   nv = mjm.nv
   blocks = _m_blocks(mjm)
   allow_dense = _m_allow_dense(mjm)
-  dof_adr = np.full(nv, -1, dtype=np.int32)
+  dof_adr = np.full(nv, types.Q_LD_BLOCK_SPARSE, dtype=np.int32)
   scalar_tiles = {}
   dense_tiles = {}
   off = 0
@@ -206,7 +206,7 @@ def m_block_layout(mjm: mujoco.MjModel) -> dict:
     if size <= types.M_BLOCK_SCALAR_MAX and (compact or (allow_dense and triangular)):
       category = "compact" if compact else "full"
       scalar_tiles.setdefault(size, {"compact": [], "full": []})[category].append(start)
-      dof_adr[start : start + size] = 0
+      dof_adr[start : start + size] = types.Q_LD_BLOCK_COMPACT
       if not compact:
         dof_adr[start : start + size] = off
         off += size * size
@@ -219,7 +219,7 @@ def m_block_layout(mjm: mujoco.MjModel) -> dict:
     "dof_adr": dof_adr,
     "scalar_tiles": scalar_tiles,
     "dense_tiles": dense_tiles,
-    "has_sparse": bool(np.any(dof_adr < 0)),
+    "has_sparse": bool(np.any(dof_adr == types.Q_LD_BLOCK_SPARSE)),
   }
 
 
@@ -910,7 +910,7 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
     if mjm.M_rownnz[k] == 1:
       continue
     dof_depth[k] = dof_depth[mjm.dof_parentid[k]] + 1
-    if _lay["dof_adr"][k] >= 0:
+    if _lay["dof_adr"][k] != types.Q_LD_BLOCK_SPARSE:
       continue
     i = mjm.dof_parentid[k]
     diag_k = mjm.M_rowadr[k] + mjm.M_rownnz[k] - 1
@@ -1963,10 +1963,6 @@ def put_data(
   if lay["has_sparse"]:
     qLD[lay["total"] :] = mjd.qLD
   d.qLD = wp.array(np.full((nworld, qld_total), qLD), dtype=float)
-  qLDiagInv = d.qLDiagInv.numpy()
-  full_scalar_dofs = [start for blocks in lay["scalar_tiles"].values() for start in blocks["full"]]
-  qLDiagInv[:, full_scalar_dofs] = 0.0
-  d.qLDiagInv = wp.array(qLDiagInv, dtype=float)
 
   _allocate_island_arrays(mjm, d, nworld, njmax, island_alloc, mjd)
   _allocate_compact_arrays(mjm, d, nworld, sizes["nvmax_pad"], sizes["njmax_pad"], compact_alloc)

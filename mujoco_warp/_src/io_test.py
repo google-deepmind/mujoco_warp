@@ -1289,7 +1289,7 @@ class IOTest(parameterized.TestCase):
     _assert_eq(m.body_invweight0.numpy()[0, 1], mjm.body_invweight0[1], "body_invweight0")
 
   def test_set_const_full_freejoint_per_world_com(self):
-    """A full free-joint block selects diagonal or coupled factors per world."""
+    """A full free-joint factor handles diagonal and coupled worlds."""
     mjm = mujoco.MjModel.from_xml_string("""
     <mujoco>
       <worldbody>
@@ -1322,8 +1322,7 @@ class IOTest(parameterized.TestCase):
       mujoco.mju_sym2dense(dense[worldid], d.M.numpy()[worldid], mjm.M_rownnz, mjm.M_rowadr, mjm.M_colind)
     np.testing.assert_allclose(dense[0], np.diag(np.diag(dense[0])), atol=1e-6)
     self.assertGreater(np.max(np.abs(dense[1] - np.diag(np.diag(dense[1])))), 1e-6)
-    self.assertGreater(d.qLDiagInv.numpy()[0, 0], 0.0)
-    self.assertEqual(d.qLDiagInv.numpy()[1, 0], 0.0)
+    self.assertGreaterEqual(m.qLD_block_adr.numpy()[0], 0)
 
     rhs = wp.ones((2, m.nv), dtype=float)
     result = wp.zeros_like(rhs)
