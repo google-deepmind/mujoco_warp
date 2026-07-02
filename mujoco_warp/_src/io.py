@@ -192,14 +192,10 @@ def m_block_layout(mjm: mujoco.MjModel) -> dict:
   nv = mjm.nv
   blocks = _m_blocks(mjm)
   allow_dense = _m_allow_dense(mjm)
-  dof_adr = np.zeros(nv, dtype=np.int32)
-  dof_dense = np.zeros(nv, dtype=np.int32)
+  dof_adr = np.full(nv, -1, dtype=np.int32)
   scalar_tiles = {}
   dense_tiles = {}
-  factor_blocks = []
-  full_scalar_dofs = []
   off = 0
-  has_sparse = False
   for start, size in blocks:
     last = start + size - 1
     madr = int(mjm.M_rowadr[start])
@@ -208,33 +204,22 @@ def m_block_layout(mjm: mujoco.MjModel) -> dict:
     triangular = nnz == size * (size + 1) // 2
 
     if size <= types.M_BLOCK_SCALAR_MAX and (compact or (allow_dense and triangular)):
-      scalar_tiles.setdefault(size, []).append((start, compact))
-      dof_dense[start : start + size] = 1
+      category = "compact" if compact else "full"
+      scalar_tiles.setdefault(size, {"compact": [], "full": []})[category].append(start)
+      dof_adr[start : start + size] = 0
       if not compact:
-        full_scalar_dofs.append(start)
-        factor_blocks.append((start, size))
         dof_adr[start : start + size] = off
         off += size * size
     elif allow_dense and size <= types.M_BLOCK_DENSE_MAX:
       dense_tiles.setdefault(size, []).append(start)
-      factor_blocks.append((start, size))
       dof_adr[start : start + size] = off
-      dof_dense[start : start + size] = 1
       off += size * size
-    else:
-      has_sparse = True
-  scalar_tiles = {
-    size: [start for start, _ in sorted(blocks, key=lambda block: not block[1])] for size, blocks in scalar_tiles.items()
-  }
   return {
     "total": off,
     "dof_adr": dof_adr,
     "scalar_tiles": scalar_tiles,
     "dense_tiles": dense_tiles,
-    "factor_blocks": factor_blocks,
-    "full_scalar_dofs": full_scalar_dofs,
-    "dof_dense": dof_dense,
-    "has_sparse": has_sparse,
+    "has_sparse": bool(np.any(dof_adr < 0)),
   }
 
 
@@ -902,45 +887,45 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
 
   # Per-block scalar/tile/sparse layout (see m_block_layout).
   _lay = m_block_layout(mjm)
-  dof_dense = _lay["dof_dense"]
-  m.qLD_has_sparse = _lay["has_sparse"]
   m.qLD_block_total = _lay["total"]  # packed dense region length / offset of the LDL region
   m.qLD_block_adr = _lay["dof_adr"]
-  m.qLD_dof_dense = dof_dense  # per-dof: 1 if the dof uses a block path
 
   scalar_tiles = [
-    types.TileSet(adr=wp.array(_lay["scalar_tiles"][size], dtype=int), size=size) for size in sorted(_lay["scalar_tiles"])
+    types.TileSet(
+      adr=wp.array(_lay["scalar_tiles"][size]["compact"] + _lay["scalar_tiles"][size]["full"], dtype=int),
+      size=size,
+    )
+    for size in sorted(_lay["scalar_tiles"])
   ]
   dense_tiles = [
     types.TileSet(adr=wp.array(_lay["dense_tiles"][size], dtype=int), size=size) for size in sorted(_lay["dense_tiles"])
   ]
   m.M_tiles = tuple(scalar_tiles + dense_tiles)
 
-  # qLD_updates has dof tree ordering of qLD updates for the sparse LDL factor. Block-path DOFs
-  # never touch the LDL region.
-  qLD_updates, dof_depth = {}, np.zeros(mjm.nv, dtype=int) - 1
+  # Group sparse LDL updates by tree depth. Block-path DOFs never touch the LDL region.
+  sparse_updates, dof_depth = {}, np.zeros(mjm.nv, dtype=int) - 1
 
   for k in range(mjm.nv):
     # skip diagonal rows
     if mjm.M_rownnz[k] == 1:
       continue
     dof_depth[k] = dof_depth[mjm.dof_parentid[k]] + 1
-    if dof_dense[k]:
+    if _lay["dof_adr"][k] >= 0:
       continue
     i = mjm.dof_parentid[k]
     diag_k = mjm.M_rowadr[k] + mjm.M_rownnz[k] - 1
     Madr_ki = diag_k - 1
     while i > -1:
-      qLD_updates.setdefault(dof_depth[i], []).append((i, k, Madr_ki))
+      sparse_updates.setdefault(dof_depth[i], []).append((i, k, Madr_ki))
       i = mjm.dof_parentid[i]
       Madr_ki -= 1
-  m.qLD_updates = tuple(wp.array(qLD_updates[i], dtype=wp.vec3i) for i in sorted(qLD_updates))
+  m.qLD_updates = tuple(wp.array(sparse_updates[i], dtype=wp.vec3i) for i in sorted(sparse_updates))
 
   # Build concatenated updates for fused kernel
   all_updates_flat = []
   level_offsets = [0]
-  for level in sorted(qLD_updates):
-    all_updates_flat.extend(qLD_updates[level])
+  for level in sorted(sparse_updates):
+    all_updates_flat.extend(sparse_updates[level])
     level_offsets.append(len(all_updates_flat))
   m.qLD_all_updates = all_updates_flat if all_updates_flat else [(0, 0, 0)]
   m.qLD_level_offsets = level_offsets
@@ -1963,19 +1948,24 @@ def put_data(
   lay = m_block_layout(mjm)
   qld_total = lay["total"] + (mjm.nC if lay["has_sparse"] else 0)
   qLD = np.zeros(qld_total, dtype=np.float32)
-  if lay["factor_blocks"]:
+  factor_tiles = [(size, blocks["full"]) for size, blocks in lay["scalar_tiles"].items() if blocks["full"]] + list(
+    lay["dense_tiles"].items()
+  )
+  if factor_tiles:
     Mfull = np.zeros((mjm.nv, mjm.nv))
     mujoco.mju_sym2dense(Mfull, mjd.M, mjm.M_rownnz, mjm.M_rowadr, mjm.M_colind)
-    for start, size in lay["factor_blocks"]:
-      off = lay["dof_adr"][start]
-      blk = Mfull[start : start + size, start : start + size]
-      if blk.any():
-        qLD[off : off + size * size] = np.linalg.cholesky(blk).T.reshape(-1)
+    for size, starts in factor_tiles:
+      for start in starts:
+        off = lay["dof_adr"][start]
+        blk = Mfull[start : start + size, start : start + size]
+        if blk.any():
+          qLD[off : off + size * size] = np.linalg.cholesky(blk).T.reshape(-1)
   if lay["has_sparse"]:
     qLD[lay["total"] :] = mjd.qLD
   d.qLD = wp.array(np.full((nworld, qld_total), qLD), dtype=float)
   qLDiagInv = d.qLDiagInv.numpy()
-  qLDiagInv[:, lay["full_scalar_dofs"]] = 0.0
+  full_scalar_dofs = [start for blocks in lay["scalar_tiles"].values() for start in blocks["full"]]
+  qLDiagInv[:, full_scalar_dofs] = 0.0
   d.qLDiagInv = wp.array(qLDiagInv, dtype=float)
 
   _allocate_island_arrays(mjm, d, nworld, njmax, island_alloc, mjd)

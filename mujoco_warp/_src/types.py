@@ -1332,11 +1332,9 @@ class Model:
     nmaxpolygon: maximum number of verts per polygon
     nmaxmeshdeg: maximum number of polygons per vert
     is_sparse: constraint Jacobian/Hessian layout (sparse vs dense). Does not affect M, whose
-      factorization is a per-block decision -- see M_tiles, qLD_has_sparse, and m_block_layout
-    qLD_has_sparse: any M block factors via sparse LDL (oversized block / tendon armature)
+      factorization is a per-block decision -- see M_tiles and m_block_layout
     qLD_block_total: packed length of the dense region per world (also the offset of the LDL region)
-    qLD_block_adr: packed offset of each dof's diagonal block; 0 if sparse  (nv,)
-    qLD_dof_dense: per-dof flag, 1 if the dof uses a block path            (nv,)
+    qLD_block_adr: packed offset of each dof's diagonal block; -1 if sparse (nv,)
     has_fluid: True if wind, density, or viscosity are non-zero at put_model time
     has_sdf_geom: whether the model contains SDF geoms
     has_flex_selfcollide: whether any flex has self-collision enabled
@@ -1412,7 +1410,7 @@ class Model:
     taxel_vertadr: tactile sensor vertex address             (nsensortaxel,)
     taxel_sensorid: address for tactile sensors
     M_tiles: scalar and tiled block-factorization groups
-    qLD_updates: tuple of index triples for sparse factorization
+    qLD_updates: sparse factor updates grouped by tree level
     qLD_all_updates: tuple of all levels concatenated
     qLD_level_offsets: tuple of start offsets for each level
     M_fullm_i: sparse mass matrix addressing
@@ -1809,10 +1807,8 @@ class Model:
   nmaxpolygon: int
   nmaxmeshdeg: int
   is_sparse: bool
-  qLD_has_sparse: bool
   qLD_block_total: int
   qLD_block_adr: wp.array[int]
-  qLD_dof_dense: wp.array[int]
   has_fluid: bool
   has_sdf_geom: bool
   has_flex_selfcollide: bool

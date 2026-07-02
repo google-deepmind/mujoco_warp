@@ -485,10 +485,10 @@ class SmoothTest(parameterized.TestCase):
     # The M \ 1 check above verifies the solve regardless of layout. The raw factor matches MuJoCo's
     # only in specific cases: a pure sparse-LDL model stores the L'DL factor in qLD, while a
     # compact diagonal model stores nothing in qLD and just 1/diag in qLDiagInv.
-    if m.qLD_has_sparse and not m.M_tiles:
+    if d.qLD.shape[1] > m.qLD_block_total and not m.M_tiles:
       _assert_eq(d.qLD.numpy()[0].reshape(-1), mjd.qLD, "qLD")
       _assert_eq(d.qLDiagInv.numpy()[0], mjd.qLDiagInv, "qLDiagInv")
-    elif m.M_tiles and not m.qLD_has_sparse and d.qLD.shape[1] == 0:
+    elif m.M_tiles and d.qLD.shape[1] == 0:
       _assert_eq(d.qLDiagInv.numpy()[0], mjd.qLDiagInv, "qLDiagInv")
 
   def test_factor_solve_i_coupled_small_block(self):
@@ -587,7 +587,7 @@ class SmoothTest(parameterized.TestCase):
     mjm, mjd, m, d = test_data.fixture(xml=xml)
     # genuinely mixed: both factor paths active in one model
     self.assertTrue(any(tile.elemid is None for tile in m.M_tiles))
-    self.assertTrue(m.qLD_has_sparse)
+    self.assertGreater(d.qLD.shape[1], m.qLD_block_total)
 
     # M^{-1} @ qfrc_smooth parity against MuJoCo exercises both the packed and the LDL solve.
     ref = np.zeros((1, mjm.nv))

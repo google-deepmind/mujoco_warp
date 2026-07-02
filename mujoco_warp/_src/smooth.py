@@ -1248,7 +1248,7 @@ def factor_m(m: Model, d: Data):
   """
   if m.M_tiles:
     _factor_blocks(m, d, d.M, d.qLD, d.qLDiagInv)
-  if m.qLD_has_sparse:
+  if d.qLD.shape[1] > m.qLD_block_total:
     _factor_i_sparse(m, d, d.M, d.qLD[:, m.qLD_block_total :], d.qLDiagInv)
 
 
@@ -2890,8 +2890,9 @@ def _solve_LD_sparse_fused(nv: int, nlevels: int):
 
   @wp.kernel(module="unique", enable_backward=False)
   def kernel(
+    # Model:
+    qLD_block_adr: wp.array[int],
     # In:
-    dof_dense: wp.array[int],
     L: wp.array2d[float],
     D: wp.array2d[float],
     all_updates: wp.array[wp.vec3i],
@@ -2907,7 +2908,7 @@ def _solve_LD_sparse_fused(nv: int, nlevels: int):
 
     # Copy y to x_out for sparse-block dofs only.
     for dofid in range(tid, NV, BLOCK_DIM):
-      if dof_dense[dofid] == 0:
+      if qLD_block_adr[dofid] < 0:
         x_out[worldid, dofid] = y[worldid, dofid]
     _syncthreads()
 
@@ -2925,7 +2926,7 @@ def _solve_LD_sparse_fused(nv: int, nlevels: int):
 
     # Diagonal multiply (sparse-block dofs only)
     for dofid in range(tid, NV, BLOCK_DIM):
-      if dof_dense[dofid] == 0:
+      if qLD_block_adr[dofid] < 0:
         x_out[worldid, dofid] *= D[worldid, dofid]
     _syncthreads()
 
@@ -2963,7 +2964,7 @@ def _solve_LD_sparse(
   wp.launch(
     _solve_LD_sparse_fused(m.nv, nlevels),
     dim=(d.nworld, dim_block),
-    inputs=[m.qLD_dof_dense, L, D, m.qLD_all_updates, m.qLD_level_offsets, y],
+    inputs=[m.qLD_block_adr, L, D, m.qLD_all_updates, m.qLD_level_offsets, y],
     outputs=[x],
     block_dim=dim_block,
   )
@@ -3104,7 +3105,7 @@ def solve_LD(
   """
   if m.M_tiles:
     _solve_blocks(m, d, L, D, x, y)
-  if m.qLD_has_sparse:
+  if L.shape[1] > m.qLD_block_total:
     _solve_LD_sparse(m, d, L[:, m.qLD_block_total :], D, x, y)
 
 
@@ -3278,7 +3279,7 @@ def factor_solve_i(m, d, M, L, D, x, y):
   """
   if m.M_tiles:
     _factor_solve_blocks(m, d, M, L, D, x, y)
-  if m.qLD_has_sparse:
+  if L.shape[1] > m.qLD_block_total:
     L_ldl = L[:, m.qLD_block_total :]
     _factor_i_sparse(m, d, M, L_ldl, D)
     _solve_LD_sparse(m, d, L_ldl, D, x, y)
