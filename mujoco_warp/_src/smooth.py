@@ -1206,7 +1206,7 @@ def _factor_blocks(
   D: wp.array2d[float],
 ):
   for tile in m.M_tiles:
-    if tile.elemid is None:
+    if tile.elemid.size == 0:
       wp.launch(
         _small_cholesky_factorize_block(tile.size),
         dim=(d.nworld, tile.adr.size),
@@ -3047,7 +3047,7 @@ def _solve_blocks(
   y: wp.array2d[float],
 ):
   for tile in m.M_tiles:
-    if tile.elemid is None:
+    if tile.elemid.size == 0:
       wp.launch(
         _small_cholesky_solve_block(tile.size),
         dim=(d.nworld, tile.adr.size),
@@ -3215,7 +3215,7 @@ def _factor_solve_blocks(
   y: wp.array2d[float],
 ):
   for tile in m.M_tiles:
-    if tile.elemid is None:
+    if tile.elemid.size == 0:
       wp.launch(
         _small_cholesky_factorize_solve_block(tile.size),
         dim=(d.nworld, tile.adr.size),

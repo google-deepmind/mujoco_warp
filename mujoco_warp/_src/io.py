@@ -894,6 +894,7 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
     types.TileSet(
       adr=wp.array(_lay["scalar_tiles"][size]["compact"] + _lay["scalar_tiles"][size]["full"], dtype=int),
       size=size,
+      elemid=wp.array([], dtype=int),
     )
     for size in sorted(_lay["scalar_tiles"])
   ]

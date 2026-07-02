@@ -586,7 +586,7 @@ class SmoothTest(parameterized.TestCase):
 
     mjm, mjd, m, d = test_data.fixture(xml=xml)
     # genuinely mixed: both factor paths active in one model
-    self.assertTrue(any(tile.elemid is None for tile in m.M_tiles))
+    self.assertTrue(any(tile.elemid.size == 0 for tile in m.M_tiles))
     self.assertGreater(d.qLD.shape[1], m.qLD_block_total)
 
     # M^{-1} @ qfrc_smooth parity against MuJoCo exercises both the packed and the LDL solve.

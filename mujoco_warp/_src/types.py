@@ -921,7 +921,7 @@ class TileSet:
   Attributes:
     adr: address of each tile in the set
     size: size of all the tiles in this set
-    elemid: flat CSR gather indices for tiled blocks; None selects the native-layout scalar path
+    elemid: flat CSR gather indices for tiled blocks; empty selects the native-layout scalar path
   """
 
   adr: wp.array[int]

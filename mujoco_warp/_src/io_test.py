@@ -1307,7 +1307,7 @@ class IOTest(parameterized.TestCase):
     self.assertEqual(mjm.nC, 21)
     self.assertLen(m.M_tiles, 1)
     self.assertEqual(m.M_tiles[0].size, 6)
-    self.assertIsNone(m.M_tiles[0].elemid)
+    self.assertEqual(m.M_tiles[0].elemid.size, 0)
 
     body_ipos = np.tile(mjm.body_ipos, (2, 1, 1))
     body_ipos[1, 1] = (0.05, 0.0, -0.02)
