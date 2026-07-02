@@ -143,6 +143,20 @@ def _jtdaj_groups(mjd: mujoco.MjData) -> tuple[np.ndarray, np.ndarray]:
   return adr, nrow
 
 
+def _get_nflexintcell(mjm: mujoco.MjModel) -> int:
+  nflexintcell = 0
+  if mjm.nflex > 0 and hasattr(mjm, "flex_interp"):
+    for fi in range(mjm.nflex):
+      order = abs(int(mjm.flex_interp[fi]))
+      if order == 0:
+        continue
+      if hasattr(mjm, "flex_edgeequality") and mjm.flex_edgeequality[fi] == 3:
+        continue
+      cx, cy, cz = mjm.flex_cellnum[fi]
+      nflexintcell += int(cx) * int(cy) * int(cz)
+  return nflexintcell
+
+
 def is_sparse(mjm: mujoco.MjModel) -> bool:
   if mjm.opt.jacobian == mujoco.mjtJacobian.mjJAC_AUTO:
     if mjm.nv > 32:
@@ -329,6 +343,9 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
   if (mjm.opt.enableflags & mujoco.mjtEnableBit.mjENBL_SLEEP) and (mjm.eq_type == mujoco.mjtEq.mjEQ_FLEX).any():
     raise NotImplementedError("Flex equality constraints are not supported with sleeping enabled.")
 
+  if mjm.nflex > 0 and (mjm.flex_interp < 0).any():
+    raise NotImplementedError("Flex interpolation order < 0 (shell/quad elements) is not supported.")
+
   if mjm.opt.noslip_iterations > 0:
     raise NotImplementedError(f"noslip solver not implemented.")
 
@@ -440,6 +457,7 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
   m.nmaxpyramid = np.maximum(1, 2 * (m.nmaxcondim - 1))
   m.has_sdf_geom = (mjm.geom_type == mujoco.mjtGeom.mjGEOM_SDF).any()
   m.has_flex_selfcollide = bool(mjm.nflex > 0 and np.any(mjm.flex_selfcollide != 0))
+  m.has_trilinear = bool(mjm.nflex > 0 and np.any(mjm.flex_interp == 1))
   m.max_flex_dim = int(np.max(mjm.flex_dim)) if mjm.nflex > 0 else 0
   m.block_dim = types.BlockDim()
   # Derive CG solver block_dim from nv: clamp(round_up_to_32(nv), 32, 256)
@@ -452,6 +470,28 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
     m.block_dim.linesearch_iterative = 512
   m.is_sparse = is_sparse(mjm)
   m.has_fluid = mjm.opt.wind.any() or mjm.opt.density > 0 or mjm.opt.viscosity > 0
+
+  m.nflexintcell = _get_nflexintcell(mjm)
+
+  # Precompute flex_cell_map
+  flex_cell_map = []
+  if mjm.nflex > 0 and hasattr(mjm, "flex_interp"):
+    for fi in range(mjm.nflex):
+      order = abs(int(mjm.flex_interp[fi]))
+      if order == 0:
+        continue
+      if hasattr(mjm, "flex_edgeequality") and mjm.flex_edgeequality[fi] == 3:
+        continue
+      cx, cy, cz = mjm.flex_cellnum[fi]
+      for ci in range(cx):
+        for cj in range(cy):
+          for ck in range(cz):
+            flex_cell_map.append((fi, ci, cj, ck))
+  if not flex_cell_map:
+    m.flex_cell_map = np.zeros((0, 4), dtype=np.int32)
+  else:
+    m.flex_cell_map = np.array(flex_cell_map, dtype=np.int32)
+
   m.max_ten_J_rownnz = int(mjm.ten_J_rownnz.max()) if mjm.ntendon else 0
 
   # body ids grouped by tree level (depth-based traversal)
@@ -698,6 +738,49 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
   m.eq_jnt_adr = np.nonzero(mjm.eq_type == types.EqType.JOINT)[0]
   m.eq_ten_adr = np.nonzero(mjm.eq_type == types.EqType.TENDON)[0]
   m.eq_flex_adr = np.nonzero(mjm.eq_type == types.EqType.FLEX)[0]
+  m.eq_flexstrain_adr = np.nonzero(mjm.eq_type == types.EqType.FLEXSTRAIN)[0]
+  m.neq_flexstrain = m.eq_flexstrain_adr.size
+
+  # Precompute flex strain Jacobian sparsity pattern
+  flexstrain_J_rownnz = []
+  flexstrain_J_colind = []
+
+  if m.neq_flexstrain > 0:
+    for eqstrainid, eqid in enumerate(m.eq_flexstrain_adr):
+      f = int(mjm.eq_obj1id[eqid])
+      order = int(mjm.flex_interp[f])
+      ci = int(mjm.eq_data[eqid, 0])
+      cj = int(mjm.eq_data[eqid, 1])
+      ck = int(mjm.eq_data[eqid, 2])
+
+      cellnum = mjm.flex_cellnum[f]
+      cy = cellnum[1]
+      cz = cellnum[2]
+      nstart = mjm.flex_nodeadr[f]
+      ny_g = cy * order + 1
+      nz_g = cz * order + 1
+
+      node_bodies = [
+        mjm.flex_nodebodyid[nstart + (ci * order + li) * ny_g * nz_g + (cj * order + lj) * nz_g + (ck * order + lk)]
+        for li in range(order + 1)
+        for lj in range(order + 1)
+        for lk in range(order + 1)
+      ]
+
+      active_dof_mask = np.any(body_isdofancestor[node_bodies, :] != 0, axis=0)
+      sorted_dofs = np.nonzero(active_dof_mask)[0].tolist()
+      flexstrain_J_rownnz.append(len(sorted_dofs))
+      flexstrain_J_colind.extend(sorted_dofs)
+
+    m.flexstrain_J_rownnz = np.array(flexstrain_J_rownnz, dtype=np.int32)
+    m.flexstrain_J_colind = np.array(flexstrain_J_colind, dtype=np.int32)
+    m.flexstrain_J_rowadr = np.cumsum([0] + flexstrain_J_rownnz[:-1], dtype=np.int32)
+  else:
+    m.flexstrain_J_rownnz = np.zeros((0,), dtype=np.int32)
+    m.flexstrain_J_rowadr = np.zeros((0,), dtype=np.int32)
+    m.flexstrain_J_colind = np.zeros((0,), dtype=np.int32)
+
+  m.nJfs = m.flexstrain_J_colind.size
 
   # fixed tendon
   m.tendon_jnt_adr, m.wrap_jnt_adr = [], []
@@ -1218,6 +1301,15 @@ def _default_njmax_nnz(mjm: mujoco.MjModel, nconmax: int, njmax: int) -> int:
         for e in range(edge_count):
           total_nnz += mjm.flexedge_J_rownnz[edge_start + e]
 
+    elif eq_type == mujoco.mjtEq.mjEQ_FLEXSTRAIN:
+      # strain constraints: each cell produces neig rows, each dense (nv)
+      obj1id = mjm.eq_obj1id[i]
+      if obj1id < mjm.nflex and hasattr(mjm, "flex_stiffnessadr"):
+        # estimate neig from stiffness data
+        adr = mjm.flex_stiffnessadr[obj1id]
+        neig = int(mjm.flex_stiffness[adr])
+        total_nnz += neig * mjm.nv
+
   # friction constraints
   total_nnz += (mjm.dof_frictionloss > 0).sum()
   for i in range(mjm.ntendon):
@@ -1504,6 +1596,7 @@ def make_data(
   sizes["njmax"] = njmax
   sizes["nvmax"] = nvmax
   sizes["nvmax_pad"] = _nvmax_pad(nvmax)
+  sizes["nflexintcell"] = _get_nflexintcell(mjm)
 
   if njmax_nnz is None:
     if is_sparse(mjm):

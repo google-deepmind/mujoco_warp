@@ -1202,7 +1202,11 @@ def _linesearch_iterative_kernel(ls_iterations: int, cone_type: types.ConeType, 
         swap_hi = swap_hi_hi_next or swap_hi_mid or swap_hi_lo_next
 
         # check for convergence
-        ls_done = (not swap_lo and not swap_hi) or (lo[1] < 0.0 and lo[1] > -gtol) or (hi[1] > 0.0 and hi[1] < gtol)
+        ls_done = (
+          (not swap_lo and not swap_hi)
+          or (lo[0] < 0.0 and lo[1] < 0.0 and lo[1] > -gtol)
+          or (hi[0] < 0.0 and hi[1] > 0.0 and hi[1] < gtol)
+        )
 
         # update alpha if improved
         improved = lo[0] < 0.0 or hi[0] < 0.0
@@ -1380,8 +1384,13 @@ def _linesearch(m: types.Model, d: types.Data, ctx: SolverContext):
 
   # jv = J @ search (when not fused into iterative kernel)
   if not fuse_jv:
-    dofs_per_thread = 20 if m.nv > 50 else 50
-    threads_per_efc = ceil(m.nv / dofs_per_thread)
+    if m.is_sparse:
+      # Sparse J has few nonzeros per row, one thread handles them all.
+      dofs_per_thread = m.nv
+      threads_per_efc = 1
+    else:
+      dofs_per_thread = 20 if m.nv > 50 else 50
+      threads_per_efc = ceil(m.nv / dofs_per_thread)
 
     if threads_per_efc > 1:
       wp.launch(
@@ -3400,12 +3409,16 @@ def init_context(m: types.Model, d: types.Data, ctx: SolverContext | InverseCont
   # if we are only using 1 thread, it makes sense to do more dofs as we can also skip the
   # init kernel. For more than 1 thread, dofs_per_thread is lower for better load balancing.
 
-  if m.nv > 50:
+  if m.is_sparse:
+    # Sparse J has few nonzeros per row, one thread handles them all.
+    dofs_per_thread = m.nv
+    threads_per_efc = 1
+  elif m.nv > 50:
     dofs_per_thread = 20
+    threads_per_efc = ceil(m.nv / dofs_per_thread)
   else:
     dofs_per_thread = 50
-
-  threads_per_efc = ceil(m.nv / dofs_per_thread)
+    threads_per_efc = ceil(m.nv / dofs_per_thread)
   # we need to clear the jaref array if we're doing atomic adds.
   if threads_per_efc > 1:
     ctx.Jaref.zero_()

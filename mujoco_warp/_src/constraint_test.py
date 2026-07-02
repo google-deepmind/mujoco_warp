@@ -162,7 +162,7 @@ class ConstraintTest(parameterized.TestCase):
 
   @parameterized.parameters(
     *itertools.product(
-      ("constraints.xml", "flex/floppy.xml"),
+      ("constraints.xml", "flex/floppy.xml", "flex/moving_base_strain.xml"),
       (mujoco.mjtCone.mjCONE_PYRAMIDAL, mujoco.mjtCone.mjCONE_ELLIPTIC),
       (mujoco.mjtJacobian.mjJAC_DENSE, mujoco.mjtJacobian.mjJAC_SPARSE),
     )
@@ -178,6 +178,9 @@ class ConstraintTest(parameterized.TestCase):
       for arr in (d.efc.J, d.efc.D, d.efc.vel, d.efc.aref, d.efc.pos, d.efc.margin):
         arr.fill_(wp.inf)
 
+      # compute flexnode_xpos from body kinematics before generating constraints
+      if mjm.nflex > 0:
+        mjw.fwd_position(m, d)
       mjw.make_constraint(m, d)
 
       _assert_eq(d.ne.numpy()[0], mjd.ne, "ne")
