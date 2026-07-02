@@ -344,9 +344,6 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
   if (mjm.opt.enableflags & mujoco.mjtEnableBit.mjENBL_SLEEP) and (mjm.eq_type == mujoco.mjtEq.mjEQ_FLEX).any():
     raise NotImplementedError("Flex equality constraints are not supported with sleeping enabled.")
 
-  if mjm.nflex > 0 and (mjm.flex_interp < 0).any():
-    raise NotImplementedError("Flex interpolation order < 0 (shell/quad elements) is not supported.")
-
   if mjm.opt.noslip_iterations > 0:
     raise NotImplementedError(f"noslip solver not implemented.")
 
@@ -458,7 +455,7 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
   m.nmaxpyramid = np.maximum(1, 2 * (m.nmaxcondim - 1))
   m.has_sdf_geom = (mjm.geom_type == mujoco.mjtGeom.mjGEOM_SDF).any()
   m.has_flex_selfcollide = bool(mjm.nflex > 0 and np.any(mjm.flex_selfcollide != 0))
-  m.has_trilinear = bool(mjm.nflex > 0 and np.any(mjm.flex_interp == 1))
+  m.has_trilinear = bool(mjm.nflex > 0 and np.any(np.abs(mjm.flex_interp) == 1))
   m.max_flex_dim = int(np.max(mjm.flex_dim)) if mjm.nflex > 0 else 0
   m.block_dim = types.BlockDim()
   # Derive CG solver block_dim from nv: clamp(round_up_to_32(nv), 32, 256)
@@ -741,15 +738,85 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
   m.eq_flex_adr = np.nonzero(mjm.eq_type == types.EqType.FLEX)[0]
   m.eq_flexstrain_adr = np.nonzero(mjm.eq_type == types.EqType.FLEXSTRAIN)[0]
   m.neq_flexstrain = m.eq_flexstrain_adr.size
-
   # Precompute flex strain Jacobian sparsity pattern
   flexstrain_J_rownnz = []
   flexstrain_J_colind = []
+
+  def _gather_face_node_index(order_abs: int, cx: int, cy: int, cz: int, face_elem_idx: int, local_idx: int) -> int:
+    size01 = cy * cz
+    size23 = cx * cz
+    size45 = cx * cy
+
+    face_id = 0
+    within_face = 0
+
+    if face_elem_idx < size01:
+      face_id = 0
+      within_face = face_elem_idx
+    elif face_elem_idx < 2 * size01:
+      face_id = 1
+      within_face = face_elem_idx - size01
+    elif face_elem_idx < 2 * size01 + size23:
+      face_id = 2
+      within_face = face_elem_idx - 2 * size01
+    elif face_elem_idx < 2 * size01 + 2 * size23:
+      face_id = 3
+      within_face = face_elem_idx - 2 * size01 - size23
+    elif face_elem_idx < 2 * size01 + 2 * size23 + size45:
+      face_id = 4
+      within_face = face_elem_idx - 2 * size01 - 2 * size23
+    else:
+      face_id = 5
+      within_face = face_elem_idx - 2 * size01 - 2 * size23 - size45
+
+    normal_axis = 0
+    if face_id == 0 or face_id == 1:
+      normal_axis = 0
+    elif face_id == 2 or face_id == 3:
+      normal_axis = 1
+    else:
+      normal_axis = 2
+
+    c1 = 0
+    if face_id == 0 or face_id == 1:
+      c1 = cz
+    elif face_id == 2 or face_id == 3:
+      c1 = cx
+    else:
+      c1 = cy
+
+    g_fixed = 0
+    if face_id == 1:
+      g_fixed = cx * order_abs
+    elif face_id == 3:
+      g_fixed = cy * order_abs
+    elif face_id == 5:
+      g_fixed = cz * order_abs
+
+    q0 = within_face // c1
+    q1 = within_face % c1
+
+    l0 = local_idx // (order_abs + 1)
+    l1 = local_idx % (order_abs + 1)
+
+    g = [0, 0, 0]
+    if normal_axis == 0:
+      g = [g_fixed, q0 * order_abs + l0, q1 * order_abs + l1]
+    elif normal_axis == 1:
+      g = [q1 * order_abs + l1, g_fixed, q0 * order_abs + l0]
+    else:
+      g = [q0 * order_abs + l0, q1 * order_abs + l1, g_fixed]
+
+    ny_g = cy * order_abs + 1
+    nz_g = cz * order_abs + 1
+    gidx = g[0] * ny_g * nz_g + g[1] * nz_g + g[2]
+    return gidx
 
   if m.neq_flexstrain > 0:
     for eqstrainid, eqid in enumerate(m.eq_flexstrain_adr):
       f = int(mjm.eq_obj1id[eqid])
       order = int(mjm.flex_interp[f])
+      order_abs = abs(order)
       ci = int(mjm.eq_data[eqid, 0])
       cj = int(mjm.eq_data[eqid, 1])
       ck = int(mjm.eq_data[eqid, 2])
@@ -758,15 +825,26 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
       cy = cellnum[1]
       cz = cellnum[2]
       nstart = mjm.flex_nodeadr[f]
-      ny_g = cy * order + 1
-      nz_g = cz * order + 1
+      ny_g = cy * order_abs + 1
+      nz_g = cz * order_abs + 1
 
-      node_bodies = [
-        mjm.flex_nodebodyid[nstart + (ci * order + li) * ny_g * nz_g + (cj * order + lj) * nz_g + (ck * order + lk)]
-        for li in range(order + 1)
-        for lj in range(order + 1)
-        for lk in range(order + 1)
-      ]
+      if order < 0:
+        # Shell mode: 2D bilinear quad
+        npc = (order_abs + 1) * (order_abs + 1)
+        node_bodies = []
+        for idx in range(npc):
+          gidx = _gather_face_node_index(order_abs, cellnum[0], cy, cz, ci, idx)
+          node_bodies.append(mjm.flex_nodebodyid[nstart + gidx])
+      else:
+        # Solid mode: 3D trilinear voxel
+        node_bodies = [
+          mjm.flex_nodebodyid[
+            nstart + (ci * order_abs + li) * ny_g * nz_g + (cj * order_abs + lj) * nz_g + (ck * order_abs + lk)
+          ]
+          for li in range(order_abs + 1)
+          for lj in range(order_abs + 1)
+          for lk in range(order_abs + 1)
+        ]
 
       active_dof_mask = np.any(body_isdofancestor[node_bodies, :] != 0, axis=0)
       sorted_dofs = np.nonzero(active_dof_mask)[0].tolist()
@@ -1154,6 +1232,26 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
   m.flex_evpairflexid = flex_evpairflexid
   m.flex_vertflexid = flex_vertflexid
   m.flex_shelladr = flex_shelladr
+
+  flex_bend_interp_map = []
+  if mjm.nflex > 0:
+    for fi in range(mjm.nflex):
+      order = mjm.flex_interp[fi]
+      if order >= 0:  # only for interpolated shells (order < 0)
+        continue
+      bendingadr = mjm.flex_bendingadr[fi]
+      if bendingadr < 0:
+        continue
+      nedge = int(mjm.flex_bending[bendingadr])
+      for e in range(nedge):
+        flex_bend_interp_map.append((fi, e))
+
+  if not flex_bend_interp_map:
+    m.nflexbend_interp = 0
+    m.flex_bend_interp_map = np.zeros((0, 2), dtype=np.int32)
+  else:
+    m.nflexbend_interp = len(flex_bend_interp_map)
+    m.flex_bend_interp_map = np.array(flex_bend_interp_map, dtype=np.int32)
 
   # place m on device
   sizes = {f.name: getattr(m, f.name) for f in dataclasses.fields(types.Model) if f.type is int}

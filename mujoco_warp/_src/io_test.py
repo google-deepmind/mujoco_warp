@@ -2926,8 +2926,8 @@ class IOTest(parameterized.TestCase):
         host_slice = val_host[:ncon].reshape(-1)
         _assert_eq(device_slice, host_slice, f"{field} mismatch in world {w}")
 
-  def test_flex_interp_negative_error(self):
-    """Test that put_model raises NotImplementedError for negative flex_interp."""
+  def test_flex_interp_negative_success(self):
+    """Test that put_model succeeds for negative flex_interp (shell elements)."""
     xml = """
     <mujoco>
       <worldbody>
@@ -2943,8 +2943,9 @@ class IOTest(parameterized.TestCase):
     # Modify flex_interp to be negative (simulating quad shells or unsupported order)
     mjm.flex_interp[0] = -1
 
-    with self.assertRaisesRegex(NotImplementedError, "Flex interpolation order < 0 .* not supported"):
-      mjwarp.put_model(mjm)
+    # Should succeed without NotImplementedError
+    m = mjwarp.put_model(mjm)
+    self.assertEqual(m.has_trilinear, True)
 
 
 # TODO(team): test set_const_0 sparse
