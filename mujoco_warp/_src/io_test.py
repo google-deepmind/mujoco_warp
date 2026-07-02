@@ -1305,8 +1305,9 @@ class IOTest(parameterized.TestCase):
     d = mjwarp.put_data(mjm, mjd, nworld=2)
 
     self.assertEqual(mjm.nC, 21)
-    self.assertLen(m.M_small_blocks, 1)
-    np.testing.assert_array_equal(m.M_small_blocks[0].nnz.numpy(), [21])
+    self.assertLen(m.M_tiles, 1)
+    self.assertEqual(m.M_tiles[0].size, 6)
+    self.assertIsNone(m.M_tiles[0].elemid)
 
     body_ipos = np.tile(mjm.body_ipos, (2, 1, 1))
     body_ipos[1, 1] = (0.05, 0.0, -0.02)

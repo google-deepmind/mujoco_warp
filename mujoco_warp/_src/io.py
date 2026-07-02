@@ -912,20 +912,17 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
     small_blocks.setdefault(size, []).append((start, madr, nnz))
   for size, blocks in small_blocks.items():
     blocks.sort(key=lambda block: block[2] != size)
-  m.M_small_blocks = tuple(
-    types.SmallBlockSet(
-      adr=wp.array([block[0] for block in small_blocks[sz]], dtype=int),
-      madr=wp.array([block[1] for block in small_blocks[sz]], dtype=int),
-      nnz=wp.array([block[2] for block in small_blocks[sz]], dtype=int),
-      size=sz,
-    )
-    for sz in sorted(small_blocks)
-  )
 
-  tiles = {}
+  dense_blocks = {}
   for start, size in _lay["dense_blocks"]:
-    tiles.setdefault(size, []).append(start)
-  m.M_tiles = tuple(types.TileSet(adr=wp.array(tiles[sz], dtype=int), size=sz) for sz in sorted(tiles.keys()))
+    dense_blocks.setdefault(size, []).append(start)
+
+  scalar_tiles = [
+    types.TileSet(adr=wp.array([block[0] for block in small_blocks[size]], dtype=int), size=size)
+    for size in sorted(small_blocks)
+  ]
+  dense_tiles = [types.TileSet(adr=wp.array(dense_blocks[size], dtype=int), size=size) for size in sorted(dense_blocks)]
+  m.M_tiles = tuple(scalar_tiles + dense_tiles)
 
   # qLD_updates has dof tree ordering of qLD updates for the sparse LDL factor. Block-path DOFs
   # never touch the LDL region.
@@ -988,9 +985,9 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
   # dense block and flat slot (row, col), store the CSR address of M[max(i,j), min(i,j)], or nC
   # (out of bounds -> read as 0) for structurally absent pairs. Laid out [block, slot] so the kernel
   # reads slice (block_size^2,) at offset blk * block_size^2.
-  for tile in m.M_tiles:
+  for tile in dense_tiles:
     sz = tile.size
-    starts = np.array(tiles[sz], dtype=np.int32)  # host block starts; no device round-trip
+    starts = np.array(dense_blocks[sz], dtype=np.int32)  # host block starts; no device round-trip
     dofs = starts[:, None] + np.arange(sz)[None, :]  # (nblock, sz) global dof per block row
     gi = dofs[:, :, None]  # (nblock, sz, 1)
     gj = dofs[:, None, :]  # (nblock, 1, sz)

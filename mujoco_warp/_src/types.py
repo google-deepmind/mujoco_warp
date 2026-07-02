@@ -918,7 +918,7 @@ class TileSet:
   Attributes:
     adr: address of each tile in the set
     size: size of all the tiles in this set
-    elemid: flat per-block gather indices into CSR M for tile_load_indexed (absent -> nC sentinel)
+    elemid: flat CSR gather indices for tiled blocks; None selects the native-layout scalar path
   """
 
   adr: wp.array[int]
@@ -933,23 +933,6 @@ class TileSet:
   def __hash__(self) -> int:
     adr = np.asarray(self.adr.numpy())
     return hash((self.size, adr.dtype.str, adr.shape, adr.tobytes()))
-
-
-@dataclasses.dataclass
-class SmallBlockSet:
-  """Native CSR metadata for inertia blocks sharing a size.
-
-  Attributes:
-    adr: first DOF of each block
-    madr: first M address of each block
-    nnz: number of stored M entries in each block
-    size: number of DOFs in each block
-  """
-
-  adr: wp.array[int]
-  madr: wp.array[int]
-  nnz: wp.array[int]
-  size: int
 
 
 @dataclasses.dataclass
@@ -1430,8 +1413,7 @@ class Model:
     sensor_rangefinder_bodyid: bodyid for rangefinder        (nrangefinder,)
     taxel_vertadr: tactile sensor vertex address             (nsensortaxel,)
     taxel_sensorid: address for tactile sensors
-    M_small_blocks: native CSR metadata for scalar blocks, grouped by size
-    M_tiles: tiling configuration for dense blocks
+    M_tiles: scalar and tiled block-factorization groups
     qLD_updates: tuple of index triples for sparse factorization
     qLD_all_updates: tuple of all levels concatenated
     qLD_level_offsets: tuple of start offsets for each level
@@ -1900,7 +1882,6 @@ class Model:
   sensor_rangefinder_bodyid: array("nrangefinder", int)
   taxel_vertadr: array("nsensortaxel", int)
   taxel_sensorid: wp.array[int]
-  M_small_blocks: tuple[SmallBlockSet, ...]
   M_tiles: tuple[TileSet, ...]
   qLD_updates: tuple[wp.array[wp.vec3i], ...]
   qLD_all_updates: wp.array[wp.vec3i]

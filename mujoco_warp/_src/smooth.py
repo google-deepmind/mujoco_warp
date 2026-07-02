@@ -1124,22 +1124,23 @@ def _small_cholesky_factorize_block(block_size: int):
   @wp.kernel(module="unique", enable_backward=False)
   def kernel(
     # Model:
+    M_rownnz: wp.array[int],
+    M_rowadr: wp.array[int],
     qLD_block_adr: wp.array[int],
     # Data in:
     M_in: wp.array2d[float],
     # In:
     block_dof: wp.array[int],
-    block_madr: wp.array[int],
-    block_nnz: wp.array[int],
     # Out:
     D_out: wp.array2d[float],
     L_out: wp.array2d[float],
   ):
     worldid, blk = wp.tid()
     start = block_dof[blk]
-    matrix_adr = block_madr[blk]
-    matrix_nnz = block_nnz[blk]
     size = wp.static(block_size)
+    matrix_adr = M_rowadr[start]
+    last = start + size - 1
+    matrix_nnz = M_rowadr[last] + M_rownnz[last] - matrix_adr
     triangular_nnz = wp.static(block_size * (block_size + 1) // 2)
 
     diagonal = bool(True)
@@ -1177,17 +1178,6 @@ def _small_cholesky_factorize_block(block_size: int):
   return kernel
 
 
-def _factor_block_small(m: Model, d: Data, M: wp.array2d[float], L: wp.array2d[float], D: wp.array2d[float]):
-  for blocks in m.M_small_blocks:
-    wp.launch(
-      _small_cholesky_factorize_block(blocks.size),
-      dim=(d.nworld, blocks.adr.size),
-      inputs=[m.qLD_block_adr, M, blocks.adr, blocks.madr, blocks.nnz],
-      outputs=[D, L],
-      block_dim=64,
-    )
-
-
 @cache_kernel
 def _tile_cholesky_factorize_block(tile: TileSet):
   # One diagonal block of `block_size` dofs per (world, block) tile group. tile_load_indexed gathers
@@ -1223,15 +1213,30 @@ def _tile_cholesky_factorize_block(tile: TileSet):
   return kernel
 
 
-def _factor_block_dense(m: Model, d: Data, M: wp.array2d[float], L: wp.array2d[float]):
+def _factor_blocks(
+  m: Model,
+  d: Data,
+  M: wp.array2d[float],
+  L: wp.array2d[float],
+  D: wp.array2d[float],
+):
   for tile in m.M_tiles:
-    wp.launch_tiled(
-      _tile_cholesky_factorize_block(tile),
-      dim=(d.nworld, tile.adr.size),
-      inputs=[m.qLD_block_adr, M, tile.elemid, tile.adr],
-      outputs=[L],
-      block_dim=m.block_dim.cholesky_factorize,
-    )
+    if tile.elemid is None:
+      wp.launch(
+        _small_cholesky_factorize_block(tile.size),
+        dim=(d.nworld, tile.adr.size),
+        inputs=[m.M_rownnz, m.M_rowadr, m.qLD_block_adr, M, tile.adr],
+        outputs=[D, L],
+        block_dim=64,
+      )
+    else:
+      wp.launch_tiled(
+        _tile_cholesky_factorize_block(tile),
+        dim=(d.nworld, tile.adr.size),
+        inputs=[m.qLD_block_adr, M, tile.elemid, tile.adr],
+        outputs=[L],
+        block_dim=m.block_dim.cholesky_factorize,
+      )
 
 
 @event_scope
@@ -1241,10 +1246,8 @@ def factor_m(m: Model, d: Data):
   Small blocks select diagonal or scalar Cholesky at runtime, larger dense blocks use tile
   Cholesky, and oversized blocks use sparse LDL.
   """
-  if m.qLD_has_small:
-    _factor_block_small(m, d, d.M, d.qLD, d.qLDiagInv)
-  if m.qLD_has_dense:
-    _factor_block_dense(m, d, d.M, d.qLD)
+  if m.qLD_has_small or m.qLD_has_dense:
+    _factor_blocks(m, d, d.M, d.qLD, d.qLDiagInv)
   if m.qLD_has_sparse:
     _factor_i_sparse(m, d, d.M, d.qLD[:, m.qLD_block_total :], d.qLDiagInv)
 
@@ -3000,7 +3003,6 @@ def _small_cholesky_solve_block(block_size: int):
     qLD_block_adr: wp.array[int],
     # In:
     block_dof: wp.array[int],
-    block_nnz: wp.array[int],
     D_in: wp.array2d[float],
     L_in: wp.array2d[float],
     y_in: wp.array2d[float],
@@ -3010,7 +3012,7 @@ def _small_cholesky_solve_block(block_size: int):
     worldid, blk = wp.tid()
     start = block_dof[blk]
     size = wp.static(block_size)
-    if block_nnz[blk] == size or D_in[worldid, start] != 0.0:
+    if D_in[worldid, start] != 0.0:
       for i in range(wp.static(block_size)):
         x_out[worldid, start + i] = D_in[worldid, start + i] * y_in[worldid, start + i]
     else:
@@ -3049,21 +3051,7 @@ def _tile_cholesky_solve_block(tile: TileSet):
   return kernel
 
 
-def _solve_block_dense(m: Model, d: Data, L: wp.array2d[float], x: wp.array2d[float], y: wp.array2d[float]):
-  for tile in m.M_tiles:
-    # The triangular back-substitution is largely sequential, so large blocks prefer fewer threads
-    # for better occupancy while moderate blocks still want a couple warps (16/27->64, 60->32).
-    block_dim = m.block_dim.cholesky_solve if tile.size <= 40 else 32
-    wp.launch_tiled(
-      _tile_cholesky_solve_block(tile),
-      dim=(d.nworld, tile.adr.size),
-      inputs=[m.qLD_block_adr, tile.adr, L, y],
-      outputs=[x],
-      block_dim=block_dim,
-    )
-
-
-def _solve_block_small(
+def _solve_blocks(
   m: Model,
   d: Data,
   L: wp.array2d[float],
@@ -3071,14 +3059,26 @@ def _solve_block_small(
   x: wp.array2d[float],
   y: wp.array2d[float],
 ):
-  for blocks in m.M_small_blocks:
-    wp.launch(
-      _small_cholesky_solve_block(blocks.size),
-      dim=(d.nworld, blocks.adr.size),
-      inputs=[m.qLD_block_adr, blocks.adr, blocks.nnz, D, L, y],
-      outputs=[x],
-      block_dim=64,
-    )
+  for tile in m.M_tiles:
+    if tile.elemid is None:
+      wp.launch(
+        _small_cholesky_solve_block(tile.size),
+        dim=(d.nworld, tile.adr.size),
+        inputs=[m.qLD_block_adr, tile.adr, D, L, y],
+        outputs=[x],
+        block_dim=64,
+      )
+    else:
+      # The triangular back-substitution is largely sequential, so large blocks prefer fewer threads
+      # for better occupancy while moderate blocks still want a couple warps (16/27->64, 60->32).
+      block_dim = m.block_dim.cholesky_solve if tile.size <= 40 else 32
+      wp.launch_tiled(
+        _tile_cholesky_solve_block(tile),
+        dim=(d.nworld, tile.adr.size),
+        inputs=[m.qLD_block_adr, tile.adr, L, y],
+        outputs=[x],
+        block_dim=block_dim,
+      )
 
 
 def solve_LD(
@@ -3102,10 +3102,8 @@ def solve_LD(
     x: Output array for the solution.
     y: Input right-hand side array.
   """
-  if m.qLD_has_small:
-    _solve_block_small(m, d, L, D, x, y)
-  if m.qLD_has_dense:
-    _solve_block_dense(m, d, L, x, y)
+  if m.qLD_has_small or m.qLD_has_dense:
+    _solve_blocks(m, d, L, D, x, y)
   if m.qLD_has_sparse:
     _solve_LD_sparse(m, d, L[:, m.qLD_block_total :], D, x, y)
 
@@ -3167,13 +3165,13 @@ def _small_cholesky_factorize_solve_block(block_size: int):
   @wp.kernel(module="unique", enable_backward=False)
   def kernel(
     # Model:
+    M_rownnz: wp.array[int],
+    M_rowadr: wp.array[int],
     qLD_block_adr: wp.array[int],
     # Data in:
     M_in: wp.array2d[float],
     # In:
     block_dof: wp.array[int],
-    block_madr: wp.array[int],
-    block_nnz: wp.array[int],
     y: wp.array2d[float],
     # Out:
     D_out: wp.array2d[float],
@@ -3182,9 +3180,10 @@ def _small_cholesky_factorize_solve_block(block_size: int):
   ):
     worldid, blk = wp.tid()
     start = block_dof[blk]
-    matrix_adr = block_madr[blk]
-    matrix_nnz = block_nnz[blk]
     size = wp.static(block_size)
+    matrix_adr = M_rowadr[start]
+    last = start + size - 1
+    matrix_nnz = M_rowadr[last] + M_rownnz[last] - matrix_adr
     triangular_nnz = wp.static(block_size * (block_size + 1) // 2)
 
     diagonal = bool(True)
@@ -3234,20 +3233,7 @@ def _small_cholesky_factorize_solve_block(block_size: int):
   return kernel
 
 
-def _factor_solve_block_dense(
-  m: Model, d: Data, M: wp.array2d[float], x: wp.array2d[float], y: wp.array2d[float], L: wp.array2d[float]
-):
-  for tile in m.M_tiles:
-    wp.launch_tiled(
-      _tile_cholesky_factorize_solve_block(tile),
-      dim=(d.nworld, tile.adr.size),
-      inputs=[m.qLD_block_adr, M, tile.elemid, tile.adr, y],
-      outputs=[x, L],
-      block_dim=m.block_dim.cholesky_factorize_solve,
-    )
-
-
-def _factor_solve_block_small(
+def _factor_solve_blocks(
   m: Model,
   d: Data,
   M: wp.array2d[float],
@@ -3256,14 +3242,23 @@ def _factor_solve_block_small(
   x: wp.array2d[float],
   y: wp.array2d[float],
 ):
-  for blocks in m.M_small_blocks:
-    wp.launch(
-      _small_cholesky_factorize_solve_block(blocks.size),
-      dim=(d.nworld, blocks.adr.size),
-      inputs=[m.qLD_block_adr, M, blocks.adr, blocks.madr, blocks.nnz, y],
-      outputs=[D, x, L],
-      block_dim=64,
-    )
+  for tile in m.M_tiles:
+    if tile.elemid is None:
+      wp.launch(
+        _small_cholesky_factorize_solve_block(tile.size),
+        dim=(d.nworld, tile.adr.size),
+        inputs=[m.M_rownnz, m.M_rowadr, m.qLD_block_adr, M, tile.adr, y],
+        outputs=[D, x, L],
+        block_dim=64,
+      )
+    else:
+      wp.launch_tiled(
+        _tile_cholesky_factorize_solve_block(tile),
+        dim=(d.nworld, tile.adr.size),
+        inputs=[m.qLD_block_adr, M, tile.elemid, tile.adr, y],
+        outputs=[x, L],
+        block_dim=m.block_dim.cholesky_factorize_solve,
+      )
 
 
 def factor_solve_i(m, d, M, L, D, x, y):
@@ -3281,10 +3276,8 @@ def factor_solve_i(m, d, M, L, D, x, y):
     x: Output array for the solution.
     y: Input right-hand side array.
   """
-  if m.qLD_has_small:
-    _factor_solve_block_small(m, d, M, L, D, x, y)
-  if m.qLD_has_dense:
-    _factor_solve_block_dense(m, d, M, x, y, L)
+  if m.qLD_has_small or m.qLD_has_dense:
+    _factor_solve_blocks(m, d, M, L, D, x, y)
   if m.qLD_has_sparse:
     L_ldl = L[:, m.qLD_block_total :]
     _factor_i_sparse(m, d, M, L_ldl, D)
