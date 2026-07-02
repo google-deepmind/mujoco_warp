@@ -548,6 +548,55 @@ def jac_dof(
   return jacp, jacr
 
 
+@wp.func
+def apply_force_torque(
+  # Model:
+  body_parentid: wp.array[int],
+  body_rootid: wp.array[int],
+  body_dofnum: wp.array[int],
+  body_dofadr: wp.array[int],
+  dof_bodyid: wp.array[int],
+  body_isdofancestor: wp.array2d[int],
+  # Data in:
+  subtree_com_in: wp.array2d[wp.vec3],
+  cdof_in: wp.array2d[wp.spatial_vector],
+  # In:
+  force: wp.vec3,
+  torque: wp.vec3,
+  point: wp.vec3,
+  bodyid: int,
+  worldid: int,
+  # Out:
+  qfrc_out: wp.array2d[float],
+):
+  b = bodyid
+  while b > 0:
+    dofnum = body_dofnum[b]
+    if dofnum <= 0:
+      b = body_parentid[b]
+      continue
+    dofadr = body_dofadr[b]
+    for d in range(6):
+      if d >= dofnum:
+        continue
+      dofid = dofadr + d
+      jacp, jacr = jac_dof(
+        body_parentid,
+        body_rootid,
+        dof_bodyid,
+        body_isdofancestor,
+        subtree_com_in,
+        cdof_in,
+        point,
+        bodyid,
+        dofid,
+        worldid,
+      )
+      val = wp.dot(jacp, force) + wp.dot(jacr, torque)
+      wp.atomic_add(qfrc_out, worldid, dofid, val)
+    b = body_parentid[b]
+
+
 @cache_kernel
 def _make_jac_kernel(has_jacp: bool, has_jacr: bool):
   @wp.kernel(module="unique", enable_backward=False)
@@ -1083,3 +1132,258 @@ def select_top4_weights(
     )
 
   return selected_b, selected_W
+
+
+@wp.func
+def gather_face_node_index(
+  # In:
+  cellnum_x: int,
+  cellnum_y: int,
+  cellnum_z: int,
+  face_elem_idx: int,
+  local_idx: int,
+  order_abs: int,
+) -> int:
+  size01 = cellnum_y * cellnum_z
+  size23 = cellnum_x * cellnum_z
+  size45 = cellnum_x * cellnum_y
+
+  face_id = 0
+  within_face = 0
+
+  if face_elem_idx < size01:
+    face_id = 0
+    within_face = face_elem_idx
+  elif face_elem_idx < 2 * size01:
+    face_id = 1
+    within_face = face_elem_idx - size01
+  elif face_elem_idx < 2 * size01 + size23:
+    face_id = 2
+    within_face = face_elem_idx - 2 * size01
+  elif face_elem_idx < 2 * size01 + 2 * size23:
+    face_id = 3
+    within_face = face_elem_idx - 2 * size01 - size23
+  elif face_elem_idx < 2 * size01 + 2 * size23 + size45:
+    face_id = 4
+    within_face = face_elem_idx - 2 * size01 - 2 * size23
+  else:
+    face_id = 5
+    within_face = face_elem_idx - 2 * size01 - 2 * size23 - size45
+
+  normal_axis = face_id // 2
+
+  c1 = 0
+  if face_id == 0 or face_id == 1:
+    c1 = cellnum_z
+  elif face_id == 2 or face_id == 3:
+    c1 = cellnum_x
+  else:
+    c1 = cellnum_y
+
+  fixed_dim = wp.where(normal_axis == 0, cellnum_x, wp.where(normal_axis == 1, cellnum_y, cellnum_z))
+  g_fixed = (face_id % 2) * fixed_dim * order_abs
+
+  q0 = within_face // c1
+  q1 = within_face % c1
+
+  l0 = local_idx // (order_abs + 1)
+  l1 = local_idx % (order_abs + 1)
+
+  g = wp.vec3i(0, 0, 0)
+  if normal_axis == 0:
+    g = wp.vec3i(g_fixed, q0 * order_abs + l0, q1 * order_abs + l1)
+  elif normal_axis == 1:
+    g = wp.vec3i(q1 * order_abs + l1, g_fixed, q0 * order_abs + l0)
+  else:
+    g = wp.vec3i(q0 * order_abs + l0, q1 * order_abs + l1, g_fixed)
+
+  ny_g = cellnum_y * order_abs + 1
+  nz_g = cellnum_z * order_abs + 1
+  gidx = g[0] * ny_g * nz_g + g[1] * nz_g + g[2]
+  return gidx
+
+
+@wp.func
+def compute_interp_face_quat(
+  # Data in:
+  flexnode_xpos_in: wp.array2d[wp.vec3],
+  # In:
+  cellnum_x: int,
+  cellnum_y: int,
+  cellnum_z: int,
+  face_elem_idx: int,
+  nstart: int,
+  order_abs: int,
+  worldid: int,
+) -> wp.quat:
+  size01 = cellnum_y * cellnum_z
+  size23 = cellnum_x * cellnum_z
+  size45 = cellnum_x * cellnum_y
+
+  face_id = 0
+  if face_elem_idx < size01:
+    face_id = 0
+  elif face_elem_idx < 2 * size01:
+    face_id = 1
+  elif face_elem_idx < 2 * size01 + size23:
+    face_id = 2
+  elif face_elem_idx < 2 * size01 + 2 * size23:
+    face_id = 3
+  elif face_elem_idx < 2 * size01 + 2 * size23 + size45:
+    face_id = 4
+  else:
+    face_id = 5
+
+  normal_axis = face_id // 2
+
+  t1 = wp.vec3(0.0)
+  t2 = wp.vec3(0.0)
+
+  npc = (order_abs + 1) * (order_abs + 1)
+
+  for local_idx in range(9):
+    if local_idx < npc:
+      gidx = gather_face_node_index(
+        cellnum_x,
+        cellnum_y,
+        cellnum_z,
+        face_elem_idx,
+        local_idx,
+        order_abs,
+      )
+      node_pos = flexnode_xpos_in[worldid, nstart + gidx]
+
+      l0 = local_idx // (order_abs + 1)
+      l1 = local_idx % (order_abs + 1)
+
+      dphi0 = float(l0 - 1) if order_abs == 2 else (-1.0 + 2.0 * float(l0))
+      dphi1 = float(l1 - 1) if order_abs == 2 else (-1.0 + 2.0 * float(l1))
+      phi0 = wp.where(l0 == 1, 1.0, 0.5) if order_abs == 2 else 0.5
+      phi1 = wp.where(l1 == 1, 1.0, 0.5) if order_abs == 2 else 0.5
+
+      grad0 = dphi0 * phi1
+      grad1 = phi0 * dphi1
+
+      t1 += node_pos * grad0
+      t2 += node_pos * grad1
+
+  normal = wp.cross(t1, t2)
+
+  F = wp.mat33(0.0)
+  if normal_axis == 0:
+    F = wp.mat33(
+      normal[0],
+      t1[0],
+      t2[0],
+      normal[1],
+      t1[1],
+      t2[1],
+      normal[2],
+      t1[2],
+      t2[2],
+    )
+  elif normal_axis == 1:
+    F = wp.mat33(
+      t2[0],
+      normal[0],
+      t1[0],
+      t2[1],
+      normal[1],
+      t1[1],
+      t2[2],
+      normal[2],
+      t1[2],
+    )
+  else:
+    F = wp.mat33(
+      t1[0],
+      t2[0],
+      normal[0],
+      t1[1],
+      t2[1],
+      normal[1],
+      t1[2],
+      t2[2],
+      normal[2],
+    )
+
+  return mat33_to_quat_polar(F)
+
+
+@wp.func
+def flex_phi(s: float, i: int, order: int) -> float:
+  if order == 1:
+    return 1.0 - s if i == 0 else s
+  if i == 0:
+    return 2.0 * s * s - 3.0 * s + 1.0
+  if i == 1:
+    return 4.0 * (s - s * s)
+  if i == 2:
+    return 2.0 * s * s - s
+  return 0.0
+
+
+@wp.func
+def flex_dphi(s: float, i: int, order: int) -> float:
+  if order == 1:
+    return -1.0 if i == 0 else 1.0
+  if i == 0:
+    return 4.0 * s - 3.0
+  if i == 1:
+    return 4.0 * (1.0 - 2.0 * s)
+  if i == 2:
+    return 4.0 * s - 1.0
+  return 0.0
+
+
+@wp.func
+def dphi2D(s0: float, l0: int, s1: float, l1: int, order: int, direction: int) -> float:
+  if direction == 0:
+    return flex_dphi(s0, l0, order) * flex_phi(s1, l1, order)
+  else:
+    return flex_phi(s0, l0, order) * flex_dphi(s1, l1, order)
+
+
+@wp.func
+def flex_face_normal_2D(
+  # Data in:
+  flexnode_xpos_in: wp.array2d[wp.vec3],
+  # In:
+  cellnum_x: int,
+  cellnum_y: int,
+  cellnum_z: int,
+  face_elem_idx: int,
+  nstart: int,
+  order: int,
+  worldid: int,
+  local: wp.vec2,
+) -> Tuple[wp.vec3, wp.vec3, wp.vec3]:
+  t1 = wp.vec3(0.0)
+  t2 = wp.vec3(0.0)
+
+  idx = int(0)
+  for l0 in range(3):
+    if l0 > order:
+      continue
+    for l1 in range(3):
+      if l1 > order:
+        continue
+      gidx = gather_face_node_index(
+        cellnum_x,
+        cellnum_y,
+        cellnum_z,
+        face_elem_idx,
+        idx,
+        order,
+      )
+      pos = flexnode_xpos_in[worldid, nstart + gidx]
+
+      grad0 = flex_dphi(local[0], l0, order) * flex_phi(local[1], l1, order)
+      grad1 = flex_phi(local[0], l0, order) * flex_dphi(local[1], l1, order)
+
+      t1 += pos * grad0
+      t2 += pos * grad1
+      idx += 1
+
+  normal = wp.cross(t1, t2)
+  return normal, t1, t2

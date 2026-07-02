@@ -423,6 +423,85 @@ class PassiveTest(parameterized.TestCase):
     mjw.forward(m, d)
     np.testing.assert_allclose(d.qfrc_fluid.numpy()[0], mjd.qfrc_fluid, atol=5e-4, rtol=5e-4)
 
+  @parameterized.parameters(
+    ("bend", 1e-6),
+    ("stretch", 1e-4),
+    ("both", 1e-4),
+  )
+  def test_flex_elastic2d(self, elastic2d, atol):
+    """Tests 2D flex passive forces (bending and stretching)."""
+    xml = f"""
+    <mujoco>
+      <option gravity="0 0 -9.81">
+        <flag contact="disable"/>
+      </option>
+      <worldbody>
+        <flexcomp type="grid" count="3 3 1" spacing="0.1 0.1 0.1"
+                  pos="0 0 0.5" name="cloth" dim="2" mass="1" radius="0.005">
+          <elasticity young="3e3" poisson="0.3" thickness="1e-2" damping="1e-3" elastic2d="{elastic2d}"/>
+        </flexcomp>
+      </worldbody>
+    </mujoco>
+    """
+    _, mjd, m, d = test_data.fixture(
+      xml=xml,
+      qpos_noise=0.01,
+    )
+    for arr in (d.qfrc_spring, d.qfrc_passive):
+      arr.zero_()
+
+    mjw.kinematics(m, d)
+    mjw.flex(m, d)
+    mjw.passive(m, d)
+
+    np.testing.assert_allclose(
+      d.qfrc_spring.numpy()[0],
+      mjd.qfrc_spring,
+      atol=atol,
+      err_msg=f"qfrc_spring mismatch for elastic2d={elastic2d}",
+    )
+
+  @parameterized.parameters(
+    ("bend", 5e-3),
+    ("stretch", 1e-4),
+    ("both", 5e-3),
+  )
+  def test_flex_elastic2d_interp(self, elastic2d, atol):
+    """Tests 2D interpolated flex passive forces (bending and stretching)."""
+    xml = f"""
+    <mujoco>
+      <option gravity="0 0 -9.81">
+        <flag contact="disable"/>
+      </option>
+      <worldbody>
+        <flexcomp type="grid" count="4 2 4" spacing=".025 .05 .025" pos="0 0 1"
+                  dim="3" cellcount="2 1 2" radius=".001"
+                  mass="5" name="softbody" dof="trilinear">
+          <elasticity young="1e4" poisson="0.3" damping="1e-3"
+                      elastic2d="{elastic2d}" thickness="0.03"/>
+          <contact selfcollide="none" internal="false"/>
+        </flexcomp>
+      </worldbody>
+    </mujoco>
+    """
+    _, mjd, m, d = test_data.fixture(
+      xml=xml,
+      qpos_noise=0.01,
+    )
+    for arr in (d.qfrc_spring, d.qfrc_passive):
+      arr.zero_()
+
+    mjw.kinematics(m, d)
+    mjw.flex(m, d)
+    mjw.passive(m, d)
+
+    np.testing.assert_allclose(
+      d.qfrc_spring.numpy()[0],
+      mjd.qfrc_spring,
+      atol=atol,
+      err_msg=f"qfrc_spring mismatch for interpolated elastic2d={elastic2d}",
+    )
+
 
 if __name__ == "__main__":
   wp.init()

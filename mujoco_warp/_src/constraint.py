@@ -1484,11 +1484,16 @@ def _equality_flexstrain(is_sparse: bool, newton: bool):
 
     f = eq_obj1id[eqid]
     order = flex_interp[f]
-    if order <= 0:
+    order_abs = wp.abs(order)
+    if order_abs == 0:
       return
 
     # nodes per cell
-    npc = (order + 1) * (order + 1) * (order + 1)
+    npc = wp.where(
+      order < 0,
+      (order_abs + 1) * (order_abs + 1),
+      (order_abs + 1) * (order_abs + 1) * (order_abs + 1),
+    )
 
     # cell indices from eq_data
     data = eq_data[worldid % eq_data.shape[0], eqid]
@@ -1500,13 +1505,13 @@ def _equality_flexstrain(is_sparse: bool, newton: bool):
     cy = cellnum[1]
     cz = cellnum[2]
     nstart = flex_nodeadr[f]
-    ny_g = cy * order + 1
-    nz_g = cz * order + 1
+    ny_g = cy * order_abs + 1
+    nz_g = cz * order_abs + 1
 
     ndof_cell = 3 * npc
 
     # read eigenmode data from flex_stiffness
-    cell_idx = ci * cy * cz + cj * cz + ck
+    cell_idx = wp.where(order < 0, ci, ci * cy * cz + cj * cz + ck)
     k_base = flex_stiffnessadr[f] + cell_idx * ndof_cell * ndof_cell
     neig = int(flex_stiffness[k_base])
 
@@ -1520,20 +1525,46 @@ def _equality_flexstrain(is_sparse: bool, newton: bool):
     # We compute the corotational quaternion from the deformation gradient
     # at the cell center (0.5, 0.5, 0.5)
 
-    cell_quat = support.compute_interp_cell_quat(flexnode_xpos_in, order, ci, cj, ck, cy, cz, ny_g, nz_g, nstart, worldid)
+    cell_quat = wp.where(
+      order < 0,
+      support.compute_interp_face_quat(
+        flexnode_xpos_in,
+        cellnum[0],
+        cy,
+        cz,
+        cell_idx,
+        nstart,
+        order_abs,
+        worldid,
+      ),
+      support.compute_interp_cell_quat(
+        flexnode_xpos_in,
+        order_abs,
+        ci,
+        cj,
+        ck,
+        cy,
+        cz,
+        ny_g,
+        nz_g,
+        nstart,
+        worldid,
+      ),
+    )
     cell_quat_inv = wp.quat(-cell_quat[0], -cell_quat[1], -cell_quat[2], cell_quat[3])
 
     # Compute average invweight across cell nodes (translation component)
     avg_invweight = float(0.0)
     idx_iw = int(0)
-    for li_iw in range(order + 1):
-      for lj_iw in range(order + 1):
-        for lk_iw in range(order + 1):
+    for li_iw in range(order_abs + 1):
+      for lj_iw in range(order_abs + 1):
+        for lk_iw in range(order_abs + 1):
           if idx_iw < npc:
-            gi_iw = ci * order + li_iw
-            gj_iw = cj * order + lj_iw
-            gk_iw = ck * order + lk_iw
-            gidx_iw = gi_iw * ny_g * nz_g + gj_iw * nz_g + gk_iw
+            gidx_iw = wp.where(
+              order < 0,
+              support.gather_face_node_index(cellnum[0], cy, cz, cell_idx, idx_iw, order_abs),
+              (ci * order_abs + li_iw) * ny_g * nz_g + (cj * order_abs + lj_iw) * nz_g + (ck * order_abs + lk_iw),
+            )
             bodyid_iw = flex_nodebodyid[nstart + gidx_iw]
             avg_invweight += body_invweight0[worldid % body_invweight0.shape[0], bodyid_iw][0]
             idx_iw += 1
@@ -1558,14 +1589,15 @@ def _equality_flexstrain(is_sparse: bool, newton: bool):
       # Compute constraint residual: dot(eigvec, displacement_in_corot_frame)
       residual = float(0.0)
       idx2 = int(0)
-      for li2 in range(order + 1):
-        for lj2 in range(order + 1):
-          for lk2 in range(order + 1):
+      for li2 in range(order_abs + 1):
+        for lj2 in range(order_abs + 1):
+          for lk2 in range(order_abs + 1):
             if idx2 < npc:
-              gi2 = ci * order + li2
-              gj2 = cj * order + lj2
-              gk2 = ck * order + lk2
-              gidx2 = gi2 * ny_g * nz_g + gj2 * nz_g + gk2
+              gidx2 = wp.where(
+                order < 0,
+                support.gather_face_node_index(cellnum[0], cy, cz, cell_idx, idx2, order_abs),
+                (ci * order_abs + li2) * ny_g * nz_g + (cj * order_abs + lj2) * nz_g + (ck * order_abs + lk2),
+              )
 
               xpos_n = flexnode_xpos_in[worldid, nstart + gidx2]
               refpos_n = flex_node0[nstart + gidx2]
@@ -1606,14 +1638,15 @@ def _equality_flexstrain(is_sparse: bool, newton: bool):
         q = flexstrain_J_colind[fs_rowadr + sparseid]
         J_val = float(0.0)
         idx3 = int(0)
-        for li3 in range(order + 1):
-          for lj3 in range(order + 1):
-            for lk3 in range(order + 1):
+        for li3 in range(order_abs + 1):
+          for lj3 in range(order_abs + 1):
+            for lk3 in range(order_abs + 1):
               if idx3 < npc:
-                gi3 = ci * order + li3
-                gj3 = cj * order + lj3
-                gk3 = ck * order + lk3
-                gidx3 = gi3 * ny_g * nz_g + gj3 * nz_g + gk3
+                gidx3 = wp.where(
+                  order < 0,
+                  support.gather_face_node_index(cellnum[0], cy, cz, cell_idx, idx3, order_abs),
+                  (ci * order_abs + li3) * ny_g * nz_g + (cj * order_abs + lj3) * nz_g + (ck * order_abs + lk3),
+                )
 
                 bodyid3 = flex_nodebodyid[nstart + gidx3]
                 xpos_n3 = flexnode_xpos_in[worldid, nstart + gidx3]

@@ -26,6 +26,7 @@ from mujoco_warp import ConeType
 from mujoco_warp import State
 from mujoco_warp import test_data
 from mujoco_warp._src import io
+from mujoco_warp._src import support
 from mujoco_warp._src.block_cholesky import create_blocked_cholesky_factorize_solve_func
 
 # tolerance for difference between MuJoCo and MJWarp support calculations - mostly
@@ -442,6 +443,85 @@ class SupportTest(parameterized.TestCase):
     # Reset data and verify userdata is zeroed
     mjwarp.reset_data(m, d2)
     _assert_eq(d2.userdata.numpy()[0], np.zeros(4), "reset_data userdata")
+
+  def test_apply_force_torque(self):
+    """Tests apply_force_torque helper."""
+    mjm, mjd, m, d = test_data.fixture("pendula.xml")
+
+    # Generate a random force, torque, and point
+    force = np.random.uniform(-10.0, 10.0, size=3)
+    torque = np.random.uniform(-5.0, 5.0, size=3)
+    point = np.random.uniform(-1.0, 1.0, size=3)
+
+    # We will test apply_force_torque on each body (except worldbody, index 0)
+    for bodyid in range(1, mjm.nbody):
+      # Clear qfrc
+      d.qfrc_spring.zero_()
+
+      wp.launch(
+        _test_apply_force_torque_kernel,
+        dim=1,
+        inputs=[
+          m.body_parentid,
+          m.body_rootid,
+          m.body_dofnum,
+          m.body_dofadr,
+          m.dof_bodyid,
+          m.body_isdofancestor,
+          d.subtree_com,
+          d.cdof,
+          wp.vec3(force),
+          wp.vec3(torque),
+          wp.vec3(point),
+          bodyid,
+        ],
+        outputs=[d.qfrc_spring],
+      )
+
+      # Reference calculation
+      qfrc_expected = np.zeros(mjm.nv)
+      mujoco.mj_applyFT(mjm, mjd, force, torque, point, bodyid, qfrc_expected)
+
+      _assert_eq(d.qfrc_spring.numpy()[0], qfrc_expected, f"apply_force_torque for body {bodyid}")
+
+
+@wp.kernel
+def _test_apply_force_torque_kernel(
+  # Model:
+  body_parentid: wp.array[int],
+  body_rootid: wp.array[int],
+  body_dofnum: wp.array[int],
+  body_dofadr: wp.array[int],
+  dof_bodyid: wp.array[int],
+  body_isdofancestor: wp.array2d[int],
+  # Data in:
+  subtree_com_in: wp.array2d[wp.vec3],
+  cdof_in: wp.array2d[wp.spatial_vector],
+  # In:
+  force: wp.vec3,
+  torque: wp.vec3,
+  point: wp.vec3,
+  bodyid: int,
+  # Out:
+  qfrc_out: wp.array2d[float],
+):
+  worldid = wp.tid()
+  support.apply_force_torque(
+    body_parentid,
+    body_rootid,
+    body_dofnum,
+    body_dofadr,
+    dof_bodyid,
+    body_isdofancestor,
+    subtree_com_in,
+    cdof_in,
+    force,
+    torque,
+    point,
+    bodyid,
+    worldid,
+    qfrc_out,
+  )
 
 
 if __name__ == "__main__":
