@@ -32,6 +32,7 @@ from mujoco_warp._src.types import MJ_MINVAL
 from mujoco_warp._src.types import BiasType
 from mujoco_warp._src.types import TrnType
 from mujoco_warp._src.types import vec10
+from mujoco_warp._src.util_pkg import check_version
 
 
 def _is_array_spec(typ) -> bool:
@@ -2010,9 +2011,23 @@ def get_data_into(
   ncon_filter[:nacon] = d.contact.worldid.numpy()[:nacon] == world_id
   ncon = ncon_filter.sum()
 
+  realloc_con_efc_called = False
   if ncon != result.ncon or nefc != result.nefc:
     # TODO(team): if sparse, set nJ based on sparse efc_J
     mujoco._functions._realloc_con_efc(result, ncon=ncon, nefc=nefc, nJ=nefc * mjm.nv)
+    realloc_con_efc_called = True
+
+  if check_version("mujoco>=3.10.1.dev941628625"):
+    nisland = d.nisland.numpy()[world_id]
+    nidof = d.nidof.numpy()[world_id]
+    if nisland > result.nisland or nidof > result.nidof:
+      mujoco._functions._realloc_island(result, nisland=nisland, nidof=nidof)
+  elif realloc_con_efc_called:
+    warnings.warn(
+      "mujoco._functions._realloc_island could not be called because "
+      "mujoco version is older than 3.10.1.dev941628625. This may cause "
+      "memory corruption if island constraint arrays are out-of-sync."
+    )
 
   ne = d.ne.numpy()[world_id]
   nf = d.nf.numpy()[world_id]
