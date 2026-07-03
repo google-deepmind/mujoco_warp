@@ -168,3 +168,32 @@ class BlockCholeskyTest(absltest.TestCase):
 if __name__ == "__main__":
   wp.init()
   absltest.main()
+
+
+class BlockCholeskyHealthyPivotTest(absltest.TestCase):
+  """Finite-but-garbage pivots must also trigger the floored repair.
+
+  Rank deficiency can factor to FINITE garbage pivots without a NaN. A pure
+  non-finite scan misses them; and on backends whose indefinite-input behavior
+  is finite garbage rather than NaN, the health check is the only trigger.
+  """
+
+  def test_finite_but_rank_deficient_pivot_triggers_repair(self):
+    # SPD with one eigenvalue positive but far below mindiag = eps32 * max|diag|:
+    # the unguarded factorization is FINITE (no NaN) with a garbage-small pivot,
+    # so the previous NaN-only detection never fired.
+    diag = np.full(_NV, 1.0e8, dtype=np.float64)
+    diag[-1] = 1.0e-12
+    unguarded = np.linalg.cholesky(np.diag(diag)).T
+    self.assertTrue(np.isfinite(unguarded).all())
+    mindiag = float(np.finfo(np.float32).eps) * 1.0e8
+    self.assertLess(float(unguarded[-1, -1]), mindiag**0.5)
+
+    h32 = np.diag(diag).astype(np.float32)
+    b = np.ones(_NV, dtype=np.float64)
+    u, x = _run_blocked(h32, b)
+    self.assertTrue(np.isfinite(x).all(), "repair did not run on finite garbage pivot")
+    # the floored pivot must be present in the factor (>= sqrt(mindiag)), and the
+    # floored row behaves as a stiffness-mindiag spring: bounded, not ~1e12
+    self.assertGreaterEqual(float(u[-1, -1]), mindiag**0.5 * 0.99)
+    self.assertLess(float(np.abs(x[-1])), 2.0 / mindiag)

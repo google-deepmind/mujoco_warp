@@ -36,6 +36,22 @@ def tile_diag_is_finite(t: Any, size: int) -> bool:
 
 
 @wp.func
+def tile_diag_is_healthy(t: Any, size: int, floor: float) -> bool:
+  """Returns True if the leading diagonal of tile t is finite and >= floor.
+
+  The factor diagonal is sqrt(pivot), so pass sqrt(mindiag). This catches rank
+  deficiency that factors to finite-but-garbage pivots without producing a NaN:
+  a pure non-finite scan misses those, and backends may return finite garbage
+  rather than NaN on indefinite input.
+  """
+  healthy = bool(True)
+  for i in range(size):
+    if (not wp.isfinite(t[i, i])) or t[i, i] < floor:
+      healthy = False
+  return healthy
+
+
+@wp.func
 def cholesky_mindiag(A: wp.array2d[float], matrix_size: int) -> float:
   """Scale-relative pivot floor for A: eps32 * max |diag(A)|, at least MJ_MINVAL."""
   max_diag = float(0.0)
@@ -130,6 +146,14 @@ def create_blocked_cholesky_factorize_solve_func(block_size: int, matrix_size_st
     """Block Cholesky factorization and solve while keeping the forward RHS live."""
     rhs_tile = wp.tile_load(b, shape=(matrix_size_static, 1), offset=(0, 0), storage="shared", bounds_check=False)
 
+    # hoisted: same value for every diagonal block; O(nv) once per matrix,
+
+    # so the strengthened health check adds no per-block cost.
+
+    mindiag = cholesky_mindiag(A, matrix_size)
+
+    sqrt_mindiag = wp.sqrt(mindiag)
+
     for k in range(0, matrix_size, block_size):
       end = k + block_size
       rhs_view = wp.tile_view(rhs_tile, shape=(block_size, 1), offset=(k, 0))
@@ -155,9 +179,9 @@ def create_blocked_cholesky_factorize_solve_func(block_size: int, matrix_size_st
       # per-pivot floor, cf. mju_cholFactor's mindiag (issue #1415). The rebuild
       # is element-wise, so no cooperative tile op runs inside the branch.
       deficient = wp.int64(0)
-      if not tile_diag_is_finite(A_kk_tile, block_size):
+      if not tile_diag_is_healthy(A_kk_tile, block_size, sqrt_mindiag):
         rebuild_diagonal_block(A_kk_tile, A, U, k, block_size)
-        deficient = tile_cholesky_floored_inplace(A_kk_tile, block_size, cholesky_mindiag(A, matrix_size))
+        deficient = tile_cholesky_floored_inplace(A_kk_tile, block_size, mindiag)
 
       wp.tile_store(U, A_kk_tile, offset=(k, k), bounds_check=False, aligned=True)
 
