@@ -14,8 +14,105 @@
 # ==============================================================================
 
 from functools import lru_cache
+from typing import Any
 
 import warp as wp
+
+from mujoco_warp._src.types import MJ_MINVAL
+
+# float32 machine epsilon; the pivot floor is scaled relative to the matrix magnitude,
+# mirroring the mindiag argument of MuJoCo's mju_cholFactor (issue #1415)
+_FLOAT32_EPS = 1.1920929e-07
+
+
+@wp.func
+def tile_diag_is_finite(t: Any, size: int) -> bool:
+  """Returns True if the leading size x size diagonal of tile t is all finite."""
+  finite = bool(True)
+  for i in range(size):
+    if not wp.isfinite(t[i, i]):
+      finite = False
+  return finite
+
+
+@wp.func
+def cholesky_mindiag(A: wp.array2d[float], matrix_size: int) -> float:
+  """Scale-relative pivot floor for A: eps32 * max |diag(A)|, at least MJ_MINVAL."""
+  max_diag = float(0.0)
+  for i in range(matrix_size):
+    max_diag = wp.max(max_diag, wp.abs(A[i, i]))
+  return wp.max(_FLOAT32_EPS * max_diag, float(MJ_MINVAL))
+
+
+@wp.func
+def tile_load_elementwise(t: Any, A: wp.array2d[float], size: int):
+  """Reloads the leading size x size block of A into tile t element-wise."""
+  for a in range(size):
+    for b in range(size):
+      t[a, b] = A[a, b]
+
+
+@wp.func
+def rebuild_diagonal_block(t: Any, A: wp.array2d[float], U: wp.array2d[float], k: int, block_size: int):
+  """Reloads diagonal block A[k:k+bs, k:k+bs] into tile t.
+
+  Reapplies the Schur complement updates from the already-factorized block rows
+  of U element-wise.
+  """
+  for a in range(block_size):
+    for b in range(block_size):
+      s = A[k + a, k + b]
+      for r in range(k):
+        s -= U[r, k + a] * U[r, k + b]
+      t[a, b] = s
+
+
+@wp.func
+def tile_cholesky_floored_inplace(t: Any, size: int, mindiag: float) -> wp.int64:
+  """In-place upper Cholesky of the leading size x size block of tile t.
+
+  Each pivot is floored at mindiag like MuJoCo's mju_cholFactor, so factorizing
+  a numerically indefinite matrix yields a finite factor instead of NaNs (#1415).
+
+  A floored pivot is treated as rank deficient: it is set to sqrt(mindiag) and
+  the remainder of its row is zeroed, decoupling the direction (a spring of
+  stiffness mindiag). Dividing the row by a floored pivot instead (as
+  mju_cholFactor does in float64) amplifies consecutive deficient rows
+  quadratically and overflows float32. Returns a bitmask of the deficient rows
+  so callers can decouple them from trailing blocks as well.
+
+  Element-wise and redundant across the block's threads; this is only correct
+  because every thread computes identical values in identical order.
+  """
+  deficient = wp.int64(0)
+  for j in range(size):
+    s = t[j, j]
+    for k in range(j):
+      s -= t[k, j] * t[k, j]
+    if s >= mindiag:
+      piv = wp.sqrt(s)
+      t[j, j] = piv
+      inv = 1.0 / piv
+      for i in range(j + 1, size):
+        s2 = t[j, i]
+        for k in range(j):
+          s2 -= t[k, j] * t[k, i]
+        t[j, i] = s2 * inv
+    else:  # small, negative or NaN pivot
+      deficient |= wp.int64(1) << wp.int64(j)
+      t[j, j] = wp.sqrt(mindiag)
+      for i in range(j + 1, size):
+        t[j, i] = 0.0
+  return deficient
+
+
+@wp.func
+def tile_zero_deficient_rows(t: Any, deficient: wp.int64, size: int):
+  """Zeroes the rows of tile t flagged in the deficient bitmask."""
+  for j in range(size):
+    if ((deficient >> wp.int64(j)) & wp.int64(1)) != wp.int64(0):
+      for i in range(size):
+        t[j, i] = 0.0
 
 
 @lru_cache(maxsize=None)
@@ -51,6 +148,17 @@ def create_blocked_cholesky_factorize_solve_func(block_size: int, matrix_size_st
         wp.tile_matmul(wp.tile_transpose(U_block), y_block, rhs_view, alpha=-1.0)
 
       wp.tile_cholesky_inplace(A_kk_tile, fill_mode="upper")
+
+      # float32 roundoff in the assembly of H can push its smallest eigenvalues
+      # negative when ||H|| is large; the unguarded factorization above then
+      # produces NaNs. Detect this and refactor the block with a scale-relative
+      # per-pivot floor, cf. mju_cholFactor's mindiag (issue #1415). The rebuild
+      # is element-wise, so no cooperative tile op runs inside the branch.
+      deficient = wp.int64(0)
+      if not tile_diag_is_finite(A_kk_tile, block_size):
+        rebuild_diagonal_block(A_kk_tile, A, U, k, block_size)
+        deficient = tile_cholesky_floored_inplace(A_kk_tile, block_size, cholesky_mindiag(A, matrix_size))
+
       wp.tile_store(U, A_kk_tile, offset=(k, k), bounds_check=False, aligned=True)
 
       wp.tile_lower_solve_inplace(wp.tile_transpose(A_kk_tile), rhs_view)
@@ -70,6 +178,11 @@ def create_blocked_cholesky_factorize_solve_func(block_size: int, matrix_size_st
           wp.tile_matmul(wp.tile_transpose(U_jk_tile), U_ji_tile, A_ki_tile, alpha=-1.0)
 
         wp.tile_lower_solve_inplace(wp.tile_transpose(A_kk_tile), A_ki_tile)
+
+        # decouple rank-deficient rows from the trailing blocks (issue #1415)
+        if deficient != wp.int64(0):
+          tile_zero_deficient_rows(A_ki_tile, deficient, block_size)
+
         wp.tile_store(U, A_ki_tile, offset=(k, i), bounds_check=False, aligned=True)
 
     for i in range(matrix_size - block_size, -1, -block_size):
