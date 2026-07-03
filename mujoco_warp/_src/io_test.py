@@ -1062,6 +1062,96 @@ class IOTest(parameterized.TestCase):
     _assert_eq(d.qvel.numpy()[0], 1.0, "qvel[0]")
     _assert_eq(d.qvel.numpy()[1], 2.0, "qvel[1]")
 
+  def test_reset_data_keyframe(self):
+    """Tests that reset_data_keyframe matches mj_resetDataKeyframe."""
+    _MJCF = """
+    <mujoco>
+      <worldbody>
+        <body name="mocap1" mocap="true">
+          <geom type="sphere" size="0.1"/>
+        </body>
+        <body>
+          <joint type="slide" name="slide1"/>
+          <geom type="sphere" size="1"/>
+        </body>
+      </worldbody>
+      <actuator>
+        <general joint="slide1" dyntype="integrator" dynprm="1" gaintype="fixed" gainprm="1" biastype="none"/>
+      </actuator>
+      <keyframe>
+        <key name="k0" time="0.5" qpos="0.3" qvel="0.4" act="0.6" ctrl="0.7"
+             mpos="0.1 0.2 0.3" mquat="0.7071068 0.7071068 0 0"/>
+      </keyframe>
+    </mujoco>
+    """
+    reset_datafield = ["time", "qpos", "qvel", "act", "ctrl", "mocap_pos", "mocap_quat"]
+    key = 0
+
+    mjm, mjd, m, d = test_data.fixture(xml=_MJCF)
+
+    # corrupt data
+    for arr in reset_datafield:
+      attr = getattr(d, arr)
+      if attr.dtype == float:
+        attr.fill_(wp.nan)
+      else:
+        attr.fill_(-1)
+
+    mujoco.mj_resetDataKeyframe(mjm, mjd, key)
+    mjwarp.reset_data_keyframe(mjm, m, d, key)
+
+    for arr in reset_datafield:
+      _assert_eq(getattr(d, arr).numpy()[0], getattr(mjd, arr), arr)
+
+  def test_reset_data_keyframe_world(self):
+    """Tests per-world reset for reset_data_keyframe."""
+    _MJCF = """
+    <mujoco>
+      <worldbody>
+        <body>
+          <geom type="sphere" size="1"/>
+          <joint type="slide"/>
+        </body>
+      </worldbody>
+      <keyframe>
+        <key name="k0" qpos="0.5"/>
+      </keyframe>
+    </mujoco>
+    """
+    key = 0
+    mjm = mujoco.MjModel.from_xml_string(_MJCF)
+    m = mjwarp.put_model(mjm)
+    d = mjwarp.make_data(mjm, nworld=2)
+
+    # nonzero values
+    qpos = wp.array(np.array([[1.0], [2.0]]), dtype=float)
+
+    wp.copy(d.qpos, qpos)
+
+    # reset both worlds
+    mjwarp.reset_data_keyframe(mjm, m, d, key)
+
+    _assert_eq(d.qpos.numpy()[0], 0.5, "qpos[0]")
+    _assert_eq(d.qpos.numpy()[1], 0.5, "qpos[1]")
+
+    wp.copy(d.qpos, qpos)
+
+    # don't reset second world
+    reset10 = wp.array(np.array([True, False]), dtype=bool)
+    mjwarp.reset_data_keyframe(mjm, m, d, key, reset=reset10)
+
+    _assert_eq(d.qpos.numpy()[0], 0.5, "qpos[0]")
+    _assert_eq(d.qpos.numpy()[1], 2.0, "qpos[1]")
+
+    wp.copy(d.qpos, qpos)
+
+    # don't reset both worlds
+    reset00 = wp.array(np.array([False, False], dtype=bool))
+    mjwarp.reset_data_keyframe(mjm, m, d, key, reset=reset00)
+
+    _assert_eq(d.qpos.numpy()[0], 1.0, "qpos[0]")
+    _assert_eq(d.qpos.numpy()[1], 2.0, "qpos[1]")
+
   def test_sdf(self):
     """Tests that an SDF can be loaded."""
     mjm, mjd, m, d = test_data.fixture("collision_sdf/cow.xml")

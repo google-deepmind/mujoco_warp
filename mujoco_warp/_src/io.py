@@ -2576,6 +2576,190 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
     sleep.update_sleep(m, d)
 
 
+def reset_data_keyframe(
+  mjm: mujoco.MjModel,
+  m: types.Model,
+  d: types.Data,
+  key: int,
+  reset: Optional[wp.array] = None,
+):
+  """Reset data, set fields from specified keyframe; optionally by world.
+
+  Unlike `reset_data`, this function requires the host-side MuJoCo model as an argument
+  becasue the keyframe data are not tracked by `types.Model`.
+
+  Args:
+    mjm: The host-side MuJoCo model.
+    m: The model containing kinematic and dynamic information (device).
+    d: The data object containing the current state and output arrays (device).
+    key: The keyframe index to initialize the data with. An IndexError is raised if
+      key<0 or key>=mjm.nkey.
+    reset: Per-world bitmask. Reset if True.
+  """
+  reset_data(m, d, reset)
+
+  @wp.kernel(module="unique", enable_backward=False)
+  def reset_time(
+    # In:
+    target_time: float,
+    reset_in: wp.array[bool],
+    # Data out:
+    time_out: wp.array[float],
+  ):
+    worldid = wp.tid()
+
+    if wp.static(reset is not None):
+      if not reset_in[worldid]:
+        return
+
+    time_out[worldid] = target_time
+
+  @wp.kernel(module="unique", enable_backward=False)
+  def reset_qpos(
+    # In:
+    target_qpos: wp.array[float],
+    reset_in: wp.array[bool],
+    # Data out:
+    qpos_out: wp.array2d[float],
+  ):
+    worldid, qid = wp.tid()
+
+    if wp.static(reset is not None):
+      if not reset_in[worldid]:
+        return
+
+    qpos_out[worldid, qid] = target_qpos[qid]
+
+  @wp.kernel(module="unique", enable_backward=False)
+  def reset_qvel(
+    # In:
+    target_qvel: wp.array[float],
+    reset_in: wp.array[bool],
+    # Data out:
+    qvel_out: wp.array2d[float],
+  ):
+    worldid, vid = wp.tid()
+
+    if wp.static(reset is not None):
+      if not reset_in[worldid]:
+        return
+
+    qvel_out[worldid, vid] = target_qvel[vid]
+
+  @wp.kernel(module="unique", enable_backward=False)
+  def reset_activation(
+    # In:
+    target_act: wp.array[float],
+    reset_in: wp.array[bool],
+    # Data out:
+    act_out: wp.array2d[float],
+  ):
+    worldid, aid = wp.tid()
+
+    if wp.static(reset is not None):
+      if not reset_in[worldid]:
+        return
+
+    act_out[worldid, aid] = target_act[aid]
+
+  @wp.kernel(module="unique", enable_backward=False)
+  def reset_mocap(
+    # Model:
+    body_mocapid: wp.array[int],
+    # In:
+    target_mpos: wp.array[wp.vec3],
+    target_mquat: wp.array[wp.quat],
+    # In:
+    reset_in: wp.array[bool],
+    # Data out:
+    mocap_pos_out: wp.array2d[wp.vec3],
+    mocap_quat_out: wp.array2d[wp.quat],
+  ):
+    worldid, bodyid = wp.tid()
+
+    if wp.static(reset is not None):
+      if not reset_in[worldid]:
+        return
+
+    mocapid = body_mocapid[bodyid]
+
+    if mocapid >= 0:
+      mocap_pos_out[worldid, mocapid] = target_mpos[mocapid]
+      mocap_quat_out[worldid, mocapid] = target_mquat[mocapid]
+
+  @wp.kernel(module="unique", enable_backward=False)
+  def reset_control(
+    # In:
+    target_ctrl: wp.array[float],
+    reset_in: wp.array[bool],
+    # Data out:
+    ctrl_out: wp.array2d[float],
+  ):
+    worldid, cid = wp.tid()
+
+    if wp.static(reset is not None):
+      if not reset_in[worldid]:
+        return
+
+    ctrl_out[worldid, cid] = target_ctrl[cid]
+
+  reset_input = reset or wp.ones(d.nworld, dtype=bool)
+
+  target_time = mjm.key_time[key]
+  wp.launch(
+    reset_time,
+    dim=d.nworld,
+    inputs=[target_time, reset_input],
+    outputs=[d.time],
+  )
+
+  target_qpos = wp.array(mjm.key_qpos[key], dtype=float)
+  wp.launch(
+    reset_qpos,
+    dim=(d.nworld, m.nq),
+    inputs=[target_qpos, reset_input],
+    outputs=[d.qpos],
+  )
+
+  target_qvel = wp.array(mjm.key_qvel[key], dtype=float)
+  wp.launch(
+    reset_qvel,
+    dim=(d.nworld, m.nv),
+    inputs=[target_qvel, reset_input],
+    outputs=[d.qvel],
+  )
+
+  target_act = wp.array(mjm.key_act[key], dtype=float)
+  wp.launch(
+    reset_activation,
+    dim=(d.nworld, m.na),
+    inputs=[target_act, reset_input],
+    outputs=[d.act],
+  )
+
+  target_mpos = wp.array(mjm.key_mpos[key], dtype=wp.vec3)
+  target_mquat = wp.array(mjm.key_mquat[key], dtype=wp.quat)
+  wp.launch(
+    reset_mocap,
+    dim=(d.nworld, m.nbody),
+    inputs=[
+      m.body_mocapid,
+      target_mpos,
+      target_mquat,
+      reset_input,
+    ],
+    outputs=[d.mocap_pos, d.mocap_quat],
+  )
+
+  target_ctrl = wp.array(mjm.key_ctrl[key], dtype=float)
+  wp.launch(
+    reset_control,
+    dim=(d.nworld, m.nu),
+    inputs=[target_ctrl, reset_input],
+    outputs=[d.ctrl],
+  )
+
+
 # kernel_analyzer: off
 @wp.kernel
 def _init_subtreemass(
