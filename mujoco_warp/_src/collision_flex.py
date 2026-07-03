@@ -131,6 +131,7 @@ def _flex_triangle_geom_broadphase(
     and gtype != int(GeomType.BOX)
     and gtype != int(GeomType.CYLINDER)
     and gtype != int(GeomType.MESH)
+    and gtype != int(GeomType.ELLIPSOID)
   ):
     return
 
@@ -189,6 +190,8 @@ def _flex_triangle_geom_broadphase(
   elif gtype == int(GeomType.BOX):
     r_extent = wp.length(geom_half_size_local)
   elif gtype == int(GeomType.MESH):
+    r_extent = wp.length(geom_half_size_local)
+  elif gtype == int(GeomType.ELLIPSOID):
     r_extent = wp.length(geom_half_size_local)
 
   if wp.abs(signed_dist) > r_extent + margin + tri_radius:
@@ -827,7 +830,7 @@ def _collide_mesh_triangle(
   geom2.margin = 0.0
   geom2.index = -1
 
-  centroid = (t1 + t2 + t3) * (1.0 / 3.0)
+  centroid = (t1 + t2 + t3) * wp.static(1.0 / 3.0)
   r_geom = wp.length(geom_size_val)
   d1 = wp.length(t1 - centroid)
   d2 = wp.length(t2 - centroid)
@@ -1990,6 +1993,7 @@ def _flex_narrowphase_unified(
     and gtype != int(GeomType.BOX)
     and gtype != int(GeomType.CYLINDER)
     and gtype != int(GeomType.MESH)
+    and gtype != int(GeomType.ELLIPSOID)
   ):
     return
 
@@ -2078,6 +2082,103 @@ def _flex_narrowphase_unified(
         cand_geomcollisionid_out,
         ncand_out,
       )
+  elif gtype == int(GeomType.ELLIPSOID):
+    ccdid = wp.atomic_add(nccd, 0, 1)
+    if ccdid >= naccdmax_in:
+      if opt_warn_overflow:
+        wp.printf("CCD overflow in flex narrowphase - please increase naccdmax to %u\n", ccdid)
+      wp.atomic_or(overflow_out, worldid, wp.static(OverflowType.CCD))
+    else:
+      tolerance = opt_ccd_tolerance[worldid % opt_ccd_tolerance.shape[0]]
+
+      # Construct Ellipsoid Geom (geom1)
+      geom1 = Geom()
+      geom1.pos = geom_pos
+      geom1.rot = geom_rot
+      geom1.size = geom_size_val
+      geom1.margin = 0.0
+      geom1.index = -1
+
+      # Construct Triangle Geom (geom2)
+      geom2 = Geom()
+      geom2.pos = wp.vec3(0.0, 0.0, 0.0)
+      geom2.rot = wp.mat33(t1[0], t1[1], t1[2], t2[0], t2[1], t2[2], t3[0], t3[1], t3[2])
+      geom2.margin = 0.0
+      geom2.index = -1
+
+      centroid = (t1 + t2 + t3) * wp.static(1.0 / 3.0)
+      r_geom = wp.length(geom_size_val)
+      d1 = wp.length(t1 - centroid)
+      d2 = wp.length(t2 - centroid)
+      d3 = wp.length(t3 - centroid)
+      r_tri = wp.max(d1, wp.max(d2, d3))
+
+      if wp.length(centroid - geom_pos) <= r_geom + r_tri + margin + tri_radius + 0.04:
+        dist, ncontact, w1, w2, idx = ccd(
+          tolerance,
+          margin + tri_radius,
+          ccd_iterations,
+          ccd_iterations,
+          geom1,
+          geom2,
+          int(GeomType.ELLIPSOID),
+          int(GeomType.TRIANGLE),
+          geom_pos,
+          centroid,
+          epa_vert[ccdid],
+          epa_vert_index[ccdid],
+          epa_face[ccdid],
+          epa_pr[ccdid],
+          epa_norm2[ccdid],
+          epa_horizon[ccdid],
+        )
+
+        if ncontact > 0 and dist < margin + tri_radius:
+          if _inside_triangle(w2, t1, t2, t3, 0.2):
+            if dist < 0.0:
+              normal = wp.normalize(w1 - w2)
+            else:
+              normal = wp.normalize(w2 - w1)
+
+            # Project triangle vertices onto normal to find deepest penetration
+            dist_v0 = wp.dot(t1 - w1, normal) - tri_radius
+            dist_v1 = wp.dot(t2 - w1, normal) - tri_radius
+            dist_v2 = wp.dot(t3 - w1, normal) - tri_radius
+
+            min_dist = wp.min(dist_v0, wp.min(dist_v1, dist_v2))
+            if min_dist < margin:
+              deepest_vert = v0_local
+              pos = t1 - normal * (tri_radius + 0.5 * dist_v0)
+              if dist_v1 < dist_v0 and dist_v1 < dist_v2:
+                deepest_vert = v1_local
+                pos = t2 - normal * (tri_radius + 0.5 * dist_v1)
+              elif dist_v2 < dist_v0 and dist_v2 < dist_v1:
+                deepest_vert = v2_local
+                pos = t3 - normal * (tri_radius + 0.5 * dist_v2)
+
+              _write_candidate_contact(
+                max_candidates,
+                min_dist,
+                pos,
+                normal,
+                geomid,
+                flexid,
+                local_tri_id,
+                -1,
+                worldid,
+                overflow_out,
+                cand_dist_out,
+                cand_pos_out,
+                cand_nrm_out,
+                cand_geom_out,
+                cand_flex_out,
+                cand_elem_out,
+                cand_vert_out,
+                cand_worldid_out,
+                cand_type_out,
+                cand_geomcollisionid_out,
+                ncand_out,
+              )
   else:
     _collide_geom_triangle_detect(
       max_candidates,
@@ -2517,7 +2618,7 @@ def flex_collision(m: Model, d: Data, ctx):
 
   # EPA workspaces if mesh or self collisions are possible
   epa_iterations = m.opt.ccd_iterations
-  if m.nmesh > 0:
+  if m.nmesh > 0 or m.has_ellipsoid_geom:
     mesh_epa_vert = wp.empty(shape=(d.naccdmax, 10 + 2 * epa_iterations), dtype=wp.vec3)
     mesh_epa_vert_index = wp.empty(shape=(d.naccdmax, 10 + 2 * epa_iterations), dtype=int)
     mesh_epa_face = wp.empty(shape=(d.naccdmax, 6 + MJ_MAX_EPAFACES * epa_iterations), dtype=int)
