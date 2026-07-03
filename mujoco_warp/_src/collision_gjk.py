@@ -282,11 +282,11 @@ def _subdistance(n: int, simplex: mat43) -> wp.vec4:
   if n == 4:
     return _S3D(simplex[0], simplex[1], simplex[2], simplex[3])
   if n == 3:
-    wts3 = _S2D(simplex[0], simplex[1], simplex[2])
-    return wp.vec4(wts3[0], wts3[1], wts3[2], 0.0)
+    lmbda3 = _S2D(simplex[0], simplex[1], simplex[2])
+    return wp.vec4(lmbda3[0], lmbda3[1], lmbda3[2], 0.0)
   if n == 2:
-    wts2 = _S1D(simplex[0], simplex[1])
-    return wp.vec4(wts2[0], wts2[1], 0.0, 0.0)
+    lmbda2 = _S1D(simplex[0], simplex[1])
+    return wp.vec4(lmbda2[0], lmbda2[1], 0.0, 0.0)
   return wp.vec4(1.0, 0.0, 0.0, 0.0)
 
 
@@ -371,52 +371,52 @@ def _S3D(s1: wp.vec3, s2: wp.vec3, s3: wp.vec3, s4: wp.vec3) -> wp.vec4:
   if comp1 and comp2 and comp3 and comp4:
     return wp.vec4(C41 / m_det, C42 / m_det, C43 / m_det, C44 / m_det)
 
-  # find the smallest distance, and use the corresponding barycentric coordinates (weights)
-  wts = wp.vec4(0.0, 0.0, 0.0, 0.0)
+  # find the smallest distance, and use the corresponding barycentric coordinates
+  lmbda = wp.vec4(0.0, 0.0, 0.0, 0.0)
   dmin = FLOAT_MAX
 
   if not comp1:
-    subwts = _S2D(s2, s3, s4)
-    x = subwts[0] * s2 + subwts[1] * s3 + subwts[2] * s4
+    sublmbda = _S2D(s2, s3, s4)
+    x = sublmbda[0] * s2 + sublmbda[1] * s3 + sublmbda[2] * s4
     d = wp.dot(x, x)
-    wts[0] = 0.0
-    wts[1] = subwts[0]
-    wts[2] = subwts[1]
-    wts[3] = subwts[2]
+    lmbda[0] = 0.0
+    lmbda[1] = sublmbda[0]
+    lmbda[2] = sublmbda[1]
+    lmbda[3] = sublmbda[2]
     dmin = d
 
   if not comp2:
-    subwts = _S2D(s1, s3, s4)
-    x = subwts[0] * s1 + subwts[1] * s3 + subwts[2] * s4
+    sublmbda = _S2D(s1, s3, s4)
+    x = sublmbda[0] * s1 + sublmbda[1] * s3 + sublmbda[2] * s4
     d = wp.dot(x, x)
     if d < dmin:
-      wts[0] = subwts[0]
-      wts[1] = 0.0
-      wts[2] = subwts[1]
-      wts[3] = subwts[2]
+      lmbda[0] = sublmbda[0]
+      lmbda[1] = 0.0
+      lmbda[2] = sublmbda[1]
+      lmbda[3] = sublmbda[2]
       dmin = d
 
   if not comp3:
-    subwts = _S2D(s1, s2, s4)
-    x = subwts[0] * s1 + subwts[1] * s2 + subwts[2] * s4
+    sublmbda = _S2D(s1, s2, s4)
+    x = sublmbda[0] * s1 + sublmbda[1] * s2 + sublmbda[2] * s4
     d = wp.dot(x, x)
     if d < dmin:
-      wts[0] = subwts[0]
-      wts[1] = subwts[1]
-      wts[2] = 0.0
-      wts[3] = subwts[2]
+      lmbda[0] = sublmbda[0]
+      lmbda[1] = sublmbda[1]
+      lmbda[2] = 0.0
+      lmbda[3] = sublmbda[2]
       dmin = d
 
   if not comp4:
-    subwts = _S2D(s1, s2, s3)
-    x = subwts[0] * s1 + subwts[1] * s2 + subwts[2] * s3
+    sublmbda = _S2D(s1, s2, s3)
+    x = sublmbda[0] * s1 + sublmbda[1] * s2 + sublmbda[2] * s3
     d = wp.dot(x, x)
     if d < dmin:
-      wts[0] = subwts[0]
-      wts[1] = subwts[1]
-      wts[2] = subwts[2]
-      wts[3] = 0.0
-  return wts
+      lmbda[0] = sublmbda[0]
+      lmbda[1] = sublmbda[1]
+      lmbda[2] = sublmbda[2]
+      lmbda[3] = 0.0
+  return lmbda
 
 
 @wp.func
@@ -530,38 +530,38 @@ def _S2D(s1: wp.vec3, s2: wp.vec3, s3: wp.vec3) -> wp.vec3:
   if comp1 and comp2 and comp3:
     return wp.vec3(C31 / M_max, C32 / M_max, C33 / M_max)
 
-  # find the smallest distance, and use the corresponding barycentric coordinates (weights)
+  # find the smallest distance, and use the corresponding barycentric coordinates
   dmin = FLOAT_MAX
-  wts = wp.vec3(0.0, 0.0, 0.0)
+  lmbda = wp.vec3(0.0, 0.0, 0.0)
 
   if not comp1:
-    subwts = _S1D(s2, s3)
-    x = subwts[0] * s2 + subwts[1] * s3
+    sublmbda = _S1D(s2, s3)
+    x = sublmbda[0] * s2 + sublmbda[1] * s3
     d = wp.dot(x, x)
-    wts[0] = 0.0
-    wts[1] = subwts[0]
-    wts[2] = subwts[1]
+    lmbda[0] = 0.0
+    lmbda[1] = sublmbda[0]
+    lmbda[2] = sublmbda[1]
     dmin = d
 
   if not comp2:
-    subwts = _S1D(s1, s3)
-    x = subwts[0] * s1 + subwts[1] * s3
+    sublmbda = _S1D(s1, s3)
+    x = sublmbda[0] * s1 + sublmbda[1] * s3
     d = wp.dot(x, x)
     if d < dmin:
-      wts[0] = subwts[0]
-      wts[1] = 0.0
-      wts[2] = subwts[1]
+      lmbda[0] = sublmbda[0]
+      lmbda[1] = 0.0
+      lmbda[2] = sublmbda[1]
       dmin = d
 
   if not comp3:
-    subwts = _S1D(s1, s2)
-    x = subwts[0] * s1 + subwts[1] * s2
+    sublmbda = _S1D(s1, s2)
+    x = sublmbda[0] * s1 + sublmbda[1] * s2
     d = wp.dot(x, x)
     if d < dmin:
-      wts[0] = subwts[0]
-      wts[1] = subwts[1]
-      wts[2] = 0.0
-  return wts
+      lmbda[0] = sublmbda[0]
+      lmbda[1] = sublmbda[1]
+      lmbda[2] = 0.0
+  return lmbda
 
 
 @wp.func
@@ -615,7 +615,7 @@ def gjk(
   simplex_index1 = wp.vec4i()
   simplex_index2 = wp.vec4i()
   n = int(0)
-  wts = wp.vec4()  # barycentric coordinates (weights)
+  lmbda = wp.vec4()  # barycentric coordinates
   tol2 = tolerance * tolerance
   epsilon = wp.where(is_discrete, 0.0, 0.5 * tol2)
 
@@ -667,12 +667,12 @@ def gjk(
 
     # run the distance subalgorithm to compute the barycentric coordinates
     # of the closest point to the origin in the simplex
-    wts = _subdistance(n + 1, simplex)
+    lmbda = _subdistance(n + 1, simplex)
 
     # remove vertices from the simplex no longer needed
     n = int(0)
     for i in range(4):
-      if wts[i] == 0.0:
+      if lmbda[i] == 0.0:
         continue
 
       simplex[n] = simplex[i]
@@ -680,7 +680,7 @@ def gjk(
       simplex2[n] = simplex2[i]
       simplex_index1[n] = simplex_index1[i]
       simplex_index2[n] = simplex_index2[i]
-      wts[n] = wts[i]
+      lmbda[n] = lmbda[i]
       n += int(1)
 
     # SHOULD NOT OCCUR
@@ -688,7 +688,7 @@ def gjk(
       break
 
     # get the next iteration of x_k
-    x_next = _linear_combine(n, wts, simplex)
+    x_next = _linear_combine(n, lmbda, simplex)
 
     # x_k has converged to minimum
     if _almost_equal(x_next, x_k):
@@ -706,8 +706,8 @@ def gjk(
   # compute the approximate witness points
   # if n is zero, then there was an immediate return meaning the initial points
   # are the witness points
-  result.x1 = wp.where(n == 0, x1_0, _linear_combine(n, wts, simplex1))
-  result.x2 = wp.where(n == 0, x2_0, _linear_combine(n, wts, simplex2))
+  result.x1 = wp.where(n == 0, x1_0, _linear_combine(n, lmbda, simplex1))
+  result.x2 = wp.where(n == 0, x2_0, _linear_combine(n, lmbda, simplex2))
   result.dist = wp.norm_l2(x_k)
 
   result.dim = n
