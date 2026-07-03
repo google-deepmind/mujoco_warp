@@ -282,11 +282,11 @@ def _subdistance(n: int, simplex: mat43) -> wp.vec4:
   if n == 4:
     return _S3D(simplex[0], simplex[1], simplex[2], simplex[3])
   if n == 3:
-    coordinates3 = _S2D(simplex[0], simplex[1], simplex[2])
-    return wp.vec4(coordinates3[0], coordinates3[1], coordinates3[2], 0.0)
+    wts3 = _S2D(simplex[0], simplex[1], simplex[2])
+    return wp.vec4(wts3[0], wts3[1], wts3[2], 0.0)
   if n == 2:
-    coordinates2 = _S1D(simplex[0], simplex[1])
-    return wp.vec4(coordinates2[0], coordinates2[1], 0.0, 0.0)
+    wts2 = _S1D(simplex[0], simplex[1])
+    return wp.vec4(wts2[0], wts2[1], 0.0, 0.0)
   return wp.vec4(1.0, 0.0, 0.0, 0.0)
 
 
