@@ -1005,6 +1005,7 @@ class Model:
     nJten: number of non-zeros in sparse tendon Jacobian
     nwrap: number of wrap objects in all tendon paths
     nsensor: number of sensors
+    nkey: number of keyframes
     nmocap: number of mocap bodies
     nplugin: number of plugin instances
     nJmom: number of non-zeros in actuator_moment
@@ -1302,6 +1303,13 @@ class Model:
     sensor_interval: sensor interval and phase               (nsensor, 2)
     plugin: globally registered plugin slot number           (nplugin,)
     plugin_attr: config attributes of geom plugin            (nplugin, _NPLUGINATTR)
+    key_time: keyframe time                                  (nkey,)
+    key_qpos: keyframe qpos                                  (nkey, nq)
+    key_qvel: keyframe qvel                                  (nkey, nv)
+    key_act: keyframe act                                    (nkey, na)
+    key_mpos: keyframe mocap pos                             (nkey, nmocap, 3)
+    key_mquat: keyframe mocap quat                           (nkey, nmocap, 4)
+    key_ctrl: keyframe ctrl                                   (nkey, nu)
     M_rownnz: number of non-zeros in each row of M           (nv,)
     M_rowadr: index of each row in M                         (nv,)
     M_colind: column indices of non-zeros in M               (nC,)
@@ -1490,6 +1498,7 @@ class Model:
   nJten: int
   nwrap: int
   nsensor: int
+  nkey: int
   nmocap: int
   nplugin: int
   nJmom: int
@@ -1786,6 +1795,13 @@ class Model:
   sensor_interval: array("nsensor", wp.vec2)
   plugin: array("nplugin", int)
   plugin_attr: array("nplugin", vec_pluginattr)
+  key_time: array("nkey", float)
+  key_qpos: array("nkey", "nq", float)
+  key_qvel: array("nkey", "nv", float)
+  key_act: array("nkey", "na", float)
+  key_mpos: array("nkey", "nmocap", wp.vec3)
+  key_mquat: array("nkey", "nmocap", wp.quat)
+  key_ctrl: array("nkey", "nu", float)
   M_rownnz: array("nv", int)
   M_rowadr: array("nv", int)
   M_colind: array("nC", int)

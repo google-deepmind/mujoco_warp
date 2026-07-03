@@ -1087,7 +1087,7 @@ class IOTest(parameterized.TestCase):
     reset_datafield = ["time", "qpos", "qvel", "act", "ctrl", "mocap_pos", "mocap_quat"]
     key = 0
 
-    mjm, mjd, m, d = test_data.fixture(xml=_MJCF)
+    mjm, mjd, m, d = test_data.fixture(xml=_MJCF, keyframe=key)
 
     # corrupt data
     for arr in reset_datafield:
@@ -1097,8 +1097,7 @@ class IOTest(parameterized.TestCase):
       else:
         attr.fill_(-1)
 
-    mujoco.mj_resetDataKeyframe(mjm, mjd, key)
-    mjwarp.reset_data_keyframe(mjm, m, d, key)
+    mjwarp.reset_data_keyframe(m, d, key)
 
     for arr in reset_datafield:
       _assert_eq(getattr(d, arr).numpy()[0], getattr(mjd, arr), arr)
@@ -1129,7 +1128,7 @@ class IOTest(parameterized.TestCase):
     wp.copy(d.qpos, qpos)
 
     # reset both worlds
-    mjwarp.reset_data_keyframe(mjm, m, d, key)
+    mjwarp.reset_data_keyframe(m, d, key)
 
     _assert_eq(d.qpos.numpy()[0], 0.5, "qpos[0]")
     _assert_eq(d.qpos.numpy()[1], 0.5, "qpos[1]")
@@ -1138,7 +1137,7 @@ class IOTest(parameterized.TestCase):
 
     # don't reset second world
     reset10 = wp.array(np.array([True, False]), dtype=bool)
-    mjwarp.reset_data_keyframe(mjm, m, d, key, reset=reset10)
+    mjwarp.reset_data_keyframe(m, d, key, reset=reset10)
 
     _assert_eq(d.qpos.numpy()[0], 0.5, "qpos[0]")
     _assert_eq(d.qpos.numpy()[1], 2.0, "qpos[1]")
@@ -1147,7 +1146,7 @@ class IOTest(parameterized.TestCase):
 
     # don't reset both worlds
     reset00 = wp.array(np.array([False, False], dtype=bool))
-    mjwarp.reset_data_keyframe(mjm, m, d, key, reset=reset00)
+    mjwarp.reset_data_keyframe(m, d, key, reset=reset00)
 
     _assert_eq(d.qpos.numpy()[0], 1.0, "qpos[0]")
     _assert_eq(d.qpos.numpy()[1], 2.0, "qpos[1]")

@@ -2577,7 +2577,6 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
 
 
 def reset_data_keyframe(
-  mjm: mujoco.MjModel,
   m: types.Model,
   d: types.Data,
   key: int,
@@ -2585,23 +2584,20 @@ def reset_data_keyframe(
 ):
   """Reset data, set fields from specified keyframe; optionally by world.
 
-  Unlike `reset_data`, this function requires the host-side MuJoCo model as an argument
-  becasue the keyframe data are not tracked by `types.Model`.
-
   Args:
-    mjm: The host-side MuJoCo model.
     m: The model containing kinematic and dynamic information (device).
     d: The data object containing the current state and output arrays (device).
-    key: The keyframe index to initialize the data with. An IndexError is raised if
-      key<0 or key>=mjm.nkey.
+    key: The keyframe index to initialize the data with.
     reset: Per-world bitmask. Reset if True.
   """
   reset_data(m, d, reset)
 
   @wp.kernel(module="unique", enable_backward=False)
   def reset_time(
+    # Model:
+    key_time: wp.array[float],
     # In:
-    target_time: float,
+    key: int,
     reset_in: wp.array[bool],
     # Data out:
     time_out: wp.array[float],
@@ -2612,12 +2608,14 @@ def reset_data_keyframe(
       if not reset_in[worldid]:
         return
 
-    time_out[worldid] = target_time
+    time_out[worldid] = key_time[key]
 
   @wp.kernel(module="unique", enable_backward=False)
   def reset_qpos(
+    # Model:
+    key_qpos: wp.array2d[float],
     # In:
-    target_qpos: wp.array[float],
+    key: int,
     reset_in: wp.array[bool],
     # Data out:
     qpos_out: wp.array2d[float],
@@ -2628,12 +2626,14 @@ def reset_data_keyframe(
       if not reset_in[worldid]:
         return
 
-    qpos_out[worldid, qid] = target_qpos[qid]
+    qpos_out[worldid, qid] = key_qpos[key, qid]
 
   @wp.kernel(module="unique", enable_backward=False)
   def reset_qvel(
+    # Model:
+    key_qvel: wp.array2d[float],
     # In:
-    target_qvel: wp.array[float],
+    key: int,
     reset_in: wp.array[bool],
     # Data out:
     qvel_out: wp.array2d[float],
@@ -2644,12 +2644,14 @@ def reset_data_keyframe(
       if not reset_in[worldid]:
         return
 
-    qvel_out[worldid, vid] = target_qvel[vid]
+    qvel_out[worldid, vid] = key_qvel[key, vid]
 
   @wp.kernel(module="unique", enable_backward=False)
   def reset_activation(
+    # Model:
+    key_act: wp.array2d[float],
     # In:
-    target_act: wp.array[float],
+    key: int,
     reset_in: wp.array[bool],
     # Data out:
     act_out: wp.array2d[float],
@@ -2660,16 +2662,16 @@ def reset_data_keyframe(
       if not reset_in[worldid]:
         return
 
-    act_out[worldid, aid] = target_act[aid]
+    act_out[worldid, aid] = key_act[key, aid]
 
   @wp.kernel(module="unique", enable_backward=False)
   def reset_mocap(
     # Model:
     body_mocapid: wp.array[int],
+    key_mpos: wp.array2d[wp.vec3],
+    key_mquat: wp.array2d[wp.quat],
     # In:
-    target_mpos: wp.array[wp.vec3],
-    target_mquat: wp.array[wp.quat],
-    # In:
+    key: int,
     reset_in: wp.array[bool],
     # Data out:
     mocap_pos_out: wp.array2d[wp.vec3],
@@ -2684,13 +2686,15 @@ def reset_data_keyframe(
     mocapid = body_mocapid[bodyid]
 
     if mocapid >= 0:
-      mocap_pos_out[worldid, mocapid] = target_mpos[mocapid]
-      mocap_quat_out[worldid, mocapid] = target_mquat[mocapid]
+      mocap_pos_out[worldid, mocapid] = key_mpos[key, mocapid]
+      mocap_quat_out[worldid, mocapid] = key_mquat[key, mocapid]
 
   @wp.kernel(module="unique", enable_backward=False)
   def reset_control(
+    # Model:
+    key_ctrl: wp.array2d[float],
     # In:
-    target_ctrl: wp.array[float],
+    key: int,
     reset_in: wp.array[bool],
     # Data out:
     ctrl_out: wp.array2d[float],
@@ -2701,61 +2705,55 @@ def reset_data_keyframe(
       if not reset_in[worldid]:
         return
 
-    ctrl_out[worldid, cid] = target_ctrl[cid]
+    ctrl_out[worldid, cid] = key_ctrl[key, cid]
 
   reset_input = reset or wp.ones(d.nworld, dtype=bool)
 
-  target_time = mjm.key_time[key]
   wp.launch(
     reset_time,
     dim=d.nworld,
-    inputs=[target_time, reset_input],
+    inputs=[m.key_time, key, reset_input],
     outputs=[d.time],
   )
 
-  target_qpos = wp.array(mjm.key_qpos[key], dtype=float)
   wp.launch(
     reset_qpos,
     dim=(d.nworld, m.nq),
-    inputs=[target_qpos, reset_input],
+    inputs=[m.key_qpos, key, reset_input],
     outputs=[d.qpos],
   )
 
-  target_qvel = wp.array(mjm.key_qvel[key], dtype=float)
   wp.launch(
     reset_qvel,
     dim=(d.nworld, m.nv),
-    inputs=[target_qvel, reset_input],
+    inputs=[m.key_qvel, key, reset_input],
     outputs=[d.qvel],
   )
 
-  target_act = wp.array(mjm.key_act[key], dtype=float)
   wp.launch(
     reset_activation,
     dim=(d.nworld, m.na),
-    inputs=[target_act, reset_input],
+    inputs=[m.key_act, key, reset_input],
     outputs=[d.act],
   )
 
-  target_mpos = wp.array(mjm.key_mpos[key], dtype=wp.vec3)
-  target_mquat = wp.array(mjm.key_mquat[key], dtype=wp.quat)
   wp.launch(
     reset_mocap,
     dim=(d.nworld, m.nbody),
     inputs=[
       m.body_mocapid,
-      target_mpos,
-      target_mquat,
+      m.key_mpos,
+      m.key_mquat,
+      key,
       reset_input,
     ],
     outputs=[d.mocap_pos, d.mocap_quat],
   )
 
-  target_ctrl = wp.array(mjm.key_ctrl[key], dtype=float)
   wp.launch(
     reset_control,
     dim=(d.nworld, m.nu),
-    inputs=[target_ctrl, reset_input],
+    inputs=[m.key_ctrl, key, reset_input],
     outputs=[d.ctrl],
   )
 
