@@ -1342,6 +1342,7 @@ class Model:
     has_sdf_geom: whether the model contains SDF geoms
     has_flex_selfcollide: whether any flex has self-collision enabled
     has_trilinear: whether the model contains trilinear flexes
+    has_ellipsoid_geom: whether the model contains ellipsoid geoms
     max_flex_dim: maximum flex dimension in the model
     block_dim: block dim options
     body_tree: list of body ids by tree level
@@ -1822,6 +1823,7 @@ class Model:
   has_sdf_geom: bool
   has_flex_selfcollide: bool
   has_trilinear: bool
+  has_ellipsoid_geom: bool
   max_flex_dim: int
   block_dim: BlockDim
   body_tree: tuple[wp.array[int], ...]
