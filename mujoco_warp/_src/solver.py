@@ -1658,6 +1658,8 @@ def _update_constraint_init_qfrc_constraint_sparse(
     return
 
   force = efc_force_in[worldid, efcid]
+  if force == 0.0:
+    return
 
   rownnz = efc_J_rownnz_in[worldid, efcid]
   rowadr = efc_J_rowadr_in[worldid, efcid]
