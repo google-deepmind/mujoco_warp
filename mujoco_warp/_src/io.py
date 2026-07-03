@@ -2589,7 +2589,13 @@ def reset_data_keyframe(
     d: The data object containing the current state and output arrays (device).
     key: The keyframe index to initialize the data with.
     reset: Per-world bitmask. Reset if True.
+
+  Raises:
+    ValueError: If key<0 or key>=m.nkey.
   """
+  if key < 0 or key >= m.nkey:
+    raise ValueError(f"key ({key}) must be in [0, {m.nkey}).")
+
   reset_data(m, d, reset)
 
   @wp.kernel(module="unique", enable_backward=False)
