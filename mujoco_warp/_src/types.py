@@ -1341,8 +1341,8 @@ class Model:
     has_fluid: True if wind, density, or viscosity are non-zero at put_model time
     has_sdf_geom: whether the model contains SDF geoms
     has_flex_selfcollide: whether any flex has self-collision enabled
-    has_trilinear: whether the model contains trilinear flexes
     has_ellipsoid_geom: whether the model contains ellipsoid geoms
+    has_3d_flex: whether the model contains 3D flexes
     max_flex_dim: maximum flex dimension in the model
     block_dim: block dim options
     body_tree: list of body ids by tree level
@@ -1430,7 +1430,6 @@ class Model:
     M_mulm_col: sparse matmul column indices
     M_mulm_madr: sparse matmul matrix addresses
     flexelem_geom_pair_filtered: conaffinity-filtered element vs geom pairs (*, 2)
-    flexshell_geom_pair_filtered: conaffinity-filtered shell vs geom pairs  (*, 2)
     flexvert_geom_pair_filtered: conaffinity-filtered vertex vs geom pairs  (*, 2)
     flex_elemflexid: maps each element index directly to its flexid         (nflexelem,)
     flex_shellflexid: maps each shell index directly to its flexid          (nflexshelldata,)
@@ -1822,8 +1821,8 @@ class Model:
   has_fluid: bool
   has_sdf_geom: bool
   has_flex_selfcollide: bool
-  has_trilinear: bool
   has_ellipsoid_geom: bool
+  has_3d_flex: bool
   max_flex_dim: int
   block_dim: BlockDim
   body_tree: tuple[wp.array[int], ...]
@@ -1905,7 +1904,6 @@ class Model:
   M_mulm_col: wp.array[int]  # column index to gather from
   M_mulm_madr: wp.array[int]  # matrix address to read
   flexelem_geom_pair_filtered: wp.array[wp.vec2i]
-  flexshell_geom_pair_filtered: wp.array[wp.vec2i]
   flexvert_geom_pair_filtered: wp.array[wp.vec2i]
   flex_elemflexid: array("nflexelem", int)
   flex_shellflexid: array("nflexshelldata", int)
