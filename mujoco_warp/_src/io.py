@@ -2636,7 +2636,7 @@ def _compute_eq_data0(
   # Out:
   eq_data_out: wp.array2d[types.vec11],
 ):
-  """Compute missing eq_data for connect/weld constraints, mirroring mj_setConst.
+  """Compute eq_data for connect/weld constraints.
 
   Kinematics must have been evaluated at qpos0 so the constraint is satisfied at qpos0.
   """
@@ -3182,7 +3182,7 @@ def set_const_0(m: types.Model, d: types.Data, restore: bool = True):
   Computes:
     - tendon_length0: tendon resting lengths
     - eq_data: connect/weld anchor data, recomputed so the constraint is
-      satisfied at qpos0 (mirrors mj_setConst)
+      satisfied at qpos0
     - dof_invweight0: inverse inertia for DOFs
     - body_invweight0: inverse spatial inertia for bodies
     - tendon_invweight0: inverse weight for tendons
@@ -3222,14 +3222,12 @@ def set_const_0(m: types.Model, d: types.Data, restore: bool = True):
 
   wp.launch(_copy_tendon_length0, dim=(d.nworld, m.ntendon), inputs=[d.ten_length], outputs=[m.tendon_length0])
 
-  # eq_data: recompute missing connect/weld anchor data at qpos0 (mirrors mj_setConst)
-  if m.neq > 0:
-    wp.launch(
-      _compute_eq_data0,
-      dim=(d.nworld, m.neq),
-      inputs=[m.eq_type, m.eq_obj1id, m.eq_obj2id, m.eq_objtype, d.xpos, d.xquat, d.xmat],
-      outputs=[m.eq_data],
-    )
+  wp.launch(
+    _compute_eq_data0,
+    dim=(d.nworld, m.neq),
+    inputs=[m.eq_type, m.eq_obj1id, m.eq_obj2id, m.eq_objtype, d.xpos, d.xquat, d.xmat],
+    outputs=[m.eq_data],
+  )
 
   # dof_invweight0: computed per joint with averaging for multi-DOF joints
   # FREE: 6 DOFs, trans gets mean(A[0:3]), rot gets mean(A[3:6])
