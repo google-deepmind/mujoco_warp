@@ -570,8 +570,7 @@ def _S1D(s1: wp.vec3, s2: wp.vec3) -> wp.vec2:
   p_o = _project_origin_line(s1, s2)
 
   # find the axis with the largest projection "shadow" of the simplex
-  mu = s1[0] - s2[0]
-  mu_max = mu
+  mu_max = s1[0] - s2[0]
   index = 0
 
   mu = s1[1] - s2[1]
