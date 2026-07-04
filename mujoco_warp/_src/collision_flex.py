@@ -2744,6 +2744,108 @@ def _flex_narrowphase_tet_detect(
 
 
 @wp.kernel
+def _compute_filter_key(
+  # Model:
+  ngeom: int,
+  nflex: int,
+  # In:
+  ncand: wp.array[int],
+  cand_geom: wp.array[wp.vec2i],
+  cand_flex: wp.array[wp.vec2i],
+  cand_worldid: wp.array[int],
+  # Out:
+  key_out: wp.array[int],
+  val_out: wp.array[int],
+):
+  """Compute sort key for candidate grouping.
+
+  Groups candidates by (worldid, flex_id, geom_id) so that duplicates
+  are contiguous after sorting. Self-collision contacts (geom_id < 0)
+  are mapped to a sentinel value (ngeom).
+  """
+  i = wp.tid()
+  if i >= ncand[0]:
+    key_out[i] = 2147483647  # INT_MAX: sort unused entries to end
+    val_out[i] = i
+    return
+
+  worldid = cand_worldid[i]
+  flex_id = cand_flex[i][1]
+  geom_id = cand_geom[i][0]
+
+  # Map self-collision (geom_id < 0) to sentinel
+  g = geom_id
+  if g < 0:
+    g = ngeom
+
+  key_out[i] = worldid * (nflex + 1) * (ngeom + 2) + flex_id * (ngeom + 2) + g
+  val_out[i] = i
+
+
+@wp.kernel
+def _filter_flex_candidates_sorted(
+  # In:
+  ncand: wp.array[int],
+  epsilon: float,
+  sort_key: wp.array[int],
+  sort_val: wp.array[int],
+  cand_dist: wp.array[float],
+  cand_pos: wp.array[wp.vec3],
+  # Out:
+  cand_active_out: wp.array[int],
+):
+  """Filter duplicate candidates using sorted order.
+
+  After sorting by group key, candidates in the same group are contiguous.
+  Each candidate only compares with neighbors sharing the same key, reducing
+  complexity from O(n^2) to O(n * k) where k is the average group size.
+  """
+  si = wp.tid()
+  if si >= ncand[0]:
+    return
+
+  i = sort_val[si]
+  my_key = sort_key[si]
+  pos_i = cand_pos[i]
+  dist_i = cand_dist[i]
+  eps2 = epsilon * epsilon
+
+  keep = int(1)
+
+  # Compare with same-key neighbors (backward)
+  j = si - 1
+  while j >= 0:
+    if sort_key[j] != my_key:
+      break
+    oj = sort_val[j]
+    diff = pos_i - cand_pos[oj]
+    if wp.dot(diff, diff) < eps2:
+      dist_j = cand_dist[oj]
+      if dist_j < dist_i:
+        keep = 0
+      elif dist_j == dist_i and oj < i:
+        keep = 0
+    j -= 1
+
+  # Compare with same-key neighbors (forward)
+  j = si + 1
+  while j < ncand[0]:
+    if sort_key[j] != my_key:
+      break
+    oj = sort_val[j]
+    diff = pos_i - cand_pos[oj]
+    if wp.dot(diff, diff) < eps2:
+      dist_j = cand_dist[oj]
+      if dist_j < dist_i:
+        keep = 0
+      elif dist_j == dist_i and oj < i:
+        keep = 0
+    j += 1
+
+  cand_active_out[i] = keep
+
+
+@wp.kernel
 def _filter_flex_candidates(
   # In:
   max_candidates: int,
@@ -3772,20 +3874,40 @@ def flex_collision(m: Model, d: Data, ctx):
         ],
       )
 
-  # Filter duplicate contacts (e.g. from shared vertices or edges)
-  cand_active = wp.empty(d.naconmax, dtype=int)
+  # Filter duplicate contacts using sort-based deduplication.
+  # Sort candidates by (worldid, flex_id, geom_id) so duplicates are contiguous,
+  # then compare only within each group. This is O(n log n) vs the naive O(n^2).
+  filter_key = wp.empty(d.naconmax * 2, dtype=int)
+  filter_val = wp.empty(d.naconmax * 2, dtype=int)
   wp.launch(
-    _filter_flex_candidates,
+    _compute_filter_key,
     dim=d.naconmax,
     inputs=[
-      d.naconmax,
+      m.ngeom,
+      m.nflex,
       ncand,
-      1e-3,  # epsilon
-      cand_dist,
-      cand_pos,
       cand_geom,
       cand_flex,
       cand_worldid,
+    ],
+    outputs=[
+      filter_key,
+      filter_val,
+    ],
+  )
+  wp.utils.radix_sort_pairs(filter_key, filter_val, d.naconmax)
+
+  cand_active = wp.empty(d.naconmax, dtype=int)
+  wp.launch(
+    _filter_flex_candidates_sorted,
+    dim=d.naconmax,
+    inputs=[
+      ncand,
+      1e-3,  # epsilon
+      filter_key,
+      filter_val,
+      cand_dist,
+      cand_pos,
     ],
     outputs=[
       cand_active,
