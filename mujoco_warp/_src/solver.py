@@ -149,7 +149,7 @@ def _create_solver_context(m: types.Model, d: types.Data) -> SolverContext:
 
   # IC(0) preconditioner: (M + JTDJ) factored for articulated bodies.
   has_articulated = m.is_sparse and m.has_articulated_trees
-  alloc_ic = alloc_block_jacobi and has_articulated and m.opt.jac_preconditioner
+  alloc_ic = False  # IC(0) preconditioner removed; using diagonal for flex
   if alloc_ic:
     M_precond = wp.zeros((nworld, m.nC), dtype=float)
     qld_total = d.qLD.shape[1]
@@ -2840,6 +2840,89 @@ _JTDAJ_THREADS_PER_GROUP = 32  # one warp per group, so its J reads coalesce
 _JTDAJ_OVERSUBSCRIBE_WAVES = 6  # grid-stride depth; short per-warp chains load-balance groups
 
 
+
+
+# =============================================================================
+# Diagonal Preconditioner for flex DOFs: diag(M + J^T D J)
+# =============================================================================
+
+
+@wp.kernel
+def _diag_precond_build(
+  nv: int,
+  M_mulm_rowadr_in: wp.array[int],
+  M_mulm_col_in: wp.array[int],
+  M_mulm_madr_in: wp.array[int],
+  M_in: wp.array2d[float],
+  dof_to_block_in: wp.array[int],
+  ctx_done_in: wp.array[bool],
+  diag_out: wp.array2d[float],
+):
+  """Initialize diagonal with M_ii for flex DOFs only."""
+  worldid, di = wp.tid()
+  if di >= nv or ctx_done_in[worldid]:
+    return
+  if dof_to_block_in[di] < 0:
+    return
+  val = float(1.0e-12)
+  start = M_mulm_rowadr_in[di]
+  end = M_mulm_rowadr_in[di + 1]
+  for k in range(start, end):
+    if M_mulm_col_in[k] == di:
+      val += M_in[worldid, M_mulm_madr_in[k]]
+      break
+  diag_out[worldid, di] = val
+
+
+@wp.kernel
+def _diag_precond_add_JTDJ(
+  nefc_in: wp.array[int],
+  efc_J_rownnz_in: wp.array2d[int],
+  efc_J_rowadr_in: wp.array2d[int],
+  efc_J_colind_in: wp.array3d[int],
+  efc_J_in: wp.array3d[float],
+  efc_D_in: wp.array2d[float],
+  dof_to_block_in: wp.array[int],
+  ctx_done_in: wp.array[bool],
+  diag_out: wp.array2d[float],
+):
+  """Add diagonal of J^T D J for flex DOFs only."""
+  worldid, efcid = wp.tid()
+  if ctx_done_in[worldid]:
+    return
+  if efcid >= nefc_in[worldid]:
+    return
+  D = efc_D_in[worldid, efcid]
+  if D == 0.0:
+    return
+  rownnz = efc_J_rownnz_in[worldid, efcid]
+  rowadr = efc_J_rowadr_in[worldid, efcid]
+  for i in range(rownnz):
+    col = efc_J_colind_in[worldid, 0, rowadr + i]
+    if dof_to_block_in[col] < 0:
+      continue
+    Jval = efc_J_in[worldid, 0, rowadr + i]
+    wp.atomic_add(diag_out, worldid, col, D * Jval * Jval)
+
+
+@wp.kernel
+def _diag_precond_apply_flex(
+  nv: int,
+  dof_to_block_in: wp.array[int],
+  diag_in: wp.array2d[float],
+  grad_in: wp.array2d[float],
+  ctx_done_in: wp.array[bool],
+  Mgrad_out: wp.array2d[float],
+):
+  """Overwrite Mgrad for flex DOFs: z_i = g_i / diag_i."""
+  worldid, di = wp.tid()
+  if di >= nv or ctx_done_in[worldid]:
+    return
+  if dof_to_block_in[di] < 0:
+    return
+  Mgrad_out[worldid, di] = grad_in[worldid, di] / diag_in[worldid, di]
+
+
 @wp.kernel
 def _block_jacobi_JTDJ(
   # Data in:
@@ -3374,11 +3457,15 @@ def _update_gradient(m: types.Model, d: types.Data, ctx: SolverContext, compact:
       outputs=[ctx.grad, ctx.grad_dot],
     )
   if m.opt.solver == types.SolverType.CG:
-    if m.is_sparse and m.opt.jac_preconditioner:
-      _build_ic_preconditioner(m, d, ctx)
-      _apply_ic_preconditioner(m, d, ctx)
-    else:
-      smooth.solve_m(m, d, ctx.Mgrad, ctx.grad)
+    smooth.solve_m(m, d, ctx.Mgrad, ctx.grad)
+    if m.is_sparse and m.nflex > 0 and hasattr(ctx, 'diag_precond') and ctx.diag_precond is not None:
+      wp.launch(
+        _diag_precond_apply_flex,
+        dim=(d.nworld, m.nv),
+        inputs=[m.nv, ctx.dof_to_block, ctx.diag_precond,
+                ctx.grad, ctx.done],
+        outputs=[ctx.Mgrad],
+      )
   elif m.opt.solver == types.SolverType.NEWTON:
     # h = M + (efc_J.T * efc_D * active) @ efc_J
     if m.is_sparse:
@@ -3988,6 +4075,26 @@ def init_context(m: types.Model, d: types.Data, ctx: SolverContext | InverseCont
   support.mul_m(m, d, d.efc.Ma, d.qacc, skip=ctx.done)
 
   _update_constraint(m, d, ctx)
+
+  # Build diagonal preconditioner for flex DOFs (once per step).
+  if m.is_sparse and m.nflex > 0:
+    if not hasattr(ctx, 'diag_precond') or ctx.diag_precond is None:
+      ctx.diag_precond = wp.zeros(shape=(d.nworld, m.nv), dtype=float)
+    wp.launch(
+      _diag_precond_build,
+      dim=(d.nworld, m.nv),
+      inputs=[m.nv, m.M_mulm_rowadr, m.M_mulm_col,
+              m.M_mulm_madr, d.M, ctx.dof_to_block, ctx.done],
+      outputs=[ctx.diag_precond],
+    )
+    wp.launch(
+      _diag_precond_add_JTDJ,
+      dim=(d.nworld, d.njmax),
+      inputs=[d.nefc, d.efc.J_rownnz, d.efc.J_rowadr,
+              d.efc.J_colind, d.efc.J, d.efc.D,
+              ctx.dof_to_block, ctx.done],
+      outputs=[ctx.diag_precond],
+    )
 
   if grad:
     _update_gradient(m, d, ctx, compact=compact)
