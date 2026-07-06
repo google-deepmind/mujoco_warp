@@ -463,7 +463,7 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
   m.has_sdf_geom = (mjm.geom_type == mujoco.mjtGeom.mjGEOM_SDF).any()
   m.has_ellipsoid_geom = (mjm.geom_type == mujoco.mjtGeom.mjGEOM_ELLIPSOID).any()
   m.has_flex_selfcollide = bool(mjm.nflex > 0 and np.any(mjm.flex_selfcollide != 0))
-  m.has_trilinear = bool(mjm.nflex > 0 and np.any(mjm.flex_interp == 1))
+  m.has_3d_flex = bool(mjm.nflex > 0 and np.any(mjm.flex_dim == 3))
   m.max_flex_dim = int(np.max(mjm.flex_dim)) if mjm.nflex > 0 else 0
   m.block_dim = types.BlockDim()
   # Derive CG solver block_dim from nv: clamp(round_up_to_32(nv), 32, 256)
@@ -1040,7 +1040,6 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
 
   # Populate lookup maps and candidate pairs
   flexelem_geom_pairs = []
-  flexshell_geom_pairs = []
   flexvert_geom_pairs = []
 
   flex_elemflexid = np.zeros(mjm.nflexelem, dtype=np.int32)
@@ -1107,19 +1106,6 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
             for g in matching_primitive_geoms[~filtered]:
               flexelem_geom_pairs.append((elemid, g))
 
-      elif fdim == 3:
-        shelldata_start = mjm.flex_shelldataadr[fi]
-        prev_shells_offset = shell_offset - shell_num
-        for s in range(shell_num):
-          v0 = vert_start + mjm.flex_shell[shelldata_start + s * 3]
-          v1 = vert_start + mjm.flex_shell[shelldata_start + s * 3 + 1]
-          v2 = vert_start + mjm.flex_shell[shelldata_start + s * 3 + 2]
-
-          if len(matching_primitive_geoms) > 0:
-            filtered = _filter_tri_geoms(mjm, v0, v1, v2, matching_primitive_geoms, filterparent)
-            for g in matching_primitive_geoms[~filtered]:
-              flexshell_geom_pairs.append((prev_shells_offset + s, g))
-
       # Planes vs Vertices
       if len(matching_plane_geoms) > 0:
         vert_count = mjm.flex_vertnum[fi]
@@ -1146,13 +1132,10 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
 
   if not flexelem_geom_pairs:
     flexelem_geom_pairs = np.zeros((0, 2), dtype=np.int32)
-  if not flexshell_geom_pairs:
-    flexshell_geom_pairs = np.zeros((0, 2), dtype=np.int32)
   if not flexvert_geom_pairs:
     flexvert_geom_pairs = np.zeros((0, 2), dtype=np.int32)
 
   m.flexelem_geom_pair_filtered = np.array(flexelem_geom_pairs, dtype=np.int32)
-  m.flexshell_geom_pair_filtered = np.array(flexshell_geom_pairs, dtype=np.int32)
   m.flexvert_geom_pair_filtered = np.array(flexvert_geom_pairs, dtype=np.int32)
 
   m.flex_elemflexid = flex_elemflexid
