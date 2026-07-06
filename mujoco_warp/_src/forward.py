@@ -170,8 +170,8 @@ def _next_time(
 ):
   worldid = wp.tid()
   next_time(worldid, opt_timestep, time_in, time_out)
-  nefc = nefc_in[worldid]
 
+  nefc = nefc_in[worldid]
   if nefc > njmax_in:
     wp.printf("nefc overflow - please increase njmax to %u\n", nefc)
   elif nefc > 0 and is_sparse:
@@ -564,10 +564,6 @@ def fwd_kinematics(m: Model, d: Data):
     smooth.camlight(m, d)
     smooth.flex(m, d)
     smooth.tendon(m, d)
-    sleep_enabled = bool(m.opt.enableflags & EnableBit.SLEEP) and not bool(m.opt.disableflags & DisableBit.ISLAND)
-    if sleep_enabled and m.ntendon > 0:
-      sleep.wake_tendon(m, d)
-      sleep.update_sleep_trees(m, d)
   finally:
     if record:
       rt.tape = tape
@@ -590,6 +586,10 @@ def fwd_position(m: Model, d: Data, factorize: bool = True):
   fwd_kinematics(m, d)
 
   sleep_enabled = bool(m.opt.enableflags & EnableBit.SLEEP) and not bool(m.opt.disableflags & DisableBit.ISLAND)
+
+  if sleep_enabled and m.ntendon > 0:
+    sleep.wake_tendon(m, d)
+    sleep.update_sleep_trees(m, d)
 
   smooth.crb(m, d)
   smooth.tendon_armature(m, d)
