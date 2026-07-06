@@ -41,6 +41,7 @@ from mujoco_warp._src.forward import euler as euler
 from mujoco_warp._src.forward import forward as forward
 from mujoco_warp._src.forward import fwd_acceleration as fwd_acceleration
 from mujoco_warp._src.forward import fwd_actuation as fwd_actuation
+from mujoco_warp._src.forward import fwd_kinematics as fwd_kinematics
 from mujoco_warp._src.forward import fwd_position as fwd_position
 from mujoco_warp._src.forward import fwd_velocity as fwd_velocity
 from mujoco_warp._src.forward import implicit as implicit

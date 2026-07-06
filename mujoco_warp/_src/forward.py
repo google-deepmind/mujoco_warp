@@ -613,6 +613,21 @@ def implicit(m: Model, d: Data):
 
 
 @event_scope
+def fwd_kinematics(m: Model, d: Data):
+  """Kinematic position-dependent computations.
+
+  Args:
+    m: The model containing kinematic and dynamic information.
+    d: The data object containing the current state and output arrays.
+  """
+  smooth.kinematics(m, d)
+  smooth.com_pos(m, d)
+  smooth.camlight(m, d)
+  smooth.flex(m, d)
+  smooth.tendon(m, d)
+
+
+@event_scope
 def fwd_position(m: Model, d: Data, factorize: bool = True):
   """Position-dependent computations.
 
@@ -621,11 +636,7 @@ def fwd_position(m: Model, d: Data, factorize: bool = True):
     d: The data object containing the current state and output arrays.
     factorize: Flag to factorize interia matrix.
   """
-  smooth.kinematics(m, d)
-  smooth.com_pos(m, d)
-  smooth.camlight(m, d)
-  smooth.flex(m, d)
-  smooth.tendon(m, d)
+  fwd_kinematics(m, d)
 
   sleep_enabled = bool(m.opt.enableflags & EnableBit.SLEEP) and not bool(m.opt.disableflags & DisableBit.ISLAND)
 
