@@ -530,7 +530,7 @@ def implicit(m: Model, d: Data):
     _advance(m, d, d.qacc)
 
 
-# Analytic position-gradient hook, set by adjoint.py via register_position_backward_hook (None = off).
+# Analytic position-gradient hook, set via register_position_backward_hook (None = off).
 # Consulted in fwd_kinematics under an active wp.Tape (so NOT inside step, which pauses the tape).
 _position_backward_hook = None
 
@@ -543,15 +543,11 @@ def register_position_backward_hook(fn):
 
 @event_scope
 def fwd_kinematics(m: Model, d: Data):
-  """Kinematic position computations (mj_fwdKinematics): body/site/geom poses (kinematics), subtree
-  COM + cdof (com_pos), camera/light, flex, tendon lengths. NO collision / inertia / constraints --
-  the collision-free smooth kinematic subset shared with fwd_position.
+  """Kinematic position-dependent computations.
 
-  Differentiable-observation entry point: call after step() to refresh site_xpos / xpos / xquat at the
-  new qpos, then read them into a loss. Under a wp.Tape with adjoint.py's position backward registered
-  (and NOT nested inside a tape-paused step), records ONE analytic record_func mapping the derived
-  position quantities' grads back to qpos via the analytic point Jacobian (support.jac) -- never AD-ing
-  the kinematics tree or the sharp collision/constraint stages.
+  Args:
+    m: The model containing kinematic and dynamic information.
+    d: The data object containing the current state and output arrays.
   """
   rt = wp._src.context.runtime
   tape = rt.tape if rt is not None else None
@@ -1308,8 +1304,17 @@ def forward(m: Model, d: Data):
 # Minimal step-input state copied d -> d_out on step()'s out-of-place path; forward(m, d_out)
 # recomputes everything else. wp.copy (no alloc / no sync) keeps the path graph-capture safe.
 _STEP_STATE_FIELDS = (
-  "qpos", "qvel", "act", "ctrl", "qfrc_applied", "xfrc_applied",
-  "mocap_pos", "mocap_quat", "qacc_warmstart", "eq_active", "time",
+  "qpos",
+  "qvel",
+  "act",
+  "ctrl",
+  "qfrc_applied",
+  "xfrc_applied",
+  "mocap_pos",
+  "mocap_quat",
+  "qacc_warmstart",
+  "eq_active",
+  "time",
 )
 
 # Analytic-gradient hook, set by adjoint.py via register_backward_hook (None = off). Only consulted
@@ -1334,14 +1339,10 @@ def _copy_state(d: Data, d_out: Data):
 
 @event_scope
 def step(m: Model, d: Data, d_out: Data = None):
-  """Advance simulation.
+  """Advance simulation: in place (d_out=None) or out-of-place d -> d_out, leaving d untouched.
 
-  d_out is None: advance d in place (default; unchanged from before).
-  d_out given: copy d's input state into d_out and advance d_out (forward + integrator) in place,
-    leaving d untouched -- Newton solver.step(state_in, state_out) style. d_out then holds the
-    next state AND this step's intermediates (qacc/efc/M). Under a wp.Tape with adjoint.py's backward
-    registered, records ONE analytic adjoint (d_out.grad -> d.grad); distinct in/out buffers per
-    step let the tape chain multi-step BPTT without in-place hazards. See MJPLAN.md §6.3.
+  When given, d_out holds the next state plus this step's intermediates (Newton-style step).
+  Under a wp.Tape with a backward hook, records one analytic adjoint (d_out.grad -> d.grad).
   """
   inplace = d_out is None
   if inplace:
@@ -1352,7 +1353,7 @@ def step(m: Model, d: Data, d_out: Data = None):
   # Out-of-place under a tape with an analytic backward: pause recording across the WHOLE forward
   # (state copy + the ~90 forward-only physics kernels) so none of it lands on the tape -- the
   # copy's wp.copy adjoints would otherwise double-count against adjoint.py's analytic record_func,
-  # which alone owns the step's VJP (d_out.grad -> d.grad). See MJPLAN.md §6.3.
+  # which alone owns the step VJP (d_out.grad -> d.grad).
   record = (not inplace) and (tape is not None) and (_backward_hook is not None)
   if record:
     rt.tape = None

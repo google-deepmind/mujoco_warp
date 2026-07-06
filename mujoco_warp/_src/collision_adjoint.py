@@ -45,10 +45,9 @@ def _capsule_box_segpos(
   mat_b: wp.mat33,
   size_b: wp.vec3,
 ) -> Tuple[wp.vec2, wp.vec3i]:
-  """Forward-only re-run of ``collision_primitive_core.capsule_box``'s closest-feature search.
+  """Forward-only closest-feature re-run: returns segment params (t1, t2) and frozen feature state.
 
-  Returns the sphere-reduction segment params (t1, t2) plus the frozen feature state that
-  ``_capsule_box_t0`` re-derives t1 from; keep in sync. Not AD-safe: only call backward-disabled.
+  Mirrors collision_primitive_core.capsule_box (keep in sync); not AD-safe, backward-disabled only.
   """
   boxmatT = wp.transpose(mat_b)
   pos = boxmatT @ (pos_c - pos_b)
@@ -249,11 +248,7 @@ def _capsule_box_t0(
   clcorner: int,
   cledge: int,
 ) -> float:
-  """Differentiably re-derive the primary segment parameter t1 for the frozen feature.
-
-  Replays the forward search's closed forms with the branch/clamp state frozen, so d(t1)/d(pose)
-  flows and the adjoint matches FD of the forward's actual computation graph.
-  """
+  """Differentiably re-derive segment param t1 with the branch/clamp feature state frozen."""
   if cltype < 0:  # capsule TIP closest to a face: t is the constant tip
     return wp.where(cltype == -3, -1.0, 1.0)
   s1 = cltype // 3
@@ -294,11 +289,7 @@ def _capsule_box_freeze(
   tseg_out: wp.array(dtype=wp.vec2),
   feat_out: wp.array(dtype=wp.vec3i),
 ):
-  """Store per capsule-box contact the frozen sphere-reduction segment params and feature state.
-
-  Forward-only (enable_backward=False), keeping the data-dependent feature search out of the
-  backward; ``_narrowphase_recompute`` then differentiates ``sphere_box`` at the re-derived t.
-  """
+  """Store per capsule-box contact the frozen sphere-reduction segment params and feature state."""
   cid = wp.tid()
   if cid >= nacon[0]:
     return
@@ -346,8 +337,7 @@ def _narrowphase_recompute(
 ):
   """Frozen-witness narrowphase replay, backward-enabled so Warp auto-diffs adj(geom poses).
 
-  Calls the forward wrappers' ``collision_primitive_core`` leaves (keep in sync) with feature/slot
-  choices frozen; reads raw poses -- a ``Geom`` struct from a @wp.func zeroes Warp reverse-mode.
+  Reuses the collision_primitive_core leaves (keep in sync); a Geom struct arg zeroes the adjoint.
   """
   cid = wp.tid()
   if cid >= nacon[0]:
@@ -477,11 +467,7 @@ def _gather_efc_to_contact(
   res_efc_pos: wp.array2d[float],  # dr/defc_pos * lam (per world, per efc row)
   adj_dist_out: wp.array[float],  # per-contact seed for dist_out.grad (defc_pos/ddist = 1)
 ):
-  """Gather dr/defc_pos (efc-row indexed) to the per-contact normal-row distance adjoint.
-
-  efc_pos = contact.dist - includemargin, so defc_pos/ddist = 1 (the margin offset is
-  qpos-independent).
-  """
+  """Gather dr/defc_pos (efc-row indexed) to the per-contact normal-row distance adjoint."""
   cid = wp.tid()
   if cid >= nacon[0]:
     return
@@ -504,8 +490,7 @@ def _cdof_qpos_vjp(
 ):
   """Fixed-reference part of dr/dcdof -> qpos: the screw-axis commutator, as a manual VJP.
 
-  The transport mask is transitive dof ancestry plus the full same-quaternion (free/ball) angular
-  block; the moving-COM reference term is NOT here -- it is folded into the seed by _build_ceff.
+  The moving-COM reference term is NOT here -- _build_ceff folds it into the subtree-COM seed.
   """
   w, k = wp.tid()
   cdof_k = cdof_in[w, k]
@@ -544,11 +529,7 @@ def _build_ceff(
   nv: int,
   ceff_out: wp.array2d[wp.vec3],  # OUT: effective subtree-COM cotangent
 ):
-  """Build the effective subtree-COM cotangent seed.
-
-  Folds the moving-COM part of dr/dcdof (rotational rows only) into res_subtree_com so a single
-  pass of the subtree-COM Jacobian VJP (_subtree_com_qpos_vjp) carries both terms.
-  """
+  """Build the effective subtree-COM seed: res_subtree_com + the moving-COM part of dr/dcdof."""
   w, b = wp.tid()
   c = res_subtree_com[w, b]
   if body_rootid[b] == b and b > 0:  # tree root -> accumulate the rotational rows' moving-COM cotangent
@@ -574,11 +555,7 @@ def _subtree_com_qpos_vjp(
   nbody: int,
   res_dof: wp.array2d[float],  # OUT: += per-dof tangent gradient dc/d(dof k)
 ):
-  """Chain dr/dsubtree_com to qpos via the mass-weighted subtree-COM Jacobian (mj_jacSubtreeCom).
-
-  The residual reads subtree_com only at tree-root indices, so summing bodies by their root
-  covers it. Must pair with _cdof_qpos_vjp (fixed-reference half of the stored-cdof derivative).
-  """
+  """Chain dr/dsubtree_com to qpos via the mass-weighted subtree-COM Jacobian (mj_jacSubtreeCom)."""
   w, k = wp.tid()
   wm = w % body_mass.shape[0]
   acc = float(0.0)
@@ -618,11 +595,7 @@ def _geom_pose_dof_vjp(
   ngeom: int,
   res_dof: wp.array2d[float],  # OUT: per-dof tangent gradient d(contact)/d(dof k)
 ):
-  """Chain the narrowphase geom-pose adjoints to the per-dof tangent gradient via support.jac_dof.
-
-  Analytic body Jacobian, no kinematics-tree AD; the orientation adjoint reduces to the world
-  axis tau = sum_col xmat[:,col] x adj(xmat)[:,col]. Stays in dof space; _dof_to_qpos lifts.
-  """
+  """Chain narrowphase geom-pose adjoints to the per-dof tangent gradient via support.jac_dof."""
   w, k = wp.tid()
   acc = float(0.0)
   for g in range(ngeom):
@@ -660,10 +633,9 @@ def _dof_to_qpos(
   res_dof: wp.array2d[float],  # per-dof tangent gradient d(contact)/d(dof)
   res_qpos: wp.array2d[float],  # += dof -> qpos (1:1 for slide/hinge/free-translation; quaternion lift for free/ball)
 ):
-  """Map the per-dof tangent gradient ``res_dof`` to ``res_qpos`` (nq-indexed).
+  """Map the per-dof tangent gradient res_dof to res_qpos (nq-indexed; 1:1 except quaternions).
 
-  Slide/hinge/free-translation dofs map 1:1; each free/ball joint's angular gradient g lifts to
-  raw quaternion coords via dc/dq = 2 * quat_mul(q, [0, g]), matching quat_integrate's adjoint.
+  Free/ball angular gradient g lifts to raw quaternion coords as dc/dq = 2*quat_mul(q, [0, g]).
   """
   w, j = wp.tid()
   jt = jnt_type[j]
@@ -703,9 +675,8 @@ def contact_qpos_vjp(
 ):
   """Accumulate the contact residual's dqpos into ``res_qpos`` from the exposed input-adjoints.
 
-  Mirrors the forward narrowphase instead of AD-ing the kinematics tree: a frozen-witness replay
-  yields adj(geom poses), then analytic Jacobian VJPs chain all terms into one per-dof tangent
-  buffer that ``_dof_to_qpos`` lifts to qpos. Sign: adjoint.step_backward's _sub_write subtracts.
+  A frozen-witness narrowphase replay yields adj(geom poses); analytic Jacobian VJPs then chain
+  everything into one per-dof tangent buffer that _dof_to_qpos lifts. Sign: _sub_write subtracts.
   """
   nworld = d_out.qpos.shape[0]
   nv = m.nv

@@ -352,15 +352,8 @@ def _eval_elliptic_cost(
 
 
 @wp.func
-def _eval_elliptic_cone(N: float, T: float, D0: float, mu: float, ufrictionj: float, is_normal: bool) -> wp.vec2:
-  """Elliptic-cone (CONE / middle-zone) contact ``(force, cost)`` for one row.
-
-  ``N = jaref0*mu``; ``T = sqrt(sum_j (jaref_j*friction_j)^2)``; ``ufrictionj = jaref_j*friction_j^2``
-  is the row's friction-scaled tangent (ignored for the normal row).  Returns ``vec2(force, cost)``
-  (cost is 0 on tangent rows).  Shared by ``_eval_constraint`` (forward) and ``adjoint._residual_contact``
-  (backward, frozen active set; it uses only the force).  Warp inlines ``@wp.func`` so the forward
-  stays bit-identical.
-  """
+def _eval_elliptic_middle(N: float, T: float, D0: float, mu: float, ufrictionj: float, is_normal: bool) -> wp.vec2:
+  """Elliptic-cone middle-zone ``vec2(force, cost)`` for one row (cost 0 on tangent rows)."""
   dm = math.safe_div(D0, mu * mu * (1.0 + mu * mu))
   nmt = N - mu * T
   force_normal = -dm * nmt * mu
@@ -415,7 +408,8 @@ def _eval_constraint(
       return wp.vec3(-D * jaref, float(types.ConstraintState.QUADRATIC.value), 0.5 * D * jaref * jaref)
     # Middle zone
     else:
-      fc = _eval_elliptic_cone(N, T, D0, mu, ufrictionj, efcid == efcid0)
+      is_normal = efcid == efcid0
+      fc = _eval_elliptic_middle(N, T, D0, mu, ufrictionj, is_normal)
       return wp.vec3(fc[0], float(types.ConstraintState.CONE.value), fc[1])
 
   if jaref >= 0.0:

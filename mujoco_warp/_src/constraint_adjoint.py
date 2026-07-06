@@ -37,7 +37,7 @@ _CONE = int(types.ConstraintState.CONE.value)
 _ELLIPTIC = int(types.ConeType.ELLIPTIC.value)
 _MAXCONDIM = 6  # max valid MuJoCo condim; elliptic friction rows = dimid 1..condim-1
 _MAX_PYRAMID_EDGES = 10  # 2*(_MAXCONDIM - 1) pyramidal edges at condim 6
-_MAX_NV = 16  # static unroll bound for the dense `_residual_contact` oracle (the sparse path is nv-general)
+_MAX_NV = 16  # static unroll bound of the dense `_residual_contact` path (sparse is nv-general)
 
 
 # Non-contact constraint residual VJP (equality / joint-limit / dof-friction rows), orchestrated by
@@ -68,10 +68,9 @@ def _constraint_gather(is_sparse: bool):
     Z_out: wp.array2d[float],
     invw_out: wp.array2d[float],
   ):
-    """GATHER (manual): per active non-contact row, reduce Z and gather the topology invweight.
+    """GATHER (manual): per active non-contact row, reduce Z = J*lam and the topology invweight.
 
-    Z_e = sum_i J_ei*lam_i over the row's J support (mirrors solver._solve_init_jaref_kernel's
-    CSR/dense iterator); invw=0 signals the leaf's frozen-D fallback (equality / other rows).
+    Mirrors solver._solve_init_jaref_kernel's CSR/dense J iterator (keep in sync).
     """
     w, row = wp.tid()
     Z_out[w, row] = 0.0
@@ -130,12 +129,7 @@ def _constraint_row_phi(
   opt_disableflags: int,
   phi_out: wp.array2d[float],
 ):
-  """LOOP-FREE reference-anchored row leaf: phi_e = -Z*f.
-
-  f is VALUE-anchored to the stored efc.force (base byte-equals efc.force_ref; only the intended
-  derivatives flow). efc.state is read FROZEN and branched on, never recomputed from a perturbed
-  jaref, which would be non-smooth.
-  """
+  """LOOP-FREE row leaf: phi_e = -Z*f, f VALUE-anchored to the stored efc.force."""
   w, row = wp.tid()
   phi_out[w, row] = 0.0  # assign output before any early return (Warp footgun)
   if row >= nefc_in[w]:
@@ -205,11 +199,9 @@ def _constraint_scatter(is_sparse: bool):
     res_qvel: wp.array2d[float],
     res_dof: wp.array2d[float],
   ):
-    """SCATTER (manual): re-walk the row's J support and accumulate the leaf adjoints.
+    """SCATTER (manual): re-walk the row's J support; res_qvel += J*Vbar for all active rows.
 
-    res_qvel_i += J_ei*Vbar_e for ALL rows; res_dof_i += J_ei*Pbar_e for POSITION-BEARING rows
-    only -- a friction row's P is identically zero, so routing Pbar through J would invent a
-    spurious qpos stiffness.
+    res_dof += J*Pbar only for position-bearing rows -- a friction row's P is identically zero.
     """
     w, row = wp.tid()
     if row >= nefc_in[w]:
@@ -244,22 +236,15 @@ def _constraint_scatter(is_sparse: bool):
 
 
 # ============================================================================================
-# CONTACT constraint residual VJP -- the elliptic/pyramidal cone force law. The CONTACT-row
-# counterpart of the non-contact gather/leaf/scatter above; both are the VJP of constraint.py's
-# efc rows. Orchestrated by adjoint.contact_residual_backward: the dense `_residual_contact`
-# oracle + the sparse `_contact_gather/phi/scatter` path.
+# CONTACT constraint residual VJP -- the elliptic/pyramidal cone force law. Orchestrated by
+# adjoint.contact_residual_backward, routing on the forward's jacobian storage: dense
+# `_residual_contact` (one monolithic source-AD pass, nv<=_MAX_NV static unroll) when
+# not m.is_sparse and nv<=_MAX_NV, else the SPARSE contract-first path (gather V/A/Z over the
+# symmetric-difference ancestor-dof walk, source-AD cone leaf phi=-Z*F(V,A,xi), manual scatter;
+# nv-general, reads no efc.J). test_sparse_vs_dense_oracle_match pins the two to ~1e-5.
 # ============================================================================================
-# ----------------------------------------------------------------------------
-# Contact residual r_contact(qpos,qvel) = -J^T*f(J*qacc - aref), seeded adj_r = lam ->
-# -(dr/dtheta)^T lam in one AD pass. This is the CONTACT term of the stationarity residual; the
-# SMOOTH term r_smooth = M*qacc - qfrc_smooth is a planned SEPARATE sibling kernel
-# `_residual_smooth` -- the IFT VJP is linear in r = r_smooth + r_contact, so the two AD passes
-# share the same lam and their input adjoints sum (see step_backward's closing note). Omitted
-# now: zero for the gravity-only free body. Scope: one free-joint body (dofs 0-5),
-# elliptic/pyramidal cones, condim {1,3,4,6}.
-# ----------------------------------------------------------------------------
 # Per-row physics shared with the forward: (k, b, impedance) from constraint._contact_kbimp and
-# the elliptic cone force from solver._eval_elliptic_cone (single source of truth). Only
+# the elliptic cone force from solver._eval_elliptic_middle (single source of truth). Only
 # _contact_D (differentiable D recovered from the frozen converged D) is backward-only.
 @wp.func
 def _contact_D(D_base: float, imp_base: float, imp: float) -> float:
@@ -275,11 +260,7 @@ def _contact_dof_coefficient(
   geom_bodyid: wp.array[int],
   body_isdofancestor: wp.array2d[int],
 ) -> float:
-  """Coefficient of one DOF in a rigid-geom contact's J = J_geom1 - J_geom0.
-
-  Shared-ancestor DOFs cancel, geom-0-only DOFs contribute -1, geom-1-only +1; flex contacts
-  (negative geom ids) have no coefficient here.
-  """
+  """Coefficient of one dof in a rigid-geom contact's J = J_geom1 - J_geom0 (+1/-1/0; flex -> 0)."""
   if geom[0] < 0 or geom[1] < 0:
     return 0.0
   body0 = geom_bodyid[geom[0]]
@@ -299,11 +280,7 @@ def _frame_axis(fm: wp.mat33, idx: int) -> wp.vec3:
 
 @wp.func
 def _friction(fri: vec5, idx: int) -> float:
-  """Friction coefficient by runtime row index via STATIC vec lookups.
-
-  A runtime vector index has a corrupt Warp reverse-mode adjoint; it is only exercised in
-  enable_backward=False forward kernels.
-  """
+  """Friction coef by row index; STATIC lookups (a runtime vec index corrupts Warp's adjoint)."""
   if idx == 0:
     return fri[0]
   if idx == 1:
@@ -317,11 +294,7 @@ def _friction(fri: vec5, idx: int) -> float:
 
 @wp.func
 def _row_jaref(Jqa: float, Jqv: float, k: float, b: float, imp: float, pos_aref: float) -> float:
-  """Jaref = J*qacc - aref, with aref = -k*imp*pos_aref - b*(J*qvel) (constraint._efc_row).
-
-  Elliptic friction rows pass pos_aref=0 (no penetration reference); the normal row and every
-  pyramidal edge pass pos_aref = pos (the shared normal penetration).
-  """
+  """Jaref = J*qacc - aref, aref = -k*imp*pos_aref - b*(J*qvel) (mirrors constraint._efc_row)."""
   return Jqa - (-k * imp * pos_aref - b * Jqv)
 
 
@@ -339,10 +312,9 @@ def _jac_dif(
   subtree_com_in: wp.array2d[wp.vec3],
   cdof_in: wp.array2d[wp.spatial_vector],
 ) -> Tuple[wp.vec3, wp.vec3]:
-  """Per-dof contact-Jacobian difference J_i = jac_dof(body1, i) - jac_dof(body0, i).
+  """Per-dof contact-Jacobian difference: (jacp_dif, jacr_dif) = jac_dof(body1) - jac_dof(body0).
 
-  Returns (jacp_dif, jacr_dif), each body via its OWN subtree_com[body_rootid]; mirrors the
-  forward constraint._efc_contact_jac_sparse exactly. cdof/subtree_com/point are frozen.
+  Mirrors constraint._efc_contact_jac_sparse: each body via its OWN subtree_com[body_rootid].
   """
   jp1, jr1 = support.jac_dof(
     body_parentid, body_rootid, dof_bodyid, body_isdofancestor, subtree_com_in, cdof_in, point, body1, dofid, w
@@ -355,11 +327,7 @@ def _jac_dif(
 
 @wp.func
 def _row_coef(jpd: wp.vec3, jrd: wp.vec3, fm: wp.mat33, dimid: int) -> float:
-  """Contact-Jacobian coefficient of one dof for row ``dimid``: frame-axis . jac_dif.
-
-  dimid<3 = translational (jacp_dif; axes normal/tangent1/tangent2), dimid>=3 = rotational
-  (jacr_dif; axis dimid-3).
-  """
+  """One dof's coefficient for contact row dimid: frame-axis dot jacp_dif (dimid<3) or jacr_dif."""
   if dimid < 3:
     return wp.dot(_frame_axis(fm, dimid), jpd)
   return wp.dot(_frame_axis(fm, dimid - 3), jrd)
@@ -383,11 +351,7 @@ def _row_Jqv_Jqa(
   subtree_com_in: wp.array2d[wp.vec3],
   cdof_in: wp.array2d[wp.spatial_vector],
 ) -> Tuple[float, float]:
-  """Row ``dimid``'s (J.qvel, J.qacc) = sum_i coef_i*{qvel_i, qacc_i}.
-
-  STATIC loop (range _MAX_NV + runtime nv guard, like the condim loops) so Warp unrolls +
-  replays it -- the reduction feeds the nonlinear cone T.
-  """
+  """Row dimid's (J.qvel, J.qacc) = sum_i coef_i*(qvel_i, qacc_i); STATIC dof loop."""
   Jqv = float(0.0)
   Jqa = float(0.0)
   for i in range(_MAX_NV):
@@ -403,11 +367,7 @@ def _row_Jqv_Jqa(
 
 @wp.func
 def _edge_coef(jpd: wp.vec3, jrd: wp.vec3, fm: wp.mat33, fric: vec5, e: int, condim: int) -> float:
-  """Pyramidal edge ``e``'s coefficient of one dof.
-
-  Normal row + (condim>1) (+/-friction_k)*(k-th friction direction). dimid2 = e/2 + 1 selects
-  the friction dir; the two edges per dir take +/- the friction.
-  """
+  """Pyramidal edge e's dof coefficient: normal coef +/- friction * (friction-dir e/2+1 coef)."""
   c = _row_coef(jpd, jrd, fm, 0)
   if condim > 1:
     dimid2 = e / 2 + 1
@@ -436,10 +396,7 @@ def _edge_Jqv_Jqa(
   subtree_com_in: wp.array2d[wp.vec3],
   cdof_in: wp.array2d[wp.spatial_vector],
 ) -> Tuple[float, float]:
-  """Pyramidal edge ``e``'s (J_edge.qvel, J_edge.qacc), J_edge = normal +/- friction*tangent.
-
-  STATIC dof loop.
-  """
+  """Pyramidal edge e's (J_edge.qvel, J_edge.qacc); STATIC dof loop."""
   Jqv = float(0.0)
   Jqa = float(0.0)
   for i in range(_MAX_NV):
@@ -478,10 +435,9 @@ def _elliptic_TN(
   subtree_com_in: wp.array2d[wp.vec3],
   cdof_in: wp.array2d[wp.spatial_vector],
 ) -> Tuple[float, float]:
-  """Elliptic middle-zone cone coupling.
+  """Elliptic middle-zone coupling: (T, N) = (sqrt(sum_j (Jaref_j*fric_j)^2), mu*Jaref_normal).
 
-  N = mu*Jaref_normal, T = sqrt(sum_{j=1..condim-1} (Jaref_j*fric_j)^2). STATIC row loop (range
-  _MAXCONDIM + condim guard); the sqrt-of-sum is nonlinear, so the accumulation must unroll.
+  STATIC row loop: the nonlinear sqrt-of-sum accumulation must unroll for Warp's replay.
   """
   Jqv0, Jqa0 = _row_Jqv_Jqa(
     body0,
@@ -529,11 +485,9 @@ def _elliptic_TN(
 
 @cache_kernel
 def _residual_contact(cone_type: int):
-  """Per-step contact residual r = -J^T f(qvel, qacc) for the IFT backward, cone-specialized.
+  """Cone-specialized dense per-step contact residual r = -J^T f(qvel, qacc) for the IFT backward.
 
-  The contact point and penetration are FROZEN (their qpos-tracking is the narrowphase VJP);
-  per-dof/row reductions are STATIC so Warp replays them -- the nonlinear cone T must not be
-  accumulated in the dynamic contact loop.
+  Per-dof/row reductions are STATIC (Warp replay); only the linear += over contacts stays dynamic.
   """
   IS_ELLIPTIC = cone_type == _ELLIPTIC
 
@@ -646,7 +600,7 @@ def _residual_contact(cone_type: int):
             subtree_com_in,
             cdof_in,
           )
-          fn = solver._eval_elliptic_cone(N, T, D0, mu, 0.0, True)[0]  # normal-row force
+          fn = solver._eval_elliptic_middle(N, T, D0, mu, 0.0, True)[0]  # normal-row force
           for i in range(_MAX_NV):
             if i < nv:
               jpd, jrd = _jac_dif(
@@ -683,7 +637,9 @@ def _residual_contact(cone_type: int):
                 cdof_in,
               )
               frij = _friction(fric, j - 1)
-              fj = solver._eval_elliptic_cone(N, T, D0, mu, _row_jaref(Jqaj, Jqvj, 0.0, b_t, 0.0, 0.0) * frij * frij, False)[0]
+              fj = solver._eval_elliptic_middle(N, T, D0, mu, _row_jaref(Jqaj, Jqvj, 0.0, b_t, 0.0, 0.0) * frij * frij, False)[
+                0
+              ]
               for i in range(_MAX_NV):
                 if i < nv:
                   jpd, jrd = _jac_dif(
@@ -824,13 +780,11 @@ def _residual_contact(cone_type: int):
 # `_residual_contact`. gather assembles per-contact spatial motions V/A/Z; the loop-free source-AD
 # leaf phi_c = -Z*F(V,A,xi) reuses the forward cone law (Zbar = -F carries the direct -J^T f
 # path); scatter routes the leaf adjoints. Symmetric-difference walk; forward-only manual VJP.
+
+
 @wp.func
 def _proj_row_spatial(Vsp: wp.spatial_vector, fm: wp.mat33, dimid: int) -> float:
-  """Project a contact-point spatial motion onto contact-frame row ``dimid``.
-
-  The SUMMED form of _row_coef: translational rows (0/1/2) use the linear (spatial_bottom)
-  part, rotational rows (3/4/5) the angular (spatial_top) part.
-  """
+  """Project a contact-point spatial motion onto contact-frame row dimid (the SUMMED _row_coef)."""
   if dimid < 3:
     return wp.dot(_frame_axis(fm, dimid), wp.spatial_bottom(Vsp))
   return wp.dot(_frame_axis(fm, dimid - 3), wp.spatial_top(Vsp))
@@ -838,10 +792,7 @@ def _proj_row_spatial(Vsp: wp.spatial_vector, fm: wp.mat33, dimid: int) -> float
 
 @wp.func
 def _proj_edge_spatial(Vsp: wp.spatial_vector, fm: wp.mat33, fric: vec5, e: int, condim: int) -> float:
-  """Pyramidal edge ``e``'s projection of a contact-point spatial motion.
-
-  The SUMMED _edge_coef: normal row + (condim>1) (+/-friction_k)*(k-th friction direction).
-  """
+  """Pyramidal edge e's projection of a contact-point spatial motion (the SUMMED _edge_coef)."""
   c = _proj_row_spatial(Vsp, fm, 0)
   if condim > 1:
     dimid2 = e / 2 + 1
@@ -876,11 +827,7 @@ def _contact_gather(
   A_out: wp.array(dtype=wp.spatial_vector),
   Z_out: wp.array(dtype=wp.spatial_vector),
 ):
-  """GATHER (manual, sparse): assemble each contact's three contact-point spatial motions V/A/Z.
-
-  Walks the SYMMETRIC DIFFERENCE of the two geoms' ancestor-dof chains (side=+1 geom1, -1
-  geom0); shared ancestors cancel (J=J1-J0) so the walk breaks when the two chain pointers meet.
-  """
+  """GATHER (manual, sparse): per-contact spatial motions V/A/Z (symmetric-difference dof walk)."""
   cid = wp.tid()
   z = wp.spatial_vector(wp.vec3(0.0), wp.vec3(0.0))
   V_out[cid] = z
@@ -937,11 +884,7 @@ def _contact_gather(
 
 @cache_kernel
 def _contact_phi(cone_type: int):
-  """Loop-free source-AD cone leaf (one thread per contact): phi_c = lam^T r_c = -Z*F(V,A,xi).
-
-  Reuses the forward force law on the contact-frame projections of V/A (no per-dof loop); AD'd
-  wrt V/A/Z, contact_frame, and efc_pos.
-  """
+  """Loop-free source-AD cone leaf (one thread per contact): phi_c = lam^T r_c = -Z*F(V,A,xi)."""
   IS_ELLIPTIC = cone_type == _ELLIPTIC
 
   @wp.kernel(module="unique", enable_backward=True)
@@ -1017,13 +960,13 @@ def _contact_phi(cone_type: int):
             )
             TT += uj * uj
         T = wp.sqrt(wp.max(TT, _MINVAL * _MINVAL))
-        fn = solver._eval_elliptic_cone(N, T, D0, mu, 0.0, True)[0]
+        fn = solver._eval_elliptic_middle(N, T, D0, mu, 0.0, True)[0]
         phi += -fn * _proj_row_spatial(Z, fm, 0)
         for j in range(1, _MAXCONDIM):
           if j < condim:
             frij = _friction(fric, j - 1)
             uj = _row_jaref(_proj_row_spatial(A, fm, j), _proj_row_spatial(V, fm, j), 0.0, b_t, 0.0, 0.0)
-            fj = solver._eval_elliptic_cone(N, T, D0, mu, uj * frij * frij, False)[0]
+            fj = solver._eval_elliptic_middle(N, T, D0, mu, uj * frij * frij, False)[0]
             phi += -fj * _proj_row_spatial(Z, fm, j)
       else:  # bottom zone / frictionless: each row force = -D_row * Jaref_row
         f0 = -D0 * _row_jaref(_proj_row_spatial(A, fm, 0), _proj_row_spatial(V, fm, 0), k, b, imp, pos)
@@ -1053,10 +996,7 @@ def _contact_phi(cone_type: int):
 
 @wp.kernel
 def _fill_ones(out: wp.array(dtype=float)):
-  """Seed adj_phi = +1 (per contact).
-
-  phi = lam^T r_c already folds in the IFT seed lam, so adj_phi is a plain 1.
-  """
+  """Seed adj_phi = +1 per contact (phi = lam^T r_c already folds in the IFT seed lam)."""
   out[wp.tid()] = 1.0
 
 
@@ -1091,9 +1031,8 @@ def _contact_scatter(
   res_subtree_com: wp.array2d[wp.vec3],
   res_contact_pos: wp.array(dtype=wp.vec3),
 ):
-  """SCATTER (manual, sparse): walk the gather's symmetric-difference chain.
+  """SCATTER (manual, sparse): route leaf adjoints over the gather's symmetric-difference walk.
 
-  G_i = side_i*(qvel_i*Vbar + qacc_i*Abar + lam_i*Zbar) is the cotangent on the raw jac column;
   qacc is the implicit root (no adj_qacc), but its Abar term still feeds cdof/com via cdof(qpos).
   """
   cid = wp.tid()
@@ -1166,8 +1105,7 @@ def _contact_friction_geom_vjp(
 ):
   """CONTACT-PARAM sys-id: chain dphi/dcontact.friction to dphi/dgeom_friction (IFT minus).
 
-  Manual VJP of collision_core.contact_params' priority/elementwise-max routing (ties go to g1);
-  explicit-pair contacts take pair_friction, so their geom_friction grad correctly stays 0.
+  Mirrors collision_core.contact_params' priority/max routing; explicit-pair grads stay 0.
   """
   cid = wp.tid()
   if cid >= nacon_in[0]:

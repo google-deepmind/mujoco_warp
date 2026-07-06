@@ -61,11 +61,7 @@ def _contact_kbimp(
   solimp: vec5,
   pos_imp: float,
 ) -> wp.vec3:
-  """Constraint (k, b, impedance) from solref/solimp at impedance position ``pos_imp``.
-
-  Shared by ``_efc_row`` (forward) and the analytic residual VJPs.  The piecewise branches mirror
-  MuJoCo's ``getimpedance`` and avoid evaluating inactive formulas with singular derivatives.
-  """
+  """Constraint ``vec3(k, b, impedance)`` from solref/solimp at impedance position ``pos_imp``."""
   timeconst = solref[0]
   dampratio = solref[1]
   dmin = solimp[0]
@@ -86,9 +82,9 @@ def _contact_kbimp(
 
   # see https://mujoco.readthedocs.io/en/latest/modeling.html#solver-parameters
   dmax_sq = dmax * dmax
-  # Use real control flow rather than wp.where.  Warp reverses both arguments of wp.where, so the
-  # unselected positive-format expression used to evaluate 1/0 for direct-format solref and leave a
-  # sticky floating-point exception (or a NaN parameter adjoint) even though the forward result was finite.
+  # Real control flow, not wp.where: Warp reverses BOTH wp.where arguments, so the unselected
+  # positive-format expression evaluated 1/0 for direct-format solref -- a sticky FP exception
+  # (or NaN parameter adjoint) even though the forward result was finite.
   if solref[0] <= 0.0:
     k = -solref[0] / wp.max(types.MJ_MINVAL, dmax_sq)
   else:
@@ -99,10 +95,9 @@ def _contact_kbimp(
     b = 2.0 / wp.max(types.MJ_MINVAL, dmax * timeconst)
 
   imp_x = wp.abs(pos_imp) / width
-  # Only evaluate the active impedance polynomial.  The old eager imp_b evaluated pow(1-imp_x, power)
-  # at a non-positive base for saturated contacts.  Its generated reverse contains log(1-imp_x), which
-  # produces NaN/FE_INVALID even when wp.where later discards that branch.  At the two saturation knots we
-  # choose the bounded zero subgradient; the contact active set is already treated piecewise by the solver.
+  # Only evaluate the ACTIVE impedance polynomial: eager pow(1-imp_x, power) at a non-positive
+  # base has log(1-imp_x) in its reverse -> NaN/FE_INVALID even when wp.where discards the branch.
+  # At the saturation knots take the bounded zero subgradient (active set is piecewise anyway).
   if dmin == dmax or width_raw <= types.MJ_MINVAL:
     imp = 0.5 * (dmin + dmax)
   elif imp_x <= 0.0:
@@ -149,7 +144,7 @@ def _efc_row(
   aref_out: wp.array2d[float],
   frictionloss_out: wp.array2d[float],
 ):
-  # k, b, impedance from solref/solimp at pos_imp (shared @wp.func; Warp inlines it => bit-identical).
+  # k, b, impedance from solref/solimp at pos_imp (shared @wp.func; inlined => bit-identical).
   kbimp = _contact_kbimp(opt_disableflags, timestep, solref, solimp, pos_imp)
   k = kbimp[0]
   b = kbimp[1]

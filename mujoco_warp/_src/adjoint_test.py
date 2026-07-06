@@ -75,6 +75,7 @@ torch NOTE: ``torch`` is not installed in this environment, so P0 uses the pure
 import os
 import tempfile
 import warnings
+from unittest import mock
 
 import mujoco
 import numpy as np
@@ -2335,6 +2336,7 @@ class ConstraintGradientTest(parameterized.TestCase):
 # step_backward yet (FD-of-rne stays the live ∂qpos path; the kinematic ∂qpos reverse is steps 5-7).
 # ============================================================================================
 from mujoco_warp._src import adjoint as _adjoint  # noqa: E402
+from mujoco_warp._src import adjoint_test_util as _atu  # noqa: E402  (FD-of-rne oracle)
 from mujoco_warp._src import smooth_adjoint as _smooth_adjoint  # noqa: E402  (rne_backward / comvel_backward / rne_qpos_vjp moved here)
 from mujoco_warp._src import smooth as _smooth  # noqa: E402
 from mujoco_warp._src import solver as _solver  # noqa: E402  (init_context -> ctx.Jaref / lam for the constraint VJP)
@@ -2645,7 +2647,8 @@ def _rne_bptt_fd(mjm, mjd, T, qpos0, eps=1e-4):
 class RneQposBpttTest(parameterized.TestCase):
   """Multi-step FD-of-mjw.step BPTT gate for the ANALYTIC RNE-bias ∂qpos (the definitive accumulation
   test, MJPLAN_ADRNE §14.6). Pure-RNE pendulum (gravity-driven 3-hinge chain, NO contact / passive /
-  actuator) so the smooth ∂qpos is fully analytic (rne_qpos_vjp, via _USE_ANALYTIC_RNE_QPOS). Validates
+  actuator) so the smooth ∂qpos is fully analytic (the FD-of-rne oracle is patched in from
+  adjoint_test_util for the reference run). Validates
   d(Σ qvel_T²)/dqpos0 over a horizon vs a float64-tangent FD of the real mjw.step rollout -- a per-step
   bias would show as cos degrading with the horizon T."""
 
@@ -2658,41 +2661,36 @@ class RneQposBpttTest(parameterized.TestCase):
     rng = np.random.default_rng(0)
     qpos0 = mjd.qpos.copy() + rng.standard_normal(nv) * 0.3  # bend (hinges: qpos == tangent)
 
-    prev = _adjoint._USE_ANALYTIC_RNE_QPOS
-    try:
-      horizons = (8, 16, 32, 64)
-      fd_step = {T: _rne_bptt_fd(mjm, mjd, T, qpos0) for T in horizons}  # ground truth (flag-independent)
-      for T in horizons:
-        _adjoint._USE_ANALYTIC_RNE_QPOS = True
-        ana = _rne_bptt_analytic(mjm, mjd, T, qpos0)  # analytic RNE-bias ∂qpos
-        _adjoint._USE_ANALYTIC_RNE_QPOS = False
+    horizons = (8, 16, 32, 64)
+    fd_step = {T: _rne_bptt_fd(mjm, mjd, T, qpos0) for T in horizons}  # ground truth (oracle-independent)
+    for T in horizons:
+      ana = _rne_bptt_analytic(mjm, mjd, T, qpos0)  # analytic RNE-bias ∂qpos
+      with mock.patch.object(_adjoint, "smooth_qpos_backward", _atu.fd_smooth_qpos_backward):
         ref = _rne_bptt_analytic(mjm, mjd, T, qpos0)  # FD-of-rne ∂qpos (same machinery -> the reference)
-        fd = fd_step[T]
+      fd = fd_step[T]
 
-        # PRIMARY gate: AD-RNE vs FD-of-rne -- identical step_backward except the ∂qpos method, so a
-        # per-step AD-RNE bias would show as drift here (no FD-of-mjw.step truncation noise to hide it).
-        nar, nrr = np.linalg.norm(ana), np.linalg.norm(ref)
-        cos_r = float(ana @ ref / (nar * nrr)) if nar > 1e-12 and nrr > 1e-12 else float("nan")
-        rel_r = float(np.linalg.norm(ana - ref) / (nrr + 1e-12))
-        # sanity vs the real rollout FD (looser: f32 multi-step central-diff truncation over a nonlinear
-        # pendulum). Both analytic paths share whatever residual this has.
-        nf = np.linalg.norm(fd)
-        cos_f = float(ana @ fd / (nar * nf)) if nar > 1e-12 and nf > 1e-12 else float("nan")
-        rel_f_ad = float(np.linalg.norm(ana - fd) / (nf + 1e-12))
-        rel_f_ref = float(np.linalg.norm(ref - fd) / (nf + 1e-12))
-        print(f"[bptt T={T:2d}] AD-RNE vs FD-of-rne: cos={cos_r:+.6f} rel={rel_r:.2e}  | "
-              f"vs FD-of-step: cos={cos_f:+.4f} rel(ad)={rel_f_ad:.3f} rel(fdrne)={rel_f_ref:.3f}  |ana|={nar:.2e}")
-        self.assertGreater(nrr, 1e-6, f"T={T}: gradient ~0 (scene not exercising qpos)")
-        self.assertGreater(cos_r, 0.9999, f"T={T}: AD-RNE != FD-of-rne reference, cos={cos_r:.6f} (per-step bias)")
-        self.assertLess(rel_r, 1e-2, f"T={T}: AD-RNE != FD-of-rne reference, rel={rel_r:.2e} (per-step bias)")
-        self.assertGreater(cos_f, 0.99, f"T={T}: BPTT direction off vs real rollout, cos={cos_f:.4f}")
-    finally:
-      _adjoint._USE_ANALYTIC_RNE_QPOS = prev
+      # PRIMARY gate: AD-RNE vs FD-of-rne -- identical step_backward except the ∂qpos method, so a
+      # per-step AD-RNE bias would show as drift here (no FD-of-mjw.step truncation noise to hide it).
+      nar, nrr = np.linalg.norm(ana), np.linalg.norm(ref)
+      cos_r = float(ana @ ref / (nar * nrr)) if nar > 1e-12 and nrr > 1e-12 else float("nan")
+      rel_r = float(np.linalg.norm(ana - ref) / (nrr + 1e-12))
+      # sanity vs the real rollout FD (looser: f32 multi-step central-diff truncation over a nonlinear
+      # pendulum). Both analytic paths share whatever residual this has.
+      nf = np.linalg.norm(fd)
+      cos_f = float(ana @ fd / (nar * nf)) if nar > 1e-12 and nf > 1e-12 else float("nan")
+      rel_f_ad = float(np.linalg.norm(ana - fd) / (nf + 1e-12))
+      rel_f_ref = float(np.linalg.norm(ref - fd) / (nf + 1e-12))
+      print(f"[bptt T={T:2d}] AD-RNE vs FD-of-rne: cos={cos_r:+.6f} rel={rel_r:.2e}  | "
+            f"vs FD-of-step: cos={cos_f:+.4f} rel(ad)={rel_f_ad:.3f} rel(fdrne)={rel_f_ref:.3f}  |ana|={nar:.2e}")
+      self.assertGreater(nrr, 1e-6, f"T={T}: gradient ~0 (scene not exercising qpos)")
+      self.assertGreater(cos_r, 0.9999, f"T={T}: AD-RNE != FD-of-rne reference, cos={cos_r:.6f} (per-step bias)")
+      self.assertLess(rel_r, 1e-2, f"T={T}: AD-RNE != FD-of-rne reference, rel={rel_r:.2e} (per-step bias)")
+      self.assertGreater(cos_f, 0.99, f"T={T}: BPTT direction off vs real rollout, cos={cos_f:.4f}")
 
 
 # ----------------------------------------------------------------------------
 # nv>16 articulated-contact gate (MJPLAN_ARTICULATION S4). The SPARSE contract-first contact VJP
-# (adjoint._USE_SPARSE_CONTACT, the default) must be correct beyond the dense _MAX_NV=16 unroll bound that
+# (structurally routed for m.is_sparse or nv > _MAX_NV) must be correct beyond the dense _MAX_NV=16 unroll bound that
 # capped the legacy `_residual_contact` kernel (G1 has nv~35). Scene: a free base (6 dof) + a serial hinge
 # chain (nv = 6 + n_hinge) ending in a sphere foot vs a plane. Only the foot collides (chain/base geoms
 # contype=conaffinity=0) -> ONE clean foot-floor contact whose Jacobian spans EVERY chain dof, including
@@ -2959,15 +2957,15 @@ class ArticulatedContactNvTest(parameterized.TestCase):
     qvel = state.qvel.numpy()[0].copy()
 
     def grad(sparse):
-      prev = _adjoint._USE_SPARSE_CONTACT
-      _adjoint._USE_SPARSE_CONTACT = sparse
+      prev = _adjoint._FORCE_SPARSE_CONTACT
+      _adjoint._FORCE_SPARSE_CONTACT = sparse  # False -> structural routing picks DENSE (nv=6, dense jacobian)
       try:
         d0, d1 = self._onestep(m, mjm, mjd, qpos, qvel)
         d1.qvel.grad.assign(np.ones((1, mjm.nv), dtype=np.float32))
         adjoint.step_backward(m, d0, d1)
         return d0.qpos.grad.numpy()[0].copy(), d0.qvel.grad.numpy()[0].copy()
       finally:
-        _adjoint._USE_SPARSE_CONTACT = prev
+        _adjoint._FORCE_SPARSE_CONTACT = prev
 
     gq_s, gv_s = grad(True)
     gq_d, gv_d = grad(False)

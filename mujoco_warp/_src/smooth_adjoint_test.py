@@ -22,6 +22,8 @@ body, tree depth > 32, a zero-joint (welded) body, and multiple worlds. CUDA + g
 on a CUDA box (this suite is CPU on the dev laptop); the math is device-independent.
 """
 
+from unittest import mock
+
 import mujoco
 import numpy as np
 import warp as wp
@@ -31,6 +33,7 @@ from absl.testing import parameterized
 import mujoco_warp as mjw
 from mujoco_warp._src import adjoint as _adjoint
 from mujoco_warp._src import adjoint_test as _at  # reuse the RNE scenes + float64 FD helpers
+from mujoco_warp._src import adjoint_test_util as _atu
 from mujoco_warp._src import collision_adjoint as _collision_adjoint
 from mujoco_warp._src import forward as _forward
 from mujoco_warp._src import smooth as _smooth
@@ -406,24 +409,19 @@ class SmoothStepBackwardTest(parameterized.TestCase):
     rng = np.random.default_rng(0)
     qpos0 = mjd.qpos.copy() + rng.standard_normal(nv) * 0.3
 
-    prev = _adjoint._USE_ANALYTIC_RNE_QPOS
-    try:
-      for T in horizons:
-        _adjoint._USE_ANALYTIC_RNE_QPOS = True
-        ana = _at._rne_bptt_analytic(mjm, mjd, T, qpos0)  # analytic (smooth_adjoint via step_backward §5)
-        _adjoint._USE_ANALYTIC_RNE_QPOS = False
-        ref = _at._rne_bptt_analytic(mjm, mjd, T, qpos0)  # FD-of-rne path (same step_backward modulo §5)
-        fd = _at._rne_bptt_fd(mjm, mjd, T, qpos0)  # float64 FD-of-mjw.step (gold)
-        nar, nrr, nf = np.linalg.norm(ana), np.linalg.norm(ref), np.linalg.norm(fd)
-        cos_r = float(ana @ ref / (nar * nrr)) if nar > 1e-12 and nrr > 1e-12 else float("nan")
-        rel_r = float(np.linalg.norm(ana - ref) / (nrr + 1e-12))
-        cos_f = float(ana @ fd / (nar * nf)) if nar > 1e-12 and nf > 1e-12 else float("nan")
-        self.assertGreater(nrr, 1e-6, f"T={T}: gradient ~0 (scene not exercising qpos)")
-        self.assertGreater(cos_r, 0.9999, f"T={T}: analytic != FD-of-rne, cos={cos_r:.6f} (per-step bias)")
-        self.assertLess(rel_r, rel_tol, f"T={T}: analytic != FD-of-rne, rel={rel_r:.2e} (per-step bias)")
-        self.assertGreater(cos_f, 0.99, f"T={T}: analytic vs FD-of-step direction off, cos={cos_f:.4f}")
-    finally:
-      _adjoint._USE_ANALYTIC_RNE_QPOS = prev
+    for T in horizons:
+      ana = _at._rne_bptt_analytic(mjm, mjd, T, qpos0)  # analytic (smooth_adjoint via step_backward §5)
+      with mock.patch.object(_adjoint, "smooth_qpos_backward", _atu.fd_smooth_qpos_backward):
+        ref = _at._rne_bptt_analytic(mjm, mjd, T, qpos0)  # FD-of-rne dqpos (same machinery otherwise)
+      fd = _at._rne_bptt_fd(mjm, mjd, T, qpos0)  # float64 FD-of-mjw.step (gold)
+      nar, nrr, nf = np.linalg.norm(ana), np.linalg.norm(ref), np.linalg.norm(fd)
+      cos_r = float(ana @ ref / (nar * nrr)) if nar > 1e-12 and nrr > 1e-12 else float("nan")
+      rel_r = float(np.linalg.norm(ana - ref) / (nrr + 1e-12))
+      cos_f = float(ana @ fd / (nar * nf)) if nar > 1e-12 and nf > 1e-12 else float("nan")
+      self.assertGreater(nrr, 1e-6, f"T={T}: gradient ~0 (scene not exercising qpos)")
+      self.assertGreater(cos_r, 0.9999, f"T={T}: analytic != FD-of-rne, cos={cos_r:.6f} (per-step bias)")
+      self.assertLess(rel_r, rel_tol, f"T={T}: analytic != FD-of-rne, rel={rel_r:.2e} (per-step bias)")
+      self.assertGreater(cos_f, 0.99, f"T={T}: analytic vs FD-of-step direction off, cos={cos_f:.4f}")
 
 
 class SmoothReplayRneTest(parameterized.TestCase):
