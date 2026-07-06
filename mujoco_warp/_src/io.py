@@ -2623,6 +2623,83 @@ def _copy_tendon_length0(
 
 
 @wp.kernel
+def _compute_eq_data0(
+  # Model:
+  eq_type: wp.array[int],
+  eq_obj1id: wp.array[int],
+  eq_obj2id: wp.array[int],
+  eq_objtype: wp.array[int],
+  # Data in:
+  xpos_in: wp.array2d[wp.vec3],
+  xquat_in: wp.array2d[wp.quat],
+  xmat_in: wp.array2d[wp.mat33],
+  # Out:
+  eq_data_out: wp.array2d[types.vec11],
+):
+  """Compute eq_data for connect/weld constraints.
+
+  Kinematics must have been evaluated at qpos0 so the constraint is satisfied at qpos0.
+  """
+  worldid, eqid = wp.tid()
+  eq_data_id = worldid % eq_data_out.shape[0]
+
+  eqtype = eq_type[eqid]
+  objtype = eq_objtype[eqid]
+  data = eq_data_out[eq_data_id, eqid]
+
+  if eqtype == int(types.EqType.CONNECT.value):
+    if objtype == int(types.ObjType.BODY.value):
+      obj1id = eq_obj1id[eqid]
+      obj2id = eq_obj2id[eqid]
+
+      # data[0:3] = anchor in body1 local frame; map to global frame
+      anchor1 = wp.vec3(data[0], data[1], data[2])
+      pos = xpos_in[worldid, obj1id] + xmat_in[worldid, obj1id] @ anchor1
+
+      # data[3:6] = anchor position in body2 local frame
+      anchor2 = wp.transpose(xmat_in[worldid, obj2id]) @ (pos - xpos_in[worldid, obj2id])
+      data[3] = anchor2[0]
+      data[4] = anchor2[1]
+      data[5] = anchor2[2]
+      eq_data_out[eq_data_id, eqid] = data
+    elif objtype == int(types.ObjType.SITE.value):
+      # site-based connect, eq_data is unused
+      eq_data_out[eq_data_id, eqid] = types.vec11(0.0)
+  elif eqtype == int(types.EqType.WELD.value):
+    if objtype == int(types.ObjType.BODY.value):
+      quat = wp.quat(data[6], data[7], data[8], data[9])
+      if wp.length_sq(quat) > 0.0:
+        # user has set quaternion data: normalize it and keep the remaining data
+        quat = wp.normalize(quat)
+        data[6] = quat[0]
+        data[7] = quat[1]
+        data[8] = quat[2]
+        data[9] = quat[3]
+        eq_data_out[eq_data_id, eqid] = data
+      else:
+        obj1id = eq_obj1id[eqid]
+        obj2id = eq_obj2id[eqid]
+
+        # data[0:3] = anchor in body2 local frame; map to global frame
+        anchor2 = wp.vec3(data[0], data[1], data[2])
+        pos = xpos_in[worldid, obj2id] + xmat_in[worldid, obj2id] @ anchor2
+
+        # data[3:6] = anchor position in body1 local frame
+        anchor1 = wp.transpose(xmat_in[worldid, obj1id]) @ (pos - xpos_in[worldid, obj1id])
+        data[3] = anchor1[0]
+        data[4] = anchor1[1]
+        data[5] = anchor1[2]
+
+        # data[6:10] = neg(xquat1) * xquat2 = "xquat2 - xquat1" in body1 local frame
+        relquat = mjmath.mul_quat(mjmath.quat_inv(xquat_in[worldid, obj1id]), xquat_in[worldid, obj2id])
+        data[6] = relquat[0]
+        data[7] = relquat[1]
+        data[8] = relquat[2]
+        data[9] = relquat[3]
+        eq_data_out[eq_data_id, eqid] = data
+
+
+@wp.kernel
 def _resolve_tendon_lengthspring(
   ten_length_in: wp.array2d[float],
   tendon_lengthspring_out: wp.array2d[wp.vec2],
@@ -3104,6 +3181,8 @@ def set_const_0(m: types.Model, d: types.Data, restore: bool = True):
 
   Computes:
     - tendon_length0: tendon resting lengths
+    - eq_data: connect/weld anchor data, recomputed so the constraint is
+      satisfied at qpos0
     - dof_invweight0: inverse inertia for DOFs
     - body_invweight0: inverse spatial inertia for bodies
     - tendon_invweight0: inverse weight for tendons
@@ -3142,6 +3221,13 @@ def set_const_0(m: types.Model, d: types.Data, restore: bool = True):
   )
 
   wp.launch(_copy_tendon_length0, dim=(d.nworld, m.ntendon), inputs=[d.ten_length], outputs=[m.tendon_length0])
+
+  wp.launch(
+    _compute_eq_data0,
+    dim=(d.nworld, m.neq),
+    inputs=[m.eq_type, m.eq_obj1id, m.eq_obj2id, m.eq_objtype, d.xpos, d.xquat, d.xmat],
+    outputs=[m.eq_data],
+  )
 
   # dof_invweight0: computed per joint with averaging for multi-DOF joints
   # FREE: 6 DOFs, trans gets mean(A[0:3]), rot gets mean(A[3:6])
