@@ -2904,6 +2904,91 @@ def _jtdaj_groups_per_world(nworld: int, njmax: int) -> int:
   return max(1, min(njmax, _JTDAJ_OVERSUBSCRIBE_WAVES * device_warps // nworld))
 
 
+@wp.kernel
+def _diag_precond_build(
+  # Model:
+  body_simple: wp.array[int],
+  dof_bodyid: wp.array[int],
+  M_rownnz: wp.array[int],
+  M_rowadr: wp.array[int],
+  # Data in:
+  M_in: wp.array2d[float],
+  # In:
+  ctx_done_in: wp.array[bool],
+  # Out:
+  diag_out: wp.array2d[float],
+):
+  """Initialize diagonal with M_ii + regularization for flex DOFs only."""
+  worldid, dofid = wp.tid()
+  if ctx_done_in[worldid]:
+    return
+  if body_simple[dof_bodyid[dofid]] != 2:
+    return
+  madr_ii = M_rowadr[dofid] + M_rownnz[dofid] - 1
+  diag_out[worldid, dofid] = M_in[worldid, madr_ii] + float(1.0e-12)
+
+
+@wp.kernel
+def _diag_precond_add_JTDJ(
+  # Model:
+  body_simple: wp.array[int],
+  dof_bodyid: wp.array[int],
+  # Data in:
+  nefc_in: wp.array[int],
+  efc_J_rownnz_in: wp.array2d[int],
+  efc_J_rowadr_in: wp.array2d[int],
+  efc_J_colind_in: wp.array3d[int],
+  efc_J_in: wp.array3d[float],
+  efc_D_in: wp.array2d[float],
+  # In:
+  ctx_done_in: wp.array[bool],
+  # Out:
+  diag_out: wp.array2d[float],
+):
+  """Add diagonal of J^T D J for flex DOFs only."""
+  worldid, efcid = wp.tid()
+  if ctx_done_in[worldid]:
+    return
+  if efcid >= nefc_in[worldid]:
+    return
+  D = efc_D_in[worldid, efcid]
+  if D == 0.0:
+    return
+  rownnz = efc_J_rownnz_in[worldid, efcid]
+  rowadr = efc_J_rowadr_in[worldid, efcid]
+  for i in range(rownnz):
+    col = efc_J_colind_in[worldid, 0, rowadr + i]
+    if body_simple[dof_bodyid[col]] != 2:
+      continue
+    Jval = efc_J_in[worldid, 0, rowadr + i]
+    if Jval != 0.0:
+      wp.atomic_add(diag_out, worldid, col, D * Jval * Jval)
+
+
+@wp.kernel
+def _diag_precond_apply(
+  # Model:
+  body_simple: wp.array[int],
+  dof_bodyid: wp.array[int],
+  # Data in:
+  qLDiagInv_in: wp.array2d[float],
+  # In:
+  diag_in: wp.array2d[float],
+  grad_in: wp.array2d[float],
+  ctx_done_in: wp.array[bool],
+  # Out:
+  Mgrad_out: wp.array2d[float],
+):
+  """Apply preconditioner: flex DOFs use diag(M+JTDJ), others use M diagonal."""
+  worldid, dofid = wp.tid()
+  if ctx_done_in[worldid]:
+    return
+  if body_simple[dof_bodyid[dofid]] == 2:
+    Mgrad_out[worldid, dofid] = grad_in[worldid, dofid] / diag_in[worldid, dofid]
+  else:
+    Mgrad_out[worldid, dofid] = qLDiagInv_in[worldid, dofid] * grad_in[worldid, dofid]
+
+
 def _update_gradient(m: types.Model, d: types.Data, ctx: SolverContext, compact: bool = False):
   # grad = Ma - qfrc_smooth - qfrc_constraint
   if m.opt.solver == types.SolverType.CG:
@@ -2929,7 +3014,15 @@ def _update_gradient(m: types.Model, d: types.Data, ctx: SolverContext, compact:
     )
 
   if m.opt.solver == types.SolverType.CG:
-    smooth.solve_m(m, d, ctx.Mgrad, ctx.grad)
+    if m.is_sparse and m.nflex > 0:
+      wp.launch(
+        _diag_precond_apply,
+        dim=(d.nworld, m.nv),
+        inputs=[m.body_simple, m.dof_bodyid, d.qLDiagInv, ctx.diag_precond, ctx.grad, ctx.done],
+        outputs=[ctx.Mgrad],
+      )
+    else:
+      smooth.solve_m(m, d, ctx.Mgrad, ctx.grad)
   elif m.opt.solver == types.SolverType.NEWTON:
     # h = M + (efc_J.T * efc_D * active) @ efc_J
     if m.is_sparse:
@@ -3587,6 +3680,22 @@ def init_context(m: types.Model, d: types.Data, ctx: SolverContext | InverseCont
   support.mul_m(m, d, d.efc.Ma, d.qacc, skip=ctx.done)
 
   _update_constraint(m, d, ctx)
+
+  # Build diagonal preconditioner (once per step).
+  if m.is_sparse and m.nflex > 0:
+    ctx.diag_precond = wp.empty(shape=(d.nworld, m.nv), dtype=float)
+    wp.launch(
+      _diag_precond_build,
+      dim=(d.nworld, m.nv),
+      inputs=[m.body_simple, m.dof_bodyid, m.M_rownnz, m.M_rowadr, d.M, ctx.done],
+      outputs=[ctx.diag_precond],
+    )
+    wp.launch(
+      _diag_precond_add_JTDJ,
+      dim=(d.nworld, d.njmax),
+      inputs=[m.body_simple, m.dof_bodyid, d.nefc, d.efc.J_rownnz, d.efc.J_rowadr, d.efc.J_colind, d.efc.J, d.efc.D, ctx.done],
+      outputs=[ctx.diag_precond],
+    )
 
   if grad:
     _update_gradient(m, d, ctx, compact=compact)
