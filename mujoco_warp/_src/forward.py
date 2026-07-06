@@ -634,7 +634,7 @@ def fwd_position(m: Model, d: Data, factorize: bool = True):
   Args:
     m: The model containing kinematic and dynamic information.
     d: The data object containing the current state and output arrays.
-    factorize: Flag to factorize interia matrix.
+    factorize: Flag to factorize inertia matrix.
   """
   fwd_kinematics(m, d)
 
