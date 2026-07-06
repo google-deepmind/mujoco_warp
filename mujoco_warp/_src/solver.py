@@ -1791,45 +1791,42 @@ def _update_gradient_h_incremental_sparse(
   # In:
   changed_ids_in: wp.array2d[int],
   changed_count_in: wp.array[int],
+  slots_per_world: int,
   # Out:
   ctx_h_out: wp.array3d[float],
 ):
-  """Incrementally update upper triangle of H for changed constraints (sparse J)."""
-  worldid, change_idx = wp.tid()
+  """Incrementally update upper triangle of H for changed constraints (sparse J).
+
+  One warp per changed constraint row: the lanes split the row's upper-triangular
+  entries (same sqrt triangular-number decode as _JTDAJ_sparse), replacing the
+  serial nnz^2 loop that dominated this kernel.
+  """
+  worldid, slot, lane = wp.tid()
 
   n_changes = changed_count_in[worldid]
-  if change_idx >= n_changes:
-    return
+  for change_idx in range(slot, n_changes, slots_per_world):
+    efcid = changed_ids_in[worldid, change_idx]
+    D = efc_D_in[worldid, efcid]
+    sign = float(0.0)
+    if efc_state_in[worldid, efcid] == types.ConstraintState.QUADRATIC.value:
+      sign = D
+    else:
+      sign = -D
 
-  efcid = changed_ids_in[worldid, change_idx]
-  D = efc_D_in[worldid, efcid]
-  sign = float(0.0)
-  if efc_state_in[worldid, efcid] == types.ConstraintState.QUADRATIC.value:
-    sign = D
-  else:
-    sign = -D
+    rownnz = efc_J_rownnz_in[worldid, efcid]
+    rowadr = efc_J_rowadr_in[worldid, efcid]
+    n_entries = rownnz * (rownnz + 1) // 2
 
-  rownnz = efc_J_rownnz_in[worldid, efcid]
-  rowadr = efc_J_rowadr_in[worldid, efcid]
-
-  for ii in range(rownnz):
-    sparseidi = rowadr + ii
-    Ji = efc_J_in[worldid, 0, sparseidi]
-    if Ji == 0.0:
-      continue
-    colindi = efc_J_colind_in[worldid, 0, sparseidi]
-    for jj in range(ii + 1):
-      sparseidj = rowadr + jj
-      Jj = efc_J_in[worldid, 0, sparseidj]
-      if Jj == 0.0:
-        continue
-      colindj = efc_J_colind_in[worldid, 0, sparseidj]
+    for entry in range(lane, n_entries, wp.static(_JTDAJ_THREADS_PER_GROUP)):
+      ii = int((wp.sqrt(float(8 * entry + 1)) - 1.0) * 0.5)
+      jj = entry - ii * (ii + 1) // 2
+      Ji = efc_J_in[worldid, 0, rowadr + ii]
+      Jj = efc_J_in[worldid, 0, rowadr + jj]
       h = sign * Ji * Jj
-      # Ensure upper triangle: smaller index first.
-      if colindi <= colindj:
-        wp.atomic_add(ctx_h_out[worldid, colindi], colindj, h)
-      else:
-        wp.atomic_add(ctx_h_out[worldid, colindj], colindi, h)
+      if h != 0.0:
+        colindi = efc_J_colind_in[worldid, 0, rowadr + ii]
+        colindj = efc_J_colind_in[worldid, 0, rowadr + jj]
+        wp.atomic_add(ctx_h_out[worldid, wp.min(colindi, colindj)], wp.max(colindi, colindj), h)
 
 
 def _update_constraint(
@@ -3142,9 +3139,10 @@ def _update_gradient_incremental(m: types.Model, d: types.Data, ctx: SolverConte
 
   # Update upper triangle of H with delta from changed constraints.
   if m.is_sparse:
+    slots = _jtdaj_groups_per_world(d.nworld, ctx.changed_efc_ids.shape[1])
     wp.launch(
       _update_gradient_h_incremental_sparse,
-      dim=(d.nworld, ctx.changed_efc_ids.shape[1]),
+      dim=(d.nworld, slots, _JTDAJ_THREADS_PER_GROUP),
       inputs=[
         d.efc.J_rownnz,
         d.efc.J_rowadr,
@@ -3154,6 +3152,7 @@ def _update_gradient_incremental(m: types.Model, d: types.Data, ctx: SolverConte
         d.efc.state,
         ctx.changed_efc_ids,
         ctx.changed_efc_count,
+        slots,
       ],
       outputs=[ctx.h],
     )
