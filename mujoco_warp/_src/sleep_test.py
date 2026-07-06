@@ -33,8 +33,8 @@ wp.set_module_options({"enable_backward": False})
 
 
 class SleepTest(parameterized.TestCase):
-  @parameterized.parameters(1, 2)
-  def test_sleep_initiation(self, nworld):
+  @parameterized.product(nworld=[1, 2], solver=list(types.SolverType))
+  def test_sleep_initiation(self, nworld, solver):
     """Verify that a stationary body on a flat plane goes to sleep."""
     mjm, mjd, m, d = test_data.fixture(
       xml="""
@@ -52,6 +52,7 @@ class SleepTest(parameterized.TestCase):
       </mujoco>
       """,
       nworld=nworld,
+      overrides={"opt.solver": solver},
     )
 
     # Set initial state: close to the ground, with zero velocity
@@ -84,8 +85,8 @@ class SleepTest(parameterized.TestCase):
       self.assertTrue((qvel == 0.0).all(), f"World {w} qvel not zeroed")
       self.assertTrue((qacc == 0.0).all(), f"World {w} qacc not zeroed")
 
-  @parameterized.parameters(1, 2)
-  def test_collision_waking(self, nworld):
+  @parameterized.product(nworld=[1, 2], solver=list(types.SolverType))
+  def test_collision_waking(self, nworld, solver):
     """Verify that a moving body colliding with a sleeping body wakes it up."""
     mjm, mjd, m, d = test_data.fixture(
       xml="""
@@ -107,6 +108,7 @@ class SleepTest(parameterized.TestCase):
       </mujoco>
       """,
       nworld=nworld,
+      overrides={"opt.solver": solver},
     )
 
     # Set initial state: target is sitting, bullet is moving towards target
@@ -135,8 +137,8 @@ class SleepTest(parameterized.TestCase):
       self.assertEqual(d.tree_awake.numpy()[w, 0], 1, f"Target tree in world {w} should have woken up upon contact")
       self.assertLess(d.tree_asleep.numpy()[w, 0], 0, f"Target tree_asleep in world {w} should be negative (awake)")
 
-  @parameterized.parameters(1, 2)
-  def test_tendon_waking(self, nworld):
+  @parameterized.product(nworld=[1, 2], solver=list(types.SolverType))
+  def test_tendon_waking(self, nworld, solver):
     """Verify that pulling an awake body wakes up a connected sleeping body through a tendon."""
     mjm, mjd, m, d = test_data.fixture(
       xml="""
@@ -163,6 +165,7 @@ class SleepTest(parameterized.TestCase):
       </mujoco>
       """,
       nworld=nworld,
+      overrides={"opt.solver": solver},
     )
 
     # Put b2 (tree 1) to sleep manually
@@ -186,8 +189,8 @@ class SleepTest(parameterized.TestCase):
     for w in range(nworld):
       self.assertEqual(d.tree_awake.numpy()[w, 1], 1, f"b2 in world {w} should have woken up due to tendon constraint")
 
-  @parameterized.parameters(1, 2)
-  def test_equality_waking(self, nworld):
+  @parameterized.product(nworld=[1, 2], solver=list(types.SolverType))
+  def test_equality_waking(self, nworld, solver):
     """Verify that moving an awake body wakes up a connected sleeping body (weld equality)."""
     mjm, mjd, m, d = test_data.fixture(
       xml="""
@@ -211,6 +214,7 @@ class SleepTest(parameterized.TestCase):
       </mujoco>
       """,
       nworld=nworld,
+      overrides={"opt.solver": solver},
     )
 
     # Put b2 (tree 1) to sleep manually
@@ -233,8 +237,8 @@ class SleepTest(parameterized.TestCase):
     for w in range(nworld):
       self.assertEqual(d.tree_awake.numpy()[w, 1], 1, f"b2 in world {w} should have woken up due to weld constraint")
 
-  @parameterized.parameters(1, 2)
-  def test_waking_unaffected_by_sleeping(self, nworld):
+  @parameterized.product(nworld=[1, 2], solver=list(types.SolverType))
+  def test_waking_unaffected_by_sleeping(self, nworld, solver):
     """Verify that sleeping trees do not affect the physical rollout trajectories of awake trees."""
     xml = """
     <mujoco>
@@ -258,6 +262,7 @@ class SleepTest(parameterized.TestCase):
     _, _, m_sleep, d_sleep = test_data.fixture(
       xml=xml,
       nworld=nworld,
+      overrides={"opt.solver": solver},
     )
 
     # Place b1 exactly on the ground so it sleeps
@@ -270,6 +275,7 @@ class SleepTest(parameterized.TestCase):
     _, _, m_nosleep, d_nosleep = test_data.fixture(
       xml=xml,
       nworld=nworld,
+      overrides={"opt.solver": solver},
     )
 
     qpos_nosleep = d_nosleep.qpos.numpy()

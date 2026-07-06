@@ -22,6 +22,7 @@ from mujoco_warp._src.types import MJ_MINVAL
 from mujoco_warp._src.types import ConeType
 from mujoco_warp._src.types import Data
 from mujoco_warp._src.types import DynType
+from mujoco_warp._src.types import EnableBit
 from mujoco_warp._src.types import JointType
 from mujoco_warp._src.types import Model
 from mujoco_warp._src.types import State
@@ -174,15 +175,20 @@ def compute_interp_cell_quat(
 
 
 @cache_kernel
-def mul_m_kernel(check_skip: bool):
+def mul_m_kernel(check_skip: bool, sleep_enabled: bool = False):
+  SLEEP_ENABLED = sleep_enabled
+
   @wp.kernel(module="unique")
   def _mul_m(
     # Model:
+    body_treeid: wp.array[int],
+    dof_bodyid: wp.array[int],
     M_mulm_rowadr: wp.array[int],
     M_mulm_col: wp.array[int],
     M_mulm_madr: wp.array[int],
     # Data in:
     M_in: wp.array2d[float],
+    tree_awake_in: wp.array2d[int],
     # In:
     vec: wp.array2d[float],
     skip: wp.array[bool],
@@ -194,6 +200,12 @@ def mul_m_kernel(check_skip: bool):
 
     if wp.static(check_skip):
       if skip[worldid]:
+        return
+
+    if wp.static(SLEEP_ENABLED):
+      treeid = body_treeid[dof_bodyid[dofid]]
+      if tree_awake_in[worldid, treeid] == 0:
+        res[worldid, dofid] = 0.0
         return
 
     # Gather all contributions (diagonal + off-diagonal).
@@ -271,10 +283,11 @@ def mul_m(
       outputs=[res],
     )
   else:
+    sleep_enabled = bool(m.opt.enableflags & EnableBit.SLEEP)
     wp.launch(
-      mul_m_kernel(check_skip),
+      mul_m_kernel(check_skip, sleep_enabled),
       dim=(d.nworld, m.nv),
-      inputs=[m.M_mulm_rowadr, m.M_mulm_col, m.M_mulm_madr, M, vec, skip],
+      inputs=[m.body_treeid, m.dof_bodyid, m.M_mulm_rowadr, m.M_mulm_col, m.M_mulm_madr, M, d.tree_awake, vec, skip],
       outputs=[res],
     )
 
