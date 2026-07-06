@@ -23,7 +23,6 @@ from mujoco_warp._src.types import GeomType
 from mujoco_warp._src.types import mat43
 from mujoco_warp._src.types import mat63
 
-# TODO(team): improve compile time to enable backward pass
 wp.set_module_options({"enable_backward": False})
 
 FLOAT_MIN = -1e30

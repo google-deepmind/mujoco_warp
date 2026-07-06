@@ -47,7 +47,6 @@ from mujoco_warp._src.types import vec5
 from mujoco_warp._src.warp_util import cache_kernel
 from mujoco_warp._src.warp_util import event_scope
 
-# TODO(team): improve compile time to enable backward pass
 wp.set_module_options({"enable_backward": False})
 
 vec_maxconpair = wp.types.vector(length=MJ_MAXCONPAIR, dtype=float)
