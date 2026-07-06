@@ -380,7 +380,14 @@ def _accum_neg_vec5(res: wp.array2d[vec5], grad: wp.array2d[vec5]):
 
 @wp.kernel
 def _accum_neg_vec3(res: wp.array2d[wp.vec3], grad: wp.array2d[wp.vec3]):
-  """grad -= res over a per-body wp.vec3 model param (e.g. body_inertia); the vec3 IFT minus-accumulate."""
+  """grad -= res over a per-body wp.vec3 model param (e.g. body_inertia, body_ipos); the vec3 IFT minus-accumulate."""
+  w, i = wp.tid()
+  grad[w, i] -= res[w, i]
+
+
+@wp.kernel
+def _accum_neg_quat(res: wp.array2d[wp.quat], grad: wp.array2d[wp.quat]):
+  """grad -= res over a per-body wp.quat model param (body_iquat); the quat IFT minus-accumulate."""
   w, i = wp.tid()
   grad[w, i] -= res[w, i]
 
@@ -601,6 +608,36 @@ def _recompute_smooth_forces(m: Model, d: Data):
   _smooth.rne(m, d, flg_acc=True)
   _smooth.tendon_bias(m, d, d.qfrc_bias)
   _forward.fwd_actuation(m, d)
+
+
+def _smooth_linearization(m: Model, d: Data, d_out: Data) -> Data:
+  """A SHALLOW view of d_out at the step's linearization point (d.qpos, d.qvel, d_out.qacc) for the smooth
+  VJPs -- the cheap replacement for the per-step deep clone + full smooth recompute (_clone_for_fd +
+  _recompute_smooth_forces: ~100 array copies + ~30 launches -> 3 small allocs + one rne).
+
+  Every smooth intermediate in the live d_out (kinematics/xipos/ximat/subtree_com/cinert/cdof/cvel/cdof_dot/
+  tendon/actuator_moment/qfrc_passive/qfrc_actuator) was computed by the forward AT THE INPUT STATE and is
+  untouched by integration (which only overwrites qpos/qvel/act) -- recomputing them is bit-identical waste.
+  Exactly two things differ at the linearization: (1) qpos/qvel/ctrl/act must read the step's INPUTS -> alias
+  d's arrays (no copies); (2) d_out's cacc/cfrc_int/qfrc_bias are the WRONG decomposition for the smooth VJP
+  either way -- the forward's rne ran flg_acc=False (gravity-seeded cacc, no M*qacc term), and when the model
+  has acceleration sensors, sensor_acc's rne_postconstraint then overwrites them with POST-CONSTRAINT values
+  (constraint/contact forces folded in) -- so those three fields get FRESH scratch and one rne(flg_acc=True)
+  (+ tendon_bias), reusing the shared kinematic intermediates. The view shares everything else with d_out;
+  the VJPs read it as a frozen linearization and d_out is never mutated."""
+  s = dataclasses.replace(
+    d_out,
+    qpos=d.qpos,
+    qvel=d.qvel,
+    ctrl=d.ctrl,
+    act=d.act,
+    cacc=wp.empty_like(d_out.cacc),
+    cfrc_int=wp.empty_like(d_out.cfrc_int),
+    qfrc_bias=wp.empty_like(d_out.qfrc_bias),
+  )
+  _smooth.rne(m, s, flg_acc=True)
+  _smooth.tendon_bias(m, s, s.qfrc_bias)
+  return s
 
 
 @wp.kernel
@@ -1091,26 +1128,23 @@ def smooth_param_backward(m: Model, d: Data, d_out: Data, lam: wp.array):
       adjoint=True,
     )
 
-  # --- 4b (inertial). body_mass / body_inertia sys-id. mass/inertia enter the smooth residual ONLY through
-  # cinert (the c-frame spatial inertia: the M·qacc CRB contraction AND the RNE Coriolis/gravity bias both
-  # flow through it -- gravity via the cacc-world seed). So adj_cinert from the rne-proper reverse
-  # (rne_backward; the irreducible dynamic-depth tree transpose, a manual enable_backward=False VJP -> no
-  # unroll/DOF-scaling dependency) routed through the SOURCE-AD cinert leaf (_cinert_recompute, loop-free ->
-  # exact) yields -(∂r/∂{mass,inertia})ᵀλ with NO hand-written inertia VJP. Unlike armature/damping (the LOCAL
-  # residual above), this needs the smooth KINEMATIC intermediates at the linearization (cinert/cdof/cvel/
-  # cfrc_int from rne flg_acc=True), and the live d_out carries the flg_acc=False bias + post-integration
-  # qpos/qvel -- so recompute the reduced smooth pipeline on a NON-GRAD scratch (only when requested; never
-  # mutate d_out). Same IFT-minus sign as the local params.
-  if m.body_mass.requires_grad or m.body_inertia.requires_grad:
+  # --- 4b (inertial). body_mass / body_inertia / body_ipos / body_iquat sys-id. All four enter the smooth
+  # residual ONLY through cinert (the c-frame spatial inertia: the M·qacc CRB contraction AND the RNE Coriolis/
+  # gravity bias both flow through it -- gravity via the cacc-world seed). So adj_cinert from the rne-proper
+  # reverse (rne_backward; the irreducible dynamic-depth tree transpose, a manual enable_backward=False VJP ->
+  # no unroll/DOF-scaling dependency) routed through the SOURCE-AD cinert leaf (_cinert_recompute, loop-free ->
+  # exact) yields -(∂r/∂θ)ᵀλ with NO hand-written inertia VJP: mass/inertia are DIRECT cinert inputs, while
+  # ipos/iquat continue the reverse from adj_{xipos,ximat} through the inertial-frame leaf (_inertial_frames_
+  # recompute). Unlike armature/damping (the LOCAL residual above), this needs the smooth KINEMATIC
+  # intermediates at the linearization (cinert/cdof/cvel/cfrc_int from rne flg_acc=True), and the live d_out
+  # carries the flg_acc=False bias + post-integration qpos/qvel -- so recompute the reduced smooth pipeline on
+  # a NON-GRAD scratch (only when requested; never mutate d_out). Same IFT-minus sign as the local params.
+  if (m.body_mass.requires_grad or m.body_inertia.requires_grad
+      or m.body_ipos.requires_grad or m.body_iquat.requires_grad):
     from mujoco_warp._src import smooth_adjoint as _smooth_adjoint  # local import breaks the import cycle
 
-    s = _clone_for_fd(d_out)
-    wp.copy(s.qpos, d.qpos)
-    wp.copy(s.qvel, d.qvel)
-    if m.nu > 0:
-      wp.copy(s.ctrl, d.ctrl)
-    _recompute_smooth_forces(m, s)  # flg_acc=True kinematic+inertia intermediates at (d.qpos, d.qvel, d_out.qacc)
-    _smooth_adjoint.inertia_param_vjp(m, s, lam)  # -(∂r/∂{mass,inertia})ᵀλ -> m.body_{mass,inertia}.grad
+    s = _smooth_linearization(m, d, d_out)  # shallow view + rne(flg_acc=True); replaces the per-step deep clone
+    _smooth_adjoint.inertia_param_vjp(m, s, lam)  # -(∂r/∂θ)ᵀλ -> m.body_{mass,inertia,ipos,iquat}.grad
 
 
 def noncontact_constraint_backward(m: Model, d: Data, d_out: Data, lam: wp.array,
@@ -1193,17 +1227,13 @@ def smooth_qpos_backward(m: Model, d: Data, d_out: Data, lam: wp.array,
     from mujoco_warp._src import smooth_adjoint as _smooth_adjoint
 
     _smooth_adjoint.assert_smooth_supported(m)
-    # CRITICAL: recompute the smooth forces on a NON-GRAD scratch at the SAME linearization FD-of-rne uses
-    # -- (d.qpos, d.qvel, d_out.qacc) with rne(flg_acc=True). The live d_out has qfrc_bias = Coriolis only
-    # (forward solves for qacc -> flg_acc=False, so d_out.cacc/cfrc_int miss the M·qacc term) AND its
-    # qpos/qvel are the INTEGRATED next state, not the linearization point. Skipping this drops
-    # ∂(M·qacc)/∂qpos (verified: BPTT rel 0.14 vs FD-of-rne -> 0 after this recompute).
-    s = _clone_for_fd(d_out)
-    wp.copy(s.qpos, d.qpos)
-    wp.copy(s.qvel, d.qvel)
-    if m.nu > 0:
-      wp.copy(s.ctrl, d.ctrl)
-    _recompute_smooth_forces(m, s)  # flg_acc=True intermediates at (d.qpos, d.qvel, d_out.qacc)
+    # CRITICAL: evaluate the smooth VJPs at the SAME linearization FD-of-rne uses -- (d.qpos, d.qvel,
+    # d_out.qacc) with rne(flg_acc=True). The live d_out has qfrc_bias = Coriolis only (forward solves for
+    # qacc -> flg_acc=False, so d_out.cacc/cfrc_int miss the M·qacc term) AND its qpos/qvel are the
+    # INTEGRATED next state, not the linearization point. Skipping this drops ∂(M·qacc)/∂qpos (verified:
+    # BPTT rel 0.14 vs FD-of-rne -> 0 after this recompute). _smooth_linearization provides exactly that as
+    # a shallow d_out view (input-state aliases + fresh rne flg_acc=True), replacing the former deep clone.
+    s = _smooth_linearization(m, d, d_out)
     res_q = _smooth_adjoint.smooth_force_backward(m, s, lam, flg_acc=True)  # rigid-body RNE bias
     wp.launch(_accum_cols, dim=(nworld, nq), inputs=[res_q], outputs=[res_qpos])
     res_sp = _smooth_adjoint.spring_qpos_vjp(m, s, lam)  # joint springs (all joint types)

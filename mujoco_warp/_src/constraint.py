@@ -63,14 +63,15 @@ def _contact_kbimp(
 ) -> wp.vec3:
   """Constraint (k, b, impedance) from solref/solimp at impedance position ``pos_imp``.
 
-  Shared by ``_efc_row`` (forward) and ``adjoint._residual_contact`` (backward).  Warp inlines
-  ``@wp.func``, so factoring this out of ``_efc_row`` leaves the forward codegen bit-identical.
+  Shared by ``_efc_row`` (forward) and the analytic residual VJPs.  The piecewise branches mirror
+  MuJoCo's ``getimpedance`` and avoid evaluating inactive formulas with singular derivatives.
   """
   timeconst = solref[0]
   dampratio = solref[1]
   dmin = solimp[0]
   dmax = solimp[1]
-  width = solimp[2]
+  width_raw = solimp[2]
+  width = width_raw
   mid = solimp[3]
   power = solimp[4]
 
@@ -85,18 +86,37 @@ def _contact_kbimp(
 
   # see https://mujoco.readthedocs.io/en/latest/modeling.html#solver-parameters
   dmax_sq = dmax * dmax
-  k = 1.0 / (dmax_sq * timeconst * timeconst * dampratio * dampratio)
-  b = 2.0 / (dmax * timeconst)
-  k = wp.where(solref[0] <= 0, -solref[0] / dmax_sq, k)
-  b = wp.where(solref[1] <= 0, -solref[1] / dmax, b)
+  # Use real control flow rather than wp.where.  Warp reverses both arguments of wp.where, so the
+  # unselected positive-format expression used to evaluate 1/0 for direct-format solref and leave a
+  # sticky floating-point exception (or a NaN parameter adjoint) even though the forward result was finite.
+  if solref[0] <= 0.0:
+    k = -solref[0] / wp.max(types.MJ_MINVAL, dmax_sq)
+  else:
+    k = 1.0 / wp.max(types.MJ_MINVAL, dmax_sq * timeconst * timeconst * dampratio * dampratio)
+  if solref[1] <= 0.0:
+    b = -solref[1] / wp.max(types.MJ_MINVAL, dmax)
+  else:
+    b = 2.0 / wp.max(types.MJ_MINVAL, dmax * timeconst)
 
   imp_x = wp.abs(pos_imp) / width
-  imp_a = (1.0 / wp.pow(mid, power - 1.0)) * wp.pow(imp_x, power)
-  imp_b = 1.0 - (1.0 / wp.pow(1.0 - mid, power - 1.0)) * wp.pow(1.0 - imp_x, power)
-  imp_y = wp.where(imp_x < mid, imp_a, imp_b)
-  imp = dmin + imp_y * (dmax - dmin)
-  imp = wp.clamp(imp, dmin, dmax)
-  imp = wp.where(imp_x > 1.0, dmax, imp)
+  # Only evaluate the active impedance polynomial.  The old eager imp_b evaluated pow(1-imp_x, power)
+  # at a non-positive base for saturated contacts.  Its generated reverse contains log(1-imp_x), which
+  # produces NaN/FE_INVALID even when wp.where later discards that branch.  At the two saturation knots we
+  # choose the bounded zero subgradient; the contact active set is already treated piecewise by the solver.
+  if dmin == dmax or width_raw <= types.MJ_MINVAL:
+    imp = 0.5 * (dmin + dmax)
+  elif imp_x <= 0.0:
+    imp = dmin
+  elif imp_x >= 1.0:
+    imp = dmax
+  elif power == 1.0:
+    imp = dmin + imp_x * (dmax - dmin)
+  elif imp_x <= mid:
+    imp_y = (1.0 / wp.pow(mid, power - 1.0)) * wp.pow(imp_x, power)
+    imp = wp.clamp(dmin + imp_y * (dmax - dmin), dmin, dmax)
+  else:
+    imp_y = 1.0 - (1.0 / wp.pow(1.0 - mid, power - 1.0)) * wp.pow(1.0 - imp_x, power)
+    imp = wp.clamp(dmin + imp_y * (dmax - dmin), dmin, dmax)
 
   return wp.vec3(k, b, imp)
 

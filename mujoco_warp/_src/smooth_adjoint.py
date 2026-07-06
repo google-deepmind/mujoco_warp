@@ -1147,8 +1147,14 @@ def cinert_qpos_vjp(m: Model, d: Data, adj_cinert: wp.array2d, res_dof: wp.array
   adj_subtree = wp.zeros((nworld, nbody), dtype=wp.vec3)
   cin = [m.body_rootid, m.body_mass, m.body_inertia, d.xipos, d.ximat, d.subtree_com]
   wp.launch(_cinert_recompute, dim=(nworld, nbody), inputs=cin, outputs=[cinert_rec])
+  # THROWAWAY adjoint buffers for body_mass/body_inertia: the qpos path is NOT a function of the inertial
+  # PARAMS, but _cinert_recompute reads them, so with adj_input=None Warp would auto-route their adjoint into
+  # m.body_{mass,inertia}.grad -- CLOBBERING the sys-id gradient smooth_param_backward accumulated this step
+  # (inertia_param_vjp). Capture (and discard) it here so this VJP only touches the qpos (xipos/ximat) channel.
+  junk_mass = wp.zeros_like(m.body_mass)
+  junk_inertia = wp.zeros_like(m.body_inertia)
   wp.launch(_cinert_recompute, dim=(nworld, nbody), inputs=cin, outputs=[cinert_rec],
-            adj_inputs=[None, None, None, adj_xipos, adj_ximat, adj_subtree],
+            adj_inputs=[None, junk_mass, junk_inertia, adj_xipos, adj_ximat, adj_subtree],
             adj_outputs=[adj_cinert], adjoint=True)
   wp.launch(_cinert_pose_dof_vjp, dim=(nworld, nv),
             inputs=[m.body_parentid, m.body_rootid, m.dof_bodyid, m.body_isdofancestor,
@@ -1157,31 +1163,79 @@ def cinert_qpos_vjp(m: Model, d: Data, adj_cinert: wp.array2d, res_dof: wp.array
   return adj_subtree
 
 
+@wp.kernel
+def _inertial_frames_recompute(
+  body_ipos: wp.array2d[wp.vec3],
+  body_iquat: wp.array2d[wp.quat],
+  xpos: wp.array2d[wp.vec3],
+  xquat: wp.array2d[wp.quat],
+  xipos_out: wp.array2d[wp.vec3],
+  ximat_out: wp.array2d[wp.mat33],
+):
+  """EXACT reconstruction of smooth._compute_body_inertial_frames (smooth.py is enable_backward=False, so its
+  kernel cannot be tape-reversed) for a manual adjoint launch -> adj_{body_ipos, body_iquat}. Mirrors the
+  forward statement-for-statement: xipos = xpos + R(xquat)·body_ipos; ximat = quat_to_mat(xquat ⊗ body_iquat)."""
+  w, b = wp.tid()
+  xp = xpos[w, b]
+  xq = xquat[w, b]
+  xipos_out[w, b] = xp + _math.rot_vec_quat(body_ipos[w % body_ipos.shape[0], b], xq)
+  ximat_out[w, b] = _math.quat_to_mat(_math.mul_quat(xq, body_iquat[w % body_iquat.shape[0], b]))
+
+
 def inertia_param_vjp(m: Model, d: Data, lam: wp.array2d):
-  """Inertial system-id (body_mass / body_inertia): accumulate -(∂(λᵀqfrc_bias)/∂{body_mass,body_inertia})
-  into m.body_mass.grad / m.body_inertia.grad (the IFT minus, matching adjoint.smooth_param_backward's
-  armature/damping sign). body_mass/body_inertia enter the dynamics ONLY through cinert (the c-frame spatial
-  inertia: the M·qacc CRB contraction, the RNE Coriolis term, AND gravity -- via the cacc-world seed -- all
-  flow through it), so adj_cinert from the rne-proper reverse (rne_backward, flg_acc=True -- the irreducible
-  dynamic-depth tree transpose, a manual VJP with NO unroll/DOF dependency) routed through the SOURCE-AD
-  cinert leaf (_cinert_recompute: loop-free + alias-free -> exact, body_mass/body_inertia are direct inputs)
-  yields the inertia derivative with NO hand-written inertia VJP -- exactly the autodiff path. ``d`` holds the
-  converged smooth intermediates (kinematics->com_pos->com_vel->rne(flg_acc=True) at the linearization);
-  read-only. No-op unless body_mass / body_inertia are requires_grad. FD-gated vs float64 mj_rne."""
+  """Inertial system-id (body_mass / body_inertia / body_ipos / body_iquat): accumulate
+  -(∂(λᵀqfrc_bias)/∂θ) into m.<param>.grad (the IFT minus, matching adjoint.smooth_param_backward's
+  armature/damping sign). All four enter the dynamics ONLY through cinert (the c-frame spatial inertia: the
+  M·qacc CRB contraction, the RNE Coriolis term, AND gravity -- via the cacc-world seed -- all flow through
+  it), so adj_cinert from the rne-proper reverse (rne_backward, flg_acc=True -- the irreducible dynamic-depth
+  tree transpose, a manual VJP with NO unroll/DOF dependency) is the single seed:
+    * body_mass / body_inertia -- DIRECT cinert inputs (positions 1,2 of _cinert_recompute) -> source-AD.
+    * body_ipos / body_iquat   -- enter cinert only through xipos / ximat (positions 3,4), so the reverse
+      continues from adj_{xipos,ximat} through the inertial-frame leaf (_inertial_frames_recompute:
+      xipos<-body_ipos, ximat<-body_iquat) -- again source-AD, no hand VJP.
+  ``d`` holds the converged smooth intermediates (kinematics->com_pos->com_vel->rne(flg_acc=True) at the
+  linearization); read-only. No-op unless the param is requires_grad. FD-gated vs float64 mj_rne.
+
+  CAVEAT (body_ipos): subtree_com (position 5) is held FROZEN, so the ipos gradient captures the LOCAL
+  own-body parallel-axis (dif = xipos - subtree_com[root]) path only; the second-order feedback of a moving
+  COM through subtree_com -> {ancestor cinert, cdof} is not yet included. body_iquat has NO subtree_com path
+  (ximat rotates the inertia in place) -> exact. mass/inertia are exact."""
   nworld = d.qpos.shape[0]
   nbody = m.nbody
+  want_mass = m.body_mass.requires_grad
+  want_inertia = m.body_inertia.requires_grad
+  want_ipos = m.body_ipos.requires_grad
+  want_iquat = m.body_iquat.requires_grad
+  want_pose = want_ipos or want_iquat
   # adj_cinert = ∂(λᵀqfrc_bias)/∂cinert (captures M·qacc + Coriolis + gravity, qacc frozen).
   adj = rne_backward(m, d, lam, flg_acc=True)
   adj_cinert = adj["cinert"]
-  # SOURCE-AD the cinert leaf wrt body_mass/body_inertia (the autodiff inertia derivative; no hand VJP).
+  # SOURCE-AD the cinert leaf: params (mass/inertia) as direct inputs; xipos/ximat kept for the pose chain.
   cinert_rec = wp.zeros((nworld, nbody), dtype=vec10f, requires_grad=True)
   cin = [m.body_rootid, m.body_mass, m.body_inertia, d.xipos, d.ximat, d.subtree_com]
   wp.launch(_cinert_recompute, dim=(nworld, nbody), inputs=cin, outputs=[cinert_rec])
-  adj_mass = wp.zeros_like(m.body_mass) if m.body_mass.requires_grad else None
-  adj_inertia = wp.zeros_like(m.body_inertia) if m.body_inertia.requires_grad else None
+  adj_mass = wp.zeros_like(m.body_mass) if want_mass else None
+  adj_inertia = wp.zeros_like(m.body_inertia) if want_inertia else None
+  adj_xipos = wp.zeros((nworld, nbody), dtype=wp.vec3) if want_pose else None
+  adj_ximat = wp.zeros((nworld, nbody), dtype=wp.mat33) if want_pose else None
   wp.launch(_cinert_recompute, dim=(nworld, nbody), inputs=cin, outputs=[cinert_rec],
-            adj_inputs=[None, adj_mass, adj_inertia, None, None, None],
+            adj_inputs=[None, adj_mass, adj_inertia, adj_xipos, adj_ximat, None],
             adj_outputs=[adj_cinert], adjoint=True)
+  # body_ipos/body_iquat: continue the reverse from adj_{xipos,ximat} through the inertial-frame leaf.
+  if want_pose:
+    fout_xipos = wp.zeros((nworld, nbody), dtype=wp.vec3)
+    fout_ximat = wp.zeros((nworld, nbody), dtype=wp.mat33)
+    fin = [m.body_ipos, m.body_iquat, d.xpos, d.xquat]
+    wp.launch(_inertial_frames_recompute, dim=(nworld, nbody), inputs=fin, outputs=[fout_xipos, fout_ximat])
+    adj_ipos = wp.zeros_like(m.body_ipos) if want_ipos else None
+    adj_iquat = wp.zeros_like(m.body_iquat) if want_iquat else None
+    wp.launch(_inertial_frames_recompute, dim=(nworld, nbody), inputs=fin, outputs=[fout_xipos, fout_ximat],
+              adj_inputs=[adj_ipos, adj_iquat, None, None],
+              adj_outputs=[adj_xipos, adj_ximat], adjoint=True)
+    if adj_ipos is not None:
+      wp.launch(_adjoint._accum_neg_vec3, dim=adj_ipos.shape, inputs=[adj_ipos], outputs=[m.body_ipos.grad])
+    if adj_iquat is not None:
+      wp.launch(_adjoint._accum_neg_quat, dim=adj_iquat.shape, inputs=[adj_iquat], outputs=[m.body_iquat.grad])
   # IFT minus into the shared (trajectory-accumulated) model param grads.
   if adj_mass is not None:
     wp.launch(_adjoint._accum_neg, dim=adj_mass.shape, inputs=[adj_mass], outputs=[m.body_mass.grad])
