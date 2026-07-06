@@ -37,15 +37,18 @@ AD-ing the kinematics tree (the Warp dynamic-loop bug zone), by mirroring the FO
      FREE-body com identity (articulated com-Jacobian is the follow-up).
   4. ``_gather_efc_to_contact`` -- map ``∂r/∂efc_pos`` (efc-row indexed) to the per-contact dist adjoint.
 
-COVERAGE: 10 of the 13 ``_PRIMITIVE_COLLISIONS`` pairs are AD-safe and dispatched here -- plane-sphere,
+COVERAGE: 11 of the 13 ``_PRIMITIVE_COLLISIONS`` pairs are AD-safe and dispatched here -- plane-sphere,
 sphere-sphere, sphere-box, plane-capsule, sphere-capsule, sphere-cylinder, plane-ellipsoid (single contact)
-+ capsule-capsule, plane-cylinder, plane-box (multi-contact, slot-indexed). The remaining 3 are NOT AD-safe
-(data-dependent feature searches / loops over a runtime-variable contact set) and fall through ->
-∂qpos stays 0 for that pair: capsule-box (range(8)xrange(3) closest-feature search with runtime
-cltype/clface indices), box-box, plane-convex/mesh. capsule-capsule is gated on the non-parallel (crossed,
-slot-0) regime; its parallel slot-1 assignment is margin-dependent -> documented follow-up. The FD oracle in
-collision_adjoint_test.py covers + gates every dispatched pair. Gated only by which pairs
-``_narrowphase_recompute`` dispatches -- a frozen-active-set, frozen-feature, differentiable-geometry boundary.
++ capsule-capsule, plane-cylinder, plane-box (multi-contact, slot-indexed) + capsule-box (FROZEN-SEGMENT
+witness: ``_capsule_box_freeze`` re-runs the forward's range(8)xrange(3) closest-feature search forward-only
+and stores the 1-2 segment parameters; the backward differentiates ``sphere_box`` at the frozen t -- exact
+to first order for the minimizing slot-0 contact by the envelope theorem, frozen-t approximate for the
+slot-1 spread point). The remaining 2 are NOT AD-safe (data-dependent feature searches / loops over a
+runtime-variable contact set) and fall through -> ∂qpos stays 0 for that pair: box-box, plane-convex/mesh.
+capsule-capsule is gated on the non-parallel (crossed, slot-0) regime; its parallel slot-1 assignment is
+margin-dependent -> documented follow-up. The FD oracle in collision_adjoint_test.py covers + gates every
+dispatched pair. Gated only by which pairs ``_narrowphase_recompute`` dispatches -- a frozen-active-set,
+frozen-feature, differentiable-geometry boundary.
 """
 
 from typing import Tuple
@@ -69,6 +72,292 @@ _CYLINDER = int(_types.GeomType.CYLINDER.value)
 _BOX = int(_types.GeomType.BOX.value)
 
 
+@wp.func
+def _capsule_box_segpos(
+  pos_c: wp.vec3,
+  axis_c: wp.vec3,
+  half_len: float,
+  pos_b: wp.vec3,
+  mat_b: wp.mat33,
+  size_b: wp.vec3,
+) -> Tuple[wp.vec2, wp.vec3i]:
+  """FROZEN-FEATURE extractor for capsule<->box: re-run ``collision_primitive_core.capsule_box``'s
+  closest-feature search and return ``(t1, t2)`` -- the (up to two) SEGMENT PARAMETERS t in [-1, 1] along
+  the capsule axis at which the forward reduces the pair to ``sphere_box`` (its tail: sphere at
+  ``pos + halfaxis * t``; t2 == t1 when no second contact) -- plus the DISCRETE feature state
+  ``(cltype, clcorner, cledge)`` that lets ``_capsule_box_t0`` re-derive t1 as a CLOSED-FORM
+  DIFFERENTIABLE function of the poses. This is a VERBATIM transcription of the search half of
+  ``capsule_box`` -- the data-dependent argmin and runtime vector indexing that make the core NOT AD-safe
+  are fine here because this func is only called from the ``enable_backward=False``
+  ``_capsule_box_freeze`` kernel."""
+  boxmatT = wp.transpose(mat_b)
+  pos = boxmatT @ (pos_c - pos_b)
+  axis = boxmatT @ axis_c
+  halfaxis = axis * half_len
+  axisdir = wp.int32(halfaxis[0] > 0.0) + 2 * wp.int32(halfaxis[1] > 0.0) + 4 * wp.int32(halfaxis[2] > 0.0)
+
+  bestdist = wp.float32(1.0e32)
+  bestsegmentpos = wp.float32(-12)
+  cltype = wp.int32(-4)
+  clface = wp.int32(-12)
+
+  # first: cases where a face of the box is closest to a capsule tip
+  for i in range(-1, 2, 2):
+    axisTip = pos + wp.float32(i) * halfaxis
+    boxPoint = wp.vec3(axisTip)
+    n_out = wp.int32(0)
+    ax_out = wp.int32(-1)
+    for j in range(3):
+      if boxPoint[j] < -size_b[j]:
+        n_out += 1
+        ax_out = j
+        boxPoint[j] = -size_b[j]
+      elif boxPoint[j] > size_b[j]:
+        n_out += 1
+        ax_out = j
+        boxPoint[j] = size_b[j]
+    if n_out > 1:
+      continue
+    dist = wp.length_sq(boxPoint - axisTip)
+    if dist < bestdist:
+      bestdist = dist
+      bestsegmentpos = wp.float32(i)
+      cltype = -2 + i
+      clface = ax_out
+
+  # second: cases where an edge of the box is closest
+  clcorner = wp.int32(-123)
+  cledge = wp.int32(-123)
+  bestboxpos = wp.float32(0.0)
+  for i in range(8):
+    for j in range(3):
+      if i & (1 << j) != 0:
+        continue
+      c2 = wp.int32(-123)
+      box_pt = wp.cw_mul(
+        wp.vec3(
+          wp.where(i & 1, 1.0, -1.0),
+          wp.where(i & 2, 1.0, -1.0),
+          wp.where(i & 4, 1.0, -1.0),
+        ),
+        size_b,
+      )
+      box_pt[j] = 0.0
+      dif = box_pt - pos
+      u = -size_b[j] * dif[j]
+      v = wp.dot(halfaxis, dif)
+      ma = size_b[j] * size_b[j]
+      mb = -size_b[j] * halfaxis[j]
+      mc = half_len * half_len
+      det = ma * mc - mb * mb
+      if wp.abs(det) < _cpc.MJ_MINVAL:
+        continue
+      idet = 1.0 / det
+      x1 = wp.float32((mc * u - mb * v) * idet)
+      x2 = wp.float32((ma * v - mb * u) * idet)
+      s1 = wp.int32(1)
+      s2 = wp.int32(1)
+      if x1 > 1:
+        x1 = 1.0
+        s1 = 2
+        x2 = _cpc.safe_div(v - mb, mc)
+      elif x1 < -1:
+        x1 = -1.0
+        s1 = 0
+        x2 = _cpc.safe_div(v + mb, mc)
+      x2_over = x2 > 1.0
+      if x2_over or x2 < -1.0:
+        if x2_over:
+          x2 = 1.0
+          s2 = 2
+          x1 = _cpc.safe_div(u - mb, ma)
+        else:
+          x2 = -1.0
+          s2 = 0
+          x1 = _cpc.safe_div(u + mb, ma)
+        if x1 > 1:
+          x1 = 1.0
+          s1 = 2
+        elif x1 < -1:
+          x1 = -1.0
+          s1 = 0
+      dif -= halfaxis * x2
+      dif[j] += size_b[j] * x1
+      ct = s1 * 3 + s2
+      dif_sq = wp.length_sq(dif)
+      if dif_sq < bestdist - _cpc.MJ_MINVAL:
+        bestdist = dif_sq
+        bestsegmentpos = x2
+        bestboxpos = x1
+        c2 = ct // 6
+        clcorner = i + (1 << j) * c2
+        cledge = j
+        cltype = ct
+
+  if cltype == -4:  # no valid configuration -> no contact was created by the forward
+    return wp.vec2(0.0, 0.0), wp.vec3i(-4, 0, 0)
+
+  secondpos = wp.float32(-4.0)
+  if cltype >= 0 and cltype // 3 != 1:  # closest to a corner of the box
+    c1 = axisdir ^ clcorner
+    if c1 != 0 and c1 != 7:
+      mul = wp.int32(1)
+      if not (c1 == 1 or c1 == 2 or c1 == 4):
+        mul = -1
+        c1 = 7 - c1
+      ax = wp.int32(0)
+      ax1 = wp.int32(1)
+      ax2 = wp.int32(2)
+      if c1 == 2:
+        ax = 1
+        ax1 = 2
+        ax2 = 0
+      elif c1 == 4:
+        ax = 2
+        ax1 = 0
+        ax2 = 1
+      if axis[ax] * axis[ax] > 0.5:  # second point along the edge of the box
+        m = 2.0 * _cpc.safe_div(size_b[ax], wp.abs(halfaxis[ax]))
+        secondpos = min(1.0 - wp.float32(mul) * bestsegmentpos, m)
+      else:  # second point along a face of the box
+        m = 2.0 * min(
+          _cpc.safe_div(size_b[ax1], wp.abs(halfaxis[ax1])),
+          _cpc.safe_div(size_b[ax2], wp.abs(halfaxis[ax2])),
+        )
+        secondpos = -min(1.0 + wp.float32(mul) * bestsegmentpos, m)
+      secondpos *= wp.float32(mul)
+  elif cltype >= 0 and cltype // 3 == 1:  # closest to a box edge
+    c1 = axisdir ^ clcorner
+    c1 &= 7 - (1 << cledge)
+    if c1 == 1 or c1 == 2 or c1 == 4:
+      ax1 = wp.int32(1)
+      ax2 = wp.int32(2)
+      if cledge == 1:
+        ax1 = 2
+        ax2 = 0
+      if cledge == 2:
+        ax1 = 0
+        ax2 = 1
+      ax = cledge
+      if wp.abs(axis[ax1]) > wp.abs(axis[ax2]):
+        ax1 = ax2
+      ax2 = 3 - ax - ax1
+      mul = wp.int32(1)
+      if c1 & (1 << ax2):
+        secondpos = 1.0 - bestsegmentpos
+      else:
+        mul = -1
+        secondpos = 1.0 + bestsegmentpos
+      e1 = 2.0 * _cpc.safe_div(size_b[ax2], wp.abs(halfaxis[ax2]))
+      secondpos = min(e1, secondpos)
+      if ((axisdir & (1 << ax)) != 0) == ((c1 & (1 << ax2)) != 0):
+        e2 = 1.0 - bestboxpos
+      else:
+        e2 = 1.0 + bestboxpos
+      e1 = size_b[ax] * _cpc.safe_div(e2, wp.abs(halfaxis[ax]))
+      secondpos = min(e1, secondpos)
+      secondpos *= wp.float32(mul)
+  else:  # a capsule tip is closest to a box face
+    if clface != -1:
+      mul = wp.where(cltype == -3, 1, -1)
+      secondpos = wp.float32(2.0)
+      tmp1 = pos - halfaxis * wp.float32(mul)
+      for i in range(3):
+        if i != clface:
+          ha_r = _cpc.safe_div(wp.float32(mul), halfaxis[i])
+          e1 = (size_b[i] - tmp1[i]) * ha_r
+          if 0 < e1 and e1 < secondpos:
+            secondpos = e1
+          e1 = (-size_b[i] - tmp1[i]) * ha_r
+          if 0 < e1 and e1 < secondpos:
+            secondpos = e1
+      secondpos *= wp.float32(mul)
+
+  t2 = bestsegmentpos
+  if secondpos > -3.0:
+    t2 = bestsegmentpos + secondpos
+  return wp.vec2(bestsegmentpos, t2), wp.vec3i(cltype, wp.max(clcorner, 0), wp.max(cledge, 0))
+
+
+@wp.func
+def _capsule_box_t0(
+  pos_bf: wp.vec3,  # capsule center in the BOX frame [grad]
+  halfaxis_bf: wp.vec3,  # capsule half-axis in the BOX frame [grad]
+  half_len: float,
+  size_b: wp.vec3,
+  cltype: int,  # frozen discrete feature state (from _capsule_box_segpos)
+  clcorner: int,
+  cledge: int,
+) -> float:
+  """DIFFERENTIABLE re-derivation of the primary segment parameter t1 for the FROZEN discrete feature:
+  reproduces exactly the closed forms the forward search used, with the branch/clamp state frozen --
+  so d(t1)/d(poses) flows and the adjoint matches FD of the forward's actual computation graph (a fully
+  frozen t is only first-order exact for INTERIOR minimizers; a box-EDGE contact has t interior with
+  pose-dependent drift that FD sees). All feature selects are static compare-selects on frozen ints."""
+  if cltype < 0:  # capsule TIP closest to a face: t is the constant tip
+    return wp.where(cltype == -3, -1.0, 1.0)
+  s1 = cltype // 3
+  s2 = cltype - 3 * s1
+  if s2 == 0:  # segment end clamped low
+    return -1.0
+  if s2 == 2:  # segment end clamped high
+    return 1.0
+  # rebuild the frozen edge's quantities (forward's edge loop body) via compare-selects
+  bx = wp.where(cledge == 0, 0.0, wp.where((clcorner & 1) != 0, size_b[0], -size_b[0]))
+  by = wp.where(cledge == 1, 0.0, wp.where((clcorner & 2) != 0, size_b[1], -size_b[1]))
+  bz = wp.where(cledge == 2, 0.0, wp.where((clcorner & 4) != 0, size_b[2], -size_b[2]))
+  dif = wp.vec3(bx, by, bz) - pos_bf
+  sj = wp.where(cledge == 0, size_b[0], wp.where(cledge == 1, size_b[1], size_b[2]))
+  dj = wp.where(cledge == 0, dif[0], wp.where(cledge == 1, dif[1], dif[2]))
+  hj = wp.where(cledge == 0, halfaxis_bf[0], wp.where(cledge == 1, halfaxis_bf[1], halfaxis_bf[2]))
+  u = -sj * dj
+  v = wp.dot(halfaxis_bf, dif)
+  ma = sj * sj
+  mb = -sj * hj
+  mc = half_len * half_len
+  if s1 == 1:  # interior-interior: the 2x2 solve
+    return _cpc.safe_div(ma * v - mb * u, ma * mc - mb * mb)
+  if s1 == 2:  # box-edge param clamped high
+    return _cpc.safe_div(v - mb, mc)
+  return _cpc.safe_div(v + mb, mc)  # s1 == 0: box-edge param clamped low
+
+
+@wp.kernel(enable_backward=False)
+def _capsule_box_freeze(
+  geom_type: wp.array[int],
+  geom_size: wp.array2d(dtype=wp.vec3),
+  geom_xpos_in: wp.array2d[wp.vec3],
+  geom_xmat_in: wp.array2d[wp.mat33],
+  contact_geom: wp.array(dtype=wp.vec2i),
+  contact_worldid: wp.array[int],
+  nacon: wp.array[int],
+  tseg_out: wp.array(dtype=wp.vec2),
+  feat_out: wp.array(dtype=wp.vec3i),
+):
+  """Per frozen capsule<->box contact, extract the sphere-reduction SEGMENT PARAMETERS + discrete feature
+  state (see ``_capsule_box_segpos``) so ``_narrowphase_recompute`` can differentiate ``sphere_box`` at a
+  re-derived t. Forward-only: the feature search stays out of the backward kernel."""
+  cid = wp.tid()
+  if cid >= nacon[0]:
+    return
+  geoms = contact_geom[cid]
+  if geoms[0] < 0 or geoms[1] < 0:
+    return
+  g0 = geoms[0]
+  g1 = geoms[1]
+  if geom_type[g0] != _CAPSULE or geom_type[g1] != _BOX:
+    return
+  w = contact_worldid[cid]
+  gw = w % geom_size.shape[0]
+  m0 = geom_xmat_in[w, g0]
+  axis0 = wp.vec3(m0[0, 2], m0[1, 2], m0[2, 2])
+  ts, ft = _capsule_box_segpos(
+    geom_xpos_in[w, g0], axis0, geom_size[gw, g0][1], geom_xpos_in[w, g1], geom_xmat_in[w, g1], geom_size[gw, g1]
+  )
+  tseg_out[cid] = ts
+  feat_out[cid] = ft
+
+
 @wp.kernel(enable_backward=True)
 def _narrowphase_recompute(
   geom_type: wp.array[int],
@@ -79,6 +368,8 @@ def _narrowphase_recompute(
   contact_geomcollisionid: wp.array[int],
   contact_worldid: wp.array[int],
   nacon: wp.array[int],
+  capsule_box_tseg: wp.array(dtype=wp.vec2),  # frozen capsule-box segment params (_capsule_box_freeze)
+  capsule_box_feat: wp.array(dtype=wp.vec3i),  # frozen capsule-box discrete feature state
   cpos_out: wp.array(dtype=wp.vec3),
   dist_out: wp.array[float],
   frame_out: wp.array(dtype=wp.mat33),
@@ -91,7 +382,8 @@ def _narrowphase_recompute(
   caps 0/1; capsule-capsule 0/1; plane-cylinder 0..3; plane-box CORNER id 0..7 -- the wrapper passes id_=i
   over range(8) so the slot is the literal corner, not a bottom-4 remap). Multi-contact rows are selected
   with a static-unrolled loop + runtime compare (NEVER runtime-index a vector/array in a backward kernel).
-  geom0=geoms[0], geom1=geoms[1] (forward order). AD-safe primitives only; capsule-box / box-box /
+  geom0=geoms[0], geom1=geoms[1] (forward order). AD-safe primitives only; capsule-box differentiates
+  sphere_box at its FROZEN segment parameter (capsule_box_tseg, from _capsule_box_freeze); box-box /
   plane-convex / mesh fall through -> ∂qpos stays 0 for that pair (data-dependent feature search)."""
   cid = wp.tid()
   if cid >= nacon[0]:
@@ -188,6 +480,28 @@ def _narrowphase_recompute(
         dist_out[cid] = box_dist[i]
         cpos_out[cid] = wp.vec3(box_pos[i, 0], box_pos[i, 1], box_pos[i, 2])
     frame_out[cid] = _math.make_frame(box_n)
+  elif t0 == _CAPSULE and t1 == _BOX:
+    # FROZEN-FEATURE WITNESS: the forward's capsule_box tail reduces the pair to sphere_box at 1-2 points
+    # along the capsule segment; the search that PICKS the feature is a data-dependent hunt (not AD-safe),
+    # so _capsule_box_freeze re-ran it forward-only and froze the DISCRETE state (cltype/clcorner/cledge +
+    # clamp branch). Here the primary segment parameter t1 is RE-DERIVED as a closed-form differentiable
+    # function of the poses for that frozen feature (_capsule_box_t0) -- the adjoint then matches FD of
+    # the forward's actual computation graph (interior-edge contacts have pose-dependent t1 that a fully
+    # frozen t misses). The slot-1 spread point rides t1 with its OFFSET frozen (the spread heuristic's
+    # own pose-derivative is dropped -- same approximation class as capsule_capsule's parallel slot-1).
+    axis0 = wp.vec3(m0[0, 2], m0[1, 2], m0[2, 2])
+    ts = capsule_box_tseg[cid]
+    ft = capsule_box_feat[cid]
+    bmT = wp.transpose(m1)
+    pos_bf = bmT @ (p0 - p1)
+    halfaxis_bf = (bmT @ axis0) * s0[1]
+    t0d = _capsule_box_t0(pos_bf, halfaxis_bf, s0[1], s1, ft[0], ft[1], ft[2])
+    tk = wp.where(slot == 0, t0d, t0d + (ts[1] - ts[0]))
+    cb_center = p0 + axis0 * (s0[1] * tk)
+    cb_dist, cb_pos, cb_n = _cpc.sphere_box(cb_center, s0[0], p1, m1, s1)
+    dist_out[cid] = cb_dist
+    cpos_out[cid] = cb_pos
+    frame_out[cid] = _math.make_frame(cb_n)
 
 
 @wp.kernel(enable_backward=False)
@@ -446,8 +760,15 @@ def contact_qpos_vjp(
   cpos_o = wp.zeros(ncon_max, dtype=wp.vec3, requires_grad=True)
   dist_o = wp.zeros(ncon_max, dtype=float, requires_grad=True)
   frame_o = wp.zeros(ncon_max, dtype=wp.mat33, requires_grad=True)
+  # frozen capsule-box segment parameters + feature state (forward-only search; see _capsule_box_freeze)
+  cb_tseg = wp.zeros(ncon_max, dtype=wp.vec2)
+  cb_feat = wp.zeros(ncon_max, dtype=wp.vec3i)
+  wp.launch(_capsule_box_freeze, dim=ncon_max,
+            inputs=[m.geom_type, m.geom_size, d_out.geom_xpos, d_out.geom_xmat, d_out.contact.geom,
+                    d_out.contact.worldid, d_out.nacon],
+            outputs=[cb_tseg, cb_feat])
   np_in = [m.geom_type, m.geom_size, d_out.geom_xpos, d_out.geom_xmat, d_out.contact.geom,
-           d_out.contact.geomcollisionid, d_out.contact.worldid, d_out.nacon]
+           d_out.contact.geomcollisionid, d_out.contact.worldid, d_out.nacon, cb_tseg, cb_feat]
   wp.launch(_narrowphase_recompute, dim=ncon_max, inputs=np_in, outputs=[cpos_o, dist_o, frame_o])
   # seed the geometry adjoints: contact_pos/frame are per-contact direct; efc_pos is efc-row-indexed
   # -> gather to per-contact (∂efc_pos/∂dist = 1).
