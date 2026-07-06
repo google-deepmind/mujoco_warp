@@ -68,7 +68,41 @@ _FLAT_CYL = """
       </worldbody>
     </mujoco>
     """
-_FIXTURES = {**_cdt.CollisionTest._FIXTURES, "plane_cylinder_flat": _FLAT_CYL}  # + the flat-disk regression scene
+# capsule_box_face_tilt: a capsule NEARLY parallel to a box face (5 deg tilt, shallow overlap at the lower
+# tip). Gates the capsule-box FACE branch (cltype<0, clface>=0) plus the second-contact face spread -- the
+# smooth version of the driver's capsule_box_face_flat, which sits on a symmetric TIE (both tips exactly
+# equidistant, sphere center exactly on the face plane): central FD there averages the two tip branches
+# while the frozen-feature analytic follows one -- a genuine kink of that configuration, not a VJP defect.
+_CAP_BOX_TILT = """
+    <mujoco>
+      <worldbody>
+        <geom type="box" pos="0 0 0" size=".5 .7 .9"/>
+        <body pos="0.70 0.2 0.0" euler="0 5 0">
+          <geom type="capsule" size="0.2 0.4"/>
+          <freejoint/>
+        </body>
+      </worldbody>
+    </mujoco>
+    """
+# capsule_box_lean: a capsule LEANING against a fixed box (foot on the floor, shaft on the box's top
+# edge) -- the "robot slumped against the door" regime that motivated the capsule-box adjoint
+# (contrib/diffsim/g1_push.py heavy door). Gates the END-TO-END accumulation through a persistent
+# capsule-box contact (plus its plane-capsule foot contact).
+_CAP_BOX_LEAN = """
+<mujoco>
+  <option timestep="0.004" cone="elliptic" gravity="0 0 -9.81"><flag eulerdamp="disable"/></option>
+  <default><geom condim="3" friction="0.8 0.01 0.01" solimp="0 0.95 0.001"/></default>
+  <worldbody>
+    <geom type="plane" size="5 5 0.1"/>
+    <geom type="box" pos="0 0 0.3" size="0.3 0.3 0.3"/>
+    <body pos="0.302 0 0.389" euler="0 -20 0"><freejoint/>
+      <geom type="capsule" size="0.06 0.35" mass="0.5"/></body>
+  </worldbody>
+</mujoco>
+"""
+_FIXTURES = {**_cdt.CollisionTest._FIXTURES, "plane_cylinder_flat": _FLAT_CYL,  # + flat-disk regression
+             "capsule_box_face_tilt": _CAP_BOX_TILT,  # + smooth near-parallel capsule-box face scene
+             "capsule_box_lean": _CAP_BOX_LEAN}  # + leaning capsule (the g1_push door-slump regime)
 
 _PLANE = GeomType.PLANE
 _SPHERE = GeomType.SPHERE
@@ -98,6 +132,15 @@ _PAIR = {
   "sphere_box_shallow": (_SPHERE, _BOX),
   "sphere_box_deep": (_SPHERE, _BOX),
   "capsule_capsule": (_CAPSULE, _CAPSULE),  # crossed (non-parallel) -> slot 0
+  # capsule-box: FROZEN-FEATURE witness (sphere_box differentiated at a t1 RE-DERIVED in closed form for
+  # the frozen discrete feature -- see collision_adjoint._capsule_box_t0; slot-1 spread offset frozen).
+  # capsule_box_face_flat is EXCLUDED like capsule_capsule_parallel_axes: it sits on a symmetric two-tip
+  # TIE (see _CAP_BOX_TILT above for the smooth version of that regime, included here).
+  "capsule_box_edge": (_CAPSULE, _BOX),
+  "capsule_box_corner": (_CAPSULE, _BOX),
+  "capsule_box_face_tip": (_CAPSULE, _BOX),
+  "capsule_box_face_tilt": (_CAPSULE, _BOX),  # near-parallel face + the two-contact spread path
+  "capsule_box_lean": (_CAPSULE, _BOX),  # leaning capsule (foot on floor, shaft on box top edge)
 }
 
 # End-to-end accumulation gate: plane-supported scenes that settle to a stable contact and SLIDE/ROLL under
@@ -118,6 +161,8 @@ _MULTISTEP = {
   # the genuine friction stick/slip NON-SMOOTHNESS (cos~0.87, unrelated to the sqrt fix) -- the tall
   # plane_cylinder_1/2/3 roll (smoother) and pass here; a sliding-to-stop disk doesn't.
   "sphere_box_shallow": (8, 30),
+  "capsule_box_lean": (30, 30),  # settles into the lean, then the kick slides the foot: persistent
+  # capsule-box + plane-capsule contacts through the whole rollout (the g1_push door-slump regime)
 }
 
 # Articulated scenes (not in the driver fixtures -- those are single-geom-pair) that gate the free/ball
