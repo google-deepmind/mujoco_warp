@@ -2351,6 +2351,7 @@ class SolverContext:
   jv: wp.array2d[float]
   quad: wp.array2d[wp.vec3]
   alpha: wp.array[float]
+  grad_scale: wp.array[float]
   improvement: wp.array[float]
   prev_grad: wp.array2d[float]
   prev_Mgrad: wp.array2d[float]
