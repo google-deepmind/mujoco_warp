@@ -23,8 +23,12 @@ from mujoco_warp._src import math
 from mujoco_warp._src import smooth
 from mujoco_warp._src import support
 from mujoco_warp._src import types
+from mujoco_warp._src.block_cholesky import cholesky_mindiag
 from mujoco_warp._src.block_cholesky import create_blocked_cholesky_factorize_solve_func
 from mujoco_warp._src.block_cholesky import create_blocked_cholesky_solve_func
+from mujoco_warp._src.block_cholesky import tile_cholesky_floored_inplace
+from mujoco_warp._src.block_cholesky import tile_diag_is_healthy
+from mujoco_warp._src.block_cholesky import tile_load_elementwise
 from mujoco_warp._src.types import InverseContext
 from mujoco_warp._src.types import SolverContext
 from mujoco_warp._src.warp_util import cache_kernel
@@ -2610,8 +2614,17 @@ def _update_gradient_cholesky(tile_size: int):
     if ctx_done_in[worldid]:
       return
 
-    mat_tile = wp.tile_load(h_in[worldid], shape=(TILE_SIZE, TILE_SIZE))
+    mat_tile = wp.tile_load(h_in[worldid], shape=(TILE_SIZE, TILE_SIZE), storage="shared")
     wp.tile_cholesky_inplace(mat_tile, fill_mode="upper")
+
+    # a float32-roundoff-indefinite Hessian makes the unguarded factorization
+    # produce NaNs — or finite-but-garbage pivots below the mju_cholFactor-style
+    # floor: detect either and refactor with a per-pivot floor (issue #1415)
+    mindiag = cholesky_mindiag(h_in[worldid], TILE_SIZE)
+    if not tile_diag_is_healthy(mat_tile, TILE_SIZE, wp.sqrt(mindiag)):
+      tile_load_elementwise(mat_tile, h_in[worldid], TILE_SIZE)
+      tile_cholesky_floored_inplace(mat_tile, TILE_SIZE, mindiag)
+
     input_tile = wp.tile_load(ctx_grad_in[worldid], shape=TILE_SIZE)
     output_tile = wp.tile_cholesky_solve(mat_tile, input_tile, fill_mode="upper")
     wp.tile_store(ctx_Mgrad_out[worldid], output_tile)
