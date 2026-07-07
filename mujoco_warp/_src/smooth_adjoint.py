@@ -438,13 +438,16 @@ def actuator_qpos_vjp(m: Model, d: Data, lam: wp.array2d):
 # cache of the capability-check result per Model (host metadata is static; the per-element
 # .numpy() reads run ONCE here, eager, at first call -- a setup-time assertion like io.is_sparse,
 # NEVER per-step or inside a graph-capture region)
+# The value keeps a strong ref to m so an id() reused after GC cannot alias a stale entry;
+# in-place structural mutation of m stays undetected.
+# TODO(team): fold into the per-(m,d) prepare_backward context.
 _SUPPORTED_CACHE = {}
 
 
 def assert_smooth_supported(m: Model):
   """Raise NotImplementedError for ENABLED features missing an analytic VJP; no FD fallback."""
   key = id(m)
-  if _SUPPORTED_CACHE.get(key):
+  if _SUPPORTED_CACHE.get(key) is not None:
     return
   bad = []
   if int(m.ntendon) != 0:
@@ -482,7 +485,7 @@ def assert_smooth_supported(m: Model):
       + ". Implement the leaf/topology VJP (the FD oracle lives in adjoint_test_util). "
       "There is no silent FD fallback."
     )
-  _SUPPORTED_CACHE[key] = True
+  _SUPPORTED_CACHE[key] = (m, True)
 
 
 # ----------------------------------------------------------------------------
@@ -542,6 +545,9 @@ def _gravcomp_seed(
     grad_out[w, i] = 0.0
 
 
+# cache keyed by id(m); the value keeps a strong ref to m so a reused id() after GC cannot alias
+# a stale entry (in-place structural mutation of m stays undetected).
+# TODO(team): fold into the per-(m,d) prepare_backward context.
 _HAS_GRAVCOMP_CACHE = {}
 
 
@@ -554,10 +560,12 @@ def gravcomp_qpos_vjp(m: Model, d: Data, lam: wp.array2d):
   nbody = m.nbody
   res_qpos = wp.zeros((nworld, nq), dtype=float)
   key = id(m)
-  has = _HAS_GRAVCOMP_CACHE.get(key)
-  if has is None:
+  cached = _HAS_GRAVCOMP_CACHE.get(key)
+  if cached is None:
     has = bool(np.any(m.body_gravcomp.numpy() != 0.0))
-    _HAS_GRAVCOMP_CACHE[key] = has
+    _HAS_GRAVCOMP_CACHE[key] = (m, has)
+  else:
+    _, has = cached
   if not has:
     return res_qpos
 
