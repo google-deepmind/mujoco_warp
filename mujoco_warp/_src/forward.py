@@ -43,7 +43,7 @@ from mujoco_warp._src.types import JointType
 from mujoco_warp._src.types import Model
 from mujoco_warp._src.types import OverflowType
 from mujoco_warp._src.types import TrnType
-from mujoco_warp._src.types import vec10f
+from mujoco_warp._src.types import vec10
 from mujoco_warp._src.warp_util import cache_kernel
 from mujoco_warp._src.warp_util import event_scope
 
@@ -139,9 +139,9 @@ def _next_activation(
   actuator_actadr: wp.array[int],
   actuator_actnum: wp.array[int],
   actuator_actlimited: wp.array[bool],
-  actuator_dynprm: wp.array2d[vec10f],
-  actuator_gainprm: wp.array2d[vec10f],
-  actuator_biasprm: wp.array2d[vec10f],
+  actuator_dynprm: wp.array2d[vec10],
+  actuator_gainprm: wp.array2d[vec10],
+  actuator_biasprm: wp.array2d[vec10],
   actuator_actrange: wp.array2d[wp.vec2],
   # Data in:
   act_in: wp.array2d[float],
@@ -766,9 +766,9 @@ def _actuator_force(
   actuator_ctrllimited: wp.array[bool],
   actuator_forcelimited: wp.array[bool],
   actuator_actlimited: wp.array[bool],
-  actuator_dynprm: wp.array2d[vec10f],
-  actuator_gainprm: wp.array2d[vec10f],
-  actuator_biasprm: wp.array2d[vec10f],
+  actuator_dynprm: wp.array2d[vec10],
+  actuator_gainprm: wp.array2d[vec10],
+  actuator_biasprm: wp.array2d[vec10],
   actuator_actearly: wp.array[bool],
   actuator_ctrlrange: wp.array2d[wp.vec2],
   actuator_forcerange: wp.array2d[wp.vec2],
