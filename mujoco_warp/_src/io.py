@@ -454,11 +454,16 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
   condim_arrays = [np.array([0]), mjm.geom_condim, mjm.pair_dim]
   if mjm.nflex > 0:
     condim_arrays.append(mjm.flex_condim)
+    if (mjm.geom_type == mujoco.mjtGeom.mjGEOM_SDF).any():
+      raise NotImplementedError("Flex-SDF collision is not implemented.")
+    if (mjm.geom_type == mujoco.mjtGeom.mjGEOM_HFIELD).any():
+      raise NotImplementedError("Flex-HField collision is not implemented.")
   m.nmaxcondim = np.concatenate(condim_arrays).max()
   m.nmaxpyramid = np.maximum(1, 2 * (m.nmaxcondim - 1))
   m.has_sdf_geom = (mjm.geom_type == mujoco.mjtGeom.mjGEOM_SDF).any()
+  m.has_ellipsoid_geom = (mjm.geom_type == mujoco.mjtGeom.mjGEOM_ELLIPSOID).any()
   m.has_flex_selfcollide = bool(mjm.nflex > 0 and np.any(mjm.flex_selfcollide != 0))
-  m.has_trilinear = bool(mjm.nflex > 0 and np.any(mjm.flex_interp == 1))
+  m.has_3d_flex = bool(mjm.nflex > 0 and np.any(mjm.flex_dim == 3))
   m.max_flex_dim = int(np.max(mjm.flex_dim)) if mjm.nflex > 0 else 0
   m.block_dim = types.BlockDim()
   # Derive CG solver block_dim from nv: clamp(round_up_to_32(nv), 32, 256)
@@ -1035,7 +1040,6 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
 
   # Populate lookup maps and candidate pairs
   flexelem_geom_pairs = []
-  flexshell_geom_pairs = []
   flexvert_geom_pairs = []
 
   flex_elemflexid = np.zeros(mjm.nflexelem, dtype=np.int32)
@@ -1079,6 +1083,7 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
           mujoco.mjtGeom.mjGEOM_BOX,
           mujoco.mjtGeom.mjGEOM_CYLINDER,
           mujoco.mjtGeom.mjGEOM_MESH,
+          mujoco.mjtGeom.mjGEOM_ELLIPSOID,
         ],
       )
       is_pl = mjm.geom_type == mujoco.mjtGeom.mjGEOM_PLANE
@@ -1100,19 +1105,6 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
             filtered = _filter_tri_geoms(mjm, v0, v1, v2, matching_primitive_geoms, filterparent)
             for g in matching_primitive_geoms[~filtered]:
               flexelem_geom_pairs.append((elemid, g))
-
-      elif fdim == 3:
-        shelldata_start = mjm.flex_shelldataadr[fi]
-        prev_shells_offset = shell_offset - shell_num
-        for s in range(shell_num):
-          v0 = vert_start + mjm.flex_shell[shelldata_start + s * 3]
-          v1 = vert_start + mjm.flex_shell[shelldata_start + s * 3 + 1]
-          v2 = vert_start + mjm.flex_shell[shelldata_start + s * 3 + 2]
-
-          if len(matching_primitive_geoms) > 0:
-            filtered = _filter_tri_geoms(mjm, v0, v1, v2, matching_primitive_geoms, filterparent)
-            for g in matching_primitive_geoms[~filtered]:
-              flexshell_geom_pairs.append((prev_shells_offset + s, g))
 
       # Planes vs Vertices
       if len(matching_plane_geoms) > 0:
@@ -1140,13 +1132,10 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
 
   if not flexelem_geom_pairs:
     flexelem_geom_pairs = np.zeros((0, 2), dtype=np.int32)
-  if not flexshell_geom_pairs:
-    flexshell_geom_pairs = np.zeros((0, 2), dtype=np.int32)
   if not flexvert_geom_pairs:
     flexvert_geom_pairs = np.zeros((0, 2), dtype=np.int32)
 
   m.flexelem_geom_pair_filtered = np.array(flexelem_geom_pairs, dtype=np.int32)
-  m.flexshell_geom_pair_filtered = np.array(flexshell_geom_pairs, dtype=np.int32)
   m.flexvert_geom_pair_filtered = np.array(flexvert_geom_pairs, dtype=np.int32)
 
   m.flex_elemflexid = flex_elemflexid
@@ -2617,6 +2606,83 @@ def _copy_tendon_length0(
 
 
 @wp.kernel
+def _compute_eq_data0(
+  # Model:
+  eq_type: wp.array[int],
+  eq_obj1id: wp.array[int],
+  eq_obj2id: wp.array[int],
+  eq_objtype: wp.array[int],
+  # Data in:
+  xpos_in: wp.array2d[wp.vec3],
+  xquat_in: wp.array2d[wp.quat],
+  xmat_in: wp.array2d[wp.mat33],
+  # Out:
+  eq_data_out: wp.array2d[types.vec11],
+):
+  """Compute eq_data for connect/weld constraints.
+
+  Kinematics must have been evaluated at qpos0 so the constraint is satisfied at qpos0.
+  """
+  worldid, eqid = wp.tid()
+  eq_data_id = worldid % eq_data_out.shape[0]
+
+  eqtype = eq_type[eqid]
+  objtype = eq_objtype[eqid]
+  data = eq_data_out[eq_data_id, eqid]
+
+  if eqtype == int(types.EqType.CONNECT.value):
+    if objtype == int(types.ObjType.BODY.value):
+      obj1id = eq_obj1id[eqid]
+      obj2id = eq_obj2id[eqid]
+
+      # data[0:3] = anchor in body1 local frame; map to global frame
+      anchor1 = wp.vec3(data[0], data[1], data[2])
+      pos = xpos_in[worldid, obj1id] + xmat_in[worldid, obj1id] @ anchor1
+
+      # data[3:6] = anchor position in body2 local frame
+      anchor2 = wp.transpose(xmat_in[worldid, obj2id]) @ (pos - xpos_in[worldid, obj2id])
+      data[3] = anchor2[0]
+      data[4] = anchor2[1]
+      data[5] = anchor2[2]
+      eq_data_out[eq_data_id, eqid] = data
+    elif objtype == int(types.ObjType.SITE.value):
+      # site-based connect, eq_data is unused
+      eq_data_out[eq_data_id, eqid] = types.vec11(0.0)
+  elif eqtype == int(types.EqType.WELD.value):
+    if objtype == int(types.ObjType.BODY.value):
+      quat = wp.quat(data[6], data[7], data[8], data[9])
+      if wp.length_sq(quat) > 0.0:
+        # user has set quaternion data: normalize it and keep the remaining data
+        quat = wp.normalize(quat)
+        data[6] = quat[0]
+        data[7] = quat[1]
+        data[8] = quat[2]
+        data[9] = quat[3]
+        eq_data_out[eq_data_id, eqid] = data
+      else:
+        obj1id = eq_obj1id[eqid]
+        obj2id = eq_obj2id[eqid]
+
+        # data[0:3] = anchor in body2 local frame; map to global frame
+        anchor2 = wp.vec3(data[0], data[1], data[2])
+        pos = xpos_in[worldid, obj2id] + xmat_in[worldid, obj2id] @ anchor2
+
+        # data[3:6] = anchor position in body1 local frame
+        anchor1 = wp.transpose(xmat_in[worldid, obj1id]) @ (pos - xpos_in[worldid, obj1id])
+        data[3] = anchor1[0]
+        data[4] = anchor1[1]
+        data[5] = anchor1[2]
+
+        # data[6:10] = neg(xquat1) * xquat2 = "xquat2 - xquat1" in body1 local frame
+        relquat = mjmath.mul_quat(mjmath.quat_inv(xquat_in[worldid, obj1id]), xquat_in[worldid, obj2id])
+        data[6] = relquat[0]
+        data[7] = relquat[1]
+        data[8] = relquat[2]
+        data[9] = relquat[3]
+        eq_data_out[eq_data_id, eqid] = data
+
+
+@wp.kernel
 def _resolve_tendon_lengthspring(
   ten_length_in: wp.array2d[float],
   tendon_lengthspring_out: wp.array2d[wp.vec2],
@@ -2985,14 +3051,14 @@ def _compute_dof_M0(
 @wp.kernel
 def _resolve_dampratio(
   actuator_biastype: wp.array[int],
-  actuator_gainprm: wp.array2d[types.vec10f],
+  actuator_gainprm: wp.array2d[types.vec10],
   moment_rownnz_in: wp.array2d[int],
   moment_rowadr_in: wp.array2d[int],
   moment_colind_in: wp.array2d[int],
   actuator_moment_in: wp.array2d[float],
   dof_M0_in: wp.array2d[float],
   nv: int,
-  actuator_biasprm: wp.array2d[types.vec10f],
+  actuator_biasprm: wp.array2d[types.vec10],
 ):
   worldid, actid = wp.tid()
   biastype = actuator_biastype[actid]
@@ -3098,6 +3164,8 @@ def set_const_0(m: types.Model, d: types.Data, restore: bool = True):
 
   Computes:
     - tendon_length0: tendon resting lengths
+    - eq_data: connect/weld anchor data, recomputed so the constraint is
+      satisfied at qpos0
     - dof_invweight0: inverse inertia for DOFs
     - body_invweight0: inverse spatial inertia for bodies
     - tendon_invweight0: inverse weight for tendons
@@ -3136,6 +3204,13 @@ def set_const_0(m: types.Model, d: types.Data, restore: bool = True):
   )
 
   wp.launch(_copy_tendon_length0, dim=(d.nworld, m.ntendon), inputs=[d.ten_length], outputs=[m.tendon_length0])
+
+  wp.launch(
+    _compute_eq_data0,
+    dim=(d.nworld, m.neq),
+    inputs=[m.eq_type, m.eq_obj1id, m.eq_obj2id, m.eq_objtype, d.xpos, d.xquat, d.xmat],
+    outputs=[m.eq_data],
+  )
 
   # dof_invweight0: computed per joint with averaging for multi-DOF joints
   # FREE: 6 DOFs, trans gets mean(A[0:3]), rot gets mean(A[3:6])

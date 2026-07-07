@@ -133,6 +133,7 @@ def _flex_triangle_geom_broadphase(
     and gtype != int(GeomType.BOX)
     and gtype != int(GeomType.CYLINDER)
     and gtype != int(GeomType.MESH)
+    and gtype != int(GeomType.ELLIPSOID)
   ):
     return
 
@@ -191,6 +192,8 @@ def _flex_triangle_geom_broadphase(
   elif gtype == int(GeomType.BOX):
     r_extent = wp.length(geom_half_size_local)
   elif gtype == int(GeomType.MESH):
+    r_extent = wp.length(geom_half_size_local)
+  elif gtype == int(GeomType.ELLIPSOID):
     r_extent = wp.length(geom_half_size_local)
 
   if wp.abs(signed_dist) > r_extent + margin + tri_radius:
@@ -829,7 +832,7 @@ def _collide_mesh_triangle(
   geom2.margin = 0.0
   geom2.index = -1
 
-  centroid = (t1 + t2 + t3) * (1.0 / 3.0)
+  centroid = (t1 + t2 + t3) * wp.static(1.0 / 3.0)
   r_geom = wp.length(geom_size_val)
   d1 = wp.length(t1 - centroid)
   d2 = wp.length(t2 - centroid)
@@ -2366,6 +2369,7 @@ def _flex_narrowphase_unified(
     and gtype != int(GeomType.BOX)
     and gtype != int(GeomType.CYLINDER)
     and gtype != int(GeomType.MESH)
+    and gtype != int(GeomType.ELLIPSOID)
   ):
     return
 
@@ -2454,6 +2458,103 @@ def _flex_narrowphase_unified(
         cand_geomcollisionid_out,
         ncand_out,
       )
+  elif gtype == int(GeomType.ELLIPSOID):
+    ccdid = wp.atomic_add(nccd, 0, 1)
+    if ccdid >= naccdmax_in:
+      if opt_warn_overflow:
+        wp.printf("CCD overflow in flex narrowphase - please increase naccdmax to %u\n", ccdid)
+      wp.atomic_or(overflow_out, worldid, wp.static(OverflowType.CCD))
+    else:
+      tolerance = opt_ccd_tolerance[worldid % opt_ccd_tolerance.shape[0]]
+
+      # Construct Ellipsoid Geom (geom1)
+      geom1 = Geom()
+      geom1.pos = geom_pos
+      geom1.rot = geom_rot
+      geom1.size = geom_size_val
+      geom1.margin = 0.0
+      geom1.index = -1
+
+      # Construct Triangle Geom (geom2)
+      geom2 = Geom()
+      geom2.pos = wp.vec3(0.0, 0.0, 0.0)
+      geom2.rot = wp.mat33(t1[0], t1[1], t1[2], t2[0], t2[1], t2[2], t3[0], t3[1], t3[2])
+      geom2.margin = 0.0
+      geom2.index = -1
+
+      centroid = (t1 + t2 + t3) * wp.static(1.0 / 3.0)
+      r_geom = wp.length(geom_size_val)
+      d1 = wp.length(t1 - centroid)
+      d2 = wp.length(t2 - centroid)
+      d3 = wp.length(t3 - centroid)
+      r_tri = wp.max(d1, wp.max(d2, d3))
+
+      if wp.length(centroid - geom_pos) <= r_geom + r_tri + margin + tri_radius + 0.04:
+        dist, ncontact, w1, w2, idx = ccd(
+          tolerance,
+          margin + tri_radius,
+          ccd_iterations,
+          ccd_iterations,
+          geom1,
+          geom2,
+          int(GeomType.ELLIPSOID),
+          int(GeomType.TRIANGLE),
+          geom_pos,
+          centroid,
+          epa_vert[ccdid],
+          epa_vert_index[ccdid],
+          epa_face[ccdid],
+          epa_pr[ccdid],
+          epa_norm2[ccdid],
+          epa_horizon[ccdid],
+        )
+
+        if ncontact > 0 and dist < margin + tri_radius:
+          if _inside_triangle(w2, t1, t2, t3, 0.2):
+            if dist < 0.0:
+              normal = wp.normalize(w1 - w2)
+            else:
+              normal = wp.normalize(w2 - w1)
+
+            # Project triangle vertices onto normal to find deepest penetration
+            dist_v0 = wp.dot(t1 - w1, normal) - tri_radius
+            dist_v1 = wp.dot(t2 - w1, normal) - tri_radius
+            dist_v2 = wp.dot(t3 - w1, normal) - tri_radius
+
+            min_dist = wp.min(dist_v0, wp.min(dist_v1, dist_v2))
+            if min_dist < margin:
+              deepest_vert = v0_local
+              pos = t1 - normal * (tri_radius + 0.5 * dist_v0)
+              if dist_v1 < dist_v0 and dist_v1 < dist_v2:
+                deepest_vert = v1_local
+                pos = t2 - normal * (tri_radius + 0.5 * dist_v1)
+              elif dist_v2 < dist_v0 and dist_v2 < dist_v1:
+                deepest_vert = v2_local
+                pos = t3 - normal * (tri_radius + 0.5 * dist_v2)
+
+              _write_candidate_contact(
+                max_candidates,
+                min_dist,
+                pos,
+                normal,
+                geomid,
+                flexid,
+                local_tri_id,
+                -1,
+                worldid,
+                overflow_out,
+                cand_dist_out,
+                cand_pos_out,
+                cand_nrm_out,
+                cand_geom_out,
+                cand_flex_out,
+                cand_elem_out,
+                cand_vert_out,
+                cand_worldid_out,
+                cand_type_out,
+                cand_geomcollisionid_out,
+                ncand_out,
+              )
   else:
     _collide_geom_triangle_detect(
       max_candidates,
@@ -2640,6 +2741,108 @@ def _flex_narrowphase_tet_detect(
         cand_geomcollisionid_out,
         ncand_out,
       )
+
+
+@wp.kernel
+def _compute_filter_key(
+  # Model:
+  ngeom: int,
+  nflex: int,
+  # In:
+  ncand: wp.array[int],
+  cand_geom: wp.array[wp.vec2i],
+  cand_flex: wp.array[wp.vec2i],
+  cand_worldid: wp.array[int],
+  # Out:
+  key_out: wp.array[int],
+  val_out: wp.array[int],
+):
+  """Compute sort key for candidate grouping.
+
+  Groups candidates by (worldid, flex_id, geom_id) so that duplicates
+  are contiguous after sorting. Self-collision contacts (geom_id < 0)
+  are mapped to a sentinel value (ngeom).
+  """
+  i = wp.tid()
+  if i >= ncand[0]:
+    key_out[i] = 2147483647  # INT_MAX: sort unused entries to end
+    val_out[i] = i
+    return
+
+  worldid = cand_worldid[i]
+  flex_id = cand_flex[i][1]
+  geom_id = cand_geom[i][0]
+
+  # Map self-collision (geom_id < 0) to sentinel
+  g = geom_id
+  if g < 0:
+    g = ngeom
+
+  key_out[i] = worldid * (nflex + 1) * (ngeom + 2) + flex_id * (ngeom + 2) + g
+  val_out[i] = i
+
+
+@wp.kernel
+def _filter_flex_candidates_sorted(
+  # In:
+  ncand: wp.array[int],
+  epsilon: float,
+  sort_key: wp.array[int],
+  sort_val: wp.array[int],
+  cand_dist: wp.array[float],
+  cand_pos: wp.array[wp.vec3],
+  # Out:
+  cand_active_out: wp.array[int],
+):
+  """Filter duplicate candidates using sorted order.
+
+  After sorting by group key, candidates in the same group are contiguous.
+  Each candidate only compares with neighbors sharing the same key, reducing
+  complexity from O(n^2) to O(n * k) where k is the average group size.
+  """
+  si = wp.tid()
+  if si >= ncand[0]:
+    return
+
+  i = sort_val[si]
+  my_key = sort_key[si]
+  pos_i = cand_pos[i]
+  dist_i = cand_dist[i]
+  eps2 = epsilon * epsilon
+
+  keep = int(1)
+
+  # Compare with same-key neighbors (backward)
+  j = si - 1
+  while j >= 0:
+    if sort_key[j] != my_key:
+      break
+    oj = sort_val[j]
+    diff = pos_i - cand_pos[oj]
+    if wp.dot(diff, diff) < eps2:
+      dist_j = cand_dist[oj]
+      if dist_j < dist_i:
+        keep = 0
+      elif dist_j == dist_i and oj < i:
+        keep = 0
+    j -= 1
+
+  # Compare with same-key neighbors (forward)
+  j = si + 1
+  while j < ncand[0]:
+    if sort_key[j] != my_key:
+      break
+    oj = sort_val[j]
+    diff = pos_i - cand_pos[oj]
+    if wp.dot(diff, diff) < eps2:
+      dist_j = cand_dist[oj]
+      if dist_j < dist_i:
+        keep = 0
+      elif dist_j == dist_i and oj < i:
+        keep = 0
+    j += 1
+
+  cand_active_out[i] = keep
 
 
 @wp.kernel
@@ -2893,7 +3096,7 @@ def flex_collision(m: Model, d: Data, ctx):
 
   # EPA workspaces if mesh or self collisions are possible
   epa_iterations = m.opt.ccd_iterations
-  if m.nmesh > 0:
+  if m.nmesh > 0 or m.has_ellipsoid_geom:
     mesh_epa_vert = wp.empty(shape=(d.naccdmax, 10 + 2 * epa_iterations), dtype=wp.vec3)
     mesh_epa_vert_index = wp.empty(shape=(d.naccdmax, 10 + 2 * epa_iterations), dtype=int)
     mesh_epa_face = wp.empty(shape=(d.naccdmax, 6 + MJ_MAX_EPAFACES * epa_iterations), dtype=int)
@@ -2914,7 +3117,7 @@ def flex_collision(m: Model, d: Data, ctx):
   ncollision_dim3 = wp.zeros(1, dtype=int)
   ncollision_plane = wp.zeros(1, dtype=int)
 
-  if m.has_trilinear:
+  if m.has_3d_flex:
     wp.launch(
       _flex_narrowphase_tet_detect,
       dim=(d.nworld, m.nflexelem),
@@ -3052,125 +3255,6 @@ def flex_collision(m: Model, d: Data, ctx):
         m.flex_elemdataadr,
         m.flex_elem,
         m.flex_elemflexid,
-        ctx.collision_pair,
-        ctx.collision_worldid,
-        mesh_epa_vert,
-        mesh_epa_vert_index,
-        mesh_epa_face,
-        mesh_epa_pr,
-        mesh_epa_norm2,
-        mesh_epa_horizon,
-        mesh_nccd,
-        epa_iterations,
-        d.naconmax,
-      ],
-      outputs=[
-        d.overflow,
-        cand_dist,
-        cand_pos,
-        cand_nrm,
-        cand_geom,
-        cand_flex,
-        cand_elem,
-        cand_vert,
-        cand_worldid,
-        cand_type,
-        cand_geomcollisionid,
-        ncand,
-      ],
-    )
-
-  # 3D Flex Element Collisions
-  if m.flexshell_geom_pair_filtered.shape[0] > 0:
-    wp.launch(
-      _flex_broadphase_unified,
-      dim=(d.nworld, m.flexshell_geom_pair_filtered.shape[0]),
-      inputs=[
-        m.ngeom,
-        m.nflex,
-        m.opt.warn_overflow,
-        m.geom_type,
-        m.geom_size,
-        m.geom_aabb,
-        m.geom_rbound,
-        m.geom_margin,
-        m.flex_margin,
-        m.flex_dim,
-        m.flex_vertadr,
-        m.flex_radius,
-        d.geom_xpos,
-        d.geom_xmat,
-        d.flexvert_xpos,
-        d.naconmax,
-        d.flex_aabb_min,
-        d.flex_aabb_max,
-        m.flex_shelladr,
-        m.flex_shelldataadr,
-        m.flex_shell,
-        m.flexshell_geom_pair_filtered,
-        m.flex_shellflexid,
-      ],
-      outputs=[
-        ncollision_dim3,
-        d.overflow,
-        ctx.collision_pair,
-        ctx.collision_worldid,
-      ],
-    )
-
-    wp.launch(
-      _flex_narrowphase_unified,
-      dim=d.naconmax,
-      inputs=[
-        m.ngeom,
-        m.nflex,
-        m.opt.ccd_tolerance,
-        m.opt.warn_overflow,
-        m.geom_type,
-        m.geom_condim,
-        m.geom_dataid,
-        m.geom_priority,
-        m.geom_solmix,
-        m.geom_solref,
-        m.geom_solimp,
-        m.geom_size,
-        m.geom_friction,
-        m.geom_margin,
-        m.geom_gap,
-        m.flex_condim,
-        m.flex_priority,
-        m.flex_solmix,
-        m.flex_solref,
-        m.flex_solimp,
-        m.flex_friction,
-        m.flex_margin,
-        m.flex_gap,
-        m.flex_dim,
-        m.flex_vertadr,
-        m.flex_radius,
-        m.mesh_vertadr,
-        m.mesh_vertnum,
-        m.mesh_graphadr,
-        m.mesh_vert,
-        m.mesh_graph,
-        m.mesh_pos,
-        m.mesh_polynormal,
-        m.mesh_polyvertadr,
-        m.mesh_polyvert,
-        m.mesh_polymapadr,
-        m.mesh_polymapnum,
-        m.mesh_polymap,
-        d.geom_xpos,
-        d.geom_xmat,
-        d.flexvert_xpos,
-        d.nworld,
-        d.naconmax,
-        d.naccdmax,
-        ncollision_dim3,
-        m.flex_shelladr,
-        m.flex_shelldataadr,
-        m.flex_shell,
-        m.flex_shellflexid,
         ctx.collision_pair,
         ctx.collision_worldid,
         mesh_epa_vert,
@@ -3671,20 +3755,40 @@ def flex_collision(m: Model, d: Data, ctx):
         ],
       )
 
-  # Filter duplicate contacts (e.g. from shared vertices or edges)
-  cand_active = wp.empty(d.naconmax, dtype=int)
+  # Filter duplicate contacts using sort-based deduplication.
+  # Sort candidates by (worldid, flex_id, geom_id) so duplicates are contiguous,
+  # then compare only within each group. This is O(n log n) vs the naive O(n^2).
+  filter_key = wp.empty(d.naconmax * 2, dtype=int)
+  filter_val = wp.empty(d.naconmax * 2, dtype=int)
   wp.launch(
-    _filter_flex_candidates,
+    _compute_filter_key,
     dim=d.naconmax,
     inputs=[
-      d.naconmax,
+      m.ngeom,
+      m.nflex,
       ncand,
-      1e-3,  # epsilon
-      cand_dist,
-      cand_pos,
       cand_geom,
       cand_flex,
       cand_worldid,
+    ],
+    outputs=[
+      filter_key,
+      filter_val,
+    ],
+  )
+  wp.utils.radix_sort_pairs(filter_key, filter_val, d.naconmax)
+
+  cand_active = wp.empty(d.naconmax, dtype=int)
+  wp.launch(
+    _filter_flex_candidates_sorted,
+    dim=d.naconmax,
+    inputs=[
+      ncand,
+      1e-3,  # epsilon
+      filter_key,
+      filter_val,
+      cand_dist,
+      cand_pos,
     ],
     outputs=[
       cand_active,

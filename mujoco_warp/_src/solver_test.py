@@ -662,11 +662,16 @@ class SolverTest(parameterized.TestCase):
             if np.any(ctx.changed_efc_count.numpy() > 0):
               any_changes = True
           update_fn(m, d, ctx)
-          wp.launch(solver._solve_zero_search_dot, dim=(d.nworld), inputs=[ctx.done], outputs=[ctx.search_dot])
           wp.launch(
-            solver._solve_search_update,
+            solver._solve_zero_search_dot(False),
+            dim=(d.nworld),
+            inputs=[ctx.changed_efc_count, ctx.done],
+            outputs=[ctx.search_dot],
+          )
+          wp.launch(
+            solver._solve_search_update(False),
             dim=(d.nworld, m.nv),
-            inputs=[m.opt.solver, ctx.Mgrad, ctx.search, ctx.beta, ctx.done],
+            inputs=[m.opt.solver, ctx.changed_efc_count, ctx.Mgrad, ctx.search, ctx.beta, ctx.done],
             outputs=[ctx.search, ctx.search_dot],
           )
         return d.qacc.numpy().copy(), any_changes

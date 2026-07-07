@@ -1026,6 +1026,7 @@ class Model:
     body_treeid: id of body's tree; -1: static               (nbody,)
     body_geomnum: number of geoms                            (nbody,)
     body_geomadr: start addr of geoms; -1: no geoms          (nbody,)
+    body_simple: body simple type                            (nbody,)
     body_pos: position offset rel. to parent body            (*, nbody, 3)
     body_quat: orientation offset rel. to parent body        (*, nbody, 4)
     body_ipos: local position of center of mass              (*, nbody, 3)
@@ -1341,7 +1342,8 @@ class Model:
     has_fluid: True if wind, density, or viscosity are non-zero at put_model time
     has_sdf_geom: whether the model contains SDF geoms
     has_flex_selfcollide: whether any flex has self-collision enabled
-    has_trilinear: whether the model contains trilinear flexes
+    has_ellipsoid_geom: whether the model contains ellipsoid geoms
+    has_3d_flex: whether the model contains 3D flexes
     max_flex_dim: maximum flex dimension in the model
     block_dim: block dim options
     body_tree: list of body ids by tree level
@@ -1429,7 +1431,6 @@ class Model:
     M_mulm_col: sparse matmul column indices
     M_mulm_madr: sparse matmul matrix addresses
     flexelem_geom_pair_filtered: conaffinity-filtered element vs geom pairs (*, 2)
-    flexshell_geom_pair_filtered: conaffinity-filtered shell vs geom pairs  (*, 2)
     flexvert_geom_pair_filtered: conaffinity-filtered vertex vs geom pairs  (*, 2)
     flex_elemflexid: maps each element index directly to its flexid         (nflexelem,)
     flex_shellflexid: maps each shell index directly to its flexid          (nflexshelldata,)
@@ -1510,6 +1511,7 @@ class Model:
   body_treeid: array("nbody", int)
   body_geomnum: array("nbody", int)
   body_geomadr: array("nbody", int)
+  body_simple: array("nbody", int)
   body_pos: array("*", "nbody", wp.vec3)
   body_quat: array("*", "nbody", wp.quat)
   body_ipos: array("*", "nbody", wp.vec3)
@@ -1758,9 +1760,9 @@ class Model:
   actuator_ctrllimited: array("nu", bool)
   actuator_forcelimited: array("nu", bool)
   actuator_actlimited: array("nu", bool)
-  actuator_dynprm: array("*", "nu", vec10f)
-  actuator_gainprm: array("*", "nu", vec10f)
-  actuator_biasprm: array("*", "nu", vec10f)
+  actuator_dynprm: array("*", "nu", vec10)
+  actuator_gainprm: array("*", "nu", vec10)
+  actuator_biasprm: array("*", "nu", vec10)
   actuator_actearly: array("nu", bool)
   actuator_ctrlrange: array("*", "nu", wp.vec2)
   actuator_forcerange: array("*", "nu", wp.vec2)
@@ -1821,7 +1823,8 @@ class Model:
   has_fluid: bool
   has_sdf_geom: bool
   has_flex_selfcollide: bool
-  has_trilinear: bool
+  has_ellipsoid_geom: bool
+  has_3d_flex: bool
   max_flex_dim: int
   block_dim: BlockDim
   body_tree: tuple[wp.array[int], ...]
@@ -1903,7 +1906,6 @@ class Model:
   M_mulm_col: wp.array[int]  # column index to gather from
   M_mulm_madr: wp.array[int]  # matrix address to read
   flexelem_geom_pair_filtered: wp.array[wp.vec2i]
-  flexshell_geom_pair_filtered: wp.array[wp.vec2i]
   flexvert_geom_pair_filtered: wp.array[wp.vec2i]
   flex_elemflexid: array("nflexelem", int)
   flex_shellflexid: array("nflexshelldata", int)
@@ -2351,6 +2353,7 @@ class SolverContext:
   jv: wp.array2d[float]
   quad: wp.array2d[wp.vec3]
   alpha: wp.array[float]
+  grad_scale: wp.array[float]
   improvement: wp.array[float]
   prev_grad: wp.array2d[float]
   prev_Mgrad: wp.array2d[float]

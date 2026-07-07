@@ -15,12 +15,13 @@
 
 import numpy as np
 from absl.testing import absltest
+from absl.testing import parameterized
 
 import mujoco_warp as mjwarp
 from mujoco_warp import test_data
 
 
-class FlexCollisionTest(absltest.TestCase):
+class FlexCollisionTest(parameterized.TestCase):
   """Tests for flex element collision detection."""
 
   def test_sphere_cloth_contact_generated(self):
@@ -618,6 +619,91 @@ class FlexCollisionTest(absltest.TestCase):
 
     nacon = int(d.nacon.numpy()[0])
     self.assertGreater(nacon, 0, "Expected contacts to be generated")
+
+  def test_ellipsoid_cloth_contact_generated(self):
+    """Test that contacts are generated between ellipsoid and cloth."""
+    mjm, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option solver="CG" tolerance="1e-6" timestep=".001"/>
+        <size memory="10M"/>
+
+        <worldbody>
+          <light pos="0 0 3" dir="0 0 -1"/>
+
+          <!-- Ground plane -->
+          <geom type="plane" size="5 5 .1" pos="0 0 0"/>
+
+          <!-- Ellipsoid positioned just above the cloth -->
+          <body pos="0 0 0.12">
+            <freejoint/>
+            <geom type="ellipsoid" size=".1 .15 .08" mass="1"/>
+          </body>
+
+          <!-- Cloth (dim=2 flex) -->
+          <flexcomp type="grid" count="4 4 1" spacing=".2 .2 .1" pos="-.3 -.3 0"
+                    radius=".02" name="cloth" dim="2" mass=".5">
+            <contact condim="3" solref="0.01 1" solimp=".95 .99 .0001"
+                     selfcollide="none" conaffinity="1" contype="1"/>
+            <edge damping="0.01"/>
+          </flexcomp>
+        </worldbody>
+      </mujoco>
+      """
+    )
+
+    self.assertEqual(mjm.nflex, 1)
+    self.assertEqual(mjm.flex_dim[0], 2)
+
+    self.assertEqual(m.nflex, 1)
+    self.assertGreater(m.flex_elemnum.numpy()[0], 0)
+
+    mjwarp.kinematics(m, d)
+    mjwarp.collision(m, d)
+
+    nacon = int(d.nacon.numpy()[0])
+
+    # Ellipsoid is just above the cloth, so there should be contacts
+    self.assertGreater(nacon, 0, "Expected contacts between ellipsoid and cloth")
+
+  @parameterized.named_parameters(
+    (
+      "hfield",
+      """
+      <mujoco>
+        <asset>
+          <hfield name="terrain" nrow="2" ncol="2" size="1 1 0.1 0.1" elevation="0 0 0 0"/>
+        </asset>
+        <worldbody>
+          <geom type="hfield" hfield="terrain"/>
+          <flexcomp type="grid" count="2 2 1" spacing=".2 .2 .1" pos="0 0 0.1" name="cloth" dim="2"/>
+        </worldbody>
+      </mujoco>
+      """,
+    ),
+    (
+      "sdf",
+      """
+      <mujoco>
+        <asset>
+          <mesh name="cube"
+           vertex="1 1 1  1 1 -1  1 -1 1  1 -1 -1  -1 1 1  -1 1 -1  -1 -1 1  -1 -1 -1"/>
+        </asset>
+        <worldbody>
+          <body pos="0 0 1">
+            <freejoint/>
+            <geom type="sdf" mesh="cube"/>
+          </body>
+          <flexcomp type="grid" count="2 2 1" spacing=".2 .2 .1" pos="0 0 0.1" name="cloth" dim="2"/>
+        </worldbody>
+      </mujoco>
+      """,
+    ),
+  )
+  def test_unsupported_flex_collision_error(self, xml):
+    """Test that loading a model with unsupported geoms and Flex raises NotImplementedError."""
+    with self.assertRaises(NotImplementedError):
+      test_data.fixture(xml=xml)
 
 
 if __name__ == "__main__":

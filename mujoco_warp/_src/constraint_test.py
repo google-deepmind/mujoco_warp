@@ -386,6 +386,38 @@ class ConstraintTest(parameterized.TestCase):
 
     _assert_efc_eq(mjm, m, d, mjd, mjd.nefc, f"efc_flex_dim{m.flex_dim.numpy()[0]}", m.nv)
 
+  def test_flex_3d_simplex_collision(self):
+    """Test 3D simplex flex collision and constraint generation."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+    <mujoco>
+      <option solver="CG" tolerance="1e-6" timestep=".001"/>
+      <worldbody>
+        <!-- Sphere positioned to press into the soft body shifted -->
+        <body pos="-0.055 -0.075 0.1">
+          <freejoint/>
+          <geom type="sphere" size=".05" mass="1"/>
+        </body>
+        <!-- Soft body (dim=3 flex, simplex by default) -->
+        <flexcomp name="softbody" type="grid" count="2 2 2" spacing=".15 .15 .15" pos="-.075 -.075 0"
+                  radius=".01" dim="3" mass=".5">
+          <contact condim="3" selfcollide="none" solimp="0.9 0.95 0.1"/>
+          <elasticity young="1e4" poisson="0.2" damping="0.002"/>
+        </flexcomp>
+      </worldbody>
+    </mujoco>
+    """
+    )
+
+    mjw.kinematics(m, d)
+    mjw.collision(m, d)
+    mjw.make_constraint(m, d)
+
+    self.assertGreater(mjd.nefc, 0, "Expected active contacts")
+    self.assertEqual(d.nefc.numpy()[0], mjd.nefc, "nefc mismatch")
+
+    _assert_efc_eq(mjm, m, d, mjd, mjd.nefc, "efc_flex_3d_simplex", m.nv, tol=1e-3)
+
 
 if __name__ == "__main__":
   absltest.main()
