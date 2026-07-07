@@ -19,6 +19,7 @@ import dataclasses
 import numpy as np  # host-only: one-time cached capability checks
 import warp as wp
 
+from mujoco_warp._src import adjoint_util
 from mujoco_warp._src import collision_adjoint
 from mujoco_warp._src import math
 from mujoco_warp._src import smooth
@@ -27,9 +28,11 @@ from mujoco_warp._src import types
 from mujoco_warp._src import util_misc
 from mujoco_warp._src.types import Data
 from mujoco_warp._src.types import Model
-from mujoco_warp._src.types import vec5
 from mujoco_warp._src.types import vec10
 from mujoco_warp._src.types import vec10f
+
+# Adjoint module: backward stays ON so AD leaves differentiate through cross-module @wp.funcs.
+wp.set_module_options({"enable_backward": True})
 
 _SV = wp.spatial_vector
 _FREE = int(types.JointType.FREE.value)
@@ -43,50 +46,9 @@ _BIAS_AFFINE = int(types.BiasType.AFFINE.value)
 
 
 # ----------------------------------------------------------------------------
-# Shared grad-seed / IFT-minus accumulate kernels and the non-grad Data clone. Defined here
-# (the lowest module of the adjoint stack that uses them) so adjoint.py can import them
-# without an import cycle.
+# Non-grad Data clone shared by the adjoint stack (elementwise grad-seed / IFT-minus accumulate
+# kernels now live in adjoint_util.py).
 # ----------------------------------------------------------------------------
-@wp.kernel
-def _neg_cols(src: wp.array2d[float], dst_out: wp.array2d[float]):
-  """Compute dst_out[w,i] = -src[w,i] (seed adj_r = -lam for the smooth-param residual adjoint)."""
-  w, i = wp.tid()
-  dst_out[w, i] = -src[w, i]
-
-
-@wp.kernel
-def _accum_neg(res_in: wp.array2d[float], grad_out: wp.array2d[float]):
-  """Compute grad_out -= res_in per-(world,dof) FLOAT param (e.g. dof_frictionloss); IFT minus."""
-  w, i = wp.tid()
-  grad_out[w, i] -= res_in[w, i]
-
-
-@wp.kernel
-def _accum_neg_vec2(res_in: wp.array2d[wp.vec2], grad_out: wp.array2d[wp.vec2]):
-  """Compute grad_out -= res_in per-constraint wp.vec2 model param (e.g. *_solref); IFT minus."""
-  w, i = wp.tid()
-  grad_out[w, i] -= res_in[w, i]
-
-
-@wp.kernel
-def _accum_neg_vec5(res_in: wp.array2d[vec5], grad_out: wp.array2d[vec5]):
-  """Compute grad_out -= res_in per-constraint vec5 model param (e.g. *_solimp); IFT minus."""
-  w, i = wp.tid()
-  grad_out[w, i] -= res_in[w, i]
-
-
-@wp.kernel
-def _accum_neg_vec3(res_in: wp.array2d[wp.vec3], grad_out: wp.array2d[wp.vec3]):
-  """Compute grad_out -= res_in per-body vec3 param (e.g. body_inertia, body_ipos); IFT minus."""
-  w, i = wp.tid()
-  grad_out[w, i] -= res_in[w, i]
-
-
-@wp.kernel
-def _accum_neg_quat(res_in: wp.array2d[wp.quat], grad_out: wp.array2d[wp.quat]):
-  """Compute grad_out -= res_in per-body wp.quat model param (body_iquat); IFT minus."""
-  w, i = wp.tid()
-  grad_out[w, i] -= res_in[w, i]
 
 
 def _clone_for_fd(d: Data) -> Data:
@@ -331,7 +293,7 @@ def mass_matrix_qpos_vjp(m: Model, d: Data, y: wp.array2d, w: wp.array2d):
 # lands in raw-coordinate space (no manual tangent lift); the viscous -damper*qvel term has zero
 # qpos derivative and is omitted. An additive res_qpos term (NOT part of the kinematic reverse).
 # ----------------------------------------------------------------------------
-@wp.kernel(module="unique", enable_backward=True)
+@wp.kernel(enable_backward=True)
 def _spring_qfrc_recompute(
   # Model:
   opt_disableflags: int,
@@ -408,7 +370,7 @@ def spring_qpos_vjp(m: Model, d: Data, lam: wp.array2d):
     d.qpos,
   ]
   wp.launch(_spring_qfrc_recompute, dim=(nworld, m.njnt), inputs=sp_in, outputs=[qfrc_spring])
-  wp.launch(_neg_cols, dim=(nworld, nv), inputs=[lam], outputs=[qfrc_spring.grad])  # seed -lam
+  wp.launch(adjoint_util._neg_cols, dim=(nworld, nv), inputs=[lam], outputs=[qfrc_spring.grad])  # seed -lam
   wp.launch(
     _spring_qfrc_recompute,
     dim=(nworld, m.njnt),
@@ -524,7 +486,7 @@ def assert_smooth_supported(m: Model):
 # forward leaf, then route the adjoints through the SAME kinematic reverse the rne bias uses.
 # Seed -lam masked by (gravity_enabled & ~actgravcomp); the actuator-bucket case is asserted off.
 # ----------------------------------------------------------------------------
-@wp.kernel(module="unique", enable_backward=True)
+@wp.kernel(enable_backward=True)
 def _gravity_force_recompute(
   # Model:
   opt_gravity: wp.array[wp.vec3],
@@ -1362,14 +1324,14 @@ def inertia_param_vjp(m: Model, d: Data, lam: wp.array2d):
       adjoint=True,
     )
     if adj_ipos is not None:
-      wp.launch(_accum_neg_vec3, dim=adj_ipos.shape, inputs=[adj_ipos], outputs=[m.body_ipos.grad])
+      wp.launch(adjoint_util._accum_neg_vec3, dim=adj_ipos.shape, inputs=[adj_ipos], outputs=[m.body_ipos.grad])
     if adj_iquat is not None:
-      wp.launch(_accum_neg_quat, dim=adj_iquat.shape, inputs=[adj_iquat], outputs=[m.body_iquat.grad])
+      wp.launch(adjoint_util._accum_neg_quat, dim=adj_iquat.shape, inputs=[adj_iquat], outputs=[m.body_iquat.grad])
   # IFT minus into the shared (trajectory-accumulated) model param grads.
   if adj_mass is not None:
-    wp.launch(_accum_neg, dim=adj_mass.shape, inputs=[adj_mass], outputs=[m.body_mass.grad])
+    wp.launch(adjoint_util._accum_neg, dim=adj_mass.shape, inputs=[adj_mass], outputs=[m.body_mass.grad])
   if adj_inertia is not None:
-    wp.launch(_accum_neg_vec3, dim=adj_inertia.shape, inputs=[adj_inertia], outputs=[m.body_inertia.grad])
+    wp.launch(adjoint_util._accum_neg_vec3, dim=adj_inertia.shape, inputs=[adj_inertia], outputs=[m.body_inertia.grad])
 
 
 @wp.kernel(enable_backward=False)

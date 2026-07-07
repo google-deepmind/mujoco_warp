@@ -25,6 +25,9 @@ from mujoco_warp._src import types
 from mujoco_warp._src.types import vec5
 from mujoco_warp._src.warp_util import cache_kernel
 
+# Adjoint module: backward stays ON so AD leaves differentiate through cross-module @wp.funcs.
+wp.set_module_options({"enable_backward": True})
+
 _SATISFIED = int(types.ConstraintState.SATISFIED.value)
 _LINEARNEG = int(types.ConstraintState.LINEARNEG.value)  # saturated friction, force = +frictionloss
 _LINEARPOS = int(types.ConstraintState.LINEARPOS.value)  # saturated friction, force = -frictionloss
@@ -104,7 +107,7 @@ def _constraint_gather(is_sparse: bool):
   return kernel
 
 
-@wp.kernel(module="unique", enable_backward=True)
+@wp.kernel(enable_backward=True)
 def _constraint_row_phi(
   # Model:
   opt_timestep: wp.array[float],
@@ -1022,12 +1025,6 @@ def _contact_phi(cone_type: int):
     phi_out[cid] = phi
 
   return kernel
-
-
-@wp.kernel
-def _fill_ones(out: wp.array[float]):
-  """Seed adj_phi = +1 per contact (phi = lam^T r_c already folds in the IFT seed lam)."""
-  out[wp.tid()] = 1.0
 
 
 @wp.kernel(enable_backward=False)

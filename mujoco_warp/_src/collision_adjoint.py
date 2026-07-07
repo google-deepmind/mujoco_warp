@@ -26,6 +26,9 @@ from mujoco_warp._src.types import MJ_MINVAL
 from mujoco_warp._src.types import Data
 from mujoco_warp._src.types import Model
 
+# Adjoint module: backward stays ON so AD leaves differentiate through cross-module @wp.funcs.
+wp.set_module_options({"enable_backward": True})
+
 _FREE = int(types.JointType.FREE.value)
 _BALL = int(types.JointType.BALL.value)
 _PLANE = int(types.GeomType.PLANE.value)
@@ -730,7 +733,7 @@ def contact_qpos_vjp(
   )
   res_geom_xpos = wp.zeros_like(d_out.geom_xpos)
   res_geom_xmat = wp.zeros_like(d_out.geom_xmat)
-  # (input, input-adjoint) pairs; only the geom poses carry adjoints (Warp auto-diffs the narrowphase).
+  # (input, input-adjoint) pairs; only geom poses carry adjoints (Warp auto-diffs narrowphase).
   np_pairs = [
     (m.geom_type, None),
     (m.geom_size, None),
