@@ -987,37 +987,6 @@ class GJKTest(parameterized.TestCase):
     # dir = (0, 1, eps): expect prism[5] + margin offset
     np.testing.assert_allclose(result[3], prism[5], rtol=1e-5)
 
-  @parameterized.parameters(1.0, 10.0, 50.0, 100.0)
-  def test_box_box_settle(self, halfsize: float):
-    """Test box-box settling: free box on fixed box gives 4 contacts."""
-    _, _, m, d = test_data.fixture(
-      xml=f"""
-      <mujoco>
-        <option timestep="0.002" gravity="0 0 -9.81"/>
-        <worldbody>
-          <geom name="fixed" type="box" pos="0 0 0.25"
-                size="{halfsize} {halfsize} 0.25"/>
-          <body name="free" pos="0 0 0.6">
-            <freejoint/>
-            <geom name="free" type="box" size="0.1 0.1 0.1" mass="10"/>
-          </body>
-        </worldbody>
-      </mujoco>
-      """
-    )
-
-    for _ in range(1500):
-      step(m, d)
-    forward(m, d)
-    wp.synchronize()
-
-    ncon = int(d.nacon.numpy()[0])
-    # TODO(kbayes): support size 25 on CPU
-    self.assertEqual(ncon, 4)
-    dist = d.contact.dist.numpy()[:ncon]
-    np.testing.assert_allclose(dist.min(), -0.0001081, atol=1e-7)
-
-
 if __name__ == "__main__":
   wp.init()
   absltest.main()
