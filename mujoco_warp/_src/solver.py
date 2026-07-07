@@ -3559,7 +3559,7 @@ def _solver_iteration(
   # exactly quadratic over the step, so grad/Mgrad/search only changed by a
   # scalar along the same ray. Skip their qfrc/grad/solve/search updates and
   # track the scalar in ctx.grad_scale.
-  stable_fast = _stable_fast(m, compact)
+  stable_fast = False
 
   if incremental:
     # Must complete before _update_constraint_efc which atomically increments.
