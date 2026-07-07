@@ -613,13 +613,12 @@ def implicit(m: Model, d: Data):
 
 
 @event_scope
-def fwd_position(m: Model, d: Data, factorize: bool = True):
-  """Position-dependent computations.
+def fwd_kinematics(m: Model, d: Data):
+  """Kinematics-dependent computations.
 
   Args:
     m: The model containing kinematic and dynamic information.
     d: The data object containing the current state and output arrays.
-    factorize: Flag to factorize inertia matrix.
   """
   smooth.kinematics(m, d)
   smooth.com_pos(m, d)
@@ -628,10 +627,23 @@ def fwd_position(m: Model, d: Data, factorize: bool = True):
   smooth.tendon(m, d)
 
   sleep_enabled = bool(m.opt.enableflags & EnableBit.SLEEP) and not bool(m.opt.disableflags & DisableBit.ISLAND)
-
   if sleep_enabled and m.ntendon > 0:
     sleep.wake_tendon(m, d)
     sleep.update_sleep_trees(m, d)
+
+
+@event_scope
+def fwd_position(m: Model, d: Data, factorize: bool = True):
+  """Position-dependent computations.
+
+  Args:
+    m: The model containing kinematic and dynamic information.
+    d: The data object containing the current state and output arrays.
+    factorize: Flag to factorize inertia matrix.
+  """
+  fwd_kinematics(m, d)
+
+  sleep_enabled = bool(m.opt.enableflags & EnableBit.SLEEP) and not bool(m.opt.disableflags & DisableBit.ISLAND)
 
   smooth.crb(m, d)
   smooth.tendon_armature(m, d)
