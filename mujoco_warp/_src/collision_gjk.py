@@ -594,6 +594,7 @@ def _S1D(s1: wp.vec3, s2: wp.vec3) -> wp.vec2:
 
 @wp.func
 def _gjk_support(
+  # In:
   geom1: Geom,
   geom2: Geom,
   geomtype1: int,
