@@ -21,8 +21,6 @@ from absl.testing import parameterized
 from mujoco_warp import Data
 from mujoco_warp import GeomType
 from mujoco_warp import Model
-from mujoco_warp import forward
-from mujoco_warp import step
 from mujoco_warp import test_data
 from mujoco_warp._src.collision_core import Geom
 from mujoco_warp._src.collision_gjk import ccd
@@ -986,6 +984,7 @@ class GJKTest(parameterized.TestCase):
 
     # dir = (0, 1, eps): expect prism[5] + margin offset
     np.testing.assert_allclose(result[3], prism[5], rtol=1e-5)
+
 
 if __name__ == "__main__":
   wp.init()
