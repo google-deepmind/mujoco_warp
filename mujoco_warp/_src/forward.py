@@ -614,7 +614,7 @@ def implicit(m: Model, d: Data):
 
 @event_scope
 def fwd_kinematics(m: Model, d: Data):
-  """Kinematic position-dependent computations.
+  """Kinematics-dependent computations.
 
   Args:
     m: The model containing kinematic and dynamic information.
