@@ -245,8 +245,8 @@ def _capsule_box_segpos(
 @wp.func
 def _capsule_box_t0(
   # In:
-  pos_bf: wp.vec3,  # capsule center in the box frame [grad]
-  halfaxis_bf: wp.vec3,  # capsule half-axis in the box frame [grad]
+  pos_bf: wp.vec3,  # capsule center in the box frame
+  halfaxis_bf: wp.vec3,  # capsule half-axis in the box frame
   half_len: float,
   size_b: wp.vec3,
   cltype: int,  # frozen discrete feature state (from _capsule_box_segpos)
@@ -333,8 +333,8 @@ def _narrowphase_recompute(
   geom_type: wp.array[int],
   geom_size: wp.array2d[wp.vec3],
   # Data in:
-  geom_xpos_in: wp.array2d[wp.vec3],  # [grad]
-  geom_xmat_in: wp.array2d[wp.mat33],  # [grad]
+  geom_xpos_in: wp.array2d[wp.vec3],
+  geom_xmat_in: wp.array2d[wp.mat33],
   contact_geom_in: wp.array[wp.vec2i],
   contact_worldid_in: wp.array[int],
   contact_geomcollisionid_in: wp.array[int],

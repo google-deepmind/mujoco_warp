@@ -304,7 +304,7 @@ def _spring_qfrc_recompute(
   jnt_stiffness: wp.array2d[float],
   jnt_stiffnesspoly: wp.array2d[wp.vec2],
   # Data in:
-  qpos_in: wp.array2d[float],  # [grad: dqpos] linearization point; adjoint routed to res_qpos
+  qpos_in: wp.array2d[float],
   # Data out:
   qfrc_spring_out: wp.array2d[float],
 ):
@@ -497,9 +497,9 @@ def _gravity_force_recompute(
   dof_bodyid: wp.array[int],
   body_isdofancestor: wp.array2d[int],
   # Data in:
-  xipos_in: wp.array2d[wp.vec3],  # [grad] body COM (the jac_dof point)
-  subtree_com_in: wp.array2d[wp.vec3],  # [grad]
-  cdof_in: wp.array2d[wp.spatial_vector],  # [grad]
+  xipos_in: wp.array2d[wp.vec3],
+  subtree_com_in: wp.array2d[wp.vec3],
+  cdof_in: wp.array2d[wp.spatial_vector],
   # Data out:
   qfrc_gravcomp_out: wp.array2d[float],
 ):
@@ -899,7 +899,7 @@ def _comvel_vjp_local(
   # Data in:
   qvel_in: wp.array2d[float],
   cdof_in: wp.array2d[wp.spatial_vector],
-  cvel_in: wp.array2d[wp.spatial_vector],  # stored forward cvel_in (linearization point)
+  cvel_in: wp.array2d[wp.spatial_vector],
   # In:
   adj_cdof_dot: wp.array2d[wp.spatial_vector],  # G seed
   # Out:
@@ -1411,8 +1411,8 @@ def _actuator_qpos_vjp(
   moment_rownnz_in: wp.array2d[int],
   moment_rowadr_in: wp.array2d[int],
   moment_colind_in: wp.array2d[int],
-  actuator_moment_in: wp.array2d[float],  # frozen joint-transmission moment (dlength/dqvel; CONST in qpos)
-  actuator_force_in: wp.array2d[float],  # frozen (clamped) force -- the forcerange-saturation gate
+  actuator_moment_in: wp.array2d[float],
+  actuator_force_in: wp.array2d[float],
   # In:
   lam: wp.array2d[float],
   dsbl_clampctrl: int,

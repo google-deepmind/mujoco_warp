@@ -123,15 +123,15 @@ def _constraint_row_phi(
   nefc_in: wp.array[int],
   efc_type_in: wp.array2d[int],
   efc_id_in: wp.array2d[int],
-  efc_pos_in: wp.array2d[float],  # [grad] penetration source (P = efc.pos - margin) -> Pbar (res_efc_pos)
-  efc_margin_in: wp.array2d[float],  # frozen
-  efc_D_in: wp.array2d[float],  # frozen efc.D_ref (D base + frozen-D fallback)
-  efc_vel_in: wp.array2d[float],  # [grad] J*qvel -> Vbar (res_efc_vel)
-  efc_aref_in: wp.array2d[float],  # frozen (= -g_base; cancels g0 so jaref base == ctx.Jaref)
-  efc_force_in: wp.array2d[float],  # frozen efc.force_ref (force VALUE anchor)
-  efc_state_in: wp.array2d[int],  # frozen active set (NEVER re-derived from a perturbed jaref)
+  efc_pos_in: wp.array2d[float],
+  efc_margin_in: wp.array2d[float],
+  efc_D_in: wp.array2d[float],
+  efc_vel_in: wp.array2d[float],
+  efc_aref_in: wp.array2d[float],
+  efc_force_in: wp.array2d[float],
+  efc_state_in: wp.array2d[int],
   # In:
-  Z_in: wp.array2d[float],  # [grad] = J*lam (gather) -> Zbar (= -f; the dJ/dq topology seed, unused for G1)
+  Z_in: wp.array2d[float],  # = J*lam (gather) -> Zbar (= -f; the dJ/dq topology seed, unused for G1)
   invw_in: wp.array2d[float],  # frozen TRUE topology invweight (0 -> frozen-D fallback)
   ctx_Jaref_in: wp.array2d[float],  # frozen J*qacc - aref (jaref VALUE anchor)
   # Out:
@@ -529,13 +529,13 @@ def _residual_contact(cone_type: int):
     geom_bodyid: wp.array[int],
     body_isdofancestor: wp.array2d[int],
     # Data in:
-    qpos_in: wp.array2d[float],  # unused in-kernel (d/dqpos is the narrowphase VJP); kept for the res_qpos slot
-    qvel_in: wp.array2d[float],  # [grad]
-    qacc_in: wp.array2d[float],  # frozen
-    subtree_com_in: wp.array2d[wp.vec3],  # frozen per-body com (jac_dof moment-arm reference)
-    cdof_in: wp.array2d[wp.spatial_vector],  # frozen motion-dof axes (the contact Jacobian basis)
-    contact_pos_in: wp.array[wp.vec3],  # frozen contact point
-    contact_frame_in: wp.array[wp.mat33],  # per-contact frame; rows = normal, tangent1, tangent2
+    qpos_in: wp.array2d[float],  # unused (kept for the res_qpos slot; d/dqpos is the narrowphase VJP)
+    qvel_in: wp.array2d[float],
+    qacc_in: wp.array2d[float],
+    subtree_com_in: wp.array2d[wp.vec3],
+    cdof_in: wp.array2d[wp.spatial_vector],
+    contact_pos_in: wp.array[wp.vec3],
+    contact_frame_in: wp.array[wp.mat33],
     contact_friction_in: wp.array[vec5],
     contact_solref_in: wp.array[wp.vec2],
     contact_solreffriction_in: wp.array[wp.vec2],
@@ -544,10 +544,10 @@ def _residual_contact(cone_type: int):
     contact_geom_in: wp.array[wp.vec2i],
     contact_efc_address_in: wp.array2d[int],
     contact_worldid_in: wp.array[int],
-    efc_pos_in: wp.array2d[float],  # frozen row position (normal: contact dist)
-    efc_margin_in: wp.array2d[float],  # frozen include margin
-    efc_D_in: wp.array2d[float],  # frozen
-    efc_state_in: wp.array2d[int],  # frozen active set
+    efc_pos_in: wp.array2d[float],
+    efc_margin_in: wp.array2d[float],
+    efc_D_in: wp.array2d[float],
+    efc_state_in: wp.array2d[int],
     nacon_in: wp.array[int],
     # In:
     efc_pos_ref_in: wp.array2d[float],  # FROZEN efc_pos (no adjoint): the D-recovery reference (pos0/imp0)
@@ -923,7 +923,7 @@ def _contact_phi(cone_type: int):
     opt_disableflags: int,
     opt_impratio_invsqrt: wp.array[float],
     # Data in:
-    contact_frame_in: wp.array[wp.mat33],  # [grad] -> res_contact_frame
+    contact_frame_in: wp.array[wp.mat33],
     contact_friction_in: wp.array[vec5],
     contact_solref_in: wp.array[wp.vec2],
     contact_solreffriction_in: wp.array[wp.vec2],
@@ -931,15 +931,15 @@ def _contact_phi(cone_type: int):
     contact_dim_in: wp.array[int],
     contact_efc_address_in: wp.array2d[int],
     contact_worldid_in: wp.array[int],
-    efc_pos_in: wp.array2d[float],  # [grad] -> res_efc_pos (penetration)
+    efc_pos_in: wp.array2d[float],
     efc_margin_in: wp.array2d[float],
     efc_D_in: wp.array2d[float],
     efc_state_in: wp.array2d[int],
     nacon_in: wp.array[int],
     # In:
-    V_in: wp.array[wp.spatial_vector],  # [grad]
-    A_in: wp.array[wp.spatial_vector],  # [grad] (qacc frozen, but A feeds the qacc->cdof scatter path)
-    Z_in: wp.array[wp.spatial_vector],  # [grad] (= Jlam; Zbar = -F carries the direct -J^Tf projection)
+    V_in: wp.array[wp.spatial_vector],
+    A_in: wp.array[wp.spatial_vector],  # qacc frozen, but A feeds the qacc->cdof scatter path
+    Z_in: wp.array[wp.spatial_vector],  # = Jlam; Zbar = -F carries the direct -J^Tf projection
     efc_pos_ref_in: wp.array2d[float],  # FROZEN efc_pos (no adjoint): the D-recovery reference (pos0/imp0)
     # Out:
     phi_out: wp.array[float],
