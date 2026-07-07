@@ -684,34 +684,57 @@ class SolverTest(parameterized.TestCase):
 
     self.assertTrue(total_any_changes, "no state changes detected across any keyframe")
 
-  @parameterized.parameters(SolverType.CG, SolverType.NEWTON)
-  def test_qfrc_constraint_early_convergence(self, solver_):
-    """Sparse qfrc_constraint must survive for worlds that converge before the batch."""
-    mjm, mjd, m, _ = test_data.fixture(
-      "humanoid/humanoid.xml",
-      keyframe=0,
-      overrides={"opt.jacobian": mujoco.mjtJacobian.mjJAC_SPARSE, "opt.solver": solver_},
-    )
+  def test_qfrc_constraint_early_convergence(self):
+    """Sparse qfrc_constraint must survive for a world that converges before the batch.
+
+    The sparse solve clears qfrc_constraint each iteration and only rewrites
+    unconverged worlds; a world that converges early must keep its value rather
+    than be zeroed by a later iteration's clear. Uses CG, which has no post-solve
+    recovery. World 0 rests on the floor (converges immediately, contacts active);
+    world 1 is kicked so it takes several more iterations.
+    """
+    xml = """
+    <mujoco>
+      <option jacobian="sparse" solver="CG" iterations="20" ls_iterations="10"/>
+      <worldbody>
+        <geom name="floor" type="plane" size="10 10 .1"/>
+        <body pos="0 0 .05"><freejoint/><geom type="sphere" size=".05"/></body>
+        <body pos=".3 0 .05"><freejoint/><geom type="sphere" size=".05"/></body>
+        <body pos=".6 0 .05"><freejoint/><geom type="sphere" size=".05"/></body>
+        <body pos=".9 0 .05"><freejoint/><geom type="sphere" size=".05"/></body>
+      </worldbody>
+    </mujoco>
+    """
+    mjm = mujoco.MjModel.from_xml_string(xml)
+    mjd = mujoco.MjData(mjm)
+    for _ in range(200):  # settle onto the floor: active contacts, warmstart near solution
+      mujoco.mj_step(mjm, mjd)
+    mujoco.mj_forward(mjm, mjd)
+    mjd.qacc_warmstart = mjd.qacc
+
+    m = mjw.put_model(mjm)
     self.assertTrue(m.is_sparse)
+    d = mjw.put_data(mjm, mjd, nworld=2)
 
-    d = mjw.put_data(mjm, mjd, nworld=32)
+    qvel = d.qvel.numpy()
+    qvel[1] += 5.0  # kick world 1 only
+    d.qvel = wp.array(qvel, dtype=float)
 
-    # Perturb each world so they converge at different iteration counts; identical
-    # worlds would converge in lockstep and hide the early-convergence zeroing.
-    rng = np.random.default_rng(0)
-    d.qpos = wp.array(d.qpos.numpy() + rng.uniform(-0.05, 0.05, d.qpos.shape), dtype=float)
-    d.qvel = wp.array(d.qvel.numpy() + rng.uniform(-0.5, 0.5, d.qvel.shape), dtype=float)
-
-    for _ in range(10):
-      mjw.step(m, d)
+    mjw.step(m, d)
 
     nefc = d.nefc.numpy()
     efc_force = d.efc.force.numpy()
-    force = np.array([np.abs(efc_force[w, : nefc[w]]).sum() for w in range(d.nworld)])
-    active = force > 0
-    has_qfrc = np.abs(d.qfrc_constraint.numpy()).sum(axis=1) > 0
-    self.assertTrue(active.any(), "no worlds developed constraint forces")
-    np.testing.assert_array_equal(has_qfrc[active], np.ones(active.sum(), dtype=bool))
+    niter = d.solver_niter.numpy()
+    qfrc = np.abs(d.qfrc_constraint.numpy()).sum(axis=1)
+
+    # Precondition: both worlds have active constraint forces and converge at
+    # different iteration counts (world 0 early), the setup that triggers the bug.
+    for w in range(2):
+      self.assertGreater(np.abs(efc_force[w, : nefc[w]]).sum(), 0.0, f"world {w} has no constraint force")
+    self.assertLess(niter[0], niter[1], "worlds did not converge at staggered iterations")
+
+    self.assertGreater(qfrc[0], 0.0, "early-converged world was zeroed")
+    self.assertGreater(qfrc[1], 0.0)
 
 
 # Basic weld constraint model.
