@@ -3012,8 +3012,8 @@ def _launch_gather(m, d, lam):
   wp.launch(
     _constraint_adjoint._constraint_gather(m.is_sparse),
     dim=(nworld, njmax),
-    inputs=[m.jnt_dofadr, m.dof_invweight0, lam, d.efc.J_rownnz, d.efc.J_rowadr, d.efc.J_colind,
-            d.efc.J, d.efc.state, d.efc.type, d.efc.id, d.nefc, nv],
+    inputs=[nv, m.jnt_dofadr, m.dof_invweight0, d.nefc, d.efc.type, d.efc.id, d.efc.J_rownnz,
+            d.efc.J_rowadr, d.efc.J_colind, d.efc.J, d.efc.state, lam],
     outputs=[Z, invw],
   )
   return Z, invw
@@ -3027,7 +3027,7 @@ def _launch_scatter(m, d, adjP, adjV):
   wp.launch(
     _constraint_adjoint._constraint_scatter(m.is_sparse),
     dim=(nworld, d.efc.type.shape[1]),
-    inputs=[d.efc.J_rownnz, d.efc.J_rowadr, d.efc.J_colind, d.efc.J, d.efc.state, d.efc.type, d.nefc, nv,
+    inputs=[nv, d.nefc, d.efc.type, d.efc.J_rownnz, d.efc.J_rowadr, d.efc.J_colind, d.efc.J, d.efc.state,
             adjP, adjV],
     outputs=[res_qvel, res_dof],
   )
@@ -3250,9 +3250,9 @@ def _contraction_value(m, d1, ctx_Jaref, lam):
   wp.launch(
     _constraint_adjoint._constraint_row_phi,
     dim=(nworld, njmax),
-    inputs=[d1.efc.pos, d1.efc.vel, Z, invw, d1.efc.margin, d1.efc.aref, d1.efc.D, d1.efc.force, ctx_Jaref,
-            d1.efc.state, d1.efc.type, d1.efc.id, m.dof_solref, m.dof_solimp, m.dof_frictionloss, m.eq_solref,
-            m.eq_solimp, m.jnt_solref, m.jnt_solimp, d1.nefc, m.opt.timestep, m.opt.disableflags],
+    inputs=[m.opt.timestep, m.opt.disableflags, m.jnt_solref, m.jnt_solimp, m.dof_solref, m.dof_solimp,
+            m.dof_frictionloss, m.eq_solref, m.eq_solimp, d1.nefc, d1.efc.type, d1.efc.id, d1.efc.pos,
+            d1.efc.margin, d1.efc.D, d1.efc.vel, d1.efc.aref, d1.efc.force, d1.efc.state, Z, invw, ctx_Jaref],
     outputs=[phi],
   )
   return float(phi.numpy()[0].sum())

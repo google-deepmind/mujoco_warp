@@ -51,20 +51,21 @@ def _constraint_gather(is_sparse: bool):
   @wp.kernel(module="unique", enable_backward=False)
   def kernel(
     # Model:
+    nv: int,
     jnt_dofadr: wp.array[int],
     dof_invweight0: wp.array2d[float],
-    # Data in (frozen):
-    lam_in: wp.array2d[float],
+    # Data in:
+    nefc_in: wp.array[int],
+    efc_type_in: wp.array2d[int],
+    efc_id_in: wp.array2d[int],
     efc_J_rownnz_in: wp.array2d[int],
     efc_J_rowadr_in: wp.array2d[int],
     efc_J_colind_in: wp.array3d[int],
     efc_J_in: wp.array3d[float],
     efc_state_in: wp.array2d[int],
-    efc_type_in: wp.array2d[int],
-    efc_id_in: wp.array2d[int],
-    nefc_in: wp.array[int],
-    nv: int,
-    # Out (per row):
+    # In:
+    lam_in: wp.array2d[float],
+    # Out:
     Z_out: wp.array2d[float],
     invw_out: wp.array2d[float],
   ):
@@ -105,28 +106,32 @@ def _constraint_gather(is_sparse: bool):
 
 @wp.kernel(module="unique", enable_backward=True)
 def _constraint_row_phi(
-  efc_pos_in: wp.array2d[float],  # [grad] penetration source (P = efc.pos - margin) -> Pbar (res_efc_pos)
-  efc_vel_in: wp.array2d[float],  # [grad] J*qvel -> Vbar (res_efc_vel)
-  Z_in: wp.array2d[float],  # [grad] = J*lam (gather) -> Zbar (= -f; the dJ/dq topology seed, unused for G1)
-  invw_in: wp.array2d[float],  # frozen TRUE topology invweight (0 -> frozen-D fallback)
-  efc_margin_in: wp.array2d[float],  # frozen
-  efc_aref_in: wp.array2d[float],  # frozen (= -g_base; cancels g0 so jaref base == ctx.Jaref)
-  efc_D_in: wp.array2d[float],  # frozen efc.D_ref (D base + frozen-D fallback)
-  efc_force_in: wp.array2d[float],  # frozen efc.force_ref (force VALUE anchor)
-  ctx_Jaref_in: wp.array2d[float],  # frozen J*qacc - aref (jaref VALUE anchor)
-  efc_state_in: wp.array2d[int],  # frozen active set (NEVER re-derived from a perturbed jaref)
-  efc_type_in: wp.array2d[int],
-  efc_id_in: wp.array2d[int],
-  dof_solref_in: wp.array2d[wp.vec2],
-  dof_solimp_in: wp.array2d[vec5],
-  dof_frictionloss_in: wp.array2d[float],
-  eq_solref_in: wp.array2d[wp.vec2],
-  eq_solimp_in: wp.array2d[vec5],
-  jnt_solref_in: wp.array2d[wp.vec2],
-  jnt_solimp_in: wp.array2d[vec5],
-  nefc_in: wp.array[int],
+  # Model:
   opt_timestep: wp.array[float],
   opt_disableflags: int,
+  jnt_solref: wp.array2d[wp.vec2],
+  jnt_solimp: wp.array2d[vec5],
+  dof_solref: wp.array2d[wp.vec2],
+  dof_solimp: wp.array2d[vec5],
+  dof_frictionloss: wp.array2d[float],
+  eq_solref: wp.array2d[wp.vec2],
+  eq_solimp: wp.array2d[vec5],
+  # Data in:
+  nefc_in: wp.array[int],
+  efc_type_in: wp.array2d[int],
+  efc_id_in: wp.array2d[int],
+  efc_pos_in: wp.array2d[float],  # [grad] penetration source (P = efc.pos - margin) -> Pbar (res_efc_pos)
+  efc_margin_in: wp.array2d[float],  # frozen
+  efc_D_in: wp.array2d[float],  # frozen efc.D_ref (D base + frozen-D fallback)
+  efc_vel_in: wp.array2d[float],  # [grad] J*qvel -> Vbar (res_efc_vel)
+  efc_aref_in: wp.array2d[float],  # frozen (= -g_base; cancels g0 so jaref base == ctx.Jaref)
+  efc_force_in: wp.array2d[float],  # frozen efc.force_ref (force VALUE anchor)
+  efc_state_in: wp.array2d[int],  # frozen active set (NEVER re-derived from a perturbed jaref)
+  # In:
+  Z_in: wp.array2d[float],  # [grad] = J*lam (gather) -> Zbar (= -f; the dJ/dq topology seed, unused for G1)
+  invw_in: wp.array2d[float],  # frozen TRUE topology invweight (0 -> frozen-D fallback)
+  ctx_Jaref_in: wp.array2d[float],  # frozen J*qacc - aref (jaref VALUE anchor)
+  # Out:
   phi_out: wp.array2d[float],
 ):
   """LOOP-FREE row leaf: phi_e = -Z*f, f VALUE-anchored to the stored efc.force."""
@@ -143,24 +148,27 @@ def _constraint_row_phi(
   cid = efc_id_in[w, row]
   Z = Z_in[w, row]
   if ty == _FRICTION_DOF and st == _LINEARNEG:  # saturated friction: force = +frictionloss
-    phi_out[w, row] = -Z * dof_frictionloss_in[w % dof_frictionloss_in.shape[0], cid]
+    phi_out[w, row] = -Z * dof_frictionloss[w % dof_frictionloss.shape[0], cid]
     return
   if ty == _FRICTION_DOF and st == _LINEARPOS:  # saturated friction: force = -frictionloss
-    phi_out[w, row] = -Z * (-dof_frictionloss_in[w % dof_frictionloss_in.shape[0], cid])
+    phi_out[w, row] = -Z * (-dof_frictionloss[w % dof_frictionloss.shape[0], cid])
     return
   # QUADRATIC (equality / active limit / stuck friction): f = -D*jaref, value-anchored to efc.force.
   dt = opt_timestep[w % opt_timestep.shape[0]]
   P = efc_pos_in[w, row] - efc_margin_in[w, row]
   V = efc_vel_in[w, row]
   if ty == _FRICTION_DOF:
-    sid = w % dof_solref_in.shape[0]
-    kbi = constraint._contact_kbimp(opt_disableflags, dt, dof_solref_in[sid, cid], dof_solimp_in[sid, cid], P)
+    sr = dof_solref[w % dof_solref.shape[0], cid]
+    si = dof_solimp[w % dof_solimp.shape[0], cid]
+    kbi = constraint._contact_kbimp(opt_disableflags, dt, sr, si, P)
   elif ty == _EQUALITY:
-    sid = w % eq_solref_in.shape[0]
-    kbi = constraint._contact_kbimp(opt_disableflags, dt, eq_solref_in[sid, cid], eq_solimp_in[sid, cid], P)
+    sr = eq_solref[w % eq_solref.shape[0], cid]
+    si = eq_solimp[w % eq_solimp.shape[0], cid]
+    kbi = constraint._contact_kbimp(opt_disableflags, dt, sr, si, P)
   else:  # _LIMIT_JOINT (slide/hinge scalar J; ball 3-dof -axis J)
-    sid = w % jnt_solref_in.shape[0]
-    kbi = constraint._contact_kbimp(opt_disableflags, dt, jnt_solref_in[sid, cid], jnt_solimp_in[sid, cid], P)
+    sr = jnt_solref[w % jnt_solref.shape[0], cid]
+    si = jnt_solimp[w % jnt_solimp.shape[0], cid]
+    kbi = constraint._contact_kbimp(opt_disableflags, dt, sr, si, P)
   k = kbi[0]
   b = kbi[1]
   imp = kbi[2]
@@ -183,19 +191,19 @@ def _constraint_row_phi(
 def _constraint_scatter(is_sparse: bool):
   @wp.kernel(module="unique", enable_backward=False)
   def kernel(
-    # Data in (frozen):
+    # Model:
+    nv: int,
+    # Data in:
+    nefc_in: wp.array[int],
+    efc_type_in: wp.array2d[int],
     efc_J_rownnz_in: wp.array2d[int],
     efc_J_rowadr_in: wp.array2d[int],
     efc_J_colind_in: wp.array3d[int],
     efc_J_in: wp.array3d[float],
     efc_state_in: wp.array2d[int],
-    efc_type_in: wp.array2d[int],
-    nefc_in: wp.array[int],
-    nv: int,
-    # Leaf adjoints (per row):
+    # In:
     adjP_in: wp.array2d[float],  # Pbar (dphi/defc.pos)
     adjV_in: wp.array2d[float],  # Vbar (dphi/defc.vel)
-    # Out (accumulate):
     res_qvel: wp.array2d[float],
     res_dof: wp.array2d[float],
   ):
@@ -255,10 +263,12 @@ def _contact_D(D_base: float, imp_base: float, imp: float) -> float:
 
 @wp.func
 def _contact_dof_coefficient(
-  geom: wp.vec2i,
-  dofid: int,
+  # Model:
   geom_bodyid: wp.array[int],
   body_isdofancestor: wp.array2d[int],
+  # In:
+  geom: wp.vec2i,
+  dofid: int,
 ) -> float:
   """Coefficient of one dof in a rigid-geom contact's J = J_geom1 - J_geom0 (+1/-1/0; flex -> 0)."""
   if geom[0] < 0 or geom[1] < 0:
@@ -300,17 +310,20 @@ def _row_jaref(Jqa: float, Jqv: float, k: float, b: float, imp: float, pos_aref:
 
 @wp.func
 def _jac_dif(
+  # Model:
+  body_parentid: wp.array[int],
+  body_rootid: wp.array[int],
+  dof_bodyid: wp.array[int],
+  body_isdofancestor: wp.array2d[int],
+  # Data in:
+  subtree_com_in: wp.array2d[wp.vec3],
+  cdof_in: wp.array2d[wp.spatial_vector],
+  # In:
   body0: int,
   body1: int,
   dofid: int,
   point: wp.vec3,
   w: int,
-  body_parentid: wp.array[int],
-  body_rootid: wp.array[int],
-  dof_bodyid: wp.array[int],
-  body_isdofancestor: wp.array2d[int],
-  subtree_com_in: wp.array2d[wp.vec3],
-  cdof_in: wp.array2d[wp.spatial_vector],
 ) -> Tuple[wp.vec3, wp.vec3]:
   """Per-dof contact-Jacobian difference: (jacp_dif, jacr_dif) = jac_dof(body1) - jac_dof(body0).
 
@@ -335,21 +348,24 @@ def _row_coef(jpd: wp.vec3, jrd: wp.vec3, fm: wp.mat33, dimid: int) -> float:
 
 @wp.func
 def _row_Jqv_Jqa(
+  # Model:
+  nv: int,
+  body_parentid: wp.array[int],
+  body_rootid: wp.array[int],
+  dof_bodyid: wp.array[int],
+  body_isdofancestor: wp.array2d[int],
+  # Data in:
+  qvel_in: wp.array2d[float],
+  qacc_in: wp.array2d[float],
+  subtree_com_in: wp.array2d[wp.vec3],
+  cdof_in: wp.array2d[wp.spatial_vector],
+  # In:
   body0: int,
   body1: int,
   point: wp.vec3,
   fm: wp.mat33,
   dimid: int,
-  nv: int,
   w: int,
-  qvel_in: wp.array2d[float],
-  qacc_in: wp.array2d[float],
-  body_parentid: wp.array[int],
-  body_rootid: wp.array[int],
-  dof_bodyid: wp.array[int],
-  body_isdofancestor: wp.array2d[int],
-  subtree_com_in: wp.array2d[wp.vec3],
-  cdof_in: wp.array2d[wp.spatial_vector],
 ) -> Tuple[float, float]:
   """Row dimid's (J.qvel, J.qacc) = sum_i coef_i*(qvel_i, qacc_i); STATIC dof loop."""
   Jqv = float(0.0)
@@ -357,7 +373,7 @@ def _row_Jqv_Jqa(
   for i in range(_MAX_NV):
     if i < nv:
       jpd, jrd = _jac_dif(
-        body0, body1, i, point, w, body_parentid, body_rootid, dof_bodyid, body_isdofancestor, subtree_com_in, cdof_in
+        body_parentid, body_rootid, dof_bodyid, body_isdofancestor, subtree_com_in, cdof_in, body0, body1, i, point, w
       )
       c = _row_coef(jpd, jrd, fm, dimid)
       Jqv += c * qvel_in[w, i]
@@ -378,6 +394,18 @@ def _edge_coef(jpd: wp.vec3, jrd: wp.vec3, fm: wp.mat33, fric: vec5, e: int, con
 
 @wp.func
 def _edge_Jqv_Jqa(
+  # Model:
+  nv: int,
+  body_parentid: wp.array[int],
+  body_rootid: wp.array[int],
+  dof_bodyid: wp.array[int],
+  body_isdofancestor: wp.array2d[int],
+  # Data in:
+  qvel_in: wp.array2d[float],
+  qacc_in: wp.array2d[float],
+  subtree_com_in: wp.array2d[wp.vec3],
+  cdof_in: wp.array2d[wp.spatial_vector],
+  # In:
   body0: int,
   body1: int,
   point: wp.vec3,
@@ -385,16 +413,7 @@ def _edge_Jqv_Jqa(
   fric: vec5,
   e: int,
   condim: int,
-  nv: int,
   w: int,
-  qvel_in: wp.array2d[float],
-  qacc_in: wp.array2d[float],
-  body_parentid: wp.array[int],
-  body_rootid: wp.array[int],
-  dof_bodyid: wp.array[int],
-  body_isdofancestor: wp.array2d[int],
-  subtree_com_in: wp.array2d[wp.vec3],
-  cdof_in: wp.array2d[wp.spatial_vector],
 ) -> Tuple[float, float]:
   """Pyramidal edge e's (J_edge.qvel, J_edge.qacc); STATIC dof loop."""
   Jqv = float(0.0)
@@ -402,7 +421,7 @@ def _edge_Jqv_Jqa(
   for i in range(_MAX_NV):
     if i < nv:
       jpd, jrd = _jac_dif(
-        body0, body1, i, point, w, body_parentid, body_rootid, dof_bodyid, body_isdofancestor, subtree_com_in, cdof_in
+        body_parentid, body_rootid, dof_bodyid, body_isdofancestor, subtree_com_in, cdof_in, body0, body1, i, point, w
       )
       c = _edge_coef(jpd, jrd, fm, fric, e, condim)
       Jqv += c * qvel_in[w, i]
@@ -412,6 +431,18 @@ def _edge_Jqv_Jqa(
 
 @wp.func
 def _elliptic_TN(
+  # Model:
+  nv: int,
+  body_parentid: wp.array[int],
+  body_rootid: wp.array[int],
+  dof_bodyid: wp.array[int],
+  body_isdofancestor: wp.array2d[int],
+  # Data in:
+  qvel_in: wp.array2d[float],
+  qacc_in: wp.array2d[float],
+  subtree_com_in: wp.array2d[wp.vec3],
+  cdof_in: wp.array2d[wp.spatial_vector],
+  # In:
   body0: int,
   body1: int,
   point: wp.vec3,
@@ -424,58 +455,49 @@ def _elliptic_TN(
   imp: float,
   pos: float,
   condim: int,
-  nv: int,
   w: int,
-  qvel_in: wp.array2d[float],
-  qacc_in: wp.array2d[float],
-  body_parentid: wp.array[int],
-  body_rootid: wp.array[int],
-  dof_bodyid: wp.array[int],
-  body_isdofancestor: wp.array2d[int],
-  subtree_com_in: wp.array2d[wp.vec3],
-  cdof_in: wp.array2d[wp.spatial_vector],
 ) -> Tuple[float, float]:
   """Elliptic middle-zone coupling: (T, N) = (sqrt(sum_j (Jaref_j*fric_j)^2), mu*Jaref_normal).
 
   STATIC row loop: the nonlinear sqrt-of-sum accumulation must unroll for Warp's replay.
   """
   Jqv0, Jqa0 = _row_Jqv_Jqa(
+    nv,
+    body_parentid,
+    body_rootid,
+    dof_bodyid,
+    body_isdofancestor,
+    qvel_in,
+    qacc_in,
+    subtree_com_in,
+    cdof_in,
     body0,
     body1,
     point,
     fm,
     0,
-    nv,
     w,
-    qvel_in,
-    qacc_in,
-    body_parentid,
-    body_rootid,
-    dof_bodyid,
-    body_isdofancestor,
-    subtree_com_in,
-    cdof_in,
   )
   N = _row_jaref(Jqa0, Jqv0, k, b, imp, pos) * mu
   TT = float(0.0)
   for j in range(1, _MAXCONDIM):
     if j < condim:
       Jqvj, Jqaj = _row_Jqv_Jqa(
+        nv,
+        body_parentid,
+        body_rootid,
+        dof_bodyid,
+        body_isdofancestor,
+        qvel_in,
+        qacc_in,
+        subtree_com_in,
+        cdof_in,
         body0,
         body1,
         point,
         fm,
         j,
-        nv,
         w,
-        qvel_in,
-        qacc_in,
-        body_parentid,
-        body_rootid,
-        dof_bodyid,
-        body_isdofancestor,
-        subtree_com_in,
-        cdof_in,
       )
       uj = _row_jaref(Jqaj, Jqvj, 0.0, b_t, 0.0, 0.0) * _friction(fric, j - 1)
       TT += uj * uj
@@ -493,39 +515,42 @@ def _residual_contact(cone_type: int):
 
   @wp.kernel(module="unique", enable_backward=True)
   def kernel(
+    # Model:
+    nv: int,
+    opt_timestep: wp.array[float],
+    opt_disableflags: int,
+    opt_impratio_invsqrt: wp.array[float],
+    body_parentid: wp.array[int],
+    body_rootid: wp.array[int],
+    dof_bodyid: wp.array[int],
+    geom_bodyid: wp.array[int],
+    body_isdofancestor: wp.array2d[int],
+    # Data in:
     qpos_in: wp.array2d[float],  # unused in-kernel (d/dqpos is the narrowphase VJP); kept for the res_qpos slot
     qvel_in: wp.array2d[float],  # [grad]
     qacc_in: wp.array2d[float],  # frozen
-    cdof_in: wp.array2d[wp.spatial_vector],  # frozen motion-dof axes (the contact Jacobian basis)
     subtree_com_in: wp.array2d[wp.vec3],  # frozen per-body com (jac_dof moment-arm reference)
-    efc_D_in: wp.array2d[float],  # frozen
-    efc_state_in: wp.array2d[int],  # frozen active set
-    efc_pos_in: wp.array2d[float],  # frozen row position (normal: contact dist)
-    efc_margin_in: wp.array2d[float],  # frozen include margin
-    contact_pos_in: wp.array(dtype=wp.vec3),  # frozen contact point
-    contact_frame_in: wp.array(dtype=wp.mat33),  # per-contact frame; rows = normal, tangent1, tangent2
-    contact_friction_in: wp.array(dtype=vec5),
-    contact_solref_in: wp.array(dtype=wp.vec2),
-    contact_solreffriction_in: wp.array(dtype=wp.vec2),
-    contact_solimp_in: wp.array(dtype=vec5),
+    cdof_in: wp.array2d[wp.spatial_vector],  # frozen motion-dof axes (the contact Jacobian basis)
+    contact_pos_in: wp.array[wp.vec3],  # frozen contact point
+    contact_frame_in: wp.array[wp.mat33],  # per-contact frame; rows = normal, tangent1, tangent2
+    contact_friction_in: wp.array[vec5],
+    contact_solref_in: wp.array[wp.vec2],
+    contact_solreffriction_in: wp.array[wp.vec2],
+    contact_solimp_in: wp.array[vec5],
     contact_dim_in: wp.array[int],
-    contact_geom_in: wp.array(dtype=wp.vec2i),
-    geom_bodyid_in: wp.array[int],
-    body_isdofancestor_in: wp.array2d[int],
-    body_parentid_in: wp.array[int],
-    body_rootid_in: wp.array[int],
-    dof_bodyid_in: wp.array[int],
+    contact_geom_in: wp.array[wp.vec2i],
     contact_efc_address_in: wp.array2d[int],
     contact_worldid_in: wp.array[int],
+    efc_pos_in: wp.array2d[float],  # frozen row position (normal: contact dist)
+    efc_margin_in: wp.array2d[float],  # frozen include margin
+    efc_D_in: wp.array2d[float],  # frozen
+    efc_state_in: wp.array2d[int],  # frozen active set
     nacon_in: wp.array[int],
-    opt_timestep: wp.array[float],
-    opt_impratio_invsqrt: wp.array[float],
-    opt_disableflags: int,
-    nv: int,
-    efc_pos_ref_in: wp.array2d[float],  # FROZEN efc_pos (no adjoint): the D-recovery reference (pos0/imp0),
-    # kept SEPARATE from the differentiated efc_pos_in so _contact_D's invweight stays frozen --
-    # else AD differentiates imp0==imp and dD/dpos is wrong in the unsaturated-solimp regime
-    # (CONE hides it; the settled/QUADRATIC deep-penetration regime exposes it).
+    # In:
+    efc_pos_ref_in: wp.array2d[float],  # FROZEN efc_pos (no adjoint): the D-recovery reference (pos0/imp0)
+    # kept SEPARATE from differentiated efc_pos_in so _contact_D's invweight stays frozen -- else AD
+    # differentiates imp0 == imp and dD/dpos is wrong in the unsaturated-solimp regime.
+    # Out:
     r_out: wp.array2d[float],  # out: contact residual (pre-zeroed)
   ):
     w = wp.tid()
@@ -544,8 +569,8 @@ def _residual_contact(cone_type: int):
       geom = contact_geom_in[cid]
       if geom[0] < 0 or geom[1] < 0:  # flex (negative geom ids) -- unsupported
         continue
-      body0 = geom_bodyid_in[geom[0]]
-      body1 = geom_bodyid_in[geom[1]]
+      body0 = geom_bodyid[geom[0]]
+      body1 = geom_bodyid[geom[1]]
       condim = contact_dim_in[cid]
       fm = contact_frame_in[cid]
       fric = contact_friction_in[cid]
@@ -577,6 +602,15 @@ def _residual_contact(cone_type: int):
 
         if (condim > 1) and (st == _CONE):  # middle zone: cone-coupled forces, shared T
           T, N = _elliptic_TN(
+            nv,
+            body_parentid,
+            body_rootid,
+            dof_bodyid,
+            body_isdofancestor,
+            qvel_in,
+            qacc_in,
+            subtree_com_in,
+            cdof_in,
             body0,
             body1,
             point,
@@ -589,52 +623,43 @@ def _residual_contact(cone_type: int):
             imp,
             pos,
             condim,
-            nv,
             w,
-            qvel_in,
-            qacc_in,
-            body_parentid_in,
-            body_rootid_in,
-            dof_bodyid_in,
-            body_isdofancestor_in,
-            subtree_com_in,
-            cdof_in,
           )
           fn = solver._eval_elliptic_middle(N, T, D0, mu, 0.0, True)[0]  # normal-row force
           for i in range(_MAX_NV):
             if i < nv:
               jpd, jrd = _jac_dif(
+                body_parentid,
+                body_rootid,
+                dof_bodyid,
+                body_isdofancestor,
+                subtree_com_in,
+                cdof_in,
                 body0,
                 body1,
                 i,
                 point,
                 w,
-                body_parentid_in,
-                body_rootid_in,
-                dof_bodyid_in,
-                body_isdofancestor_in,
-                subtree_com_in,
-                cdof_in,
               )
               r_out[w, i] += -fn * _row_coef(jpd, jrd, fm, 0)
           for j in range(1, _MAXCONDIM):
             if j < condim:
               Jqvj, Jqaj = _row_Jqv_Jqa(
+                nv,
+                body_parentid,
+                body_rootid,
+                dof_bodyid,
+                body_isdofancestor,
+                qvel_in,
+                qacc_in,
+                subtree_com_in,
+                cdof_in,
                 body0,
                 body1,
                 point,
                 fm,
                 j,
-                nv,
                 w,
-                qvel_in,
-                qacc_in,
-                body_parentid_in,
-                body_rootid_in,
-                dof_bodyid_in,
-                body_isdofancestor_in,
-                subtree_com_in,
-                cdof_in,
               )
               frij = _friction(fric, j - 1)
               fj = solver._eval_elliptic_middle(N, T, D0, mu, _row_jaref(Jqaj, Jqvj, 0.0, b_t, 0.0, 0.0) * frij * frij, False)[
@@ -643,89 +668,89 @@ def _residual_contact(cone_type: int):
               for i in range(_MAX_NV):
                 if i < nv:
                   jpd, jrd = _jac_dif(
+                    body_parentid,
+                    body_rootid,
+                    dof_bodyid,
+                    body_isdofancestor,
+                    subtree_com_in,
+                    cdof_in,
                     body0,
                     body1,
                     i,
                     point,
                     w,
-                    body_parentid_in,
-                    body_rootid_in,
-                    dof_bodyid_in,
-                    body_isdofancestor_in,
-                    subtree_com_in,
-                    cdof_in,
                   )
                   r_out[w, i] += -fj * _row_coef(jpd, jrd, fm, j)
         else:  # bottom zone / frictionless: each row force = -D_row * Jaref_row
           Jqv0, Jqa0 = _row_Jqv_Jqa(
+            nv,
+            body_parentid,
+            body_rootid,
+            dof_bodyid,
+            body_isdofancestor,
+            qvel_in,
+            qacc_in,
+            subtree_com_in,
+            cdof_in,
             body0,
             body1,
             point,
             fm,
             0,
-            nv,
             w,
-            qvel_in,
-            qacc_in,
-            body_parentid_in,
-            body_rootid_in,
-            dof_bodyid_in,
-            body_isdofancestor_in,
-            subtree_com_in,
-            cdof_in,
           )
           f0 = -D0 * _row_jaref(Jqa0, Jqv0, k, b, imp, pos)
           for i in range(_MAX_NV):
             if i < nv:
               jpd, jrd = _jac_dif(
+                body_parentid,
+                body_rootid,
+                dof_bodyid,
+                body_isdofancestor,
+                subtree_com_in,
+                cdof_in,
                 body0,
                 body1,
                 i,
                 point,
                 w,
-                body_parentid_in,
-                body_rootid_in,
-                dof_bodyid_in,
-                body_isdofancestor_in,
-                subtree_com_in,
-                cdof_in,
               )
               r_out[w, i] += -f0 * _row_coef(jpd, jrd, fm, 0)
           for j in range(1, _MAXCONDIM):
             if j < condim:
               Jqvj, Jqaj = _row_Jqv_Jqa(
+                nv,
+                body_parentid,
+                body_rootid,
+                dof_bodyid,
+                body_isdofancestor,
+                qvel_in,
+                qacc_in,
+                subtree_com_in,
+                cdof_in,
                 body0,
                 body1,
                 point,
                 fm,
                 j,
-                nv,
                 w,
-                qvel_in,
-                qacc_in,
-                body_parentid_in,
-                body_rootid_in,
-                dof_bodyid_in,
-                body_isdofancestor_in,
-                subtree_com_in,
-                cdof_in,
               )
               Dj = _contact_D(efc_D_in[w, contact_efc_address_in[cid, j]], imp0, imp)
               fj = -Dj * _row_jaref(Jqaj, Jqvj, 0.0, b_t, 0.0, 0.0)
               for i in range(_MAX_NV):
                 if i < nv:
                   jpd, jrd = _jac_dif(
+                    body_parentid,
+                    body_rootid,
+                    dof_bodyid,
+                    body_isdofancestor,
+                    subtree_com_in,
+                    cdof_in,
                     body0,
                     body1,
                     i,
                     point,
                     w,
-                    body_parentid_in,
-                    body_rootid_in,
-                    dof_bodyid_in,
-                    body_isdofancestor_in,
-                    subtree_com_in,
-                    cdof_in,
                   )
                   r_out[w, i] += -fj * _row_coef(jpd, jrd, fm, j)
       else:  # PYRAMIDAL: ndim = 2*(condim-1) edges (1 if condim==1); each edge an independent force
@@ -737,6 +762,15 @@ def _residual_contact(cone_type: int):
             ea = contact_efc_address_in[cid, e]
             if ea >= 0 and efc_state_in[w, ea] != _SATISFIED:
               Jqve, Jqae = _edge_Jqv_Jqa(
+                nv,
+                body_parentid,
+                body_rootid,
+                dof_bodyid,
+                body_isdofancestor,
+                qvel_in,
+                qacc_in,
+                subtree_com_in,
+                cdof_in,
                 body0,
                 body1,
                 point,
@@ -744,32 +778,23 @@ def _residual_contact(cone_type: int):
                 fric,
                 e,
                 condim,
-                nv,
                 w,
-                qvel_in,
-                qacc_in,
-                body_parentid_in,
-                body_rootid_in,
-                dof_bodyid_in,
-                body_isdofancestor_in,
-                subtree_com_in,
-                cdof_in,
               )
               fe = -_contact_D(efc_D_in[w, ea], imp0, imp) * _row_jaref(Jqae, Jqve, k, b, imp, pos)
               for i in range(_MAX_NV):
                 if i < nv:
                   jpd, jrd = _jac_dif(
+                    body_parentid,
+                    body_rootid,
+                    dof_bodyid,
+                    body_isdofancestor,
+                    subtree_com_in,
+                    cdof_in,
                     body0,
                     body1,
                     i,
                     point,
                     w,
-                    body_parentid_in,
-                    body_rootid_in,
-                    dof_bodyid_in,
-                    body_isdofancestor_in,
-                    subtree_com_in,
-                    cdof_in,
                   )
                   r_out[w, i] += -fe * _edge_coef(jpd, jrd, fm, fric, e, condim)
 
@@ -803,29 +828,30 @@ def _proj_edge_spatial(Vsp: wp.spatial_vector, fm: wp.mat33, fric: vec5, e: int,
 
 @wp.kernel(enable_backward=False)
 def _contact_gather(
-  # Model (sparse ancestor walk):
+  # Model:
   body_rootid: wp.array[int],
   body_weldid: wp.array[int],
   body_dofnum: wp.array[int],
   body_dofadr: wp.array[int],
   dof_parentid: wp.array[int],
   geom_bodyid: wp.array[int],
-  # Data in (frozen):
+  # Data in:
   qvel_in: wp.array2d[float],
   qacc_in: wp.array2d[float],
-  lam_in: wp.array2d[float],
   subtree_com_in: wp.array2d[wp.vec3],
   cdof_in: wp.array2d[wp.spatial_vector],
-  contact_pos_in: wp.array(dtype=wp.vec3),
-  contact_geom_in: wp.array(dtype=wp.vec2i),
+  contact_pos_in: wp.array[wp.vec3],
+  contact_geom_in: wp.array[wp.vec2i],
   contact_efc_address_in: wp.array2d[int],
   contact_worldid_in: wp.array[int],
   efc_state_in: wp.array2d[int],
   nacon_in: wp.array[int],
-  # Out (per contact):
-  V_out: wp.array(dtype=wp.spatial_vector),
-  A_out: wp.array(dtype=wp.spatial_vector),
-  Z_out: wp.array(dtype=wp.spatial_vector),
+  # In:
+  lam_in: wp.array2d[float],
+  # Out:
+  V_out: wp.array[wp.spatial_vector],
+  A_out: wp.array[wp.spatial_vector],
+  Z_out: wp.array[wp.spatial_vector],
 ):
   """GATHER (manual, sparse): per-contact spatial motions V/A/Z (symmetric-difference dof walk)."""
   cid = wp.tid()
@@ -889,27 +915,31 @@ def _contact_phi(cone_type: int):
 
   @wp.kernel(module="unique", enable_backward=True)
   def kernel(
-    V_in: wp.array(dtype=wp.spatial_vector),  # [grad]
-    A_in: wp.array(dtype=wp.spatial_vector),  # [grad] (qacc frozen, but A feeds the qacc->cdof scatter path)
-    Z_in: wp.array(dtype=wp.spatial_vector),  # [grad] (= Jlam; Zbar = -F carries the direct -J^Tf projection)
-    contact_frame_in: wp.array(dtype=wp.mat33),  # [grad] -> res_contact_frame
+    # Model:
+    opt_timestep: wp.array[float],
+    opt_disableflags: int,
+    opt_impratio_invsqrt: wp.array[float],
+    # Data in:
+    contact_frame_in: wp.array[wp.mat33],  # [grad] -> res_contact_frame
+    contact_friction_in: wp.array[vec5],
+    contact_solref_in: wp.array[wp.vec2],
+    contact_solreffriction_in: wp.array[wp.vec2],
+    contact_solimp_in: wp.array[vec5],
+    contact_dim_in: wp.array[int],
+    contact_efc_address_in: wp.array2d[int],
+    contact_worldid_in: wp.array[int],
     efc_pos_in: wp.array2d[float],  # [grad] -> res_efc_pos (penetration)
     efc_margin_in: wp.array2d[float],
     efc_D_in: wp.array2d[float],
     efc_state_in: wp.array2d[int],
-    contact_friction_in: wp.array(dtype=vec5),
-    contact_solref_in: wp.array(dtype=wp.vec2),
-    contact_solreffriction_in: wp.array(dtype=wp.vec2),
-    contact_solimp_in: wp.array(dtype=vec5),
-    contact_dim_in: wp.array[int],
-    contact_efc_address_in: wp.array2d[int],
-    contact_worldid_in: wp.array[int],
     nacon_in: wp.array[int],
-    opt_timestep: wp.array[float],
-    opt_impratio_invsqrt: wp.array[float],
-    opt_disableflags: int,
+    # In:
+    V_in: wp.array[wp.spatial_vector],  # [grad]
+    A_in: wp.array[wp.spatial_vector],  # [grad] (qacc frozen, but A feeds the qacc->cdof scatter path)
+    Z_in: wp.array[wp.spatial_vector],  # [grad] (= Jlam; Zbar = -F carries the direct -J^Tf projection)
     efc_pos_ref_in: wp.array2d[float],  # FROZEN efc_pos (no adjoint): the D-recovery reference (pos0/imp0)
-    phi_out: wp.array(dtype=float),
+    # Out:
+    phi_out: wp.array[float],
   ):
     cid = wp.tid()
     phi_out[cid] = 0.0
@@ -995,41 +1025,41 @@ def _contact_phi(cone_type: int):
 
 
 @wp.kernel
-def _fill_ones(out: wp.array(dtype=float)):
+def _fill_ones(out: wp.array[float]):
   """Seed adj_phi = +1 per contact (phi = lam^T r_c already folds in the IFT seed lam)."""
   out[wp.tid()] = 1.0
 
 
 @wp.kernel(enable_backward=False)
 def _contact_scatter(
-  # Model (sparse ancestor walk):
+  # Model:
   body_rootid: wp.array[int],
   body_weldid: wp.array[int],
   body_dofnum: wp.array[int],
   body_dofadr: wp.array[int],
   dof_parentid: wp.array[int],
   geom_bodyid: wp.array[int],
-  # Data in (frozen):
+  # Data in:
   qvel_in: wp.array2d[float],
   qacc_in: wp.array2d[float],
-  lam_in: wp.array2d[float],
   subtree_com_in: wp.array2d[wp.vec3],
   cdof_in: wp.array2d[wp.spatial_vector],
-  contact_pos_in: wp.array(dtype=wp.vec3),
-  contact_geom_in: wp.array(dtype=wp.vec2i),
+  contact_pos_in: wp.array[wp.vec3],
+  contact_geom_in: wp.array[wp.vec2i],
   contact_efc_address_in: wp.array2d[int],
   contact_worldid_in: wp.array[int],
   efc_state_in: wp.array2d[int],
   nacon_in: wp.array[int],
-  # Leaf adjoints (per contact):
-  adjV_in: wp.array(dtype=wp.spatial_vector),
-  adjA_in: wp.array(dtype=wp.spatial_vector),
-  adjZ_in: wp.array(dtype=wp.spatial_vector),
-  # Out (accumulate):
+  # In:
+  lam_in: wp.array2d[float],
+  adjV_in: wp.array[wp.spatial_vector],
+  adjA_in: wp.array[wp.spatial_vector],
+  adjZ_in: wp.array[wp.spatial_vector],
   res_qvel: wp.array2d[float],
   res_cdof: wp.array2d[wp.spatial_vector],
   res_subtree_com: wp.array2d[wp.vec3],
-  res_contact_pos: wp.array(dtype=wp.vec3),
+  # Out:
+  res_contact_pos_out: wp.array[wp.vec3],
 ):
   """SCATTER (manual, sparse): route leaf adjoints over the gather's symmetric-difference walk.
 
@@ -1085,7 +1115,7 @@ def _contact_scatter(
     wp.atomic_add(res_cdof[w], i, wp.spatial_vector(Ga + wp.cross(off, Gl), Gl))
     cpos_acc += wp.cross(Gl, a)  # d(off=p-com)/dp
     wp.atomic_add(res_subtree_com[w], body_rootid[bb], wp.cross(a, Gl))  # doff/dcom = -doff/dp
-  res_contact_pos[cid] = cpos_acc
+  res_contact_pos_out[cid] = cpos_acc
 
 
 @wp.kernel(enable_backward=False)
@@ -1093,14 +1123,14 @@ def _contact_friction_geom_vjp(
   # Model:
   geom_priority: wp.array[int],
   geom_friction: wp.array2d[wp.vec3],
-  # Data in (frozen):
-  contact_geom_in: wp.array(dtype=wp.vec2i),
-  contact_worldid_in: wp.array[int],
+  # Data in:
+  contact_geom_in: wp.array[wp.vec2i],
   contact_efc_address_in: wp.array2d[int],
+  contact_worldid_in: wp.array[int],
   efc_state_in: wp.array2d[int],
   nacon_in: wp.array[int],
-  adj_friction_in: wp.array(dtype=vec5),  # dphi/dcontact.friction (the leaf's input-adjoint)
-  # Out (accumulate, IFT minus):
+  # In:
+  adj_friction_in: wp.array[vec5],  # dphi/dcontact.friction (the leaf's input-adjoint)
   geom_friction_grad: wp.array2d[wp.vec3],
 ):
   """CONTACT-PARAM sys-id: chain dphi/dcontact.friction to dphi/dgeom_friction (IFT minus).

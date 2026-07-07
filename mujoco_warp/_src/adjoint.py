@@ -42,7 +42,7 @@ _wp_sqrt = wp.sqrt
 
 
 @wp.func
-def safe_sqrt(x: wp.float32):
+def safe_sqrt(x: float):
   return _wp_sqrt(x)
 
 
@@ -105,13 +105,16 @@ _FORCE_SPARSE_CONTACT = True
 # ----------------------------------------------------------------------------
 @wp.kernel
 def _advance_state(
+  # Model:
   opt_timestep: wp.array[float],
   jnt_type: wp.array[int],
   jnt_qposadr: wp.array[int],
   jnt_dofadr: wp.array[int],
+  # Data in:
   qpos_in: wp.array2d[float],
   qvel_in: wp.array2d[float],
   qacc_in: wp.array2d[float],
+  # Data out:
   qpos_out: wp.array2d[float],
   qvel_out: wp.array2d[float],
 ):
@@ -160,7 +163,14 @@ def _advance_state(
 # 2. IFT helper.
 # ----------------------------------------------------------------------------
 @wp.kernel
-def _load_rhs(adj_qacc: wp.array2d[float], nv: int, grad_out: wp.array2d[float]):
+def _load_rhs(
+  # Model:
+  nv: int,
+  # In:
+  adj_qacc: wp.array2d[float],
+  # Out:
+  grad_out: wp.array2d[float],
+):
   """Write adj_qacc into ctx.grad[:, :nv] (zero the padding) as the RHS of H lam = adj_qacc."""
   worldid, i = wp.tid()
   if i < nv:
@@ -176,14 +186,14 @@ def _load_rhs(adj_qacc: wp.array2d[float], nv: int, grad_out: wp.array2d[float])
 
 
 @wp.kernel
-def _copy_cols(src: wp.array2d[float], dst: wp.array2d[float]):
-  """dst[w,i] = src[w,i] over dst's columns (seed r.grad = lam from ctx.Mgrad[:, :nv])."""
+def _copy_cols(src: wp.array2d[float], dst_out: wp.array2d[float]):
+  """dst_out[w,i] = src[w,i] over dst_out's columns (seed r.grad = lam from ctx.Mgrad[:, :nv])."""
   w, i = wp.tid()
-  dst[w, i] = src[w, i]
+  dst_out[w, i] = src[w, i]
 
 
 @wp.kernel
-def _sub_write(a: wp.array2d[float], b: wp.array2d[float], out: wp.array2d[float]):
+def _sub_cols(a: wp.array2d[float], b: wp.array2d[float], out: wp.array2d[float]):
   """Write out = a - b: integrator-direct adjoint minus residual-VJP scatter (dr/dtheta)^T lam."""
   w, i = wp.tid()
   out[w, i] = a[w, i] - b[w, i]
@@ -191,7 +201,7 @@ def _sub_write(a: wp.array2d[float], b: wp.array2d[float], out: wp.array2d[float
 
 @wp.kernel
 def _accum_cols(a: wp.array2d[float], out: wp.array2d[float]):
-  """Compute out += a (accumulate the RNE-bias dqpos into the buffer _sub_write subtracts)."""
+  """Compute out += a (accumulate the RNE-bias dqpos into the buffer _sub_cols subtracts)."""
   w, i = wp.tid()
   out[w, i] = out[w, i] + a[w, i]
 
@@ -203,81 +213,95 @@ def _accum_cols(a: wp.array2d[float], out: wp.array2d[float]):
 # ----------------------------------------------------------------------------
 @wp.kernel
 def _smooth_qvel_vjp(
+  # Model:
+  opt_timestep: wp.array[float],
   qD_fullm_i: wp.array[int],  # D-structure (full square) row index of entry e
   qD_fullm_j: wp.array[int],  # D-structure column index of entry e
+  # Data in:
+  qLU_in: wp.array2d[float],  # assembled so (M_D - qLU_in)/dt = dqfrc_smooth/dqvel (deriv_smooth_vel + rne, no subtract)
+  # In:
   M_D: wp.array2d[float],  # mass matrix in D-structure (M mapped via mapM2D)
-  qLU: wp.array2d[float],  # assembled so (M_D - qLU)/dt = dqfrc_smooth/dqvel (deriv_smooth_vel + rne, no subtract)
   lam: wp.array2d[float],  # IFT multiplier lam (cols 0:nv valid)
-  opt_timestep: wp.array[float],
-  adj_qvel: wp.array2d[float],  # += G^T lam  (G = dqfrc_smooth/dqvel = (M_D - qLU)/dt)
+  adj_qvel: wp.array2d[float],  # += G^T lam  (G = dqfrc_smooth/dqvel = (M_D - qLU_in)/dt)
 ):
-  """adj_qvel += G^T lam, G = dqfrc_smooth/dqvel = (M_D - qLU)/dt (full-square D-structure)."""
+  """adj_qvel += G^T lam, G = dqfrc_smooth/dqvel = (M_D - qLU_in)/dt (full-square D-structure)."""
   w, e = wp.tid()
   dt = opt_timestep[w % opt_timestep.shape[0]]
-  g = (M_D[w, e] - qLU[w, e]) / dt
+  g = (M_D[w, e] - qLU_in[w, e]) / dt
   wp.atomic_add(adj_qvel[w], qD_fullm_j[e], g * lam[w, qD_fullm_i[e]])
 
 
 @wp.kernel
 def _smooth_ctrl_vjp(
-  moment_rownnz: wp.array2d[int],
-  moment_rowadr: wp.array2d[int],
-  moment_colind: wp.array2d[int],
-  actuator_moment: wp.array2d[float],  # sparse actuator_moment (frozen)
+  # Model:
   actuator_gainprm: wp.array2d[vec10f],  # gain = prm[0] for FIXED gaintype (motor/position)
+  # Data in:
+  moment_rownnz_in: wp.array2d[int],
+  moment_rowadr_in: wp.array2d[int],
+  moment_colind_in: wp.array2d[int],
+  actuator_moment_in: wp.array2d[float],  # sparse actuator_moment_in (frozen)
+  # In:
   lam: wp.array2d[float],
-  adj_ctrl: wp.array2d[float],  # = (dqfrc_actuator/dctrl)^T lam = gain*(moment^T lam)
+  # Out:
+  adj_ctrl_out: wp.array2d[float],  # = (dqfrc_actuator/dctrl)^T lam = gain*(moment^T lam)
 ):
-  """adj_ctrl = gain*(moment^T lam) for FIXED gaintype (AFFINE-gain actuators not yet handled)."""
+  """adj_ctrl_out = gain*(moment^T lam) for FIXED gaintype (AFFINE-gain not yet handled)."""
   w, actid = wp.tid()
-  rownnz = moment_rownnz[w, actid]
-  rowadr = moment_rowadr[w, actid]
+  rownnz = moment_rownnz_in[w, actid]
+  rowadr = moment_rowadr_in[w, actid]
   mtl = float(0.0)
   for i in range(rownnz):
     sparseid = rowadr + i
-    mtl += actuator_moment[w, sparseid] * lam[w, moment_colind[w, sparseid]]
+    mtl += actuator_moment_in[w, sparseid] * lam[w, moment_colind_in[w, sparseid]]
   gain = actuator_gainprm[w % actuator_gainprm.shape[0], actid][0]
-  adj_ctrl[w, actid] = gain * mtl
+  adj_ctrl_out[w, actid] = gain * mtl
 
 
 @wp.kernel(module="unique", enable_backward=True)
 def _residual_smooth_local(
+  # Model:
+  dof_armature: wp.array2d[float],  # [grad target] reflected rotor inertia (added to the M diagonal)
+  dof_damping: wp.array2d[float],  # [grad target] viscous joint damping
+  # Data in:
   qvel_in: wp.array2d[float],  # frozen input velocity (the EULER passive-force linearization point)
   qacc_in: wp.array2d[float],  # frozen converged acceleration
-  dof_armature_in: wp.array2d[float],  # [grad target] reflected rotor inertia (added to the M diagonal)
-  dof_damping_in: wp.array2d[float],  # [grad target] viscous joint damping
+  # Out:
   r_out: wp.array2d[float],
 ):
   """r[i] = armature[i]*qacc[i] + damping[i]*qvel[i]: the armature/damping terms of r_smooth."""
   w, i = wp.tid()
-  arm = dof_armature_in[w % dof_armature_in.shape[0], i]
-  dmp = dof_damping_in[w % dof_damping_in.shape[0], i]
+  arm = dof_armature[w % dof_armature.shape[0], i]
+  dmp = dof_damping[w % dof_damping.shape[0], i]
   r_out[w, i] = arm * qacc_in[w, i] + dmp * qvel_in[w, i]
 
 
 @wp.kernel(module="unique", enable_backward=True)
 def _residual_constraint(
-  dpos_in: wp.array2d[float],  # [grad: TANGENT dqpos] dof-space perturbation seed (zeros); lifted via _dof_to_qpos
-  qvel_in: wp.array2d[float],  # [grad: dqvel state] input velocity
-  qacc_in: wp.array2d[float],  # frozen converged accel
-  efc_J_in: wp.array3d[float],  # frozen constraint Jacobian (dense)
-  efc_D_in: wp.array2d[float],  # frozen constraint mass
-  efc_pos_in: wp.array2d[float],  # frozen efc position (= pos_aref + margin)
-  efc_margin_in: wp.array2d[float],  # frozen efc margin
-  efc_state_in: wp.array2d[int],  # frozen active set
-  efc_type_in: wp.array2d[int],  # ConstraintType per row
-  efc_id_in: wp.array2d[int],  # source id (dofid / eqid / jntid)
-  dof_frictionloss_in: wp.array2d[float],  # [grad target] joint Coulomb friction
-  dof_solref_in: wp.array2d[wp.vec2],
-  dof_solimp_in: wp.array2d[vec5],
-  eq_solref_in: wp.array2d[wp.vec2],
-  eq_solimp_in: wp.array2d[vec5],
-  jnt_solref_in: wp.array2d[wp.vec2],
-  jnt_solimp_in: wp.array2d[vec5],
-  nefc_in: wp.array[int],
+  # Model:
+  nv: int,
   opt_timestep: wp.array[float],
   opt_disableflags: int,
-  nv: int,
+  jnt_solref: wp.array2d[wp.vec2],
+  jnt_solimp: wp.array2d[vec5],
+  dof_solref: wp.array2d[wp.vec2],
+  dof_solimp: wp.array2d[vec5],
+  dof_frictionloss: wp.array2d[float],  # [grad target] joint Coulomb friction
+  eq_solref: wp.array2d[wp.vec2],
+  eq_solimp: wp.array2d[vec5],
+  # Data in:
+  nefc_in: wp.array[int],
+  qvel_in: wp.array2d[float],  # [grad: dqvel state] input velocity
+  qacc_in: wp.array2d[float],  # frozen converged accel
+  efc_type_in: wp.array2d[int],  # ConstraintType per row
+  efc_id_in: wp.array2d[int],  # source id (dofid / eqid / jntid)
+  efc_J_in: wp.array3d[float],  # frozen constraint Jacobian (dense)
+  efc_pos_in: wp.array2d[float],  # frozen efc position (= pos_aref + margin)
+  efc_margin_in: wp.array2d[float],  # frozen efc margin
+  efc_D_in: wp.array2d[float],  # frozen constraint mass
+  efc_state_in: wp.array2d[int],  # frozen active set
+  # In:
+  dpos_in: wp.array2d[float],  # [grad: TANGENT dqpos] dof-space perturbation seed (zeros); lifted via _dof_to_qpos
+  # Out:
   r_out: wp.array2d[float],
 ):
   """NON-CONTACT constraint residual r += -J^T f (equality/limit/friction) over frozen efc rows.
@@ -295,20 +319,23 @@ def _residual_constraint(
       continue
     cid = efc_id_in[w, row]  # source id: dofid (FRICTION_DOF) / eqid (EQUALITY) / jntid (LIMIT_JOINT)
     if ty == _FRICTION_DOF and st == _LINEARNEG:  # saturated friction: force = +frictionloss
-      f = dof_frictionloss_in[w % dof_frictionloss_in.shape[0], cid]
+      f = dof_frictionloss[w % dof_frictionloss.shape[0], cid]
     elif ty == _FRICTION_DOF and st == _LINEARPOS:  # saturated friction: force = -frictionloss
-      f = -dof_frictionloss_in[w % dof_frictionloss_in.shape[0], cid]
+      f = -dof_frictionloss[w % dof_frictionloss.shape[0], cid]
     else:  # QUADRATIC: equality (bilateral) / active limit / stuck friction -> force = -D*jaref
       pos_aref0 = efc_pos_in[w, row] - efc_margin_in[w, row]  # frozen signed violation (impedance ref)
       if ty == _FRICTION_DOF:  # per-type solref/solimp -> (k, b, imp) at the frozen pos
-        sid = w % dof_solref_in.shape[0]
-        kbi = constraint._contact_kbimp(opt_disableflags, dt, dof_solref_in[sid, cid], dof_solimp_in[sid, cid], pos_aref0)
+        sr = dof_solref[w % dof_solref.shape[0], cid]
+        si = dof_solimp[w % dof_solimp.shape[0], cid]
+        kbi = constraint._contact_kbimp(opt_disableflags, dt, sr, si, pos_aref0)
       elif ty == _EQUALITY:
-        sid = w % eq_solref_in.shape[0]
-        kbi = constraint._contact_kbimp(opt_disableflags, dt, eq_solref_in[sid, cid], eq_solimp_in[sid, cid], pos_aref0)
+        sr = eq_solref[w % eq_solref.shape[0], cid]
+        si = eq_solimp[w % eq_solimp.shape[0], cid]
+        kbi = constraint._contact_kbimp(opt_disableflags, dt, sr, si, pos_aref0)
       else:  # _LIMIT_JOINT (slide/hinge: scalar J; ball: the 3-dof angular -axis J)
-        sid = w % jnt_solref_in.shape[0]
-        kbi = constraint._contact_kbimp(opt_disableflags, dt, jnt_solref_in[sid, cid], jnt_solimp_in[sid, cid], pos_aref0)
+        sr = jnt_solref[w % jnt_solref.shape[0], cid]
+        si = jnt_solimp[w % jnt_solimp.shape[0], cid]
+        kbi = constraint._contact_kbimp(opt_disableflags, dt, sr, si, pos_aref0)
       Jqa = float(0.0)
       Jqv = float(0.0)
       pos_d = float(0.0)
@@ -346,18 +373,18 @@ def _residual_constraint_sparse(
     gather,
     dim=(nworld, njmax),
     inputs=[
+      nv,
       m.jnt_dofadr,
       m.dof_invweight0,
-      lam,
+      d_out.nefc,
+      d_out.efc.type,
+      d_out.efc.id,
       d_out.efc.J_rownnz,
       d_out.efc.J_rowadr,
       d_out.efc.J_colind,
       d_out.efc.J,
       d_out.efc.state,
-      d_out.efc.type,
-      d_out.efc.id,
-      d_out.nefc,
-      nv,
+      lam,
     ],
     outputs=[Z, invw],
   )
@@ -366,59 +393,48 @@ def _residual_constraint_sparse(
   phi = wp.zeros((nworld, njmax), dtype=float, requires_grad=True)
   res_pos = wp.zeros((nworld, njmax), dtype=float)  # Pbar per row
   res_vel = wp.zeros((nworld, njmax), dtype=float)  # Vbar per row
-  leaf_in = [
-    d_out.efc.pos,
-    d_out.efc.vel,
-    Z,
-    invw,
-    d_out.efc.margin,
-    d_out.efc.aref,
-    d_out.efc.D,
-    d_out.efc.force,
-    ctx_Jaref,
-    d_out.efc.state,
-    d_out.efc.type,
-    d_out.efc.id,
-    m.dof_solref,
-    m.dof_solimp,
-    m.dof_frictionloss,
-    m.eq_solref,
-    m.eq_solimp,
-    m.jnt_solref,
-    m.jnt_solimp,
-    d_out.nefc,
-    m.opt.timestep,
-    m.opt.disableflags,
+  # (input, input-adjoint) pairs -- res_pos/res_vel are Pbar/Vbar, Z.grad is Zbar; per-class *_rb
+  # param buffers exist only when the param requires_grad and feed the post-launch IFT-minus.
+  res_dof_frictionloss = wp.zeros_like(m.dof_frictionloss) if m.dof_frictionloss.requires_grad else None
+  res_dof_solref = wp.zeros_like(m.dof_solref) if m.dof_solref.requires_grad else None
+  res_dof_solimp = wp.zeros_like(m.dof_solimp) if m.dof_solimp.requires_grad else None
+  res_eq_solref = wp.zeros_like(m.eq_solref) if m.eq_solref.requires_grad else None
+  res_eq_solimp = wp.zeros_like(m.eq_solimp) if m.eq_solimp.requires_grad else None
+  res_jnt_solref = wp.zeros_like(m.jnt_solref) if m.jnt_solref.requires_grad else None
+  res_jnt_solimp = wp.zeros_like(m.jnt_solimp) if m.jnt_solimp.requires_grad else None
+  leaf = [
+    (m.opt.timestep, None),
+    (m.opt.disableflags, None),
+    (m.jnt_solref, res_jnt_solref),
+    (m.jnt_solimp, res_jnt_solimp),
+    (m.dof_solref, res_dof_solref),
+    (m.dof_solimp, res_dof_solimp),
+    (m.dof_frictionloss, res_dof_frictionloss),
+    (m.eq_solref, res_eq_solref),
+    (m.eq_solimp, res_eq_solimp),
+    (d_out.nefc, None),
+    (d_out.efc.type, None),
+    (d_out.efc.id, None),
+    (d_out.efc.pos, res_pos),  # dphi/defc.pos = Pbar
+    (d_out.efc.margin, None),
+    (d_out.efc.D, None),
+    (d_out.efc.vel, res_vel),  # dphi/defc.vel = Vbar
+    (d_out.efc.aref, None),
+    (d_out.efc.force, None),
+    (d_out.efc.state, None),
+    (Z, Z.grad),  # Zbar (consumed only by the dJ/dq topology reverse, steps 4-8)
+    (invw, None),
+    (ctx_Jaref, None),
   ]
+  leaf_in = [a for a, _ in leaf]
   wp.launch(constraint_adjoint._constraint_row_phi, dim=(nworld, njmax), inputs=leaf_in, outputs=[phi])
   phi.grad.fill_(1.0)  # seed adj_phi = +1 (phi already folds in lam; inactive rows returned early -> no-op reverse)
-  adj_leaf = [None] * len(leaf_in)
-  adj_leaf[0] = res_pos  # dphi/defc.pos = Pbar
-  adj_leaf[1] = res_vel  # dphi/defc.vel = Vbar
-  adj_leaf[2] = Z.grad  # Zbar (computed; consumed only by the dJ/dq topology reverse, steps 4-8)
-  # PARAM sys-id: expose per-class frictionloss / solref / solimp input-adjoints into res buffers.
-  fl_rb = None
-  if m.dof_frictionloss.requires_grad:
-    fl_rb = wp.zeros_like(m.dof_frictionloss)
-    adj_leaf[14] = fl_rb
-  solref_rbs = []
-  for _slot, _arr in ((12, m.dof_solref), (15, m.eq_solref), (17, m.jnt_solref)):
-    if _arr.requires_grad:
-      _rb = wp.zeros_like(_arr)
-      adj_leaf[_slot] = _rb
-      solref_rbs.append((_arr.grad, _rb))
-  solimp_rbs = []
-  for _slot, _arr in ((13, m.dof_solimp), (16, m.eq_solimp), (18, m.jnt_solimp)):
-    if _arr.requires_grad:
-      _rb = wp.zeros_like(_arr)
-      adj_leaf[_slot] = _rb
-      solimp_rbs.append((_arr.grad, _rb))
   wp.launch(
     constraint_adjoint._constraint_row_phi,
     dim=(nworld, njmax),
     inputs=leaf_in,
     outputs=[phi],
-    adj_inputs=adj_leaf,
+    adj_inputs=[g for _, g in leaf],
     adj_outputs=[phi.grad],
     adjoint=True,
   )
@@ -427,25 +443,27 @@ def _residual_constraint_sparse(
     scatter,
     dim=(nworld, njmax),
     inputs=[
+      nv,
+      d_out.nefc,
+      d_out.efc.type,
       d_out.efc.J_rownnz,
       d_out.efc.J_rowadr,
       d_out.efc.J_colind,
       d_out.efc.J,
       d_out.efc.state,
-      d_out.efc.type,
-      d_out.nefc,
-      nv,
       res_pos,
       res_vel,
     ],
     outputs=[res_qvel, res_dof],
   )
-  if fl_rb is not None:  # IFT minus into the shared param grads
-    wp.launch(smooth_adjoint._accum_neg, dim=fl_rb.shape, inputs=[fl_rb], outputs=[m.dof_frictionloss.grad])
-  for _pg, _rb in solref_rbs:
-    wp.launch(smooth_adjoint._accum_neg_vec2, dim=_rb.shape, inputs=[_rb], outputs=[_pg])
-  for _pg, _rb in solimp_rbs:
-    wp.launch(smooth_adjoint._accum_neg_vec5, dim=_rb.shape, inputs=[_rb], outputs=[_pg])
+  if res_dof_frictionloss is not None:  # IFT minus into the shared param grads
+    wp.launch(smooth_adjoint._accum_neg, dim=res_dof_frictionloss.shape, inputs=[res_dof_frictionloss], outputs=[m.dof_frictionloss.grad])
+  for _pg, _rb in ((m.dof_solref, res_dof_solref), (m.eq_solref, res_eq_solref), (m.jnt_solref, res_jnt_solref)):
+    if _rb is not None:
+      wp.launch(smooth_adjoint._accum_neg_vec2, dim=_rb.shape, inputs=[_rb], outputs=[_pg.grad])
+  for _pg, _rb in ((m.dof_solimp, res_dof_solimp), (m.eq_solimp, res_eq_solimp), (m.jnt_solimp, res_jnt_solimp)):
+    if _rb is not None:
+      wp.launch(smooth_adjoint._accum_neg_vec5, dim=_rb.shape, inputs=[_rb], outputs=[_pg.grad])
 
 
 # ----------------------------------------------------------------------------
@@ -513,11 +531,15 @@ def _assert_step_supported(m: Model):
 
 @wp.kernel(module="unique", enable_backward=True)
 def _dampingpoly_Qv_leaf(
-  timestep: wp.array[float],
+  # Model:
   dof_damping: wp.array2d[float],
   dof_dampingpoly: wp.array2d[wp.vec2],
-  qvel: wp.array2d[float],
+  # Data in:
+  qvel_in: wp.array2d[float],
+  # In:
+  timestep: wp.array[float],
   a_u: wp.array2d[float],
+  # Out:
   out: wp.array2d[float],
 ):
   """out[i] = dt*D_eff(v_i)*a_u[i], D_eff = d(poly damping force)/dv (a_u and y_int held fixed)."""
@@ -525,7 +547,7 @@ def _dampingpoly_Qv_leaf(
   dt = timestep[w % timestep.shape[0]]
   damping = dof_damping[w % dof_damping.shape[0], i]
   dpoly = dof_dampingpoly[w % dof_dampingpoly.shape[0], i]
-  out[w, i] = dt * util_misc._poly_force_deriv(damping, dpoly, qvel[w, i], 1) * a_u[w, i]
+  out[w, i] = dt * util_misc._poly_force_deriv(damping, dpoly, qvel_in[w, i], 1) * a_u[w, i]
 
 
 def advance_backward(m: Model, d: Data, d_out: Data):
@@ -618,7 +640,7 @@ def advance_backward(m: Model, d: Data, d_out: Data):
     # M(q)/Q(q), so adj_qpos += d_q[ y^T M(q)(a_s - a_u) ] (y = y_int held fixed). Distinct
     # cotangent from the stage-2 IFT lam, so no double-count with the smooth residual term.
     w_dir = wp.empty((nworld, nv), dtype=float)
-    wp.launch(_sub_write, dim=(nworld, nv), inputs=[d_out.qacc, qacc_advance], outputs=[w_dir])  # a_s - a_u
+    wp.launch(_sub_cols, dim=(nworld, nv), inputs=[d_out.qacc, qacc_advance], outputs=[w_dir])  # a_s - a_u
     q_dir = smooth_adjoint.mass_matrix_qpos_vjp(m, d, y_int, w_dir)
     wp.launch(_accum_cols, dim=(nworld, nq), inputs=[q_dir], outputs=[adj_qpos])  # adj_qpos += d_q[y^T M w]
     # Stage 4 -- d_v direct term for STATE-DEPENDENT (dampingpoly) damping:
@@ -627,18 +649,18 @@ def advance_backward(m: Model, d: Data, d_out: Data):
     if (int(m.opt.disableflags) & _DAMPER) == 0:
       dp_out = wp.empty((nworld, nv), dtype=float)
       dp_qv_adj = wp.zeros((nworld, nv), dtype=float)
-      dp_ins = [m.opt.timestep, m.dof_damping, m.dof_dampingpoly, d.qvel, qacc_advance]
+      dp_ins = [m.dof_damping, m.dof_dampingpoly, d.qvel, m.opt.timestep, qacc_advance]
       wp.launch(_dampingpoly_Qv_leaf, dim=(nworld, nv), inputs=dp_ins, outputs=[dp_out])
       wp.launch(
         _dampingpoly_Qv_leaf,
         dim=(nworld, nv),
         inputs=dp_ins,
         outputs=[dp_out],
-        adj_inputs=[None, None, None, dp_qv_adj, None],
+        adj_inputs=[None, None, dp_qv_adj, None, None],
         adj_outputs=[y_int],
         adjoint=True,
       )
-      wp.launch(_sub_write, dim=(nworld, nv), inputs=[adj_qvel, dp_qv_adj], outputs=[adj_qvel])  # -= d_v[...]
+      wp.launch(_sub_cols, dim=(nworld, nv), inputs=[adj_qvel, dp_qv_adj], outputs=[adj_qvel])  # -= d_v[...]
     # Stage 5 (TODO -- capability gate for GENERAL implicitfast): the mass VJP + dampingpoly leaf
     # cover only rigid-body dM/dq and joint dD/dv; FLUID / TENDON damping / GainType.AFFINE Q
     # terms are OMITTED, so the gradient is SILENTLY INCOMPLETE for such models until a
@@ -673,7 +695,7 @@ def solve_backward(m: Model, d_out: Data, adj_qacc: wp.array):
   # --- 2. IFT: solve H lam = adj_qacc, reusing the solver's assembly + Cholesky factor ---
   ctx = solver._create_solver_context(m, d_out)
   solver.init_context(m, d_out, ctx, grad=True)  # assembles + factors ctx.h; active set = forward's
-  wp.launch(_load_rhs, dim=(nworld, nv_pad), inputs=[adj_qacc, nv], outputs=[ctx.grad])
+  wp.launch(_load_rhs, dim=(nworld, nv_pad), inputs=[nv, adj_qacc], outputs=[ctx.grad])
   ctx.done.zero_()
   solver._cholesky_factorize_solve(m, d_out, ctx)  # ctx.Mgrad[:, :nv] = lam
   return ctx
@@ -708,7 +730,6 @@ def _contact_residual_vjp_sparse(
   state_in = [
     d.qvel,
     d_out.qacc,
-    lam,
     d_out.subtree_com,
     d_out.cdof,
     d_out.contact.pos,
@@ -718,7 +739,7 @@ def _contact_residual_vjp_sparse(
     d_out.efc.state,
     d_out.nacon,
   ]
-  wp.launch(constraint_adjoint._contact_gather, dim=ncon_max, inputs=walk_in + state_in, outputs=[Vc, Ac, Zc])
+  wp.launch(constraint_adjoint._contact_gather, dim=ncon_max, inputs=walk_in + state_in + [lam], outputs=[Vc, Ac, Zc])
   want_fric = m.geom_friction.requires_grad  # geom_friction sys-id (the contact-PARAM gradient)
   for _arr in (d_out.contact.frame, d_out.efc.pos):
     _arr.requires_grad = True  # so the leaf adjoint accumulates res_contact_frame / res_efc_pos
@@ -726,53 +747,47 @@ def _contact_residual_vjp_sparse(
   if want_fric:
     d_out.contact.friction.requires_grad = True  # so the leaf exposes dphi/dcontact.friction (mu -> cone)
     res_contact_friction = wp.zeros(ncon_max, dtype=vec5)
-  phi_in = [
-    Vc,
-    Ac,
-    Zc,
-    d_out.contact.frame,
-    d_out.efc.pos,
-    d_out.efc.margin,
-    d_out.efc.D,
-    d_out.efc.state,
-    d_out.contact.friction,
-    d_out.contact.solref,
-    d_out.contact.solreffriction,
-    d_out.contact.solimp,
-    d_out.contact.dim,
-    d_out.contact.efc_address,
-    d_out.contact.worldid,
-    d_out.nacon,
-    m.opt.timestep,
-    m.opt.impratio_invsqrt,
-    m.opt.disableflags,
-    efc_pos_ref,
+  # (input, input-adjoint) pairs; res_contact_friction is None unless want_fric (set above).
+  phi_pairs = [
+    (m.opt.timestep, None),
+    (m.opt.disableflags, None),
+    (m.opt.impratio_invsqrt, None),
+    (d_out.contact.frame, res_contact_frame),  # dr/dcontact_frame
+    (d_out.contact.friction, res_contact_friction),  # dr/dcontact.friction -> chained to geom_friction below
+    (d_out.contact.solref, None),
+    (d_out.contact.solreffriction, None),
+    (d_out.contact.solimp, None),
+    (d_out.contact.dim, None),
+    (d_out.contact.efc_address, None),
+    (d_out.contact.worldid, None),
+    (d_out.efc.pos, res_efc_pos),  # dr/defc_pos (penetration)
+    (d_out.efc.margin, None),
+    (d_out.efc.D, None),
+    (d_out.efc.state, None),
+    (d_out.nacon, None),
+    (Vc, adjV),  # Vbar
+    (Ac, adjA),  # Abar
+    (Zc, adjZ),  # Zbar
+    (efc_pos_ref, None),
   ]
+  phi_in = [a for a, _ in phi_pairs]
   contact_phi_kernel = constraint_adjoint._contact_phi(int(m.opt.cone))  # cone-specialized (cached)
   wp.launch(contact_phi_kernel, dim=ncon_max, inputs=phi_in, outputs=[phi])
   wp.launch(constraint_adjoint._fill_ones, dim=ncon_max, inputs=[phi.grad])  # seed adj_phi = +1 (phi already folds in lam)
-  adj_phi_in = [None] * len(phi_in)
-  adj_phi_in[0] = adjV  # Vbar
-  adj_phi_in[1] = adjA  # Abar
-  adj_phi_in[2] = adjZ  # Zbar
-  adj_phi_in[3] = res_contact_frame  # dr/dcontact_frame
-  adj_phi_in[4] = res_efc_pos  # dr/defc_pos (penetration)
-  if want_fric:
-    adj_phi_in[8] = res_contact_friction  # dr/dcontact.friction -> chained to geom_friction below
   wp.launch(
     contact_phi_kernel,
     dim=ncon_max,
     inputs=phi_in,
     outputs=[phi],
-    adj_inputs=adj_phi_in,
+    adj_inputs=[g for _, g in phi_pairs],
     adj_outputs=[phi.grad],
     adjoint=True,
   )
   wp.launch(
     constraint_adjoint._contact_scatter,
     dim=ncon_max,
-    inputs=walk_in + state_in + [adjV, adjA, adjZ],
-    outputs=[res_qvel, res_cdof, res_subtree_com, res_contact_pos],
+    inputs=walk_in + state_in + [lam, adjV, adjA, adjZ, res_qvel, res_cdof, res_subtree_com],
+    outputs=[res_contact_pos],
   )
   if want_fric:  # CONTACT-PARAM sys-id: chain dphi/dcontact.friction -> m.geom_friction.grad (IFT minus)
     wp.launch(
@@ -782,8 +797,8 @@ def _contact_residual_vjp_sparse(
         m.geom_priority,
         m.geom_friction,
         d_out.contact.geom,
-        d_out.contact.worldid,
         d_out.contact.efc_address,
+        d_out.contact.worldid,
         d_out.efc.state,
         d_out.nacon,
         res_contact_friction,
@@ -813,53 +828,49 @@ def _contact_residual_vjp_dense(
   r = wp.zeros((nworld, nv), dtype=float, requires_grad=True)
   for _arr in (d_out.cdof, d_out.subtree_com, d_out.efc.pos, d_out.contact.pos, d_out.contact.frame):
     _arr.requires_grad = True  # so the manual adjoint launch accumulates their input-adjoints
-  rin = [
-    d.qpos,  # 0 (unused in-kernel; res_qpos accumulates the stage-3c narrowphase dqpos below)
-    d.qvel,  # 1
-    d_out.qacc,  # 2
-    d_out.cdof,  # 3
-    d_out.subtree_com,  # 4
-    d_out.efc.D,  # 5
-    d_out.efc.state,  # 6
-    d_out.efc.pos,  # 7
-    d_out.efc.margin,  # 8
-    d_out.contact.pos,  # 9
-    d_out.contact.frame,  # 10
-    d_out.contact.friction,
-    d_out.contact.solref,
-    d_out.contact.solreffriction,
-    d_out.contact.solimp,
-    d_out.contact.dim,
-    d_out.contact.geom,
-    m.geom_bodyid,
-    m.body_isdofancestor,
-    m.body_parentid,
-    m.body_rootid,
-    m.dof_bodyid,
-    d_out.contact.efc_address,
-    d_out.contact.worldid,
-    d_out.nacon,
-    m.opt.timestep,
-    m.opt.impratio_invsqrt,
-    m.opt.disableflags,
-    nv,
-    efc_pos_ref,  # frozen efc_pos reference (no adjoint) for the D-recovery imp0/pos0
+  # (input, input-adjoint) pairs: one +lam adjoint launch exposes every kinematic-intermediate
+  # input-adjoint (dr/dx^T lam) into its res buffer; the IFT minus is applied at write-back.
+  rin_pairs = [
+    (nv, None),
+    (m.opt.timestep, None),
+    (m.opt.disableflags, None),
+    (m.opt.impratio_invsqrt, None),
+    (m.body_parentid, None),
+    (m.body_rootid, None),
+    (m.dof_bodyid, None),
+    (m.geom_bodyid, None),
+    (m.body_isdofancestor, None),
+    (d.qpos, None),  # unused in-kernel; res_qpos accumulates the stage-3c narrowphase dqpos below
+    (d.qvel, res_qvel),
+    (d_out.qacc, None),
+    (d_out.subtree_com, res_subtree_com),  # dr/dsubtree_com (articulated)
+    (d_out.cdof, res_cdof),  # dr/dcdof (articulated)
+    (d_out.contact.pos, res_contact_pos),  # dr/dcontact_pos (moment arm)
+    (d_out.contact.frame, res_contact_frame),  # dr/dcontact_frame (normal/tangent rows)
+    (d_out.contact.friction, None),
+    (d_out.contact.solref, None),
+    (d_out.contact.solreffriction, None),
+    (d_out.contact.solimp, None),
+    (d_out.contact.dim, None),
+    (d_out.contact.geom, None),
+    (d_out.contact.efc_address, None),
+    (d_out.contact.worldid, None),
+    (d_out.efc.pos, res_efc_pos),  # dr/defc_pos (penetration)
+    (d_out.efc.margin, None),
+    (d_out.efc.D, None),
+    (d_out.efc.state, None),
+    (d_out.nacon, None),
+    (efc_pos_ref, None),  # frozen efc_pos reference (no adjoint) for the D-recovery imp0/pos0
   ]
+  rin = [a for a, _ in rin_pairs]
   wp.launch(residual_contact_kernel, dim=nworld, inputs=rin, outputs=[r])
   wp.launch(_copy_cols, dim=(nworld, nv), inputs=[lam], outputs=[r.grad])  # seed adj_r = lam
-  adj_rin = [None] * len(rin)  # expose the kinematic-intermediate input-adjoints (dr/dx^T lam for each input x)
-  adj_rin[1] = res_qvel
-  adj_rin[3] = res_cdof  # dr/dcdof (articulated)
-  adj_rin[4] = res_subtree_com  # dr/dsubtree_com (articulated)
-  adj_rin[7] = res_efc_pos  # dr/defc_pos (penetration)
-  adj_rin[9] = res_contact_pos  # dr/dcontact_pos (moment arm)
-  adj_rin[10] = res_contact_frame  # dr/dcontact_frame (normal/tangent rows)
   wp.launch(
     residual_contact_kernel,
     dim=nworld,
     inputs=rin,
     outputs=[r],
-    adj_inputs=adj_rin,
+    adj_inputs=[g for _, g in rin_pairs],
     adj_outputs=[r.grad],
     adjoint=True,
   )
@@ -894,7 +905,7 @@ def contact_residual_backward(m: Model, d: Data, d_out: Data, lam: wp.array, res
 
   # --- stage 3c: contact dqpos. collision_adjoint replays each frozen contact's narrowphase
   # geometry and chains geom-pose -> qpos (support.jac_dof), accumulating into res_qpos (which
-  # _sub_write subtracts). nacon=0 / unsupported geom pairs -> no-op.
+  # _sub_cols subtracts). nacon=0 / unsupported geom pairs -> no-op.
   collision_adjoint.contact_qpos_vjp(
     m, d_out, d.qpos, res_contact_pos, res_contact_frame, res_efc_pos, res_subtree_com, res_cdof, res_qpos
   )
@@ -927,14 +938,14 @@ def smooth_vel_backward(m: Model, d: Data, d_out: Data, lam: wp.array, adj_qvel:
   wp.launch(
     _smooth_qvel_vjp,
     dim=(nworld, m.nD),
-    inputs=[m.qD_fullm_i, m.qD_fullm_j, M_D, qLU, lam, m.opt.timestep],
+    inputs=[m.opt.timestep, m.qD_fullm_i, m.qD_fullm_j, qLU, M_D, lam],
     outputs=[adj_qvel],  # adj_qvel += G^T lam
   )
   if m.nu > 0 and d.ctrl.requires_grad:
     wp.launch(
       _smooth_ctrl_vjp,
       dim=(nworld, m.nu),
-      inputs=[d_out.moment_rownnz, d_out.moment_rowadr, d_out.moment_colind, d_out.actuator_moment, m.actuator_gainprm, lam],
+      inputs=[m.actuator_gainprm, d_out.moment_rownnz, d_out.moment_rowadr, d_out.moment_colind, d_out.actuator_moment, lam],
       outputs=[d.ctrl.grad],
     )
 
@@ -953,7 +964,7 @@ def smooth_param_backward(m: Model, d: Data, d_out: Data, lam: wp.array):
   # trajectory: its grad ACCUMULATES every step/world; the caller zeros it once per trajectory.
   if m.dof_armature.requires_grad or m.dof_damping.requires_grad:
     r_s = wp.zeros((nworld, nv), dtype=float, requires_grad=True)
-    _rs_inputs = [d.qvel, d_out.qacc, m.dof_armature, m.dof_damping]
+    _rs_inputs = [m.dof_armature, m.dof_damping, d.qvel, d_out.qacc]
     wp.launch(_residual_smooth_local, dim=(nworld, nv), inputs=_rs_inputs, outputs=[r_s])
     wp.launch(smooth_adjoint._neg_cols, dim=(nworld, nv), inputs=[lam], outputs=[r_s.grad])  # seed adj_r = -lam
     wp.launch(
@@ -962,10 +973,10 @@ def smooth_param_backward(m: Model, d: Data, d_out: Data, lam: wp.array):
       inputs=_rs_inputs,
       outputs=[r_s],
       adj_inputs=[
-        None,
-        None,  # qvel/qacc frozen
         m.dof_armature.grad if m.dof_armature.requires_grad else None,
         m.dof_damping.grad if m.dof_damping.requires_grad else None,
+        None,
+        None,
       ],
       adj_outputs=[r_s.grad],
       adjoint=True,
@@ -1010,59 +1021,55 @@ def noncontact_constraint_backward(
     _assert_dense_unroll("_residual_constraint")
     r_c = wp.zeros((nworld, nv), dtype=float, requires_grad=True)
     dpos = wp.zeros((nworld, nv), dtype=float, requires_grad=True)  # TANGENT seed (zeros); dr/d(delta_theta) -> res_dof
-    _rc_inputs = [
-      dpos,
-      d.qvel,
-      d_out.qacc,
-      d_out.efc.J,
-      d_out.efc.D,
-      d_out.efc.pos,
-      d_out.efc.margin,
-      d_out.efc.state,
-      d_out.efc.type,
-      d_out.efc.id,
-      m.dof_frictionloss,
-      m.dof_solref,
-      m.dof_solimp,
-      m.eq_solref,
-      m.eq_solimp,
-      m.jnt_solref,
-      m.jnt_solimp,
-      d_out.nefc,
-      m.opt.timestep,
-      m.opt.disableflags,
-      nv,
+    # (input, input-adjoint) pairs; adjoint None for non-differentiated inputs, else a res buffer.
+    # Pairing keeps inputs/adj_inputs aligned under reorder -- no index bookkeeping.
+    # res_qvel/res_dof are state-grad accumulators; *_grad buffers exist only under requires_grad.
+    res_dof_frictionloss = wp.zeros_like(m.dof_frictionloss) if m.dof_frictionloss.requires_grad else None
+    res_dof_solref = wp.zeros_like(m.dof_solref) if m.dof_solref.requires_grad else None
+    res_eq_solref = wp.zeros_like(m.eq_solref) if m.eq_solref.requires_grad else None
+    res_jnt_solref = wp.zeros_like(m.jnt_solref) if m.jnt_solref.requires_grad else None
+    rc = [
+      (nv, None),
+      (m.opt.timestep, None),
+      (m.opt.disableflags, None),
+      (m.jnt_solref, res_jnt_solref),
+      (m.jnt_solimp, None),
+      (m.dof_solref, res_dof_solref),
+      (m.dof_solimp, None),
+      (m.dof_frictionloss, res_dof_frictionloss),
+      (m.eq_solref, res_eq_solref),
+      (m.eq_solimp, None),
+      (d_out.nefc, None),
+      (d.qvel, res_qvel),  # dqvel state-grad -> res_qvel (accumulates with contact; subtracted by _sub_cols)
+      (d_out.qacc, None),
+      (d_out.efc.type, None),
+      (d_out.efc.id, None),
+      (d_out.efc.J, None),
+      (d_out.efc.pos, None),
+      (d_out.efc.margin, None),
+      (d_out.efc.D, None),
+      (d_out.efc.state, None),
+      (dpos, res_dof),  # TANGENT dqpos seed -> res_dof (lifted to res_qpos by _dof_to_qpos below)
     ]
-    wp.launch(_residual_constraint, dim=nworld, inputs=_rc_inputs, outputs=[r_c])
+    rc_inputs = [a for a, _ in rc]
+    wp.launch(_residual_constraint, dim=nworld, inputs=rc_inputs, outputs=[r_c])
     wp.launch(_copy_cols, dim=(nworld, nv), inputs=[lam], outputs=[r_c.grad])  # seed adj_r = +lam
-    _adj_rc = [None] * len(_rc_inputs)
-    _adj_rc[0] = res_dof  # tangent dqpos (lifted to res_qpos by _dof_to_qpos below)
-    _adj_rc[1] = res_qvel  # dqvel state-grad -> res_qvel (accumulates with contact; subtracted by _sub_write)
-    _res_fl = None  # PARAM sys-id: expose input-adjoints (dof_frictionloss float; per-class *_solref vec2)
-    if m.dof_frictionloss.requires_grad:
-      _res_fl = wp.zeros_like(m.dof_frictionloss)
-      _adj_rc[10] = _res_fl
-    _res_solref = []  # (param_grad, res_buffer) for the vec2 solref params
-    for _slot, _arr in ((11, m.dof_solref), (13, m.eq_solref), (15, m.jnt_solref)):
-      if _arr.requires_grad:
-        _rb = wp.zeros_like(_arr)
-        _adj_rc[_slot] = _rb
-        _res_solref.append((_arr.grad, _rb))
     wp.launch(
       _residual_constraint,
       dim=nworld,
-      inputs=_rc_inputs,
+      inputs=rc_inputs,
       outputs=[r_c],
-      adj_inputs=_adj_rc,
+      adj_inputs=[g for _, g in rc],
       adj_outputs=[r_c.grad],
       adjoint=True,
     )
-    if _res_fl is not None:  # -(dr/dfl)^T lam into the shared param grad
-      wp.launch(smooth_adjoint._accum_neg, dim=_res_fl.shape, inputs=[_res_fl], outputs=[m.dof_frictionloss.grad])
-    for _pg, _rb in _res_solref:
-      wp.launch(smooth_adjoint._accum_neg_vec2, dim=_rb.shape, inputs=[_rb], outputs=[_pg])
+    if res_dof_frictionloss is not None:  # -(dr/dfl)^T lam into the shared param grad
+      wp.launch(smooth_adjoint._accum_neg, dim=res_dof_frictionloss.shape, inputs=[res_dof_frictionloss], outputs=[m.dof_frictionloss.grad])
+    for _pg, _rb in ((m.dof_solref, res_dof_solref), (m.eq_solref, res_eq_solref), (m.jnt_solref, res_jnt_solref)):
+      if _rb is not None:
+        wp.launch(smooth_adjoint._accum_neg_vec2, dim=_rb.shape, inputs=[_rb], outputs=[_pg.grad])
   # lift the per-dof TANGENT dqpos to qpos (quaternion-aware: free/BALL via 2*(q outer [0,g]));
-  # accumulates into res_qpos alongside the contact dqpos, then both flow through _sub_write.
+  # accumulates into res_qpos alongside the contact dqpos, then both flow through _sub_cols.
   # Shared by both paths.
   wp.launch(
     collision_adjoint._dof_to_qpos,
@@ -1082,7 +1089,7 @@ def smooth_qpos_backward(m: Model, d: Data, d_out: Data, lam: wp.array, res_qpos
   nq = d.qpos.shape[1]
   nv = m.nv
   # Analytic reduced replay: each term returns d(lam^T r_smooth_term)/dqpos, accumulated into
-  # res_qpos (the _sub_write IFT minus). NO FD fallback: assert_smooth_supported RAISES on any
+  # res_qpos (the _sub_cols IFT minus). NO FD fallback: assert_smooth_supported RAISES on any
   # enabled smooth feature without an analytic leaf; FD is the explicit test-only path below.
   # Local import breaks the smooth_adjoint<->adjoint cycle.
   smooth_adjoint.assert_smooth_supported(m)
@@ -1106,8 +1113,8 @@ def _write_input_adjoints(m: Model, d: Data, adj_qpos: wp.array, adj_qvel: wp.ar
   nq = d.qpos.shape[1]
   nv = m.nv
   # --- write input adjoints (each d == datas[t] is the d_in of exactly one step) ---
-  wp.launch(_sub_write, dim=(nworld, nq), inputs=[adj_qpos, res_qpos], outputs=[d.qpos.grad])
-  wp.launch(_sub_write, dim=(nworld, nv), inputs=[adj_qvel, res_qvel], outputs=[d.qvel.grad])
+  wp.launch(_sub_cols, dim=(nworld, nq), inputs=[adj_qpos, res_qpos], outputs=[d.qpos.grad])
+  wp.launch(_sub_cols, dim=(nworld, nv), inputs=[adj_qvel, res_qvel], outputs=[d.qvel.grad])
   # The IFT VJP is linear in r = r_smooth + r_contact, so every residual term shares the SAME lam
   # and SUMS into the writes above. No double-count with H = M + J^T G_s J: M in H is dr/dqacc,
   # while d(M*qacc)/dtheta in r_smooth is w.r.t. theta.
@@ -1165,22 +1172,22 @@ forward.register_backward_hook(step_backward)
 @wp.kernel(enable_backward=False)
 def _site_jac_vjp(
   # Model:
+  nsite: int,
   body_parentid: wp.array[int],
   body_rootid: wp.array[int],
   dof_bodyid: wp.array[int],
-  body_isdofancestor: wp.array2d[int],
   site_bodyid: wp.array[int],
-  # Data (scratch, fresh at qpos):
-  subtree_com: wp.array2d[wp.vec3],
-  cdof: wp.array2d[wp.spatial_vector],
-  site_xpos: wp.array2d[wp.vec3],
-  # adjoint of site_xpos (= d.site_xpos.grad):
+  body_isdofancestor: wp.array2d[int],
+  # Data in:
+  site_xpos_in: wp.array2d[wp.vec3],
+  subtree_com_in: wp.array2d[wp.vec3],
+  cdof_in: wp.array2d[wp.spatial_vector],
+  # In:
   adj_site: wp.array2d[wp.vec3],
-  nsite: int,
-  # Out (accumulate), DOF/tangent-space -- lifted to qpos by _dof_to_qpos (quaternion-aware):
-  adj_dof: wp.array2d[float],
+  # Out:
+  adj_dof_out: wp.array2d[float],
 ):
-  """adj_dof[w, i] += sum_site (dsite_xpos/d(dof i))^T adj_site[w, site], in dof/tangent space."""
+  """adj_dof_out[w, i] += sum_site (dsite_xpos/d(dof i))^T adj_site[w, site] (dof/tangent space)."""
   w, i = wp.tid()
   acc = float(0.0)
   for s in range(nsite):
@@ -1189,15 +1196,15 @@ def _site_jac_vjp(
       body_rootid,
       dof_bodyid,
       body_isdofancestor,
-      subtree_com,
-      cdof,
-      site_xpos[w, s],
+      subtree_com_in,
+      cdof_in,
+      site_xpos_in[w, s],
       site_bodyid[s],
       i,
       w,
     )
     acc += wp.dot(jacp, adj_site[w, s])
-  adj_dof[w, i] += acc
+  adj_dof_out[w, i] += acc
 
 
 def fwd_kinematics_backward(m: Model, d: Data):
@@ -1216,16 +1223,16 @@ def fwd_kinematics_backward(m: Model, d: Data):
     _site_jac_vjp,
     dim=(d.nworld, m.nv),
     inputs=[
+      m.nsite,
       m.body_parentid,
       m.body_rootid,
       m.dof_bodyid,
-      m.body_isdofancestor,
       m.site_bodyid,
+      m.body_isdofancestor,
+      fd.site_xpos,
       fd.subtree_com,
       fd.cdof,
-      fd.site_xpos,
       d.site_xpos.grad,
-      m.nsite,
     ],
     outputs=[adj_dof],
   )

@@ -38,6 +38,7 @@ _BOX = int(types.GeomType.BOX.value)
 
 @wp.func
 def _capsule_box_segpos(
+  # In:
   pos_c: wp.vec3,
   axis_c: wp.vec3,
   half_len: float,
@@ -240,6 +241,7 @@ def _capsule_box_segpos(
 
 @wp.func
 def _capsule_box_t0(
+  # In:
   pos_bf: wp.vec3,  # capsule center in the box frame [grad]
   halfaxis_bf: wp.vec3,  # capsule half-axis in the box frame [grad]
   half_len: float,
@@ -279,28 +281,31 @@ def _capsule_box_t0(
 
 @wp.kernel(enable_backward=False)
 def _capsule_box_freeze(
+  # Model:
   geom_type: wp.array[int],
-  geom_size: wp.array2d(dtype=wp.vec3),
+  geom_size: wp.array2d[wp.vec3],
+  # Data in:
   geom_xpos_in: wp.array2d[wp.vec3],
   geom_xmat_in: wp.array2d[wp.mat33],
-  contact_geom: wp.array(dtype=wp.vec2i),
-  contact_worldid: wp.array[int],
-  nacon: wp.array[int],
-  tseg_out: wp.array(dtype=wp.vec2),
-  feat_out: wp.array(dtype=wp.vec3i),
+  contact_geom_in: wp.array[wp.vec2i],
+  contact_worldid_in: wp.array[int],
+  nacon_in: wp.array[int],
+  # Out:
+  tseg_out: wp.array[wp.vec2],
+  feat_out: wp.array[wp.vec3i],
 ):
   """Store per capsule-box contact the frozen sphere-reduction segment params and feature state."""
   cid = wp.tid()
-  if cid >= nacon[0]:
+  if cid >= nacon_in[0]:
     return
-  geoms = contact_geom[cid]
+  geoms = contact_geom_in[cid]
   if geoms[0] < 0 or geoms[1] < 0:
     return
   g0 = geoms[0]
   g1 = geoms[1]
   if geom_type[g0] != _CAPSULE or geom_type[g1] != _BOX:
     return
-  w = contact_worldid[cid]
+  w = contact_worldid_in[cid]
   gw = w % geom_size.shape[0]
   m0 = geom_xmat_in[w, g0]
   axis0 = wp.vec3(m0[0, 2], m0[1, 2], m0[2, 2])
@@ -321,32 +326,36 @@ def _capsule_box_freeze(
 # crossed slot-0 regime). the FD oracle in collision_adjoint_test.py gates every dispatched pair.
 @wp.kernel(enable_backward=True)
 def _narrowphase_recompute(
+  # Model:
   geom_type: wp.array[int],
-  geom_size: wp.array2d(dtype=wp.vec3),
+  geom_size: wp.array2d[wp.vec3],
+  # Data in:
   geom_xpos_in: wp.array2d[wp.vec3],  # [grad]
   geom_xmat_in: wp.array2d[wp.mat33],  # [grad]
-  contact_geom: wp.array(dtype=wp.vec2i),
-  contact_geomcollisionid: wp.array[int],
-  contact_worldid: wp.array[int],
-  nacon: wp.array[int],
-  capsule_box_tseg: wp.array(dtype=wp.vec2),  # frozen capsule-box segment params (_capsule_box_freeze)
-  capsule_box_feat: wp.array(dtype=wp.vec3i),  # frozen capsule-box discrete feature state
-  cpos_out: wp.array(dtype=wp.vec3),
+  contact_geom_in: wp.array[wp.vec2i],
+  contact_worldid_in: wp.array[int],
+  contact_geomcollisionid_in: wp.array[int],
+  nacon_in: wp.array[int],
+  # In:
+  capsule_box_tseg: wp.array[wp.vec2],  # frozen capsule-box segment params (_capsule_box_freeze)
+  capsule_box_feat: wp.array[wp.vec3i],  # frozen capsule-box discrete feature state
+  # Out:
+  cpos_out: wp.array[wp.vec3],
   dist_out: wp.array[float],
-  frame_out: wp.array(dtype=wp.mat33),
+  frame_out: wp.array[wp.mat33],
 ):
   """Frozen-witness narrowphase replay, backward-enabled so Warp auto-diffs adj(geom poses).
 
   Reuses the collision_primitive_core leaves (keep in sync); a Geom struct arg zeroes the adjoint.
   """
   cid = wp.tid()
-  if cid >= nacon[0]:
+  if cid >= nacon_in[0]:
     return
-  geoms = contact_geom[cid]
+  geoms = contact_geom_in[cid]
   if geoms[0] < 0 or geoms[1] < 0:
     return
-  w = contact_worldid[cid]
-  slot = contact_geomcollisionid[cid]
+  w = contact_worldid_in[cid]
+  slot = contact_geomcollisionid_in[cid]
   gw = w % geom_size.shape[0]
   g0 = geoms[0]
   g1 = geoms[1]
@@ -461,32 +470,39 @@ def _narrowphase_recompute(
 
 @wp.kernel(enable_backward=False)
 def _gather_efc_to_contact(
-  contact_efc_address: wp.array2d[int],
-  contact_worldid: wp.array[int],
-  nacon: wp.array[int],
+  # Data in:
+  contact_efc_address_in: wp.array2d[int],
+  contact_worldid_in: wp.array[int],
+  nacon_in: wp.array[int],
+  # In:
   res_efc_pos: wp.array2d[float],  # dr/defc_pos * lam (per world, per efc row)
+  # Out:
   adj_dist_out: wp.array[float],  # per-contact seed for dist_out.grad (defc_pos/ddist = 1)
 ):
   """Gather dr/defc_pos (efc-row indexed) to the per-contact normal-row distance adjoint."""
   cid = wp.tid()
-  if cid >= nacon[0]:
+  if cid >= nacon_in[0]:
     return
-  e0 = contact_efc_address[cid, 0]
+  e0 = contact_efc_address_in[cid, 0]
   if e0 < 0:
     return
-  adj_dist_out[cid] = res_efc_pos[contact_worldid[cid], e0]
+  adj_dist_out[cid] = res_efc_pos[contact_worldid_in[cid], e0]
 
 
 @wp.kernel(enable_backward=False)
 def _cdof_qpos_vjp(
-  dof_parentid: wp.array[int],
-  dof_jntid: wp.array[int],
+  # Model:
+  nv: int,
   jnt_type: wp.array[int],
   jnt_dofadr: wp.array[int],
+  dof_jntid: wp.array[int],
+  dof_parentid: wp.array[int],
+  # Data in:
   cdof_in: wp.array2d[wp.spatial_vector],
+  # In:
   res_cdof: wp.array2d[wp.spatial_vector],  # dr/dcdof * lam (per dof)
-  nv: int,
-  res_dof: wp.array2d[float],  # OUT: += per-dof tangent gradient dc/d(dof k)
+  # Out:
+  res_dof_out: wp.array2d[float],  # OUT: += per-dof tangent gradient dc/d(dof k)
 ):
   """Fixed-reference part of dr/dcdof -> qpos: the screw-axis commutator, as a manual VJP.
 
@@ -516,17 +532,21 @@ def _cdof_qpos_vjp(
         chi = True
     if chi:
       acc += wp.dot(res_cdof[w, i], math.motion_cross(cdof_k, cdof_in[w, i]))
-  res_dof[w, k] += acc
+  res_dof_out[w, k] += acc
 
 
 @wp.kernel(enable_backward=False)
 def _build_ceff(
+  # Model:
+  nv: int,
   body_rootid: wp.array[int],
   dof_bodyid: wp.array[int],
+  # Data in:
   cdof_in: wp.array2d[wp.spatial_vector],
+  # In:
   res_cdof: wp.array2d[wp.spatial_vector],
   res_subtree_com: wp.array2d[wp.vec3],
-  nv: int,
+  # Out:
   ceff_out: wp.array2d[wp.vec3],  # OUT: effective subtree-COM cotangent
 ):
   """Build the effective subtree-COM seed: res_subtree_com + the moving-COM part of dr/dcdof."""
@@ -542,18 +562,22 @@ def _build_ceff(
 
 @wp.kernel(enable_backward=False)
 def _subtree_com_qpos_vjp(
+  # Model:
+  nbody: int,
   body_parentid: wp.array[int],
   body_rootid: wp.array[int],
-  dof_bodyid: wp.array[int],
-  body_isdofancestor: wp.array2d[int],
   body_mass: wp.array2d[float],
   body_subtreemass: wp.array2d[float],
+  dof_bodyid: wp.array[int],
+  body_isdofancestor: wp.array2d[int],
+  # Data in:
+  xipos_in: wp.array2d[wp.vec3],
   subtree_com_in: wp.array2d[wp.vec3],
   cdof_in: wp.array2d[wp.spatial_vector],
-  xipos_in: wp.array2d[wp.vec3],
+  # In:
   res_subtree_com: wp.array2d[wp.vec3],  # dr/dsubtree_com * lam
-  nbody: int,
-  res_dof: wp.array2d[float],  # OUT: += per-dof tangent gradient dc/d(dof k)
+  # Out:
+  res_dof_out: wp.array2d[float],  # OUT: += per-dof tangent gradient dc/d(dof k)
 ):
   """Chain dr/dsubtree_com to qpos via the mass-weighted subtree-COM Jacobian (mj_jacSubtreeCom)."""
   w, k = wp.tid()
@@ -575,25 +599,29 @@ def _subtree_com_qpos_vjp(
       k,
       w,
     )
-    acc += (body_mass[wm, c] / body_subtreemass[wm, r]) * wp.dot(jp, res_subtree_com[w, r])
-  res_dof[w, k] += acc
+    acc += (body_mass[wm, c] / body_subtreemass[w % body_subtreemass.shape[0], r]) * wp.dot(jp, res_subtree_com[w, r])
+  res_dof_out[w, k] += acc
 
 
 @wp.kernel(enable_backward=False)
 def _geom_pose_dof_vjp(
+  # Model:
+  ngeom: int,
   body_parentid: wp.array[int],
   body_rootid: wp.array[int],
   dof_bodyid: wp.array[int],
-  body_isdofancestor: wp.array2d[int],
   geom_bodyid: wp.array[int],
-  subtree_com_in: wp.array2d[wp.vec3],
-  cdof_in: wp.array2d[wp.spatial_vector],
+  body_isdofancestor: wp.array2d[int],
+  # Data in:
   geom_xpos_in: wp.array2d[wp.vec3],
   geom_xmat_in: wp.array2d[wp.mat33],
+  subtree_com_in: wp.array2d[wp.vec3],
+  cdof_in: wp.array2d[wp.spatial_vector],
+  # In:
   res_geom_xpos: wp.array2d[wp.vec3],  # adj(geom_xpos) from the narrowphase backward
   res_geom_xmat: wp.array2d[wp.mat33],  # adj(geom_xmat)
-  ngeom: int,
-  res_dof: wp.array2d[float],  # OUT: per-dof tangent gradient d(contact)/d(dof k)
+  # Out:
+  res_dof_out: wp.array2d[float],  # OUT: per-dof tangent gradient d(contact)/d(dof k)
 ):
   """Chain narrowphase geom-pose adjoints to the per-dof tangent gradient via support.jac_dof."""
   w, k = wp.tid()
@@ -621,19 +649,23 @@ def _geom_pose_dof_vjp(
       + wp.cross(wp.vec3(xm[0, 2], xm[1, 2], xm[2, 2]), wp.vec3(rgm[0, 2], rgm[1, 2], rgm[2, 2]))
     )
     acc += wp.dot(jacp, rgp) + wp.dot(jacr, tau)
-  res_dof[w, k] += acc
+  res_dof_out[w, k] += acc
 
 
 @wp.kernel(enable_backward=False)
 def _dof_to_qpos(
+  # Model:
   jnt_type: wp.array[int],
   jnt_qposadr: wp.array[int],
   jnt_dofadr: wp.array[int],
+  # Data in:
   qpos_in: wp.array2d[float],
+  # In:
   res_dof: wp.array2d[float],  # per-dof tangent gradient d(contact)/d(dof)
-  res_qpos: wp.array2d[float],  # += dof -> qpos (1:1 for slide/hinge/free-translation; quaternion lift for free/ball)
+  # Out:
+  res_qpos_out: wp.array2d[float],  # += dof -> qpos (1:1 for slide/hinge/free-translation; quaternion lift for free/ball)
 ):
-  """Map the per-dof tangent gradient res_dof to res_qpos (nq-indexed; 1:1 except quaternions).
+  """Map the per-dof tangent gradient res_dof to res_qpos_out (nq-indexed; 1:1 except quaternions).
 
   Free/ball angular gradient g lifts to raw quaternion coords as dc/dq = 2*quat_mul(q, [0, g]).
   """
@@ -643,9 +675,9 @@ def _dof_to_qpos(
   dadr = jnt_dofadr[j]
   if jt == _FREE or jt == _BALL:
     if jt == _FREE:  # translation dofs are 1:1; the quaternion starts at qadr+3, angular dofs at dadr+3
-      res_qpos[w, qadr + 0] += res_dof[w, dadr + 0]
-      res_qpos[w, qadr + 1] += res_dof[w, dadr + 1]
-      res_qpos[w, qadr + 2] += res_dof[w, dadr + 2]
+      res_qpos_out[w, qadr + 0] += res_dof[w, dadr + 0]
+      res_qpos_out[w, qadr + 1] += res_dof[w, dadr + 1]
+      res_qpos_out[w, qadr + 2] += res_dof[w, dadr + 2]
       qadr_q = qadr + 3
       dadr_a = dadr + 3
     else:  # BALL: 4 qpos (quaternion), 3 dofs, both at the joint adr
@@ -654,12 +686,12 @@ def _dof_to_qpos(
     q = wp.quat(qpos_in[w, qadr_q + 0], qpos_in[w, qadr_q + 1], qpos_in[w, qadr_q + 2], qpos_in[w, qadr_q + 3])
     g = wp.vec3(res_dof[w, dadr_a + 0], res_dof[w, dadr_a + 1], res_dof[w, dadr_a + 2])
     dq = 2.0 * math.quat_mul_axis(q, g)  # 2 * quat_mul(q, [0, g]): lift tangent angular -> raw quaternion gradient
-    res_qpos[w, qadr_q + 0] += dq[0]
-    res_qpos[w, qadr_q + 1] += dq[1]
-    res_qpos[w, qadr_q + 2] += dq[2]
-    res_qpos[w, qadr_q + 3] += dq[3]
+    res_qpos_out[w, qadr_q + 0] += dq[0]
+    res_qpos_out[w, qadr_q + 1] += dq[1]
+    res_qpos_out[w, qadr_q + 2] += dq[2]
+    res_qpos_out[w, qadr_q + 3] += dq[3]
   else:  # HINGE / SLIDE (nq == nv, qpos coord == dof)
-    res_qpos[w, qadr] += res_dof[w, dadr]
+    res_qpos_out[w, qadr] += res_dof[w, dadr]
 
 
 def contact_qpos_vjp(
@@ -696,18 +728,22 @@ def contact_qpos_vjp(
     inputs=[m.geom_type, m.geom_size, d_out.geom_xpos, d_out.geom_xmat, d_out.contact.geom, d_out.contact.worldid, d_out.nacon],
     outputs=[cb_tseg, cb_feat],
   )
-  np_in = [
-    m.geom_type,
-    m.geom_size,
-    d_out.geom_xpos,
-    d_out.geom_xmat,
-    d_out.contact.geom,
-    d_out.contact.geomcollisionid,
-    d_out.contact.worldid,
-    d_out.nacon,
-    cb_tseg,
-    cb_feat,
+  res_geom_xpos = wp.zeros_like(d_out.geom_xpos)
+  res_geom_xmat = wp.zeros_like(d_out.geom_xmat)
+  # (input, input-adjoint) pairs; only the geom poses carry adjoints (Warp auto-diffs the narrowphase).
+  np_pairs = [
+    (m.geom_type, None),
+    (m.geom_size, None),
+    (d_out.geom_xpos, res_geom_xpos),  # geom_xpos_in
+    (d_out.geom_xmat, res_geom_xmat),  # geom_xmat_in
+    (d_out.contact.geom, None),
+    (d_out.contact.worldid, None),
+    (d_out.contact.geomcollisionid, None),
+    (d_out.nacon, None),
+    (cb_tseg, None),
+    (cb_feat, None),
   ]
+  np_in = [a for a, _ in np_pairs]
   wp.launch(_narrowphase_recompute, dim=ncon_max, inputs=np_in, outputs=[cpos_o, dist_o, frame_o])
   # seed the geometry adjoints: contact_pos/frame are per-contact direct; efc_pos is
   # efc-row-indexed -> gather to per-contact (defc_pos/ddist = 1).
@@ -719,17 +755,12 @@ def contact_qpos_vjp(
     inputs=[d_out.contact.efc_address, d_out.contact.worldid, d_out.nacon, res_efc_pos],
     outputs=[dist_o.grad],
   )
-  res_geom_xpos = wp.zeros_like(d_out.geom_xpos)
-  res_geom_xmat = wp.zeros_like(d_out.geom_xmat)
-  adj_np = [None] * len(np_in)
-  adj_np[2] = res_geom_xpos  # geom_xpos_in
-  adj_np[3] = res_geom_xmat  # geom_xmat_in
   wp.launch(
     _narrowphase_recompute,
     dim=ncon_max,
     inputs=np_in,
     outputs=[cpos_o, dist_o, frame_o],
-    adj_inputs=adj_np,
+    adj_inputs=[g for _, g in np_pairs],
     adj_outputs=[cpos_o.grad, dist_o.grad, frame_o.grad],
     adjoint=True,
   )
@@ -742,52 +773,61 @@ def contact_qpos_vjp(
     _geom_pose_dof_vjp,
     dim=(nworld, nv),
     inputs=[
+      m.ngeom,
       m.body_parentid,
       m.body_rootid,
       m.dof_bodyid,
-      m.body_isdofancestor,
       m.geom_bodyid,
-      d_out.subtree_com,
-      d_out.cdof,
+      m.body_isdofancestor,
       d_out.geom_xpos,
       d_out.geom_xmat,
+      d_out.subtree_com,
+      d_out.cdof,
       res_geom_xpos,
       res_geom_xmat,
-      m.ngeom,
     ],
     outputs=[res_dof],
   )
   wp.launch(
     _cdof_qpos_vjp,
     dim=(nworld, nv),
-    inputs=[m.dof_parentid, m.dof_jntid, m.jnt_type, m.jnt_dofadr, d_out.cdof, res_cdof, nv],
+    inputs=[nv, m.jnt_type, m.jnt_dofadr, m.dof_jntid, m.dof_parentid, d_out.cdof, res_cdof],
     outputs=[res_dof],
   )
   ceff = wp.empty_like(res_subtree_com)
   wp.launch(
     _build_ceff,
     dim=(nworld, m.nbody),
-    inputs=[m.body_rootid, m.dof_bodyid, d_out.cdof, res_cdof, res_subtree_com, nv],
+    inputs=[nv, m.body_rootid, m.dof_bodyid, d_out.cdof, res_cdof, res_subtree_com],
     outputs=[ceff],
   )
   wp.launch(
     _subtree_com_qpos_vjp,
     dim=(nworld, nv),
     inputs=[
+      m.nbody,
       m.body_parentid,
       m.body_rootid,
-      m.dof_bodyid,
-      m.body_isdofancestor,
       m.body_mass,
       m.body_subtreemass,
+      m.dof_bodyid,
+      m.body_isdofancestor,
+      d_out.xipos,
       d_out.subtree_com,
       d_out.cdof,
-      d_out.xipos,
       ceff,
-      m.nbody,
     ],
     outputs=[res_dof],
   )
   wp.launch(
-    _dof_to_qpos, dim=(nworld, m.njnt), inputs=[m.jnt_type, m.jnt_qposadr, m.jnt_dofadr, qpos_in, res_dof], outputs=[res_qpos]
+    _dof_to_qpos,
+    dim=(nworld, m.njnt),
+    inputs=[
+      m.jnt_type,
+      m.jnt_qposadr,
+      m.jnt_dofadr,
+      qpos_in,
+      res_dof,
+    ],
+    outputs=[res_qpos],
   )
