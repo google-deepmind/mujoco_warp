@@ -608,7 +608,7 @@ def _gjk_support(
   dir_neg = x_k / x_norm
 
   # tuning for discrete geoms when direction is noisy
-  if is_discrete and x_norm < 1e-5:
+  if is_discrete and x_norm < 1e-4:
     if n == 2:
       edge = simplex[1] - simplex[0]
       edge_norm2 = wp.dot(edge, edge)
