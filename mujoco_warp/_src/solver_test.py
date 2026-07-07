@@ -684,6 +684,35 @@ class SolverTest(parameterized.TestCase):
 
     self.assertTrue(total_any_changes, "no state changes detected across any keyframe")
 
+  @parameterized.parameters(SolverType.CG, SolverType.NEWTON)
+  def test_qfrc_constraint_early_convergence(self, solver_):
+    """Sparse qfrc_constraint must survive for worlds that converge before the batch."""
+    mjm, mjd, m, _ = test_data.fixture(
+      "humanoid/humanoid.xml",
+      keyframe=0,
+      overrides={"opt.jacobian": mujoco.mjtJacobian.mjJAC_SPARSE, "opt.solver": solver_},
+    )
+    self.assertTrue(m.is_sparse)
+
+    d = mjw.put_data(mjm, mjd, nworld=32)
+
+    # Perturb each world so they converge at different iteration counts; identical
+    # worlds would converge in lockstep and hide the early-convergence zeroing.
+    rng = np.random.default_rng(0)
+    d.qpos = wp.array(d.qpos.numpy() + rng.uniform(-0.05, 0.05, d.qpos.shape), dtype=float)
+    d.qvel = wp.array(d.qvel.numpy() + rng.uniform(-0.5, 0.5, d.qvel.shape), dtype=float)
+
+    for _ in range(10):
+      mjw.step(m, d)
+
+    nefc = d.nefc.numpy()
+    efc_force = d.efc.force.numpy()
+    force = np.array([np.abs(efc_force[w, : nefc[w]]).sum() for w in range(d.nworld)])
+    active = force > 0
+    has_qfrc = np.abs(d.qfrc_constraint.numpy()).sum(axis=1) > 0
+    self.assertTrue(active.any(), "no worlds developed constraint forces")
+    np.testing.assert_array_equal(has_qfrc[active], np.ones(active.sum(), dtype=bool))
+
 
 # Basic weld constraint model.
 _WELD_XML = """
