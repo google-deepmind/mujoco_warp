@@ -23,7 +23,6 @@ from mujoco_warp._src import constraint
 from mujoco_warp._src import constraint_adjoint
 from mujoco_warp._src import derivative
 from mujoco_warp._src import forward
-from mujoco_warp._src import forward_next
 from mujoco_warp._src import smooth
 from mujoco_warp._src import smooth_adjoint
 from mujoco_warp._src import solver
@@ -122,17 +121,17 @@ def _advance_state(
   qadr = jnt_qposadr[jntid]
   dadr = jnt_dofadr[jntid]
 
-  # semi-implicit: update qvel, then integrate qpos with it, via the shared forward_next funcs.
+  # semi-implicit: update qvel, then integrate qpos with it, via the shared forward funcs.
   # next_velocity returns the value (held as a local) so qpos uses it without reading qvel_out back.
   qvel_lin = wp.vec3(0.0, 0.0, 0.0)
   qvel_ang = wp.vec3(0.0, 0.0, 0.0)
   if jt == _FREE:
-    vlx = forward_next.next_velocity(worldid, dadr + 0, opt_timestep, qvel_in, qacc_in, 1.0)
-    vly = forward_next.next_velocity(worldid, dadr + 1, opt_timestep, qvel_in, qacc_in, 1.0)
-    vlz = forward_next.next_velocity(worldid, dadr + 2, opt_timestep, qvel_in, qacc_in, 1.0)
-    vax = forward_next.next_velocity(worldid, dadr + 3, opt_timestep, qvel_in, qacc_in, 1.0)
-    vay = forward_next.next_velocity(worldid, dadr + 4, opt_timestep, qvel_in, qacc_in, 1.0)
-    vaz = forward_next.next_velocity(worldid, dadr + 5, opt_timestep, qvel_in, qacc_in, 1.0)
+    vlx = forward.next_velocity(opt_timestep, qvel_in, qacc_in, worldid, dadr + 0, 1.0)
+    vly = forward.next_velocity(opt_timestep, qvel_in, qacc_in, worldid, dadr + 1, 1.0)
+    vlz = forward.next_velocity(opt_timestep, qvel_in, qacc_in, worldid, dadr + 2, 1.0)
+    vax = forward.next_velocity(opt_timestep, qvel_in, qacc_in, worldid, dadr + 3, 1.0)
+    vay = forward.next_velocity(opt_timestep, qvel_in, qacc_in, worldid, dadr + 4, 1.0)
+    vaz = forward.next_velocity(opt_timestep, qvel_in, qacc_in, worldid, dadr + 5, 1.0)
     qvel_out[worldid, dadr + 0] = vlx
     qvel_out[worldid, dadr + 1] = vly
     qvel_out[worldid, dadr + 2] = vlz
@@ -142,19 +141,19 @@ def _advance_state(
     qvel_lin = wp.vec3(vlx, vly, vlz)
     qvel_ang = wp.vec3(vax, vay, vaz)
   elif jt == _BALL:
-    vx = forward_next.next_velocity(worldid, dadr + 0, opt_timestep, qvel_in, qacc_in, 1.0)
-    vy = forward_next.next_velocity(worldid, dadr + 1, opt_timestep, qvel_in, qacc_in, 1.0)
-    vz = forward_next.next_velocity(worldid, dadr + 2, opt_timestep, qvel_in, qacc_in, 1.0)
+    vx = forward.next_velocity(opt_timestep, qvel_in, qacc_in, worldid, dadr + 0, 1.0)
+    vy = forward.next_velocity(opt_timestep, qvel_in, qacc_in, worldid, dadr + 1, 1.0)
+    vz = forward.next_velocity(opt_timestep, qvel_in, qacc_in, worldid, dadr + 2, 1.0)
     qvel_out[worldid, dadr + 0] = vx
     qvel_out[worldid, dadr + 1] = vy
     qvel_out[worldid, dadr + 2] = vz
     qvel_ang = wp.vec3(vx, vy, vz)
   else:  # HINGE / SLIDE
-    v = forward_next.next_velocity(worldid, dadr, opt_timestep, qvel_in, qacc_in, 1.0)
+    v = forward.next_velocity(opt_timestep, qvel_in, qacc_in, worldid, dadr, 1.0)
     qvel_out[worldid, dadr] = v
     qvel_lin = wp.vec3(v, 0.0, 0.0)
 
-  forward_next.next_position(jt, qadr, dt, qpos_in, worldid, qvel_lin, qvel_ang, qpos_out)
+  forward.next_position(qpos_in, jt, qadr, dt, worldid, qvel_lin, qvel_ang, qpos_out)
 
 
 # ----------------------------------------------------------------------------
