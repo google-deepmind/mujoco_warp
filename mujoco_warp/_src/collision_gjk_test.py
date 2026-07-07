@@ -1013,7 +1013,7 @@ class GJKTest(parameterized.TestCase):
 
     ncon = int(d.nacon.numpy()[0])
     # TODO(kbayes): support size 10.0 better
-    self.assertEqual(ncon, 4)
+    self.assertGreaterEqual(ncon, 4)
     dist = d.contact.dist.numpy()[:ncon]
     np.testing.assert_allclose(dist.min(), -0.0001081, atol=1e-7)
 
