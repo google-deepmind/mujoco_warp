@@ -30,6 +30,7 @@ from mujoco_warp._src.types import Data
 from mujoco_warp._src.types import Model
 from mujoco_warp._src.types import vec10
 from mujoco_warp._src.types import vec10f
+from mujoco_warp._src.warp_util import event_scope
 
 # Adjoint module: backward stays ON so AD leaves differentiate through cross-module @wp.funcs.
 wp.set_module_options({"enable_backward": True})
@@ -128,6 +129,7 @@ def _comvel_W_acc(
 # ----------------------------------------------------------------------------
 # The shared reduced reverse.
 # ----------------------------------------------------------------------------
+@event_scope
 def smooth_force_backward(
   m: Model,
   d: Data,
@@ -271,6 +273,7 @@ def smooth_force_backward(
   return res_qpos
 
 
+@event_scope
 def mass_matrix_qpos_vjp(m: Model, d: Data, y: wp.array2d, w: wp.array2d):
   """Mass-matrix-derivative VJP: res_qpos = d_q[ y^T M(q) w ] with y, w fixed; d never mutated."""
   s = _clone_for_fd(d)  # non-grad scratch; s.qpos = d.qpos
@@ -352,6 +355,7 @@ def _spring_qfrc_recompute(
     qfrc_spring_out[w, dofid] = -fdif * util_misc._poly_force(stiffness, spoly, fdif, 0)
 
 
+@event_scope
 def spring_qpos_vjp(m: Model, d: Data, lam: wp.array2d):
   """Spring qpos VJP: res_qpos = d(lam^T(-qfrc_spring))/dqpos, all joint types; d read-only."""
   nworld = d.qpos.shape[0]
@@ -389,6 +393,7 @@ def spring_qpos_vjp(m: Model, d: Data, lam: wp.array2d):
 # moment B is constant in qpos for JOINT (adj_B = 0); the velocity channel is owned by
 # deriv_smooth_vel. Unsupported topologies are gated off by assert_smooth_supported, NOT FD.
 # ----------------------------------------------------------------------------
+@event_scope
 def actuator_qpos_vjp(m: Model, d: Data, lam: wp.array2d):
   """Affine JOINT-actuator qpos VJP: res_qpos = d(lam^T(-qfrc_actuator))/dqpos over frozen d."""
   nworld = d.qpos.shape[0]
@@ -540,6 +545,7 @@ def _gravcomp_seed(
 _HAS_GRAVCOMP_CACHE = {}
 
 
+@event_scope
 def gravcomp_qpos_vjp(m: Model, d: Data, lam: wp.array2d):
   """Gravcomp qpos VJP: res_qpos = d(lam^T(-qfrc_gravcomp))/dqpos (passive bucket); d read-only."""
   nworld = d.qpos.shape[0]
@@ -1205,6 +1211,7 @@ def _cinert_pose_dof_vjp(
   res_dof_out[w, k] += acc
 
 
+@event_scope
 def cinert_qpos_vjp(m: Model, d: Data, adj_cinert: wp.array2d, res_dof: wp.array2d):
   """VJP of smooth._cinert: pose terms += into res_dof; RETURNS the subtree_com cotangent seed."""
   nworld = d.qpos.shape[0]
@@ -1271,6 +1278,7 @@ def _inertial_frames_recompute(
   ximat_out[w, b] = math.quat_to_mat(math.mul_quat(xq, body_iquat[w % body_iquat.shape[0], b]))
 
 
+@event_scope
 def inertia_param_vjp(m: Model, d: Data, lam: wp.array2d):
   """Inertial sys-id VJP: accumulates -(d(lam^T qfrc_bias)/dtheta) into m.<param>.grad.
 

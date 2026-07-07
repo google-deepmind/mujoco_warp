@@ -25,6 +25,7 @@ from mujoco_warp._src import types
 from mujoco_warp._src.types import MJ_MINVAL
 from mujoco_warp._src.types import Data
 from mujoco_warp._src.types import Model
+from mujoco_warp._src.warp_util import event_scope
 
 # Adjoint module: backward stays ON so AD leaves differentiate through cross-module @wp.funcs.
 wp.set_module_options({"enable_backward": True})
@@ -697,6 +698,7 @@ def _dof_to_qpos(
     res_qpos_out[w, qadr] += res_dof[w, dadr]
 
 
+@event_scope
 def contact_qpos_vjp(
   m: Model,
   d_out: Data,

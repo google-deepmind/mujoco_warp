@@ -25,7 +25,7 @@ import numpy as np
 import warp as wp
 
 import mujoco_warp as mjw
-from mujoco_warp._src import adjoint  # noqa: F401  registers the analytic step() backward
+mjw.enable_grad()
 
 sys.path.insert(0, os.path.dirname(__file__))
 import viz  # noqa: E402  shared renderer (mp4 or live MuJoCo viewer via MJW_VIEWER)

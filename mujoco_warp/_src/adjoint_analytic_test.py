@@ -412,6 +412,10 @@ def _quad_grad_E(loss_of_theta, theta, sigma, deg=121):
 # ============================================================================
 
 
+def setUpModule():
+  mjw.enable_grad()
+
+
 class AnalyticCorrectnessTest(parameterized.TestCase):
   def test_floor_bounce_pn_closed_form_consistency(self):
     """floor_bounce_pn is internally consistent with floor_bounce_grads (FD of the value ==

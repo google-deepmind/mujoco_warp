@@ -640,15 +640,17 @@ def implicit(m: Model, d: Data):
     _advance(m, d, d.qacc)
 
 
-# Analytic position-gradient hook, set via register_position_backward_hook (None = off).
-# Consulted in fwd_kinematics under an active wp.Tape (so NOT inside step, which pauses the tape).
-_position_backward_hook = None
+# Gradient opt-in gate + analytic fwd_kinematics backward hook, set by mujoco_warp.enable_grad().
+# ENABLE_GRAD gates step() and fwd_kinematics(): a taped record while it is False is a hard error
+# (no silent zero-grad). The hook is the callback forward.py invokes (it cannot import adjoint.py).
+ENABLE_GRAD = False
+_fwd_kinematics_backward_hook = None
 
 
-def register_position_backward_hook(fn):
-  """Register adjoint.py's analytic fwd_kinematics backward (pass None to disable)."""
-  global _position_backward_hook
-  _position_backward_hook = fn
+def register_fwd_kinematics_backward_hook(fn):
+  """Register adjoint.py's analytic fwd_kinematics backward (the position VJP callback)."""
+  global _fwd_kinematics_backward_hook
+  _fwd_kinematics_backward_hook = fn
 
 
 @event_scope
@@ -661,7 +663,12 @@ def fwd_kinematics(m: Model, d: Data):
   """
   rt = wp._src.context.runtime
   tape = rt.tape if rt is not None else None
-  record = (tape is not None) and (_position_backward_hook is not None)
+  record = tape is not None
+  if record and not ENABLE_GRAD:
+    raise RuntimeError(
+      "fwd_kinematics() was recorded under a wp.Tape but gradients are disabled; "
+      "call mujoco_warp.enable_grad() first, or run fwd_kinematics outside the tape"
+    )
   if record:
     rt.tape = None  # pause: kinematics kernels run forward-only; the analytic record_func owns the VJP
   try:
@@ -674,7 +681,7 @@ def fwd_kinematics(m: Model, d: Data):
     if record:
       rt.tape = tape
   if record:
-    hook = _position_backward_hook
+    hook = _fwd_kinematics_backward_hook
     arrays = [a for a in (d.qpos, d.site_xpos, d.xpos, d.xquat) if a is not None and a.grad]
     if len(arrays) > 1:  # qpos + at least one differentiated output
       tape.record_func(lambda: hook(m, d), arrays=arrays)
@@ -1427,15 +1434,16 @@ _STEP_STATE_FIELDS = (
   "time",
 )
 
-# Analytic-gradient hook, set by adjoint.py via register_backward_hook (None = off). Only consulted
-# on the out-of-place (d_out is not d) path under an active wp.Tape; never affects in-place step.
-_backward_hook = None
+# Analytic step-backward hook (the step VJP callback), set by mujoco_warp.enable_grad(). Only
+# consulted on the out-of-place (d_out is not d) path under an active wp.Tape; never affects
+# in-place step. The ENABLE_GRAD gate (defined above) is what raises on a taped step while off.
+_step_backward_hook = None
 
 
-def register_backward_hook(fn):
-  """Register adjoint.py's analytic step backward (pass None to disable)."""
-  global _backward_hook
-  _backward_hook = fn
+def register_step_backward_hook(fn):
+  """Register adjoint.py's analytic step backward (the step VJP callback)."""
+  global _step_backward_hook
+  _step_backward_hook = fn
 
 
 def _copy_state(d: Data, d_out: Data):
@@ -1464,7 +1472,12 @@ def step(m: Model, d: Data, d_out: Data = None):
   # (state copy + the ~90 forward-only physics kernels) so none of it lands on the tape -- the
   # copy's wp.copy adjoints would otherwise double-count against adjoint.py's analytic record_func,
   # which alone owns the step VJP (d_out.grad -> d.grad).
-  record = (not inplace) and (tape is not None) and (_backward_hook is not None)
+  record = (not inplace) and (tape is not None)
+  if record and not ENABLE_GRAD:
+    raise RuntimeError(
+      "step() was recorded under a wp.Tape but gradients are disabled; "
+      "call mujoco_warp.enable_grad() first, or step outside the tape"
+    )
   if record:
     rt.tape = None
   try:
@@ -1484,7 +1497,7 @@ def step(m: Model, d: Data, d_out: Data = None):
       rt.tape = tape
 
   if record:
-    hook = _backward_hook
+    hook = _step_backward_hook
     arrays = [a for a in (d.qpos, d.qvel, d.ctrl, d_out.qpos, d_out.qvel) if a.grad]
     tape.record_func(lambda: hook(m, d, d_out), arrays=arrays)
 

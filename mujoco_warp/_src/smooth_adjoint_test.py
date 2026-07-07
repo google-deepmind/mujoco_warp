@@ -148,6 +148,10 @@ def _spring_fd_qpos_mj(mjm, qpos, lam, eps=1e-6):
   return out
 
 
+def setUpModule():
+  mjw.enable_grad()
+
+
 class SmoothSpringTest(parameterized.TestCase):
   """smooth_adjoint.spring_qpos_vjp (complete FREE/BALL/SLIDE/HINGE source-AD spring leaf) vs float64
   MuJoCo-C FD of L = λᵀ(-qfrc_spring). The FREE/BALL quaternion springs are the new coverage the

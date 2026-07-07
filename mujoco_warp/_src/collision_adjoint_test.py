@@ -370,6 +370,10 @@ def _fd_grad(mjm, mjd, T, qvel0, eps=1e-4):
   return g
 
 
+def setUpModule():
+  mjw.enable_grad()
+
+
 class ContactQposVJPTest(parameterized.TestCase):
   """FD gates for the contact-∂qpos analytic VJPs (collision_adjoint.py)."""
 

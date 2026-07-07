@@ -54,15 +54,13 @@ from mujoco_warp._src.types import Data
 from mujoco_warp._src.types import Model
 from mujoco_warp._src.types import vec5
 from mujoco_warp._src.types import vec10f
+from mujoco_warp._src.warp_util import event_scope
 
 # Backward stays ON for this adjoint module (do NOT set False): its AD leaves are launched with
 # adjoint=True and differentiate through cross-module @wp.funcs from forward/constraint/solver,
 # e.g. _contact_kbimp, _eval_elliptic_middle; Warp codegens those func adjoints only when the
 # calling kernel's module is backward-on. Forward-only hand VJPs opt out via enable_backward=False.
 wp.set_module_options({"enable_backward": True})
-
-# Install the zero-guarded sqrt adjoint globally (kernels compiled after this see safe_sqrt).
-wp.sqrt = adjoint_util.safe_sqrt
 
 _FREE = int(types.JointType.FREE.value)
 _BALL = int(types.JointType.BALL.value)
@@ -523,6 +521,7 @@ def _dampingpoly_Qv_leaf(
   out[w, i] = dt * util_misc._poly_force_deriv(damping, dpoly, qvel_in[w, i], 1) * a_u[w, i]
 
 
+@event_scope
 def advance_backward(m: Model, d: Data, d_out: Data):
   """Integrator (advance) adjoint (stage 1) -- the VJP of forward.{euler,implicit,...}.
 
@@ -656,6 +655,7 @@ def advance_backward(m: Model, d: Data, d_out: Data):
   return adj_qpos, adj_qvel, adj_qacc
 
 
+@event_scope
 def solve_backward(m: Model, d_out: Data, adj_qacc: wp.array):
   """The IFT (stage 2): solve H lam = adj_qacc, reusing the forward solver's assembly + factor.
 
@@ -849,6 +849,7 @@ def _contact_residual_vjp_dense(
   )
 
 
+@event_scope
 def contact_residual_backward(m: Model, d: Data, d_out: Data, lam: wp.array, res_qpos: wp.array, res_qvel: wp.array):
   """Contact residual VJP (stages 3 and 3c): the dqpos/dqvel channels of -J^T f_contact.
 
@@ -884,6 +885,7 @@ def contact_residual_backward(m: Model, d: Data, d_out: Data, lam: wp.array, res
   )
 
 
+@event_scope
 def smooth_vel_backward(m: Model, d: Data, d_out: Data, lam: wp.array, adj_qvel: wp.array):
   """Smooth residual dqvel + dctrl (stage 4).
 
@@ -923,6 +925,7 @@ def smooth_vel_backward(m: Model, d: Data, d_out: Data, lam: wp.array, adj_qvel:
     )
 
 
+@event_scope
 def smooth_param_backward(m: Model, d: Data, d_out: Data, lam: wp.array):
   """Smooth-PARAM sys-id with the same IFT lam (stage 4b).
 
@@ -964,6 +967,7 @@ def smooth_param_backward(m: Model, d: Data, d_out: Data, lam: wp.array):
     smooth_adjoint.inertia_param_vjp(m, s, lam)  # -(dr/dtheta)^T lam -> m.body_{mass,inertia,ipos,iquat}.grad
 
 
+@event_scope
 def noncontact_constraint_backward(
   m: Model, d: Data, d_out: Data, lam: wp.array, res_qpos: wp.array, res_qvel: wp.array, ctx_Jaref: wp.array = None
 ):
@@ -1057,6 +1061,7 @@ def noncontact_constraint_backward(
   )
 
 
+@event_scope
 def smooth_qpos_backward(m: Model, d: Data, d_out: Data, lam: wp.array, res_qpos: wp.array, adj_qpos: wp.array):
   """Smooth-force dqpos (stage 5): the analytic reduced replay, accumulated into res_qpos.
 
@@ -1098,6 +1103,7 @@ def _write_input_adjoints(m: Model, d: Data, adj_qpos: wp.array, adj_qvel: wp.ar
   # while d(M*qacc)/dtheta in r_smooth is w.r.t. theta.
 
 
+@event_scope
 def forward_backward_ift(m: Model, d: Data, d_out: Data, adj_qpos: wp.array, adj_qvel: wp.array, adj_qacc: wp.array):
   """Adjoint (VJP) of forward() via the implicit function theorem, not the pipeline reversed.
 
@@ -1125,18 +1131,16 @@ def forward_backward_ift(m: Model, d: Data, d_out: Data, adj_qpos: wp.array, adj
   _write_input_adjoints(m, d, adj_qpos, adj_qvel, res_qpos, res_qvel)  # grad = integrator-direct - residual
 
 
+@event_scope
 def step_backward(m: Model, d: Data, d_out: Data):
   """Analytic backward of step(): reads d_out.{qpos,qvel}.grad, writes d.{qpos,qvel}.grad.
 
-  Registered via forward.register_backward_hook as one tape.record_func per step (distinct in/out
+  Registered by enable_grad() as one tape.record_func per step (distinct in/out
   buffers chain BPTT); composes advance_backward + forward_backward_ift, all graph-capture-ready.
   """
   _assert_step_supported(m)
   adj_qpos, adj_qvel, adj_qacc = advance_backward(m, d, d_out)
   forward_backward_ift(m, d, d_out, adj_qpos, adj_qvel, adj_qacc)
-
-
-forward.register_backward_hook(step_backward)
 
 
 # ============================================================================================
@@ -1183,6 +1187,7 @@ def _site_jac_vjp(
   adj_dof_out[w, i] += acc
 
 
+@event_scope
 def fwd_kinematics_backward(m: Model, d: Data):
   """Analytic position VJP for forward.fwd_kinematics: adj(site_xpos) -> adj(qpos).
 
@@ -1223,4 +1228,15 @@ def fwd_kinematics_backward(m: Model, d: Data):
   )
 
 
-forward.register_position_backward_hook(fwd_kinematics_backward)
+def enable_grad() -> None:
+  """Route step() and fwd_kinematics() backward through the analytic adjoints (idempotent, one-way).
+
+  Call once after importing mujoco_warp, before the first differentiated kernel launch (in
+  practice, before put_model): sets the ENABLE_GRAD gate, installs a zero-guarded wp.sqrt for
+  kernels compiled afterwards, and registers the analytic step / fwd_kinematics backward hooks.
+  Import is otherwise gradient-side-effect-free; taping either without this raises.
+  """
+  forward.ENABLE_GRAD = True
+  wp.sqrt = adjoint_util.safe_sqrt
+  forward.register_step_backward_hook(step_backward)
+  forward.register_fwd_kinematics_backward_hook(fwd_kinematics_backward)

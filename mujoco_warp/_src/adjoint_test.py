@@ -488,6 +488,41 @@ def unittest_skip(reason):
 # ----------------------------------------------------------------------------
 
 
+def setUpModule():
+  mjw.enable_grad()
+
+
+class EnableGradApiTest(parameterized.TestCase):
+  def test_enable_grad_idempotent(self):
+    from mujoco_warp._src import adjoint, adjoint_util, forward
+
+    mjw.enable_grad()
+    mjw.enable_grad()  # second call is a no-op (idempotent)
+    self.assertTrue(forward.ENABLE_GRAD)
+    self.assertIs(forward._step_backward_hook, adjoint.step_backward)
+    self.assertIs(forward._fwd_kinematics_backward_hook, adjoint.fwd_kinematics_backward)
+    self.assertIs(wp.sqrt, adjoint_util.safe_sqrt)
+
+  def test_taped_step_without_enable_grad_raises(self):
+    from mujoco_warp._src import forward
+
+    mjm = mujoco.MjModel.from_xml_string(_SINGLE_HINGE)
+    mjd = mujoco.MjData(mjm)
+    mujoco.mj_forward(mjm, mjd)
+    m = mjw.put_model(mjm)
+    d = mjw.put_data(mjm, mjd)
+    d_out = mjw.put_data(mjm, mjd)
+
+    saved = forward.ENABLE_GRAD
+    forward.ENABLE_GRAD = False  # white-box: there is no disable_grad() by design
+    try:
+      with self.assertRaises(RuntimeError):
+        with wp.Tape():
+          mjw.step(m, d, d_out)
+    finally:
+      forward.ENABLE_GRAD = saved
+
+
 class StepNotDifferentiableTest(parameterized.TestCase):
   """Documents the pre-``adjoint.py`` state: analytic gradients of ``step`` are 0/None."""
 
