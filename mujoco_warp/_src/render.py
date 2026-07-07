@@ -81,7 +81,9 @@ def sample_texture(
 
   if geom_type[geom_id] == GeomType.PLANE:
     local = wp.transpose(rot) @ (hit_point - pos)
-    uv = wp.vec2(local[0], local[1])
+    # MuJoCo's OBJECT_PLANE texgen for planes is `s = 0.5 * texrepeat * x_obj` (render_gl3.c),
+    # i.e. one tile spans `2 / texrepeat` world units. Scale by 0.5 here to match.
+    uv = wp.vec2(0.5 * local[0], 0.5 * local[1])
 
   if geom_type[geom_id] == GeomType.MESH:
     if f < 0 or mesh_id < 0:
