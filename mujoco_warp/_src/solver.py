@@ -3590,11 +3590,6 @@ def _use_incremental(m: types.Model) -> bool:
   return m.opt.solver == types.SolverType.NEWTON and m.opt.cone != types.ConeType.ELLIPTIC
 
 
-def _stable_fast(m: types.Model, compact: bool) -> bool:
-  """Stable-state fast path: needs state-change tracking; compact scatters qfrc itself."""
-  return _use_incremental(m) and not compact
-
-
 @wp.kernel
 def _zero_change_counters(
   # Out:
@@ -3621,11 +3616,6 @@ def _solver_iteration(
   # tracking, and the additional JTCJ Hessian term depends on Jaref which
   # changes every iteration.
   incremental = _use_incremental(m)
-  # Stable-state fast path: worlds with no state flips this iteration were
-  # exactly quadratic over the step, so grad/Mgrad/search only changed by a
-  # scalar along the same ray. Skip their qfrc/grad/solve/search updates and
-  # track the scalar in ctx.grad_scale.
-  stable_fast = _stable_fast(m, compact)
 
   if incremental:
     # Must complete before _update_constraint_efc which atomically increments.
@@ -3635,10 +3625,14 @@ def _solver_iteration(
       outputs=[ctx.quad_changed_count, ctx.state_changed_count],
     )
 
-  _update_constraint(m, d, ctx, track_changes=incremental, stable_fast=stable_fast)
+  # The tracking also enables the stable-state fast path: worlds with no state
+  # flips this iteration were exactly quadratic over the step, so grad/Mgrad/
+  # search only changed by a scalar along the same ray. Skip their qfrc/grad/
+  # solve/search updates and track the scalar in ctx.grad_scale.
+  _update_constraint(m, d, ctx, track_changes=incremental, stable_fast=incremental)
 
   if incremental:
-    _update_gradient_incremental(m, d, ctx, stable_fast)
+    _update_gradient_incremental(m, d, ctx, stable_fast=incremental)
   else:
     _update_gradient(m, d, ctx, compact=compact)
 
@@ -3686,11 +3680,11 @@ def _solver_iteration(
     )
 
   else:
-    changed = ctx.state_changed_count if stable_fast else d.nefc
-    wp.launch(_solve_zero_search_dot(stable_fast), dim=d.nworld, inputs=[changed, ctx.done], outputs=[ctx.search_dot])
+    changed = ctx.state_changed_count if incremental else d.nefc
+    wp.launch(_solve_zero_search_dot(incremental), dim=d.nworld, inputs=[changed, ctx.done], outputs=[ctx.search_dot])
 
     wp.launch(
-      _solve_search_update(stable_fast),
+      _solve_search_update(incremental),
       dim=(d.nworld, m.nv),
       inputs=[m.opt.solver, changed, ctx.Mgrad, ctx.search, ctx.beta, ctx.done],
       outputs=[ctx.search, ctx.search_dot],
@@ -3835,9 +3829,10 @@ def _solve(m: types.Model, d: types.Data, ctx: SolverContext, compact: bool = Fa
     for _ in range(m.opt.iterations):
       _solver_iteration(m, d, ctx, nsolving, compact=compact)
 
-  # Recover the public qfrc_constraint: the fast path leaves it stale, and the
-  # per-iteration zeroing wiped it for worlds that converged early.
-  if _stable_fast(m, compact):
+  # Recover qfrc_constraint (the compacted buffer when run under solve_compact):
+  # the fast path leaves it stale, and the per-iteration zeroing wiped it for
+  # worlds that converged early.
+  if _use_incremental(m):
     wp.launch(
       _qfrc_constraint_from_grad,
       dim=(d.nworld, m.nv),
