@@ -2336,6 +2336,7 @@ class InverseContext:
   done: wp.array[bool]
   quad_changed_ids: wp.array2d[int]
   quad_changed_count: wp.array[int]
+  state_changed_count: wp.array[int]
 
 
 @dataclasses.dataclass

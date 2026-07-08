@@ -54,6 +54,7 @@ def create_inverse_context(m: types.Model, d: types.Data) -> InverseContext:
     done=wp.empty((nworld,), dtype=bool),
     quad_changed_ids=wp.empty((nworld, 0), dtype=int),
     quad_changed_count=wp.empty((0,), dtype=int),
+    state_changed_count=wp.empty((0,), dtype=int),
   )
 
 
