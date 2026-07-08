@@ -55,6 +55,7 @@ def create_inverse_context(m: types.Model, d: types.Data) -> InverseContext:
     quad_changed_ids=wp.empty((nworld, 0), dtype=int),
     quad_changed_count=wp.empty((0,), dtype=int),
     state_changed_count=wp.empty((0,), dtype=int),
+    ray_exhausted=wp.empty((0,), dtype=bool),
   )
 
 
@@ -90,6 +91,7 @@ def _create_solver_context(m: types.Model, d: types.Data) -> SolverContext:
     alpha=wp.empty((nworld,), dtype=float),
     grad_scale=wp.empty((nworld,), dtype=float),
     improvement=wp.empty((nworld,), dtype=float),
+    ray_exhausted=wp.zeros((nworld,), dtype=bool),
     prev_grad=wp.empty((nworld, nv), dtype=float),
     prev_Mgrad=wp.empty((nworld, nv), dtype=float),
     beta=wp.empty((nworld,), dtype=float),
@@ -843,6 +845,7 @@ def _linesearch_iterative_kernel(ls_iterations: int, cone_type: types.ConeType, 
     ctx_quad_out: wp.array2d[wp.vec3],
     ctx_improvement_out: wp.array[float],
     ctx_alpha_out: wp.array[float],
+    ctx_ray_exhausted_out: wp.array[bool],
   ):
     worldid, tid = wp.tid()
 
@@ -942,8 +945,10 @@ def _linesearch_iterative_kernel(ls_iterations: int, cone_type: types.ConeType, 
     scale = meaninertia * wp.float(nv)
     gtol = wp.max(tolerance * ls_tolerance * snorm * scale, 1e-6)
 
-    # p0 via parallel reduction
+    # p0 via parallel reduction; also accumulate the gross derivative-term
+    # magnitude, which sets the arithmetic noise floor of the bracketing search
     local_p0 = wp.vec3(0.0)
+    local_q1_abs = float(0.0)
     for efcid in range(tid, nefc, wp.block_dim()):
       if wp.static(IS_ELLIPTIC):
         efc_type = efc_type_in[worldid, efcid]
@@ -964,7 +969,7 @@ def _linesearch_iterative_kernel(ls_iterations: int, cone_type: types.ConeType, 
           quad1 = ctx_quad_in[worldid, efc_addr1]
           quad2 = ctx_quad_in[worldid, efc_addr2]
 
-        local_p0 += _compute_efc_eval_pt_alpha_zero(
+        pt = _compute_efc_eval_pt_alpha_zero(
           efcid,
           ne,
           nf,
@@ -980,9 +985,11 @@ def _linesearch_iterative_kernel(ls_iterations: int, cone_type: types.ConeType, 
           quad1,
           quad2,
         )
+        local_p0 += pt
+        local_q1_abs += wp.abs(pt[1])
       else:
         # direct evaluation for pyramidal cones (no intermediate quad)
-        local_p0 += _compute_efc_eval_pt_alpha_zero(
+        pt = _compute_efc_eval_pt_alpha_zero(
           efcid,
           ne,
           nf,
@@ -991,12 +998,16 @@ def _linesearch_iterative_kernel(ls_iterations: int, cone_type: types.ConeType, 
           ctx_Jaref_in[worldid, efcid],
           ctx_jv_in[worldid, efcid],
         )
+        local_p0 += pt
+        local_q1_abs += wp.abs(pt[1])
 
     # at this point, every thread has computed some contributions to p0 in local_p0
     # we now create a tile of all local_p0 contributions and reduce them to a single value
     # this is done in parallel using a tile reduction
     p0_tile = wp.tile(local_p0, preserve_type=True)
     p0_sum = wp.tile_reduce(wp.add, p0_tile)
+    q1_abs_tile = wp.tile(local_q1_abs)
+    q1_abs_sum = wp.tile_reduce(wp.add, q1_abs_tile)
 
     # quad_gauss = [0, search.T @ Ma - search.T @ qfrc_smooth, 0.5 * search.T @ mv]
     local_gauss = wp.vec2(0.0)
@@ -1015,6 +1026,7 @@ def _linesearch_iterative_kernel(ls_iterations: int, cone_type: types.ConeType, 
     # add quad_gauss contribution to p0
     p0 = wp.vec3(ctx_quad_gauss[0], ctx_quad_gauss[1], 2.0 * ctx_quad_gauss[2]) + p0_sum[0]
     p0_delta = wp.vec3(0.0, p0[1], p0[2])
+    q1_abs = q1_abs_sum[0] + wp.abs(ctx_quad_gauss[1])
 
     # lo_in at lo_alpha_in = -p0[1] / p0[2]
     lo_alpha_in = -math.safe_div(p0[1], p0[2])
@@ -1238,6 +1250,12 @@ def _linesearch_iterative_kernel(ls_iterations: int, cone_type: types.ConeType, 
     if tid == 0:
       ctx_improvement_out[worldid] = improvement
       ctx_alpha_out[worldid] = alpha
+      # The bracketing search reads derivative sums whose rounding noise is
+      # ~eps * q1_abs, so roots below eps * q1_abs / p0[2] (and never below
+      # 8 ulps of the unit ray anchor) are noise, not descent: the stale ray
+      # is exhausted and the fast path must rebuild this world.
+      noise_floor = _ALPHA_NOISE_EPS * wp.max(1.0, math.safe_div(q1_abs, p0[2]))
+      ctx_ray_exhausted_out[worldid] = wp.abs(alpha) < noise_floor
 
   return kernel
 
@@ -1285,7 +1303,7 @@ def _linesearch_iterative(m: types.Model, d: types.Data, ctx: SolverContext, fus
       ctx.quad,
       ctx.done,
     ],
-    outputs=[d.qacc, d.efc.Ma, ctx.Jaref, ctx.jv, ctx.quad, ctx.improvement, ctx.alpha],
+    outputs=[d.qacc, d.efc.Ma, ctx.Jaref, ctx.jv, ctx.quad, ctx.improvement, ctx.alpha, ctx.ray_exhausted],
     block_dim=m.block_dim.linesearch_iterative,
   )
 
@@ -1548,7 +1566,7 @@ def _update_constraint_efc(track_changes: bool):
     nacon_in: wp.array[int],
     # In:
     ctx_Jaref_in: wp.array2d[float],
-    ctx_alpha_in: wp.array[float],
+    ctx_ray_exhausted_in: wp.array[bool],
     ctx_done_in: wp.array[bool],
     # Data out:
     efc_force_out: wp.array2d[float],
@@ -1563,10 +1581,10 @@ def _update_constraint_efc(track_changes: bool):
     if ctx_done_in[worldid]:
       return
 
-    # A vanishing linesearch step means the stale search ray is exhausted;
-    # count it as a state change so the fast path rebuilds this world.
+    # The linesearch flags worlds whose accepted step was rounding noise (stale
+    # ray exhausted); count it as a state change so the fast path rebuilds them.
     if wp.static(TRACK_CHANGES):
-      if efcid == 0 and wp.abs(ctx_alpha_in[worldid]) < _STABLE_FAST_MIN_ALPHA:
+      if efcid == 0 and ctx_ray_exhausted_in[worldid]:
         wp.atomic_add(state_changed_count_out, worldid, 1)
 
     if efcid >= nefc_in[worldid]:
@@ -1866,7 +1884,7 @@ def _update_constraint(
     d.efc.frictionloss,
     d.nacon,
     ctx.Jaref,
-    ctx.alpha if isinstance(ctx, SolverContext) else d.time,
+    ctx.ray_exhausted,
     ctx.done,
   ]
 
@@ -3553,14 +3571,13 @@ def _solve_done(
     wp.atomic_add(nsolving_out, 0, -1)
 
 
-# For a world with no state flips the problem is quadratic and the exact
-# linesearch step along the stale Newton ray equals the remaining ray fraction
-# (t* = grad_scale, with the minimizer at grad_scale = 0). Steps below ~8 ulp
-# of the unit ray anchor are float32 rounding noise: the ray's reachable
-# gradient is floored at ~eps * |grad at rebuild|, and if the tolerance sits
-# below that floor the world could never terminate on this ray. Rebuilding
-# re-anchors the arithmetic at the current (much smaller) gradient scale.
-_STABLE_FAST_MIN_ALPHA = 8.0 * 1.1920929e-07  # 8 * float32 eps
+# The linesearch runs in ray units anchored at the last gradient rebuild, and
+# its bracketing arithmetic cannot resolve steps below ~eps times the gross
+# derivative-term magnitude over the curvature (see _linesearch_iterative_kernel).
+# A world whose tolerance sits below that floor could never terminate on the
+# stale ray; rebuilding re-anchors the arithmetic at the current (much smaller)
+# gradient scale. The 8 is an allowance for the reduction depth of the sums.
+_ALPHA_NOISE_EPS = 8.0 * 1.1920929e-07  # 8 * float32 eps
 
 
 def _use_incremental(m: types.Model) -> bool:
