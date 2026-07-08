@@ -106,7 +106,7 @@ def create_blocked_cholesky_augmented_factorize_solve_func(block_size: int, matr
     U: wp.array2d[float],
     x: wp.array2d[float],
   ):
-    """Factor an augmented matrix and use its border as the forward solution."""
+    """Factor A with b as an augmented border and reuse it as the forward solution."""
     rhs_tile = wp.tile_zeros(shape=(matrix_size_static, 1), dtype=float, storage="shared")
 
     for k in range(0, matrix_size, block_size):

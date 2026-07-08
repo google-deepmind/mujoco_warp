@@ -449,7 +449,7 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
     0,
     is_sparse(mjm),
     types.TILE_SIZE_JTDAJ_SPARSE if is_sparse(mjm) else types.TILE_SIZE_JTDAJ_DENSE,
-    mjm.opt.solver == mujoco.mjtSolver.mjSOL_NEWTON and mjm.nv > 32,
+    augment_cholesky=mjm.opt.solver == mujoco.mjtSolver.mjSOL_NEWTON and mjm.nv > 32,
   )[1]
   m.nacttrnbody = (mjm.actuator_trntype == mujoco.mjtTrn.mjTRN_BODY).sum()
   m.nsensortaxel = mjm.mesh_vertnum[mjm.sensor_objid[mjm.sensor_type == mujoco.mjtSensor.mjSENS_TACTILE]].sum()
@@ -1574,7 +1574,7 @@ def make_data(
     njmax,
     is_sparse(mjm),
     tile_size,
-    mjm.opt.solver == mujoco.mjtSolver.mjSOL_NEWTON and mjm.nv > 32,
+    augment_cholesky=mjm.opt.solver == mujoco.mjtSolver.mjSOL_NEWTON and mjm.nv > 32,
   )
   sizes["nworld"] = nworld
   sizes["naconmax"] = naconmax
@@ -1800,7 +1800,7 @@ def put_data(
     njmax,
     is_sparse(mjm),
     tile_size,
-    mjm.opt.solver == mujoco.mjtSolver.mjSOL_NEWTON and mjm.nv > 32,
+    augment_cholesky=mjm.opt.solver == mujoco.mjtSolver.mjSOL_NEWTON and mjm.nv > 32,
   )
   sizes["nworld"] = nworld
   sizes["naconmax"] = naconmax

@@ -459,8 +459,12 @@ _MESH_RANDOMIZE_XML = """
 class IOTest(parameterized.TestCase):
   @parameterized.parameters((47, 48), (48, 64), (63, 64), (64, 80))
   def test_augmented_cholesky_padding(self, nv, expected):
-    _, nv_pad = io._get_padded_sizes(nv, 0, True, types.TILE_SIZE_JTDAJ_DENSE, True)
+    _, nv_pad = io._get_padded_sizes(nv, 0, False, types.TILE_SIZE_JTDAJ_DENSE, augment_cholesky=True)
     self.assertEqual(nv_pad, expected)
+
+  @parameterized.parameters((15, 16), (16, 32), (31, 32), (32, 48))
+  def test_augmented_cholesky_nvmax_padding(self, nvmax, expected):
+    self.assertEqual(io._nvmax_pad(nvmax), expected)
 
   def test_make_put_data(self):
     """Tests that make_data and put_data are producing the same shapes for all arrays."""
