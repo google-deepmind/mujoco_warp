@@ -1548,6 +1548,7 @@ def _update_constraint_efc(track_changes: bool):
     nacon_in: wp.array[int],
     # In:
     ctx_Jaref_in: wp.array2d[float],
+    ctx_alpha_in: wp.array[float],
     ctx_done_in: wp.array[bool],
     # Data out:
     efc_force_out: wp.array2d[float],
@@ -1559,10 +1560,16 @@ def _update_constraint_efc(track_changes: bool):
   ):
     worldid, efcid = wp.tid()
 
-    if efcid >= nefc_in[worldid]:
+    if ctx_done_in[worldid]:
       return
 
-    if ctx_done_in[worldid]:
+    # A vanishing linesearch step means the stale search ray is exhausted;
+    # count it as a state change so the fast path rebuilds this world.
+    if wp.static(TRACK_CHANGES):
+      if efcid == 0 and wp.abs(ctx_alpha_in[worldid]) < _STABLE_FAST_MIN_ALPHA:
+        wp.atomic_add(state_changed_count_out, worldid, 1)
+
+    if efcid >= nefc_in[worldid]:
       return
 
     # Read old state before overwriting
@@ -1859,6 +1866,7 @@ def _update_constraint(
     d.efc.frictionloss,
     d.nacon,
     ctx.Jaref,
+    ctx.alpha if isinstance(ctx, SolverContext) else d.time,
     ctx.done,
   ]
 
@@ -3543,6 +3551,16 @@ def _solve_done(
     # mark this world as done and remove it from the number of unconverged worlds
     ctx_done_out[worldid] = True
     wp.atomic_add(nsolving_out, 0, -1)
+
+
+# For a world with no state flips the problem is quadratic and the exact
+# linesearch step along the stale Newton ray equals the remaining ray fraction
+# (t* = grad_scale, with the minimizer at grad_scale = 0). Steps below ~8 ulp
+# of the unit ray anchor are float32 rounding noise: the ray's reachable
+# gradient is floored at ~eps * |grad at rebuild|, and if the tolerance sits
+# below that floor the world could never terminate on this ray. Rebuilding
+# re-anchors the arithmetic at the current (much smaller) gradient scale.
+_STABLE_FAST_MIN_ALPHA = 8.0 * 1.1920929e-07  # 8 * float32 eps
 
 
 def _use_incremental(m: types.Model) -> bool:
