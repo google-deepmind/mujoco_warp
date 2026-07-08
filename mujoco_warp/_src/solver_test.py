@@ -665,13 +665,13 @@ class SolverTest(parameterized.TestCase):
           wp.launch(
             solver._solve_zero_search_dot(False),
             dim=(d.nworld),
-            inputs=[ctx.quad_changed_count, ctx.done],
+            inputs=[ctx.state_changed_count, ctx.done],
             outputs=[ctx.search_dot],
           )
           wp.launch(
             solver._solve_search_update(False),
             dim=(d.nworld, m.nv),
-            inputs=[m.opt.solver, ctx.quad_changed_count, ctx.Mgrad, ctx.search, ctx.beta, ctx.done],
+            inputs=[m.opt.solver, ctx.state_changed_count, ctx.Mgrad, ctx.search, ctx.beta, ctx.done],
             outputs=[ctx.search, ctx.search_dot],
           )
         return d.qacc.numpy().copy(), any_changes

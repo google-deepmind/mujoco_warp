@@ -1663,7 +1663,7 @@ def _update_constraint_init_qfrc_constraint_sparse(
   efc_J_in: wp.array3d[float],
   efc_force_in: wp.array2d[float],
   # In:
-  quad_changed_count_in: wp.array[int],
+  state_changed_count_in: wp.array[int],
   ctx_done_in: wp.array[bool],
   # Data out:
   qfrc_constraint_out: wp.array2d[float],
@@ -1673,7 +1673,7 @@ def _update_constraint_init_qfrc_constraint_sparse(
   if ctx_done_in[worldid]:
     return
 
-  if quad_changed_count_in[worldid] == 0:
+  if state_changed_count_in[worldid] == 0:
     return
 
   if efcid >= nefc_in[worldid]:
@@ -1721,7 +1721,7 @@ def _update_constraint_init_qfrc_constraint_dense(stable_fast: bool):
     efc_force_in: wp.array2d[float],
     njmax_in: int,
     # In:
-    quad_changed_count_in: wp.array[int],
+    state_changed_count_in: wp.array[int],
     ctx_done_in: wp.array[bool],
     # Data out:
     qfrc_constraint_out: wp.array2d[float],
@@ -1733,7 +1733,7 @@ def _update_constraint_init_qfrc_constraint_dense(stable_fast: bool):
 
     # Fast path: stale qfrc_constraint is never read; recovered after the solve.
     if wp.static(STABLE_FAST):
-      if quad_changed_count_in[worldid] == 0:
+      if state_changed_count_in[worldid] == 0:
         return
 
     sum_qfrc = float(0.0)
@@ -1904,7 +1904,7 @@ def _update_gradient_zero_grad_dot(stable_fast: bool):
   @wp.kernel(module="unique", enable_backward=False)
   def kernel(
     # In:
-    quad_changed_count_in: wp.array[int],
+    state_changed_count_in: wp.array[int],
     ctx_alpha_in: wp.array[float],
     ctx_done_in: wp.array[bool],
     # Out:
@@ -1920,7 +1920,7 @@ def _update_gradient_zero_grad_dot(stable_fast: bool):
     # gradient is grad_scale * g, and a linesearch step t along the (equally
     # stale) search direction changes it to (grad_scale - t) * g.
     if wp.static(STABLE_FAST):
-      if quad_changed_count_in[worldid] == 0:
+      if state_changed_count_in[worldid] == 0:
         sigma = ctx_grad_scale_out[worldid]
         new_sigma = sigma - ctx_alpha_in[worldid]
         ratio = float(0.0)
@@ -1947,7 +1947,7 @@ def _update_gradient_grad(stable_fast: bool):
     qfrc_constraint_in: wp.array2d[float],
     efc_Ma_in: wp.array2d[float],
     # In:
-    quad_changed_count_in: wp.array[int],
+    state_changed_count_in: wp.array[int],
     ctx_done_in: wp.array[bool],
     # Out:
     ctx_grad_out: wp.array2d[float],
@@ -1960,7 +1960,7 @@ def _update_gradient_grad(stable_fast: bool):
 
     # Fast path: grad stays stale (see _update_gradient_zero_grad_dot).
     if wp.static(STABLE_FAST):
-      if quad_changed_count_in[worldid] == 0:
+      if state_changed_count_in[worldid] == 0:
         return
 
     grad = efc_Ma_in[worldid, dofid] - qfrc_smooth_in[worldid, dofid] - qfrc_constraint_in[worldid, dofid]
@@ -2697,7 +2697,7 @@ def _update_gradient_cholesky(tile_size: int, skip_noflip: bool = False):
     # In:
     ctx_grad_in: wp.array2d[float],
     h_in: wp.array3d[float],
-    quad_changed_count_in: wp.array[int],
+    state_changed_count_in: wp.array[int],
     ctx_done_in: wp.array[bool],
     # Out:
     ctx_Mgrad_out: wp.array2d[float],
@@ -2710,7 +2710,7 @@ def _update_gradient_cholesky(tile_size: int, skip_noflip: bool = False):
 
     # Fast path: skip the solve (see the blocked skip_unchanged variant).
     if wp.static(SKIP_NOFLIP):
-      if quad_changed_count_in[worldid] == 0:
+      if state_changed_count_in[worldid] == 0:
         return
 
     mat_tile = wp.tile_load(h_in[worldid], shape=(TILE_SIZE, TILE_SIZE))
@@ -3373,7 +3373,7 @@ def _solve_zero_search_dot(stable_fast: bool):
   @wp.kernel(module="unique", enable_backward=False)
   def kernel(
     # In:
-    quad_changed_count_in: wp.array[int],
+    state_changed_count_in: wp.array[int],
     ctx_done_in: wp.array[bool],
     # Out:
     ctx_search_dot_out: wp.array[float],
@@ -3385,7 +3385,7 @@ def _solve_zero_search_dot(stable_fast: bool):
 
     # Fast path: search stays on the same ray; keep search_dot consistent with it.
     if wp.static(STABLE_FAST):
-      if quad_changed_count_in[worldid] == 0:
+      if state_changed_count_in[worldid] == 0:
         return
 
     ctx_search_dot_out[worldid] = 0.0
@@ -3402,7 +3402,7 @@ def _solve_search_update(stable_fast: bool):
     # Model:
     opt_solver: int,
     # In:
-    quad_changed_count_in: wp.array[int],
+    state_changed_count_in: wp.array[int],
     ctx_Mgrad_in: wp.array2d[float],
     ctx_search_in: wp.array2d[float],
     ctx_beta_in: wp.array[float],
@@ -3418,7 +3418,7 @@ def _solve_search_update(stable_fast: bool):
 
     # Fast path: search stays on the stale ray; the linesearch absorbs its scale.
     if wp.static(STABLE_FAST):
-      if quad_changed_count_in[worldid] == 0:
+      if state_changed_count_in[worldid] == 0:
         return
 
     search = -1.0 * ctx_Mgrad_in[worldid, dofid]
