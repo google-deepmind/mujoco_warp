@@ -726,8 +726,10 @@ class SolverFastPathTest(parameterized.TestCase):
     wp.copy(d.qvel, wp.array(qvel, dtype=float))
 
     max_rel = 0.0
+    cap_steps = 0
     for _ in range(100):
       mjw.step(m, d)
+      cap_steps += int(d.solver_niter.numpy().max() >= mjm.opt.iterations)
       nefc = d.nefc.numpy()
       J = d.efc.J.numpy()
       force = d.efc.force.numpy()
@@ -740,6 +742,10 @@ class SolverFastPathTest(parameterized.TestCase):
         scale = max(np.abs(ref).max(), 1.0)
         max_rel = max(max_rel, np.abs(ref - got[w]).max() / scale)
     self.assertLess(max_rel, 1e-4, f"qfrc_constraint inconsistent with J^T f: rel {max_rel:.3e}")
+    # Friction chatter legitimately caps a couple of steps here even with full
+    # per-iteration rebuilds; an exhausted stale ray that never re-anchors spins
+    # to the cap on most steps (warmstart is off, so every solve starts far away).
+    self.assertLess(cap_steps, 20, f"solver stalled: {cap_steps}/100 steps hit the iteration cap")
 
 
 # Basic weld constraint model.
