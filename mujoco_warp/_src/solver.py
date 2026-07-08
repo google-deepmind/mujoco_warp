@@ -773,7 +773,9 @@ def _compute_efc_eval_pt_3alphas_elliptic(
 
 
 @cache_kernel
-def _linesearch_iterative_kernel(ls_iterations: int, cone_type: types.ConeType, fuse_jv: bool, is_sparse: bool):
+def _linesearch_iterative_kernel(
+  ls_iterations: int, cone_type: types.ConeType, fuse_jv: bool, is_sparse: bool, track_exhaustion: bool
+):
   """Factory for iterative linesearch kernel.
 
   Args:
@@ -781,10 +783,12 @@ def _linesearch_iterative_kernel(ls_iterations: int, cone_type: types.ConeType, 
     cone_type: Friction cone type (PYRAMIDAL or ELLIPTIC) for compile-time optimization.
     fuse_jv: Whether to compute jv = J @ search in-kernel (efficient for small nv).
     is_sparse: Use sparse matrix representation for constraint Jacobian.
+    track_exhaustion: Flag exhausted search rays (only useful when the fast path is on).
   """
   LS_ITERATIONS = ls_iterations
   IS_ELLIPTIC = cone_type == types.ConeType.ELLIPTIC
   FUSE_JV = fuse_jv
+  TRACK_EXHAUSTION = track_exhaustion
   IS_SPARSE = is_sparse
 
   # Native snippet for CUDA __syncthreads()
@@ -986,7 +990,8 @@ def _linesearch_iterative_kernel(ls_iterations: int, cone_type: types.ConeType, 
           quad2,
         )
         local_p0 += pt
-        local_q1_abs += wp.abs(pt[1])
+        if wp.static(TRACK_EXHAUSTION):
+          local_q1_abs += wp.abs(pt[1])
       else:
         # direct evaluation for pyramidal cones (no intermediate quad)
         pt = _compute_efc_eval_pt_alpha_zero(
@@ -999,15 +1004,19 @@ def _linesearch_iterative_kernel(ls_iterations: int, cone_type: types.ConeType, 
           ctx_jv_in[worldid, efcid],
         )
         local_p0 += pt
-        local_q1_abs += wp.abs(pt[1])
+        if wp.static(TRACK_EXHAUSTION):
+          local_q1_abs += wp.abs(pt[1])
 
     # at this point, every thread has computed some contributions to p0 in local_p0
     # we now create a tile of all local_p0 contributions and reduce them to a single value
     # this is done in parallel using a tile reduction
     p0_tile = wp.tile(local_p0, preserve_type=True)
     p0_sum = wp.tile_reduce(wp.add, p0_tile)
-    q1_abs_tile = wp.tile(local_q1_abs)
-    q1_abs_sum = wp.tile_reduce(wp.add, q1_abs_tile)
+    q1_abs = float(0.0)
+    if wp.static(TRACK_EXHAUSTION):
+      q1_abs_tile = wp.tile(local_q1_abs)
+      q1_abs_sum = wp.tile_reduce(wp.add, q1_abs_tile)
+      q1_abs = q1_abs_sum[0]
 
     # quad_gauss = [0, search.T @ Ma - search.T @ qfrc_smooth, 0.5 * search.T @ mv]
     local_gauss = wp.vec2(0.0)
@@ -1026,7 +1035,6 @@ def _linesearch_iterative_kernel(ls_iterations: int, cone_type: types.ConeType, 
     # add quad_gauss contribution to p0
     p0 = wp.vec3(ctx_quad_gauss[0], ctx_quad_gauss[1], 2.0 * ctx_quad_gauss[2]) + p0_sum[0]
     p0_delta = wp.vec3(0.0, p0[1], p0[2])
-    q1_abs = q1_abs_sum[0] + wp.abs(ctx_quad_gauss[1])
 
     # lo_in at lo_alpha_in = -p0[1] / p0[2]
     lo_alpha_in = -math.safe_div(p0[1], p0[2])
@@ -1254,8 +1262,10 @@ def _linesearch_iterative_kernel(ls_iterations: int, cone_type: types.ConeType, 
       # ~eps * q1_abs, so roots below eps * q1_abs / p0[2] (and never below
       # 8 ulps of the unit ray anchor) are noise, not descent: the stale ray
       # is exhausted and the fast path must rebuild this world.
-      noise_floor = _ALPHA_NOISE_EPS * wp.max(1.0, math.safe_div(q1_abs, p0[2]))
-      ctx_ray_exhausted_out[worldid] = wp.abs(alpha) < noise_floor
+      if wp.static(TRACK_EXHAUSTION):
+        total_q1_abs = q1_abs + wp.abs(ctx_quad_gauss[1])
+        noise_floor = _ALPHA_NOISE_EPS * wp.max(1.0, math.safe_div(total_q1_abs, p0[2]))
+        ctx_ray_exhausted_out[worldid] = wp.abs(alpha) < noise_floor
 
   return kernel
 
@@ -1270,7 +1280,7 @@ def _linesearch_iterative(m: types.Model, d: types.Data, ctx: SolverContext, fus
     fuse_jv: Whether jv is computed in-kernel (True) or pre-computed (False).
   """
   wp.launch_tiled(
-    _linesearch_iterative_kernel(m.opt.ls_iterations, m.opt.cone, fuse_jv, m.is_sparse),
+    _linesearch_iterative_kernel(m.opt.ls_iterations, m.opt.cone, fuse_jv, m.is_sparse, _use_incremental(m)),
     dim=d.nworld,
     inputs=[
       m.nv,
