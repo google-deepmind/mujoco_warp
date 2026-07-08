@@ -593,6 +593,45 @@ def _S1D(s1: wp.vec3, s2: wp.vec3) -> wp.vec2:
 
 
 @wp.func
+def _gjk_support(
+  # In:
+  geom1: Geom,
+  geom2: Geom,
+  geomtype1: int,
+  geomtype2: int,
+  x_k: wp.vec3,
+  x_norm: float,
+  simplex: mat43,
+  n: int,
+  is_discrete: bool,
+) -> Tuple[SupportPoint, SupportPoint]:
+  dir_neg = x_k / x_norm
+
+  # tuning for discrete geoms when direction is noisy
+  if is_discrete and x_norm < 1e-4:
+    if n == 2:
+      edge = simplex[1] - simplex[0]
+      edge_norm2 = wp.dot(edge, edge)
+      if edge_norm2 > MINVAL2:
+        proj = wp.dot(dir_neg, edge) / edge_norm2
+        dir_neg = dir_neg - proj * edge
+        dir_norm = wp.length(dir_neg)
+        if dir_norm > MINVAL:
+          dir_neg = dir_neg / dir_norm
+    elif n == 3:
+      e1 = simplex[1] - simplex[0]
+      e2 = simplex[2] - simplex[0]
+      normal = wp.cross(e1, e2)
+      normal_norm = wp.length(normal)
+      if normal_norm > MINVAL:
+        dir_neg = wp.sign(wp.dot(dir_neg, normal)) * normal / normal_norm
+
+  sp1 = support(geom1, geomtype1, -dir_neg)
+  sp2 = support(geom2, geomtype2, dir_neg)
+  return sp1, sp2
+
+
+@wp.func
 def gjk(
   # In:
   tolerance: float,
@@ -614,33 +653,32 @@ def gjk(
   simplex_index1 = wp.vec4i()
   simplex_index2 = wp.vec4i()
   n = int(0)
-  lmbda = wp.vec4()  # barycentric coordinates
+  lmbda = wp.vec4(1.0, 0.0, 0.0, 0.0)  # barycentric coordinates
   tol2 = tolerance * tolerance
   epsilon = wp.where(is_discrete, 0.0, 0.5 * tol2)
+  min_norm2 = wp.where(is_discrete, MINVAL2, tol2)
 
   # set initial guess
   x_k = x1_0 - x2_0
-  xnorm2_old = FLOAT_MAX
+  xnorm = float(0.0)
+  xnorm2_old = float(0.0)
 
-  for _ in range(gjk_iterations):
+  for k in range(gjk_iterations):
     xnorm2 = wp.dot(x_k, x_k)
-    # TODO(kbayes): determine new constant here
-    if xnorm2 < tol2 or wp.abs(xnorm2_old - xnorm2) < tol2:
+    if xnorm2 < min_norm2 and wp.abs(xnorm2_old - xnorm2) < tol2:
       break
     xnorm2_old = xnorm2
-    dir_neg = x_k / wp.sqrt(xnorm2)
+    xnorm = wp.sqrt(xnorm2)
 
-    # compute kth support point in geom1
-    sp = support(geom1, geomtype1, -dir_neg)
-    simplex1[n] = sp.point
-    geom1.index = sp.cached_index
-    simplex_index1[n] = sp.vertex_index
+    # compute the support point with direction tuning
+    sp1, sp2 = _gjk_support(geom1, geom2, geomtype1, geomtype2, x_k, xnorm, simplex, n, is_discrete)
+    simplex1[n] = sp1.point
+    geom1.index = sp1.cached_index
+    simplex_index1[n] = sp1.vertex_index
 
-    # compute kth support point in geom2
-    sp = support(geom2, geomtype2, dir_neg)
-    simplex2[n] = sp.point
-    geom2.index = sp.cached_index
-    simplex_index2[n] = sp.vertex_index
+    simplex2[n] = sp2.point
+    geom2.index = sp2.cached_index
+    simplex_index2[n] = sp2.vertex_index
 
     # compute the kth support point
     simplex[n] = simplex1[n] - simplex2[n]
@@ -670,6 +708,8 @@ def gjk(
 
     # remove vertices from the simplex no longer needed
     n = int(0)
+    lmbdamax = float(-1.0)
+    imax = int(-1)
     for i in range(4):
       if lmbda[i] == 0.0:
         continue
@@ -680,11 +720,20 @@ def gjk(
       simplex_index1[n] = simplex_index1[i]
       simplex_index2[n] = simplex_index2[i]
       lmbda[n] = lmbda[i]
+      imax = wp.where(lmbda[n] > lmbdamax, n, imax)
+      lmbdamax = wp.where(lmbda[n] > lmbdamax, lmbda[n], lmbdamax)
       n += int(1)
 
     # SHOULD NOT OCCUR
     if n < 1:
       break
+
+    lmbda[imax] = 1.0
+    acc = float(0.0)
+    for i in range(n):
+      if i != imax:
+        acc += lmbda[i]
+    lmbda[imax] -= acc
 
     # get the next iteration of x_k
     x_next = _linear_combine(n, lmbda, simplex)
@@ -698,6 +747,7 @@ def gjk(
 
     # we have a tetrahedron containing the origin so return early
     if n == 4:
+      xnorm = 0.0
       break
 
   result = GJKResult()
@@ -707,7 +757,7 @@ def gjk(
   # are the witness points
   result.x1 = wp.where(n == 0, x1_0, _linear_combine(n, lmbda, simplex1))
   result.x2 = wp.where(n == 0, x2_0, _linear_combine(n, lmbda, simplex2))
-  result.dist = wp.norm_l2(x_k)
+  result.dist = xnorm
 
   result.dim = n
   result.simplex1 = simplex1
