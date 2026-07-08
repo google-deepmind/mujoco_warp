@@ -3590,6 +3590,17 @@ def _stable_fast(m: types.Model, compact: bool) -> bool:
   return _use_incremental(m) and not compact
 
 
+@wp.kernel
+def _zero_change_counters(
+  # Out:
+  quad_changed_count_out: wp.array[int],
+  state_changed_count_out: wp.array[int],
+):
+  worldid = wp.tid()
+  quad_changed_count_out[worldid] = 0
+  state_changed_count_out[worldid] = 0
+
+
 @event_scope
 def _solver_iteration(
   m: types.Model,
@@ -3613,8 +3624,11 @@ def _solver_iteration(
 
   if incremental:
     # Must complete before _update_constraint_efc which atomically increments.
-    ctx.quad_changed_count.zero_()
-    ctx.state_changed_count.zero_()
+    wp.launch(
+      _zero_change_counters,
+      dim=d.nworld,
+      outputs=[ctx.quad_changed_count, ctx.state_changed_count],
+    )
 
   _update_constraint(m, d, ctx, track_changes=incremental, stable_fast=stable_fast)
 
