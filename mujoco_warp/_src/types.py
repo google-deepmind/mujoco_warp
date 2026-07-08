@@ -2334,8 +2334,8 @@ class InverseContext:
   Jaref: wp.array2d[float]
   search_dot: wp.array[float]
   done: wp.array[bool]
-  changed_efc_ids: wp.array2d[int]
-  changed_efc_count: wp.array[int]
+  quad_changed_ids: wp.array2d[int]
+  quad_changed_count: wp.array[int]
 
 
 @dataclasses.dataclass
@@ -2354,6 +2354,7 @@ class SolverContext:
   quad: wp.array2d[wp.vec3]
   alpha: wp.array[float]
   grad_scale: wp.array[float]
+  # rows with any piecewise-state change this iteration (gradient rebuild needed)
   state_changed_count: wp.array[int]
   improvement: wp.array[float]
   prev_grad: wp.array2d[float]
@@ -2363,8 +2364,9 @@ class SolverContext:
   h: wp.array3d[float]
   hfactor: wp.array3d[float]
   # Incremental Hessian update (Newton only)
-  changed_efc_ids: wp.array2d[int]
-  changed_efc_count: wp.array[int]
+  # rows whose QUADRATIC membership flipped this iteration (Hessian delta needed)
+  quad_changed_ids: wp.array2d[int]
+  quad_changed_count: wp.array[int]
 
 
 @dataclasses.dataclass

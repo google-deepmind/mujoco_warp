@@ -655,23 +655,23 @@ class SolverTest(parameterized.TestCase):
         for _ in range(m.opt.iterations):
           solver._linesearch(m, d, ctx)
           if track:
-            ctx.changed_efc_count.zero_()
+            ctx.quad_changed_count.zero_()
           solver._update_constraint(m, d, ctx, track_changes=track)
           if track:
             wp.synchronize()
-            if np.any(ctx.changed_efc_count.numpy() > 0):
+            if np.any(ctx.quad_changed_count.numpy() > 0):
               any_changes = True
           update_fn(m, d, ctx)
           wp.launch(
             solver._solve_zero_search_dot(False),
             dim=(d.nworld),
-            inputs=[ctx.changed_efc_count, ctx.done],
+            inputs=[ctx.quad_changed_count, ctx.done],
             outputs=[ctx.search_dot],
           )
           wp.launch(
             solver._solve_search_update(False),
             dim=(d.nworld, m.nv),
-            inputs=[m.opt.solver, ctx.changed_efc_count, ctx.Mgrad, ctx.search, ctx.beta, ctx.done],
+            inputs=[m.opt.solver, ctx.quad_changed_count, ctx.Mgrad, ctx.search, ctx.beta, ctx.done],
             outputs=[ctx.search, ctx.search_dot],
           )
         return d.qacc.numpy().copy(), any_changes
