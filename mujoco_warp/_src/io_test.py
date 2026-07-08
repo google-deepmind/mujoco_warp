@@ -457,6 +457,11 @@ _MESH_RANDOMIZE_XML = """
 
 
 class IOTest(parameterized.TestCase):
+  @parameterized.parameters((47, 48), (48, 64), (63, 64), (64, 80))
+  def test_augmented_cholesky_padding(self, nv, expected):
+    _, nv_pad = io._get_padded_sizes(nv, 0, True, types.TILE_SIZE_JTDAJ_DENSE, True)
+    self.assertEqual(nv_pad, expected)
+
   def test_make_put_data(self):
     """Tests that make_data and put_data are producing the same shapes for all arrays."""
     mjm, _, _, d = test_data.fixture("pendula.xml", nvmax=None)

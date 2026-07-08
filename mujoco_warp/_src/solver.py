@@ -23,6 +23,7 @@ from mujoco_warp._src import math
 from mujoco_warp._src import smooth
 from mujoco_warp._src import support
 from mujoco_warp._src import types
+from mujoco_warp._src.block_cholesky import create_blocked_cholesky_augmented_factorize_solve_func
 from mujoco_warp._src.block_cholesky import create_blocked_cholesky_factorize_solve_func
 from mujoco_warp._src.block_cholesky import create_blocked_cholesky_solve_func
 from mujoco_warp._src.types import InverseContext
@@ -2781,6 +2782,73 @@ def _update_gradient_cholesky_blocked_skip_unchanged(tile_size: int, matrix_size
   return kernel
 
 
+@cache_kernel
+def _update_gradient_cholesky_blocked_augmented(tile_size: int, matrix_size: int, check_skip: bool = True):
+  @wp.kernel(module="unique", enable_backward=False, module_options={"enable_mathdx_gemm": False})
+  def kernel(
+    # In:
+    ctx_done_in: wp.array[bool],
+    ctx_grad_in: wp.array3d[float],
+    ctx_h_in: wp.array3d[float],
+    ctx_hfactor: wp.array3d[float],
+    # Out:
+    ctx_Mgrad_out: wp.array3d[float],
+  ):
+    worldid = wp.tid()
+    TILE_SIZE = wp.static(tile_size)
+
+    if wp.static(check_skip):
+      if ctx_done_in[worldid]:
+        return
+
+    wp.static(create_blocked_cholesky_augmented_factorize_solve_func(TILE_SIZE, matrix_size))(
+      ctx_h_in[worldid], ctx_grad_in[worldid], matrix_size, ctx_hfactor[worldid], ctx_Mgrad_out[worldid]
+    )
+
+  return kernel
+
+
+@cache_kernel
+def _update_gradient_cholesky_blocked_augmented_skip_unchanged(tile_size: int, matrix_size: int, skip_noflip: bool = False):
+  SKIP_NOFLIP = skip_noflip
+
+  @wp.kernel(module="unique", enable_backward=False, module_options={"enable_mathdx_gemm": False})
+  def kernel(
+    # In:
+    ctx_done_in: wp.array[bool],
+    ctx_grad_in: wp.array3d[float],
+    ctx_h_in: wp.array3d[float],
+    changed_count_in: wp.array[int],
+    ctx_hfactor: wp.array3d[float],
+    # Out:
+    ctx_Mgrad_out: wp.array3d[float],
+  ):
+    worldid = wp.tid()
+    TILE_SIZE = wp.static(tile_size)
+
+    if ctx_done_in[worldid]:
+      return
+
+    if wp.static(SKIP_NOFLIP):
+      if changed_count_in[worldid] == 0:
+        return
+
+      wp.static(create_blocked_cholesky_augmented_factorize_solve_func(TILE_SIZE, matrix_size))(
+        ctx_h_in[worldid], ctx_grad_in[worldid], matrix_size, ctx_hfactor[worldid], ctx_Mgrad_out[worldid]
+      )
+    else:
+      if changed_count_in[worldid] > 0:
+        wp.static(create_blocked_cholesky_augmented_factorize_solve_func(TILE_SIZE, matrix_size))(
+          ctx_h_in[worldid], ctx_grad_in[worldid], matrix_size, ctx_hfactor[worldid], ctx_Mgrad_out[worldid]
+        )
+      else:
+        wp.static(create_blocked_cholesky_solve_func(TILE_SIZE, matrix_size))(
+          ctx_hfactor[worldid], ctx_grad_in[worldid], matrix_size, ctx_Mgrad_out[worldid]
+        )
+
+  return kernel
+
+
 @wp.kernel
 def _padding_h(nv: int, ctx_done_in: wp.array[bool], ctx_h_out: wp.array3d[float]):
   worldid, elementid = wp.tid()
@@ -2818,7 +2886,7 @@ def _cholesky_factorize_solve(
 
     if skip_unchanged:
       wp.launch_tiled(
-        _update_gradient_cholesky_blocked_skip_unchanged(types.TILE_SIZE_JTDAJ_DENSE, m.nv_pad, skip_noflip),
+        _update_gradient_cholesky_blocked_augmented_skip_unchanged(types.TILE_SIZE_JTDAJ_DENSE, m.nv_pad, skip_noflip),
         dim=d.nworld,
         inputs=[ctx.done, ctx.grad.reshape(shape=(d.nworld, ctx.grad.shape[1], 1)), ctx.h, ctx.changed_efc_count, ctx.hfactor],
         outputs=[ctx.Mgrad.reshape(shape=(d.nworld, ctx.Mgrad.shape[1], 1))],
@@ -2826,7 +2894,7 @@ def _cholesky_factorize_solve(
       )
     else:
       wp.launch_tiled(
-        _update_gradient_cholesky_blocked(types.TILE_SIZE_JTDAJ_DENSE, m.nv_pad),
+        _update_gradient_cholesky_blocked_augmented(types.TILE_SIZE_JTDAJ_DENSE, m.nv_pad),
         dim=d.nworld,
         inputs=[ctx.done, ctx.grad.reshape(shape=(d.nworld, ctx.grad.shape[1], 1)), ctx.h, ctx.hfactor],
         outputs=[ctx.Mgrad.reshape(shape=(d.nworld, ctx.Mgrad.shape[1], 1))],
@@ -3885,7 +3953,7 @@ def smooth_solve_compact(m: types.Model, d: types.Data):
     outputs=[d.crhs],
   )
   wp.launch_tiled(
-    _update_gradient_cholesky_blocked(types.TILE_SIZE_JTDAJ_DENSE, d.nvmax_pad, False),
+    _update_gradient_cholesky_blocked_augmented(types.TILE_SIZE_JTDAJ_DENSE, d.nvmax_pad, False),
     dim=d.nworld,
     inputs=[wp.empty(0, dtype=bool), d.crhs, d.cM, d.cqLD],
     outputs=[d.cx],
