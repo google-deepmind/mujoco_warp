@@ -949,10 +949,8 @@ def _linesearch_iterative_kernel(
     scale = meaninertia * wp.float(nv)
     gtol = wp.max(tolerance * ls_tolerance * snorm * scale, 1e-6)
 
-    # p0 via parallel reduction; also accumulate the gross derivative-term
-    # magnitude, which sets the arithmetic noise floor of the bracketing search
+    # p0 via parallel reduction
     local_p0 = wp.vec3(0.0)
-    local_q1_abs = float(0.0)
     for efcid in range(tid, nefc, wp.block_dim()):
       if wp.static(IS_ELLIPTIC):
         efc_type = efc_type_in[worldid, efcid]
@@ -973,7 +971,7 @@ def _linesearch_iterative_kernel(
           quad1 = ctx_quad_in[worldid, efc_addr1]
           quad2 = ctx_quad_in[worldid, efc_addr2]
 
-        pt = _compute_efc_eval_pt_alpha_zero(
+        local_p0 += _compute_efc_eval_pt_alpha_zero(
           efcid,
           ne,
           nf,
@@ -989,12 +987,9 @@ def _linesearch_iterative_kernel(
           quad1,
           quad2,
         )
-        local_p0 += pt
-        if wp.static(TRACK_EXHAUSTION):
-          local_q1_abs += wp.abs(pt[1])
       else:
         # direct evaluation for pyramidal cones (no intermediate quad)
-        pt = _compute_efc_eval_pt_alpha_zero(
+        local_p0 += _compute_efc_eval_pt_alpha_zero(
           efcid,
           ne,
           nf,
@@ -1003,20 +998,12 @@ def _linesearch_iterative_kernel(
           ctx_Jaref_in[worldid, efcid],
           ctx_jv_in[worldid, efcid],
         )
-        local_p0 += pt
-        if wp.static(TRACK_EXHAUSTION):
-          local_q1_abs += wp.abs(pt[1])
 
     # at this point, every thread has computed some contributions to p0 in local_p0
     # we now create a tile of all local_p0 contributions and reduce them to a single value
     # this is done in parallel using a tile reduction
     p0_tile = wp.tile(local_p0, preserve_type=True)
     p0_sum = wp.tile_reduce(wp.add, p0_tile)
-    q1_abs = float(0.0)
-    if wp.static(TRACK_EXHAUSTION):
-      q1_abs_tile = wp.tile(local_q1_abs)
-      q1_abs_sum = wp.tile_reduce(wp.add, q1_abs_tile)
-      q1_abs = q1_abs_sum[0]
 
     # quad_gauss = [0, search.T @ Ma - search.T @ qfrc_smooth, 0.5 * search.T @ mv]
     local_gauss = wp.vec2(0.0)
@@ -1035,6 +1022,20 @@ def _linesearch_iterative_kernel(
     # add quad_gauss contribution to p0
     p0 = wp.vec3(ctx_quad_gauss[0], ctx_quad_gauss[1], 2.0 * ctx_quad_gauss[2]) + p0_sum[0]
     p0_delta = wp.vec3(0.0, p0[1], p0[2])
+
+    # The bracketing search reads derivative sums whose rounding noise is ~eps
+    # times their gross magnitude, so roots below eps * |q1| / p0[2] (and never
+    # below 8 ulps of the unit ray anchor) are noise, not descent: an accepted
+    # step under this floor means the stale ray is exhausted and the fast path
+    # must rebuild the world. Per quadratic row |q1| = sqrt(2 * cost * hessian),
+    # so Cauchy-Schwarz bounds the row total by sums already reduced for p0; the
+    # smooth term is added exactly. Friction linear rows fall outside the bound,
+    # which only lowers the floor toward the fixed 8-ulp base.
+    noise_floor = float(0.0)
+    if wp.static(TRACK_EXHAUSTION):
+      rows = p0_sum[0]
+      q1_abs = wp.sqrt(2.0 * wp.max(rows[0], 0.0) * wp.max(rows[2], 0.0)) + wp.abs(ctx_quad_gauss[1])
+      noise_floor = _ALPHA_NOISE_EPS * wp.max(1.0, math.safe_div(q1_abs, p0[2]))
 
     # lo_in at lo_alpha_in = -p0[1] / p0[2]
     lo_alpha_in = -math.safe_div(p0[1], p0[2])
@@ -1258,13 +1259,7 @@ def _linesearch_iterative_kernel(
     if tid == 0:
       ctx_improvement_out[worldid] = improvement
       ctx_alpha_out[worldid] = alpha
-      # The bracketing search reads derivative sums whose rounding noise is
-      # ~eps * q1_abs, so roots below eps * q1_abs / p0[2] (and never below
-      # 8 ulps of the unit ray anchor) are noise, not descent: the stale ray
-      # is exhausted and the fast path must rebuild this world.
       if wp.static(TRACK_EXHAUSTION):
-        total_q1_abs = q1_abs + wp.abs(ctx_quad_gauss[1])
-        noise_floor = _ALPHA_NOISE_EPS * wp.max(1.0, math.safe_div(total_q1_abs, p0[2]))
         ctx_ray_exhausted_out[worldid] = wp.abs(alpha) < noise_floor
 
   return kernel
