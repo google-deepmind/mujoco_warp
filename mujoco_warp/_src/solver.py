@@ -97,6 +97,7 @@ def _create_solver_context(m: types.Model, d: types.Data) -> SolverContext:
     hfactor=wp.empty((nworld, nv_pad, nv_pad), dtype=float) if alloc_hfactor else wp.empty((nworld, 0, 0), dtype=float),
     changed_efc_ids=wp.empty((nworld, njmax), dtype=int) if alloc_h else wp.empty((nworld, 0), dtype=int),
     changed_efc_count=wp.empty((nworld,), dtype=int) if alloc_h else wp.empty((0,), dtype=int),
+    state_changed_count=wp.empty((nworld,), dtype=int) if alloc_h else wp.empty((0,), dtype=int),
   )
 
 
@@ -1553,6 +1554,7 @@ def _update_constraint_efc(track_changes: bool):
     # Out:
     changed_ids_out: wp.array2d[int],
     changed_count_out: wp.array[int],
+    state_changed_count_out: wp.array[int],
   ):
     worldid, efcid = wp.tid()
 
@@ -1562,9 +1564,9 @@ def _update_constraint_efc(track_changes: bool):
     if ctx_done_in[worldid]:
       return
 
-    # Read old QUADRATIC status before overwriting
+    # Read old state before overwriting
     if wp.static(TRACK_CHANGES):
-      old_quad = efc_state_out[worldid, efcid] == types.ConstraintState.QUADRATIC.value
+      old_state = efc_state_out[worldid, efcid]
 
     efc_D = efc_D_in[worldid, efcid]
     Jaref = ctx_Jaref_in[worldid, efcid]
@@ -1630,10 +1632,15 @@ def _update_constraint_efc(track_changes: bool):
     efc_state_out[worldid, efcid] = new_state
 
     if wp.static(TRACK_CHANGES):
+      old_quad = old_state == types.ConstraintState.QUADRATIC.value
       new_quad = new_state == types.ConstraintState.QUADRATIC.value
       if old_quad != new_quad:
         idx = wp.atomic_add(changed_count_out, worldid, 1)
         changed_ids_out[worldid, idx] = efcid
+      # LINEARNEG <-> LINEARPOS friction transitions change the force without
+      # changing the quadratic flag (or H); the fast path must still see them.
+      if old_state != new_state:
+        wp.atomic_add(state_changed_count_out, worldid, 1)
 
   return kernel
 
@@ -1858,12 +1865,12 @@ def _update_constraint(
     _update_constraint_efc(track_changes),
     dim=(d.nworld, d.njmax),
     inputs=efc_inputs,
-    outputs=[d.efc.force, d.efc.state, ctx.changed_efc_ids, ctx.changed_efc_count],
+    outputs=[d.efc.force, d.efc.state, ctx.changed_efc_ids, ctx.changed_efc_count, ctx.state_changed_count],
   )
 
   # qfrc_constraint = efc_J.T @ efc_force. Fast-path worlds with no state flips
   # skip the rebuild; the public value is recovered after the solve.
-  changed = ctx.changed_efc_count if stable_fast else d.nefc
+  changed = ctx.state_changed_count if stable_fast else d.nefc
   if m.is_sparse:
     d.qfrc_constraint.zero_()
     wp.launch(
@@ -2749,6 +2756,7 @@ def _update_gradient_cholesky_blocked_skip_unchanged(tile_size: int, matrix_size
     ctx_grad_in: wp.array3d[float],
     ctx_h_in: wp.array3d[float],
     changed_count_in: wp.array[int],
+    state_changed_count_in: wp.array[int],
     ctx_hfactor: wp.array3d[float],
     # Out:
     ctx_Mgrad_out: wp.array3d[float],
@@ -2760,23 +2768,22 @@ def _update_gradient_cholesky_blocked_skip_unchanged(tile_size: int, matrix_size
       return
 
     # Fast path: skip the solve; Mgrad stays stale on the unchanged ray, and
-    # the linesearch is invariant to the scale of its direction.
+    # the linesearch is invariant to the scale of its direction. Worlds whose
+    # only transitions were between friction linear zones (state change but no
+    # quadratic flip) rebuilt grad with H unchanged: solve from the cached
+    # factor.
     if wp.static(SKIP_NOFLIP):
-      if changed_count_in[worldid] == 0:
+      if state_changed_count_in[worldid] == 0:
         return
 
+    if changed_count_in[worldid] > 0:
       wp.static(create_blocked_cholesky_factorize_solve_func(TILE_SIZE, matrix_size))(
         ctx_h_in[worldid], ctx_grad_in[worldid], matrix_size, ctx_hfactor[worldid], ctx_Mgrad_out[worldid]
       )
     else:
-      if changed_count_in[worldid] > 0:
-        wp.static(create_blocked_cholesky_factorize_solve_func(TILE_SIZE, matrix_size))(
-          ctx_h_in[worldid], ctx_grad_in[worldid], matrix_size, ctx_hfactor[worldid], ctx_Mgrad_out[worldid]
-        )
-      else:
-        wp.static(create_blocked_cholesky_solve_func(TILE_SIZE, matrix_size))(
-          ctx_hfactor[worldid], ctx_grad_in[worldid], matrix_size, ctx_Mgrad_out[worldid]
-        )
+      wp.static(create_blocked_cholesky_solve_func(TILE_SIZE, matrix_size))(
+        ctx_hfactor[worldid], ctx_grad_in[worldid], matrix_size, ctx_Mgrad_out[worldid]
+      )
 
   return kernel
 
@@ -2804,7 +2811,7 @@ def _cholesky_factorize_solve(
     wp.launch_tiled(
       _update_gradient_cholesky(m.nv, skip_noflip),
       dim=d.nworld,
-      inputs=[ctx.grad, ctx.h, ctx.changed_efc_count if skip_noflip else d.nefc, ctx.done],
+      inputs=[ctx.grad, ctx.h, ctx.state_changed_count if skip_noflip else d.nefc, ctx.done],
       outputs=[ctx.Mgrad],
       block_dim=m.block_dim.update_gradient_cholesky,
     )
@@ -2820,7 +2827,14 @@ def _cholesky_factorize_solve(
       wp.launch_tiled(
         _update_gradient_cholesky_blocked_skip_unchanged(types.TILE_SIZE_JTDAJ_DENSE, m.nv_pad, skip_noflip),
         dim=d.nworld,
-        inputs=[ctx.done, ctx.grad.reshape(shape=(d.nworld, ctx.grad.shape[1], 1)), ctx.h, ctx.changed_efc_count, ctx.hfactor],
+        inputs=[
+          ctx.done,
+          ctx.grad.reshape(shape=(d.nworld, ctx.grad.shape[1], 1)),
+          ctx.h,
+          ctx.changed_efc_count,
+          ctx.state_changed_count if skip_noflip else ctx.changed_efc_count,
+          ctx.hfactor,
+        ],
         outputs=[ctx.Mgrad.reshape(shape=(d.nworld, ctx.Mgrad.shape[1], 1))],
         block_dim=m.block_dim.update_gradient_cholesky_blocked,
       )
@@ -3215,7 +3229,7 @@ def _update_gradient_incremental(m: types.Model, d: types.Data, ctx: SolverConte
   Skips the full J^T*D*J rebuild by applying only the delta from constraints
   that changed QUADRATIC state, then re-factorizes and solves.
   """
-  changed = ctx.changed_efc_count if stable_fast else d.nefc
+  changed = ctx.state_changed_count if stable_fast else d.nefc
   wp.launch(
     _update_gradient_zero_grad_dot(stable_fast),
     dim=d.nworld,
@@ -3564,6 +3578,7 @@ def _solver_iteration(
   if incremental:
     # Must complete before _update_constraint_efc which atomically increments.
     ctx.changed_efc_count.zero_()
+    ctx.state_changed_count.zero_()
 
   _update_constraint(m, d, ctx, track_changes=incremental, stable_fast=stable_fast)
 
@@ -3616,7 +3631,7 @@ def _solver_iteration(
     )
 
   else:
-    changed = ctx.changed_efc_count if stable_fast else d.nefc
+    changed = ctx.state_changed_count if stable_fast else d.nefc
     wp.launch(_solve_zero_search_dot(stable_fast), dim=d.nworld, inputs=[changed, ctx.done], outputs=[ctx.search_dot])
 
     wp.launch(
