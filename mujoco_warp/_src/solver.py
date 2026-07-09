@@ -1383,10 +1383,31 @@ def _linesearch(m: types.Model, d: types.Data, ctx: SolverContext):
 
   # Fuse jv computation in-kernel for small nv (iterative only, dense only)
   # Sparse mode requires pre-computed jv since in-kernel uses dense indexing
-  fuse_jv = m.nv <= 50 and not m.is_sparse
+  # the sparse-compact J path needs the full model's sparse J structures;
+  # dense full models keep the gathered dense cJ path
+  dfull = ctx.compact_d_full
+  mfull = ctx.compact_m_full
+  sparse_compact = dfull is not None and mfull.is_sparse
+  fuse_jv = m.nv <= 50 and not m.is_sparse and not sparse_compact
 
   # jv = J @ search (when not fused into iterative kernel)
-  if not fuse_jv:
+  if sparse_compact:
+    wp.launch(
+      _linesearch_jv_sparse_compact,
+      dim=(d.nworld, d.njmax),
+      inputs=[
+        d.nefc,
+        dfull.efc.J_rownnz,
+        dfull.efc.J_rowadr,
+        dfull.efc.J_colind,
+        dfull.efc.J,
+        dfull.dof_cdof,
+        ctx.search,
+        ctx.done,
+      ],
+      outputs=[ctx.jv],
+    )
+  elif not fuse_jv:
     if m.is_sparse:
       # Sparse J has few nonzeros per row, one thread handles them all.
       dofs_per_thread = m.nv
@@ -1895,6 +1916,30 @@ def _update_constraint(
       _update_constraint_init_qfrc_constraint_sparse,
       dim=(d.nworld, d.njmax),
       inputs=[d.nefc, d.efc.J_rownnz, d.efc.J_rowadr, d.efc.J_colind, d.efc.J, d.efc.force, changed, ctx.done],
+      outputs=[d.qfrc_constraint],
+    )
+  elif ctx.compact_d_full is not None and ctx.compact_m_full.is_sparse:
+    dfull = ctx.compact_d_full
+    wp.launch(
+      _zero_qfrc_constraint_sparse,
+      dim=(d.nworld, m.nv),
+      inputs=[changed, ctx.done],
+      outputs=[d.qfrc_constraint],
+    )
+    wp.launch(
+      _update_constraint_init_qfrc_constraint_sparse_compact,
+      dim=(d.nworld, d.njmax),
+      inputs=[
+        d.nefc,
+        dfull.efc.J_rownnz,
+        dfull.efc.J_rowadr,
+        dfull.efc.J_colind,
+        dfull.efc.J,
+        d.efc.force,
+        dfull.dof_cdof,
+        changed,
+        ctx.done,
+      ],
       outputs=[d.qfrc_constraint],
     )
   else:
@@ -3694,12 +3739,30 @@ def init_context(m: types.Model, d: types.Data, ctx: SolverContext | InverseCont
   if threads_per_efc > 1:
     ctx.Jaref.zero_()
 
-  wp.launch(
-    _solve_init_jaref_kernel(m.is_sparse, m.nv, dofs_per_thread),
-    dim=(d.nworld, d.njmax, threads_per_efc),
-    inputs=[d.nefc, d.qacc, d.efc.J_rownnz, d.efc.J_rowadr, d.efc.J_colind, d.efc.J, d.efc.aref],
-    outputs=[ctx.Jaref],
-  )
+  if ctx.compact_d_full is not None and ctx.compact_m_full.is_sparse:
+    dfull = ctx.compact_d_full
+    wp.launch(
+      _solve_init_jaref_sparse_compact,
+      dim=(d.nworld, d.njmax),
+      inputs=[
+        d.nefc,
+        d.qacc,
+        dfull.efc.J_rownnz,
+        dfull.efc.J_rowadr,
+        dfull.efc.J_colind,
+        dfull.efc.J,
+        d.efc.aref,
+        dfull.dof_cdof,
+      ],
+      outputs=[ctx.Jaref],
+    )
+  else:
+    wp.launch(
+      _solve_init_jaref_kernel(m.is_sparse, m.nv, dofs_per_thread),
+      dim=(d.nworld, d.njmax, threads_per_efc),
+      inputs=[d.nefc, d.qacc, d.efc.J_rownnz, d.efc.J_rowadr, d.efc.J_colind, d.efc.J, d.efc.aref],
+      outputs=[ctx.Jaref],
+    )
 
   # Ma = M @ qacc
   _mul_m_compact_aware(m, d, ctx, d.efc.Ma, d.qacc, ctx.done)
@@ -3862,6 +3925,110 @@ def _mul_m_sparse_compact(
     if cj >= 0:
       acc += M_in[worldid, M_mulm_madr[k]] * vec[worldid, cj]
   res[worldid, ci] = acc
+
+
+@wp.kernel
+def _linesearch_jv_sparse_compact(
+  # Data in:
+  nefc_in: wp.array[int],
+  efc_J_rownnz_in: wp.array2d[int],
+  efc_J_rowadr_in: wp.array2d[int],
+  efc_J_colind_in: wp.array3d[int],
+  efc_J_in: wp.array3d[float],
+  dof_cdof_in: wp.array2d[int],
+  # In:
+  ctx_search_in: wp.array2d[float],
+  ctx_done_in: wp.array[bool],
+  # Out:
+  ctx_jv_out: wp.array2d[float],
+):
+  """Compacted jv = J @ search via the full-coordinate sparse J."""
+  worldid, efcid = wp.tid()
+
+  if efcid >= nefc_in[worldid]:
+    return
+
+  if ctx_done_in[worldid]:
+    return
+
+  jv = float(0.0)
+  rowadr = efc_J_rowadr_in[worldid, efcid]
+  for k in range(efc_J_rownnz_in[worldid, efcid]):
+    adr = rowadr + k
+    cj = dof_cdof_in[worldid, efc_J_colind_in[worldid, 0, adr]]
+    if cj >= 0:
+      jv += efc_J_in[worldid, 0, adr] * ctx_search_in[worldid, cj]
+  ctx_jv_out[worldid, efcid] = jv
+
+
+@wp.kernel
+def _update_constraint_init_qfrc_constraint_sparse_compact(
+  # Data in:
+  nefc_in: wp.array[int],
+  efc_J_rownnz_in: wp.array2d[int],
+  efc_J_rowadr_in: wp.array2d[int],
+  efc_J_colind_in: wp.array3d[int],
+  efc_J_in: wp.array3d[float],
+  efc_force_in: wp.array2d[float],
+  dof_cdof_in: wp.array2d[int],
+  # In:
+  changed_count_in: wp.array[int],
+  ctx_done_in: wp.array[bool],
+  # Data out:
+  qfrc_constraint_out: wp.array2d[float],
+):
+  """Compacted qfrc_constraint = J^T @ force via the full-coordinate sparse J."""
+  worldid, efcid = wp.tid()
+
+  if ctx_done_in[worldid]:
+    return
+
+  if changed_count_in[worldid] == 0:
+    return
+
+  if efcid >= nefc_in[worldid]:
+    return
+
+  force = efc_force_in[worldid, efcid]
+  if force == 0.0:
+    return
+
+  rowadr = efc_J_rowadr_in[worldid, efcid]
+  for k in range(efc_J_rownnz_in[worldid, efcid]):
+    adr = rowadr + k
+    cj = dof_cdof_in[worldid, efc_J_colind_in[worldid, 0, adr]]
+    if cj >= 0:
+      wp.atomic_add(qfrc_constraint_out, worldid, cj, efc_J_in[worldid, 0, adr] * force)
+
+
+@wp.kernel
+def _solve_init_jaref_sparse_compact(
+  # Data in:
+  nefc_in: wp.array[int],
+  qacc_in: wp.array2d[float],
+  efc_J_rownnz_in: wp.array2d[int],
+  efc_J_rowadr_in: wp.array2d[int],
+  efc_J_colind_in: wp.array3d[int],
+  efc_J_in: wp.array3d[float],
+  efc_aref_in: wp.array2d[float],
+  dof_cdof_in: wp.array2d[int],
+  # Out:
+  ctx_Jaref_out: wp.array2d[float],
+):
+  """Compacted Jaref = J @ qacc - aref via the full-coordinate sparse J."""
+  worldid, efcid = wp.tid()
+
+  if efcid >= nefc_in[worldid]:
+    return
+
+  jaref = float(0.0)
+  rowadr = efc_J_rowadr_in[worldid, efcid]
+  for k in range(efc_J_rownnz_in[worldid, efcid]):
+    adr = rowadr + k
+    cj = dof_cdof_in[worldid, efc_J_colind_in[worldid, 0, adr]]
+    if cj >= 0:
+      jaref += efc_J_in[worldid, 0, adr] * qacc_in[worldid, cj]
+  ctx_Jaref_out[worldid, efcid] = jaref - efc_aref_in[worldid, efcid]
 
 
 def _mul_m_compact_aware(m: types.Model, d: types.Data, ctx, res, vec, skip):
@@ -4105,6 +4272,7 @@ def solve_compact(m: types.Model, d: types.Data):
   sctx = _create_solver_context(m2, d2)
   # compact kernels read the full-coordinate sparse structures (M, J) through
   # the compaction maps instead of dense products on gathered blocks
+  sctx.compact_m_full = m
   sctx.compact_d_full = d
   _solve(m2, d2, sctx, compact=True)
 

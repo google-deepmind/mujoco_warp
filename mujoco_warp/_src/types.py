@@ -2337,6 +2337,7 @@ class InverseContext:
   changed_efc_ids: wp.array2d[int]
   changed_efc_count: wp.array[int]
   # the full-coordinate Data, set by solve_compact (None natively)
+  compact_m_full: Optional["Model"] = None
   compact_d_full: Optional["Data"] = None
 
 
@@ -2367,6 +2368,7 @@ class SolverContext:
   changed_efc_ids: wp.array2d[int]
   changed_efc_count: wp.array[int]
   # the full-coordinate Data, set by solve_compact (None natively)
+  compact_m_full: Optional["Model"] = None
   compact_d_full: Optional["Data"] = None
 
 
