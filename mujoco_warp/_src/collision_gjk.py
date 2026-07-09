@@ -273,8 +273,12 @@ def _linear_combine(n: int, scl: wp.vec4, mat: mat43) -> wp.vec3:
 
 
 @wp.func
-def _almost_equal(v1: wp.vec3, v2: wp.vec3) -> bool:
-  return wp.abs(v1[0] - v2[0]) < MINVAL and wp.abs(v1[1] - v2[1]) < MINVAL and wp.abs(v1[2] - v2[2]) < MINVAL
+def _almost_equal(v1: wp.vec3, v2: wp.vec3, tolerance: float) -> bool:
+  # no-progress check at the caller's tolerance: mjMINVAL (1e-15) is calibrated
+  # for float64 and can only fire on bitwise equality in float32, making
+  # termination depend on reaching an exact fixed point
+  tol = tolerance * wp.max(1.0, wp.max(wp.abs(v1[0]), wp.max(wp.abs(v1[1]), wp.abs(v1[2]))))
+  return wp.abs(v1[0] - v2[0]) < tol and wp.abs(v1[1] - v2[1]) < tol and wp.abs(v1[2] - v2[2]) < tol
 
 
 @wp.func
@@ -708,8 +712,6 @@ def gjk(
 
     # remove vertices from the simplex no longer needed
     n = int(0)
-    lmbdamax = float(-1.0)
-    imax = int(-1)
     for i in range(4):
       if lmbda[i] == 0.0:
         continue
@@ -720,26 +722,17 @@ def gjk(
       simplex_index1[n] = simplex_index1[i]
       simplex_index2[n] = simplex_index2[i]
       lmbda[n] = lmbda[i]
-      imax = wp.where(lmbda[n] > lmbdamax, n, imax)
-      lmbdamax = wp.where(lmbda[n] > lmbdamax, lmbda[n], lmbdamax)
       n += int(1)
 
     # SHOULD NOT OCCUR
     if n < 1:
       break
 
-    lmbda[imax] = 1.0
-    acc = float(0.0)
-    for i in range(n):
-      if i != imax:
-        acc += lmbda[i]
-    lmbda[imax] -= acc
-
     # get the next iteration of x_k
     x_next = _linear_combine(n, lmbda, simplex)
 
     # x_k has converged to minimum
-    if _almost_equal(x_next, x_k):
+    if _almost_equal(x_next, x_k, tolerance):
       break
 
     # copy next iteration into x_k
@@ -757,7 +750,10 @@ def gjk(
   # are the witness points
   result.x1 = wp.where(n == 0, x1_0, _linear_combine(n, lmbda, simplex1))
   result.x2 = wp.where(n == 0, x2_0, _linear_combine(n, lmbda, simplex2))
-  result.dist = xnorm
+  # xnorm can be one iteration stale when the loop exhausts its iterations;
+  # the witness points correspond to the final x_k, so recompute its norm
+  # (n == 4 encloses the origin and forces zero distance)
+  result.dist = wp.where(n == 4, 0.0, wp.norm_l2(x_k))
 
   result.dim = n
   result.simplex1 = simplex1
