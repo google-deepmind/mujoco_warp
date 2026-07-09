@@ -2091,6 +2091,43 @@ def _update_gradient_init_h_sparse(
     ctx_h_out[worldid, i, j] = 0.0
 
 
+@wp.kernel
+def _update_gradient_init_h_sparse_compact(
+  # Model:
+  M_elemid: wp.array2d[int],
+  # Data in:
+  M_in: wp.array2d[float],
+  cdof_dof_in: wp.array2d[int],
+  # In:
+  ctx_done_in: wp.array[bool],
+  # Out:
+  ctx_h_out: wp.array3d[float],
+):
+  """Compacted h = M via the full-coordinate sparse M (no gathered cM)."""
+  worldid, i, j = wp.tid()
+
+  if ctx_done_in[worldid]:
+    return
+
+  # only write the upper triangle; Cholesky reads the upper triangle only
+  if j < i:
+    return
+
+  dof_i = cdof_dof_in[worldid, i]
+  dof_j = cdof_dof_in[worldid, j]
+  if dof_i < 0 or dof_j < 0:
+    # padded block: identity keeps the factorization well conditioned
+    ctx_h_out[worldid, i, j] = wp.where(i == j, 1.0, 0.0)
+    return
+
+  # sparse M is stored in the lower triangle, so look up (larger, smaller)
+  elemid = M_elemid[wp.max(dof_i, dof_j), wp.min(dof_i, dof_j)]
+  if elemid >= 0:
+    ctx_h_out[worldid, i, j] = M_in[worldid, elemid]
+  else:
+    ctx_h_out[worldid, i, j] = 0.0
+
+
 @wp.func
 def _state_check(D: float, state: int) -> float:
   if state == types.ConstraintState.QUADRATIC.value:
@@ -2962,6 +2999,56 @@ def _JTDAJ_sparse(
         wp.atomic_add(h_out[worldid, wp.min(dof_row, dof_col)], wp.max(dof_row, dof_col), hval)
 
 
+@wp.kernel
+def _JTDAJ_sparse_compact(
+  # Data in:
+  efc_jtdaj_adr_in: wp.array2d[int],
+  efc_jtdaj_nrow_in: wp.array2d[int],
+  efc_jtdaj_nblock_in: wp.array[int],
+  efc_J_rownnz_in: wp.array2d[int],
+  efc_J_rowadr_in: wp.array2d[int],
+  efc_J_colind_in: wp.array3d[int],
+  efc_J_in: wp.array3d[float],
+  efc_D_in: wp.array2d[float],
+  efc_state_in: wp.array2d[int],
+  dof_cdof_in: wp.array2d[int],
+  # In:
+  ctx_done_in: wp.array[bool],
+  groups_per_world: int,
+  # Out:
+  h_out: wp.array3d[float],
+):
+  """_JTDAJ_sparse writing into the compacted h through dof_cdof."""
+  worldid, slot, lane = wp.tid()
+  if ctx_done_in[worldid]:
+    return
+  count = efc_jtdaj_nblock_in[worldid]
+  for groupid in range(slot, count, groups_per_world):  # grid-stride this world's group list
+    head_row = efc_jtdaj_adr_in[worldid, groupid]
+    block_rows = efc_jtdaj_nrow_in[worldid, groupid]
+    head_adr = efc_J_rowadr_in[worldid, head_row]
+    support = efc_J_rownnz_in[worldid, head_row]  # dofs the constraint touches = block dimension
+    n_entries = support * (support + 1) // 2  # upper-triangular entries of the |S|x|S| block
+    for entry in range(lane, n_entries, wp.static(_JTDAJ_THREADS_PER_GROUP)):
+      block_col = int((wp.sqrt(float(8 * entry + 1)) - 1.0) * 0.5)
+      block_row = entry - block_col * (block_col + 1) // 2
+      dof_row = efc_J_colind_in[worldid, 0, head_adr + block_row]
+      dof_col = efc_J_colind_in[worldid, 0, head_adr + block_col]
+      hval = float(0.0)
+      for member in range(block_rows):
+        member_row = head_row + member
+        if efc_state_in[worldid, member_row] == types.ConstraintState.QUADRATIC.value:
+          member_adr = efc_J_rowadr_in[worldid, member_row]
+          j_row = efc_J_in[worldid, 0, member_adr + block_row]
+          j_col = efc_J_in[worldid, 0, member_adr + block_col]
+          hval += j_row * efc_D_in[worldid, member_row] * j_col
+      if hval != 0.0:  # skip the atomic when no member row is active
+        ci = dof_cdof_in[worldid, dof_row]
+        cj = dof_cdof_in[worldid, dof_col]
+        if ci >= 0 and cj >= 0:
+          wp.atomic_add(h_out[worldid, wp.min(ci, cj)], wp.max(ci, cj), hval)
+
+
 def _jtdaj_groups_per_world(nworld: int, njmax: int) -> int:
   # Per-world width of the grid stride.  Target one warp per group-slot (njmax), but cap the grid at
   # _JTDAJ_OVERSUBSCRIBE_WAVES device waves -- else high-njmax worlds dispatch many idle tail warps
@@ -3122,6 +3209,37 @@ def _update_gradient(m: types.Model, d: types.Data, ctx: SolverContext, compact:
         ],
         outputs=[ctx.h],
         block_dim=m.block_dim.update_gradient_JTDAJ_sparse,
+      )
+    elif compact and ctx.compact_m_full is not None and ctx.compact_m_full.is_sparse:
+      mfull = ctx.compact_m_full
+      dfull = ctx.compact_d_full
+      wp.launch(
+        _update_gradient_init_h_sparse_compact,
+        dim=(d.nworld, m.nv_pad, m.nv_pad),
+        inputs=[mfull.M_elemid, dfull.M, dfull.cdof_dof, ctx.done],
+        outputs=[ctx.h],
+      )
+
+      groups_per_world = _jtdaj_groups_per_world(d.nworld, d.njmax)
+      wp.launch(
+        _JTDAJ_sparse_compact,
+        dim=(d.nworld, groups_per_world, _JTDAJ_THREADS_PER_GROUP),
+        inputs=[
+          dfull.efc.jtdaj_adr,
+          dfull.efc.jtdaj_nrow,
+          dfull.efc.jtdaj_nblock,
+          dfull.efc.J_rownnz,
+          dfull.efc.J_rowadr,
+          dfull.efc.J_colind,
+          dfull.efc.J,
+          d.efc.D,
+          d.efc.state,
+          dfull.dof_cdof,
+          ctx.done,
+          groups_per_world,
+        ],
+        outputs=[ctx.h],
+        block_dim=mfull.block_dim.update_gradient_JTDAJ_sparse,
       )
     else:
       if compact:
@@ -4296,7 +4414,8 @@ def _compact_gather(m: types.Model, d: types.Data):
     inputs=[m.M_rownnz, m.M_rowadr, m.M_colind, d.M, d.dof_cdof],
     outputs=[d.cM],
   )
-  # gather compacted dense constraint Jacobian (active columns only)
+  # gather compacted dense constraint Jacobian (active columns only); the
+  # incremental Hessian update still reads cJ
   d.cJ.zero_()
   if m.is_sparse:
     wp.launch(
