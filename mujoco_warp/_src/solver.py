@@ -319,14 +319,53 @@ def _eval_elliptic(
 
 
 @wp.func
-def _eval_elliptic_cost(
+def _eval_elliptic_reference(
+  # In:
+  mu: float,
+  quad: wp.vec3,
+  quad1: wp.vec3,
+  quad2: wp.vec3,
+) -> tuple[float, float, int]:
+  u0 = quad1[0]
+  uu = quad1[2]
+  dm = quad2[2]
+
+  if uu <= 0.0:
+    if u0 < 0.0:
+      return quad[0], 0.0, int(types.ConstraintState.QUADRATIC)
+    return 0.0, 0.0, int(types.ConstraintState.SATISFIED)
+
+  T0 = wp.sqrt(uu)
+  if u0 >= mu * T0:
+    return 0.0, T0, int(types.ConstraintState.SATISFIED)
+  if mu * u0 + T0 <= 0.0:
+    return quad[0], T0, int(types.ConstraintState.QUADRATIC)
+
+  r0 = u0 - mu * T0
+  return 0.5 * dm * r0 * r0, T0, int(types.ConstraintState.CONE)
+
+
+@wp.func
+def _eval_elliptic_quadratic_shifted(quad: wp.vec3, alpha: float, cost0: float, state0: int) -> wp.vec3:
+  aq2 = alpha * quad[2]
+  cost = alpha * aq2 + alpha * quad[1] + quad[0] - cost0
+  if state0 == int(types.ConstraintState.QUADRATIC):
+    cost = alpha * (aq2 + quad[1])
+  return wp.vec3(cost, 2.0 * aq2 + quad[1], 2.0 * quad[2])
+
+
+@wp.func
+def _eval_elliptic_shifted(
   # In:
   mu: float,
   quad: wp.vec3,
   quad1: wp.vec3,
   quad2: wp.vec3,
   alpha: float,
-) -> float:
+  cost0: float,
+  T0: float,
+  state0: int,
+) -> wp.vec3:
   u0 = quad1[0]
   v0 = quad1[1]
   uu = quad1[2]
@@ -335,21 +374,40 @@ def _eval_elliptic_cost(
   dm = quad2[2]
 
   N = u0 + alpha * v0
-  Tsqr = uu + alpha * (2.0 * uv + alpha * vv)
+  Tsqr_delta = alpha * (2.0 * uv + alpha * vv)
+  Tsqr = uu + Tsqr_delta
 
   if Tsqr <= 0.0:
     if N < 0.0:
-      return _eval_cost(quad, alpha)
+      return _eval_elliptic_quadratic_shifted(quad, alpha, cost0, state0)
   else:
     T = wp.sqrt(Tsqr)
     if N >= mu * T:
       pass
     elif mu * N + T <= 0.0:
-      return _eval_cost(quad, alpha)
+      return _eval_elliptic_quadratic_shifted(quad, alpha, cost0, state0)
     else:
-      return 0.5 * dm * (N - mu * T) * (N - mu * T)
+      N1 = v0
+      T1 = (uv + alpha * vv) / T
+      T2 = vv / T - (uv + alpha * vv) * T1 / (T * T)
+      r = N - mu * T
+      r1 = N1 - mu * T1
 
-  return 0.0
+      cost = 0.5 * dm * r * r - cost0
+      if state0 == int(types.ConstraintState.CONE):
+        # Rationalize T - T0 before forming the small cone residual change.
+        T_delta = Tsqr_delta / (T + T0)
+        r_delta = alpha * v0 - mu * T_delta
+        r0 = u0 - mu * T0
+        cost = 0.5 * dm * r_delta * (2.0 * r0 + r_delta)
+
+      return wp.vec3(
+        cost,
+        dm * r * r1,
+        dm * (r1 * r1 + r * (-mu * T2)),
+      )
+
+  return wp.vec3(-cost0, 0.0, 0.0)
 
 
 @wp.func
@@ -485,8 +543,8 @@ def _compute_efc_eval_pt_elliptic(
       if efcid != efc_address0:  # Not primary row
         return wp.vec3(0.0)
       mu = contact_friction[0] * impratio_invsqrt
-      cost0 = _eval_elliptic_cost(mu, ctx_quad, quad1, quad2, 0.0)
-      return _shift_cost(_eval_elliptic(mu, ctx_quad, quad1, quad2, alpha), cost0)
+      cost0, T0, state0 = _eval_elliptic_reference(mu, ctx_quad, quad1, quad2)
+      return _eval_elliptic_shifted(mu, ctx_quad, quad1, quad2, alpha, cost0, T0, state0)
 
     # Limit/other constraint — direct eval (no quad read)
     x = ctx_Jaref + alpha * ctx_jv
@@ -674,11 +732,12 @@ def _compute_efc_eval_pt_3alphas_elliptic(
       if efcid != efc_address0:  # secondary rows contribute nothing
         return (wp.vec3(0.0), wp.vec3(0.0), wp.vec3(0.0))
       mu = contact_friction[0] * impratio_invsqrt
-      cost0 = _eval_elliptic_cost(mu, ctx_quad, quad1, quad2, 0.0)
-      lo = _eval_elliptic(mu, ctx_quad, quad1, quad2, lo_alpha)
-      hi = _eval_elliptic(mu, ctx_quad, quad1, quad2, hi_alpha)
-      mid = _eval_elliptic(mu, ctx_quad, quad1, quad2, mid_alpha)
-      return (_shift_cost(lo, cost0), _shift_cost(hi, cost0), _shift_cost(mid, cost0))
+      cost0, T0, state0 = _eval_elliptic_reference(mu, ctx_quad, quad1, quad2)
+      return (
+        _eval_elliptic_shifted(mu, ctx_quad, quad1, quad2, lo_alpha, cost0, T0, state0),
+        _eval_elliptic_shifted(mu, ctx_quad, quad1, quad2, hi_alpha, cost0, T0, state0),
+        _eval_elliptic_shifted(mu, ctx_quad, quad1, quad2, mid_alpha, cost0, T0, state0),
+      )
 
     # Limit/other constraints — direct eval (no quad read)
     efc_D = efc_D_in[efcid]
