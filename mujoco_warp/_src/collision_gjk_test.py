@@ -201,7 +201,7 @@ def _geom_dist(
       horizon,
     )
 
-    if wp.static(multiccd):
+    if multiccd and idx >= 0:
       ncon, witness1, witness2 = multicontact(
         polygon,
         clipped,
