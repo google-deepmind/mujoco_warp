@@ -55,8 +55,8 @@ def _assert_efc_eq(mjm, m, d, mjd, nefc, name, nv, tol=_TOLERANCE):
   mjd_efc_d = mjd.efc_D[:nefc]
 
   # Create sorting keys using lexsort
-  d_sort_indices = np.lexsort((efc_pos, efc_type, efc_vel, efc_aref, efc_id, efc_d))
-  mjd_sort_indices = np.lexsort((mjd_efc_pos, mjd_efc_type, mjd_efc_vel, mjd_efc_aref, mjd_efc_id, mjd_efc_d))
+  d_sort_indices = np.lexsort((efc_pos, efc_vel, efc_aref, efc_d, efc_id, efc_type))
+  mjd_sort_indices = np.lexsort((mjd_efc_pos, mjd_efc_vel, mjd_efc_aref, mjd_efc_d, mjd_efc_id, mjd_efc_type))
 
   # convert sparse to dense if necessary
   if m.is_sparse:
@@ -417,6 +417,41 @@ class ConstraintTest(parameterized.TestCase):
     self.assertEqual(d.nefc.numpy()[0], mjd.nefc, "nefc mismatch")
 
     _assert_efc_eq(mjm, m, d, mjd, mjd.nefc, "efc_flex_3d_simplex", m.nv, tol=1e-3)
+
+  # TODO(thowell): Add support for quadratic flex interpolation.
+  def test_flex_interpolated(self):
+    """Test collision and constraint generation for interpolated flex shells."""
+    xml = f"""
+      <mujoco>
+        <option solver="CG" tolerance="1e-6" timestep=".001"/>
+        <worldbody>
+          <body pos="0 0 0.07">
+            <freejoint/>
+            <geom type="box" size=".05 .05 .05" mass="1"/>
+          </body>
+          <flexcomp name="softbody" type="grid" count="4 2 4" spacing=".025 .05 .025" pos="0 0 0"
+                    dim="3" cellcount="2 1 2" radius=".001"
+                    mass="5" dof="trilinear">
+            <elasticity young="1e4" poisson="0.3" damping="1e-3"/>
+            <contact condim="3" selfcollide="none" internal="false"/>
+          </flexcomp>
+        </worldbody>
+      </mujoco>
+    """
+    mjm, mjd, m, d = test_data.fixture(
+      xml=xml,
+      overrides={
+        "opt.cone": mujoco.mjtCone.mjCONE_ELLIPTIC,
+        "opt.jacobian": mujoco.mjtJacobian.mjJAC_SPARSE,
+      },
+    )
+
+    mjw.kinematics(m, d)
+    mjw.make_constraint(m, d)
+
+    self.assertGreater(mjd.nefc, 0, "Expected active contacts in MuJoCo")
+    self.assertEqual(d.nefc.numpy()[0], mjd.nefc, "nefc mismatch")
+    _assert_efc_eq(mjm, m, d, mjd, mjd.nefc, f"efc_flex_interpolated_trilinear", m.nv)
 
 
 if __name__ == "__main__":
