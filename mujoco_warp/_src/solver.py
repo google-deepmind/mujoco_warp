@@ -92,6 +92,7 @@ def _create_solver_context(m: types.Model, d: types.Data) -> SolverContext:
     grad_scale=wp.empty((nworld,), dtype=float),
     improvement=wp.empty((nworld,), dtype=float),
     ray_exhausted=wp.zeros((nworld,), dtype=bool),
+    search_unchanged=wp.zeros((nworld,), dtype=bool),
     prev_grad=wp.empty((nworld, nv), dtype=float),
     prev_Mgrad=wp.empty((nworld, nv), dtype=float),
     beta=wp.empty((nworld,), dtype=float),
@@ -774,7 +775,7 @@ def _compute_efc_eval_pt_3alphas_elliptic(
 
 @cache_kernel
 def _linesearch_iterative_kernel(
-  ls_iterations: int, cone_type: types.ConeType, fuse_jv: bool, is_sparse: bool, track_exhaustion: bool
+  ls_iterations: int, cone_type: types.ConeType, fuse_jv: bool, is_sparse: bool, incremental: bool
 ):
   """Factory for iterative linesearch kernel.
 
@@ -783,12 +784,12 @@ def _linesearch_iterative_kernel(
     cone_type: Friction cone type (PYRAMIDAL or ELLIPTIC) for compile-time optimization.
     fuse_jv: Whether to compute jv = J @ search in-kernel (efficient for small nv).
     is_sparse: Use sparse matrix representation for constraint Jacobian.
-    track_exhaustion: Flag exhausted search rays (only useful when the fast path is on).
+    incremental: State changes are tracked: flag exhausted rays, reuse jv on unchanged search.
   """
   LS_ITERATIONS = ls_iterations
   IS_ELLIPTIC = cone_type == types.ConeType.ELLIPTIC
   FUSE_JV = fuse_jv
-  TRACK_EXHAUSTION = track_exhaustion
+  INCREMENTAL = incremental
   IS_SPARSE = is_sparse
 
   # Native snippet for CUDA __syncthreads()
@@ -833,6 +834,7 @@ def _linesearch_iterative_kernel(
     njmax_in: int,
     nacon_in: wp.array[int],
     # In:
+    ctx_search_unchanged_in: wp.array[bool],
     ctx_Jaref_in: wp.array2d[float],
     ctx_search_in: wp.array2d[float],
     ctx_search_dot_in: wp.array[float],
@@ -860,21 +862,26 @@ def _linesearch_iterative_kernel(
     nf = nf_in[worldid]
     nefc = wp.min(njmax_in, nefc_in[worldid])
 
-    # jv = J @ search (fused for small nv)
+    # jv = J @ search (fused for small nv); on unchanged search the buffer
+    # already holds jv (see _linesearch).
     if wp.static(FUSE_JV):
-      for efcid in range(tid, nefc, wp.block_dim()):
-        jv = float(0.0)
-        if wp.static(IS_SPARSE):
-          rownnz = efc_J_rownnz_in[worldid, efcid]
-          rowadr = efc_J_rowadr_in[worldid, efcid]
-          for k in range(rownnz):
-            sparseid = rowadr + k
-            colind = efc_J_colind_in[worldid, 0, sparseid]
-            jv += efc_J_in[worldid, 0, sparseid] * ctx_search_in[worldid, colind]
-        else:
-          for i in range(nv):
-            jv += efc_J_in[worldid, efcid, i] * ctx_search_in[worldid, i]
-        ctx_jv_out[worldid, efcid] = jv
+      recompute_jv = True
+      if wp.static(INCREMENTAL):
+        recompute_jv = not ctx_search_unchanged_in[worldid]
+      if recompute_jv:
+        for efcid in range(tid, nefc, wp.block_dim()):
+          jv = float(0.0)
+          if wp.static(IS_SPARSE):
+            rownnz = efc_J_rownnz_in[worldid, efcid]
+            rowadr = efc_J_rowadr_in[worldid, efcid]
+            for k in range(rownnz):
+              sparseid = rowadr + k
+              colind = efc_J_colind_in[worldid, 0, sparseid]
+              jv += efc_J_in[worldid, 0, sparseid] * ctx_search_in[worldid, colind]
+          else:
+            for i in range(nv):
+              jv += efc_J_in[worldid, efcid, i] * ctx_search_in[worldid, i]
+          ctx_jv_out[worldid, efcid] = jv
 
       _syncthreads()  # ensure all jv values are written before reading
 
@@ -1032,7 +1039,7 @@ def _linesearch_iterative_kernel(
     # smooth term is added exactly. Friction linear rows fall outside the bound,
     # which only lowers the floor toward the fixed 8-ulp base.
     noise_floor = float(0.0)
-    if wp.static(TRACK_EXHAUSTION):
+    if wp.static(INCREMENTAL):
       rows = p0_sum[0]
       q1_abs = wp.sqrt(2.0 * wp.max(rows[0], 0.0) * wp.max(rows[2], 0.0)) + wp.abs(ctx_quad_gauss[1])
       noise_floor = _ALPHA_NOISE_EPS * wp.max(1.0, math.safe_div(q1_abs, p0[2]))
@@ -1259,7 +1266,7 @@ def _linesearch_iterative_kernel(
     if tid == 0:
       ctx_improvement_out[worldid] = improvement
       ctx_alpha_out[worldid] = alpha
-      if wp.static(TRACK_EXHAUSTION):
+      if wp.static(INCREMENTAL):
         ctx_ray_exhausted_out[worldid] = wp.abs(alpha) < noise_floor
 
   return kernel
@@ -1300,6 +1307,7 @@ def _linesearch_iterative(m: types.Model, d: types.Data, ctx: SolverContext, fus
       d.efc.frictionloss,
       d.njmax,
       d.nacon,
+      ctx.search_unchanged,
       ctx.Jaref,
       ctx.search,
       ctx.search_dot,
@@ -1318,7 +1326,7 @@ def _linesearch_zero_jv(
   # Data in:
   nefc_in: wp.array[int],
   # In:
-  ctx_done_in: wp.array[bool],
+  skip_in: wp.array[bool],
   # Out:
   ctx_jv_out: wp.array2d[float],
 ):
@@ -1327,7 +1335,7 @@ def _linesearch_zero_jv(
   if efcid >= nefc_in[worldid]:
     return
 
-  if ctx_done_in[worldid]:
+  if skip_in[worldid]:
     return
 
   ctx_jv_out[worldid, efcid] = 0.0
@@ -1345,7 +1353,7 @@ def _linesearch_jv_fused_kernel(is_sparse: bool, nv: int, dofs_per_thread: int):
     efc_J_in: wp.array3d[float],
     # In:
     ctx_search_in: wp.array2d[float],
-    ctx_done_in: wp.array[bool],
+    skip_in: wp.array[bool],
     # Out:
     ctx_jv_out: wp.array2d[float],
   ):
@@ -1354,7 +1362,7 @@ def _linesearch_jv_fused_kernel(is_sparse: bool, nv: int, dofs_per_thread: int):
     if efcid >= nefc_in[worldid]:
       return
 
-    if ctx_done_in[worldid]:
+    if skip_in[worldid]:
       return
 
     jv_out = float(0.0)
@@ -1398,13 +1406,22 @@ def _linesearch_jv_fused_kernel(is_sparse: bool, nv: int, dofs_per_thread: int):
 def _linesearch(m: types.Model, d: types.Data, ctx: SolverContext):
   """Linesearch for constraint solver.
 
+  When state changes are tracked, worlds with ctx.search_unchanged reuse last
+  iteration's mv/jv, so a fresh search requires clearing the flag (see the
+  invalidation in _solve and the writer in _solve_search_update).
+
   Args:
     m: Model
     d: Data
     ctx: SolverContext
   """
+  # mv and jv are pure functions of the search direction, and M and J are
+  # constant within a solve: worlds whose search was kept (see
+  # _solve_search_update) reuse last iteration's values.
+  skip = ctx.search_unchanged if _use_incremental(m) else ctx.done
+
   # mv = M @ search (common to both parallel and iterative)
-  support.mul_m(m, d, ctx.mv, ctx.search, skip=ctx.done)
+  support.mul_m(m, d, ctx.mv, ctx.search, skip=skip)
 
   # Fuse jv computation in-kernel for small nv (iterative only, dense only)
   # Sparse mode requires pre-computed jv since in-kernel uses dense indexing
@@ -1424,14 +1441,14 @@ def _linesearch(m: types.Model, d: types.Data, ctx: SolverContext):
       wp.launch(
         _linesearch_zero_jv,
         dim=(d.nworld, d.njmax),
-        inputs=[d.nefc, ctx.done],
+        inputs=[d.nefc, skip],
         outputs=[ctx.jv],
       )
 
     wp.launch(
       _linesearch_jv_fused_kernel(m.is_sparse, m.nv, dofs_per_thread),
       dim=(d.nworld, d.njmax, threads_per_efc),
-      inputs=[d.nefc, d.efc.J_rownnz, d.efc.J_rowadr, d.efc.J_colind, d.efc.J, ctx.search, ctx.done],
+      inputs=[d.nefc, d.efc.J_rownnz, d.efc.J_rowadr, d.efc.J_colind, d.efc.J, ctx.search, skip],
       outputs=[ctx.jv],
     )
 
@@ -3433,8 +3450,15 @@ def _solve_search_update(stable_fast: bool):
     # Out:
     ctx_search_out: wp.array2d[float],
     ctx_search_dot_out: wp.array[float],
+    ctx_search_unchanged_out: wp.array[bool],
   ):
     worldid, dofid = wp.tid()
+
+    # Record whether this world keeps its search vector, so the next linesearch
+    # can reuse mv/jv (pure functions of search; done worlds never consume them).
+    if wp.static(STABLE_FAST):
+      if dofid == 0:
+        ctx_search_unchanged_out[worldid] = ctx_done_in[worldid] or state_changed_count_in[worldid] == 0
 
     if ctx_done_in[worldid]:
       return
@@ -3687,7 +3711,7 @@ def _solver_iteration(
       _solve_search_update(incremental),
       dim=(d.nworld, m.nv),
       inputs=[m.opt.solver, changed, ctx.Mgrad, ctx.search, ctx.beta, ctx.done],
-      outputs=[ctx.search, ctx.search_dot],
+      outputs=[ctx.search, ctx.search_dot, ctx.search_unchanged],
     )
 
     wp.launch(
@@ -3793,6 +3817,11 @@ def _solve(m: types.Model, d: types.Data, ctx: SolverContext, compact: bool = Fa
 
   #  context
   init_context(m, d, ctx, grad=True, compact=compact)
+
+  if _use_incremental(m):
+    # A new solve computes a new search direction: invalidate the mv/jv reuse
+    # left over from the previous solve.
+    ctx.search_unchanged.zero_()
 
   # search = -Mgrad
   if m.opt.solver == types.SolverType.CG:

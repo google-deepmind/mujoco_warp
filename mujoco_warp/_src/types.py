@@ -2361,6 +2361,8 @@ class SolverContext:
   improvement: wp.array[float]
   # accepted linesearch step was below its arithmetic noise floor (stale ray exhausted)
   ray_exhausted: wp.array[bool]
+  # search vector kept from last iteration (or done): mv/jv are still valid
+  search_unchanged: wp.array[bool]
   prev_grad: wp.array2d[float]
   prev_Mgrad: wp.array2d[float]
   beta: wp.array[float]

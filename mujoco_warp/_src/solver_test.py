@@ -174,6 +174,7 @@ class SolverTest(parameterized.TestCase):
 
       # Reset and launch linesearch
       ctx.jv.fill_(wp.inf)
+      ctx.search_unchanged.fill_(False)
       solver._linesearch(m, d, ctx)
 
       # mv and jv are always written
@@ -245,6 +246,7 @@ class SolverTest(parameterized.TestCase):
     ctx.Jaref = wp.array(jaref, dtype=float)
     ctx.search_dot = wp.array([1.0], dtype=float)
     ctx.done = wp.array([False], dtype=bool)
+    ctx.search_unchanged.fill_(False)
 
     solver._linesearch(m, d, ctx)
 
@@ -265,6 +267,7 @@ class SolverTest(parameterized.TestCase):
     ctx.Jaref = wp.array(jaref, dtype=float)
     ctx.search_dot = wp.array([4.0], dtype=float)
     ctx.done = wp.array([False], dtype=bool)
+    ctx.search_unchanged.fill_(False)
 
     solver._linesearch(m, d, ctx)
 
@@ -313,6 +316,7 @@ class SolverTest(parameterized.TestCase):
     ctx.Jaref.assign(jaref)
     ctx.search_dot.fill_(1.0)
     ctx.done.fill_(False)
+    ctx.search_unchanged.fill_(False)
 
     solver._linesearch(m, d, ctx)
 
@@ -652,6 +656,7 @@ class SolverTest(parameterized.TestCase):
         solver.init_context(m, d, ctx, grad=True)
         wp.launch(solver._solve_init_search, dim=(d.nworld, m.nv), inputs=[ctx.Mgrad], outputs=[ctx.search, ctx.search_dot])
         any_changes = False
+        ctx.search_unchanged.fill_(False)
         for _ in range(m.opt.iterations):
           solver._linesearch(m, d, ctx)
           if track:
@@ -672,7 +677,7 @@ class SolverTest(parameterized.TestCase):
             solver._solve_search_update(False),
             dim=(d.nworld, m.nv),
             inputs=[m.opt.solver, ctx.state_changed_count, ctx.Mgrad, ctx.search, ctx.beta, ctx.done],
-            outputs=[ctx.search, ctx.search_dot],
+            outputs=[ctx.search, ctx.search_dot, ctx.search_unchanged],
           )
         return d.qacc.numpy().copy(), any_changes
 
