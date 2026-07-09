@@ -26,6 +26,7 @@ from mujoco_warp import ConeType
 from mujoco_warp import State
 from mujoco_warp import test_data
 from mujoco_warp._src import io
+from mujoco_warp._src import support
 from mujoco_warp._src.block_cholesky import create_blocked_cholesky_factorize_solve_func
 
 # tolerance for difference between MuJoCo and MJWarp support calculations - mostly
@@ -442,6 +443,60 @@ class SupportTest(parameterized.TestCase):
     # Reset data and verify userdata is zeroed
     mjwarp.reset_data(m, d2)
     _assert_eq(d2.userdata.numpy()[0], np.zeros(4), "reset_data userdata")
+
+  @parameterized.parameters(
+    # axis, angle, stretch
+    ([1.0, 0.0, 0.0], 0.0, [1.0, 1.0, 1.0]),  # Identity
+    ([1.0, 0.0, 0.0], np.pi / 2.0, [1.0, 1.0, 1.0]),  # 90 deg around X
+    ([0.0, 1.0, 0.0], -np.pi / 4.0, [1.0, 1.0, 1.0]),  # -45 deg around Y
+    ([0.0, 0.0, 1.0], np.pi * 0.99, [1.0, 1.0, 1.0]),  # 178.2 deg around Z
+    ([1.0, 1.0, 1.0], np.pi / 3.0, [1.0, 1.0, 1.0]),  # arbitrary axis
+    ([1.0, 0.0, 0.0], np.pi / 2.0, [2.0, 0.5, 1.0]),  # stretch along X and Y
+    ([0.0, 1.0, 0.0], -np.pi / 4.0, [1.5, 1.5, 1.5]),  # uniform scaling
+    ([1.0, 2.0, 3.0], np.pi / 6.0, [0.1, 10.0, 2.0]),  # extreme stretch
+  )
+  def test_mat33_to_quat_polar(self, axis, angle, stretch):
+    # Rodrigues' rotation formula
+    axis = np.array(axis, dtype=float) / np.linalg.norm(axis)
+    x, y, z = axis
+    K = np.array([[0.0, -z, y], [z, 0.0, -x], [-y, x, 0.0]])
+    R = np.eye(3) + np.sin(angle) * K + (1.0 - np.cos(angle)) * np.dot(K, K)
+    U = np.diag(stretch)
+    F = np.dot(R, U)
+
+    q_exp = np.array(
+      [
+        axis[0] * np.sin(angle / 2.0),
+        axis[1] * np.sin(angle / 2.0),
+        axis[2] * np.sin(angle / 2.0),
+        np.cos(angle / 2.0),
+      ]
+    )
+
+    F_wp = wp.array([wp.mat33(F.flatten())], dtype=wp.mat33)
+    q_out_wp = wp.zeros(1, dtype=wp.quat)
+
+    @wp.kernel
+    def test_polar_kernel(
+      F_in: wp.array[wp.mat33],
+      q_out: wp.array[wp.quat],
+    ):
+      q_out[0] = support.mat33_to_quat_polar(F_in[0])
+
+    wp.launch(
+      test_polar_kernel,
+      dim=1,
+      inputs=[F_wp],
+      outputs=[q_out_wp],
+    )
+
+    q_est = q_out_wp.numpy()[0]
+
+    # Align signs (antipodal symmetry)
+    if q_est[3] * q_exp[3] < 0.0:
+      q_est = -q_est
+
+    _assert_eq(q_est, q_exp, "quat")
 
 
 if __name__ == "__main__":
