@@ -1379,7 +1379,7 @@ def _linesearch(m: types.Model, d: types.Data, ctx: SolverContext):
     ctx: SolverContext
   """
   # mv = M @ search (common to both parallel and iterative)
-  support.mul_m(m, d, ctx.mv, ctx.search, skip=ctx.done)
+  _mul_m_compact_aware(m, d, ctx, ctx.mv, ctx.search, ctx.done)
 
   # Fuse jv computation in-kernel for small nv (iterative only, dense only)
   # Sparse mode requires pre-computed jv since in-kernel uses dense indexing
@@ -3702,7 +3702,7 @@ def init_context(m: types.Model, d: types.Data, ctx: SolverContext | InverseCont
   )
 
   # Ma = M @ qacc
-  support.mul_m(m, d, d.efc.Ma, d.qacc, skip=ctx.done)
+  _mul_m_compact_aware(m, d, ctx, d.efc.Ma, d.qacc, ctx.done)
 
   _update_constraint(m, d, ctx)
 
@@ -3823,6 +3823,68 @@ def _init_compact_inertia(
   if i == j and i >= ncdof_in[worldid]:
     val = 1.0
   M_c_out[worldid, i, j] = val
+
+
+@wp.kernel
+def _mul_m_sparse_compact(
+  # Model:
+  M_mulm_rowadr: wp.array[int],
+  M_mulm_col: wp.array[int],
+  M_mulm_madr: wp.array[int],
+  # Data in:
+  M_in: wp.array2d[float],
+  dof_cdof_in: wp.array2d[int],
+  cdof_dof_in: wp.array2d[int],
+  # In:
+  vec: wp.array2d[float],
+  skip: wp.array[bool],
+  # Out:
+  res: wp.array2d[float],
+):
+  """Compacted res = M @ vec via the full-coordinate sparse M (no gathered cM)."""
+  worldid, ci = wp.tid()
+
+  if skip[worldid]:
+    return
+
+  dof = cdof_dof_in[worldid, ci]
+  if dof < 0:
+    res[worldid, ci] = 0.0
+    return
+
+  acc = float(0.0)
+  start = M_mulm_rowadr[dof]
+  end = M_mulm_rowadr[dof + 1]
+  for k in range(start, end):
+    # tree-internal columns are awake with the row; guard like _gather_M_sparse
+    # in case M ever carries cross-tree entries (their gathered value is zero)
+    cj = dof_cdof_in[worldid, M_mulm_col[k]]
+    if cj >= 0:
+      acc += M_in[worldid, M_mulm_madr[k]] * vec[worldid, cj]
+  res[worldid, ci] = acc
+
+
+def _mul_m_compact_aware(m: types.Model, d: types.Data, ctx, res, vec, skip):
+  """M @ vec: full-coordinate sparse walk under compact, support.mul_m natively."""
+  dfull = ctx.compact_d_full
+  if dfull is not None:
+    wp.launch(
+      _mul_m_sparse_compact,
+      dim=(d.nworld, m.nv),
+      inputs=[
+        m.M_mulm_rowadr,
+        m.M_mulm_col,
+        m.M_mulm_madr,
+        dfull.M,
+        dfull.dof_cdof,
+        dfull.cdof_dof,
+        vec,
+        skip,
+      ],
+      outputs=[res],
+    )
+  else:
+    support.mul_m(m, d, res, vec, skip=skip)
 
 
 @wp.kernel
@@ -4041,6 +4103,9 @@ def solve_compact(m: types.Model, d: types.Data):
   )
 
   sctx = _create_solver_context(m2, d2)
+  # compact kernels read the full-coordinate sparse structures (M, J) through
+  # the compaction maps instead of dense products on gathered blocks
+  sctx.compact_d_full = d
   _solve(m2, d2, sctx, compact=True)
 
   _compact_scatter(m, d)

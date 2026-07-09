@@ -14,7 +14,7 @@
 # ==============================================================================
 import dataclasses
 import enum
-from typing import Callable
+from typing import Callable, Optional
 
 import mujoco
 import numpy as np
@@ -2336,6 +2336,8 @@ class InverseContext:
   done: wp.array[bool]
   changed_efc_ids: wp.array2d[int]
   changed_efc_count: wp.array[int]
+  # the full-coordinate Data, set by solve_compact (None natively)
+  compact_d_full: Optional["Data"] = None
 
 
 @dataclasses.dataclass
@@ -2364,6 +2366,8 @@ class SolverContext:
   # Incremental Hessian update (Newton only)
   changed_efc_ids: wp.array2d[int]
   changed_efc_count: wp.array[int]
+  # the full-coordinate Data, set by solve_compact (None natively)
+  compact_d_full: Optional["Data"] = None
 
 
 @dataclasses.dataclass
