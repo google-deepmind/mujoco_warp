@@ -1870,6 +1870,53 @@ def _update_gradient_h_incremental_sparse(
         wp.atomic_add(ctx_h_out[worldid, wp.min(colindi, colindj)], wp.max(colindi, colindj), h)
 
 
+@wp.kernel
+def _update_gradient_h_incremental_sparse_compact(
+  # Data in:
+  efc_J_rownnz_in: wp.array2d[int],
+  efc_J_rowadr_in: wp.array2d[int],
+  efc_J_colind_in: wp.array3d[int],
+  efc_J_in: wp.array3d[float],
+  efc_D_in: wp.array2d[float],
+  efc_state_in: wp.array2d[int],
+  dof_cdof_in: wp.array2d[int],
+  # In:
+  changed_ids_in: wp.array2d[int],
+  changed_count_in: wp.array[int],
+  slots_per_world: int,
+  # Out:
+  ctx_h_out: wp.array3d[float],
+):
+  """_update_gradient_h_incremental_sparse writing into the compacted h through dof_cdof."""
+  worldid, slot, lane = wp.tid()
+
+  n_changes = changed_count_in[worldid]
+  for change_idx in range(slot, n_changes, slots_per_world):
+    efcid = changed_ids_in[worldid, change_idx]
+    D = efc_D_in[worldid, efcid]
+    sign = float(0.0)
+    if efc_state_in[worldid, efcid] == types.ConstraintState.QUADRATIC.value:
+      sign = D
+    else:
+      sign = -D
+
+    rownnz = efc_J_rownnz_in[worldid, efcid]
+    rowadr = efc_J_rowadr_in[worldid, efcid]
+    n_entries = rownnz * (rownnz + 1) // 2
+
+    for entry in range(lane, n_entries, wp.static(_JTDAJ_THREADS_PER_GROUP)):
+      ii = int((wp.sqrt(float(8 * entry + 1)) - 1.0) * 0.5)
+      jj = entry - ii * (ii + 1) // 2
+      Ji = efc_J_in[worldid, 0, rowadr + ii]
+      Jj = efc_J_in[worldid, 0, rowadr + jj]
+      h = sign * Ji * Jj
+      if h != 0.0:
+        ci = dof_cdof_in[worldid, efc_J_colind_in[worldid, 0, rowadr + ii]]
+        cj = dof_cdof_in[worldid, efc_J_colind_in[worldid, 0, rowadr + jj]]
+        if ci >= 0 and cj >= 0:
+          wp.atomic_add(ctx_h_out[worldid, wp.min(ci, cj)], wp.max(ci, cj), h)
+
+
 def _update_constraint(
   m: types.Model,
   d: types.Data,
@@ -3437,6 +3484,26 @@ def _update_gradient_incremental(m: types.Model, d: types.Data, ctx: SolverConte
       ],
       outputs=[ctx.h],
     )
+  elif ctx.compact_d_full is not None and ctx.compact_m_full.is_sparse:
+    dfull = ctx.compact_d_full
+    slots = _jtdaj_groups_per_world(d.nworld, ctx.changed_efc_ids.shape[1])
+    wp.launch(
+      _update_gradient_h_incremental_sparse_compact,
+      dim=(d.nworld, slots, _JTDAJ_THREADS_PER_GROUP),
+      inputs=[
+        dfull.efc.J_rownnz,
+        dfull.efc.J_rowadr,
+        dfull.efc.J_colind,
+        dfull.efc.J,
+        d.efc.D,
+        d.efc.state,
+        dfull.dof_cdof,
+        ctx.changed_efc_ids,
+        ctx.changed_efc_count,
+        slots,
+      ],
+      outputs=[ctx.h],
+    )
   else:
     tri_dim = m.nv * (m.nv + 1) // 2
     wp.launch(
@@ -4414,10 +4481,13 @@ def _compact_gather(m: types.Model, d: types.Data):
     inputs=[m.M_rownnz, m.M_rowadr, m.M_colind, d.M, d.dof_cdof],
     outputs=[d.cM],
   )
-  # gather compacted dense constraint Jacobian (active columns only); the
-  # incremental Hessian update still reads cJ
-  d.cJ.zero_()
-  if m.is_sparse:
+  # gather compacted dense constraint Jacobian (active columns only). On the
+  # incremental Newton path for sparse models every consumer reads the
+  # full-coordinate sparse J directly, so the gather is skipped.
+  if m.is_sparse and _use_incremental(m):
+    pass
+  elif m.is_sparse:
+    d.cJ.zero_()
     wp.launch(
       _gather_J_sparse,
       dim=(d.nworld, d.njmax),
@@ -4425,6 +4495,7 @@ def _compact_gather(m: types.Model, d: types.Data):
       outputs=[d.cJ],
     )
   else:
+    d.cJ.zero_()
     wp.launch(
       _gather_J_dense,
       dim=(d.nworld, d.njmax),
