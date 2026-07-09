@@ -1309,7 +1309,9 @@ def _linesearch_zero_jv(
 
 
 @cache_kernel
-def _linesearch_jv_fused_kernel(is_sparse: bool, nv: int, dofs_per_thread: int):
+def _linesearch_jv_fused_kernel(is_sparse: bool, nv: int, dofs_per_thread: int, compact: bool):
+  COMPACT = compact
+
   @wp.kernel(module="unique", enable_backward=False)
   def kernel(
     # Data in:
@@ -1318,6 +1320,7 @@ def _linesearch_jv_fused_kernel(is_sparse: bool, nv: int, dofs_per_thread: int):
     efc_J_rowadr_in: wp.array2d[int],
     efc_J_colind_in: wp.array3d[int],
     efc_J_in: wp.array3d[float],
+    dof_cdof_in: wp.array2d[int],
     # In:
     ctx_search_in: wp.array2d[float],
     ctx_done_in: wp.array[bool],
@@ -1342,6 +1345,10 @@ def _linesearch_jv_fused_kernel(is_sparse: bool, nv: int, dofs_per_thread: int):
         for k in range(rownnz):
           sparseid = rowadr + k
           colind = efc_J_colind_in[worldid, 0, sparseid]
+          if wp.static(COMPACT):
+            colind = dof_cdof_in[worldid, colind]
+            if colind < 0:
+              continue
           jv_out += efc_J_in[worldid, 0, sparseid] * ctx_search_in[worldid, colind]
       else:
         for i in range(wp.static(min(dofs_per_thread, nv))):
@@ -1357,6 +1364,10 @@ def _linesearch_jv_fused_kernel(is_sparse: bool, nv: int, dofs_per_thread: int):
           for k in range(rownnz):
             sparseid = rowadr + k
             colind = efc_J_colind_in[worldid, 0, sparseid]
+            if wp.static(COMPACT):
+              colind = dof_cdof_in[worldid, colind]
+              if colind < 0:
+                continue
             jv_out += efc_J_in[worldid, 0, sparseid] * ctx_search_in[worldid, colind]
           ctx_jv_out[worldid, efcid] = jv_out
       else:
@@ -1383,32 +1394,15 @@ def _linesearch(m: types.Model, d: types.Data, ctx: SolverContext):
 
   # Fuse jv computation in-kernel for small nv (iterative only, dense only)
   # Sparse mode requires pre-computed jv since in-kernel uses dense indexing
-  # the sparse-compact J path needs the full model's sparse J structures;
+  # the sparse-compact J path reads the full model's sparse J structures;
   # dense full models keep the gathered dense cJ path
-  dfull = ctx.compact_d_full
-  mfull = ctx.compact_m_full
-  sparse_compact = dfull is not None and mfull.is_sparse
-  fuse_jv = m.nv <= 50 and not m.is_sparse and not sparse_compact
+  sc = _sparse_compact(ctx)
+  fuse_jv = m.nv <= 50 and not m.is_sparse and not sc
 
   # jv = J @ search (when not fused into iterative kernel)
-  if sparse_compact:
-    wp.launch(
-      _linesearch_jv_sparse_compact,
-      dim=(d.nworld, d.njmax),
-      inputs=[
-        d.nefc,
-        dfull.efc.J_rownnz,
-        dfull.efc.J_rowadr,
-        dfull.efc.J_colind,
-        dfull.efc.J,
-        dfull.dof_cdof,
-        ctx.search,
-        ctx.done,
-      ],
-      outputs=[ctx.jv],
-    )
-  elif not fuse_jv:
-    if m.is_sparse:
+  if not fuse_jv:
+    dj = ctx.compact_d_full if sc else d
+    if sc or m.is_sparse:
       # Sparse J has few nonzeros per row, one thread handles them all.
       dofs_per_thread = m.nv
       threads_per_efc = 1
@@ -1425,9 +1419,9 @@ def _linesearch(m: types.Model, d: types.Data, ctx: SolverContext):
       )
 
     wp.launch(
-      _linesearch_jv_fused_kernel(m.is_sparse, m.nv, dofs_per_thread),
+      _linesearch_jv_fused_kernel(sc or m.is_sparse, m.nv, dofs_per_thread, sc),
       dim=(d.nworld, d.njmax, threads_per_efc),
-      inputs=[d.nefc, d.efc.J_rownnz, d.efc.J_rowadr, d.efc.J_colind, d.efc.J, ctx.search, ctx.done],
+      inputs=[d.nefc, dj.efc.J_rownnz, dj.efc.J_rowadr, dj.efc.J_colind, dj.efc.J, dj.dof_cdof, ctx.search, ctx.done],
       outputs=[ctx.jv],
     )
 
@@ -1449,7 +1443,9 @@ def _solve_init_efc(
 
 
 @cache_kernel
-def _solve_init_jaref_kernel(is_sparse: bool, nv: int, dofs_per_thread: int):
+def _solve_init_jaref_kernel(is_sparse: bool, nv: int, dofs_per_thread: int, compact: bool):
+  COMPACT = compact
+
   @wp.kernel(module="unique", enable_backward=False)
   def kernel(
     # Data in:
@@ -1460,6 +1456,7 @@ def _solve_init_jaref_kernel(is_sparse: bool, nv: int, dofs_per_thread: int):
     efc_J_colind_in: wp.array3d[int],
     efc_J_in: wp.array3d[float],
     efc_aref_in: wp.array2d[float],
+    dof_cdof_in: wp.array2d[int],
     # Out:
     ctx_Jaref_out: wp.array2d[float],
   ):
@@ -1475,6 +1472,10 @@ def _solve_init_jaref_kernel(is_sparse: bool, nv: int, dofs_per_thread: int):
       for i in range(rownnz):
         sparseid = rowadr + i
         colind = efc_J_colind_in[worldid, 0, sparseid]
+        if wp.static(COMPACT):
+          colind = dof_cdof_in[worldid, colind]
+          if colind < 0:
+            continue
         jaref += efc_J_in[worldid, 0, sparseid] * qacc_in[worldid, colind]
       ctx_Jaref_out[worldid, efcid] = jaref - efc_aref_in[worldid, efcid]
     else:
@@ -1679,43 +1680,54 @@ def _zero_qfrc_constraint_sparse(
   qfrc_constraint_out[worldid, dofid] = 0.0
 
 
-@wp.kernel
-def _update_constraint_init_qfrc_constraint_sparse(
-  # Data in:
-  nefc_in: wp.array[int],
-  efc_J_rownnz_in: wp.array2d[int],
-  efc_J_rowadr_in: wp.array2d[int],
-  efc_J_colind_in: wp.array3d[int],
-  efc_J_in: wp.array3d[float],
-  efc_force_in: wp.array2d[float],
-  # In:
-  changed_count_in: wp.array[int],
-  ctx_done_in: wp.array[bool],
-  # Data out:
-  qfrc_constraint_out: wp.array2d[float],
-):
-  worldid, efcid = wp.tid()
+@cache_kernel
+def _update_constraint_init_qfrc_constraint_sparse(compact: bool):
+  COMPACT = compact
 
-  if ctx_done_in[worldid]:
-    return
+  @wp.kernel(module="unique", enable_backward=False)
+  def kernel(
+    # Data in:
+    nefc_in: wp.array[int],
+    efc_J_rownnz_in: wp.array2d[int],
+    efc_J_rowadr_in: wp.array2d[int],
+    efc_J_colind_in: wp.array3d[int],
+    efc_J_in: wp.array3d[float],
+    efc_force_in: wp.array2d[float],
+    dof_cdof_in: wp.array2d[int],
+    # In:
+    changed_count_in: wp.array[int],
+    ctx_done_in: wp.array[bool],
+    # Data out:
+    qfrc_constraint_out: wp.array2d[float],
+  ):
+    worldid, efcid = wp.tid()
 
-  if changed_count_in[worldid] == 0:
-    return
+    if ctx_done_in[worldid]:
+      return
 
-  if efcid >= nefc_in[worldid]:
-    return
+    if changed_count_in[worldid] == 0:
+      return
 
-  force = efc_force_in[worldid, efcid]
-  if force == 0.0:
-    return
+    if efcid >= nefc_in[worldid]:
+      return
 
-  rownnz = efc_J_rownnz_in[worldid, efcid]
-  rowadr = efc_J_rowadr_in[worldid, efcid]
-  for i in range(rownnz):
-    sparseid = rowadr + i
-    colind = efc_J_colind_in[worldid, 0, sparseid]
-    efc_J = efc_J_in[worldid, 0, sparseid]
-    wp.atomic_add(qfrc_constraint_out[worldid], colind, efc_J * force)
+    force = efc_force_in[worldid, efcid]
+    if force == 0.0:
+      return
+
+    rownnz = efc_J_rownnz_in[worldid, efcid]
+    rowadr = efc_J_rowadr_in[worldid, efcid]
+    for i in range(rownnz):
+      sparseid = rowadr + i
+      colind = efc_J_colind_in[worldid, 0, sparseid]
+      if wp.static(COMPACT):
+        colind = dof_cdof_in[worldid, colind]
+        if colind < 0:
+          continue
+      efc_J = efc_J_in[worldid, 0, sparseid]
+      wp.atomic_add(qfrc_constraint_out[worldid], colind, efc_J * force)
+
+  return kernel
 
 
 @wp.kernel
@@ -1820,101 +1832,66 @@ def _update_gradient_h_incremental(
     ctx_h_out[worldid, row, col] += delta
 
 
-@wp.kernel
-def _update_gradient_h_incremental_sparse(
-  # Data in:
-  efc_J_rownnz_in: wp.array2d[int],
-  efc_J_rowadr_in: wp.array2d[int],
-  efc_J_colind_in: wp.array3d[int],
-  efc_J_in: wp.array3d[float],
-  efc_D_in: wp.array2d[float],
-  efc_state_in: wp.array2d[int],
-  # In:
-  changed_ids_in: wp.array2d[int],
-  changed_count_in: wp.array[int],
-  slots_per_world: int,
-  # Out:
-  ctx_h_out: wp.array3d[float],
-):
-  """Incrementally update upper triangle of H for changed constraints (sparse J).
+@cache_kernel
+def _update_gradient_h_incremental_sparse(compact: bool):
+  COMPACT = compact
 
-  One warp per changed constraint row: the lanes split the row's upper-triangular
-  entries (same sqrt triangular-number decode as _JTDAJ_sparse), replacing the
-  serial nnz^2 loop that dominated this kernel.
-  """
-  worldid, slot, lane = wp.tid()
+  @wp.kernel(module="unique", enable_backward=False)
+  def kernel(
+    # Data in:
+    efc_J_rownnz_in: wp.array2d[int],
+    efc_J_rowadr_in: wp.array2d[int],
+    efc_J_colind_in: wp.array3d[int],
+    efc_J_in: wp.array3d[float],
+    efc_D_in: wp.array2d[float],
+    efc_state_in: wp.array2d[int],
+    dof_cdof_in: wp.array2d[int],
+    # In:
+    changed_ids_in: wp.array2d[int],
+    changed_count_in: wp.array[int],
+    slots_per_world: int,
+    # Out:
+    ctx_h_out: wp.array3d[float],
+  ):
+    """Incrementally update upper triangle of H for changed constraints (sparse J).
 
-  n_changes = changed_count_in[worldid]
-  for change_idx in range(slot, n_changes, slots_per_world):
-    efcid = changed_ids_in[worldid, change_idx]
-    D = efc_D_in[worldid, efcid]
-    sign = float(0.0)
-    if efc_state_in[worldid, efcid] == types.ConstraintState.QUADRATIC.value:
-      sign = D
-    else:
-      sign = -D
+    One warp per changed constraint row: the lanes split the row's upper-triangular
+    entries (same sqrt triangular-number decode as _JTDAJ_sparse), replacing the
+    serial nnz^2 loop that dominated this kernel.
+    """
+    worldid, slot, lane = wp.tid()
 
-    rownnz = efc_J_rownnz_in[worldid, efcid]
-    rowadr = efc_J_rowadr_in[worldid, efcid]
-    n_entries = rownnz * (rownnz + 1) // 2
+    n_changes = changed_count_in[worldid]
+    for change_idx in range(slot, n_changes, slots_per_world):
+      efcid = changed_ids_in[worldid, change_idx]
+      D = efc_D_in[worldid, efcid]
+      sign = float(0.0)
+      if efc_state_in[worldid, efcid] == types.ConstraintState.QUADRATIC.value:
+        sign = D
+      else:
+        sign = -D
 
-    for entry in range(lane, n_entries, wp.static(_JTDAJ_THREADS_PER_GROUP)):
-      ii = int((wp.sqrt(float(8 * entry + 1)) - 1.0) * 0.5)
-      jj = entry - ii * (ii + 1) // 2
-      Ji = efc_J_in[worldid, 0, rowadr + ii]
-      Jj = efc_J_in[worldid, 0, rowadr + jj]
-      h = sign * Ji * Jj
-      if h != 0.0:
-        colindi = efc_J_colind_in[worldid, 0, rowadr + ii]
-        colindj = efc_J_colind_in[worldid, 0, rowadr + jj]
-        wp.atomic_add(ctx_h_out[worldid, wp.min(colindi, colindj)], wp.max(colindi, colindj), h)
+      rownnz = efc_J_rownnz_in[worldid, efcid]
+      rowadr = efc_J_rowadr_in[worldid, efcid]
+      n_entries = rownnz * (rownnz + 1) // 2
 
+      for entry in range(lane, n_entries, wp.static(_JTDAJ_THREADS_PER_GROUP)):
+        ii = int((wp.sqrt(float(8 * entry + 1)) - 1.0) * 0.5)
+        jj = entry - ii * (ii + 1) // 2
+        Ji = efc_J_in[worldid, 0, rowadr + ii]
+        Jj = efc_J_in[worldid, 0, rowadr + jj]
+        h = sign * Ji * Jj
+        if h != 0.0:
+          colindi = efc_J_colind_in[worldid, 0, rowadr + ii]
+          colindj = efc_J_colind_in[worldid, 0, rowadr + jj]
+          if wp.static(COMPACT):
+            colindi = dof_cdof_in[worldid, colindi]
+            colindj = dof_cdof_in[worldid, colindj]
+            if colindi < 0 or colindj < 0:
+              continue
+          wp.atomic_add(ctx_h_out[worldid, wp.min(colindi, colindj)], wp.max(colindi, colindj), h)
 
-@wp.kernel
-def _update_gradient_h_incremental_sparse_compact(
-  # Data in:
-  efc_J_rownnz_in: wp.array2d[int],
-  efc_J_rowadr_in: wp.array2d[int],
-  efc_J_colind_in: wp.array3d[int],
-  efc_J_in: wp.array3d[float],
-  efc_D_in: wp.array2d[float],
-  efc_state_in: wp.array2d[int],
-  dof_cdof_in: wp.array2d[int],
-  # In:
-  changed_ids_in: wp.array2d[int],
-  changed_count_in: wp.array[int],
-  slots_per_world: int,
-  # Out:
-  ctx_h_out: wp.array3d[float],
-):
-  """_update_gradient_h_incremental_sparse writing into the compacted h through dof_cdof."""
-  worldid, slot, lane = wp.tid()
-
-  n_changes = changed_count_in[worldid]
-  for change_idx in range(slot, n_changes, slots_per_world):
-    efcid = changed_ids_in[worldid, change_idx]
-    D = efc_D_in[worldid, efcid]
-    sign = float(0.0)
-    if efc_state_in[worldid, efcid] == types.ConstraintState.QUADRATIC.value:
-      sign = D
-    else:
-      sign = -D
-
-    rownnz = efc_J_rownnz_in[worldid, efcid]
-    rowadr = efc_J_rowadr_in[worldid, efcid]
-    n_entries = rownnz * (rownnz + 1) // 2
-
-    for entry in range(lane, n_entries, wp.static(_JTDAJ_THREADS_PER_GROUP)):
-      ii = int((wp.sqrt(float(8 * entry + 1)) - 1.0) * 0.5)
-      jj = entry - ii * (ii + 1) // 2
-      Ji = efc_J_in[worldid, 0, rowadr + ii]
-      Jj = efc_J_in[worldid, 0, rowadr + jj]
-      h = sign * Ji * Jj
-      if h != 0.0:
-        ci = dof_cdof_in[worldid, efc_J_colind_in[worldid, 0, rowadr + ii]]
-        cj = dof_cdof_in[worldid, efc_J_colind_in[worldid, 0, rowadr + jj]]
-        if ci >= 0 and cj >= 0:
-          wp.atomic_add(ctx_h_out[worldid, wp.min(ci, cj)], wp.max(ci, cj), h)
+  return kernel
 
 
 def _update_constraint(
@@ -1952,7 +1929,9 @@ def _update_constraint(
   # qfrc_constraint = efc_J.T @ efc_force. Fast-path worlds with no state flips
   # skip the rebuild; the public value is recovered after the solve.
   changed = ctx.changed_efc_count if stable_fast else d.nefc
-  if m.is_sparse:
+  sc = _sparse_compact(ctx)
+  if m.is_sparse or sc:
+    dj = ctx.compact_d_full if sc else d
     wp.launch(
       _zero_qfrc_constraint_sparse,
       dim=(d.nworld, m.nv),
@@ -1960,33 +1939,9 @@ def _update_constraint(
       outputs=[d.qfrc_constraint],
     )
     wp.launch(
-      _update_constraint_init_qfrc_constraint_sparse,
+      _update_constraint_init_qfrc_constraint_sparse(sc),
       dim=(d.nworld, d.njmax),
-      inputs=[d.nefc, d.efc.J_rownnz, d.efc.J_rowadr, d.efc.J_colind, d.efc.J, d.efc.force, changed, ctx.done],
-      outputs=[d.qfrc_constraint],
-    )
-  elif ctx.compact_d_full is not None and ctx.compact_m_full.is_sparse:
-    dfull = ctx.compact_d_full
-    wp.launch(
-      _zero_qfrc_constraint_sparse,
-      dim=(d.nworld, m.nv),
-      inputs=[changed, ctx.done],
-      outputs=[d.qfrc_constraint],
-    )
-    wp.launch(
-      _update_constraint_init_qfrc_constraint_sparse_compact,
-      dim=(d.nworld, d.njmax),
-      inputs=[
-        d.nefc,
-        dfull.efc.J_rownnz,
-        dfull.efc.J_rowadr,
-        dfull.efc.J_colind,
-        dfull.efc.J,
-        d.efc.force,
-        dfull.dof_cdof,
-        changed,
-        ctx.done,
-      ],
+      inputs=[d.nefc, dj.efc.J_rownnz, dj.efc.J_rowadr, dj.efc.J_colind, dj.efc.J, d.efc.force, dj.dof_cdof, changed, ctx.done],
       outputs=[d.qfrc_constraint],
     )
   else:
@@ -2105,74 +2060,54 @@ def _update_gradient_grad_tiled(
     ctx_grad_dot_out[worldid] = grad_dot_sum[0]
 
 
-@wp.kernel
-def _update_gradient_init_h_sparse(
-  # Model:
-  nv: int,
-  M_elemid: wp.array2d[int],
-  # Data in:
-  M_in: wp.array2d[float],
-  # In:
-  ctx_done_in: wp.array[bool],
-  # Out:
-  ctx_h_out: wp.array3d[float],
-):
-  worldid, i, j = wp.tid()
+@cache_kernel
+def _update_gradient_init_h_sparse(compact: bool):
+  COMPACT = compact
 
-  if ctx_done_in[worldid]:
-    return
+  @wp.kernel(module="unique", enable_backward=False)
+  def kernel(
+    # Model:
+    nv: int,
+    M_elemid: wp.array2d[int],
+    # Data in:
+    M_in: wp.array2d[float],
+    cdof_dof_in: wp.array2d[int],
+    # In:
+    ctx_done_in: wp.array[bool],
+    # Out:
+    ctx_h_out: wp.array3d[float],
+  ):
+    worldid, i, j = wp.tid()
 
-  # only write the upper triangle; Cholesky reads the upper triangle only
-  if j < i:
-    return
+    if ctx_done_in[worldid]:
+      return
 
-  if i >= nv or j >= nv:
-    ctx_h_out[worldid, i, j] = 0.0
-    return
+    # only write the upper triangle; Cholesky reads the upper triangle only
+    if j < i:
+      return
 
-  # sparse M is stored in the lower triangle, so transpose the lookup for the upper
-  elemid = M_elemid[j, i]
-  if elemid >= 0:
-    ctx_h_out[worldid, i, j] = M_in[worldid, elemid]
-  else:
-    ctx_h_out[worldid, i, j] = 0.0
+    if wp.static(COMPACT):
+      dof_i = cdof_dof_in[worldid, i]
+      dof_j = cdof_dof_in[worldid, j]
+      if dof_i < 0 or dof_j < 0:
+        # per-world padded block: identity keeps the factorization well conditioned
+        ctx_h_out[worldid, i, j] = wp.where(i == j, 1.0, 0.0)
+        return
+    else:
+      dof_i = i
+      dof_j = j
+      if i >= nv or j >= nv:
+        ctx_h_out[worldid, i, j] = 0.0
+        return
 
+    # sparse M is stored in the lower triangle, so look up (larger, smaller)
+    elemid = M_elemid[wp.max(dof_i, dof_j), wp.min(dof_i, dof_j)]
+    if elemid >= 0:
+      ctx_h_out[worldid, i, j] = M_in[worldid, elemid]
+    else:
+      ctx_h_out[worldid, i, j] = 0.0
 
-@wp.kernel
-def _update_gradient_init_h_sparse_compact(
-  # Model:
-  M_elemid: wp.array2d[int],
-  # Data in:
-  M_in: wp.array2d[float],
-  cdof_dof_in: wp.array2d[int],
-  # In:
-  ctx_done_in: wp.array[bool],
-  # Out:
-  ctx_h_out: wp.array3d[float],
-):
-  """Compacted h = M via the full-coordinate sparse M (no gathered cM)."""
-  worldid, i, j = wp.tid()
-
-  if ctx_done_in[worldid]:
-    return
-
-  # only write the upper triangle; Cholesky reads the upper triangle only
-  if j < i:
-    return
-
-  dof_i = cdof_dof_in[worldid, i]
-  dof_j = cdof_dof_in[worldid, j]
-  if dof_i < 0 or dof_j < 0:
-    # padded block: identity keeps the factorization well conditioned
-    ctx_h_out[worldid, i, j] = wp.where(i == j, 1.0, 0.0)
-    return
-
-  # sparse M is stored in the lower triangle, so look up (larger, smaller)
-  elemid = M_elemid[wp.max(dof_i, dof_j), wp.min(dof_i, dof_j)]
-  if elemid >= 0:
-    ctx_h_out[worldid, i, j] = M_in[worldid, elemid]
-  else:
-    ctx_h_out[worldid, i, j] = 0.0
+  return kernel
 
 
 @wp.func
@@ -3001,99 +2936,61 @@ _JTDAJ_THREADS_PER_GROUP = 32  # one warp per group, so its J reads coalesce
 _JTDAJ_OVERSUBSCRIBE_WAVES = 6  # grid-stride depth; short per-warp chains load-balance groups
 
 
-@wp.kernel
-def _JTDAJ_sparse(
-  # Data in:
-  efc_jtdaj_adr_in: wp.array2d[int],
-  efc_jtdaj_nrow_in: wp.array2d[int],
-  efc_jtdaj_nblock_in: wp.array[int],
-  efc_J_rownnz_in: wp.array2d[int],
-  efc_J_rowadr_in: wp.array2d[int],
-  efc_J_colind_in: wp.array3d[int],
-  efc_J_in: wp.array3d[float],
-  efc_D_in: wp.array2d[float],
-  efc_state_in: wp.array2d[int],
-  # In:
-  ctx_done_in: wp.array[bool],
-  groups_per_world: int,
-  # Out:
-  h_out: wp.array3d[float],
-):
-  worldid, slot, lane = wp.tid()
-  if ctx_done_in[worldid]:
-    return
-  count = efc_jtdaj_nblock_in[worldid]
-  for groupid in range(slot, count, groups_per_world):  # grid-stride this world's group list
-    head_row = efc_jtdaj_adr_in[worldid, groupid]
-    block_rows = efc_jtdaj_nrow_in[worldid, groupid]
-    head_adr = efc_J_rowadr_in[worldid, head_row]
-    support = efc_J_rownnz_in[worldid, head_row]  # dofs the constraint touches = block dimension
-    n_entries = support * (support + 1) // 2  # upper-triangular entries of the |S|x|S| block
-    for entry in range(lane, n_entries, wp.static(_JTDAJ_THREADS_PER_GROUP)):
-      block_col = int((wp.sqrt(float(8 * entry + 1)) - 1.0) * 0.5)
-      block_row = entry - block_col * (block_col + 1) // 2
-      dof_row = efc_J_colind_in[worldid, 0, head_adr + block_row]
-      dof_col = efc_J_colind_in[worldid, 0, head_adr + block_col]
-      hval = float(0.0)
-      for member in range(block_rows):
-        member_row = head_row + member
-        if efc_state_in[worldid, member_row] == types.ConstraintState.QUADRATIC.value:
-          member_adr = efc_J_rowadr_in[worldid, member_row]
-          j_row = efc_J_in[worldid, 0, member_adr + block_row]
-          j_col = efc_J_in[worldid, 0, member_adr + block_col]
-          hval += j_row * efc_D_in[worldid, member_row] * j_col
-      if hval != 0.0:  # skip the atomic when no member row is active
-        wp.atomic_add(h_out[worldid, wp.min(dof_row, dof_col)], wp.max(dof_row, dof_col), hval)
+@cache_kernel
+def _JTDAJ_sparse(compact: bool):
+  COMPACT = compact
 
+  @wp.kernel(module="unique", enable_backward=False)
+  def kernel(
+    # Data in:
+    efc_jtdaj_adr_in: wp.array2d[int],
+    efc_jtdaj_nrow_in: wp.array2d[int],
+    efc_jtdaj_nblock_in: wp.array[int],
+    efc_J_rownnz_in: wp.array2d[int],
+    efc_J_rowadr_in: wp.array2d[int],
+    efc_J_colind_in: wp.array3d[int],
+    efc_J_in: wp.array3d[float],
+    efc_D_in: wp.array2d[float],
+    efc_state_in: wp.array2d[int],
+    dof_cdof_in: wp.array2d[int],
+    # In:
+    ctx_done_in: wp.array[bool],
+    groups_per_world: int,
+    # Out:
+    h_out: wp.array3d[float],
+  ):
+    worldid, slot, lane = wp.tid()
+    if ctx_done_in[worldid]:
+      return
+    count = efc_jtdaj_nblock_in[worldid]
+    for groupid in range(slot, count, groups_per_world):  # grid-stride this world's group list
+      head_row = efc_jtdaj_adr_in[worldid, groupid]
+      block_rows = efc_jtdaj_nrow_in[worldid, groupid]
+      head_adr = efc_J_rowadr_in[worldid, head_row]
+      support = efc_J_rownnz_in[worldid, head_row]  # dofs the constraint touches = block dimension
+      n_entries = support * (support + 1) // 2  # upper-triangular entries of the |S|x|S| block
+      for entry in range(lane, n_entries, wp.static(_JTDAJ_THREADS_PER_GROUP)):
+        block_col = int((wp.sqrt(float(8 * entry + 1)) - 1.0) * 0.5)
+        block_row = entry - block_col * (block_col + 1) // 2
+        dof_row = efc_J_colind_in[worldid, 0, head_adr + block_row]
+        dof_col = efc_J_colind_in[worldid, 0, head_adr + block_col]
+        hval = float(0.0)
+        for member in range(block_rows):
+          member_row = head_row + member
+          if efc_state_in[worldid, member_row] == types.ConstraintState.QUADRATIC.value:
+            member_adr = efc_J_rowadr_in[worldid, member_row]
+            j_row = efc_J_in[worldid, 0, member_adr + block_row]
+            j_col = efc_J_in[worldid, 0, member_adr + block_col]
+            hval += j_row * efc_D_in[worldid, member_row] * j_col
+        if hval != 0.0:  # skip the atomic when no member row is active
+          if wp.static(COMPACT):
+            dof_row = dof_cdof_in[worldid, dof_row]
+            dof_col = dof_cdof_in[worldid, dof_col]
+            if dof_row < 0 or dof_col < 0:
+              continue
+          wp.atomic_add(h_out[worldid, wp.min(dof_row, dof_col)], wp.max(dof_row, dof_col), hval)
 
-@wp.kernel
-def _JTDAJ_sparse_compact(
-  # Data in:
-  efc_jtdaj_adr_in: wp.array2d[int],
-  efc_jtdaj_nrow_in: wp.array2d[int],
-  efc_jtdaj_nblock_in: wp.array[int],
-  efc_J_rownnz_in: wp.array2d[int],
-  efc_J_rowadr_in: wp.array2d[int],
-  efc_J_colind_in: wp.array3d[int],
-  efc_J_in: wp.array3d[float],
-  efc_D_in: wp.array2d[float],
-  efc_state_in: wp.array2d[int],
-  dof_cdof_in: wp.array2d[int],
-  # In:
-  ctx_done_in: wp.array[bool],
-  groups_per_world: int,
-  # Out:
-  h_out: wp.array3d[float],
-):
-  """_JTDAJ_sparse writing into the compacted h through dof_cdof."""
-  worldid, slot, lane = wp.tid()
-  if ctx_done_in[worldid]:
-    return
-  count = efc_jtdaj_nblock_in[worldid]
-  for groupid in range(slot, count, groups_per_world):  # grid-stride this world's group list
-    head_row = efc_jtdaj_adr_in[worldid, groupid]
-    block_rows = efc_jtdaj_nrow_in[worldid, groupid]
-    head_adr = efc_J_rowadr_in[worldid, head_row]
-    support = efc_J_rownnz_in[worldid, head_row]  # dofs the constraint touches = block dimension
-    n_entries = support * (support + 1) // 2  # upper-triangular entries of the |S|x|S| block
-    for entry in range(lane, n_entries, wp.static(_JTDAJ_THREADS_PER_GROUP)):
-      block_col = int((wp.sqrt(float(8 * entry + 1)) - 1.0) * 0.5)
-      block_row = entry - block_col * (block_col + 1) // 2
-      dof_row = efc_J_colind_in[worldid, 0, head_adr + block_row]
-      dof_col = efc_J_colind_in[worldid, 0, head_adr + block_col]
-      hval = float(0.0)
-      for member in range(block_rows):
-        member_row = head_row + member
-        if efc_state_in[worldid, member_row] == types.ConstraintState.QUADRATIC.value:
-          member_adr = efc_J_rowadr_in[worldid, member_row]
-          j_row = efc_J_in[worldid, 0, member_adr + block_row]
-          j_col = efc_J_in[worldid, 0, member_adr + block_col]
-          hval += j_row * efc_D_in[worldid, member_row] * j_col
-      if hval != 0.0:  # skip the atomic when no member row is active
-        ci = dof_cdof_in[worldid, dof_row]
-        cj = dof_cdof_in[worldid, dof_col]
-        if ci >= 0 and cj >= 0:
-          wp.atomic_add(h_out[worldid, wp.min(ci, cj)], wp.max(ci, cj), hval)
+  return kernel
 
 
 def _jtdaj_groups_per_world(nworld: int, njmax: int) -> int:
@@ -3101,7 +2998,7 @@ def _jtdaj_groups_per_world(nworld: int, njmax: int) -> int:
   # _JTDAJ_OVERSUBSCRIBE_WAVES device waves -- else high-njmax worlds dispatch many idle tail warps
   # (njmax >> actual groups).  A few waves of oversubscription keep each warp's serial chain short,
   # load-balancing the variable group sizes (measured plateau: ~4-8 waves).
-  block_size, min_grid_size = wp.get_suggested_block_size(_JTDAJ_sparse)
+  block_size, min_grid_size = wp.get_suggested_block_size(_JTDAJ_sparse(False))
   # block_size * min_grid_size = full-device thread count (block_size cancels): the kernel's max
   # resident threads (one wave), a device property independent of nworld and our launch block_dim.
   device_warps = max(1, block_size * min_grid_size // _JTDAJ_THREADS_PER_GROUP)
@@ -3229,64 +3126,37 @@ def _update_gradient(m: types.Model, d: types.Data, ctx: SolverContext, compact:
       smooth.solve_m(m, d, ctx.Mgrad, ctx.grad)
   elif m.opt.solver == types.SolverType.NEWTON:
     # h = M + (efc_J.T * efc_D * active) @ efc_J
-    if m.is_sparse:
+    sc = _sparse_compact(ctx)
+    if m.is_sparse or sc:
+      mj = ctx.compact_m_full if sc else m
+      dj = ctx.compact_d_full if sc else d
       wp.launch(
-        _update_gradient_init_h_sparse,
+        _update_gradient_init_h_sparse(sc),
         dim=(d.nworld, m.nv_pad, m.nv_pad),
-        inputs=[m.nv, m.M_elemid, d.M, ctx.done],
+        inputs=[mj.nv, mj.M_elemid, dj.M, dj.cdof_dof, ctx.done],
         outputs=[ctx.h],
       )
 
       groups_per_world = _jtdaj_groups_per_world(d.nworld, d.njmax)
       wp.launch(
-        _JTDAJ_sparse,
+        _JTDAJ_sparse(sc),
         dim=(d.nworld, groups_per_world, _JTDAJ_THREADS_PER_GROUP),
         inputs=[
-          d.efc.jtdaj_adr,
-          d.efc.jtdaj_nrow,
-          d.efc.jtdaj_nblock,
-          d.efc.J_rownnz,
-          d.efc.J_rowadr,
-          d.efc.J_colind,
-          d.efc.J,
+          dj.efc.jtdaj_adr,
+          dj.efc.jtdaj_nrow,
+          dj.efc.jtdaj_nblock,
+          dj.efc.J_rownnz,
+          dj.efc.J_rowadr,
+          dj.efc.J_colind,
+          dj.efc.J,
           d.efc.D,
           d.efc.state,
+          dj.dof_cdof,
           ctx.done,
           groups_per_world,
         ],
         outputs=[ctx.h],
-        block_dim=m.block_dim.update_gradient_JTDAJ_sparse,
-      )
-    elif compact and ctx.compact_m_full is not None and ctx.compact_m_full.is_sparse:
-      mfull = ctx.compact_m_full
-      dfull = ctx.compact_d_full
-      wp.launch(
-        _update_gradient_init_h_sparse_compact,
-        dim=(d.nworld, m.nv_pad, m.nv_pad),
-        inputs=[mfull.M_elemid, dfull.M, dfull.cdof_dof, ctx.done],
-        outputs=[ctx.h],
-      )
-
-      groups_per_world = _jtdaj_groups_per_world(d.nworld, d.njmax)
-      wp.launch(
-        _JTDAJ_sparse_compact,
-        dim=(d.nworld, groups_per_world, _JTDAJ_THREADS_PER_GROUP),
-        inputs=[
-          dfull.efc.jtdaj_adr,
-          dfull.efc.jtdaj_nrow,
-          dfull.efc.jtdaj_nblock,
-          dfull.efc.J_rownnz,
-          dfull.efc.J_rowadr,
-          dfull.efc.J_colind,
-          dfull.efc.J,
-          d.efc.D,
-          d.efc.state,
-          dfull.dof_cdof,
-          ctx.done,
-          groups_per_world,
-        ],
-        outputs=[ctx.h],
-        block_dim=mfull.block_dim.update_gradient_JTDAJ_sparse,
+        block_dim=mj.block_dim.update_gradient_JTDAJ_sparse,
       )
     else:
       if compact:
@@ -3466,38 +3336,21 @@ def _update_gradient_incremental(m: types.Model, d: types.Data, ctx: SolverConte
   )
 
   # Update upper triangle of H with delta from changed constraints.
-  if m.is_sparse:
+  sc = _sparse_compact(ctx)
+  if m.is_sparse or sc:
+    dj = ctx.compact_d_full if sc else d
     slots = _jtdaj_groups_per_world(d.nworld, ctx.changed_efc_ids.shape[1])
     wp.launch(
-      _update_gradient_h_incremental_sparse,
+      _update_gradient_h_incremental_sparse(sc),
       dim=(d.nworld, slots, _JTDAJ_THREADS_PER_GROUP),
       inputs=[
-        d.efc.J_rownnz,
-        d.efc.J_rowadr,
-        d.efc.J_colind,
-        d.efc.J,
+        dj.efc.J_rownnz,
+        dj.efc.J_rowadr,
+        dj.efc.J_colind,
+        dj.efc.J,
         d.efc.D,
         d.efc.state,
-        ctx.changed_efc_ids,
-        ctx.changed_efc_count,
-        slots,
-      ],
-      outputs=[ctx.h],
-    )
-  elif ctx.compact_d_full is not None and ctx.compact_m_full.is_sparse:
-    dfull = ctx.compact_d_full
-    slots = _jtdaj_groups_per_world(d.nworld, ctx.changed_efc_ids.shape[1])
-    wp.launch(
-      _update_gradient_h_incremental_sparse_compact,
-      dim=(d.nworld, slots, _JTDAJ_THREADS_PER_GROUP),
-      inputs=[
-        dfull.efc.J_rownnz,
-        dfull.efc.J_rowadr,
-        dfull.efc.J_colind,
-        dfull.efc.J,
-        d.efc.D,
-        d.efc.state,
-        dfull.dof_cdof,
+        dj.dof_cdof,
         ctx.changed_efc_ids,
         ctx.changed_efc_count,
         slots,
@@ -3924,30 +3777,17 @@ def init_context(m: types.Model, d: types.Data, ctx: SolverContext | InverseCont
   if threads_per_efc > 1:
     ctx.Jaref.zero_()
 
-  if ctx.compact_d_full is not None and ctx.compact_m_full.is_sparse:
-    dfull = ctx.compact_d_full
-    wp.launch(
-      _solve_init_jaref_sparse_compact,
-      dim=(d.nworld, d.njmax),
-      inputs=[
-        d.nefc,
-        d.qacc,
-        dfull.efc.J_rownnz,
-        dfull.efc.J_rowadr,
-        dfull.efc.J_colind,
-        dfull.efc.J,
-        d.efc.aref,
-        dfull.dof_cdof,
-      ],
-      outputs=[ctx.Jaref],
-    )
-  else:
-    wp.launch(
-      _solve_init_jaref_kernel(m.is_sparse, m.nv, dofs_per_thread),
-      dim=(d.nworld, d.njmax, threads_per_efc),
-      inputs=[d.nefc, d.qacc, d.efc.J_rownnz, d.efc.J_rowadr, d.efc.J_colind, d.efc.J, d.efc.aref],
-      outputs=[ctx.Jaref],
-    )
+  sc = _sparse_compact(ctx)
+  dj = ctx.compact_d_full if sc else d
+  if sc:
+    dofs_per_thread = m.nv
+    threads_per_efc = 1
+  wp.launch(
+    _solve_init_jaref_kernel(sc or m.is_sparse, m.nv, dofs_per_thread, sc),
+    dim=(d.nworld, d.njmax, threads_per_efc),
+    inputs=[d.nefc, d.qacc, dj.efc.J_rownnz, dj.efc.J_rowadr, dj.efc.J_colind, dj.efc.J, d.efc.aref, dj.dof_cdof],
+    outputs=[ctx.Jaref],
+  )
 
   # Ma = M @ qacc
   _mul_m_compact_aware(m, d, ctx, d.efc.Ma, d.qacc, ctx.done)
@@ -4112,111 +3952,12 @@ def _mul_m_sparse_compact(
   res[worldid, ci] = acc
 
 
-@wp.kernel
-def _linesearch_jv_sparse_compact(
-  # Data in:
-  nefc_in: wp.array[int],
-  efc_J_rownnz_in: wp.array2d[int],
-  efc_J_rowadr_in: wp.array2d[int],
-  efc_J_colind_in: wp.array3d[int],
-  efc_J_in: wp.array3d[float],
-  dof_cdof_in: wp.array2d[int],
-  # In:
-  ctx_search_in: wp.array2d[float],
-  ctx_done_in: wp.array[bool],
-  # Out:
-  ctx_jv_out: wp.array2d[float],
-):
-  """Compacted jv = J @ search via the full-coordinate sparse J."""
-  worldid, efcid = wp.tid()
-
-  if efcid >= nefc_in[worldid]:
-    return
-
-  if ctx_done_in[worldid]:
-    return
-
-  jv = float(0.0)
-  rowadr = efc_J_rowadr_in[worldid, efcid]
-  for k in range(efc_J_rownnz_in[worldid, efcid]):
-    adr = rowadr + k
-    cj = dof_cdof_in[worldid, efc_J_colind_in[worldid, 0, adr]]
-    if cj >= 0:
-      jv += efc_J_in[worldid, 0, adr] * ctx_search_in[worldid, cj]
-  ctx_jv_out[worldid, efcid] = jv
+def _sparse_compact(ctx: SolverContext | InverseContext) -> bool:
+  """Whether this solve is compact over a sparse full model (full J structures exist)."""
+  return ctx.compact_d_full is not None and ctx.compact_m_full.is_sparse
 
 
-@wp.kernel
-def _update_constraint_init_qfrc_constraint_sparse_compact(
-  # Data in:
-  nefc_in: wp.array[int],
-  efc_J_rownnz_in: wp.array2d[int],
-  efc_J_rowadr_in: wp.array2d[int],
-  efc_J_colind_in: wp.array3d[int],
-  efc_J_in: wp.array3d[float],
-  efc_force_in: wp.array2d[float],
-  dof_cdof_in: wp.array2d[int],
-  # In:
-  changed_count_in: wp.array[int],
-  ctx_done_in: wp.array[bool],
-  # Data out:
-  qfrc_constraint_out: wp.array2d[float],
-):
-  """Compacted qfrc_constraint = J^T @ force via the full-coordinate sparse J."""
-  worldid, efcid = wp.tid()
-
-  if ctx_done_in[worldid]:
-    return
-
-  if changed_count_in[worldid] == 0:
-    return
-
-  if efcid >= nefc_in[worldid]:
-    return
-
-  force = efc_force_in[worldid, efcid]
-  if force == 0.0:
-    return
-
-  rowadr = efc_J_rowadr_in[worldid, efcid]
-  for k in range(efc_J_rownnz_in[worldid, efcid]):
-    adr = rowadr + k
-    cj = dof_cdof_in[worldid, efc_J_colind_in[worldid, 0, adr]]
-    if cj >= 0:
-      wp.atomic_add(qfrc_constraint_out, worldid, cj, efc_J_in[worldid, 0, adr] * force)
-
-
-@wp.kernel
-def _solve_init_jaref_sparse_compact(
-  # Data in:
-  nefc_in: wp.array[int],
-  qacc_in: wp.array2d[float],
-  efc_J_rownnz_in: wp.array2d[int],
-  efc_J_rowadr_in: wp.array2d[int],
-  efc_J_colind_in: wp.array3d[int],
-  efc_J_in: wp.array3d[float],
-  efc_aref_in: wp.array2d[float],
-  dof_cdof_in: wp.array2d[int],
-  # Out:
-  ctx_Jaref_out: wp.array2d[float],
-):
-  """Compacted Jaref = J @ qacc - aref via the full-coordinate sparse J."""
-  worldid, efcid = wp.tid()
-
-  if efcid >= nefc_in[worldid]:
-    return
-
-  jaref = float(0.0)
-  rowadr = efc_J_rowadr_in[worldid, efcid]
-  for k in range(efc_J_rownnz_in[worldid, efcid]):
-    adr = rowadr + k
-    cj = dof_cdof_in[worldid, efc_J_colind_in[worldid, 0, adr]]
-    if cj >= 0:
-      jaref += efc_J_in[worldid, 0, adr] * qacc_in[worldid, cj]
-  ctx_Jaref_out[worldid, efcid] = jaref - efc_aref_in[worldid, efcid]
-
-
-def _mul_m_compact_aware(m: types.Model, d: types.Data, ctx, res, vec, skip):
+def _mul_m_compact_aware(m: types.Model, d: types.Data, ctx: SolverContext | InverseContext, res, vec, skip):
   """M @ vec: full-coordinate sparse walk under compact, support.mul_m natively."""
   dfull = ctx.compact_d_full
   if dfull is not None:
@@ -4429,7 +4170,8 @@ def solve_compact(m: types.Model, d: types.Data):
   Gathers the active-DOF inertia, constraint Jacobian, and smooth/warmstart vectors
   into nvmax_pad-sized dense workspaces, runs the stock dense Newton solver on a
   shallow-replaced (m, d) at nvmax_pad, then scatters qacc/qfrc_constraint back.
-  Inactive DOFs are frozen to 0. Reads the sparse Model inertia and constraint J.
+  Inactive DOFs are frozen to 0. On the incremental Newton path the solver
+  kernels read the sparse M and J directly through the compaction maps.
   """
   _compact_gather(m, d)
 
@@ -4481,12 +4223,10 @@ def _compact_gather(m: types.Model, d: types.Data):
     inputs=[m.M_rownnz, m.M_rowadr, m.M_colind, d.M, d.dof_cdof],
     outputs=[d.cM],
   )
-  # gather compacted dense constraint Jacobian (active columns only). On the
-  # incremental Newton path for sparse models every consumer reads the
-  # full-coordinate sparse J directly, so the gather is skipped.
-  if m.is_sparse and _use_incremental(m):
-    pass
-  elif m.is_sparse:
+  # gather the compacted dense constraint Jacobian (active columns only); on
+  # the incremental Newton path for sparse models every consumer reads the
+  # full-coordinate sparse J directly and no gather is needed
+  if m.is_sparse and not _use_incremental(m):
     d.cJ.zero_()
     wp.launch(
       _gather_J_sparse,
@@ -4494,7 +4234,7 @@ def _compact_gather(m: types.Model, d: types.Data):
       inputs=[d.nefc, d.dof_cdof, d.efc.J_rownnz, d.efc.J_rowadr, d.efc.J_colind, d.efc.J],
       outputs=[d.cJ],
     )
-  else:
+  elif not m.is_sparse:
     d.cJ.zero_()
     wp.launch(
       _gather_J_dense,
