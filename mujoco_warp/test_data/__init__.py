@@ -38,6 +38,7 @@ def fixture(
   overrides: dict[str, Any] | Sequence[str] = tuple(),
   nworld: int = 1,
   nvmax: Optional[int] = -1,
+  njmax_nnz: Optional[int] = None,
 ) -> Tuple[mujoco.MjModel, mujoco.MjData, mjw.Model, mjw.Data]:
   """Loads MuJoCo MjModel / MjData and corresponding mjw.Model / mjw.Data.
 
@@ -103,6 +104,12 @@ def fixture(
   m = mjw.put_model(mjm)
   override_model(m, overrides)
 
-  d = mjw.put_data(mjm, mjd, nworld=nworld, nvmax=mjm.nv if nvmax == -1 else nvmax)
+  d = mjw.put_data(
+    mjm,
+    mjd,
+    nworld=nworld,
+    nvmax=mjm.nv if nvmax == -1 else nvmax,
+    njmax_nnz=njmax_nnz,
+  )
 
   return mjm, mjd, m, d
