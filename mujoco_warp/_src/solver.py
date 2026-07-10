@@ -55,7 +55,7 @@ def create_inverse_context(m: types.Model, d: types.Data) -> InverseContext:
     quad_changed_ids=wp.empty((nworld, 0), dtype=int),
     quad_changed_count=wp.empty((0,), dtype=int),
     state_changed_count=wp.empty((0,), dtype=int),
-    ray_exhausted=wp.empty((0,), dtype=bool),
+    ls_exhausted=wp.empty((0,), dtype=bool),
   )
 
 
@@ -91,7 +91,7 @@ def _create_solver_context(m: types.Model, d: types.Data) -> SolverContext:
     alpha=wp.empty((nworld,), dtype=float),
     grad_scale=wp.empty((nworld,), dtype=float),
     improvement=wp.empty((nworld,), dtype=float),
-    ray_exhausted=wp.zeros((nworld,), dtype=bool),
+    ls_exhausted=wp.zeros((nworld,), dtype=bool),
     prev_grad=wp.empty((nworld, nv), dtype=float),
     prev_Mgrad=wp.empty((nworld, nv), dtype=float),
     beta=wp.empty((nworld,), dtype=float),
@@ -849,7 +849,7 @@ def _linesearch_iterative_kernel(
     ctx_quad_out: wp.array2d[wp.vec3],
     ctx_improvement_out: wp.array[float],
     ctx_alpha_out: wp.array[float],
-    ctx_ray_exhausted_out: wp.array[bool],
+    ctx_ls_exhausted_out: wp.array[bool],
   ):
     worldid, tid = wp.tid()
 
@@ -1260,7 +1260,7 @@ def _linesearch_iterative_kernel(
       ctx_improvement_out[worldid] = improvement
       ctx_alpha_out[worldid] = alpha
       if wp.static(TRACK_EXHAUSTION):
-        ctx_ray_exhausted_out[worldid] = wp.abs(alpha) < noise_floor
+        ctx_ls_exhausted_out[worldid] = wp.abs(alpha) < noise_floor
 
   return kernel
 
@@ -1308,7 +1308,7 @@ def _linesearch_iterative(m: types.Model, d: types.Data, ctx: SolverContext, fus
       ctx.quad,
       ctx.done,
     ],
-    outputs=[d.qacc, d.efc.Ma, ctx.Jaref, ctx.jv, ctx.quad, ctx.improvement, ctx.alpha, ctx.ray_exhausted],
+    outputs=[d.qacc, d.efc.Ma, ctx.Jaref, ctx.jv, ctx.quad, ctx.improvement, ctx.alpha, ctx.ls_exhausted],
     block_dim=m.block_dim.linesearch_iterative,
   )
 
@@ -1571,7 +1571,7 @@ def _update_constraint_efc(track_changes: bool):
     nacon_in: wp.array[int],
     # In:
     ctx_Jaref_in: wp.array2d[float],
-    ctx_ray_exhausted_in: wp.array[bool],
+    ctx_ls_exhausted_in: wp.array[bool],
     ctx_done_in: wp.array[bool],
     # Data out:
     efc_force_out: wp.array2d[float],
@@ -1589,7 +1589,7 @@ def _update_constraint_efc(track_changes: bool):
     # The linesearch flags worlds whose accepted step was rounding noise (stale
     # ray exhausted); count it as a state change so the fast path rebuilds them.
     if wp.static(TRACK_CHANGES):
-      if efcid == 0 and ctx_ray_exhausted_in[worldid]:
+      if efcid == 0 and ctx_ls_exhausted_in[worldid]:
         wp.atomic_add(state_changed_count_out, worldid, 1)
 
     if efcid >= nefc_in[worldid]:
@@ -1889,7 +1889,7 @@ def _update_constraint(
     d.efc.frictionloss,
     d.nacon,
     ctx.Jaref,
-    ctx.ray_exhausted,
+    ctx.ls_exhausted,
     ctx.done,
   ]
 

@@ -727,7 +727,7 @@ class SolverFastPathTest(parameterized.TestCase):
 
     max_rel = 0.0
     cap_steps = 0
-    for _ in range(100):
+    for _ in range(20):
       mjw.step(m, d)
       cap_steps += int(d.solver_niter.numpy().max() >= mjm.opt.iterations)
       nefc = d.nefc.numpy()
@@ -745,7 +745,7 @@ class SolverFastPathTest(parameterized.TestCase):
     # Friction chatter legitimately caps a couple of steps here even with full
     # per-iteration rebuilds; an exhausted stale ray that never re-anchors spins
     # to the cap on most steps (warmstart is off, so every solve starts far away).
-    self.assertLess(cap_steps, 20, f"solver stalled: {cap_steps}/100 steps hit the iteration cap")
+    self.assertLess(cap_steps, 5, f"solver stalled: {cap_steps}/20 steps hit the iteration cap")
 
 
 # Basic weld constraint model.

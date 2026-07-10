@@ -2337,7 +2337,7 @@ class InverseContext:
   quad_changed_ids: wp.array2d[int]
   quad_changed_count: wp.array[int]
   state_changed_count: wp.array[int]
-  ray_exhausted: wp.array[bool]
+  ls_exhausted: wp.array[bool]
 
 
 @dataclasses.dataclass
@@ -2356,19 +2356,15 @@ class SolverContext:
   quad: wp.array2d[wp.vec3]
   alpha: wp.array[float]
   grad_scale: wp.array[float]
-  # rows with any piecewise-state change this iteration (gradient rebuild needed)
   state_changed_count: wp.array[int]
   improvement: wp.array[float]
-  # accepted linesearch step was below its arithmetic noise floor (stale ray exhausted)
-  ray_exhausted: wp.array[bool]
+  ls_exhausted: wp.array[bool]
   prev_grad: wp.array2d[float]
   prev_Mgrad: wp.array2d[float]
   beta: wp.array[float]
   beta_den: wp.array[float]
   h: wp.array3d[float]
   hfactor: wp.array3d[float]
-  # Incremental Hessian update (Newton only)
-  # rows whose QUADRATIC membership flipped this iteration (Hessian delta needed)
   quad_changed_ids: wp.array2d[int]
   quad_changed_count: wp.array[int]
 
