@@ -1639,6 +1639,26 @@ def _update_constraint_efc(track_changes: bool):
 
 
 @wp.kernel
+def _zero_qfrc_constraint_sparse(
+  # In:
+  changed_count_in: wp.array[int],
+  ctx_done_in: wp.array[bool],
+  # Data out:
+  qfrc_constraint_out: wp.array2d[float],
+):
+  # Only zero worlds the rebuild will repopulate; done worlds keep their value.
+  worldid, dofid = wp.tid()
+
+  if ctx_done_in[worldid]:
+    return
+
+  if changed_count_in[worldid] == 0:
+    return
+
+  qfrc_constraint_out[worldid, dofid] = 0.0
+
+
+@wp.kernel
 def _update_constraint_init_qfrc_constraint_sparse(
   # Data in:
   nefc_in: wp.array[int],
@@ -1865,7 +1885,12 @@ def _update_constraint(
   # skip the rebuild; the public value is recovered after the solve.
   changed = ctx.changed_efc_count if stable_fast else d.nefc
   if m.is_sparse:
-    d.qfrc_constraint.zero_()
+    wp.launch(
+      _zero_qfrc_constraint_sparse,
+      dim=(d.nworld, m.nv),
+      inputs=[changed, ctx.done],
+      outputs=[d.qfrc_constraint],
+    )
     wp.launch(
       _update_constraint_init_qfrc_constraint_sparse,
       dim=(d.nworld, d.njmax),
