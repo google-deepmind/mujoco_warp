@@ -1098,7 +1098,7 @@ def _equality_weld(is_sparse: bool, newton: bool):
       qfull1 = math.mul_quat(xquat_in[worldid, body2], site_quat[site_quat_id, obj2id])
       qdot1 = math.mul_quat(omega2_q, qfull1) * 0.5
 
-      negqdot1 = wp.quat(-qdot1[0], -qdot1[1], -qdot1[2], -qdot1[3])
+      negqdot1 = math.quat_inv(qdot1)
       negq1 = wp.quat(qfull1[0], -qfull1[1], -qfull1[2], -qfull1[3])
 
     else:
@@ -1109,7 +1109,7 @@ def _equality_weld(is_sparse: bool, newton: bool):
       q1_non_site = xquat_in[worldid, body2]
       qdot1 = math.mul_quat(omega2_q, q1_non_site) * 0.5
 
-      negqdot1 = wp.quat(-qdot1[0], -qdot1[1], -qdot1[2], -qdot1[3])
+      negqdot1 = math.quat_inv(qdot1)
       negq1 = wp.quat(q1_non_site[0], -q1_non_site[1], -q1_non_site[2], -q1_non_site[3])
 
     # compute Jacobian difference (opposite of contact: 0 - 1)
