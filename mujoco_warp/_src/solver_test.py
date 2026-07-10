@@ -655,23 +655,23 @@ class SolverTest(parameterized.TestCase):
         for _ in range(m.opt.iterations):
           solver._linesearch(m, d, ctx)
           if track:
-            ctx.changed_efc_count.zero_()
+            ctx.quad_changed_count.zero_()
           solver._update_constraint(m, d, ctx, track_changes=track)
           if track:
             wp.synchronize()
-            if np.any(ctx.changed_efc_count.numpy() > 0):
+            if np.any(ctx.quad_changed_count.numpy() > 0):
               any_changes = True
           update_fn(m, d, ctx)
           wp.launch(
             solver._solve_zero_search_dot(False),
             dim=(d.nworld),
-            inputs=[ctx.changed_efc_count, ctx.done],
+            inputs=[ctx.state_changed_count, ctx.done],
             outputs=[ctx.search_dot],
           )
           wp.launch(
             solver._solve_search_update(False),
             dim=(d.nworld, m.nv),
-            inputs=[m.opt.solver, ctx.changed_efc_count, ctx.Mgrad, ctx.search, ctx.beta, ctx.done],
+            inputs=[m.opt.solver, ctx.state_changed_count, ctx.Mgrad, ctx.search, ctx.beta, ctx.done],
             outputs=[ctx.search, ctx.search_dot],
           )
         return d.qacc.numpy().copy(), any_changes
@@ -735,6 +735,69 @@ class SolverTest(parameterized.TestCase):
 
     self.assertGreater(qfrc[0], 0.0, "early-converged world was zeroed")
     self.assertGreater(qfrc[1], 0.0)
+
+
+_FRICTION_CHAIN_XML = """
+<mujoco>
+  <option timestep="0.01" solver="Newton" cone="pyramidal" jacobian="dense">
+    <flag warmstart="disable"/>
+  </option>
+  <worldbody>
+    <body>
+      <joint type="hinge" axis="0 1 0" frictionloss="1.5"/>
+      <geom type="capsule" size="0.02" fromto="0 0 0 0.2 0 0" mass="1"/>
+      <body pos="0.2 0 0">
+        <joint type="hinge" axis="0 1 0" frictionloss="0.8"/>
+        <geom type="capsule" size="0.02" fromto="0 0 0 0.2 0 0" mass="0.5"/>
+        <body pos="0.2 0 0">
+          <joint type="hinge" axis="1 0 0" frictionloss="2.0"/>
+          <geom type="capsule" size="0.02" fromto="0 0 0 0.15 0 0" mass="0.3"/>
+          <body pos="0.15 0 0">
+            <joint type="hinge" axis="0 1 0" frictionloss="0.5"/>
+            <geom type="capsule" size="0.02" fromto="0 0 0 0.1 0 0" mass="0.2"/>
+          </body>
+        </body>
+      </body>
+    </body>
+  </worldbody>
+</mujoco>
+"""
+
+
+class SolverFastPathTest(parameterized.TestCase):
+  def test_fast_path_friction_transitions(self):
+    """qfrc_constraint must stay consistent when friction rows cross linear zones."""
+    mjm = mujoco.MjModel.from_xml_string(_FRICTION_CHAIN_XML)
+    mjd = mujoco.MjData(mjm)
+    mujoco.mj_forward(mjm, mjd)
+    m = mjw.put_model(mjm)
+    nworld = 64
+    d = mjw.put_data(mjm, mjd, nworld=nworld)
+    rng = np.random.default_rng(3)
+    qvel = rng.uniform(-8.0, 8.0, size=(nworld, mjm.nv)).astype(np.float32)
+    wp.copy(d.qvel, wp.array(qvel, dtype=float))
+
+    max_rel = 0.0
+    cap_steps = 0
+    for _ in range(20):
+      mjw.step(m, d)
+      cap_steps += int(d.solver_niter.numpy().max() >= mjm.opt.iterations)
+      nefc = d.nefc.numpy()
+      J = d.efc.J.numpy()
+      force = d.efc.force.numpy()
+      got = d.qfrc_constraint.numpy()
+      for w in range(nworld):
+        n = nefc[w]
+        if n == 0:
+          continue
+        ref = J[w, :n, : mjm.nv].astype(np.float64).T @ force[w, :n].astype(np.float64)
+        scale = max(np.abs(ref).max(), 1.0)
+        max_rel = max(max_rel, np.abs(ref - got[w]).max() / scale)
+    self.assertLess(max_rel, 1e-4, f"qfrc_constraint inconsistent with J^T f: rel {max_rel:.3e}")
+    # Friction chatter legitimately caps a couple of steps here even with full
+    # per-iteration rebuilds; an exhausted stale ray that never re-anchors spins
+    # to the cap on most steps (warmstart is off, so every solve starts far away).
+    self.assertLess(cap_steps, 5, f"solver stalled: {cap_steps}/20 steps hit the iteration cap")
 
 
 # Basic weld constraint model.

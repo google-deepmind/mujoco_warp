@@ -2360,8 +2360,10 @@ class InverseContext:
   Jaref: wp.array2d[float]
   search_dot: wp.array[float]
   done: wp.array[bool]
-  changed_efc_ids: wp.array2d[int]
-  changed_efc_count: wp.array[int]
+  quad_changed_ids: wp.array2d[int]
+  quad_changed_count: wp.array[int]
+  state_changed_count: wp.array[int]
+  ls_exhausted: wp.array[bool]
 
 
 @dataclasses.dataclass
@@ -2380,16 +2382,17 @@ class SolverContext:
   quad: wp.array2d[wp.vec3]
   alpha: wp.array[float]
   grad_scale: wp.array[float]
+  state_changed_count: wp.array[int]
   improvement: wp.array[float]
+  ls_exhausted: wp.array[bool]
   prev_grad: wp.array2d[float]
   prev_Mgrad: wp.array2d[float]
   beta: wp.array[float]
   beta_den: wp.array[float]
   h: wp.array3d[float]
   hfactor: wp.array3d[float]
-  # Incremental Hessian update (Newton only)
-  changed_efc_ids: wp.array2d[int]
-  changed_efc_count: wp.array[int]
+  quad_changed_ids: wp.array2d[int]
+  quad_changed_count: wp.array[int]
 
 
 @dataclasses.dataclass
