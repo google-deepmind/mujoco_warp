@@ -260,97 +260,52 @@ def _eval_frictionloss_pt_3alphas(
 
 
 @wp.func
-def _eval_elliptic(
-  # In:
-  mu: float,
-  quad: wp.vec3,
-  quad1: wp.vec3,
-  quad2: wp.vec3,
-  alpha: float,
-) -> wp.vec3:
-  u0 = quad1[0]
-  v0 = quad1[1]
-  uu = quad1[2]
-  uv = quad2[0]
-  vv = quad2[1]
-  dm = quad2[2]
-
-  # compute N, Tsqr
-  N = u0 + alpha * v0
-  Tsqr = uu + alpha * (2.0 * uv + alpha * vv)
-
-  # no tangential force: top or bottom zone
-  if Tsqr <= 0.0:
-    # bottom zone: quadratic cost
-    if N < 0.0:
-      return _eval_pt(quad, alpha)
-
-    # top zone: nothing to do
-  # otherwise regular processing
-  else:
-    # tangential force
-    T = wp.sqrt(Tsqr)
-
-    # N >= mu * T : top zone
-    if N >= mu * T:
-      # nothing to do
-      pass
-    # mu * N + T <= 0 : bottom zone
-    elif mu * N + T <= 0.0:
-      return _eval_pt(quad, alpha)
-
-    # otherwise middle zone
-    else:
-      # derivatives
-      N1 = v0
-      T1 = (uv + alpha * vv) / T
-      T2 = vv / T - (uv + alpha * vv) * T1 / (T * T)
-
-      # add to cost
-      cost = wp.vec3(
-        0.5 * dm * (N - mu * T) * (N - mu * T),
-        dm * (N - mu * T) * (N1 - mu * T1),
-        dm * ((N1 - mu * T1) * (N1 - mu * T1) + (N - mu * T) * (-mu * T2)),
-      )
-
-      return cost
-
-  return wp.vec3(0.0, 0.0, 0.0)
-
-
-@wp.func
 def _eval_elliptic_reference(
   # In:
   mu: float,
   quad: wp.vec3,
   quad1: wp.vec3,
   quad2: wp.vec3,
-) -> tuple[float, float, int]:
+) -> tuple[float, float, float, int]:
   u0 = quad1[0]
   uu = quad1[2]
   dm = quad2[2]
 
   if uu <= 0.0:
     if u0 < 0.0:
-      return quad[0], 0.0, int(types.ConstraintState.QUADRATIC)
-    return 0.0, 0.0, int(types.ConstraintState.SATISFIED)
+      return quad[0], 0.0, 0.0, int(types.ConstraintState.QUADRATIC)
+    return 0.0, 0.0, 0.0, int(types.ConstraintState.SATISFIED)
 
   T0 = wp.sqrt(uu)
   if u0 >= mu * T0:
-    return 0.0, T0, int(types.ConstraintState.SATISFIED)
+    return 0.0, T0, 0.0, int(types.ConstraintState.SATISFIED)
   if mu * u0 + T0 <= 0.0:
-    return quad[0], T0, int(types.ConstraintState.QUADRATIC)
+    return quad[0], T0, 0.0, int(types.ConstraintState.QUADRATIC)
 
   r0 = u0 - mu * T0
-  return 0.5 * dm * r0 * r0, T0, int(types.ConstraintState.CONE)
+  return 0.5 * dm * r0 * r0, T0, r0, int(types.ConstraintState.CONE)
+
+
+@wp.func
+def _eval_elliptic_alpha_zero(mu: float, quad: wp.vec3, quad1: wp.vec3, quad2: wp.vec3) -> wp.vec3:
+  cost0, T0, r0, state0 = _eval_elliptic_reference(mu, quad, quad1, quad2)
+  if state0 == int(types.ConstraintState.QUADRATIC):
+    return _eval_pt(quad, 0.0)
+  if state0 == int(types.ConstraintState.CONE):
+    T1 = quad2[0] / T0
+    T2 = (quad2[1] - T1 * T1) / T0
+    r1 = quad1[1] - mu * T1
+    dm = quad2[2]
+    return wp.vec3(cost0, dm * r0 * r1, dm * (r1 * r1 - mu * r0 * T2))
+  return wp.vec3(0.0)
 
 
 @wp.func
 def _eval_elliptic_quadratic_shifted(quad: wp.vec3, alpha: float, cost0: float, state0: int) -> wp.vec3:
   aq2 = alpha * quad[2]
-  cost = alpha * aq2 + alpha * quad[1] + quad[0] - cost0
-  if state0 == int(types.ConstraintState.QUADRATIC):
-    cost = alpha * (aq2 + quad[1])
+  cost = alpha * (aq2 + quad[1])
+  if state0 != int(types.ConstraintState.QUADRATIC):
+    cost += quad[0] - cost0
   return wp.vec3(cost, 2.0 * aq2 + quad[1], 2.0 * quad[2])
 
 
@@ -364,6 +319,7 @@ def _eval_elliptic_shifted(
   alpha: float,
   cost0: float,
   T0: float,
+  r0: float,
   state0: int,
 ) -> wp.vec3:
   u0 = quad1[0]
@@ -387,19 +343,18 @@ def _eval_elliptic_shifted(
     elif mu * N + T <= 0.0:
       return _eval_elliptic_quadratic_shifted(quad, alpha, cost0, state0)
     else:
-      N1 = v0
       T1 = (uv + alpha * vv) / T
-      T2 = vv / T - (uv + alpha * vv) * T1 / (T * T)
+      T2 = (vv - T1 * T1) / T
       r = N - mu * T
-      r1 = N1 - mu * T1
+      r1 = v0 - mu * T1
 
-      cost = 0.5 * dm * r * r - cost0
       if state0 == int(types.ConstraintState.CONE):
         # Rationalize T - T0 before forming the small cone residual change.
         T_delta = Tsqr_delta / (T + T0)
         r_delta = alpha * v0 - mu * T_delta
-        r0 = u0 - mu * T0
         cost = 0.5 * dm * r_delta * (2.0 * r0 + r_delta)
+      else:
+        cost = 0.5 * dm * r * r - cost0
 
       return wp.vec3(
         cost,
@@ -543,8 +498,8 @@ def _compute_efc_eval_pt_elliptic(
       if efcid != efc_address0:  # Not primary row
         return wp.vec3(0.0)
       mu = contact_friction[0] * impratio_invsqrt
-      cost0, T0, state0 = _eval_elliptic_reference(mu, ctx_quad, quad1, quad2)
-      return _eval_elliptic_shifted(mu, ctx_quad, quad1, quad2, alpha, cost0, T0, state0)
+      cost0, T0, r0, state0 = _eval_elliptic_reference(mu, ctx_quad, quad1, quad2)
+      return _eval_elliptic_shifted(mu, ctx_quad, quad1, quad2, alpha, cost0, T0, r0, state0)
 
     # Limit/other constraint — direct eval (no quad read)
     x = ctx_Jaref + alpha * ctx_jv
@@ -624,7 +579,7 @@ def _compute_efc_eval_pt_alpha_zero_elliptic(
       if efcid != efc_address0:  # Not primary row
         return wp.vec3(0.0)
       mu = contact_friction[0] * impratio_invsqrt
-      return _eval_elliptic(mu, ctx_quad, quad1, quad2, 0.0)
+      return _eval_elliptic_alpha_zero(mu, ctx_quad, quad1, quad2)
 
     # Limit/other constraint — direct eval (no quad read)
     if ctx_Jaref < 0.0:
@@ -720,11 +675,6 @@ def _compute_efc_eval_pt_3alphas_elliptic(
   Returns a tuple of 3 vec3s for (lo_alpha, hi_alpha, mid_alpha).
   Constraint types checked in order: contact elliptic/limit/other -> friction -> equality.
   """
-  # x = search point, needed for friction and limit constraints
-  x_lo = ctx_Jaref + lo_alpha * ctx_jv
-  x_hi = ctx_Jaref + hi_alpha * ctx_jv
-  x_mid = ctx_Jaref + mid_alpha * ctx_jv
-
   # Contact/limit/other constraints
   if efcid >= ne + nf:
     # Contact elliptic: uses special elliptic cone evaluation
@@ -732,14 +682,17 @@ def _compute_efc_eval_pt_3alphas_elliptic(
       if efcid != efc_address0:  # secondary rows contribute nothing
         return (wp.vec3(0.0), wp.vec3(0.0), wp.vec3(0.0))
       mu = contact_friction[0] * impratio_invsqrt
-      cost0, T0, state0 = _eval_elliptic_reference(mu, ctx_quad, quad1, quad2)
+      cost0, T0, r0, state0 = _eval_elliptic_reference(mu, ctx_quad, quad1, quad2)
       return (
-        _eval_elliptic_shifted(mu, ctx_quad, quad1, quad2, lo_alpha, cost0, T0, state0),
-        _eval_elliptic_shifted(mu, ctx_quad, quad1, quad2, hi_alpha, cost0, T0, state0),
-        _eval_elliptic_shifted(mu, ctx_quad, quad1, quad2, mid_alpha, cost0, T0, state0),
+        _eval_elliptic_shifted(mu, ctx_quad, quad1, quad2, lo_alpha, cost0, T0, r0, state0),
+        _eval_elliptic_shifted(mu, ctx_quad, quad1, quad2, hi_alpha, cost0, T0, r0, state0),
+        _eval_elliptic_shifted(mu, ctx_quad, quad1, quad2, mid_alpha, cost0, T0, r0, state0),
       )
 
     # Limit/other constraints — direct eval (no quad read)
+    x_lo = ctx_Jaref + lo_alpha * ctx_jv
+    x_hi = ctx_Jaref + hi_alpha * ctx_jv
+    x_mid = ctx_Jaref + mid_alpha * ctx_jv
     efc_D = efc_D_in[efcid]
     quad0 = _eval_pt_direct_cost_alpha_zero(ctx_Jaref, efc_D)
     cost0 = wp.where(ctx_Jaref < 0.0, quad0, 0.0)
@@ -755,6 +708,9 @@ def _compute_efc_eval_pt_3alphas_elliptic(
 
   # Friction constraint - load D and frictionloss only here
   if efcid >= ne:
+    x_lo = ctx_Jaref + lo_alpha * ctx_jv
+    x_hi = ctx_Jaref + hi_alpha * ctx_jv
+    x_mid = ctx_Jaref + mid_alpha * ctx_jv
     efc_D = efc_D_in[efcid]
     f = efc_frictionloss[efcid]
     rf = math.safe_div(f, efc_D)
