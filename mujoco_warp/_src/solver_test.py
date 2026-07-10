@@ -73,18 +73,50 @@ def _eval_elliptic_delta(
 
 
 class SolverTest(parameterized.TestCase):
+  # Transition cases use powers of two so the exact delta is below the absolute-cost ulp.
   @parameterized.named_parameters(
-    ("middle_zone", (0.0, 0.0, 0.0), (0.5, 1.0e-4, 1.0), (0.0, 0.0, 1.0e8)),
-    ("quadratic_zone", (1.25e7, -5000.0, 0.5), (-2.0, 0.0, 1.0), (0.0, 0.0, 1.0)),
+    ("middle_zone", 1.0e-4, (0.0, 0.0, 0.0), (0.5, 1.0e-4, 1.0), (0.0, 0.0, 1.0e8), (-0.5, -5000.0, 1.0)),
+    (
+      "quadratic_zone",
+      1.0e-4,
+      (1.25e7, -5000.0, 0.5),
+      (-2.0, 0.0, 1.0),
+      (0.0, 0.0, 1.0),
+      (-0.5, -5000.0, 1.0),
+    ),
+    (
+      "cone_to_quadratic",
+      2.44140625e-4,
+      (33546241.0, -8192.0, 33554432.0),
+      (-0.999755859375, -1.0, 1.0),
+      (-1.0, 1.0, 16777216.0),
+      (0.5, 8192.0, 67108864.0),
+    ),
+    (
+      "quadratic_to_cone",
+      2.44140625e-4,
+      (33546241.0, -8192.0, 33554432.0),
+      (-1.0, 1.0, 0.9995117783546448),
+      (0.999755859375, 1.0, 16777216.0),
+      (-0.5, 0.0, 0.0),
+    ),
+    (
+      "satisfied_to_quadratic",
+      2.44140625e-4,
+      (1.0, -16384.0, 67108864.0),
+      (2.44140625e-4, -2.0, 0.0),
+      (0.0, 0.0, 16777216.0),
+      (1.0, 16384.0, 134217728.0),
+    ),
   )
-  def test_elliptic_shifted_cost_preserves_small_delta(self, quad, quad1, quad2):
+  def test_elliptic_shifted_cost_preserves_small_delta(self, alpha, quad, quad1, quad2, expected):
     """Elliptic cost deltas remain visible below the absolute-cost ulp."""
     result = wp.empty(1, dtype=wp.vec3)
     wp.launch(
       _eval_elliptic_delta,
       dim=1,
       inputs=[
-        1.0e-4,
+        alpha,
         wp.zeros(1, dtype=float),
         wp.zeros(1, dtype=float),
         wp.vec3(*quad),
@@ -95,7 +127,7 @@ class SolverTest(parameterized.TestCase):
       outputs=[result],
     )
 
-    np.testing.assert_allclose(result.numpy()[0], [-0.5, -5000.0, 1.0], rtol=1.0e-6, atol=1.0e-6)
+    np.testing.assert_allclose(result.numpy()[0], expected, rtol=1.0e-6, atol=1.0e-6)
 
   def test_M_fullm_upper_indices_are_row_sorted(self):
     """Sparse M seeding uses upper-triangle row-sorted writes."""

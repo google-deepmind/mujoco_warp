@@ -301,11 +301,31 @@ def _eval_elliptic_alpha_zero(mu: float, quad: wp.vec3, quad1: wp.vec3, quad2: w
 
 
 @wp.func
-def _eval_elliptic_quadratic_shifted(quad: wp.vec3, alpha: float, cost0: float, state0: int) -> wp.vec3:
+def _eval_elliptic_quadratic_cone_gap(mu: float, N: float, T: float, dm: float) -> float:
+  """Return quadratic cost minus cone cost at the same point."""
+  boundary = mu * N + T
+  return 0.5 * dm * boundary * boundary
+
+
+@wp.func
+def _eval_elliptic_quadratic_shifted(
+  # In:
+  mu: float,
+  quad: wp.vec3,
+  alpha: float,
+  N: float,
+  Tsqr: float,
+  u0: float,
+  T0: float,
+  dm: float,
+  state0: int,
+) -> wp.vec3:
   aq2 = alpha * quad[2]
   cost = alpha * (aq2 + quad[1])
-  if state0 != int(types.ConstraintState.QUADRATIC):
-    cost += quad[0] - cost0
+  if state0 == int(types.ConstraintState.CONE):
+    cost += _eval_elliptic_quadratic_cone_gap(mu, u0, T0, dm)
+  elif state0 == int(types.ConstraintState.SATISFIED):
+    cost = 0.5 * dm * (1.0 + mu * mu) * (N * N + wp.max(Tsqr, 0.0))
   return wp.vec3(cost, 2.0 * aq2 + quad[1], 2.0 * quad[2])
 
 
@@ -335,13 +355,13 @@ def _eval_elliptic_shifted(
 
   if Tsqr <= 0.0:
     if N < 0.0:
-      return _eval_elliptic_quadratic_shifted(quad, alpha, cost0, state0)
+      return _eval_elliptic_quadratic_shifted(mu, quad, alpha, N, Tsqr, u0, T0, dm, state0)
   else:
     T = wp.sqrt(Tsqr)
     if N >= mu * T:
       pass
     elif mu * N + T <= 0.0:
-      return _eval_elliptic_quadratic_shifted(quad, alpha, cost0, state0)
+      return _eval_elliptic_quadratic_shifted(mu, quad, alpha, N, Tsqr, u0, T0, dm, state0)
     else:
       T1 = (uv + alpha * vv) / T
       T2 = (vv - T1 * T1) / T
@@ -353,8 +373,11 @@ def _eval_elliptic_shifted(
         T_delta = Tsqr_delta / (T + T0)
         r_delta = alpha * v0 - mu * T_delta
         cost = 0.5 * dm * r_delta * (2.0 * r0 + r_delta)
+      elif state0 == int(types.ConstraintState.QUADRATIC):
+        aq2 = alpha * quad[2]
+        cost = alpha * (aq2 + quad[1]) - _eval_elliptic_quadratic_cone_gap(mu, N, T, dm)
       else:
-        cost = 0.5 * dm * r * r - cost0
+        cost = 0.5 * dm * r * r
 
       return wp.vec3(
         cost,
