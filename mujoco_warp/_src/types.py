@@ -1162,6 +1162,7 @@ class Model:
     flex_gap: include in solver if dist<margin-gap           (nflex,)
     flex_internal: internal collision enabled                (nflex,)
     flex_selfcollide: self-collision mode                    (nflex,)
+    flex_activelayers: active element layers, 3D only        (nflex,)
     flex_dim: 1: lines, 2: triangles, 3: tetrahedra          (nflex,)
     flex_interp: interpolation order (0: vertex, 1+: nodes)  (nflex,)
     flex_cellnum: cell count per dimension                   (nflex, 3)
@@ -1187,6 +1188,7 @@ class Model:
     flex_edgeflap: adjacent vertex ids (dim=2 only)          (nflexedge, 2)
     flex_elem: element vertex ids (dim+1 per elem)           (nflexelemdata,)
     flex_elemedge: element edge ids                          (nflexelemedge,)
+    flex_elemlayer: element layer                            (nflexelem,)
     flex_shell: shell fragment vertex ids (dim per frag)     (nflexshelldata,)
     flex_evpair: element-vertex pair indices                 (nflexevpair, 2)
     flex_vert: vertex local positions                        (nflexvert, 3)
@@ -1461,7 +1463,11 @@ class Model:
                           local edge indices
     nflexface: number of interpolated flex shell faces
     flex_face_map: mapping of face index to flex and local element face indices
-    flex_face: global node indices of each face                              (nflexface, 9)
+    flex_face: global node indices of each face                             (nflexface, 9)
+    flex_vert_boundary_count: boundary face count for each vertex           (nflexvert,)
+    flex_vert_boundary_normal1: first boundary normal for each vertex       (nflexvert, 3)
+    flex_vert_boundary_normal2: second boundary normal for each vertex      (nflexvert, 3)
+    flex_vert_boundary_normal3: third boundary normal for each vertex       (nflexvert, 3)
   """
 
   nq: int
@@ -1647,6 +1653,7 @@ class Model:
   flex_gap: array("nflex", float)
   flex_internal: array("nflex", int)
   flex_selfcollide: array("nflex", int)
+  flex_activelayers: array("nflex", int)
   flex_dim: array("nflex", int)
   flex_interp: array("nflex", int)
   flex_cellnum: array("nflex", wp.vec3i)
@@ -1672,6 +1679,7 @@ class Model:
   flex_edgeflap: array("nflexedge", wp.vec2i)
   flex_elem: array("nflexelemdata", int)
   flex_elemedge: array("nflexelemedge", int)
+  flex_elemlayer: array("nflexelem", int)
   flex_shell: array("nflexshelldata", int)
   flex_evpair: array("nflexevpair", wp.vec2i)
   flex_vert: array("nflexvert", wp.vec3)
@@ -1937,6 +1945,10 @@ class Model:
   nflexface: int
   flex_face_map: array("nflexface", wp.vec2i)
   flex_face: array("nflexface", 9, int)
+  flex_vert_boundary_count: array("nflexvert", int)
+  flex_vert_boundary_normal1: array("nflexvert", wp.vec3)
+  flex_vert_boundary_normal2: array("nflexvert", wp.vec3)
+  flex_vert_boundary_normal3: array("nflexvert", wp.vec3)
 
 
 class ContactType(enum.IntFlag):

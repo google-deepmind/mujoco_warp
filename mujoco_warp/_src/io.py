@@ -29,6 +29,8 @@ from mujoco_warp._src import smooth
 from mujoco_warp._src import support
 from mujoco_warp._src import types
 from mujoco_warp._src import warp_util
+from mujoco_warp._src.collision_flex import FLEX_KEY_ELEM_LIMIT
+from mujoco_warp._src.collision_flex import FLEX_KEY_GROUP_LIMIT
 from mujoco_warp._src.types import MJ_MINVAL
 from mujoco_warp._src.types import BiasType
 from mujoco_warp._src.types import TrnType
@@ -284,6 +286,71 @@ def _filter_tri_geoms(
   return is_self | is_parent | is_excluded
 
 
+def _compute_vert_boundary(mjm: mujoco.MjModel):
+  boundary_count = np.zeros(mjm.nflexvert, dtype=np.int32)
+  boundary_normal1 = np.zeros((mjm.nflexvert, 3), dtype=np.float32)
+  boundary_normal2 = np.zeros((mjm.nflexvert, 3), dtype=np.float32)
+  boundary_normal3 = np.zeros((mjm.nflexvert, 3), dtype=np.float32)
+
+  for fi in range(mjm.nflex):
+    vert_start = mjm.flex_vertadr[fi]
+    vert_num = mjm.flex_vertnum[fi]
+    dim = mjm.flex_dim[fi]
+
+    if dim != 3:
+      continue
+
+    shell_start = mjm.flex_shelldataadr[fi]
+    shell_num = mjm.flex_shellnum[fi]
+
+    if shell_num == 0:
+      continue
+
+    shell_data = mjm.flex_shell[shell_start : shell_start + shell_num * 3].reshape(-1, 3)
+
+    vert0 = mjm.flex_vert0[vert_start : vert_start + vert_num]
+    shell_normals = []
+    for s in shell_data:
+      v0 = vert0[s[0]]
+      v1 = vert0[s[1]]
+      v2 = vert0[s[2]]
+      n = np.cross(v1 - v0, v2 - v0)
+      n_len = np.linalg.norm(n)
+      if n_len > 1e-6:
+        n = n / n_len
+      else:
+        n = np.zeros(3)
+      shell_normals.append(n)
+    shell_normals = np.array(shell_normals)
+
+    vert_normals = [[] for _ in range(vert_num)]
+
+    for s_idx, s in enumerate(shell_data):
+      normal = shell_normals[s_idx]
+      for v in s:
+        already_exists = False
+        for existing_normal in vert_normals[v]:
+          if np.dot(normal, existing_normal) > 0.99:
+            already_exists = True
+            break
+        if not already_exists:
+          vert_normals[v].append(normal)
+
+    for v in range(vert_num):
+      global_v = vert_start + v
+      normals = vert_normals[v]
+      b_count = len(normals)
+      boundary_count[global_v] = b_count
+      if b_count >= 1:
+        boundary_normal1[global_v] = normals[0]
+      if b_count >= 2:
+        boundary_normal2[global_v] = normals[1]
+      if b_count >= 3:
+        boundary_normal3[global_v] = normals[2]
+
+  return boundary_count, boundary_normal1, boundary_normal2, boundary_normal3
+
+
 def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) -> types.Model:
   """Creates a model on device.
 
@@ -452,6 +519,12 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
 
   # create model
   m = types.Model(**{f.name: getattr(mjm, f.name, None) for f in dataclasses.fields(types.Model)})
+
+  b_count, b_norm1, b_norm2, b_norm3 = _compute_vert_boundary(mjm)
+  m.flex_vert_boundary_count = b_count
+  m.flex_vert_boundary_normal1 = b_norm1
+  m.flex_vert_boundary_normal2 = b_norm2
+  m.flex_vert_boundary_normal3 = b_norm3
 
   m.opt = opt
   m.stat = stat
@@ -1259,11 +1332,14 @@ def _default_nconmax(mjm: mujoco.MjModel, mjd: Optional[mujoco.MjData] = None) -
   This guess is based off a very simple heuristic, and may need to be manually raised if MJWarp
   reports ncon overflow, or lowered in order to get the very best performance.
   """
-  valid_sizes = (2 + (np.arange(19) % 2)) * (2 ** (np.arange(19) // 2 + 3))  # 16, 24, 32, 48, ... 8192
+  valid_sizes = (2 + (np.arange(23) % 2)) * (2 ** (np.arange(23) // 2 + 3))  # 16, 24, 32, 48, ... 32768
   has_sdf = (mjm.geom_type == mujoco.mjtGeom.mjGEOM_SDF).any()
-  has_flex = mjm.nflex > 0
-  nconmax = max(mjm.nv * 0.35 * (mjm.nhfield > 0) * 10 + 45, 256 * has_flex, 64 * has_sdf, mjd.ncon if mjd else 0)
-  return int(valid_sizes[np.searchsorted(valid_sizes, nconmax)])
+  flex_conmax = (256 + 6 * mjm.nflexelem) if mjm.nflex > 0 else 0
+  nconmax = max(mjm.nv * 0.35 * (mjm.nhfield > 0) * 10 + 45, flex_conmax, 64 * has_sdf, mjd.ncon if mjd else 0)
+  idx = np.searchsorted(valid_sizes, nconmax)
+  if idx < len(valid_sizes):
+    return int(valid_sizes[idx])
+  return int(nconmax)
 
 
 def _default_njmax(mjm: mujoco.MjModel, mjd: Optional[mujoco.MjData] = None) -> int:
@@ -1272,11 +1348,14 @@ def _default_njmax(mjm: mujoco.MjModel, mjd: Optional[mujoco.MjData] = None) -> 
   This guess is based off a very simple heuristic, and may need to be manually raised if MJWarp
   reports ncon overflow, or lowered in order to get the very best performance.
   """
-  valid_sizes = (2 + (np.arange(19) % 2)) * (2 ** (np.arange(19) // 2 + 3))  # 16, 24, 32, 48, ... 8192
+  valid_sizes = (2 + (np.arange(23) % 2)) * (2 ** (np.arange(23) // 2 + 3))  # 16, 24, 32, 48, ... 32768
   has_sdf = (mjm.geom_type == mujoco.mjtGeom.mjGEOM_SDF).any()
   has_flex = mjm.nflex > 0
   njmax = max(mjm.nv * 2.26 * (mjm.nhfield > 0) * 18 + 53, 512 * has_flex, 256 * has_sdf, mjd.nefc if mjd else 0)
-  return int(valid_sizes[np.searchsorted(valid_sizes, njmax)])
+  idx = np.searchsorted(valid_sizes, njmax)
+  if idx < len(valid_sizes):
+    return int(valid_sizes[idx])
+  return int(njmax)
 
 
 def _body_pair_nnz(mjm: mujoco.MjModel, body1: int, body2: int) -> int:
@@ -1503,6 +1582,16 @@ def _default_njmax_nnz(mjm: mujoco.MjModel, nconmax: int, njmax: int) -> int:
             _body_pair_nnz(mjm, flex_body_list[idx1], flex_body_list[idx2]),
           )
 
+    # flex-flex collision
+    for fj in range(fi + 1, mjm.nflex):
+      fct_j = mjm.flex_contype[fj]
+      fca_j = mjm.flex_conaffinity[fj]
+      if (fct & fca_j) or (fct_j & fca):
+        dim_i = mjm.flex_dim[fi]
+        dim_j = mjm.flex_dim[fj]
+        nnz_flex_flex = (dim_i + dim_j + 2) * 3
+        max_contact_nnz = max(max_contact_nnz, nnz_flex_flex)
+
   total_nnz += njmax * max_contact_nnz
 
   return int(min(max(total_nnz, 1), njmax * mjm.nv))
@@ -1622,6 +1711,31 @@ def _initial_body_awake(mjm: mujoco.MjModel, nworld: int, init_asleep: bool) -> 
   return body_awake_np
 
 
+def _check_flex_key_limits(mjm: mujoco.MjModel, nworld: int):
+  """Checks that the model/batch size does not exceed Warp sort key bitfield limits."""
+  world_stride = mjm.ngeom * mjm.nflex + mjm.nflex * mjm.nflex
+  if nworld * world_stride >= FLEX_KEY_GROUP_LIMIT:
+    raise ValueError(
+      f"Too many global collision groups: {nworld * world_stride} (limit is {FLEX_KEY_MAX_GROUP:,}). "
+      "Please reduce nworld, ngeom, or nflex."
+    )
+
+  for fi in range(mjm.nflex):
+    # Check elements
+    start_elem = mjm.flex_elemadr[fi]
+    end_elem = mjm.flex_elemadr[fi + 1] if fi < mjm.nflex - 1 else mjm.nflexelem
+    num_elems = end_elem - start_elem
+    if num_elems >= FLEX_KEY_ELEM_LIMIT:
+      raise ValueError(f"Flex object {fi} has too many elements: {num_elems} (limit is {FLEX_KEY_MAX_ELEM:,}).")
+
+    # Check vertices
+    start_vert = mjm.flex_nodeadr[fi]
+    end_vert = mjm.flex_nodeadr[fi + 1] if fi < mjm.nflex - 1 else mjm.nflexvert
+    num_verts = end_vert - start_vert
+    if num_verts >= FLEX_KEY_ELEM_LIMIT:
+      raise ValueError(f"Flex object {fi} has too many vertices: {num_verts} (limit is {FLEX_KEY_MAX_ELEM:,}).")
+
+
 def make_data(
   mjm: mujoco.MjModel,
   nworld: int = 1,
@@ -1678,6 +1792,8 @@ def make_data(
 
   if nworld < 1:
     raise ValueError(f"nworld must be >= 1")
+
+  _check_flex_key_limits(mjm, nworld)
 
   naconmax = _resolve_batch_size(naconmax, nconmax, nworld, 0)
   if naconmax < 0:
@@ -1895,6 +2011,8 @@ def put_data(
 
   if nworld < 1:
     raise ValueError(f"nworld must be >= 1")
+
+  _check_flex_key_limits(mjm, nworld)
 
   naconmax_is_input = naconmax is not None
   naconmax = _resolve_batch_size(naconmax, nconmax, nworld, 0)
