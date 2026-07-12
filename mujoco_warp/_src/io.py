@@ -3854,6 +3854,7 @@ def create_render_context(
   render_depth: list[bool] | bool | None = None,
   render_seg: list[bool] | bool | None = None,
   use_textures: bool = True,
+  use_fast_math: bool = True,
   use_shadows: bool = False,
   use_ambient_lighting: bool = True,
   enabled_geom_groups: list[int] = [0, 1, 2],
@@ -3879,6 +3880,7 @@ def create_render_context(
     render_seg: Whether to render segmentation (per-pixel object ID/type pairs).
       If None, uses the MuJoCo model values.
     use_textures: Whether to use textures.
+    use_fast_math: Whether to enable fast math for the render kernel.
     use_shadows: Whether to use shadows.
     use_ambient_lighting: Top-level ambient switch. When False, skips all
                           ambient contributions, including headlight ambient,
@@ -4101,6 +4103,7 @@ def create_render_context(
     cam_res=cam_res_arr,
     cam_id_map=wp.array(active_cam_indices, dtype=int),
     use_textures=use_textures,
+    use_fast_math=use_fast_math,
     use_shadows=use_shadows,
     use_ambient_lighting=use_ambient_lighting,
     background_color=render_util.pack_rgba_to_uint32(

@@ -566,7 +566,7 @@ def render(m: Model, d: Data, rc: RenderContext):
   M_NLIGHT = m.nlight
   background_color = rc.background_color
 
-  @wp.kernel(module="unique", enable_backward=False, module_options={"fast_math": True})
+  @wp.kernel(module="unique", enable_backward=False, module_options={"fast_math": rc.use_fast_math})
   def _render_megakernel(
     # Model:
     geom_type: wp.array[int],
