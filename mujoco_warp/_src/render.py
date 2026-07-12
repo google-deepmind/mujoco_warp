@@ -551,8 +551,6 @@ def render(m: Model, d: Data, rc: RenderContext):
     d: The data on device.
     rc: The render context on device.
   """
-  rc.rgb_data.fill_(rc.background_color)
-  rc.depth_data.fill_(0.0)
   rc.seg_data.fill_(wp.vec2i(-1, -1))
 
   # Specialize the ray-cast helpers to the geom types present in the scene so the
@@ -566,8 +564,9 @@ def render(m: Model, d: Data, rc: RenderContext):
   rc_static = {f.name: getattr(rc, f.name) for f in dataclasses.fields(rc) if f.type in (int, bool, float, wp.vec3)}
   rc_static["enable_specular_or_emission"] = rc.enable_specular or rc.enable_emission
   M_NLIGHT = m.nlight
+  background_color = rc.background_color
 
-  @wp.kernel(module="unique", enable_backward=False)
+  @wp.kernel(module="unique", enable_backward=False, module_options={"fast_math": True})
   def _render_megakernel(
     # Model:
     geom_type: wp.array[int],
@@ -722,6 +721,8 @@ def render(m: Model, d: Data, rc: RenderContext):
 
     # Early Out
     if geom_id == -1:
+      if render_depth[camid]:
+        depth_out[worldid, depth_adr[camid] + rayid_local] = 0.0
       if wp.static(rc_static["render_skybox"]) and render_rgb[camid]:
         skybox_id = skybox_tex_id[worldid % skybox_tex_id.shape[0]]
         skybox_color = sample_skybox(
@@ -735,6 +736,8 @@ def render(m: Model, d: Data, rc: RenderContext):
           skybox_color[2] * 255.0,
           255.0,
         )
+      elif render_rgb[camid]:
+        rgb_out[worldid, rgb_adr[camid] + rayid_local] = background_color
       return
 
     if render_depth[camid]:
