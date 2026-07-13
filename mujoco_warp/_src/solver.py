@@ -4067,13 +4067,14 @@ def _mul_m_compact_aware(m: types.Model, d: types.Data, ctx: SolverContext | Inv
   """M @ vec: full-coordinate sparse walk under compact, support.mul_m natively."""
   dfull = ctx.compact_d_full
   if dfull is not None:
+    mfull = ctx.compact_m_full
     wp.launch(
       _mul_m_sparse_compact,
       dim=(d.nworld, m.nv),
       inputs=[
-        m.M_mulm_rowadr,
-        m.M_mulm_col,
-        m.M_mulm_madr,
+        mfull.M_mulm_rowadr,
+        mfull.M_mulm_col,
+        mfull.M_mulm_madr,
         dfull.M,
         dfull.dof_cdof,
         dfull.cdof_dof,
