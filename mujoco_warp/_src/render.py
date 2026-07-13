@@ -78,10 +78,16 @@ def sample_texture(
   mesh_id: int,
 ) -> wp.vec3:
   uv = wp.vec2(0.0, 0.0)
+  offset = wp.vec2(0.0, 0.0)
 
   if geom_type[geom_id] == GeomType.PLANE:
     local = wp.transpose(rot) @ (hit_point - pos)
-    uv = wp.vec2(local[0], local[1])
+    # Replicate MuJoCo's OBJECT_PLANE texgen for planes (render_gl3.c settexture):
+    # s = 0.5 * texrepeat_x * x - 0.5, t = -0.5 * texrepeat_y * y - 0.5, with (x, y)
+    # the plane-local hit coordinates. The -0.5 is the texgen w-term, independent of
+    # texrepeat, so it is applied as an offset after the tex_repeat scale below.
+    uv = wp.vec2(0.5 * local[0], -0.5 * local[1])
+    offset = wp.vec2(-0.5, -0.5)
 
   if geom_type[geom_id] == GeomType.MESH:
     if f < 0 or mesh_id < 0:
@@ -93,8 +99,8 @@ def sample_texture(
     uv2 = mesh_texcoord[mesh_texcoord_offsets[mesh_id] + mesh_facetexcoord[face_adr][2]]
     uv = uv0 * bary_u + uv1 * bary_v + uv2 * (1.0 - bary_u - bary_v)
 
-  u = uv[0] * tex_repeat[0]
-  v = uv[1] * tex_repeat[1]
+  u = uv[0] * tex_repeat[0] + offset[0]
+  v = uv[1] * tex_repeat[1] + offset[1]
   u = u - wp.floor(u)
   v = v - wp.floor(v)
   tex_color = wp.texture_sample(tex, wp.vec2(u, v), dtype=wp.vec4)

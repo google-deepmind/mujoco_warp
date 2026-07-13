@@ -14,7 +14,7 @@
 # ==============================================================================
 import dataclasses
 import enum
-from typing import Callable
+from typing import Callable, Optional
 
 import mujoco
 import numpy as np
@@ -767,6 +767,14 @@ class vec8i(wp.types.vector(length=8, dtype=int)):
   pass
 
 
+class vec16f(wp.types.vector(length=16, dtype=float)):
+  pass
+
+
+class vec16i(wp.types.vector(length=16, dtype=int)):
+  pass
+
+
 class vec10f(wp.types.vector(length=10, dtype=float)):
   pass
 
@@ -796,6 +804,7 @@ vec6 = vec6f
 vec8 = vec8f
 vec10 = vec10f
 vec11 = vec11f
+vec16 = vec16f
 vec128 = vec_pluginattr
 mat23 = mat23f
 mat43 = mat43f
@@ -1033,6 +1042,7 @@ class Model:
     body_treeid: id of body's tree; -1: static               (nbody,)
     body_geomnum: number of geoms                            (nbody,)
     body_geomadr: start addr of geoms; -1: no geoms          (nbody,)
+    body_simple: body simple type                            (nbody,)
     body_pos: position offset rel. to parent body            (*, nbody, 3)
     body_quat: orientation offset rel. to parent body        (*, nbody, 4)
     body_ipos: local position of center of mass              (*, nbody, 3)
@@ -1044,6 +1054,7 @@ class Model:
     body_gravcomp: antigravity force, units of body weight   (*, nbody)
     body_contype: OR over all geom contypes                  (nbody,)
     body_conaffinity: OR over all geom conaffinities         (nbody,)
+
     oct_child: octree children                               (noct, 8)
     oct_aabb: octree axis-aligned bounding boxes             (noct, 2, 3)
     oct_coeff: octree interpolation coefficients             (noct, 8)
@@ -1186,7 +1197,6 @@ class Model:
     flex_stiffness: finite element stiffness matrix          (nflexstiffness,)
     flex_bending: bending stiffness                          (nflexbending,)
     flex_damping: Rayleigh's damping coefficient             (nflex,)
-
     flex_edgeequality: edge equality type (0:none,1:edge,2:vert,3:strain) (nflex,)
     flex_centered: flex vertices are centered at body origin (nflex,)
     flexedge_J_rownnz: number of nonzeros in Jacobian row    (nflexedge,)
@@ -1342,7 +1352,8 @@ class Model:
     has_fluid: True if wind, density, or viscosity are non-zero at put_model time
     has_sdf_geom: whether the model contains SDF geoms
     has_flex_selfcollide: whether any flex has self-collision enabled
-    has_trilinear: whether the model contains trilinear flexes
+    has_ellipsoid_geom: whether the model contains ellipsoid geoms
+    has_3d_flex: whether the model contains 3D flexes
     max_flex_dim: maximum flex dimension in the model
     block_dim: block dim options
     body_tree: list of body ids by tree level
@@ -1430,19 +1441,25 @@ class Model:
     M_mulm_col: sparse matmul column indices
     M_mulm_madr: sparse matmul matrix addresses
     flexelem_geom_pair_filtered: conaffinity-filtered element vs geom pairs (*, 2)
-    flexshell_geom_pair_filtered: conaffinity-filtered shell vs geom pairs  (*, 2)
     flexvert_geom_pair_filtered: conaffinity-filtered vertex vs geom pairs  (*, 2)
     flex_elemflexid: maps each element index directly to its flexid         (nflexelem,)
     flex_shellflexid: maps each shell index directly to its flexid          (nflexshelldata,)
     flex_evpairflexid: maps each element-vertex pair directly to its flexid (nflexevpair,)
     flex_vertflexid: maps each vertex index directly to its flexid          (nflexvert,)
     flex_shelladr: maps each flex to its start shell index                  (nflex,)
+    flex_faceadr: maps each flex to its start face index                    (nflex,)
     flex_cell_map: precomputed flex cell mapping (nflexintcell,)
-    flexstrain_J_rownnz: number of nonzeros in flex strain Jacobian row (neq_flexstrain,)
+    flexstrain_J_rownnz: number of nonzeros in flex strain Jacobian row     (neq_flexstrain,)
     flexstrain_J_rowadr: row start address in colind array (neq_flexstrain,)
-    flexstrain_J_colind: column indices in sparse flex strain Jacobian (nJfs,)
+    flexstrain_J_colind: column indices in sparse flex strain Jacobian      (nJfs,)
     neq_flexstrain: number of flex strain equality constraints
     nJfs: number of non-zeros in sparse flex strain Jacobian
+    nflexbend_interp: number of interpolated bending edges
+    flex_bend_interp_map: mapping of interpolated bending edges to flex and (nflexbend_interp, 2)
+                          local edge indices
+    nflexface: number of interpolated flex shell faces
+    flex_face_map: mapping of face index to flex and local element face indices
+    flex_face: global node indices of each face                              (nflexface, 9)
   """
 
   nq: int
@@ -1511,6 +1528,7 @@ class Model:
   body_treeid: array("nbody", int)
   body_geomnum: array("nbody", int)
   body_geomadr: array("nbody", int)
+  body_simple: array("nbody", int)
   body_pos: array("*", "nbody", wp.vec3)
   body_quat: array("*", "nbody", wp.quat)
   body_ipos: array("*", "nbody", wp.vec3)
@@ -1759,9 +1777,9 @@ class Model:
   actuator_ctrllimited: array("nu", bool)
   actuator_forcelimited: array("nu", bool)
   actuator_actlimited: array("nu", bool)
-  actuator_dynprm: array("*", "nu", vec10f)
-  actuator_gainprm: array("*", "nu", vec10f)
-  actuator_biasprm: array("*", "nu", vec10f)
+  actuator_dynprm: array("*", "nu", vec10)
+  actuator_gainprm: array("*", "nu", vec10)
+  actuator_biasprm: array("*", "nu", vec10)
   actuator_actearly: array("nu", bool)
   actuator_ctrlrange: array("*", "nu", wp.vec2)
   actuator_forcerange: array("*", "nu", wp.vec2)
@@ -1816,7 +1834,8 @@ class Model:
   has_fluid: bool
   has_sdf_geom: bool
   has_flex_selfcollide: bool
-  has_trilinear: bool
+  has_ellipsoid_geom: bool
+  has_3d_flex: bool
   max_flex_dim: int
   block_dim: BlockDim
   body_tree: tuple[wp.array[int], ...]
@@ -1898,19 +1917,24 @@ class Model:
   M_mulm_col: wp.array[int]  # column index to gather from
   M_mulm_madr: wp.array[int]  # matrix address to read
   flexelem_geom_pair_filtered: wp.array[wp.vec2i]
-  flexshell_geom_pair_filtered: wp.array[wp.vec2i]
   flexvert_geom_pair_filtered: wp.array[wp.vec2i]
   flex_elemflexid: array("nflexelem", int)
   flex_shellflexid: array("nflexshelldata", int)
   flex_evpairflexid: array("nflexevpair", int)
   flex_vertflexid: array("nflexvert", int)
   flex_shelladr: array("nflex", int)
+  flex_faceadr: array("nflex", int)
   flex_cell_map: array("nflexintcell", wp.vec4i)
   flexstrain_J_rownnz: array("neq_flexstrain", int)
   flexstrain_J_rowadr: array("neq_flexstrain", int)
   flexstrain_J_colind: array("nJfs", int)
   neq_flexstrain: int
   nJfs: int
+  nflexbend_interp: int
+  flex_bend_interp_map: array("nflexbend_interp", wp.vec2i)
+  nflexface: int
+  flex_face_map: array("nflexface", wp.vec2i)
+  flex_face: array("nflexface", 9, int)
 
 
 class ContactType(enum.IntFlag):
@@ -2174,6 +2198,8 @@ class Data:
     flex_aabb_max: dynamic flex object bounding box max         (nworld, nflex, 3)
     flexnode_xpos: cartesian flex node positions                (nworld, nflexnode, 3)
     overflow: overflow bitmask (OverflowType)                   (nworld,)
+    face_xpos: cartesian flex face positions                    (nworld, nflexface, 9, 3)
+    face_quat: cartesian flex face orientations                 (nworld, nflexface, 4)
   """
 
   solver_niter: array("nworld", int)
@@ -2318,6 +2344,8 @@ class Data:
   flex_aabb_max: array("nworld", "nflex", wp.vec3)
   flexnode_xpos: array("nworld", "nflexnode", wp.vec3)
   overflow: array("nworld", int)
+  face_xpos: array("nworld", "nflexface", 9, wp.vec3)
+  face_quat: array("nworld", "nflexface", wp.quat)
 
 
 @dataclasses.dataclass
@@ -2327,8 +2355,13 @@ class InverseContext:
   Jaref: wp.array2d[float]
   search_dot: wp.array[float]
   done: wp.array[bool]
-  changed_efc_ids: wp.array2d[int]
-  changed_efc_count: wp.array[int]
+  quad_changed_ids: wp.array2d[int]
+  quad_changed_count: wp.array[int]
+  state_changed_count: wp.array[int]
+  ls_exhausted: wp.array[bool]
+  # the full-coordinate Data, set by solve_compact (None natively)
+  compact_m_full: Optional["Model"] = None
+  compact_d_full: Optional["Data"] = None
 
 
 @dataclasses.dataclass
@@ -2346,16 +2379,21 @@ class SolverContext:
   jv: wp.array2d[float]
   quad: wp.array2d[wp.vec3]
   alpha: wp.array[float]
+  grad_scale: wp.array[float]
+  state_changed_count: wp.array[int]
   improvement: wp.array[float]
+  ls_exhausted: wp.array[bool]
   prev_grad: wp.array2d[float]
   prev_Mgrad: wp.array2d[float]
   beta: wp.array[float]
   beta_den: wp.array[float]
   h: wp.array3d[float]
   hfactor: wp.array3d[float]
-  # Incremental Hessian update (Newton only)
-  changed_efc_ids: wp.array2d[int]
-  changed_efc_count: wp.array[int]
+  quad_changed_ids: wp.array2d[int]
+  quad_changed_count: wp.array[int]
+  # the full-coordinate Data, set by solve_compact (None natively)
+  compact_m_full: Optional["Model"] = None
+  compact_d_full: Optional["Data"] = None
 
 
 @dataclasses.dataclass

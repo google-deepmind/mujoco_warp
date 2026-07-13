@@ -503,6 +503,101 @@ def kinematics(m: Model, d: Data):
   )
 
 
+@wp.kernel
+def _flex_face_kinematics(
+  # Model:
+  flex_interp: wp.array[int],
+  flex_cellnum: wp.array[wp.vec3i],
+  flex_face_map: wp.array[wp.vec2i],
+  flex_face: wp.array2d[int],
+  # Data in:
+  flexnode_xpos_in: wp.array2d[wp.vec3],
+  # Data out:
+  face_xpos_out: wp.array3d[wp.vec3],
+  face_quat_out: wp.array2d[wp.quat],
+):
+  worldid, face_id = wp.tid()
+
+  mapping = flex_face_map[face_id]
+  f = mapping[0]
+  face_elem_idx = mapping[1]
+
+  order = flex_interp[f]
+  order_abs = -order
+  cellnum = flex_cellnum[f]
+  cx = cellnum[0]
+  cy = cellnum[1]
+  cz = cellnum[2]
+  t1 = wp.vec3(0.0)
+  t2 = wp.vec3(0.0)
+  for local_idx in range(9):
+    gidx = flex_face[face_id, local_idx]
+    if gidx != -1:
+      node_pos = flexnode_xpos_in[worldid, gidx]
+
+      face_xpos_out[worldid, face_id, local_idx] = node_pos
+
+      l0 = local_idx // (order_abs + 1)
+      l1 = local_idx % (order_abs + 1)
+
+      dphi0 = float(l0 - 1) if order_abs == 2 else (-1.0 + 2.0 * float(l0))
+      dphi1 = float(l1 - 1) if order_abs == 2 else (-1.0 + 2.0 * float(l1))
+      phi0 = wp.where(l0 == 1, 1.0, 0.0) if order_abs == 2 else 0.5
+      phi1 = wp.where(l1 == 1, 1.0, 0.0) if order_abs == 2 else 0.5
+
+      grad0 = dphi0 * phi1
+      grad1 = phi0 * dphi1
+
+      t1 += node_pos * grad0
+      t2 += node_pos * grad1
+    else:
+      face_xpos_out[worldid, face_id, local_idx] = wp.vec3(0.0)
+
+  normal = wp.cross(t1, t2)
+
+  normal_axis, _, _, _, _, _ = support.get_face_metadata(cx, cy, cz, face_elem_idx, order_abs)
+
+  F = wp.mat33(0.0)
+  if normal_axis == 0:
+    F = wp.mat33(
+      normal[0],
+      t1[0],
+      t2[0],
+      normal[1],
+      t1[1],
+      t2[1],
+      normal[2],
+      t1[2],
+      t2[2],
+    )
+  elif normal_axis == 1:
+    F = wp.mat33(
+      t2[0],
+      normal[0],
+      t1[0],
+      t2[1],
+      normal[1],
+      t1[1],
+      t2[2],
+      normal[2],
+      t1[2],
+    )
+  else:
+    F = wp.mat33(
+      t1[0],
+      t2[0],
+      normal[0],
+      t1[1],
+      t2[1],
+      normal[1],
+      t1[2],
+      t2[2],
+      normal[2],
+    )
+
+  face_quat_out[worldid, face_id] = support.mat33_to_quat_polar(F)
+
+
 @event_scope
 def flex(m: Model, d: Data):
   # Compute node positions first (needed for interpolated vertex positions)
@@ -566,6 +661,22 @@ def flex(m: Model, d: Data):
       d.flexedge_J,
       d.flexedge_length,
       d.flexedge_velocity,
+    ],
+  )
+
+  wp.launch(
+    _flex_face_kinematics,
+    dim=(d.nworld, m.nflexface),
+    inputs=[
+      m.flex_interp,
+      m.flex_cellnum,
+      m.flex_face_map,
+      m.flex_face,
+      d.flexnode_xpos,
+    ],
+    outputs=[
+      d.face_xpos,
+      d.face_quat,
     ],
   )
 

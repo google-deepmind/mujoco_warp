@@ -262,22 +262,14 @@ def _epa_support(
 
 
 @wp.func
-def _linear_combine(n: int, coefs: wp.vec4, mat: mat43) -> wp.vec3:
-  v = wp.vec3(0.0)
+def _linear_combine(n: int, scl: wp.vec4, mat: mat43) -> wp.vec3:
   if n == 1:
-    v = coefs[0] * mat[0]
-  elif n == 2:
-    v = coefs[0] * mat[0] + coefs[1] * mat[1]
-  elif n == 3:
-    v = coefs[0] * mat[0] + coefs[1] * mat[1] + coefs[2] * mat[2]
-  else:
-    v = coefs[0] * mat[0] + coefs[1] * mat[1] + coefs[2] * mat[2] + coefs[3] * mat[3]
-  return v
-
-
-@wp.func
-def _almost_equal(v1: wp.vec3, v2: wp.vec3) -> bool:
-  return wp.abs(v1[0] - v2[0]) < MINVAL and wp.abs(v1[1] - v2[1]) < MINVAL and wp.abs(v1[2] - v2[2]) < MINVAL
+    return scl[0] * mat[0]
+  if n == 2:
+    return scl[0] * mat[0] + scl[1] * mat[1]
+  if n == 3:
+    return scl[0] * mat[0] + scl[1] * mat[1] + scl[2] * mat[2]
+  return scl[0] * mat[0] + scl[1] * mat[1] + scl[2] * mat[2] + scl[3] * mat[3]
 
 
 @wp.func
@@ -285,11 +277,11 @@ def _subdistance(n: int, simplex: mat43) -> wp.vec4:
   if n == 4:
     return _S3D(simplex[0], simplex[1], simplex[2], simplex[3])
   if n == 3:
-    coordinates3 = _S2D(simplex[0], simplex[1], simplex[2])
-    return wp.vec4(coordinates3[0], coordinates3[1], coordinates3[2], 0.0)
+    lmbda3 = _S2D(simplex[0], simplex[1], simplex[2])
+    return wp.vec4(lmbda3[0], lmbda3[1], lmbda3[2], 0.0)
   if n == 2:
-    coordinates2 = _S1D(simplex[0], simplex[1])
-    return wp.vec4(coordinates2[0], coordinates2[1], 0.0, 0.0)
+    lmbda2 = _S1D(simplex[0], simplex[1])
+    return wp.vec4(lmbda2[0], lmbda2[1], 0.0, 0.0)
   return wp.vec4(1.0, 0.0, 0.0, 0.0)
 
 
@@ -375,51 +367,51 @@ def _S3D(s1: wp.vec3, s2: wp.vec3, s3: wp.vec3, s4: wp.vec3) -> wp.vec4:
     return wp.vec4(C41 / m_det, C42 / m_det, C43 / m_det, C44 / m_det)
 
   # find the smallest distance, and use the corresponding barycentric coordinates
-  coordinates = wp.vec4(0.0, 0.0, 0.0, 0.0)
+  lmbda = wp.vec4(0.0, 0.0, 0.0, 0.0)
   dmin = FLOAT_MAX
 
   if not comp1:
-    subcoord = _S2D(s2, s3, s4)
-    x = subcoord[0] * s2 + subcoord[1] * s3 + subcoord[2] * s4
+    sublmbda = _S2D(s2, s3, s4)
+    x = sublmbda[0] * s2 + sublmbda[1] * s3 + sublmbda[2] * s4
     d = wp.dot(x, x)
-    coordinates[0] = 0.0
-    coordinates[1] = subcoord[0]
-    coordinates[2] = subcoord[1]
-    coordinates[3] = subcoord[2]
+    lmbda[0] = 0.0
+    lmbda[1] = sublmbda[0]
+    lmbda[2] = sublmbda[1]
+    lmbda[3] = sublmbda[2]
     dmin = d
 
   if not comp2:
-    subcoord = _S2D(s1, s3, s4)
-    x = subcoord[0] * s1 + subcoord[1] * s3 + subcoord[2] * s4
+    sublmbda = _S2D(s1, s3, s4)
+    x = sublmbda[0] * s1 + sublmbda[1] * s3 + sublmbda[2] * s4
     d = wp.dot(x, x)
     if d < dmin:
-      coordinates[0] = subcoord[0]
-      coordinates[1] = 0.0
-      coordinates[2] = subcoord[1]
-      coordinates[3] = subcoord[2]
+      lmbda[0] = sublmbda[0]
+      lmbda[1] = 0.0
+      lmbda[2] = sublmbda[1]
+      lmbda[3] = sublmbda[2]
       dmin = d
 
   if not comp3:
-    subcoord = _S2D(s1, s2, s4)
-    x = subcoord[0] * s1 + subcoord[1] * s2 + subcoord[2] * s4
+    sublmbda = _S2D(s1, s2, s4)
+    x = sublmbda[0] * s1 + sublmbda[1] * s2 + sublmbda[2] * s4
     d = wp.dot(x, x)
     if d < dmin:
-      coordinates[0] = subcoord[0]
-      coordinates[1] = subcoord[1]
-      coordinates[2] = 0.0
-      coordinates[3] = subcoord[2]
+      lmbda[0] = sublmbda[0]
+      lmbda[1] = sublmbda[1]
+      lmbda[2] = 0.0
+      lmbda[3] = sublmbda[2]
       dmin = d
 
   if not comp4:
-    subcoord = _S2D(s1, s2, s3)
-    x = subcoord[0] * s1 + subcoord[1] * s2 + subcoord[2] * s3
+    sublmbda = _S2D(s1, s2, s3)
+    x = sublmbda[0] * s1 + sublmbda[1] * s2 + sublmbda[2] * s3
     d = wp.dot(x, x)
     if d < dmin:
-      coordinates[0] = subcoord[0]
-      coordinates[1] = subcoord[1]
-      coordinates[2] = subcoord[2]
-      coordinates[3] = 0.0
-  return coordinates
+      lmbda[0] = sublmbda[0]
+      lmbda[1] = sublmbda[1]
+      lmbda[2] = sublmbda[2]
+      lmbda[3] = 0.0
+  return lmbda
 
 
 @wp.func
@@ -535,36 +527,36 @@ def _S2D(s1: wp.vec3, s2: wp.vec3, s3: wp.vec3) -> wp.vec3:
 
   # find the smallest distance, and use the corresponding barycentric coordinates
   dmin = FLOAT_MAX
-  coordinates = wp.vec3(0.0, 0.0, 0.0)
+  lmbda = wp.vec3(0.0, 0.0, 0.0)
 
   if not comp1:
-    subcoord = _S1D(s2, s3)
-    x = subcoord[0] * s2 + subcoord[1] * s3
+    sublmbda = _S1D(s2, s3)
+    x = sublmbda[0] * s2 + sublmbda[1] * s3
     d = wp.dot(x, x)
-    coordinates[0] = 0.0
-    coordinates[1] = subcoord[0]
-    coordinates[2] = subcoord[1]
+    lmbda[0] = 0.0
+    lmbda[1] = sublmbda[0]
+    lmbda[2] = sublmbda[1]
     dmin = d
 
   if not comp2:
-    subcoord = _S1D(s1, s3)
-    x = subcoord[0] * s1 + subcoord[1] * s3
+    sublmbda = _S1D(s1, s3)
+    x = sublmbda[0] * s1 + sublmbda[1] * s3
     d = wp.dot(x, x)
     if d < dmin:
-      coordinates[0] = subcoord[0]
-      coordinates[1] = 0.0
-      coordinates[2] = subcoord[1]
+      lmbda[0] = sublmbda[0]
+      lmbda[1] = 0.0
+      lmbda[2] = sublmbda[1]
       dmin = d
 
   if not comp3:
-    subcoord = _S1D(s1, s2)
-    x = subcoord[0] * s1 + subcoord[1] * s2
+    sublmbda = _S1D(s1, s2)
+    x = sublmbda[0] * s1 + sublmbda[1] * s2
     d = wp.dot(x, x)
     if d < dmin:
-      coordinates[0] = subcoord[0]
-      coordinates[1] = subcoord[1]
-      coordinates[2] = 0.0
-  return coordinates
+      lmbda[0] = sublmbda[0]
+      lmbda[1] = sublmbda[1]
+      lmbda[2] = 0.0
+  return lmbda
 
 
 @wp.func
@@ -573,13 +565,18 @@ def _S1D(s1: wp.vec3, s2: wp.vec3) -> wp.vec2:
   p_o = _project_origin_line(s1, s2)
 
   # find the axis with the largest projection "shadow" of the simplex
-  mu_max = 0.0
+  mu_max = s1[0] - s2[0]
   index = 0
-  for i in range(3):
-    mu = s1[i] - s2[i]
-    if wp.abs(mu) >= wp.abs(mu_max):
-      mu_max = mu
-      index = i
+
+  mu = s1[1] - s2[1]
+  if wp.abs(mu) >= wp.abs(mu_max):
+    mu_max = mu
+    index = 1
+
+  mu = s1[2] - s2[2]
+  if wp.abs(mu) >= wp.abs(mu_max):
+    mu_max = mu
+    index = 2
 
   C1 = p_o[index] - s2[index]
   C2 = s1[index] - p_o[index]
@@ -588,6 +585,45 @@ def _S1D(s1: wp.vec3, s2: wp.vec3) -> wp.vec2:
   if _same_sign(mu_max, C1) and _same_sign(mu_max, C2):
     return wp.vec2(C1 / mu_max, C2 / mu_max)
   return wp.vec2(0.0, 1.0)
+
+
+@wp.func
+def _gjk_support(
+  # In:
+  geom1: Geom,
+  geom2: Geom,
+  geomtype1: int,
+  geomtype2: int,
+  x_k: wp.vec3,
+  x_norm: float,
+  simplex: mat43,
+  n: int,
+  is_discrete: bool,
+) -> Tuple[SupportPoint, SupportPoint]:
+  dir_neg = x_k / x_norm
+
+  # tuning for discrete geoms when direction is noisy
+  if is_discrete and x_norm < 1e-4:
+    if n == 2:
+      edge = simplex[1] - simplex[0]
+      edge_norm2 = wp.dot(edge, edge)
+      if edge_norm2 > MINVAL2:
+        proj = wp.dot(dir_neg, edge) / edge_norm2
+        dir_neg = dir_neg - proj * edge
+        dir_norm = wp.length(dir_neg)
+        if dir_norm > MINVAL:
+          dir_neg = dir_neg / dir_norm
+    elif n == 3:
+      e1 = simplex[1] - simplex[0]
+      e2 = simplex[2] - simplex[0]
+      normal = wp.cross(e1, e2)
+      normal_norm = wp.length(normal)
+      if normal_norm > MINVAL:
+        dir_neg = wp.sign(wp.dot(dir_neg, normal)) * normal / normal_norm
+
+  sp1 = support(geom1, geomtype1, -dir_neg)
+  sp2 = support(geom2, geomtype2, dir_neg)
+  return sp1, sp2
 
 
 @wp.func
@@ -612,36 +648,37 @@ def gjk(
   simplex_index1 = wp.vec4i()
   simplex_index2 = wp.vec4i()
   n = int(0)
-  coordinates = wp.vec4()  # barycentric coordinates
-  tol2 = tolerance * tolerance
-  epsilon = wp.where(is_discrete, 0.0, 0.5 * tol2)
+  lmbda = wp.vec4(1.0, 0.0, 0.0, 0.0)  # barycentric coordinates
+  epsilon = wp.where(is_discrete, 0.0, 0.5 * tolerance * tolerance)
+  min_norm = wp.where(is_discrete, MINVAL, tolerance)
 
   # set initial guess
   x_k = x1_0 - x2_0
-  xnorm_old = FLOAT_MAX
+  xnorm2 = wp.dot(x_k, x_k)
+  xnorm = wp.sqrt(xnorm2)
+  xnorm_prev = float(0.0)
 
   for _ in range(gjk_iterations):
-    xnorm = wp.dot(x_k, x_k)
-    # TODO(kbayes): determine new constant here
-    if xnorm < tol2 or wp.abs(xnorm_old - xnorm) < tol2:
+    if xnorm < min_norm or wp.abs(xnorm_prev - xnorm) < tolerance:
       break
-    xnorm_old = xnorm
-    dir_neg = x_k / wp.sqrt(xnorm)
 
-    # compute kth support point in geom1
-    sp = support(geom1, geomtype1, -dir_neg)
-    simplex1[n] = sp.point
-    geom1.index = sp.cached_index
-    simplex_index1[n] = sp.vertex_index
+    # compute the support point with direction tuning
+    sp1, sp2 = _gjk_support(geom1, geom2, geomtype1, geomtype2, x_k, xnorm, simplex, n, is_discrete)
+    simplex1[n] = sp1.point
+    geom1.index = sp1.cached_index
+    simplex_index1[n] = sp1.vertex_index
 
-    # compute kth support point in geom2
-    sp = support(geom2, geomtype2, dir_neg)
-    simplex2[n] = sp.point
-    geom2.index = sp.cached_index
-    simplex_index2[n] = sp.vertex_index
+    simplex2[n] = sp2.point
+    geom2.index = sp2.cached_index
+    simplex_index2[n] = sp2.vertex_index
 
     # compute the kth support point
     simplex[n] = simplex1[n] - simplex2[n]
+
+    # stopping criteria using the Frank-Wolfe duality gap given by
+    #  |f(x_k) - f(x_min)|^2 <= < grad f(x_k), (x_k - simplex[n]) >
+    if wp.dot(x_k, x_k - simplex[n]) < epsilon:
+      break
 
     if cutoff == 0.0:
       if wp.dot(x_k, simplex[n]) > 0.0:
@@ -651,25 +688,20 @@ def gjk(
         return result
     elif cutoff < FLOAT_MAX:
       vs = wp.dot(x_k, simplex[n])
-      if wp.dot(x_k, simplex[n]) > 0.0 and (vs * vs / xnorm) >= cutoff2:
+      if wp.dot(x_k, simplex[n]) > 0.0 and (vs * vs / xnorm2) >= cutoff2:
         result = GJKResult()
         result.dim = 0
         result.dist = FLOAT_MAX
         return result
 
-    # stopping criteria using the Frank-Wolfe duality gap given by
-    #  |f(x_k) - f(x_min)|^2 <= < grad f(x_k), (x_k - simplex[n]) >
-    if wp.dot(x_k, x_k - simplex[n]) < epsilon:
-      break
-
     # run the distance subalgorithm to compute the barycentric coordinates
     # of the closest point to the origin in the simplex
-    coordinates = _subdistance(n + 1, simplex)
+    lmbda = _subdistance(n + 1, simplex)
 
     # remove vertices from the simplex no longer needed
     n = int(0)
     for i in range(4):
-      if coordinates[i] == 0.0:
+      if lmbda[i] == 0.0:
         continue
 
       simplex[n] = simplex[i]
@@ -677,35 +709,32 @@ def gjk(
       simplex2[n] = simplex2[i]
       simplex_index1[n] = simplex_index1[i]
       simplex_index2[n] = simplex_index2[i]
-      coordinates[n] = coordinates[i]
+      lmbda[n] = lmbda[i]
       n += int(1)
 
     # SHOULD NOT OCCUR
     if n < 1:
       break
 
-    # get the next iteration of x_k
-    x_next = _linear_combine(n, coordinates, simplex)
-
-    # x_k has converged to minimum
-    if _almost_equal(x_next, x_k):
-      break
-
-    # copy next iteration into x_k
-    x_k = x_next
-
     # we have a tetrahedron containing the origin so return early
     if n == 4:
+      xnorm = 0.0
       break
+
+    # get the next iteration of x_k
+    x_k = _linear_combine(n, lmbda, simplex)
+    xnorm_prev = xnorm
+    xnorm2 = wp.dot(x_k, x_k)
+    xnorm = wp.sqrt(xnorm2)
 
   result = GJKResult()
 
   # compute the approximate witness points
   # if n is zero, then there was an immediate return meaning the initial points
   # are the witness points
-  result.x1 = wp.where(n == 0, x1_0, _linear_combine(n, coordinates, simplex1))
-  result.x2 = wp.where(n == 0, x2_0, _linear_combine(n, coordinates, simplex2))
-  result.dist = wp.norm_l2(x_k)
+  result.x1 = wp.where(n == 0, x1_0, _linear_combine(n, lmbda, simplex1))
+  result.x2 = wp.where(n == 0, x2_0, _linear_combine(n, lmbda, simplex2))
+  result.dist = xnorm
 
   result.dim = n
   result.simplex1 = simplex1
@@ -1285,15 +1314,15 @@ def _epa(
     # compute support point w from the closest face's normal
     lower = wp.sqrt(lower2)
     wi = pt.nvert
-    face_pr_normalized = pt.face_pr[idx] / lower
-    i1, i2 = _epa_support(pt, wi, geom1, geom2, geomtype1, geomtype2, face_pr_normalized)
+    face_pr = pt.face_pr[idx]
+    i1, i2 = _epa_support(pt, wi, geom1, geom2, geomtype1, geomtype2, face_pr / lower)
     w = pt.vert[2 * wi] - pt.vert[2 * wi + 1]
     geom1.index = i1
     geom2.index = i2
     pt.nvert += 1
 
-    # upper bound for kth iteration
-    upper_k = wp.dot(face_pr_normalized, w)
+    # upper bound for kth iteration (dot product before normalizing for better precision)
+    upper_k = wp.dot(face_pr, w) / lower
     if upper_k < upper:
       upper = upper_k
       upper2 = upper * upper

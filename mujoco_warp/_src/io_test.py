@@ -457,6 +457,15 @@ _MESH_RANDOMIZE_XML = """
 
 
 class IOTest(parameterized.TestCase):
+  @parameterized.parameters((47, 48), (48, 64), (63, 64), (64, 80))
+  def test_augmented_cholesky_padding(self, nv, expected):
+    _, nv_pad = io._get_padded_sizes(nv, 0, False, types.TILE_SIZE_JTDAJ_DENSE, augment_cholesky=True)
+    self.assertEqual(nv_pad, expected)
+
+  @parameterized.parameters((15, 16), (16, 32), (31, 32), (32, 48))
+  def test_augmented_cholesky_nvmax_padding(self, nvmax, expected):
+    self.assertEqual(io._nvmax_pad(nvmax), expected)
+
   def test_make_put_data(self):
     """Tests that make_data and put_data are producing the same shapes for all arrays."""
     mjm, _, _, d = test_data.fixture("pendula.xml", nvmax=None)
@@ -1209,6 +1218,164 @@ class IOTest(parameterized.TestCase):
     _assert_eq(m.body_subtreemass.numpy()[0], mjm.body_subtreemass, "body_subtreemass")
     _assert_eq(m.actuator_acc0.numpy()[0], mjm.actuator_acc0, "actuator_acc0")
     _assert_eq(m.body_invweight0.numpy()[0, 1, 0], mjm.body_invweight0[1, 0], "body_invweight0")
+
+  def test_set_const_eq_data_connect(self):
+    """Test set_const recomputes eq_data for connect constraints."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+    <mujoco>
+      <option gravity="0 0 0">
+        <flag contact="disable"/>
+      </option>
+      <worldbody>
+        <body name="b1" pos="1 0 0">
+          <joint type="slide" axis="1 0 0" ref="1"/>
+          <geom type="sphere" size="0.1" mass="1"/>
+        </body>
+        <body name="b2" pos="2 0 0">
+          <joint type="slide" axis="1 0 0" ref="4"/>
+          <geom type="sphere" size="0.1" mass="1"/>
+        </body>
+      </worldbody>
+      <equality>
+        <connect body1="b1" body2="b2" anchor="0.5 0 0"/>
+      </equality>
+    </mujoco>
+    """
+    )
+
+    # move the anchor on body1 and clear the derived second anchor
+    new_data = mjm.eq_data[0].copy()
+    new_data[0:3] = [0.4, 0.1, 0.0]
+    new_data[3:6] = 0.0
+    mjm.eq_data[0] = new_data
+    eq_data = m.eq_data.numpy()
+    eq_data[0, 0] = new_data
+    wp.copy(m.eq_data, wp.array(eq_data, dtype=m.eq_data.dtype))
+
+    mujoco.mj_setConst(mjm, mjd)
+    mjwarp.set_const(m, d)
+
+    _assert_eq(m.eq_data.numpy()[0], mjm.eq_data, "eq_data")
+
+  def test_set_const_eq_data_weld(self):
+    """Test set_const recomputes eq_data for weld constraints."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+    <mujoco>
+      <option gravity="0 0 0">
+        <flag contact="disable"/>
+      </option>
+      <worldbody>
+        <body name="b1" pos="0.1 0 0">
+          <joint type="hinge" axis="0 0 1" ref="0.3"/>
+          <geom type="sphere" size="0.05" mass="1"/>
+        </body>
+        <body name="b2" pos="0.4 0 0" euler="0 0 20">
+          <joint type="hinge" axis="0 1 0" ref="-0.2"/>
+          <geom type="sphere" size="0.05" mass="1"/>
+        </body>
+      </worldbody>
+      <equality>
+        <weld body1="b1" body2="b2" anchor="0.1 0.2 0.3"/>
+      </equality>
+    </mujoco>
+    """
+    )
+
+    # case 1: quaternion data cleared: set_const recomputes relpose and anchor offset
+    new_data = mjm.eq_data[0].copy()
+    new_data[0:3] = [0.15, 0.1, 0.25]
+    new_data[3:10] = 0.0
+    mjm.eq_data[0] = new_data
+    eq_data = m.eq_data.numpy()
+    eq_data[0, 0] = new_data
+    wp.copy(m.eq_data, wp.array(eq_data, dtype=m.eq_data.dtype))
+
+    mujoco.mj_setConst(mjm, mjd)
+    mjwarp.set_const(m, d)
+
+    _assert_eq(m.eq_data.numpy()[0], mjm.eq_data, "eq_data")
+
+    # case 2: user-specified quaternion: set_const only normalizes it
+    new_data = mjm.eq_data[0].copy()
+    new_data[6:10] = [2.0, 0.0, 2.0, 0.0]
+    mjm.eq_data[0] = new_data
+    eq_data = m.eq_data.numpy()
+    eq_data[0, 0] = new_data
+    wp.copy(m.eq_data, wp.array(eq_data, dtype=m.eq_data.dtype))
+
+    mujoco.mj_setConst(mjm, mjd)
+    mjwarp.set_const(m, d)
+
+    _assert_eq(m.eq_data.numpy()[0], mjm.eq_data, "eq_data")
+
+  def test_set_const_eq_data_slider_crank_tracking(self):
+    """Test connect anchor recompute on a slider-crank with nonzero joint ref."""
+    r, ell = 0.075, 0.096
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+    <mujoco>
+      <option gravity="0 0 0" timestep="0.002">
+        <flag contact="disable"/>
+      </option>
+      <worldbody>
+        <body name="crank">
+          <joint name="phi" type="hinge" axis="0 0 1" ref="0.35" springref="0.55" stiffness="0.02" damping="0.002"/>
+          <geom type="capsule" fromto="0 0 0 0.075 0 0" size="0.008" mass="0.06"/>
+          <body name="conrod" pos="0.075 0 0">
+            <joint name="psi" type="hinge" axis="0 0 1" ref="-0.2" damping="0.0005"/>
+            <geom type="capsule" fromto="0 0 0 -0.1 0 0" size="0.006" mass="0.05"/>
+          </body>
+        </body>
+        <body name="slider" pos="0.005 0 0">
+          <joint name="s" type="slide" axis="1 0 0" ref="0.01" springref="0.02" stiffness="0.5" damping="0.01"/>
+          <geom type="box" size="0.01 0.008 0.008" mass="0.08"/>
+        </body>
+      </worldbody>
+      <equality>
+        <connect body1="conrod" body2="slider" anchor="-0.1 0 0"/>
+      </equality>
+      <actuator>
+        <motor joint="phi" gear="1"/>
+      </actuator>
+    </mujoco>
+    """
+    )
+
+    def slider_crank_s(phi):
+      # closed-form slide position vs crank angle, s(0) = 0 at top dead center
+      return r * np.cos(phi) - np.sqrt(ell**2 - (r * np.sin(phi)) ** 2) - (r - ell)
+
+    # re-anchor the conrod pin (effective conrod length 0.100 -> 0.096) and clear
+    # the derived anchor; per set_const docs the offsets are recomputed if not set
+    new_data = mjm.eq_data[0].copy()
+    new_data[0:3] = [-ell, 0.0, 0.0]
+    new_data[3:6] = 0.0
+    mjm.eq_data[0] = new_data
+    eq_data = m.eq_data.numpy()
+    eq_data[0, 0] = new_data
+    wp.copy(m.eq_data, wp.array(eq_data, dtype=m.eq_data.dtype))
+
+    mujoco.mj_setConst(mjm, mjd)
+    mjwarp.set_const(m, d)
+
+    _assert_eq(m.eq_data.numpy()[0], mjm.eq_data, "eq_data")
+
+    # roll out the warp path from qpos0 under a constant crank torque and check
+    # the loop against the closed form (joint ref values offset qpos readings)
+    qpos0 = mjm.qpos0.copy()
+    ctrl = 0.03
+
+    mjwarp.reset_data(m, d)
+    d.ctrl.fill_(ctrl)
+    err_wp = 0.0
+    for _ in range(10):
+      mjwarp.step(m, d)
+      qpos = d.qpos.numpy()[0]
+      err_wp = max(err_wp, abs(qpos[2] - qpos0[2] - slider_crank_s(qpos[0] - qpos0[0])))
+
+    self.assertLess(err_wp, 1.0e-3, f"warp path loop error {err_wp:.2e}")
 
   @parameterized.named_parameters(
     dict(testcase_name="dense", jacobian="dense"),
@@ -2968,8 +3135,8 @@ class IOTest(parameterized.TestCase):
         host_slice = val_host[:ncon].reshape(-1)
         _assert_eq(device_slice, host_slice, f"{field} mismatch in world {w}")
 
-  def test_flex_interp_negative_error(self):
-    """Test that put_model raises NotImplementedError for negative flex_interp."""
+  def test_flex_interp_negative_success(self):
+    """Test that put_model succeeds for negative flex_interp (shell elements)."""
     xml = """
     <mujoco>
       <worldbody>
@@ -2985,8 +3152,9 @@ class IOTest(parameterized.TestCase):
     # Modify flex_interp to be negative (simulating quad shells or unsupported order)
     mjm.flex_interp[0] = -1
 
-    with self.assertRaisesRegex(NotImplementedError, "Flex interpolation order < 0 .* not supported"):
-      mjwarp.put_model(mjm)
+    # Should succeed without NotImplementedError
+    m = mjwarp.put_model(mjm)
+    self.assertEqual(m.has_3d_flex, True)
 
 
 # TODO(team): test set_const_0 sparse
