@@ -14,7 +14,7 @@
 # ==============================================================================
 import dataclasses
 import enum
-from typing import Callable
+from typing import Callable, Optional
 
 import mujoco
 import numpy as np
@@ -2364,6 +2364,9 @@ class InverseContext:
   quad_changed_count: wp.array[int]
   state_changed_count: wp.array[int]
   ls_exhausted: wp.array[bool]
+  # the full-coordinate Data, set by solve_compact (None natively)
+  compact_m_full: Optional["Model"] = None
+  compact_d_full: Optional["Data"] = None
 
 
 @dataclasses.dataclass
@@ -2393,6 +2396,9 @@ class SolverContext:
   hfactor: wp.array3d[float]
   quad_changed_ids: wp.array2d[int]
   quad_changed_count: wp.array[int]
+  # the full-coordinate Data, set by solve_compact (None natively)
+  compact_m_full: Optional["Model"] = None
+  compact_d_full: Optional["Data"] = None
 
 
 @dataclasses.dataclass
