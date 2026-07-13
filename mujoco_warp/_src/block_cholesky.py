@@ -19,6 +19,32 @@ import warp as wp
 
 
 @lru_cache(maxsize=None)
+def _create_solve_epilogue_func(matrix_size_static: int, vector_size_static: int):
+  @wp.func
+  def solve_epilogue_func(
+    # In:
+    solution_tile: wp.tile[float, matrix_size_static, 1],
+    b: wp.array2d[float],
+    thread_idx: int,
+    # Out:
+    search_out: wp.array2d[float],
+  ):
+    local_search_dot = float(0.0)
+    local_decrement = float(0.0)
+    for i in range(thread_idx, vector_size_static, wp.block_dim()):
+      solution = wp.tile_extract(solution_tile, i, 0)
+      search_out[i, 0] = -solution
+      local_search_dot += solution * solution
+      local_decrement += b[i, 0] * solution
+
+    search_dot = wp.tile_reduce(wp.add, wp.tile(local_search_dot, preserve_type=True))[0]
+    decrement = wp.tile_reduce(wp.add, wp.tile(local_decrement, preserve_type=True))[0]
+    return wp.vec2(search_dot, decrement)
+
+  return solve_epilogue_func
+
+
+@lru_cache(maxsize=None)
 def create_blocked_cholesky_factorize_solve_func(block_size: int, matrix_size_static: int):
   @wp.func
   def blocked_cholesky_factorize_solve_func(
@@ -93,7 +119,13 @@ def create_blocked_cholesky_factorize_solve_func(block_size: int, matrix_size_st
 
 
 @lru_cache(maxsize=None)
-def create_blocked_cholesky_augmented_factorize_solve_func(block_size: int, matrix_size_static: int):
+def _create_blocked_cholesky_augmented_factorize_solve_func(
+  block_size: int,
+  matrix_size_static: int,
+  with_newton_epilogue: bool,
+  vector_size_static: int,
+):
+  WITH_NEWTON_EPILOGUE = with_newton_epilogue
   border_size = block_size - 1
 
   @wp.func
@@ -102,9 +134,11 @@ def create_blocked_cholesky_augmented_factorize_solve_func(block_size: int, matr
     A: wp.array2d[float],
     b: wp.array2d[float],
     matrix_size: int,
+    thread_idx: int,
     # Out:
     U: wp.array2d[float],
-    x: wp.array2d[float],
+    # Out:
+    result_out: wp.array2d[float],
   ):
     """Factor A with b as an augmented border and reuse it as the forward solution."""
     rhs_tile = wp.tile_zeros(shape=(matrix_size_static, 1), dtype=float, storage="shared")
@@ -170,21 +204,35 @@ def create_blocked_cholesky_augmented_factorize_solve_func(block_size: int, matr
       )
       wp.tile_upper_solve_inplace(U_tile, tmp_tile)
 
-    wp.tile_store(x, rhs_tile, offset=(0, 0), bounds_check=False)
+    sums = wp.vec2(0.0)
+    if wp.static(WITH_NEWTON_EPILOGUE):
+      sums = wp.static(_create_solve_epilogue_func(matrix_size_static, vector_size_static))(rhs_tile, b, thread_idx, result_out)
+    else:
+      wp.tile_store(result_out, rhs_tile, offset=(0, 0), bounds_check=False)
+
+    return sums
 
   return blocked_cholesky_augmented_factorize_solve_func
 
 
 @lru_cache(maxsize=None)
-def create_blocked_cholesky_solve_func(block_size: int, matrix_size_static: int):
+def _create_blocked_cholesky_solve_func(
+  block_size: int,
+  matrix_size_static: int,
+  with_newton_epilogue: bool,
+  vector_size_static: int,
+):
+  WITH_NEWTON_EPILOGUE = with_newton_epilogue
+
   @wp.func
   def blocked_cholesky_solve_func(
     # In:
     U: wp.array2d[float],
     b: wp.array2d[float],
     matrix_size: int,
+    thread_idx: int,
     # Out:
-    x: wp.array2d[float],
+    result_out: wp.array2d[float],
   ):
     """Block Cholesky solve.
 
@@ -224,6 +272,30 @@ def create_blocked_cholesky_solve_func(block_size: int, matrix_size_static: int)
 
       wp.tile_upper_solve_inplace(U_tile, tmp_tile)
 
-    wp.tile_store(x, rhs_tile, offset=(0, 0), bounds_check=False)
+    sums = wp.vec2(0.0)
+    if wp.static(WITH_NEWTON_EPILOGUE):
+      sums = wp.static(_create_solve_epilogue_func(matrix_size_static, vector_size_static))(rhs_tile, b, thread_idx, result_out)
+    else:
+      wp.tile_store(result_out, rhs_tile, offset=(0, 0), bounds_check=False)
+
+    return sums
 
   return blocked_cholesky_solve_func
+
+
+def create_blocked_cholesky_augmented_factorize_solve_func(block_size: int, matrix_size_static: int):
+  return _create_blocked_cholesky_augmented_factorize_solve_func(block_size, matrix_size_static, False, 0)
+
+
+def create_blocked_cholesky_augmented_factorize_solve_newton_func(
+  block_size: int, matrix_size_static: int, vector_size_static: int
+):
+  return _create_blocked_cholesky_augmented_factorize_solve_func(block_size, matrix_size_static, True, vector_size_static)
+
+
+def create_blocked_cholesky_solve_func(block_size: int, matrix_size_static: int):
+  return _create_blocked_cholesky_solve_func(block_size, matrix_size_static, False, 0)
+
+
+def create_blocked_cholesky_solve_newton_func(block_size: int, matrix_size_static: int, vector_size_static: int):
+  return _create_blocked_cholesky_solve_func(block_size, matrix_size_static, True, vector_size_static)

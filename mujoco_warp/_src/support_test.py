@@ -28,8 +28,10 @@ from mujoco_warp import test_data
 from mujoco_warp._src import io
 from mujoco_warp._src import support
 from mujoco_warp._src.block_cholesky import create_blocked_cholesky_augmented_factorize_solve_func
+from mujoco_warp._src.block_cholesky import create_blocked_cholesky_augmented_factorize_solve_newton_func
 from mujoco_warp._src.block_cholesky import create_blocked_cholesky_factorize_solve_func
 from mujoco_warp._src.block_cholesky import create_blocked_cholesky_solve_func
+from mujoco_warp._src.block_cholesky import create_blocked_cholesky_solve_newton_func
 
 # tolerance for difference between MuJoCo and MJWarp support calculations - mostly
 # due to float precision
@@ -211,7 +213,7 @@ class SupportTest(parameterized.TestCase):
     nworld = d.nworld
 
     @wp.kernel(module="unique", enable_backward=False)
-    def fused_cholesky_kernel(
+    def cholesky_kernel(
       grad_in: wp.array3d[float],
       h_in: wp.array3d[float],
       done_in: wp.array[bool],
@@ -229,17 +231,63 @@ class SupportTest(parameterized.TestCase):
       )
 
     @wp.kernel(module="unique", enable_backward=False)
+    def fused_cholesky_kernel(
+      grad_in: wp.array3d[float],
+      h_in: wp.array3d[float],
+      done_in: wp.array[bool],
+      hfactor_in: wp.array3d[float],
+      search_out: wp.array3d[float],
+      sums_out: wp.array[wp.vec2],
+    ):
+      worldid, thread_idx = wp.tid()
+      TILE_SIZE = wp.static(16)
+
+      if done_in[worldid]:
+        return
+
+      sums = wp.static(create_blocked_cholesky_augmented_factorize_solve_newton_func(TILE_SIZE, nv_pad, nv))(
+        h_in[worldid],
+        grad_in[worldid],
+        nv_pad,
+        thread_idx,
+        hfactor_in[worldid],
+        search_out[worldid],
+      )
+      if thread_idx == 0:
+        sums_out[worldid] = sums
+
+    @wp.kernel(module="unique", enable_backward=False)
+    def cholesky_solve_kernel(
+      grad_in: wp.array3d[float],
+      hfactor_in: wp.array3d[float],
+      search_out: wp.array3d[float],
+      sums_out: wp.array[wp.vec2],
+    ):
+      worldid, thread_idx = wp.tid()
+      TILE_SIZE = wp.static(16)
+
+      sums = wp.static(create_blocked_cholesky_solve_newton_func(TILE_SIZE, nv_pad, nv))(
+        hfactor_in[worldid],
+        grad_in[worldid],
+        nv_pad,
+        thread_idx,
+        search_out[worldid],
+      )
+      if thread_idx == 0:
+        sums_out[worldid] = sums
+
+    @wp.kernel(module="unique", enable_backward=False)
     def augmented_cholesky_kernel(
       grad_in: wp.array3d[float],
       h_in: wp.array3d[float],
       hfactor_in: wp.array3d[float],
       Mgrad_out: wp.array3d[float],
     ):
-      worldid = wp.tid()
+      worldid, thread_idx = wp.tid()
       TILE_SIZE = wp.static(16)
 
       wp.static(create_blocked_cholesky_augmented_factorize_solve_func(TILE_SIZE, nv_pad))(
-        h_in[worldid], grad_in[worldid], nv_pad, hfactor_in[worldid], Mgrad_out[worldid]
+        h_in[worldid], grad_in[worldid], nv_pad, thread_idx, hfactor_in[worldid], Mgrad_out[worldid]
       )
 
     @wp.kernel(module="unique", enable_backward=False)
@@ -248,11 +296,11 @@ class SupportTest(parameterized.TestCase):
       hfactor_in: wp.array3d[float],
       Mgrad_out: wp.array3d[float],
     ):
-      worldid = wp.tid()
+      worldid, thread_idx = wp.tid()
       TILE_SIZE = wp.static(16)
 
       wp.static(create_blocked_cholesky_solve_func(TILE_SIZE, nv_pad))(
-        hfactor_in[worldid], grad_in[worldid], nv_pad, Mgrad_out[worldid]
+        hfactor_in[worldid], grad_in[worldid], nv_pad, thread_idx, Mgrad_out[worldid]
       )
 
     # Create test vector and fill the built-in arrays
@@ -272,7 +320,7 @@ class SupportTest(parameterized.TestCase):
       h_np[0, nv:, nv:] = np.eye(padding_size, dtype=np.float32)
     h = wp.array(h_np, dtype=float)
 
-    # 3. Create inline arrays for grad, Mgrad, and done (no longer in d.efc)
+    # 3. Create inline arrays for grad and done (no longer in d.efc)
     grad_np = np.zeros((nworld, nv_pad))
     grad_np[0, :nv] = b
     grad = wp.array(grad_np, dtype=float)
@@ -282,24 +330,52 @@ class SupportTest(parameterized.TestCase):
     # Initialize padding region to identity
     L_init[0, nv:, nv:] = np.eye(nv_pad - nv, dtype=np.float32)
 
+    hfactor = wp.array(L_init, dtype=float)
+    Mgrad = wp.zeros((nworld, nv_pad), dtype=float)
     hfactor_fused = wp.array(L_init, dtype=float)
 
-    Mgrad_fused = wp.zeros((nworld, nv_pad), dtype=float)
+    search_fused = wp.zeros((nworld, nv), dtype=float)
+    sums_fused = wp.zeros(nworld, dtype=wp.vec2)
+    search_solve = wp.zeros((nworld, nv), dtype=float)
+    sums_solve = wp.zeros(nworld, dtype=wp.vec2)
 
     # Ensure done is False so kernel executes
     done = wp.zeros((nworld,), dtype=bool)
 
     wp.launch_tiled(
+      cholesky_kernel,
+      dim=nworld,
+      inputs=[grad.reshape(shape=(nworld, nv_pad, 1)), h, done, hfactor],
+      outputs=[Mgrad.reshape(shape=(nworld, nv_pad, 1))],
+      block_dim=m.block_dim.update_gradient_cholesky,
+    )
+    wp.launch_tiled(
       fused_cholesky_kernel,
       dim=nworld,
       inputs=[grad.reshape(shape=(nworld, nv_pad, 1)), h, done, hfactor_fused],
-      outputs=[Mgrad_fused.reshape(shape=(nworld, nv_pad, 1))],
+      outputs=[
+        search_fused.reshape(shape=(nworld, nv, 1)),
+        sums_fused,
+      ],
       block_dim=m.block_dim.update_gradient_cholesky,
     )
-    wp.synchronize()
-
-    U_result = hfactor_fused.numpy()[0]
-    x_result = Mgrad_fused.numpy()[0]
+    wp.launch_tiled(
+      cholesky_solve_kernel,
+      dim=nworld,
+      inputs=[grad.reshape(shape=(nworld, nv_pad, 1)), hfactor_fused],
+      outputs=[
+        search_solve.reshape(shape=(nworld, nv, 1)),
+        sums_solve,
+      ],
+      block_dim=m.block_dim.update_gradient_cholesky,
+    )
+    U_result = hfactor.numpy()[0]
+    x_result = Mgrad.numpy()[0]
+    U_fused_result = hfactor_fused.numpy()[0]
+    search_result = search_fused.numpy()[0]
+    sums_result = sums_fused.numpy()[0]
+    search_solve_result = search_solve.numpy()[0]
+    sums_solve_result = sums_solve.numpy()[0]
 
     # Verify padding outside active region doesn't affect active computation
     # Off-diagonal padding should be zero (active region shouldn't touch padding)
@@ -347,15 +423,14 @@ class SupportTest(parameterized.TestCase):
       err_msg="U.T @ U does not equal symmetrized Hessian",
     )
 
-    # Verify solution: A @ x = b using the symmetrized Hessian
+    # Verify the search direction against the symmetrized Hessian solution.
     x_numpy = np.linalg.solve(SPD_active_hessian, b)
-    np.testing.assert_allclose(
-      x_result[:nv],
-      x_numpy,
-      rtol=1e-3,
-      atol=1e-3,
-      err_msg="Solution mismatch with numpy",
-    )
+    np.testing.assert_allclose(x_result[:nv], x_numpy, rtol=1e-3, atol=1e-3)
+    np.testing.assert_allclose(U_fused_result[:nv, :nv], U_numpy, rtol=1e-4, atol=1e-4)
+    np.testing.assert_allclose(search_result, -x_numpy, rtol=1e-3, atol=1e-3)
+    np.testing.assert_allclose(sums_result, [x_numpy @ x_numpy, b @ x_numpy], rtol=1e-3, atol=1e-3)
+    np.testing.assert_allclose(search_solve_result, -x_numpy, rtol=1e-3, atol=1e-3)
+    np.testing.assert_allclose(sums_solve_result, [x_numpy @ x_numpy, b @ x_numpy], rtol=1e-3, atol=1e-3)
 
     hfactor_augmented = wp.array(L_init, dtype=float)
     Mgrad_augmented = wp.zeros((nworld, nv_pad), dtype=float)
@@ -379,8 +454,6 @@ class SupportTest(parameterized.TestCase):
       outputs=[Mgrad_solve.reshape(shape=(nworld, nv_pad, 1))],
       block_dim=m.block_dim.update_gradient_cholesky,
     )
-    wp.synchronize()
-
     np.testing.assert_allclose(hfactor_augmented.numpy()[0, :nv, :nv], U_numpy, rtol=1e-4, atol=1e-4)
     np.testing.assert_allclose(Mgrad_augmented.numpy()[0, :nv], x_numpy, rtol=1e-3, atol=1e-3)
     np.testing.assert_allclose(Mgrad_solve.numpy()[0, :nv], np.linalg.solve(SPD_active_hessian, solve_b), rtol=1e-3, atol=1e-3)
