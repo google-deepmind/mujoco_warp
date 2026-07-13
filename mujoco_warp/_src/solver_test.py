@@ -27,6 +27,7 @@ from mujoco_warp import SolverType
 from mujoco_warp import test_data
 from mujoco_warp._src import island
 from mujoco_warp._src import solver
+from mujoco_warp._src import types
 
 # tolerance for difference between MuJoCo and MJWarp solver calculations - mostly
 # due to float precision
@@ -39,7 +40,95 @@ def _assert_eq(a, b, name):
   np.testing.assert_allclose(a, b, err_msg=err_msg, atol=tol, rtol=tol)
 
 
+@wp.kernel
+def _eval_elliptic_delta(
+  # In:
+  alpha: float,
+  d_values: wp.array[float],
+  frictionloss_values: wp.array[float],
+  quad: wp.vec3,
+  quad1: wp.vec3,
+  quad2: wp.vec3,
+  friction: types.vec5,
+  # Out:
+  result_out: wp.array[wp.vec3],
+):
+  result_out[0] = solver._compute_efc_eval_pt_elliptic(
+    0,
+    alpha,
+    0,
+    0,
+    1.0,
+    int(types.ConstraintType.CONTACT_ELLIPTIC),
+    d_values,
+    frictionloss_values,
+    0.0,
+    0.0,
+    quad,
+    friction,
+    0,
+    quad1,
+    quad2,
+  )
+
+
 class SolverTest(parameterized.TestCase):
+  # Transition cases use powers of two so the exact delta is below the absolute-cost ulp.
+  @parameterized.named_parameters(
+    ("middle_zone", 1.0e-4, (0.0, 0.0, 0.0), (0.5, 1.0e-4, 1.0), (0.0, 0.0, 1.0e8), (-0.5, -5000.0, 1.0)),
+    (
+      "quadratic_zone",
+      1.0e-4,
+      (1.25e7, -5000.0, 0.5),
+      (-2.0, 0.0, 1.0),
+      (0.0, 0.0, 1.0),
+      (-0.5, -5000.0, 1.0),
+    ),
+    (
+      "cone_to_quadratic",
+      2.44140625e-4,
+      (33546241.0, -8192.0, 33554432.0),
+      (-0.999755859375, -1.0, 1.0),
+      (-1.0, 1.0, 16777216.0),
+      (0.5, 8192.0, 67108864.0),
+    ),
+    (
+      "quadratic_to_cone",
+      2.44140625e-4,
+      (33546241.0, -8192.0, 33554432.0),
+      (-1.0, 1.0, 0.9995117783546448),
+      (0.999755859375, 1.0, 16777216.0),
+      (-0.5, 0.0, 0.0),
+    ),
+    (
+      "satisfied_to_quadratic",
+      2.44140625e-4,
+      (1.0, -16384.0, 67108864.0),
+      (2.44140625e-4, -2.0, 0.0),
+      (0.0, 0.0, 16777216.0),
+      (1.0, 16384.0, 134217728.0),
+    ),
+  )
+  def test_elliptic_shifted_cost_preserves_small_delta(self, alpha, quad, quad1, quad2, expected):
+    """Elliptic cost deltas remain visible below the absolute-cost ulp."""
+    result = wp.empty(1, dtype=wp.vec3)
+    wp.launch(
+      _eval_elliptic_delta,
+      dim=1,
+      inputs=[
+        alpha,
+        wp.zeros(1, dtype=float),
+        wp.zeros(1, dtype=float),
+        wp.vec3(*quad),
+        wp.vec3(*quad1),
+        wp.vec3(*quad2),
+        types.vec5(1.0, 0.0, 0.0, 0.0, 0.0),
+      ],
+      outputs=[result],
+    )
+
+    np.testing.assert_allclose(result.numpy()[0], expected, rtol=1.0e-6, atol=1.0e-6)
+
   def test_M_fullm_upper_indices_are_row_sorted(self):
     """Sparse M seeding uses upper-triangle row-sorted writes."""
     _, _, m, _ = test_data.fixture("humanoid/humanoid.xml")
