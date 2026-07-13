@@ -1151,6 +1151,41 @@ class IOTest(parameterized.TestCase):
     _assert_eq(d.qpos.numpy()[0], 1.0, "qpos[0]")
     _assert_eq(d.qpos.numpy()[1], 2.0, "qpos[1]")
 
+  def test_reset_data_keyframe_per_world(self):
+    """Tests reset_data_keyframe with a per-world keyframe array."""
+    _MJCF = """
+    <mujoco>
+      <worldbody>
+        <body>
+          <geom type="sphere" size="1"/>
+          <joint type="slide"/>
+        </body>
+      </worldbody>
+      <keyframe>
+        <key name="k0" qpos="0.5"/>
+        <key name="k1" qpos="0.6"/>
+      </keyframe>
+    </mujoco>
+    """
+    mjm = mujoco.MjModel.from_xml_string(_MJCF)
+    m = mjwarp.put_model(mjm)
+    d = mjwarp.make_data(mjm, nworld=4)
+
+    qpos = wp.array(np.array([[1.0], [2.0], [3.0], [4.0]]), dtype=float)
+    wp.copy(d.qpos, qpos)
+
+    # world 0 -> key 0
+    # world 1 -> key 1
+    # world 2 -> key < 0 (reset skipped)
+    # world 3 -> key >= nkey (reset skipped)
+    key = wp.array(np.array([0, 1, -1, 2]), dtype=int)
+    mjwarp.reset_data_keyframe(m, d, key)
+
+    _assert_eq(d.qpos.numpy()[0], 0.5, "qpos[0]")
+    _assert_eq(d.qpos.numpy()[1], 0.6, "qpos[1]")
+    _assert_eq(d.qpos.numpy()[2], 3.0, "qpos[2]")
+    _assert_eq(d.qpos.numpy()[3], 4.0, "qpos[3]")
+
   def test_sdf(self):
     """Tests that an SDF can be loaded."""
     mjm, mjd, m, d = test_data.fixture("collision_sdf/cow.xml")
