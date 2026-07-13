@@ -649,9 +649,8 @@ def gjk(
   simplex_index2 = wp.vec4i()
   n = int(0)
   lmbda = wp.vec4(1.0, 0.0, 0.0, 0.0)  # barycentric coordinates
-  tol2 = tolerance * tolerance
-  epsilon = wp.where(is_discrete, 0.0, 0.5 * tol2)
-  min_norm2 = wp.where(is_discrete, MINVAL2, tol2)
+  epsilon = wp.where(is_discrete, 0.0, 0.5 * tolerance * tolerance)
+  min_norm = wp.where(is_discrete, MINVAL, tolerance)
 
   # set initial guess
   x_k = x1_0 - x2_0
@@ -660,7 +659,7 @@ def gjk(
   xnorm_prev = float(0.0)
 
   for _ in range(gjk_iterations):
-    if xnorm2 < min_norm2 and wp.abs(xnorm_prev - xnorm) < tolerance:
+    if xnorm < min_norm or wp.abs(xnorm_prev - xnorm) < tolerance:
       break
 
     # compute the support point with direction tuning
