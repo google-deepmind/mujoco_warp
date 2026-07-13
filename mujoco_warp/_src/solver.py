@@ -292,8 +292,9 @@ def _eval_elliptic_alpha_zero(mu: float, quad: wp.vec3, quad1: wp.vec3, quad2: w
   if state0 == int(types.ConstraintState.QUADRATIC):
     return _eval_pt(quad, 0.0)
   if state0 == int(types.ConstraintState.CONE):
-    T1 = quad2[0] / T0
-    T2 = (quad2[1] - T1 * T1) / T0
+    T0_inv = 1.0 / T0
+    T1 = quad2[0] * T0_inv
+    T2 = (quad2[1] - T1 * T1) * T0_inv
     r1 = quad1[1] - mu * T1
     dm = quad2[2]
     return wp.vec3(cost0, dm * r0 * r1, dm * (r1 * r1 - mu * r0 * T2))
@@ -363,8 +364,9 @@ def _eval_elliptic_shifted(
     elif mu * N + T <= 0.0:
       return _eval_elliptic_quadratic_shifted(mu, quad, alpha, N, Tsqr, u0, T0, dm, state0)
     else:
-      T1 = (uv + alpha * vv) / T
-      T2 = (vv - T1 * T1) / T
+      T_inv = 1.0 / T
+      T1 = (uv + alpha * vv) * T_inv
+      T2 = (vv - T1 * T1) * T_inv
       r = N - mu * T
       r1 = v0 - mu * T1
 
