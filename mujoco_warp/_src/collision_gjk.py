@@ -701,8 +701,6 @@ def gjk(
 
     # remove vertices from the simplex no longer needed
     n = int(0)
-    lmbdamax = float(-1.0)
-    imax = int(-1)
     for i in range(4):
       if lmbda[i] == 0.0:
         continue
@@ -713,8 +711,6 @@ def gjk(
       simplex_index1[n] = simplex_index1[i]
       simplex_index2[n] = simplex_index2[i]
       lmbda[n] = lmbda[i]
-      imax = wp.where(lmbda[n] > lmbdamax, n, imax)
-      lmbdamax = wp.where(lmbda[n] > lmbdamax, lmbda[n], lmbdamax)
       n += int(1)
 
     # SHOULD NOT OCCUR
@@ -725,14 +721,6 @@ def gjk(
     if n == 4:
       xnorm = 0.0
       break
-
-    # clamp barycentric coordinates to an exact partition of unity
-    lmbda[imax] = 1.0
-    acc = float(0.0)
-    for i in range(n):
-      if i != imax:
-        acc += lmbda[i]
-    lmbda[imax] -= acc
 
     # get the next iteration of x_k
     x_k = _linear_combine(n, lmbda, simplex)
