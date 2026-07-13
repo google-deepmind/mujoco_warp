@@ -2411,6 +2411,7 @@ class RenderContext:
     cam_res: camera resolution for actively rendering cameras
     cam_id_map: camera id map
     use_textures: whether to use textures
+    use_fast_math: whether to enable fast math for the render kernel
     use_shadows: whether to use shadows
     use_ambient_lighting: top-level switch for ambient contributions
     background_color: color used for missed rays when no skybox is rendered
@@ -2498,6 +2499,7 @@ class RenderContext:
   cam_res: array("ncam", wp.vec2i)
   cam_id_map: array("ncam", int)
   use_textures: bool
+  use_fast_math: bool
   use_shadows: bool
   use_ambient_lighting: bool
   background_color: wp.uint32
