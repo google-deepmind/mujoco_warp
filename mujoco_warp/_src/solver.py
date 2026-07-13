@@ -23,7 +23,7 @@ from mujoco_warp._src import math
 from mujoco_warp._src import smooth
 from mujoco_warp._src import support
 from mujoco_warp._src import types
-from mujoco_warp._src.block_cholesky import create_blocked_cholesky_factorize_solve_func
+from mujoco_warp._src.block_cholesky import create_blocked_cholesky_augmented_factorize_solve_func
 from mujoco_warp._src.block_cholesky import create_blocked_cholesky_solve_func
 from mujoco_warp._src.types import InverseContext
 from mujoco_warp._src.types import SolverContext
@@ -2789,12 +2789,8 @@ def _update_gradient_cholesky_blocked(tile_size: int, matrix_size: int, check_sk
       if ctx_done_in[worldid]:
         return
 
-    # We need matrix size both as a runtime input as well as a static input:
-    # static input is needed to specify the tile sizes for the compiler
-    # runtime input is needed for the loop bounds, otherwise warp will unroll
-    # unconditionally leading to shared memory capacity issues.
-
-    wp.static(create_blocked_cholesky_factorize_solve_func(TILE_SIZE, matrix_size))(
+    # Runtime loop bounds avoid unrolling every panel into shared memory.
+    wp.static(create_blocked_cholesky_augmented_factorize_solve_func(TILE_SIZE, matrix_size))(
       ctx_h_in[worldid], ctx_grad_in[worldid], matrix_size, ctx_hfactor[worldid], ctx_Mgrad_out[worldid]
     )
 
@@ -2834,7 +2830,7 @@ def _update_gradient_cholesky_blocked_skip_unchanged(tile_size: int, matrix_size
         return
 
     if quad_changed_count_in[worldid] > 0:
-      wp.static(create_blocked_cholesky_factorize_solve_func(TILE_SIZE, matrix_size))(
+      wp.static(create_blocked_cholesky_augmented_factorize_solve_func(TILE_SIZE, matrix_size))(
         ctx_h_in[worldid], ctx_grad_in[worldid], matrix_size, ctx_hfactor[worldid], ctx_Mgrad_out[worldid]
       )
     else:

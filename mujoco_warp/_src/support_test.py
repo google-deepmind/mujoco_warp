@@ -27,7 +27,9 @@ from mujoco_warp import State
 from mujoco_warp import test_data
 from mujoco_warp._src import io
 from mujoco_warp._src import support
+from mujoco_warp._src.block_cholesky import create_blocked_cholesky_augmented_factorize_solve_func
 from mujoco_warp._src.block_cholesky import create_blocked_cholesky_factorize_solve_func
+from mujoco_warp._src.block_cholesky import create_blocked_cholesky_solve_func
 
 # tolerance for difference between MuJoCo and MJWarp support calculations - mostly
 # due to float precision
@@ -226,6 +228,33 @@ class SupportTest(parameterized.TestCase):
         h_in[worldid], grad_in[worldid], nv_pad, hfactor_in[worldid], Mgrad_out[worldid]
       )
 
+    @wp.kernel(module="unique", enable_backward=False)
+    def augmented_cholesky_kernel(
+      grad_in: wp.array3d[float],
+      h_in: wp.array3d[float],
+      hfactor_in: wp.array3d[float],
+      Mgrad_out: wp.array3d[float],
+    ):
+      worldid = wp.tid()
+      TILE_SIZE = wp.static(16)
+
+      wp.static(create_blocked_cholesky_augmented_factorize_solve_func(TILE_SIZE, nv_pad))(
+        h_in[worldid], grad_in[worldid], nv_pad, hfactor_in[worldid], Mgrad_out[worldid]
+      )
+
+    @wp.kernel(module="unique", enable_backward=False)
+    def augmented_solve_kernel(
+      grad_in: wp.array3d[float],
+      hfactor_in: wp.array3d[float],
+      Mgrad_out: wp.array3d[float],
+    ):
+      worldid = wp.tid()
+      TILE_SIZE = wp.static(16)
+
+      wp.static(create_blocked_cholesky_solve_func(TILE_SIZE, nv_pad))(
+        hfactor_in[worldid], grad_in[worldid], nv_pad, Mgrad_out[worldid]
+      )
+
     # Create test vector and fill the built-in arrays
     b = np.random.randn(nv).astype(np.float32)
 
@@ -327,6 +356,34 @@ class SupportTest(parameterized.TestCase):
       atol=1e-3,
       err_msg="Solution mismatch with numpy",
     )
+
+    hfactor_augmented = wp.array(L_init, dtype=float)
+    Mgrad_augmented = wp.zeros((nworld, nv_pad), dtype=float)
+    wp.launch_tiled(
+      augmented_cholesky_kernel,
+      dim=nworld,
+      inputs=[grad.reshape(shape=(nworld, nv_pad, 1)), h, hfactor_augmented],
+      outputs=[Mgrad_augmented.reshape(shape=(nworld, nv_pad, 1))],
+      block_dim=m.block_dim.update_gradient_cholesky,
+    )
+
+    solve_b = np.random.randn(nv).astype(np.float32)
+    solve_grad_np = np.zeros((nworld, nv_pad))
+    solve_grad_np[0, :nv] = solve_b
+    solve_grad = wp.array(solve_grad_np, dtype=float)
+    Mgrad_solve = wp.zeros((nworld, nv_pad), dtype=float)
+    wp.launch_tiled(
+      augmented_solve_kernel,
+      dim=nworld,
+      inputs=[solve_grad.reshape(shape=(nworld, nv_pad, 1)), hfactor_augmented],
+      outputs=[Mgrad_solve.reshape(shape=(nworld, nv_pad, 1))],
+      block_dim=m.block_dim.update_gradient_cholesky,
+    )
+    wp.synchronize()
+
+    np.testing.assert_allclose(hfactor_augmented.numpy()[0, :nv, :nv], U_numpy, rtol=1e-4, atol=1e-4)
+    np.testing.assert_allclose(Mgrad_augmented.numpy()[0, :nv], x_numpy, rtol=1e-3, atol=1e-3)
+    np.testing.assert_allclose(Mgrad_solve.numpy()[0, :nv], np.linalg.solve(SPD_active_hessian, solve_b), rtol=1e-3, atol=1e-3)
 
   @parameterized.parameters(
     ("pendula.xml", 1),
