@@ -273,11 +273,6 @@ def _linear_combine(n: int, scl: wp.vec4, mat: mat43) -> wp.vec3:
 
 
 @wp.func
-def _almost_equal(v1: wp.vec3, v2: wp.vec3) -> bool:
-  return wp.abs(v1[0] - v2[0]) < MINVAL and wp.abs(v1[1] - v2[1]) < MINVAL and wp.abs(v1[2] - v2[2]) < MINVAL
-
-
-@wp.func
 def _subdistance(n: int, simplex: mat43) -> wp.vec4:
   if n == 4:
     return _S3D(simplex[0], simplex[1], simplex[2], simplex[3])
@@ -654,21 +649,18 @@ def gjk(
   simplex_index2 = wp.vec4i()
   n = int(0)
   lmbda = wp.vec4(1.0, 0.0, 0.0, 0.0)  # barycentric coordinates
-  tol2 = tolerance * tolerance
-  epsilon = wp.where(is_discrete, 0.0, 0.5 * tol2)
-  min_norm2 = wp.where(is_discrete, MINVAL2, tol2)
+  epsilon = wp.where(is_discrete, 0.0, 0.5 * tolerance * tolerance)
+  min_norm = wp.where(is_discrete, MINVAL, tolerance)
 
   # set initial guess
   x_k = x1_0 - x2_0
-  xnorm = float(0.0)
-  xnorm2_old = float(0.0)
+  xnorm2 = wp.dot(x_k, x_k)
+  xnorm = wp.sqrt(xnorm2)
+  xnorm_prev = float(0.0)
 
-  for k in range(gjk_iterations):
-    xnorm2 = wp.dot(x_k, x_k)
-    if xnorm2 < min_norm2 and wp.abs(xnorm2_old - xnorm2) < tol2:
+  for _ in range(gjk_iterations):
+    if xnorm < min_norm or wp.abs(xnorm_prev - xnorm) < tolerance:
       break
-    xnorm2_old = xnorm2
-    xnorm = wp.sqrt(xnorm2)
 
     # compute the support point with direction tuning
     sp1, sp2 = _gjk_support(geom1, geom2, geomtype1, geomtype2, x_k, xnorm, simplex, n, is_discrete)
@@ -708,8 +700,6 @@ def gjk(
 
     # remove vertices from the simplex no longer needed
     n = int(0)
-    lmbdamax = float(-1.0)
-    imax = int(-1)
     for i in range(4):
       if lmbda[i] == 0.0:
         continue
@@ -720,35 +710,22 @@ def gjk(
       simplex_index1[n] = simplex_index1[i]
       simplex_index2[n] = simplex_index2[i]
       lmbda[n] = lmbda[i]
-      imax = wp.where(lmbda[n] > lmbdamax, n, imax)
-      lmbdamax = wp.where(lmbda[n] > lmbdamax, lmbda[n], lmbdamax)
       n += int(1)
 
     # SHOULD NOT OCCUR
     if n < 1:
       break
 
-    lmbda[imax] = 1.0
-    acc = float(0.0)
-    for i in range(n):
-      if i != imax:
-        acc += lmbda[i]
-    lmbda[imax] -= acc
-
-    # get the next iteration of x_k
-    x_next = _linear_combine(n, lmbda, simplex)
-
-    # x_k has converged to minimum
-    if _almost_equal(x_next, x_k):
-      break
-
-    # copy next iteration into x_k
-    x_k = x_next
-
     # we have a tetrahedron containing the origin so return early
     if n == 4:
       xnorm = 0.0
       break
+
+    # get the next iteration of x_k
+    x_k = _linear_combine(n, lmbda, simplex)
+    xnorm_prev = xnorm
+    xnorm2 = wp.dot(x_k, x_k)
+    xnorm = wp.sqrt(xnorm2)
 
   result = GJKResult()
 
