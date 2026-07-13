@@ -760,6 +760,14 @@ class vec8i(wp.types.vector(length=8, dtype=int)):
   pass
 
 
+class vec16f(wp.types.vector(length=16, dtype=float)):
+  pass
+
+
+class vec16i(wp.types.vector(length=16, dtype=int)):
+  pass
+
+
 class vec10f(wp.types.vector(length=10, dtype=float)):
   pass
 
@@ -789,6 +797,7 @@ vec6 = vec6f
 vec8 = vec8f
 vec10 = vec10f
 vec11 = vec11f
+vec16 = vec16f
 vec128 = vec_pluginattr
 mat23 = mat23f
 mat43 = mat43f
@@ -1038,6 +1047,7 @@ class Model:
     body_gravcomp: antigravity force, units of body weight   (*, nbody)
     body_contype: OR over all geom contypes                  (nbody,)
     body_conaffinity: OR over all geom conaffinities         (nbody,)
+
     oct_child: octree children                               (noct, 8)
     oct_aabb: octree axis-aligned bounding boxes             (noct, 2, 3)
     oct_coeff: octree interpolation coefficients             (noct, 8)
@@ -1180,7 +1190,6 @@ class Model:
     flex_stiffness: finite element stiffness matrix          (nflexstiffness,)
     flex_bending: bending stiffness                          (nflexbending,)
     flex_damping: Rayleigh's damping coefficient             (nflex,)
-
     flex_edgeequality: edge equality type (0:none,1:edge,2:vert,3:strain) (nflex,)
     flex_centered: flex vertices are centered at body origin (nflex,)
     flexedge_J_rownnz: number of nonzeros in Jacobian row    (nflexedge,)
@@ -1437,12 +1446,19 @@ class Model:
     flex_evpairflexid: maps each element-vertex pair directly to its flexid (nflexevpair,)
     flex_vertflexid: maps each vertex index directly to its flexid          (nflexvert,)
     flex_shelladr: maps each flex to its start shell index                  (nflex,)
+    flex_faceadr: maps each flex to its start face index                    (nflex,)
     flex_cell_map: precomputed flex cell mapping (nflexintcell,)
-    flexstrain_J_rownnz: number of nonzeros in flex strain Jacobian row (neq_flexstrain,)
+    flexstrain_J_rownnz: number of nonzeros in flex strain Jacobian row     (neq_flexstrain,)
     flexstrain_J_rowadr: row start address in colind array (neq_flexstrain,)
-    flexstrain_J_colind: column indices in sparse flex strain Jacobian (nJfs,)
+    flexstrain_J_colind: column indices in sparse flex strain Jacobian      (nJfs,)
     neq_flexstrain: number of flex strain equality constraints
     nJfs: number of non-zeros in sparse flex strain Jacobian
+    nflexbend_interp: number of interpolated bending edges
+    flex_bend_interp_map: mapping of interpolated bending edges to flex and (nflexbend_interp, 2)
+                          local edge indices
+    nflexface: number of interpolated flex shell faces
+    flex_face_map: mapping of face index to flex and local element face indices
+    flex_face: global node indices of each face                              (nflexface, 9)
   """
 
   nq: int
@@ -1912,12 +1928,18 @@ class Model:
   flex_evpairflexid: array("nflexevpair", int)
   flex_vertflexid: array("nflexvert", int)
   flex_shelladr: array("nflex", int)
+  flex_faceadr: array("nflex", int)
   flex_cell_map: array("nflexintcell", wp.vec4i)
   flexstrain_J_rownnz: array("neq_flexstrain", int)
   flexstrain_J_rowadr: array("neq_flexstrain", int)
   flexstrain_J_colind: array("nJfs", int)
   neq_flexstrain: int
   nJfs: int
+  nflexbend_interp: int
+  flex_bend_interp_map: array("nflexbend_interp", wp.vec2i)
+  nflexface: int
+  flex_face_map: array("nflexface", wp.vec2i)
+  flex_face: array("nflexface", 9, int)
 
 
 class ContactType(enum.IntFlag):
@@ -2181,6 +2203,8 @@ class Data:
     flex_aabb_max: dynamic flex object bounding box max         (nworld, nflex, 3)
     flexnode_xpos: cartesian flex node positions                (nworld, nflexnode, 3)
     overflow: overflow bitmask (OverflowType)                   (nworld,)
+    face_xpos: cartesian flex face positions                    (nworld, nflexface, 9, 3)
+    face_quat: cartesian flex face orientations                 (nworld, nflexface, 4)
   """
 
   solver_niter: array("nworld", int)
@@ -2325,6 +2349,8 @@ class Data:
   flex_aabb_max: array("nworld", "nflex", wp.vec3)
   flexnode_xpos: array("nworld", "nflexnode", wp.vec3)
   overflow: array("nworld", int)
+  face_xpos: array("nworld", "nflexface", 9, wp.vec3)
+  face_quat: array("nworld", "nflexface", wp.quat)
 
 
 @dataclasses.dataclass
@@ -2334,8 +2360,10 @@ class InverseContext:
   Jaref: wp.array2d[float]
   search_dot: wp.array[float]
   done: wp.array[bool]
-  changed_efc_ids: wp.array2d[int]
-  changed_efc_count: wp.array[int]
+  quad_changed_ids: wp.array2d[int]
+  quad_changed_count: wp.array[int]
+  state_changed_count: wp.array[int]
+  ls_exhausted: wp.array[bool]
   # the full-coordinate Data, set by solve_compact (None natively)
   compact_m_full: Optional["Model"] = None
   compact_d_full: Optional["Data"] = None
@@ -2357,16 +2385,17 @@ class SolverContext:
   quad: wp.array2d[wp.vec3]
   alpha: wp.array[float]
   grad_scale: wp.array[float]
+  state_changed_count: wp.array[int]
   improvement: wp.array[float]
+  ls_exhausted: wp.array[bool]
   prev_grad: wp.array2d[float]
   prev_Mgrad: wp.array2d[float]
   beta: wp.array[float]
   beta_den: wp.array[float]
   h: wp.array3d[float]
   hfactor: wp.array3d[float]
-  # Incremental Hessian update (Newton only)
-  changed_efc_ids: wp.array2d[int]
-  changed_efc_count: wp.array[int]
+  quad_changed_ids: wp.array2d[int]
+  quad_changed_count: wp.array[int]
   # the full-coordinate Data, set by solve_compact (None natively)
   compact_m_full: Optional["Model"] = None
   compact_d_full: Optional["Data"] = None
