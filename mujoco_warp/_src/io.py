@@ -2241,6 +2241,9 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
     m: The model containing kinematic and dynamic information (device).
     d: The data object containing the current state and output arrays (device).
     reset: Per-world bitmask. Reset if True.
+
+  Raises:
+    ValueError: If reset is specified but its shape is not (d.nworld,).
   """
   sleep_enabled = bool(m.opt.enableflags & types.EnableBit.SLEEP)
 
@@ -2470,7 +2473,14 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
     if elemid < nv:
       dof_awake_ind_out[worldid, elemid] = elemid
 
-  reset_input = reset or wp.ones(d.nworld, dtype=bool)
+  if reset is None:
+    reset_input = wp.ones(d.nworld, dtype=bool)
+  elif isinstance(reset, wp.array):
+    if reset.shape != (d.nworld,):
+      raise ValueError(f"reset array must have shape ({d.nworld},), got {reset.shape}.")
+    reset_input = reset
+  else:
+    raise ValueError(f"reset must be None or a wp.array, got {type(reset)}.")
 
   wp.launch(reset_xfrc_applied, dim=(d.nworld, m.nbody, 6), inputs=[reset_input], outputs=[d.xfrc_applied])
   wp.launch(
@@ -2595,6 +2605,7 @@ def reset_data_keyframe(
 
   Raises:
     ValueError: If key is an int and key<0 or key>=m.nkey.
+    ValueError: If key is a wp.array but its shape is not (d.nworld,).
   """
   # Resolve reset world mask
   if reset is None:
@@ -2604,11 +2615,15 @@ def reset_data_keyframe(
 
   # Resolve target keyframe index
   if isinstance(key, wp.array):
+    if key.shape != (d.nworld,):
+      raise ValueError(f"key array must have shape ({d.nworld},), got {key.shape}.")
     key_input = key
-  else:
+  elif isinstance(key, int):
     if key < 0 or key >= m.nkey:
       raise ValueError(f"key ({key}) must be in [0, {m.nkey}).")
     key_input = wp.full(d.nworld, key, dtype=int)
+  else:
+    raise ValueError(f"key must be an int or a wp.array, got {type(key)}.")
 
   # Update reset mask: if key is out of bounds, mark reset mask as False for that world
   @wp.kernel(module="unique", enable_backward=False)

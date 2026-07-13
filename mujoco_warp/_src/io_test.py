@@ -1062,6 +1062,28 @@ class IOTest(parameterized.TestCase):
     _assert_eq(d.qvel.numpy()[0], 1.0, "qvel[0]")
     _assert_eq(d.qvel.numpy()[1], 2.0, "qvel[1]")
 
+  def test_reset_data_reset_invalid(self):
+    """Tests that reset_data validates the reset argument."""
+    _MJCF = """
+    <mujoco>
+      <worldbody>
+        <body>
+          <geom type="sphere" size="1"/>
+          <joint type="slide"/>
+        </body>
+      </worldbody>
+    </mujoco>
+    """
+    mjm = mujoco.MjModel.from_xml_string(_MJCF)
+    m = mjwarp.put_model(mjm)
+    d = mjwarp.make_data(mjm, nworld=2)
+
+    with self.assertRaisesRegex(ValueError, "reset array must have shape"):
+      mjwarp.reset_data(m, d, reset=wp.array(np.array([True, False, True]), dtype=bool))
+
+    with self.assertRaisesRegex(ValueError, "reset must be None or a wp.array"):
+      mjwarp.reset_data(m, d, reset=[True, False])
+
   def test_reset_data_keyframe(self):
     """Tests that reset_data_keyframe matches mj_resetDataKeyframe."""
     _MJCF = """
@@ -1185,6 +1207,34 @@ class IOTest(parameterized.TestCase):
     _assert_eq(d.qpos.numpy()[1], 0.6, "qpos[1]")
     _assert_eq(d.qpos.numpy()[2], 3.0, "qpos[2]")
     _assert_eq(d.qpos.numpy()[3], 4.0, "qpos[3]")
+
+  def test_reset_data_keyframe_key_invalid(self):
+    """Tests that reset_data_keyframe validates the key argument."""
+    _MJCF = """
+    <mujoco>
+      <worldbody>
+        <body>
+          <geom type="sphere" size="1"/>
+          <joint type="slide"/>
+        </body>
+      </worldbody>
+      <keyframe>
+        <key name="k0" qpos="0.5"/>
+      </keyframe>
+    </mujoco>
+    """
+    mjm = mujoco.MjModel.from_xml_string(_MJCF)
+    m = mjwarp.put_model(mjm)
+    d = mjwarp.make_data(mjm, nworld=2)
+
+    with self.assertRaisesRegex(ValueError, r"key \(-1\) must be in \[0, 1\)"):
+      mjwarp.reset_data_keyframe(m, d, -1)
+    with self.assertRaisesRegex(ValueError, r"key \(1\) must be in \[0, 1\)"):
+      mjwarp.reset_data_keyframe(m, d, 1)
+    with self.assertRaisesRegex(ValueError, "key array must have shape"):
+      mjwarp.reset_data_keyframe(m, d, wp.array(np.array([0, 0, 0]), dtype=int))
+    with self.assertRaisesRegex(ValueError, "key must be an int or a wp.array"):
+      mjwarp.reset_data_keyframe(m, d, 0.5)
 
   def test_sdf(self):
     """Tests that an SDF can be loaded."""
