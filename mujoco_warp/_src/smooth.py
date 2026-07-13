@@ -21,6 +21,7 @@ from mujoco_warp._src import support
 from mujoco_warp._src import util_misc
 from mujoco_warp._src.types import MJ_MAXVAL
 from mujoco_warp._src.types import MJ_MINVAL
+from mujoco_warp._src.types import Q_LD_BLOCK_SPARSE
 from mujoco_warp._src.types import CamLightType
 from mujoco_warp._src.types import ConeType
 from mujoco_warp._src.types import Data
@@ -1323,7 +1324,7 @@ def _factor_blocks(
         dim=(d.nworld, tile.adr.size),
         inputs=[m.M_rowadr, m.qLD_block_adr, M, tile.adr],
         outputs=[D, L],
-        block_dim=64,
+        block_dim=m.block_dim.small_cholesky,
       )
     else:
       wp.launch_tiled(
@@ -3004,7 +3005,7 @@ def _solve_LD_sparse_fused(nv: int, nlevels: int):
 
     # Copy y to x_out for sparse-block dofs only.
     for dofid in range(tid, NV, BLOCK_DIM):
-      if qLD_block_adr[dofid] == -1:
+      if qLD_block_adr[dofid] == Q_LD_BLOCK_SPARSE:
         x_out[worldid, dofid] = y[worldid, dofid]
     _syncthreads()
 
@@ -3022,7 +3023,7 @@ def _solve_LD_sparse_fused(nv: int, nlevels: int):
 
     # Diagonal multiply (sparse-block dofs only)
     for dofid in range(tid, NV, BLOCK_DIM):
-      if qLD_block_adr[dofid] == -1:
+      if qLD_block_adr[dofid] == Q_LD_BLOCK_SPARSE:
         x_out[worldid, dofid] *= D[worldid, dofid]
     _syncthreads()
 
@@ -3164,7 +3165,7 @@ def _solve_blocks(
         dim=(d.nworld, tile.adr.size),
         inputs=[m.qLD_block_adr, tile.adr, D, L, y],
         outputs=[x],
-        block_dim=64,
+        block_dim=m.block_dim.small_cholesky,
       )
     else:
       # The triangular back-substitution is largely sequential, so large blocks prefer fewer threads
@@ -3297,8 +3298,8 @@ def _small_cholesky_factorize_solve_block(block_size: int):
 
         diagonal_factor = wp.sqrt(diagonal_value)
         L_out[worldid, factor_adr + i * size + i] = diagonal_factor
-        x_out[worldid, start + i] = rhs_value / diagonal_factor
         diagonal_inv = 1.0 / diagonal_factor
+        x_out[worldid, start + i] = rhs_value * diagonal_inv
 
         for j in range(i + 1, size):
           value = M_in[worldid, matrix_adr + j * (j + 1) // 2 + i]
@@ -3332,7 +3333,7 @@ def _factor_solve_blocks(
         dim=(d.nworld, tile.adr.size),
         inputs=[m.M_rowadr, m.qLD_block_adr, M, tile.adr, y],
         outputs=[D, x, L],
-        block_dim=64,
+        block_dim=m.block_dim.small_cholesky,
       )
     else:
       wp.launch_tiled(
