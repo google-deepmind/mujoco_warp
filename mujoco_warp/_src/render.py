@@ -561,10 +561,9 @@ def render(m: Model, d: Data, rc: RenderContext):
   compute_lighting = _make_compute_lighting(cast_ray_first_hit)
 
   # Static parameters extracted for JAX FFI closure.
-  rc_static = {f.name: getattr(rc, f.name) for f in dataclasses.fields(rc) if f.type in (int, bool, float, wp.vec3)}
+  rc_static = {f.name: getattr(rc, f.name) for f in dataclasses.fields(rc) if f.type in (int, wp.uint32, bool, float, wp.vec3)}
   rc_static["enable_specular_or_emission"] = rc.enable_specular or rc.enable_emission
   M_NLIGHT = m.nlight
-  background_color = rc.background_color
 
   @wp.kernel(module="unique", enable_backward=False, module_options={"fast_math": rc.use_fast_math})
   def _render_megakernel(
@@ -737,7 +736,7 @@ def render(m: Model, d: Data, rc: RenderContext):
           255.0,
         )
       elif render_rgb[camid]:
-        rgb_out[worldid, rgb_adr[camid] + rayid_local] = background_color
+        rgb_out[worldid, rgb_adr[camid] + rayid_local] = wp.static(rc_static["background_color"])
       return
 
     if render_depth[camid]:
