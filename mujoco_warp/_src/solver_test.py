@@ -263,6 +263,7 @@ class SolverTest(parameterized.TestCase):
 
       # Reset and launch linesearch
       ctx.jv.fill_(wp.inf)
+      ctx.search_unchanged.fill_(False)
       solver._linesearch(m, d, ctx)
 
       # mv and jv are always written
@@ -334,6 +335,7 @@ class SolverTest(parameterized.TestCase):
     ctx.Jaref = wp.array(jaref, dtype=float)
     ctx.search_dot = wp.array([1.0], dtype=float)
     ctx.done = wp.array([False], dtype=bool)
+    ctx.search_unchanged.fill_(False)
 
     solver._linesearch(m, d, ctx)
 
@@ -354,6 +356,7 @@ class SolverTest(parameterized.TestCase):
     ctx.Jaref = wp.array(jaref, dtype=float)
     ctx.search_dot = wp.array([4.0], dtype=float)
     ctx.done = wp.array([False], dtype=bool)
+    ctx.search_unchanged.fill_(False)
 
     solver._linesearch(m, d, ctx)
 
@@ -402,6 +405,7 @@ class SolverTest(parameterized.TestCase):
     ctx.Jaref.assign(jaref)
     ctx.search_dot.fill_(1.0)
     ctx.done.fill_(False)
+    ctx.search_unchanged.fill_(False)
 
     solver._linesearch(m, d, ctx)
 
@@ -741,6 +745,7 @@ class SolverTest(parameterized.TestCase):
         solver.init_context(m, d, ctx, grad=True)
         wp.launch(solver._solve_init_search, dim=(d.nworld, m.nv), inputs=[ctx.Mgrad], outputs=[ctx.search, ctx.search_dot])
         any_changes = False
+        ctx.search_unchanged.fill_(False)
         for _ in range(m.opt.iterations):
           solver._linesearch(m, d, ctx)
           if track:
@@ -761,7 +766,7 @@ class SolverTest(parameterized.TestCase):
             solver._solve_search_update(False),
             dim=(d.nworld, m.nv),
             inputs=[m.opt.solver, ctx.state_changed_count, ctx.Mgrad, ctx.search, ctx.beta, ctx.done],
-            outputs=[ctx.search, ctx.search_dot],
+            outputs=[ctx.search, ctx.search_dot, ctx.search_unchanged],
           )
         return d.qacc.numpy().copy(), any_changes
 
@@ -854,14 +859,18 @@ _FRICTION_CHAIN_XML = """
 
 
 class SolverFastPathTest(parameterized.TestCase):
-  def test_fast_path_friction_transitions(self):
+  @parameterized.parameters(False, True)
+  def test_fast_path_friction_transitions(self, compact):
     """qfrc_constraint must stay consistent when friction rows cross linear zones."""
     mjm = mujoco.MjModel.from_xml_string(_FRICTION_CHAIN_XML)
+    if compact:
+      # SLEEP routes every solve through solve_compact, even with nothing asleep
+      mjm.opt.enableflags |= mujoco.mjtEnableBit.mjENBL_SLEEP
     mjd = mujoco.MjData(mjm)
     mujoco.mj_forward(mjm, mjd)
     m = mjw.put_model(mjm)
     nworld = 64
-    d = mjw.put_data(mjm, mjd, nworld=nworld)
+    d = mjw.put_data(mjm, mjd, nworld=nworld, nvmax=mjm.nv if compact else None)
     rng = np.random.default_rng(3)
     qvel = rng.uniform(-8.0, 8.0, size=(nworld, mjm.nv)).astype(np.float32)
     wp.copy(d.qvel, wp.array(qvel, dtype=float))

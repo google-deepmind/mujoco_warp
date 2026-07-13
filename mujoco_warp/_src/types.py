@@ -2388,6 +2388,7 @@ class SolverContext:
   state_changed_count: wp.array[int]
   improvement: wp.array[float]
   ls_exhausted: wp.array[bool]
+  search_unchanged: wp.array[bool]
   prev_grad: wp.array2d[float]
   prev_Mgrad: wp.array2d[float]
   beta: wp.array[float]
