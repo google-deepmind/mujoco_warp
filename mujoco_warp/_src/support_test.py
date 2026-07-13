@@ -239,7 +239,7 @@ class SupportTest(parameterized.TestCase):
       search_out: wp.array3d[float],
       sums_out: wp.array[wp.vec2],
     ):
-      worldid, thread_idx = wp.tid()
+      worldid = wp.tid()
       TILE_SIZE = wp.static(16)
 
       if done_in[worldid]:
@@ -249,12 +249,10 @@ class SupportTest(parameterized.TestCase):
         h_in[worldid],
         grad_in[worldid],
         nv_pad,
-        thread_idx,
         hfactor_in[worldid],
         search_out[worldid],
       )
-      if thread_idx == 0:
-        sums_out[worldid] = sums
+      sums_out[worldid] = sums
 
     @wp.kernel(module="unique", enable_backward=False)
     def cholesky_solve_kernel(
@@ -263,18 +261,16 @@ class SupportTest(parameterized.TestCase):
       search_out: wp.array3d[float],
       sums_out: wp.array[wp.vec2],
     ):
-      worldid, thread_idx = wp.tid()
+      worldid = wp.tid()
       TILE_SIZE = wp.static(16)
 
       sums = wp.static(create_blocked_cholesky_solve_newton_func(TILE_SIZE, nv_pad, nv))(
         hfactor_in[worldid],
         grad_in[worldid],
         nv_pad,
-        thread_idx,
         search_out[worldid],
       )
-      if thread_idx == 0:
-        sums_out[worldid] = sums
+      sums_out[worldid] = sums
 
     @wp.kernel(module="unique", enable_backward=False)
     def augmented_cholesky_kernel(
@@ -283,11 +279,11 @@ class SupportTest(parameterized.TestCase):
       hfactor_in: wp.array3d[float],
       Mgrad_out: wp.array3d[float],
     ):
-      worldid, thread_idx = wp.tid()
+      worldid = wp.tid()
       TILE_SIZE = wp.static(16)
 
       wp.static(create_blocked_cholesky_augmented_factorize_solve_func(TILE_SIZE, nv_pad))(
-        h_in[worldid], grad_in[worldid], nv_pad, thread_idx, hfactor_in[worldid], Mgrad_out[worldid]
+        h_in[worldid], grad_in[worldid], nv_pad, hfactor_in[worldid], Mgrad_out[worldid]
       )
 
     @wp.kernel(module="unique", enable_backward=False)
@@ -296,11 +292,11 @@ class SupportTest(parameterized.TestCase):
       hfactor_in: wp.array3d[float],
       Mgrad_out: wp.array3d[float],
     ):
-      worldid, thread_idx = wp.tid()
+      worldid = wp.tid()
       TILE_SIZE = wp.static(16)
 
       wp.static(create_blocked_cholesky_solve_func(TILE_SIZE, nv_pad))(
-        hfactor_in[worldid], grad_in[worldid], nv_pad, thread_idx, Mgrad_out[worldid]
+        hfactor_in[worldid], grad_in[worldid], nv_pad, Mgrad_out[worldid]
       )
 
     # Create test vector and fill the built-in arrays

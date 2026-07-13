@@ -23,6 +23,7 @@ from mujoco_warp._src import math
 from mujoco_warp._src import smooth
 from mujoco_warp._src import support
 from mujoco_warp._src import types
+from mujoco_warp._src.block_cholesky import _solve_search_sums
 from mujoco_warp._src.block_cholesky import create_blocked_cholesky_augmented_factorize_solve_newton_func
 from mujoco_warp._src.block_cholesky import create_blocked_cholesky_factorize_solve_func
 from mujoco_warp._src.block_cholesky import create_blocked_cholesky_solve_newton_func
@@ -1583,11 +1584,6 @@ def _solve_init_jaref_kernel(is_sparse: bool, nv: int, dofs_per_thread: int, com
   return kernel
 
 
-@wp.func
-def _solve_search_sums(grad: float, mgrad: float):
-  return wp.vec2(mgrad * mgrad, grad * mgrad)
-
-
 @wp.kernel
 def _solve_init_search_cg_tiled(
   # Model:
@@ -2913,7 +2909,7 @@ def _update_gradient_cholesky_blocked(tile_size: int, matrix_size: int, vector_s
     ctx_search_dot_out: wp.array[float],
     ctx_newton_decrement_out: wp.array[float],
   ):
-    worldid, thread_idx = wp.tid()
+    worldid = wp.tid()
     TILE_SIZE = wp.static(tile_size)
 
     if ctx_done_in[worldid]:
@@ -2928,13 +2924,11 @@ def _update_gradient_cholesky_blocked(tile_size: int, matrix_size: int, vector_s
       ctx_h_in[worldid],
       ctx_grad_in[worldid],
       matrix_size,
-      thread_idx,
       ctx_hfactor[worldid],
       ctx_search_out[worldid],
     )
-    if thread_idx == 0:
-      ctx_search_dot_out[worldid] = sums[0]
-      ctx_newton_decrement_out[worldid] = sums[1]
+    ctx_search_dot_out[worldid] = sums[0]
+    ctx_newton_decrement_out[worldid] = sums[1]
 
   return kernel
 
@@ -2985,7 +2979,7 @@ def _update_gradient_cholesky_blocked_skip_unchanged(
     ctx_search_dot_out: wp.array[float],
     ctx_newton_decrement_out: wp.array[float],
   ):
-    worldid, thread_idx = wp.tid()
+    worldid = wp.tid()
     TILE_SIZE = wp.static(tile_size)
 
     if ctx_done_in[worldid]:
@@ -3002,7 +2996,6 @@ def _update_gradient_cholesky_blocked_skip_unchanged(
         ctx_h_in[worldid],
         ctx_grad_in[worldid],
         matrix_size,
-        thread_idx,
         ctx_hfactor[worldid],
         ctx_search_out[worldid],
       )
@@ -3011,13 +3004,11 @@ def _update_gradient_cholesky_blocked_skip_unchanged(
         ctx_hfactor[worldid],
         ctx_grad_in[worldid],
         matrix_size,
-        thread_idx,
         ctx_search_out[worldid],
       )
 
-    if thread_idx == 0:
-      ctx_search_dot_out[worldid] = sums[0]
-      ctx_newton_decrement_out[worldid] = sums[1]
+    ctx_search_dot_out[worldid] = sums[0]
+    ctx_newton_decrement_out[worldid] = sums[1]
 
   return kernel
 

@@ -18,6 +18,11 @@ from functools import lru_cache
 import warp as wp
 
 
+@wp.func
+def _solve_search_sums(grad: float, solution: float):
+  return wp.vec2(solution * solution, grad * solution)
+
+
 @lru_cache(maxsize=None)
 def _create_solve_epilogue_func(matrix_size_static: int, vector_size_static: int):
   @wp.func
@@ -25,21 +30,13 @@ def _create_solve_epilogue_func(matrix_size_static: int, vector_size_static: int
     # In:
     solution_tile: wp.tile[float, matrix_size_static, 1],
     b: wp.array2d[float],
-    thread_idx: int,
     # Out:
     search_out: wp.array2d[float],
   ):
-    local_search_dot = float(0.0)
-    local_decrement = float(0.0)
-    for i in range(thread_idx, vector_size_static, wp.block_dim()):
-      solution = wp.tile_extract(solution_tile, i, 0)
-      search_out[i, 0] = -solution
-      local_search_dot += solution * solution
-      local_decrement += b[i, 0] * solution
-
-    search_dot = wp.tile_reduce(wp.add, wp.tile(local_search_dot, preserve_type=True))[0]
-    decrement = wp.tile_reduce(wp.add, wp.tile(local_decrement, preserve_type=True))[0]
-    return wp.vec2(search_dot, decrement)
+    grad_tile = wp.tile_load(b, shape=(vector_size_static, 1), offset=(0, 0), bounds_check=False)
+    active_solution = wp.tile_view(solution_tile, shape=(vector_size_static, 1), offset=(0, 0))
+    wp.tile_store(search_out, wp.tile_map(wp.mul, active_solution, -1.0), bounds_check=False)
+    return wp.tile_reduce(wp.add, wp.tile_map(_solve_search_sums, grad_tile, active_solution))[0]
 
   return solve_epilogue_func
 
@@ -134,7 +131,6 @@ def _create_blocked_cholesky_augmented_factorize_solve_func(
     A: wp.array2d[float],
     b: wp.array2d[float],
     matrix_size: int,
-    thread_idx: int,
     # Out:
     U: wp.array2d[float],
     # Out:
@@ -206,7 +202,7 @@ def _create_blocked_cholesky_augmented_factorize_solve_func(
 
     sums = wp.vec2(0.0)
     if wp.static(WITH_NEWTON_EPILOGUE):
-      sums = wp.static(_create_solve_epilogue_func(matrix_size_static, vector_size_static))(rhs_tile, b, thread_idx, result_out)
+      sums = wp.static(_create_solve_epilogue_func(matrix_size_static, vector_size_static))(rhs_tile, b, result_out)
     else:
       wp.tile_store(result_out, rhs_tile, offset=(0, 0), bounds_check=False)
 
@@ -230,7 +226,6 @@ def _create_blocked_cholesky_solve_func(
     U: wp.array2d[float],
     b: wp.array2d[float],
     matrix_size: int,
-    thread_idx: int,
     # Out:
     result_out: wp.array2d[float],
   ):
@@ -274,7 +269,7 @@ def _create_blocked_cholesky_solve_func(
 
     sums = wp.vec2(0.0)
     if wp.static(WITH_NEWTON_EPILOGUE):
-      sums = wp.static(_create_solve_epilogue_func(matrix_size_static, vector_size_static))(rhs_tile, b, thread_idx, result_out)
+      sums = wp.static(_create_solve_epilogue_func(matrix_size_static, vector_size_static))(rhs_tile, b, result_out)
     else:
       wp.tile_store(result_out, rhs_tile, offset=(0, 0), bounds_check=False)
 
