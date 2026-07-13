@@ -201,7 +201,7 @@ def _geom_dist(
       horizon,
     )
 
-    if wp.static(multiccd):
+    if multiccd and idx >= 0:
       ncon, witness1, witness2 = multicontact(
         polygon,
         clipped,
@@ -894,7 +894,7 @@ class GJKTest(parameterized.TestCase):
     )
 
     dist, _, _, _ = _geom_dist(m, d, 0, 1, multiccd=True, pos2=pos2, mat2=rot2)
-    self.assertAlmostEqual(dist, 1.3900499e-06)
+    self.assertAlmostEqual(dist, -4.9374998e-05)  # dist = -4.936969499999555e-05 - MJC 64 bit precision
 
   def test_box_edge_flipped(self):
     """Test flipped box edge contact points."""
