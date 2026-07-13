@@ -26,7 +26,7 @@ from mujoco_warp._src.types import JointType
 from mujoco_warp._src.types import Model
 from mujoco_warp._src.types import State
 from mujoco_warp._src.types import vec5
-from mujoco_warp._src.types import vec10f
+from mujoco_warp._src.types import vec10
 from mujoco_warp._src.warp_util import cache_kernel
 from mujoco_warp._src.warp_util import event_scope
 
@@ -39,7 +39,7 @@ def next_act(
   # Model:
   opt_timestep: float,  # kernel_analyzer: ignore
   actuator_dyntype: int,  # kernel_analyzer: ignore
-  actuator_dynprm: vec10f,  # kernel_analyzer: ignore
+  actuator_dynprm: vec10,  # kernel_analyzer: ignore
   actuator_actrange: wp.vec2,  # kernel_analyzer: ignore
   # Data In:
   act_in: float,  # kernel_analyzer: ignore

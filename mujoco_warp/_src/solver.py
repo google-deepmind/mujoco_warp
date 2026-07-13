@@ -92,7 +92,7 @@ def _create_solver_context(m: types.Model, d: types.Data) -> SolverContext:
     grad_scale=wp.empty((nworld,), dtype=float),
     improvement=wp.empty((nworld,), dtype=float),
     ls_exhausted=wp.zeros((nworld,), dtype=bool),
-    search_unchanged=wp.zeros((nworld,), dtype=bool),
+    search_unchanged=wp.empty((nworld,), dtype=bool),
     prev_grad=wp.empty((nworld, nv), dtype=float),
     prev_Mgrad=wp.empty((nworld, nv), dtype=float),
     beta=wp.empty((nworld,), dtype=float),

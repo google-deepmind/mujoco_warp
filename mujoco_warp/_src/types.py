@@ -2388,7 +2388,6 @@ class SolverContext:
   state_changed_count: wp.array[int]
   improvement: wp.array[float]
   ls_exhausted: wp.array[bool]
-  # search vector kept from last iteration (or done): mv/jv are still valid
   search_unchanged: wp.array[bool]
   prev_grad: wp.array2d[float]
   prev_Mgrad: wp.array2d[float]
