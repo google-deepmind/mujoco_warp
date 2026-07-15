@@ -2612,31 +2612,6 @@ def _jtcj_sparse_entry_tile(condim: int):
   return func
 
 
-@wp.func
-def _jtdaj_sparse_entry(
-  # Data in:
-  efc_J_rowadr_in: wp.array2d[int],
-  efc_J_in: wp.array3d[float],
-  efc_D_in: wp.array2d[float],
-  efc_state_in: wp.array2d[int],
-  # In:
-  worldid: int,
-  head_row: int,
-  block_rows: int,
-  block_row: int,
-  block_col: int,
-) -> float:
-  h = float(0.0)
-  for member in range(block_rows):
-    member_row = head_row + member
-    if efc_state_in[worldid, member_row] == types.ConstraintState.QUADRATIC.value:
-      member_adr = efc_J_rowadr_in[worldid, member_row]
-      j_row = efc_J_in[worldid, 0, member_adr + block_row]
-      j_col = efc_J_in[worldid, 0, member_adr + block_col]
-      h += j_row * efc_D_in[worldid, member_row] * j_col
-  return h
-
-
 @wp.kernel
 def _update_gradient_JTCJ_dense(
   # Model:
@@ -3073,6 +3048,7 @@ def _JTDAJ_sparse(compact: bool, elliptic: bool = False, max_condim: int = 3):
       support = efc_J_rownnz_in[worldid, head_row]  # dofs the constraint touches = block dimension
       n_entries = support * (support + 1) // 2  # upper-triangular entries of the |S|x|S| block
 
+      is_cone = False
       if wp.static(ELLIPTIC):
         is_cone = (
           efc_type_in[worldid, head_row] == types.ConstraintType.CONTACT_ELLIPTIC
@@ -3192,9 +3168,8 @@ def _JTDAJ_sparse(compact: bool, elliptic: bool = False, max_condim: int = 3):
 
               active_coeff_count = condim * (condim + 1) // 2
               coeff_tile = wp.tile_zeros(shape=(CONE_COEFF_COUNT,), dtype=float, storage="shared")
-              coeff_iters = (active_coeff_count + lanes - 1) // lanes
-              for coeff_it in range(coeff_iters):
-                coeff_id = coeff_it * lanes + lane
+              for coeff_base in range(0, active_coeff_count, lanes):
+                coeff_id = coeff_base + lane
                 coeff_slot = wp.min(coeff_id, wp.static(CONE_COEFF_COUNT - 1))
                 local_coeff = float(0.0)
                 if coeff_id < active_coeff_count:
@@ -3267,30 +3242,14 @@ def _JTDAJ_sparse(compact: bool, elliptic: bool = False, max_condim: int = 3):
                   block_row,
                   block_col,
                 )
-          else:
-            hval = _jtdaj_sparse_entry(
-              efc_J_rowadr_in,
-              efc_J_in,
-              efc_D_in,
-              efc_state_in,
-              worldid,
-              head_row,
-              block_rows,
-              block_row,
-              block_col,
-            )
-        else:
-          hval = _jtdaj_sparse_entry(
-            efc_J_rowadr_in,
-            efc_J_in,
-            efc_D_in,
-            efc_state_in,
-            worldid,
-            head_row,
-            block_rows,
-            block_row,
-            block_col,
-          )
+        if not is_cone:
+          for member in range(block_rows):
+            member_row = head_row + member
+            if efc_state_in[worldid, member_row] == types.ConstraintState.QUADRATIC.value:
+              member_adr = efc_J_rowadr_in[worldid, member_row]
+              j_row = efc_J_in[worldid, 0, member_adr + block_row]
+              j_col = efc_J_in[worldid, 0, member_adr + block_col]
+              hval += j_row * efc_D_in[worldid, member_row] * j_col
         if hval != 0.0:  # skip the atomic when no member row is active
           if wp.static(COMPACT):
             dof_row = dof_cdof_in[worldid, dof_row]
