@@ -1455,6 +1455,48 @@ class IOTest(parameterized.TestCase):
     _assert_eq(m.dof_invweight0.numpy()[0], mjm.dof_invweight0, "dof_invweight0")
     _assert_eq(m.body_invweight0.numpy()[0, 1], mjm.body_invweight0[1], "body_invweight0")
 
+  def test_set_const_full_freejoint_per_world_com(self):
+    """A full free-joint factor handles diagonal and coupled worlds."""
+    mjm, _, m, d = test_data.fixture(
+      xml="""
+    <mujoco>
+      <worldbody>
+        <body name="floating" pos="0 0 1">
+          <freejoint/>
+          <inertial pos="0 0 0" quat="0 1 0 0" mass="1" diaginertia="0.1 0.2 0.3"/>
+        </body>
+      </worldbody>
+    </mujoco>
+    """,
+      nworld=2,
+    )
+
+    self.assertEqual(mjm.nC, 21)
+    self.assertLen(m.M_tiles, 1)
+    self.assertEqual(m.M_tiles[0].size, 6)
+    self.assertEqual(m.M_tiles[0].elemid.size, 0)
+
+    body_ipos = np.tile(mjm.body_ipos, (2, 1, 1))
+    body_ipos[1, 1] = (0.05, 0.0, -0.02)
+    m.body_ipos = wp.array(body_ipos, dtype=wp.vec3)
+    m.body_invweight0 = wp.array(np.tile(mjm.body_invweight0, (2, 1, 1)), dtype=wp.vec2)
+    m.dof_invweight0 = wp.array(np.tile(mjm.dof_invweight0, (2, 1)), dtype=float)
+
+    mjwarp.set_const_0(m, d)
+
+    dense = np.zeros((2, m.nv, m.nv))
+    for worldid in range(2):
+      mujoco.mju_sym2dense(dense[worldid], d.M.numpy()[worldid], mjm.M_rownnz, mjm.M_rowadr, mjm.M_colind)
+    np.testing.assert_allclose(dense[0], np.diag(np.diag(dense[0])), atol=1e-6)
+    self.assertGreater(np.max(np.abs(dense[1] - np.diag(np.diag(dense[1])))), 1e-6)
+    self.assertGreaterEqual(m.qLD_block_adr.numpy()[0], 0)
+
+    rhs = wp.ones((2, m.nv), dtype=float)
+    result = wp.zeros_like(rhs)
+    mjwarp.solve_m(m, d, result, rhs)
+    expected = np.stack([np.linalg.solve(dense[worldid], np.ones(m.nv)) for worldid in range(2)])
+    np.testing.assert_allclose(result.numpy(), expected, atol=1e-5)
+
   def test_set_const_balljoint(self):
     """Test set_const with ball joint (3 DOFs with averaging)."""
     mjm, mjd, m, d = test_data.fixture(

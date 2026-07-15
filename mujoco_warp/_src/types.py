@@ -38,6 +38,13 @@ TILE_SIZE_JTDAJ_DENSE = 16
 # max M block size where dense tile-Cholesky beats sparse LDL (wins to ~64, degrades past ~80)
 M_BLOCK_DENSE_MAX = 64
 
+# max M block size where scalar Cholesky beats dense tile-Cholesky
+M_BLOCK_SCALAR_MAX = 6
+
+# qLD_block_adr sentinels for factorless block layouts
+Q_LD_BLOCK_COMPACT = -2
+Q_LD_BLOCK_SPARSE = -1
+
 # maximum number of plugin attributes
 _NPLUGINATTR = 128
 
@@ -59,6 +66,7 @@ class BlockDim:
     cholesky_factorize: block-dense Cholesky factorize block dimension (smooth)
     cholesky_factorize_solve: block-dense Cholesky factorize+solve block dimension (smooth)
     cholesky_solve: Cholesky solve block dimension (smooth)
+    small_cholesky: scalar small-block Cholesky block dimension (smooth)
     solve_LD_sparse_fused: solve LD sparse fused block dimension (smooth)
     update_gradient_cholesky: update gradient Cholesky block dimension (solver)
     update_gradient_cholesky_blocked: update gradient Cholesky blocked block dimension (solver)
@@ -89,6 +97,7 @@ class BlockDim:
   cholesky_factorize: int = 32
   cholesky_factorize_solve: int = 32
   cholesky_solve: int = 64
+  small_cholesky: int = 64
   solve_LD_sparse_fused: int = 128
   # solver
   update_gradient_cholesky: int = 64
@@ -924,12 +933,12 @@ class TileSet:
   Attributes:
     adr: address of each tile in the set
     size: size of all the tiles in this set
-    elemid: flat per-block gather indices into CSR M for tile_load_indexed (absent -> nC sentinel)
+    elemid: flat CSR gather indices for tiled blocks; empty selects the native-layout scalar path
   """
 
   adr: wp.array[int]
   size: int
-  elemid: wp.array[int] = None
+  elemid: wp.array[int] = dataclasses.field(default_factory=lambda: wp.array([], dtype=int))
 
   def __eq__(self, other) -> bool:
     if self.__class__ is not other.__class__:
@@ -1339,15 +1348,9 @@ class Model:
     nmaxpolygon: maximum number of verts per polygon
     nmaxmeshdeg: maximum number of polygons per vert
     is_sparse: constraint Jacobian/Hessian layout (sparse vs dense). Does not affect M, whose
-      factorization is a per-block decision -- see qLD_* and m_block_layout
-    qLD_has_dense: any M block factors as a packed dense block
-    qLD_has_simple: any M block is simple (diagonal -> 1/diag, no factorization)
-    qLD_has_sparse: any M block factors via sparse LDL (oversized block / tendon armature)
+      factorization is a per-block decision -- see M_tiles and m_block_layout
     qLD_block_total: packed length of the dense region per world (also the offset of the LDL region)
-    qLD_block_adr: packed offset of each dof's diagonal block; 0 if sparse  (nv,)
-    qLD_dof_dense: per-dof flag, 1 if the dof's block is dense (packed)     (nv,)
-    qLD_dof_simple: per-dof flag, 1 if the dof's block is simple (diagonal) (nv,)
-    qLD_simple_dofs: indices of the simple (diagonal) dofs                  (nsimple,)
+    qLD_block_adr: packed factor offset; Q_LD_BLOCK_* sentinel otherwise (nv,)
     has_fluid: True if wind, density, or viscosity are non-zero at put_model time
     has_sdf_geom: whether the model contains SDF geoms
     has_flex_selfcollide: whether any flex has self-collision enabled
@@ -1423,8 +1426,8 @@ class Model:
     sensor_rangefinder_bodyid: bodyid for rangefinder        (nrangefinder,)
     taxel_vertadr: tactile sensor vertex address             (nsensortaxel,)
     taxel_sensorid: address for tactile sensors
-    M_tiles: tiling configuration
-    qLD_updates: tuple of index triples for sparse factorization
+    M_tiles: scalar and tiled block-factorization groups
+    qLD_updates: sparse factor updates grouped by tree level
     qLD_all_updates: tuple of all levels concatenated
     qLD_level_offsets: tuple of start offsets for each level
     M_fullm_i: sparse mass matrix addressing
@@ -1828,14 +1831,8 @@ class Model:
   nmaxpolygon: int
   nmaxmeshdeg: int
   is_sparse: bool
-  qLD_has_dense: bool
-  qLD_has_simple: bool
-  qLD_has_sparse: bool
   qLD_block_total: int
   qLD_block_adr: wp.array[int]
-  qLD_dof_dense: wp.array[int]
-  qLD_dof_simple: wp.array[int]
-  qLD_simple_dofs: wp.array[int]
   has_fluid: bool
   has_sdf_geom: bool
   has_flex_selfcollide: bool
@@ -2122,7 +2119,7 @@ class Data:
     M: total inertia, CSR                                       (nworld, nC)
     qLD: per-block factor: packed dense region, then the nC     (nworld, qLD_block_total + nC)
          L'*D*L region at offset qLD_block_total (nC=0 if no sparse block)
-    qLDiagInv: 1/diag(D) for the sparse LDL region              (nworld, nv)
+    qLDiagInv: reciprocal diagonal for compact and sparse blocks (nworld, nv)
     tree_awake: is tree awake; 0: asleep; 1: awake              (nworld, ntree)
     body_awake: body sleep state (SleepState)                   (nworld, nbody)
     body_awake_ind: indices of awake/static bodies              (nworld, nbody)
