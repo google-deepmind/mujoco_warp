@@ -1457,7 +1457,8 @@ class IOTest(parameterized.TestCase):
 
   def test_set_const_full_freejoint_per_world_com(self):
     """A full free-joint factor handles diagonal and coupled worlds."""
-    mjm = mujoco.MjModel.from_xml_string("""
+    mjm, _, m, d = test_data.fixture(
+      xml="""
     <mujoco>
       <worldbody>
         <body name="floating" pos="0 0 1">
@@ -1466,10 +1467,9 @@ class IOTest(parameterized.TestCase):
         </body>
       </worldbody>
     </mujoco>
-    """)
-    mjd = mujoco.MjData(mjm)
-    m = mjwarp.put_model(mjm)
-    d = mjwarp.put_data(mjm, mjd, nworld=2)
+    """,
+      nworld=2,
+    )
 
     self.assertEqual(mjm.nC, 21)
     self.assertLen(m.M_tiles, 1)

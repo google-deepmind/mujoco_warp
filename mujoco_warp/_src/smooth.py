@@ -21,6 +21,7 @@ from mujoco_warp._src import support
 from mujoco_warp._src import util_misc
 from mujoco_warp._src.types import MJ_MAXVAL
 from mujoco_warp._src.types import MJ_MINVAL
+from mujoco_warp._src.types import Q_LD_BLOCK_COMPACT
 from mujoco_warp._src.types import Q_LD_BLOCK_SPARSE
 from mujoco_warp._src.types import CamLightType
 from mujoco_warp._src.types import ConeType
@@ -1252,7 +1253,7 @@ def _small_cholesky_factorize_block(block_size: int):
     matrix_adr = M_rowadr[start]
 
     factor_adr = qLD_block_adr[start]
-    if factor_adr < 0:
+    if factor_adr == Q_LD_BLOCK_COMPACT:
       for i in range(wp.static(block_size)):
         D_out[worldid, start + i] = 1.0 / M_in[worldid, matrix_adr + i]
     else:
@@ -3111,7 +3112,7 @@ def _small_cholesky_solve_block(block_size: int):
     start = block_dof[blk]
     size = wp.static(block_size)
     factor_adr = qLD_block_adr[start]
-    if factor_adr < 0:
+    if factor_adr == Q_LD_BLOCK_COMPACT:
       for i in range(wp.static(block_size)):
         x_out[worldid, start + i] = D_in[worldid, start + i] * y_in[worldid, start + i]
     else:
@@ -3282,7 +3283,7 @@ def _small_cholesky_factorize_solve_block(block_size: int):
     matrix_adr = M_rowadr[start]
 
     factor_adr = qLD_block_adr[start]
-    if factor_adr < 0:
+    if factor_adr == Q_LD_BLOCK_COMPACT:
       for i in range(wp.static(block_size)):
         inverse = 1.0 / M_in[worldid, matrix_adr + i]
         D_out[worldid, start + i] = inverse
