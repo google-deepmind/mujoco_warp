@@ -23,8 +23,10 @@ from mujoco_warp._src import math
 from mujoco_warp._src import smooth
 from mujoco_warp._src import support
 from mujoco_warp._src import types
-from mujoco_warp._src.block_cholesky import create_blocked_cholesky_augmented_factorize_solve_func
-from mujoco_warp._src.block_cholesky import create_blocked_cholesky_solve_func
+from mujoco_warp._src.block_cholesky import create_blocked_cholesky_augmented_factorize_solve_newton_func
+from mujoco_warp._src.block_cholesky import create_blocked_cholesky_factorize_solve_func
+from mujoco_warp._src.block_cholesky import create_blocked_cholesky_solve_newton_func
+from mujoco_warp._src.block_cholesky import solve_search_sums
 from mujoco_warp._src.types import InverseContext
 from mujoco_warp._src.types import SolverContext
 from mujoco_warp._src.warp_util import cache_kernel
@@ -76,6 +78,7 @@ def _create_solver_context(m: types.Model, d: types.Data) -> SolverContext:
 
   alloc_h = m.opt.solver == types.SolverType.NEWTON
   alloc_hfactor = alloc_h and nv > _BLOCK_CHOLESKY_DIM
+  alloc_mgrad = m.opt.solver == types.SolverType.CG
 
   return SolverContext(
     Jaref=wp.empty((nworld, njmax), dtype=float),
@@ -83,7 +86,8 @@ def _create_solver_context(m: types.Model, d: types.Data) -> SolverContext:
     done=wp.empty((nworld,), dtype=bool),
     grad=wp.zeros((nworld, nv_pad), dtype=float),
     grad_dot=wp.empty((nworld,), dtype=float),
-    Mgrad=wp.empty((nworld, nv_pad), dtype=float),
+    newton_decrement=wp.empty((nworld,), dtype=float),
+    Mgrad=wp.empty((nworld, nv_pad), dtype=float) if alloc_mgrad else wp.empty((nworld, 0), dtype=float),
     search=wp.empty((nworld, nv), dtype=float),
     mv=wp.empty((nworld, nv), dtype=float),
     jv=wp.empty((nworld, njmax), dtype=float),
@@ -1459,7 +1463,7 @@ def _linesearch(m: types.Model, d: types.Data, ctx: SolverContext):
 
   When state changes are tracked, worlds with ctx.search_unchanged reuse last
   iteration's mv/jv, so a fresh search requires clearing the flag (see the
-  invalidation in _solve and the writer in _solve_search_update).
+  invalidation in _solve and the writer in _update_gradient_zero_grad_dot).
 
   Args:
     m: Model
@@ -1467,8 +1471,8 @@ def _linesearch(m: types.Model, d: types.Data, ctx: SolverContext):
     ctx: SolverContext
   """
   # mv and jv are pure functions of the search direction, and M and J are
-  # constant within a solve: worlds whose search was kept (see
-  # _solve_search_update) reuse last iteration's values.
+  # constant within a solve, so worlds whose search was kept reuse last
+  # iteration's values.
   skip = ctx.search_unchanged if _use_incremental(m) else ctx.done
 
   # mv = M @ search (common to both parallel and iterative)
@@ -1578,20 +1582,6 @@ def _solve_init_jaref_kernel(is_sparse: bool, nv: int, dofs_per_thread: int, com
           wp.atomic_add(ctx_Jaref_out, worldid, efcid, jaref)
 
   return kernel
-
-
-@wp.kernel
-def _solve_init_search(
-  # In:
-  ctx_Mgrad_in: wp.array2d[float],
-  # Out:
-  ctx_search_out: wp.array2d[float],
-  ctx_search_dot_out: wp.array[float],
-):
-  worldid, dofid = wp.tid()
-  search = -1.0 * ctx_Mgrad_in[worldid, dofid]
-  ctx_search_out[worldid, dofid] = search
-  wp.atomic_add(ctx_search_dot_out, worldid, search * search)
 
 
 @wp.kernel
@@ -2061,9 +2051,16 @@ def _update_gradient_zero_grad_dot(stable_fast: bool):
     ctx_done_in: wp.array[bool],
     # Out:
     ctx_grad_dot_out: wp.array[float],
+    ctx_newton_decrement_out: wp.array[float],
     ctx_grad_scale_out: wp.array[float],
+    ctx_search_unchanged_out: wp.array[bool],
   ):
     worldid = wp.tid()
+
+    if wp.static(STABLE_FAST):
+      ctx_search_unchanged_out[worldid] = ctx_done_in[worldid] or state_changed_count_in[worldid] == 0
+    else:
+      ctx_search_unchanged_out[worldid] = False
 
     if ctx_done_in[worldid]:
       return
@@ -2078,11 +2075,14 @@ def _update_gradient_zero_grad_dot(stable_fast: bool):
         ratio = float(0.0)
         if sigma != 0.0:
           ratio = new_sigma / sigma
-        ctx_grad_dot_out[worldid] *= ratio * ratio
+        ratio_sq = ratio * ratio
+        ctx_grad_dot_out[worldid] *= ratio_sq
+        ctx_newton_decrement_out[worldid] *= ratio_sq
         ctx_grad_scale_out[worldid] = new_sigma
         return
 
     ctx_grad_dot_out[worldid] = 0.0
+    ctx_newton_decrement_out[worldid] = 0.0
     ctx_grad_scale_out[worldid] = 1.0
 
   return kernel
@@ -2869,7 +2869,9 @@ def _update_gradient_cholesky(tile_size: int, skip_noflip: bool = False):
     state_changed_count_in: wp.array[int],
     ctx_done_in: wp.array[bool],
     # Out:
-    ctx_Mgrad_out: wp.array2d[float],
+    ctx_search_out: wp.array2d[float],
+    ctx_search_dot_out: wp.array[float],
+    ctx_newton_decrement_out: wp.array[float],
   ):
     worldid = wp.tid()
     TILE_SIZE = wp.static(tile_size)
@@ -2886,13 +2888,16 @@ def _update_gradient_cholesky(tile_size: int, skip_noflip: bool = False):
     wp.tile_cholesky_inplace(mat_tile, fill_mode="upper")
     input_tile = wp.tile_load(ctx_grad_in[worldid], shape=TILE_SIZE)
     output_tile = wp.tile_cholesky_solve(mat_tile, input_tile, fill_mode="upper")
-    wp.tile_store(ctx_Mgrad_out[worldid], output_tile)
+    sums = wp.tile_reduce(wp.add, wp.tile_map(solve_search_sums, input_tile, output_tile))[0]
+    ctx_search_dot_out[worldid] = sums[0]
+    ctx_newton_decrement_out[worldid] = sums[1]
+    wp.tile_store(ctx_search_out[worldid], wp.tile_map(wp.mul, output_tile, -1.0))
 
   return kernel
 
 
 @cache_kernel
-def _update_gradient_cholesky_blocked(tile_size: int, matrix_size: int, check_skip: bool = True):
+def _update_gradient_cholesky_blocked(tile_size: int, matrix_size: int, vector_size: int):
   @wp.kernel(module="unique", enable_backward=False, module_options={"enable_mathdx_gemm": False})
   def kernel(
     # In:
@@ -2901,25 +2906,63 @@ def _update_gradient_cholesky_blocked(tile_size: int, matrix_size: int, check_sk
     ctx_h_in: wp.array3d[float],
     ctx_hfactor: wp.array3d[float],
     # Out:
-    ctx_Mgrad_out: wp.array3d[float],
+    ctx_search_out: wp.array3d[float],
+    ctx_search_dot_out: wp.array[float],
+    ctx_newton_decrement_out: wp.array[float],
   ):
     worldid = wp.tid()
     TILE_SIZE = wp.static(tile_size)
 
-    if wp.static(check_skip):
-      if ctx_done_in[worldid]:
-        return
+    if ctx_done_in[worldid]:
+      return
 
-    # Runtime loop bounds avoid unrolling every panel into shared memory.
-    wp.static(create_blocked_cholesky_augmented_factorize_solve_func(TILE_SIZE, matrix_size))(
-      ctx_h_in[worldid], ctx_grad_in[worldid], matrix_size, ctx_hfactor[worldid], ctx_Mgrad_out[worldid]
+    # We need matrix size both as a runtime input as well as a static input:
+    # static input is needed to specify the tile sizes for the compiler
+    # runtime input is needed for the loop bounds, otherwise warp will unroll
+    # unconditionally leading to shared memory capacity issues.
+
+    sums = wp.static(create_blocked_cholesky_augmented_factorize_solve_newton_func(TILE_SIZE, matrix_size, vector_size))(
+      ctx_h_in[worldid],
+      ctx_grad_in[worldid],
+      matrix_size,
+      ctx_hfactor[worldid],
+      ctx_search_out[worldid],
+    )
+    ctx_search_dot_out[worldid] = sums[0]
+    ctx_newton_decrement_out[worldid] = sums[1]
+
+  return kernel
+
+
+@cache_kernel
+def _cholesky_factorize_solve_blocked(tile_size: int, matrix_size: int):
+  @wp.kernel(module="unique", enable_backward=False, module_options={"enable_mathdx_gemm": False})
+  def kernel(
+    # In:
+    A_in: wp.array3d[float],
+    b_in: wp.array3d[float],
+    # Out:
+    U_out: wp.array3d[float],
+    x_out: wp.array3d[float],
+  ):
+    worldid = wp.tid()
+    TILE_SIZE = wp.static(tile_size)
+
+    wp.static(create_blocked_cholesky_factorize_solve_func(TILE_SIZE, matrix_size))(
+      A_in[worldid],
+      b_in[worldid],
+      matrix_size,
+      U_out[worldid],
+      x_out[worldid],
     )
 
   return kernel
 
 
 @cache_kernel
-def _update_gradient_cholesky_blocked_skip_unchanged(tile_size: int, matrix_size: int, skip_noflip: bool = False):
+def _update_gradient_cholesky_blocked_skip_unchanged(
+  tile_size: int, matrix_size: int, vector_size: int, skip_noflip: bool = False
+):
   """Blocked Cholesky that skips factorization when no constraints changed."""
   SKIP_NOFLIP = skip_noflip
 
@@ -2933,7 +2976,9 @@ def _update_gradient_cholesky_blocked_skip_unchanged(tile_size: int, matrix_size
     state_changed_count_in: wp.array[int],
     ctx_hfactor: wp.array3d[float],
     # Out:
-    ctx_Mgrad_out: wp.array3d[float],
+    ctx_search_out: wp.array3d[float],
+    ctx_search_dot_out: wp.array[float],
+    ctx_newton_decrement_out: wp.array[float],
   ):
     worldid = wp.tid()
     TILE_SIZE = wp.static(tile_size)
@@ -2941,23 +2986,30 @@ def _update_gradient_cholesky_blocked_skip_unchanged(tile_size: int, matrix_size
     if ctx_done_in[worldid]:
       return
 
-    # Fast path: skip the solve; Mgrad stays stale on the unchanged ray, and
-    # the linesearch is invariant to the scale of its direction. Worlds whose
-    # only transitions were between friction linear zones (state change but no
-    # quadratic flip) rebuilt grad with H unchanged: solve from the cached
-    # factor.
+    # The linesearch is invariant to direction scale, so an unchanged ray can
+    # keep its previous search direction.
     if wp.static(SKIP_NOFLIP):
       if state_changed_count_in[worldid] == 0:
         return
 
     if quad_changed_count_in[worldid] > 0:
-      wp.static(create_blocked_cholesky_augmented_factorize_solve_func(TILE_SIZE, matrix_size))(
-        ctx_h_in[worldid], ctx_grad_in[worldid], matrix_size, ctx_hfactor[worldid], ctx_Mgrad_out[worldid]
+      sums = wp.static(create_blocked_cholesky_augmented_factorize_solve_newton_func(TILE_SIZE, matrix_size, vector_size))(
+        ctx_h_in[worldid],
+        ctx_grad_in[worldid],
+        matrix_size,
+        ctx_hfactor[worldid],
+        ctx_search_out[worldid],
       )
     else:
-      wp.static(create_blocked_cholesky_solve_func(TILE_SIZE, matrix_size))(
-        ctx_hfactor[worldid], ctx_grad_in[worldid], matrix_size, ctx_Mgrad_out[worldid]
+      sums = wp.static(create_blocked_cholesky_solve_newton_func(TILE_SIZE, matrix_size, vector_size))(
+        ctx_hfactor[worldid],
+        ctx_grad_in[worldid],
+        matrix_size,
+        ctx_search_out[worldid],
       )
+
+    ctx_search_dot_out[worldid] = sums[0]
+    ctx_newton_decrement_out[worldid] = sums[1]
 
   return kernel
 
@@ -2976,7 +3028,7 @@ def _padding_h(nv: int, ctx_done_in: wp.array[bool], ctx_h_out: wp.array3d[float
 def _cholesky_factorize_solve(
   m: types.Model, d: types.Data, ctx: SolverContext, skip_unchanged: bool = False, skip_noflip: bool = False
 ):
-  """Cholesky factorize ctx.h and solve for Mgrad.
+  """Cholesky factorize ctx.h and form the Newton search direction.
 
   If skip_unchanged is True (blocked path only), worlds where no constraints
   changed reuse the cached factorization in hfactor instead of refactorizing.
@@ -2986,7 +3038,7 @@ def _cholesky_factorize_solve(
       _update_gradient_cholesky(m.nv, skip_noflip),
       dim=d.nworld,
       inputs=[ctx.grad, ctx.h, ctx.state_changed_count if skip_noflip else d.nefc, ctx.done],
-      outputs=[ctx.Mgrad],
+      outputs=[ctx.search, ctx.search_dot, ctx.newton_decrement],
       block_dim=m.block_dim.update_gradient_cholesky,
     )
   else:
@@ -2999,7 +3051,7 @@ def _cholesky_factorize_solve(
 
     if skip_unchanged:
       wp.launch_tiled(
-        _update_gradient_cholesky_blocked_skip_unchanged(types.TILE_SIZE_JTDAJ_DENSE, m.nv_pad, skip_noflip),
+        _update_gradient_cholesky_blocked_skip_unchanged(types.TILE_SIZE_JTDAJ_DENSE, m.nv_pad, m.nv, skip_noflip),
         dim=d.nworld,
         inputs=[
           ctx.done,
@@ -3009,15 +3061,23 @@ def _cholesky_factorize_solve(
           ctx.state_changed_count if skip_noflip else ctx.quad_changed_count,
           ctx.hfactor,
         ],
-        outputs=[ctx.Mgrad.reshape(shape=(d.nworld, ctx.Mgrad.shape[1], 1))],
+        outputs=[
+          ctx.search.reshape(shape=(d.nworld, m.nv, 1)),
+          ctx.search_dot,
+          ctx.newton_decrement,
+        ],
         block_dim=m.block_dim.update_gradient_cholesky_blocked,
       )
     else:
       wp.launch_tiled(
-        _update_gradient_cholesky_blocked(types.TILE_SIZE_JTDAJ_DENSE, m.nv_pad),
+        _update_gradient_cholesky_blocked(types.TILE_SIZE_JTDAJ_DENSE, m.nv_pad, m.nv),
         dim=d.nworld,
         inputs=[ctx.done, ctx.grad.reshape(shape=(d.nworld, ctx.grad.shape[1], 1)), ctx.h, ctx.hfactor],
-        outputs=[ctx.Mgrad.reshape(shape=(d.nworld, ctx.Mgrad.shape[1], 1))],
+        outputs=[
+          ctx.search.reshape(shape=(d.nworld, m.nv, 1)),
+          ctx.search_dot,
+          ctx.newton_decrement,
+        ],
         block_dim=m.block_dim.update_gradient_cholesky_blocked,
       )
 
@@ -3204,7 +3264,7 @@ def _update_gradient(m: types.Model, d: types.Data, ctx: SolverContext, compact:
       _update_gradient_zero_grad_dot(False),
       dim=d.nworld,
       inputs=[d.nefc, ctx.alpha, ctx.done],
-      outputs=[ctx.grad_dot, ctx.grad_scale],
+      outputs=[ctx.grad_dot, ctx.newton_decrement, ctx.grad_scale, ctx.search_unchanged],
     )
     wp.launch(
       _update_gradient_grad(False),
@@ -3424,7 +3484,7 @@ def _update_gradient_incremental(m: types.Model, d: types.Data, ctx: SolverConte
     _update_gradient_zero_grad_dot(stable_fast),
     dim=d.nworld,
     inputs=[changed, ctx.alpha, ctx.done],
-    outputs=[ctx.grad_dot, ctx.grad_scale],
+    outputs=[ctx.grad_dot, ctx.newton_decrement, ctx.grad_scale, ctx.search_unchanged],
   )
 
   wp.launch(
@@ -3550,79 +3610,6 @@ def _solve_beta_accumulate(
   wp.atomic_add(ctx_beta_den_out, worldid, den)
 
 
-@cache_kernel
-def _solve_zero_search_dot(stable_fast: bool):
-  STABLE_FAST = stable_fast
-
-  @wp.kernel(module="unique", enable_backward=False)
-  def kernel(
-    # In:
-    state_changed_count_in: wp.array[int],
-    ctx_done_in: wp.array[bool],
-    # Out:
-    ctx_search_dot_out: wp.array[float],
-  ):
-    worldid = wp.tid()
-
-    if ctx_done_in[worldid]:
-      return
-
-    # Fast path: search stays on the same ray; keep search_dot consistent with it.
-    if wp.static(STABLE_FAST):
-      if state_changed_count_in[worldid] == 0:
-        return
-
-    ctx_search_dot_out[worldid] = 0.0
-
-  return kernel
-
-
-@cache_kernel
-def _solve_search_update(stable_fast: bool):
-  STABLE_FAST = stable_fast
-
-  @wp.kernel(module="unique", enable_backward=False)
-  def kernel(
-    # Model:
-    opt_solver: int,
-    # In:
-    state_changed_count_in: wp.array[int],
-    ctx_Mgrad_in: wp.array2d[float],
-    ctx_search_in: wp.array2d[float],
-    ctx_beta_in: wp.array[float],
-    ctx_done_in: wp.array[bool],
-    # Out:
-    ctx_search_out: wp.array2d[float],
-    ctx_search_dot_out: wp.array[float],
-    ctx_search_unchanged_out: wp.array[bool],
-  ):
-    worldid, dofid = wp.tid()
-
-    # Record whether this world keeps its search vector, so the next linesearch
-    # can reuse mv/jv (pure functions of search; done worlds never consume them).
-    if wp.static(STABLE_FAST):
-      if dofid == 0:
-        ctx_search_unchanged_out[worldid] = ctx_done_in[worldid] or state_changed_count_in[worldid] == 0
-
-    if ctx_done_in[worldid]:
-      return
-
-    # Fast path: search stays on the stale ray; the linesearch absorbs its scale.
-    if wp.static(STABLE_FAST):
-      if state_changed_count_in[worldid] == 0:
-        return
-
-    search = -1.0 * ctx_Mgrad_in[worldid, dofid]
-
-    if opt_solver == types.SolverType.CG:
-      search += ctx_beta_in[worldid] * ctx_search_in[worldid, dofid]
-
-    ctx_search_out[worldid, dofid] = search
-    wp.atomic_add(ctx_search_dot_out, worldid, search * search)
-
-  return kernel
-
-
 @wp.kernel
 def _solve_search_update_cg_tiled(
   # Model:
@@ -3717,6 +3704,7 @@ def _solve_done(
   stat_meaninertia: wp.array[float],
   # In:
   ctx_grad_dot_in: wp.array[float],
+  ctx_newton_decrement_in: wp.array[float],
   ctx_improvement_in: wp.array[float],
   ctx_done_in: wp.array[bool],
   # Data out:
@@ -3736,7 +3724,8 @@ def _solve_done(
 
   improvement = _rescale(nv, meaninertia, ctx_improvement_in[worldid])
   gradient = _rescale(nv, meaninertia, wp.sqrt(ctx_grad_dot_in[worldid]))
-  done = (improvement < tolerance) or (gradient < tolerance)
+  model_improvement = _rescale(nv, meaninertia, 0.5 * ctx_newton_decrement_in[worldid])
+  done = (improvement < tolerance) or (gradient < tolerance) or (model_improvement < tolerance)
   if done or solver_niter_out[worldid] == opt_iterations:
     # if the solver has converged or the maximum number of iterations has been reached then
     # mark this world as done and remove it from the number of unconverged worlds
@@ -3805,8 +3794,8 @@ def _solver_iteration(
     )
 
   # The tracking also enables the stable-state fast path: worlds with no state
-  # flips this iteration were exactly quadratic over the step, so grad/Mgrad/
-  # search only changed by a scalar along the same ray. Skip their qfrc/grad/
+  # flips this iteration were exactly quadratic over the step, so grad/search
+  # only changed by a scalar along the same ray. Skip their qfrc/grad/
   # solve/search updates and track the scalar in ctx.grad_scale.
   _update_constraint(m, d, ctx, track_changes=incremental, stable_fast=incremental)
 
@@ -3859,16 +3848,6 @@ def _solver_iteration(
     )
 
   else:
-    changed = ctx.state_changed_count if incremental else d.nefc
-    wp.launch(_solve_zero_search_dot(incremental), dim=d.nworld, inputs=[changed, ctx.done], outputs=[ctx.search_dot])
-
-    wp.launch(
-      _solve_search_update(incremental),
-      dim=(d.nworld, m.nv),
-      inputs=[m.opt.solver, changed, ctx.Mgrad, ctx.search, ctx.beta, ctx.done],
-      outputs=[ctx.search, ctx.search_dot, ctx.search_unchanged],
-    )
-
     wp.launch(
       _solve_done,
       dim=d.nworld,
@@ -3878,6 +3857,7 @@ def _solver_iteration(
         m.opt.iterations,
         m.stat.meaninertia,
         ctx.grad_dot,
+        ctx.newton_decrement,
         ctx.improvement,
         ctx.done,
       ],
@@ -3983,7 +3963,7 @@ def _solve(m: types.Model, d: types.Data, ctx: SolverContext, compact: bool = Fa
     # left over from the previous solve.
     ctx.search_unchanged.zero_()
 
-  # search = -Mgrad
+  # CG search = -Mgrad
   if m.opt.solver == types.SolverType.CG:
     wp.launch_tiled(
       _solve_init_search_cg_tiled,
@@ -3991,14 +3971,6 @@ def _solve(m: types.Model, d: types.Data, ctx: SolverContext, compact: bool = Fa
       inputs=[m.nv, ctx.grad, ctx.Mgrad],
       outputs=[ctx.search, ctx.search_dot, ctx.prev_grad, ctx.prev_Mgrad],
       block_dim=m.block_dim.solve_init_search_cg,
-    )
-
-  else:
-    wp.launch(
-      _solve_init_search,
-      dim=(d.nworld, m.nv),
-      inputs=[ctx.Mgrad],
-      outputs=[ctx.search, ctx.search_dot],
     )
 
   nsolving = wp.full(shape=(1,), value=d.nworld, dtype=int)
@@ -4207,10 +4179,10 @@ def smooth_solve_compact(m: types.Model, d: types.Data):
     outputs=[d.crhs],
   )
   wp.launch_tiled(
-    _update_gradient_cholesky_blocked(types.TILE_SIZE_JTDAJ_DENSE, d.nvmax_pad, False),
+    _cholesky_factorize_solve_blocked(types.TILE_SIZE_JTDAJ_DENSE, d.nvmax_pad),
     dim=d.nworld,
-    inputs=[wp.empty(0, dtype=bool), d.crhs, d.cM, d.cqLD],
-    outputs=[d.cx],
+    inputs=[d.cM, d.crhs],
+    outputs=[d.cqLD, d.cx],
     block_dim=m.block_dim.update_gradient_cholesky_blocked,
   )
   wp.launch(_scatter_solution, dim=(d.nworld, m.nv), inputs=[d.dof_cdof, d.cx], outputs=[d.qacc_smooth])
