@@ -67,6 +67,8 @@ class GJKResult:
   simplex2: mat43
   simplex_index1: wp.vec4i
   simplex_index2: wp.vec4i
+  index1: int
+  index2: int
 
 
 @wp.struct
@@ -170,6 +172,7 @@ def support(geom: Geom, geomtype: int, dir: wp.vec3) -> SupportPoint:
       edge_localid = geom.graphadr + 2 + 2 * numvert
       prev = int(-1)
       imax = wp.where(geom.index > -1, geom.index, 0)
+      max_dist = wp.dot(local_dir, geom.vert[geom.vertadr + geom.graph[vert_globalid + imax]])
 
       # hillclimb until no change
       while imax != prev:
@@ -685,6 +688,8 @@ def gjk(
         result = GJKResult()
         result.dim = 0
         result.dist = FLOAT_MAX
+        result.index1 = geom1.index
+        result.index2 = geom2.index
         return result
     elif cutoff < FLOAT_MAX:
       vs = wp.dot(x_k, simplex[n])
@@ -692,6 +697,8 @@ def gjk(
         result = GJKResult()
         result.dim = 0
         result.dist = FLOAT_MAX
+        result.index1 = geom1.index
+        result.index2 = geom2.index
         return result
 
     # run the distance subalgorithm to compute the barycentric coordinates
@@ -742,6 +749,8 @@ def gjk(
   result.simplex_index1 = simplex_index1
   result.simplex_index2 = simplex_index2
   result.simplex = simplex
+  result.index1 = geom1.index
+  result.index2 = geom2.index
   return result
 
 
@@ -2329,6 +2338,8 @@ def gjk_phase(
   if size1 + size2 > 0.0:
     cutoff += full_margin1 + full_margin2
     result = gjk(tolerance, gjk_iterations, geom1, geom2, x_1, x_2, geomtype1, geomtype2, cutoff, is_discrete)
+    geom1.index = result.index1
+    geom2.index = result.index2
 
     # shallow penetration, inflate contact
     if result.dist > tolerance:
@@ -2345,6 +2356,8 @@ def gjk_phase(
     cutoff -= full_margin1 + full_margin2
 
   result = gjk(tolerance, gjk_iterations, geom1, geom2, x_1, x_2, geomtype1, geomtype2, cutoff, is_discrete)
+  geom1.index = result.index1
+  geom2.index = result.index2
 
   # no penetration depth to recover
   if result.dist > tolerance or result.dim < 2:
