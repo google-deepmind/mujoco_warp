@@ -488,6 +488,73 @@ class SolverTest(parameterized.TestCase):
     self.assertGreater(mjd.nefc, 0)
 
     d = mjw.put_data(mjm, mjd)
+    ctx = solver._create_solver_context(m, d)
+    solver.init_context(m, d, ctx, grad=True)
+    fused_h = ctx.h.numpy().copy()
+
+    ctx.done.fill_(False)
+    wp.launch(
+      solver._update_gradient_init_h_sparse(False),
+      dim=(d.nworld, m.nv_pad, m.nv_pad),
+      inputs=[m.nv, m.M_elemid, d.M, d.cdof_dof, ctx.done],
+      outputs=[ctx.h],
+    )
+    groups_per_world = solver._jtdaj_groups_per_world(d.nworld, d.njmax)
+    wp.launch(
+      solver._JTDAJ_sparse(False),
+      dim=(d.nworld, groups_per_world, solver._JTDAJ_THREADS_PER_GROUP),
+      inputs=[
+        m.opt.impratio_invsqrt,
+        d.contact.friction,
+        d.contact.dim,
+        d.contact.efc_address,
+        d.efc.type,
+        d.efc.id,
+        d.efc.jtdaj_adr,
+        d.efc.jtdaj_nrow,
+        d.efc.jtdaj_nblock,
+        d.efc.J_rownnz,
+        d.efc.J_rowadr,
+        d.efc.J_colind,
+        d.efc.J,
+        d.efc.D,
+        d.efc.state,
+        d.dof_cdof,
+        ctx.Jaref,
+        ctx.done,
+        groups_per_world,
+      ],
+      outputs=[ctx.h],
+      block_dim=m.block_dim.update_gradient_JTDAJ_sparse,
+    )
+    wp.launch(
+      solver._update_gradient_JTCJ_sparse,
+      dim=(d.naconmax, m.jtcj_max_pairs),
+      inputs=[
+        m.opt.impratio_invsqrt,
+        d.contact.dist,
+        d.contact.includemargin,
+        d.contact.friction,
+        d.contact.dim,
+        d.contact.efc_address,
+        d.contact.worldid,
+        d.efc.J_rownnz,
+        d.efc.J_rowadr,
+        d.efc.J_colind,
+        d.efc.J,
+        d.efc.D,
+        d.efc.state,
+        d.naconmax,
+        d.nacon,
+        ctx.Jaref,
+        ctx.done,
+        1,
+        d.naconmax,
+      ],
+      outputs=[ctx.h],
+    )
+    np.testing.assert_allclose(fused_h[:, : m.nv, : m.nv], ctx.h.numpy()[:, : m.nv, : m.nv], rtol=1e-5, atol=1e-6)
+
     d.qacc.fill_(wp.inf)
     d.qfrc_constraint.fill_(wp.inf)
     d.efc.force.fill_(wp.inf)
@@ -1142,19 +1209,22 @@ class CompactSolverTest(absltest.TestCase):
 
   def test_constrained_solve_equivalence_all_active(self):
     """With every tree active and nvmax=nv, the compacted Newton solve matches baseline qacc."""
-    _, _, m, d = _put_compact(_COMPACT_CONTACT_XML)
-    self.assertTrue(m.is_sparse)
-    mjw.forward(m, d)  # full baseline solve (also builds efc.J, M)
-    self.assertGreater(d.nacon.numpy()[0], 0)  # contacts exist
-    baseline_qacc = d.qacc.numpy().copy()
+    for cone in ("pyramidal", "elliptic"):
+      with self.subTest(cone=cone):
+        xml = _COMPACT_CONTACT_XML.replace('iterations="20"', f'iterations="20" cone="{cone}"')
+        _, _, m, d = _put_compact(xml)
+        self.assertTrue(m.is_sparse)
+        mjw.forward(m, d)  # full baseline solve (also builds efc.J, M)
+        self.assertGreater(d.nacon.numpy()[0], 0)  # contacts exist
+        baseline_qacc = d.qacc.numpy().copy()
 
-    d.tree_awake = wp.array(np.ones((d.nworld, m.ntree), dtype=int), dtype=int)
-    island.update_active_dofs(m, d)
-    self.assertEqual(d.ncdof.numpy()[0], m.nv)
+        d.tree_awake = wp.array(np.ones((d.nworld, m.ntree), dtype=int), dtype=int)
+        island.update_active_dofs(m, d)
+        self.assertEqual(d.ncdof.numpy()[0], m.nv)
 
-    solver.solve_compact(m, d)
+        solver.solve_compact(m, d)
 
-    np.testing.assert_allclose(d.qacc.numpy(), baseline_qacc, rtol=1e-3, atol=1e-4)
+        np.testing.assert_allclose(d.qacc.numpy(), baseline_qacc, rtol=1e-3, atol=1e-4)
 
   def test_solve_compact_populates_islands(self):
     """When using the compact solver via mjw.solve, island mapping fields are updated."""
