@@ -3000,7 +3000,7 @@ _JTDAJ_OVERSUBSCRIBE_WAVES = 6  # grid-stride depth; short per-warp chains load-
 
 
 @cache_kernel
-def _JTDAJ_sparse(compact: bool, elliptic: bool = False, max_condim: int = 3):
+def _JTDAJ_sparse(compact: bool, elliptic: bool, max_condim: int):
   COMPACT = compact
   ELLIPTIC = elliptic
   MAX_CONDIM = max_condim
@@ -3266,7 +3266,7 @@ def _jtdaj_groups_per_world(nworld: int, njmax: int) -> int:
   # _JTDAJ_OVERSUBSCRIBE_WAVES device waves -- else high-njmax worlds dispatch many idle tail warps
   # (njmax >> actual groups).  A few waves of oversubscription keep each warp's serial chain short,
   # load-balancing the variable group sizes (measured plateau: ~4-8 waves).
-  block_size, min_grid_size = wp.get_suggested_block_size(_JTDAJ_sparse(False))
+  block_size, min_grid_size = wp.get_suggested_block_size(_JTDAJ_sparse(False, False, 3))
   # block_size * min_grid_size = full-device thread count (block_size cancels): the kernel's max
   # resident threads (one wave), a device property independent of nworld and our launch block_dim.
   device_warps = max(1, block_size * min_grid_size // _JTDAJ_THREADS_PER_GROUP)
