@@ -777,10 +777,6 @@ class vec16i(wp.types.vector(length=16, dtype=int)):
   pass
 
 
-class vec21f(wp.types.vector(length=21, dtype=float)):
-  pass
-
-
 class vec10f(wp.types.vector(length=10, dtype=float)):
   pass
 
@@ -811,7 +807,6 @@ vec8 = vec8f
 vec10 = vec10f
 vec11 = vec11f
 vec16 = vec16f
-vec21 = vec21f
 vec128 = vec_pluginattr
 mat23 = mat23f
 mat43 = mat43f
