@@ -2373,6 +2373,7 @@ class SolverContext:
   done: wp.array[bool]
   grad: wp.array2d[float]
   grad_dot: wp.array[float]
+  newton_decrement: wp.array[float]
   Mgrad: wp.array2d[float]
   search: wp.array2d[float]
   mv: wp.array2d[float]

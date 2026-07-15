@@ -141,6 +141,32 @@ def _eval_elliptic_delta(
 
 
 class SolverTest(parameterized.TestCase):
+  def test_newton_decrement_termination(self):
+    """Newton stops when only its local model predicts convergence."""
+    solver_niter = wp.zeros(1, dtype=int)
+    nsolving = wp.ones(1, dtype=int)
+    done = wp.zeros(1, dtype=bool)
+
+    wp.launch(
+      solver._solve_done,
+      dim=1,
+      inputs=[
+        1,
+        wp.array([1.0e-6], dtype=float),
+        2,
+        wp.array([1.0], dtype=float),
+        wp.array([4.0e-12], dtype=float),
+        wp.array([1.0e-6], dtype=float),
+        wp.array([2.0e-6], dtype=float),
+        done,
+      ],
+      outputs=[solver_niter, nsolving, done],
+    )
+
+    self.assertTrue(done.numpy()[0])
+    self.assertEqual(solver_niter.numpy()[0], 1)
+    self.assertEqual(nsolving.numpy()[0], 0)
+
   # Transition cases use powers of two so the exact delta is below the absolute-cost ulp.
   @parameterized.named_parameters(
     ("middle_zone", 1.0e-4, (0.0, 0.0, 0.0), (0.5, 1.0e-4, 1.0), (0.0, 0.0, 1.0e8), (-0.5, -5000.0, 1.0)),
@@ -859,7 +885,6 @@ class SolverTest(parameterized.TestCase):
         d.efc.force.zero_()
         ctx = solver._create_solver_context(m, d)
         solver.init_context(m, d, ctx, grad=True)
-        wp.launch(solver._solve_init_search, dim=(d.nworld, m.nv), inputs=[ctx.Mgrad], outputs=[ctx.search, ctx.search_dot])
         any_changes = False
         ctx.search_unchanged.fill_(False)
         for _ in range(m.opt.iterations):
@@ -872,18 +897,6 @@ class SolverTest(parameterized.TestCase):
             if np.any(ctx.quad_changed_count.numpy() > 0):
               any_changes = True
           update_fn(m, d, ctx)
-          wp.launch(
-            solver._solve_zero_search_dot(False),
-            dim=(d.nworld),
-            inputs=[ctx.state_changed_count, ctx.done],
-            outputs=[ctx.search_dot],
-          )
-          wp.launch(
-            solver._solve_search_update(False),
-            dim=(d.nworld, m.nv),
-            inputs=[m.opt.solver, ctx.state_changed_count, ctx.Mgrad, ctx.search, ctx.beta, ctx.done],
-            outputs=[ctx.search, ctx.search_dot, ctx.search_unchanged],
-          )
         return d.qacc.numpy().copy(), any_changes
 
       qacc_full, _ = _run_solver(mjw.put_data(mjm, mjd), solver._update_gradient)
