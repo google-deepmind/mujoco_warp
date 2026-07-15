@@ -2364,6 +2364,82 @@ def _update_gradient_JTDAJ_dense_tiled(nv_pad: int, tile_size: int, njmax: int, 
 
 
 @wp.func
+def _jtcj_sparse_prepare3(
+  # Model:
+  opt_impratio_invsqrt: wp.array[float],
+  # Data in:
+  efc_D_in: wp.array2d[float],
+  # In:
+  fri: types.vec5,
+  ctx_Jaref_in: wp.array2d[float],
+  worldid: int,
+  efcid0: int,
+  efcid1: int,
+  efcid2: int,
+) -> types.vec6:
+  mu = fri[0] * opt_impratio_invsqrt[worldid % opt_impratio_invsqrt.shape[0]]
+  mu2 = mu * mu
+  dm = math.safe_div(efc_D_in[worldid, efcid0], mu2 * (1.0 + mu2))
+  if dm == 0.0:
+    return types.vec6()
+
+  n = ctx_Jaref_in[worldid, efcid0] * mu
+  fri1 = float(0.0)
+  fri2 = float(0.0)
+  u1 = float(0.0)
+  u2 = float(0.0)
+  if efcid1 >= 0:
+    fri1 = fri[0]
+    u1 = ctx_Jaref_in[worldid, efcid1] * fri1
+  if efcid2 >= 0:
+    fri2 = fri[1]
+    u2 = ctx_Jaref_in[worldid, efcid2] * fri2
+  t = wp.max(wp.sqrt(u1 * u1 + u2 * u2), types.MJ_MINVAL)
+  ttt = wp.max(t * t * t, types.MJ_MINVAL)
+  mu_over_t = math.safe_div(mu, t)
+  mu_n_over_ttt = mu * math.safe_div(n, ttt)
+  tangent_diag = mu2 - mu * math.safe_div(n, t)
+
+  return types.vec6(
+    dm * mu2,
+    -dm * mu * fri1 * mu_over_t * u1,
+    dm * fri1 * fri1 * (mu_n_over_ttt * u1 * u1 + tangent_diag),
+    -dm * mu * fri2 * mu_over_t * u2,
+    dm * fri1 * fri2 * mu_n_over_ttt * u1 * u2,
+    dm * fri2 * fri2 * (mu_n_over_ttt * u2 * u2 + tangent_diag),
+  )
+
+
+@wp.func
+def _jtcj_sparse_entry3(
+  # Data in:
+  efc_J_in: wp.array3d[float],
+  # In:
+  coeff: types.vec6,
+  worldid: int,
+  rowadr0: int,
+  rowadr1: int,
+  rowadr2: int,
+  pos1: int,
+  pos2: int,
+) -> float:
+  j01 = efc_J_in[worldid, 0, rowadr0 + pos1]
+  j02 = efc_J_in[worldid, 0, rowadr0 + pos2]
+  j11 = efc_J_in[worldid, 0, rowadr1 + pos1]
+  j12 = efc_J_in[worldid, 0, rowadr1 + pos2]
+  j21 = efc_J_in[worldid, 0, rowadr2 + pos1]
+  j22 = efc_J_in[worldid, 0, rowadr2 + pos2]
+
+  h = coeff[0] * j01 * j02
+  h += coeff[1] * (j11 * j02 + j12 * j01)
+  h += coeff[2] * j11 * j12
+  h += coeff[3] * (j21 * j02 + j22 * j01)
+  h += coeff[4] * (j21 * j12 + j22 * j11)
+  h += coeff[5] * j21 * j22
+  return h
+
+
+@wp.func
 def _jtcj_sparse_entry(
   # Model:
   opt_impratio_invsqrt: wp.array[float],
@@ -3059,9 +3135,10 @@ _JTDAJ_OVERSUBSCRIBE_WAVES = 6  # grid-stride depth; short per-warp chains load-
 
 
 @cache_kernel
-def _JTDAJ_sparse(compact: bool, elliptic: bool = False):
+def _JTDAJ_sparse(compact: bool, elliptic: bool = False, condim3: bool = False):
   COMPACT = compact
   ELLIPTIC = elliptic
+  CONDIM3 = condim3
 
   @wp.kernel(module="unique", enable_backward=False)
   def kernel(
@@ -3100,40 +3177,107 @@ def _JTDAJ_sparse(compact: bool, elliptic: bool = False):
       head_adr = efc_J_rowadr_in[worldid, head_row]
       support = efc_J_rownnz_in[worldid, head_row]  # dofs the constraint touches = block dimension
       n_entries = support * (support + 1) // 2  # upper-triangular entries of the |S|x|S| block
+
+      is_cone = False
+      fast3 = False
+      conid = int(-1)
+      efcid1 = int(-1)
+      efcid2 = int(-1)
+      rowadr1 = int(-1)
+      rowadr2 = int(-1)
+      cone_coeff = types.vec6()
+      if wp.static(ELLIPTIC):
+        is_cone = (
+          efc_type_in[worldid, head_row] == types.ConstraintType.CONTACT_ELLIPTIC
+          and efc_state_in[worldid, head_row] == types.ConstraintState.CONE
+        )
+        if is_cone:
+          conid = efc_id_in[worldid, head_row]
+          if wp.static(CONDIM3):
+            fast3 = True
+          elif contact_dim_in[conid] == 3:
+            fast3 = True
+          if fast3:
+            efcid1 = contact_efc_address_in[conid, 1]
+            efcid2 = contact_efc_address_in[conid, 2]
+            if efcid1 >= 0:
+              rowadr1 = efc_J_rowadr_in[worldid, efcid1]
+            else:
+              rowadr1 = head_adr
+            if efcid2 >= 0:
+              rowadr2 = efc_J_rowadr_in[worldid, efcid2]
+            else:
+              rowadr2 = head_adr
+            local_coeff = types.vec6()
+            if lane == 0:
+              local_coeff = _jtcj_sparse_prepare3(
+                opt_impratio_invsqrt,
+                efc_D_in,
+                contact_friction_in[conid],
+                ctx_Jaref_in,
+                worldid,
+                head_row,
+                efcid1,
+                efcid2,
+              )
+            coeff_tile = wp.tile_zeros(shape=(1,), dtype=types.vec6, storage="shared")
+            wp.tile_scatter_masked(coeff_tile, 0, local_coeff, lane == 0)
+            cone_coeff = wp.tile_extract(coeff_tile, 0)
+
       for entry in range(lane, n_entries, wp.static(_JTDAJ_THREADS_PER_GROUP)):
         block_col = int((wp.sqrt(float(8 * entry + 1)) - 1.0) * 0.5)
         block_row = entry - block_col * (block_col + 1) // 2
         dof_row = efc_J_colind_in[worldid, 0, head_adr + block_row]
         dof_col = efc_J_colind_in[worldid, 0, head_adr + block_col]
         hval = float(0.0)
-        for member in range(block_rows):
-          member_row = head_row + member
-          if efc_state_in[worldid, member_row] == types.ConstraintState.QUADRATIC.value:
-            member_adr = efc_J_rowadr_in[worldid, member_row]
-            j_row = efc_J_in[worldid, 0, member_adr + block_row]
-            j_col = efc_J_in[worldid, 0, member_adr + block_col]
-            hval += j_row * efc_D_in[worldid, member_row] * j_col
-        if wp.static(ELLIPTIC):
-          if (
-            efc_type_in[worldid, head_row] == types.ConstraintType.CONTACT_ELLIPTIC
-            and efc_state_in[worldid, head_row] == types.ConstraintState.CONE
-          ):
-            conid = efc_id_in[worldid, head_row]
-            hval += _jtcj_sparse_entry(
-              opt_impratio_invsqrt,
-              contact_friction_in,
-              contact_dim_in,
-              contact_efc_address_in,
-              efc_J_rowadr_in,
+        if is_cone:
+          if wp.static(CONDIM3):
+            hval = _jtcj_sparse_entry3(
               efc_J_in,
-              efc_D_in,
-              ctx_Jaref_in,
+              cone_coeff,
               worldid,
-              conid,
-              head_row,
+              head_adr,
+              rowadr1,
+              rowadr2,
               block_row,
               block_col,
             )
+          else:
+            if fast3:
+              hval = _jtcj_sparse_entry3(
+                efc_J_in,
+                cone_coeff,
+                worldid,
+                head_adr,
+                rowadr1,
+                rowadr2,
+                block_row,
+                block_col,
+              )
+            else:
+              hval += _jtcj_sparse_entry(
+                opt_impratio_invsqrt,
+                contact_friction_in,
+                contact_dim_in,
+                contact_efc_address_in,
+                efc_J_rowadr_in,
+                efc_J_in,
+                efc_D_in,
+                ctx_Jaref_in,
+                worldid,
+                conid,
+                head_row,
+                block_row,
+                block_col,
+              )
+        else:
+          for member in range(block_rows):
+            member_row = head_row + member
+            if efc_state_in[worldid, member_row] == types.ConstraintState.QUADRATIC.value:
+              member_adr = efc_J_rowadr_in[worldid, member_row]
+              j_row = efc_J_in[worldid, 0, member_adr + block_row]
+              j_col = efc_J_in[worldid, 0, member_adr + block_col]
+              hval += j_row * efc_D_in[worldid, member_row] * j_col
         if hval != 0.0:  # skip the atomic when no member row is active
           if wp.static(COMPACT):
             dof_row = dof_cdof_in[worldid, dof_row]
@@ -3290,8 +3434,10 @@ def _update_gradient(m: types.Model, d: types.Data, ctx: SolverContext, compact:
       )
 
       groups_per_world = _jtdaj_groups_per_world(d.nworld, d.njmax)
+      elliptic = bool(m.opt.cone == types.ConeType.ELLIPTIC)
+      condim3 = bool(elliptic and m.nmaxcondim <= 3)
       wp.launch(
-        _JTDAJ_sparse(sc, m.opt.cone == types.ConeType.ELLIPTIC),
+        _JTDAJ_sparse(sc, elliptic, condim3),
         dim=(d.nworld, groups_per_world, _JTDAJ_THREADS_PER_GROUP),
         inputs=[
           m.opt.impratio_invsqrt,
@@ -3315,7 +3461,7 @@ def _update_gradient(m: types.Model, d: types.Data, ctx: SolverContext, compact:
           groups_per_world,
         ],
         outputs=[ctx.h],
-        block_dim=mj.block_dim.update_gradient_JTDAJ_sparse,
+        block_dim=_JTDAJ_THREADS_PER_GROUP if elliptic else mj.block_dim.update_gradient_JTDAJ_sparse,
       )
     else:
       if compact:

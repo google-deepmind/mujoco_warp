@@ -463,19 +463,20 @@ class SolverTest(parameterized.TestCase):
         _assert_eq(d.qfrc_constraint.numpy()[0], mjd.qfrc_constraint, "qfrc_constraint")
         _assert_eq(d.efc.force.numpy()[0, : mjd.nefc], mjd.efc_force, "efc_force")
 
-  def test_solve_elliptic_sparse_diagonal_inertia(self):
+  @parameterized.parameters(3, 6)
+  def test_solve_elliptic_sparse_diagonal_inertia(self, condim):
     """Sparse elliptic Newton solve over diagonal-inertia bodies must not NaN (jtcj sizing)."""
     n = 12  # 72 dofs -> sparse path
     bodies = "".join(
       f'<body pos="{(i % 4) * 0.25 - 0.4:.3f} {(i // 4) * 0.25 - 0.3:.3f} 0.020">'
-      f'<freejoint/><geom type="box" size="0.04 0.05 0.03" mass="0.5"/></body>'
+      f'<freejoint/><geom type="box" size="0.04 0.05 0.03" mass="0.5" condim="{condim}"/></body>'
       for i in range(n)
     )
     xml = f"""
     <mujoco>
       <option cone="elliptic" solver="Newton" jacobian="sparse" iterations="20" ls_iterations="20" integrator="implicitfast"/>
       <worldbody>
-        <geom name="floor" type="plane" size="5 5 .1" friction="1 0.01 0.001"/>
+        <geom name="floor" type="plane" size="5 5 .1" friction="1 0.01 0.001" condim="{condim}"/>
         {bodies}
       </worldbody>
     </mujoco>
