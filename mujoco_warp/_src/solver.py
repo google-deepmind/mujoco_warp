@@ -23,10 +23,10 @@ from mujoco_warp._src import math
 from mujoco_warp._src import smooth
 from mujoco_warp._src import support
 from mujoco_warp._src import types
-from mujoco_warp._src.block_cholesky import _solve_search_sums
 from mujoco_warp._src.block_cholesky import create_blocked_cholesky_augmented_factorize_solve_newton_func
 from mujoco_warp._src.block_cholesky import create_blocked_cholesky_factorize_solve_func
 from mujoco_warp._src.block_cholesky import create_blocked_cholesky_solve_newton_func
+from mujoco_warp._src.block_cholesky import solve_search_sums
 from mujoco_warp._src.types import InverseContext
 from mujoco_warp._src.types import SolverContext
 from mujoco_warp._src.warp_util import cache_kernel
@@ -2075,8 +2075,9 @@ def _update_gradient_zero_grad_dot(stable_fast: bool):
         ratio = float(0.0)
         if sigma != 0.0:
           ratio = new_sigma / sigma
-        ctx_grad_dot_out[worldid] *= ratio * ratio
-        ctx_newton_decrement_out[worldid] *= ratio * ratio
+        ratio_sq = ratio * ratio
+        ctx_grad_dot_out[worldid] *= ratio_sq
+        ctx_newton_decrement_out[worldid] *= ratio_sq
         ctx_grad_scale_out[worldid] = new_sigma
         return
 
@@ -2887,7 +2888,7 @@ def _update_gradient_cholesky(tile_size: int, skip_noflip: bool = False):
     wp.tile_cholesky_inplace(mat_tile, fill_mode="upper")
     input_tile = wp.tile_load(ctx_grad_in[worldid], shape=TILE_SIZE)
     output_tile = wp.tile_cholesky_solve(mat_tile, input_tile, fill_mode="upper")
-    sums = wp.tile_reduce(wp.add, wp.tile_map(_solve_search_sums, input_tile, output_tile))[0]
+    sums = wp.tile_reduce(wp.add, wp.tile_map(solve_search_sums, input_tile, output_tile))[0]
     ctx_search_dot_out[worldid] = sums[0]
     ctx_newton_decrement_out[worldid] = sums[1]
     wp.tile_store(ctx_search_out[worldid], wp.tile_map(wp.mul, output_tile, -1.0))

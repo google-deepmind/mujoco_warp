@@ -19,14 +19,14 @@ import warp as wp
 
 
 @wp.func
-def _solve_search_sums(grad: float, solution: float):
+def solve_search_sums(grad: float, solution: float):
   return wp.vec2(solution * solution, grad * solution)
 
 
 @lru_cache(maxsize=None)
-def _create_solve_epilogue_func(matrix_size_static: int, vector_size_static: int):
+def _create_newton_decrement_func(matrix_size_static: int, vector_size_static: int):
   @wp.func
-  def solve_epilogue_func(
+  def newton_decrement_func(
     # In:
     solution_tile: wp.tile[float, matrix_size_static, 1],
     b: wp.array2d[float],
@@ -36,9 +36,9 @@ def _create_solve_epilogue_func(matrix_size_static: int, vector_size_static: int
     grad_tile = wp.tile_load(b, shape=(vector_size_static, 1), offset=(0, 0), bounds_check=False)
     active_solution = wp.tile_view(solution_tile, shape=(vector_size_static, 1), offset=(0, 0))
     wp.tile_store(search_out, wp.tile_map(wp.mul, active_solution, -1.0), bounds_check=False)
-    return wp.tile_reduce(wp.add, wp.tile_map(_solve_search_sums, grad_tile, active_solution))[0]
+    return wp.tile_reduce(wp.add, wp.tile_map(solve_search_sums, grad_tile, active_solution))[0]
 
-  return solve_epilogue_func
+  return newton_decrement_func
 
 
 @lru_cache(maxsize=None)
@@ -119,10 +119,10 @@ def create_blocked_cholesky_factorize_solve_func(block_size: int, matrix_size_st
 def _create_blocked_cholesky_augmented_factorize_solve_func(
   block_size: int,
   matrix_size_static: int,
-  with_newton_epilogue: bool,
+  with_newton_decrement: bool,
   vector_size_static: int,
 ):
-  WITH_NEWTON_EPILOGUE = with_newton_epilogue
+  WITH_NEWTON_DECREMENT = with_newton_decrement
   border_size = block_size - 1
 
   @wp.func
@@ -200,8 +200,8 @@ def _create_blocked_cholesky_augmented_factorize_solve_func(
       wp.tile_upper_solve_inplace(U_tile, tmp_tile)
 
     sums = wp.vec2(0.0)
-    if wp.static(WITH_NEWTON_EPILOGUE):
-      sums = wp.static(_create_solve_epilogue_func(matrix_size_static, vector_size_static))(rhs_tile, b, result_out)
+    if wp.static(WITH_NEWTON_DECREMENT):
+      sums = wp.static(_create_newton_decrement_func(matrix_size_static, vector_size_static))(rhs_tile, b, result_out)
     else:
       wp.tile_store(result_out, rhs_tile, offset=(0, 0), bounds_check=False)
 
@@ -214,10 +214,10 @@ def _create_blocked_cholesky_augmented_factorize_solve_func(
 def _create_blocked_cholesky_solve_func(
   block_size: int,
   matrix_size_static: int,
-  with_newton_epilogue: bool,
+  with_newton_decrement: bool,
   vector_size_static: int,
 ):
-  WITH_NEWTON_EPILOGUE = with_newton_epilogue
+  WITH_NEWTON_DECREMENT = with_newton_decrement
 
   @wp.func
   def blocked_cholesky_solve_func(
@@ -267,8 +267,8 @@ def _create_blocked_cholesky_solve_func(
       wp.tile_upper_solve_inplace(U_tile, tmp_tile)
 
     sums = wp.vec2(0.0)
-    if wp.static(WITH_NEWTON_EPILOGUE):
-      sums = wp.static(_create_solve_epilogue_func(matrix_size_static, vector_size_static))(rhs_tile, b, result_out)
+    if wp.static(WITH_NEWTON_DECREMENT):
+      sums = wp.static(_create_newton_decrement_func(matrix_size_static, vector_size_static))(rhs_tile, b, result_out)
     else:
       wp.tile_store(result_out, rhs_tile, offset=(0, 0), bounds_check=False)
 
