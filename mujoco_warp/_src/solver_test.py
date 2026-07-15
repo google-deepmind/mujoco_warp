@@ -463,7 +463,7 @@ class SolverTest(parameterized.TestCase):
         _assert_eq(d.qfrc_constraint.numpy()[0], mjd.qfrc_constraint, "qfrc_constraint")
         _assert_eq(d.efc.force.numpy()[0, : mjd.nefc], mjd.efc_force, "efc_force")
 
-  @parameterized.parameters(3, 6)
+  @parameterized.parameters(3, 4, 6)
   def test_solve_elliptic_sparse_diagonal_inertia(self, condim):
     """Sparse elliptic Newton solve over diagonal-inertia bodies must not NaN (jtcj sizing)."""
     n = 12  # 72 dofs -> sparse path
