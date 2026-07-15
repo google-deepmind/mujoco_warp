@@ -602,7 +602,7 @@ class SolverTest(parameterized.TestCase):
     groups_per_world = solver._jtdaj_groups_per_world(d.nworld, d.njmax)
     wp.launch(
       solver._JTDAJ_sparse(False, False, 3),
-      dim=(d.nworld, groups_per_world, solver._JTDAJ_THREADS_PER_GROUP),
+      dim=(d.nworld, groups_per_world, solver._JTDAJ_WARP_SIZE),
       inputs=[
         m.opt.impratio_invsqrt,
         d.contact.friction,
