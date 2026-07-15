@@ -2365,7 +2365,7 @@ def _update_gradient_JTDAJ_dense_tiled(nv_pad: int, tile_size: int, njmax: int, 
 
 
 @wp.func
-def _jtcj_sparse_prepare3(
+def _elliptic_curvature_coefficients_max3(
   # Model:
   opt_impratio_invsqrt: wp.array[float],
   # Data in:
@@ -2412,7 +2412,7 @@ def _jtcj_sparse_prepare3(
 
 
 @wp.func
-def _jtcj_sparse_entry3(
+def _elliptic_hessian_entry_max3(
   # Data in:
   efc_J_in: wp.array3d[float],
   # In:
@@ -2440,7 +2440,7 @@ def _jtcj_sparse_entry3(
   return h
 
 
-def _jtcj_sparse_prepare_state(condim: int):
+def _elliptic_curvature_terms(condim: int):
   @wp.func
   def func(
     # Model:
@@ -2478,20 +2478,21 @@ def _jtcj_sparse_prepare_state(condim: int):
     mu_n_over_ttt = mu * math.safe_div(n, ttt)
     tangent_diag = mu2 - mu * math.safe_div(n, t)
 
-    state = types.vec16()
+    # Pack u[6], row scales[6], dm, mu/t, mu*n/t^3, and the tangent diagonal.
+    terms = types.vec16()
     for dim in range(wp.static(condim)):
-      state[dim] = u[dim]
-      state[6 + dim] = scale[dim]
-    state[12] = dm
-    state[13] = mu_over_t
-    state[14] = mu_n_over_ttt
-    state[15] = tangent_diag
-    return state
+      terms[dim] = u[dim]
+      terms[6 + dim] = scale[dim]
+    terms[12] = dm
+    terms[13] = mu_over_t
+    terms[14] = mu_n_over_ttt
+    terms[15] = tangent_diag
+    return terms
 
   return func
 
 
-def _jtcj_sparse_prepare_table(condim: int, coeff_type: type):
+def _elliptic_curvature_coefficients(condim: int, coeff_type: type):
   @wp.func
   def func(
     # Model:
@@ -2506,7 +2507,7 @@ def _jtcj_sparse_prepare_table(condim: int, coeff_type: type):
     conid: int,
     efcid0: int,
   ) -> coeff_type:
-    state = wp.static(_jtcj_sparse_prepare_state(condim))(
+    terms = wp.static(_elliptic_curvature_terms(condim))(
       opt_impratio_invsqrt,
       contact_efc_address_in,
       efc_D_in,
@@ -2520,39 +2521,39 @@ def _jtcj_sparse_prepare_table(condim: int, coeff_type: type):
     coeff = coeff_type()
     for dim1 in range(wp.static(condim)):
       for dim2 in range(dim1 + 1):
-        hcone = state[14] * state[dim1] * state[dim2]
+        hcone = terms[14] * terms[dim1] * terms[dim2]
         if dim1 == 0 and dim2 == 0:
           hcone = 1.0
         elif dim2 == 0:
-          hcone = -state[13] * state[dim1]
+          hcone = -terms[13] * terms[dim1]
         elif dim1 == dim2:
-          hcone += state[15]
-        coeff[dim1 * (dim1 + 1) // 2 + dim2] = state[12] * state[6 + dim1] * state[6 + dim2] * hcone
+          hcone += terms[15]
+        coeff[dim1 * (dim1 + 1) // 2 + dim2] = terms[12] * terms[6 + dim1] * terms[6 + dim2] * hcone
     return coeff
 
   return func
 
 
 @wp.func
-def _jtcj_sparse_prepare_entry(state: Any, coeff_id: int) -> float:
+def _elliptic_curvature_coefficient(terms: Any, coeff_id: int) -> float:
   dim1 = int((wp.sqrt(float(8 * coeff_id + 1)) - 1.0) * 0.5)
   dim2 = coeff_id - dim1 * (dim1 + 1) // 2
-  u1 = wp.tile_extract(state, dim1)
-  u2 = wp.tile_extract(state, dim2)
-  scale1 = wp.tile_extract(state, 6 + dim1)
-  scale2 = wp.tile_extract(state, 6 + dim2)
-  dm = wp.tile_extract(state, 12)
-  hcone = wp.tile_extract(state, 14) * u1 * u2
+  u1 = wp.tile_extract(terms, dim1)
+  u2 = wp.tile_extract(terms, dim2)
+  scale1 = wp.tile_extract(terms, 6 + dim1)
+  scale2 = wp.tile_extract(terms, 6 + dim2)
+  dm = wp.tile_extract(terms, 12)
+  hcone = wp.tile_extract(terms, 14) * u1 * u2
   if dim1 == 0 and dim2 == 0:
     hcone = 1.0
   elif dim2 == 0:
-    hcone = -wp.tile_extract(state, 13) * u1
+    hcone = -wp.tile_extract(terms, 13) * u1
   elif dim1 == dim2:
-    hcone += wp.tile_extract(state, 15)
+    hcone += wp.tile_extract(terms, 15)
   return dm * scale1 * scale2 * hcone
 
 
-def _jtcj_sparse_entry_table(condim: int, coeff_type: type):
+def _elliptic_hessian_entry(condim: int, coeff_type: type):
   @wp.func
   def func(
     # Data in:
@@ -2582,7 +2583,7 @@ def _jtcj_sparse_entry_table(condim: int, coeff_type: type):
   return func
 
 
-def _jtcj_sparse_entry_tile(condim: int):
+def _elliptic_hessian_entry_tile(condim: int):
   @wp.func
   def func(
     # Data in:
@@ -3078,7 +3079,7 @@ def _JTDAJ_sparse(compact: bool, elliptic: bool, max_condim: int):
               rowadr2 = head_adr
             local_coeff3 = types.vec6()
             if lane == 0:
-              local_coeff3 = _jtcj_sparse_prepare3(
+              local_coeff3 = _elliptic_curvature_coefficients_max3(
                 opt_impratio_invsqrt,
                 efc_D_in,
                 contact_friction_in[conid],
@@ -3098,11 +3099,12 @@ def _JTDAJ_sparse(compact: bool, elliptic: bool, max_condim: int):
                 efcid = contact_efc_address_in[conid, dim]
                 if efcid >= 0:
                   cone_rowadr[dim] = efc_J_rowadr_in[worldid, efcid]
+            # Exact dimensions keep mixed-contact curvature paths statically unrolled.
             if wp.static(MAX_CONDIM == 4):
               local_coeff4 = types.vec10()
               if lane == 0:
                 if condim == 3:
-                  local_coeff4 = wp.static(_jtcj_sparse_prepare_table(3, types.vec10))(
+                  local_coeff4 = wp.static(_elliptic_curvature_coefficients(3, types.vec10))(
                     opt_impratio_invsqrt,
                     contact_efc_address_in,
                     efc_D_in,
@@ -3113,7 +3115,7 @@ def _JTDAJ_sparse(compact: bool, elliptic: bool, max_condim: int):
                     head_row,
                   )
                 else:
-                  local_coeff4 = wp.static(_jtcj_sparse_prepare_table(4, types.vec10))(
+                  local_coeff4 = wp.static(_elliptic_curvature_coefficients(4, types.vec10))(
                     opt_impratio_invsqrt,
                     contact_efc_address_in,
                     efc_D_in,
@@ -3127,10 +3129,10 @@ def _JTDAJ_sparse(compact: bool, elliptic: bool, max_condim: int):
               wp.tile_scatter_masked(coeff_tile4, 0, local_coeff4, lane == 0)
               cone_coeff4 = wp.tile_extract(coeff_tile4, 0)
             else:
-              local_state = types.vec16()
+              local_terms = types.vec16()
               if lane == 0:
                 if condim == 3:
-                  local_state = wp.static(_jtcj_sparse_prepare_state(3))(
+                  local_terms = wp.static(_elliptic_curvature_terms(3))(
                     opt_impratio_invsqrt,
                     contact_efc_address_in,
                     efc_D_in,
@@ -3141,7 +3143,7 @@ def _JTDAJ_sparse(compact: bool, elliptic: bool, max_condim: int):
                     head_row,
                   )
                 elif condim == 4:
-                  local_state = wp.static(_jtcj_sparse_prepare_state(4))(
+                  local_terms = wp.static(_elliptic_curvature_terms(4))(
                     opt_impratio_invsqrt,
                     contact_efc_address_in,
                     efc_D_in,
@@ -3152,7 +3154,7 @@ def _JTDAJ_sparse(compact: bool, elliptic: bool, max_condim: int):
                     head_row,
                   )
                 elif condim == 6:
-                  local_state = wp.static(_jtcj_sparse_prepare_state(6))(
+                  local_terms = wp.static(_elliptic_curvature_terms(6))(
                     opt_impratio_invsqrt,
                     contact_efc_address_in,
                     efc_D_in,
@@ -3162,9 +3164,9 @@ def _JTDAJ_sparse(compact: bool, elliptic: bool, max_condim: int):
                     conid,
                     head_row,
                   )
-              state_tile = wp.tile_zeros(shape=(16,), dtype=float, storage="shared")
-              for state_id in range(16):
-                wp.tile_scatter_masked(state_tile, state_id, local_state[state_id], lane == 0)
+              terms_tile = wp.tile_zeros(shape=(16,), dtype=float, storage="shared")
+              for term_id in range(16):
+                wp.tile_scatter_masked(terms_tile, term_id, local_terms[term_id], lane == 0)
 
               active_coeff_count = condim * (condim + 1) // 2
               coeff_tile = wp.tile_zeros(shape=(CONE_COEFF_COUNT,), dtype=float, storage="shared")
@@ -3173,7 +3175,7 @@ def _JTDAJ_sparse(compact: bool, elliptic: bool, max_condim: int):
                 coeff_slot = wp.min(coeff_id, wp.static(CONE_COEFF_COUNT - 1))
                 local_coeff = float(0.0)
                 if coeff_id < active_coeff_count:
-                  local_coeff = _jtcj_sparse_prepare_entry(state_tile, coeff_slot)
+                  local_coeff = _elliptic_curvature_coefficient(terms_tile, coeff_slot)
                 wp.tile_scatter_masked(coeff_tile, coeff_slot, local_coeff, coeff_id < active_coeff_count)
 
       for entry in range(lane, n_entries, lanes):
@@ -3185,7 +3187,7 @@ def _JTDAJ_sparse(compact: bool, elliptic: bool, max_condim: int):
         if wp.static(ELLIPTIC):
           if is_cone:
             if wp.static(MAX_CONDIM == 3):
-              hval = _jtcj_sparse_entry3(
+              hval = _elliptic_hessian_entry_max3(
                 efc_J_in,
                 cone_coeff3,
                 worldid,
@@ -3197,7 +3199,7 @@ def _JTDAJ_sparse(compact: bool, elliptic: bool, max_condim: int):
               )
             elif wp.static(MAX_CONDIM == 4):
               if condim == 3:
-                hval = wp.static(_jtcj_sparse_entry_table(3, types.vec10))(
+                hval = wp.static(_elliptic_hessian_entry(3, types.vec10))(
                   efc_J_in,
                   cone_coeff4,
                   cone_rowadr,
@@ -3206,7 +3208,7 @@ def _JTDAJ_sparse(compact: bool, elliptic: bool, max_condim: int):
                   block_col,
                 )
               else:
-                hval = wp.static(_jtcj_sparse_entry_table(4, types.vec10))(
+                hval = wp.static(_elliptic_hessian_entry(4, types.vec10))(
                   efc_J_in,
                   cone_coeff4,
                   cone_rowadr,
@@ -3216,7 +3218,7 @@ def _JTDAJ_sparse(compact: bool, elliptic: bool, max_condim: int):
                 )
             else:
               if condim == 3:
-                hval = wp.static(_jtcj_sparse_entry_tile(3))(
+                hval = wp.static(_elliptic_hessian_entry_tile(3))(
                   efc_J_in,
                   coeff_tile,
                   cone_rowadr,
@@ -3225,7 +3227,7 @@ def _JTDAJ_sparse(compact: bool, elliptic: bool, max_condim: int):
                   block_col,
                 )
               elif condim == 4:
-                hval = wp.static(_jtcj_sparse_entry_tile(4))(
+                hval = wp.static(_elliptic_hessian_entry_tile(4))(
                   efc_J_in,
                   coeff_tile,
                   cone_rowadr,
@@ -3234,7 +3236,7 @@ def _JTDAJ_sparse(compact: bool, elliptic: bool, max_condim: int):
                   block_col,
                 )
               elif condim == 6:
-                hval = wp.static(_jtcj_sparse_entry_tile(6))(
+                hval = wp.static(_elliptic_hessian_entry_tile(6))(
                   efc_J_in,
                   coeff_tile,
                   cone_rowadr,
