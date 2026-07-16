@@ -2538,24 +2538,22 @@ def _elliptic_curvature_coefficients(condim: int, coeff_type: type):
 def _elliptic_curvature_coefficient(terms: Any, coeff_id: int) -> float:
   dim1 = int((wp.sqrt(float(8 * coeff_id + 1)) - 1.0) * 0.5)
   dim2 = coeff_id - dim1 * (dim1 + 1) // 2
-  u1 = wp.tile_extract(terms, dim1)
-  u2 = wp.tile_extract(terms, dim2)
-  scale1 = wp.tile_extract(terms, 6 + dim1)
-  scale2 = wp.tile_extract(terms, 6 + dim2)
-  dm = wp.tile_extract(terms, 12)
-  hcone = wp.tile_extract(terms, 14) * u1 * u2
+  u1 = terms[dim1]
+  u2 = terms[dim2]
+  scale1 = terms[6 + dim1]
+  scale2 = terms[6 + dim2]
+  dm = terms[12]
+  hcone = terms[14] * u1 * u2
   if dim1 == 0 and dim2 == 0:
     hcone = 1.0
   elif dim2 == 0:
-    hcone = -wp.tile_extract(terms, 13) * u1
+    hcone = -terms[13] * u1
   elif dim1 == dim2:
-    hcone += wp.tile_extract(terms, 15)
+    hcone += terms[15]
   return dm * scale1 * scale2 * hcone
 
 
-def _elliptic_hessian_entry(condim: int, coeff_type: type, tiled: bool):
-  TILED = tiled
-
+def _elliptic_hessian_entry(condim: int, coeff_type: type):
   @wp.func
   def func(
     # Data in:
@@ -2577,10 +2575,7 @@ def _elliptic_hessian_entry(condim: int, coeff_type: type, tiled: bool):
     for dim1 in range(wp.static(condim)):
       for dim2 in range(dim1 + 1):
         coeff_id = dim1 * (dim1 + 1) // 2 + dim2
-        if wp.static(TILED):
-          c = wp.tile_extract(coeff, coeff_id)
-        else:
-          c = coeff[coeff_id]
+        c = coeff[coeff_id]
         h += c * j1[dim1] * j2[dim2]
         if dim1 != dim2:
           h += c * j1[dim2] * j2[dim1]
@@ -3175,7 +3170,7 @@ def _JTDAJ_sparse(compact: bool, elliptic: bool, max_condim: int):
               )
             elif wp.static(MAX_CONDIM == 4):
               if condim == 3:
-                hval = wp.static(_elliptic_hessian_entry(3, types.vec10, False))(
+                hval = wp.static(_elliptic_hessian_entry(3, types.vec10))(
                   efc_J_in,
                   cone_coeff4,
                   cone_rowadr,
@@ -3184,7 +3179,7 @@ def _JTDAJ_sparse(compact: bool, elliptic: bool, max_condim: int):
                   block_col,
                 )
               else:
-                hval = wp.static(_elliptic_hessian_entry(4, types.vec10, False))(
+                hval = wp.static(_elliptic_hessian_entry(4, types.vec10))(
                   efc_J_in,
                   cone_coeff4,
                   cone_rowadr,
@@ -3194,7 +3189,7 @@ def _JTDAJ_sparse(compact: bool, elliptic: bool, max_condim: int):
                 )
             else:
               if condim == 3:
-                hval = wp.static(_elliptic_hessian_entry(3, Any, True))(
+                hval = wp.static(_elliptic_hessian_entry(3, Any))(
                   efc_J_in,
                   coeff_tile,
                   cone_rowadr,
@@ -3203,7 +3198,7 @@ def _JTDAJ_sparse(compact: bool, elliptic: bool, max_condim: int):
                   block_col,
                 )
               elif condim == 4:
-                hval = wp.static(_elliptic_hessian_entry(4, Any, True))(
+                hval = wp.static(_elliptic_hessian_entry(4, Any))(
                   efc_J_in,
                   coeff_tile,
                   cone_rowadr,
@@ -3212,7 +3207,7 @@ def _JTDAJ_sparse(compact: bool, elliptic: bool, max_condim: int):
                   block_col,
                 )
               elif condim == 6:
-                hval = wp.static(_elliptic_hessian_entry(6, Any, True))(
+                hval = wp.static(_elliptic_hessian_entry(6, Any))(
                   efc_J_in,
                   coeff_tile,
                   cone_rowadr,
