@@ -2412,24 +2412,22 @@ def _elliptic_curvature_coefficients_max3(
 
 
 @wp.func
-def _elliptic_hessian_entry_max3(
+def _contract_elliptic_hessian_entry_max3(
   # Data in:
   efc_J_in: wp.array3d[float],
   # In:
   coeff: types.vec6,
+  rowadr: types.vec6i,
   worldid: int,
-  rowadr0: int,
-  rowadr1: int,
-  rowadr2: int,
   pos1: int,
   pos2: int,
 ) -> float:
-  j01 = efc_J_in[worldid, 0, rowadr0 + pos1]
-  j02 = efc_J_in[worldid, 0, rowadr0 + pos2]
-  j11 = efc_J_in[worldid, 0, rowadr1 + pos1]
-  j12 = efc_J_in[worldid, 0, rowadr1 + pos2]
-  j21 = efc_J_in[worldid, 0, rowadr2 + pos1]
-  j22 = efc_J_in[worldid, 0, rowadr2 + pos2]
+  j01 = efc_J_in[worldid, 0, rowadr[0] + pos1]
+  j02 = efc_J_in[worldid, 0, rowadr[0] + pos2]
+  j11 = efc_J_in[worldid, 0, rowadr[1] + pos1]
+  j12 = efc_J_in[worldid, 0, rowadr[1] + pos2]
+  j21 = efc_J_in[worldid, 0, rowadr[2] + pos1]
+  j22 = efc_J_in[worldid, 0, rowadr[2] + pos2]
 
   h = coeff[0] * j01 * j02
   h += coeff[1] * (j11 * j02 + j12 * j01)
@@ -2553,7 +2551,7 @@ def _elliptic_curvature_coefficient(terms: Any, coeff_id: int) -> float:
   return dm * scale1 * scale2 * hcone
 
 
-def _elliptic_hessian_entry(condim: int, coeff_type: type):
+def _contract_elliptic_hessian_entry(condim: int, coeff_type: type):
   @wp.func
   def func(
     # Data in:
@@ -2579,6 +2577,37 @@ def _elliptic_hessian_entry(condim: int, coeff_type: type):
         h += c * j1[dim1] * j2[dim2]
         if dim1 != dim2:
           h += c * j1[dim2] * j2[dim1]
+    return h
+
+  return func
+
+
+def _elliptic_hessian_entry(max_condim: int, coeff_type: type):
+  MAX_CONDIM = max_condim
+
+  @wp.func
+  def func(
+    # Data in:
+    efc_J_in: wp.array3d[float],
+    # In:
+    coeff: coeff_type,
+    rowadr: types.vec6i,
+    worldid: int,
+    pos1: int,
+    pos2: int,
+    condim: int,
+  ) -> float:
+    if wp.static(MAX_CONDIM == 3):
+      return _contract_elliptic_hessian_entry_max3(efc_J_in, coeff, rowadr, worldid, pos1, pos2)
+
+    h = float(0.0)
+    if condim == 3:
+      h = wp.static(_contract_elliptic_hessian_entry(3, coeff_type))(efc_J_in, coeff, rowadr, worldid, pos1, pos2)
+    elif condim == 4:
+      h = wp.static(_contract_elliptic_hessian_entry(4, coeff_type))(efc_J_in, coeff, rowadr, worldid, pos1, pos2)
+    elif wp.static(MAX_CONDIM == 6):
+      if condim == 6:
+        h = wp.static(_contract_elliptic_hessian_entry(6, coeff_type))(efc_J_in, coeff, rowadr, worldid, pos1, pos2)
     return h
 
   return func
@@ -2976,6 +3005,7 @@ def _JTDAJ_sparse(compact: bool, elliptic: bool, max_condim: int):
   COMPACT = compact
   ELLIPTIC = elliptic
   MAX_CONDIM = max_condim
+  CONE_COEFF_TYPE = types.vec6 if max_condim == 3 else types.vec10 if max_condim == 4 else Any
   CONE_COEFF_COUNT = max_condim * (max_condim + 1) // 2
 
   @wp.kernel(module="unique", enable_backward=False)
@@ -3027,27 +3057,25 @@ def _JTDAJ_sparse(compact: bool, elliptic: bool, max_condim: int):
           and efc_state_in[worldid, head_row] == types.ConstraintState.CONE
         )
         condim = int(0)
+        cone_rowadr = types.vec6i(head_adr, head_adr, head_adr, head_adr, head_adr, head_adr)
         if wp.static(MAX_CONDIM == 3):
-          rowadr1 = int(-1)
-          rowadr2 = int(-1)
-          cone_coeff3 = types.vec6()
-        else:
-          cone_rowadr = types.vec6i(head_adr, head_adr, head_adr, head_adr, head_adr, head_adr)
-          if wp.static(MAX_CONDIM == 4):
-            cone_coeff4 = types.vec10()
+          cone_coeff = types.vec6()
+        elif wp.static(MAX_CONDIM == 4):
+          cone_coeff = types.vec10()
         if is_cone:
           conid = efc_id_in[worldid, head_row]
           if wp.static(MAX_CONDIM == 3):
+            condim = int(3)
+          else:
+            condim = contact_dim_in[conid]
+          for dim in range(1, wp.static(MAX_CONDIM)):
+            if dim < condim:
+              efcid = contact_efc_address_in[conid, dim]
+              if efcid >= 0:
+                cone_rowadr[dim] = efc_J_rowadr_in[worldid, efcid]
+          if wp.static(MAX_CONDIM == 3):
             efcid1 = contact_efc_address_in[conid, 1]
             efcid2 = contact_efc_address_in[conid, 2]
-            if efcid1 >= 0:
-              rowadr1 = efc_J_rowadr_in[worldid, efcid1]
-            else:
-              rowadr1 = head_adr
-            if efcid2 >= 0:
-              rowadr2 = efc_J_rowadr_in[worldid, efcid2]
-            else:
-              rowadr2 = head_adr
             local_coeff3 = types.vec6()
             if lane == 0:
               local_coeff3 = _elliptic_curvature_coefficients_max3(
@@ -3062,14 +3090,8 @@ def _JTDAJ_sparse(compact: bool, elliptic: bool, max_condim: int):
               )
             coeff_tile3 = wp.tile_zeros(shape=(1,), dtype=types.vec6, storage="shared")
             wp.tile_scatter_masked(coeff_tile3, 0, local_coeff3, lane == 0)
-            cone_coeff3 = wp.tile_extract(coeff_tile3, 0)
+            cone_coeff = wp.tile_extract(coeff_tile3, 0)
           else:
-            condim = contact_dim_in[conid]
-            for dim in range(1, wp.static(MAX_CONDIM)):
-              if dim < condim:
-                efcid = contact_efc_address_in[conid, dim]
-                if efcid >= 0:
-                  cone_rowadr[dim] = efc_J_rowadr_in[worldid, efcid]
             # Exact dimensions keep mixed-contact curvature paths statically unrolled.
             if wp.static(MAX_CONDIM == 4):
               local_coeff4 = types.vec10()
@@ -3098,7 +3120,7 @@ def _JTDAJ_sparse(compact: bool, elliptic: bool, max_condim: int):
                   )
               coeff_tile4 = wp.tile_zeros(shape=(1,), dtype=types.vec10, storage="shared")
               wp.tile_scatter_masked(coeff_tile4, 0, local_coeff4, lane == 0)
-              cone_coeff4 = wp.tile_extract(coeff_tile4, 0)
+              cone_coeff = wp.tile_extract(coeff_tile4, 0)
             else:
               local_terms = types.vec16()
               if lane == 0:
@@ -3140,14 +3162,14 @@ def _JTDAJ_sparse(compact: bool, elliptic: bool, max_condim: int):
                 wp.tile_scatter_masked(terms_tile, term_id, local_terms[term_id], lane == 0)
 
               active_coeff_count = condim * (condim + 1) // 2
-              coeff_tile = wp.tile_zeros(shape=(CONE_COEFF_COUNT,), dtype=float, storage="shared")
+              cone_coeff = wp.tile_zeros(shape=(CONE_COEFF_COUNT,), dtype=float, storage="shared")
               for coeff_base in range(0, active_coeff_count, lanes):
                 coeff_id = coeff_base + lane
                 coeff_slot = wp.min(coeff_id, wp.static(CONE_COEFF_COUNT - 1))
                 local_coeff = float(0.0)
                 if coeff_id < active_coeff_count:
                   local_coeff = _elliptic_curvature_coefficient(terms_tile, coeff_slot)
-                wp.tile_scatter_masked(coeff_tile, coeff_slot, local_coeff, coeff_id < active_coeff_count)
+                wp.tile_scatter_masked(cone_coeff, coeff_slot, local_coeff, coeff_id < active_coeff_count)
 
       for entry in range(lane, n_entries, lanes):
         block_col = int((wp.sqrt(float(8 * entry + 1)) - 1.0) * 0.5)
@@ -3157,64 +3179,15 @@ def _JTDAJ_sparse(compact: bool, elliptic: bool, max_condim: int):
         hval = float(0.0)
         if wp.static(ELLIPTIC):
           if is_cone:
-            if wp.static(MAX_CONDIM == 3):
-              hval = _elliptic_hessian_entry_max3(
-                efc_J_in,
-                cone_coeff3,
-                worldid,
-                head_adr,
-                rowadr1,
-                rowadr2,
-                block_row,
-                block_col,
-              )
-            elif wp.static(MAX_CONDIM == 4):
-              if condim == 3:
-                hval = wp.static(_elliptic_hessian_entry(3, types.vec10))(
-                  efc_J_in,
-                  cone_coeff4,
-                  cone_rowadr,
-                  worldid,
-                  block_row,
-                  block_col,
-                )
-              else:
-                hval = wp.static(_elliptic_hessian_entry(4, types.vec10))(
-                  efc_J_in,
-                  cone_coeff4,
-                  cone_rowadr,
-                  worldid,
-                  block_row,
-                  block_col,
-                )
-            else:
-              if condim == 3:
-                hval = wp.static(_elliptic_hessian_entry(3, Any))(
-                  efc_J_in,
-                  coeff_tile,
-                  cone_rowadr,
-                  worldid,
-                  block_row,
-                  block_col,
-                )
-              elif condim == 4:
-                hval = wp.static(_elliptic_hessian_entry(4, Any))(
-                  efc_J_in,
-                  coeff_tile,
-                  cone_rowadr,
-                  worldid,
-                  block_row,
-                  block_col,
-                )
-              elif condim == 6:
-                hval = wp.static(_elliptic_hessian_entry(6, Any))(
-                  efc_J_in,
-                  coeff_tile,
-                  cone_rowadr,
-                  worldid,
-                  block_row,
-                  block_col,
-                )
+            hval = wp.static(_elliptic_hessian_entry(MAX_CONDIM, CONE_COEFF_TYPE))(
+              efc_J_in,
+              cone_coeff,
+              cone_rowadr,
+              worldid,
+              block_row,
+              block_col,
+              condim,
+            )
         if not is_cone:
           for member in range(block_rows):
             member_row = head_row + member
