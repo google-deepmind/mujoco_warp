@@ -1514,6 +1514,35 @@ def _linesearch(m: types.Model, d: types.Data, ctx: SolverContext):
   _linesearch_iterative(m, d, ctx, fuse_jv)
 
 
+@cache_kernel
+def _solve_init_dof(warmstart: bool, sparse: bool):
+  WARMSTART = warmstart
+  SPARSE = sparse
+
+  @wp.kernel(module="unique", enable_backward=False)
+  def kernel(
+    # Data in:
+    nefc_in: wp.array[int],
+    qacc_warmstart_in: wp.array2d[float],
+    qacc_smooth_in: wp.array2d[float],
+    # Data out:
+    qacc_out: wp.array2d[float],
+    qfrc_constraint_out: wp.array2d[float],
+  ):
+    worldid, dofid = wp.tid()
+
+    if wp.static(WARMSTART):
+      qacc_out[worldid, dofid] = qacc_warmstart_in[worldid, dofid]
+    else:
+      qacc_out[worldid, dofid] = qacc_smooth_in[worldid, dofid]
+
+    if wp.static(SPARSE):
+      if nefc_in[worldid] == 0:
+        qfrc_constraint_out[worldid, dofid] = 0.0
+
+  return kernel
+
+
 @wp.kernel
 def _solve_init_efc(
   # Data out:
@@ -3950,10 +3979,13 @@ def solve(m: types.Model, d: types.Data):
 
 def _solve(m: types.Model, d: types.Data, ctx: SolverContext, compact: bool = False):
   """Finds forces that satisfy constraints."""
-  if not (m.opt.disableflags & types.DisableBit.WARMSTART):
-    wp.copy(d.qacc, d.qacc_warmstart)
-  else:
-    wp.copy(d.qacc, d.qacc_smooth)
+  warmstart = not (m.opt.disableflags & types.DisableBit.WARMSTART)
+  wp.launch(
+    _solve_init_dof(warmstart, m.is_sparse),
+    dim=(d.nworld, m.nv),
+    inputs=[d.nefc, d.qacc_warmstart, d.qacc_smooth],
+    outputs=[d.qacc, d.qfrc_constraint],
+  )
 
   #  context
   init_context(m, d, ctx, grad=True, compact=compact)
