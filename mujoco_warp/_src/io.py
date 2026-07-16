@@ -723,9 +723,6 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
       if pm and t1 in (BOX, MESH) and t2 in (BOX, MESH):
         _check_margin(f"pair {pid} ({geom_name(g1)}, {geom_name(g2)})", t1, t2, pm)
 
-  m.nmaxpolygon = np.append(mjm.mesh_polyvertnum, 0).max()
-  m.nmaxmeshdeg = np.append(mjm.mesh_polymapnum, 0).max()
-
   # filter plugins for only geom plugins, drop the rest
   m.plugin, m.plugin_attr = [], []
   m.geom_plugin_index = np.full_like(mjm.geom_type, -1)
