@@ -490,7 +490,7 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
   m.block_dim.solve_search_update_cg = _nv_block
   m.block_dim.solve_init_search_cg = _nv_block
   if mjm.nv > 500:
-    m.block_dim.linesearch_iterative = 512
+    m.block_dim.linesearch_iterative = 256
   m.is_sparse = is_sparse(mjm)
   m.has_fluid = mjm.opt.wind.any() or mjm.opt.density > 0 or mjm.opt.viscosity > 0
 
