@@ -90,6 +90,7 @@ def _efc_row(
   pos_aref: float,
   pos_imp: float,
   invweight: float,
+  invweight_ref: float,
   solref: wp.vec2,
   solimp: vec5,
   margin: float,
@@ -140,8 +141,8 @@ def _efc_row(
   imp = wp.clamp(imp, dmin, dmax)
   imp = wp.where(imp_x > 1.0, dmax, imp)
 
-  # set outputs
-  D_out[worldid, efcid] = 1.0 / wp.max(invweight * (1.0 - imp) / imp, types.MJ_MINVAL)
+  Dinv_floor = wp.max(types.MIN_COMPLIANCE_RATIO * invweight_ref, types.MJ_MINVAL)
+  D_out[worldid, efcid] = 1.0 / wp.max(invweight * (1.0 - imp) / imp, Dinv_floor)
   vel_out[worldid, efcid] = vel
   aref_out[worldid, efcid] = -k * imp * pos_aref - b * vel
   pos_out[worldid, efcid] = pos_aref + margin
@@ -473,6 +474,7 @@ def _equality_connect(is_sparse: bool, newton: bool):
         pos[i],
         pos_imp,
         invweight,
+        invweight,
         solref,
         solimp,
         0.0,
@@ -616,6 +618,7 @@ def _equality_joint(is_sparse: bool, newton: bool):
       efcid,
       pos,
       pos,
+      invweight,
       invweight,
       eq_solref[worldid % eq_solref.shape[0], eqid],
       eq_solimp[worldid % eq_solimp.shape[0], eqid],
@@ -806,6 +809,7 @@ def _equality_tendon(is_sparse: bool, newton: bool):
       pos,
       pos,
       invweight,
+      invweight,
       solref,
       solimp,
       0.0,
@@ -933,6 +937,7 @@ def _equality_flex(is_sparse: bool, newton: bool):
         efc_J_out[worldid, efcid, colind] = J
         Jqvel += J * qvel_in[worldid, colind]
 
+    invweight = flexedge_invweight0[edgeid]
     _efc_row(
       opt_disableflags,
       worldid,
@@ -940,7 +945,8 @@ def _equality_flex(is_sparse: bool, newton: bool):
       efcid,
       pos,
       pos,
-      flexedge_invweight0[edgeid],
+      invweight,
+      invweight,
       solref,
       solimp,
       0.0,
@@ -1386,6 +1392,7 @@ def _equality_weld(is_sparse: bool, newton: bool):
         cpos[i],
         pos_imp,
         invweight_t,
+        invweight_t,
         solref,
         solimp,
         0.0,
@@ -1415,6 +1422,7 @@ def _equality_weld(is_sparse: bool, newton: bool):
         efcid + 3 + i,
         crot[i],
         pos_imp,
+        invweight_r,
         invweight_r,
         solref,
         solimp,
@@ -1741,6 +1749,7 @@ def _equality_flexstrain(is_sparse: bool, newton: bool):
         residual,
         residual,
         invweight,
+        invweight,
         solref,
         solimp,
         0.0,
@@ -1832,6 +1841,7 @@ def _friction_dof(is_sparse: bool, newton: bool):
     Jqvel = qvel_in[worldid, dofid]
 
     dof_invweight0_id = worldid % dof_invweight0.shape[0]
+    invweight = dof_invweight0[dof_invweight0_id, dofid]
     dof_solref_id = worldid % dof_solref.shape[0]
     dof_solimp_id = worldid % dof_solimp.shape[0]
     _efc_row(
@@ -1841,7 +1851,8 @@ def _friction_dof(is_sparse: bool, newton: bool):
       efcid,
       0.0,
       0.0,
-      dof_invweight0[dof_invweight0_id, dofid],
+      invweight,
+      invweight,
       dof_solref[dof_solref_id, dofid],
       dof_solimp[dof_solimp_id, dofid],
       0.0,
@@ -1956,6 +1967,7 @@ def _friction_tendon(is_sparse: bool, newton: bool):
           efc_J_out[worldid, efcid, i] = 0.0
 
     tendon_invweight0_id = worldid % tendon_invweight0.shape[0]
+    invweight = tendon_invweight0[tendon_invweight0_id, tenid]
     tendon_solref_fri_id = worldid % tendon_solref_fri.shape[0]
     tendon_solimp_fri_id = worldid % tendon_solimp_fri.shape[0]
     _efc_row(
@@ -1965,7 +1977,8 @@ def _friction_tendon(is_sparse: bool, newton: bool):
       efcid,
       0.0,
       0.0,
-      tendon_invweight0[tendon_invweight0_id, tenid],
+      invweight,
+      invweight,
       tendon_solref_fri[tendon_solref_fri_id, tenid],
       tendon_solimp_fri[tendon_solimp_fri_id, tenid],
       0.0,
@@ -2072,6 +2085,7 @@ def _limit_slide_hinge(is_sparse: bool, newton: bool):
       Jqvel = J * qvel_in[worldid, dofadr]
 
       dof_invweight0_id = worldid % dof_invweight0.shape[0]
+      invweight = dof_invweight0[dof_invweight0_id, dofadr]
       jnt_solref_id = worldid % jnt_solref.shape[0]
       jnt_solimp_id = worldid % jnt_solimp.shape[0]
       _efc_row(
@@ -2081,7 +2095,8 @@ def _limit_slide_hinge(is_sparse: bool, newton: bool):
         efcid,
         pos,
         pos,
-        dof_invweight0[dof_invweight0_id, dofadr],
+        invweight,
+        invweight,
         jnt_solref[jnt_solref_id, jntid],
         jnt_solimp[jnt_solimp_id, jntid],
         jntmargin,
@@ -2208,6 +2223,7 @@ def _limit_ball(is_sparse: bool, newton: bool):
       Jqvel -= axis[2] * qvel_in[worldid, dof2]
 
       dof_invweight0_id = worldid % dof_invweight0.shape[0]
+      invweight = dof_invweight0[dof_invweight0_id, dofadr]
       jnt_solref_id = worldid % jnt_solref.shape[0]
       jnt_solimp_id = worldid % jnt_solimp.shape[0]
       _efc_row(
@@ -2217,7 +2233,8 @@ def _limit_ball(is_sparse: bool, newton: bool):
         efcid,
         pos,
         pos,
-        dof_invweight0[dof_invweight0_id, dofadr],
+        invweight,
+        invweight,
         jnt_solref[jnt_solref_id, jntid],
         jnt_solimp[jnt_solimp_id, jntid],
         jntmargin,
@@ -2341,6 +2358,7 @@ def _limit_tendon(is_sparse: bool, newton: bool):
             efc_J_out[worldid, efcid, i] = 0.0
 
       tendon_invweight0_id = worldid % tendon_invweight0.shape[0]
+      invweight = tendon_invweight0[tendon_invweight0_id, tenid]
       tendon_solref_lim_id = worldid % tendon_solref_lim.shape[0]
       tendon_solimp_lim_id = worldid % tendon_solimp_lim.shape[0]
       _efc_row(
@@ -2350,7 +2368,8 @@ def _limit_tendon(is_sparse: bool, newton: bool):
         efcid,
         pos,
         pos,
-        tendon_invweight0[tendon_invweight0_id, tenid],
+        invweight,
+        invweight,
         tendon_solref_lim[tendon_solref_lim_id, tenid],
         tendon_solimp_lim[tendon_solimp_lim_id, tenid],
         tenmargin,
@@ -4260,6 +4279,7 @@ def _efc_contact_update(cone_type: types.ConeType):
 
     body_invweight0_id = worldid % body_invweight0.shape[0]
     invweight = body_invweight0[body_invweight0_id, body1][0] + body_invweight0[body_invweight0_id, body2][0]
+    invweight_ref = invweight
 
     ref = solref_in[conid]
     pos_aref = pos
@@ -4304,6 +4324,7 @@ def _efc_contact_update(cone_type: types.ConeType):
       pos_aref,
       pos,
       invweight,
+      invweight_ref,
       ref,
       solimp_in[conid],
       includemargin,
@@ -4681,6 +4702,7 @@ def _efc_contact_update_flex(cone_type: types.ConeType):
           invweight2 += weights[3] * body_invweight0[body_invweight0_id, b3][0]
 
     invweight = invweight1 + invweight2
+    invweight_ref = invweight
 
     ref = solref_in[conid]
     pos_aref = pos
@@ -4725,6 +4747,7 @@ def _efc_contact_update_flex(cone_type: types.ConeType):
       pos_aref,
       pos,
       invweight,
+      invweight_ref,
       ref,
       solimp_in[conid],
       includemargin,

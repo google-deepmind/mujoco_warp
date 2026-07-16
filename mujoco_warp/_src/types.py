@@ -26,6 +26,7 @@ MJ_MINIMP = mujoco.mjMINIMP  # minimum constraint impedance
 MJ_MAXIMP = mujoco.mjMAXIMP  # maximum constraint impedance
 MJ_MAXCONPAIR = mujoco.mjMAXCONPAIR
 MJ_MINMU = mujoco.mjMINMU  # minimum friction
+MIN_COMPLIANCE_RATIO = 1e-4
 MJ_MINAWAKE = mujoco.mjMINAWAKE  # minimum number of timesteps before sleeping
 # maximum size (by number of edges) of an horizon in EPA algorithm
 MJ_MAX_EPAHORIZON = 24

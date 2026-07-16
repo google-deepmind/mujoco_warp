@@ -1235,6 +1235,33 @@ class CompactSolverTest(absltest.TestCase):
       f"qfrc_constraint should be zeroed, but got max abs: {np.max(np.abs(qfrc_constraint_post))}",
     )
 
+  def test_low_compliance(self):
+    """Test that low compliance does not produce NaNs."""
+    _, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option timestep="0.005" cone="pyramidal"/>
+        <worldbody>
+          <geom type="plane" size="10 10 0.1" friction="1 0.005 0.0001"/>
+          <body pos="0 0 0.2">
+            <freejoint/>
+            <geom type="box" size="0.2 0.2 0.2" friction="0.001 0.005 0.0001" condim="3" mass="1"/>
+          </body>
+          <body pos="0 0 0.5">
+            <freejoint/>
+            <geom type="box" size="0.1 0.1 0.1" friction="0.001 0.005 0.0001" condim="3" mass="1"/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """
+    )
+
+    for _ in range(5):
+      mjw.step(m, d)
+      qpos = d.qpos.numpy()[0]
+      self.assertTrue(np.all(np.isfinite(qpos)), "Simulation produced NaNs in qpos")
+      self.assertTrue(np.all(np.isfinite(d.qvel.numpy()[0])), "Simulation produced NaNs in qvel")
+
 
 if __name__ == "__main__":
   wp.init()
