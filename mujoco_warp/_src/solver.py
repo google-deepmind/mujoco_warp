@@ -1961,7 +1961,7 @@ def _update_gradient_h_incremental_sparse(compact: bool):
       rowadr = efc_J_rowadr_in[worldid, efcid]
       n_entries = rownnz * (rownnz + 1) // 2
 
-      for entry in range(lane, n_entries, wp.static(_JTDAJ_WARP_SIZE)):
+      for entry in range(lane, n_entries, wp.static(_JTDAJ_THREADS_PER_GROUP)):
         ii = int((wp.sqrt(float(8 * entry + 1)) - 1.0) * 0.5)
         jj = entry - ii * (ii + 1) // 2
         Ji = efc_J_in[worldid, 0, rowadr + ii]
@@ -2972,7 +2972,7 @@ def _cholesky_factorize_solve(
 # entry -> (block_row, block_col) is the triangular-number
 # inverse, exact in float32 since column boundaries are perfect squares (8*entry+1 = (2c+1)^2).
 # ---------------------------------------------------------------------------
-_JTDAJ_WARP_SIZE = 32
+_JTDAJ_THREADS_PER_GROUP = 32
 _JTDAJ_OVERSUBSCRIBE_WAVES = 6  # grid-stride depth; short per-warp chains load-balance groups
 
 
@@ -3014,7 +3014,7 @@ def _JTDAJ_sparse(compact: bool, elliptic: bool, max_condim: int):
     if wp.static(ELLIPTIC):
       lanes = wp.block_dim()
     else:
-      lanes = wp.static(_JTDAJ_WARP_SIZE)
+      lanes = wp.static(_JTDAJ_THREADS_PER_GROUP)
     if ctx_done_in[worldid]:
       return
     count = efc_jtdaj_nblock_in[worldid]
@@ -3247,7 +3247,7 @@ def _jtdaj_groups_per_world(nworld: int, njmax: int) -> int:
   block_size, min_grid_size = wp.get_suggested_block_size(_JTDAJ_sparse(False, False, 3))
   # block_size * min_grid_size = full-device thread count (block_size cancels): the kernel's max
   # resident threads (one wave), a device property independent of nworld and our launch block_dim.
-  device_warps = max(1, block_size * min_grid_size // _JTDAJ_WARP_SIZE)
+  device_warps = max(1, block_size * min_grid_size // _JTDAJ_THREADS_PER_GROUP)
   return max(1, min(njmax, _JTDAJ_OVERSUBSCRIBE_WAVES * device_warps // nworld))
 
 
@@ -3414,12 +3414,12 @@ def _update_gradient(m: types.Model, d: types.Data, ctx: SolverContext, compact:
           dim=(d.nworld, groups_per_world),
           inputs=jtdaj_inputs,
           outputs=[ctx.h],
-          block_dim=_JTDAJ_WARP_SIZE,
+          block_dim=_JTDAJ_THREADS_PER_GROUP,
         )
       else:
         wp.launch(
           jtdaj_kernel,
-          dim=(d.nworld, groups_per_world, _JTDAJ_WARP_SIZE),
+          dim=(d.nworld, groups_per_world, _JTDAJ_THREADS_PER_GROUP),
           inputs=jtdaj_inputs,
           outputs=[ctx.h],
           block_dim=mj.block_dim.update_gradient_JTDAJ_sparse,
@@ -3540,7 +3540,7 @@ def _update_gradient_incremental(m: types.Model, d: types.Data, ctx: SolverConte
     slots = _jtdaj_groups_per_world(d.nworld, ctx.quad_changed_ids.shape[1])
     wp.launch(
       _update_gradient_h_incremental_sparse(sc),
-      dim=(d.nworld, slots, _JTDAJ_WARP_SIZE),
+      dim=(d.nworld, slots, _JTDAJ_THREADS_PER_GROUP),
       inputs=[
         dj.efc.J_rownnz,
         dj.efc.J_rowadr,
