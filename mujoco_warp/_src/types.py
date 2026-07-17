@@ -1026,6 +1026,8 @@ class Model:
     nmocap: number of mocap bodies
     nplugin: number of plugin instances
     nJmom: number of non-zeros in actuator_moment
+    npolygonmax: maximum number of verts per polygon
+    nmeshdegmax: maximum number of polygons per vert
     nuserdata: number of custom user parameters
     nsensordata: number of elements in sensor data vector
     nhistory: number of history buffer entries
@@ -1345,8 +1347,6 @@ class Model:
     nmaxcondim: maximum condim across geoms, pairs, and flexes
     nmaxpyramid: maximum number of pyramid directions
     nflexintcell: total interp cells (non-strain) for passive forces
-    nmaxpolygon: maximum number of verts per polygon
-    nmaxmeshdeg: maximum number of polygons per vert
     is_sparse: constraint Jacobian/Hessian layout (sparse vs dense). Does not affect M, whose
       factorization is a per-block decision -- see M_tiles and m_block_layout
     qLD_block_total: packed length of the dense region per world (also the offset of the LDL region)
@@ -1512,6 +1512,8 @@ class Model:
   nmocap: int
   nplugin: int
   nJmom: int
+  npolygonmax: int
+  nmeshdegmax: int
   nuserdata: int
   nsensordata: int
   nhistory: int
@@ -1828,8 +1830,6 @@ class Model:
   nmaxcondim: int
   nmaxpyramid: int
   nflexintcell: int
-  nmaxpolygon: int
-  nmaxmeshdeg: int
   is_sparse: bool
   qLD_block_total: int
   qLD_block_adr: wp.array[int]
