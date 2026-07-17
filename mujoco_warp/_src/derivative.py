@@ -217,6 +217,97 @@ def _qderiv_actuator_passive_actuation_sparse(
         wp.atomic_add(qDeriv_out[worldid], elemid, contrib)
 
 
+@wp.func
+def _moment_row_find(
+  # Data in:
+  moment_colind_in: wp.array2d[int],
+  # In:
+  worldid: int,
+  rowadr: int,
+  rownnz: int,
+  dofid: int,
+) -> int:
+  """Binary search for dofid in one actuator_moment row (colind ascending within a row).
+
+  Returns the sparse index of the entry, or -1 if the row has no entry for dofid.
+  """
+  lo = int(0)
+  hi = int(rownnz)
+  while lo < hi:
+    mid = (lo + hi) >> 1
+    if moment_colind_in[worldid, rowadr + mid] < dofid:
+      lo = mid + 1
+    else:
+      hi = mid
+  if lo < rownnz and moment_colind_in[worldid, rowadr + lo] == dofid:
+    return rowadr + lo
+  return -1
+
+
+@wp.kernel
+def _qderiv_actuator_passive_actuation_sparse_det(
+  # Model:
+  nu: int,
+  M_elemid: wp.array2d[int],
+  # Data in:
+  moment_rownnz_in: wp.array2d[int],
+  moment_rowadr_in: wp.array2d[int],
+  moment_colind_in: wp.array2d[int],
+  actuator_moment_in: wp.array2d[float],
+  # In:
+  vel_in: wp.array2d[float],
+  Mi: wp.array[int],
+  Mj: wp.array[int],
+  # Out:
+  qDeriv_out: wp.array2d[float],
+):
+  """Deterministic actuation qDeriv: one thread per M element gathers over actuators.
+
+  Replaces the per-actuator `wp.atomic_add` scatter (float addition order across
+  actuators sharing a dof pair is unordered) with a serial ascending-actuator
+  accumulation owned by the element's single thread.
+  """
+  worldid, elemid = wp.tid()
+
+  dofiid = Mi[elemid]
+  dofjid = Mj[elemid]
+
+  # Off-pattern (dofiid, dofjid) pairs have no CSR entry (madr < 0).
+  madr = M_elemid[dofiid, dofjid]
+  if madr < 0:
+    return
+
+  acc = float(0.0)
+  for actid in range(nu):
+    vel = vel_in[worldid, actid]
+    if vel == 0.0:
+      continue
+
+    rownnz = moment_rownnz_in[worldid, actid]
+    rowadr = moment_rowadr_in[worldid, actid]
+
+    adr_i = _moment_row_find(moment_colind_in, worldid, rowadr, rownnz, dofiid)
+    if adr_i < 0:
+      continue
+    moment_i = actuator_moment_in[worldid, adr_i]
+    if moment_i == 0.0:
+      continue
+
+    adr_j = adr_i
+    if dofjid != dofiid:
+      adr_j = _moment_row_find(moment_colind_in, worldid, rowadr, rownnz, dofjid)
+    if adr_j < 0:
+      continue
+    moment_j = actuator_moment_in[worldid, adr_j]
+    if moment_j == 0.0:
+      continue
+
+    acc += moment_i * moment_j * vel
+
+  if acc != 0.0:
+    qDeriv_out[worldid, madr] += acc
+
+
 @wp.kernel
 def _qderiv_actuator_passive(
   # Model:
@@ -480,6 +571,33 @@ def deriv_rne_cfrcbody_backward(
 
 
 @wp.kernel
+def deriv_rne_cfrcbody_backward_det(
+  # Model:
+  body_children_adr: wp.array[int],
+  body_children: wp.array[int],
+  # In:
+  body_tree_: wp.array[int],
+  # Out:
+  Dcfrcbody_out: wp.array3d[wp.spatial_vector],
+):
+  """Backward pass: gather d(cfrc_body) from children in ascending child order.
+
+  Deterministic variant of deriv_rne_cfrcbody_backward: instead of siblings
+  scattering into their shared parent with atomics (unordered float addition),
+  each body's single thread pulls from its children. Levels run deepest-first
+  and every child is exactly one level deeper, so child values are final when
+  the parent's level runs.
+  """
+  worldid, nodeid, dofid = wp.tid()
+  bodyid = body_tree_[nodeid]
+
+  acc = Dcfrcbody_out[worldid, bodyid, dofid]
+  for c in range(body_children_adr[bodyid], body_children_adr[bodyid + 1]):
+    acc += Dcfrcbody_out[worldid, body_children[c], dofid]
+  Dcfrcbody_out[worldid, bodyid, dofid] = acc
+
+
+@wp.kernel
 def deriv_rne_body2jnt_sparse(
   # Model:
   dof_bodyid: wp.array[int],
@@ -568,12 +686,20 @@ def deriv_rne_vel(m: Model, d: Data, out: wp.array2d[float], flg_subtract: bool 
 
   # Backward pass: accumulate Dcfrcbody from children to parents
   for body_tree in reversed(m.body_tree):
-    wp.launch(
-      deriv_rne_cfrcbody_backward,
-      dim=(d.nworld, body_tree.size, m.nv),
-      inputs=[m.body_parentid, body_tree],
-      outputs=[Dcfrcbody],
-    )
+    if m.opt.deterministic:
+      wp.launch(
+        deriv_rne_cfrcbody_backward_det,
+        dim=(d.nworld, body_tree.size, m.nv),
+        inputs=[m.body_children_adr, m.body_children, body_tree],
+        outputs=[Dcfrcbody],
+      )
+    else:
+      wp.launch(
+        deriv_rne_cfrcbody_backward,
+        dim=(d.nworld, body_tree.size, m.nv),
+        inputs=[m.body_parentid, body_tree],
+        outputs=[Dcfrcbody],
+      )
 
   # Project body-space derivatives into joint-space qDeriv (always sparse D-structure)
   wp.launch(
@@ -923,6 +1049,104 @@ def _qderiv_ellipsoid_fluid(
     wp.atomic_add(qDeriv_out[worldid], madr, -contrib)
 
 
+@wp.kernel
+def _qderiv_ellipsoid_fluid_det(
+  # Model:
+  opt_timestep: wp.array[float],
+  opt_wind: wp.array[wp.vec3],
+  opt_density: wp.array[float],
+  opt_viscosity: wp.array[float],
+  opt_integrator: int,
+  body_parentid: wp.array[int],
+  body_rootid: wp.array[int],
+  body_geomnum: wp.array[int],
+  body_geomadr: wp.array[int],
+  dof_bodyid: wp.array[int],
+  geom_type: wp.array[int],
+  geom_size: wp.array2d[wp.vec3],
+  geom_fluid: wp.array2d[float],
+  body_fluid_ellipsoid_adr: wp.array[int],
+  body_isdofancestor: wp.array2d[int],
+  M_elemid: wp.array2d[int],
+  # Data in:
+  xipos_in: wp.array2d[wp.vec3],
+  geom_xpos_in: wp.array2d[wp.vec3],
+  geom_xmat_in: wp.array2d[wp.mat33],
+  subtree_com_in: wp.array2d[wp.vec3],
+  cdof_in: wp.array2d[wp.spatial_vector],
+  cvel_in: wp.array2d[wp.spatial_vector],
+  # In:
+  Mi: wp.array[int],
+  Mj: wp.array[int],
+  # Out:
+  qDeriv_out: wp.array2d[float],
+):
+  """Deterministic ellipsoid fluid qDeriv: one thread per M element gathers over fluid bodies.
+
+  Same math as _qderiv_ellipsoid_fluid, but the fluid-body loop runs serially
+  inside the element's single thread (ascending body id) instead of scattering
+  per-body contributions into the shared M address with atomics.
+  """
+  worldid, elemid = wp.tid()
+
+  dofiid = Mi[elemid]
+  dofjid = Mj[elemid]
+
+  madr = M_elemid[dofiid, dofjid]
+  if madr < 0:
+    return
+
+  bodyid_i = dof_bodyid[dofiid]
+
+  if bodyid_i == 0:
+    return
+
+  wind = opt_wind[worldid % opt_wind.shape[0]]
+  density = opt_density[worldid % opt_density.shape[0]]
+  viscosity = opt_viscosity[worldid % opt_viscosity.shape[0]]
+  timestep = opt_timestep[worldid % opt_timestep.shape[0]]
+
+  if density <= 0.0 and viscosity <= 0.0:
+    return
+
+  cdof_i = cdof_in[worldid, dofiid]
+  cdof_j = cdof_in[worldid, dofjid]
+
+  acc = float(0.0)
+  for fluid_idx in range(body_fluid_ellipsoid_adr.shape[0]):
+    bodyid = body_fluid_ellipsoid_adr[fluid_idx]
+
+    if body_isdofancestor[bodyid, dofiid] == 0:
+      continue
+
+    contrib = _deriv_ellipsoid_fluid(
+      opt_integrator,
+      geom_type,
+      geom_size,
+      geom_fluid,
+      xipos_in,
+      geom_xpos_in,
+      geom_xmat_in,
+      subtree_com_in,
+      cvel_in,
+      worldid,
+      bodyid,
+      body_rootid[bodyid],
+      body_geomadr[bodyid],
+      body_geomnum[bodyid],
+      cdof_i,
+      cdof_j,
+      wind,
+      density,
+      viscosity,
+    )
+
+    acc += contrib * timestep
+
+  if acc != 0.0:
+    qDeriv_out[worldid, madr] -= acc
+
+
 @wp.func
 def _deriv_box_fluid(
   # Model:
@@ -1113,6 +1337,111 @@ def _qderiv_box_fluid(
     wp.atomic_add(qDeriv_out[worldid], madr, -contrib)
 
 
+@wp.kernel
+def _qderiv_box_fluid_det(
+  # Model:
+  opt_timestep: wp.array[float],
+  opt_wind: wp.array[wp.vec3],
+  opt_density: wp.array[float],
+  opt_viscosity: wp.array[float],
+  opt_integrator: int,
+  body_parentid: wp.array[int],
+  body_rootid: wp.array[int],
+  body_mass: wp.array2d[float],
+  body_inertia: wp.array2d[wp.vec3],
+  dof_bodyid: wp.array[int],
+  body_fluid_box_adr: wp.array[int],
+  body_isdofancestor: wp.array2d[int],
+  M_elemid: wp.array2d[int],
+  # Data in:
+  xipos_in: wp.array2d[wp.vec3],
+  ximat_in: wp.array2d[wp.mat33],
+  subtree_com_in: wp.array2d[wp.vec3],
+  cdof_in: wp.array2d[wp.spatial_vector],
+  cvel_in: wp.array2d[wp.spatial_vector],
+  # In:
+  Mi: wp.array[int],
+  Mj: wp.array[int],
+  # Out:
+  qDeriv_out: wp.array2d[float],
+):
+  """Deterministic box fluid qDeriv: one thread per M element gathers over fluid bodies.
+
+  Same math as _qderiv_box_fluid, but the fluid-body loop runs serially inside
+  the element's single thread (ascending body id) instead of scattering
+  per-body contributions into the shared M address with atomics.
+  """
+  worldid, elemid = wp.tid()
+
+  dofiid = Mi[elemid]
+  dofjid = Mj[elemid]
+
+  madr = M_elemid[dofiid, dofjid]
+  if madr < 0:
+    return
+
+  bodyid_i = dof_bodyid[dofiid]
+
+  if bodyid_i == 0:
+    return
+
+  wind = opt_wind[worldid % opt_wind.shape[0]]
+  density = opt_density[worldid % opt_density.shape[0]]
+  viscosity = opt_viscosity[worldid % opt_viscosity.shape[0]]
+  timestep = opt_timestep[worldid % opt_timestep.shape[0]]
+
+  if density <= 0.0 and viscosity <= 0.0:
+    return
+
+  acc = float(0.0)
+  for fluid_idx in range(body_fluid_box_adr.shape[0]):
+    bodyid = body_fluid_box_adr[fluid_idx]
+
+    if body_isdofancestor[bodyid, dofiid] == 0:
+      continue
+
+    # Body velocity and kinematics
+    b_ipos = xipos_in[worldid, bodyid]
+    b_imat = ximat_in[worldid, bodyid]
+    subtree_root = subtree_com_in[worldid, body_rootid[bodyid]]
+
+    vel_subtree = cvel_in[worldid, bodyid]
+    v_subtree_ang = wp.vec3(vel_subtree[0], vel_subtree[1], vel_subtree[2])
+    v_subtree_lin = wp.vec3(vel_subtree[3], vel_subtree[4], vel_subtree[5])
+
+    lin_com = v_subtree_lin - wp.cross(b_ipos - subtree_root, v_subtree_ang)
+    b_imat_T = wp.transpose(b_imat)
+    v_local_ang = b_imat_T @ v_subtree_ang
+    v_local_lin = b_imat_T @ lin_com
+    wind_local = b_imat_T @ wind
+
+    lvel = wp.spatial_vector(v_local_ang, v_local_lin - wind_local)
+
+    B = _deriv_box_fluid(
+      opt_integrator,
+      body_mass,
+      body_inertia,
+      worldid,
+      bodyid,
+      lvel,
+      density,
+      viscosity,
+    )
+
+    # Jacobian transformation: J_i^T @ B @ J_j
+    J_i = _get_jac_column_local(
+      body_parentid, body_rootid, dof_bodyid, subtree_com_in, cdof_in, b_ipos, bodyid, dofiid, worldid, b_imat
+    )
+    J_j = _get_jac_column_local(
+      body_parentid, body_rootid, dof_bodyid, subtree_com_in, cdof_in, b_ipos, bodyid, dofjid, worldid, b_imat
+    )
+
+    acc += wp.dot(J_i, B @ J_j) * timestep
+
+  if acc != 0.0:
+    qDeriv_out[worldid, madr] -= acc
+
+
 @event_scope
 def deriv_smooth_vel(m: Model, d: Data, out: wp.array2d[float]):
   """Analytical derivative of smooth forces w.r.t. velocities.
@@ -1156,19 +1485,37 @@ def deriv_smooth_vel(m: Model, d: Data, out: wp.array2d[float]):
         outputs=[vel],
       )
       # out (qDeriv) is in M-structure.
-      wp.launch(
-        _qderiv_actuator_passive_actuation_sparse,
-        dim=(d.nworld, m.nu),
-        inputs=[
-          m.M_elemid,
-          d.moment_rownnz,
-          d.moment_rowadr,
-          d.moment_colind,
-          d.actuator_moment,
-          vel,
-        ],
-        outputs=[out],
-      )
+      if m.opt.deterministic:
+        wp.launch(
+          _qderiv_actuator_passive_actuation_sparse_det,
+          dim=(d.nworld, Mi.size),
+          inputs=[
+            m.nu,
+            m.M_elemid,
+            d.moment_rownnz,
+            d.moment_rowadr,
+            d.moment_colind,
+            d.actuator_moment,
+            vel,
+            Mi,
+            Mj,
+          ],
+          outputs=[out],
+        )
+      else:
+        wp.launch(
+          _qderiv_actuator_passive_actuation_sparse,
+          dim=(d.nworld, m.nu),
+          inputs=[
+            m.M_elemid,
+            d.moment_rownnz,
+            d.moment_rowadr,
+            d.moment_colind,
+            d.actuator_moment,
+            vel,
+          ],
+          outputs=[out],
+        )
     wp.launch(
       _qderiv_actuator_passive,
       dim=(d.nworld, Mi.size),
@@ -1213,8 +1560,8 @@ def deriv_smooth_vel(m: Model, d: Data, out: wp.array2d[float]):
   if m.has_fluid:
     if m.body_fluid_ellipsoid_adr.size > 0:
       wp.launch(
-        _qderiv_ellipsoid_fluid,
-        dim=(d.nworld, m.body_fluid_ellipsoid_adr.size, Mi.size),
+        _qderiv_ellipsoid_fluid_det if m.opt.deterministic else _qderiv_ellipsoid_fluid,
+        dim=(d.nworld, Mi.size) if m.opt.deterministic else (d.nworld, m.body_fluid_ellipsoid_adr.size, Mi.size),
         inputs=[
           m.opt.timestep,
           m.opt.wind,
@@ -1245,8 +1592,8 @@ def deriv_smooth_vel(m: Model, d: Data, out: wp.array2d[float]):
       )
     if m.body_fluid_box_adr.size > 0:
       wp.launch(
-        _qderiv_box_fluid,
-        dim=(d.nworld, m.body_fluid_box_adr.size, Mi.size),
+        _qderiv_box_fluid_det if m.opt.deterministic else _qderiv_box_fluid,
+        dim=(d.nworld, Mi.size) if m.opt.deterministic else (d.nworld, m.body_fluid_box_adr.size, Mi.size),
         inputs=[
           m.opt.timestep,
           m.opt.wind,

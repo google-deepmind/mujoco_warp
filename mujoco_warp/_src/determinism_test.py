@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # ==============================================================================
-"""Tests for GPU determinism (contact sorting + constraint row allocation)."""
+"""Tests for GPU determinism (contact sorting, constraint rows, full-pipeline bitwise stability)."""
 
 import hashlib
 
@@ -827,6 +827,511 @@ class SleepDeterminismTest(absltest.TestCase):
     for _ in range(50):
       mjw.step(m, d)
     self.assertFalse(np.isnan(d.qacc.numpy()).any(), "qacc contains NaN after 50 det+SLEEP steps")
+
+
+def _det_fixture(njmax=None, naconmax=None, **kwargs):
+  """Builds a deterministic-mode fixture; repeated calls initialize identically (fixed seed).
+
+  njmax/naconmax rebuild Data with explicit capacities (test_data.fixture does not expose them);
+  det mode raises on nefc overflow, so fixtures must be sized for the run's peak constraint count.
+  """
+  mjm, mjd, m, d = test_data.fixture(**kwargs)
+  m.opt.deterministic = True
+  if njmax is not None or naconmax is not None:
+    put_kwargs = {"nworld": kwargs.get("nworld", 1), "nvmax": mjm.nv}
+    if njmax is not None:
+      put_kwargs["njmax"] = njmax
+    if naconmax is not None:
+      put_kwargs["naconmax"] = naconmax
+    d = mjw.put_data(mjm, mjd, **put_kwargs)
+  return m, d
+
+
+def _det_fixture_raw(xml, nworld, jacobian=None, enableflags=0, njmax=None, naconmax=None):
+  """Builds (m, d) directly from XML with explicit capacities.
+
+  Enable flags are applied to MjModel before put_model because model construction depends on them.
+  """
+  mjm = mujoco.MjModel.from_xml_string(xml)
+  mjm.opt.enableflags |= enableflags
+  if jacobian is not None:
+    mjm.opt.jacobian = jacobian
+  mjd = mujoco.MjData(mjm)
+  mujoco.mj_forward(mjm, mjd)
+  m = mjw.put_model(mjm)
+  m.opt.deterministic = True
+  put_kwargs = {}
+  if njmax is not None:
+    put_kwargs["njmax"] = njmax
+  if naconmax is not None:
+    put_kwargs["naconmax"] = naconmax
+  d = mjw.put_data(mjm, mjd, nworld=nworld, **put_kwargs)
+  return m, d
+
+
+def _assert_lockstep_bitwise(test, build, nsteps, fields, label, extra_compares=None, on_step=None):
+  """Steps two identically-built sims in lockstep, asserting per-step bitwise-equal state.
+
+  Args:
+    test: the TestCase (for fail()).
+    build: zero-arg callable returning (m, d); called twice.
+    nsteps: number of steps to run.
+    fields: Data attribute names compared bitwise (raw bytes) after every step.
+    label: prefix for failure messages.
+    extra_compares: optional {name: fn(d) -> bytes} canonical serializations compared per step.
+    on_step: optional callable(step, d1) for validity tracking; runs after the comparisons.
+
+  Returns:
+    (m1, d1) from the first sim, after nsteps.
+  """
+  m1, d1 = build()
+  m2, d2 = build()
+  for step in range(nsteps):
+    mjw.step(m1, d1)
+    mjw.step(m2, d2)
+    for field in fields:
+      a = getattr(d1, field).numpy()
+      b = getattr(d2, field).numpy()
+      if a.tobytes() != b.tobytes():
+        np.testing.assert_array_equal(a, b, err_msg=f"{label}: d.{field} diverged at step {step}")
+        # Numerically equal but bitwise different (e.g. -0.0 vs 0.0): still a determinism failure.
+        test.fail(f"{label}: d.{field} bitwise-diverged at step {step} with numerically-equal values")
+    if extra_compares:
+      for name, fn in extra_compares.items():
+        if fn(d1) != fn(d2):
+          test.fail(f"{label}: {name} diverged at step {step}")
+    if on_step is not None:
+      on_step(step, d1)
+  return m1, d1
+
+
+def _canonical_actuator_moment(d):
+  """Serializes the used entries of the actuator moment CSR (per-row colind + values)."""
+  rownnz = d.moment_rownnz.numpy()
+  rowadr = d.moment_rowadr.numpy()
+  colind = d.moment_colind.numpy()
+  moment = d.actuator_moment.numpy()
+  parts = [rownnz.tobytes(), rowadr.tobytes()]
+  for w in range(rownnz.shape[0]):
+    for u in range(rownnz.shape[1]):
+      adr, nnz = rowadr[w, u], rownnz[w, u]
+      parts.append(colind[w, adr : adr + nnz].tobytes())
+      parts.append(moment[w, adr : adr + nnz].tobytes())
+  return b"".join(parts)
+
+
+def _gravcomp_star_xml(nchild=12):
+  """Root hinge with `nchild` gravity-compensated children: all project onto the shared root dof."""
+  children = "".join(
+    f"""
+        <body pos="{0.02 * (i + 1)} {0.03 * ((i % 3) - 1)} 0" gravcomp="{0.5 + 0.04 * i}">
+          <joint type="hinge" axis="1 0 0" damping=".05"/>
+          <geom type="capsule" size=".015" fromto="0 0 0 0 .15 0" mass=".2"/>
+        </body>"""
+    for i in range(nchild)
+  )
+  return f"""
+  <mujoco>
+    <option>
+      <flag contact="disable"/>
+    </option>
+    <worldbody>
+      <body name="root" pos="0 0 1">
+        <joint name="root" type="hinge" axis="0 1 0" damping=".1"/>
+        <geom type="capsule" size=".02" fromto="0 0 0 .3 0 0"/>
+        {children}
+      </body>
+    </worldbody>
+  </mujoco>
+"""
+
+
+def _fixed_tendon_actuator_xml(njnt=24, nten=16):
+  """`nten` fixed tendons each spanning all `njnt` hinges, driven by tendon and joint motors."""
+  bodies = "".join(
+    f"""
+      <body pos="{0.3 * (i % 6)} {0.3 * (i // 6)} 0">
+        <joint name="j{i}" type="hinge" axis="0 1 0" damping=".1" stiffness=".05"/>
+        <geom type="capsule" size=".02" fromto="0 0 0 0 0 .2" mass=".3"/>
+      </body>"""
+    for i in range(njnt)
+  )
+  tendons = []
+  for t in range(nten):
+    joints = "".join(f'<joint joint="j{i}" coef="{0.1 + 0.01 * ((t + i) % 7)}"/>' for i in range(njnt))
+    tendons.append(f'<fixed name="t{t}" armature="0.02" stiffness=".1" damping=".02">{joints}</fixed>')
+  actuators = "".join(f'<motor tendon="t{t}" gear="1.5"/>' for t in range(nten))
+  actuators += "".join(f'<motor joint="j{i}" gear="2"/>' for i in range(0, njnt, 3))
+  return f"""
+  <mujoco>
+    <option>
+      <flag contact="disable"/>
+    </option>
+    <worldbody>{bodies}
+    </worldbody>
+    <tendon>{"".join(tendons)}</tendon>
+    <actuator>{actuators}</actuator>
+  </mujoco>
+"""
+
+
+def _branching_fluid_torso_xml(nlimb=6, nlink=3):
+  """Free-root torso with `nlimb` branches of `nlink` hinges, fluid forces, and servo actuators."""
+  limbs = []
+  actuators = []
+  for l in range(nlimb):
+    inner = ""
+    for k in reversed(range(1, nlink)):
+      axis = "0 1 0" if k % 2 else "0 0 1"
+      name = f'name="limb{l}_{k}"' if k == 1 else ""
+      fluid = 'fluidshape="ellipsoid"' if k == 1 else ""
+      inner = f"""
+            <body pos=".12 0 0">
+              <joint {name} type="hinge" axis="{axis}" damping=".2"/>
+              <geom type="capsule" size=".02" fromto="0 0 0 .12 0 0" mass=".1" {fluid}/>
+              {inner}
+            </body>"""
+    limbs.append(f"""
+          <body pos=".15 0 0" euler="0 0 {360 * l // nlimb}">
+            <joint name="limb{l}_0" type="hinge" axis="0 1 0" damping=".2"/>
+            <geom type="capsule" size=".02" fromto="0 0 0 .12 0 0" mass=".1"/>
+            {inner}
+          </body>""")
+    actuators.append(f'<motor joint="limb{l}_0" gear="1"/>')
+    actuators.append(f'<position joint="limb{l}_1" kp="2" kv=".5"/>')
+  return f"""
+  <mujoco>
+    <option density="1.2" viscosity="0.1">
+      <flag contact="disable"/>
+    </option>
+    <worldbody>
+      <body pos="0 0 1">
+        <freejoint/>
+        <geom type="box" size=".08 .08 .04" mass="1"/>
+        {"".join(limbs)}
+      </body>
+    </worldbody>
+    <actuator>{"".join(actuators)}</actuator>
+  </mujoco>
+"""
+
+
+# sensordata layout (by construction): touch [0], force [1:4], torque [4:7],
+# subtreelinvel [7:10], subtreeangmom [10:13], e_potential [13], e_kinetic [14].
+def _sensor_suite_xml(nsphere=12):
+  """Spheres dropping onto a touch plate plus a branching arm with force/torque/subtree sensors."""
+  spheres = "".join(
+    f"""
+      <body pos="{0.12 * (i % 4) - 0.18} {0.12 * (i // 4) - 0.12} {0.12 + 0.02 * i}">
+        <freejoint/>
+        <geom type="sphere" size=".04" mass=".1"/>
+      </body>"""
+    for i in range(nsphere)
+  )
+  arms = "".join(
+    f"""
+          <body pos="0 0 .1" euler="0 0 {120 * a}">
+            <joint type="hinge" axis="0 1 0" damping=".1"/>
+            <geom type="capsule" size=".015" fromto="0 0 0 .1 0 .05" mass=".05"/>
+            <body pos=".1 0 .05">
+              <joint type="hinge" axis="0 0 1" damping=".1"/>
+              <geom type="capsule" size=".015" fromto="0 0 0 .08 0 0" mass=".05"/>
+            </body>
+          </body>"""
+    for a in range(3)
+  )
+  return f"""
+  <mujoco>
+    <worldbody>
+      <geom type="plane" size="3 3 .01"/>
+      <body name="plate" pos="0 0 .05">
+        <geom type="box" size=".35 .35 .02" mass="1"/>
+        <site name="plate_site" type="box" size=".36 .36 .03"/>
+      </body>
+      {spheres}
+      <body name="trunk" pos="1.5 0 .3">
+        <joint type="hinge" axis="1 0 0" damping=".2"/>
+        <geom type="capsule" size=".02" fromto="0 0 0 0 0 .1" mass=".2"/>
+        <site name="trunk_site" pos="0 0 .05"/>
+        {arms}
+      </body>
+    </worldbody>
+    <sensor>
+      <touch site="plate_site"/>
+      <force site="trunk_site"/>
+      <torque site="trunk_site"/>
+      <subtreelinvel body="trunk"/>
+      <subtreeangmom body="trunk"/>
+      <e_potential/>
+      <e_kinetic/>
+    </sensor>
+  </mujoco>
+"""
+
+
+def _elastic_flex_xml():
+  """A 3D elastic flex body dropping onto a plane: shared vertices accumulate elastic forces."""
+  return """
+  <mujoco>
+    <worldbody>
+      <geom type="plane" size="3 3 .01"/>
+      <flexcomp type="grid" count="6 6 2" spacing=".06 .06 .06" pos="0 0 .08" radius=".005"
+                name="soft" dim="3" mass="2">
+        <contact selfcollide="none"/>
+        <elasticity young="2e4" damping="0.003" poisson="0.2"/>
+      </flexcomp>
+    </worldbody>
+  </mujoco>
+"""
+
+
+def _sleep_wake_churn_xml(npair=8):
+  """`npair` resting boxes that sleep early plus staggered falling impactors that wake them."""
+  bodies = []
+  for i in range(npair):
+    x = 0.5 * i
+    bodies.append(f"""
+      <body pos="{x} 0 .05">
+        <freejoint/>
+        <geom type="box" size=".05 .05 .05" mass=".2"/>
+      </body>
+      <body pos="{x + 0.02} 0.01 {0.3 + 0.12 * i}">
+        <freejoint/>
+        <geom type="box" size=".04 .04 .04" mass=".15"/>
+      </body>""")
+  return f"""
+  <mujoco>
+    <worldbody>
+      <geom type="plane" size="10 10 .01"/>
+      {"".join(bodies)}
+    </worldbody>
+  </mujoco>
+"""
+
+
+class PipelineStateDeterminismTest(parameterized.TestCase):
+  """Lockstep bitwise stability of the full pipeline on branching-tree and wide-dense models."""
+
+  @parameterized.parameters("SPARSE", "DENSE")
+  def test_pendula_state_bitwise(self, jacobian):
+    """pendula.xml (branching kinematic trees, nv=36) is bitwise stable over 100 steps."""
+    _assert_lockstep_bitwise(
+      self,
+      lambda: _det_fixture(path="pendula.xml", nworld=16, qvel_noise=0.1, ctrl_noise=0.1, overrides={"opt.jacobian": jacobian}),
+      nsteps=100,
+      fields=("qpos", "qvel", "qacc"),
+      label=f"pendula {jacobian}",
+    )
+
+  def test_constraints_dense_state_bitwise(self):
+    """constraints.xml (nv=50, dense) is bitwise stable over 100 steps."""
+    _assert_lockstep_bitwise(
+      self,
+      lambda: _det_fixture(path="constraints.xml", nworld=16, ctrl_noise=0.1, overrides={"opt.jacobian": "DENSE"}, njmax=256),
+      nsteps=100,
+      fields=("qpos", "qvel", "qacc"),
+      label="constraints DENSE",
+    )
+
+
+class PassiveActuationDeterminismTest(absltest.TestCase):
+  """Lockstep bitwise stability of passive gravcomp and tendon/actuator force accumulation."""
+
+  def test_gravcomp_bitwise(self):
+    """Many gravity-compensated bodies sharing ancestor dofs stay bitwise stable."""
+    _, d = _assert_lockstep_bitwise(
+      self,
+      lambda: _det_fixture(xml=_gravcomp_star_xml(), nworld=64, qvel_noise=0.05),
+      nsteps=50,
+      fields=("qpos", "qvel", "qacc", "qfrc_gravcomp"),
+      label="gravcomp",
+    )
+    self.assertTrue((d.qfrc_gravcomp.numpy() != 0.0).any(), "expected nonzero gravity compensation forces")
+
+  def test_fixed_tendon_actuator_bitwise(self):
+    """Fixed-tendon lengths and shared-dof actuator forces stay bitwise stable."""
+    _, d = _assert_lockstep_bitwise(
+      self,
+      lambda: _det_fixture(xml=_fixed_tendon_actuator_xml(), nworld=32, qvel_noise=0.1, ctrl_noise=0.2),
+      nsteps=50,
+      fields=("qpos", "qvel", "qacc", "ten_length", "ten_J", "qfrc_actuator", "actuator_force"),
+      label="fixed tendon + actuators",
+      extra_compares={"actuator_moment": _canonical_actuator_moment},
+    )
+    self.assertTrue((d.ten_length.numpy() != 0.0).any(), "expected nonzero tendon lengths")
+    self.assertTrue((d.qfrc_actuator.numpy() != 0.0).any(), "expected nonzero actuator forces")
+
+
+class ImplicitIntegratorDeterminismTest(parameterized.TestCase):
+  """Lockstep bitwise stability of implicit integrators (qDeriv assembly) on a branching tree."""
+
+  @parameterized.parameters("IMPLICIT", "IMPLICITFAST")
+  def test_implicit_integrators_bitwise(self, integrator):
+    """A branching free-root torso with fluid forces and servos is bitwise stable."""
+    _assert_lockstep_bitwise(
+      self,
+      lambda: _det_fixture(
+        xml=_branching_fluid_torso_xml(),
+        nworld=128,
+        qvel_noise=0.1,
+        ctrl_noise=0.2,
+        overrides={"opt.integrator": integrator},
+      ),
+      nsteps=50,
+      fields=("qpos", "qvel", "qacc"),
+      label=f"branching torso {integrator}",
+    )
+
+
+class SensorDataDeterminismTest(absltest.TestCase):
+  """Lockstep bitwise stability of sensordata (touch/force/torque/subtree/energy)."""
+
+  def test_sensordata_bitwise(self):
+    """Contact-fed touch plus rne_postconstraint / subtree / energy sensors stay bitwise stable."""
+    touch_seen = [False]
+
+    def on_step(step, d):
+      if (d.sensordata.numpy()[:, 0] > 0.0).any():
+        touch_seen[0] = True
+
+    _, d = _assert_lockstep_bitwise(
+      self,
+      lambda: _det_fixture_raw(
+        _sensor_suite_xml(),
+        nworld=4,
+        jacobian=mujoco.mjtJacobian.mjJAC_SPARSE,
+        enableflags=mujoco.mjtEnableBit.mjENBL_ENERGY,
+        njmax=512,
+        naconmax=4096,
+      ),
+      nsteps=100,
+      fields=("sensordata", "energy", "qpos", "qvel", "qacc"),
+      label="sensors",
+      on_step=on_step,
+    )
+    self.assertTrue(touch_seen[0], "touch sensor never fired: contacts did not reach the plate")
+    sensordata = d.sensordata.numpy()
+    self.assertTrue((sensordata[:, 1:7] != 0.0).any(), "expected nonzero force/torque sensor data")
+    self.assertTrue((sensordata[:, 13:15] != 0.0).any(), "expected nonzero energy sensor data")
+
+
+class FlexPassiveDeterminismTest(absltest.TestCase):
+  """Lockstep bitwise stability of flex models (elastic passive forces, CG preconditioner)."""
+
+  def test_flex_full_state_bitwise(self):
+    """An elastic flex body deforming and landing on a plane is bitwise stable w/ qfrc_passive."""
+    _, d = _assert_lockstep_bitwise(
+      self,
+      lambda: _det_fixture_raw(
+        _elastic_flex_xml(), nworld=8, jacobian=mujoco.mjtJacobian.mjJAC_SPARSE, njmax=1024, naconmax=8192
+      ),
+      nsteps=70,
+      fields=("qpos", "qvel", "qacc", "qfrc_passive"),
+      label="elastic flex",
+    )
+    self.assertTrue((d.qfrc_passive.numpy() != 0.0).any(), "expected nonzero flex passive forces")
+    self.assertGreater(int(d.nacon.numpy()[0]), 0, "expected flex-plane contacts by the end of the run")
+
+  def test_cg_flex_floppy_bitwise(self):
+    """flex/floppy.xml (CG solver, flex diagonal preconditioner) is bitwise stable."""
+    _assert_lockstep_bitwise(
+      self,
+      lambda: _det_fixture(path="flex/floppy.xml", nworld=4, overrides={"opt.jacobian": "SPARSE"}),
+      nsteps=40,
+      fields=("qpos", "qvel", "qacc"),
+      label="floppy CG",
+    )
+
+
+class EllipticConeDeterminismTest(parameterized.TestCase):
+  """Lockstep bitwise stability of the elliptic cone Hessian on a contact-rich mixed scene."""
+
+  @parameterized.parameters("SPARSE", "DENSE")
+  def test_aloha_elliptic_bitwise(self, jacobian):
+    """aloha_pot (elliptic cone, impratio=10, many cone contacts) is bitwise stable."""
+    _assert_lockstep_bitwise(
+      self,
+      lambda: _det_fixture(path="aloha_pot/scene.xml", keyframe="lift_pot0", nworld=8, overrides={"opt.jacobian": jacobian}),
+      nsteps=50,
+      fields=("qpos", "qvel", "qacc"),
+      label=f"aloha elliptic {jacobian}",
+    )
+
+
+class SleepWakeChurnDeterminismTest(absltest.TestCase):
+  """Lockstep bitwise stability of det + SLEEP while trees genuinely sleep and wake."""
+
+  def test_sleep_wake_churn_bitwise(self):
+    """Resting boxes sleep, staggered impactors wake them; state stays bitwise stable throughout."""
+    nsteps = 260
+    prev_awake = [None]
+    sleep_events = [0]
+    wake_events = [0]
+    max_nacon = [0]
+
+    def on_step(step, d):
+      cur = d.tree_awake.numpy()
+      if prev_awake[0] is not None:
+        sleep_events[0] += int(((prev_awake[0] == 1) & (cur == 0)).sum())
+        wake_events[0] += int(((prev_awake[0] == 0) & (cur == 1)).sum())
+      prev_awake[0] = cur.copy()
+      max_nacon[0] = max(max_nacon[0], int(d.nacon.numpy()[0]))
+
+    _, d = _assert_lockstep_bitwise(
+      self,
+      lambda: _det_fixture_raw(
+        _sleep_wake_churn_xml(),
+        nworld=16,
+        jacobian=mujoco.mjtJacobian.mjJAC_SPARSE,
+        enableflags=mujoco.mjtEnableBit.mjENBL_SLEEP,
+        njmax=1024,
+        naconmax=16384,
+      ),
+      nsteps=nsteps,
+      fields=("qpos", "qvel", "qacc", "qfrc_constraint", "tree_awake"),
+      label="sleep wake churn",
+      on_step=on_step,
+    )
+    self.assertFalse(np.isnan(d.qacc.numpy()).any(), "qacc contains NaN after det+SLEEP run")
+    # The run is only a meaningful probe if the compact solve was exercised through churn and no
+    # capacity overflow (an independent determinism hazard) occurred.
+    self.assertGreater(sleep_events[0], 0, "no tree ever fell asleep: model failed to exercise SLEEP")
+    self.assertGreater(wake_events[0], 0, "no tree ever woke up: model failed to exercise wake churn")
+    self.assertLess(max_nacon[0], d.naconmax, "contact capacity saturated; probe invalid")
+    self.assertLess(int(d.nefc.numpy().max()), d.njmax, "constraint capacity saturated; probe invalid")
+
+
+class GraphCaptureLongHorizonTest(parameterized.TestCase):
+  """Long-horizon bitwise stability of a captured step across independent capture+replay runs."""
+
+  @absltest.skipIf(not wp.get_device().is_cuda, "Skipping test that requires GPU.")
+  @parameterized.parameters(
+    ("humanoid/humanoid.xml", "DENSE", 64),
+    ("pendula.xml", "SPARSE", 16),
+  )
+  def test_captured_step_long_horizon_bitwise(self, path, jacobian, nworld):
+    """320 replays of a captured step produce identical per-step state hashes across two runs."""
+    nsteps = 320
+
+    def run():
+      m, d = _det_fixture(path=path, nworld=nworld, qvel_noise=0.1, ctrl_noise=0.1, overrides={"opt.jacobian": jacobian})
+      with wp.ScopedCapture() as capture:
+        mjw.step(m, d)
+      hashes = []
+      for _ in range(nsteps):
+        wp.capture_launch(capture.graph)
+        wp.synchronize()
+        h = hashlib.sha256()
+        for field in ("qpos", "qvel", "qacc"):
+          h.update(getattr(d, field).numpy().tobytes())
+        hashes.append(h.hexdigest())
+      return hashes, d.qpos.numpy().copy()
+
+    hashes1, qpos1 = run()
+    hashes2, _ = run()
+    self.assertTrue(np.isfinite(qpos1).all(), "captured run produced non-finite qpos")
+    for step, (h1, h2) in enumerate(zip(hashes1, hashes2)):
+      self.assertEqual(h1, h2, f"{path} {jacobian}: captured-step state hash diverged at replay {step}")
 
 
 if __name__ == "__main__":

@@ -1069,6 +1069,29 @@ def _tendon_actuator_force(
 
 
 @wp.kernel
+def _tendon_actuator_force_det(
+  # Model:
+  nu: int,
+  actuator_trntype: wp.array[int],
+  actuator_trnid: wp.array[wp.vec2i],
+  # Data in:
+  actuator_force_in: wp.array2d[float],
+  # Out:
+  ten_actfrc_out: wp.array2d[float],
+):
+  worldid, tenid = wp.tid()
+
+  ten_actfrc = float(0.0)
+
+  # gather over the tendon's actuators in ascending actuator id order
+  for actid in range(nu):
+    if actuator_trntype[actid] == TrnType.TENDON and actuator_trnid[actid][0] == tenid:
+      ten_actfrc += actuator_force_in[worldid, actid]
+
+  ten_actfrc_out[worldid, tenid] = ten_actfrc
+
+
+@wp.kernel
 def _tendon_actuator_force_clamp(
   # Model:
   tendon_actfrclimited: wp.array[bool],
@@ -1115,6 +1138,46 @@ def _qfrc_actuator(
     colind = moment_colind_in[worldid, sparseid]
     qfrc = actuator_moment_in[worldid, sparseid] * actuator_force_in[worldid, actid]
     wp.atomic_add(qfrc_actuator_out[worldid], colind, qfrc)
+
+
+@wp.kernel
+def _qfrc_actuator_det(
+  # Model:
+  nu: int,
+  # Data in:
+  moment_rownnz_in: wp.array2d[int],
+  moment_rowadr_in: wp.array2d[int],
+  moment_colind_in: wp.array2d[int],
+  actuator_moment_in: wp.array2d[float],
+  actuator_force_in: wp.array2d[float],
+  # Data out:
+  qfrc_actuator_out: wp.array2d[float],
+):
+  worldid, dofid = wp.tid()
+
+  qfrc = float(0.0)
+
+  # gather over actuators in ascending actuator id order
+  for actid in range(nu):
+    rownnz = moment_rownnz_in[worldid, actid]
+    if rownnz == 0:
+      continue
+    rowadr = moment_rowadr_in[worldid, actid]
+
+    # moment_colind is ascending within each row for every transmission type
+    lo = rowadr
+    hi = rowadr + rownnz
+    while lo < hi:
+      mid = (lo + hi) >> 1
+      if moment_colind_in[worldid, mid] < dofid:
+        lo = mid + 1
+      else:
+        hi = mid
+
+    if lo < rowadr + rownnz and moment_colind_in[worldid, lo] == dofid:
+      qfrc += actuator_moment_in[worldid, lo] * actuator_force_in[worldid, actid]
+
+  qfrc_actuator_out[worldid, dofid] = qfrc
 
 
 @wp.kernel
@@ -1207,12 +1270,20 @@ def fwd_actuation(m: Model, d: Data):
   if m.ntendon:
     # total actuator force at tendon
     ten_actfrc = wp.zeros((d.nworld, m.ntendon), dtype=float)
-    wp.launch(
-      _tendon_actuator_force,
-      dim=(d.nworld, m.nu),
-      inputs=[m.actuator_trntype, m.actuator_trnid, d.actuator_force],
-      outputs=[ten_actfrc],
-    )
+    if m.opt.deterministic:
+      wp.launch(
+        _tendon_actuator_force_det,
+        dim=(d.nworld, m.ntendon),
+        inputs=[m.nu, m.actuator_trntype, m.actuator_trnid, d.actuator_force],
+        outputs=[ten_actfrc],
+      )
+    else:
+      wp.launch(
+        _tendon_actuator_force,
+        dim=(d.nworld, m.nu),
+        inputs=[m.actuator_trntype, m.actuator_trnid, d.actuator_force],
+        outputs=[ten_actfrc],
+      )
 
     wp.launch(
       _tendon_actuator_force_clamp,
@@ -1221,20 +1292,35 @@ def fwd_actuation(m: Model, d: Data):
       outputs=[d.actuator_force],
     )
 
-  # TODO(team): optimize performance
-  d.qfrc_actuator.zero_()
-  wp.launch(
-    _qfrc_actuator,
-    dim=(d.nworld, m.nu),
-    inputs=[
-      d.moment_rownnz,
-      d.moment_rowadr,
-      d.moment_colind,
-      d.actuator_moment,
-      d.actuator_force,
-    ],
-    outputs=[d.qfrc_actuator],
-  )
+  if m.opt.deterministic:
+    wp.launch(
+      _qfrc_actuator_det,
+      dim=(d.nworld, m.nv),
+      inputs=[
+        m.nu,
+        d.moment_rownnz,
+        d.moment_rowadr,
+        d.moment_colind,
+        d.actuator_moment,
+        d.actuator_force,
+      ],
+      outputs=[d.qfrc_actuator],
+    )
+  else:
+    # TODO(team): optimize performance
+    d.qfrc_actuator.zero_()
+    wp.launch(
+      _qfrc_actuator,
+      dim=(d.nworld, m.nu),
+      inputs=[
+        d.moment_rownnz,
+        d.moment_rowadr,
+        d.moment_colind,
+        d.actuator_moment,
+        d.actuator_force,
+      ],
+      outputs=[d.qfrc_actuator],
+    )
   gravity_enabled = not (m.opt.disableflags & DisableBit.GRAVITY)
   wp.launch(
     _qfrc_actuator_gravcomp_limits,

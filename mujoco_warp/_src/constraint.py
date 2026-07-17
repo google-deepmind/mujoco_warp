@@ -2354,9 +2354,11 @@ def _equality_flexstrain(is_sparse: bool, deterministic: bool, newton: bool):
         return
 
       if wp.static(is_sparse and newton):
+        # one jtdaj block per eigenmode row: nrow must be 1, not the family's
+        # row count (a wider block would re-accumulate neighboring rows into H)
         jgid = wp.atomic_add(efc_jtdaj_nblock_out, worldid, 1)
         efc_jtdaj_adr_out[worldid, jgid] = efcid
-        efc_jtdaj_nrow_out[worldid, jgid] = 6
+        efc_jtdaj_nrow_out[worldid, jgid] = 1
 
       # Read eigenvector from stiffness data
       eigvec_base = k_base + 1 + eig * ndof_cell
@@ -7015,7 +7017,16 @@ def make_constraint(m: types.Model, d: types.Data):
           )
       else:
         d.efc.Jqvel.zero_()
-        tile_size = m.block_dim.contact_jac_tiled
+        if det:
+          # One dof block spanning all of nv_pad: the tile_reduce + atomic_add on efc_Jqvel_out
+          # then has a single contributor per row with a fixed intra-tile reduction order.
+          # block_dim stays a warp multiple; tiles wider than the block assign multiple
+          # elements per thread.
+          tile_size = m.nv_pad
+          block_dim = min(256, ((tile_size + 31) // 32) * 32)
+        else:
+          tile_size = m.block_dim.contact_jac_tiled
+          block_dim = tile_size
         n_dof_blocks = (m.nv_pad + tile_size - 1) // tile_size
 
         if has_flex:
@@ -7062,7 +7073,7 @@ def make_constraint(m: types.Model, d: types.Data):
               d.efc.J,
               d.efc.Jqvel,
             ],
-            block_dim=tile_size,
+            block_dim=block_dim,
           )
         else:
           wp.launch_tiled(
@@ -7093,7 +7104,7 @@ def make_constraint(m: types.Model, d: types.Data):
               d.efc.J,
               d.efc.Jqvel,
             ],
-            block_dim=tile_size,
+            block_dim=block_dim,
           )
 
       if has_flex:

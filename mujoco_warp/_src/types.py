@@ -1363,6 +1363,8 @@ class Model:
     max_flex_dim: maximum flex dimension in the model
     block_dim: block dim options
     body_tree: list of body ids by tree level
+    body_children_adr: address per body into body_children       (nbody + 1,)
+    body_children: child body ids, ascending within each parent  (nbody - 1,)
     body_branches: flattened body ids for all branches
     body_branch_start: start index in body_branches for each branch   (nbranch + 1,)
     mocap_bodyid: id of body for mocap                       (nmocap,)
@@ -1372,6 +1374,10 @@ class Model:
     jnt_limited_slide_hinge_adr: limited/slide/hinge jntadr
     jnt_limited_ball_adr: limited/ball jntadr
     body_isdofancestor: precomputed mask of which DOFs affect each body
+    dof_gravcomp_adr: address per dof into dof_gravcomp_body     (nv + 1,)
+    dof_gravcomp_body: bodies with mjModel gravcomp != 0 supported by each dof, ascending body
+                       id; per-world body_gravcomp overrides of structurally-zero entries are
+                       not covered
     dof_tri_row: dof upper triangle row (used in solver)
     dof_tri_col: dof upper triangle col (used in solver)
     nxn_geom_pair: collision pair geom ids [-2, ngeom-1]
@@ -1402,9 +1408,20 @@ class Model:
     wrap_site_adr: addresses for site tendon wrap object
     wrap_site_pair_adr: first address for site wrap pair
     wrap_geom_adr: addresses for geom tendon wrap object
+    dof_ten_adr: address per dof into dof_ten_tenid          (nv + 1,)
+    dof_ten_tenid: tendon id of each static ten_J entry touching the dof, ascending
+                   tendon id within each dof                 (nJten,)
+    dof_ten_sparseid: ten_J sparse index of each dof_ten_tenid entry (nJten,)
+    ten_sitepair_adr: segment per tendon into wrap_site_pair_adr / tendon_site_pair_adr,
+                      path order within each tendon          (ntendon + 1,)
+    ten_geomwrap_adr: segment per tendon into wrap_geom_adr / tendon_geom_adr,
+                      path order within each tendon          (ntendon + 1,)
     wrap_pulley_scale: pulley scaling                        (nwrap,)
     actuator_trntype_body_adr: addresses for actuators
                                with body transmission
+    actuator_moment_rownnz_static: structural actuator_moment row widths (nu,)
+    actuator_moment_rowadr_static: exclusive scan of actuator_moment_rownnz_static,
+                                   ascending actuator id     (nu,)
     sensor_pos_adr: addresses for position sensors
     sensor_limitpos_adr: address for limit position sensors
     sensor_vel_adr: addresses for velocity sensors
@@ -1434,6 +1451,13 @@ class Model:
     qLD_updates: sparse factor updates grouped by tree level
     qLD_all_updates: tuple of all levels concatenated
     qLD_level_offsets: tuple of start offsets for each level
+    qLD_det_updates: qLD_updates tuples resorted by (level, target row i, source row k)
+    qLD_det_rowid: target row i per row slot; a row slot is a (level, i) pair with
+                   >= 1 update                               (nrowslots,)
+    qLD_det_rowadr: segment per row slot into qLD_det_updates (nrowslots + 1,)
+    qLD_det_level_rowadr: row-slot range per level, levels ascending by depth as in
+                          qLD_updates                        (nlevels + 1,)
+    qLD_det_level_rowadr_np: host copy of qLD_det_level_rowadr
     M_fullm_i: sparse mass matrix addressing
     M_fullm_j: sparse mass matrix addressing
     M_elemid: (row, col) -> CSR madr addresses; -1 if not a chain ancestor
@@ -1466,6 +1490,19 @@ class Model:
     nflexface: number of interpolated flex shell faces
     flex_face_map: mapping of face index to flex and local element face indices
     flex_face: global node indices of each face                              (nflexface, 9)
+    nflexpartial: total flex passive-force partial slots across all four families
+    flex_partial_elas_base: elasticity family slot base;
+                            slot = base + flex_elemdataadr-relative vertex address
+    flex_partial_bend_base: bending family slot base;
+                            slot = base + 4 * edgeid + vertex (v0, v1, flap0, flap1)
+    flex_partial_interp_base: interp family slot base;
+                              slot = base + cellid * flex_partial_interp_npc + node index
+    flex_partial_face_base: bend-interp face family slot base;
+                            slot = base + 18 * bendedgeid + 9 * side (A=0, B=1) + node index
+    flex_partial_interp_npc: interp family slot stride (max nodes per interp cell)
+    flexbody_partial_adr: address per body into flexbody_partialid           (nbody + 1,)
+    flexbody_partialid: statically writable partial slot ids per body, ascending; slots
+                        whose scatter site is compiled out never appear     (<= nflexpartial,)
   """
 
   nq: int
@@ -1845,6 +1882,8 @@ class Model:
   max_flex_dim: int
   block_dim: BlockDim
   body_tree: tuple[wp.array[int], ...]
+  body_children_adr: wp.array[int]
+  body_children: wp.array[int]
   body_branches: wp.array[int]
   body_branch_start: wp.array[int]
   mocap_bodyid: array("nmocap", int)
@@ -1854,6 +1893,8 @@ class Model:
   jnt_limited_slide_hinge_adr: wp.array[int]
   jnt_limited_ball_adr: wp.array[int]
   body_isdofancestor: array("nbody", "nv_pad", int)
+  dof_gravcomp_adr: wp.array[int]
+  dof_gravcomp_body: wp.array[int]
   dof_tri_row: wp.array[int]
   dof_tri_col: wp.array[int]
   nxn_geom_pair: wp.array[wp.vec2i]
@@ -1880,8 +1921,15 @@ class Model:
   wrap_site_adr: wp.array[int]
   wrap_site_pair_adr: wp.array[int]
   wrap_geom_adr: wp.array[int]
+  dof_ten_adr: wp.array[int]
+  dof_ten_tenid: wp.array[int]
+  dof_ten_sparseid: wp.array[int]
+  ten_sitepair_adr: wp.array[int]
+  ten_geomwrap_adr: wp.array[int]
   wrap_pulley_scale: array("nwrap", float)
   actuator_trntype_body_adr: wp.array[int]
+  actuator_moment_rownnz_static: array("nu", int)
+  actuator_moment_rowadr_static: array("nu", int)
   sensor_pos_adr: wp.array[int]
   sensor_limitpos_adr: wp.array[int]
   sensor_vel_adr: wp.array[int]
@@ -1907,6 +1955,11 @@ class Model:
   qLD_updates: tuple[wp.array[wp.vec3i], ...]
   qLD_all_updates: wp.array[wp.vec3i]
   qLD_level_offsets: wp.array[int]
+  qLD_det_updates: wp.array[wp.vec3i]
+  qLD_det_rowid: wp.array[int]
+  qLD_det_rowadr: wp.array[int]
+  qLD_det_level_rowadr: wp.array[int]
+  qLD_det_level_rowadr_np: tuple[int, ...]
   # TODO(team): Remove M_fullm_i/j and M_elemid by iterating the M CSR layout
   # directly in the solver/derivative kernels
   M_fullm_i: wp.array[int]
@@ -1941,6 +1994,14 @@ class Model:
   nflexface: int
   flex_face_map: array("nflexface", wp.vec2i)
   flex_face: array("nflexface", 9, int)
+  nflexpartial: int
+  flex_partial_elas_base: int
+  flex_partial_bend_base: int
+  flex_partial_interp_base: int
+  flex_partial_face_base: int
+  flex_partial_interp_npc: int
+  flexbody_partial_adr: wp.array[int]
+  flexbody_partialid: wp.array[int]
 
 
 class ContactType(enum.IntFlag):
