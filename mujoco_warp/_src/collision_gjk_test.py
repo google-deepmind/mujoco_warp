@@ -199,6 +199,7 @@ def _geom_dist(
       face_pr,
       face_norm2,
       horizon,
+      True,
     )
 
     if multiccd and idx >= 0:

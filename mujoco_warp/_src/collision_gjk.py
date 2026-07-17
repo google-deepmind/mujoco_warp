@@ -1287,6 +1287,7 @@ def _epa(
   geomtype1: int,
   geomtype2: int,
   is_discrete: bool,
+  warn_overflow: bool,
 ) -> Tuple[float, wp.vec3, wp.vec3, int]:
   """Recover penetration data from two geoms in contact given an initial polytope."""
   upper = FLOAT_MAX
@@ -1356,7 +1357,8 @@ def _epa(
     pt.nhorizon = _add_edge(pt, face[1], face[2])
     pt.nhorizon = _add_edge(pt, face[2], face[0])
     if pt.nhorizon == -1:
-      wp.printf("Warning: EPA horizon = %d isn't large enough.\n", pt.horizon.shape[0])
+      if warn_overflow:
+        wp.printf("Warning: EPA horizon = %d isn't large enough.\n", pt.horizon.shape[0])
       idx = -1
       break
 
@@ -1373,7 +1375,8 @@ def _epa(
         pt.nhorizon = _add_edge(pt, face[1], face[2])
         pt.nhorizon = _add_edge(pt, face[2], face[0])
         if pt.nhorizon == -1:
-          wp.printf("Warning: EPA horizon = %d isn't large enough.\n", pt.horizon.shape[0])
+          if warn_overflow:
+            wp.printf("Warning: EPA horizon = %d isn't large enough.\n", pt.horizon.shape[0])
           idx = -1
           break
 
@@ -2382,6 +2385,7 @@ def epa_phase(
   face_pr: wp.array[wp.vec3],
   face_norm2: wp.array[float],
   horizon: wp.array[int],
+  warn_overflow: bool,
 ) -> Tuple[float, int, wp.vec3, wp.vec3, int]:
   """Run EPA given GJK result. Returns (dist, ncontact, x1, x2, multiccd_idx)."""
   pt = Polytope()
@@ -2453,7 +2457,7 @@ def epa_phase(
     return result.dist, 1, result.x1, result.x2, -1
 
   is_discrete = _discrete_geoms(geomtype1, geomtype2) and (geom1.margin == 0.0 and geom2.margin == 0.0)
-  dist, x1, x2, idx = _epa(tolerance, epa_iterations, pt, geom1, geom2, geomtype1, geomtype2, is_discrete)
+  dist, x1, x2, idx = _epa(tolerance, epa_iterations, pt, geom1, geom2, geomtype1, geomtype2, is_discrete, warn_overflow)
   if idx == -1:
     return FLOAT_MAX, 0, wp.vec3(), wp.vec3(), -1
 
@@ -2487,6 +2491,7 @@ def ccd(
   face_pr: wp.array[wp.vec3],
   face_norm2: wp.array[float],
   horizon: wp.array[int],
+  warn_overflow: bool,
 ) -> Tuple[float, int, wp.vec3, wp.vec3, int]:
   """General convex collision detection via GJK/EPA."""
   needs_epa, dist, ncontact, x1, x2, result, geom1, geom2 = gjk_phase(
@@ -2508,4 +2513,5 @@ def ccd(
     face_pr,
     face_norm2,
     horizon,
+    warn_overflow,
   )

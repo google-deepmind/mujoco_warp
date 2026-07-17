@@ -474,6 +474,7 @@ def ccd_hfield_kernel_builder(
             epa_pr,
             epa_norm2,
             epa_horizon,
+            wp.static(warn_overflow),
           )
 
           if ncontact == 0:
@@ -833,6 +834,7 @@ def ccd_kernel_builder(
         epa_pr_in[ccdid],
         epa_norm2_in[ccdid],
         epa_horizon_in[ccdid],
+        wp.static(warn_overflow),
       )
 
     if dist >= gap and not is_collision_sensor:
