@@ -2921,7 +2921,6 @@ def _JTDAJ_sparse(compact: bool, elliptic: bool, max_condim: int):
     # Data in:
     contact_friction_in: wp.array[types.vec5],
     contact_dim_in: wp.array[int],
-    efc_type_in: wp.array2d[int],
     efc_id_in: wp.array2d[int],
     efc_jtdaj_adr_in: wp.array2d[int],
     efc_jtdaj_nrow_in: wp.array2d[int],
@@ -2957,10 +2956,7 @@ def _JTDAJ_sparse(compact: bool, elliptic: bool, max_condim: int):
 
       is_cone = False
       if wp.static(ELLIPTIC):
-        is_cone = (
-          efc_type_in[worldid, head_row] == types.ConstraintType.CONTACT_ELLIPTIC
-          and efc_state_in[worldid, head_row] == types.ConstraintState.CONE
-        )
+        is_cone = efc_state_in[worldid, head_row] == types.ConstraintState.CONE
         condim = int(0)
         cone_rowadr = types.vec6i(head_adr, head_adr, head_adr, head_adr, head_adr, head_adr)
         if is_cone:
@@ -3176,7 +3172,6 @@ def _update_gradient(m: types.Model, d: types.Data, ctx: SolverContext, compact:
         m.opt.impratio_invsqrt,
         d.contact.friction,
         d.contact.dim,
-        d.efc.type,
         d.efc.id,
         dj.efc.jtdaj_adr,
         dj.efc.jtdaj_nrow,
