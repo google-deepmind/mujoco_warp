@@ -14,6 +14,9 @@
 # ==============================================================================
 """Tests for GPU determinism (contact sorting + constraint row allocation)."""
 
+import hashlib
+
+import mujoco
 import numpy as np
 import warp as wp
 from absl.testing import absltest
@@ -522,6 +525,278 @@ class SolverDeterminismTest(parameterized.TestCase):
     # divergence consistent with reordered rounding amplified by contact
     # dynamics, but catch gross algorithmic errors.
     self.assertLess(np.max(np.abs(qpos_det - qpos_nondet)), 1.0)
+
+
+# A cube SDF resting deeply penetrated into a plane: every step the SDF narrowphase
+# emits a large multi-contact manifold from many concurrent initpoint threads.
+_SDF_PLANE_CUBE = """
+  <mujoco>
+    <option sdf_iterations="10" sdf_initpoints="40"/>
+    <asset>
+      <mesh name="cube"
+       vertex="1 1 1  1 1 -1  1 -1 1  1 -1 -1  -1 1 1  -1 1 -1  -1 -1 1  -1 -1 -1"/>
+    </asset>
+    <worldbody>
+      <geom size="40 40 40" type="plane"/>
+      <body pos="0 0 1" euler="45 0 0">
+        <freejoint/>
+        <geom type="sdf" mesh="cube"/>
+      </body>
+    </worldbody>
+  </mujoco>
+"""
+
+
+# An 8x8 cloth resting on a plane: 64 vertex-plane contacts emitted by concurrent
+# flex narrowphase threads.
+_FLEX_CLOTH_PLANE = """
+  <mujoco>
+    <worldbody>
+      <geom type="plane" size="2 2 .01"/>
+      <flexcomp type="grid" count="8 8 1" spacing=".05 .05 .05" pos="0 0 .005" radius=".01" mass="1" name="cloth" dim="2">
+        <contact selfcollide="none"/>
+      </flexcomp>
+    </worldbody>
+  </mujoco>
+"""
+
+
+# An 8x8 cloth and a free box resting on a plane: flex vertex-plane contacts and
+# rigid box-plane contacts coexist in every world, exercising the split
+# rigid/flex sort-key ranges.
+_FLEX_CLOTH_PLANE_BOX = """
+  <mujoco>
+    <worldbody>
+      <geom type="plane" size="2 2 .01"/>
+      <body pos=".6 .6 .04">
+        <freejoint/>
+        <geom type="box" size=".05 .05 .05"/>
+      </body>
+      <flexcomp type="grid" count="8 8 1" spacing=".05 .05 .05" pos="0 0 .005" radius=".01" mass="1" name="cloth" dim="2">
+        <contact selfcollide="none"/>
+      </flexcomp>
+    </worldbody>
+  </mujoco>
+"""
+
+
+# Three fixed tendons whose limits are all violated at keyframe 0, referencing
+# 3 + 3 + 2 Jacobian non-zeros. No other constraints are active.
+_TENDON_LIMIT_ACTIVE = """
+  <mujoco>
+    <option>
+      <flag contact="disable"/>
+    </option>
+    <worldbody>
+      <body>
+        <joint name="j0" type="hinge"/>
+        <geom type="sphere" size=".1"/>
+        <body>
+          <joint name="j1" type="hinge"/>
+          <geom type="sphere" size=".1"/>
+          <body>
+            <joint name="j2" type="hinge"/>
+            <geom type="sphere" size=".1"/>
+          </body>
+        </body>
+      </body>
+    </worldbody>
+    <tendon>
+      <fixed limited="true" range="-.4 .5">
+        <joint joint="j0" coef=".25"/>
+        <joint joint="j1" coef=".5"/>
+        <joint joint="j2" coef=".75"/>
+      </fixed>
+      <fixed limited="true" range="0 .4">
+        <joint joint="j0" coef=".5"/>
+        <joint joint="j1" coef=".25"/>
+        <joint joint="j2" coef="-.75"/>
+      </fixed>
+      <fixed limited="true" range="0 .3">
+        <joint joint="j0" coef="1"/>
+        <joint joint="j2" coef=".5"/>
+      </fixed>
+    </tendon>
+    <keyframe>
+      <key qpos=".2 .4 .6"/>
+    </keyframe>
+  </mujoco>
+"""
+
+
+def _flexstrain_grid_xml(ncomp):
+  """Returns a model with `ncomp` disjoint trilinear flexcomps with strain equalities."""
+  comps = []
+  for i in range(ncomp):
+    pos = f"{0.4 * (i % 8)} {0.4 * (i // 8)} 1"
+    comps.append(f"""
+      <flexcomp type="grid" count="2 2 2" spacing=".05 .05 .05" pos="{pos}" radius=".001" mass="1"
+                name="soft{i}" dof="trilinear" dim="3">
+        <edge equality="strain"/>
+        <contact contype="0" conaffinity="0" selfcollide="none" internal="false"/>
+      </flexcomp>""")
+  return "<mujoco>\n  <worldbody>{}\n  </worldbody>\n</mujoco>".format("".join(comps))
+
+
+def _ordered_contact_signature(d):
+  """Returns a hash of the active contact buffer, sensitive to contact order."""
+  nacon = int(d.nacon.numpy()[0])
+  parts = [np.int64(nacon).tobytes()]
+  for field in ("worldid", "geom", "flex", "elem", "vert", "dist", "pos", "dim"):
+    arr = getattr(d.contact, field).numpy()
+    # flex, elem and vert are only allocated when flex contacts are present.
+    if arr.shape[0]:
+      parts.append(arr[:nacon].tobytes())
+  return hashlib.sha256(b"".join(parts)).hexdigest()
+
+
+class SDFDeterminismTest(absltest.TestCase):
+  """Tests that SDF contacts are emitted in a deterministic order."""
+
+  def test_sdf_state_and_contact_order_deterministic(self):
+    """qpos/qvel/qacc and the ordered contact buffer are bitwise identical across runs."""
+    nsteps = 30
+
+    def run():
+      mjm, _, m, d = test_data.fixture(xml=_SDF_PLANE_CUBE, nworld=4, overrides={"opt.jacobian": "SPARSE"})
+      m.opt.deterministic = True
+      for _ in range(nsteps):
+        mjw.step(m, d)
+      nacon = int(d.nacon.numpy()[0])
+      result = {
+        "nacon": nacon,
+        "qpos": d.qpos.numpy().copy(),
+        "qvel": d.qvel.numpy().copy(),
+        "qacc": d.qacc.numpy().copy(),
+      }
+      for field in ("worldid", "geom", "dist", "pos", "frame"):
+        result[field] = getattr(d.contact, field).numpy()[:nacon].copy()
+      return mjm, result
+
+    mjm, first = run()
+    _, second = run()
+
+    # Confirm the SDF narrowphase is exercised: contacts involve the sdf geom.
+    sdf_geoms = np.nonzero(mjm.geom_type == mujoco.mjtGeom.mjGEOM_SDF)[0]
+    self.assertGreater(first["nacon"], 0)
+    self.assertTrue(np.isin(first["geom"], sdf_geoms).any(), "expected contacts involving the sdf geom")
+
+    self.assertEqual(first["nacon"], second["nacon"])
+    for field in ("qpos", "qvel", "qacc", "worldid", "geom", "dist", "pos", "frame"):
+      np.testing.assert_array_equal(first[field], second[field], err_msg=f"{field} differs between runs")
+
+
+class FlexDeterminismTest(absltest.TestCase):
+  """Tests deterministic contact ordering and efc row placement for flex models."""
+
+  def test_flex_contact_order_deterministic(self):
+    """Repeated collision() on a frozen state yields one unique ordered-contact signature."""
+    _, _, m, d = test_data.fixture(xml=_FLEX_CLOTH_PLANE, nworld=2)
+    m.opt.deterministic = True
+
+    signatures = set()
+    for _ in range(12):
+      mjw.collision(m, d)
+      signatures.add(_ordered_contact_signature(d))
+
+    nacon = int(d.nacon.numpy()[0])
+    self.assertGreater(nacon, 0)
+    self.assertTrue((d.contact.geom.numpy()[:nacon] == -1).any(), "expected flex contacts")
+    self.assertLen(signatures, 1, "contact order varies across identical collision() calls")
+
+  def test_mixed_rigid_flex_contacts_world_contiguous(self):
+    """Sorted contacts stay world-major when rigid and flex contacts coexist."""
+    _, _, m, d = test_data.fixture(xml=_FLEX_CLOTH_PLANE_BOX, nworld=4, overrides={"opt.jacobian": "SPARSE"})
+    m.opt.deterministic = True
+    for _ in range(3):
+      mjw.step(m, d)
+
+    nacon = int(d.nacon.numpy()[0])
+    geom = d.contact.geom.numpy()[:nacon]
+    self.assertTrue((geom[:, 1] >= 0).any(), "expected rigid contacts")
+    self.assertTrue((geom[:, 1] < 0).any(), "expected flex contacts")
+
+    # The per-world constraint row scan accumulates over [world_start, world_end)
+    # spans, so each world's contacts must be contiguous after sorting.
+    worldid = d.contact.worldid.numpy()[:nacon]
+    self.assertTrue((np.diff(worldid) >= 0).all(), "contacts are not world-contiguous after sorting")
+
+    # All worlds are identical, so overlapping per-world scan spans show up as unequal nefc.
+    nefc = d.nefc.numpy()
+    np.testing.assert_array_equal(nefc, np.full(d.nworld, nefc[0]), err_msg="nefc differs across identical worlds")
+
+  def test_flexstrain_row_allocation_deterministic(self):
+    """Repeated make_constraint on a frozen state gives bitwise-identical efc row placement."""
+    _, _, m, d = test_data.fixture(
+      xml=_flexstrain_grid_xml(64), nworld=128, overrides={"opt.jacobian": "SPARSE"}, njmax_nnz=32768
+    )
+    m.opt.deterministic = True
+    mjw.fwd_position(m, d)
+    nworld = d.nworld
+
+    def snapshot():
+      mjw.make_constraint(m, d)
+      nefc = d.nefc.numpy().copy()
+      fields = {}
+      for name in ("id", "type", "J_rowadr"):
+        arr = getattr(d.efc, name).numpy()
+        fields[name] = np.concatenate([arr[w, : nefc[w]] for w in range(nworld)])
+      return nefc, fields
+
+    nefc0, first = snapshot()
+    self.assertGreater(nefc0.sum(), 0)
+    for rep in range(1, 8):
+      nefc, fields = snapshot()
+      np.testing.assert_array_equal(nefc0, nefc, err_msg=f"nefc differs on repeat {rep}")
+      for name, values in fields.items():
+        np.testing.assert_array_equal(first[name], values, err_msg=f"efc.{name} placement differs on repeat {rep}")
+
+
+class TendonLimitNnzTest(absltest.TestCase):
+  """Tests deterministic-mode sparse nnz accounting for tendon limit rows."""
+
+  def test_limit_tendon_nnz_matches_rows(self):
+    """Rows reference exactly the reserved nnz region: no allocator hole below their addresses."""
+    _, _, m, d = test_data.fixture(xml=_TENDON_LIMIT_ACTIVE, keyframe=0, nworld=4, overrides={"opt.jacobian": "SPARSE"})
+    m.opt.deterministic = True
+    mjw.make_constraint(m, d)
+
+    nefc = d.nefc.numpy()
+    np.testing.assert_array_equal(d.nl.numpy(), np.full(d.nworld, 3), err_msg="expected 3 active tendon limits per world")
+    np.testing.assert_array_equal(nefc, np.full(d.nworld, 3))
+
+    rownnz = d.efc.J_rownnz.numpy()
+    rowadr = d.efc.J_rowadr.numpy()
+    for w in range(d.nworld):
+      referenced = rownnz[w, : nefc[w]].sum()
+      row_end = (rowadr[w, : nefc[w]] + rownnz[w, : nefc[w]]).max()
+      self.assertEqual(referenced, 8)
+      self.assertLessEqual(row_end, referenced, f"tendon limit rows placed beyond the referenced nnz in world {w}")
+
+  def test_limit_tendon_tight_njmax_nnz_does_not_raise(self):
+    """No spurious det overflow when njmax_nnz exactly fits the active tendon limit rows."""
+    _, _, m, d = test_data.fixture(
+      xml=_TENDON_LIMIT_ACTIVE, keyframe=0, nworld=4, overrides={"opt.jacobian": "SPARSE"}, njmax_nnz=8
+    )
+    m.opt.deterministic = True
+    mjw.step(m, d)
+    np.testing.assert_array_equal(d.nl.numpy(), np.full(d.nworld, 3))
+
+
+class SleepDeterminismTest(absltest.TestCase):
+  """Tests deterministic mode combined with the SLEEP feature."""
+
+  def test_det_sleep_no_nan(self):
+    """Deterministic mode plus SLEEP stays numerically healthy (bitwise stability not covered)."""
+    _, _, m, d = test_data.fixture(
+      path="humanoid/humanoid.xml",
+      nworld=4,
+      overrides={"opt.jacobian": "SPARSE", "opt.enableflags": mjw.EnableBit.SLEEP},
+    )
+    m.opt.deterministic = True
+    for _ in range(50):
+      mjw.step(m, d)
+    self.assertFalse(np.isnan(d.qacc.numpy()).any(), "qacc contains NaN after 50 det+SLEEP steps")
 
 
 if __name__ == "__main__":

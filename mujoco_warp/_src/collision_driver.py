@@ -35,6 +35,7 @@ from mujoco_warp._src.types import DisableBit
 from mujoco_warp._src.types import EnableBit
 from mujoco_warp._src.types import GeomType
 from mujoco_warp._src.types import Model
+from mujoco_warp._src.types import OverflowType
 from mujoco_warp._src.types import SleepState
 from mujoco_warp._src.types import mat23
 from mujoco_warp._src.types import mat63
@@ -882,37 +883,91 @@ def _narrowphase(m: Model, d: Data, ctx: CollisionContext):
     sdf_narrowphase(m, d, ctx)
 
 
-# Maximum geomcollisionid packed into sort key. Primitive box<>box generates at
-# most 8 contacts, so larger geomcollisionid values need not contribute to the
-# deterministic ordering key.
+# Maximum geomcollisionid packed into rigid sort keys. Primitive box<>box
+# generates at most 8 contacts; SDF pairs generate up to sdf_initpoints, so the
+# key width is raised to that when SDF geoms are present.
 _CONTACT_SORT_GCID_MAX = 8
 
+# Maximum geomcollisionid packed into flex sort keys. Flex narrowphase emits at
+# most two contacts per primitive pair per tetrahedron face (4 faces).
+_CONTACT_SORT_FLEX_GCID_MAX = 8
 
-@wp.kernel
-def _compute_contact_sort_keys(
-  # Model:
-  ngeom: int,
-  # Data in:
-  contact_geom_in: wp.array[wp.vec2i],
-  contact_worldid_in: wp.array[int],
-  contact_geomcollisionid_in: wp.array[int],
-  nacon_in: wp.array[int],
-  # In:
-  gcid_max: int,
-  # Out:
-  sort_keys_out: wp.array[int],
-  sort_indices_out: wp.array[int],
-):
-  """Compute composite sort keys for deterministic contact ordering."""
-  cid = wp.tid()
-  sort_indices_out[cid] = cid
-  if cid >= nacon_in[0]:
-    sort_keys_out[cid] = 2147483647  # INT_MAX: inactive contacts sort to end
-    return
-  geom = contact_geom_in[cid]
-  wid = contact_worldid_in[cid]
-  gcid = wp.min(contact_geomcollisionid_in[cid], gcid_max - 1)
-  sort_keys_out[cid] = ((wid * ngeom + geom[0]) * ngeom + geom[1]) * gcid_max + gcid
+
+@cache_kernel
+def _compute_contact_sort_keys(has_flex: bool):
+  @wp.kernel(module="unique", enable_backward=False)
+  def kernel(
+    # Model:
+    ngeom: int,
+    nflex: int,
+    nflexvert: int,
+    nflexelem: int,
+    # Data in:
+    contact_geom_in: wp.array[wp.vec2i],
+    contact_flex_in: wp.array[wp.vec2i],
+    contact_elem_in: wp.array[wp.vec2i],
+    contact_vert_in: wp.array[wp.vec2i],
+    contact_worldid_in: wp.array[int],
+    contact_geomcollisionid_in: wp.array[int],
+    nacon_in: wp.array[int],
+    # In:
+    gcid_max: int,
+    world_key_space: wp.int64,
+    flex_subkey_base: wp.int64,
+    # Out:
+    sort_keys_out: wp.array[wp.int64],
+    sort_indices_out: wp.array[int],
+  ):
+    """Compute composite sort keys for deterministic contact ordering."""
+    cid = wp.tid()
+    sort_indices_out[cid] = cid
+    if cid >= nacon_in[0]:
+      sort_keys_out[cid] = wp.int64(9223372036854775807)  # INT64_MAX: inactive contacts sort to end
+      return
+    geom = contact_geom_in[cid]
+    wid = contact_worldid_in[cid]
+    gcid = contact_geomcollisionid_in[cid]
+    # Worldid is the leading radix so each world's contacts stay contiguous after
+    # sorting, which the per-world constraint row scan relies on.
+    world_key = wp.int64(wid) * world_key_space
+    if wp.static(has_flex):
+      if geom[1] < 0:
+        # Flex contacts carry geom (g, -1) or (-1, -1), so the rigid geom-pair key
+        # cannot separate them. Key on the content-stable primitive ids instead;
+        # elements and vertices share one code space with 0 reserved for unset
+        # slots, and flex subkeys live above flex_subkey_base so they never alias
+        # rigid subkeys within a world. The stored id patterns are: geom-flex
+        # (elem/vert in slot 1), element-element (elem slots 0 and 1) and
+        # vertex-element (vert slot 0, elem slot 1).
+        elem = contact_elem_in[cid]
+        vert = contact_vert_in[cid]
+        nprim = wp.int64(1 + nflexelem + nflexvert)
+        p1 = wp.int64(0)
+        p2 = wp.int64(0)
+        if elem[0] >= 0:
+          p1 = wp.int64(1 + elem[0])
+          p2 = wp.int64(1 + elem[1])
+        elif vert[0] >= 0:
+          p1 = wp.int64(1 + nflexelem + vert[0])
+          p2 = wp.int64(1 + elem[1])
+        else:
+          if vert[1] >= 0:
+            p1 = wp.int64(1 + nflexelem + vert[1])
+          if elem[1] >= 0:
+            p2 = wp.int64(1 + elem[1])
+        key = wp.int64(geom[0] + 1)
+        key = key * wp.int64(nflex) + wp.int64(contact_flex_in[cid][1])
+        key = (key * nprim + p1) * nprim + p2
+        key = key * wp.int64(wp.static(_CONTACT_SORT_FLEX_GCID_MAX))
+        key += wp.int64(wp.min(gcid, wp.static(_CONTACT_SORT_FLEX_GCID_MAX - 1)))
+        sort_keys_out[cid] = world_key + flex_subkey_base + key
+        return
+    gcid = wp.min(gcid, gcid_max - 1)
+    key = wp.int64(geom[0]) * wp.int64(ngeom) + wp.int64(geom[1])
+    key = key * wp.int64(gcid_max) + wp.int64(gcid)
+    sort_keys_out[cid] = world_key + key
+
+  return kernel
 
 
 @wp.kernel
@@ -990,26 +1045,49 @@ def _sort_contacts(m: Model, d: Data):
   if d.naconmax == 0:
     return
 
-  # Check for sort-key overflow. Fall back to no-gcid key if needed.
+  # Rigid keys pack (worldid, geom0, geom1, gcid); the gcid width must cover the
+  # largest per-pair manifold so every contact of a pair gets a unique key.
   gcid_max = _CONTACT_SORT_GCID_MAX
-  if d.nworld * m.ngeom * m.ngeom * gcid_max > 2**31 - 1:
-    gcid_max = 1
+  if m.has_sdf_geom:
+    gcid_max = max(gcid_max, m.opt.sdf_initpoints)
+
+  # Each world owns one contiguous key range, split into rigid subkeys below and
+  # flex subkeys above, so sorted contacts are world-major and world-contiguous.
+  rigid_key_space = m.ngeom * m.ngeom * gcid_max
+  flex_key_space = 0
+  if m.nflex > 0:
+    nprim = 1 + m.nflexelem + m.nflexvert
+    flex_key_space = (m.ngeom + 1) * m.nflex * nprim * nprim * _CONTACT_SORT_FLEX_GCID_MAX
+  world_key_space = rigid_key_space + flex_key_space
+  if d.nworld * world_key_space > 2**63 - 1:
+    raise RuntimeError(
+      f"opt.deterministic: contact sort keys exceed int64 (nworld={d.nworld}, per-world rigid key "
+      f"space={rigid_key_space}, flex key space={flex_key_space}). Reduce nworld, ngeom or flex sizes."
+    )
 
   # Allocate sort buffers (radix_sort_pairs needs 2x capacity for internal use).
-  sort_keys = wp.empty(2 * d.naconmax, dtype=int)
+  sort_keys = wp.empty(2 * d.naconmax, dtype=wp.int64)
   sort_indices = wp.empty(2 * d.naconmax, dtype=int)
 
   # Step 1: Compute sort keys and initialise indices to identity.
   wp.launch(
-    _compute_contact_sort_keys,
+    _compute_contact_sort_keys(m.nflex > 0),
     dim=d.naconmax,
     inputs=[
       m.ngeom,
+      m.nflex,
+      m.nflexvert,
+      m.nflexelem,
       d.contact.geom,
+      d.contact.flex,
+      d.contact.elem,
+      d.contact.vert,
       d.contact.worldid,
       d.contact.geomcollisionid,
       d.nacon,
       gcid_max,
+      wp.int64(world_key_space),
+      wp.int64(rigid_key_space),
     ],
     outputs=[sort_keys, sort_indices],
   )
@@ -1102,6 +1180,39 @@ def _sort_contacts(m: Model, d: Data):
   )
 
 
+def _check_collision_overflow(m: Model, d: Data):
+  """Raise on collision buffer overflow, which drops contacts race-dependently.
+
+  Host-side validation mirroring the deterministic nefc overflow check in
+  constraint.py: overflowing collision buffers truncate to a race-dependent
+  subset, silently voiding the opt.deterministic guarantee. Skipped during CUDA
+  graph capture (host readback is not capture-safe); the device-side overflow
+  warning paths still report overflow on capture replays.
+  """
+  nacon = int(d.nacon.numpy()[0])
+  if nacon > d.naconmax:
+    raise RuntimeError(
+      f"opt.deterministic: nacon overflow (max={nacon}, naconmax={d.naconmax}). "
+      "Increase nconmax / naconmax when calling put_data / make_data."
+    )
+  ncollision = int(d.ncollision.numpy()[0])
+  if ncollision > d.naconmax:
+    raise RuntimeError(
+      f"opt.deterministic: broadphase pair overflow (max={ncollision}, naconmax={d.naconmax}). "
+      "Increase nconmax / naconmax when calling put_data / make_data."
+    )
+  overflow = d.overflow.numpy()
+  if (overflow & OverflowType.CCD).any():
+    raise RuntimeError(
+      f"opt.deterministic: CCD overflow (naccdmax={d.naccdmax}). Increase nccdmax / naccdmax when calling put_data / make_data."
+    )
+  if (overflow & OverflowType.BROADPHASE).any():
+    raise RuntimeError(
+      f"opt.deterministic: flex broadphase or candidate overflow (naconmax={d.naconmax}). "
+      "Increase nconmax / naconmax when calling put_data / make_data."
+    )
+
+
 @event_scope
 def collision(
   m: Model,
@@ -1160,6 +1271,8 @@ def collision(
     flex_collision(m, d, ctx)
 
   if m.opt.deterministic:
+    if not (wp.get_device().is_cuda and wp.get_stream().is_capturing):
+      _check_collision_overflow(m, d)
     _sort_contacts(m, d)
 
   if m.callback.contactfilter:
