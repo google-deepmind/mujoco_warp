@@ -607,7 +607,6 @@ class SolverTest(parameterized.TestCase):
         m.opt.impratio_invsqrt,
         d.contact.friction,
         d.contact.dim,
-        d.contact.efc_address,
         d.efc.type,
         d.efc.id,
         d.efc.jtdaj_adr,
