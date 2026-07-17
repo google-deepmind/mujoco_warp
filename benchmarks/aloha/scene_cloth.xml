@@ -35,9 +35,11 @@
     <texture type="2d" name="groundplane" builtin="checker" mark="edge" rgb1="0.2 0.3 0.4" rgb2="0.1 0.2 0.3"
       markrgb="0.8 0.8 0.8" width="300" height="300"/>
     <texture type="2d" file="small_meta_table_diffuse.png"/>
+    <texture type="2d" name="cloth_tex" builtin="checker" rgb1="0.7 0.4 0.4" rgb2="0.4 0.2 0.2" width="300" height="300"/>
     <material name="groundplane" texture="groundplane" texuniform="true" texrepeat="5 5" reflectance="0.2"/>
     <material name="table" texture="small_meta_table_diffuse"/>
     <material name="metal" rgba="0.517 0.529 0.537 1"/>
+    <material name="cloth_mat" texture="cloth_tex" texuniform="false" texrepeat="10 10"/>
   </asset>
 
   <default>
@@ -91,7 +93,7 @@
     
     <!-- Cloth -->
     <flexcomp name="towel" type="grid" count="30 30 1" spacing="0.014 0.014 0.014"
-              radius="0.004" dim="2" rgba="1 0.5 0.5 1" pos="0 0 0" mass=".1">
+              radius="0.004" dim="2" material="cloth_mat" pos="0 0 0" mass=".1">
       <edge equality="true"/>
       <contact selfcollide="auto" condim="3"/>
       <elasticity young="3e3" poisson="0" thickness="1e-2" damping="1e-3" elastic2d="bend"/>
