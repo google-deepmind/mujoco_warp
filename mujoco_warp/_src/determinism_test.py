@@ -725,6 +725,36 @@ class FlexDeterminismTest(absltest.TestCase):
     nefc = d.nefc.numpy()
     np.testing.assert_array_equal(nefc, np.full(d.nworld, nefc[0]), err_msg="nefc differs across identical worlds")
 
+  def test_mixed_rigid_flex_row_allocation_deterministic(self):
+    """Repeated make_constraint on a frozen mixed rigid+flex state gives bitwise-identical rows."""
+    _, _, m, d = test_data.fixture(xml=_FLEX_CLOTH_PLANE_BOX, nworld=4, overrides={"opt.jacobian": "SPARSE"})
+    m.opt.deterministic = True
+    mjw.fwd_position(m, d)
+    nworld = d.nworld
+
+    nacon = int(d.nacon.numpy()[0])
+    geom = d.contact.geom.numpy()[:nacon]
+    self.assertTrue((geom[:, 1] >= 0).any(), "expected rigid contacts")
+    self.assertTrue((geom[:, 1] < 0).any(), "expected flex contacts")
+
+    def snapshot():
+      mjw.make_constraint(m, d)
+      nefc = d.nefc.numpy().copy()
+      fields = {"contact.efc_address": d.contact.efc_address.numpy()[:nacon].copy()}
+      for name in ("id", "type", "J_rowadr", "J_rownnz"):
+        arr = getattr(d.efc, name).numpy()
+        fields[f"efc.{name}"] = np.concatenate([arr[w, : nefc[w]] for w in range(nworld)])
+      return nefc, fields
+
+    nefc0, first = snapshot()
+    self.assertGreater(nefc0.sum(), 0)
+    np.testing.assert_array_equal(nefc0, np.full(nworld, nefc0[0]), err_msg="nefc differs across identical worlds")
+    for rep in range(1, 5):
+      nefc, fields = snapshot()
+      np.testing.assert_array_equal(nefc0, nefc, err_msg=f"nefc differs on repeat {rep}")
+      for name, values in fields.items():
+        np.testing.assert_array_equal(first[name], values, err_msg=f"{name} placement differs on repeat {rep}")
+
   def test_flexstrain_row_allocation_deterministic(self):
     """Repeated make_constraint on a frozen state gives bitwise-identical efc row placement."""
     _, _, m, d = test_data.fixture(

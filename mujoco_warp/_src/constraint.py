@@ -322,7 +322,7 @@ def _contact_world_totals(
 
 
 @cache_kernel
-def _efc_contact_init_det(cone_type: types.ConeType, is_sparse: bool):
+def _efc_contact_init_det(cone_type: types.ConeType, is_sparse: bool, newton: bool):
   IS_ELLIPTIC = cone_type == types.ConeType.ELLIPTIC
   IS_SPARSE = is_sparse
 
@@ -348,6 +348,9 @@ def _efc_contact_init_det(cone_type: types.ConeType, is_sparse: bool):
     # Data out:
     contact_efc_address_out: wp.array2d[int],
     efc_id_out: wp.array2d[int],
+    efc_jtdaj_adr_out: wp.array2d[int],
+    efc_jtdaj_nrow_out: wp.array2d[int],
+    efc_jtdaj_nblock_out: wp.array[int],
     efc_J_rownnz_out: wp.array2d[int],
     efc_J_rowadr_out: wp.array2d[int],
   ):
@@ -356,7 +359,10 @@ def _efc_contact_init_det(cone_type: types.ConeType, is_sparse: bool):
     Identical row layout logic, but the atomic slot allocation is replaced by
     the contact's exclusive-scan offset: rows land directly in canonical
     per-world order and nothing is ever moved. Per-world totals are bumped by
-    `_contact_world_totals` instead of per-contact atomics.
+    `_contact_world_totals` instead of per-contact atomics. JTDAJ block
+    descriptors keep the atomic list allocation of the default path: the list
+    order is non-canonical, but each block is a self-contained (adr, nrow)
+    descriptor over canonical rows, so consumers are order-independent.
     """
     conid = wp.tid()
 
@@ -395,6 +401,12 @@ def _efc_contact_init_det(cone_type: types.ConeType, is_sparse: bool):
         contact_efc_address_out[conid, dim] = efcid
         # This is redundant with the _efc_row call later but needed for the jac calculation
         efc_id_out[worldid, efcid] = conid
+
+    if wp.static(is_sparse and newton):
+      if base_efcid < njmax_in:
+        jgid = wp.atomic_add(efc_jtdaj_nblock_out, worldid, 1)
+        efc_jtdaj_adr_out[worldid, jgid] = base_efcid
+        efc_jtdaj_nrow_out[worldid, jgid] = wp.min(ndim, njmax_in - base_efcid)
 
     if wp.static(IS_SPARSE):
       rownnz = counts_rownnz_in[conid]
@@ -3813,7 +3825,7 @@ def _contact_flex_rownnz(
 
 
 @cache_kernel
-def _efc_contact_count_flex(cone_type: types.ConeType, is_sparse: bool):
+def _contact_row_counts_flex(cone_type: types.ConeType, is_sparse: bool):
   IS_ELLIPTIC = cone_type == types.ConeType.ELLIPTIC
   IS_SPARSE = is_sparse
 
@@ -3852,13 +3864,20 @@ def _efc_contact_count_flex(cone_type: types.ConeType, is_sparse: bool):
     pos_in: wp.array[wp.vec3],
     type_in: wp.array[int],
     # Out:
-    efcid_count_out: wp.array2d[int],
-    nnz_count_out: wp.array2d[int],
+    counts_out: wp.array[int],  # (naconmax,)
+    nnz_counts_out: wp.array[int],  # (naconmax,)
+    rownnz_out: wp.array[int],  # (naconmax,)
   ):
+    """Flex-aware variant of `_contact_row_counts`.
+
+    Same row counting, with the two-body rownnz walk replaced by
+    `_contact_flex_rownnz` so flex contacts flow through the same scan.
+    """
     conid = wp.tid()
 
-    efcid_count_out[conid, 0] = 0
-    nnz_count_out[conid, 0] = 0
+    counts_out[conid] = 0
+    if wp.static(IS_SPARSE):
+      nnz_counts_out[conid] = 0
 
     if conid >= nacon_in[0]:
       return
@@ -3868,11 +3887,7 @@ def _efc_contact_count_flex(cone_type: types.ConeType, is_sparse: bool):
 
     condim = condim_in[conid]
 
-    includemargin = includemargin_in[conid]
-    pos = dist_in[conid] - includemargin
-    active = pos < 0
-
-    if not active:
+    if dist_in[conid] - includemargin_in[conid] >= 0.0:
       return
 
     if wp.static(IS_ELLIPTIC):
@@ -3883,7 +3898,7 @@ def _efc_contact_count_flex(cone_type: types.ConeType, is_sparse: bool):
       else:
         ndim = 2 * (condim - 1)
 
-    efcid_count_out[conid, 0] = ndim
+    counts_out[conid] = ndim
 
     if wp.static(IS_SPARSE):
       worldid = worldid_in[conid]
@@ -3920,7 +3935,8 @@ def _efc_contact_count_flex(cone_type: types.ConeType, is_sparse: bool):
         con_pos,
         worldid,
       )
-      nnz_count_out[conid, 0] = rownnz * ndim
+      rownnz_out[conid] = rownnz
+      nnz_counts_out[conid] = rownnz * ndim
 
   return kernel
 
@@ -6695,37 +6711,75 @@ def make_constraint(m: types.Model, d: types.Data):
       )
 
       has_flex = m.nflex > 0
-      if det and not has_flex:
+      if det:
         # Contacts are sorted world-major, so canonical row slots follow from
         # an exclusive scan of per-contact row counts: count rows per contact,
         # scan, localize the scan per world via the first contact's prefix,
         # bump per-world totals at the last contact, then write rows directly
         # into canonical slots. Same layout logic as _efc_contact_init, with
-        # the atomic slot allocation replaced by the scan offset. The scan
-        # kernels mirror the non-flex body resolution only, so flex models fall
-        # back to the plain atomic flex init below.
-        wp.launch(
-          _contact_row_counts(m.opt.cone, m.is_sparse),
-          dim=d.naconmax,
-          inputs=[
-            m.body_weldid,
-            m.body_dofnum,
-            m.body_dofadr,
-            m.dof_parentid,
-            m.geom_bodyid,
-            m.flex_vertadr,
-            m.flex_vertbodyid,
-            d.nacon,
-            d.contact.dist,
-            d.contact.dim,
-            d.contact.includemargin,
-            d.contact.geom,
-            d.contact.flex,
-            d.contact.vert,
-            d.contact.type,
-          ],
-          outputs=[s["contact_counts"], s["contact_nnz_counts"], s["contact_rownnz"]],
-        )
+        # the atomic slot allocation replaced by the scan offset. Flex models
+        # count rows with the flex-aware rownnz walk so rigid and flex contacts
+        # share the same scan.
+        if has_flex:
+          wp.launch(
+            _contact_row_counts_flex(m.opt.cone, m.is_sparse),
+            dim=d.naconmax,
+            inputs=[
+              m.body_weldid,
+              m.body_dofnum,
+              m.body_dofadr,
+              m.dof_parentid,
+              m.geom_bodyid,
+              m.flex_dim,
+              m.flex_interp,
+              m.flex_cellnum,
+              m.flex_nodeadr,
+              m.flex_vertadr,
+              m.flex_elemdataadr,
+              m.flex_shelldataadr,
+              m.flex_nodebodyid,
+              m.flex_vertbodyid,
+              m.flex_elem,
+              m.flex_shell,
+              m.flex_vert0,
+              d.flexvert_xpos,
+              d.nacon,
+              d.contact.dist,
+              d.contact.dim,
+              d.contact.includemargin,
+              d.contact.worldid,
+              d.contact.geom,
+              d.contact.flex,
+              d.contact.elem,
+              d.contact.vert,
+              d.contact.pos,
+              d.contact.type,
+            ],
+            outputs=[s["contact_counts"], s["contact_nnz_counts"], s["contact_rownnz"]],
+          )
+        else:
+          wp.launch(
+            _contact_row_counts(m.opt.cone, m.is_sparse),
+            dim=d.naconmax,
+            inputs=[
+              m.body_weldid,
+              m.body_dofnum,
+              m.body_dofadr,
+              m.dof_parentid,
+              m.geom_bodyid,
+              m.flex_vertadr,
+              m.flex_vertbodyid,
+              d.nacon,
+              d.contact.dist,
+              d.contact.dim,
+              d.contact.includemargin,
+              d.contact.geom,
+              d.contact.flex,
+              d.contact.vert,
+              d.contact.type,
+            ],
+            outputs=[s["contact_counts"], s["contact_nnz_counts"], s["contact_rownnz"]],
+          )
         wp.utils.array_scan(s["contact_counts"], s["contact_row_prefix"], inclusive=False)
         if m.is_sparse:
           wp.utils.array_scan(s["contact_nnz_counts"], s["contact_nnz_prefix"], inclusive=False)
@@ -6758,7 +6812,7 @@ def make_constraint(m: types.Model, d: types.Data):
           outputs=[d.nefc, efc_nnz],
         )
         wp.launch(
-          _efc_contact_init_det(m.opt.cone, m.is_sparse),
+          _efc_contact_init_det(m.opt.cone, m.is_sparse, newton),
           dim=d.naconmax,
           inputs=[
             d.njmax,
@@ -6780,6 +6834,9 @@ def make_constraint(m: types.Model, d: types.Data):
           outputs=[
             d.contact.efc_address,
             d.efc.id,
+            d.efc.jtdaj_adr,
+            d.efc.jtdaj_nrow,
+            d.efc.jtdaj_nblock,
             d.efc.J_rownnz,
             d.efc.J_rowadr,
           ],
