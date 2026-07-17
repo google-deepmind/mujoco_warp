@@ -831,6 +831,7 @@ def _actuator_force(
         adr += 1
 
       # integral
+      x_I = 0.0
       if slots[1] >= 0:
         x_I = act_in[worldid, adr]
         input_mode = int(gainprm[8])
