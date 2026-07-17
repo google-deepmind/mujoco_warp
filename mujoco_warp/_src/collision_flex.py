@@ -863,6 +863,8 @@ def _collide_mesh_triangle(
       epa_norm2,
       epa_horizon,
       warn_overflow,
+      worldid,
+      overflow_out,
     )
 
     if ncontact > 0 and dist < margin + tri_radius:
@@ -2019,6 +2021,8 @@ def _flex_selfcollision_narrowphase(
       epa_norm2_out[pairid],
       epa_horizon_out[pairid],
       opt_warn_overflow,
+      worldid,
+      overflow_out,
     )
 
     phys_dist = dist
@@ -2240,6 +2244,8 @@ def _flex_active_element_collisions_detect(
         epa_norm2_out[unique_thread_id],
         epa_horizon_out[unique_thread_id],
         opt_warn_overflow,
+        worldid,
+        overflow_out,
       )
 
       phys_dist = dist
@@ -2515,6 +2521,8 @@ def _flex_narrowphase_unified(
           epa_norm2[ccdid],
           epa_horizon[ccdid],
           opt_warn_overflow,
+          worldid,
+          overflow_out,
         )
 
         if ncontact > 0 and dist < margin + tri_radius:
