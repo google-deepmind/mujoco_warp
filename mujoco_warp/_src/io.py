@@ -1535,8 +1535,10 @@ def allocate_solver_retained(d: types.Data, nworld: int, njmax: int, nv: int, nv
 def allocate_solver_retained_for_model(mjm: mujoco.MjModel, d: types.Data, grad: bool):
   """(Re)allocates solver retained AD state for an existing Data object."""
   tile_size = types.TILE_SIZE_JTDAJ_SPARSE if is_sparse(mjm) else types.TILE_SIZE_JTDAJ_DENSE
-  nv_pad = _get_padded_sizes(mjm.nv, 0, is_sparse(mjm), tile_size)[1]
   is_newton = mjm.opt.solver == mujoco.mjtSolver.mjSOL_NEWTON
+  # Match Model.nv_pad (put_model), including the augmented Cholesky column for
+  # Newton with nv > 32: the solver aliases these arrays assuming that shape.
+  nv_pad = _get_padded_sizes(mjm.nv, 0, is_sparse(mjm), tile_size, augment_cholesky=is_newton and mjm.nv > 32)[1]
   allocate_solver_retained(d, d.nworld, d.njmax, mjm.nv, nv_pad, is_newton, grad=grad)
 
 

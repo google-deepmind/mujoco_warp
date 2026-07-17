@@ -26,6 +26,7 @@ from mujoco_warp._src.types import GeomType
 from mujoco_warp._src.types import JointType
 from mujoco_warp._src.types import Model
 from mujoco_warp._src.types import mat43
+from mujoco_warp._src.warp_util import cache_kernel
 from mujoco_warp._src.warp_util import event_scope
 
 # Backward-enabled kernels generate slower forward code, so AD compilation is
@@ -530,7 +531,10 @@ def _fluid_force(
 
 
 def _fluid(m: Model, d: Data):
-  fluid_applied = wp.empty((d.nworld, m.nbody), dtype=wp.spatial_vector)
+  # Track the body-force intermediate when qfrc_fluid gradients are requested so
+  # the apply_ft backward can route cotangents into the fluid force kernel. The
+  # fresh allocation per call also gives each substep isolated adjoint storage.
+  fluid_applied = wp.empty((d.nworld, m.nbody), dtype=wp.spatial_vector, requires_grad=d.qfrc_fluid.requires_grad)
 
   wp.launch(
     _fluid_force,
@@ -592,247 +596,460 @@ def _qfrc_passive(
   qfrc_passive_out[worldid, dofid] = qfrc_passive
 
 
-@wp.kernel
-def _flex_elasticity(
+# Owning-flex lookup used by the differentiable flex kernels. Warp's AD replay
+# of a dynamic loop cannot reconstruct loop-carried scalars (the owning-flex
+# scan result reads as its initial value in the backward pass, silencing every
+# gradient of the kernel), so grad mode precomputes the owner ids with this
+# integer kernel and the differentiable kernels read them back per thread.
+@wp.kernel(enable_backward=False)
+def _flex_owner_ids(
   # Model:
   nflex: int,
-  opt_timestep: wp.array[float],
-  flex_dim: wp.array[int],
-  flex_vertadr: wp.array[int],
-  flex_edgeadr: wp.array[int],
-  flex_elemadr: wp.array[int],
-  flex_elemnum: wp.array[int],
-  flex_elemdataadr: wp.array[int],
-  flex_stiffnessadr: wp.array[int],
-  flex_elemedgeadr: wp.array[int],
-  flex_vertbodyid: wp.array[int],
-  flex_elem: wp.array[int],
-  flex_elemedge: wp.array[int],
-  flexedge_length0: wp.array[float],
-  flex_stiffness: wp.array[float],
-  flex_damping: wp.array[float],
-  # Data in:
-  xipos_in: wp.array2d[wp.vec3],
-  flexvert_xpos_in: wp.array2d[wp.vec3],
-  flexedge_length_in: wp.array2d[float],
-  flexedge_velocity_in: wp.array2d[float],
   # In:
-  dsbl_damper: bool,
+  flex_adr: wp.array[int],
+  flex_num: wp.array[int],
   # Out:
-  flex_spring_body_force_out: wp.array2d[wp.spatial_vector],
+  owner_out: wp.array[int],
 ):
-  worldid, elemid = wp.tid()
-  timestep = opt_timestep[worldid % opt_timestep.shape[0]]
-
+  elemid = wp.tid()
   f = int(-1)
   for i in range(nflex):
-    locid = elemid - flex_elemadr[i]
-    if locid >= 0 and locid < flex_elemnum[i]:
+    locid = elemid - flex_adr[i]
+    if locid >= 0 and locid < flex_num[i]:
       f = i
       break
+  owner_out[elemid] = f
 
-  # No owning flex found for this element: bail out before indexing with f, to
-  # avoid a negative flex id reaching the autodiff-generated backward kernel.
+
+# Differentiable replays of smooth._flex_vertices / smooth._flex_edges, used in
+# grad mode only. The smooth kernels carry the owning-flex scan result out of a
+# dynamic loop, which Warp's AD replay cannot reconstruct, so the flex passive
+# force kernels would see zero cotangents through flexvert_xpos and the edge
+# arrays. The replays compute bitwise-identical values into fresh gradient-
+# tracked arrays (which also isolates them per substep under a multi-step tape).
+@wp.kernel
+def _flex_vertices_replay(
+  # Model:
+  flex_interp: wp.array[int],
+  flex_cellnum: wp.array[wp.vec3i],
+  flex_nodeadr: wp.array[int],
+  flex_vertbodyid: wp.array[int],
+  flex_vert: wp.array[wp.vec3],
+  flex_vert0: wp.array[wp.vec3],
+  flex_centered: wp.array[bool],
+  # Data in:
+  xpos_in: wp.array2d[wp.vec3],
+  xmat_in: wp.array2d[wp.mat33],
+  flexnode_xpos_in: wp.array2d[wp.vec3],
+  # In:
+  flex_vert_owner_in: wp.array[int],
+  # Data out:
+  flexvert_xpos_out: wp.array2d[wp.vec3],
+):
+  worldid, vertid = wp.tid()
+
+  f = flex_vert_owner_in[vertid]
   if f < 0:
     return
 
-  stiffness_adr_base = flex_stiffnessadr[f]
-  if stiffness_adr_base < 0:
-    return
-  if flex_stiffness[stiffness_adr_base] == 0.0:
-    return
+  if flex_interp[f] != 0:
+    # Interpolated flex: vertex position = weighted sum of node positions
+    coord = flex_vert0[vertid]
+    cn = flex_cellnum[f]
+    cx = cn[0]
+    cy = cn[1]
+    cz = cn[2]
 
-  local_elemid = elemid - flex_elemadr[f]
-  dim = flex_dim[f]
-  nvert = dim + 1
-  nedge = nvert * (nvert - 1) / 2
-  edges = wp.where(
-    dim == 1,
-    wp.matrix(0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, shape=(6, 2), dtype=int),
-    wp.where(
-      dim == 3,
-      wp.matrix(0, 1, 1, 2, 2, 0, 2, 3, 0, 3, 1, 3, shape=(6, 2), dtype=int),
-      wp.matrix(1, 2, 2, 0, 0, 1, 0, 0, 0, 0, 0, 0, shape=(6, 2), dtype=int),
-    ),
-  )
-  if timestep > 0.0 and not dsbl_damper:
-    kD = flex_damping[f] / timestep
+    # Cell lookup: find containing cell
+    ci = wp.min(int(coord[0] * float(cx)), cx - 1)
+    ci = wp.max(ci, 0)
+    cj = wp.min(int(coord[1] * float(cy)), cy - 1)
+    cj = wp.max(cj, 0)
+    ck = wp.min(int(coord[2] * float(cz)), cz - 1)
+    ck = wp.max(ck, 0)
+
+    # Local parametric coordinates within cell
+    local_x = wp.clamp(coord[0] * float(cx) - float(ci), 0.0, 1.0)
+    local_y = wp.clamp(coord[1] * float(cy) - float(cj), 0.0, 1.0)
+    local_z = wp.clamp(coord[2] * float(cz) - float(ck), 0.0, 1.0)
+    local = wp.vec3(local_x, local_y, local_z)
+
+    # Node grid dimensions
+    ny_g = cy + 1
+    nz_g = cz + 1
+    nstart = flex_nodeadr[f]
+
+    # Accumulate weighted node positions
+    result = wp.vec3(0.0, 0.0, 0.0)
+    for li in range(2):
+      for lj in range(2):
+        for lk in range(2):
+          w = support.eval_basis_trilinear(local, li * 4 + lj * 2 + lk)
+          gi = ci + li
+          gj = cj + lj
+          gk = ck + lk
+          node_idx = gi * ny_g * nz_g + gj * nz_g + gk
+          result += w * flexnode_xpos_in[worldid, nstart + node_idx]
+
+    flexvert_xpos_out[worldid, vertid] = result
   else:
-    kD = 0.0
+    # Non-interpolated flex: vertex position from single body
+    bodyid = flex_vertbodyid[vertid]
+    xpos = xpos_in[worldid, bodyid]
 
-  elem_data_adr = flex_elemdataadr[f] + local_elemid * (dim + 1)
-  vbase = flex_vertadr[f]
-
-  # skip trilinear/interp elements (vertbodyid == -1, no simplex stiffness)
-  vert0_check = flex_elem[elem_data_adr]
-  if flex_vertbodyid[vbase + vert0_check] < 0:
-    return
-  gradient = wp.matrix(0.0, shape=(6, 6))
-  for e in range(nedge):
-    vert0 = flex_elem[elem_data_adr + edges[e, 0]]
-    vert1 = flex_elem[elem_data_adr + edges[e, 1]]
-    xpos0 = flexvert_xpos_in[worldid, vbase + vert0]
-    xpos1 = flexvert_xpos_in[worldid, vbase + vert1]
-    for i in range(3):
-      gradient[e, 0 + i] = xpos0[i] - xpos1[i]
-      gradient[e, 3 + i] = xpos1[i] - xpos0[i]
-
-  elongation = wp.spatial_vectorf(0.0)
-  for e in range(nedge):
-    idx = flex_elemedge[flex_elemedgeadr[f] + local_elemid * nedge + e]
-    vel = flexedge_velocity_in[worldid, flex_edgeadr[f] + idx]
-    deformed = flexedge_length_in[worldid, flex_edgeadr[f] + idx]
-    reference = flexedge_length0[flex_edgeadr[f] + idx]
-    previous = deformed - vel * timestep
-    elongation[e] = deformed * deformed - reference * reference + (deformed * deformed - previous * previous) * kD
-
-  metric = wp.matrix(0.0, shape=(6, 6))
-  stiffness_size = 21
-  stiffness_adr = stiffness_adr_base + local_elemid * stiffness_size
-  id = int(0)
-  for ed1 in range(nedge):
-    for ed2 in range(ed1, nedge):
-      metric[ed1, ed2] = flex_stiffness[stiffness_adr + id]
-      metric[ed2, ed1] = flex_stiffness[stiffness_adr + id]
-      id += 1
-
-  force = wp.matrix(0.0, shape=(6, 3))
-  for ed1 in range(nedge):
-    for ed2 in range(nedge):
-      for i in range(2):
-        for x in range(3):
-          force[edges[ed2, i], x] -= elongation[ed1] * gradient[ed2, 3 * i + x] * metric[ed1, ed2]
-
-  for v in range(nvert):
-    vert = flex_elem[elem_data_adr + v]
-    bodyid = flex_vertbodyid[flex_vertadr[f] + vert]
-
-    frc = force[v]
-
-    node_pos = flexvert_xpos_in[worldid, flex_vertadr[f] + vert]
-    body_xipos = xipos_in[worldid, bodyid]
-    offset = body_xipos - node_pos
-    spatial_frc = wp.spatial_vector(frc, -wp.cross(offset, frc))
-    wp.atomic_add(flex_spring_body_force_out, worldid, bodyid, spatial_frc)
+    if flex_centered[f]:
+      flexvert_xpos_out[worldid, vertid] = xpos
+    else:
+      xmat = xmat_in[worldid, bodyid]
+      local_pos = flex_vert[vertid]
+      flexvert_xpos_out[worldid, vertid] = xmat @ local_pos + xpos
 
 
 @wp.kernel
-def _flex_bending(
+def _flex_edges_replay(
   # Model:
-  nflex: int,
   body_rootid: wp.array[int],
-  flex_dim: wp.array[int],
+  body_dofnum: wp.array[int],
+  body_dofadr: wp.array[int],
   flex_vertadr: wp.array[int],
-  flex_edgeadr: wp.array[int],
-  flex_edgenum: wp.array[int],
-  flex_bendingadr: wp.array[int],
   flex_vertbodyid: wp.array[int],
   flex_edge: wp.array[wp.vec2i],
-  flex_edgeflap: wp.array[wp.vec2i],
-  flex_bending: wp.array[float],
-  flex_damping: wp.array[float],
   # Data in:
-  xipos_in: wp.array2d[wp.vec3],
+  qvel_in: wp.array2d[float],
   subtree_com_in: wp.array2d[wp.vec3],
+  cdof_in: wp.array2d[wp.spatial_vector],
   flexvert_xpos_in: wp.array2d[wp.vec3],
-  cvel_in: wp.array2d[wp.spatial_vector],
   # In:
-  dsbl_damper: bool,
-  # Out:
-  flex_spring_body_force_out: wp.array2d[wp.spatial_vector],
-  flex_damper_body_force_out: wp.array2d[wp.spatial_vector],
+  flex_edge_owner_in: wp.array[int],
+  # Data out:
+  flexedge_length_out: wp.array2d[float],
+  flexedge_velocity_out: wp.array2d[float],
 ):
   worldid, edgeid = wp.tid()
 
-  f = int(-1)
-  for i in range(nflex):
-    eid = edgeid - flex_edgeadr[i]
-    if eid >= 0 and eid < flex_edgenum[i]:
-      f = i
-      break
-
-  # No owning flex found for this edge: bail out before indexing with f. Without
-  # this the forward reads flex_bendingadr[-1] and the autodiff-generated backward
-  # kernel indexes adjoint arrays with a negative flex id, causing an illegal
-  # memory access (observed as an out-of-bounds read far below any allocation).
+  f = flex_edge_owner_in[edgeid]
   if f < 0:
     return
 
-  bendingadr = flex_bendingadr[f]
-  if bendingadr < 0:
+  vbase = flex_vertadr[f]
+  v = flex_edge[edgeid]
+  vbase0 = vbase + v[0]
+  vbase1 = vbase + v[1]
+
+  pos1 = flexvert_xpos_in[worldid, vbase0]
+  pos2 = flexvert_xpos_in[worldid, vbase1]
+  vec = pos2 - pos1
+  edge, edge_length = math.normalize_with_norm(vec)
+  flexedge_length_out[worldid, edgeid] = edge_length
+  b1 = flex_vertbodyid[vbase0]
+  b2 = flex_vertbodyid[vbase1]
+
+  # skip Jacobian/velocity for trilinear flex (vertbodyid == -1)
+  if b1 < 0 or b2 < 0:
+    flexedge_velocity_out[worldid, edgeid] = 0.0
     return
 
-  if flex_dim[f] != 2:
-    return
+  dofnum1 = body_dofnum[b1]
+  dofnum2 = body_dofnum[b2]
 
-  if flex_edgeflap[edgeid][1] == -1:
-    return
+  # velocity via Jacobian: sum_k J_k * qvel_k for each body
+  vel = float(0.0)
+  if dofnum1 > 0:
+    dofi = body_dofadr[b1]
+    offset1 = pos1 - wp.vec3(subtree_com_in[worldid, body_rootid[b1]])
+    for k in range(dofnum1):
+      cdof = cdof_in[worldid, dofi + k]
+      cdof_ang = wp.spatial_top(cdof)
+      cdof_lin = wp.spatial_bottom(cdof)
+      jacp1 = cdof_lin + wp.cross(cdof_ang, offset1)
+      vel -= wp.dot(jacp1, edge) * qvel_in[worldid, dofi + k]
+  if dofnum2 > 0:
+    dofj = body_dofadr[b2]
+    offset2 = pos2 - wp.vec3(subtree_com_in[worldid, body_rootid[b2]])
+    for k in range(dofnum2):
+      cdof = cdof_in[worldid, dofj + k]
+      cdof_ang = wp.spatial_top(cdof)
+      cdof_lin = wp.spatial_bottom(cdof)
+      jacp2 = cdof_lin + wp.cross(cdof_ang, offset2)
+      vel += wp.dot(jacp2, edge) * qvel_in[worldid, dofj + k]
+  flexedge_velocity_out[worldid, edgeid] = vel
 
-  v = wp.vec4i(
-    flex_vertadr[f] + flex_edge[edgeid][0],
-    flex_vertadr[f] + flex_edge[edgeid][1],
-    flex_vertadr[f] + flex_edgeflap[edgeid][0],
-    flex_vertadr[f] + flex_edgeflap[edgeid][1],
-  )
 
-  frc = mat43()
-  if flex_bending[bendingadr + 17 * eid + 16]:
-    v0 = flexvert_xpos_in[worldid, v[0]]
-    v1 = flexvert_xpos_in[worldid, v[1]]
-    v2 = flexvert_xpos_in[worldid, v[2]]
-    v3 = flexvert_xpos_in[worldid, v[3]]
+@cache_kernel
+def _flex_elasticity(grad: bool):
+  # grad mode reads the owning flex from a precomputed id array instead of the
+  # dynamic scan: Warp's AD replay cannot reconstruct scalars carried out of a
+  # dynamic loop, which silences every gradient of the kernel.
+  @wp.kernel(module="unique", enable_backward=grad)
+  def flex_elasticity(
+    # Model:
+    nflex: int,
+    opt_timestep: wp.array[float],
+    flex_dim: wp.array[int],
+    flex_vertadr: wp.array[int],
+    flex_edgeadr: wp.array[int],
+    flex_elemadr: wp.array[int],
+    flex_elemnum: wp.array[int],
+    flex_elemdataadr: wp.array[int],
+    flex_stiffnessadr: wp.array[int],
+    flex_elemedgeadr: wp.array[int],
+    flex_vertbodyid: wp.array[int],
+    flex_elem: wp.array[int],
+    flex_elemedge: wp.array[int],
+    flexedge_length0: wp.array[float],
+    flex_stiffness: wp.array[float],
+    flex_damping: wp.array[float],
+    # Data in:
+    xipos_in: wp.array2d[wp.vec3],
+    flexvert_xpos_in: wp.array2d[wp.vec3],
+    flexedge_length_in: wp.array2d[float],
+    flexedge_velocity_in: wp.array2d[float],
+    # In:
+    flex_elem_owner_in: wp.array[int],
+    dsbl_damper: bool,
+    # Out:
+    flex_spring_body_force_out: wp.array2d[wp.spatial_vector],
+  ):
+    worldid, elemid = wp.tid()
+    timestep = opt_timestep[worldid % opt_timestep.shape[0]]
 
-    ed0 = v1 - v0
-    ed1 = v2 - v0
-    ed2 = v3 - v0
+    if wp.static(grad):
+      f = flex_elem_owner_in[elemid]
+    else:
+      f = int(-1)
+      for i in range(nflex):
+        locid = elemid - flex_elemadr[i]
+        if locid >= 0 and locid < flex_elemnum[i]:
+          f = i
+          break
 
-    frc[1] = wp.cross(ed1, ed2)
-    frc[2] = wp.cross(ed2, ed0)
-    frc[3] = wp.cross(ed0, ed1)
-    frc[0] = -(frc[1] + frc[2] + frc[3])
+    # No owning flex found for this element: bail out before indexing with f, to
+    # avoid a negative flex id reaching the autodiff-generated backward kernel.
+    if f < 0:
+      return
 
-  # Gather velocities if damping is enabled
-  vel = mat43()
-  if not dsbl_damper and flex_damping[f] > 0.0:
-    for j in range(4):
-      bodyid_j = flex_vertbodyid[v[j]]
-      cvel_j = cvel_in[worldid, bodyid_j]
-      omega_j = wp.spatial_top(cvel_j)
-      vcom_j = wp.spatial_bottom(cvel_j)
-      com_j = subtree_com_in[worldid, body_rootid[bodyid_j]]
-      r_j = flexvert_xpos_in[worldid, v[j]] - com_j
-      vel[j] = vcom_j + wp.cross(omega_j, r_j)
+    stiffness_adr_base = flex_stiffnessadr[f]
+    if stiffness_adr_base < 0:
+      return
+    if flex_stiffness[stiffness_adr_base] == 0.0:
+      return
 
-  force_spring = mat43()
-  force_damper = mat43()
-  for i in range(4):
-    for x in range(3):
-      acc_spring = float(0.0)
-      acc_damper = float(0.0)
-      for j in range(4):
-        coeff = flex_bending[bendingadr + 17 * eid + 4 * i + j]
-        acc_spring += coeff * flexvert_xpos_in[worldid, v[j]][x]
-        if not dsbl_damper and flex_damping[f] > 0.0:
-          acc_damper += coeff * vel[j, x]
+    local_elemid = elemid - flex_elemadr[f]
+    dim = flex_dim[f]
+    nvert = dim + 1
+    nedge = nvert * (nvert - 1) / 2
+    edges = wp.where(
+      dim == 1,
+      wp.matrix(0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, shape=(6, 2), dtype=int),
+      wp.where(
+        dim == 3,
+        wp.matrix(0, 1, 1, 2, 2, 0, 2, 3, 0, 3, 1, 3, shape=(6, 2), dtype=int),
+        wp.matrix(1, 2, 2, 0, 0, 1, 0, 0, 0, 0, 0, 0, shape=(6, 2), dtype=int),
+      ),
+    )
+    if timestep > 0.0 and not dsbl_damper:
+      kD = flex_damping[f] / timestep
+    else:
+      kD = 0.0
 
-      force_spring[i, x] = -(acc_spring + flex_bending[bendingadr + 17 * eid + 16] * frc[i, x])
-      if not dsbl_damper and flex_damping[f] > 0.0:
-        force_damper[i, x] = -acc_damper
+    elem_data_adr = flex_elemdataadr[f] + local_elemid * (dim + 1)
+    vbase = flex_vertadr[f]
 
-  for i in range(4):
-    bodyid = flex_vertbodyid[v[i]]
-    frc_s = force_spring[i]
-    node_pos = flexvert_xpos_in[worldid, v[i]]
-    body_xipos = xipos_in[worldid, bodyid]
-    offset = body_xipos - node_pos
+    # skip trilinear/interp elements (vertbodyid == -1, no simplex stiffness)
+    vert0_check = flex_elem[elem_data_adr]
+    if flex_vertbodyid[vbase + vert0_check] < 0:
+      return
 
-    spatial_frc_s = wp.spatial_vector(frc_s, -wp.cross(offset, frc_s))
-    wp.atomic_add(flex_spring_body_force_out, worldid, bodyid, spatial_frc_s)
+    # Static loop bounds (6 edges / 4 vertices max) with guards instead of
+    # dynamic bounds: Warp's AD replay of dynamic-bound loops drops the local
+    # matrix/vector state these loops build up, zeroing the kernel's gradients.
+    # Guarded extra iterations are no-ops, so forward values are unchanged.
+    gradient = wp.matrix(0.0, shape=(6, 6))
+    for e in range(6):
+      if e < nedge:
+        vert0 = flex_elem[elem_data_adr + edges[e, 0]]
+        vert1 = flex_elem[elem_data_adr + edges[e, 1]]
+        xpos0 = flexvert_xpos_in[worldid, vbase + vert0]
+        xpos1 = flexvert_xpos_in[worldid, vbase + vert1]
+        for i in range(3):
+          gradient[e, 0 + i] = xpos0[i] - xpos1[i]
+          gradient[e, 3 + i] = xpos1[i] - xpos0[i]
 
+    elongation = wp.spatial_vectorf(0.0)
+    for e in range(6):
+      if e < nedge:
+        idx = flex_elemedge[flex_elemedgeadr[f] + local_elemid * nedge + e]
+        vel = flexedge_velocity_in[worldid, flex_edgeadr[f] + idx]
+        deformed = flexedge_length_in[worldid, flex_edgeadr[f] + idx]
+        reference = flexedge_length0[flex_edgeadr[f] + idx]
+        previous = deformed - vel * timestep
+        elongation[e] = deformed * deformed - reference * reference + (deformed * deformed - previous * previous) * kD
+
+    metric = wp.matrix(0.0, shape=(6, 6))
+    stiffness_size = 21
+    stiffness_adr = stiffness_adr_base + local_elemid * stiffness_size
+    for ed1 in range(6):
+      for ed2 in range(6):
+        if ed1 < nedge and ed2 >= ed1 and ed2 < nedge:
+          # closed-form upper-triangular index: a counter carried across loop
+          # iterations reads back wrong in Warp's AD replay
+          id = ed1 * nedge - (ed1 * (ed1 + 1)) / 2 + ed2
+          metric[ed1, ed2] = flex_stiffness[stiffness_adr + id]
+          metric[ed2, ed1] = flex_stiffness[stiffness_adr + id]
+
+    force = wp.matrix(0.0, shape=(6, 3))
+    for ed1 in range(6):
+      for ed2 in range(6):
+        if ed1 < nedge and ed2 < nedge:
+          for i in range(2):
+            for x in range(3):
+              force[edges[ed2, i], x] -= elongation[ed1] * gradient[ed2, 3 * i + x] * metric[ed1, ed2]
+
+    for v in range(4):
+      if v < nvert:
+        vert = flex_elem[elem_data_adr + v]
+        bodyid = flex_vertbodyid[flex_vertadr[f] + vert]
+
+        frc = force[v]
+
+        node_pos = flexvert_xpos_in[worldid, flex_vertadr[f] + vert]
+        body_xipos = xipos_in[worldid, bodyid]
+        offset = body_xipos - node_pos
+        spatial_frc = wp.spatial_vector(frc, -wp.cross(offset, frc))
+        wp.atomic_add(flex_spring_body_force_out, worldid, bodyid, spatial_frc)
+
+  return flex_elasticity
+
+
+@cache_kernel
+def _flex_bending(grad: bool):
+  # grad mode reads the owning flex from a precomputed id array instead of the
+  # dynamic scan: Warp's AD replay cannot reconstruct scalars carried out of a
+  # dynamic loop, which silences every gradient of the kernel.
+  @wp.kernel(module="unique", enable_backward=grad)
+  def flex_bending(
+    # Model:
+    nflex: int,
+    body_rootid: wp.array[int],
+    flex_dim: wp.array[int],
+    flex_vertadr: wp.array[int],
+    flex_edgeadr: wp.array[int],
+    flex_edgenum: wp.array[int],
+    flex_bendingadr: wp.array[int],
+    flex_vertbodyid: wp.array[int],
+    flex_edge: wp.array[wp.vec2i],
+    flex_edgeflap: wp.array[wp.vec2i],
+    flex_bending: wp.array[float],
+    flex_damping: wp.array[float],
+    # Data in:
+    xipos_in: wp.array2d[wp.vec3],
+    subtree_com_in: wp.array2d[wp.vec3],
+    flexvert_xpos_in: wp.array2d[wp.vec3],
+    cvel_in: wp.array2d[wp.spatial_vector],
+    # In:
+    flex_edge_owner_in: wp.array[int],
+    dsbl_damper: bool,
+    # Out:
+    flex_spring_body_force_out: wp.array2d[wp.spatial_vector],
+    flex_damper_body_force_out: wp.array2d[wp.spatial_vector],
+  ):
+    worldid, edgeid = wp.tid()
+
+    if wp.static(grad):
+      f = flex_edge_owner_in[edgeid]
+    else:
+      f = int(-1)
+      for i in range(nflex):
+        locid = edgeid - flex_edgeadr[i]
+        if locid >= 0 and locid < flex_edgenum[i]:
+          f = i
+          break
+
+    # No owning flex found for this edge: bail out before indexing with f. Without
+    # this the forward reads flex_bendingadr[-1] and the autodiff-generated backward
+    # kernel indexes adjoint arrays with a negative flex id, causing an illegal
+    # memory access (observed as an out-of-bounds read far below any allocation).
+    if f < 0:
+      return
+    eid = edgeid - flex_edgeadr[f]
+
+    bendingadr = flex_bendingadr[f]
+    if bendingadr < 0:
+      return
+
+    if flex_dim[f] != 2:
+      return
+
+    if flex_edgeflap[edgeid][1] == -1:
+      return
+
+    v = wp.vec4i(
+      flex_vertadr[f] + flex_edge[edgeid][0],
+      flex_vertadr[f] + flex_edge[edgeid][1],
+      flex_vertadr[f] + flex_edgeflap[edgeid][0],
+      flex_vertadr[f] + flex_edgeflap[edgeid][1],
+    )
+
+    frc = mat43()
+    if flex_bending[bendingadr + 17 * eid + 16]:
+      v0 = flexvert_xpos_in[worldid, v[0]]
+      v1 = flexvert_xpos_in[worldid, v[1]]
+      v2 = flexvert_xpos_in[worldid, v[2]]
+      v3 = flexvert_xpos_in[worldid, v[3]]
+
+      ed0 = v1 - v0
+      ed1 = v2 - v0
+      ed2 = v3 - v0
+
+      frc[1] = wp.cross(ed1, ed2)
+      frc[2] = wp.cross(ed2, ed0)
+      frc[3] = wp.cross(ed0, ed1)
+      frc[0] = -(frc[1] + frc[2] + frc[3])
+
+    # Gather velocities if damping is enabled
+    vel = mat43()
     if not dsbl_damper and flex_damping[f] > 0.0:
-      frc_d = force_damper[i] * flex_damping[f]
-      spatial_frc_d = wp.spatial_vector(frc_d, -wp.cross(offset, frc_d))
-      wp.atomic_add(flex_damper_body_force_out, worldid, bodyid, spatial_frc_d)
+      for j in range(4):
+        bodyid_j = flex_vertbodyid[v[j]]
+        cvel_j = cvel_in[worldid, bodyid_j]
+        omega_j = wp.spatial_top(cvel_j)
+        vcom_j = wp.spatial_bottom(cvel_j)
+        com_j = subtree_com_in[worldid, body_rootid[bodyid_j]]
+        r_j = flexvert_xpos_in[worldid, v[j]] - com_j
+        vel[j] = vcom_j + wp.cross(omega_j, r_j)
+
+    force_spring = mat43()
+    force_damper = mat43()
+    for i in range(4):
+      for x in range(3):
+        acc_spring = float(0.0)
+        acc_damper = float(0.0)
+        for j in range(4):
+          coeff = flex_bending[bendingadr + 17 * eid + 4 * i + j]
+          acc_spring += coeff * flexvert_xpos_in[worldid, v[j]][x]
+          if not dsbl_damper and flex_damping[f] > 0.0:
+            acc_damper += coeff * vel[j, x]
+
+        force_spring[i, x] = -(acc_spring + flex_bending[bendingadr + 17 * eid + 16] * frc[i, x])
+        if not dsbl_damper and flex_damping[f] > 0.0:
+          force_damper[i, x] = -acc_damper
+
+    for i in range(4):
+      bodyid = flex_vertbodyid[v[i]]
+      frc_s = force_spring[i]
+      node_pos = flexvert_xpos_in[worldid, v[i]]
+      body_xipos = xipos_in[worldid, bodyid]
+      offset = body_xipos - node_pos
+
+      spatial_frc_s = wp.spatial_vector(frc_s, -wp.cross(offset, frc_s))
+      wp.atomic_add(flex_spring_body_force_out, worldid, bodyid, spatial_frc_s)
+
+      if not dsbl_damper and flex_damping[f] > 0.0:
+        frc_d = force_damper[i] * flex_damping[f]
+        spatial_frc_d = wp.spatial_vector(frc_d, -wp.cross(offset, frc_d))
+        wp.atomic_add(flex_damper_body_force_out, worldid, bodyid, spatial_frc_d)
+
+  return flex_bending
 
 
 @wp.kernel
@@ -1255,13 +1472,75 @@ def passive(m: Model, d: Data):
 
   flex_spring_body_force = None
   flex_damper_body_force = None
+  flexvert_xpos = d.flexvert_xpos
+  flexedge_length = d.flexedge_length
+  flexedge_velocity = d.flexedge_velocity
+  flex_grad = d.qfrc_spring.requires_grad or d.qfrc_damper.requires_grad
+  flex_vert_owner = flex_edge_owner = flex_elem_owner = wp.empty(0, dtype=int)
   if m.nflex > 0:
-    flex_spring_body_force = wp.zeros((d.nworld, m.nbody), dtype=wp.spatial_vector, device=d.qfrc_spring.device)
-    flex_damper_body_force = wp.zeros((d.nworld, m.nbody), dtype=wp.spatial_vector, device=d.qfrc_spring.device)
+    # Track the flex body-force intermediates when qfrc gradients are requested
+    # so the apply_ft backward can route cotangents into the flex force kernels.
+    flex_spring_body_force = wp.zeros(
+      (d.nworld, m.nbody), dtype=wp.spatial_vector, device=d.qfrc_spring.device, requires_grad=flex_grad
+    )
+    flex_damper_body_force = wp.zeros(
+      (d.nworld, m.nbody), dtype=wp.spatial_vector, device=d.qfrc_spring.device, requires_grad=flex_grad
+    )
 
-  if not dsbl_spring:
+    if flex_grad:
+      # Owning-flex ids for the differentiable kernels (see _flex_owner_ids).
+      flex_vert_owner = wp.empty(m.nflexvert, dtype=int)
+      flex_edge_owner = wp.empty(m.nflexedge, dtype=int)
+      flex_elem_owner = wp.empty(m.nflexelem, dtype=int)
+      wp.launch(_flex_owner_ids, dim=m.nflexvert, inputs=[m.nflex, m.flex_vertadr, m.flex_vertnum], outputs=[flex_vert_owner])
+      wp.launch(_flex_owner_ids, dim=m.nflexedge, inputs=[m.nflex, m.flex_edgeadr, m.flex_edgenum], outputs=[flex_edge_owner])
+      wp.launch(_flex_owner_ids, dim=m.nflexelem, inputs=[m.nflex, m.flex_elemadr, m.flex_elemnum], outputs=[flex_elem_owner])
+
+      # Recompute the flex kinematic inputs with the differentiable replays
+      # (bitwise-identical values, see _flex_vertices_replay above).
+      flexvert_xpos = wp.zeros_like(d.flexvert_xpos, requires_grad=True)
+      flexedge_length = wp.zeros_like(d.flexedge_length, requires_grad=True)
+      flexedge_velocity = wp.zeros_like(d.flexedge_velocity, requires_grad=True)
+      wp.launch(
+        _flex_vertices_replay,
+        dim=(d.nworld, m.nflexvert),
+        inputs=[
+          m.flex_interp,
+          m.flex_cellnum,
+          m.flex_nodeadr,
+          m.flex_vertbodyid,
+          m.flex_vert,
+          m.flex_vert0,
+          m.flex_centered,
+          d.xpos,
+          d.xmat,
+          d.flexnode_xpos,
+          flex_vert_owner,
+        ],
+        outputs=[flexvert_xpos],
+      )
+      wp.launch(
+        _flex_edges_replay,
+        dim=(d.nworld, m.nflexedge),
+        inputs=[
+          m.body_rootid,
+          m.body_dofnum,
+          m.body_dofadr,
+          m.flex_vertadr,
+          m.flex_vertbodyid,
+          m.flex_edge,
+          d.qvel,
+          d.subtree_com,
+          d.cdof,
+          flexvert_xpos,
+          flex_edge_owner,
+        ],
+        outputs=[flexedge_length, flexedge_velocity],
+      )
+
+  if not dsbl_spring and m.nflex > 0:
     wp.launch(
-      _flex_elasticity,
+      _flex_elasticity(flex_grad),
       dim=(d.nworld, m.nflexelem),
       inputs=[
         m.nflex,
@@ -1281,17 +1560,18 @@ def passive(m: Model, d: Data):
         m.flex_stiffness,
         m.flex_damping,
         d.xipos,
-        d.flexvert_xpos,
-        d.flexedge_length,
-        d.flexedge_velocity,
+        flexvert_xpos,
+        flexedge_length,
+        flexedge_velocity,
+        flex_elem_owner,
         dsbl_damper,
       ],
       outputs=[flex_spring_body_force],
     )
 
-  if not dsbl_spring or not dsbl_damper:
+  if (not dsbl_spring or not dsbl_damper) and m.nflex > 0:
     wp.launch(
-      _flex_bending,
+      _flex_bending(flex_grad),
       dim=(d.nworld, m.nflexedge),
       inputs=[
         m.nflex,
@@ -1308,8 +1588,9 @@ def passive(m: Model, d: Data):
         m.flex_damping,
         d.xipos,
         d.subtree_com,
-        d.flexvert_xpos,
+        flexvert_xpos,
         d.cvel,
+        flex_edge_owner,
         dsbl_damper,
       ],
       outputs=[

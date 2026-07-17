@@ -24,10 +24,12 @@ import warp as wp
 from mujoco_warp._src import ad_flags
 from mujoco_warp._src import adjoint as _adjoint  # noqa: F401 (register custom adjoints)
 from mujoco_warp._src import io
+from mujoco_warp._src import sensor as _sensor
 from mujoco_warp._src.forward import forward
 from mujoco_warp._src.forward import step
 from mujoco_warp._src.types import Data
 from mujoco_warp._src.types import Model
+from mujoco_warp._src.types import SensorType
 from mujoco_warp._src.types import SolverType
 
 SMOOTH_GRAD_FIELDS: tuple = (
@@ -90,11 +92,54 @@ SMOOTH_GRAD_FIELDS: tuple = (
   # actuator
   "actuator_length",
   "actuator_moment",
+  # delayed-ctrl ring buffer
+  "history",
   # sensor
   "sensordata",
 )
 
 SOLVER_GRAD_FIELDS: tuple = ("qfrc_constraint",)
+
+# Sensor types whose sensordata slots carry gradients: smooth position- and
+# velocity-stage sensors computed from differentiable kinematic quantities.
+# All other types (rangefinder/geomdist ray+collision queries, joint/tendon
+# limit sensors, energy, clock, insidesite, and every acceleration-stage
+# sensor: touch/tactile/contact, accelerometer, force/torque, actuator force,
+# frame accelerations) read non-differentiable inputs and return exactly zero
+# gradient on their sensordata slots.
+GRAD_SENSOR_TYPES: frozenset = frozenset(
+  int(t)
+  for t in (
+    SensorType.MAGNETOMETER,
+    SensorType.CAMPROJECTION,
+    SensorType.JOINTPOS,
+    SensorType.TENDONPOS,
+    SensorType.ACTUATORPOS,
+    SensorType.BALLQUAT,
+    SensorType.FRAMEPOS,
+    SensorType.FRAMEXAXIS,
+    SensorType.FRAMEYAXIS,
+    SensorType.FRAMEZAXIS,
+    SensorType.FRAMEQUAT,
+    SensorType.SUBTREECOM,
+    SensorType.VELOCIMETER,
+    SensorType.GYRO,
+    SensorType.JOINTVEL,
+    SensorType.TENDONVEL,
+    SensorType.ACTUATORVEL,
+    SensorType.BALLANGVEL,
+    SensorType.FRAMELINVEL,
+    SensorType.FRAMEANGVEL,
+    SensorType.SUBTREELINVEL,
+    SensorType.SUBTREEANGMOM,
+  )
+)
+
+# Model parameter arrays whose gradients are known to be silently dropped by
+# the manual packed-M/qLD adjoints (their only path to the dynamics runs
+# through composite inertia and the mass-matrix factorization, which have
+# hand-written adjoints that do not differentiate w.r.t. Model parameters).
+DROPPED_MODEL_GRAD_FIELDS: tuple = ("body_mass", "body_inertia", "dof_armature")
 
 COLLISION_GRAD_FIELDS: tuple = (
   # Contact geometry (written by smooth_recompute_contacts)
@@ -119,6 +164,56 @@ def _resolve_field(d: Data, name: str):
   return getattr(d, name, None)
 
 
+# sensor.py is not in ad_flags._AD_MODULES (only its smooth position/velocity
+# kernels differentiate; the rest opt out per kernel), so its module option is
+# flipped here alongside the main AD modules.
+_sensor_ad_enabled = ad_flags.ad_enabled()
+
+
+def _enable_sensor_ad() -> None:
+  global _sensor_ad_enabled
+  if _sensor_ad_enabled:
+    return
+  _sensor_ad_enabled = True
+  wp.set_module_options({"enable_backward": True}, module=_sensor)
+
+
+def _warn_if_no_differentiable_sensors(mjm) -> None:
+  """Warn when sensordata is grad-tracked but no sensor type carries gradients."""
+  if mjm.nsensor == 0:
+    return
+  if any(int(t) in GRAD_SENSOR_TYPES for t in mjm.sensor_type):
+    return
+  warnings.warn(
+    "sensordata is gradient-tracked but this model only contains sensor types with no gradient support "
+    "(see mujoco_warp GRAD_SENSOR_TYPES); a loss on sensordata will produce zero gradients.",
+    stacklevel=3,
+  )
+
+
+def _warn_if_nondifferentiable_flex(mjm) -> None:
+  """Warn for interpolated flexes, whose passive-force gradients are unsupported."""
+  if getattr(mjm, "nflex", 0) and any(mjm.flex_interp != 0):
+    warnings.warn(
+      "Model contains trilinear/quadratic-interpolated flexes; their passive-force gradients are not supported "
+      "and will be missing or zero.",
+      stacklevel=3,
+    )
+
+
+def _warn_if_flex_contacts_possible(mjm) -> None:
+  """Warn that flex contact rows keep their discrete geometry under a tape."""
+  import mujoco
+
+  if getattr(mjm, "nflex", 0) and not (mjm.opt.disableflags & mujoco.mjtDisableBit.mjDSBL_CONTACT):
+    warnings.warn(
+      "Model contains flexes with contact enabled: flex contact rows are excluded from the differentiable "
+      "contact replay (they keep their discrete geometry), so gradients through flex contacts are incomplete "
+      "and can be biased.",
+      stacklevel=3,
+    )
+
+
 def enable_grad(d: Data, fields: Optional[Sequence[str]] = None, mjm=None) -> None:
   """Enables gradient tracking on Data arrays.
 
@@ -128,8 +223,32 @@ def enable_grad(d: Data, fields: Optional[Sequence[str]] = None, mjm=None) -> No
   Also enables backward-kernel compilation for gradient-path modules
   (see ad_flags.enable_ad); call this before the first step to avoid a
   module recompile.
+
+  Sensor gradients: sensordata is gradient-tracked, but only smooth
+  position/velocity-stage sensor types carry gradients (the exact set is
+  GRAD_SENSOR_TYPES: frame pos/quat/axis, joint/tendon/actuator pos and
+  vel, ball quat/angvel, velocimeter, gyro, magnetometer, camprojection,
+  subtree com/linvel/angmom). Contact-dependent sensors (touch, tactile,
+  contact), acceleration/force-stage sensors (accelerometer, force,
+  torque, actuator force, frame accelerations), rangefinder, geom
+  distance, limit and energy sensors return exactly zero gradient on
+  their sensordata slots. When mjm is provided and the model contains
+  only unsupported sensor types, a warning is emitted.
+
+  Model parameter gradients: setting requires_grad manually on Model
+  arrays consumed by auto-differentiated kernels yields gradients (
+  verified for actuator_gainprm, jnt_stiffness, dof_damping, geom_size),
+  but parameters whose only path to the dynamics runs through the
+  manually-adjointed mass-matrix chain are silently dropped (
+  DROPPED_MODEL_GRAD_FIELDS: body_mass, body_inertia, dof_armature).
+  diff_step/diff_forward warn when these are gradient-tracked.
   """
   ad_flags.enable_ad()
+  _enable_sensor_ad()
+  if mjm is not None:
+    _warn_if_no_differentiable_sensors(mjm)
+    _warn_if_nondifferentiable_flex(mjm)
+    _warn_if_flex_contacts_possible(mjm)
   if fields is None:
     # Include the collision/solver fields so contact gradients work out of the box: the
     # implicit-diff backward needs efc.{J,D,aref,vel,pos} and qfrc_constraint gradient-tracked
@@ -167,7 +286,13 @@ def make_diff_data(
   grad_fields: Optional[Sequence[str]] = None,
   **kwargs,
 ) -> Data:
-  """Creates a Data object with gradient tracking enabled."""
+  """Creates a Data object with gradient tracking enabled.
+
+  See enable_grad for the supported gradient scope: in particular only
+  the smooth sensor types in GRAD_SENSOR_TYPES carry sensordata
+  gradients, and Model parameters listed in DROPPED_MODEL_GRAD_FIELDS
+  do not receive gradients even when manually gradient-tracked.
+  """
   d = io.make_data(mjm, nworld=nworld, **kwargs)
   enable_grad(d, fields=grad_fields, mjm=mjm)
   return d
@@ -242,6 +367,17 @@ def _warn_if_cg_solver(m: Model, d: Data):
     )
 
 
+def _warn_if_dropped_model_grads(m: Model):
+  """Warn when requires_grad is set on Model arrays whose gradients are dropped."""
+  tracked = [name for name in DROPPED_MODEL_GRAD_FIELDS if getattr(getattr(m, name, None), "requires_grad", False)]
+  if tracked:
+    warnings.warn(
+      f"requires_grad is set on Model arrays {tracked}, but their gradients are dropped by the manual "
+      "mass-matrix adjoints and will be zero.",
+      stacklevel=3,
+    )
+
+
 def diff_step(
   m: Model,
   d: Data,
@@ -249,6 +385,7 @@ def diff_step(
 ) -> wp.Tape:
   """Runs a differentiable physics step."""
   _warn_if_cg_solver(m, d)
+  _warn_if_dropped_model_grads(m)
   tape = wp.Tape()
   with tape:
     step(m, d)
@@ -264,6 +401,7 @@ def diff_forward(
 ) -> wp.Tape:
   """Runs differentiable forward dynamics (no integration)."""
   _warn_if_cg_solver(m, d)
+  _warn_if_dropped_model_grads(m)
   tape = wp.Tape()
   with tape:
     forward(m, d)

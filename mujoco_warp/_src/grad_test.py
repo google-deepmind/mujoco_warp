@@ -2315,5 +2315,933 @@ class GradFrictionTangentialTest(absltest.TestCase):
     np.testing.assert_allclose(ad, fd, rtol=0.2, atol=1e-10, err_msg=f"tangential friction grad: AD={ad:.3e} FD={fd:.3e}")
 
 
+# ---- Rollout-gradient helpers for FD validation from an assigned initial state ----
+#
+# These helpers step from an explicitly assigned (qpos, qvel, ctrl, act) state so the AD
+# rollout and every finite-difference evaluation start from bit-identical inputs, and use
+# a weighted qpos/qvel loss so a single loss kernel covers position- and velocity-level
+# gradient paths.
+
+
+def _assign_state(d, mjm, qpos, qvel, ctrl=None, act=None):
+  """Assigns initial state arrays on a fresh Data."""
+  d.qpos.assign(np.asarray(qpos, dtype=np.float32).reshape(1, -1))
+  d.qvel.assign(np.asarray(qvel, dtype=np.float32).reshape(1, -1))
+  if ctrl is not None and mjm.nu:
+    d.ctrl.assign(np.asarray(ctrl, dtype=np.float32).reshape(1, -1))
+  if act is not None and mjm.na:
+    d.act.assign(np.asarray(act, dtype=np.float32).reshape(1, -1))
+
+
+def _rollout_loss(m, mjm, nsteps, qpos_w, qvel_w, qpos, qvel, ctrl=None, act=None, split=False, set_data_fn=None):
+  """No-grad rollout returning the weighted qpos/qvel loss (finite-difference ground truth)."""
+  d = mjw.make_data(mjm)
+  _assign_state(d, mjm, qpos, qvel, ctrl, act)
+  if set_data_fn is not None:
+    set_data_fn(d)
+  for _ in range(nsteps):
+    if split:
+      mjw.step1(m, d)
+      mjw.step2(m, d)
+    else:
+      mjw.step(m, d)
+  qw = np.asarray(qpos_w, dtype=np.float64)
+  vw = np.asarray(qvel_w, dtype=np.float64)
+  return float(d.qpos.numpy()[0] @ qw + d.qvel.numpy()[0] @ vw)
+
+
+def _rollout_ad_grads(
+  m, mjm, nsteps, qpos_w, qvel_w, qpos, qvel, ctrl=None, act=None, split=False, set_data_fn=None, watch=("qpos", "qvel", "ctrl")
+):
+  """AD gradients of the weighted rollout loss w.r.t. watched Data input arrays.
+
+  Input array references are captured before the tape because step() rebinds
+  intermediates for per-substep isolation. Returns (grads, d).
+  """
+  d = mjw.make_diff_data(mjm)
+  _assign_state(d, mjm, qpos, qvel, ctrl, act)
+  if set_data_fn is not None:
+    set_data_fn(d)
+  refs = {name: getattr(d, name) for name in watch}
+  qpos_w_wp = wp.array(np.asarray(qpos_w, dtype=np.float32), dtype=float)
+  qvel_w_wp = wp.array(np.asarray(qvel_w, dtype=np.float32), dtype=float)
+  loss = wp.zeros(1, dtype=float, requires_grad=True)
+  tape = wp.Tape()
+  with tape:
+    for _ in range(nsteps):
+      if split:
+        mjw.step1(m, d)
+        mjw.step2(m, d)
+      else:
+        mjw.step(m, d)
+    wp.launch(_hopper_state_loss_kernel, dim=max(mjm.nq, mjm.nv), inputs=[d.qpos, d.qvel, qpos_w_wp, qvel_w_wp, loss])
+  tape.backward(loss=loss)
+  grads = {name: refs[name].grad.numpy()[0].copy() for name in watch}
+  tape.zero()
+  return grads, d
+
+
+# Damped two-link pendulum used across the integrator-family gradient tests.
+_INTEGRATOR_FAMILY_XML = """
+<mujoco>
+  <option timestep="0.005" gravity="0 0 -9.81" integrator="{integrator}" jacobian="sparse">
+    <flag contact="disable" constraint="disable"/>
+  </option>
+  <worldbody>
+    <body>
+      <joint name="j0" type="hinge" axis="0 1 0" damping="{damping}"/>
+      <geom type="sphere" size="0.1" mass="1"/>
+      <body pos="0 0 -0.5">
+        <joint name="j1" type="hinge" axis="0 1 0" damping="{damping}"/>
+        <geom type="sphere" size="0.1" mass="1"/>
+      </body>
+    </body>
+  </worldbody>
+  <actuator>
+    <motor joint="j0" gear="1"/>
+    <motor joint="j1" gear="1"/>
+  </actuator>
+</mujoco>
+"""
+
+
+class GradIntegratorFamilyTest(parameterized.TestCase):
+  """FD-validated rollout gradients for the RK4 / implicitfast / implicit integrators."""
+
+  def _state(self):
+    q0 = np.array([0.5, -0.3], dtype=np.float32)
+    v0 = np.array([0.1, -0.2], dtype=np.float32)
+    c0 = np.array([0.5, -0.5], dtype=np.float32)
+    qw = np.ones(2, dtype=np.float32)
+    vw = np.ones(2, dtype=np.float32)
+    return q0, v0, c0, qw, vw
+
+  def _fd_state_grads(self, m, mjm, nsteps, qw, vw, q0, v0, c0, eps=1e-3):
+    fd_q = _fd_gradient(lambda q: _rollout_loss(m, mjm, nsteps, qw, vw, q, v0, c0), q0, eps=eps)
+    fd_v = _fd_gradient(lambda v: _rollout_loss(m, mjm, nsteps, qw, vw, q0, v, c0), v0, eps=eps)
+    fd_c = _fd_gradient(lambda c: _rollout_loss(m, mjm, nsteps, qw, vw, q0, v0, c), c0, eps=eps)
+    return fd_q, fd_v, fd_c
+
+  @absltest.skipIf(_REQUIRES_GPU, _REQUIRES_GPU_REASON)
+  def test_rk4_rollout_grads_match_fd(self):
+    """RK4 4-step dL/dqpos, dL/dqvel, dL/dctrl must match FD (no stage double count)."""
+    xml = _INTEGRATOR_FAMILY_XML.format(integrator="RK4", damping="0.1")
+    mjm = mujoco.MjModel.from_xml_string(xml)
+    m = mjw.put_model(mjm)
+    q0, v0, c0, qw, vw = self._state()
+    nsteps = 4
+    grads, _ = _rollout_ad_grads(m, mjm, nsteps, qw, vw, q0, v0, c0)
+    fd_q, fd_v, fd_c = self._fd_state_grads(m, mjm, nsteps, qw, vw, q0, v0, c0)
+    np.testing.assert_allclose(grads["qpos"], fd_q, rtol=0.02, atol=2e-3, err_msg=f"RK4 dL/dqpos: AD={grads['qpos']} FD={fd_q}")
+    np.testing.assert_allclose(grads["qvel"], fd_v, rtol=0.02, atol=2e-3, err_msg=f"RK4 dL/dqvel: AD={grads['qvel']} FD={fd_v}")
+    np.testing.assert_allclose(grads["ctrl"], fd_c, rtol=0.02, atol=2e-3, err_msg=f"RK4 dL/dctrl: AD={grads['ctrl']} FD={fd_c}")
+
+  @absltest.skipIf(_REQUIRES_GPU, _REQUIRES_GPU_REASON)
+  def test_implicitfast_rollout_grads_match_fd(self):
+    """IMPLICITFAST gradients on a strongly damped model must match FD (no damp-transform bias)."""
+    xml = _INTEGRATOR_FAMILY_XML.format(integrator="implicitfast", damping="5.0")
+    mjm = mujoco.MjModel.from_xml_string(xml)
+    m = mjw.put_model(mjm)
+    q0, v0, c0, qw, vw = self._state()
+    nsteps = 2
+    grads, _ = _rollout_ad_grads(m, mjm, nsteps, qw, vw, q0, v0, c0)
+    fd_q, fd_v, fd_c = self._fd_state_grads(m, mjm, nsteps, qw, vw, q0, v0, c0)
+    np.testing.assert_allclose(
+      grads["qpos"], fd_q, rtol=0.01, atol=1e-3, err_msg=f"implicitfast dL/dqpos: AD={grads['qpos']} FD={fd_q}"
+    )
+    np.testing.assert_allclose(
+      grads["qvel"], fd_v, rtol=0.01, atol=1e-3, err_msg=f"implicitfast dL/dqvel: AD={grads['qvel']} FD={fd_v}"
+    )
+    np.testing.assert_allclose(
+      grads["ctrl"], fd_c, rtol=0.01, atol=1e-3, err_msg=f"implicitfast dL/dctrl: AD={grads['ctrl']} FD={fd_c}"
+    )
+
+  @absltest.skipIf(_REQUIRES_GPU, _REQUIRES_GPU_REASON)
+  def test_implicit_grads_fd_correct_or_not_implemented(self):
+    """IMPLICIT integrator under tape: either FD-correct gradients or a clear NotImplementedError.
+
+    A silent-zero dL/dctrl (the failure mode when no solver adjoint is recorded and qacc
+    carries no gradient) must fail.
+    """
+    xml = _INTEGRATOR_FAMILY_XML.format(integrator="implicit", damping="5.0")
+    mjm = mujoco.MjModel.from_xml_string(xml)
+    m = mjw.put_model(mjm)
+    q0, v0, c0, qw, vw = self._state()
+    nsteps = 2
+    try:
+      grads, _ = _rollout_ad_grads(m, mjm, nsteps, qw, vw, q0, v0, c0)
+    except NotImplementedError:
+      return  # a loud guard on the unsupported integrator is an accepted outcome
+    _, fd_v, fd_c = self._fd_state_grads(m, mjm, nsteps, qw, vw, q0, v0, c0)
+    self.assertGreater(
+      np.linalg.norm(grads["ctrl"]),
+      1e-10,
+      "implicit integrator dL/dctrl is silently zero under tape (must raise or be correct)",
+    )
+    np.testing.assert_allclose(
+      grads["ctrl"], fd_c, rtol=0.02, atol=1e-3, err_msg=f"implicit dL/dctrl: AD={grads['ctrl']} FD={fd_c}"
+    )
+    np.testing.assert_allclose(
+      grads["qvel"], fd_v, rtol=0.02, atol=1e-3, err_msg=f"implicit dL/dqvel: AD={grads['qvel']} FD={fd_v}"
+    )
+
+
+class GradStep12Test(absltest.TestCase):
+  """AD through the step1/step2 split entry must match FD over a multi-step rollout."""
+
+  @absltest.skipIf(_REQUIRES_GPU, _REQUIRES_GPU_REASON)
+  def test_step12_three_step_rollout_matches_fd(self):
+    mjm = mujoco.MjModel.from_xml_string(_SIMPLE_HINGE_XML)
+    m = mjw.put_model(mjm)
+    q0 = np.array([0.5, -0.3], dtype=np.float32)
+    v0 = np.array([0.1, -0.2], dtype=np.float32)
+    c0 = np.array([0.5, -0.5], dtype=np.float32)
+    qw = np.ones(2, dtype=np.float32)
+    vw = np.ones(2, dtype=np.float32)
+    nsteps = 3
+    grads, _ = _rollout_ad_grads(m, mjm, nsteps, qw, vw, q0, v0, c0, split=True)
+    fd_q = _fd_gradient(lambda q: _rollout_loss(m, mjm, nsteps, qw, vw, q, v0, c0, split=True), q0, eps=1e-3)
+    fd_v = _fd_gradient(lambda v: _rollout_loss(m, mjm, nsteps, qw, vw, q0, v, c0, split=True), v0, eps=1e-3)
+    fd_c = _fd_gradient(lambda c: _rollout_loss(m, mjm, nsteps, qw, vw, q0, v0, c, split=True), c0, eps=1e-3)
+    np.testing.assert_allclose(
+      grads["ctrl"], fd_c, rtol=0.02, atol=1e-3, err_msg=f"step1/step2 dL/dctrl: AD={grads['ctrl']} FD={fd_c}"
+    )
+    np.testing.assert_allclose(
+      grads["qpos"], fd_q, rtol=0.02, atol=1e-3, err_msg=f"step1/step2 dL/dqpos: AD={grads['qpos']} FD={fd_q}"
+    )
+    np.testing.assert_allclose(
+      grads["qvel"], fd_v, rtol=0.02, atol=1e-3, err_msg=f"step1/step2 dL/dqvel: AD={grads['qvel']} FD={fd_v}"
+    )
+
+
+_MUSCLE_XML = """
+<mujoco>
+  <option timestep="0.005" gravity="0 0 0" jacobian="sparse">
+    <flag contact="disable" constraint="disable"/>
+  </option>
+  <worldbody>
+    <body>
+      <joint name="j0" type="hinge" axis="0 1 0" range="-85 85" limited="true" damping="0.1"/>
+      <geom type="capsule" size="0.04" fromto="0 0 0 0.3 0 0" mass="1"/>
+    </body>
+  </worldbody>
+  <actuator>
+    <muscle joint="j0" ctrlrange="0 1"/>
+  </actuator>
+</mujoco>
+"""
+
+
+class GradMuscleActuatorTest(absltest.TestCase):
+  """Muscle activation dynamics gradients over a multi-step rollout.
+
+  The muscle time constant tau(act) is nonlinear in act, so any stale-activation replay in
+  the backward pass shows up as a large (formerly ~2x) dL/dctrl error at several steps.
+  """
+
+  @absltest.skipIf(_REQUIRES_GPU, _REQUIRES_GPU_REASON)
+  def test_muscle_six_step_ctrl_grad_matches_fd(self):
+    mjm = mujoco.MjModel.from_xml_string(_MUSCLE_XML)
+    m = mjw.put_model(mjm)
+    q0 = np.array([0.6], dtype=np.float32)
+    v0 = np.array([0.3], dtype=np.float32)
+    c0 = np.array([0.7], dtype=np.float32)
+    a0 = np.array([0.5], dtype=np.float32)
+    qw = np.ones(1, dtype=np.float32)
+    vw = np.zeros(1, dtype=np.float32)
+    nsteps = 6
+    grads, _ = _rollout_ad_grads(m, mjm, nsteps, qw, vw, q0, v0, c0, act=a0, watch=("qpos", "ctrl"))
+    fd_c = _fd_gradient(lambda c: _rollout_loss(m, mjm, nsteps, qw, vw, q0, v0, c, act=a0), c0, eps=3e-3)
+    fd_q = _fd_gradient(lambda q: _rollout_loss(m, mjm, nsteps, qw, vw, q, v0, c0, act=a0), q0, eps=3e-3)
+    np.testing.assert_allclose(
+      grads["ctrl"], fd_c, rtol=0.02, atol=1e-4, err_msg=f"muscle dL/dctrl (6 steps): AD={grads['ctrl']} FD={fd_c}"
+    )
+    np.testing.assert_allclose(
+      grads["qpos"], fd_q, rtol=0.02, atol=1e-4, err_msg=f"muscle dL/dqpos (6 steps): AD={grads['qpos']} FD={fd_q}"
+    )
+
+
+# Two-body chain spanned by a three-site spatial tendon driven by a tendon motor: the
+# actuator moment ten_J varies with pose, so a backward pass replaying final-substep
+# moments corrupts the multi-step control gradient. The large timestep and fast initial
+# rotation make ten_J change substantially per step (formerly a 20%+ eps-stable bias,
+# sign-flipping on faster-varying tendon geometries).
+_SPATIAL_TENDON_MOTOR_XML = """
+<mujoco>
+  <option timestep="0.02" gravity="0 0 -9.81" jacobian="sparse">
+    <flag contact="disable" constraint="disable"/>
+  </option>
+  <worldbody>
+    <site name="anchor" pos="0.3 0 1"/>
+    <body pos="0.2 0 0.7">
+      <joint name="j0" type="hinge" axis="0 1 0"/>
+      <geom type="capsule" size="0.04" fromto="0 0 0 0 0 -0.3" mass="1"/>
+      <site name="mid" pos="0.12 0 -0.15"/>
+      <body pos="0 0 -0.3">
+        <joint name="j1" type="hinge" axis="0 1 0"/>
+        <geom type="capsule" size="0.04" fromto="0 0 0 0 0 -0.3" mass="1"/>
+        <site name="tip" pos="0 0 -0.3"/>
+      </body>
+    </body>
+  </worldbody>
+  <tendon>
+    <spatial name="t0">
+      <site site="anchor"/>
+      <site site="mid"/>
+      <site site="tip"/>
+    </spatial>
+  </tendon>
+  <actuator>
+    <motor tendon="t0" gear="1"/>
+  </actuator>
+</mujoco>
+"""
+
+
+class GradSpatialTendonTransmissionTest(absltest.TestCase):
+  """Multi-step dL/dctrl through a pose-varying spatial-tendon transmission must match FD."""
+
+  @absltest.skipIf(_REQUIRES_GPU, _REQUIRES_GPU_REASON)
+  def test_tendon_motor_four_step_ctrl_grad_matches_fd(self):
+    mjm = mujoco.MjModel.from_xml_string(_SPATIAL_TENDON_MOTOR_XML)
+    m = mjw.put_model(mjm)
+    q0 = np.array([0.4, -0.3], dtype=np.float32)
+    v0 = np.array([8.0, -10.0], dtype=np.float32)
+    c0 = np.array([3.0], dtype=np.float32)
+    qw = np.ones(2, dtype=np.float32)
+    vw = np.zeros(2, dtype=np.float32)
+    nsteps = 4
+    grads, _ = _rollout_ad_grads(m, mjm, nsteps, qw, vw, q0, v0, c0, watch=("ctrl",))
+    fd_c = _fd_gradient(lambda c: _rollout_loss(m, mjm, nsteps, qw, vw, q0, v0, c), c0, eps=1e-3)
+    np.testing.assert_allclose(
+      grads["ctrl"],
+      fd_c,
+      rtol=0.05,
+      atol=2e-4,
+      err_msg=f"spatial tendon motor dL/dctrl (4 steps): AD={grads['ctrl']} FD={fd_c}",
+    )
+
+
+_POLYDAMP_XML = """
+<mujoco>
+  <option timestep="0.005" gravity="0 0 -9.81" jacobian="sparse">
+    <flag contact="disable" constraint="disable"/>
+  </option>
+  <worldbody>
+    <body>
+      <joint name="j0" type="hinge" axis="0 1 0" damping="0.3"/>
+      <geom type="sphere" size="0.1" mass="1"/>
+      <body pos="0 0 -0.5">
+        <joint name="j1" type="hinge" axis="0 1 0" damping="0.2"/>
+        <geom type="sphere" size="0.1" mass="1"/>
+      </body>
+    </body>
+  </worldbody>
+</mujoco>
+"""
+
+
+class GradPolyDampingTest(absltest.TestCase):
+  """Eulerdamp adjoint with polynomial (velocity-dependent) damping must match FD at one step."""
+
+  @absltest.skipIf(_REQUIRES_GPU, _REQUIRES_GPU_REASON)
+  def test_polydamp_single_step_qvel_grad_matches_fd(self):
+    mjm = mujoco.MjModel.from_xml_string(_POLYDAMP_XML)
+    m = mjw.put_model(mjm)
+    m.dof_dampingpoly.assign(np.array([[[0.4, 0.15], [0.3, 0.1]]], dtype=np.float32))
+    q0 = np.array([0.5, -0.3], dtype=np.float32)
+    v0 = np.array([1.5, -2.0], dtype=np.float32)
+    qw = np.ones(2, dtype=np.float32)
+    vw = np.ones(2, dtype=np.float32)
+    grads, _ = _rollout_ad_grads(m, mjm, 1, qw, vw, q0, v0, watch=("qpos", "qvel"))
+    fd_v = _fd_gradient(lambda v: _rollout_loss(m, mjm, 1, qw, vw, q0, v), v0, eps=1e-4)
+    fd_q = _fd_gradient(lambda q: _rollout_loss(m, mjm, 1, qw, vw, q, v0), q0, eps=1e-4)
+    np.testing.assert_allclose(
+      grads["qvel"], fd_v, rtol=5e-3, atol=5e-4, err_msg=f"polydamp dL/dqvel: AD={grads['qvel']} FD={fd_v}"
+    )
+    np.testing.assert_allclose(
+      grads["qpos"], fd_q, rtol=5e-3, atol=5e-4, err_msg=f"polydamp dL/dqpos: AD={grads['qpos']} FD={fd_q}"
+    )
+
+
+_XFRC_PENDULUM_XML = """
+<mujoco>
+  <option timestep="0.01" gravity="0 0 -9.81" jacobian="sparse">
+    <flag contact="disable" constraint="disable"/>
+  </option>
+  <worldbody>
+    <body>
+      <joint name="j0" type="hinge" axis="0 1 0"/>
+      <geom type="capsule" size="0.04" fromto="0 0 0 0 0 -0.4" mass="1"/>
+      <body pos="0 0 -0.4">
+        <joint name="j1" type="hinge" axis="1 0 0"/>
+        <geom type="capsule" size="0.04" fromto="0 0 0 0 0 -0.4" mass="1"/>
+      </body>
+    </body>
+  </worldbody>
+</mujoco>
+"""
+
+
+class GradXfrcAppliedTest(absltest.TestCase):
+  """dL/d(xfrc_applied) must match FD (regression: it was exactly zero)."""
+
+  @absltest.skipIf(_REQUIRES_GPU, _REQUIRES_GPU_REASON)
+  def test_xfrc_applied_grad_matches_fd(self):
+    mjm = mujoco.MjModel.from_xml_string(_XFRC_PENDULUM_XML)
+    m = mjw.put_model(mjm)
+    nbody = mjm.nbody
+    q0 = np.array([0.3, -0.2], dtype=np.float32)
+    v0 = np.array([0.1, 0.2], dtype=np.float32)
+    qw = np.ones(2, dtype=np.float32)
+    vw = np.ones(2, dtype=np.float32)
+    bodyid = 2  # second link
+    xfrc0 = np.zeros((nbody, 6), dtype=np.float32)
+    xfrc0[bodyid] = [0.5, 0.0, 0.3, 0.0, 0.2, 0.1]
+    nsteps = 2
+
+    def set_xfrc(arr):
+      def _fn(d):
+        d.xfrc_applied.assign(arr.reshape(1, nbody, 6))
+
+      return _fn
+
+    grads, _ = _rollout_ad_grads(m, mjm, nsteps, qw, vw, q0, v0, set_data_fn=set_xfrc(xfrc0), watch=("xfrc_applied",))
+    ad = grads["xfrc_applied"][bodyid]
+
+    def eval_xfrc(x6):
+      arr = xfrc0.copy()
+      arr[bodyid] = x6
+      return _rollout_loss(m, mjm, nsteps, qw, vw, q0, v0, set_data_fn=set_xfrc(arr))
+
+    fd = _fd_gradient(eval_xfrc, xfrc0[bodyid].copy(), eps=1e-2)
+    self.assertGreater(np.linalg.norm(ad), 1e-8, f"dL/dxfrc_applied is silently zero (FD={fd})")
+    np.testing.assert_allclose(ad, fd, rtol=0.05, atol=1e-5, err_msg=f"xfrc_applied grad: AD={ad} FD={fd}")
+
+
+_FLUID_XML = """
+<mujoco>
+  <option timestep="0.005" density="500" viscosity="0.5" wind="1.5 0.5 0" gravity="0 0 -9.81" jacobian="sparse">
+    <flag contact="disable" constraint="disable"/>
+  </option>
+  <worldbody>
+    <body pos="0 0 1">
+      <freejoint/>
+      <geom type="{geom_type}" size="0.1 0.05 0.02" mass="0.5"{fluidshape}/>
+    </body>
+  </worldbody>
+</mujoco>
+"""
+
+
+class GradFluidForceTest(parameterized.TestCase):
+  """Fluid (drag/wind) force gradients must match FD instead of vacuum-dynamics values."""
+
+  @parameterized.named_parameters(
+    ("box", _FLUID_XML.format(geom_type="box", fluidshape="")),
+    ("ellipsoid", _FLUID_XML.format(geom_type="ellipsoid", fluidshape=' fluidshape="ellipsoid"')),
+  )
+  @absltest.skipIf(_REQUIRES_GPU, _REQUIRES_GPU_REASON)
+  def test_fluid_qvel_grad_matches_fd(self, xml):
+    mjm = mujoco.MjModel.from_xml_string(xml)
+    m = mjw.put_model(mjm)
+    q0 = np.array([0, 0, 1, 1, 0, 0, 0], dtype=np.float32)
+    v0 = np.array([0.5, -0.3, 0.4, 0.2, -0.1, 0.3], dtype=np.float32)
+    qw = np.zeros(7, dtype=np.float32)
+    vw = np.ones(6, dtype=np.float32)
+    nsteps = 2
+    grads, _ = _rollout_ad_grads(m, mjm, nsteps, qw, vw, q0, v0, watch=("qvel",))
+    fd = _fd_gradient(lambda v: _rollout_loss(m, mjm, nsteps, qw, vw, q0, v), v0, eps=1e-3)
+    # The scene must have a real fluid contribution, otherwise the test is vacuous.
+    self.assertGreater(np.max(np.abs(fd - 1.0)), 0.02, f"fluid model has no gradient signal: FD={fd}")
+    np.testing.assert_allclose(grads["qvel"], fd, rtol=0.02, atol=1e-3, err_msg=f"fluid dL/dqvel: AD={grads['qvel']} FD={fd}")
+
+
+_FLEX_FREE_CLOTH_XML = """
+<mujoco>
+  <option timestep="0.005" gravity="0 0 -9.81" jacobian="sparse">
+    <flag contact="disable" constraint="disable"/>
+  </option>
+  <worldbody>
+    <flexcomp name="cloth" type="grid" count="4 4 1" spacing="0.1 0.1 0.1" pos="0 0 1" dim="2" mass="1">
+      <elasticity young="1e3" poisson="0.3" thickness="1e-2" elastic2d="both"/>
+    </flexcomp>
+  </worldbody>
+</mujoco>
+"""
+
+
+class GradFlexElasticityTest(absltest.TestCase):
+  """Flex passive elasticity gradients must be nonzero and FD-correct.
+
+  With contacts and constraints disabled and a loss on qvel, gravity contributes nothing to
+  dL/dqpos, so the entire FD signal is the elastic (stretch/bending) stiffness. A backward
+  pass that drops the flex force gradients returns exactly zero here.
+  """
+
+  @absltest.skipIf(_REQUIRES_GPU, _REQUIRES_GPU_REASON)
+  def test_flex_elasticity_qpos_grad_matches_fd(self):
+    mjm = mujoco.MjModel.from_xml_string(_FLEX_FREE_CLOTH_XML)
+    m = mjw.put_model(mjm)
+    self.assertGreater(mjm.nflex, 0)
+    q0 = mjm.qpos0.astype(np.float32).copy()
+    v0 = np.zeros(mjm.nv, dtype=np.float32)
+    qw = np.zeros(mjm.nq, dtype=np.float32)
+    # Random qvel weights: internal elastic forces sum to zero over the vertices (and nearly
+    # cancel for smoothly varying weights), so a uniform sum(qvel) loss has no elastic FD
+    # signal at all.
+    vw = np.random.default_rng(3).normal(size=mjm.nv).astype(np.float32)
+    nsteps = 2
+    grads, _ = _rollout_ad_grads(m, mjm, nsteps, qw, vw, q0, v0, watch=("qpos",))
+    # Two interior vertices of the 4x4 grid (row-major vertex ids 5 and 10, 3 dofs each).
+    idxs = [15, 16, 17, 30, 31, 32]
+    ad = grads["qpos"][idxs]
+
+    def eval_sub(sub):
+      q = q0.copy()
+      q[idxs] = sub
+      return _rollout_loss(m, mjm, nsteps, qw, vw, q, v0)
+
+    fd = _fd_gradient(eval_sub, q0[idxs].copy(), eps=1e-3)
+    self.assertGreater(np.linalg.norm(fd), 1e-2, f"flex scene has no elastic gradient signal: FD={fd}")
+    self.assertTrue(np.all(np.isfinite(ad)), f"flex elasticity gradient is non-finite: AD={ad}")
+    self.assertGreater(
+      np.linalg.norm(ad), 0.1 * np.linalg.norm(fd), f"flex elasticity gradient is silently zero: AD={ad} FD={fd}"
+    )
+    np.testing.assert_allclose(ad, fd, rtol=0.02, atol=2e-3, err_msg=f"flex elasticity dL/dqpos: AD={ad} FD={fd}")
+
+
+_FRAMEPOS_XML = """
+<mujoco>
+  <option gravity="0 0 -9.81" jacobian="sparse">
+    <flag contact="disable" constraint="disable"/>
+  </option>
+  <worldbody>
+    <body>
+      <joint name="j0" type="hinge" axis="0 1 0"/>
+      <geom type="capsule" size="0.04" fromto="0 0 0 0 0 -0.4" mass="1"/>
+      <site name="tip" pos="0 0 -0.4"/>
+    </body>
+  </worldbody>
+  <sensor>
+    <framepos objtype="site" objname="tip"/>
+  </sensor>
+</mujoco>
+"""
+
+
+class GradSensorLossTest(absltest.TestCase):
+  """A loss on sensordata (framepos) must carry gradients back to qpos (was exactly zero)."""
+
+  @absltest.skipIf(_REQUIRES_GPU, _REQUIRES_GPU_REASON)
+  def test_framepos_sensor_loss_qpos_grad_matches_fd(self):
+    mjm = mujoco.MjModel.from_xml_string(_FRAMEPOS_XML)
+    m = mjw.put_model(mjm)
+    q0 = np.array([0.7], dtype=np.float32)
+    v0 = np.array([0.2], dtype=np.float32)
+
+    d = mjw.make_diff_data(mjm)
+    _assign_state(d, mjm, q0, v0)
+    qpos_ref = d.qpos
+    loss = wp.zeros(1, dtype=float, requires_grad=True)
+    tape = wp.Tape()
+    with tape:
+      mjw.step(m, d)
+      wp.launch(_sum_qpos_kernel, dim=(d.nworld, mjm.nsensordata), inputs=[d.sensordata, loss])
+    tape.backward(loss=loss)
+    ad = qpos_ref.grad.numpy()[0].copy()
+    tape.zero()
+
+    def eval_loss(q):
+      d_fd = mjw.make_data(mjm)
+      _assign_state(d_fd, mjm, q, v0)
+      mjw.step(m, d_fd)
+      return float(d_fd.sensordata.numpy()[0].sum())
+
+    fd = _fd_gradient(eval_loss, q0, eps=1e-3)
+    self.assertGreater(np.abs(fd[0]), 1e-2, f"framepos scene has no gradient signal: FD={fd}")
+    np.testing.assert_allclose(ad, fd, rtol=5e-3, atol=1e-4, err_msg=f"framepos sensor loss dL/dqpos: AD={ad} FD={fd}")
+
+
+_MOCAP_WELD_XML = """
+<mujoco>
+  <option timestep="0.005" gravity="0 0 -9.81" jacobian="sparse" solver="Newton" iterations="50"/>
+  <worldbody>
+    <body name="anchor" mocap="true" pos="0 0 1">
+      <geom type="sphere" size="0.05" contype="0" conaffinity="0"/>
+    </body>
+    <body name="ball" pos="0.02 -0.01 0.97">
+      <freejoint/>
+      <geom type="sphere" size="0.05" mass="1" contype="0" conaffinity="0"/>
+    </body>
+  </worldbody>
+  <equality>
+    <weld body1="anchor" body2="ball" solref="0.02 1"/>
+  </equality>
+</mujoco>
+"""
+
+
+class GradMocapWeldTest(absltest.TestCase):
+  """dL/d(mocap_pos) through a mocap-driven weld must match FD (was exactly zero)."""
+
+  @absltest.skipIf(_REQUIRES_GPU, _REQUIRES_GPU_REASON)
+  def test_mocap_pos_grad_matches_fd(self):
+    mjm = mujoco.MjModel.from_xml_string(_MOCAP_WELD_XML)
+    m = mjw.put_model(mjm)
+    q0 = mjm.qpos0.astype(np.float32).copy()
+    v0 = np.zeros(mjm.nv, dtype=np.float32)
+    qw = np.ones(mjm.nq, dtype=np.float32)
+    vw = np.zeros(mjm.nv, dtype=np.float32)
+    mocap0 = np.array([0.05, 0.02, 1.03], dtype=np.float32)
+
+    def set_mocap(pos3):
+      def _fn(d):
+        d.mocap_pos.assign(np.asarray(pos3, dtype=np.float32).reshape(1, 1, 3))
+
+      return _fn
+
+    grads, d = _rollout_ad_grads(m, mjm, 1, qw, vw, q0, v0, set_data_fn=set_mocap(mocap0), watch=("mocap_pos",))
+    self.assertGreater(int(d.nefc.numpy()[0]), 0, "weld constraint must be active")
+    ad = grads["mocap_pos"][0]
+    fd = _fd_gradient(lambda p: _rollout_loss(m, mjm, 1, qw, vw, q0, v0, set_data_fn=set_mocap(p)), mocap0.copy(), eps=1e-3)
+    self.assertGreater(np.linalg.norm(ad), 1e-8, f"dL/dmocap_pos is silently zero (FD={fd})")
+    np.testing.assert_allclose(ad, fd, rtol=0.05, atol=2e-4, err_msg=f"mocap weld dL/dmocap_pos: AD={ad} FD={fd}")
+
+
+_FRICTION_DOF_JAC_XML = """
+<mujoco>
+  <option timestep="0.005" gravity="0 0 0" jacobian="{jacobian}" solver="Newton" iterations="50">
+    <flag eulerdamp="disable"/>
+  </option>
+  <worldbody>
+    <body>
+      <joint name="j0" type="slide" axis="1 0 0" frictionloss="2"/>
+      <geom type="sphere" size="0.05" mass="1" contype="0" conaffinity="0"/>
+    </body>
+  </worldbody>
+</mujoco>
+"""
+
+_FRICTION_TENDON_FIXED_XML = """
+<mujoco>
+  <option timestep="0.005" gravity="0 0 0" jacobian="sparse" solver="Newton" iterations="50">
+    <flag eulerdamp="disable"/>
+  </option>
+  <worldbody>
+    <body>
+      <joint name="j0" type="slide" axis="1 0 0"/>
+      <geom type="sphere" size="0.05" mass="1" contype="0" conaffinity="0"/>
+    </body>
+  </worldbody>
+  <tendon>
+    <fixed name="t0" frictionloss="2">
+      <joint joint="j0" coef="1"/>
+    </fixed>
+  </tendon>
+</mujoco>
+"""
+
+
+class GradFrictionRowTest(parameterized.TestCase):
+  """Friction rows in the quadratic (unsaturated) regime must carry the -b*vel dissipation VJP.
+
+  A 1-dof slider with frictionloss=2 at qvel=1e-3 keeps the friction row in the QUADRATIC
+  state; the missing dissipation term formerly returned dL/dqvel=1.3035 vs FD~0.686 on the
+  0.7*qpos + 1.3*qvel loss.
+  """
+
+  @parameterized.named_parameters(
+    ("dof_dense", _FRICTION_DOF_JAC_XML.format(jacobian="dense"), mujoco.mjtConstraint.mjCNSTR_FRICTION_DOF),
+    ("dof_sparse", _FRICTION_DOF_JAC_XML.format(jacobian="sparse"), mujoco.mjtConstraint.mjCNSTR_FRICTION_DOF),
+    ("tendon", _FRICTION_TENDON_FIXED_XML, mujoco.mjtConstraint.mjCNSTR_FRICTION_TENDON),
+  )
+  @absltest.skipIf(_REQUIRES_GPU, _REQUIRES_GPU_REASON)
+  def test_friction_row_quadratic_grad_matches_fd(self, xml, expected_type):
+    mjm = mujoco.MjModel.from_xml_string(xml)
+    m = mjw.put_model(mjm)
+    q0 = np.array([0.0], dtype=np.float32)
+    v0 = np.array([1e-3], dtype=np.float32)
+    qw = np.array([0.7], dtype=np.float32)
+    vw = np.array([1.3], dtype=np.float32)
+    grads, d = _rollout_ad_grads(m, mjm, 1, qw, vw, q0, v0, watch=("qpos", "qvel"))
+    self.assertEqual(int(d.nefc.numpy()[0]), 1)
+    self.assertEqual(int(d.efc.type.numpy()[0, 0]), int(expected_type))
+    self.assertEqual(int(d.efc.state.numpy()[0, 0]), int(mujoco.mjtConstraintState.mjCNSTRSTATE_QUADRATIC))
+    fd_v = _fd_gradient(lambda v: _rollout_loss(m, mjm, 1, qw, vw, q0, v), v0, eps=1e-5)
+    fd_q = _fd_gradient(lambda q: _rollout_loss(m, mjm, 1, qw, vw, q, v0), q0, eps=1e-5)
+    self.assertLess(grads["qvel"][0], 1.0, f"friction dissipation missing from dL/dqvel: AD={grads['qvel'][0]} FD={fd_v[0]}")
+    np.testing.assert_allclose(
+      grads["qvel"], fd_v, rtol=5e-3, atol=1e-4, err_msg=f"friction row dL/dqvel: AD={grads['qvel']} FD={fd_v}"
+    )
+    np.testing.assert_allclose(
+      grads["qpos"], fd_q, rtol=1e-3, atol=1e-4, err_msg=f"friction row dL/dqpos: AD={grads['qpos']} FD={fd_q}"
+    )
+
+
+class GradCGSolverTest(absltest.TestCase):
+  """CG-solver gradients on a contact scene: FD/Newton-correct or a clear raise, never silent-wrong.
+
+  The identity fallback formerly returned the unconstrained free-body dL/dctrl (~dt^2, about
+  20x FD) with no error.
+  """
+
+  @absltest.skipIf(_REQUIRES_GPU, _REQUIRES_GPU_REASON)
+  def test_cg_contact_ctrl_grad_or_clear_raise(self):
+    xml_cg = _CONTACT_SLIDE_XML.replace('solver="Newton" iterations="30"', 'solver="CG" iterations="100"')
+    q0 = np.array([0.0], dtype=np.float32)
+    v0 = np.array([0.0], dtype=np.float32)
+    c0 = np.array([0.2], dtype=np.float32)
+    qw = np.array([1.0], dtype=np.float32)
+    vw = np.array([0.0], dtype=np.float32)
+
+    mjm_n = mujoco.MjModel.from_xml_string(_CONTACT_SLIDE_XML)
+    m_n = mjw.put_model(mjm_n)
+    grads_n, _ = _rollout_ad_grads(m_n, mjm_n, 1, qw, vw, q0, v0, c0, watch=("ctrl",))
+
+    mjm_c = mujoco.MjModel.from_xml_string(xml_cg)
+    m_c = mjw.put_model(mjm_c)
+    try:
+      grads_c, _ = _rollout_ad_grads(m_c, mjm_c, 1, qw, vw, q0, v0, c0, watch=("ctrl",))
+    except (NotImplementedError, RuntimeError) as e:
+      self.assertNotIn("cuda error", str(e).lower(), f"CG solver under tape crashed instead of raising a guard: {e}")
+      return  # a loud guard on the unsupported solver is an accepted outcome
+    fd_c = _fd_gradient(lambda c: _rollout_loss(m_c, mjm_c, 1, qw, vw, q0, v0, c), c0, eps=3e-2)
+    np.testing.assert_allclose(
+      grads_c["ctrl"],
+      grads_n["ctrl"],
+      rtol=0.05,
+      atol=1e-9,
+      err_msg=f"CG vs Newton dL/dctrl: CG={grads_c['ctrl']} Newton={grads_n['ctrl']}",
+    )
+    np.testing.assert_allclose(
+      grads_c["ctrl"], fd_c, rtol=0.25, atol=5e-9, err_msg=f"CG dL/dctrl vs FD: AD={grads_c['ctrl']} FD={fd_c}"
+    )
+
+
+_EQ_CONNECT_XML = """
+<mujoco>
+  <option timestep="0.005" gravity="0 0 0" jacobian="{jacobian}" solver="Newton" iterations="50"/>
+  <worldbody>
+    <body name="b1">
+      <joint name="j0" type="slide" axis="1 0 0" damping="20"/>
+      <joint name="j1" type="slide" axis="0 1 0" damping="20"/>
+      <joint name="j2" type="slide" axis="0 0 1" damping="20"/>
+      <geom type="sphere" size="0.05" mass="1" contype="0" conaffinity="0"/>
+    </body>
+  </worldbody>
+  <equality>
+    <connect body1="b1" anchor="0 0 0" solref="0.02 1" solimp="0.2 0.9 0.8 0.5 2"/>
+  </equality>
+</mujoco>
+"""
+
+_EQ_WELD_XML = """
+<mujoco>
+  <option timestep="0.005" gravity="0 0 0" jacobian="{jacobian}" solver="Newton" iterations="50"/>
+  <worldbody>
+    <body name="b1">
+      <joint name="j0" type="slide" axis="1 0 0" damping="20"/>
+      <joint name="j1" type="slide" axis="0 1 0" damping="20"/>
+      <joint name="j2" type="slide" axis="0 0 1" damping="20"/>
+      <joint name="j3" type="hinge" axis="0 1 0" damping="20"/>
+      <geom type="sphere" size="0.05" mass="1" contype="0" conaffinity="0"/>
+    </body>
+  </worldbody>
+  <equality>
+    <weld body1="b1" solref="0.02 1" solimp="0.2 0.9 0.8 0.5 2"/>
+  </equality>
+</mujoco>
+"""
+
+
+class GradEqualityConnectWeldTest(parameterized.TestCase):
+  """Connect and weld equality state VJPs must match FD (their qpos dependence was dropped)."""
+
+  @parameterized.named_parameters(
+    ("connect_dense", _EQ_CONNECT_XML, "dense", 3),
+    ("connect_sparse", _EQ_CONNECT_XML, "sparse", 3),
+    ("weld_dense", _EQ_WELD_XML, "dense", 6),
+    ("weld_sparse", _EQ_WELD_XML, "sparse", 6),
+  )
+  @absltest.skipIf(_REQUIRES_GPU, _REQUIRES_GPU_REASON)
+  def test_equality_state_vjp_matches_fd(self, xml_tpl, jacobian, expected_rows):
+    xml = xml_tpl.format(jacobian=jacobian)
+    mjm = mujoco.MjModel.from_xml_string(xml)
+    m = mjw.put_model(mjm)
+    nq, nv = mjm.nq, mjm.nv
+    q0 = np.array([0.06, -0.04, 0.05, 0.1][:nq], dtype=np.float32)
+    v0 = np.array([0.3, -0.2, 0.25, -0.2][:nv], dtype=np.float32)
+    qw = np.linspace(0.15, 0.85, nq).astype(np.float32)
+    vw = np.linspace(-0.55, 0.65, nv).astype(np.float32)
+    grads, d = _rollout_ad_grads(m, mjm, 1, qw, vw, q0, v0, watch=("qpos", "qvel"))
+    nefc = int(d.nefc.numpy()[0])
+    self.assertEqual(nefc, expected_rows)
+    self.assertTrue(np.all(d.efc.type.numpy()[0, :nefc] == int(mujoco.mjtConstraint.mjCNSTR_EQUALITY)))
+    self.assertTrue(np.all(d.efc.state.numpy()[0, :nefc] == int(mujoco.mjtConstraintState.mjCNSTRSTATE_QUADRATIC)))
+    fd_q = _fd_gradient(lambda q: _rollout_loss(m, mjm, 1, qw, vw, q, v0), q0, eps=1e-3)
+    fd_v = _fd_gradient(lambda v: _rollout_loss(m, mjm, 1, qw, vw, q0, v), v0, eps=1e-3)
+    np.testing.assert_allclose(
+      grads["qpos"], fd_q, rtol=5e-3, atol=5e-4, err_msg=f"equality {jacobian} dL/dqpos: AD={grads['qpos']} FD={fd_q}"
+    )
+    np.testing.assert_allclose(
+      grads["qvel"], fd_v, rtol=5e-3, atol=5e-4, err_msg=f"equality {jacobian} dL/dqvel: AD={grads['qvel']} FD={fd_v}"
+    )
+
+
+_BOX_PLANE_XML = """
+<mujoco>
+  <option gravity="0 0 -9.81" jacobian="sparse" solver="Newton" iterations="30"/>
+  <worldbody>
+    <geom type="plane" size="5 5 0.01"/>
+    <body pos="0 0 0.051">
+      <joint name="slide" type="slide" axis="0 0 1"/>
+      <geom type="box" size="0.05 0.05 0.05" mass="1"/>
+    </body>
+  </worldbody>
+</mujoco>
+"""
+
+
+class GradBoxPlaneContactTest(parameterized.TestCase):
+  """Box-plane contact geometry gradients must match FD (formerly the identity value 1.0)."""
+
+  @parameterized.named_parameters(
+    ("one_step", 1, 5e-3),
+    ("five_steps", 5, 2e-2),
+  )
+  @absltest.skipIf(_REQUIRES_GPU, _REQUIRES_GPU_REASON)
+  def test_box_plane_qpos_grad_matches_fd(self, nsteps, rtol):
+    mjm = mujoco.MjModel.from_xml_string(_BOX_PLANE_XML)
+    m = mjw.put_model(mjm)
+    d_settle = mjw.make_data(mjm)
+    for _ in range(200):
+      mjw.step(m, d_settle)
+    q0 = d_settle.qpos.numpy()[0].copy()
+    v0 = d_settle.qvel.numpy()[0].copy()
+    qw = np.array([1.0], dtype=np.float32)
+    vw = np.array([0.0], dtype=np.float32)
+    grads, d = _rollout_ad_grads(m, mjm, nsteps, qw, vw, q0, v0, watch=("qpos",))
+    self.assertGreater(int(d.nacon.numpy()[0]), 0, "box must stay in contact")
+    fd = _fd_gradient(lambda q: _rollout_loss(m, mjm, nsteps, qw, vw, q, v0), q0, eps=2e-6)
+    self.assertLess(fd[0], 0.9995, f"contact must contract the qpos perturbation: FD={fd}")
+    np.testing.assert_allclose(
+      grads["qpos"], fd, rtol=rtol, atol=1e-4, err_msg=f"box-plane dL/dqpos ({nsteps} steps): AD={grads['qpos']} FD={fd}"
+    )
+
+
+_FLEX_ONPLANE_XML = """
+<mujoco>
+  <option timestep="0.002" gravity="0 0 -9.81" jacobian="sparse" solver="Newton" iterations="30"/>
+  <worldbody>
+    <geom type="plane" size="2 2 0.01"/>
+    <flexcomp name="cloth" type="grid" count="3 3 1" spacing="0.05 0.05 0.05" pos="0 0 0.004" dim="2" mass="0.5">
+      <elasticity young="1e3" poisson="0.3" thickness="0.01"/>
+      <contact selfcollide="none"/>
+    </flexcomp>
+  </worldbody>
+</mujoco>
+"""
+
+
+class GradFlexTapeForwardIntegrityTest(absltest.TestCase):
+  """A flex-contact rollout under tape must produce the exact no-grad forward trajectory."""
+
+  @absltest.skipIf(_REQUIRES_GPU, _REQUIRES_GPU_REASON)
+  def test_flex_contact_tape_forward_matches_plain(self):
+    mjm = mujoco.MjModel.from_xml_string(_FLEX_ONPLANE_XML)
+    m = mjw.put_model(mjm)
+    nsteps = 8
+
+    d_plain = mjw.make_data(mjm)
+    for _ in range(nsteps):
+      mjw.step(m, d_plain)
+    qpos_plain = d_plain.qpos.numpy().copy()
+    nacon_plain = int(d_plain.nacon.numpy()[0])
+    self.assertGreater(nacon_plain, 0, "cloth must be in contact with the plane")
+
+    d_ad = mjw.make_diff_data(mjm)
+    tape = wp.Tape()
+    with tape:
+      for _ in range(nsteps):
+        mjw.step(m, d_ad)
+    qpos_ad = d_ad.qpos.numpy().copy()
+    nacon_ad = int(d_ad.nacon.numpy()[0])
+    tape.zero()
+
+    self.assertEqual(nacon_ad, nacon_plain)
+    np.testing.assert_array_equal(qpos_ad, qpos_plain, err_msg="flex-contact forward under tape diverged from no-grad forward")
+
+
+_SLEEP_CONTACT_XML = """
+<mujoco>
+  <option gravity="0 0 -9.81" jacobian="dense" solver="Newton" iterations="30">
+    <flag sleep="enable" island="enable"/>
+  </option>
+  <worldbody>
+    <geom type="plane" size="5 5 0.01"/>
+    <body pos="0 0 0.098">
+      <joint name="slide" type="slide" axis="0 0 1"/>
+      <geom type="sphere" size="0.1" mass="1"/>
+    </body>
+  </worldbody>
+</mujoco>
+"""
+
+
+class GradUnsupportedModeGuardTest(absltest.TestCase):
+  """Sleep and CUDA-graph capture under tape must raise clearly, never NaN or silently mislead."""
+
+  @absltest.skipIf(_REQUIRES_GPU, _REQUIRES_GPU_REASON)
+  def test_sleep_under_tape_raises_or_is_correct(self):
+    mjm = mujoco.MjModel.from_xml_string(_SLEEP_CONTACT_XML)
+    m = mjw.put_model(mjm)
+    q0 = np.array([0.0], dtype=np.float32)
+    v0 = np.array([-0.05], dtype=np.float32)
+    qw = np.array([0.7], dtype=np.float32)
+    vw = np.array([1.3], dtype=np.float32)
+    try:
+      grads, _ = _rollout_ad_grads(m, mjm, 1, qw, vw, q0, v0, watch=("qpos", "qvel"))
+    except (NotImplementedError, RuntimeError) as e:
+      self.assertNotIn("cuda error", str(e).lower(), f"sleep under tape crashed instead of raising a guard: {e}")
+      return  # a loud guard on the unsupported sleep mode is an accepted outcome
+    ad = np.concatenate([grads["qpos"], grads["qvel"]])
+    self.assertTrue(np.all(np.isfinite(ad)), f"sleep+tape produced non-finite gradients {ad} (must raise or be correct)")
+    fd_v = _fd_gradient(lambda v: _rollout_loss(m, mjm, 1, qw, vw, q0, v), v0, eps=1e-4)
+    np.testing.assert_allclose(
+      grads["qvel"], fd_v, rtol=0.05, atol=1e-4, err_msg=f"sleep+tape dL/dqvel is silently wrong: AD={grads['qvel']} FD={fd_v}"
+    )
+
+  @absltest.skipIf(_REQUIRES_GPU, _REQUIRES_GPU_REASON)
+  def test_graph_capture_under_tape_raises(self):
+    mjm, _, m, d_warm = test_data.fixture(xml=_SIMPLE_HINGE_XML, keyframe=0)
+    # Warm up forward+backward modules so capture cannot fail on module loading.
+    enable_grad(d_warm)
+    loss_warm = wp.zeros(1, dtype=float, requires_grad=True)
+    tape_warm = wp.Tape()
+    with tape_warm:
+      mjw.step(m, d_warm)
+      wp.launch(_sum_qpos_kernel, dim=(d_warm.nworld, mjm.nq), inputs=[d_warm.qpos, loss_warm])
+    tape_warm.backward(loss=loss_warm)
+    tape_warm.zero()
+
+    _, _, _, d = test_data.fixture(xml=_SIMPLE_HINGE_XML, keyframe=0)
+    enable_grad(d)
+    loss = wp.zeros(1, dtype=float, requires_grad=True)
+    try:
+      tape = wp.Tape()
+      with tape:
+        with wp.ScopedCapture() as capture:
+          mjw.step(m, d)
+        for _ in range(8):
+          wp.capture_launch(capture.graph)
+        wp.launch(_sum_qpos_kernel, dim=(d.nworld, mjm.nq), inputs=[d.qpos, loss])
+      tape.backward(loss=loss)
+    except (NotImplementedError, RuntimeError) as e:
+      self.assertNotIn("cuda error", str(e).lower(), f"graph capture under tape crashed instead of raising a guard: {e}")
+      return
+    self.fail("graph capture under tape must raise a clear error (the replayed rollout differentiates a single step)")
+
+
 if __name__ == "__main__":
   absltest.main()

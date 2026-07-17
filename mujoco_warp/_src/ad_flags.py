@@ -41,6 +41,7 @@ _AD_MODULES = (
   "mujoco_warp._src.passive",
   "mujoco_warp._src.derivative",
   "mujoco_warp._src.collision_smooth",
+  "mujoco_warp._src.history",
 )
 
 _enabled = os.environ.get("MJWARP_ENABLE_AD", "0").lower() not in ("", "0", "false")
