@@ -2254,7 +2254,17 @@ def _update_constraint(
       wp.launch(
         _update_constraint_init_qfrc_constraint_sparse(sc),
         dim=(d.nworld, d.njmax),
-        inputs=[d.nefc, dj.efc.J_rownnz, dj.efc.J_rowadr, dj.efc.J_colind, dj.efc.J, d.efc.force, dj.dof_cdof, changed, ctx.done],
+        inputs=[
+          d.nefc,
+          dj.efc.J_rownnz,
+          dj.efc.J_rowadr,
+          dj.efc.J_colind,
+          dj.efc.J,
+          d.efc.force,
+          dj.dof_cdof,
+          changed,
+          ctx.done,
+        ],
         outputs=[d.qfrc_constraint],
       )
   else:
@@ -2381,6 +2391,58 @@ def _update_gradient_grad_tiled(
 
   if tid == 0:
     ctx_grad_dot_out[worldid] = grad_dot_sum[0]
+
+
+@cache_kernel
+def _update_gradient_grad_det(stable_fast: bool):
+  STABLE_FAST = stable_fast
+
+  @wp.kernel(module="unique", enable_backward=False)
+  def kernel(
+    # Model:
+    nv: int,
+    # Data in:
+    qfrc_smooth_in: wp.array2d[float],
+    qfrc_constraint_in: wp.array2d[float],
+    efc_Ma_in: wp.array2d[float],
+    # In:
+    state_changed_count_in: wp.array[int],
+    ctx_done_in: wp.array[bool],
+    # Out:
+    ctx_grad_out: wp.array2d[float],
+    ctx_grad_dot_out: wp.array[float],
+  ):
+    """Newton grad/grad_dot via a fixed-order tile reduction.
+
+    Replaces the per-dof `wp.atomic_add` into grad_dot (float addition order
+    across warps is unordered) with the same block reduction the CG path uses,
+    so the termination test in _solve_done reads a reproducible sum.
+    """
+    worldid, tid = wp.tid()
+
+    if ctx_done_in[worldid]:
+      return
+
+    # Fast path: grad stays stale (see _update_gradient_zero_grad_dot).
+    if wp.static(STABLE_FAST):
+      if state_changed_count_in[worldid] == 0:
+        return
+
+    local_grad_dot = float(0.0)
+    BLOCK_DIM = wp.block_dim()
+
+    for dofid in range(tid, nv, BLOCK_DIM):
+      grad = efc_Ma_in[worldid, dofid] - qfrc_smooth_in[worldid, dofid] - qfrc_constraint_in[worldid, dofid]
+      ctx_grad_out[worldid, dofid] = grad
+      local_grad_dot += grad * grad
+
+    grad_dot_tile = wp.tile(local_grad_dot, preserve_type=True)
+    grad_dot_sum = wp.tile_reduce(wp.add, grad_dot_tile)
+
+    if tid == 0:
+      ctx_grad_dot_out[worldid] = grad_dot_sum[0]
+
+  return kernel
 
 
 @cache_kernel
@@ -3696,12 +3758,21 @@ def _update_gradient(m: types.Model, d: types.Data, ctx: SolverContext, compact:
       inputs=[d.nefc, ctx.alpha, ctx.done],
       outputs=[ctx.grad_dot, ctx.newton_decrement, ctx.grad_scale, ctx.search_unchanged],
     )
-    wp.launch(
-      _update_gradient_grad(False),
-      dim=(d.nworld, m.nv),
-      inputs=[d.qfrc_smooth, d.qfrc_constraint, d.efc.Ma, d.nefc, ctx.done],
-      outputs=[ctx.grad, ctx.grad_dot],
-    )
+    if m.opt.deterministic:
+      wp.launch_tiled(
+        _update_gradient_grad_det(False),
+        dim=d.nworld,
+        inputs=[m.nv, d.qfrc_smooth, d.qfrc_constraint, d.efc.Ma, d.nefc, ctx.done],
+        outputs=[ctx.grad, ctx.grad_dot],
+        block_dim=m.block_dim.update_gradient_grad,
+      )
+    else:
+      wp.launch(
+        _update_gradient_grad(False),
+        dim=(d.nworld, m.nv),
+        inputs=[d.qfrc_smooth, d.qfrc_constraint, d.efc.Ma, d.nefc, ctx.done],
+        outputs=[ctx.grad, ctx.grad_dot],
+      )
 
   if m.opt.solver == types.SolverType.CG:
     if m.is_sparse and m.nflex > 0:
@@ -3939,12 +4010,21 @@ def _update_gradient_incremental(m: types.Model, d: types.Data, ctx: SolverConte
     outputs=[ctx.grad_dot, ctx.newton_decrement, ctx.grad_scale, ctx.search_unchanged],
   )
 
-  wp.launch(
-    _update_gradient_grad(stable_fast),
-    dim=(d.nworld, m.nv),
-    inputs=[d.qfrc_smooth, d.qfrc_constraint, d.efc.Ma, changed, ctx.done],
-    outputs=[ctx.grad, ctx.grad_dot],
-  )
+  if m.opt.deterministic:
+    wp.launch_tiled(
+      _update_gradient_grad_det(stable_fast),
+      dim=d.nworld,
+      inputs=[m.nv, d.qfrc_smooth, d.qfrc_constraint, d.efc.Ma, changed, ctx.done],
+      outputs=[ctx.grad, ctx.grad_dot],
+      block_dim=m.block_dim.update_gradient_grad,
+    )
+  else:
+    wp.launch(
+      _update_gradient_grad(stable_fast),
+      dim=(d.nworld, m.nv),
+      inputs=[d.qfrc_smooth, d.qfrc_constraint, d.efc.Ma, changed, ctx.done],
+      outputs=[ctx.grad, ctx.grad_dot],
+    )
 
   # Update upper triangle of H with delta from changed constraints.
   sc = _sparse_compact(ctx)
