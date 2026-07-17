@@ -655,6 +655,7 @@ def gjk(
 
   # for discrete geoms GJK is guaranteed to converge in a finite number of iterations
   # so we can ignore tolerance
+  # TODO(kbayes): look into relative tolerances based off of xnorm
   epsilon = wp.where(is_discrete, 0.0, 0.5 * tolerance * tolerance)
   min_norm = wp.where(is_discrete, MINVAL, tolerance)
   min_tol = wp.where(is_discrete, MINVAL, tolerance)
