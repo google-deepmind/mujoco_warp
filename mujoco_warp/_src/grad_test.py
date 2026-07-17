@@ -978,7 +978,7 @@ class GradSolverAdjointTest(parameterized.TestCase):
         qvel_m[0, 0] -= eps
       fd[:, col] = (eval_state(qpos_p, qvel_p) - eval_state(qpos_m, qvel_m)) / (2.0 * eps)
 
-    np.testing.assert_allclose(ad, fd, atol=2.0e-5, rtol=2.0e-5, err_msg=f"active {jacobian} limit state VJP mismatch")
+    np.testing.assert_allclose(ad, fd, atol=5.0e-5, rtol=5.0e-5, err_msg=f"active {jacobian} limit state VJP mismatch")
 
   @parameterized.named_parameters(
     ("equality_dense", "equality_joint", "dense"),

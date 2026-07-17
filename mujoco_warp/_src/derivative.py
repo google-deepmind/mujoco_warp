@@ -30,7 +30,6 @@ from mujoco_warp._src.types import GainType
 from mujoco_warp._src.types import IntegratorType
 from mujoco_warp._src.types import Model
 from mujoco_warp._src.types import vec10
-from mujoco_warp._src.types import vec10f
 from mujoco_warp._src.warp_util import event_scope
 
 # Backward-enabled kernels generate slower forward code, so AD compilation is
@@ -49,9 +48,9 @@ def _qderiv_actuator_passive_vel(
   actuator_actnum: wp.array[int],
   actuator_forcelimited: wp.array[bool],
   actuator_actlimited: wp.array[bool],
-  actuator_dynprm: wp.array2d[vec10f],
-  actuator_gainprm: wp.array2d[vec10f],
-  actuator_biasprm: wp.array2d[vec10f],
+  actuator_dynprm: wp.array2d[vec10],
+  actuator_gainprm: wp.array2d[vec10],
+  actuator_biasprm: wp.array2d[vec10],
   actuator_actearly: wp.array[bool],
   actuator_forcerange: wp.array2d[wp.vec2],
   actuator_actrange: wp.array2d[wp.vec2],

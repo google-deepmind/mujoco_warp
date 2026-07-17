@@ -22,6 +22,8 @@ from mujoco_warp._src import support
 from mujoco_warp._src import util_misc
 from mujoco_warp._src.types import MJ_MAXVAL
 from mujoco_warp._src.types import MJ_MINVAL
+from mujoco_warp._src.types import Q_LD_BLOCK_COMPACT
+from mujoco_warp._src.types import Q_LD_BLOCK_SPARSE
 from mujoco_warp._src.types import CamLightType
 from mujoco_warp._src.types import ConeType
 from mujoco_warp._src.types import Data
@@ -360,14 +362,19 @@ def _site_local_to_global(
 def _flex_vertices(
   # Model:
   nflex: int,
+  flex_interp: wp.array[int],
+  flex_cellnum: wp.array[wp.vec3i],
+  flex_nodeadr: wp.array[int],
   flex_vertadr: wp.array[int],
   flex_vertnum: wp.array[int],
   flex_vertbodyid: wp.array[int],
   flex_vert: wp.array[wp.vec3],
+  flex_vert0: wp.array[wp.vec3],
   flex_centered: wp.array[bool],
   # Data in:
   xpos_in: wp.array2d[wp.vec3],
   xmat_in: wp.array2d[wp.mat33],
+  flexnode_xpos_in: wp.array2d[wp.vec3],
   # Data out:
   flexvert_xpos_out: wp.array2d[wp.vec3],
 ):
@@ -385,15 +392,93 @@ def _flex_vertices(
   if f < 0:
     return
 
-  bodyid = flex_vertbodyid[vertid]
+  if flex_interp[f] != 0:
+    # Interpolated flex: vertex position = weighted sum of node positions
+    coord = flex_vert0[vertid]
+    cn = flex_cellnum[f]
+    cx = cn[0]
+    cy = cn[1]
+    cz = cn[2]
+
+    # Cell lookup: find containing cell
+    ci = wp.min(int(coord[0] * float(cx)), cx - 1)
+    ci = wp.max(ci, 0)
+    cj = wp.min(int(coord[1] * float(cy)), cy - 1)
+    cj = wp.max(cj, 0)
+    ck = wp.min(int(coord[2] * float(cz)), cz - 1)
+    ck = wp.max(ck, 0)
+
+    # Local parametric coordinates within cell
+    local_x = wp.clamp(coord[0] * float(cx) - float(ci), 0.0, 1.0)
+    local_y = wp.clamp(coord[1] * float(cy) - float(cj), 0.0, 1.0)
+    local_z = wp.clamp(coord[2] * float(cz) - float(ck), 0.0, 1.0)
+    local = wp.vec3(local_x, local_y, local_z)
+
+    # Node grid dimensions
+    ny_g = cy + 1
+    nz_g = cz + 1
+    nstart = flex_nodeadr[f]
+
+    # Accumulate weighted node positions
+    result = wp.vec3(0.0, 0.0, 0.0)
+    for li in range(2):
+      for lj in range(2):
+        for lk in range(2):
+          w = support.eval_basis_trilinear(local, li * 4 + lj * 2 + lk)
+          gi = ci + li
+          gj = cj + lj
+          gk = ck + lk
+          node_idx = gi * ny_g * nz_g + gj * nz_g + gk
+          result += w * flexnode_xpos_in[worldid, nstart + node_idx]
+
+    flexvert_xpos_out[worldid, vertid] = result
+  else:
+    # Non-interpolated flex: vertex position from single body
+    bodyid = flex_vertbodyid[vertid]
+    xpos = xpos_in[worldid, bodyid]
+
+    if flex_centered[f]:
+      flexvert_xpos_out[worldid, vertid] = xpos
+    else:
+      xmat = xmat_in[worldid, bodyid]
+      local_pos = flex_vert[vertid]
+      flexvert_xpos_out[worldid, vertid] = xmat @ local_pos + xpos
+
+
+@wp.kernel
+def _flex_nodes(
+  # Model:
+  nflex: int,
+  flex_nodeadr: wp.array[int],
+  flex_nodenum: wp.array[int],
+  flex_nodebodyid: wp.array[int],
+  flex_node: wp.array[wp.vec3],
+  flex_centered: wp.array[bool],
+  # Data in:
+  xpos_in: wp.array2d[wp.vec3],
+  xmat_in: wp.array2d[wp.mat33],
+  # Data out:
+  flexnode_xpos_out: wp.array2d[wp.vec3],
+):
+  worldid, nodeid = wp.tid()
+
+  for f in range(nflex):
+    locid = nodeid - flex_nodeadr[f]
+    if locid >= 0 and locid < flex_nodenum[f]:
+      break
+
+  bodyid = flex_nodebodyid[nodeid]
   xpos = xpos_in[worldid, bodyid]
 
   if flex_centered[f]:
-    flexvert_xpos_out[worldid, vertid] = xpos
+    flexnode_xpos_out[worldid, nodeid] = xpos
   else:
-    xmat = xmat_in[worldid, bodyid]
-    local_pos = flex_vert[vertid]
-    flexvert_xpos_out[worldid, vertid] = xmat @ local_pos + xpos
+    local_pos = flex_node[nodeid]
+    if local_pos[0] == 0.0 and local_pos[1] == 0.0 and local_pos[2] == 0.0:
+      flexnode_xpos_out[worldid, nodeid] = xpos
+    else:
+      xmat = xmat_in[worldid, bodyid]
+      flexnode_xpos_out[worldid, nodeid] = xmat @ local_pos + xpos
 
 
 @wp.kernel
@@ -446,6 +531,11 @@ def _flex_edges(
   # TODO(quaglino): use Jacobian
   b1 = flex_vertbodyid[vbase0]
   b2 = flex_vertbodyid[vbase1]
+
+  # skip Jacobian/velocity for trilinear flex (vertbodyid == -1)
+  if b1 < 0 or b2 < 0:
+    flexedge_velocity_out[worldid, edgeid] = 0.0
+    return
 
   dofnum1 = body_dofnum[b1]
   dofnum2 = body_dofnum[b2]
@@ -560,20 +650,137 @@ def kinematics(m: Model, d: Data):
   )
 
 
+@wp.kernel
+def _flex_face_kinematics(
+  # Model:
+  flex_interp: wp.array[int],
+  flex_cellnum: wp.array[wp.vec3i],
+  flex_face_map: wp.array[wp.vec2i],
+  flex_face: wp.array2d[int],
+  # Data in:
+  flexnode_xpos_in: wp.array2d[wp.vec3],
+  # Data out:
+  face_xpos_out: wp.array3d[wp.vec3],
+  face_quat_out: wp.array2d[wp.quat],
+):
+  worldid, face_id = wp.tid()
+
+  mapping = flex_face_map[face_id]
+  f = mapping[0]
+  face_elem_idx = mapping[1]
+
+  order = flex_interp[f]
+  order_abs = -order
+  cellnum = flex_cellnum[f]
+  cx = cellnum[0]
+  cy = cellnum[1]
+  cz = cellnum[2]
+  t1 = wp.vec3(0.0)
+  t2 = wp.vec3(0.0)
+  for local_idx in range(9):
+    gidx = flex_face[face_id, local_idx]
+    if gidx != -1:
+      node_pos = flexnode_xpos_in[worldid, gidx]
+
+      face_xpos_out[worldid, face_id, local_idx] = node_pos
+
+      l0 = local_idx // (order_abs + 1)
+      l1 = local_idx % (order_abs + 1)
+
+      dphi0 = float(l0 - 1) if order_abs == 2 else (-1.0 + 2.0 * float(l0))
+      dphi1 = float(l1 - 1) if order_abs == 2 else (-1.0 + 2.0 * float(l1))
+      phi0 = wp.where(l0 == 1, 1.0, 0.0) if order_abs == 2 else 0.5
+      phi1 = wp.where(l1 == 1, 1.0, 0.0) if order_abs == 2 else 0.5
+
+      grad0 = dphi0 * phi1
+      grad1 = phi0 * dphi1
+
+      t1 += node_pos * grad0
+      t2 += node_pos * grad1
+    else:
+      face_xpos_out[worldid, face_id, local_idx] = wp.vec3(0.0)
+
+  normal = wp.cross(t1, t2)
+
+  normal_axis, _, _, _, _, _ = support.get_face_metadata(cx, cy, cz, face_elem_idx, order_abs)
+
+  F = wp.mat33(0.0)
+  if normal_axis == 0:
+    F = wp.mat33(
+      normal[0],
+      t1[0],
+      t2[0],
+      normal[1],
+      t1[1],
+      t2[1],
+      normal[2],
+      t1[2],
+      t2[2],
+    )
+  elif normal_axis == 1:
+    F = wp.mat33(
+      t2[0],
+      normal[0],
+      t1[0],
+      t2[1],
+      normal[1],
+      t1[1],
+      t2[2],
+      normal[2],
+      t1[2],
+    )
+  else:
+    F = wp.mat33(
+      t1[0],
+      t2[0],
+      normal[0],
+      t1[1],
+      t2[1],
+      normal[1],
+      t1[2],
+      t2[2],
+      normal[2],
+    )
+
+  face_quat_out[worldid, face_id] = support.mat33_to_quat_polar(F)
+
+
 @event_scope
 def flex(m: Model, d: Data):
+  # Compute node positions first (needed for interpolated vertex positions)
+  wp.launch(
+    _flex_nodes,
+    dim=(d.nworld, m.nflexnode),
+    inputs=[
+      m.nflex,
+      m.flex_nodeadr,
+      m.flex_nodenum,
+      m.flex_nodebodyid,
+      m.flex_node,
+      m.flex_centered,
+      d.xpos,
+      d.xmat,
+    ],
+    outputs=[d.flexnode_xpos],
+  )
+
   wp.launch(
     _flex_vertices,
     dim=(d.nworld, m.nflexvert),
     inputs=[
       m.nflex,
+      m.flex_interp,
+      m.flex_cellnum,
+      m.flex_nodeadr,
       m.flex_vertadr,
       m.flex_vertnum,
       m.flex_vertbodyid,
       m.flex_vert,
+      m.flex_vert0,
       m.flex_centered,
       d.xpos,
       d.xmat,
+      d.flexnode_xpos,
     ],
     outputs=[d.flexvert_xpos],
   )
@@ -601,6 +808,22 @@ def flex(m: Model, d: Data):
       d.flexedge_J,
       d.flexedge_length,
       d.flexedge_velocity,
+    ],
+  )
+
+  wp.launch(
+    _flex_face_kinematics,
+    dim=(d.nworld, m.nflexface),
+    inputs=[
+      m.flex_interp,
+      m.flex_cellnum,
+      m.flex_face_map,
+      m.flex_face,
+      d.flexnode_xpos,
+    ],
+    outputs=[
+      d.face_xpos,
+      d.face_quat,
     ],
   )
 
@@ -1326,25 +1549,6 @@ def _qLDiag_div(
   D_out[worldid, dofid] = 1.0 / L_in[worldid, diag_i]
 
 
-@wp.kernel
-def _factor_simple(
-  # Model:
-  M_rownnz: wp.array[int],
-  M_rowadr: wp.array[int],
-  # Data in:
-  M_in: wp.array2d[float],
-  # In:
-  simple_dofs: wp.array[int],
-  # Out:
-  D_out: wp.array2d[float],
-):
-  # A simple (decoupled) dof's whole factorization is D = 1/M(i,i): no L entries, no elimination.
-  worldid, s = wp.tid()
-  dofid = simple_dofs[s]
-  diag_i = M_rowadr[dofid] + M_rownnz[dofid] - 1
-  D_out[worldid, dofid] = 1.0 / M_in[worldid, diag_i]
-
-
 def _factor_i_sparse(m: Model, d: Data, M: wp.array2d[float], L: wp.array2d[float], D: wp.array2d[float]):
   """Sparse L'*D*L factorization of inertia-like matrix M, assumed spd."""
   wp.copy(L, M)
@@ -1354,6 +1558,50 @@ def _factor_i_sparse(m: Model, d: Data, M: wp.array2d[float], L: wp.array2d[floa
     wp.launch(_qLD_acc, dim=(d.nworld, qLD_updates.size), inputs=[m.M_rownnz, m.M_rowadr, qLD_updates, L], outputs=[L])
 
   wp.launch(_qLDiag_div, dim=(d.nworld, m.nv), inputs=[m.M_rownnz, m.M_rowadr, L], outputs=[D])
+
+
+@cache_kernel
+def _small_cholesky_factorize_block(block_size: int):
+  @wp.kernel(module="unique", enable_backward=False)
+  def kernel(
+    # Model:
+    M_rowadr: wp.array[int],
+    qLD_block_adr: wp.array[int],
+    # Data in:
+    M_in: wp.array2d[float],
+    # In:
+    block_dof: wp.array[int],
+    # Out:
+    D_out: wp.array2d[float],
+    L_out: wp.array2d[float],
+  ):
+    worldid, blk = wp.tid()
+    start = block_dof[blk]
+    size = wp.static(block_size)
+    matrix_adr = M_rowadr[start]
+
+    factor_adr = qLD_block_adr[start]
+    if factor_adr == Q_LD_BLOCK_COMPACT:
+      for i in range(wp.static(block_size)):
+        D_out[worldid, start + i] = 1.0 / M_in[worldid, matrix_adr + i]
+    else:
+      for i in range(wp.static(block_size)):
+        value = M_in[worldid, matrix_adr + i * (i + 1) // 2 + i]
+        for k in range(i):
+          factor = L_out[worldid, factor_adr + k * size + i]
+          value -= factor * factor
+
+        diagonal_value = wp.sqrt(value)
+        L_out[worldid, factor_adr + i * size + i] = diagonal_value
+        diagonal_inv = 1.0 / diagonal_value
+
+        for j in range(i + 1, size):
+          value = M_in[worldid, matrix_adr + j * (j + 1) // 2 + i]
+          for k in range(i):
+            value -= L_out[worldid, factor_adr + k * size + i] * L_out[worldid, factor_adr + k * size + j]
+          L_out[worldid, factor_adr + i * size + j] = value * diagonal_inv
+
+  return kernel
 
 
 @cache_kernel
@@ -1391,36 +1639,43 @@ def _tile_cholesky_factorize_block(tile: TileSet):
   return kernel
 
 
-def _factor_block_dense(m: Model, d: Data, M: wp.array2d[float], L: wp.array2d[float]):
+def _factor_blocks(
+  m: Model,
+  d: Data,
+  M: wp.array2d[float],
+  L: wp.array2d[float],
+  D: wp.array2d[float],
+):
   for tile in m.M_tiles:
-    wp.launch_tiled(
-      _tile_cholesky_factorize_block(tile),
-      dim=(d.nworld, tile.adr.size),
-      inputs=[m.qLD_block_adr, M, tile.elemid, tile.adr],
-      outputs=[L],
-      block_dim=m.block_dim.cholesky_factorize,
-    )
+    if tile.elemid.size == 0:
+      wp.launch(
+        _small_cholesky_factorize_block(tile.size),
+        dim=(d.nworld, tile.adr.size),
+        inputs=[m.M_rowadr, m.qLD_block_adr, M, tile.adr],
+        outputs=[D, L],
+        block_dim=m.block_dim.small_cholesky,
+      )
+    else:
+      wp.launch_tiled(
+        _tile_cholesky_factorize_block(tile),
+        dim=(d.nworld, tile.adr.size),
+        inputs=[m.qLD_block_adr, M, tile.elemid, tile.adr],
+        outputs=[L],
+        block_dim=m.block_dim.cholesky_factorize,
+      )
 
 
 @event_scope
 def factor_m(m: Model, d: Data):
   """Factorization of inertia-like matrix M, assumed spd.
 
-  The factor is a per-block decision: dense blocks factor as a packed tile-Cholesky (M_tiles),
-  sparse blocks via the LDL factor over the LDL region (offset qLD_block_total), and simple
-  (diagonal) blocks need only D = 1/diag. The passes write disjoint dofs and may all run at once.
+  Compact blocks use reciprocal diagonals, full small blocks use scalar Cholesky, larger dense
+  blocks use tile Cholesky, and oversized blocks use sparse LDL.
   """
-  if m.qLD_has_dense:
-    _factor_block_dense(m, d, d.M, d.qLD)
-  if m.qLD_has_sparse:
+  if m.M_tiles:
+    _factor_blocks(m, d, d.M, d.qLD, d.qLDiagInv)
+  if d.qLD.shape[1] > m.qLD_block_total:
     _factor_i_sparse(m, d, d.M, d.qLD[:, m.qLD_block_total :], d.qLDiagInv)
-  if m.qLD_has_simple:
-    wp.launch(
-      _factor_simple,
-      dim=(d.nworld, m.qLD_simple_dofs.size),
-      inputs=[m.M_rownnz, m.M_rowadr, d.M, m.qLD_simple_dofs],
-      outputs=[d.qLDiagInv],
-    )
 
 
 @wp.kernel
@@ -3215,9 +3470,9 @@ def _solve_LD_sparse_fused(nv: int, nlevels: int):
 
   @wp.kernel(module="unique", enable_backward=False)
   def kernel(
+    # Model:
+    qLD_block_adr: wp.array[int],
     # In:
-    dof_dense: wp.array[int],
-    dof_simple: wp.array[int],
     L: wp.array2d[float],
     D: wp.array2d[float],
     all_updates: wp.array[wp.vec3i],
@@ -3231,10 +3486,9 @@ def _solve_LD_sparse_fused(nv: int, nlevels: int):
     NLEVELS = wp.static(nlevels)
     BLOCK_DIM = wp.block_dim()
 
-    # Copy y to x_out for sparse-block dofs only; dense blocks use the packed pass and simple
-    # (diagonal) blocks use the dedicated 1/diag solve.
+    # Copy y to x_out for sparse-block dofs only.
     for dofid in range(tid, NV, BLOCK_DIM):
-      if dof_dense[dofid] == 0 and dof_simple[dofid] == 0:
+      if qLD_block_adr[dofid] == Q_LD_BLOCK_SPARSE:
         x_out[worldid, dofid] = y[worldid, dofid]
     _syncthreads()
 
@@ -3252,7 +3506,7 @@ def _solve_LD_sparse_fused(nv: int, nlevels: int):
 
     # Diagonal multiply (sparse-block dofs only)
     for dofid in range(tid, NV, BLOCK_DIM):
-      if dof_dense[dofid] == 0 and dof_simple[dofid] == 0:
+      if qLD_block_adr[dofid] == Q_LD_BLOCK_SPARSE:
         x_out[worldid, dofid] *= D[worldid, dofid]
     _syncthreads()
 
@@ -3310,48 +3564,63 @@ def _solve_LD_sparse(
   wp.launch(
     _solve_LD_sparse_fused(m.nv, nlevels),
     dim=(d.nworld, dim_block),
-    inputs=[m.qLD_dof_dense, m.qLD_dof_simple, L, D, m.qLD_all_updates, m.qLD_level_offsets, y],
+    inputs=[m.qLD_block_adr, L, D, m.qLD_all_updates, m.qLD_level_offsets, y],
     outputs=[x],
     block_dim=dim_block,
   )
 
 
-@wp.kernel
-def _solve_simple(
+@wp.func
+def _small_cholesky_solve(
   # In:
-  simple_dofs: wp.array[int],
-  D: wp.array2d[float],
-  y: wp.array2d[float],
+  block_size: int,
+  worldid: int,
+  factor_adr: int,
+  start: int,
+  L_in: wp.array2d[float],
+  y_in: wp.array2d[float],
   # Out:
   x_out: wp.array2d[float],
 ):
-  # A simple (decoupled) dof's solve is just x = (1/diag) * y.
-  worldid, s = wp.tid()
-  dofid = simple_dofs[s]
-  x_out[worldid, dofid] = D[worldid, dofid] * y[worldid, dofid]
+  for i in range(block_size):
+    value = y_in[worldid, start + i]
+    for k in range(i):
+      value -= L_in[worldid, factor_adr + k * block_size + i] * x_out[worldid, start + k]
+    x_out[worldid, start + i] = value / L_in[worldid, factor_adr + i * block_size + i]
+
+  for reverse_i in range(block_size):
+    i = block_size - 1 - reverse_i
+    value = x_out[worldid, start + i]
+    for k in range(i + 1, block_size):
+      value -= L_in[worldid, factor_adr + i * block_size + k] * x_out[worldid, start + k]
+    x_out[worldid, start + i] = value / L_in[worldid, factor_adr + i * block_size + i]
 
 
-@wp.kernel(enable_backward=False)
-def _factor_solve_simple(
-  # Model:
-  M_rownnz: wp.array[int],
-  M_rowadr: wp.array[int],
-  # Data in:
-  M_in: wp.array2d[float],
-  # In:
-  simple_dofs: wp.array[int],
-  y: wp.array2d[float],
-  # Out:
-  D_out: wp.array2d[float],
-  x_out: wp.array2d[float],
-):
-  # Fused factor+solve for a simple dof: read M(i,i) once, emit D = 1/diag and x = D * y.
-  worldid, s = wp.tid()
-  dofid = simple_dofs[s]
-  diag_i = M_rowadr[dofid] + M_rownnz[dofid] - 1
-  d_inv = 1.0 / M_in[worldid, diag_i]
-  D_out[worldid, dofid] = d_inv
-  x_out[worldid, dofid] = d_inv * y[worldid, dofid]
+@cache_kernel
+def _small_cholesky_solve_block(block_size: int):
+  @wp.kernel(module="unique", enable_backward=False)
+  def kernel(
+    # Model:
+    qLD_block_adr: wp.array[int],
+    # In:
+    block_dof: wp.array[int],
+    D_in: wp.array2d[float],
+    L_in: wp.array2d[float],
+    y_in: wp.array2d[float],
+    # Out:
+    x_out: wp.array2d[float],
+  ):
+    worldid, blk = wp.tid()
+    start = block_dof[blk]
+    size = wp.static(block_size)
+    factor_adr = qLD_block_adr[start]
+    if factor_adr == Q_LD_BLOCK_COMPACT:
+      for i in range(wp.static(block_size)):
+        x_out[worldid, start + i] = D_in[worldid, start + i] * y_in[worldid, start + i]
+    else:
+      _small_cholesky_solve(size, worldid, factor_adr, start, L_in, y_in, x_out)
+
+  return kernel
 
 
 @cache_kernel
@@ -3384,18 +3653,34 @@ def _tile_cholesky_solve_block(tile: TileSet):
   return kernel
 
 
-def _solve_block_dense(m: Model, d: Data, L: wp.array2d[float], x: wp.array2d[float], y: wp.array2d[float]):
+def _solve_blocks(
+  m: Model,
+  d: Data,
+  L: wp.array2d[float],
+  D: wp.array2d[float],
+  x: wp.array2d[float],
+  y: wp.array2d[float],
+):
   for tile in m.M_tiles:
-    # The triangular back-substitution is largely sequential, so large blocks prefer fewer threads
-    # for better occupancy while moderate blocks still want a couple warps (16/27->64, 60->32).
-    block_dim = m.block_dim.cholesky_solve if tile.size <= 40 else 32
-    wp.launch_tiled(
-      _tile_cholesky_solve_block(tile),
-      dim=(d.nworld, tile.adr.size),
-      inputs=[m.qLD_block_adr, tile.adr, L, y],
-      outputs=[x],
-      block_dim=block_dim,
-    )
+    if tile.elemid.size == 0:
+      wp.launch(
+        _small_cholesky_solve_block(tile.size),
+        dim=(d.nworld, tile.adr.size),
+        inputs=[m.qLD_block_adr, tile.adr, D, L, y],
+        outputs=[x],
+        block_dim=m.block_dim.small_cholesky,
+      )
+    else:
+      # The triangular back-substitution is largely sequential, so large blocks prefer fewer threads
+      # for better occupancy while moderate blocks still want a couple warps (16/27->64, 60->32).
+      block_dim = m.block_dim.cholesky_solve if tile.size <= 40 else 32
+      wp.launch_tiled(
+        _tile_cholesky_solve_block(tile),
+        dim=(d.nworld, tile.adr.size),
+        inputs=[m.qLD_block_adr, tile.adr, L, y],
+        outputs=[x],
+        block_dim=block_dim,
+      )
 
 
 def solve_LD(
@@ -3408,25 +3693,21 @@ def solve_LD(
 ):
   """Computes backsubstitution for the inertia factorization.
 
-  The choice is per-block. Dense blocks back-substitute from the packed Cholesky region of L; sparse
-  blocks from the LDL region (offset qLD_block_total); simple (diagonal) blocks are a plain x = D*y.
-  The passes write disjoint dofs; the sparse pass skips dense and simple dofs so it does not clobber
-  their results.
+  Compact blocks use reciprocal diagonals, full small blocks use scalar Cholesky, dense blocks use
+  tile Cholesky, and sparse blocks use the LDL region.
 
   Args:
     m: The model containing factorization and sparsity information.
     d: The data object containing workspace and factorization results.
     L: The factor: packed dense region followed by the nC LDL region.
-    D: Diagonal factor (1/diag) for the sparse LDL and simple regions.
+    D: Reciprocal diagonal for compact and sparse blocks.
     x: Output array for the solution.
     y: Input right-hand side array.
   """
-  if m.qLD_has_dense:
-    _solve_block_dense(m, d, L, x, y)
-  if m.qLD_has_sparse:
+  if m.M_tiles:
+    _solve_blocks(m, d, L, D, x, y)
+  if L.shape[1] > m.qLD_block_total:
     _solve_LD_sparse(m, d, L[:, m.qLD_block_total :], D, x, y)
-  if m.qLD_has_simple:
-    wp.launch(_solve_simple, dim=(d.nworld, m.qLD_simple_dofs.size), inputs=[m.qLD_simple_dofs, D, y], outputs=[x])
 
 
 @event_scope
@@ -3481,49 +3762,113 @@ def _tile_cholesky_factorize_solve_block(tile: TileSet):
   return kernel
 
 
-def _factor_solve_block_dense(
-  m: Model, d: Data, M: wp.array2d[float], x: wp.array2d[float], y: wp.array2d[float], L: wp.array2d[float]
+@cache_kernel
+def _small_cholesky_factorize_solve_block(block_size: int):
+  @wp.kernel(module="unique", enable_backward=False)
+  def kernel(
+    # Model:
+    M_rowadr: wp.array[int],
+    qLD_block_adr: wp.array[int],
+    # Data in:
+    M_in: wp.array2d[float],
+    # In:
+    block_dof: wp.array[int],
+    y: wp.array2d[float],
+    # Out:
+    D_out: wp.array2d[float],
+    x_out: wp.array2d[float],
+    L_out: wp.array2d[float],
+  ):
+    worldid, blk = wp.tid()
+    start = block_dof[blk]
+    size = wp.static(block_size)
+    matrix_adr = M_rowadr[start]
+
+    factor_adr = qLD_block_adr[start]
+    if factor_adr == Q_LD_BLOCK_COMPACT:
+      for i in range(wp.static(block_size)):
+        inverse = 1.0 / M_in[worldid, matrix_adr + i]
+        D_out[worldid, start + i] = inverse
+        x_out[worldid, start + i] = inverse * y[worldid, start + i]
+    else:
+      for i in range(wp.static(block_size)):
+        diagonal_value = M_in[worldid, matrix_adr + i * (i + 1) // 2 + i]
+        rhs_value = y[worldid, start + i]
+        for k in range(i):
+          factor = L_out[worldid, factor_adr + k * size + i]
+          diagonal_value -= factor * factor
+          rhs_value -= factor * x_out[worldid, start + k]
+
+        diagonal_factor = wp.sqrt(diagonal_value)
+        L_out[worldid, factor_adr + i * size + i] = diagonal_factor
+        diagonal_inv = 1.0 / diagonal_factor
+        x_out[worldid, start + i] = rhs_value * diagonal_inv
+
+        for j in range(i + 1, size):
+          value = M_in[worldid, matrix_adr + j * (j + 1) // 2 + i]
+          for k in range(i):
+            value -= L_out[worldid, factor_adr + k * size + i] * L_out[worldid, factor_adr + k * size + j]
+          L_out[worldid, factor_adr + i * size + j] = value * diagonal_inv
+
+      for reverse_i in range(wp.static(block_size)):
+        i = size - 1 - reverse_i
+        value = x_out[worldid, start + i]
+        for k in range(i + 1, size):
+          value -= L_out[worldid, factor_adr + i * size + k] * x_out[worldid, start + k]
+        x_out[worldid, start + i] = value / L_out[worldid, factor_adr + i * size + i]
+
+  return kernel
+
+
+def _factor_solve_blocks(
+  m: Model,
+  d: Data,
+  M: wp.array2d[float],
+  L: wp.array2d[float],
+  D: wp.array2d[float],
+  x: wp.array2d[float],
+  y: wp.array2d[float],
 ):
   for tile in m.M_tiles:
-    wp.launch_tiled(
-      _tile_cholesky_factorize_solve_block(tile),
-      dim=(d.nworld, tile.adr.size),
-      inputs=[m.qLD_block_adr, M, tile.elemid, tile.adr, y],
-      outputs=[x, L],
-      block_dim=m.block_dim.cholesky_factorize_solve,
-    )
+    if tile.elemid.size == 0:
+      wp.launch(
+        _small_cholesky_factorize_solve_block(tile.size),
+        dim=(d.nworld, tile.adr.size),
+        inputs=[m.M_rowadr, m.qLD_block_adr, M, tile.adr, y],
+        outputs=[D, x, L],
+        block_dim=m.block_dim.small_cholesky,
+      )
+    else:
+      wp.launch_tiled(
+        _tile_cholesky_factorize_solve_block(tile),
+        dim=(d.nworld, tile.adr.size),
+        inputs=[m.qLD_block_adr, M, tile.elemid, tile.adr, y],
+        outputs=[x, L],
+        block_dim=m.block_dim.cholesky_factorize_solve,
+      )
 
 
 def factor_solve_i(m, d, M, L, D, x, y):
   """Factorizes and solves the inertia-like linear system.
 
-  The choice is per-block (see factor_m): dense blocks factor+solve via the packed Cholesky, sparse
-  blocks via the LDL region, simple (diagonal) blocks via D = 1/diag. Factorizes M, solves for x.
+  Compact blocks use reciprocal diagonals, full small blocks use scalar Cholesky, dense blocks use
+  tile Cholesky, and sparse blocks use LDL. Factorizes M and solves for x.
 
   Args:
     m: The model containing factorization and sparsity information.
     d: The data object containing workspace and factorization results.
     M: The inertia-like matrix to factorize (CSR, length nC).
     L: Output factor: packed dense region followed by the nC LDL region (sized like d.qLD).
-    D: Output diagonal factor (1/diag) for the sparse LDL and simple regions.
+    D: Output reciprocal diagonal for compact and sparse blocks.
     x: Output array for the solution.
     y: Input right-hand side array.
   """
-  # Per-block: dense blocks factor+solve via the packed Cholesky; sparse blocks via the LDL region
-  # (offset qLD_block_total); simple blocks via 1/diag. The passes write disjoint dofs.
-  if m.qLD_has_dense:
-    _factor_solve_block_dense(m, d, M, x, y, L)
-  if m.qLD_has_sparse:
+  if m.M_tiles:
+    _factor_solve_blocks(m, d, M, L, D, x, y)
+  if L.shape[1] > m.qLD_block_total:
     L_ldl = L[:, m.qLD_block_total :]
     _factor_i_sparse(m, d, M, L_ldl, D)
     _solve_LD_sparse(m, d, L_ldl, D, x, y)
-  if m.qLD_has_simple:
-    wp.launch(
-      _factor_solve_simple,
-      dim=(d.nworld, m.qLD_simple_dofs.size),
-      inputs=[m.M_rownnz, m.M_rowadr, M, m.qLD_simple_dofs, y],
-      outputs=[D, x],
-    )
 
 
 @cache_kernel

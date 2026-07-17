@@ -27,6 +27,7 @@ from mujoco_warp import SolverType
 from mujoco_warp import test_data
 from mujoco_warp._src import island
 from mujoco_warp._src import solver
+from mujoco_warp._src import types
 
 # tolerance for difference between MuJoCo and MJWarp solver calculations - mostly
 # due to float precision
@@ -39,7 +40,121 @@ def _assert_eq(a, b, name):
   np.testing.assert_allclose(a, b, err_msg=err_msg, atol=tol, rtol=tol)
 
 
+@wp.kernel
+def _eval_elliptic_delta(
+  # In:
+  alpha: float,
+  d_values: wp.array[float],
+  frictionloss_values: wp.array[float],
+  quad: wp.vec3,
+  quad1: wp.vec3,
+  quad2: wp.vec3,
+  friction: types.vec5,
+  # Out:
+  result_out: wp.array[wp.vec3],
+):
+  result_out[0] = solver._compute_efc_eval_pt_elliptic(
+    0,
+    alpha,
+    0,
+    0,
+    1.0,
+    int(types.ConstraintType.CONTACT_ELLIPTIC),
+    d_values,
+    frictionloss_values,
+    0.0,
+    0.0,
+    quad,
+    friction,
+    0,
+    quad1,
+    quad2,
+  )
+
+
 class SolverTest(parameterized.TestCase):
+  def test_newton_decrement_termination(self):
+    """Newton stops when only its local model predicts convergence."""
+    solver_niter = wp.zeros(1, dtype=int)
+    nsolving = wp.ones(1, dtype=int)
+    done = wp.zeros(1, dtype=bool)
+
+    wp.launch(
+      solver._solve_done,
+      dim=1,
+      inputs=[
+        1,
+        wp.array([1.0e-6], dtype=float),
+        2,
+        wp.array([1.0], dtype=float),
+        wp.array([4.0e-12], dtype=float),
+        wp.array([1.0e-6], dtype=float),
+        wp.array([2.0e-6], dtype=float),
+        done,
+      ],
+      outputs=[solver_niter, nsolving, done],
+    )
+
+    self.assertTrue(done.numpy()[0])
+    self.assertEqual(solver_niter.numpy()[0], 1)
+    self.assertEqual(nsolving.numpy()[0], 0)
+
+  # Transition cases use powers of two so the exact delta is below the absolute-cost ulp.
+  @parameterized.named_parameters(
+    ("middle_zone", 1.0e-4, (0.0, 0.0, 0.0), (0.5, 1.0e-4, 1.0), (0.0, 0.0, 1.0e8), (-0.5, -5000.0, 1.0)),
+    (
+      "quadratic_zone",
+      1.0e-4,
+      (1.25e7, -5000.0, 0.5),
+      (-2.0, 0.0, 1.0),
+      (0.0, 0.0, 1.0),
+      (-0.5, -5000.0, 1.0),
+    ),
+    (
+      "cone_to_quadratic",
+      2.44140625e-4,
+      (33546241.0, -8192.0, 33554432.0),
+      (-0.999755859375, -1.0, 1.0),
+      (-1.0, 1.0, 16777216.0),
+      (0.5, 8192.0, 67108864.0),
+    ),
+    (
+      "quadratic_to_cone",
+      2.44140625e-4,
+      (33546241.0, -8192.0, 33554432.0),
+      (-1.0, 1.0, 0.9995117783546448),
+      (0.999755859375, 1.0, 16777216.0),
+      (-0.5, 0.0, 0.0),
+    ),
+    (
+      "satisfied_to_quadratic",
+      2.44140625e-4,
+      (1.0, -16384.0, 67108864.0),
+      (2.44140625e-4, -2.0, 0.0),
+      (0.0, 0.0, 16777216.0),
+      (1.0, 16384.0, 134217728.0),
+    ),
+  )
+  def test_elliptic_shifted_cost_preserves_small_delta(self, alpha, quad, quad1, quad2, expected):
+    """Elliptic cost deltas remain visible below the absolute-cost ulp."""
+    result = wp.empty(1, dtype=wp.vec3)
+    wp.launch(
+      _eval_elliptic_delta,
+      dim=1,
+      inputs=[
+        alpha,
+        wp.zeros(1, dtype=float),
+        wp.zeros(1, dtype=float),
+        wp.vec3(*quad),
+        wp.vec3(*quad1),
+        wp.vec3(*quad2),
+        types.vec5(1.0, 0.0, 0.0, 0.0, 0.0),
+      ],
+      outputs=[result],
+    )
+
+    np.testing.assert_allclose(result.numpy()[0], expected, rtol=1.0e-6, atol=1.0e-6)
+
   def test_M_fullm_upper_indices_are_row_sorted(self):
     """Sparse M seeding uses upper-triangle row-sorted writes."""
     _, _, m, _ = test_data.fixture("humanoid/humanoid.xml")
@@ -174,6 +289,7 @@ class SolverTest(parameterized.TestCase):
 
       # Reset and launch linesearch
       ctx.jv.fill_(wp.inf)
+      ctx.search_unchanged.fill_(False)
       solver._linesearch(m, d, ctx)
 
       # mv and jv are always written
@@ -245,6 +361,7 @@ class SolverTest(parameterized.TestCase):
     ctx.Jaref = wp.array(jaref, dtype=float)
     ctx.search_dot = wp.array([1.0], dtype=float)
     ctx.done = wp.array([False], dtype=bool)
+    ctx.search_unchanged.fill_(False)
 
     solver._linesearch(m, d, ctx)
 
@@ -265,12 +382,61 @@ class SolverTest(parameterized.TestCase):
     ctx.Jaref = wp.array(jaref, dtype=float)
     ctx.search_dot = wp.array([4.0], dtype=float)
     ctx.done = wp.array([False], dtype=bool)
+    ctx.search_unchanged.fill_(False)
 
     solver._linesearch(m, d, ctx)
 
     self.assertLess(d.qacc.numpy()[0, 0], -1.0)
     self.assertLess(ctx.improvement.numpy()[0], 0.001)
     self.assertGreater(ctx.improvement.numpy()[0], 0.0004)
+
+  def test_linesearch_requires_cost_improvement_to_converge(self):
+    """Line search should not converge at an unimproved bound."""
+    _, _, m, d = test_data.fixture(
+      "constraints.xml",
+      overrides={
+        "opt.cone": ConeType.PYRAMIDAL,
+        "opt.jacobian": mujoco.mjtJacobian.mjJAC_DENSE,
+        "opt.iterations": 0,
+        "opt.ls_iterations": 50,
+      },
+    )
+    ctx = solver._create_solver_context(m, d)
+
+    # Exercise derivative convergence with a loose scaled tolerance.
+    m.stat.meaninertia.fill_(1.0e9)
+    d.ne = wp.array([1], dtype=int)
+    d.nf = wp.array([0], dtype=int)
+    d.nefc = wp.array([4], dtype=int)
+    d.nacon = wp.array([0], dtype=int)
+    d.M.zero_()
+    d.qacc.zero_()
+    d.efc.Ma.zero_()
+    d.qfrc_smooth.zero_()
+
+    efc_j = np.zeros(d.efc.J.shape, dtype=np.float32)
+    efc_j[0, :4, 0] = [1.0, -1.0, -1.0, 1.0]
+    d.efc.J.assign(efc_j)
+
+    efc_d = np.zeros(d.efc.D.shape, dtype=np.float32)
+    efc_d[0, :4] = [0.0030866014, 1.7318993, 4555.986, 0.14425136]
+    d.efc.D.assign(efc_d)
+    d.efc.frictionloss.zero_()
+
+    search = np.zeros(ctx.search.shape, dtype=np.float32)
+    search[0, 0] = 1.0
+    ctx.search.assign(search)
+    jaref = np.zeros(ctx.Jaref.shape, dtype=np.float32)
+    jaref[0, :4] = [-4.634305, 1.5213286, 0.03916324, 1.388601]
+    ctx.Jaref.assign(jaref)
+    ctx.search_dot.fill_(1.0)
+    ctx.done.fill_(False)
+    ctx.search_unchanged.fill_(False)
+
+    solver._linesearch(m, d, ctx)
+
+    self.assertGreater(d.qacc.numpy()[0, 0], 0.03)
+    self.assertGreater(ctx.improvement.numpy()[0], 5.0e-4)
 
   @parameterized.parameters(
     (ConeType.PYRAMIDAL, SolverType.CG, 10, 5, mujoco.mjtJacobian.mjJAC_DENSE),
@@ -603,25 +769,18 @@ class SolverTest(parameterized.TestCase):
         d.efc.force.zero_()
         ctx = solver._create_solver_context(m, d)
         solver.init_context(m, d, ctx, grad=True)
-        wp.launch(solver._solve_init_search, dim=(d.nworld, m.nv), inputs=[ctx.Mgrad], outputs=[ctx.search, ctx.search_dot])
         any_changes = False
+        ctx.search_unchanged.fill_(False)
         for _ in range(m.opt.iterations):
           solver._linesearch(m, d, ctx)
           if track:
-            ctx.changed_efc_count.zero_()
+            ctx.quad_changed_count.zero_()
           solver._update_constraint(m, d, ctx, track_changes=track)
           if track:
             wp.synchronize()
-            if np.any(ctx.changed_efc_count.numpy() > 0):
+            if np.any(ctx.quad_changed_count.numpy() > 0):
               any_changes = True
           update_fn(m, d, ctx)
-          wp.launch(solver._solve_zero_search_dot, dim=(d.nworld), inputs=[ctx.done], outputs=[ctx.search_dot])
-          wp.launch(
-            solver._solve_search_update,
-            dim=(d.nworld, m.nv),
-            inputs=[m.opt.solver, ctx.Mgrad, ctx.search, ctx.beta, ctx.done],
-            outputs=[ctx.search, ctx.search_dot],
-          )
         return d.qacc.numpy().copy(), any_changes
 
       qacc_full, _ = _run_solver(mjw.put_data(mjm, mjd), solver._update_gradient)
@@ -681,6 +840,125 @@ class SolverTest(parameterized.TestCase):
     h = d.solver_h.numpy()[0, :nv, :nv]
     self.assertTrue(np.any(h != 0), "Hessian is all zeros")
     self.assertTrue(np.all(np.diag(h) > 0), "Hessian diagonal should be positive")
+
+  def test_qfrc_constraint_early_convergence(self):
+    """Sparse qfrc_constraint must survive for a world that converges before the batch.
+
+    The sparse solve clears qfrc_constraint each iteration and only rewrites
+    unconverged worlds; a world that converges early must keep its value rather
+    than be zeroed by a later iteration's clear. Uses CG, which has no post-solve
+    recovery. World 0 rests on the floor (converges immediately, contacts active);
+    world 1 is kicked so it takes several more iterations.
+    """
+    xml = """
+    <mujoco>
+      <option jacobian="sparse" solver="CG" iterations="20" ls_iterations="10"/>
+      <worldbody>
+        <geom name="floor" type="plane" size="10 10 .1"/>
+        <body pos="0 0 .05"><freejoint/><geom type="sphere" size=".05"/></body>
+        <body pos=".3 0 .05"><freejoint/><geom type="sphere" size=".05"/></body>
+        <body pos=".6 0 .05"><freejoint/><geom type="sphere" size=".05"/></body>
+        <body pos=".9 0 .05"><freejoint/><geom type="sphere" size=".05"/></body>
+      </worldbody>
+    </mujoco>
+    """
+    mjm = mujoco.MjModel.from_xml_string(xml)
+    mjd = mujoco.MjData(mjm)
+    for _ in range(200):  # settle onto the floor: active contacts, warmstart near solution
+      mujoco.mj_step(mjm, mjd)
+    mujoco.mj_forward(mjm, mjd)
+    mjd.qacc_warmstart = mjd.qacc
+
+    m = mjw.put_model(mjm)
+    self.assertTrue(m.is_sparse)
+    d = mjw.put_data(mjm, mjd, nworld=2)
+
+    qvel = d.qvel.numpy()
+    qvel[1] += 5.0  # kick world 1 only
+    d.qvel = wp.array(qvel, dtype=float)
+
+    mjw.step(m, d)
+
+    nefc = d.nefc.numpy()
+    efc_force = d.efc.force.numpy()
+    niter = d.solver_niter.numpy()
+    qfrc = np.abs(d.qfrc_constraint.numpy()).sum(axis=1)
+
+    # Precondition: both worlds have active constraint forces and converge at
+    # different iteration counts (world 0 early), the setup that triggers the bug.
+    for w in range(2):
+      self.assertGreater(np.abs(efc_force[w, : nefc[w]]).sum(), 0.0, f"world {w} has no constraint force")
+    self.assertLess(niter[0], niter[1], "worlds did not converge at staggered iterations")
+
+    self.assertGreater(qfrc[0], 0.0, "early-converged world was zeroed")
+    self.assertGreater(qfrc[1], 0.0)
+
+
+_FRICTION_CHAIN_XML = """
+<mujoco>
+  <option timestep="0.01" solver="Newton" cone="pyramidal" jacobian="dense">
+    <flag warmstart="disable"/>
+  </option>
+  <worldbody>
+    <body>
+      <joint type="hinge" axis="0 1 0" frictionloss="1.5"/>
+      <geom type="capsule" size="0.02" fromto="0 0 0 0.2 0 0" mass="1"/>
+      <body pos="0.2 0 0">
+        <joint type="hinge" axis="0 1 0" frictionloss="0.8"/>
+        <geom type="capsule" size="0.02" fromto="0 0 0 0.2 0 0" mass="0.5"/>
+        <body pos="0.2 0 0">
+          <joint type="hinge" axis="1 0 0" frictionloss="2.0"/>
+          <geom type="capsule" size="0.02" fromto="0 0 0 0.15 0 0" mass="0.3"/>
+          <body pos="0.15 0 0">
+            <joint type="hinge" axis="0 1 0" frictionloss="0.5"/>
+            <geom type="capsule" size="0.02" fromto="0 0 0 0.1 0 0" mass="0.2"/>
+          </body>
+        </body>
+      </body>
+    </body>
+  </worldbody>
+</mujoco>
+"""
+
+
+class SolverFastPathTest(parameterized.TestCase):
+  @parameterized.parameters(False, True)
+  def test_fast_path_friction_transitions(self, compact):
+    """qfrc_constraint must stay consistent when friction rows cross linear zones."""
+    mjm = mujoco.MjModel.from_xml_string(_FRICTION_CHAIN_XML)
+    if compact:
+      # SLEEP routes every solve through solve_compact, even with nothing asleep
+      mjm.opt.enableflags |= mujoco.mjtEnableBit.mjENBL_SLEEP
+    mjd = mujoco.MjData(mjm)
+    mujoco.mj_forward(mjm, mjd)
+    m = mjw.put_model(mjm)
+    nworld = 64
+    d = mjw.put_data(mjm, mjd, nworld=nworld, nvmax=mjm.nv if compact else None)
+    rng = np.random.default_rng(3)
+    qvel = rng.uniform(-8.0, 8.0, size=(nworld, mjm.nv)).astype(np.float32)
+    wp.copy(d.qvel, wp.array(qvel, dtype=float))
+
+    max_rel = 0.0
+    cap_steps = 0
+    for _ in range(20):
+      mjw.step(m, d)
+      cap_steps += int(d.solver_niter.numpy().max() >= mjm.opt.iterations)
+      nefc = d.nefc.numpy()
+      J = d.efc.J.numpy()
+      force = d.efc.force.numpy()
+      got = d.qfrc_constraint.numpy()
+      for w in range(nworld):
+        n = nefc[w]
+        if n == 0:
+          continue
+        ref = J[w, :n, : mjm.nv].astype(np.float64).T @ force[w, :n].astype(np.float64)
+        scale = max(np.abs(ref).max(), 1.0)
+        max_rel = max(max_rel, np.abs(ref - got[w]).max() / scale)
+    self.assertLess(max_rel, 1e-4, f"qfrc_constraint inconsistent with J^T f: rel {max_rel:.3e}")
+    # Friction chatter legitimately caps a couple of steps here even with full
+    # per-iteration rebuilds; an exhausted stale ray that never re-anchors spins
+    # to the cap on most steps (warmstart is off, so every solve starts far away).
+    self.assertLess(cap_steps, 5, f"solver stalled: {cap_steps}/20 steps hit the iteration cap")
 
 
 # Basic weld constraint model.
@@ -967,6 +1245,45 @@ class CompactSolverTest(absltest.TestCase):
     self.assertGreater(nefc, 0)
     np.testing.assert_array_equal(efc_island[:nefc], [2] * nefc)
     np.testing.assert_array_equal(efc_island[nefc:], [-1] * (d.njmax - nefc))
+
+  def test_qfrc_constraint_initialization(self):
+    """Verify that qfrc_constraint is initially zeroed when nefc==0."""
+    xml = """
+    <mujoco>
+      <option solver="CG" jacobian="sparse"/>
+      <worldbody>
+        <geom type="plane" size="10 10 .001"/>
+        <body name="sphere" pos="0 0 0.04">
+          <freejoint/>
+          <geom type="sphere" size="0.05" mass="1.0"/>
+        </body>
+      </worldbody>
+    </mujoco>
+    """
+    _, _, m, d = test_data.fixture(xml=xml)
+
+    # 1. Step once (starts in contact because Z=0.04 < radius=0.05)
+    mjw.step(m, d)
+
+    self.assertGreater(d.nefc.numpy()[0], 0, "Should have active constraints")
+    self.assertGreater(np.max(np.abs(d.qfrc_constraint.numpy()[0])), 1.0, "Should have non-zero constraint forces")
+
+    # 2. Teleport sphere up (no contacts)
+    qpos_np = d.qpos.numpy()
+    qpos_np[0, 2] = 1.0  # Move up to Z=1.0
+    wp.copy(d.qpos, wp.array(qpos_np))
+    d.qvel.zero_()
+
+    # 3. Step again (will update nefc to 0 and should zero qfrc_constraint)
+    mjw.step(m, d)
+
+    self.assertEqual(d.nefc.numpy()[0], 0, "Should have no active constraints after teleport")
+    qfrc_constraint_post = d.qfrc_constraint.numpy()[0]
+    self.assertLess(
+      np.max(np.abs(qfrc_constraint_post)),
+      1e-5,
+      f"qfrc_constraint should be zeroed, but got max abs: {np.max(np.abs(qfrc_constraint_post))}",
+    )
 
 
 if __name__ == "__main__":
