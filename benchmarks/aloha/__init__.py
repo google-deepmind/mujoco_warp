@@ -37,9 +37,9 @@ BENCHMARKS = [
     "mjcf": "scene_cloth.xml",
     "nworld": 32,
     "nconmax": 3600,
-    "nccdmax": 1,
+    "nccdmax": 256,
     "njmax": 8192,
-    "nstep": 100,
+    "replay": "lift_cloth.npz",
     "assets": [(ASSETS[0], "aloha")],
   },
   {
@@ -51,6 +51,7 @@ BENCHMARKS = [
     "njmax": 1024,
     "nvmax": 64,
     "override": "opt.enableflags=SLEEP",
+    "init_asleep": True,
     "replay": "pick_clutter.npz",
     "assets": [
       (ASSETS[0], "aloha"),
