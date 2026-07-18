@@ -652,8 +652,13 @@ def gjk(
   simplex_index2 = wp.vec4i()
   n = int(0)
   lmbda = wp.vec4(1.0, 0.0, 0.0, 0.0)  # barycentric coordinates
+
+  # for discrete geoms GJK is guaranteed to converge in a finite number of iterations
+  # so we can ignore tolerance
+  # TODO(kbayes): look into relative tolerances based off of xnorm
   epsilon = wp.where(is_discrete, 0.0, 0.5 * tolerance * tolerance)
   min_norm = wp.where(is_discrete, MINVAL, tolerance)
+  min_tol = wp.where(is_discrete, MINVAL, tolerance)
 
   # set initial guess
   x_k = x1_0 - x2_0
@@ -662,7 +667,7 @@ def gjk(
   xnorm_prev = float(0.0)
 
   for _ in range(gjk_iterations):
-    if xnorm < min_norm or wp.abs(xnorm_prev - xnorm) < tolerance:
+    if xnorm < min_norm or wp.abs(xnorm_prev - xnorm) < min_tol:
       break
 
     # compute the support point with direction tuning
