@@ -21,25 +21,19 @@ import warp as wp
 from mujoco_warp._src import collision_primitive_core
 from mujoco_warp._src import math
 from mujoco_warp._src import support
-from mujoco_warp._src import types
 from mujoco_warp._src.types import MJ_MINVAL
 from mujoco_warp._src.types import Data
+from mujoco_warp._src.types import GeomType
+from mujoco_warp._src.types import JointType
 from mujoco_warp._src.types import Model
 from mujoco_warp._src.warp_util import event_scope
 
-# Adjoint module: backward stays ON so AD leaves differentiate through cross-module @wp.funcs.
+# adjoint module: backward stays on so AD leaves differentiate through cross-module @wp.funcs
 wp.set_module_options({"enable_backward": True})
 
-_FREE = int(types.JointType.FREE.value)
-_BALL = int(types.JointType.BALL.value)
-_PLANE = int(types.GeomType.PLANE.value)
-_SPHERE = int(types.GeomType.SPHERE.value)
-_CAPSULE = int(types.GeomType.CAPSULE.value)
-_ELLIPSOID = int(types.GeomType.ELLIPSOID.value)
-_CYLINDER = int(types.GeomType.CYLINDER.value)
-_BOX = int(types.GeomType.BOX.value)
 
-
+# forward-only closest-feature re-run: returns segment params (t1, t2) and frozen feature state;
+# mirrors collision_primitive_core.capsule_box (keep in sync); not AD-safe, backward-disabled only
 @wp.func
 def _capsule_box_segpos(
   # In:
@@ -50,10 +44,6 @@ def _capsule_box_segpos(
   mat_b: wp.mat33,
   size_b: wp.vec3,
 ) -> Tuple[wp.vec2, wp.vec3i]:
-  """Forward-only closest-feature re-run: returns segment params (t1, t2) and frozen feature state.
-
-  Mirrors collision_primitive_core.capsule_box (keep in sync); not AD-safe, backward-disabled only.
-  """
   boxmatT = wp.transpose(mat_b)
   pos = boxmatT @ (pos_c - pos_b)
   axis = boxmatT @ axis_c
@@ -243,6 +233,7 @@ def _capsule_box_segpos(
   return wp.vec2(bestsegmentpos, t2), wp.vec3i(cltype, wp.max(clcorner, 0), wp.max(cledge, 0))
 
 
+# differentiably re-derive segment param t1 with the branch/clamp feature state frozen
 @wp.func
 def _capsule_box_t0(
   # In:
@@ -254,8 +245,7 @@ def _capsule_box_t0(
   clcorner: int,
   cledge: int,
 ) -> float:
-  """Differentiably re-derive segment param t1 with the branch/clamp feature state frozen."""
-  if cltype < 0:  # capsule TIP closest to a face: t is the constant tip
+  if cltype < 0:  # capsule tip closest to a face: t is the constant tip
     return wp.where(cltype == -3, -1.0, 1.0)
   s1 = cltype // 3
   s2 = cltype - 3 * s1
@@ -283,6 +273,7 @@ def _capsule_box_t0(
   return math.safe_div(v + mb, mc)  # s1 == 0: box-edge param clamped low
 
 
+# store per capsule-box contact the frozen sphere-reduction segment params and feature state
 @wp.kernel(enable_backward=False)
 def _capsule_box_freeze(
   # Model:
@@ -298,7 +289,6 @@ def _capsule_box_freeze(
   tseg_out: wp.array[wp.vec2],
   feat_out: wp.array[wp.vec3i],
 ):
-  """Store per capsule-box contact the frozen sphere-reduction segment params and feature state."""
   cid = wp.tid()
   if cid >= nacon_in[0]:
     return
@@ -307,7 +297,7 @@ def _capsule_box_freeze(
     return
   g0 = geoms[0]
   g1 = geoms[1]
-  if geom_type[g0] != _CAPSULE or geom_type[g1] != _BOX:
+  if geom_type[g0] != GeomType.CAPSULE or geom_type[g1] != GeomType.BOX:
     return
   w = contact_worldid_in[cid]
   gw = w % geom_size.shape[0]
@@ -320,14 +310,16 @@ def _capsule_box_freeze(
   feat_out[cid] = ft
 
 
-# coverage of the dispatch chain in _narrowphase_recompute: 11 of the 13 _PRIMITIVE_COLLISIONS pairs
-# are AD-safe and dispatched -- plane-{sphere,capsule,ellipsoid,cylinder,box}, sphere-{sphere,box,
-# capsule,cylinder}, capsule-capsule, capsule-box. the remaining 2 pairs are not AD-safe and fall
-# through -> dqpos stays silently 0 for that pair: box-box, plane-convex/mesh.
-# capsule-box: _capsule_box_freeze stores the frozen segment/feature; the backward diffs sphere_box
-# at the frozen t -- first-order exact for the minimizing slot-0 contact (envelope theorem).
-# capsule-capsule: the parallel slot-1 assignment is margin-dependent (gated to the non-parallel,
-# crossed slot-0 regime). the FD oracle in collision_adjoint_test.py gates every dispatched pair.
+# frozen-witness narrowphase replay, backward-enabled so warp auto-diffs adj(geom poses); reuses
+# the collision_primitive_core leaves (keep in sync); a Geom struct arg zeroes the adjoint.
+# coverage: 11 of the 13 _PRIMITIVE_COLLISIONS pairs are AD-safe and dispatched:
+# plane-{sphere,capsule,ellipsoid,cylinder,box}, sphere-{sphere,box,capsule,cylinder},
+# capsule-capsule, capsule-box. the remaining 2 (box-box, plane-convex/mesh) are not AD-safe and
+# fall through; dqpos stays silently 0 for those pairs.
+# capsule-box: _capsule_box_freeze stores the frozen segment/feature; the backward diffs
+# sphere_box at the frozen t, first-order exact for the minimizing slot-0 contact (envelope
+# theorem). capsule-capsule: the parallel slot-1 assignment is margin-dependent (gated to the
+# non-parallel, crossed slot-0 regime).
 @wp.kernel(enable_backward=True)
 def _narrowphase_recompute(
   # Model:
@@ -348,10 +340,6 @@ def _narrowphase_recompute(
   dist_out: wp.array[float],
   frame_out: wp.array[wp.mat33],
 ):
-  """Frozen-witness narrowphase replay, backward-enabled so Warp auto-diffs adj(geom poses).
-
-  Reuses the collision_primitive_core leaves (keep in sync); a Geom struct arg zeroes the adjoint.
-  """
   cid = wp.tid()
   if cid >= nacon_in[0]:
     return
@@ -369,25 +357,25 @@ def _narrowphase_recompute(
   p1 = geom_xpos_in[w, g1]
   m1 = geom_xmat_in[w, g1]
   s1 = geom_size[gw, g1]
-  t0 = geom_type[g0]
-  t1 = geom_type[g1]
-  if t0 == _PLANE and t1 == _SPHERE:
+  type0 = geom_type[g0]
+  type1 = geom_type[g1]
+  if type0 == GeomType.PLANE and type1 == GeomType.SPHERE:
     n0 = wp.vec3(m0[0, 2], m0[1, 2], m0[2, 2])
     dist, pos = collision_primitive_core.plane_sphere(n0, p0, p1, s1[0])
     dist_out[cid] = dist
     cpos_out[cid] = pos
     frame_out[cid] = math.make_frame(n0)
-  elif t0 == _SPHERE and t1 == _SPHERE:
+  elif type0 == GeomType.SPHERE and type1 == GeomType.SPHERE:
     dist, pos, n = collision_primitive_core.sphere_sphere(p0, s0[0], p1, s1[0])
     dist_out[cid] = dist
     cpos_out[cid] = pos
     frame_out[cid] = math.make_frame(n)
-  elif t0 == _SPHERE and t1 == _BOX:
+  elif type0 == GeomType.SPHERE and type1 == GeomType.BOX:
     dist, pos, n = collision_primitive_core.sphere_box(p0, s0[0], p1, m1, s1)
     dist_out[cid] = dist
     cpos_out[cid] = pos
     frame_out[cid] = math.make_frame(n)
-  elif t0 == _PLANE and t1 == _CAPSULE:
+  elif type0 == GeomType.PLANE and type1 == GeomType.CAPSULE:
     n0 = wp.vec3(m0[0, 2], m0[1, 2], m0[2, 2])
     axis = wp.vec3(m1[0, 2], m1[1, 2], m1[2, 2])  # capsule local z-axis
     dvec, pmat, frame = collision_primitive_core.plane_capsule(n0, p0, p1, axis, s1[0], s1[1])  # two caps, shared frame
@@ -398,25 +386,25 @@ def _narrowphase_recompute(
       dist_out[cid] = dvec[1]
       cpos_out[cid] = wp.vec3(pmat[1, 0], pmat[1, 1], pmat[1, 2])
     frame_out[cid] = frame
-  elif t0 == _SPHERE and t1 == _CAPSULE:
+  elif type0 == GeomType.SPHERE and type1 == GeomType.CAPSULE:
     axis = wp.vec3(m1[0, 2], m1[1, 2], m1[2, 2])  # capsule local z-axis
     dist, pos, n = collision_primitive_core.sphere_capsule(p0, s0[0], p1, axis, s1[0], s1[1])
     dist_out[cid] = dist
     cpos_out[cid] = pos
     frame_out[cid] = math.make_frame(n)
-  elif t0 == _SPHERE and t1 == _CYLINDER:
+  elif type0 == GeomType.SPHERE and type1 == GeomType.CYLINDER:
     axis = wp.vec3(m1[0, 2], m1[1, 2], m1[2, 2])  # cylinder local z-axis
     dist, pos, n = collision_primitive_core.sphere_cylinder(p0, s0[0], p1, axis, s1[0], s1[1])
     dist_out[cid] = dist
     cpos_out[cid] = pos
     frame_out[cid] = math.make_frame(n)
-  elif t0 == _PLANE and t1 == _ELLIPSOID:
+  elif type0 == GeomType.PLANE and type1 == GeomType.ELLIPSOID:
     n0 = wp.vec3(m0[0, 2], m0[1, 2], m0[2, 2])
     dist, pos, n = collision_primitive_core.plane_ellipsoid(n0, p0, p1, m1, s1)  # returns normal = plane normal
     dist_out[cid] = dist
     cpos_out[cid] = pos
     frame_out[cid] = math.make_frame(n)
-  elif t0 == _CAPSULE and t1 == _CAPSULE:
+  elif type0 == GeomType.CAPSULE and type1 == GeomType.CAPSULE:
     # unique local names per multi-contact branch: Warp codegen scopes locals to the whole
     # function, so reusing one name with a different vec/mat type across branches is a
     # type-conflict error.
@@ -431,7 +419,7 @@ def _narrowphase_recompute(
         dist_out[cid] = cc_dist[i]
         cpos_out[cid] = wp.vec3(cc_pos[i, 0], cc_pos[i, 1], cc_pos[i, 2])
         frame_out[cid] = math.make_frame(wp.vec3(cc_nrm[i, 0], cc_nrm[i, 1], cc_nrm[i, 2]))  # per-slot normal
-  elif t0 == _PLANE and t1 == _CYLINDER:
+  elif type0 == GeomType.PLANE and type1 == GeomType.CYLINDER:
     n0 = wp.vec3(m0[0, 2], m0[1, 2], m0[2, 2])
     axis = wp.vec3(m1[0, 2], m1[1, 2], m1[2, 2])
     cyl_dist, cyl_pos, cyl_n = collision_primitive_core.plane_cylinder(
@@ -442,7 +430,7 @@ def _narrowphase_recompute(
         dist_out[cid] = cyl_dist[i]
         cpos_out[cid] = wp.vec3(cyl_pos[i, 0], cyl_pos[i, 1], cyl_pos[i, 2])
     frame_out[cid] = math.make_frame(cyl_n)
-  elif t0 == _PLANE and t1 == _BOX:
+  elif type0 == GeomType.PLANE and type1 == GeomType.BOX:
     n0 = wp.vec3(m0[0, 2], m0[1, 2], m0[2, 2])
     box_dist, box_pos, box_n = collision_primitive_core.plane_box(
       n0, p0, p1, m1, s1
@@ -452,7 +440,7 @@ def _narrowphase_recompute(
         dist_out[cid] = box_dist[i]
         cpos_out[cid] = wp.vec3(box_pos[i, 0], box_pos[i, 1], box_pos[i, 2])
     frame_out[cid] = math.make_frame(box_n)
-  elif t0 == _CAPSULE and t1 == _BOX:
+  elif type0 == GeomType.CAPSULE and type1 == GeomType.BOX:
     # frozen-feature witness: capsule-box reduces to sphere_box at 1-2 capsule-segment points; the
     # feature search is not AD-safe, so _capsule_box_freeze froze the discrete state and t1 is
     # re-derived differentiably for that feature (_capsule_box_t0). the slot-1 spread point rides
@@ -472,6 +460,7 @@ def _narrowphase_recompute(
     frame_out[cid] = math.make_frame(cb_n)
 
 
+# gather dr/defc_pos (efc-row indexed) to the per-contact normal-row distance adjoint
 @wp.kernel(enable_backward=False)
 def _gather_efc_to_contact(
   # Data in:
@@ -483,7 +472,6 @@ def _gather_efc_to_contact(
   # Out:
   adj_dist_out: wp.array[float],  # per-contact seed for dist_out.grad (defc_pos/ddist = 1)
 ):
-  """Gather dr/defc_pos (efc-row indexed) to the per-contact normal-row distance adjoint."""
   cid = wp.tid()
   if cid >= nacon_in[0]:
     return
@@ -493,6 +481,8 @@ def _gather_efc_to_contact(
   adj_dist_out[cid] = res_efc_pos[contact_worldid_in[cid], e0]
 
 
+# fixed-reference part of dr/dcdof -> qpos: the screw-axis commutator, as a manual VJP. the
+# moving-COM reference term is not here; _build_ceff folds it into the subtree-COM seed
 @wp.kernel(enable_backward=False)
 def _cdof_qpos_vjp(
   # Model:
@@ -506,12 +496,8 @@ def _cdof_qpos_vjp(
   # In:
   res_cdof: wp.array2d[wp.spatial_vector],  # dr/dcdof * lam (per dof)
   # Out:
-  res_dof_out: wp.array2d[float],  # OUT: += per-dof tangent gradient dc/d(dof k)
+  res_dof_out: wp.array2d[float],  # += per-dof tangent gradient dc/d(dof k)
 ):
-  """Fixed-reference part of dr/dcdof -> qpos: the screw-axis commutator, as a manual VJP.
-
-  The moving-COM reference term is NOT here -- _build_ceff folds it into the subtree-COM seed.
-  """
   w, k = wp.tid()
   cdof_k = cdof_in[w, k]
   jk = dof_jntid[k]
@@ -520,7 +506,7 @@ def _cdof_qpos_vjp(
     ji = dof_jntid[i]
     jti = jnt_type[ji]
     ofs = jnt_dofadr[ji]
-    if jti == _FREE and (i - ofs) < 3:
+    if jti == JointType.FREE and (i - ofs) < 3:
       continue  # free-translation target row: d(stored cdof_i)/dq = 0
     chi = bool(False)
     p = dof_parentid[i]  # (a) transitive dof_parentid ancestry: is k a predecessor of i?
@@ -530,15 +516,16 @@ def _cdof_qpos_vjp(
         break
       p = dof_parentid[p]
     if (not chi) and ji == jk:  # (b)/(c) full same-BALL / same-FREE-rotation angular block
-      if jti == _BALL:
+      if jti == JointType.BALL:
         chi = True
-      elif jti == _FREE and (k - ofs) >= 3:
+      elif jti == JointType.FREE and (k - ofs) >= 3:
         chi = True
     if chi:
       acc += wp.dot(res_cdof[w, i], math.motion_cross(cdof_k, cdof_in[w, i]))
   res_dof_out[w, k] += acc
 
 
+# build the effective subtree-COM seed: res_subtree_com + the moving-COM part of dr/dcdof
 @wp.kernel(enable_backward=False)
 def _build_ceff(
   # Model:
@@ -551,9 +538,8 @@ def _build_ceff(
   res_cdof: wp.array2d[wp.spatial_vector],
   res_subtree_com: wp.array2d[wp.vec3],
   # Out:
-  ceff_out: wp.array2d[wp.vec3],  # OUT: effective subtree-COM cotangent
+  ceff_out: wp.array2d[wp.vec3],  # effective subtree-COM cotangent
 ):
-  """Build the effective subtree-COM seed: res_subtree_com + the moving-COM part of dr/dcdof."""
   w, b = wp.tid()
   c = res_subtree_com[w, b]
   if body_rootid[b] == b and b > 0:  # tree root -> accumulate the rotational rows' moving-COM cotangent
@@ -564,6 +550,7 @@ def _build_ceff(
   ceff_out[w, b] = c
 
 
+# chain dr/dsubtree_com to qpos via the mass-weighted subtree-COM jacobian (mj_jacSubtreeCom)
 @wp.kernel(enable_backward=False)
 def _subtree_com_qpos_vjp(
   # Model:
@@ -581,9 +568,8 @@ def _subtree_com_qpos_vjp(
   # In:
   res_subtree_com: wp.array2d[wp.vec3],  # dr/dsubtree_com * lam
   # Out:
-  res_dof_out: wp.array2d[float],  # OUT: += per-dof tangent gradient dc/d(dof k)
+  res_dof_out: wp.array2d[float],  # += per-dof tangent gradient dc/d(dof k)
 ):
-  """Chain dr/dsubtree_com to qpos via the mass-weighted subtree-COM Jacobian (mj_jacSubtreeCom)."""
   w, k = wp.tid()
   wm = w % body_mass.shape[0]
   acc = float(0.0)
@@ -607,6 +593,7 @@ def _subtree_com_qpos_vjp(
   res_dof_out[w, k] += acc
 
 
+# chain narrowphase geom-pose adjoints to the per-dof tangent gradient via support.jac_dof
 @wp.kernel(enable_backward=False)
 def _geom_pose_dof_vjp(
   # Model:
@@ -625,9 +612,8 @@ def _geom_pose_dof_vjp(
   res_geom_xpos: wp.array2d[wp.vec3],  # adj(geom_xpos) from the narrowphase backward
   res_geom_xmat: wp.array2d[wp.mat33],  # adj(geom_xmat)
   # Out:
-  res_dof_out: wp.array2d[float],  # OUT: per-dof tangent gradient d(contact)/d(dof k)
+  res_dof_out: wp.array2d[float],  # per-dof tangent gradient d(contact)/d(dof k)
 ):
-  """Chain narrowphase geom-pose adjoints to the per-dof tangent gradient via support.jac_dof."""
   w, k = wp.tid()
   acc = float(0.0)
   for g in range(ngeom):
@@ -656,6 +642,8 @@ def _geom_pose_dof_vjp(
   res_dof_out[w, k] += acc
 
 
+# map the per-dof tangent gradient res_dof to res_qpos_out (nq-indexed; 1:1 except quaternions);
+# free/ball angular gradient g lifts to raw quaternion coords as dc/dq = 2*quat_mul(q, [0, g])
 @wp.kernel(enable_backward=False)
 def _dof_to_qpos(
   # Model:
@@ -669,16 +657,12 @@ def _dof_to_qpos(
   # Out:
   res_qpos_out: wp.array2d[float],  # += dof -> qpos (1:1 for slide/hinge/free-translation; quaternion lift for free/ball)
 ):
-  """Map the per-dof tangent gradient res_dof to res_qpos_out (nq-indexed; 1:1 except quaternions).
-
-  Free/ball angular gradient g lifts to raw quaternion coords as dc/dq = 2*quat_mul(q, [0, g]).
-  """
   w, j = wp.tid()
   jt = jnt_type[j]
   qadr = jnt_qposadr[j]
   dadr = jnt_dofadr[j]
-  if jt == _FREE or jt == _BALL:
-    if jt == _FREE:  # translation dofs are 1:1; the quaternion starts at qadr+3, angular dofs at dadr+3
+  if jt == JointType.FREE or jt == JointType.BALL:
+    if jt == JointType.FREE:  # translation dofs are 1:1; the quaternion starts at qadr+3, angular dofs at dadr+3
       res_qpos_out[w, qadr + 0] += res_dof[w, dadr + 0]
       res_qpos_out[w, qadr + 1] += res_dof[w, dadr + 1]
       res_qpos_out[w, qadr + 2] += res_dof[w, dadr + 2]
@@ -702,18 +686,29 @@ def _dof_to_qpos(
 def contact_qpos_vjp(
   m: Model,
   d_out: Data,
-  qpos_in: wp.array2d[float],  # input/linearization qpos (d.qpos), not integrated d_out.qpos
-  res_contact_pos: wp.array,  # dr/dcontact_pos * lam (per-contact vec3)
-  res_contact_frame: wp.array,  # dr/dcontact_frame * lam (per-contact mat33)
-  res_efc_pos: wp.array2d[float],  # dr/defc_pos * lam (nworld, njmax)
-  res_subtree_com: wp.array2d[wp.vec3],  # dr/dsubtree_com * lam (nworld, nbody)
-  res_cdof: wp.array2d[wp.spatial_vector],  # dr/dcdof * lam (nworld, nv)
-  res_qpos: wp.array2d[float],  # OUT: += -(dr_contact/dqpos)^T lam-worth of the contraction (sign per _sub_write)
+  qpos_in: wp.array2d[float],
+  res_contact_pos: wp.array,
+  res_contact_frame: wp.array,
+  res_efc_pos: wp.array2d[float],
+  res_subtree_com: wp.array2d[wp.vec3],
+  res_cdof: wp.array2d[wp.spatial_vector],
+  res_qpos: wp.array2d[float],
 ):
-  """Accumulate the contact residual's dqpos into ``res_qpos`` from the exposed input-adjoints.
+  """Accumulates the contact residual's dqpos into res_qpos from the exposed input-adjoints.
 
   A frozen-witness narrowphase replay yields adj(geom poses); analytic Jacobian VJPs then chain
-  everything into one per-dof tangent buffer that _dof_to_qpos lifts. Sign: _sub_write subtracts.
+  everything into one per-dof tangent buffer that _dof_to_qpos lifts.
+
+  Args:
+    m: The model.
+    d_out: The step-output data holding the frozen contacts and kinematics.
+    qpos_in: Input/linearization qpos (d.qpos), not the integrated d_out.qpos.
+    res_contact_pos: dr/dcontact_pos * lam, per-contact vec3.
+    res_contact_frame: dr/dcontact_frame * lam, per-contact mat33.
+    res_efc_pos: dr/defc_pos * lam, (nworld, njmax).
+    res_subtree_com: dr/dsubtree_com * lam, (nworld, nbody).
+    res_cdof: dr/dcdof * lam, (nworld, nv).
+    res_qpos: Accumulated (+=) output; the caller's _sub_write applies the IFT minus.
   """
   nworld = d_out.qpos.shape[0]
   nv = m.nv
