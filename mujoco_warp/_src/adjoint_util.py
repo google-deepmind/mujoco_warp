@@ -12,10 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # ==============================================================================
-"""Shared adjoint helpers: safe_sqrt plus forward-only column / IFT-minus accumulate kernels."""
+"""Shared adjoint leaves: safe_sqrt, a non-grad Data clone, forward-only accumulate kernels."""
+
+import dataclasses
 
 import warp as wp
 
+from mujoco_warp._src.types import Data
 from mujoco_warp._src.types import vec5
 
 wp.set_module_options({"enable_backward": False})
@@ -47,6 +50,21 @@ def safe_sqrt(x: wp.float64):  # concrete overload (same name) so float64 sqrt s
 def _adj_safe_sqrt_f64(x: wp.float64, adj_ret: wp.float64):
   if x > wp.float64(0.0):
     wp.adjoint[x] += adj_ret / (wp.float64(2.0) * _wp_sqrt(x))
+
+
+def _clone_nograd(d: Data) -> Data:
+  """Deep-clone a Data's wp.arrays, grads off, so replay never mutates the tape-tracked d_out."""
+
+  def cl(o):
+    if isinstance(o, wp.array):
+      c = wp.clone(o)
+      c.requires_grad = False
+      return c
+    if dataclasses.is_dataclass(o) and not isinstance(o, type):
+      return dataclasses.replace(o, **{f.name: cl(getattr(o, f.name)) for f in dataclasses.fields(o)})
+    return o
+
+  return cl(d)
 
 
 # Column grad-seed / arithmetic primitives (per-(world, col), out-of-place unless noted).

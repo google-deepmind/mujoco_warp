@@ -14,8 +14,6 @@
 # ==============================================================================
 """Backward-only qpos VJPs of the smooth pipeline (kinematics, com_pos, com_vel, rne)."""
 
-import dataclasses
-
 import numpy as np  # host-only: one-time cached capability checks
 import warp as wp
 
@@ -44,27 +42,6 @@ _CLAMPCTRL = int(types.DisableBit.CLAMPCTRL.value)
 _GRAVITY = int(types.DisableBit.GRAVITY.value)
 _GAIN_AFFINE = int(types.GainType.AFFINE.value)
 _BIAS_AFFINE = int(types.BiasType.AFFINE.value)
-
-
-# ----------------------------------------------------------------------------
-# Non-grad Data clone shared by the adjoint stack (elementwise grad-seed / IFT-minus accumulate
-# kernels now live in adjoint_util.py).
-# ----------------------------------------------------------------------------
-
-
-def _clone_for_fd(d: Data) -> Data:
-  """Deep-clone a Data's wp.arrays, grads off, so replay never mutates the tape-tracked d_out."""
-
-  def cl(o):
-    if isinstance(o, wp.array):
-      c = wp.clone(o)
-      c.requires_grad = False
-      return c
-    if dataclasses.is_dataclass(o) and not isinstance(o, type):
-      return dataclasses.replace(o, **{f.name: cl(getattr(o, f.name)) for f in dataclasses.fields(o)})
-    return o
-
-  return cl(d)
 
 
 # ----------------------------------------------------------------------------
@@ -274,9 +251,23 @@ def smooth_force_backward(
 
 
 @event_scope
-def mass_matrix_qpos_vjp(m: Model, d: Data, y: wp.array2d, w: wp.array2d):
-  """Mass-matrix-derivative VJP: res_qpos = d_q[ y^T M(q) w ] with y, w fixed; d never mutated."""
-  s = _clone_for_fd(d)  # non-grad scratch; s.qpos = d.qpos
+def mass_matrix_qpos_vjp(m: Model, d: Data, y: wp.array2d, w: wp.array2d, scratch: Data = None):
+  """Mass-matrix-derivative VJP: res_qpos = d_q[ y^T M(q) w ] with y, w fixed; d never mutated.
+
+  `scratch` (a BackwardContext.scratch: off-tape non-grad Data of d's shape) is REUSED when given,
+  refreshing only the kinematic inputs (qpos, + mocap) because kinematics/com_pos/rne overwrite
+  every other field before reading it; else a fresh full clone is allocated (the per-call path).
+  Reuse is graph-capture-safe -- the T sequential per-backward calls share it on one stream -- and
+  drops ~165 array-copies/call to ~1 (the qpos copy), which the capture bakes into the graph.
+  """
+  if scratch is None:
+    s = adjoint_util._clone_nograd(d)  # non-grad scratch; s.qpos = d.qpos
+  else:
+    s = scratch  # reuse the preallocated scratch; refresh only what kinematics reads from d
+    wp.copy(s.qpos, d.qpos)
+    if m.nmocap > 0:
+      wp.copy(s.mocap_pos, d.mocap_pos)
+      wp.copy(s.mocap_quat, d.mocap_quat)
   s.qvel.zero_()
   s.qacc = w
   smooth.kinematics(m, s)  # fresh xipos/ximat/cdof at d.qpos (the cloned kinematics are a step stale)
@@ -439,8 +430,8 @@ def actuator_qpos_vjp(m: Model, d: Data, lam: wp.array2d):
 # .numpy() reads run ONCE here, eager, at first call -- a setup-time assertion like io.is_sparse,
 # NEVER per-step or inside a graph-capture region)
 # The value keeps a strong ref to m so an id() reused after GC cannot alias a stale entry;
-# in-place structural mutation of m stays undetected.
-# TODO(team): fold into the per-(m,d) prepare_backward context.
+# in-place structural mutation of m stays undetected. adjoint.create_backward_context primes it
+# at setup so the .numpy() never runs inside a graph-capture region (capture users prepare first).
 _SUPPORTED_CACHE = {}
 
 
@@ -546,9 +537,24 @@ def _gravcomp_seed(
 
 
 # cache keyed by id(m); the value keeps a strong ref to m so a reused id() after GC cannot alias
-# a stale entry (in-place structural mutation of m stays undetected).
-# TODO(team): fold into the per-(m,d) prepare_backward context.
+# a stale entry (in-place structural mutation of m stays undetected). create_backward_context
+# primes it (like assert_smooth_supported) so the .numpy() never runs inside a capture region.
 _HAS_GRAVCOMP_CACHE = {}
+
+
+def has_gravcomp(m: Model) -> bool:
+  """Whether any body has passive-bucket gravcomp (result cached per Model).
+
+  The .numpy() host read runs ONCE, eager -- prime it at setup (create_backward_context), never
+  inside a graph-capture region.
+  """
+  key = id(m)
+  cached = _HAS_GRAVCOMP_CACHE.get(key)
+  if cached is not None:
+    return cached[1]
+  has = bool(np.any(m.body_gravcomp.numpy() != 0.0))
+  _HAS_GRAVCOMP_CACHE[key] = (m, has)
+  return has
 
 
 @event_scope
@@ -559,14 +565,7 @@ def gravcomp_qpos_vjp(m: Model, d: Data, lam: wp.array2d):
   nq = d.qpos.shape[1]
   nbody = m.nbody
   res_qpos = wp.zeros((nworld, nq), dtype=float)
-  key = id(m)
-  cached = _HAS_GRAVCOMP_CACHE.get(key)
-  if cached is None:
-    has = bool(np.any(m.body_gravcomp.numpy() != 0.0))
-    _HAS_GRAVCOMP_CACHE[key] = (m, has)
-  else:
-    _, has = cached
-  if not has:
+  if not has_gravcomp(m):
     return res_qpos
 
   # 1. recompute qfrc_gravcomp on differentiable kinematic intermediates; seed -lam (masked) ->

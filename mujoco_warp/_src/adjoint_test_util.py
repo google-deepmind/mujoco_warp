@@ -16,10 +16,10 @@
 
 import warp as wp
 
+from mujoco_warp._src import adjoint_util
 from mujoco_warp._src import forward
 from mujoco_warp._src import passive
 from mujoco_warp._src import smooth
-from mujoco_warp._src import smooth_adjoint
 from mujoco_warp._src.types import Data
 from mujoco_warp._src.types import Model
 
@@ -92,7 +92,7 @@ def fd_smooth_qpos_backward(m: Model, d: Data, d_out: Data, lam: wp.array, res_q
   # (adj_qpos += -(dr_smooth/dqpos)^T lam). NOT capture-safe (host loop over nq); runs on a
   # separate non-grad clone -- never mutate the grad-tracked d_out.
   eps = 1.0e-4
-  fd = smooth_adjoint._clone_for_fd(d_out)
+  fd = adjoint_util._clone_nograd(d_out)
   wp.copy(fd.qvel, d.qvel)
   if m.nu > 0:
     wp.copy(fd.ctrl, d.ctrl)

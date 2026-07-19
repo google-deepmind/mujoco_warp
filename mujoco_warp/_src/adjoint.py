@@ -34,6 +34,8 @@ minus). The exposed grad is their difference, e.g. d.qpos.grad = adj_qpos - res_
 grads are -res_param.
 """
 
+import contextlib
+import contextvars
 import dataclasses
 
 import warp as wp
@@ -613,7 +615,8 @@ def advance_backward(m: Model, d: Data, d_out: Data):
     # cotangent from the stage-2 IFT lam, so no double-count with the smooth residual term.
     w_dir = wp.empty((nworld, nv), dtype=float)
     wp.launch(adjoint_util._sub_cols, dim=(nworld, nv), inputs=[d_out.qacc, qacc_advance], outputs=[w_dir])  # a_s - a_u
-    q_dir = smooth_adjoint.mass_matrix_qpos_vjp(m, d, y_int, w_dir)
+    _bc = _ACTIVE_BACKWARD_CONTEXT.get()  # reuse its preallocated scratch if a context is active (else clone)
+    q_dir = smooth_adjoint.mass_matrix_qpos_vjp(m, d, y_int, w_dir, scratch=_bc.scratch if _bc is not None else None)
     wp.launch(adjoint_util._accum_cols, dim=(nworld, nq), inputs=[q_dir], outputs=[adj_qpos])  # adj_qpos += d_q[y^T M w]
     # Stage 4 -- d_v direct term for STATE-DEPENDENT (dampingpoly) damping:
     # adj_qvel += -d_v[ y_int^T dt*D(v) a_u ] (a_u, y_int held fixed). Zero for LINEAR damping;
@@ -666,8 +669,9 @@ def solve_backward(m: Model, d_out: Data, adj_qacc: wp.array):
   nv = m.nv
   nv_pad = m.nv_pad
   # --- 2. IFT: solve H lam = adj_qacc, reusing the solver's assembly + Cholesky factor ---
-  ctx = solver._create_solver_context(m, d_out)
-  solver.init_context(m, d_out, ctx, grad=True)  # assembles + factors ctx.h; active set = forward's
+  _bc = _ACTIVE_BACKWARD_CONTEXT.get()  # reuse its preallocated solver workspace if a context is active
+  ctx = _bc.solver_ctx if _bc is not None else solver._create_solver_context(m, d_out)
+  solver.init_context(m, d_out, ctx, grad=True)  # assembles + factors ctx.h; active set = forward's (reused ctx re-inited)
   wp.launch(_load_rhs, dim=(nworld, nv_pad), inputs=[nv, adj_qacc], outputs=[ctx.grad])
   ctx.done.zero_()
   solver._cholesky_factorize_solve(m, d_out, ctx)  # ctx.Mgrad[:, :nv] = lam
@@ -1196,9 +1200,17 @@ def fwd_kinematics_backward(m: Model, d: Data):
   """
   if m.nsite == 0 or d.qpos.grad is None or d.site_xpos.grad is None:
     return
-  fd = smooth_adjoint._clone_for_fd(d)  # value-only scratch; refresh kinematics state at qpos
-  smooth.kinematics(m, fd)
-  smooth.com_pos(m, fd)
+  _bc = _ACTIVE_BACKWARD_CONTEXT.get()
+  if _bc is not None:
+    scratch = _bc.scratch  # reuse the preallocated scratch; kinematics/com_pos overwrite the rest
+    wp.copy(scratch.qpos, d.qpos)  # refresh only what kinematics reads from d (d's kinematics is a step stale)
+    if m.nmocap > 0:
+      wp.copy(scratch.mocap_pos, d.mocap_pos)
+      wp.copy(scratch.mocap_quat, d.mocap_quat)
+  else:
+    scratch = adjoint_util._clone_nograd(d)  # non-grad scratch; refresh kinematics at d.qpos
+  smooth.kinematics(m, scratch)
+  smooth.com_pos(m, scratch)
   adj_dof = wp.zeros((d.nworld, m.nv), dtype=float)  # per-dof TANGENT VJP, lifted to qpos below
   wp.launch(
     _site_jac_vjp,
@@ -1210,9 +1222,9 @@ def fwd_kinematics_backward(m: Model, d: Data):
       m.dof_bodyid,
       m.site_bodyid,
       m.body_isdofancestor,
-      fd.site_xpos,
-      fd.subtree_com,
-      fd.cdof,
+      scratch.site_xpos,
+      scratch.subtree_com,
+      scratch.cdof,
       d.site_xpos.grad,
     ],
     outputs=[adj_dof],
@@ -1226,6 +1238,71 @@ def fwd_kinematics_backward(m: Model, d: Data):
     inputs=[m.jnt_type, m.jnt_qposadr, m.jnt_dofadr, d.qpos, adj_dof],
     outputs=[d.qpos.grad],
   )
+
+
+@dataclasses.dataclass
+class BackwardContext:
+  """Per-(m, d) setup-time scratch for step()'s analytic backward, built once and reused.
+
+  Folds the state step_backward rebuilds every call. Pass to the backward entries to reuse it;
+  omit for the existing per-call path. Modeled on RenderContext / SolverContext.
+
+  Attributes:
+    solver_ctx: preallocated solver workspace (replaces per-call solver._create_solver_context).
+    scratch: off-tape non-grad Data clone for kinematics/rne replay (replaces _clone_nograd).
+  """
+
+  solver_ctx: types.SolverContext
+  scratch: Data
+
+
+def _create_backward_context(m: Model, d: Data) -> BackwardContext:
+  """Build the BackwardContext for (m, d): preallocate the backward's reusable workspace.
+
+  Reuse across a BPTT rollout that keeps m and d's capacities fixed. Also PRIMES the id(m)
+  capability caches so their one-time .numpy() host reads run here at setup -- never lazily on a
+  first backward a graph capture might enclose (assert_smooth_supported also validates the model).
+  """
+  smooth_adjoint.assert_smooth_supported(m)  # prime + validate (raises for unsupported features)
+  smooth_adjoint.has_gravcomp(m)  # prime the passive-gravcomp flag cache
+  return BackwardContext(
+    solver_ctx=solver._create_solver_context(m, d),
+    scratch=adjoint_util._clone_nograd(d),
+  )
+
+
+def create_backward_context(m: Model, d: Data) -> BackwardContext:
+  """Public factory for step()'s reusable backward workspace, preallocated once for (m, d).
+
+  Activate it with `backward_context(bc)` around the taped backward (or its graph capture) to skip
+  the per-call scratch clone -- the graph-capture / BPTT-reuse half of the opt-in API (see
+  enable_grad).
+  """
+  return _create_backward_context(m, d)
+
+
+# Active BackwardContext: the taped step_backward hook has a fixed (m, d, d_out) signature, so the
+# persisted context is delivered out-of-band (mirrors forward.ENABLE_GRAD). A ContextVar (not a bare
+# module global) so concurrent threads/async tasks can't cross-wire each other's scratch/solver ctx.
+# Default None keeps the allocate-per-call path -> grad fingerprint stays bitwise-equal.
+_ACTIVE_BACKWARD_CONTEXT: "contextvars.ContextVar[BackwardContext | None]" = contextvars.ContextVar(
+  "mjw_active_backward_context", default=None
+)
+
+
+@contextlib.contextmanager
+def backward_context(bc: BackwardContext):
+  """Activate `bc` for the taped backward in this block so it reuses bc's preallocated scratch.
+
+  Wrap the backward, or the capture of it: `with backward_context(bc): tape.backward(loss)`. Reuse
+  replaces the per-call Data clone; nestable and restoring. Capture bakes the reuse into the graph,
+  so replays need no active context. Keep one in-flight backward per bc (its scratch is shared).
+  """
+  token = _ACTIVE_BACKWARD_CONTEXT.set(bc)
+  try:
+    yield bc
+  finally:
+    _ACTIVE_BACKWARD_CONTEXT.reset(token)
 
 
 def enable_grad() -> None:
