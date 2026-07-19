@@ -40,7 +40,12 @@ import mujoco_warp as mjw
 mjw.enable_grad()
 
 sys.path.insert(0, os.path.dirname(__file__))
+import demo  # noqa: E402  shared config + gradients + capture/reuse + optimize loop + main
 import viz  # noqa: E402  shared renderer (mp4 or live MuJoCo viewer via MJW_VIEWER)
+import typing  # noqa: E402
+from dataclasses import dataclass  # noqa: E402
+from dataclasses import field  # noqa: E402
+from absl import app  # noqa: E402
 
 BENCH = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "..", "benchmarks", "unitree_go1"))
 ASSETS = os.path.join(os.path.dirname(__file__), "reports", "assets")
@@ -252,6 +257,7 @@ class Task:
   objective: str                              # "reach" | "sequence" | "gallop" | "handstand" | "stones"
   T: int = 220
   steps: int = 120
+  envs: int = 4                                # per-task default parallel env count (used when --num_envs<=0); handstand needs many
   lr: float = 0.03
   spread: float = SPREAD                       # per-env init control-bias std (the parallel fan); smaller = tighter, less likely to topple an env
   n_hops: int = 3                              # stones: number of forward stone-to-stone steps (stages = n_hops+1)
@@ -277,7 +283,7 @@ TASKS = {
     cam={"lookat": [0.6, 0.0, 0.3], "distance": 3.1, "azimuth": 60.0, "elevation": -14.0},
   ),
   "precision_jump": Task(
-    "precision_jump", "scene_stones.xml", "stones", T=300, steps=120, lr=0.02, n_hops=2, lane=1.2, spread=0.0,
+    "precision_jump", "scene_stones.xml", "stones", T=300, steps=120, lr=0.02, n_hops=2, lane=1.2, spread=0.05, envs=32,
     tbptt_h=32, grad_clip=15.0, title="jumps",
     # PRONK (all 4 feet jump together) with dial-mpc COST TERMS: WITHIN-RADIUS foot placement (0 loss once the
     # foot is over the pillar top, forgiving) + UP-VECTOR upright + COM waypoint tracking (reward_pos) + yaw->0
@@ -288,12 +294,19 @@ TASKS = {
     # for RL/MPC; in fixed-horizon trajopt alive*10 just makes "stay upright & don't fall" the low-loss optimum
     # -> the robot barely moves). Forward COM and landing terms dominate here; the one-sided floor term makes
     # a foot in a gap much more expensive than a small arc-tracking error, while alive stays only anti-fall.
+    # LANDING-STANCE terms were drowned out by the foot-placement terms (floor/miss 3000-6000): the optimizer
+    # planted the foot SITES on the pillar tops while FOLDING the knees (landing on knees costs ~nothing), since
+    # extending the legs to actually stand was only weight 30. Strengthen the (flight-gated-OFF, descent/dwell-
+    # gated-ON so the mid-air tuck is untouched) stance enforcement so the legs EXTEND to land on feet:
+    #   land_pose 30->150  (pull all legs to the home standing pose through descent + settle),
+    #   clear     20->60   (keep the 2nd-flight rear thighs UP / calves tucked so the hind knees clear the pillars),
+    #   alive      3->10   (a knee-landing = collapsed trunk; penalize the trunk sinking below z_min harder).
     w={"foot": 50.0, "footz": 60.0, "land": 250.0, "floor": 3000.0, "sync": 1000.0,
        "worst": 1000.0, "over": 3000.0, "brake": 30.0, "miss": 6000.0,
-       "clear": 20.0, "land_pose": 30.0, "finish": 2500.0, "state_sym": 40.0,
+       "clear": 60.0, "land_pose": 150.0, "finish": 2500.0, "state_sym": 40.0,
        "com": 300.0, "vel": 8.0, "up": 400.0, "z": 80.0, "omega": 8.0,
        "slip": 3.0, "yaw": 8.0, "sym": 0.5,
-       "alive": 3.0, "ctrl": 1e-3},
+       "alive": 10.0, "ctrl": 1e-3},
     cam={"lookat": [0.5, 0.0, 0.15], "distance": 3.2, "azimuth": 60.0, "elevation": -14.0},
   ),
   "gallop": Task(
@@ -305,7 +318,7 @@ TASKS = {
     cam={"track": True, "z": 0.3, "azimuth": 135.0, "elevation": -18.0, "dist0": 2.0, "distk": 0.75},
   ),
   "handstand": Task(
-    "handstand", "scene_flat.xml", "handstand", T=250, steps=120, lr=0.03, height_tar=0.25, lane=0.9,
+    "handstand", "scene_flat.xml", "handstand", T=250, steps=120, envs=64, lr=0.03, grad_clip=8.0, height_tar=0.25, lane=0.9,
     w={"ori": 2.0, "head": 8.0, "bal": 0.02, "ctrl": 2e-3},  # pitch to +90deg AND hold the head up (front legs support)
     # Front-three-quarter view keeps all four y-lanes visible (90 degrees looked down-lane and occluded them).
     cam={"lookat": [0.1, 0.0, 0.35], "distance": 2.3, "azimuth": 135.0, "elevation": -8.0},
@@ -994,161 +1007,258 @@ def build(task, N):
   return mjm, mjd, m, np.tile(qpos0, (N, 1)).astype(np.float32), home, params
 
 
-def run_backward(task, m, mjm, mjd, ctrls, q0, home_wp, N, params):
-  """Batched (nworld=N) taped rollout with PERSISTENT per-step control leaves ctrls[t] (1D, N*nu),
-  each reshaped to (N,nu) and bound just-in-time (mujoco_warp step(d,d_out) copies ctrl d->d_out).
-  Leaves the accumulated gradients in ctrls[t].grad for warp.optim.Adam. Returns qtraj (N,T+1,nq).
-
-  TRUNCATED BPTT (task.tbptt_h > 0, like g1_sysid.py): the rollout is cut into chunks of tbptt_h frames;
-  the state is DETACHED at each chunk boundary (a fresh requires_grad leaf, no grad link to the previous
-  chunk) and each chunk's loss is back-propagated on its OWN tape. Every backward chain is thus <= tbptt_h
-  steps -- dodging the long-horizon contact chaos/local-optima that a full-T single-shooting backward hits --
-  while the per-step control grads still ACCUMULATE across chunks, so the objective stays the full trajectory.
-  tbptt_h == 0 -> one tape over all T (classic full BPTT)."""
-  T, nu = task.T, mjm.nu
-  feet = task.objective in ("stones", "gallop") or "feet" in task.w   # loss reads foot site_xpos (differentiable FK)
-  H = task.tbptt_h if task.tbptt_h > 0 else T                          # chunk length (T = full BPTT)
-  for c in ctrls:
-    c.grad.zero_()                                    # tape.backward ACCUMULATES -> zero once, before all chunks
-  datas = [mjw.put_data(mjm, mjd, nworld=N) for _ in range(T + 1)]
-  for d in datas:
-    d.qpos.requires_grad = True
-    d.qvel.requires_grad = True
-    if feet:
-      d.site_xpos.requires_grad = True               # site_xpos.grad -> qpos.grad via fwd_kinematics hook
-  cur_qpos = q0.copy()                                # detached state carried between chunks (numpy round-trip)
-  cur_qvel = np.zeros((N, mjm.nv), np.float32)
-  t = 0
-  while t < T:
-    ct = min(H, T - t)                                # frames in this truncation chunk
-    datas[t].qpos = wp.array(cur_qpos, dtype=float, requires_grad=True)  # fresh DETACHED leaf (breaks grad chain)
-    datas[t].qvel = wp.array(cur_qvel, dtype=float, requires_grad=True)
-    if feet:
-      mjw.fwd_kinematics(m, datas[t])                 # site_xpos at the chunk-start state
-    loss = wp.zeros(1, dtype=float, requires_grad=True)
-    tape = wp.Tape()
-    with tape:
-      for tt in range(t, t + ct):
-        c = ctrls[tt].reshape((N, nu))                # (N,nu) view of the 1D leaf; just-in-time bind
-        datas[tt].ctrl = c
-        mjw.step(m, datas[tt], datas[tt + 1])
-        if feet:
-          mjw.fwd_kinematics(m, datas[tt + 1])        # refresh site_xpos under the tape -> foot-site gradient
-        _launch_loss(task, datas[tt + 1], datas[tt], c, home_wp, tt, N, params, loss)
-    tape.backward(loss=loss)                          # += this chunk's grads into ctrls[tt].grad (tt in chunk)
-    cur_qpos = datas[t + ct].qpos.numpy()             # DETACH: next chunk starts here with no gradient link back
-    cur_qvel = datas[t + ct].qvel.numpy()
-    t += ct
-  qtraj = np.stack([datas[t].qpos.numpy() for t in range(T + 1)], axis=1)          # (N,T+1,nq)
-  qveltraj = np.stack([datas[t].qvel.numpy() for t in range(T + 1)], axis=1)       # (N,T+1,nv)
-  foot_traj = None
-  if feet:
-    fids = params["foot_ids"]
-    foot_traj = np.stack([datas[t].site_xpos.numpy()[:, fids] for t in range(T + 1)], axis=1)  # (N,T+1,4,3)
-  return qtraj, qveltraj, foot_traj
+# Per-task USD field spacing (x, y) for the immersed hero render, overriding Args.usd_xpitch/ypitch in
+# export_usd. precision_jump is a directional jump COURSE (robot + a ~2.4m line of stepping stones), so it
+# needs a WIDE y-pitch or adjacent courses overlap into a sea of stones; the compact in-place tasks
+# (handstand/crate_climb) use the square Args default.
+USD_PITCH = {"precision_jump": (2.4, 3.3)}
 
 
-def optimize(task, N, steps, lr):
-  mjm, mjd, m, q0, home, params = build(task, N)
-  nu = mjm.nu
-  home_wp = wp.array(home, dtype=float)
-  lo, hi = (home - ACTION).astype(np.float32), (home + ACTION).astype(np.float32)   # box-clamp targets around home
-  lo_wp, hi_wp = wp.array(lo, dtype=float), wp.array(hi, dtype=float)
-  rng = np.random.default_rng(0)
-  base = np.clip(home[None, :] + rng.normal(0.0, task.spread, (N, nu)).astype(np.float32), lo, hi)  # (N,nu) per-env bias -> fan
-  # PERSISTENT per-step control leaves (1D N*nu) optimized by warp.optim.Adam with SHAC betas (0.7, 0.95)
-  if task.objective == "stones":
-    seed = _stones_ctrl_seed(task, home)
-    ctrls = [wp.array(np.tile(seed[t], (N, 1)).reshape(-1), dtype=float, requires_grad=True) for t in range(task.T)]
-  else:
-    ctrls = [wp.array(base.reshape(-1).copy(), dtype=float, requires_grad=True) for _ in range(task.T)]
-  opt = warp.optim.Adam(ctrls, lr=lr, betas=(0.7, 0.95))
-  history = []
-  for it in range(steps):
-    if task.objective == "stones" and steps > 1:
-      # The pronk seed finds the useful contact basin early. Decay aggressively thereafter: the previous
-      # linear schedule still used ~0.018 at the good iter-18 solution and Adam walked into a row-skipping
-      # contact mode. This reaches ~0.0026 by iter 40 and ~0.0005 at iter 119 for landing refinement.
-      opt.lr = lr * (0.025 + 0.975 * np.exp(-it / 18.0))
-    qtraj, qveltraj, foot_traj = run_backward(task, m, mjm, mjd, ctrls, q0, home_wp, N, params)
-    losses = per_env_loss(task, qtraj, params, foot_traj, qveltraj)
-    fwd = float(np.mean(qtraj[:, -1, 0] - qtraj[:, 0, 0]))
-    peak = float(np.mean(qtraj[:, :, 2].max(axis=1)))
-    history.append({"it": it, "losses": losses.copy(), "qtraj": qtraj,
-                    "qveltraj": qveltraj, "foot_traj": foot_traj})
-    gnorm = float(np.mean([np.linalg.norm(np.nan_to_num(c.grad.numpy())) for c in ctrls]))  # mean per-step |grad|
-    if task.grad_clip > 0.0 and gnorm > task.grad_clip:  # trajopt hygiene: scale the whole gradient down so Adam
-      s = task.grad_clip / (gnorm + 1e-8)                # can't overshoot into a topple when an aggressive launch
-      for c in ctrls:                                    # slams a foot into a pillar edge (stiff contact -> |g| spike)
-        wp.launch(_scale, dim=c.shape, inputs=[c.grad, float(s)])
-    if it % 10 == 0 or it == steps - 1:
-      lname = "mean_loss"
-      print(f"  [{it:3d}] {lname}={losses.mean():.3f} best={losses.min():.3f}  "
-            f"mean_fwd={fwd:+.2f}m mean_peak_z={peak:.2f}  |g|={gnorm:.2f}")
-    opt.step([c.grad for c in ctrls])                 # in-place Adam update of the control leaves
-    for c in ctrls:
-      if task.objective == "stones":
-        wp.launch(_project_pronk, dim=N, inputs=[c, nu])  # exact L/R synchronization, still real force-limited targets
-      wp.launch(_clamp, dim=c.shape, inputs=[c, lo_wp, hi_wp, nu])  # project back to home +/- ACTION
-  mean_loss = np.array([h["losses"].mean() for h in history])
-  best = int(mean_loss.argmin())
-  lname = "mean loss"
-  print(f"[go1_agile/{task.name}] {N} env(s): {lname} {mean_loss[0]:.3f} -> best {mean_loss[best]:.3f} (iter {best})")
-  if task.objective == "stones":
-    hb = history[best]
-    parts = _stones_component_sums(task, hb["qtraj"], hb["qveltraj"], hb["foot_traj"], params)
-    print("  best summed loss terms: " + "  ".join(f"{k}={v:.1f}" for k, v in parts.items()))
-    _print_stones_landings(task, hb["qtraj"], hb["foot_traj"], params)
-  elif task.objective == "handstand":
-    hb = history[best]
-    _print_handstand_metrics(task, hb["qtraj"], hb["qveltraj"])
-  return history, best, mjm, params
+@dataclass
+class Args(demo.CommonArgs):
+  """go1_agile config: CommonArgs + the task selector. steps/lr default to the per-task values (0 = task)."""
+
+  task: str = field(default="crate_climb", metadata={"help": "agile skill", "choices": list(TASKS)})
+  num_envs: int = field(default=0, metadata={"help": "parallel envs (nworld batching); 0 = per-task default (Task.envs)"})
+  steps: int = field(default=0, metadata={"help": "Adam steps (0 = per-task default)"})
+  lr: float = field(default=0.0, metadata={"help": "Adam learning rate (0 = per-task default)"})
+  cols: int = field(default=1, metadata={"help": "render grid columns (1 = single y-row)"})
+  sp_x: typing.Optional[float] = field(default=None, metadata={"help": "render grid x-pitch (default: task lane)"})
+  usd_stride: int = field(default=5, metadata={"help": "USD field: subsample (dt=0.004 -> stride 5 = 1x@50fps)"})
+  # dense hero field for the immersed render (render_blender.hero_cam): 17x17 quadrupeds at 2.0m spacing so
+  # the pushed-in camera shows a big foreground hero + a field cropping off the frame edges.
+  usd_envs: int = field(default=289, metadata={"help": "USD field: instanced lanes (17x17 dense field)"})
+  usd_cols: int = field(default=17, metadata={"help": "USD field: grid columns"})
+  usd_xpitch: float = field(default=2.0, metadata={"help": "USD field: column pitch (x) = robot spacing"})
+  usd_ypitch: float = field(default=2.0, metadata={"help": "USD field: row pitch (y)"})
+
+
+class Go1AgileDemo(demo.Example):
+  """Go1 agile skills: optimize a per-step open-loop control SCHEDULE (a list of per-step ctrl leaves,
+  Adam) via the analytic adjoint of a time-dependent per-step loss. Truncated BPTT for the contact-rich
+  tasks (chunk = tbptt_h frames); full BPTT for gallop/handstand. Reuses the module's build/_launch_loss/
+  per_env_loss/projections/render; the checkpointed harness supplies the gradient."""
+
+  Args = Args
+  capturable = False  # per-step control leaves + host step index -> eager checkpointed path
+
+  def optimize(self):
+    return self._optimize()
+
+  # ---- harness hooks ----
+
+  def build_model(self):
+    self.task = TASKS[self.args.task]
+    if self.args.num_envs <= 0:  # 0 -> per-task default env count (handstand's chaotic full-BPTT landscape needs 64)
+      self.args.num_envs = self.task.envs
+    self.truncated = self.task.tbptt_h > 0
+    C = self.task.tbptt_h if self.task.tbptt_h > 0 else self.task.T
+    while self.task.T % C != 0:  # the checkpoint segment must divide T (uniform chunks; eager, so a ragged
+      C -= 1                     # last chunk would need extra bookkeeping) -- snap to the nearest divisor <= tbptt_h
+    self.args.chunk = C
+    self.mjm, self.mjd, _m, self.q0, self.home, self.lossparams = build(self.task, self.args.num_envs)
+    self.home_wp = wp.array(self.home, dtype=float)
+    self.feet = self.task.objective in ("stones", "gallop") or "feet" in self.task.w  # loss reads foot site_xpos
+    self.lo = (self.home - ACTION).astype(np.float32)
+    self.hi = (self.home + ACTION).astype(np.float32)
+    self.lo_wp, self.hi_wp = wp.array(self.lo, dtype=float), wp.array(self.hi, dtype=float)
+
+  def init_params(self):
+    return np.zeros((self.args.num_envs, 1), np.float32)  # placeholder; the optimized leaves are self.ctrls
+
+  def build_datas(self):
+    N, nu, T = self.args.num_envs, self.mjm.nu, self.task.T
+    self.nT = T
+    self.datas = [mjw.put_data(self.mjm, self.mjd, nworld=N) for _ in range(self.args.chunk + 1)]
+    for d in self.datas:
+      d.qpos.requires_grad = True
+      d.qvel.requires_grad = True
+      d.ctrl.requires_grad = True  # bind_ctrl scatters the schedule leaf into this stable buffer
+      if self.feet:
+        d.site_xpos.requires_grad = True  # foot-site gradient via fwd_kinematics on the tape
+    self.datas[0].qpos = wp.array(self.q0, dtype=float, requires_grad=True)
+    self.datas[0].qvel = wp.array(np.zeros((N, self.mjm.nv), np.float32), dtype=float, requires_grad=True)
+    rng = np.random.default_rng(0)
+    if self.task.objective == "stones":
+      seed = _stones_ctrl_seed(self.task, self.home)
+      self.ctrls = [wp.array(np.tile(seed[t], (N, 1)).reshape(-1), dtype=float, requires_grad=True) for t in range(T)]
+    else:
+      base = np.clip(self.home[None] + rng.normal(0.0, self.task.spread, (N, nu)).astype(np.float32), self.lo, self.hi)
+      self.ctrls = [wp.array(base.reshape(-1).copy(), dtype=float, requires_grad=True) for _ in range(T)]
+    self.loss = wp.zeros(1, dtype=float, requires_grad=True)
+    self._viz = [mjw.put_data(self.mjm, self.mjd, nworld=N) for _ in range(2)]  # forward-only display rollout
+
+  def set_params(self):
+    pass  # ctrls are persistent leaves; datas[0] = q0 is restored by the harness
+
+  def chunk_prologue(self):
+    if self.feet:
+      mjw.fwd_kinematics(self.m, self.datas[0])  # site_xpos at the chunk-start state
+
+  def chunk_step(self, i, t):
+    N, nu = self.args.num_envs, self.mjm.nu
+    self.bind_ctrl(i, self.ctrls[t])  # scatter (a rebind is invisible to the step under the bc context)
+    mjw.step(self.m, self.datas[i], self.datas[i + 1])
+    if self.feet:
+      mjw.fwd_kinematics(self.m, self.datas[i + 1])  # refresh foot site_xpos under the tape
+    _launch_loss(self.task, self.datas[i + 1], self.datas[i], self.ctrls[t].reshape((N, nu)),
+                 self.home_wp, t, N, self.lossparams, self.loss)
+
+  def _sim_rollout(self):
+    """Forward-only qtraj/qveltraj/foot_traj (N,T+1,...) at the current ctrls (checkpointing keeps only
+    chunk+1 buffers); feeds per_env_loss + the render, matching run_backward's forward physics."""
+    N, nu, T = self.args.num_envs, self.mjm.nu, self.task.T
+    fids = self.lossparams["foot_ids"] if self.feet else None
+    a, b = self._viz
+    a.qpos = wp.array(self.q0, dtype=float)
+    a.qvel = wp.array(np.zeros((N, self.mjm.nv), np.float32), dtype=float)
+    if self.feet:
+      mjw.fwd_kinematics(self.m, a)
+    qs, qvs = [self.q0.copy()], [np.zeros((N, self.mjm.nv), np.float32)]
+    fts = [a.site_xpos.numpy()[:, fids].copy()] if self.feet else None
+    for t in range(T):
+      wp.launch(demo._scatter_ctrl, dim=(N, nu), inputs=[self.ctrls[t], nu], outputs=[a.ctrl])
+      mjw.step(self.m, a, b)
+      if self.feet:
+        mjw.fwd_kinematics(self.m, b)
+      qs.append(b.qpos.numpy().copy())
+      qvs.append(b.qvel.numpy().copy())
+      if self.feet:
+        fts.append(b.site_xpos.numpy()[:, fids].copy())
+      a, b = b, a
+    qtraj, qveltraj = np.stack(qs, axis=1), np.stack(qvs, axis=1)
+    return qtraj, qveltraj, (np.stack(fts, axis=1) if self.feet else None)
+
+  def _optimize(self):
+    task, N, nu = self.task, self.args.num_envs, self.mjm.nu
+    steps = self.args.steps or task.steps
+    lr = self.args.lr or task.lr
+    opt = warp.optim.Adam(self.ctrls, lr=lr, betas=(0.7, 0.95))
+    history = []
+    for it in range(steps):
+      if task.objective == "stones" and steps > 1:
+        opt.lr = lr * (0.025 + 0.975 * np.exp(-it / 18.0))  # aggressive decay for landing refinement
+      self.backward()  # checkpointed adjoint -> ctrls[t].grad (truncated per chunk for the contact tasks)
+      qtraj, qveltraj, foot_traj = self._sim_rollout()
+      losses = per_env_loss(task, qtraj, self.lossparams, foot_traj, qveltraj)
+      history.append({"it": it, "losses": losses.copy(), "qtraj": qtraj, "qveltraj": qveltraj, "foot_traj": foot_traj})
+      gnorm = float(np.mean([np.linalg.norm(np.nan_to_num(c.grad.numpy())) for c in self.ctrls]))
+      if task.grad_clip > 0.0 and gnorm > task.grad_clip:  # trajopt hygiene: cap the aggressive-launch overshoot
+        s = task.grad_clip / (gnorm + 1e-8)
+        for c in self.ctrls:
+          wp.launch(_scale, dim=c.shape, inputs=[c.grad, float(s)])
+      if it % 10 == 0 or it == steps - 1:
+        fwd = float(np.mean(qtraj[:, -1, 0] - qtraj[:, 0, 0]))
+        peak = float(np.mean(qtraj[:, :, 2].max(axis=1)))
+        print(f"  [{it:3d}] mean_loss={losses.mean():.3f} best={losses.min():.3f}  "
+              f"mean_fwd={fwd:+.2f}m mean_peak_z={peak:.2f}  |g|={gnorm:.2f}")
+      opt.step([c.grad for c in self.ctrls])
+      for c in self.ctrls:
+        if task.objective == "stones":
+          wp.launch(_project_pronk, dim=N, inputs=[c, nu])  # exact L/R pronk synchronization
+        wp.launch(_clamp, dim=c.shape, inputs=[c, self.lo_wp, self.hi_wp, nu])  # box-clamp to home +/- ACTION
+    mean_loss = np.array([h["losses"].mean() for h in history])
+    best = int(mean_loss.argmin())
+    print(f"[go1_agile/{task.name}] {N} env(s): mean loss {mean_loss[0]:.3f} -> best {mean_loss[best]:.3f} (iter {best})")
+    return history, best
+
+  def default_out(self):
+    return os.path.join(ASSETS, f"go1_{self.task.name}.mp4")
+
+  def export_usd(self, history, best):
+    """--export_usd hook: replay THIS agile-motion optimization across an instanced Go1 FIELD for the
+    Blender render (go1_agile_render_blender.py). Samples a spread of iterations; each iteration's forward
+    rollout qpos is ALREADY stored (`qtraj`), so just subsample env 0 + hold the settled end, tracking
+    frame->iteration. The proto is the task scene stripped of floor/lights (keeps the obstacles, e.g. the
+    crate, as named viz geoms so the motion has something to climb)."""
+    a = self.args
+    tag = f"go1_{self.task.name}"  # per-task dir/name so handstand + precision_jump don't overwrite each other
+    out_dir = os.path.join(ASSETS, f"{tag}_render")
+    ks = sorted(set(np.linspace(0, len(history) - 1, a.usd_iters).astype(int).tolist()))
+    if self.task.objective == "stones":
+      # match render(): the post-'best' Adam iterates DRIFT (the hind legs clip the pillar tops), so the raw
+      # last iterate (len-1) is a degraded jump. Sample the convergence [0, best] and END on the clean
+      # incumbent instead of holding iter len-1 -- otherwise the field's 289 instances all replay the bad jump.
+      ks = sorted(set(np.linspace(0, best, a.usd_iters).astype(int).tolist()))
+    ne = self.args.num_envs
+    env_frames, frame_iters = [], None  # each env a DIFFERENT control-bias init -> distinct motion -> diverse field
+    for e in range(ne):
+      fr, fi = [], []
+      for k in ks:
+        qp = history[k]["qtraj"][e]  # (T+1, nq=19): env e's rollout at this iteration
+        sub = list(qp[:: a.usd_stride]) + [qp[-1]] * a.usd_hold
+        fr.extend(sub)
+        fi.extend([int(k)] * len(sub))
+      env_frames.append([np.asarray(f, np.float64) for f in fr])
+      frame_iters = fi
+    proto = self.strip_to_proto(os.path.join(BENCH, self.task.scene))  # robot + obstacles, no floor/lights
+    assert proto.nq == env_frames[0][0].shape[0], (proto.nq, env_frames[0][0].shape[0])
+    xp, yp = USD_PITCH.get(self.task.name, (a.usd_xpitch, a.usd_ypitch))  # directional courses need a wide y
+    offsets = self._usd_grid_offsets(a.usd_envs, a.usd_cols, xp, yp)
+    fps = max(1, round(1.0 / (self.mjm.opt.timestep * a.usd_stride)))  # 1x real-time (qtraj is 1 step/frame)
+    out = self.export_field(proto, None, offsets, out_dir, name=f"{tag}_traj", fps=fps,
+                            frame_iters=frame_iters, opt_label="open-loop ctrl", env_frames=env_frames)
+    fwd = float(np.mean([history[ks[-1]]["qtraj"][e][-1, 0] - history[ks[-1]]["qtraj"][e][0, 0] for e in range(ne)]))
+    print(f"[export] go1 {self.task.name}: {ne} DISTINCT envs, iters {ks}, mean_fwd {fwd:+.2f}m; "
+          f"NF={len(env_frames[0])} -> {out}")
+
+  def render(self, history, best, out):
+    render(self.task, history, best, out_path=out, live=(True if self.args.live else None),
+           cols=self.args.cols, sp_x=self.args.sp_x)
 
 
 # ---------------- render (all envs in ONE scene, replicated into y-lanes, cradle-style) ----------------
-def _lanes_model(task, N, sp):
-  """All N envs in ONE scene: the imported single-robot scene replicated into N y-lanes via MjSpec --
-  attach a Go1 copy per lane (the from-file equivalent of dm_suite's inline-<replicate>) + duplicate the
-  obstacle geoms into each lane. Returns the compiled viz model; qpos is env-major ([env0(nq), env1..])."""
+def _lanes_model(task, N, sp, cols=1, sp_x=None):
+  """All N envs in ONE scene: the imported single-robot scene replicated into a `cols`-wide GRID (x =
+  columns, y = rows) via MjSpec -- attach a Go1 copy per cell (the from-file equivalent of dm_suite's
+  inline-<replicate>) + duplicate the obstacle geoms into each cell. cols=1 -> the classic single y-row of
+  lanes (keeps locomotion tasks, which travel in +x, from colliding down-lane). Returns the compiled viz
+  model; qpos is env-major ([env0(nq), env1..])."""
+  sp_x = sp if sp_x is None else sp_x
   robot = mujoco.MjSpec.from_file(os.path.join(BENCH, "unitree_go1_mjlab.xml"))
-  scene = mujoco.MjSpec.from_file(os.path.join(BENCH, task.scene))               # lane 0 = robot + obstacles + floor
+  scene = mujoco.MjSpec.from_file(os.path.join(BENCH, task.scene))               # cell 0 = robot + obstacles + floor
   obst = [(g.type, np.array(g.size), np.array(g.pos), np.array(g.quat), np.array(g.rgba), g.material)
-          for g in scene.worldbody.geoms if g.name != "floor"]                    # obstacles to replicate per lane
+          for g in scene.worldbody.geoms if g.name != "floor"]                    # obstacles to replicate per cell
   for e in range(1, N):
+    ox, oy = (e % cols) * sp_x, (e // cols) * sp
     fr = scene.worldbody.add_frame()
-    fr.pos = [0.0, e * sp, 0.0]
+    fr.pos = [ox, oy, 0.0]
     scene.attach(robot.copy(), prefix=f"e{e}_", frame=fr)
     for typ, size, pos, quat, rgba, mat in obst:
       g2 = scene.worldbody.add_geom()
       g2.type, g2.size, g2.quat, g2.rgba = typ, size, quat, rgba
-      g2.pos = [float(pos[0]), float(pos[1] + e * sp), float(pos[2])]
+      g2.pos = [float(pos[0] + ox), float(pos[1] + oy), float(pos[2])]
       g2.contype, g2.conaffinity = 0, 0                                           # viz-only (render sets qpos, no stepping)
       if mat:
         g2.material = mat
   return scene.compile()
 
 
-def render(task, history, best, out_path, sample_every=4, live=None):
+def render(task, history, best, out_path, sample_every=4, live=None, cols=1, sp_x=None):
   N = history[0]["qtraj"].shape[0]
   T, nq_r = task.T, history[0]["qtraj"].shape[2]
   sp = task.lane
-  m = _lanes_model(task, N, sp)
+  cols = max(1, min(cols, N))
+  sp_x = sp if sp_x is None else sp_x
+  rows = int(np.ceil(N / cols))
+  m = _lanes_model(task, N, sp, cols=cols, sp_x=sp_x)
   vd = mujoco.MjData(m)
-  off = np.array([[0.0, e * sp, 0.0] for e in range(N)])
+  off = np.array([[(e % cols) * sp_x, (e // cols) * sp, 0.0] for e in range(N)])   # per-env grid-cell offset
   lo, hi = 0.0, float(max(h["losses"].max() for h in history))
 
   cam = mujoco.MjvCamera()
   mujoco.mjv_defaultFreeCamera(m, cam)
   c = task.cam
-  ymid = (N - 1) * sp / 2.0
-  if c.get("track"):  # locomotion: frame the forward extent + all lanes
+  ymid = (rows - 1) * sp / 2.0
+  xmid = (cols - 1) * sp_x / 2.0
+  if c.get("track"):  # locomotion: frame the forward extent + all lanes (single row; cols left at 1)
     allx = history[best]["qtraj"][:, :, 0]
     cam.lookat = [float(0.5 * (allx.min() + allx.max())), ymid, c.get("z", 0.3)]
     span = max(float(allx.max() - allx.min()), (N - 1) * sp)
     cam.distance = c.get("dist0", 2.0) + c.get("distk", 0.9) * span    # dist0/distk tune the zoom
   else:
-    cam.lookat = [c["lookat"][0], ymid, c["lookat"][2]]
-    cam.distance = c["distance"] + 0.55 * (N - 1) * sp
+    cam.lookat = [c["lookat"][0] + xmid, ymid, c["lookat"][2]]
+    cam.distance = c["distance"] + 0.55 * max((rows - 1) * sp, (cols - 1) * sp_x)
   cam.azimuth = c.get("azimuth", 115.0)
   cam.elevation = c.get("elevation", -16.0)
 
@@ -1170,7 +1280,8 @@ def render(task, history, best, out_path, sample_every=4, live=None):
       q = np.zeros(m.nq)
       for e in range(N):
         q[e * nq_r:(e + 1) * nq_r] = hk["qtraj"][e, t]
-        q[e * nq_r + 1] += e * sp                        # place env e in its y-lane (free-joint qpos is absolute)
+        q[e * nq_r] += off[e, 0]                          # place env e in its grid cell (free-joint qpos is absolute)
+        q[e * nq_r + 1] += off[e, 1]
       cur = [hk["qtraj"][e, : t + 1, 0:3] + off[e] for e in range(N)]
 
       def draw(scene, cur=cur, ccols=ccols):             # each env's loss-colored COM trail in its lane
@@ -1183,26 +1294,11 @@ def render(task, history, best, out_path, sample_every=4, live=None):
   return viz.emit(m, vd, cam, frames, out_path=out_path, label=f"ADJOINT ({task.title or task.name})", w=W, h=H, fps=FPS, live=live)
 
 
-def main():
-  ap = argparse.ArgumentParser(description="Unitree Go1 agile skills -- open-loop BPTT trajectory optimization.")
-  ap.add_argument("--task", choices=list(TASKS), default="crate_climb", help="which agile skill to optimize")
-  ap.add_argument("--envs", type=int, default=4, help="parallel envs (mujoco_warp nworld batching)")
-  ap.add_argument("--steps", type=int, default=None, help="optimization iterations (default: per-task)")
-  ap.add_argument("--lr", type=float, default=None, help="Adam learning rate (default: per-task)")
-  ap.add_argument("--out", default=None, help="output mp4 (default: reports/assets/go1_<task>.mp4; MJW_RENDER_PATH honored)")
-  ap.add_argument("--live", action="store_true", help="open the live MuJoCo viewer instead of writing an mp4")
-  args = ap.parse_args()
-
-  task = TASKS[args.task]
-  steps = args.steps if args.steps is not None else task.steps
-  lr = args.lr if args.lr is not None else task.lr
-  out = args.out or os.environ.get("MJW_RENDER_PATH") or os.path.join(ASSETS, f"go1_{task.name}.mp4")
-  live = True if args.live else None
-  os.makedirs(os.path.dirname(out), exist_ok=True)
-
-  history, best, mjm, params = optimize(task, args.envs, steps, lr)
-  render(task, history, best, out_path=out, live=live)
+def main(argv):
+  del argv  # config comes from the absl-parsed Args
+  demo.run(Go1AgileDemo, demo.parse_args(Args))
 
 
 if __name__ == "__main__":
-  main()
+  demo.define_flags(Args)
+  app.run(main)

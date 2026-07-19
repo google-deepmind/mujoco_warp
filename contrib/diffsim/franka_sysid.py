@@ -1,332 +1,207 @@
-"""Franka Research 3 (FR3) whole-arm INERTIA system identification -- recover every arm link's principal
-moments of inertia via the analytic adjoint of differentiable mujoco_warp.
+"""Franka FR3 link-inertia system-identification -- parallel envs, ANALYTIC adjoint gradient.
 
-One GT ("real") FR3 arm and NUM_ENVS sys-id arms track the SAME joint-space position chirp (PACE-style
-excitation) through a compliant servo -- gravity on, contacts disabled. Each sys-id arm starts with every
-link's inertia physically-consistently wrong; recovering theta drives its open-loop trajectory back onto
-the GT's. Inertia is parameterized the way ../mjlab does it (Rucker & Wensing RA-L 2022): principal moments
-I are realizable iff the mass-covariance eigenvalues sigma_i = (sum(I) - 2*I_i)/2 are positive, so we
-optimize the unconstrained theta = log(sigma) (MODE=full) or a per-link log-scale of the whole tensor
-(MODE=scale, the demo default).
-
-The whole chain is ONE autodiff graph: a Warp kernel maps theta -> body_inertia ON THE TAPE, mjw.step's
-analytic backward writes body_inertia.grad (body_inertia enters the dynamics only through cinert, so its
-adjoint comes from the rne-proper reverse routed through the source-AD cinert leaf:
-adjoint.smooth_param_backward -> smooth_adjoint.inertia_param_vjp), and tape.backward continues straight
-into theta.grad for warp.optim.Adam. No host-side Jacobian composition.
-
-The fit is OPEN-LOOP over the entire chirp: state integrates continuously under the wrong inertia --
-teacher-forced resets destroy the horizon-compounding signal that makes weakly-loaded links observable.
-Only the GRADIENT is truncated (TBPTT, WINDOW-step segments each on its own tape). The FD cross-check at
-startup is a one-time gate: expect cos ~= 1; ratio < 1 is the DELIBERATE truncation bias, not an error.
+OPEN-LOOP trajectory fit: a joint-space position CHIRP (PACE-style) is driven through a COMPLIANT servo
+so link inertia visibly shapes the low-frequency sway; we recover each arm link's principal moments of
+inertia (MODEL parameter m.body_inertia) by matching the recorded trajectory. num_envs envs each start
+from a different (wrong) inertia and recover toward the true values via warp.optim.Adam on the analytic
+d(loss)/d(theta). theta is a reduced leaf (log-scale per link for MODE=scale) mapped to body_inertia by a
+DIFFERENTIABLE kernel recorded on the tape; the gradient is TRUNCATED-BPTT (WINDOW-step segments) with the
+theta grad accumulating across the checkpointed segments (demo.Example harness).
 
   uv run --active --with imageio --with imageio-ffmpeg --with pillow python contrib/diffsim/franka_sysid.py
 """
 
 import os
 import sys
+from dataclasses import dataclass
+from dataclasses import field
 
 import mujoco
 import numpy as np
 import warp as wp
-import warp.optim
+from absl import app
 
 import mujoco_warp as mjw
-mjw.enable_grad()
 
 sys.path.insert(0, os.path.dirname(__file__))
-import inertia_param as ip  # noqa: E402  physically-consistent inertia parameterization (host helpers)
-import viz  # noqa: E402  shared renderer
-
-
-# --- what is identified -------------------------------------------------------------------------------
+import demo  # noqa: E402  shared config + gradients + capture/reuse + optimize loop + main
+import inertia_param as ip  # noqa: E402  principal-moment <-> log-sigma helpers (MODE=full)
+import viz  # noqa: E402  shared renderer (mp4 or live MuJoCo viewer via MJW_VIEWER)
 
 SCENE = "benchmarks/franka_fr3/scene_sysid.xml"  # arm-only FR3 (nq=7), contacts disabled in the XML
 NARM = 7
-NLINK = int(os.environ.get("MJW_NLINK", 6))  # fr3_link1..fr3_link{NLINK}. link7 is a near-massless flange
-# (inertia ~2e-4, 100x smaller than the others) -> dynamically negligible/unidentifiable, excluded.
+NLINK = 6  # fr3_link1..fr3_link6; link7 is a near-massless flange (unidentifiable), excluded
 LINKS = [f"fr3_link{i}" for i in range(1, NLINK + 1)]
-MODE = os.environ.get("MJW_MODE", "scale")
-#  "scale": ONE log-scale per link (I -> s*I). Every link's scale is identifiable, so |I-I_gt| -> 0 exactly,
-#           and a pure-scale error maximizes trajectory divergence per unit of wrongness. The demo default.
-#  "full":  the three principal moments (log mass-covariance eigenvalues). Research-grade, but a serial
-#           arm's proximal moments are only PARTIALLY identifiable (base-parameter degeneracy: link1 only
-#           contributes n^T I n about its fixed axis) -> |I-I_gt| plateaus at that floor, by physics.
-NP = 1 if MODE == "scale" else 3  # params per link
-
-# --- excitation (PACE-style joint-space position chirp) ------------------------------------------------
-
-CHIRP_DURATION = float(os.environ.get("MJW_DUR", 3.0))  # sweep duration [s]
-AMP_SCALE = float(os.environ.get("MJW_AMP", 3.0))  # x base PACE amplitudes at the slow start; the taper
-# shrinks amplitude as the sweep speeds up (constant peak velocity) -> big slow sways, no violent motion
-CHIRP_KWARGS = {
-  "f0": float(os.environ.get("MJW_F0", 0.1)),
-  "f1": float(os.environ.get("MJW_F1", 3.0)),  # the compliant servo puts sqrt(kp/M) inside this band, so
-  # inertia shapes the low-frequency sway -- no fast ringing needed
-  "jnt_amp": list(AMP_SCALE * np.array([0.075, 0.075, 0.075, 0.075, 0.075, 0.075, 0.2])),  # PACE base amps
-  "ramp_up": 0.4,  # scaled to the short sweep (the 2-3 s defaults suit a 10-20 s sweep)
-  "ramp_down": 0.4,
-  "pad_start": 0.1,
-  "pad_end": 0.1,
-  "taper_pivot": float(os.environ.get("MJW_TAPER_PIVOT", 0.7)),  # Hz: full amplitude below, ~1/f above
-  "taper_pow": 1.0,  # 1 = constant peak joint velocity across the sweep
-}
-NEXC = int(os.environ.get("MJW_NEXC", 1))  # excitations fitted jointly (>1 = phase-decorrelated chirps)
-
-# COMPLIANT servo mode for the ID protocol (experimental-setup choice, never the robot's physics): the
-# native FR3 servo (kp=4500) tracks so well that inertia never shapes the trajectory; softening kp makes
-# the M*A*w^2 tracking-error term a VISIBLE fraction of the commanded amplitude at f<=3 Hz. kv keeps the
-# damping ratio moderate (smooth sway, not ringing).
-KP_SCALE = float(os.environ.get("MJW_KP", 0.2))
-KV_SCALE = float(os.environ.get("MJW_KV", 0.02))
-
-# --- fit ------------------------------------------------------------------------------------------------
-
-WINDOW = int(os.environ.get("MJW_WINDOW", 40))  # truncated-BPTT segment length [steps]. Longer = deeper
-# credit assignment per segment, but closer to the chaotic-gradient regime of full-horizon BPTT.
-NUM_ENVS = int(os.environ.get("MJW_NUM_ENVS", 4))
-PERTURB = float(os.environ.get("MJW_PERTURB", 2.3 if MODE == "scale" else 2.0))  # per-link theta magnitude:
-# MODE=scale starts each tensor at e^{+-2.3} (~0.1x..10x) -- wildly wrong but physically valid; a uniform
-# scale moves the servo-tracked dynamics less than an anisotropic error of the same theta-norm.
-DIVERGE_MIN = float(os.environ.get("MJW_DIVERGE_MIN", 0.25))  # rad: minimum free-run max|dq| vs GT an env's
-# initial inertia must produce. Equal theta-distance does NOT mean equal trajectory effect (a draw can land
-# on weakly-observable combos and look identical to GT); below-bar envs get their directions redrawn.
-LR = float(os.environ.get("MJW_LR", 0.03))
-WD = float(os.environ.get("MJW_WD", 0.0 if MODE == "scale" else 2e-3))  # Tikhonov pull toward each env's
-# INITIAL theta. scale: 0 (everything identifiable; an anchor would only bias the answer). full: anchors
-# the structurally-flat directions where the data gradient is ~noise and bare Adam would random-walk.
-STEPS = int(os.environ.get("MJW_STEPS", 160))
-BETAS = (float(os.environ.get("MJW_BETA1", 0.7)), float(os.environ.get("MJW_BETA2", 0.95)))  # SHAC betas
-# (the dm_suite.py recipe): fast-adapting per-parameter moments, no LR schedule needed
-SEED = int(os.environ.get("MJW_SEED", 0))
-
-# --- render ---------------------------------------------------------------------------------------------
-
-RENDER_STRIDE = int(os.environ.get("MJW_RENDER_STRIDE", 2))
-# LAYOUT: one FRONT row of all sys-id arms + the GT reference arm alone in a BACK row, centered. Rows run
-# along the camera's screen-right axis (derived from CAM_AZIMUTH), so env0..env3 read left->right in the
-# same order as the banner numbers, and the GT (farther, so drawn higher on screen at this elevation) is
-# visible between/above the front row.
-ROW_CENTER = np.array([0.35, 0.0])  # world xy midpoint between the two rows (arm BASES; the FR3's visual
-# mass leans ~+0.4m in x, which is why CAM_LOOKAT x sits at 0.75)
-ROW_SPACING = 1.2  # env arm spacing along screen-right [m]
-ROW_SEP = 1.6      # depth between the env row (front) and the GT row (back) [m]
-CAM_LOOKAT = [0.75, 0.0, 0.3]
-# LONG LENS: the camera sits far back with a narrow fovy so the view rays across the 3.6m row are near-
-# parallel (angular spread ~±8° vs ±20° at the old distance 5.0 / fovy 45) -- all four sys-id arms and
-# their ribbons are seen from (nearly) the SAME angle, so identical trajectories LOOK identical per cell.
-# CAM_ORTHO=1 goes fully parallel (exactly identical angles; CAM_FOVY then = vertical half-extent [m]).
-CAM_DISTANCE = 12.0
-CAM_FOVY = 19.0       # deg (perspective) | meters half-height (orthographic)
-CAM_ORTHO = int(os.environ.get("MJW_CAM_ORTHO", 0))
-CAM_AZIMUTH = 110.0   # the friction-demo view family
-CAM_ELEVATION = -28.0
-OUT_MP4 = os.environ.get(
-  "MJW_RENDER_PATH", os.path.join(os.path.dirname(__file__), "reports", "assets", "franka_sysid.mp4")
-)
-HISTORY_NPZ = os.environ.get("MJW_HISTORY_PATH", "/tmp/fr3_history.npz")  # optimize() saves the per-iter
-# theta history here; MJW_RENDER_FROM=<npz> re-renders the video from it WITHOUT re-fitting (~2 min vs
-# ~40 -- iterate on ribbons/camera against the REAL converged history)
+MODE = "scale"  # "scale": one log-scale per link (I -> s*I; the demo default, fully identifiable)
+NP = 1 if MODE == "scale" else 3
+WINDOW = 40  # truncated-BPTT segment length [steps] (= the checkpoint segment)
+PERTURB = 3.0  # per-link initial theta magnitude (e^{+-3.0} ~ 0.05x..20x -- bigger initial inertia error -> more sim-vs-ghost delta)
+DIVERGE_MIN = 0.25  # rad: min free-run max|dq| vs GT an env's init must produce (else redraw)
+WD = 0.0 if MODE == "scale" else 2e-3  # Tikhonov pull toward the initial theta (structurally-flat dirs)
+BETAS = (0.7, 0.95)  # SHAC betas
+SEED = 0
+# CHIRP EXCITATION. LOW-frequency (f 0.15 -> 1.5 Hz), annealed low->high->low, velocity-constant taper
+# (taper_pow=1: amp ~ 1/f -> big slow swings at low freq, small fast at high; peak joint speed ~flat = smooth,
+# no whipping). ramp_up 0.7 s eases the big low-freq swing in (no startup servo yank); the wrist base is tamed to
+# 0.12 (at 2.7x the other joints it whipped ~2x faster and caused a start jitter). Crucially the delta vs the GT
+# ghost is driven NOT by raw frequency (higher f reads as "too fast") but by the SOFT servo (KP_SCALE 0.1) + a
+# big initial inertia error (PERTURB 3.0): a softer compliant servo shifts the inertia-sensitive band DOWN so the
+# wrong-inertia sim arm diverges from the ghost even at LOW freq (~2x the delta, ~0.13-0.16 rad, gentle <1 rad/s).
+CHIRP_DURATION, AMP_SCALE = 5.0, 5.0
+CHIRP_KWARGS = {"f0": 0.15, "f1": 1.5, "jnt_amp": list(AMP_SCALE * np.array([0.075] * 6 + [0.12])),
+                "ramp_up": 0.7, "ramp_down": 0.6, "pad_start": 0.1, "pad_end": 0.1, "taper_pow": 1.0,
+                "anneal": True}
+KP_SCALE, KV_SCALE = 0.1, 0.02  # SOFT compliant servo (inertia shapes the sway; softer -> more sim-vs-ghost delta at low freq)
 W, H, FPS = 1024, 768, 30
-GT_RGBA = np.array([1.0, 0.5, 0.12, 1.0], dtype=np.float32)  # solid orange = GT (true-inertia) reference
-# Env ribbons are colored by the dm_suite-style OPTIMIZATION COLORMAP (viz.bourke_color_map), not by env
-# identity: each env's remaining scale error (log-normalized to its own iter-0 error) sweeps the map
-# blue (wrong) -> cyan -> green -> yellow -> ORANGE (converged). The sweep TERMINATES at the GT orange, so
-# at x1.0 every cell's track turns orange and reads as the GT ribbon -- while mid-run a geometrically
-# merged track that is still cyan/green says "trajectory matches but the params haven't converged yet".
-_BOURKE_ORANGE_V = 0.875  # bourke(0,1,0.875) = (1.0, 0.5, 0.0) ~= GT orange; sweep v = 0.875*(1-u)
+ASSETS = os.path.join(os.path.dirname(__file__), "reports", "assets")
+# render layout / camera (a long-lens near-parallel view so identical trajectories look identical per cell)
+ROW_CENTER, ROW_SPACING, ROW_SEP = np.array([0.35, 0.0]), 1.2, 1.6
+CAM_LOOKAT, CAM_DISTANCE, CAM_FOVY, CAM_AZIMUTH, CAM_ELEVATION = [0.75, 0.0, 0.3], 12.0, 19.0, 110.0, -28.0
+GT_RGBA = np.array([1.0, 0.5, 0.12, 1.0], dtype=np.float32)
+RIBBON_W_ENV, RIBBON_W_REF, RIBBON_W_GT, REF_LIFT = 0.010, 0.006, 0.0085, 0.012
+RENDER_STRIDE = 2
 
 
-def _env_ribbon_rgb(serr_e, serr0_e):
-  """Per-env ribbon color for one shown iteration: u = normalized log scale error (1 at the env's initial
-  wrongness, 0 at x1.0) -> bourke sweep ending exactly on the GT orange."""
-  u = float(np.clip(np.log(max(serr_e, 1.0)) / max(np.log(max(serr0_e, 1.0 + 1e-6)), 1e-9), 0.0, 1.0))
-  if u <= 0.02:
-    return tuple(GT_RGBA[:3])  # snap: converged track IS the GT orange
-  return tuple(viz.bourke_color_map(0.0, 1.0, _BOURKE_ORANGE_V * (1.0 - u)))
-# Ribbon radii [m]. Judge ON THE ENCODED MP4 AT 1:1 IN MOTION -- zoomed still crops overstate visibility,
-# and radii under ~5mm (1-2 px at the camera's ~200 px/m) are destroyed by h264 chroma subsampling. REF
-# stays THINNER than ENV so at convergence the orange tucks fully INSIDE the colored tube and the ribbons
-# read as one merged track; while trajectories differ, the orange reads as a bold second strand.
-TRAIL_STEPS = int(os.environ.get("MJW_TRAIL_STEPS", 0))  # >0: draw only the last N sim steps of each tip
-# trace (comet tail) instead of the full-history path; 0 = full history (the accepted look)
-RIBBON_W_ENV = 0.010  # env tip trace (optimization-colormap color)
-RIBBON_W_REF = 0.006  # GT reference: THINNER than the env tube, drawn with REF_LIFT so it rides as an
-# orange STRIPE on top of the colored ribbon when the tracks merge -- reference and progress-hue both stay
-# visible at every iteration; at x1.0 the stripe blends into the (now orange) env ribbon
-RIBBON_W_GT = 0.0085  # GT arm's own tip trace in its own cell (orange)
-REF_LIFT = 0.012  # [m] the env-cell GT reference is drawn OFFSET ALONG THE CAMERA RAY (toward the eye):
-# zero pixels of on-screen shift (NOT a spatial offset -- merge semantics intact), but it wins the depth
-# test against the coincident env tube, so the orange reads as a stripe ON TOP of the colored ribbon at
-# every iteration (user request: the reference must stay visible even after the trajectories merge).
-
-
-# ========================================================================================================
-# excitation
-# ========================================================================================================
-
+# ---- excitation + inertia parameterization (preserved helpers) ---------------------------------------
 
 def prep_excitation(m):
-  """Configure the sys-id controller mode: the arm's own position actuators, kp/kv scaled to the compliant
-  tracking mode, and the per-joint actuator-force clamp LIFTED (saturating the +-87/+-12 N*m clamps is a
-  non-smooth event that corrupts both the fit landscape and the gradient; lifting it is a controller /
-  experimental choice -- the robot's mass/inertia/geometry are untouched)."""
-  m.actuator_gainprm[:, 0] *= KP_SCALE  # kp (gain on ctrl)
-  m.actuator_biasprm[:, 1] *= KP_SCALE  # -kp (bias on qpos)
-  m.actuator_biasprm[:, 2] *= KV_SCALE  # -kv (velocity-feedback gain)
-  m.jnt_actfrclimited[:] = 0  # lift the per-joint actuator-force clamp (actuatorfrcrange)
+  """Compliant sys-id controller: scale kp/kv, lift the actuator-force clamp (a non-smooth event), and REMOVE
+  GRAVITY (opt.gravity=0). Without this the compliant (low-kp) arm SAGS under gravity at the start -- a shoulder
+  (j1) droop transient that read as an 'initial jump' (gravity-off -> zero droop, confirmed). body_gravcomp=1
+  does NOT work here (MuJoCo 3.10 leaves qfrc_gravcomp=0 at runtime), so we zero gravity instead -- mjw and mjc
+  apply it identically, so the optimize and render agree. Zeroing gravity also ISOLATES the inertia response for
+  the sys-id: gravity torque is a mass/COM effect that only confounds INERTIA identification. The robot's
+  mass/inertia/geometry are untouched -- this is an experimental-setup / controller choice."""
+  m.actuator_gainprm[:, 0] *= KP_SCALE
+  m.actuator_biasprm[:, 1] *= KP_SCALE
+  m.actuator_biasprm[:, 2] *= KV_SCALE
+  m.jnt_actfrclimited[:] = 0
+  m.opt.gravity[:] = 0.0
 
 
-def generate_chirp_trajectory(
-  n_joints, duration, dt, f0, f1, amplitudes, ramp_up=2.0, ramp_down=3.0, pad_start=0.0, pad_end=0.0,
-  taper_pivot=None, taper_pow=1.0,
-):
-  """Joint-space linear chirp for system identification.
-
-  Args:
-      n_joints:   number of joints
-      duration:   total sweep duration [s]
-      dt:         timestep [s]
-      f0, f1:     start / end sweep frequencies [Hz]
-      amplitudes: (n_joints,) per-joint amplitude [rad]
-      ramp_up:    envelope ramp-up time [s]
-      ramp_down:  envelope ramp-down time [s]
-      pad_start:  hold-still time before sweep [s]
-      pad_end:    hold-still time after sweep [s]
-      taper_pivot: optional [Hz] -- amplitude TAPER: full amplitude while the instantaneous frequency is
-                  below the pivot, then scaled by (pivot / f)^taper_pow. taper_pow=1 keeps the peak joint
-                  VELOCITY (A*2pi*f) constant across the sweep -> big slow sways early, small fast wiggle
-                  late, never violent. None = constant amplitude.
-      taper_pow:  taper exponent (1 = constant velocity, 2 = constant acceleration amplitude)
-
-  Returns:
-      q_offsets: (T, n_joints) joint angle offsets from home config
-      t:         (T,) time vector
-  """
+def generate_chirp_trajectory(n_joints, duration, dt, f0, f1, amplitudes, ramp_up=2.0, ramp_down=3.0,
+                              pad_start=0.0, pad_end=0.0, taper_pow=0.0, anneal=False):
+  """Joint-space chirp (PACE sys-id excitation): per-joint sinusoid whose instantaneous frequency sweeps,
+  decoupled by even phase offsets, under a Hann ramp-in/out envelope. `anneal=True` sweeps frequency
+  low->high->low (triangular: f0->f1 over the first half, f1->f0 over the second) instead of monotonic f0->f1,
+  so the high-freq (high-acceleration -> big sim-vs-ghost delta) burst is in the MIDDLE, framed by big slow
+  swings at both ends. `taper_pow`(>0) scales amplitude by (f0/f_inst)**taper_pow: HIGH amp at low freq (big
+  slow swings), small at high freq (small fast oscillations); taper_pow=1 = velocity-constant (flat peak speed,
+  no whipping). Phase is the numerical integral of f_inst so any frequency profile works."""
   T = int(duration / dt)
   t = np.linspace(0, duration, T)
-
-  phase = 2 * np.pi * (f0 * t + (f1 - f0) / (2 * duration) * t**2)
-
+  if anneal:
+    h = T // 2
+    f_inst = np.concatenate([np.linspace(f0, f1, h), np.linspace(f1, f0, T - h)])   # low -> high -> low
+  else:
+    f_inst = f0 + (f1 - f0) * t / duration                                          # monotonic low -> high
+  phase = 2 * np.pi * np.cumsum(f_inst) * dt
   envelope = np.ones(T)
-  n_up = min(int(ramp_up / dt), T // 2)
-  n_dn = min(int(ramp_down / dt), T // 2)
+  n_up, n_dn = min(int(ramp_up / dt), T // 2), min(int(ramp_down / dt), T // 2)
   envelope[:n_up] = 0.5 * (1 - np.cos(np.pi * np.arange(n_up) / n_up))
   envelope[-n_dn:] = 0.5 * (1 - np.cos(np.pi * np.arange(n_dn, 0, -1) / n_dn))
-  if taper_pivot is not None:
-    f_inst = f0 + (f1 - f0) * t / duration  # linear-chirp instantaneous frequency
-    envelope = envelope * (taper_pivot / np.maximum(f_inst, taper_pivot)) ** taper_pow
-
+  if taper_pow > 0.0:
+    envelope = envelope * (f0 / f_inst) ** taper_pow   # amp ~ (f0/f)^p: big@low-freq -> small@high-freq
   phase_offsets = np.linspace(0, 2 * np.pi, n_joints, endpoint=False)
   amplitudes = np.asarray(amplitudes)
-
   q_offsets = np.zeros((T, n_joints))
   for i in range(n_joints):
     q_offsets[:, i] = amplitudes[i] * envelope * np.sin(phase + phase_offsets[i])
-
-  n_pad_start = int(pad_start / dt)
-  n_pad_end = int(pad_end / dt)
-  if n_pad_start > 0 or n_pad_end > 0:
-    q_offsets = np.concatenate(
-      [np.zeros((n_pad_start, n_joints)), q_offsets, np.zeros((n_pad_end, n_joints))]
-    )
-    t = np.arange(len(q_offsets)) * dt
-
-  return q_offsets, t
+  n_ps, n_pe = int(pad_start / dt), int(pad_end / dt)
+  if n_ps or n_pe:
+    q_offsets = np.concatenate([np.zeros((n_ps, n_joints)), q_offsets, np.zeros((n_pe, n_joints))])
+  return q_offsets
 
 
-def chirp_ctrl(home_ctrl, dt, variant=0, **overrides):
-  """Position-target chirp: ctrl (T, NARM) = home + the joint-space chirp offsets. `variant>0` rolls the
-  per-joint phase assignment (a decorrelated pattern for NEXC>1). `overrides` patch CHIRP_KWARGS for
-  one-off probes (e.g. f1=8.0) without mutating the module config."""
-  kw = {**CHIRP_KWARGS, **overrides}
+def chirp_ctrl(home_ctrl, dt, variant=0):
+  kw = dict(CHIRP_KWARGS)
   amps = np.asarray(kw.pop("jnt_amp"), dtype=np.float64)
-  offsets, _t = generate_chirp_trajectory(NARM, CHIRP_DURATION, dt, kw.pop("f0"), kw.pop("f1"), amps, **kw)
+  offsets = generate_chirp_trajectory(NARM, CHIRP_DURATION, dt, kw.pop("f0"), kw.pop("f1"), amps, **kw)
   if variant:
-    offsets = offsets[:, np.roll(np.arange(NARM), 3 * variant)]  # permute joint<->phase pairing
+    offsets = offsets[:, np.roll(np.arange(NARM), 3 * variant)]
   return (home_ctrl[None, :NARM] + offsets).astype(np.float32)
-
-
-# ========================================================================================================
-# inertia parameterization
-# ========================================================================================================
 
 
 @wp.kernel
 def _theta_to_body_inertia(theta: wp.array(dtype=float), np_: int, nlink: int,
                            body_param_idx: wp.array(dtype=int), gt: wp.array(dtype=wp.vec3),
                            out: wp.array2d(dtype=wp.vec3)):
-  """DIFFERENTIABLE reduced-param -> body_inertia map (recorded on the tape). np_==1 (MODE=scale):
-  I = exp(theta)*I_gt (positivity + triangle inequality inherited from I_gt for any theta). np_==3
-  (MODE=full): sigma_i = exp(theta_i), I_i = sigma_j + sigma_k (triangle-safe). Non-identified bodies copy
-  their GT inertia (constant wrt theta). theta is flat (E*nlink*np_,) so warp's 1-D Adam optimizes it."""
-  e, b = wp.tid()  # env, body
+  """DIFFERENTIABLE reduced-param -> body_inertia (recorded on the tape). np_==1: I = exp(theta)*I_gt.
+  np_==3: sigma_i = exp(theta_i), I = (s1+s2, s0+s2, s0+s1). Non-identified bodies copy GT."""
+  e, b = wp.tid()
   li = body_param_idx[b]
   if li >= 0:
     base = e * nlink * np_ + li * np_
     if np_ == 1:
       out[e, b] = wp.exp(theta[base]) * gt[b]
     else:
-      s0 = wp.exp(theta[base + 0])
-      s1 = wp.exp(theta[base + 1])
-      s2 = wp.exp(theta[base + 2])
+      s0, s1, s2 = wp.exp(theta[base + 0]), wp.exp(theta[base + 1]), wp.exp(theta[base + 2])
       out[e, b] = wp.vec3(s1 + s2, s0 + s2, s0 + s1)
   else:
     out[e, b] = gt[b]
 
 
 def link_bids(mjm):
-  """Body ids of the NLINK identified links."""
   return [mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_BODY, name) for name in LINKS]
 
 
 def gt_theta(mjm, bids):
-  """The recovery target: theta_gt (NLINK, NP) and the GT principal moments (NLINK, 3)."""
   pm = np.array([mjm.body_inertia[b].copy() for b in bids])
   if MODE == "scale":
     return np.zeros((len(bids), 1)), pm
-  theta = np.array([ip.principal_to_logsigma(pm[i]) for i in range(len(bids))])
-  return theta, pm
+  return np.array([ip.principal_to_logsigma(pm[i]) for i in range(len(bids))]), pm
 
 
 def theta_to_principal(theta_link, pm_gt_link):
-  """One link's params -> its principal moments (the host mirror of _theta_to_body_inertia)."""
   if MODE == "scale":
     return np.exp(theta_link[0]) * pm_gt_link
   return ip.logsigma_to_principal(theta_link)
 
 
 def _gt_inertia_w(mjm):
-  """GT per-body principal moments as an (nbody,) warp vec3 array (what non-identified bodies copy)."""
   return wp.array(mjw.put_model(mjm).body_inertia.numpy()[0], dtype=wp.vec3)
 
 
 def _body_param_idx(mjm, bids):
-  """(nbody,) int array mapping each body to its param slot (0..NLINK-1) or -1 (not identified)."""
   idx = np.full(mjm.nbody, -1, dtype=np.int32)
   for li, b in enumerate(bids):
     idx[b] = li
   return wp.array(idx, dtype=int)
 
 
+def _mjc_replay(rm, mjd, bids, inertia_links, ctrl, n):
+  """MuJoCo-C forward at the given per-link principal moments -> (qpos (n+1, nq), tip (n+1, 3))."""
+  for li, b in enumerate(bids):
+    rm.body_inertia[b] = inertia_links[li]
+  sid = mujoco.mj_name2id(rm, mujoco.mjtObj.mjOBJ_SITE, "attachment_site")
+  d = mujoco.MjData(rm)
+  d.qpos[:], d.qvel[:] = mjd.qpos, mjd.qvel
+  mujoco.mj_forward(rm, d)
+  qs, tips = [d.qpos.copy()], [d.site_xpos[sid].copy()]
+  for t in range(n):
+    d.ctrl[:] = ctrl[t]
+    mujoco.mj_step(rm, d)
+    mujoco.mj_kinematics(rm, d)
+    qs.append(d.qpos.copy())
+    tips.append(d.site_xpos[sid].copy())
+  return np.array(qs), np.array(tips)
+
+
 def _draw_theta(theta_gt, rng):
-  """One env's perturbation: RANDOM direction per link, per-link magnitude uniform in [0.5, 1.0] x PERTURB
-  (envs open with visibly DIFFERENT wrongness instead of an identical fixed magnitude)."""
   g = rng.normal(size=(NLINK, NP))
   mag = rng.uniform(0.5, 1.0, size=(NLINK, 1)) * PERTURB * np.sqrt(NP)
   g *= mag / np.linalg.norm(g, axis=1, keepdims=True)
   return theta_gt + g
 
 
-def init_theta(theta_gt, pm_gt, rng, mjd, bids, ctrl, gt_qpos):
-  """Per-env initial params (E, NLINK, NP): random-direction perturbations, REDRAWN until each env's
-  free-run trajectory visibly diverges from GT (max|dq| >= DIVERGE_MIN). If no draw clears the bar, keep
-  the most divergent one seen -- the strongest observable direction the stream offered."""
+def init_theta(theta_gt, pm_gt, rng, mjd, bids, ctrl, gt_qpos, num_envs):
+  """Per-env init (E, NLINK, NP): random-direction perturbations, redrawn until each env's free-run
+  visibly diverges from GT (max|dq| >= DIVERGE_MIN)."""
   rm = mujoco.MjModel.from_xml_path(SCENE)
   prep_excitation(rm)
   n = len(ctrl)
-  theta0 = np.empty((NUM_ENVS, NLINK, NP))
-  for e in range(NUM_ENVS):
+  theta0 = np.empty((num_envs, NLINK, NP))
+  for e in range(num_envs):
     best_dq, best_cand = -1.0, None
     for attempt in range(24):
       cand = _draw_theta(theta_gt, rng)
@@ -337,13 +212,7 @@ def init_theta(theta_gt, pm_gt, rng, mjd, bids, ctrl, gt_qpos):
       if dq >= DIVERGE_MIN:
         break
     theta0[e] = best_cand
-    print(f"[fr3] env{e}: init free-run max|dq|={best_dq:.3f} rad  ({attempt + 1} draw{'s' if attempt else ''})")
   return theta0
-
-
-# ========================================================================================================
-# differentiable fit
-# ========================================================================================================
 
 
 @wp.kernel
@@ -354,7 +223,7 @@ def _pose_loss(qpos: wp.array2d[float], tgt: wp.array2d[float], t: int, narm: in
 
 
 def _forward_gt(mjm, mjd, ctrl, n):
-  """GT trajectory: mjw forward at the TRUE (base-model) inertias, single world -> qpos (n+1, nq)."""
+  """GT trajectory: mjw forward at the TRUE inertias, single world -> qpos (n+1, nq)."""
   m = mjw.put_model(mjm)
   d_in, d_out = mjw.put_data(mjm, mjd, nworld=1), mjw.put_data(mjm, mjd, nworld=1)
   qs = [d_in.qpos.numpy()[0].copy()]
@@ -366,342 +235,270 @@ def _forward_gt(mjm, mjd, ctrl, n):
   return np.array(qs)
 
 
-def run(mjm, mjd, body_pidx, theta_w, gt_w, ctrls, tgts_qpos, n, want_grad=True):
-  """OPEN-LOOP trajectory fit with truncated BPTT, batched (nworld=E) over all excitations. Per excitation
-  the state integrates CONTINUOUSLY from home through the entire chirp under the env's wrong inertia (no
-  state resets); the loss sums the tracking error vs GT over every step. The GRADIENT is truncated: the
-  rollout is recorded as n/WINDOW consecutive segments, each on its own tape; a segment back-propagates its
-  own loss to theta (through the param kernel re-recorded on that tape) with the segment's INCOMING state
-  detached (the wp.copy handoff happens outside any tape). Per-segment theta grads accumulate host-side
-  into theta_w.grad. Returns per_env_loss (E,), summed over excitations."""
-  E = theta_w.shape[0] // (NLINK * NP)
-  R = len(ctrls)
-  m = mjw.put_model(mjm)
-  nbody = m.nbody
-  assert n % WINDOW == 0, f"NF={n} must be a multiple of WINDOW={WINDOW}"
-  nseg = n // WINDOW
-  body_inertia = wp.zeros((E, nbody), dtype=wp.vec3, requires_grad=want_grad)
-  tgt_ws = [wp.array(tgts_qpos[r].astype(np.float32), dtype=float) for r in range(R)]
-  # ONE reusable segment chain (WINDOW+1 states): segment s's end state is copied (DETACHED) into slot 0
-  d_home = mjw.put_data(mjm, mjd, nworld=E)  # pristine home state (each excitation restarts from it)
-  datas = [mjw.put_data(mjm, mjd, nworld=E) for _ in range(WINDOW + 1)]
-  for d in datas:
-    d.qpos.requires_grad = True
-    d.qvel.requires_grad = True
-  ctrl_ws = [[wp.array(np.tile(ctrls[r][t], (E, 1)).astype(np.float32), dtype=float) for t in range(n)] for r in range(R)]
-  loss_seg = wp.zeros(1, dtype=float, requires_grad=True)
-  g_acc = np.zeros(theta_w.shape[0], dtype=np.float64) if want_grad else None
-  per_env_loss = np.zeros(E)
-  for r in range(R):
-    wp.copy(datas[0].qpos, d_home.qpos)  # open-loop restart at home for this excitation (outside any tape)
-    wp.copy(datas[0].qvel, d_home.qvel)
-    for s in range(nseg):
-      if want_grad:  # fresh adjoint state per segment tape (stale .grad values would pollute the reverse)
-        theta_w.grad.zero_()
-        body_inertia.grad.zero_()
-        loss_seg.grad.zero_()
-        for d in datas:
-          d.qpos.grad.zero_()
-          d.qvel.grad.zero_()
-      loss_seg.zero_()
-      tape = wp.Tape()
-      with tape:
-        wp.launch(_theta_to_body_inertia, dim=(E, nbody), inputs=[theta_w, NP, NLINK, body_pidx, gt_w],
-                  outputs=[body_inertia])
-        m.body_inertia = body_inertia  # on THIS tape -> its adjoint chains body_inertia.grad into theta.grad
-        for j in range(WINDOW):
-          t = s * WINDOW + j  # global step index within this excitation
-          datas[j].ctrl = ctrl_ws[r][t]
-          mjw.step(m, datas[j], datas[j + 1])
-          wp.launch(_pose_loss, dim=(E, NARM), inputs=[datas[j + 1].qpos, tgt_ws[r], t + 1, NARM],
-                    outputs=[loss_seg])
-      sim = np.array([datas[j].qpos.numpy() for j in range(1, WINDOW + 1)]).transpose(1, 0, 2)  # (E,W,nq)
-      ref = tgts_qpos[r][s * WINDOW + 1 : (s + 1) * WINDOW + 1, :NARM][None]
-      per_env_loss += ((sim[:, :, :NARM] - ref) ** 2).sum(axis=(1, 2))
-      if want_grad:
-        tape.backward(loss=loss_seg)
-        g_acc += theta_w.grad.numpy().astype(np.float64)  # accumulate this segment's truncated grad
-      # DETACHED handoff: the next segment continues from this end state, outside any tape
-      wp.copy(datas[0].qpos, datas[WINDOW].qpos)
-      wp.copy(datas[0].qvel, datas[WINDOW].qvel)
-  if want_grad:
-    theta_w.grad = wp.array(g_acc.astype(np.float32), dtype=float)
-  return per_env_loss
-
-
 def _per_link_err(theta_np, theta_gt, pm_gt):
-  """Per-link ||I - I_gt|| -> (NLINK,) principal-moment error vector."""
   return np.array([np.linalg.norm(theta_to_principal(theta_np[i], pm_gt[i]) - theta_to_principal(theta_gt[i], pm_gt[i]))
                    for i in range(NLINK)])
 
 
-def optimize(mjm, mjd, body_pidx, theta0, theta_gt, pm_gt, gt_w, ctrls, tgts_qpos, n, steps=STEPS, lr=LR):
-  """warp.optim.Adam recovery of the per-env params, optimized DIRECTLY (theta.grad comes from the tape).
-  Params are flat (E*NLINK*NP,) for warp's 1-D Adam kernel. Returns (history, best-iteration index);
-  history[k]["theta"] is the pre-step theta at iteration k."""
-  E = len(theta0)
-  norm = np.sqrt(len(ctrls) * n * NARM)
-  theta0_flat = theta0.reshape(-1).astype(np.float64)
-  theta_w = wp.array(theta0.reshape(-1).astype(np.float32), dtype=float, requires_grad=True)
-  opt = warp.optim.Adam([theta_w], lr=lr, betas=BETAS)
-  history = []
-  for it in range(steps):
-    theta = theta_w.numpy().reshape(E, NLINK, NP).copy()
-    per_env_loss = run(mjm, mjd, body_pidx, theta_w, gt_w, ctrls, tgts_qpos, n)
-    terr = np.array([_per_link_err(theta[e], theta_gt, pm_gt).sum() for e in range(E)])  # total over links
-    # per-env SCALE error (geometric mean over links of the per-link scale-factor error): x1.0 = perfect
-    serr = np.exp(np.abs(theta - theta_gt[None]).mean(axis=(1, 2)))
-    history.append({"it": it, "theta": theta.copy(), "rmse": np.sqrt(per_env_loss) / norm, "terr": terr,
-                    "serr": serr})
-    if it % 16 == 0 or it == steps - 1:
-      print(f"  [{it:3d}] RMSE={np.array2string(np.sqrt(per_env_loss)/norm, precision=4)}  "
-            f"total|dI|={np.array2string(terr, precision=3)}  scale x{np.array2string(serr, precision=2)}")
-    # Tikhonov toward the initial guess: anchors the structurally-unidentifiable directions (see WD)
-    g = theta_w.grad.numpy().astype(np.float64) + WD * (theta.reshape(-1) - theta0_flat)
-    theta_w.grad = wp.array(g.astype(np.float32), dtype=float)
-    opt.step([theta_w.grad])
-  best = int(np.argmin([h["rmse"].mean() for h in history]))
-  np.savez(HISTORY_NPZ, best=best, **{k: np.array([h[k] for h in history]) for k in ("it", "theta", "rmse", "terr", "serr")})
-  print(f"[fr3] saved optimization history -> {HISTORY_NPZ}  (re-render: MJW_RENDER_FROM={HISTORY_NPZ})")
-  hb = history[best]
-  per_link0 = np.mean([_per_link_err(history[0]["theta"][e], theta_gt, pm_gt) for e in range(E)], axis=0)
-  per_linkB = np.mean([_per_link_err(hb["theta"][e], theta_gt, pm_gt) for e in range(E)], axis=0)
-  print(f"[fr3 inertia sysid] {E} envs, {NLINK} links ({LINKS[0]}..{LINKS[-1]}): recovered principal moments")
-  print(f"  total |I-I_gt| per env  {np.array2string(history[0]['terr'],precision=3)} -> {np.array2string(hb['terr'],precision=4)}")
-  print(f"  mean per-link |I-I_gt|  {np.array2string(per_link0,precision=4)}\n"
-        f"                       -> {np.array2string(per_linkB,precision=5)}")
-  print(f"  track RMSE {history[0]['rmse'].mean():.4f} -> {hb['rmse'].mean():.4f}")
-  return history, best
+@dataclass
+class Args(demo.CommonArgs):
+  """fr3 inertia sys-id config: CommonArgs + the fit defaults (num_envs/steps/lr; chunk = WINDOW)."""
+
+  num_envs: int = field(default=32, metadata={"help": "parallel envs, each a DIFFERENT init inertia -> distinct trajectories tiled across the field"})
+  steps: int = field(default=160, metadata={"help": "Adam steps"})
+  lr: float = field(default=0.03, metadata={"help": "Adam learning rate"})
+  usd_stride: int = field(default=4, metadata={"help": "USD field: subsample (dt=0.005 -> stride 4 = 1x@50fps)"})
+  usd_iters: int = field(default=5, metadata={"help": "USD field: optimization iterations sampled"})
+  # dense hero field for the immersed render (render_blender.hero_cam): 17x17 arms at 1.6m spacing so the
+  # pushed-in camera shows a big foreground hero arm + a field cropping off the frame edges.
+  usd_envs: int = field(default=289, metadata={"help": "USD field: instanced lanes (17x17 dense field)"})
+  usd_cols: int = field(default=17, metadata={"help": "USD field: grid columns"})
+  usd_xpitch: float = field(default=1.6, metadata={"help": "USD field: column pitch (x) = arm spacing"})
+  usd_ypitch: float = field(default=1.6, metadata={"help": "USD field: row pitch (y)"})
 
 
-def fd_check(mjm, mjd, body_pidx, theta0, gt_w, ctrls, gts_qpos, nf):
-  """One-time analytic-vs-FD gate on dL/dtheta at the init points. Returns (per_env_loss, cos, ratio).
-  Expect cos ~= 1 (direction exact); ratio < 1 is the DELIBERATE truncation bias of TBPTT, not an error."""
-  P = NLINK * NP
-  theta_w = wp.array(theta0.reshape(-1).astype(np.float32), dtype=float, requires_grad=True)
-  per_env_loss = run(mjm, mjd, body_pidx, theta_w, gt_w, ctrls, gts_qpos, nf)
-  dtheta = theta_w.grad.numpy().reshape(NUM_ENVS, P)
-  theta0_flat = theta0.reshape(NUM_ENVS, P)
-  eps = 5e-3
-  fd = np.zeros((NUM_ENVS, P))
-  for k in range(P):
-    for sgn in (+1, -1):
-      tp = theta0_flat.copy()
-      tp[:, k] += sgn * eps
-      tw = wp.array(tp.reshape(-1).astype(np.float32), dtype=float)
-      lp = run(mjm, mjd, body_pidx, tw, gt_w, ctrls, gts_qpos, nf, want_grad=False)
-      fd[:, k] += sgn * lp / (2 * eps)
-  cos = np.array([float(dtheta[e] @ fd[e] / (np.linalg.norm(dtheta[e]) * np.linalg.norm(fd[e]) + 1e-30))
-                  for e in range(NUM_ENVS)])
-  ratio = np.array([np.linalg.norm(dtheta[e]) / (np.linalg.norm(fd[e]) + 1e-30) for e in range(NUM_ENVS)])
-  return per_env_loss, cos, ratio
+class FrankaSysidDemo(demo.Example):
+  """FR3 link-inertia sys-id: optimize the reduced leaf theta (Adam) mapped to m.body_inertia by an
+  ON-TAPE kernel (so theta.grad accumulates across the truncated-BPTT segments). Time-dependent per-step
+  tracking loss vs the GT chirp trajectory; the excitation ctrl is a fixed per-step schedule."""
+
+  Args = Args
+  capturable = False  # fixed per-step chirp ctrl + host step index -> eager checkpointed path
+  truncated = True    # truncated BPTT: detach the state adjoint every WINDOW steps
+
+  def optimize(self):
+    return self.optimize_adam(betas=BETAS)
+
+  # ---- harness hooks ----
+
+  def build_model(self):
+    if not os.path.exists(SCENE):
+      raise SystemExit(f"run from the mujoco_warp repo root (missing {SCENE})")
+    self.args.chunk = WINDOW  # the checkpoint segment = one TBPTT window
+    self.mjm = mujoco.MjModel.from_xml_path(SCENE)
+    prep_excitation(self.mjm)
+    self.mjm.vis.global_.offwidth, self.mjm.vis.global_.offheight = W, H
+    self.mjd = mujoco.MjData(self.mjm)
+    mujoco.mj_resetDataKeyframe(self.mjm, self.mjd, 0)
+    mujoco.mj_forward(self.mjm, self.mjd)
+    self.bids = link_bids(self.mjm)
+    self.theta_gt, self.pm_gt = gt_theta(self.mjm, self.bids)  # (NLINK, NP), (NLINK, 3)
+    home = self.mjm.key_ctrl[0].copy() if self.mjm.nkey else np.zeros(self.mjm.nu)
+    ctrl = chirp_ctrl(home, self.mjm.opt.timestep)
+    self.nf = (len(ctrl) // WINDOW) * WINDOW  # trim to a TBPTT-window multiple
+    self.ctrl = ctrl[: self.nf]
+    self.gt_qpos = _forward_gt(self.mjm, self.mjd, self.ctrl, self.nf)  # GT target trajectory (nf+1, nq)
+    self.rng = np.random.default_rng(SEED)
+
+  def init_params(self):
+    theta0 = init_theta(self.theta_gt, self.pm_gt, self.rng, self.mjd, self.bids, self.ctrl, self.gt_qpos, self.args.num_envs)
+    self.theta0_flat = theta0.reshape(-1).astype(np.float64)  # Tikhonov anchor
+    return theta0  # (E, NLINK, NP)
+
+  def build_datas(self):
+    ne, nu = self.args.num_envs, self.mjm.nu
+    self.nT = self.nf  # checkpointed BPTT length (chunk = WINDOW segment buffers)
+    self.nbody = self.mjm.nbody
+    self.datas = [mjw.put_data(self.mjm, self.mjd, nworld=ne) for _ in range(self.args.chunk + 1)]
+    for d in self.datas:
+      d.qpos.requires_grad = True
+      d.qvel.requires_grad = True
+      d.ctrl.requires_grad = True  # bind_ctrl scatters the fixed chirp ctrl into this stable buffer
+    self.datas[0].qpos = wp.array(np.tile(self.mjd.qpos, (ne, 1)).astype(np.float32), dtype=float, requires_grad=True)
+    self.datas[0].qvel = wp.array(np.tile(self.mjd.qvel, (ne, 1)).astype(np.float32), dtype=float, requires_grad=True)
+    self.param = wp.array(self.params.reshape(-1).astype(np.float32), dtype=float, requires_grad=True)  # theta (Adam leaf)
+    self.accum_leaf = self.param  # theta grad accumulates across segments (reduction is ON the chunk tape)
+    self.body_inertia = wp.zeros((ne, self.nbody), dtype=wp.vec3, requires_grad=True)  # reused intermediate
+    self.gt_w = _gt_inertia_w(self.mjm)
+    self.body_pidx = _body_param_idx(self.mjm, self.bids)
+    self.tgt_wp = wp.array(self.gt_qpos.astype(np.float32), dtype=float)  # GT target (indexed by step)
+    self.ctrl_flat = [wp.array(np.tile(self.ctrl[t], (ne, 1)).reshape(-1).astype(np.float32), dtype=float)
+                      for t in range(self.nf)]  # flat (E*nu,) fixed chirp ctrl per step
+    self.loss = wp.zeros(1, dtype=float, requires_grad=True)
+    self._viz = [mjw.put_data(self.mjm, self.mjd, nworld=ne) for _ in range(2)]
+
+  def set_params(self):
+    pass  # theta -> body_inertia happens in chunk_prologue (ON the tape); datas[0] is the fixed home state
+
+  def chunk_prologue(self):
+    # DIFFERENTIABLE reduction re-recorded every chunk so its adjoint accumulates theta.grad
+    wp.launch(_theta_to_body_inertia, dim=(self.args.num_envs, self.nbody),
+              inputs=[self.param, NP, NLINK, self.body_pidx, self.gt_w], outputs=[self.body_inertia])
+    self.m.body_inertia = self.body_inertia  # on THIS tape -> body_inertia.grad chains into theta.grad
+
+  def chunk_step(self, i, t):
+    self.bind_ctrl(i, self.ctrl_flat[t])  # scatter the fixed chirp ctrl (rebind is invisible under bc)
+    mjw.step(self.m, self.datas[i], self.datas[i + 1])
+    wp.launch(_pose_loss, dim=(self.args.num_envs, NARM), inputs=[self.datas[i + 1].qpos, self.tgt_wp, t + 1, NARM],
+              outputs=[self.loss])
+
+  def read_grad(self):
+    return self.accum_grad + WD * (self.param.numpy().astype(np.float64) - self.theta0_flat)  # theta grad + Tikhonov
+
+  def sim_qpos(self):
+    """Full per-step trajectory (E, nf+1, nq) via a fresh forward-only rollout at the current theta."""
+    ne, nu = self.args.num_envs, self.mjm.nu
+    wp.launch(_theta_to_body_inertia, dim=(ne, self.nbody), inputs=[self.param, NP, NLINK, self.body_pidx, self.gt_w],
+              outputs=[self.body_inertia])
+    self.m.body_inertia = self.body_inertia
+    a, b = self._viz
+    a.qpos = wp.array(np.tile(self.mjd.qpos, (ne, 1)).astype(np.float32), dtype=float)
+    a.qvel = wp.array(np.tile(self.mjd.qvel, (ne, 1)).astype(np.float32), dtype=float)
+    qs = [np.tile(self.mjd.qpos, (ne, 1)).astype(np.float32)]
+    for t in range(self.nf):
+      wp.launch(demo._scatter_ctrl, dim=(ne, nu), inputs=[self.ctrl_flat[t], nu], outputs=[a.ctrl])
+      mjw.step(self.m, a, b)
+      qs.append(b.qpos.numpy().copy())  # b = post-step state
+      a, b = b, a
+    return np.array(qs).transpose(1, 0, 2)  # (E, nf+1, nq)
+
+  def record(self, it, loss, qpos, pnp, g):
+    E = self.args.num_envs
+    theta = pnp.reshape(E, NLINK, NP)
+    norm = np.sqrt(self.nf * NARM)
+    per_env = ((qpos[:, 1:, :NARM] - self.gt_qpos[1:self.nf + 1, :NARM][None]) ** 2).sum(axis=(1, 2))
+    terr = np.array([_per_link_err(theta[e], self.theta_gt, self.pm_gt).sum() for e in range(E)])
+    serr = np.exp(np.abs(theta - self.theta_gt[None]).mean(axis=(1, 2)))  # per-env geometric scale error
+    return {"it": it, "loss": loss, "theta": theta.copy(), "rmse": np.sqrt(per_env) / norm, "terr": terr, "serr": serr}
+
+  def progress(self, rec, g):
+    return (f"  [{rec['it']:3d}] RMSE={np.array2string(rec['rmse'], precision=4)}  "
+            f"total|dI|={np.array2string(rec['terr'], precision=3)}  scale x{np.array2string(rec['serr'], precision=2)}")
+
+  def summary(self, history, best):
+    hb = history[best]
+    return (f"[fr3 inertia sysid / {self.args.grad}] {self.args.num_envs} envs, {NLINK} links: "
+            f"total |I-I_gt| {np.array2string(history[0]['terr'], precision=3)} -> "
+            f"{np.array2string(hb['terr'], precision=4)}; RMSE {history[0]['rmse'].mean():.4f} -> {hb['rmse'].mean():.4f}")
+
+  def default_out(self):
+    return os.path.join(ASSETS, "franka_sysid.mp4")
+
+  # ---- render: front row of sys-id arms + a back-row GT reference; tip-trace ribbons ----
+
+  def _row_axes(self):
+    a = np.radians(CAM_AZIMUTH)
+    f = np.array([np.cos(a), np.sin(a)])
+    return np.array([f[1], -f[0]]), f
+
+  def _add_robot(self, scene, rm, d, qpos, opt, pert, offset, rgba=None):
+    d.qpos[:] = qpos
+    mujoco.mj_forward(rm, d)
+    n0 = scene.ngeom
+    cat = int(mujoco.mjtCatBit.mjCAT_STATIC) | int(mujoco.mjtCatBit.mjCAT_DYNAMIC)
+    mujoco.mjv_addGeoms(rm, d, opt, pert, cat, scene)
+    for k in range(n0, scene.ngeom):
+      if scene.geoms[k].type == int(mujoco.mjtGeom.mjGEOM_PLANE):
+        scene.geoms[k].rgba[3] = 0.0
+        continue
+      scene.geoms[k].pos[0] += offset[0]
+      scene.geoms[k].pos[1] += offset[1]
+      if rgba is not None:
+        scene.geoms[k].rgba = rgba
+
+  def export_usd(self, history, best):
+    """--export_usd hook: replay THIS inertia sys-id's convergence across an instanced Franka FIELD for the
+    Blender render (franka_sysid_render_blender.py). Samples a spread of iterations; for each, re-runs the
+    fixed chirp excitation in MuJoCo-C at that iteration's per-link inertia (env 0, recovering toward the
+    true x1.0), subsamples + holds the settled end, tracking frame->iteration. The arm is fixed-base (no
+    floor needed); the proto is fr3.xml stripped to named visual geoms."""
+    a = self.args
+    out_dir = os.path.join(ASSETS, "franka_sysid_render")
+    ks = sorted(set(np.linspace(0, len(history) - 1, a.usd_iters).astype(int).tolist()))
+    rm = mujoco.MjModel.from_xml_path(SCENE)
+    prep_excitation(rm)
+    pm_gt = np.array([rm.body_inertia[b].copy() for b in self.bids])  # GT principal moments per link
+    rn = self.nf
+    gt_qp, _ = _mjc_replay(rm, self.mjd, self.bids, list(pm_gt), self.ctrl, rn)  # GT trajectory -> the ghost (shared)
+    idx = list(range(0, rn + 1, a.usd_stride))
+    frame_iters = [int(k) for k in ks for _ in range(len(idx) + a.usd_hold)]  # same schedule across every env
+    ne = self.args.num_envs
+    env_frames = []  # a DISTINCT trajectory per env (each recovers its OWN wrong inertia) -> diverse tiled field
+    for e in range(ne):
+      fr = []
+      for k in ks:
+        inertia = [theta_to_principal(history[k]["theta"][e][li], pm_gt[li]) for li in range(NLINK)]
+        sim_qp, _ = _mjc_replay(rm, self.mjd, self.bids, inertia, self.ctrl, rn)  # (rn+1, 7) at env e's iter-k inertia
+        for t in idx:
+          fr.append(np.concatenate([sim_qp[t], gt_qp[t]]))  # [sim(7) | gt(7)] overlaid (sim morphs to the ghost)
+        fr += [np.concatenate([sim_qp[-1], gt_qp[-1]])] * a.usd_hold
+      env_frames.append([np.asarray(f, np.float64) for f in fr])
+    proto = self.multi_proto(os.path.join(os.path.dirname(SCENE), "fr3.xml"),
+                             [("sim_", (0.0, 0.0, 0.0)), ("gt_", (0.0, 0.0, 0.0))])  # sim + GT ghost overlaid (like g1)
+    assert proto.nq == env_frames[0][0].shape[0], (proto.nq, env_frames[0][0].shape[0])
+    offsets = self._usd_grid_offsets(a.usd_envs, a.usd_cols, a.usd_xpitch, a.usd_ypitch)
+    fps = max(1, round(1.0 / (rm.opt.timestep * a.usd_stride)))  # 1x real-time (chirp is 1 step/frame)
+    out = self.export_field(proto, None, offsets, out_dir, name="franka_sysid_traj", fps=fps,
+                            frame_iters=frame_iters, opt_label="link inertia scale", env_frames=env_frames)
+    serrs = [round(float(history[ks[-1]]["serr"][e]), 1) for e in range(min(ne, 8))]
+    print(f"[export] franka inertia sysid: {ne} DISTINCT envs, iters {ks}; final serr(first8) {serrs} "
+          f"(true 1.0); sim+ghost overlay; NF={len(env_frames[0])} -> {out}")
+
+  def render(self, history, best, out):
+    vm = mujoco.MjModel.from_xml_path(SCENE)
+    prep_excitation(vm)
+    vm.vis.global_.offwidth, vm.vis.global_.offheight = W, H
+    vm.vis.global_.fovy = CAM_FOVY
+    vm.stat.extent, vm.stat.center = 3.5, np.array([0.1, 0.0, 0.4])
+    root = mujoco.mj_name2id(vm, mujoco.mjtObj.mjOBJ_BODY, "base")
+    if root >= 0:
+      vm.body_pos[root] = [0.0, 0.0, -50.0]  # hide the model's own arm; every arm is an added, offset geom
+    rm = mujoco.MjModel.from_xml_path(SCENE)
+    prep_excitation(rm)
+    vd, gd = mujoco.MjData(vm), mujoco.MjData(rm)
+    opt, pert = mujoco.MjvOption(), mujoco.MjvPerturb()
+    E = history[0]["theta"].shape[0]
+    r_ax, f_ax = self._row_axes()
+    offs = [ROW_CENTER + (e - (E - 1) / 2) * ROW_SPACING * r_ax - 0.5 * ROW_SEP * f_ax for e in range(E)]
+    gt_off = ROW_CENTER + 0.5 * ROW_SEP * f_ax
+    rn = self.nf
+    cam = mujoco.MjvCamera()
+    mujoco.mjv_defaultFreeCamera(vm, cam)
+    cam.lookat, cam.distance, cam.azimuth, cam.elevation = list(CAM_LOOKAT), CAM_DISTANCE, CAM_AZIMUTH, CAM_ELEVATION
+    el, az = np.radians(CAM_ELEVATION), np.radians(CAM_AZIMUTH)
+    ref_lift = -REF_LIFT * np.array([np.cos(el) * np.cos(az), np.cos(el) * np.sin(az), np.sin(el)])
+    parked = self.mjd.qpos.copy()
+    pm_gt = np.array([rm.body_inertia[b].copy() for b in self.bids])
+    _, gt_tip = _mjc_replay(rm, self.mjd, self.bids, list(pm_gt), self.ctrl, rn)
+    serr0 = np.asarray(history[0]["serr"], dtype=np.float64)
+    show = sorted(set([k for k in [0, max(1, best // 4), max(2, best // 2), 3 * best // 4] if k < best] + [best]))
+    frames = []
+    for k in show:
+      h = history[k]
+      s_s = "[" + ",".join(f"{v:.2f}" for v in h["serr"]) + "]"
+      sub = f"iter {h['it']:3d}   inertia x{s_s}   (true x1.0)"
+      env_rgb = [tuple(GT_RGBA[:3]) if float(h["serr"][e]) <= 1.02 else
+                 tuple(viz.bourke_color_map(0.0, 1.0, 0.875 * (1.0 - float(np.clip(np.log(max(h["serr"][e], 1.0)) /
+                 max(np.log(max(serr0[e], 1.0 + 1e-6)), 1e-9), 0.0, 1.0))))) for e in range(E)]
+      replays = [_mjc_replay(rm, self.mjd, self.bids, [theta_to_principal(h["theta"][e][li], pm_gt[li]) for li in range(NLINK)],
+                             self.ctrl, rn) for e in range(E)]
+      env_q, env_tip = [r[0] for r in replays], [r[1] for r in replays]
+      hold = 20 if k == best else 0
+      for t in list(range(0, rn + 1, RENDER_STRIDE)) + [rn] * hold:
+        sim_poses = [(env_q[e][t], offs[e]) for e in range(E)]
+        ghost_q = self.gt_qpos[t]
+        trail = slice(0, t + 1, 2)
+
+        def draw(scene, sim_poses=sim_poses, ghost_q=ghost_q, trail=trail, env_tip=env_tip, gt_tip=gt_tip, env_rgb=env_rgb):
+          for e, (sim_q, off) in enumerate(sim_poses):
+            self._add_robot(scene, rm, gd, sim_q, opt, pert, off)
+            off3 = np.array([off[0], off[1], 0.0])
+            viz.add_polyline(scene, env_tip[e][trail] + off3, env_rgb[e], width=RIBBON_W_ENV)
+            viz.add_polyline(scene, gt_tip[trail] + off3 + ref_lift, GT_RGBA[:3], width=RIBBON_W_REF)
+          self._add_robot(scene, rm, gd, ghost_q, opt, pert, gt_off, GT_RGBA)
+          viz.add_polyline(scene, gt_tip[trail] + np.array([gt_off[0], gt_off[1], 0.0]), GT_RGBA[:3], width=RIBBON_W_GT)
+
+        frames.append((parked, draw, f"{sub}   [t={t}/{rn}]"))
+    if frames:
+      frames += [frames[-1]] * 20
+    return viz.emit(vm, vd, cam, frames, out_path=out, label="ADJOINT (Franka inertia)", w=W, h=H, fps=FPS)
 
 
-# ========================================================================================================
-# render: 2x2 grid of sys-id arms (native FR3 look) + ONE separate GT reference arm (solid orange).
-# Per-cell comparison = tip-trace ribbons at their TRUE positions: the env's trace (thick, colored) + the
-# GT reference (thinner, orange). Wrong inertia -> two separated strands; at x1.0 the colored strand lands
-# exactly on the GT path and the ribbons MERGE into one track (the orange tucks inside the colored tube).
-# ========================================================================================================
-
-
-def _row_axes():
-  """Camera-aligned unit vectors in world xy: (screen-right, camera-forward) for CAM_AZIMUTH."""
-  a = np.radians(CAM_AZIMUTH)
-  f = np.array([np.cos(a), np.sin(a)])  # camera forward: points AWAY from the camera
-  return np.array([f[1], -f[0]]), f     # screen-right = forward x up
-
-def _grid_offsets(e, n=NUM_ENVS):
-  """Env arm e's world-xy offset: the front row, ordered left->right on screen."""
-  r, f = _row_axes()
-  return ROW_CENTER + (e - (n - 1) / 2) * ROW_SPACING * r - 0.5 * ROW_SEP * f
-
-def _gt_offset():
-  """The GT reference arm: alone in the back row, centered."""
-  _, f = _row_axes()
-  return ROW_CENTER + 0.5 * ROW_SEP * f
-
-
-def _add_robot(scene, vm, d, qpos, opt, pert, offset, rgba=None):
-  """Append the arm's geoms at `qpos`, TRANSLATED by `offset` into the env's grid cell, hide the floor.
-  rgba=None keeps the asset's NATIVE materials (the FR3 look); a color (the GT arm's orange) recolors."""
-  d.qpos[:] = qpos
-  mujoco.mj_forward(vm, d)
-  n0 = scene.ngeom
-  cat = int(mujoco.mjtCatBit.mjCAT_STATIC) | int(mujoco.mjtCatBit.mjCAT_DYNAMIC)
-  mujoco.mjv_addGeoms(vm, d, opt, pert, cat, scene)
-  for i in range(n0, scene.ngeom):
-    if scene.geoms[i].type == int(mujoco.mjtGeom.mjGEOM_PLANE):
-      scene.geoms[i].rgba[3] = 0.0
-      continue
-    scene.geoms[i].pos[0] += offset[0]
-    scene.geoms[i].pos[1] += offset[1]
-    if rgba is not None:
-      scene.geoms[i].rgba = rgba
-
-
-def _mjc_replay(rm, mjd, bids, inertia_links, ctrl, n):
-  """MuJoCo-C forward at the given per-link principal moments (set on rm in place; orientations stay GT)
-  under the position-chirp targets -> (qpos (n+1, nq), tip (n+1, 3)), tip = attachment_site world path."""
-  for li, b in enumerate(bids):
-    rm.body_inertia[b] = inertia_links[li]
-  sid = mujoco.mj_name2id(rm, mujoco.mjtObj.mjOBJ_SITE, "attachment_site")
-  d = mujoco.MjData(rm)
-  d.qpos[:], d.qvel[:] = mjd.qpos, mjd.qvel
-  mujoco.mj_forward(rm, d)
-  qs = [d.qpos.copy()]
-  tips = [d.site_xpos[sid].copy()]
-  for t in range(n):
-    d.ctrl[:] = ctrl[t]
-    mujoco.mj_step(rm, d)
-    mujoco.mj_kinematics(rm, d)  # mj_step leaves site_xpos at the PRE-integration state; refresh so the
-    qs.append(d.qpos.copy())     # trace ends AT the flange (the lag is up to ~17mm at tip speed)
-    tips.append(d.site_xpos[sid].copy())
-  return np.array(qs), np.array(tips)
-
-
-def _banner(h):
-  """Per-iteration banner subtext (the friction-demo-style multiplier readout: x1.0 = perfect sys-id)."""
-  if MODE == "scale" and "serr" in h:
-    s_s = "[" + ",".join(f"{v:.2f}" for v in h["serr"]) + "]"
-    return f"iter {h['it']:3d}   inertia x{s_s}   (true x1.0)"
-  terr_s = "[" + ",".join(f"{v:.3f}" for v in h["terr"]) + "]"  # fixed-point keeps the banner in frame
-  return f"iter {h['it']:3d}   total |I-I_gt| {terr_s}   (true 0)"
-
-
-def render(mjm, mjd, bids, ctrl_full, gt_qpos, history, best, out_path=OUT_MP4):
-  """Video of shown iterations: every arm is replayed in MuJoCo-C at that iteration's inertias (history
-  stores the pre-step theta) and drawn as offset geoms; ribbons per the section note above."""
-  vm = mujoco.MjModel.from_xml_path(SCENE)
-  prep_excitation(vm)
-  vm.vis.global_.offwidth, vm.vis.global_.offheight = W, H
-  vm.vis.global_.fovy = CAM_FOVY
-  vm.vis.global_.orthographic = CAM_ORTHO
-  vm.stat.extent = 3.5
-  vm.stat.center = np.array([0.1, 0.0, 0.4])
-  arm_root = mujoco.mj_name2id(vm, mujoco.mjtObj.mjOBJ_BODY, "base")  # fr3's root body
-  if arm_root >= 0:
-    vm.body_pos[arm_root] = [0.0, 0.0, -50.0]  # hide the model's OWN arm; every arm is an added, offset geom
-  rm = mujoco.MjModel.from_xml_path(SCENE)
-  prep_excitation(rm)
-  vd, gd = mujoco.MjData(vm), mujoco.MjData(rm)
-  opt, pert = mujoco.MjvOption(), mujoco.MjvPerturb()
-  E = history[0]["theta"].shape[0]
-  offs = [_grid_offsets(e, E) for e in range(E)]
-  gt_off = _gt_offset()
-  gt_off3 = np.array([gt_off[0], gt_off[1], 0.0])
-  rn = len(ctrl_full)
-
-  cam = mujoco.MjvCamera()
-  mujoco.mjv_defaultFreeCamera(vm, cam)
-  cam.lookat = list(CAM_LOOKAT)
-  cam.distance = CAM_DISTANCE
-  cam.azimuth = CAM_AZIMUTH
-  cam.elevation = CAM_ELEVATION
-
-  el, az = np.radians(CAM_ELEVATION), np.radians(CAM_AZIMUTH)
-  ref_lift = -REF_LIFT * np.array([np.cos(el) * np.cos(az), np.cos(el) * np.sin(az), np.sin(el)])
-  # ^ toward the camera eye (rays are near-parallel at the tele distance, so one direction serves the scene)
-
-  parked = mjd.qpos.copy()  # pose for the hidden native arm (vd); all visible arms are decorative geoms
-  show = sorted(set([k for k in [0, max(1, best // 4), max(2, best // 2), 3 * best // 4] if k < best] + [best]))
-  # GT replay ONCE, and capture pm_gt BEFORE any replay mutates rm (rm is freshly loaded here, so it still
-  # carries the TRUE inertias). gt_tip is the orange reference ribbon, drawn inside every env's cell.
-  pm_gt = np.array([rm.body_inertia[b].copy() for b in bids])
-  _, gt_tip = _mjc_replay(rm, mjd, bids, list(pm_gt), ctrl_full, rn)
-
-  serr0 = np.asarray(history[0]["serr"], dtype=np.float64)  # per-env initial wrongness (colormap anchor)
-  frames = []
-  for k in show:
-    h = history[k]
-    sub = _banner(h)
-    env_rgb = [_env_ribbon_rgb(float(h["serr"][e]), serr0[e]) for e in range(E)]
-    replays = [_mjc_replay(rm, mjd, bids, [theta_to_principal(h["theta"][e][li], pm_gt[li]) for li in range(NLINK)],
-                           ctrl_full, rn) for e in range(E)]
-    env_q = [r[0] for r in replays]
-    env_tip = [r[1] for r in replays]
-    hold = 20 if k == best else 0
-    idx = list(range(0, rn + 1, RENDER_STRIDE)) + [rn] * hold
-    for t in idx:
-      sim_poses = [(env_q[e][t], offs[e]) for e in range(E)]
-      ghost_q = gt_qpos[t]
-
-      t0 = max(0, t - TRAIL_STEPS) if TRAIL_STEPS > 0 else 0
-      t0 -= t0 % 2  # keep the subsample phase fixed as the window slides (no frame-to-frame shimmer)
-      trail = slice(t0, t + 1, 2)
-
-      # NOTE: every loop-varying object the closure uses MUST be bound as a default argument. draw() runs
-      # lazily inside viz.emit AFTER this loop has finished, so a free variable (late binding) would make
-      # every frame use the LAST shown iteration's data -- this exact bug shipped: env_tip was free, so
-      # all blocks drew the CONVERGED ribbons (colored tube on the GT path, orange swallowed everywhere).
-      def draw(scene, sim_poses=sim_poses, ghost_q=ghost_q, trail=trail, env_tip=env_tip, gt_tip=gt_tip,
-               env_rgb=env_rgb):
-        for e, (sim_q, off) in enumerate(sim_poses):
-          _add_robot(scene, rm, gd, sim_q, opt, pert, off)  # native FR3 materials
-          off3 = np.array([off[0], off[1], 0.0])
-          viz.add_polyline(scene, (env_tip[e][trail] + off3), env_rgb[e], width=RIBBON_W_ENV)
-          viz.add_polyline(scene, (gt_tip[trail] + off3 + ref_lift), GT_RGBA[:3], width=RIBBON_W_REF)
-        _add_robot(scene, rm, gd, ghost_q, opt, pert, gt_off, GT_RGBA)
-        viz.add_polyline(scene, (gt_tip[trail] + gt_off3), GT_RGBA[:3], width=RIBBON_W_GT)
-
-      frames.append((parked, draw, f"{sub}   [t={t}/{rn}]"))
-  if frames:
-    frames += [frames[-1]] * 20
-  return viz.emit(vm, vd, cam, frames, out_path=out_path, label="ADJOINT (Franka inertia)", w=W, h=H, fps=FPS)
-
-
-# ========================================================================================================
-
-
-def main():
-  if not os.path.exists(SCENE):
-    raise SystemExit(f"run from the mujoco_warp repo root (missing {SCENE})")
-  mjm = mujoco.MjModel.from_xml_path(SCENE)
-  prep_excitation(mjm)
-  mjd = mujoco.MjData(mjm)
-  mujoco.mj_resetDataKeyframe(mjm, mjd, 0)
-  mujoco.mj_forward(mjm, mjd)
-  bids = link_bids(mjm)
-  if any(b < 0 for b in bids):
-    raise SystemExit(f"missing a body in {LINKS}")
-
-  theta_gt, gt_inertia = gt_theta(mjm, bids)  # (NLINK, NP)
-  gt_w = _gt_inertia_w(mjm)
-  body_pidx = _body_param_idx(mjm, bids)
-
-  home_ctrl = mjm.key_ctrl[0].copy() if mjm.nkey else np.zeros(mjm.nu)
-  ctrls = [chirp_ctrl(home_ctrl, mjm.opt.timestep, variant=r) for r in range(NEXC)]
-  nf = (len(ctrls[0]) // WINDOW) * WINDOW  # fit the whole chirp, trimmed to a TBPTT-window multiple
-  ctrls = [c[:nf] for c in ctrls]
-
-  if from_npz := os.environ.get("MJW_RENDER_FROM"):  # render-only: replay a saved optimization history
-    z = np.load(from_npz)
-    history = [{k: z[k][i] for k in ("it", "theta", "rmse", "terr", "serr")} for i in range(len(z["it"]))]
-    gt_qpos = _forward_gt(mjm, mjd, ctrls[0], nf)
-    render(mjm, mjd, bids, ctrls[0], gt_qpos, history, int(z["best"]))
-    return
-
-  gts_qpos = [_forward_gt(mjm, mjd, c, nf) for c in ctrls]  # GT trajectory per excitation
-
-  rng = np.random.default_rng(SEED)
-  theta0 = init_theta(theta_gt, gt_inertia, rng, mjd, bids, ctrls[0], gts_qpos[0])  # visibly-divergent init
-
-  per_env_loss, cos, ratio = fd_check(mjm, mjd, body_pidx, theta0, gt_w, ctrls, gts_qpos, nf)
-  norm = np.sqrt(NEXC * nf * NARM)
-  span = gts_qpos[0][:, :NARM].max(0) - gts_qpos[0][:, :NARM].min(0)
-  print(f"[fr3] nf={nf} ({CHIRP_DURATION}s chirp {CHIRP_KWARGS['f0']}-{CHIRP_KWARGS['f1']}Hz, position PD, "
-        f"gravity on)  {NUM_ENVS} envs  {NEXC} excitation(s)  {NLINK} links")
-  print(f"[fr3] joint oscillation (p2p, rad): {np.array2string(span, precision=3)}")
-  print(f"[fr3] init windowed-tracking RMSE per env (TBPTT window={WINDOW}): "
-        f"{np.array2string(np.sqrt(per_env_loss)/norm, precision=4)} rad")
-  print(f"[fr3] dL/dtheta analytic-vs-FD ({NLINK * NP}-dim): cos {np.array2string(cos, precision=3)}  "
-        f"ratio {np.array2string(ratio, precision=3)}")
-
-  history, best = optimize(mjm, mjd, body_pidx, theta0, theta_gt, gt_inertia, gt_w, ctrls, gts_qpos, nf)
-  if os.environ.get("MJW_NO_RENDER") != "1":
-    os.makedirs(os.path.dirname(out_path := OUT_MP4), exist_ok=True)
-    render(mjm, mjd, bids, ctrls[0], gts_qpos[0], history, best, out_path=out_path)  # video: excitation 0
+def main(argv):
+  del argv  # config comes from the absl-parsed Args
+  demo.run(FrankaSysidDemo, demo.parse_args(Args))
 
 
 if __name__ == "__main__":
-  main()
+  demo.define_flags(Args)
+  app.run(main)

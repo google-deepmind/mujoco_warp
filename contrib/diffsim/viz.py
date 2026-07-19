@@ -130,30 +130,51 @@ def add_disk(scene, pos, rgba, radius=0.15, alpha=0.35, thickness=0.003):
   scene.ngeom += 1
 
 
-def make_overlay(w, h, label):
-  """Returns overlay(frame_rgb, subtext) -> frame_rgb with a top banner: big label + subtext."""
+def make_overlay(w, h, label, color=(255, 235, 59), bg_alpha=1.0):
+  """Returns overlay(frame_rgb, subtext) -> frame_rgb with a top banner: big `label` in `color` (default
+  yellow; the Blender field renders pass NVIDIA green) + a grey subtext line. `bg_alpha` is the banner
+  background opacity in [0,1]: 1.0 = solid black bar (default); <1 blends the bar toward black so the
+  scene shows through (the Blender field renders pass ~0.6)."""
   from PIL import Image, ImageDraw, ImageFont
 
   def _font(sz):
     for p in (
-      "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
+      "/System/Library/Fonts/Supplemental/Arial Bold.ttf",              # macOS
       "/System/Library/Fonts/Helvetica.ttc",
       "/Library/Fonts/Arial.ttf",
+      "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",           # Linux (Ubuntu server)
+      "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+      "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
     ):
       try:
         return ImageFont.truetype(p, sz)
       except Exception:
         pass
-    return ImageFont.load_default()
+    try:
+      return ImageFont.load_default(size=sz)  # Pillow >= 10.1 scales the built-in font
+    except TypeError:
+      return ImageFont.load_default()         # older Pillow: fixed-size bitmap fallback
 
   big, small = _font(48), _font(26)
+  bar_h = 108   # fixed banner strip height (same across every video)
+  pad_x = 30    # single left margin shared by BOTH lines (was 24 vs 26 -> misaligned)
+  gap = 12      # vertical gap between the label and the subtext
 
   def overlay(arr, subtext):
+    arr = np.array(arr)  # writable copy (imageio frames can be read-only)
+    # blend the top strip toward black at bg_alpha (1.0 -> solid black, matching the old dr.rectangle fill)
+    arr[:bar_h, :, :3] = (arr[:bar_h, :, :3] * (1.0 - bg_alpha)).astype(arr.dtype)
     img = Image.fromarray(arr)
     dr = ImageDraw.Draw(img)
-    dr.rectangle([0, 0, w, 92], fill=(0, 0, 0))
-    dr.text((24, 6), label, fill=(255, 235, 59), font=big)
-    dr.text((26, 62), subtext, fill=(210, 210, 210), font=small)
+    # Center the (label + gap + subtext) INK block vertically -> equal top/bottom padding. Measure the
+    # label's real ink box (constant per video) + a FIXED reference for the subtext line height ("Ag0" spans
+    # ascender..descender..digit) so the layout never jiggles as the per-frame `iter N` text changes.
+    lb = dr.textbbox((0, 0), label, font=big)
+    ref = dr.textbbox((0, 0), "Ag0", font=small)
+    lh, sh = lb[3] - lb[1], ref[3] - ref[1]
+    top = max(0, (bar_h - (lh + gap + sh)) // 2)
+    dr.text((pad_x, top - lb[1]), label, fill=color, font=big)            # ink top -> `top`
+    dr.text((pad_x, top + lh + gap - ref[1]), subtext, fill=(210, 210, 210), font=small)
     return np.asarray(img)
 
   return overlay
@@ -206,7 +227,7 @@ def emit(viz_model, vd, cam, frames, *, out_path=None, label="", w=1024, h=768, 
 
   overlay = make_overlay(w, h, label)
   out = []
-  with mujoco.Renderer(viz_model, height=h, width=w, max_geom=30000) as r:
+  with mujoco.Renderer(viz_model, height=h, width=w, max_geom=200000) as r:
     if frames:  # warmup render: stabilize the first-frame reflection/shadow buffer
       q0 = frames[0][0]
       if q0 is not None:
