@@ -14,7 +14,7 @@
 # ==============================================================================
 """Backward-only qpos VJPs of the smooth pipeline (kinematics, com_pos, com_vel, rne)."""
 
-import numpy as np  # host-only: one-time cached capability checks
+import numpy as np
 import warp as wp
 
 from mujoco_warp._src import adjoint_util
@@ -30,7 +30,7 @@ from mujoco_warp._src.types import vec10
 from mujoco_warp._src.types import vec10f
 from mujoco_warp._src.warp_util import event_scope
 
-# Adjoint module: backward stays ON so AD leaves differentiate through cross-module @wp.funcs.
+# adjoint module: backward stays on so AD leaves differentiate through cross-module @wp.funcs
 wp.set_module_options({"enable_backward": True})
 
 _SV = wp.spatial_vector
@@ -45,62 +45,64 @@ _BIAS_AFFINE = int(types.BiasType.AFFINE.value)
 
 
 # ----------------------------------------------------------------------------
-# Per-depth tree-reduction reverses over m.body_tree (replace the O(nbody^2) ancestry-walk
-# oracles). All enable_backward=False (manual VJP), all out-of-place across depths: a body reads
-# only an already-finalized parent/child depth, so writes never race.
+# Per-depth tree-reduction reverses over m.body_tree: fast equivalents of the O(nbody^2)
+# ancestry-walk kernels below. All enable_backward=False (manual VJP), all out-of-place across
+# depths: a body reads only an already-finalized parent/child depth, so writes never race.
 # ----------------------------------------------------------------------------
+# root->leaves ancestor accumulation; launch once per m.body_tree depth in forward order
 @wp.kernel(enable_backward=False)
 def _anc_acc_sv(
   # Model:
   body_parentid: wp.array[int],
   # In:
-  body_tree_: wp.array[int],
+  body_tree_level: wp.array[int],
   # Out:
   val_io_out: wp.array2d[wp.spatial_vector],  # init = local; root->leaves: val[b] += val[parent(b)]
 ):
-  """Root->leaves ancestor accumulation; launch once per m.body_tree depth in FORWARD order."""
   w, nodeid = wp.tid()
-  b = body_tree_[nodeid]
+  b = body_tree_level[nodeid]
   if b != 0:
     val_io_out[w, b] = val_io_out[w, b] + val_io_out[w, body_parentid[b]]
 
 
+# leaves->root subtree sum; launch per depth reversed; mirrors smooth._subtree_com_acc
 @wp.kernel(enable_backward=False)
 def _subtree_acc_sv(
   # Model:
   body_parentid: wp.array[int],
   # In:
-  body_tree_: wp.array[int],
-  val_io: wp.array2d[wp.spatial_vector],  # init = local; leaves->root: val[parent] += val[b]
+  body_tree_level: wp.array[int],
+  # Out:
+  val_io_out: wp.array2d[wp.spatial_vector],  # init = local; leaves->root: val[parent] += val[b]
 ):
-  """Leaves->root subtree sum; launch per depth REVERSED; mirrors smooth._subtree_com_acc."""
   w, nodeid = wp.tid()
-  b = body_tree_[nodeid]
+  b = body_tree_level[nodeid]
   if b != 0:
-    wp.atomic_add(val_io, w, body_parentid[b], val_io[w, b])
+    wp.atomic_add(val_io_out, w, body_parentid[b], val_io_out[w, b])
 
 
+# io_out += src (merges a contact subtree-COM seed into the bias's)
 @wp.kernel(enable_backward=False)
 def _acc_vec3(src: wp.array2d[wp.vec3], io_out: wp.array2d[wp.vec3]):
-  """Accumulate io_out += src (merge a contact subtree-COM seed into the bias's)."""
   w, i = wp.tid()
   io_out[w, i] = io_out[w, i] + src[w, i]
 
 
+# CV3 augmented-seed subtree sum; launch per depth reversed (children finalized first)
 @wp.kernel(enable_backward=False)
 def _comvel_W_acc(
   # Model:
   body_parentid: wp.array[int],
   # In:
-  body_tree_: wp.array[int],
+  body_tree_level: wp.array[int],
   H_in: wp.array2d[wp.spatial_vector],
-  W_io: wp.array2d[wp.spatial_vector],  # init = adj_cvel (A); leaves->root: W[parent] += W[b] + H[b]
+  # Out:
+  W_io_out: wp.array2d[wp.spatial_vector],  # init = adj_cvel (A); leaves->root: W[parent] += W[b] + H[b]
 ):
-  """CV3 augmented-seed subtree sum; launch per depth REVERSED (children finalized first)."""
   w, nodeid = wp.tid()
-  b = body_tree_[nodeid]
+  b = body_tree_level[nodeid]
   if b != 0:
-    wp.atomic_add(W_io, w, body_parentid[b], W_io[w, b] + H_in[w, b])
+    wp.atomic_add(W_io_out, w, body_parentid[b], W_io_out[w, b] + H_in[w, b])
 
 
 # ----------------------------------------------------------------------------
@@ -115,10 +117,11 @@ def smooth_force_backward(
   res_cdof_extra: wp.array2d = None,
   res_subtree_extra: wp.array2d = None,
 ):
-  """Reduced smooth-force qpos VJP: res_qpos (nq) = d(lam^T qfrc_bias)/dqpos over converged d.
+  """Computes the reduced smooth-force qpos VJP over converged d.
 
-  adj_qvel is DISCARDED (qvel channel owned by derivative.deriv_smooth_vel); optional extras
-  merge the contact residual's cdof / subtree-COM cotangents so the shared reverse runs once.
+  res_qpos (nq) = d(lam^T qfrc_bias)/dqpos. adj_qvel is discarded (the qvel channel is owned by
+  derivative.deriv_smooth_vel); optional extras merge the contact residual's cdof / subtree-COM
+  cotangents so the shared reverse runs once.
   """
   nworld = d.qvel.shape[0]
   nv = m.nv
@@ -126,11 +129,11 @@ def smooth_force_backward(
   nbody = m.nbody
 
   # ---- rne reverse (K1, K2', K3, K4a', K4b) ----
-  # TODO(team): scratch preallocation for graph capture
+  # TODO(etaoxing): scratch preallocation for graph capture
   adj_cdof = wp.zeros((nworld, nv), dtype=_SV)
   adj_cdof_dot = wp.zeros((nworld, nv), dtype=_SV)
-  adj_qvel = wp.zeros((nworld, nv), dtype=float)  # DISCARDED (deriv_smooth_vel owns qvel)
-  adj_qacc = wp.zeros((nworld, nv), dtype=float)  # DISCARDED here (rne_backward exposes it for the qacc gate)
+  adj_qvel = wp.zeros((nworld, nv), dtype=float)  # discarded (deriv_smooth_vel owns qvel)
+  adj_qacc = wp.zeros((nworld, nv), dtype=float)  # discarded here (rne_backward exposes it for the qacc gate)
   adj_force = wp.zeros((nworld, nbody), dtype=_SV)
 
   # K1: lam -> adj_cdof (tau projection) + adj_force (body force seed)
@@ -178,7 +181,7 @@ def smooth_force_backward(
   h = wp.zeros((nworld, nv), dtype=_SV)
   kk = wp.zeros((nworld, nv), dtype=_SV)
   Hbody = wp.zeros((nworld, nbody), dtype=_SV)
-  cv_adj_qvel = wp.zeros((nworld, nv), dtype=float)  # DISCARDED
+  cv_adj_qvel = wp.zeros((nworld, nv), dtype=float)  # discarded
   cv_adj_cdof = wp.zeros((nworld, nv), dtype=_SV)
   wp.launch(
     _comvel_vjp_local,
@@ -252,13 +255,14 @@ def smooth_force_backward(
 
 @event_scope
 def mass_matrix_qpos_vjp(m: Model, d: Data, y: wp.array2d, w: wp.array2d, scratch: Data = None):
-  """Mass-matrix-derivative VJP: res_qpos = d_q[ y^T M(q) w ] with y, w fixed; d never mutated.
+  """Computes the mass-matrix-derivative VJP: res_qpos = d_q[ y^T M(q) w ] with y, w fixed.
 
-  `scratch` (a BackwardContext.scratch: off-tape non-grad Data of d's shape) is REUSED when given,
-  refreshing only the kinematic inputs (qpos, + mocap) because kinematics/com_pos/rne overwrite
-  every other field before reading it; else a fresh full clone is allocated (the per-call path).
-  Reuse is graph-capture-safe -- the T sequential per-backward calls share it on one stream -- and
-  drops ~165 array-copies/call to ~1 (the qpos copy), which the capture bakes into the graph.
+  d is never mutated. scratch (a BackwardContext.scratch: off-tape non-grad Data of d's shape) is
+  reused when given, refreshing only the kinematic inputs (qpos, plus mocap) because
+  kinematics/com_pos/rne overwrite every other field before reading it; otherwise a fresh full
+  clone is allocated (the per-call path). Reuse is graph-capture-safe (the T sequential
+  per-backward calls share it on one stream) and drops ~165 array-copies/call to ~1 (the qpos
+  copy), which the capture bakes into the graph.
   """
   if scratch is None:
     s = adjoint_util._clone_nograd(d)  # non-grad scratch; s.qpos = d.qpos
@@ -274,7 +278,7 @@ def mass_matrix_qpos_vjp(m: Model, d: Data, y: wp.array2d, w: wp.array2d, scratc
   smooth.com_pos(m, s)  # fresh subtree_com/cinert/cdof at d.qpos
   s.cvel.zero_()  # qvel = 0 -> no cvel / cdof_dot (skip com_vel); mass-only has no Coriolis
   s.cdof_dot.zero_()
-  s.cacc.zero_()  # root cacc = 0 -> NO gravity injected (mass-only)
+  s.cacc.zero_()  # root cacc = 0 -> no gravity injected (mass-only)
   smooth._rne_cacc_forward(m, s, flg_acc=True)  # cacc = sum cdof*w  (the cdof_dot*qvel term is 0)
   smooth._rne_cfrc(m, s)  # cfrc_int_local = cinert*cacc  (cvel = 0 -> no gyroscopic)
   smooth._rne_cfrc_backward(m, s)  # subtree-accumulate cfrc_int up the tree
@@ -282,11 +286,12 @@ def mass_matrix_qpos_vjp(m: Model, d: Data, y: wp.array2d, w: wp.array2d, scratc
 
 
 # ----------------------------------------------------------------------------
-# Joint-spring leaf: the COMPLETE spring law of passive._spring_damper_dof_passive (all types
-# incl. FREE/BALL quaternion springs) as a source-AD leaf. Reads qpos DIRECTLY, so its adjoint
+# Joint-spring leaf: the complete spring law of passive._spring_damper_dof_passive (all types
+# incl. FREE/BALL quaternion springs) as a source-AD leaf. Reads qpos directly, so its adjoint
 # lands in raw-coordinate space (no manual tangent lift); the viscous -damper*qvel term has zero
-# qpos derivative and is omitted. An additive res_qpos term (NOT part of the kinematic reverse).
+# qpos derivative and is omitted. An additive res_qpos term, not part of the kinematic reverse.
 # ----------------------------------------------------------------------------
+# exact reconstruction of the spring branch of passive._spring_damper_dof_passive (all types)
 @wp.kernel(enable_backward=True)
 def _spring_qfrc_recompute(
   # Model:
@@ -302,7 +307,6 @@ def _spring_qfrc_recompute(
   # Data out:
   qfrc_spring_out: wp.array2d[float],
 ):
-  """Exact reconstruction of the spring branch of passive._spring_damper_dof_passive (all types)."""
   w, jntid = wp.tid()
   jnttype = jnt_type[jntid]
   dofid = jnt_dofadr[jntid]
@@ -348,7 +352,10 @@ def _spring_qfrc_recompute(
 
 @event_scope
 def spring_qpos_vjp(m: Model, d: Data, lam: wp.array2d):
-  """Spring qpos VJP: res_qpos = d(lam^T(-qfrc_spring))/dqpos, all joint types; d read-only."""
+  """Computes the spring qpos VJP for all joint types; d is read-only.
+
+  res_qpos = d(lam^T(-qfrc_spring))/dqpos.
+  """
   nworld = d.qpos.shape[0]
   nv = m.nv
   nq = d.qpos.shape[1]
@@ -382,16 +389,19 @@ def spring_qpos_vjp(m: Model, d: Data, lam: wp.array2d):
 # Actuator leaf: reverse of qfrc_actuator for AFFINE gain/bias on a scalar-JOINT transmission
 # (seed adj_tau = -lam): res_dof[j] += -ml_a*dfdl_a*B_aj under the frozen saturation mask. The
 # moment B is constant in qpos for JOINT (adj_B = 0); the velocity channel is owned by
-# deriv_smooth_vel. Unsupported topologies are gated off by assert_smooth_supported, NOT FD.
+# deriv_smooth_vel. Unsupported topologies are gated off by assert_smooth_supported, not FD.
 # ----------------------------------------------------------------------------
 @event_scope
 def actuator_qpos_vjp(m: Model, d: Data, lam: wp.array2d):
-  """Affine JOINT-actuator qpos VJP: res_qpos = d(lam^T(-qfrc_actuator))/dqpos over frozen d."""
+  """Computes the affine JOINT-actuator qpos VJP over frozen d.
+
+  res_qpos = d(lam^T(-qfrc_actuator))/dqpos.
+  """
   nworld = d.qpos.shape[0]
   nv = m.nv
   nq = d.qpos.shape[1]
   res_qpos = wp.zeros((nworld, nq), dtype=float)
-  if m.nu == 0 or (int(m.opt.disableflags) & _ACTUATION) != 0:  # forward suppresses actuation -> so do we
+  if m.nu == 0 or (int(m.opt.disableflags) & _ACTUATION) != 0:  # match forward: actuation suppressed
     return res_qpos
   res_dof = wp.zeros((nworld, nv), dtype=float)
   wp.launch(
@@ -426,17 +436,15 @@ def actuator_qpos_vjp(m: Model, d: Data, lam: wp.array2d):
   return res_qpos
 
 
-# cache of the capability-check result per Model (host metadata is static; the per-element
-# .numpy() reads run ONCE here, eager, at first call -- a setup-time assertion like io.is_sparse,
-# NEVER per-step or inside a graph-capture region)
-# The value keeps a strong ref to m so an id() reused after GC cannot alias a stale entry;
-# in-place structural mutation of m stays undetected. adjoint.create_backward_context primes it
-# at setup so the .numpy() never runs inside a graph-capture region (capture users prepare first).
+# capability-check result per Model, keyed by id(m); the value holds a strong ref to m so a
+# GC-reused id() cannot alias a stale entry (in-place structural mutation of m stays undetected).
+# adjoint.create_backward_context primes it at setup so the .numpy() reads never run inside a
+# graph-capture region.
 _SUPPORTED_CACHE = {}
 
 
 def assert_smooth_supported(m: Model):
-  """Raise NotImplementedError for ENABLED features missing an analytic VJP; no FD fallback."""
+  """Raises NotImplementedError for enabled features missing an analytic VJP; no FD fallback."""
   key = id(m)
   if _SUPPORTED_CACHE.get(key) is not None:
     return
@@ -447,7 +455,7 @@ def assert_smooth_supported(m: Model):
   if np.any(opt.density.numpy() != 0.0) or np.any(opt.viscosity.numpy() != 0.0) or np.any(opt.wind.numpy() != 0.0):
     bad.append("fluid forces (opt.density/viscosity/wind)")
   if np.any(m.body_gravcomp.numpy() != 0.0) and np.any(m.jnt_actgravcomp.numpy() != 0):
-    bad.append("gravcomp routed to an actuator (jnt_actgravcomp; force-limit clamp) -- passive-bucket gravcomp is supported")
+    bad.append("gravcomp routed to an actuator (jnt_actgravcomp; force-limit clamp); passive-bucket gravcomp is supported")
   if int(m.nu) > 0:
     trntype = m.actuator_trntype.numpy()
     gaintype = m.actuator_gaintype.numpy()
@@ -462,10 +470,10 @@ def assert_smooth_supported(m: Model):
     jnt_ids = m.actuator_trnid.numpy()[:, 0][trntype == int(types.TrnType.JOINT.value)]
     if jnt_ids.size and np.any((jnt_type[jnt_ids] == _FREE) | (jnt_type[jnt_ids] == _BALL)):
       bad.append("actuator on a FREE/BALL joint (quaternion-dependent transmission length)")
-    # activation (na>0) is SUPPORTED for the dqpos when gain is FIXED: dfdl = biasprm[1] and
+    # activation (na>0) is supported for the dqpos when gain is FIXED: dfdl = biasprm[1] and
     # ctrl_act (=act) is unused (the common filtered/integrated position/velocity servo). A
-    # STATEFUL AFFINE-gain actuator would need the gain term gainprm[1]*act (ctrl_act=act, not
-    # clamped ctrl) -- not implemented.
+    # stateful AFFINE-gain actuator would need the gain term gainprm[1]*act (ctrl_act=act, not
+    # clamped ctrl); not implemented.
     stateful = m.actuator_dyntype.numpy() != int(types.DynType.NONE.value)
     if np.any(stateful & (gaintype == int(types.GainType.AFFINE.value))):
       bad.append("stateful (na>0) AFFINE-gain actuator (ctrl_act=act not implemented)")
@@ -480,11 +488,12 @@ def assert_smooth_supported(m: Model):
 
 
 # ----------------------------------------------------------------------------
-# Gravcomp leaf: a COM-Jacobian contraction with a CONSTANT per-body force, so qpos enters ONLY
+# Gravcomp leaf: a COM-Jacobian contraction with a constant per-body force, so qpos enters only
 # via the kinematic intermediates jac_dof reads (cdof, subtree_com, xipos). Source-AD the exact
-# forward leaf, then route the adjoints through the SAME kinematic reverse the rne bias uses.
+# forward leaf, then route the adjoints through the same kinematic reverse the rne bias uses.
 # Seed -lam masked by (gravity_enabled & ~actgravcomp); the actuator-bucket case is asserted off.
 # ----------------------------------------------------------------------------
+# exact reconstruction of passive._gravity_force (reuses support.jac_dof)
 @wp.kernel(enable_backward=True)
 def _gravity_force_recompute(
   # Model:
@@ -502,7 +511,6 @@ def _gravity_force_recompute(
   # Data out:
   qfrc_gravcomp_out: wp.array2d[float],
 ):
-  """Exact reconstruction of passive._gravity_force (reuses support.jac_dof)."""
   worldid, bodyid, dofid = wp.tid()
   bodyid += 1  # skip world body
   gravcomp = body_gravcomp[worldid % body_gravcomp.shape[0], bodyid]
@@ -536,16 +544,17 @@ def _gravcomp_seed(
     grad_out[w, i] = 0.0
 
 
-# cache keyed by id(m); the value keeps a strong ref to m so a reused id() after GC cannot alias
-# a stale entry (in-place structural mutation of m stays undetected). create_backward_context
-# primes it (like assert_smooth_supported) so the .numpy() never runs inside a capture region.
+# has-gravcomp result per Model, keyed by id(m); the value holds a strong ref to m so a GC-reused
+# id() cannot alias a stale entry (in-place structural mutation of m stays undetected).
+# create_backward_context primes it (like assert_smooth_supported) so the .numpy() read never
+# runs inside a graph-capture region.
 _HAS_GRAVCOMP_CACHE = {}
 
 
 def has_gravcomp(m: Model) -> bool:
-  """Whether any body has passive-bucket gravcomp (result cached per Model).
+  """Returns whether any body has passive-bucket gravcomp (result cached per Model).
 
-  The .numpy() host read runs ONCE, eager -- prime it at setup (create_backward_context), never
+  The .numpy() host read runs once, eager; prime it at setup (create_backward_context), never
   inside a graph-capture region.
   """
   key = id(m)
@@ -559,7 +568,10 @@ def has_gravcomp(m: Model) -> bool:
 
 @event_scope
 def gravcomp_qpos_vjp(m: Model, d: Data, lam: wp.array2d):
-  """Gravcomp qpos VJP: res_qpos = d(lam^T(-qfrc_gravcomp))/dqpos (passive bucket); d read-only."""
+  """Computes the gravcomp qpos VJP (passive bucket); d is read-only.
+
+  res_qpos = d(lam^T(-qfrc_gravcomp))/dqpos.
+  """
   nworld = d.qpos.shape[0]
   nv = m.nv
   nq = d.qpos.shape[1]
@@ -607,7 +619,7 @@ def gravcomp_qpos_vjp(m: Model, d: Data, lam: wp.array2d):
     adjoint=True,
   )
 
-  # 2. route the kinematic-intermediate adjoints to qpos -- the EXACT composition rne_qpos_vjp
+  # 2. route the kinematic-intermediate adjoints to qpos, the exact composition rne_qpos_vjp
   #    uses: cdof screw-commutator + (cdof moving-COM folded into the subtree seed via
   #    _build_ceff) + xipos FK.
   res_dof = wp.zeros((nworld, nv), dtype=float)
@@ -672,15 +684,16 @@ def gravcomp_qpos_vjp(m: Model, d: Data, lam: wp.array2d):
 
 # ============================================================================================
 # AD-RNE: analytic backward of smooth.rne, the production dqpos path in step_backward.
-# FD-of-rne is retained only as an explicitly selected validation oracle in adjoint_test_util.
-# smooth.rne is enable_backward=False, so the reverse is RECONSTRUCTED here: source-AD the
-# loop-free/alias-free nonlinear _cfrc leaf (exact), MANUAL transposed VJPs for the two LINEAR
-# tree reductions (their forwards have dynamic loops + in-place aliasing -> naive reverse WRONG).
+# FD-of-rne is an explicitly selected validation oracle in adjoint_test_util. smooth.rne is
+# enable_backward=False, so the reverse is reconstructed here: source-AD the loop-free/
+# alias-free nonlinear _cfrc leaf (exact), manual transposed VJPs for the two linear tree
+# reductions (their forwards have dynamic loops + in-place aliasing, so a naive reverse is wrong).
 # ============================================================================================
 
 _SV_ZERO = wp.constant(wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 0.0, 0.0))
 
 
+# K1: d(lam^T qfrc_bias)/dcdof_i = lam_i * F_body(i); += into adj_cdof_out (K4b adds qacc)
 @wp.kernel(enable_backward=False)
 def _rne_qfrcbias_cdof_vjp(
   # Model:
@@ -690,14 +703,14 @@ def _rne_qfrcbias_cdof_vjp(
   # In:
   lam: wp.array2d[float],  # seed adj_qfrc_bias
   # Out:
-  adj_cdof_out: wp.array2d[wp.spatial_vector],  # OUT (+=): the tau_i = cdof_i*F_body(i) part
+  adj_cdof_out: wp.array2d[wp.spatial_vector],  # (+=): the tau_i = cdof_i*F_body(i) part
 ):
-  """K1: d(lam^T qfrc_bias)/dcdof_i = lam_i * F_body(i); += into adj_cdof_out (K4b adds qacc)."""
   w, i = wp.tid()
   b = dof_bodyid[i]
   adj_cdof_out[w, i] = adj_cdof_out[w, i] + lam[w, i] * cfrc_int_in[w, b]
 
 
+# K1: d(lam^T qfrc_bias)/dF_b = sum_{i: body(i)=b} lam_i * cdof_i (one thread per body)
 @wp.kernel(enable_backward=False)
 def _rne_qfrcbias_force_vjp(
   # Model:
@@ -708,9 +721,8 @@ def _rne_qfrcbias_force_vjp(
   # In:
   lam: wp.array2d[float],  # seed adj_qfrc_bias
   # Out:
-  adj_force_out: wp.array2d[wp.spatial_vector],  # OUT: adj on the accumulated body force F_b
+  adj_force_out: wp.array2d[wp.spatial_vector],  # adj on the accumulated body force F_b
 ):
-  """K1: d(lam^T qfrc_bias)/dF_b = sum_{i: body(i)=b} lam_i * cdof_i (one thread per body)."""
   w, b = wp.tid()
   dofadr = body_dofadr[b]
   dofnum = body_dofnum[b]
@@ -721,6 +733,7 @@ def _rne_qfrcbias_force_vjp(
   adj_force_out[w, b] = acc
 
 
+# K2: transpose of the child->parent sum: adj_f_out[b] = sum of adj_F over ancestors-or-self
 @wp.kernel(enable_backward=False)
 def _rne_cfrc_tree_vjp(
   # Model:
@@ -728,18 +741,18 @@ def _rne_cfrc_tree_vjp(
   # In:
   adj_force: wp.array2d[wp.spatial_vector],  # adj on accumulated F_b (from K1)
   # Out:
-  adj_f_out: wp.array2d[wp.spatial_vector],  # OUT: adj on the LOCAL force f_d (pre-accumulation)
+  adj_f_out: wp.array2d[wp.spatial_vector],  # adj on the local force f_b (pre-accumulation)
 ):
-  """K2: transpose of the child->parent sum: adj_f_out[d] = sum of adj_F over ancestors-or-self."""
-  w, d = wp.tid()
+  w, b = wp.tid()
   acc = _SV_ZERO
-  b = d
-  while b > 0:
-    acc = acc + adj_force[w, b]
-    b = body_parentid[b]
-  adj_f_out[w, d] = acc
+  p = b
+  while p > 0:
+    acc = acc + adj_force[w, p]
+    p = body_parentid[p]
+  adj_f_out[w, b] = acc
 
 
+# K3: exact reconstruction of smooth._cfrc's local inertial force (source-AD leaf)
 @wp.kernel
 def _rne_cfrc_recompute(
   # Data in:
@@ -747,9 +760,8 @@ def _rne_cfrc_recompute(
   cvel_in: wp.array2d[wp.spatial_vector],
   cacc_in: wp.array2d[wp.spatial_vector],
   # Out:
-  cfrc_local_out: wp.array2d[wp.spatial_vector],  # OUT: f_b = I*a + v x* (I*v)
+  cfrc_local_out: wp.array2d[wp.spatial_vector],  # f_b = I*a + v x* (I*v)
 ):
-  """K3: exact reconstruction of smooth._cfrc's local inertial force (source-AD leaf)."""
   w, b = wp.tid()
   frc = _SV_ZERO
   if b != 0:  # world body has no inertial force (mirrors smooth._cfrc's bodyid==0 branch)
@@ -759,6 +771,7 @@ def _rne_cfrc_recompute(
   cfrc_local_out[w, b] = frc
 
 
+# K4a: subtree-sum of adj_cacc per body; O(nbody*depth) oracle form of _subtree_acc_sv
 @wp.kernel(enable_backward=False)
 def _rne_cacc_subtree_sum(
   # Model:
@@ -767,21 +780,21 @@ def _rne_cacc_subtree_sum(
   # In:
   adj_cacc: wp.array2d[wp.spatial_vector],
   # Out:
-  subtree_adj_cacc_out: wp.array2d[wp.spatial_vector],  # OUT: sum_{d in subtree(b)} adj_cacc[d]
+  subtree_adj_cacc_out: wp.array2d[wp.spatial_vector],  # sum_{b in subtree(target)} adj_cacc[b]
 ):
-  """K4a: subtree-sum of adj_cacc per body; O(nbody*depth) oracle form of _subtree_acc_sv."""
   w, target = wp.tid()
   acc = _SV_ZERO
-  for d in range(nbody):
-    p = d  # is `target` an ancestor-or-self of body d?
+  for b in range(nbody):
+    p = b  # is target an ancestor-or-self of body b?
     while p > 0:
       if p == target:
-        acc = acc + adj_cacc[w, d]
+        acc = acc + adj_cacc[w, b]
         break
       p = body_parentid[p]
   subtree_adj_cacc_out[w, target] = acc
 
 
+# K4b: transpose of the dof contributions cacc_b += cdof_dot_i*qvel_i + cdof_i*qacc_i
 @wp.kernel(enable_backward=False)
 def _rne_cacc_dof_vjp(
   # Model:
@@ -795,12 +808,11 @@ def _rne_cacc_dof_vjp(
   subtree_adj_cacc: wp.array2d[wp.spatial_vector],  # sum adj_cacc over body(j)'s subtree (from K4a)
   flg_acc: bool,
   # Out:
-  adj_qvel_out: wp.array2d[float],  # OUT
-  adj_qacc_out: wp.array2d[float],  # OUT
-  adj_cdof_dot_out: wp.array2d[wp.spatial_vector],  # OUT
-  adj_cdof_out: wp.array2d[wp.spatial_vector],  # OUT (+=): the cdof_i*qacc_i term (K1 added the tau term)
+  adj_qvel_out: wp.array2d[float],
+  adj_qacc_out: wp.array2d[float],
+  adj_cdof_dot_out: wp.array2d[wp.spatial_vector],
+  adj_cdof_out: wp.array2d[wp.spatial_vector],  # (+=): the cdof_i*qacc_i term (K1 added the tau term)
 ):
-  """K4b: transpose of the dof contributions cacc_b += cdof_dot_i*qvel_i + cdof_i*qacc_i."""
   w, i = wp.tid()
   a = subtree_adj_cacc[w, dof_bodyid[i]]
   adj_qvel_out[w, i] = wp.dot(a, cdof_dot_in[w, i])
@@ -811,10 +823,11 @@ def _rne_cacc_dof_vjp(
 
 
 def rne_backward(m: Model, d: Data, lam: wp.array2d, flg_acc: bool = True):
-  """Analytic VJP of smooth.rne: cotangent lam on qfrc_bias -> adjoints of the RNE inputs.
+  """Computes the analytic VJP of smooth.rne.
 
-  Returns dict {qvel, qacc, cdof, cdof_dot, cinert, cvel}: direct input adjoints plus the
-  intermediate seeds for the kinematic reverse; d holds converged intermediates (read-only).
+  Maps the cotangent lam on qfrc_bias to adjoints of the RNE inputs. Returns dict {qvel, qacc,
+  cdof, cdof_dot, cinert, cvel}: direct input adjoints plus the intermediate seeds for the
+  kinematic reverse; d holds converged intermediates (read-only).
   """
   nworld = d.qvel.shape[0]
   nv = m.nv
@@ -837,7 +850,7 @@ def rne_backward(m: Model, d: Data, lam: wp.array2d, flg_acc: bool = True):
   # K2: adj_force -> adj_f (transpose the child->parent accumulation)
   wp.launch(_rne_cfrc_tree_vjp, dim=(nworld, nbody), inputs=[m.body_parentid, adj_force], outputs=[adj_f])
 
-  # K3: adj_f -> {adj_cinert, adj_cacc, adj_cvel} via AUTODIFF of the reconstructed local leaf
+  # K3: adj_f -> {adj_cinert, adj_cacc, adj_cvel} via autodiff of the reconstructed local leaf
   cfrc_local = wp.zeros((nworld, nbody), dtype=SV)
   adj_cinert = wp.zeros((nworld, nbody), dtype=vec10f)
   adj_cacc = wp.zeros((nworld, nbody), dtype=SV)
@@ -876,13 +889,14 @@ def rne_backward(m: Model, d: Data, lam: wp.array2d, flg_acc: bool = True):
 
 
 # --------------------------------------------------------------------------------------------
-# com_vel reverse: bound-free MANUAL VJP of smooth.com_vel (the Coriolis path); maps the seeds
-# adj_cvel / adj_cdof_dot to adj_qvel / adj_cdof in stages CV1-CV4 (dynamic bounds -- no
-# _CV_MAX_* truncation). WIRING: step_backward already uses deriv_rne_vel for the smooth
-# adj_qvel -- pick ONE of the two RNE-qvel paths, or the Coriolis term double-counts.
+# com_vel reverse: bound-free manual VJP of smooth.com_vel (the Coriolis path); maps the seeds
+# adj_cvel / adj_cdof_dot to adj_qvel / adj_cdof in stages CV1-CV4 (dynamic bounds, no
+# _CV_MAX_* truncation). Wiring constraint: step_backward already uses deriv_rne_vel for the
+# smooth adj_qvel; wire exactly one of the two RNE-qvel paths or the Coriolis term double-counts.
 # --------------------------------------------------------------------------------------------
 
 
+# same-body scatter of a running prefix cotangent t: nubar_j += S_j*t, Sbar_j += nu_j*t
 @wp.func
 def _cv_scatter(
   # Data in:
@@ -896,11 +910,11 @@ def _cv_scatter(
   adj_qvel_out: wp.array2d[float],
   adj_cdof_out: wp.array2d[wp.spatial_vector],
 ):
-  """Same-body scatter of a running prefix cotangent t: nubar_j += S_j*t, Sbar_j += nu_j*t."""
   adj_qvel_out[w, j] = adj_qvel_out[w, j] + wp.dot(cdof_in[w, j], t)
   adj_cdof_out[w, j] = adj_cdof_out[w, j] + qvel_in[w, j] * t
 
 
+# CV1: replay a body's joints from the parent-cvel_in snapshot: h, k per dof, H per body
 @wp.kernel(enable_backward=False)
 def _comvel_vjp_local(
   # Model:
@@ -916,11 +930,10 @@ def _comvel_vjp_local(
   # In:
   adj_cdof_dot: wp.array2d[wp.spatial_vector],  # G seed
   # Out:
-  h_out: wp.array2d[wp.spatial_vector],  # OUT per dof: cotangent on the snapshot velocity
-  k_out: wp.array2d[wp.spatial_vector],  # OUT per dof: direct cotangent on cdof_in
-  H_out: wp.array2d[wp.spatial_vector],  # OUT per body: sum h on this body
+  h_out: wp.array2d[wp.spatial_vector],  # per dof: cotangent on the snapshot velocity
+  k_out: wp.array2d[wp.spatial_vector],  # per dof: direct cotangent on cdof_in
+  H_out: wp.array2d[wp.spatial_vector],  # per body: sum h on this body
 ):
-  """CV1: replay a body's joints from the parent-cvel_in snapshot: h, k per dof, H per body."""
   w, b = wp.tid()
   zero = wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
   if b == 0:  # world body: no joints / snapshot
@@ -933,7 +946,7 @@ def _comvel_vjp_local(
   for jj in range(jntnum):
     jt = jnt_type[jntadr + jj]
     d = jnt_dofadr[jntadr + jj]
-    if jt == _FREE:  # ADD translations -> SNAPSHOT rotations (post-translation) -> ADD rotations
+    if jt == _FREE:  # add translations -> snapshot rotations (post-translation) -> add rotations
       u = (
         u
         + cdof_in[w, d + 0] * qvel_in[w, d + 0]
@@ -965,7 +978,7 @@ def _comvel_vjp_local(
         + cdof_in[w, d + 5] * qvel_in[w, d + 5]
       )
       Hb = Hb + h3 + h4 + h5
-    elif jt == _BALL:  # SNAPSHOT all 3 axes from the pre-ball cvel_in, then ADD
+    elif jt == _BALL:  # snapshot all 3 axes from the pre-ball cvel_in, then add
       g0 = adj_cdof_dot[w, d + 0]
       g1 = adj_cdof_dot[w, d + 1]
       g2 = adj_cdof_dot[w, d + 2]
@@ -985,7 +998,7 @@ def _comvel_vjp_local(
         + cdof_in[w, d + 2] * qvel_in[w, d + 2]
       )
       Hb = Hb + h0 + h1 + h2
-    else:  # HINGE / SLIDE: SNAPSHOT from the pre-joint cvel_in, then ADD
+    else:  # HINGE / SLIDE: snapshot from the pre-joint cvel_in, then add
       g0 = adj_cdof_dot[w, d]
       h0 = math.motion_cross_force(cdof_in[w, d], g0)
       h_out[w, d] = h0
@@ -995,6 +1008,7 @@ def _comvel_vjp_local(
   H_out[w, b] = Hb
 
 
+# CV2: same-body reverse suffix scan; scatter precedes T+=h so no axis sees its own snapshot
 @wp.kernel(enable_backward=False)
 def _comvel_vjp_samebody(
   # Model:
@@ -1008,11 +1022,10 @@ def _comvel_vjp_samebody(
   # In:
   h_in: wp.array2d[wp.spatial_vector],
   k_in: wp.array2d[wp.spatial_vector],
-  adj_qvel: wp.array2d[float],  # OUT (+=): same-body T_j part
   # Out:
-  adj_cdof_out: wp.array2d[wp.spatial_vector],  # OUT (+=): same-body T_j part + direct k_j
+  adj_qvel_out: wp.array2d[float],  # (+=): same-body T_j part
+  adj_cdof_out: wp.array2d[wp.spatial_vector],  # (+=): same-body T_j part + direct k_j
 ):
-  """CV2: same-body reverse suffix scan; scatter precedes T+=h so no axis sees its own snapshot."""
   w, b = wp.tid()
   t = wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
   jntadr = body_jntadr[b]
@@ -1021,48 +1034,48 @@ def _comvel_vjp_samebody(
     jj = jntnum - 1 - jr  # reverse joint order
     jt = jnt_type[jntadr + jj]
     d = jnt_dofadr[jntadr + jj]
-    if jt == _FREE:  # reverse: scatter rot ADDs, T += rot h, k rot, scatter trans ADDs (now see rot h)
-      _cv_scatter(qvel_in, cdof_in, w, d + 5, t, adj_qvel, adj_cdof_out)
-      _cv_scatter(qvel_in, cdof_in, w, d + 4, t, adj_qvel, adj_cdof_out)
-      _cv_scatter(qvel_in, cdof_in, w, d + 3, t, adj_qvel, adj_cdof_out)
+    if jt == _FREE:  # reverse: scatter rot adds, T += rot h, k rot, scatter trans adds (now see rot h)
+      _cv_scatter(qvel_in, cdof_in, w, d + 5, t, adj_qvel_out, adj_cdof_out)
+      _cv_scatter(qvel_in, cdof_in, w, d + 4, t, adj_qvel_out, adj_cdof_out)
+      _cv_scatter(qvel_in, cdof_in, w, d + 3, t, adj_qvel_out, adj_cdof_out)
       t = t + h_in[w, d + 5] + h_in[w, d + 4] + h_in[w, d + 3]
       adj_cdof_out[w, d + 5] = adj_cdof_out[w, d + 5] + k_in[w, d + 5]
       adj_cdof_out[w, d + 4] = adj_cdof_out[w, d + 4] + k_in[w, d + 4]
       adj_cdof_out[w, d + 3] = adj_cdof_out[w, d + 3] + k_in[w, d + 3]
-      _cv_scatter(qvel_in, cdof_in, w, d + 2, t, adj_qvel, adj_cdof_out)
-      _cv_scatter(qvel_in, cdof_in, w, d + 1, t, adj_qvel, adj_cdof_out)
-      _cv_scatter(qvel_in, cdof_in, w, d + 0, t, adj_qvel, adj_cdof_out)
+      _cv_scatter(qvel_in, cdof_in, w, d + 2, t, adj_qvel_out, adj_cdof_out)
+      _cv_scatter(qvel_in, cdof_in, w, d + 1, t, adj_qvel_out, adj_cdof_out)
+      _cv_scatter(qvel_in, cdof_in, w, d + 0, t, adj_qvel_out, adj_cdof_out)
     elif jt == _BALL:  # scatter all 3 with the same T, then T += the 3 same-ball h
-      _cv_scatter(qvel_in, cdof_in, w, d + 2, t, adj_qvel, adj_cdof_out)
-      _cv_scatter(qvel_in, cdof_in, w, d + 1, t, adj_qvel, adj_cdof_out)
-      _cv_scatter(qvel_in, cdof_in, w, d + 0, t, adj_qvel, adj_cdof_out)
+      _cv_scatter(qvel_in, cdof_in, w, d + 2, t, adj_qvel_out, adj_cdof_out)
+      _cv_scatter(qvel_in, cdof_in, w, d + 1, t, adj_qvel_out, adj_cdof_out)
+      _cv_scatter(qvel_in, cdof_in, w, d + 0, t, adj_qvel_out, adj_cdof_out)
       t = t + h_in[w, d + 2] + h_in[w, d + 1] + h_in[w, d + 0]
       adj_cdof_out[w, d + 0] = adj_cdof_out[w, d + 0] + k_in[w, d + 0]
       adj_cdof_out[w, d + 1] = adj_cdof_out[w, d + 1] + k_in[w, d + 1]
       adj_cdof_out[w, d + 2] = adj_cdof_out[w, d + 2] + k_in[w, d + 2]
     else:  # HINGE / SLIDE
-      _cv_scatter(qvel_in, cdof_in, w, d, t, adj_qvel, adj_cdof_out)
+      _cv_scatter(qvel_in, cdof_in, w, d, t, adj_qvel_out, adj_cdof_out)
       t = t + h_in[w, d]
       adj_cdof_out[w, d] = adj_cdof_out[w, d] + k_in[w, d]
 
 
+# CV3: W_B = sum_{subtree(B)} adj_cvel + sum_{strict_subtree(B)} H; oracle of _comvel_W_acc
 @wp.kernel(enable_backward=False)
 def _comvel_subtree_W(
   # Model:
   nbody: int,
   body_parentid: wp.array[int],
   # In:
-  adj_cvel: wp.array2d[wp.spatial_vector],  # A seed (per body); NOT mutated
+  adj_cvel: wp.array2d[wp.spatial_vector],  # A seed (per body); not mutated
   H_in: wp.array2d[wp.spatial_vector],
   # Out:
   W_out: wp.array2d[wp.spatial_vector],
 ):
-  """CV3: W_B = sum_{subtree(B)} adj_cvel + sum_{strict_subtree(B)} H; oracle of _comvel_W_acc."""
   w, target = wp.tid()
   acc = adj_cvel[w, target]  # B itself (subtree includes self for the A term)
   for x in range(1, nbody):
     if x != target:
-      p = body_parentid[x]  # is `target` a STRICT ancestor of x?
+      p = body_parentid[x]  # is target a strict ancestor of x?
       while p > 0:
         if p == target:
           acc = acc + adj_cvel[w, x] + H_in[w, x]
@@ -1071,6 +1084,7 @@ def _comvel_subtree_W(
   W_out[w, target] = acc
 
 
+# CV4: global cvel scatter += W_body(i): nubar_i += S_i*W, Sbar_i += nu_i*W
 @wp.kernel(enable_backward=False)
 def _comvel_scatter_W(
   # Model:
@@ -1081,10 +1095,9 @@ def _comvel_scatter_W(
   # In:
   W_in: wp.array2d[wp.spatial_vector],
   # Out:
-  adj_qvel_out: wp.array2d[float],  # OUT (+=): W_B part
-  adj_cdof_out: wp.array2d[wp.spatial_vector],  # OUT (+=): W_B part
+  adj_qvel_out: wp.array2d[float],  # (+=): W_B part
+  adj_cdof_out: wp.array2d[wp.spatial_vector],  # (+=): W_B part
 ):
-  """CV4: global cvel scatter += W_body(i): nubar_i += S_i*W, Sbar_i += nu_i*W."""
   w, i = wp.tid()
   wv = W_in[w, dof_bodyid[i]]
   adj_qvel_out[w, i] = adj_qvel_out[w, i] + wp.dot(cdof_in[w, i], wv)
@@ -1092,7 +1105,10 @@ def _comvel_scatter_W(
 
 
 def comvel_backward(m: Model, d: Data, adj_cvel: wp.array2d, adj_cdof_dot: wp.array2d):
-  """Bound-free manual VJP of smooth.com_vel: adj_cvel/adj_cdof_dot -> {qvel, cdof} adjoints."""
+  """Computes the bound-free manual VJP of smooth.com_vel.
+
+  Maps adj_cvel / adj_cdof_dot to {qvel, cdof} adjoints.
+  """
   nworld = d.qvel.shape[0]
   nv = m.nv
   nbody = m.nbody
@@ -1127,11 +1143,12 @@ def comvel_backward(m: Model, d: Data, adj_cvel: wp.array2d, adj_cdof_dot: wp.ar
 # --------------------------------------------------------------------------------------------
 # cinert reverse: the last kinematic dqpos leaf. cinert depends on qpos via ximat / xipos /
 # subtree_com[root]: source-AD the body-local _cinert leaf, chain xipos/ximat -> qpos via
-# support.jac_dof, route adj_subtree_com through _subtree_com_qpos_vjp. cvel/cdof_dot have NO
-# direct qpos path (it flows through the TOTAL adj_cdof via _cdof_qpos_vjp).
+# support.jac_dof, route adj_subtree_com through _subtree_com_qpos_vjp. cvel/cdof_dot have no
+# direct qpos path (it flows through the total adj_cdof via _cdof_qpos_vjp).
 # --------------------------------------------------------------------------------------------
 
 
+# exact reconstruction of smooth._cinert (body-local, no loop) for a manual adjoint launch
 @wp.kernel
 def _cinert_recompute(
   # Model:
@@ -1145,16 +1162,14 @@ def _cinert_recompute(
   # Data out:
   cinert_out: wp.array2d[vec10],
 ):
-  """Exact reconstruction of smooth._cinert (body-local, no loop) for a manual adjoint launch."""
   w, b = wp.tid()
   mat = ximat_in[w, b]
   inert = body_inertia[w % body_inertia.shape[0], b]
   mass = body_mass[w % body_mass.shape[0], b]
   dif = xipos_in[w, b] - subtree_com_in[w, body_rootid[b]]
-  # build the vec10 as SCALARS + a single vec10f(...) constructor, never in-place component
-  # updates: Warp 1.14's reverse double-counts the in-place vec-component update pattern (adjoint
-  # exactly 2x on the rotation block). The forward smooth._cinert keeps the component-write form
-  # (enable_backward=False -> value-only).
+  # build the vec10 via a single vec10f(...) ctor: warp 1.14's reverse double-counts in-place
+  # component writes (adjoint exactly 2x on the rotation block); forward smooth._cinert keeps
+  # the component-write form (enable_backward=False, value-only).
   i0 = inert[0]
   i1 = inert[1]
   i2 = inert[2]
@@ -1170,6 +1185,7 @@ def _cinert_recompute(
   cinert_out[w, b] = vec10f(r0, r1, r2, r3, r4, r5, mass * d0, mass * d1, mass * d2, mass)
 
 
+# chain adj_{xipos_in, ximat_in} to a per-dof tangent gradient via support.jac_dof
 @wp.kernel(enable_backward=False)
 def _cinert_pose_dof_vjp(
   # Model:
@@ -1187,9 +1203,8 @@ def _cinert_pose_dof_vjp(
   adj_xipos: wp.array2d[wp.vec3],
   adj_ximat: wp.array2d[wp.mat33],
   # Out:
-  res_dof_out: wp.array2d[float],  # OUT (+=): per-dof TANGENT gradient
+  res_dof_out: wp.array2d[float],  # (+=): per-dof tangent gradient
 ):
-  """Chain adj_{xipos_in, ximat_in} to per-dof TANGENT gradient via support.jac_dof."""
   w, k = wp.tid()
   acc = float(0.0)
   for b in range(1, nbody):
@@ -1220,7 +1235,10 @@ def _cinert_pose_dof_vjp(
 
 @event_scope
 def cinert_qpos_vjp(m: Model, d: Data, adj_cinert: wp.array2d, res_dof: wp.array2d):
-  """VJP of smooth._cinert: pose terms += into res_dof; RETURNS the subtree_com cotangent seed."""
+  """Computes the VJP of smooth._cinert.
+
+  Pose terms += into res_dof; returns the subtree_com cotangent seed.
+  """
   nworld = d.qpos.shape[0]
   nv = m.nv
   nbody = m.nbody
@@ -1231,7 +1249,7 @@ def cinert_qpos_vjp(m: Model, d: Data, adj_cinert: wp.array2d, res_dof: wp.array
   cin = [m.body_rootid, m.body_mass, m.body_inertia, d.xipos, d.ximat, d.subtree_com]
   wp.launch(_cinert_recompute, dim=(nworld, nbody), inputs=cin, outputs=[cinert_rec])
   # throwaway mass/inertia adjoint buffers: with adj_input=None Warp would auto-route their
-  # adjoint into m.body_{mass,inertia}.grad, CLOBBERING the sys-id gradient inertia_param_vjp
+  # adjoint into m.body_{mass,inertia}.grad, clobbering the sys-id gradient inertia_param_vjp
   # accumulated this step. Capture and discard so only the qpos (xipos/ximat) channel is touched.
   junk_mass = wp.zeros_like(m.body_mass)
   junk_inertia = wp.zeros_like(m.body_inertia)
@@ -1265,6 +1283,7 @@ def cinert_qpos_vjp(m: Model, d: Data, adj_cinert: wp.array2d, res_dof: wp.array
   return adj_subtree
 
 
+# exact reconstruction of smooth._compute_body_inertial_frames for a manual adjoint launch
 @wp.kernel
 def _inertial_frames_recompute(
   # Model:
@@ -1277,7 +1296,6 @@ def _inertial_frames_recompute(
   xipos_out: wp.array2d[wp.vec3],
   ximat_out: wp.array2d[wp.mat33],
 ):
-  """Exact reconstruction of smooth._compute_body_inertial_frames for a manual adjoint launch."""
   w, b = wp.tid()
   xp = xpos_in[w, b]
   xq = xquat_in[w, b]
@@ -1287,9 +1305,9 @@ def _inertial_frames_recompute(
 
 @event_scope
 def inertia_param_vjp(m: Model, d: Data, lam: wp.array2d):
-  """Inertial sys-id VJP: accumulates -(d(lam^T qfrc_bias)/dtheta) into m.<param>.grad.
+  """Accumulates the inertial sys-id VJP -(d(lam^T qfrc_bias)/dtheta) into m.<param>.grad.
 
-  Caveat: subtree_com is FROZEN, so body_ipos captures only the local parallel-axis path;
+  Caveat: subtree_com is frozen, so body_ipos captures only the local parallel-axis path;
   mass/inertia/iquat are exact. No-op unless a param is requires_grad.
   """
   nworld = d.qpos.shape[0]
@@ -1356,7 +1374,10 @@ def _add_spatial(a: wp.array2d[wp.spatial_vector], b: wp.array2d[wp.spatial_vect
 
 
 def rne_qpos_vjp(m: Model, d: Data, lam: wp.array2d, flg_acc: bool = True):
-  """Full RNE-bias dqpos: res_qpos = d(lam^T qfrc_bias)/dqpos; reads converged d only."""
+  """Computes the full RNE-bias dqpos: res_qpos = d(lam^T qfrc_bias)/dqpos.
+
+  Reads converged d only.
+  """
   nworld = d.qpos.shape[0]
   nv = m.nv
   nq = d.qpos.shape[1]
@@ -1409,7 +1430,9 @@ def rne_qpos_vjp(m: Model, d: Data, lam: wp.array2d, flg_acc: bool = True):
   return res_qpos
 
 
-# affine joint-actuator local-dqpos leaf (launched by actuator_qpos_vjp above)
+# affine joint-actuator local-dqpos leaf (launched by actuator_qpos_vjp above): manual VJP,
+# res_dof_out[j] += -ml_a*dfdl_a*moment[a,j]; saturated forcerange zeroes dfdl (mirrors forward);
+# velocity coeffs are owned by the velocity stage
 @wp.kernel(enable_backward=False)
 def _actuator_qpos_vjp(
   # Model:
@@ -1431,12 +1454,9 @@ def _actuator_qpos_vjp(
   # In:
   lam: wp.array2d[float],
   dsbl_clampctrl: int,
-  res_dof: wp.array2d[float],  # OUT (+=): per-dof TANGENT gradient; lifted by _dof_to_qpos
+  # Out:
+  res_dof_out: wp.array2d[float],  # (+=): per-dof tangent gradient; lifted by _dof_to_qpos
 ):
-  """Local dqpos of AFFINE joint actuators: res_dof[j] += -ml_a*dfdl_a*moment[a,j] (manual VJP).
-
-  Saturated forcerange zeroes dfdl (mirrors forward); velocity coeffs owned by velocity stage.
-  """
   w, actid = wp.tid()
   dfdl = float(0.0)
   if actuator_gaintype[actid] == _GAIN_AFFINE:
@@ -1460,7 +1480,7 @@ def _actuator_qpos_vjp(
   for i in range(rownnz):
     sid = rowadr + i
     ml += actuator_moment_in[w, sid] * lam[w, moment_colind_in[w, sid]]
-  c = -ml * dfdl  # MINUS: r_smooth includes -qfrc_actuator
+  c = -ml * dfdl  # minus: r_smooth includes -qfrc_actuator
   for i in range(rownnz):
     sid = rowadr + i
-    wp.atomic_add(res_dof[w], moment_colind_in[w, sid], c * actuator_moment_in[w, sid])
+    wp.atomic_add(res_dof_out[w], moment_colind_in[w, sid], c * actuator_moment_in[w, sid])
