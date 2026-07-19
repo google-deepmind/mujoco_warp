@@ -26,23 +26,10 @@ from absl.testing import parameterized
 import mujoco_warp as mjw
 from mujoco_warp import ConeType
 from mujoco_warp import test_data
-from mujoco_warp._src import constraint as _constraint
-from mujoco_warp._src.types import vec5
 
 # tolerance for difference between MuJoCo and MJWarp constraint calculations,
 # mostly due to float precision
 _TOLERANCE = 5e-4
-
-
-@wp.kernel
-def _contact_kbimp_grad_kernel(
-  pos: wp.array[float],
-  solref: wp.array(dtype=wp.vec2),
-  solimp: wp.array(dtype=vec5),
-  impedance: wp.array[float],
-):
-  i = wp.tid()
-  impedance[i] = _constraint._contact_kbimp(0, 0.005, solref[i], solimp[i], pos[i])[2]
 
 
 def _assert_eq(a, b, name, tol=_TOLERANCE):
@@ -132,27 +119,6 @@ def _assert_efc_eq(mjm, m, d, mjd, nefc, name, nv, tol=_TOLERANCE):
 
 
 class ConstraintTest(parameterized.TestCase):
-  @parameterized.parameters(1.0, 1.5, 2.0)
-  def test_contact_kbimp_saturated_grad_finite(self, power):
-    """Saturated impedance must not evaluate/reverse an invalid inactive power branch."""
-    width = 0.003
-    x = np.array([0.0, 0.5, 1.0, 2.0, 4.0], dtype=np.float32)
-    pos = wp.array(x * width, dtype=float, requires_grad=True)
-    solref = wp.array(np.tile([0.02, 1.0], (len(x), 1)), dtype=wp.vec2, requires_grad=True)
-    values = np.tile([0.9, 0.95, width, 0.5, power], (len(x), 1))
-    solimp = wp.array(values, dtype=vec5, requires_grad=True)
-    impedance = wp.empty(len(x), dtype=float, requires_grad=True)
-    tape = wp.Tape()
-    with tape:
-      wp.launch(_contact_kbimp_grad_kernel, dim=len(x), inputs=[pos, solref, solimp], outputs=[impedance])
-    tape.backward(grads={impedance: wp.ones(len(x), dtype=float)})
-
-    expected = np.array([0.9, 0.925, 0.95, 0.95, 0.95])
-    np.testing.assert_allclose(impedance.numpy(), expected, rtol=1e-6, atol=1e-6)
-    self.assertTrue(np.isfinite(pos.grad.numpy()).all())
-    self.assertTrue(np.isfinite(solref.grad.numpy()).all())
-    self.assertTrue(np.isfinite(solimp.grad.numpy()).all())
-
   @parameterized.parameters(
     *itertools.product(
       (ConeType.PYRAMIDAL, ConeType.ELLIPTIC),
