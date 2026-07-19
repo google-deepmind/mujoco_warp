@@ -352,8 +352,16 @@ def _eval_elliptic_cost(
 
 
 @wp.func
-def _eval_elliptic_middle(N: float, T: float, D0: float, mu: float, ufrictionj: float, is_normal: bool) -> wp.vec2:
-  """Elliptic-cone middle-zone ``vec2(force, cost)`` for one row (cost 0 on tangent rows)."""
+def _eval_elliptic_middle(
+  # In:
+  N: float,
+  T: float,
+  D0: float,
+  mu: float,
+  ufrictionj: float,
+  is_normal: bool,
+) -> wp.vec2:
+  """Computes the elliptic-cone middle-zone (force, cost) for one row (cost 0 on tangent rows)."""
   dm = math.safe_div(D0, mu * mu * (1.0 + mu * mu))
   nmt = N - mu * T
   force_normal = -dm * nmt * mu

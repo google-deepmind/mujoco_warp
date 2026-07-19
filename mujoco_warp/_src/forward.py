@@ -114,7 +114,7 @@ def next_velocity(
   dofid: int,
   qacc_scale_in: float,
 ) -> float:
-  # returns the updated velocity (not written) so the backward integrator can hold it as a local
+  """Returns the next velocity for one dof (value only, not written to qvel)."""
   timestep = opt_timestep[worldid % opt_timestep.shape[0]]
   return qvel_in[worldid, dofid] + qacc_scale_in * qacc_in[worldid, dofid] * timestep
 
@@ -142,7 +142,7 @@ def _next_position(
   dof_adr = jnt_dofadr[jntid]
   qvel = qvel_in[worldid]
 
-  # extract the (scaled) per-joint velocity as values, then integrate via the shared func.
+  # extract the (scaled) per-joint velocity
   qvel_lin = wp.vec3(0.0, 0.0, 0.0)
   qvel_ang = wp.vec3(0.0, 0.0, 0.0)
   if jnttype == JointType.FREE:
@@ -640,15 +640,13 @@ def implicit(m: Model, d: Data):
     _advance(m, d, d.qacc)
 
 
-# Gradient opt-in gate + analytic fwd_kinematics backward hook, set by mujoco_warp.enable_grad().
-# ENABLE_GRAD gates step() and fwd_kinematics(): a taped record while it is False is a hard error
-# (no silent zero-grad). The hook is the callback forward.py invokes (it cannot import adjoint.py).
+# gradient opt-in gate + analytic fwd_kinematics backward hook, set by mujoco_warp.enable_grad()
 ENABLE_GRAD = False
 _fwd_kinematics_backward_hook = None
 
 
 def register_fwd_kinematics_backward_hook(fn):
-  """Register adjoint.py's analytic fwd_kinematics backward (the position VJP callback)."""
+  """Registers the analytic fwd_kinematics backward callback."""
   global _fwd_kinematics_backward_hook
   _fwd_kinematics_backward_hook = fn
 
@@ -670,7 +668,7 @@ def fwd_kinematics(m: Model, d: Data):
       "call mujoco_warp.enable_grad() first, or run fwd_kinematics outside the tape"
     )
   if record:
-    rt.tape = None  # pause: kinematics kernels run forward-only; the analytic record_func owns the VJP
+    rt.tape = None  # pause recording; the record_func below is the sole adjoint
   try:
     smooth.kinematics(m, d)
     smooth.com_pos(m, d)
@@ -1418,8 +1416,7 @@ def forward(m: Model, d: Data):
   sensor.sensor_acc(m, d)
 
 
-# Minimal step-input state copied d -> d_out on step()'s out-of-place path; forward(m, d_out)
-# recomputes everything else. wp.copy (no alloc / no sync) keeps the path graph-capture safe.
+# minimal step-input state copied d -> d_out out-of-place; forward(m, d_out) recomputes the rest
 _STEP_STATE_FIELDS = (
   "qpos",
   "qvel",
@@ -1434,14 +1431,12 @@ _STEP_STATE_FIELDS = (
   "time",
 )
 
-# Analytic step-backward hook (the step VJP callback), set by mujoco_warp.enable_grad(). Only
-# consulted on the out-of-place (d_out is not d) path under an active wp.Tape; never affects
-# in-place step. The ENABLE_GRAD gate (defined above) is what raises on a taped step while off.
+# analytic step-backward hook, set by mujoco_warp.enable_grad(); taped out-of-place path only
 _step_backward_hook = None
 
 
 def register_step_backward_hook(fn):
-  """Register adjoint.py's analytic step backward (the step VJP callback)."""
+  """Registers the analytic step backward callback."""
   global _step_backward_hook
   _step_backward_hook = fn
 
@@ -1456,10 +1451,9 @@ def _copy_state(d: Data, d_out: Data):
 
 
 @event_scope
-def step(m: Model, d: Data, d_out: Data = None):
+def step(m: Model, d: Data, d_out: Optional[Data] = None):
   """Advance simulation: in place (d_out=None) or out-of-place d -> d_out, leaving d untouched.
 
-  When given, d_out holds the next state plus this step's intermediates (Newton-style step).
   Under a wp.Tape with a backward hook, records one analytic adjoint (d_out.grad -> d.grad).
   """
   inplace = d_out is None
@@ -1468,10 +1462,8 @@ def step(m: Model, d: Data, d_out: Data = None):
 
   rt = wp._src.context.runtime
   tape = rt.tape if rt is not None else None
-  # Out-of-place under a tape with an analytic backward: pause recording across the WHOLE forward
-  # (state copy + the ~90 forward-only physics kernels) so none of it lands on the tape -- the
-  # copy's wp.copy adjoints would otherwise double-count against adjoint.py's analytic record_func,
-  # which alone owns the step VJP (d_out.grad -> d.grad).
+  # pause recording across the forward: the analytic record_func below is the sole step adjoint;
+  # taping the state copy would double-count its wp.copy adjoints against it
   record = (not inplace) and (tape is not None)
   if record and not ENABLE_GRAD:
     raise RuntimeError(

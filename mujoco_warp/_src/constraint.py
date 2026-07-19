@@ -55,13 +55,15 @@ def _zero_constraint_counts(
 
 @wp.func
 def _contact_kbimp(
+  # Model:
   opt_disableflags: int,
+  # In:
   timestep: float,
   solref: wp.vec2,
   solimp: vec5,
   pos_imp: float,
 ) -> wp.vec3:
-  """Constraint ``vec3(k, b, impedance)`` from solref/solimp at impedance position ``pos_imp``."""
+  """Computes the constraint (k, b, impedance) from solref/solimp at impedance position pos_imp."""
   timeconst = solref[0]
   dampratio = solref[1]
   dmin = solimp[0]
@@ -82,9 +84,9 @@ def _contact_kbimp(
 
   # see https://mujoco.readthedocs.io/en/latest/modeling.html#solver-parameters
   dmax_sq = dmax * dmax
-  # Real control flow, not wp.where: Warp reverses BOTH wp.where arguments, so the unselected
-  # positive-format expression evaluated 1/0 for direct-format solref -- a sticky FP exception
-  # (or NaN parameter adjoint) even though the forward result was finite.
+  # branch, not wp.where: warp differentiates both wp.where operands, so the unselected
+  # positive-format expression yields 1/0 for direct-format solref (a sticky FP exception or NaN
+  # parameter adjoint) even though the forward result is finite
   if solref[0] <= 0.0:
     k = -solref[0] / wp.max(types.MJ_MINVAL, dmax_sq)
   else:
@@ -95,9 +97,9 @@ def _contact_kbimp(
     b = 2.0 / wp.max(types.MJ_MINVAL, dmax * timeconst)
 
   imp_x = wp.abs(pos_imp) / width
-  # Only evaluate the ACTIVE impedance polynomial: eager pow(1-imp_x, power) at a non-positive
-  # base has log(1-imp_x) in its reverse -> NaN/FE_INVALID even when wp.where discards the branch.
-  # At the saturation knots take the bounded zero subgradient (active set is piecewise anyway).
+  # evaluate only the active impedance polynomial: pow(1 - imp_x, power) at a non-positive base
+  # has log(1 - imp_x) in its reverse, NaN/FE_INVALID even when wp.where discards the branch;
+  # the saturation knots take the bounded zero subgradient (the active set is piecewise anyway)
   if dmin == dmax or width_raw <= types.MJ_MINVAL:
     imp = 0.5 * (dmin + dmax)
   elif imp_x <= 0.0:
@@ -144,7 +146,7 @@ def _efc_row(
   aref_out: wp.array2d[float],
   frictionloss_out: wp.array2d[float],
 ):
-  # k, b, impedance from solref/solimp at pos_imp (shared @wp.func; inlined => bit-identical).
+  # calculate kbi
   kbimp = _contact_kbimp(opt_disableflags, timestep, solref, solimp, pos_imp)
   k = kbimp[0]
   b = kbimp[1]
