@@ -2845,11 +2845,12 @@ def _update_gradient_JTCJ_dense(
 
     t = wp.max(wp.sqrt(tt), types.MJ_MINVAL)
     ttt = wp.max(t * t * t, types.MJ_MINVAL)
+    mu_tinv = math.safe_div(mu, t)
     h = _elliptic_hessian_entry_from_projections(
       dm,
-      math.safe_div(mu, t),
+      mu_tinv,
       mu * math.safe_div(n, ttt),
-      mu2 - mu * math.safe_div(n, t),
+      mu2 - n * mu_tinv,
       z01,
       z02,
       projection1,
