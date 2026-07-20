@@ -2385,15 +2385,17 @@ def _elliptic_curvature_terms(condim: int):
       return types.vec16()
 
     n = ctx_Jaref_in[worldid, efcid0] * mu
-    u = types.vec6(n, 0.0, 0.0, 0.0, 0.0, 0.0)
-    scale = types.vec6(mu, 0.0, 0.0, 0.0, 0.0, 0.0)
+    terms = types.vec16()
+    terms[6] = mu
     tt = float(0.0)
     for dim in range(1, wp.static(condim)):
       if dim < block_rows:
         efcid = efcid0 + dim
-        scale[dim] = fri[dim - 1]
-        u[dim] = ctx_Jaref_in[worldid, efcid] * scale[dim]
-        tt += u[dim] * u[dim]
+        scale = fri[dim - 1]
+        u = ctx_Jaref_in[worldid, efcid] * scale
+        terms[dim] = u
+        terms[6 + dim] = scale
+        tt += u * u
 
     t = wp.max(wp.sqrt(tt), types.MJ_MINVAL)
     ttt = wp.max(t * t * t, types.MJ_MINVAL)
@@ -2401,11 +2403,7 @@ def _elliptic_curvature_terms(condim: int):
     mu_n_over_ttt = mu * math.safe_div(n, ttt)
     tangent_diag = mu2 - mu * math.safe_div(n, t)
 
-    # Pack u[6], row scales[6], dm, mu/t, mu*n/t^3, and the tangent diagonal.
-    terms = types.vec16()
-    for dim in range(wp.static(condim)):
-      terms[dim] = u[dim]
-      terms[6 + dim] = scale[dim]
+    # Pack tangent u[1:6], row scales[6], dm, mu/t, mu*n/t^3, and the tangent diagonal.
     terms[12] = dm
     terms[13] = mu_over_t
     terms[14] = mu_n_over_ttt
@@ -2437,21 +2435,21 @@ def _elliptic_curvature_terms_dispatch(max_condim: int):
         opt_impratio_invsqrt, efc_D_in, fri, ctx_Jaref_in, worldid, efcid0, block_rows
       )
 
-    terms = types.vec16()
     if condim == 3:
-      terms = wp.static(_elliptic_curvature_terms(3))(
+      return wp.static(_elliptic_curvature_terms(3))(
         opt_impratio_invsqrt, efc_D_in, fri, ctx_Jaref_in, worldid, efcid0, block_rows
       )
-    elif condim == 4:
-      terms = wp.static(_elliptic_curvature_terms(4))(
+    if wp.static(MAX_CONDIM == 4):
+      return wp.static(_elliptic_curvature_terms(4))(
         opt_impratio_invsqrt, efc_D_in, fri, ctx_Jaref_in, worldid, efcid0, block_rows
       )
-    elif wp.static(MAX_CONDIM == 6):
-      if condim == 6:
-        terms = wp.static(_elliptic_curvature_terms(6))(
-          opt_impratio_invsqrt, efc_D_in, fri, ctx_Jaref_in, worldid, efcid0, block_rows
-        )
-    return terms
+    if condim == 4:
+      return wp.static(_elliptic_curvature_terms(4))(
+        opt_impratio_invsqrt, efc_D_in, fri, ctx_Jaref_in, worldid, efcid0, block_rows
+      )
+    return wp.static(_elliptic_curvature_terms(6))(
+      opt_impratio_invsqrt, efc_D_in, fri, ctx_Jaref_in, worldid, efcid0, block_rows
+    )
 
   return func
 
@@ -2508,15 +2506,13 @@ def _elliptic_hessian_entry(max_condim: int):
     if wp.static(MAX_CONDIM == 3):
       return wp.static(_contract_elliptic_hessian_entry_structured(3))(efc_J_in, terms, rowadr, worldid, pos1, pos2)
 
-    h = float(0.0)
     if condim == 3:
-      h = wp.static(_contract_elliptic_hessian_entry_structured(3))(efc_J_in, terms, rowadr, worldid, pos1, pos2)
-    elif condim == 4:
-      h = wp.static(_contract_elliptic_hessian_entry_structured(4))(efc_J_in, terms, rowadr, worldid, pos1, pos2)
-    elif wp.static(MAX_CONDIM == 6):
-      if condim == 6:
-        h = wp.static(_contract_elliptic_hessian_entry_structured(6))(efc_J_in, terms, rowadr, worldid, pos1, pos2)
-    return h
+      return wp.static(_contract_elliptic_hessian_entry_structured(3))(efc_J_in, terms, rowadr, worldid, pos1, pos2)
+    if wp.static(MAX_CONDIM == 4):
+      return wp.static(_contract_elliptic_hessian_entry_structured(4))(efc_J_in, terms, rowadr, worldid, pos1, pos2)
+    if condim == 4:
+      return wp.static(_contract_elliptic_hessian_entry_structured(4))(efc_J_in, terms, rowadr, worldid, pos1, pos2)
+    return wp.static(_contract_elliptic_hessian_entry_structured(6))(efc_J_in, terms, rowadr, worldid, pos1, pos2)
 
   return func
 
@@ -2528,8 +2524,6 @@ def _update_gradient_JTCJ_dense(
   dof_tri_row: wp.array[int],
   dof_tri_col: wp.array[int],
   # Data in:
-  contact_dist_in: wp.array[float],
-  contact_includemargin_in: wp.array[float],
   contact_friction_in: wp.array[types.vec5],
   contact_dim_in: wp.array[int],
   contact_efc_address_in: wp.array2d[int],
@@ -2562,21 +2556,13 @@ def _update_gradient_JTCJ_dense(
     if ctx_done_in[worldid]:
       continue
 
-    condim = contact_dim_in[conid]
-
-    if condim == 1:
-      continue
-
-    # check contact status
-    if contact_dist_in[conid] - contact_includemargin_in[conid] >= 0.0:
-      continue
-
     efcid0 = contact_efc_address_in[conid, 0]
     if efcid0 < 0:
       continue
     if efc_state_in[worldid, efcid0] != types.ConstraintState.CONE:
       continue
 
+    condim = contact_dim_in[conid]
     fri = contact_friction_in[conid]
     mu = fri[0] * opt_impratio_invsqrt[worldid % opt_impratio_invsqrt.shape[0]]
 
@@ -2599,22 +2585,23 @@ def _update_gradient_JTCJ_dense(
       tt += uj * uj
       u[j] = uj
 
-    if tt <= 0.0:
-      t = 0.0
-    else:
-      t = wp.sqrt(tt)
-    t = wp.max(t, types.MJ_MINVAL)
+    t = wp.max(wp.sqrt(tt), types.MJ_MINVAL)
     ttt = wp.max(t * t * t, types.MJ_MINVAL)
+    mu_over_t = math.safe_div(mu, t)
+    mu_n_over_ttt = mu * math.safe_div(n, ttt)
+    tangent_diag = mu2 - mu * math.safe_div(n, t)
 
     h = float(0.0)
 
     for dim1id in range(condim):
       if dim1id == 0:
         efcid1 = efcid0
+        dm_fri1 = dm * mu
       else:
         efcid1 = contact_efc_address_in[conid, dim1id]
         if efcid1 < 0:
           continue
+        dm_fri1 = dm * fri[dim1id - 1]
 
       efc_J11 = efc_J_in[worldid, efcid1, dof1id]
       efc_J12 = efc_J_in[worldid, efcid1, dof2id]
@@ -2624,10 +2611,12 @@ def _update_gradient_JTCJ_dense(
       for dim2id in range(0, dim1id + 1):
         if dim2id == 0:
           efcid2 = efcid0
+          dm_fri12 = dm_fri1 * mu
         else:
           efcid2 = contact_efc_address_in[conid, dim2id]
           if efcid2 < 0:
             continue
+          dm_fri12 = dm_fri1 * fri[dim2id - 1]
 
         efc_J21 = efc_J_in[worldid, efcid2, dof1id]
         efc_J22 = efc_J_in[worldid, efcid2, dof2id]
@@ -2638,28 +2627,16 @@ def _update_gradient_JTCJ_dense(
         if dim1id == 0 and dim2id == 0:
           hcone = 1.0
         elif dim1id == 0:
-          hcone = -math.safe_div(mu, t) * uj
+          hcone = -mu_over_t * uj
         elif dim2id == 0:
-          hcone = -math.safe_div(mu, t) * ui
+          hcone = -mu_over_t * ui
         else:
-          hcone = mu * math.safe_div(n, ttt) * ui * uj
+          hcone = mu_n_over_ttt * ui * uj
 
-          # add to diagonal: mu^2 - mu * n / t
           if dim1id == dim2id:
-            hcone += mu2 - mu * math.safe_div(n, t)
+            hcone += tangent_diag
 
-        # pre and post multiply by diag(mu, friction) scale by dm
-        if dim1id == 0:
-          fri1 = mu
-        else:
-          fri1 = fri[dim1id - 1]
-
-        if dim2id == 0:
-          fri2 = mu
-        else:
-          fri2 = fri[dim2id - 1]
-
-        hcone *= dm * fri1 * fri2
+        hcone *= dm_fri12
 
         if hcone != 0.0:
           h += hcone * efc_J11 * efc_J22
@@ -2966,7 +2943,7 @@ def _JTDAJ_sparse(compact: bool, elliptic: bool, max_condim: int):
           else:
             condim = contact_dim_in[conid]
           for dim in range(1, wp.static(MAX_CONDIM)):
-            if dim < condim and dim < block_rows:
+            if dim < block_rows:
               cone_rowadr[dim] = head_adr + dim * support
           local_terms = types.vec16()
           if lane == 0:
@@ -2981,7 +2958,7 @@ def _JTDAJ_sparse(compact: bool, elliptic: bool, max_condim: int):
               block_rows,
             )
           cone_terms = wp.tile_zeros(shape=(16,), dtype=float, storage="shared")
-          for term_id in range(16):
+          for term_id in range(1, 16):
             wp.tile_scatter_masked(cone_terms, term_id, local_terms[term_id], lane == 0)
 
       for entry in range(lane, n_entries, lanes):
@@ -3025,6 +3002,8 @@ def _jtdaj_groups_per_world(nworld: int, njmax: int) -> int:
   # _JTDAJ_OVERSUBSCRIBE_WAVES device waves -- else high-njmax worlds dispatch many idle tail warps
   # (njmax >> actual groups).  A few waves of oversubscription keep each warp's serial chain short,
   # load-balancing the variable group sizes (measured plateau: ~4-8 waves).
+  # Keep a stable calibration kernel: the occupancy API selects large blocks, so specialization-
+  # specific results do not model this kernel's fixed one-warp tiled launch.
   block_size, min_grid_size = wp.get_suggested_block_size(_JTDAJ_sparse(False, False, 3))
   # block_size * min_grid_size = full-device thread count (block_size cancels): the kernel's max
   # resident threads (one wave), a device property independent of nworld and our launch block_dim.
@@ -3267,8 +3246,6 @@ def _update_gradient(m: types.Model, d: types.Data, ctx: SolverContext, compact:
           m.opt.impratio_invsqrt,
           m.dof_tri_row,
           m.dof_tri_col,
-          d.contact.dist,
-          d.contact.includemargin,
           d.contact.friction,
           d.contact.dim,
           d.contact.efc_address,
