@@ -3187,13 +3187,9 @@ def _update_gradient(m: types.Model, d: types.Data, ctx: SolverContext, compact:
         ctx.done,
         groups_per_world,
       ]
-      threads_per_group = _JTDAJ_THREADS_PER_GROUP
-      block_dim = mj.block_dim.update_gradient_JTDAJ_sparse
-      if m.opt.cone == types.ConeType.ELLIPTIC:
-        block_dim = threads_per_group
-        if wp.get_device().is_cpu:
-          threads_per_group = 1
-          block_dim = 1
+      elliptic = m.opt.cone == types.ConeType.ELLIPTIC
+      threads_per_group = 1 if elliptic and wp.get_device().is_cpu else _JTDAJ_THREADS_PER_GROUP
+      block_dim = threads_per_group if elliptic else mj.block_dim.update_gradient_JTDAJ_sparse
       wp.launch(
         jtdaj_kernel,
         dim=(d.nworld, groups_per_world, threads_per_group),
