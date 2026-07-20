@@ -2393,159 +2393,6 @@ def _update_gradient_JTDAJ_dense_tiled(nv_pad: int, tile_size: int, njmax: int, 
   return kernel
 
 
-def _elliptic_curvature_terms(condim: int):
-  @wp.func
-  def func(
-    # Model:
-    opt_impratio_invsqrt: wp.array[float],
-    # Data in:
-    efc_D_in: wp.array2d[float],
-    # In:
-    fri: types.vec5,
-    ctx_Jaref_in: wp.array2d[float],
-    worldid: int,
-    efcid0: int,
-    block_rows: int,
-  ) -> types.vec16:
-    mu = fri[0] * opt_impratio_invsqrt[worldid % opt_impratio_invsqrt.shape[0]]
-    mu2 = mu * mu
-    dm = math.safe_div(efc_D_in[worldid, efcid0], mu2 * (1.0 + mu2))
-    if dm == 0.0:
-      return types.vec16()
-
-    n = ctx_Jaref_in[worldid, efcid0] * mu
-    terms = types.vec16()
-    terms[6] = mu
-    tt = float(0.0)
-    for dim in range(1, wp.static(condim)):
-      if dim < block_rows:
-        efcid = efcid0 + dim
-        scale = fri[dim - 1]
-        u = ctx_Jaref_in[worldid, efcid] * scale
-        terms[dim] = u
-        terms[6 + dim] = scale
-        tt += u * u
-
-    t = wp.max(wp.sqrt(tt), types.MJ_MINVAL)
-    ttt = wp.max(t * t * t, types.MJ_MINVAL)
-    mu_over_t = math.safe_div(mu, t)
-    mu_n_over_ttt = mu * math.safe_div(n, ttt)
-    tangent_diag = mu2 - mu * math.safe_div(n, t)
-
-    # Layout: tangent u[1:6], scales[6:12], dm, mu/t, mu*n/t^3, tangent diagonal.
-    terms[12] = dm
-    terms[13] = mu_over_t
-    terms[14] = mu_n_over_ttt
-    terms[15] = tangent_diag
-    return terms
-
-  return func
-
-
-def _elliptic_curvature_terms_dispatch(max_condim: int):
-  MAX_CONDIM = max_condim
-
-  @wp.func
-  def func(
-    # Model:
-    opt_impratio_invsqrt: wp.array[float],
-    # Data in:
-    efc_D_in: wp.array2d[float],
-    # In:
-    fri: types.vec5,
-    ctx_Jaref_in: wp.array2d[float],
-    worldid: int,
-    efcid0: int,
-    condim: int,
-    block_rows: int,
-  ) -> types.vec16:
-    if wp.static(MAX_CONDIM == 3):
-      return wp.static(_elliptic_curvature_terms(3))(
-        opt_impratio_invsqrt, efc_D_in, fri, ctx_Jaref_in, worldid, efcid0, block_rows
-      )
-
-    if condim == 3:
-      return wp.static(_elliptic_curvature_terms(3))(
-        opt_impratio_invsqrt, efc_D_in, fri, ctx_Jaref_in, worldid, efcid0, block_rows
-      )
-    if wp.static(MAX_CONDIM == 4):
-      return wp.static(_elliptic_curvature_terms(4))(
-        opt_impratio_invsqrt, efc_D_in, fri, ctx_Jaref_in, worldid, efcid0, block_rows
-      )
-    if condim == 4:
-      return wp.static(_elliptic_curvature_terms(4))(
-        opt_impratio_invsqrt, efc_D_in, fri, ctx_Jaref_in, worldid, efcid0, block_rows
-      )
-    return wp.static(_elliptic_curvature_terms(6))(
-      opt_impratio_invsqrt, efc_D_in, fri, ctx_Jaref_in, worldid, efcid0, block_rows
-    )
-
-  return func
-
-
-def _contract_elliptic_hessian_entry_structured(condim: int):
-  @wp.func
-  def func(
-    # Data in:
-    efc_J_in: wp.array3d[float],
-    # In:
-    terms: Any,
-    rowadr: types.vec6i,
-    worldid: int,
-    pos1: int,
-    pos2: int,
-  ) -> float:
-    z01 = terms[6] * efc_J_in[worldid, 0, rowadr[0] + pos1]
-    z02 = terms[6] * efc_J_in[worldid, 0, rowadr[0] + pos2]
-    projection1 = float(0.0)
-    projection2 = float(0.0)
-    tangent_dot = float(0.0)
-    for dim in range(1, wp.static(condim)):
-      z1 = terms[6 + dim] * efc_J_in[worldid, 0, rowadr[dim] + pos1]
-      z2 = terms[6 + dim] * efc_J_in[worldid, 0, rowadr[dim] + pos2]
-      projection1 += terms[dim] * z1
-      projection2 += terms[dim] * z2
-      tangent_dot += z1 * z2
-
-    return terms[12] * (
-      z01 * z02
-      - terms[13] * (z01 * projection2 + z02 * projection1)
-      + terms[14] * projection1 * projection2
-      + terms[15] * tangent_dot
-    )
-
-  return func
-
-
-def _elliptic_hessian_entry(max_condim: int):
-  MAX_CONDIM = max_condim
-
-  @wp.func
-  def func(
-    # Data in:
-    efc_J_in: wp.array3d[float],
-    # In:
-    terms: Any,
-    rowadr: types.vec6i,
-    worldid: int,
-    pos1: int,
-    pos2: int,
-    condim: int,
-  ) -> float:
-    if wp.static(MAX_CONDIM == 3):
-      return wp.static(_contract_elliptic_hessian_entry_structured(3))(efc_J_in, terms, rowadr, worldid, pos1, pos2)
-
-    if condim == 3:
-      return wp.static(_contract_elliptic_hessian_entry_structured(3))(efc_J_in, terms, rowadr, worldid, pos1, pos2)
-    if wp.static(MAX_CONDIM == 4):
-      return wp.static(_contract_elliptic_hessian_entry_structured(4))(efc_J_in, terms, rowadr, worldid, pos1, pos2)
-    if condim == 4:
-      return wp.static(_contract_elliptic_hessian_entry_structured(4))(efc_J_in, terms, rowadr, worldid, pos1, pos2)
-    return wp.static(_contract_elliptic_hessian_entry_structured(6))(efc_J_in, terms, rowadr, worldid, pos1, pos2)
-
-  return func
-
-
 @wp.kernel
 def _update_gradient_JTCJ_dense(
   # Model:
@@ -2929,10 +2776,146 @@ _JTDAJ_OVERSUBSCRIBE_WAVES = 6
 
 
 @cache_kernel
-def _JTDAJ_sparse(compact: bool, elliptic: bool, max_condim: int):
+def _JTDAJ_sparse(compact: bool, cone_type: types.ConeType, max_condim: int):
   COMPACT = compact
-  ELLIPTIC = elliptic
+  ELLIPTIC = cone_type == types.ConeType.ELLIPTIC
   MAX_CONDIM = max_condim
+
+  def make_curvature_terms(condim: int):
+    @wp.func
+    def func(
+      # Model:
+      opt_impratio_invsqrt: wp.array[float],
+      # Data in:
+      efc_D_in: wp.array2d[float],
+      # In:
+      fri: types.vec5,
+      ctx_Jaref_in: wp.array2d[float],
+      worldid: int,
+      efcid0: int,
+      block_rows: int,
+    ) -> types.vec16:
+      mu = fri[0] * opt_impratio_invsqrt[worldid % opt_impratio_invsqrt.shape[0]]
+      mu2 = mu * mu
+      dm = math.safe_div(efc_D_in[worldid, efcid0], mu2 * (1.0 + mu2))
+      if dm == 0.0:
+        return types.vec16()
+
+      n = ctx_Jaref_in[worldid, efcid0] * mu
+      terms = types.vec16()
+      terms[6] = mu
+      tt = float(0.0)
+      for dim in range(1, wp.static(condim)):
+        if dim < block_rows:
+          efcid = efcid0 + dim
+          scale = fri[dim - 1]
+          u = ctx_Jaref_in[worldid, efcid] * scale
+          terms[dim] = u
+          terms[6 + dim] = scale
+          tt += u * u
+
+      t = wp.max(wp.sqrt(tt), types.MJ_MINVAL)
+      ttt = wp.max(t * t * t, types.MJ_MINVAL)
+      mu_over_t = math.safe_div(mu, t)
+      mu_n_over_ttt = mu * math.safe_div(n, ttt)
+      tangent_diag = mu2 - mu * math.safe_div(n, t)
+
+      # Layout: tangent u[1:6], scales[6:12], dm, mu/t, mu*n/t^3, tangent diagonal.
+      terms[12] = dm
+      terms[13] = mu_over_t
+      terms[14] = mu_n_over_ttt
+      terms[15] = tangent_diag
+      return terms
+
+    return func
+
+  def make_hessian_entry(condim: int):
+    @wp.func
+    def func(
+      # Data in:
+      efc_J_in: wp.array3d[float],
+      # In:
+      terms: Any,
+      rowadr: types.vec6i,
+      worldid: int,
+      pos1: int,
+      pos2: int,
+    ) -> float:
+      z01 = terms[6] * efc_J_in[worldid, 0, rowadr[0] + pos1]
+      z02 = terms[6] * efc_J_in[worldid, 0, rowadr[0] + pos2]
+      projection1 = float(0.0)
+      projection2 = float(0.0)
+      tangent_dot = float(0.0)
+      for dim in range(1, wp.static(condim)):
+        z1 = terms[6 + dim] * efc_J_in[worldid, 0, rowadr[dim] + pos1]
+        z2 = terms[6 + dim] * efc_J_in[worldid, 0, rowadr[dim] + pos2]
+        projection1 += terms[dim] * z1
+        projection2 += terms[dim] * z2
+        tangent_dot += z1 * z2
+
+      return terms[12] * (
+        z01 * z02
+        - terms[13] * (z01 * projection2 + z02 * projection1)
+        + terms[14] * projection1 * projection2
+        + terms[15] * tangent_dot
+      )
+
+    return func
+
+  curvature_terms3 = make_curvature_terms(3)
+  curvature_terms4 = make_curvature_terms(4)
+  curvature_terms6 = make_curvature_terms(6)
+  hessian_entry3 = make_hessian_entry(3)
+  hessian_entry4 = make_hessian_entry(4)
+  hessian_entry6 = make_hessian_entry(6)
+
+  @wp.func
+  def curvature_terms(
+    # Model:
+    opt_impratio_invsqrt: wp.array[float],
+    # Data in:
+    efc_D_in: wp.array2d[float],
+    # In:
+    fri: types.vec5,
+    ctx_Jaref_in: wp.array2d[float],
+    worldid: int,
+    efcid0: int,
+    condim: int,
+    block_rows: int,
+  ) -> types.vec16:
+    if wp.static(MAX_CONDIM == 3):
+      return curvature_terms3(opt_impratio_invsqrt, efc_D_in, fri, ctx_Jaref_in, worldid, efcid0, block_rows)
+
+    if condim == 3:
+      return curvature_terms3(opt_impratio_invsqrt, efc_D_in, fri, ctx_Jaref_in, worldid, efcid0, block_rows)
+    if wp.static(MAX_CONDIM == 4):
+      return curvature_terms4(opt_impratio_invsqrt, efc_D_in, fri, ctx_Jaref_in, worldid, efcid0, block_rows)
+    if condim == 4:
+      return curvature_terms4(opt_impratio_invsqrt, efc_D_in, fri, ctx_Jaref_in, worldid, efcid0, block_rows)
+    return curvature_terms6(opt_impratio_invsqrt, efc_D_in, fri, ctx_Jaref_in, worldid, efcid0, block_rows)
+
+  @wp.func
+  def hessian_entry(
+    # Data in:
+    efc_J_in: wp.array3d[float],
+    # In:
+    terms: Any,
+    rowadr: types.vec6i,
+    worldid: int,
+    pos1: int,
+    pos2: int,
+    condim: int,
+  ) -> float:
+    if wp.static(MAX_CONDIM == 3):
+      return hessian_entry3(efc_J_in, terms, rowadr, worldid, pos1, pos2)
+
+    if condim == 3:
+      return hessian_entry3(efc_J_in, terms, rowadr, worldid, pos1, pos2)
+    if wp.static(MAX_CONDIM == 4):
+      return hessian_entry4(efc_J_in, terms, rowadr, worldid, pos1, pos2)
+    if condim == 4:
+      return hessian_entry4(efc_J_in, terms, rowadr, worldid, pos1, pos2)
+    return hessian_entry6(efc_J_in, terms, rowadr, worldid, pos1, pos2)
 
   @wp.kernel(module="unique", enable_backward=False)
   def kernel(
@@ -2991,7 +2974,7 @@ def _JTDAJ_sparse(compact: bool, elliptic: bool, max_condim: int):
               cone_rowadr[dim] = head_adr + dim * support
           local_terms = types.vec16()
           if lane == 0:
-            local_terms = wp.static(_elliptic_curvature_terms_dispatch(MAX_CONDIM))(
+            local_terms = curvature_terms(
               opt_impratio_invsqrt,
               efc_D_in,
               contact_friction_in[conid],
@@ -3013,7 +2996,7 @@ def _JTDAJ_sparse(compact: bool, elliptic: bool, max_condim: int):
         hval = float(0.0)
         if wp.static(ELLIPTIC):
           if is_cone:
-            hval = wp.static(_elliptic_hessian_entry(MAX_CONDIM))(
+            hval = hessian_entry(
               efc_J_in,
               cone_terms,
               cone_rowadr,
@@ -3043,7 +3026,7 @@ def _JTDAJ_sparse(compact: bool, elliptic: bool, max_condim: int):
 
 def _jtdaj_groups_per_world(nworld: int, njmax: int) -> int:
   # njmax is capacity and often mostly empty, so cap slots at a few resident waves.
-  block_size, min_grid_size = wp.get_suggested_block_size(_JTDAJ_sparse(False, False, 3))
+  block_size, min_grid_size = wp.get_suggested_block_size(_JTDAJ_sparse(False, types.ConeType.PYRAMIDAL, 3))
   device_warps = max(1, block_size * min_grid_size // _JTDAJ_THREADS_PER_GROUP)
   return max(1, min(njmax, _JTDAJ_OVERSUBSCRIBE_WAVES * device_warps // nworld))
 
@@ -3181,9 +3164,10 @@ def _update_gradient(m: types.Model, d: types.Data, ctx: SolverContext, compact:
       )
 
       groups_per_world = _jtdaj_groups_per_world(d.nworld, d.njmax)
-      elliptic = bool(m.opt.cone == types.ConeType.ELLIPTIC)
-      max_condim = 3 if not elliptic or m.nmaxcondim <= 3 else int(m.nmaxcondim)
-      jtdaj_kernel = _JTDAJ_sparse(sc, elliptic, max_condim)
+      max_condim = 3
+      if m.opt.cone == types.ConeType.ELLIPTIC and m.nmaxcondim > 3:
+        max_condim = int(m.nmaxcondim)
+      jtdaj_kernel = _JTDAJ_sparse(sc, m.opt.cone, max_condim)
       jtdaj_inputs = [
         m.opt.impratio_invsqrt,
         d.contact.friction,
@@ -3203,7 +3187,7 @@ def _update_gradient(m: types.Model, d: types.Data, ctx: SolverContext, compact:
         ctx.done,
         groups_per_world,
       ]
-      if elliptic:
+      if m.opt.cone == types.ConeType.ELLIPTIC:
         wp.launch_tiled(
           jtdaj_kernel,
           dim=(d.nworld, groups_per_world),

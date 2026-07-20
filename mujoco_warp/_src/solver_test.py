@@ -601,7 +601,7 @@ class SolverTest(parameterized.TestCase):
     )
     groups_per_world = solver._jtdaj_groups_per_world(d.nworld, d.njmax)
     wp.launch(
-      solver._JTDAJ_sparse(False, False, 3),
+      solver._JTDAJ_sparse(False, ConeType.PYRAMIDAL, 3),
       dim=(d.nworld, groups_per_world, solver._JTDAJ_THREADS_PER_GROUP),
       inputs=[
         m.opt.impratio_invsqrt,
