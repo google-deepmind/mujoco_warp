@@ -750,7 +750,7 @@ class GJKTest(parameterized.TestCase):
       mat1=rot1,
       pos2=pos2,
       mat2=rot2,
-      horizon_size=8,
+      horizon_size=5,
       warn_overflow=False,
       overflow_out=overflow,
     )
