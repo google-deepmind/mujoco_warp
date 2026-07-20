@@ -2553,6 +2553,8 @@ def _update_gradient_JTCJ_dense(
   dof_tri_row: wp.array[int],
   dof_tri_col: wp.array[int],
   # Data in:
+  contact_dist_in: wp.array[float],
+  contact_includemargin_in: wp.array[float],
   contact_friction_in: wp.array[types.vec5],
   contact_dim_in: wp.array[int],
   contact_efc_address_in: wp.array2d[int],
@@ -2585,13 +2587,21 @@ def _update_gradient_JTCJ_dense(
     if ctx_done_in[worldid]:
       continue
 
+    condim = contact_dim_in[conid]
+
+    if condim == 1:
+      continue
+
+    # check contact status
+    if contact_dist_in[conid] - contact_includemargin_in[conid] >= 0.0:
+      continue
+
     efcid0 = contact_efc_address_in[conid, 0]
     if efcid0 < 0:
       continue
     if efc_state_in[worldid, efcid0] != types.ConstraintState.CONE:
       continue
 
-    condim = contact_dim_in[conid]
     fri = contact_friction_in[conid]
     mu = fri[0] * opt_impratio_invsqrt[worldid % opt_impratio_invsqrt.shape[0]]
 
@@ -2614,23 +2624,22 @@ def _update_gradient_JTCJ_dense(
       tt += uj * uj
       u[j] = uj
 
-    t = wp.max(wp.sqrt(tt), types.MJ_MINVAL)
+    if tt <= 0.0:
+      t = 0.0
+    else:
+      t = wp.sqrt(tt)
+    t = wp.max(t, types.MJ_MINVAL)
     ttt = wp.max(t * t * t, types.MJ_MINVAL)
-    mu_over_t = math.safe_div(mu, t)
-    mu_n_over_ttt = mu * math.safe_div(n, ttt)
-    tangent_diag = mu2 - mu * math.safe_div(n, t)
 
     h = float(0.0)
 
     for dim1id in range(condim):
       if dim1id == 0:
         efcid1 = efcid0
-        dm_fri1 = dm * mu
       else:
         efcid1 = contact_efc_address_in[conid, dim1id]
         if efcid1 < 0:
           continue
-        dm_fri1 = dm * fri[dim1id - 1]
 
       efc_J11 = efc_J_in[worldid, efcid1, dof1id]
       efc_J12 = efc_J_in[worldid, efcid1, dof2id]
@@ -2640,12 +2649,10 @@ def _update_gradient_JTCJ_dense(
       for dim2id in range(0, dim1id + 1):
         if dim2id == 0:
           efcid2 = efcid0
-          dm_fri12 = dm_fri1 * mu
         else:
           efcid2 = contact_efc_address_in[conid, dim2id]
           if efcid2 < 0:
             continue
-          dm_fri12 = dm_fri1 * fri[dim2id - 1]
 
         efc_J21 = efc_J_in[worldid, efcid2, dof1id]
         efc_J22 = efc_J_in[worldid, efcid2, dof2id]
@@ -2656,16 +2663,28 @@ def _update_gradient_JTCJ_dense(
         if dim1id == 0 and dim2id == 0:
           hcone = 1.0
         elif dim1id == 0:
-          hcone = -mu_over_t * uj
+          hcone = -math.safe_div(mu, t) * uj
         elif dim2id == 0:
-          hcone = -mu_over_t * ui
+          hcone = -math.safe_div(mu, t) * ui
         else:
-          hcone = mu_n_over_ttt * ui * uj
+          hcone = mu * math.safe_div(n, ttt) * ui * uj
 
+          # add to diagonal: mu^2 - mu * n / t
           if dim1id == dim2id:
-            hcone += tangent_diag
+            hcone += mu2 - mu * math.safe_div(n, t)
 
-        hcone *= dm_fri12
+        # pre and post multiply by diag(mu, friction) scale by dm
+        if dim1id == 0:
+          fri1 = mu
+        else:
+          fri1 = fri[dim1id - 1]
+
+        if dim2id == 0:
+          fri2 = mu
+        else:
+          fri2 = fri[dim2id - 1]
+
+        hcone *= dm * fri1 * fri2
 
         if hcone != 0.0:
           h += hcone * efc_J11 * efc_J22
@@ -3264,6 +3283,8 @@ def _update_gradient(m: types.Model, d: types.Data, ctx: SolverContext, compact:
           m.opt.impratio_invsqrt,
           m.dof_tri_row,
           m.dof_tri_col,
+          d.contact.dist,
+          d.contact.includemargin,
           d.contact.friction,
           d.contact.dim,
           d.contact.efc_address,
