@@ -667,7 +667,7 @@ def register_fwd_kinematics_backward_hook(fn):
 
 @event_scope
 def fwd_kinematics(m: Model, d: Data):
-  """Kinematic position-dependent computations.
+  """Kinematics-dependent computations.
 
   Args:
     m: The model containing kinematic and dynamic information.
@@ -689,6 +689,11 @@ def fwd_kinematics(m: Model, d: Data):
     smooth.camlight(m, d)
     smooth.flex(m, d)
     smooth.tendon(m, d)
+
+    sleep_enabled = bool(m.opt.enableflags & EnableBit.SLEEP) and not bool(m.opt.disableflags & DisableBit.ISLAND)
+    if sleep_enabled and m.ntendon > 0:
+      sleep.wake_tendon(m, d)
+      sleep.update_sleep_trees(m, d)
   finally:
     if record:
       rt.tape = tape
@@ -697,22 +702,6 @@ def fwd_kinematics(m: Model, d: Data):
     arrays = [a for a in (d.qpos, d.site_xpos, d.xpos, d.xquat) if a is not None and a.grad]
     if len(arrays) > 1:  # qpos + at least one differentiated output
       tape.record_func(lambda: hook(m, d), arrays=arrays)
-
-
-@event_scope
-def fwd_kinematics(m: Model, d: Data):
-  """Kinematics-dependent computations.
-
-  Args:
-    m: The model containing kinematic and dynamic information.
-    d: The data object containing the current state and output arrays.
-  """
-  fwd_kinematics(m, d)
-
-  sleep_enabled = bool(m.opt.enableflags & EnableBit.SLEEP) and not bool(m.opt.disableflags & DisableBit.ISLAND)
-  if sleep_enabled and m.ntendon > 0:
-    sleep.wake_tendon(m, d)
-    sleep.update_sleep_trees(m, d)
 
 
 @event_scope
