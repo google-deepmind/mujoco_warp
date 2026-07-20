@@ -25,6 +25,7 @@ import mujoco_warp as mjw
 from mujoco_warp import test_data
 from mujoco_warp._src import derivative
 from mujoco_warp._src import forward
+from mujoco_warp._src import util_pkg
 
 # tolerance for difference between MuJoCo and mjwarp smooth calculations - mostly
 # due to float precision
@@ -1239,6 +1240,11 @@ class DerivativeTest(parameterized.TestCase):
       """,
   }
 
+  # TODO(thowell): update implementation for free bodies
+  @absltest.skipIf(
+    util_pkg.check_version("mujoco>=3.10.1.dev948899583"),
+    "Requires MuJoCo < 3.10.1.dev948899583",
+  )
   @parameterized.product(
     scenario=list(_FLUID_SCENARIOS.keys()),
     jacobian=[mujoco.mjtJacobian.mjJAC_DENSE, mujoco.mjtJacobian.mjJAC_SPARSE],
