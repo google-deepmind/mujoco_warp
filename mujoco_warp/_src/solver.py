@@ -3187,22 +3187,20 @@ def _update_gradient(m: types.Model, d: types.Data, ctx: SolverContext, compact:
         ctx.done,
         groups_per_world,
       ]
+      threads_per_group = _JTDAJ_THREADS_PER_GROUP
+      block_dim = mj.block_dim.update_gradient_JTDAJ_sparse
       if m.opt.cone == types.ConeType.ELLIPTIC:
-        wp.launch_tiled(
-          jtdaj_kernel,
-          dim=(d.nworld, groups_per_world),
-          inputs=jtdaj_inputs,
-          outputs=[ctx.h],
-          block_dim=_JTDAJ_THREADS_PER_GROUP,
-        )
-      else:
-        wp.launch(
-          jtdaj_kernel,
-          dim=(d.nworld, groups_per_world, _JTDAJ_THREADS_PER_GROUP),
-          inputs=jtdaj_inputs,
-          outputs=[ctx.h],
-          block_dim=mj.block_dim.update_gradient_JTDAJ_sparse,
-        )
+        block_dim = threads_per_group
+        if wp.get_device().is_cpu:
+          threads_per_group = 1
+          block_dim = 1
+      wp.launch(
+        jtdaj_kernel,
+        dim=(d.nworld, groups_per_world, threads_per_group),
+        inputs=jtdaj_inputs,
+        outputs=[ctx.h],
+        block_dim=block_dim,
+      )
     else:
       if compact:
         # compact path: d.M is the dense 3D compact inertia block (nworld, nv_pad, nv_pad)
