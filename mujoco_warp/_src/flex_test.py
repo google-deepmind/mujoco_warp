@@ -1673,6 +1673,35 @@ class FlexCollisionTest(parameterized.TestCase):
       self.assertGreater(plane_contacts, 0, f"Expected at least one contact with the plane in world {w}")
 
   @parameterized.parameters(1, 2)
+  def test_plane_cloth_no_fps_limit(self, nworld):
+    """Test that flex-geom contacts are not limited to MJ_MAXCONPAIR (50)."""
+    xml = """
+    <mujoco>
+      <option solver="CG" tolerance="1e-6" timestep=".001"/>
+      <size memory="10M"/>
+
+      <worldbody>
+        <light pos="0 0 3" dir="0 0 -1"/>
+        <geom type="plane" size="5 5 .1" pos="0 0 0"/>
+        <flexcomp type="grid" count="10 10 1" spacing=".1 .1 .1" pos="-.5 -.5 0.01"
+                  radius=".02" name="cloth" dim="2" mass=".5">
+          <contact condim="3" solref="0.01 1" solimp=".95 .99 .0001"
+                   selfcollide="none" conaffinity="1" contype="1"/>
+          <edge damping="0.01"/>
+        </flexcomp>
+      </worldbody>
+    </mujoco>
+    """
+    _, _, m, d = test_data.fixture(xml=xml, nworld=nworld)
+
+    mjw.kinematics(m, d)
+    mjw.collision(m, d)
+
+    nacon = int(d.nacon.numpy()[0])
+    expected_contacts = 100 * nworld
+    self.assertEqual(nacon, expected_contacts, f"Expected {expected_contacts} contacts, got {nacon}")
+
+  @parameterized.parameters(1, 2)
   def test_mixed_flex_broadphase_and_narrowphase(self, nworld):
     """Test that broadphase and narrowphase run correctly with mixed 2D and 3D flexes."""
     xml = """
@@ -2592,6 +2621,179 @@ class FlexSensorTest(parameterized.TestCase):
         atol=_TOLERANCE,
         err_msg=f"sensordata mismatch (world {w})",
       )
+
+
+class FlexFlexCollisionTest(parameterized.TestCase):
+  """Tests for flex-flex collisions."""
+
+  def test_flex_flex_collision_1d_1d(self):
+    """Test collision between two overlapping 1D flexes (capsules)."""
+    xml = """
+    <mujoco>
+      <worldbody>
+        <!-- Two line flexes overlapping at origin -->
+        <flexcomp name="rope1" type="grid" count="2 1 1" spacing=".2 .2 .1" pos="0 -0.01 0"
+                  radius=".02" dim="1" mass=".5">
+          <contact selfcollide="none" contype="1" conaffinity="1"/>
+        </flexcomp>
+        <flexcomp name="rope2" type="grid" count="2 1 1" spacing=".2 .2 .1" pos="0 0.01 0"
+                  radius=".02" dim="1" mass=".5">
+          <contact selfcollide="none" contype="1" conaffinity="1"/>
+        </flexcomp>
+      </worldbody>
+    </mujoco>
+    """
+    _, _, m, d = test_data.fixture(xml=xml)
+
+    self.assertEqual(m.nflex, 2)
+
+    mjw.kinematics(m, d)
+    mjw.collision(m, d)
+
+    nacon = int(d.nacon.numpy()[0])
+    self.assertGreater(nacon, 0, "Expected capsule-capsule flex-flex contacts")
+
+  def test_flex_flex_collision_2d_2d(self):
+    """Test GJK/EPA collision between two overlapping 2D cloths."""
+    xml = """
+    <mujoco>
+      <worldbody>
+        <!-- Two cloth grids placed one slightly above the other, overlapping in X/Y -->
+        <flexcomp name="cloth1" type="grid" count="3 3 1" spacing=".2 .2 .1" pos="0 0 0"
+                  radius=".02" dim="2" mass=".5">
+          <contact selfcollide="none" contype="1" conaffinity="1"/>
+        </flexcomp>
+        <flexcomp name="cloth2" type="grid" count="3 3 1" spacing=".2 .2 .1" pos="0.1 0.1 0.02"
+                  radius=".02" dim="2" mass=".5">
+          <contact selfcollide="none" contype="1" conaffinity="1"/>
+        </flexcomp>
+      </worldbody>
+    </mujoco>
+    """
+    _, _, m, d = test_data.fixture(xml=xml)
+
+    self.assertEqual(m.nflex, 2)
+
+    mjw.kinematics(m, d)
+    mjw.collision(m, d)
+
+    nacon = int(d.nacon.numpy()[0])
+    self.assertGreater(nacon, 0, "Expected GJK/EPA cloth-cloth contacts")
+
+  def test_flex_flex_collision_1d_2d(self):
+    """Test GJK/EPA collision between 1D rope and 2D cloth."""
+    xml = """
+    <mujoco>
+      <worldbody>
+        <!-- Cloth at origin -->
+        <flexcomp name="cloth" type="grid" count="3 3 1" spacing=".2 .2 .1" pos="0 0 0"
+                  radius=".02" dim="2" mass=".5">
+          <contact selfcollide="none" contype="1" conaffinity="1"/>
+        </flexcomp>
+        <!-- Rope passing through the cloth -->
+        <flexcomp name="rope" type="grid" count="2 1 1" spacing=".2 .2 .1" pos="0 0 0.01"
+                  radius=".02" dim="1" mass=".5">
+          <contact selfcollide="none" contype="1" conaffinity="1"/>
+        </flexcomp>
+      </worldbody>
+    </mujoco>
+    """
+    _, _, m, d = test_data.fixture(xml=xml)
+
+    self.assertEqual(m.nflex, 2)
+
+    mjw.kinematics(m, d)
+    mjw.collision(m, d)
+
+    nacon = int(d.nacon.numpy()[0])
+    self.assertGreater(nacon, 0, "Expected GJK/EPA rope-cloth contacts")
+
+  def test_flex_flex_collision_bitmask_filtering(self):
+    """Test that flex-flex collisions respect contype/conaffinity bitmasks."""
+    xml = """
+    <mujoco>
+      <worldbody>
+        <!-- Two cloths that would overlap, but contype/conaffinity do not match -->
+        <flexcomp name="cloth1" type="grid" count="3 3 1" spacing=".2 .2 .1" pos="0 0 0"
+                  radius=".02" dim="2" mass=".5">
+          <contact selfcollide="none" contype="1" conaffinity="2"/>
+        </flexcomp>
+        <flexcomp name="cloth2" type="grid" count="3 3 1" spacing=".2 .2 .1" pos="0 0 0.02"
+                  radius=".02" dim="2" mass=".5">
+          <contact selfcollide="none" contype="4" conaffinity="8"/>
+        </flexcomp>
+      </worldbody>
+    </mujoco>
+    """
+    _, _, m, d = test_data.fixture(xml=xml)
+
+    self.assertEqual(m.nflex, 2)
+
+    mjw.kinematics(m, d)
+    mjw.collision(m, d)
+
+    nacon = int(d.nacon.numpy()[0])
+    self.assertEqual(nacon, 0, "Expected no contacts due to bitmask mismatch")
+
+  def test_flex_flex_collision_shared_body_filtering(self):
+    """Test that flex-flex collisions exclude elements if vertices share a body."""
+    xml = """
+    <mujoco>
+      <worldbody>
+        <flexcomp name="cloth1" type="grid" count="3 3 1" spacing=".2 .2 .1" pos="0 0 0"
+                  radius=".02" dim="2" mass=".5">
+          <contact selfcollide="none" contype="1" conaffinity="1"/>
+        </flexcomp>
+        <flexcomp name="cloth2" type="grid" count="3 3 1" spacing=".2 .2 .1" pos="0 0 0.02"
+                  radius=".02" dim="2" mass=".5">
+          <contact selfcollide="none" contype="1" conaffinity="1"/>
+        </flexcomp>
+      </worldbody>
+    </mujoco>
+    """
+    _, _, m, d = test_data.fixture(xml=xml)
+
+    # First verify we get contacts normally
+    mjw.kinematics(m, d)
+    mjw.collision(m, d)
+    nacon = int(d.nacon.numpy()[0])
+    self.assertGreater(nacon, 0, "Expected baseline contacts before weld")
+
+    # Now weld all vertices of cloth1 and cloth2 to the same body ID (e.g. 1)
+    # So they are treated as sharing bodies.
+    vertbody = m.flex_vertbodyid.numpy()
+    vertbody[:] = 1
+    m.flex_vertbodyid.assign(vertbody)
+
+    # Run collision again
+    mjw.collision(m, d)
+    nacon = int(d.nacon.numpy()[0])
+    self.assertEqual(nacon, 0, "Expected 0 contacts due to shared body exclusion")
+
+  def test_flex_flex_collision_3d_3d(self):
+    """Test GJK/EPA collision between two overlapping 3D blocks."""
+    xml = """
+    <mujoco>
+      <worldbody>
+        <flexcomp name="cube1" type="grid" count="3 3 3" spacing="0.05 0.05 0.05" pos="0 0 0.1" dim="3" mass="1" radius="0.01">
+          <contact selfcollide="none" contype="1" conaffinity="1" condim="3"/>
+        </flexcomp>
+        <flexcomp name="cube2" type="grid" count="3 3 3" spacing="0.05 0.05 0.05" pos="0.08 0.08 0.18" dim="3" mass="1" radius="0.01">
+          <contact selfcollide="none" contype="1" conaffinity="1" condim="3"/>
+        </flexcomp>
+      </worldbody>
+    </mujoco>
+    """
+    _, _, m, d = test_data.fixture(xml=xml)
+
+    self.assertEqual(m.nflex, 2)
+
+    mjw.kinematics(m, d)
+    mjw.flex(m, d)
+    mjw.collision(m, d)
+
+    nacon = int(d.nacon.numpy()[0])
+    self.assertGreater(nacon, 0, "Expected GJK/EPA 3D block-block contacts")
 
 
 if __name__ == "__main__":
