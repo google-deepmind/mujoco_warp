@@ -2737,6 +2737,28 @@ def _update_gradient_JTCJ_compact(
     wp.atomic_add(ctx_h_out[worldid, c_dof1], c_dof2, h)
 
 
+@wp.func
+def _elliptic_hessian_entry_from_projections(
+  # In:
+  dm: float,
+  mu_over_t: float,
+  mu_n_over_ttt: float,
+  tangent_diag: float,
+  z01: float,
+  z02: float,
+  projection1: float,
+  projection2: float,
+  tangent_dot: float,
+) -> float:
+  # Contract the diagonal-plus-rank-one curvature without materializing the cone Hessian.
+  return dm * (
+    z01 * z02
+    - mu_over_t * (z01 * projection2 + z02 * projection1)
+    + mu_n_over_ttt * projection1 * projection2
+    + tangent_diag * tangent_dot
+  )
+
+
 @wp.kernel
 def _update_gradient_JTCJ_dense(
   # Model:
@@ -2803,85 +2825,37 @@ def _update_gradient_JTCJ_dense(
       continue
 
     n = ctx_Jaref_in[worldid, efcid0] * mu
-    u = types.vec6(n, 0.0, 0.0, 0.0, 0.0, 0.0)
-
+    z01 = mu * efc_J_in[worldid, efcid0, dof1id]
+    z02 = mu * efc_J_in[worldid, efcid0, dof2id]
     tt = float(0.0)
-    for j in range(1, condim):
-      efcidj = contact_efc_address_in[conid, j]
-      if efcidj >= 0:
-        uj = ctx_Jaref_in[worldid, efcidj] * fri[j - 1]
-      else:
-        uj = 0.0
-      tt += uj * uj
-      u[j] = uj
+    projection1 = float(0.0)
+    projection2 = float(0.0)
+    tangent_dot = float(0.0)
+    for dim in range(1, condim):
+      efcid = contact_efc_address_in[conid, dim]
+      if efcid >= 0:
+        scale = fri[dim - 1]
+        u = ctx_Jaref_in[worldid, efcid] * scale
+        z1 = scale * efc_J_in[worldid, efcid, dof1id]
+        z2 = scale * efc_J_in[worldid, efcid, dof2id]
+        tt += u * u
+        projection1 += u * z1
+        projection2 += u * z2
+        tangent_dot += z1 * z2
 
-    if tt <= 0.0:
-      t = 0.0
-    else:
-      t = wp.sqrt(tt)
-    t = wp.max(t, types.MJ_MINVAL)
+    t = wp.max(wp.sqrt(tt), types.MJ_MINVAL)
     ttt = wp.max(t * t * t, types.MJ_MINVAL)
-
-    h = float(0.0)
-
-    for dim1id in range(condim):
-      if dim1id == 0:
-        efcid1 = efcid0
-      else:
-        efcid1 = contact_efc_address_in[conid, dim1id]
-        if efcid1 < 0:
-          continue
-
-      efc_J11 = efc_J_in[worldid, efcid1, dof1id]
-      efc_J12 = efc_J_in[worldid, efcid1, dof2id]
-
-      ui = u[dim1id]
-
-      for dim2id in range(0, dim1id + 1):
-        if dim2id == 0:
-          efcid2 = efcid0
-        else:
-          efcid2 = contact_efc_address_in[conid, dim2id]
-          if efcid2 < 0:
-            continue
-
-        efc_J21 = efc_J_in[worldid, efcid2, dof1id]
-        efc_J22 = efc_J_in[worldid, efcid2, dof2id]
-
-        uj = u[dim2id]
-
-        # set first row/column: (1, -mu/t * u)
-        if dim1id == 0 and dim2id == 0:
-          hcone = 1.0
-        elif dim1id == 0:
-          hcone = -math.safe_div(mu, t) * uj
-        elif dim2id == 0:
-          hcone = -math.safe_div(mu, t) * ui
-        else:
-          hcone = mu * math.safe_div(n, ttt) * ui * uj
-
-          # add to diagonal: mu^2 - mu * n / t
-          if dim1id == dim2id:
-            hcone += mu2 - mu * math.safe_div(n, t)
-
-        # pre and post multiply by diag(mu, friction) scale by dm
-        if dim1id == 0:
-          fri1 = mu
-        else:
-          fri1 = fri[dim1id - 1]
-
-        if dim2id == 0:
-          fri2 = mu
-        else:
-          fri2 = fri[dim2id - 1]
-
-        hcone *= dm * fri1 * fri2
-
-        if hcone != 0.0:
-          h += hcone * efc_J11 * efc_J22
-
-          if dim1id != dim2id:
-            h += hcone * efc_J12 * efc_J21
+    h = _elliptic_hessian_entry_from_projections(
+      dm,
+      math.safe_div(mu, t),
+      mu * math.safe_div(n, ttt),
+      mu2 - mu * math.safe_div(n, t),
+      z01,
+      z02,
+      projection1,
+      projection2,
+      tangent_dot,
+    )
 
     ctx_h_out[worldid, dof1id, dof2id] += h
 
