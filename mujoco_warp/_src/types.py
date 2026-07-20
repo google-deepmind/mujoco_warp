@@ -158,6 +158,7 @@ class OverflowType(enum.IntFlag):
     HFIELD: height field collision overflow
     CONTACT_MATCH: contact match sensor overflow
     NVMAX: nvmax overflow (islands)
+    EPA_HORIZON: EPA horizon buffer overflow
   """
 
   NEFC = 1 << 0
@@ -168,6 +169,7 @@ class OverflowType(enum.IntFlag):
   HFIELD = 1 << 5
   CONTACT_MATCH = 1 << 6
   NVMAX = 1 << 7
+  EPA_HORIZON = 1 << 8
 
 
 class CamLightType(enum.IntEnum):
