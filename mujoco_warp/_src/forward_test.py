@@ -23,6 +23,7 @@ from absl.testing import parameterized
 
 import mujoco_warp as mjw
 from mujoco_warp import BiasType
+from mujoco_warp import ConeType
 from mujoco_warp import DisableBit
 from mujoco_warp import DynType
 from mujoco_warp import EnableBit
@@ -2071,6 +2072,36 @@ class DCMotorTest(parameterized.TestCase):
     np.testing.assert_allclose(
       energy_implicit_warp, energy_implicit_c, atol=1e-3, err_msg="Warp IMPLICIT energy should match C IMPLICIT energy"
     )
+
+  @absltest.skipIf(
+    not hasattr(mujoco.MjModel, "geom_surfacevel"),
+    "Requires MuJoCo with surfacevel support",
+  )
+  @parameterized.product(
+    surfacevel=[("0.5 0 0 0 0 0", 1), ("0 0 0 0 0 1", 6)],
+    cone=[ConeType.PYRAMIDAL, ConeType.ELLIPTIC],
+  )
+  def test_surfacevel_step(self, surfacevel, cone):
+    """Test stepping a box on a surfacevel geom over time."""
+    svel_str, condim_val = surfacevel
+    xml = f"""
+      <mujoco>
+        <worldbody>
+          <geom type="plane" size="5 5 .1" condim="{condim_val}" surfacevel="{svel_str}"/>
+          <body pos="0 0 .1">
+            <freejoint/>
+            <geom type="box" size=".1 .1 .1" mass="1" condim="{condim_val}"/>
+          </body>
+        </worldbody>
+      </mujoco>
+    """
+    mjm, mjd, m, d = test_data.fixture(xml=xml, overrides={"opt.cone": cone})
+
+    for _ in range(10):
+      mujoco.mj_step(mjm, mjd)
+      mjw.step(m, d)
+
+    np.testing.assert_allclose(d.qvel.numpy()[0], mjd.qvel, atol=1e-3, rtol=1e-3)
 
 
 if __name__ == "__main__":

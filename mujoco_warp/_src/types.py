@@ -1113,6 +1113,7 @@ class Model:
     geom_friction: friction for (slide, spin, roll)          (*, ngeom, 3)
     geom_margin: detect contact if dist<margin               (*, ngeom,)
     geom_gap: additional contact detection buffer            (*, ngeom,)
+    geom_surfacevel: surface velocity in local frame: lin,ang(*, ngeom, 6)
     geom_fluid: fluid interaction parameters                 (ngeom, mjNFLUID)
     geom_rgba: rgba when material is omitted                 (*, ngeom, 4)
     site_type: geom type for rendering (GeomType)            (nsite,)
@@ -1352,6 +1353,7 @@ class Model:
     qLD_block_total: packed length of the dense region per world (also the offset of the LDL region)
     qLD_block_adr: packed factor offset; Q_LD_BLOCK_* sentinel otherwise (nv,)
     has_fluid: True if wind, density, or viscosity are non-zero at put_model time
+    has_surfacevel: whether model has non-zero surfacevel
     has_sdf_geom: whether the model contains SDF geoms
     has_flex_selfcollide: whether any flex has self-collision enabled
     has_ellipsoid_geom: whether the model contains ellipsoid geoms
@@ -1598,6 +1600,7 @@ class Model:
   geom_friction: array("*", "ngeom", wp.vec3)
   geom_margin: array("*", "ngeom", float)
   geom_gap: array("*", "ngeom", float)
+  geom_surfacevel: array("*", "ngeom", vec6)
   geom_fluid: array("ngeom", 12, float)
   geom_rgba: array("*", "ngeom", wp.vec4)
   site_type: array("nsite", int)
@@ -1834,6 +1837,7 @@ class Model:
   qLD_block_total: int
   qLD_block_adr: wp.array[int]
   has_fluid: bool
+  has_surfacevel: bool
   has_sdf_geom: bool
   has_flex_selfcollide: bool
   has_ellipsoid_geom: bool
