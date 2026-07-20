@@ -652,8 +652,13 @@ def gjk(
   simplex_index2 = wp.vec4i()
   n = int(0)
   lmbda = wp.vec4(1.0, 0.0, 0.0, 0.0)  # barycentric coordinates
+
+  # for discrete geoms GJK is guaranteed to converge in a finite number of iterations
+  # so we can ignore tolerance
+  # TODO(kbayes): look into relative tolerances based off of xnorm
   epsilon = wp.where(is_discrete, 0.0, 0.5 * tolerance * tolerance)
   min_norm = wp.where(is_discrete, MINVAL, tolerance)
+  min_tol = wp.where(is_discrete, MINVAL, tolerance)
 
   # set initial guess
   x_k = x1_0 - x2_0
@@ -662,7 +667,7 @@ def gjk(
   xnorm_prev = float(0.0)
 
   for _ in range(gjk_iterations):
-    if xnorm < min_norm or wp.abs(xnorm_prev - xnorm) < tolerance:
+    if xnorm < min_norm or wp.abs(xnorm_prev - xnorm) < min_tol:
       break
 
     # compute the support point with direction tuning
@@ -1218,26 +1223,48 @@ def _polytope4(
   pt.vert_index[6] = simplex_index1[3]
   pt.vert_index[7] = simplex_index2[3]
 
+  dist = wp.vec4()
+  idx = int(0)
+
   # if the origin is on a face, replace the 3-simplex with a 2-simplex
-  if _attach_face(pt, 0, 0, 1, 2) < MIN_DIST4:
+  dist[0] = _attach_face(pt, 0, 0, 1, 2)
+  if dist[0] < MIN_DIST4:
     pt.status = -1
     return pt, _replace_simplex3(pt, 0, 1, 2)
 
-  if _attach_face(pt, 1, 0, 3, 1) < MIN_DIST4:
+  dist[1] = _attach_face(pt, 1, 0, 3, 1)
+  if dist[1] < MIN_DIST4:
     pt.status = -1
     return pt, _replace_simplex3(pt, 0, 3, 1)
+  idx = wp.where(dist[0] < dist[1], 0, 1)
 
-  if _attach_face(pt, 2, 0, 2, 3) < MIN_DIST4:
+  dist[2] = _attach_face(pt, 2, 0, 2, 3)
+  if dist[2] < MIN_DIST4:
     pt.status = -1
     return pt, _replace_simplex3(pt, 0, 2, 3)
+  idx = wp.where(dist[2] < dist[idx], 2, idx)
 
-  if _attach_face(pt, 3, 3, 2, 1) < MIN_DIST4:
+  dist[3] = _attach_face(pt, 3, 3, 2, 1)
+  if dist[3] < MIN_DIST4:
     pt.status = -1
     return pt, _replace_simplex3(pt, 3, 2, 1)
+  idx = wp.where(dist[3] < dist[idx], 3, idx)
 
   if not _test_tetra(simplex[0], simplex[1], simplex[2], simplex[3]):
-    pt.status = 12
-    return pt, GJKResult()
+    if dist[idx] > MINVAL:
+      pt.status = 12
+      return pt, GJKResult()
+
+    # fallback to closest face
+    pt.status = -1
+    if idx == 0:
+      return pt, _replace_simplex3(pt, 0, 1, 2)
+    elif idx == 1:
+      return pt, _replace_simplex3(pt, 0, 3, 1)
+    elif idx == 2:
+      return pt, _replace_simplex3(pt, 0, 2, 3)
+    else:
+      return pt, _replace_simplex3(pt, 3, 2, 1)
 
   # set polytope counts
   pt.nvert = 4

@@ -426,6 +426,32 @@ class GJKTest(parameterized.TestCase):
     dist, _, _, _ = _geom_dist(m, d, 0, 1)
     self.assertAlmostEqual(-0.01, dist)
 
+  def test_mesh_mesh_contact2(self):
+    """Test penetration between two meshes for degenerate geometries."""
+    _, _, m, d = test_data.fixture(
+      xml="""
+    <mujoco>
+      <asset>
+        <mesh name="mesh" vertex="-0.0611590669 -0.13801524  -0.158372656
+     0.0620514415  0.135089189 -0.159879193
+    -0.105518319  -0.100999095 -0.188289702
+    -0.107238553  -0.102976903  0.1569262
+    -0.0851279497 -0.122304708  0.156887323
+    -0.0590926372 -0.104567274 -0.242715642"/>
+      </asset>
+      <worldbody>
+        <geom name="geom1" type="mesh" mesh="mesh" pos="-0.141666584 0 0"
+              quat="0.5425650813 0.0029009761 0.0001424328 0.8400087479"/>
+        <geom name="geom2" type="mesh" mesh="mesh" pos="0.141666584 0 0"
+              quat="0.5425650813 0.0029009761 0.0001424328 0.8400087479"/>
+      </worldbody>
+    </mujoco>
+    """
+    )
+    dist, ncon, _, _ = _geom_dist(m, d, 0, 1)
+    self.assertEqual(1, ncon)
+    self.assertAlmostEqual(-0.0031312597856874586, dist)
+
   def test_cylinder_cylinder_contact(self):
     """Test penetration between two cylinder."""
     _, _, m, d = test_data.fixture(
@@ -441,6 +467,22 @@ class GJKTest(parameterized.TestCase):
 
     dist, _, _, _ = _geom_dist(m, d, 0, 1)
     self.assertAlmostEqual(-0.001, dist)
+
+  def test_box_box_shallow_penetration(self):
+    """Test box-box contact for shallow penetration from a settling scene."""
+    _, _, m, d = test_data.fixture(
+      xml="""
+    <mujoco>
+      <worldbody>
+        <geom type="box" size="0.2 0.2 0.2" pos="0 0 0.19972974"/>
+        <geom type="box" size="0.1 0.1 0.1" pos="0 0 0.49947918"/>
+      </worldbody>
+    </mujoco>
+    """
+    )
+    dist, ncon, _, _ = _geom_dist(m, d, 0, 1, True)
+    self.assertEqual(4, ncon)
+    self.assertAlmostEqual(-0.00025054812, dist)
 
   def test_box_edge(self):
     """Test box edge."""

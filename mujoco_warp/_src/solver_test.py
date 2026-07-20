@@ -1313,6 +1313,45 @@ class CompactSolverTest(absltest.TestCase):
     np.testing.assert_array_equal(efc_island[:nefc], [2] * nefc)
     np.testing.assert_array_equal(efc_island[nefc:], [-1] * (d.njmax - nefc))
 
+  def test_qfrc_constraint_initialization(self):
+    """Verify that qfrc_constraint is initially zeroed when nefc==0."""
+    xml = """
+    <mujoco>
+      <option solver="CG" jacobian="sparse"/>
+      <worldbody>
+        <geom type="plane" size="10 10 .001"/>
+        <body name="sphere" pos="0 0 0.04">
+          <freejoint/>
+          <geom type="sphere" size="0.05" mass="1.0"/>
+        </body>
+      </worldbody>
+    </mujoco>
+    """
+    _, _, m, d = test_data.fixture(xml=xml)
+
+    # 1. Step once (starts in contact because Z=0.04 < radius=0.05)
+    mjw.step(m, d)
+
+    self.assertGreater(d.nefc.numpy()[0], 0, "Should have active constraints")
+    self.assertGreater(np.max(np.abs(d.qfrc_constraint.numpy()[0])), 1.0, "Should have non-zero constraint forces")
+
+    # 2. Teleport sphere up (no contacts)
+    qpos_np = d.qpos.numpy()
+    qpos_np[0, 2] = 1.0  # Move up to Z=1.0
+    wp.copy(d.qpos, wp.array(qpos_np))
+    d.qvel.zero_()
+
+    # 3. Step again (will update nefc to 0 and should zero qfrc_constraint)
+    mjw.step(m, d)
+
+    self.assertEqual(d.nefc.numpy()[0], 0, "Should have no active constraints after teleport")
+    qfrc_constraint_post = d.qfrc_constraint.numpy()[0]
+    self.assertLess(
+      np.max(np.abs(qfrc_constraint_post)),
+      1e-5,
+      f"qfrc_constraint should be zeroed, but got max abs: {np.max(np.abs(qfrc_constraint_post))}",
+    )
+
 
 if __name__ == "__main__":
   wp.init()

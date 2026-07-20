@@ -23,6 +23,7 @@ import warp as wp
 from absl.testing import absltest
 from absl.testing import parameterized
 
+from mujoco_warp._src import util_pkg
 from mujoco_warp._src.types import Data
 from mujoco_warp._src.types import Model
 from mujoco_warp._src.types import Option
@@ -40,6 +41,11 @@ class TypesTest(parameterized.TestCase):
     self.assertEqual(hash(tile_a), hash(tile_b))
     self.assertNotEqual(tile_a, tile_c)
 
+  # TODO(thowell): update Model field ordering
+  @absltest.skipIf(
+    util_pkg.check_version("mujoco>=3.10.1.dev948361631"),
+    "Requires MuJoCo < 3.10.1.dev948361631",
+  )
   @parameterized.parameters((mujoco.MjOption, Option), (mujoco.MjModel, Model), (mujoco.MjData, Data))
   def test_field_order(self, mj_class, mjw_class):
     """Tests that MJW field order matches MuJoCo, and all warp-only fields are at the end."""
