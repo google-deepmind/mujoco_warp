@@ -272,6 +272,53 @@ class SolverTest(parameterized.TestCase):
     self.assertLess(ctx.improvement.numpy()[0], 0.001)
     self.assertGreater(ctx.improvement.numpy()[0], 0.0004)
 
+  def test_linesearch_requires_cost_improvement_to_converge(self):
+    """Line search should not converge at an unimproved bound."""
+    _, _, m, d = test_data.fixture(
+      "constraints.xml",
+      overrides={
+        "opt.cone": ConeType.PYRAMIDAL,
+        "opt.jacobian": mujoco.mjtJacobian.mjJAC_DENSE,
+        "opt.iterations": 0,
+        "opt.ls_iterations": 50,
+      },
+    )
+    ctx = solver._create_solver_context(m, d)
+
+    # Exercise derivative convergence with a loose scaled tolerance.
+    m.stat.meaninertia.fill_(1.0e9)
+    d.ne = wp.array([1], dtype=int)
+    d.nf = wp.array([0], dtype=int)
+    d.nefc = wp.array([4], dtype=int)
+    d.nacon = wp.array([0], dtype=int)
+    d.M.zero_()
+    d.qacc.zero_()
+    d.efc.Ma.zero_()
+    d.qfrc_smooth.zero_()
+
+    efc_j = np.zeros(d.efc.J.shape, dtype=np.float32)
+    efc_j[0, :4, 0] = [1.0, -1.0, -1.0, 1.0]
+    d.efc.J.assign(efc_j)
+
+    efc_d = np.zeros(d.efc.D.shape, dtype=np.float32)
+    efc_d[0, :4] = [0.0030866014, 1.7318993, 4555.986, 0.14425136]
+    d.efc.D.assign(efc_d)
+    d.efc.frictionloss.zero_()
+
+    search = np.zeros(ctx.search.shape, dtype=np.float32)
+    search[0, 0] = 1.0
+    ctx.search.assign(search)
+    jaref = np.zeros(ctx.Jaref.shape, dtype=np.float32)
+    jaref[0, :4] = [-4.634305, 1.5213286, 0.03916324, 1.388601]
+    ctx.Jaref.assign(jaref)
+    ctx.search_dot.fill_(1.0)
+    ctx.done.fill_(False)
+
+    solver._linesearch(m, d, ctx)
+
+    self.assertGreater(d.qacc.numpy()[0, 0], 0.03)
+    self.assertGreater(ctx.improvement.numpy()[0], 5.0e-4)
+
   @parameterized.parameters(
     (ConeType.PYRAMIDAL, SolverType.CG, 10, 5, mujoco.mjtJacobian.mjJAC_DENSE),
     (ConeType.ELLIPTIC, SolverType.CG, 10, 5, mujoco.mjtJacobian.mjJAC_DENSE),
@@ -615,11 +662,16 @@ class SolverTest(parameterized.TestCase):
             if np.any(ctx.changed_efc_count.numpy() > 0):
               any_changes = True
           update_fn(m, d, ctx)
-          wp.launch(solver._solve_zero_search_dot, dim=(d.nworld), inputs=[ctx.done], outputs=[ctx.search_dot])
           wp.launch(
-            solver._solve_search_update,
+            solver._solve_zero_search_dot(False),
+            dim=(d.nworld),
+            inputs=[ctx.changed_efc_count, ctx.done],
+            outputs=[ctx.search_dot],
+          )
+          wp.launch(
+            solver._solve_search_update(False),
             dim=(d.nworld, m.nv),
-            inputs=[m.opt.solver, ctx.Mgrad, ctx.search, ctx.beta, ctx.done],
+            inputs=[m.opt.solver, ctx.changed_efc_count, ctx.Mgrad, ctx.search, ctx.beta, ctx.done],
             outputs=[ctx.search, ctx.search_dot],
           )
         return d.qacc.numpy().copy(), any_changes

@@ -45,6 +45,10 @@ NOISE_RATE = flags.DEFINE_float("noise_rate", 0.1, "add noise to ctrl signal (no
 NVMAX = flags.DEFINE_integer("nvmax", None, "maximum active DOFs per world")
 
 
+INIT_ASLEEP = flags.DEFINE_bool(
+  "init_asleep", False, "initialize all trees as asleep before simulation (requires sleep enabled)"
+)
+
 DEVICE = flags.DEFINE_string("device", None, "override the default Warp device")
 REPLAY = flags.DEFINE_string("replay", None, "NPZ file with ctrl sequence to replay")
 
@@ -151,6 +155,9 @@ def init_structs(
     m = mjw.put_model(mjm)
     if OVERRIDE.value:
       override_model(m, OVERRIDE.value)
+    if INIT_ASLEEP.value:
+      mjd.tree_asleep[:] = np.arange(mjm.ntree, dtype=np.int32)
+
     d = mjw.put_data(
       mjm,
       mjd,

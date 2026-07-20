@@ -28,6 +28,7 @@ import mujoco_warp as mjwarp
 from mujoco_warp import ConeType
 from mujoco_warp import IntegratorType
 from mujoco_warp import test_data
+from mujoco_warp._src import io
 from mujoco_warp._src import types
 from mujoco_warp._src import warp_util
 from mujoco_warp._src.io import put_model
@@ -504,6 +505,32 @@ class IOTest(parameterized.TestCase):
       self.assertTrue((eid[a : a + n] == eid[a]).all())
       if a > 0:  # maximal: the preceding row belongs to a different instance
         self.assertTrue(etype[a - 1] != etype[a] or eid[a - 1] != eid[a])
+
+  @parameterized.parameters(types.Model, types.Data, types.RenderContext)
+  def test_is_batched_metadata(self, dataclass_type):
+    """Verify that all fields specified with 'nworld' or '*' are marked with _is_batched=True."""
+    fixture_outputs = test_data.fixture("pendula.xml")
+    if dataclass_type is types.RenderContext:
+      obj = io.create_render_context(fixture_outputs[0], nworld=1)
+    else:
+      obj = next(o for o in fixture_outputs if isinstance(o, dataclass_type))
+
+    for f in dataclasses.fields(dataclass_type):
+      if not io._is_array_spec(f.type):
+        continue
+      spec_shape = getattr(f.type, "shape", ())
+      if not (spec_shape and spec_shape[0] in ("*", "nworld")):
+        continue
+      arr = getattr(obj, f.name)
+      if arr is None:
+        continue
+      self.assertTrue(
+        getattr(arr, "_is_batched", False),
+        msg=(
+          f"{dataclass_type.__name__} field '{f.name}' has shape spec {spec_shape} "
+          "but its instantiated array does not have _is_batched=True"
+        ),
+      )
 
   @parameterized.parameters(*_IO_TEST_MODELS)
   def test_put_data_sizes(self, xml):
@@ -1183,6 +1210,164 @@ class IOTest(parameterized.TestCase):
     _assert_eq(m.actuator_acc0.numpy()[0], mjm.actuator_acc0, "actuator_acc0")
     _assert_eq(m.body_invweight0.numpy()[0, 1, 0], mjm.body_invweight0[1, 0], "body_invweight0")
 
+  def test_set_const_eq_data_connect(self):
+    """Test set_const recomputes eq_data for connect constraints."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+    <mujoco>
+      <option gravity="0 0 0">
+        <flag contact="disable"/>
+      </option>
+      <worldbody>
+        <body name="b1" pos="1 0 0">
+          <joint type="slide" axis="1 0 0" ref="1"/>
+          <geom type="sphere" size="0.1" mass="1"/>
+        </body>
+        <body name="b2" pos="2 0 0">
+          <joint type="slide" axis="1 0 0" ref="4"/>
+          <geom type="sphere" size="0.1" mass="1"/>
+        </body>
+      </worldbody>
+      <equality>
+        <connect body1="b1" body2="b2" anchor="0.5 0 0"/>
+      </equality>
+    </mujoco>
+    """
+    )
+
+    # move the anchor on body1 and clear the derived second anchor
+    new_data = mjm.eq_data[0].copy()
+    new_data[0:3] = [0.4, 0.1, 0.0]
+    new_data[3:6] = 0.0
+    mjm.eq_data[0] = new_data
+    eq_data = m.eq_data.numpy()
+    eq_data[0, 0] = new_data
+    wp.copy(m.eq_data, wp.array(eq_data, dtype=m.eq_data.dtype))
+
+    mujoco.mj_setConst(mjm, mjd)
+    mjwarp.set_const(m, d)
+
+    _assert_eq(m.eq_data.numpy()[0], mjm.eq_data, "eq_data")
+
+  def test_set_const_eq_data_weld(self):
+    """Test set_const recomputes eq_data for weld constraints."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+    <mujoco>
+      <option gravity="0 0 0">
+        <flag contact="disable"/>
+      </option>
+      <worldbody>
+        <body name="b1" pos="0.1 0 0">
+          <joint type="hinge" axis="0 0 1" ref="0.3"/>
+          <geom type="sphere" size="0.05" mass="1"/>
+        </body>
+        <body name="b2" pos="0.4 0 0" euler="0 0 20">
+          <joint type="hinge" axis="0 1 0" ref="-0.2"/>
+          <geom type="sphere" size="0.05" mass="1"/>
+        </body>
+      </worldbody>
+      <equality>
+        <weld body1="b1" body2="b2" anchor="0.1 0.2 0.3"/>
+      </equality>
+    </mujoco>
+    """
+    )
+
+    # case 1: quaternion data cleared: set_const recomputes relpose and anchor offset
+    new_data = mjm.eq_data[0].copy()
+    new_data[0:3] = [0.15, 0.1, 0.25]
+    new_data[3:10] = 0.0
+    mjm.eq_data[0] = new_data
+    eq_data = m.eq_data.numpy()
+    eq_data[0, 0] = new_data
+    wp.copy(m.eq_data, wp.array(eq_data, dtype=m.eq_data.dtype))
+
+    mujoco.mj_setConst(mjm, mjd)
+    mjwarp.set_const(m, d)
+
+    _assert_eq(m.eq_data.numpy()[0], mjm.eq_data, "eq_data")
+
+    # case 2: user-specified quaternion: set_const only normalizes it
+    new_data = mjm.eq_data[0].copy()
+    new_data[6:10] = [2.0, 0.0, 2.0, 0.0]
+    mjm.eq_data[0] = new_data
+    eq_data = m.eq_data.numpy()
+    eq_data[0, 0] = new_data
+    wp.copy(m.eq_data, wp.array(eq_data, dtype=m.eq_data.dtype))
+
+    mujoco.mj_setConst(mjm, mjd)
+    mjwarp.set_const(m, d)
+
+    _assert_eq(m.eq_data.numpy()[0], mjm.eq_data, "eq_data")
+
+  def test_set_const_eq_data_slider_crank_tracking(self):
+    """Test connect anchor recompute on a slider-crank with nonzero joint ref."""
+    r, ell = 0.075, 0.096
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+    <mujoco>
+      <option gravity="0 0 0" timestep="0.002">
+        <flag contact="disable"/>
+      </option>
+      <worldbody>
+        <body name="crank">
+          <joint name="phi" type="hinge" axis="0 0 1" ref="0.35" springref="0.55" stiffness="0.02" damping="0.002"/>
+          <geom type="capsule" fromto="0 0 0 0.075 0 0" size="0.008" mass="0.06"/>
+          <body name="conrod" pos="0.075 0 0">
+            <joint name="psi" type="hinge" axis="0 0 1" ref="-0.2" damping="0.0005"/>
+            <geom type="capsule" fromto="0 0 0 -0.1 0 0" size="0.006" mass="0.05"/>
+          </body>
+        </body>
+        <body name="slider" pos="0.005 0 0">
+          <joint name="s" type="slide" axis="1 0 0" ref="0.01" springref="0.02" stiffness="0.5" damping="0.01"/>
+          <geom type="box" size="0.01 0.008 0.008" mass="0.08"/>
+        </body>
+      </worldbody>
+      <equality>
+        <connect body1="conrod" body2="slider" anchor="-0.1 0 0"/>
+      </equality>
+      <actuator>
+        <motor joint="phi" gear="1"/>
+      </actuator>
+    </mujoco>
+    """
+    )
+
+    def slider_crank_s(phi):
+      # closed-form slide position vs crank angle, s(0) = 0 at top dead center
+      return r * np.cos(phi) - np.sqrt(ell**2 - (r * np.sin(phi)) ** 2) - (r - ell)
+
+    # re-anchor the conrod pin (effective conrod length 0.100 -> 0.096) and clear
+    # the derived anchor; per set_const docs the offsets are recomputed if not set
+    new_data = mjm.eq_data[0].copy()
+    new_data[0:3] = [-ell, 0.0, 0.0]
+    new_data[3:6] = 0.0
+    mjm.eq_data[0] = new_data
+    eq_data = m.eq_data.numpy()
+    eq_data[0, 0] = new_data
+    wp.copy(m.eq_data, wp.array(eq_data, dtype=m.eq_data.dtype))
+
+    mujoco.mj_setConst(mjm, mjd)
+    mjwarp.set_const(m, d)
+
+    _assert_eq(m.eq_data.numpy()[0], mjm.eq_data, "eq_data")
+
+    # roll out the warp path from qpos0 under a constant crank torque and check
+    # the loop against the closed form (joint ref values offset qpos readings)
+    qpos0 = mjm.qpos0.copy()
+    ctrl = 0.03
+
+    mjwarp.reset_data(m, d)
+    d.ctrl.fill_(ctrl)
+    err_wp = 0.0
+    for _ in range(10):
+      mjwarp.step(m, d)
+      qpos = d.qpos.numpy()[0]
+      err_wp = max(err_wp, abs(qpos[2] - qpos0[2] - slider_crank_s(qpos[0] - qpos0[0])))
+
+    self.assertLess(err_wp, 1.0e-3, f"warp path loop error {err_wp:.2e}")
+
   @parameterized.named_parameters(
     dict(testcase_name="dense", jacobian="dense"),
     dict(testcase_name="sparse", jacobian="sparse"),
@@ -1466,23 +1651,29 @@ class IOTest(parameterized.TestCase):
     )
 
     m_default = mjwarp.put_model(mjm)
-    m = mjwarp.put_model(mjm, batch_sizes={"mat_texid": 3, "geom_size": 2, "mat_rgba": 4})
+    batch_sizes = {"mat_texid": 3, "geom_size": 2, "mat_rgba": 4}
+    m = mjwarp.put_model(mjm, batch_sizes=batch_sizes)
 
     nrole = int(mujoco.mjtTextureRole.mjNTEXROLE)
     self.assertEqual(tuple(m.mat_texid.shape), (3, mjm.nmat, nrole))
     self.assertEqual(tuple(m.geom_size.shape), (2, mjm.ngeom))
     self.assertEqual(tuple(m.mat_rgba.shape), (4, mjm.nmat))
-    self.assertGreater(m.mat_texid.strides[0], 0)
-    self.assertGreater(m.geom_size.strides[0], 0)
-    self.assertGreater(m.mat_rgba.strides[0], 0)
 
     np.testing.assert_array_equal(m.mat_texid.numpy(), np.repeat(m_default.mat_texid.numpy(), 3, axis=0))
     np.testing.assert_allclose(m.geom_size.numpy(), np.repeat(m_default.geom_size.numpy(), 2, axis=0))
     np.testing.assert_allclose(m.mat_rgba.numpy(), np.repeat(m_default.mat_rgba.numpy(), 4, axis=0))
 
-    # Fields not listed in batch_sizes keep the shared legacy allocation.
-    self.assertEqual(m.geom_pos.shape[0], 1)
-    self.assertEqual(m.geom_pos.strides[0], 0)
+    # field has batched dimension and defaults to batch size 1
+    for f in dataclasses.fields(types.Model):
+      if not io._is_array_spec(f.type):
+        continue
+      spec_shape = getattr(f.type, "shape", ())
+      if not spec_shape or spec_shape[0] != "*":
+        continue
+      val = getattr(m, f.name)
+      if val is not None:
+        expected = batch_sizes.get(f.name, 1)
+        self.assertEqual(val.shape[0], expected, f"Field {f.name} does not have batch dimension {expected}")
 
     red_id = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_TEXTURE, "red")
     green_id = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_TEXTURE, "green")
@@ -2892,6 +3083,26 @@ class IOTest(parameterized.TestCase):
         device_slice = val_device[w * ncon : (w + 1) * ncon].reshape(-1)
         host_slice = val_host[:ncon].reshape(-1)
         _assert_eq(device_slice, host_slice, f"{field} mismatch in world {w}")
+
+  def test_flex_interp_negative_error(self):
+    """Test that put_model raises NotImplementedError for negative flex_interp."""
+    xml = """
+    <mujoco>
+      <worldbody>
+        <flexcomp type="grid" count="3 3 3" spacing="0.1 0.1 0.1"
+                  pos="0 0 0.5" name="cube" dim="3" mass="1" radius="0.005"
+                  dof="trilinear">
+          <contact selfcollide="none"/>
+        </flexcomp>
+      </worldbody>
+    </mujoco>
+    """
+    mjm = mujoco.MjModel.from_xml_string(xml)
+    # Modify flex_interp to be negative (simulating quad shells or unsupported order)
+    mjm.flex_interp[0] = -1
+
+    with self.assertRaisesRegex(NotImplementedError, "Flex interpolation order < 0 .* not supported"):
+      mjwarp.put_model(mjm)
 
 
 # TODO(team): test set_const_0 sparse
