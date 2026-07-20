@@ -468,6 +468,22 @@ class GJKTest(parameterized.TestCase):
     dist, _, _, _ = _geom_dist(m, d, 0, 1)
     self.assertAlmostEqual(-0.001, dist)
 
+  def test_box_box_shallow_penetration(self):
+    """Test box-box contact for shallow penetration from a settling scene."""
+    _, _, m, d = test_data.fixture(
+      xml="""
+    <mujoco>
+      <worldbody>
+        <geom type="box" size="0.2 0.2 0.2" pos="0 0 0.19972974"/>
+        <geom type="box" size="0.1 0.1 0.1" pos="0 0 0.49947918"/>
+      </worldbody>
+    </mujoco>
+    """
+    )
+    dist, ncon, _, _ = _geom_dist(m, d, 0, 1, True)
+    self.assertEqual(4, ncon)
+    self.assertAlmostEqual(-0.00025054812, dist)
+
   def test_box_edge(self):
     """Test box edge."""
     _, _, m, d = test_data.fixture(
