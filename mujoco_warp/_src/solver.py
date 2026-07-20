@@ -2403,7 +2403,7 @@ def _elliptic_curvature_terms(condim: int):
     mu_n_over_ttt = mu * math.safe_div(n, ttt)
     tangent_diag = mu2 - mu * math.safe_div(n, t)
 
-    # Pack tangent u[1:6], row scales[6], dm, mu/t, mu*n/t^3, and the tangent diagonal.
+    # Layout: tangent u[1:6], scales[6:12], dm, mu/t, mu*n/t^3, tangent diagonal.
     terms[12] = dm
     terms[13] = mu_over_t
     terms[14] = mu_n_over_ttt
@@ -2873,16 +2873,11 @@ def _cholesky_factorize_solve(
 
 
 # ---------------------------------------------------------------------------
-# H += J^T A J. A is diagonal D for ordinary constraints and the dense cone curvature for
-# elliptic contacts. make_constraint groups each constraint's rows, which share dof support S,
-# into one |S|x|S| block stored per world in efc.jtdaj_{adr,nrow,nblock}. The launch fills the
-# GPU once (groups_per_world slots/world) then grid-strides the rest, so no thread lands on a
-# non-head efc row. A block's upper-triangular entries split across one warp for coalesced J reads;
-# entry -> (block_row, block_col) is the triangular-number
-# inverse, exact in float32 since column boundaries are perfect squares (8*entry+1 = (2c+1)^2).
+# Constraint groups contain consecutive rows with identical sparse support. Each thread group
+# accumulates their upper-triangular Hessian block, including elliptic cone curvature.
 # ---------------------------------------------------------------------------
 _JTDAJ_THREADS_PER_GROUP = 32
-_JTDAJ_OVERSUBSCRIBE_WAVES = 6  # grid-stride depth; short per-warp chains load-balance groups
+_JTDAJ_OVERSUBSCRIBE_WAVES = 6
 
 
 @cache_kernel
@@ -2924,17 +2919,18 @@ def _JTDAJ_sparse(compact: bool, elliptic: bool, max_condim: int):
     if ctx_done_in[worldid]:
       return
     count = efc_jtdaj_nblock_in[worldid]
-    for groupid in range(slot, count, groups_per_world):  # grid-stride this world's group list
+    for groupid in range(slot, count, groups_per_world):
       head_row = efc_jtdaj_adr_in[worldid, groupid]
       block_rows = efc_jtdaj_nrow_in[worldid, groupid]
       head_adr = efc_J_rowadr_in[worldid, head_row]
-      support = efc_J_rownnz_in[worldid, head_row]  # dofs the constraint touches = block dimension
-      n_entries = support * (support + 1) // 2  # upper-triangular entries of the |S|x|S| block
+      support = efc_J_rownnz_in[worldid, head_row]
+      n_entries = support * (support + 1) // 2
 
       is_cone = False
       if wp.static(ELLIPTIC):
         is_cone = efc_state_in[worldid, head_row] == types.ConstraintState.CONE
         condim = int(0)
+        # Clipped cone rows retain the safe head address and a zero scale.
         cone_rowadr = types.vec6i(head_adr, head_adr, head_adr, head_adr, head_adr, head_adr)
         if is_cone:
           conid = efc_id_in[worldid, head_row]
@@ -2986,7 +2982,7 @@ def _JTDAJ_sparse(compact: bool, elliptic: bool, max_condim: int):
               j_row = efc_J_in[worldid, 0, member_adr + block_row]
               j_col = efc_J_in[worldid, 0, member_adr + block_col]
               hval += j_row * efc_D_in[worldid, member_row] * j_col
-        if hval != 0.0:  # skip the atomic when no member row is active
+        if hval != 0.0:
           if wp.static(COMPACT):
             dof_row = dof_cdof_in[worldid, dof_row]
             dof_col = dof_cdof_in[worldid, dof_col]
@@ -2998,15 +2994,8 @@ def _JTDAJ_sparse(compact: bool, elliptic: bool, max_condim: int):
 
 
 def _jtdaj_groups_per_world(nworld: int, njmax: int) -> int:
-  # Per-world width of the grid stride.  Target one warp per group-slot (njmax), but cap the grid at
-  # _JTDAJ_OVERSUBSCRIBE_WAVES device waves -- else high-njmax worlds dispatch many idle tail warps
-  # (njmax >> actual groups).  A few waves of oversubscription keep each warp's serial chain short,
-  # load-balancing the variable group sizes (measured plateau: ~4-8 waves).
-  # Keep a stable calibration kernel: the occupancy API selects large blocks, so specialization-
-  # specific results do not model this kernel's fixed one-warp tiled launch.
+  # njmax is capacity and often mostly empty, so cap slots at a few resident waves.
   block_size, min_grid_size = wp.get_suggested_block_size(_JTDAJ_sparse(False, False, 3))
-  # block_size * min_grid_size = full-device thread count (block_size cancels): the kernel's max
-  # resident threads (one wave), a device property independent of nworld and our launch block_dim.
   device_warps = max(1, block_size * min_grid_size // _JTDAJ_THREADS_PER_GROUP)
   return max(1, min(njmax, _JTDAJ_OVERSUBSCRIBE_WAVES * device_warps // nworld))
 
