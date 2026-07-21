@@ -10,7 +10,7 @@
     "vscode": "^1.75.0"
   },
   "dependencies": {
-    "vscode-languageclient": "^9.0.1"
+    "vscode-languageclient": "^10.1.0"
   },
   "categories": [
     "Linters",
@@ -49,7 +49,7 @@
     "url": "git+https://http://github.com/google-deepmind/mujoco_warp.git"
   },
   "devDependencies": {
-    "@vscode/vsce": "^3.3.2",
+    "@vscode/vsce": "^3.9.2",
     "@types/node": "^18.17.0",
     "@types/vscode": "^1.75.0",
     "typescript": "^5.3.3"
