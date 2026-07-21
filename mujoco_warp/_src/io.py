@@ -1529,6 +1529,7 @@ def _allocate_island_arrays(
   njmax_size = njmax if enabled else 0
 
   d.nisland = wp.array(np.full(nworld, mjd.nisland), dtype=int)
+  d.island_parent = wp.empty((nworld, ntree_size), dtype=int)
   d.tree_island = wp.array(np.tile(mjd.tree_island, (nworld, 1 if enabled else 0)), dtype=int)
   d.dof_island = wp.array(np.tile(mjd.dof_island, (nworld, 1 if enabled else 0)), dtype=int)
 
@@ -1789,6 +1790,7 @@ def make_data(
     "eq_active": wp.array(np.tile(mjm.eq_active0.astype(bool), (nworld, 1)), shape=(nworld, mjm.neq), dtype=bool),
     # island arrays
     "nisland": None,
+    "island_parent": None,
     "tree_island": None,
     "dof_island": None,
     "island_dofadr": None,
@@ -2068,6 +2070,7 @@ def put_data(
     "nacon": None,
     # island arrays
     "nisland": None,
+    "island_parent": None,
     "tree_island": None,
     "dof_island": None,
     "island_dofadr": None,

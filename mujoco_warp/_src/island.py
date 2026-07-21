@@ -277,6 +277,233 @@ def flood_fill(m: types.Model, d: types.Data, tree_tree: wp.array3d[int]):
   )
 
 
+@wp.func
+def _dsu_find(parent: wp.array2d[int], worldid: int, tree: int):
+  """Find a root while shortening its strictly decreasing parent path."""
+  current = tree
+  while True:
+    parent_current = parent[worldid, current]
+    if parent_current == current:
+      return current
+    grandparent = parent[worldid, parent_current]
+    if grandparent < parent_current:
+      wp.atomic_min(parent, worldid, current, grandparent)
+    current = parent_current
+  return current
+
+
+@wp.func
+def _dsu_activate(tree_island: wp.array2d[int], worldid: int, tree: int):
+  if tree >= 0:
+    wp.atomic_max(tree_island, worldid, tree, 0)
+
+
+@wp.func
+def _dsu_union(parent: wp.array2d[int], tree_island: wp.array2d[int], worldid: int, tree0: int, tree1: int):
+  """Activate endpoints and atomically hook the higher root to the lower root."""
+  if tree0 < 0:
+    tree0 = tree1
+    tree1 = -1
+  if tree0 < 0:
+    return
+  _dsu_activate(tree_island, worldid, tree0)
+  if tree1 < 0:
+    return
+  _dsu_activate(tree_island, worldid, tree1)
+
+  while True:
+    root0 = _dsu_find(parent, worldid, tree0)
+    root1 = _dsu_find(parent, worldid, tree1)
+    if root0 == root1:
+      return
+    low_root = wp.min(root0, root1)
+    high_root = wp.max(root0, root1)
+    previous = wp.atomic_cas(parent, worldid, high_root, high_root, low_root)
+    if previous == high_root:
+      return
+
+
+@wp.kernel
+def _reset_dsu(
+  island_parent_out: wp.array2d[int],
+  tree_island_out: wp.array2d[int],
+  nisland_out: wp.array[int],
+):
+  """Reset identity parents and active/output markers in parallel."""
+  worldid, tree = wp.tid()
+  island_parent_out[worldid, tree] = tree
+  tree_island_out[worldid, tree] = -1
+  if tree == 0:
+    nisland_out[worldid] = 0
+
+
+@wp.kernel
+def _island_dsu(
+  # Model:
+  nv: int,
+  body_treeid: wp.array[int],
+  jnt_dofadr: wp.array[int],
+  dof_treeid: wp.array[int],
+  geom_bodyid: wp.array[int],
+  site_bodyid: wp.array[int],
+  eq_type: wp.array[int],
+  eq_obj1id: wp.array[int],
+  eq_obj2id: wp.array[int],
+  eq_objtype: wp.array[int],
+  is_sparse: bool,
+  # Data in:
+  nefc_in: wp.array[int],
+  contact_geom_in: wp.array[wp.vec2i],
+  efc_type_in: wp.array2d[int],
+  efc_id_in: wp.array2d[int],
+  efc_J_rownnz_in: wp.array2d[int],
+  efc_J_rowadr_in: wp.array2d[int],
+  efc_J_colind_in: wp.array3d[int],
+  efc_J_in: wp.array3d[float],
+  njmax_in: int,
+  # Data in/out:
+  island_parent_out: wp.array2d[int],
+  tree_island_out: wp.array2d[int],
+):
+  """Process one active EFC per thread using atomic minimum-root hooks."""
+  worldid, efcid = wp.tid()
+  if efcid >= wp.min(njmax_in, nefc_in[worldid]):
+    return
+
+  efc_type = efc_type_in[worldid, efcid]
+  efc_id = efc_id_in[worldid, efcid]
+  tree0 = int(-1)
+  tree1 = int(-1)
+  use_generic = int(0)
+
+  if efc_type == ConstraintType.EQUALITY:
+    eq_t = eq_type[efc_id]
+    if eq_t == EqType.CONNECT or eq_t == EqType.WELD:
+      body0 = eq_obj1id[efc_id]
+      body1 = eq_obj2id[efc_id]
+      if eq_objtype[efc_id] == ObjType.SITE:
+        body0 = site_bodyid[body0]
+        body1 = site_bodyid[body1]
+      tree0 = body_treeid[body0]
+      tree1 = body_treeid[body1]
+    else:
+      use_generic = 1
+  elif efc_type == ConstraintType.FRICTION_DOF:
+    tree0 = dof_treeid[efc_id]
+  elif efc_type == ConstraintType.LIMIT_JOINT:
+    tree0 = dof_treeid[jnt_dofadr[efc_id]]
+  elif (
+    efc_type == ConstraintType.CONTACT_FRICTIONLESS
+    or efc_type == ConstraintType.CONTACT_PYRAMIDAL
+    or efc_type == ConstraintType.CONTACT_ELLIPTIC
+  ):
+    geom_pair = contact_geom_in[efc_id]
+    if geom_pair[0] >= 0 and geom_pair[1] >= 0:
+      tree0 = body_treeid[geom_bodyid[geom_pair[0]]]
+      tree1 = body_treeid[geom_bodyid[geom_pair[1]]]
+    else:
+      use_generic = 1
+  else:
+    use_generic = 1
+
+  if use_generic == 0:
+    _dsu_union(island_parent_out, tree_island_out, worldid, tree0, tree1)
+    return
+
+  first_tree = int(-1)
+  count = nv
+  rowadr = int(0)
+  if is_sparse:
+    count = efc_J_rownnz_in[worldid, efcid]
+    rowadr = efc_J_rowadr_in[worldid, efcid]
+
+  for index in range(count):
+    dof = index
+    if is_sparse:
+      dof = efc_J_colind_in[worldid, 0, rowadr + index]
+    elif efc_J_in[worldid, efcid, dof] == 0.0:
+      continue
+    tree = dof_treeid[dof]
+    if tree < 0:
+      continue
+    if first_tree < 0:
+      first_tree = tree
+      _dsu_union(island_parent_out, tree_island_out, worldid, tree, -1)
+    else:
+      _dsu_union(island_parent_out, tree_island_out, worldid, first_tree, tree)
+
+
+@wp.kernel
+def _compress_and_label(
+  island_parent_inout: wp.array2d[int],
+  tree_island_inout: wp.array2d[int],
+  nisland_out: wp.array[int],
+  ntree: int,
+):
+  """Compress active trees and label roots in minimum-tree order."""
+  worldid = wp.tid()
+  for tree in range(ntree):
+    if tree_island_inout[worldid, tree] >= 0:
+      island_parent_inout[worldid, tree] = _dsu_find(island_parent_inout, worldid, tree)
+
+  nisland = int(0)
+  for tree in range(ntree):
+    if tree_island_inout[worldid, tree] >= 0 and island_parent_inout[worldid, tree] == tree:
+      tree_island_inout[worldid, tree] = nisland
+      nisland += 1
+  for tree in range(ntree):
+    if tree_island_inout[worldid, tree] >= 0:
+      tree_island_inout[worldid, tree] = tree_island_inout[worldid, island_parent_inout[worldid, tree]]
+  nisland_out[worldid] = nisland
+
+
+@event_scope
+def direct_dsu(m: types.Model, d: types.Data):
+  """Discover islands with EFC-parallel atomic minimum-root hooks."""
+  device = d.island_parent.device
+  wp.launch(
+    _reset_dsu,
+    dim=(d.nworld, m.ntree),
+    inputs=[d.island_parent, d.tree_island, d.nisland],
+    device=device,
+  )
+  wp.launch(
+    _island_dsu,
+    dim=(d.nworld, d.njmax),
+    inputs=[
+      m.nv,
+      m.body_treeid,
+      m.jnt_dofadr,
+      m.dof_treeid,
+      m.geom_bodyid,
+      m.site_bodyid,
+      m.eq_type,
+      m.eq_obj1id,
+      m.eq_obj2id,
+      m.eq_objtype,
+      m.is_sparse,
+      d.nefc,
+      d.contact.geom,
+      d.efc.type,
+      d.efc.id,
+      d.efc.J_rownnz,
+      d.efc.J_rowadr,
+      d.efc.J_colind,
+      d.efc.J,
+      d.njmax,
+      d.island_parent,
+      d.tree_island,
+    ],
+    device=device,
+  )
+  wp.launch(
+    _compress_and_label,
+    dim=d.nworld,
+    inputs=[d.island_parent, d.tree_island, d.nisland, m.ntree],
+    device=device,
+  )
+
+
 @event_scope
 def island(m: types.Model, d: types.Data):
   """Discover constraint islands."""
@@ -284,12 +511,7 @@ def island(m: types.Model, d: types.Data):
     d.nisland.zero_()
     return
 
-  # Step 1: Find tree edges
-  tree_tree = wp.zeros((d.nworld, m.ntree, m.ntree), dtype=int)
-  tree_edges(m, d, tree_tree)
-
-  # Step 2: DFS flood fill
-  flood_fill(m, d, tree_tree)
+  direct_dsu(m, d)
 
 
 @wp.kernel
@@ -350,24 +572,28 @@ def _island_map_dofs(
   map_dof2idof_out: wp.array2d[int],
   map_idof2dof_out: wp.array2d[int],
   idof_islandid_out: wp.array2d[int],
-  unconstrained_cnt_inout: wp.array2d[int],
 ):
-  worldid, dofid = wp.tid()
+  """Map DOFs in ascending global order for deterministic solver inputs."""
+  worldid = wp.tid()
 
   nidof = nidof_in[worldid]
-  island_id = dof_island_in[worldid, dofid]
+  unconstrained_count = int(0)
+  for dofid in range(nv):
+    island_id = dof_island_in[worldid, dofid]
 
-  if island_id >= 0:
-    local_idx = wp.atomic_add(island_nv_inout, worldid, island_id, 1)
-    idof = island_idofadr_in[worldid, island_id] + local_idx
-    idof_islandid_out[worldid, idof] = island_id
-    wp.atomic_min(island_dofadr_out, worldid, island_id, dofid)
-  else:
-    cnt = wp.atomic_add(unconstrained_cnt_inout, worldid, 0, 1)
-    idof = nidof + cnt
+    if island_id >= 0:
+      local_idx = island_nv_inout[worldid, island_id]
+      island_nv_inout[worldid, island_id] = local_idx + 1
+      idof = island_idofadr_in[worldid, island_id] + local_idx
+      idof_islandid_out[worldid, idof] = island_id
+      if local_idx == 0:
+        island_dofadr_out[worldid, island_id] = dofid
+    else:
+      idof = nidof + unconstrained_count
+      unconstrained_count += 1
 
-  map_dof2idof_out[worldid, dofid] = idof
-  map_idof2dof_out[worldid, idof] = dofid
+    map_dof2idof_out[worldid, dofid] = idof
+    map_idof2dof_out[worldid, idof] = dofid
 
 
 @wp.kernel
@@ -901,13 +1127,12 @@ def compute_island_mapping(m: types.Model, d: types.Data):
   )
 
   # 4. Map DOFs
-  unconstrained_cnt = wp.zeros((d.nworld, 1), dtype=int)
   d.island_dofadr.fill_(m.nv)
   wp.launch(
     _island_map_dofs,
-    dim=(d.nworld, m.nv),
+    dim=d.nworld,
     inputs=[m.nv, d.dof_island, d.island_idofadr, d.nidof],
-    outputs=[d.island_nv, d.island_dofadr, d.map_dof2idof, d.map_idof2dof, d.dof_islandid, unconstrained_cnt],
+    outputs=[d.island_nv, d.island_dofadr, d.map_dof2idof, d.map_idof2dof, d.dof_islandid],
   )
 
   # 5. Map Constraints
