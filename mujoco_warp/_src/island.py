@@ -648,34 +648,39 @@ def _island_map_constraints(
   map_iefc2efc_out: wp.array2d[int],
   iefc_islandid_out: wp.array2d[int],
 ):
-  worldid, efcid = wp.tid()
-  if efcid >= wp.min(njmax_in, nefc_in[worldid]):
-    return
+  """Map constraints in ascending EFC order within each MuJoCo category."""
+  worldid = wp.tid()
+  for efcid in range(wp.min(njmax_in, nefc_in[worldid])):
+    island_id = efc_island_in[worldid, efcid]
+    if island_id >= 0:
+      efc_type = efc_type_in[worldid, efcid]
 
-  island_id = efc_island_in[worldid, efcid]
-  if island_id >= 0:
-    efc_type = efc_type_in[worldid, efcid]
+      # 1. Determine local index and absolute index ic based on category
+      if efc_type == ConstraintType.EQUALITY:
+        local_idx = island_ne_mapped_inout[worldid, island_id]
+        island_ne_mapped_inout[worldid, island_id] = local_idx + 1
+        ic = island_iefcadr_in[worldid, island_id] + local_idx
+      elif efc_type == ConstraintType.FRICTION_DOF or efc_type == ConstraintType.FRICTION_TENDON:
+        local_idx = island_nf_mapped_inout[worldid, island_id]
+        island_nf_mapped_inout[worldid, island_id] = local_idx + 1
+        ic = island_iefcadr_in[worldid, island_id] + island_ne_in[worldid, island_id] + local_idx
+      else:
+        local_idx = island_nother_mapped_inout[worldid, island_id]
+        island_nother_mapped_inout[worldid, island_id] = local_idx + 1
+        ic = (
+          island_iefcadr_in[worldid, island_id]
+          + island_ne_in[worldid, island_id]
+          + island_nf_in[worldid, island_id]
+          + local_idx
+        )
 
-    # 1. Determine local index and absolute index ic based on category
-    if efc_type == ConstraintType.EQUALITY:
-      local_idx = wp.atomic_add(island_ne_mapped_inout, worldid, island_id, 1)
-      ic = island_iefcadr_in[worldid, island_id] + local_idx
-    elif efc_type == ConstraintType.FRICTION_DOF or efc_type == ConstraintType.FRICTION_TENDON:
-      local_idx = wp.atomic_add(island_nf_mapped_inout, worldid, island_id, 1)
-      ic = island_iefcadr_in[worldid, island_id] + island_ne_in[worldid, island_id] + local_idx
-    else:
-      local_idx = wp.atomic_add(island_nother_mapped_inout, worldid, island_id, 1)
-      ic = (
-        island_iefcadr_in[worldid, island_id] + island_ne_in[worldid, island_id] + island_nf_in[worldid, island_id] + local_idx
-      )
+      # 2. Increment overall island_nefc counter to reconstruct d.island_nefc
+      island_nefc_inout[worldid, island_id] += 1
 
-    # 2. Increment overall island_nefc counter to reconstruct d.island_nefc
-    wp.atomic_add(island_nefc_inout, worldid, island_id, 1)
-
-    # 3. Store mappings
-    map_efc2iefc_out[worldid, efcid] = ic
-    map_iefc2efc_out[worldid, ic] = efcid
-    iefc_islandid_out[worldid, ic] = island_id
+      # 3. Store mappings
+      map_efc2iefc_out[worldid, efcid] = ic
+      map_iefc2efc_out[worldid, ic] = efcid
+      iefc_islandid_out[worldid, ic] = island_id
 
 
 @wp.kernel
@@ -1142,7 +1147,7 @@ def compute_island_mapping(m: types.Model, d: types.Data):
 
   wp.launch(
     _island_map_constraints,
-    dim=(d.nworld, d.njmax),
+    dim=d.nworld,
     inputs=[
       d.nefc,
       d.njmax,

@@ -1221,6 +1221,19 @@ class IslandMappingTest(absltest.TestCase):
     np.testing.assert_array_equal(d.map_dof2idof.numpy()[:, : mjm.nv], expected_dof2idof)
     np.testing.assert_array_equal(d.map_idof2dof.numpy()[:, : mjm.nv], expected_idof2dof)
 
+  def test_efc_mapping_is_canonical_across_worlds(self):
+    """Island-local constraints retain MuJoCo's category and EFC order."""
+    mjm, mjd, m, d = test_data.fixture(xml=_chain_xml(22), nworld=256)
+    m.opt.disableflags &= ~types.DisableBit.ISLAND
+
+    mjwarp.fwd_position(m, d)
+    island.compute_island_mapping(m, d)
+
+    expected_efc2iefc = np.tile(mjd.map_efc2iefc[: mjd.nefc], (d.nworld, 1))
+    expected_iefc2efc = np.tile(mjd.map_iefc2efc[: mjd.nefc], (d.nworld, 1))
+    np.testing.assert_array_equal(d.map_efc2iefc.numpy()[:, : mjd.nefc], expected_efc2iefc)
+    np.testing.assert_array_equal(d.map_iefc2efc.numpy()[:, : mjd.nefc], expected_iefc2efc)
+
   def test_island_ne_nf_parity(self):
     """island_ne and island_nf match MuJoCo C values."""
     mjm, mjd, m, d = test_data.fixture(xml=_WELD_XML)
