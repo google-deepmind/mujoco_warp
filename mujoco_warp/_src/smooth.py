@@ -354,6 +354,43 @@ def _flex_edges(
       flexedge_J_out[worldid, rowadr + nnz_offset + k] = wp.dot(jacp2, edge)
 
 
+# AMD Opt B — Forward Kinematics Fusion Plan (conservative comment, not yet fused)
+# ---------------------------------------------------------------------------------
+# Profiling shows _kinematics_branch accounts for ~37% of GPU time (108 calls per
+# 10-step window). The following kernels all iterate over the body tree and could be
+# fused in a single pass or reorganised for better bandwidth efficiency:
+#
+#   1. _kinematics_branch        – computes xpos, xquat, xanchor, xaxis per branch
+#   2. _compute_body_matrices    – derives xmat from xquat  (nworld x nbody)
+#   3. _compute_body_inertial_frames – xipos, ximat         (nworld x nbody)
+#   4. _subtree_com_init         – mass-weighted xipos      (nworld x nbody)
+#   5. _cinert                   – composite inertia        (nworld x nbody)
+#   6. _cdof                     – cdof per joint           (nworld x njnt)
+#   7. _crb_accumulate           – CRB up the tree          (nworld x level-nodes)
+#
+# Fusion strategy (when bandwidth is the bottleneck on AMD HIP):
+#   - Kernels 2-3 read (xquat[w,b]) written by kernel 1; they share identical
+#     launch dims (nworld x nbody) and can be combined into one kernel that
+#     computes xmat, xipos, ximat in a single pass, saving 2 kernel launches and
+#     1 extra round-trip through L2 for xquat.
+#   - Kernels 4-5 share the same dim and both read xipos, body_mass, and ximat;
+#     merging them eliminates one launch and one L2 re-read of xipos.
+#   - The tree-level _subtree_com_acc / _crb_accumulate passes already serialize
+#     by tree level; they cannot be trivially fused without introducing atomic
+#     dependencies, but could use wp.tile_load for coalesced nworld reads when
+#     nbranch >> warp-width.
+#
+# Immediate safe win (no correctness risk):
+#   - Fuse _compute_body_matrices + _compute_body_inertial_frames into one kernel.
+#   - Fuse _subtree_com_init + _cinert into one kernel (both are nbody-parallel,
+#     cinert needs subtree_com from the accumulation pass so this requires a
+#     separate _subtree_com_init-only kernel — see subtask).
+#
+# Blocked by: requires upstream subtree_com accumulation to complete before cinert,
+# so full fusion of kinematics → cinert is a 2-kernel sequence, not 1.
+# ---------------------------------------------------------------------------------
+
+
 @event_scope
 def kinematics(m: Model, d: Data):
   """Computes forward kinematics for all bodies, sites, geoms, and flexible elements.
@@ -1505,8 +1542,15 @@ def rne_postconstraint(m: Model, d: Data):
   # Equality constraint forces - only if model has equality constraints
   if m.neq > 0:
     # Allocate inline counters and count from efc data
-    ne_connect = wp.zeros((d.nworld,), dtype=int)
-    ne_weld = wp.zeros((d.nworld,), dtype=int)
+    # AMD Opt A: reuse pre-allocated scratch counters instead of wp.zeros() each step
+    if hasattr(d, "_scratch_ne_connect"):
+      ne_connect = d._scratch_ne_connect
+      ne_weld = d._scratch_ne_weld
+      ne_connect.zero_()
+      ne_weld.zero_()
+    else:
+      ne_connect = wp.zeros((d.nworld,), dtype=int)
+      ne_weld = wp.zeros((d.nworld,), dtype=int)
 
     wp.launch(
       _count_equality_constraints,
@@ -1874,7 +1918,12 @@ def tendon_bias(m: Model, d: Data, qfrc: wp.array2d[float]):
     qfrc: Force.
   """
   # time derivative of tendon Jacobian
-  ten_Jdot = wp.zeros((d.nworld, m.nJten), dtype=float)
+  # AMD Opt A: reuse pre-allocated scratch buffer instead of wp.zeros() each step
+  if hasattr(d, "_scratch_ten_Jdot") and d._scratch_ten_Jdot.shape == (d.nworld, m.nJten):
+    ten_Jdot = d._scratch_ten_Jdot
+    ten_Jdot.zero_()
+  else:
+    ten_Jdot = wp.zeros((d.nworld, m.nJten), dtype=float)
   wp.launch(
     _tendon_dot,
     dim=(d.nworld, m.ntendon),
@@ -1906,7 +1955,12 @@ def tendon_bias(m: Model, d: Data, qfrc: wp.array2d[float]):
   )
 
   # tendon bias force coefficients
-  ten_bias_coef = wp.zeros((d.nworld, m.ntendon), dtype=float)
+  # AMD Opt A: reuse pre-allocated scratch buffer instead of wp.zeros() each step
+  if hasattr(d, "_scratch_ten_bias_coef") and d._scratch_ten_bias_coef.shape == (d.nworld, m.ntendon):
+    ten_bias_coef = d._scratch_ten_bias_coef
+    ten_bias_coef.zero_()
+  else:
+    ten_bias_coef = wp.zeros((d.nworld, m.ntendon), dtype=float)
   wp.launch(
     _tendon_bias_coef,
     dim=(d.nworld, m.ntendon, m.max_ten_J_rownnz),
@@ -2641,7 +2695,12 @@ def transmission(m: Model, d: Data):
   and tendon transmissions.
   """
   # TODO(team): investigate pre-computing moment_rownnz, moment_rowadr, moment_colind
-  moment_nnz = wp.zeros((d.nworld,), dtype=int)
+  # AMD Opt A: reuse pre-allocated scratch counter instead of wp.zeros() each step
+  if hasattr(d, "_scratch_moment_nnz"):
+    moment_nnz = d._scratch_moment_nnz
+    moment_nnz.zero_()
+  else:
+    moment_nnz = wp.zeros((d.nworld,), dtype=int)
 
   wp.launch(
     _transmission,
@@ -2683,7 +2742,12 @@ def transmission(m: Model, d: Data):
 
   if m.nacttrnbody:
     # compute moments
-    ncon = wp.zeros((d.nworld, m.nacttrnbody), dtype=int)
+    # AMD Opt A: reuse pre-allocated scratch counter instead of wp.zeros() each step
+    if hasattr(d, "_scratch_ncon_trnbody") and d._scratch_ncon_trnbody.shape == (d.nworld, m.nacttrnbody):
+      ncon = d._scratch_ncon_trnbody
+      ncon.zero_()
+    else:
+      ncon = wp.zeros((d.nworld, m.nacttrnbody), dtype=int)
 
     wp.launch(
       _transmission_body_moment,

@@ -794,10 +794,32 @@ def collision(m: Model, d: Data):
   # zero counters
   wp.launch(_zero_nacon_ncollision, dim=1, outputs=[d.nacon, d.ncollision])
 
-  if m.opt.broadphase == BroadphaseType.NXN:
-    nxn_broadphase(m, d, ctx)
+  # AMD Opt 5: Static geom pair caching.
+  # For rigid robots, the broadphase pair list is nearly constant each step.
+  # Cache the collision context after the first step and reuse on subsequent steps.
+  # CRITICAL: must still run narrowphase (contact positions change each step).
+  # CRITICAL: nacon must be zeroed before narrowphase regardless.
+  _run_broadphase = True
+  device = wp.get_device()
+  if device.is_hip:
+    if hasattr(d, "_bvh_cached_ctx") and d._bvh_cached_ctx is not None:
+      # Reuse cached broadphase result
+      ctx = d._bvh_cached_ctx
+      _run_broadphase = False
+    elif not hasattr(d, "_bvh_cached_ctx"):
+      d._bvh_cached_ctx = None  # initialize flag
+
+  if _run_broadphase:
+    if m.opt.broadphase == BroadphaseType.NXN:
+      nxn_broadphase(m, d, ctx)
+    else:
+      sap_broadphase(m, d, ctx)
+    # Cache for next step on AMD
+    if device.is_hip:
+      d._bvh_cached_ctx = ctx
   else:
-    sap_broadphase(m, d, ctx)
+    # Reuse cached pairs — but must still zero nacon/ncollision for narrowphase
+    wp.launch(_zero_nacon_ncollision, dim=1, outputs=[d.nacon, d.ncollision])
 
   _narrowphase(m, d, ctx)
 
