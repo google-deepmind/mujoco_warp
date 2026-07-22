@@ -271,6 +271,7 @@ class DisableBit(enum.IntFlag):
   NATIVECCD = mujoco.mjtDisableBit.mjDSBL_NATIVECCD
   ISLAND = mujoco.mjtDisableBit.mjDSBL_ISLAND
   MULTICCD = mujoco.mjtDisableBit.mjDSBL_MULTICCD
+  PASSIVE = getattr(mujoco.mjtDisableBit, "mjDSBL_PASSIVE", 1 << 22)
   # unsupported: MIDPHASE, AUTORESET
 
 
@@ -1115,6 +1116,7 @@ class Model:
     geom_friction: friction for (slide, spin, roll)          (*, ngeom, 3)
     geom_margin: detect contact if dist<margin               (*, ngeom,)
     geom_gap: additional contact detection buffer            (*, ngeom,)
+    geom_adhesion: adhesive force of contacts                (*, ngeom,)
     geom_fluid: fluid interaction parameters                 (ngeom, mjNFLUID)
     geom_rgba: rgba when material is omitted                 (*, ngeom, 4)
     site_type: geom type for rendering (GeomType)            (nsite,)
@@ -1247,6 +1249,7 @@ class Model:
     pair_solimp: solver impedance: contact                   (*, npair, mjNIMP)
     pair_margin: detect contact if dist<margin               (*, npair,)
     pair_gap: additional contact detection buffer            (*, npair,)
+    pair_adhesion: adhesive force of contacts                (*, npair,)
     pair_friction: tangent1, 2, spin, roll1, 2               (*, npair, 5)
     exclude_signature: body1 << 16 + body2                   (nexclude,)
     eq_type: constraint type (EqType)                        (neq,)
@@ -1287,24 +1290,24 @@ class Model:
     actuator_dyntype: dynamics type (DynType)                (nu,)
     actuator_gaintype: gain type (GainType)                  (nu,)
     actuator_biastype: bias type (BiasType)                  (nu,)
-    actuator_trnid: transmission id: joint, tendon, site     (nu, 2)
     actuator_actadr: first activation address; -1: stateless (nu,)
     actuator_actnum: number of activation variables          (nu,)
-    actuator_history: history buffer sizes                   (nu, 2)
-    actuator_historyadr: history buffer address              (nu,)
-    actuator_delay: delay in seconds                         (nu,)
-    actuator_ctrllimited: is control limited                 (nu,)
-    actuator_forcelimited: is force limited                  (nu,)
-    actuator_actlimited: is activation limited               (nu,)
+    actuator_trnid: transmission id: joint, tendon, site     (nu, 2)
+    actuator_cranklength: crank length for slider-crank      (*, nu)
     actuator_dynprm: dynamics parameters                     (*, nu, mjNDYN)
     actuator_gainprm: gain parameters                        (*, nu, mjNGAIN)
     actuator_biasprm: bias parameters                        (*, nu, mjNBIAS)
-    actuator_actearly: step activation before force          (nu,)
-    actuator_ctrlrange: range of controls                    (*, nu, 2)
-    actuator_forcerange: range of forces                     (*, nu, 2)
+    actuator_actlimited: is activation limited               (nu,)
     actuator_actrange: range of activations                  (*, nu, 2)
+    actuator_actearly: step activation before force          (nu,)
+    actuator_history: history buffer sizes                   (nu, 2)
+    actuator_historyadr: history buffer address              (nu,)
+    actuator_delay: delay in seconds                         (nu,)
+    actuator_forcelimited: is force limited                  (nu,)
+    actuator_forcerange: range of forces                     (*, nu, 2)
+    actuator_ctrllimited: is control limited                 (nu,)
+    actuator_ctrlrange: range of controls                    (*, nu, 2)
     actuator_gear: scale length and transmitted force        (*, nu, 6)
-    actuator_cranklength: crank length for slider-crank      (*, nu)
     actuator_acc0: acceleration from unit force in qpos0     (*, nu)
     actuator_lengthrange: feasible actuator length range     (*, nu, 2)
     sensor_type: sensor type (SensorType)                    (nsensor,)
@@ -1353,6 +1356,7 @@ class Model:
       factorization is a per-block decision -- see M_tiles and m_block_layout
     qLD_block_total: packed length of the dense region per world (also the offset of the LDL region)
     qLD_block_adr: packed factor offset; Q_LD_BLOCK_* sentinel otherwise (nv,)
+    flg_adhesion: flag indicating if model has passive adhesion
     has_fluid: True if wind, density, or viscosity are non-zero at put_model time
     has_sdf_geom: whether the model contains SDF geoms
     has_flex_selfcollide: whether any flex has self-collision enabled
@@ -1600,6 +1604,7 @@ class Model:
   geom_friction: array("*", "ngeom", wp.vec3)
   geom_margin: array("*", "ngeom", float)
   geom_gap: array("*", "ngeom", float)
+  geom_adhesion: array("*", "ngeom", float)
   geom_fluid: array("ngeom", 12, float)
   geom_rgba: array("*", "ngeom", wp.vec4)
   site_type: array("nsite", int)
@@ -1732,6 +1737,7 @@ class Model:
   pair_solimp: array("*", "npair", vec5)
   pair_margin: array("*", "npair", float)
   pair_gap: array("*", "npair", float)
+  pair_adhesion: array("*", "npair", float)
   pair_friction: array("*", "npair", vec5)
   exclude_signature: array("nexclude", int)
   eq_type: array("neq", int)
@@ -1772,24 +1778,24 @@ class Model:
   actuator_dyntype: array("nu", int)
   actuator_gaintype: array("nu", int)
   actuator_biastype: array("nu", int)
-  actuator_trnid: array("nu", wp.vec2i)
   actuator_actadr: array("nu", int)
   actuator_actnum: array("nu", int)
-  actuator_history: array("nu", wp.vec2i)
-  actuator_historyadr: array("nu", int)
-  actuator_delay: array("nu", float)
-  actuator_ctrllimited: array("nu", bool)
-  actuator_forcelimited: array("nu", bool)
-  actuator_actlimited: array("nu", bool)
+  actuator_trnid: array("nu", wp.vec2i)
+  actuator_cranklength: array("*", "nu", float)
   actuator_dynprm: array("*", "nu", vec10)
   actuator_gainprm: array("*", "nu", vec10)
   actuator_biasprm: array("*", "nu", vec10)
-  actuator_actearly: array("nu", bool)
-  actuator_ctrlrange: array("*", "nu", wp.vec2)
-  actuator_forcerange: array("*", "nu", wp.vec2)
+  actuator_actlimited: array("nu", bool)
   actuator_actrange: array("*", "nu", wp.vec2)
+  actuator_actearly: array("nu", bool)
+  actuator_history: array("nu", wp.vec2i)
+  actuator_historyadr: array("nu", int)
+  actuator_delay: array("nu", float)
+  actuator_forcelimited: array("nu", bool)
+  actuator_forcerange: array("*", "nu", wp.vec2)
+  actuator_ctrllimited: array("nu", bool)
+  actuator_ctrlrange: array("*", "nu", wp.vec2)
   actuator_gear: array("*", "nu", wp.spatial_vector)
-  actuator_cranklength: array("*", "nu", float)
   actuator_acc0: array("*", "nu", float)
   actuator_lengthrange: array("*", "nu", wp.vec2)
   sensor_type: array("nsensor", int)
@@ -1835,6 +1841,7 @@ class Model:
   is_sparse: bool
   qLD_block_total: int
   qLD_block_adr: wp.array[int]
+  flg_adhesion: bool
   has_fluid: bool
   has_sdf_geom: bool
   has_flex_selfcollide: bool
@@ -1996,6 +2003,7 @@ class Contact:
   worldid: array("naconmax", int)
   type: array("naconmax", int)
   geomcollisionid: array("naconmax", int)
+  adhesion: array("naconmax", float)
 
 
 @dataclasses.dataclass
@@ -2136,6 +2144,7 @@ class Data:
     qfrc_damper: passive damper force                           (nworld, nv)
     qfrc_gravcomp: passive gravity compensation force           (nworld, nv)
     qfrc_fluid: passive fluid force                             (nworld, nv)
+    qfrc_adhesion: passive adhesion force                       (nworld, nv)
     qfrc_passive: total passive force                           (nworld, nv)
     subtree_linvel: linear velocity of subtree com              (nworld, nbody, 3)
     subtree_angmom: angular momentum about subtree com          (nworld, nbody, 3)
@@ -2284,6 +2293,7 @@ class Data:
   qfrc_damper: array("nworld", "nv", float)
   qfrc_gravcomp: array("nworld", "nv", float)
   qfrc_fluid: array("nworld", "nv", float)
+  qfrc_adhesion: array("nworld", "nv", float)
   qfrc_passive: array("nworld", "nv", float)
   subtree_linvel: array("nworld", "nbody", wp.vec3)
   subtree_angmom: array("nworld", "nbody", wp.vec3)

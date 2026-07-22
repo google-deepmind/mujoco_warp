@@ -30,6 +30,7 @@ from mujoco_warp import IntegratorType
 from mujoco_warp import test_data
 from mujoco_warp._src import io
 from mujoco_warp._src import types
+from mujoco_warp._src import util_pkg
 from mujoco_warp._src import warp_util
 from mujoco_warp._src.io import put_model
 from mujoco_warp._src.io import set_length_range
@@ -3141,6 +3142,7 @@ class IOTest(parameterized.TestCase):
       "solref",
       "solreffriction",
       "solimp",
+      "adhesion",
       "dim",
       "geom",
     ]:
@@ -3171,6 +3173,38 @@ class IOTest(parameterized.TestCase):
     # Should succeed without NotImplementedError
     m = mjwarp.put_model(mjm)
     self.assertEqual(m.has_3d_flex, True)
+
+  @absltest.skipUnless(
+    util_pkg.check_version("mujoco>=3.11.0.dev951917287"),
+    "Adhesion features require MuJoCo version 3.11.0.dev951917287 or higher.",
+  )
+  def test_adhesion_io(self):
+    """Test put_model, put_data, and get_data_into for adhesion fields."""
+    mjm, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <body>
+            <freejoint/>
+            <geom type="sphere" size="0.1" adhesion="5.0"/>
+          </body>
+          <body pos="0 0 0.15">
+            <freejoint/>
+            <geom type="sphere" size="0.1" adhesion="3.0"/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """
+    )
+    mjwarp.collision(m, d)
+    mjwarp.passive(m, d)
+
+    self.assertTrue(m.flg_adhesion)
+    self.assertEqual(d.contact.adhesion.numpy()[0], 8.0)
+
+    mjd_out = mujoco.MjData(mjm)
+    mjwarp.get_data_into(mjd_out, mjm, d)
+    self.assertEqual(mjd_out.contact.adhesion[0], 8.0)
 
 
 # TODO(team): test set_const_0 sparse
