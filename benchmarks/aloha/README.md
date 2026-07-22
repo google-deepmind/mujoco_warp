@@ -88,3 +88,22 @@ Object assets sourced from [aloha_sim](https://github.com/google-deepmind/aloha_
 | Matrix Format | Dense |
 
 ![aloha_clutter](rollout_clutter.webp)
+
+### aloha_clutter_vision
+
+Full workbench clutter scene benchmarking combined physics simulation and multi-camera vision rendering (`step`, `refit_bvh`, and `render`). Renders RGB, depth, and segmentation images simultaneously across 4 cameras (`overhead_cam`, `worms_eye_cam`, `wrist_cam_left`, and `wrist_cam_right`).
+
+| Property | Value |
+|----------|-------|
+| Bodies | 42 |
+| DoFs | 136 |
+| Actuators | 14 |
+| Geoms | 548 |
+| Cameras | 4 |
+| Render Resolution | 64x64 |
+| Timestep | 0.002s |
+| Solver | Newton |
+| Friction | Elliptic |
+| Integrator | Euler |
+| Matrix Format | Dense |
+
