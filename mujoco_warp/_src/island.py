@@ -337,8 +337,24 @@ def _reset_dsu(
     nisland_out[worldid] = 0
 
 
-@wp.kernel
-def _island_dsu(
+@wp.func
+def _is_repeated_fixed_support_efc(
+  efc_type_in: wp.array2d[int],
+  efc_id_in: wp.array2d[int],
+  worldid: int,
+  efcid: int,
+) -> bool:
+  """Return whether the preceding scalar row has the same fixed tree support."""
+  if efcid == 0:
+    return False
+  return (
+    efc_type_in[worldid, efcid - 1] == efc_type_in[worldid, efcid]
+    and efc_id_in[worldid, efcid - 1] == efc_id_in[worldid, efcid]
+  )
+
+
+@wp.func
+def _process_island_efc(
   # Model:
   nv: int,
   body_treeid: wp.array[int],
@@ -352,7 +368,6 @@ def _island_dsu(
   eq_objtype: wp.array[int],
   is_sparse: bool,
   # Data in:
-  nefc_in: wp.array[int],
   contact_geom_in: wp.array[wp.vec2i],
   efc_type_in: wp.array2d[int],
   efc_id_in: wp.array2d[int],
@@ -360,18 +375,16 @@ def _island_dsu(
   efc_J_rowadr_in: wp.array2d[int],
   efc_J_colind_in: wp.array3d[int],
   efc_J_in: wp.array3d[float],
-  njmax_in: int,
   # Data in/out:
   island_parent_out: wp.array2d[int],
   tree_island_out: wp.array2d[int],
+  worldid: int,
+  efcid: int,
 ):
-  """Process one active EFC per thread using atomic minimum-root hooks."""
-  worldid, efcid = wp.tid()
-  if efcid >= wp.min(njmax_in, nefc_in[worldid]):
-    return
-
+  """Process one active EFC using atomic minimum-root hooks."""
   efc_type = efc_type_in[worldid, efcid]
   efc_id = efc_id_in[worldid, efcid]
+  repeated = _is_repeated_fixed_support_efc(efc_type_in, efc_id_in, worldid, efcid)
   tree0 = int(-1)
   tree1 = int(-1)
   use_generic = int(0)
@@ -379,6 +392,8 @@ def _island_dsu(
   if efc_type == ConstraintType.EQUALITY:
     eq_t = eq_type[efc_id]
     if eq_t == EqType.CONNECT or eq_t == EqType.WELD:
+      if repeated:
+        return
       body0 = eq_obj1id[efc_id]
       body1 = eq_obj2id[efc_id]
       if eq_objtype[efc_id] == ObjType.SITE:
@@ -389,8 +404,12 @@ def _island_dsu(
     else:
       use_generic = 1
   elif efc_type == ConstraintType.FRICTION_DOF:
+    if repeated:
+      return
     tree0 = dof_treeid[efc_id]
   elif efc_type == ConstraintType.LIMIT_JOINT:
+    if repeated:
+      return
     tree0 = dof_treeid[jnt_dofadr[efc_id]]
   elif (
     efc_type == ConstraintType.CONTACT_FRICTIONLESS
@@ -399,6 +418,8 @@ def _island_dsu(
   ):
     geom_pair = contact_geom_in[efc_id]
     if geom_pair[0] >= 0 and geom_pair[1] >= 0:
+      if repeated:
+        return
       tree0 = body_treeid[geom_bodyid[geom_pair[0]]]
       tree1 = body_treeid[geom_bodyid[geom_pair[1]]]
     else:
@@ -431,6 +452,63 @@ def _island_dsu(
       _dsu_union(island_parent_out, tree_island_out, worldid, tree, -1)
     else:
       _dsu_union(island_parent_out, tree_island_out, worldid, first_tree, tree)
+
+
+@wp.kernel
+def _island_dsu(
+  # Model:
+  nv: int,
+  body_treeid: wp.array[int],
+  jnt_dofadr: wp.array[int],
+  dof_treeid: wp.array[int],
+  geom_bodyid: wp.array[int],
+  site_bodyid: wp.array[int],
+  eq_type: wp.array[int],
+  eq_obj1id: wp.array[int],
+  eq_obj2id: wp.array[int],
+  eq_objtype: wp.array[int],
+  is_sparse: bool,
+  # Data in:
+  nefc_in: wp.array[int],
+  contact_geom_in: wp.array[wp.vec2i],
+  efc_type_in: wp.array2d[int],
+  efc_id_in: wp.array2d[int],
+  efc_J_rownnz_in: wp.array2d[int],
+  efc_J_rowadr_in: wp.array2d[int],
+  efc_J_colind_in: wp.array3d[int],
+  efc_J_in: wp.array3d[float],
+  njmax_in: int,
+  # Data in/out:
+  island_parent_out: wp.array2d[int],
+  tree_island_out: wp.array2d[int],
+):
+  """Process one world's active EFC prefix with one strided CUDA warp."""
+  worldid, lane = wp.tid()
+  for efcid in range(lane, wp.min(njmax_in, nefc_in[worldid]), wp.block_dim()):
+    _process_island_efc(
+      nv,
+      body_treeid,
+      jnt_dofadr,
+      dof_treeid,
+      geom_bodyid,
+      site_bodyid,
+      eq_type,
+      eq_obj1id,
+      eq_obj2id,
+      eq_objtype,
+      is_sparse,
+      contact_geom_in,
+      efc_type_in,
+      efc_id_in,
+      efc_J_rownnz_in,
+      efc_J_rowadr_in,
+      efc_J_colind_in,
+      efc_J_in,
+      island_parent_out,
+      tree_island_out,
+      worldid,
+      efcid,
+    )
 
 
 @wp.kernel
@@ -467,9 +545,9 @@ def direct_dsu(m: types.Model, d: types.Data):
     inputs=[d.island_parent, d.tree_island, d.nisland],
     device=device,
   )
-  wp.launch(
+  wp.launch_tiled(
     _island_dsu,
-    dim=(d.nworld, d.njmax),
+    dim=d.nworld,
     inputs=[
       m.nv,
       m.body_treeid,
@@ -495,6 +573,7 @@ def direct_dsu(m: types.Model, d: types.Data):
       d.tree_island,
     ],
     device=device,
+    block_dim=32,
   )
   wp.launch(
     _compress_and_label,

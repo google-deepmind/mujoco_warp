@@ -595,8 +595,40 @@ class IslandDiscoveryTest(absltest.TestCase):
     self.assertNotIn("wp.empty", source)
     self.assertNotIn("wp.zeros", source)
     self.assertIn("dim=(d.nworld, m.ntree)", source)
-    self.assertIn("dim=(d.nworld, d.njmax)", source)
+    self.assertIn("wp.launch_tiled", source)
+    self.assertIn("dim=d.nworld", source)
+    self.assertIn("block_dim=32", source)
     self.assertIn("d.island_parent", source)
+
+  def test_direct_dsu_assigns_one_cuda_warp_to_each_world(self):
+    """Warp lanes stride the active EFC prefix instead of launching its capacity."""
+    source = inspect.getsource(island._island_dsu)
+    self.assertIn("worldid, lane = wp.tid()", source)
+    self.assertIn("range(lane, wp.min(njmax_in, nefc_in[worldid]), wp.block_dim())", source)
+    self.assertIn("_process_island_efc", source)
+
+  def test_direct_dsu_collapses_only_repeated_fixed_support_rows(self):
+    """Known equal-support scalar rows keep one representative before union."""
+    helper = getattr(island, "_is_repeated_fixed_support_efc", None)
+    self.assertIsNotNone(helper)
+
+    helper_source = inspect.getsource(helper)
+    self.assertIn("efcid == 0", helper_source)
+    self.assertIn("efc_type_in[worldid, efcid - 1]", helper_source)
+    self.assertIn("efc_id_in[worldid, efcid - 1]", helper_source)
+
+    processor = getattr(island, "_process_island_efc", None)
+    self.assertIsNotNone(processor)
+    kernel_source = inspect.getsource(processor)
+    quotient = kernel_source.index("repeated = _is_repeated_fixed_support_efc")
+    classification = kernel_source.index("if efc_type == ConstraintType.EQUALITY")
+    equality_body_lookup = kernel_source.index("body0 = eq_obj1id")
+    contact_tree_lookup = kernel_source.index("tree0 = body_treeid[geom_bodyid")
+    generic_scan = kernel_source.index("first_tree")
+    self.assertLess(quotient, classification)
+    self.assertGreaterEqual(kernel_source[:equality_body_lookup].count("if repeated:"), 1)
+    self.assertGreaterEqual(kernel_source[:contact_tree_lookup].count("if repeated:"), 2)
+    self.assertLess(contact_tree_lookup, generic_scan)
 
   def test_repeated_island_reset_is_bitwise_stable(self):
     """Each call overwrites the persistent DSU workspace and output labels."""
