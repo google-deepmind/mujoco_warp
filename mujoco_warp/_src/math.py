@@ -331,3 +331,60 @@ def upper_trid_index(n: int, i: int, j: int) -> int:
   if j < i:
     i, j = j, i
   return (i * (2 * n - i - 1)) // 2 + j
+
+
+@wp.func
+def lu_factor_6x6(
+  # In:
+  A_in: types.mat66,
+) -> tuple[types.mat66, types.vec6i, bool]:
+  """LU factorization with partial pivoting for a 6x6 matrix."""
+  A = A_in
+  pivot = types.vec6i(0)
+  for k in range(6):
+    maxval = wp.abs(A[k, k])
+    maxrow = k
+    for i in range(k + 1, 6):
+      val = wp.abs(A[i, k])
+      if val > maxval:
+        maxval = val
+        maxrow = i
+    if maxval < 1e-10:
+      return A, pivot, False
+    pivot[k] = maxrow
+    if maxrow != k:
+      for j in range(6):
+        tmp = A[k, j]
+        A[k, j] = A[maxrow, j]
+        A[maxrow, j] = tmp
+    diaginv = 1.0 / A[k, k]
+    for i in range(k + 1, 6):
+      A[i, k] *= diaginv
+      Aik = A[i, k]
+      for j in range(k + 1, 6):
+        A[i, j] -= Aik * A[k, j]
+  return A, pivot, True
+
+
+@wp.func
+def lu_solve_6x6(
+  # In:
+  A_in: types.mat66,
+  pivot_in: types.vec6i,
+  b_in: types.vec6,
+) -> types.vec6:
+  """Solves A * x = b for a 6x6 system using pre-computed LU factorization and pivots."""
+  x = b_in
+  for i in range(6):
+    p = pivot_in[i]
+    if p != i:
+      tmp = x[i]
+      x[i] = x[p]
+      x[p] = tmp
+    for j in range(i):
+      x[i] -= A_in[i, j] * x[j]
+  for i in range(5, -1, -1):
+    for j in range(i + 1, 6):
+      x[i] -= A_in[i, j] * x[j]
+    x[i] /= A_in[i, i]
+  return x

@@ -822,6 +822,10 @@ class IOTest(parameterized.TestCase):
     self.assertTrue(body_has[mjm.geom_bodyid[0]])
     self.assertFalse(body_has[0])
 
+    is_free = m.body_is_free.numpy()
+    self.assertTrue(is_free[mjm.geom_bodyid[0]])
+    self.assertFalse(is_free[0])
+
   def test_jacobian_auto(self):
     mjm = mujoco.MjModel.from_xml_string("""
       <mujoco>
