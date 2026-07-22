@@ -32,7 +32,7 @@ from mujoco_warp._src.types import SolverContext
 from mujoco_warp._src.warp_util import cache_kernel
 from mujoco_warp._src.warp_util import event_scope
 
-wp.set_module_options({"enable_backward": False})
+wp.set_module_options({"enable_backward": False, "default_grid_stride": False})
 
 _BLOCK_CHOLESKY_DIM = 32
 
@@ -851,7 +851,7 @@ def _linesearch_iterative_kernel(
     _compute_efc_eval_pt_alpha_zero = _compute_efc_eval_pt_alpha_zero_pyramidal
     _compute_efc_eval_pt_3alphas = _compute_efc_eval_pt_3alphas_pyramidal
 
-  @wp.kernel(module="unique", enable_backward=False)
+  @wp.kernel(module="unique", enable_backward=False, grid_stride=True)
   def kernel(
     # Model:
     nv: int,
@@ -1389,7 +1389,7 @@ def _linesearch_zero_jv(
 def _linesearch_jv_fused_kernel(is_sparse: bool, nv: int, dofs_per_thread: int, compact: bool):
   COMPACT = compact
 
-  @wp.kernel(module="unique", enable_backward=False)
+  @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
   def kernel(
     # Data in:
     nefc_in: wp.array[int],
@@ -1519,7 +1519,7 @@ def _solve_init_dof(warmstart: bool, sparse: bool):
   WARMSTART = warmstart
   SPARSE = sparse
 
-  @wp.kernel(module="unique", enable_backward=False)
+  @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
   def kernel(
     # Data in:
     nefc_in: wp.array[int],
@@ -1543,7 +1543,7 @@ def _solve_init_dof(warmstart: bool, sparse: bool):
   return kernel
 
 
-@wp.kernel
+@wp.kernel(grid_stride=True)
 def _solve_init_efc(
   # Data out:
   solver_niter_out: wp.array[int],
@@ -1561,7 +1561,7 @@ def _solve_init_efc(
 def _solve_init_jaref_kernel(is_sparse: bool, nv: int, dofs_per_thread: int, compact: bool):
   COMPACT = compact
 
-  @wp.kernel(module="unique", enable_backward=False)
+  @wp.kernel(module="unique", enable_backward=False, grid_stride=True)
   def kernel(
     # Data in:
     nefc_in: wp.array[int],
@@ -1651,7 +1651,7 @@ def _solve_init_search_cg_tiled(
 def _update_constraint_efc(track_changes: bool):
   TRACK_CHANGES = track_changes
 
-  @wp.kernel(module="unique", enable_backward=False)
+  @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
   def kernel(
     # Model:
     opt_impratio_invsqrt: wp.array[float],
@@ -1798,7 +1798,7 @@ def _zero_qfrc_constraint_sparse(
 def _update_constraint_init_qfrc_constraint_sparse(compact: bool):
   COMPACT = compact
 
-  @wp.kernel(module="unique", enable_backward=False)
+  @wp.kernel(module="unique", enable_backward=False, grid_stride=True)
   def kernel(
     # Data in:
     nefc_in: wp.array[int],
@@ -1865,7 +1865,7 @@ def _qfrc_constraint_from_grad(
 def _update_constraint_init_qfrc_constraint_dense(stable_fast: bool):
   STABLE_FAST = stable_fast
 
-  @wp.kernel(module="unique", enable_backward=False)
+  @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
   def kernel(
     # Data in:
     nefc_in: wp.array[int],
@@ -1950,7 +1950,7 @@ def _update_gradient_h_incremental(
 def _update_gradient_h_incremental_sparse(compact: bool):
   COMPACT = compact
 
-  @wp.kernel(module="unique", enable_backward=False)
+  @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
   def kernel(
     # Data in:
     efc_J_rownnz_in: wp.array2d[int],
@@ -2072,7 +2072,7 @@ def _update_constraint(
 def _update_gradient_zero_grad_dot(stable_fast: bool):
   STABLE_FAST = stable_fast
 
-  @wp.kernel(module="unique", enable_backward=False)
+  @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
   def kernel(
     # In:
     state_changed_count_in: wp.array[int],
@@ -2121,7 +2121,7 @@ def _update_gradient_zero_grad_dot(stable_fast: bool):
 def _update_gradient_grad(stable_fast: bool):
   STABLE_FAST = stable_fast
 
-  @wp.kernel(module="unique", enable_backward=False)
+  @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
   def kernel(
     # Data in:
     qfrc_smooth_in: wp.array2d[float],
@@ -2189,7 +2189,7 @@ def _update_gradient_grad_tiled(
 def _update_gradient_init_h_sparse(compact: bool):
   COMPACT = compact
 
-  @wp.kernel(module="unique", enable_backward=False)
+  @wp.kernel(module="unique", enable_backward=False, grid_stride=True)
   def kernel(
     # Model:
     nv: int,
@@ -2265,7 +2265,7 @@ def _update_gradient_JTDAJ_dense_tiled_compact(nv_pad: int, tile_size: int, njma
 
   TILE_SIZE_K = tile_size
 
-  @wp.kernel(module="unique", enable_backward=False, module_options={"enable_mathdx_gemm": False})
+  @wp.kernel(module="unique", enable_backward=False, grid_stride=False, module_options={"enable_mathdx_gemm": False})
   def kernel(
     # Data in:
     nefc_in: wp.array[int],
@@ -2321,7 +2321,7 @@ def _update_gradient_JTDAJ_dense_tiled(nv_pad: int, tile_size: int, njmax: int, 
 
   TILE_SIZE_K = tile_size
 
-  @wp.kernel(module="unique", enable_backward=False, module_options={"enable_mathdx_gemm": False})
+  @wp.kernel(module="unique", enable_backward=False, grid_stride=False, module_options={"enable_mathdx_gemm": False})
   def kernel(
     # Model:
     M_colind: wp.array[int],  # column index of each CSR entry
@@ -2865,7 +2865,7 @@ def _update_gradient_JTCJ_dense(
 def _update_gradient_cholesky(tile_size: int, skip_noflip: bool = False):
   SKIP_NOFLIP = skip_noflip
 
-  @wp.kernel(module="unique", enable_backward=False)
+  @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
   def kernel(
     # In:
     ctx_grad_in: wp.array2d[float],
@@ -2902,7 +2902,7 @@ def _update_gradient_cholesky(tile_size: int, skip_noflip: bool = False):
 
 @cache_kernel
 def _update_gradient_cholesky_blocked(tile_size: int, matrix_size: int, vector_size: int):
-  @wp.kernel(module="unique", enable_backward=False, module_options={"enable_mathdx_gemm": False})
+  @wp.kernel(module="unique", enable_backward=False, grid_stride=False, module_options={"enable_mathdx_gemm": False})
   def kernel(
     # In:
     ctx_done_in: wp.array[bool],
@@ -2940,7 +2940,7 @@ def _update_gradient_cholesky_blocked(tile_size: int, matrix_size: int, vector_s
 
 @cache_kernel
 def _cholesky_factorize_solve_blocked(tile_size: int, matrix_size: int):
-  @wp.kernel(module="unique", enable_backward=False, module_options={"enable_mathdx_gemm": False})
+  @wp.kernel(module="unique", enable_backward=False, grid_stride=False, module_options={"enable_mathdx_gemm": False})
   def kernel(
     # In:
     A_in: wp.array3d[float],
@@ -2970,7 +2970,7 @@ def _update_gradient_cholesky_blocked_skip_unchanged(
   """Blocked Cholesky that skips factorization when no constraints changed."""
   SKIP_NOFLIP = skip_noflip
 
-  @wp.kernel(module="unique", enable_backward=False, module_options={"enable_mathdx_gemm": False})
+  @wp.kernel(module="unique", enable_backward=False, grid_stride=False, module_options={"enable_mathdx_gemm": False})
   def kernel(
     # In:
     ctx_done_in: wp.array[bool],
@@ -3018,7 +3018,7 @@ def _update_gradient_cholesky_blocked_skip_unchanged(
   return kernel
 
 
-@wp.kernel
+@wp.kernel(grid_stride=True)
 def _padding_h(nv: int, ctx_done_in: wp.array[bool], ctx_h_out: wp.array3d[float]):
   worldid, elementid = wp.tid()
 
@@ -3103,7 +3103,7 @@ _JTDAJ_OVERSUBSCRIBE_WAVES = 6  # grid-stride depth; short per-warp chains load-
 def _JTDAJ_sparse(compact: bool):
   COMPACT = compact
 
-  @wp.kernel(module="unique", enable_backward=False)
+  @wp.kernel(module="unique", enable_backward=False, grid_stride=True)
   def kernel(
     # Data in:
     efc_jtdaj_adr_in: wp.array2d[int],
@@ -3751,7 +3751,7 @@ def _use_incremental(m: types.Model) -> bool:
   return m.opt.solver == types.SolverType.NEWTON and m.opt.cone != types.ConeType.ELLIPTIC
 
 
-@wp.kernel
+@wp.kernel(grid_stride=True)
 def _zero_change_counters(
   # Out:
   quad_changed_count_out: wp.array[int],
@@ -3762,7 +3762,7 @@ def _zero_change_counters(
   state_changed_count_out[worldid] = 0
 
 
-@wp.kernel
+@wp.kernel(grid_stride=True)
 def _zero_change_counters(
   # Out:
   quad_changed_count_out: wp.array[int],
