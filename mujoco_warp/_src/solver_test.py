@@ -40,6 +40,72 @@ def _assert_eq(a, b, name):
   np.testing.assert_allclose(a, b, err_msg=err_msg, atol=tol, rtol=tol)
 
 
+def _elliptic_dense_hessian_reference(m, d, ctx):
+  contact_dim = d.contact.dim.numpy()
+  contact_dist = d.contact.dist.numpy()
+  contact_efc_address = d.contact.efc_address.numpy()
+  contact_friction = d.contact.friction.numpy()
+  contact_includemargin = d.contact.includemargin.numpy()
+  contact_worldid = d.contact.worldid.numpy()
+  efc_D = d.efc.D.numpy()
+  efc_J = d.efc.J.numpy()
+  efc_state = d.efc.state.numpy()
+  impratio_invsqrt = m.opt.impratio_invsqrt.numpy()
+  jaref = ctx.Jaref.numpy()
+  h = np.zeros((d.nworld, m.nv, m.nv), dtype=np.float64)
+
+  for conid in range(d.nacon.numpy()[0]):
+    if contact_dist[conid] - contact_includemargin[conid] >= 0.0:
+      continue
+    worldid = contact_worldid[conid]
+    efcid0 = contact_efc_address[conid, 0]
+    if efcid0 < 0 or efc_state[worldid, efcid0] != types.ConstraintState.CONE.value:
+      continue
+
+    condim = contact_dim[conid]
+    friction = contact_friction[conid]
+    mu = friction[0] * impratio_invsqrt[worldid % impratio_invsqrt.shape[0]]
+    mu2 = mu * mu
+    dm = efc_D[worldid, efcid0] / (mu2 * (1.0 + mu2))
+    if dm == 0.0:
+      continue
+
+    u = np.zeros(condim)
+    scale = np.zeros(condim)
+    u[0] = jaref[worldid, efcid0] * mu
+    scale[0] = mu
+    jac = np.zeros((condim, m.nv))
+    for dim in range(condim):
+      efcid = contact_efc_address[conid, dim]
+      if efcid < 0:
+        continue
+      if dim > 0:
+        scale[dim] = friction[dim - 1]
+        u[dim] = jaref[worldid, efcid] * scale[dim]
+      jac[dim] = efc_J[worldid, efcid, : m.nv]
+
+    t = max(np.linalg.norm(u[1:]), types.MJ_MINVAL)
+    ttt = max(t * t * t, types.MJ_MINVAL)
+    cone = np.zeros((condim, condim))
+    for dim1 in range(condim):
+      for dim2 in range(dim1 + 1):
+        if dim1 == 0 and dim2 == 0:
+          value = 1.0
+        elif dim2 == 0:
+          value = -mu / t * u[dim1]
+        else:
+          value = mu * u[0] / ttt * u[dim1] * u[dim2]
+          if dim1 == dim2:
+            value += mu2 - mu * u[0] / t
+        value *= dm * scale[dim1] * scale[dim2]
+        cone[dim1, dim2] = value
+        cone[dim2, dim1] = value
+
+    h[worldid] += np.triu(jac.T @ cone @ jac)
+
+  return h
+
+
 def _elliptic_sparse_hessian_reference(m, d, ctx):
   contact_dim = d.contact.dim.numpy()
   contact_efc_address = d.contact.efc_address.numpy()
@@ -636,6 +702,74 @@ class SolverTest(parameterized.TestCase):
     qacc = d.qacc.numpy()[0]
     self.assertTrue(np.all(np.isfinite(qacc)), "Newton solve produced non-finite qacc")
     _assert_eq(qacc, mjd.qacc, "qacc")
+
+  def test_elliptic_dense_hessian(self):
+    """Structured dense cone contraction matches the reference Hessian."""
+    condims = (3, 4, 6)
+    bodies = "".join(
+      f'<body pos="{i * 0.25 - 0.25:.3f} 0 0.020">'
+      f'<freejoint/><geom type="box" size="0.04 0.05 0.03" mass="0.5" condim="{condim}"/></body>'
+      for i, condim in enumerate(condims)
+    )
+    xml = f"""
+    <mujoco>
+      <option cone="elliptic" solver="Newton" jacobian="dense" iterations="20" ls_iterations="20"/>
+      <worldbody>
+        <geom type="plane" size="5 5 .1" friction="1 0.01 0.001" condim="1"/>
+        {bodies}
+      </worldbody>
+    </mujoco>
+    """
+    mjm, mjd, m, _ = test_data.fixture(xml=xml)
+    self.assertFalse(m.is_sparse)
+
+    mjd.qvel[0::6] = 1.5
+    mujoco.mj_forward(mjm, mjd)
+    self.assertEqual(set(mjd.contact.dim[: mjd.ncon]), set(condims))
+
+    d = mjw.put_data(mjm, mjd)
+    ctx = solver._create_solver_context(m, d)
+    solver.init_context(m, d, ctx, grad=True)
+    ctx.h.zero_()
+    ctx.done.fill_(False)
+
+    if wp.get_device().is_cuda:
+      dim_block = (wp.get_device().sm_count * 6 * 256 + m.dof_tri_row.size - 1) // m.dof_tri_row.size
+    else:
+      dim_block = d.naconmax
+    nblocks_perblock = (d.naconmax + dim_block - 1) // dim_block
+    wp.launch(
+      solver._update_gradient_JTCJ_dense,
+      dim=(dim_block, m.dof_tri_row.size),
+      inputs=[
+        m.opt.impratio_invsqrt,
+        m.dof_tri_row,
+        m.dof_tri_col,
+        d.contact.dist,
+        d.contact.includemargin,
+        d.contact.friction,
+        d.contact.dim,
+        d.contact.efc_address,
+        d.contact.worldid,
+        d.efc.J,
+        d.efc.D,
+        d.efc.state,
+        d.naconmax,
+        d.nacon,
+        ctx.Jaref,
+        ctx.done,
+        nblocks_perblock,
+        dim_block,
+      ],
+      outputs=[ctx.h],
+    )
+
+    np.testing.assert_allclose(
+      ctx.h.numpy()[:, : m.nv, : m.nv],
+      _elliptic_dense_hessian_reference(m, d, ctx),
+      rtol=1e-5,
+      atol=1e-6,
+    )
 
   @parameterized.parameters(
     (ConeType.PYRAMIDAL, SolverType.CG, 25, 5),

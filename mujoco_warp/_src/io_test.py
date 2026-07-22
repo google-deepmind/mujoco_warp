@@ -1219,6 +1219,22 @@ class IOTest(parameterized.TestCase):
     _assert_eq(m.actuator_acc0.numpy()[0], mjm.actuator_acc0, "actuator_acc0")
     _assert_eq(m.body_invweight0.numpy()[0, 1, 0], mjm.body_invweight0[1, 0], "body_invweight0")
 
+  def test_set_const_unbatched_model_multi_world(self):
+    """Test set_const with unbatched model and nworld > 1."""
+    mjm, mjd, m, d = test_data.fixture("pendula.xml", nworld=4)
+
+    new_mass = 3.0
+    mjm.body_mass[1] = new_mass
+    body_mass_np = m.body_mass.numpy()
+    body_mass_np[0, 1] = new_mass
+    wp.copy(m.body_mass, wp.array(body_mass_np, dtype=m.body_mass.dtype))
+
+    mujoco.mj_setConst(mjm, mjd)
+    mjwarp.set_const(m, d)
+
+    _assert_eq(m.body_subtreemass.numpy()[0], mjm.body_subtreemass, "body_subtreemass")
+    _assert_eq(m.dof_invweight0.numpy()[0], mjm.dof_invweight0, "dof_invweight0")
+
   def test_set_const_eq_data_connect(self):
     """Test set_const recomputes eq_data for connect constraints."""
     mjm, mjd, m, d = test_data.fixture(
