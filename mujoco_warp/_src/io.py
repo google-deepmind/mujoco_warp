@@ -34,6 +34,8 @@ from mujoco_warp._src.types import BiasType
 from mujoco_warp._src.types import TrnType
 from mujoco_warp._src.types import vec10
 
+wp.set_module_options({"default_grid_stride": False})
+
 
 def _is_array_spec(typ) -> bool:
   """Check if a type annotation is an array spec (wp.array instance or bracket annotation)."""
@@ -2380,7 +2382,7 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
   """
   sleep_enabled = bool(m.opt.enableflags & types.EnableBit.SLEEP)
 
-  @wp.kernel(module="unique", enable_backward=False)
+  @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
   def reset_xfrc_applied(reset_in: wp.array[bool], xfrc_applied_out: wp.array2d[wp.spatial_vector]):
     worldid, bodyid, elemid = wp.tid()
 
@@ -2390,7 +2392,7 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
 
     xfrc_applied_out[worldid, bodyid][elemid] = 0.0
 
-  @wp.kernel(module="unique", enable_backward=False)
+  @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
   def reset_M(reset_in: wp.array[bool], M_out: wp.array2d[float]):
     worldid, elemid = wp.tid()
 
@@ -2400,7 +2402,7 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
 
     M_out[worldid, elemid] = 0.0
 
-  @wp.kernel(module="unique", enable_backward=False)
+  @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
   def reset_nworld(
     # Model:
     nq: int,
@@ -2482,7 +2484,7 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
       userdata_out[worldid, i] = 0.0
     overflow_out[worldid] = 0
 
-  @wp.kernel(module="unique", enable_backward=False)
+  @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
   def reset_mocap(
     # Model:
     body_mocapid: wp.array[int],
@@ -2506,7 +2508,7 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
       mocap_pos_out[worldid, mocapid] = body_pos[worldid % body_pos.shape[0], bodyid]
       mocap_quat_out[worldid, mocapid] = body_quat[worldid % body_quat.shape[0], bodyid]
 
-  @wp.kernel(module="unique", enable_backward=False)
+  @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
   def reset_contact(
     # Data in:
     nacon_in: wp.array[int],
@@ -2565,7 +2567,7 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
     contact_type_out[conid] = 0
     contact_geomcollisionid_out[conid] = 0
 
-  @wp.kernel(module="unique", enable_backward=False)
+  @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
   def reset_sleep(
     # Model:
     nv: int,

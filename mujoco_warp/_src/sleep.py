@@ -23,7 +23,7 @@ from mujoco_warp._src.types import SleepState
 from mujoco_warp._src.types import WrapType
 from mujoco_warp._src.warp_util import event_scope
 
-wp.set_module_options({"enable_backward": False})
+wp.set_module_options({"enable_backward": False, "default_grid_stride": False})
 
 # tree_asleep value for fully awake tree
 K_AWAKE_VAL = -(1 + types.MJ_MINAWAKE)

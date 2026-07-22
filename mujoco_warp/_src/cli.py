@@ -30,6 +30,8 @@ from mujoco_warp._src.io import load_trajectory
 from mujoco_warp._src.io import override_model
 from mujoco_warp._src.util_misc import halton
 
+wp.set_module_options({"default_grid_stride": True})
+
 # shared flags for cli tool
 NWORLD = flags.DEFINE_integer("nworld", 8192, "number of parallel rollouts")
 NSTEP = flags.DEFINE_integer("nstep", 1000, "number of steps per rollout")
