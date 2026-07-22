@@ -608,6 +608,7 @@ def _deriv_ellipsoid_fluid(
   wind: wp.vec3,
   density: float,
   viscosity: float,
+  is_free_body: bool,
 ) -> float:
   """Compute one body's ellipsoid fluid derivative contribution for a DOF pair.
 
@@ -796,8 +797,8 @@ def _deriv_ellipsoid_fluid(
     D = wp.outer(ang_vel, mom_sq) + wp.diag(wp.vec3(diag_val))
     B00 += D
 
-    # symmetrize for implicitfast
-    if is_implicitfast:
+    # symmetrize for implicitfast except for standalone free bodies
+    if is_implicitfast and not is_free_body:
       B00 = 0.5 * (B00 + wp.transpose(B00))
       B11 = 0.5 * (B11 + wp.transpose(B11))
       B01_sym = 0.5 * (B01 + wp.transpose(B10))
@@ -841,6 +842,7 @@ def _qderiv_ellipsoid_fluid(
   geom_type: wp.array[int],
   geom_size: wp.array2d[wp.vec3],
   geom_fluid: wp.array2d[float],
+  body_is_free: wp.array[bool],
   body_fluid_ellipsoid_adr: wp.array[int],
   body_isdofancestor: wp.array2d[int],
   M_elemid: wp.array2d[int],
@@ -915,6 +917,7 @@ def _qderiv_ellipsoid_fluid(
     wind,
     density,
     viscosity,
+    body_is_free[bodyid],
   )
 
   contrib *= timestep
@@ -935,6 +938,7 @@ def _deriv_box_fluid(
   lvel: wp.spatial_vector,
   density: float,
   viscosity: float,
+  is_free_body: bool,
 ) -> wp.spatial_matrix:
   B = wp.spatial_matrix(0.0)
 
@@ -980,7 +984,7 @@ def _deriv_box_fluid(
     B[4, 4] -= density * box[0] * box[2] * wp.abs(lvel[4])
     B[5, 5] -= density * box[0] * box[1] * wp.abs(lvel[5])
 
-  if opt_integrator == IntegratorType.IMPLICITFAST:
+  if opt_integrator == IntegratorType.IMPLICITFAST and not is_free_body:
     B = 0.5 * (B + wp.transpose(B))
 
   return B
@@ -1029,6 +1033,7 @@ def _qderiv_box_fluid(
   body_mass: wp.array2d[float],
   body_inertia: wp.array2d[wp.vec3],
   dof_bodyid: wp.array[int],
+  body_is_free: wp.array[bool],
   body_fluid_box_adr: wp.array[int],
   body_isdofancestor: wp.array2d[int],
   M_elemid: wp.array2d[int],
@@ -1097,6 +1102,7 @@ def _qderiv_box_fluid(
     lvel,
     density,
     viscosity,
+    body_is_free[bodyid],
   )
 
   # Jacobian transformation: J_i^T @ B @ J_j
@@ -1229,6 +1235,7 @@ def deriv_smooth_vel(m: Model, d: Data, out: wp.array2d[float]):
           m.geom_type,
           m.geom_size,
           m.geom_fluid,
+          m.body_is_free,
           m.body_fluid_ellipsoid_adr,
           m.body_isdofancestor,
           m.M_elemid,
@@ -1258,6 +1265,7 @@ def deriv_smooth_vel(m: Model, d: Data, out: wp.array2d[float]):
           m.body_mass,
           m.body_inertia,
           m.dof_bodyid,
+          m.body_is_free,
           m.body_fluid_box_adr,
           m.body_isdofancestor,
           m.M_elemid,
