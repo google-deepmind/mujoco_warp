@@ -3302,12 +3302,13 @@ def set_const_fixed(m: types.Model, d: types.Data):
     m: The model containing kinematic and dynamic information (device).
     d: The data object containing the current state and output arrays (device).
   """
-  wp.launch(_init_subtreemass, dim=(d.nworld, m.nbody), inputs=[m.body_mass], outputs=[m.body_subtreemass])
+  nworld_subtreemass = m.body_subtreemass.shape[0]
+  wp.launch(_init_subtreemass, dim=(nworld_subtreemass, m.nbody), inputs=[m.body_mass], outputs=[m.body_subtreemass])
   for i in reversed(range(len(m.body_tree))):
     body_tree = m.body_tree[i]
     wp.launch(
       _accumulate_subtreemass,
-      dim=(d.nworld, body_tree.size),
+      dim=(nworld_subtreemass, body_tree.size),
       inputs=[m.body_parentid, m.body_subtreemass, body_tree],
     )
 
@@ -3351,16 +3352,16 @@ def set_const_0(m: types.Model, d: types.Data, restore: bool = True):
   # Compute meaninertia from M diagonal at qpos0
   wp.launch(
     _compute_meaninertia,
-    dim=d.nworld,
+    dim=m.stat.meaninertia.shape[0],
     inputs=[m.nv, m.M_rownnz, m.M_rowadr, d.M],
     outputs=[m.stat.meaninertia],
   )
 
-  wp.launch(_copy_tendon_length0, dim=(d.nworld, m.ntendon), inputs=[d.ten_length], outputs=[m.tendon_length0])
+  wp.launch(_copy_tendon_length0, dim=(m.tendon_length0.shape[0], m.ntendon), inputs=[d.ten_length], outputs=[m.tendon_length0])
 
   wp.launch(
     _compute_eq_data0,
-    dim=(d.nworld, m.neq),
+    dim=(m.eq_data.shape[0], m.neq),
     inputs=[m.eq_type, m.eq_obj1id, m.eq_obj2id, m.eq_objtype, d.xpos, d.xquat, d.xmat],
     outputs=[m.eq_data],
   )
@@ -3382,7 +3383,7 @@ def set_const_0(m: types.Model, d: types.Data, restore: bool = True):
 
     wp.launch(
       _finalize_dof_invweight0,
-      dim=(d.nworld, m.nv),
+      dim=(m.dof_invweight0.shape[0], m.nv),
       inputs=[m.dof_jntid, m.jnt_type, m.jnt_dofadr, dof_A_diag],
       outputs=[m.dof_invweight0],
     )
@@ -3425,7 +3426,7 @@ def set_const_0(m: types.Model, d: types.Data, restore: bool = True):
 
     wp.launch(
       _finalize_body_invweight0,
-      dim=(d.nworld, m.nbody),
+      dim=(m.body_invweight0.shape[0], m.nbody),
       inputs=[m.body_weldid, body_A_diag],
       outputs=[m.body_invweight0],
     )
@@ -3448,21 +3449,23 @@ def set_const_0(m: types.Model, d: types.Data, restore: bool = True):
       smooth.solve_m(m, d, ten_result_vec, ten_J_vec)
       wp.launch(
         _compute_tendon_dot_product,
-        dim=d.nworld,
+        dim=m.tendon_invweight0.shape[0],
         inputs=[m.ten_J_rownnz, m.ten_J_rowadr, m.ten_J_colind, tenid, d.ten_J, ten_result_vec],
         outputs=[m.tendon_invweight0],
       )
 
+  nworld_cam = np.max([m.cam_pos0.shape[0], m.cam_poscom0.shape[0], m.cam_mat0.shape[0]])
   wp.launch(
     _compute_cam_pos0,
-    dim=(d.nworld, m.ncam),
+    dim=(nworld_cam, m.ncam),
     inputs=[m.cam_bodyid, m.cam_targetbodyid, d.cam_xpos, d.cam_xmat, d.xpos, d.subtree_com],
     outputs=[m.cam_pos0, m.cam_poscom0, m.cam_mat0],
   )
 
+  nworld_light = np.max([m.light_pos0.shape[0], m.light_poscom0.shape[0], m.light_dir0.shape[0]])
   wp.launch(
     _compute_light_pos0,
-    dim=(d.nworld, m.nlight),
+    dim=(nworld_light, m.nlight),
     inputs=[m.light_bodyid, m.light_targetbodyid, d.light_xpos, d.light_xdir, d.xpos, d.subtree_com],
     outputs=[m.light_pos0, m.light_poscom0, m.light_dir0],
   )
@@ -3480,7 +3483,9 @@ def set_const_0(m: types.Model, d: types.Data, restore: bool = True):
         outputs=[act_moment_vec],
       )
       smooth.solve_m(m, d, act_result_vec, act_moment_vec)
-      wp.launch(_compute_actuator_acc0, dim=d.nworld, inputs=[actid, m.nv, act_result_vec], outputs=[m.actuator_acc0])
+      wp.launch(
+        _compute_actuator_acc0, dim=m.actuator_acc0.shape[0], inputs=[actid, m.nv, act_result_vec], outputs=[m.actuator_acc0]
+      )
 
   # resolve dampratio: compute dof_M0, then convert dampratio to damping
   if m.nu > 0 and m.nv > 0:
@@ -3493,7 +3498,7 @@ def set_const_0(m: types.Model, d: types.Data, restore: bool = True):
     )
     wp.launch(
       _resolve_dampratio,
-      dim=(d.nworld, m.nu),
+      dim=(m.actuator_biasprm.shape[0], m.nu),
       inputs=[
         m.actuator_biastype,
         m.actuator_gainprm,
@@ -3541,7 +3546,7 @@ def set_const_spring(m: types.Model, d: types.Data, restore: bool = True):
 
   wp.launch(
     _resolve_tendon_lengthspring,
-    dim=(d.nworld, m.ntendon),
+    dim=(m.tendon_lengthspring.shape[0], m.ntendon),
     inputs=[d.ten_length],
     outputs=[m.tendon_lengthspring],
   )
