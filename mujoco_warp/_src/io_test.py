@@ -63,6 +63,31 @@ def _allocate_worlds(
   return assignment
 
 
+class IslandArrayAllocationTest(absltest.TestCase):
+  """Tests the persistent, linear island workspace allocation."""
+
+  def test_parent_workspace_shape_dtype_bytes_and_disabled_shape(self):
+    mjm, mjd, _, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody><body><joint type="free"/><geom size=".1"/></body></worldbody>
+      </mujoco>
+      """
+    )
+
+    enabled = mock.MagicMock()
+    io._allocate_island_arrays(mjm, enabled, 3, d.njmax, True, mjd)
+    self.assertEqual(enabled.island_parent.shape, (3, mjm.ntree))
+    self.assertEqual(enabled.island_parent.dtype, wp.int32)
+    self.assertEqual(enabled.island_parent.capacity, 3 * mjm.ntree * 4)
+
+    disabled = mock.MagicMock()
+    io._allocate_island_arrays(mjm, disabled, 3, d.njmax, False, mjd)
+    self.assertEqual(disabled.island_parent.shape, (3, 0))
+    self.assertEqual(disabled.island_parent.dtype, wp.int32)
+    self.assertEqual(disabled.island_parent.capacity, 0)
+
+
 def _populate_dependent_fields(m, spec, padded_model, dataid_table, nworld, geom_variants, body_variants):
   """Compile each unique variant and set per-world dependent fields.
 

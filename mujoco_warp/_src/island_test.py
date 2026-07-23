@@ -15,6 +15,10 @@
 
 """Tests for island discovery."""
 
+import inspect
+from unittest import mock
+
+import mujoco
 import numpy as np
 import warp as wp
 from absl.testing import absltest
@@ -42,6 +46,34 @@ _WELD_XML = """
     <weld body1="b1" body2="b2"/>
   </equality>
 </mujoco>"""
+
+_ELLIPTIC_CONTACT_XML = """
+<mujoco>
+  <option cone="elliptic"/>
+  <worldbody>
+    <body name="left" pos="-.05 0 0"><freejoint/><geom type="sphere" size=".1"/></body>
+    <body name="right" pos=".05 0 0"><freejoint/><geom type="sphere" size=".1"/></body>
+  </worldbody>
+</mujoco>
+"""
+
+
+def _site_equality_xml(kind: str) -> str:
+  return f"""
+  <mujoco>
+    <worldbody>
+      <body name="left" pos="-1 0 0"><freejoint/><geom size=".1"/><site name="left_site"/></body>
+      <body name="right" pos="1 0 0"><freejoint/><geom size=".1"/><site name="right_site"/></body>
+    </worldbody>
+    <equality><{kind} site1="left_site" site2="right_site"/></equality>
+  </mujoco>
+  """
+
+
+def _chain_xml(count: int) -> str:
+  bodies = "".join(f'<body name="b{i}" pos="{i * 0.3} 0 0"><freejoint/><geom size=".1"/></body>' for i in range(count))
+  welds = "".join(f'<weld body1="b{i}" body2="b{i + 1}"/>' for i in range(count - 1))
+  return f"<mujoco><worldbody>{bodies}</worldbody><equality>{welds}</equality></mujoco>"
 
 
 class IslandEdgeDiscoveryTest(absltest.TestCase):
@@ -402,6 +434,316 @@ class IslandEdgeDiscoveryTest(absltest.TestCase):
 
 class IslandDiscoveryTest(absltest.TestCase):
   """Tests for full island discovery."""
+
+  def test_parent_workspace_uses_minimum_tree_identity_pointers(self):
+    """Active parents are compressed pointers to their component's minimum tree."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option><flag island="disable"/></option>
+        <worldbody>
+          <body name="a"><freejoint/><geom size=".1"/></body>
+          <body name="b" pos="1 0 0"><freejoint/><geom size=".1"/></body>
+          <body name="c" pos="2 0 0"><freejoint/><geom size=".1"/></body>
+          <body name="free" pos="4 0 0"><freejoint/><geom size=".1"/></body>
+        </worldbody>
+        <equality>
+          <weld body1="c" body2="b"/>
+          <weld body1="b" body2="a"/>
+        </equality>
+      </mujoco>
+      """,
+      nworld=2,
+    )
+    del mjm, mjd
+    mjwarp.fwd_position(m, d)
+
+    island.island(m, d)
+    parent = d.island_parent.numpy()
+    tree_island = d.tree_island.numpy()
+
+    for world in range(d.nworld):
+      active = np.flatnonzero(tree_island[world] >= 0)
+      self.assertGreater(active.size, 0)
+      component_minimum = int(active.min())
+      np.testing.assert_array_equal(parent[world, active], component_minimum)
+      self.assertTrue(np.all(parent[world, active] >= 0))
+      self.assertTrue(np.all(parent[world, active] <= active))
+      self.assertEqual(parent[world, component_minimum], component_minimum)
+      inactive = np.flatnonzero(tree_island[world] < 0)
+      np.testing.assert_array_equal(parent[world, inactive], inactive)
+
+  def test_parent_workspace_and_canonical_labels(self):
+    """DSU storage is linear and labels are ordered by their first active tree."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option><flag island="disable"/></option>
+        <worldbody>
+          <body name="a"><joint type="free"/><geom size=".1"/></body>
+          <body name="b" pos="1 0 0"><joint type="free"/><geom size=".1"/></body>
+          <body name="c" pos="5 0 0"><joint type="free"/><geom size=".1"/></body>
+          <body name="d" pos="6 0 0"><joint type="free"/><geom size=".1"/></body>
+          <body name="free" pos="10 0 0"><joint type="free"/><geom size=".1"/></body>
+        </worldbody>
+        <equality>
+          <weld body1="a" body2="b"/>
+          <weld body1="c" body2="d"/>
+        </equality>
+      </mujoco>
+      """,
+      nworld=2,
+    )
+    del mjm, mjd
+
+    self.assertEqual(d.island_parent.shape, (d.nworld, m.ntree))
+    self.assertEqual(d.island_parent.dtype, wp.int32)
+    self.assertEqual(d.island_parent.capacity, d.nworld * m.ntree * 4)
+
+    mjwarp.fwd_position(m, d)
+    island.island(m, d)
+    np.testing.assert_array_equal(
+      d.tree_island.numpy(),
+      np.array([[0, 0, 1, 1, -1], [0, 0, 1, 1, -1]], dtype=np.int32),
+    )
+
+  def test_inactive_efc_suffix_is_ignored_per_world(self):
+    """Allocated EFC rows beyond each world's active prefix cannot activate trees."""
+    mjm, mjd, m, d = test_data.fixture(xml=_WELD_XML, nworld=2)
+    del mjm, mjd
+    mjwarp.fwd_position(m, d)
+    nefc = d.nefc.numpy().copy()
+    self.assertTrue(np.all(nefc > 0))
+    nefc[1] = 0
+    wp.copy(d.nefc, wp.array(nefc, dtype=wp.int32, device=d.nefc.device))
+
+    island.island(m, d)
+
+    np.testing.assert_array_equal(d.nisland.numpy(), np.array([1, 0], dtype=np.int32))
+    np.testing.assert_array_equal(d.tree_island.numpy(), np.array([[0, 0], [-1, -1]], dtype=np.int32))
+    np.testing.assert_array_equal(d.island_parent.numpy(), np.array([[0, 0], [0, 1]], dtype=np.int32))
+
+  def test_site_connect_and_weld_lower_to_body_trees(self):
+    """Site-based CONNECT and WELD constraints use their owning body trees."""
+    for kind in ("connect", "weld"):
+      with self.subTest(kind=kind):
+        mjm, mjd, m, d = test_data.fixture(xml=_site_equality_xml(kind), nworld=2)
+        del mjm, mjd
+        mjwarp.fwd_position(m, d)
+        self.assertEqual(m.eq_objtype.numpy()[0], types.ObjType.SITE)
+
+        island.island(m, d)
+
+        np.testing.assert_array_equal(d.nisland.numpy(), np.ones(2, dtype=np.int32))
+        np.testing.assert_array_equal(d.tree_island.numpy(), np.zeros((2, 2), dtype=np.int32))
+
+  def test_elliptic_contact_uses_direct_geom_incidence(self):
+    """Elliptic contact rows connect the trees owning their two geoms."""
+    mjm, mjd, m, d = test_data.fixture(xml=_ELLIPTIC_CONTACT_XML, nworld=2)
+    del mjm, mjd
+    mjwarp.fwd_position(m, d)
+    efc_type = d.efc.type.numpy()
+    nefc = d.nefc.numpy()
+    self.assertTrue(
+      all(np.any(efc_type[world, : nefc[world]] == types.ConstraintType.CONTACT_ELLIPTIC) for world in range(d.nworld))
+    )
+
+    island.island(m, d)
+
+    np.testing.assert_array_equal(d.nisland.numpy(), np.ones(2, dtype=np.int32))
+    np.testing.assert_array_equal(d.tree_island.numpy(), np.zeros((2, 2), dtype=np.int32))
+
+  def test_generic_equality_matches_in_explicit_dense_and_sparse_modes(self):
+    """Generic Jacobian incidence is exact for both supported storage modes."""
+    xml = """
+    <mujoco>
+      <worldbody>
+        <body><joint name="j0" type="hinge"/><geom size=".1"/></body>
+        <body pos="1 0 0"><joint name="j1" type="hinge"/><geom size=".1"/></body>
+      </worldbody>
+      <equality><joint joint1="j0" joint2="j1"/></equality>
+    </mujoco>
+    """
+    for jacobian in (mujoco.mjtJacobian.mjJAC_DENSE, mujoco.mjtJacobian.mjJAC_SPARSE):
+      with self.subTest(jacobian=int(jacobian)):
+        mjm, mjd, m, d = test_data.fixture(xml=xml, nworld=2, overrides={"opt.jacobian": jacobian})
+        del mjm, mjd
+        mjwarp.fwd_position(m, d)
+        self.assertEqual(m.is_sparse, jacobian == mujoco.mjtJacobian.mjJAC_SPARSE)
+
+        island.island(m, d)
+
+        np.testing.assert_array_equal(d.nisland.numpy(), np.ones(2, dtype=np.int32))
+        np.testing.assert_array_equal(d.tree_island.numpy(), np.zeros((2, 2), dtype=np.int32))
+
+  def test_atomic_discovery_drives_downstream_mapping(self):
+    """Atomic discovery outputs feed exact production DOF and EFC mappings."""
+    mjm, mjd, m, d = test_data.fixture(xml=_WELD_XML, nworld=2)
+    mjwarp.fwd_position(m, d)
+    island.island(m, d)
+    island.compute_island_mapping(m, d)
+
+    for world in range(d.nworld):
+      np.testing.assert_array_equal(d.dof_island.numpy()[world, : m.nv], mjd.dof_island[: mjm.nv])
+      np.testing.assert_array_equal(d.efc.island.numpy()[world, : mjd.nefc], mjd.efc_island[: mjd.nefc])
+      np.testing.assert_array_equal(d.island_nv.numpy()[world, : mjd.nisland], mjd.island_nv[: mjd.nisland])
+      np.testing.assert_array_equal(d.island_nefc.numpy()[world, : mjd.nisland], mjd.island_nefc[: mjd.nisland])
+
+  def test_direct_dsu_owns_no_hidden_allocation(self):
+    """Production discovery reuses its one persistent parent array and outputs."""
+    source = inspect.getsource(island.direct_dsu)
+    self.assertNotIn("wp.empty", source)
+    self.assertNotIn("wp.zeros", source)
+    self.assertIn("dim=(d.nworld, m.ntree)", source)
+    self.assertIn("wp.launch_tiled", source)
+    self.assertIn("dim=d.nworld", source)
+    self.assertIn("block_dim=32", source)
+    self.assertIn("d.island_parent", source)
+
+  def test_direct_dsu_assigns_one_cuda_warp_to_each_world(self):
+    """Warp lanes stride the active EFC prefix instead of launching its capacity."""
+    source = inspect.getsource(island._island_dsu)
+    self.assertIn("worldid, lane = wp.tid()", source)
+    self.assertIn("range(lane, wp.min(njmax_in, nefc_in[worldid]), wp.block_dim())", source)
+    self.assertIn("_process_island_efc", source)
+
+  def test_direct_dsu_collapses_only_repeated_fixed_support_rows(self):
+    """Known equal-support scalar rows keep one representative before union."""
+    helper = getattr(island, "_is_repeated_fixed_support_efc", None)
+    self.assertIsNotNone(helper)
+
+    helper_source = inspect.getsource(helper)
+    self.assertIn("efcid == 0", helper_source)
+    self.assertIn("efc_type_in[worldid, efcid - 1]", helper_source)
+    self.assertIn("efc_id_in[worldid, efcid - 1]", helper_source)
+
+    processor = getattr(island, "_process_island_efc", None)
+    self.assertIsNotNone(processor)
+    kernel_source = inspect.getsource(processor)
+    quotient = kernel_source.index("repeated = _is_repeated_fixed_support_efc")
+    classification = kernel_source.index("if efc_type == ConstraintType.EQUALITY")
+    equality_body_lookup = kernel_source.index("body0 = eq_obj1id")
+    contact_tree_lookup = kernel_source.index("tree0 = body_treeid[geom_bodyid")
+    generic_scan = kernel_source.index("first_tree")
+    self.assertLess(quotient, classification)
+    self.assertGreaterEqual(kernel_source[:equality_body_lookup].count("if repeated:"), 1)
+    self.assertGreaterEqual(kernel_source[:contact_tree_lookup].count("if repeated:"), 2)
+    self.assertLess(contact_tree_lookup, generic_scan)
+
+  def test_repeated_island_reset_is_bitwise_stable(self):
+    """Each call overwrites the persistent DSU workspace and output labels."""
+    mjm, mjd, m, d = test_data.fixture(xml=_WELD_XML)
+    del mjm, mjd
+    mjwarp.fwd_position(m, d)
+
+    island.island(m, d)
+    first_parent = d.island_parent.numpy().copy()
+    first_labels = d.tree_island.numpy().copy()
+    first_nisland = d.nisland.numpy().copy()
+
+    for _ in range(16):
+      d.island_parent.fill_(123)
+      d.tree_island.fill_(123)
+      d.nisland.fill_(123)
+      island.island(m, d)
+
+      np.testing.assert_array_equal(d.island_parent.numpy(), first_parent)
+      np.testing.assert_array_equal(d.tree_island.numpy(), first_labels)
+      np.testing.assert_array_equal(d.nisland.numpy(), first_nisland)
+
+  def test_high_contention_chain_is_bitwise_stable(self):
+    """Concurrent duplicate weld rows converge to one deterministic minimum root."""
+    mjm, mjd, m, d = test_data.fixture(xml=_chain_xml(64), nworld=2)
+    del mjm, mjd
+    mjwarp.fwd_position(m, d)
+    expected_parent = np.zeros((d.nworld, m.ntree), dtype=np.int32)
+    expected_labels = np.zeros((d.nworld, m.ntree), dtype=np.int32)
+
+    for _ in range(16):
+      island.island(m, d)
+      np.testing.assert_array_equal(d.island_parent.numpy(), expected_parent)
+      np.testing.assert_array_equal(d.tree_island.numpy(), expected_labels)
+      np.testing.assert_array_equal(d.nisland.numpy(), np.ones(d.nworld, dtype=np.int32))
+
+  def test_joint_friction_and_limit_rows_activate_their_dof_tree(self):
+    """Special one-tree EFC rows use their prescribed DOF-tree incidence."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option><flag island="disable"/></option>
+        <worldbody>
+          <body><joint type="hinge" limited="true" range="-1 1" frictionloss="1"/><geom size=".1"/></body>
+        </worldbody>
+      </mujoco>
+      """
+    )
+    del mjm, mjd
+    d.qpos.fill_(2.0)
+    mjwarp.fwd_position(m, d)
+
+    efc_types = d.efc.type.numpy()[0, : d.nefc.numpy()[0]]
+    self.assertIn(types.ConstraintType.FRICTION_DOF, efc_types)
+    self.assertIn(types.ConstraintType.LIMIT_JOINT, efc_types)
+
+    island.island(m, d)
+    np.testing.assert_array_equal(d.nisland.numpy(), np.array([1], dtype=np.int32))
+    np.testing.assert_array_equal(d.tree_island.numpy(), np.array([[0]], dtype=np.int32))
+
+  def test_generic_equality_jacobian_unions_all_active_trees(self):
+    """Joint equality takes the generic Jacobian path rather than body incidence."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option><flag island="disable"/></option>
+        <worldbody>
+          <body><joint name="j0" type="hinge"/><geom size=".1"/></body>
+          <body pos="1 0 0"><joint name="j1" type="hinge"/><geom size=".1"/></body>
+        </worldbody>
+        <equality><joint joint1="j0" joint2="j1"/></equality>
+      </mujoco>
+      """
+    )
+    del mjm, mjd
+    mjwarp.fwd_position(m, d)
+
+    self.assertIn(types.ConstraintType.EQUALITY, d.efc.type.numpy()[0, : d.nefc.numpy()[0]])
+    island.island(m, d)
+    np.testing.assert_array_equal(d.tree_island.numpy(), np.array([[0, 0]], dtype=np.int32))
+
+  def test_warmed_island_does_not_allocate_or_sync_with_host(self):
+    """The persistent DSU path is safe to call inside a warmed graph region."""
+    mjm, mjd, m, d = test_data.fixture(xml=_WELD_XML)
+    del mjm, mjd
+    mjwarp.fwd_position(m, d)
+    island.island(m, d)  # compile and warm the kernel before installing spies
+
+    with (
+      mock.patch.object(wp, "empty", side_effect=AssertionError("wp.empty")),
+      mock.patch.object(wp, "zeros", side_effect=AssertionError("wp.zeros")),
+      mock.patch.object(wp, "synchronize", side_effect=AssertionError("wp.synchronize")),
+      mock.patch.object(wp, "synchronize_device", side_effect=AssertionError("wp.synchronize_device")),
+      mock.patch.object(wp.array, "numpy", side_effect=AssertionError("array.numpy")),
+    ):
+      island.island(m, d)
+
+  @absltest.skipIf(not wp.get_device().is_cuda, "CUDA graph capture requires a CUDA device.")
+  def test_capture_replay_matches_direct_island_output(self):
+    """Graph replay produces the same labels and DSU workspace as a direct launch."""
+    mjm, mjd, m, d = test_data.fixture(xml=_WELD_XML)
+    del mjm, mjd
+    mjwarp.fwd_position(m, d)
+    island.island(m, d)
+    expected_parent = d.island_parent.numpy().copy()
+    expected_labels = d.tree_island.numpy().copy()
+    expected_nisland = d.nisland.numpy().copy()
+
+    with wp.ScopedCapture() as capture:
+      island.island(m, d)
+    wp.capture_launch(capture.graph)
+
+    np.testing.assert_array_equal(d.island_parent.numpy(), expected_parent)
+    np.testing.assert_array_equal(d.tree_island.numpy(), expected_labels)
+    np.testing.assert_array_equal(d.nisland.numpy(), expected_nisland)
 
   def test_two_trees_one_constraint_one_island(self):
     """Two trees connected by one constraint form one island.
@@ -897,6 +1239,32 @@ class IslandMappingTest(absltest.TestCase):
       d.map_iefc2efc.numpy()[0, :nefc],
       mjd.map_iefc2efc[:nefc],
     )
+
+  def test_dof_mapping_is_canonical_across_worlds(self):
+    """Island-local DOFs retain MuJoCo's ascending global-DOF order."""
+    mjm, mjd, m, d = test_data.fixture(xml=_chain_xml(22), nworld=256)
+    m.opt.disableflags &= ~types.DisableBit.ISLAND
+
+    mjwarp.fwd_position(m, d)
+    island.compute_island_mapping(m, d)
+
+    expected_dof2idof = np.tile(mjd.map_dof2idof[: mjm.nv], (d.nworld, 1))
+    expected_idof2dof = np.tile(mjd.map_idof2dof[: mjm.nv], (d.nworld, 1))
+    np.testing.assert_array_equal(d.map_dof2idof.numpy()[:, : mjm.nv], expected_dof2idof)
+    np.testing.assert_array_equal(d.map_idof2dof.numpy()[:, : mjm.nv], expected_idof2dof)
+
+  def test_efc_mapping_is_canonical_across_worlds(self):
+    """Island-local constraints retain MuJoCo's category and EFC order."""
+    mjm, mjd, m, d = test_data.fixture(xml=_chain_xml(22), nworld=256)
+    m.opt.disableflags &= ~types.DisableBit.ISLAND
+
+    mjwarp.fwd_position(m, d)
+    island.compute_island_mapping(m, d)
+
+    expected_efc2iefc = np.tile(mjd.map_efc2iefc[: mjd.nefc], (d.nworld, 1))
+    expected_iefc2efc = np.tile(mjd.map_iefc2efc[: mjd.nefc], (d.nworld, 1))
+    np.testing.assert_array_equal(d.map_efc2iefc.numpy()[:, : mjd.nefc], expected_efc2iefc)
+    np.testing.assert_array_equal(d.map_iefc2efc.numpy()[:, : mjd.nefc], expected_iefc2efc)
 
   def test_island_ne_nf_parity(self):
     """island_ne and island_nf match MuJoCo C values."""
