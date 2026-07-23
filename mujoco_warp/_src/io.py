@@ -573,13 +573,6 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
       dofid = mjm.dof_parentid[dofid]
   m.body_isdofancestor = body_isdofancestor
 
-  # Upper bound on a contact's Jacobian support-pair count, to size the elliptic-cone JTCJ
-  # launch. Use body_isdofancestor (the full dof tree), not the mass-matrix sparsity, which the
-  # simple-dof optimization diagonalizes -- that undercounts the support and NaNs the solve.
-  support_chains = [set(np.flatnonzero(row).tolist()) for row in np.unique(body_isdofancestor[mjm.geom_bodyid], axis=0)]
-  max_support = max((len(ci | cj) for i, ci in enumerate(support_chains) for cj in support_chains[i:]), default=0)
-  m.jtcj_max_pairs = max(max_support * (max_support + 1) // 2, 1)
-
   # precalculated geom pairs
   filterparent = not (mjm.opt.disableflags & types.DisableBit.FILTERPARENT)
 
