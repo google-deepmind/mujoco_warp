@@ -760,8 +760,8 @@
       <geom name="tablelegs" class="visual" material="table" quat="1 0 0 1" mesh="tablelegs" />
       <geom name="table" class="collision" type="box" size="0.60999999999999999 0.37 0.10000000000000001" pos="0 0 0.65090000000000003" />
     </body>
-    <camera name="overhead_cam" class="/" mode="fixed" fovy="58" pos="0 -0.30379400000000001 1.0252399999999999" quat="0.97633199999999998 0.216277 0 0" />
-    <camera name="worms_eye_cam" class="/" mode="fixed" fovy="58" pos="0 -0.37716699999999997 0.031605500000000002" quat="0.67265900000000001 0.73995299999999997 0 0" />
+    <camera name="overhead_cam" focal="1.93e-3 1.93e-3" resolution="1280 720" sensorsize="3896e-6 2140e-6" pos="0 -0.303794 1.02524" mode="fixed" quat="0.976332 0.216277 0 0" />
+    <camera name="worms_eye_cam" focal="1.93e-3 1.93e-3" resolution="1280 720" sensorsize="3896e-6 2140e-6" pos="0 -0.377167 0.0316055" mode="fixed" quat="0.672659 0.739953 0 0" />
     <geom name="//unnamed_geom_4" class="frame" pos="0.44 -0.36099999999999999 1.03" quat="0 1 0 1" mesh="extrusion_2040_880" />
     <geom name="//unnamed_geom_5" class="frame" pos="0.44 -0.371 0.60999999999999999" quat="1 0 -1 0" mesh="extrusion_150" />
     <geom name="//unnamed_geom_6" class="frame" pos="0 -0.30379400000000001 1.0252399999999999" quat="0 0 0.97629600000000005 0.21643999999999999" mesh="d405_solid" />
@@ -795,8 +795,7 @@
     <geom name="//unnamed_geom_34" class="frame" pos="0 -0.39100000000000001 -0.01" quat="0 0 0 1" mesh="wormseye_mount" />
     <light name="tracking_light_left" class="/" mode="targetbodycom" target="left\gripper_link" pos="-0.5 0.69999999999999996 2.5" cutoff="55" />
     <light name="tracking_light_right" class="/" mode="targetbodycom" target="right\gripper_link" pos="0.5 0.69999999999999996 2.5" cutoff="55" />
-    <camera name="teleoperator_pov" class="/" pos="0 -1.3540000000000001 0.68500000000000005" xyaxes="1 0 0 0 0.20000000000000001 0.80000000000000004" />
-    <camera name="collaborator_pov" class="/" pos="0 1.5 0.80000000000000004" xyaxes="-1 0 0 0 -0.20000000000000001 0.80000000000000004" />
+
     <body name="left\base_link" childclass="vx300s" pos="-0.46899999999999997 -0.019 0.02">
       <site name="left\base" group="5" pos="0 0 0" />
       <inertial pos="-0.053477400000000001 -0.00056257500000000005 0.020596099999999999" quat="-0.0029232400000000001 0.71251699999999996 0.00480387 0.70163299999999995" mass="0.96903399999999995" diaginertia="0.0071633 0.0060245100000000003 0.00169819" />
@@ -845,7 +844,7 @@
                     <geom name="//unnamed_geom_52" class="collision" type="mesh" pos="0 -0.035249999999999997 -0.022700000000000001" quat="0 -1 0 -1" mesh="vx300s_7_gripper_wrist_mount" />
                     <geom name="//unnamed_geom_53" class="visual" type="mesh" pos="0 -0.082474800000000001 -0.0095954999999999999" quat="0 0 -0.21643999999999999 -0.97629600000000005" mesh="d405_solid" />
                     <geom name="//unnamed_geom_54" class="collision" type="mesh" pos="0 -0.082474800000000001 -0.0095954999999999999" quat="0 0 -0.21643999999999999 -0.97629600000000005" mesh="d405_solid" />
-                    <camera name="wrist_cam_left" mode="fixed" fovy="58" pos="0 -0.082474800000000001 -0.0095954999999999999" euler="2.7052595535899999 0 0" />
+                    <camera name="wrist_cam_left" pos="0 -0.0824748 -0.0095955" mode="fixed" euler="2.70525955359 0 0" focal="1.93e-3 1.93e-3" resolution="1280 720" sensorsize="3896e-6 2140e-6" />
                     <body name="left\left_finger_link" pos="0.019099999999999999 -0.0141637 0.021172699999999999" quat="1 -1 -1 1">
                       <inertial pos="0.014347800000000001 -0.0284791 0.012289700000000001" quat="0.53548600000000002 0.45876600000000001 -0.450407 0.547651" mass="0.086293700000000001" diaginertia="5.8684799999999998e-05 4.4688699999999998e-05 1.8397e-05" />
                       <joint name="left\left_finger" class="left_finger" />
@@ -922,7 +921,7 @@
                     <geom name="//unnamed_geom_82" class="collision" type="mesh" pos="0 -0.035249999999999997 -0.022700000000000001" quat="0 -0.70710700000000004 0 -0.70710700000000004" mesh="vx300s_7_gripper_wrist_mount" />
                     <geom name="//unnamed_geom_83" class="visual" type="mesh" pos="0 -0.082474800000000001 -0.0095954999999999999" quat="0 0 -0.21643999999999999 -0.97629600000000005" mesh="d405_solid" />
                     <geom name="//unnamed_geom_84" class="collision" type="mesh" pos="0 -0.082474800000000001 -0.0095954999999999999" quat="0 0 -0.21643999999999999 -0.97629600000000005" mesh="d405_solid" />
-                    <camera name="wrist_cam_right" mode="fixed" fovy="58" pos="0 -0.082474800000000001 -0.0095954999999999999" euler="2.7052595535899999 0 0" />
+                    <camera name="wrist_cam_right" pos="0 -0.0824748 -0.0095955" mode="fixed" euler="2.70525955359 0 0" focal="1.93e-3 1.93e-3" resolution="1280 720" sensorsize="3896e-6 2140e-6" />
                     <body name="right\left_finger_link" pos="0.019099999999999999 -0.0141637 0.021172699999999999" quat="1 -1 -1 1">
                       <inertial pos="0.014347800000000001 -0.0284791 0.012289700000000001" quat="0.53548600000000002 0.45876600000000001 -0.450407 0.547651" mass="0.086293700000000001" diaginertia="5.8684799999999998e-05 4.4688699999999998e-05 1.8397e-05" />
                       <joint name="right\left_finger" class="left_finger" />

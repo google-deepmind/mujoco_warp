@@ -142,7 +142,12 @@ def _run_benchmark(bm: dict, input_dir: Path) -> dict:
     if field == "replay":
       cmd.append(f"--replay={(benchmark_root / bm['replay'])}")
     elif field not in ("name", "assets", "mjcf", "_dir"):
-      cmd.append(f"--{field}={bm[field]}")
+      val = bm[field]
+      if isinstance(val, list):
+        for v in val:
+          cmd.append(f"--{field}={v}")
+      else:
+        cmd.append(f"--{field}={val}")
 
   result = _uv_run(*cmd, cwd=input_dir)
 

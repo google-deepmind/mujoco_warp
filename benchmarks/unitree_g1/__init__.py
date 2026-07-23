@@ -27,7 +27,7 @@ BENCHMARKS = [
   {
     "name": "unitree_g1_hfield_render",
     "mjcf": "scene_hfield.xml",
-    "function": "render",
+    "function": ["refit_bvh", "render"],
     "nworld": 8192,
     "nconmax": 48,
     "njmax": 192,
