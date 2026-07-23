@@ -19,7 +19,7 @@ import warp as wp
 from mujoco_warp._src.types import ProjectionType
 from mujoco_warp._src.types import RenderContext
 
-wp.set_module_options({"enable_backward": False})
+wp.set_module_options({"enable_backward": False, "default_grid_stride": False})
 
 
 @wp.kernel

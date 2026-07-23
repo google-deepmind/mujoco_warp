@@ -36,7 +36,7 @@ from mujoco_warp._src.types import OverflowType
 from mujoco_warp._src.types import vec5
 from mujoco_warp._src.warp_util import event_scope
 
-wp.set_module_options({"enable_backward": False})
+wp.set_module_options({"enable_backward": False, "default_grid_stride": False})
 
 
 @wp.func
@@ -1289,7 +1289,7 @@ def _plane_vertex(
   return True, dist, contact_pos, nrm_out
 
 
-@wp.kernel(module="unique", enable_backward=False)
+@wp.kernel(module="unique", enable_backward=False, grid_stride=False)
 def _flex_internal_collisions_detect(
   # Model:
   nflex: int,
@@ -1398,7 +1398,7 @@ def _flex_internal_collisions_detect(
     )
 
 
-@wp.kernel(module="unique", enable_backward=False)
+@wp.kernel(module="unique", enable_backward=False, grid_stride=False)
 def _flex_tet_internal_collisions_detect(
   # Model:
   nflex: int,
@@ -2063,7 +2063,7 @@ def _flex_selfcollision_narrowphase(
       )
 
 
-@wp.kernel(module="unique", enable_backward=False)
+@wp.kernel(module="unique", enable_backward=False, grid_stride=False)
 def _flex_active_element_collisions_detect(
   # Model:
   nflex: int,

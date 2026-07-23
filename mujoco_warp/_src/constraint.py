@@ -28,7 +28,7 @@ from mujoco_warp._src.types import vec11
 from mujoco_warp._src.warp_util import cache_kernel
 from mujoco_warp._src.warp_util import event_scope
 
-wp.set_module_options({"enable_backward": False})
+wp.set_module_options({"enable_backward": False, "default_grid_stride": False})
 
 
 @wp.func
@@ -153,7 +153,7 @@ def _efc_row(
 
 @cache_kernel
 def _equality_connect(is_sparse: bool, newton: bool):
-  @wp.kernel(module="unique", enable_backward=False)
+  @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
   def kernel(
     # Model:
     nv: int,
@@ -497,7 +497,7 @@ def _equality_connect(is_sparse: bool, newton: bool):
 
 @cache_kernel
 def _equality_joint(is_sparse: bool, newton: bool):
-  @wp.kernel(module="unique", enable_backward=False)
+  @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
   def kernel(
     # Model:
     nv: int,
@@ -639,7 +639,7 @@ def _equality_joint(is_sparse: bool, newton: bool):
 
 @cache_kernel
 def _equality_tendon(is_sparse: bool, newton: bool):
-  @wp.kernel(module="unique", enable_backward=False)
+  @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
   def kernel(
     # Model:
     nv: int,
@@ -828,7 +828,7 @@ def _equality_tendon(is_sparse: bool, newton: bool):
 
 @cache_kernel
 def _equality_flex(is_sparse: bool, newton: bool):
-  @wp.kernel(module="unique", enable_backward=False)
+  @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
   def kernel(
     # Model:
     nv: int,
@@ -963,7 +963,7 @@ def _equality_flex(is_sparse: bool, newton: bool):
 
 @cache_kernel
 def _equality_weld(is_sparse: bool, newton: bool):
-  @wp.kernel(module="unique", enable_backward=False)
+  @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
   def kernel(
     # Model:
     nv: int,
@@ -1440,7 +1440,7 @@ def _equality_weld(is_sparse: bool, newton: bool):
 
 @cache_kernel
 def _equality_flexstrain(is_sparse: bool, newton: bool):
-  @wp.kernel(module="unique", enable_backward=False)
+  @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
   def kernel(
     # Model:
     nv: int,
@@ -1763,7 +1763,7 @@ def _equality_flexstrain(is_sparse: bool, newton: bool):
 
 @cache_kernel
 def _friction_dof(is_sparse: bool, newton: bool):
-  @wp.kernel(module="unique", enable_backward=False)
+  @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
   def kernel(
     # Model:
     nv: int,
@@ -1864,7 +1864,7 @@ def _friction_dof(is_sparse: bool, newton: bool):
 
 @cache_kernel
 def _friction_tendon(is_sparse: bool, newton: bool):
-  @wp.kernel(module="unique", enable_backward=False)
+  @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
   def kernel(
     # Model:
     nv: int,
@@ -1988,7 +1988,7 @@ def _friction_tendon(is_sparse: bool, newton: bool):
 
 @cache_kernel
 def _limit_slide_hinge(is_sparse: bool, newton: bool):
-  @wp.kernel(module="unique", enable_backward=False)
+  @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
   def kernel(
     # Model:
     nv: int,
@@ -2104,7 +2104,7 @@ def _limit_slide_hinge(is_sparse: bool, newton: bool):
 
 @cache_kernel
 def _limit_ball(is_sparse: bool, newton: bool):
-  @wp.kernel(module="unique", enable_backward=False)
+  @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
   def kernel(
     # Model:
     nv: int,
@@ -2240,7 +2240,7 @@ def _limit_ball(is_sparse: bool, newton: bool):
 
 @cache_kernel
 def _limit_tendon(is_sparse: bool, newton: bool):
-  @wp.kernel(module="unique", enable_backward=False)
+  @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
   def kernel(
     # Model:
     nv: int,
@@ -2642,7 +2642,7 @@ def _efc_contact_init(cone_type: types.ConeType, is_sparse: bool, newton: bool):
   IS_ELLIPTIC = cone_type == types.ConeType.ELLIPTIC
   IS_SPARSE = is_sparse
 
-  @wp.kernel(module="unique", enable_backward=False)
+  @wp.kernel(module="unique", enable_backward=False, grid_stride=True)
   def kernel(
     # Model:
     body_weldid: wp.array[int],
@@ -2756,7 +2756,7 @@ def _efc_contact_init_flex(cone_type: types.ConeType, is_sparse: bool, newton: b
   IS_SPARSE = is_sparse
   HAS_FLEX = True
 
-  @wp.kernel(module="unique", enable_backward=False)
+  @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
   def kernel(
     # Model:
     body_parentid: wp.array[int],
@@ -3092,7 +3092,7 @@ def _efc_contact_init_flex(cone_type: types.ConeType, is_sparse: bool, newton: b
 def _efc_contact_jac_sparse(cone_type: types.ConeType):
   IS_ELLIPTIC = cone_type == types.ConeType.ELLIPTIC
 
-  @wp.kernel(module="unique", enable_backward=False)
+  @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
   def kernel(
     # Model:
     body_parentid: wp.array[int],
@@ -3245,7 +3245,7 @@ def _efc_contact_jac_sparse_flex(cone_type: types.ConeType):
   IS_ELLIPTIC = cone_type == types.ConeType.ELLIPTIC
   HAS_FLEX = True
 
-  @wp.kernel(module="unique", enable_backward=False)
+  @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
   def kernel(
     # Model:
     body_parentid: wp.array[int],
@@ -3744,7 +3744,7 @@ def _efc_contact_jac_dense(tile_size: int, cone_type: types.ConeType):
   TILE_SIZE = tile_size
   IS_ELLIPTIC = cone_type == types.ConeType.ELLIPTIC
 
-  @wp.kernel(module="unique", enable_backward=False)
+  @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
   def kernel(
     # Model:
     body_rootid: wp.array[int],
@@ -3873,7 +3873,7 @@ def _efc_contact_jac_dense_flex(tile_size: int, cone_type: types.ConeType):
   TILE_SIZE = tile_size
   IS_ELLIPTIC = cone_type == types.ConeType.ELLIPTIC
 
-  @wp.kernel(module="unique", enable_backward=False)
+  @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
   def kernel(
     # Model:
     body_rootid: wp.array[int],
@@ -4189,7 +4189,7 @@ def _efc_contact_jac_dense_flex(tile_size: int, cone_type: types.ConeType):
 def _efc_contact_update(cone_type: types.ConeType):
   IS_ELLIPTIC = cone_type == types.ConeType.ELLIPTIC
 
-  @wp.kernel(module="unique", enable_backward=False)
+  @wp.kernel(module="unique", enable_backward=False, grid_stride=True)
   def kernel(
     # Model:
     opt_timestep: wp.array[float],
@@ -4328,7 +4328,7 @@ def _efc_contact_update(cone_type: types.ConeType):
 def _efc_contact_update_flex(cone_type: types.ConeType):
   IS_ELLIPTIC = cone_type == types.ConeType.ELLIPTIC
 
-  @wp.kernel(module="unique", enable_backward=False)
+  @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
   def kernel(
     # Model:
     opt_timestep: wp.array[float],

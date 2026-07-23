@@ -30,7 +30,7 @@ from mujoco_warp._src.types import vec10
 from mujoco_warp._src.warp_util import cache_kernel
 from mujoco_warp._src.warp_util import event_scope
 
-wp.set_module_options({"enable_backward": False})
+wp.set_module_options({"enable_backward": False, "default_grid_stride": False})
 
 
 # TODO(team): kernel analyzer array slice?
@@ -152,7 +152,7 @@ def compute_interp_cell_quat(
 
 @cache_kernel
 def mul_m_kernel(check_skip: bool):
-  @wp.kernel(module="unique")
+  @wp.kernel(module="unique", grid_stride=False)
   def _mul_m(
     # Model:
     M_mulm_rowadr: wp.array[int],
@@ -189,7 +189,7 @@ def mul_m_kernel(check_skip: bool):
 
 @cache_kernel
 def mul_m_dense(nv: int, check_skip: bool):
-  @wp.kernel(module="unique")
+  @wp.kernel(module="unique", grid_stride=False)
   def _mul_m_dense(
     # Data in:
     M_in: wp.array3d[float],  # kernel_analyzer: ignore
@@ -527,7 +527,7 @@ def jac_dof(
 
 @cache_kernel
 def _make_jac_kernel(has_jacp: bool, has_jacr: bool):
-  @wp.kernel(module="unique", enable_backward=False)
+  @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
   def _jac(
     # Model:
     body_parentid: wp.array[int],
@@ -679,7 +679,7 @@ def get_state(m: Model, d: Data, state: wp.array2d[float], sig: int, active: Opt
   if sig >= (1 << State.NSTATE):
     raise ValueError(f"invalid state signature {sig} >= 2^mjNSTATE")
 
-  @wp.kernel(module="unique", enable_backward=False)
+  @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
   def _get_state(
     # Model:
     nq: int,
@@ -834,7 +834,7 @@ def set_state(m: Model, d: Data, state: wp.array2d[float], sig: int, active: Opt
   if sig >= (1 << State.NSTATE):
     raise ValueError(f"invalid state signature {sig} >= 2^mjNSTATE")
 
-  @wp.kernel(module="unique", enable_backward=False)
+  @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
   def _set_state(
     # Model:
     nq: int,
