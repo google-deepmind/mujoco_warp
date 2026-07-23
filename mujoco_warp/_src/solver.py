@@ -400,6 +400,25 @@ def _eval_elliptic_shifted(
 
 
 @wp.func
+def _eval_elliptic_middle(
+  # In:
+  N: float,
+  T: float,
+  D0: float,
+  mu: float,
+  ufrictionj: float,
+  is_normal: bool,
+) -> wp.vec2:
+  """Computes the elliptic-cone middle-zone (force, cost) for one row (cost 0 on tangent rows)."""
+  dm = math.safe_div(D0, mu * mu * (1.0 + mu * mu))
+  nmt = N - mu * T
+  force_normal = -dm * nmt * mu
+  if is_normal:
+    return wp.vec2(force_normal, 0.5 * dm * nmt * nmt)
+  return wp.vec2(-math.safe_div(force_normal, T) * ufrictionj, 0.0)
+
+
+@wp.func
 def _eval_constraint(
   # In:
   is_equality: bool,
@@ -445,16 +464,9 @@ def _eval_constraint(
       return wp.vec3(-D * jaref, float(types.ConstraintState.QUADRATIC.value), 0.5 * D * jaref * jaref)
     # Middle zone
     else:
-      dm = math.safe_div(D0, mu * mu * (1.0 + mu * mu))
-      nmt = N - mu * T
-      force_normal = -dm * nmt * mu
-
-      if efcid == efcid0:
-        return wp.vec3(force_normal, float(types.ConstraintState.CONE.value), 0.5 * dm * nmt * nmt)
-      else:
-        force_tangent = -math.safe_div(force_normal, T) * ufrictionj
-
-      return wp.vec3(force_tangent, float(types.ConstraintState.CONE.value), 0.0)
+      is_normal = efcid == efcid0
+      fc = _eval_elliptic_middle(N, T, D0, mu, ufrictionj, is_normal)
+      return wp.vec3(fc[0], float(types.ConstraintState.CONE.value), fc[1])
 
   if jaref >= 0.0:
     return wp.vec3(0.0, float(types.ConstraintState.SATISFIED.value), 0.0)

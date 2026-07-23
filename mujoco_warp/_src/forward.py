@@ -50,6 +50,76 @@ from mujoco_warp._src.warp_util import event_scope
 wp.set_module_options({"enable_backward": False})
 
 
+@wp.func
+def next_position(
+  # Data in:
+  qpos_in: wp.array2d[float],
+  # In:
+  jnttype: int,
+  qpos_adr: int,
+  timestep: float,
+  worldid: int,
+  qvel_lin: wp.vec3,
+  qvel_ang: wp.vec3,
+  # Data out:
+  qpos_out: wp.array2d[float],
+):
+  """Per-joint semi-implicit position integration from velocity values."""
+  if jnttype == JointType.FREE:
+    qpos_pos = wp.vec3(qpos_in[worldid, qpos_adr], qpos_in[worldid, qpos_adr + 1], qpos_in[worldid, qpos_adr + 2])
+    qpos_new = qpos_pos + timestep * qvel_lin
+
+    qpos_quat = wp.quat(
+      qpos_in[worldid, qpos_adr + 3],
+      qpos_in[worldid, qpos_adr + 4],
+      qpos_in[worldid, qpos_adr + 5],
+      qpos_in[worldid, qpos_adr + 6],
+    )
+    qpos_quat_new = math.quat_integrate(qpos_quat, qvel_ang, timestep)
+
+    qpos_out[worldid, qpos_adr + 0] = qpos_new[0]
+    qpos_out[worldid, qpos_adr + 1] = qpos_new[1]
+    qpos_out[worldid, qpos_adr + 2] = qpos_new[2]
+    qpos_out[worldid, qpos_adr + 3] = qpos_quat_new[0]
+    qpos_out[worldid, qpos_adr + 4] = qpos_quat_new[1]
+    qpos_out[worldid, qpos_adr + 5] = qpos_quat_new[2]
+    qpos_out[worldid, qpos_adr + 6] = qpos_quat_new[3]
+
+  elif jnttype == JointType.BALL:
+    qpos_quat = wp.quat(
+      qpos_in[worldid, qpos_adr + 0],
+      qpos_in[worldid, qpos_adr + 1],
+      qpos_in[worldid, qpos_adr + 2],
+      qpos_in[worldid, qpos_adr + 3],
+    )
+    qpos_quat_new = math.quat_integrate(qpos_quat, qvel_ang, timestep)
+
+    qpos_out[worldid, qpos_adr + 0] = qpos_quat_new[0]
+    qpos_out[worldid, qpos_adr + 1] = qpos_quat_new[1]
+    qpos_out[worldid, qpos_adr + 2] = qpos_quat_new[2]
+    qpos_out[worldid, qpos_adr + 3] = qpos_quat_new[3]
+
+  else:  # HINGE / SLIDE
+    qpos_out[worldid, qpos_adr] = qpos_in[worldid, qpos_adr] + timestep * qvel_lin[0]
+
+
+@wp.func
+def next_velocity(
+  # Model:
+  opt_timestep: wp.array[float],
+  # Data in:
+  qvel_in: wp.array2d[float],
+  qacc_in: wp.array2d[float],
+  # In:
+  worldid: int,
+  dofid: int,
+  qacc_scale_in: float,
+) -> float:
+  """Returns the next velocity for one dof (value only, not written to qvel)."""
+  timestep = opt_timestep[worldid % opt_timestep.shape[0]]
+  return qvel_in[worldid, dofid] + qacc_scale_in * qacc_in[worldid, dofid] * timestep
+
+
 @wp.kernel
 def _next_position(
   # Model:
@@ -71,47 +141,20 @@ def _next_position(
   jnttype = jnt_type[jntid]
   qpos_adr = jnt_qposadr[jntid]
   dof_adr = jnt_dofadr[jntid]
-  qpos = qpos_in[worldid]
-  qpos_next = qpos_out[worldid]
   qvel = qvel_in[worldid]
 
+  # extract the (scaled) per-joint velocity
+  qvel_lin = wp.vec3(0.0, 0.0, 0.0)
+  qvel_ang = wp.vec3(0.0, 0.0, 0.0)
   if jnttype == JointType.FREE:
-    qpos_pos = wp.vec3(qpos[qpos_adr], qpos[qpos_adr + 1], qpos[qpos_adr + 2])
     qvel_lin = wp.vec3(qvel[dof_adr], qvel[dof_adr + 1], qvel[dof_adr + 2]) * qvel_scale_in
-
-    qpos_new = qpos_pos + timestep * qvel_lin
-
-    qpos_quat = wp.quat(
-      qpos[qpos_adr + 3],
-      qpos[qpos_adr + 4],
-      qpos[qpos_adr + 5],
-      qpos[qpos_adr + 6],
-    )
     qvel_ang = wp.vec3(qvel[dof_adr + 3], qvel[dof_adr + 4], qvel[dof_adr + 5]) * qvel_scale_in
-
-    qpos_quat_new = math.quat_integrate(qpos_quat, qvel_ang, timestep)
-
-    qpos_next[qpos_adr + 0] = qpos_new[0]
-    qpos_next[qpos_adr + 1] = qpos_new[1]
-    qpos_next[qpos_adr + 2] = qpos_new[2]
-    qpos_next[qpos_adr + 3] = qpos_quat_new[0]
-    qpos_next[qpos_adr + 4] = qpos_quat_new[1]
-    qpos_next[qpos_adr + 5] = qpos_quat_new[2]
-    qpos_next[qpos_adr + 6] = qpos_quat_new[3]
-
   elif jnttype == JointType.BALL:
-    qpos_quat = wp.quat(qpos[qpos_adr + 0], qpos[qpos_adr + 1], qpos[qpos_adr + 2], qpos[qpos_adr + 3])
     qvel_ang = wp.vec3(qvel[dof_adr], qvel[dof_adr + 1], qvel[dof_adr + 2]) * qvel_scale_in
+  else:  # HINGE / SLIDE
+    qvel_lin = wp.vec3(qvel[dof_adr] * qvel_scale_in, 0.0, 0.0)
 
-    qpos_quat_new = math.quat_integrate(qpos_quat, qvel_ang, timestep)
-
-    qpos_next[qpos_adr + 0] = qpos_quat_new[0]
-    qpos_next[qpos_adr + 1] = qpos_quat_new[1]
-    qpos_next[qpos_adr + 2] = qpos_quat_new[2]
-    qpos_next[qpos_adr + 3] = qpos_quat_new[3]
-
-  else:  # if jnt_type in (JointType.HINGE, JointType.SLIDE):
-    qpos_next[qpos_adr] = qpos[qpos_adr] + timestep * qvel[dof_adr] * qvel_scale_in
+  next_position(qpos_in, jnttype, qpos_adr, timestep, worldid, qvel_lin, qvel_ang, qpos_out)
 
 
 @wp.kernel
@@ -127,8 +170,7 @@ def _next_velocity(
   qvel_out: wp.array2d[float],
 ):
   worldid, dofid = wp.tid()
-  timestep = opt_timestep[worldid % opt_timestep.shape[0]]
-  qvel_out[worldid, dofid] = qvel_in[worldid, dofid] + qacc_scale_in * qacc_in[worldid, dofid] * timestep
+  qvel_out[worldid, dofid] = next_velocity(opt_timestep, qvel_in, qacc_in, worldid, dofid, qacc_scale_in)
 
 
 @wp.kernel
@@ -612,6 +654,17 @@ def implicit(m: Model, d: Data):
     _advance(m, d, d.qacc)
 
 
+# gradient opt-in gate + analytic fwd_kinematics backward hook, set by mujoco_warp.enable_grad()
+ENABLE_GRAD = False
+_fwd_kinematics_backward_hook = None
+
+
+def register_fwd_kinematics_backward_hook(fn):
+  """Registers the analytic fwd_kinematics backward callback."""
+  global _fwd_kinematics_backward_hook
+  _fwd_kinematics_backward_hook = fn
+
+
 @event_scope
 def fwd_kinematics(m: Model, d: Data):
   """Kinematics-dependent computations.
@@ -620,16 +673,35 @@ def fwd_kinematics(m: Model, d: Data):
     m: The model containing kinematic and dynamic information.
     d: The data object containing the current state and output arrays.
   """
-  smooth.kinematics(m, d)
-  smooth.com_pos(m, d)
-  smooth.camlight(m, d)
-  smooth.flex(m, d)
-  smooth.tendon(m, d)
+  rt = wp._src.context.runtime
+  tape = rt.tape if rt is not None else None
+  record = tape is not None
+  if record and not ENABLE_GRAD:
+    raise RuntimeError(
+      "fwd_kinematics() was recorded under a wp.Tape but gradients are disabled; "
+      "call mujoco_warp.enable_grad() first, or run fwd_kinematics outside the tape"
+    )
+  if record:
+    rt.tape = None  # pause recording; the record_func below is the sole adjoint
+  try:
+    smooth.kinematics(m, d)
+    smooth.com_pos(m, d)
+    smooth.camlight(m, d)
+    smooth.flex(m, d)
+    smooth.tendon(m, d)
 
-  sleep_enabled = bool(m.opt.enableflags & EnableBit.SLEEP) and not bool(m.opt.disableflags & DisableBit.ISLAND)
-  if sleep_enabled and m.ntendon > 0:
-    sleep.wake_tendon(m, d)
-    sleep.update_sleep_trees(m, d)
+    sleep_enabled = bool(m.opt.enableflags & EnableBit.SLEEP) and not bool(m.opt.disableflags & DisableBit.ISLAND)
+    if sleep_enabled and m.ntendon > 0:
+      sleep.wake_tendon(m, d)
+      sleep.update_sleep_trees(m, d)
+  finally:
+    if record:
+      rt.tape = tape
+  if record:
+    hook = _fwd_kinematics_backward_hook
+    arrays = [a for a in (d.qpos, d.site_xpos, d.xpos, d.xquat) if a is not None and a.grad]
+    if len(arrays) > 1:  # qpos + at least one differentiated output
+      tape.record_func(lambda: hook(m, d), arrays=arrays)
 
 
 @event_scope
@@ -1360,19 +1432,82 @@ def forward(m: Model, d: Data):
   sensor.sensor_acc(m, d)
 
 
-@event_scope
-def step(m: Model, d: Data):
-  """Advance simulation."""
-  forward(m, d)
+# minimal step-input state copied d -> d_out out-of-place; forward(m, d_out) recomputes the rest
+_STEP_STATE_FIELDS = (
+  "qpos",
+  "qvel",
+  "act",
+  "ctrl",
+  "qfrc_applied",
+  "xfrc_applied",
+  "mocap_pos",
+  "mocap_quat",
+  "qacc_warmstart",
+  "eq_active",
+  "time",
+)
 
-  if m.opt.integrator == IntegratorType.EULER:
-    euler(m, d)
-  elif m.opt.integrator == IntegratorType.RK4:
-    rungekutta4(m, d)
-  elif m.opt.integrator in (IntegratorType.IMPLICITFAST, IntegratorType.IMPLICIT):
-    implicit(m, d)
-  else:
-    raise NotImplementedError(f"integrator {m.opt.integrator} not implemented.")
+# analytic step-backward hook, set by mujoco_warp.enable_grad(); taped out-of-place path only
+_step_backward_hook = None
+
+
+def register_step_backward_hook(fn):
+  """Registers the analytic step backward callback."""
+  global _step_backward_hook
+  _step_backward_hook = fn
+
+
+def _copy_state(d: Data, d_out: Data):
+  """Copy the minimal step-input state d -> d_out; forward(m, d_out) recomputes the rest."""
+  for name in _STEP_STATE_FIELDS:
+    src = getattr(d, name, None)
+    dst = getattr(d_out, name, None)
+    if src is not None and dst is not None and src.size:
+      wp.copy(dst, src)
+
+
+@event_scope
+def step(m: Model, d: Data, d_out: Optional[Data] = None):
+  """Advance simulation: in place (d_out=None) or out-of-place d -> d_out, leaving d untouched.
+
+  Under a wp.Tape with a backward hook, records one analytic adjoint (d_out.grad -> d.grad).
+  """
+  inplace = d_out is None
+  if inplace:
+    d_out = d
+
+  rt = wp._src.context.runtime
+  tape = rt.tape if rt is not None else None
+  # pause recording across the forward: the analytic record_func below is the sole step adjoint;
+  # taping the state copy would double-count its wp.copy adjoints against it
+  record = (not inplace) and (tape is not None)
+  if record and not ENABLE_GRAD:
+    raise RuntimeError(
+      "step() was recorded under a wp.Tape but gradients are disabled; "
+      "call mujoco_warp.enable_grad() first, or step outside the tape"
+    )
+  if record:
+    rt.tape = None
+  try:
+    if not inplace:
+      _copy_state(d, d_out)
+    forward(m, d_out)
+    if m.opt.integrator == IntegratorType.EULER:
+      euler(m, d_out)
+    elif m.opt.integrator == IntegratorType.RK4:
+      rungekutta4(m, d_out)
+    elif m.opt.integrator in (IntegratorType.IMPLICITFAST, IntegratorType.IMPLICIT):
+      implicit(m, d_out)
+    else:
+      raise NotImplementedError(f"integrator {m.opt.integrator} not implemented.")
+  finally:
+    if record:
+      rt.tape = tape
+
+  if record:
+    hook = _step_backward_hook
+    arrays = [a for a in (d.qpos, d.qvel, d.ctrl, d_out.qpos, d_out.qvel) if a.grad]
+    tape.record_func(lambda: hook(m, d, d_out), arrays=arrays)
 
 
 @event_scope
