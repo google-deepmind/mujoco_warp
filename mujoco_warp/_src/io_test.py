@@ -1071,6 +1071,180 @@ class IOTest(parameterized.TestCase):
     _assert_eq(d.qvel.numpy()[0], 1.0, "qvel[0]")
     _assert_eq(d.qvel.numpy()[1], 2.0, "qvel[1]")
 
+  def test_reset_data_reset_invalid(self):
+    """Tests that reset_data validates the reset argument."""
+    _MJCF = """
+    <mujoco>
+      <worldbody>
+        <body>
+          <geom type="sphere" size="1"/>
+          <joint type="slide"/>
+        </body>
+      </worldbody>
+    </mujoco>
+    """
+    mjm = mujoco.MjModel.from_xml_string(_MJCF)
+    m = mjwarp.put_model(mjm)
+    d = mjwarp.make_data(mjm, nworld=2)
+
+    with self.assertRaisesRegex(ValueError, "reset array must have shape"):
+      mjwarp.reset_data(m, d, reset=wp.array(np.array([True, False, True]), dtype=bool))
+
+    with self.assertRaisesRegex(ValueError, "reset must be None or a wp.array"):
+      mjwarp.reset_data(m, d, reset=[True, False])
+
+  def test_reset_data_keyframe(self):
+    """Tests that reset_data_keyframe matches mj_resetDataKeyframe."""
+    _MJCF = """
+    <mujoco>
+      <worldbody>
+        <body name="mocap1" mocap="true">
+          <geom type="sphere" size="0.1"/>
+        </body>
+        <body>
+          <joint type="slide" name="slide1"/>
+          <geom type="sphere" size="1"/>
+        </body>
+      </worldbody>
+      <actuator>
+        <general joint="slide1" dyntype="integrator" dynprm="1" gaintype="fixed" gainprm="1" biastype="none"/>
+      </actuator>
+      <keyframe>
+        <key name="k0" time="0.5" qpos="0.3" qvel="0.4" act="0.6" ctrl="0.7"
+             mpos="0.1 0.2 0.3" mquat="0.7071068 0.7071068 0 0"/>
+      </keyframe>
+    </mujoco>
+    """
+    reset_datafield = ["time", "qpos", "qvel", "act", "ctrl", "mocap_pos", "mocap_quat"]
+    key = 0
+
+    mjm, mjd, m, d = test_data.fixture(xml=_MJCF, keyframe=key)
+
+    # corrupt data
+    for arr in reset_datafield:
+      attr = getattr(d, arr)
+      if attr.dtype == float:
+        attr.fill_(wp.nan)
+      else:
+        attr.fill_(-1)
+
+    mjwarp.reset_data_keyframe(m, d, key)
+
+    for arr in reset_datafield:
+      _assert_eq(getattr(d, arr).numpy()[0], getattr(mjd, arr), arr)
+
+  def test_reset_data_keyframe_world(self):
+    """Tests per-world reset for reset_data_keyframe."""
+    _MJCF = """
+    <mujoco>
+      <worldbody>
+        <body>
+          <geom type="sphere" size="1"/>
+          <joint type="slide"/>
+        </body>
+      </worldbody>
+      <keyframe>
+        <key name="k0" qpos="0.5"/>
+      </keyframe>
+    </mujoco>
+    """
+    key = 0
+    mjm = mujoco.MjModel.from_xml_string(_MJCF)
+    m = mjwarp.put_model(mjm)
+    d = mjwarp.make_data(mjm, nworld=2)
+
+    # nonzero values
+    qpos = wp.array(np.array([[1.0], [2.0]]), dtype=float)
+
+    wp.copy(d.qpos, qpos)
+
+    # reset both worlds
+    mjwarp.reset_data_keyframe(m, d, key)
+
+    _assert_eq(d.qpos.numpy()[0], 0.5, "qpos[0]")
+    _assert_eq(d.qpos.numpy()[1], 0.5, "qpos[1]")
+
+    wp.copy(d.qpos, qpos)
+
+    # don't reset second world
+    reset10 = wp.array(np.array([True, False]), dtype=bool)
+    mjwarp.reset_data_keyframe(m, d, key, reset=reset10)
+
+    _assert_eq(d.qpos.numpy()[0], 0.5, "qpos[0]")
+    _assert_eq(d.qpos.numpy()[1], 2.0, "qpos[1]")
+
+    wp.copy(d.qpos, qpos)
+
+    # don't reset both worlds
+    reset00 = wp.array(np.array([False, False], dtype=bool))
+    mjwarp.reset_data_keyframe(m, d, key, reset=reset00)
+
+    _assert_eq(d.qpos.numpy()[0], 1.0, "qpos[0]")
+    _assert_eq(d.qpos.numpy()[1], 2.0, "qpos[1]")
+
+  def test_reset_data_keyframe_per_world(self):
+    """Tests reset_data_keyframe with a per-world keyframe array."""
+    _MJCF = """
+    <mujoco>
+      <worldbody>
+        <body>
+          <geom type="sphere" size="1"/>
+          <joint type="slide"/>
+        </body>
+      </worldbody>
+      <keyframe>
+        <key name="k0" qpos="0.5"/>
+        <key name="k1" qpos="0.6"/>
+      </keyframe>
+    </mujoco>
+    """
+    mjm = mujoco.MjModel.from_xml_string(_MJCF)
+    m = mjwarp.put_model(mjm)
+    d = mjwarp.make_data(mjm, nworld=4)
+
+    qpos = wp.array(np.array([[1.0], [2.0], [3.0], [4.0]]), dtype=float)
+    wp.copy(d.qpos, qpos)
+
+    # world 0 -> key 0
+    # world 1 -> key 1
+    # world 2 -> key < 0 (reset skipped)
+    # world 3 -> key >= nkey (reset skipped)
+    key = wp.array(np.array([0, 1, -1, 2]), dtype=int)
+    mjwarp.reset_data_keyframe(m, d, key)
+
+    _assert_eq(d.qpos.numpy()[0], 0.5, "qpos[0]")
+    _assert_eq(d.qpos.numpy()[1], 0.6, "qpos[1]")
+    _assert_eq(d.qpos.numpy()[2], 3.0, "qpos[2]")
+    _assert_eq(d.qpos.numpy()[3], 4.0, "qpos[3]")
+
+  def test_reset_data_keyframe_key_invalid(self):
+    """Tests that reset_data_keyframe validates the key argument."""
+    _MJCF = """
+    <mujoco>
+      <worldbody>
+        <body>
+          <geom type="sphere" size="1"/>
+          <joint type="slide"/>
+        </body>
+      </worldbody>
+      <keyframe>
+        <key name="k0" qpos="0.5"/>
+      </keyframe>
+    </mujoco>
+    """
+    mjm = mujoco.MjModel.from_xml_string(_MJCF)
+    m = mjwarp.put_model(mjm)
+    d = mjwarp.make_data(mjm, nworld=2)
+
+    with self.assertRaisesRegex(ValueError, r"key \(-1\) must be in \[0, 1\)"):
+      mjwarp.reset_data_keyframe(m, d, -1)
+    with self.assertRaisesRegex(ValueError, r"key \(1\) must be in \[0, 1\)"):
+      mjwarp.reset_data_keyframe(m, d, 1)
+    with self.assertRaisesRegex(ValueError, "key array must have shape"):
+      mjwarp.reset_data_keyframe(m, d, wp.array(np.array([0, 0, 0]), dtype=int))
+    with self.assertRaisesRegex(ValueError, "key must be an int or a wp.array"):
+      mjwarp.reset_data_keyframe(m, d, 0.5)
+
   def test_sdf(self):
     """Tests that an SDF can be loaded."""
     mjm, mjd, m, d = test_data.fixture("collision_sdf/cow.xml")
