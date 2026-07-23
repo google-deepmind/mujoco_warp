@@ -17,6 +17,7 @@ from typing import Any, Tuple
 
 import warp as wp
 
+from mujoco_warp._src import ad_flags as _ad_flags
 from mujoco_warp._src import history
 from mujoco_warp._src import math
 from mujoco_warp._src import ray
@@ -50,7 +51,12 @@ from mujoco_warp._src.util_misc import poly_potential
 from mujoco_warp._src.warp_util import cache_kernel
 from mujoco_warp._src.warp_util import event_scope
 
-wp.set_module_options({"enable_backward": False})
+# The smooth (position/velocity-stage) sensor kernels compile with backward
+# support in grad mode so losses on d.sensordata reach the state gradients.
+# Contact/constraint/ray/energy-dependent sensor kernels opt out below with
+# kernel-level enable_backward=False: their inputs are produced by
+# non-differentiable modules, so they carry no gradients.
+wp.set_module_options({"enable_backward": _ad_flags.ad_enabled()})
 
 
 @wp.func
@@ -175,7 +181,7 @@ def _cam_projection(
   return wp.vec2(pixel_x, pixel_y) / denom + 0.5 * wp.vec2(float(res[0]), float(res[1]))
 
 
-@wp.kernel
+@wp.kernel(enable_backward=False)
 def _sensor_rangefinder_init(
   # Model:
   sensor_objid: wp.array[int],
@@ -224,7 +230,7 @@ def _ball_quat(jnt_qposadr: wp.array[int], qpos_in: wp.array2d[float], worldid: 
   return wp.normalize(quat)
 
 
-@wp.kernel
+@wp.kernel(enable_backward=False)
 def _limit_pos(
   # Model:
   sensor_type: wp.array[int],
@@ -755,7 +761,7 @@ def _sensor_pos(
     _write_scalar(sensor_type, sensor_datatype, sensor_adr, sensor_cutoff, sensorid, val, out)
 
 
-@wp.kernel
+@wp.kernel(enable_backward=False)
 def _sensor_collision(
   # Model:
   ngeom: int,
@@ -811,6 +817,14 @@ def sensor_pos(m: Model, d: Data):
   """Compute position-dependent sensor values."""
   if m.opt.disableflags & DisableBit.SENSOR:
     return
+
+  # Under a tape, give each substep's sensordata unique storage: the array is
+  # rewritten every substep, and a shared .grad would be zeroed by the later
+  # substep's backward, corrupting earlier substeps' sensor cotangents. The
+  # caller (forward / step1) zeroes sensordata right before this point, so a
+  # fresh zero allocation preserves forward values without recording a copy.
+  if d.sensordata.requires_grad and wp._src.context.runtime.tape is not None:
+    d.sensordata = wp.zeros_like(d.sensordata, requires_grad=True)
 
   # rangefinder
   rangefinder_dist = wp.empty((d.nworld, m.nrangefinder), dtype=float)
@@ -1024,7 +1038,7 @@ def _ball_ang_vel(jnt_dofadr: wp.array[int], qvel_in: wp.array2d[float], worldid
   return wp.vec3(qvel_in[worldid, adr + 0], qvel_in[worldid, adr + 1], qvel_in[worldid, adr + 2])
 
 
-@wp.kernel
+@wp.kernel(enable_backward=False)
 def _limit_vel(
   # Model:
   sensor_type: wp.array[int],
@@ -1594,7 +1608,7 @@ def _joint_actuator_force(
   return qfrc_actuator_in[worldid, jnt_dofadr[objid]]
 
 
-@wp.kernel
+@wp.kernel(enable_backward=False)
 def _tendon_actuator_force(
   # Model:
   actuator_trntype: wp.array[int],
@@ -1615,7 +1629,7 @@ def _tendon_actuator_force(
     sensordata_out[worldid, adr] += actuator_force_in[worldid, actid]
 
 
-@wp.kernel
+@wp.kernel(enable_backward=False)
 def _tendon_actuator_force_cutoff(
   # Model:
   sensor_type: wp.array[int],
@@ -1636,7 +1650,7 @@ def _tendon_actuator_force_cutoff(
   _write_scalar(sensor_type, sensor_datatype, sensor_adr, sensor_cutoff, sensorid, val, sensordata_out[worldid])
 
 
-@wp.kernel
+@wp.kernel(enable_backward=False)
 def _limit_frc(
   # Model:
   sensor_type: wp.array[int],
@@ -1752,7 +1766,7 @@ def _frameangacc(
   return wp.spatial_top(cacc_in[worldid, bodyid])
 
 
-@wp.kernel
+@wp.kernel(enable_backward=False)
 def _sensor_acc(
   # Model:
   opt_cone: int,
@@ -2056,7 +2070,7 @@ def _sensor_acc(
     _write_vector(sensor_type, sensor_datatype, sensor_adr, sensor_cutoff, sensorid, 3, vec3, out)
 
 
-@wp.kernel
+@wp.kernel(enable_backward=False)
 def _sensor_touch(
   # Model:
   opt_cone: int,
@@ -2140,7 +2154,7 @@ def _transform_spatial(vec: wp.spatial_vector, dif: wp.vec3) -> wp.vec3:
   return wp.spatial_bottom(vec) - wp.cross(dif, wp.spatial_top(vec))
 
 
-@wp.kernel
+@wp.kernel(enable_backward=False)
 def _preprocess_tactile_contacts(
   # Model:
   body_weldid: wp.array[int],
@@ -2177,7 +2191,7 @@ def _preprocess_tactile_contacts(
       weld_geom_list_out[worldid, weld, idx] = geom
 
 
-@wp.kernel
+@wp.kernel(enable_backward=False)
 def _sensor_tactile(
   # Model:
   body_rootid: wp.array[int],
@@ -2327,7 +2341,7 @@ def _check_match(body_parentid: wp.array[int], body: int, geom: int, objtype: in
   return False
 
 
-@wp.kernel
+@wp.kernel(enable_backward=False)
 def _contact_match(
   # Model:
   opt_cone: int,
@@ -2762,7 +2776,7 @@ def sensor_acc(m: Model, d: Data):
     m.callback.sensor(m, d, Stage.ACC)
 
 
-@wp.kernel
+@wp.kernel(enable_backward=False)
 def _energy_pos_zero(
   # Data out:
   energy_out: wp.array[wp.vec2],
@@ -2771,7 +2785,7 @@ def _energy_pos_zero(
   energy_out[worldid][0] = 0.0
 
 
-@wp.kernel
+@wp.kernel(enable_backward=False)
 def _energy_pos_gravity(
   # Model:
   opt_gravity: wp.array[wp.vec3],
@@ -2793,7 +2807,7 @@ def _energy_pos_gravity(
   wp.atomic_sub(energy_out, worldid, energy)
 
 
-@wp.kernel
+@wp.kernel(enable_backward=False)
 def _energy_pos_passive_joint(
   # Model:
   qpos_spring: wp.array2d[float],
@@ -2885,7 +2899,7 @@ def _energy_pos_passive_joint(
     wp.atomic_add(energy_out, worldid, energy)
 
 
-@wp.kernel
+@wp.kernel(enable_backward=False)
 def _energy_pos_passive_tendon(
   # Model:
   tendon_stiffness: wp.array2d[float],

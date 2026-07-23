@@ -15,12 +15,16 @@
 
 import warp as wp
 
+from mujoco_warp._src import ad_flags as _ad_flags
 from mujoco_warp._src.types import MJ_MAXVAL
 from mujoco_warp._src.types import MJ_MINVAL
 from mujoco_warp._src.types import Data
 from mujoco_warp._src.types import Model
 
-wp.set_module_options({"enable_backward": False})
+# In gradient mode the delayed-ctrl read and the ctrl-history insert differentiate (the
+# interpolation is a gather of ring-buffer samples; the insert scatters d.ctrl into one
+# slot). The sensor-history and init kernels stay forward-only per kernel below.
+wp.set_module_options({"enable_backward": _ad_flags.ad_enabled()})
 
 
 @wp.func
@@ -412,7 +416,7 @@ def _insert_ctrl_history_kernel(
   _history_insert_scalar(worldid, buf_offset, nsample, t, value, history_out)
 
 
-@wp.kernel
+@wp.kernel(enable_backward=False)
 def _insert_sensor_history_stage(
   # Model:
   sensor_dim: wp.array[int],
@@ -456,7 +460,7 @@ def _insert_sensor_history_stage(
     _history_insert_vector(worldid, buf_offset, nsample, dim, t, sensordata_in, sensor_adr[sid], history_out)
 
 
-@wp.kernel
+@wp.kernel(enable_backward=False)
 def _apply_sensor_delay_kernel(
   # Model:
   sensor_dim: wp.array[int],
@@ -597,7 +601,7 @@ def apply_sensor_delay(m: Model, d: Data, sensorid: wp.array[int]):
   )
 
 
-@wp.kernel
+@wp.kernel(enable_backward=False)
 def _read_ctrl_kernel(
   # Model:
   actuator_history: wp.array[wp.vec2i],
@@ -666,7 +670,7 @@ def read_ctrl(
   )
 
 
-@wp.kernel
+@wp.kernel(enable_backward=False)
 def _read_sensor_kernel(
   # Model:
   sensor_dim: wp.array[int],
@@ -752,7 +756,7 @@ def read_sensor(
   )
 
 
-@wp.kernel
+@wp.kernel(enable_backward=False)
 def _init_ctrl_history_kernel(
   # kernel_analyzer: off
   # Model:
@@ -837,7 +841,7 @@ def init_ctrl_history(
 
 
 # kernel_analyzer: off
-@wp.kernel
+@wp.kernel(enable_backward=False)
 def _init_sensor_history_kernel(
   # Model:
   sensor_history: wp.array[wp.vec2i],

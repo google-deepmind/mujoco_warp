@@ -1,0 +1,1381 @@
+# Copyright 2025 The Newton Developers
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+# ==============================================================================
+"""Smooth (differentiable) collision recomputation for autodifferentiation.
+
+This module provides differentiable replacements for the collision pipeline's
+contact geometry and constraint assembly. It runs *after* the discrete pipeline
+and overwrites contact.{dist, pos, frame} and efc.{J, pos, D, aref, vel} with
+smooth values that Warp can differentiate through.
+
+Supported geom type pairs:
+  - plane-sphere, sphere-sphere, sphere-capsule, sphere-box
+  - capsule-capsule (2 contacts), plane-capsule (2 contacts)
+  - plane-box (up to 8 contacts), capsule-box (2 contacts)
+
+Unsupported types (mesh, convex, etc.) are no-ops that keep discrete values
+(zero gradient through those contacts); see unsupported_geom_pairs.
+"""
+
+from typing import Tuple
+
+import warp as wp
+
+from mujoco_warp._src import ad_flags as _ad_flags
+from mujoco_warp._src import support
+from mujoco_warp._src import types
+from mujoco_warp._src.math import safe_div
+from mujoco_warp._src.types import MJ_MINVAL
+from mujoco_warp._src.types import DisableBit
+
+# Backward-enabled kernels generate slower forward code, so AD compilation is
+# opt-in: off by default, enabled by mjw.enable_ad() / make_diff_data().
+wp.set_module_options({"enable_backward": _ad_flags.ad_enabled()})
+
+
+# Large finite "no contact" sentinel. Must NOT be wp.inf: expressions like
+# alpha * wp.inf produce 0 * inf = NaN in both the forward blend (alpha == 0)
+# and the reverse-mode adjoint, poisoning gradients of every input the blend
+# factor depends on (capsule axes via det). 1e10 is far above any margin.
+_FAR = 1.0e10
+
+
+# ============================================================================
+# Custom types (matching collision_primitive_core.py)
+# ============================================================================
+
+
+class mat23f(wp.types.matrix(shape=(2, 3), dtype=wp.float32)):
+  pass
+
+
+# ============================================================================
+# Smooth distance functions
+# ============================================================================
+
+
+@wp.func
+def smooth_plane_sphere(
+  # In:
+  plane_normal: wp.vec3,
+  plane_pos: wp.vec3,
+  sphere_pos: wp.vec3,
+  sphere_radius: float,
+) -> Tuple[float, wp.vec3]:
+  """Plane-sphere distance (already smooth)."""
+  dist = wp.dot(sphere_pos - plane_pos, plane_normal) - sphere_radius
+  pos = sphere_pos - plane_normal * (sphere_radius + 0.5 * dist)
+  return dist, pos
+
+
+@wp.func
+def smooth_sphere_sphere(
+  # In:
+  pos1: wp.vec3,
+  radius1: float,
+  pos2: wp.vec3,
+  radius2: float,
+) -> Tuple[float, wp.vec3, wp.vec3]:
+  """Sphere-sphere distance with smooth normalization at coincident centers."""
+  dir = pos2 - pos1
+  # Softened norm: wp.length has a NaN adjoint at dir == 0 (0/0), which occurs
+  # for capsules whose closest points coincide (e.g. sibling capsules sharing a
+  # joint anchor). sqrt(|dir|^2 + eps^2) keeps both the value and the gradient
+  # finite everywhere; the forward error is at most eps.
+  raw_dist = wp.sqrt(wp.dot(dir, dir) + 1e-12)
+  n = dir / raw_dist
+  dist = raw_dist - (radius1 + radius2)
+  pos = pos1 + n * (radius1 + 0.5 * dist)
+  return dist, pos, n
+
+
+@wp.func
+def smooth_sphere_capsule(
+  # In:
+  sphere_pos: wp.vec3,
+  sphere_radius: float,
+  capsule_pos: wp.vec3,
+  capsule_axis: wp.vec3,
+  capsule_radius: float,
+  capsule_half_length: float,
+) -> Tuple[float, wp.vec3, wp.vec3]:
+  """Sphere-capsule distance using wp.clamp (subdifferentiable at boundary)."""
+  segment = capsule_axis * capsule_half_length
+  seg_start = capsule_pos - segment
+  seg_end = capsule_pos + segment
+
+  # Closest point on capsule centerline to sphere center
+  ab = seg_end - seg_start
+  t = wp.dot(sphere_pos - seg_start, ab) / (wp.dot(ab, ab) + 1e-6)
+  pt = seg_start + wp.clamp(t, 0.0, 1.0) * ab
+
+  return smooth_sphere_sphere(sphere_pos, sphere_radius, pt, capsule_radius)
+
+
+@wp.func
+def smooth_capsule_capsule(
+  # In:
+  cap1_pos: wp.vec3,
+  cap1_axis: wp.vec3,
+  cap1_radius: float,
+  cap1_half_length: float,
+  cap2_pos: wp.vec3,
+  cap2_axis: wp.vec3,
+  cap2_radius: float,
+  cap2_half_length: float,
+  margin: float,
+) -> Tuple[wp.vec2, mat23f, mat23f]:
+  """Capsule-capsule distance returning 2 contacts, regularized for parallel axes."""
+  contact_dist = wp.vec2(_FAR, _FAR)
+  contact_pos = mat23f()
+  contact_normal = mat23f()
+
+  axis1 = cap1_axis * cap1_half_length
+  axis2 = cap2_axis * cap2_half_length
+  dif = cap1_pos - cap2_pos
+
+  ma = wp.dot(axis1, axis1)
+  mb = -wp.dot(axis1, axis2)
+  mc = wp.dot(axis2, axis2)
+  u = -wp.dot(axis1, dif)
+  v = wp.dot(axis2, dif)
+  det = ma * mc - mb * mb
+
+  # Regularized determinant: smooth handling of near-parallel axes
+  det_abs = wp.abs(det)
+  det_sign = wp.where(det >= 0.0, 1.0, -1.0)
+  det_reg = det_sign * wp.max(det_abs, 1e-10)
+
+  # Blend: use non-parallel path when |det| > threshold, parallel otherwise
+  # Smooth blending factor
+  blend_threshold = 1e-8
+  alpha = wp.min(det_abs / wp.max(blend_threshold, 1e-15), 1.0)
+
+  # -- Non-parallel path --
+  inv_det = 1.0 / det_reg
+  x1_np = (mc * u - mb * v) * inv_det
+  x2_np = (ma * v - mb * u) * inv_det
+
+  # Clamp with recomputation (smooth via wp.clamp)
+  x1_np = wp.clamp(x1_np, -1.0, 1.0)
+  x2_np = wp.clamp(x2_np, -1.0, 1.0)
+
+  # Re-clamp for consistency
+  x2_np = wp.clamp((v + mb * x1_np) / wp.max(mc, 1e-10), -1.0, 1.0)
+  x1_np = wp.clamp((u - mb * x2_np) / wp.max(ma, 1e-10), -1.0, 1.0)
+
+  vec1_np = cap1_pos + axis1 * x1_np
+  vec2_np = cap2_pos + axis2 * x2_np
+  dist_np, pos_np, normal_np = smooth_sphere_sphere(vec1_np, cap1_radius, vec2_np, cap2_radius)
+
+  # -- Parallel path: test 4 endpoint pairs, keep first 2 --
+  # Endpoint 1: x1 = 1
+  vec1_a = cap1_pos + axis1
+  x2_a = wp.clamp((v - mb) / wp.max(mc, 1e-10), -1.0, 1.0)
+  vec2_a = cap2_pos + axis2 * x2_a
+  dist_a, pos_a, normal_a = smooth_sphere_sphere(vec1_a, cap1_radius, vec2_a, cap2_radius)
+
+  # Endpoint 2: x1 = -1
+  vec1_b = cap1_pos - axis1
+  x2_b = wp.clamp((v + mb) / wp.max(mc, 1e-10), -1.0, 1.0)
+  vec2_b = cap2_pos + axis2 * x2_b
+  dist_b, pos_b, normal_b = smooth_sphere_sphere(vec1_b, cap1_radius, vec2_b, cap2_radius)
+
+  # Endpoint 3: x2 = 1
+  vec2_c = cap2_pos + axis2
+  x1_c = wp.clamp((u - mb) / wp.max(ma, 1e-10), -1.0, 1.0)
+  vec1_c = cap1_pos + axis1 * x1_c
+  dist_c, pos_c, normal_c = smooth_sphere_sphere(vec1_c, cap1_radius, vec2_c, cap2_radius)
+
+  # Endpoint 4: x2 = -1
+  vec2_d = cap2_pos - axis2
+  x1_d = wp.clamp((u + mb) / wp.max(ma, 1e-10), -1.0, 1.0)
+  vec1_d = cap1_pos + axis1 * x1_d
+  dist_d, pos_d, normal_d = smooth_sphere_sphere(vec1_d, cap1_radius, vec2_d, cap2_radius)
+
+  # Fill the 2 parallel contact slots in the discrete candidate order
+  # (x1 = +1, x1 = -1, x2 = +1, x2 = -1) so that geomcollisionid k replays the
+  # same endpoint feature the discrete narrowphase wrote to contact slot k.
+  # Slots are assigned by candidate index, never by comparing distance values:
+  # symmetric stacks yield bitwise-equal candidate distances, and value-based
+  # tie-breaking would collapse both slots onto one endpoint and drop the
+  # second contact from the replayed physics.
+  par_count = int(0)
+  par_dist0 = _FAR
+  par_pos0 = wp.vec3(0.0)
+  par_normal0 = wp.vec3(1.0, 0.0, 0.0)
+  par_dist1 = _FAR
+  par_pos1 = wp.vec3(0.0)
+  par_normal1 = wp.vec3(1.0, 0.0, 0.0)
+
+  if dist_a <= margin:
+    par_dist0 = dist_a
+    par_pos0 = pos_a
+    par_normal0 = normal_a
+    par_count = 1
+  if dist_b <= margin:
+    if par_count == 0:
+      par_dist0 = dist_b
+      par_pos0 = pos_b
+      par_normal0 = normal_b
+    else:
+      par_dist1 = dist_b
+      par_pos1 = pos_b
+      par_normal1 = normal_b
+    par_count += 1
+  if par_count < 2 and dist_c <= margin:
+    if par_count == 0:
+      par_dist0 = dist_c
+      par_pos0 = pos_c
+      par_normal0 = normal_c
+    else:
+      par_dist1 = dist_c
+      par_pos1 = pos_c
+      par_normal1 = normal_c
+    par_count += 1
+  if par_count < 2 and dist_d <= margin:
+    if par_count == 0:
+      par_dist0 = dist_d
+      par_pos0 = pos_d
+      par_normal0 = normal_d
+    else:
+      par_dist1 = dist_d
+      par_pos1 = pos_d
+      par_normal1 = normal_d
+    par_count += 1
+
+  # Blend between non-parallel (1 contact) and parallel (2 contacts)
+  # Non-parallel: contact 0 = np result, contact 1 = inf
+  # Parallel: contact 0, 1 from the slots above
+  blend_dist0 = alpha * dist_np + (1.0 - alpha) * par_dist0
+  blend_pos0 = alpha * pos_np + (1.0 - alpha) * par_pos0
+  blend_normal0 = alpha * normal_np + (1.0 - alpha) * par_normal0
+  # Renormalize blended normal
+  blend_normal0 = blend_normal0 / wp.max(wp.length(blend_normal0), 1e-8)
+
+  # Contact 1: only from parallel path (non-parallel has 1 contact)
+  blend_dist1 = (1.0 - alpha) * par_dist1 + alpha * _FAR
+
+  if blend_dist0 <= margin:
+    contact_dist[0] = blend_dist0
+    contact_pos[0] = blend_pos0
+    contact_normal[0] = blend_normal0
+
+  if blend_dist1 <= margin:
+    contact_dist[1] = blend_dist1
+    contact_pos[1] = par_pos1
+    contact_normal[1] = par_normal1
+
+  return contact_dist, contact_pos, contact_normal
+
+
+@wp.func
+def smooth_plane_capsule(
+  # In:
+  plane_normal: wp.vec3,
+  plane_pos: wp.vec3,
+  capsule_pos: wp.vec3,
+  capsule_axis: wp.vec3,
+  capsule_radius: float,
+  capsule_half_length: float,
+) -> Tuple[wp.vec2, mat23f, wp.mat33]:
+  """Plane-capsule distance returning 2 contacts (already smooth)."""
+  n = plane_normal
+  axis = capsule_axis
+  segment = axis * capsule_half_length
+
+  # Build contact frame (smooth version matching collision_primitive_core.py)
+  proj = axis - n * wp.dot(n, axis)
+  proj_len = wp.length(proj)
+  b = proj / wp.max(proj_len, 1e-8)
+
+  # Fallback when capsule axis is nearly parallel to plane normal
+  if proj_len < 0.5:
+    if -0.5 < n[1] and n[1] < 0.5:
+      b = wp.vec3(0.0, 1.0, 0.0)
+    else:
+      b = wp.vec3(0.0, 0.0, 1.0)
+
+  c = wp.cross(n, b)
+  frame = wp.mat33(n[0], n[1], n[2], b[0], b[1], b[2], c[0], c[1], c[2])
+
+  # Two contacts at capsule endpoints
+  dist1, pos1 = smooth_plane_sphere(n, plane_pos, capsule_pos + segment, capsule_radius)
+  dist2, pos2 = smooth_plane_sphere(n, plane_pos, capsule_pos - segment, capsule_radius)
+
+  dist = wp.vec2(dist1, dist2)
+  pos = mat23f(pos1[0], pos1[1], pos1[2], pos2[0], pos2[1], pos2[2])
+
+  return dist, pos, frame
+
+
+@wp.func
+def smooth_plane_box(
+  # In:
+  plane_normal: wp.vec3,
+  plane_pos: wp.vec3,
+  box_pos: wp.vec3,
+  box_rot: wp.mat33,
+  box_size: wp.vec3,
+  corner: int,
+) -> Tuple[float, wp.vec3]:
+  """Plane-box corner distance for one corner index (already smooth for a fixed corner)."""
+  center_dist = wp.dot(box_pos - plane_pos, plane_normal)
+
+  # Corner in global coordinates relative to the box center. The corner index
+  # is the discrete contact's geomcollisionid, so the replayed feature always
+  # matches the corner the narrowphase emitted.
+  corner_local = wp.vec3(
+    wp.where(corner & 1, box_size[0], -box_size[0]),
+    wp.where(corner & 2, box_size[1], -box_size[1]),
+    wp.where(corner & 4, box_size[2], -box_size[2]),
+  )
+  corner_world = box_rot * corner_local
+
+  dist = center_dist + wp.dot(plane_normal, corner_world)
+  pos = corner_world + box_pos - 0.5 * plane_normal * dist
+  return dist, pos
+
+
+@wp.func
+def smooth_sphere_box(
+  # In:
+  sphere_pos: wp.vec3,
+  sphere_radius: float,
+  box_pos: wp.vec3,
+  box_rot: wp.mat33,
+  box_size: wp.vec3,
+) -> Tuple[float, wp.vec3, wp.vec3]:
+  """Sphere-box distance via the clamped closest point (subdifferentiable at feature changes)."""
+  center = wp.transpose(box_rot) @ (sphere_pos - box_pos)
+
+  clamped = wp.max(-box_size, wp.min(box_size, center))
+  dif = clamped - center
+  dif_sq = wp.dot(dif, dif)
+  # Softened norm keeps the direction adjoint finite when the sphere center
+  # sits exactly on the box surface (see smooth_sphere_sphere).
+  dist = wp.sqrt(dif_sq + 1e-12)
+  clamped_dir = dif / dist
+
+  # sphere center inside box: nearest face (hard feature selection, subgradient)
+  if dif_sq <= MJ_MINVAL * MJ_MINVAL:
+    closest = 2.0 * (box_size[0] + box_size[1] + box_size[2])
+    k = wp.int32(0)
+    for i in range(6):
+      face_dist = wp.abs(wp.where(i % 2, 1.0, -1.0) * box_size[i // 2] - center[i // 2])
+      if closest > face_dist:
+        closest = face_dist
+        k = i
+
+    nearest = wp.vec3(0.0)
+    nearest[k // 2] = wp.where(k % 2, -1.0, 1.0)
+    pos = center + nearest * (sphere_radius - closest) / 2.0
+    contact_normal = box_rot @ nearest
+    contact_distance = -closest - sphere_radius
+
+  else:
+    deepest = center + clamped_dir * sphere_radius
+    pos = 0.5 * (clamped + deepest)
+    contact_normal = box_rot @ clamped_dir
+    contact_distance = dist - sphere_radius
+
+  contact_position = box_pos + box_rot @ pos
+
+  return contact_distance, contact_position, contact_normal
+
+
+@wp.func
+def smooth_capsule_box(
+  # In:
+  capsule_pos: wp.vec3,
+  capsule_axis: wp.vec3,
+  capsule_radius: float,
+  capsule_half_length: float,
+  box_pos: wp.vec3,
+  box_rot: wp.mat33,
+  box_size: wp.vec3,
+) -> Tuple[wp.vec2, mat23f, mat23f]:
+  """Capsule-box distance returning 2 contacts.
+
+  Mirrors collision_primitive_core.capsule_box: the closest-feature search selects hard
+  features (argmin over faces/edges/corners, subgradients at transitions) while the segment
+  positions and the final sphere-box collisions stay differentiable.
+  """
+  boxmatT = wp.transpose(box_rot)
+  pos = boxmatT @ (capsule_pos - box_pos)
+  axis = boxmatT @ capsule_axis
+  halfaxis = axis * capsule_half_length  # halfaxis is the capsule direction
+  axisdir = wp.int32(halfaxis[0] > 0.0) + 2 * wp.int32(halfaxis[1] > 0.0) + 4 * wp.int32(halfaxis[2] > 0.0)
+
+  # keep track of closest point
+  bestdist = wp.float32(1.0e32)
+  bestsegmentpos = wp.float32(-12)
+
+  # cltype: encoded collision configuration
+  # cltype / 3 == 0 : lower corner is closest to the capsule
+  #            == 2 : upper corner is closest to the capsule
+  #            == 1 : middle of the edge is closest to the capsule
+  # cltype % 3 == 0 : lower corner is closest to the box
+  #            == 2 : upper corner is closest to the box
+  #            == 1 : middle of the capsule is closest to the box
+  cltype = wp.int32(-4)
+
+  # clface: index of the closest face of the box to the capsule
+  # -1: no face is closest (edge or corner is closest)
+  # 0, 1, 2: index of the axis perpendicular to the closest face
+  clface = wp.int32(-12)
+
+  # first: consider cases where a face of the box is closest
+  # NOTE: guarded blocks are used instead of the discrete version's `continue`
+  # statements throughout: Warp's reverse pass miscompiles loop-carried state
+  # that crosses a `continue`, silently corrupting every adjoint of the func.
+  for i in range(-1, 2, 2):
+    axisTip = pos + wp.float32(i) * halfaxis
+    boxPoint = wp.vec3(axisTip)
+
+    n_out = wp.int32(0)
+    ax_out = wp.int32(-1)
+
+    for j in range(3):
+      if boxPoint[j] < -box_size[j]:
+        n_out += 1
+        ax_out = j
+        boxPoint[j] = -box_size[j]
+      elif boxPoint[j] > box_size[j]:
+        n_out += 1
+        ax_out = j
+        boxPoint[j] = box_size[j]
+
+    if n_out <= 1:
+      dist = wp.length_sq(boxPoint - axisTip)
+
+      if dist < bestdist:
+        bestdist = dist
+        bestsegmentpos = wp.float32(i)
+        cltype = -2 + i
+        clface = ax_out
+
+  # second: consider cases where an edge of the box is closest
+  clcorner = wp.int32(-123)  # which corner is the closest
+  cledge = wp.int32(-123)  # which axis
+  bestboxpos = wp.float32(0.0)
+
+  for i in range(8):
+    for j in range(3):
+      # only consider edges emanating from corner i along axis j
+      if i & (1 << j) == 0:
+        c2 = wp.int32(-123)
+
+        # box_pt is the starting point (corner) on the box
+        box_pt = wp.cw_mul(
+          wp.vec3(
+            wp.where(i & 1, 1.0, -1.0),
+            wp.where(i & 2, 1.0, -1.0),
+            wp.where(i & 4, 1.0, -1.0),
+          ),
+          box_size,
+        )
+        box_pt[j] = 0.0
+
+        # find closest point between capsule and the edge
+        dif = box_pt - pos
+
+        u = -box_size[j] * dif[j]
+        v = wp.dot(halfaxis, dif)
+        ma = box_size[j] * box_size[j]
+        mb = -box_size[j] * halfaxis[j]
+        mc = capsule_half_length * capsule_half_length
+        det = ma * mc - mb * mb
+        if wp.abs(det) >= MJ_MINVAL:
+          idet = 1.0 / det
+          # sX : X=1 means middle of segment. X=0 or 2 one or the other end
+
+          x1 = wp.float32((mc * u - mb * v) * idet)
+          x2 = wp.float32((ma * v - mb * u) * idet)
+
+          s1 = wp.int32(1)
+          s2 = wp.int32(1)
+
+          if x1 > 1.0:
+            x1 = 1.0
+            s1 = 2
+            x2 = safe_div(v - mb, mc)
+          elif x1 < -1.0:
+            x1 = -1.0
+            s1 = 0
+            x2 = safe_div(v + mb, mc)
+
+          x2_over = x2 > 1.0
+          if x2_over or x2 < -1.0:
+            if x2_over:
+              x2 = 1.0
+              s2 = 2
+              x1 = safe_div(u - mb, ma)
+            else:
+              x2 = -1.0
+              s2 = 0
+              x1 = safe_div(u + mb, ma)
+
+            if x1 > 1.0:
+              x1 = 1.0
+              s1 = 2
+            elif x1 < -1.0:
+              x1 = -1.0
+              s1 = 0
+
+          dif -= halfaxis * x2
+          dif[j] += box_size[j] * x1
+
+          # encode relative positions of the closest points
+          ct = s1 * 3 + s2
+
+          dif_sq = wp.length_sq(dif)
+          if dif_sq < bestdist - MJ_MINVAL:
+            bestdist = dif_sq
+            bestsegmentpos = x2
+            bestboxpos = x1
+            # ct<6 means closest point on box is at lower end or middle of edge
+            c2 = ct // 6
+
+            clcorner = i + (1 << j) * c2  # index of closest box corner
+            cledge = j  # axis index of closest box edge
+            cltype = ct  # encoded collision configuration
+
+  best = wp.float32(0.0)
+
+  p = wp.vec2(pos.x, pos.y)
+  dd = wp.vec2(halfaxis.x, halfaxis.y)
+  s = wp.vec2(box_size[0], box_size[1])
+  secondpos = wp.float32(-4.0)
+
+  uu = dd.x * s.y
+  vv = dd.y * s.x
+  w_neg = dd.x * p.y - dd.y * p.x < 0.0
+
+  best = wp.float32(-1.0)
+
+  ee1 = uu - vv
+  ee2 = uu + vv
+
+  if wp.abs(ee1) > best:
+    best = wp.abs(ee1)
+    c1 = wp.where((ee1 < 0.0) == w_neg, 0, 3)
+
+  if wp.abs(ee2) > best:
+    best = wp.abs(ee2)
+    c1 = wp.where((ee2 > 0.0) == w_neg, 1, 2)
+
+  # cltype == -4 (invalid, no closest feature) falls through to the far
+  # sentinel below: an early return here would break Warp's reverse pass,
+  # which only supports a single function exit.
+  if cltype >= 0 and cltype // 3 != 1:  # closest to a corner of the box
+    c1 = axisdir ^ clcorner
+    # Calculate relative orientation between capsule and corner
+    # There are two possible configurations:
+    # 1. Capsule axis points toward/away from corner
+    # 2. Capsule axis aligns with a face or edge
+    if c1 != 0 and c1 != 7:  # create second contact point
+      if c1 == 1 or c1 == 2 or c1 == 4:
+        mul = 1
+      else:
+        mul = -1
+        c1 = 7 - c1
+
+      # "de" and "dp" distance from first closest point on the capsule to both ends of it
+      # mul is a direction along the capsule's axis
+
+      if c1 == 1:
+        ax = 0
+        ax1 = 1
+        ax2 = 2
+      elif c1 == 2:
+        ax = 1
+        ax1 = 2
+        ax2 = 0
+      elif c1 == 4:
+        ax = 2
+        ax1 = 0
+        ax2 = 1
+
+      if axis[ax] * axis[ax] > 0.5:  # second point along the edge of the box
+        m = 2.0 * safe_div(box_size[ax], wp.abs(halfaxis[ax]))
+        secondpos = wp.min(1.0 - wp.float32(mul) * bestsegmentpos, m)
+      else:  # second point along a face of the box
+        # check for overshoot again
+        m = 2.0 * wp.min(
+          safe_div(box_size[ax1], wp.abs(halfaxis[ax1])),
+          safe_div(box_size[ax2], wp.abs(halfaxis[ax2])),
+        )
+        secondpos = -wp.min(1.0 + wp.float32(mul) * bestsegmentpos, m)
+      secondpos *= wp.float32(mul)
+
+  elif cltype >= 0 and cltype // 3 == 1:  # we are on box's edge
+    # Calculate relative orientation between capsule and edge
+    # Two possible configurations:
+    # - T configuration: c1 = 2^n (no additional contacts)
+    # - X configuration: c1 != 2^n (potential additional contacts)
+    c1 = axisdir ^ clcorner
+    c1 &= 7 - (1 << cledge)  # mask out edge axis to determine configuration
+
+    if c1 == 1 or c1 == 2 or c1 == 4:  # create second contact point
+      if cledge == 0:
+        ax1 = 1
+        ax2 = 2
+      if cledge == 1:
+        ax1 = 2
+        ax2 = 0
+      if cledge == 2:
+        ax1 = 0
+        ax2 = 1
+      ax = cledge
+
+      # find which face the capsule has a lower angle, and switch the axis
+      if wp.abs(axis[ax1]) > wp.abs(axis[ax2]):
+        ax1 = ax2
+      ax2 = 3 - ax - ax1
+
+      # mul determines direction along capsule axis for second contact point
+      if c1 & (1 << ax2):
+        mul = 1
+        secondpos = 1.0 - bestsegmentpos
+      else:
+        mul = -1
+        secondpos = 1.0 + bestsegmentpos
+
+      # now find out whether we point towards the opposite side or towards one of the sides
+      # and also find the farthest point along the capsule that is above the box
+
+      e1 = 2.0 * safe_div(box_size[ax2], wp.abs(halfaxis[ax2]))
+      secondpos = wp.min(e1, secondpos)
+
+      if ((axisdir & (1 << ax)) != 0) == ((c1 & (1 << ax2)) != 0):
+        e2 = 1.0 - bestboxpos
+      else:
+        e2 = 1.0 + bestboxpos
+
+      e1 = box_size[ax] * safe_div(e2, wp.abs(halfaxis[ax]))
+
+      secondpos = wp.min(e1, secondpos)
+      secondpos *= wp.float32(mul)
+
+  elif cltype < 0:
+    # similarly we handle the case when one capsule's end is closest to a face of the box
+    # and find where is the other end pointing to and clamping to the farthest point
+    # of the capsule that's above the box
+    # if the closest point is inside the box there's no need for a second point
+
+    if clface != -1:  # create second contact point
+      mul = wp.where(cltype == -3, 1, -1)
+      secondpos = 2.0
+
+      tmp1 = pos - halfaxis * wp.float32(mul)
+
+      for i in range(3):
+        if i != clface:
+          ha_r = safe_div(wp.float32(mul), halfaxis[i])
+          e1 = (box_size[i] - tmp1[i]) * ha_r
+          if 0.0 < e1 and e1 < secondpos:
+            secondpos = e1
+
+          e1 = (-box_size[i] - tmp1[i]) * ha_r
+          if 0.0 < e1 and e1 < secondpos:
+            secondpos = e1
+
+      secondpos *= wp.float32(mul)
+
+  # create sphere in original orientation at first contact point
+  s1_pos_l = pos + halfaxis * bestsegmentpos
+  s1_pos_g = box_rot @ s1_pos_l + box_pos
+
+  # collide with sphere using the smooth core function
+  dist1, pos1, normal1 = smooth_sphere_box(s1_pos_g, capsule_radius, box_pos, box_rot, box_size)
+
+  if secondpos > -3.0:  # secondpos was modified
+    s2_pos_l = pos + halfaxis * (secondpos + bestsegmentpos)
+    s2_pos_g = box_rot @ s2_pos_l + box_pos
+
+    dist2, pos2, normal2 = smooth_sphere_box(s2_pos_g, capsule_radius, box_pos, box_rot, box_size)
+  else:
+    dist2 = _FAR
+    pos2 = wp.vec3()
+    normal2 = wp.vec3()
+
+  if cltype == -4:  # invalid type: no contact
+    dist1 = _FAR
+    dist2 = _FAR
+
+  return (
+    wp.vec2(dist1, dist2),
+    mat23f(pos1[0], pos1[1], pos1[2], pos2[0], pos2[1], pos2[2]),
+    mat23f(normal1[0], normal1[1], normal1[2], normal2[0], normal2[1], normal2[2]),
+  )
+
+
+@wp.func
+def smooth_make_frame(normal: wp.vec3) -> wp.mat33:
+  """Construct contact frame from normal with smooth tangent directions."""
+  a = normal / wp.max(wp.length(normal), 1e-8)
+
+  # Gram-Schmidt orthogonalization (same as math.orthogonals but using
+  # wp.where instead of branching on a[1] for smoother gradients)
+  y = wp.vec3(0.0, 1.0, 0.0)
+  z = wp.vec3(0.0, 0.0, 1.0)
+  b = wp.where((-0.5 < a[1]) and (a[1] < 0.5), y, z)
+  b = b - a * wp.dot(a, b)
+  b_len = wp.length(b)
+  b = b / wp.max(b_len, 1e-8)
+  c = wp.cross(a, b)
+
+  return wp.mat33(
+    a[0],
+    a[1],
+    a[2],
+    b[0],
+    b[1],
+    b[2],
+    c[0],
+    c[1],
+    c[2],
+  )
+
+
+# ============================================================================
+# Smooth contact recomputation kernel
+# ============================================================================
+
+
+@wp.kernel
+def _smooth_recompute_kernel(
+  # Model:
+  geom_type: wp.array[int],
+  geom_bodyid: wp.array[int],
+  geom_size: wp.array2d[wp.vec3],
+  # Data in:
+  geom_xpos_in: wp.array2d[wp.vec3],
+  geom_xmat_in: wp.array2d[wp.mat33],
+  contact_includemargin_in: wp.array[float],
+  contact_geom_in: wp.array[wp.vec2i],
+  contact_worldid_in: wp.array[int],
+  contact_geomcollisionid_in: wp.array[int],
+  nacon_in: wp.array[int],
+  # Data out:
+  contact_dist_out: wp.array[float],
+  contact_pos_out: wp.array[wp.vec3],
+  contact_frame_out: wp.array[wp.mat33],
+):
+  cid = wp.tid()
+
+  if cid >= nacon_in[0]:
+    return
+
+  geoms = contact_geom_in[cid]
+  g1 = geoms[0]
+  g2 = geoms[1]
+
+  # Skip flex contacts (geom id = -1)
+  if g1 < 0 or g2 < 0:
+    return
+
+  worldid = contact_worldid_in[cid]
+  subcid = contact_geomcollisionid_in[cid]
+  t1 = geom_type[g1]
+  t2 = geom_type[g2]
+
+  # Geom poses (differentiable from Phase 1 kinematics)
+  pos1 = geom_xpos_in[worldid, g1]
+  pos2 = geom_xpos_in[worldid, g2]
+  mat1 = geom_xmat_in[worldid, g1]
+  mat2 = geom_xmat_in[worldid, g2]
+
+  # Geom sizes (model constants — use worldid=0 for batched models)
+  size_id = worldid % geom_size.shape[0]
+  size1 = geom_size[size_id, g1]
+  size2 = geom_size[size_id, g2]
+
+  # Dispatch based on geom type pair
+  # Geom types: PLANE=0, HFIELD=1, SPHERE=2, CAPSULE=3, ELLIPSOID=4,
+  #             CYLINDER=5, BOX=6, MESH=7, SDF=8
+
+  handled = False
+
+  # plane-sphere
+  if t1 == 0 and t2 == 2:
+    plane_normal = wp.vec3(mat1[0, 2], mat1[1, 2], mat1[2, 2])
+    dist, pos = smooth_plane_sphere(plane_normal, pos1, pos2, size2[0])
+    frame = smooth_make_frame(plane_normal)
+    contact_dist_out[cid] = dist
+    contact_pos_out[cid] = pos
+    contact_frame_out[cid] = frame
+    handled = True
+
+  # sphere-sphere
+  if not handled and t1 == 2 and t2 == 2:
+    dist, pos, normal = smooth_sphere_sphere(pos1, size1[0], pos2, size2[0])
+    frame = smooth_make_frame(normal)
+    contact_dist_out[cid] = dist
+    contact_pos_out[cid] = pos
+    contact_frame_out[cid] = frame
+    handled = True
+
+  # sphere-capsule
+  if not handled and t1 == 2 and t2 == 3:
+    cap_axis = wp.vec3(mat2[0, 2], mat2[1, 2], mat2[2, 2])
+    dist, pos, normal = smooth_sphere_capsule(pos1, size1[0], pos2, cap_axis, size2[0], size2[1])
+    frame = smooth_make_frame(normal)
+    contact_dist_out[cid] = dist
+    contact_pos_out[cid] = pos
+    contact_frame_out[cid] = frame
+    handled = True
+
+  # capsule-capsule (2 contacts via geomcollisionid)
+  if not handled and t1 == 3 and t2 == 3:
+    cap1_axis = wp.vec3(mat1[0, 2], mat1[1, 2], mat1[2, 2])
+    cap2_axis = wp.vec3(mat2[0, 2], mat2[1, 2], mat2[2, 2])
+    # The discrete margin decides which endpoint feature fills each contact
+    # slot in the parallel branch, so replaying the slot assignment needs it.
+    dists, positions, normals = smooth_capsule_capsule(
+      pos1,
+      cap1_axis,
+      size1[0],
+      size1[1],
+      pos2,
+      cap2_axis,
+      size2[0],
+      size2[1],
+      contact_includemargin_in[cid],
+    )
+    # A slot left at _FAR means the smooth value landed outside the margin;
+    # keep the discrete contact rather than overwriting it with the sentinel.
+    if subcid == 0 and dists[0] < _FAR:
+      contact_dist_out[cid] = dists[0]
+      contact_pos_out[cid] = wp.vec3(positions[0, 0], positions[0, 1], positions[0, 2])
+      normal0 = wp.vec3(normals[0, 0], normals[0, 1], normals[0, 2])
+      contact_frame_out[cid] = smooth_make_frame(normal0)
+    if subcid == 1 and dists[1] < _FAR:
+      contact_dist_out[cid] = dists[1]
+      contact_pos_out[cid] = wp.vec3(positions[1, 0], positions[1, 1], positions[1, 2])
+      normal1 = wp.vec3(normals[1, 0], normals[1, 1], normals[1, 2])
+      contact_frame_out[cid] = smooth_make_frame(normal1)
+    handled = True
+
+  # plane-capsule (2 contacts via geomcollisionid)
+  if not handled and t1 == 0 and t2 == 3:
+    plane_normal = wp.vec3(mat1[0, 2], mat1[1, 2], mat1[2, 2])
+    cap_axis = wp.vec3(mat2[0, 2], mat2[1, 2], mat2[2, 2])
+    dists, positions, frame = smooth_plane_capsule(plane_normal, pos1, pos2, cap_axis, size2[0], size2[1])
+    if subcid == 0:
+      contact_dist_out[cid] = dists[0]
+      contact_pos_out[cid] = wp.vec3(positions[0, 0], positions[0, 1], positions[0, 2])
+    else:
+      contact_dist_out[cid] = dists[1]
+      contact_pos_out[cid] = wp.vec3(positions[1, 0], positions[1, 1], positions[1, 2])
+    contact_frame_out[cid] = frame
+    handled = True
+
+  # plane-box (up to 8 contacts, geomcollisionid = corner index)
+  if not handled and t1 == 0 and t2 == 6:
+    plane_normal = wp.vec3(mat1[0, 2], mat1[1, 2], mat1[2, 2])
+    dist, pos = smooth_plane_box(plane_normal, pos1, pos2, mat2, size2, subcid)
+    contact_dist_out[cid] = dist
+    contact_pos_out[cid] = pos
+    contact_frame_out[cid] = smooth_make_frame(plane_normal)
+    handled = True
+
+  # sphere-box
+  if not handled and t1 == 2 and t2 == 6:
+    dist, pos, normal = smooth_sphere_box(pos1, size1[0], pos2, mat2, size2)
+    contact_dist_out[cid] = dist
+    contact_pos_out[cid] = pos
+    contact_frame_out[cid] = smooth_make_frame(normal)
+    handled = True
+
+  # capsule-box (2 contacts via geomcollisionid)
+  if not handled and t1 == 3 and t2 == 6:
+    cap_axis = wp.vec3(mat1[0, 2], mat1[1, 2], mat1[2, 2])
+    dists, positions, normals = smooth_capsule_box(pos1, cap_axis, size1[0], size1[1], pos2, mat2, size2)
+    # A slot at the far sentinel means no smooth value; keep the discrete contact.
+    if subcid == 0 and dists[0] < _FAR:
+      contact_dist_out[cid] = dists[0]
+      contact_pos_out[cid] = wp.vec3(positions[0, 0], positions[0, 1], positions[0, 2])
+      normal0 = wp.vec3(normals[0, 0], normals[0, 1], normals[0, 2])
+      contact_frame_out[cid] = smooth_make_frame(normal0)
+    if subcid == 1 and dists[1] < _FAR:
+      contact_dist_out[cid] = dists[1]
+      contact_pos_out[cid] = wp.vec3(positions[1, 0], positions[1, 1], positions[1, 2])
+      normal1 = wp.vec3(normals[1, 0], normals[1, 1], normals[1, 2])
+      contact_frame_out[cid] = smooth_make_frame(normal1)
+    handled = True
+
+  # Unsupported types: no-op (keeps discrete values, zero gradient)
+
+
+# ============================================================================
+# Shared constraint parameter computation
+# ============================================================================
+
+
+@wp.func
+def compute_k_imp(
+  # Model:
+  opt_disableflags: int,
+  # In:
+  solref: wp.vec2,
+  solimp: types.vec5,
+  pos: float,
+  timestep: float,
+) -> wp.vec2:
+  """Compute stiffness k and impedance imp from solref/solimp parameters.
+
+  Returns (k, imp) packed as a vec2. Used by both the forward constraint
+  assembly and the adjoint gradient kernel.
+  """
+  timeconst = solref[0]
+  dampratio = solref[1]
+  dmin = solimp[0]
+  dmax = solimp[1]
+  width = solimp[2]
+  mid = solimp[3]
+  power = solimp[4]
+
+  if not (opt_disableflags & DisableBit.REFSAFE):
+    timeconst = wp.max(timeconst, 2.0 * timestep)
+
+  dmin = wp.clamp(dmin, types.MJ_MINIMP, types.MJ_MAXIMP)
+  dmax = wp.clamp(dmax, types.MJ_MINIMP, types.MJ_MAXIMP)
+  width = wp.max(MJ_MINVAL, width)
+  mid = wp.clamp(mid, types.MJ_MINIMP, types.MJ_MAXIMP)
+  power = wp.max(1.0, power)
+
+  dmax_sq = dmax * dmax
+  k = 1.0 / (dmax_sq * timeconst * timeconst * dampratio * dampratio)
+  k = wp.where(solref[0] <= 0.0, -solref[0] / dmax_sq, k)
+
+  imp_x = wp.abs(pos) / width
+  imp_a = (1.0 / wp.pow(mid, power - 1.0)) * wp.pow(imp_x, power)
+  imp_b = 1.0 - (1.0 / wp.pow(1.0 - mid, power - 1.0)) * wp.pow(1.0 - imp_x, power)
+  imp_y = wp.where(imp_x < mid, imp_a, imp_b)
+  imp = dmin + imp_y * (dmax - dmin)
+  imp = wp.clamp(imp, dmin, dmax)
+  imp = wp.where(imp_x > 1.0, dmax, imp)
+
+  return wp.vec2(k, imp)
+
+
+# ============================================================================
+# Differentiable constraint assembly kernel
+# ============================================================================
+
+
+@wp.func
+def _smooth_efc_row(
+  # Model:
+  opt_disableflags: int,
+  # In:
+  worldid: int,
+  timestep: float,
+  efcid: int,
+  pos_aref: float,
+  pos_imp: float,
+  invweight: float,
+  solref: wp.vec2,
+  solimp: types.vec5,
+  margin: float,
+  vel: float,
+  # Out:
+  pos_out: wp.array2d[float],
+  D_out: wp.array2d[float],
+  aref_out: wp.array2d[float],
+  vel_out: wp.array2d[float],
+):
+  """Smooth reimplementation of _efc_row for differentiable constraint params."""
+  k_imp = compute_k_imp(opt_disableflags, solref, solimp, pos_imp, timestep)
+  k = k_imp[0]
+  imp = k_imp[1]
+
+  # Damping coefficient (not shared — only needed by forward, not adjoint)
+  dmax = wp.clamp(solimp[1], types.MJ_MINIMP, types.MJ_MAXIMP)
+  timeconst = solref[0]
+  if not (opt_disableflags & DisableBit.REFSAFE):
+    timeconst = wp.max(timeconst, 2.0 * timestep)
+  b = 2.0 / (dmax * timeconst)
+  b = wp.where(solref[1] <= 0.0, -solref[1] / dmax, b)
+
+  D_out[worldid, efcid] = 1.0 / wp.max(invweight * (1.0 - imp) / imp, MJ_MINVAL)
+  vel_out[worldid, efcid] = vel
+  aref_out[worldid, efcid] = -k * imp * pos_aref - b * vel
+  pos_out[worldid, efcid] = pos_aref + margin
+
+
+@wp.kernel
+def _smooth_contact_to_efc_kernel(
+  # Model:
+  nv: int,
+  opt_timestep: wp.array[float],
+  opt_cone: int,
+  opt_disableflags: int,
+  opt_impratio_invsqrt: wp.array[float],
+  body_parentid: wp.array[int],
+  body_rootid: wp.array[int],
+  body_weldid: wp.array[int],
+  body_dofnum: wp.array[int],
+  body_dofadr: wp.array[int],
+  body_invweight0: wp.array2d[wp.vec2],
+  dof_bodyid: wp.array[int],
+  dof_parentid: wp.array[int],
+  geom_bodyid: wp.array[int],
+  is_sparse: bool,
+  body_isdofancestor: wp.array2d[int],
+  # Data in:
+  qvel_in: wp.array2d[float],
+  subtree_com_in: wp.array2d[wp.vec3],
+  cdof_in: wp.array2d[wp.spatial_vector],
+  contact_dist_in: wp.array[float],
+  contact_pos_in: wp.array[wp.vec3],
+  contact_frame_in: wp.array[wp.mat33],
+  contact_includemargin_in: wp.array[float],
+  contact_friction_in: wp.array[types.vec5],
+  contact_solref_in: wp.array[wp.vec2],
+  contact_solreffriction_in: wp.array[wp.vec2],
+  contact_solimp_in: wp.array[types.vec5],
+  contact_dim_in: wp.array[int],
+  contact_geom_in: wp.array[wp.vec2i],
+  contact_efc_address_in: wp.array2d[int],
+  contact_worldid_in: wp.array[int],
+  contact_type_in: wp.array[int],
+  efc_J_rowadr_in: wp.array2d[int],
+  njmax_in: int,
+  nacon_in: wp.array[int],
+  # Data out:
+  efc_J_colind_out: wp.array3d[int],
+  efc_J_out: wp.array3d[float],
+  efc_pos_out: wp.array2d[float],
+  efc_D_out: wp.array2d[float],
+  efc_vel_out: wp.array2d[float],
+  efc_aref_out: wp.array2d[float],
+):
+  conid, dimid = wp.tid()
+
+  if conid >= nacon_in[0]:
+    return
+
+  # Only process constraint contacts
+  if not (contact_type_in[conid] & 1):  # ContactType.CONSTRAINT = 1
+    return
+
+  # Skip flex contacts (geom id = -1): they keep their discrete efc rows.
+  geom = contact_geom_in[conid]
+  if geom[0] < 0 or geom[1] < 0:
+    return
+
+  condim = contact_dim_in[conid]
+  is_elliptic = opt_cone == int(types.ConeType.ELLIPTIC.value)
+  if is_elliptic:
+    if dimid >= condim:
+      return
+  else:
+    if condim == 1 and dimid > 0:
+      return
+    elif condim > 1 and dimid >= 2 * (condim - 1):
+      return
+
+  # Read efc_address — skip if -1 (not active)
+  efcid = contact_efc_address_in[conid, dimid]
+  if efcid < 0:
+    return
+  if efcid >= njmax_in:
+    return
+
+  worldid = contact_worldid_in[conid]
+  timestep = opt_timestep[worldid % opt_timestep.shape[0]]
+  impratio_invsqrt = opt_impratio_invsqrt[worldid % opt_impratio_invsqrt.shape[0]]
+
+  body1 = geom_bodyid[geom[0]]
+  body2 = geom_bodyid[geom[1]]
+
+  con_pos = contact_pos_in[conid]
+  frame = contact_frame_in[conid]
+  includemargin = contact_includemargin_in[conid]
+  pos = contact_dist_in[conid] - includemargin
+
+  # Pyramidal invweight computation
+  body_invweight0_id = worldid % body_invweight0.shape[0]
+  invweight = body_invweight0[body_invweight0_id, body1][0] + body_invweight0[body_invweight0_id, body2][0]
+
+  fri0 = float(0.0)
+  frii = float(0.0)
+  dimid2 = int(0)
+  if is_elliptic:
+    if dimid > 0:
+      invweight = invweight * impratio_invsqrt * impratio_invsqrt
+      friction = contact_friction_in[conid]
+      if dimid > 1:
+        fri0 = friction[0]
+        frii = friction[dimid - 1]
+        invweight = invweight * fri0 * fri0 / (frii * frii)
+  elif condim > 1:
+    dimid2 = dimid / 2 + 1
+    friction = contact_friction_in[conid]
+    fri0 = friction[0]
+    frii = friction[dimid2 - 1]
+    invweight = invweight + fri0 * fri0 * invweight
+    invweight = invweight * 2.0 * fri0 * fri0 * impratio_invsqrt * impratio_invsqrt
+
+  Jqvel = float(0.0)
+
+  # Skip fixed bodies
+  body1 = body_weldid[body1]
+  body2 = body_weldid[body2]
+
+  da1 = int(body_dofadr[body1] + body_dofnum[body1] - 1)
+  da2 = int(body_dofadr[body2] + body_dofnum[body2] - 1)
+
+  da = wp.max(da1, da2)
+  dofid = int(nv - 1)
+  # Sparse write cursor: contact rows are stored compressed at efc_J[worldid, 0, rowadr + k].
+  rowadr = int(0)
+  if is_sparse:
+    rowadr = efc_J_rowadr_in[worldid, efcid]
+  nnz = int(0)
+
+  while True:
+    if dofid < 0:
+      break
+
+    if dofid == da:
+      jac1p, jac1r = support.jac_dof(
+        body_parentid,
+        body_rootid,
+        dof_bodyid,
+        body_isdofancestor,
+        subtree_com_in,
+        cdof_in,
+        con_pos,
+        body1,
+        dofid,
+        worldid,
+      )
+      jac2p, jac2r = support.jac_dof(
+        body_parentid,
+        body_rootid,
+        dof_bodyid,
+        body_isdofancestor,
+        subtree_com_in,
+        cdof_in,
+        con_pos,
+        body2,
+        dofid,
+        worldid,
+      )
+
+      J = float(0.0)
+      if is_elliptic:
+        if dimid < 3:
+          frame_row = wp.vec3(frame[dimid, 0], frame[dimid, 1], frame[dimid, 2])
+          J = wp.dot(frame_row, jac2p - jac1p)
+        else:
+          frame_row = wp.vec3(frame[dimid - 3, 0], frame[dimid - 3, 1], frame[dimid - 3, 2])
+          J = wp.dot(frame_row, jac2r - jac1r)
+      else:
+        Ji = float(0.0)
+        for xyz in range(3):
+          jacp_dif = jac2p[xyz] - jac1p[xyz]
+          J += frame[0, xyz] * jacp_dif
+          if condim > 1:
+            if dimid2 < 3:
+              Ji += frame[dimid2, xyz] * jacp_dif
+            else:
+              Ji += frame[dimid2 - 3, xyz] * (jac2r[xyz] - jac1r[xyz])
+
+        if condim > 1:
+          if dimid % 2 == 0:
+            J += Ji * frii
+          else:
+            J -= Ji * frii
+
+      if is_sparse:
+        efc_J_colind_out[worldid, 0, rowadr + nnz] = dofid
+        efc_J_out[worldid, 0, rowadr + nnz] = J
+        nnz += 1
+      else:
+        efc_J_out[worldid, efcid, dofid] = J
+      Jqvel += J * qvel_in[worldid, dofid]
+
+      # Advance tree pointers
+      if da1 == da:
+        da1 = dof_parentid[da1]
+      if da2 == da:
+        da2 = dof_parentid[da2]
+      da = wp.max(da1, da2)
+      dofid -= 1
+    else:
+      if not is_sparse:
+        efc_J_out[worldid, efcid, dofid] = 0.0
+      dofid -= 1
+
+  ref = contact_solref_in[conid]
+  pos_aref = pos
+  if is_elliptic and dimid > 0:
+    friction_ref = contact_solreffriction_in[conid]
+    if friction_ref[0] != 0.0 or friction_ref[1] != 0.0:
+      ref = friction_ref
+    pos_aref = 0.0
+
+  # Compute constraint equation row
+  _smooth_efc_row(
+    opt_disableflags,
+    worldid,
+    timestep,
+    efcid,
+    pos_aref,
+    pos,
+    invweight,
+    ref,
+    contact_solimp_in[conid],
+    includemargin,
+    Jqvel,
+    efc_pos_out,
+    efc_D_out,
+    efc_aref_out,
+    efc_vel_out,
+  )
+
+
+# Geom type pairs replayed differentiably by _smooth_recompute_kernel, in the
+# canonical (type1 <= type2) order used by the collision tables.
+_DIFFERENTIABLE_PAIRS = frozenset(
+  {
+    (types.GeomType.PLANE, types.GeomType.SPHERE),
+    (types.GeomType.PLANE, types.GeomType.CAPSULE),
+    (types.GeomType.PLANE, types.GeomType.BOX),
+    (types.GeomType.SPHERE, types.GeomType.SPHERE),
+    (types.GeomType.SPHERE, types.GeomType.CAPSULE),
+    (types.GeomType.SPHERE, types.GeomType.BOX),
+    (types.GeomType.CAPSULE, types.GeomType.CAPSULE),
+    (types.GeomType.CAPSULE, types.GeomType.BOX),
+  }
+)
+
+
+def unsupported_geom_pairs(m: types.Model) -> set[tuple[types.GeomType, types.GeomType]]:
+  """Returns the model's active geom type pairs not covered by the differentiable replay.
+
+  Contacts between these pairs keep their discrete geometry under AD, so gradients through
+  their contact position/orientation are silently zero.
+  """
+  ntypes = len(types.GeomType)
+  # only mjCore geom types appear in geom_pair_type_count (FLEX/TRIANGLE are warp-side sentinels)
+  geomtypes = [t for t in types.GeomType if t <= types.GeomType.SDF]
+  unsupported = set()
+  for t1 in geomtypes:
+    for t2 in geomtypes:
+      if t2 < t1 or (t1, t2) in _DIFFERENTIABLE_PAIRS:
+        continue
+      # same upper-triangular indexing as geom_pair_type_count construction in io.py
+      trid = (t1 * (2 * ntypes - t1 - 1)) // 2 + t2
+      if m.geom_pair_type_count[trid] > 0:
+        unsupported.add((t1, t2))
+  return unsupported
+
+
+# ============================================================================
+# Python launchers
+# ============================================================================
+
+
+def smooth_recompute_contacts(m: types.Model, d: types.Data):
+  """Overwrite contact.{dist, pos, frame} with smooth differentiable values."""
+  if d.naconmax == 0:
+    return
+
+  wp.launch(
+    _smooth_recompute_kernel,
+    dim=d.naconmax,
+    inputs=[
+      # Model
+      m.geom_type,
+      m.geom_bodyid,
+      m.geom_size,
+      # Data in
+      d.geom_xpos,
+      d.geom_xmat,
+      d.contact.includemargin,
+      d.contact.geom,
+      d.contact.worldid,
+      d.contact.geomcollisionid,
+      d.nacon,
+    ],
+    outputs=[
+      d.contact.dist,
+      d.contact.pos,
+      d.contact.frame,
+    ],
+  )
+
+
+def smooth_contact_to_efc(m: types.Model, d: types.Data):
+  """Overwrite efc.{J, pos, D, aref, vel} with smooth differentiable values."""
+  if d.naconmax == 0 or d.njmax == 0:
+    return
+
+  wp.launch(
+    _smooth_contact_to_efc_kernel,
+    dim=(d.naconmax, m.nmaxpyramid),
+    inputs=[
+      # Model
+      m.nv,
+      m.opt.timestep,
+      m.opt.cone,
+      m.opt.disableflags,
+      m.opt.impratio_invsqrt,
+      m.body_parentid,
+      m.body_rootid,
+      m.body_weldid,
+      m.body_dofnum,
+      m.body_dofadr,
+      m.body_invweight0,
+      m.dof_bodyid,
+      m.dof_parentid,
+      m.geom_bodyid,
+      m.is_sparse,
+      m.body_isdofancestor,
+      # Data in
+      d.qvel,
+      d.subtree_com,
+      d.cdof,
+      d.contact.dist,
+      d.contact.pos,
+      d.contact.frame,
+      d.contact.includemargin,
+      d.contact.friction,
+      d.contact.solref,
+      d.contact.solreffriction,
+      d.contact.solimp,
+      d.contact.dim,
+      d.contact.geom,
+      d.contact.efc_address,
+      d.contact.worldid,
+      d.contact.type,
+      d.efc.J_rowadr,
+      d.njmax,
+      d.nacon,
+    ],
+    outputs=[
+      d.efc.J_colind,
+      d.efc.J,
+      d.efc.pos,
+      d.efc.D,
+      d.efc.vel,
+      d.efc.aref,
+    ],
+  )

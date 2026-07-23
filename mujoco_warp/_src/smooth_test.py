@@ -156,6 +156,52 @@ class SmoothTest(parameterized.TestCase):
       _assert_eq(d.mocap_pos.numpy()[i], mjd.mocap_pos, "mocap_pos")
       _assert_eq(d.mocap_quat.numpy()[i], mjd.mocap_quat, "mocap_quat")
 
+  @parameterized.parameters(5, 6)
+  def test_kinematics_many_joints_per_body(self, njoints):
+    """A single body can carry up to six non-free joints (3 slide + 3 hinge).
+
+    The unrolled joint loop in _kinematics_branch must process all of them, otherwise
+    the trailing joints keep their zero-initialized xaxis and corrupt downstream dynamics.
+    This is a regression test for bodies with five or six joints, where the unroll
+    previously stopped at four and left xaxis at zero for the fifth and sixth joints.
+    """
+    slides = """
+        <joint name="x" type="slide" axis="1 0 0"/>
+        <joint name="y" type="slide" axis="0 1 0"/>
+        <joint name="z" type="slide" axis="0 0 1"/>"""
+    hinges = """
+        <joint name="rx" type="hinge" axis="1 0 0"/>
+        <joint name="ry" type="hinge" axis="0 1 0"/>"""
+    if njoints == 6:
+      hinges += """
+        <joint name="rz" type="hinge" axis="0 0 1"/>"""
+    xml = f"""
+    <mujoco>
+      <worldbody>
+        <body name="multi" pos="0.1 0.2 0.3">{slides}{hinges}
+          <geom type="sphere" size="0.1"/>
+        </body>
+      </worldbody>
+    </mujoco>
+    """
+    mjm = mujoco.MjModel.from_xml_string(xml)
+    self.assertEqual(int((mjm.jnt_bodyid == 1).sum()), njoints)
+
+    mjd = mujoco.MjData(mjm)
+    # Non-trivial configuration so every joint contributes a distinct transform.
+    mjd.qpos[:] = np.array([0.05, -0.1, 0.15, 0.3, -0.2, 0.25][:njoints])
+    mujoco.mj_kinematics(mjm, mjd)
+
+    m = mjw.put_model(mjm)
+    d = mjw.make_data(mjm)
+    wp.copy(d.qpos, wp.array(mjd.qpos.reshape(1, -1), dtype=float))
+    mjw.kinematics(m, d)
+
+    _assert_eq(d.xanchor.numpy()[0], mjd.xanchor, "xanchor")
+    _assert_eq(d.xaxis.numpy()[0], mjd.xaxis, "xaxis")
+    _assert_eq(d.xpos.numpy()[0], mjd.xpos, "xpos")
+    _assert_eq(d.xquat.numpy()[0], mjd.xquat, "xquat")
+
   def test_com_pos(self):
     """Tests com_pos."""
     _, mjd, m, d = test_data.fixture("pendula.xml")

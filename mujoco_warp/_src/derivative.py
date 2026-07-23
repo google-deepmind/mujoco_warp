@@ -15,6 +15,7 @@
 
 import warp as wp
 
+from mujoco_warp._src import ad_flags as _ad_flags
 from mujoco_warp._src import math
 from mujoco_warp._src import util_misc
 from mujoco_warp._src.passive import ellipsoid_max_moment
@@ -31,7 +32,9 @@ from mujoco_warp._src.types import Model
 from mujoco_warp._src.types import vec10
 from mujoco_warp._src.warp_util import event_scope
 
-wp.set_module_options({"enable_backward": False})
+# Backward-enabled kernels generate slower forward code, so AD compilation is
+# opt-in: off by default, enabled by mjw.enable_ad() / make_diff_data().
+wp.set_module_options({"enable_backward": _ad_flags.ad_enabled()})
 
 
 @wp.kernel
