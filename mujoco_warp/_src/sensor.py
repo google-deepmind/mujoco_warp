@@ -1616,6 +1616,34 @@ def _tendon_actuator_force(
 
 
 @wp.kernel
+def _tendon_actuator_force_det(
+  # Model:
+  nu: int,
+  actuator_trntype: wp.array[int],
+  actuator_trnid: wp.array[wp.vec2i],
+  sensor_objid: wp.array[int],
+  sensor_adr: wp.array[int],
+  sensor_tendonactfrc_adr: wp.array[int],
+  # Data in:
+  actuator_force_in: wp.array2d[float],
+  # Data out:
+  sensordata_out: wp.array2d[float],
+):
+  worldid, tenactfrcid = wp.tid()
+  sensorid = sensor_tendonactfrc_adr[tenactfrcid]
+  objid = sensor_objid[sensorid]
+
+  # one thread per sensor: fixed ascending actuator order, single read-modify-write per address
+  frc = float(0.0)
+  for actid in range(nu):
+    if actuator_trntype[actid] == TrnType.TENDON and actuator_trnid[actid][0] == objid:
+      frc += actuator_force_in[worldid, actid]
+
+  adr = sensor_adr[sensorid]
+  sensordata_out[worldid, adr] += frc
+
+
+@wp.kernel
 def _tendon_actuator_force_cutoff(
   # Model:
   sensor_type: wp.array[int],
@@ -2136,6 +2164,101 @@ def _sensor_touch(
 
 
 @wp.func
+def _contact_world_lower_bound(contact_worldid_in: wp.array[int], ncontact: int, worldid: int) -> int:
+  """First index of worldid in the world-major sorted contact array (deterministic mode only)."""
+  lo = int(0)
+  hi = ncontact
+  while lo < hi:
+    mid = (lo + hi) >> 1
+    if contact_worldid_in[mid] < worldid:
+      lo = mid + 1
+    else:
+      hi = mid
+  return lo
+
+
+@wp.kernel
+def _sensor_touch_det(
+  # Model:
+  opt_cone: int,
+  geom_bodyid: wp.array[int],
+  site_type: wp.array[int],
+  site_bodyid: wp.array[int],
+  site_size: wp.array[wp.vec3],
+  sensor_objid: wp.array[int],
+  sensor_adr: wp.array[int],
+  sensor_touch_adr: wp.array[int],
+  # Data in:
+  site_xpos_in: wp.array2d[wp.vec3],
+  site_xmat_in: wp.array2d[wp.mat33],
+  contact_pos_in: wp.array[wp.vec3],
+  contact_frame_in: wp.array[wp.mat33],
+  contact_dim_in: wp.array[int],
+  contact_geom_in: wp.array[wp.vec2i],
+  contact_efc_address_in: wp.array2d[int],
+  contact_worldid_in: wp.array[int],
+  efc_force_in: wp.array2d[float],
+  nacon_in: wp.array[int],
+  # Data out:
+  sensordata_out: wp.array2d[float],
+):
+  worldid, sensortouchadrid = wp.tid()
+
+  sensorid = sensor_touch_adr[sensortouchadrid]
+
+  objid = sensor_objid[sensorid]
+  bodyid = site_bodyid[objid]
+
+  # one thread per (world, sensor): accumulate over this world's contacts in ascending order
+  nacon = wp.min(nacon_in[0], contact_worldid_in.shape[0])
+  acc = float(0.0)
+  for conid in range(_contact_world_lower_bound(contact_worldid_in, nacon, worldid), nacon):
+    if contact_worldid_in[conid] != worldid:
+      break
+
+    # contacting bodies
+    geom = contact_geom_in[conid]
+    conbody = wp.vec2i(geom_bodyid[geom[0]], geom_bodyid[geom[1]])
+
+    # select contacts involving sensorized body
+    efc_address0 = contact_efc_address_in[conid, 0]
+    if efc_address0 >= 0 and (bodyid == conbody[0] or bodyid == conbody[1]):
+      # get contact normal force
+      normalforce = efc_force_in[worldid, efc_address0]
+
+      if opt_cone == ConeType.PYRAMIDAL:
+        dim = contact_dim_in[conid]
+        for i in range(1, 2 * (dim - 1)):
+          normalforce += efc_force_in[worldid, contact_efc_address_in[conid, i]]
+
+      if normalforce <= 0.0:
+        continue
+
+      # convert contact normal force to global frame, normalize
+      frame = contact_frame_in[conid]
+      conray = wp.vec3(frame[0, 0], frame[0, 1], frame[0, 2]) * normalforce
+      conray, _ = math.normalize_with_norm(conray)
+
+      # flip ray direction if sensor is on body2
+      if bodyid == conbody[1]:
+        conray = -conray
+
+      # add if ray-zone intersection (always true when contact.pos inside zone)
+      dist, normal = ray.ray_geom(
+        site_xpos_in[worldid, objid],
+        site_xmat_in[worldid, objid],
+        site_size[objid],
+        contact_pos_in[conid],
+        conray,
+        site_type[objid],
+      )
+      if dist >= 0.0:
+        acc += normalforce
+
+  sensordata_out[worldid, sensor_adr[sensorid]] += acc
+
+
+@wp.func
 def _transform_spatial(vec: wp.spatial_vector, dif: wp.vec3) -> wp.vec3:
   return wp.spatial_bottom(vec) - wp.cross(dif, wp.spatial_top(vec))
 
@@ -2175,6 +2298,43 @@ def _preprocess_tactile_contacts(
     idx = wp.atomic_add(weld_geom_count_out[worldid], weld, 1)
     if idx < MJ_MAXCONPAIR:
       weld_geom_list_out[worldid, weld, idx] = geom
+
+
+@wp.kernel
+def _preprocess_tactile_contacts_det(
+  # Model:
+  body_weldid: wp.array[int],
+  geom_bodyid: wp.array[int],
+  # Data in:
+  contact_geom_in: wp.array[wp.vec2i],
+  contact_worldid_in: wp.array[int],
+  nacon_in: wp.array[int],
+  # Out:
+  weld_geom_count_out: wp.array2d[int],
+  weld_geom_list_out: wp.array3d[int],
+):
+  worldid, weldid = wp.tid()
+
+  # one thread per (world, weld): append this world's contacts in ascending order
+  nacon = wp.min(nacon_in[0], contact_worldid_in.shape[0])
+  count = int(0)
+  for conid in range(_contact_world_lower_bound(contact_worldid_in, nacon, worldid), nacon):
+    if contact_worldid_in[conid] != worldid:
+      break
+    contact_geom = contact_geom_in[conid]
+    weld1 = body_weldid[geom_bodyid[contact_geom[0]]]
+    weld2 = body_weldid[geom_bodyid[contact_geom[1]]]
+
+    if weld1 == weldid:
+      if count < MJ_MAXCONPAIR:
+        weld_geom_list_out[worldid, weldid, count] = contact_geom[1]
+      count += 1
+    if weld2 == weldid:
+      if count < MJ_MAXCONPAIR:
+        weld_geom_list_out[worldid, weldid, count] = contact_geom[0]
+      count += 1
+
+  weld_geom_count_out[worldid, weldid] = count
 
 
 @wp.kernel
@@ -2466,6 +2626,152 @@ def _contact_match(
   sensor_contact_direction_out[worldid, contactsensorid, contactmatchid] = dir
 
 
+@wp.kernel
+def _sensor_contact_match_det(
+  # Model:
+  opt_cone: int,
+  opt_contact_sensor_maxmatch: int,
+  opt_warn_overflow: bool,
+  body_parentid: wp.array[int],
+  geom_bodyid: wp.array[int],
+  site_type: wp.array[int],
+  site_size: wp.array[wp.vec3],
+  sensor_objtype: wp.array[int],
+  sensor_objid: wp.array[int],
+  sensor_reftype: wp.array[int],
+  sensor_refid: wp.array[int],
+  sensor_intprm: wp.array2d[int],
+  sensor_contact_adr: wp.array[int],
+  # Data in:
+  site_xpos_in: wp.array2d[wp.vec3],
+  site_xmat_in: wp.array2d[wp.mat33],
+  contact_dist_in: wp.array[float],
+  contact_pos_in: wp.array[wp.vec3],
+  contact_frame_in: wp.array[wp.mat33],
+  contact_friction_in: wp.array[vec5],
+  contact_dim_in: wp.array[int],
+  contact_geom_in: wp.array[wp.vec2i],
+  contact_efc_address_in: wp.array2d[int],
+  contact_worldid_in: wp.array[int],
+  contact_type_in: wp.array[int],
+  efc_force_in: wp.array2d[float],
+  njmax_in: int,
+  nacon_in: wp.array[int],
+  # Data out:
+  overflow_out: wp.array[int],
+  # Out:
+  sensor_contact_nmatch_out: wp.array2d[int],
+  sensor_contact_matchid_out: wp.array3d[int],
+  sensor_contact_criteria_out: wp.array3d[float],
+  sensor_contact_direction_out: wp.array3d[float],
+):
+  worldid, contactsensorid = wp.tid()
+  sensorid = sensor_contact_adr[contactsensorid]
+
+  # sensor information
+  objtype = sensor_objtype[sensorid]
+  objid = sensor_objid[sensorid]
+  reftype = sensor_reftype[sensorid]
+  refid = sensor_refid[sensorid]
+  reduce = sensor_intprm[sensorid, 1]
+
+  # one thread per (world, sensor): match this world's contacts in ascending order
+  nacon = wp.min(nacon_in[0], contact_worldid_in.shape[0])
+  nmatch = int(0)
+  for contactid in range(_contact_world_lower_bound(contact_worldid_in, nacon, worldid), nacon):
+    if contact_worldid_in[contactid] != worldid:
+      break
+
+    if not contact_type_in[contactid] & ContactType.CONSTRAINT:
+      continue
+
+    # site filter
+    if objtype == ObjType.SITE:
+      if not inside_geom(
+        site_xpos_in[worldid, objid],
+        site_xmat_in[worldid, objid],
+        site_size[objid],
+        site_type[objid],
+        contact_pos_in[contactid],
+      ):
+        continue
+
+    # unknown-unknown match
+    dir = 1.0
+    if objtype != ObjType.UNKNOWN or reftype != ObjType.UNKNOWN:
+      # contact information
+      geom = contact_geom_in[contactid]
+      geom1 = geom[0]
+      geom2 = geom[1]
+      body1 = geom_bodyid[geom1]
+      body2 = geom_bodyid[geom2]
+
+      # check match of sensor objects with contact objects
+      match11 = _check_match(body_parentid, body1, geom1, objtype, objid)
+      match12 = _check_match(body_parentid, body2, geom2, objtype, objid)
+      match21 = _check_match(body_parentid, body1, geom1, reftype, refid)
+      match22 = _check_match(body_parentid, body2, geom2, reftype, refid)
+
+      # if a sensor object is specified, it must be involved in the contact
+      if not match11 and not match12:
+        continue
+      if not match21 and not match22:
+        continue
+
+      # determine direction
+      if objtype != ObjType.UNKNOWN and reftype != ObjType.UNKNOWN:
+        # both obj1 and obj2 specified: direction depends on order
+        order_regular = match11 and match22
+        order_reverse = match12 and match21
+        if not order_regular and not order_reverse:
+          continue
+        if order_reverse and not order_regular:
+          dir = -1.0
+      elif objtype != ObjType.UNKNOWN:
+        if not match11:
+          dir = -1.0
+      elif reftype != ObjType.UNKNOWN:
+        if not match22:
+          dir = -1.0
+
+    contactmatchid = nmatch
+    nmatch += 1
+
+    if contactmatchid >= opt_contact_sensor_maxmatch:
+      if opt_warn_overflow:
+        wp.printf("contact match overflow: please increase Option.contact_sensor_maxmatch to %u\n", contactmatchid)
+      wp.atomic_or(overflow_out, worldid, OverflowType.CONTACT_MATCH)
+      continue
+
+    sensor_contact_matchid_out[worldid, contactsensorid, contactmatchid] = contactid
+
+    if reduce == 1:  # mindist
+      sensor_contact_criteria_out[worldid, contactsensorid, contactmatchid] = contact_dist_in[contactid]
+    elif reduce == 2:  # maxforce
+      contact_force = support.contact_force_fn(
+        opt_cone,
+        contact_frame_in,
+        contact_friction_in,
+        contact_dim_in,
+        contact_efc_address_in,
+        efc_force_in,
+        njmax_in,
+        nacon_in,
+        worldid,
+        contactid,
+        False,
+      )
+      force_magnitude = (
+        contact_force[0] * contact_force[0] + contact_force[1] * contact_force[1] + contact_force[2] * contact_force[2]
+      )
+      sensor_contact_criteria_out[worldid, contactsensorid, contactmatchid] = -force_magnitude
+
+    # contact direction
+    sensor_contact_direction_out[worldid, contactsensorid, contactmatchid] = dir
+
+  sensor_contact_nmatch_out[worldid, contactsensorid] = nmatch
+
+
 @cache_kernel
 def _contact_sort(maxmatch: int):
   @wp.kernel(module="unique", enable_backward=False)
@@ -2509,51 +2815,74 @@ def sensor_acc(m: Model, d: Data):
   if m.opt.disableflags & DisableBit.SENSOR:
     return
 
-  wp.launch(
-    _sensor_touch,
-    dim=(d.naconmax, m.sensor_touch_adr.size),
-    inputs=[
-      m.opt.cone,
-      m.geom_bodyid,
-      m.site_type,
-      m.site_bodyid,
-      m.site_size,
-      m.sensor_objid,
-      m.sensor_adr,
-      m.sensor_touch_adr,
-      d.site_xpos,
-      d.site_xmat,
-      d.contact.pos,
-      d.contact.frame,
-      d.contact.dim,
-      d.contact.geom,
-      d.contact.efc_address,
-      d.contact.worldid,
-      d.efc.force,
-      d.nacon,
-    ],
-    outputs=[
-      d.sensordata,
-    ],
-  )
+  sensor_touch_inputs = [
+    m.opt.cone,
+    m.geom_bodyid,
+    m.site_type,
+    m.site_bodyid,
+    m.site_size,
+    m.sensor_objid,
+    m.sensor_adr,
+    m.sensor_touch_adr,
+    d.site_xpos,
+    d.site_xmat,
+    d.contact.pos,
+    d.contact.frame,
+    d.contact.dim,
+    d.contact.geom,
+    d.contact.efc_address,
+    d.contact.worldid,
+    d.efc.force,
+    d.nacon,
+  ]
+  if m.opt.deterministic:
+    wp.launch(
+      _sensor_touch_det,
+      dim=(d.nworld, m.sensor_touch_adr.size),
+      inputs=sensor_touch_inputs,
+      outputs=[
+        d.sensordata,
+      ],
+    )
+  else:
+    wp.launch(
+      _sensor_touch,
+      dim=(d.naconmax, m.sensor_touch_adr.size),
+      inputs=sensor_touch_inputs,
+      outputs=[
+        d.sensordata,
+      ],
+    )
 
   weld_geom_count = wp.zeros((d.nworld, m.nbody), dtype=int)
   weld_geom_list = wp.full((d.nworld, m.nbody, MJ_MAXCONPAIR), -1, dtype=int)
-  wp.launch(
-    _preprocess_tactile_contacts,
-    dim=d.naconmax,
-    inputs=[
-      m.body_weldid,
-      m.geom_bodyid,
-      d.contact.geom,
-      d.contact.worldid,
-      d.nacon,
-    ],
-    outputs=[
-      weld_geom_count,
-      weld_geom_list,
-    ],
-  )
+  preprocess_tactile_inputs = [
+    m.body_weldid,
+    m.geom_bodyid,
+    d.contact.geom,
+    d.contact.worldid,
+    d.nacon,
+  ]
+  if m.opt.deterministic:
+    wp.launch(
+      _preprocess_tactile_contacts_det,
+      dim=(d.nworld, m.nbody),
+      inputs=preprocess_tactile_inputs,
+      outputs=[
+        weld_geom_count,
+        weld_geom_list,
+      ],
+    )
+  else:
+    wp.launch(
+      _preprocess_tactile_contacts,
+      dim=d.naconmax,
+      inputs=preprocess_tactile_inputs,
+      outputs=[
+        weld_geom_count,
+        weld_geom_list,
+      ],
+    )
 
   wp.launch(
     _sensor_tactile,
@@ -2607,40 +2936,56 @@ def sensor_acc(m: Model, d: Data):
     sensor_contact_matchid.fill_(-1)
     sensor_contact_criteria.fill_(1.0e32)
 
-    wp.launch(
-      _contact_match,
-      dim=(m.sensor_contact_adr.size, d.naconmax),
-      inputs=[
-        m.opt.cone,
-        m.opt.contact_sensor_maxmatch,
-        m.opt.warn_overflow,
-        m.body_parentid,
-        m.geom_bodyid,
-        m.site_type,
-        m.site_size,
-        m.sensor_objtype,
-        m.sensor_objid,
-        m.sensor_reftype,
-        m.sensor_refid,
-        m.sensor_intprm,
-        m.sensor_contact_adr,
-        d.site_xpos,
-        d.site_xmat,
-        d.contact.dist,
-        d.contact.pos,
-        d.contact.frame,
-        d.contact.friction,
-        d.contact.dim,
-        d.contact.geom,
-        d.contact.efc_address,
-        d.contact.worldid,
-        d.contact.type,
-        d.efc.force,
-        d.njmax,
-        d.nacon,
-      ],
-      outputs=[d.overflow, sensor_contact_nmatch, sensor_contact_matchid, sensor_contact_criteria, sensor_contact_direction],
-    )
+    contact_match_inputs = [
+      m.opt.cone,
+      m.opt.contact_sensor_maxmatch,
+      m.opt.warn_overflow,
+      m.body_parentid,
+      m.geom_bodyid,
+      m.site_type,
+      m.site_size,
+      m.sensor_objtype,
+      m.sensor_objid,
+      m.sensor_reftype,
+      m.sensor_refid,
+      m.sensor_intprm,
+      m.sensor_contact_adr,
+      d.site_xpos,
+      d.site_xmat,
+      d.contact.dist,
+      d.contact.pos,
+      d.contact.frame,
+      d.contact.friction,
+      d.contact.dim,
+      d.contact.geom,
+      d.contact.efc_address,
+      d.contact.worldid,
+      d.contact.type,
+      d.efc.force,
+      d.njmax,
+      d.nacon,
+    ]
+    contact_match_outputs = [
+      d.overflow,
+      sensor_contact_nmatch,
+      sensor_contact_matchid,
+      sensor_contact_criteria,
+      sensor_contact_direction,
+    ]
+    if m.opt.deterministic:
+      wp.launch(
+        _sensor_contact_match_det,
+        dim=(d.nworld, m.sensor_contact_adr.size),
+        inputs=contact_match_inputs,
+        outputs=contact_match_outputs,
+      )
+    else:
+      wp.launch(
+        _contact_match,
+        dim=(m.sensor_contact_adr.size, d.naconmax),
+        inputs=contact_match_inputs,
+        outputs=contact_match_outputs,
+      )
 
     # sorting
     wp.launch_tiled(
@@ -2702,21 +3047,39 @@ def sensor_acc(m: Model, d: Data):
     outputs=[d.sensordata],
   )
 
-  wp.launch(
-    _tendon_actuator_force,
-    dim=(d.nworld, m.sensor_tendonactfrc_adr.size, m.nu),
-    inputs=[
-      m.actuator_trntype,
-      m.actuator_trnid,
-      m.sensor_objid,
-      m.sensor_adr,
-      m.sensor_tendonactfrc_adr,
-      d.actuator_force,
-    ],
-    outputs=[
-      d.sensordata,
-    ],
-  )
+  if m.opt.deterministic:
+    wp.launch(
+      _tendon_actuator_force_det,
+      dim=(d.nworld, m.sensor_tendonactfrc_adr.size),
+      inputs=[
+        m.nu,
+        m.actuator_trntype,
+        m.actuator_trnid,
+        m.sensor_objid,
+        m.sensor_adr,
+        m.sensor_tendonactfrc_adr,
+        d.actuator_force,
+      ],
+      outputs=[
+        d.sensordata,
+      ],
+    )
+  else:
+    wp.launch(
+      _tendon_actuator_force,
+      dim=(d.nworld, m.sensor_tendonactfrc_adr.size, m.nu),
+      inputs=[
+        m.actuator_trntype,
+        m.actuator_trnid,
+        m.sensor_objid,
+        m.sensor_adr,
+        m.sensor_tendonactfrc_adr,
+        d.actuator_force,
+      ],
+      outputs=[
+        d.sensordata,
+      ],
+    )
 
   wp.launch(
     _tendon_actuator_force_cutoff,
@@ -2791,6 +3154,29 @@ def _energy_pos_gravity(
   )
 
   wp.atomic_sub(energy_out, worldid, energy)
+
+
+@wp.kernel
+def _energy_pos_gravity_det(
+  # Model:
+  nbody: int,
+  opt_gravity: wp.array[wp.vec3],
+  body_mass: wp.array2d[float],
+  # Data in:
+  xipos_in: wp.array2d[wp.vec3],
+  # Data out:
+  energy_out: wp.array[wp.vec2],
+):
+  worldid = wp.tid()
+  gravity = opt_gravity[worldid % opt_gravity.shape[0]]
+  body_mass_id = worldid % body_mass.shape[0]
+
+  # one thread per world: sum bodies in ascending order, single read-modify-write
+  energy = float(0.0)
+  for bodyid in range(1, nbody):
+    energy += body_mass[body_mass_id, bodyid] * wp.dot(gravity, xipos_in[worldid, bodyid])
+
+  energy_out[worldid][0] = energy_out[worldid][0] - energy
 
 
 @wp.kernel
@@ -2886,6 +3272,92 @@ def _energy_pos_passive_joint(
 
 
 @wp.kernel
+def _energy_pos_passive_joint_det(
+  # Model:
+  njnt: int,
+  qpos_spring: wp.array2d[float],
+  jnt_type: wp.array[int],
+  jnt_qposadr: wp.array[int],
+  jnt_stiffness: wp.array2d[float],
+  jnt_stiffnesspoly: wp.array2d[wp.vec2],
+  # Data in:
+  qpos_in: wp.array2d[float],
+  # Data out:
+  energy_out: wp.array[wp.vec2],
+):
+  worldid = wp.tid()
+  jnt_stiffness_id = worldid % jnt_stiffness.shape[0]
+  jnt_stiffnesspoly_id = worldid % jnt_stiffnesspoly.shape[0]
+  qpos_spring_id = worldid % qpos_spring.shape[0]
+
+  # one thread per world: sum joints in ascending order, single read-modify-write
+  energy = float(0.0)
+  for jntid in range(njnt):
+    stiffness = jnt_stiffness[jnt_stiffness_id, jntid]
+    spoly = jnt_stiffnesspoly[jnt_stiffnesspoly_id, jntid]
+
+    if stiffness == 0.0 and spoly[0] == 0.0 and spoly[1] == 0.0:
+      continue
+
+    padr = jnt_qposadr[jntid]
+    jnttype = jnt_type[jntid]
+
+    if jnttype == JointType.FREE:
+      dif0 = wp.vec3(
+        qpos_in[worldid, padr + 0] - qpos_spring[qpos_spring_id, padr + 0],
+        qpos_in[worldid, padr + 1] - qpos_spring[qpos_spring_id, padr + 1],
+        qpos_in[worldid, padr + 2] - qpos_spring[qpos_spring_id, padr + 2],
+      )
+
+      # convert quaternion difference into angular "velocity"
+      quat1 = wp.quat(
+        qpos_in[worldid, padr + 3],
+        qpos_in[worldid, padr + 4],
+        qpos_in[worldid, padr + 5],
+        qpos_in[worldid, padr + 6],
+      )
+      quat1 = wp.normalize(quat1)
+
+      quat_spring = wp.quat(
+        qpos_spring[qpos_spring_id, padr + 3],
+        qpos_spring[qpos_spring_id, padr + 4],
+        qpos_spring[qpos_spring_id, padr + 5],
+        qpos_spring[qpos_spring_id, padr + 6],
+      )
+
+      dif1 = math.quat_sub(quat1, quat_spring)
+
+      r0 = wp.length(dif0)
+      r1 = wp.length(dif1)
+
+      energy += poly_potential(stiffness, spoly, r0, 0) + poly_potential(stiffness, spoly, r1, 0)
+    elif jnttype == JointType.BALL:
+      quat = wp.quat(
+        qpos_in[worldid, padr + 0],
+        qpos_in[worldid, padr + 1],
+        qpos_in[worldid, padr + 2],
+        qpos_in[worldid, padr + 3],
+      )
+      quat = wp.normalize(quat)
+
+      quat_spring = wp.quat(
+        qpos_spring[qpos_spring_id, padr + 0],
+        qpos_spring[qpos_spring_id, padr + 1],
+        qpos_spring[qpos_spring_id, padr + 2],
+        qpos_spring[qpos_spring_id, padr + 3],
+      )
+
+      dif = math.quat_sub(quat, quat_spring)
+      r = wp.length(dif)
+      energy += poly_potential(stiffness, spoly, r, 0)
+    elif jnttype == JointType.SLIDE or jnttype == JointType.HINGE:
+      dif_ = qpos_in[worldid, padr] - qpos_spring[qpos_spring_id, padr]
+      energy += poly_potential(stiffness, spoly, dif_, 0)
+
+  energy_out[worldid][0] = energy_out[worldid][0] + energy
+
+
+@wp.kernel
 def _energy_pos_passive_tendon(
   # Model:
   tendon_stiffness: wp.array2d[float],
@@ -2924,45 +3396,125 @@ def _energy_pos_passive_tendon(
   wp.atomic_add(energy_out, worldid, energy)
 
 
+@wp.kernel
+def _energy_pos_passive_tendon_det(
+  # Model:
+  ntendon: int,
+  tendon_stiffness: wp.array2d[float],
+  tendon_stiffnesspoly: wp.array2d[wp.vec2],
+  tendon_lengthspring: wp.array2d[wp.vec2],
+  # Data in:
+  ten_length_in: wp.array2d[float],
+  # Data out:
+  energy_out: wp.array[wp.vec2],
+):
+  worldid = wp.tid()
+  tendon_stiffness_id = worldid % tendon_stiffness.shape[0]
+  tendon_stiffnesspoly_id = worldid % tendon_stiffnesspoly.shape[0]
+  tendon_lengthspring_id = worldid % tendon_lengthspring.shape[0]
+
+  # one thread per world: sum tendons in ascending order, single read-modify-write
+  energy = float(0.0)
+  for tenid in range(ntendon):
+    stiffness = tendon_stiffness[tendon_stiffness_id, tenid]
+    spoly = tendon_stiffnesspoly[tendon_stiffnesspoly_id, tenid]
+
+    if stiffness == 0.0 and spoly[0] == 0.0 and spoly[1] == 0.0:
+      continue
+
+    length = ten_length_in[worldid, tenid]
+
+    # compute spring displacement
+    lengthspring = tendon_lengthspring[tendon_lengthspring_id, tenid]
+    lower = lengthspring[0]
+    upper = lengthspring[1]
+
+    if length > upper:
+      x = length - upper
+    elif length < lower:
+      x = length - lower
+    else:
+      x = 0.0
+
+    energy += poly_potential(stiffness, spoly, x, 0)
+
+  energy_out[worldid][0] = energy_out[worldid][0] + energy
+
+
 def energy_pos(m: Model, d: Data):
   """Position-dependent energy (potential)."""
   wp.launch(_energy_pos_zero, dim=d.nworld, outputs=[d.energy])
 
   # init potential energy: -sum_i(body_i.mass * dot(gravity, body_i.pos))
   if not (m.opt.disableflags & DisableBit.GRAVITY):
-    wp.launch(
-      _energy_pos_gravity, dim=(d.nworld, m.nbody - 1), inputs=[m.opt.gravity, m.body_mass, d.xipos], outputs=[d.energy]
-    )
+    if m.opt.deterministic:
+      wp.launch(
+        _energy_pos_gravity_det, dim=d.nworld, inputs=[m.nbody, m.opt.gravity, m.body_mass, d.xipos], outputs=[d.energy]
+      )
+    else:
+      wp.launch(
+        _energy_pos_gravity, dim=(d.nworld, m.nbody - 1), inputs=[m.opt.gravity, m.body_mass, d.xipos], outputs=[d.energy]
+      )
 
   if not (m.opt.disableflags & DisableBit.SPRING):
     # add joint-level springs
-    wp.launch(
-      _energy_pos_passive_joint,
-      dim=(d.nworld, m.njnt),
-      inputs=[
-        m.qpos_spring,
-        m.jnt_type,
-        m.jnt_qposadr,
-        m.jnt_stiffness,
-        m.jnt_stiffnesspoly,
-        d.qpos,
-      ],
-      outputs=[d.energy],
-    )
-
-    # add tendon-level springs
-    if m.ntendon:
+    if m.opt.deterministic:
       wp.launch(
-        _energy_pos_passive_tendon,
-        dim=(d.nworld, m.ntendon),
+        _energy_pos_passive_joint_det,
+        dim=d.nworld,
         inputs=[
-          m.tendon_stiffness,
-          m.tendon_stiffnesspoly,
-          m.tendon_lengthspring,
-          d.ten_length,
+          m.njnt,
+          m.qpos_spring,
+          m.jnt_type,
+          m.jnt_qposadr,
+          m.jnt_stiffness,
+          m.jnt_stiffnesspoly,
+          d.qpos,
         ],
         outputs=[d.energy],
       )
+    else:
+      wp.launch(
+        _energy_pos_passive_joint,
+        dim=(d.nworld, m.njnt),
+        inputs=[
+          m.qpos_spring,
+          m.jnt_type,
+          m.jnt_qposadr,
+          m.jnt_stiffness,
+          m.jnt_stiffnesspoly,
+          d.qpos,
+        ],
+        outputs=[d.energy],
+      )
+
+    # add tendon-level springs
+    if m.ntendon:
+      if m.opt.deterministic:
+        wp.launch(
+          _energy_pos_passive_tendon_det,
+          dim=d.nworld,
+          inputs=[
+            m.ntendon,
+            m.tendon_stiffness,
+            m.tendon_stiffnesspoly,
+            m.tendon_lengthspring,
+            d.ten_length,
+          ],
+          outputs=[d.energy],
+        )
+      else:
+        wp.launch(
+          _energy_pos_passive_tendon,
+          dim=(d.nworld, m.ntendon),
+          inputs=[
+            m.tendon_stiffness,
+            m.tendon_stiffnesspoly,
+            m.tendon_lengthspring,
+            d.ten_length,
+          ],
+          outputs=[d.energy],
+        )
 
     # TODO(team): flex
 

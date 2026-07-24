@@ -34,6 +34,7 @@ from mujoco_warp._src.types import GeomType
 from mujoco_warp._src.types import Model
 from mujoco_warp._src.types import OverflowType
 from mujoco_warp._src.types import vec5
+from mujoco_warp._src.warp_util import cache_kernel
 from mujoco_warp._src.warp_util import event_scope
 
 wp.set_module_options({"enable_backward": False})
@@ -399,7 +400,7 @@ def _write_flex_contact(
   # Data in:
   naconmax_in: int,
   # In:
-  collisionid: int,
+  id_: int,
   dist: float,
   pos: wp.vec3,
   normal: wp.vec3,
@@ -464,7 +465,7 @@ def _write_flex_contact(
     contact_vert_out[c_idx] = wp.vec2i(-1, vertid)
     contact_worldid_out[c_idx] = worldid
     contact_type_out[c_idx] = ContactType.CONSTRAINT
-    contact_geomcollisionid_out[c_idx] = collisionid
+    contact_geomcollisionid_out[c_idx] = id_
 
 
 # TODO(team): generalize into a shared contact parameter mixing function
@@ -558,6 +559,7 @@ def _mix_flex_contact_params(
 def _write_candidate_contact(
   # In:
   max_candidates: int,
+  id_: int,
   dist: float,
   pos: wp.vec3,
   nrm: wp.vec3,
@@ -613,13 +615,14 @@ def _write_candidate_contact(
     cand_vert_out[candid] = wp.vec2i(vertid, -1)
   cand_worldid_out[candid] = worldid
   cand_type_out[candid] = 1
-  cand_geomcollisionid_out[candid] = 0
+  cand_geomcollisionid_out[candid] = id_
 
 
 @wp.func
 def _collide_geom_triangle_detect(
   # In:
   max_candidates: int,
+  id_: int,
   gtype: int,
   pos: wp.vec3,
   rot: wp.mat33,
@@ -655,6 +658,7 @@ def _collide_geom_triangle_detect(
     if dist < margin:
       _write_candidate_contact(
         max_candidates,
+        id_,
         dist,
         contact_pos,
         nrm,
@@ -706,6 +710,7 @@ def _collide_geom_triangle_detect(
     n1 = wp.vec3(nrms[0, 0], nrms[0, 1], nrms[0, 2])
     _write_candidate_contact(
       max_candidates,
+      id_,
       dists[0],
       p1,
       n1,
@@ -732,6 +737,7 @@ def _collide_geom_triangle_detect(
     n2 = wp.vec3(nrms[1, 0], nrms[1, 1], nrms[1, 2])
     _write_candidate_contact(
       max_candidates,
+      id_ + 1,
       dists[1],
       p2,
       n2,
@@ -944,6 +950,7 @@ def _collide_mesh_triangle(
 
         _write_candidate_contact(
           max_candidates,
+          0,
           min_dist,
           pos,
           normal,
@@ -1074,7 +1081,7 @@ def _flex_plane_narrowphase(
       flex_margin,
       flex_gap,
       naconmax_in,
-      collisionid,
+      0,
       dist,
       contact_pos,
       plane_normal,
@@ -1206,6 +1213,7 @@ def _flex_geom_vertex_narrowphase_detect(
     if dist < margin:
       _write_candidate_contact(
         max_candidates,
+        0,
         dist,
         contact_pos,
         nrm,
@@ -1375,6 +1383,7 @@ def _flex_internal_collisions_detect(
   if dist < margin:
     _write_candidate_contact(
       max_candidates,
+      0,
       dist,
       contact_pos,
       nrm,
@@ -1456,6 +1465,7 @@ def _flex_tet_internal_collisions_detect(
   if ok0:
     _write_candidate_contact(
       max_candidates,
+      0,
       dist0,
       pos0,
       nrm0,
@@ -1483,6 +1493,7 @@ def _flex_tet_internal_collisions_detect(
   if ok1:
     _write_candidate_contact(
       max_candidates,
+      0,
       dist1,
       pos1,
       nrm1,
@@ -1510,6 +1521,7 @@ def _flex_tet_internal_collisions_detect(
   if ok2:
     _write_candidate_contact(
       max_candidates,
+      0,
       dist2,
       pos2,
       nrm2,
@@ -1537,6 +1549,7 @@ def _flex_tet_internal_collisions_detect(
   if ok3:
     _write_candidate_contact(
       max_candidates,
+      0,
       dist3,
       pos3,
       nrm3,
@@ -1942,6 +1955,7 @@ def _flex_selfcollision_narrowphase(
       if d_val < 0.0:
         _write_candidate_contact(
           max_candidates,
+          c,
           d_val,
           contact_pos[c],
           contact_normal[c],
@@ -2040,6 +2054,7 @@ def _flex_selfcollision_narrowphase(
       nrm = wp.normalize(w1 - w2)
       _write_candidate_contact(
         max_candidates,
+        0,
         phys_dist,
         pos,
         nrm,
@@ -2166,6 +2181,7 @@ def _flex_active_element_collisions_detect(
         if d_val < 0.0:
           _write_candidate_contact(
             max_candidates,
+            c,
             d_val,
             contact_pos[c],
             contact_normal[c],
@@ -2263,6 +2279,7 @@ def _flex_active_element_collisions_detect(
         nrm = wp.normalize(w1 - w2)
         _write_candidate_contact(
           max_candidates,
+          0,
           phys_dist,
           pos,
           nrm,
@@ -2550,6 +2567,7 @@ def _flex_narrowphase_unified(
 
               _write_candidate_contact(
                 max_candidates,
+                0,
                 min_dist,
                 pos,
                 normal,
@@ -2574,6 +2592,7 @@ def _flex_narrowphase_unified(
   else:
     _collide_geom_triangle_detect(
       max_candidates,
+      0,
       gtype,
       geom_pos,
       geom_rot,
@@ -2728,8 +2747,11 @@ def _flex_narrowphase_tet_detect(
         t2 = p1
         t3 = p2
 
+      # Each face may emit up to two contacts with the same (geom, elem) ids;
+      # offset by face so every candidate of the pair gets a distinct id.
       _collide_geom_triangle_detect(
         max_candidates,
+        2 * face,
         gtype,
         geom_pos,
         geom_rot,
@@ -2798,67 +2820,112 @@ def _compute_filter_key(
   val_out[i] = i
 
 
-@wp.kernel
-def _filter_flex_candidates_sorted(
+@wp.func
+def _cand_content_less(
   # In:
-  ncand: wp.array[int],
-  epsilon: float,
-  sort_key: wp.array[int],
-  sort_val: wp.array[int],
-  cand_dist: wp.array[float],
-  cand_pos: wp.array[wp.vec3],
-  # Out:
-  cand_active_out: wp.array[int],
-):
-  """Filter duplicate candidates using sorted order.
+  elem_a: wp.vec2i,
+  vert_a: wp.vec2i,
+  id_a: int,
+  elem_b: wp.vec2i,
+  vert_b: wp.vec2i,
+  id_b: int,
+) -> bool:
+  """Lexicographic order on candidate primitive ids, for run-invariant tie-breaks."""
+  if elem_a[0] != elem_b[0]:
+    return elem_a[0] < elem_b[0]
+  if elem_a[1] != elem_b[1]:
+    return elem_a[1] < elem_b[1]
+  if vert_a[0] != vert_b[0]:
+    return vert_a[0] < vert_b[0]
+  if vert_a[1] != vert_b[1]:
+    return vert_a[1] < vert_b[1]
+  return id_a < id_b
 
-  After sorting by group key, candidates in the same group are contiguous.
-  Each candidate only compares with neighbors sharing the same key, reducing
-  complexity from O(n^2) to O(n * k) where k is the average group size.
-  """
-  si = wp.tid()
-  if si >= ncand[0]:
-    return
 
-  i = sort_val[si]
-  my_key = sort_key[si]
-  pos_i = cand_pos[i]
-  dist_i = cand_dist[i]
-  eps2 = epsilon * epsilon
+@cache_kernel
+def _filter_flex_candidates_sorted(deterministic: bool):
+  @wp.kernel(module="unique", enable_backward=False)
+  def kernel(
+    # In:
+    ncand: wp.array[int],
+    epsilon: float,
+    sort_key: wp.array[int],
+    sort_val: wp.array[int],
+    cand_dist: wp.array[float],
+    cand_pos: wp.array[wp.vec3],
+    cand_elem: wp.array[wp.vec2i],
+    cand_vert: wp.array[wp.vec2i],
+    cand_geomcollisionid: wp.array[int],
+    # Out:
+    cand_active_out: wp.array[int],
+  ):
+    """Filter duplicate candidates using sorted order.
 
-  keep = int(1)
+    After sorting by group key, candidates in the same group are contiguous.
+    Each candidate only compares with neighbors sharing the same key, reducing
+    complexity from O(n^2) to O(n * k) where k is the average group size.
+    """
+    si = wp.tid()
+    if si >= ncand[0]:
+      return
 
-  # Compare with same-key neighbors (backward)
-  j = si - 1
-  while j >= 0:
-    if sort_key[j] != my_key:
-      break
-    oj = sort_val[j]
-    diff = pos_i - cand_pos[oj]
-    if wp.dot(diff, diff) < eps2:
-      dist_j = cand_dist[oj]
-      if dist_j < dist_i:
-        keep = 0
-      elif dist_j == dist_i and oj < i:
-        keep = 0
-    j -= 1
+    i = sort_val[si]
+    my_key = sort_key[si]
+    pos_i = cand_pos[i]
+    dist_i = cand_dist[i]
+    eps2 = epsilon * epsilon
 
-  # Compare with same-key neighbors (forward)
-  j = si + 1
-  while j < ncand[0]:
-    if sort_key[j] != my_key:
-      break
-    oj = sort_val[j]
-    diff = pos_i - cand_pos[oj]
-    if wp.dot(diff, diff) < eps2:
-      dist_j = cand_dist[oj]
-      if dist_j < dist_i:
-        keep = 0
-      elif dist_j == dist_i and oj < i:
-        keep = 0
-    j += 1
+    keep = int(1)
 
-  cand_active_out[i] = keep
+    # Compare with same-key neighbors (backward)
+    j = si - 1
+    while j >= 0:
+      if sort_key[j] != my_key:
+        break
+      oj = sort_val[j]
+      diff = pos_i - cand_pos[oj]
+      if wp.dot(diff, diff) < eps2:
+        dist_j = cand_dist[oj]
+        if dist_j < dist_i:
+          keep = 0
+        elif dist_j == dist_i:
+          # Equal-distance duplicates: candidate slots are assigned by atomics, so
+          # deterministic mode breaks the tie on candidate content instead.
+          if wp.static(deterministic):
+            if _cand_content_less(
+              cand_elem[oj], cand_vert[oj], cand_geomcollisionid[oj], cand_elem[i], cand_vert[i], cand_geomcollisionid[i]
+            ):
+              keep = 0
+          else:
+            if oj < i:
+              keep = 0
+      j -= 1
+
+    # Compare with same-key neighbors (forward)
+    j = si + 1
+    while j < ncand[0]:
+      if sort_key[j] != my_key:
+        break
+      oj = sort_val[j]
+      diff = pos_i - cand_pos[oj]
+      if wp.dot(diff, diff) < eps2:
+        dist_j = cand_dist[oj]
+        if dist_j < dist_i:
+          keep = 0
+        elif dist_j == dist_i:
+          if wp.static(deterministic):
+            if _cand_content_less(
+              cand_elem[oj], cand_vert[oj], cand_geomcollisionid[oj], cand_elem[i], cand_vert[i], cand_geomcollisionid[i]
+            ):
+              keep = 0
+          else:
+            if oj < i:
+              keep = 0
+      j += 1
+
+    cand_active_out[i] = keep
+
+  return kernel
 
 
 @wp.kernel
@@ -3798,7 +3865,7 @@ def flex_collision(m: Model, d: Data, ctx):
 
   cand_active = wp.empty(d.naconmax, dtype=int)
   wp.launch(
-    _filter_flex_candidates_sorted,
+    _filter_flex_candidates_sorted(bool(m.opt.deterministic)),
     dim=d.naconmax,
     inputs=[
       ncand,
@@ -3807,6 +3874,9 @@ def flex_collision(m: Model, d: Data, ctx):
       filter_val,
       cand_dist,
       cand_pos,
+      cand_elem,
+      cand_vert,
+      cand_geomcollisionid,
     ],
     outputs=[
       cand_active,

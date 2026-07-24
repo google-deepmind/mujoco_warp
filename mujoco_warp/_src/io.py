@@ -439,6 +439,7 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
     opt.contact_sensor_maxmatch = mjm.numeric_data[mjm.numeric_adr[contact_sensor_maxmatch_id]]
   else:
     opt.contact_sensor_maxmatch = 64
+  opt.deterministic = False
 
   # place opt on device
   for f in dataclasses.fields(types.Option):
@@ -524,6 +525,16 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
     bodies.setdefault(body_depth[i], []).append(i)
   m.body_tree = tuple(wp.array(bodies[i], dtype=int) for i in sorted(bodies))
 
+  # per-parent child list CSR; children ascending within each parent
+  children = [[] for _ in range(mjm.nbody)]
+  for b in range(1, mjm.nbody):
+    children[mjm.body_parentid[b]].append(b)
+  body_children_adr = np.zeros(mjm.nbody + 1, dtype=np.int32)
+  for b in range(mjm.nbody):
+    body_children_adr[b + 1] = body_children_adr[b] + len(children[b])
+  m.body_children_adr = body_children_adr
+  m.body_children = np.array([c for childlist in children for c in childlist], dtype=np.int32)
+
   # branch-based traversal data
   children_count = np.bincount(mjm.body_parentid[1:], minlength=mjm.nbody)
   ancestor_chain = lambda b: ancestor_chain(mjm.body_parentid[b]) + [b] if b else []
@@ -572,6 +583,16 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
       body_isdofancestor[bodyid, dofid] = 1
       dofid = mjm.dof_parentid[dofid]
   m.body_isdofancestor = body_isdofancestor
+
+  # per-dof CSR of bodies with structural (mjModel) gravcomp the dof supports, ascending body id
+  gravcomp_bodies = np.nonzero(mjm.body_gravcomp != 0.0)[0]
+  dof_gravcomp_adr = np.zeros(mjm.nv + 1, dtype=np.int32)
+  dof_gravcomp_body = []
+  for dofid in range(mjm.nv):
+    dof_gravcomp_body.extend(gravcomp_bodies[body_isdofancestor[gravcomp_bodies, dofid] != 0].tolist())
+    dof_gravcomp_adr[dofid + 1] = len(dof_gravcomp_body)
+  m.dof_gravcomp_adr = dof_gravcomp_adr
+  m.dof_gravcomp_body = np.array(dof_gravcomp_body, dtype=np.int32)
 
   # Upper bound on a contact's Jacobian support-pair count, to size the elliptic-cone JTCJ
   # launch. Use body_isdofancestor (the full dof tree), not the mass-matrix sparsity, which the
@@ -856,6 +877,30 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
   m.wrap_site_pair_adr = np.setdiff1d(m.wrap_site_adr[np.nonzero(np.diff(m.wrap_site_adr) == 1)[0]], mjm.tendon_adr[1:] - 1)
   m.wrap_geom_adr = np.nonzero(np.isin(mjm.wrap_type, [mujoco.mjtWrap.mjWRAP_SPHERE, mujoco.mjtWrap.mjWRAP_CYLINDER]))[0]
 
+  # per-tendon segments of the flattened wrap element lists; wrap addresses are ascending and
+  # grouped by tendon, so the flattened lists are already in per-tendon path order
+  wrap_adr_bounds = np.append(mjm.tendon_adr, mjm.nwrap)
+  m.ten_sitepair_adr = np.searchsorted(m.wrap_site_pair_adr, wrap_adr_bounds).astype(np.int32)
+  m.ten_geomwrap_adr = np.searchsorted(m.wrap_geom_adr, wrap_adr_bounds).astype(np.int32)
+
+  # dof -> tendon transpose of the static ten_J sparsity, ascending tendon id within each dof
+  ten_J_colind_flat = mjm.ten_J_colind.reshape(-1)
+  dof_ten = [[] for _ in range(mjm.nv)]
+  for tenid in range(mjm.ntendon):
+    rowadr = mjm.ten_J_rowadr[tenid]
+    for k in range(mjm.ten_J_rownnz[tenid]):
+      dof_ten[ten_J_colind_flat[rowadr + k]].append((tenid, rowadr + k))
+  dof_ten_adr = np.zeros(mjm.nv + 1, dtype=np.int32)
+  dof_ten_tenid, dof_ten_sparseid = [], []
+  for dofid in range(mjm.nv):
+    for tenid, sparseid in dof_ten[dofid]:
+      dof_ten_tenid.append(tenid)
+      dof_ten_sparseid.append(sparseid)
+    dof_ten_adr[dofid + 1] = len(dof_ten_tenid)
+  m.dof_ten_adr = dof_ten_adr
+  m.dof_ten_tenid = np.array(dof_ten_tenid, dtype=np.int32)
+  m.dof_ten_sparseid = np.array(dof_ten_sparseid, dtype=np.int32)
+
   # pulley scaling
   m.wrap_pulley_scale = np.ones(mjm.nwrap, dtype=float)
   pulley_adr = np.nonzero(mjm.wrap_type == mujoco.mjtWrap.mjWRAP_PULLEY)[0]
@@ -865,6 +910,57 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
         m.wrap_pulley_scale[padr : tadr + tnum] = 1.0 / mjm.wrap_prm[padr]
 
   m.actuator_trntype_body_adr = np.nonzero(mjm.actuator_trntype == mujoco.mjtTrn.mjTRN_BODY)[0]
+
+  # static actuator_moment CSR layout: row widths are structural for every transmission type;
+  # the walks below replicate the in-kernel dof-chain counting of smooth._transmission
+  def _body_lastdof(bodyid: int) -> int:
+    if bodyid > 0:
+      return mjm.body_dofadr[bodyid] + mjm.body_dofnum[bodyid] - 1
+    return -1
+
+  def _merged_chain_ndof(da1: int, da2: int, stop_at_common: bool) -> int:
+    ndof = 0
+    while da1 >= 0 or da2 >= 0:
+      da = max(da1, da2)
+      if stop_at_common and da1 == da and da2 == da:
+        break
+      ndof += 1
+      if da1 == da:
+        da1 = mjm.dof_parentid[da1]
+      if da2 == da:
+        da2 = mjm.dof_parentid[da2]
+    return ndof
+
+  def _moment_rownnz(actid: int) -> int:
+    trntype = mjm.actuator_trntype[actid]
+    trnid = mjm.actuator_trnid[actid]
+    if trntype == mujoco.mjtTrn.mjTRN_JOINT or trntype == mujoco.mjtTrn.mjTRN_JOINTINPARENT:
+      jnt_type = mjm.jnt_type[trnid[0]]
+      if jnt_type == mujoco.mjtJoint.mjJNT_FREE:
+        return 6
+      if jnt_type == mujoco.mjtJoint.mjJNT_BALL:
+        return 3
+      return 1
+    if trntype == mujoco.mjtTrn.mjTRN_SLIDERCRANK:
+      b1 = mjm.body_weldid[mjm.site_bodyid[trnid[0]]]
+      b2 = mjm.body_weldid[mjm.site_bodyid[trnid[1]]]
+      return _merged_chain_ndof(_body_lastdof(b1), _body_lastdof(b2), stop_at_common=False)
+    if trntype == mujoco.mjtTrn.mjTRN_TENDON:
+      return int(mjm.ten_J_rownnz[trnid[0]])
+    if trntype == mujoco.mjtTrn.mjTRN_BODY:
+      return mjm.nv
+    if trntype == mujoco.mjtTrn.mjTRN_SITE:
+      b1 = mjm.body_weldid[mjm.site_bodyid[trnid[0]]]
+      if trnid[1] == -1:
+        return _merged_chain_ndof(_body_lastdof(b1), -1, stop_at_common=False)
+      b2 = mjm.body_weldid[mjm.site_bodyid[trnid[1]]]
+      return _merged_chain_ndof(_body_lastdof(b1), _body_lastdof(b2), stop_at_common=True)
+    return 0
+
+  moment_rownnz_static = np.array([_moment_rownnz(i) for i in range(mjm.nu)], dtype=np.int32)
+  m.actuator_moment_rownnz_static = moment_rownnz_static
+  m.actuator_moment_rowadr_static = np.cumsum(moment_rownnz_static, dtype=np.int32) - moment_rownnz_static
+  assert moment_rownnz_static.sum() <= mjm.nJmom, "static actuator_moment layout exceeds nJmom"
 
   # sensor addresses
   m.sensor_pos_adr = np.nonzero(
@@ -975,6 +1071,24 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
     level_offsets.append(len(all_updates_flat))
   m.qLD_all_updates = all_updates_flat if all_updates_flat else [(0, 0, 0)]
   m.qLD_level_offsets = level_offsets
+
+  # same update tuples regrouped by (level, target row i, ascending source row k): one row slot
+  # per (level, i) pair so all updates into a row within a level can be applied in a fixed order
+  det_updates, det_rowid, det_rowadr, det_level_rowadr = [], [], [0], [0]
+  for level in sorted(sparse_updates):
+    by_row = {}
+    for i, k, madr in sparse_updates[level]:
+      by_row.setdefault(i, []).append((k, madr))
+    for i in sorted(by_row):
+      det_rowid.append(i)
+      det_updates.extend((i, k, madr) for k, madr in sorted(by_row[i]))
+      det_rowadr.append(len(det_updates))
+    det_level_rowadr.append(len(det_rowid))
+  m.qLD_det_updates = np.array(det_updates, dtype=np.int32).reshape(-1, 3)
+  m.qLD_det_rowid = np.array(det_rowid, dtype=np.int32)
+  m.qLD_det_rowadr = np.array(det_rowadr, dtype=np.int32)
+  m.qLD_det_level_rowadr = np.array(det_level_rowadr, dtype=np.int32)
+  m.qLD_det_level_rowadr_np = tuple(det_level_rowadr)
 
   # Indices for sparse M_fullm (used in solver). M_fullm_i/j are built by
   # walking dof_parentid for each dof, so for joint types whose internal block
@@ -1225,6 +1339,99 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
     m.flex_face = flex_face
   else:
     m.flex_face = np.zeros((0, 9), dtype=np.int32)
+
+  # flex passive-force partial slot space: one slot per static scatter site of the four flex
+  # passive kernels (elasticity, bending, interp, bend-interp faces), plus the per-body incidence
+  # CSR over all statically writable slots; slot owners follow the kernels' scatter loops exactly
+  nslot_elas = mjm.flex_elem.size
+  nslot_bend = 4 * mjm.nflexedge
+  flex_partial_interp_npc = 0
+  for cellid in range(len(m.flex_cell_map)):
+    order = int(mjm.flex_interp[m.flex_cell_map[cellid][0]])
+    if order > 0:
+      flex_partial_interp_npc = max(flex_partial_interp_npc, (order + 1) ** 3)
+  nslot_interp = len(m.flex_cell_map) * flex_partial_interp_npc
+  nslot_face = 18 * m.nflexbend_interp
+
+  m.flex_partial_elas_base = 0
+  m.flex_partial_bend_base = nslot_elas
+  m.flex_partial_interp_base = nslot_elas + nslot_bend
+  m.flex_partial_face_base = nslot_elas + nslot_bend + nslot_interp
+  m.flex_partial_interp_npc = flex_partial_interp_npc
+  m.nflexpartial = nslot_elas + nslot_bend + nslot_interp + nslot_face
+
+  slot_body = [[] for _ in range(mjm.nbody)]
+
+  # elasticity: slot per (element, vertex slot), addressed by the flat flex_elem vertex address
+  for f in range(mjm.nflex):
+    sadr = mjm.flex_stiffnessadr[f]
+    if sadr < 0 or mjm.flex_stiffness[sadr] == 0.0:
+      continue
+    dim = mjm.flex_dim[f]
+    vbase = mjm.flex_vertadr[f]
+    for e in range(mjm.flex_elemnum[f]):
+      elem_data_adr = mjm.flex_elemdataadr[f] + e * (dim + 1)
+      if mjm.flex_vertbodyid[vbase + mjm.flex_elem[elem_data_adr]] < 0:
+        continue
+      for v in range(dim + 1):
+        bodyid = mjm.flex_vertbodyid[vbase + mjm.flex_elem[elem_data_adr + v]]
+        slot_body[bodyid].append(m.flex_partial_elas_base + elem_data_adr + v)
+
+  # bending: 4 slots per edge (two edge vertices, two flap vertices)
+  for f in range(mjm.nflex):
+    if mjm.flex_bendingadr[f] < 0 or mjm.flex_dim[f] != 2:
+      continue
+    vbase = mjm.flex_vertadr[f]
+    for e in range(mjm.flex_edgenum[f]):
+      edgeid = mjm.flex_edgeadr[f] + e
+      if mjm.flex_edgeflap[edgeid][1] == -1:
+        continue
+      verts = (mjm.flex_edge[edgeid][0], mjm.flex_edge[edgeid][1], mjm.flex_edgeflap[edgeid][0], mjm.flex_edgeflap[edgeid][1])
+      for i in range(4):
+        slot_body[mjm.flex_vertbodyid[vbase + verts[i]]].append(m.flex_partial_bend_base + 4 * edgeid + i)
+
+  # interp: flex_partial_interp_npc slots per cell, node index in the cell's (li, lj, lk) loop order
+  for cellid in range(len(m.flex_cell_map)):
+    f, ci, cj, ck = (int(x) for x in m.flex_cell_map[cellid])
+    order = int(mjm.flex_interp[f])
+    sadr = mjm.flex_stiffnessadr[f]
+    if order <= 0 or sadr < 0:
+      continue
+    npc = (order + 1) ** 3
+    cy, cz = int(mjm.flex_cellnum[f][1]), int(mjm.flex_cellnum[f][2])
+    if mjm.flex_stiffness[sadr + (ci * cy * cz + cj * cz + ck) * (3 * npc) * (3 * npc)] == 0.0:
+      continue
+    nstart = mjm.flex_nodeadr[f]
+    ny_g, nz_g = cy * order + 1, cz * order + 1
+    idx = 0
+    for li in range(order + 1):
+      for lj in range(order + 1):
+        for lk in range(order + 1):
+          gidx = (ci * order + li) * ny_g * nz_g + (cj * order + lj) * nz_g + (ck * order + lk)
+          bodyid = mjm.flex_nodebodyid[nstart + gidx]
+          slot_body[bodyid].append(m.flex_partial_interp_base + cellid * flex_partial_interp_npc + idx)
+          idx += 1
+
+  # bend-interp faces: 9 node slots per (bend edge, face side), node index in flex_face column order
+  for beid in range(m.nflexbend_interp):
+    f, e = int(m.flex_bend_interp_map[beid][0]), int(m.flex_bend_interp_map[beid][1])
+    order_abs = -int(mjm.flex_interp[f])
+    edata = mjm.flex_bendingadr[f] + 1 + e * 10
+    if mjm.flex_bending[edata + 6] <= 0.0:
+      continue
+    for side in range(2):
+      face_id = m.flex_faceadr[f] + int(mjm.flex_bending[edata + side])
+      for idx in range((order_abs + 1) * (order_abs + 1)):
+        bodyid = mjm.flex_nodebodyid[m.flex_face[face_id, idx]]
+        slot_body[bodyid].append(m.flex_partial_face_base + 18 * beid + 9 * side + idx)
+
+  flexbody_partial_adr = np.zeros(mjm.nbody + 1, dtype=np.int32)
+  flexbody_partialid = []
+  for b in range(mjm.nbody):
+    flexbody_partialid.extend(sorted(slot_body[b]))
+    flexbody_partial_adr[b + 1] = len(flexbody_partialid)
+  m.flexbody_partial_adr = flexbody_partial_adr
+  m.flexbody_partialid = np.array(flexbody_partialid, dtype=np.int32)
 
   # place m on device
   sizes = {f.name: getattr(m, f.name) for f in dataclasses.fields(types.Model) if f.type is int}
@@ -3694,6 +3901,7 @@ def override_model(model: types.Model | mujoco.MjModel, overrides: dict[str, Any
     "opt.broadphase_filter",
     "opt.graph_conditional",
     "opt.contact_sensor_maxmatch",
+    "opt.deterministic",
   }
   mj_only_fields = {"opt.jacobian", "vis.quality.offsamples"}
 
