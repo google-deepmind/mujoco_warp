@@ -188,6 +188,7 @@ def ccd_hfield_kernel_builder(
     geom_friction: wp.array2d[wp.vec3],
     geom_margin: wp.array2d[float],
     geom_gap: wp.array2d[float],
+    geom_adhesion: wp.array2d[float],
     mesh_vertadr: wp.array[int],
     mesh_vertnum: wp.array[int],
     mesh_graphadr: wp.array[int],
@@ -213,6 +214,7 @@ def ccd_hfield_kernel_builder(
     pair_solimp: wp.array2d[vec5],
     pair_margin: wp.array2d[float],
     pair_gap: wp.array2d[float],
+    pair_adhesion: wp.array2d[float],
     pair_friction: wp.array2d[vec5],
     # Data in:
     geom_xpos_in: wp.array2d[wp.vec3],
@@ -246,6 +248,7 @@ def ccd_hfield_kernel_builder(
     contact_worldid_out: wp.array[int],
     contact_type_out: wp.array[int],
     contact_geomcollisionid_out: wp.array[int],
+    contact_adhesion_out: wp.array[float],
     nacon_out: wp.array[int],
     # Data out:
     overflow_out: wp.array[int],
@@ -292,7 +295,7 @@ def ccd_hfield_kernel_builder(
       wp.atomic_or(overflow_out, worldid, wp.static(OverflowType.CCD))
       return
 
-    _, margin, gap, condim, friction, solref, solreffriction, solimp = contact_params(
+    _, margin, gap, condim, friction, solref, solreffriction, solimp, adhesion = contact_params(
       geom_condim,
       geom_priority,
       geom_solmix,
@@ -301,12 +304,14 @@ def ccd_hfield_kernel_builder(
       geom_friction,
       geom_margin,
       geom_gap,
+      geom_adhesion,
       pair_dim,
       pair_solref,
       pair_solreffriction,
       pair_solimp,
       pair_margin,
       pair_gap,
+      pair_adhesion,
       pair_friction,
       collision_pair_in,
       collision_pairid_in,
@@ -522,6 +527,7 @@ def ccd_hfield_kernel_builder(
       solref,
       solreffriction,
       solimp,
+      adhesion,
       geoms,
       collision_pairid,
       worldid,
@@ -539,6 +545,7 @@ def ccd_hfield_kernel_builder(
       contact_worldid_out,
       contact_type_out,
       contact_geomcollisionid_out,
+      contact_adhesion_out,
       nacon_out,
     )
 
@@ -579,6 +586,7 @@ def ccd_hfield_kernel_builder(
         solref,
         solreffriction,
         solimp,
+        adhesion,
         geoms,
         collision_pairid,
         worldid,
@@ -596,6 +604,7 @@ def ccd_hfield_kernel_builder(
         contact_worldid_out,
         contact_type_out,
         contact_geomcollisionid_out,
+        contact_adhesion_out,
         nacon_out,
       )
 
@@ -634,6 +643,7 @@ def ccd_hfield_kernel_builder(
         solref,
         solreffriction,
         solimp,
+        adhesion,
         geoms,
         collision_pairid,
         worldid,
@@ -651,6 +661,7 @@ def ccd_hfield_kernel_builder(
         contact_worldid_out,
         contact_type_out,
         contact_geomcollisionid_out,
+        contact_adhesion_out,
         nacon_out,
       )
 
@@ -690,6 +701,7 @@ def ccd_hfield_kernel_builder(
         solref,
         solreffriction,
         solimp,
+        adhesion,
         geoms,
         collision_pairid,
         worldid,
@@ -707,6 +719,7 @@ def ccd_hfield_kernel_builder(
         contact_worldid_out,
         contact_type_out,
         contact_geomcollisionid_out,
+        contact_adhesion_out,
         nacon_out,
       )
 
@@ -740,10 +753,12 @@ def ccd_kernel_builder(
     geom_solref: wp.array2d[wp.vec2],
     geom_solimp: wp.array2d[vec5],
     geom_friction: wp.array2d[wp.vec3],
+    geom_adhesion: wp.array2d[float],
     pair_dim: wp.array[int],
     pair_solref: wp.array2d[wp.vec2],
     pair_solreffriction: wp.array2d[wp.vec2],
     pair_solimp: wp.array2d[vec5],
+    pair_adhesion: wp.array2d[float],
     pair_friction: wp.array2d[vec5],
     # Data in:
     naconmax_in: int,
@@ -789,6 +804,7 @@ def ccd_kernel_builder(
     contact_worldid_out: wp.array[int],
     contact_type_out: wp.array[int],
     contact_geomcollisionid_out: wp.array[int],
+    contact_adhesion_out: wp.array[float],
     nacon_out: wp.array[int],
     overflow_out: wp.array[int],
   ):
@@ -895,17 +911,19 @@ def ccd_kernel_builder(
           geomtype2,
         )
 
-    condim, friction, solref, solreffriction, solimp = contact_material_params(
+    condim, friction, solref, solreffriction, solimp, adhesion = contact_material_params(
       geom_condim,
       geom_priority,
       geom_solmix,
       geom_solref,
       geom_solimp,
       geom_friction,
+      geom_adhesion,
       pair_dim,
       pair_solref,
       pair_solreffriction,
       pair_solimp,
+      pair_adhesion,
       pair_friction,
       geoms,
       pairid[0],
@@ -931,6 +949,7 @@ def ccd_kernel_builder(
         solref,
         solreffriction,
         solimp,
+        adhesion,
         geoms,
         pairid,
         worldid,
@@ -948,6 +967,7 @@ def ccd_kernel_builder(
         contact_worldid_out,
         contact_type_out,
         contact_geomcollisionid_out,
+        contact_adhesion_out,
         nacon_out,
       )
 
@@ -967,6 +987,7 @@ def ccd_kernel_builder(
     geom_friction: wp.array2d[wp.vec3],
     geom_margin: wp.array2d[float],
     geom_gap: wp.array2d[float],
+    geom_adhesion: wp.array2d[float],
     mesh_vertadr: wp.array[int],
     mesh_vertnum: wp.array[int],
     mesh_graphadr: wp.array[int],
@@ -987,6 +1008,7 @@ def ccd_kernel_builder(
     pair_solimp: wp.array2d[vec5],
     pair_margin: wp.array2d[float],
     pair_gap: wp.array2d[float],
+    pair_adhesion: wp.array2d[float],
     pair_friction: wp.array2d[vec5],
     # Data in:
     geom_xpos_in: wp.array2d[wp.vec3],
@@ -1032,6 +1054,7 @@ def ccd_kernel_builder(
     contact_worldid_out: wp.array[int],
     contact_type_out: wp.array[int],
     contact_geomcollisionid_out: wp.array[int],
+    contact_adhesion_out: wp.array[float],
     nacon_out: wp.array[int],
     # Data out:
     overflow_out: wp.array[int],
@@ -1090,10 +1113,12 @@ def ccd_kernel_builder(
         geom_solref,
         geom_solimp,
         geom_friction,
+        geom_adhesion,
         pair_dim,
         pair_solref,
         pair_solreffriction,
         pair_solimp,
+        pair_adhesion,
         pair_friction,
         naconmax_in,
         naccdmax_in,
@@ -1136,6 +1161,7 @@ def ccd_kernel_builder(
         contact_worldid_out,
         contact_type_out,
         contact_geomcollisionid_out,
+        contact_adhesion_out,
         nacon_out,
         overflow_out,
       )
@@ -1236,6 +1262,7 @@ def convex_narrowphase(m: Model, d: Data, ctx: CollisionContext, collision_table
     d.contact.worldid,
     d.contact.type,
     d.contact.geomcollisionid,
+    d.contact.adhesion,
     d.nacon,
   ]
 
@@ -1262,6 +1289,7 @@ def convex_narrowphase(m: Model, d: Data, ctx: CollisionContext, collision_table
           m.geom_friction,
           m.geom_margin,
           m.geom_gap,
+          m.geom_adhesion,
           m.mesh_vertadr,
           m.mesh_vertnum,
           m.mesh_graphadr,
@@ -1287,6 +1315,7 @@ def convex_narrowphase(m: Model, d: Data, ctx: CollisionContext, collision_table
           m.pair_solimp,
           m.pair_margin,
           m.pair_gap,
+          m.pair_adhesion,
           m.pair_friction,
           d.geom_xpos,
           d.geom_xmat,
@@ -1365,6 +1394,7 @@ def convex_narrowphase(m: Model, d: Data, ctx: CollisionContext, collision_table
           m.geom_friction,
           m.geom_margin,
           m.geom_gap,
+          m.geom_adhesion,
           m.mesh_vertadr,
           m.mesh_vertnum,
           m.mesh_graphadr,
@@ -1385,6 +1415,7 @@ def convex_narrowphase(m: Model, d: Data, ctx: CollisionContext, collision_table
           m.pair_solimp,
           m.pair_margin,
           m.pair_gap,
+          m.pair_adhesion,
           m.pair_friction,
           d.geom_xpos,
           d.geom_xmat,

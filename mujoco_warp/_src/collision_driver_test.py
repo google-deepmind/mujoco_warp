@@ -26,6 +26,7 @@ from mujoco_warp import DisableBit
 from mujoco_warp import GeomType
 from mujoco_warp import test_data
 from mujoco_warp._src import types
+from mujoco_warp._src import util_pkg
 from mujoco_warp._src.collision_core import Geom
 from mujoco_warp._src.collision_driver import MJ_COLLISION_TABLE
 from mujoco_warp._src.collision_primitive import plane_convex
@@ -1242,6 +1243,108 @@ class CollisionTest(parameterized.TestCase):
     # dist(≈0.05) > margin(0.02): contacts are in gap zone, no constraints
     self.assertEqual(mjd.nefc, 0, "Classic MuJoCo should have no active constraints")
     self.assertEqual(d.nefc.numpy()[0], 0, "MuJoCo Warp should have no active constraints")
+
+  @absltest.skipUnless(
+    util_pkg.check_version("mujoco>=3.11.0.dev951917287"),
+    "requires mujoco>=3.11.0.dev951917287",
+  )
+  def test_adhesion_contacts(self):
+    """Test adhesion contact resolution (priority, pair override, and in-gap dim reduction)."""
+    _, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <body>
+            <freejoint/>
+            <geom type="sphere" size="0.1" priority="1" adhesion="5.0"/>
+          </body>
+          <body pos="0 0 0.22">
+            <freejoint/>
+            <geom type="sphere" size="0.1" priority="2" gap="0.05" adhesion="3.0"/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """
+    )
+
+    mjw.collision(m, d)
+    mjw.make_constraint(m, d)
+
+    self.assertEqual(d.nacon.numpy()[0], 1)
+    np.testing.assert_allclose(d.contact.adhesion.numpy()[0], 3.0)
+    self.assertEqual(d.contact.dim.numpy()[0], 1)
+    self.assertEqual(d.nefc.numpy()[0], 1)
+
+  @absltest.skipUnless(
+    util_pkg.check_version("mujoco>=3.11.0.dev951917287"),
+    "requires mujoco>=3.11.0.dev951917287",
+  )
+  def test_adhesion_combination_and_pair_override(self):
+    """Test explicit pair adhesion override against geom sum."""
+    _, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <contact>
+          <pair geom1="g1" geom2="g2" adhesion="12.0"/>
+        </contact>
+        <worldbody>
+          <body>
+            <freejoint/>
+            <geom name="g1" type="sphere" size="0.1" adhesion="5.0"/>
+          </body>
+          <body pos="0 0 0.15">
+            <freejoint/>
+            <geom name="g2" type="sphere" size="0.1" adhesion="3.0"/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """
+    )
+
+    mjw.collision(m, d)
+
+    self.assertEqual(d.nacon.numpy()[0], 1)
+    np.testing.assert_allclose(d.contact.adhesion.numpy()[0], 12.0)
+
+  @absltest.skipUnless(
+    util_pkg.check_version("mujoco>=3.11.0.dev951917287"),
+    "requires mujoco>=3.11.0.dev951917287",
+  )
+  def test_adhesion_pulloff_and_tether(self):
+    """Test inside contact (dim=3), in-gap tether (dim=1), and outside gap (nacon=0)."""
+    _, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <geom type="sphere" size="0.1" adhesion="5.0"/>
+          <body pos="0 0 0.15">
+            <freejoint/>
+            <geom type="sphere" size="0.1" gap="0.05" adhesion="3.0"/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """
+    )
+    # 1. Inside touching contact: pos="0 0 0.15" -> dist=-0.05
+    mjw.collision(m, d)
+    self.assertEqual(d.nacon.numpy()[0], 1)
+    self.assertEqual(d.contact.dim.numpy()[0], 3)
+
+    # 2. In-gap band: pos="0 0 0.22" (dist=0.02, within margin+gap=0.05)
+    qpos = d.qpos.numpy()
+    qpos[0, :3] = np.array([0.0, 0.0, 0.22])
+    d.qpos = wp.from_numpy(qpos, dtype=wp.float32)
+    mjw.kinematics(m, d)
+    mjw.collision(m, d)
+    self.assertEqual(d.nacon.numpy()[0], 1)
+    self.assertEqual(d.contact.dim.numpy()[0], 1)
+
+    # 3. Outside gap band: pos="0 0 0.30" (dist=0.10, > gap=0.05) -> constraint released
+    qpos[0, :3] = np.array([0.0, 0.0, 0.30])
+    d.qpos = wp.from_numpy(qpos, dtype=wp.float32)
+    mjw.kinematics(m, d)
+    mjw.collision(m, d)
+    self.assertEqual(d.nacon.numpy()[0], 0)
 
 
 if __name__ == "__main__":

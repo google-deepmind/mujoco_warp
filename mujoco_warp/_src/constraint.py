@@ -2638,7 +2638,7 @@ def _get_contact_bodies_and_weights(
 
 
 @cache_kernel
-def _efc_contact_init(cone_type: types.ConeType, is_sparse: bool, newton: bool):
+def _efc_contact_init(cone_type: types.ConeType, is_sparse: bool, newton: bool, flg_adhesion: bool):
   IS_ELLIPTIC = cone_type == types.ConeType.ELLIPTIC
   IS_SPARSE = is_sparse
 
@@ -2658,6 +2658,7 @@ def _efc_contact_init(cone_type: types.ConeType, is_sparse: bool, newton: bool):
     dist_in: wp.array[float],
     condim_in: wp.array[int],
     includemargin_in: wp.array[float],
+    adhesion_in: wp.array[float],
     worldid_in: wp.array[int],
     geom_in: wp.array[wp.vec2i],
     type_in: wp.array[int],
@@ -2685,7 +2686,10 @@ def _efc_contact_init(cone_type: types.ConeType, is_sparse: bool, newton: bool):
 
     includemargin = includemargin_in[conid]
     pos = dist_in[conid] - includemargin
-    active = pos < 0
+    if wp.static(flg_adhesion):
+      active = (pos < 0.0) or (adhesion_in[conid] != 0.0)
+    else:
+      active = pos < 0.0
 
     if not active:
       return
@@ -2751,7 +2755,7 @@ def _efc_contact_init(cone_type: types.ConeType, is_sparse: bool, newton: bool):
 
 
 @cache_kernel
-def _efc_contact_init_flex(cone_type: types.ConeType, is_sparse: bool, newton: bool):
+def _efc_contact_init_flex(cone_type: types.ConeType, is_sparse: bool, newton: bool, flg_adhesion: bool):
   IS_ELLIPTIC = cone_type == types.ConeType.ELLIPTIC
   IS_SPARSE = is_sparse
   HAS_FLEX = True
@@ -2786,6 +2790,7 @@ def _efc_contact_init_flex(cone_type: types.ConeType, is_sparse: bool, newton: b
     dist_in: wp.array[float],
     condim_in: wp.array[int],
     includemargin_in: wp.array[float],
+    adhesion_in: wp.array[float],
     worldid_in: wp.array[int],
     geom_in: wp.array[wp.vec2i],
     flex_in: wp.array[wp.vec2i],
@@ -2817,7 +2822,10 @@ def _efc_contact_init_flex(cone_type: types.ConeType, is_sparse: bool, newton: b
 
     includemargin = includemargin_in[conid]
     pos = dist_in[conid] - includemargin
-    active = pos < 0
+    if wp.static(flg_adhesion):
+      active = (pos < 0.0) or (adhesion_in[conid] != 0.0)
+    else:
+      active = pos < 0.0
 
     if not active:
       return
@@ -4186,7 +4194,7 @@ def _efc_contact_jac_dense_flex(tile_size: int, cone_type: types.ConeType):
 
 
 @cache_kernel
-def _efc_contact_update(cone_type: types.ConeType):
+def _efc_contact_update(cone_type: types.ConeType, flg_adhesion: bool):
   IS_ELLIPTIC = cone_type == types.ConeType.ELLIPTIC
 
   @wp.kernel(module="unique", enable_backward=False)
@@ -4211,6 +4219,7 @@ def _efc_contact_update(cone_type: types.ConeType):
     solref_in: wp.array[wp.vec2],
     solreffriction_in: wp.array[wp.vec2],
     solimp_in: wp.array[vec5],
+    adhesion_in: wp.array[float],
     type_in: wp.array[int],
     # Data out:
     efc_type_out: wp.array2d[int],
@@ -4321,11 +4330,20 @@ def _efc_contact_update(cone_type: types.ConeType):
       efc_frictionloss_out,
     )
 
+    if wp.static(flg_adhesion):
+      if adhesion_in[conid] != 0.0 and (dimid == 0 or not wp.static(IS_ELLIPTIC)):
+        efc_D = efc_D_out[worldid, efcid]
+        if efc_D > 0.0:
+          adhesion = adhesion_in[conid]
+          if not wp.static(IS_ELLIPTIC):
+            adhesion = adhesion / float(2 * (condim - 1))
+          efc_aref_out[worldid, efcid] += (1.0 / efc_D) * adhesion
+
   return kernel
 
 
 @cache_kernel
-def _efc_contact_update_flex(cone_type: types.ConeType):
+def _efc_contact_update_flex(cone_type: types.ConeType, flg_adhesion: bool = False):
   IS_ELLIPTIC = cone_type == types.ConeType.ELLIPTIC
 
   @wp.kernel(module="unique", enable_backward=False)
@@ -4367,6 +4385,7 @@ def _efc_contact_update_flex(cone_type: types.ConeType):
     solref_in: wp.array[wp.vec2],
     solreffriction_in: wp.array[wp.vec2],
     solimp_in: wp.array[vec5],
+    adhesion_in: wp.array[float],
     type_in: wp.array[int],
     # Data out:
     efc_type_out: wp.array2d[int],
@@ -4741,6 +4760,15 @@ def _efc_contact_update_flex(cone_type: types.ConeType):
       efc_aref_out,
       efc_frictionloss_out,
     )
+
+    if wp.static(flg_adhesion):
+      if adhesion_in[conid] != 0.0 and (dimid == 0 or not wp.static(IS_ELLIPTIC)):
+        efc_D = efc_D_out[worldid, efcid]
+        if efc_D > 0.0:
+          adhesion = adhesion_in[conid]
+          if not wp.static(IS_ELLIPTIC):
+            adhesion = adhesion / float(2 * (condim - 1))
+          efc_aref_out[worldid, efcid] += (1.0 / efc_D) * adhesion
 
   return kernel
 
@@ -5323,7 +5351,7 @@ def make_constraint(m: types.Model, d: types.Data):
       has_flex = m.nflex > 0
       if has_flex:
         wp.launch(
-          _efc_contact_init_flex(m.opt.cone, m.is_sparse, newton),
+          _efc_contact_init_flex(m.opt.cone, m.is_sparse, newton, m.flg_adhesion),
           dim=d.naconmax,
           inputs=[
             m.body_parentid,
@@ -5351,6 +5379,7 @@ def make_constraint(m: types.Model, d: types.Data):
             d.contact.dist,
             d.contact.dim,
             d.contact.includemargin,
+            d.contact.adhesion,
             d.contact.worldid,
             d.contact.geom,
             d.contact.flex,
@@ -5373,7 +5402,7 @@ def make_constraint(m: types.Model, d: types.Data):
         )
       else:
         wp.launch(
-          _efc_contact_init(m.opt.cone, m.is_sparse, newton),
+          _efc_contact_init(m.opt.cone, m.is_sparse, newton, m.flg_adhesion),
           dim=d.naconmax,
           inputs=[
             m.body_weldid,
@@ -5387,6 +5416,7 @@ def make_constraint(m: types.Model, d: types.Data):
             d.contact.dist,
             d.contact.dim,
             d.contact.includemargin,
+            d.contact.adhesion,
             d.contact.worldid,
             d.contact.geom,
             d.contact.type,
@@ -5574,7 +5604,7 @@ def make_constraint(m: types.Model, d: types.Data):
 
       if has_flex:
         wp.launch(
-          _efc_contact_update_flex(m.opt.cone),
+          _efc_contact_update_flex(m.opt.cone, m.flg_adhesion),
           dim=(d.naconmax, nmaxdim),
           inputs=[
             m.opt.timestep,
@@ -5611,6 +5641,7 @@ def make_constraint(m: types.Model, d: types.Data):
             d.contact.solref,
             d.contact.solreffriction,
             d.contact.solimp,
+            d.contact.adhesion,
             d.contact.type,
           ],
           outputs=[
@@ -5626,7 +5657,7 @@ def make_constraint(m: types.Model, d: types.Data):
         )
       else:
         wp.launch(
-          _efc_contact_update(m.opt.cone),
+          _efc_contact_update(m.opt.cone, m.flg_adhesion),
           dim=(d.naconmax, nmaxdim),
           inputs=[
             m.opt.timestep,
@@ -5646,6 +5677,7 @@ def make_constraint(m: types.Model, d: types.Data):
             d.contact.solref,
             d.contact.solreffriction,
             d.contact.solimp,
+            d.contact.adhesion,
             d.contact.type,
           ],
           outputs=[

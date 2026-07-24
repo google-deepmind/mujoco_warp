@@ -24,6 +24,7 @@ from absl.testing import parameterized
 import mujoco_warp as mjw
 from mujoco_warp import DisableBit
 from mujoco_warp import test_data
+from mujoco_warp._src import util_pkg
 
 # tolerance for difference between MuJoCo and MJWarp passive force calculations - mostly
 # due to float precision
@@ -422,6 +423,97 @@ class PassiveTest(parameterized.TestCase):
     d.qfrc_fluid.zero_()
     mjw.forward(m, d)
     np.testing.assert_allclose(d.qfrc_fluid.numpy()[0], mjd.qfrc_fluid, atol=5e-4, rtol=5e-4)
+
+  @absltest.skipUnless(
+    util_pkg.check_version("mujoco>=3.11.0.dev951917287"),
+    "Adhesion features require MuJoCo version 3.11.0.dev951917287 or higher.",
+  )
+  def test_adhesion(self):
+    """Verify passive adhesion force and contact parameters."""
+    _, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option gravity="0 0 0"/>
+        <worldbody>
+          <body>
+            <geom type="sphere" size="0.1" adhesion="5.0"/>
+            <joint type="free"/>
+          </body>
+          <body pos="0 0 0.15">
+            <geom type="sphere" size="0.1" adhesion="3.0"/>
+            <joint type="free"/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """,
+    )
+
+    mjw.collision(m, d)
+    mjw.passive(m, d)
+
+    self.assertGreater(d.nacon.numpy()[0], 0)
+    self.assertEqual(d.contact.adhesion.numpy()[0], 8.0)
+    self.assertEqual(d.contact.dim.numpy()[0], 3)
+    self.assertGreater(np.linalg.norm(d.qfrc_adhesion.numpy()[0]), 0)
+
+  @absltest.skipUnless(
+    util_pkg.check_version("mujoco>=3.11.0.dev951917287"),
+    "Adhesion features require MuJoCo version 3.11.0.dev951917287 or higher.",
+  )
+  def test_adhesion_capture_dynamics(self):
+    """Test dynamic capture of a body released inside the adhesion gap band."""
+    _, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option gravity="0 0 0"/>
+        <worldbody>
+          <geom type="sphere" size="0.1" pos="0 0 0"/>
+          <body pos="0 0 0.22">
+            <geom type="sphere" size="0.1" gap="0.05" adhesion="20.0"/>
+            <joint type="slide" axis="0 0 1"/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """
+    )
+    mjw.collision(m, d)
+    mjw.passive(m, d)
+
+    self.assertEqual(d.nacon.numpy()[0], 1)
+    self.assertEqual(d.contact.dim.numpy()[0], 1)
+    self.assertEqual(d.contact.adhesion.numpy()[0], 20.0)
+    self.assertGreater(np.linalg.norm(d.qfrc_adhesion.numpy()[0]), 0)
+
+  @absltest.skipUnless(
+    util_pkg.check_version("mujoco>=3.11.0.dev951917287"),
+    "Adhesion features require MuJoCo version 3.11.0.dev951917287 or higher.",
+  )
+  def test_adhesion_resting_penetration_equivalence(self):
+    """Verify resting penetration equilibrium and passive adhesion forces match MuJoCo."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option gravity="0 0 -9.81"/>
+        <worldbody>
+          <geom type="plane" size="1 1 0.1"/>
+          <body pos="0 0 0.1">
+            <geom type="sphere" size="0.1" adhesion="15.0"/>
+            <joint type="free"/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """
+    )
+    for _ in range(20):
+      mujoco.mj_step(mjm, mjd)
+      mjw.step(m, d)
+
+    np.testing.assert_allclose(d.qpos.numpy()[0], mjd.qpos, atol=1e-3)
+    np.testing.assert_allclose(
+      np.abs(d.qfrc_adhesion.numpy()[0]),
+      np.abs(mjd.qfrc_passive),
+      atol=1e-3,
+    )
 
 
 if __name__ == "__main__":
