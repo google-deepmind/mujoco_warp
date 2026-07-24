@@ -451,7 +451,7 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
   stat = types.Statistic(meaninertia=_create_array([mjm.stat.meaninertia], types.array("*", float), {"*": 1}))
 
   # create model
-  m = types.Model(**{f.name: getattr(mjm, f.name, None) for f in dataclasses.fields(types.Model)})
+  m = types.Model(**{f.name: getattr(mjm, f.name, 0 if f.type is int else None) for f in dataclasses.fields(types.Model)})
 
   m.opt = opt
   m.stat = stat
@@ -493,6 +493,7 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
     m.block_dim.linesearch_iterative = 256
   m.is_sparse = is_sparse(mjm)
   m.has_fluid = mjm.opt.wind.any() or mjm.opt.density > 0 or mjm.opt.viscosity > 0
+  m.has_surfacevel = hasattr(mjm, "geom_surfacevel") and bool(np.any(mjm.geom_surfacevel != 0))
 
   m.nflexintcell = _get_nflexintcell(mjm)
 
@@ -1227,7 +1228,11 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
     m.flex_face = np.zeros((0, 9), dtype=np.int32)
 
   # place m on device
-  sizes = {f.name: getattr(m, f.name) for f in dataclasses.fields(types.Model) if f.type is int}
+  sizes = {
+    f.name: (getattr(m, f.name) if getattr(m, f.name) is not None else 0)
+    for f in dataclasses.fields(types.Model)
+    if f.type is int
+  }
   for f in dataclasses.fields(types.Model):
     if _is_array_spec(f.type):
       batch_size = batch_sizes.get(f.name, 1)

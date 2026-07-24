@@ -483,6 +483,90 @@ class ConstraintTest(parameterized.TestCase):
 
     _assert_efc_eq(mjm, m, d, mjd, mjd.nefc, "weld_coriolis", m.nv, tol=1e-3)
 
+  @absltest.skipIf(
+    not hasattr(mujoco.MjModel, "geom_surfacevel"),
+    "Requires MuJoCo with surfacevel support",
+  )
+  @parameterized.product(
+    xml=[
+      """
+          <mujoco>
+            <worldbody>
+              <geom type="plane" size="5 5 .1" surfacevel=".5 0 0  0 0 0"/>
+              <body pos="0 0 .1">
+                <freejoint/>
+                <geom type="box" size=".1 .1 .1" mass="1"/>
+              </body>
+            </worldbody>
+          </mujoco>
+          """,
+      """
+          <mujoco>
+            <worldbody>
+              <geom type="plane" size="5 5 .1" condim="6" surfacevel="0 0 0  0 0 1"/>
+              <body pos="0 0 .1">
+                <freejoint/>
+                <geom type="box" size=".1 .1 .1" mass="1" condim="6"/>
+              </body>
+            </worldbody>
+          </mujoco>
+          """,
+      """
+          <mujoco>
+            <worldbody>
+              <geom type="plane" size="5 5 .1" surfacevel="0 0 1  0 0 0"/>
+              <body pos="0 0 .1">
+                <freejoint/>
+                <geom type="box" size=".1 .1 .1" mass="1"/>
+              </body>
+            </worldbody>
+          </mujoco>
+          """,
+      """
+          <mujoco>
+            <worldbody>
+              <geom type="box" size=".05 .3 .5" pos="-.152 0 .5" surfacevel="0 0 1  0 0 0"/>
+              <geom type="box" size=".05 .3 .5" pos=".152 0 .5" surfacevel="0 0 1  0 0 0"/>
+              <body pos="0 0 .5">
+                <freejoint/>
+                <geom type="box" size=".103 .1 .1" mass=".2"/>
+              </body>
+            </worldbody>
+          </mujoco>
+          """,
+      """
+          <mujoco>
+            <worldbody>
+              <geom type="plane" size="10 10 .1" friction="0 0 0" condim="1" priority="1"/>
+              <body name="vehicle" pos="0 0 .15">
+                <freejoint/>
+                <geom type="box" size=".5 .3 .04" mass="10"/>
+                <geom type="box" size=".4 .25 .01" pos="0 0 .05" mass=".01" surfacevel=".3 0 0  0 0 0"/>
+              </body>
+              <body name="cargo" pos="0 0 .3">
+                <freejoint/>
+                <geom type="box" size=".08 .08 .08" mass=".1"/>
+              </body>
+            </worldbody>
+            <keyframe>
+              <key qvel=".2 0 0 0 0 0  0 0 0 0 0 0"/>
+            </keyframe>
+          </mujoco>
+          """,
+    ],
+    cone=[ConeType.PYRAMIDAL, ConeType.ELLIPTIC],
+    jacobian=[mujoco.mjtJacobian.mjJAC_SPARSE, mujoco.mjtJacobian.mjJAC_DENSE],
+  )
+  def test_surfacevel(self, xml, cone, jacobian):
+    """Test surfacevel calculation."""
+    keyframe = 0 if "<keyframe>" in xml else None
+    mjm, mjd, m, d = test_data.fixture(xml=xml, keyframe=keyframe, overrides={"opt.cone": cone, "opt.jacobian": jacobian})
+
+    mjw.make_constraint(m, d)
+
+    self.assertGreater(mjd.nefc, 0)
+    _assert_efc_eq(mjm, m, d, mjd, mjd.nefc, "surfacevel", m.nv)
+
 
 if __name__ == "__main__":
   absltest.main()

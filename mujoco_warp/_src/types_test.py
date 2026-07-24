@@ -43,8 +43,8 @@ class TypesTest(parameterized.TestCase):
 
   # TODO(thowell): update Model field ordering
   @absltest.skipIf(
-    util_pkg.check_version("mujoco>=3.10.1.dev948361631"),
-    "Requires MuJoCo < 3.10.1.dev948361631",
+    util_pkg.check_version("mujoco>=3.10.1.dev948361631") or "geom_surfacevel" not in mujoco.MjModel._all_fields,
+    "Requires MuJoCo < 3.10.1.dev948361631 and geom_surfacevel in MjModel._all_fields",
   )
   @parameterized.parameters((mujoco.MjOption, Option), (mujoco.MjModel, Model), (mujoco.MjData, Data))
   def test_field_order(self, mj_class, mjw_class):
