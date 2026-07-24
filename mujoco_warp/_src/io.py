@@ -191,12 +191,6 @@ def _m_blocks(mjm: mujoco.MjModel):
   return [(int(adr), int(num)) for adr, num in zip(mjm.tree_dofadr, mjm.tree_dofnum) if num > 0]
 
 
-def _m_allow_dense(mjm: mujoco.MjModel) -> bool:
-  """Whether any block may use the packed dense layout (tendon armature forces all-sparse)."""
-  # tendon armature accumulates into M in CSR layout, which the packed block layout cannot represent
-  return not (mjm.ntendon and np.any(mjm.tendon_armature))
-
-
 def m_block_layout(mjm: mujoco.MjModel) -> dict:
   """Per-block dense/sparse layout for M's diagonal blocks.
 
@@ -205,7 +199,6 @@ def m_block_layout(mjm: mujoco.MjModel) -> dict:
   """
   nv = mjm.nv
   blocks = _m_blocks(mjm)
-  allow_dense = _m_allow_dense(mjm)
   dof_adr = np.full(nv, types.Q_LD_BLOCK_SPARSE, dtype=np.int32)
   scalar_tiles = {}
   gather_tiles = {}
@@ -217,14 +210,14 @@ def m_block_layout(mjm: mujoco.MjModel) -> dict:
     compact = nnz == size
     triangular = nnz == size * (size + 1) // 2
 
-    if size <= types.M_BLOCK_SCALAR_MAX and (compact or (allow_dense and triangular)):
+    if size <= types.M_BLOCK_SCALAR_MAX and (compact or triangular):
       scalar_tiles.setdefault(size, []).append(start)
       if compact:
         dof_adr[start : start + size] = types.Q_LD_BLOCK_COMPACT
       else:
         dof_adr[start : start + size] = off
         off += size * size
-    elif allow_dense and size <= types.M_BLOCK_DENSE_MAX:
+    elif size <= types.M_BLOCK_DENSE_MAX:
       gather_tiles.setdefault(size, []).append(start)
       dof_adr[start : start + size] = off
       off += size * size
