@@ -43,6 +43,8 @@ from mujoco_warp._src.types import JointType
 from mujoco_warp._src.types import Model
 from mujoco_warp._src.types import OverflowType
 from mujoco_warp._src.types import TrnType
+from mujoco_warp._src.types import mat66
+from mujoco_warp._src.types import vec6
 from mujoco_warp._src.types import vec10
 from mujoco_warp._src.warp_util import cache_kernel
 from mujoco_warp._src.warp_util import event_scope
@@ -575,6 +577,71 @@ def _map_m2d(
     qLU_out[worldid, elemid] = 0.0
 
 
+@wp.kernel
+def _implicit_not_free_body(
+  # Model:
+  body_dofnum: wp.array[int],
+  body_dofadr: wp.array[int],
+  M_rownnz: wp.array[int],
+  M_rowadr: wp.array[int],
+  body_notfreeadr: wp.array[int],
+  # Data in:
+  M_in: wp.array2d[float],
+  # Out:
+  qH_out: wp.array2d[float],
+):
+  worldid, notfreeid = wp.tid()
+  bodyid = body_notfreeadr[notfreeid]
+
+  dof_adr = body_dofadr[bodyid]
+  if dof_adr < 0:
+    return
+
+  dof_num = body_dofnum[bodyid]
+  for d in range(dof_num):
+    row = dof_adr + d
+    start = M_rowadr[row]
+    nnz = M_rownnz[row]
+    for k in range(nnz):
+      qH_out[worldid, start + k] = M_in[worldid, start + k]
+
+
+@wp.kernel
+def _implicit_free_body_solve(
+  # Model:
+  body_dofadr: wp.array[int],
+  M_rowadr: wp.array[int],
+  body_freeadr: wp.array[int],
+  # In:
+  qDeriv_in: wp.array2d[float],
+  qfrc_in: wp.array2d[float],
+  # Data out:
+  qacc_out: wp.array2d[float],
+):
+  worldid, freeid = wp.tid()
+  bodyid = body_freeadr[freeid]
+
+  dof_adr = body_dofadr[bodyid]
+  base_adr = M_rowadr[dof_adr]
+
+  A = mat66(0.0)
+  for r in range(6):
+    for c in range(r + 1):
+      adr = base_adr + (r * (r + 1) // 2 + c)
+      val = qDeriv_in[worldid, adr]
+      A[r, c] = val
+      A[c, r] = val
+
+  A_fact, pivot, ok = math.lu_factor_6x6(A)
+  if ok:
+    b = vec6(0.0)
+    for r in range(6):
+      b[r] = qfrc_in[worldid, dof_adr + r]
+    x = math.lu_solve_6x6(A_fact, pivot, b)
+    for r in range(6):
+      qacc_out[worldid, dof_adr + r] = x[r]
+
+
 @event_scope
 def implicit(m: Model, d: Data):
   """Integrates fully implicit in velocity."""
@@ -607,6 +674,18 @@ def implicit(m: Model, d: Data):
     derivative.deriv_smooth_vel(m, d, qDeriv)
     qacc = wp.empty((d.nworld, m.nv), dtype=float)
     smooth.factor_solve_i(m, d, qDeriv, qLD, qLDiagInv, qacc, d.efc.Ma)
+    wp.launch(
+      _implicit_free_body_solve,
+      dim=(d.nworld, m.body_freeadr.shape[0]),
+      inputs=[
+        m.body_dofadr,
+        m.M_rowadr,
+        m.body_freeadr,
+        qDeriv,
+        d.efc.Ma,
+      ],
+      outputs=[qacc],
+    )
     _advance(m, d, qacc)
   else:
     _advance(m, d, d.qacc)
