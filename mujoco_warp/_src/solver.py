@@ -3125,7 +3125,26 @@ def solve(m: types.Model, d: types.Data):
       scatter_Ma = m.opt.integrator != types.IntegratorType.RK4
       island.scatter_island_results(m, d, ctx, scatter_Ma=scatter_Ma)
     else:
-      ctx = _create_solver_context(m, d)
+      # Cache solver context on Data to avoid repeated allocation.
+      # On HIP/ROCm: allocate with mempool temporarily disabled so buffers use
+      # hipMalloc (stable addresses) not hipMallocAsync.  hipMallocAsync pointers
+      # become memAlloc nodes inside a hipGraph and re-execute on every replay,
+      # adding significant overhead.  On CUDA this path has no effect.
+      if not hasattr(d, '_solver_ctx'):
+        _dev = wp.get_device()
+        if _dev.is_hip and wp.is_mempool_enabled(_dev):
+          wp.set_mempool_enabled(_dev, False)
+          d._solver_ctx = _create_solver_context(m, d)
+          wp.set_mempool_enabled(_dev, True)
+        else:
+          d._solver_ctx = _create_solver_context(m, d)
+      ctx = d._solver_ctx
+      ctx.grad.zero_()
+      ctx.Mgrad.zero_()
+      if ctx.h.shape[0] > 0:
+        ctx.h.zero_()
+      if ctx.hfactor.shape[0] > 0:
+        ctx.hfactor.zero_()
       _solve(m, d, ctx)
 
 

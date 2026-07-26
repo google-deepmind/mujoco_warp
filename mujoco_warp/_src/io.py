@@ -1468,6 +1468,18 @@ def put_data(
 
   d.nacon = wp.array([mjd.ncon * nworld], dtype=int)
 
+  # Pre-create dedicated streams for multi-stream parallelism in fwd_position.
+  # These enable collision detection and mass-matrix kinematics to run concurrently.
+  # Also used for async observation readback (stream_obs).
+  # Only created when multiple streams are available on the device.
+  _dev = wp.get_device()
+  if _dev.is_cuda or _dev.is_hip:
+    try:
+      d._stream_collision = wp.Stream(device=_dev)
+      d._stream_secondary = wp.Stream(device=_dev)
+    except Exception:
+      pass  # streams unavailable, fwd_position falls back to sequential
+
   return d
 
 

@@ -661,32 +661,67 @@ def fwd_position(m: Model, d: Data, factorize: bool = True):
   """
   smooth.kinematics(m, d)
   smooth.com_pos(m, d)
-  smooth.camlight(m, d)
-  smooth.flex(m, d)
-  smooth.tendon(m, d)
-
   sleep_enabled = not (m.opt.disableflags & DisableBit.ISLAND) and (m.opt.enableflags & EnableBit.SLEEP)
 
-  if sleep_enabled and m.ntendon > 0:
-    sleep.wake_tendon(m, d)
-    sleep.update_sleep_trees(m, d)
+  # Multi-stream parallelism: run collision concurrently with mass-matrix kinematics.
+  # Requires pre-cached streams on Data (set by put_data via wp.Stream).
+  # Not used when sleep is enabled (sleep has cross-stream dependencies).
+  _use_ms = (m.opt.run_collision_detection and
+             not sleep_enabled and
+             hasattr(d, '_stream_collision') and
+             hasattr(d, '_stream_secondary'))
 
-  smooth.crb(m, d)
-  smooth.tendon_armature(m, d)
-  if factorize:
-    smooth.factor_m(m, d)
-  if m.opt.run_collision_detection:
-    if sleep_enabled:
-      # pass 1
+  if _use_ms:
+    # Fork A: collision on dedicated stream (only needs kinematics output, already done)
+    with wp.ScopedStream(d._stream_collision):
       collision_driver.collision(m, d)
-      # check for newly awake
-      skip = wp.zeros(1, dtype=int)
-      sleep.wake_collision(m, d, skip)
-      sleep.update_sleep(m, d)
-      # pass 2: broadphase kernels early-return if skip[0] is 0
-      collision_driver.collision(m, d, skip)
-    else:
-      collision_driver.collision(m, d)
+
+    # Fork B: mass-matrix kinematics on secondary stream (independent of collision)
+    with wp.ScopedStream(d._stream_secondary):
+      smooth.camlight(m, d)
+      smooth.flex(m, d)
+      smooth.tendon(m, d)
+      smooth.crb(m, d)
+      smooth.tendon_armature(m, d)
+      if factorize:
+        smooth.factor_m(m, d)
+
+    # Join: primary stream waits for both forks via GPU events.
+    # stream.record_event / stream.wait_event create graph dependency edges —
+    # these are capturable in CUDA graphs and HIP graphs (unlike synchronize_stream).
+    if not hasattr(d, '_event_collision'):
+      d._event_collision = wp.Event(device=wp.get_device())
+    if not hasattr(d, '_event_secondary'):
+      d._event_secondary = wp.Event(device=wp.get_device())
+    d._stream_collision.record_event(d._event_collision)
+    d._stream_secondary.record_event(d._event_secondary)
+    wp.get_device().stream.wait_event(d._event_collision)
+    wp.get_device().stream.wait_event(d._event_secondary)
+  else:
+    smooth.camlight(m, d)
+    smooth.flex(m, d)
+    smooth.tendon(m, d)
+
+    if sleep_enabled and m.ntendon > 0:
+      sleep.wake_tendon(m, d)
+      sleep.update_sleep_trees(m, d)
+
+    smooth.crb(m, d)
+    smooth.tendon_armature(m, d)
+    if factorize:
+      smooth.factor_m(m, d)
+    if m.opt.run_collision_detection:
+      if sleep_enabled:
+        # pass 1
+        collision_driver.collision(m, d)
+        # check for newly awake
+        skip = wp.zeros(1, dtype=int)
+        sleep.wake_collision(m, d, skip)
+        sleep.update_sleep(m, d)
+        # pass 2: broadphase kernels early-return if skip[0] is 0
+        collision_driver.collision(m, d, skip)
+      else:
+        collision_driver.collision(m, d)
 
   constraint.make_constraint(m, d)
 
