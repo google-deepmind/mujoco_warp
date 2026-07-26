@@ -666,8 +666,14 @@ def fwd_position(m: Model, d: Data, factorize: bool = True):
   # Multi-stream parallelism: run collision concurrently with mass-matrix kinematics.
   # Requires pre-cached streams on Data (set by put_data via wp.Stream).
   # Not used when sleep is enabled (sleep has cross-stream dependencies).
+  # Multi-stream fork-join improves eager throughput but adds event-record/wait
+  # nodes to the captured graph, which has overhead on some ROCm versions.
+  # During graph capture (wp.get_device().is_capturing), use single-stream path
+  # so the captured graph contains only kernel nodes.
+  _capturing = getattr(wp.get_device(), 'is_capturing', False)
   _use_ms = (m.opt.run_collision_detection and
              not sleep_enabled and
+             not _capturing and
              hasattr(d, '_stream_collision') and
              hasattr(d, '_stream_secondary'))
 
