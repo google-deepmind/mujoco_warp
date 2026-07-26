@@ -126,32 +126,65 @@ from mujoco_warp._src.types import TrnType as TrnType
 import contextlib as _contextlib
 
 @_contextlib.contextmanager
-def hip_graph_capture(device=None):
-    """Context manager for HIP graph capture compatible with ROCm memory pools.
+def hip_graph_capture(model, data, device=None, warmup_steps=3):
+    """Context manager for HIP/CUDA graph capture of mujoco_warp physics.
 
-    Wraps wp.ScopedCapture and handles mempool enable/disable automatically.
-    On CUDA, behaves identically to wp.ScopedCapture.
-    On HIP/ROCm: enables mempool before capture, restores state after.
+    Handles all pre-capture requirements automatically:
+
+    1. Runs warmup_steps eager steps to trigger all lazy allocations
+       (solver context, tendon scratch, RK4 buffers, collision structures).
+    2. On HIP/ROCm: enables memory pool before capture (required for
+       hipGraph) and restores pool state after.
+    3. Wraps wp.ScopedCapture — the caller gets the standard graph
+       object and uses wp.capture_launch(cap.graph) to replay.
 
     Usage::
 
-        with mjw.hip_graph_capture() as cap:
-            mjw.step(model, data)
-        wp.capture_launch(cap.graph)  # ~1.7x faster on AMD ROCm
+        model = mjw.put_model(mj_model)
+        data  = mjw.put_data(mj_model, mj_data, nworld=256)
 
-    This is the recommended way to capture mujoco_warp graphs on AMD hardware.
-    The standard wp.ScopedCapture() also works if the caller manages mempool.
+        with mjw.hip_graph_capture(model, data) as cap:
+            mjw.step(model, data)
+
+        # Replay ~1.7x faster on AMD ROCm, ~2x faster on NVIDIA CUDA
+        for _ in range(1000):
+            wp.capture_launch(cap.graph)
+
+    Args:
+        model: mujoco_warp Model (from put_model).
+        data:  mujoco_warp Data  (from put_data).
+        device: Warp device to capture on. Defaults to current device.
+        warmup_steps: Number of eager steps before capture to trigger all
+            lazy buffer allocations. Default 3 is sufficient for most models.
     """
     import warp as _wp
+    from mujoco_warp._src import forward as _fwd
 
     dev = device or _wp.get_device()
-    pool_was_enabled = _wp.is_mempool_enabled(dev) if (dev.is_cuda or dev.is_hip) else False
+    is_hip = getattr(dev, 'is_hip', False)
+    pool_was_enabled = _wp.is_mempool_enabled(dev) if (dev.is_cuda or is_hip) else False
 
     try:
-        if dev.is_hip and not pool_was_enabled:
+        # Step 1: warmup to trigger all lazy allocations in the step() call graph.
+        # This includes solver context, tendon scratch, RK4 buffers, constraint
+        # structures, collision temporaries — any wp.zeros/wp.empty inside step().
+        # After warmup these are cached on Data and will NOT fire during capture.
+        for _ in range(warmup_steps):
+            _fwd.step(model, data)
+
+        import torch as _torch
+        _torch.cuda.synchronize()
+
+        # Step 2: enable mempool on HIP (required for ScopedCapture to allocate
+        # the graph node backing store).
+        if is_hip and not pool_was_enabled:
             _wp.set_mempool_enabled(dev, True)
+
+        # Step 3: capture — after warmup, step() should fire zero new allocations.
         with _wp.ScopedCapture() as cap:
             yield cap
+
     finally:
-        if dev.is_hip and not pool_was_enabled:
+        # Restore mempool state.
+        if is_hip and not pool_was_enabled:
             _wp.set_mempool_enabled(dev, False)
