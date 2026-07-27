@@ -1874,7 +1874,17 @@ def tendon_bias(m: Model, d: Data, qfrc: wp.array2d[float]):
     qfrc: Force.
   """
   # time derivative of tendon Jacobian
-  ten_Jdot = wp.zeros((d.nworld, m.nJten), dtype=float)
+  # Cache on Data with stable hipMalloc so this is not a memAlloc node in hipGraph.
+  if not hasattr(d, '_ten_Jdot') or d._ten_Jdot.shape != (d.nworld, m.nJten):
+    _dev = wp.get_device()
+    if _dev.is_hip and wp.is_mempool_enabled(_dev):
+      wp.set_mempool_enabled(_dev, False)
+      d._ten_Jdot = wp.zeros((d.nworld, m.nJten), dtype=float)
+      wp.set_mempool_enabled(_dev, True)
+    else:
+      d._ten_Jdot = wp.zeros((d.nworld, m.nJten), dtype=float)
+  ten_Jdot = d._ten_Jdot
+  ten_Jdot.zero_()
   wp.launch(
     _tendon_dot,
     dim=(d.nworld, m.ntendon),
@@ -1906,7 +1916,17 @@ def tendon_bias(m: Model, d: Data, qfrc: wp.array2d[float]):
   )
 
   # tendon bias force coefficients
-  ten_bias_coef = wp.zeros((d.nworld, m.ntendon), dtype=float)
+  # Cache on Data with stable hipMalloc so this is not a memAlloc node in hipGraph.
+  if not hasattr(d, '_ten_bias_coef') or d._ten_bias_coef.shape != (d.nworld, m.ntendon):
+    _dev = wp.get_device()
+    if _dev.is_hip and wp.is_mempool_enabled(_dev):
+      wp.set_mempool_enabled(_dev, False)
+      d._ten_bias_coef = wp.zeros((d.nworld, m.ntendon), dtype=float)
+      wp.set_mempool_enabled(_dev, True)
+    else:
+      d._ten_bias_coef = wp.zeros((d.nworld, m.ntendon), dtype=float)
+  ten_bias_coef = d._ten_bias_coef
+  ten_bias_coef.zero_()
   wp.launch(
     _tendon_bias_coef,
     dim=(d.nworld, m.ntendon, m.max_ten_J_rownnz),
