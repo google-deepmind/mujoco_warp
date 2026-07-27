@@ -29,6 +29,23 @@ try:
 except Exception:
   _HAS_RENDERER = False
 
+# A box on a ground plane, viewed from a camera directly above it. The box is small relative to how
+# far the refit test slides it, so a bounding volume fit to the original pose no longer overlaps the
+# box afterwards: a ray cast against the stale BVH never reaches the box and reports the plane
+# behind it instead.
+_MOVING_BOX_XML = """
+<mujoco>
+  <worldbody>
+    <camera name="cam" pos="0 0 1" euler="0 0 0" resolution="64 64" sensorsize="0.036 0.036" focal="0.012 0.012"/>
+    <geom name="plane" type="plane" size="2 2 0.1"/>
+    <body name="box_body" pos="0 0 0.1">
+      <freejoint/>
+      <geom name="box" type="box" size="0.1 0.1 0.1"/>
+    </body>
+  </worldbody>
+</mujoco>
+"""
+
 
 def _assert_eq(a, b, name):
   tol = 5e-4
@@ -79,6 +96,31 @@ class RenderTest(parameterized.TestCase):
     rgb = rc.rgb_data.numpy()
 
     self.assertNotEqual(np.unique(rgb).shape[0], 1)
+
+  def test_render_refits_bvh(self):
+    """Tests that `render(refit=True)` refits the scene BVH for the pose it is about to draw."""
+    mjm, mjd, m, d = test_data.fixture(xml=_MOVING_BOX_XML)
+    rc = mjw.create_render_context(mjm, cam_res=(64, 64), render_rgb=True, render_depth=True)
+
+    # `create_render_context` fits the BVH to the pose in `mjd`, so slide the box out from under the
+    # bounds it fit.
+    geom_xpos = d.geom_xpos.numpy()
+    geom_xpos[:, mjm.geom("box").id, 0] += 0.8
+    d.geom_xpos = wp.array(geom_xpos, dtype=wp.vec3)
+
+    mjw.render(m, d, rc)
+    stale = rc.depth_data.numpy().copy()
+
+    mjw.render(m, d, rc, refit=True)
+    got = rc.depth_data.numpy().copy()
+
+    mjw.refit_bvh(m, d, rc)
+    mjw.render(m, d, rc)
+    want = rc.depth_data.numpy().copy()
+
+    # Guards the test itself: the stale BVH has to render something else, or `refit` is untested.
+    self.assertFalse(np.array_equal(stale, want), "stale BVH rendered the same depth")
+    _assert_eq(got, want, "depth")
 
   @absltest.skipIf(not wp.get_device().is_cuda, "Skipping test that requires CUDA.")
   def test_render_graph_capture(self):
