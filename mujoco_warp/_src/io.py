@@ -256,6 +256,35 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
   # bouncing around the optimal solution
   opt.tolerance = max(opt.tolerance, 1e-6)
 
+  # On HIP/ROCm devices, the MuJoCo default ls_iterations=50 (designed for
+  # CPU float64) is conservative for GPU float32. The parallel linesearch
+  # evaluates all step sizes simultaneously; 10 candidates on a log scale
+  # typically gives equivalent physics quality for warmstarted humanoid/
+  # quadruped workloads at 5x lower linesearch compute cost.
+  #
+  # Guidance: This optimization is workload-dependent. At large environment
+  # counts (>= 4096) on compute-bound workloads, fewer linesearch candidates
+  # may degrade step quality enough to require additional Newton iterations,
+  # reducing net throughput. Profile your workload before enabling.
+  # Users can always override: model.opt.ls_iterations = <value>
+  if wp.get_device().is_hip and opt.ls_iterations > 10:
+    opt.ls_iterations = 10
+
+  # On HIP/ROCm devices using float32, the MuJoCo default ls_iterations=50
+  # (chosen for CPU float64 precision) is more than needed. The parallel
+  # linesearch evaluates all step sizes simultaneously on GPU; 10 candidates
+  # on a log scale gives equivalent physics quality at 5x less GPU work for
+  # most warmstarted humanoid and quadruped workloads.
+  #
+  # IMPORTANT: This reduction is workload-dependent. At very large environment
+  # counts (>=4096) on some workloads the GPU becomes compute-bound and the
+  # step quality degradation from fewer linesearch candidates can require
+  # additional Newton iterations, potentially reducing overall throughput.
+  # Profile your specific workload before enabling. Users can override after
+  # put_model() by setting: model.opt.ls_iterations = <desired_value>
+  if wp.get_device().is_hip and opt.ls_iterations > 10:
+    opt.ls_iterations = 10
+
   # warp only fields
   opt.broadphase = types.BroadphaseType.NXN
   opt.broadphase_filter = types.BroadphaseFilter.PLANE | types.BroadphaseFilter.SPHERE | types.BroadphaseFilter.OBB
