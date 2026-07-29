@@ -3762,17 +3762,6 @@ def _zero_change_counters(
   state_changed_count_out[worldid] = 0
 
 
-@wp.kernel(grid_stride=True)
-def _zero_change_counters(
-  # Out:
-  quad_changed_count_out: wp.array[int],
-  state_changed_count_out: wp.array[int],
-):
-  worldid = wp.tid()
-  quad_changed_count_out[worldid] = 0
-  state_changed_count_out[worldid] = 0
-
-
 @event_scope
 def _solver_iteration(
   m: types.Model,
