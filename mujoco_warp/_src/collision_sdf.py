@@ -36,6 +36,10 @@ from mujoco_warp._src.warp_util import event_scope
 
 wp.set_module_options({"enable_backward": False})
 
+# Collision sensors scatter contacts by geomcollisionid into 8 slots per geom pair
+# (see _sensor_collision in sensor.py); contacts beyond that cannot feed sensors.
+_SENSOR_COLLISION_NSLOT = 8
+
 
 @wp.struct
 class OptimizationParams:
@@ -969,9 +973,16 @@ def _sdf_narrowphase(
     mesh_data1,
     mesh_data2,
   )
+  # Each initpoint emits its own contact: use the initpoint index as the
+  # geomcollisionid so contacts of one pair carry distinct, content-stable ids.
+  # Initpoints beyond the sensor slot capacity drop the sensor pairid so the
+  # sensor scatter stays in bounds.
+  pairid = collision_pairid_in[contact_tid]
+  if i >= _SENSOR_COLLISION_NSLOT:
+    pairid = wp.vec2i(pairid[0], -1)
   write_contact(
     naconmax_in,
-    0,
+    i,
     dist,
     pos,
     make_frame(n),
@@ -983,7 +994,7 @@ def _sdf_narrowphase(
     solreffriction,
     solimp,
     geoms,
-    collision_pairid_in[contact_tid],
+    pairid,
     worldid,
     contact_dist_out,
     contact_pos_out,
