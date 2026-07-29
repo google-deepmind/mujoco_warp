@@ -636,11 +636,17 @@ def accumulate_flex_vertex_normals(
   """Accumulate per-vertex normals by summing adjacent face normals."""
   worldid, elemid = wp.tid()
 
+  f = int(-1)
   for i in range(nflex):
     locid = elemid - flex_elemadr[i]
     if locid >= 0 and locid < flex_elemnum[i]:
       f = i
       break
+
+  # No owning flex found for this element: bail out before indexing with f, both
+  # to stay safe today and to keep this correct if backward is ever enabled here.
+  if f < 0:
+    return
 
   if flex_dim[f] == 1 or flex_dim[f] == 3:
     return

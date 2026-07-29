@@ -33,6 +33,22 @@ from mujoco_warp._src.warp_util import event_scope
 wp.set_module_options({"enable_backward": False})
 
 
+# Copy kernel that never participates in the tape backward, for cases where a
+# manual adjoint callback (e.g. record_func) already handles the backward path.
+# wp.copy is a Warp built-in whose backward IS tracked regardless of
+# module-level enable_backward, causing double-counting with the manual adjoint.
+@wp.kernel(enable_backward=False)
+def _nograd_copy(
+  # In:
+  src: wp.array2d[float],
+  # Out:
+  dst_out: wp.array2d[float],
+):
+  worldid, idx = wp.tid()
+  if idx < src.shape[1]:
+    dst_out[worldid, idx] = src[worldid, idx]
+
+
 # TODO(team): kernel analyzer array slice?
 @wp.func
 def next_act(
@@ -301,13 +317,67 @@ def _apply_ft(
     qfrc_out[worldid, dofid] = accumul
 
 
+# enable_backward: differentiable variant of _apply_ft used when gradients are
+# tracked. It drops the zero-force early-out (a value-dependent skip would also
+# skip the adjoint, zeroing gradients at exactly-zero applied force) and reads
+# the subtree membership from the precomputed body_isdofancestor mask: Warp's
+# AD replay cannot reconstruct the parent-walk result carried out of the while
+# loop, which corrupts the guard in the backward pass. The extra zero terms do
+# not change the sum, so forward output is bitwise identical.
+@wp.kernel(enable_backward=True)
+def _apply_ft_grad(
+  # Model:
+  nbody: int,
+  body_rootid: wp.array[int],
+  dof_bodyid: wp.array[int],
+  body_isdofancestor: wp.array2d[int],
+  # Data in:
+  xipos_in: wp.array2d[wp.vec3],
+  subtree_com_in: wp.array2d[wp.vec3],
+  cdof_in: wp.array2d[wp.spatial_vector],
+  # In:
+  ft_in: wp.array2d[wp.spatial_vector],
+  flg_add: bool,
+  # Out:
+  qfrc_out: wp.array2d[float],
+):
+  worldid, dofid = wp.tid()
+  cdof = cdof_in[worldid, dofid]
+  rotational_cdof = wp.vec3(cdof[0], cdof[1], cdof[2])
+  jac = wp.spatial_vector(cdof[3], cdof[4], cdof[5], cdof[0], cdof[1], cdof[2])
+
+  dofbodyid = dof_bodyid[dofid]
+  accumul = float(0.0)
+
+  for bodyid in range(dofbodyid, nbody):
+    # any body that is in the subtree of dofbodyid is part of the jacobian
+    if body_isdofancestor[bodyid, dofid] != 0:
+      ft_body = ft_in[worldid, bodyid]
+      offset = xipos_in[worldid, bodyid] - subtree_com_in[worldid, body_rootid[bodyid]]
+      cross_term = wp.cross(rotational_cdof, offset)
+      accumul += wp.dot(jac, ft_body) + wp.dot(cross_term, wp.spatial_top(ft_body))
+
+  if flg_add:
+    qfrc_out[worldid, dofid] += accumul
+  else:
+    qfrc_out[worldid, dofid] = accumul
+
+
 def apply_ft(m: Model, d: Data, ft: wp.array2d[wp.spatial_vector], qfrc: wp.array2d[float], flg_add: bool):
-  wp.launch(
-    kernel=_apply_ft,
-    dim=(d.nworld, m.nv),
-    inputs=[m.nbody, m.body_parentid, m.body_rootid, m.dof_bodyid, d.xipos, d.subtree_com, d.cdof, ft, flg_add],
-    outputs=[qfrc],
-  )
+  if ft.requires_grad or qfrc.requires_grad:
+    wp.launch(
+      kernel=_apply_ft_grad,
+      dim=(d.nworld, m.nv),
+      inputs=[m.nbody, m.body_rootid, m.dof_bodyid, m.body_isdofancestor, d.xipos, d.subtree_com, d.cdof, ft, flg_add],
+      outputs=[qfrc],
+    )
+  else:
+    wp.launch(
+      kernel=_apply_ft,
+      dim=(d.nworld, m.nv),
+      inputs=[m.nbody, m.body_parentid, m.body_rootid, m.dof_bodyid, d.xipos, d.subtree_com, d.cdof, ft, flg_add],
+      outputs=[qfrc],
+    )
 
 
 @event_scope
