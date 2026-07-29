@@ -16,6 +16,7 @@
 """Tests for io functions."""
 
 import dataclasses
+import warnings
 from unittest import mock
 
 import mujoco
@@ -3171,6 +3172,55 @@ class IOTest(parameterized.TestCase):
     # Should succeed without NotImplementedError
     m = mjwarp.put_model(mjm)
     self.assertEqual(m.has_3d_flex, True)
+
+  # TODO(team): remove after implementing multicontact support for CCD pairs.
+  @parameterized.parameters(
+    ("cylinder", "box"),
+    ("cylinder", "cylinder"),
+    ("cylinder", "mesh"),
+    ("capsule", "cylinder"),
+    ("capsule", "mesh"),
+  )
+  def test_unsupported_multiccd_warning(self, geom1_type, geom2_type):
+    """Tests warning for unsupported multicontact CCD pairs when MULTICCD is enabled."""
+
+    def _make_geom_xml(gtype: str) -> str:
+      if gtype == "mesh":
+        return '<geom type="mesh" mesh="m"/>'
+      elif gtype in ("cylinder", "capsule"):
+        return f'<geom type="{gtype}" size=".1 .1"/>'
+      elif gtype == "sphere":
+        return '<geom type="sphere" size=".1"/>'
+      else:
+        return f'<geom type="{gtype}" size=".1 .1 .1"/>'
+
+    mesh_asset = '<mesh name="m" vertex="0 0 0 1 0 0 0 1 0 0 0 1"/>' if "mesh" in (geom1_type, geom2_type) else ""
+    xml = f"""
+      <mujoco>
+        <asset>
+          {mesh_asset}
+        </asset>
+        <worldbody>
+          <body>
+            <freejoint/>
+            {_make_geom_xml(geom1_type)}
+          </body>
+          <body pos="0 0 .5">
+            <freejoint/>
+            {_make_geom_xml(geom2_type)}
+          </body>
+        </worldbody>
+      </mujoco>
+    """
+    mjm = mujoco.MjModel.from_xml_string(xml)
+
+    with self.assertWarns(UserWarning):
+      mjwarp.put_model(mjm)
+
+    mjm.opt.disableflags |= mujoco.mjtDisableBit.mjDSBL_MULTICCD
+    with warnings.catch_warnings():
+      warnings.simplefilter("error")
+      mjwarp.put_model(mjm)
 
 
 # TODO(team): test set_const_0 sparse
