@@ -1971,7 +1971,7 @@ def _update_gradient_h_incremental_sparse(compact: bool):
     """Incrementally update upper triangle of H for changed constraints (sparse J).
 
     One warp per changed constraint row: the lanes split the row's upper-triangular
-    entries (same sqrt triangular-number decode as _JTDAJ_sparse), replacing the
+    entries (same sqrt triangular-number decode as _JTDACJ_sparse), replacing the
     serial nnz^2 loop that dominated this kernel.
     """
     worldid, slot, lane = wp.tid()
@@ -3002,9 +3002,6 @@ def _JTDACJ_sparse(compact: bool, cone_type: types.ConeType, max_condim: int):
           wp.atomic_add(h_out[worldid, wp.min(dof_row, dof_col)], wp.max(dof_row, dof_col), hval)
 
   return kernel
-
-
-_JTDAJ_sparse = _JTDACJ_sparse
 
 
 def _jtdaj_groups_per_world(nworld: int, njmax: int) -> int:
