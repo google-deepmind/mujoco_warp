@@ -2751,7 +2751,7 @@ _JTDAJ_OVERSUBSCRIBE_WAVES = 6
 
 
 @cache_kernel
-def _JTDAJ_sparse(compact: bool, cone_type: types.ConeType, max_condim: int):
+def _JTDACJ_sparse(compact: bool, cone_type: types.ConeType, max_condim: int):
   COMPACT = compact
   ELLIPTIC = cone_type == types.ConeType.ELLIPTIC
   MAX_CONDIM = max_condim
@@ -2793,7 +2793,7 @@ def _JTDAJ_sparse(compact: bool, cone_type: types.ConeType, max_condim: int):
       ttt = wp.max(t * t * t, types.MJ_MINVAL)
       mu_over_t = math.safe_div(mu, t)
       mu_n_over_ttt = mu * math.safe_div(n, ttt)
-      tangent_diag = mu2 - mu * math.safe_div(n, t)
+      tangent_diag = mu2 - n * mu_over_t
 
       # Layout: tangent u[1:6], scales[6:12], dm, mu/t, mu*n/t^3, tangent diagonal.
       terms[12] = dm
@@ -3004,9 +3004,12 @@ def _JTDAJ_sparse(compact: bool, cone_type: types.ConeType, max_condim: int):
   return kernel
 
 
+_JTDAJ_sparse = _JTDACJ_sparse
+
+
 def _jtdaj_groups_per_world(nworld: int, njmax: int) -> int:
   # njmax is capacity and often mostly empty, so cap slots at a few resident waves.
-  block_size, min_grid_size = wp.get_suggested_block_size(_JTDAJ_sparse(False, types.ConeType.PYRAMIDAL, 3))
+  block_size, min_grid_size = wp.get_suggested_block_size(_JTDACJ_sparse(False, types.ConeType.PYRAMIDAL, 3))
   device_warps = max(1, block_size * min_grid_size // _JTDAJ_THREADS_PER_GROUP)
   return max(1, min(njmax, _JTDAJ_OVERSUBSCRIBE_WAVES * device_warps // nworld))
 
@@ -3147,7 +3150,7 @@ def _update_gradient(m: types.Model, d: types.Data, ctx: SolverContext, compact:
       max_condim = 3
       if m.opt.cone == types.ConeType.ELLIPTIC and m.nmaxcondim > 3:
         max_condim = int(m.nmaxcondim)
-      jtdaj_kernel = _JTDAJ_sparse(sc, m.opt.cone, max_condim)
+      jtdaj_kernel = _JTDACJ_sparse(sc, m.opt.cone, max_condim)
       jtdaj_inputs = [
         m.opt.impratio_invsqrt,
         d.contact.friction,
