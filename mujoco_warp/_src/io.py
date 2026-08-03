@@ -3879,7 +3879,7 @@ def create_render_context(
   use_shadows: bool = False,
   use_ambient_lighting: bool = True,
   enabled_geom_groups: list[int] = [0, 1, 2],
-  cam_active: list[bool] | None = None,
+  cam_active: list[bool] | list[str] | list[int] | None = None,
   background_color: tuple[float, float, float, float] = (0.1, 0.1, 0.2, 1.0),
   flex_render_smooth: bool = True,
   use_precomputed_rays: bool = True,
@@ -3907,8 +3907,8 @@ def create_render_context(
                           ambient contributions, including headlight ambient,
                           the no-light fallback, and per-light ambient.
     enabled_geom_groups: The geom groups to render.
-    cam_active: List of booleans indicating which cameras to include in rendering.
-                If None, all cameras are included.
+    cam_active: List of booleans, camera names (str), or camera indices (int) indicating
+                which cameras to include in rendering. If None, all cameras are included.
     flex_render_smooth: Whether to render flex meshes smoothly.
     use_precomputed_rays: Use precomputed rays instead of computing during rendering.
                           When using domain randomization for camera intrinsics, set to False.
@@ -4016,8 +4016,20 @@ def create_render_context(
 
   # Filter active cameras
   if cam_active is not None:
-    assert len(cam_active) == mjm.ncam, f"cam_active must have length {mjm.ncam} (got {len(cam_active)})"
-    active_cam_indices = np.nonzero(cam_active)[0]
+    if len(cam_active) > 0 and isinstance(cam_active[0], (bool, np.bool_)):
+      assert len(cam_active) == mjm.ncam, f"cam_active must have length {mjm.ncam} (got {len(cam_active)})"
+      active_cam_indices = [int(i) for i in np.nonzero(cam_active)[0]]
+    elif len(cam_active) > 0 and isinstance(cam_active[0], str):
+      active_cam_indices = []
+      for name in cam_active:
+        cid = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_CAMERA, name)
+        if cid == -1:
+          raise ValueError(f"Camera '{name}' not found in model.")
+        active_cam_indices.append(cid)
+    elif len(cam_active) > 0 and isinstance(cam_active[0], (int, np.integer)):
+      active_cam_indices = [int(x) for x in cam_active]
+    else:
+      raise ValueError(f"Invalid cam_active format: {cam_active}")
   else:
     active_cam_indices = list(range(mjm.ncam))
 
@@ -4026,9 +4038,10 @@ def create_render_context(
   if cam_res is not None:
     if isinstance(cam_res, tuple):
       cam_res = [cam_res] * ncam
-    assert len(cam_res) == ncam, (
-      f"Camera resolutions must be provided for all active cameras (got {len(cam_res)}, expected {ncam})"
-    )
+    elif isinstance(cam_res, list) and len(cam_res) == 1 and ncam > 1:
+      cam_res = cam_res * ncam
+    if len(cam_res) != ncam:
+      raise ValueError(f"Camera resolutions count ({len(cam_res)}) does not match active camera count ({ncam}).")
     active_cam_res = cam_res
   else:
     active_cam_res = mjm.cam_resolution[active_cam_indices]
@@ -4036,23 +4049,47 @@ def create_render_context(
   cam_res_arr = wp.array(active_cam_res, dtype=wp.vec2i)
 
   if render_rgb is None:
-    render_rgb = [mjm.cam_output[i] & mujoco.mjtCamOutBit.mjCAMOUT_RGB for i in active_cam_indices]
+    render_rgb = [bool(np.any(mjm.cam_output[i] & mujoco.mjtCamOutBit.mjCAMOUT_RGB)) for i in active_cam_indices]
   elif isinstance(render_rgb, bool):
     render_rgb = [render_rgb] * ncam
+  elif isinstance(render_rgb, (list, np.ndarray)):
+    if len(render_rgb) == mjm.ncam and ncam != mjm.ncam:
+      render_rgb = [bool(render_rgb[i]) for i in active_cam_indices]
+    elif len(render_rgb) == 1 and ncam > 1:
+      render_rgb = [bool(render_rgb[0])] * ncam
+    else:
+      render_rgb = [bool(x) for x in render_rgb]
 
   if render_depth is None:
-    render_depth = [mjm.cam_output[i] & mujoco.mjtCamOutBit.mjCAMOUT_DEPTH for i in active_cam_indices]
-  if isinstance(render_depth, bool):
+    render_depth = [bool(np.any(mjm.cam_output[i] & mujoco.mjtCamOutBit.mjCAMOUT_DEPTH)) for i in active_cam_indices]
+  elif isinstance(render_depth, bool):
     render_depth = [render_depth] * ncam
+  elif isinstance(render_depth, (list, np.ndarray)):
+    if len(render_depth) == mjm.ncam and ncam != mjm.ncam:
+      render_depth = [bool(render_depth[i]) for i in active_cam_indices]
+    elif len(render_depth) == 1 and ncam > 1:
+      render_depth = [bool(render_depth[0])] * ncam
+    else:
+      render_depth = [bool(x) for x in render_depth]
 
   if render_seg is None:
-    render_seg = [mjm.cam_output[i] & mujoco.mjtCamOutBit.mjCAMOUT_SEG for i in active_cam_indices]
+    render_seg = [bool(np.any(mjm.cam_output[i] & mujoco.mjtCamOutBit.mjCAMOUT_SEG)) for i in active_cam_indices]
   elif isinstance(render_seg, bool):
     render_seg = [render_seg] * ncam
+  elif isinstance(render_seg, (list, np.ndarray)):
+    if len(render_seg) == mjm.ncam and ncam != mjm.ncam:
+      render_seg = [bool(render_seg[i]) for i in active_cam_indices]
+    elif len(render_seg) == 1 and ncam > 1:
+      render_seg = [bool(render_seg[0])] * ncam
+    else:
+      render_seg = [bool(x) for x in render_seg]
 
-  assert len(render_rgb) == ncam and len(render_depth) == ncam and len(render_seg) == ncam, (
-    f"render_rgb, render_depth, and render_seg must be a bool or a list of bools with length {ncam}"
-  )
+  if len(render_rgb) != ncam:
+    raise ValueError(f"render_rgb length ({len(render_rgb)}) does not match active camera count ({ncam}).")
+  if len(render_depth) != ncam:
+    raise ValueError(f"render_depth length ({len(render_depth)}) does not match active camera count ({ncam}).")
+  if len(render_seg) != ncam:
+    raise ValueError(f"render_seg length ({len(render_seg)}) does not match active camera count ({ncam}).")
 
   rgb_adr = -1 * np.ones(ncam, dtype=int)
   depth_adr = -1 * np.ones(ncam, dtype=int)
@@ -4076,16 +4113,17 @@ def create_render_context(
 
     total += cam_res_np[idx][0] * cam_res_np[idx][1]
 
-  znear = mjm.vis.map.znear * mjm.stat.extent
+  znear = float(mjm.vis.map.znear * mjm.stat.extent)
 
   ray = wp.zeros(int(total), dtype=wp.vec3)
 
   cam_projection = mjm.cam_projection
 
   offset = 0
-  for idx, cam_id in enumerate(active_cam_indices):
-    img_w = cam_res_np[idx][0]
-    img_h = cam_res_np[idx][1]
+  for idx, cam_id_val in enumerate(active_cam_indices):
+    cam_id = int(cam_id_val)
+    img_w = int(cam_res_np[idx][0])
+    img_h = int(cam_res_np[idx][1])
     wp.launch(
       kernel=_build_rays,
       dim=(img_w, img_h),
@@ -4093,10 +4131,15 @@ def create_render_context(
         offset,
         img_w,
         img_h,
-        int(cam_projection[cam_id]),
+        int(mjm.cam_projection[cam_id]),
         float(mjm.cam_fovy[cam_id]),
-        wp.vec2(mjm.cam_sensorsize[cam_id]),
-        wp.vec4(mjm.cam_intrinsic[cam_id]),
+        wp.vec2(float(mjm.cam_sensorsize[cam_id, 0]), float(mjm.cam_sensorsize[cam_id, 1])),
+        wp.vec4(
+          float(mjm.cam_intrinsic[cam_id, 0]),
+          float(mjm.cam_intrinsic[cam_id, 1]),
+          float(mjm.cam_intrinsic[cam_id, 2]),
+          float(mjm.cam_intrinsic[cam_id, 3]),
+        ),
         znear,
       ],
       outputs=[ray],
