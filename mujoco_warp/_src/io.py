@@ -488,8 +488,7 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
   if mjm.nv > 500:
     m.block_dim.linesearch_iterative = 256
   m.is_sparse = is_sparse(mjm)
-  m.has_fluid = mjm.opt.wind.any() or mjm.opt.density > 0 or mjm.opt.viscosity > 0
-
+  m.has_fluid = bool(mjm.opt.wind.any() or mjm.opt.density > 0 or mjm.opt.viscosity > 0)
   m.nflexintcell = _get_nflexintcell(mjm)
 
   # Precompute flex_cell_map
@@ -2264,6 +2263,7 @@ def get_data_into(
   result.qfrc_damper[:] = d.qfrc_damper.numpy()[world_id]
   result.qfrc_gravcomp[:] = d.qfrc_gravcomp.numpy()[world_id]
   result.qfrc_fluid[:] = d.qfrc_fluid.numpy()[world_id]
+  result.qfrc_adhesion[:] = d.qfrc_adhesion.numpy()[world_id]
   result.qfrc_passive[:] = d.qfrc_passive.numpy()[world_id]
   result.subtree_linvel[:] = d.subtree_linvel.numpy()[world_id]
   result.subtree_angmom[:] = d.subtree_angmom.numpy()[world_id]
@@ -2289,6 +2289,7 @@ def get_data_into(
   result.contact.solref[:ncon] = d.contact.solref.numpy()[ncon_filter]
   result.contact.solreffriction[:ncon] = d.contact.solreffriction.numpy()[ncon_filter]
   result.contact.solimp[:ncon] = d.contact.solimp.numpy()[ncon_filter]
+  result.contact.adhesion[:ncon] = d.contact.adhesion.numpy()[ncon_filter]
   result.contact.dim[:ncon] = d.contact.dim.numpy()[ncon_filter]
   result.contact.geom[:ncon] = d.contact.geom.numpy()[ncon_filter]
   if mjm.nflex > 0:
@@ -2547,6 +2548,7 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
     contact_worldid_out: wp.array[int],
     contact_type_out: wp.array[int],
     contact_geomcollisionid_out: wp.array[int],
+    contact_adhesion_out: wp.array[float],
   ):
     conid = wp.tid()
 
@@ -2580,6 +2582,7 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
     contact_worldid_out[conid] = 0
     contact_type_out[conid] = 0
     contact_geomcollisionid_out[conid] = 0
+    contact_adhesion_out[conid] = 0.0
 
   @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
   def reset_sleep(
@@ -2663,6 +2666,7 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
       d.contact.worldid,
       d.contact.type,
       d.contact.geomcollisionid,
+      d.contact.adhesion,
     ],
   )
 
