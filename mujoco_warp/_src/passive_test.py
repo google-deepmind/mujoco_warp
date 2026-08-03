@@ -120,6 +120,8 @@ class PassiveTest(parameterized.TestCase):
 
     max_err = 0.0
     for _ in range(25):
+      d.qpos.assign(mjd.qpos)
+      d.qvel.assign(mjd.qvel)
       mjw.step(m, d)
       mujoco.mj_step(mjm, mjd)
 
