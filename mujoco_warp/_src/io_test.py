@@ -747,6 +747,63 @@ class IOTest(parameterized.TestCase):
         field,
       )
 
+  def test_get_data_into_realloc_island(self):
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+    <mujoco>
+      <option>
+        <flag sleep="enable"/>
+      </option>
+      <size memory="100M"/>
+      <worldbody>
+        <body>
+          <joint type="free"/>
+          <geom type="sphere" size="0.1"/>
+        </body>
+        <body>
+          <joint type="free"/>
+          <geom type="sphere" size="0.1"/>
+        </body>
+      </worldbody>
+    </mujoco>
+    """,
+      nworld=1,
+    )
+
+    expected_nisland = int(d.nisland.numpy()[0])
+    expected_nidof = int(d.nidof.numpy()[0])
+
+    mjwarp.get_data_into(mjd, mjm, d, world_id=0)
+
+    self.assertEqual(mjd.nisland, expected_nisland)
+    self.assertEqual(mjd.island_idofadr.shape[0], expected_nisland)
+
+  def test_get_data_into_islands_disabled_error(self):
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+    <mujoco>
+      <option>
+        <flag island="disable"/>
+      </option>
+      <worldbody>
+        <body>
+          <joint type="free"/>
+          <geom type="sphere" size="0.1"/>
+        </body>
+        <body>
+          <joint type="free"/>
+          <geom type="sphere" size="0.1"/>
+        </body>
+      </worldbody>
+    </mujoco>
+    """,
+      nworld=1,
+    )
+    mjwarp.forward(m, d)
+    if d.nisland.numpy()[0] > 0:
+      with self.assertRaisesRegex(ValueError, "islands are disabled in MjModel"):
+        mjwarp.get_data_into(mjd, mjm, d, world_id=0)
+
   @parameterized.product(
     xml=_IO_TEST_MODELS,
     cone=list(ConeType),
