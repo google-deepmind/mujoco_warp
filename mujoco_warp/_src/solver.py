@@ -39,6 +39,11 @@ wp.set_module_options({"enable_backward": False, "default_grid_stride": False})
 _BLOCK_CHOLESKY_DIM = 32
 
 
+def _is_sleep_enabled(m: types.Model) -> bool:
+  """Returns whether sleeping is enabled and island processing is not disabled."""
+  return bool(m.opt.enableflags & types.EnableBit.SLEEP) and not bool(m.opt.disableflags & types.DisableBit.ISLAND)
+
+
 def create_inverse_context(m: types.Model, d: types.Data) -> InverseContext:
   """Create an InverseContext with allocated workspace arrays.
 
@@ -840,6 +845,7 @@ def _linesearch_iterative_kernel(
   is_sparse: bool,
   incremental: bool,
   warn_overflow: bool,
+  sleep_enabled: bool = False,
 ):
   """Factory for iterative linesearch kernel.
 
@@ -850,12 +856,14 @@ def _linesearch_iterative_kernel(
     is_sparse: Use sparse matrix representation for constraint Jacobian.
     incremental: State changes are tracked: flag exhausted rays, reuse jv on unchanged search.
     warn_overflow: Whether to print overflow warnings.
+    sleep_enabled: Bypasses update for asleep trees.
   """
   LS_ITERATIONS = ls_iterations
   IS_ELLIPTIC = cone_type == types.ConeType.ELLIPTIC
   FUSE_JV = fuse_jv
   INCREMENTAL = incremental
   IS_SPARSE = is_sparse
+  SLEEP_ENABLED = sleep_enabled
 
   # Native snippet for CUDA __syncthreads()
   @wp.func_native(snippet="WP_TILE_SYNC();")
@@ -880,10 +888,12 @@ def _linesearch_iterative_kernel(
     opt_ls_tolerance: wp.array[float],
     opt_impratio_invsqrt: wp.array[float],
     stat_meaninertia: wp.array[float],
+    dof_treeid: wp.array[int],
     # Data in:
     ne_in: wp.array[int],
     nf_in: wp.array[int],
     nefc_in: wp.array[int],
+    tree_awake_in: wp.array2d[int],
     qfrc_smooth_in: wp.array2d[float],
     contact_friction_in: wp.array[types.vec5],
     contact_dim_in: wp.array[int],
@@ -1324,8 +1334,14 @@ def _linesearch_iterative_kernel(
 
     # qacc and Ma update
     for dofid in range(tid, nv, wp.block_dim()):
-      qacc_out[worldid, dofid] += alpha * ctx_search_in[worldid, dofid]
-      efc_Ma_out[worldid, dofid] += alpha * ctx_mv_in[worldid, dofid]
+      if wp.static(SLEEP_ENABLED):
+        treeid = dof_treeid[dofid]
+        if tree_awake_in[worldid, treeid] != 0:
+          qacc_out[worldid, dofid] += alpha * ctx_search_in[worldid, dofid]
+          efc_Ma_out[worldid, dofid] += alpha * ctx_mv_in[worldid, dofid]
+      else:
+        qacc_out[worldid, dofid] += alpha * ctx_search_in[worldid, dofid]
+        efc_Ma_out[worldid, dofid] += alpha * ctx_mv_in[worldid, dofid]
 
     # Jaref update
     for efcid in range(tid, nefc, wp.block_dim()):
@@ -1364,6 +1380,7 @@ def _linesearch_iterative(m: types.Model, d: types.Data, ctx: SolverContext, fus
       m.is_sparse,
       _use_incremental(m),
       bool(m.opt.warn_overflow),
+      _is_sleep_enabled(m) and m.opt.solver == types.SolverType.CG,
     ),
     dim=d.nworld,
     inputs=[
@@ -1372,9 +1389,11 @@ def _linesearch_iterative(m: types.Model, d: types.Data, ctx: SolverContext, fus
       m.opt.ls_tolerance,
       m.opt.impratio_invsqrt,
       m.stat.meaninertia,
+      m.dof_treeid,
       d.ne,
       d.nf,
       d.nefc,
+      d.tree_awake,
       d.qfrc_smooth,
       d.contact.friction,
       d.contact.dim,
@@ -1563,21 +1582,33 @@ def _linesearch(m: types.Model, d: types.Data, ctx: SolverContext):
 
 
 @cache_kernel
-def _solve_init_dof(warmstart: bool, sparse: bool):
+def _solve_init_dof(warmstart: bool, sparse: bool, sleep_enabled: bool = False):
   WARMSTART = warmstart
   SPARSE = sparse
+  SLEEP_ENABLED = sleep_enabled
 
   @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
   def kernel(
+    # Model:
+    dof_treeid: wp.array[int],
     # Data in:
     nefc_in: wp.array[int],
     qacc_warmstart_in: wp.array2d[float],
+    tree_awake_in: wp.array2d[int],
     qacc_smooth_in: wp.array2d[float],
     # Data out:
     qacc_out: wp.array2d[float],
     qfrc_constraint_out: wp.array2d[float],
   ):
     worldid, dofid = wp.tid()
+
+    if wp.static(SLEEP_ENABLED):
+      if tree_awake_in[worldid, dof_treeid[dofid]] == 0:
+        qacc_out[worldid, dofid] = 0.0
+        if wp.static(SPARSE):
+          if nefc_in[worldid] == 0:
+            qfrc_constraint_out[worldid, dofid] = 0.0
+        return
 
     if wp.static(WARMSTART):
       qacc_out[worldid, dofid] = qacc_warmstart_in[worldid, dofid]
@@ -1661,38 +1692,54 @@ def _solve_init_jaref_kernel(is_sparse: bool, nv: int, dofs_per_thread: int, com
   return kernel
 
 
-@wp.kernel
-def _solve_init_search_cg_tiled(
-  # Model:
-  nv: int,
-  # In:
-  ctx_grad_in: wp.array2d[float],
-  ctx_Mgrad_in: wp.array2d[float],
-  # Out:
-  ctx_search_out: wp.array2d[float],
-  ctx_search_dot_out: wp.array[float],
-  ctx_prev_grad_out: wp.array2d[float],
-  ctx_prev_Mgrad_out: wp.array2d[float],
-):
-  worldid, tid = wp.tid()
+@cache_kernel
+def _solve_init_search_cg_tiled(nv: int, sleep_enabled: bool = False):
+  SLEEP_ENABLED = sleep_enabled
 
-  local_search_dot = float(0.0)
-  BLOCK_DIM = wp.block_dim()
+  @wp.kernel(module="unique", enable_backward=False)
+  def kernel(
+    # Model:
+    dof_treeid: wp.array[int],
+    # Data in:
+    tree_awake_in: wp.array2d[int],
+    # In:
+    ctx_grad_in: wp.array2d[float],
+    ctx_Mgrad_in: wp.array2d[float],
+    # Out:
+    ctx_search_out: wp.array2d[float],
+    ctx_search_dot_out: wp.array[float],
+    ctx_prev_grad_out: wp.array2d[float],
+    ctx_prev_Mgrad_out: wp.array2d[float],
+  ):
+    worldid, tid = wp.tid()
 
-  for dofid in range(tid, nv, BLOCK_DIM):
-    mgrad = ctx_Mgrad_in[worldid, dofid]
-    search = -1.0 * mgrad
-    ctx_search_out[worldid, dofid] = search
-    local_search_dot += search * search
+    local_search_dot = float(0.0)
+    BLOCK_DIM = wp.block_dim()
 
-    ctx_prev_grad_out[worldid, dofid] = ctx_grad_in[worldid, dofid]
-    ctx_prev_Mgrad_out[worldid, dofid] = mgrad
+    for dofid in range(tid, nv, BLOCK_DIM):
+      if wp.static(SLEEP_ENABLED):
+        treeid = dof_treeid[dofid]
+        if tree_awake_in[worldid, treeid] == 0:
+          ctx_search_out[worldid, dofid] = 0.0
+          ctx_prev_grad_out[worldid, dofid] = 0.0
+          ctx_prev_Mgrad_out[worldid, dofid] = 0.0
+          continue
 
-  search_dot_tile = wp.tile(local_search_dot, preserve_type=True)
-  search_dot_sum = wp.tile_reduce(wp.add, search_dot_tile)
+      mgrad = ctx_Mgrad_in[worldid, dofid]
+      search = -1.0 * mgrad
+      ctx_search_out[worldid, dofid] = search
+      local_search_dot += search * search
 
-  if tid == 0:
-    ctx_search_dot_out[worldid] = search_dot_sum[0]
+      ctx_prev_grad_out[worldid, dofid] = ctx_grad_in[worldid, dofid]
+      ctx_prev_Mgrad_out[worldid, dofid] = mgrad
+
+    search_dot_tile = wp.tile(local_search_dot, preserve_type=True)
+    search_dot_sum = wp.tile_reduce(wp.add, search_dot_tile)
+
+    if tid == 0:
+      ctx_search_dot_out[worldid] = search_dot_sum[0]
+
+  return kernel
 
 
 @cache_kernel
@@ -2199,38 +2246,51 @@ def _update_gradient_grad(stable_fast: bool):
   return kernel
 
 
-@wp.kernel
-def _update_gradient_grad_tiled(
-  # Model:
-  nv: int,
-  # Data in:
-  qfrc_smooth_in: wp.array2d[float],
-  qfrc_constraint_in: wp.array2d[float],
-  efc_Ma_in: wp.array2d[float],
-  # In:
-  ctx_done_in: wp.array[bool],
-  # Out:
-  ctx_grad_out: wp.array2d[float],
-  ctx_grad_dot_out: wp.array[float],
-):
-  worldid, tid = wp.tid()
+@cache_kernel
+def _update_gradient_grad_tiled(nv: int, sleep_enabled: bool = False):
+  SLEEP_ENABLED = sleep_enabled
 
-  if ctx_done_in[worldid]:
-    return
+  @wp.kernel(module="unique", enable_backward=False)
+  def kernel(
+    # Model:
+    dof_treeid: wp.array[int],
+    # Data in:
+    tree_awake_in: wp.array2d[int],
+    qfrc_smooth_in: wp.array2d[float],
+    qfrc_constraint_in: wp.array2d[float],
+    efc_Ma_in: wp.array2d[float],
+    # In:
+    ctx_done_in: wp.array[bool],
+    # Out:
+    ctx_grad_out: wp.array2d[float],
+    ctx_grad_dot_out: wp.array[float],
+  ):
+    worldid, tid = wp.tid()
 
-  local_grad_dot = float(0.0)
-  BLOCK_DIM = wp.block_dim()
+    if ctx_done_in[worldid]:
+      return
 
-  for dofid in range(tid, nv, BLOCK_DIM):
-    grad = efc_Ma_in[worldid, dofid] - qfrc_smooth_in[worldid, dofid] - qfrc_constraint_in[worldid, dofid]
-    ctx_grad_out[worldid, dofid] = grad
-    local_grad_dot += grad * grad
+    local_grad_dot = float(0.0)
+    BLOCK_DIM = wp.block_dim()
 
-  grad_dot_tile = wp.tile(local_grad_dot, preserve_type=True)
-  grad_dot_sum = wp.tile_reduce(wp.add, grad_dot_tile)
+    for dofid in range(tid, nv, BLOCK_DIM):
+      if wp.static(SLEEP_ENABLED):
+        treeid = dof_treeid[dofid]
+        if tree_awake_in[worldid, treeid] == 0:
+          ctx_grad_out[worldid, dofid] = 0.0
+          continue
 
-  if tid == 0:
-    ctx_grad_dot_out[worldid] = grad_dot_sum[0]
+      grad = efc_Ma_in[worldid, dofid] - qfrc_smooth_in[worldid, dofid] - qfrc_constraint_in[worldid, dofid]
+      ctx_grad_out[worldid, dofid] = grad
+      local_grad_dot += grad * grad
+
+    grad_dot_tile = wp.tile(local_grad_dot, preserve_type=True)
+    grad_dot_sum = wp.tile_reduce(wp.add, grad_dot_tile)
+
+    if tid == 0:
+      ctx_grad_dot_out[worldid] = grad_dot_sum[0]
+
+  return kernel
 
 
 @cache_kernel
@@ -3062,9 +3122,9 @@ def _update_gradient(m: types.Model, d: types.Data, ctx: SolverContext, compact:
   # grad = Ma - qfrc_smooth - qfrc_constraint
   if m.opt.solver == types.SolverType.CG:
     wp.launch_tiled(
-      _update_gradient_grad_tiled,
+      _update_gradient_grad_tiled(m.nv, _is_sleep_enabled(m)),
       dim=d.nworld,
-      inputs=[m.nv, d.qfrc_smooth, d.qfrc_constraint, d.efc.Ma, ctx.done],
+      inputs=[m.dof_treeid, d.tree_awake, d.qfrc_smooth, d.qfrc_constraint, d.efc.Ma, ctx.done],
       outputs=[ctx.grad, ctx.grad_dot],
       block_dim=m.block_dim.update_gradient_grad,
     )
@@ -3291,111 +3351,116 @@ def _solve_beta_zero(
   ctx_beta_den_out[worldid] = 0.0
 
 
-@wp.kernel
-def _solve_beta_accumulate_tiled(
-  # Model:
-  nv: int,
-  # In:
-  ctx_grad_in: wp.array2d[float],
-  ctx_Mgrad_in: wp.array2d[float],
-  ctx_prev_grad_in: wp.array2d[float],
-  ctx_prev_Mgrad_in: wp.array2d[float],
-  ctx_done_in: wp.array[bool],
-  # Out:
-  ctx_beta_num_out: wp.array[float],
-  ctx_beta_den_out: wp.array[float],
-):
-  worldid, tid = wp.tid()
+@cache_kernel
+def _solve_beta_accumulate_tiled(nv: int, sleep_enabled: bool = False):
+  SLEEP_ENABLED = sleep_enabled
 
-  if ctx_done_in[worldid]:
-    return
+  @wp.kernel(module="unique", enable_backward=False)
+  def kernel(
+    # Model:
+    dof_treeid: wp.array[int],
+    # Data in:
+    tree_awake_in: wp.array2d[int],
+    # In:
+    ctx_grad_in: wp.array2d[float],
+    ctx_Mgrad_in: wp.array2d[float],
+    ctx_prev_grad_in: wp.array2d[float],
+    ctx_prev_Mgrad_in: wp.array2d[float],
+    ctx_done_in: wp.array[bool],
+    # Out:
+    ctx_beta_num_out: wp.array[float],
+    ctx_beta_den_out: wp.array[float],
+  ):
+    worldid, tid = wp.tid()
 
-  local_num = float(0.0)
-  local_den = float(0.0)
-  BLOCK_DIM = wp.block_dim()
+    if ctx_done_in[worldid]:
+      return
 
-  for dofid in range(tid, nv, BLOCK_DIM):
-    prev_Mgrad = ctx_prev_Mgrad_in[worldid, dofid]
-    num = ctx_grad_in[worldid, dofid] * (ctx_Mgrad_in[worldid, dofid] - prev_Mgrad)
-    den = ctx_prev_grad_in[worldid, dofid] * prev_Mgrad
-    local_num += num
-    local_den += den
+    local_num = float(0.0)
+    local_den = float(0.0)
+    BLOCK_DIM = wp.block_dim()
 
-  num_tile = wp.tile(local_num, preserve_type=True)
-  num_sum = wp.tile_reduce(wp.add, num_tile)
+    for dofid in range(tid, nv, BLOCK_DIM):
+      if wp.static(SLEEP_ENABLED):
+        treeid = dof_treeid[dofid]
+        if tree_awake_in[worldid, treeid] == 0:
+          continue
 
-  den_tile = wp.tile(local_den, preserve_type=True)
-  den_sum = wp.tile_reduce(wp.add, den_tile)
+      prev_Mgrad = ctx_prev_Mgrad_in[worldid, dofid]
+      num = ctx_grad_in[worldid, dofid] * (ctx_Mgrad_in[worldid, dofid] - prev_Mgrad)
+      den = ctx_prev_grad_in[worldid, dofid] * prev_Mgrad
+      local_num += num
+      local_den += den
 
-  if tid == 0:
-    ctx_beta_num_out[worldid] = num_sum[0]
-    ctx_beta_den_out[worldid] = den_sum[0]
+    num_tile = wp.tile(local_num, preserve_type=True)
+    num_sum = wp.tile_reduce(wp.add, num_tile)
 
+    den_tile = wp.tile(local_den, preserve_type=True)
+    den_sum = wp.tile_reduce(wp.add, den_tile)
 
-@wp.kernel
-def _solve_beta_accumulate(
-  # In:
-  ctx_grad_in: wp.array2d[float],
-  ctx_Mgrad_in: wp.array2d[float],
-  ctx_prev_grad_in: wp.array2d[float],
-  ctx_prev_Mgrad_in: wp.array2d[float],
-  ctx_done_in: wp.array[bool],
-  # Out:
-  ctx_beta_num_out: wp.array[float],
-  ctx_beta_den_out: wp.array[float],
-):
-  worldid, dofid = wp.tid()
+    if tid == 0:
+      ctx_beta_num_out[worldid] = num_sum[0]
+      ctx_beta_den_out[worldid] = den_sum[0]
 
-  if ctx_done_in[worldid]:
-    return
-
-  prev_Mgrad = ctx_prev_Mgrad_in[worldid, dofid]
-  num = ctx_grad_in[worldid, dofid] * (ctx_Mgrad_in[worldid, dofid] - prev_Mgrad)
-  den = ctx_prev_grad_in[worldid, dofid] * prev_Mgrad
-  wp.atomic_add(ctx_beta_num_out, worldid, num)
-  wp.atomic_add(ctx_beta_den_out, worldid, den)
+  return kernel
 
 
-@wp.kernel
-def _solve_search_update_cg_tiled(
-  # Model:
-  nv: int,
-  # In:
-  ctx_grad_in: wp.array2d[float],
-  ctx_Mgrad_in: wp.array2d[float],
-  ctx_search_in: wp.array2d[float],
-  ctx_beta_in: wp.array[float],
-  ctx_done_in: wp.array[bool],
-  # Out:
-  ctx_search_out: wp.array2d[float],
-  ctx_search_dot_out: wp.array[float],
-  ctx_prev_grad_out: wp.array2d[float],
-  ctx_prev_Mgrad_out: wp.array2d[float],
-):
-  worldid, tid = wp.tid()
+@cache_kernel
+def _solve_search_update_cg_tiled(nv: int, sleep_enabled: bool = False):
+  SLEEP_ENABLED = sleep_enabled
 
-  if ctx_done_in[worldid]:
-    return
+  @wp.kernel(module="unique", enable_backward=False)
+  def kernel(
+    # Model:
+    dof_treeid: wp.array[int],
+    # Data in:
+    tree_awake_in: wp.array2d[int],
+    # In:
+    ctx_grad_in: wp.array2d[float],
+    ctx_Mgrad_in: wp.array2d[float],
+    ctx_search_in: wp.array2d[float],
+    ctx_beta_in: wp.array[float],
+    ctx_done_in: wp.array[bool],
+    # Out:
+    ctx_search_out: wp.array2d[float],
+    ctx_search_dot_out: wp.array[float],
+    ctx_prev_grad_out: wp.array2d[float],
+    ctx_prev_Mgrad_out: wp.array2d[float],
+  ):
+    worldid, tid = wp.tid()
 
-  local_search_dot = float(0.0)
-  BLOCK_DIM = wp.block_dim()
-  beta = ctx_beta_in[worldid]
+    if ctx_done_in[worldid]:
+      return
 
-  for dofid in range(tid, nv, BLOCK_DIM):
-    mgrad = ctx_Mgrad_in[worldid, dofid]
-    search = -1.0 * mgrad + beta * ctx_search_in[worldid, dofid]
+    local_search_dot = float(0.0)
+    BLOCK_DIM = wp.block_dim()
+    beta = ctx_beta_in[worldid]
 
-    ctx_search_out[worldid, dofid] = search
-    local_search_dot += search * search
+    for dofid in range(tid, nv, BLOCK_DIM):
+      if wp.static(SLEEP_ENABLED):
+        treeid = dof_treeid[dofid]
+        if tree_awake_in[worldid, treeid] == 0:
+          ctx_search_out[worldid, dofid] = 0.0
+          ctx_prev_grad_out[worldid, dofid] = 0.0
+          ctx_prev_Mgrad_out[worldid, dofid] = 0.0
+          continue
 
-    ctx_prev_grad_out[worldid, dofid] = ctx_grad_in[worldid, dofid]
-    ctx_prev_Mgrad_out[worldid, dofid] = mgrad
+      mgrad = ctx_Mgrad_in[worldid, dofid]
+      search = -1.0 * mgrad + beta * ctx_search_in[worldid, dofid]
 
-  search_dot_tile = wp.tile(local_search_dot, preserve_type=True)
-  search_dot_sum = wp.tile_reduce(wp.add, search_dot_tile)
+      ctx_search_out[worldid, dofid] = search
+      local_search_dot += search * search
 
-  if tid == 0:
-    ctx_search_dot_out[worldid] = search_dot_sum[0]
+      ctx_prev_grad_out[worldid, dofid] = ctx_grad_in[worldid, dofid]
+      ctx_prev_Mgrad_out[worldid, dofid] = mgrad
+
+    search_dot_tile = wp.tile(local_search_dot, preserve_type=True)
+    search_dot_sum = wp.tile_reduce(wp.add, search_dot_tile)
+
+    if tid == 0:
+      ctx_search_dot_out[worldid] = search_dot_sum[0]
+
+  return kernel
 
 
 @cache_kernel
@@ -3559,15 +3624,16 @@ def _solver_iteration(
 
   # polak-ribiere
   if m.opt.solver == types.SolverType.CG:
+    sleep_enabled = _is_sleep_enabled(m)
     wp.launch(
       _solve_beta_zero,
       dim=d.nworld,
       outputs=[ctx.beta, ctx.beta_den],
     )
     wp.launch_tiled(
-      _solve_beta_accumulate_tiled,
+      _solve_beta_accumulate_tiled(m.nv, sleep_enabled),
       dim=d.nworld,
-      inputs=[m.nv, ctx.grad, ctx.Mgrad, ctx.prev_grad, ctx.prev_Mgrad, ctx.done],
+      inputs=[m.dof_treeid, d.tree_awake, ctx.grad, ctx.Mgrad, ctx.prev_grad, ctx.prev_Mgrad, ctx.done],
       outputs=[ctx.beta, ctx.beta_den],
       block_dim=m.block_dim.solve_beta_accumulate,
     )
@@ -3594,9 +3660,9 @@ def _solver_iteration(
       ],
     )
     wp.launch_tiled(
-      _solve_search_update_cg_tiled,
+      _solve_search_update_cg_tiled(m.nv, sleep_enabled),
       dim=d.nworld,
-      inputs=[m.nv, ctx.grad, ctx.Mgrad, ctx.search, ctx.beta, ctx.done],
+      inputs=[m.dof_treeid, d.tree_awake, ctx.grad, ctx.Mgrad, ctx.search, ctx.beta, ctx.done],
       outputs=[ctx.search, ctx.search_dot, ctx.prev_grad, ctx.prev_Mgrad],
       block_dim=m.block_dim.solve_search_update_cg,
     )
@@ -3669,30 +3735,34 @@ def init_context(m: types.Model, d: types.Data, ctx: SolverContext | InverseCont
 
 @event_scope
 def solve(m: types.Model, d: types.Data):
-  if m.opt.enableflags & types.EnableBit.SLEEP:
+  sleep_enabled = _is_sleep_enabled(m)
+  if sleep_enabled and m.opt.solver == types.SolverType.NEWTON:
     # Self-contained like the island branch below: rebuild the active-DOF mapping from
     # tree_awake so solve() works when called directly (not only via fwd_acceleration).
     island.update_active_dofs(m, d)
     solve_compact(m, d)
-    if m.ntree > 1:
-      island.compute_island_mapping(m, d)
-    return
-
-  if d.njmax == 0 or m.nv == 0:
+  elif d.njmax == 0 or m.nv == 0:
     wp.copy(d.qacc, d.qacc_smooth)
     d.solver_niter.fill_(0)
   else:
     ctx = _create_solver_context(m, d)
     _solve(m, d, ctx)
 
+  if sleep_enabled and m.ntree > 1:
+    island.compute_island_mapping(m, d)
+
 
 def _solve(m: types.Model, d: types.Data, ctx: SolverContext, compact: bool = False):
   """Finds forces that satisfy constraints."""
   warmstart = not (m.opt.disableflags & types.DisableBit.WARMSTART)
   wp.launch(
-    _solve_init_dof(warmstart, m.is_sparse),
+    _solve_init_dof(
+      warmstart,
+      m.is_sparse,
+      _is_sleep_enabled(m) and m.opt.solver == types.SolverType.CG and not compact,
+    ),
     dim=(d.nworld, m.nv),
-    inputs=[d.nefc, d.qacc_warmstart, d.qacc_smooth],
+    inputs=[m.dof_treeid, d.nefc, d.qacc_warmstart, d.tree_awake, d.qacc_smooth],
     outputs=[d.qacc, d.qfrc_constraint],
   )
 
@@ -3707,9 +3777,9 @@ def _solve(m: types.Model, d: types.Data, ctx: SolverContext, compact: bool = Fa
   # CG search = -Mgrad
   if m.opt.solver == types.SolverType.CG:
     wp.launch_tiled(
-      _solve_init_search_cg_tiled,
+      _solve_init_search_cg_tiled(m.nv, _is_sleep_enabled(m)),
       dim=d.nworld,
-      inputs=[m.nv, ctx.grad, ctx.Mgrad],
+      inputs=[m.dof_treeid, d.tree_awake, ctx.grad, ctx.Mgrad],
       outputs=[ctx.search, ctx.search_dot, ctx.prev_grad, ctx.prev_Mgrad],
       block_dim=m.block_dim.solve_init_search_cg,
     )
