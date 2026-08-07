@@ -18,6 +18,7 @@ import mujoco
 import numpy as np
 import warp as wp
 from absl.testing import absltest
+from absl.testing import parameterized
 
 import mujoco_warp as mjw
 from mujoco_warp import test_data
@@ -34,8 +35,7 @@ def _assert_eq(a, b, name):
   np.testing.assert_allclose(a, b, err_msg=err_msg, atol=tol, rtol=tol)
 
 
-# TODO: Add tests comparing normal to engine implementation once available.
-class RayTest(absltest.TestCase):
+class RayTest(parameterized.TestCase):
   def test_ray_nothing(self):
     """Tests that ray returns -1 when nothing is hit."""
     mjm, mjd, m, d = test_data.fixture("ray.xml")
@@ -73,11 +73,14 @@ class RayTest(absltest.TestCase):
     wp.synchronize()
     geomid_np = geomid.numpy()[0, 0]
     dist_np = dist.numpy()[0, 0]
+    normal_np = normal.numpy()[0, 0]
     _assert_eq(geomid_np, 0, "geom_id")
     pnt_np, vec_np = pnt.numpy()[0, 0], vec.numpy()[0, 0]
     unused = np.zeros(1, dtype=np.int32)
-    mj_dist = mujoco.mj_ray(mjm, mjd, pnt_np, vec_np, None, 1, -1, unused)
+    mj_normal = np.zeros(3, dtype=np.float64)
+    mj_dist = mujoco.mj_ray(mjm, mjd, pnt_np, vec_np, None, 1, -1, unused, mj_normal)
     _assert_eq(dist_np, mj_dist, "dist")
+    _assert_eq(normal_np, mj_normal, "normal")
 
     # test that bvh raycast produces the same results
     rc = mjw.create_render_context(mjm)
@@ -116,11 +119,14 @@ class RayTest(absltest.TestCase):
     wp.synchronize()
     geomid_np = geomid.numpy()[0, 0]
     dist_np = dist.numpy()[0, 0]
+    normal_np = normal.numpy()[0, 0]
     _assert_eq(geomid_np, 1, "geom_id")
     pnt_np, vec_np = pnt.numpy()[0, 0], vec.numpy()[0, 0]
     unused = np.zeros(1, dtype=np.int32)
-    mj_dist = mujoco.mj_ray(mjm, mjd, pnt_np, vec_np, None, 1, -1, unused)
+    mj_normal = np.zeros(3, dtype=np.float64)
+    mj_dist = mujoco.mj_ray(mjm, mjd, pnt_np, vec_np, None, 1, -1, unused, mj_normal)
     _assert_eq(dist_np, mj_dist, "dist")
+    _assert_eq(normal_np, mj_normal, "normal")
 
     # test that bvh raycast produces the same results
     rc = mjw.create_render_context(mjm)
@@ -142,11 +148,14 @@ class RayTest(absltest.TestCase):
     wp.synchronize()
     geomid_np = geomid.numpy()[0, 0]
     dist_np = dist.numpy()[0, 0]
+    normal_np = normal.numpy()[0, 0]
     _assert_eq(geomid_np, 2, "geom_id")
     pnt_np, vec_np = pnt.numpy()[0, 0], vec.numpy()[0, 0]
     unused = np.zeros(1, dtype=np.int32)
-    mj_dist = mujoco.mj_ray(mjm, mjd, pnt_np, vec_np, None, 1, -1, unused)
+    mj_normal = np.zeros(3, dtype=np.float64)
+    mj_dist = mujoco.mj_ray(mjm, mjd, pnt_np, vec_np, None, 1, -1, unused, mj_normal)
     _assert_eq(dist_np, mj_dist, "dist")
+    _assert_eq(normal_np, mj_normal, "normal")
 
     # test that bvh raycast produces the same results
     rc = mjw.create_render_context(mjm)
@@ -164,11 +173,14 @@ class RayTest(absltest.TestCase):
     wp.synchronize()
     geomid_np = geomid.numpy()[0, 0]
     dist_np = dist.numpy()[0, 0]
+    normal_np = normal.numpy()[0, 0]
     _assert_eq(geomid_np, 2, "geom_id")
     pnt_np, vec_np = pnt.numpy()[0, 0], vec.numpy()[0, 0]
     unused = np.zeros(1, dtype=np.int32)
-    mj_dist = mujoco.mj_ray(mjm, mjd, pnt_np, vec_np, None, 1, -1, unused)
+    mj_normal = np.zeros(3, dtype=np.float64)
+    mj_dist = mujoco.mj_ray(mjm, mjd, pnt_np, vec_np, None, 1, -1, unused, mj_normal)
     _assert_eq(dist_np, mj_dist, "dist")
+    _assert_eq(normal_np, mj_normal, "normal")
 
     # test that bvh raycast produces the same results
     dist, geomid, normal = mjw.ray(m, d, pnt, vec, rc=rc)
@@ -185,11 +197,14 @@ class RayTest(absltest.TestCase):
     wp.synchronize()
     geomid_np = geomid.numpy()[0, 0]
     dist_np = dist.numpy()[0, 0]
+    normal_np = normal.numpy()[0, 0]
     _assert_eq(geomid_np, 2, "geom_id")
     pnt_np, vec_np = pnt.numpy()[0, 0], vec.numpy()[0, 0]
     unused = np.zeros(1, dtype=np.int32)
-    mj_dist = mujoco.mj_ray(mjm, mjd, pnt_np, vec_np, None, 1, -1, unused)
+    mj_normal = np.zeros(3, dtype=np.float64)
+    mj_dist = mujoco.mj_ray(mjm, mjd, pnt_np, vec_np, None, 1, -1, unused, mj_normal)
     _assert_eq(dist_np, mj_dist, "dist")
+    _assert_eq(normal_np, mj_normal, "normal")
 
     # test that bvh raycast produces the same results
     dist, geomid, normal = mjw.ray(m, d, pnt, vec, rc=rc)
@@ -207,14 +222,17 @@ class RayTest(absltest.TestCase):
     vec = wp.array([wp.normalize(wp.vec3(0.0, 0.05, 1.0))], dtype=wp.vec3).reshape((1, 1))
 
     mj_geomid = np.zeros(1, dtype=np.int32)
-    mj_dist = mujoco.mj_ray(mjm, mjd, pnt.numpy()[0, 0], vec.numpy()[0, 0], None, 1, -1, mj_geomid)
+    mj_normal = np.zeros(3, dtype=np.float64)
+    mj_dist = mujoco.mj_ray(mjm, mjd, pnt.numpy()[0, 0], vec.numpy()[0, 0], None, 1, -1, mj_geomid, mj_normal)
     dist, geomid, normal = mjw.ray(m, d, pnt, vec)
     wp.synchronize()
     geomid_np = geomid.numpy()[0, 0]
     dist_np = dist.numpy()[0, 0]
+    normal_np = normal.numpy()[0, 0]
 
     _assert_eq(geomid_np, mj_geomid[0], "geomid")
     _assert_eq(dist_np, mj_dist, "dist")
+    _assert_eq(normal_np, mj_normal, "normal")
 
     # test that bvh raycast produces the same results
     rc = mjw.create_render_context(mjm)
@@ -236,11 +254,14 @@ class RayTest(absltest.TestCase):
     wp.synchronize()
     geomid_np = geomid.numpy()[0, 0]
     dist_np = dist.numpy()[0, 0]
+    normal_np = normal.numpy()[0, 0]
     _assert_eq(geomid_np, 3, "geom_id")
     pnt_np, vec_np = pnt.numpy()[0, 0], vec.numpy()[0, 0]
     unused = np.zeros(1, dtype=np.int32)
-    mj_dist = mujoco.mj_ray(mjm, mjd, pnt_np, vec_np, None, 1, -1, unused)
+    mj_normal = np.zeros(3, dtype=np.float64)
+    mj_dist = mujoco.mj_ray(mjm, mjd, pnt_np, vec_np, None, 1, -1, unused, mj_normal)
     _assert_eq(dist_np, mj_dist, "dist")
+    _assert_eq(normal_np, mj_normal, "normal")
 
     # test that bvh raycast produces the same results
     rc = mjw.create_render_context(mjm)
@@ -258,11 +279,14 @@ class RayTest(absltest.TestCase):
     wp.synchronize()
     geomid_np = geomid.numpy()[0, 0]
     dist_np = dist.numpy()[0, 0]
+    normal_np = normal.numpy()[0, 0]
     _assert_eq(geomid_np, 3, "geom_id")
     pnt_np, vec_np = pnt.numpy()[0, 0], vec.numpy()[0, 0]
     unused = np.zeros(1, dtype=np.int32)
-    mj_dist = mujoco.mj_ray(mjm, mjd, pnt_np, vec_np, None, 1, -1, unused)
+    mj_normal = np.zeros(3, dtype=np.float64)
+    mj_dist = mujoco.mj_ray(mjm, mjd, pnt_np, vec_np, None, 1, -1, unused, mj_normal)
     _assert_eq(dist_np, mj_dist, "dist")
+    _assert_eq(normal_np, mj_normal, "normal")
 
     # test that bvh raycast produces the same results
     dist, geomid, normal = mjw.ray(m, d, pnt, vec, rc=rc)
@@ -283,12 +307,15 @@ class RayTest(absltest.TestCase):
     wp.synchronize()
     geomid_np = geomid.numpy()[0, 0]
     dist_np = dist.numpy()[0, 0]
+    normal_np = normal.numpy()[0, 0]
     _assert_eq(geomid_np, 4, "geom_id")
 
     pnt_np, vec_np = pnt.numpy()[0, 0], vec.numpy()[0, 0]
     unused = np.zeros(1, dtype=np.int32)
-    mj_dist = mujoco.mj_ray(mjm, mjd, pnt_np, vec_np, None, 1, -1, unused)
+    mj_normal = np.zeros(3, dtype=np.float64)
+    mj_dist = mujoco.mj_ray(mjm, mjd, pnt_np, vec_np, None, 1, -1, unused, mj_normal)
     _assert_eq(dist_np, mj_dist, "dist-tetrahedron")
+    _assert_eq(normal_np, mj_normal, "normal-tetrahedron")
 
     # test that bvh raycast produces the same results
     rc = mjw.create_render_context(mjm)
@@ -320,12 +347,15 @@ class RayTest(absltest.TestCase):
     wp.synchronize()
     geomid_np = geomid.numpy()[0, 0]
     dist_np = dist.numpy()[0, 0]
+    normal_np = normal.numpy()[0, 0]
     _assert_eq(geomid_np, 5, "geom_id")
 
     pnt_np, vec_np = pnt.numpy()[0, 0], vec.numpy()[0, 0]
     unused = np.zeros(1, dtype=np.int32)
-    mj_dist = mujoco.mj_ray(mjm, mjd, pnt_np, vec_np, None, 1, -1, unused)
+    mj_normal = np.zeros(3, dtype=np.float64)
+    mj_dist = mujoco.mj_ray(mjm, mjd, pnt_np, vec_np, None, 1, -1, unused, mj_normal)
     _assert_eq(dist_np, mj_dist, "dist-dodecahedron")
+    _assert_eq(normal_np, mj_normal, "normal-dodecahedron")
 
     # test that bvh raycast produces the same results
     dist, geomid, normal = mjw.ray(m, d, pnt, vec, rc=rc)
@@ -486,6 +516,56 @@ class RayTest(absltest.TestCase):
     _assert_eq(bvh_geomid_np, geomid_np, "geom_id")
     _assert_eq(bvh_dist_np, dist_np, "dist")
     _assert_eq(bvh_normal_np, normal_np, "normal")
+
+  @parameterized.product(
+    nworld=[1, 2],
+    mode=["shared", "batched"],
+  )
+  def test_ray_multi_world(self, nworld, mode):
+    mjm, mjd, m, d = test_data.fixture("ray.xml", nworld=nworld)
+
+    if mode == "shared":
+      pnt = wp.array([wp.vec3(2.0, 1.0, 3.0)], dtype=wp.vec3).reshape((1, 1))
+      vec = wp.array([wp.normalize(wp.vec3(0.1, 0.2, -1.0))], dtype=wp.vec3).reshape((1, 1))
+      expected_geomids = [0] * nworld
+      expected_hits = [True] * nworld
+    else:  # batched
+      # World 0 ray: looking down and hits geom 0
+      # World 1 ray: looking up (opposite direction) and misses (returns -1)
+      pnt = wp.array([wp.vec3(2.0, 1.0, 3.0), wp.vec3(2.0, 1.0, 3.0)], dtype=wp.vec3).reshape((2, 1))
+      vec = wp.array(
+        [
+          wp.normalize(wp.vec3(0.1, 0.2, -1.0)),
+          wp.normalize(wp.vec3(0.1, 0.2, 1.0)),
+        ],
+        dtype=wp.vec3,
+      ).reshape((2, 1))
+      expected_geomids = [0] if nworld == 1 else [0, -1]
+      expected_hits = [True] if nworld == 1 else [True, False]
+
+    # Non-BVH path
+    dist, geomid, normal = mjw.ray(m, d, pnt, vec)
+
+    self.assertEqual(dist.shape, (nworld, 1))
+    self.assertEqual(geomid.shape, (nworld, 1))
+
+    for w in range(nworld):
+      _assert_eq(geomid.numpy()[w, 0], expected_geomids[w], f"geom_id world {w}")
+      if expected_hits[w]:
+        self.assertGreater(dist.numpy()[w, 0], 0.0)
+      else:
+        _assert_eq(dist.numpy()[w, 0], -1.0, f"dist world {w}")
+
+    # BVH-accelerated path
+    rc = mjw.create_render_context(mjm, nworld=nworld)
+    dist_bvh, geomid_bvh, normal_bvh = mjw.ray(m, d, pnt, vec, rc=rc)
+
+    self.assertEqual(dist_bvh.shape, (nworld, 1))
+    self.assertEqual(geomid_bvh.shape, (nworld, 1))
+
+    for w in range(nworld):
+      _assert_eq(geomid_bvh.numpy()[w, 0], geomid.numpy()[w, 0], f"geom_id bvh world {w}")
+      _assert_eq(dist_bvh.numpy()[w, 0], dist.numpy()[w, 0], f"dist bvh world {w}")
 
 
 if __name__ == "__main__":
