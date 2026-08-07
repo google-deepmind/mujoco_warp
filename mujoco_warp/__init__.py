@@ -29,6 +29,9 @@ from mujoco_warp._src.types import Data as Data
 # isort: on
 
 
+from mujoco_warp._src.adjoint import backward_context as backward_context
+from mujoco_warp._src.adjoint import create_backward_context as create_backward_context
+from mujoco_warp._src.adjoint import enable_grad as enable_grad
 from mujoco_warp._src.bvh import refit_bvh as refit_bvh
 from mujoco_warp._src.collision_driver import collision as collision
 from mujoco_warp._src.collision_driver import nxn_broadphase as nxn_broadphase
