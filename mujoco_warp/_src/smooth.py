@@ -19,6 +19,9 @@ import warp as wp
 from mujoco_warp._src import math
 from mujoco_warp._src import support
 from mujoco_warp._src import util_misc
+from mujoco_warp._src.batched_cholesky import BATCHED_CHOLESKY_MAX_DIM as _BATCHED_CHOLESKY_MAX_DIM
+from mujoco_warp._src.batched_cholesky import USE_BATCHED_CHOLESKY as _USE_BATCHED_CHOLESKY
+from mujoco_warp._src.batched_cholesky import batched_factor_solve_i
 from mujoco_warp._src.types import MJ_MAXVAL
 from mujoco_warp._src.types import MJ_MINVAL
 from mujoco_warp._src.types import CamLightType
@@ -1080,11 +1083,90 @@ def _qLDiag_div(
   D_out[worldid, dofid] = 1.0 / L_in[worldid, 0, diag_i]
 
 
+@cache_kernel
+def _qLD_acc_fused(nv: int, nlevels: int):
+  """Fused sparse L'*D*L factorization: all elimination levels + diagonal in one kernel.
+
+  Equivalent to the per-level ``_qLD_acc`` launches followed by ``_qLDiag_div``, but
+  folded into a single kernel (one block per world) that loops over the elimination
+  tree levels internally with a block-wide barrier between them. Updates within a
+  level are mutually independent (that is the definition of a level), so processing
+  them in strided chunks with atomics is order-independent; the cross-level dependency
+  is enforced by ``_syncthreads()``. This mirrors ``_solve_LD_sparse_fused`` and
+  removes ~nlevels tiny launches per factorization (dominant launch overhead on HIP).
+  """
+
+  @wp.func_native(snippet="WP_TILE_SYNC();")
+  def _syncthreads():
+    pass
+
+  @wp.kernel(module="unique", enable_backward=False)
+  def kernel(
+    # Model:
+    M_rownnz: wp.array[int],
+    M_rowadr: wp.array[int],
+    all_updates: wp.array[wp.vec3i],
+    level_offsets: wp.array[int],
+    # In/Out:
+    L: wp.array3d[float],
+    # Out:
+    D_out: wp.array2d[float],
+  ):
+    worldid, tid = wp.tid()
+    NV = wp.static(nv)
+    NLEVELS = wp.static(nlevels)
+    BLOCK_DIM = wp.block_dim()
+
+    # Iterate elimination levels deepest-first to match the reversed per-level
+    # launch order in the unfused path.
+    for level in range(NLEVELS):
+      level_idx = NLEVELS - 1 - level
+      level_offset = level_offsets[level_idx]
+      level_size = level_offsets[level_idx + 1] - level_offset
+
+      for u in range(tid, level_size, BLOCK_DIM):
+        update = all_updates[level_offset + u]
+        i, k, Madr_ki = update[0], update[1], update[2]
+        Madr_i = M_rowadr[i]
+        diag_k = M_rowadr[k] + M_rownnz[k] - 1
+        # tmp = M(k,i) / M(k,k)
+        tmp = L[worldid, 0, Madr_ki] / L[worldid, 0, diag_k]
+        for j in range(M_rownnz[i]):
+          # M(i,j) -= M(k,j) * tmp
+          wp.atomic_sub(L[worldid, 0], Madr_i + j, L[worldid, 0, M_rowadr[k] + j] * tmp)
+        # M(k,i) = tmp
+        L[worldid, 0, Madr_ki] = tmp
+      _syncthreads()
+
+    # Diagonal inverse (folds in _qLDiag_div).
+    for dofid in range(tid, NV, BLOCK_DIM):
+      diag_i = M_rowadr[dofid] + M_rownnz[dofid] - 1
+      D_out[worldid, dofid] = 1.0 / L[worldid, 0, diag_i]
+
+  return kernel
+
+
 def _factor_i_sparse(m: Model, d: Data, M: wp.array3d[float], L: wp.array3d[float], D: wp.array2d[float]):
   """Sparse L'*D*L factorization of inertia-like matrix M, assumed spd."""
   wp.copy(L, M)
 
-  for i in reversed(range(len(m.qLD_updates))):
+  nlevels = len(m.qLD_updates)
+
+  # Fused single-launch factorization on GPU: folds the per-level _qLD_acc
+  # launches (and _qLDiag_div) into one kernel, eliminating ~nlevels launches
+  # per factorization. Falls back to the per-level path on CPU or when there
+  # are no updates (purely diagonal M).
+  if nlevels > 0 and wp.get_device().is_cuda:
+    wp.launch(
+      _qLD_acc_fused(m.nv, nlevels),
+      dim=(d.nworld, m.block_dim.solve_LD_sparse_fused),
+      inputs=[m.M_rownnz, m.M_rowadr, m.qLD_all_updates, m.qLD_level_offsets, L],
+      outputs=[D],
+      block_dim=m.block_dim.solve_LD_sparse_fused,
+    )
+    return
+
+  for i in reversed(range(nlevels)):
     qLD_updates = m.qLD_updates[i]
     wp.launch(_qLD_acc, dim=(d.nworld, qLD_updates.size), inputs=[m.M_rownnz, m.M_rowadr, qLD_updates, L], outputs=[L])
 
@@ -2994,13 +3076,22 @@ def _factor_solve_i_dense(
   L: wp.array3d[float],
 ):
   for tile in m.M_tiles:
-    wp.launch_tiled(
-      _tile_cholesky_factorize_solve(tile),
-      dim=(d.nworld, tile.adr.size),
-      inputs=[M, y, tile.adr],
-      outputs=[x, L],
-      block_dim=m.block_dim.cholesky_factorize_solve,
-    )
+    if _USE_BATCHED_CHOLESKY and tile.size <= _BATCHED_CHOLESKY_MAX_DIM:
+      wp.launch_tiled(
+        batched_factor_solve_i(tile.size),
+        dim=(d.nworld, tile.adr.size),
+        inputs=[M, y, tile.adr],
+        outputs=[x, L],
+        block_dim=64,
+      )
+    else:
+      wp.launch_tiled(
+        _tile_cholesky_factorize_solve(tile),
+        dim=(d.nworld, tile.adr.size),
+        inputs=[M, y, tile.adr],
+        outputs=[x, L],
+        block_dim=m.block_dim.cholesky_factorize_solve,
+      )
 
 
 def factor_solve_i(m, d, M, L, D, x, y):

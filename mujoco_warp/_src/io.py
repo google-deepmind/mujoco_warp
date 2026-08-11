@@ -14,6 +14,7 @@
 # ==============================================================================
 
 import dataclasses
+import os
 import warnings
 from typing import Any, Optional, Sequence
 
@@ -266,8 +267,12 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
   # On AMD GPU with float32 + early-exit solver (1-2 Newton iters typical),
   # ls_iterations=10 gives equivalent physics quality at ~3-4x less linesearch cost.
   # User can override by setting m.opt.ls_iterations after put_model().
-  if wp.get_device().is_hip and opt.ls_iterations > 10:
-    opt.ls_iterations = 10
+  # The cap itself is env-tunable (MJW_LS_ITERS_HIP_CAP) so the linesearch budget
+  # can be swept lower (e.g. 6-8) without editing config, since linesearch cost
+  # scales directly with ls_iterations (dim=(nworld, ls_iterations)).
+  _ls_cap = int(os.environ.get("MJW_LS_ITERS_HIP_CAP", "10"))
+  if wp.get_device().is_hip and opt.ls_iterations > _ls_cap:
+    opt.ls_iterations = _ls_cap
 
   opt.run_collision_detection = True
   contact_sensor_maxmatch_id = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_NUMERIC, "contact_sensor_maxmatch")
@@ -307,6 +312,38 @@ def put_model(mjm: mujoco.MjModel) -> types.Model:
   m.nmaxpyramid = np.maximum(1, 2 * (m.nmaxcondim - 1))
   m.has_sdf_geom = (mjm.geom_type == mujoco.mjtGeom.mjGEOM_SDF).any()
   m.block_dim = types.BlockDim()
+  # AMD Opt: wavefront-align the dense linear-algebra launch dims on HIP/ROCm.
+  # gfx942 has a 64-lane wavefront; the blocked Cholesky (the single dominant
+  # solver kernel, ~25% of GPU-busy time) and the smooth-dynamics Cholesky ship
+  # with block_dim=32 = half a wavefront, which caps per-CU SIMD occupancy. Round
+  # these hot launch dims up to a full wavefront on HIP. This is a pure launch-
+  # geometry change (no algorithm change) and leaves CUDA behavior untouched.
+  if wp.get_device().is_hip:
+    for _bd_field in (
+      "update_gradient_cholesky_blocked",
+      "cholesky_factorize",
+      "cholesky_solve",
+      "cholesky_factorize_solve",
+    ):
+      if getattr(m.block_dim, _bd_field) < 64:
+        setattr(m.block_dim, _bd_field, 64)
+  # Validated on G1/gfx942: update_gradient_cholesky_blocked=64 is correct and
+  # ~7% faster than 32 at 2048 envs (larger at higher env counts, where the
+  # blocked Cholesky dominates). NOTE: values >64 (e.g. 128) overshoot the tiled
+  # Cholesky's thread-cooperation assumptions and produce NaNs — 64 (one full
+  # wavefront) is the safe ceiling for the blocked-Cholesky launch dim.
+  #
+  # Every block_dim field is overridable from the environment so occupancy can be
+  # swept without recompiling, e.g. MJW_BLOCKDIM_LINESEARCH_ITERATIVE=64.
+  for _bd in dataclasses.fields(types.BlockDim):
+    _bd_env = os.environ.get("MJW_BLOCKDIM_" + _bd.name.upper())
+    if _bd_env is not None:
+      setattr(m.block_dim, _bd.name, int(_bd_env))
+      print(
+        f"[mujoco_warp] block_dim.{_bd.name}={int(_bd_env)} "
+        f"(from MJW_BLOCKDIM_{_bd.name.upper()})",
+        flush=True,
+      )
   m.is_sparse = is_sparse(mjm)
   m.has_fluid = mjm.opt.wind.any() or mjm.opt.density > 0 or mjm.opt.viscosity > 0
 
@@ -1494,6 +1531,12 @@ def put_data(
     d._hip_graph_exec = None  # compiled graph executable
     d._hip_step_warmup_count = 0  # counts warmup steps before capture
     d._HIP_GRAPH_WARMUP_STEPS = 3  # number of warmup steps before capture
+    # Pre-allocate the solver's D2H convergence-check buffer here, outside any
+    # graph-capture window. Allocating pinned host memory during hipGraph
+    # capture is illegal (hipErrorStreamCaptureUnsupported) and previously
+    # crashed the first captured step (see solver._solve). Allocating it eagerly
+    # in put_data guarantees it exists before capture begins.
+    d._nsolving_host = wp.empty(1, dtype=int, device="cpu", pinned=True)
 
   return d
 

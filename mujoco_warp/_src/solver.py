@@ -13,6 +13,7 @@
 # limitations under the License.
 # ==============================================================================
 
+import os
 from math import ceil
 from math import sqrt
 
@@ -23,6 +24,9 @@ from mujoco_warp._src import math
 from mujoco_warp._src import smooth
 from mujoco_warp._src import support
 from mujoco_warp._src import types
+from mujoco_warp._src.batched_cholesky import BATCHED_CHOLESKY_MAX_DIM as _BATCHED_CHOLESKY_MAX_DIM
+from mujoco_warp._src.batched_cholesky import USE_BATCHED_CHOLESKY as _USE_BATCHED_CHOLESKY
+from mujoco_warp._src.batched_cholesky import batched_cholesky_factorize_solve
 from mujoco_warp._src.block_cholesky import create_blocked_cholesky_factorize_solve_func
 from mujoco_warp._src.block_cholesky import create_blocked_cholesky_solve_func
 from mujoco_warp._src.types import InverseContext
@@ -147,6 +151,41 @@ def create_solver_context(m: types.Model, d: types.Data) -> SolverContext:
     changed_efc_ids=wp.empty((nworld, njmax), dtype=int) if alloc_h else wp.empty((nworld, 0), dtype=int),
     changed_efc_count=wp.empty((nworld,), dtype=int) if alloc_h else wp.empty((0,), dtype=int),
   )
+
+
+def _get_cached_solver_context(m: types.Model, d: types.Data) -> SolverContext:
+  """Return a persistent SolverContext cached on ``d``, reused across solves.
+
+  ``create_solver_context`` allocates ~16-24 device arrays on every solve; with
+  the synchronous ROCm allocator each per-step free is a ``hipFree`` that stalls
+  the device (profiling showed ~30% of wall time in per-step frees). Caching the
+  context and reusing it removes those allocations entirely.
+
+  Semantics are preserved exactly: ``create_solver_context`` zero-initializes only
+  grad/Mgrad/h/hfactor (the rest are ``wp.empty`` = uninitialized and overwritten
+  before use each solve). On reuse we re-zero just those four arrays, so the solver
+  sees the same initial state as a freshly allocated context.
+  """
+  nv_pad = m.nv_pad
+  alloc_h = m.opt.solver == types.SolverType.NEWTON
+  alloc_hfactor = alloc_h and m.nv > _BLOCK_CHOLESKY_DIM
+  sig = (d.nworld, m.nv, nv_pad, d.njmax, int(m.opt.solver), alloc_h, alloc_hfactor)
+
+  ctx = getattr(d, "_cached_solver_ctx", None)
+  if ctx is None or getattr(d, "_cached_solver_ctx_sig", None) != sig:
+    ctx = create_solver_context(m, d)
+    d._cached_solver_ctx = ctx
+    d._cached_solver_ctx_sig = sig
+    return ctx
+
+  # Reused context: restore the zero-init invariant.
+  ctx.grad.zero_()
+  ctx.Mgrad.zero_()
+  if alloc_h:
+    ctx.h.zero_()
+  if alloc_hfactor:
+    ctx.hfactor.zero_()
+  return ctx
 
 
 @wp.func
@@ -2866,7 +2905,18 @@ def _cholesky_factorize_solve(m: types.Model, d: types.Data, ctx: SolverContext,
   If skip_unchanged is True (blocked path only), worlds where no constraints
   changed reuse the cached factorization in hfactor instead of refactorizing.
   """
-  if m.nv <= _BLOCK_CHOLESKY_DIM:
+  # Lane-cooperative batched kernel: one 64-lane wavefront per world. Handles the
+  # full nv (dense AND former blocked regime) as long as nv fits the wavefront (<=64),
+  # reading only the upper triangle of ctx.h (so no padding_h/hfactor needed).
+  if _USE_BATCHED_CHOLESKY and m.nv <= _BATCHED_CHOLESKY_MAX_DIM:
+    wp.launch_tiled(
+      batched_cholesky_factorize_solve(m.nv, m.nv_pad),
+      dim=d.nworld,
+      inputs=[ctx.grad, ctx.h, ctx.done],
+      outputs=[ctx.Mgrad],
+      block_dim=64,
+    )
+  elif m.nv <= _BLOCK_CHOLESKY_DIM:
     wp.launch_tiled(
       update_gradient_cholesky(m.nv),
       dim=d.nworld,
@@ -3401,7 +3451,7 @@ def solve(m: types.Model, d: types.Data):
       scatter_Ma = m.opt.integrator != types.IntegratorType.RK4
       island.scatter_island_results(m, d, ctx, scatter_Ma=scatter_Ma)
     else:
-      ctx = create_solver_context(m, d)
+      ctx = _get_cached_solver_context(m, d)
       _solve(m, d, ctx)
 
 
@@ -3439,21 +3489,31 @@ def _solve(m: types.Model, d: types.Data, ctx: SolverContext):
     )
   elif m.opt.iterations != 0 and wp.get_device().is_hip:
     # AMD: self-implemented hipGraphConditionalHandle equivalent.
-    # Samples convergence every N_CHECK=3 iterations to reduce D2H overhead.
-    # D2H sync ~2µs; checking every 3 iters reduces sync count by ~67%.
-    N_CHECK = 3
-    if not hasattr(d, "_nsolving_host"):
-      d._nsolving_host = wp.empty(1, dtype=int, device="cpu", pinned=True)
+    # Samples convergence every N_CHECK iterations to reduce D2H overhead.
+    # Each check is a full stream drain + D2H readback, so it trades solver
+    # early-exit granularity against pipeline-stall count; env-tunable so the
+    # balance can be swept (MJW_SOLVER_NCHECK, default 3).
+    N_CHECK = max(1, int(os.environ.get("MJW_SOLVER_NCHECK", "3")))
     _dev = wp.get_device()
     # AMD: skip D2H sync during hipGraph capture (synchronize_stream forbidden)
     _in_capture = getattr(d, "_hip_graph_capturing", False)
+    # The pinned buffer is normally pre-allocated in put_data (outside any
+    # capture window). Only lazily allocate here as a fallback, and never while
+    # a graph is being captured — pinned allocation during capture is illegal.
+    if not hasattr(d, "_nsolving_host") and not _in_capture:
+      d._nsolving_host = wp.empty(1, dtype=int, device="cpu", pinned=True)
     for i in range(m.opt.iterations):
       _solver_iteration(m, d, ctx, step_size_cost, nsolving)
       if not _in_capture and (i + 1) % N_CHECK == 0:
         wp.copy(d._nsolving_host, nsolving)
         wp.synchronize_stream(_dev)  # stream-scoped sync: ~2µs
         if d._nsolving_host.numpy()[0] == 0:
+          if os.environ.get("MJW_LOG_NITER") == "1":
+            print(f"[niter] converged at {i + 1}", flush=True)
           break  # all worlds converged — exit early
+    else:
+      if os.environ.get("MJW_LOG_NITER") == "1" and not _in_capture:
+        print(f"[niter] reached cap {m.opt.iterations}", flush=True)
   else:
     for _ in range(m.opt.iterations):
       _solver_iteration(m, d, ctx, step_size_cost, nsolving)

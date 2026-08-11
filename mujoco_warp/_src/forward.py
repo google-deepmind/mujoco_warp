@@ -1483,17 +1483,41 @@ def step(m: Model, d: Data):
       for _ in range(_HIP_GRAPH_PRE_CAPTURE_WARMUP):
         _hip_graph_step_single_stream(m, d)
       _wp.synchronize_device(device)
+
+      # Auto-calibrate the replay iteration budget to the solver convergence
+      # observed during warmup. The warmup steps above run the eager solver
+      # path (capture flag not yet set), so d.solver_niter now holds the real
+      # per-world iteration count needed to converge. Picking the budget from
+      # this avoids the over-provisioned fixed default (which forced every
+      # captured step to run ~10 iters even when the workload converges in 1-2,
+      # the dominant cause of graph-vs-eager slowdown). A headroom multiplier
+      # guards against warmup under-estimating steady-state convergence; the
+      # periodic monitor in Phase 4 escalates further if contacts increase it.
+      try:
+        _conv = int(d.solver_niter.numpy().max())
+      except Exception:
+        _conv = 0
+      _headroom = float(_os.environ.get("MJW_HIP_GRAPH_HEADROOM", "1.25"))
+      d._hip_graph_auto_iters = max(1, int(_conv * _headroom + 0.5))
+      d._hip_graph_step_count = 0
+
       _hip_graph_zero_scratch(d)  # flush warmup dirt before capture
       _wp.synchronize_device(device)
 
-      # Capture one graph per iteration count in the adaptive sequence
-      # PR#15 disables mempool by default (ROCm memset bug) but graph capture
-      # needs mempool for wp.zeros/wp.empty inside step functions.
-      # Re-enable temporarily for capture only.
-      _mempool_reenabled = False
+      # Graph capture needs the stream-ordered mempool for the wp.zeros/wp.empty
+      # temporaries created inside the step. Ensure it is on for capture and
+      # restore the caller's prior setting afterwards (do NOT force-disable: the
+      # old ROCm memset corruption was a zero-length hipMemsetAsync no-op, now
+      # handled in Warp's wp_memset_device, so the mempool is safe to keep on).
       try:
-        _wp.set_mempool_enabled(device, True)
-        _mempool_reenabled = True
+        _prev_mempool = _wp.is_mempool_enabled(device)
+      except Exception:
+        _prev_mempool = None
+      _mempool_changed = False
+      try:
+        if _prev_mempool is not True:
+          _wp.set_mempool_enabled(device, True)
+          _mempool_changed = True
       except Exception:
         pass
 
@@ -1504,8 +1528,12 @@ def step(m: Model, d: Data):
         d._hip_graph_capturing = True
         try:
           began = _wp.capture_begin(device, force_module_load=False)
-          if not began:
-            # capture_begin returned False — HIP graph not supported
+          # capture_begin returns False ONLY when the device cannot record a
+          # native graph; on success it starts capture and returns None. So the
+          # "not supported" fallback must test `is False`, not falsiness — a
+          # `not began` check would wrongly fire on the None success path and
+          # run _step_body on an already-capturing stream (illegal sync).
+          if began is False:
             d._hip_graph_capturing = False
             d._hip_step_warmup_count = -1
             m.opt.iterations = _orig_iters
@@ -1532,10 +1560,10 @@ def step(m: Model, d: Data):
         _wp.synchronize_device(device)
 
       m.opt.iterations = _orig_iters
-      # Restore mempool disabled state after capture
-      if _mempool_reenabled:
+      # Restore the caller's prior mempool setting (only if we changed it).
+      if _mempool_changed and _prev_mempool is not None:
         try:
-          _wp.set_mempool_enabled(device, False)
+          _wp.set_mempool_enabled(device, _prev_mempool)
         except Exception:
           pass
       d._hip_graphs = graphs
@@ -1577,29 +1605,69 @@ def step(m: Model, d: Data):
         _step_body(m, d)
         return
 
-    # Phase 4: adaptive steady-state dispatch
-    # Launch G1, check convergence, escalate to G4/G10/G40/G100 only if needed.
-    # D2H check happens BETWEEN graph launches — never inside capture window.
+    # Phase 4: steady-state dispatch — launch EXACTLY ONE captured graph.
+    #
+    # Each captured graph is a *complete* physics step (_step_body) that runs a
+    # fixed number of solver iterations. They are NOT incremental continuations
+    # of one another, so launching several in sequence would advance the sim by
+    # several timesteps (over-integration -> divergence -> NaN). A host-side
+    # "escalate until converged" loop is also impossible here: the solver's
+    # convergence D2H copy is skipped during capture (illegal to sync/copy to a
+    # pinned host buffer inside a capture window), so a replayed graph never
+    # updates _nsolving_host — any between-launch check would read a stale value.
+    #
+    # Instead select the single graph whose fixed iteration count best matches
+    # the solver's configured iterations. Captured graphs cannot early-exit, so
+    # use the largest count <= the configured iterations (a full solve); fall
+    # back to the smallest captured count if the configuration is below all of
+    # them. This yields correct one-step-per-call semantics with a single
+    # hipGraphLaunch (the launch-overhead win we captured graphs for).
     import warp as _wp
 
     graphs = d._hip_graphs
-    if not hasattr(d, "_nsolving_host"):
-      d._nsolving_host = _wp.empty(1, dtype=int, device="cpu", pinned=True)
+    # Fixed per-step solver-iteration budget for the replayed graph. Captured
+    # graphs cannot early-exit, so replaying the full m.opt.iterations (=100 for
+    # mjlab G1) would do ~16x the work of the eager solver, which early-exits at
+    # ~6 iters for locomotion. Target a value near real convergence (with a
+    # little headroom) and pick the smallest captured graph >= that budget.
+    # Env-tunable via MJW_HIP_GRAPH_ITERS so the budget can be swept.
+    # Budget selection: an explicit MJW_HIP_GRAPH_ITERS always wins (sweeps /
+    # debugging). Otherwise use the auto-calibrated budget measured from warmup
+    # convergence (Phase 2), which self-tunes to the workload instead of the
+    # old fixed default of 10.
+    _env_iters = _os.environ.get("MJW_HIP_GRAPH_ITERS")
+    if _env_iters is not None:
+      _target = int(_env_iters)
+    else:
+      _target = getattr(d, "_hip_graph_auto_iters", 10)
+    _avail = sorted(graphs.keys())
+    _n_sel = next((k for k in _avail if k >= _target), _avail[-1])
 
-    # Adaptive dispatch: launch G1 first, check convergence, escalate if needed.
-    # nsolving is tracked via d._nsolving_host (pre-allocated in solver early-exit).
-    # If _nsolving_host not available (e.g. first step), run G1 only as safe default.
-    for n_iters in _HIP_GRAPH_ITER_SEQUENCE:
-      _wp.capture_launch(graphs[n_iters])
-      # D2H convergence check: solver writes to d._nsolving_host via early-exit path
-      # If it shows 0 (all worlds converged), stop launching more graphs.
-      if hasattr(d, "_nsolving_host") and d._nsolving_host is not None:
-        _wp.synchronize_device()
-        if d._nsolving_host.numpy()[0] == 0:
-          break  # converged — skip remaining graphs
-      else:
-        # No convergence info available yet — run G1 only, rely on fixed 1 iter
-        break
+    # Periodic convergence monitor (graph-legal: runs between replays, never
+    # during capture). d.solver_niter is written by the captured solve_done, so
+    # after a replay it holds each world's used iteration count (capped at the
+    # replayed graph's fixed count). If the max saturates the selected budget,
+    # the solve was likely truncated (contacts increased the needed iterations)
+    # -> escalate the auto budget to the next captured tier for future steps.
+    # Sampled every MJW_HIP_GRAPH_MONITOR steps so the D2H readback cost is
+    # amortized to ~0 (default 64).
+    if _env_iters is None:
+      _mon = int(_os.environ.get("MJW_HIP_GRAPH_MONITOR", "64"))
+      d._hip_graph_step_count = getattr(d, "_hip_graph_step_count", 0) + 1
+      if _mon > 0 and d._hip_graph_step_count % _mon == 0:
+        try:
+          _used = int(d.solver_niter.numpy().max())
+        except Exception:
+          _used = 0
+        if _used >= _n_sel and _n_sel < _avail[-1]:
+          d._hip_graph_auto_iters = next(k for k in _avail if k > _n_sel)
+    # Re-zero the pre-allocated scratch buffers before each replay, exactly as
+    # the build/post-capture-warmup paths do. These scratch arrays (AMD Opt A)
+    # are zeroed OUTSIDE the captured region, so the graph does not reset them;
+    # replaying without zeroing lets stale values persist across steps and can
+    # diverge to NaN (masked at some env counts, fatal at others).
+    _hip_graph_zero_scratch(d)
+    _wp.capture_launch(graphs[_n_sel])
     return
   # ------------------------------------------------------------------ end Opt D
 
