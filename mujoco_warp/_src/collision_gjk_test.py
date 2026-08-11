@@ -48,8 +48,8 @@ def _geom_dist(
   overflow_out: wp.array | None = None,
 ):
   # we run multiccd on static scenes so these need to be initialized
-  nmaxpolygon = 10 if multiccd else 0
-  nmaxmeshdeg = 10 if multiccd else 0
+  npolygonmax = 10 if multiccd else 0
+  nmeshdegmax = 10 if multiccd else 0
   epa_vert = wp.empty(10 + 2 * m.opt.ccd_iterations, dtype=wp.vec3)
   epa_vert_index = wp.empty(10 + 2 * m.opt.ccd_iterations, dtype=int)
   epa_face = wp.empty(6 + MJ_MAX_EPAFACES * m.opt.ccd_iterations, dtype=int)
@@ -58,17 +58,17 @@ def _geom_dist(
   epa_horizon = wp.empty(MJ_MAX_EPAHORIZON if horizon_size is None else horizon_size, dtype=int)
   if overflow_out is None:
     overflow_out = wp.zeros(1, dtype=int)
-  multiccd_polygon = wp.empty(2 * nmaxpolygon, dtype=wp.vec3)
-  multiccd_clipped = wp.empty(2 * nmaxpolygon, dtype=wp.vec3)
-  multiccd_pnormal = wp.empty(nmaxpolygon, dtype=wp.vec3)
-  multiccd_pdist = wp.empty(nmaxpolygon, dtype=float)
-  multiccd_idx1 = wp.empty(nmaxmeshdeg, dtype=int)
-  multiccd_idx2 = wp.empty(nmaxmeshdeg, dtype=int)
-  multiccd_n1 = wp.empty(nmaxmeshdeg, dtype=wp.vec3)
-  multiccd_n2 = wp.empty(nmaxmeshdeg, dtype=wp.vec3)
-  multiccd_endvert = wp.empty(nmaxmeshdeg, dtype=wp.vec3)
-  multiccd_face1 = wp.empty(nmaxpolygon, dtype=wp.vec3)
-  multiccd_face2 = wp.empty(nmaxpolygon, dtype=wp.vec3)
+  multiccd_polygon = wp.empty(2 * npolygonmax, dtype=wp.vec3)
+  multiccd_clipped = wp.empty(2 * npolygonmax, dtype=wp.vec3)
+  multiccd_pnormal = wp.empty(npolygonmax, dtype=wp.vec3)
+  multiccd_pdist = wp.empty(npolygonmax, dtype=float)
+  multiccd_idx1 = wp.empty(nmeshdegmax, dtype=int)
+  multiccd_idx2 = wp.empty(nmeshdegmax, dtype=int)
+  multiccd_n1 = wp.empty(nmeshdegmax, dtype=wp.vec3)
+  multiccd_n2 = wp.empty(nmeshdegmax, dtype=wp.vec3)
+  multiccd_endvert = wp.empty(nmeshdegmax, dtype=wp.vec3)
+  multiccd_face1 = wp.empty(npolygonmax, dtype=wp.vec3)
+  multiccd_face2 = wp.empty(npolygonmax, dtype=wp.vec3)
 
   @wp.kernel(module="unique", enable_backward=False)
   def _ccd_kernel(
