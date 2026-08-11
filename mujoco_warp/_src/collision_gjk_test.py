@@ -28,6 +28,7 @@ from mujoco_warp._src.collision_gjk import multicontact
 from mujoco_warp._src.collision_gjk import support
 from mujoco_warp._src.types import MJ_MAX_EPAFACES
 from mujoco_warp._src.types import MJ_MAX_EPAHORIZON
+from mujoco_warp._src.types import OverflowType
 from mujoco_warp._src.types import mat63
 
 
@@ -42,6 +43,9 @@ def _geom_dist(
   pos2: wp.vec3 | None = None,
   mat1: wp.mat33 | None = None,
   mat2: wp.mat33 | None = None,
+  horizon_size: int | None = None,
+  warn_overflow: bool = True,
+  overflow_out: wp.array | None = None,
 ):
   # we run multiccd on static scenes so these need to be initialized
   nmaxpolygon = 10 if multiccd else 0
@@ -51,7 +55,9 @@ def _geom_dist(
   epa_face = wp.empty(6 + MJ_MAX_EPAFACES * m.opt.ccd_iterations, dtype=int)
   epa_pr = wp.empty(6 + MJ_MAX_EPAFACES * m.opt.ccd_iterations, dtype=wp.vec3)
   epa_norm2 = wp.empty(6 + MJ_MAX_EPAFACES * m.opt.ccd_iterations, dtype=float)
-  epa_horizon = wp.empty(MJ_MAX_EPAHORIZON, dtype=int)
+  epa_horizon = wp.empty(MJ_MAX_EPAHORIZON if horizon_size is None else horizon_size, dtype=int)
+  if overflow_out is None:
+    overflow_out = wp.zeros(1, dtype=int)
   multiccd_polygon = wp.empty(2 * nmaxpolygon, dtype=wp.vec3)
   multiccd_clipped = wp.empty(2 * nmaxpolygon, dtype=wp.vec3)
   multiccd_pnormal = wp.empty(nmaxpolygon, dtype=wp.vec3)
@@ -107,6 +113,8 @@ def _geom_dist(
     endvert: wp.array[wp.vec3],
     face1: wp.array[wp.vec3],
     face2: wp.array[wp.vec3],
+    # Data out:
+    overflow_out: wp.array[int],
     # Out:
     dist_out: wp.array[float],
     ncon_out: wp.array[int],
@@ -199,6 +207,9 @@ def _geom_dist(
       face_pr,
       face_norm2,
       horizon,
+      wp.static(warn_overflow),
+      worldid,
+      overflow_out,
     )
 
     if multiccd and idx >= 0:
@@ -281,6 +292,7 @@ def _geom_dist(
       multiccd_face2,
     ],
     outputs=[
+      overflow_out,
       dist_out,
       ncon_out,
       pos_out,
@@ -426,6 +438,32 @@ class GJKTest(parameterized.TestCase):
     dist, _, _, _ = _geom_dist(m, d, 0, 1)
     self.assertAlmostEqual(-0.01, dist)
 
+  def test_mesh_mesh_contact2(self):
+    """Test penetration between two meshes for degenerate geometries."""
+    _, _, m, d = test_data.fixture(
+      xml="""
+    <mujoco>
+      <asset>
+        <mesh name="mesh" vertex="-0.0611590669 -0.13801524  -0.158372656
+     0.0620514415  0.135089189 -0.159879193
+    -0.105518319  -0.100999095 -0.188289702
+    -0.107238553  -0.102976903  0.1569262
+    -0.0851279497 -0.122304708  0.156887323
+    -0.0590926372 -0.104567274 -0.242715642"/>
+      </asset>
+      <worldbody>
+        <geom name="geom1" type="mesh" mesh="mesh" pos="-0.141666584 0 0"
+              quat="0.5425650813 0.0029009761 0.0001424328 0.8400087479"/>
+        <geom name="geom2" type="mesh" mesh="mesh" pos="0.141666584 0 0"
+              quat="0.5425650813 0.0029009761 0.0001424328 0.8400087479"/>
+      </worldbody>
+    </mujoco>
+    """
+    )
+    dist, ncon, _, _ = _geom_dist(m, d, 0, 1)
+    self.assertEqual(1, ncon)
+    self.assertAlmostEqual(-0.0031312597856874586, dist)
+
   def test_cylinder_cylinder_contact(self):
     """Test penetration between two cylinder."""
     _, _, m, d = test_data.fixture(
@@ -441,6 +479,22 @@ class GJKTest(parameterized.TestCase):
 
     dist, _, _, _ = _geom_dist(m, d, 0, 1)
     self.assertAlmostEqual(-0.001, dist)
+
+  def test_box_box_shallow_penetration(self):
+    """Test box-box contact for shallow penetration from a settling scene."""
+    _, _, m, d = test_data.fixture(
+      xml="""
+    <mujoco>
+      <worldbody>
+        <geom type="box" size="0.2 0.2 0.2" pos="0 0 0.19972974"/>
+        <geom type="box" size="0.1 0.1 0.1" pos="0 0 0.49947918"/>
+      </worldbody>
+    </mujoco>
+    """
+    )
+    dist, ncon, _, _ = _geom_dist(m, d, 0, 1, True)
+    self.assertEqual(4, ncon)
+    self.assertAlmostEqual(-0.00025054812, dist)
 
   def test_box_edge(self):
     """Test box edge."""
@@ -725,6 +779,24 @@ class GJKTest(parameterized.TestCase):
 
     dist, _, _, _ = _geom_dist(m, d, 0, 1, multiccd=False, pos1=pos1, mat1=rot1, pos2=pos2, mat2=rot2)
     self.assertAlmostEqual(dist, -0.00011578822, 6)  # dist = -0.00011579410621457821 - MJC 64 bit precision
+
+    # same configuration with an undersized horizon buffer sets the overflow bit
+    overflow = wp.zeros(1, dtype=int)
+    _geom_dist(
+      m,
+      d,
+      0,
+      1,
+      multiccd=False,
+      pos1=pos1,
+      mat1=rot1,
+      pos2=pos2,
+      mat2=rot2,
+      horizon_size=5,
+      warn_overflow=False,
+      overflow_out=overflow,
+    )
+    self.assertTrue(overflow.numpy()[0] & OverflowType.EPA_HORIZON)
 
   def test_box_box_rotation(self):
     """Test box-box with slight rotation which should give 4 contacts."""

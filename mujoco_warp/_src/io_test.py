@@ -16,6 +16,7 @@
 """Tests for io functions."""
 
 import dataclasses
+import warnings
 from unittest import mock
 
 import mujoco
@@ -1218,6 +1219,22 @@ class IOTest(parameterized.TestCase):
     _assert_eq(m.body_subtreemass.numpy()[0], mjm.body_subtreemass, "body_subtreemass")
     _assert_eq(m.actuator_acc0.numpy()[0], mjm.actuator_acc0, "actuator_acc0")
     _assert_eq(m.body_invweight0.numpy()[0, 1, 0], mjm.body_invweight0[1, 0], "body_invweight0")
+
+  def test_set_const_unbatched_model_multi_world(self):
+    """Test set_const with unbatched model and nworld > 1."""
+    mjm, mjd, m, d = test_data.fixture("pendula.xml", nworld=4)
+
+    new_mass = 3.0
+    mjm.body_mass[1] = new_mass
+    body_mass_np = m.body_mass.numpy()
+    body_mass_np[0, 1] = new_mass
+    wp.copy(m.body_mass, wp.array(body_mass_np, dtype=m.body_mass.dtype))
+
+    mujoco.mj_setConst(mjm, mjd)
+    mjwarp.set_const(m, d)
+
+    _assert_eq(m.body_subtreemass.numpy()[0], mjm.body_subtreemass, "body_subtreemass")
+    _assert_eq(m.dof_invweight0.numpy()[0], mjm.dof_invweight0, "dof_invweight0")
 
   def test_set_const_eq_data_connect(self):
     """Test set_const recomputes eq_data for connect constraints."""
@@ -3155,6 +3172,70 @@ class IOTest(parameterized.TestCase):
     # Should succeed without NotImplementedError
     m = mjwarp.put_model(mjm)
     self.assertEqual(m.has_3d_flex, True)
+
+  # TODO(team): remove after implementing multicontact support for CCD pairs.
+  @parameterized.parameters(
+    ("cylinder", "box"),
+    ("cylinder", "cylinder"),
+    ("cylinder", "mesh"),
+    ("capsule", "cylinder"),
+    ("capsule", "mesh"),
+  )
+  def test_unsupported_multiccd_warning(self, geom1_type, geom2_type):
+    """Tests warning for unsupported multicontact CCD pairs when MULTICCD is enabled."""
+
+    def _make_geom_xml(gtype: str) -> str:
+      if gtype == "mesh":
+        return '<geom type="mesh" mesh="m"/>'
+      elif gtype in ("cylinder", "capsule"):
+        return f'<geom type="{gtype}" size=".1 .1"/>'
+      elif gtype == "sphere":
+        return '<geom type="sphere" size=".1"/>'
+      else:
+        return f'<geom type="{gtype}" size=".1 .1 .1"/>'
+
+    mesh_asset = '<mesh name="m" vertex="0 0 0 1 0 0 0 1 0 0 0 1"/>' if "mesh" in (geom1_type, geom2_type) else ""
+    xml = f"""
+      <mujoco>
+        <asset>
+          {mesh_asset}
+        </asset>
+        <worldbody>
+          <body>
+            <freejoint/>
+            {_make_geom_xml(geom1_type)}
+          </body>
+          <body pos="0 0 .5">
+            <freejoint/>
+            {_make_geom_xml(geom2_type)}
+          </body>
+        </worldbody>
+      </mujoco>
+    """
+    mjm = mujoco.MjModel.from_xml_string(xml)
+
+    with self.assertWarns(UserWarning):
+      mjwarp.put_model(mjm)
+
+    mjm.opt.disableflags |= mujoco.mjtDisableBit.mjDSBL_MULTICCD
+    with warnings.catch_warnings():
+      warnings.simplefilter("error")
+      mjwarp.put_model(mjm)
+
+  def test_flex_internal_collision(self):
+    """Test that flex internal collision raises NotImplementedError."""
+    xml = """
+      <mujoco>
+        <worldbody>
+          <flexcomp name="cloth" type="grid" count="3 3 1" spacing=".2 .2 .1" pos="0 0 0"
+                    radius=".02" dim="2" mass=".5">
+            <contact selfcollide="none" internal="true" margin="0.05"/>
+          </flexcomp>
+        </worldbody>
+      </mujoco>
+      """
+    with self.assertRaises(NotImplementedError):
+      test_data.fixture(xml=xml)
 
 
 # TODO(team): test set_const_0 sparse

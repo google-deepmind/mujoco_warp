@@ -20,6 +20,7 @@ import warp as wp
 
 from mujoco_warp._src.collision_core import Geom
 from mujoco_warp._src.types import GeomType
+from mujoco_warp._src.types import OverflowType
 from mujoco_warp._src.types import mat43
 from mujoco_warp._src.types import mat63
 
@@ -652,8 +653,13 @@ def gjk(
   simplex_index2 = wp.vec4i()
   n = int(0)
   lmbda = wp.vec4(1.0, 0.0, 0.0, 0.0)  # barycentric coordinates
+
+  # for discrete geoms GJK is guaranteed to converge in a finite number of iterations
+  # so we can ignore tolerance
+  # TODO(kbayes): look into relative tolerances based off of xnorm
   epsilon = wp.where(is_discrete, 0.0, 0.5 * tolerance * tolerance)
   min_norm = wp.where(is_discrete, MINVAL, tolerance)
+  min_tol = wp.where(is_discrete, MINVAL, tolerance)
 
   # set initial guess
   x_k = x1_0 - x2_0
@@ -662,7 +668,7 @@ def gjk(
   xnorm_prev = float(0.0)
 
   for _ in range(gjk_iterations):
-    if xnorm < min_norm or wp.abs(xnorm_prev - xnorm) < tolerance:
+    if xnorm < min_norm or wp.abs(xnorm_prev - xnorm) < min_tol:
       break
 
     # compute the support point with direction tuning
@@ -1116,9 +1122,11 @@ def _polytope3(
 
   # get normals in both directions
   n = wp.cross(simplex[1] - simplex[0], simplex[2] - simplex[0])
-  if wp.norm_l2(n) < MINVAL:
+  norm = wp.norm_l2(n)
+  if norm < MINVAL:
     pt.status = 2
     return pt
+  n = n / norm
 
   pt.vert[0] = simplex1[0]
   pt.vert[1] = simplex2[0]
@@ -1218,26 +1226,48 @@ def _polytope4(
   pt.vert_index[6] = simplex_index1[3]
   pt.vert_index[7] = simplex_index2[3]
 
+  dist = wp.vec4()
+  idx = int(0)
+
   # if the origin is on a face, replace the 3-simplex with a 2-simplex
-  if _attach_face(pt, 0, 0, 1, 2) < MIN_DIST4:
+  dist[0] = _attach_face(pt, 0, 0, 1, 2)
+  if dist[0] < MIN_DIST4:
     pt.status = -1
     return pt, _replace_simplex3(pt, 0, 1, 2)
 
-  if _attach_face(pt, 1, 0, 3, 1) < MIN_DIST4:
+  dist[1] = _attach_face(pt, 1, 0, 3, 1)
+  if dist[1] < MIN_DIST4:
     pt.status = -1
     return pt, _replace_simplex3(pt, 0, 3, 1)
+  idx = wp.where(dist[0] < dist[1], 0, 1)
 
-  if _attach_face(pt, 2, 0, 2, 3) < MIN_DIST4:
+  dist[2] = _attach_face(pt, 2, 0, 2, 3)
+  if dist[2] < MIN_DIST4:
     pt.status = -1
     return pt, _replace_simplex3(pt, 0, 2, 3)
+  idx = wp.where(dist[2] < dist[idx], 2, idx)
 
-  if _attach_face(pt, 3, 3, 2, 1) < MIN_DIST4:
+  dist[3] = _attach_face(pt, 3, 3, 2, 1)
+  if dist[3] < MIN_DIST4:
     pt.status = -1
     return pt, _replace_simplex3(pt, 3, 2, 1)
+  idx = wp.where(dist[3] < dist[idx], 3, idx)
 
   if not _test_tetra(simplex[0], simplex[1], simplex[2], simplex[3]):
-    pt.status = 12
-    return pt, GJKResult()
+    if dist[idx] > MINVAL:
+      pt.status = 12
+      return pt, GJKResult()
+
+    # fallback to closest face
+    pt.status = -1
+    if idx == 0:
+      return pt, _replace_simplex3(pt, 0, 1, 2)
+    elif idx == 1:
+      return pt, _replace_simplex3(pt, 0, 3, 1)
+    elif idx == 2:
+      return pt, _replace_simplex3(pt, 0, 2, 3)
+    else:
+      return pt, _replace_simplex3(pt, 3, 2, 1)
 
   # set polytope counts
   pt.nvert = 4
@@ -1287,6 +1317,10 @@ def _epa(
   geomtype1: int,
   geomtype2: int,
   is_discrete: bool,
+  warn_overflow: bool,
+  worldid: int,
+  # Data out:
+  overflow_out: wp.array[int],
 ) -> Tuple[float, wp.vec3, wp.vec3, int]:
   """Recover penetration data from two geoms in contact given an initial polytope."""
   upper = FLOAT_MAX
@@ -1356,7 +1390,9 @@ def _epa(
     pt.nhorizon = _add_edge(pt, face[1], face[2])
     pt.nhorizon = _add_edge(pt, face[2], face[0])
     if pt.nhorizon == -1:
-      wp.printf("Warning: EPA horizon = %d isn't large enough.\n", pt.horizon.shape[0])
+      if warn_overflow:
+        wp.printf("Warning: EPA horizon = %d isn't large enough.\n", pt.horizon.shape[0])
+      wp.atomic_or(overflow_out, worldid, OverflowType.EPA_HORIZON)
       idx = -1
       break
 
@@ -1373,7 +1409,9 @@ def _epa(
         pt.nhorizon = _add_edge(pt, face[1], face[2])
         pt.nhorizon = _add_edge(pt, face[2], face[0])
         if pt.nhorizon == -1:
-          wp.printf("Warning: EPA horizon = %d isn't large enough.\n", pt.horizon.shape[0])
+          if warn_overflow:
+            wp.printf("Warning: EPA horizon = %d isn't large enough.\n", pt.horizon.shape[0])
+          wp.atomic_or(overflow_out, worldid, OverflowType.EPA_HORIZON)
           idx = -1
           break
 
@@ -2382,6 +2420,10 @@ def epa_phase(
   face_pr: wp.array[wp.vec3],
   face_norm2: wp.array[float],
   horizon: wp.array[int],
+  warn_overflow: bool,
+  worldid: int,
+  # Data out:
+  overflow_out: wp.array[int],
 ) -> Tuple[float, int, wp.vec3, wp.vec3, int]:
   """Run EPA given GJK result. Returns (dist, ncontact, x1, x2, multiccd_idx)."""
   pt = Polytope()
@@ -2453,7 +2495,9 @@ def epa_phase(
     return result.dist, 1, result.x1, result.x2, -1
 
   is_discrete = _discrete_geoms(geomtype1, geomtype2) and (geom1.margin == 0.0 and geom2.margin == 0.0)
-  dist, x1, x2, idx = _epa(tolerance, epa_iterations, pt, geom1, geom2, geomtype1, geomtype2, is_discrete)
+  dist, x1, x2, idx = _epa(
+    tolerance, epa_iterations, pt, geom1, geom2, geomtype1, geomtype2, is_discrete, warn_overflow, worldid, overflow_out
+  )
   if idx == -1:
     return FLOAT_MAX, 0, wp.vec3(), wp.vec3(), -1
 
@@ -2487,6 +2531,10 @@ def ccd(
   face_pr: wp.array[wp.vec3],
   face_norm2: wp.array[float],
   horizon: wp.array[int],
+  warn_overflow: bool,
+  worldid: int,
+  # Data out:
+  overflow_out: wp.array[int],
 ) -> Tuple[float, int, wp.vec3, wp.vec3, int]:
   """General convex collision detection via GJK/EPA."""
   needs_epa, dist, ncontact, x1, x2, result, geom1, geom2 = gjk_phase(
@@ -2508,4 +2556,7 @@ def ccd(
     face_pr,
     face_norm2,
     horizon,
+    warn_overflow,
+    worldid,
+    overflow_out,
   )

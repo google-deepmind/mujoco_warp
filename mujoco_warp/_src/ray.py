@@ -26,7 +26,7 @@ from mujoco_warp._src.types import Model
 from mujoco_warp._src.types import RenderContext
 from mujoco_warp._src.types import vec6
 
-wp.set_module_options({"enable_backward": False})
+wp.set_module_options({"enable_backward": False, "default_grid_stride": False})
 
 
 @wp.func

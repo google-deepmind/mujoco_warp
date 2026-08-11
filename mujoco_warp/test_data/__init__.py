@@ -37,6 +37,8 @@ def fixture(
   mocap_noise: Optional[float] = None,
   overrides: dict[str, Any] | Sequence[str] = tuple(),
   nworld: int = 1,
+  nconmax: Optional[int] = None,
+  njmax: Optional[int] = None,
   nvmax: Optional[int] = -1,
   njmax_nnz: Optional[int] = None,
 ) -> Tuple[mujoco.MjModel, mujoco.MjData, mjw.Model, mjw.Data]:
@@ -108,6 +110,8 @@ def fixture(
     mjm,
     mjd,
     nworld=nworld,
+    nconmax=nconmax,
+    njmax=njmax,
     nvmax=mjm.nv if nvmax == -1 else nvmax,
     njmax_nnz=njmax_nnz,
   )

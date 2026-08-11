@@ -20,7 +20,7 @@ from mujoco_warp._src.types import MJ_MINVAL
 from mujoco_warp._src.types import Data
 from mujoco_warp._src.types import Model
 
-wp.set_module_options({"enable_backward": False})
+wp.set_module_options({"enable_backward": False, "default_grid_stride": False})
 
 
 @wp.func

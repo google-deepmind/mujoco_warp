@@ -34,7 +34,7 @@ from mujoco_warp._src.types import vec_pluginattr
 from mujoco_warp._src.util_misc import halton
 from mujoco_warp._src.warp_util import event_scope
 
-wp.set_module_options({"enable_backward": False})
+wp.set_module_options({"enable_backward": False, "default_grid_stride": False})
 
 
 @wp.struct

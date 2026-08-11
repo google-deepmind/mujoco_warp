@@ -39,7 +39,7 @@ from mujoco_warp._src.types import ObjType
 from mujoco_warp._src.types import RenderContext
 from mujoco_warp._src.warp_util import event_scope
 
-wp.set_module_options({"enable_backward": False})
+wp.set_module_options({"enable_backward": False, "default_grid_stride": False})
 
 # Default value for mat_shininess in MuJoCo is 0.5
 # With an 8 bit image format, the maximum value is 255.0
@@ -565,7 +565,7 @@ def render(m: Model, d: Data, rc: RenderContext):
   rc_static["enable_specular_or_emission"] = rc.enable_specular or rc.enable_emission
   M_NLIGHT = m.nlight
 
-  @wp.kernel(module="unique", enable_backward=False, module_options={"fast_math": rc.use_fast_math})
+  @wp.kernel(module="unique", enable_backward=False, grid_stride=False, module_options={"fast_math": rc.use_fast_math})
   def _render_megakernel(
     # Model:
     geom_type: wp.array[int],

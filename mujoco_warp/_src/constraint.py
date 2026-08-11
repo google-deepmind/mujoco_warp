@@ -24,11 +24,12 @@ from mujoco_warp._src.types import ConstraintType
 from mujoco_warp._src.types import ContactType
 from mujoco_warp._src.types import DisableBit
 from mujoco_warp._src.types import vec5
+from mujoco_warp._src.types import vec6
 from mujoco_warp._src.types import vec11
 from mujoco_warp._src.warp_util import cache_kernel
 from mujoco_warp._src.warp_util import event_scope
 
-wp.set_module_options({"enable_backward": False})
+wp.set_module_options({"enable_backward": False, "default_grid_stride": False})
 
 
 @wp.func
@@ -153,7 +154,7 @@ def _efc_row(
 
 @cache_kernel
 def _equality_connect(is_sparse: bool, newton: bool):
-  @wp.kernel(module="unique", enable_backward=False)
+  @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
   def kernel(
     # Model:
     nv: int,
@@ -497,7 +498,7 @@ def _equality_connect(is_sparse: bool, newton: bool):
 
 @cache_kernel
 def _equality_joint(is_sparse: bool, newton: bool):
-  @wp.kernel(module="unique", enable_backward=False)
+  @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
   def kernel(
     # Model:
     nv: int,
@@ -639,7 +640,7 @@ def _equality_joint(is_sparse: bool, newton: bool):
 
 @cache_kernel
 def _equality_tendon(is_sparse: bool, newton: bool):
-  @wp.kernel(module="unique", enable_backward=False)
+  @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
   def kernel(
     # Model:
     nv: int,
@@ -828,7 +829,7 @@ def _equality_tendon(is_sparse: bool, newton: bool):
 
 @cache_kernel
 def _equality_flex(is_sparse: bool, newton: bool):
-  @wp.kernel(module="unique", enable_backward=False)
+  @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
   def kernel(
     # Model:
     nv: int,
@@ -963,7 +964,7 @@ def _equality_flex(is_sparse: bool, newton: bool):
 
 @cache_kernel
 def _equality_weld(is_sparse: bool, newton: bool):
-  @wp.kernel(module="unique", enable_backward=False)
+  @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
   def kernel(
     # Model:
     nv: int,
@@ -1440,7 +1441,7 @@ def _equality_weld(is_sparse: bool, newton: bool):
 
 @cache_kernel
 def _equality_flexstrain(is_sparse: bool, newton: bool):
-  @wp.kernel(module="unique", enable_backward=False)
+  @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
   def kernel(
     # Model:
     nv: int,
@@ -1763,7 +1764,7 @@ def _equality_flexstrain(is_sparse: bool, newton: bool):
 
 @cache_kernel
 def _friction_dof(is_sparse: bool, newton: bool):
-  @wp.kernel(module="unique", enable_backward=False)
+  @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
   def kernel(
     # Model:
     nv: int,
@@ -1864,7 +1865,7 @@ def _friction_dof(is_sparse: bool, newton: bool):
 
 @cache_kernel
 def _friction_tendon(is_sparse: bool, newton: bool):
-  @wp.kernel(module="unique", enable_backward=False)
+  @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
   def kernel(
     # Model:
     nv: int,
@@ -1988,7 +1989,7 @@ def _friction_tendon(is_sparse: bool, newton: bool):
 
 @cache_kernel
 def _limit_slide_hinge(is_sparse: bool, newton: bool):
-  @wp.kernel(module="unique", enable_backward=False)
+  @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
   def kernel(
     # Model:
     nv: int,
@@ -2104,7 +2105,7 @@ def _limit_slide_hinge(is_sparse: bool, newton: bool):
 
 @cache_kernel
 def _limit_ball(is_sparse: bool, newton: bool):
-  @wp.kernel(module="unique", enable_backward=False)
+  @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
   def kernel(
     # Model:
     nv: int,
@@ -2240,7 +2241,7 @@ def _limit_ball(is_sparse: bool, newton: bool):
 
 @cache_kernel
 def _limit_tendon(is_sparse: bool, newton: bool):
-  @wp.kernel(module="unique", enable_backward=False)
+  @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
   def kernel(
     # Model:
     nv: int,
@@ -2642,7 +2643,7 @@ def _efc_contact_init(cone_type: types.ConeType, is_sparse: bool, newton: bool):
   IS_ELLIPTIC = cone_type == types.ConeType.ELLIPTIC
   IS_SPARSE = is_sparse
 
-  @wp.kernel(module="unique", enable_backward=False)
+  @wp.kernel(module="unique", enable_backward=False, grid_stride=True)
   def kernel(
     # Model:
     body_weldid: wp.array[int],
@@ -2756,7 +2757,7 @@ def _efc_contact_init_flex(cone_type: types.ConeType, is_sparse: bool, newton: b
   IS_SPARSE = is_sparse
   HAS_FLEX = True
 
-  @wp.kernel(module="unique", enable_backward=False)
+  @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
   def kernel(
     # Model:
     body_parentid: wp.array[int],
@@ -3092,7 +3093,7 @@ def _efc_contact_init_flex(cone_type: types.ConeType, is_sparse: bool, newton: b
 def _efc_contact_jac_sparse(cone_type: types.ConeType):
   IS_ELLIPTIC = cone_type == types.ConeType.ELLIPTIC
 
-  @wp.kernel(module="unique", enable_backward=False)
+  @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
   def kernel(
     # Model:
     body_parentid: wp.array[int],
@@ -3245,7 +3246,7 @@ def _efc_contact_jac_sparse_flex(cone_type: types.ConeType):
   IS_ELLIPTIC = cone_type == types.ConeType.ELLIPTIC
   HAS_FLEX = True
 
-  @wp.kernel(module="unique", enable_backward=False)
+  @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
   def kernel(
     # Model:
     body_parentid: wp.array[int],
@@ -3744,7 +3745,7 @@ def _efc_contact_jac_dense(tile_size: int, cone_type: types.ConeType):
   TILE_SIZE = tile_size
   IS_ELLIPTIC = cone_type == types.ConeType.ELLIPTIC
 
-  @wp.kernel(module="unique", enable_backward=False)
+  @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
   def kernel(
     # Model:
     body_rootid: wp.array[int],
@@ -3873,7 +3874,7 @@ def _efc_contact_jac_dense_flex(tile_size: int, cone_type: types.ConeType):
   TILE_SIZE = tile_size
   IS_ELLIPTIC = cone_type == types.ConeType.ELLIPTIC
 
-  @wp.kernel(module="unique", enable_backward=False)
+  @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
   def kernel(
     # Model:
     body_rootid: wp.array[int],
@@ -4189,7 +4190,7 @@ def _efc_contact_jac_dense_flex(tile_size: int, cone_type: types.ConeType):
 def _efc_contact_update(cone_type: types.ConeType):
   IS_ELLIPTIC = cone_type == types.ConeType.ELLIPTIC
 
-  @wp.kernel(module="unique", enable_backward=False)
+  @wp.kernel(module="unique", enable_backward=False, grid_stride=True)
   def kernel(
     # Model:
     opt_timestep: wp.array[float],
@@ -4328,7 +4329,7 @@ def _efc_contact_update(cone_type: types.ConeType):
 def _efc_contact_update_flex(cone_type: types.ConeType):
   IS_ELLIPTIC = cone_type == types.ConeType.ELLIPTIC
 
-  @wp.kernel(module="unique", enable_backward=False)
+  @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
   def kernel(
     # Model:
     opt_timestep: wp.array[float],
@@ -4741,6 +4742,126 @@ def _efc_contact_update_flex(cone_type: types.ConeType):
       efc_aref_out,
       efc_frictionloss_out,
     )
+
+  return kernel
+
+
+@wp.func
+def _geom_surface_velocity(
+  # In:
+  geom_xpos_val: wp.vec3,
+  geom_xmat_val: wp.mat33,
+  surfacevel_val: vec6,
+  point_val: wp.vec3,
+) -> Tuple[wp.vec3, wp.vec3]:
+  lin_local = wp.vec3(surfacevel_val[0], surfacevel_val[1], surfacevel_val[2])
+  ang_local = wp.vec3(surfacevel_val[3], surfacevel_val[4], surfacevel_val[5])
+
+  linear = geom_xmat_val * lin_local
+  angular = geom_xmat_val * ang_local
+
+  arm = point_val - geom_xpos_val
+  linear = linear + wp.cross(angular, arm)
+
+  return linear, angular
+
+
+@cache_kernel
+def _add_surface_vel(is_pyramidal: bool):
+  @wp.kernel(module="unique", enable_backward=False)
+  def kernel(
+    # Model:
+    geom_surfacevel: wp.array2d[vec6],
+    # Data in:
+    geom_xpos_in: wp.array2d[wp.vec3],
+    geom_xmat_in: wp.array2d[wp.mat33],
+    contact_efc_address_in: wp.array2d[int],
+    nacon_in: wp.array[int],
+    # In:
+    pos_in: wp.array[wp.vec3],
+    dim_in: wp.array[int],
+    worldid_in: wp.array[int],
+    geom_in: wp.array[wp.vec2i],
+    friction_in: wp.array[vec5],
+    frame_in: wp.array[wp.mat33],
+    type_in: wp.array[int],
+    # Data out:
+    efc_Jqvel_out: wp.array2d[float],
+  ):
+    conid = wp.tid()
+
+    if conid >= nacon_in[0]:
+      return
+
+    if not type_in[conid] & ContactType.CONSTRAINT:
+      return
+
+    if contact_efc_address_in[conid, 0] < 0:
+      return
+
+    geom = geom_in[conid]
+    worldid = worldid_in[conid]
+    g0 = geom[0]
+    g1 = geom[1]
+
+    geom_surfvel_id = worldid % geom_surfacevel.shape[0]
+    sv0 = geom_surfacevel[geom_surfvel_id, g0] if g0 >= 0 else vec6(0.0)
+    sv1 = geom_surfacevel[geom_surfvel_id, g1] if g1 >= 0 else vec6(0.0)
+
+    has_sv0 = sv0[0] != 0.0 or sv0[1] != 0.0 or sv0[2] != 0.0 or sv0[3] != 0.0 or sv0[4] != 0.0 or sv0[5] != 0.0
+    has_sv1 = sv1[0] != 0.0 or sv1[1] != 0.0 or sv1[2] != 0.0 or sv1[3] != 0.0 or sv1[4] != 0.0 or sv1[5] != 0.0
+
+    if not (has_sv0 or has_sv1):
+      return
+
+    pos = pos_in[conid]
+    svel = wp.vec3(0.0, 0.0, 0.0)
+    sang = wp.vec3(0.0, 0.0, 0.0)
+
+    geom_x_id = worldid % geom_xpos_in.shape[0]
+
+    if has_sv0:
+      vw0, ww0 = _geom_surface_velocity(
+        geom_xpos_in[geom_x_id, g0],
+        geom_xmat_in[geom_x_id, g0],
+        sv0,
+        pos,
+      )
+      svel -= vw0
+      sang -= ww0
+
+    if has_sv1:
+      vw1, ww1 = _geom_surface_velocity(
+        geom_xpos_in[geom_x_id, g1],
+        geom_xmat_in[geom_x_id, g1],
+        sv1,
+        pos,
+      )
+      svel += vw1
+      sang += ww1
+
+    frame = frame_in[conid]
+    cs_lin = frame * svel
+    cs_ang = frame * sang
+
+    cs = vec6(0.0, cs_lin[1], cs_lin[2], cs_ang[0], 0.0, 0.0)
+
+    dim = dim_in[conid]
+    if dim == 1 or not wp.static(is_pyramidal):
+      for j in range(dim):
+        efcid = contact_efc_address_in[conid, j]
+        if efcid >= 0:
+          efc_Jqvel_out[worldid, efcid] += cs[j]
+    else:
+      friction = friction_in[conid]
+      for k in range(1, dim):
+        mu = friction[k - 1]
+        efcid_pos = contact_efc_address_in[conid, 2 * (k - 1)]
+        if efcid_pos >= 0:
+          efc_Jqvel_out[worldid, efcid_pos] += mu * cs[k]
+        efcid_neg = contact_efc_address_in[conid, 2 * (k - 1) + 1]
+        if efcid_neg >= 0:
+          efc_Jqvel_out[worldid, efcid_neg] -= mu * cs[k]
 
   return kernel
 
@@ -5571,6 +5692,29 @@ def make_constraint(m: types.Model, d: types.Data):
             ],
             block_dim=tile_size,
           )
+
+      if m.flg_surfacevel:
+        wp.launch(
+          _add_surface_vel(m.opt.cone == types.ConeType.PYRAMIDAL),
+          dim=d.naconmax,
+          inputs=[
+            m.geom_surfacevel,
+            d.geom_xpos,
+            d.geom_xmat,
+            d.contact.efc_address,
+            d.nacon,
+            d.contact.pos,
+            d.contact.dim,
+            d.contact.worldid,
+            d.contact.geom,
+            d.contact.friction,
+            d.contact.frame,
+            d.contact.type,
+          ],
+          outputs=[
+            d.efc.Jqvel,
+          ],
+        )
 
       if has_flex:
         wp.launch(
