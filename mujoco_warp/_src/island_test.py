@@ -15,7 +15,6 @@
 
 """Tests for island discovery."""
 
-import inspect
 from unittest import mock
 
 import mujoco
@@ -68,6 +67,33 @@ _WELD_XML = """
     <weld body1="b1" body2="b2"/>
   </equality>
 </mujoco>"""
+
+# One flex equality emitting several rows that share an id but not their tree support.
+_FLEX_EQUALITY_XML = """
+<mujoco>
+  <option jacobian="sparse"><flag contact="disable" gravity="disable"/></option>
+  <worldbody>
+    <flexcomp name="f" type="grid" dim="1" count="3 1 1"
+              spacing=".05 .05 .05" radius=".01" mass="1">
+      <edge equality="true"/>
+      <contact internal="false" selfcollide="none"/>
+    </flexcomp>
+  </worldbody>
+</mujoco>
+"""
+
+# A weld between two static bodies: both endpoints resolve to tree -1.
+_STATIC_WELD_XML = """
+<mujoco>
+  <option><flag contact="disable"/></option>
+  <worldbody>
+    <body name="s1"><geom size=".05"/></body>
+    <body name="s2" pos="1 0 0"><geom size=".05"/></body>
+    <body name="dyn" pos="2 0 0"><joint type="slide"/><geom size=".05"/></body>
+  </worldbody>
+  <equality><weld body1="s1" body2="s2"/></equality>
+</mujoco>
+"""
 
 _ELLIPTIC_CONTACT_XML = """
 <mujoco>
@@ -140,10 +166,81 @@ def _site_equality_xml(kind: str) -> str:
   """
 
 
-def _chain_xml(count: int) -> str:
-  bodies = "".join(f'<body name="b{i}" pos="{i * 0.3} 0 0"><freejoint/><geom size=".1"/></body>' for i in range(count))
+def _chain_xml(count: int, freejoint: bool = True) -> str:
+  """Welded chain of `count` trees. Slide joints keep `nv` linear for the large sizes."""
+  joint = "<freejoint/>" if freejoint else '<joint type="slide" axis="0 0 1"/>'
+  bodies = "".join(f'<body name="b{i}" pos="{i * 0.3} 0 0">{joint}<geom size=".1"/></body>' for i in range(count))
   welds = "".join(f'<weld body1="b{i}" body2="b{i + 1}"/>' for i in range(count - 1))
-  return f"<mujoco><worldbody>{bodies}</worldbody><equality>{welds}</equality></mujoco>"
+  option = "" if freejoint else '<option jacobian="sparse"><flag contact="disable"/></option>'
+  return f"<mujoco>{option}<worldbody>{bodies}</worldbody><equality>{welds}</equality></mujoco>"
+
+
+def _one_equality_xml(trees: int) -> str:
+  """Many single-DOF trees, exactly one of which is constrained, leaving the rest inactive."""
+  bodies = "".join(
+    f'<body name="b{i}" pos="{i} 0 0"><joint type="slide" axis="0 0 1"/><geom size=".05"/></body>' for i in range(trees)
+  )
+  return (
+    f'<mujoco><option jacobian="sparse"><flag contact="disable"/></option><worldbody>{bodies}</worldbody>'
+    f'<equality><weld body1="b0" body2="b1"/></equality></mujoco>'
+  )
+
+
+def _random_edge_pool_xml(trees: int, edges: int, seed: int = 7) -> str:
+  """Sparse fixed pool of weld equalities, plus static ones, for the randomized differential.
+
+  The pool is sparse relative to `trees` so random subsets of it produce fragmented partitions
+  rather than collapsing to a single island every trial.
+  """
+  rng = np.random.default_rng(seed)
+  bodies = "".join(
+    f'<body name="b{i}" pos="{i} 0 0"><joint type="slide" axis="0 0 1"/><geom size=".05"/></body>' for i in range(trees)
+  )
+  pairs = set()
+  while len(pairs) < edges:
+    lo, hi = sorted(rng.integers(0, trees, size=2))
+    if lo != hi:
+      pairs.add((int(lo), int(hi)))
+  equalities = "".join(f'<weld body1="b{lo}" body2="b{hi}"/>' for lo, hi in sorted(pairs))
+  equalities += "".join(f'<weld body1="world" body2="b{i}"/>' for i in range(0, trees, max(1, trees // 4)))
+  return (
+    f'<mujoco><option jacobian="sparse"><flag contact="disable"/></option>'
+    f"<worldbody>{bodies}</worldbody><equality>{equalities}</equality></mujoco>"
+  )
+
+
+def _reference_islands(edges, ntree: int):
+  """Label connected components by BFS from the lowest unvisited active tree.
+
+  Deliberately independent of the disjoint-set implementation under test: adjacency lists plus a
+  stack, matching the reference traversal in MuJoCo's randomized differential test.
+  """
+  active = np.zeros(ntree, dtype=bool)
+  adjacent = [[] for _ in range(ntree)]
+  for tree0, tree1 in edges:
+    if tree0 >= 0:
+      active[tree0] = True
+    if tree1 >= 0:
+      active[tree1] = True
+    if tree0 >= 0 and tree1 >= 0:
+      adjacent[tree0].append(tree1)
+      adjacent[tree1].append(tree0)
+
+  labels = np.full(ntree, -1, dtype=np.int32)
+  nisland = 0
+  for start in range(ntree):
+    if not active[start] or labels[start] != -1:
+      continue
+    labels[start] = nisland
+    pending = [start]
+    while pending:
+      tree = pending.pop()
+      for neighbor in adjacent[tree]:
+        if labels[neighbor] == -1:
+          labels[neighbor] = nisland
+          pending.append(neighbor)
+    nisland += 1
+  return labels, nisland
 
 
 class IslandDiscoveryTest(absltest.TestCase):
@@ -302,23 +399,6 @@ class IslandDiscoveryTest(absltest.TestCase):
       np.testing.assert_array_equal(d.island_nv.numpy()[world, : mjd.nisland], mjd.island_nv[: mjd.nisland])
       np.testing.assert_array_equal(d.island_nefc.numpy()[world, : mjd.nisland], mjd.island_nefc[: mjd.nisland])
 
-  def test_direct_dsu_owns_no_hidden_allocation(self):
-    """Discovery allocates nothing of its own; the workspace comes from the caller."""
-    source = inspect.getsource(island.direct_dsu)
-    self.assertNotIn("wp.empty", source)
-    self.assertNotIn("wp.zeros", source)
-    self.assertIn("dim=(d.nworld, m.ntree)", source)
-    self.assertIn("wp.launch_tiled", source)
-    self.assertIn("dim=d.nworld", source)
-    self.assertIn("block_dim=types.BlockDim.island_dsu", source)
-    self.assertIn("island_parent", source)
-
-  def test_direct_dsu_blocks_cover_constraint_capacity_not_batch_size(self):
-    """Warp lanes stride one chunk of the active EFC prefix, never its capacity."""
-    source = inspect.getsource(island._island_dsu)
-    self.assertIn("worldid, chunkid, lane = wp.tid()", source)
-    self.assertIn("range(chunk_beg + lane, chunk_end, wp.block_dim())", source)
-
   def test_dsu_chunking_splits_only_when_the_batch_leaves_the_device_idle(self):
     """Chunk count trades against nworld, so a large batch keeps one block per world."""
     # a batch that already fills the device is left alone: splitting it only launches
@@ -339,26 +419,157 @@ class IslandDiscoveryTest(absltest.TestCase):
         self.assertGreaterEqual(chunk_size, 1, f"{nworld=} {njmax=}")
         self.assertGreaterEqual(nchunk * chunk_size, njmax, f"{nworld=} {njmax=}")
 
-  def test_direct_dsu_collapses_only_repeated_fixed_support_rows(self):
-    """Known equal-support scalar rows keep one representative before union."""
-    helper = getattr(island, "_is_repeated_fixed_support_efc", None)
-    self.assertIsNotNone(helper)
+  def test_flex_equality_rows_are_rescanned_not_quotiented(self):
+    """Rows sharing one flex equality id carry different tree incidence, so none may be dropped.
 
-    helper_source = inspect.getsource(helper)
-    self.assertIn("efcid == 0", helper_source)
-    self.assertIn("efc_type_in[worldid, efcid - 1]", helper_source)
-    self.assertIn("efc_id_in[worldid, efcid - 1]", helper_source)
+    Mirrors MuJoCo's `ProductionFlexEqualityRescansRows`. The repeated-row shortcut keys on
+    `(efc_type, efc_id)`, which is equal across these rows even though their support differs;
+    quotienting them would leave the last tree unactivated.
+    """
+    mjm, mjd, m, d = test_data.fixture(xml=_FLEX_EQUALITY_XML, nworld=2)
+    mjwarp.fwd_position(m, d)
 
-    kernel_source = inspect.getsource(island._island_dsu)
-    quotient = kernel_source.index("repeated = _is_repeated_fixed_support_efc")
-    classification = kernel_source.index("if efc_type == ConstraintType.EQUALITY")
-    equality_body_lookup = kernel_source.index("body0 = eq_obj1id")
-    contact_tree_lookup = kernel_source.index("tree0 = body_treeid[geom_bodyid")
-    generic_scan = kernel_source.index("first_tree")
-    self.assertLess(quotient, classification)
-    self.assertGreaterEqual(kernel_source[:equality_body_lookup].count("if repeated:"), 1)
-    self.assertGreaterEqual(kernel_source[:contact_tree_lookup].count("if repeated:"), 2)
-    self.assertLess(contact_tree_lookup, generic_scan)
+    nefc = int(d.nefc.numpy()[0])
+    efc_id = d.efc.id.numpy()[0, :nefc]
+    # the rows this test exists for: same id, different support
+    self.assertEqual(nefc, 2)
+    np.testing.assert_array_equal(efc_id, np.zeros(2, dtype=np.int32))
+    self.assertEqual(mjm.eq_type[0], types.EqType.FLEX)
+    row_trees = []
+    for row in range(nefc):
+      adr, nnz = d.efc.J_rowadr.numpy()[0, row], d.efc.J_rownnz.numpy()[0, row]
+      dofs = d.efc.J_colind.numpy()[0, 0, adr : adr + nnz]
+      row_trees.append(sorted(set(int(t) for t in m.dof_treeid.numpy()[dofs])))
+    self.assertEqual(row_trees, [[0, 1], [1, 2]])
+
+    island.island(m, d)
+
+    np.testing.assert_array_equal(d.nisland.numpy(), np.full(d.nworld, mjd.nisland, dtype=np.int32))
+    np.testing.assert_array_equal(d.tree_island.numpy(), np.tile(mjd.tree_island[: mjm.ntree], (d.nworld, 1)))
+
+  def test_duplicate_fixed_support_rows_do_not_change_the_partition(self):
+    """Repeated scalar rows with equal `(efc_type, efc_id)` collapse to one representative."""
+    mjm, mjd, m, d = test_data.fixture(xml=_WELD_XML, nworld=2)
+    del mjm, mjd
+    mjwarp.fwd_position(m, d)
+    island.island(m, d)
+    expected_labels = d.tree_island.numpy().copy()
+    expected_nisland = d.nisland.numpy().copy()
+
+    # duplicate every active row in place; the H0 partition is unchanged by duplicate incidence
+    efc_type, efc_id, nefc = d.efc.type.numpy(), d.efc.id.numpy(), d.nefc.numpy()
+    for world in range(d.nworld):
+      n = nefc[world]
+      self.assertLessEqual(2 * n, d.njmax)
+      efc_type[world, n : 2 * n] = efc_type[world, :n]
+      efc_id[world, n : 2 * n] = efc_id[world, :n]
+      nefc[world] = 2 * n
+    wp.copy(d.efc.type, wp.array(efc_type, dtype=wp.int32, device=d.efc.type.device))
+    wp.copy(d.efc.id, wp.array(efc_id, dtype=wp.int32, device=d.efc.id.device))
+    wp.copy(d.nefc, wp.array(nefc, dtype=wp.int32, device=d.nefc.device))
+
+    island.island(m, d)
+
+    np.testing.assert_array_equal(d.tree_island.numpy(), expected_labels)
+    np.testing.assert_array_equal(d.nisland.numpy(), expected_nisland)
+
+  def test_static_static_constraint_creates_no_island(self):
+    """A constraint between two static bodies activates nothing, as in MuJoCo.
+
+    Covers the incidence that MuJoCo's `DsuMergeRejectsStaticSelfIncidence` and
+    `ReportsConstraintBetweenTwoStaticBodies` guard. `_dsu_union` returns without touching the
+    workspace when both endpoints are static, so the partition is empty rather than diagnosed.
+    `tree_island` is only compared against its own expected value: with `nisland == 0` MuJoCo
+    leaves its copy unwritten, so cross-checking that array here would read undefined memory.
+    """
+    mjm, mjd, m, d = test_data.fixture(xml=_STATIC_WELD_XML, nworld=2)
+    mjwarp.fwd_position(m, d)
+    self.assertGreater(int(d.nefc.numpy()[0]), 0)
+    np.testing.assert_array_equal(m.body_treeid.numpy()[[1, 2]], np.full(2, -1, dtype=np.int32))
+
+    island.island(m, d)
+
+    self.assertEqual(mjd.nisland, 0)
+    np.testing.assert_array_equal(d.nisland.numpy(), np.zeros(d.nworld, dtype=np.int32))
+    np.testing.assert_array_equal(d.tree_island.numpy(), np.full((d.nworld, mjm.ntree), -1, dtype=np.int32))
+
+  def test_randomized_incidence_matches_graph_traversal(self):
+    """Differential against an independent traversal over randomized incidence.
+
+    Mirrors MuJoCo's `DsuRandomizedDifferentialAgainstGraphTraversal`. Each world carries an
+    independent random multiset of equality rows drawn from a sparse fixed edge pool, including
+    static endpoints, duplicates and reversed pairs, so one launch covers `nworld` trials.
+    """
+    ntree, nedge, nworld, rounds = 24, 18, 16, 16
+    mjm, mjd, m, d = test_data.fixture(xml=_random_edge_pool_xml(ntree, nedge), nworld=nworld, njmax=1024)
+    del mjd
+    body_treeid = m.body_treeid.numpy()
+    eq_obj1, eq_obj2 = m.eq_obj1id.numpy(), m.eq_obj2id.numpy()
+    edge_trees = [(int(body_treeid[eq_obj1[e]]), int(body_treeid[eq_obj2[e]])) for e in range(mjm.neq)]
+    self.assertTrue(any(a < 0 or b < 0 for a, b in edge_trees), "pool must contain static endpoints")
+
+    rng = np.random.default_rng(0)
+    efc_type, efc_id, nefc = d.efc.type.numpy(), d.efc.id.numpy(), d.nefc.numpy()
+    seen_nisland = set()
+    for round_ in range(rounds):
+      efc_type[:], efc_id[:] = 0, 0
+      trials = []
+      for world in range(nworld):
+        rows = rng.integers(0, mjm.neq, size=int(rng.integers(0, 16)))
+        efc_type[world, : rows.size] = int(types.ConstraintType.EQUALITY)
+        efc_id[world, : rows.size] = rows
+        nefc[world] = rows.size
+        trials.append([edge_trees[e] for e in rows])
+      wp.copy(d.efc.type, wp.array(efc_type, dtype=wp.int32, device=d.efc.type.device))
+      wp.copy(d.efc.id, wp.array(efc_id, dtype=wp.int32, device=d.efc.id.device))
+      wp.copy(d.nefc, wp.array(nefc, dtype=wp.int32, device=d.nefc.device))
+
+      island.island(m, d)
+
+      labels, nisland = d.tree_island.numpy(), d.nisland.numpy()
+      for world in range(nworld):
+        want_labels, want_nisland = _reference_islands(trials[world], ntree)
+        seen_nisland.add(want_nisland)
+        msg = f"round {round_} world {world}"
+        self.assertEqual(int(nisland[world]), want_nisland, msg)
+        np.testing.assert_array_equal(labels[world], want_labels, err_msg=msg)
+
+    # a pool that only ever produced one island would not discriminate
+    self.assertGreaterEqual(len(seen_nisland), 5)
+
+  def test_deep_connected_chain_compresses_to_one_island(self):
+    """A chain spanning every tree collapses to a single island.
+
+    Mirrors MuJoCo's `DsuAssignCompresses4096NodeAdversarialChain` and
+    `DsuHandlesLongConnectedBoundaryCase` at a size that keeps the fixture cheap.
+    """
+    trees = 1024
+    mjm, mjd, m, d = test_data.fixture(xml=_chain_xml(trees, freejoint=False), nworld=2, njmax=6 * trees + 64)
+    del mjm, mjd
+    mjwarp.fwd_position(m, d)
+
+    island.island(m, d)
+
+    np.testing.assert_array_equal(d.nisland.numpy(), np.ones(d.nworld, dtype=np.int32))
+    np.testing.assert_array_equal(d.tree_island.numpy(), np.zeros((d.nworld, trees), dtype=np.int32))
+
+  def test_one_equality_among_many_trees_leaves_the_rest_inactive(self):
+    """Only the two constrained trees join an island; every other tree stays unlabeled.
+
+    Mirrors MuJoCo's `BoundedArenaSupports1024Trees`.
+    """
+    trees = 1024
+    mjm, mjd, m, d = test_data.fixture(xml=_one_equality_xml(trees), nworld=2, njmax=256)
+    del mjm, mjd
+    mjwarp.fwd_position(m, d)
+
+    island.island(m, d)
+
+    expected = np.full((d.nworld, trees), -1, dtype=np.int32)
+    expected[:, 0] = 0
+    expected[:, 1] = 0
+    np.testing.assert_array_equal(d.nisland.numpy(), np.ones(d.nworld, dtype=np.int32))
+    np.testing.assert_array_equal(d.tree_island.numpy(), expected)
 
   def test_repeated_island_reset_is_bitwise_stable(self):
     """Each call overwrites the persistent DSU workspace and output labels."""
