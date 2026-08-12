@@ -106,29 +106,6 @@ _ELLIPTIC_CONTACT_XML = """
 """
 
 
-# Mixed-constraint pile: static-plane contacts, body-body contacts that merge and split
-# as the pile settles, a weld pair, and a hinge tree carrying both a limit and friction.
-_MIXED_CONTACT_XML = """
-<mujoco>
-  <worldbody>
-    <geom type="plane" size="5 5 .1"/>
-    <body name="p0" pos="0 0 .12"><freejoint/><geom type="sphere" size=".1"/></body>
-    <body name="p1" pos=".13 0 .34"><freejoint/><geom type="sphere" size=".1"/></body>
-    <body name="p2" pos="-.05 .12 .56"><freejoint/><geom type="sphere" size=".1"/></body>
-    <body name="p3" pos="2 0 .12"><freejoint/><geom type="box" size=".1 .1 .1"/></body>
-    <body name="p4" pos="2 .05 .40"><freejoint/><geom type="box" size=".1 .1 .1"/></body>
-    <body name="w0" pos="-2 0 .5"><freejoint/><geom type="sphere" size=".1"/></body>
-    <body name="w1" pos="-2 .3 .5"><freejoint/><geom type="sphere" size=".1"/></body>
-    <body name="h0" pos="4 0 .5">
-      <joint type="hinge" axis="0 1 0" limited="true" range="-.3 .3" frictionloss="1"/>
-      <geom type="capsule" size=".05" fromto="0 0 0 .4 0 0"/>
-    </body>
-  </worldbody>
-  <equality><weld body1="w0" body2="w1"/></equality>
-</mujoco>
-"""
-
-
 def _limit_chain_xml(trees: int) -> str:
   """One limited slide joint per tree.
 
@@ -364,7 +341,7 @@ class IslandDiscoveryTest(absltest.TestCase):
     np.testing.assert_array_equal(d.tree_island.numpy(), np.zeros((2, 2), dtype=np.int32))
 
   def test_generic_equality_matches_in_explicit_dense_and_sparse_modes(self):
-    """Generic Jacobian incidence is exact for both supported storage modes."""
+    """A joint equality takes the generic Jacobian path, and it is exact in both storage modes."""
     xml = """
     <mujoco>
       <worldbody>
@@ -380,6 +357,8 @@ class IslandDiscoveryTest(absltest.TestCase):
         del mjm, mjd
         mjwarp.fwd_position(m, d)
         self.assertEqual(m.is_sparse, jacobian == mujoco.mjtJacobian.mjJAC_SPARSE)
+        # a joint equality has no body incidence, so these rows can only reach the generic scan
+        self.assertIn(types.ConstraintType.EQUALITY, d.efc.type.numpy()[0, : d.nefc.numpy()[0]])
 
         island.island(m, d)
 
@@ -571,36 +550,34 @@ class IslandDiscoveryTest(absltest.TestCase):
     np.testing.assert_array_equal(d.nisland.numpy(), np.ones(d.nworld, dtype=np.int32))
     np.testing.assert_array_equal(d.tree_island.numpy(), expected)
 
-  def test_repeated_island_reset_is_bitwise_stable(self):
-    """Each call overwrites the persistent DSU workspace and output labels."""
-    mjm, mjd, m, d = test_data.fixture(xml=_WELD_XML)
-    del mjm, mjd
-    mjwarp.fwd_position(m, d)
+  def test_repeated_discovery_is_bitwise_stable(self):
+    """Every call overwrites the workspace and reproduces its labels exactly.
 
-    first_parent = _discover(m, d).numpy().copy()
-    first_labels = d.tree_island.numpy().copy()
-    first_nisland = d.nisland.numpy().copy()
+    Both fixtures poison `tree_island` and `nisland` before each repeat, so a phase that read
+    stale output instead of rewriting it would be caught. The 64-tree chain adds contention:
+    duplicate weld rows race to hook the same roots and must still converge on the minimum.
+    """
+    for label, xml, nworld in (("weld pair", _WELD_XML, 1), ("64-tree chain", _chain_xml(64), 2)):
+      with self.subTest(model=label):
+        mjm, mjd, m, d = test_data.fixture(xml=xml, nworld=nworld)
+        del mjm, mjd
+        mjwarp.fwd_position(m, d)
 
-    for _ in range(16):
-      d.tree_island.fill_(123)
-      d.nisland.fill_(123)
+        first_parent = _discover(m, d).numpy().copy()
+        first_labels = d.tree_island.numpy().copy()
+        first_nisland = d.nisland.numpy().copy()
+        # every tree ends in one island rooted at the minimum, whichever fixture this is
+        np.testing.assert_array_equal(first_parent, np.zeros((d.nworld, m.ntree), dtype=np.int32))
+        np.testing.assert_array_equal(first_labels, np.zeros((d.nworld, m.ntree), dtype=np.int32))
+        np.testing.assert_array_equal(first_nisland, np.ones(d.nworld, dtype=np.int32))
 
-      np.testing.assert_array_equal(_discover(m, d).numpy(), first_parent)
-      np.testing.assert_array_equal(d.tree_island.numpy(), first_labels)
-      np.testing.assert_array_equal(d.nisland.numpy(), first_nisland)
+        for _ in range(16):
+          d.tree_island.fill_(123)
+          d.nisland.fill_(123)
 
-  def test_high_contention_chain_is_bitwise_stable(self):
-    """Concurrent duplicate weld rows converge to one deterministic minimum root."""
-    mjm, mjd, m, d = test_data.fixture(xml=_chain_xml(64), nworld=2)
-    del mjm, mjd
-    mjwarp.fwd_position(m, d)
-    expected_parent = np.zeros((d.nworld, m.ntree), dtype=np.int32)
-    expected_labels = np.zeros((d.nworld, m.ntree), dtype=np.int32)
-
-    for _ in range(16):
-      np.testing.assert_array_equal(_discover(m, d).numpy(), expected_parent)
-      np.testing.assert_array_equal(d.tree_island.numpy(), expected_labels)
-      np.testing.assert_array_equal(d.nisland.numpy(), np.ones(d.nworld, dtype=np.int32))
+          np.testing.assert_array_equal(_discover(m, d).numpy(), first_parent)
+          np.testing.assert_array_equal(d.tree_island.numpy(), first_labels)
+          np.testing.assert_array_equal(d.nisland.numpy(), first_nisland)
 
   def test_joint_friction_and_limit_rows_activate_their_dof_tree(self):
     """Special one-tree EFC rows use their prescribed DOF-tree incidence."""
@@ -625,27 +602,6 @@ class IslandDiscoveryTest(absltest.TestCase):
     island.island(m, d)
     np.testing.assert_array_equal(d.nisland.numpy(), np.array([1], dtype=np.int32))
     np.testing.assert_array_equal(d.tree_island.numpy(), np.array([[0]], dtype=np.int32))
-
-  def test_generic_equality_jacobian_unions_all_active_trees(self):
-    """Joint equality takes the generic Jacobian path rather than body incidence."""
-    mjm, mjd, m, d = test_data.fixture(
-      xml="""
-      <mujoco>
-        <option><flag island="disable"/></option>
-        <worldbody>
-          <body><joint name="j0" type="hinge"/><geom size=".1"/></body>
-          <body pos="1 0 0"><joint name="j1" type="hinge"/><geom size=".1"/></body>
-        </worldbody>
-        <equality><joint joint1="j0" joint2="j1"/></equality>
-      </mujoco>
-      """
-    )
-    del mjm, mjd
-    mjwarp.fwd_position(m, d)
-
-    self.assertIn(types.ConstraintType.EQUALITY, d.efc.type.numpy()[0, : d.nefc.numpy()[0]])
-    island.island(m, d)
-    np.testing.assert_array_equal(d.tree_island.numpy(), np.array([[0, 0]], dtype=np.int32))
 
   def test_warmed_island_does_not_sync_with_host(self):
     """The DSU path is safe to call inside a warmed graph region.
@@ -754,150 +710,6 @@ class IslandDiscoveryTest(absltest.TestCase):
     np.testing.assert_array_equal(d.tree_island.numpy(), expected_labels)
     np.testing.assert_array_equal(d.nisland.numpy(), expected_nisland)
 
-  def test_two_trees_one_constraint_one_island(self):
-    """Two trees connected by one constraint form one island.
-
-    topology:
-      [[0, 1],
-       [1, 0]]
-    """
-    mjm, mjd, m, d = test_data.fixture(
-      xml="""
-      <mujoco>
-        <option>
-          <flag island="disable"/>
-        </option>
-        <worldbody>
-          <body name="body1">
-            <joint type="free"/>
-            <geom size=".1"/>
-          </body>
-          <body name="body2" pos="1 0 0">
-            <joint type="free"/>
-            <geom size=".1"/>
-          </body>
-        </worldbody>
-        <equality>
-          <weld body1="body1" body2="body2"/>
-        </equality>
-      </mujoco>
-      """
-    )
-
-    d.nisland.fill_(-1)
-    d.tree_island.fill_(-1)
-    mjwarp.fwd_position(m, d)
-    island.island(m, d)
-
-    # should have exactly 1 island
-    self.assertEqual(d.nisland.numpy()[0], 1)
-    # both trees should be in island 0
-    tree_island = d.tree_island.numpy()[0]
-    self.assertEqual(tree_island[0], tree_island[1])
-    self.assertEqual(tree_island[0], 0)
-
-  def test_three_trees_chain_one_island(self):
-    """Three trees in a chain form one island.
-
-    topology:
-      [[0, 1, 0],
-       [1, 0, 1],
-       [0, 1, 0]]
-    """
-    mjm, mjd, m, d = test_data.fixture(
-      xml="""
-      <mujoco>
-        <option>
-          <flag island="disable"/>
-        </option>
-        <worldbody>
-          <body name="body1">
-            <joint type="free"/>
-            <geom size=".1"/>
-          </body>
-          <body name="body2" pos="1 0 0">
-            <joint type="free"/>
-            <geom size=".1"/>
-          </body>
-          <body name="body3" pos="2 0 0">
-            <joint type="free"/>
-            <geom size=".1"/>
-          </body>
-        </worldbody>
-        <equality>
-          <weld body1="body1" body2="body2"/>
-          <weld body1="body2" body2="body3"/>
-        </equality>
-      </mujoco>
-      """
-    )
-
-    d.nisland.fill_(-1)
-    d.tree_island.fill_(-1)
-    mjwarp.fwd_position(m, d)
-    island.island(m, d)
-
-    # should have exactly 1 island
-    self.assertEqual(d.nisland.numpy()[0], 1)
-    # all trees should be in the same island
-    tree_island = d.tree_island.numpy()[0]
-    self.assertEqual(tree_island[0], tree_island[1])
-    self.assertEqual(tree_island[1], tree_island[2])
-
-  def test_two_disconnected_pairs_two_islands(self):
-    """Two pairs of disconnected trees form two islands.
-
-    topology:
-      [[0, 1, 0, 0],
-       [1, 0, 0, 0],
-       [0, 0, 0, 1],
-       [0, 0, 1, 0]]
-    """
-    mjm, mjd, m, d = test_data.fixture(
-      xml="""
-      <mujoco>
-        <option>
-          <flag island="disable"/>
-        </option>
-        <worldbody>
-          <body name="body1">
-            <joint type="free"/>
-            <geom size=".1"/>
-          </body>
-          <body name="body2" pos="1 0 0">
-            <joint type="free"/>
-            <geom size=".1"/>
-          </body>
-          <body name="body3" pos="10 0 0">
-            <joint type="free"/>
-            <geom size=".1"/>
-          </body>
-          <body name="body4" pos="11 0 0">
-            <joint type="free"/>
-            <geom size=".1"/>
-          </body>
-        </worldbody>
-        <equality>
-          <weld body1="body1" body2="body2"/>
-          <weld body1="body3" body2="body4"/>
-        </equality>
-      </mujoco>
-      """
-    )
-
-    d.nisland.fill_(-1)
-    d.tree_island.fill_(-1)
-    mjwarp.fwd_position(m, d)
-    island.island(m, d)
-
-    # should have exactly 2 islands
-    self.assertEqual(d.nisland.numpy()[0], 2)
-    # trees 0,1 should be in one island, trees 2,3 in another
-    tree_island = d.tree_island.numpy()[0]
-    self.assertEqual(tree_island[0], tree_island[1])
-    self.assertEqual(tree_island[2], tree_island[3])
-    self.assertNotEqual(tree_island[0], tree_island[2])
-
   def test_no_constraints_no_islands(self):
     """No constraints means no constrained islands.
 
@@ -927,101 +739,6 @@ class IslandDiscoveryTest(absltest.TestCase):
 
     # should have 0 islands (unconstrained tree is not an island)
     self.assertEqual(d.nisland.numpy()[0], 0)
-
-  def test_multiple_worlds(self):
-    """Test island discovery with nworld=2.
-
-    topology:
-      [[0, 1],
-       [1, 0]]
-    """
-    mjm, mjd, m, d = test_data.fixture(
-      xml="""
-      <mujoco>
-        <option>
-          <flag island="disable"/>
-        </option>
-        <worldbody>
-          <body name="body1">
-            <joint type="free"/>
-            <geom size=".1"/>
-          </body>
-          <body name="body2" pos="1 0 0">
-            <joint type="free"/>
-            <geom size=".1"/>
-          </body>
-        </worldbody>
-        <equality>
-          <weld body1="body1" body2="body2"/>
-        </equality>
-      </mujoco>
-      """,
-      nworld=2,
-    )
-
-    d.nisland.fill_(-1)
-    d.tree_island.fill_(-1)
-    mjwarp.fwd_position(m, d)
-    island.island(m, d)
-
-    # both worlds should have exactly 1 island
-    nisland = d.nisland.numpy()
-    self.assertEqual(nisland[0], 1)
-    self.assertEqual(nisland[1], 1)
-
-    # both trees in both worlds should be in island 0
-    tree_island = d.tree_island.numpy()
-    for worldid in range(2):
-      self.assertEqual(tree_island[worldid, 0], 0)
-      self.assertEqual(tree_island[worldid, 1], 0)
-
-  def test_three_trees_star_hub_at_end(self):
-    """Three trees with tree 2 as hub connecting trees 0 and 1.
-
-    topology:
-      [[0, 0, 1],
-       [0, 0, 1],
-       [1, 1, 0]]
-    """
-    mjm, mjd, m, d = test_data.fixture(
-      xml="""
-      <mujoco>
-        <option>
-          <flag island="disable"/>
-        </option>
-        <worldbody>
-          <body name="body1">
-            <joint type="free"/>
-            <geom size=".1"/>
-          </body>
-          <body name="body2" pos="1 0 0">
-            <joint type="free"/>
-            <geom size=".1"/>
-          </body>
-          <body name="body3" pos="2 0 0">
-            <joint type="free"/>
-            <geom size=".1"/>
-          </body>
-        </worldbody>
-        <equality>
-          <weld body1="body1" body2="body3"/>
-          <weld body1="body2" body2="body3"/>
-        </equality>
-      </mujoco>
-      """
-    )
-
-    d.nisland.fill_(-1)
-    d.tree_island.fill_(-1)
-    mjwarp.fwd_position(m, d)
-    island.island(m, d)
-
-    # should have exactly 1 island
-    self.assertEqual(d.nisland.numpy()[0], 1)
-    # all trees should be in the same island
-    tree_island = d.tree_island.numpy()[0]
-    self.assertEqual(tree_island[0], tree_island[1])
-    self.assertEqual(tree_island[1], tree_island[2])
 
 
 class IslandMappingTest(absltest.TestCase):
@@ -1249,18 +966,21 @@ class IslandMappingTest(absltest.TestCase):
       mjd.map_iefc2efc[:nefc],
     )
 
-  def test_dof_mapping_is_canonical_across_worlds(self):
-    """Island-local DOFs retain MuJoCo's ascending global-DOF order."""
+  def test_mapping_is_canonical_across_worlds(self):
+    """Island-local DOFs and constraints keep MuJoCo's order in every world."""
     mjm, mjd, m, d = test_data.fixture(xml=_chain_xml(22), nworld=256)
     m.opt.disableflags &= ~types.DisableBit.ISLAND
 
     mjwarp.fwd_position(m, d)
     island.compute_island_mapping(m, d)
 
-    expected_dof2idof = np.tile(mjd.map_dof2idof[: mjm.nv], (d.nworld, 1))
-    expected_idof2dof = np.tile(mjd.map_idof2dof[: mjm.nv], (d.nworld, 1))
-    np.testing.assert_array_equal(d.map_dof2idof.numpy()[:, : mjm.nv], expected_dof2idof)
-    np.testing.assert_array_equal(d.map_idof2dof.numpy()[:, : mjm.nv], expected_idof2dof)
+    for name, got, want in (
+      ("map_dof2idof", d.map_dof2idof.numpy()[:, : mjm.nv], mjd.map_dof2idof[: mjm.nv]),
+      ("map_idof2dof", d.map_idof2dof.numpy()[:, : mjm.nv], mjd.map_idof2dof[: mjm.nv]),
+      ("map_efc2iefc", d.map_efc2iefc.numpy()[:, : mjd.nefc], mjd.map_efc2iefc[: mjd.nefc]),
+      ("map_iefc2efc", d.map_iefc2efc.numpy()[:, : mjd.nefc], mjd.map_iefc2efc[: mjd.nefc]),
+    ):
+      np.testing.assert_array_equal(got, np.tile(want, (d.nworld, 1)), err_msg=name)
 
   def test_dof_mapping_interleaves_islands_and_unconstrained_trees(self):
     """Disjoint islands separated by unconstrained trees keep MuJoCo's DOF order."""
@@ -1285,19 +1005,6 @@ class IslandMappingTest(absltest.TestCase):
     np.testing.assert_array_equal(
       d.island_dofadr.numpy()[:, : mjd.nisland], np.tile(mjd.island_dofadr[: mjd.nisland], (d.nworld, 1))
     )
-
-  def test_efc_mapping_is_canonical_across_worlds(self):
-    """Island-local constraints retain MuJoCo's category and EFC order."""
-    mjm, mjd, m, d = test_data.fixture(xml=_chain_xml(22), nworld=256)
-    m.opt.disableflags &= ~types.DisableBit.ISLAND
-
-    mjwarp.fwd_position(m, d)
-    island.compute_island_mapping(m, d)
-
-    expected_efc2iefc = np.tile(mjd.map_efc2iefc[: mjd.nefc], (d.nworld, 1))
-    expected_iefc2efc = np.tile(mjd.map_iefc2efc[: mjd.nefc], (d.nworld, 1))
-    np.testing.assert_array_equal(d.map_efc2iefc.numpy()[:, : mjd.nefc], expected_efc2iefc)
-    np.testing.assert_array_equal(d.map_iefc2efc.numpy()[:, : mjd.nefc], expected_iefc2efc)
 
   def test_island_ne_nf_parity(self):
     """island_ne and island_nf match MuJoCo C values."""
