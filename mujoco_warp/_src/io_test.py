@@ -1135,7 +1135,7 @@ class IOTest(parameterized.TestCase):
       _assert_eq(getattr(d, arr).numpy()[0], getattr(mjd, arr), arr)
 
   def test_reset_data_keyframe_world(self):
-    """Tests per-world reset for reset_data_keyframe."""
+    """Tests per-world reset for reset_data_keyframe, skipping worlds via an invalid key."""
     _MJCF = """
     <mujoco>
       <worldbody>
@@ -1167,18 +1167,18 @@ class IOTest(parameterized.TestCase):
 
     wp.copy(d.qpos, qpos)
 
-    # don't reset second world
-    reset10 = wp.array(np.array([True, False]), dtype=bool)
-    mjwarp.reset_data_keyframe(m, d, key, reset=reset10)
+    # don't reset second world: give it an out-of-range key
+    key10 = wp.array(np.array([0, -1]), dtype=int)
+    mjwarp.reset_data_keyframe(m, d, key10)
 
     _assert_eq(d.qpos.numpy()[0], 0.5, "qpos[0]")
     _assert_eq(d.qpos.numpy()[1], 2.0, "qpos[1]")
 
     wp.copy(d.qpos, qpos)
 
-    # don't reset both worlds
-    reset00 = wp.array(np.array([False, False], dtype=bool))
-    mjwarp.reset_data_keyframe(m, d, key, reset=reset00)
+    # don't reset either world
+    key00 = wp.array(np.array([-1, -1]), dtype=int)
+    mjwarp.reset_data_keyframe(m, d, key00)
 
     _assert_eq(d.qpos.numpy()[0], 1.0, "qpos[0]")
     _assert_eq(d.qpos.numpy()[1], 2.0, "qpos[1]")
@@ -1243,6 +1243,8 @@ class IOTest(parameterized.TestCase):
       mjwarp.reset_data_keyframe(m, d, 1)
     with self.assertRaisesRegex(ValueError, "key array must have shape"):
       mjwarp.reset_data_keyframe(m, d, wp.array(np.array([0, 0, 0]), dtype=int))
+    with self.assertRaisesRegex(ValueError, "key array must be of integer type"):
+      mjwarp.reset_data_keyframe(m, d, wp.array(np.array([0.0, 0.0]), dtype=float))
     with self.assertRaisesRegex(ValueError, "key must be an int or a wp.array"):
       mjwarp.reset_data_keyframe(m, d, 0.5)
 

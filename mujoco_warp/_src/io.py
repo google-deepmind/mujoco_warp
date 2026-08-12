@@ -2738,37 +2738,30 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
     sleep.update_sleep(m, d)
 
 
-def reset_data_keyframe(
-  m: types.Model,
-  d: types.Data,
-  key: int | wp.array,
-  reset: Optional[wp.array] = None,
-):
-  """Reset data, set fields from specified keyframe; optionally by world.
+def reset_data_keyframe(m: types.Model, d: types.Data, key: int | wp.array):
+  """Reset data, set fields from specified keyframe.
 
   Args:
     m: The model containing kinematic and dynamic information (device).
     d: The data object containing the current state and output arrays (device).
-    key: The keyframe index to initialize the data with. Either an int, which
-      sets the same keyframe for every world, or a wp.array(dtype=int) of size
-      nworld, which sets a keyframe per world. In the latter case, worlds with a
-      keyframe index < 0 or >= m.nkey are not reset.
-    reset: Per-world bitmask. Reset if True.
+    key: The keyframe index to initialize the data with. If a plain integer is
+      given, all worlds are reset to that keyframe (in this case, if keyframe
+      index is < 0 or >= m.nkey, a ValueError is raised). If an array of
+      integers is given, each value of the array indicates the target
+      keyframe of the corresponding world (in this case, worlds whose
+      keyframe index is < 0 or >= m.nkey are not reset).
 
   Raises:
     ValueError: If key is an int and key<0 or key>=m.nkey.
-    ValueError: If key is a wp.array but its shape is not (d.nworld,).
+    ValueError: If key is a wp.array but its shape is not (d.nworld,) or its
+      dtype is not int.
   """
-  # Resolve reset world mask
-  if reset is None:
-    reset_input = wp.ones(d.nworld, dtype=bool)
-  else:
-    reset_input = reset
-
   # Resolve target keyframe index
   if isinstance(key, wp.array):
     if key.shape != (d.nworld,):
       raise ValueError(f"key array must have shape ({d.nworld},), got {key.shape}.")
+    if not wp.types.type_is_int(key.dtype):
+      raise ValueError(f"key array must be of integer type, got {key.dtype}.")
     key_input = key
   elif isinstance(key, int):
     if key < 0 or key >= m.nkey:
@@ -2777,31 +2770,30 @@ def reset_data_keyframe(
   else:
     raise ValueError(f"key must be an int or a wp.array, got {type(key)}.")
 
-  # Update reset mask: if key is out of bounds, mark reset mask as False for that world
+  # Worlds whose keyframe index is out of bounds are left untouched.
   @wp.kernel(module="unique", enable_backward=False)
-  def update_mask_for_invalid_keys(
+  def valid_key_mask(
     # Model:
     nkey: int,
     # In:
     key_in: wp.array[int],
-    reset_in: wp.array[bool],
     # Out:
     mask_out: wp.array[bool],
   ):
     worldid = wp.tid()
     key = key_in[worldid]
-    mask_out[worldid] = reset_in[worldid] and key >= 0 and key < nkey
+    mask_out[worldid] = key >= 0 and key < nkey
 
-  reset_input_with_invalid_keys_masked = wp.empty(d.nworld, dtype=bool)
+  reset_mask = wp.empty(d.nworld, dtype=bool)
   wp.launch(
-    update_mask_for_invalid_keys,
+    valid_key_mask,
     dim=d.nworld,
-    inputs=[m.nkey, key_input, reset_input],
-    outputs=[reset_input_with_invalid_keys_masked],
+    inputs=[m.nkey, key_input],
+    outputs=[reset_mask],
   )
 
-  # Call normal reset using updated mask
-  reset_data(m, d, reset_input_with_invalid_keys_masked)
+  # Call normal reset using the mask
+  reset_data(m, d, reset_mask)
 
   # Set time, qpos, qvel, act, mocap_pos, mocap_quat, ctrl from keyframes
   @wp.kernel(module="unique", enable_backward=False)
@@ -2922,28 +2914,28 @@ def reset_data_keyframe(
   wp.launch(
     reset_time,
     dim=d.nworld,
-    inputs=[m.key_time, key_input, reset_input_with_invalid_keys_masked],
+    inputs=[m.key_time, key_input, reset_mask],
     outputs=[d.time],
   )
 
   wp.launch(
     reset_qpos,
     dim=(d.nworld, m.nq),
-    inputs=[m.key_qpos, key_input, reset_input_with_invalid_keys_masked],
+    inputs=[m.key_qpos, key_input, reset_mask],
     outputs=[d.qpos],
   )
 
   wp.launch(
     reset_qvel,
     dim=(d.nworld, m.nv),
-    inputs=[m.key_qvel, key_input, reset_input_with_invalid_keys_masked],
+    inputs=[m.key_qvel, key_input, reset_mask],
     outputs=[d.qvel],
   )
 
   wp.launch(
     reset_activation,
     dim=(d.nworld, m.na),
-    inputs=[m.key_act, key_input, reset_input_with_invalid_keys_masked],
+    inputs=[m.key_act, key_input, reset_mask],
     outputs=[d.act],
   )
 
@@ -2955,7 +2947,7 @@ def reset_data_keyframe(
       m.key_mpos,
       m.key_mquat,
       key_input,
-      reset_input_with_invalid_keys_masked,
+      reset_mask,
     ],
     outputs=[d.mocap_pos, d.mocap_quat],
   )
@@ -2963,7 +2955,7 @@ def reset_data_keyframe(
   wp.launch(
     reset_control,
     dim=(d.nworld, m.nu),
-    inputs=[m.key_ctrl, key_input, reset_input_with_invalid_keys_masked],
+    inputs=[m.key_ctrl, key_input, reset_mask],
     outputs=[d.ctrl],
   )
 
