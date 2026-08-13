@@ -2395,7 +2395,8 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
     reset: Per-world bitmask. Reset if True.
 
   Raises:
-    ValueError: If reset is specified but its shape is not (d.nworld,).
+    ValueError: If reset is specified but its shape is not (d.nworld,) or its
+      dtype is not bool.
   """
   sleep_enabled = bool(m.opt.enableflags & types.EnableBit.SLEEP)
 
@@ -2630,6 +2631,8 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
   elif isinstance(reset, wp.array):
     if reset.shape != (d.nworld,):
       raise ValueError(f"reset array must have shape ({d.nworld},), got {reset.shape}.")
+    if reset.dtype != wp.bool:
+      raise ValueError(f"reset array must be of bool type, got {reset.dtype}.")
     reset_input = reset
   else:
     raise ValueError(f"reset must be None or a wp.array, got {type(reset)}.")
@@ -2763,7 +2766,8 @@ def reset_data_keyframe(m: types.Model, d: types.Data, key: int | wp.array):
     if not wp.types.type_is_int(key.dtype):
       raise ValueError(f"key array must be of integer type, got {key.dtype}.")
     key_input = key
-  elif isinstance(key, int):
+  elif isinstance(key, (int, np.integer)):
+    key = int(key)
     if key < 0 or key >= m.nkey:
       raise ValueError(f"key ({key}) must be in [0, {m.nkey}).")
     key_input = wp.full(d.nworld, key, dtype=int)
@@ -2795,16 +2799,33 @@ def reset_data_keyframe(m: types.Model, d: types.Data, key: int | wp.array):
   # Call normal reset using the mask
   reset_data(m, d, reset_mask)
 
-  # Set time, qpos, qvel, act, mocap_pos, mocap_quat, ctrl from keyframes
+  # Set time, qpos, qvel, act, ctrl, mocap_pos, mocap_quat from the keyframe.
   @wp.kernel(module="unique", enable_backward=False)
-  def reset_time(
+  def reset_keyframe_data(
     # Model:
+    nq: int,
+    nv: int,
+    nu: int,
+    na: int,
+    nmocap: int,
     key_time: wp.array[float],
+    key_qpos: wp.array2d[float],
+    key_qvel: wp.array2d[float],
+    key_act: wp.array2d[float],
+    key_mpos: wp.array2d[wp.vec3],
+    key_mquat: wp.array2d[wp.quat],
+    key_ctrl: wp.array2d[float],
     # In:
     key_in: wp.array[int],
     reset_in: wp.array[bool],
     # Data out:
     time_out: wp.array[float],
+    qpos_out: wp.array2d[float],
+    qvel_out: wp.array2d[float],
+    act_out: wp.array2d[float],
+    ctrl_out: wp.array2d[float],
+    mocap_pos_out: wp.array2d[wp.vec3],
+    mocap_quat_out: wp.array2d[wp.quat],
   ):
     worldid = wp.tid()
 
@@ -2813,150 +2834,46 @@ def reset_data_keyframe(m: types.Model, d: types.Data, key: int | wp.array):
 
     key = key_in[worldid]
     time_out[worldid] = key_time[key]
-
-  @wp.kernel(module="unique", enable_backward=False)
-  def reset_qpos(
-    # Model:
-    key_qpos: wp.array2d[float],
-    # In:
-    key_in: wp.array[int],
-    reset_in: wp.array[bool],
-    # Data out:
-    qpos_out: wp.array2d[float],
-  ):
-    worldid, qid = wp.tid()
-
-    if not reset_in[worldid]:
-      return
-
-    key = key_in[worldid]
-    qpos_out[worldid, qid] = key_qpos[key, qid]
-
-  @wp.kernel(module="unique", enable_backward=False)
-  def reset_qvel(
-    # Model:
-    key_qvel: wp.array2d[float],
-    # In:
-    key_in: wp.array[int],
-    reset_in: wp.array[bool],
-    # Data out:
-    qvel_out: wp.array2d[float],
-  ):
-    worldid, vid = wp.tid()
-
-    if not reset_in[worldid]:
-      return
-
-    key = key_in[worldid]
-    qvel_out[worldid, vid] = key_qvel[key, vid]
-
-  @wp.kernel(module="unique", enable_backward=False)
-  def reset_activation(
-    # Model:
-    key_act: wp.array2d[float],
-    # In:
-    key_in: wp.array[int],
-    reset_in: wp.array[bool],
-    # Data out:
-    act_out: wp.array2d[float],
-  ):
-    worldid, aid = wp.tid()
-
-    if not reset_in[worldid]:
-      return
-
-    key = key_in[worldid]
-    act_out[worldid, aid] = key_act[key, aid]
-
-  @wp.kernel(module="unique", enable_backward=False)
-  def reset_mocap(
-    # Model:
-    body_mocapid: wp.array[int],
-    key_mpos: wp.array2d[wp.vec3],
-    key_mquat: wp.array2d[wp.quat],
-    # In:
-    key_in: wp.array[int],
-    reset_in: wp.array[bool],
-    # Data out:
-    mocap_pos_out: wp.array2d[wp.vec3],
-    mocap_quat_out: wp.array2d[wp.quat],
-  ):
-    worldid, bodyid = wp.tid()
-
-    if not reset_in[worldid]:
-      return
-
-    mocapid = body_mocapid[bodyid]
-
-    if mocapid >= 0:
-      key = key_in[worldid]
-      mocap_pos_out[worldid, mocapid] = key_mpos[key, mocapid]
-      mocap_quat_out[worldid, mocapid] = key_mquat[key, mocapid]
-
-  @wp.kernel(module="unique", enable_backward=False)
-  def reset_control(
-    # Model:
-    key_ctrl: wp.array2d[float],
-    # In:
-    key_in: wp.array[int],
-    reset_in: wp.array[bool],
-    # Data out:
-    ctrl_out: wp.array2d[float],
-  ):
-    worldid, cid = wp.tid()
-
-    if not reset_in[worldid]:
-      return
-
-    key = key_in[worldid]
-    ctrl_out[worldid, cid] = key_ctrl[key, cid]
+    for i in range(nq):
+      qpos_out[worldid, i] = key_qpos[key, i]
+    for i in range(nv):
+      qvel_out[worldid, i] = key_qvel[key, i]
+    for i in range(na):
+      act_out[worldid, i] = key_act[key, i]
+    for i in range(nmocap):
+      mocap_pos_out[worldid, i] = key_mpos[key, i]
+      mocap_quat_out[worldid, i] = key_mquat[key, i]
+    for i in range(nu):
+      ctrl_out[worldid, i] = key_ctrl[key, i]
 
   wp.launch(
-    reset_time,
+    reset_keyframe_data,
     dim=d.nworld,
-    inputs=[m.key_time, key_input, reset_mask],
-    outputs=[d.time],
-  )
-
-  wp.launch(
-    reset_qpos,
-    dim=(d.nworld, m.nq),
-    inputs=[m.key_qpos, key_input, reset_mask],
-    outputs=[d.qpos],
-  )
-
-  wp.launch(
-    reset_qvel,
-    dim=(d.nworld, m.nv),
-    inputs=[m.key_qvel, key_input, reset_mask],
-    outputs=[d.qvel],
-  )
-
-  wp.launch(
-    reset_activation,
-    dim=(d.nworld, m.na),
-    inputs=[m.key_act, key_input, reset_mask],
-    outputs=[d.act],
-  )
-
-  wp.launch(
-    reset_mocap,
-    dim=(d.nworld, m.nbody),
     inputs=[
-      m.body_mocapid,
+      m.nq,
+      m.nv,
+      m.nu,
+      m.na,
+      m.nmocap,
+      m.key_time,
+      m.key_qpos,
+      m.key_qvel,
+      m.key_act,
       m.key_mpos,
       m.key_mquat,
+      m.key_ctrl,
       key_input,
       reset_mask,
     ],
-    outputs=[d.mocap_pos, d.mocap_quat],
-  )
-
-  wp.launch(
-    reset_control,
-    dim=(d.nworld, m.nu),
-    inputs=[m.key_ctrl, key_input, reset_mask],
-    outputs=[d.ctrl],
+    outputs=[
+      d.time,
+      d.qpos,
+      d.qvel,
+      d.act,
+      d.ctrl,
+      d.mocap_pos,
+      d.mocap_quat,
+    ],
   )
 
 

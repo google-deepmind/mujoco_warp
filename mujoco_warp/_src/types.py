@@ -1330,7 +1330,7 @@ class Model:
     key_act: keyframe act                                    (nkey, na)
     key_mpos: keyframe mocap pos                             (nkey, nmocap, 3)
     key_mquat: keyframe mocap quat                           (nkey, nmocap, 4)
-    key_ctrl: keyframe ctrl                                   (nkey, nu)
+    key_ctrl: keyframe ctrl                                  (nkey, nu)
     M_rownnz: number of non-zeros in each row of M           (nv,)
     M_rowadr: index of each row in M                         (nv,)
     M_colind: column indices of non-zeros in M               (nC,)
