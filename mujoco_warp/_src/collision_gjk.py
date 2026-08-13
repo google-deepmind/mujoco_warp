@@ -198,7 +198,7 @@ def support(geom: Geom, geomtype: int, dir: wp.vec3) -> SupportPoint:
     # TODO(kbayes): Support edge prisms
     sp.vertex_index = wp.where(dir[2] < 0.0, -2, -3)
     for i in range(6):
-      vert = geom.hfprism[i]
+      vert = geom.polyvert[i]
       dist = wp.dot(vert, dir)
       if dist > max_dist:
         max_dist = dist
@@ -216,6 +216,23 @@ def support(geom: Geom, geomtype: int, dir: wp.vec3) -> SupportPoint:
       sp.point = t2
     else:
       sp.point = t3
+  elif geomtype == GeomType.FLEX:
+    p0 = geom.polyvert[0]
+    p1 = geom.polyvert[1]
+    p2 = geom.polyvert[2]
+    p3 = geom.polyvert[3]
+    d0 = wp.dot(p0, dir)
+    d1 = wp.dot(p1, dir)
+    d2 = wp.dot(p2, dir)
+    d3 = wp.dot(p3, dir)
+    if d0 > d1 and d0 > d2 and d0 > d3:
+      sp.point = p0
+    elif d1 > d2 and d1 > d3:
+      sp.point = p1
+    elif d2 > d3:
+      sp.point = p2
+    else:
+      sp.point = p3
 
   if geom.margin > 0.0:
     sp.point += dir * (0.5 * geom.margin)
@@ -967,9 +984,9 @@ def _epa_witness(
     n = wp.vec3(0.0, 0.0, 1.0)
 
     # height field prism vertices
-    a = geom1.hfprism[3]
-    b = geom1.hfprism[4]
-    c = geom1.hfprism[5]
+    a = geom1.polyvert[3]
+    b = geom1.polyvert[4]
+    c = geom1.polyvert[5]
 
     # TODO(kbayes): Support cases where geom2 is larger than the height field
     if geomtype2 == GeomType.CAPSULE or geomtype2 == GeomType.SPHERE:
@@ -2312,9 +2329,9 @@ def _inflate(
       x2 = sp.point - margin2 * n
 
       # height field prism vertices
-      a = geom1.hfprism[3]
-      b = geom1.hfprism[4]
-      c = geom1.hfprism[5]
+      a = geom1.polyvert[3]
+      b = geom1.polyvert[4]
+      c = geom1.polyvert[5]
 
       coordinates = _tri_affine_coord(a, b, c, x2)
       if coordinates[0] > 0.0 and coordinates[1] > 0.0 and coordinates[2] > 0.0:
@@ -2360,16 +2377,21 @@ def gjk_phase(
   # determine if the geoms being tested are discrete
   is_discrete = _discrete_geoms(geomtype1, geomtype2) and (geom1.margin == 0.0 and geom2.margin == 0.0)
 
+  orig_margin1 = geom1.margin
+  orig_margin2 = geom2.margin
+  orig_size1 = geom1.size
+  orig_size2 = geom2.size
+
   # special handling for sphere and capsule (shrink to point and line respectively)
   if geomtype1 == GeomType.SPHERE or geomtype1 == GeomType.CAPSULE:
     size1 = geom1.size[0]
-    full_margin1 = size1 + 0.5 * geom1.margin
+    full_margin1 = size1 + 0.5 * orig_margin1
     geom1.margin = 0.0
     geom1.size = wp.vec3(0.0, geom1.size[1], geom1.size[2])
 
   if geomtype2 == GeomType.SPHERE or geomtype2 == GeomType.CAPSULE:
     size2 = geom2.size[0]
-    full_margin2 = size2 + 0.5 * geom2.margin
+    full_margin2 = size2 + 0.5 * orig_margin2
     geom2.margin = 0.0
     geom2.size = wp.vec3(0.0, geom2.size[1], geom2.size[2])
 
@@ -2387,10 +2409,10 @@ def gjk_phase(
       return False, dist, 1, x1, x2, empty, geom1, geom2
 
     # deep penetration: reset initial conditions and rerun GJK + EPA
-    geom1.margin = full_margin1 - size1
-    geom1.size = wp.vec3(size1, geom1.size[1], geom1.size[2])
-    geom2.margin = full_margin2 - size2
-    geom2.size = wp.vec3(size2, geom2.size[1], geom2.size[2])
+    geom1.margin = orig_margin1
+    geom1.size = orig_size1
+    geom2.margin = orig_margin2
+    geom2.size = orig_size2
     cutoff -= full_margin1 + full_margin2
 
   result = gjk(tolerance, gjk_iterations, geom1, geom2, x_1, x_2, geomtype1, geomtype2, cutoff, is_discrete)
