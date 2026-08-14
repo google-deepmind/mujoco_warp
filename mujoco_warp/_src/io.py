@@ -95,8 +95,8 @@ def _create_constraint(
 
     if mjd is not None:
       shape = tuple(sizes[dim] if isinstance(dim, str) else dim for dim in f.type.shape)
-      val = np.zeros(shape, dtype=wp.dtype_to_numpy(f.type.dtype))
-      if f.name in ("type", "id", "pos", "margin", "D", "vel", "aref", "frictionloss", "force"):
+      val = np.full(shape, -1 if f.name == "island" else 0, dtype=f.type.dtype)
+      if f.name in ("type", "id", "pos", "margin", "D", "vel", "aref", "frictionloss", "force", "island"):
         val[:, : mjd.nefc] = np.tile(getattr(mjd, "efc_" + f.name), (nworld, 1))
       efc_kwargs[f.name] = wp.array(val, dtype=f.type.dtype)
     else:
@@ -1574,32 +1574,63 @@ def _allocate_island_arrays(
   d: types.Data,
   nworld: int,
   njmax: int,
-  enabled: bool,
   mjd: mujoco.MjData,
 ):
-  ntree_size = mjm.ntree if enabled else 0
-  nv_size = mjm.nv if enabled else 0
-  njmax_size = njmax if enabled else 0
+  ntree = mjm.ntree
+  nv = mjm.nv
+  nisland = int(mjd.nisland)
+  nidof = int(mjd.nidof)
+  nefc = int(mjd.nefc)
 
-  d.nisland = wp.array(np.full(nworld, mjd.nisland), dtype=int)
-  d.nidof = wp.array(np.full(nworld, mjd.nidof), dtype=int)
-  d.tree_island = wp.array(np.tile(mjd.tree_island, (nworld, 1 if enabled else 0)), dtype=int)
-  d.dof_island = wp.array(np.tile(mjd.dof_island, (nworld, 1 if enabled else 0)), dtype=int)
+  d.nisland = wp.array(np.full(nworld, nisland, dtype=np.int32), dtype=int)
+  d.nidof = wp.array(np.full(nworld, nidof, dtype=np.int32), dtype=int)
 
-  d.island_dofadr = wp.empty((nworld, ntree_size), dtype=int)
-  d.island_idofadr = wp.empty((nworld, ntree_size), dtype=int)
-  d.island_nv = wp.empty((nworld, ntree_size), dtype=int)
-  d.island_nefc = wp.empty((nworld, ntree_size), dtype=int)
-  d.island_ne = wp.empty((nworld, ntree_size), dtype=int)
-  d.island_nf = wp.empty((nworld, ntree_size), dtype=int)
-  d.island_iefcadr = wp.empty((nworld, ntree_size), dtype=int)
-  d.map_dof2idof = wp.empty((nworld, nv_size), dtype=int)
-  d.map_idof2dof = wp.empty((nworld, nv_size), dtype=int)
-  d.map_efc2iefc = wp.empty((nworld, njmax_size), dtype=int)
-  d.map_iefc2efc = wp.empty((nworld, njmax_size), dtype=int)
+  tree_island = np.tile(mjd.tree_island[:ntree], (nworld, 1)) if nisland > 0 else np.full((nworld, ntree), -1, dtype=np.int32)
+  d.tree_island = wp.array(tree_island, dtype=int)
+  dof_island = np.tile(mjd.dof_island[:nv], (nworld, 1)) if nisland > 0 else np.full((nworld, nv), -1, dtype=np.int32)
+  d.dof_island = wp.array(dof_island, dtype=int)
 
-  d.dof_islandid = wp.empty((nworld, nv_size), dtype=int)
-  d.efc_islandid = wp.empty((nworld, njmax_size), dtype=int)
+  # Island arrays sized by ntree
+  for name in (
+    "island_dofadr",
+    "island_idofadr",
+    "island_nv",
+    "island_nefc",
+    "island_ne",
+    "island_nf",
+    "island_iefcadr",
+  ):
+    arr = np.zeros((nworld, ntree), dtype=np.int32)
+    if nisland > 0:
+      arr[:, :nisland] = getattr(mjd, name)[:nisland]
+    setattr(d, name, wp.array(arr, dtype=int))
+
+  # DOF mapping arrays sized by nv
+  map_dof2idof = np.tile(mjd.map_dof2idof[:nv], (nworld, 1))
+  map_idof2dof = np.tile(mjd.map_idof2dof[:nv], (nworld, 1))
+  dof_islandid = np.full((nworld, nv), -1, dtype=np.int32)
+  if nisland > 0 and nidof > 0:
+    dof_islandid[:, :nidof] = mjd.dof_island[mjd.map_idof2dof[:nidof]]
+
+  d.map_dof2idof = wp.array(map_dof2idof, dtype=int)
+  d.map_idof2dof = wp.array(map_idof2dof, dtype=int)
+  d.dof_islandid = wp.array(dof_islandid, dtype=int)
+
+  # Constraint mapping arrays sized by njmax
+  map_efc2iefc = np.zeros((nworld, njmax), dtype=np.int32)
+  map_iefc2efc = np.zeros((nworld, njmax), dtype=np.int32)
+  efc_islandid = np.full((nworld, njmax), -1, dtype=np.int32)
+
+  if nefc > 0:
+    map_efc2iefc[:, :nefc] = mjd.map_efc2iefc[:nefc]
+    map_iefc2efc[:, :nefc] = mjd.map_iefc2efc[:nefc]
+    if nisland > 0:
+      total_iefc = int(mjd.island_iefcadr[nisland - 1] + mjd.island_nefc[nisland - 1])
+      efc_islandid[:, :total_iefc] = mjd.efc_island[mjd.map_iefc2efc[:total_iefc]]
+
+  d.map_efc2iefc = wp.array(map_efc2iefc, dtype=int)
+  d.map_iefc2efc = wp.array(map_iefc2efc, dtype=int)
+  d.efc_islandid = wp.array(efc_islandid, dtype=int)
 
 
 def _allocate_compact_arrays(
@@ -1713,7 +1744,6 @@ def make_data(
   if njmax is None:
     njmax = _default_njmax(mjm)
 
-  island_alloc = True
   sleep_enabled = bool(mjm.opt.enableflags & mujoco.mjtEnableBit.mjENBL_SLEEP) and not bool(
     mjm.opt.disableflags & mujoco.mjtDisableBit.mjDSBL_ISLAND
   )
@@ -1877,7 +1907,7 @@ def make_data(
 
   d = types.Data(**d_kwargs)
 
-  _allocate_island_arrays(mjm, d, nworld, njmax, island_alloc, mjd)
+  _allocate_island_arrays(mjm, d, nworld, njmax, mjd)
   _allocate_compact_arrays(mjm, d, nworld, sizes["nvmax_pad"], sizes["njmax_pad"], compact_alloc)
   d.ncdof.zero_()
   d.dof_cdof.fill_(-1)
@@ -1928,7 +1958,6 @@ def put_data(
   if njmax is None:
     njmax = _default_njmax(mjm, mjd)
 
-  island_alloc = True
   sleep_enabled = bool(mjm.opt.enableflags & mujoco.mjtEnableBit.mjENBL_SLEEP) and not bool(
     mjm.opt.disableflags & mujoco.mjtDisableBit.mjDSBL_ISLAND
   )
@@ -2169,7 +2198,7 @@ def put_data(
     qLD[lay["total"] :] = mjd.qLD
   d.qLD = wp.array(np.full((nworld, qld_total), qLD), dtype=float)
 
-  _allocate_island_arrays(mjm, d, nworld, njmax, island_alloc, mjd)
+  _allocate_island_arrays(mjm, d, nworld, njmax, mjd)
   _allocate_compact_arrays(mjm, d, nworld, sizes["nvmax_pad"], sizes["njmax_pad"], compact_alloc)
   d.ncdof.zero_()
   d.dof_cdof.fill_(-1)
@@ -2413,8 +2442,8 @@ def get_data_into(
 
   # islands
   result.nisland = nisland
-  result.nidof = nidof
-  if nisland > 0:
+  result.nidof = d.nidof.numpy()[world_id]
+  if d.tree_island.shape[1] > 0 and nisland:
     result.tree_island[:] = d.tree_island.numpy()[world_id]
     result.dof_island[:] = d.dof_island.numpy()[world_id]
     result.island_idofadr[:nisland] = d.island_idofadr.numpy()[world_id, :nisland]
