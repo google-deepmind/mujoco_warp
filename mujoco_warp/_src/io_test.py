@@ -1071,6 +1071,15 @@ class IOTest(parameterized.TestCase):
     _assert_eq(d.qvel.numpy()[0], 1.0, "qvel[0]")
     _assert_eq(d.qvel.numpy()[1], 2.0, "qvel[1]")
 
+    wp.copy(d.qvel, qvel)
+
+    # int arrays are tolerated as a reset mask (nonzero means reset)
+    reset10_int = wp.array(np.array([1, 0]), dtype=int)
+    mjwarp.reset_data(m, d, reset=reset10_int)
+
+    _assert_eq(d.qvel.numpy()[0], 0.0, "qvel[0]")
+    _assert_eq(d.qvel.numpy()[1], 2.0, "qvel[1]")
+
   def test_reset_data_reset_invalid(self):
     """Tests that reset_data validates the reset argument."""
     _, _, m, d = test_data.fixture(
@@ -1090,10 +1099,7 @@ class IOTest(parameterized.TestCase):
     with self.assertRaisesRegex(ValueError, "reset array must have shape"):
       mjwarp.reset_data(m, d, reset=wp.array(np.array([True, False, True]), dtype=bool))
 
-    with self.assertRaisesRegex(ValueError, "reset array must be of bool type"):
-      mjwarp.reset_data(m, d, reset=wp.array(np.array([1, 0]), dtype=int))
-
-    with self.assertRaisesRegex(ValueError, "reset array must be of bool type"):
+    with self.assertRaisesRegex(ValueError, "reset array must be of bool or integer type"):
       mjwarp.reset_data(m, d, reset=wp.array(np.array([1.0, 0.0]), dtype=float))
 
     with self.assertRaisesRegex(ValueError, "reset must be None or a wp.array"):

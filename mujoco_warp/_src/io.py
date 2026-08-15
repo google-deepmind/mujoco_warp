@@ -2392,11 +2392,11 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
   Args:
     m: The model containing kinematic and dynamic information (device).
     d: The data object containing the current state and output arrays (device).
-    reset: Per-world bitmask. Reset if True.
+    reset: Per-world bitmask (bool or integer array). Reset if nonzero/True.
 
   Raises:
     ValueError: If reset is specified but its shape is not (d.nworld,) or its
-      dtype is not bool.
+      dtype is not bool or integer.
   """
   sleep_enabled = bool(m.opt.enableflags & types.EnableBit.SLEEP)
 
@@ -2631,9 +2631,13 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
   elif isinstance(reset, wp.array):
     if reset.shape != (d.nworld,):
       raise ValueError(f"reset array must have shape ({d.nworld},), got {reset.shape}.")
-    if reset.dtype != wp.bool:
-      raise ValueError(f"reset array must be of bool type, got {reset.dtype}.")
-    reset_input = reset
+    if reset.dtype == wp.bool:
+      reset_input = reset
+    elif wp.types.type_is_int(reset.dtype):
+      reset_input = wp.empty(d.nworld, dtype=bool)
+      wp.utils.array_cast(reset, reset_input)
+    else:
+      raise ValueError(f"reset array must be of bool or integer type, got {reset.dtype}.")
   else:
     raise ValueError(f"reset must be None or a wp.array, got {type(reset)}.")
 
