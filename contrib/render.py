@@ -19,6 +19,10 @@ Usage: mjwarp-render <mjcf XML path> [flags]
 
 Example:
   mjwarp-render benchmarks/humanoid/humanoid.xml --nworld=1 --cam=0 --width=512 --height=512
+  mjwarp-render mujoco_warp/test_data/gaussian/scene.xml \
+    --gaussian=mujoco_warp/test_data/gaussian/fox.ply
+  mjwarp-render mujoco_warp/test_data/gaussian/orbit.xml \
+    --gaussian=mujoco_warp/test_data/gaussian/train.ply --orbit --orbit_up=-y
 """
 
 import sys
@@ -54,8 +58,14 @@ _OUTPUT_DEPTH = flags.DEFINE_string("output_depth", "debug_depth.png", "output p
 _DEPTH_SCALE = flags.DEFINE_float("depth_scale", 5.0, "scale factor to map depth to 0..255 for preview")
 _TILED = flags.DEFINE_bool("tiled", False, "render a 4x4 tiled grid across 16 worlds at 512x512")
 _ROLLOUT = flags.DEFINE_bool("rollout", False, "render a rollout video instead of a single frame")
-_NSTEPS = flags.DEFINE_integer("nstep", 128, "number of simulation steps in the rollout")
+_ORBIT = flags.DEFINE_bool("orbit", False, "render one camera orbit instead of a single frame")
+_ORBIT_CENTER = flags.DEFINE_list("orbit_center", ["0", "0", "1"], "orbit target as x,y,z")
+_ORBIT_RADIUS = flags.DEFINE_float("orbit_radius", 4.0, "orbit radius")
+_ORBIT_HEIGHT = flags.DEFINE_float("orbit_height", 1.0, "camera height above the orbit target")
+_ORBIT_UP = flags.DEFINE_enum("orbit_up", "z", ["x", "y", "z", "-x", "-y", "-z"], "up axis for the camera orbit")
+_NSTEPS = flags.DEFINE_integer("nstep", 128, "simulation steps, or frames in an orbit")
 _ROLLOUT_OUTPUT = flags.DEFINE_string("output_video", "rollout.gif", "output path for rollout video")
+_GAUSSIAN = flags.DEFINE_string("gaussian", None, "Gaussian splat PLY path")
 
 
 def _load_model(path: epath.Path) -> mujoco.MjModel:
@@ -109,6 +119,69 @@ def _depth_image_from_row(depth_row: np.ndarray, width: int, height: int, scale:
   arr = depth_row.reshape(height, width)
   arr = np.clip(arr / max(scale, 1e-6), 0.0, 1.0)
   return (arr * 255.0).astype(np.uint8)
+
+
+def _rgb_frame(
+  rc: mjw.RenderContext,
+  cam: int,
+  world: int,
+  width: int,
+  height: int,
+  grid_rows: int,
+  grid_cols: int,
+) -> np.ndarray | None:
+  rgb_adr = rc.rgb_adr.numpy()
+  if rgb_adr[cam] == -1:
+    return None
+
+  rgb = rc.rgb_data.numpy()
+  start = rgb_adr[cam]
+  rows = rgb[:, start : start + width * height]
+  if grid_rows == 1 and grid_cols == 1:
+    return _rgb_image_from_packed(rows[world], width, height)
+
+  tiles = [_rgb_image_from_packed(rows[i], width, height) for i in range(grid_rows * grid_cols)]
+  tiled_rows = [np.concatenate(tiles[i * grid_cols : (i + 1) * grid_cols], axis=1) for i in range(grid_rows)]
+  return np.concatenate(tiled_rows, axis=0)
+
+
+def _set_orbit_camera(
+  d: mjw.Data,
+  cam: int,
+  angle: float,
+  center: np.ndarray,
+  radius: float,
+  height: float,
+  up_axis: str,
+):
+  axis = up_axis[-1]
+  up = {
+    "x": np.array([1.0, 0.0, 0.0]),
+    "y": np.array([0.0, 1.0, 0.0]),
+    "z": np.array([0.0, 0.0, 1.0]),
+  }[axis]
+  if up_axis[0] == "-":
+    up = -up
+  radial_0 = {
+    "x": np.array([0.0, -1.0, 0.0]),
+    "y": np.array([0.0, 0.0, -1.0]),
+    "z": np.array([0.0, -1.0, 0.0]),
+  }[axis]
+  radial_1 = np.cross(radial_0, up)
+  position = center + radius * (radial_0 * np.cos(angle) + radial_1 * np.sin(angle)) + height * up
+  forward = center - position
+  forward /= np.linalg.norm(forward)
+  z_axis = -forward
+  x_axis = np.cross(forward, up)
+  x_axis /= np.linalg.norm(x_axis)
+  y_axis = np.cross(z_axis, x_axis)
+
+  cam_xpos = d.cam_xpos.numpy()
+  cam_xmat = d.cam_xmat.numpy()
+  cam_xpos[:, cam] = position
+  cam_xmat[:, cam] = np.column_stack((x_axis, y_axis, z_axis))
+  d.cam_xpos.assign(cam_xpos)
+  d.cam_xmat.assign(cam_xmat)
 
 
 def _save_tiled_rgb(
@@ -202,6 +275,9 @@ def _main(argv: Sequence[str]):
       render_height = int(_HEIGHT.value)
 
     d = mjw.put_data(mjm, mjd, nworld=nworld)
+    gaussian_positions = gaussian_rotations = gaussian_scales = gaussian_rgba = None
+    if _GAUSSIAN.value:
+      gaussian_positions, gaussian_rotations, gaussian_scales, gaussian_rgba = mjw.load_gaussian_ply(_GAUSSIAN.value)
 
     rc = mjw.create_render_context(
       mjm,
@@ -214,6 +290,10 @@ def _main(argv: Sequence[str]):
       _USE_SHADOWS.value,
       enabled_geom_groups=[0, 1, 2],
       render_skybox=_RENDER_SKYBOX.value,
+      gaussian_positions=gaussian_positions,
+      gaussian_rotations=gaussian_rotations,
+      gaussian_scales=gaussian_scales,
+      gaussian_rgba=gaussian_rgba,
     )
 
     print(f"Model: ncam={m.ncam} nlight={m.nlight} ngeom={m.ngeom}\n")
@@ -232,6 +312,42 @@ def _main(argv: Sequence[str]):
 
     rgb_adr = rc.rgb_adr.numpy()
     depth_adr = rc.depth_adr.numpy()
+
+    if _ORBIT.value:
+      if _ROLLOUT.value:
+        raise ValueError("camera orbit and physics rollout cannot be enabled together")
+      if not _RENDER_RGB.value:
+        raise ValueError("camera orbit requires RGB rendering to be enabled (--rgb).")
+      if _TILED.value:
+        raise ValueError("camera orbit does not support tiled rendering")
+
+      center = np.asarray(_ORBIT_CENTER.value, dtype=float)
+      if center.shape != (3,):
+        raise ValueError("orbit_center must contain three values")
+      frame_count = int(_NSTEPS.value)
+      if frame_count < 2:
+        raise ValueError("camera orbit requires at least two frames")
+      if _ORBIT_RADIUS.value <= 0.0:
+        raise ValueError("orbit_radius must be positive")
+
+      print(f"Rendering {frame_count}-frame camera orbit...")
+      frames = []
+      for frame in range(frame_count):
+        angle = 2.0 * np.pi * frame / frame_count
+        _set_orbit_camera(d, cam, angle, center, _ORBIT_RADIUS.value, _ORBIT_HEIGHT.value, _ORBIT_UP.value)
+        mjw.render(m, d, rc)
+        frame_array = _rgb_frame(rc, cam, world, base_width, base_height, grid_rows, grid_cols)
+        frames.append(Image.fromarray(frame_array))
+
+      frames[0].save(
+        _ROLLOUT_OUTPUT.value,
+        save_all=True,
+        append_images=frames[1:],
+        duration=1000 // 30,
+        loop=0,
+      )
+      print(f"Saved camera orbit to: {_ROLLOUT_OUTPUT.value}")
+      return
 
     if _ROLLOUT.value:
       if not _RENDER_RGB.value:
@@ -257,36 +373,7 @@ def _main(argv: Sequence[str]):
         mjw.refit_bvh(m, d, rc)
         mjw.render(m, d, rc)
 
-        if _TILED.value:
-          rgb_all = rc.rgb_data.numpy()
-          if rgb_adr[cam] != -1:
-            slice_start = rgb_adr[cam]
-            slice_end = slice_start + base_width * base_height
-            rows = rgb_all[:, slice_start:slice_end]
-            # Build a tiled frame from all worlds.
-            expected = grid_rows * grid_cols
-            if rows.shape[0] >= expected:
-              tiles = []
-              for wi in range(expected):
-                tiles.append(_rgb_image_from_packed(rows[wi], base_width, base_height))
-              row_imgs = []
-              for r in range(grid_rows):
-                row_tiles = tiles[r * grid_cols : (r + 1) * grid_cols]
-                row_imgs.append(np.concatenate(row_tiles, axis=1))
-              frame_array = np.concatenate(row_imgs, axis=0)
-            else:
-              frame_array = None
-          else:
-            frame_array = None
-        else:
-          rgb_all = rc.rgb_data.numpy()
-          if rgb_adr[cam] != -1:
-            slice_start = rgb_adr[cam]
-            slice_end = slice_start + base_width * base_height
-            row = rgb_all[world, slice_start:slice_end]
-            frame_array = _rgb_image_from_packed(row, base_width, base_height)
-          else:
-            frame_array = None
+        frame_array = _rgb_frame(rc, cam, world, base_width, base_height, grid_rows, grid_cols)
 
         if frame_array is not None:
           frames.append(Image.fromarray(frame_array))

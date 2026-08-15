@@ -19,6 +19,7 @@ import numpy as np
 import warp as wp
 from absl.testing import absltest
 from absl.testing import parameterized
+from etils import epath
 
 import mujoco_warp as mjw
 from mujoco_warp import test_data
@@ -44,6 +45,69 @@ def _unpack_rgb(packed):
 
 
 class RenderTest(parameterized.TestCase):
+  def test_load_gaussian_ply(self):
+    path = epath.resource_path("mujoco_warp") / "test_data" / "gaussian" / "lego.ply"
+    positions, rotations, scales, rgba = mjw.load_gaussian_ply(path)
+
+    self.assertEqual(len(positions), 50_000)
+    self.assertEqual(rotations.shape, (50_000, 4))
+    self.assertTrue(np.all(scales > 0.0))
+    self.assertTrue(np.all((rgba >= 0.0) & (rgba <= 1.0)))
+
+  def test_render_gaussian(self):
+    xml = """
+    <mujoco>
+      <worldbody>
+        <camera pos="0 -3 1" xyaxes="1 0 0 0 0.2 1"/>
+        <geom type="plane" size="3 3 0.1" rgba="0.2 0.2 0.2 1"/>
+      </worldbody>
+    </mujoco>
+    """
+    mjm, _, m, d = test_data.fixture(xml=xml)
+    rc = mjw.create_render_context(mjm, cam_res=(48, 48), render_rgb=True)
+    mjw.render(m, d, rc)
+    without_gaussian = rc.rgb_data.numpy().copy()
+    rc = mjw.create_render_context(
+      mjm,
+      cam_res=(48, 48),
+      render_rgb=True,
+      gaussian_positions=[[0.0, 0.0, 0.6]],
+      gaussian_scales=[[0.25, 0.25, 0.25]],
+      gaussian_rgba=[[1.0, 0.0, 0.0, 0.95]],
+    )
+    mjw.render(m, d, rc)
+    with_gaussian = rc.rgb_data.numpy()
+
+    self.assertGreater(np.count_nonzero(with_gaussian != without_gaussian), 20)
+    rgb = _unpack_rgb(with_gaussian[0]).reshape(48, 48, 3)
+    self.assertGreater(int(rgb[..., 0].max()), int(rgb[..., 1].max()))
+
+  def test_gaussian_is_occluded_by_geometry(self):
+    xml = """
+    <mujoco>
+      <worldbody>
+        <camera pos="0 -3 0.6" xyaxes="1 0 0 0 0 1"/>
+        <geom type="box" pos="0 0 0.6" size="0.6 0.2 0.6" rgba="0 1 0 1"/>
+      </worldbody>
+    </mujoco>
+    """
+    mjm, _, m, d = test_data.fixture(xml=xml)
+    rc = mjw.create_render_context(mjm, cam_res=(33, 33), render_rgb=True)
+    mjw.render(m, d, rc)
+    center_without = rc.rgb_data.numpy()[0, 16 * 33 + 16]
+    rc = mjw.create_render_context(
+      mjm,
+      cam_res=(33, 33),
+      render_rgb=True,
+      gaussian_positions=[[0.0, 1.0, 0.6]],
+      gaussian_scales=[[0.3, 0.3, 0.3]],
+      gaussian_rgba=[[1.0, 0.0, 0.0, 1.0]],
+    )
+    mjw.render(m, d, rc)
+    center_with = rc.rgb_data.numpy()[0, 16 * 33 + 16]
+
+    self.assertEqual(center_with, center_without)
+
   @parameterized.parameters(2, 512)
   def test_render(self, nworld: int):
     mjm, mjd, m, d = test_data.fixture("primitives.xml", nworld=nworld)
