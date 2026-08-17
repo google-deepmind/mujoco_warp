@@ -137,15 +137,14 @@ def _load_ply_splats(filename) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.n
   if not all(name in names for name in ("x", "y", "z", "opacity")):
     raise ValueError("PLY file is missing required splat attributes")
 
-  positions = np.column_stack([vertices[name] for name in ("x", "y", "z")]).astype(np.float32)
-  rotations_wxyz = fields("rot", 4)
-  rotations = rotations_wxyz[:, [1, 2, 3, 0]]
-  rotations /= np.maximum(np.linalg.norm(rotations, axis=1, keepdims=True), 1.0e-12)
-  scales = np.exp(fields("scale", 3))
+  splat_position = np.column_stack([vertices[name] for name in ("x", "y", "z")]).astype(np.float32)
+  splat_rotation = fields("rot", 4)
+  splat_rotation /= np.maximum(np.linalg.norm(splat_rotation, axis=1, keepdims=True), 1.0e-12)
+  splat_scale = np.exp(fields("scale", 3))
   opacity = 1.0 / (1.0 + np.exp(-np.clip(vertices["opacity"], -80.0, 80.0)))
   color = np.clip(0.5 + _SH_C0 * fields("f_dc", 3), 0.0, 1.0)
   rgba = np.column_stack((color, opacity)).astype(np.float32)
-  return positions, rotations, scales, rgba
+  return splat_position, splat_rotation, splat_scale, rgba
 
 
 def _load_model(path: epath.Path) -> mujoco.MjModel:
@@ -355,9 +354,9 @@ def _main(argv: Sequence[str]):
       render_height = int(_HEIGHT.value)
 
     d = mjw.put_data(mjm, mjd, nworld=nworld)
-    splat_positions = splat_rotations = splat_scales = splat_rgba = None
+    splat_position = splat_rotation = splat_scale = splat_rgba = None
     if _SPLAT.value:
-      splat_positions, splat_rotations, splat_scales, splat_rgba = _load_ply_splats(_SPLAT.value)
+      splat_position, splat_rotation, splat_scale, splat_rgba = _load_ply_splats(_SPLAT.value)
 
     rc = mjw.create_render_context(
       mjm,
@@ -370,9 +369,9 @@ def _main(argv: Sequence[str]):
       _USE_SHADOWS.value,
       enabled_geom_groups=[0, 1, 2],
       render_skybox=_RENDER_SKYBOX.value,
-      splat_positions=splat_positions,
-      splat_rotations=splat_rotations,
-      splat_scales=splat_scales,
+      splat_position=splat_position,
+      splat_rotation=splat_rotation,
+      splat_scale=splat_scale,
       splat_rgba=splat_rgba,
     )
 

@@ -3951,10 +3951,12 @@ def create_render_context(
   enable_specular: bool = True,
   enable_emission: bool = True,
   enable_per_light_ambient: bool = True,
-  splat_positions: np.ndarray | None = None,
-  splat_rotations: np.ndarray | None = None,
-  splat_scales: np.ndarray | None = None,
+  splat_position: np.ndarray | None = None,
+  splat_rotation: np.ndarray | None = None,
+  splat_scale: np.ndarray | None = None,
   splat_rgba: np.ndarray | None = None,
+  splat_offset: np.ndarray | None = None,
+  splat_group_id: np.ndarray | None = None,
 ) -> types.RenderContext:
   """Creates a render context on device.
 
@@ -3998,10 +4000,16 @@ def create_render_context(
                               the per-light ambient pass is removed at compile
                               time. Disable for performance when model lights
                               do not use ambient colors.
-    splat_positions: Splat centers in world coordinates.
-    splat_rotations: Splat rotations as `(x, y, z, w)` quaternions.
-    splat_scales: Splat standard deviations.
-    splat_rgba: Splat colors and opacities.
+    splat_position: Contiguous `(nsplat, 3)` float32 centers in world coordinates.
+    splat_rotation: Contiguous `(nsplat, 4)` float32 MuJoCo `(w, x, y, z)` quaternions.
+    splat_scale: Contiguous `(nsplat, 3)` float32 standard deviations.
+    splat_rgba: Contiguous `(nsplat, 4)` float32 colors and opacity.
+    splat_offset: Contiguous `(ngroup + 1,)` integer offsets delimiting each
+      splat group in the splat attribute arrays. Defaults to one group containing
+      every splat.
+    splat_group_id: Contiguous `(nworld,)` integer group IDs used to initialize
+      `rc.splat_group_root`. Defaults to group zero in all worlds. To randomize
+      groups after context creation, assign the desired roots to that field.
 
   Returns:
     The render context containing rendering fields and output arrays on device.
@@ -4011,30 +4019,40 @@ def create_render_context(
 
   constructor = "cubql"
 
-  # Build gaussian splat BVH
-  splat_attributes = (splat_positions, splat_rotations, splat_scales, splat_rgba)
-  if splat_positions is None:
-    if any(value is not None for value in splat_attributes[1:]):
-      raise ValueError("splat_positions, splat_rotations, splat_scales, and splat_rgba must be supplied together")
-    splat_transforms = wp.empty(0, dtype=wp.transform)
-    splat_scales = wp.empty(0, dtype=wp.vec3)
+  # Build grouped splat BVH.
+  splat_attribute = (splat_position, splat_rotation, splat_scale, splat_rgba)
+  if splat_position is None:
+    if any(value is not None for value in (*splat_attribute[1:], splat_offset, splat_group_id)):
+      raise ValueError("splat attributes, offsets, and group IDs must be supplied together")
+
+    splat_position = wp.empty(0, dtype=wp.vec3)
+    splat_rotation = wp.empty(0, dtype=wp.quat)
+    splat_scale = wp.empty(0, dtype=wp.vec3)
     splat_rgba = wp.empty(0, dtype=wp.vec4)
     splat_bvh = None
     splat_bvh_id = wp.uint64(0)
     splat_lower = wp.empty(0, dtype=wp.vec3)
     splat_upper = wp.empty(0, dtype=wp.vec3)
+    splat_group_root = wp.empty(nworld, dtype=int)
     splat_count = 0
   else:
+    if splat_offset is None:
+      splat_offset = np.array([0, splat_position.shape[0]], dtype=np.int32)
+    if splat_group_id is None:
+      splat_group_id = np.zeros(nworld, dtype=np.int32)
+    # Grouped BVHs are not supported by the scene's cuBQL constructor.
     (
-      splat_transforms,
-      splat_scales,
+      splat_position,
+      splat_rotation,
+      splat_scale,
       splat_rgba,
       splat_bvh,
       splat_bvh_id,
       splat_lower,
       splat_upper,
+      splat_group_root,
       splat_count,
-    ) = bvh.build_splat_bvh(*splat_attributes, constructor=constructor)
+    ) = bvh.build_splat_bvh(*splat_attribute, splat_offset, splat_group_id, constructor="sah")
 
   # Mesh BVHs – build for all meshes so per-world variants are available
   nmesh = mjm.nmesh
@@ -4281,13 +4299,15 @@ def create_render_context(
     enable_per_light_ambient=enable_per_light_ambient,
     light_attenuation_is_default=light_attenuation_is_default,
     has_spot_lights=has_spot_lights,
-    splat_transforms=splat_transforms,
-    splat_scales=splat_scales,
+    splat_position=splat_position,
+    splat_rotation=splat_rotation,
+    splat_scale=splat_scale,
     splat_rgba=splat_rgba,
     splat_bvh=splat_bvh,
     splat_bvh_id=splat_bvh_id,
     splat_lower=splat_lower,
     splat_upper=splat_upper,
+    splat_group_root=splat_group_root,
     splat_count=splat_count,
   )
 

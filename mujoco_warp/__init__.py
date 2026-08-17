@@ -30,6 +30,7 @@ from mujoco_warp._src.types import Data as Data
 
 
 from mujoco_warp._src.bvh import refit_bvh as refit_bvh
+from mujoco_warp._src.bvh import refit_splat_bvh as refit_splat_bvh
 from mujoco_warp._src.collision_driver import collision as collision
 from mujoco_warp._src.collision_driver import nxn_broadphase as nxn_broadphase
 from mujoco_warp._src.collision_driver import sap_broadphase as sap_broadphase

@@ -21,6 +21,7 @@ import mujoco
 import numpy as np
 import warp as wp
 
+from mujoco_warp._src import math as mjmath
 from mujoco_warp._src.types import MJ_MAXVAL
 from mujoco_warp._src.types import Data
 from mujoco_warp._src.types import GeomType
@@ -1181,17 +1182,19 @@ def refit_flex_bvh(m: Model, d: Data, rc: RenderContext):
 @wp.kernel
 def _compute_splat_bounds(
   # In:
-  transforms: wp.array[wp.transform],
-  scales: wp.array[wp.vec3],
-  rgba: wp.array[wp.vec4],
+  splat_position: wp.array[wp.vec3],
+  splat_rotation: wp.array[wp.quat],
+  splat_scale: wp.array[wp.vec3],
+  splat_rgba: wp.array[wp.vec4],
   # Out:
   lower_out: wp.array[wp.vec3],
   upper_out: wp.array[wp.vec3],
 ):
   tid = wp.tid()
-  transform = transforms[tid]
-  scale = scales[tid]
-  opacity = wp.max(rgba[tid][3], 1.0e-6)
+  pos = splat_position[tid]
+  rot = splat_rotation[tid]
+  scale = splat_scale[tid]
+  opacity = wp.max(splat_rgba[tid][3], 1.0e-6)
   response = wp.clamp(wp.static(SPLAT_MIN_RESPONSE) / opacity, 1.0e-6, 0.97)
   radius = wp.sqrt(-2.0 * wp.log(response))
 
@@ -1205,7 +1208,7 @@ def _compute_splat_bounds(
           scale[1] * radius * (2.0 * float(y) - 1.0),
           scale[2] * radius * (2.0 * float(z) - 1.0),
         )
-        point = wp.transform_point(transform, corner)
+        point = pos + mjmath.rot_vec_quat(corner, rot)
         lo = wp.min(lo, point)
         hi = wp.max(hi, point)
 
@@ -1213,23 +1216,41 @@ def _compute_splat_bounds(
   upper_out[tid] = hi
 
 
-def build_splat_bvh(positions, rotations, scales, rgba, constructor: str = "sah") -> tuple:
-  """Creates device fields for splats defined by world-space attributes.
+def build_splat_bvh(
+  splat_position, splat_rotation, splat_scale, splat_rgba, splat_offset, splat_group_id, constructor: str = "sah"
+) -> tuple:
+  """Creates a splat BVH for a set of splats."""
+  count = splat_position.shape[0]
+  splat_group = np.empty(count, dtype=np.int32)
+  for group_id in range(len(splat_offset) - 1):
+    splat_group[splat_offset[group_id] : splat_offset[group_id + 1]] = group_id
 
-  Rotations use Warp's ``(x, y, z, w)`` quaternion convention. Callers are
-  responsible for supplying finite, consistently shaped, positive-scale data.
-  """
-  positions = np.ascontiguousarray(np.asarray(positions, dtype=np.float32).reshape(-1, 3))
-  count = positions.shape[0]
-  rotations = np.ascontiguousarray(np.asarray(rotations, dtype=np.float32).reshape(count, 4))
-  scales = np.ascontiguousarray(np.asarray(scales, dtype=np.float32).reshape(count, 3))
-  rgba = np.ascontiguousarray(np.asarray(rgba, dtype=np.float32).reshape(count, 4))
-
-  transforms = wp.array(np.concatenate((positions, rotations), axis=1), dtype=wp.transform)
-  scales = wp.array(scales, dtype=wp.vec3)
-  rgba = wp.array(rgba, dtype=wp.vec4)
+  splat_position = wp.array(splat_position, dtype=wp.vec3)
+  splat_rotation = wp.array(splat_rotation, dtype=wp.quat)
+  splat_scale = wp.array(splat_scale, dtype=wp.vec3)
+  splat_rgba = wp.array(splat_rgba, dtype=wp.vec4)
+  groups = wp.array(splat_group, dtype=int)
   lower = wp.empty(count, dtype=wp.vec3)
   upper = wp.empty(count, dtype=wp.vec3)
-  wp.launch(_compute_splat_bounds, dim=count, inputs=[transforms, scales, rgba], outputs=[lower, upper])
-  splat_bvh = wp.Bvh(lower, upper, constructor=constructor)
-  return transforms, scales, rgba, splat_bvh, splat_bvh.id, lower, upper, count
+  wp.launch(
+    _compute_splat_bounds,
+    dim=count,
+    inputs=[splat_position, splat_rotation, splat_scale, splat_rgba],
+    outputs=[lower, upper],
+  )
+  splat_bvh = wp.Bvh(lower, upper, groups=groups, constructor=constructor)
+  group_root = wp.empty(len(splat_offset) - 1, dtype=int)
+  wp.launch(compute_bvh_group_roots, dim=group_root.shape[0], inputs=[splat_bvh.id], outputs=[group_root])
+  splat_group_root = wp.array(group_root.numpy()[splat_group_id], dtype=int)
+  return splat_position, splat_rotation, splat_scale, splat_rgba, splat_bvh, splat_bvh.id, lower, upper, splat_group_root, count
+
+
+def refit_splat_bvh(rc: RenderContext):
+  """Refits splat BVHs."""
+  wp.launch(
+    _compute_splat_bounds,
+    dim=rc.splat_count,
+    inputs=[rc.splat_position, rc.splat_rotation, rc.splat_scale, rc.splat_rgba],
+    outputs=[rc.splat_lower, rc.splat_upper],
+  )
+  rc.splat_bvh.refit()

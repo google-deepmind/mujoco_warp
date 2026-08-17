@@ -46,10 +46,10 @@ def _unpack_rgb(packed):
 def _sample_splats(position, scale, rgba):
   """Creates one splat with an identity rotation for renderer tests."""
   return {
-    "splat_positions": [position],
-    "splat_rotations": [[0.0, 0.0, 0.0, 1.0]],
-    "splat_scales": [scale],
-    "splat_rgba": [rgba],
+    "splat_position": np.asarray([position], dtype=np.float32),
+    "splat_rotation": np.asarray([[1.0, 0.0, 0.0, 0.0]], dtype=np.float32),
+    "splat_scale": np.asarray([scale], dtype=np.float32),
+    "splat_rgba": np.asarray([rgba], dtype=np.float32),
   }
 
 

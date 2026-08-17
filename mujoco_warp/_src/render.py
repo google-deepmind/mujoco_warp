@@ -53,7 +53,8 @@ _MIN_SPLAT_ALPHA = 1.0 / 255.0
 @wp.func
 def ray_splat(
   # In:
-  transform: wp.transform,
+  position: wp.vec3,
+  rotation: wp.quat,
   scale: wp.vec3,
   opacity: float,
   pnt: wp.vec3,
@@ -62,9 +63,9 @@ def ray_splat(
   max_distance: float,
 ) -> Tuple[float, float]:
   """Returns the distance and alpha at which a ray intersects a splat."""
-  inv_transform = wp.transform_inverse(transform)
-  lpnt = wp.cw_div(wp.transform_point(inv_transform, pnt), scale)
-  lvec = wp.cw_div(wp.transform_vector(inv_transform, vec), scale)
+  inverse_rotation = math.quat_inv(rotation)
+  lpnt = wp.cw_div(math.rot_vec_quat(pnt - position, inverse_rotation), scale)
+  lvec = wp.cw_div(math.rot_vec_quat(vec, inverse_rotation), scale)
 
   distance = -wp.dot(lpnt, lvec) / wp.dot(lvec, lvec)
   if distance <= min_distance or distance >= max_distance:
@@ -81,10 +82,12 @@ def ray_splat(
 @wp.func
 def shade_splats(
   # In:
-  transforms: wp.array[wp.transform],
-  scales: wp.array[wp.vec3],
-  rgba: wp.array[wp.vec4],
+  splat_position: wp.array[wp.vec3],
+  splat_rotation: wp.array[wp.quat],
+  splat_scale: wp.array[wp.vec3],
+  splat_rgba: wp.array[wp.vec4],
   bvh_id: wp.uint64,
+  group_root: int,
   ray_origin: wp.vec3,
   ray_direction: wp.vec3,
   max_distance: float,
@@ -106,10 +109,17 @@ def shade_splats(
       hit_alphas[i] = 0.0
 
     index = int(0)
-    query = wp.bvh_query_ray(bvh_id, ray_origin, ray_direction)
+    query = wp.bvh_query_ray(bvh_id, ray_origin, ray_direction, group_root)
     while wp.bvh_query_next(query, index, hit_distances[_MAX_SPLAT_HITS - 1]):
       distance, alpha = ray_splat(
-        transforms[index], scales[index], rgba[index][3], ray_origin, ray_direction, min_distance, max_distance
+        splat_position[index],
+        splat_rotation[index],
+        splat_scale[index],
+        splat_rgba[index][3],
+        ray_origin,
+        ray_direction,
+        min_distance,
+        max_distance,
       )
       if distance > 0.0:
         if num_hits < wp.static(_MAX_SPLAT_HITS):
@@ -131,7 +141,7 @@ def shade_splats(
     for i in range(num_hits):
       index = hit_indices[i]
       alpha = hit_alphas[i]
-      color += wp.vec3(rgba[index][0], rgba[index][1], rgba[index][2]) * alpha * transmittance
+      color += wp.vec3(splat_rgba[index][0], splat_rgba[index][1], splat_rgba[index][2]) * alpha * transmittance
       transmittance *= 1.0 - alpha
       if depth < 0.0 and transmittance < wp.static(_MIN_SPLAT_TRANSMITTANCE):
         depth = hit_distances[i]
@@ -737,10 +747,12 @@ def render(m: Model, d: Data, rc: RenderContext):
     skybox_tex_id: wp.array[int],
     skybox_face_width: wp.array[int],
     textures: wp.array[wp.Texture2D],
-    splat_transforms: wp.array[wp.transform],
-    splat_scales: wp.array[wp.vec3],
+    splat_position: wp.array[wp.vec3],
+    splat_rotation: wp.array[wp.quat],
+    splat_scale: wp.array[wp.vec3],
     splat_rgba: wp.array[wp.vec4],
     splat_bvh_id: wp.uint64,
+    splat_group_root: wp.array[int],
     # Out:
     rgb_out: wp.array2d[wp.uint32],
     depth_out: wp.array2d[float],
@@ -824,10 +836,12 @@ def render(m: Model, d: Data, rc: RenderContext):
     splat_depth = float(-1.0)
     if wp.static(has_splats):
       splat_color, splat_transmittance, splat_depth = shade_splats(
-        splat_transforms,
-        splat_scales,
+        splat_position,
+        splat_rotation,
+        splat_scale,
         splat_rgba,
         splat_bvh_id,
+        splat_group_root[worldid],
         ray_origin_world,
         ray_dir_world,
         dist,
@@ -1145,10 +1159,12 @@ def render(m: Model, d: Data, rc: RenderContext):
       rc.skybox_tex_id,
       rc.skybox_face_width,
       rc.textures,
-      rc.splat_transforms,
-      rc.splat_scales,
+      rc.splat_position,
+      rc.splat_rotation,
+      rc.splat_scale,
       rc.splat_rgba,
       rc.splat_bvh_id,
+      rc.splat_group_root,
     ],
     outputs=[
       rc.rgb_data,
