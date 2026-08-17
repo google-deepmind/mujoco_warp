@@ -22,7 +22,6 @@ import numpy as np
 import warp as wp
 
 from mujoco_warp._src import bvh
-from mujoco_warp._src import gaussian as gaussian_util
 from mujoco_warp._src import math as mjmath
 from mujoco_warp._src import render_util
 from mujoco_warp._src import sleep
@@ -3952,11 +3951,10 @@ def create_render_context(
   enable_specular: bool = True,
   enable_emission: bool = True,
   enable_per_light_ambient: bool = True,
-  gaussian_positions=None,
-  gaussian_rotations=None,
-  gaussian_scales=None,
-  gaussian_rgba=None,
-  gaussian_min_response: float = 0.01,
+  splat_positions: np.ndarray | None = None,
+  splat_rotations: np.ndarray | None = None,
+  splat_scales: np.ndarray | None = None,
+  splat_rgba: np.ndarray | None = None,
 ) -> types.RenderContext:
   """Creates a render context on device.
 
@@ -4000,11 +3998,10 @@ def create_render_context(
                               the per-light ambient pass is removed at compile
                               time. Disable for performance when model lights
                               do not use ambient colors.
-    gaussian_positions: Gaussian centers in world coordinates.
-    gaussian_rotations: Gaussian rotations as `(x, y, z, w)` quaternions.
-    gaussian_scales: Gaussian standard deviations.
-    gaussian_rgba: Gaussian colors and opacities.
-    gaussian_min_response: Minimum Gaussian response to render.
+    splat_positions: Splat centers in world coordinates.
+    splat_rotations: Splat rotations as `(x, y, z, w)` quaternions.
+    splat_scales: Splat standard deviations.
+    splat_rgba: Splat colors and opacities.
 
   Returns:
     The render context containing rendering fields and output arrays on device.
@@ -4012,33 +4009,32 @@ def create_render_context(
   mjd = mujoco.MjData(mjm)
   mujoco.mj_forward(mjm, mjd)
 
-  if gaussian_positions is None:
-    if any(value is not None for value in (gaussian_rotations, gaussian_scales, gaussian_rgba)):
-      raise ValueError("gaussian_positions is required when Gaussian attributes are provided")
-    gaussian_transforms = wp.empty(0, dtype=wp.transform)
-    gaussian_scales = wp.empty(0, dtype=wp.vec3)
-    gaussian_rgba = wp.empty(0, dtype=wp.vec4)
-    gaussian_bvh = None
-    gaussian_bvh_id = wp.uint64(0)
-    gaussian_lower = wp.empty(0, dtype=wp.vec3)
-    gaussian_upper = wp.empty(0, dtype=wp.vec3)
-    gaussian_count = 0
+  constructor = "cubql"
+
+  # Build gaussian splat BVH
+  splat_attributes = (splat_positions, splat_rotations, splat_scales, splat_rgba)
+  if splat_positions is None:
+    if any(value is not None for value in splat_attributes[1:]):
+      raise ValueError("splat_positions, splat_rotations, splat_scales, and splat_rgba must be supplied together")
+    splat_transforms = wp.empty(0, dtype=wp.transform)
+    splat_scales = wp.empty(0, dtype=wp.vec3)
+    splat_rgba = wp.empty(0, dtype=wp.vec4)
+    splat_bvh = None
+    splat_bvh_id = wp.uint64(0)
+    splat_lower = wp.empty(0, dtype=wp.vec3)
+    splat_upper = wp.empty(0, dtype=wp.vec3)
+    splat_count = 0
   else:
     (
-      gaussian_transforms,
-      gaussian_scales,
-      gaussian_rgba,
-      gaussian_bvh,
-      gaussian_bvh_id,
-      gaussian_lower,
-      gaussian_upper,
-      gaussian_min_response,
-      gaussian_count,
-    ) = gaussian_util.create_gaussian_fields(
-      gaussian_positions, gaussian_rotations, gaussian_scales, gaussian_rgba, gaussian_min_response
-    )
-
-  constructor = "cubql"
+      splat_transforms,
+      splat_scales,
+      splat_rgba,
+      splat_bvh,
+      splat_bvh_id,
+      splat_lower,
+      splat_upper,
+      splat_count,
+    ) = bvh.build_splat_bvh(*splat_attributes, constructor=constructor)
 
   # Mesh BVHs – build for all meshes so per-world variants are available
   nmesh = mjm.nmesh
@@ -4285,15 +4281,14 @@ def create_render_context(
     enable_per_light_ambient=enable_per_light_ambient,
     light_attenuation_is_default=light_attenuation_is_default,
     has_spot_lights=has_spot_lights,
-    gaussian_transforms=gaussian_transforms,
-    gaussian_scales=gaussian_scales,
-    gaussian_rgba=gaussian_rgba,
-    gaussian_bvh=gaussian_bvh,
-    gaussian_bvh_id=gaussian_bvh_id,
-    gaussian_lower=gaussian_lower,
-    gaussian_upper=gaussian_upper,
-    gaussian_min_response=gaussian_min_response,
-    gaussian_count=gaussian_count,
+    splat_transforms=splat_transforms,
+    splat_scales=splat_scales,
+    splat_rgba=splat_rgba,
+    splat_bvh=splat_bvh,
+    splat_bvh_id=splat_bvh_id,
+    splat_lower=splat_lower,
+    splat_upper=splat_upper,
+    splat_count=splat_count,
   )
 
   bvh.build_scene_bvh(mjm, mjd, rc, nworld)

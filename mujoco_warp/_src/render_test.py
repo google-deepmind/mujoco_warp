@@ -19,7 +19,6 @@ import numpy as np
 import warp as wp
 from absl.testing import absltest
 from absl.testing import parameterized
-from etils import epath
 
 import mujoco_warp as mjw
 from mujoco_warp import test_data
@@ -44,17 +43,18 @@ def _unpack_rgb(packed):
   return np.stack([r, g, b], axis=-1)
 
 
+def _sample_splats(position, scale, rgba):
+  """Creates one splat with an identity rotation for renderer tests."""
+  return {
+    "splat_positions": [position],
+    "splat_rotations": [[0.0, 0.0, 0.0, 1.0]],
+    "splat_scales": [scale],
+    "splat_rgba": [rgba],
+  }
+
+
 class RenderTest(parameterized.TestCase):
-  def test_load_gaussian_ply(self):
-    path = epath.resource_path("mujoco_warp") / "test_data" / "gaussian" / "lego.ply"
-    positions, rotations, scales, rgba = mjw.load_gaussian_ply(path)
-
-    self.assertEqual(len(positions), 50_000)
-    self.assertEqual(rotations.shape, (50_000, 4))
-    self.assertTrue(np.all(scales > 0.0))
-    self.assertTrue(np.all((rgba >= 0.0) & (rgba <= 1.0)))
-
-  def test_render_gaussian(self):
+  def test_render_splat(self):
     xml = """
     <mujoco>
       <worldbody>
@@ -66,23 +66,21 @@ class RenderTest(parameterized.TestCase):
     mjm, _, m, d = test_data.fixture(xml=xml)
     rc = mjw.create_render_context(mjm, cam_res=(48, 48), render_rgb=True)
     mjw.render(m, d, rc)
-    without_gaussian = rc.rgb_data.numpy().copy()
+    without_splat = rc.rgb_data.numpy().copy()
     rc = mjw.create_render_context(
       mjm,
       cam_res=(48, 48),
       render_rgb=True,
-      gaussian_positions=[[0.0, 0.0, 0.6]],
-      gaussian_scales=[[0.25, 0.25, 0.25]],
-      gaussian_rgba=[[1.0, 0.0, 0.0, 0.95]],
+      **_sample_splats([0.0, 0.0, 0.6], [0.25, 0.25, 0.25], [1.0, 0.0, 0.0, 0.95]),
     )
     mjw.render(m, d, rc)
-    with_gaussian = rc.rgb_data.numpy()
+    with_splat = rc.rgb_data.numpy()
 
-    self.assertGreater(np.count_nonzero(with_gaussian != without_gaussian), 20)
-    rgb = _unpack_rgb(with_gaussian[0]).reshape(48, 48, 3)
+    self.assertGreater(np.count_nonzero(with_splat != without_splat), 20)
+    rgb = _unpack_rgb(with_splat[0]).reshape(48, 48, 3)
     self.assertGreater(int(rgb[..., 0].max()), int(rgb[..., 1].max()))
 
-  def test_gaussian_is_occluded_by_geometry(self):
+  def test_splat_is_occluded_by_geometry(self):
     xml = """
     <mujoco>
       <worldbody>
@@ -99,9 +97,7 @@ class RenderTest(parameterized.TestCase):
       mjm,
       cam_res=(33, 33),
       render_rgb=True,
-      gaussian_positions=[[0.0, 1.0, 0.6]],
-      gaussian_scales=[[0.3, 0.3, 0.3]],
-      gaussian_rgba=[[1.0, 0.0, 0.0, 1.0]],
+      **_sample_splats([0.0, 1.0, 0.6], [0.3, 0.3, 0.3], [1.0, 0.0, 0.0, 1.0]),
     )
     mjw.render(m, d, rc)
     center_with = rc.rgb_data.numpy()[0, 16 * 33 + 16]

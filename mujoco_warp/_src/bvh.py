@@ -30,6 +30,9 @@ from mujoco_warp._src.warp_util import event_scope
 
 wp.set_module_options({"enable_backward": False, "default_grid_stride": False})
 
+# Render splats out to this density response, balancing extent and coverage.
+SPLAT_MIN_RESPONSE = 0.01
+
 
 @event_scope
 def refit_bvh(m: Model, d: Data, rc: RenderContext):
@@ -1173,3 +1176,60 @@ def refit_flex_bvh(m: Model, d: Data, rc: RenderContext):
       )
 
     mesh.refit()
+
+
+@wp.kernel
+def _compute_splat_bounds(
+  # In:
+  transforms: wp.array[wp.transform],
+  scales: wp.array[wp.vec3],
+  rgba: wp.array[wp.vec4],
+  # Out:
+  lower_out: wp.array[wp.vec3],
+  upper_out: wp.array[wp.vec3],
+):
+  tid = wp.tid()
+  transform = transforms[tid]
+  scale = scales[tid]
+  opacity = wp.max(rgba[tid][3], 1.0e-6)
+  response = wp.clamp(wp.static(SPLAT_MIN_RESPONSE) / opacity, 1.0e-6, 0.97)
+  radius = wp.sqrt(-2.0 * wp.log(response))
+
+  lo = wp.vec3(MJ_MAXVAL)
+  hi = wp.vec3(-MJ_MAXVAL)
+  for x in range(2):
+    for y in range(2):
+      for z in range(2):
+        corner = wp.vec3(
+          scale[0] * radius * (2.0 * float(x) - 1.0),
+          scale[1] * radius * (2.0 * float(y) - 1.0),
+          scale[2] * radius * (2.0 * float(z) - 1.0),
+        )
+        point = wp.transform_point(transform, corner)
+        lo = wp.min(lo, point)
+        hi = wp.max(hi, point)
+
+  lower_out[tid] = lo
+  upper_out[tid] = hi
+
+
+def build_splat_bvh(positions, rotations, scales, rgba, constructor: str = "sah") -> tuple:
+  """Creates device fields for splats defined by world-space attributes.
+
+  Rotations use Warp's ``(x, y, z, w)`` quaternion convention. Callers are
+  responsible for supplying finite, consistently shaped, positive-scale data.
+  """
+  positions = np.ascontiguousarray(np.asarray(positions, dtype=np.float32).reshape(-1, 3))
+  count = positions.shape[0]
+  rotations = np.ascontiguousarray(np.asarray(rotations, dtype=np.float32).reshape(count, 4))
+  scales = np.ascontiguousarray(np.asarray(scales, dtype=np.float32).reshape(count, 3))
+  rgba = np.ascontiguousarray(np.asarray(rgba, dtype=np.float32).reshape(count, 4))
+
+  transforms = wp.array(np.concatenate((positions, rotations), axis=1), dtype=wp.transform)
+  scales = wp.array(scales, dtype=wp.vec3)
+  rgba = wp.array(rgba, dtype=wp.vec4)
+  lower = wp.empty(count, dtype=wp.vec3)
+  upper = wp.empty(count, dtype=wp.vec3)
+  wp.launch(_compute_splat_bounds, dim=count, inputs=[transforms, scales, rgba], outputs=[lower, upper])
+  splat_bvh = wp.Bvh(lower, upper, constructor=constructor)
+  return transforms, scales, rgba, splat_bvh, splat_bvh.id, lower, upper, count

@@ -19,10 +19,7 @@ Usage: mjwarp-render <mjcf XML path> [flags]
 
 Example:
   mjwarp-render benchmarks/humanoid/humanoid.xml --nworld=1 --cam=0 --width=512 --height=512
-  mjwarp-render mujoco_warp/test_data/gaussian/scene.xml \
-    --gaussian=mujoco_warp/test_data/gaussian/fox.ply
-  mjwarp-render mujoco_warp/test_data/gaussian/orbit.xml \
-    --gaussian=mujoco_warp/test_data/gaussian/train.ply --orbit --orbit_up=-y
+  mjwarp-render benchmarks/humanoid/humanoid.xml --splat=my_scene.ply
 """
 
 import sys
@@ -65,7 +62,90 @@ _ORBIT_HEIGHT = flags.DEFINE_float("orbit_height", 1.0, "camera height above the
 _ORBIT_UP = flags.DEFINE_enum("orbit_up", "z", ["x", "y", "z", "-x", "-y", "-z"], "up axis for the camera orbit")
 _NSTEPS = flags.DEFINE_integer("nstep", 128, "simulation steps, or frames in an orbit")
 _ROLLOUT_OUTPUT = flags.DEFINE_string("output_video", "rollout.gif", "output path for rollout video")
-_GAUSSIAN = flags.DEFINE_string("gaussian", None, "Gaussian splat PLY path")
+_SPLAT = flags.DEFINE_string("splat", None, "3DGS PLY path to load as splat attributes")
+
+# Map PLY scalar names to NumPy dtypes while reading the binary 3DGS vertex payload.
+_PLY_TYPES = {
+  "char": "i1",
+  "int8": "i1",
+  "uchar": "u1",
+  "uint8": "u1",
+  "short": "<i2",
+  "int16": "<i2",
+  "ushort": "<u2",
+  "uint16": "<u2",
+  "int": "<i4",
+  "int32": "<i4",
+  "uint": "<u4",
+  "uint32": "<u4",
+  "float": "<f4",
+  "float32": "<f4",
+  "double": "<f8",
+  "float64": "<f8",
+}
+# Convert degree-zero spherical-harmonic coefficients to RGB values.
+_SH_C0 = 0.28209479177387814
+
+
+def _load_ply_splats(filename) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+  """Loads splat attributes from a binary little-endian 3DGS PLY file."""
+  with open(filename, "rb") as file:
+    if file.readline().strip() != b"ply":
+      raise ValueError("not a PLY file")
+
+    vertex_count = None
+    vertex_properties = []
+    in_vertex = False
+    binary_little_endian = False
+    while True:
+      line = file.readline()
+      if not line:
+        raise ValueError("PLY header is missing end_header")
+      fields = line.decode("ascii").strip().split()
+      if fields[:2] == ["format", "binary_little_endian"]:
+        binary_little_endian = True
+      elif fields and fields[0] == "format":
+        raise ValueError("only binary little-endian PLY files are supported")
+      elif fields[:2] == ["element", "vertex"]:
+        vertex_count = int(fields[2])
+        in_vertex = True
+      elif fields and fields[0] == "element":
+        in_vertex = False
+      elif fields and fields[0] == "property" and in_vertex:
+        if len(fields) != 3 or fields[1] not in _PLY_TYPES:
+          raise ValueError("unsupported PLY vertex property")
+        vertex_properties.append((fields[2], _PLY_TYPES[fields[1]]))
+      elif fields == ["end_header"]:
+        break
+
+    if vertex_count is None:
+      raise ValueError("PLY file has no vertex element")
+    if not binary_little_endian:
+      raise ValueError("PLY header is missing its binary little-endian format")
+    vertices = np.fromfile(file, dtype=np.dtype(vertex_properties), count=vertex_count)
+    if len(vertices) != vertex_count:
+      raise ValueError("PLY vertex data is truncated")
+
+  names = vertices.dtype.names or ()
+
+  def fields(prefix, count):
+    required = [f"{prefix}_{i}" for i in range(count)]
+    if not all(name in names for name in required):
+      raise ValueError(f"PLY file is missing {prefix} splat attributes")
+    return np.column_stack([vertices[name] for name in required]).astype(np.float32)
+
+  if not all(name in names for name in ("x", "y", "z", "opacity")):
+    raise ValueError("PLY file is missing required splat attributes")
+
+  positions = np.column_stack([vertices[name] for name in ("x", "y", "z")]).astype(np.float32)
+  rotations_wxyz = fields("rot", 4)
+  rotations = rotations_wxyz[:, [1, 2, 3, 0]]
+  rotations /= np.maximum(np.linalg.norm(rotations, axis=1, keepdims=True), 1.0e-12)
+  scales = np.exp(fields("scale", 3))
+  opacity = 1.0 / (1.0 + np.exp(-np.clip(vertices["opacity"], -80.0, 80.0)))
+  color = np.clip(0.5 + _SH_C0 * fields("f_dc", 3), 0.0, 1.0)
+  rgba = np.column_stack((color, opacity)).astype(np.float32)
+  return positions, rotations, scales, rgba
 
 
 def _load_model(path: epath.Path) -> mujoco.MjModel:
@@ -275,9 +355,9 @@ def _main(argv: Sequence[str]):
       render_height = int(_HEIGHT.value)
 
     d = mjw.put_data(mjm, mjd, nworld=nworld)
-    gaussian_positions = gaussian_rotations = gaussian_scales = gaussian_rgba = None
-    if _GAUSSIAN.value:
-      gaussian_positions, gaussian_rotations, gaussian_scales, gaussian_rgba = mjw.load_gaussian_ply(_GAUSSIAN.value)
+    splat_positions = splat_rotations = splat_scales = splat_rgba = None
+    if _SPLAT.value:
+      splat_positions, splat_rotations, splat_scales, splat_rgba = _load_ply_splats(_SPLAT.value)
 
     rc = mjw.create_render_context(
       mjm,
@@ -290,10 +370,10 @@ def _main(argv: Sequence[str]):
       _USE_SHADOWS.value,
       enabled_geom_groups=[0, 1, 2],
       render_skybox=_RENDER_SKYBOX.value,
-      gaussian_positions=gaussian_positions,
-      gaussian_rotations=gaussian_rotations,
-      gaussian_scales=gaussian_scales,
-      gaussian_rgba=gaussian_rgba,
+      splat_positions=splat_positions,
+      splat_rotations=splat_rotations,
+      splat_scales=splat_scales,
+      splat_rgba=splat_rgba,
     )
 
     print(f"Model: ncam={m.ncam} nlight={m.nlight} ngeom={m.ngeom}\n")
