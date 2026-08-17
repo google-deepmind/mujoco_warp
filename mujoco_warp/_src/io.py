@@ -3955,7 +3955,7 @@ def create_render_context(
   splat_rotation: np.ndarray | None = None,
   splat_scale: np.ndarray | None = None,
   splat_rgba: np.ndarray | None = None,
-  splat_offset: np.ndarray | None = None,
+  splat_adr: np.ndarray | None = None,
   splat_group_id: np.ndarray | None = None,
 ) -> types.RenderContext:
   """Creates a render context on device.
@@ -4000,16 +4000,14 @@ def create_render_context(
                               the per-light ambient pass is removed at compile
                               time. Disable for performance when model lights
                               do not use ambient colors.
-    splat_position: Contiguous `(nsplat, 3)` float32 centers in world coordinates.
-    splat_rotation: Contiguous `(nsplat, 4)` float32 MuJoCo `(w, x, y, z)` quaternions.
-    splat_scale: Contiguous `(nsplat, 3)` float32 standard deviations.
-    splat_rgba: Contiguous `(nsplat, 4)` float32 colors and opacity.
-    splat_offset: Contiguous `(ngroup + 1,)` integer offsets delimiting each
-      splat group in the splat attribute arrays. Defaults to one group containing
-      every splat.
-    splat_group_id: Contiguous `(nworld,)` integer group IDs used to initialize
-      `rc.splat_group_root`. Defaults to group zero in all worlds. To randomize
-      groups after context creation, assign the desired roots to that field.
+    splat_position: Splat centers in world coordinates (nsplat, 3).
+    splat_rotation: Splat rotations (nsplat, 4).
+    splat_scale: Splat scales as standard deviation in each dimension (nsplat, 3).
+    splat_rgba: Splat color and opacity (nsplat, 4).
+    splat_adr: Offset of each splat in the splat attribute arrays,
+               if None then all splats are in one group.
+    splat_group_id: Splat id for each world (nworld,). If None then all worlds
+                    use the first splat group.
 
   Returns:
     The render context containing rendering fields and output arrays on device.
@@ -4022,7 +4020,7 @@ def create_render_context(
   # Build grouped splat BVH.
   splat_attribute = (splat_position, splat_rotation, splat_scale, splat_rgba)
   if splat_position is None:
-    if any(value is not None for value in (*splat_attribute[1:], splat_offset, splat_group_id)):
+    if any(value is not None for value in (*splat_attribute[1:], splat_adr, splat_group_id)):
       raise ValueError("splat attributes, offsets, and group IDs must be supplied together")
 
     splat_position = wp.empty(0, dtype=wp.vec3)
@@ -4036,11 +4034,17 @@ def create_render_context(
     splat_group_root = wp.empty(nworld, dtype=int)
     splat_count = 0
   else:
-    if splat_offset is None:
-      splat_offset = np.array([0, splat_position.shape[0]], dtype=np.int32)
+    if any(splat_position.shape != other.shape for other in splat_attribute[1:]):
+      raise ValueError("all splat arrays must be of same shape")
+    if splat_adr is not None and splat_adr.shape != (len(splat_adr) - 1,):
+      raise ValueError("splat_adr must be of shape (len(splat_adr) - 1,)")
+    if splat_group_id is not None and splat_group_id.shape != (nworld,):
+      raise ValueError("splat_group_id must be of shape (nworld,)")
+
+    if splat_adr is None:
+      splat_adr = np.array([0, splat_position.shape[0]], dtype=np.int32)
     if splat_group_id is None:
       splat_group_id = np.zeros(nworld, dtype=np.int32)
-    # Grouped BVHs are not supported by the scene's cuBQL constructor.
     (
       splat_position,
       splat_rotation,
@@ -4052,7 +4056,7 @@ def create_render_context(
       splat_upper,
       splat_group_root,
       splat_count,
-    ) = bvh.build_splat_bvh(*splat_attribute, splat_offset, splat_group_id, constructor="sah")
+    ) = bvh.build_splat_bvh(*splat_attribute, splat_adr, splat_group_id, constructor="sah")
 
   # Mesh BVHs – build for all meshes so per-world variants are available
   nmesh = mjm.nmesh

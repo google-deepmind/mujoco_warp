@@ -1195,6 +1195,8 @@ def _compute_splat_bounds(
   rot = splat_rotation[tid]
   scale = splat_scale[tid]
   opacity = wp.max(splat_rgba[tid][3], 1.0e-6)
+  # 1e-6 caps the radius of nearly transparent splats,
+  # 0.97 keeps it positive below the response cutoff.
   response = wp.clamp(wp.static(SPLAT_MIN_RESPONSE) / opacity, 1.0e-6, 0.97)
   radius = wp.sqrt(-2.0 * wp.log(response))
 
@@ -1217,18 +1219,19 @@ def _compute_splat_bounds(
 
 
 def build_splat_bvh(
-  splat_position, splat_rotation, splat_scale, splat_rgba, splat_offset, splat_group_id, constructor: str = "sah"
+  splat_position, splat_rotation, splat_scale, splat_rgba, splat_adr, splat_group_id, constructor: str = "sah"
 ) -> tuple:
   """Creates a splat BVH for a set of splats."""
   count = splat_position.shape[0]
   splat_group = np.empty(count, dtype=np.int32)
-  for group_id in range(len(splat_offset) - 1):
-    splat_group[splat_offset[group_id] : splat_offset[group_id + 1]] = group_id
+  for group_id in range(len(splat_adr) - 1):
+    splat_group[splat_adr[group_id] : splat_adr[group_id + 1]] = group_id
 
   splat_position = wp.array(splat_position, dtype=wp.vec3)
   splat_rotation = wp.array(splat_rotation, dtype=wp.quat)
   splat_scale = wp.array(splat_scale, dtype=wp.vec3)
   splat_rgba = wp.array(splat_rgba, dtype=wp.vec4)
+
   groups = wp.array(splat_group, dtype=int)
   lower = wp.empty(count, dtype=wp.vec3)
   upper = wp.empty(count, dtype=wp.vec3)
@@ -1238,9 +1241,17 @@ def build_splat_bvh(
     inputs=[splat_position, splat_rotation, splat_scale, splat_rgba],
     outputs=[lower, upper],
   )
+
   splat_bvh = wp.Bvh(lower, upper, groups=groups, constructor=constructor)
-  group_root = wp.empty(len(splat_offset) - 1, dtype=int)
-  wp.launch(compute_bvh_group_roots, dim=group_root.shape[0], inputs=[splat_bvh.id], outputs=[group_root])
+  group_root = wp.empty(len(splat_adr) - 1, dtype=int)
+
+  wp.launch(
+    kernel=compute_bvh_group_roots,
+    dim=group_root.shape[0],
+    inputs=[splat_bvh.id],
+    outputs=[group_root],
+  )
+
   splat_group_root = wp.array(group_root.numpy()[splat_group_id], dtype=int)
   return splat_position, splat_rotation, splat_scale, splat_rgba, splat_bvh, splat_bvh.id, lower, upper, splat_group_root, count
 
