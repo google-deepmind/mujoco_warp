@@ -734,7 +734,7 @@ def fwd_velocity(m: Model, d: Data):
   """Velocity-dependent computations."""
   wp.launch(
     _actuator_velocity,
-    dim=(d.nworld, m.nu),
+    dim=(d.nworld, m.nactuator),
     inputs=[d.qvel, d.moment_rownnz, d.moment_rowadr, d.moment_colind, d.actuator_moment],
     outputs=[d.actuator_velocity],
     block_dim=m.block_dim.actuator_velocity,
@@ -761,6 +761,9 @@ def _actuator_force(
   actuator_dyntype: wp.array[int],
   actuator_gaintype: wp.array[int],
   actuator_biastype: wp.array[int],
+  actuator_ctrladr: wp.array[int],
+  actuator_ctrlnum: wp.array[int],
+  actuator_ctrlspec: wp.array[int],
   actuator_actadr: wp.array[int],
   actuator_actnum: wp.array[int],
   actuator_dynprm: wp.array2d[vec10],
@@ -790,12 +793,16 @@ def _actuator_force(
 
   actuator_ctrlrange_id = worldid % actuator_ctrlrange.shape[0]
 
-  ctrl = ctrl_in[worldid, uid]
-
-  if actuator_ctrllimited[uid] and not dsbl_clampctrl:
-    ctrlrange = actuator_ctrlrange[actuator_ctrlrange_id, uid]
-    ctrl = wp.clamp(ctrl, ctrlrange[0], ctrlrange[1])
+  uadr = actuator_ctrladr[uid]
+  ctrlnum = actuator_ctrlnum[uid]
+  ctrl = 0.0
+  if ctrlnum > 0:
+    ctrl = ctrl_in[worldid, uadr]
+    if actuator_ctrllimited[uadr] and not dsbl_clampctrl:
+      ctrlrange = actuator_ctrlrange[actuator_ctrlrange_id, uadr]
+      ctrl = wp.clamp(ctrl, ctrlrange[0], ctrlrange[1])
   ctrl_act = ctrl
+  u_first = ctrl
 
   act_first = actuator_actadr[uid]
   if na and act_first >= 0:
@@ -824,21 +831,18 @@ def _actuator_force(
         u_prev = act_in[worldid, adr]
         slew_s = dynprm[7]
         slew = slew_s * opt_timestep[worldid % opt_timestep.shape[0]]
-        u_eff = wp.clamp(ctrl, u_prev - slew, u_prev + slew)
+        u_eff = wp.clamp(u_first, u_prev - slew, u_prev + slew)
         act_dot = (u_eff - u_prev) / opt_timestep[worldid % opt_timestep.shape[0]]
         act_dot_out[worldid, adr] = act_dot
-        ctrl = u_eff
+        u_first = u_eff
         adr += 1
 
       # integral
       x_I = 0.0
       if slots[1] >= 0:
         x_I = act_in[worldid, adr]
-        input_mode = int(gainprm[8])
         Imax = dynprm[8]
-        act_dot = ctrl
-        if input_mode == 1:
-          act_dot = ctrl - actuator_length_in[worldid, uid]
+        act_dot = u_first - actuator_length_in[worldid, uid]
 
         if Imax > 0.0:
           if x_I >= Imax:
@@ -850,13 +854,19 @@ def _actuator_force(
         adr += 1
 
       # voltage
-      V = util_misc.dcmotor_voltage(
-        ctrl,
-        actuator_length_in[worldid, uid],
-        actuator_velocity_in[worldid, uid],
-        x_I,
-        gainprm,
-      )
+      V = 0.0
+      if ctrlnum > 0:
+        V = util_misc.dcmotor_voltage(
+          ctrl_in,
+          worldid,
+          uadr,
+          actuator_ctrlspec[uid],
+          u_first,
+          actuator_length_in[worldid, uid],
+          actuator_velocity_in[worldid, uid],
+          x_I,
+          gainprm,
+        )
 
       # temperature
       R = gainprm[0]
@@ -968,6 +978,7 @@ def _actuator_force(
   # gain
   gaintype = actuator_gaintype[uid]
   gainprm = actuator_gainprm[worldid % actuator_gainprm.shape[0], uid]
+  dynprm = actuator_dynprm[worldid % actuator_dynprm.shape[0], uid]
 
   gain = 0.0
   if gaintype == GainType.FIXED:
@@ -983,27 +994,40 @@ def _actuator_force(
     K = gainprm[1]
     te = dynprm[0]
 
-    slots = util_misc.dcmotor_slots(dynprm, gainprm)
-    adr = act_first
-
-    if slots[2] >= 0:
-      T = act_in[worldid, adr + slots[2]]
-      alpha = gainprm[2]
-      T0 = gainprm[3]
-      Ta = dynprm[4]
-      R *= 1.0 + alpha * (T + Ta - T0)
+    if na and act_first >= 0:
+      slots = util_misc.dcmotor_slots(dynprm, gainprm)
+      adr = act_first
+      if slots[2] >= 0:
+        T = act_in[worldid, adr + slots[2]]
+        alpha = gainprm[2]
+        T0 = gainprm[3]
+        Ta = dynprm[4]
+        R *= 1.0 + alpha * (T + Ta - T0)
 
     gain = K if te > 0.0 else K / wp.max(MJ_MINVAL, R)
 
     if te <= 0.0:
-      input_mode = int(gainprm[8])
-      if input_mode > 0:
+      if ctrlnum == 0:
+        ctrl_act = 0.0
+      elif (actuator_ctrlspec[uid] & 7) != 0:
         x_I = 0.0
-        if slots[1] >= 0:
-          x_I = act_in[worldid, adr + slots[1]]
-        ctrl_act = util_misc.dcmotor_voltage(ctrl, length, velocity, x_I, gainprm)
+        if na and act_first >= 0:
+          slots = util_misc.dcmotor_slots(dynprm, gainprm)
+          if slots[1] >= 0:
+            x_I = act_in[worldid, act_first + slots[1]]
+        ctrl_act = util_misc.dcmotor_voltage(
+          ctrl_in,
+          worldid,
+          uadr,
+          actuator_ctrlspec[uid],
+          u_first,
+          length,
+          velocity,
+          x_I,
+          gainprm,
+        )
       else:
-        ctrl_act = ctrl
+        ctrl_act = u_first
   # GainType.USER: gain stays 0, modified by act_gain_callback
 
   # bias
@@ -1152,7 +1176,7 @@ def _qfrc_actuator_gravcomp_limits(
 @event_scope
 def fwd_actuation(m: Model, d: Data):
   """Actuation-dependent computations."""
-  if not m.nu or (m.opt.disableflags & DisableBit.ACTUATION):
+  if not m.nactuator or (m.opt.disableflags & DisableBit.ACTUATION):
     d.act_dot.zero_()
     d.qfrc_actuator.zero_()
     d.actuator_force.zero_()
@@ -1167,13 +1191,16 @@ def fwd_actuation(m: Model, d: Data):
 
   wp.launch(
     _actuator_force,
-    dim=(d.nworld, m.nu),
+    dim=(d.nworld, m.nactuator),
     inputs=[
       m.na,
       m.opt.timestep,
       m.actuator_dyntype,
       m.actuator_gaintype,
       m.actuator_biastype,
+      m.actuator_ctrladr,
+      m.actuator_ctrlnum,
+      m.actuator_ctrlspec,
       m.actuator_actadr,
       m.actuator_actnum,
       m.actuator_dynprm,
@@ -1209,14 +1236,14 @@ def fwd_actuation(m: Model, d: Data):
     ten_actfrc = wp.zeros((d.nworld, m.ntendon), dtype=float)
     wp.launch(
       _tendon_actuator_force,
-      dim=(d.nworld, m.nu),
+      dim=(d.nworld, m.nactuator),
       inputs=[m.actuator_trntype, m.actuator_trnid, d.actuator_force],
       outputs=[ten_actfrc],
     )
 
     wp.launch(
       _tendon_actuator_force_clamp,
-      dim=(d.nworld, m.nu),
+      dim=(d.nworld, m.nactuator),
       inputs=[m.tendon_actfrclimited, m.tendon_actfrcrange, m.actuator_trntype, m.actuator_trnid, ten_actfrc],
       outputs=[d.actuator_force],
     )
@@ -1225,7 +1252,7 @@ def fwd_actuation(m: Model, d: Data):
   d.qfrc_actuator.zero_()
   wp.launch(
     _qfrc_actuator,
-    dim=(d.nworld, m.nu),
+    dim=(d.nworld, m.nactuator),
     inputs=[
       d.moment_rownnz,
       d.moment_rowadr,

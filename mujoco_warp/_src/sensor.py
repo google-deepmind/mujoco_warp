@@ -2711,7 +2711,7 @@ def sensor_acc(m: Model, d: Data):
 
   wp.launch(
     _tendon_actuator_force,
-    dim=(d.nworld, m.sensor_tendonactfrc_adr.size, m.nu),
+    dim=(d.nworld, m.sensor_tendonactfrc_adr.size, m.nactuator),
     inputs=[
       m.actuator_trntype,
       m.actuator_trnid,
