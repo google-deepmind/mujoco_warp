@@ -435,16 +435,16 @@ def sample_volume_sdf(xyz: wp.vec3, volume_data: VolumeData) -> float:
 @wp.func
 def sample_volume_grad(xyz: wp.vec3, volume_data: VolumeData) -> wp.vec3:
   dist0, point = box_project(volume_data.center, volume_data.half_size, xyz)
-  if dist0 > 0:
-    h = 1e-4
-    dx = wp.vec3(h, 0.0, 0.0)
-    dy = wp.vec3(0.0, h, 0.0)
-    dz = wp.vec3(0.0, 0.0, h)
-    f = sample_volume_sdf(xyz, volume_data)
-    grad_x = (sample_volume_sdf(xyz + dx, volume_data) - f) / h
-    grad_y = (sample_volume_sdf(xyz + dy, volume_data) - f) / h
-    grad_z = (sample_volume_sdf(xyz + dz, volume_data) - f) / h
-    return wp.vec3(grad_x, grad_y, grad_z)
+  if dist0 > 0.0:
+    dir_to_box = wp.normalize(xyz - point) if dist0 > 1e-6 else wp.vec3(0.0)
+    node, weights = find_oct(volume_data.oct_child, volume_data.oct_aabb, point, grad=True, root=volume_data.root)
+    if node != -1:
+      grad_x = wp.dot(weights[0], volume_data.oct_coeff[node])
+      grad_y = wp.dot(weights[1], volume_data.oct_coeff[node])
+      grad_z = wp.dot(weights[2], volume_data.oct_coeff[node])
+      return dir_to_box + wp.vec3(grad_x, grad_y, grad_z)
+    else:
+      return dir_to_box
   node, weights = find_oct(volume_data.oct_child, volume_data.oct_aabb, point, grad=True, root=volume_data.root)
   grad_x = wp.dot(weights[0], volume_data.oct_coeff[node])
   grad_y = wp.dot(weights[1], volume_data.oct_coeff[node])
@@ -469,8 +469,11 @@ def sdf(type: int, p: wp.vec3, attr: vec_pluginattr, sdf_type: int, volume_data:
   elif type == GeomType.ELLIPSOID:
     return ellipsoid(p, attr_vec3)
   elif type == GeomType.MESH and mesh_data.valid:
-    mesh_data.pnt = p
-    mesh_data.vec = -wp.normalize(p)
+    p_len = wp.norm_l2(p)
+    p_norm = p * (1.0 / p_len) if p_len > 1e-6 else wp.vec3(0.0, 0.0, 1.0)
+    p_offset = p + p_norm * 1e-5
+    mesh_data.pnt = mesh_data.mat @ p_offset + mesh_data.pos
+    mesh_data.vec = mesh_data.mat @ p_norm
     dist, normal = ray_mesh(
       mesh_data.nmeshface,
       mesh_data.mesh_vertadr,
@@ -484,7 +487,13 @@ def sdf(type: int, p: wp.vec3, attr: vec_pluginattr, sdf_type: int, volume_data:
       mesh_data.pnt,
       mesh_data.vec,
     )
-    if dist > wp.norm_l2(p):
+    if dist >= 0.0:
+      dot = wp.dot(mesh_data.vec, normal)
+      if dot > 0.0:
+        return -dist
+      else:
+        return dist
+    else:
       dist, normal = ray_mesh(
         mesh_data.nmeshface,
         mesh_data.mesh_vertadr,
@@ -498,8 +507,14 @@ def sdf(type: int, p: wp.vec3, attr: vec_pluginattr, sdf_type: int, volume_data:
         mesh_data.pnt,
         -mesh_data.vec,
       )
-      return -dist
-    return dist
+      if dist >= 0.0:
+        dot = wp.dot(-mesh_data.vec, normal)
+        if dot > 0.0:
+          return -dist
+        else:
+          return dist
+      else:
+        return 1e10
   elif type == GeomType.SDF:
     if sdf_type == -1:
       return sample_volume_sdf(p, volume_data)
@@ -531,8 +546,11 @@ def sdf_grad(
   elif type == GeomType.ELLIPSOID:
     return grad_ellipsoid(p, attr_vec3)
   elif type == GeomType.MESH and mesh_data.valid:
-    mesh_data.pnt = p
-    mesh_data.vec = -wp.normalize(p)
+    p_len = wp.norm_l2(p)
+    p_norm = p * (1.0 / p_len) if p_len > 1e-6 else wp.vec3(0.0, 0.0, 1.0)
+    p_offset = p + p_norm * 1e-5
+    mesh_data.pnt = mesh_data.mat @ p_offset + mesh_data.pos
+    mesh_data.vec = mesh_data.mat @ p_norm
     dist, normal = ray_mesh(
       mesh_data.nmeshface,
       mesh_data.mesh_vertadr,
@@ -546,10 +564,26 @@ def sdf_grad(
       mesh_data.pnt,
       mesh_data.vec,
     )
-    if dist > wp.norm_l2(p):
-      return wp.vec3(1.0)
+    if dist >= 0.0:
+      return wp.transpose(mesh_data.mat) @ normal
     else:
-      return wp.vec3(-1.0)
+      dist, normal = ray_mesh(
+        mesh_data.nmeshface,
+        mesh_data.mesh_vertadr,
+        mesh_data.mesh_faceadr,
+        mesh_data.mesh_vert,
+        mesh_data.mesh_face,
+        mesh_data.data_id,
+        mesh_data.pos,
+        mesh_data.mat,
+        mesh_data.size,
+        mesh_data.pnt,
+        -mesh_data.vec,
+      )
+      if dist >= 0.0:
+        return wp.transpose(mesh_data.mat) @ normal
+      else:
+        return p_norm
 
   elif type == GeomType.SDF:
     if sdf_type == -1:
@@ -581,7 +615,8 @@ def clearance(
   sdf1 = sdf(type1, p1, s1, sdf_type1, volume_data1, mesh_data1)
   sdf2 = sdf(GeomType.SDF, p2, s2, sdf_type2, volume_data2, mesh_data2)
   if sfd_intersection:
-    return wp.max(sdf1, sdf2)
+    max_val = wp.max(sdf1, sdf2)
+    return wp.where(max_val < 0.0, sdf1 + sdf2, max_val)
   else:
     return sdf1 + sdf2 + wp.abs(wp.max(sdf1, sdf2))
 
@@ -633,6 +668,7 @@ def gradient_step(
   sdf_type2: int,
   niter: int,
   sfd_intersection: bool,
+  max_step: float,
   volume_data1: VolumeData,
   volume_data2: VolumeData,
   mesh_data1: MeshData,
@@ -643,7 +679,7 @@ def gradient_step(
   c = 0.1
   dist = float(1e10)
   for i in range(niter):
-    alpha = float(2.0)
+    alpha = wp.min(float(2.0), max_step)
     x2 = wp.vec3(x[0], x[1], x[2])
     x1 = params.rel_mat * x2 + params.rel_pos
     grad = compute_grad(
@@ -707,6 +743,7 @@ def gradient_descent(
   sdf_type1: int,
   sdf_type2: int,
   sdf_iterations: int,
+  max_step: float,
   volume_data1: VolumeData,
   volume_data2: VolumeData,
   mesh_data1: MeshData,
@@ -718,9 +755,22 @@ def gradient_descent(
   params.attr1 = attr1
   params.attr2 = attr2
   dist, x = gradient_step(
-    type1, x0_initial, params, sdf_type1, sdf_type2, sdf_iterations, False, volume_data1, volume_data2, mesh_data1, mesh_data2
+    type1,
+    x0_initial,
+    params,
+    sdf_type1,
+    sdf_type2,
+    sdf_iterations,
+    False,
+    max_step,
+    volume_data1,
+    volume_data2,
+    mesh_data1,
+    mesh_data2,
   )
-  dist, x = gradient_step(type1, x, params, sdf_type1, sdf_type2, 1, True, volume_data1, volume_data2, mesh_data1, mesh_data2)
+  dist, x = gradient_step(
+    type1, x, params, sdf_type1, sdf_type2, 1, True, max_step, volume_data1, volume_data2, mesh_data1, mesh_data2
+  )
   x_1 = params.rel_mat * x + params.rel_pos
   grad1 = sdf_grad(type1, x_1, params.attr1, sdf_type1, volume_data1, mesh_data1)
   grad1 = wp.transpose(params.rel_mat) * grad1
@@ -945,13 +995,42 @@ def _sdf_narrowphase(
   mesh_data2.vec = wp.vec3(0.0)
   mesh_data2.valid = True
 
-  x_g2 = wp.vec3(
-    aabb_intersection.min[0] + (aabb_intersection.max[0] - aabb_intersection.min[0]) * halton(i, 2),
-    aabb_intersection.min[1] + (aabb_intersection.max[1] - aabb_intersection.min[1]) * halton(i, 3),
-    aabb_intersection.min[2] + (aabb_intersection.max[2] - aabb_intersection.min[2]) * halton(i, 5),
-  )
-  x = geom1.rot * x_g2 + geom1.pos
+  x = wp.vec3(0.0)
+  mesh_id = mesh_data1.data_id
+  face_start = mesh_data1.mesh_faceadr[mesh_id]
+  face_end = mesh_data1.mesh_face.shape[0]
+  if mesh_id + 1 < mesh_data1.mesh_faceadr.shape[0]:
+    face_end = mesh_data1.mesh_faceadr[mesh_id + 1]
+  nfaces = face_end - face_start
+
+  if type1 == GeomType.MESH and i >= sdf_initpoints // 2 and nfaces > 0:
+    face_idx = i % nfaces
+    face_adr = face_start + face_idx
+    face_verts = mesh_data1.mesh_face[face_adr]
+
+    vert_adr = mesh_data1.mesh_vertadr[mesh_id]
+    v0 = mesh_data1.mesh_vert[vert_adr + face_verts[0]]
+    v1 = mesh_data1.mesh_vert[vert_adr + face_verts[1]]
+    v2 = mesh_data1.mesh_vert[vert_adr + face_verts[2]]
+
+    r1 = halton(i, 2)
+    r2 = halton(i, 3)
+    if r1 + r2 > 1.0:
+      r1 = 1.0 - r1
+      r2 = 1.0 - r2
+
+    p_local = v0 + (v1 - v0) * r1 + (v2 - v0) * r2
+    x = geom1.rot * p_local + geom1.pos
+  else:
+    x_g2 = wp.vec3(
+      aabb_intersection.min[0] + (aabb_intersection.max[0] - aabb_intersection.min[0]) * halton(i, 2),
+      aabb_intersection.min[1] + (aabb_intersection.max[1] - aabb_intersection.min[1]) * halton(i, 3),
+      aabb_intersection.min[2] + (aabb_intersection.max[2] - aabb_intersection.min[2]) * halton(i, 5),
+    )
+    x = geom1.rot * x_g2 + geom1.pos
   x0_initial = wp.transpose(rot2) * (x - pos2)
+  aabb_size = aabb_intersection.max - aabb_intersection.min
+  max_step = wp.max(aabb_size[0], wp.max(aabb_size[1], aabb_size[2]))
   dist, pos, n = gradient_descent(
     type1,
     x0_initial,
@@ -964,6 +1043,7 @@ def _sdf_narrowphase(
     g1_plugin_id,
     g2_plugin_id,
     sdf_iterations,
+    max_step,
     volume_data1,
     volume_data2,
     mesh_data1,
