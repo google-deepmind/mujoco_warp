@@ -4034,10 +4034,16 @@ def create_render_context(
     splat_group_root = wp.empty(nworld, dtype=int)
     splat_count = 0
   else:
-    if any(splat_position.shape != other.shape for other in splat_attribute[1:]):
-      raise ValueError("all splat arrays must be of same shape")
-    if splat_adr is not None and splat_adr.shape != (len(splat_adr) - 1,):
-      raise ValueError("splat_adr must be of shape (len(splat_adr) - 1,)")
+    nsplat = splat_position.shape[0]
+    if (
+      splat_position.shape != (nsplat, 3)
+      or splat_rotation.shape != (nsplat, 4)
+      or splat_scale.shape != (nsplat, 3)
+      or splat_rgba.shape != (nsplat, 4)
+    ):
+      raise ValueError("splat attributes must have shapes (nsplat, 3), (nsplat, 4), (nsplat, 3), and (nsplat, 4)")
+    if splat_adr is not None and splat_adr.ndim != 1:
+      raise ValueError("splat_adr must be one-dimensional")
     if splat_group_id is not None and splat_group_id.shape != (nworld,):
       raise ValueError("splat_group_id must be of shape (nworld,)")
 
