@@ -2216,6 +2216,11 @@ def _sensor_tactile(
   weld_geom_list_in: wp.array3d[int],
   # Data out:
   sensordata_out: wp.array2d[float],
+  # Aliases sensordata_out. Bound separately so the atomic_max on the normal
+  # channel and the atomic_add on the shear channels are distinct reduction
+  # targets: deterministic mode allows only one reduction family per target, and
+  # the channels are disjoint (channel 0 vs channels 1 and 2).
+  sensordata_max_out: wp.array2d[float],
 ):
   worldid, taxelid = wp.tid()
 
@@ -2303,7 +2308,7 @@ def _sensor_tactile(
       forceT[2] = wp.abs(wp.dot(vel_rel, tang2))
 
     dim = sensor_dim[sensor_id] // 3
-    wp.atomic_max(sensordata_out, worldid, sensor_adr[sensor_id] + 0 * dim + vertid, forceT[0])
+    wp.atomic_max(sensordata_max_out, worldid, sensor_adr[sensor_id] + 0 * dim + vertid, forceT[0])
     wp.atomic_add(sensordata_out, worldid, sensor_adr[sensor_id] + 1 * dim + vertid, forceT[1])
     wp.atomic_add(sensordata_out, worldid, sensor_adr[sensor_id] + 2 * dim + vertid, forceT[2])
 
@@ -2593,6 +2598,7 @@ def sensor_acc(m: Model, d: Data):
       weld_geom_list,
     ],
     outputs=[
+      d.sensordata,
       d.sensordata,
     ],
   )
