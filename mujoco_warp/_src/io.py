@@ -123,7 +123,7 @@ def _create_constraint(
 
     if mjd is not None:
       shape = tuple(sizes[dim] if isinstance(dim, str) else dim for dim in f.type.shape)
-      val = np.zeros(shape, dtype=f.type.dtype)
+      val = np.zeros(shape, dtype=wp.dtype_to_numpy(f.type.dtype))
       if f.name in ("type", "id", "pos", "margin", "D", "vel", "aref", "frictionloss", "force"):
         val[:, : mjd.nefc] = np.tile(getattr(mjd, "efc_" + f.name), (nworld, 1))
       efc_kwargs[f.name] = wp.array(val, dtype=f.type.dtype)
@@ -4259,7 +4259,7 @@ def create_render_context(
   # Scene BVH flex primitives: 1D → one capsule per edge, 2D/3D → one box per flex
   flex_geom_flexid = []
   flex_geom_edgeid = []
-  flex_bvh_id = np.full(nflex, 0, dtype=wp.uint64)
+  flex_bvh_id = np.full(nflex, 0, dtype=np.uint64)
   # Indexed later as [worldid, flexid].
   flex_group_root = np.full((nworld, nflex), -1, dtype=int)
 
