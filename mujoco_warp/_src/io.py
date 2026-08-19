@@ -4001,7 +4001,7 @@ def create_render_context(
                               time. Disable for performance when model lights
                               do not use ambient colors.
     splat_position: Splat centers in world coordinates (nsplat, 3).
-    splat_rotation: Splat rotations (nsplat, 4).
+    splat_rotation: Splat rotations as (w, x, y, z) (nsplat, 4).
     splat_scale: Splat scales as standard deviation in each dimension (nsplat, 3).
     splat_rgba: Splat color and opacity (nsplat, 4).
     splat_adr: Offset of each splat in the splat attribute arrays,

@@ -2491,10 +2491,10 @@ class RenderContext:
       fallback are controlled by `use_ambient_lighting`.
     geom_ray_types: tuple of GeomType int values present in the scene, used to
       statically eliminate unused intersection branches in the ray-cast kernels.
-    splat_position: Splat centers
-    splat_rotation: Splat rotation
-    splat_scale: Splat scale
-    splat_rgba: Splat color and opacity
+    splat_position: Splat centers in world coordinates (nsplat, 3)
+    splat_rotation: Splat rotation as (w, x, y, z) (nsplat, 4)
+    splat_scale: Splat scale as standard deviation in each dimension (nsplat, 3)
+    splat_rgba: Splat color and opacity (nsplat, 4)
     splat_bvh: Splat BVH
     splat_lower: Splat lower bounds
     splat_upper: Splat upper bounds

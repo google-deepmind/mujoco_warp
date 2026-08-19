@@ -1219,7 +1219,13 @@ def _compute_splat_bounds(
 
 
 def build_splat_bvh(
-  splat_position, splat_rotation, splat_scale, splat_rgba, splat_adr, splat_group_id, constructor: str = "sah"
+  splat_position: np.ndarray,
+  splat_rotation: np.ndarray,
+  splat_scale: np.ndarray,
+  splat_rgba: np.ndarray,
+  splat_adr: np.ndarray,
+  splat_group_id: np.ndarray,
+  constructor: str = "sah",
 ) -> tuple:
   """Creates a splat BVH for a set of splats."""
   count = splat_position.shape[0]
