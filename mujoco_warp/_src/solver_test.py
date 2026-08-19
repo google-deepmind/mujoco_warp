@@ -26,7 +26,9 @@ from mujoco_warp import ConeType
 from mujoco_warp import SolverType
 from mujoco_warp import test_data
 from mujoco_warp._src import island
+from mujoco_warp._src import smooth
 from mujoco_warp._src import solver
+from mujoco_warp._src import support
 from mujoco_warp._src import types
 
 # tolerance for difference between MuJoCo and MJWarp solver calculations - mostly
@@ -1591,6 +1593,255 @@ class CompactSolverTest(absltest.TestCase):
       1e-5,
       f"qfrc_constraint should be zeroed, but got max abs: {np.max(np.abs(qfrc_constraint_post))}",
     )
+
+  def test_cg_sleep_preconditioner(self):
+    """Test smooth.solve_m preconditioner behaves identically when sleep skips asleep trees."""
+    _, _, m, d = test_data.fixture(
+      xml=_COMPACT_ARM_XML,
+      overrides={
+        "opt.jacobian": mujoco.mjtJacobian.mjJAC_SPARSE,
+        "opt.solver": types.SolverType.CG,
+      },
+    )
+    mjw.forward(m, d)
+
+    d.tree_awake = wp.array([[1, 0, 0]], dtype=int)
+
+    y_np = np.random.randn(1, m.nv).astype(np.float32)
+    y_np[0, 2:] = 0.0
+    y = wp.array(y_np, dtype=float)
+
+    x_baseline = wp.zeros_like(y)
+    m.opt.enableflags &= ~types.EnableBit.SLEEP
+    smooth.solve_m(m, d, x_baseline, y)
+
+    x_sleep = wp.zeros_like(y)
+    m.opt.enableflags |= types.EnableBit.SLEEP
+    smooth.solve_m(m, d, x_sleep, y)
+
+    x_baseline_np = x_baseline.numpy()
+    x_sleep_np = x_sleep.numpy()
+
+    np.testing.assert_allclose(x_sleep_np[0, :2], x_baseline_np[0, :2], rtol=1e-5, atol=1e-6)
+    np.testing.assert_array_equal(x_sleep_np[0, 2:], np.zeros(m.nv - 2))
+
+  def test_cg_sleep_matrix_multiplication(self):
+    """Test support.mul_m matrix multiplication skips asleep trees correctly."""
+    _, _, m, d = test_data.fixture(
+      xml=_COMPACT_ARM_XML,
+      overrides={
+        "opt.jacobian": mujoco.mjtJacobian.mjJAC_SPARSE,
+        "opt.solver": types.SolverType.CG,
+      },
+    )
+    mjw.forward(m, d)
+
+    d.tree_awake = wp.array([[1, 0, 0]], dtype=int)
+
+    s_np = np.random.randn(1, m.nv).astype(np.float32)
+    s_np[0, 2:] = 0.0
+    s = wp.array(s_np, dtype=float)
+
+    mv_baseline = wp.zeros_like(s)
+    m.opt.enableflags &= ~types.EnableBit.SLEEP
+    support.mul_m(m, d, mv_baseline, s)
+
+    mv_sleep = wp.zeros_like(s)
+    m.opt.enableflags |= types.EnableBit.SLEEP
+    support.mul_m(m, d, mv_sleep, s)
+
+    mv_baseline_np = mv_baseline.numpy()
+    mv_sleep_np = mv_sleep.numpy()
+
+    np.testing.assert_allclose(mv_sleep_np[0, :2], mv_baseline_np[0, :2], rtol=1e-5, atol=1e-6)
+    np.testing.assert_array_equal(mv_sleep_np[0, 2:], np.zeros(m.nv - 2))
+
+  def test_cg_sleep_solver_correctness(self):
+    """Test end-to-end CG solve outputs match baseline when sleeping is enabled."""
+    _, _, m, d = test_data.fixture(
+      xml=_COMPACT_CONTACT_XML,
+      overrides={
+        "opt.jacobian": mujoco.mjtJacobian.mjJAC_SPARSE,
+        "opt.solver": types.SolverType.CG,
+        "opt.iterations": 30,
+      },
+    )
+    mjw.forward(m, d)
+
+    baseline_qacc = d.qacc.numpy().copy()
+
+    d.qacc.zero_()
+    d.tree_awake = wp.array([[1, 0, 0]], dtype=int)
+    m.opt.enableflags |= types.EnableBit.SLEEP
+
+    solver.solve(m, d)
+
+    sleep_qacc = d.qacc.numpy()
+
+    np.testing.assert_allclose(sleep_qacc[0, 0], baseline_qacc[0, 0], rtol=1e-3, atol=1e-4)
+    np.testing.assert_array_equal(sleep_qacc[0, 1:], np.zeros(m.nv - 1))
+
+  def test_cg_sleep_heterogeneous_batch(self):
+    """Test CG sleep with heterogeneous awake/sleep patterns across multiple worlds."""
+    _, _, m, d = test_data.fixture(
+      xml=_COMPACT_CONTACT_XML,
+      nworld=4,
+      overrides={
+        "opt.jacobian": mujoco.mjtJacobian.mjJAC_SPARSE,
+        "opt.solver": types.SolverType.CG,
+        "opt.iterations": 30,
+      },
+    )
+    mjw.forward(m, d)
+
+    baseline_qacc = d.qacc.numpy().copy()
+
+    # World 0: Tree 0 awake
+    # World 1: Tree 1 awake
+    # World 2: All trees awake
+    # World 3: All trees asleep
+    d.qacc.zero_()
+    d.tree_awake = wp.array(
+      [
+        [1, 0, 0],
+        [0, 1, 0],
+        [1, 1, 1],
+        [0, 0, 0],
+      ],
+      dtype=int,
+    )
+    m.opt.enableflags |= types.EnableBit.SLEEP
+
+    solver.solve(m, d)
+
+    sleep_qacc = d.qacc.numpy()
+
+    # World 0: Tree 0 (dof 0) matches baseline, trees 1 & 2 (dofs 1..12) zero
+    np.testing.assert_allclose(sleep_qacc[0, 0], baseline_qacc[0, 0], rtol=1e-3, atol=1e-4)
+    np.testing.assert_array_equal(sleep_qacc[0, 1:], np.zeros(m.nv - 1))
+
+    # World 1: Tree 1 (dofs 1..6) matches baseline, trees 0 & 2 zero
+    np.testing.assert_array_equal(sleep_qacc[1, :1], np.zeros(1))
+    np.testing.assert_allclose(sleep_qacc[1, 1:7], baseline_qacc[1, 1:7], rtol=1e-3, atol=1e-4)
+    np.testing.assert_array_equal(sleep_qacc[1, 7:], np.zeros(6))
+
+    # World 2: All trees awake match baseline
+    np.testing.assert_allclose(sleep_qacc[2], baseline_qacc[2], rtol=1e-3, atol=1e-4)
+
+    # World 3: All trees asleep are strictly zero
+    np.testing.assert_array_equal(sleep_qacc[3], np.zeros(m.nv))
+
+  def test_cg_sleep_elliptic_cone(self):
+    """Test CG sleep with elliptic friction cone."""
+    _, _, m, d = test_data.fixture(
+      xml=_COMPACT_CONTACT_XML,
+      overrides={
+        "opt.cone": ConeType.ELLIPTIC,
+        "opt.jacobian": mujoco.mjtJacobian.mjJAC_SPARSE,
+        "opt.solver": types.SolverType.CG,
+        "opt.iterations": 30,
+      },
+    )
+    mjw.forward(m, d)
+
+    baseline_qacc = d.qacc.numpy().copy()
+
+    d.qacc.zero_()
+    d.tree_awake = wp.array([[1, 0, 0]], dtype=int)
+    m.opt.enableflags |= types.EnableBit.SLEEP
+
+    solver.solve(m, d)
+
+    sleep_qacc = d.qacc.numpy()
+
+    np.testing.assert_allclose(sleep_qacc[0, 0], baseline_qacc[0, 0], rtol=1e-3, atol=1e-4)
+    np.testing.assert_array_equal(sleep_qacc[0, 1:], np.zeros(m.nv - 1))
+
+  def test_cg_sleep_articulated_chain(self):
+    """Test CG sleep with multi-DOF articulated chain."""
+    _, _, m, d = test_data.fixture(
+      xml=_COMPACT_ARM_XML,
+      overrides={
+        "opt.jacobian": mujoco.mjtJacobian.mjJAC_SPARSE,
+        "opt.solver": types.SolverType.CG,
+        "opt.iterations": 30,
+      },
+    )
+    mjw.forward(m, d)
+
+    baseline_qacc = d.qacc.numpy().copy()
+
+    # Case A: Articulated arm (tree 0, 2 DOFs) awake, free bodies asleep
+    d.qacc.zero_()
+    d.tree_awake = wp.array([[1, 0, 0]], dtype=int)
+    m.opt.enableflags |= types.EnableBit.SLEEP
+
+    solver.solve(m, d)
+
+    sleep_qacc = d.qacc.numpy()
+    np.testing.assert_allclose(sleep_qacc[0, :2], baseline_qacc[0, :2], rtol=1e-3, atol=1e-4)
+    np.testing.assert_array_equal(sleep_qacc[0, 2:], np.zeros(m.nv - 2))
+
+    # Case B: Articulated arm asleep, ball 0 (tree 1, DOFs 2-7) awake, ball 1 asleep
+    d.qacc.zero_()
+    d.tree_awake = wp.array([[0, 1, 0]], dtype=int)
+
+    solver.solve(m, d)
+
+    sleep_qacc = d.qacc.numpy()
+    np.testing.assert_array_equal(sleep_qacc[0, :2], np.zeros(2))
+    np.testing.assert_allclose(sleep_qacc[0, 2:8], baseline_qacc[0, 2:8], rtol=1e-3, atol=1e-4)
+    np.testing.assert_array_equal(sleep_qacc[0, 8:], np.zeros(6))
+
+  def test_cg_sleep_warmstart_transition(self):
+    """Test that warmstart does not pollute asleep tree DOFs."""
+    _, _, m, d = test_data.fixture(
+      xml=_COMPACT_CONTACT_XML,
+      overrides={
+        "opt.jacobian": mujoco.mjtJacobian.mjJAC_SPARSE,
+        "opt.solver": types.SolverType.CG,
+        "opt.iterations": 30,
+      },
+    )
+    m.opt.disableflags &= ~types.DisableBit.WARMSTART
+    d.ctrl = wp.array([[10.0]], dtype=float)
+    mjw.step(m, d)
+
+    # Populate warmstart with non-zero values on all DOFs
+    d.qacc_warmstart = wp.array(np.ones((1, m.nv), dtype=np.float32) * 5.0)
+
+    d.tree_awake = wp.array([[1, 0, 0]], dtype=int)
+    m.opt.enableflags |= types.EnableBit.SLEEP
+
+    solver.solve(m, d)
+
+    sleep_qacc = d.qacc.numpy()
+    self.assertNotEqual(sleep_qacc[0, 0], 0.0)
+    np.testing.assert_array_equal(sleep_qacc[0, 1:], np.zeros(m.nv - 1))
+
+  def test_cg_sleep_island_disable_bit(self):
+    """Test that DisableBit.ISLAND disables sleeping behavior in CG solver."""
+    _, _, m, d = test_data.fixture(
+      xml=_COMPACT_CONTACT_XML,
+      overrides={
+        "opt.jacobian": mujoco.mjtJacobian.mjJAC_SPARSE,
+        "opt.solver": types.SolverType.CG,
+        "opt.iterations": 30,
+      },
+    )
+    mjw.forward(m, d)
+
+    baseline_qacc = d.qacc.numpy().copy()
+
+    d.qacc.zero_()
+    d.tree_awake = wp.array([[1, 0, 0]], dtype=int)
+    m.opt.enableflags |= types.EnableBit.SLEEP
+    m.opt.disableflags |= types.DisableBit.ISLAND
+
+    solver.solve(m, d)
+
+    qacc_solved = d.qacc.numpy()
+    np.testing.assert_allclose(qacc_solved, baseline_qacc, rtol=1e-3, atol=1e-4)
 
 
 if __name__ == "__main__":

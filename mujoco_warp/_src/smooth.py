@@ -27,6 +27,7 @@ from mujoco_warp._src.types import CamLightType
 from mujoco_warp._src.types import ConeType
 from mujoco_warp._src.types import Data
 from mujoco_warp._src.types import DisableBit
+from mujoco_warp._src.types import EnableBit
 from mujoco_warp._src.types import EqType
 from mujoco_warp._src.types import JointType
 from mujoco_warp._src.types import Model
@@ -2979,8 +2980,9 @@ def transmission(m: Model, d: Data):
 
 
 @cache_kernel
-def _solve_LD_sparse_fused(nv: int, nlevels: int):
+def _solve_LD_sparse_fused(nv: int, nlevels: int, sleep_enabled: bool = False):
   """Fused sparse backsubstitution: UP + diag + DOWN in one kernel."""
+  SLEEP_ENABLED = sleep_enabled
 
   @wp.func_native(snippet="WP_TILE_SYNC();")
   def _syncthreads():
@@ -2989,7 +2991,10 @@ def _solve_LD_sparse_fused(nv: int, nlevels: int):
   @wp.kernel(module="unique", enable_backward=False)
   def kernel(
     # Model:
+    dof_treeid: wp.array[int],
     qLD_block_adr: wp.array[int],
+    # Data in:
+    tree_awake_in: wp.array2d[int],
     # In:
     L: wp.array2d[float],
     D: wp.array2d[float],
@@ -3007,7 +3012,14 @@ def _solve_LD_sparse_fused(nv: int, nlevels: int):
     # Copy y to x_out for sparse-block dofs only.
     for dofid in range(tid, NV, BLOCK_DIM):
       if qLD_block_adr[dofid] == Q_LD_BLOCK_SPARSE:
-        x_out[worldid, dofid] = y[worldid, dofid]
+        if wp.static(SLEEP_ENABLED):
+          treeid = dof_treeid[dofid]
+          if tree_awake_in[worldid, treeid] != 0:
+            x_out[worldid, dofid] = y[worldid, dofid]
+          else:
+            x_out[worldid, dofid] = 0.0
+        else:
+          x_out[worldid, dofid] = y[worldid, dofid]
     _syncthreads()
 
     # Forward substitution (all_updates only references sparse-block dofs)
@@ -3019,13 +3031,23 @@ def _solve_LD_sparse_fused(nv: int, nlevels: int):
       for u in range(tid, level_size, BLOCK_DIM):
         update = all_updates[level_offset + u]
         i, k, Madr_ki = update[0], update[1], update[2]
-        wp.atomic_sub(x_out[worldid], i, L[worldid, Madr_ki] * x_out[worldid, k])
+        if wp.static(SLEEP_ENABLED):
+          treeid = dof_treeid[i]
+          if tree_awake_in[worldid, treeid] != 0:
+            wp.atomic_sub(x_out[worldid], i, L[worldid, Madr_ki] * x_out[worldid, k])
+        else:
+          wp.atomic_sub(x_out[worldid], i, L[worldid, Madr_ki] * x_out[worldid, k])
       _syncthreads()
 
     # Diagonal multiply (sparse-block dofs only)
     for dofid in range(tid, NV, BLOCK_DIM):
       if qLD_block_adr[dofid] == Q_LD_BLOCK_SPARSE:
-        x_out[worldid, dofid] *= D[worldid, dofid]
+        if wp.static(SLEEP_ENABLED):
+          treeid = dof_treeid[dofid]
+          if tree_awake_in[worldid, treeid] != 0:
+            x_out[worldid, dofid] *= D[worldid, dofid]
+        else:
+          x_out[worldid, dofid] *= D[worldid, dofid]
     _syncthreads()
 
     # Backward substitution
@@ -3037,7 +3059,12 @@ def _solve_LD_sparse_fused(nv: int, nlevels: int):
       for u in range(tid, level_size, BLOCK_DIM):
         update = all_updates[level_offset + u]
         i, k, Madr_ki = update[0], update[1], update[2]
-        wp.atomic_sub(x_out[worldid], k, L[worldid, Madr_ki] * x_out[worldid, i])
+        if wp.static(SLEEP_ENABLED):
+          treeid = dof_treeid[i]
+          if tree_awake_in[worldid, treeid] != 0:
+            wp.atomic_sub(x_out[worldid], k, L[worldid, Madr_ki] * x_out[worldid, i])
+        else:
+          wp.atomic_sub(x_out[worldid], k, L[worldid, Madr_ki] * x_out[worldid, i])
       _syncthreads()
 
   return kernel
@@ -3050,6 +3077,7 @@ def _solve_LD_sparse(
   D: wp.array2d[float],
   x: wp.array2d[float],
   y: wp.array2d[float],
+  sleep_enabled: bool = False,
 ):
   """Computes sparse backsubstitution: x = inv(L'*D*L)*y."""
   nlevels = len(m.qLD_updates)
@@ -3060,9 +3088,9 @@ def _solve_LD_sparse(
     dim_block = 1
 
   wp.launch(
-    _solve_LD_sparse_fused(m.nv, nlevels),
+    _solve_LD_sparse_fused(m.nv, nlevels, sleep_enabled),
     dim=(d.nworld, dim_block),
-    inputs=[m.qLD_block_adr, L, D, m.qLD_all_updates, m.qLD_level_offsets, y],
+    inputs=[m.dof_treeid, m.qLD_block_adr, d.tree_awake, L, D, m.qLD_all_updates, m.qLD_level_offsets, y],
     outputs=[x],
     block_dim=dim_block,
   )
@@ -3095,11 +3123,16 @@ def _small_cholesky_solve(
 
 
 @cache_kernel
-def _small_cholesky_solve_block(block_size: int):
+def _small_cholesky_solve_block(block_size: int, sleep_enabled: bool = False):
+  SLEEP_ENABLED = sleep_enabled
+
   @wp.kernel(module="unique", enable_backward=False)
   def kernel(
     # Model:
+    dof_treeid: wp.array[int],
     qLD_block_adr: wp.array[int],
+    # Data in:
+    tree_awake_in: wp.array2d[int],
     # In:
     block_dof: wp.array[int],
     D_in: wp.array2d[float],
@@ -3111,6 +3144,14 @@ def _small_cholesky_solve_block(block_size: int):
     worldid, blk = wp.tid()
     start = block_dof[blk]
     size = wp.static(block_size)
+
+    if wp.static(SLEEP_ENABLED):
+      treeid = dof_treeid[start]
+      if tree_awake_in[worldid, treeid] == 0:
+        for i in range(wp.static(block_size)):
+          x_out[worldid, start + i] = 0.0
+        return
+
     factor_adr = qLD_block_adr[start]
     if factor_adr == Q_LD_BLOCK_COMPACT:
       for i in range(wp.static(block_size)):
@@ -3122,31 +3163,41 @@ def _small_cholesky_solve_block(block_size: int):
 
 
 @cache_kernel
-def _tile_cholesky_solve_block(tile: TileSet):
+def _tile_cholesky_solve_block(tile: TileSet, sleep_enabled: bool = False):
   # One diagonal block per (world, block) thread group; no densify, so a 2D grid suffices.
   block_size = tile.size
   block_area = block_size * block_size
+  SLEEP_ENABLED = sleep_enabled
 
   @wp.kernel(module="unique", enable_backward=False)
   def kernel(
     # Model:
+    dof_treeid: wp.array[int],
     qLD_block_adr: wp.array[int],
+    # Data in:
+    tree_awake_in: wp.array2d[int],
     # In:
     block_dof: wp.array[int],
     L_in: wp.array2d[float],
     y: wp.array2d[float],
     # Out:
-    x: wp.array2d[float],
+    x_out: wp.array2d[float],
   ):
     worldid, blk = wp.tid()
     start = block_dof[blk]
+
+    if wp.static(SLEEP_ENABLED):
+      treeid = dof_treeid[start]
+      if tree_awake_in[worldid, treeid] == 0:
+        wp.tile_store(x_out[worldid], wp.tile_zeros(shape=(block_size,), dtype=float), offset=(start,))
+        return
 
     L = wp.tile_reshape(
       wp.tile_load(L_in[worldid], shape=(block_area,), offset=(qLD_block_adr[start],)), (block_size, block_size)
     )
     rhs = wp.tile_load(y[worldid], shape=(block_size,), offset=(start,))
     sol = wp.tile_cholesky_solve(L, rhs, fill_mode="upper")
-    wp.tile_store(x[worldid], sol, offset=(start,))
+    wp.tile_store(x_out[worldid], sol, offset=(start,))
 
   return kernel
 
@@ -3158,13 +3209,14 @@ def _solve_blocks(
   D: wp.array2d[float],
   x: wp.array2d[float],
   y: wp.array2d[float],
+  sleep_enabled: bool = False,
 ):
   for tile in m.M_tiles:
     if tile.elemid.size == 0:
       wp.launch(
-        _small_cholesky_solve_block(tile.size),
+        _small_cholesky_solve_block(tile.size, sleep_enabled),
         dim=(d.nworld, tile.adr.size),
-        inputs=[m.qLD_block_adr, tile.adr, D, L, y],
+        inputs=[m.dof_treeid, m.qLD_block_adr, d.tree_awake, tile.adr, D, L, y],
         outputs=[x],
         block_dim=m.block_dim.small_cholesky,
       )
@@ -3173,9 +3225,9 @@ def _solve_blocks(
       # for better occupancy while moderate blocks still want a couple warps (16/27->64, 60->32).
       block_dim = m.block_dim.cholesky_solve if tile.size <= 40 else 32
       wp.launch_tiled(
-        _tile_cholesky_solve_block(tile),
+        _tile_cholesky_solve_block(tile, sleep_enabled),
         dim=(d.nworld, tile.adr.size),
-        inputs=[m.qLD_block_adr, tile.adr, L, y],
+        inputs=[m.dof_treeid, m.qLD_block_adr, d.tree_awake, tile.adr, L, y],
         outputs=[x],
         block_dim=block_dim,
       )
@@ -3188,6 +3240,7 @@ def solve_LD(
   D: wp.array2d[float],
   x: wp.array2d[float],
   y: wp.array2d[float],
+  sleep_enabled: bool = False,
 ):
   """Computes backsubstitution for the inertia factorization.
 
@@ -3201,11 +3254,12 @@ def solve_LD(
     D: Reciprocal diagonal for compact and sparse blocks.
     x: Output array for the solution.
     y: Input right-hand side array.
+    sleep_enabled: Whether to skip calculation for asleep trees.
   """
   if m.M_tiles:
-    _solve_blocks(m, d, L, D, x, y)
+    _solve_blocks(m, d, L, D, x, y, sleep_enabled)
   if L.shape[1] > m.qLD_block_total:
-    _solve_LD_sparse(m, d, L[:, m.qLD_block_total :], D, x, y)
+    _solve_LD_sparse(m, d, L[:, m.qLD_block_total :], D, x, y, sleep_enabled)
 
 
 @event_scope
@@ -3218,7 +3272,8 @@ def solve_m(m: Model, d: Data, x: wp.array2d[float], y: wp.array2d[float]):
     x: Output array for the solution.
     y: Input right-hand side array.
   """
-  solve_LD(m, d, d.qLD, d.qLDiagInv, x, y)
+  sleep_enabled = bool(m.opt.enableflags & EnableBit.SLEEP) and not bool(m.opt.disableflags & DisableBit.ISLAND)
+  solve_LD(m, d, d.qLD, d.qLDiagInv, x, y, sleep_enabled)
 
 
 @cache_kernel

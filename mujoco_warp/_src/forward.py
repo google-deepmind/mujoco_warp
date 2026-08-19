@@ -42,6 +42,7 @@ from mujoco_warp._src.types import IntegratorType
 from mujoco_warp._src.types import JointType
 from mujoco_warp._src.types import Model
 from mujoco_warp._src.types import OverflowType
+from mujoco_warp._src.types import SolverType
 from mujoco_warp._src.types import TrnType
 from mujoco_warp._src.types import vec10
 from mujoco_warp._src.warp_util import cache_kernel
@@ -1257,8 +1258,7 @@ def _qfrc_smooth(enable_sleep: bool):
   @wp.kernel(module="unique", enable_backward=False)
   def kernel(
     # Model:
-    body_treeid: wp.array[int],
-    dof_bodyid: wp.array[int],
+    dof_treeid: wp.array[int],
     # Data in:
     qfrc_applied_in: wp.array2d[float],
     tree_awake_in: wp.array2d[int],
@@ -1271,8 +1271,7 @@ def _qfrc_smooth(enable_sleep: bool):
     worldid, dofid = wp.tid()
 
     if wp.static(enable_sleep):
-      bodyid = dof_bodyid[dofid]
-      tree = body_treeid[bodyid]
+      tree = dof_treeid[dofid]
       if tree >= 0 and tree_awake_in[worldid, tree] == 0:
         qfrc_smooth_out[worldid, dofid] = 0.0
         return
@@ -1301,8 +1300,7 @@ def fwd_acceleration(m: Model, d: Data, factorize: bool = False):
     _qfrc_smooth(enable_sleep),
     dim=(d.nworld, m.nv),
     inputs=[
-      m.body_treeid,
-      m.dof_bodyid,
+      m.dof_treeid,
       d.qfrc_applied,
       d.tree_awake,
       d.qfrc_bias,
@@ -1313,7 +1311,7 @@ def fwd_acceleration(m: Model, d: Data, factorize: bool = False):
   )
   xfrc_accumulate(m, d, d.qfrc_smooth)
 
-  if enable_sleep:
+  if enable_sleep and m.opt.solver == SolverType.NEWTON:
     # update the active-DOF set (needs contacts from fwd_position) and solve
     # the smooth acceleration in compacted dense space.
     island.update_active_dofs(m, d)
