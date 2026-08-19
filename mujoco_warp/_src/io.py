@@ -4050,11 +4050,11 @@ def load_trajectory(npz_path: str, mjm: mujoco.MjModel, mjd: mujoco.MjData) -> n
   ctrl = data["ctrl"]
   times = data["times"]
 
-  if ctrl.ndim != 2:
-    raise ValueError(f"ctrl must have shape (nstep, nu), got {ctrl.shape}")
+  if ctrl.ndim != 2 or len(ctrl) == 0:
+    raise ValueError(f"ctrl must have shape (nstep, nu) with nstep > 0, got {ctrl.shape}")
   if ctrl.shape[1] != mjm.nu:
     raise ValueError(f"ctrl shape {ctrl.shape} does not match model nu={mjm.nu}")
-  if times.ndim != 1 or len(times) not in (len(ctrl), len(ctrl) + 1) or not len(ctrl):
+  if times.ndim != 1 or len(times) not in (len(ctrl), len(ctrl) + 1):
     raise ValueError(f"times shape {times.shape} must contain {len(ctrl)} or {len(ctrl) + 1} timestamps")
   if not np.all(np.isfinite(times)):
     raise ValueError("times must be finite")
@@ -4069,16 +4069,13 @@ def load_trajectory(npz_path: str, mjm: mujoco.MjModel, mjd: mujoco.MjData) -> n
   if "qvel" in data and data["qvel"].shape[1] == mjm.nv:
     mjd.qvel[:] = data["qvel"][0]
 
-  boundaries = times
   if len(times) == len(ctrl):
-    final_interval = intervals[-1] if len(intervals) else mjm.opt.timestep
-    boundaries = np.append(times, times[-1] + final_interval)
+    final_dt = intervals[-1] if len(intervals) else mjm.opt.timestep
+    times = np.append(times, times[-1] + final_dt)
 
-  boundary_steps = (boundaries - boundaries[0]) / mjm.opt.timestep
-  nearest_steps = np.rint(boundary_steps)
-  boundary_steps = np.where(np.isclose(boundary_steps, nearest_steps, rtol=0.0, atol=1e-9), nearest_steps, boundary_steps)
-  physics_steps = np.arange(int(np.ceil(boundary_steps[-1])))
-  ctrl_indices = np.searchsorted(boundary_steps, physics_steps, side="right") - 1
+  n_steps = int(np.round((times[-1] - times[0]) / mjm.opt.timestep))
+  sample_times = times[0] + (np.arange(n_steps) + 1e-7) * mjm.opt.timestep
+  ctrl_indices = np.searchsorted(times, sample_times, side="right") - 1
   return ctrl[ctrl_indices]
 
 

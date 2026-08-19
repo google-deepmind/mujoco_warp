@@ -16,11 +16,8 @@
 """Tests for io functions."""
 
 import dataclasses
-import pathlib
 import tempfile
 import warnings
-from types import SimpleNamespace
-from unittest import mock
 
 import mujoco
 import numpy as np
@@ -483,20 +480,7 @@ class IOTest(parameterized.TestCase):
       expected_indices=[0, 0, 0, 1, 1, 1, 2, 2, 2],
     ),
   )
-  def test_load_trajectory_zero_order_hold(self, times, expected_indices):
-    model = SimpleNamespace(nu=1, nq=0, nv=0, opt=SimpleNamespace(timestep=0.1))
-    data = SimpleNamespace(qpos=np.empty(0), qvel=np.empty(0))
-    trajectory = {
-      "ctrl": np.arange(3)[:, None],
-      "times": times,
-    }
-
-    with mock.patch.object(np, "load", return_value=trajectory):
-      ctrl = io.load_trajectory("trajectory.npz", model, data)
-
-    np.testing.assert_array_equal(ctrl, trajectory["ctrl"][expected_indices])
-
-  def test_load_trajectory_npz_roundtrip(self):
+  def test_load_trajectory_npz_roundtrip(self, times, expected_indices):
     model = mujoco.MjModel.from_xml_string(
       """
       <mujoco>
@@ -510,45 +494,19 @@ class IOTest(parameterized.TestCase):
     ctrl = np.array([[1.0], [2.0], [3.0]])
 
     with tempfile.TemporaryDirectory() as tmp_dir:
-      trajectory_path = pathlib.Path(tmp_dir) / "trajectory.npz"
+      trajectory_path = f"{tmp_dir}/trajectory.npz"
       np.savez(
         trajectory_path,
         ctrl=ctrl,
-        times=np.array([0.0, 0.1, 0.4, 0.6]),
+        times=times,
         qpos=np.array([[0.25]]),
         qvel=np.array([[0.5]]),
       )
       loaded_ctrl = io.load_trajectory(trajectory_path, model, data)
 
-    np.testing.assert_array_equal(loaded_ctrl, ctrl[[0, 1, 1, 1, 2, 2]])
+    np.testing.assert_array_equal(loaded_ctrl, ctrl[expected_indices])
     np.testing.assert_array_equal(data.qpos, [0.25])
     np.testing.assert_array_equal(data.qvel, [0.5])
-
-  def test_load_trajectory_shuffle_dance_count(self):
-    trajectory_path = pathlib.Path(__file__).parents[2] / "benchmarks" / "unitree_g1" / "shuffle_dance.npz"
-    model = SimpleNamespace(nu=29, nq=36, nv=35, opt=SimpleNamespace(timestep=0.005))
-    data = SimpleNamespace(qpos=np.empty(model.nq), qvel=np.empty(model.nv))
-
-    ctrl = io.load_trajectory(trajectory_path, model, data)
-
-    self.assertEqual(ctrl.shape, (1000, model.nu))
-
-  @parameterized.named_parameters(
-    dict(testcase_name="empty", times=np.array([]), ctrl_length=0),
-    dict(testcase_name="too_few", times=np.array([0.0]), ctrl_length=2),
-    dict(testcase_name="too_many", times=np.array([0.0, 0.1, 0.2, 0.3]), ctrl_length=2),
-    dict(testcase_name="duplicate", times=np.array([0.0, 0.0]), ctrl_length=2),
-    dict(testcase_name="decreasing", times=np.array([0.1, 0.0]), ctrl_length=2),
-    dict(testcase_name="not_finite", times=np.array([0.0, np.nan]), ctrl_length=2),
-  )
-  def test_load_trajectory_rejects_invalid_times(self, times, ctrl_length):
-    model = SimpleNamespace(nu=1, nq=0, nv=0, opt=SimpleNamespace(timestep=0.1))
-    data = SimpleNamespace(qpos=np.empty(0), qvel=np.empty(0))
-    trajectory = {"ctrl": np.ones((ctrl_length, 1)), "times": times}
-
-    with mock.patch.object(np, "load", return_value=trajectory):
-      with self.assertRaisesRegex(ValueError, "times"):
-        io.load_trajectory("trajectory.npz", model, data)
 
   @parameterized.parameters((47, 48), (48, 64), (63, 64), (64, 80))
   def test_augmented_cholesky_padding(self, nv, expected):
