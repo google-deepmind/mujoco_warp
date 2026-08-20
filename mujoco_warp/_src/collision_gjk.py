@@ -59,6 +59,7 @@ _FACE_INVALID_OR_DELETED_MASK = wp.constant(wp.uint32(0xC0000000))
 
 @wp.struct
 class GJKResult:
+  separated: bool
   dist: float
   x1: wp.vec3
   x2: wp.vec3
@@ -645,7 +646,6 @@ def gjk(
   is_discrete: bool,
 ) -> GJKResult:
   """Find distance within a tolerance between two geoms."""
-  cutoff2 = cutoff * cutoff
   simplex = mat43()
   simplex1 = mat43()
   simplex2 = mat43()
@@ -659,16 +659,14 @@ def gjk(
   # TODO(kbayes): look into relative tolerances based off of xnorm
   epsilon = wp.where(is_discrete, 0.0, 0.5 * tolerance * tolerance)
   min_norm = wp.where(is_discrete, MINVAL, tolerance)
-  min_tol = wp.where(is_discrete, MINVAL, tolerance)
 
   # set initial guess
   x_k = x1_0 - x2_0
-  xnorm2 = wp.dot(x_k, x_k)
-  xnorm = wp.sqrt(xnorm2)
+  xnorm = wp.sqrt(wp.dot(x_k, x_k))
   xnorm_prev = float(0.0)
 
   for _ in range(gjk_iterations):
-    if xnorm < min_norm or wp.abs(xnorm_prev - xnorm) < min_tol:
+    if xnorm < min_norm or wp.abs(xnorm_prev - xnorm) < min_norm:
       break
 
     # compute the support point with direction tuning
@@ -689,18 +687,22 @@ def gjk(
     if wp.dot(x_k, x_k - simplex[n]) < epsilon:
       break
 
+    # the lower bound on distance between the two geoms is (lower / x_norm)
+    # if lower > 0, then the geoms are separated
+    lower = wp.dot(x_k, simplex[n]) 
     if cutoff == 0.0:
-      if wp.dot(x_k, simplex[n]) > 0.0:
+      if lower > 0.0:
         result = GJKResult()
+        result.separated = True
         result.dim = 0
         result.dist = FLOAT_MAX
         result.index1 = geom1.index
         result.index2 = geom2.index
         return result
     elif cutoff < FLOAT_MAX:
-      vs = wp.dot(x_k, simplex[n])
-      if wp.dot(x_k, simplex[n]) > 0.0 and (vs * vs / xnorm2) >= cutoff2:
+      if lower > 0.0 and lower >= cutoff * xnorm:
         result = GJKResult()
+        result.separated = True
         result.dim = 0
         result.dist = FLOAT_MAX
         result.index1 = geom1.index
@@ -731,23 +733,31 @@ def gjk(
 
     # we have a tetrahedron containing the origin so return early
     if n == 4:
-      xnorm = 0.0
       break
 
     # get the next iteration of x_k
     x_k = _linear_combine(n, lmbda, simplex)
     xnorm_prev = xnorm
-    xnorm2 = wp.dot(x_k, x_k)
-    xnorm = wp.sqrt(xnorm2)
+    xnorm = wp.sqrt(wp.dot(x_k, x_k))
 
   result = GJKResult()
+  result.separated = False
 
   # compute the approximate witness points
   # if n is zero, then there was an immediate return meaning the initial points
   # are the witness points
   result.x1 = wp.where(n == 0, x1_0, _linear_combine(n, lmbda, simplex1))
   result.x2 = wp.where(n == 0, x2_0, _linear_combine(n, lmbda, simplex2))
-  result.dist = xnorm
+
+
+  if (xnorm > 0.0):
+    dir = x_k / xnorm
+    sp1 = support(geom1, geomtype1, -dir)
+    sp2 = support(geom2, geomtype2, dir)
+    result.separated = wp.dot(x_k, sp1.point - sp2.point) > 0.0
+
+  # if 3-simplex and not separated, then the origin is contained in the simplex
+  result.dist = wp.where(n == 4 and not result.separated, 0.0, xnorm)
 
   result.dim = n
   result.simplex1 = simplex1
@@ -2398,7 +2408,7 @@ def gjk_phase(
   geom2.index = result.index2
 
   # no penetration depth to recover
-  if result.dist > tolerance or result.dim < 2:
+  if result.dist > tolerance or result.dim < 2 or result.separated:
     return False, result.dist, 1, result.x1, result.x2, empty, geom1, geom2
 
   return True, result.dist, 1, result.x1, result.x2, result, geom1, geom2
