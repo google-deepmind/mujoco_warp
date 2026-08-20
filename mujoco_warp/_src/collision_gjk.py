@@ -666,7 +666,7 @@ def gjk(
   xnorm_prev = float(0.0)
 
   for _ in range(gjk_iterations):
-    if xnorm < min_norm or wp.abs(xnorm_prev - xnorm) < min_norm:
+    if xnorm < min_norm or wp.abs(xnorm_prev - xnorm) < MINVAL:
       break
 
     # compute the support point with direction tuning
@@ -731,14 +731,14 @@ def gjk(
     if n < 1:
       break
 
-    # we have a tetrahedron containing the origin so return early
-    if n == 4:
-      break
-
     # get the next iteration of x_k
     x_k = _linear_combine(n, lmbda, simplex)
     xnorm_prev = xnorm
     xnorm = wp.sqrt(wp.dot(x_k, x_k))
+
+    # we have a tetrahedron containing the origin so return early
+    if n == 4:
+      break
 
   result = GJKResult()
   result.separated = False
