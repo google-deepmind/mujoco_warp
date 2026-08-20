@@ -452,7 +452,7 @@ def ccd_hfield_kernel_builder(
           if prism[3, 2] < zmin and prism[4, 2] < zmin and prism[5, 2] < zmin:
             continue
 
-          geom1.hfprism = prism
+          geom1.polyvert = prism
 
           # prism center
           x1 = geom1.pos + geom1.rot @ (prism[0] + prism[1] + prism[2] + prism[3] + prism[4] + prism[5]) * wp.static(1.0 / 6.0)

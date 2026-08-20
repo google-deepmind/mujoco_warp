@@ -1368,6 +1368,7 @@ class Model:
     has_sdf_geom: whether the model contains SDF geoms
     has_flex_selfcollide: whether any flex has self-collision enabled
     has_ellipsoid_geom: whether the model contains ellipsoid geoms
+    has_plane_geom: whether the model contains plane geoms
     has_3d_flex: whether the model contains 3D flexes
     max_flex_dim: maximum flex dimension in the model
     block_dim: block dim options
@@ -1454,8 +1455,6 @@ class Model:
     M_mulm_rowadr: sparse matmul row pointers
     M_mulm_col: sparse matmul column indices
     M_mulm_madr: sparse matmul matrix addresses
-    flexelem_geom_pair_filtered: conaffinity-filtered element vs geom pairs (*, 2)
-    flexvert_geom_pair_filtered: conaffinity-filtered vertex vs geom pairs  (*, 2)
     flex_elemflexid: maps each element index directly to its flexid         (nflexelem,)
     flex_shellflexid: maps each shell index directly to its flexid          (nflexshelldata,)
     flex_vertflexid: maps each vertex index directly to its flexid          (nflexvert,)
@@ -1855,6 +1854,7 @@ class Model:
   has_sdf_geom: bool
   has_flex_selfcollide: bool
   has_ellipsoid_geom: bool
+  has_plane_geom: bool
   has_3d_flex: bool
   max_flex_dim: int
   block_dim: BlockDim
@@ -1935,8 +1935,6 @@ class Model:
   M_mulm_rowadr: array("nv_plus_1", int)  # start address for each row [nv+1]
   M_mulm_col: array("nM_mulm", int)  # column index to gather from
   M_mulm_madr: array("nM_mulm", int)  # matrix address to read
-  flexelem_geom_pair_filtered: array("nflexelem_geom_pair_filtered", wp.vec2i)
-  flexvert_geom_pair_filtered: array("nflexvert_geom_pair_filtered", wp.vec2i)
   flex_elemflexid: array("nflexelem", int)
   flex_shellflexid: array("nflexshelldata", int)
   flex_vertflexid: array("nflexvert", int)

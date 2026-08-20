@@ -239,51 +239,6 @@ def m_block_layout(mjm: mujoco.MjModel) -> dict:
   }
 
 
-def _filter_tri_geoms(
-  mjm: mujoco.MjModel,
-  v0: int,
-  v1: int,
-  v2: int,
-  geomids: np.ndarray,
-  filterparent: bool,
-) -> np.ndarray:
-  """Vectorized check for a single triangle vs multiple geoms."""
-  b0 = mjm.flex_vertbodyid[v0]
-  b1 = mjm.flex_vertbodyid[v1]
-  b2 = mjm.flex_vertbodyid[v2]
-
-  w0 = mjm.body_weldid[b0]
-  w1 = mjm.body_weldid[b1]
-  w2 = mjm.body_weldid[b2]
-
-  bg = mjm.geom_bodyid[geomids]
-  wg = mjm.body_weldid[bg]
-
-  is_self = (wg == w0) | (wg == w1) | (wg == w2)
-
-  is_parent = np.zeros_like(is_self, dtype=bool)
-  if filterparent:
-    wp0 = mjm.body_weldid[mjm.body_parentid[w0]]
-    wp1 = mjm.body_weldid[mjm.body_parentid[w1]]
-    wp2 = mjm.body_weldid[mjm.body_parentid[w2]]
-    wpg = mjm.body_weldid[mjm.body_parentid[wg]]
-
-    cond0 = (wg != 0) & (w0 != 0) & ((wg == wp0) | (w0 == wpg))
-    cond1 = (wg != 0) & (w1 != 0) & ((wg == wp1) | (w1 == wpg))
-    cond2 = (wg != 0) & (w2 != 0) & ((wg == wp2) | (w2 == wpg))
-    is_parent = cond0 | cond1 | cond2
-
-  sig0 = (b0 << 16) + geomids
-  sig1 = (b1 << 16) + geomids
-  sig2 = (b2 << 16) + geomids
-
-  is_excluded = (
-    np.isin(sig0, mjm.exclude_signature) | np.isin(sig1, mjm.exclude_signature) | np.isin(sig2, mjm.exclude_signature)
-  )
-
-  return is_self | is_parent | is_excluded
-
-
 def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) -> types.Model:
   """Creates a model on device.
 
@@ -481,6 +436,7 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
   m.nmaxpyramid = np.maximum(1, 2 * (m.nmaxcondim - 1))
   m.has_sdf_geom = (mjm.geom_type == mujoco.mjtGeom.mjGEOM_SDF).any()
   m.has_ellipsoid_geom = (mjm.geom_type == mujoco.mjtGeom.mjGEOM_ELLIPSOID).any()
+  m.has_plane_geom = bool(mjm.ngeom > 0 and (mjm.geom_type == mujoco.mjtGeom.mjGEOM_PLANE).any())
   m.has_flex_selfcollide = bool(
     mjm.nflex > 0 and np.any((mjm.flex_selfcollide != 0) & ((mjm.flex_contype & mjm.flex_conaffinity) != 0))
   )
@@ -1082,10 +1038,7 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
   m.flexedge_J_rowadr = mjm.flexedge_J_rowadr
   m.flexedge_J_colind = mjm.flexedge_J_colind.reshape(-1)
 
-  # Populate lookup maps and candidate pairs
-  flexelem_geom_pairs = []
-  flexvert_geom_pairs = []
-
+  # Populate lookup maps
   flex_elemflexid = np.zeros(mjm.nflexelem, dtype=np.int32)
   flex_shellflexid = np.zeros(mjm.nflexshelldata, dtype=np.int32)
   flex_vertflexid = np.zeros(mjm.nflexvert, dtype=np.int32)
@@ -1094,11 +1047,6 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
   if mjm.nflex > 0:
     shell_offset = 0
     for fi in range(mjm.nflex):
-      fct = mjm.flex_contype[fi]
-      fca = mjm.flex_conaffinity[fi]
-      fdim = mjm.flex_dim[fi]
-
-      # Mappings loop
       elem_start = mjm.flex_elemadr[fi]
       elem_num = mjm.flex_elemnum[fi]
       flex_elemflexid[elem_start : elem_start + elem_num] = fi
@@ -1111,71 +1059,6 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
       vert_start = mjm.flex_vertadr[fi]
       vert_num = mjm.flex_vertnum[fi]
       flex_vertflexid[vert_start : vert_start + vert_num] = fi
-
-      # Candidate pairs loop
-      match = ((mjm.geom_contype & fca) != 0) | ((fct & mjm.geom_conaffinity) != 0)
-      is_prim = np.isin(
-        mjm.geom_type,
-        [
-          mujoco.mjtGeom.mjGEOM_SPHERE,
-          mujoco.mjtGeom.mjGEOM_CAPSULE,
-          mujoco.mjtGeom.mjGEOM_BOX,
-          mujoco.mjtGeom.mjGEOM_CYLINDER,
-          mujoco.mjtGeom.mjGEOM_MESH,
-          mujoco.mjtGeom.mjGEOM_ELLIPSOID,
-        ],
-      )
-      is_pl = mjm.geom_type == mujoco.mjtGeom.mjGEOM_PLANE
-
-      matching_primitive_geoms = np.where(match & is_prim)[0]
-      matching_plane_geoms = np.where(match & is_pl)[0]
-
-      vert_start = mjm.flex_vertadr[fi]
-
-      if fdim == 2:
-        elemdata_start = mjm.flex_elemdataadr[fi]
-        for e in range(elem_num):
-          elemid = elem_start + e
-          v0 = vert_start + mjm.flex_elem[elemdata_start + e * 3]
-          v1 = vert_start + mjm.flex_elem[elemdata_start + e * 3 + 1]
-          v2 = vert_start + mjm.flex_elem[elemdata_start + e * 3 + 2]
-
-          if len(matching_primitive_geoms) > 0:
-            filtered = _filter_tri_geoms(mjm, v0, v1, v2, matching_primitive_geoms, filterparent)
-            for g in matching_primitive_geoms[~filtered]:
-              flexelem_geom_pairs.append((elemid, g))
-
-      # Planes vs Vertices
-      if len(matching_plane_geoms) > 0:
-        vert_count = mjm.flex_vertnum[fi]
-        for v in range(vert_count):
-          vertid = vert_start + v
-          bv = mjm.flex_vertbodyid[vertid]
-          wv = mjm.body_weldid[bv]
-
-          bg = mjm.geom_bodyid[matching_plane_geoms]
-          wg = mjm.body_weldid[bg]
-
-          mask = wg != wv
-
-          if filterparent:
-            wpv = mjm.body_weldid[mjm.body_parentid[wv]]
-            wpg = mjm.body_weldid[mjm.body_parentid[wg]]
-            mask &= ~((wg != 0) & (wv != 0) & ((wg == wpv) | (wv == wpg)))
-
-          sig = (bv << 16) + matching_plane_geoms
-          mask &= ~np.isin(sig, mjm.exclude_signature)
-
-          for g in matching_plane_geoms[mask]:
-            flexvert_geom_pairs.append((vertid, g))
-
-  if not flexelem_geom_pairs:
-    flexelem_geom_pairs = np.zeros((0, 2), dtype=np.int32)
-  if not flexvert_geom_pairs:
-    flexvert_geom_pairs = np.zeros((0, 2), dtype=np.int32)
-
-  m.flexelem_geom_pair_filtered = np.array(flexelem_geom_pairs, dtype=np.int32)
-  m.flexvert_geom_pair_filtered = np.array(flexvert_geom_pairs, dtype=np.int32)
 
   m.flex_elemflexid = flex_elemflexid
   m.flex_shellflexid = flex_shellflexid
@@ -1281,8 +1164,6 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
       "nqD_fullm": len(m.qD_fullm_i),
       "nv_plus_1": len(m.M_mulm_rowadr),
       "nM_mulm": len(m.M_mulm_col),
-      "nflexelem_geom_pair_filtered": len(m.flexelem_geom_pair_filtered),
-      "nflexvert_geom_pair_filtered": len(m.flexvert_geom_pair_filtered),
     }
   )
   for f in dataclasses.fields(types.Model):
