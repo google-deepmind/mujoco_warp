@@ -54,7 +54,6 @@ from mujoco_warp._src.history import init_sensor_history as init_sensor_history
 from mujoco_warp._src.history import read_ctrl as read_ctrl
 from mujoco_warp._src.history import read_sensor as read_sensor
 from mujoco_warp._src.inverse import inverse as inverse
-from mujoco_warp._src.io import create_render_context as create_render_context
 from mujoco_warp._src.io import get_data_into as get_data_into
 from mujoco_warp._src.io import make_data as make_data
 from mujoco_warp._src.io import put_data as put_data
@@ -71,6 +70,7 @@ from mujoco_warp._src.passive import passive as passive
 from mujoco_warp._src.ray import ray as ray
 from mujoco_warp._src.ray import rays as rays
 from mujoco_warp._src.render import render as render
+from mujoco_warp._src.render_util import create_render_context as create_render_context
 from mujoco_warp._src.render_util import get_depth as get_depth
 from mujoco_warp._src.render_util import get_rgb as get_rgb
 from mujoco_warp._src.render_util import get_segmentation as get_segmentation
