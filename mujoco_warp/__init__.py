@@ -61,11 +61,6 @@ from mujoco_warp._src.io import put_data as put_data
 from mujoco_warp._src.io import put_model as put_model
 from mujoco_warp._src.io import reset_data as reset_data
 from mujoco_warp._src.io import reset_data_keyframe as reset_data_keyframe
-from mujoco_warp._src.io import set_const as set_const
-from mujoco_warp._src.io import set_const_0 as set_const_0
-from mujoco_warp._src.io import set_const_fixed as set_const_fixed
-from mujoco_warp._src.io import set_const_spring as set_const_spring
-from mujoco_warp._src.io import set_length_range as set_length_range
 from mujoco_warp._src.island import island as island
 from mujoco_warp._src.passive import passive as passive
 from mujoco_warp._src.ray import ray as ray
@@ -79,6 +74,11 @@ from mujoco_warp._src.sensor import energy_vel as energy_vel
 from mujoco_warp._src.sensor import sensor_acc as sensor_acc
 from mujoco_warp._src.sensor import sensor_pos as sensor_pos
 from mujoco_warp._src.sensor import sensor_vel as sensor_vel
+from mujoco_warp._src.set_const import set_const as set_const
+from mujoco_warp._src.set_const import set_const_0 as set_const_0
+from mujoco_warp._src.set_const import set_const_fixed as set_const_fixed
+from mujoco_warp._src.set_const import set_const_spring as set_const_spring
+from mujoco_warp._src.set_const import set_length_range as set_length_range
 from mujoco_warp._src.smooth import camlight as camlight
 from mujoco_warp._src.smooth import com_pos as com_pos
 from mujoco_warp._src.smooth import com_vel as com_vel
