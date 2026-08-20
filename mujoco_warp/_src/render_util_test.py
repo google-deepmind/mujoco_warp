@@ -21,7 +21,6 @@ from absl.testing import absltest
 from absl.testing import parameterized
 
 import mujoco_warp as mjw
-import mujoco_warp as mjwarp
 from mujoco_warp import test_data
 from mujoco_warp._src import render_util
 from mujoco_warp._src import types
@@ -153,7 +152,7 @@ class RenderUtilTest(parameterized.TestCase):
   def test_bvh_creation(self, nworld):
     """Test that the BVH is created correctly for single world and multiple worlds."""
     mjm, mjd, m, d = test_data.fixture("primitives.xml", nworld=nworld)
-    rc = mjwarp.create_render_context(mjm, nworld=nworld, cam_res=(64, 64), use_textures=False)
+    rc = mjw.create_render_context(mjm, nworld=nworld, cam_res=(64, 64), use_textures=False)
 
     self.assertIsNotNone(rc)
     self.assertEqual(rc.nrender, mjm.ncam)
@@ -173,7 +172,7 @@ class RenderUtilTest(parameterized.TestCase):
     """Test that the output rgb and depth buffers have correct shapes and addresses."""
     mjm, mjd, m, d = test_data.fixture(xml=_CAMERA_TEST_XML)
     width, height = 32, 24
-    rc = mjwarp.create_render_context(mjm, cam_res=(width, height), render_rgb=True, render_depth=True)
+    rc = mjw.create_render_context(mjm, cam_res=(width, height), render_rgb=True, render_depth=True)
 
     expected_total = 3 * width * height
 
@@ -190,7 +189,7 @@ class RenderUtilTest(parameterized.TestCase):
     """Tests render context with different resolutions and output."""
     mjm, mjd, m, d = test_data.fixture(xml=_CAMERA_TEST_XML)
     cam_res = [(64, 64), (32, 32), (16, 16)]
-    rc = mjwarp.create_render_context(mjm, cam_res=cam_res, render_rgb=True, render_depth=True)
+    rc = mjw.create_render_context(mjm, cam_res=cam_res, render_rgb=True, render_depth=True)
 
     self.assertEqual(rc.nrender, 3, "nrender")
     _assert_eq(rc.cam_res.numpy(), cam_res, "cam_res")
@@ -205,7 +204,7 @@ class RenderUtilTest(parameterized.TestCase):
     _assert_eq(depth_adr, [0, 64 * 64, 64 * 64 + 32 * 32], "depth_adr")
 
     # Test that results are same when reading from mjmodel fields loaded through xml
-    rc_xml = mjwarp.create_render_context(mjm, render_rgb=True, render_depth=True)
+    rc_xml = mjw.create_render_context(mjm, render_rgb=True, render_depth=True)
     self.assertEqual(rc.rgb_data.shape, rc_xml.rgb_data.shape, "rgb_data")
     self.assertEqual(rc.depth_data.shape, rc_xml.depth_data.shape, "depth_data")
     _assert_eq(rc.rgb_adr.numpy(), rc_xml.rgb_adr.numpy(), "rgb_adr")
@@ -215,7 +214,7 @@ class RenderUtilTest(parameterized.TestCase):
     mjm, mjd, m, d = test_data.fixture(xml=_CAMERA_TEST_XML)
     width, height = 32, 32
 
-    rc = mjwarp.create_render_context(mjm, cam_res=(width, height), cam_active=[True, False, True])
+    rc = mjw.create_render_context(mjm, cam_res=(width, height), cam_active=[True, False, True])
 
     self.assertEqual(rc.nrender, 2, "nrender")
 
@@ -228,7 +227,7 @@ class RenderUtilTest(parameterized.TestCase):
     width, height = 32, 32
     pixels = width * height
 
-    rc = mjwarp.create_render_context(
+    rc = mjw.create_render_context(
       mjm,
       cam_res=(width, height),
       render_rgb=[True, False, True],
@@ -243,7 +242,7 @@ class RenderUtilTest(parameterized.TestCase):
     _assert_eq(rc.render_depth.numpy(), [False, True, True], "render_depth")
 
     # Test that results are same when reading from mjmodel fields loaded through xml
-    rc_xml = mjwarp.create_render_context(mjm, cam_res=(width, height))
+    rc_xml = mjw.create_render_context(mjm, cam_res=(width, height))
     self.assertEqual(rc.rgb_data.shape, rc_xml.rgb_data.shape, "rgb_data")
     self.assertEqual(rc.depth_data.shape, rc_xml.depth_data.shape, "depth_data")
     _assert_eq(rc.rgb_adr.numpy(), rc_xml.rgb_adr.numpy(), "rgb_adr")
@@ -272,7 +271,7 @@ class RenderUtilTest(parameterized.TestCase):
     """
     mjm = mujoco.MjModel.from_xml_string(xml)
     self.assertEqual(mjm.nflex, 1, "nflex")
-    rc = mjwarp.create_render_context(mjm, nworld=1, cam_res=(32, 32))
+    rc = mjw.create_render_context(mjm, nworld=1, cam_res=(32, 32))
     pixels = 32 * 32
 
     self.assertEqual(rc.seg_data.shape, (1, pixels), "seg_data")
@@ -281,7 +280,7 @@ class RenderUtilTest(parameterized.TestCase):
 
   def test_render_context_with_textures(self):
     mjm, mjd, m, d = test_data.fixture("mug/mug.xml")
-    rc = mjwarp.create_render_context(mjm, render_rgb=True, render_depth=True, use_textures=True)
+    rc = mjw.create_render_context(mjm, render_rgb=True, render_depth=True, use_textures=True)
     self.assertTrue(rc.use_textures, "use_textures")
     self.assertEqual(rc.textures.shape, (mjm.ntex,), "textures")
 
@@ -299,7 +298,7 @@ class RenderUtilTest(parameterized.TestCase):
       </mujoco>
       """
     )
-    rc = mjwarp.create_render_context(
+    rc = mjw.create_render_context(
       mjm,
       cam_res=(32, 32),
       render_rgb=True,

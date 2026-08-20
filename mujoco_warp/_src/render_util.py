@@ -296,7 +296,7 @@ def create_render_context(
   splat_rgba: np.ndarray | None = None,
   splat_adr: np.ndarray | None = None,
   splat_group_id: np.ndarray | None = None,
-) -> types.RenderContext:
+) -> RenderContext:
   """Creates a render context on device.
 
   Args:
@@ -625,7 +625,7 @@ def create_render_context(
     light_attenuation_is_default = bool(np.allclose(atten, np.array([1.0, 0.0, 0.0], dtype=np.float32)))
     has_spot_lights = bool((np.asarray(mjm.light_type) == int(mujoco.mjtLightType.mjLIGHT_SPOT)).any())
 
-  rc = types.RenderContext(
+  rc = RenderContext(
     nrender=ncam,
     cam_res=cam_res_arr,
     cam_id_map=wp.array(active_cam_indices, dtype=int),
