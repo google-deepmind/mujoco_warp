@@ -18,6 +18,7 @@
 import dataclasses
 import tempfile
 import warnings
+from unittest import mock
 
 import mujoco
 import numpy as np
