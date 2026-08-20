@@ -689,7 +689,7 @@ def gjk(
 
     # the lower bound on distance between the two geoms is (lower / x_norm)
     # if lower > 0, then the geoms are separated
-    lower = wp.dot(x_k, simplex[n]) 
+    lower = wp.dot(x_k, simplex[n])
     if cutoff == 0.0:
       if lower > 0.0:
         result = GJKResult()
@@ -749,8 +749,7 @@ def gjk(
   result.x1 = wp.where(n == 0, x1_0, _linear_combine(n, lmbda, simplex1))
   result.x2 = wp.where(n == 0, x2_0, _linear_combine(n, lmbda, simplex2))
 
-
-  if (xnorm > 0.0):
+  if xnorm > 0.0:
     dir = x_k / xnorm
     sp1 = support(geom1, geomtype1, -dir)
     sp2 = support(geom2, geomtype2, dir)
