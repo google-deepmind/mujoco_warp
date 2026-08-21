@@ -29,7 +29,7 @@ from mujoco_warp._src.types import vec10
 wp.set_module_options({"default_grid_stride": False})
 
 
-# TODO: Refactor this file to enable the kernel_analyzer (Model fields are outputs here).
+# TODO: Update kernel_analyzer to support Model fields as outputs so it can be enabled here.
 # kernel_analyzer: off
 @wp.kernel
 def _init_subtreemass(
