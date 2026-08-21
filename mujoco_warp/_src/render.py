@@ -582,6 +582,7 @@ def _make_compute_lighting(cast_ray_first_hit: wp.Function) -> wp.Function:
     mat_spec: float,
     mat_shin_exp: float,
     cull_backfaces: bool,
+    shadow_light_fraction: float,
     enable_specular: bool,
     default_attenuation: bool,
     has_spot: bool,
@@ -658,7 +659,7 @@ def _make_compute_lighting(cast_ray_first_hit: wp.Function) -> wp.Function:
       )
 
       if shadow_geom_id != -1:
-        visible = NO_LIGHT_AMBIENT_FALLBACK
+        visible = shadow_light_fraction
 
     weight = attenuation * visible
     diff_rgb = lightdiff * (ndotl * weight)
@@ -1071,6 +1072,7 @@ def render(m: Model, d: Data, rc: RenderContext):
         mat_spec,
         mat_shin_exp,
         wp.static(rc_static["enable_backface_culling"]),
+        wp.static(rc_static["shadow_light_fraction"]),
         wp.static(rc_static["enable_specular"]),
         wp.static(rc_static["light_attenuation_is_default"]),
         wp.static(rc_static["has_spot_lights"]),
@@ -1120,6 +1122,7 @@ def render(m: Model, d: Data, rc: RenderContext):
         mat_spec,
         mat_shin_exp,
         wp.static(rc_static["enable_backface_culling"]),
+        wp.static(rc_static["shadow_light_fraction"]),
         wp.static(rc_static["enable_specular"]),
         True,
         False,

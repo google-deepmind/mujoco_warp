@@ -814,6 +814,42 @@ class RenderTest(parameterized.TestCase):
     self.assertGreater(len(value), 120)
     self.assertLess(int(count.max()), 40)
 
+  def test_shadow_light_fraction_scales_shadowed_light(self):
+    # How much of a light survives its own shadow: 0 is black, 1 is no shadow.
+    xml = """
+    <mujoco>
+      <worldbody>
+        <light pos="0 0 3" dir="0 0 -1" directional="true" diffuse="1 1 1" castshadow="true"/>
+        <camera pos="0 -1.2 1.2" xyaxes="1 0 0 0 0.7 0.7" fovy="60"/>
+        <geom type="plane" size="2 2 0.1" rgba="0.8 0.8 0.8 1"/>
+        <geom type="box" pos="0 0 0.5" size="0.25 0.25 0.02" rgba="0.2 0.2 0.9 1"/>
+      </worldbody>
+    </mujoco>
+    """
+    shadowed = []
+    for fraction in (0.0, 0.3, 0.6, 1.0):
+      mjm, _, m, d = test_data.fixture(xml=xml)
+      rc = mjw.create_render_context(
+        mjm,
+        cam_res=(64, 64),
+        render_rgb=True,
+        render_seg=True,
+        use_shadows=True,
+        use_ambient_lighting=False,
+        shadow_light_fraction=fraction,
+      )
+      mjw.render(m, d, rc)
+      red = _unpack_rgb(rc.rgb_data.numpy()[0])[..., 0]
+      seg = rc.seg_data.numpy()[0].reshape(-1, 2)[..., 0]
+      floor = red[seg == 0]
+      shadowed.append((int(floor.min()), int(floor.max())))
+
+    darkest = [lo for lo, _ in shadowed]
+    self.assertEqual(darkest, sorted(darkest))
+    self.assertLess(darkest[0], darkest[-1])
+    self.assertEqual(shadowed[-1][0], shadowed[-1][1])
+
+
 if __name__ == "__main__":
   wp.init()
   absltest.main()

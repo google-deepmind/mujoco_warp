@@ -2544,6 +2544,8 @@ class RenderContext:
     headlight_ambient: RGB ambient color of the headlight (from vis.headlight).
     headlight_diffuse: RGB diffuse color of the headlight.
     headlight_specular: RGB specular color of the headlight.
+    shadow_light_fraction: fraction of a light's direct contribution reaching an
+      occluded point; 0 is a true shadow
     enable_backface_culling: drop primitive ray hits whose normal faces away
       from the ray (i.e. the ray origin is inside the geom). Matches MuJoCo's
       mesh-ray rule. When False, the renderer reports inner-surface hits, which
@@ -2645,6 +2647,7 @@ class RenderContext:
   znear: float
   total_rays: int
   enable_backface_culling: bool
+  shadow_light_fraction: float
   enable_specular: bool
   enable_emission: bool
   enable_per_light_ambient: bool
