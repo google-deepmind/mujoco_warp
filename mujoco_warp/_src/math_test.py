@@ -13,12 +13,41 @@
 # limitations under the License.
 # ==============================================================================
 
+import numpy as np
 import warp as wp
 from absl.testing import absltest
+from absl.testing import parameterized
 
+from mujoco_warp._src import types
 from mujoco_warp._src.math import closest_segment_to_segment_points
+from mujoco_warp._src.math import lu_factor_6x6
+from mujoco_warp._src.math import lu_solve_6x6
 from mujoco_warp._src.math import upper_tri_index
 from mujoco_warp._src.math import upper_trid_index
+
+
+@wp.kernel
+def _lu_solve_6x6_kernel(
+  # In:
+  A_in: wp.array2d[float],
+  b_in: wp.array[float],
+  # Out:
+  x_out: wp.array[float],
+  success_out: wp.array[bool],
+):
+  A_work = types.mat66(0.0)
+  b_vec = types.vec6(0.0)
+  for i in range(6):
+    b_vec[i] = b_in[i]
+    for j in range(6):
+      A_work[i, j] = A_in[i, j]
+
+  A_fact, pivot_work, ok = lu_factor_6x6(A_work)
+  if ok:
+    success_out[0] = True
+    x_vec = lu_solve_6x6(A_fact, pivot_work, b_vec)
+    for i in range(6):
+      x_out[i] = x_vec[i]
 
 
 class ClosestSegmentSegmentPointsTest(absltest.TestCase):
@@ -124,6 +153,64 @@ class ClosestSegmentSegmentPointsTest(absltest.TestCase):
   def test_upper_trid_index10(self):
     """Tests upper_trid_index works with symmetric matrix."""
     self.assertEqual(upper_trid_index(10, 1, 5), upper_trid_index(10, 5, 1))
+
+
+class DenseLUTest(parameterized.TestCase):
+  """Tests for 6x6 dense LU factorization and solve."""
+
+  @parameterized.parameters(
+    # General non-singular matrix
+    (
+      np.array(
+        [
+          [10.0, 2.0, 1.0, 0.0, 0.0, 0.0],
+          [3.0, 12.0, 4.0, 1.0, 0.0, 0.0],
+          [1.0, 2.0, 15.0, 2.0, 1.0, 0.0],
+          [0.0, 1.0, 3.0, 11.0, 2.0, 1.0],
+          [0.0, 0.0, 1.0, 2.0, 9.0, 3.0],
+          [0.0, 0.0, 0.0, 1.0, 2.0, 8.0],
+        ],
+        dtype=np.float32,
+      ),
+      np.array([1.0, -2.0, 3.0, 4.0, -5.0, 6.0], dtype=np.float32),
+      True,
+    ),
+    # Zero diagonal matrix requiring pivoting
+    (
+      np.array(
+        [
+          [0.0, 1.0, 2.0, 0.0, 0.0, 0.0],
+          [1.0, 0.0, 3.0, 1.0, 0.0, 0.0],
+          [2.0, 3.0, 0.0, 4.0, 1.0, 0.0],
+          [0.0, 1.0, 4.0, 0.0, 5.0, 2.0],
+          [0.0, 0.0, 1.0, 5.0, 0.0, 3.0],
+          [0.0, 0.0, 0.0, 2.0, 3.0, 0.0],
+        ],
+        dtype=np.float32,
+      ),
+      np.array([2.0, -1.0, 4.0, 3.0, -2.0, 5.0], dtype=np.float32),
+      True,
+    ),
+    # Singular matrix
+    (
+      np.zeros((6, 6), dtype=np.float32),
+      np.zeros(6, dtype=np.float32),
+      False,
+    ),
+  )
+  def test_lu_solve(self, A_np, b_np, expected_success):
+    """Tests 6x6 LU factorization and solve against numpy solution."""
+    A_wp = wp.array(A_np, dtype=float)
+    b_wp = wp.array(b_np, dtype=float)
+    x_wp = wp.zeros(6, dtype=float)
+    success_wp = wp.zeros(1, dtype=bool)
+
+    wp.launch(_lu_solve_6x6_kernel, dim=1, inputs=[A_wp, b_wp], outputs=[x_wp, success_wp])
+
+    self.assertEqual(success_wp.numpy()[0], expected_success)
+    if expected_success:
+      x_ref = np.linalg.solve(A_np, b_np)
+      np.testing.assert_allclose(x_wp.numpy(), x_ref, atol=1e-5, rtol=1e-5)
 
 
 if __name__ == "__main__":

@@ -807,6 +807,10 @@ class mat63f(wp.types.matrix(shape=(6, 3), dtype=float)):
   pass
 
 
+class mat66f(wp.types.matrix(shape=(6, 6), dtype=float)):
+  pass
+
+
 vec5 = vec5f
 vec6 = vec6f
 vec8 = vec8f
@@ -817,6 +821,7 @@ vec128 = vec_pluginattr
 mat23 = mat23f
 mat43 = mat43f
 mat63 = mat63f
+mat66 = mat66f
 
 
 def array(*args) -> wp.array:
@@ -1378,8 +1383,11 @@ class Model:
     body_branch_start: start index in body_branches for each branch   (nbranch + 1,)
     mocap_bodyid: id of body for mocap                       (nmocap,)
     body_fluid_ellipsoid: does body use ellipsoid fluid      (nbody,)
+    body_is_free: is body a standalone free body             (nbody,)
     body_fluid_ellipsoid_adr: body ids with ellipsoid fluid  (nbody_fluid_ellipsoid,)
     body_fluid_box_adr: body ids with box fluid              (nbody_fluid_box,)
+    body_freeadr: body ids of free bodies                    (nbodyfree,)
+    body_notfreeadr: body ids of non-free bodies             (nbodynotfree,)
     jnt_limited_slide_hinge_adr: limited/slide/hinge jntadr
     jnt_limited_ball_adr: limited/ball jntadr
     body_isdofancestor: precomputed mask of which DOFs affect each body
@@ -1868,8 +1876,11 @@ class Model:
   body_branch_start: array("nbranch_start", int)
   mocap_bodyid: array("nmocap", int)
   body_fluid_ellipsoid: array("nbody", bool)
+  body_is_free: array("nbody", bool)
   body_fluid_ellipsoid_adr: array("nbody_fluid_ellipsoid", int)
   body_fluid_box_adr: array("nbody_fluid_box", int)
+  body_freeadr: array("nbodyfree", int)
+  body_notfreeadr: array("nbodynotfree", int)
   jnt_limited_slide_hinge_adr: array("njnt_limited_slide_hinge", int)
   jnt_limited_ball_adr: array("njnt_limited_ball", int)
   body_isdofancestor: array("nbody", "nv_pad", int)
