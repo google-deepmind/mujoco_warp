@@ -2562,6 +2562,8 @@ class RenderContext:
     has_orthographic_camera: True iff any actively rendering camera uses
       orthographic projection. When False, the kernel skips the ray origin
       offset since it is always zero for perspective-only scenes.
+    enable_vertex_normals: when True, shade meshes from their authored vertex
+      normals, matching mjr_uploadMesh; when False, use the face normal.
     enable_specular: when True, evaluate the Phong specular highlight per
       light per pixel (uses `mat_specular` / `mat_shininess`). When False,
       the entire specular branch is removed at compile time. Useful for
@@ -2648,6 +2650,7 @@ class RenderContext:
   total_rays: int
   enable_backface_culling: bool
   shadow_light_fraction: float
+  enable_vertex_normals: bool
   enable_specular: bool
   enable_emission: bool
   enable_per_light_ambient: bool

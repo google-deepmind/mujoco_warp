@@ -860,7 +860,13 @@ def render(m: Model, d: Data, rc: RenderContext):
       wp.static(rc_static["enable_backface_culling"]),
     )
 
-    if geom_id >= 0 and mesh_id >= 0 and f >= 0 and geom_type[geom_id] == int(GeomType.MESH.value):
+    if (
+      wp.static(rc_static["enable_vertex_normals"])
+      and geom_id >= 0
+      and mesh_id >= 0
+      and f >= 0
+      and geom_type[geom_id] == int(GeomType.MESH.value)
+    ):
       mat = geom_xmat_in[worldid, geom_id]
       face = wp.transpose(mat) @ normal
       tri = mesh_facenormal[mesh_faceadr[mesh_id] + f]

@@ -321,6 +321,7 @@ def create_render_context(
   render_skybox: bool = False,
   enable_backface_culling: bool = True,
   shadow_light_fraction: float = 0.3,
+  enable_vertex_normals: bool = True,
   enable_specular: bool = True,
   enable_emission: bool = True,
   enable_per_light_ambient: bool = True,
@@ -358,6 +359,8 @@ def create_render_context(
                    Requires the model to contain a texture with type `mjTEXTURE_SKYBOX`.
     shadow_light_fraction: Fraction of a light's direct contribution reaching an
       occluded point. 0 is a true shadow.
+    enable_vertex_normals: Shade meshes from their authored vertex normals,
+      matching mjr_uploadMesh. When False, use the face normal.
     enable_backface_culling: Drop primitive-ray hits whose normal faces away from
                              the ray (ray origin inside the geom). Matches MuJoCo's
                              mesh-ray rule. Default True. Disable for a small
@@ -730,6 +733,7 @@ def create_render_context(
     enable_backface_culling=enable_backface_culling,
     shadow_light_fraction=shadow_light_fraction,
     geom_ray_types=geom_ray_types,
+    enable_vertex_normals=enable_vertex_normals,
     enable_specular=enable_specular,
     enable_emission=enable_emission,
     enable_per_light_ambient=enable_per_light_ambient,
