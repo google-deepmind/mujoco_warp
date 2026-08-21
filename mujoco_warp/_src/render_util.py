@@ -665,7 +665,7 @@ def create_render_context(
       )
       offset += img_w * img_h
 
-  aa_accum = wp.zeros((nworld, int(total)), dtype=wp.vec3) if nsamples > 1 else wp.zeros(0, dtype=wp.vec3)
+  aa_accum = wp.zeros((nworld, int(total) if nsamples > 1 else 1), dtype=wp.vec3)
 
   bvh_ngeom = len(geom_enabled_idx)
 

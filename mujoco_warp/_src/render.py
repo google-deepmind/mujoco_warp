@@ -676,36 +676,17 @@ def _make_compute_lighting(cast_ray_first_hit: wp.Function) -> wp.Function:
 
 
 @wp.kernel
-def _aa_accumulate(
-  # In:
-  rgb: wp.array2d[wp.uint32],
-  # Out:
-  accum: wp.array2d[wp.vec3],
-):
-  worldid, i = wp.tid()
-  c = rgb[worldid, i]
-  accum[worldid, i] += wp.vec3(
-    float(c & wp.uint32(0xFF)),
-    float((c >> wp.uint32(8)) & wp.uint32(0xFF)),
-    float((c >> wp.uint32(16)) & wp.uint32(0xFF)),
-  )
-
-
-@wp.kernel
 def _aa_resolve(
   # In:
   accum: wp.array2d[wp.vec3],
   inv_n: float,
   # Out:
-  rgb: wp.array2d[wp.uint32],
+  rgb_out: wp.array2d[wp.uint32],
 ):
   worldid, i = wp.tid()
   c = accum[worldid, i] * inv_n
-  rgb[worldid, i] = (
-    wp.uint32(wp.clamp(c[0], 0.0, 255.0))
-    | (wp.uint32(wp.clamp(c[1], 0.0, 255.0)) << wp.uint32(8))
-    | (wp.uint32(wp.clamp(c[2], 0.0, 255.0)) << wp.uint32(16))
-    | (wp.uint32(255) << wp.uint32(24))
+  rgb_out[worldid, i] = pack_rgba_to_uint32(
+    wp.clamp(c[0], 0.0, 255.0), wp.clamp(c[1], 0.0, 255.0), wp.clamp(c[2], 0.0, 255.0), 255.0
   )
 
 
@@ -724,6 +705,25 @@ def _build_megakernel(m: Model, rc: RenderContext):
   rc_static = {f.name: getattr(rc, f.name) for f in dataclasses.fields(rc) if f.type in (int, wp.uint32, bool, float, wp.vec3)}
   rc_static["enable_specular_or_emission"] = rc.enable_specular or rc.enable_emission
   M_NLIGHT = m.nlight
+
+  aa = rc.samples_per_pixel * rc.samples_per_pixel > 1
+
+  @wp.func
+  def store_pixel(
+    # In:
+    worldid: int,
+    adr: int,
+    color: wp.vec3,
+    # Out:
+    rgb_out: wp.array2d[wp.uint32],
+    aa_accum_out: wp.array2d[wp.vec3],
+  ):
+    # Supersampling sums in float here rather than re-reading the packed byte
+    # image, so the passes neither round-trip through memory nor quantise early.
+    if wp.static(aa):
+      aa_accum_out[worldid, adr] += color * 255.0
+    else:
+      rgb_out[worldid, adr] = pack_rgba_to_uint32(color[0] * 255.0, color[1] * 255.0, color[2] * 255.0, 255.0)
 
   @wp.kernel(module="unique", enable_backward=False, grid_stride=False, module_options={"fast_math": rc.use_fast_math})
   def _render_megakernel(
@@ -807,6 +807,7 @@ def _build_megakernel(m: Model, rc: RenderContext):
     splat_group_root: wp.array[int],
     # Out:
     rgb_out: wp.array2d[wp.uint32],
+    aa_accum_out: wp.array2d[wp.vec3],
     depth_out: wp.array2d[float],
     seg_out: wp.array2d[wp.vec2i],
   ):
@@ -948,12 +949,7 @@ def _build_megakernel(m: Model, rc: RenderContext):
         )
         if wp.static(has_splats):
           skybox_color = splat_color + skybox_color * splat_transmittance
-        rgb_out[worldid, rgb_adr[camid] + rayid_local] = pack_rgba_to_uint32(
-          skybox_color[0] * 255.0,
-          skybox_color[1] * 255.0,
-          skybox_color[2] * 255.0,
-          255.0,
-        )
+        store_pixel(worldid, rgb_adr[camid] + rayid_local, skybox_color, rgb_out, aa_accum_out)
       elif render_rgb[camid]:
         if wp.static(has_splats):
           packed = wp.static(rc_static["background_color"])
@@ -963,8 +959,20 @@ def _build_megakernel(m: Model, rc: RenderContext):
             float(packed & wp.uint32(0xFF)),
           ) * wp.static(1.0 / 255.0)
           pixel_color = splat_color + background * splat_transmittance
-          rgb_out[worldid, rgb_adr[camid] + rayid_local] = pack_rgba_to_uint32(
-            pixel_color[0] * 255.0, pixel_color[1] * 255.0, pixel_color[2] * 255.0, 255.0
+          store_pixel(worldid, rgb_adr[camid] + rayid_local, pixel_color, rgb_out, aa_accum_out)
+        elif wp.static(aa):
+          packed = wp.static(rc_static["background_color"])
+          store_pixel(
+            worldid,
+            rgb_adr[camid] + rayid_local,
+            wp.vec3(
+              float((packed >> wp.uint32(16)) & wp.uint32(0xFF)),
+              float((packed >> wp.uint32(8)) & wp.uint32(0xFF)),
+              float(packed & wp.uint32(0xFF)),
+            )
+            * wp.static(1.0 / 255.0),
+            rgb_out,
+            aa_accum_out,
           )
         else:
           rgb_out[worldid, rgb_adr[camid] + rayid_local] = wp.static(rc_static["background_color"])
@@ -1164,12 +1172,7 @@ def _build_megakernel(m: Model, rc: RenderContext):
     if wp.static(has_splats):
       hit_color = splat_color + hit_color * splat_transmittance
 
-    rgb_out[worldid, rgb_adr[camid] + rayid_local] = pack_rgba_to_uint32(
-      hit_color[0] * 255.0,
-      hit_color[1] * 255.0,
-      hit_color[2] * 255.0,
-      255.0,
-    )
+    store_pixel(worldid, rgb_adr[camid] + rayid_local, hit_color, rgb_out, aa_accum_out)
 
   return _render_megakernel
 
@@ -1279,13 +1282,12 @@ def render(m: Model, d: Data, rc: RenderContext):
       ],
       outputs=[
         rc.rgb_data,
+        rc.aa_accum,
         rc.depth_data,
         rc.seg_data,
       ],
       block_dim=m.block_dim.render,
     )
-    if nsamples > 1:
-      wp.launch(_aa_accumulate, dim=rc.rgb_data.shape, inputs=[rc.rgb_data], outputs=[rc.aa_accum])
 
   if nsamples > 1:
     wp.launch(_aa_resolve, dim=rc.rgb_data.shape, inputs=[rc.aa_accum, 1.0 / float(nsamples)], outputs=[rc.rgb_data])
