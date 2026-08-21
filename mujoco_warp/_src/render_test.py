@@ -740,6 +740,27 @@ class RenderTest(parameterized.TestCase):
     self.assertGreater(np.count_nonzero(seg == 1), 0)
     self.assertEqual(np.count_nonzero(seg == 0), 0)
 
+  def test_backfaces_are_shaded_two_sided(self):
+    # Camera inside the box: every visible face points away from it. Shading
+    # those hits with an unflipped normal leaves the interior at zero diffuse.
+    xml = """
+    <mujoco>
+      <worldbody>
+        <light pos="0 0 0.5" diffuse="1 1 1"/>
+        <camera pos="0 0 0" xyaxes="1 0 0 0 0 1"/>
+        <geom type="box" size="1 1 1" rgba="0.8 0.8 0.8 1"/>
+      </worldbody>
+    </mujoco>
+    """
+    mjm, _, m, d = test_data.fixture(xml=xml)
+    rc = mjw.create_render_context(
+      mjm, cam_res=(32, 32), render_rgb=True, enable_backface_culling=False, use_ambient_lighting=False
+    )
+    mjw.render(m, d, rc)
+    rgb = _unpack_rgb(rc.rgb_data.numpy()[0])
+
+    self.assertGreater(int(rgb.min()), 0)
+
 if __name__ == "__main__":
   wp.init()
   absltest.main()

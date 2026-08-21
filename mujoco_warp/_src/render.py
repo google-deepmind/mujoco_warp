@@ -848,6 +848,11 @@ def render(m: Model, d: Data, rc: RenderContext):
       wp.static(rc_static["enable_backface_culling"]),
     )
 
+    if wp.static(not rc_static["enable_backface_culling"]):
+      # Two-sided shading: light a back-facing hit as if it faced the viewer.
+      if geom_id >= 0 and wp.dot(normal, ray_dir_world) > 0.0:
+        normal = -normal
+
     splat_color = wp.vec3(0.0)
     splat_transmittance = float(1.0)
     splat_depth = float(-1.0)
