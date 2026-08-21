@@ -712,6 +712,34 @@ class RenderTest(parameterized.TestCase):
 
     self.assertGreater(np.count_nonzero(seg[:32] >= 0), 100)
 
+  @parameterized.parameters("box", "mesh")
+  def test_coincident_geoms_resolve_to_higher_index(self, geom_type: str):
+    # Two geoms in the same place: MuJoCo's GL depth test (GL_LEQUAL) leaves the
+    # last-drawn geom on top, so the higher index must win every pixel, not
+    # whichever the BVH reaches first.
+    s = 0.2
+    vert = " ".join(f"{x} {y} {z}" for x in (-s, s) for y in (-s, s) for z in (-s, s))
+    asset = f'<asset><mesh name="m" vertex="{vert}"/></asset>' if geom_type == "mesh" else ""
+    geom = 'type="mesh" mesh="m"' if geom_type == "mesh" else f'type="box" size="{s} {s} {s}"'
+    xml = f"""
+    <mujoco>
+      {asset}
+      <worldbody>
+        <light pos="0 -1 1"/>
+        <camera pos="0 -1.5 0" xyaxes="1 0 0 0 0 1"/>
+        <geom {geom} rgba="1 0 0 1"/>
+        <geom {geom} rgba="0 1 0 1"/>
+      </worldbody>
+    </mujoco>
+    """
+    mjm, _, m, d = test_data.fixture(xml=xml)
+    rc = mjw.create_render_context(mjm, cam_res=(32, 32), render_seg=True)
+    mjw.render(m, d, rc)
+    seg = rc.seg_data.numpy()[0].reshape(-1, 2)[..., 0]
+
+    self.assertGreater(np.count_nonzero(seg == 1), 0)
+    self.assertEqual(np.count_nonzero(seg == 0), 0)
+
 if __name__ == "__main__":
   wp.init()
   absltest.main()
