@@ -1,4 +1,4 @@
-# Copyright 2025 The Newton Developers
+# Copyright 2026 The Newton Developers
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -29,6 +29,7 @@ from mujoco_warp._src.types import vec10
 wp.set_module_options({"default_grid_stride": False})
 
 
+# TODO: Refactor this file to enable the kernel_analyzer (Model fields are outputs here).
 # kernel_analyzer: off
 @wp.kernel
 def _init_subtreemass(
