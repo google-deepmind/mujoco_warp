@@ -690,6 +690,7 @@ def create_render_context(
     mesh_texcoord=wp.array(mjm.mesh_texcoord, dtype=wp.vec2),
     mesh_texcoord_offsets=wp.array(mjm.mesh_texcoordadr, dtype=int),
     mesh_facetexcoord=wp.array(mjm.mesh_facetexcoord, dtype=wp.vec3i),
+    mesh_facenormal=wp.array(mjm.mesh_facenormal, dtype=wp.vec3i),
     textures=textures,
     textures_registry=textures_registry,
     hfield_registry=hfield_registry,

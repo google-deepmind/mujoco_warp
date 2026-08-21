@@ -291,6 +291,14 @@ def sample_skybox(
   return wp.vec3(color[0], color[1], color[2])
 
 
+@wp.func
+def vertex_normal(n: wp.vec3, face: wp.vec3) -> wp.vec3:
+  # Matches mjr_uploadMesh: a vertex normal more than ~37 degrees off the face is unusable.
+  if wp.dot(n, face) < 0.8:
+    return face
+  return n
+
+
 def _make_cast_ray(geom_ray_types: Tuple[int], first_hit: bool = False) -> wp.Function:
   """Build a ray-cast func specialized to the geom types present in the scene.
 
@@ -716,6 +724,8 @@ def render(m: Model, d: Data, rc: RenderContext):
     flex_edge: wp.array[wp.vec2i],
     flex_radius: wp.array[float],
     mesh_faceadr: wp.array[int],
+    mesh_normaladr: wp.array[int],
+    mesh_normal: wp.array[wp.vec3],
     mat_texid: wp.array3d[int],
     mat_texrepeat: wp.array2d[wp.vec2],
     mat_emission: wp.array2d[float],
@@ -752,6 +762,7 @@ def render(m: Model, d: Data, rc: RenderContext):
     enabled_geom_ids: wp.array[int],
     mesh_bvh_id: wp.array[wp.uint64],
     mesh_facetexcoord: wp.array[wp.vec3i],
+    mesh_facenormal: wp.array[wp.vec3i],
     mesh_texcoord: wp.array[wp.vec2],
     mesh_texcoord_offsets: wp.array[int],
     hfield_bvh_id: wp.array[wp.uint64],
@@ -847,6 +858,20 @@ def render(m: Model, d: Data, rc: RenderContext):
       float(MJ_MAXVAL),
       wp.static(rc_static["enable_backface_culling"]),
     )
+
+    if geom_id >= 0 and mesh_id >= 0 and f >= 0 and geom_type[geom_id] == int(GeomType.MESH.value):
+      mat = geom_xmat_in[worldid, geom_id]
+      face = wp.transpose(mat) @ normal
+      tri = mesh_facenormal[mesh_faceadr[mesh_id] + f]
+      adr = mesh_normaladr[mesh_id]
+      normal = wp.normalize(
+        mat
+        @ (
+          vertex_normal(mesh_normal[adr + tri[0]], face) * u
+          + vertex_normal(mesh_normal[adr + tri[1]], face) * v
+          + vertex_normal(mesh_normal[adr + tri[2]], face) * (1.0 - u - v)
+        )
+      )
 
     if wp.static(not rc_static["enable_backface_culling"]):
       # Two-sided shading: light a back-facing hit as if it faced the viewer.
@@ -1139,6 +1164,8 @@ def render(m: Model, d: Data, rc: RenderContext):
       m.flex_edge,
       m.flex_radius,
       m.mesh_faceadr,
+      m.mesh_normaladr,
+      m.mesh_normal,
       m.mat_texid,
       m.mat_texrepeat,
       m.mat_emission,
@@ -1173,6 +1200,7 @@ def render(m: Model, d: Data, rc: RenderContext):
       rc.enabled_geom_ids,
       rc.mesh_bvh_id,
       rc.mesh_facetexcoord,
+      rc.mesh_facenormal,
       rc.mesh_texcoord,
       rc.mesh_texcoord_offsets,
       rc.hfield_bvh_id,

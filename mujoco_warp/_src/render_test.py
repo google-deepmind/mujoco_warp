@@ -761,6 +761,59 @@ class RenderTest(parameterized.TestCase):
 
     self.assertGreater(int(rgb.min()), 0)
 
+  def test_unusable_vertex_normals_fall_back_to_the_face(self):
+    # A bare-vertex hull has no authored normals: at a cube corner MuJoCo's face
+    # contributions cancel and it stores the [0, 0, 1] sentinel. Rejecting those
+    # against the face normal must render the hull exactly like the primitive.
+    s = 0.3
+    vert = " ".join(f"{x} {y} {z}" for x in (-s, s) for y in (-s, s) for z in (-s, s))
+
+    def render(geom):
+      xml = f"""
+      <mujoco>
+        <asset><mesh name="cube" vertex="{vert}"/></asset>
+        <worldbody>
+          <light pos="0 -2 1" dir="0 0.9 -0.45" directional="true" diffuse="0.55 0.55 0.55"/>
+          <camera pos="0 -3 0" xyaxes="1 0 0 0 0 1" fovy="25"/>
+          <geom {geom} euler="20 0 30" rgba="0.8 0.8 0.8 1"/>
+        </worldbody>
+      </mujoco>
+      """
+      mjm, _, m, d = test_data.fixture(xml=xml)
+      rc = mjw.create_render_context(mjm, cam_res=(64, 64), render_rgb=True, use_ambient_lighting=False)
+      mjw.render(m, d, rc)
+      return _unpack_rgb(rc.rgb_data.numpy()[0])
+
+    np.testing.assert_array_equal(render('type="mesh" mesh="cube"'), render(f'type="box" size="{s} {s} {s}"'))
+
+  def test_authored_normals_shade_smoothly(self):
+    # On a sphere hull neighbouring faces stay inside the tolerance, so MuJoCo
+    # keeps real vertex normals: interpolating them must leave no flat facet.
+    n, r = 64, 0.3
+    i = np.arange(n) + 0.5
+    phi = np.arccos(1.0 - 2.0 * i / n)
+    theta = np.pi * (1.0 + 5.0**0.5) * i
+    pts = r * np.stack([np.cos(theta) * np.sin(phi), np.sin(theta) * np.sin(phi), np.cos(phi)], axis=-1)
+    xml = f"""
+    <mujoco>
+      <asset><mesh name="sphere" vertex="{" ".join(f"{x:.5f}" for x in pts.ravel())}"/></asset>
+      <worldbody>
+        <light pos="0 -2 1" dir="0 0.9 -0.45" directional="true" diffuse="0.55 0.55 0.55"/>
+        <camera pos="0 -1.6 0" xyaxes="1 0 0 0 0 1" fovy="30"/>
+        <geom type="mesh" mesh="sphere" rgba="0.8 0.8 0.8 1"/>
+      </worldbody>
+    </mujoco>
+    """
+    mjm, _, m, d = test_data.fixture(xml=xml)
+    rc = mjw.create_render_context(mjm, cam_res=(64, 64), render_rgb=True, render_seg=True, use_ambient_lighting=False)
+    mjw.render(m, d, rc)
+    red = _unpack_rgb(rc.rgb_data.numpy()[0])[..., 0]
+    seg = rc.seg_data.numpy()[0].reshape(-1, 2)[..., 0]
+    value, count = np.unique(red[seg == 0], return_counts=True)
+
+    self.assertGreater(len(value), 120)
+    self.assertLess(int(count.max()), 40)
+
 if __name__ == "__main__":
   wp.init()
   absltest.main()
