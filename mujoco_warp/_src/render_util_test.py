@@ -32,6 +32,7 @@ def _assert_eq(a, b, name):
   np.testing.assert_allclose(a, b, err_msg=err_msg, atol=tol, rtol=tol)
 
 
+# TODO: Add more cameras for testing projection and intrinsics
 _CAMERA_TEST_XML = """
 <mujoco>
   <worldbody>

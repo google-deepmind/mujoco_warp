@@ -399,7 +399,7 @@ _IO_TEST_MODELS = (
   "hfield/hfield.xml",
 )
 
-# TODO: Add more cameras for testing projection and intrinsics
+
 _MESH_RANDOMIZE_XML = """
 <mujoco>
   <asset>
