@@ -2500,6 +2500,8 @@ class RenderContext:
     mesh_texcoord_offsets: mesh texture coordinate offsets
     mesh_facetexcoord: mesh face texture coordinates
     mesh_facenormal: per-face indices into Model.mesh_normal
+    samples_per_pixel: sub-pixel samples per axis; 1 disables supersampling
+    aa_accum: colour accumulator, unused when samples_per_pixel is 1
     textures: textures
     textures_registry: texture registry
     hfield_registry: hfield BVH id to warp mesh mapping
@@ -2615,6 +2617,8 @@ class RenderContext:
   mesh_texcoord_offsets: array("nmesh", int)
   mesh_facetexcoord: array("nmeshface", wp.vec3i)
   mesh_facenormal: array("nmeshface", wp.vec3i)
+  samples_per_pixel: int
+  aa_accum: array("*", wp.vec3)
   textures: array("*", wp.Texture2D)
   textures_registry: list[wp.Texture2D]
   hfield_registry: dict

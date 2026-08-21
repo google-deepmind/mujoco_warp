@@ -675,6 +675,40 @@ def _make_compute_lighting(cast_ray_first_hit: wp.Function) -> wp.Function:
   return compute_lighting
 
 
+@wp.kernel
+def _aa_accumulate(
+  # In:
+  rgb: wp.array2d[wp.uint32],
+  # Out:
+  accum: wp.array2d[wp.vec3],
+):
+  worldid, i = wp.tid()
+  c = rgb[worldid, i]
+  accum[worldid, i] += wp.vec3(
+    float(c & wp.uint32(0xFF)),
+    float((c >> wp.uint32(8)) & wp.uint32(0xFF)),
+    float((c >> wp.uint32(16)) & wp.uint32(0xFF)),
+  )
+
+
+@wp.kernel
+def _aa_resolve(
+  # In:
+  accum: wp.array2d[wp.vec3],
+  inv_n: float,
+  # Out:
+  rgb: wp.array2d[wp.uint32],
+):
+  worldid, i = wp.tid()
+  c = accum[worldid, i] * inv_n
+  rgb[worldid, i] = (
+    wp.uint32(wp.clamp(c[0], 0.0, 255.0))
+    | (wp.uint32(wp.clamp(c[1], 0.0, 255.0)) << wp.uint32(8))
+    | (wp.uint32(wp.clamp(c[2], 0.0, 255.0)) << wp.uint32(16))
+    | (wp.uint32(255) << wp.uint32(24))
+  )
+
+
 def _build_megakernel(m: Model, rc: RenderContext):
   """Construct the specialised megakernel for this context."""
   has_splats = rc.splat_count > 0
@@ -741,6 +775,7 @@ def _build_megakernel(m: Model, rc: RenderContext):
     cam_id_map: wp.array[int],
     ray: wp.array[wp.vec3],
     ray_offset: wp.array[wp.vec3],
+    ray_base: int,
     rgb_adr: wp.array[int],
     depth_adr: wp.array[int],
     seg_adr: wp.array[int],
@@ -798,8 +833,8 @@ def _build_megakernel(m: Model, rc: RenderContext):
     mujoco_cam_id = cam_id_map[camid]
 
     if wp.static(rc_static["use_precomputed_rays"]):
-      ray_dir_local_cam = ray[rayid]
-      ray_offset_local_cam = ray_offset[rayid]
+      ray_dir_local_cam = ray[ray_base + rayid]
+      ray_offset_local_cam = ray_offset[ray_base + rayid]
     else:
       img_w = cam_res[camid][0]
       img_h = cam_res[camid][1]
@@ -1157,89 +1192,100 @@ def render(m: Model, d: Data, rc: RenderContext):
     rc._megakernel = _build_megakernel(m, rc)
   _render_megakernel = rc._megakernel
 
-  wp.launch(
-    kernel=_render_megakernel,
-    dim=(d.nworld, rc.total_rays),
-    inputs=[
-      m.geom_type,
-      m.geom_dataid,
-      m.geom_matid,
-      m.geom_size,
-      m.geom_rgba,
-      m.cam_projection,
-      m.cam_fovy,
-      m.cam_sensorsize,
-      m.cam_intrinsic,
-      m.light_type,
-      m.light_castshadow,
-      m.light_active,
-      m.light_attenuation,
-      m.light_cutoff,
-      m.light_exponent,
-      m.light_ambient,
-      m.light_diffuse,
-      m.light_specular,
-      m.flex_vertadr,
-      m.flex_edge,
-      m.flex_radius,
-      m.mesh_faceadr,
-      m.mesh_normaladr,
-      m.mesh_normal,
-      m.mat_texid,
-      m.mat_texrepeat,
-      m.mat_emission,
-      m.mat_specular,
-      m.mat_shininess,
-      m.mat_rgba,
-      d.geom_xpos,
-      d.geom_xmat,
-      d.cam_xpos,
-      d.cam_xmat,
-      d.light_xpos,
-      d.light_xdir,
-      d.flexvert_xpos,
-      rc.nrender,
-      rc.use_shadows,
-      rc.bvh_ngeom,
-      rc.bvh_nflexgeom,
-      rc.cam_res,
-      rc.cam_id_map,
-      rc.ray,
-      rc.ray_offset,
-      rc.rgb_adr,
-      rc.depth_adr,
-      rc.seg_adr,
-      rc.render_rgb,
-      rc.render_depth,
-      rc.render_seg,
-      rc.bvh_id,
-      rc.group_root,
-      rc.flex_bvh_id,
-      rc.flex_group_root,
-      rc.enabled_geom_ids,
-      rc.mesh_bvh_id,
-      rc.mesh_facetexcoord,
-      rc.mesh_facenormal,
-      rc.mesh_texcoord,
-      rc.mesh_texcoord_offsets,
-      rc.hfield_bvh_id,
-      rc.flex_rgba,
-      rc.flex_geom_flexid,
-      rc.flex_geom_edgeid,
-      rc.skybox_tex_id,
-      rc.skybox_face_width,
-      rc.textures,
-      rc.splat_position,
-      rc.splat_rotation,
-      rc.splat_scale,
-      rc.splat_rgba,
-      rc.splat_bvh_id,
-      rc.splat_group_root,
-    ],
-    outputs=[
-      rc.rgb_data,
-      rc.depth_data,
-      rc.seg_data,
-    ],
-    block_dim=m.block_dim.render,
-  )
+  nsamples = rc.samples_per_pixel * rc.samples_per_pixel
+  if nsamples > 1:
+    rc.aa_accum.zero_()
+
+  for sample in range(nsamples):
+    wp.launch(
+      kernel=_render_megakernel,
+      dim=(d.nworld, rc.total_rays),
+      inputs=[
+        m.geom_type,
+        m.geom_dataid,
+        m.geom_matid,
+        m.geom_size,
+        m.geom_rgba,
+        m.cam_projection,
+        m.cam_fovy,
+        m.cam_sensorsize,
+        m.cam_intrinsic,
+        m.light_type,
+        m.light_castshadow,
+        m.light_active,
+        m.light_attenuation,
+        m.light_cutoff,
+        m.light_exponent,
+        m.light_ambient,
+        m.light_diffuse,
+        m.light_specular,
+        m.flex_vertadr,
+        m.flex_edge,
+        m.flex_radius,
+        m.mesh_faceadr,
+        m.mesh_normaladr,
+        m.mesh_normal,
+        m.mat_texid,
+        m.mat_texrepeat,
+        m.mat_emission,
+        m.mat_specular,
+        m.mat_shininess,
+        m.mat_rgba,
+        d.geom_xpos,
+        d.geom_xmat,
+        d.cam_xpos,
+        d.cam_xmat,
+        d.light_xpos,
+        d.light_xdir,
+        d.flexvert_xpos,
+        rc.nrender,
+        rc.use_shadows,
+        rc.bvh_ngeom,
+        rc.bvh_nflexgeom,
+        rc.cam_res,
+        rc.cam_id_map,
+        rc.ray,
+        rc.ray_offset,
+        sample * rc.total_rays,
+        rc.rgb_adr,
+        rc.depth_adr,
+        rc.seg_adr,
+        rc.render_rgb,
+        rc.render_depth,
+        rc.render_seg,
+        rc.bvh_id,
+        rc.group_root,
+        rc.flex_bvh_id,
+        rc.flex_group_root,
+        rc.enabled_geom_ids,
+        rc.mesh_bvh_id,
+        rc.mesh_facetexcoord,
+        rc.mesh_facenormal,
+        rc.mesh_texcoord,
+        rc.mesh_texcoord_offsets,
+        rc.hfield_bvh_id,
+        rc.flex_rgba,
+        rc.flex_geom_flexid,
+        rc.flex_geom_edgeid,
+        rc.skybox_tex_id,
+        rc.skybox_face_width,
+        rc.textures,
+        rc.splat_position,
+        rc.splat_rotation,
+        rc.splat_scale,
+        rc.splat_rgba,
+        rc.splat_bvh_id,
+        rc.splat_group_root,
+      ],
+      outputs=[
+        rc.rgb_data,
+        rc.depth_data,
+        rc.seg_data,
+      ],
+      block_dim=m.block_dim.render,
+    )
+    if nsamples > 1:
+      wp.launch(_aa_accumulate, dim=rc.rgb_data.shape, inputs=[rc.rgb_data], outputs=[rc.aa_accum])
+
+  if nsamples > 1:
+    wp.launch(_aa_resolve, dim=rc.rgb_data.shape, inputs=[rc.aa_accum, 1.0 / float(nsamples)], outputs=[rc.rgb_data])

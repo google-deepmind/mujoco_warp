@@ -291,12 +291,17 @@ def _build_rays(
   sensorsize: wp.vec2,
   intrinsic: wp.vec4,
   znear: float,
+  n: int,
+  sx: int,
+  sy: int,
   # Out:
   ray_out: wp.array[wp.vec3],
   ray_offset_out: wp.array[wp.vec3],
 ):
   xid, yid = wp.tid()
-  ray_dir, ray_offset = compute_ray(projection, fovy, sensorsize, intrinsic, img_w, img_h, xid, yid, znear)
+  ray_dir, ray_offset = compute_ray(
+    projection, fovy, sensorsize, intrinsic, img_w * n, img_h * n, xid * n + sx, yid * n + sy, znear
+  )
   idx = offset + xid + yid * img_w
   ray_out[idx] = ray_dir
   ray_offset_out[idx] = ray_offset
@@ -321,6 +326,7 @@ def create_render_context(
   render_skybox: bool = False,
   enable_backface_culling: bool = True,
   shadow_light_fraction: float = 0.3,
+  samples_per_pixel: int = 1,
   enable_vertex_normals: bool = True,
   enable_specular: bool = True,
   enable_emission: bool = True,
@@ -359,6 +365,7 @@ def create_render_context(
                    Requires the model to contain a texture with type `mjTEXTURE_SKYBOX`.
     shadow_light_fraction: Fraction of a light's direct contribution reaching an
       occluded point. 0 is a true shadow.
+    samples_per_pixel: Sub-pixel samples per axis, averaged. Costs n*n renders.
     enable_vertex_normals: Shade meshes from their authored vertex normals,
       matching mjr_uploadMesh. When False, use the face normal.
     enable_backface_culling: Drop primitive-ray hits whose normal faces away from
@@ -617,37 +624,48 @@ def create_render_context(
 
   znear = float(mjm.vis.map.znear * mjm.stat.extent)
 
-  ray = wp.zeros(int(total), dtype=wp.vec3)
-  ray_offset = wp.zeros(int(total), dtype=wp.vec3)
+  if samples_per_pixel < 1:
+    raise ValueError("samples_per_pixel must be at least 1.")
+  if samples_per_pixel > 1 and not use_precomputed_rays:
+    raise ValueError("samples_per_pixel > 1 requires use_precomputed_rays=True: dynamic rays carry no sub-pixel jitter.")
+  nsamples = samples_per_pixel * samples_per_pixel
+  ray = wp.zeros(int(total) * nsamples, dtype=wp.vec3)
+  ray_offset = wp.zeros(int(total) * nsamples, dtype=wp.vec3)
 
   cam_projection = mjm.cam_projection
 
-  offset = 0
-  for idx, cam_id_val in enumerate(active_cam_indices):
-    cam_id = int(cam_id_val)
-    img_w = int(cam_res_np[idx][0])
-    img_h = int(cam_res_np[idx][1])
-    wp.launch(
-      kernel=_build_rays,
-      dim=(img_w, img_h),
-      inputs=[
-        offset,
-        img_w,
-        img_h,
-        int(mjm.cam_projection[cam_id]),
-        float(mjm.cam_fovy[cam_id]),
-        wp.vec2(float(mjm.cam_sensorsize[cam_id, 0]), float(mjm.cam_sensorsize[cam_id, 1])),
-        wp.vec4(
-          float(mjm.cam_intrinsic[cam_id, 0]),
-          float(mjm.cam_intrinsic[cam_id, 1]),
-          float(mjm.cam_intrinsic[cam_id, 2]),
-          float(mjm.cam_intrinsic[cam_id, 3]),
-        ),
-        znear,
-      ],
-      outputs=[ray, ray_offset],
-    )
-    offset += img_w * img_h
+  for sample in range(nsamples):
+    offset = sample * int(total)
+    for idx, cam_id_val in enumerate(active_cam_indices):
+      cam_id = int(cam_id_val)
+      img_w = int(cam_res_np[idx][0])
+      img_h = int(cam_res_np[idx][1])
+      wp.launch(
+        kernel=_build_rays,
+        dim=(img_w, img_h),
+        inputs=[
+          offset,
+          img_w,
+          img_h,
+          int(mjm.cam_projection[cam_id]),
+          float(mjm.cam_fovy[cam_id]),
+          wp.vec2(float(mjm.cam_sensorsize[cam_id, 0]), float(mjm.cam_sensorsize[cam_id, 1])),
+          wp.vec4(
+            float(mjm.cam_intrinsic[cam_id, 0]),
+            float(mjm.cam_intrinsic[cam_id, 1]),
+            float(mjm.cam_intrinsic[cam_id, 2]),
+            float(mjm.cam_intrinsic[cam_id, 3]),
+          ),
+          znear,
+          samples_per_pixel,
+          sample % samples_per_pixel,
+          sample // samples_per_pixel,
+        ],
+        outputs=[ray, ray_offset],
+      )
+      offset += img_w * img_h
+
+  aa_accum = wp.zeros((nworld, int(total)), dtype=wp.vec3) if nsamples > 1 else wp.zeros(0, dtype=wp.vec3)
 
   bvh_ngeom = len(geom_enabled_idx)
 
@@ -732,6 +750,8 @@ def create_render_context(
     total_rays=int(total),
     enable_backface_culling=enable_backface_culling,
     shadow_light_fraction=shadow_light_fraction,
+    samples_per_pixel=samples_per_pixel,
+    aa_accum=aa_accum,
     geom_ray_types=geom_ray_types,
     enable_vertex_normals=enable_vertex_normals,
     enable_specular=enable_specular,

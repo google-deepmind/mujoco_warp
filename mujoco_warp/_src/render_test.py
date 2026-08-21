@@ -955,6 +955,33 @@ class RenderTest(parameterized.TestCase):
       self.assertGreater(int(floor.min()), 0)
       self.assertLess(int(floor.min()), int(floor.max()))
 
+  def test_supersampling_antialiases_edges(self):
+    # At one sample a slanted silhouette is binary: geom or background, nothing
+    # between. More samples must add blends without moving those two levels.
+    xml = """
+    <mujoco>
+      <worldbody>
+        <light pos="0 -2 2" dir="0 1 -1" directional="true" diffuse="1 1 1"/>
+        <camera pos="0 -2 0" xyaxes="1 0 0 0 0 1" fovy="30"/>
+        <geom type="box" size="0.3 0.3 0.3" euler="0 22 0" rgba="0.9 0.9 0.9 1"/>
+      </worldbody>
+    </mujoco>
+    """
+    blended = []
+    for samples in (1, 2, 3):
+      mjm, _, m, d = test_data.fixture(xml=xml)
+      rc = mjw.create_render_context(mjm, cam_res=(64, 64), render_rgb=True, samples_per_pixel=samples)
+      mjw.render(m, d, rc)
+      red = _unpack_rgb(rc.rgb_data.numpy()[0])[..., 0].astype(int)
+      value, count = np.unique(red, return_counts=True)
+      flat = value[count > 40]
+      blended.append(int(np.count_nonzero((red > flat.min() + 2) & (red < flat.max() - 2))))
+      self.assertEqual(flat.tolist(), [25, 255])
+
+    self.assertEqual(blended[0], 0)
+    self.assertGreater(blended[1], 50)
+    self.assertGreater(blended[2], blended[1])
+
 
 if __name__ == "__main__":
   wp.init()
