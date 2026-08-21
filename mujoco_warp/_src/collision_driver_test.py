@@ -1338,6 +1338,7 @@ class CollisionTest(parameterized.TestCase):
     ("box", "box", 0.205, 0.005),
     ("cylinder", "cylinder", 0.18, -0.02),
     ("cylinder", "cylinder", 0.205, 0.005),
+    ("capsule", "cylinder", 0.25, -0.05),
   )
   def test_convex_contact_frame_parity(self, type1, type2, z2, expected_dist):
     """Test CCD contact frame normal and dist parity against MuJoCo C."""

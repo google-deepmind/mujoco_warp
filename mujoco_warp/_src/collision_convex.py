@@ -930,7 +930,12 @@ def ccd_kernel_builder(
       worldid,
     )
 
-    if needs_epa:
+    # When shapes overlap (dist <= margin, i.e. inflated dist <= 0), witness1 has crossed
+    # past witness2, so witness1 - witness2 points from geom[0] to geom[1].
+    # When shapes are separated in the gap band (dist > margin, i.e. inflated dist > 0),
+    # witness1 is on geom[0] and witness2 is on geom[1], so witness2 - witness1 points
+    # from geom[0] to geom[1].
+    if dist <= margin:
       frame = make_frame(witness1[0] - witness2[0])
     else:
       frame = make_frame(witness2[0] - witness1[0])
