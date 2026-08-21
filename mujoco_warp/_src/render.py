@@ -674,18 +674,8 @@ def _make_compute_lighting(cast_ray_first_hit: wp.Function) -> wp.Function:
   return compute_lighting
 
 
-@event_scope
-def render(m: Model, d: Data, rc: RenderContext):
-  """Render the current frame.
-
-  Outputs are stored in buffers within the render context.
-
-  Args:
-    m: The model on device.
-    d: The data on device.
-    rc: The render context on device.
-  """
-  rc.seg_data.fill_(wp.vec2i(-1, -1))
+def _build_megakernel(m: Model, rc: RenderContext):
+  """Construct the specialised megakernel for this context."""
   has_splats = rc.splat_count > 0
 
   # Specialize the ray-cast helpers to the geom types present in the scene so the
@@ -1146,6 +1136,28 @@ def render(m: Model, d: Data, rc: RenderContext):
       hit_color[2] * 255.0,
       255.0,
     )
+
+  return _render_megakernel
+
+
+@event_scope
+def render(m: Model, d: Data, rc: RenderContext):
+  """Render the current frame.
+
+  Outputs are stored in buffers within the render context.
+
+  Args:
+    m: The model on device.
+    d: The data on device.
+    rc: The render context on device.
+  """
+  rc.seg_data.fill_(wp.vec2i(-1, -1))
+  # Specialising the megakernel costs more than launching it, so keep it on the
+  # context: the static configuration it closes over is fixed at creation.
+  _render_megakernel = getattr(rc, "_megakernel", None)
+  if _render_megakernel is None:
+    _render_megakernel = _build_megakernel(m, rc)
+    object.__setattr__(rc, "_megakernel", _render_megakernel)
 
   wp.launch(
     kernel=_render_megakernel,
