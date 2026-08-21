@@ -608,6 +608,62 @@ class CollisionTest(parameterized.TestCase):
     else:
       self.assertEqual(d.nacon.numpy()[0], mjd.ncon)
 
+  def test_mesh_mesh_common_translation(self):
+    """A common world translation must not change the CCD contact result (#1546).
+
+    The five-vertex mesh pair below loses its GJK tetrahedron when both bodies
+    are translated to y=1: the support points are formed in absolute float32
+    world coordinates, so a common translation does not cancel exactly and the
+    small simplex components round away.  The contact must be identical at both
+    translations.
+    """
+    vertices = np.array(
+      [
+        [0.0, 0.0, -0.3],
+        [0.2, 0.0, -0.2],
+        [-0.2, 0.0, -0.2],
+        [-0.1, -0.2, -0.2],
+        [0.0, -0.2, -0.2],
+      ],
+      dtype=np.float32,
+    )
+
+    def scene(y_offset):
+      vertex_list = " ".join(str(value) for value in vertices.reshape(-1))
+      return f"""
+        <mujoco>
+          <option cone="elliptic"/>
+          <asset>
+            <mesh name="a" vertex="{vertex_list}"/>
+            <mesh name="b" vertex="{vertex_list}"/>
+          </asset>
+          <worldbody>
+            <body pos="0 {y_offset} 0.5">
+              <freejoint/>
+              <geom type="mesh" mesh="a" gap="0.01"/>
+            </body>
+            <body pos="0.2 {y_offset} 0.5">
+              <freejoint/>
+              <geom type="mesh" mesh="b" gap="0.01"/>
+            </body>
+          </worldbody>
+        </mujoco>
+        """
+
+    def contact_distances(xml):
+      _, _, m, d = test_data.fixture(xml=xml)
+      mjw.forward(m, d)
+      nacon = int(d.nacon.numpy()[0])
+      return d.contact.dist.numpy()[:nacon]
+
+    dists0 = contact_distances(scene(0.0))
+    dists1 = contact_distances(scene(1.0))
+
+    self.assertGreater(len(dists0), 0)
+    self.assertGreater(len(dists1), 0)
+    np.testing.assert_allclose(dists0, dists1, atol=1e-5)
+    np.testing.assert_array_less(dists1, 0.0)
+
   _HFIELD_FIXTURES = {
     "hfield_box": """
         <mujoco>
