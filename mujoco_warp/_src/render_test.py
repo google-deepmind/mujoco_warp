@@ -687,6 +687,30 @@ class RenderTest(parameterized.TestCase):
     # Verify that the two worlds rendered different skybox backgrounds
     self.assertFalse(np.array_equal(rgb_w0, rgb_w1))
 
+  def test_mesh_bounds_contain_offcentre_mesh(self):
+    # Recentred on its centroid the pyramid spans -h/4 to 3h/4, but a half-extent
+    # of 0.5 * (pmax - pmin) reaches only h/2, cutting the apex off. The camera
+    # sits on that cut looking along the horizon, so rays above the centre row
+    # only travel upwards: they reach the apex only if it is inside the bounds.
+    b, h = 0.1, 0.4
+    xml = f"""
+    <mujoco>
+      <asset>
+        <mesh name="pyramid" vertex="{-b} {-b} 0  {b} {-b} 0  {b} {b} 0  {-b} {b} 0  0 0 {h}"/>
+      </asset>
+      <worldbody>
+        <light pos="0 -1 2"/>
+        <camera pos="0 -0.5 {0.25 * h + 0.5 * h}" xyaxes="1 0 0 0 0 1" fovy="30"/>
+        <geom type="mesh" mesh="pyramid" rgba="1 0 0 1"/>
+      </worldbody>
+    </mujoco>
+    """
+    mjm, _, m, d = test_data.fixture(xml=xml)
+    rc = mjw.create_render_context(mjm, cam_res=(64, 64), render_seg=True)
+    mjw.render(m, d, rc)
+    seg = rc.seg_data.numpy()[0].reshape(64, 64, 2)[..., 0]
+
+    self.assertGreater(np.count_nonzero(seg[:32] >= 0), 100)
 
 if __name__ == "__main__":
   wp.init()
