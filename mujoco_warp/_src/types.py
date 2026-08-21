@@ -400,6 +400,24 @@ class BiasType(enum.IntEnum):
   DCMOTOR = mujoco.mjtBias.mjBIAS_DCMOTOR
 
 
+class CtrlInput(enum.IntFlag):
+  """Control input signature bitflags for actuators.
+
+  Attributes:
+    POS: position setpoint input
+    VEL: velocity setpoint input
+    FF: feedforward input
+    VOLTAGE: raw terminal voltage input
+    NONE: explicitly no inputs (purely passive)
+  """
+
+  POS = mujoco.mjtCtrlInput.mjINPUT_POS
+  VEL = mujoco.mjtCtrlInput.mjINPUT_VEL
+  FF = mujoco.mjtCtrlInput.mjINPUT_FF
+  VOLTAGE = mujoco.mjtCtrlInput.mjINPUT_VOLTAGE
+  NONE = mujoco.mjtCtrlInput.mjINPUT_NONE
+
+
 class JointType(enum.IntEnum):
   """Type of degree of freedom.
 
@@ -986,7 +1004,8 @@ class Model:
   Attributes:
     nq: number of generalized coordinates
     nv: number of degrees of freedom
-    nu: number of actuators/controls
+    nu: number of controls/inputs
+    nactuator: number of actuators
     na: number of activation states
     nbody: number of bodies
     noct: number of total octree cells in all meshes
@@ -1289,29 +1308,32 @@ class Model:
     wrap_type: wrap object type (WrapType)                   (nwrap,)
     wrap_objid: object id: geom, site, joint                 (nwrap,)
     wrap_prm: divisor, joint coef, or site id                (nwrap,)
-    actuator_trntype: transmission type (TrnType)            (nu,)
-    actuator_dyntype: dynamics type (DynType)                (nu,)
-    actuator_gaintype: gain type (GainType)                  (nu,)
-    actuator_biastype: bias type (BiasType)                  (nu,)
-    actuator_actadr: first activation address; -1: stateless (nu,)
-    actuator_actnum: number of activation variables          (nu,)
-    actuator_trnid: transmission id: joint, tendon, site     (nu, 2)
-    actuator_cranklength: crank length for slider-crank      (*, nu)
-    actuator_dynprm: dynamics parameters                     (*, nu, mjNDYN)
-    actuator_gainprm: gain parameters                        (*, nu, mjNGAIN)
-    actuator_biasprm: bias parameters                        (*, nu, mjNBIAS)
-    actuator_actlimited: is activation limited               (nu,)
-    actuator_actrange: range of activations                  (*, nu, 2)
-    actuator_actearly: step activation before force          (nu,)
-    actuator_history: history buffer sizes                   (nu, 2)
-    actuator_historyadr: history buffer address              (nu,)
-    actuator_delay: delay in seconds                         (nu,)
-    actuator_forcelimited: is force limited                  (nu,)
-    actuator_forcerange: range of forces                     (*, nu, 2)
+    actuator_trntype: transmission type (TrnType)            (nactuator,)
+    actuator_dyntype: dynamics type (DynType)                (nactuator,)
+    actuator_gaintype: gain type (GainType)                  (nactuator,)
+    actuator_biastype: bias type (BiasType)                  (nactuator,)
+    actuator_ctrladr: first control address; -1: none        (nactuator,)
+    actuator_ctrlnum: number of control variables            (nactuator,)
+    actuator_ctrlspec: input specification bitmask           (nactuator,)
+    actuator_actadr: first activation address; -1: stateless (nactuator,)
+    actuator_actnum: number of activation variables          (nactuator,)
+    actuator_trnid: transmission id: joint, tendon, site     (nactuator, 2)
+    actuator_cranklength: crank length for slider-crank      (*, nactuator)
+    actuator_dynprm: dynamics parameters                     (*, nactuator, mjNDYN)
+    actuator_gainprm: gain parameters                        (*, nactuator, mjNGAIN)
+    actuator_biasprm: bias parameters                        (*, nactuator, mjNBIAS)
+    actuator_actlimited: is activation limited               (nactuator,)
+    actuator_actrange: range of activations                  (*, nactuator, 2)
+    actuator_actearly: step activation before force          (nactuator,)
+    actuator_history: history buffer sizes                   (nactuator, 2)
+    actuator_historyadr: history buffer address              (nactuator,)
+    actuator_delay: delay in seconds                         (nactuator,)
+    actuator_forcelimited: is force limited                  (nactuator,)
+    actuator_forcerange: range of forces                     (*, nactuator, 2)
     actuator_ctrllimited: is control limited                 (nu,)
     actuator_ctrlrange: range of controls                    (*, nu, 2)
-    actuator_gear: scale length and transmitted force        (*, nu, 6)
-    actuator_acc0: acceleration from unit force in qpos0     (*, nu)
+    actuator_gear: scale length and transmitted force        (*, nactuator, 6)
+    actuator_acc0: acceleration from unit force in qpos0     (*, nactuator)
     actuator_lengthrange: feasible actuator length range     (*, nu, 2)
     sensor_type: sensor type (SensorType)                    (nsensor,)
     sensor_datatype: numeric data type (DataType)            (nsensor,)
@@ -1480,6 +1502,7 @@ class Model:
   nq: int
   nv: int
   nu: int
+  nactuator: int
   na: int
   nbody: int
   noct: int
@@ -1782,30 +1805,33 @@ class Model:
   wrap_type: array("nwrap", int)
   wrap_objid: array("nwrap", int)
   wrap_prm: array("nwrap", float)
-  actuator_trntype: array("nu", int)
-  actuator_dyntype: array("nu", int)
-  actuator_gaintype: array("nu", int)
-  actuator_biastype: array("nu", int)
-  actuator_actadr: array("nu", int)
-  actuator_actnum: array("nu", int)
-  actuator_trnid: array("nu", wp.vec2i)
-  actuator_cranklength: array("*", "nu", float)
-  actuator_dynprm: array("*", "nu", vec10)
-  actuator_gainprm: array("*", "nu", vec10)
-  actuator_biasprm: array("*", "nu", vec10)
-  actuator_actlimited: array("nu", bool)
-  actuator_actrange: array("*", "nu", wp.vec2)
-  actuator_actearly: array("nu", bool)
-  actuator_history: array("nu", wp.vec2i)
-  actuator_historyadr: array("nu", int)
-  actuator_delay: array("nu", float)
-  actuator_forcelimited: array("nu", bool)
-  actuator_forcerange: array("*", "nu", wp.vec2)
+  actuator_trntype: array("nactuator", int)
+  actuator_dyntype: array("nactuator", int)
+  actuator_gaintype: array("nactuator", int)
+  actuator_biastype: array("nactuator", int)
+  actuator_ctrladr: array("nactuator", int)
+  actuator_ctrlnum: array("nactuator", int)
+  actuator_ctrlspec: array("nactuator", int)
+  actuator_actadr: array("nactuator", int)
+  actuator_actnum: array("nactuator", int)
+  actuator_trnid: array("nactuator", wp.vec2i)
+  actuator_cranklength: array("*", "nactuator", float)
+  actuator_dynprm: array("*", "nactuator", vec10)
+  actuator_gainprm: array("*", "nactuator", vec10)
+  actuator_biasprm: array("*", "nactuator", vec10)
+  actuator_actlimited: array("nactuator", bool)
+  actuator_actrange: array("*", "nactuator", wp.vec2)
+  actuator_actearly: array("nactuator", bool)
+  actuator_history: array("nactuator", wp.vec2i)
+  actuator_historyadr: array("nactuator", int)
+  actuator_delay: array("nactuator", float)
+  actuator_forcelimited: array("nactuator", bool)
+  actuator_forcerange: array("*", "nactuator", wp.vec2)
   actuator_ctrllimited: array("nu", bool)
   actuator_ctrlrange: array("*", "nu", wp.vec2)
-  actuator_gear: array("*", "nu", wp.spatial_vector)
-  actuator_acc0: array("*", "nu", float)
-  actuator_lengthrange: array("*", "nu", wp.vec2)
+  actuator_gear: array("*", "nactuator", wp.spatial_vector)
+  actuator_acc0: array("*", "nactuator", float)
+  actuator_lengthrange: array("*", "nactuator", wp.vec2)
   sensor_type: array("nsensor", int)
   sensor_datatype: array("nsensor", int)
   sensor_objtype: array("nsensor", int)
@@ -2282,9 +2308,9 @@ class Data:
   ten_length: array("nworld", "ntendon", float)
   wrap_obj: array("nworld", "nwrap", wp.vec2i)
   wrap_xpos: array("nworld", "nwrap", wp.spatial_vector)
-  actuator_length: array("nworld", "nu", float)
-  moment_rownnz: array("nworld", "nu", int)
-  moment_rowadr: array("nworld", "nu", int)
+  actuator_length: array("nworld", "nactuator", float)
+  moment_rownnz: array("nworld", "nactuator", int)
+  moment_rowadr: array("nworld", "nactuator", int)
   moment_colind: array("nworld", "nJmom", int)
   actuator_moment: array("nworld", "nJmom", float)
   crb: array("nworld", "nbody", vec10)
@@ -2297,7 +2323,7 @@ class Data:
   dof_awake_ind: array("nworld", "nv", int)
   flexedge_velocity: array("nworld", "nflexedge", float)
   ten_velocity: array("nworld", "ntendon", float)
-  actuator_velocity: array("nworld", "nu", float)
+  actuator_velocity: array("nworld", "nactuator", float)
   cvel: array("nworld", "nbody", wp.spatial_vector)
   cdof_dot: array("nworld", "nv", wp.spatial_vector)
   qfrc_bias: array("nworld", "nv", float)
@@ -2310,7 +2336,7 @@ class Data:
   subtree_linvel: array("nworld", "nbody", wp.vec3)
   subtree_angmom: array("nworld", "nbody", wp.vec3)
   qLU: array("nworld", "nD", float)
-  actuator_force: array("nworld", "nu", float)
+  actuator_force: array("nworld", "nactuator", float)
   qfrc_actuator: array("nworld", "nv", float)
   qfrc_smooth: array("nworld", "nv", float)
   qacc_smooth: array("nworld", "nv", float)

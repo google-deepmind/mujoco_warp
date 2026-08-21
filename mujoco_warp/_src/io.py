@@ -3744,7 +3744,7 @@ def set_const_0(m: types.Model, d: types.Data, restore: bool = True):
     )
     wp.launch(
       _resolve_dampratio,
-      dim=(m.actuator_biasprm.shape[0], m.nu),
+      dim=(m.actuator_biasprm.shape[0], m.nactuator),
       inputs=[
         m.actuator_biastype,
         m.actuator_gainprm,
