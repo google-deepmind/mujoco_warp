@@ -19,6 +19,7 @@ from absl.testing import absltest
 from absl.testing import parameterized
 
 from mujoco_warp._src import collision_primitive_core
+from mujoco_warp._src.collision_primitive_core import box_box
 from mujoco_warp._src.collision_primitive_core import sphere_triangle
 
 
@@ -529,6 +530,70 @@ class CylinderTriangleTest(parameterized.TestCase):
     )
 
     self.assertLess(dist[0], collision_primitive_core.MJ_MAXVAL)
+
+
+@wp.kernel
+def box_box_kernel(
+  # In:
+  box1_pos: wp.vec3,
+  box1_rot: wp.mat33,
+  box1_size: wp.vec3,
+  box2_pos: wp.vec3,
+  box2_rot: wp.mat33,
+  box2_size: wp.vec3,
+  margin: float,
+  # Out:
+  dist_out: wp.array[float],
+):
+  dist, pos, normal = box_box(box1_pos, box1_rot, box1_size, box2_pos, box2_rot, box2_size, margin)
+  for i in range(8):
+    dist_out[i] = dist[i]
+
+
+class BoxBoxTest(parameterized.TestCase):
+  """Tests for box_box collision."""
+
+  def test_level_boxes_pick_a_face_axis(self):
+    """A level bar resting on a level table must not take the edge-edge branch.
+
+    When both boxes are level, four of the nine edge-cross separating axes are exactly the
+    face normal, so their separations tie with the best face axis to the last float32 bit.
+    If an edge axis wins the tie, edge-edge geometry runs on what is a face-face contact and
+    reports a contact orders of magnitude deeper than the boxes overlap. The poses below are
+    what kinematics produces for a bar overlapping a table by 1e-4 m at one such yaw.
+    """
+    overlap = 1.0e-4
+    dist = wp.zeros(8, dtype=float)
+
+    wp.launch(
+      box_box_kernel,
+      dim=1,
+      inputs=[
+        wp.vec3(0.1917702853679657, 0.1877419650554657, 0.414900004863739),
+        wp.mat33(
+          0.6132574081420898,
+          -0.7898833751678467,
+          0.0,
+          0.7898833751678467,
+          0.6132574081420898,
+          0.0,
+          0.0,
+          0.0,
+          1.000000238418579,
+        ),
+        wp.vec3(0.06, 0.003, 0.015),
+        wp.vec3(0.3499999940395355, 0.0, 0.20000000298023224),
+        wp.mat33(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0),
+        wp.vec3(0.6, 0.4, 0.2),
+        0.0,
+      ],
+      outputs=[dist],
+    )
+
+    dist = dist.numpy()
+    populated = dist[dist < collision_primitive_core.MJ_MAXVAL]
+    self.assertGreater(populated.size, 0)
+    np.testing.assert_allclose(populated, -overlap, atol=1e-6)
 
 
 if __name__ == "__main__":

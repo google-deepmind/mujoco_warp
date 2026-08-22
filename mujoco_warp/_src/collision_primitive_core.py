@@ -638,6 +638,15 @@ def box_box(
   separation = wp.float32(margin + s_sum_3[0] + s_sum_3[1] + s_sum_3[2])
   axis_code = wp.int32(-1)
 
+  # An edge axis has to beat the best face axis by more than the rounding error of the
+  # separations themselves. Those are sums of box extents times rotation entries, so their
+  # float32 error is absolute and proportional to the extents, while the separation of a
+  # resting contact is near zero -- a relative margin cannot express that. It matters
+  # because when both boxes are level four of the nine edge-cross axes ARE the face normal,
+  # so they tie with it to the last bit and rounding alone would otherwise hand a face-face
+  # contact to the edge-edge branch, which then reports a point outside the boxes.
+  edge_slack = wp.float32(1.0e-6) * (box1_size[0] + box1_size[1] + box1_size[2] + box2_size[0] + box2_size[1] + box2_size[2])
+
   # First test: consider boxes' face normals
   for i in range(3):
     c1 = -wp.abs(pos21[i]) + box1_size[i] + plen2[i]
@@ -693,7 +702,7 @@ def box_box(
         return contact_dist, contact_pos, contact_normals
 
       # Track minimum separation and which edge-edge pair it occurs on
-      if c3 < separation * (1.0 - 1e-12):
+      if c3 < separation - edge_slack:
         separation = c3
         # Determine which corners/edges are closest
         cle1 = 0
