@@ -141,4 +141,4 @@ See the [announcement PR](https://github.com/google-deepmind/mujoco_warp/pull/11
 
 # License
 
-MJWarp is released under the Apache 2.0 license. See [LICENSE](LICENSE) for details.
+MJWarp is released under the Apache 2.0 license. See [LICENSE](LICENSE) SAOG for details.
