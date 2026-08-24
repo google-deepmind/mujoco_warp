@@ -377,6 +377,56 @@ class RenderTest(parameterized.TestCase):
 
     np.testing.assert_array_equal(warp_seg_np, mj_seg)
 
+  def test_render_segmentation_orthographic(self):
+    """Orthographic camera's rays must shift across pixels, depending on its offset."""
+    xml = """
+      <mujoco>
+        <worldbody>
+          <camera name="cam" pos="0 -10 0" xyaxes="1 0 0 0 0 1" projection="orthographic" fovy="10"/>
+          <geom name="left_box" type="box" size="1 2 1" pos="-2 0 0" rgba="1 0 0 1"/>
+          <geom name="right_box" type="box" size="1 2 1" pos="2 0 0" rgba="0 0 1 1"/>
+        </worldbody>
+      </mujoco>
+    """
+    mjm, mjd, m, d = test_data.fixture(xml=xml)
+
+    rc = mjw.create_render_context(mjm, nworld=1, cam_res=(64, 64), render_rgb=False, render_depth=False, render_seg=True)
+    mjw.render(m, d, rc)
+
+    seg = rc.seg_data.numpy().reshape(1, 64, 64, 2)[0]
+    left_ids = set(np.unique(seg[:, :32, 0])) - {-1}
+    right_ids = set(np.unique(seg[:, 32:, 0])) - {-1}
+    self.assertTrue(left_ids, "left half of the frame should hit the left sphere")
+    self.assertTrue(right_ids, "right half of the frame should hit the right sphere")
+    self.assertFalse(left_ids & right_ids, "the two spheres are distinct geoms")
+
+  @absltest.skipIf(not _HAS_RENDERER, "MuJoCo rendering requires OpenGL")
+  def test_segmentation_orthographic_matches_mujoco(self):
+    """Orthographic segmentation should match native MuJoCo."""
+    xml = """
+      <mujoco>
+        <worldbody>
+          <camera name="cam" pos="0 -10 0" xyaxes="1 0 0 0 0 1" projection="orthographic" fovy="10"/>
+          <geom name="left_box" type="box" size="1 2 1" pos="-2 0 0" rgba="1 0 0 1"/>
+          <geom name="right_box" type="box" size="1 2 1" pos="2 0 0" rgba="0 0 1 1"/>
+        </worldbody>
+      </mujoco>
+    """
+    mjm, mjd, _m, d = test_data.fixture(xml=xml)
+    m = mjw.put_model(mjm)
+    cam_w, cam_h = 64, 64
+
+    rc = mjw.create_render_context(mjm, nworld=1, cam_res=(cam_w, cam_h), render_seg=[True])
+    mjw.render(m, d, rc)
+    warp_seg_np = rc.seg_data.numpy()[0].reshape(-1, 2)
+
+    with mujoco.Renderer(mjm, height=cam_h, width=cam_w) as renderer:
+      renderer.update_scene(mjd, camera="cam")
+      renderer.enable_segmentation_rendering()
+      mj_seg = renderer.render().reshape(-1, 2)
+
+    np.testing.assert_array_equal(warp_seg_np, mj_seg)
+
   @absltest.skipIf(not _HAS_RENDERER, "MuJoCo rendering requires OpenGL")
   def test_depth_matches_mujoco(self):
     """Depth values should match native MuJoCo (planar depth, not Euclidean)."""

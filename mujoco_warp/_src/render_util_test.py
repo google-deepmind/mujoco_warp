@@ -65,7 +65,7 @@ class RenderUtilTest(parameterized.TestCase):
     sensorsize = wp.vec2(0.0, 0.0)
     intrinsic = wp.vec4(0.0, 0.0, 0.0, 0.0)
 
-    persp_ray = render_util.compute_ray(
+    persp_dir, persp_offset = render_util.compute_ray(
       int(types.ProjectionType.PERSPECTIVE),
       fovy,
       sensorsize,
@@ -76,7 +76,7 @@ class RenderUtilTest(parameterized.TestCase):
       py,
       znear,
     )
-    ortho_ray = render_util.compute_ray(
+    ortho_dir, ortho_offset = render_util.compute_ray(
       int(types.ProjectionType.ORTHOGRAPHIC),
       fovy,
       sensorsize,
@@ -90,14 +90,24 @@ class RenderUtilTest(parameterized.TestCase):
 
     mag = np.sqrt(0.5**2 + 0.5**2 + 1.0**2)
     expected_persp = np.array([0.5 / mag, -0.5 / mag, -1.0 / mag])
-    np.testing.assert_allclose(np.array(persp_ray), expected_persp, atol=1e-5)
+    np.testing.assert_allclose(np.array(persp_dir), expected_persp, atol=1e-5)
 
     expected_ortho = np.array([0.0, 0.0, -1.0])
-    np.testing.assert_allclose(np.array(ortho_ray), expected_ortho, atol=1e-5)
+    np.testing.assert_allclose(np.array(ortho_dir), expected_ortho, atol=1e-5)
 
     self.assertFalse(
-      np.allclose(np.array(persp_ray), np.array(ortho_ray)),
+      np.allclose(np.array(persp_dir), np.array(ortho_dir)),
       "perspective != orthographic raydir",
+    )
+
+    # Perspective rays all originate at the camera center: no offset, for any pixel.
+    np.testing.assert_allclose(np.array(persp_offset), [0.0, 0.0, 0.0], atol=1e-5)
+
+    # Orthographic rays are parallel, so the per-pixel fan-out that perspective
+    # puts in the direction shows up in the offset instead.
+    self.assertFalse(
+      np.allclose(np.array(ortho_offset), [0.0, 0.0, 0.0]),
+      "orthographic offset should vary with pixel position",
     )
 
   def test_get_segmentation(self):
