@@ -43,8 +43,8 @@ MIN_DIST4 = 1e-17
 # minimal tolerance for EPA
 MIN_EPATOL = 1e-7
 
-FACE_TOL = wp.static(math.cos(0.0016))
-EDGE_TOL = wp.static(math.sin(0.0016))
+FACE_TOL = wp.static(math.cos(0.0889))
+EDGE_TOL = wp.static(math.sin(0.0889))
 
 # tolarance used by multicontact for intersecting a plane and a line segment
 INTERSECT_TOL = 0.0000003
@@ -1936,6 +1936,20 @@ def _plane_intersect(pn: wp.vec3, pd: float, a: wp.vec3, b: wp.vec3) -> float:
   return (pd - wp.dot(pn, a)) / dot
 
 
+@wp.func
+def _witness_on_face(
+  v: wp.vec3,
+  p: wp.vec3,
+  n: wp.vec3,
+  dir: wp.vec3,
+) -> Tuple[wp.vec3, wp.vec3, float]:
+  d = v - p
+  dist = wp.dot(d, n)
+  w1 = v - dir * wp.abs(dist)
+  w2 = v
+  return w1, w2, dist
+
+
 # clip a polygon against another polygon
 @wp.func
 def _polygon_clip(
@@ -1951,13 +1965,14 @@ def _polygon_clip(
   # Out:
   polygon_out: wp.array[wp.vec3],
   clipped_out: wp.array[wp.vec3],
-) -> Tuple[int, mat43, mat43]:
+) -> Tuple[int, mat43, mat43, wp.vec4]:
   witness1 = mat43()
   witness2 = mat43()
+  dists = wp.vec4()
 
   # clipping face needs to be at least a triangle
   if nface1 < 3:
-    return 0, witness1, witness2
+    return 0, witness1, witness2, dists
 
   # compute plane normal and distance to plane for each vertex
   pn = plane_normal
@@ -2018,7 +2033,7 @@ def _polygon_clip(
     nclipped = 0
 
   if npolygon < 1:
-    return 0, witness1, witness2
+    return 0, witness1, witness2, dists
 
   # if the face is an edge, remove potential duplicates
   if nface2 == 2 and npolygon > 2:
@@ -2035,24 +2050,34 @@ def _polygon_clip(
           best1 = i
           best2 = j
 
-    witness2[0] = polygon_out[best1]
-    witness1[0] = witness2[0] - dir
-    witness2[1] = polygon_out[best2]
-    witness1[1] = witness2[1] - dir
-    return 2, witness1, witness2
+    w1, w2, d = _witness_on_face(polygon_out[best1], face1[0], n, dir)
+    witness1[0] = w1
+    witness2[0] = w2
+    dists[0] = d
+
+    w1, w2, d = _witness_on_face(polygon_out[best2], face1[0], n, dir)
+    witness1[1] = w1
+    witness2[1] = w2
+    dists[1] = d
+
+    return 2, witness1, witness2, dists
 
   if npolygon > 4:
     quad = _polygon_quad(polygon_out, npolygon)
     for i in range(4):
-      witness2[i] = polygon_out[quad[i]]
-      witness1[i] = witness2[i] - dir
-    return 4, witness1, witness2
+      w1, w2, d = _witness_on_face(polygon_out[quad[i]], face1[0], n, dir)
+      witness1[i] = w1
+      witness2[i] = w2
+      dists[i] = d
+    return 4, witness1, witness2, dists
 
   # no pruning needed
   for i in range(npolygon):
-    witness2[i] = polygon_out[i]
-    witness1[i] = witness2[i] - dir
-  return npolygon, witness1, witness2
+    w1, w2, d = _witness_on_face(polygon_out[i], face1[0], n, dir)
+    witness1[i] = w1
+    witness2[i] = w2
+    dists[i] = d
+  return npolygon, witness1, witness2, dists
 
 
 @wp.func
@@ -2095,9 +2120,10 @@ def multicontact(
   geom2: Geom,
   geomtype1: int,
   geomtype2: int,
-) -> Tuple[int, mat43, mat43]:
+) -> Tuple[int, mat43, mat43, wp.vec4]:
   witness1 = mat43()
   witness2 = mat43()
+  dists = wp.vec4()
   witness1[0] = x1
   witness2[0] = x2
 
@@ -2197,7 +2223,7 @@ def multicontact(
         )
       nres, res = _aligned_face_edge(n1, nnorms1, n2, nnorms2)
       if not nres:
-        return 1, witness1, witness2
+        return 1, witness1, witness2, dists
       is_edge_contact_geom1 = 1
 
     # check if face-edge collision
@@ -2229,11 +2255,11 @@ def multicontact(
         )
       nres, res = _aligned_face_edge(n2, nnorms2, n1, nnorms1)
       if not nres:
-        return 1, witness1, witness2
+        return 1, witness1, witness2, dists
       is_edge_contact_geom2 = 1
     else:
       # no multi-contact
-      return 1, witness1, witness2
+      return 1, witness1, witness2, dists
 
   i = res[0]
   j = res[1]
@@ -2282,11 +2308,11 @@ def multicontact(
   # face1 is an edge; clip face1 against face2
   if is_edge_contact_geom1:
     approx_dir = -wp.norm_l2(dir) * n2[j]
-    nclipped, clipped1, clipped2 = _polygon_clip(
+    nclipped, clipped1, clipped2, d = _polygon_clip(
       plane_normal, plane_dist, face2, nface2, face1, nface1, n2[j], approx_dir, polygon, clipped
     )
     # the faces were flipped in calling _polygon_clip so we need to flip them back
-    return nclipped, clipped2, clipped1
+    return nclipped, clipped2, clipped1, d
 
   # face2 is an edge; clip face2 against face1
   if is_edge_contact_geom2:

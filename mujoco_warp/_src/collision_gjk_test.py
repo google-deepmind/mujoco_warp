@@ -213,7 +213,7 @@ def _geom_dist(
     )
 
     if multiccd and idx >= 0:
-      ncon, witness1, witness2 = multicontact(
+      ncon, witness1, witness2, _ = multicontact(
         polygon,
         clipped,
         pnormal,
@@ -999,7 +999,7 @@ class GJKTest(parameterized.TestCase):
     _, ncon, x1, x2 = _geom_dist(m, d, 0, 1, multiccd=True)
     self.assertEqual(ncon, 2)
     np.testing.assert_allclose(x1, np.array([1.907368, -0.052973, 0.700000]), atol=1e-4)
-    np.testing.assert_allclose(x2, np.array([1.30000, -0.052973, 0.700000]), atol=1e-4)
+    np.testing.assert_allclose(x2, np.array([1.538472, -0.052973, 0.700000]), atol=1e-4)
 
   @parameterized.parameters(0.0, 0.1)
   def test_hfield_support(self, margin: float):

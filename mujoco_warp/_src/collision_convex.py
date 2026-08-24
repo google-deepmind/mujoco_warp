@@ -869,6 +869,7 @@ def ccd_kernel_builder(
 
     witness1 = mat43()
     witness2 = mat43()
+    dists = wp.vec4()
     witness1[0] = w1
     witness2[0] = w2
 
@@ -887,8 +888,9 @@ def ccd_kernel_builder(
         if geom2.mesh_polyadr < 0:
           multiccd_idx = -1
 
+      dists = wp.vec4()
       if multiccd_idx > -1:
-        ncollision, witness1, witness2 = multicontact(
+        ncollision, witness1, witness2, dists = multicontact(
           multiccd_polygon_in[ccdid],
           multiccd_clipped_in[ccdid],
           multiccd_pnormal_in[ccdid],
@@ -944,7 +946,7 @@ def ccd_kernel_builder(
       write_contact(
         naconmax_in,
         i,
-        dist,
+        dists[i] if ncollision > 1 else dist,
         0.5 * (witness1[i] + witness2[i]),
         frame,
         margin,
