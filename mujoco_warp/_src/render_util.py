@@ -105,11 +105,12 @@ def compute_ray(
       sensor_w = sensor_h * aspect
 
     left = -0.5 * sensor_w
+    top = 0.5 * sensor_h
     bottom = -0.5 * sensor_h
     u = (float(px) + 0.5) / float(img_w)
     v = (float(py) + 0.5) / float(img_h)
     x = left + sensor_w * u
-    y = bottom + sensor_h * v
+    y = top + (bottom - top) * v
     offset = wp.vec3(x, y, 0.0)
 
   else:  # projection == ProjectionType.PERSPECTIVE:
