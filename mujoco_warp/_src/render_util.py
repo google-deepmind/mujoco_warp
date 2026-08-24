@@ -79,54 +79,85 @@ def compute_ray(
   px: int,
   py: int,
   znear: float,
-) -> wp.vec3:
-  """Compute ray direction for a pixel with per-world camera parameters.
+) -> tuple[wp.vec3, wp.vec3]:
+  """Compute ray vector for a pixel with per-world camera parameters.
 
   This combines _camera_frustum_bounds and build_primary_rays logic for use
   inside a kernel when camera parameters are batched/randomized across worlds.
+
+  Returns:
+    Direction of the ray in camera space, and the offset of the ray from the
+    camera's center. The latter is only used for orthographic cameras.
   """
   if projection == ProjectionType.ORTHOGRAPHIC:
-    return wp.vec3(0.0, 0.0, -1.0)
+    # Compute ray direction
+    direction = wp.vec3(0.0, 0.0, -1.0)  # always poiting forward
 
-  aspect = float(img_w) / float(img_h)
-  sensor_h = sensorsize[1]
+    # Compute ray offset from center
+    aspect = float(img_w) / float(img_h)
+    if sensorsize[0] != 0 and sensorsize[1] != 0:
+      # sensorsize is set - use it to derive camera FOV
+      sensor_h = sensorsize[1]
+      sensor_w = sensor_h * aspect
+    else:
+      # sensorsize is not set - use fovy to derive camera FOV
+      sensor_h = fovy
+      sensor_w = sensor_h * aspect
 
-  # Check if we have intrinsics (sensorsize[1] != 0)
-  if sensor_h != 0.0:
-    fx = intrinsic[0]
-    fy = intrinsic[1]
-    cx = intrinsic[2]
-    cy = intrinsic[3]
-    sensor_w = sensorsize[0]
+    left = -0.5 * sensor_w
+    bottom = -0.5 * sensor_h
+    u = (float(px) + 0.5) / float(img_w)
+    v = (float(py) + 0.5) / float(img_h)
+    x = left + sensor_w * u
+    y = bottom + sensor_h * v
+    offset = wp.vec3(x, y, 0.0)
 
-    target_aspect = float(img_w) / float(img_h)
-    sensor_aspect = sensor_w / sensor_h
-    if target_aspect > sensor_aspect:
-      sensor_h = sensor_w / target_aspect
-    elif target_aspect < sensor_aspect:
-      sensor_w = sensor_h * target_aspect
+  else:  # projection == ProjectionType.PERSPECTIVE:
+    # Compute ray direction
+    aspect = float(img_w) / float(img_h)
+    sensor_h = sensorsize[1]
 
-    inv_fx_znear = znear / fx
-    inv_fy_znear = znear / fy
-    left = -inv_fx_znear * (sensor_w * 0.5 - cx)
-    right = inv_fx_znear * (sensor_w * 0.5 + cx)
-    top = inv_fy_znear * (sensor_h * 0.5 - cy)
-    bottom = -inv_fy_znear * (sensor_h * 0.5 + cy)
-  else:
-    fovy_rad = fovy * wp.static(wp.pi / 180.0)
-    half_height = znear * wp.tan(0.5 * fovy_rad)
-    half_width = half_height * aspect
-    left = -half_width
-    right = half_width
-    top = half_height
-    bottom = -half_height
+    # Check if we have intrinsics (sensorsize[1] != 0)
+    if sensor_h != 0.0:
+      fx = intrinsic[0]
+      fy = intrinsic[1]
+      cx = intrinsic[2]
+      cy = intrinsic[3]
+      sensor_w = sensorsize[0]
 
-  u = (float(px) + 0.5) / float(img_w)
-  v = (float(py) + 0.5) / float(img_h)
-  x = left + (right - left) * u
-  y = top + (bottom - top) * v
+      target_aspect = float(img_w) / float(img_h)
+      sensor_aspect = sensor_w / sensor_h
+      if target_aspect > sensor_aspect:
+        sensor_h = sensor_w / target_aspect
+      elif target_aspect < sensor_aspect:
+        sensor_w = sensor_h * target_aspect
 
-  return wp.normalize(wp.vec3(x, y, -znear))
+      inv_fx_znear = znear / fx
+      inv_fy_znear = znear / fy
+      left = -inv_fx_znear * (sensor_w * 0.5 - cx)
+      right = inv_fx_znear * (sensor_w * 0.5 + cx)
+      top = inv_fy_znear * (sensor_h * 0.5 - cy)
+      bottom = -inv_fy_znear * (sensor_h * 0.5 + cy)
+    else:
+      fovy_rad = fovy * wp.static(wp.pi / 180.0)
+      half_height = znear * wp.tan(0.5 * fovy_rad)
+      half_width = half_height * aspect
+      left = -half_width
+      right = half_width
+      top = half_height
+      bottom = -half_height
+
+    u = (float(px) + 0.5) / float(img_w)
+    v = (float(py) + 0.5) / float(img_h)
+    x = left + (right - left) * u
+    y = top + (bottom - top) * v
+
+    direction = wp.normalize(wp.vec3(x, y, -znear))
+
+    # Ray offset from center not used for perspective cameras
+    offset = wp.vec3(0.0, 0.0, 0.0)
+
+  return direction, offset
 
 
 @wp.func
@@ -264,9 +295,13 @@ def _build_rays(
   znear: float,
   # Out:
   ray_out: wp.array[wp.vec3],
+  ray_offset_out: wp.array[wp.vec3],
 ):
   xid, yid = wp.tid()
-  ray_out[offset + xid + yid * img_w] = compute_ray(projection, fovy, sensorsize, intrinsic, img_w, img_h, xid, yid, znear)
+  ray_dir, ray_offset = compute_ray(projection, fovy, sensorsize, intrinsic, img_w, img_h, xid, yid, znear)
+  idx = offset + xid + yid * img_w
+  ray_out[idx] = ray_dir
+  ray_offset_out[idx] = ray_offset
 
 
 def create_render_context(
@@ -579,6 +614,7 @@ def create_render_context(
   znear = float(mjm.vis.map.znear * mjm.stat.extent)
 
   ray = wp.zeros(int(total), dtype=wp.vec3)
+  ray_offset = wp.zeros(int(total), dtype=wp.vec3)
 
   cam_projection = mjm.cam_projection
 
@@ -605,7 +641,7 @@ def create_render_context(
         ),
         znear,
       ],
-      outputs=[ray],
+      outputs=[ray, ray_offset],
     )
     offset += img_w * img_h
 
@@ -673,6 +709,7 @@ def create_render_context(
     group=wp.zeros(nworld * (bvh_ngeom + len(flex_geom_flexid)), dtype=int),
     group_root=wp.zeros(nworld, dtype=int),
     ray=ray,
+    ray_offset=ray_offset,
     rgb_data=wp.zeros((nworld, ri), dtype=wp.uint32),
     rgb_adr=wp.array(rgb_adr, dtype=int),
     depth_data=wp.zeros((nworld, di), dtype=wp.float32),

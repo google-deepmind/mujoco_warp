@@ -725,6 +725,7 @@ def render(m: Model, d: Data, rc: RenderContext):
     cam_res: wp.array[wp.vec2i],
     cam_id_map: wp.array[int],
     ray: wp.array[wp.vec3],
+    ray_offset: wp.array[wp.vec3],
     rgb_adr: wp.array[int],
     depth_adr: wp.array[int],
     seg_adr: wp.array[int],
@@ -782,12 +783,13 @@ def render(m: Model, d: Data, rc: RenderContext):
 
     if wp.static(rc_static["use_precomputed_rays"]):
       ray_dir_local_cam = ray[rayid]
+      ray_offset_local_cam = ray_offset[rayid]
     else:
       img_w = cam_res[camid][0]
       img_h = cam_res[camid][1]
       px = rayid_local % img_w
       py = rayid_local // img_w
-      ray_dir_local_cam = compute_ray(
+      ray_dir_local_cam, ray_offset_local_cam = compute_ray(
         cam_projection[mujoco_cam_id],
         cam_fovy[worldid % cam_fovy.shape[0], mujoco_cam_id],
         cam_sensorsize[mujoco_cam_id],
@@ -799,8 +801,8 @@ def render(m: Model, d: Data, rc: RenderContext):
         wp.static(rc_static["znear"]),
       )
 
-    ray_origin_world = cam_xpos_in[worldid, mujoco_cam_id]
     cam_mat_world = cam_xmat_in[worldid, mujoco_cam_id]
+    ray_origin_world = cam_xpos_in[worldid, mujoco_cam_id] + cam_mat_world @ ray_offset_local_cam
     ray_dir_world = cam_mat_world @ ray_dir_local_cam
 
     geom_id, dist, normal, u, v, f, mesh_id = cast_ray(
@@ -1137,6 +1139,7 @@ def render(m: Model, d: Data, rc: RenderContext):
       rc.cam_res,
       rc.cam_id_map,
       rc.ray,
+      rc.ray_offset,
       rc.rgb_adr,
       rc.depth_adr,
       rc.seg_adr,

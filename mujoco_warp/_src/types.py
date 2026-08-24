@@ -2466,7 +2466,9 @@ class RenderContext:
     upper: upper bounds
     group: groups
     group_root: group roots
-    ray: rays
+    ray: per-pixel rays direction
+    ray_offset: per-pixel ray offset from camera center (for orthographic
+      camera projections only)
     rgb_data: RGB data
     rgb_adr: RGB addresses
     depth_data: depth data
@@ -2572,6 +2574,7 @@ class RenderContext:
   group: array("*", int)
   group_root: array("*", int)
   ray: array("*", wp.vec3)
+  ray_offset: array("*", wp.vec3)
   rgb_data: array("*", wp.uint32)
   rgb_adr: array("ncam", int)
   depth_data: array("*", wp.float32)
