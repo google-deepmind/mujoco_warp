@@ -50,10 +50,17 @@ from mujoco_warp._src import smooth
 from mujoco_warp._src import smooth_adjoint
 from mujoco_warp._src import solver
 from mujoco_warp._src import support
-from mujoco_warp._src import types
 from mujoco_warp._src import util_misc
+from mujoco_warp._src.types import ConeType
+from mujoco_warp._src.types import ConstraintState
+from mujoco_warp._src.types import ConstraintType
 from mujoco_warp._src.types import Data
+from mujoco_warp._src.types import DisableBit
+from mujoco_warp._src.types import EnableBit
+from mujoco_warp._src.types import IntegratorType
+from mujoco_warp._src.types import JointType
 from mujoco_warp._src.types import Model
+from mujoco_warp._src.types import SolverContext
 from mujoco_warp._src.types import vec5
 from mujoco_warp._src.types import vec10f
 from mujoco_warp._src.warp_util import event_scope
@@ -64,20 +71,6 @@ from mujoco_warp._src.warp_util import event_scope
 # only when the calling kernel's module is backward-on. hand VJPs opt out via enable_backward=False.
 wp.set_module_options({"enable_backward": True})
 
-_FREE = int(types.JointType.FREE.value)
-_BALL = int(types.JointType.BALL.value)
-_SATISFIED = int(types.ConstraintState.SATISFIED.value)
-_LINEARNEG = int(types.ConstraintState.LINEARNEG.value)  # saturated friction, force = +frictionloss
-_LINEARPOS = int(types.ConstraintState.LINEARPOS.value)  # saturated friction, force = -frictionloss
-_FRICTION_DOF = int(types.ConstraintType.FRICTION_DOF.value)
-_EQUALITY = int(types.ConstraintType.EQUALITY.value)
-_LIMIT_JOINT = int(types.ConstraintType.LIMIT_JOINT.value)
-_ELLIPTIC = int(types.ConeType.ELLIPTIC.value)
-_PYRAMIDAL = int(types.ConeType.PYRAMIDAL.value)
-_EULER = int(types.IntegratorType.EULER.value)
-_IMPLICITFAST = int(types.IntegratorType.IMPLICITFAST.value)
-_EULERDAMP = int(types.DisableBit.EULERDAMP.value)
-_DAMPER = int(types.DisableBit.DAMPER.value)
 
 # static unroll bound for the dense non-contact constraint residual (_residual_constraint, nv<=16).
 # warp does not replay dynamic loops in the backward: a nonlinear reduction in a dynamic loop reads
@@ -121,7 +114,7 @@ def _advance_state(
   # next_velocity returns the value (held as a local) so qpos uses it without reading qvel_out back.
   qvel_lin = wp.vec3(0.0, 0.0, 0.0)
   qvel_ang = wp.vec3(0.0, 0.0, 0.0)
-  if jt == _FREE:
+  if jt == JointType.FREE:
     vlx = forward.next_velocity(opt_timestep, qvel_in, qacc_in, worldid, dadr + 0, 1.0)
     vly = forward.next_velocity(opt_timestep, qvel_in, qacc_in, worldid, dadr + 1, 1.0)
     vlz = forward.next_velocity(opt_timestep, qvel_in, qacc_in, worldid, dadr + 2, 1.0)
@@ -136,7 +129,7 @@ def _advance_state(
     qvel_out[worldid, dadr + 5] = vaz
     qvel_lin = wp.vec3(vlx, vly, vlz)
     qvel_ang = wp.vec3(vax, vay, vaz)
-  elif jt == _BALL:
+  elif jt == JointType.BALL:
     vx = forward.next_velocity(opt_timestep, qvel_in, qacc_in, worldid, dadr + 0, 1.0)
     vy = forward.next_velocity(opt_timestep, qvel_in, qacc_in, worldid, dadr + 1, 1.0)
     vz = forward.next_velocity(opt_timestep, qvel_in, qacc_in, worldid, dadr + 2, 1.0)
@@ -283,27 +276,27 @@ def _residual_constraint(
   dt = opt_timestep[w % opt_timestep.shape[0]]
   for row in range(nefc_in[w]):  # dynamic loop over this world's efc rows (piecewise-linear -> AD-safe)
     ty = efc_type_in[w, row]
-    if ty != _EQUALITY and ty != _LIMIT_JOINT and ty != _FRICTION_DOF:
+    if ty != ConstraintType.EQUALITY and ty != ConstraintType.LIMIT_JOINT and ty != ConstraintType.FRICTION_DOF:
       continue  # contact rows -> _contact_gather/phi/scatter; TODO(etaoxing): LIMIT_TENDON / FRICTION_TENDON
     st = efc_state_in[w, row]
-    if st == _SATISFIED:
+    if st == ConstraintState.SATISFIED:
       continue
     cid = efc_id_in[w, row]  # source id: dofid (FRICTION_DOF) / eqid (EQUALITY) / jntid (LIMIT_JOINT)
-    if ty == _FRICTION_DOF and st == _LINEARNEG:  # saturated friction: force = +frictionloss
+    if ty == ConstraintType.FRICTION_DOF and st == ConstraintState.LINEARNEG:  # saturated friction: force = +frictionloss
       f = dof_frictionloss[w % dof_frictionloss.shape[0], cid]
-    elif ty == _FRICTION_DOF and st == _LINEARPOS:  # saturated friction: force = -frictionloss
+    elif ty == ConstraintType.FRICTION_DOF and st == ConstraintState.LINEARPOS:  # saturated friction: force = -frictionloss
       f = -dof_frictionloss[w % dof_frictionloss.shape[0], cid]
     else:  # QUADRATIC: equality (bilateral) / active limit / stuck friction -> force = -D*jaref
       pos_aref0 = efc_pos_in[w, row] - efc_margin_in[w, row]  # frozen signed violation (impedance ref)
-      if ty == _FRICTION_DOF:  # per-type solref/solimp -> (k, b, imp) at the frozen pos
+      if ty == ConstraintType.FRICTION_DOF:  # per-type solref/solimp -> (k, b, imp) at the frozen pos
         sr = dof_solref[w % dof_solref.shape[0], cid]
         si = dof_solimp[w % dof_solimp.shape[0], cid]
         kbi = constraint._contact_kbimp(opt_disableflags, dt, sr, si, pos_aref0)
-      elif ty == _EQUALITY:
+      elif ty == ConstraintType.EQUALITY:
         sr = eq_solref[w % eq_solref.shape[0], cid]
         si = eq_solimp[w % eq_solimp.shape[0], cid]
         kbi = constraint._contact_kbimp(opt_disableflags, dt, sr, si, pos_aref0)
-      else:  # _LIMIT_JOINT (slide/hinge: scalar J; ball: the 3-dof angular -axis J)
+      else:  # ConstraintType.LIMIT_JOINT (slide/hinge: scalar J; ball: the 3-dof angular -axis J)
         sr = jnt_solref[w % jnt_solref.shape[0], cid]
         si = jnt_solimp[w % jnt_solimp.shape[0], cid]
         kbi = constraint._contact_kbimp(opt_disableflags, dt, sr, si, pos_aref0)
@@ -486,7 +479,7 @@ def _assert_step_supported(m: Model):
   # supported by collision_adjoint.
   if m.nflex != 0:
     raise NotImplementedError("adjoint.step_backward does not support flex contacts")
-  if m.opt.cone != _ELLIPTIC and m.opt.cone != _PYRAMIDAL:
+  if m.opt.cone != ConeType.ELLIPTIC and m.opt.cone != ConeType.PYRAMIDAL:
     raise NotImplementedError("adjoint.step_backward supports only elliptic/pyramidal cones")
   # adhesion offsets contact aref by (1/D)*adhesion, widens the active set to the gap band, and
   # adds a qpos-dependent qfrc_adhesion to the passive force; surfacevel folds a surface-velocity
@@ -505,7 +498,7 @@ def _assert_step_supported(m: Model):
   # sleep re-runs fwd_velocity at the post-step state inside _advance and skips sleeping trees in
   # the smooth force / solve, breaking the "d_out owns the forward linearization" invariant the
   # IFT and replay helpers rely on (same enable condition as forward._advance).
-  if bool(m.opt.enableflags & types.EnableBit.SLEEP) and not bool(m.opt.disableflags & types.DisableBit.ISLAND):
+  if bool(m.opt.enableflags & EnableBit.SLEEP) and not bool(m.opt.disableflags & DisableBit.ISLAND):
     raise NotImplementedError("adjoint.step_backward does not support sleep (EnableBit.SLEEP)")
   # non-contact constraint rows: supported classes (dof-friction, slide/hinge limit, joint
   # equality, ball limit) run at any nv (sparse/CSR for nv>_MAX_NV, dense otherwise). unsupported
@@ -561,13 +554,13 @@ def advance_backward(m: Model, d: Data, d_out: Data):
   # raw solver root. Rebuild a_int here (the quaternion-position adjoint needs it) and later map
   # adj(a_int) through the transpose solve; omitting the map makes the backward behave like
   # explicit Euler (unstable multiplier on a low-inertia damped hinge).
-  implicit_deriv_flags = types.DisableBit.ACTUATION | types.DisableBit.SPRING | types.DisableBit.DAMPER
-  implicitfast_deriv = int(m.opt.integrator) == _IMPLICITFAST and bool(~(m.opt.disableflags | ~implicit_deriv_flags))
+  implicit_deriv_flags = DisableBit.ACTUATION | DisableBit.SPRING | DisableBit.DAMPER
+  implicitfast_deriv = m.opt.integrator == IntegratorType.IMPLICITFAST and bool(~(m.opt.disableflags | ~implicit_deriv_flags))
   # EULERDAMP analog: forward.euler advances at a_u = (M+dt*D)^-1 M a_s, so reconstruct a_u and
   # replay the integrator at a_u (not the solver root a_s): free/ball quaternion integration is
   # nonlinear in qvel', so replaying at a_s is wrong for quaternions. The transpose remap
   # adj(a_s)=M(M+dt*D)^-1 adj(a_u) is applied after the replay (cached factor).
-  eulerdamp = int(m.opt.integrator) == _EULER and (int(m.opt.disableflags) & (_EULERDAMP | _DAMPER)) == 0
+  eulerdamp = m.opt.integrator == IntegratorType.EULER and (m.opt.disableflags & (DisableBit.EULERDAMP | DisableBit.DAMPER)) == 0
   qacc_advance = d_out.qacc
   qLD_int = None
   qLDiagInv_int = None
@@ -640,7 +633,7 @@ def advance_backward(m: Model, d: Data, d_out: Data):
     # stage 4: d_v direct term for state-dependent (dampingpoly) damping,
     # adj_qvel += -d_v[ y_int^T dt*D(v) a_u ] (a_u, y_int held fixed). Zero for linear damping;
     # gated on DAMPER enabled to match the forward Q (which drops the damping block when disabled).
-    if (int(m.opt.disableflags) & _DAMPER) == 0:
+    if (m.opt.disableflags & DisableBit.DAMPER) == 0:
       dp_out = wp.empty((nworld, nv), dtype=float)
       dp_qv_adj = wp.zeros((nworld, nv), dtype=float)
       dp_ins = [m.opt.timestep, m.dof_damping, m.dof_dampingpoly, d.qvel, qacc_advance]
@@ -1272,7 +1265,7 @@ class BackwardContext:
     scratch: off-tape non-grad Data clone for kinematics/rne replay (replaces _clone_nograd).
   """
 
-  solver_ctx: types.SolverContext
+  solver_ctx: SolverContext
   scratch: Data
 
 

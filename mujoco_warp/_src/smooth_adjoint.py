@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # ==============================================================================
+
 """Backward-only qpos VJPs of the smooth pipeline (kinematics, com_pos, com_vel, rne)."""
 
 import numpy as np
@@ -22,10 +23,15 @@ from mujoco_warp._src import collision_adjoint
 from mujoco_warp._src import math
 from mujoco_warp._src import smooth
 from mujoco_warp._src import support
-from mujoco_warp._src import types
 from mujoco_warp._src import util_misc
+from mujoco_warp._src.types import BiasType
 from mujoco_warp._src.types import Data
+from mujoco_warp._src.types import DisableBit
+from mujoco_warp._src.types import DynType
+from mujoco_warp._src.types import GainType
+from mujoco_warp._src.types import JointType
 from mujoco_warp._src.types import Model
+from mujoco_warp._src.types import TrnType
 from mujoco_warp._src.types import vec10
 from mujoco_warp._src.types import vec10f
 from mujoco_warp._src.warp_util import event_scope
@@ -33,15 +39,6 @@ from mujoco_warp._src.warp_util import event_scope
 # adjoint module: backward stays on so AD leaves differentiate through cross-module @wp.funcs
 wp.set_module_options({"enable_backward": True})
 
-_SV = wp.spatial_vector
-_FREE = int(types.JointType.FREE.value)
-_BALL = int(types.JointType.BALL.value)
-_SPRING = int(types.DisableBit.SPRING.value)
-_ACTUATION = int(types.DisableBit.ACTUATION.value)
-_CLAMPCTRL = int(types.DisableBit.CLAMPCTRL.value)
-_GRAVITY = int(types.DisableBit.GRAVITY.value)
-_GAIN_AFFINE = int(types.GainType.AFFINE.value)
-_BIAS_AFFINE = int(types.BiasType.AFFINE.value)
 
 
 # ----------------------------------------------------------------------------
@@ -130,11 +127,11 @@ def smooth_force_backward(
 
   # ---- rne reverse (K1, K2', K3, K4a', K4b) ----
   # TODO(etaoxing): scratch preallocation for graph capture
-  adj_cdof = wp.zeros((nworld, nv), dtype=_SV)
-  adj_cdof_dot = wp.zeros((nworld, nv), dtype=_SV)
+  adj_cdof = wp.zeros((nworld, nv), dtype=wp.spatial_vector)
+  adj_cdof_dot = wp.zeros((nworld, nv), dtype=wp.spatial_vector)
   adj_qvel = wp.zeros((nworld, nv), dtype=float)  # discarded (deriv_smooth_vel owns qvel)
   adj_qacc = wp.zeros((nworld, nv), dtype=float)  # discarded here (rne_backward exposes it for the qacc gate)
-  adj_force = wp.zeros((nworld, nbody), dtype=_SV)
+  adj_force = wp.zeros((nworld, nbody), dtype=wp.spatial_vector)
 
   # K1: lam -> adj_cdof (tau projection) + adj_force (body force seed)
   wp.launch(_rne_qfrcbias_cdof_vjp, dim=(nworld, nv), inputs=[m.dof_bodyid, d.cfrc_int, lam], outputs=[adj_cdof])
@@ -148,10 +145,10 @@ def smooth_force_backward(
     wp.launch(_anc_acc_sv, dim=(nworld, body_tree.size), inputs=[m.body_parentid, body_tree], outputs=[adj_f])
 
   # K3: adj_f -> adj_{cinert,cacc,cvel} via source-AD of the local inertial-force leaf
-  cfrc_local = wp.zeros((nworld, nbody), dtype=_SV)
+  cfrc_local = wp.zeros((nworld, nbody), dtype=wp.spatial_vector)
   adj_cinert = wp.zeros((nworld, nbody), dtype=vec10f)
-  adj_cacc = wp.zeros((nworld, nbody), dtype=_SV)
-  adj_cvel = wp.zeros((nworld, nbody), dtype=_SV)
+  adj_cacc = wp.zeros((nworld, nbody), dtype=wp.spatial_vector)
+  adj_cvel = wp.zeros((nworld, nbody), dtype=wp.spatial_vector)
   cfrc_inputs = [d.cinert, d.cvel, d.cacc]
   wp.launch(_rne_cfrc_recompute, dim=(nworld, nbody), inputs=cfrc_inputs, outputs=[cfrc_local])
   wp.launch(
@@ -178,11 +175,11 @@ def smooth_force_backward(
   )
 
   # ---- com_vel reverse (CV1, CV2, CV3', CV4): Coriolis cdof path; adj_qvel discarded ----
-  h = wp.zeros((nworld, nv), dtype=_SV)
-  kk = wp.zeros((nworld, nv), dtype=_SV)
-  Hbody = wp.zeros((nworld, nbody), dtype=_SV)
+  h = wp.zeros((nworld, nv), dtype=wp.spatial_vector)
+  kk = wp.zeros((nworld, nv), dtype=wp.spatial_vector)
+  Hbody = wp.zeros((nworld, nbody), dtype=wp.spatial_vector)
   cv_adj_qvel = wp.zeros((nworld, nv), dtype=float)  # discarded
-  cv_adj_cdof = wp.zeros((nworld, nv), dtype=_SV)
+  cv_adj_cdof = wp.zeros((nworld, nv), dtype=wp.spatial_vector)
   wp.launch(
     _comvel_vjp_local,
     dim=(nworld, nbody),
@@ -202,7 +199,7 @@ def smooth_force_backward(
 
   # total cdof cotangent = rne-proper + com_vel (+ optional contact res_cdof seed -> one shared
   # reverse)
-  total_cdof = wp.zeros((nworld, nv), dtype=_SV)
+  total_cdof = wp.zeros((nworld, nv), dtype=wp.spatial_vector)
   wp.launch(_add_spatial, dim=(nworld, nv), inputs=[adj_cdof, cv_adj_cdof], outputs=[total_cdof])
   if res_cdof_extra is not None:
     wp.launch(_add_spatial, dim=(nworld, nv), inputs=[total_cdof, res_cdof_extra], outputs=[total_cdof])
@@ -312,12 +309,12 @@ def _spring_qfrc_recompute(
   dofid = jnt_dofadr[jntid]
   stiffness = jnt_stiffness[w % jnt_stiffness.shape[0], jntid]
   spoly = jnt_stiffnesspoly[w % jnt_stiffnesspoly.shape[0], jntid]
-  has_stiffness = (stiffness != 0.0 or spoly[0] != 0.0 or spoly[1] != 0.0) and (opt_disableflags & _SPRING) == 0
+  has_stiffness = (stiffness != 0.0 or spoly[0] != 0.0 or spoly[1] != 0.0) and (opt_disableflags & DisableBit.SPRING) == 0
   if not has_stiffness:
     return
   qposid = jnt_qposadr[jntid]
   sid = w % qpos_spring.shape[0]
-  if jnttype == _FREE:
+  if jnttype == JointType.FREE:
     difx = qpos_in[w, qposid + 0] - qpos_spring[sid, qposid + 0]
     dify = qpos_in[w, qposid + 1] - qpos_spring[sid, qposid + 1]
     difz = qpos_in[w, qposid + 2] - qpos_spring[sid, qposid + 2]
@@ -335,7 +332,7 @@ def _spring_qfrc_recompute(
     qfrc_spring_out[w, dofid + 3] = -k_rot * dif[0]
     qfrc_spring_out[w, dofid + 4] = -k_rot * dif[1]
     qfrc_spring_out[w, dofid + 5] = -k_rot * dif[2]
-  elif jnttype == _BALL:
+  elif jnttype == JointType.BALL:
     rot = wp.normalize(wp.quat(qpos_in[w, qposid + 0], qpos_in[w, qposid + 1], qpos_in[w, qposid + 2], qpos_in[w, qposid + 3]))
     ref = wp.quat(
       qpos_spring[sid, qposid + 0], qpos_spring[sid, qposid + 1], qpos_spring[sid, qposid + 2], qpos_spring[sid, qposid + 3]
@@ -401,7 +398,7 @@ def actuator_qpos_vjp(m: Model, d: Data, lam: wp.array2d):
   nv = m.nv
   nq = d.qpos.shape[1]
   res_qpos = wp.zeros((nworld, nq), dtype=float)
-  if m.nu == 0 or (int(m.opt.disableflags) & _ACTUATION) != 0:  # match forward: actuation suppressed
+  if m.nu == 0 or (int(m.opt.disableflags) & DisableBit.ACTUATION) != 0:  # match forward: actuation suppressed
     return res_qpos
   res_dof = wp.zeros((nworld, nv), dtype=float)
   wp.launch(
@@ -423,7 +420,7 @@ def actuator_qpos_vjp(m: Model, d: Data, lam: wp.array2d):
       d.actuator_moment,
       d.actuator_force,
       lam,
-      int(m.opt.disableflags) & _CLAMPCTRL,
+      int(m.opt.disableflags) & DisableBit.CLAMPCTRL,
     ],
     outputs=[res_dof],
   )
@@ -463,21 +460,21 @@ def assert_smooth_supported(m: Model):
     gaintype = m.actuator_gaintype.numpy()
     biastype = m.actuator_biastype.numpy()
     jnt_type = m.jnt_type.numpy()
-    if np.any(trntype != int(types.TrnType.JOINT.value)):
+    if np.any(trntype != TrnType.JOINT):
       bad.append("non-JOINT actuator transmission (tendon/site/body/slider-crank/jointinparent)")
-    ok_gain = (gaintype == int(types.GainType.FIXED.value)) | (gaintype == int(types.GainType.AFFINE.value))
-    ok_bias = (biastype == int(types.BiasType.NONE.value)) | (biastype == int(types.BiasType.AFFINE.value))
+    ok_gain = (gaintype == GainType.FIXED) | (gaintype == GainType.AFFINE)
+    ok_bias = (biastype == BiasType.NONE) | (biastype == BiasType.AFFINE)
     if not ok_gain.all() or not ok_bias.all():
       bad.append("non-affine actuator gain/bias (muscle/DC-motor/user)")
-    jnt_ids = m.actuator_trnid.numpy()[:, 0][trntype == int(types.TrnType.JOINT.value)]
-    if jnt_ids.size and np.any((jnt_type[jnt_ids] == _FREE) | (jnt_type[jnt_ids] == _BALL)):
+    jnt_ids = m.actuator_trnid.numpy()[:, 0][trntype == TrnType.JOINT]
+    if jnt_ids.size and np.any((jnt_type[jnt_ids] == JointType.FREE) | (jnt_type[jnt_ids] == JointType.BALL)):
       bad.append("actuator on a FREE/BALL joint (quaternion-dependent transmission length)")
     # activation (na>0) is supported for the dqpos when gain is FIXED: dfdl = biasprm[1] and
     # ctrl_act (=act) is unused (the common filtered/integrated position/velocity servo). A
     # stateful AFFINE-gain actuator would need the gain term gainprm[1]*act (ctrl_act=act, not
     # clamped ctrl); not implemented.
-    stateful = m.actuator_dyntype.numpy() != int(types.DynType.NONE.value)
-    if np.any(stateful & (gaintype == int(types.GainType.AFFINE.value))):
+    stateful = m.actuator_dyntype.numpy() != DynType.NONE
+    if np.any(stateful & (gaintype == GainType.AFFINE)):
       bad.append("stateful (na>0) AFFINE-gain actuator (ctrl_act=act not implemented)")
   if bad:
     raise NotImplementedError(
@@ -604,13 +601,13 @@ def gravcomp_qpos_vjp(m: Model, d: Data, lam: wp.array2d):
     cdof,
   ]
   wp.launch(_gravity_force_recompute, dim=(nworld, nbody - 1, nv), inputs=gc_in, outputs=[qfrc_gc])
-  gravity_enabled = 1 if (int(m.opt.disableflags) & _GRAVITY) == 0 else 0
+  gravity_enabled = 1 if (int(m.opt.disableflags) & DisableBit.GRAVITY) == 0 else 0
   wp.launch(
     _gravcomp_seed, dim=(nworld, nv), inputs=[m.jnt_actgravcomp, m.dof_jntid, lam, gravity_enabled], outputs=[qfrc_gc.grad]
   )
   adj_xipos = wp.zeros((nworld, nbody), dtype=wp.vec3)
   adj_subtree = wp.zeros((nworld, nbody), dtype=wp.vec3)
-  adj_cdof = wp.zeros((nworld, nv), dtype=_SV)
+  adj_cdof = wp.zeros((nworld, nv), dtype=wp.spatial_vector)
   wp.launch(
     _gravity_force_recompute,
     dim=(nworld, nbody - 1, nv),
@@ -948,7 +945,7 @@ def _comvel_vjp_local(
   for jj in range(jntnum):
     jt = jnt_type[jntadr + jj]
     d = jnt_dofadr[jntadr + jj]
-    if jt == _FREE:  # add translations -> snapshot rotations (post-translation) -> add rotations
+    if jt == JointType.FREE:  # add translations -> snapshot rotations (post-translation) -> add rotations
       u = (
         u
         + cdof_in[w, d + 0] * qvel_in[w, d + 0]
@@ -980,7 +977,7 @@ def _comvel_vjp_local(
         + cdof_in[w, d + 5] * qvel_in[w, d + 5]
       )
       Hb = Hb + h3 + h4 + h5
-    elif jt == _BALL:  # snapshot all 3 axes from the pre-ball cvel_in, then add
+    elif jt == JointType.BALL:  # snapshot all 3 axes from the pre-ball cvel_in, then add
       g0 = adj_cdof_dot[w, d + 0]
       g1 = adj_cdof_dot[w, d + 1]
       g2 = adj_cdof_dot[w, d + 2]
@@ -1036,7 +1033,7 @@ def _comvel_vjp_samebody(
     jj = jntnum - 1 - jr  # reverse joint order
     jt = jnt_type[jntadr + jj]
     d = jnt_dofadr[jntadr + jj]
-    if jt == _FREE:  # reverse: scatter rot adds, T += rot h, k rot, scatter trans adds (now see rot h)
+    if jt == JointType.FREE:  # reverse: scatter rot adds, T += rot h, k rot, scatter trans adds (now see rot h)
       _cv_scatter(qvel_in, cdof_in, w, d + 5, t, adj_qvel_out, adj_cdof_out)
       _cv_scatter(qvel_in, cdof_in, w, d + 4, t, adj_qvel_out, adj_cdof_out)
       _cv_scatter(qvel_in, cdof_in, w, d + 3, t, adj_qvel_out, adj_cdof_out)
@@ -1047,7 +1044,7 @@ def _comvel_vjp_samebody(
       _cv_scatter(qvel_in, cdof_in, w, d + 2, t, adj_qvel_out, adj_cdof_out)
       _cv_scatter(qvel_in, cdof_in, w, d + 1, t, adj_qvel_out, adj_cdof_out)
       _cv_scatter(qvel_in, cdof_in, w, d + 0, t, adj_qvel_out, adj_cdof_out)
-    elif jt == _BALL:  # scatter all 3 with the same T, then T += the 3 same-ball h
+    elif jt == JointType.BALL:  # scatter all 3 with the same T, then T += the 3 same-ball h
       _cv_scatter(qvel_in, cdof_in, w, d + 2, t, adj_qvel_out, adj_cdof_out)
       _cv_scatter(qvel_in, cdof_in, w, d + 1, t, adj_qvel_out, adj_cdof_out)
       _cv_scatter(qvel_in, cdof_in, w, d + 0, t, adj_qvel_out, adj_cdof_out)
@@ -1461,13 +1458,13 @@ def _actuator_qpos_vjp(
 ):
   w, actid = wp.tid()
   dfdl = float(0.0)
-  if actuator_gaintype[actid] == _GAIN_AFFINE:
+  if actuator_gaintype[actid] == GainType.AFFINE:
     ctrl = ctrl_in[w % ctrl_in.shape[0], actid]
     if actuator_ctrllimited[actid] and dsbl_clampctrl == 0:
       cr = actuator_ctrlrange[w % actuator_ctrlrange.shape[0], actid]
       ctrl = wp.clamp(ctrl, cr[0], cr[1])
     dfdl += actuator_gainprm[w % actuator_gainprm.shape[0], actid][1] * ctrl
-  if actuator_biastype[actid] == _BIAS_AFFINE:
+  if actuator_biastype[actid] == BiasType.AFFINE:
     dfdl += actuator_biasprm[w % actuator_biasprm.shape[0], actid][1]
   if dfdl == 0.0:
     return
