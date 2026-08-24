@@ -2542,65 +2542,66 @@ def sensor_acc(m: Model, d: Data):
     ],
   )
 
-  weld_geom_count = wp.zeros((d.nworld, m.nbody), dtype=int)
-  weld_geom_list = wp.full((d.nworld, m.nbody, MJ_MAXCONPAIR), -1, dtype=int)
-  wp.launch(
-    _preprocess_tactile_contacts,
-    dim=d.naconmax,
-    inputs=[
-      m.body_weldid,
-      m.geom_bodyid,
-      d.contact.geom,
-      d.contact.worldid,
-      d.nacon,
-    ],
-    outputs=[
-      weld_geom_count,
-      weld_geom_list,
-    ],
-  )
+  if m.nsensortaxel:
+    weld_geom_count = wp.zeros((d.nworld, m.nbody), dtype=int)
+    weld_geom_list = wp.full((d.nworld, m.nbody, MJ_MAXCONPAIR), -1, dtype=int)
+    wp.launch(
+      _preprocess_tactile_contacts,
+      dim=d.naconmax,
+      inputs=[
+        m.body_weldid,
+        m.geom_bodyid,
+        d.contact.geom,
+        d.contact.worldid,
+        d.nacon,
+      ],
+      outputs=[
+        weld_geom_count,
+        weld_geom_list,
+      ],
+    )
 
-  wp.launch(
-    _sensor_tactile,
-    dim=(d.nworld, m.nsensortaxel),
-    inputs=[
-      m.body_rootid,
-      m.body_weldid,
-      m.oct_child,
-      m.oct_aabb,
-      m.oct_coeff,
-      m.geom_type,
-      m.geom_bodyid,
-      m.geom_dataid,
-      m.geom_size,
-      m.mesh_vertadr,
-      m.mesh_vertnum,
-      m.mesh_octadr,
-      m.mesh_normaladr,
-      m.mesh_normalnum,
-      m.mesh_vert,
-      m.mesh_normal,
-      m.mesh_quat,
-      m.sensor_objid,
-      m.sensor_refid,
-      m.sensor_dim,
-      m.sensor_adr,
-      m.plugin,
-      m.plugin_attr,
-      m.geom_plugin_index,
-      m.taxel_vertadr,
-      m.taxel_sensorid,
-      d.geom_xpos,
-      d.geom_xmat,
-      d.subtree_com,
-      d.cvel,
-      weld_geom_count,
-      weld_geom_list,
-    ],
-    outputs=[
-      d.sensordata,
-    ],
-  )
+    wp.launch(
+      _sensor_tactile,
+      dim=(d.nworld, m.nsensortaxel),
+      inputs=[
+        m.body_rootid,
+        m.body_weldid,
+        m.oct_child,
+        m.oct_aabb,
+        m.oct_coeff,
+        m.geom_type,
+        m.geom_bodyid,
+        m.geom_dataid,
+        m.geom_size,
+        m.mesh_vertadr,
+        m.mesh_vertnum,
+        m.mesh_octadr,
+        m.mesh_normaladr,
+        m.mesh_normalnum,
+        m.mesh_vert,
+        m.mesh_normal,
+        m.mesh_quat,
+        m.sensor_objid,
+        m.sensor_refid,
+        m.sensor_dim,
+        m.sensor_adr,
+        m.plugin,
+        m.plugin_attr,
+        m.geom_plugin_index,
+        m.taxel_vertadr,
+        m.taxel_sensorid,
+        d.geom_xpos,
+        d.geom_xmat,
+        d.subtree_com,
+        d.cvel,
+        weld_geom_count,
+        weld_geom_list,
+      ],
+      outputs=[
+        d.sensordata,
+      ],
+    )
 
   sensor_contact_nmatch = wp.empty((d.nworld, m.nsensorcontact), dtype=int)
   sensor_contact_matchid = wp.empty((d.nworld, m.nsensorcontact, m.opt.contact_sensor_maxmatch), dtype=int)
