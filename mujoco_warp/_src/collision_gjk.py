@@ -2027,6 +2027,16 @@ def _polygon_clip(
     npolygon = nclipped
     nclipped = 0
 
+  # prune out vertices with positive distance from the face
+  m = int(npolygon)
+  npolygon = int(0)
+  for i in range(m):
+    diff = polygon_out[i] - face1[0]
+    if wp.dot(diff, n) <= 0.0:
+      if npolygon != i:
+        polygon_out[npolygon] = polygon_out[i]
+      npolygon += 1
+
   if npolygon < 1:
     return 0, witness1, witness2, dists
 
