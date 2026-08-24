@@ -50,7 +50,7 @@ from mujoco_warp._src.util_misc import poly_potential
 from mujoco_warp._src.warp_util import cache_kernel
 from mujoco_warp._src.warp_util import event_scope
 
-wp.set_module_options({"enable_backward": False})
+wp.set_module_options({"enable_backward": False, "default_grid_stride": False})
 
 
 @wp.func
@@ -1790,6 +1790,7 @@ def _sensor_acc(
   contact_friction_in: wp.array[vec5],
   contact_dim_in: wp.array[int],
   contact_efc_address_in: wp.array2d[int],
+  contact_adhesion_in: wp.array[float],
   efc_force_in: wp.array2d[float],
   njmax_in: int,
   nacon_in: wp.array[int],
@@ -1871,6 +1872,7 @@ def _sensor_acc(
           contact_friction_in,
           contact_dim_in,
           contact_efc_address_in,
+          contact_adhesion_in,
           efc_force_in,
           njmax_in,
           nacon_in,
@@ -1962,6 +1964,7 @@ def _sensor_acc(
             contact_friction_in,
             contact_dim_in,
             contact_efc_address_in,
+            contact_adhesion_in,
             efc_force_in,
             njmax_in,
             nacon_in,
@@ -2140,7 +2143,7 @@ def _transform_spatial(vec: wp.spatial_vector, dif: wp.vec3) -> wp.vec3:
   return wp.spatial_bottom(vec) - wp.cross(dif, wp.spatial_top(vec))
 
 
-@wp.kernel
+@wp.kernel(grid_stride=True)
 def _preprocess_tactile_contacts(
   # Model:
   body_weldid: wp.array[int],
@@ -2355,6 +2358,7 @@ def _contact_match(
   contact_efc_address_in: wp.array2d[int],
   contact_worldid_in: wp.array[int],
   contact_type_in: wp.array[int],
+  contact_adhesion_in: wp.array[float],
   efc_force_in: wp.array2d[float],
   njmax_in: int,
   nacon_in: wp.array[int],
@@ -2450,6 +2454,7 @@ def _contact_match(
       contact_friction_in,
       contact_dim_in,
       contact_efc_address_in,
+      contact_adhesion_in,
       efc_force_in,
       njmax_in,
       nacon_in,
@@ -2468,7 +2473,7 @@ def _contact_match(
 
 @cache_kernel
 def _contact_sort(maxmatch: int):
-  @wp.kernel(module="unique", enable_backward=False)
+  @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
   def contact_sort(
     # Model:
     sensor_intprm: wp.array2d[int],
@@ -2635,6 +2640,7 @@ def sensor_acc(m: Model, d: Data):
         d.contact.efc_address,
         d.contact.worldid,
         d.contact.type,
+        d.contact.adhesion,
         d.efc.force,
         d.njmax,
         d.nacon,
@@ -2692,6 +2698,7 @@ def sensor_acc(m: Model, d: Data):
       d.contact.friction,
       d.contact.dim,
       d.contact.efc_address,
+      d.contact.adhesion,
       d.efc.force,
       d.njmax,
       d.nacon,
@@ -2969,7 +2976,7 @@ def energy_pos(m: Model, d: Data):
 
 @cache_kernel
 def _energy_vel_kinetic(nv: int):
-  @wp.kernel(module="unique", enable_backward=False)
+  @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
   def energy_vel_kinetic(
     # Data in:
     qvel_in: wp.array2d[float],

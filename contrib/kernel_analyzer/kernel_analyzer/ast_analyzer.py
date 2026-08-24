@@ -120,6 +120,15 @@ class MissingBatchModulo(Issue):
     return f'"{self.param_name}" is a *-dimensioned field; first index must use "% {self.param_name}.shape[0]"'
 
 
+@dataclasses.dataclass
+class DirectWpArrayForbidden(Issue):
+  attr_name: str
+  class_name: str
+
+  def __str__(self):
+    return f'"{self.attr_name}" in class "{self.class_name}" must use array(...) annotation instead of direct wp.array.'
+
+
 # TODO(team): add argument order analyzer.
 # this one is tricky because just verifying order does not tell you if the arguments
 # match the parameter signature.
@@ -193,15 +202,15 @@ def analyze(source: str, filename: str, type_source: str) -> List[Issue]:
   field_info = {}
   star_fields = set()  # fields with "*" first dimension
 
-  for field, typ in type_classes["Model"]:
+  for field, typ in type_classes.get("Model", []):
     if field == "opt":
-      for sfield, styp in type_classes["Option"]:
+      for sfield, styp in type_classes.get("Option", []):
         full_name = field + "_" + sfield
         field_info[full_name] = ("Model", styp, len(field_info))
         if styp.startswith('array("*"'):
           star_fields.add(full_name)
     elif field == "stat":
-      for sfield, styp in type_classes["Statistic"]:
+      for sfield, styp in type_classes.get("Statistic", []):
         full_name = field + "_" + sfield
         field_info[full_name] = ("Model", styp, len(field_info))
         if styp.startswith('array("*"'):
@@ -211,7 +220,7 @@ def analyze(source: str, filename: str, type_source: str) -> List[Issue]:
       if typ.startswith('array("*"'):
         star_fields.add(field)
 
-  for field, typ in type_classes["Data"]:
+  for field, typ in type_classes.get("Data", []):
     if field == "efc":
       for sfield, styp in type_classes["Constraint"]:
         field_info[field + "_" + sfield] = ("Data", styp, len(field_info))
@@ -228,6 +237,13 @@ def analyze(source: str, filename: str, type_source: str) -> List[Issue]:
     return []
 
   issues: List[Issue] = []
+  for cls_name in ("Model", "Data", "Option", "Statistic", "Constraint"):
+    if cls_name in type_classes:
+      for attr_name, attr_type in type_classes[cls_name]:
+        if attr_type.startswith("wp.array"):
+          dummy_node = ast.AST()
+          dummy_node.lineno = 1
+          issues.append(DirectWpArrayForbidden(dummy_node, "", attr_name, cls_name))
   source_lines = source.splitlines()
 
   def _is_kernel(name: str) -> bool:

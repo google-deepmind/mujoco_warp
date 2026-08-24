@@ -42,7 +42,19 @@ _CAM_DISTANCE = flags.DEFINE_float("cam_distance", 1.5, "camera distance coeffic
 _CAM_LOOKAT_Z = flags.DEFINE_float("cam_lookat_z", None, "camera lookat z value (absolute); default: mjm.stat.center[2]")
 _CAM_AZIMUTH_SPEED = flags.DEFINE_float("cam_azimuth_speed", 0.05, "camera azimuth orbit speed (degrees per step)")
 _RENDER_MODE = flags.DEFINE_enum("render_mode", "python", ["warp", "python"], "rendering backend to use")
-_CHANNEL = flags.DEFINE_enum("channel", "rgb", ["rgb", "depth"], "rendering channel to record in the video")
+_CHANNEL = flags.DEFINE_enum("channel", "rgb", ["rgb", "depth", "segmentation"], "rendering channel to record in the video")
+_CAM_INDEX = flags.DEFINE_integer("cam_index", 0, "camera index to record in warp mode")
+
+
+def _colorize_segmentation(seg_map: np.ndarray) -> np.ndarray:
+  """Map 2D segmentation geom IDs to RGB image."""
+  geom_ids = seg_map[:, :, 0]
+  rng = np.random.RandomState(42)
+  palette = rng.randint(50, 255, size=(1000, 3), dtype=np.uint8)
+  mask_bg = geom_ids < 0
+  colored = palette[np.mod(np.abs(geom_ids), len(palette))]
+  colored[mask_bg] = [20, 20, 20]
+  return colored
 
 
 def _main(argv: Sequence[str]):
@@ -69,12 +81,14 @@ def _main(argv: Sequence[str]):
     m, d, rc, ctrls = cli.init_structs(mjw.render, mjm)
     if _CHANNEL.value == "depth" and not rc.render_depth.numpy()[0]:
       raise ValueError("Depth channel requested for recording, but depth rendering is disabled.")
+    if _CHANNEL.value == "segmentation" and not rc.render_seg.numpy()[0]:
+      raise ValueError("Segmentation channel requested for recording, but segmentation rendering is disabled.")
   else:
-    if _CHANNEL.value == "depth":
-      raise ValueError("Depth channel recording is only supported under the 'warp' rendering mode.")
+    if _CHANNEL.value in ("depth", "segmentation"):
+      raise ValueError(f"{_CHANNEL.value} channel recording is only supported under the 'warp' rendering mode.")
     m, d, rc, ctrls = cli.init_structs(mjw.step, mjm)
 
-    renderer = mujoco.Renderer(mjm, height=cli.RENDER_HEIGHT.value, width=cli.RENDER_WIDTH.value)
+    renderer = mujoco.Renderer(mjm, height=cli.RENDER_HEIGHT.value[0], width=cli.RENDER_WIDTH.value[0])
     cam = mujoco.MjvCamera()
     cam.type = mujoco.mjtCamera.mjCAMERA_FREE
     cam.lookat[:] = mjm.stat.center
@@ -96,22 +110,30 @@ def _main(argv: Sequence[str]):
       mjw.refit_bvh(m, d, rc)
       mjw.render(m, d, rc)
 
-      res = rc.cam_res.numpy()[0]  # (width, height)
+      cam_idx = _CAM_INDEX.value
+      res = rc.cam_res.numpy()[cam_idx]  # (width, height)
 
       # 1. Extract and Unpack RGB via mjw.get_rgb
       if _CHANNEL.value == "rgb":
         rgb_dev = wp.zeros((d.nworld, res[1], res[0]), dtype=wp.vec3)
-        mjw.get_rgb(rc, 0, rgb_dev)
+        mjw.get_rgb(rc, cam_idx, rgb_dev)
         img_rgb = (rgb_dev.numpy() * 255.0).astype(np.uint8)
         frames.append(Image.fromarray(img_rgb[0]))
 
       # 2. Extract and Normalize Depth via mjw.get_depth
       elif _CHANNEL.value == "depth":
         depth_dev = wp.zeros((d.nworld, res[1], res[0]), dtype=float)
-        mjw.get_depth(rc, 0, 5.0, depth_dev)
+        mjw.get_depth(rc, cam_idx, 5.0, depth_dev)
         # Scale to uint8 grayscale
         img_depth = ((1.0 - depth_dev.numpy()[0]) * 255.0).astype(np.uint8)
         frames.append(Image.fromarray(img_depth, "L"))
+
+      # 3. Extract Segmentation via mjw.get_segmentation
+      elif _CHANNEL.value == "segmentation":
+        seg_dev = wp.zeros((d.nworld, res[1], res[0]), dtype=wp.vec2i)
+        mjw.get_segmentation(rc, cam_idx, seg_dev)
+        img_seg = _colorize_segmentation(seg_dev.numpy()[0])
+        frames.append(Image.fromarray(img_seg))
     else:
       mjd.qpos[:] = d.qpos.numpy()[0]
       mjd.qvel[:] = d.qvel.numpy()[0]
@@ -148,8 +170,8 @@ def main():
   flags.FLAGS.set_default("nworld", 1)
   flags.FLAGS.set_default("noise_std", 0.0)
   flags.FLAGS.set_default("noise_rate", 0.0)
-  flags.FLAGS.set_default("render_width", 320)
-  flags.FLAGS.set_default("render_height", 240)
+  flags.FLAGS.set_default("render_width", [320])
+  flags.FLAGS.set_default("render_height", [240])
   app.run(_main)
 
 

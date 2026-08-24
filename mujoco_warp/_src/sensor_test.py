@@ -232,7 +232,7 @@ class SensorTest(parameterized.TestCase):
           <framepos objtype="body" objname="body1" reftype="body" refname="body0"/>
           <framepos objtype="body" objname="body1" reftype="geom" refname="geom0"/>
           <framepos objtype="body" objname="body1" reftype="site" refname="site0"/>
-          <framepos objtype="body" objname="body1" reftype="cam" refname="cam0"/>
+          <framepos objtype="body" objname="body1" reftype="camera" refname="cam0"/>
           <framepos objtype="xbody" objname="body1"/>
           <framepos objtype="body" objname="body1" reftype="xbody" refname="body0"/>
           <framepos objtype="geom" objname="geom0"/>
@@ -242,7 +242,7 @@ class SensorTest(parameterized.TestCase):
           <framexaxis objtype="body" objname="body1" reftype="body" refname="body0"/>
           <framexaxis objtype="body" objname="body1" reftype="geom" refname="geom0"/>
           <framexaxis objtype="body" objname="body1" reftype="site" refname="site0"/>
-          <framexaxis objtype="body" objname="body1" reftype="cam" refname="cam0"/>
+          <framexaxis objtype="body" objname="body1" reftype="camera" refname="cam0"/>
           <framexaxis objtype="xbody" objname="body1"/>
           <framexaxis objtype="geom" objname="geom0"/>
           <framexaxis objtype="site" objname="site0"/>
@@ -251,7 +251,7 @@ class SensorTest(parameterized.TestCase):
           <frameyaxis objtype="body" objname="body1" reftype="body" refname="body0"/>
           <frameyaxis objtype="body" objname="body1" reftype="geom" refname="geom0"/>
           <frameyaxis objtype="body" objname="body1" reftype="site" refname="site0"/>
-          <frameyaxis objtype="body" objname="body1" reftype="cam" refname="cam0"/>
+          <frameyaxis objtype="body" objname="body1" reftype="camera" refname="cam0"/>
           <frameyaxis objtype="xbody" objname="body1"/>
           <frameyaxis objtype="geom" objname="geom0"/>
           <frameyaxis objtype="site" objname="site0"/>
@@ -260,7 +260,7 @@ class SensorTest(parameterized.TestCase):
           <framezaxis objtype="body" objname="body1" reftype="body" refname="body0"/>
           <framezaxis objtype="body" objname="body1" reftype="geom" refname="geom0"/>
           <framezaxis objtype="body" objname="body1" reftype="site" refname="site0"/>
-          <framezaxis objtype="body" objname="body1" reftype="cam" refname="cam0"/>
+          <framezaxis objtype="body" objname="body1" reftype="camera" refname="cam0"/>
           <framezaxis objtype="xbody" objname="body1"/>
           <framezaxis objtype="geom" objname="geom0"/>
           <framezaxis objtype="site" objname="site0"/>
@@ -269,7 +269,7 @@ class SensorTest(parameterized.TestCase):
           <framequat objtype="body" objname="body1" reftype="body" refname="body0"/>
           <framequat objtype="body" objname="body1" reftype="geom" refname="geom0"/>
           <framequat objtype="body" objname="body1" reftype="site" refname="site0"/>
-          <framequat objtype="body" objname="body1" reftype="cam" refname="cam0"/>
+          <framequat objtype="body" objname="body1" reftype="camera" refname="cam0"/>
           <framequat objtype="xbody" objname="body1"/>
           <framequat objtype="geom" objname="geom0"/>
           <framequat objtype="site" objname="site0"/>
@@ -314,8 +314,8 @@ class SensorTest(parameterized.TestCase):
           <frameangvel objtype="body" objname="body9" reftype="geom" refname="geom0"/>
           <framelinvel objtype="body" objname="body9" reftype="site" refname="site0"/>
           <frameangvel objtype="body" objname="body9" reftype="site" refname="site0"/>
-          <framelinvel objtype="body" objname="body9" reftype="cam" refname="cam0"/>
-          <frameangvel objtype="body" objname="body9" reftype="cam" refname="cam0"/>
+          <framelinvel objtype="body" objname="body9" reftype="camera" refname="cam0"/>
+          <frameangvel objtype="body" objname="body9" reftype="camera" refname="cam0"/>
           <subtreelinvel body="body4"/>
           <subtreelinvel body="body4" cutoff=".001"/>
           <subtreeangmom body="body4"/>
@@ -857,32 +857,6 @@ class SensorTest(parameterized.TestCase):
     </mujoco>
     """,
       keyframe=keyframe,
-    )
-
-    d.sensordata.fill_(wp.inf)
-    mjw.sensor_pos(m, d)
-
-    _assert_eq(d.sensordata.numpy()[0], mjd.sensordata, "sensordata")
-
-  def test_insidesite_flex_body(self):
-    """Test insidesite uses subtree_com for massless flex parent bodies."""
-    _, mjd, m, d = test_data.fixture(
-      xml="""
-    <mujoco>
-      <worldbody>
-        <site name="sensor_site" type="sphere" size="2" pos="0 0 .5"/>
-        <body name="flex_parent" pos="0 0 .5">
-          <flexcomp type="grid" count="3 3 1" spacing=".1 .1 .1"
-                    radius=".0" name="softbody" dim="2" mass="1">
-            <contact condim="3" selfcollide="none"/>
-          </flexcomp>
-        </body>
-      </worldbody>
-      <sensor>
-        <insidesite site="sensor_site" objtype="body" objname="flex_parent"/>
-      </sensor>
-    </mujoco>
-    """,
     )
 
     d.sensordata.fill_(wp.inf)

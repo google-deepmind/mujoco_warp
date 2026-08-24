@@ -22,6 +22,8 @@ from mujoco_warp._src.types import ObjType
 from mujoco_warp._src.types import OverflowType
 from mujoco_warp._src.warp_util import event_scope
 
+wp.set_module_options({"default_grid_stride": False})
+
 
 @wp.kernel
 def _tree_edges(
@@ -277,11 +279,26 @@ def flood_fill(m: types.Model, d: types.Data, tree_tree: wp.array3d[int]):
   )
 
 
+@wp.kernel
+def _zero_island_counts(
+  # Data out:
+  nisland_out: wp.array[int],
+  nidof_out: wp.array[int],
+):
+  worldid = wp.tid()
+  nisland_out[worldid] = 0
+  nidof_out[worldid] = 0
+
+
 @event_scope
 def island(m: types.Model, d: types.Data):
   """Discover constraint islands."""
   if m.ntree == 0:
-    d.nisland.zero_()
+    wp.launch(
+      _zero_island_counts,
+      dim=d.nworld,
+      outputs=[d.nisland, d.nidof],
+    )
     return
 
   # Step 1: Find tree edges

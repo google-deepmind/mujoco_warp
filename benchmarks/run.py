@@ -138,11 +138,15 @@ def _run_benchmark(bm: dict, input_dir: Path) -> dict:
     "--measure_solver=true",
     "--measure_alloc=true",
   ]
-  for field in bm:
+  for field, value in bm.items():
     if field == "replay":
-      cmd.append(f"--replay={(benchmark_root / bm['replay'])}")
+      cmd.append(f"--replay={(benchmark_root / value)}")
     elif field not in ("name", "assets", "mjcf", "_dir"):
-      cmd.append(f"--{field}={bm[field]}")
+      if isinstance(value, (list, tuple)):
+        for item in value:
+          cmd.append(f"--{field}={item}")
+      else:
+        cmd.append(f"--{field}={value}")
 
   result = _uv_run(*cmd, cwd=input_dir)
 

@@ -133,6 +133,7 @@ Key capabilities:
 - Texture support
 - Heightfield rendering
 - Flex deformable rendering
+- Gaussian splat rendering
 - Heterogeneous multi-camera support (different resolutions/FOV/intrinsics for each camera)
 - Lighting and shadow support
 

@@ -1243,6 +1243,134 @@ class CollisionTest(parameterized.TestCase):
     self.assertEqual(mjd.nefc, 0, "Classic MuJoCo should have no active constraints")
     self.assertEqual(d.nefc.numpy()[0], 0, "MuJoCo Warp should have no active constraints")
 
+  def test_adhesion_contacts(self):
+    """Test adhesion contact resolution (priority, pair override, and in-gap dim reduction)."""
+    _, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <body>
+            <freejoint/>
+            <geom type="sphere" size="0.1" priority="1" adhesion="5.0"/>
+          </body>
+          <body pos="0 0 0.22">
+            <freejoint/>
+            <geom type="sphere" size="0.1" priority="2" gap="0.05" adhesion="3.0"/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """
+    )
+
+    mjw.collision(m, d)
+    mjw.make_constraint(m, d)
+
+    self.assertEqual(d.nacon.numpy()[0], 1)
+    np.testing.assert_allclose(d.contact.adhesion.numpy()[0], 3.0)
+    self.assertEqual(d.contact.dim.numpy()[0], 1)
+    self.assertEqual(d.nefc.numpy()[0], 1)
+
+  def test_adhesion_combination_and_pair_override(self):
+    """Test explicit pair adhesion override against geom sum."""
+    _, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <contact>
+          <pair geom1="g1" geom2="g2" adhesion="12.0"/>
+        </contact>
+        <worldbody>
+          <body>
+            <freejoint/>
+            <geom name="g1" type="sphere" size="0.1" adhesion="5.0"/>
+          </body>
+          <body pos="0 0 0.15">
+            <freejoint/>
+            <geom name="g2" type="sphere" size="0.1" adhesion="3.0"/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """
+    )
+
+    mjw.collision(m, d)
+
+    self.assertEqual(d.nacon.numpy()[0], 1)
+    np.testing.assert_allclose(d.contact.adhesion.numpy()[0], 12.0)
+
+  def test_adhesion_pulloff_and_tether(self):
+    """Test inside contact (dim=3), in-gap tether (dim=1), and outside gap (nacon=0)."""
+    _, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <geom type="sphere" size="0.1" adhesion="5.0"/>
+          <body pos="0 0 0.15">
+            <freejoint/>
+            <geom type="sphere" size="0.1" gap="0.05" adhesion="3.0"/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """
+    )
+    # 1. Inside touching contact: pos="0 0 0.15" -> dist=-0.05
+    mjw.collision(m, d)
+    self.assertEqual(d.nacon.numpy()[0], 1)
+    self.assertEqual(d.contact.dim.numpy()[0], 3)
+
+    # 2. In-gap band: pos="0 0 0.22" (dist=0.02, within margin+gap=0.05)
+    qpos = d.qpos.numpy()
+    qpos[0, :3] = np.array([0.0, 0.0, 0.22])
+    d.qpos = wp.from_numpy(qpos, dtype=wp.float32)
+    mjw.kinematics(m, d)
+    mjw.collision(m, d)
+    self.assertEqual(d.nacon.numpy()[0], 1)
+    self.assertEqual(d.contact.dim.numpy()[0], 1)
+
+    # 3. Outside gap band: pos="0 0 0.30" (dist=0.10, > gap=0.05) -> constraint released
+    qpos[0, :3] = np.array([0.0, 0.0, 0.30])
+    d.qpos = wp.from_numpy(qpos, dtype=wp.float32)
+    mjw.kinematics(m, d)
+    mjw.collision(m, d)
+    self.assertEqual(d.nacon.numpy()[0], 0)
+
+  @parameterized.parameters(
+    ("box", "box", 0.18, -0.02),
+    ("box", "box", 0.205, 0.005),
+    ("cylinder", "cylinder", 0.18, -0.02),
+    ("cylinder", "cylinder", 0.205, 0.005),
+    ("capsule", "cylinder", 0.25, -0.05),
+  )
+  def test_convex_contact_frame_parity(self, type1, type2, z2, expected_dist):
+    """Test CCD contact frame normal and dist parity against MuJoCo C."""
+    _, mjd, m, d = test_data.fixture(
+      xml=f"""
+      <mujoco>
+        <worldbody>
+          <body pos="0 0 0">
+            <geom type="{type1}" size="0.1 0.1 0.1" gap="0.01"/>
+          </body>
+          <body pos="0 0 {z2}">
+            <freejoint/>
+            <geom type="{type2}" size="0.1 0.1 0.1" gap="0.01"/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """
+    )
+    d.nacon.fill_(-1)
+    d.contact.frame.fill_(wp.inf)
+    d.contact.dist.fill_(wp.inf)
+    mjw.forward(m, d)
+
+    self.assertGreater(mjd.ncon, 0)
+    self.assertGreater(int(d.nacon.numpy()[0]), 0)
+
+    c_norm = mjd.contact.frame[0].reshape((3, 3))[0]
+    w_norm = d.contact.frame.numpy()[0][0]
+    dot = float(np.dot(c_norm, w_norm))
+    self.assertAlmostEqual(dot, 1.0, places=4, msg=f"Frame normal misaligned for {type1}-{type2} at z={z2}")
+    self.assertAlmostEqual(float(d.contact.dist.numpy()[0]), expected_dist, places=4)
+
 
 if __name__ == "__main__":
   absltest.main()

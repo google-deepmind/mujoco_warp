@@ -115,6 +115,51 @@ class InverseTest(parameterized.TestCase):
     _assert_eq(d.qfrc_inverse.numpy()[0], qfrc_inverse, "qfrc_inverse")
     _assert_eq(d.qacc.numpy()[0], qacc, "qacc")
 
+  def test_qfrc_constraint_inverse_initialization(self):
+    """Verify that qfrc_constraint is zeroed in inverse dynamics when nefc==0."""
+    xml = """
+    <mujoco>
+      <option solver="CG" jacobian="sparse"/>
+      <worldbody>
+        <geom type="plane" size="10 10 .001"/>
+        <body name="sphere" pos="0 0 0.04">
+          <freejoint/>
+          <geom type="sphere" size="0.05" mass="1.0"/>
+        </body>
+      </worldbody>
+    </mujoco>
+    """
+    _, _, m, d = test_data.fixture(xml=xml)
+
+    # 1. Position in contact, set some qacc (resisting gravity requires contact force)
+    d.qpos.zero_()
+    qpos_np = d.qpos.numpy()
+    qpos_np[0, 2] = 0.04  # contact
+    wp.copy(d.qpos, wp.array(qpos_np))
+    d.qvel.zero_()
+    d.qacc.zero_()
+
+    mjw.inverse(m, d)
+
+    self.assertGreater(d.nefc.numpy()[0], 0, "Should have active constraints")
+    self.assertGreater(np.max(np.abs(d.qfrc_constraint.numpy()[0])), 1.0, "Should have non-zero constraint forces")
+
+    # 2. Teleport sphere up (no contacts)
+    qpos_np[0, 2] = 1.0
+    wp.copy(d.qpos, wp.array(qpos_np))
+    d.qvel.zero_()
+    d.qacc.zero_()
+
+    mjw.inverse(m, d)
+
+    self.assertEqual(d.nefc.numpy()[0], 0, "Should have no active constraints after teleport")
+    qfrc_constraint_post = d.qfrc_constraint.numpy()[0]
+    self.assertLess(
+      np.max(np.abs(qfrc_constraint_post)),
+      1e-5,
+      f"qfrc_constraint should be zeroed, but got max abs: {np.max(np.abs(qfrc_constraint_post))}",
+    )
+
   def test_discrete_acc_eulerdamp(self):
     _, _, m, d = test_data.fixture(
       xml=_XML,
