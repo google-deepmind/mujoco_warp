@@ -155,7 +155,8 @@ def _advance_state(
 # ----------------------------------------------------------------------------
 # 2. IFT helper.
 # ----------------------------------------------------------------------------
-# write adj_qacc into ctx.grad[:, :nv] (zero the padding) as the RHS of H lam = adj_qacc
+# write -adj_qacc into ctx.grad[:, :nv] (zero the padding): the solver's fused solve returns
+# ctx.search = -H^-1 ctx.grad, so seeding the negated RHS makes ctx.search = H^-1 adj_qacc = lam
 @wp.kernel(enable_backward=False)
 def _load_rhs(
   # Model:
@@ -167,7 +168,7 @@ def _load_rhs(
 ):
   worldid, i = wp.tid()
   if i < nv:
-    grad_out[worldid, i] = adj_qacc[worldid, i]
+    grad_out[worldid, i] = -adj_qacc[worldid, i]
   else:
     grad_out[worldid, i] = 0.0
 
@@ -662,7 +663,9 @@ def solve_backward(m: Model, d_out: Data, adj_qacc: wp.array):
   """Computes the IFT solve (stage 2): H lam = adj_qacc, reusing the solver's assembly + factor.
 
   H is built at the converged qacc (active set matches; the Newton loop is never backpropagated).
-  Returns the SolverContext; lam = ctx.Mgrad and ctx owns it, so keep ctx alive while lam is used.
+  Returns the SolverContext; lam = ctx.search (cols 0:nv) and ctx owns it, so keep ctx alive while
+  lam is used. (ctx.Mgrad is CG-only/zero-width since the fused Newton-decrement solve; the solve
+  writes -H^-1 grad into ctx.search, so _load_rhs seeds grad = -adj_qacc to cancel the sign.)
   """
   nworld = d_out.qpos.shape[0]
   nv = m.nv
@@ -673,7 +676,7 @@ def solve_backward(m: Model, d_out: Data, adj_qacc: wp.array):
   solver.init_context(m, d_out, ctx, grad=True)  # assembles + factors ctx.h; active set = forward's (reused ctx re-inited)
   wp.launch(_load_rhs, dim=(nworld, nv_pad), inputs=[nv, adj_qacc], outputs=[ctx.grad])
   ctx.done.zero_()
-  solver._cholesky_factorize_solve(m, d_out, ctx)  # ctx.Mgrad[:, :nv] = lam
+  solver._cholesky_factorize_solve(m, d_out, ctx)  # ctx.search = -H^-1 grad = H^-1 adj_qacc = lam
   return ctx
 
 
@@ -1116,7 +1119,7 @@ def forward_backward_ift(m: Model, d: Data, d_out: Data, adj_qpos: wp.array, adj
   nq = d.qpos.shape[1]
   nv = m.nv
   ctx = solve_backward(m, d_out, adj_qacc)  # H lam = adj_qacc; ctx owns lam, keep alive
-  lam = ctx.Mgrad
+  lam = ctx.search  # width nv (see solve_backward)
   # residual-VJP cross-term seeds (the qpos / qvel columns), shared across the contact /
   # constraint / smooth terms and summed into d.{qpos,qvel}.grad at write-back. (The contact
   # term's five contact-geometry seeds are local to its helper.)

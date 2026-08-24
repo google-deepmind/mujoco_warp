@@ -68,7 +68,7 @@ def _clone_nograd(d: Data) -> Data:
 
 
 # Column grad-seed / arithmetic primitives (per-(world, col), out-of-place unless noted).
-# dst_out[w,i] = src[w,i] over dst_out's columns (seed r.grad = lam from ctx.Mgrad[:, :nv])
+# dst_out[w,i] = src[w,i] over dst_out's columns (seed r.grad = lam from ctx.search[:, :nv])
 @wp.kernel
 def _copy_cols(src: wp.array2d[float], dst_out: wp.array2d[float]):
   w, i = wp.tid()
