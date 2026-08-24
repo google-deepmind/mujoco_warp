@@ -33,7 +33,6 @@ from mujoco_warp._src.types import JointType
 from mujoco_warp._src.types import Model
 from mujoco_warp._src.types import TrnType
 from mujoco_warp._src.types import vec10
-from mujoco_warp._src.types import vec10f
 from mujoco_warp._src.warp_util import event_scope
 
 # adjoint module: backward stays on so AD leaves differentiate through cross-module @wp.funcs
@@ -146,7 +145,7 @@ def smooth_force_backward(
 
   # K3: adj_f -> adj_{cinert,cacc,cvel} via source-AD of the local inertial-force leaf
   cfrc_local = wp.zeros((nworld, nbody), dtype=wp.spatial_vector)
-  adj_cinert = wp.zeros((nworld, nbody), dtype=vec10f)
+  adj_cinert = wp.zeros((nworld, nbody), dtype=vec10)
   adj_cacc = wp.zeros((nworld, nbody), dtype=wp.spatial_vector)
   adj_cvel = wp.zeros((nworld, nbody), dtype=wp.spatial_vector)
   cfrc_inputs = [d.cinert, d.cvel, d.cacc]
@@ -851,7 +850,7 @@ def rne_backward(m: Model, d: Data, lam: wp.array2d, flg_acc: bool = True):
 
   # K3: adj_f -> {adj_cinert, adj_cacc, adj_cvel} via autodiff of the reconstructed local leaf
   cfrc_local = wp.zeros((nworld, nbody), dtype=SV)
-  adj_cinert = wp.zeros((nworld, nbody), dtype=vec10f)
+  adj_cinert = wp.zeros((nworld, nbody), dtype=vec10)
   adj_cacc = wp.zeros((nworld, nbody), dtype=SV)
   adj_cvel = wp.zeros((nworld, nbody), dtype=SV)
   cfrc_inputs = [d.cinert, d.cvel, d.cacc]
@@ -1166,7 +1165,7 @@ def _cinert_recompute(
   inert = body_inertia[w % body_inertia.shape[0], b]
   mass = body_mass[w % body_mass.shape[0], b]
   dif = xipos_in[w, b] - subtree_com_in[w, body_rootid[b]]
-  # build the vec10 via a single vec10f(...) ctor: warp 1.14's reverse double-counts in-place
+  # build the vec10 via a single vec10(...) ctor: warp 1.14's reverse double-counts in-place
   # component writes (adjoint exactly 2x on the rotation block); forward smooth._cinert keeps
   # the component-write form (enable_backward=False, value-only).
   i0 = inert[0]
@@ -1181,7 +1180,7 @@ def _cinert_recompute(
   r3 = i0 * mat[0, 0] * mat[1, 0] + i1 * mat[0, 1] * mat[1, 1] + i2 * mat[0, 2] * mat[1, 2] - mass * d0 * d1
   r4 = i0 * mat[0, 0] * mat[2, 0] + i1 * mat[0, 1] * mat[2, 1] + i2 * mat[0, 2] * mat[2, 2] - mass * d0 * d2
   r5 = i0 * mat[1, 0] * mat[2, 0] + i1 * mat[1, 1] * mat[2, 1] + i2 * mat[1, 2] * mat[2, 2] - mass * d1 * d2
-  cinert_out[w, b] = vec10f(r0, r1, r2, r3, r4, r5, mass * d0, mass * d1, mass * d2, mass)
+  cinert_out[w, b] = vec10(r0, r1, r2, r3, r4, r5, mass * d0, mass * d1, mass * d2, mass)
 
 
 # chain adj_{xipos_in, ximat_in} to a per-dof tangent gradient via support.jac_dof
@@ -1241,7 +1240,7 @@ def cinert_qpos_vjp(m: Model, d: Data, adj_cinert: wp.array2d, res_dof: wp.array
   nworld = d.qpos.shape[0]
   nv = m.nv
   nbody = m.nbody
-  cinert_rec = wp.zeros((nworld, nbody), dtype=vec10f)
+  cinert_rec = wp.zeros((nworld, nbody), dtype=vec10)
   adj_xipos = wp.zeros((nworld, nbody), dtype=wp.vec3)
   adj_ximat = wp.zeros((nworld, nbody), dtype=wp.mat33)
   adj_subtree = wp.zeros((nworld, nbody), dtype=wp.vec3)
@@ -1321,7 +1320,7 @@ def inertia_param_vjp(m: Model, d: Data, lam: wp.array2d):
   adj_cinert = adj["cinert"]
   # source-AD the cinert leaf: params (mass/inertia) as direct inputs; xipos/ximat kept for the
   # pose chain.
-  cinert_rec = wp.zeros((nworld, nbody), dtype=vec10f, requires_grad=True)
+  cinert_rec = wp.zeros((nworld, nbody), dtype=vec10, requires_grad=True)
   cin = [m.body_rootid, m.body_mass, m.body_inertia, d.xipos, d.ximat, d.subtree_com]
   wp.launch(_cinert_recompute, dim=(nworld, nbody), inputs=cin, outputs=[cinert_rec])
   adj_mass = wp.zeros_like(m.body_mass) if want_mass else None
@@ -1439,8 +1438,8 @@ def _actuator_qpos_vjp(
   actuator_biastype: wp.array[int],
   actuator_ctrllimited: wp.array[bool],
   actuator_forcelimited: wp.array[bool],
-  actuator_gainprm: wp.array2d[vec10f],
-  actuator_biasprm: wp.array2d[vec10f],
+  actuator_gainprm: wp.array2d[vec10],
+  actuator_biasprm: wp.array2d[vec10],
   actuator_ctrlrange: wp.array2d[wp.vec2],
   actuator_forcerange: wp.array2d[wp.vec2],
   # Data in:

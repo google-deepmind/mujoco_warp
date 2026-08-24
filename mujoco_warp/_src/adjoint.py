@@ -62,7 +62,7 @@ from mujoco_warp._src.types import JointType
 from mujoco_warp._src.types import Model
 from mujoco_warp._src.types import SolverContext
 from mujoco_warp._src.types import vec5
-from mujoco_warp._src.types import vec10f
+from mujoco_warp._src.types import vec10
 from mujoco_warp._src.warp_util import event_scope
 
 # backward stays on for this adjoint module (do not set enable_backward=False): its AD leaves are
@@ -201,7 +201,7 @@ def _smooth_qvel_vjp(
 @wp.kernel(enable_backward=False)
 def _smooth_ctrl_vjp(
   # Model:
-  actuator_gainprm: wp.array2d[vec10f],
+  actuator_gainprm: wp.array2d[vec10],
   # Data in:
   moment_rownnz_in: wp.array2d[int],
   moment_rowadr_in: wp.array2d[int],
