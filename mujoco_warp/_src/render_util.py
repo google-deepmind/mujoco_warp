@@ -95,15 +95,8 @@ def compute_ray(
 
     # Compute ray offset from center
     aspect = float(img_w) / float(img_h)
-    if sensorsize[0] != 0 and sensorsize[1] != 0:
-      # sensorsize is set - use it to derive camera FOV
-      sensor_h = sensorsize[1]
-      sensor_w = sensor_h * aspect
-    else:
-      # sensorsize is not set - use fovy to derive camera FOV
-      sensor_h = fovy
-      sensor_w = sensor_h * aspect
-
+    sensor_h = fovy
+    sensor_w = sensor_h * aspect
     left = -0.5 * sensor_w
     top = 0.5 * sensor_h
     bottom = -0.5 * sensor_h
