@@ -802,7 +802,9 @@ def render(m: Model, d: Data, rc: RenderContext):
       )
 
     cam_mat_world = cam_xmat_in[worldid, mujoco_cam_id]
-    ray_origin_world = cam_xpos_in[worldid, mujoco_cam_id] + cam_mat_world @ ray_offset_local_cam
+    ray_origin_world = cam_xpos_in[worldid, mujoco_cam_id]
+    if wp.static(rc_static["has_orthographic_camera"]):
+      ray_origin_world += cam_mat_world @ ray_offset_local_cam
     ray_dir_world = cam_mat_world @ ray_dir_local_cam
 
     geom_id, dist, normal, u, v, f, mesh_id = cast_ray(

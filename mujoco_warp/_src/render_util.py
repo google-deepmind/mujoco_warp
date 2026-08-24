@@ -655,6 +655,10 @@ def create_render_context(
     light_attenuation_is_default = bool(np.allclose(atten, np.array([1.0, 0.0, 0.0], dtype=np.float32)))
     has_spot_lights = bool((np.asarray(mjm.light_type) == int(mujoco.mjtLightType.mjLIGHT_SPOT)).any())
 
+  has_orthographic_camera = any(
+    int(mjm.cam_projection[cam_id]) == int(ProjectionType.ORTHOGRAPHIC) for cam_id in active_cam_indices
+  )
+
   rc = RenderContext(
     nrender=ncam,
     cam_res=cam_res_arr,
@@ -722,6 +726,7 @@ def create_render_context(
     enable_per_light_ambient=enable_per_light_ambient,
     light_attenuation_is_default=light_attenuation_is_default,
     has_spot_lights=has_spot_lights,
+    has_orthographic_camera=has_orthographic_camera,
     splat_position=splat_position,
     splat_rotation=splat_rotation,
     splat_scale=splat_scale,
