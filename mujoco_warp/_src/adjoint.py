@@ -488,6 +488,25 @@ def _assert_step_supported(m: Model):
     raise NotImplementedError("adjoint.step_backward does not support flex contacts")
   if m.opt.cone != _ELLIPTIC and m.opt.cone != _PYRAMIDAL:
     raise NotImplementedError("adjoint.step_backward supports only elliptic/pyramidal cones")
+  # adhesion offsets contact aref by (1/D)*adhesion, widens the active set to the gap band, and
+  # adds a qpos-dependent qfrc_adhesion to the passive force; surfacevel folds a surface-velocity
+  # offset into efc.Jqvel. Neither has a landed VJP, and the residual mirrors rebuild aref/Jqvel
+  # without them, so raise structurally (both are host-side model flags, sync-free).
+  if m.flg_adhesion:
+    raise NotImplementedError(
+      "adjoint.step_backward does not support adhesion (m.flg_adhesion): the contact aref offset, "
+      "gap-band active set, and qfrc_adhesion have no VJP"
+    )
+  if m.flg_surfacevel:
+    raise NotImplementedError(
+      "adjoint.step_backward does not support surfacevel (m.flg_surfacevel): the efc.Jqvel "
+      "surface-velocity offset has no VJP"
+    )
+  # sleep re-runs fwd_velocity at the post-step state inside _advance and skips sleeping trees in
+  # the smooth force / solve, breaking the "d_out owns the forward linearization" invariant the
+  # IFT and replay helpers rely on (same enable condition as forward._advance).
+  if bool(m.opt.enableflags & types.EnableBit.SLEEP) and not bool(m.opt.disableflags & types.DisableBit.ISLAND):
+    raise NotImplementedError("adjoint.step_backward does not support sleep (EnableBit.SLEEP)")
   # non-contact constraint rows: supported classes (dof-friction, slide/hinge limit, joint
   # equality, ball limit) run at any nv (sparse/CSR for nv>_MAX_NV, dense otherwise). unsupported
   # classes (connect/weld equality, tendon rows, flex) have no landed VJP -> raise structurally,

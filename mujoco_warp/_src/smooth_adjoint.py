@@ -454,6 +454,8 @@ def assert_smooth_supported(m: Model):
   opt = m.opt
   if np.any(opt.density.numpy() != 0.0) or np.any(opt.viscosity.numpy() != 0.0) or np.any(opt.wind.numpy() != 0.0):
     bad.append("fluid forces (opt.density/viscosity/wind)")
+  if m.flg_adhesion:
+    bad.append("passive adhesion (m.flg_adhesion: qpos-dependent qfrc_adhesion has no VJP leaf)")
   if np.any(m.body_gravcomp.numpy() != 0.0) and np.any(m.jnt_actgravcomp.numpy() != 0):
     bad.append("gravcomp routed to an actuator (jnt_actgravcomp; force-limit clamp); passive-bucket gravcomp is supported")
   if int(m.nu) > 0:
