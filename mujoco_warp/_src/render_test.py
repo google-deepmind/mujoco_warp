@@ -409,8 +409,7 @@ class RenderTest(parameterized.TestCase):
   @parameterized.named_parameters(("precomputed_rays", True), ("dynamic_rays", False))
   def test_segmentation_orthographic_matches_mujoco(self, use_precomputed_rays: bool):
     """Orthographic segmentation should match native MuJoCo, including vertical orientation."""
-    mjm, mjd, _m, d = test_data.fixture(xml=self._ORTHOGRAPHIC_SCENE)
-    m = mjw.put_model(mjm)
+    mjm, mjd, m, d = test_data.fixture(xml=self._ORTHOGRAPHIC_SCENE)
     cam_w, cam_h = 64, 64
 
     rc = mjw.create_render_context(

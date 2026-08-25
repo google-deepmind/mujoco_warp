@@ -89,26 +89,28 @@ def compute_ray(
     Direction of the ray in camera space, and the offset of the ray from the
     camera's center. The latter is only used for orthographic cameras.
   """
+  inv_img_h = 1.0 / float(img_h)
+
   if projection == ProjectionType.ORTHOGRAPHIC:
     # Compute ray direction
     direction = wp.vec3(0.0, 0.0, -1.0)  # always pointing forward
 
     # Compute ray offset from center
-    aspect = float(img_w) / float(img_h)
+    aspect = float(img_w) * inv_img_h
     sensor_h = fovy
     sensor_w = sensor_h * aspect
     left = -0.5 * sensor_w
     top = 0.5 * sensor_h
-    bottom = -0.5 * sensor_h
+    bottom = -top
     u = (float(px) + 0.5) / float(img_w)
-    v = (float(py) + 0.5) / float(img_h)
+    v = (float(py) + 0.5) * inv_img_h
     x = left + sensor_w * u
     y = top + (bottom - top) * v
     offset = wp.vec3(x, y, 0.0)
 
   else:  # projection == ProjectionType.PERSPECTIVE:
     # Compute ray direction
-    aspect = float(img_w) / float(img_h)
+    aspect = float(img_w) * inv_img_h
     sensor_h = sensorsize[1]
 
     # Check if we have intrinsics (sensorsize[1] != 0)
@@ -119,7 +121,7 @@ def compute_ray(
       cy = intrinsic[3]
       sensor_w = sensorsize[0]
 
-      target_aspect = float(img_w) / float(img_h)
+      target_aspect = aspect
       sensor_aspect = sensor_w / sensor_h
       if target_aspect > sensor_aspect:
         sensor_h = sensor_w / target_aspect
@@ -128,10 +130,12 @@ def compute_ray(
 
       inv_fx_znear = znear / fx
       inv_fy_znear = znear / fy
-      left = -inv_fx_znear * (sensor_w * 0.5 - cx)
-      right = inv_fx_znear * (sensor_w * 0.5 + cx)
-      top = inv_fy_znear * (sensor_h * 0.5 - cy)
-      bottom = -inv_fy_znear * (sensor_h * 0.5 + cy)
+      half_sensor_w = 0.5 * sensor_w
+      half_sensor_h = 0.5 * sensor_h
+      left = -inv_fx_znear * (half_sensor_w - cx)
+      right = inv_fx_znear * (half_sensor_w + cx)
+      top = inv_fy_znear * (half_sensor_h - cy)
+      bottom = -inv_fy_znear * (half_sensor_h + cy)
     else:
       fovy_rad = fovy * wp.static(wp.pi / 180.0)
       half_height = znear * wp.tan(0.5 * fovy_rad)
@@ -142,7 +146,7 @@ def compute_ray(
       bottom = -half_height
 
     u = (float(px) + 0.5) / float(img_w)
-    v = (float(py) + 0.5) / float(img_h)
+    v = (float(py) + 0.5) * inv_img_h
     x = left + (right - left) * u
     y = top + (bottom - top) * v
 
