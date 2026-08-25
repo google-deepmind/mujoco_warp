@@ -2031,10 +2031,8 @@ def _polygon_clip(
   m = int(npolygon)
   npolygon = int(0)
   for i in range(m):
-    diff = polygon_out[i] - face1[0]
-    if wp.dot(diff, n) <= 0.0:
-      if npolygon != i:
-        polygon_out[npolygon] = polygon_out[i]
+    if wp.dot(polygon_out[i] - face1[0], n) <= 0.0:
+      polygon_out[npolygon] = polygon_out[i]
       npolygon += 1
 
   if npolygon < 1:
@@ -2312,22 +2310,18 @@ def multicontact(
 
   # face1 is an edge; clip face1 against face2
   if is_edge_contact_geom1:
-    approx_dir = -wp.norm_l2(dir) * n2[j]
     nclipped, clipped1, clipped2, d = _polygon_clip(
-      plane_normal, plane_dist, face2, nface2, face1, nface1, n2[j], approx_dir, polygon, clipped
+      plane_normal, plane_dist, face2, nface2, face1, nface1, n2[j], n2[j], polygon, clipped
     )
     # the faces were flipped in calling _polygon_clip so we need to flip them back
     return nclipped, clipped2, clipped1, d
 
   # face2 is an edge; clip face2 against face1
   if is_edge_contact_geom2:
-    approx_dir = -wp.norm_l2(dir) * n1[j]
-    return _polygon_clip(plane_normal, plane_dist, face1, nface1, face2, nface2, n1[j], approx_dir, polygon, clipped)
+    return _polygon_clip(plane_normal, plane_dist, face1, nface1, face2, nface2, n1[j], -n1[j], polygon, clipped)
 
   # face-face collision
-  approx_dir = wp.norm_l2(dir) * n2[j]
-
-  return _polygon_clip(plane_normal, plane_dist, face1, nface1, face2, nface2, n1[i], approx_dir, polygon, clipped)
+  return _polygon_clip(plane_normal, plane_dist, face1, nface1, face2, nface2, n1[i], n2[j], polygon, clipped)
 
 
 @wp.func
