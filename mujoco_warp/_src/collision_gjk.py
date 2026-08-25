@@ -2311,7 +2311,7 @@ def multicontact(
   # face1 is an edge; clip face1 against face2
   if is_edge_contact_geom1:
     nclipped, clipped1, clipped2, d = _polygon_clip(
-      plane_normal, plane_dist, face2, nface2, face1, nface1, n2[j], n2[j], polygon, clipped
+      plane_normal, plane_dist, face2, nface2, face1, nface1, n2[j], -n2[j], polygon, clipped
     )
     # the faces were flipped in calling _polygon_clip so we need to flip them back
     return nclipped, clipped2, clipped1, d
