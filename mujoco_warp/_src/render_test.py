@@ -377,46 +377,49 @@ class RenderTest(parameterized.TestCase):
 
     np.testing.assert_array_equal(warp_seg_np, mj_seg)
 
+  # The two boxes sit in diagonally opposite quadrants (bottom-left and top-right, in
+  # image space) so that a flip along either the horizontal or the vertical ray axis
+  # is caught by a single scene, unlike a left/right or top/bottom split alone, each
+  # of which is symmetric under the other axis' flip.
+  _ORTHOGRAPHIC_SCENE = """
+    <mujoco>
+      <worldbody>
+        <camera name="cam" pos="0 -10 0" xyaxes="1 0 0 0 0 1" projection="orthographic" fovy="10"/>
+        <geom name="bottom_left_box" type="box" size="1 1 1" pos="-2 0 -2" rgba="1 0 0 1"/>
+        <geom name="top_right_box" type="box" size="1 1 1" pos="2 0 2" rgba="0 0 1 1"/>
+      </worldbody>
+    </mujoco>
+  """
+
   def test_render_segmentation_orthographic(self):
     """Orthographic camera's rays must shift across pixels, depending on its offset."""
-    xml = """
-      <mujoco>
-        <worldbody>
-          <camera name="cam" pos="0 -10 0" xyaxes="1 0 0 0 0 1" projection="orthographic" fovy="10"/>
-          <geom name="left_box" type="box" size="1 2 1" pos="-2 0 0" rgba="1 0 0 1"/>
-          <geom name="right_box" type="box" size="1 2 1" pos="2 0 0" rgba="0 0 1 1"/>
-        </worldbody>
-      </mujoco>
-    """
-    mjm, mjd, m, d = test_data.fixture(xml=xml)
+    mjm, mjd, m, d = test_data.fixture(xml=self._ORTHOGRAPHIC_SCENE)
 
     rc = mjw.create_render_context(mjm, nworld=1, cam_res=(64, 64), render_rgb=False, render_depth=False, render_seg=True)
     mjw.render(m, d, rc)
 
     seg = rc.seg_data.numpy().reshape(1, 64, 64, 2)[0]
-    left_ids = set(np.unique(seg[:, :32, 0])) - {-1}
-    right_ids = set(np.unique(seg[:, 32:, 0])) - {-1}
-    self.assertTrue(left_ids, "left half of the frame should hit the left sphere")
-    self.assertTrue(right_ids, "right half of the frame should hit the right sphere")
-    self.assertFalse(left_ids & right_ids, "the two spheres are distinct geoms")
+    bottom_left_ids = set(np.unique(seg[32:, :32, 0])) - {-1}
+    top_right_ids = set(np.unique(seg[:32, 32:, 0])) - {-1}
+    self.assertTrue(bottom_left_ids, "bottom-left quadrant should hit the bottom-left box")
+    self.assertTrue(top_right_ids, "top-right quadrant should hit the top-right box")
+    self.assertFalse(bottom_left_ids & top_right_ids, "the two boxes are distinct geoms")
 
   @absltest.skipIf(not _HAS_RENDERER, "MuJoCo rendering requires OpenGL")
-  def test_segmentation_orthographic_matches_mujoco(self):
-    """Orthographic segmentation should match native MuJoCo."""
-    xml = """
-      <mujoco>
-        <worldbody>
-          <camera name="cam" pos="0 -10 0" xyaxes="1 0 0 0 0 1" projection="orthographic" fovy="10"/>
-          <geom name="left_box" type="box" size="1 2 1" pos="-2 0 0" rgba="1 0 0 1"/>
-          <geom name="right_box" type="box" size="1 2 1" pos="2 0 0" rgba="0 0 1 1"/>
-        </worldbody>
-      </mujoco>
-    """
-    mjm, mjd, _m, d = test_data.fixture(xml=xml)
+  @parameterized.named_parameters(("precomputed_rays", True), ("dynamic_rays", False))
+  def test_segmentation_orthographic_matches_mujoco(self, use_precomputed_rays: bool):
+    """Orthographic segmentation should match native MuJoCo, including vertical orientation."""
+    mjm, mjd, _m, d = test_data.fixture(xml=self._ORTHOGRAPHIC_SCENE)
     m = mjw.put_model(mjm)
     cam_w, cam_h = 64, 64
 
-    rc = mjw.create_render_context(mjm, nworld=1, cam_res=(cam_w, cam_h), render_seg=[True])
+    rc = mjw.create_render_context(
+      mjm,
+      nworld=1,
+      cam_res=(cam_w, cam_h),
+      render_seg=[True],
+      use_precomputed_rays=use_precomputed_rays,
+    )
     mjw.render(m, d, rc)
     warp_seg_np = rc.seg_data.numpy()[0].reshape(-1, 2)
 
@@ -426,6 +429,47 @@ class RenderTest(parameterized.TestCase):
       mj_seg = renderer.render().reshape(-1, 2)
 
     np.testing.assert_array_equal(warp_seg_np, mj_seg)
+
+  def test_depth_orthographic_is_correct(self):
+    """Orthographic depth should equal the true planar distance to each box's near face."""
+    mjm, mjd, m, d = test_data.fixture(xml=self._ORTHOGRAPHIC_SCENE)
+    cam_w, cam_h = 64, 64
+
+    rc = mjw.create_render_context(mjm, nworld=1, cam_res=(cam_w, cam_h), render_depth=[True], render_seg=[True])
+    mjw.render(m, d, rc)
+    depth = rc.depth_data.numpy()[0]
+    seg = rc.seg_data.numpy()[0]
+
+    # Camera is at y=-10, both boxes are centered at y=0 with half-extent 1 along y,
+    # so the true planar distance from the camera to either box's near face is 9.
+    hit = seg[:, 1] == int(mjw.ObjType.GEOM)
+    self.assertTrue(np.any(hit))
+    _assert_eq(depth[hit], 9.0, "orthographic depth")
+    self.assertTrue(np.all(depth[~hit] == 0.0))  # background
+
+  def test_rgb_orthographic_is_correct(self):
+    """Orthographic RGB should show each box's color in the correct quadrant of the frame."""
+    mjm, mjd, m, d = test_data.fixture(xml=self._ORTHOGRAPHIC_SCENE)
+    cam_w, cam_h = 64, 64
+
+    rc = mjw.create_render_context(mjm, nworld=1, cam_res=(cam_w, cam_h), render_rgb=[True], render_seg=[True])
+    mjw.render(m, d, rc)
+    rgb = _unpack_rgb(rc.rgb_data.numpy()[0]).reshape(cam_h, cam_w, 3).astype(np.int16)
+    seg = rc.seg_data.numpy()[0].reshape(cam_h, cam_w, 2)
+
+    bottom_left_id = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_GEOM, "bottom_left_box")
+    top_right_id = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_GEOM, "top_right_box")
+    bottom_left_hit = seg[32:, :32, 0] == bottom_left_id
+    top_right_hit = seg[:32, 32:, 0] == top_right_id
+    self.assertTrue(np.any(bottom_left_hit))
+    self.assertTrue(np.any(top_right_hit))
+
+    # bottom_left_box (rgba="1 0 0 1") should read red, and top_right_box
+    # (rgba="0 0 1 1") should read blue.
+    bottom_left_colors = rgb[32:, :32, :][bottom_left_hit]
+    top_right_colors = rgb[:32, 32:, :][top_right_hit]
+    self.assertTrue(np.all(bottom_left_colors[:, 0] > bottom_left_colors[:, 2]), "bottom-left box should read red, not blue")
+    self.assertTrue(np.all(top_right_colors[:, 2] > top_right_colors[:, 0]), "top-right box should read blue, not red")
 
   @absltest.skipIf(not _HAS_RENDERER, "MuJoCo rendering requires OpenGL")
   def test_depth_matches_mujoco(self):
