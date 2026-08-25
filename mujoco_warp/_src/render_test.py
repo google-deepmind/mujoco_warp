@@ -309,6 +309,39 @@ class RenderTest(parameterized.TestCase):
     self.assertGreater(rgb[0, 1], rgb[0, 0] + 0.1)
     self.assertGreater(rgb[1, 0], rgb[1, 1] + 0.1)
 
+  def test_render_textured_mesh_without_texcoords(self):
+    """A textured mesh with no texcoords must not crash `sample_texture`.
+
+    Meshes defined by vertices alone (no `texcoord`) have `mesh_texcoordadr == -1`.
+    Regression test for a fix that avoids indexing `mesh_texcoord` with that -1 offset.
+    """
+    xml = """
+    <mujoco>
+      <asset>
+        <mesh name="tetra" vertex="1 1 1  1 -1 -1  -1 1 -1  -1 -1 1"/>
+        <texture name="red" type="2d" builtin="flat" rgb1="1 0 0" width="1" height="1"/>
+        <material name="mat" texture="red"/>
+      </asset>
+      <worldbody>
+        <camera pos="0 -4 0" xyaxes="1 0 0 0 0 1" resolution="32 32"/>
+        <geom type="mesh" mesh="tetra" material="mat"/>
+      </worldbody>
+    </mujoco>
+    """
+    mjm, mjd, m, d = test_data.fixture(xml=xml)
+    self.assertEqual(mjm.mesh_texcoordadr[0], -1, "fixture mesh must have no texcoords")
+
+    rc = mjw.create_render_context(mjm, cam_res=(32, 32), render_rgb=True, render_seg=True)
+    mjw.render(m, d, rc)
+
+    seg = rc.seg_data.numpy()[0]
+    geom_mask = seg[:, 1] == int(mjw.ObjType.GEOM)
+    self.assertTrue(np.any(geom_mask), "Expected the mesh to be hit")
+
+    rgb = _unpack_rgb(rc.rgb_data.numpy()[0])[geom_mask]
+    self.assertTrue(np.all(rgb[:, 0] > rgb[:, 1]), "mesh should read as red from its texture")
+    self.assertTrue(np.all(rgb[:, 0] > rgb[:, 2]), "mesh should read as red from its texture")
+
   def test_disable_ambient_lighting(self):
     xml = """
     <mujoco>
