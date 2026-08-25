@@ -2032,7 +2032,8 @@ def _polygon_clip(
   npolygon = int(0)
   for i in range(m):
     if wp.dot(polygon_out[i] - face1[0], n) <= 0.0:
-      polygon_out[npolygon] = polygon_out[i]
+      if npolygon != i:
+        polygon_out[npolygon] = polygon_out[i]
       npolygon += 1
 
   if npolygon < 1:
