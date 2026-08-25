@@ -183,7 +183,6 @@ def sample_texture(
   mesh_facetexcoord: wp.array[wp.vec3i],
   mesh_texcoord: wp.array[wp.vec2],
   mesh_texcoord_offsets: wp.array[int],
-  mesh_texcoordnum: wp.array[int],
   hit_point: wp.vec3,
   bary_u: float,
   bary_v: float,
@@ -206,11 +205,10 @@ def sample_texture(
     if f < 0 or mesh_id < 0:
       return wp.vec3(0.0, 0.0, 0.0)
 
-    if mesh_texcoordnum[mesh_id] == 0:
-      # Some meshes might have mesh_texcoordsnum[mesh_id] == 0, in which case.
-      # mesh_texcoord_offsets (taken from mjm.mesh_texcoordadr upon renderint context
-      # initialization) is -1. Using this offset to index mesh_texcoord would lead to
-      # index error, so handle this case separately.
+    if mesh_texcoord_offsets[mesh_id] == -1:
+      # Some meshes may have no texcoord. The corresponding elements for these meshes in
+      # mjm.mesh_texcoordadr (passed here as mesh_texcoord_offsets) are marked as -1.
+      # Handle these meshes separately to avoid indexing error using -1 as an offset.
       uv = wp.vec2(0.0, 0.0)
     else:
       face_adr = mesh_faceadr[mesh_id] + f
@@ -751,7 +749,6 @@ def render(m: Model, d: Data, rc: RenderContext):
     mesh_facetexcoord: wp.array[wp.vec3i],
     mesh_texcoord: wp.array[wp.vec2],
     mesh_texcoord_offsets: wp.array[int],
-    mesh_texcoordnum: wp.array[int],
     hfield_bvh_id: wp.array[wp.uint64],
     flex_rgba: wp.array[wp.vec4],
     flex_geom_flexid: wp.array[int],
@@ -951,7 +948,6 @@ def render(m: Model, d: Data, rc: RenderContext):
               mesh_facetexcoord,
               mesh_texcoord,
               mesh_texcoord_offsets,
-              mesh_texcoordnum,
               hit_point,
               u,
               v,
@@ -1169,7 +1165,6 @@ def render(m: Model, d: Data, rc: RenderContext):
       rc.mesh_facetexcoord,
       rc.mesh_texcoord,
       rc.mesh_texcoord_offsets,
-      rc.mesh_texcoordnum,
       rc.hfield_bvh_id,
       rc.flex_rgba,
       rc.flex_geom_flexid,
