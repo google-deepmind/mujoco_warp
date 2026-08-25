@@ -2446,6 +2446,7 @@ class RenderContext:
     mesh_bounds_size: mesh bounds size
     mesh_texcoord: mesh texture coordinates
     mesh_texcoord_offsets: mesh texture coordinate offsets
+    mesh_texcoordnum: number of texture coordinates per mesh
     mesh_facetexcoord: mesh face texture coordinates
     textures: textures
     textures_registry: texture registry
@@ -2556,6 +2557,7 @@ class RenderContext:
   mesh_bounds_size: array("nmesh", wp.vec3)
   mesh_texcoord: array("*", wp.vec2)
   mesh_texcoord_offsets: array("nmesh", int)
+  mesh_texcoordnum: array("nmesh", int)
   mesh_facetexcoord: array("nmeshface", wp.vec3i)
   textures: array("*", wp.Texture2D)
   textures_registry: list[wp.Texture2D]

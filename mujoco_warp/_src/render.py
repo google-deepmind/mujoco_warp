@@ -183,6 +183,7 @@ def sample_texture(
   mesh_facetexcoord: wp.array[wp.vec3i],
   mesh_texcoord: wp.array[wp.vec2],
   mesh_texcoord_offsets: wp.array[int],
+  mesh_texcoordnum: wp.array[int],
   hit_point: wp.vec3,
   bary_u: float,
   bary_v: float,
@@ -205,11 +206,20 @@ def sample_texture(
     if f < 0 or mesh_id < 0:
       return wp.vec3(0.0, 0.0, 0.0)
 
-    face_adr = mesh_faceadr[mesh_id] + f
-    uv0 = mesh_texcoord[mesh_texcoord_offsets[mesh_id] + mesh_facetexcoord[face_adr][0]]
-    uv1 = mesh_texcoord[mesh_texcoord_offsets[mesh_id] + mesh_facetexcoord[face_adr][1]]
-    uv2 = mesh_texcoord[mesh_texcoord_offsets[mesh_id] + mesh_facetexcoord[face_adr][2]]
-    uv = uv0 * bary_u + uv1 * bary_v + uv2 * (1.0 - bary_u - bary_v)
+    if mesh_texcoordnum[mesh_id] == 0:
+      # Some meshes might have mesh_texcoordsnum[mesh_id] == 0, in which case.
+      # mesh_texcoord_offsets (taken from mjm.mesh_texcoordadr upon renderint context
+      # initialization) is -1. Using this offset to index mesh_texcoord would lead to
+      # index error, so handle this case separately.
+      uv = wp.vec2(0.0, 0.0)
+    else:
+      face_adr = mesh_faceadr[mesh_id] + f
+      offsets = mesh_texcoord_offsets[mesh_id]
+      coords = mesh_facetexcoord[face_adr]
+      uv0 = mesh_texcoord[offsets + coords[0]]
+      uv1 = mesh_texcoord[offsets + coords[1]]
+      uv2 = mesh_texcoord[offsets + coords[2]]
+      uv = uv0 * bary_u + uv1 * bary_v + uv2 * (1.0 - bary_u - bary_v)
 
   u = uv[0] * tex_repeat[0] + offset[0]
   v = uv[1] * tex_repeat[1] + offset[1]
@@ -741,6 +751,7 @@ def render(m: Model, d: Data, rc: RenderContext):
     mesh_facetexcoord: wp.array[wp.vec3i],
     mesh_texcoord: wp.array[wp.vec2],
     mesh_texcoord_offsets: wp.array[int],
+    mesh_texcoordnum: wp.array[int],
     hfield_bvh_id: wp.array[wp.uint64],
     flex_rgba: wp.array[wp.vec4],
     flex_geom_flexid: wp.array[int],
@@ -940,6 +951,7 @@ def render(m: Model, d: Data, rc: RenderContext):
               mesh_facetexcoord,
               mesh_texcoord,
               mesh_texcoord_offsets,
+              mesh_texcoordnum,
               hit_point,
               u,
               v,
@@ -1157,6 +1169,7 @@ def render(m: Model, d: Data, rc: RenderContext):
       rc.mesh_facetexcoord,
       rc.mesh_texcoord,
       rc.mesh_texcoord_offsets,
+      rc.mesh_texcoordnum,
       rc.hfield_bvh_id,
       rc.flex_rgba,
       rc.flex_geom_flexid,
