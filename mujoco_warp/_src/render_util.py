@@ -91,7 +91,7 @@ def compute_ray(
   """
   if projection == ProjectionType.ORTHOGRAPHIC:
     # Compute ray direction
-    direction = wp.vec3(0.0, 0.0, -1.0)  # always poiting forward
+    direction = wp.vec3(0.0, 0.0, -1.0)  # always pointing forward
 
     # Compute ray offset from center
     aspect = float(img_w) / float(img_h)
