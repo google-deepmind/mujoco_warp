@@ -309,18 +309,16 @@ class RenderTest(parameterized.TestCase):
     self.assertGreater(rgb[0, 1], rgb[0, 0] + 0.1)
     self.assertGreater(rgb[1, 0], rgb[1, 1] + 0.1)
 
-  def test_render_textured_mesh_without_texcoords(self):
-    """A textured mesh with no texcoords must not crash `sample_texture`.
-
-    Meshes defined by vertices alone (no `texcoord`) have `mesh_texcoordadr == -1`.
-    Regression test for a fix that avoids indexing `mesh_texcoord` with that -1 offset.
-    """
-    xml = """
+  def test_render_textured_mesh_texcoords_handling(self):
+    """Meshes without texcoords in a scene with textured UV meshes must not mis-index."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
     <mujoco>
       <asset>
-        <mesh name="tetra" vertex="1 1 1  1 -1 -1  -1 1 -1  -1 -1 1"/>
         <texture name="red" type="2d" builtin="flat" rgb1="1 0 0" width="1" height="1"/>
         <material name="mat" texture="red"/>
+        <mesh name="m_uv" vertex="1 1 1  1 -1 -1  -1 1 -1  -1 -1 1" texcoord="0 0  1 0  0 1  1 1"/>
+        <mesh name="tetra" vertex="1 1 1  1 -1 -1  -1 1 -1  -1 -1 1"/>
       </asset>
       <worldbody>
         <camera pos="0 -4 0" xyaxes="1 0 0 0 0 1" resolution="32 32"/>
@@ -328,10 +326,14 @@ class RenderTest(parameterized.TestCase):
       </worldbody>
     </mujoco>
     """
-    mjm, mjd, m, d = test_data.fixture(xml=xml)
-    self.assertEqual(mjm.mesh_texcoordadr[0], -1, "fixture mesh must have no texcoords")
+    )
+    self.assertGreaterEqual(mjm.mesh_texcoordadr[0], 0, "m_uv must have texcoords")
+    self.assertEqual(mjm.mesh_texcoordadr[1], -1, "tetra must have no texcoords")
 
     rc = mjw.create_render_context(mjm, cam_res=(32, 32), render_rgb=True, render_seg=True)
+    rc.rgb_data.fill_(0)
+    rc.seg_data.fill_(wp.vec2i(-1, -1))
+
     mjw.render(m, d, rc)
 
     seg = rc.seg_data.numpy()[0]
