@@ -913,6 +913,13 @@ def ccd_kernel_builder(
           geomtype2,
         )
 
+        # multicontact clipping may produce 0 contacts; fall back to the
+        # single EPA witness pair
+        if ncollision < 1:
+          ncollision = 1
+          witness1[0] = w1
+          witness2[0] = w2
+
     condim, friction, solref, solreffriction, solimp, adhesion = contact_material_params(
       geom_condim,
       geom_priority,
