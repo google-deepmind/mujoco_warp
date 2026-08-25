@@ -205,18 +205,18 @@ def sample_texture(
     if f < 0 or mesh_id < 0:
       return wp.vec3(0.0, 0.0, 0.0)
 
-    if mesh_texcoord_offsets[mesh_id] == -1:
+    texcoord_offset = mesh_texcoord_offsets[mesh_id]
+    if texcoord_offset == -1:
       # Some meshes may have no texcoord. The corresponding elements for these meshes in
       # mjm.mesh_texcoordadr (passed here as mesh_texcoord_offsets) are marked as -1.
       # Handle these meshes separately to avoid indexing error using -1 as an offset.
       uv = wp.vec2(0.0, 0.0)
     else:
       face_adr = mesh_faceadr[mesh_id] + f
-      offsets = mesh_texcoord_offsets[mesh_id]
       coords = mesh_facetexcoord[face_adr]
-      uv0 = mesh_texcoord[offsets + coords[0]]
-      uv1 = mesh_texcoord[offsets + coords[1]]
-      uv2 = mesh_texcoord[offsets + coords[2]]
+      uv0 = mesh_texcoord[texcoord_offset + coords[0]]
+      uv1 = mesh_texcoord[texcoord_offset + coords[1]]
+      uv2 = mesh_texcoord[texcoord_offset + coords[2]]
       uv = uv0 * bary_u + uv1 * bary_v + uv2 * (1.0 - bary_u - bary_v)
 
   u = uv[0] * tex_repeat[0] + offset[0]
