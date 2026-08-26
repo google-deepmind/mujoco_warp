@@ -37,6 +37,7 @@ import os
 
 import warp as wp
 
+from mujoco_warp._src.types import MJ_MINVAL
 from mujoco_warp._src.warp_util import cache_kernel
 
 wp.set_module_options({"enable_backward": False})
@@ -93,7 +94,14 @@ def batched_cholesky_factorize_solve(nv: int, nv_pad: int):
         for j in range(k):
           r = wp.tile_extract(A, k, j)
           s -= r * r
-        d = wp.sqrt(s)
+        # Floor the squared pivot at MJ_MINVAL before the sqrt. For an SPD system
+        # s > 0 in exact arithmetic, but a near-singular world combined with
+        # gfx950's FP reduction order (which differs from gfx942/CUDA) can drive s
+        # slightly <= 0; sqrt() would then emit NaN and 1/L[k,k] Inf, corrupting the
+        # whole solve. This mirrors MuJoCo's mju_cholFactor mindiag handling and is
+        # a no-op when s >> MJ_MINVAL, so well-conditioned pivots (and gfx942/CUDA
+        # numerics) are unchanged.
+        d = wp.sqrt(wp.max(s, MJ_MINVAL))
       wp.tile_scatter_masked(A, k, k, d, lane == k)  # publish L[k,k] (+ barrier)
       inv = 1.0 / wp.tile_extract(A, k, k)
 
@@ -183,7 +191,11 @@ def batched_factor_solve_i(tile_size: int):
         for i in range(k):
           u = wp.tile_extract(A, i, k)
           s -= u * u
-        d = wp.sqrt(s)
+        # See batched_cholesky_factorize_solve: floor the squared pivot at
+        # MJ_MINVAL so a near-singular world on gfx950 cannot produce a negative
+        # value under the sqrt (NaN) or a zero pivot (Inf in 1/U[k,k]). Mirrors
+        # MuJoCo's mju_cholFactor mindiag handling; no-op for s >> MJ_MINVAL.
+        d = wp.sqrt(wp.max(s, MJ_MINVAL))
       wp.tile_scatter_masked(A, k, k, d, lane == k)
       inv = 1.0 / wp.tile_extract(A, k, k)
 
