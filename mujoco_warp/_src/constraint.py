@@ -145,6 +145,11 @@ def _contact_kbimp(
 
 
 @wp.func
+def _efc_D(invweight: float, imp: float) -> float:
+  return 1.0 / wp.max(invweight * (1.0 - imp) / imp, types.MJ_MINVAL)
+
+
+@wp.func
 def _efc_row(
   # Model:
   opt_disableflags: int,
@@ -179,7 +184,7 @@ def _efc_row(
   imp = kbimp[2]
 
   # set outputs
-  D_out[worldid, efcid] = 1.0 / wp.max(invweight * (1.0 - imp) / imp, types.MJ_MINVAL)
+  D_out[worldid, efcid] = _efc_D(invweight, imp)
   vel_out[worldid, efcid] = vel
   aref_out[worldid, efcid] = -k * imp * pos_aref - b * vel
   pos_out[worldid, efcid] = pos_aref + margin
