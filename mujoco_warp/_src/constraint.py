@@ -111,9 +111,8 @@ def _contact_kbimp(
 
   # see https://mujoco.readthedocs.io/en/latest/modeling.html#solver-parameters
   dmax_sq = dmax * dmax
-  # branch, not wp.where: warp differentiates both wp.where operands, so the unselected
-  # positive-format expression yields 1/0 for direct-format solref (a sticky FP exception or NaN
-  # parameter adjoint) even though the forward result is finite
+  # use a branch because Warp differentiates both wp.where operands; the unused time-constant
+  # formula for direct-format solref can divide by zero or produce NaN gradients
   if solref[0] <= 0.0:
     k = -solref[0] / wp.max(types.MJ_MINVAL, dmax_sq)
   else:
@@ -124,9 +123,8 @@ def _contact_kbimp(
     b = 2.0 / wp.max(types.MJ_MINVAL, dmax * timeconst)
 
   imp_x = wp.abs(pos_imp) / width
-  # evaluate only the active impedance polynomial: pow(1 - imp_x, power) at a non-positive base
-  # has log(1 - imp_x) in its reverse, NaN/FE_INVALID even when wp.where discards the branch;
-  # the saturation knots take the bounded zero subgradient (the active set is piecewise anyway)
+  # evaluate only the active polynomial because the unused branch can raise FE_INVALID or produce
+  # NaN gradients; the constant branch gives zero gradient at and beyond the transition endpoints
   if dmin == dmax or width_raw <= types.MJ_MINVAL:
     imp = 0.5 * (dmin + dmax)
   elif imp_x <= 0.0:
