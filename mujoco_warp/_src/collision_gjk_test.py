@@ -28,6 +28,7 @@ from mujoco_warp._src.collision_gjk import multicontact
 from mujoco_warp._src.collision_gjk import support
 from mujoco_warp._src.types import MJ_MAX_EPAFACES
 from mujoco_warp._src.types import MJ_MAX_EPAHORIZON
+from mujoco_warp._src.types import OverflowType
 from mujoco_warp._src.types import mat63
 
 
@@ -42,27 +43,32 @@ def _geom_dist(
   pos2: wp.vec3 | None = None,
   mat1: wp.mat33 | None = None,
   mat2: wp.mat33 | None = None,
+  horizon_size: int | None = None,
+  warn_overflow: bool = True,
+  overflow_out: wp.array | None = None,
 ):
   # we run multiccd on static scenes so these need to be initialized
-  nmaxpolygon = 10 if multiccd else 0
-  nmaxmeshdeg = 10 if multiccd else 0
+  npolygonmax = 10 if multiccd else 0
+  nmeshdegmax = 10 if multiccd else 0
   epa_vert = wp.empty(10 + 2 * m.opt.ccd_iterations, dtype=wp.vec3)
   epa_vert_index = wp.empty(10 + 2 * m.opt.ccd_iterations, dtype=int)
   epa_face = wp.empty(6 + MJ_MAX_EPAFACES * m.opt.ccd_iterations, dtype=int)
   epa_pr = wp.empty(6 + MJ_MAX_EPAFACES * m.opt.ccd_iterations, dtype=wp.vec3)
   epa_norm2 = wp.empty(6 + MJ_MAX_EPAFACES * m.opt.ccd_iterations, dtype=float)
-  epa_horizon = wp.empty(MJ_MAX_EPAHORIZON, dtype=int)
-  multiccd_polygon = wp.empty(2 * nmaxpolygon, dtype=wp.vec3)
-  multiccd_clipped = wp.empty(2 * nmaxpolygon, dtype=wp.vec3)
-  multiccd_pnormal = wp.empty(nmaxpolygon, dtype=wp.vec3)
-  multiccd_pdist = wp.empty(nmaxpolygon, dtype=float)
-  multiccd_idx1 = wp.empty(nmaxmeshdeg, dtype=int)
-  multiccd_idx2 = wp.empty(nmaxmeshdeg, dtype=int)
-  multiccd_n1 = wp.empty(nmaxmeshdeg, dtype=wp.vec3)
-  multiccd_n2 = wp.empty(nmaxmeshdeg, dtype=wp.vec3)
-  multiccd_endvert = wp.empty(nmaxmeshdeg, dtype=wp.vec3)
-  multiccd_face1 = wp.empty(nmaxpolygon, dtype=wp.vec3)
-  multiccd_face2 = wp.empty(nmaxpolygon, dtype=wp.vec3)
+  epa_horizon = wp.empty(MJ_MAX_EPAHORIZON if horizon_size is None else horizon_size, dtype=int)
+  if overflow_out is None:
+    overflow_out = wp.zeros(1, dtype=int)
+  multiccd_polygon = wp.empty(2 * npolygonmax, dtype=wp.vec3)
+  multiccd_clipped = wp.empty(2 * npolygonmax, dtype=wp.vec3)
+  multiccd_pnormal = wp.empty(npolygonmax, dtype=wp.vec3)
+  multiccd_pdist = wp.empty(npolygonmax, dtype=float)
+  multiccd_idx1 = wp.empty(nmeshdegmax, dtype=int)
+  multiccd_idx2 = wp.empty(nmeshdegmax, dtype=int)
+  multiccd_n1 = wp.empty(nmeshdegmax, dtype=wp.vec3)
+  multiccd_n2 = wp.empty(nmeshdegmax, dtype=wp.vec3)
+  multiccd_endvert = wp.empty(nmeshdegmax, dtype=wp.vec3)
+  multiccd_face1 = wp.empty(npolygonmax, dtype=wp.vec3)
+  multiccd_face2 = wp.empty(npolygonmax, dtype=wp.vec3)
 
   @wp.kernel(module="unique", enable_backward=False)
   def _ccd_kernel(
@@ -107,6 +113,8 @@ def _geom_dist(
     endvert: wp.array[wp.vec3],
     face1: wp.array[wp.vec3],
     face2: wp.array[wp.vec3],
+    # Data out:
+    overflow_out: wp.array[int],
     # Out:
     dist_out: wp.array[float],
     ncon_out: wp.array[int],
@@ -199,10 +207,13 @@ def _geom_dist(
       face_pr,
       face_norm2,
       horizon,
+      wp.static(warn_overflow),
+      worldid,
+      overflow_out,
     )
 
     if multiccd and idx >= 0:
-      ncon, witness1, witness2 = multicontact(
+      ncon, witness1, witness2, _ = multicontact(
         polygon,
         clipped,
         pnormal,
@@ -281,6 +292,7 @@ def _geom_dist(
       multiccd_face2,
     ],
     outputs=[
+      overflow_out,
       dist_out,
       ncon_out,
       pos_out,
@@ -467,6 +479,22 @@ class GJKTest(parameterized.TestCase):
 
     dist, _, _, _ = _geom_dist(m, d, 0, 1)
     self.assertAlmostEqual(-0.001, dist)
+
+  def test_box_box_shallow_penetration(self):
+    """Test box-box contact for shallow penetration from a settling scene."""
+    _, _, m, d = test_data.fixture(
+      xml="""
+    <mujoco>
+      <worldbody>
+        <geom type="box" size="0.2 0.2 0.2" pos="0 0 0.19972974"/>
+        <geom type="box" size="0.1 0.1 0.1" pos="0 0 0.49947918"/>
+      </worldbody>
+    </mujoco>
+    """
+    )
+    dist, ncon, _, _ = _geom_dist(m, d, 0, 1, True)
+    self.assertEqual(4, ncon)
+    self.assertAlmostEqual(-0.00025054812, dist)
 
   def test_box_edge(self):
     """Test box edge."""
@@ -667,6 +695,21 @@ class GJKTest(parameterized.TestCase):
     dist, _, _, _ = _geom_dist(m, d, 0, 1, pos2=pos, mat2=rot)
     self.assertAlmostEqual(dist, -0.0016624178339902445)
 
+  def test_cylinder_capsule(self):
+    """Test cylinder and a capsule with CCD fallback."""
+    _, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <geom type="cylinder" size="2 4" pos="0 0 0"/>
+          <geom type="capsule" size="1 1" pos="0 0 5"/>
+        </worldbody>
+      </mujoco>
+      """
+    )
+    dist, _, _, _ = _geom_dist(m, d, 0, 1)
+    self.assertAlmostEqual(-1.0, dist, places=6)
+
   def test_box_box_float(self):
     """Test box-box under float32."""
     _, _, m, d = test_data.fixture(
@@ -751,6 +794,24 @@ class GJKTest(parameterized.TestCase):
 
     dist, _, _, _ = _geom_dist(m, d, 0, 1, multiccd=False, pos1=pos1, mat1=rot1, pos2=pos2, mat2=rot2)
     self.assertAlmostEqual(dist, -0.00011578822, 6)  # dist = -0.00011579410621457821 - MJC 64 bit precision
+
+    # same configuration with an undersized horizon buffer sets the overflow bit
+    overflow = wp.zeros(1, dtype=int)
+    _geom_dist(
+      m,
+      d,
+      0,
+      1,
+      multiccd=False,
+      pos1=pos1,
+      mat1=rot1,
+      pos2=pos2,
+      mat2=rot2,
+      horizon_size=5,
+      warn_overflow=False,
+      overflow_out=overflow,
+    )
+    self.assertTrue(overflow.numpy()[0] & OverflowType.EPA_HORIZON)
 
   def test_box_box_rotation(self):
     """Test box-box with slight rotation which should give 4 contacts."""
@@ -938,7 +999,7 @@ class GJKTest(parameterized.TestCase):
     _, ncon, x1, x2 = _geom_dist(m, d, 0, 1, multiccd=True)
     self.assertEqual(ncon, 2)
     np.testing.assert_allclose(x1, np.array([1.907368, -0.052973, 0.700000]), atol=1e-4)
-    np.testing.assert_allclose(x2, np.array([1.30000, -0.052973, 0.700000]), atol=1e-4)
+    np.testing.assert_allclose(x2, np.array([1.300000, -0.052973, 0.700000]), atol=1e-4)
 
   @parameterized.parameters(0.0, 0.1)
   def test_hfield_support(self, margin: float):
@@ -967,7 +1028,7 @@ class GJKTest(parameterized.TestCase):
       geom = Geom()
       geom.pos = wp.vec3(0.0, 0.0, 0.0)
       geom.rot = wp.identity(n=3, dtype=float)
-      geom.hfprism = hfprism_in
+      geom.polyvert = hfprism_in
       geom.margin = 0.0  # margin added to prism
 
       # Test directions with eps offsets for unique support points
@@ -1010,6 +1071,179 @@ class GJKTest(parameterized.TestCase):
 
     # dir = (0, 1, eps): expect prism[5] + margin offset
     np.testing.assert_allclose(result[3], prism[5], rtol=1e-5)
+
+  def test_flex_support_margin_inflation(self):
+    """Test support function inflation by margin for flex simplex elements."""
+    radius = 0.05
+    polyvert = mat63(
+      0.0,
+      0.0,
+      0.0,
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+    )
+
+    @wp.kernel(module="unique", enable_backward=False)
+    def _test_kernel(
+      polyvert_in: mat63,
+      margin_in: float,
+      dir_in: wp.vec3,
+      out_sp: wp.array[wp.vec3],
+    ):
+      geom = Geom()
+      geom.pos = wp.vec3(0.0, 0.0, 0.0)
+      geom.rot = wp.identity(n=3, dtype=float)
+      geom.polyvert = polyvert_in
+      geom.margin = margin_in
+
+      sp = support(geom, GeomType.FLEX, dir_in)
+      out_sp[0] = sp.point
+
+    out_sp = wp.empty(1, dtype=wp.vec3)
+
+    # Test along +z direction: extremal vertex is (0, 0, 1)
+    dir_z = wp.vec3(0.0, 0.0, 1.0)
+    wp.launch(
+      _test_kernel,
+      dim=1,
+      inputs=[polyvert, 2.0 * radius, dir_z],
+      outputs=[out_sp],
+    )
+    expected_z = np.array([0.0, 0.0, 1.0 + radius])
+    np.testing.assert_allclose(out_sp.numpy()[0], expected_z, atol=1e-6)
+
+    # Test without margin: should match uninflated vertex exactly
+    wp.launch(
+      _test_kernel,
+      dim=1,
+      inputs=[polyvert, 0.0, dir_z],
+      outputs=[out_sp],
+    )
+    expected_uninflated_z = np.array([0.0, 0.0, 1.0])
+    np.testing.assert_allclose(out_sp.numpy()[0], expected_uninflated_z, atol=1e-6)
+
+  def test_flex_ccd_deep_penetration_margin_preservation(self):
+    """Test that flex element margin is preserved during deep penetration EPA in ccd()."""
+    sphere_radius = 0.05
+    flex_radius = 0.03
+    # Sphere centered at (0, 0, 0.05) with radius 0.05 -> bottom at z = 0.0
+    # Flex tetrahedron with top vertex at (0, 0, 0.02) with flex_radius 0.03
+    # -> top surface at z = 0.05
+    # True penetration depth between sphere bottom (z=0.0) and flex top (z=0.05) is 0.05
+    polyvert = mat63(
+      0.0,
+      0.0,
+      0.02,
+      -0.1,
+      -0.1,
+      -0.1,
+      0.1,
+      -0.1,
+      -0.1,
+      0.0,
+      0.1,
+      -0.1,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+    )
+
+    @wp.kernel(module="unique", enable_backward=False)
+    def _test_kernel(
+      polyvert_in: mat63,
+      sphere_rad: float,
+      flex_rad: float,
+      epa_vert: wp.array[wp.vec3],
+      epa_vert_index: wp.array[int],
+      epa_face: wp.array[int],
+      epa_pr: wp.array[wp.vec3],
+      epa_norm2: wp.array[float],
+      epa_horizon: wp.array[int],
+      overflow: wp.array[int],
+      out_dist: wp.array[float],
+    ):
+      geom1 = Geom()
+      geom1.pos = wp.vec3(0.0, 0.0, 0.05)
+      geom1.rot = wp.identity(n=3, dtype=float)
+      geom1.size = wp.vec3(sphere_rad, 0.0, 0.0)
+      geom1.margin = 0.0
+
+      geom2 = Geom()
+      geom2.pos = wp.vec3(0.0, 0.0, 0.0)
+      geom2.rot = wp.identity(n=3, dtype=float)
+      geom2.polyvert = polyvert_in
+      geom2.margin = 2.0 * flex_rad
+
+      centroid = (polyvert_in[0] + polyvert_in[1] + polyvert_in[2] + polyvert_in[3]) * 0.25
+
+      dist, ncontact, w1, w2, idx = ccd(
+        1e-6,
+        10.0,
+        100,
+        100,
+        geom1,
+        geom2,
+        GeomType.SPHERE,
+        GeomType.FLEX,
+        geom1.pos,
+        centroid,
+        epa_vert,
+        epa_vert_index,
+        epa_face,
+        epa_pr,
+        epa_norm2,
+        epa_horizon,
+        False,
+        0,
+        overflow,
+      )
+      out_dist[0] = dist
+
+    ccd_iterations = 100
+    out_dist = wp.empty(1, dtype=float)
+    overflow = wp.zeros(1, dtype=int)
+    epa_vert = wp.empty(4 + 2 * ccd_iterations, dtype=wp.vec3)
+    epa_vert_index = wp.empty(4 + 2 * ccd_iterations, dtype=int)
+    epa_face = wp.empty(6 + MJ_MAX_EPAFACES * ccd_iterations, dtype=int)
+    epa_pr = wp.empty(6 + MJ_MAX_EPAFACES * ccd_iterations, dtype=wp.vec3)
+    epa_norm2 = wp.empty(6 + MJ_MAX_EPAFACES * ccd_iterations, dtype=float)
+    epa_horizon = wp.empty(MJ_MAX_EPAHORIZON, dtype=int)
+
+    wp.launch(
+      _test_kernel,
+      dim=1,
+      inputs=[
+        polyvert,
+        sphere_radius,
+        flex_radius,
+        epa_vert,
+        epa_vert_index,
+        epa_face,
+        epa_pr,
+        epa_norm2,
+        epa_horizon,
+        overflow,
+      ],
+      outputs=[out_dist],
+    )
+    # Expected dist is negative penetration depth: -0.05
+    np.testing.assert_allclose(out_dist.numpy()[0], -0.05, atol=1e-4)
 
 
 if __name__ == "__main__":

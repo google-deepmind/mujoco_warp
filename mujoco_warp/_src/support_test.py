@@ -131,6 +131,47 @@ class SupportTest(parameterized.TestCase):
 
     _assert_eq(force.numpy()[0], mj_force, "contact force")
 
+  @parameterized.product(
+    cone=(ConeType.PYRAMIDAL, ConeType.ELLIPTIC),
+    condim=(1, 3, 4, 6),
+    to_world_frame=(False, True),
+  )
+  def test_contact_force_adhesion(self, cone, condim, to_world_frame):
+    """Tests contact_force reporting for adhesive contacts."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml=f"""
+      <mujoco>
+        <worldbody>
+          <geom type="plane" size="10 10 .001"/>
+          <body pos="0 0 1">
+            <freejoint/>
+            <geom fromto="-.4 0 0 .4 0 0" size=".05 .1" type="capsule" condim="{condim}" friction="1 1 1" adhesion="12.0"/>
+          </body>
+        </worldbody>
+        <keyframe>
+          <key qpos="0 0 0.04 1 0 0 0" qvel="-1 -1 -1 .1 .1 .1"/>
+        </keyframe>
+      </mujoco>
+      """,
+      keyframe=0,
+      overrides={"opt.cone": cone},
+    )
+
+    mj_force = np.zeros(6, dtype=float)
+    mujoco.mj_contactForce(mjm, mjd, 0, mj_force)
+
+    contact_ids = wp.zeros(1, dtype=int)
+    force = wp.zeros(1, dtype=wp.spatial_vector)
+    force.fill_(wp.spatial_vector(wp.inf, wp.inf, wp.inf, wp.inf, wp.inf, wp.inf))
+
+    mjwarp.contact_force(m, d, contact_ids, to_world_frame, force)
+
+    if to_world_frame:
+      frame = mjd.contact.frame[0].reshape((3, 3))
+      mj_force = np.concatenate([frame.T @ mj_force[:3], frame.T @ mj_force[3:]])
+
+    _assert_eq(force.numpy()[0], mj_force, "contact force with adhesion")
+
   @parameterized.parameters("constraints.xml", "pendula.xml")
   def test_get_state(self, xml):
     mjm, mjd, m, d = test_data.fixture(xml, keyframe=0, ctrl_noise=1.0, qfrc_noise=1.0, xfrc_noise=1.0, mocap_noise=1.0)

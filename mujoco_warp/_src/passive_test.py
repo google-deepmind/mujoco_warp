@@ -22,6 +22,7 @@ from absl.testing import absltest
 from absl.testing import parameterized
 
 import mujoco_warp as mjw
+from mujoco_warp import ConeType
 from mujoco_warp import DisableBit
 from mujoco_warp import test_data
 
@@ -422,6 +423,180 @@ class PassiveTest(parameterized.TestCase):
     d.qfrc_fluid.zero_()
     mjw.forward(m, d)
     np.testing.assert_allclose(d.qfrc_fluid.numpy()[0], mjd.qfrc_fluid, atol=5e-4, rtol=5e-4)
+
+  def test_adhesion_gap_force(self):
+    """Test contact creation and passive attraction in the gap band without collision."""
+    _, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option gravity="0 0 0"/>
+        <worldbody>
+          <geom type="sphere" size="0.1" pos="0 0 0"/>
+          <body pos="0 0 0.22">
+            <geom type="sphere" size="0.1" gap="0.05" adhesion="8.0"/>
+            <joint type="free"/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """,
+    )
+    d.nacon.fill_(-1)
+    d.contact.dim.fill_(-1)
+    d.contact.adhesion.fill_(wp.inf)
+    d.qfrc_adhesion.fill_(wp.inf)
+
+    mjw.collision(m, d)
+    mjw.passive(m, d)
+
+    self.assertGreater(d.nacon.numpy()[0], 0)
+    self.assertEqual(d.contact.adhesion.numpy()[0], 8.0)
+    self.assertEqual(d.contact.dim.numpy()[0], 1)
+    self.assertGreater(np.linalg.norm(d.qfrc_adhesion.numpy()[0]), 0)
+
+  def test_adhesion_capture_dynamics(self):
+    """Test dynamic capture of a body released inside the adhesion gap band."""
+    _, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option gravity="0 0 0"/>
+        <worldbody>
+          <geom type="sphere" size="0.1" pos="0 0 0"/>
+          <body pos="0 0 0.22">
+            <geom type="sphere" size="0.1" gap="0.05" adhesion="20.0"/>
+            <joint type="slide" axis="0 0 1"/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """
+    )
+    d.nacon.fill_(-1)
+    d.contact.dim.fill_(-1)
+    d.contact.adhesion.fill_(wp.inf)
+    d.qfrc_adhesion.fill_(wp.inf)
+
+    mjw.collision(m, d)
+    mjw.passive(m, d)
+
+    self.assertEqual(d.nacon.numpy()[0], 1)
+    self.assertEqual(d.contact.dim.numpy()[0], 1)
+    self.assertEqual(d.contact.adhesion.numpy()[0], 20.0)
+    self.assertGreater(np.linalg.norm(d.qfrc_adhesion.numpy()[0]), 0)
+
+  def test_adhesion_resting_penetration_equivalence(self):
+    """Verify resting penetration equilibrium and passive adhesion forces match MuJoCo."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option gravity="0 0 -9.81"/>
+        <worldbody>
+          <geom type="plane" size="1 1 0.1"/>
+          <body pos="0 0 0.1">
+            <geom type="sphere" size="0.1" adhesion="15.0"/>
+            <joint type="free"/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """
+    )
+    d.qfrc_adhesion.fill_(wp.inf)
+    for _ in range(20):
+      mujoco.mj_step(mjm, mjd)
+      mjw.step(m, d)
+
+    np.testing.assert_allclose(d.qpos.numpy()[0], mjd.qpos, atol=1e-3)
+    np.testing.assert_allclose(
+      d.qfrc_adhesion.numpy()[0],
+      mjd.qfrc_passive,
+      atol=1e-3,
+    )
+
+  @parameterized.parameters(
+    (0, True),
+    (DisableBit.SPRING, True),
+    (DisableBit.DAMPER, True),
+    (DisableBit.CONSTRAINT, False),
+    (DisableBit.CONTACT, False),
+  )
+  def test_adhesion_disableflags(self, disableflags, adhesion_expected):
+    """Verify adhesion passive force logic respects DisableBit.CONTACT."""
+    _, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option gravity="0 0 0"/>
+        <worldbody>
+          <geom type="sphere" size="0.1" adhesion="5.0"/>
+          <body pos="0 0 0.15">
+            <freejoint/>
+            <geom type="sphere" size="0.1" adhesion="3.0"/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """,
+    )
+    d.qfrc_adhesion.fill_(wp.inf)
+    m.opt.disableflags |= disableflags
+    mjw.collision(m, d)
+    mjw.passive(m, d)
+
+    if adhesion_expected:
+      self.assertGreater(np.linalg.norm(d.qfrc_adhesion.numpy()[0]), 0)
+    else:
+      self.assertEqual(np.linalg.norm(d.qfrc_adhesion.numpy()[0]), 0)
+
+  def test_adhesion_mutual_attraction_two_dynamic_bodies(self):
+    """Verify mutual attraction and qfrc_passive parity between two free-floating bodies."""
+    _, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option gravity="0 0 0"/>
+        <worldbody>
+          <body name="b1" pos="0 0 0">
+            <geom name="g1" type="sphere" size="0.1" adhesion="5.0"/>
+            <joint name="j1" type="free"/>
+          </body>
+          <body name="b2" pos="0 0 0.15">
+            <geom name="g2" type="sphere" size="0.1" adhesion="3.0"/>
+            <joint name="j2" type="free"/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """
+    )
+    d.qfrc_adhesion.fill_(wp.inf)
+    d.qfrc_passive.fill_(wp.inf)
+    mjw.forward(m, d)
+
+    # Lower sphere pulled +z towards upper sphere; upper sphere pulled -z towards lower sphere.
+    _assert_eq(d.qfrc_adhesion.numpy()[0], mjd.qfrc_passive, "qfrc_adhesion")
+    _assert_eq(d.qfrc_passive.numpy()[0], mjd.qfrc_passive, "qfrc_passive")
+
+  @parameterized.product(
+    cone=(ConeType.PYRAMIDAL, ConeType.ELLIPTIC),
+    condim=(1, 3, 4, 6),
+  )
+  def test_adhesion_pyramidal_aref(self, cone, condim):
+    """Verify efc_aref for adhesive contacts across cone types and condim."""
+    _, mjd, m, d = test_data.fixture(
+      xml=f"""
+      <mujoco>
+        <worldbody>
+          <geom type="plane" size="1 1 0.1"/>
+          <body pos="0 0 0.09">
+            <geom type="sphere" size="0.1" condim="{condim}" adhesion="12.0"/>
+            <joint type="free"/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """,
+      overrides={"opt.cone": cone},
+    )
+    d.nefc.fill_(-1)
+    d.efc.aref.fill_(wp.inf)
+    mjw.forward(m, d)
+
+    nefc = mjd.nefc
+    self.assertGreater(nefc, 0)
+    _assert_eq(d.efc.aref.numpy()[0, :nefc], mjd.efc_aref[:nefc], "efc_aref")
 
 
 if __name__ == "__main__":

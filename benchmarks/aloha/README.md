@@ -88,3 +88,28 @@ Object assets sourced from [aloha_sim](https://github.com/google-deepmind/aloha_
 | Matrix Format | Dense |
 
 ![aloha_clutter](rollout_clutter.webp)
+
+### aloha_clutter_vision
+
+Full workbench clutter scene benchmarking GPU multi-camera vision rendering (`refit_bvh` and `render`). Renders RGB, depth, and segmentation image modalities simultaneously across 4 cameras (`overhead_cam`, `worms_eye_cam`, `wrist_cam_left`, and `wrist_cam_right`) with full directional lighting and shadow ray casting.
+
+- **Cameras**: 4 active cameras (`overhead_cam`, `worms_eye_cam`, `wrist_cam_left`, `wrist_cam_right`) at $64 \times 64$ resolution.
+- **Modalities**: Simultaneous **RGB**, **Depth**, and **Segmentation** buffer generation.
+- **Lighting & Shadows**: Per-pixel Phong shading with spot/directional lights and distance-capped shadow ray casting (`render_shadows=True`).
+- **Assets**: High-resolution 64k visual meshes for YCB and GSO objects scattered on the workbench table.
+
+| Property | Value |
+|----------|-------|
+| Bodies | 42 |
+| DoFs | 136 |
+| Actuators | 14 |
+| Geoms | 548 |
+| Cameras | 4 |
+| Render Resolution | 64x64 |
+| Render Modalities | RGB + Depth + Segmentation |
+| Shadows | Enabled (`render_shadows=True`) |
+| Timestep | 0.002s |
+| Solver | Newton |
+| Friction | Elliptic |
+| Integrator | Euler |
+| Matrix Format | Dense |

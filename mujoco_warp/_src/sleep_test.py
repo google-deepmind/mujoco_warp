@@ -493,6 +493,34 @@ class SleepTest(parameterized.TestCase):
     self.assertEqual(woke_count.numpy()[0], 1)
     np.testing.assert_array_equal(tree_asleep.numpy()[0], [k_awake, k_awake, k_awake, k_awake])
 
+  def test_wake_tree_invalid_tree_id(self):
+    """Verify that calling _wake_tree with an invalid tree ID returns 0."""
+
+    @wp.kernel(module="unique", enable_backward=False)
+    def _test_wake_tree_kernel(
+      ntree: int,
+      worldid: int,
+      target_tree: int,
+      wakeval: int,
+      tree_asleep_out: wp.array2d[int],
+      woke_count_out: wp.array[int],
+    ):
+      woke_count_out[0] = sleep._wake_tree(ntree, worldid, target_tree, wakeval, tree_asleep_out)
+
+    k_awake = sleep.K_AWAKE_VAL
+    asleep_init = np.array([[0, 1]], dtype=np.int32)
+    tree_asleep = wp.array(asleep_init, dtype=int)
+    woke_count = wp.zeros((1,), dtype=int)
+
+    wp.launch(
+      _test_wake_tree_kernel,
+      dim=1,
+      inputs=[2, 0, -1, k_awake],
+      outputs=[tree_asleep, woke_count],
+    )
+    self.assertEqual(woke_count.numpy()[0], 0)
+    np.testing.assert_array_equal(tree_asleep.numpy(), asleep_init)
+
   @parameterized.parameters(1, 2)
   def test_multitree_tendon_waking(self, nworld):
     """Verify pulling wakes up multiple connected sleeping bodies through a single tendon."""
