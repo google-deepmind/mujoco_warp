@@ -1339,7 +1339,7 @@ def _linesearch_iterative_kernel(
       if not ls_converged:
         if wp.static(warn_overflow):
           wp.printf(
-            "linesearch iterations limit reached - please increase ls_iterations to %u\n",
+            "linesearch iterations limit reached - please increase ls_iterations beyond %u\n",
             wp.static(LS_ITERATIONS),
           )
         wp.atomic_or(overflow_out, worldid, wp.static(OverflowType.LS_ITERATIONS))
@@ -3442,7 +3442,7 @@ def _solve_cg_finalize(warn_overflow: bool):
     if done or solver_niter_out[worldid] == opt_iterations:
       if not done and solver_niter_out[worldid] == opt_iterations:
         if wp.static(warn_overflow):
-          wp.printf("solver iterations limit reached - please increase iterations to %u\n", opt_iterations)
+          wp.printf("solver iterations limit reached - please increase iterations beyond %u\n", opt_iterations)
         overflow_out[worldid] = overflow_out[worldid] | OverflowType.ITERATIONS
       ctx_done_out[worldid] = True
       wp.atomic_add(nsolving_out, 0, -1)
@@ -3489,7 +3489,7 @@ def _solve_done(warn_overflow: bool):
       # mark this world as done and remove it from the number of unconverged worlds
       if not done and solver_niter_out[worldid] == opt_iterations:
         if wp.static(warn_overflow):
-          wp.printf("solver iterations limit reached - please increase iterations to %u\n", opt_iterations)
+          wp.printf("solver iterations limit reached - please increase iterations beyond %u\n", opt_iterations)
         overflow_out[worldid] = overflow_out[worldid] | OverflowType.ITERATIONS
       ctx_done_out[worldid] = True
       wp.atomic_add(nsolving_out, 0, -1)
