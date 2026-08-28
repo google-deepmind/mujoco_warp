@@ -209,6 +209,32 @@ class ContactSortDeterminismTest(parameterized.TestCase):
         err_msg=f"{field} was not permuted into deterministic order",
       )
 
+  def test_constraint_rows_accept_interleaved_contact_worlds(self):
+    """Deterministic row allocation does not require world-major contacts."""
+    _, _, m, d = test_data.fixture(path="collision.xml", nworld=4, overrides={"opt.jacobian": "SPARSE"})
+    m.opt.deterministic = True
+    mjw.fwd_position(m, d)
+
+    nacon = int(d.nacon.numpy()[0])
+    self.assertGreater(nacon, d.nworld)
+    expected_nefc = d.nefc.numpy().copy()
+    original = _copy_contact_fields(d)
+
+    by_world = [np.flatnonzero(original["worldid"][:nacon] == worldid) for worldid in range(d.nworld)]
+    max_contacts = max(len(indices) for indices in by_world)
+    perm = np.asarray(
+      [indices[offset] for offset in range(max_contacts) for indices in by_world if offset < len(indices)],
+      dtype=np.int64,
+    )
+    interleaved = _permute_active_contacts(original, nacon, perm)
+    self.assertGreater(np.count_nonzero(np.diff(interleaved["worldid"][:nacon])), d.nworld)
+    _write_contact_fields(d, interleaved)
+
+    mjw.make_constraint(m, d)
+
+    np.testing.assert_array_equal(d.nefc.numpy(), expected_nefc)
+    self.assertTrue((d.contact.efc_address.numpy()[:nacon, 0] >= 0).all())
+
   def test_deterministic_flag_default_false(self):
     """The deterministic flag defaults to False."""
     _, _, m, _ = test_data.fixture(path="collision.xml")
