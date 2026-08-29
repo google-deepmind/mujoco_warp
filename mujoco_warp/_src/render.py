@@ -356,11 +356,12 @@ def _make_cast_ray(geom_ray_types: Tuple[int], first_hit: bool = False) -> wp.Fu
     bounds_nr = int(0)
     ngeom = bvh_ngeom + flex_bvh_ngeom
 
-    # A coincident geom sits exactly at dist; widen the prune so it survives to
-    # reach the tie-break below.
+    # max_t is exclusive: widen so coincident hits reach the tie-break below.
     while wp.bvh_query_next(query, bounds_nr, dist * (1.0 + 1.0e-6) + 1.0e-9):
       gi_global = bounds_nr
       local_id = gi_global - (worldid * ngeom)
+
+      query_dist = dist * (1.0 + 1.0e-6) + 1.0e-9
 
       d = float(-1.0)
       hit_mesh_id = int(-1)
@@ -397,7 +398,7 @@ def _make_cast_ray(geom_ray_types: Tuple[int], first_hit: bool = False) -> wp.Fu
             geom_xmat_in[worldid, gi],
             ray_origin_world,
             ray_dir_world,
-            dist,
+            query_dist,
             cull_backfaces,
           )
       if wp.static(int(GeomType.SPHERE) in geom_ray_types):
@@ -465,7 +466,7 @@ def _make_cast_ray(geom_ray_types: Tuple[int], first_hit: bool = False) -> wp.Fu
               geom_xmat_in[worldid, gi],
               ray_origin_world,
               ray_dir_world,
-              dist * (1.0 + 1.0e-6) + 1.0e-9,  # max_t is exclusive
+              query_dist,
               cull_backfaces,
             )
       if wp.static(int(GeomType.FLEX) in geom_ray_types):
@@ -502,7 +503,7 @@ def _make_cast_ray(geom_ray_types: Tuple[int], first_hit: bool = False) -> wp.Fu
               d = 0.0 if hit else -1.0
             else:
               flex_gr = flex_group_root[worldid, flexid]
-              d, n, u, v, f = ray_flex_with_bvh(flex_bvh_id, flexid, flex_gr, ray_origin_world, ray_dir_world, dist)
+              d, n, u, v, f = ray_flex_with_bvh(flex_bvh_id, flexid, flex_gr, ray_origin_world, ray_dir_world, query_dist)
               if d >= 0.0:
                 hit_mesh_id = flexid
 
@@ -517,11 +518,9 @@ def _make_cast_ray(geom_ray_types: Tuple[int], first_hit: bool = False) -> wp.Fu
         if d >= 0.0 and d < dist:
           return hit_geom_id, d, n, u, v, f, hit_mesh_id
       else:
-        # MuJoCo's GL depth test (GL_LEQUAL) leaves the last-drawn geom on top, so
-        # coincident surfaces resolve to the higher geom index.
-        closer = d < dist
-        if wp.abs(d - dist) <= 1.0e-6 * wp.max(dist, 1.0) and geom_id >= 0 and hit_geom_id > geom_id:
-          closer = True
+        # Ties go to the higher geom index, like MuJoCo's GL depth test.
+        tol = 1.0e-6 * wp.max(dist, 1.0)
+        closer = (d < dist - tol) or (wp.abs(d - dist) <= tol and (geom_id < 0 or hit_geom_id > geom_id))
         if d >= 0.0 and closer:
           dist = d
           normal = n

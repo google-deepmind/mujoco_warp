@@ -740,6 +740,35 @@ class RenderTest(parameterized.TestCase):
     self.assertGreater(np.count_nonzero(seg == 1), 0)
     self.assertEqual(np.count_nonzero(seg == 0), 0)
 
+  @parameterized.parameters(False, True)
+  def test_coincident_geoms_with_roundoff_resolve_to_higher_index(self, extra_geoms: bool):
+    # The lower-index box sits nearer by less than the tie tolerance: roundoff
+    # must not let it win. The extra geoms reshuffle the BVH traversal order so
+    # both visit orders of the pair are exercised.
+    ring = "".join(
+      f'<geom type="sphere" size="0.05" pos="{0.7 * np.cos(t):.3f} {0.5 * np.sin(t):.3f} 0" rgba="0.5 0.5 0.9 1"/>'
+      for t in np.linspace(0.0, 2.0 * np.pi, 9, endpoint=False)
+    )
+    xml = f"""
+    <mujoco>
+      <worldbody>
+        <light pos="0 -1 1"/>
+        <camera pos="0 -2 0" xyaxes="1 0 0 0 0 1"/>
+        {ring if extra_geoms else ""}
+        <geom type="box" size="0.2 0.2 0.2" rgba="1 0 0 1"/>
+        <geom type="box" pos="0 1e-7 0" size="0.2 0.2 0.2" rgba="0 1 0 1"/>
+      </worldbody>
+    </mujoco>
+    """
+    mjm, _, m, d = test_data.fixture(xml=xml)
+    rc = mjw.create_render_context(mjm, cam_res=(32, 32), render_seg=True)
+    mjw.render(m, d, rc)
+    seg = rc.seg_data.numpy()[0].reshape(-1, 2)[..., 0]
+    nbox = mjm.ngeom - 2, mjm.ngeom - 1
+
+    self.assertGreater(np.count_nonzero(seg == nbox[1]), 0)
+    self.assertEqual(np.count_nonzero(seg == nbox[0]), 0)
+
   def test_backfaces_are_shaded_two_sided(self):
     # Camera inside the box: every visible face points away from it. Shading
     # those hits with an unflipped normal leaves the interior at zero diffuse.
