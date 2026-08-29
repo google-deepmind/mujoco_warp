@@ -2668,3 +2668,4 @@ class RenderContext:
   splat_group_root: array("nworld", int)
   splat_count: int
   geom_ray_types: tuple = ()
+  _megakernel: Optional[wp.Kernel] = None

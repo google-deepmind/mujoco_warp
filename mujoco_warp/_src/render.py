@@ -1153,10 +1153,9 @@ def render(m: Model, d: Data, rc: RenderContext):
   rc.seg_data.fill_(wp.vec2i(-1, -1))
   # Specialising the megakernel costs more than launching it, so keep it on the
   # context: the static configuration it closes over is fixed at creation.
-  _render_megakernel = getattr(rc, "_megakernel", None)
-  if _render_megakernel is None:
-    _render_megakernel = _build_megakernel(m, rc)
-    object.__setattr__(rc, "_megakernel", _render_megakernel)
+  if rc._megakernel is None:
+    rc._megakernel = _build_megakernel(m, rc)
+  _render_megakernel = rc._megakernel
 
   wp.launch(
     kernel=_render_megakernel,

@@ -864,6 +864,61 @@ class RenderTest(parameterized.TestCase):
     self.assertGreater(len(value), 120)
     self.assertLess(int(count.max()), 40)
 
+  def test_vertex_normals_can_be_disabled(self):
+    # Same sphere hull as above: disabling vertex normals falls back to face
+    # normals, collapsing the smooth gradient into a few flat facet levels.
+    n, r = 64, 0.3
+    i = np.arange(n) + 0.5
+    phi = np.arccos(1.0 - 2.0 * i / n)
+    theta = np.pi * (1.0 + 5.0**0.5) * i
+    pts = r * np.stack([np.cos(theta) * np.sin(phi), np.sin(theta) * np.sin(phi), np.cos(phi)], axis=-1)
+    xml = f"""
+    <mujoco>
+      <asset><mesh name="sphere" vertex="{" ".join(f"{x:.5f}" for x in pts.ravel())}"/></asset>
+      <worldbody>
+        <light pos="0 -2 1" dir="0 0.9 -0.45" directional="true" diffuse="0.55 0.55 0.55"/>
+        <camera pos="0 -1.6 0" xyaxes="1 0 0 0 0 1" fovy="30"/>
+        <geom type="mesh" mesh="sphere" rgba="0.8 0.8 0.8 1"/>
+      </worldbody>
+    </mujoco>
+    """
+    mjm, _, m, d = test_data.fixture(xml=xml)
+
+    def render(enable):
+      rc = mjw.create_render_context(
+        mjm, cam_res=(64, 64), render_rgb=True, render_seg=True, use_ambient_lighting=False, enable_vertex_normals=enable
+      )
+      mjw.render(m, d, rc)
+      red = _unpack_rgb(rc.rgb_data.numpy()[0])[..., 0]
+      seg = rc.seg_data.numpy()[0].reshape(-1, 2)[..., 0]
+      return np.unique(red[seg == 0], return_counts=True)
+
+    value_smooth, count_smooth = render(True)
+    value_flat, count_flat = render(False)
+
+    self.assertGreater(len(value_smooth), len(value_flat))
+    self.assertGreater(int(count_flat.max()), int(count_smooth.max()))
+
+  def test_megakernel_cached_across_renders(self):
+    mjm, _, m, d = test_data.fixture(
+      xml="""
+    <mujoco>
+      <worldbody>
+        <light pos="0 0 2"/>
+        <camera pos="0 -2 0" xyaxes="1 0 0 0 0 1"/>
+        <geom type="sphere" size="0.2" rgba="1 0 0 1"/>
+      </worldbody>
+    </mujoco>
+    """
+    )
+    rc = mjw.create_render_context(mjm, cam_res=(32, 32), render_rgb=True)
+    self.assertIsNone(rc._megakernel)
+    mjw.render(m, d, rc)
+    kernel = rc._megakernel
+    self.assertIsNotNone(kernel)
+    mjw.render(m, d, rc)
+    self.assertIs(rc._megakernel, kernel)
+
   def test_shadow_light_fraction_scales_shadowed_light(self):
     # How much of a light survives its own shadow: 0 is black, 1 is no shadow.
     xml = """
