@@ -179,6 +179,32 @@ class RenderUtilTest(parameterized.TestCase):
     group_np = rc.group.numpy()
     _assert_eq(group_np, np.repeat(np.arange(nworld), rc.bvh_ngeom), "render context group values")
 
+  def test_use_textures_flag(self):
+    """create_render_context honors use_textures: skip texture materialization when False."""
+    textured_xml = """
+    <mujoco>
+      <asset>
+        <texture name="tex" type="2d" builtin="flat" rgb1="1 0 0" width="4" height="4"/>
+        <material name="mat" texture="tex"/>
+      </asset>
+      <worldbody>
+        <camera name="cam" pos="0 -3 2" xyaxes="1 0 0 0 0.6 0.8" resolution="16 16" output="rgb"/>
+        <geom type="plane" size="5 5 0.1" material="mat"/>
+        <geom type="sphere" size="0.5" pos="0 0 1" material="mat"/>
+      </worldbody>
+    </mujoco>
+    """
+    mjm, mjd, m, d = test_data.fixture(xml=textured_xml)
+    self.assertGreater(mjm.ntex, 0, "test model must contain at least one texture")
+
+    rc_off = mjw.create_render_context(mjm, cam_res=(16, 16), use_textures=False)
+    self.assertEqual(len(rc_off.textures_registry), 0, "no textures should be created when use_textures=False")
+    self.assertFalse(rc_off.use_textures)
+
+    rc_on = mjw.create_render_context(mjm, cam_res=(16, 16), render_rgb=True, use_textures=True)
+    self.assertEqual(len(rc_on.textures_registry), mjm.ntex, "all model textures should be created when use_textures=True")
+    self.assertTrue(rc_on.use_textures)
+
   def test_output_buffers(self):
     """Test that the output rgb and depth buffers have correct shapes and addresses."""
     mjm, mjd, m, d = test_data.fixture(xml=_CAMERA_TEST_XML)

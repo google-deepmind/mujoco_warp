@@ -496,8 +496,13 @@ def create_render_context(
       flex_group_root[:, f] = group_root.numpy()
 
   textures_registry = []
-  for i in range(mjm.ntex):
-    textures_registry.append(create_warp_texture(mjm, i))
+  # Only materialize GPU textures when the caller actually needs them. The
+  # loop below calls wp.Texture2D, which requires backend texture-object
+  # support (hipArray textures are unsupported on some non-CUDA backends);
+  # raycast-only contexts pass use_textures=False and never sample textures.
+  if use_textures:
+    for i in range(mjm.ntex):
+      textures_registry.append(create_warp_texture(mjm, i))
   textures = wp.array(textures_registry, dtype=wp.Texture2D)
 
   # Locate skybox texture
