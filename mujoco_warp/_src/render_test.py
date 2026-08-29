@@ -769,6 +769,27 @@ class RenderTest(parameterized.TestCase):
     self.assertGreater(np.count_nonzero(seg == nbox[1]), 0)
     self.assertEqual(np.count_nonzero(seg == nbox[0]), 0)
 
+  def test_backface_cull_skips_culled_triangles(self):
+    # An inside-out tetra: like GL, culling must drop its near faces yet still
+    # draw the far face behind them, not drop the whole mesh.
+    xml = """
+    <mujoco>
+      <asset><mesh name="tetra" vertex="1 1 1  1 -1 -1  -1 1 -1  -1 -1 1" face="0 2 1  0 1 3  0 3 2  1 2 3"/></asset>
+      <worldbody>
+        <light pos="0 -3 1"/>
+        <camera pos="0 -3 0" xyaxes="1 0 0 0 0 1"/>
+        <geom name="tetra" type="mesh" mesh="tetra"/>
+        <geom name="marker" type="box" size="0.5 0.5 0.5" pos="0 5 0"/>
+      </worldbody>
+    </mujoco>
+    """
+    mjm, _, m, d = test_data.fixture(xml=xml)
+    rc = mjw.create_render_context(mjm, cam_res=(32, 32), render_seg=True, enable_backface_culling=True)
+    mjw.render(m, d, rc)
+    seg = rc.seg_data.numpy()[0].reshape(-1, 2)[..., 0]
+
+    self.assertGreater(np.count_nonzero(seg == 0), 0)
+
   def test_backfaces_are_shaded_two_sided(self):
     # Camera inside the box: every visible face points away from it. Shading
     # those hits with an unflipped normal leaves the interior at zero diffuse.
