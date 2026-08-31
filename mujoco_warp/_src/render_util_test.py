@@ -181,7 +181,8 @@ class RenderUtilTest(parameterized.TestCase):
 
   def test_use_textures_flag(self):
     """create_render_context honors use_textures: skip texture materialization when False."""
-    textured_xml = """
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
     <mujoco>
       <asset>
         <texture name="tex" type="2d" builtin="flat" rgb1="1 0 0" width="4" height="4"/>
@@ -194,14 +195,14 @@ class RenderUtilTest(parameterized.TestCase):
       </worldbody>
     </mujoco>
     """
-    mjm, mjd, m, d = test_data.fixture(xml=textured_xml)
+    )
     self.assertGreater(mjm.ntex, 0, "test model must contain at least one texture")
 
     rc_off = mjw.create_render_context(mjm, cam_res=(16, 16), use_textures=False)
     self.assertEqual(len(rc_off.textures_registry), 0, "no textures should be created when use_textures=False")
     self.assertFalse(rc_off.use_textures)
 
-    rc_on = mjw.create_render_context(mjm, cam_res=(16, 16), render_rgb=True, use_textures=True)
+    rc_on = mjw.create_render_context(mjm, cam_res=(16, 16), use_textures=True)
     self.assertEqual(len(rc_on.textures_registry), mjm.ntex, "all model textures should be created when use_textures=True")
     self.assertTrue(rc_on.use_textures)
 
