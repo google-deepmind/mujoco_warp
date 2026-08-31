@@ -20,6 +20,8 @@ import warp as wp
 
 from mujoco_warp._src import math
 from mujoco_warp._src.bvh import SPLAT_MIN_RESPONSE
+from mujoco_warp._src.ray import RAY_TOL_ABS
+from mujoco_warp._src.ray import RAY_TOL_REL
 from mujoco_warp._src.ray import ray_box
 from mujoco_warp._src.ray import ray_capsule
 from mujoco_warp._src.ray import ray_cylinder
@@ -357,11 +359,11 @@ def _make_cast_ray(geom_ray_types: Tuple[int], first_hit: bool = False) -> wp.Fu
     ngeom = bvh_ngeom + flex_bvh_ngeom
 
     # max_t is exclusive: widen so coincident hits reach the tie-break below.
-    while wp.bvh_query_next(query, bounds_nr, dist * (1.0 + 1.0e-6) + 1.0e-9):
+    while wp.bvh_query_next(query, bounds_nr, dist * (1.0 + RAY_TOL_REL) + RAY_TOL_ABS):
       gi_global = bounds_nr
       local_id = gi_global - (worldid * ngeom)
 
-      query_dist = dist * (1.0 + 1.0e-6) + 1.0e-9
+      query_dist = dist * (1.0 + RAY_TOL_REL) + RAY_TOL_ABS
 
       d = float(-1.0)
       hit_mesh_id = int(-1)
@@ -519,7 +521,7 @@ def _make_cast_ray(geom_ray_types: Tuple[int], first_hit: bool = False) -> wp.Fu
           return hit_geom_id, d, n, u, v, f, hit_mesh_id
       else:
         # Ties go to the higher geom index, like MuJoCo's GL depth test.
-        tol = 1.0e-6 * wp.max(dist, 1.0)
+        tol = RAY_TOL_REL * wp.max(dist, 1.0)
         closer = (d < dist - tol) or (wp.abs(d - dist) <= tol and (geom_id < 0 or hit_geom_id > geom_id))
         if d >= 0.0 and closer:
           dist = d
@@ -860,14 +862,12 @@ def _build_megakernel(m: Model, rc: RenderContext):
       face = wp.transpose(mat) @ normal
       tri = mesh_facenormal[mesh_faceadr[mesh_id] + f]
       adr = mesh_normaladr[mesh_id]
-      normal = wp.normalize(
-        mat
-        @ (
-          vertex_normal(mesh_normal[adr + tri[0]], face) * u
-          + vertex_normal(mesh_normal[adr + tri[1]], face) * v
-          + vertex_normal(mesh_normal[adr + tri[2]], face) * (1.0 - u - v)
-        )
+      vec = (
+        vertex_normal(mesh_normal[adr + tri[0]], face) * u
+        + vertex_normal(mesh_normal[adr + tri[1]], face) * v
+        + vertex_normal(mesh_normal[adr + tri[2]], face) * (1.0 - u - v)
       )
+      normal = wp.normalize(mat @ vec)
 
     if wp.static(not rc_static["enable_backface_culling"]):
       # Two-sided shading: light a back-facing hit as if it faced the viewer.

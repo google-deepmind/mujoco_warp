@@ -688,42 +688,45 @@ class RenderTest(parameterized.TestCase):
     self.assertFalse(np.array_equal(rgb_w0, rgb_w1))
 
   def test_mesh_bounds_contain_offcentre_mesh(self):
-    # Recentred on its centroid the pyramid spans -h/4 to 3h/4, but a half-extent
-    # of 0.5 * (pmax - pmin) reaches only h/2, cutting the apex off. The camera
-    # sits on that cut looking along the horizon, so rays above the centre row
-    # only travel upwards: they reach the apex only if it is inside the bounds.
-    b, h = 0.1, 0.4
-    xml = f"""
+    # Recentred on its centroid the pyramid (height 0.4) spans -0.1 to 0.3, but a
+    # half-extent of 0.5 * (pmax - pmin) reaches only 0.2, cutting the apex off.
+    # The camera sits on that cut (z = 0.3) looking along the horizon, so rays
+    # above the centre row reach the apex only if it is inside the bounds.
+    mjm, _, m, d = test_data.fixture(
+      xml="""
     <mujoco>
       <asset>
-        <mesh name="pyramid" vertex="{-b} {-b} 0  {b} {-b} 0  {b} {b} 0  {-b} {b} 0  0 0 {h}"/>
+        <mesh name="pyramid" vertex="-0.1 -0.1 0  0.1 -0.1 0  0.1 0.1 0  -0.1 0.1 0  0 0 0.4"/>
       </asset>
       <worldbody>
         <light pos="0 -1 2"/>
-        <camera pos="0 -0.5 {0.25 * h + 0.5 * h}" xyaxes="1 0 0 0 0 1" fovy="30"/>
+        <camera pos="0 -0.5 0.3" xyaxes="1 0 0 0 0 1" fovy="30"/>
         <geom type="mesh" mesh="pyramid" rgba="1 0 0 1"/>
       </worldbody>
     </mujoco>
     """
-    mjm, _, m, d = test_data.fixture(xml=xml)
+    )
     rc = mjw.create_render_context(mjm, cam_res=(64, 64), render_seg=True)
     mjw.render(m, d, rc)
     seg = rc.seg_data.numpy()[0].reshape(64, 64, 2)[..., 0]
 
     self.assertGreater(np.count_nonzero(seg[:32] >= 0), 100)
 
-  @parameterized.parameters("box", "mesh")
-  def test_coincident_geoms_resolve_to_higher_index(self, geom_type: str):
+  @parameterized.named_parameters(
+    ("box", 'type="box" size="0.2 0.2 0.2"'),
+    ("mesh", 'type="mesh" mesh="cube"'),
+  )
+  def test_coincident_geoms_resolve_to_higher_index(self, geom: str):
     # Two geoms in the same place: MuJoCo's GL depth test (GL_LEQUAL) leaves the
     # last-drawn geom on top, so the higher index must win every pixel, not
     # whichever the BVH reaches first.
-    s = 0.2
-    vert = " ".join(f"{x} {y} {z}" for x in (-s, s) for y in (-s, s) for z in (-s, s))
-    asset = f'<asset><mesh name="m" vertex="{vert}"/></asset>' if geom_type == "mesh" else ""
-    geom = 'type="mesh" mesh="m"' if geom_type == "mesh" else f'type="box" size="{s} {s} {s}"'
-    xml = f"""
+    mjm, _, m, d = test_data.fixture(
+      xml=f"""
     <mujoco>
-      {asset}
+      <asset>
+        <mesh name="cube" vertex="-0.2 -0.2 -0.2  -0.2 -0.2 0.2  -0.2 0.2 -0.2  -0.2 0.2 0.2
+                                  0.2 -0.2 -0.2  0.2 -0.2 0.2  0.2 0.2 -0.2  0.2 0.2 0.2"/>
+      </asset>
       <worldbody>
         <light pos="0 -1 1"/>
         <camera pos="0 -1.5 0" xyaxes="1 0 0 0 0 1"/>
@@ -732,7 +735,7 @@ class RenderTest(parameterized.TestCase):
       </worldbody>
     </mujoco>
     """
-    mjm, _, m, d = test_data.fixture(xml=xml)
+    )
     rc = mjw.create_render_context(mjm, cam_res=(32, 32), render_seg=True)
     mjw.render(m, d, rc)
     seg = rc.seg_data.numpy()[0].reshape(-1, 2)[..., 0]
@@ -740,27 +743,34 @@ class RenderTest(parameterized.TestCase):
     self.assertGreater(np.count_nonzero(seg == 1), 0)
     self.assertEqual(np.count_nonzero(seg == 0), 0)
 
+  _RING = """
+        <geom type="sphere" size="0.05" pos="0.700 0.000 0" rgba="0.5 0.5 0.9 1"/>
+        <geom type="sphere" size="0.05" pos="0.536 0.321 0" rgba="0.5 0.5 0.9 1"/>
+        <geom type="sphere" size="0.05" pos="0.122 0.492 0" rgba="0.5 0.5 0.9 1"/>
+        <geom type="sphere" size="0.05" pos="-0.350 0.433 0" rgba="0.5 0.5 0.9 1"/>
+        <geom type="sphere" size="0.05" pos="-0.658 0.171 0" rgba="0.5 0.5 0.9 1"/>
+        <geom type="sphere" size="0.05" pos="-0.658 -0.171 0" rgba="0.5 0.5 0.9 1"/>
+        <geom type="sphere" size="0.05" pos="-0.350 -0.433 0" rgba="0.5 0.5 0.9 1"/>
+        <geom type="sphere" size="0.05" pos="0.122 -0.492 0" rgba="0.5 0.5 0.9 1"/>
+        <geom type="sphere" size="0.05" pos="0.536 -0.321 0" rgba="0.5 0.5 0.9 1"/>"""
+
   @parameterized.parameters(False, True)
   def test_coincident_geoms_with_roundoff_resolve_to_higher_index(self, extra_geoms: bool):
     # The lower-index box sits nearer by less than the tie tolerance: roundoff
     # must not let it win. The extra geoms reshuffle the BVH traversal order so
     # both visit orders of the pair are exercised.
-    ring = "".join(
-      f'<geom type="sphere" size="0.05" pos="{0.7 * np.cos(t):.3f} {0.5 * np.sin(t):.3f} 0" rgba="0.5 0.5 0.9 1"/>'
-      for t in np.linspace(0.0, 2.0 * np.pi, 9, endpoint=False)
-    )
-    xml = f"""
+    mjm, _, m, d = test_data.fixture(
+      xml=f"""
     <mujoco>
       <worldbody>
         <light pos="0 -1 1"/>
-        <camera pos="0 -2 0" xyaxes="1 0 0 0 0 1"/>
-        {ring if extra_geoms else ""}
+        <camera pos="0 -2 0" xyaxes="1 0 0 0 0 1"/>{self._RING if extra_geoms else ""}
         <geom type="box" size="0.2 0.2 0.2" rgba="1 0 0 1"/>
         <geom type="box" pos="0 1e-7 0" size="0.2 0.2 0.2" rgba="0 1 0 1"/>
       </worldbody>
     </mujoco>
     """
-    mjm, _, m, d = test_data.fixture(xml=xml)
+    )
     rc = mjw.create_render_context(mjm, cam_res=(32, 32), render_seg=True)
     mjw.render(m, d, rc)
     seg = rc.seg_data.numpy()[0].reshape(-1, 2)[..., 0]
@@ -772,7 +782,8 @@ class RenderTest(parameterized.TestCase):
   def test_backface_cull_skips_culled_triangles(self):
     # An inside-out tetra: like GL, culling must drop its near faces yet still
     # draw the far face behind them, not drop the whole mesh.
-    xml = """
+    mjm, _, m, d = test_data.fixture(
+      xml="""
     <mujoco>
       <asset><mesh name="tetra" vertex="1 1 1  1 -1 -1  -1 1 -1  -1 -1 1" face="0 2 1  0 1 3  0 3 2  1 2 3"/></asset>
       <worldbody>
@@ -783,7 +794,7 @@ class RenderTest(parameterized.TestCase):
       </worldbody>
     </mujoco>
     """
-    mjm, _, m, d = test_data.fixture(xml=xml)
+    )
     rc = mjw.create_render_context(mjm, cam_res=(32, 32), render_seg=True, enable_backface_culling=True)
     mjw.render(m, d, rc)
     seg = rc.seg_data.numpy()[0].reshape(-1, 2)[..., 0]
@@ -793,7 +804,8 @@ class RenderTest(parameterized.TestCase):
   def test_backfaces_are_shaded_two_sided(self):
     # Camera inside the box: every visible face points away from it. Shading
     # those hits with an unflipped normal leaves the interior at zero diffuse.
-    xml = """
+    mjm, _, m, d = test_data.fixture(
+      xml="""
     <mujoco>
       <worldbody>
         <light pos="0 0 0.5" diffuse="1 1 1"/>
@@ -802,7 +814,7 @@ class RenderTest(parameterized.TestCase):
       </worldbody>
     </mujoco>
     """
-    mjm, _, m, d = test_data.fixture(xml=xml)
+    )
     rc = mjw.create_render_context(
       mjm, cam_res=(32, 32), render_rgb=True, enable_backface_culling=False, use_ambient_lighting=False
     )
@@ -815,13 +827,15 @@ class RenderTest(parameterized.TestCase):
     # A bare-vertex hull has no authored normals: at a cube corner MuJoCo's face
     # contributions cancel and it stores the [0, 0, 1] sentinel. Rejecting those
     # against the face normal must render the hull exactly like the primitive.
-    s = 0.3
-    vert = " ".join(f"{x} {y} {z}" for x in (-s, s) for y in (-s, s) for z in (-s, s))
-
-    def render(geom):
-      xml = f"""
+    rgb = []
+    for geom in ('type="mesh" mesh="cube"', 'type="box" size="0.3 0.3 0.3"'):
+      mjm, _, m, d = test_data.fixture(
+        xml=f"""
       <mujoco>
-        <asset><mesh name="cube" vertex="{vert}"/></asset>
+        <asset>
+          <mesh name="cube" vertex="-0.3 -0.3 -0.3  -0.3 -0.3 0.3  -0.3 0.3 -0.3  -0.3 0.3 0.3
+                                    0.3 -0.3 -0.3  0.3 -0.3 0.3  0.3 0.3 -0.3  0.3 0.3 0.3"/>
+        </asset>
         <worldbody>
           <light pos="0 -2 1" dir="0 0.9 -0.45" directional="true" diffuse="0.55 0.55 0.55"/>
           <camera pos="0 -3 0" xyaxes="1 0 0 0 0 1" fovy="25"/>
@@ -829,22 +843,24 @@ class RenderTest(parameterized.TestCase):
         </worldbody>
       </mujoco>
       """
-      mjm, _, m, d = test_data.fixture(xml=xml)
+      )
       rc = mjw.create_render_context(mjm, cam_res=(64, 64), render_rgb=True, use_ambient_lighting=False)
       mjw.render(m, d, rc)
-      return _unpack_rgb(rc.rgb_data.numpy()[0])
+      rgb.append(_unpack_rgb(rc.rgb_data.numpy()[0]))
 
-    np.testing.assert_array_equal(render('type="mesh" mesh="cube"'), render(f'type="box" size="{s} {s} {s}"'))
+    np.testing.assert_array_equal(rgb[0], rgb[1])
 
-  def test_authored_normals_shade_smoothly(self):
+  def test_authored_normals_shade_smoothly_unless_disabled(self):
     # On a sphere hull neighbouring faces stay inside the tolerance, so MuJoCo
-    # keeps real vertex normals: interpolating them must leave no flat facet.
+    # keeps real vertex normals: interpolating them must leave no flat facet,
+    # while enable_vertex_normals=False must collapse back to facet levels.
     n, r = 64, 0.3
     i = np.arange(n) + 0.5
     phi = np.arccos(1.0 - 2.0 * i / n)
     theta = np.pi * (1.0 + 5.0**0.5) * i
     pts = r * np.stack([np.cos(theta) * np.sin(phi), np.sin(theta) * np.sin(phi), np.cos(phi)], axis=-1)
-    xml = f"""
+    mjm, _, m, d = test_data.fixture(
+      xml=f"""
     <mujoco>
       <asset><mesh name="sphere" vertex="{" ".join(f"{x:.5f}" for x in pts.ravel())}"/></asset>
       <worldbody>
@@ -854,50 +870,29 @@ class RenderTest(parameterized.TestCase):
       </worldbody>
     </mujoco>
     """
-    mjm, _, m, d = test_data.fixture(xml=xml)
-    rc = mjw.create_render_context(mjm, cam_res=(64, 64), render_rgb=True, render_seg=True, use_ambient_lighting=False)
-    mjw.render(m, d, rc)
-    red = _unpack_rgb(rc.rgb_data.numpy()[0])[..., 0]
-    seg = rc.seg_data.numpy()[0].reshape(-1, 2)[..., 0]
-    value, count = np.unique(red[seg == 0], return_counts=True)
+    )
 
-    self.assertGreater(len(value), 120)
-    self.assertLess(int(count.max()), 40)
-
-  def test_vertex_normals_can_be_disabled(self):
-    # Same sphere hull as above: disabling vertex normals falls back to face
-    # normals, collapsing the smooth gradient into a few flat facet levels.
-    n, r = 64, 0.3
-    i = np.arange(n) + 0.5
-    phi = np.arccos(1.0 - 2.0 * i / n)
-    theta = np.pi * (1.0 + 5.0**0.5) * i
-    pts = r * np.stack([np.cos(theta) * np.sin(phi), np.sin(theta) * np.sin(phi), np.cos(phi)], axis=-1)
-    xml = f"""
-    <mujoco>
-      <asset><mesh name="sphere" vertex="{" ".join(f"{x:.5f}" for x in pts.ravel())}"/></asset>
-      <worldbody>
-        <light pos="0 -2 1" dir="0 0.9 -0.45" directional="true" diffuse="0.55 0.55 0.55"/>
-        <camera pos="0 -1.6 0" xyaxes="1 0 0 0 0 1" fovy="30"/>
-        <geom type="mesh" mesh="sphere" rgba="0.8 0.8 0.8 1"/>
-      </worldbody>
-    </mujoco>
-    """
-    mjm, _, m, d = test_data.fixture(xml=xml)
-
-    def render(enable):
+    values, counts = [], []
+    for enable_vertex_normals in (True, False):
       rc = mjw.create_render_context(
-        mjm, cam_res=(64, 64), render_rgb=True, render_seg=True, use_ambient_lighting=False, enable_vertex_normals=enable
+        mjm,
+        cam_res=(64, 64),
+        render_rgb=True,
+        render_seg=True,
+        use_ambient_lighting=False,
+        enable_vertex_normals=enable_vertex_normals,
       )
       mjw.render(m, d, rc)
       red = _unpack_rgb(rc.rgb_data.numpy()[0])[..., 0]
       seg = rc.seg_data.numpy()[0].reshape(-1, 2)[..., 0]
-      return np.unique(red[seg == 0], return_counts=True)
+      value, count = np.unique(red[seg == 0], return_counts=True)
+      values.append(value)
+      counts.append(count)
 
-    value_smooth, count_smooth = render(True)
-    value_flat, count_flat = render(False)
-
-    self.assertGreater(len(value_smooth), len(value_flat))
-    self.assertGreater(int(count_flat.max()), int(count_smooth.max()))
+    self.assertGreater(len(values[0]), 120)
+    self.assertLess(int(counts[0].max()), 40)
+    self.assertGreater(len(values[0]), len(values[1]))
+    self.assertGreater(int(counts[1].max()), int(counts[0].max()))
 
   def test_megakernel_cached_across_renders(self):
     mjm, _, m, d = test_data.fixture(
@@ -919,10 +914,14 @@ class RenderTest(parameterized.TestCase):
     mjw.render(m, d, rc)
     self.assertIs(rc._megakernel, kernel)
 
-  def test_shadow_light_fraction_scales_shadowed_light(self):
-    # How much of a light survives its own shadow: 0 is black, 1 is no shadow.
-    xml = """
+  @parameterized.parameters(0.0, 0.3, 1.0)
+  def test_shadow_light_fraction_scales_shadowed_light(self, fraction: float):
+    # How much of a light survives its own shadow: 0 renders the shadowed floor
+    # black, 1 erases the shadow, and mid-fractions sit strictly between.
+    mjm, _, m, d = test_data.fixture(
+      xml="""
     <mujoco>
+      <visual><headlight active="0"/></visual>
       <worldbody>
         <light pos="0 0 3" dir="0 0 -1" directional="true" diffuse="1 1 1" castshadow="true"/>
         <camera pos="0 -1.2 1.2" xyaxes="1 0 0 0 0.7 0.7" fovy="60"/>
@@ -931,28 +930,30 @@ class RenderTest(parameterized.TestCase):
       </worldbody>
     </mujoco>
     """
-    shadowed = []
-    for fraction in (0.0, 0.3, 0.6, 1.0):
-      mjm, _, m, d = test_data.fixture(xml=xml)
-      rc = mjw.create_render_context(
-        mjm,
-        cam_res=(64, 64),
-        render_rgb=True,
-        render_seg=True,
-        use_shadows=True,
-        use_ambient_lighting=False,
-        shadow_light_fraction=fraction,
-      )
-      mjw.render(m, d, rc)
-      red = _unpack_rgb(rc.rgb_data.numpy()[0])[..., 0]
-      seg = rc.seg_data.numpy()[0].reshape(-1, 2)[..., 0]
-      floor = red[seg == 0]
-      shadowed.append((int(floor.min()), int(floor.max())))
+    )
+    rc = mjw.create_render_context(
+      mjm,
+      cam_res=(64, 64),
+      render_rgb=True,
+      render_seg=True,
+      use_shadows=True,
+      use_ambient_lighting=False,
+      enable_specular=False,
+      shadow_light_fraction=fraction,
+    )
+    mjw.render(m, d, rc)
+    red = _unpack_rgb(rc.rgb_data.numpy()[0])[..., 0]
+    seg = rc.seg_data.numpy()[0].reshape(-1, 2)[..., 0]
+    floor = red[seg == 0]
 
-    darkest = [lo for lo, _ in shadowed]
-    self.assertEqual(darkest, sorted(darkest))
-    self.assertLess(darkest[0], darkest[-1])
-    self.assertEqual(shadowed[-1][0], shadowed[-1][1])
+    if fraction == 0.0:
+      self.assertEqual(int(floor.min()), 0)
+      self.assertGreater(int(floor.max()), 0)
+    elif fraction == 1.0:
+      self.assertEqual(int(floor.min()), int(floor.max()))
+    else:
+      self.assertGreater(int(floor.min()), 0)
+      self.assertLess(int(floor.min()), int(floor.max()))
 
 
 if __name__ == "__main__":
