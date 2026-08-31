@@ -271,7 +271,8 @@ def _main(argv: Sequence[str]):
         print(f"\nSimulation aborted: overflow detected in {n_worlds} world{'s' if n_worlds > 1 else ''}:")
         for wid in world_ids[:10]:
           mask = overflows[wid]
-          active_flags = [f.name for f in OverflowType if mask & f.value]
+          # skip composite members (e.g. ALL) so only the individual overflows are reported
+          active_flags = [f.name for f in OverflowType if f.value and not (f.value & (f.value - 1)) and mask & f.value]
           print(f"  World {wid}: {', '.join(active_flags)}")
         if n_worlds > 10:
           print(f"  ... and {n_worlds - 10} more worlds (reporting truncated to first 10)")
