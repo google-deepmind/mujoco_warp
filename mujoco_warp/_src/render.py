@@ -704,6 +704,12 @@ def _build_megakernel(m: Model, rc: RenderContext):
   # Static parameters extracted for JAX FFI closure.
   rc_static = {f.name: getattr(rc, f.name) for f in dataclasses.fields(rc) if f.type in (int, wp.uint32, bool, float, wp.vec3)}
   rc_static["enable_specular_or_emission"] = rc.enable_specular or rc.enable_emission
+  bg = int(rc.background_color)
+  rc_static["background_color_vec3"] = wp.vec3(
+    float((bg >> 16) & 0xFF) / 255.0,
+    float((bg >> 8) & 0xFF) / 255.0,
+    float(bg & 0xFF) / 255.0,
+  )
   M_NLIGHT = m.nlight
 
   aa = rc.samples_per_pixel * rc.samples_per_pixel > 1
@@ -926,7 +932,8 @@ def _build_megakernel(m: Model, rc: RenderContext):
         dist,
       )
 
-    if render_seg[camid] and geom_id != -1:
+    # Depth and seg are single-sample outputs: only the first pass writes them.
+    if ray_base == 0 and render_seg[camid] and geom_id != -1:
       if geom_id == -2:
         seg_out[worldid, seg_adr[camid] + rayid_local] = wp.vec2i(mesh_id, int(ObjType.FLEX))
       else:
@@ -934,7 +941,7 @@ def _build_megakernel(m: Model, rc: RenderContext):
 
     # Early Out
     if geom_id == -1:
-      if render_depth[camid]:
+      if ray_base == 0 and render_depth[camid]:
         depth = 0.0
         if wp.static(has_splats):
           if splat_depth > 0.0:
@@ -952,25 +959,13 @@ def _build_megakernel(m: Model, rc: RenderContext):
         store_pixel(worldid, rgb_adr[camid] + rayid_local, skybox_color, rgb_out, aa_accum_out)
       elif render_rgb[camid]:
         if wp.static(has_splats):
-          packed = wp.static(rc_static["background_color"])
-          background = wp.vec3(
-            float((packed >> wp.uint32(16)) & wp.uint32(0xFF)),
-            float((packed >> wp.uint32(8)) & wp.uint32(0xFF)),
-            float(packed & wp.uint32(0xFF)),
-          ) * wp.static(1.0 / 255.0)
-          pixel_color = splat_color + background * splat_transmittance
+          pixel_color = splat_color + wp.static(rc_static["background_color_vec3"]) * splat_transmittance
           store_pixel(worldid, rgb_adr[camid] + rayid_local, pixel_color, rgb_out, aa_accum_out)
         elif wp.static(aa):
-          packed = wp.static(rc_static["background_color"])
           store_pixel(
             worldid,
             rgb_adr[camid] + rayid_local,
-            wp.vec3(
-              float((packed >> wp.uint32(16)) & wp.uint32(0xFF)),
-              float((packed >> wp.uint32(8)) & wp.uint32(0xFF)),
-              float(packed & wp.uint32(0xFF)),
-            )
-            * wp.static(1.0 / 255.0),
+            wp.static(rc_static["background_color_vec3"]),
             rgb_out,
             aa_accum_out,
           )
@@ -978,7 +973,7 @@ def _build_megakernel(m: Model, rc: RenderContext):
           rgb_out[worldid, rgb_adr[camid] + rayid_local] = wp.static(rc_static["background_color"])
       return
 
-    if render_depth[camid]:
+    if ray_base == 0 and render_depth[camid]:
       # Planar depth: project Euclidean distance onto the camera's optical axis.
       # In camera-local coordinates, the optical axis is -Z. The Z-component of the
       # normalized ray direction is negative, so -ray_dir_local_cam[2] gives cos(θ)

@@ -982,6 +982,96 @@ class RenderTest(parameterized.TestCase):
     self.assertGreater(blended[1], 50)
     self.assertGreater(blended[2], blended[1])
 
+  def test_supersampling_preserves_segmentation_and_depth(self):
+    # Depth and seg come from a single sample: extra samples must not dilate the
+    # segmentation silhouette or disturb the background depth.
+    coverage = []
+    for samples in (1, 2):
+      mjm, _, m, d = test_data.fixture(
+        xml="""
+      <mujoco>
+        <worldbody>
+          <light pos="0 -2 2" dir="0 1 -1" directional="true"/>
+          <camera pos="0 -2 0" xyaxes="1 0 0 0 0 1" fovy="30"/>
+          <geom type="box" size="0.3 0.3 0.3" euler="0 22 0" rgba="0.9 0.9 0.9 1"/>
+        </worldbody>
+      </mujoco>
+      """
+      )
+      rc = mjw.create_render_context(
+        mjm, cam_res=(64, 64), render_rgb=True, render_depth=True, render_seg=True, samples_per_pixel=samples
+      )
+      mjw.render(m, d, rc)
+      hits = rc.seg_data.numpy()[0][:, 0] >= 0
+      coverage.append(int(np.count_nonzero(hits)))
+      self.assertTrue(np.all(rc.depth_data.numpy()[0][~hits] == 0.0))
+
+    self.assertLess(abs(coverage[1] - coverage[0]), 10)
+
+  def test_supersampling_validation(self):
+    mjm, _, _, _ = test_data.fixture(
+      xml="""
+    <mujoco>
+      <worldbody>
+        <camera pos="0 -1 0" xyaxes="1 0 0 0 0 1"/>
+        <geom type="sphere" size="0.1"/>
+      </worldbody>
+    </mujoco>
+    """
+    )
+    with self.assertRaisesRegex(ValueError, "at least 1"):
+      mjw.create_render_context(mjm, samples_per_pixel=0)
+    with self.assertRaisesRegex(ValueError, "use_precomputed_rays"):
+      mjw.create_render_context(mjm, samples_per_pixel=2, use_precomputed_rays=False)
+    with self.assertRaisesRegex(ValueError, "render_rgb"):
+      mjw.create_render_context(mjm, samples_per_pixel=2, render_rgb=False)
+
+  def test_supersampling_multi_camera_mixed_outputs(self):
+    # aa_accum spans only the RGB pixels; a depth-only camera must not widen it.
+    mjm, _, m, d = test_data.fixture(
+      xml="""
+    <mujoco>
+      <worldbody>
+        <camera pos="0 -2 0" xyaxes="1 0 0 0 0 1" fovy="30"/>
+        <camera pos="0 0 2" xyaxes="1 0 0 0 1 0" fovy="30"/>
+        <geom type="box" size="0.2 0.2 0.2" rgba="1 0 0 1"/>
+      </worldbody>
+    </mujoco>
+    """
+    )
+    rc = mjw.create_render_context(
+      mjm,
+      cam_res=[(32, 32), (32, 32)],
+      render_rgb=[True, False],
+      render_depth=[False, True],
+      samples_per_pixel=2,
+    )
+    mjw.render(m, d, rc)
+
+    self.assertEqual(rc.aa_accum.shape, (1, 32 * 32))
+    self.assertGreater(np.count_nonzero(rc.rgb_data.numpy()[0]), 0)
+    self.assertGreater(np.count_nonzero(rc.depth_data.numpy()[0]), 0)
+
+  def test_supersampling_batched_worlds(self):
+    mjm, _, m, d = test_data.fixture(
+      xml="""
+    <mujoco>
+      <worldbody>
+        <light pos="0 -2 2" dir="0 1 -1" directional="true"/>
+        <camera pos="0 -2 0" xyaxes="1 0 0 0 0 1" fovy="30"/>
+        <geom type="box" size="0.3 0.3 0.3" euler="0 22 0" rgba="0.9 0.9 0.9 1"/>
+      </worldbody>
+    </mujoco>
+    """,
+      nworld=4,
+    )
+    rc = mjw.create_render_context(mjm, nworld=4, cam_res=(32, 32), render_rgb=True, samples_per_pixel=2)
+    mjw.render(m, d, rc)
+
+    for world in range(4):
+      red = _unpack_rgb(rc.rgb_data.numpy()[world])[..., 0]
+      self.assertGreater(len(np.unique(red)), 2)
+
 
 if __name__ == "__main__":
   wp.init()

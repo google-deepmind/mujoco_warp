@@ -628,6 +628,8 @@ def create_render_context(
     raise ValueError("samples_per_pixel must be at least 1.")
   if samples_per_pixel > 1 and not use_precomputed_rays:
     raise ValueError("samples_per_pixel > 1 requires use_precomputed_rays=True: dynamic rays carry no sub-pixel jitter.")
+  if samples_per_pixel > 1 and ri == 0:
+    raise ValueError("samples_per_pixel > 1 requires at least one camera with render_rgb=True.")
   nsamples = samples_per_pixel * samples_per_pixel
   ray = wp.zeros(int(total) * nsamples, dtype=wp.vec3)
   ray_offset = wp.zeros(int(total) * nsamples, dtype=wp.vec3)
@@ -665,7 +667,7 @@ def create_render_context(
       )
       offset += img_w * img_h
 
-  aa_accum = wp.zeros((nworld, int(total) if nsamples > 1 else 1), dtype=wp.vec3)
+  aa_accum = wp.zeros((nworld, ri if nsamples > 1 else 1), dtype=wp.vec3)
 
   bvh_ngeom = len(geom_enabled_idx)
 
