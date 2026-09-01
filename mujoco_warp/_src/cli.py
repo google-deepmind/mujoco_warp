@@ -15,6 +15,7 @@
 
 """Shared utilities and flags for MJWarp CLI tools."""
 
+import contextlib
 import time
 from typing import Callable, Tuple, get_type_hints
 
@@ -258,15 +259,19 @@ def unroll(
   Returns:
     jit_duration: Time to JIT capture the function.
   """
-  with wp.ScopedDevice(wp.get_device(DEVICE.value)):
+  device = wp.get_device(DEVICE.value)
+  with wp.ScopedDevice(device):
     with warp_util.EventTracer(enabled=EVENT_TRACE.value) as tracer:
       jit_beg = time.perf_counter()
-      with wp.ScopedCapture() as capture:
+      if device.is_cuda:
+        with wp.ScopedCapture() as capture:
+          fn(*(m, d) if rc is None else (m, d, rc))
+      else:
         fn(*(m, d) if rc is None else (m, d, rc))
       jit_end = time.perf_counter()
 
       for i in range(NSTEP.value):
-        with wp.ScopedStream(wp.get_stream()):
+        with wp.ScopedStream(wp.get_stream()) if device.is_cuda else contextlib.nullcontext():
           if ctrls is not None:
             center = wp.array(ctrls[i], dtype=wp.float32)
             wp.launch(
@@ -287,7 +292,10 @@ def unroll(
             wp.synchronize()
 
           run_beg = time.perf_counter()
-          wp.capture_launch(capture.graph)
+          if device.is_cuda:
+            wp.capture_launch(capture.graph)
+          else:
+            fn(*(m, d) if rc is None else (m, d, rc))
           wp.synchronize()
           run_end = time.perf_counter()
 

@@ -150,8 +150,6 @@ def _main(argv: Sequence[str]):
   wp.config.quiet = flags.FLAGS["verbosity"].value < 1
   wp.init()
   device = wp.get_device(cli.DEVICE.value)
-  if device == "cpu":
-    raise ValueError("testspeed available for gpu only")
 
   if _CLEAR_WARP_CACHE.value:
     wp.clear_kernel_cache()
@@ -167,7 +165,7 @@ def _main(argv: Sequence[str]):
     print(f"Loading model from: {path}...\n")
 
   mjm = cli.load_model(path)
-  free_mem_at_init = wp.get_device(device).free_memory
+  free_mem_at_init = wp.get_device(device).free_memory if wp.get_device(device).is_cuda else 0
   m, d, rc, ctrls = cli.init_structs(_FUNCS[_FUNCTION.value], mjm)
   m.opt.warn_overflow = int(OverflowType.ALL) if _OVERFLOW_BEHAVIOR.value == "continue" else 0
   timestep = m.opt.timestep.numpy()[0]
@@ -279,13 +277,20 @@ def _main(argv: Sequence[str]):
         sys.exit(1)
 
   if _FUNCTION.value == "render":
-    with wp.ScopedCapture() as step_capture:
-      mjw.step(m, d)
+    if wp.get_device(device).is_cuda:
+      with wp.ScopedCapture() as step_capture:
+        mjw.step(m, d)
 
-    def render_callback(step, step_trace, latency):
-      callback(step, step_trace, latency)
-      wp.capture_launch(step_capture.graph)
-      wp.synchronize()
+      def render_callback(step, step_trace, latency):
+        callback(step, step_trace, latency)
+        wp.capture_launch(step_capture.graph)
+        wp.synchronize()
+    else:
+
+      def render_callback(step, step_trace, latency):
+        callback(step, step_trace, latency)
+        mjw.step(m, d)
+        wp.synchronize()
 
     # TODO(team): Support specifying multiple functions to benchmark them together,
     # e.g., `mjwarp-testspeed --function=refit_bvh --function=render`
@@ -301,7 +306,7 @@ def _main(argv: Sequence[str]):
   steps = cli.NWORLD.value * cli.NSTEP.value
   model_mem = _dataclass_memory(m)
   data_mem = _dataclass_memory(d)
-  total_mem = free_mem_at_init - wp.get_device(device).free_memory
+  total_mem = (free_mem_at_init - wp.get_device(device).free_memory) if wp.get_device(device).is_cuda else 0
 
   if _FORMAT.value == "human":
     print(f"""
@@ -344,11 +349,11 @@ Total converged worlds: {nconverged} / {d.nworld}""")
       _print_table(matrix, ("mean", "std", "min", "max"), "solver niter")
 
     if _MEMORY.value:
-      device_mem = wp.get_device(device).total_memory
+      device_mem = getattr(wp.get_device(device), "total_memory", 0) or 1
       for mem, name in [(model_mem, "\nModel"), (data_mem, "Data")]:
         mem_total = sum(mem.values())
         print(f"{name} memory {mem_total / 1024**2:.2f} MiB ({100 * mem_total / device_mem:.2f}% of device memory):")
-        fields = [(f, c) for f, c in mem.items() if c / total_mem >= 0.01]
+        fields = [(f, c) for f, c in mem.items() if total_mem > 0 and c / total_mem >= 0.01]
         for field, capacity in fields:
           print(f" {field}: {capacity / 1024**2:.2f} MiB ({100 * capacity / device_mem:.2f}%)")
         if not fields:

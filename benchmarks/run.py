@@ -138,6 +138,9 @@ def _run_benchmark(bm: dict, input_dir: Path) -> dict:
     "--measure_solver=true",
     "--measure_alloc=true",
   ]
+  if _ARGS.nworld is not None:
+    bm = {**bm, "nworld": _ARGS.nworld}
+
   for field, value in bm.items():
     if field == "replay":
       cmd.append(f"--replay={(benchmark_root / value)}")
@@ -192,6 +195,7 @@ def main():
     type=lambda v: v.lower() not in ("false", "0"),
     help="clear warp caches (kernel, LTO, CUDA compute)",
   )
+  parser.add_argument("--nworld", type=int, default=None, help="override number of parallel worlds")
 
   _ARGS = parser.parse_args()
 
