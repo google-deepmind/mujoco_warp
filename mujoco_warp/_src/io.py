@@ -21,6 +21,7 @@ import mujoco
 import numpy as np
 import warp as wp
 
+from mujoco_warp._src import history
 from mujoco_warp._src import sleep
 from mujoco_warp._src import support
 from mujoco_warp._src import types
@@ -1759,6 +1760,12 @@ def make_data(
     ),
     # equality constraints
     "eq_active": wp.array(np.tile(mjm.eq_active0.astype(bool), (nworld, 1)), shape=(nworld, mjm.neq), dtype=bool),
+    # history
+    "history": (
+      wp.array(np.tile(mjd.history, (nworld, 1)), shape=(nworld, mjm.nhistory), dtype=float)
+      if mjm.nhistory > 0
+      else wp.zeros((nworld, 0), dtype=float)
+    ),
     # island arrays
     "nisland": None,
     "tree_island": None,
@@ -2699,6 +2706,9 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
       d.overflow,
     ],
   )
+
+  if m.nhistory > 0:
+    history.reset_history(m, d, reset=reset_input)
 
   if sleep_enabled:
     sleep.update_sleep(m, d)
