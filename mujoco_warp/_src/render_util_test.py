@@ -259,6 +259,22 @@ class RenderUtilTest(parameterized.TestCase):
     expected_total = 2 * width * height
     self.assertEqual(rc.rgb_data.shape, (1, expected_total), "rgb_data")
 
+  def test_cam_active_empty(self):
+    """Tests that an empty cam_active selects no cameras, whether or not the model has any."""
+    mjm_nocam = mujoco.MjModel.from_xml_string("""
+    <mujoco>
+      <worldbody>
+        <geom type="sphere" size="0.5"/>
+      </worldbody>
+    </mujoco>
+    """)
+    self.assertEqual(mjm_nocam.ncam, 0, "ncam")
+    self.assertEqual(mjw.create_render_context(mjm_nocam, cam_active=[]).nrender, 0, "nrender")
+
+    mjm = mujoco.MjModel.from_xml_string(_CAMERA_TEST_XML)
+    self.assertEqual(mjw.create_render_context(mjm, cam_active=[]).nrender, 0, "nrender")
+    self.assertEqual(mjw.create_render_context(mjm, cam_active=[False] * mjm.ncam).nrender, 0, "nrender")
+
   def test_rgb_only_and_depth_only(self):
     """Test that disabling rgb or depth correctly reduces the shape and invalidates the address."""
     mjm, mjd, m, d = test_data.fixture(xml=_CAMERA_TEST_XML)

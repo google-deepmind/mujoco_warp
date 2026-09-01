@@ -358,6 +358,7 @@ def create_render_context(
     enabled_geom_groups: The geom groups to render.
     cam_active: List of booleans, camera names (str), or camera indices (int) indicating
                 which cameras to include in rendering. If None, all cameras are included.
+                An empty list includes no cameras.
     flex_render_smooth: Whether to render flex meshes smoothly.
     use_precomputed_rays: Use precomputed rays instead of computing during rendering.
                           When using domain randomization for camera intrinsics, set to False.
@@ -527,17 +528,20 @@ def create_render_context(
 
   # Filter active cameras
   if cam_active is not None:
-    if len(cam_active) > 0 and isinstance(cam_active[0], (bool, np.bool_)):
+    if len(cam_active) == 0:
+      # Empty selection renders no cameras, and is the only valid mask when ncam == 0.
+      active_cam_indices = []
+    elif isinstance(cam_active[0], (bool, np.bool_)):
       assert len(cam_active) == mjm.ncam, f"cam_active must have length {mjm.ncam} (got {len(cam_active)})"
       active_cam_indices = [int(i) for i in np.nonzero(cam_active)[0]]
-    elif len(cam_active) > 0 and isinstance(cam_active[0], str):
+    elif isinstance(cam_active[0], str):
       active_cam_indices = []
       for name in cam_active:
         cid = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_CAMERA, name)
         if cid == -1:
           raise ValueError(f"Camera '{name}' not found in model.")
         active_cam_indices.append(cid)
-    elif len(cam_active) > 0 and isinstance(cam_active[0], (int, np.integer)):
+    elif isinstance(cam_active[0], (int, np.integer)):
       active_cam_indices = [int(x) for x in cam_active]
     else:
       raise ValueError(f"Invalid cam_active format: {cam_active}")
