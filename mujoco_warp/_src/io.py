@@ -1426,7 +1426,7 @@ def _default_njmax_nnz(mjm: mujoco.MjModel, nconmax: int, njmax: int) -> int:
   # limit constraints (assume all active)
   for i in range(mjm.njnt):
     if mjm.jnt_limited[i]:
-      jnt_type = mjm.jnt_type[i]
+      jnt_type = int(mjm.jnt_type[i])
       if jnt_type == mujoco.mjtJoint.mjJNT_BALL:
         total_nnz += 3
       elif jnt_type in (mujoco.mjtJoint.mjJNT_SLIDE, mujoco.mjtJoint.mjJNT_HINGE):
