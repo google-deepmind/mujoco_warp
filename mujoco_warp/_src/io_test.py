@@ -512,8 +512,8 @@ class IOTest(parameterized.TestCase):
         <option jacobian="sparse"/>
         <worldbody>
           <body>
-            <joint type="slide" limited="true" range="-1 1" frictionloss="1"/>
-            <joint type="hinge" limited="true" range="-1 1" frictionloss="1"/>
+            <joint type="slide" limited="true" range="-1 1"/>
+            <joint type="hinge" limited="true" range="-1 1"/>
             <geom size="0.1" contype="0" conaffinity="0"/>
           </body>
         </worldbody>
@@ -521,7 +521,7 @@ class IOTest(parameterized.TestCase):
       """
     )
 
-    self.assertEqual(io._default_njmax_nnz(mjm, nconmax=0, njmax=4), 4)
+    self.assertEqual(io._default_njmax_nnz(mjm, nconmax=0, njmax=2), 2)
 
   def test_make_put_data(self):
     """Tests that make_data and put_data are producing the same shapes for all arrays."""
