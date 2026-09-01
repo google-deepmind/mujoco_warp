@@ -1551,29 +1551,62 @@ def _feature_dim(
 
 # find two normals that are facing each other within a tolerance, return 1 if found
 @wp.func
-def _aligned_faces(vert1: wp.array[wp.vec3], len1: int, vert2: wp.array[wp.vec3], len2: int) -> Tuple[int, wp.vec2i]:
+def _aligned_faces(
+  # In:
+  vert1: wp.array[wp.vec3],
+  len1: int,
+  vert2: wp.array[wp.vec3],
+  len2: int,
+  dir_neg: wp.vec3,
+  dir: wp.vec3,
+) -> Tuple[int, wp.vec2i]:
+  max_align = float(-1.0)
+  found = int(0)
   res = wp.vec2i()
   for i in range(len1):
+    d1 = wp.dot(vert1[i], dir_neg)
+    if d1 <= 0.0:
+      continue
     for j in range(len2):
+      d2 = wp.dot(vert2[j], dir)
+      if d2 <= 0.0:
+        continue
       if wp.dot(vert1[i], vert2[j]) < -FACE_TOL:
-        res[0] = i
-        res[1] = j
-        return 1, res
-  return 0, res
+        align = d1 + d2
+        if align > max_align:
+          max_align = align
+          res[0] = i
+          res[1] = j
+          found = 1
+  return found, res
 
 
 # find two normals that are perpendicular to each other within a tolerance
 # return 1 if found
 @wp.func
-def _aligned_face_edge(edge: wp.array[wp.vec3], nedge: int, face: wp.array[wp.vec3], nface: int) -> Tuple[int, wp.vec2i]:
+def _aligned_face_edge(
+  # In:
+  edge: wp.array[wp.vec3],
+  nedge: int,
+  face: wp.array[wp.vec3],
+  nface: int,
+  dir: wp.vec3,
+) -> Tuple[int, wp.vec2i]:
+  max_align = float(-1.0)
+  found = int(0)
   res = wp.vec2i()
   for i in range(nface):
+    d = wp.dot(face[i], dir)
+    if d <= 0.0:
+      continue
     for j in range(nedge):
       if wp.abs(wp.dot(edge[j], face[i])) < EDGE_TOL:
-        res[0] = j
-        res[1] = i
-        return 1, res
-  return 0, res
+        if d > max_align:
+          max_align = d
+          res[0] = j
+          res[1] = i
+          found = 1
+  return found, res
 
 
 # find up to n <= 2 common integers of two arrays, return n
@@ -2184,6 +2217,13 @@ def multicontact(
   dir = x2 - x1
   dir_neg = -dir
 
+  # normalize separation direction vectors
+  dir_len = wp.norm_l2(dir)
+  if dir_len < 1e-6:
+    return 1, witness1, witness2, dists
+  dir_unit = dir / dir_len
+  dir_neg_unit = -dir_unit
+
   # get all possible face normals for each geom
   if geomtype1 == GeomType.BOX:
     nnorms1 = _box_normals(nface1, feature_index1, geom1.rot, dir_neg, n1, idx1)
@@ -2221,7 +2261,7 @@ def multicontact(
   # determine if any two face normals match
   is_edge_contact_geom1 = 0
   is_edge_contact_geom2 = 0
-  nres, res = _aligned_faces(n1, nnorms1, n2, nnorms2)
+  nres, res = _aligned_faces(n1, nnorms1, n2, nnorms2, dir_neg_unit, dir_unit)
   if not nres:
     # check if edge-face collision
     if nface1 < 3 and nface1 <= nface2:
@@ -2250,7 +2290,7 @@ def multicontact(
           n1,
           endvert,
         )
-      nres, res = _aligned_face_edge(n1, nnorms1, n2, nnorms2)
+      nres, res = _aligned_face_edge(n1, nnorms1, n2, nnorms2, dir_unit)
       if not nres:
         return 1, witness1, witness2, dists
       is_edge_contact_geom1 = 1
@@ -2282,7 +2322,7 @@ def multicontact(
           n2,
           endvert,
         )
-      nres, res = _aligned_face_edge(n2, nnorms2, n1, nnorms1)
+      nres, res = _aligned_face_edge(n2, nnorms2, n1, nnorms1, dir_neg_unit)
       if not nres:
         return 1, witness1, witness2, dists
       is_edge_contact_geom2 = 1

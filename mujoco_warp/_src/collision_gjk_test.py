@@ -542,8 +542,45 @@ class GJKTest(parameterized.TestCase):
        """
     )
 
-    _, ncon, _, _ = _geom_dist(m, d, 0, 1, multiccd=True)
+    _, ncon, pos1, pos2 = _geom_dist(m, d, 0, 1, multiccd=True)
     self.assertEqual(ncon, 4)
+    normal = wp.normalize(wp.vec3(pos1 - pos2))
+    np.testing.assert_allclose(normal, np.array([0.0, 0.0, 1.0]), atol=1e-5)
+
+  @parameterized.parameters(
+    ("", 4),
+    ("0 0 45", 4),
+    ("0 45 0", 2),
+  )
+  def test_mesh_mesh_thin_plates_normal_direction(self, euler: str, expected_ncon: int):
+    """Test that thin mesh-mesh multiccd produces outward-pointing contact normals."""
+    euler_attr = f' euler="{euler}"' if euler else ""
+    _, _, m, d = test_data.fixture(
+      xml=f"""
+      <mujoco>
+        <asset>
+          <mesh name="plate1" vertex="-1 -1 0  1 -1 0  1 1 0  -1 1 0  -1 -1 0.01  1 -1 0.01  1 1 0.01  -1 1 0.01"/>
+          <mesh name="plate2" vertex="-2 -2 0  2 -2 0  2 2 0  -2 2 0  -2 -2 0.01  2 -2 0.01  2 2 0.01  -2 2 0.01"/>
+        </asset>
+        <worldbody>
+          <geom name="plate2" type="mesh" mesh="plate2" pos="0 0 0"/>
+          <geom name="plate1" type="mesh" mesh="plate1" pos="0 0 0.008"{euler_attr}/>
+        </worldbody>
+      </mujoco>
+      """
+    )
+
+    # plate1 (above) vs plate2 (below): normal from plate1 to plate2 should point in -z direction
+    dist, ncon, pos1, pos2 = _geom_dist(m, d, 1, 0, multiccd=True)
+    self.assertEqual(ncon, expected_ncon)
+    normal = wp.normalize(wp.vec3(pos1 - pos2))
+    np.testing.assert_allclose(normal, np.array([0.0, 0.0, -1.0]), atol=1e-5)
+
+    # Reverse order: normal from plate2 to plate1 should point in +z direction
+    dist, ncon, pos1, pos2 = _geom_dist(m, d, 0, 1, multiccd=True)
+    self.assertEqual(ncon, expected_ncon)
+    normal = wp.normalize(wp.vec3(pos1 - pos2))
+    np.testing.assert_allclose(normal, np.array([0.0, 0.0, 1.0]), atol=1e-5)
 
   def test_box_box_ccd2(self):
     """Test box-box multiccd 2."""
