@@ -17,8 +17,6 @@
 
 """sweep.py: runs benchmarks across a range of commits.
 
-Requires common.py to sit next to it; see contrib/systemd/README.md for the nightly install.
-
 Supports two directions:
   forward  - benchmark commits after the last known SHA
   back     - benchmark commits before the earliest known SHA
@@ -44,24 +42,87 @@ Usage:
 """
 
 import argparse
+import importlib
 import json
+import logging
+import os
+import re
 import shutil
 import sys
 from datetime import datetime
 from datetime import timezone
 from pathlib import Path
+from typing import Iterable
 
-from common import assemble_benchmark
 from common import clone_if_needed
-from common import discover_benchmarks
+from common import ensure_pinned_clone
 from common import git
-from common import log
 from common import uv_run
 
 _ARGS = None  # module level variable that gets populated with argparse results
 
+# Ensure the active virtual environment's bin directory is in PATH so 'uv' can be found
+_venv_bin = Path(sys.executable).parent.as_posix()
+if _venv_bin not in os.environ.get("PATH", ""):
+  os.environ["PATH"] = f"{_venv_bin}{os.path.pathsep}{os.environ.get('PATH', '')}"
 
-# benchmark execution
+logging.basicConfig(format="[%(asctime)s] %(message)s", datefmt="%Y-%m-%d %H:%M:%S", level=logging.INFO)
+log = logging.getLogger(__name__)
+
+
+# benchmark discovery, assembly, and execution
+
+
+def _discover_benchmarks(input_dir: str) -> Iterable[dict]:
+  """Discover benchmarks from __init__.py modules under benchmarks_dir."""
+  benchmarks_dir = Path(input_dir) / "benchmarks"
+
+  if benchmarks_dir.as_posix() not in sys.path:
+    sys.path.append(benchmarks_dir.as_posix())
+
+  importlib.invalidate_caches()
+
+  for benchmark in sorted(benchmarks_dir.iterdir()):
+    if not (benchmark / "__init__.py").exists():
+      continue
+    if benchmark.name in sys.modules:
+      module = importlib.reload(sys.modules[benchmark.name])
+    else:
+      module = importlib.import_module(benchmark.name)
+    for bm in getattr(module, "BENCHMARKS", []):
+      if re.match(_ARGS.filter, bm["name"]):
+        bm["_dir"] = benchmark
+        yield bm
+
+
+def _assemble_benchmark(bm: dict):
+  """Assemble benchmark files into assets root."""
+  benchmark_dir = Path(_ARGS.assets_root) / bm["name"]
+  if benchmark_dir.exists():
+    shutil.rmtree(benchmark_dir)
+  benchmark_dir.mkdir(parents=True)
+
+  for asset_spec in bm.get("assets", []):
+    repo, repo_path, dst_path = (asset_spec + ("",))[:3]
+
+    # repo clones are stored in the format: <assets_root>/_git/<repo_source>/<repo_ref>
+    repo_dir = Path(_ARGS.assets_root) / "_git" / Path(repo["source"]).stem / repo["ref"]
+    ensure_pinned_clone(repo["source"], repo["ref"], repo_dir)
+
+    if "*" in repo_path:
+      parts = Path(repo_path).parts
+      offset = parts.index("*") - len(parts)
+      for path in sorted(repo_dir.glob(repo_path)):
+        if not path.is_dir():
+          continue
+        dst = benchmark_dir / dst_path / path.parts[offset]
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(path, dst, dirs_exist_ok=True)
+    else:
+      shutil.copytree(repo_dir / repo_path, benchmark_dir / dst_path, dirs_exist_ok=True)
+
+  # copy benchmark module files on top
+  shutil.copytree(bm["_dir"], benchmark_dir, dirs_exist_ok=True)
 
 
 def _run_benchmark(bm: dict, input_dir: Path, *, mock: bool) -> dict:
@@ -136,8 +197,8 @@ def _sweep(input_dir: str, output_dir: str):
     # discover and assemble benchmarks
     if _ARGS.direction == "forward" or i == 0:
       benchmarks = {}
-      for bm in discover_benchmarks(input_dir, _ARGS.filter):
-        assemble_benchmark(bm, _ARGS.assets_root)
+      for bm in _discover_benchmarks(input_dir):
+        _assemble_benchmark(bm)
         benchmarks[bm["name"]] = bm
 
       log.info("Discovered %d benchmarks for commit %s: [%s]", len(benchmarks), commit, ", ".join(benchmarks.keys()))
