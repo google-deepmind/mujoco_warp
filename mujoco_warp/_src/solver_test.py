@@ -15,6 +15,8 @@
 
 """Tests for solver functions."""
 
+from unittest import mock
+
 import mujoco
 import numpy as np
 import warp as wp
@@ -416,6 +418,36 @@ class SolverTest(parameterized.TestCase):
       _assert_eq(efc_sorted_state, mjd_sorted_state, "efc_state")
       _assert_eq(efc_sorted_force, mjd_sorted_force, "efc_force")
       _assert_eq(qfrc_constraint, mjd.qfrc_constraint, "qfrc_constraint")
+
+  def test_sparse_world_warp_matches_generic_solver(self):
+    """Forced world-warp solver launches match the generic sparse path."""
+    mjm, mjd, m, _ = test_data.fixture(
+      "constraints.xml",
+      keyframe=2,
+      overrides={
+        "opt.cone": ConeType.PYRAMIDAL,
+        "opt.solver": SolverType.NEWTON,
+        "opt.jacobian": mujoco.mjtJacobian.mjJAC_SPARSE,
+        "opt.iterations": 5,
+        "opt.ls_iterations": 10,
+      },
+    )
+    self.assertTrue(m.is_sparse)
+    self.assertLessEqual(m.nv, 50)
+
+    d_generic = mjw.put_data(mjm, mjd, nworld=4)
+    d_world_warp = mjw.put_data(mjm, mjd, nworld=4)
+    with mock.patch.object(solver, "launch_world_warp_enabled", return_value=False):
+      solver.solve(m, d_generic)
+    with mock.patch.object(solver, "launch_world_warp_enabled", return_value=True):
+      solver.solve(m, d_world_warp)
+
+    nefc = int(d_generic.nefc.numpy().max())
+    _assert_eq(d_world_warp.qacc.numpy(), d_generic.qacc.numpy(), "qacc")
+    _assert_eq(d_world_warp.qfrc_constraint.numpy(), d_generic.qfrc_constraint.numpy(), "qfrc_constraint")
+    _assert_eq(d_world_warp.efc.force.numpy()[:, :nefc], d_generic.efc.force.numpy()[:, :nefc], "efc_force")
+    np.testing.assert_array_equal(d_world_warp.efc.state.numpy()[:, :nefc], d_generic.efc.state.numpy()[:, :nefc])
+    np.testing.assert_array_equal(d_world_warp.solver_niter.numpy(), d_generic.solver_niter.numpy())
 
   @parameterized.product(
     cone=(ConeType.PYRAMIDAL, ConeType.ELLIPTIC),
