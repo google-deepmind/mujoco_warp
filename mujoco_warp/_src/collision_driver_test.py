@@ -14,6 +14,10 @@
 # ==============================================================================
 """Tests the collision driver."""
 
+import subprocess
+import sys
+import textwrap
+
 import mujoco
 import numpy as np
 import warp as wp
@@ -607,6 +611,64 @@ class CollisionTest(parameterized.TestCase):
       self.assertGreaterEqual(d.nacon.numpy()[0], mjd.ncon)
     else:
       self.assertEqual(d.nacon.numpy()[0], mjd.ncon)
+
+  _DETERMINISTIC_XML = """
+      <mujoco>
+        <worldbody>
+          <geom type="box" pos="0 0 .1" size="1 1 .1"/>
+          <body pos="0 0 .29">
+            <freejoint/>
+            <geom type="box" size=".1 .1 .1"/>
+          </body>
+        </worldbody>
+      </mujoco>
+  """
+
+  @absltest.skipIf(not wp.get_device().is_cuda, "Skipping test that requires GPU.")
+  def test_deterministic_convex_narrowphase(self):
+    """Tests that convex pairs still report contacts under Warp's deterministic mode.
+
+    Warp runs slot-allocating kernels twice, counting reservations on the first pass and
+    replaying them on the second, and suppresses array stores while counting. EPA keeps its
+    polytope in global scratch, so the counting pass used to read back values it was not
+    allowed to write and take a different branch than the replay, reserving no contact slots
+    at all. A box resting on a box then fell straight through it.
+
+    Warp fixes a module's determinism mode when that module is first compiled, so setting
+    the mode after anything has been launched has no effect. The deterministic half of this
+    comparison therefore has to run in a fresh interpreter.
+    """
+    _, _, m, d = test_data.fixture(xml=self._DETERMINISTIC_XML)
+    mjw.collision(m, d)
+    expected = int(d.nacon.numpy()[0])
+    self.assertGreater(expected, 0)
+
+    probe = textwrap.dedent(f"""
+        import warp as wp
+
+        wp.config.deterministic = wp.DeterministicMode.RUN_TO_RUN
+        wp.config.deterministic_max_records = 64
+
+        import mujoco
+        import mujoco_warp as mjw
+
+        mjm = mujoco.MjModel.from_xml_string({self._DETERMINISTIC_XML!r})
+        mjd = mujoco.MjData(mjm)
+        mujoco.mj_forward(mjm, mjd)
+        m = mjw.put_model(mjm)
+        d = mjw.put_data(mjm, mjd, nworld=1)
+        mjw.collision(m, d)
+        print("NACON", int(d.nacon.numpy()[0]))
+    """)
+    result = subprocess.run(
+      [sys.executable, "-c", probe],
+      capture_output=True,
+      text=True,
+      check=True,
+    )
+    nacon = [line for line in result.stdout.splitlines() if line.startswith("NACON")]
+    self.assertLen(nacon, 1, f"probe did not report a contact count:\n{result.stdout}\n{result.stderr}")
+    self.assertEqual(int(nacon[0].split()[1]), expected)
 
   _HFIELD_FIXTURES = {
     "hfield_box": """

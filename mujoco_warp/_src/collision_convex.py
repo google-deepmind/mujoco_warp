@@ -168,8 +168,16 @@ def ccd_hfield_kernel_builder(
   epa_iterations: int,
   geomgeomid: int,
   warn_overflow: int,
+  deterministic: bool,
 ):
-  """Kernel builder for heightfield CCD collisions (no multiccd args)."""
+  """Kernel builder for heightfield CCD collisions (no multiccd args).
+
+  When ``deterministic`` is set, contact writing is split into a second kernel
+  (``ccd_hfield_write_kernel``) for the same reason as in ``ccd_kernel_builder``: the
+  per-prism CCD results come from EPA scratch that Warp's counting pass cannot read back
+  consistently, so the number of contact slots this kernel would reserve differs between
+  the counting pass and the replay pass.
+  """
 
   # runs convex collision on a set of geom pairs to recover contact info
   @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
@@ -252,6 +260,11 @@ def ccd_hfield_kernel_builder(
     nacon_out: wp.array[int],
     # Data out:
     overflow_out: wp.array[int],
+    # Out:
+    hfield_ncon_out: wp.array[int],
+    hfield_cdist_out: wp.array2d[float],
+    hfield_cpos_out: wp.array2d[wp.vec3],
+    hfield_cnormal_out: wp.array2d[wp.vec3],
   ):
     collisionid = wp.tid()
     if collisionid >= ncollision_in[0]:
@@ -520,40 +533,48 @@ def ccd_hfield_kernel_builder(
           count += 1
 
     # contact 0: minimum distance
-    write_contact(
-      naconmax_in,
-      0,
-      min_dist,
-      min_pos,
-      make_frame(min_normal),
-      margin,
-      gap,
-      condim,
-      friction,
-      solref,
-      solreffriction,
-      solimp,
-      adhesion,
-      geoms,
-      collision_pairid,
-      worldid,
-      contact_dist_out,
-      contact_pos_out,
-      contact_frame_out,
-      contact_includemargin_out,
-      contact_friction_out,
-      contact_solref_out,
-      contact_solreffriction_out,
-      contact_solimp_out,
-      contact_dim_out,
-      contact_geom_out,
-      contact_efc_address_out,
-      contact_worldid_out,
-      contact_type_out,
-      contact_geomcollisionid_out,
-      contact_adhesion_out,
-      nacon_out,
-    )
+    if wp.static(deterministic):
+      # Stage the selected contact for ccd_hfield_write_kernel instead of reserving a
+      # slot here; see the builder docstring.
+      hfield_ncon_out[collisionid] = 1
+      hfield_cdist_out[collisionid, 0] = min_dist
+      hfield_cpos_out[collisionid, 0] = min_pos
+      hfield_cnormal_out[collisionid, 0] = min_normal
+    else:
+      write_contact(
+        naconmax_in,
+        0,
+        min_dist,
+        min_pos,
+        make_frame(min_normal),
+        margin,
+        gap,
+        condim,
+        friction,
+        solref,
+        solreffriction,
+        solimp,
+        adhesion,
+        geoms,
+        collision_pairid,
+        worldid,
+        contact_dist_out,
+        contact_pos_out,
+        contact_frame_out,
+        contact_includemargin_out,
+        contact_friction_out,
+        contact_solref_out,
+        contact_solreffriction_out,
+        contact_solimp_out,
+        contact_dim_out,
+        contact_geom_out,
+        contact_efc_address_out,
+        contact_worldid_out,
+        contact_type_out,
+        contact_geomcollisionid_out,
+        contact_adhesion_out,
+        nacon_out,
+      )
 
     # TODO(team): routine for select subset of contacts
     if wp.static(True):
@@ -579,40 +600,46 @@ def ccd_hfield_kernel_builder(
       pos1 = wp.vec3(hfield_contact_pos[id1, 0], hfield_contact_pos[id1, 1], hfield_contact_pos[id1, 2])
       normal1 = wp.vec3(hfield_contact_normal[id1, 0], hfield_contact_normal[id1, 1], hfield_contact_normal[id1, 2])
 
-      write_contact(
-        naconmax_in,
-        1,
-        hfield_contact_dist[id1],
-        pos1,
-        make_frame(normal1),
-        margin,
-        gap,
-        condim,
-        friction,
-        solref,
-        solreffriction,
-        solimp,
-        adhesion,
-        geoms,
-        collision_pairid,
-        worldid,
-        contact_dist_out,
-        contact_pos_out,
-        contact_frame_out,
-        contact_includemargin_out,
-        contact_friction_out,
-        contact_solref_out,
-        contact_solreffriction_out,
-        contact_solimp_out,
-        contact_dim_out,
-        contact_geom_out,
-        contact_efc_address_out,
-        contact_worldid_out,
-        contact_type_out,
-        contact_geomcollisionid_out,
-        contact_adhesion_out,
-        nacon_out,
-      )
+      if wp.static(deterministic):
+        hfield_ncon_out[collisionid] = 2
+        hfield_cdist_out[collisionid, 1] = hfield_contact_dist[id1]
+        hfield_cpos_out[collisionid, 1] = pos1
+        hfield_cnormal_out[collisionid, 1] = normal1
+      else:
+        write_contact(
+          naconmax_in,
+          1,
+          hfield_contact_dist[id1],
+          pos1,
+          make_frame(normal1),
+          margin,
+          gap,
+          condim,
+          friction,
+          solref,
+          solreffriction,
+          solimp,
+          adhesion,
+          geoms,
+          collision_pairid,
+          worldid,
+          contact_dist_out,
+          contact_pos_out,
+          contact_frame_out,
+          contact_includemargin_out,
+          contact_friction_out,
+          contact_solref_out,
+          contact_solreffriction_out,
+          contact_solimp_out,
+          contact_dim_out,
+          contact_geom_out,
+          contact_efc_address_out,
+          contact_worldid_out,
+          contact_type_out,
+          contact_geomcollisionid_out,
+          contact_adhesion_out,
+          nacon_out,
+        )
 
       # contact 2: point furthest from min_pos - pos1 line
       dist_min1 = wp.cross(min_normal, min_pos - pos1)
@@ -636,40 +663,46 @@ def ccd_hfield_kernel_builder(
       pos2 = wp.vec3(hfield_contact_pos[id2, 0], hfield_contact_pos[id2, 1], hfield_contact_pos[id2, 2])
       normal2 = wp.vec3(hfield_contact_normal[id2, 0], hfield_contact_normal[id2, 1], hfield_contact_normal[id2, 2])
 
-      write_contact(
-        naconmax_in,
-        2,
-        hfield_contact_dist[id2],
-        pos2,
-        make_frame(normal2),
-        margin,
-        gap,
-        condim,
-        friction,
-        solref,
-        solreffriction,
-        solimp,
-        adhesion,
-        geoms,
-        collision_pairid,
-        worldid,
-        contact_dist_out,
-        contact_pos_out,
-        contact_frame_out,
-        contact_includemargin_out,
-        contact_friction_out,
-        contact_solref_out,
-        contact_solreffriction_out,
-        contact_solimp_out,
-        contact_dim_out,
-        contact_geom_out,
-        contact_efc_address_out,
-        contact_worldid_out,
-        contact_type_out,
-        contact_geomcollisionid_out,
-        contact_adhesion_out,
-        nacon_out,
-      )
+      if wp.static(deterministic):
+        hfield_ncon_out[collisionid] = 3
+        hfield_cdist_out[collisionid, 2] = hfield_contact_dist[id2]
+        hfield_cpos_out[collisionid, 2] = pos2
+        hfield_cnormal_out[collisionid, 2] = normal2
+      else:
+        write_contact(
+          naconmax_in,
+          2,
+          hfield_contact_dist[id2],
+          pos2,
+          make_frame(normal2),
+          margin,
+          gap,
+          condim,
+          friction,
+          solref,
+          solreffriction,
+          solimp,
+          adhesion,
+          geoms,
+          collision_pairid,
+          worldid,
+          contact_dist_out,
+          contact_pos_out,
+          contact_frame_out,
+          contact_includemargin_out,
+          contact_friction_out,
+          contact_solref_out,
+          contact_solreffriction_out,
+          contact_solimp_out,
+          contact_dim_out,
+          contact_geom_out,
+          contact_efc_address_out,
+          contact_worldid_out,
+          contact_type_out,
+          contact_geomcollisionid_out,
+          contact_adhesion_out,
+          nacon_out,
+        )
 
       # contact 3: point furthest from other triangle edge
       vec_min2 = wp.cross(min_normal, min_pos - pos2)
@@ -694,12 +727,146 @@ def ccd_hfield_kernel_builder(
       pos3 = wp.vec3(hfield_contact_pos[id3, 0], hfield_contact_pos[id3, 1], hfield_contact_pos[id3, 2])
       normal3 = wp.vec3(hfield_contact_normal[id3, 0], hfield_contact_normal[id3, 1], hfield_contact_normal[id3, 2])
 
+      if wp.static(deterministic):
+        hfield_ncon_out[collisionid] = 4
+        hfield_cdist_out[collisionid, 3] = hfield_contact_dist[id3]
+        hfield_cpos_out[collisionid, 3] = pos3
+        hfield_cnormal_out[collisionid, 3] = normal3
+      else:
+        write_contact(
+          naconmax_in,
+          3,
+          hfield_contact_dist[id3],
+          pos3,
+          make_frame(normal3),
+          margin,
+          gap,
+          condim,
+          friction,
+          solref,
+          solreffriction,
+          solimp,
+          adhesion,
+          geoms,
+          collision_pairid,
+          worldid,
+          contact_dist_out,
+          contact_pos_out,
+          contact_frame_out,
+          contact_includemargin_out,
+          contact_friction_out,
+          contact_solref_out,
+          contact_solreffriction_out,
+          contact_solimp_out,
+          contact_dim_out,
+          contact_geom_out,
+          contact_efc_address_out,
+          contact_worldid_out,
+          contact_type_out,
+          contact_geomcollisionid_out,
+          contact_adhesion_out,
+          nacon_out,
+        )
+
+  # writes contacts from the results staged by ccd_hfield_kernel (deterministic mode only).
+  # Every branch here reads state written by a previous launch, so Warp's counting pass and
+  # its replay pass agree on how many contact slots to reserve.
+  @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
+  def ccd_hfield_write_kernel(
+    # Model:
+    geom_type: wp.array[int],
+    geom_condim: wp.array[int],
+    geom_priority: wp.array[int],
+    geom_solmix: wp.array2d[float],
+    geom_solref: wp.array2d[wp.vec2],
+    geom_solimp: wp.array2d[vec5],
+    geom_friction: wp.array2d[wp.vec3],
+    geom_margin: wp.array2d[float],
+    geom_gap: wp.array2d[float],
+    geom_adhesion: wp.array2d[float],
+    pair_dim: wp.array[int],
+    pair_solref: wp.array2d[wp.vec2],
+    pair_solreffriction: wp.array2d[wp.vec2],
+    pair_solimp: wp.array2d[vec5],
+    pair_margin: wp.array2d[float],
+    pair_gap: wp.array2d[float],
+    pair_adhesion: wp.array2d[float],
+    pair_friction: wp.array2d[vec5],
+    # Data in:
+    naconmax_in: int,
+    ncollision_in: wp.array[int],
+    # In:
+    collision_pair_in: wp.array[wp.vec2i],
+    collision_pairid_in: wp.array[wp.vec2i],
+    collision_worldid_in: wp.array[int],
+    hfield_ncon_in: wp.array[int],
+    hfield_cdist_in: wp.array2d[float],
+    hfield_cpos_in: wp.array2d[wp.vec3],
+    hfield_cnormal_in: wp.array2d[wp.vec3],
+    # Data out:
+    contact_dist_out: wp.array[float],
+    contact_pos_out: wp.array[wp.vec3],
+    contact_frame_out: wp.array[wp.mat33],
+    contact_includemargin_out: wp.array[float],
+    contact_friction_out: wp.array[vec5],
+    contact_solref_out: wp.array[wp.vec2],
+    contact_solreffriction_out: wp.array[wp.vec2],
+    contact_solimp_out: wp.array[vec5],
+    contact_dim_out: wp.array[int],
+    contact_geom_out: wp.array[wp.vec2i],
+    contact_efc_address_out: wp.array2d[int],
+    contact_worldid_out: wp.array[int],
+    contact_type_out: wp.array[int],
+    contact_geomcollisionid_out: wp.array[int],
+    contact_adhesion_out: wp.array[float],
+    nacon_out: wp.array[int],
+  ):
+    collisionid = wp.tid()
+    if collisionid >= ncollision_in[0]:
+      return
+
+    ncontact = hfield_ncon_in[collisionid]
+    if ncontact == 0:
+      return
+
+    geoms = collision_pair_in[collisionid]
+    if geom_type[geoms[0]] != geomtype1 or geom_type[geoms[1]] != geomtype2:
+      return
+
+    worldid = collision_worldid_in[collisionid]
+    collision_pairid = collision_pairid_in[collisionid]
+
+    _, margin, gap, condim, friction, solref, solreffriction, solimp, adhesion = contact_params(
+      geom_condim,
+      geom_priority,
+      geom_solmix,
+      geom_solref,
+      geom_solimp,
+      geom_friction,
+      geom_margin,
+      geom_gap,
+      geom_adhesion,
+      pair_dim,
+      pair_solref,
+      pair_solreffriction,
+      pair_solimp,
+      pair_margin,
+      pair_gap,
+      pair_adhesion,
+      pair_friction,
+      collision_pair_in,
+      collision_pairid_in,
+      collisionid,
+      worldid,
+    )
+
+    for i in range(ncontact):
       write_contact(
         naconmax_in,
-        3,
-        hfield_contact_dist[id3],
-        pos3,
-        make_frame(normal3),
+        i,
+        hfield_cdist_in[collisionid, i],
+        hfield_cpos_in[collisionid, i],
+        make_frame(hfield_cnormal_in[collisionid, i]),
         margin,
         gap,
         condim,
@@ -729,7 +896,7 @@ def ccd_hfield_kernel_builder(
         nacon_out,
       )
 
-  return ccd_hfield_kernel
+  return ccd_hfield_kernel, ccd_hfield_write_kernel
 
 
 _CCD_OVERSUBSCRIBE_WAVES = 2
@@ -746,8 +913,133 @@ def ccd_kernel_builder(
   geomgeomid: int,
   block_dim: int,
   warn_overflow: int,
+  deterministic: bool,
 ):
-  """Kernel builder for non-heightfield CCD collisions (no hfield args)."""
+  """Kernel builder for non-heightfield CCD collisions (no hfield args).
+
+  When ``deterministic`` is set, contact writing is split out of the CCD kernel into a
+  second kernel (see ``ccd_write_kernel``). Warp's deterministic modes run slot-allocating
+  kernels twice - a counting pass followed by a replay - and suppress array stores during
+  the counting pass. EPA keeps its polytope in global scratch, so during the counting pass
+  it reads back values it was not allowed to write, and every branch downstream of it takes
+  a different path than it will on replay. That includes the branches deciding how many
+  contact slots to reserve, so the reserved count does not match the replayed one and the
+  contacts are dropped. Writing contacts from a second kernel keeps the reservation count a
+  function of values already in memory, which both passes read identically.
+  """
+
+  @wp.func
+  def write_ccd_contacts(
+    # Model:
+    geom_condim: wp.array[int],
+    geom_priority: wp.array[int],
+    geom_solmix: wp.array2d[float],
+    geom_solref: wp.array2d[wp.vec2],
+    geom_solimp: wp.array2d[vec5],
+    geom_friction: wp.array2d[wp.vec3],
+    geom_adhesion: wp.array2d[float],
+    pair_dim: wp.array[int],
+    pair_solref: wp.array2d[wp.vec2],
+    pair_solreffriction: wp.array2d[wp.vec2],
+    pair_solimp: wp.array2d[vec5],
+    pair_adhesion: wp.array2d[float],
+    pair_friction: wp.array2d[vec5],
+    # Data in:
+    naconmax_in: int,
+    # In:
+    ncontact: int,
+    dist: float,
+    witness1: mat43,
+    witness2: mat43,
+    dists: wp.vec4,
+    geoms: wp.vec2i,
+    worldid: int,
+    margin: float,
+    gap: float,
+    pairid: wp.vec2i,
+    # Data out:
+    contact_dist_out: wp.array[float],
+    contact_pos_out: wp.array[wp.vec3],
+    contact_frame_out: wp.array[wp.mat33],
+    contact_includemargin_out: wp.array[float],
+    contact_friction_out: wp.array[vec5],
+    contact_solref_out: wp.array[wp.vec2],
+    contact_solreffriction_out: wp.array[wp.vec2],
+    contact_solimp_out: wp.array[vec5],
+    contact_dim_out: wp.array[int],
+    contact_geom_out: wp.array[wp.vec2i],
+    contact_efc_address_out: wp.array2d[int],
+    contact_worldid_out: wp.array[int],
+    contact_type_out: wp.array[int],
+    contact_geomcollisionid_out: wp.array[int],
+    contact_adhesion_out: wp.array[float],
+    nacon_out: wp.array[int],
+  ):
+    """Turn a solved CCD result for one candidate pair into contact rows."""
+    condim, friction, solref, solreffriction, solimp, adhesion = contact_material_params(
+      geom_condim,
+      geom_priority,
+      geom_solmix,
+      geom_solref,
+      geom_solimp,
+      geom_friction,
+      geom_adhesion,
+      pair_dim,
+      pair_solref,
+      pair_solreffriction,
+      pair_solimp,
+      pair_adhesion,
+      pair_friction,
+      geoms,
+      pairid[0],
+      worldid,
+    )
+
+    # When shapes overlap (dist <= margin, i.e. inflated dist <= 0), witness1 has crossed
+    # past witness2, so witness1 - witness2 points from geom[0] to geom[1].
+    # When shapes are separated in the gap band (dist > margin, i.e. inflated dist > 0),
+    # witness1 is on geom[0] and witness2 is on geom[1], so witness2 - witness1 points
+    # from geom[0] to geom[1].
+    if dist <= margin:
+      frame = make_frame(witness1[0] - witness2[0])
+    else:
+      frame = make_frame(witness2[0] - witness1[0])
+
+    for i in range(ncontact):
+      write_contact(
+        naconmax_in,
+        i,
+        dists[i] if ncontact > 1 else dist,
+        0.5 * (witness1[i] + witness2[i]),
+        frame,
+        margin,
+        gap,
+        condim,
+        friction,
+        solref,
+        solreffriction,
+        solimp,
+        adhesion,
+        geoms,
+        pairid,
+        worldid,
+        contact_dist_out,
+        contact_pos_out,
+        contact_frame_out,
+        contact_includemargin_out,
+        contact_friction_out,
+        contact_solref_out,
+        contact_solreffriction_out,
+        contact_solimp_out,
+        contact_dim_out,
+        contact_geom_out,
+        contact_efc_address_out,
+        contact_worldid_out,
+        contact_type_out,
+        contact_geomcollisionid_out,
+        contact_adhesion_out,
+        nacon_out,
+      )
 
   @wp.func
   def eval_ccd_write_contact(
@@ -795,6 +1087,7 @@ def ccd_kernel_builder(
     margin: float,
     gap: float,
     pairid: wp.vec2i,
+    collisionid: int,
     # Data out:
     contact_dist_out: wp.array[float],
     contact_pos_out: wp.array[wp.vec3],
@@ -813,6 +1106,12 @@ def ccd_kernel_builder(
     contact_adhesion_out: wp.array[float],
     nacon_out: wp.array[int],
     overflow_out: wp.array[int],
+    # Out:
+    ccd_ncollision_out: wp.array[int],
+    ccd_dist_out: wp.array[float],
+    ccd_witness1_out: wp.array[mat43],
+    ccd_witness2_out: wp.array[mat43],
+    ccd_dists_out: wp.array[wp.vec4],
   ):
     geom1.margin = margin
     geom2.margin = margin
@@ -930,7 +1229,18 @@ def ccd_kernel_builder(
           witness1[0] = w1
           witness2[0] = w2
 
-    condim, friction, solref, solreffriction, solimp, adhesion = contact_material_params(
+    if wp.static(deterministic):
+      # Hand the solved result to ccd_write_kernel rather than reserving contact slots
+      # here. Stores from this kernel are suppressed during Warp's counting pass, so a
+      # reservation derived from EPA output would not agree with the replay pass.
+      ccd_ncollision_out[collisionid] = ncollision
+      ccd_dist_out[collisionid] = dist
+      ccd_witness1_out[collisionid] = witness1
+      ccd_witness2_out[collisionid] = witness2
+      ccd_dists_out[collisionid] = dists
+      return
+
+    write_ccd_contacts(
       geom_condim,
       geom_priority,
       geom_solmix,
@@ -944,56 +1254,34 @@ def ccd_kernel_builder(
       pair_solimp,
       pair_adhesion,
       pair_friction,
+      naconmax_in,
+      ncollision,
+      dist,
+      witness1,
+      witness2,
+      dists,
       geoms,
-      pairid[0],
       worldid,
+      margin,
+      gap,
+      pairid,
+      contact_dist_out,
+      contact_pos_out,
+      contact_frame_out,
+      contact_includemargin_out,
+      contact_friction_out,
+      contact_solref_out,
+      contact_solreffriction_out,
+      contact_solimp_out,
+      contact_dim_out,
+      contact_geom_out,
+      contact_efc_address_out,
+      contact_worldid_out,
+      contact_type_out,
+      contact_geomcollisionid_out,
+      contact_adhesion_out,
+      nacon_out,
     )
-
-    # When shapes overlap (dist <= margin, i.e. inflated dist <= 0), witness1 has crossed
-    # past witness2, so witness1 - witness2 points from geom[0] to geom[1].
-    # When shapes are separated in the gap band (dist > margin, i.e. inflated dist > 0),
-    # witness1 is on geom[0] and witness2 is on geom[1], so witness2 - witness1 points
-    # from geom[0] to geom[1].
-    if dist <= margin:
-      frame = make_frame(witness1[0] - witness2[0])
-    else:
-      frame = make_frame(witness2[0] - witness1[0])
-
-    for i in range(ncollision):
-      write_contact(
-        naconmax_in,
-        i,
-        dists[i] if ncollision > 1 else dist,
-        0.5 * (witness1[i] + witness2[i]),
-        frame,
-        margin,
-        gap,
-        condim,
-        friction,
-        solref,
-        solreffriction,
-        solimp,
-        adhesion,
-        geoms,
-        pairid,
-        worldid,
-        contact_dist_out,
-        contact_pos_out,
-        contact_frame_out,
-        contact_includemargin_out,
-        contact_friction_out,
-        contact_solref_out,
-        contact_solreffriction_out,
-        contact_solimp_out,
-        contact_dim_out,
-        contact_geom_out,
-        contact_efc_address_out,
-        contact_worldid_out,
-        contact_type_out,
-        contact_geomcollisionid_out,
-        contact_adhesion_out,
-        nacon_out,
-      )
 
   # runs convex collision on a set of geom pairs to recover contact info (non-heightfield)
   @wp.kernel(module="unique", enable_backward=False, grid_stride=False, launch_bounds=(block_dim, _CCD_MIN_BLOCKS))
@@ -1082,6 +1370,12 @@ def ccd_kernel_builder(
     nacon_out: wp.array[int],
     # Data out:
     overflow_out: wp.array[int],
+    # Out:
+    ccd_ncollision_out: wp.array[int],
+    ccd_dist_out: wp.array[float],
+    ccd_witness1_out: wp.array[mat43],
+    ccd_witness2_out: wp.array[mat43],
+    ccd_dists_out: wp.array[wp.vec4],
   ):
     tid = wp.tid()
     for collisionid in range(tid, wp.min(ncollision_in[0], naconmax_in), grid_stride_in):
@@ -1171,6 +1465,7 @@ def ccd_kernel_builder(
         margin,
         gap,
         pairid,
+        collisionid,
         contact_dist_out,
         contact_pos_out,
         contact_frame_out,
@@ -1188,9 +1483,134 @@ def ccd_kernel_builder(
         contact_adhesion_out,
         nacon_out,
         overflow_out,
+        ccd_ncollision_out,
+        ccd_dist_out,
+        ccd_witness1_out,
+        ccd_witness2_out,
+        ccd_dists_out,
       )
 
-  return ccd_kernel
+  # writes contacts from the CCD results staged by ccd_kernel (deterministic mode only).
+  # Every branch here reads state written by a previous launch, so Warp's counting pass and
+  # its replay pass agree on how many contact slots to reserve.
+  @wp.kernel(module="unique", enable_backward=False, grid_stride=False, launch_bounds=(block_dim, _CCD_MIN_BLOCKS))
+  def ccd_write_kernel(
+    # Model:
+    geom_type: wp.array[int],
+    geom_condim: wp.array[int],
+    geom_priority: wp.array[int],
+    geom_solmix: wp.array2d[float],
+    geom_solref: wp.array2d[wp.vec2],
+    geom_solimp: wp.array2d[vec5],
+    geom_friction: wp.array2d[wp.vec3],
+    geom_margin: wp.array2d[float],
+    geom_gap: wp.array2d[float],
+    geom_adhesion: wp.array2d[float],
+    pair_dim: wp.array[int],
+    pair_solref: wp.array2d[wp.vec2],
+    pair_solreffriction: wp.array2d[wp.vec2],
+    pair_solimp: wp.array2d[vec5],
+    pair_margin: wp.array2d[float],
+    pair_gap: wp.array2d[float],
+    pair_adhesion: wp.array2d[float],
+    pair_friction: wp.array2d[vec5],
+    # Data in:
+    naconmax_in: int,
+    ncollision_in: wp.array[int],
+    # In:
+    grid_stride_in: int,
+    collision_pair_in: wp.array[wp.vec2i],
+    collision_pairid_in: wp.array[wp.vec2i],
+    collision_worldid_in: wp.array[int],
+    ccd_ncollision_in: wp.array[int],
+    ccd_dist_in: wp.array[float],
+    ccd_witness1_in: wp.array[mat43],
+    ccd_witness2_in: wp.array[mat43],
+    ccd_dists_in: wp.array[wp.vec4],
+    # Data out:
+    contact_dist_out: wp.array[float],
+    contact_pos_out: wp.array[wp.vec3],
+    contact_frame_out: wp.array[wp.mat33],
+    contact_includemargin_out: wp.array[float],
+    contact_friction_out: wp.array[vec5],
+    contact_solref_out: wp.array[wp.vec2],
+    contact_solreffriction_out: wp.array[wp.vec2],
+    contact_solimp_out: wp.array[vec5],
+    contact_dim_out: wp.array[int],
+    contact_geom_out: wp.array[wp.vec2i],
+    contact_efc_address_out: wp.array2d[int],
+    contact_worldid_out: wp.array[int],
+    contact_type_out: wp.array[int],
+    contact_geomcollisionid_out: wp.array[int],
+    contact_adhesion_out: wp.array[float],
+    nacon_out: wp.array[int],
+  ):
+    tid = wp.tid()
+    for collisionid in range(tid, wp.min(ncollision_in[0], naconmax_in), grid_stride_in):
+      ncollision = ccd_ncollision_in[collisionid]
+      if ncollision < 1:
+        continue
+
+      geoms = collision_pair_in[collisionid]
+      if geom_type[geoms[0]] != geomtype1 or geom_type[geoms[1]] != geomtype2:
+        continue
+
+      worldid = collision_worldid_in[collisionid]
+      pairid = collision_pairid_in[collisionid]
+      margin, gap = contact_margin_gap(
+        geom_margin,
+        geom_gap,
+        pair_margin,
+        pair_gap,
+        geoms,
+        pairid[0],
+        worldid,
+      )
+
+      write_ccd_contacts(
+        geom_condim,
+        geom_priority,
+        geom_solmix,
+        geom_solref,
+        geom_solimp,
+        geom_friction,
+        geom_adhesion,
+        pair_dim,
+        pair_solref,
+        pair_solreffriction,
+        pair_solimp,
+        pair_adhesion,
+        pair_friction,
+        naconmax_in,
+        ncollision,
+        ccd_dist_in[collisionid],
+        ccd_witness1_in[collisionid],
+        ccd_witness2_in[collisionid],
+        ccd_dists_in[collisionid],
+        geoms,
+        worldid,
+        margin,
+        gap,
+        pairid,
+        contact_dist_out,
+        contact_pos_out,
+        contact_frame_out,
+        contact_includemargin_out,
+        contact_friction_out,
+        contact_solref_out,
+        contact_solreffriction_out,
+        contact_solimp_out,
+        contact_dim_out,
+        contact_geom_out,
+        contact_efc_address_out,
+        contact_worldid_out,
+        contact_type_out,
+        contact_geomcollisionid_out,
+        contact_adhesion_out,
+        nacon_out,
+      )
+
+  return ccd_kernel, ccd_write_kernel
 
 
 def _ccd_grid_size(kernel, naconmax: int, device) -> int:
@@ -1257,6 +1677,23 @@ def convex_narrowphase(m: Model, d: Data, ctx: CollisionContext, collision_table
   # ccd collider count
   nccd = wp.zeros(len(GeomType) * (len(GeomType) + 1) // 2, dtype=int)
 
+  # Under Warp's deterministic modes the CCD kernel cannot reserve contact slots itself;
+  # it stages its result per candidate pair and ccd_write_kernel writes the contacts.
+  # See ccd_kernel_builder for why.
+  deterministic = wp.config.deterministic != wp.DeterministicMode.NOT_GUARANTEED
+  nstage = d.naconmax if deterministic else 1
+  # ccd_ncollision doubles as the "pair produced no contact" flag, so it must start zeroed
+  ccd_ncollision = wp.zeros(nstage, dtype=int)
+  ccd_dist = wp.empty(nstage, dtype=float)
+  ccd_witness1 = wp.empty(nstage, dtype=mat43)
+  ccd_witness2 = wp.empty(nstage, dtype=mat43)
+  ccd_dists = wp.empty(nstage, dtype=wp.vec4)
+  # heightfield staging: up to 4 selected contacts per candidate pair
+  hfield_ncon = wp.zeros(nstage, dtype=int)
+  hfield_cdist = wp.empty(shape=(nstage, 4), dtype=float)
+  hfield_cpos = wp.empty(shape=(nstage, 4), dtype=wp.vec3)
+  hfield_cnormal = wp.empty(shape=(nstage, 4), dtype=wp.vec3)
+
   # epa_vert: vertices in EPA polytope
   epa_vert = wp.empty(shape=(d.naccdmax, 10 + 2 * epa_iterations), dtype=wp.vec3)
   # epa_vert_index: vertex indices in EPA polytope
@@ -1296,8 +1733,11 @@ def convex_narrowphase(m: Model, d: Data, ctx: CollisionContext, collision_table
     g2 = geom_pair[1].value
     count, geomgeomid = _pair_count(g1, g2)
     if (g1 == GeomType.HFIELD or g2 == GeomType.HFIELD) and count:
+      hfield_k, hfield_write_k = ccd_hfield_kernel_builder(
+        g1, g2, m.opt.ccd_iterations, epa_iterations, geomgeomid, int(m.opt.warn_overflow), deterministic
+      )
       wp.launch(
-        ccd_hfield_kernel_builder(g1, g2, m.opt.ccd_iterations, epa_iterations, geomgeomid, int(m.opt.warn_overflow)),
+        hfield_k,
         dim=d.naconmax,
         inputs=[
           m.opt.ccd_tolerance,
@@ -1357,8 +1797,44 @@ def convex_narrowphase(m: Model, d: Data, ctx: CollisionContext, collision_table
           epa_horizon,
           nccd,
         ],
-        outputs=contact_outputs + [d.overflow],
+        outputs=contact_outputs + [d.overflow, hfield_ncon, hfield_cdist, hfield_cpos, hfield_cnormal],
       )
+
+      if deterministic:
+        wp.launch(
+          hfield_write_k,
+          dim=d.naconmax,
+          inputs=[
+            m.geom_type,
+            m.geom_condim,
+            m.geom_priority,
+            m.geom_solmix,
+            m.geom_solref,
+            m.geom_solimp,
+            m.geom_friction,
+            m.geom_margin,
+            m.geom_gap,
+            m.geom_adhesion,
+            m.pair_dim,
+            m.pair_solref,
+            m.pair_solreffriction,
+            m.pair_solimp,
+            m.pair_margin,
+            m.pair_gap,
+            m.pair_adhesion,
+            m.pair_friction,
+            d.naconmax,
+            d.ncollision,
+            ctx.collision_pair,
+            ctx.collision_pairid,
+            ctx.collision_worldid,
+            hfield_ncon,
+            hfield_cdist,
+            hfield_cpos,
+            hfield_cnormal,
+          ],
+          outputs=contact_outputs,
+        )
 
   # Allocate multiccd arrays only for non-heightfield collisions
   # multiccd_polygon: clipped contact surface
@@ -1390,7 +1866,7 @@ def convex_narrowphase(m: Model, d: Data, ctx: CollisionContext, collision_table
     g2 = geom_pair[1].value
     count, geomgeomid = _pair_count(g1, g2)
     if g1 != GeomType.HFIELD and g2 != GeomType.HFIELD and count:
-      ccd_k = ccd_kernel_builder(
+      ccd_k, ccd_write_k = ccd_kernel_builder(
         g1,
         g2,
         m.opt.ccd_iterations,
@@ -1399,6 +1875,7 @@ def convex_narrowphase(m: Model, d: Data, ctx: CollisionContext, collision_table
         geomgeomid,
         m.block_dim.convex_ccd,
         int(m.opt.warn_overflow),
+        deterministic,
       )
       ccd_grid = _ccd_grid_size(ccd_k, d.naconmax, d.ncollision.device)
       wp.launch(
@@ -1469,5 +1946,44 @@ def convex_narrowphase(m: Model, d: Data, ctx: CollisionContext, collision_table
           multiccd_face2,
           nccd,
         ],
-        outputs=contact_outputs + [d.overflow],
+        outputs=contact_outputs + [d.overflow, ccd_ncollision, ccd_dist, ccd_witness1, ccd_witness2, ccd_dists],
       )
+
+      if deterministic:
+        wp.launch(
+          ccd_write_k,
+          dim=ccd_grid,
+          block_dim=m.block_dim.convex_ccd,
+          inputs=[
+            m.geom_type,
+            m.geom_condim,
+            m.geom_priority,
+            m.geom_solmix,
+            m.geom_solref,
+            m.geom_solimp,
+            m.geom_friction,
+            m.geom_margin,
+            m.geom_gap,
+            m.geom_adhesion,
+            m.pair_dim,
+            m.pair_solref,
+            m.pair_solreffriction,
+            m.pair_solimp,
+            m.pair_margin,
+            m.pair_gap,
+            m.pair_adhesion,
+            m.pair_friction,
+            d.naconmax,
+            d.ncollision,
+            ccd_grid,
+            ctx.collision_pair,
+            ctx.collision_pairid,
+            ctx.collision_worldid,
+            ccd_ncollision,
+            ccd_dist,
+            ccd_witness1,
+            ccd_witness2,
+            ccd_dists,
+          ],
+          outputs=contact_outputs,
+        )
