@@ -9,11 +9,12 @@ and pushes the results to the gh-pages branch.  See sweep.py for more details.
 ```bash
 # 1. Create directories if they don't exist
 mkdir -p ~/.config/systemd/user
-mkdir -p ~/.local/bin
+mkdir -p ~/.local/share/mjwarp-benchmarks
 
-# 2. Copy the nightly script and make it executable
-cp ../../benchmarks/sweep.py ~/.local/bin/mjwarp-sweep
-chmod +x ~/.local/bin/mjwarp-sweep
+# 2. Copy the nightly scripts and make sweep.py executable.  sweep.py imports common.py from
+#    its own directory, so both files have to be installed together.
+cp ../../benchmarks/sweep.py ../../benchmarks/common.py ~/.local/share/mjwarp-benchmarks/
+chmod +x ~/.local/share/mjwarp-benchmarks/sweep.py
 
 # 3. Copy the service and timer files
 cp mjwarp-nightly.service ~/.config/systemd/user/
@@ -67,10 +68,23 @@ Edit `~/.config/systemd/user/mjwarp-nightly.timer` to change the schedule:
 
 ## Updating
 
-When updating to a newer version of MuJoCo Warp, copy the latest sweep script:
+When updating to a newer version of MuJoCo Warp, copy the latest sweep scripts.  Copy both, or
+sweep.py will fail at startup on a stale or missing common.py:
 
 ```bash
-cp /path/to/mujoco_warp/benchmarks/sweep.py ~/.local/bin/mjwarp-sweep
+cp /path/to/mujoco_warp/benchmarks/sweep.py /path/to/mujoco_warp/benchmarks/common.py \
+  ~/.local/share/mjwarp-benchmarks/
+```
+
+If you installed this before sweep.py was split into two files, do the one-time migration below as
+well.  Copying only the scripts is not enough: your existing service still runs the old single-file
+copy at `~/.local/bin/mjwarp-sweep`, so the nightly would keep benchmarking stale code without ever
+reporting an error.
+
+```bash
+cp mjwarp-nightly.service ~/.config/systemd/user/
+systemctl --user daemon-reload
+rm ~/.local/bin/mjwarp-sweep
 ```
 
 ## Acknowledgements
