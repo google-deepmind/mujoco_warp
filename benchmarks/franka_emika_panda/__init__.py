@@ -13,5 +13,13 @@ BENCHMARKS = [
     "nconmax": 1,
     "njmax": 5,
     "assets": [(ASSETS[0], "franka_emika_panda")],
-  }
+  },
+  {
+    "name": "franka_emika_panda_sparse_contact",
+    "mjcf": "scene_sparse_contact.xml",
+    "nworld": 4096,
+    "nconmax": 600,
+    "njmax": 3000,
+    "assets": [(ASSETS[0], "franka_emika_panda")],
+  },
 ]

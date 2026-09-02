@@ -1,0 +1,16 @@
+<mujoco model="panda sparse contact">
+  <include file="panda.xml"/>
+
+  <option timestep="0.005" integrator="implicitfast" solver="Newton" jacobian="sparse" cone="pyramidal"/>
+
+  <default>
+    <geom solref="0.01 1" solimp="0.95 0.99 0.0001" friction="1 0.005 0.0001"/>
+  </default>
+
+  <worldbody>
+    <geom name="floor" type="plane" size="0 0 0.05" contype="1" conaffinity="1"/>
+    <!-- Intersect the fingertip pads at the model's default pose so contact remains active throughout the rollout. -->
+    <geom name="gripper_contact" type="box" pos="0.088 0 0.813" size="0.035 0.035 0.01"
+      contype="1" conaffinity="1" rgba="0.7 0.5 0.2 1"/>
+  </worldbody>
+</mujoco>
