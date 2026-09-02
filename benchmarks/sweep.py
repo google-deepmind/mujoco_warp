@@ -86,21 +86,23 @@ def _ensure_pinned_clone(source: str, ref: str, dst: Path):
   """Make dst a shallow checkout of ref from source, reusing it if it already is one."""
   if (dst / ".git").exists():
     return
-  # a dst without .git is a leftover from an interrupted fetch, rebuild it rather than trust it
-  shutil.rmtree(dst, ignore_errors=True)
+  # a dst without .git is a leftover from an interrupted fetch, rebuild it rather than trust it.
+  # rmtree only handles directories, so clear a file or symlink at dst separately or the rename
+  # below fails
+  if dst.is_dir() and not dst.is_symlink():
+    shutil.rmtree(dst, ignore_errors=True)
+  elif dst.exists() or dst.is_symlink():
+    dst.unlink(missing_ok=True)
   # "git clone --revision" does this in one step but needs git >= 2.49, newer than the git in
   # current LTS distros. fetch into a sibling directory and rename it into place so a failed or
   # interrupted fetch cannot leave a partial dst that later runs mistake for a good checkout.
   dst.parent.mkdir(parents=True, exist_ok=True)
-  staging = Path(tempfile.mkdtemp(prefix=f".{dst.name}.", dir=dst.parent))
-  try:
+  with tempfile.TemporaryDirectory(prefix=f".{dst.name}.", dir=dst.parent) as tmp_dir:
+    staging = Path(tmp_dir)
     _git("init", "--quiet", staging.as_posix())
     _git("fetch", "--quiet", "--depth", "1", source, ref, cwd=staging)
     _git("checkout", "--quiet", "FETCH_HEAD", cwd=staging)
-  except BaseException:
-    shutil.rmtree(staging, ignore_errors=True)
-    raise
-  staging.rename(dst)
+    staging.rename(dst)
 
 
 def _uv_run(*args, cwd: Path | None = None):
