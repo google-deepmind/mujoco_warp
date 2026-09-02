@@ -82,6 +82,27 @@ def _git(*args, cwd: Path | None = None, check: bool = True):
   return subprocess.run(("git",) + args, cwd=cwd, env=env, check=check, capture_output=True, text=True)
 
 
+def _ensure_pinned_clone(source: str, ref: str, dst: Path):
+  """Make dst a shallow checkout of ref from source, reusing it if it already is one."""
+  if (dst / ".git").exists():
+    return
+  # a dst without .git is a leftover from an interrupted fetch, rebuild it rather than trust it
+  shutil.rmtree(dst, ignore_errors=True)
+  # "git clone --revision" does this in one step but needs git >= 2.49, newer than the git in
+  # current LTS distros. fetch into a sibling directory and rename it into place so a failed or
+  # interrupted fetch cannot leave a partial dst that later runs mistake for a good checkout.
+  dst.parent.mkdir(parents=True, exist_ok=True)
+  staging = Path(tempfile.mkdtemp(prefix=f".{dst.name}.", dir=dst.parent))
+  try:
+    _git("init", "--quiet", staging.as_posix())
+    _git("fetch", "--quiet", "--depth", "1", source, ref, cwd=staging)
+    _git("checkout", "--quiet", "FETCH_HEAD", cwd=staging)
+  except BaseException:
+    shutil.rmtree(staging, ignore_errors=True)
+    raise
+  staging.rename(dst)
+
+
 def _uv_run(*args, cwd: Path | None = None):
   """Run a uv command, returning CompletedProcess."""
   log.info("Command: uv run %s", " ".join(args))
@@ -125,9 +146,7 @@ def _assemble_benchmark(bm: dict):
 
     # repo clones are stored in the format: <assets_root>/_git/<repo_source>/<repo_ref>
     repo_dir = Path(_ARGS.assets_root) / "_git" / Path(repo["source"]).stem / repo["ref"]
-    if not repo_dir.exists():
-      repo_dir.mkdir(parents=True, exist_ok=True)
-      _git("clone", repo["source"], repo_dir.as_posix(), "--depth", "1", "--revision", repo["ref"])
+    _ensure_pinned_clone(repo["source"], repo["ref"], repo_dir)
 
     if "*" in repo_path:
       parts = Path(repo_path).parts
