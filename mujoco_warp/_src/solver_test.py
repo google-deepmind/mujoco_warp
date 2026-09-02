@@ -449,6 +449,42 @@ class SolverTest(parameterized.TestCase):
     np.testing.assert_array_equal(d_world_warp.efc.state.numpy()[:, :nefc], d_generic.efc.state.numpy()[:, :nefc])
     np.testing.assert_array_equal(d_world_warp.solver_niter.numpy(), d_generic.solver_niter.numpy())
 
+  def test_sparse_constraint_gradient_fusion(self):
+    """Fused world-warp force and gradient updates preserve all fast-path states."""
+    nworld, nv, njmax = 3, 3, 2
+    nefc = wp.array([2, 2, 2], dtype=int)
+    rownnz = wp.array(np.tile([[2, 2]], (nworld, 1)), dtype=int)
+    rowadr = wp.array(np.tile([[0, 2]], (nworld, 1)), dtype=int)
+    colind = wp.array(np.tile([[[0, 1, 1, 2]]], (nworld, 1, 1)), dtype=int)
+    jacobian = wp.array(np.tile([[[1.0, 2.0, -1.0, 0.5]]], (nworld, 1, 1)), dtype=float)
+    force = wp.array([[2.0, -3.0], [1.0, 1.0], [4.0, -2.0]], dtype=float)
+    qfrc_smooth = wp.array([[0.5, -1.0, 2.0], [0.0, 0.0, 0.0], [1.0, 1.0, 1.0]], dtype=float)
+    ma = wp.array([[3.0, 10.0, 0.5], [1.0, 1.0, 1.0], [2.0, 2.0, 2.0]], dtype=float)
+    changed = wp.array([1, 0, 1], dtype=int)
+    alpha = wp.array([0.1, 0.5, 0.2], dtype=float)
+    done = wp.array([False, False, True], dtype=bool)
+    qfrc = wp.array([[9.0, 9.0, 9.0], [9.0, 8.0, 7.0], [6.0, 5.0, 4.0]], dtype=float)
+    grad = wp.array([[8.0, 8.0, 8.0], [1.0, 2.0, 3.0], [4.0, 5.0, 6.0]], dtype=float)
+    grad_dot = wp.array([99.0, 14.0, 5.0], dtype=float)
+    decrement = wp.array([88.0, 8.0, 6.0], dtype=float)
+    grad_scale = wp.array([3.0, 2.0, 7.0], dtype=float)
+    search_unchanged = wp.zeros(nworld, dtype=bool)
+
+    wp.launch_tiled(
+      solver._update_constraint_qfrc_gradient_sparse_world_warp(nv),
+      dim=nworld,
+      inputs=[nefc, qfrc_smooth, rownnz, rowadr, colind, jacobian, force, ma, njmax, changed, alpha, done],
+      outputs=[qfrc, grad, grad_dot, decrement, grad_scale, search_unchanged],
+      block_dim=32,
+    )
+
+    np.testing.assert_allclose(qfrc.numpy(), [[2.0, 7.0, -1.5], [9.0, 8.0, 7.0], [6.0, 5.0, 4.0]])
+    np.testing.assert_allclose(grad.numpy(), [[0.5, 4.0, 0.0], [1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])
+    np.testing.assert_allclose(grad_dot.numpy(), [16.25, 7.875, 5.0])
+    np.testing.assert_allclose(decrement.numpy(), [0.0, 4.5, 6.0])
+    np.testing.assert_allclose(grad_scale.numpy(), [1.0, 1.5, 7.0])
+    np.testing.assert_array_equal(search_unchanged.numpy(), [False, True, True])
+
   @parameterized.product(
     cone=(ConeType.PYRAMIDAL, ConeType.ELLIPTIC),
     jacobian=(mujoco.mjtJacobian.mjJAC_DENSE, mujoco.mjtJacobian.mjJAC_SPARSE),

@@ -1984,6 +1984,96 @@ def _update_constraint_init_qfrc_constraint_sparse(compact: bool, world_warp: bo
   return kernel
 
 
+@cache_kernel
+def _update_constraint_qfrc_gradient_sparse_world_warp(nv: int):
+  NV = nv
+
+  @wp.func_native(snippet="WP_TILE_SYNC();")
+  def _syncthreads():
+    pass
+
+  @wp.kernel(module="unique", enable_backward=False)
+  def kernel(
+    # Data in:
+    nefc_in: wp.array[int],
+    qfrc_smooth_in: wp.array2d[float],
+    efc_J_rownnz_in: wp.array2d[int],
+    efc_J_rowadr_in: wp.array2d[int],
+    efc_J_colind_in: wp.array3d[int],
+    efc_J_in: wp.array3d[float],
+    efc_force_in: wp.array2d[float],
+    efc_Ma_in: wp.array2d[float],
+    njmax_in: int,
+    # In:
+    state_changed_count_in: wp.array[int],
+    ctx_alpha_in: wp.array[float],
+    ctx_done_in: wp.array[bool],
+    # Data out:
+    qfrc_constraint_out: wp.array2d[float],
+    # Out:
+    ctx_grad_out: wp.array2d[float],
+    ctx_grad_dot_out: wp.array[float],
+    ctx_newton_decrement_out: wp.array[float],
+    ctx_grad_scale_out: wp.array[float],
+    ctx_search_unchanged_out: wp.array[bool],
+  ):
+    worldid, tid = wp.tid()
+
+    done = ctx_done_in[worldid]
+    changed = state_changed_count_in[worldid] != 0
+    if tid == 0:
+      ctx_search_unchanged_out[worldid] = done or not changed
+
+    if done:
+      return
+
+    # Stable-state worlds stay on the previous gradient/search ray. Their
+    # public qfrc_constraint value is recovered once the solve completes.
+    if not changed:
+      if tid == 0:
+        sigma = ctx_grad_scale_out[worldid]
+        new_sigma = sigma - ctx_alpha_in[worldid]
+        ratio = float(0.0)
+        if sigma != 0.0:
+          ratio = new_sigma / sigma
+        ratio_sq = ratio * ratio
+        ctx_grad_dot_out[worldid] *= ratio_sq
+        ctx_newton_decrement_out[worldid] *= ratio_sq
+        ctx_grad_scale_out[worldid] = new_sigma
+      return
+
+    for dofid in range(tid, wp.static(NV), wp.static(32)):
+      qfrc_constraint_out[worldid, dofid] = 0.0
+    _syncthreads()
+
+    for efcid in range(tid, wp.min(nefc_in[worldid], njmax_in), wp.static(32)):
+      force = efc_force_in[worldid, efcid]
+      if force == 0.0:
+        continue
+      rownnz = efc_J_rownnz_in[worldid, efcid]
+      rowadr = efc_J_rowadr_in[worldid, efcid]
+      for i in range(rownnz):
+        sparseid = rowadr + i
+        colind = efc_J_colind_in[worldid, 0, sparseid]
+        wp.atomic_add(qfrc_constraint_out[worldid], colind, efc_J_in[worldid, 0, sparseid] * force)
+    _syncthreads()
+
+    local_grad_dot = float(0.0)
+    for dofid in range(tid, wp.static(NV), wp.static(32)):
+      grad = efc_Ma_in[worldid, dofid] - qfrc_smooth_in[worldid, dofid] - qfrc_constraint_out[worldid, dofid]
+      ctx_grad_out[worldid, dofid] = grad
+      local_grad_dot += grad * grad
+
+    grad_dot_tile = wp.tile(local_grad_dot, preserve_type=True)
+    grad_dot_sum = wp.tile_reduce(wp.add, grad_dot_tile)
+    if tid == 0:
+      ctx_grad_dot_out[worldid] = grad_dot_sum[0]
+      ctx_newton_decrement_out[worldid] = 0.0
+      ctx_grad_scale_out[worldid] = 1.0
+
+  return kernel
+
+
 @wp.kernel
 def _qfrc_constraint_from_grad(
   # Data in:
@@ -2148,52 +2238,6 @@ def _update_gradient_h_incremental_sparse(compact: bool):
   return kernel
 
 
-def _update_constraint_qfrc(
-  m: types.Model,
-  d: types.Data,
-  ctx: SolverContext | InverseContext,
-  stable_fast: bool = False,
-):
-  """Update generalized constraint forces from the current EFC forces."""
-  # qfrc_constraint = efc_J.T @ efc_force. Fast-path worlds with no state flips
-  # skip the rebuild; the public value is recovered after the solve.
-  changed = ctx.state_changed_count if stable_fast else d.nefc
-  sc = _sparse_compact(ctx)
-  if m.is_sparse or sc:
-    dj = ctx.compact_d_full if sc else d
-    wp.launch(
-      _zero_qfrc_constraint_sparse,
-      dim=(d.nworld, m.nv),
-      inputs=[changed, ctx.done],
-      outputs=[d.qfrc_constraint],
-    )
-    world_warp = m.is_sparse and launch_world_warp_enabled(d.nworld, d.qacc.device)
-    wp.launch(
-      _update_constraint_init_qfrc_constraint_sparse(sc, world_warp),
-      dim=(d.nworld, 32 if world_warp else d.njmax),
-      inputs=[
-        d.nefc,
-        dj.efc.J_rownnz,
-        dj.efc.J_rowadr,
-        dj.efc.J_colind,
-        dj.efc.J,
-        d.efc.force,
-        dj.dof_cdof,
-        d.njmax,
-        changed,
-        ctx.done,
-      ],
-      outputs=[d.qfrc_constraint],
-    )
-  else:
-    wp.launch(
-      _update_constraint_init_qfrc_constraint_dense(stable_fast),
-      dim=(d.nworld, m.nv),
-      inputs=[d.nefc, d.efc.J, d.efc.force, d.njmax, changed, ctx.done],
-      outputs=[d.qfrc_constraint],
-    )
-
-
 def _update_constraint(
   m: types.Model,
   d: types.Data,
@@ -2201,7 +2245,7 @@ def _update_constraint(
   track_changes: bool = False,
   stable_fast: bool = False,
 ):
-  """Update constraint arrays after each solve iteration."""
+  """Update constraint arrays and generalized forces after each solve iteration."""
   world_warp = m.is_sparse and launch_world_warp_enabled(d.nworld, d.qacc.device)
   wp.launch(
     _update_constraint_efc(track_changes, world_warp),
@@ -2226,7 +2270,43 @@ def _update_constraint(
     ],
     outputs=[d.efc.force, d.efc.state, ctx.quad_changed_ids, ctx.quad_changed_count, ctx.state_changed_count],
   )
-  _update_constraint_qfrc(m, d, ctx, stable_fast)
+
+  # qfrc_constraint = efc_J.T @ efc_force. Fast-path worlds with no state flips
+  # skip the rebuild; the public value is recovered after the solve.
+  changed = ctx.state_changed_count if stable_fast else d.nefc
+  sc = _sparse_compact(ctx)
+  if m.is_sparse or sc:
+    dj = ctx.compact_d_full if sc else d
+    wp.launch(
+      _zero_qfrc_constraint_sparse,
+      dim=(d.nworld, m.nv),
+      inputs=[changed, ctx.done],
+      outputs=[d.qfrc_constraint],
+    )
+    wp.launch(
+      _update_constraint_init_qfrc_constraint_sparse(sc, world_warp),
+      dim=(d.nworld, 32 if world_warp else d.njmax),
+      inputs=[
+        d.nefc,
+        dj.efc.J_rownnz,
+        dj.efc.J_rowadr,
+        dj.efc.J_colind,
+        dj.efc.J,
+        d.efc.force,
+        dj.dof_cdof,
+        d.njmax,
+        changed,
+        ctx.done,
+      ],
+      outputs=[d.qfrc_constraint],
+    )
+  else:
+    wp.launch(
+      _update_constraint_init_qfrc_constraint_dense(stable_fast),
+      dim=(d.nworld, m.nv),
+      inputs=[d.nefc, d.efc.J, d.efc.force, d.njmax, changed, ctx.done],
+      outputs=[d.qfrc_constraint],
+    )
 
 
 @cache_kernel
@@ -3332,26 +3412,31 @@ def _update_gradient(m: types.Model, d: types.Data, ctx: SolverContext, compact:
     raise ValueError(f"Unknown solver type: {m.opt.solver}")
 
 
-def _update_gradient_incremental(m: types.Model, d: types.Data, ctx: SolverContext, stable_fast: bool = False):
+def _update_gradient_incremental(
+  m: types.Model,
+  d: types.Data,
+  ctx: SolverContext,
+  gradient_ready: bool = False,
+):
   """Incremental gradient update: update H for changed constraints + re-factorize.
 
   Skips the full J^T*D*J rebuild by applying only the delta from constraints
   that changed QUADRATIC state, then re-factorizes and solves.
   """
-  changed = ctx.state_changed_count if stable_fast else d.nefc
-  wp.launch(
-    _update_gradient_zero_grad_dot(stable_fast),
-    dim=d.nworld,
-    inputs=[changed, ctx.alpha, ctx.done],
-    outputs=[ctx.grad_dot, ctx.newton_decrement, ctx.grad_scale, ctx.search_unchanged],
-  )
+  if not gradient_ready:
+    wp.launch(
+      _update_gradient_zero_grad_dot(True),
+      dim=d.nworld,
+      inputs=[ctx.state_changed_count, ctx.alpha, ctx.done],
+      outputs=[ctx.grad_dot, ctx.newton_decrement, ctx.grad_scale, ctx.search_unchanged],
+    )
 
-  wp.launch(
-    _update_gradient_grad(stable_fast),
-    dim=(d.nworld, m.nv),
-    inputs=[d.qfrc_smooth, d.qfrc_constraint, d.efc.Ma, changed, ctx.done],
-    outputs=[ctx.grad, ctx.grad_dot],
-  )
+    wp.launch(
+      _update_gradient_grad(True),
+      dim=(d.nworld, m.nv),
+      inputs=[d.qfrc_smooth, d.qfrc_constraint, d.efc.Ma, ctx.state_changed_count, ctx.done],
+      outputs=[ctx.grad, ctx.grad_dot],
+    )
 
   # Update upper triangle of H with delta from changed constraints.
   sc = _sparse_compact(ctx)
@@ -3390,7 +3475,7 @@ def _update_gradient_incremental(m: types.Model, d: types.Data, ctx: SolverConte
       outputs=[ctx.h],
     )
 
-  _cholesky_factorize_solve(m, d, ctx, skip_unchanged=True, skip_noflip=stable_fast)
+  _cholesky_factorize_solve(m, d, ctx, skip_unchanged=True, skip_noflip=True)
 
 
 @wp.kernel
@@ -3683,12 +3768,38 @@ def _solver_iteration(
   # only changed by a scalar along the same ray. Skip their qfrc/grad/
   # solve/search updates and track the scalar in ctx.grad_scale.
   if fuse_constraint_update:
-    _update_constraint_qfrc(m, d, ctx, stable_fast=incremental)
+    wp.launch_tiled(
+      _update_constraint_qfrc_gradient_sparse_world_warp(m.nv),
+      dim=d.nworld,
+      inputs=[
+        d.nefc,
+        d.qfrc_smooth,
+        d.efc.J_rownnz,
+        d.efc.J_rowadr,
+        d.efc.J_colind,
+        d.efc.J,
+        d.efc.force,
+        d.efc.Ma,
+        d.njmax,
+        ctx.state_changed_count,
+        ctx.alpha,
+        ctx.done,
+      ],
+      outputs=[
+        d.qfrc_constraint,
+        ctx.grad,
+        ctx.grad_dot,
+        ctx.newton_decrement,
+        ctx.grad_scale,
+        ctx.search_unchanged,
+      ],
+      block_dim=32,
+    )
   else:
     _update_constraint(m, d, ctx, track_changes=incremental, stable_fast=incremental)
 
   if incremental:
-    _update_gradient_incremental(m, d, ctx, stable_fast=incremental)
+    _update_gradient_incremental(m, d, ctx, gradient_ready=fuse_constraint_update)
   else:
     _update_gradient(m, d, ctx, compact=compact)
 
