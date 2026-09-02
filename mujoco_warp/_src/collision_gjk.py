@@ -1481,7 +1481,7 @@ def _epa(
 @wp.func
 def _area4(a: wp.vec3, b: wp.vec3, c: wp.vec3, d: wp.vec3) -> float:
   """Computes area of a quadrilateral embedded in 3D space."""
-  return 0.5 * wp.norm_l2(wp.cross(a - d, d - b) + wp.cross(b - c, c - a))
+  return 0.5 * wp.norm_l2(wp.cross(a - c, b - d))
 
 
 @wp.func
