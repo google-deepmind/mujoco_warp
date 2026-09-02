@@ -1008,15 +1008,7 @@ class CollisionTest(parameterized.TestCase):
     _assert_eq(d.contact.dim.numpy()[0], mjd.contact.dim[0], "dim")
 
   def test_box_box_face_penetration_depth(self):
-    """Tests box-box face-to-face penetration depth calculation.
-
-    This test validates the bugfix for box-box collision depth calculation.
-    Two aligned boxes with face-to-face contact should report correct penetration depth.
-
-    Note: MuJoCo's native collision detection has a bug in box-box face-to-face
-    penetration depth calculation (it reports half the correct depth). This test
-    verifies that mujoco_warp reports the analytically correct depth.
-    """
+    """Tests box-box face-to-face penetration depth calculation."""
     mjm, mjd, m, d = test_data.fixture(
       xml="""
     <mujoco>
@@ -1047,9 +1039,6 @@ class CollisionTest(parameterized.TestCase):
     self.assertGreater(d.nacon.numpy()[0], 0, "Should have contacts")
     self.assertGreater(mjd.ncon, 0, "MuJoCo should have contacts")
 
-    # Verify that mujoco_warp reports the analytically correct penetration depth
-    # Note: We do NOT compare against MuJoCo's output here because MuJoCo has a bug
-    # that causes it to report half the correct penetration depth for face-to-face contacts
     for i in range(d.nacon.numpy()[0]):
       mjw_dist = d.contact.dist.numpy()[i]
       self.assertAlmostEqual(
