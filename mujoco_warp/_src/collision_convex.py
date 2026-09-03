@@ -822,14 +822,7 @@ def ccd_kernel_builder(
       cutoff = 1.0e32
     else:
       cutoff = gap
-    # Run GJK/EPA in a pair-local frame anchored at geom1 so that the support
-    # points subtracted during the Minkowski-difference iterations stay close to
-    # the origin.  In float32, a common world translation does not cancel
-    # exactly between two large support points, which can round away the small
-    # simplex components GJK needs to certify a tetrahedron containing the
-    # origin (see #1546).  Translating both geoms by the same amount leaves the
-    # relative geometry unchanged; the world origin is restored on the written
-    # contact position below.
+    # Shift origin to geom1 position for translation invariance with numerical precision.
     origin = geom1.pos
     geom1.pos = wp.vec3(0.0)
     geom2.pos = geom2.pos - origin

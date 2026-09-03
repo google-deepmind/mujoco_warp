@@ -612,14 +612,7 @@ class CollisionTest(parameterized.TestCase):
       self.assertEqual(d.nacon.numpy()[0], mjd.ncon)
 
   def test_mesh_mesh_common_translation(self):
-    """A common world translation must not change the CCD contact result (#1546).
-
-    The five-vertex mesh pair below loses its GJK tetrahedron when both bodies
-    are translated to y=1: the support points are formed in absolute float32
-    world coordinates, so a common translation does not cancel exactly and the
-    small simplex components round away.  The contact must be identical at both
-    translations.
-    """
+    """Test collision against translation."""
     vertices = np.array(
       [
         [0.0, 0.0, -0.3],
