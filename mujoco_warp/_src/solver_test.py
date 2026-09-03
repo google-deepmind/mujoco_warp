@@ -15,6 +15,8 @@
 
 """Tests for solver functions."""
 
+from unittest import mock
+
 import mujoco
 import numpy as np
 import warp as wp
@@ -416,6 +418,72 @@ class SolverTest(parameterized.TestCase):
       _assert_eq(efc_sorted_state, mjd_sorted_state, "efc_state")
       _assert_eq(efc_sorted_force, mjd_sorted_force, "efc_force")
       _assert_eq(qfrc_constraint, mjd.qfrc_constraint, "qfrc_constraint")
+
+  def test_sparse_world_warp_matches_generic_solver(self):
+    """Forced world-warp solver launches match the generic sparse path."""
+    mjm, mjd, m, _ = test_data.fixture(
+      "constraints.xml",
+      keyframe=2,
+      overrides={
+        "opt.cone": ConeType.PYRAMIDAL,
+        "opt.solver": SolverType.NEWTON,
+        "opt.jacobian": mujoco.mjtJacobian.mjJAC_SPARSE,
+        "opt.iterations": 5,
+        "opt.ls_iterations": 10,
+      },
+    )
+    self.assertTrue(m.is_sparse)
+    self.assertLessEqual(m.nv, 50)
+
+    d_generic = mjw.put_data(mjm, mjd, nworld=4)
+    d_world_warp = mjw.put_data(mjm, mjd, nworld=4)
+    with mock.patch.object(solver, "launch_world_warp_enabled", return_value=False):
+      solver.solve(m, d_generic)
+    with mock.patch.object(solver, "launch_world_warp_enabled", return_value=True):
+      solver.solve(m, d_world_warp)
+
+    nefc = int(d_generic.nefc.numpy().max())
+    _assert_eq(d_world_warp.qacc.numpy(), d_generic.qacc.numpy(), "qacc")
+    _assert_eq(d_world_warp.qfrc_constraint.numpy(), d_generic.qfrc_constraint.numpy(), "qfrc_constraint")
+    _assert_eq(d_world_warp.efc.force.numpy()[:, :nefc], d_generic.efc.force.numpy()[:, :nefc], "efc_force")
+    np.testing.assert_array_equal(d_world_warp.efc.state.numpy()[:, :nefc], d_generic.efc.state.numpy()[:, :nefc])
+    np.testing.assert_array_equal(d_world_warp.solver_niter.numpy(), d_generic.solver_niter.numpy())
+
+  def test_sparse_constraint_gradient_fusion(self):
+    """Fused world-warp force and gradient updates preserve all fast-path states."""
+    nworld, nv, njmax = 3, 3, 2
+    nefc = wp.array([2, 2, 2], dtype=int)
+    rownnz = wp.array(np.tile([[2, 2]], (nworld, 1)), dtype=int)
+    rowadr = wp.array(np.tile([[0, 2]], (nworld, 1)), dtype=int)
+    colind = wp.array(np.tile([[[0, 1, 1, 2]]], (nworld, 1, 1)), dtype=int)
+    jacobian = wp.array(np.tile([[[1.0, 2.0, -1.0, 0.5]]], (nworld, 1, 1)), dtype=float)
+    force = wp.array([[2.0, -3.0], [1.0, 1.0], [4.0, -2.0]], dtype=float)
+    qfrc_smooth = wp.array([[0.5, -1.0, 2.0], [0.0, 0.0, 0.0], [1.0, 1.0, 1.0]], dtype=float)
+    ma = wp.array([[3.0, 10.0, 0.5], [1.0, 1.0, 1.0], [2.0, 2.0, 2.0]], dtype=float)
+    changed = wp.array([1, 0, 1], dtype=int)
+    alpha = wp.array([0.1, 0.5, 0.2], dtype=float)
+    done = wp.array([False, False, True], dtype=bool)
+    qfrc = wp.array([[9.0, 9.0, 9.0], [9.0, 8.0, 7.0], [6.0, 5.0, 4.0]], dtype=float)
+    grad = wp.array([[8.0, 8.0, 8.0], [1.0, 2.0, 3.0], [4.0, 5.0, 6.0]], dtype=float)
+    grad_dot = wp.array([99.0, 14.0, 5.0], dtype=float)
+    decrement = wp.array([88.0, 8.0, 6.0], dtype=float)
+    grad_scale = wp.array([3.0, 2.0, 7.0], dtype=float)
+    search_unchanged = wp.zeros(nworld, dtype=bool)
+
+    wp.launch_tiled(
+      solver._update_constraint_qfrc_gradient_sparse_world_warp(nv),
+      dim=nworld,
+      inputs=[nefc, qfrc_smooth, rownnz, rowadr, colind, jacobian, force, ma, njmax, changed, alpha, done],
+      outputs=[qfrc, grad, grad_dot, decrement, grad_scale, search_unchanged],
+      block_dim=32,
+    )
+
+    np.testing.assert_allclose(qfrc.numpy(), [[2.0, 7.0, -1.5], [9.0, 8.0, 7.0], [6.0, 5.0, 4.0]])
+    np.testing.assert_allclose(grad.numpy(), [[0.5, 4.0, 0.0], [1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])
+    np.testing.assert_allclose(grad_dot.numpy(), [16.25, 7.875, 5.0])
+    np.testing.assert_allclose(decrement.numpy(), [0.0, 4.5, 6.0])
+    np.testing.assert_allclose(grad_scale.numpy(), [1.0, 1.5, 7.0])
+    np.testing.assert_array_equal(search_unchanged.numpy(), [False, True, True])
 
   @parameterized.product(
     cone=(ConeType.PYRAMIDAL, ConeType.ELLIPTIC),

@@ -16,6 +16,7 @@
 """Tests for constraint functions."""
 
 import itertools
+from unittest import mock
 
 import mujoco
 import numpy as np
@@ -26,6 +27,7 @@ from absl.testing import parameterized
 import mujoco_warp as mjw
 from mujoco_warp import ConeType
 from mujoco_warp import test_data
+from mujoco_warp._src import constraint
 
 # tolerance for difference between MuJoCo and MJWarp constraint calculations,
 # mostly due to float precision
@@ -159,6 +161,36 @@ class ConstraintTest(parameterized.TestCase):
 
     _assert_eq(d.nacon.numpy()[0], mjd.ncon, "nacon")
     _assert_efc_eq(mjm, m, d, mjd, mjd.nefc, "efc", m.nv)
+
+  @parameterized.parameters(ConeType.PYRAMIDAL, ConeType.ELLIPTIC)
+  def test_contact_world_warp(self, cone):
+    """Test sparse contact construction with one warp per world."""
+    xml = """
+      <mujoco>
+        <worldbody>
+          <geom type="plane" size="1 1 0.1"/>
+          <body pos="0 0 0.09">
+            <geom type="sphere" size="0.1" condim="6" adhesion="12"/>
+            <joint type="free"/>
+          </body>
+        </worldbody>
+      </mujoco>
+    """
+    mjm, mjd, m, d = test_data.fixture(
+      xml=xml,
+      nworld=2,
+      overrides={"opt.cone": cone, "opt.jacobian": mujoco.mjtJacobian.mjJAC_SPARSE},
+    )
+    for arr in (d.efc.J, d.efc.D, d.efc.aref, d.efc.pos, d.efc.margin):
+      arr.fill_(wp.nan)
+
+    with mock.patch.object(constraint, "launch_world_warp_enabled", return_value=True):
+      mjw.make_constraint(m, d)
+
+    _assert_eq(d.nefc.numpy(), mjd.nefc, "nefc")
+    _assert_efc_eq(mjm, m, d, mjd, mjd.nefc, "efc", m.nv)
+    world_aref = d.efc.aref.numpy()[:, : mjd.nefc]
+    _assert_eq(world_aref, np.repeat(world_aref[:1], d.nworld, axis=0), "world_aref")
 
   @parameterized.parameters(
     *itertools.product(

@@ -167,6 +167,11 @@ def cache_kernel(func):
   return wrapper
 
 
+def launch_world_warp_enabled(nworld: int, device) -> bool:
+  """Return whether one warp per world supplies at least four GPU occupancy waves."""
+  return device.is_cuda and nworld >= 4 * device.sm_count
+
+
 def check_toolkit_driver():
   wp.init()
   if wp.get_device().is_cuda:
