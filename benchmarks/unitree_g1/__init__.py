@@ -13,6 +13,7 @@ BENCHMARKS = [
     "nconmax": 48,
     "njmax": 192,
     "replay": "shuffle_dance.npz",
+    "override": "opt.warn_overflow=~ITERATIONS|~LS_ITERATIONS",
     "assets": [(ASSETS[0], "unitree_g1/assets", "assets")],
   },
   {
@@ -22,6 +23,7 @@ BENCHMARKS = [
     "nconmax": 48,
     "njmax": 192,
     "replay": "shuffle_dance.npz",
+    "override": "opt.warn_overflow=~ITERATIONS|~LS_ITERATIONS",
     "assets": [(ASSETS[0], "unitree_g1/assets", "assets")],
   },
   {
@@ -36,6 +38,7 @@ BENCHMARKS = [
     "render_height": 64,
     "render_depth": False,
     "replay": "shuffle_dance.npz",
+    "override": "opt.warn_overflow=~ITERATIONS|~LS_ITERATIONS",
     "assets": [(ASSETS[0], "unitree_g1/assets", "assets")],
   },
 ]

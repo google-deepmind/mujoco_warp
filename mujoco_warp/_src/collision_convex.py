@@ -167,7 +167,7 @@ def ccd_hfield_kernel_builder(
   gjk_iterations: int,
   epa_iterations: int,
   geomgeomid: int,
-  warn_overflow: bool,
+  warn_overflow: int,
 ):
   """Kernel builder for heightfield CCD collisions (no multiccd args)."""
 
@@ -290,8 +290,12 @@ def ccd_hfield_kernel_builder(
 
     ccdid = wp.atomic_add(nccd_in, wp.static(geomgeomid), 1)
     if ccdid >= naccdmax_in:
-      if wp.static(warn_overflow):
-        wp.printf("CCD overflow - please increase naccdmax to %u\n", ccdid)
+      if wp.static(bool(warn_overflow & OverflowType.CCD)):
+        wp.printf(
+          "CCD overflow - please increase naccdmax beyond %u\n"
+          "To disable the print warning: m.opt.warn_overflow &= ~mjw.OverflowType.CCD (or = 0 for all)\n",
+          naccdmax_in,
+        )
       wp.atomic_or(overflow_out, worldid, wp.static(OverflowType.CCD))
       return
 
@@ -429,9 +433,11 @@ def ccd_hfield_kernel_builder(
         # add both triangles from this cell
         for i in range(2):
           if count >= MJ_MAXCONPAIR:
-            if wp.static(warn_overflow):
+            if wp.static(bool(warn_overflow & OverflowType.HFIELD)):
               wp.printf(
-                "height field collision overflow, number of collisions >= %u - please adjust resolution: \n decrease the number of hfield rows/cols or modify size of colliding geom\n",
+                "height field collision overflow, number of collisions >= %u - please adjust resolution: \n"
+                "decrease the number of hfield rows/cols or modify size of colliding geom\n"
+                "To disable the print warning: m.opt.warn_overflow &= ~mjw.OverflowType.HFIELD (or = 0 for all)\n",
                 MJ_MAXCONPAIR,
               )
             wp.atomic_or(overflow_out, worldid, OverflowType.HFIELD)
@@ -457,7 +463,7 @@ def ccd_hfield_kernel_builder(
           if prism[3, 2] < zmin and prism[4, 2] < zmin and prism[5, 2] < zmin:
             continue
 
-          geom1.hfprism = prism
+          geom1.polyvert = prism
 
           # prism center
           x1 = geom1.pos + geom1.rot @ (prism[0] + prism[1] + prism[2] + prism[3] + prism[4] + prism[5]) * wp.static(1.0 / 6.0)
@@ -479,7 +485,7 @@ def ccd_hfield_kernel_builder(
             epa_pr,
             epa_norm2,
             epa_horizon,
-            wp.static(warn_overflow),
+            wp.static(bool(warn_overflow & OverflowType.EPA_HORIZON)),
             worldid,
             overflow_out,
           )
@@ -739,7 +745,7 @@ def ccd_kernel_builder(
   use_multiccd: bool,
   geomgeomid: int,
   block_dim: int,
-  warn_overflow: bool,
+  warn_overflow: int,
 ):
   """Kernel builder for non-heightfield CCD collisions (no hfield args)."""
 
@@ -845,8 +851,12 @@ def ccd_kernel_builder(
     if needs_epa:
       ccdid = wp.atomic_add(nccd_in, geomgeomid, 1)
       if ccdid >= naccdmax_in:
-        if wp.static(warn_overflow):
-          wp.printf("CCD overflow - please increase naccdmax to %u\n", ccdid)
+        if wp.static(bool(warn_overflow & OverflowType.CCD)):
+          wp.printf(
+            "CCD overflow - please increase naccdmax beyond %u\n"
+            "To disable the print warning: m.opt.warn_overflow &= ~mjw.OverflowType.CCD (or = 0 for all)\n",
+            naccdmax_in,
+          )
         wp.atomic_or(overflow_out, worldid, OverflowType.CCD)
         return
       dist, ncollision, w1, w2, multiccd_idx = epa_phase(
@@ -863,7 +873,7 @@ def ccd_kernel_builder(
         epa_pr_in[ccdid],
         epa_norm2_in[ccdid],
         epa_horizon_in[ccdid],
-        wp.static(warn_overflow),
+        wp.static(bool(warn_overflow & OverflowType.EPA_HORIZON)),
         worldid,
         overflow_out,
       )
@@ -880,6 +890,7 @@ def ccd_kernel_builder(
 
     witness1 = mat43()
     witness2 = mat43()
+    dists = wp.vec4()
     witness1[0] = w1
     witness2[0] = w2
 
@@ -898,8 +909,9 @@ def ccd_kernel_builder(
         if geom2.mesh_polyadr < 0:
           multiccd_idx = -1
 
+      dists = wp.vec4()
       if multiccd_idx > -1:
-        ncollision, witness1, witness2 = multicontact(
+        ncollision, witness1, witness2, dists = multicontact(
           multiccd_polygon_in[ccdid],
           multiccd_clipped_in[ccdid],
           multiccd_pnormal_in[ccdid],
@@ -921,6 +933,13 @@ def ccd_kernel_builder(
           geomtype1,
           geomtype2,
         )
+
+        # multicontact clipping may produce 0 contacts; fall back to the
+        # single EPA witness pair
+        if ncollision < 1:
+          ncollision = 1
+          witness1[0] = w1
+          witness2[0] = w2
 
     condim, friction, solref, solreffriction, solimp, adhesion = contact_material_params(
       geom_condim,
@@ -955,7 +974,7 @@ def ccd_kernel_builder(
       write_contact(
         naconmax_in,
         i,
-        dist,
+        dists[i] if ncollision > 1 else dist,
         0.5 * (witness1[i] + witness2[i]) + origin,
         frame,
         margin,
@@ -1289,7 +1308,7 @@ def convex_narrowphase(m: Model, d: Data, ctx: CollisionContext, collision_table
     count, geomgeomid = _pair_count(g1, g2)
     if (g1 == GeomType.HFIELD or g2 == GeomType.HFIELD) and count:
       wp.launch(
-        ccd_hfield_kernel_builder(g1, g2, m.opt.ccd_iterations, epa_iterations, geomgeomid, bool(m.opt.warn_overflow)),
+        ccd_hfield_kernel_builder(g1, g2, m.opt.ccd_iterations, epa_iterations, geomgeomid, int(m.opt.warn_overflow)),
         dim=d.naconmax,
         inputs=[
           m.opt.ccd_tolerance,
@@ -1390,7 +1409,7 @@ def convex_narrowphase(m: Model, d: Data, ctx: CollisionContext, collision_table
         use_multiccd,
         geomgeomid,
         m.block_dim.convex_ccd,
-        bool(m.opt.warn_overflow),
+        int(m.opt.warn_overflow),
       )
       ccd_grid = _ccd_grid_size(ccd_k, d.naconmax, d.ncollision.device)
       wp.launch(

@@ -23,9 +23,12 @@ import warp as wp
 from absl.testing import absltest
 from absl.testing import parameterized
 
+from mujoco_warp._src.io import override_model
+from mujoco_warp._src.io import put_model
 from mujoco_warp._src.types import Data
 from mujoco_warp._src.types import Model
 from mujoco_warp._src.types import Option
+from mujoco_warp._src.types import OverflowType
 from mujoco_warp._src.types import TileSet
 
 
@@ -84,6 +87,54 @@ class TypesTest(parameterized.TestCase):
         attrs.append(line.split(":")[0].strip())
 
     self.assertListEqual(attrs, [f.name for f in dataclasses.fields(mjw_class)])
+
+  def test_overflow_type_flags(self):
+    self.assertEqual(int(OverflowType.NONE), 0)
+    self.assertEqual(int(OverflowType.NEFC), 1 << 0)
+    self.assertEqual(int(OverflowType.NJMAX_NNZ), 1 << 1)
+    self.assertEqual(int(OverflowType.BROADPHASE), 1 << 2)
+    self.assertEqual(int(OverflowType.NARROWPHASE), 1 << 3)
+    self.assertEqual(int(OverflowType.CCD), 1 << 4)
+    self.assertEqual(int(OverflowType.HFIELD), 1 << 5)
+    self.assertEqual(int(OverflowType.CONTACT_MATCH), 1 << 6)
+    self.assertEqual(int(OverflowType.NVMAX), 1 << 7)
+    self.assertEqual(int(OverflowType.EPA_HORIZON), 1 << 8)
+    self.assertEqual(int(OverflowType.ITERATIONS), 1 << 9)
+    self.assertEqual(int(OverflowType.LS_ITERATIONS), 1 << 10)
+    self.assertEqual(int(OverflowType.ALL), (1 << 11) - 1)
+
+  def test_option_warn_overflow(self):
+    mjm = mujoco.MjModel.from_xml_string("<mujoco/>")
+    m = put_model(mjm)
+
+    # Defaults to ALL
+    self.assertEqual(m.opt.warn_overflow, int(OverflowType.ALL))
+
+    # Setting boolean False converts to 0
+    m.opt.warn_overflow = False
+    self.assertEqual(m.opt.warn_overflow, 0)
+
+    # Setting boolean True converts to OverflowType.ALL
+    m.opt.warn_overflow = True
+    self.assertEqual(m.opt.warn_overflow, int(OverflowType.ALL))
+
+    # Setting selective bitmask
+    m.opt.warn_overflow &= ~OverflowType.NEFC
+    self.assertEqual(m.opt.warn_overflow, int(OverflowType.ALL) & ~OverflowType.NEFC)
+    self.assertFalse(bool(m.opt.warn_overflow & OverflowType.NEFC))
+    self.assertTrue(bool(m.opt.warn_overflow & OverflowType.CCD))
+
+    # Test override_model support
+    override_model(m, {"opt.warn_overflow": 0})
+    self.assertEqual(m.opt.warn_overflow, 0)
+
+    override_model(m, {"opt.warn_overflow": "CCD"})
+    self.assertEqual(m.opt.warn_overflow, int(OverflowType.CCD))
+
+    m = put_model(mjm)
+    override_model(m, ["opt.warn_overflow=~ITERATIONS|~LS_ITERATIONS"])
+    expected = int(OverflowType.ALL) & ~OverflowType.ITERATIONS & ~OverflowType.LS_ITERATIONS
+    self.assertEqual(m.opt.warn_overflow, expected)
 
 
 if __name__ == "__main__":

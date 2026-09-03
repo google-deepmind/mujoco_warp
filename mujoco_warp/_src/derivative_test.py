@@ -911,31 +911,31 @@ class DerivativeTest(parameterized.TestCase):
       </worldbody>
       <actuator>
         <dcmotor name="dc_bias" joint="slide1"
-                 motorconst="2.0" resistance="0.5"/>
+                 motorconst="2.0" resistance="0.5" input="voltage"/>
         <dcmotor name="dc_vel" joint="slide2"
                  motorconst="1.0" resistance="1.0"
-                 input="velocity" controller="0 5"/>
+                 input="vel" controller="0 0 5"/>
         <dcmotor name="dc_pos" joint="slide3"
                  motorconst="1.0" resistance="1.0"
-                 input="position" controller="10 0 5"/>
+                 input="pos vel" controller="10 0 5"/>
         <dcmotor name="dc_lugre" joint="joint4"
                  motorconst="0.05" resistance="2.0"
-                 damping="0.001"
+                 input="none"
                  lugre="1e4 100 0.005 0.008 0.1"/>
         <dcmotor name="dc_stateful_v" joint="slide5"
                  motorconst="2.0" resistance="0.5"
-                 inductance="0 0.001"/>
+                 inductance="0.001" input="voltage"/>
         <dcmotor name="dc_stateful_pos" joint="slide6"
                  motorconst="1.0" resistance="1.0"
-                 inductance="0 0.001"
-                 input="position" controller="10 0 5"/>
+                 inductance="0.001"
+                 input="pos vel" controller="10 0 5"/>
         <dcmotor name="dc_stateful_vel" joint="slide7"
                  motorconst="1.0" resistance="1.0"
-                 inductance="0 0.001"
-                 input="velocity" controller="5 0"/>
+                 inductance="0.001"
+                 input="vel" controller="0 0 5"/>
       </actuator>
       <keyframe>
-        <key qvel="1 2 3 4 5 6 7" ctrl=".1 .2 .3 .4 .5 .6 .7"/>
+        <key qvel="1 2 3 4 5 6 7" ctrl=".1 .2 .3 .4 .5 .6 .7 .8"/>
       </keyframe>
     </mujoco>
   """
@@ -1002,8 +1002,8 @@ class DerivativeTest(parameterized.TestCase):
       </worldbody>
       <actuator>
         <dcmotor name="dc" joint="j" motorconst="2.0"
-                 resistance="0.5" inductance="0 0.001"
-                 input="position" controller="10 0 5"/>
+                 resistance="0.5" inductance="0.0005"
+                 input="pos vel" controller="10 0 5"/>
       </actuator>
     </mujoco>
     """,
@@ -1012,6 +1012,7 @@ class DerivativeTest(parameterized.TestCase):
     # Set nonzero velocity and ctrl
     mjd.qvel[0] = 1.0
     mjd.ctrl[0] = 0.5
+    mjd.ctrl[1] = 0.0
     mujoco.mj_forward(mjm, mjd)
     d = mjw.put_data(mjm, mjd)
 
@@ -1020,10 +1021,10 @@ class DerivativeTest(parameterized.TestCase):
     forward.fwd_velocity(m, d)
     derivative.deriv_smooth_vel(m, d, out)
 
-    # Expected: K*(dVdw - K)*(1 - exp(-h/te))/R
-    # K=2, R=0.5, te=0.001, h=0.002, kd=5, dVdw=-kd=-5
-    K, R, te, h, kd = 2.0, 0.5, 0.001, 0.002, 5.0
-    expected = K * (-kd - K) * (1 - np.exp(-h / te)) / R
+    # Expected: K*(dVdw - K)*(1 - exp(-h/te))/R = -kd*(1 - exp(-h/te))
+    # K=2, R=0.5, te=0.001 (L/R = 0.0005/0.5), h=0.002, kd=5
+    te, h, kd = 0.001, 0.002, 5.0
+    expected = -kd * (1.0 - np.exp(-h / te))
 
     # Extract diagonal
     out_diag = out.numpy()[0, 0]
@@ -1051,7 +1052,7 @@ class DerivativeTest(parameterized.TestCase):
       </worldbody>
       <actuator>
         <dcmotor name="dc" joint="j" motorconst="1.0"
-                 resistance="1.0" input="position"
+                 resistance="1.0" input="pos vel"
                  controller="10 0 5"/>
       </actuator>
     </mujoco>
@@ -1068,8 +1069,8 @@ class DerivativeTest(parameterized.TestCase):
       </worldbody>
       <actuator>
         <dcmotor name="dc" joint="j" motorconst="1.0"
-                 resistance="1.0" inductance="0 1e-8"
-                 input="position" controller="10 0 5"/>
+                 resistance="1.0" inductance="1e-8"
+                 input="pos vel" controller="10 0 5"/>
       </actuator>
     </mujoco>
     """

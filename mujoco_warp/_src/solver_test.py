@@ -215,7 +215,7 @@ class SolverTest(parameterized.TestCase):
     overflow = wp.zeros(1, dtype=int)
 
     wp.launch(
-      solver._solve_done(False),
+      solver._solve_done(types.OverflowType.NONE),
       dim=1,
       inputs=[
         1,
@@ -243,7 +243,7 @@ class SolverTest(parameterized.TestCase):
     overflow = wp.zeros(1, dtype=int)
 
     wp.launch(
-      solver._solve_done(False),
+      solver._solve_done(types.OverflowType.NONE),
       dim=1,
       inputs=[
         1,
@@ -272,7 +272,7 @@ class SolverTest(parameterized.TestCase):
     beta = wp.zeros(1, dtype=float)
 
     wp.launch(
-      solver._solve_cg_finalize(False),
+      solver._solve_cg_finalize(types.OverflowType.NONE),
       dim=1,
       inputs=[
         1,
