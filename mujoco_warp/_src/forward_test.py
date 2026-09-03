@@ -2053,6 +2053,53 @@ class DCMotorTest(parameterized.TestCase):
 
     np.testing.assert_allclose(d.qvel.numpy()[0], mjd.qvel, atol=1e-3, rtol=1e-3)
 
+  def test_run_rne_postconstraint(self):
+    """Tests run_rne_postconstraint option in forward and step2."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <body name="body0" pos="0 0 1">
+            <freejoint/>
+            <geom type="sphere" size=".1" mass="1"/>
+            <site name="site0"/>
+          </body>
+        </worldbody>
+        <sensor>
+          <accelerometer site="site0"/>
+        </sensor>
+      </mujoco>
+      """,
+      overrides={"opt.disableflags": DisableBit.SENSOR, "opt.run_rne_postconstraint": True},
+    )
+    self.assertTrue(m.opt.run_rne_postconstraint)
+    mujoco.mj_forward(mjm, mjd)
+    mujoco.mj_rnePostConstraint(mjm, mjd)
+
+    # 1. run_rne_postconstraint=True: RNE runs in forward and step2, sensors skipped
+    d.cacc.fill_(wp.inf)
+    d.cfrc_int.fill_(wp.inf)
+    d.cfrc_ext.fill_(wp.inf)
+    mjw.forward(m, d)
+
+    _assert_eq(d.cacc.numpy()[0], mjd.cacc, "cacc")
+    _assert_eq(d.cfrc_int.numpy()[0], mjd.cfrc_int, "cfrc_int")
+    _assert_eq(d.cfrc_ext.numpy()[0], mjd.cfrc_ext, "cfrc_ext")
+    self.assertFalse(d.sensordata.numpy().any(), "Sensors should not be computed when disabled")
+
+    # Verify step2 also runs RNE
+    d.cacc.fill_(wp.inf)
+    mjw.step2(m, d)
+    _assert_eq(d.cacc.numpy()[0], mjd.cacc, "step2 cacc")
+
+    # 2. run_rne_postconstraint=False: RNE skipped when sensors disabled
+    m.opt.run_rne_postconstraint = False
+    d.cfrc_ext.fill_(wp.inf)
+    mjw.forward(m, d)
+    self.assertTrue(
+      np.isinf(d.cfrc_ext.numpy()[0]).all(), "cfrc_ext should remain inf when RNE is not requested and sensors disabled"
+    )
+
 
 if __name__ == "__main__":
   wp.init()

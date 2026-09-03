@@ -2520,7 +2520,7 @@ def _contact_sort(maxmatch: int):
 
 
 @event_scope
-def sensor_acc(m: Model, d: Data):
+def sensor_acc(m: Model, d: Data, skip_rne_postconstraint: bool = False):
   """Compute acceleration-dependent sensor values."""
   if m.opt.disableflags & DisableBit.SENSOR:
     return
@@ -2668,7 +2668,7 @@ def sensor_acc(m: Model, d: Data):
       block_dim=m.block_dim.contact_sort,
     )
 
-  if m.sensor_rne_postconstraint:
+  if not skip_rne_postconstraint and m.sensor_rne_postconstraint:
     smooth.rne_postconstraint(m, d)
 
   wp.launch(

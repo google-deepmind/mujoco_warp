@@ -904,6 +904,8 @@ class Option:
     run_collision_detection: if False, skips collision detection and allows user-populated
       contacts during the physics step (as opposed to DisableBit.CONTACT which explicitly
       zeros out the contacts at each step)
+    run_rne_postconstraint: if True, evaluates rne_postconstraint after the solver step even if
+      sensors are disabled or no sensors are present
     contact_sensor_maxmatch: max number of contacts considered by contact sensor matching criteria
                              contacts matched after this value is exceded will be ignored
     warn_overflow: overflow warning bitmask (OverflowType)
@@ -935,6 +937,7 @@ class Option:
   broadphase_filter: BroadphaseFilter
   graph_conditional: bool
   run_collision_detection: bool
+  run_rne_postconstraint: bool
   contact_sensor_maxmatch: int
   warn_overflow: int
 

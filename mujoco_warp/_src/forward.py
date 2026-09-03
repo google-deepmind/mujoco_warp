@@ -1405,7 +1405,9 @@ def forward(m: Model, d: Data):
   fwd_acceleration(m, d, factorize=True)
 
   solver.solve(m, d)
-  sensor.sensor_acc(m, d)
+  if m.opt.run_rne_postconstraint or (not (m.opt.disableflags & DisableBit.SENSOR) and m.sensor_rne_postconstraint):
+    smooth.rne_postconstraint(m, d)
+  sensor.sensor_acc(m, d, skip_rne_postconstraint=True)
 
 
 @event_scope
@@ -1448,7 +1450,9 @@ def step2(m: Model, d: Data):
   fwd_actuation(m, d)
   fwd_acceleration(m, d)
   solver.solve(m, d)
-  sensor.sensor_acc(m, d)
+  if m.opt.run_rne_postconstraint or (not (m.opt.disableflags & DisableBit.SENSOR) and m.sensor_rne_postconstraint):
+    smooth.rne_postconstraint(m, d)
+  sensor.sensor_acc(m, d, skip_rne_postconstraint=True)
 
   # integrate with Euler or implicitfast
   if m.opt.integrator in (IntegratorType.IMPLICITFAST, IntegratorType.IMPLICIT):

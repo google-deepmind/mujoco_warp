@@ -940,6 +940,36 @@ class SensorTest(parameterized.TestCase):
     # Verify Warp sensor is triggered
     self.assertTrue(warp_sensordata.any(), "Warp sensordata should not be all zeros")
 
+  def test_sensor_acc_skip_rne_postconstraint(self):
+    """Tests skip_rne_postconstraint parameter in sensor_acc."""
+    _, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <body name="body0" pos="0 0 1">
+            <freejoint/>
+            <geom type="sphere" size=".1" mass="1"/>
+            <site name="site0"/>
+          </body>
+        </worldbody>
+        <sensor>
+          <accelerometer site="site0"/>
+        </sensor>
+      </mujoco>
+      """
+    )
+    self.assertFalse(m.opt.run_rne_postconstraint)
+
+    # Default (skip_rne_postconstraint=False): RNE runs and populates cacc
+    d.cacc.zero_()
+    mjw.sensor_acc(m, d)
+    self.assertTrue(d.cacc.numpy().any())
+
+    # skip_rne_postconstraint=True: RNE is skipped, cacc remains zeros
+    d.cacc.zero_()
+    mjw.sensor_acc(m, d, skip_rne_postconstraint=True)
+    self.assertFalse(d.cacc.numpy().any())
+
 
 if __name__ == "__main__":
   wp.init()
