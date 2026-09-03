@@ -81,6 +81,10 @@ def _check_type_matches_annotation(test_obj, obj: Any, prefix: str = ""):
     if isinstance(val, Callback):
       continue
 
+    # skip mesh_bvh — Warp device BVH reference holder, not JAX-serializable
+    if field_name == "mesh_bvh":
+      continue
+
     if dataclasses.is_dataclass(val):
       test_obj.assertTrue(dataclasses.is_dataclass(type_), msg.format(**locals()))
       _check_type_matches_annotation(test_obj, val, prefix + field_name + ".")
@@ -133,6 +137,10 @@ def _check_annotation_compat(
 
     # skip Callback — not JAX-serializable
     if dataclasses.is_dataclass(v) and v.__name__ == "Callback":
+      continue
+
+    # skip mesh_bvh — Warp device BVH reference holder, not JAX-serializable
+    if k == "mesh_bvh":
       continue
 
     if v in (int, bool, float):

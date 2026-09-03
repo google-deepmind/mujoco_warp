@@ -21,6 +21,7 @@ import mujoco
 import numpy as np
 import warp as wp
 
+from mujoco_warp._src import bvh
 from mujoco_warp._src import sleep
 from mujoco_warp._src import support
 from mujoco_warp._src import types
@@ -1149,6 +1150,14 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
     if warp_util.is_array_spec(f.type):
       batch_size = batch_sizes.get(f.name, 1)
       setattr(m, f.name, _create_array(getattr(m, f.name), f.type, sizes, batch_size))
+
+  if m.has_sdf_geom and mjm.nmesh > 0:
+    meshes = [bvh.build_mesh_bvh(mjm, mid)[0] for mid in range(mjm.nmesh)]
+    m.bvh_mesh_id = wp.array([mesh.id for mesh in meshes], dtype=wp.uint64)
+    m.mesh_bvh = meshes
+  else:
+    m.bvh_mesh_id = wp.zeros(max(mjm.nmesh, 1), dtype=wp.uint64)
+    m.mesh_bvh = []
 
   warp_util.mark_batched(m)
   return m

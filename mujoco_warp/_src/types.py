@@ -1441,6 +1441,8 @@ class Model:
     body_isdofancestor: precomputed mask of which DOFs affect each body
     dof_tri_row: dof upper triangle row (used in solver)
     dof_tri_col: dof upper triangle col (used in solver)
+    bvh_mesh_id: mesh BVH ids
+    mesh_bvh: list of wp.Mesh objects
     nxn_geom_pair: collision pair geom ids [-2, ngeom-1]
     nxn_geom_pair_filtered: valid collision pair geom ids
                             [-1, ngeom - 1]
@@ -1936,6 +1938,8 @@ class Model:
   body_isdofancestor: array("nbody", "nv_pad", int)
   dof_tri_row: array("ndof_tri", int)
   dof_tri_col: array("ndof_tri", int)
+  bvh_mesh_id: array("nmesh", wp.uint64)
+  mesh_bvh: list[wp.Mesh]
   nxn_geom_pair: array("nnxn_geom_pair", wp.vec2i)
   nxn_geom_pair_filtered: array("nnxn_geom_pair_filtered", wp.vec2i)
   nxn_pairid: array("nnxn_geom_pair", wp.vec2i)

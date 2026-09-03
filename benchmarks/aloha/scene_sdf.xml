@@ -4,6 +4,16 @@
     <flag multiccd="enable"/>
   </option>
 
+  <keyframe>
+    <key name="home" qpos="
+    0 -0.96 1.16 0 -0.3 0 0.0084 0.0084
+    0 -0.96 1.16 0 -0.3 0 0.0084 0.0084
+    0 0 0.1 0 0 0.732543 0.680721"
+      ctrl="
+    0 -0.96 1.16 0 -0.3 0 0.0084
+    0 -0.96 1.16 0 -0.3 0 0.0084"/>
+  </keyframe>
+
   <include file="aloha.xml"/>
 
   <statistic center="0 -0.1 0.2" extent="0.6" meansize="0.05"/>
@@ -96,7 +106,7 @@
     <geom class="frame" pos="0 -0.391 -0.01" quat="0 0 0 1" mesh="wormseye_mount"/>
     
     <!-- Cow (SDF) -->
-    <body name="cow" euler="0 0 90" pos="0 0 .1">
+    <body name="cow" pos="0 0 0.1" quat="0 0 0.732543 0.680721">
       <freejoint name="cow"/>
       <geom type="sdf" name="cow" mesh="spot" material="matspot"/>
     </body>

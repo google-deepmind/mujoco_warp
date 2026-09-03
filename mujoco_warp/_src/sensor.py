@@ -2326,7 +2326,7 @@ def _sensor_tactile(
     if contact_type == GeomType.SDF and plugin_id != -1 and other_dataid >= 0:
       lpos = math.rot_vec_quat(lpos, mesh_quat[other_dataid]) + mesh_pos[other_dataid]
 
-    plugin_attributes, plugin_index, volume_data, mesh_data = get_sdf_params(
+    plugin_attributes, plugin_index, volume_data = get_sdf_params(
       oct_child,
       oct_aabb,
       oct_coeff,
@@ -2339,7 +2339,7 @@ def _sensor_tactile(
       other_dataid,
     )
 
-    depth = wp.min(sdf(contact_type, lpos, plugin_attributes, plugin_index, volume_data, mesh_data), 0.0)
+    depth = wp.min(sdf(contact_type, lpos, plugin_attributes, plugin_index, volume_data), 0.0)
     if depth >= 0.0:
       continue
 

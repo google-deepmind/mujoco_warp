@@ -912,7 +912,7 @@ def collision(
     return
 
   # TODO(team): create context outside collision?
-  ctx = create_collision_context(d.naconmax)
+  ctx = create_collision_context(d.naconmax, has_sdf=m.has_sdf_geom)
 
   incremental = awake_prev is not None
 
