@@ -412,6 +412,8 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
   m.has_flex_selfcollide = bool(
     mjm.nflex > 0 and np.any((mjm.flex_selfcollide != 0) & ((mjm.flex_contype & mjm.flex_conaffinity) != 0))
   )
+  m.has_1d_flex = bool(mjm.nflex > 0 and np.any(mjm.flex_dim == 1))
+  m.has_2d_flex = bool(mjm.nflex > 0 and np.any(mjm.flex_dim == 2))
   m.has_3d_flex = bool(mjm.nflex > 0 and np.any(mjm.flex_dim == 3))
   m.max_flex_dim = int(np.max(mjm.flex_dim)) if mjm.nflex > 0 else 0
   m.block_dim = types.BlockDim()
@@ -1522,6 +1524,25 @@ def _allocate_island_arrays(
   d.efc_islandid = wp.array(efc_islandid, dtype=int)
 
 
+_COMPACT_DATA_FIELDS: tuple[str, ...] = (
+  "ctol",
+  "cls_tol",
+  "cdof_tri_row",
+  "cdof_tri_col",
+  "cM",
+  "cqLD",
+  "crhs",
+  "cx",
+  "cJ",
+  "cMa",
+  "cqfrc_smooth",
+  "cqacc_smooth",
+  "cqacc_warmstart",
+  "cqacc",
+  "cqfrc_constraint",
+)
+
+
 def _allocate_compact_arrays(
   mjm: mujoco.MjModel,
   d: types.Data,
@@ -1785,6 +1806,8 @@ def make_data(
     "map_iefc2efc": None,
     "dof_islandid": None,
     "efc_islandid": None,
+    # compact arrays (populated by _allocate_compact_arrays; skip eager allocation)
+    **{name: None for name in _COMPACT_DATA_FIELDS},
     "tree_asleep": wp.array(np.full((nworld, mjm.ntree), -(1 + types.MJ_MINAWAKE), dtype=np.int32), dtype=int),
     "tree_awake": wp.array(np.ones((nworld, mjm.ntree), dtype=np.int32), dtype=int),
     "body_awake": wp.array(_initial_body_awake(mjm, nworld, False), dtype=int),
@@ -2053,6 +2076,8 @@ def put_data(
     "map_iefc2efc": None,
     "dof_islandid": None,
     "efc_islandid": None,
+    # compact arrays (populated by _allocate_compact_arrays; skip eager allocation)
+    **{name: None for name in _COMPACT_DATA_FIELDS},
     "tree_asleep": wp.array(np.tile(tree_asleep_init, (nworld, 1)), dtype=int),
     "tree_awake": wp.array(np.tile((tree_asleep_init < 0).astype(np.int32), (nworld, 1)), dtype=int),
     "body_awake": wp.array(np.tile(body_awake_init.astype(np.int32), (nworld, 1)), dtype=int),

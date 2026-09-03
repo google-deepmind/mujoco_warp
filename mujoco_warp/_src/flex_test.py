@@ -25,6 +25,7 @@ import mujoco_warp as mjw
 from mujoco_warp import ConeType
 from mujoco_warp import test_data
 from mujoco_warp._src import bvh
+from mujoco_warp._src import collision_core
 from mujoco_warp._src import collision_flex
 from mujoco_warp._src import io
 from mujoco_warp._src import types
@@ -1733,6 +1734,201 @@ class FlexCollisionTest(parameterized.TestCase):
     self.assertEqual(nacon, expected_contacts, f"Expected {expected_contacts} contacts, got {nacon}")
 
   @parameterized.parameters(1, 2)
+  def test_flex_fps_capping(self, nworld):
+    """Test that flex-flex contacts are limited to MJ_MAXCONPAIR (50) via parallel FPS."""
+    _, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <flexcomp name="cloth1" type="grid" count="8 8 1" spacing=".05 .05 .05" pos="0 0 0"
+                    radius=".02" dim="2" mass=".5">
+            <contact selfcollide="none" contype="1" conaffinity="1"/>
+          </flexcomp>
+          <flexcomp name="cloth2" type="grid" count="8 8 1" spacing=".05 .05 .05" pos="0 0 0.01"
+                    radius=".02" dim="2" mass=".5">
+            <contact selfcollide="none" contype="1" conaffinity="1"/>
+          </flexcomp>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=nworld,
+      nconmax=1500,
+    )
+    d.nacon.fill_(-1)
+    d.contact.dist.fill_(wp.inf)
+    mjw.kinematics(m, d)
+    mjw.collision(m, d)
+    nacon = int(d.nacon.numpy()[0])
+    self.assertEqual(nacon, types.MJ_MAXCONPAIR * nworld)
+
+  def test_flex_sat_prefilter_conservative(self):
+    """Test that broadphase SAT prefilter is conservative and yields identical contacts."""
+    xml = """
+    <mujoco>
+      <worldbody>
+        <flexcomp name="cloth" type="grid" count="4 4 1" spacing=".05 .05 .05" pos="0 0 0"
+                  radius=".02" dim="2" mass=".5">
+          <contact selfcollide="auto" contype="1" conaffinity="1"/>
+          <edge damping="0.01"/>
+        </flexcomp>
+      </worldbody>
+    </mujoco>
+    """
+    _, _, m, d_sat = test_data.fixture(xml=xml, nworld=1, nconmax=500)
+    _, _, _, d_nosat = test_data.fixture(xml=xml, nworld=1, nconmax=500)
+
+    # Deform vertices slightly to create self-collisions
+    qpos = d_sat.qpos.numpy()
+    qpos[0, 0] += 0.05
+    qpos[0, 1] += 0.05
+    d_sat.qpos.assign(qpos)
+    d_nosat.qpos.assign(qpos)
+
+    d_sat.nacon.fill_(-1)
+    d_sat.contact.dist.fill_(wp.inf)
+    d_nosat.nacon.fill_(-1)
+    d_nosat.contact.dist.fill_(wp.inf)
+
+    orig_sat = collision_flex.ENABLE_SAT_PREFILTER
+    try:
+      collision_flex.ENABLE_SAT_PREFILTER = True
+      mjw.kinematics(m, d_sat)
+      mjw.collision(m, d_sat)
+
+      collision_flex.ENABLE_SAT_PREFILTER = False
+      mjw.kinematics(m, d_nosat)
+      mjw.collision(m, d_nosat)
+    finally:
+      collision_flex.ENABLE_SAT_PREFILTER = orig_sat
+
+    nacon_sat = int(d_sat.nacon.numpy()[0])
+    nacon_nosat = int(d_nosat.nacon.numpy()[0])
+    ncoll_sat = int(d_sat.ncollision.numpy()[0])
+    ncoll_nosat = int(d_nosat.ncollision.numpy()[0])
+
+    # Verify SAT actively prunes candidate pairs while preserving all contacts
+    self.assertGreater(nacon_sat, 0)
+    self.assertLess(ncoll_sat, ncoll_nosat)
+    self.assertEqual(nacon_sat, nacon_nosat)
+
+    pos_sat = d_sat.contact.pos.numpy()[:nacon_sat]
+    pos_nosat = d_nosat.contact.pos.numpy()[:nacon_nosat]
+    dist_sat = d_sat.contact.dist.numpy()[:nacon_sat]
+    dist_nosat = d_nosat.contact.dist.numpy()[:nacon_nosat]
+
+    def _sort_key(pos, dist):
+      return np.lexsort((dist, pos[:, 2], pos[:, 1], pos[:, 0]))
+
+    idx_sat = _sort_key(np.round(pos_sat, 5), np.round(dist_sat, 5))
+    idx_nosat = _sort_key(np.round(pos_nosat, 5), np.round(dist_nosat, 5))
+
+    np.testing.assert_allclose(pos_sat[idx_sat], pos_nosat[idx_nosat], atol=1e-5)
+    np.testing.assert_allclose(dist_sat[idx_sat], dist_nosat[idx_nosat], atol=1e-5)
+
+  def test_parallel_fps_numpy_parity(self):
+    """Test that parallel FPS selects candidates matching a serial NumPy reference."""
+    _, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <flexcomp name="cloth1" type="grid" count="8 8 1" spacing=".05 .05 .05" pos="0 0 0"
+                    radius=".02" dim="2" mass=".5">
+            <contact selfcollide="none" contype="1" conaffinity="1"/>
+          </flexcomp>
+          <flexcomp name="cloth2" type="grid" count="8 8 1" spacing=".05 .05 .05" pos="0 0 0.01"
+                    radius=".02" dim="2" mass=".5">
+            <contact selfcollide="none" contype="1" conaffinity="1"/>
+          </flexcomp>
+        </worldbody>
+      </mujoco>
+      """,
+      qpos_noise=0.005,
+      nworld=1,
+      nconmax=1500,
+    )
+    d.nacon.fill_(-1)
+    d.contact.dist.fill_(wp.inf)
+
+    mjw.kinematics(m, d)
+
+    ws = collision_flex._allocate_flex_workspace(m, d)
+    sap_data = collision_flex._run_flex_sap_sort(m, d)
+    ctx = collision_core.create_collision_context(d.naconmax)
+    collision_flex._flex_sap_collision(m, d, ctx, ws, is_self=False, sap_data=sap_data)
+
+    ncand = int(ws.ncand.numpy()[0])
+    cand_active = ws.cand_active.numpy()[:ncand]
+    sort_val = ws.filter_val.numpy()[:ncand]
+    cand_active_sorted = ws.cand_active_sorted.numpy()[:ncand]
+    cand_pos = ws.pos.numpy()[:ncand]
+    cand_dist = ws.dist.numpy()[:ncand]
+    cand_elem = ws.elem.numpy()[:ncand]
+    num_groups = int(ws.flex_num_groups.numpy()[0])
+    group_starts = ws.flex_group_start_indices.numpy()[:num_groups]
+
+    def _tie_break(curr, sel):
+      if sel < 0:
+        return True
+      e1_c, e2_c = cand_elem[curr]
+      e1_s, e2_s = cand_elem[sel]
+      if e1_c != e1_s:
+        return e1_c < e1_s
+      if e2_c != e2_s:
+        return e2_c < e2_s
+      return curr < sel
+
+    self.assertGreater(num_groups, 0)
+    for g in range(num_groups):
+      g_start = group_starts[g]
+      g_end = group_starts[g + 1] if g + 1 < num_groups else ncand
+      group_cands = [sort_val[si] for si in range(g_start, g_end) if cand_active_sorted[si] == 1]
+      if len(group_cands) <= types.MJ_MAXCONPAIR:
+        continue
+
+      best_seed = -1
+      min_d = 1e10
+      for c_idx in group_cands:
+        d_val = cand_dist[c_idx]
+        if d_val < min_d:
+          min_d = d_val
+          best_seed = c_idx
+        elif d_val == min_d and _tie_break(c_idx, best_seed):
+          min_d = d_val
+          best_seed = c_idx
+
+      selected = [best_seed]
+      seed_pos = cand_pos[best_seed]
+      min_dist = {c_idx: np.float32(np.linalg.norm(cand_pos[c_idx] - seed_pos)) for c_idx in group_cands}
+
+      for _ in range(1, types.MJ_MAXCONPAIR):
+        max_d = np.float32(-1e10)
+        best_cand = -1
+        for c_idx in group_cands:
+          if c_idx in selected:
+            continue
+          md = min_dist[c_idx]
+          if md > max_d:
+            max_d = md
+            best_cand = c_idx
+          elif md == max_d and _tie_break(c_idx, best_cand):
+            max_d = md
+            best_cand = c_idx
+
+        if best_cand < 0 or max_d <= 0.0:
+          break
+
+        selected.append(best_cand)
+        new_pos = cand_pos[best_cand]
+        for c_idx in group_cands:
+          d_new = np.float32(np.linalg.norm(cand_pos[c_idx] - new_pos))
+          if d_new < min_dist[c_idx]:
+            min_dist[c_idx] = d_new
+
+      warp_selected = sorted([c_idx for c_idx in group_cands if cand_active[c_idx] == 1])
+      np_selected = sorted(selected)
+      self.assertEqual(warp_selected, np_selected)
+
+  @parameterized.parameters(1, 2)
   def test_mixed_flex_broadphase_and_narrowphase(self, nworld):
     """Test that broadphase and narrowphase run correctly with mixed 2D and 3D flexes."""
     xml = """
@@ -1859,6 +2055,94 @@ class FlexCollisionTest(parameterized.TestCase):
     """Test that loading a model with unsupported geoms and Flex raises NotImplementedError."""
     with self.assertRaises(NotImplementedError):
       test_data.fixture(xml=xml)
+
+  def test_triangle_sat_separated(self):
+    """Tests 2D separating axis test on coplanar, parallel, and intersecting triangles."""
+
+    @wp.kernel
+    def eval_sat(
+      p0: wp.array[wp.vec3],
+      p1: wp.array[wp.vec3],
+      p2: wp.array[wp.vec3],
+      q0: wp.array[wp.vec3],
+      q1: wp.array[wp.vec3],
+      q2: wp.array[wp.vec3],
+      cutoff_sq: wp.array[float],
+      result: wp.array[bool],
+    ):
+      tid = wp.tid()
+      result[tid] = collision_flex._triangle_sat_separated(
+        p0[tid],
+        p1[tid],
+        p2[tid],
+        q0[tid],
+        q1[tid],
+        q2[tid],
+        cutoff_sq[tid],
+      )
+
+    p0_list = [
+      wp.vec3(0.0, 0.0, 0.0),
+      wp.vec3(0.0, 0.0, 0.0),
+      wp.vec3(0.0, 0.0, 0.0),
+      wp.vec3(0.0, -1.0, 0.0),
+    ]
+    p1_list = [
+      wp.vec3(1.0, 0.0, 0.0),
+      wp.vec3(1.0, 0.0, 0.0),
+      wp.vec3(1.0, 0.0, 0.0),
+      wp.vec3(0.0, 1.0, 0.0),
+    ]
+    p2_list = [
+      wp.vec3(0.0, 1.0, 0.0),
+      wp.vec3(0.0, 1.0, 0.0),
+      wp.vec3(0.0, 1.0, 0.0),
+      wp.vec3(0.0, 0.0, 1.0),
+    ]
+
+    q0_list = [
+      wp.vec3(3.0, 0.0, 0.0),
+      wp.vec3(0.0, 0.0, 0.5),
+      wp.vec3(0.0, 0.0, 0.1),
+      wp.vec3(-0.5, 0.0, 0.5),
+    ]
+    q1_list = [
+      wp.vec3(4.0, 0.0, 0.0),
+      wp.vec3(1.0, 0.0, 0.5),
+      wp.vec3(1.0, 0.0, 0.1),
+      wp.vec3(0.5, 0.0, 0.5),
+    ]
+    q2_list = [
+      wp.vec3(3.0, 1.0, 0.0),
+      wp.vec3(0.0, 1.0, 0.5),
+      wp.vec3(0.0, 1.0, 0.1),
+      wp.vec3(0.0, 0.5, 0.5),
+    ]
+    cutoff_sq_list = [
+      0.01,
+      0.04,
+      0.04,
+      0.0,
+    ]
+    expected = [True, True, False, False]
+
+    n = len(expected)
+    res = wp.zeros(n, dtype=bool)
+    wp.launch(
+      eval_sat,
+      dim=n,
+      inputs=[
+        wp.array(p0_list, dtype=wp.vec3),
+        wp.array(p1_list, dtype=wp.vec3),
+        wp.array(p2_list, dtype=wp.vec3),
+        wp.array(q0_list, dtype=wp.vec3),
+        wp.array(q1_list, dtype=wp.vec3),
+        wp.array(q2_list, dtype=wp.vec3),
+        wp.array(cutoff_sq_list, dtype=float),
+      ],
+      outputs=[res],
+    )
+    np.testing.assert_array_equal(res.numpy(), expected)
 
 
 class FlexDynamicsTest(parameterized.TestCase):

@@ -2653,6 +2653,8 @@ class IOTest(parameterized.TestCase):
 
     # Should succeed without NotImplementedError
     m = mjwarp.put_model(mjm)
+    self.assertEqual(m.has_1d_flex, False)
+    self.assertEqual(m.has_2d_flex, False)
     self.assertEqual(m.has_3d_flex, True)
 
   # TODO(team): remove after implementing multicontact support for CCD pairs.

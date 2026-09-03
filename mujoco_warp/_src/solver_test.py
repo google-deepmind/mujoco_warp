@@ -272,18 +272,20 @@ class SolverTest(parameterized.TestCase):
     beta = wp.zeros(1, dtype=float)
 
     wp.launch(
-      solver._solve_cg_finalize(types.OverflowType.NONE),
-      dim=1,
+      solver._solve_beta_finalize_tiled(types.OverflowType.NONE),
+      dim=(1, 32),
       inputs=[
         1,
         wp.array([1.0e-6], dtype=float),
         1,
         wp.array([1.0], dtype=float),
-        wp.array([1.0], dtype=float),
+        wp.zeros((1, 1), dtype=float),
+        wp.zeros((1, 1), dtype=float),
+        wp.zeros((1, 1), dtype=float),
+        wp.zeros((1, 1), dtype=float),
         wp.array([1.0], dtype=float),
         wp.array([1.0], dtype=float),
         done,
-        wp.array([1.0], dtype=float),
       ],
       outputs=[solver_niter, overflow, beta, nsolving, done],
     )
