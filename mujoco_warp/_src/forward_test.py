@@ -316,6 +316,37 @@ class ForwardTest(parameterized.TestCase):
 
     np.testing.assert_allclose(d.qvel.numpy()[0], mjd.qvel, atol=1e-3, rtol=1e-3, err_msg="qvel")
 
+  def test_standalone_free_body_implicitfast_fluid(self):
+    """Verify IMPLICITFAST matches IMPLICIT for standalone free body in fluid."""
+    xml = """
+    <mujoco>
+      <option timestep="0.005" density="1.2" viscosity="0.002" wind="1 2 3"/>
+      <worldbody>
+        <body pos="0.1 -0.2 0.5" euler="20 -30 40">
+          <joint type="free"/>
+          <geom type="ellipsoid" size=".1 .2 .3" mass="2" pos=".04 -.02 .03"
+                fluidshape="ellipsoid"/>
+        </body>
+      </worldbody>
+      <keyframe>
+        <key qpos="0.1 -0.2 0.5 1 0 0 0" qvel="1 -0.5 0.8 5 -3 2"/>
+      </keyframe>
+    </mujoco>
+    """
+    mjm, mjd, m_fast, d_fast = test_data.fixture(xml=xml, keyframe=0, overrides={"opt.integrator": IntegratorType.IMPLICITFAST})
+
+    for i in range(10):
+      mjw.step(m_fast, d_fast)
+      mujoco.mj_step(mjm, mjd)
+
+      np.testing.assert_allclose(
+        d_fast.qvel.numpy()[0],
+        mjd.qvel,
+        atol=1e-3,
+        rtol=1e-3,
+        err_msg=f"step {i} qvel mismatch between IMPLICITFAST and MuJoCo",
+      )
+
   @parameterized.parameters(mujoco.mjtJacobian.mjJAC_SPARSE, mujoco.mjtJacobian.mjJAC_DENSE)
   def test_implicit_tendon_damping(self, jacobian):
     mjm, mjd, m, d = test_data.fixture(

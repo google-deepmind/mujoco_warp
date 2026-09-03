@@ -1244,8 +1244,6 @@ class DerivativeTest(parameterized.TestCase):
       """,
   }
 
-  # TODO: update implementation for free bodies (https://github.com/google-deepmind/mujoco_warp/pull/1548)
-  @absltest.skip("Requires updating fluid derivative implementation for free bodies to match MuJoCo 3.11")
   @parameterized.product(
     scenario=list(_FLUID_SCENARIOS.keys()),
     jacobian=[mujoco.mjtJacobian.mjJAC_DENSE, mujoco.mjtJacobian.mjJAC_SPARSE],
@@ -1284,10 +1282,13 @@ class DerivativeTest(parameterized.TestCase):
     )
     mj_out = mj_M - mjm.opt.timestep * mj_qDeriv
 
+    has_free_body = bool(m.body_is_free.numpy().any())
     name = f"M - dt * qDeriv (fluid {scenario})"
     if jacobian == mujoco.mjtJacobian.mjJAC_SPARSE:
       mask = m.M_elemid.numpy() >= 0
       _assert_eq(mjw_out[mask], mj_out[mask], name)
+    elif has_free_body:
+      _assert_eq(np.tril(mjw_out), np.tril(mj_out), name)
     else:
       _assert_eq(mjw_out, mj_out, name)
 

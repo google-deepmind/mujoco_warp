@@ -43,6 +43,8 @@ from mujoco_warp._src.types import JointType
 from mujoco_warp._src.types import Model
 from mujoco_warp._src.types import OverflowType
 from mujoco_warp._src.types import TrnType
+from mujoco_warp._src.types import mat66
+from mujoco_warp._src.types import vec6
 from mujoco_warp._src.types import vec10
 from mujoco_warp._src.warp_util import cache_kernel
 from mujoco_warp._src.warp_util import event_scope
@@ -591,6 +593,196 @@ def _map_m2d(
     qLU_out[worldid, elemid] = 0.0
 
 
+@wp.kernel
+def _implicit_free_body_reset_m(
+  # Model:
+  body_dofadr: wp.array[int],
+  M_rownnz: wp.array[int],
+  M_rowadr: wp.array[int],
+  body_freeadr: wp.array[int],
+  # Data in:
+  M_in: wp.array2d[float],
+  # Out:
+  qH_out: wp.array2d[float],
+):
+  worldid, freeid = wp.tid()
+  bodyid = body_freeadr[freeid]
+
+  dof_adr = body_dofadr[bodyid]
+  for r in range(6):
+    row = dof_adr + r
+    start = M_rowadr[row]
+    nnz = M_rownnz[row]
+    for k in range(nnz):
+      qH_out[worldid, start + k] = M_in[worldid, start + k]
+
+
+@wp.kernel
+def _implicit_free_body_solve(
+  # Model:
+  opt_timestep: wp.array[float],
+  opt_wind: wp.array[wp.vec3],
+  opt_density: wp.array[float],
+  opt_viscosity: wp.array[float],
+  opt_integrator: int,
+  body_parentid: wp.array[int],
+  body_rootid: wp.array[int],
+  body_dofadr: wp.array[int],
+  body_geomnum: wp.array[int],
+  body_geomadr: wp.array[int],
+  body_mass: wp.array2d[float],
+  body_inertia: wp.array2d[wp.vec3],
+  dof_bodyid: wp.array[int],
+  dof_damping: wp.array2d[float],
+  geom_type: wp.array[int],
+  geom_size: wp.array2d[wp.vec3],
+  geom_fluid: wp.array2d[float],
+  M_rownnz: wp.array[int],
+  M_rowadr: wp.array[int],
+  M_colind: wp.array[int],
+  body_fluid_ellipsoid: wp.array[bool],
+  body_freeadr: wp.array[int],
+  # Data in:
+  qvel_in: wp.array2d[float],
+  xpos_in: wp.array2d[wp.vec3],
+  xmat_in: wp.array2d[wp.mat33],
+  xipos_in: wp.array2d[wp.vec3],
+  ximat_in: wp.array2d[wp.mat33],
+  geom_xpos_in: wp.array2d[wp.vec3],
+  geom_xmat_in: wp.array2d[wp.mat33],
+  subtree_com_in: wp.array2d[wp.vec3],
+  cdof_in: wp.array2d[wp.spatial_vector],
+  M_in: wp.array2d[float],
+  cvel_in: wp.array2d[wp.spatial_vector],
+  # In:
+  qfrc_in: wp.array2d[float],
+  # Data out:
+  qacc_out: wp.array2d[float],
+):
+  worldid, freeid = wp.tid()
+  bodyid = body_freeadr[freeid]
+
+  dof_adr = body_dofadr[bodyid]
+  timestep = opt_timestep[worldid % opt_timestep.shape[0]]
+
+  # 1. A = M block (gather from sparse lower triangle)
+  A = mat66(0.0)
+  for r in range(6):
+    row = dof_adr + r
+    start = M_rowadr[row]
+    nnz = M_rownnz[row]
+    for k in range(nnz):
+      c = M_colind[start + k] - dof_adr
+      val = M_in[worldid, start + k]
+      A[r, c] = val
+      A[c, r] = val
+
+  # 2. Add joint damping
+  for r in range(6):
+    damp = dof_damping[worldid % dof_damping.shape[0], dof_adr + r]
+    if damp > 0.0:
+      A[r, r] += timestep * damp
+
+  # 3. Add gyroscopic bias velocity derivative
+  mass = body_mass[worldid % body_mass.shape[0], bodyid]
+  R = xmat_in[worldid, bodyid]
+  Xi = ximat_in[worldid, bodyid]
+  inertia = body_inertia[worldid % body_inertia.shape[0], bodyid]
+  s = xipos_in[worldid, bodyid] - xpos_in[worldid, bodyid]
+  qvel_rot = wp.vec3(
+    qvel_in[worldid, dof_adr + 3],
+    qvel_in[worldid, dof_adr + 4],
+    qvel_in[worldid, dof_adr + 5],
+  )
+  lin, rot = math.free_bias_vel_blocks(mass, R, Xi, inertia, s, qvel_rot)
+  h_mass = -timestep * mass
+  for r in range(3):
+    for c in range(3):
+      A[r, 3 + c] += h_mass * lin[r, c]
+      A[3 + r, 3 + c] += timestep * rot[r, c]
+
+  # 4. Fluid force derivatives
+  density = opt_density[worldid % opt_density.shape[0]]
+  viscosity = opt_viscosity[worldid % opt_viscosity.shape[0]]
+  wind = opt_wind[worldid % opt_wind.shape[0]]
+
+  if density > 0.0 or viscosity > 0.0:
+    if body_fluid_ellipsoid[bodyid]:
+      for r in range(6):
+        cdof_r = cdof_in[worldid, dof_adr + r]
+        for c in range(6):
+          cdof_c = cdof_in[worldid, dof_adr + c]
+          contrib = derivative._deriv_ellipsoid_fluid(
+            opt_integrator,
+            geom_type,
+            geom_size,
+            geom_fluid,
+            xipos_in,
+            geom_xpos_in,
+            geom_xmat_in,
+            subtree_com_in,
+            cvel_in,
+            worldid,
+            bodyid,
+            body_rootid[bodyid],
+            body_geomadr[bodyid],
+            body_geomnum[bodyid],
+            cdof_r,
+            cdof_c,
+            wind,
+            density,
+            viscosity,
+            True,
+          )
+          A[r, c] -= timestep * contrib
+    elif mass > 0.0:
+      b_ipos = xipos_in[worldid, bodyid]
+      b_imat = ximat_in[worldid, bodyid]
+      subtree_root = subtree_com_in[worldid, body_rootid[bodyid]]
+
+      vel_subtree = cvel_in[worldid, bodyid]
+      v_subtree_ang = wp.vec3(vel_subtree[0], vel_subtree[1], vel_subtree[2])
+      v_subtree_lin = wp.vec3(vel_subtree[3], vel_subtree[4], vel_subtree[5])
+
+      lin_com = v_subtree_lin - wp.cross(b_ipos - subtree_root, v_subtree_ang)
+      b_imat_T = wp.transpose(b_imat)
+      v_local_ang = b_imat_T @ v_subtree_ang
+      v_local_lin = b_imat_T @ lin_com
+      wind_local = b_imat_T @ wind
+
+      lvel = wp.spatial_vector(v_local_ang, v_local_lin - wind_local)
+
+      B_box = derivative._deriv_box_fluid(
+        opt_integrator,
+        body_mass,
+        body_inertia,
+        worldid,
+        bodyid,
+        lvel,
+        density,
+        viscosity,
+      )
+      for r in range(6):
+        J_r = derivative._get_jac_column_local(
+          body_parentid, body_rootid, dof_bodyid, subtree_com_in, cdof_in, b_ipos, bodyid, dof_adr + r, worldid, b_imat
+        )
+        for c in range(6):
+          J_c = derivative._get_jac_column_local(
+            body_parentid, body_rootid, dof_bodyid, subtree_com_in, cdof_in, b_ipos, bodyid, dof_adr + c, worldid, b_imat
+          )
+          A[r, c] -= timestep * wp.dot(J_r, B_box @ J_c)
+
+  # 5. Solve A * x = qfrc
+  A_fact, pivot, ok = math.lu_factor_6x6(A)
+  if ok:
+    b = vec6(0.0)
+    for r in range(6):
+      b[r] = qfrc_in[worldid, dof_adr + r]
+    x = math.lu_solve_6x6(A_fact, pivot, b)
+    for r in range(6):
+      qacc_out[worldid, dof_adr + r] = x[r]
+
+
 @event_scope
 def implicit(m: Model, d: Data):
   """Integrates fully implicit in velocity."""
@@ -621,8 +813,63 @@ def implicit(m: Model, d: Data):
     qLD = wp.empty_like(d.qLD)
     qLDiagInv = wp.empty((d.nworld, m.nv), dtype=float)
     derivative.deriv_smooth_vel(m, d, qDeriv)
+    if m.body_freeadr.size > 0:
+      wp.launch(
+        _implicit_free_body_reset_m,
+        dim=(d.nworld, m.body_freeadr.size),
+        inputs=[
+          m.body_dofadr,
+          m.M_rownnz,
+          m.M_rowadr,
+          m.body_freeadr,
+          d.M,
+        ],
+        outputs=[qDeriv],
+      )
     qacc = wp.empty((d.nworld, m.nv), dtype=float)
     smooth.factor_solve_i(m, d, qDeriv, qLD, qLDiagInv, qacc, d.efc.Ma)
+    if m.body_freeadr.size > 0:
+      wp.launch(
+        _implicit_free_body_solve,
+        dim=(d.nworld, m.body_freeadr.size),
+        inputs=[
+          m.opt.timestep,
+          m.opt.wind,
+          m.opt.density,
+          m.opt.viscosity,
+          m.opt.integrator,
+          m.body_parentid,
+          m.body_rootid,
+          m.body_dofadr,
+          m.body_geomnum,
+          m.body_geomadr,
+          m.body_mass,
+          m.body_inertia,
+          m.dof_bodyid,
+          m.dof_damping,
+          m.geom_type,
+          m.geom_size,
+          m.geom_fluid,
+          m.M_rownnz,
+          m.M_rowadr,
+          m.M_colind,
+          m.body_fluid_ellipsoid,
+          m.body_freeadr,
+          d.qvel,
+          d.xpos,
+          d.xmat,
+          d.xipos,
+          d.ximat,
+          d.geom_xpos,
+          d.geom_xmat,
+          d.subtree_com,
+          d.cdof,
+          d.M,
+          d.cvel,
+          d.efc.Ma,
+        ],
+        outputs=[qacc],
+      )
     _advance(m, d, qacc)
   else:
     _advance(m, d, d.qacc)
