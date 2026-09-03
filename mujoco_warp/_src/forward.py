@@ -49,6 +49,13 @@ from mujoco_warp._src.warp_util import event_scope
 
 wp.set_module_options({"enable_backward": False})
 
+# gradient opt-in gate + analytic backward hooks, set by mujoco_warp.enable_grad()
+ENABLE_GRAD = False
+_fwd_kinematics_backward_hook = None
+_fwd_kinematics_backward_registration = None
+_step_backward_hook = None
+_step_backward_registration = None
+
 
 @wp.func
 def next_position(
@@ -654,15 +661,11 @@ def implicit(m: Model, d: Data):
     _advance(m, d, d.qacc)
 
 
-# gradient opt-in gate + analytic fwd_kinematics backward hook, set by mujoco_warp.enable_grad()
-ENABLE_GRAD = False
-_fwd_kinematics_backward_hook = None
-
-
-def register_fwd_kinematics_backward_hook(fn):
+def register_fwd_kinematics_backward(hook, prepare_arrays):
   """Registers the analytic fwd_kinematics backward callback."""
-  global _fwd_kinematics_backward_hook
-  _fwd_kinematics_backward_hook = fn
+  global _fwd_kinematics_backward_hook, _fwd_kinematics_backward_registration
+  _fwd_kinematics_backward_hook = hook
+  _fwd_kinematics_backward_registration = (hook, prepare_arrays)
 
 
 @event_scope
@@ -698,8 +701,8 @@ def fwd_kinematics(m: Model, d: Data):
     if record:
       rt.tape = tape
   if record:
-    hook = _fwd_kinematics_backward_hook
-    arrays = [a for a in (d.qpos, d.site_xpos, d.xpos, d.xquat) if a is not None and a.grad]
+    hook, prepare_arrays = _fwd_kinematics_backward_registration
+    arrays = prepare_arrays(d)
     if len(arrays) > 1:  # qpos + at least one differentiated output
       tape.record_func(lambda: hook(m, d), arrays=arrays)
 
@@ -1437,6 +1440,13 @@ def forward(m: Model, d: Data):
   sensor.sensor_acc(m, d)
 
 
+def register_step_backward(hook, prepare_arrays):
+  """Registers the analytic step backward callback."""
+  global _step_backward_hook, _step_backward_registration
+  _step_backward_hook = hook
+  _step_backward_registration = (hook, prepare_arrays)
+
+
 # minimal step-input state copied d -> d_out out-of-place; forward(m, d_out) recomputes the rest
 _STEP_STATE_FIELDS = (
   "qpos",
@@ -1451,15 +1461,6 @@ _STEP_STATE_FIELDS = (
   "eq_active",
   "time",
 )
-
-# analytic step-backward hook, set by mujoco_warp.enable_grad(); taped out-of-place path only
-_step_backward_hook = None
-
-
-def register_step_backward_hook(fn):
-  """Registers the analytic step backward callback."""
-  global _step_backward_hook
-  _step_backward_hook = fn
 
 
 def _copy_state(d: Data, d_out: Data):
@@ -1510,8 +1511,8 @@ def step(m: Model, d: Data, d_out: Optional[Data] = None):
       rt.tape = tape
 
   if record:
-    hook = _step_backward_hook
-    arrays = [a for a in (d.qpos, d.qvel, d.ctrl, d_out.qpos, d_out.qvel) if a.grad]
+    hook, prepare_arrays = _step_backward_registration
+    arrays = prepare_arrays(d, d_out)
     tape.record_func(lambda: hook(m, d, d_out), arrays=arrays)
 
 

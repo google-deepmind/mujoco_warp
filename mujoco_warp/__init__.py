@@ -102,6 +102,7 @@ from mujoco_warp._src.support import jac as jac
 from mujoco_warp._src.support import mul_m as mul_m
 from mujoco_warp._src.support import set_state as set_state
 from mujoco_warp._src.support import xfrc_accumulate as xfrc_accumulate
+from mujoco_warp._src.types import BackwardContext as BackwardContext
 from mujoco_warp._src.types import BiasType as BiasType
 from mujoco_warp._src.types import BroadphaseFilter as BroadphaseFilter
 from mujoco_warp._src.types import BroadphaseType as BroadphaseType
