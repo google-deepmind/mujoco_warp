@@ -38,7 +38,6 @@ class JAXTest(parameterized.TestCase):
       self.skipTest("JAX not installed")
 
     from jax import numpy as jp
-    from warp.jax_experimental import ffi
 
     if jax.default_backend() != "gpu":
       self.skipTest("JAX default backend is not GPU")
@@ -80,11 +79,11 @@ class JAXTest(parameterized.TestCase):
 
       return qpos, qvel
 
-    warp_step_fn = ffi.jax_callable(
+    warp_step_fn = wp.jax_callable(
       warp_step,
       num_outputs=2,
       output_dims={"qpos_out": (NWORLDS, mjm.nq), "qvel_out": (NWORLDS, mjm.nv)},
-      graph_mode=ffi.GraphMode.WARP,
+      graph_mode=wp.JaxCallableGraphMode.WARP,
     )
 
     jax_qpos = jp.tile(m.qpos0.numpy(), (NWORLDS, 1))

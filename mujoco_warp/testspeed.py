@@ -147,7 +147,7 @@ def _main(argv: Sequence[str]):
   if _FUNCTION.value not in _FUNCS:
     raise ValueError(f"Unknown function: {_FUNCTION.value}")
 
-  wp.config.quiet = flags.FLAGS["verbosity"].value < 1
+  wp.config.log_level = wp.LOG_WARNING if flags.FLAGS["verbosity"].value < 1 else wp.LOG_INFO
   wp.init()
   device = wp.get_device(cli.DEVICE.value)
   if device == "cpu":
