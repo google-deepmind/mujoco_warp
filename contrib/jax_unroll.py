@@ -12,8 +12,6 @@ import numpy as np
 import warp as wp
 from etils import epath
 from jax import numpy as jp
-from warp.jax_experimental.ffi import GraphMode
-from warp.jax_experimental.ffi import jax_callable
 
 import mujoco_warp as mjwarp
 
@@ -50,10 +48,10 @@ def warp_step(
   wp.copy(qvel_out, d.qvel)
 
 
-warp_step_fn = jax_callable(
+warp_step_fn = wp.jax_callable(
   warp_step,
   num_outputs=2,
-  graph_mode=GraphMode.WARP,
+  graph_mode=wp.JaxCallableGraphMode.WARP,
   output_dims={"qpos_out": (NWORLDS, mjm.nq), "qvel_out": (NWORLDS, mjm.nv)},
 )
 
