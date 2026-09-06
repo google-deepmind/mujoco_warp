@@ -53,6 +53,152 @@ def _sample_splats(position, scale, rgba):
   }
 
 
+class ObjectTextureTest(parameterized.TestCase):
+  """Checks spatial texture patterns, including randomized models."""
+
+  @staticmethod
+  def _scene(geom_type="box", size=".25 .25 .25", mesh_uv=False):
+    mesh_attribute = 'mesh="cube"' if geom_type == "mesh" else ""
+    texcoord_attribute = 'texcoord="' + "0.125 0.125 " * 8 + '"' if mesh_uv else ""
+    return mujoco.MjModel.from_xml_string(f"""
+      <mujoco>
+        <visual><headlight active="0"/></visual>
+        <asset>
+          <texture name="red_green" type="2d" builtin="checker" width="16" height="16"
+                   rgb1="1 0 0" rgb2="0 1 0"/>
+          <texture name="blue_yellow" type="2d" builtin="checker" width="16" height="16"
+                   rgb1="0 0 1" rgb2="1 1 0"/>
+          <material name="object" texture="red_green" rgba="1 1 1 1" emission="1"/>
+          <mesh name="cube" {texcoord_attribute}
+                vertex="-.25 -.25 -.25  .25 -.25 -.25  .25 .25 -.25  -.25 .25 -.25
+                        -.25 -.25 .25  .25 -.25 .25  .25 .25 .25  -.25 .25 .25"/>
+        </asset>
+        <worldbody>
+          <camera name="camera" pos="0 0 1" resolution="32 32" fovy="45" output="rgb"/>
+          <body name="object">
+            <freejoint/>
+            <geom type="{geom_type}" size="{size}" material="object" {mesh_attribute}/>
+          </body>
+        </worldbody>
+      </mujoco>
+    """)
+
+  @staticmethod
+  def _context(mjm, nworld=1):
+    return mjw.create_render_context(
+      mjm, nworld=nworld, use_shadows=False, use_ambient_lighting=False, use_precomputed_rays=False
+    )
+
+  @staticmethod
+  def _pixels(m, d, rc):
+    mjw.refit_bvh(m, d, rc)
+    mjw.render(m, d, rc)
+    return _unpack_rgb(rc.rgb_data.numpy()).reshape(-1, 32, 32, 3).astype(float) / 255.0
+
+  @parameterized.named_parameters(
+    ("box", "box", ".25 .25 .25"),
+    ("sphere", "sphere", ".25"),
+    ("ellipsoid", "ellipsoid", ".25 .2 .3"),
+    ("cylinder", "cylinder", ".25 .25"),
+    ("capsule", "capsule", ".25 .15"),
+    ("mesh_without_uvs", "mesh", "1 1 1"),
+  )
+  def test_spatial_pattern_and_per_world_texture_swap(self, geom_type, size):
+    mjm = self._scene(geom_type, size)
+    mjd = mujoco.MjData(mjm)
+    mujoco.mj_forward(mjm, mjd)
+    m = mjw.put_model(mjm, batch_sizes={"mat_texid": 2})
+    d = mjw.put_data(mjm, mjd, nworld=2)
+    rc = self._context(mjm, nworld=2)
+    ids = m.mat_texid.numpy()
+    ids[:, 0, 1] = [mjm.texture("red_green").id, mjm.texture("blue_yellow").id]
+    m.mat_texid.assign(ids)
+    first = self._pixels(m, d, rc)
+    # Sampling a single texel cannot produce both regions of either checkerboard.
+    self.assertTrue(np.any(first[0, ..., 0] - first[0, ..., 1] > 0.2))
+    self.assertTrue(np.any(first[0, ..., 1] - first[0, ..., 0] > 0.2))
+    self.assertTrue(np.any(first[1, ..., 2] - first[1, ..., 0] > 0.2))
+    self.assertTrue(np.any(first[1, ..., 0] - first[1, ..., 2] > 0.2))
+    ids[:, 0, 1] = ids[::-1, 0, 1]
+    m.mat_texid.assign(ids)
+    second = self._pixels(m, d, rc)
+    np.testing.assert_array_equal(second, first[::-1])
+
+  def test_explicit_mesh_uvs_override_projection(self):
+    mjm = self._scene("mesh", "1 1 1", mesh_uv=True)
+    mjd = mujoco.MjData(mjm)
+    mujoco.mj_forward(mjm, mjd)
+    pixels = self._pixels(mjw.put_model(mjm), mjw.put_data(mjm, mjd), self._context(mjm))
+    # Constant UVs select exactly one checker color despite the varying hit points.
+    red = np.any(pixels[..., 0] - pixels[..., 1] > 0.2)
+    green = np.any(pixels[..., 1] - pixels[..., 0] > 0.2)
+    self.assertNotEqual(red, green)
+
+  @parameterized.parameters("0 0 0", "0.3 -0.2 0.1")
+  def test_texture_rotates_with_object(self, position):
+    mjm = self._scene()
+    translation = np.fromstring(position, sep=" ")
+    mjm.cam_pos[0] += translation
+    mjd = mujoco.MjData(mjm)
+    mjd.qpos[:3] = translation
+    mujoco.mj_forward(mjm, mjd)
+    m, rc = mjw.put_model(mjm), self._context(mjm)
+    first = self._pixels(m, mjw.put_data(mjm, mjd), rc)
+    # A quarter turn keeps the silhouette and rotates the checkerboard.
+    mjd.qpos[3:] = [np.sqrt(0.5), 0, 0, np.sqrt(0.5)]
+    mujoco.mj_forward(mjm, mjd)
+    second = self._pixels(m, mjw.put_data(mjm, mjd), rc)
+    self.assertGreater(np.mean(np.abs(first - second)), 0.1)
+    np.testing.assert_allclose(second, np.rot90(first, axes=(1, 2)), atol=1.0 / 255)
+
+  @parameterized.named_parameters(
+    ("x", [np.sqrt(0.5), np.sqrt(0.5), 0, 0], [0, -1, 0]),
+    ("y", [np.sqrt(0.5), 0, np.sqrt(0.5), 0], [1, 0, 0]),
+  )
+  def test_projection_axis_rotates_with_object(self, quaternion, camera_position):
+    mjm = self._scene(size=".25 .2 .3")
+    mjd = mujoco.MjData(mjm)
+    mujoco.mj_forward(mjm, mjd)
+    m, rc = mjw.put_model(mjm), self._context(mjm)
+    first = self._pixels(m, mjw.put_data(mjm, mjd), rc)
+    # Rotate camera and object together: world normals change but local UVs do not.
+    mjm.cam_pos[0] = camera_position
+    mjm.cam_quat[0] = quaternion
+    mjd.qpos[3:] = quaternion
+    mujoco.mj_forward(mjm, mjd)
+    second = self._pixels(m, mjw.put_data(mjm, mjd), rc)
+    np.testing.assert_allclose(second, first, atol=1.0 / 255)
+
+  @parameterized.named_parameters(
+    ("box", "box", ".25 .2 .3"),
+    ("sphere", "sphere", ".25"),
+    ("ellipsoid", "ellipsoid", ".25 .2 .3"),
+    ("cylinder", "cylinder", ".25 .3"),
+    ("capsule", "capsule", ".25 .15"),
+  )
+  def test_per_world_sizes(self, geom_type, size):
+    mjm = self._scene(geom_type, size)
+    # Oblique orthographic rays exercise side projection and all three extents.
+    mjm.cam_projection[0] = mujoco.mjtProjection.mjPROJ_ORTHOGRAPHIC
+    mjm.cam_fovy[0] = 1.0
+    mjm.cam_pos[0] = [1, 0, 1]
+    mjm.cam_quat[0] = [np.cos(np.pi / 8), 0, np.sin(np.pi / 8), 0]
+    mjd = mujoco.MjData(mjm)
+    mujoco.mj_forward(mjm, mjd)
+    m = mjw.put_model(mjm, batch_sizes={"geom_size": 2, "cam_fovy": 2})
+    sizes = m.geom_size.numpy()
+    sizes[1] *= 0.5
+    m.geom_size.assign(sizes)
+    fovy = m.cam_fovy.numpy()
+    fovy[1] *= 0.5
+    m.cam_fovy.assign(fovy)
+    pixels = self._pixels(m, mjw.put_data(mjm, mjd, nworld=2), self._context(mjm, nworld=2))
+    self.assertTrue(np.any(pixels[0, ..., 0] - pixels[0, ..., 1] > 0.2))
+    self.assertTrue(np.any(pixels[0, ..., 1] - pixels[0, ..., 0] > 0.2))
+    # Scaling the object and view together preserves both silhouette and pattern.
+    np.testing.assert_allclose(pixels[0], pixels[1], atol=1.0 / 255)
+
+
 class RenderTest(parameterized.TestCase):
   def test_render_splat(self):
     xml = """

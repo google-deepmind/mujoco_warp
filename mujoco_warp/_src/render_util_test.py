@@ -14,11 +14,15 @@
 # ==============================================================================
 """Tests for render utility functions."""
 
+import io
+from unittest import mock
+
 import mujoco
 import numpy as np
 import warp as wp
 from absl.testing import absltest
 from absl.testing import parameterized
+from PIL import Image
 
 import mujoco_warp as mjw
 from mujoco_warp import test_data
@@ -48,6 +52,98 @@ _CAMERA_TEST_XML = """
 
 
 class RenderUtilTest(parameterized.TestCase):
+  @parameterized.parameters(1, 3, 4)
+  def test_texture_upload_slice(self, nchannel):
+    """Each upload contains only its image, with channels and row ordering preserved."""
+    pixels = np.arange(3 * 2 * nchannel, dtype=np.uint8).reshape(2, 3, nchannel)
+    image = Image.fromarray(pixels[..., 0] if nchannel == 1 else pixels)
+    png = io.BytesIO()
+    image.save(png, format="PNG")
+    mjm = mujoco.MjModel.from_xml_string(
+      f"""
+      <mujoco>
+        <asset>
+          <texture name="first" type="2d" builtin="flat" width="4" height="5"/>
+          <texture name="second" type="2d" file="second.png" nchannel="{nchannel}"/>
+        </asset>
+      </mujoco>
+    """,
+      assets={"second.png": png.getvalue()},
+    )
+    mjm.tex_data[:] = np.arange(mjm.tex_data.size, dtype=np.uint8)
+    tex_id = mjm.texture("second").id
+    adr = mjm.tex_adr[tex_id]
+    self.assertGreater(adr, 0)
+    with mock.patch.object(wp, "launch", wraps=wp.launch) as launch:
+      texture = render_util.create_warp_texture(mjm, tex_id)
+    self.assertNotEqual(texture.id, wp.uint64(0))
+    upload = launch.call_args.kwargs["inputs"][-1].numpy()
+    expected_bytes = mjm.tex_data[adr : adr + 3 * 2 * nchannel]
+    np.testing.assert_array_equal(upload, expected_bytes)
+    converted = launch.call_args.kwargs["outputs"][0].numpy()
+    expected = np.zeros((2, 3, 4))
+    expected[..., : min(nchannel, 3)] = expected_bytes.reshape(2, 3, nchannel)[..., :3] / 255.0
+    expected[..., 3] = 1.0
+    np.testing.assert_allclose(converted, expected, atol=1e-7)
+
+  @parameterized.named_parameters(
+    ("default_rgb", {}, True),
+    ("default_depth", {"cam_active": ["depth"]}, False),
+    ("default_seg", {"cam_active": ["seg"]}, False),
+    ("explicit_depth", {"render_rgb": False, "render_depth": True}, False),
+    ("explicit_seg", {"render_rgb": False, "render_seg": True}, False),
+    ("override_depth_default", {"cam_active": ["depth"], "render_rgb": True}, True),
+    ("filtered_rgb_list", {"cam_active": [False, True, False], "render_rgb": [True, False, False]}, False),
+    ("active_rgb_list", {"cam_active": [1], "render_rgb": [True]}, True),
+    ("empty_cameras", {"cam_active": [], "render_rgb": True}, False),
+    ("no_surface_textures", {"use_textures": False}, False),
+    ("skybox_only", {"use_textures": False, "render_skybox": True}, True),
+    ("depth_with_skybox", {"render_rgb": False, "render_depth": True, "render_skybox": True}, False),
+  )
+  def test_texture_upload_camera_outputs(self, options, upload):
+    """Only resolved RGB cameras need images, including skyboxes without surface textures."""
+    mjm, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <asset>
+          <texture name="surface" type="2d" builtin="checker" width="4" height="4"/>
+          <texture name="sky" type="skybox" builtin="flat" width="4" height="4" rgb1="1 0 0" rgb2="1 0 0"/>
+          <material name="mat" texture="surface"/>
+        </asset>
+        <worldbody>
+          <camera name="rgb" pos="0 0 1" resolution="8 8" output="rgb"/>
+          <camera name="depth" pos="0 0 1" resolution="8 8" output="depth"/>
+          <camera name="seg" pos="0 0 1" resolution="8 8" output="segmentation"/>
+          <geom type="sphere" size=".1" material="mat"/>
+        </worldbody>
+      </mujoco>
+    """
+    )
+    with mock.patch.object(render_util, "create_warp_texture", wraps=render_util.create_warp_texture) as create:
+      rc = mjw.create_render_context(mjm, **options)
+    self.assertEqual(create.call_count, mjm.ntex if upload else 0)
+    self.assertLen(rc.textures_registry, mjm.ntex if upload else 0)
+    self.assertEqual(rc.textures.shape, (mjm.ntex if upload else 0,))
+    # Exercise depth/seg kernels with an empty texture registry and RGB skybox sampling.
+    if rc.nrender:
+      mjw.render(m, d, rc)
+      if options.get("render_skybox") and options.get("use_textures") is False:
+        # The corner ray misses the sphere and sees the red skybox.
+        self.assertEqual(int(rc.rgb_data.numpy()[0, 0]) & 0xFFFFFF, 0xFF0000)
+
+  def test_missing_skybox_does_not_upload_images(self):
+    mjm = mujoco.MjModel.from_xml_string("""
+      <mujoco>
+        <asset><texture name="surface" type="2d" builtin="flat" width="4" height="4"/></asset>
+        <worldbody><camera resolution="8 8" output="rgb"/></worldbody>
+      </mujoco>
+    """)
+    with mock.patch.object(render_util, "create_warp_texture", wraps=render_util.create_warp_texture) as create:
+      rc = mjw.create_render_context(mjm, use_textures=False, render_skybox=True)
+    create.assert_not_called()
+    self.assertEmpty(rc.textures_registry)
+    self.assertFalse(rc.render_skybox)
+
   def test_create_warp_texture(self):
     """Tests that create_warp_texture creates a valid texture."""
     mjm, mjd, m, d = test_data.fixture("ray.xml")

@@ -61,7 +61,12 @@ def create_warp_texture(mjm: mujoco.MjModel, tex_id: int) -> wp.array:
   wp.launch(
     _convert_texture_data,
     dim=(tex_width, tex_height),
-    inputs=[tex_width, tex_adr, nchannel, wp.array(mjm.tex_data, dtype=wp.uint8)],
+    inputs=[
+      tex_width,
+      0,
+      nchannel,
+      wp.array(mjm.tex_data[tex_adr : tex_adr + tex_width * tex_height * nchannel], dtype=wp.uint8),
+    ],
     outputs=[tex_data],
   )
   return wp.Texture2D(tex_data, filter_mode=wp.TextureFilterMode.LINEAR)
@@ -509,13 +514,6 @@ def create_render_context(
       flex_bvh_id[f] = fmesh.id
       flex_group_root[:, f] = group_root.numpy()
 
-  textures_registry = []
-  # Only materialize GPU textures when the caller actually needs them.
-  if use_textures:
-    for i in range(mjm.ntex):
-      textures_registry.append(create_warp_texture(mjm, i))
-  textures = wp.array(textures_registry, dtype=wp.Texture2D)
-
   # Locate skybox texture
   skybox_tex_ids = np.nonzero(mjm.tex_type == mujoco.mjtTexture.mjTEXTURE_SKYBOX)[0] if mjm.ntex else np.array([], dtype=int)
   if render_skybox and skybox_tex_ids.size > 0:
@@ -605,6 +603,14 @@ def create_render_context(
     raise ValueError(f"render_depth length ({len(render_depth)}) does not match active camera count ({ncam}).")
   if len(render_seg) != ncam:
     raise ValueError(f"render_seg length ({len(render_seg)}) does not match active camera count ({ncam}).")
+
+  textures_registry = []
+  # Depth and segmentation do not sample textures. Resolve camera outputs and the
+  # skybox first; a skybox still needs images when surface textures are disabled.
+  if any(render_rgb) and (use_textures or render_skybox):
+    for i in range(mjm.ntex):
+      textures_registry.append(create_warp_texture(mjm, i))
+  textures = wp.array(textures_registry, dtype=wp.Texture2D)
 
   rgb_adr = -1 * np.ones(ncam, dtype=int)
   depth_adr = -1 * np.ones(ncam, dtype=int)

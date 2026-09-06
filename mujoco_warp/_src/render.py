@@ -182,6 +182,8 @@ def sample_texture(
   tex: wp.Texture2D,
   pos: wp.vec3,
   rot: wp.mat33,
+  size: wp.vec3,
+  normal: wp.vec3,
   mesh_facetexcoord: wp.array[wp.vec3i],
   mesh_texcoord: wp.array[wp.vec2],
   mesh_texcoord_offsets: wp.array[int],
@@ -203,21 +205,54 @@ def sample_texture(
     uv = wp.vec2(0.5 * local[0], -0.5 * local[1])
     offset = wp.vec2(-0.5, -0.5)
 
+  has_texcoords = bool(False)
   if geom_type[geom_id] == GeomType.MESH:
     if f < 0 or mesh_id < 0:
       return wp.vec3(0.0, 0.0, 0.0)
 
     texcoord_offset = mesh_texcoord_offsets[mesh_id]
     if texcoord_offset >= 0:
-      # Some meshes may have no texcoord. The corresponding elements for these meshes in
-      # mjm.mesh_texcoordadr (passed here as mesh_texcoord_offsets) are marked as -1, in
-      # which case uv stays at its initialized value of (0.0, 0.0).
       face_adr = mesh_faceadr[mesh_id] + f
       coords = mesh_facetexcoord[face_adr]
-      uv0 = mesh_texcoord[texcoord_offset + coords[0]]
-      uv1 = mesh_texcoord[texcoord_offset + coords[1]]
-      uv2 = mesh_texcoord[texcoord_offset + coords[2]]
-      uv = uv0 * bary_u + uv1 * bary_v + uv2 * (1.0 - bary_u - bary_v)
+      if coords[0] >= 0 and coords[1] >= 0 and coords[2] >= 0:
+        uv0 = mesh_texcoord[texcoord_offset + coords[0]]
+        uv1 = mesh_texcoord[texcoord_offset + coords[1]]
+        uv2 = mesh_texcoord[texcoord_offset + coords[2]]
+        uv = uv0 * bary_u + uv1 * bary_v + uv2 * (1.0 - bary_u - bary_v)
+        has_texcoords = True
+
+  if not has_texcoords and (
+    geom_type[geom_id] == GeomType.BOX
+    or geom_type[geom_id] == GeomType.SPHERE
+    or geom_type[geom_id] == GeomType.ELLIPSOID
+    or geom_type[geom_id] == GeomType.CYLINDER
+    or geom_type[geom_id] == GeomType.CAPSULE
+    or geom_type[geom_id] == GeomType.MESH
+  ):
+    # Object-local box projection: the pattern follows rotation and per-world
+    # dimensions. Select one face rather than blending three texture samples;
+    # this introduces seams where the dominant normal axis changes.
+    local = wp.transpose(rot) @ (hit_point - pos)
+    local_normal = wp.transpose(rot) @ normal
+    extent = size
+    if geom_type[geom_id] == GeomType.SPHERE:
+      extent = wp.vec3(size[0], size[0], size[0])
+    elif geom_type[geom_id] == GeomType.CYLINDER:
+      extent = wp.vec3(size[0], size[0], size[1])
+    elif geom_type[geom_id] == GeomType.CAPSULE:
+      extent = wp.vec3(size[0], size[0], size[1] + size[0])
+    point = wp.vec3(
+      local[0] / wp.max(extent[0], 1.0e-8),
+      local[1] / wp.max(extent[1], 1.0e-8),
+      local[2] / wp.max(extent[2], 1.0e-8),
+    )
+    axis = wp.vec3(wp.abs(local_normal[0]), wp.abs(local_normal[1]), wp.abs(local_normal[2]))
+    uv = wp.vec2(point[0], point[1])
+    if axis[0] > axis[1] and axis[0] > axis[2]:
+      uv = wp.vec2(point[1], point[2])
+    elif axis[1] > axis[2]:
+      uv = wp.vec2(point[0], point[2])
+    uv = 0.5 * (uv + wp.vec2(1.0, 1.0))
 
   u = uv[0] * tex_repeat[0] + offset[0]
   v = uv[1] * tex_repeat[1] + offset[1]
@@ -1014,6 +1049,8 @@ def _build_megakernel(m: Model, rc: RenderContext):
               textures[tex_id],
               geom_xpos_in[worldid, geom_id],
               geom_xmat_in[worldid, geom_id],
+              geom_size[worldid % geom_size.shape[0], geom_id],
+              normal,
               mesh_facetexcoord,
               mesh_texcoord,
               mesh_texcoord_offsets,
