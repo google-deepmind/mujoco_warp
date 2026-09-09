@@ -65,7 +65,7 @@ class RenderUtilTest(parameterized.TestCase):
     sensorsize = wp.vec2(0.0, 0.0)
     intrinsic = wp.vec4(0.0, 0.0, 0.0, 0.0)
 
-    persp_ray = render_util.compute_ray(
+    persp_dir, persp_offset = render_util.compute_ray(
       int(types.ProjectionType.PERSPECTIVE),
       fovy,
       sensorsize,
@@ -76,7 +76,7 @@ class RenderUtilTest(parameterized.TestCase):
       py,
       znear,
     )
-    ortho_ray = render_util.compute_ray(
+    ortho_dir, ortho_offset = render_util.compute_ray(
       int(types.ProjectionType.ORTHOGRAPHIC),
       fovy,
       sensorsize,
@@ -90,14 +90,24 @@ class RenderUtilTest(parameterized.TestCase):
 
     mag = np.sqrt(0.5**2 + 0.5**2 + 1.0**2)
     expected_persp = np.array([0.5 / mag, -0.5 / mag, -1.0 / mag])
-    np.testing.assert_allclose(np.array(persp_ray), expected_persp, atol=1e-5)
+    np.testing.assert_allclose(np.array(persp_dir), expected_persp, atol=1e-5)
 
     expected_ortho = np.array([0.0, 0.0, -1.0])
-    np.testing.assert_allclose(np.array(ortho_ray), expected_ortho, atol=1e-5)
+    np.testing.assert_allclose(np.array(ortho_dir), expected_ortho, atol=1e-5)
 
     self.assertFalse(
-      np.allclose(np.array(persp_ray), np.array(ortho_ray)),
+      np.allclose(np.array(persp_dir), np.array(ortho_dir)),
       "perspective != orthographic raydir",
+    )
+
+    # Perspective rays all originate at the camera center: no offset, for any pixel.
+    np.testing.assert_allclose(np.array(persp_offset), [0.0, 0.0, 0.0], atol=1e-5)
+
+    # Orthographic rays are parallel, so the per-pixel fan-out that perspective
+    # puts in the direction shows up in the offset instead.
+    self.assertFalse(
+      np.allclose(np.array(ortho_offset), [0.0, 0.0, 0.0]),
+      "orthographic offset should vary with pixel position",
     )
 
   def test_get_segmentation(self):
@@ -169,6 +179,33 @@ class RenderUtilTest(parameterized.TestCase):
     group_np = rc.group.numpy()
     _assert_eq(group_np, np.repeat(np.arange(nworld), rc.bvh_ngeom), "render context group values")
 
+  def test_use_textures_flag(self):
+    """create_render_context honors use_textures: skip texture materialization when False."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+    <mujoco>
+      <asset>
+        <texture name="tex" type="2d" builtin="flat" rgb1="1 0 0" width="4" height="4"/>
+        <material name="mat" texture="tex"/>
+      </asset>
+      <worldbody>
+        <camera name="cam" pos="0 -3 2" xyaxes="1 0 0 0 0.6 0.8" resolution="16 16" output="rgb"/>
+        <geom type="plane" size="5 5 0.1" material="mat"/>
+        <geom type="sphere" size="0.5" pos="0 0 1" material="mat"/>
+      </worldbody>
+    </mujoco>
+    """
+    )
+    self.assertGreater(mjm.ntex, 0, "test model must contain at least one texture")
+
+    rc_off = mjw.create_render_context(mjm, cam_res=(16, 16), use_textures=False)
+    self.assertEqual(len(rc_off.textures_registry), 0, "no textures should be created when use_textures=False")
+    self.assertFalse(rc_off.use_textures)
+
+    rc_on = mjw.create_render_context(mjm, cam_res=(16, 16), use_textures=True)
+    self.assertEqual(len(rc_on.textures_registry), mjm.ntex, "all model textures should be created when use_textures=True")
+    self.assertTrue(rc_on.use_textures)
+
   def test_output_buffers(self):
     """Test that the output rgb and depth buffers have correct shapes and addresses."""
     mjm, mjd, m, d = test_data.fixture(xml=_CAMERA_TEST_XML)
@@ -221,6 +258,22 @@ class RenderUtilTest(parameterized.TestCase):
 
     expected_total = 2 * width * height
     self.assertEqual(rc.rgb_data.shape, (1, expected_total), "rgb_data")
+
+  def test_cam_active_empty(self):
+    """Tests that an empty cam_active selects no cameras, whether or not the model has any."""
+    mjm_nocam = mujoco.MjModel.from_xml_string("""
+    <mujoco>
+      <worldbody>
+        <geom type="sphere" size="0.5"/>
+      </worldbody>
+    </mujoco>
+    """)
+    self.assertEqual(mjm_nocam.ncam, 0, "ncam")
+    self.assertEqual(mjw.create_render_context(mjm_nocam, cam_active=[]).nrender, 0, "nrender")
+
+    mjm = mujoco.MjModel.from_xml_string(_CAMERA_TEST_XML)
+    self.assertEqual(mjw.create_render_context(mjm, cam_active=[]).nrender, 0, "nrender")
+    self.assertEqual(mjw.create_render_context(mjm, cam_active=[False] * mjm.ncam).nrender, 0, "nrender")
 
   def test_rgb_only_and_depth_only(self):
     """Test that disabling rgb or depth correctly reduces the shape and invalidates the address."""

@@ -44,7 +44,7 @@ class Geom:
   normal: wp.vec3
   size: wp.vec3
   margin: float
-  hfprism: mat63
+  polyvert: mat63
   vertadr: int
   vertnum: int
   vert: wp.array[wp.vec3]

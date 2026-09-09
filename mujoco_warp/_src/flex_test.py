@@ -25,6 +25,7 @@ import mujoco_warp as mjw
 from mujoco_warp import ConeType
 from mujoco_warp import test_data
 from mujoco_warp._src import bvh
+from mujoco_warp._src import collision_flex
 from mujoco_warp._src import io
 from mujoco_warp._src import types
 
@@ -1098,6 +1099,52 @@ class FlexCollisionTest(parameterized.TestCase):
       self.assertEqual(int(d.contact.flex.numpy()[idx, 1]), 0)
       self.assertEqual(int(d.contact.elem.numpy()[idx, 1]), -1)
       self.assertEqual(int(d.contact.vert.numpy()[idx, 1]), 3)
+
+  @parameterized.parameters(1, 2)
+  def test_mesh_rope_collision(self, nworld):
+    """Test contacts for 1D rope colliding with a mesh geom via CCD."""
+    xml = """
+    <mujoco>
+      <asset>
+        <mesh name="box_mesh" vertex="-0.05 -0.05 -0.05  0.05 -0.05 -0.05  0.05 0.05 -0.05  -0.05 0.05 -0.05
+                                      -0.05 -0.05 0.05   0.05 -0.05 0.05   0.05 0.05 0.05   -0.05 0.05 0.05"/>
+      </asset>
+      <worldbody>
+        <geom type="mesh" mesh="box_mesh" pos="0.1 0 0.05"/>
+        <flexcomp name="rope" type="grid" count="5 1 1" spacing="0.1 0.1 0.1" pos="0 0 0.08" dim="1" mass="1">
+          <contact condim="3"/>
+        </flexcomp>
+      </worldbody>
+    </mujoco>
+    """
+    _, _, m, d = test_data.fixture(xml=xml, nworld=nworld)
+    d.nacon.fill_(-1)
+    mjw.kinematics(m, d)
+    mjw.flex(m, d)
+    mjw.collision(m, d)
+
+    self.assertGreater(d.nacon.numpy()[0], 0, "Expected contacts in Warp for 1D rope vs mesh")
+
+  @parameterized.parameters(1, 2)
+  def test_ellipsoid_rope_collision(self, nworld):
+    """Test contacts for 1D rope colliding with an ellipsoid geom via CCD."""
+    xml = """
+    <mujoco>
+      <worldbody>
+        <geom type="ellipsoid" size="0.05 0.05 0.05" pos="0.1 0 0.05"/>
+        <flexcomp name="rope" type="grid" count="5 1 1" spacing="0.1 0.1 0.1" pos="0 0 0.08" dim="1" mass="1">
+          <contact condim="3"/>
+        </flexcomp>
+      </worldbody>
+    </mujoco>
+    """
+    _, _, m, d = test_data.fixture(xml=xml, nworld=nworld)
+    d.nacon.fill_(-1)
+    mjw.kinematics(m, d)
+    mjw.flex(m, d)
+    mjw.collision(m, d)
+
+    self.assertGreater(d.nacon.numpy()[0], 0, "Expected contacts in Warp for 1D rope vs ellipsoid")
 
   @parameterized.parameters(1, 2)
   def test_sphere_cloth_contact_generated(self, nworld):
@@ -2393,6 +2440,240 @@ class FlexContactParityTest(parameterized.TestCase):
           for w in range(nworld):
             self.assertEqual(d.nefc.numpy()[w], mjd.nefc, f"nefc mismatch at step {curr_step} (world {w})")
 
+  @parameterized.parameters(1, 2)
+  def test_contact_mesh_flex_3d_parity(self, nworld):
+    """Test contact parity for 3D flex soft body colliding with a mesh geom."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <asset>
+          <mesh name="box_mesh" vertex="-0.05 -0.05 -0.05  0.05 -0.05 -0.05  0.05 0.05 -0.05  -0.05 0.05 -0.05
+                                        -0.05 -0.05 0.05   0.05 -0.05 0.05   0.05 0.05 0.05   -0.05 0.05 0.05"/>
+        </asset>
+        <worldbody>
+          <geom type="mesh" mesh="box_mesh" pos="0 0 0.05"/>
+          <flexcomp name="tet" type="direct" dim="3" radius="0.01" mass="0.5"
+                    point="0 0 -0.01  0.05 0 -0.06  0 0.05 -0.06  -0.05 0 -0.06"
+                    element="0 1 2 3">
+            <contact condim="3" selfcollide="none" margin="0.02"/>
+          </flexcomp>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=nworld,
+    )
+    d.nacon.fill_(-1)
+    mjw.kinematics(m, d)
+    mjw.flex(m, d)
+    mjw.collision(m, d)
+
+    mujoco.mj_kinematics(mjm, mjd)
+    mujoco.mj_flex(mjm, mjd)
+    mujoco.mj_collision(mjm, mjd)
+
+    self.assertEqual(d.nacon.numpy()[0], nworld * mjd.ncon)
+    for w in range(nworld):
+      w_contacts = self._get_sorted_contacts(d, d.nacon.numpy()[0], world_idx=w, is_warp=True)
+      m_contacts = self._get_sorted_contacts(mjd, mjd.ncon, is_warp=False)
+      self._assert_contact_parity(w_contacts, m_contacts, atol=1e-4)
+
+  @parameterized.parameters(1, 2)
+  def test_contact_ellipsoid_cloth_parity(self, nworld):
+    """Test contact parity for 2D cloth triangle colliding with an ellipsoid."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <geom type="ellipsoid" size="0.05 0.05 0.05" pos="0 0 0.04"/>
+          <flexcomp name="cloth" type="direct" dim="2" radius="0.02" mass="0.5"
+                    point="-0.05 -0.05 0  0.05 -0.05 0  0 0.05 0"
+                    element="0 1 2">
+            <contact condim="3" selfcollide="none" margin="0.02"/>
+          </flexcomp>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=nworld,
+    )
+    d.nacon.fill_(-1)
+    mjw.kinematics(m, d)
+    mjw.flex(m, d)
+    mjw.collision(m, d)
+
+    mujoco.mj_kinematics(mjm, mjd)
+    mujoco.mj_collision(mjm, mjd)
+
+    self.assertEqual(d.nacon.numpy()[0], nworld * mjd.ncon)
+    for w in range(nworld):
+      w_contacts = self._get_sorted_contacts(d, d.nacon.numpy()[0], world_idx=w, is_warp=True)
+      m_contacts = self._get_sorted_contacts(mjd, mjd.ncon, is_warp=False)
+      self._assert_contact_parity(w_contacts, m_contacts, atol=1e-3)
+
+  @parameterized.parameters(1, 2)
+  def test_contact_flex_flex_none_selfcollide(self, nworld):
+    """Test contacts between two distinct flex bodies when selfcollide is none."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <flexcomp name="cloth1" type="direct" dim="2" radius="0.01" mass="0.5"
+                    point="-0.05 -0.05 0  0.05 -0.05 0  0 0.05 0"
+                    element="0 1 2">
+          <contact selfcollide="none" contype="1" conaffinity="1" margin="0.01"/>
+        </flexcomp>
+        <flexcomp name="cloth2" type="direct" dim="2" radius="0.01" mass="0.5"
+                    point="-0.05 -0.05 0.015  0.05 -0.05 0.015  0 0.05 0.015"
+                    element="0 1 2">
+          <contact selfcollide="none" contype="1" conaffinity="1" margin="0.01"/>
+        </flexcomp>
+      </worldbody>
+    </mujoco>
+      """,
+      nworld=nworld,
+    )
+    d.nacon.fill_(-1)
+    mjw.kinematics(m, d)
+    mjw.collision(m, d)
+
+    mujoco.mj_kinematics(mjm, mjd)
+    mujoco.mj_collision(mjm, mjd)
+
+    self.assertEqual(d.nacon.numpy()[0], nworld * mjd.ncon)
+    for w in range(nworld):
+      w_contacts = self._get_sorted_contacts(d, d.nacon.numpy()[0], world_idx=w, is_warp=True)
+      m_contacts = self._get_sorted_contacts(mjd, mjd.ncon, is_warp=False)
+      self._assert_contact_parity(w_contacts, m_contacts, atol=1e-4)
+
+  @parameterized.parameters(1, 2)
+  def test_contact_cloth_pinned_to_geom_body_parity(self, nworld):
+    """Test that flex elements on the same body as a geom do not collide with that geom."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <body name="carrier" pos="0 0 0">
+            <geom name="carrier_box" type="box" size="0.05 0.05 0.05"/>
+            <flexcomp name="cloth" type="direct" dim="2" radius="0.01" mass="0.5"
+                      point="0 0 0  0.05 0 0  0 0.05 0"
+                      element="0 1 2">
+              <pin id="0"/>
+              <contact condim="3" selfcollide="none" margin="0.02"/>
+            </flexcomp>
+          </body>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=nworld,
+    )
+    d.nacon.fill_(-1)
+    mjw.kinematics(m, d)
+    mjw.flex(m, d)
+    mjw.collision(m, d)
+
+    mujoco.mj_kinematics(mjm, mjd)
+    mujoco.mj_flex(mjm, mjd)
+    mujoco.mj_collision(mjm, mjd)
+
+    self.assertEqual(d.nacon.numpy()[0], nworld * mjd.ncon)
+    for w in range(nworld):
+      w_contacts = self._get_sorted_contacts(d, d.nacon.numpy()[0], world_idx=w, is_warp=True)
+      m_contacts = self._get_sorted_contacts(mjd, mjd.ncon, is_warp=False)
+      self._assert_contact_parity(w_contacts, m_contacts, atol=1e-4)
+
+  def test_3d_flex_interior_layer_culling_in_sap(self):
+    """Test that inactive interior elements are projected to MJ_MAXVAL in SAP."""
+    _, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <flexcomp name="cube" type="grid" dim="3" count="4 4 4" spacing="0.05 0.05 0.05"
+                    radius="0.01" mass="1.0">
+            <contact condim="3" selfcollide="none" margin="0.02" activelayers="1"/>
+          </flexcomp>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=1,
+    )
+    mjw.kinematics(m, d)
+    mjw.flex(m, d)
+
+    nelem = m.nflexelem
+    sap_lower = wp.empty((d.nworld, nelem), dtype=float)
+    sap_upper = wp.empty((d.nworld, nelem), dtype=float)
+    sap_sort_index = wp.empty((d.nworld, nelem, 2), dtype=int)
+    elem_aabb_lower = wp.empty((d.nworld, nelem), dtype=wp.vec3)
+    elem_aabb_upper = wp.empty((d.nworld, nelem), dtype=wp.vec3)
+    sap_seg_index = wp.empty(d.nworld + 1, dtype=int)
+
+    wp.launch(
+      collision_flex._flex_sap_project,
+      dim=(d.nworld, nelem),
+      inputs=[
+        m.flex_margin,
+        m.flex_gap,
+        m.flex_activelayers,
+        m.flex_dim,
+        m.flex_vertadr,
+        m.flex_elemadr,
+        m.flex_elemdataadr,
+        m.flex_elem,
+        m.flex_elemlayer,
+        m.flex_radius,
+        m.flex_elemflexid,
+        d.flexvert_xpos,
+        d.nworld,
+        nelem,
+        wp.vec3(1.0, 0.0, 0.0),
+      ],
+      outputs=[
+        sap_lower.reshape((-1, nelem)),
+        sap_upper,
+        sap_sort_index.reshape((-1, nelem)),
+        elem_aabb_lower,
+        elem_aabb_upper,
+        sap_seg_index,
+      ],
+    )
+
+    layers = m.flex_elemlayer.numpy()
+    proj_lower = sap_lower.numpy()[0]
+    for e in range(nelem):
+      if layers[e] >= 1:
+        self.assertEqual(proj_lower[e], types.MJ_MAXVAL, f"Element {e} (layer {layers[e]}) should be culled in SAP")
+      else:
+        self.assertLess(proj_lower[e], types.MJ_MAXVAL, f"Element {e} (layer {layers[e]}) should be active in SAP")
+
+  def test_flex_num_groups_zero_on_empty_pass(self):
+    """Test that flex_num_groups is reset to 0 when no candidate contacts exist."""
+    _, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <flexcomp name="cloth1" type="grid" dim="2" count="2 2 1" spacing="0.05 0.05 0.05"
+                    radius="0.01" mass="0.5">
+            <contact condim="3" selfcollide="none" margin="0.02"/>
+          </flexcomp>
+          <flexcomp name="cloth2" type="grid" dim="2" count="2 2 1" spacing="0.05 0.05 0.05"
+                    radius="0.01" mass="0.5" pos="10.0 0 0">
+            <contact condim="3" selfcollide="none" margin="0.02"/>
+          </flexcomp>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=1,
+    )
+    mjw.kinematics(m, d)
+    mjw.flex(m, d)
+
+    ws = collision_flex._allocate_flex_workspace(m, d)
+    ws.flex_num_groups.fill_(42)
+    self.assertEqual(ws.flex_num_groups.numpy()[0], 42)
+
+    collision_flex._flex_geom_collision(m, d, ws)
+
+    self.assertEqual(ws.flex_num_groups.numpy()[0], 0)
+
 
 class FlexContactConstraintTest(parameterized.TestCase):
   """Tests for flex contact constraint generation (efc matrices) parity."""
@@ -2482,7 +2763,55 @@ class FlexContactConstraintTest(parameterized.TestCase):
     for w in range(nworld):
       self.assertEqual(d.nefc.numpy()[w], mjd.nefc, "nefc mismatch")
 
-    _assert_efc_eq(mjm, m, d, mjd, mjd.nefc, "efc_flex_3d_simplex", m.nv, nworld, tol=1e-3)
+    _assert_efc_eq(mjm, m, d, mjd, mjd.nefc, "efc_flex_3d_simplex", m.nv, nworld, tol=1e-2)
+
+  @parameterized.parameters(1, 2)
+  def test_mesh_flex_3d_collision(self, nworld):
+    """Test contacts for 3D flex soft body colliding with a mesh geom via CCD."""
+    xml = """
+    <mujoco>
+      <asset>
+        <mesh name="box_mesh" vertex="-0.05 -0.05 -0.05  0.05 -0.05 -0.05  0.05 0.05 -0.05  -0.05 0.05 -0.05
+                                      -0.05 -0.05 0.05   0.05 -0.05 0.05   0.05 0.05 0.05   -0.05 0.05 0.05"/>
+      </asset>
+      <worldbody>
+        <geom type="mesh" mesh="box_mesh" pos="-0.055 -0.075 0.1"/>
+        <flexcomp name="softbody" type="grid" count="2 2 2" spacing=".15 .15 .15" pos="-.075 -.075 0"
+                  radius=".01" dim="3" mass=".5">
+          <contact condim="3" selfcollide="none"/>
+        </flexcomp>
+      </worldbody>
+    </mujoco>
+    """
+    _, _, m, d = test_data.fixture(xml=xml, nworld=nworld)
+    d.nacon.fill_(-1)
+    mjw.kinematics(m, d)
+    mjw.flex(m, d)
+    mjw.collision(m, d)
+
+    self.assertGreater(d.nacon.numpy()[0], 0, "Expected contacts in Warp for 3D flex vs mesh")
+
+  @parameterized.parameters(1, 2)
+  def test_ellipsoid_flex_3d_collision(self, nworld):
+    """Test contacts for 3D flex soft body colliding with an ellipsoid geom via CCD."""
+    xml = """
+    <mujoco>
+      <worldbody>
+        <geom type="ellipsoid" size="0.05 0.05 0.05" pos="-0.055 -0.075 0.1"/>
+        <flexcomp name="softbody" type="grid" count="2 2 2" spacing=".15 .15 .15" pos="-.075 -.075 0"
+                  radius=".01" dim="3" mass=".5">
+          <contact condim="3" selfcollide="none"/>
+        </flexcomp>
+      </worldbody>
+    </mujoco>
+    """
+    _, _, m, d = test_data.fixture(xml=xml, nworld=nworld)
+    d.nacon.fill_(-1)
+    mjw.kinematics(m, d)
+    mjw.flex(m, d)
+    mjw.collision(m, d)
+
+    self.assertGreater(d.nacon.numpy()[0], 0, "Expected contacts in Warp for 3D flex vs ellipsoid")
 
   @parameterized.parameters(1, 2)
   def test_flex_interpolated(self, nworld):

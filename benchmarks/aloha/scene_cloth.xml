@@ -3,7 +3,7 @@
   <size memory="640M"/>
 
   <include file="aloha.xml"/>
-  <option solver="CG" tolerance="1e-6" jacobian="sparse" cone="pyramidal"/>
+  <option solver="CG" iterations="200" tolerance="1e-3" jacobian="sparse" cone="pyramidal"/>
 
   <statistic center="0 -0.1 0.2" extent="0.6" meansize="0.05"/>
 
@@ -90,11 +90,11 @@
     <geom class="frame" pos="-0.6 -0.26 0.12" quat="0.923 0.382 0 0" material="metal" mesh="angled_extrusion"/>
     <geom class="frame" pos="0.43 -0.361 1.02" quat="0 0 0 1" mesh="extrusion_2040_1000"/>
     <geom class="frame" pos="0 -0.391 -0.01" quat="0 0 0 1" mesh="wormseye_mount"/>
-    
+
     <!-- Cloth -->
     <flexcomp name="towel" type="grid" count="30 30 1" spacing="0.014 0.014 0.014"
-              radius="0.004" dim="2" material="cloth_mat" pos="0 0 0" mass=".1">
-      <edge equality="true"/>
+              radius="0.003" dim="2" material="cloth_mat" pos="0 0 0" mass=".1">
+      <edge equality="true" solimp="0.9 0.95 0.001" solref="0.02 1"/>
       <contact selfcollide="auto" condim="3"/>
       <elasticity young="3e3" poisson="0" thickness="1e-2" damping="1e-3" elastic2d="bend"/>
     </flexcomp>

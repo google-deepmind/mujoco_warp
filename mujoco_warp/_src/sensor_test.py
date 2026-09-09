@@ -25,9 +25,11 @@ import mujoco_warp as mjw
 from mujoco_warp import DisableBit
 from mujoco_warp import GeomType
 from mujoco_warp import test_data
+from mujoco_warp._src import util_pkg
 from mujoco_warp._src.collision_core import create_collision_context
 from mujoco_warp._src.collision_driver import MJ_COLLISION_TABLE
 from mujoco_warp._src.types import CollisionType
+from mujoco_warp._src.types import OverflowType
 
 # tolerance for difference between MuJoCo and MJWarp calculations - mostly
 # due to float precision
@@ -893,14 +895,15 @@ class SensorTest(parameterized.TestCase):
 
     self.assertEqual(d.sensordata.numpy()[0, 0], 17.0)
 
-  def test_tactile_sensor_geom_deduplication(self):
+  @parameterized.parameters(1, 2)
+  def test_tactile_sensor_geom_deduplication(self, nworld):
     """Test tactile sensor deduplicates contacts by geom.
 
     Without deduplication, multiple contacts with the same geom cause
     the sensor value to be doubled (or more), resulting in incorrect output.
     Uses mesh-sphere vs box collision with multiccd to generate multiple contacts.
     """
-    mjm, mjd, m, d = test_data.fixture(
+    _, mjd, m, d = test_data.fixture(
       xml="""
       <mujoco>
         <option>
@@ -927,18 +930,403 @@ class SensorTest(parameterized.TestCase):
       </mujoco>
       """,
       keyframe=0,
+      nworld=nworld,
     )
 
-    d.sensordata.zero_()
+    d.sensordata.fill_(wp.inf)
     mjw.sensor_acc(m, d)
 
-    warp_sensordata = d.sensordata.numpy()[0]
+    warp_sensordata = d.sensordata.numpy()
+    for w in range(nworld):
+      _assert_eq(warp_sensordata[w], mjd.sensordata, f"tactile_sensordata_world_{w}")
+      self.assertTrue(warp_sensordata[w].any(), f"Warp sensordata world {w} should not be all zeros")
 
-    # Check Warp output matches MuJoCo output, if available
-    _assert_eq(warp_sensordata, mjd.sensordata, "tactile_sensordata")
+  @parameterized.parameters(1, 2)
+  def test_tactile_sensor_cutoff_and_zeroing(self, nworld):
+    """Test tactile sensor cutoff clamping and zeroing on contact break."""
+    cutoff_val = 0.01
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <asset>
+          <mesh name="sensor_mesh" builtin="sphere" params="0"/>
+        </asset>
+        <worldbody>
+          <body name="sensor_body" pos="0 0 1">
+            <freejoint/>
+            <geom name="sensor_geom" type="mesh" mesh="sensor_mesh"/>
+          </body>
+          <body>
+            <geom type="box" size=".7 .7 .3"/>
+          </body>
+        </worldbody>
+        <sensor>
+          <tactile geom="sensor_geom" mesh="sensor_mesh"/>
+        </sensor>
+        <keyframe>
+          <key qpos="0 0 1 1 0 0 0"/>
+        </keyframe>
+      </mujoco>
+      """,
+      keyframe=0,
+      nworld=nworld,
+    )
 
-    # Verify Warp sensor is triggered
-    self.assertTrue(warp_sensordata.any(), "Warp sensordata should not be all zeros")
+    # Cutoff is applied by MuJoCo C engine (engine_sensor.c), but omitted in mjcf.schema;
+    # set on mjModel.
+    mjm.sensor_cutoff[0] = cutoff_val
+    m.sensor_cutoff.fill_(cutoff_val)
+    mujoco.mj_sensorAcc(mjm, mjd)
+
+    d.sensordata.fill_(wp.inf)
+    mjw.sensor_acc(m, d)
+
+    sensordata = d.sensordata.numpy()
+    for w in range(nworld):
+      self.assertTrue(sensordata[w].any(), f"Sensordata world {w} should not be zero")
+      self.assertLessEqual(np.max(sensordata[w]), cutoff_val + 1e-6)
+      _assert_eq(sensordata[w], mjd.sensordata, f"tactile_cutoff_world_{w}")
+
+    # For multi-world, move only world 1 away to test isolation between contact and free space
+    if nworld > 1:
+      qpos = d.qpos.numpy()
+      qpos[1, 2] = 10.0
+      d.qpos.assign(qpos)
+      d.sensordata.fill_(wp.inf)
+      mjw.forward(m, d)
+      self.assertTrue(d.sensordata.numpy()[0].any(), "World 0 should still detect contact")
+      np.testing.assert_allclose(d.sensordata.numpy()[1], 0.0, atol=1e-6)
+
+    # Move all worlds to free space; sensordata should be completely zeroed
+    qpos = d.qpos.numpy()
+    qpos[:, 2] = 10.0
+    d.qpos.assign(qpos)
+    d.sensordata.fill_(wp.inf)
+    mjw.forward(m, d)
+    np.testing.assert_allclose(d.sensordata.numpy(), 0.0, atol=1e-6)
+
+  @parameterized.parameters(1, 2)
+  def test_tactile_sensor_overflow(self, nworld):
+    """Test tactile sensor sets OverflowType.TACTILE when contact pairs exceed limit."""
+    spheres = "\n".join(f'<geom type="sphere" size="0.05" pos="{0.001 * i} 0 0.95"/>' for i in range(55))
+    _, _, m, d = test_data.fixture(
+      xml=f"""
+      <mujoco>
+        <asset>
+          <mesh name="sensor_mesh" builtin="sphere" params="0"/>
+        </asset>
+        <worldbody>
+          <body name="sensor_body" pos="0 0 1">
+            <freejoint/>
+            <geom name="sensor_geom" type="mesh" mesh="sensor_mesh"/>
+          </body>
+          {spheres}
+        </worldbody>
+        <sensor>
+          <tactile geom="sensor_geom" mesh="sensor_mesh"/>
+        </sensor>
+      </mujoco>
+      """,
+      nworld=nworld,
+      nconmax=200,
+    )
+    d.overflow.fill_(0)
+    mjw.forward(m, d)
+    for w in range(nworld):
+      self.assertTrue(bool(d.overflow.numpy()[w] & OverflowType.TACTILE))
+
+  @parameterized.parameters(1, 2)
+  def test_tactile_sensor_non_octree_mesh_skipped(self, nworld):
+    """Test tactile sensor gracefully skips colliding meshes without octrees."""
+    _, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <asset>
+          <mesh name="sensor_mesh" builtin="sphere" params="0"/>
+          <mesh
+            name="other_mesh"
+            vertex="-0.5 -0.5 -0.5 0.5 -0.5 -0.5 0.5 0.5 -0.5 -0.5 0.5 -0.5 -0.5 -0.5 0.5 0.5 -0.5 0.5 0.5 0.5 0.5 -0.5 0.5 0.5"
+          />
+        </asset>
+        <worldbody>
+          <body name="sensor_body" pos="0 0 1">
+            <freejoint/>
+            <geom name="sensor_geom" type="mesh" mesh="sensor_mesh"/>
+          </body>
+          <body>
+            <geom type="mesh" mesh="other_mesh"/>
+          </body>
+        </worldbody>
+        <sensor>
+          <tactile geom="sensor_geom" mesh="sensor_mesh"/>
+        </sensor>
+        <keyframe>
+          <key qpos="0 0 1 1 0 0 0"/>
+        </keyframe>
+      </mujoco>
+      """,
+      keyframe=0,
+      nworld=nworld,
+    )
+
+    d.sensordata.fill_(wp.inf)
+    mjw.forward(m, d)
+    np.testing.assert_allclose(d.sensordata.numpy(), 0.0, atol=1e-6)
+
+  @parameterized.parameters(1, 2)
+  def test_tactile_sensor_dynamic_parity(self, nworld):
+    """Test tactile sensor 3-axis output against MuJoCo C with non-zero velocities."""
+    # Note: refquat aligns the wedge's principal axes so mesh_quat is identity.
+    # Combined with identity geom frame and pure translation, this exercises pipeline
+    # execution and channel layout on a reference scene compatible with MuJoCo C 3.12.0.
+    # Coverage for non-degenerate tangent rotation and contact-point velocity is gated
+    # on the reference implementation.
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option>
+          <flag multiccd="enable" nativeccd="disable"/>
+        </option>
+        <asset>
+          <mesh name="sensor_mesh" builtin="wedge" params="3 3 45 45 0" scale=".2 .2 .2"
+                refquat="0.5 0.5 0.5 -0.5"/>
+        </asset>
+        <worldbody>
+          <body>
+            <geom type="box" size=".25 .25 .25"/>
+            <geom name="sensor_geom" type="mesh" mesh="sensor_mesh"
+                  mass="0" contype="0" conaffinity="0"/>
+          </body>
+          <body name="slider">
+            <joint type="slide" axis="1 0 0"/>
+            <geom type="box" size=".3 .3 .3"/>
+          </body>
+        </worldbody>
+        <sensor>
+          <tactile geom="sensor_geom" mesh="sensor_mesh"/>
+        </sensor>
+        <keyframe>
+          <key qvel="2.0"/>
+        </keyframe>
+      </mujoco>
+      """,
+      keyframe=0,
+      nworld=nworld,
+    )
+
+    d.sensordata.fill_(wp.inf)
+    mjw.forward(m, d)
+
+    sensordata = d.sensordata.numpy()
+    ntaxel = mjm.mesh_vertnum[0]
+    for w in range(nworld):
+      self.assertTrue(sensordata[w, 0 * ntaxel : 1 * ntaxel].any(), f"Depth channel empty for world {w}")
+      self.assertTrue(sensordata[w, 1 * ntaxel : 2 * ntaxel].any(), f"Slip U channel empty for world {w}")
+      self.assertTrue(sensordata[w, 2 * ntaxel : 3 * ntaxel].any(), f"Slip V channel empty for world {w}")
+      _assert_eq(sensordata[w], mjd.sensordata, f"tactile_dynamic_world_{w}")
+
+  @parameterized.parameters(1, 2)
+  def test_tactile_sensor_dynamic_discriminating(self, nworld):
+    """Test tactile sensor with non-identity mesh_quat and contacting-body angular velocity."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option>
+          <flag multiccd="enable" nativeccd="disable"/>
+        </option>
+        <asset>
+          <mesh name="sensor_mesh" builtin="wedge" params="3 3 45 45 0" scale=".2 .2 .2"/>
+        </asset>
+        <worldbody>
+          <body>
+            <geom type="box" size=".25 .25 .25"/>
+            <geom name="sensor_geom" type="mesh" mesh="sensor_mesh"
+                  mass="0" contype="0" conaffinity="0"/>
+          </body>
+          <body name="rotator">
+            <joint type="hinge" axis="0 1 0"/>
+            <geom type="box" size=".3 .3 .3"/>
+          </body>
+        </worldbody>
+        <sensor>
+          <tactile geom="sensor_geom" mesh="sensor_mesh"/>
+        </sensor>
+        <keyframe>
+          <key qvel="2.0"/>
+        </keyframe>
+      </mujoco>
+      """,
+      keyframe=0,
+      nworld=nworld,
+    )
+
+    d.sensordata.fill_(wp.inf)
+    mjw.forward(m, d)
+
+    sensordata = d.sensordata.numpy()
+    ntaxel = mjm.mesh_vertnum[0]
+    for w in range(nworld):
+      self.assertTrue(sensordata[w, 0 * ntaxel : 1 * ntaxel].any(), f"Depth channel empty for world {w}")
+      self.assertTrue(sensordata[w, 1 * ntaxel : 2 * ntaxel].any(), f"Slip U channel empty for world {w}")
+      if util_pkg.check_version("mujoco>=3.12.1.dev972096410"):
+        _assert_eq(sensordata[w], mjd.sensordata, f"tactile_discriminating_world_{w}")
+
+  @parameterized.parameters(1, 2)
+  def test_tactile_sensor_duplicate_pressure_retention(self, nworld):
+    """Test distinct geoms are retained without overflow under duplicate contact pressure."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <asset>
+          <mesh name="sensor_mesh" builtin="sphere" params="0"/>
+        </asset>
+        <worldbody>
+          <body name="sensor_body" pos="0 0 1">
+            <freejoint/>
+            <geom name="sensor_geom" type="mesh" mesh="sensor_mesh"/>
+          </body>
+          <body name="body_a" pos="0 -0.525 1.85">
+            <geom name="geom_a" type="sphere" size="0.2"/>
+          </body>
+          <body name="body_b" pos="0 0.525 1.85">
+            <geom name="geom_b" type="sphere" size="0.2"/>
+          </body>
+        </worldbody>
+        <sensor>
+          <tactile geom="sensor_geom" mesh="sensor_mesh"/>
+        </sensor>
+      </mujoco>
+      """,
+      nworld=nworld,
+      nconmax=200,
+    )
+
+    geom_sensor_id = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_GEOM, "sensor_geom")
+    geom_a_id = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_GEOM, "geom_a")
+    geom_b_id = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_GEOM, "geom_b")
+
+    con_a = mujoco.MjContact()
+    con_a.geom1 = geom_sensor_id
+    con_a.geom2 = geom_a_id
+    con_b = mujoco.MjContact()
+    con_b.geom1 = geom_sensor_id
+    con_b.geom2 = geom_b_id
+
+    # Add 60 duplicate contacts for geom_a and 1 contact for geom_b
+    for _ in range(60):
+      mujoco.mj_addContact(mjm, mjd, con_a)
+    mujoco.mj_addContact(mjm, mjd, con_b)
+
+    ncon_per_world = mjd.ncon
+    total_ncon = nworld * ncon_per_world
+
+    contact_geom_np = np.zeros((d.naconmax, 2), dtype=np.int32)
+    contact_worldid_np = np.zeros(d.naconmax, dtype=np.int32)
+    for w in range(nworld):
+      start = w * ncon_per_world
+      end = start + ncon_per_world
+      contact_geom_np[start:end, 0] = mjd.contact.geom1[:ncon_per_world]
+      contact_geom_np[start:end, 1] = mjd.contact.geom2[:ncon_per_world]
+      contact_worldid_np[start:end] = w
+
+    d.contact.geom.assign(contact_geom_np)
+    d.contact.worldid.assign(contact_worldid_np)
+    d.nacon.fill_(total_ncon)
+
+    d.overflow.fill_(0)
+    d.sensordata.fill_(wp.inf)
+    mjw.sensor_acc(m, d)
+
+    # Overflow should NOT be set because there are only 2 distinct contacting geoms
+    overflow_vals = d.overflow.numpy()
+    for w in range(nworld):
+      self.assertFalse(bool(overflow_vals[w] & OverflowType.TACTILE), f"Overflow set for world {w}")
+
+    mujoco.mj_sensorAcc(mjm, mjd)
+    sensordata = d.sensordata.numpy()
+    for w in range(nworld):
+      # Vertex 4 corresponds to geom_a, vertex 5 corresponds to geom_b
+      self.assertGreater(sensordata[w, 4], 0.0, f"Geom A taxel 4 empty for world {w}")
+      self.assertGreater(sensordata[w, 5], 0.0, f"Geom B taxel 5 empty for world {w}")
+      _assert_eq(sensordata[w], mjd.sensordata, f"tactile_dedup_pressure_world_{w}")
+
+  @parameterized.parameters(1, 2)
+  def test_tactile_sensor_dense_weld_indexing(self, nworld):
+    """Test tactile sensor weld buffers use dense indexing (ntactileweld << nbody)."""
+    # Verify model with no tactile sensors initializes ntactileweld=0 and weld_tactile_id=-1
+    mjm_no_tactile = mujoco.MjModel.from_xml_string("""
+    <mujoco>
+      <worldbody>
+        <body name="b1"><geom type="sphere" size="0.1"/></body>
+      </worldbody>
+    </mujoco>
+    """)
+    m_no_tactile = mjw.put_model(mjm_no_tactile)
+    self.assertEqual(m_no_tactile.ntactileweld, 0)
+    self.assertTrue((m_no_tactile.weld_tactile_id.numpy() == -1).all())
+
+    # Multi-body model where only a subset of bodies have tactile sensors
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option>
+          <flag multiccd="enable" nativeccd="disable"/>
+        </option>
+        <asset>
+          <mesh name="sensor_mesh" builtin="wedge" params="3 3 45 45 0" scale=".2 .2 .2"
+                refquat="0.5 0.5 0.5 -0.5"/>
+        </asset>
+        <worldbody>
+          <body name="body_with_sensor_1">
+            <joint name="jnt1" type="hinge" axis="0 0 1"/>
+            <geom type="box" size=".25 .25 .25"/>
+            <geom name="sensor_geom_1" type="mesh" mesh="sensor_mesh"
+                  mass="0" contype="0" conaffinity="0"/>
+          </body>
+          <body name="inert_body_no_sensor" pos="5 0 0">
+            <joint name="jnt2" type="hinge" axis="0 0 1"/>
+            <geom type="sphere" size=".1"/>
+          </body>
+          <body name="body_with_sensor_2" pos="0 5 0">
+            <joint name="jnt3" type="hinge" axis="0 0 1"/>
+            <geom type="box" size=".25 .25 .25"/>
+            <geom name="sensor_geom_2" type="mesh" mesh="sensor_mesh"
+                  mass="0" contype="0" conaffinity="0"/>
+          </body>
+          <body name="slider">
+            <joint name="jnt4" type="slide" axis="1 0 0"/>
+            <geom type="box" size=".3 .3 .3"/>
+          </body>
+        </worldbody>
+        <sensor>
+          <tactile geom="sensor_geom_1" mesh="sensor_mesh"/>
+          <tactile geom="sensor_geom_2" mesh="sensor_mesh"/>
+        </sensor>
+        <keyframe>
+          <key qvel="0 0 0 2.0"/>
+        </keyframe>
+      </mujoco>
+      """,
+      keyframe=0,
+      nworld=nworld,
+    )
+    # Bodies: world(0), body_with_sensor_1(1), inert_body(2), body_with_sensor_2(3), slider(4)
+    # Only bodies 1 and 3 have tactile sensors, so ntactileweld == 2 while nbody == 5
+    self.assertEqual(m.ntactileweld, 2)
+    self.assertEqual(mjm.nbody, 5)
+    weld_tactile_id = m.weld_tactile_id.numpy()
+    self.assertEqual(weld_tactile_id[0], -1)
+    self.assertEqual(weld_tactile_id[1], 0)
+    self.assertEqual(weld_tactile_id[2], -1)
+    self.assertEqual(weld_tactile_id[3], 1)
+    self.assertEqual(weld_tactile_id[4], -1)
+
+    d.sensordata.fill_(wp.inf)
+    mjw.forward(m, d)
+
+    sensordata = d.sensordata.numpy()
+    for w in range(nworld):
+      _assert_eq(sensordata[w], mjd.sensordata, f"tactile_dense_world_{w}")
 
 
 if __name__ == "__main__":

@@ -48,13 +48,16 @@ import logging
 import os
 import re
 import shutil
-import subprocess
 import sys
-import tempfile
 from datetime import datetime
 from datetime import timezone
 from pathlib import Path
 from typing import Iterable
+
+from common import clone_if_needed
+from common import ensure_pinned_clone
+from common import git
+from common import uv_run
 
 _ARGS = None  # module level variable that gets populated with argparse results
 
@@ -65,27 +68,6 @@ if _venv_bin not in os.environ.get("PATH", ""):
 
 logging.basicConfig(format="[%(asctime)s] %(message)s", datefmt="%Y-%m-%d %H:%M:%S", level=logging.INFO)
 log = logging.getLogger(__name__)
-
-
-# external commands
-
-
-def _git(*args, cwd: Path | None = None, check: bool = True):
-  """Run a git command, returning CompletedProcess."""
-  env = os.environ.copy()
-  env["TZ"] = "UTC"
-  ssh_key = Path.home() / ".ssh" / "id_ed25519_mujoco_warp_nightly"
-  if ssh_key.exists():
-    env["GIT_SSH_COMMAND"] = f'ssh -i "{ssh_key}" -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new'
-  log.info("Command: git %s", " ".join(args))
-
-  return subprocess.run(("git",) + args, cwd=cwd, env=env, check=check, capture_output=True, text=True)
-
-
-def _uv_run(*args, cwd: Path | None = None):
-  """Run a uv command, returning CompletedProcess."""
-  log.info("Command: uv run %s", " ".join(args))
-  return subprocess.run(("uv", "run") + args, cwd=cwd, check=True, capture_output=True, text=True)
 
 
 # benchmark discovery, assembly, and execution
@@ -125,9 +107,7 @@ def _assemble_benchmark(bm: dict):
 
     # repo clones are stored in the format: <assets_root>/_git/<repo_source>/<repo_ref>
     repo_dir = Path(_ARGS.assets_root) / "_git" / Path(repo["source"]).stem / repo["ref"]
-    if not repo_dir.exists():
-      repo_dir.mkdir(parents=True, exist_ok=True)
-      _git("clone", repo["source"], repo_dir.as_posix(), "--depth", "1", "--revision", repo["ref"])
+    ensure_pinned_clone(repo["source"], repo["ref"], repo_dir)
 
     if "*" in repo_path:
       parts = Path(repo_path).parts
@@ -168,7 +148,7 @@ def _run_benchmark(bm: dict, input_dir: Path, *, mock: bool) -> dict:
     elif field not in ("name", "assets", "mjcf", "_dir"):
       cmd.append(f"--{field}={bm[field]}")
 
-  return json.loads(_uv_run(*cmd, cwd=input_dir).stdout)
+  return json.loads(uv_run(*cmd, cwd=input_dir).stdout)
 
 
 def _sweep(input_dir: str, output_dir: str):
@@ -185,12 +165,12 @@ def _sweep(input_dir: str, output_dir: str):
   # determine commits to process
   if _ARGS.direction == "forward":
     end = "HEAD" if _ARGS.target.isdigit() else _ARGS.target
-    result = _git("rev-list", "--reverse", f"{commit_range['to']}..{end}", cwd=input_dir)
+    result = git("rev-list", "--reverse", f"{commit_range['to']}..{end}", cwd=input_dir)
   else:
     if _ARGS.target == "root" or _ARGS.target.isdigit():
-      result = _git("rev-list", f"{commit_range['from']}^", cwd=input_dir)
+      result = git("rev-list", f"{commit_range['from']}^", cwd=input_dir)
     else:
-      result = _git("rev-list", f"{_ARGS.target}^..{commit_range['from']}^", cwd=input_dir)
+      result = git("rev-list", f"{_ARGS.target}^..{commit_range['from']}^", cwd=input_dir)
 
   commits = result.stdout.strip().splitlines()
   if _ARGS.target.isdigit():
@@ -208,11 +188,11 @@ def _sweep(input_dir: str, output_dir: str):
   for i, commit in enumerate(commits):
     log.info("[%d/%d] Processing commit %s", i + 1, len(commits), commit)
 
-    _git("restore", "--staged", "--worktree", ".", cwd=input_dir)
-    _git("checkout", commit, cwd=input_dir)
+    git("restore", "--staged", "--worktree", ".", cwd=input_dir)
+    git("checkout", commit, cwd=input_dir)
 
     # get commit timestamp (UTC ISO 8601)
-    timestamp = _git("log", "-1", "--format=%cd", "--date=format-local:%Y-%m-%dT%H:%M:%S+00:00", commit, cwd=input_dir)
+    timestamp = git("log", "-1", "--format=%cd", "--date=format-local:%Y-%m-%dT%H:%M:%S+00:00", commit, cwd=input_dir)
 
     # discover and assemble benchmarks
     if _ARGS.direction == "forward" or i == 0:
@@ -270,19 +250,8 @@ def main():
 
   _ARGS = parser.parse_args()
 
-  def clone_if_needed(uri):
-    if ":" not in uri:
-      return uri
-    path = tempfile.mkdtemp(prefix="mjwarp-sweep")
-    spec = uri.rsplit("#", 1)
-    if len(spec) < 2:
-      _git("clone", spec[0], path)
-    else:
-      _git("clone", spec[0], path, "--branch", spec[1])
-    return path
-
-  input_dir = clone_if_needed(_ARGS.input)
-  output_dir = clone_if_needed(_ARGS.output)
+  input_dir = clone_if_needed(_ARGS.input, "mjwarp-sweep")
+  output_dir = clone_if_needed(_ARGS.output, "mjwarp-sweep")
 
   _sweep(input_dir, output_dir)
 
@@ -291,12 +260,12 @@ def main():
     return
 
   # push results if output was a repo
-  if ":" in _ARGS.output and _git("status", "--porcelain", cwd=output_dir).stdout:
+  if ":" in _ARGS.output and git("status", "--porcelain", cwd=output_dir).stdout:
     log.info("Pushing changes from %s back to %s.", output_dir, _ARGS.output)
-    _git("add", ".", cwd=output_dir)
+    git("add", ".", cwd=output_dir)
     msg = f"Update benchmarks ({_ARGS.direction}) - {datetime.now(timezone.utc):%Y-%m-%d %H:%M:%S UTC}"
-    _git("commit", "-m", msg, cwd=output_dir)
-    _git("push", "origin", *_ARGS.output.rsplit("#", 1)[1:], cwd=output_dir)
+    git("commit", "-m", msg, cwd=output_dir)
+    git("push", "origin", *_ARGS.output.rsplit("#", 1)[1:], cwd=output_dir)
 
   if ":" in _ARGS.input:
     shutil.rmtree(input_dir, ignore_errors=True)

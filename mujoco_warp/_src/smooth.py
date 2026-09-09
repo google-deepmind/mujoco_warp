@@ -2899,7 +2899,7 @@ def transmission(m: Model, d: Data):
 
   wp.launch(
     _transmission,
-    dim=(d.nworld, m.nu),
+    dim=(d.nworld, m.nactuator),
     inputs=[
       m.nv,
       m.body_parentid,

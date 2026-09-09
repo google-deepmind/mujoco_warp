@@ -504,6 +504,25 @@ class IOTest(parameterized.TestCase):
   def test_augmented_cholesky_nvmax_padding(self, nvmax, expected):
     self.assertEqual(io._nvmax_pad(nvmax), expected)
 
+  def test_default_njmax_nnz_includes_scalar_joint_limits(self):
+    """Include slide and hinge limits in the sparse Jacobian capacity."""
+    mjm = mujoco.MjModel.from_xml_string(
+      """
+      <mujoco>
+        <option jacobian="sparse"/>
+        <worldbody>
+          <body>
+            <joint type="slide" limited="true" range="-1 1"/>
+            <joint type="hinge" limited="true" range="-1 1"/>
+            <geom size="0.1" contype="0" conaffinity="0"/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """
+    )
+
+    self.assertEqual(io._default_njmax_nnz(mjm, nconmax=0, njmax=2), 2)
+
   def test_make_put_data(self):
     """Tests that make_data and put_data are producing the same shapes for all arrays."""
     mjm, _, _, d = test_data.fixture("pendula.xml", nvmax=None)
@@ -895,6 +914,10 @@ class IOTest(parameterized.TestCase):
   )
   def test_get_data_into_io_test_models(self, xml, cone, integrator):
     """Tests get_data_into for field coverage across diverse model types."""
+    # TODO(team): Support integrator="discrete" for flex models once implemented in mujoco_warp.
+    if xml == "flex/floppy.xml" and integrator in (IntegratorType.IMPLICIT, IntegratorType.IMPLICITFAST):
+      self.skipTest("TODO(team): Flex elasticity under implicit/implicitfast is rejected by MuJoCo.")
+
     mjm, _, m, d = test_data.fixture(xml, nworld=2, overrides={"opt.cone": cone, "opt.integrator": integrator})
     mjwarp.step(m, d)
 

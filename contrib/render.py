@@ -326,7 +326,7 @@ def _main(argv: Sequence[str]):
   mjd = mujoco.MjData(mjm)
   mujoco.mj_forward(mjm, mjd)
 
-  wp.config.quiet = flags.FLAGS["verbosity"].value < 1
+  wp.config.log_level = wp.LOG_WARNING if flags.FLAGS["verbosity"].value < 1 else wp.LOG_INFO
   wp.init()
   if _CLEAR_KERNEL_CACHE.value:
     wp.clear_kernel_cache()

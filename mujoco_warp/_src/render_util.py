@@ -79,54 +79,83 @@ def compute_ray(
   px: int,
   py: int,
   znear: float,
-) -> wp.vec3:
-  """Compute ray direction for a pixel with per-world camera parameters.
+) -> tuple[wp.vec3, wp.vec3]:
+  """Compute ray vector for a pixel with per-world camera parameters.
 
   This combines _camera_frustum_bounds and build_primary_rays logic for use
   inside a kernel when camera parameters are batched/randomized across worlds.
+
+  Returns:
+    Direction of the ray in camera space, and the offset of the ray from the
+    camera's center. The latter is only used for orthographic cameras.
   """
+  inv_img_h = 1.0 / float(img_h)
+
   if projection == ProjectionType.ORTHOGRAPHIC:
-    return wp.vec3(0.0, 0.0, -1.0)
+    # Compute ray direction
+    direction = wp.vec3(0.0, 0.0, -1.0)  # always pointing forward
 
-  aspect = float(img_w) / float(img_h)
-  sensor_h = sensorsize[1]
+    # Compute ray offset from center
+    aspect = float(img_w) * inv_img_h
+    sensor_h = fovy
+    sensor_w = sensor_h * aspect
+    left = -0.5 * sensor_w
+    top = 0.5 * sensor_h
+    bottom = -top
+    u = (float(px) + 0.5) / float(img_w)
+    v = (float(py) + 0.5) * inv_img_h
+    x = left + sensor_w * u
+    y = top + (bottom - top) * v
+    offset = wp.vec3(x, y, 0.0)
 
-  # Check if we have intrinsics (sensorsize[1] != 0)
-  if sensor_h != 0.0:
-    fx = intrinsic[0]
-    fy = intrinsic[1]
-    cx = intrinsic[2]
-    cy = intrinsic[3]
-    sensor_w = sensorsize[0]
+  else:  # projection == ProjectionType.PERSPECTIVE:
+    # Compute ray direction
+    aspect = float(img_w) * inv_img_h
+    sensor_h = sensorsize[1]
 
-    target_aspect = float(img_w) / float(img_h)
-    sensor_aspect = sensor_w / sensor_h
-    if target_aspect > sensor_aspect:
-      sensor_h = sensor_w / target_aspect
-    elif target_aspect < sensor_aspect:
-      sensor_w = sensor_h * target_aspect
+    # Check if we have intrinsics (sensorsize[1] != 0)
+    if sensor_h != 0.0:
+      fx = intrinsic[0]
+      fy = intrinsic[1]
+      cx = intrinsic[2]
+      cy = intrinsic[3]
+      sensor_w = sensorsize[0]
 
-    inv_fx_znear = znear / fx
-    inv_fy_znear = znear / fy
-    left = -inv_fx_znear * (sensor_w * 0.5 - cx)
-    right = inv_fx_znear * (sensor_w * 0.5 + cx)
-    top = inv_fy_znear * (sensor_h * 0.5 - cy)
-    bottom = -inv_fy_znear * (sensor_h * 0.5 + cy)
-  else:
-    fovy_rad = fovy * wp.static(wp.pi / 180.0)
-    half_height = znear * wp.tan(0.5 * fovy_rad)
-    half_width = half_height * aspect
-    left = -half_width
-    right = half_width
-    top = half_height
-    bottom = -half_height
+      target_aspect = aspect
+      sensor_aspect = sensor_w / sensor_h
+      if target_aspect > sensor_aspect:
+        sensor_h = sensor_w / target_aspect
+      elif target_aspect < sensor_aspect:
+        sensor_w = sensor_h * target_aspect
 
-  u = (float(px) + 0.5) / float(img_w)
-  v = (float(py) + 0.5) / float(img_h)
-  x = left + (right - left) * u
-  y = top + (bottom - top) * v
+      inv_fx_znear = znear / fx
+      inv_fy_znear = znear / fy
+      half_sensor_w = 0.5 * sensor_w
+      half_sensor_h = 0.5 * sensor_h
+      left = -inv_fx_znear * (half_sensor_w - cx)
+      right = inv_fx_znear * (half_sensor_w + cx)
+      top = inv_fy_znear * (half_sensor_h - cy)
+      bottom = -inv_fy_znear * (half_sensor_h + cy)
+    else:
+      fovy_rad = fovy * wp.static(wp.pi / 180.0)
+      half_height = znear * wp.tan(0.5 * fovy_rad)
+      half_width = half_height * aspect
+      left = -half_width
+      right = half_width
+      top = half_height
+      bottom = -half_height
 
-  return wp.normalize(wp.vec3(x, y, -znear))
+    u = (float(px) + 0.5) / float(img_w)
+    v = (float(py) + 0.5) * inv_img_h
+    x = left + (right - left) * u
+    y = top + (bottom - top) * v
+
+    direction = wp.normalize(wp.vec3(x, y, -znear))
+
+    # Ray offset from center not used for perspective cameras
+    offset = wp.vec3(0.0, 0.0, 0.0)
+
+  return direction, offset
 
 
 @wp.func
@@ -262,11 +291,20 @@ def _build_rays(
   sensorsize: wp.vec2,
   intrinsic: wp.vec4,
   znear: float,
+  n: int,
+  sx: int,
+  sy: int,
   # Out:
   ray_out: wp.array[wp.vec3],
+  ray_offset_out: wp.array[wp.vec3],
 ):
   xid, yid = wp.tid()
-  ray_out[offset + xid + yid * img_w] = compute_ray(projection, fovy, sensorsize, intrinsic, img_w, img_h, xid, yid, znear)
+  ray_dir, ray_offset = compute_ray(
+    projection, fovy, sensorsize, intrinsic, img_w * n, img_h * n, xid * n + sx, yid * n + sy, znear
+  )
+  idx = offset + xid + yid * img_w
+  ray_out[idx] = ray_dir
+  ray_offset_out[idx] = ray_offset
 
 
 def create_render_context(
@@ -287,6 +325,9 @@ def create_render_context(
   use_precomputed_rays: bool = True,
   render_skybox: bool = False,
   enable_backface_culling: bool = True,
+  shadow_light_fraction: float = 0.3,
+  samples_per_pixel: int = 1,
+  enable_vertex_normals: bool = True,
   enable_specular: bool = True,
   enable_emission: bool = True,
   enable_per_light_ambient: bool = True,
@@ -317,11 +358,17 @@ def create_render_context(
     enabled_geom_groups: The geom groups to render.
     cam_active: List of booleans, camera names (str), or camera indices (int) indicating
                 which cameras to include in rendering. If None, all cameras are included.
+                An empty list includes no cameras.
     flex_render_smooth: Whether to render flex meshes smoothly.
     use_precomputed_rays: Use precomputed rays instead of computing during rendering.
                           When using domain randomization for camera intrinsics, set to False.
     render_skybox: Whether to shade missed rays with the MuJoCo skybox texture.
                    Requires the model to contain a texture with type `mjTEXTURE_SKYBOX`.
+    shadow_light_fraction: Fraction of a light's direct contribution reaching an
+      occluded point. 0 is a true shadow.
+    samples_per_pixel: Sub-pixel samples per axis, averaged. Costs n*n renders.
+    enable_vertex_normals: Shade meshes from their authored vertex normals,
+      matching mjr_uploadMesh. When False, use the face normal.
     enable_backface_culling: Drop primitive-ray hits whose normal faces away from
                              the ray (ray origin inside the geom). Matches MuJoCo's
                              mesh-ray rule. Default True. Disable for a small
@@ -463,8 +510,10 @@ def create_render_context(
       flex_group_root[:, f] = group_root.numpy()
 
   textures_registry = []
-  for i in range(mjm.ntex):
-    textures_registry.append(create_warp_texture(mjm, i))
+  # Only materialize GPU textures when the caller actually needs them.
+  if use_textures:
+    for i in range(mjm.ntex):
+      textures_registry.append(create_warp_texture(mjm, i))
   textures = wp.array(textures_registry, dtype=wp.Texture2D)
 
   # Locate skybox texture
@@ -479,17 +528,20 @@ def create_render_context(
 
   # Filter active cameras
   if cam_active is not None:
-    if len(cam_active) > 0 and isinstance(cam_active[0], (bool, np.bool_)):
+    if len(cam_active) == 0:
+      # Empty selection renders no cameras, and is the only valid mask when ncam == 0.
+      active_cam_indices = []
+    elif isinstance(cam_active[0], (bool, np.bool_)):
       assert len(cam_active) == mjm.ncam, f"cam_active must have length {mjm.ncam} (got {len(cam_active)})"
       active_cam_indices = [int(i) for i in np.nonzero(cam_active)[0]]
-    elif len(cam_active) > 0 and isinstance(cam_active[0], str):
+    elif isinstance(cam_active[0], str):
       active_cam_indices = []
       for name in cam_active:
         cid = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_CAMERA, name)
         if cid == -1:
           raise ValueError(f"Camera '{name}' not found in model.")
         active_cam_indices.append(cid)
-    elif len(cam_active) > 0 and isinstance(cam_active[0], (int, np.integer)):
+    elif isinstance(cam_active[0], (int, np.integer)):
       active_cam_indices = [int(x) for x in cam_active]
     else:
       raise ValueError(f"Invalid cam_active format: {cam_active}")
@@ -578,36 +630,50 @@ def create_render_context(
 
   znear = float(mjm.vis.map.znear * mjm.stat.extent)
 
-  ray = wp.zeros(int(total), dtype=wp.vec3)
+  if samples_per_pixel < 1:
+    raise ValueError("samples_per_pixel must be at least 1.")
+  if samples_per_pixel > 1 and not use_precomputed_rays:
+    raise ValueError("samples_per_pixel > 1 requires use_precomputed_rays=True: dynamic rays carry no sub-pixel jitter.")
+  if samples_per_pixel > 1 and ri == 0:
+    raise ValueError("samples_per_pixel > 1 requires at least one camera with render_rgb=True.")
+  nsamples = samples_per_pixel * samples_per_pixel
+  ray = wp.zeros(int(total) * nsamples, dtype=wp.vec3)
+  ray_offset = wp.zeros(int(total) * nsamples, dtype=wp.vec3)
 
   cam_projection = mjm.cam_projection
 
-  offset = 0
-  for idx, cam_id_val in enumerate(active_cam_indices):
-    cam_id = int(cam_id_val)
-    img_w = int(cam_res_np[idx][0])
-    img_h = int(cam_res_np[idx][1])
-    wp.launch(
-      kernel=_build_rays,
-      dim=(img_w, img_h),
-      inputs=[
-        offset,
-        img_w,
-        img_h,
-        int(mjm.cam_projection[cam_id]),
-        float(mjm.cam_fovy[cam_id]),
-        wp.vec2(float(mjm.cam_sensorsize[cam_id, 0]), float(mjm.cam_sensorsize[cam_id, 1])),
-        wp.vec4(
-          float(mjm.cam_intrinsic[cam_id, 0]),
-          float(mjm.cam_intrinsic[cam_id, 1]),
-          float(mjm.cam_intrinsic[cam_id, 2]),
-          float(mjm.cam_intrinsic[cam_id, 3]),
-        ),
-        znear,
-      ],
-      outputs=[ray],
-    )
-    offset += img_w * img_h
+  for sample in range(nsamples):
+    offset = sample * int(total)
+    for idx, cam_id_val in enumerate(active_cam_indices):
+      cam_id = int(cam_id_val)
+      img_w = int(cam_res_np[idx][0])
+      img_h = int(cam_res_np[idx][1])
+      wp.launch(
+        kernel=_build_rays,
+        dim=(img_w, img_h),
+        inputs=[
+          offset,
+          img_w,
+          img_h,
+          int(mjm.cam_projection[cam_id]),
+          float(mjm.cam_fovy[cam_id]),
+          wp.vec2(float(mjm.cam_sensorsize[cam_id, 0]), float(mjm.cam_sensorsize[cam_id, 1])),
+          wp.vec4(
+            float(mjm.cam_intrinsic[cam_id, 0]),
+            float(mjm.cam_intrinsic[cam_id, 1]),
+            float(mjm.cam_intrinsic[cam_id, 2]),
+            float(mjm.cam_intrinsic[cam_id, 3]),
+          ),
+          znear,
+          samples_per_pixel,
+          sample % samples_per_pixel,
+          sample // samples_per_pixel,
+        ],
+        outputs=[ray, ray_offset],
+      )
+      offset += img_w * img_h
+
+  aa_accum = wp.zeros((nworld, ri if nsamples > 1 else 1), dtype=wp.vec3)
 
   bvh_ngeom = len(geom_enabled_idx)
 
@@ -624,6 +690,10 @@ def create_render_context(
     atten = np.asarray(mjm.light_attenuation, dtype=np.float32).reshape(-1, 3)
     light_attenuation_is_default = bool(np.allclose(atten, np.array([1.0, 0.0, 0.0], dtype=np.float32)))
     has_spot_lights = bool((np.asarray(mjm.light_type) == int(mujoco.mjtLightType.mjLIGHT_SPOT)).any())
+
+  has_orthographic_camera = any(
+    int(mjm.cam_projection[cam_id]) == int(ProjectionType.ORTHOGRAPHIC) for cam_id in active_cam_indices
+  )
 
   rc = RenderContext(
     nrender=ncam,
@@ -652,6 +722,7 @@ def create_render_context(
     mesh_texcoord=wp.array(mjm.mesh_texcoord, dtype=wp.vec2),
     mesh_texcoord_offsets=wp.array(mjm.mesh_texcoordadr, dtype=int),
     mesh_facetexcoord=wp.array(mjm.mesh_facetexcoord, dtype=wp.vec3i),
+    mesh_facenormal=wp.array(mjm.mesh_facenormal, dtype=wp.vec3i),
     textures=textures,
     textures_registry=textures_registry,
     hfield_registry=hfield_registry,
@@ -673,6 +744,7 @@ def create_render_context(
     group=wp.zeros(nworld * (bvh_ngeom + len(flex_geom_flexid)), dtype=int),
     group_root=wp.zeros(nworld, dtype=int),
     ray=ray,
+    ray_offset=ray_offset,
     rgb_data=wp.zeros((nworld, ri), dtype=wp.uint32),
     rgb_adr=wp.array(rgb_adr, dtype=int),
     depth_data=wp.zeros((nworld, di), dtype=wp.float32),
@@ -685,12 +757,17 @@ def create_render_context(
     znear=znear,
     total_rays=int(total),
     enable_backface_culling=enable_backface_culling,
+    shadow_light_fraction=shadow_light_fraction,
+    samples_per_pixel=samples_per_pixel,
+    aa_accum=aa_accum,
     geom_ray_types=geom_ray_types,
+    enable_vertex_normals=enable_vertex_normals,
     enable_specular=enable_specular,
     enable_emission=enable_emission,
     enable_per_light_ambient=enable_per_light_ambient,
     light_attenuation_is_default=light_attenuation_is_default,
     has_spot_lights=has_spot_lights,
+    has_orthographic_camera=has_orthographic_camera,
     splat_position=splat_position,
     splat_rotation=splat_rotation,
     splat_scale=splat_scale,

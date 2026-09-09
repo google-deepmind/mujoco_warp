@@ -34,8 +34,11 @@ import re
 import shutil
 import subprocess
 import sys
-import tempfile
 from pathlib import Path
+
+from common import clone_if_needed
+from common import ensure_pinned_clone
+from common import uv_run
 
 _ARGS = None  # module level variable that gets populated with argparse results
 
@@ -46,26 +49,6 @@ if _venv_bin not in os.environ.get("PATH", ""):
 
 logging.basicConfig(format="[%(asctime)s] %(message)s", datefmt="%Y-%m-%d %H:%M:%S", level=logging.INFO)
 log = logging.getLogger(__name__)
-
-
-# external commands
-
-
-def _git(*args, cwd: Path | None = None, check: bool = True):
-  """Run a git command, returning CompletedProcess."""
-  env = os.environ.copy()
-  env["TZ"] = "UTC"
-  ssh_key = Path.home() / ".ssh" / "id_ed25519_mujoco_warp_nightly"
-  if ssh_key.exists():
-    env["GIT_SSH_COMMAND"] = f'ssh -i "{ssh_key}" -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new'
-  log.info("Command: git %s", " ".join(args))
-  return subprocess.run(("git",) + args, cwd=cwd, env=env, check=check, capture_output=True, text=True)
-
-
-def _uv_run(*args, cwd: Path | None = None):
-  """Run a uv command, returning CompletedProcess."""
-  log.info("Command: uv run %s", " ".join(args))
-  return subprocess.run(("uv", "run") + args, cwd=cwd, check=True, capture_output=True, text=True)
 
 
 # benchmark discovery, assembly, and execution
@@ -105,9 +88,7 @@ def _assemble_benchmark(bm: dict):
 
     # repo clones are stored in the format: <assets_root>/_git/<repo_source>/<repo_ref>
     repo_dir = Path(_ARGS.assets_root) / "_git" / Path(repo["source"]).stem / repo["ref"]
-    if not repo_dir.exists():
-      repo_dir.mkdir(parents=True, exist_ok=True)
-      _git("clone", repo["source"], repo_dir.as_posix(), "--depth", "1", "--revision", repo["ref"])
+    ensure_pinned_clone(repo["source"], repo["ref"], repo_dir)
 
     if "*" in repo_path:
       parts = Path(repo_path).parts
@@ -148,7 +129,7 @@ def _run_benchmark(bm: dict, input_dir: Path) -> dict:
       else:
         cmd.append(f"--{field}={value}")
 
-  result = _uv_run(*cmd, cwd=input_dir)
+  result = uv_run(*cmd, cwd=input_dir)
 
   # parse short-format output into a dict
   data = {}
@@ -195,18 +176,7 @@ def main():
 
   _ARGS = parser.parse_args()
 
-  def clone_if_needed(uri):
-    if ":" not in uri:
-      return uri
-    path = tempfile.mkdtemp(prefix="mjwarp-run-")
-    spec = uri.rsplit("#", 1)
-    if len(spec) < 2:
-      _git("clone", spec[0], path)
-    else:
-      _git("clone", spec[0], path, "--branch", spec[1])
-    return path
-
-  input_dir = clone_if_needed(_ARGS.input)
+  input_dir = clone_if_needed(_ARGS.input, "mjwarp-run-")
   benchmarks = list(_discover_benchmarks(input_dir))
 
   if _ARGS.view:

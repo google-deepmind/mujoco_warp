@@ -11,8 +11,9 @@ and pushes the results to the gh-pages branch.  See sweep.py for more details.
 mkdir -p ~/.config/systemd/user
 mkdir -p ~/.local/bin
 
-# 2. Copy the nightly script and make it executable
+# 2. Copy the nightly script and the helpers it imports, and make the script executable
 cp ../../benchmarks/sweep.py ~/.local/bin/mjwarp-sweep
+cp ../../benchmarks/common.py ~/.local/bin/
 chmod +x ~/.local/bin/mjwarp-sweep
 
 # 3. Copy the service and timer files
@@ -67,10 +68,11 @@ Edit `~/.config/systemd/user/mjwarp-nightly.timer` to change the schedule:
 
 ## Updating
 
-When updating to a newer version of MuJoCo Warp, copy the latest sweep script:
+When updating to a newer version of MuJoCo Warp, copy the latest sweep script and helpers:
 
 ```bash
 cp /path/to/mujoco_warp/benchmarks/sweep.py ~/.local/bin/mjwarp-sweep
+cp /path/to/mujoco_warp/benchmarks/common.py ~/.local/bin/
 ```
 
 ## Acknowledgements

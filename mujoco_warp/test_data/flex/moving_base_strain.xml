@@ -1,7 +1,8 @@
 <mujoco model="MovingBaseStrain">
   <include file="scene.xml"/>
 
-  <option solver="CG" tolerance="1e-6" timestep=".001" integrator="implicitfast"/>
+  <!-- TODO(team): switch to integrator="discrete" once supported in mujoco_warp -->
+  <option solver="CG" tolerance="1e-6" timestep=".001"/>
 
   <worldbody>
     <body name="moving_base" pos="0 0 1.5">
