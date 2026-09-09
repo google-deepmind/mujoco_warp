@@ -16,7 +16,7 @@
 """Core collision types and utilities shared across collision modules."""
 
 import dataclasses
-from typing import Any, Tuple
+from typing import Any, Optional, Tuple
 
 import warp as wp
 
@@ -478,11 +478,15 @@ class CollisionContext:
     collision_pair: collision pairs from broadphase             (naconmax, 2)
     collision_pairid: ids from broadphase                       (naconmax, 2)
     collision_worldid: collision world ids from broadphase      (naconmax,)
+    sdf_collision_tid: compacted SDF collision broadphase index (naconmax,)
+    nsdf_collision: compacted SDF collision count               (1,)
   """
 
   collision_pair: wp.array
   collision_pairid: wp.array
   collision_worldid: wp.array
+  sdf_collision_tid: Optional[wp.array] = None
+  nsdf_collision: Optional[wp.array] = None
 
 
 @wp.func
@@ -519,10 +523,12 @@ def sap_range(
   range_out[worldid, sortedid] = limit - sortedid
 
 
-def create_collision_context(naconmax: int) -> CollisionContext:
+def create_collision_context(naconmax: int, has_sdf: bool = False) -> CollisionContext:
   """Create a CollisionContext with allocated arrays."""
   return CollisionContext(
     collision_pair=wp.empty(naconmax, dtype=wp.vec2i),
     collision_pairid=wp.empty(naconmax, dtype=wp.vec2i),
     collision_worldid=wp.empty(naconmax, dtype=int),
+    sdf_collision_tid=wp.empty(naconmax, dtype=int) if has_sdf else None,
+    nsdf_collision=wp.zeros(1, dtype=int) if has_sdf else None,
   )

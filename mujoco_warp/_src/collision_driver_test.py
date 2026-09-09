@@ -558,19 +558,22 @@ class CollisionTest(parameterized.TestCase):
 
     mujoco.mj_collision(mjm, mjd)
     mjw.collision(m, d)
-    for i in range(min(mjd.ncon, d.nacon.numpy()[0])):
+
+    mj_ncon = mjd.ncon
+    mjw_ncon = d.nacon.numpy()[0]
+    self.assertEqual(mj_ncon > 0, mjw_ncon > 0, f"MJ ncon={mj_ncon}, MJW ncon={mjw_ncon}")
+
+    for i in range(min(mj_ncon, mjw_ncon)):
       actual_dist = mjd.contact.dist[i]
-      actual_pos = mjd.contact.pos[i]
-      actual_frame = mjd.contact.frame[i][0:3]
-      result = False
-      test_dist = d.contact.dist.numpy()[i]
-      test_pos = d.contact.pos.numpy()[i, :]
-      test_frame = d.contact.frame.numpy()[i].flatten()[0:3]
-      check_dist = np.allclose(actual_dist, test_dist, rtol=5e-2, atol=1.0e-1)
-      check_frame = np.allclose(actual_frame, test_frame, rtol=5e-2, atol=1.0e-1)
-      check_pos = np.allclose(actual_pos, test_pos, rtol=5e-2, atol=1.0e-1)
-      result = check_dist
-      np.testing.assert_equal(result, True, f"Contact {i} not found in Gjk results")
+      found_match = False
+      for j in range(mjw_ncon):
+        test_dist = d.contact.dist.numpy()[j]
+        if np.allclose(actual_dist, test_dist, rtol=5e-2, atol=1.0e-1):
+          found_match = True
+          break
+      self.assertTrue(
+        found_match, f"Contact {i} dist={actual_dist} not matched in Warp contacts {d.contact.dist.numpy()[:mjw_ncon]}"
+      )
 
   @parameterized.parameters(_FIXTURES.keys())
   def test_collision(self, fixture):
@@ -1219,6 +1222,26 @@ class CollisionTest(parameterized.TestCase):
           </worldbody>
         </mujoco>
     """,
+    "mesh_sdf": """
+        <mujoco>
+          <option sdf_iterations="10" sdf_initpoints="40"/>
+          <asset>
+            <mesh name="cube_mesh"
+             vertex="1 1 1  1 1 -1  1 -1 1  1 -1 -1  -1 1 1  -1 1 -1  -1 -1 1  -1 -1 -1"/>
+            <mesh name="cube_sdf"
+             vertex="1 1 1  1 1 -1  1 -1 1  1 -1 -1  -1 1 1  -1 1 -1  -1 -1 1  -1 -1 -1"/>
+          </asset>
+          <worldbody>
+            <body pos="0 0 0">
+              <geom type="mesh" mesh="cube_mesh"/>
+            </body>
+            <body pos="0 0 1.5" euler="30 0 0">
+              <freejoint/>
+              <geom type="sdf" mesh="cube_sdf"/>
+            </body>
+          </worldbody>
+        </mujoco>
+    """,
   }
 
   @parameterized.parameters(_SDF_VOLUME.keys())
@@ -1240,6 +1263,18 @@ class CollisionTest(parameterized.TestCase):
       test_dist = d.contact.dist.numpy()[i]
       self.assertLess(test_dist, 0.1, f"Contact {i} dist={test_dist} not indicating penetration")
 
+    if fixture == "mesh_sdf" and mjw_ncon > 0:
+      found_expected = False
+      for i in range(mjw_ncon):
+        test_normal = d.contact.frame.numpy()[i][0]
+        if abs(test_normal[0]) < 1e-3 and abs(test_normal[1] - (-0.5)) < 1e-2 and abs(test_normal[2] - 0.8660254) < 1e-2:
+          found_expected = True
+          break
+      self.assertTrue(
+        found_expected,
+        f"Expected 30-deg normal not found in detected contacts: {d.contact.frame.numpy()[:mjw_ncon, 0]}",
+      )
+
   def test_ccd_margin_dist(self):
     """Tests that CCD contact dist matches MuJoCo when margin > 0.
 
@@ -1250,21 +1285,22 @@ class CollisionTest(parameterized.TestCase):
     separation (≈0.05), not the margin-biased value that the inflated
     GJK/EPA would produce.
     """
-    xml = f"""
-    <mujoco>
-      <worldbody>
-        <body pos="0 0 0">
-          <freejoint/>
-          <geom type="ellipsoid" size="0.15 0.15 0.25" margin="0.01" gap="0.2"/>
-        </body>
-        <body pos="0 0 0.35">
-          <freejoint/>
-          <geom type="ellipsoid" size="0.1 0.1 0.05" margin="0.01" gap="0.2"/>
-        </body>
-      </worldbody>
-    </mujoco>
-    """
-    mjm, mjd, m, d = test_data.fixture(xml=xml)
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <body pos="0 0 0">
+            <freejoint/>
+            <geom type="ellipsoid" size="0.15 0.15 0.25" margin="0.01" gap="0.2"/>
+          </body>
+          <body pos="0 0 0.35">
+            <freejoint/>
+            <geom type="ellipsoid" size="0.1 0.1 0.05" margin="0.01" gap="0.2"/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """
+    )
 
     mujoco.mj_forward(mjm, mjd)
     mjw.forward(m, d)
