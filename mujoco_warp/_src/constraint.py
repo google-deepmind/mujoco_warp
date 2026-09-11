@@ -28,6 +28,7 @@ from mujoco_warp._src.types import vec6
 from mujoco_warp._src.types import vec11
 from mujoco_warp._src.warp_util import cache_kernel
 from mujoco_warp._src.warp_util import event_scope
+from mujoco_warp._src.warp_util import launch_world_warp_enabled
 
 wp.set_module_options({"enable_backward": False, "default_grid_stride": False})
 
@@ -3139,8 +3140,10 @@ def _efc_contact_init_flex(cone_type: types.ConeType, is_sparse: bool, newton: b
 
 
 @cache_kernel
-def _efc_contact_jac_sparse(cone_type: types.ConeType):
+def _efc_contact_jac_sparse(cone_type: types.ConeType, world_warp: bool):
   IS_ELLIPTIC = cone_type == types.ConeType.ELLIPTIC
+  WORLD_WARP = world_warp
+  EFC_STRIDE = 32 if world_warp else 1
 
   @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
   def kernel(
@@ -3155,12 +3158,18 @@ def _efc_contact_jac_sparse(cone_type: types.ConeType):
     geom_bodyid: wp.array[int],
     body_isdofancestor: wp.array2d[int],
     # Data in:
+    ne_in: wp.array[int],
+    nf_in: wp.array[int],
+    nl_in: wp.array[int],
+    nefc_in: wp.array[int],
     qvel_in: wp.array2d[float],
     subtree_com_in: wp.array2d[wp.vec3],
     cdof_in: wp.array2d[wp.spatial_vector],
     contact_efc_address_in: wp.array2d[int],
+    efc_id_in: wp.array2d[int],
     efc_J_rownnz_in: wp.array2d[int],
     efc_J_rowadr_in: wp.array2d[int],
+    njmax_in: int,
     nacon_in: wp.array[int],
     # In:
     condim_in: wp.array[int],
@@ -3174,46 +3183,57 @@ def _efc_contact_jac_sparse(cone_type: types.ConeType):
     efc_J_out: wp.array3d[float],
     efc_Jqvel_out: wp.array2d[float],
   ):
-    conid, dimid = wp.tid()
+    tid0, tid1 = wp.tid()
+    worldid = int(0)
+    conid = int(0)
+    dimid = int(0)
+    efcid_start = int(0)
+    efcid_end = int(0)
 
-    if conid >= nacon_in[0]:
-      return
+    if wp.static(WORLD_WARP):
+      worldid = tid0
+      efcid_start = ne_in[worldid] + nf_in[worldid] + nl_in[worldid] + tid1
+      efcid_end = wp.min(nefc_in[worldid], njmax_in)
+    else:
+      conid = tid0
+      dimid = tid1
+      if conid >= nacon_in[0]:
+        return
+      efcid_start = contact_efc_address_in[conid, dimid]
+      if efcid_start < 0:
+        return
+      efcid_end = efcid_start + 1
+      worldid = worldid_in[conid]
 
-    efcid = contact_efc_address_in[conid, dimid]
-    if efcid < 0:
-      return
+    for efcid in range(efcid_start, efcid_end, wp.static(EFC_STRIDE)):
+      if wp.static(WORLD_WARP):
+        conid = efc_id_in[worldid, efcid]
+        dimid = efcid - contact_efc_address_in[conid, 0]
+      condim = condim_in[conid]
 
-    worldid = worldid_in[conid]
-    condim = condim_in[conid]
+      geom = geom_in[conid]
+      body1 = body_weldid[geom_bodyid[geom[0]]]
+      body2 = body_weldid[geom_bodyid[geom[1]]]
 
-    geom = geom_in[conid]
-    body1 = body_weldid[geom_bodyid[geom[0]]]
-    body2 = body_weldid[geom_bodyid[geom[1]]]
+      con_pos = pos_in[conid]
 
-    con_pos = pos_in[conid]
+      if not wp.static(IS_ELLIPTIC):
+        frame_0 = frame_in[conid, 0]
+        if condim > 1:
+          dimid2 = dimid / 2 + 1
+          frii = friction_in[conid, dimid2 - 1]
 
-    if not wp.static(IS_ELLIPTIC):
-      frame_0 = frame_in[conid, 0]
-      if condim > 1:
-        dimid2 = dimid / 2 + 1
-        frii = friction_in[conid, dimid2 - 1]
+      da1 = int(body_dofadr[body1] + body_dofnum[body1] - 1)
+      da2 = int(body_dofadr[body2] + body_dofnum[body2] - 1)
+      da = wp.max(da1, da2)
 
-    da1 = int(body_dofadr[body1] + body_dofnum[body1] - 1)
-    da2 = int(body_dofadr[body2] + body_dofnum[body2] - 1)
-    da = wp.max(da1, da2)
+      rowadr = efc_J_rowadr_in[worldid, efcid]
+      rownnz = efc_J_rownnz_in[worldid, efcid]
 
-    rowadr = efc_J_rowadr_in[worldid, efcid]
-    rownnz = efc_J_rownnz_in[worldid, efcid]
+      Jqvel = float(0.0)
+      nnz = int(0)
 
-    Jqvel = float(0.0)
-    nnz = int(0)
-    dofid = int(da)
-
-    while True:
-      if nnz >= rownnz:
-        break
-
-      if dofid == da:
+      while nnz < rownnz:
         jac1p, jac1r = support.jac_dof(
           body_parentid,
           body_rootid,
@@ -3223,7 +3243,7 @@ def _efc_contact_jac_sparse(cone_type: types.ConeType):
           cdof_in,
           con_pos,
           body1,
-          dofid,
+          da,
           worldid,
         )
         jac2p, jac2r = support.jac_dof(
@@ -3235,7 +3255,7 @@ def _efc_contact_jac_sparse(cone_type: types.ConeType):
           cdof_in,
           con_pos,
           body2,
-          dofid,
+          da,
           worldid,
         )
 
@@ -3272,10 +3292,10 @@ def _efc_contact_jac_sparse(cone_type: types.ConeType):
               J -= Ji * frii
 
         sparseid = rowadr + nnz
-        efc_J_colind_out[worldid, 0, sparseid] = dofid
+        efc_J_colind_out[worldid, 0, sparseid] = da
         efc_J_out[worldid, 0, sparseid] = J
         nnz += 1
-        Jqvel += J * qvel_in[worldid, dofid]
+        Jqvel += J * qvel_in[worldid, da]
 
         # Advance tree pointers and recompute da for next iteration
         if da1 == da:
@@ -3283,9 +3303,8 @@ def _efc_contact_jac_sparse(cone_type: types.ConeType):
         if da2 == da:
           da2 = dof_parentid[da2]
         da = wp.max(da1, da2)
-        dofid = da
 
-    efc_Jqvel_out[worldid, efcid] = Jqvel
+      efc_Jqvel_out[worldid, efcid] = Jqvel
 
   return kernel
 
@@ -4236,8 +4255,10 @@ def _efc_contact_jac_dense_flex(tile_size: int, cone_type: types.ConeType):
 
 
 @cache_kernel
-def _efc_contact_update(cone_type: types.ConeType, flg_adhesion: bool):
+def _efc_contact_update(cone_type: types.ConeType, flg_adhesion: bool, world_warp: bool):
   IS_ELLIPTIC = cone_type == types.ConeType.ELLIPTIC
+  WORLD_WARP = world_warp
+  EFC_STRIDE = 32 if world_warp else 1
 
   @wp.kernel(module="unique", enable_backward=False, grid_stride=True)
   def kernel(
@@ -4248,8 +4269,14 @@ def _efc_contact_update(cone_type: types.ConeType, flg_adhesion: bool):
     body_invweight0: wp.array2d[wp.vec2],
     geom_bodyid: wp.array[int],
     # Data in:
+    ne_in: wp.array[int],
+    nf_in: wp.array[int],
+    nl_in: wp.array[int],
+    nefc_in: wp.array[int],
     contact_efc_address_in: wp.array2d[int],
+    efc_id_in: wp.array2d[int],
     efc_Jqvel_in: wp.array2d[float],
+    njmax_in: int,
     nacon_in: wp.array[int],
     # In:
     dist_in: wp.array[float],
@@ -4273,113 +4300,127 @@ def _efc_contact_update(cone_type: types.ConeType, flg_adhesion: bool):
     efc_aref_out: wp.array2d[float],
     efc_frictionloss_out: wp.array2d[float],
   ):
-    conid, dimid = wp.tid()
+    tid0, tid1 = wp.tid()
+    worldid = int(0)
+    conid = int(0)
+    dimid = int(0)
+    efcid_start = int(0)
+    efcid_end = int(0)
 
-    if conid >= nacon_in[0]:
-      return
-
-    if not type_in[conid] & ContactType.CONSTRAINT:
-      return
-
-    condim = condim_in[conid]
-
-    if wp.static(IS_ELLIPTIC):
-      if dimid > condim - 1:
-        return
+    if wp.static(WORLD_WARP):
+      worldid = tid0
+      efcid_start = ne_in[worldid] + nf_in[worldid] + nl_in[worldid] + tid1
+      efcid_end = wp.min(nefc_in[worldid], njmax_in)
     else:
-      if condim == 1 and dimid > 0:
+      conid = tid0
+      dimid = tid1
+      if conid >= nacon_in[0]:
         return
-      elif condim > 1 and dimid >= 2 * (condim - 1):
+      if not type_in[conid] & ContactType.CONSTRAINT:
         return
+      condim = condim_in[conid]
+      if wp.static(IS_ELLIPTIC):
+        if dimid > condim - 1:
+          return
+      else:
+        if condim == 1 and dimid > 0:
+          return
+        elif condim > 1 and dimid >= 2 * (condim - 1):
+          return
+      efcid_start = contact_efc_address_in[conid, dimid]
+      if efcid_start < 0:
+        return
+      efcid_end = efcid_start + 1
+      worldid = worldid_in[conid]
 
-    efcid = contact_efc_address_in[conid, dimid]
-    if efcid < 0:
-      return
+    for efcid in range(efcid_start, efcid_end, wp.static(EFC_STRIDE)):
+      if wp.static(WORLD_WARP):
+        conid = efc_id_in[worldid, efcid]
+        dimid = efcid - contact_efc_address_in[conid, 0]
+      condim = condim_in[conid]
 
-    worldid = worldid_in[conid]
-    timestep = opt_timestep[worldid % opt_timestep.shape[0]]
-    impratio_invsqrt = opt_impratio_invsqrt[worldid % opt_impratio_invsqrt.shape[0]]
+      timestep = opt_timestep[worldid % opt_timestep.shape[0]]
+      impratio_invsqrt = opt_impratio_invsqrt[worldid % opt_impratio_invsqrt.shape[0]]
 
-    includemargin = includemargin_in[conid]
-    pos = dist_in[conid] - includemargin
+      includemargin = includemargin_in[conid]
+      pos = dist_in[conid] - includemargin
 
-    geom = geom_in[conid]
-    Jqvel = efc_Jqvel_in[worldid, efcid]
+      geom = geom_in[conid]
+      Jqvel = efc_Jqvel_in[worldid, efcid]
 
-    body1 = geom_bodyid[geom[0]]
-    body2 = geom_bodyid[geom[1]]
+      body1 = geom_bodyid[geom[0]]
+      body2 = geom_bodyid[geom[1]]
 
-    body_invweight0_id = worldid % body_invweight0.shape[0]
-    invweight = body_invweight0[body_invweight0_id, body1][0] + body_invweight0[body_invweight0_id, body2][0]
+      body_invweight0_id = worldid % body_invweight0.shape[0]
+      invweight = body_invweight0[body_invweight0_id, body1][0] + body_invweight0[body_invweight0_id, body2][0]
 
-    ref = solref_in[conid]
-    pos_aref = pos
+      ref = solref_in[conid]
+      pos_aref = pos
 
-    if wp.static(IS_ELLIPTIC):
-      if dimid > 0:
-        solreffriction = solreffriction_in[conid]
+      if wp.static(IS_ELLIPTIC):
+        if dimid > 0:
+          solreffriction = solreffriction_in[conid]
 
-        # non-normal directions use solreffriction (if non-zero)
-        if solreffriction[0] or solreffriction[1]:
-          ref = solreffriction
+          # non-normal directions use solreffriction (if non-zero)
+          if solreffriction[0] or solreffriction[1]:
+            ref = solreffriction
 
-        invweight = invweight * impratio_invsqrt * impratio_invsqrt
-        friction = friction_in[conid]
+          invweight = invweight * impratio_invsqrt * impratio_invsqrt
+          friction = friction_in[conid]
 
-        if dimid > 1:
+          if dimid > 1:
+            fri0 = friction[0]
+            frii = friction[dimid - 1]
+            invweight *= fri0 * fri0 / (frii * frii)
+
+          pos_aref = 0.0
+      else:
+        if condim > 1:
+          friction = friction_in[conid]
           fri0 = friction[0]
-          frii = friction[dimid - 1]
-          fri = fri0 * fri0 / (frii * frii)
-          invweight *= fri
+          invweight = invweight + fri0 * fri0 * invweight
+          invweight = invweight * 2.0 * fri0 * fri0 * impratio_invsqrt * impratio_invsqrt
 
-        pos_aref = 0.0
-    else:
-      if condim > 1:
-        friction = friction_in[conid]
-        fri0 = friction[0]
-        invweight = invweight + fri0 * fri0 * invweight
-        invweight = invweight * 2.0 * fri0 * fri0 * impratio_invsqrt * impratio_invsqrt
+      if condim == 1:
+        efc_type = ConstraintType.CONTACT_FRICTIONLESS
+      elif wp.static(IS_ELLIPTIC):
+        efc_type = ConstraintType.CONTACT_ELLIPTIC
+      else:
+        efc_type = ConstraintType.CONTACT_PYRAMIDAL
 
-    if condim == 1:
-      efc_type = ConstraintType.CONTACT_FRICTIONLESS
-    elif wp.static(IS_ELLIPTIC):
-      efc_type = ConstraintType.CONTACT_ELLIPTIC
-    else:
-      efc_type = ConstraintType.CONTACT_PYRAMIDAL
+      _efc_row(
+        opt_disableflags,
+        worldid,
+        timestep,
+        efcid,
+        pos_aref,
+        pos,
+        invweight,
+        ref,
+        solimp_in[conid],
+        includemargin,
+        Jqvel,
+        0.0,
+        efc_type,
+        conid,
+        efc_type_out,
+        efc_id_out,
+        efc_pos_out,
+        efc_margin_out,
+        efc_D_out,
+        efc_vel_out,
+        efc_aref_out,
+        efc_frictionloss_out,
+      )
 
-    _efc_row(
-      opt_disableflags,
-      worldid,
-      timestep,
-      efcid,
-      pos_aref,
-      pos,
-      invweight,
-      ref,
-      solimp_in[conid],
-      includemargin,
-      Jqvel,
-      0.0,
-      efc_type,
-      conid,
-      efc_type_out,
-      efc_id_out,
-      efc_pos_out,
-      efc_margin_out,
-      efc_D_out,
-      efc_vel_out,
-      efc_aref_out,
-      efc_frictionloss_out,
-    )
-
-    if wp.static(flg_adhesion):
-      if adhesion_in[conid] != 0.0 and (dimid == 0 or not wp.static(IS_ELLIPTIC)):
-        efc_D = efc_D_out[worldid, efcid]
-        if efc_D > 0.0:
-          adhesion = adhesion_in[conid]
-          if not wp.static(IS_ELLIPTIC) and condim > 1:
-            adhesion = adhesion / float(2 * (condim - 1))
-          efc_aref_out[worldid, efcid] += (1.0 / efc_D) * adhesion
+      if wp.static(flg_adhesion):
+        if adhesion_in[conid] != 0.0 and (dimid == 0 or not wp.static(IS_ELLIPTIC)):
+          efc_D = efc_D_out[worldid, efcid]
+          if efc_D > 0.0:
+            adhesion = adhesion_in[conid]
+            if not wp.static(IS_ELLIPTIC) and condim > 1:
+              adhesion = adhesion / float(2 * (condim - 1))
+            efc_aref_out[worldid, efcid] += (1.0 / efc_D) * adhesion
 
   return kernel
 
@@ -5493,6 +5534,7 @@ def make_constraint(m: types.Model, d: types.Data):
     # contact
     if not (m.opt.disableflags & types.DisableBit.CONTACT):
       nmaxdim = int(m.nmaxpyramid) if m.opt.cone == types.ConeType.PYRAMIDAL else int(m.nmaxcondim)
+      world_warp = m.is_sparse and launch_world_warp_enabled(d.nworld, d.qvel.device)
 
       # Reinterpret to avoid unnecessary loads
       contact_frame_2d = wp.array(
@@ -5649,8 +5691,8 @@ def make_constraint(m: types.Model, d: types.Data):
           )
         else:
           wp.launch(
-            _efc_contact_jac_sparse(m.opt.cone),
-            dim=(d.naconmax, nmaxdim),
+            _efc_contact_jac_sparse(m.opt.cone, world_warp),
+            dim=(d.nworld, 32) if world_warp else (d.naconmax, nmaxdim),
             inputs=[
               m.body_parentid,
               m.body_rootid,
@@ -5661,12 +5703,18 @@ def make_constraint(m: types.Model, d: types.Data):
               m.dof_parentid,
               m.geom_bodyid,
               m.body_isdofancestor,
+              d.ne,
+              d.nf,
+              d.nl,
+              d.nefc,
               d.qvel,
               d.subtree_com,
               d.cdof,
               d.contact.efc_address,
+              d.efc.id,
               d.efc.J_rownnz,
               d.efc.J_rowadr,
+              d.njmax,
               d.nacon,
               d.contact.dim,
               d.contact.geom,
@@ -5842,16 +5890,22 @@ def make_constraint(m: types.Model, d: types.Data):
         )
       else:
         wp.launch(
-          _efc_contact_update(m.opt.cone, m.flg_adhesion),
-          dim=(d.naconmax, nmaxdim),
+          _efc_contact_update(m.opt.cone, m.flg_adhesion, world_warp),
+          dim=(d.nworld, 32) if world_warp else (d.naconmax, nmaxdim),
           inputs=[
             m.opt.timestep,
             m.opt.disableflags,
             m.opt.impratio_invsqrt,
             m.body_invweight0,
             m.geom_bodyid,
+            d.ne,
+            d.nf,
+            d.nl,
+            d.nefc,
             d.contact.efc_address,
+            d.efc.id,
             d.efc.Jqvel,
+            d.njmax,
             d.nacon,
             d.contact.dist,
             d.contact.dim,
