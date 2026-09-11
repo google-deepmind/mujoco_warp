@@ -1,0 +1,501 @@
+<mujoco model="panda threading">
+  <include file="panda.xml"/>
+
+  <statistic center="0.5 0 0.3" extent="0.8"/>
+
+  <option timestep="0.002" integrator="implicitfast" solver="Newton" jacobian="sparse" cone="pyramidal"/>
+
+  <visual>
+    <headlight diffuse="0.6 0.6 0.6" ambient="0.3 0.3 0.3" specular="0 0 0"/>
+    <rgba haze="0.15 0.25 0.35 1"/>
+    <global azimuth="185" elevation="-22" offwidth="1920" offheight="1080"/>
+    <scale contactwidth="0.05" contactheight="0.02" forcewidth="0.05" com="0.05" framewidth="0.01" framelength="0.2"/>
+  </visual>
+
+  <default>
+    <geom solref="0.01 1" solimp="0.95 0.99 0.0001" friction="1 0.005 0.0001"/>
+    <default class="bolt_mesh">
+      <geom type="mesh" rgba="0.7 0.7 0.75 1" friction="0.05 0.005 0.0001" contype="2" conaffinity="4"
+        solref="0.02 1" solimp="0.90 0.95 0.001"/>
+    </default>
+    <default class="nut_mesh">
+      <geom type="mesh" rgba="0.83 0.68 0.4 1" mass="0.0006" friction="0.05 0.005 0.0001" contype="4" conaffinity="2"
+        solref="0.02 1" solimp="0.90 0.95 0.001"/>
+    </default>
+    <default class="nut_pad">
+      <geom type="box" size="0.010 0.0148 0.0125" friction="5.0 0.05 0.001" solref="0.005 1"
+        rgba="0.83 0.68 0.4 0" mass="0.005" contype="1" conaffinity="1" group="3"/>
+    </default>
+  </default>
+
+  <asset>
+    <texture type="skybox" builtin="gradient" rgb1="0.3 0.5 0.7" rgb2="0 0 0" width="512" height="3072"/>
+    <texture type="2d" name="groundplane" builtin="checker" mark="edge" rgb1="0.2 0.3 0.4" rgb2="0.1 0.2 0.3"
+      markrgb="0.8 0.8 0.8" width="300" height="300"/>
+    <material name="groundplane" texture="groundplane" texuniform="true" texrepeat="5 5" reflectance="0.2"/>
+    <material name="table" rgba="0.3 0.33 0.38 1" reflectance="0.1"/>
+
+    <mesh name="bolt_000" file="bolt_000.obj"/>
+    <mesh name="bolt_001" file="bolt_001.obj"/>
+    <mesh name="bolt_002" file="bolt_002.obj"/>
+    <mesh name="bolt_003" file="bolt_003.obj"/>
+    <mesh name="bolt_004" file="bolt_004.obj"/>
+    <mesh name="bolt_005" file="bolt_005.obj"/>
+    <mesh name="bolt_006" file="bolt_006.obj"/>
+    <mesh name="bolt_007" file="bolt_007.obj"/>
+    <mesh name="bolt_008" file="bolt_008.obj"/>
+    <mesh name="bolt_009" file="bolt_009.obj"/>
+    <mesh name="bolt_010" file="bolt_010.obj"/>
+    <mesh name="bolt_011" file="bolt_011.obj"/>
+    <mesh name="bolt_012" file="bolt_012.obj"/>
+    <mesh name="bolt_013" file="bolt_013.obj"/>
+    <mesh name="bolt_014" file="bolt_014.obj"/>
+    <mesh name="bolt_015" file="bolt_015.obj"/>
+    <mesh name="bolt_016" file="bolt_016.obj"/>
+    <mesh name="bolt_017" file="bolt_017.obj"/>
+    <mesh name="bolt_018" file="bolt_018.obj"/>
+    <mesh name="bolt_019" file="bolt_019.obj"/>
+    <mesh name="bolt_020" file="bolt_020.obj"/>
+    <mesh name="bolt_021" file="bolt_021.obj"/>
+    <mesh name="bolt_022" file="bolt_022.obj"/>
+    <mesh name="bolt_023" file="bolt_023.obj"/>
+    <mesh name="bolt_024" file="bolt_024.obj"/>
+    <mesh name="bolt_025" file="bolt_025.obj"/>
+    <mesh name="bolt_026" file="bolt_026.obj"/>
+    <mesh name="bolt_027" file="bolt_027.obj"/>
+    <mesh name="bolt_028" file="bolt_028.obj"/>
+    <mesh name="bolt_029" file="bolt_029.obj"/>
+    <mesh name="bolt_030" file="bolt_030.obj"/>
+    <mesh name="bolt_031" file="bolt_031.obj"/>
+    <mesh name="bolt_032" file="bolt_032.obj"/>
+    <mesh name="bolt_033" file="bolt_033.obj"/>
+    <mesh name="bolt_034" file="bolt_034.obj"/>
+    <mesh name="bolt_035" file="bolt_035.obj"/>
+    <mesh name="bolt_036" file="bolt_036.obj"/>
+    <mesh name="bolt_037" file="bolt_037.obj"/>
+    <mesh name="bolt_038" file="bolt_038.obj"/>
+    <mesh name="bolt_039" file="bolt_039.obj"/>
+    <mesh name="bolt_040" file="bolt_040.obj"/>
+    <mesh name="bolt_041" file="bolt_041.obj"/>
+    <mesh name="bolt_042" file="bolt_042.obj"/>
+    <mesh name="bolt_043" file="bolt_043.obj"/>
+    <mesh name="bolt_044" file="bolt_044.obj"/>
+    <mesh name="bolt_045" file="bolt_045.obj"/>
+    <mesh name="bolt_046" file="bolt_046.obj"/>
+    <mesh name="bolt_047" file="bolt_047.obj"/>
+    <mesh name="bolt_048" file="bolt_048.obj"/>
+    <mesh name="bolt_049" file="bolt_049.obj"/>
+    <mesh name="bolt_050" file="bolt_050.obj"/>
+    <mesh name="nut_000" file="nut_000.obj"/>
+    <mesh name="nut_001" file="nut_001.obj"/>
+    <mesh name="nut_002" file="nut_002.obj"/>
+    <mesh name="nut_003" file="nut_003.obj"/>
+    <mesh name="nut_004" file="nut_004.obj"/>
+    <mesh name="nut_005" file="nut_005.obj"/>
+    <mesh name="nut_006" file="nut_006.obj"/>
+    <mesh name="nut_007" file="nut_007.obj"/>
+    <mesh name="nut_008" file="nut_008.obj"/>
+    <mesh name="nut_009" file="nut_009.obj"/>
+    <mesh name="nut_010" file="nut_010.obj"/>
+    <mesh name="nut_011" file="nut_011.obj"/>
+    <mesh name="nut_012" file="nut_012.obj"/>
+    <mesh name="nut_013" file="nut_013.obj"/>
+    <mesh name="nut_014" file="nut_014.obj"/>
+    <mesh name="nut_015" file="nut_015.obj"/>
+    <mesh name="nut_016" file="nut_016.obj"/>
+    <mesh name="nut_017" file="nut_017.obj"/>
+    <mesh name="nut_018" file="nut_018.obj"/>
+    <mesh name="nut_019" file="nut_019.obj"/>
+    <mesh name="nut_020" file="nut_020.obj"/>
+    <mesh name="nut_021" file="nut_021.obj"/>
+    <mesh name="nut_022" file="nut_022.obj"/>
+    <mesh name="nut_023" file="nut_023.obj"/>
+    <mesh name="nut_024" file="nut_024.obj"/>
+    <mesh name="nut_025" file="nut_025.obj"/>
+    <mesh name="nut_026" file="nut_026.obj"/>
+    <mesh name="nut_027" file="nut_027.obj"/>
+    <mesh name="nut_028" file="nut_028.obj"/>
+    <mesh name="nut_029" file="nut_029.obj"/>
+    <mesh name="nut_030" file="nut_030.obj"/>
+    <mesh name="nut_031" file="nut_031.obj"/>
+    <mesh name="nut_032" file="nut_032.obj"/>
+    <mesh name="nut_033" file="nut_033.obj"/>
+    <mesh name="nut_034" file="nut_034.obj"/>
+    <mesh name="nut_035" file="nut_035.obj"/>
+    <mesh name="nut_036" file="nut_036.obj"/>
+    <mesh name="nut_037" file="nut_037.obj"/>
+    <mesh name="nut_038" file="nut_038.obj"/>
+    <mesh name="nut_039" file="nut_039.obj"/>
+    <mesh name="nut_040" file="nut_040.obj"/>
+    <mesh name="nut_041" file="nut_041.obj"/>
+    <mesh name="nut_042" file="nut_042.obj"/>
+    <mesh name="nut_043" file="nut_043.obj"/>
+    <mesh name="nut_044" file="nut_044.obj"/>
+    <mesh name="nut_045" file="nut_045.obj"/>
+    <mesh name="nut_046" file="nut_046.obj"/>
+    <mesh name="nut_047" file="nut_047.obj"/>
+    <mesh name="nut_048" file="nut_048.obj"/>
+    <mesh name="nut_049" file="nut_049.obj"/>
+    <mesh name="nut_050" file="nut_050.obj"/>
+    <mesh name="nut_051" file="nut_051.obj"/>
+    <mesh name="nut_052" file="nut_052.obj"/>
+    <mesh name="nut_053" file="nut_053.obj"/>
+    <mesh name="nut_054" file="nut_054.obj"/>
+    <mesh name="nut_055" file="nut_055.obj"/>
+    <mesh name="nut_056" file="nut_056.obj"/>
+    <mesh name="nut_057" file="nut_057.obj"/>
+    <mesh name="nut_058" file="nut_058.obj"/>
+    <mesh name="nut_059" file="nut_059.obj"/>
+    <mesh name="nut_060" file="nut_060.obj"/>
+    <mesh name="nut_061" file="nut_061.obj"/>
+    <mesh name="nut_062" file="nut_062.obj"/>
+    <mesh name="nut_063" file="nut_063.obj"/>
+    <mesh name="nut_064" file="nut_064.obj"/>
+    <mesh name="nut_065" file="nut_065.obj"/>
+    <mesh name="nut_066" file="nut_066.obj"/>
+    <mesh name="nut_067" file="nut_067.obj"/>
+    <mesh name="nut_068" file="nut_068.obj"/>
+    <mesh name="nut_069" file="nut_069.obj"/>
+    <mesh name="nut_070" file="nut_070.obj"/>
+    <mesh name="nut_071" file="nut_071.obj"/>
+    <mesh name="nut_072" file="nut_072.obj"/>
+    <mesh name="nut_073" file="nut_073.obj"/>
+    <mesh name="nut_074" file="nut_074.obj"/>
+    <mesh name="nut_075" file="nut_075.obj"/>
+    <mesh name="nut_076" file="nut_076.obj"/>
+    <mesh name="nut_077" file="nut_077.obj"/>
+    <mesh name="nut_078" file="nut_078.obj"/>
+    <mesh name="nut_079" file="nut_079.obj"/>
+    <mesh name="nut_080" file="nut_080.obj"/>
+    <mesh name="nut_081" file="nut_081.obj"/>
+    <mesh name="nut_082" file="nut_082.obj"/>
+    <mesh name="nut_083" file="nut_083.obj"/>
+    <mesh name="nut_084" file="nut_084.obj"/>
+    <mesh name="nut_085" file="nut_085.obj"/>
+    <mesh name="nut_086" file="nut_086.obj"/>
+    <mesh name="nut_087" file="nut_087.obj"/>
+    <mesh name="nut_088" file="nut_088.obj"/>
+    <mesh name="nut_089" file="nut_089.obj"/>
+    <mesh name="nut_090" file="nut_090.obj"/>
+    <mesh name="nut_091" file="nut_091.obj"/>
+    <mesh name="nut_092" file="nut_092.obj"/>
+    <mesh name="nut_093" file="nut_093.obj"/>
+    <mesh name="nut_094" file="nut_094.obj"/>
+    <mesh name="nut_095" file="nut_095.obj"/>
+    <mesh name="nut_096" file="nut_096.obj"/>
+    <mesh name="nut_097" file="nut_097.obj"/>
+    <mesh name="nut_098" file="nut_098.obj"/>
+    <mesh name="nut_099" file="nut_099.obj"/>
+    <mesh name="nut_100" file="nut_100.obj"/>
+    <mesh name="nut_101" file="nut_101.obj"/>
+    <mesh name="nut_102" file="nut_102.obj"/>
+    <mesh name="nut_103" file="nut_103.obj"/>
+    <mesh name="nut_104" file="nut_104.obj"/>
+    <mesh name="nut_105" file="nut_105.obj"/>
+    <mesh name="nut_106" file="nut_106.obj"/>
+    <mesh name="nut_107" file="nut_107.obj"/>
+    <mesh name="nut_108" file="nut_108.obj"/>
+    <mesh name="nut_109" file="nut_109.obj"/>
+    <mesh name="nut_110" file="nut_110.obj"/>
+    <mesh name="nut_111" file="nut_111.obj"/>
+    <mesh name="nut_112" file="nut_112.obj"/>
+    <mesh name="nut_113" file="nut_113.obj"/>
+    <mesh name="nut_114" file="nut_114.obj"/>
+    <mesh name="nut_115" file="nut_115.obj"/>
+    <mesh name="nut_116" file="nut_116.obj"/>
+    <mesh name="nut_117" file="nut_117.obj"/>
+    <mesh name="nut_118" file="nut_118.obj"/>
+    <mesh name="nut_119" file="nut_119.obj"/>
+    <mesh name="nut_120" file="nut_120.obj"/>
+    <mesh name="nut_121" file="nut_121.obj"/>
+    <mesh name="nut_122" file="nut_122.obj"/>
+    <mesh name="nut_123" file="nut_123.obj"/>
+    <mesh name="nut_124" file="nut_124.obj"/>
+    <mesh name="nut_125" file="nut_125.obj"/>
+    <mesh name="nut_126" file="nut_126.obj"/>
+    <mesh name="nut_127" file="nut_127.obj"/>
+    <mesh name="nut_128" file="nut_128.obj"/>
+    <mesh name="nut_129" file="nut_129.obj"/>
+    <mesh name="nut_130" file="nut_130.obj"/>
+    <mesh name="nut_131" file="nut_131.obj"/>
+    <mesh name="nut_132" file="nut_132.obj"/>
+    <mesh name="nut_133" file="nut_133.obj"/>
+    <mesh name="nut_134" file="nut_134.obj"/>
+    <mesh name="nut_135" file="nut_135.obj"/>
+    <mesh name="nut_136" file="nut_136.obj"/>
+    <mesh name="nut_137" file="nut_137.obj"/>
+    <mesh name="nut_138" file="nut_138.obj"/>
+    <mesh name="nut_139" file="nut_139.obj"/>
+    <mesh name="nut_140" file="nut_140.obj"/>
+    <mesh name="nut_141" file="nut_141.obj"/>
+    <mesh name="nut_142" file="nut_142.obj"/>
+    <mesh name="nut_143" file="nut_143.obj"/>
+    <mesh name="nut_144" file="nut_144.obj"/>
+    <mesh name="nut_145" file="nut_145.obj"/>
+    <mesh name="nut_146" file="nut_146.obj"/>
+    <mesh name="nut_147" file="nut_147.obj"/>
+    <mesh name="nut_148" file="nut_148.obj"/>
+    <mesh name="nut_149" file="nut_149.obj"/>
+    <mesh name="nut_150" file="nut_150.obj"/>
+    <mesh name="nut_151" file="nut_151.obj"/>
+    <mesh name="nut_152" file="nut_152.obj"/>
+    <mesh name="nut_153" file="nut_153.obj"/>
+    <mesh name="nut_154" file="nut_154.obj"/>
+    <mesh name="nut_155" file="nut_155.obj"/>
+    <mesh name="nut_156" file="nut_156.obj"/>
+    <mesh name="nut_157" file="nut_157.obj"/>
+    <mesh name="nut_158" file="nut_158.obj"/>
+    <mesh name="nut_159" file="nut_159.obj"/>
+    <mesh name="nut_160" file="nut_160.obj"/>
+    <mesh name="nut_161" file="nut_161.obj"/>
+    <mesh name="nut_162" file="nut_162.obj"/>
+    <mesh name="nut_163" file="nut_163.obj"/>
+    <mesh name="nut_164" file="nut_164.obj"/>
+    <mesh name="nut_165" file="nut_165.obj"/>
+    <mesh name="nut_166" file="nut_166.obj"/>
+  </asset>
+
+  <worldbody>
+    <camera name="front" pos="1.2 0 0.7" fovy="55" mode="fixed" euler="0 1.2 1.5708"/>
+    <light pos="0.5 0 1.5" dir="0 0 -1" directional="true"/>
+    <geom name="floor" size="0 0 0.05" type="plane" material="groundplane" contype="1" conaffinity="1"/>
+    <geom name="table" type="box" pos="0.50 0 0.10" size="0.20 0.35 0.10" material="table" contype="1" conaffinity="1"/>
+
+    <body name="thread_bolt" pos="0.50 0.15 0.20">
+      <geom name="b_000" mesh="bolt_000" class="bolt_mesh"/>
+      <geom name="b_001" mesh="bolt_001" class="bolt_mesh"/>
+      <geom name="b_002" mesh="bolt_002" class="bolt_mesh"/>
+      <geom name="b_003" mesh="bolt_003" class="bolt_mesh"/>
+      <geom name="b_004" mesh="bolt_004" class="bolt_mesh"/>
+      <geom name="b_005" mesh="bolt_005" class="bolt_mesh"/>
+      <geom name="b_006" mesh="bolt_006" class="bolt_mesh"/>
+      <geom name="b_007" mesh="bolt_007" class="bolt_mesh"/>
+      <geom name="b_008" mesh="bolt_008" class="bolt_mesh"/>
+      <geom name="b_009" mesh="bolt_009" class="bolt_mesh"/>
+      <geom name="b_010" mesh="bolt_010" class="bolt_mesh"/>
+      <geom name="b_011" mesh="bolt_011" class="bolt_mesh"/>
+      <geom name="b_012" mesh="bolt_012" class="bolt_mesh"/>
+      <geom name="b_013" mesh="bolt_013" class="bolt_mesh"/>
+      <geom name="b_014" mesh="bolt_014" class="bolt_mesh"/>
+      <geom name="b_015" mesh="bolt_015" class="bolt_mesh"/>
+      <geom name="b_016" mesh="bolt_016" class="bolt_mesh"/>
+      <geom name="b_017" mesh="bolt_017" class="bolt_mesh"/>
+      <geom name="b_018" mesh="bolt_018" class="bolt_mesh"/>
+      <geom name="b_019" mesh="bolt_019" class="bolt_mesh"/>
+      <geom name="b_020" mesh="bolt_020" class="bolt_mesh"/>
+      <geom name="b_021" mesh="bolt_021" class="bolt_mesh"/>
+      <geom name="b_022" mesh="bolt_022" class="bolt_mesh"/>
+      <geom name="b_023" mesh="bolt_023" class="bolt_mesh"/>
+      <geom name="b_024" mesh="bolt_024" class="bolt_mesh"/>
+      <geom name="b_025" mesh="bolt_025" class="bolt_mesh"/>
+      <geom name="b_026" mesh="bolt_026" class="bolt_mesh"/>
+      <geom name="b_027" mesh="bolt_027" class="bolt_mesh"/>
+      <geom name="b_028" mesh="bolt_028" class="bolt_mesh"/>
+      <geom name="b_029" mesh="bolt_029" class="bolt_mesh"/>
+      <geom name="b_030" mesh="bolt_030" class="bolt_mesh"/>
+      <geom name="b_031" mesh="bolt_031" class="bolt_mesh"/>
+      <geom name="b_032" mesh="bolt_032" class="bolt_mesh"/>
+      <geom name="b_033" mesh="bolt_033" class="bolt_mesh"/>
+      <geom name="b_034" mesh="bolt_034" class="bolt_mesh"/>
+      <geom name="b_035" mesh="bolt_035" class="bolt_mesh"/>
+      <geom name="b_036" mesh="bolt_036" class="bolt_mesh"/>
+      <geom name="b_037" mesh="bolt_037" class="bolt_mesh"/>
+      <geom name="b_038" mesh="bolt_038" class="bolt_mesh"/>
+      <geom name="b_039" mesh="bolt_039" class="bolt_mesh"/>
+      <geom name="b_040" mesh="bolt_040" class="bolt_mesh"/>
+      <geom name="b_041" mesh="bolt_041" class="bolt_mesh"/>
+      <geom name="b_042" mesh="bolt_042" class="bolt_mesh"/>
+      <geom name="b_043" mesh="bolt_043" class="bolt_mesh"/>
+      <geom name="b_044" mesh="bolt_044" class="bolt_mesh"/>
+      <geom name="b_045" mesh="bolt_045" class="bolt_mesh"/>
+      <geom name="b_046" mesh="bolt_046" class="bolt_mesh"/>
+      <geom name="b_047" mesh="bolt_047" class="bolt_mesh"/>
+      <geom name="b_048" mesh="bolt_048" class="bolt_mesh"/>
+      <geom name="b_049" mesh="bolt_049" class="bolt_mesh"/>
+      <geom name="b_050" mesh="bolt_050" class="bolt_mesh"/>
+    </body>
+
+    <body name="nut" pos="0.50 -0.15 0.2000" quat="1 0 0 0">
+      <freejoint name="nut_joint"/>
+      <geom name="nut_pad_0" class="nut_pad" pos="0.01625 0.00000 0.01250" euler="0 0 0.0000"/>
+      <geom name="nut_pad_1" class="nut_pad" pos="0.00813 0.01407 0.01250" euler="0 0 1.0472"/>
+      <geom name="nut_pad_2" class="nut_pad" pos="-0.00812 0.01407 0.01250" euler="0 0 2.0944"/>
+      <geom name="nut_pad_3" class="nut_pad" pos="-0.01625 0.00000 0.01250" euler="0 0 3.1416"/>
+      <geom name="nut_pad_4" class="nut_pad" pos="-0.00813 -0.01407 0.01250" euler="0 0 4.1888"/>
+      <geom name="nut_pad_5" class="nut_pad" pos="0.00813 -0.01407 0.01250" euler="0 0 5.2360"/>
+      <geom name="n_000" mesh="nut_000" class="nut_mesh"/>
+      <geom name="n_001" mesh="nut_001" class="nut_mesh"/>
+      <geom name="n_002" mesh="nut_002" class="nut_mesh"/>
+      <geom name="n_003" mesh="nut_003" class="nut_mesh"/>
+      <geom name="n_004" mesh="nut_004" class="nut_mesh"/>
+      <geom name="n_005" mesh="nut_005" class="nut_mesh"/>
+      <geom name="n_006" mesh="nut_006" class="nut_mesh"/>
+      <geom name="n_007" mesh="nut_007" class="nut_mesh"/>
+      <geom name="n_008" mesh="nut_008" class="nut_mesh"/>
+      <geom name="n_009" mesh="nut_009" class="nut_mesh"/>
+      <geom name="n_010" mesh="nut_010" class="nut_mesh"/>
+      <geom name="n_011" mesh="nut_011" class="nut_mesh"/>
+      <geom name="n_012" mesh="nut_012" class="nut_mesh"/>
+      <geom name="n_013" mesh="nut_013" class="nut_mesh"/>
+      <geom name="n_014" mesh="nut_014" class="nut_mesh"/>
+      <geom name="n_015" mesh="nut_015" class="nut_mesh"/>
+      <geom name="n_016" mesh="nut_016" class="nut_mesh"/>
+      <geom name="n_017" mesh="nut_017" class="nut_mesh"/>
+      <geom name="n_018" mesh="nut_018" class="nut_mesh"/>
+      <geom name="n_019" mesh="nut_019" class="nut_mesh"/>
+      <geom name="n_020" mesh="nut_020" class="nut_mesh"/>
+      <geom name="n_021" mesh="nut_021" class="nut_mesh"/>
+      <geom name="n_022" mesh="nut_022" class="nut_mesh"/>
+      <geom name="n_023" mesh="nut_023" class="nut_mesh"/>
+      <geom name="n_024" mesh="nut_024" class="nut_mesh"/>
+      <geom name="n_025" mesh="nut_025" class="nut_mesh"/>
+      <geom name="n_026" mesh="nut_026" class="nut_mesh"/>
+      <geom name="n_027" mesh="nut_027" class="nut_mesh"/>
+      <geom name="n_028" mesh="nut_028" class="nut_mesh"/>
+      <geom name="n_029" mesh="nut_029" class="nut_mesh"/>
+      <geom name="n_030" mesh="nut_030" class="nut_mesh"/>
+      <geom name="n_031" mesh="nut_031" class="nut_mesh"/>
+      <geom name="n_032" mesh="nut_032" class="nut_mesh"/>
+      <geom name="n_033" mesh="nut_033" class="nut_mesh"/>
+      <geom name="n_034" mesh="nut_034" class="nut_mesh"/>
+      <geom name="n_035" mesh="nut_035" class="nut_mesh"/>
+      <geom name="n_036" mesh="nut_036" class="nut_mesh"/>
+      <geom name="n_037" mesh="nut_037" class="nut_mesh"/>
+      <geom name="n_038" mesh="nut_038" class="nut_mesh"/>
+      <geom name="n_039" mesh="nut_039" class="nut_mesh"/>
+      <geom name="n_040" mesh="nut_040" class="nut_mesh"/>
+      <geom name="n_041" mesh="nut_041" class="nut_mesh"/>
+      <geom name="n_042" mesh="nut_042" class="nut_mesh"/>
+      <geom name="n_043" mesh="nut_043" class="nut_mesh"/>
+      <geom name="n_044" mesh="nut_044" class="nut_mesh"/>
+      <geom name="n_045" mesh="nut_045" class="nut_mesh"/>
+      <geom name="n_046" mesh="nut_046" class="nut_mesh"/>
+      <geom name="n_047" mesh="nut_047" class="nut_mesh"/>
+      <geom name="n_048" mesh="nut_048" class="nut_mesh"/>
+      <geom name="n_049" mesh="nut_049" class="nut_mesh"/>
+      <geom name="n_050" mesh="nut_050" class="nut_mesh"/>
+      <geom name="n_051" mesh="nut_051" class="nut_mesh"/>
+      <geom name="n_052" mesh="nut_052" class="nut_mesh"/>
+      <geom name="n_053" mesh="nut_053" class="nut_mesh"/>
+      <geom name="n_054" mesh="nut_054" class="nut_mesh"/>
+      <geom name="n_055" mesh="nut_055" class="nut_mesh"/>
+      <geom name="n_056" mesh="nut_056" class="nut_mesh"/>
+      <geom name="n_057" mesh="nut_057" class="nut_mesh"/>
+      <geom name="n_058" mesh="nut_058" class="nut_mesh"/>
+      <geom name="n_059" mesh="nut_059" class="nut_mesh"/>
+      <geom name="n_060" mesh="nut_060" class="nut_mesh"/>
+      <geom name="n_061" mesh="nut_061" class="nut_mesh"/>
+      <geom name="n_062" mesh="nut_062" class="nut_mesh"/>
+      <geom name="n_063" mesh="nut_063" class="nut_mesh"/>
+      <geom name="n_064" mesh="nut_064" class="nut_mesh"/>
+      <geom name="n_065" mesh="nut_065" class="nut_mesh"/>
+      <geom name="n_066" mesh="nut_066" class="nut_mesh"/>
+      <geom name="n_067" mesh="nut_067" class="nut_mesh"/>
+      <geom name="n_068" mesh="nut_068" class="nut_mesh"/>
+      <geom name="n_069" mesh="nut_069" class="nut_mesh"/>
+      <geom name="n_070" mesh="nut_070" class="nut_mesh"/>
+      <geom name="n_071" mesh="nut_071" class="nut_mesh"/>
+      <geom name="n_072" mesh="nut_072" class="nut_mesh"/>
+      <geom name="n_073" mesh="nut_073" class="nut_mesh"/>
+      <geom name="n_074" mesh="nut_074" class="nut_mesh"/>
+      <geom name="n_075" mesh="nut_075" class="nut_mesh"/>
+      <geom name="n_076" mesh="nut_076" class="nut_mesh"/>
+      <geom name="n_077" mesh="nut_077" class="nut_mesh"/>
+      <geom name="n_078" mesh="nut_078" class="nut_mesh"/>
+      <geom name="n_079" mesh="nut_079" class="nut_mesh"/>
+      <geom name="n_080" mesh="nut_080" class="nut_mesh"/>
+      <geom name="n_081" mesh="nut_081" class="nut_mesh"/>
+      <geom name="n_082" mesh="nut_082" class="nut_mesh"/>
+      <geom name="n_083" mesh="nut_083" class="nut_mesh"/>
+      <geom name="n_084" mesh="nut_084" class="nut_mesh"/>
+      <geom name="n_085" mesh="nut_085" class="nut_mesh"/>
+      <geom name="n_086" mesh="nut_086" class="nut_mesh"/>
+      <geom name="n_087" mesh="nut_087" class="nut_mesh"/>
+      <geom name="n_088" mesh="nut_088" class="nut_mesh"/>
+      <geom name="n_089" mesh="nut_089" class="nut_mesh"/>
+      <geom name="n_090" mesh="nut_090" class="nut_mesh"/>
+      <geom name="n_091" mesh="nut_091" class="nut_mesh"/>
+      <geom name="n_092" mesh="nut_092" class="nut_mesh"/>
+      <geom name="n_093" mesh="nut_093" class="nut_mesh"/>
+      <geom name="n_094" mesh="nut_094" class="nut_mesh"/>
+      <geom name="n_095" mesh="nut_095" class="nut_mesh"/>
+      <geom name="n_096" mesh="nut_096" class="nut_mesh"/>
+      <geom name="n_097" mesh="nut_097" class="nut_mesh"/>
+      <geom name="n_098" mesh="nut_098" class="nut_mesh"/>
+      <geom name="n_099" mesh="nut_099" class="nut_mesh"/>
+      <geom name="n_100" mesh="nut_100" class="nut_mesh"/>
+      <geom name="n_101" mesh="nut_101" class="nut_mesh"/>
+      <geom name="n_102" mesh="nut_102" class="nut_mesh"/>
+      <geom name="n_103" mesh="nut_103" class="nut_mesh"/>
+      <geom name="n_104" mesh="nut_104" class="nut_mesh"/>
+      <geom name="n_105" mesh="nut_105" class="nut_mesh"/>
+      <geom name="n_106" mesh="nut_106" class="nut_mesh"/>
+      <geom name="n_107" mesh="nut_107" class="nut_mesh"/>
+      <geom name="n_108" mesh="nut_108" class="nut_mesh"/>
+      <geom name="n_109" mesh="nut_109" class="nut_mesh"/>
+      <geom name="n_110" mesh="nut_110" class="nut_mesh"/>
+      <geom name="n_111" mesh="nut_111" class="nut_mesh"/>
+      <geom name="n_112" mesh="nut_112" class="nut_mesh"/>
+      <geom name="n_113" mesh="nut_113" class="nut_mesh"/>
+      <geom name="n_114" mesh="nut_114" class="nut_mesh"/>
+      <geom name="n_115" mesh="nut_115" class="nut_mesh"/>
+      <geom name="n_116" mesh="nut_116" class="nut_mesh"/>
+      <geom name="n_117" mesh="nut_117" class="nut_mesh"/>
+      <geom name="n_118" mesh="nut_118" class="nut_mesh"/>
+      <geom name="n_119" mesh="nut_119" class="nut_mesh"/>
+      <geom name="n_120" mesh="nut_120" class="nut_mesh"/>
+      <geom name="n_121" mesh="nut_121" class="nut_mesh"/>
+      <geom name="n_122" mesh="nut_122" class="nut_mesh"/>
+      <geom name="n_123" mesh="nut_123" class="nut_mesh"/>
+      <geom name="n_124" mesh="nut_124" class="nut_mesh"/>
+      <geom name="n_125" mesh="nut_125" class="nut_mesh"/>
+      <geom name="n_126" mesh="nut_126" class="nut_mesh"/>
+      <geom name="n_127" mesh="nut_127" class="nut_mesh"/>
+      <geom name="n_128" mesh="nut_128" class="nut_mesh"/>
+      <geom name="n_129" mesh="nut_129" class="nut_mesh"/>
+      <geom name="n_130" mesh="nut_130" class="nut_mesh"/>
+      <geom name="n_131" mesh="nut_131" class="nut_mesh"/>
+      <geom name="n_132" mesh="nut_132" class="nut_mesh"/>
+      <geom name="n_133" mesh="nut_133" class="nut_mesh"/>
+      <geom name="n_134" mesh="nut_134" class="nut_mesh"/>
+      <geom name="n_135" mesh="nut_135" class="nut_mesh"/>
+      <geom name="n_136" mesh="nut_136" class="nut_mesh"/>
+      <geom name="n_137" mesh="nut_137" class="nut_mesh"/>
+      <geom name="n_138" mesh="nut_138" class="nut_mesh"/>
+      <geom name="n_139" mesh="nut_139" class="nut_mesh"/>
+      <geom name="n_140" mesh="nut_140" class="nut_mesh"/>
+      <geom name="n_141" mesh="nut_141" class="nut_mesh"/>
+      <geom name="n_142" mesh="nut_142" class="nut_mesh"/>
+      <geom name="n_143" mesh="nut_143" class="nut_mesh"/>
+      <geom name="n_144" mesh="nut_144" class="nut_mesh"/>
+      <geom name="n_145" mesh="nut_145" class="nut_mesh"/>
+      <geom name="n_146" mesh="nut_146" class="nut_mesh"/>
+      <geom name="n_147" mesh="nut_147" class="nut_mesh"/>
+      <geom name="n_148" mesh="nut_148" class="nut_mesh"/>
+      <geom name="n_149" mesh="nut_149" class="nut_mesh"/>
+      <geom name="n_150" mesh="nut_150" class="nut_mesh"/>
+      <geom name="n_151" mesh="nut_151" class="nut_mesh"/>
+      <geom name="n_152" mesh="nut_152" class="nut_mesh"/>
+      <geom name="n_153" mesh="nut_153" class="nut_mesh"/>
+      <geom name="n_154" mesh="nut_154" class="nut_mesh"/>
+      <geom name="n_155" mesh="nut_155" class="nut_mesh"/>
+      <geom name="n_156" mesh="nut_156" class="nut_mesh"/>
+      <geom name="n_157" mesh="nut_157" class="nut_mesh"/>
+      <geom name="n_158" mesh="nut_158" class="nut_mesh"/>
+      <geom name="n_159" mesh="nut_159" class="nut_mesh"/>
+      <geom name="n_160" mesh="nut_160" class="nut_mesh"/>
+      <geom name="n_161" mesh="nut_161" class="nut_mesh"/>
+      <geom name="n_162" mesh="nut_162" class="nut_mesh"/>
+      <geom name="n_163" mesh="nut_163" class="nut_mesh"/>
+      <geom name="n_164" mesh="nut_164" class="nut_mesh"/>
+      <geom name="n_165" mesh="nut_165" class="nut_mesh"/>
+      <geom name="n_166" mesh="nut_166" class="nut_mesh"/>
+    </body>
+  </worldbody>
+  <contact>
+    <exclude body1="hand" body2="nut"/>
+    <exclude body1="hand" body2="thread_bolt"/>
+    <exclude body1="left_finger" body2="thread_bolt"/>
+    <exclude body1="right_finger" body2="thread_bolt"/>
+  </contact>
+</mujoco>
