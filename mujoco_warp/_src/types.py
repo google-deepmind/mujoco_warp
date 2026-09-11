@@ -2695,3 +2695,72 @@ class RenderContext:
   splat_count: int
   geom_ray_types: tuple = ()
   _megakernel: Optional[wp.Kernel] = None
+
+
+@dataclasses.dataclass
+class BackwardContext:
+  """Reusable solver, replay data, and array workspace for a step backward."""
+
+  solver_ctx: SolverContext
+  scratch: Data
+  adj_qpos: array("nworld", "nq", float)
+  adj_qvel: array("nworld", "nv", float)
+  adj_qacc: array("nworld", "nv", float)
+  res_qpos: array("nworld", "nq", float)
+  res_qvel: array("nworld", "nv", float)
+  qDeriv: array("nworld", "nC", float)
+  qLD: array("nworld", "qld_total", float)
+  qLDiagInv: array("nworld", "nv", float)
+  qacc_advance: array("nworld", "nv", float)
+  y_remap: array("nworld", "nv", float)
+  adj_qacc_root: array("nworld", "nv", float)
+  w_dir: array("nworld", "nv", float)
+  damp_deriv: array("nworld", "nv", float)
+  Ma: array("nworld", "nv", float)
+  dampingpoly_Qv: array("nworld", "nv", float)
+  adj_qvel_damp: array("nworld", "nv", float)
+  efc_pos_ref: array("nworld", "njmax", float)
+  contact_V: array("naconmax", wp.spatial_vector)
+  contact_A: array("naconmax", wp.spatial_vector)
+  contact_Z: array("naconmax", wp.spatial_vector)
+  contact_phi: array("naconmax", float)
+  contact_segment: array("naconmax", wp.vec2)
+  contact_feature: array("naconmax", wp.vec3i)
+  contact_adj_dist: array("naconmax", float)
+  res_geom_xpos: array("nworld", "ngeom", wp.vec3)
+  res_geom_xmat: array("nworld", "ngeom", wp.mat33)
+  contact_res_dof: array("nworld", "nv", float)
+  contact_ceff: array("nworld", "nbody", wp.vec3)
+  res_dof: array("nworld", "nv", float)
+  efc_Z: array("nworld", "njmax", float)
+  efc_invw: array("nworld", "njmax", float)
+  efc_phi: array("nworld", "njmax", float)
+  qLU: array("nworld", "nD", float)
+  M_D: array("nworld", "nD", float)
+  adj_dof: array("nworld", "nv", float)
+  smooth_r: array("nworld", "nv", float)
+  res_dof_frictionloss: wp.array
+  res_dof_solref: wp.array
+  res_dof_solimp: wp.array
+  res_eq_solref: wp.array
+  res_eq_solimp: wp.array
+  res_jnt_solref: wp.array
+  res_jnt_solimp: wp.array
+  smooth_res_qpos: array("nworld", "nq", float)
+  smooth_res_dof: array("nworld", "nv", float)
+  smooth_adj_qvel: array("nworld", "nv", float)
+  smooth_adj_qacc: array("nworld", "nv", float)
+  smooth_cv_adj_qvel: array("nworld", "nv", float)
+  smooth_cv_adj_cdof: array("nworld", "nv", wp.spatial_vector)
+  smooth_h: array("nworld", "nv", wp.spatial_vector)
+  smooth_k: array("nworld", "nv", wp.spatial_vector)
+  smooth_force: array("nworld", "nbody", wp.spatial_vector)
+  smooth_tree: array("nworld", "nbody", wp.spatial_vector)
+  smooth_cfrc: array("nworld", "nbody", wp.spatial_vector)
+  smooth_H: array("nworld", "nbody", wp.spatial_vector)
+  smooth_W: array("nworld", "nbody", wp.spatial_vector)
+  smooth_ceff: array("nworld", "nbody", wp.vec3)
+  res_body_mass: wp.array
+  res_body_inertia: wp.array
+  res_body_ipos: wp.array
+  res_body_iquat: wp.array
