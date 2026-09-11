@@ -49,7 +49,12 @@ class EngineOptions(enum.IntEnum):
 _ENGINE = flags.DEFINE_enum_class("engine", EngineOptions.WARP, EngineOptions, "Simulation engine")
 from mujoco_warp._src import cli
 
-_VIEWER = flags.DEFINE_enum("viewer", "mujoco", ["mujoco", "viser"], "Viewer backend (mujoco native or mjviser web)")
+_VIEWER = flags.DEFINE_enum(
+  "viewer",
+  "mujoco",
+  ["mujoco", "studio", "viser"],
+  "Viewer backend (mujoco native, mujoco studio, or mjviser web)",
+)
 
 _VIEWER_GLOBAL_STATE = {"running": True, "step_once": False}
 
@@ -137,6 +142,35 @@ def _run_passive_viewer(mjm, mjd, step_fn):
         time.sleep(mjm.opt.timestep - elapsed)
 
 
+def _run_studio_viewer(mjm, mjd, step_fn, model_path: str = ""):
+  from mujoco.experimental.studio import launch_passive
+  from mujoco.experimental.studio import messages
+  from mujoco.experimental.studio import sim
+  from mujoco.experimental.studio import viewer_app
+  from mujoco.experimental.studio import viewer_protocol
+
+  vp = viewer_protocol
+  config = vp.ViewerConfig(
+    width=1200,
+    height=800,
+    gfx="",
+    viewer_mode=vp.ViewerMode.NATIVE,
+  )
+
+  with launch_passive.launch_passive(
+    config,
+    viewer_handlers=[viewer_app.ViewerApp()],
+  ) as handle:
+    handle.send_to_viewer(messages.ModelEvent(model=mjm, path=model_path))
+
+    step_control = sim.StepControl()
+    while handle.is_running():
+      if step_control.get_pause_state() != sim.PauseState.NORMAL_PAUSED:
+        step_fn(mjm, mjd)
+      mujoco.mj_forward(mjm, mjd)
+      mjm, mjd, step_control = handle.sync(mjm, mjd, step_control)
+
+
 def _main(argv: Sequence[str]) -> None:
   """Runs viewer app."""
   if len(argv) < 2:
@@ -188,6 +222,8 @@ def _main(argv: Sequence[str]) -> None:
   mjw.get_data_into(mjd, mjm, d)
   if _VIEWER.value == "viser":
     _run_viser_viewer(mjm, mjd, step_fn)
+  elif _VIEWER.value == "studio":
+    _run_studio_viewer(mjm, mjd, step_fn, model_path=argv[1])
   else:
     _run_passive_viewer(mjm, mjd, step_fn)
 
