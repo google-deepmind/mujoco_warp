@@ -613,7 +613,7 @@ class SmoothTest(parameterized.TestCase):
   def test_factor_solve_mixed_blocks(self):
     """Per-block factor/solve: sparse LDL, scalar, and tile blocks all share one qLD."""
 
-    # A 70-dof hinge chain (one block > M_BLOCK_DENSE_MAX -> sparse LDL), a 6-dof hinge chain
+    # A hinge chain one DOF above M_BLOCK_DENSE_MAX (sparse LDL), a 6-dof hinge chain
     # (scalar Cholesky), and a 7-dof hinge chain (tile Cholesky): factor_m/solve_m must run all
     # three passes into one qLD. (Coupled blocks, not free joints: a free joint on a sphere has
     # diagonal M and would take the compact path, which stores no factor.)
@@ -625,7 +625,7 @@ class SmoothTest(parameterized.TestCase):
         + "</body>" * k
       )
 
-    n = 70
+    n = types.M_BLOCK_DENSE_MAX + 1
     chain = (
       "".join('<body pos="0 0 .05"><joint type="hinge" axis="1 0 0"/><geom type="capsule" size=".02 .025"/>' for _ in range(n))
       + "</body>" * n

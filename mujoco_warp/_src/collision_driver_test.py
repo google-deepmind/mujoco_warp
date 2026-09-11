@@ -433,7 +433,8 @@ class CollisionTest(parameterized.TestCase):
           </asset>
           <worldbody>
             <geom size="40 40 40" type="plane"/>
-            <body pos="0.0 2.0 0.0" euler="90 90 0">
+            <!-- Keep the tip off the plane so contact generation is not decided by exact tangency. -->
+            <body pos="0.0 2.0 0.001" euler="90 90 0">
               <freejoint/>
               <geom size="0.2 0.2 0.2" type="mesh" mesh="poly"/>
             </body>
