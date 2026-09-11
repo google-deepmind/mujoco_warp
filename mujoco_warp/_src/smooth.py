@@ -345,17 +345,15 @@ def _flex_nodes(
 @wp.kernel
 def _flex_edges(
   # Model:
-  nflex: int,
   body_rootid: wp.array[int],
   body_dofnum: wp.array[int],
   body_dofadr: wp.array[int],
   flex_vertadr: wp.array[int],
-  flex_edgeadr: wp.array[int],
-  flex_edgenum: wp.array[int],
   flex_vertbodyid: wp.array[int],
   flex_edge: wp.array[wp.vec2i],
   flexedge_J_rowadr: wp.array[int],
   flexedge_J_colind: wp.array[int],
+  flex_edgeflexid: wp.array[int],
   # Data in:
   qvel_in: wp.array2d[float],
   subtree_com_in: wp.array2d[wp.vec3],
@@ -367,11 +365,7 @@ def _flex_edges(
   flexedge_velocity_out: wp.array2d[float],
 ):
   worldid, edgeid = wp.tid()
-  for i in range(nflex):
-    locid = edgeid - flex_edgeadr[i]
-    if locid >= 0 and locid < flex_edgenum[i]:
-      f = i
-      break
+  f = flex_edgeflexid[edgeid]
 
   vbase = flex_vertadr[f]
   v = flex_edge[edgeid]
@@ -643,17 +637,15 @@ def flex(m: Model, d: Data):
     _flex_edges,
     dim=(d.nworld, m.nflexedge),
     inputs=[
-      m.nflex,
       m.body_rootid,
       m.body_dofnum,
       m.body_dofadr,
       m.flex_vertadr,
-      m.flex_edgeadr,
-      m.flex_edgenum,
       m.flex_vertbodyid,
       m.flex_edge,
       m.flexedge_J_rowadr,
       m.flexedge_J_colind,
+      m.flex_edgeflexid,
       d.qvel,
       d.subtree_com,
       d.cdof,

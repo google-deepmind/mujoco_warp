@@ -406,6 +406,8 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
       raise NotImplementedError("Flex-HField collision is not implemented.")
     if (mjm.flex_internal != 0).any():
       raise NotImplementedError("Flex internal collisions are not implemented.")
+    if (mjm.flex_rigid != 0).any():
+      raise NotImplementedError("Rigid flexes are not implemented.")
   m.nmaxcondim = np.concatenate(condim_arrays).max()
   m.nmaxpyramid = np.maximum(1, 2 * (m.nmaxcondim - 1))
   m.has_sdf_geom = (mjm.geom_type == mujoco.mjtGeom.mjGEOM_SDF).any()
@@ -1048,6 +1050,7 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
   flex_elemflexid = np.zeros(mjm.nflexelem, dtype=np.int32)
   flex_shellflexid = np.zeros(mjm.nflexshelldata, dtype=np.int32)
   flex_vertflexid = np.zeros(mjm.nflexvert, dtype=np.int32)
+  flex_edgeflexid = np.zeros(mjm.nflexedge, dtype=np.int32)
   flex_shelladr = np.zeros(mjm.nflex, dtype=np.int32)
 
   if mjm.nflex > 0:
@@ -1056,6 +1059,10 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
       elem_start = mjm.flex_elemadr[fi]
       elem_num = mjm.flex_elemnum[fi]
       flex_elemflexid[elem_start : elem_start + elem_num] = fi
+
+      edge_start = mjm.flex_edgeadr[fi]
+      edge_num = mjm.flex_edgenum[fi]
+      flex_edgeflexid[edge_start : edge_start + edge_num] = fi
 
       flex_shelladr[fi] = shell_offset
       shell_num = mjm.flex_shellnum[fi]
@@ -1069,6 +1076,7 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
   m.flex_elemflexid = flex_elemflexid
   m.flex_shellflexid = flex_shellflexid
   m.flex_vertflexid = flex_vertflexid
+  m.flex_edgeflexid = flex_edgeflexid
   m.flex_shelladr = flex_shelladr
 
   flex_bend_interp_map = []
