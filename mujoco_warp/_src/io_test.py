@@ -1482,6 +1482,54 @@ class IOTest(parameterized.TestCase):
     _assert_eq(d.qvel.numpy()[0], 0.0, "qvel[0]")
     _assert_eq(d.qvel.numpy()[1], 2.0, "qvel[1]")
 
+  def test_reset_data_world_packed_contacts(self):
+    """Selective reset_data must compact packed contact[0:nacon] / worldid."""
+    mjm = mujoco.MjModel.from_xml_string("""
+    <mujoco>
+      <option gravity="0 0 0"/>
+      <worldbody>
+        <geom type="plane" size="2 2 .1"/>
+        <body pos="0 0 .09">
+          <freejoint/>
+          <geom type="sphere" size=".1"/>
+        </body>
+      </worldbody>
+    </mujoco>
+    """)
+    m = mjwarp.put_model(mjm)
+    d = mjwarp.make_data(mjm, nworld=2, nconmax=20, njmax=40)
+
+    def packed_contacts():
+      count = int(d.nacon.numpy()[0])
+      return count, d.contact.worldid.numpy()[:count].tolist()
+
+    def host_ncon(world_id):
+      result = mujoco.MjData(mjm)
+      mjwarp.get_data_into(result, mjm, d, world_id=world_id)
+      return result.ncon
+
+    mjwarp.forward(m, d)
+    count, worldids = packed_contacts()
+    self.assertEqual(count, 2, msg=f"expected one contact per world, got packed={count},{worldids}")
+    self.assertCountEqual(worldids, [0, 1])
+    self.assertEqual(host_ncon(0), 1)
+    self.assertEqual(host_ncon(1), 1)
+
+    # Reset world 0 only: world 1 contact must remain as the sole packed row.
+    mjwarp.reset_data(m, d, reset=wp.array([True, False], dtype=bool))
+    count, worldids = packed_contacts()
+    self.assertEqual((count, worldids), (1, [1]))
+    self.assertEqual(host_ncon(0), 0)
+    self.assertEqual(host_ncon(1), 1)
+
+    # Rebuild contacts, then reset world 1 only.
+    mjwarp.forward(m, d)
+    mjwarp.reset_data(m, d, reset=wp.array([False, True], dtype=bool))
+    count, worldids = packed_contacts()
+    self.assertEqual((count, worldids), (1, [0]))
+    self.assertEqual(host_ncon(0), 1)
+    self.assertEqual(host_ncon(1), 0)
+
   def test_reset_data_reset_invalid(self):
     """Tests that reset_data validates the reset argument."""
     _, _, m, d = test_data.fixture(

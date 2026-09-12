@@ -2491,8 +2491,11 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
         return
 
     solver_niter_out[worldid] = 0
-    if worldid == 0:
-      nacon_out[0] = 0
+    # nacon is shared across worlds. Zero only on all-world reset; selective reset
+    # updates it in compact_contact after retaining unselected-world rows.
+    if wp.static(reset is None):
+      if worldid == 0:
+        nacon_out[0] = 0
     ne_out[worldid] = 0
     nf_out[worldid] = 0
     nl_out[worldid] = 0
@@ -2552,7 +2555,6 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
     # Data in:
     nacon_in: wp.array[int],
     # In:
-    reset_in: wp.array[bool],
     nefcaddress: int,
     # Data out:
     contact_dist_out: wp.array[float],
@@ -2579,12 +2581,7 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
     if conid >= nacon_in[0]:
       return
 
-    worldid = contact_worldid_out[conid]
-    if wp.static(reset is not None):
-      if worldid >= 0:
-        if not reset_in[worldid]:
-          return
-
+    # Full-world reset only (selective reset uses compact_contact).
     contact_dist_out[conid] = 0.0
     contact_pos_out[conid] = wp.vec3(0.0)
     contact_frame_out[conid] = wp.mat33(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
@@ -2607,6 +2604,101 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
     contact_type_out[conid] = 0
     contact_geomcollisionid_out[conid] = 0
     contact_adhesion_out[conid] = 0.0
+
+  @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
+  def compact_contact(
+    # Data in:
+    nacon_in: wp.array[int],
+    # In:
+    reset_in: wp.array[bool],
+    nefcaddress: int,
+    # Data out:
+    contact_dist_out: wp.array[float],
+    contact_pos_out: wp.array[wp.vec3],
+    contact_frame_out: wp.array[wp.mat33],
+    contact_includemargin_out: wp.array[float],
+    contact_friction_out: wp.array[types.vec5],
+    contact_solref_out: wp.array[wp.vec2],
+    contact_solreffriction_out: wp.array[wp.vec2],
+    contact_solimp_out: wp.array[types.vec5],
+    contact_dim_out: wp.array[int],
+    contact_geom_out: wp.array[wp.vec2i],
+    contact_flex_out: wp.array[wp.vec2i],
+    contact_elem_out: wp.array[wp.vec2i],
+    contact_vert_out: wp.array[wp.vec2i],
+    contact_efc_address_out: wp.array2d[int],
+    contact_worldid_out: wp.array[int],
+    contact_type_out: wp.array[int],
+    contact_geomcollisionid_out: wp.array[int],
+    contact_adhesion_out: wp.array[float],
+    nacon_out: wp.array[int],
+  ):
+    # Stable in-place compaction for selective reset. contact[0:nacon] is shared
+    # across worlds; clearing selected rows in place leaves holes / wrong worldids
+    # and an incorrect global count. Keep rows whose world is not selected.
+    # Single-threaded: write_idx always <= conid, so forward copies are safe.
+    nacon_old = nacon_in[0]
+    write_idx = int(0)
+
+    for conid in range(nacon_old):
+      worldid = contact_worldid_out[conid]
+      keep = False
+      if worldid >= 0:
+        if not reset_in[worldid]:
+          keep = True
+
+      if keep:
+        if write_idx != conid:
+          contact_dist_out[write_idx] = contact_dist_out[conid]
+          contact_pos_out[write_idx] = contact_pos_out[conid]
+          contact_frame_out[write_idx] = contact_frame_out[conid]
+          contact_includemargin_out[write_idx] = contact_includemargin_out[conid]
+          contact_friction_out[write_idx] = contact_friction_out[conid]
+          contact_solref_out[write_idx] = contact_solref_out[conid]
+          contact_solreffriction_out[write_idx] = contact_solreffriction_out[conid]
+          contact_solimp_out[write_idx] = contact_solimp_out[conid]
+          contact_dim_out[write_idx] = contact_dim_out[conid]
+          contact_geom_out[write_idx] = contact_geom_out[conid]
+          if contact_flex_out.shape[0] > 0:
+            contact_flex_out[write_idx] = contact_flex_out[conid]
+          if contact_elem_out.shape[0] > 0:
+            contact_elem_out[write_idx] = contact_elem_out[conid]
+          if contact_vert_out.shape[0] > 0:
+            contact_vert_out[write_idx] = contact_vert_out[conid]
+          for i in range(nefcaddress):
+            contact_efc_address_out[write_idx, i] = contact_efc_address_out[conid, i]
+          contact_worldid_out[write_idx] = contact_worldid_out[conid]
+          contact_type_out[write_idx] = contact_type_out[conid]
+          contact_geomcollisionid_out[write_idx] = contact_geomcollisionid_out[conid]
+          contact_adhesion_out[write_idx] = contact_adhesion_out[conid]
+        write_idx += 1
+
+    # Clear vacated tail so selected-world rows cannot linger past nacon.
+    for conid in range(write_idx, nacon_old):
+      contact_dist_out[conid] = 0.0
+      contact_pos_out[conid] = wp.vec3(0.0)
+      contact_frame_out[conid] = wp.mat33(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+      contact_includemargin_out[conid] = 0.0
+      contact_friction_out[conid] = types.vec5(0.0, 0.0, 0.0, 0.0, 0.0)
+      contact_solref_out[conid] = wp.vec2(0.0, 0.0)
+      contact_solreffriction_out[conid] = wp.vec2(0.0, 0.0)
+      contact_solimp_out[conid] = types.vec5(0.0, 0.0, 0.0, 0.0, 0.0)
+      contact_dim_out[conid] = 0
+      contact_geom_out[conid] = wp.vec2i(0, 0)
+      if contact_flex_out.shape[0] > 0:
+        contact_flex_out[conid] = wp.vec2i(0, 0)
+      if contact_elem_out.shape[0] > 0:
+        contact_elem_out[conid] = wp.vec2i(0, 0)
+      if contact_vert_out.shape[0] > 0:
+        contact_vert_out[conid] = wp.vec2i(0, 0)
+      for i in range(nefcaddress):
+        contact_efc_address_out[conid, i] = -1
+      contact_worldid_out[conid] = 0
+      contact_type_out[conid] = 0
+      contact_geomcollisionid_out[conid] = 0
+      contact_adhesion_out[conid] = 0.0
+
+    nacon_out[0] = write_idx
 
   @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
   def reset_sleep(
@@ -2680,32 +2772,43 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
     outputs=[d.mocap_pos, d.mocap_quat],
   )
 
-  # clear contacts
-  wp.launch(
-    reset_contact,
-    dim=d.naconmax,
-    inputs=[d.nacon, reset_input, d.contact.efc_address.shape[1]],
-    outputs=[
-      d.contact.dist,
-      d.contact.pos,
-      d.contact.frame,
-      d.contact.includemargin,
-      d.contact.friction,
-      d.contact.solref,
-      d.contact.solreffriction,
-      d.contact.solimp,
-      d.contact.dim,
-      d.contact.geom,
-      d.contact.flex,
-      d.contact.elem,
-      d.contact.vert,
-      d.contact.efc_address,
-      d.contact.worldid,
-      d.contact.type,
-      d.contact.geomcollisionid,
-      d.contact.adhesion,
-    ],
-  )
+  # clear or compact contacts (packed across worlds)
+  contact_outputs = [
+    d.contact.dist,
+    d.contact.pos,
+    d.contact.frame,
+    d.contact.includemargin,
+    d.contact.friction,
+    d.contact.solref,
+    d.contact.solreffriction,
+    d.contact.solimp,
+    d.contact.dim,
+    d.contact.geom,
+    d.contact.flex,
+    d.contact.elem,
+    d.contact.vert,
+    d.contact.efc_address,
+    d.contact.worldid,
+    d.contact.type,
+    d.contact.geomcollisionid,
+    d.contact.adhesion,
+  ]
+  if reset is None:
+    wp.launch(
+      reset_contact,
+      dim=d.naconmax,
+      inputs=[d.nacon, d.contact.efc_address.shape[1]],
+      outputs=contact_outputs,
+    )
+  else:
+    # Selective reset must compact the packed prefix for remaining worlds and
+    # publish the retained global nacon (reset_nworld does not touch nacon here).
+    wp.launch(
+      compact_contact,
+      dim=1,
+      inputs=[d.nacon, reset_input, d.contact.efc_address.shape[1]],
+      outputs=contact_outputs + [d.nacon],
+    )
 
   wp.launch(
     reset_sleep,
