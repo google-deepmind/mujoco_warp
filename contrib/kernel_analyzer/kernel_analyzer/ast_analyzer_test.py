@@ -466,6 +466,56 @@ class Constraint:
     }
     self.assertEqual(flagged_attrs, expected_attrs)
 
+  def test_ambiguous_precedence(self):
+    bad_code = """
+import warp as wp
+
+def foo(a: int, b: int, c: int):
+  x = a & b == 0
+  y = not a & b
+  z = a & b << c
+"""
+    issues = ast_analyzer.analyze(bad_code, "test.py", "")
+    prec_issues = [i for i in issues if isinstance(i, ast_analyzer.AmbiguousPrecedence)]
+    self.assertEqual(len(prec_issues), 3)
+
+    good_code = """
+import warp as wp
+
+def foo(a: int, b: int, c: int):
+  x = (a & b) == 0
+  y = not (a & b)
+  z = a & (b << c)
+"""
+    issues = ast_analyzer.analyze(good_code, "test.py", "")
+    prec_issues = [i for i in issues if isinstance(i, ast_analyzer.AmbiguousPrecedence)]
+    self.assertEqual(len(prec_issues), 0)
+
+  def test_bitwise_inversion_in_boolean(self):
+    bad_code = """
+def foo(a: int):
+  if ~a:
+    pass
+  while ~a:
+    pass
+  assert ~a
+"""
+    issues = ast_analyzer.analyze(bad_code, "test.py", "")
+    inv_issues = [i for i in issues if isinstance(i, ast_analyzer.BitwiseInversionInBoolean)]
+    self.assertEqual(len(inv_issues), 3)
+
+    good_code = """
+def foo(a: int):
+  if not a:
+    pass
+  if ~a != 0:
+    pass
+  assert (a & 1) != 0
+"""
+    issues = ast_analyzer.analyze(good_code, "test.py", "")
+    inv_issues = [i for i in issues if isinstance(i, ast_analyzer.BitwiseInversionInBoolean)]
+    self.assertEqual(len(inv_issues), 0)
+
 
 if __name__ == "__main__":
   absltest.main()

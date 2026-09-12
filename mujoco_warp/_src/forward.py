@@ -1008,7 +1008,9 @@ def implicit(m: Model, d: Data):
     smooth.factor_solve_lu(m, d, d.qLU, qacc, d.efc.Ma)
     _launch_implicit_free_body_solve(m, d, qacc)
     _advance(m, d, qacc)
-  elif ~(m.opt.disableflags | ~(DisableBit.ACTUATION | DisableBit.SPRING | DisableBit.DAMPER)):
+  elif (m.opt.disableflags & (DisableBit.ACTUATION | DisableBit.SPRING | DisableBit.DAMPER)) != (
+    DisableBit.ACTUATION | DisableBit.SPRING | DisableBit.DAMPER
+  ):
     # qDeriv is in M-structure; the scratch qLD matches d.qLD (per-block).
     qDeriv = wp.empty((d.nworld, m.nC), dtype=float)
     qLD = wp.empty_like(d.qLD)

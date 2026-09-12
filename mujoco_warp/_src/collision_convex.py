@@ -1249,7 +1249,7 @@ def convex_narrowphase(m: Model, d: Data, ctx: CollisionContext, collision_table
   epa_iterations = 16 if nboxbox == ncollision else m.opt.ccd_iterations
 
   # set to true to enable multiccd
-  use_multiccd = m.opt.disableflags & DisableBit.MULTICCD == 0
+  use_multiccd = (m.opt.disableflags & DisableBit.MULTICCD) == 0
 
   # note: box<->box multicontact is independent of the use_multiccd flag
   # need at least 4 (square sides) if there's a box collision needing multiccd
