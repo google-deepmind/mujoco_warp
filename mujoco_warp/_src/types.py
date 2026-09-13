@@ -1444,7 +1444,7 @@ class Model:
     body_branch_start: start index in body_branches for each branch   (nbranch + 1,)
     mocap_bodyid: id of body for mocap                       (nmocap,)
     body_fluid_ellipsoid: does body use ellipsoid fluid      (nbody,)
-    body_is_free: is body a standalone free body             (nbody,)
+    body_is_free: is body root of a free rigid subtree       (nbody,)
     body_fluid_ellipsoid_adr: body ids with ellipsoid fluid  (nbody_fluid_ellipsoid,)
     body_fluid_box_adr: body ids with box fluid              (nbody_fluid_box,)
     body_freeadr: body ids of free bodies                    (nbodyfree,)
