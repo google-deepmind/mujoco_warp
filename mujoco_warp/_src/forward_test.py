@@ -448,6 +448,43 @@ class ForwardTest(parameterized.TestCase):
         err_msg=f"step {i} qvel mismatch for free root + massless child ({integrator})",
       )
 
+  def test_free_rigid_subtree_gyro_stable(self):
+    """Verify free root with inertial child remains stable under implicitfast."""
+    _, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option integrator="implicitfast" timestep="0.001" gravity="0 0 0">
+          <flag energy="enable"/>
+        </option>
+        <worldbody>
+          <body>
+            <freejoint/>
+            <body>
+              <inertial pos="0 0 0" mass="0.12"
+                        diaginertia="0.00017231 0.00000658 0.00017243"/>
+            </body>
+          </body>
+        </worldbody>
+        <keyframe>
+          <key qvel="0 0 0 100 30 100"/>
+        </keyframe>
+      </mujoco>
+      """,
+      keyframe=0,
+    )
+
+    self.assertTrue(bool(m.body_is_free.numpy().any()))
+
+    d.energy.fill_(wp.inf)
+    mjw.forward(m, d)
+    initial_energy = float(d.energy.numpy()[0, 1])
+
+    for i in range(20):
+      d.energy.fill_(wp.inf)
+      mjw.step(m, d)
+      energy = float(d.energy.numpy()[0, 1])
+      self.assertLess(energy, 1.01 * initial_energy, f"step {i}")
+
   @parameterized.parameters(mujoco.mjtJacobian.mjJAC_SPARSE, mujoco.mjtJacobian.mjJAC_DENSE)
   def test_implicit_tendon_damping(self, jacobian):
     mjm, mjd, m, d = test_data.fixture(

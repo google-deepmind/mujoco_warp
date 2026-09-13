@@ -751,6 +751,7 @@ def _implicit_free_body_solve(
   geom_xmat_in: wp.array2d[wp.mat33],
   subtree_com_in: wp.array2d[wp.vec3],
   cdof_in: wp.array2d[wp.spatial_vector],
+  crb_in: wp.array2d[vec10],
   M_in: wp.array2d[float],
   tree_awake_in: wp.array2d[int],
   cvel_in: wp.array2d[wp.spatial_vector],
@@ -794,17 +795,28 @@ def _implicit_free_body_solve(
 
   # 3. Add gyroscopic bias velocity derivative
   mass = body_mass[worldid % body_mass.shape[0], bodyid]
+  crb = crb_in[worldid, bodyid]
+  subtree_mass = crb[9]
   R = xmat_in[worldid, bodyid]
-  Xi = ximat_in[worldid, bodyid]
-  inertia = body_inertia[worldid % body_inertia.shape[0], bodyid]
-  s = xipos_in[worldid, bodyid] - xpos_in[worldid, bodyid]
+  Iw = wp.mat33(
+    crb[0],
+    crb[3],
+    crb[4],
+    crb[3],
+    crb[1],
+    crb[5],
+    crb[4],
+    crb[5],
+    crb[2],
+  )
+  s = subtree_com_in[worldid, bodyid] - xpos_in[worldid, bodyid]
   qvel_rot = wp.vec3(
     qvel_in[worldid, dof_adr + 3],
     qvel_in[worldid, dof_adr + 4],
     qvel_in[worldid, dof_adr + 5],
   )
-  lin, rot = math.free_bias_vel_blocks(mass, R, Xi, inertia, s, qvel_rot)
-  h_mass = -timestep * mass
+  lin, rot = math.free_bias_vel_blocks(subtree_mass, R, Iw, s, qvel_rot)
+  h_mass = -timestep * subtree_mass
   for r in range(3):
     for c in range(3):
       A[r, 3 + c] += h_mass * lin[r, c]
@@ -973,6 +985,7 @@ def _launch_implicit_free_body_solve(m: Model, d: Data, qacc: wp.array2d[float])
       d.geom_xmat,
       d.subtree_com,
       d.cdof,
+      d.crb,
       d.M,
       d.tree_awake,
       d.cvel,

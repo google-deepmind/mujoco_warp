@@ -499,8 +499,7 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
       dof_adrs = mjm.jnt_dofadr[jnt_free_adrs]
       tree_ids = mjm.dof_treeid[dof_adrs]
       tree_dof6 = mjm.tree_dofnum[tree_ids] == 6
-      mass_match = mjm.body_subtreemass[b_free] == mjm.body_mass[b_free]
-      body_is_free[b_free] = tree_dof6 & mass_match
+      body_is_free[b_free] = tree_dof6
   m.body_is_free = body_is_free
   m.body_freeadr = np.nonzero(m.body_is_free)[0]
   body_fluid_box = np.zeros(mjm.nbody, dtype=bool)
