@@ -1,4 +1,4 @@
-name: Nightly dependency check
+name: Nightly dependency check and benchmarks
 
 on:
   schedule:
@@ -18,9 +18,11 @@ jobs:
       matrix:
         python-version: ["3.10", "3.14"]
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
       - name: Install uv
-        uses: astral-sh/setup-uv@v7
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
         with:
           version: "0.9.27"
           python-version: ${{ matrix.python-version }}
@@ -35,3 +37,22 @@ jobs:
       - name: Test with pytest
         run: |
           uv run --with pytest --with pytest-xdist pytest -n 2
+
+  benchmarks:
+    if: github.event_name != 'schedule' || github.repository == 'google-deepmind/mujoco_warp'
+    name: Run benchmark suite and verify zero overflows (CPU)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - name: Install uv
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
+        with:
+          version: "0.9.27"
+          python-version: "3.10"
+      - name: Set up Python
+        run: uv python install
+      - name: Run benchmark suite
+        run: |
+          uv run python3 benchmarks/run.py --nworld=1
