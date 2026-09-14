@@ -272,6 +272,72 @@ def _spring_damper_tendon_passive(
 
 
 @wp.kernel
+def _spring_damper_flexedge_passive(
+  # Model:
+  flexedge_length0: wp.array[float],
+  flex_edgestiffness: wp.array[float],
+  flex_edgedamping: wp.array[float],
+  flexedge_rigid: wp.array[bool],
+  flexedge_J_rownnz: wp.array[int],
+  flexedge_J_rowadr: wp.array[int],
+  flexedge_J_colind: wp.array[int],
+  flex_edgeflexid: wp.array[int],
+  # Data in:
+  flexedge_J_in: wp.array2d[float],
+  flexedge_length_in: wp.array2d[float],
+  flexedge_velocity_in: wp.array2d[float],
+  # In:
+  dsbl_spring: bool,
+  dsbl_damper: bool,
+  # Data out:
+  qfrc_spring_out: wp.array2d[float],
+  qfrc_damper_out: wp.array2d[float],
+):
+  worldid, edgeid = wp.tid()
+
+  if flexedge_rigid[edgeid]:
+    return
+
+  f = flex_edgeflexid[edgeid]
+
+  stiffness = float(0.0)
+  if not dsbl_spring:
+    stiffness = flex_edgestiffness[f]
+
+  damping = float(0.0)
+  if not dsbl_damper:
+    damping = flex_edgedamping[f]
+
+  if stiffness == 0.0 and damping == 0.0:
+    return
+
+  rownnz = flexedge_J_rownnz[edgeid]
+  if rownnz == 0:
+    return
+
+  frc_spring = float(0.0)
+  if stiffness != 0.0:
+    frc_spring = stiffness * (flexedge_length0[edgeid] - flexedge_length_in[worldid, edgeid])
+
+  frc_damper = float(0.0)
+  if damping != 0.0:
+    frc_damper = -damping * flexedge_velocity_in[worldid, edgeid]
+
+  if frc_spring == 0.0 and frc_damper == 0.0:
+    return
+
+  rowadr = flexedge_J_rowadr[edgeid]
+  for k in range(rownnz):
+    sparseid = rowadr + k
+    colind = flexedge_J_colind[sparseid]
+    J = flexedge_J_in[worldid, sparseid]
+    if frc_spring != 0.0:
+      wp.atomic_add(qfrc_spring_out[worldid], colind, J * frc_spring)
+    if frc_damper != 0.0:
+      wp.atomic_add(qfrc_damper_out[worldid], colind, J * frc_damper)
+
+
+@wp.kernel
 def _gravity_force(
   # Model:
   opt_gravity: wp.array[wp.vec3],
@@ -1303,6 +1369,31 @@ def passive(m: Model, d: Data):
         d.ten_J,
         d.ten_length,
         d.ten_velocity,
+        dsbl_spring,
+        dsbl_damper,
+      ],
+      outputs=[
+        d.qfrc_spring,
+        d.qfrc_damper,
+      ],
+    )
+
+  if not (dsbl_spring and dsbl_damper):
+    wp.launch(
+      _spring_damper_flexedge_passive,
+      dim=(d.nworld, m.nflexedge),
+      inputs=[
+        m.flexedge_length0,
+        m.flex_edgestiffness,
+        m.flex_edgedamping,
+        m.flexedge_rigid,
+        m.flexedge_J_rownnz,
+        m.flexedge_J_rowadr,
+        m.flexedge_J_colind,
+        m.flex_edgeflexid,
+        d.flexedge_J,
+        d.flexedge_length,
+        d.flexedge_velocity,
         dsbl_spring,
         dsbl_damper,
       ],
