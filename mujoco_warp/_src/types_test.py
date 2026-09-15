@@ -137,6 +137,18 @@ class TypesTest(parameterized.TestCase):
     expected = int(OverflowType.ALL) & ~OverflowType.ITERATIONS & ~OverflowType.LS_ITERATIONS
     self.assertEqual(m.opt.warn_overflow, expected)
 
+  def test_option_newton_incremental(self):
+    mjm = mujoco.MjModel.from_xml_string("<mujoco/>")
+    m = put_model(mjm)
+
+    self.assertTrue(m.opt.newton_incremental)
+
+    override_model(m, {"opt.newton_incremental": False})
+    self.assertFalse(m.opt.newton_incremental)
+
+    override_model(m, {"opt.newton_incremental": "true"})
+    self.assertTrue(m.opt.newton_incremental)
+
 
 if __name__ == "__main__":
   wp.init()

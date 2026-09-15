@@ -909,6 +909,8 @@ class Option:
     broadphase: broadphase type (BroadphaseType)
     broadphase_filter: broadphase filter bitflag (BroadphaseFilter)
     graph_conditional: flag to use cuda graph conditional
+    newton_incremental: if True, update the Newton gradient and Hessian incrementally after
+      constraint state changes; if False, rebuild them from the current constraint state
     run_collision_detection: if False, skips collision detection and allows user-populated
       contacts during the physics step (as opposed to DisableBit.CONTACT which explicitly
       zeros out the contacts at each step)
@@ -944,6 +946,7 @@ class Option:
   broadphase: BroadphaseType
   broadphase_filter: BroadphaseFilter
   graph_conditional: bool
+  newton_incremental: bool
   run_collision_detection: bool
   run_rne_postconstraint: bool
   contact_sensor_maxmatch: int
