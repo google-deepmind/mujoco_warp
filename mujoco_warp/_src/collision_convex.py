@@ -1194,6 +1194,8 @@ def ccd_kernel_builder(
         overflow_out,
       )
 
+  # Reuse the launch variant when the occupancy query loads the module without a block dimension.
+  wp.set_module_options({"block_dim": block_dim}, module=ccd_kernel.module)
   return ccd_kernel
 
 

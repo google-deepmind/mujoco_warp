@@ -25,6 +25,7 @@ from mujoco_warp import BroadphaseType
 from mujoco_warp import DisableBit
 from mujoco_warp import GeomType
 from mujoco_warp import test_data
+from mujoco_warp._src import collision_convex
 from mujoco_warp._src import types
 from mujoco_warp._src.collision_core import Geom
 from mujoco_warp._src.collision_driver import MJ_COLLISION_TABLE
@@ -522,6 +523,19 @@ class CollisionTest(parameterized.TestCase):
         in_order = False
       prev_idx = idx
     self.assertTrue(in_order)
+
+  @parameterized.parameters(64, 128)
+  def test_ccd_grid_reuses_launch_module(self, block_dim):
+    """The occupancy query and CCD launch must share one compiled module."""
+    device = wp.get_device()
+    if not device.is_cuda:
+      self.skipTest("CUDA occupancy queries are not used on CPU")
+
+    kernel = collision_convex.ccd_kernel_builder(GeomType.BOX.value, GeomType.BOX.value, 35, 16, True, 0, block_dim, 0)
+    collision_convex._ccd_grid_size(kernel, 1, device)
+    occupancy_module = kernel.module.load(device)
+    launch_module = kernel.module.load(device, block_dim=block_dim)
+    self.assertIs(occupancy_module, launch_module)
 
   def test_native_ccd_disable_does_not_mutate_global_table(self):
     initial_type = MJ_COLLISION_TABLE[(GeomType.BOX, GeomType.BOX)]
