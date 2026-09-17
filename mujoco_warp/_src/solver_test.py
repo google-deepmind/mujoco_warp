@@ -1147,6 +1147,23 @@ class SolverTest(parameterized.TestCase):
 
     self.assertTrue(total_any_changes, "no state changes detected across any keyframe")
 
+  @parameterized.parameters(True, False)
+  def test_newton_incremental_option(self, incremental):
+    """Tests that the Newton update strategy can be selected through the model option."""
+    _, _, m, d = test_data.fixture(
+      "constraints.xml",
+      overrides={
+        "opt.cone": ConeType.PYRAMIDAL,
+        "opt.solver": SolverType.NEWTON,
+        "opt.newton_incremental": incremental,
+      },
+    )
+
+    self.assertEqual(solver._use_incremental(m), incremental)
+    mjw.solve(m, d)
+    self.assertTrue(np.isfinite(d.qacc.numpy()).all())
+    self.assertTrue(np.isfinite(d.qfrc_constraint.numpy()).all())
+
   def test_qfrc_constraint_early_convergence(self):
     """Sparse qfrc_constraint must survive for a world that converges before the batch.
 
