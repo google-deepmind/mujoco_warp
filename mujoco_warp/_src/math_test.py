@@ -56,15 +56,14 @@ def _free_bias_vel_blocks_kernel(
   # In:
   mass: float,
   R: wp.mat33,
-  Xi: wp.mat33,
-  inertia: wp.vec3,
+  Iw: wp.mat33,
   s: wp.vec3,
   qvel_rot: wp.vec3,
   # Out:
   lin_out: wp.array2d[float],
   rot_out: wp.array2d[float],
 ):
-  lin, rot = free_bias_vel_blocks(mass, R, Xi, inertia, s, qvel_rot)
+  lin, rot = free_bias_vel_blocks(mass, R, Iw, s, qvel_rot)
   for r in range(3):
     for c in range(3):
       lin_out[r, c] = lin[r, c]
@@ -291,8 +290,7 @@ class FreeBiasVelTest(absltest.TestCase):
       inputs=[
         mass,
         wp.mat33(R_np),
-        wp.mat33(Xi_np),
-        wp.vec3(inertia_np),
+        wp.mat33(Iw),
         wp.vec3(s_np),
         wp.vec3(qvel_rot_np),
       ],
