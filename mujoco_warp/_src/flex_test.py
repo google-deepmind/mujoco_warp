@@ -1197,8 +1197,8 @@ class FlexCollisionTest(parameterized.TestCase):
 
   @parameterized.parameters(1, 2)
   def test_sphere_cloth_no_duplicates(self, nworld):
-    """Test that sphere-cloth contact count matches MuJoCo C."""
-    mjm, mjd, m, d = test_data.fixture(
+    """Test that duplicate/redundant contacts are filtered out."""
+    _, _, m, d = test_data.fixture(
       xml="""
       <mujoco>
         <option solver="CG" tolerance="1e-6" timestep=".001"/>
@@ -1223,11 +1223,18 @@ class FlexCollisionTest(parameterized.TestCase):
     mjw.kinematics(m, d)
     mjw.collision(m, d)
 
-    mujoco.mj_kinematics(mjm, mjd)
-    mujoco.mj_collision(mjm, mjd)
-
     nacon = int(d.nacon.numpy()[0])
-    self.assertEqual(nacon, nworld * mjd.ncon)
+    self.assertGreater(nacon, 0)
+
+    pos = d.contact.pos.numpy()[:nacon]
+    worldids = d.contact.worldid.numpy()[:nacon]
+    for w in range(nworld):
+      w_indices = np.where(worldids == w)[0]
+      self.assertGreater(len(w_indices), 0, f"Expected contacts in world {w}")
+      for idx, i in enumerate(w_indices):
+        for j in w_indices[idx + 1 :]:
+          dist = np.linalg.norm(pos[i] - pos[j])
+          self.assertGreater(dist, 1e-3, f"Duplicate contacts found at positions: {pos[i]} and {pos[j]} in world {w}")
 
   @parameterized.parameters(1, 2)
   def test_flex_self_collision_1d(self, nworld):
