@@ -1162,7 +1162,6 @@ def fwd_velocity(m: Model, d: Data):
     dim=(d.nworld, m.nactuator),
     inputs=[d.qvel, d.moment_rownnz, d.moment_rowadr, d.moment_colind, d.actuator_moment],
     outputs=[d.actuator_velocity],
-    block_dim=m.block_dim.actuator_velocity,
   )
 
   wp.launch(

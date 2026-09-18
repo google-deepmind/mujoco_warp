@@ -811,6 +811,19 @@ class SolverTest(parameterized.TestCase):
     self.assertTrue(np.all(np.isfinite(qacc)), "Newton solve produced non-finite qacc")
     _assert_eq(qacc, mjd.qacc, "qacc")
 
+  @parameterized.parameters(32, 128)
+  def test_jtdaj_occupancy_reuses_launch_module(self, block_dim):
+    """The occupancy query and JTDAJ launch must share one compiled module."""
+    device = wp.get_device()
+    if not device.is_cuda:
+      self.skipTest("CUDA occupancy queries are not used on CPU")
+
+    kernel = solver._JTDACJ_sparse(False, ConeType.PYRAMIDAL, 3, block_dim)
+    solver._jtdaj_groups_per_world(1, 100, kernel)
+    occupancy_module = kernel.module.load(device)
+    launch_module = kernel.module.load(device, block_dim=block_dim)
+    self.assertIs(occupancy_module, launch_module)
+
   def test_elliptic_dense_hessian(self):
     """Structured dense cone contraction matches the reference Hessian."""
     condims = (3, 4, 6)

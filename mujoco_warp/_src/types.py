@@ -59,7 +59,6 @@ class BlockDim:
   Attributes:
     segmented_sort: segmented sort block dimension (collision_driver)
     convex_ccd: convex CCD kernel block dimension (collision_convex)
-    actuator_velocity: actuator velocity block dimension (forward)
     island_dsu: island discovery DSU block dimension (island)
     ray: ray block dimension (ray)
     contact_sort: contact sort block dimension (sensor)
@@ -87,8 +86,6 @@ class BlockDim:
   segmented_sort: int = 128
   # collision_convex
   convex_ccd: int = 64
-  # forward
-  actuator_velocity: int = 32
   # island
   island_dsu: int = 32
   # ray
