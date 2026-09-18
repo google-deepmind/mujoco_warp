@@ -1013,6 +1013,7 @@ class CollisionTest(parameterized.TestCase):
     mjw.collision(m, d)
 
     np.testing.assert_equal(d.nacon.numpy()[0], 4)
+    self.assertTrue(d.overflow.numpy()[0] & types.OverflowType.HFIELD)
 
   def test_min_friction(self):
     with self.assertWarns(UserWarning):
