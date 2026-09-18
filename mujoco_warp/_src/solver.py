@@ -2452,8 +2452,8 @@ def _update_gradient_JTDAJ_dense_tiled(nv_pad: int, tile_size: int, njmax: int, 
 def _elliptic_hessian_entry_from_projections(
   # In:
   dm: float,
-  mu_over_t: float,
-  mu_n_over_ttt: float,
+  mu: float,
+  mu_n_over_t: float,
   tangent_diag: float,
   z01: float,
   z02: float,
@@ -2464,8 +2464,8 @@ def _elliptic_hessian_entry_from_projections(
   # Contract the diagonal-plus-rank-one curvature without materializing the cone Hessian.
   return dm * (
     z01 * z02
-    - mu_over_t * (z01 * projection2 + z02 * projection1)
-    + mu_n_over_ttt * projection1 * projection2
+    - mu * (z01 * projection2 + z02 * projection1)
+    + mu_n_over_t * projection1 * projection2
     + tangent_diag * tangent_dot
   )
 
@@ -2555,17 +2555,17 @@ def _update_gradient_JTCJ_dense(
         tangent_dot += z1 * z2
 
     t = wp.max(wp.sqrt(tt), types.MJ_MINVAL)
-    ttt = wp.max(t * t * t, types.MJ_MINVAL)
-    mu_tinv = math.safe_div(mu, t)
+    inv_t = math.safe_div(1.0, t)
+    mu_n_over_t = mu * n * inv_t
     h = _elliptic_hessian_entry_from_projections(
       dm,
-      mu_tinv,
-      mu * math.safe_div(n, ttt),
-      mu2 - n * mu_tinv,
+      mu,
+      mu_n_over_t,
+      mu2 - mu_n_over_t,
       z01,
       z02,
-      projection1,
-      projection2,
+      projection1 * inv_t,
+      projection2 * inv_t,
       tangent_dot,
     )
 
@@ -2845,15 +2845,17 @@ def _JTDACJ_sparse(compact: bool, cone_type: types.ConeType, max_condim: int):
           tt += u * u
 
       t = wp.max(wp.sqrt(tt), types.MJ_MINVAL)
-      ttt = wp.max(t * t * t, types.MJ_MINVAL)
-      mu_over_t = math.safe_div(mu, t)
-      mu_n_over_ttt = mu * math.safe_div(n, ttt)
-      tangent_diag = mu2 - n * mu_over_t
+      inv_t = math.safe_div(1.0, t)
+      for dim in range(1, wp.static(condim)):
+        terms[dim] = terms[dim] * inv_t
 
-      # Layout: tangent u[1:6], scales[6:12], dm, mu/t, mu*n/t^3, tangent diagonal.
+      mu_n_over_t = mu * n * inv_t
+      tangent_diag = mu2 - mu_n_over_t
+
+      # Layout: normalized tangent u/t[1:6], scales[6:12], dm, mu, mu*n/t, tangent diagonal.
       terms[12] = dm
-      terms[13] = mu_over_t
-      terms[14] = mu_n_over_ttt
+      terms[13] = mu
+      terms[14] = mu_n_over_t
       terms[15] = tangent_diag
       return terms
 

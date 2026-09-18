@@ -85,18 +85,19 @@ def _elliptic_dense_hessian_reference(m, d, ctx):
       jac[dim] = efc_J[worldid, efcid, : m.nv]
 
     t = max(np.linalg.norm(u[1:]), types.MJ_MINVAL)
-    ttt = max(t * t * t, types.MJ_MINVAL)
+    inv_t = 1.0 / t
+    mu_n_over_t = mu * u[0] * inv_t
     cone = np.zeros((condim, condim))
     for dim1 in range(condim):
       for dim2 in range(dim1 + 1):
         if dim1 == 0 and dim2 == 0:
           value = 1.0
         elif dim2 == 0:
-          value = -mu / t * u[dim1]
+          value = -mu * (u[dim1] * inv_t)
         else:
-          value = mu * u[0] / ttt * u[dim1] * u[dim2]
+          value = mu_n_over_t * (u[dim1] * inv_t) * (u[dim2] * inv_t)
           if dim1 == dim2:
-            value += mu2 - mu * u[0] / t
+            value += mu2 - mu_n_over_t
         value *= dm * scale[dim1] * scale[dim2]
         cone[dim1, dim2] = value
         cone[dim2, dim1] = value
@@ -153,18 +154,19 @@ def _elliptic_sparse_hessian_reference(m, d, ctx):
       jac[dim, cols] = efc_J[worldid, 0, rowadr : rowadr + rownnz]
 
     t = max(np.linalg.norm(u[1:]), types.MJ_MINVAL)
-    ttt = max(t * t * t, types.MJ_MINVAL)
+    inv_t = 1.0 / t
+    mu_n_over_t = mu * u[0] * inv_t
     cone = np.zeros((condim, condim))
     for dim1 in range(condim):
       for dim2 in range(dim1 + 1):
         if dim1 == 0 and dim2 == 0:
           value = 1.0
         elif dim2 == 0:
-          value = -mu / t * u[dim1]
+          value = -mu * (u[dim1] * inv_t)
         else:
-          value = mu * u[0] / ttt * u[dim1] * u[dim2]
+          value = mu_n_over_t * (u[dim1] * inv_t) * (u[dim2] * inv_t)
           if dim1 == dim2:
-            value += mu2 - mu * u[0] / t
+            value += mu2 - mu_n_over_t
         value *= dm * scale[dim1] * scale[dim2]
         cone[dim1, dim2] = value
         cone[dim2, dim1] = value
@@ -878,6 +880,35 @@ class SolverTest(parameterized.TestCase):
       rtol=1e-5,
       atol=1e-6,
     )
+
+  @parameterized.parameters("dense", "sparse")
+  def test_elliptic_hessian_scale_invariance(self, jacobian):
+    """Cone curvature is degree-0 homogeneous: scaling Jaref leaves Hessian unchanged."""
+    mjm, mjd, m, _ = test_data.fixture(
+      xml=f"""
+      <mujoco>
+        <option cone="elliptic" solver="Newton" jacobian="{jacobian}"/>
+        <worldbody>
+          <geom type="plane" size="1 1 .1" friction="1 0.01 0.001"/>
+          <body pos="0 0 0.02"><freejoint/><geom type="box" size="0.04 0.05 0.03" mass="0.5"/></body>
+        </worldbody>
+      </mujoco>
+      """
+    )
+    mjd.qvel[0] = 1.5
+    mujoco.mj_forward(mjm, mjd)
+
+    d = mjw.put_data(mjm, mjd)
+    ctx = solver._create_solver_context(m, d)
+    solver.init_context(m, d, ctx, grad=True)
+    jaref = ctx.Jaref.numpy().copy()
+
+    def _get_h(scale):
+      ctx.Jaref = wp.array(jaref * scale, dtype=float, device=ctx.Jaref.device)
+      solver._update_gradient(m, d, ctx)
+      return ctx.h.numpy()[:, : m.nv, : m.nv].copy()
+
+    np.testing.assert_allclose(_get_h(1e-8), _get_h(1.0), rtol=1e-5, atol=1e-6)
 
   @parameterized.parameters(
     (ConeType.PYRAMIDAL, SolverType.CG, 25, 5),
