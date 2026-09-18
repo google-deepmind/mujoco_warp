@@ -49,7 +49,12 @@ class EngineOptions(enum.IntEnum):
 _ENGINE = flags.DEFINE_enum_class("engine", EngineOptions.WARP, EngineOptions, "Simulation engine")
 from mujoco_warp._src import cli
 
-_VIEWER = flags.DEFINE_enum("viewer", "mujoco", ["mujoco", "viser"], "Viewer backend (mujoco native or mjviser web)")
+_VIEWER = flags.DEFINE_enum(
+  "viewer",
+  "mujoco",
+  ["mujoco", "studio", "viser"],
+  "Viewer backend (mujoco native, mujoco studio, or mjviser web)",
+)
 
 _VIEWER_GLOBAL_STATE = {"running": True, "step_once": False}
 
@@ -137,6 +142,39 @@ def _run_passive_viewer(mjm, mjd, step_fn):
         time.sleep(mjm.opt.timestep - elapsed)
 
 
+def _run_studio_viewer(mjm, mjd, step_fn, model_path: str = ""):
+  from mujoco_warp._src import util_pkg
+
+  if not util_pkg.check_version("mujoco>=3.13.1.dev981757844"):
+    raise RuntimeError("MuJoCo Studio viewer requires mujoco>=3.13.1.dev981757844.")
+
+  from mujoco.experimental.studio import launch_passive
+  from mujoco.experimental.studio import messages
+  from mujoco.experimental.studio import viewer_app
+  from mujoco.experimental.studio import viewer_protocol
+
+  vp = viewer_protocol
+  config = vp.ViewerConfig(
+    width=1200,
+    height=800,
+    gfx="web",
+  )
+
+  with launch_passive.launch_passive(
+    config,
+    viewer_plugins=[viewer_app.ViewerApp()],
+  ) as handle:
+    handle.send_to_viewer(messages.ModelEvent(model=mjm, path=model_path))
+
+    while handle.is_running():
+      start = time.time()
+      step_fn(mjm, mjd)
+      mjm, mjd = handle.sync(mjm, mjd)
+      elapsed = time.time() - start
+      if elapsed < mjm.opt.timestep:
+        time.sleep(mjm.opt.timestep - elapsed)
+
+
 def _main(argv: Sequence[str]) -> None:
   """Runs viewer app."""
   if len(argv) < 2:
@@ -188,6 +226,8 @@ def _main(argv: Sequence[str]) -> None:
   mjw.get_data_into(mjd, mjm, d)
   if _VIEWER.value == "viser":
     _run_viser_viewer(mjm, mjd, step_fn)
+  elif _VIEWER.value == "studio":
+    _run_studio_viewer(mjm, mjd, step_fn, model_path=argv[1])
   else:
     _run_passive_viewer(mjm, mjd, step_fn)
 
