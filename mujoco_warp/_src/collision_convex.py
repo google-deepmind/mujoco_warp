@@ -484,7 +484,8 @@ def ccd_hfield_kernel_builder(
             overflow_out,
           )
 
-          if ncontact == 0:
+          # skip prisms not in contact: ccd reports ncontact == 1 for separated geoms
+          if ncontact == 0 or dist >= margin + gap:
             continue
 
           # cache contact information
