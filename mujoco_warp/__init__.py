@@ -125,6 +125,8 @@ from mujoco_warp._src.types import OverflowType as OverflowType
 from mujoco_warp._src.types import RayDataField as RayDataField
 from mujoco_warp._src.types import RenderContext as RenderContext
 from mujoco_warp._src.types import SetConstGroup as SetConstGroup
+from mujoco_warp._src.types import SleepPolicy as SleepPolicy
+from mujoco_warp._src.types import SleepState as SleepState
 from mujoco_warp._src.types import SolverType as SolverType
 from mujoco_warp._src.types import State as State
 from mujoco_warp._src.types import TrnType as TrnType

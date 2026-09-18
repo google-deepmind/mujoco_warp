@@ -30,6 +30,7 @@ from mujoco_warp._src import island
 from mujoco_warp._src import sleep
 from mujoco_warp._src import smooth
 from mujoco_warp._src import types
+from mujoco_warp._src.types import SleepPolicy
 from mujoco_warp._src.types import SleepState
 
 wp.set_module_options({"enable_backward": False})
@@ -561,6 +562,7 @@ class SleepTest(parameterized.TestCase):
     def _test_wake_tree_kernel(
       # Model:
       ntree: int,
+      tree_sleep_policy: wp.array2d[int],
       # In:
       worldid: int,
       target_tree: int,
@@ -570,20 +572,21 @@ class SleepTest(parameterized.TestCase):
       # Out:
       woke_count_out: wp.array[int],
     ):
-      woke_count_out[0] = sleep._wake_tree(ntree, worldid, target_tree, wakeval, tree_asleep_out)
+      woke_count_out[0] = sleep._wake_tree(ntree, tree_sleep_policy, worldid, target_tree, wakeval, tree_asleep_out)
 
     k_awake = sleep.K_AWAKE_VAL
 
     # Setup array: shape (1, 4)
     asleep_init = np.array([[k_awake, 2, 1, 3]], dtype=np.int32)
     tree_asleep = wp.array(asleep_init, dtype=int)
+    tree_sleep_policy = wp.zeros((1, 4), dtype=int)
     woke_count = wp.zeros((1,), dtype=int)
 
     # Launch kernel to execute the wp.func on device
     wp.launch(
       _test_wake_tree_kernel,
       dim=1,
-      inputs=[4, 0, 0, k_awake],
+      inputs=[4, tree_sleep_policy, 0, 0, k_awake],
       outputs=[tree_asleep, woke_count],
     )
     self.assertEqual(woke_count.numpy()[0], 0)
@@ -593,7 +596,7 @@ class SleepTest(parameterized.TestCase):
     wp.launch(
       _test_wake_tree_kernel,
       dim=1,
-      inputs=[4, 0, 1, k_awake],
+      inputs=[4, tree_sleep_policy, 0, 1, k_awake],
       outputs=[tree_asleep, woke_count],
     )
     self.assertEqual(woke_count.numpy()[0], 2)
@@ -603,7 +606,7 @@ class SleepTest(parameterized.TestCase):
     wp.launch(
       _test_wake_tree_kernel,
       dim=1,
-      inputs=[4, 0, 3, k_awake],
+      inputs=[4, tree_sleep_policy, 0, 3, k_awake],
       outputs=[tree_asleep, woke_count],
     )
     self.assertEqual(woke_count.numpy()[0], 1)
@@ -615,23 +618,25 @@ class SleepTest(parameterized.TestCase):
     @wp.kernel(module="unique", enable_backward=False)
     def _test_wake_tree_kernel(
       ntree: int,
+      tree_sleep_policy: wp.array2d[int],
       worldid: int,
       target_tree: int,
       wakeval: int,
       tree_asleep_out: wp.array2d[int],
       woke_count_out: wp.array[int],
     ):
-      woke_count_out[0] = sleep._wake_tree(ntree, worldid, target_tree, wakeval, tree_asleep_out)
+      woke_count_out[0] = sleep._wake_tree(ntree, tree_sleep_policy, worldid, target_tree, wakeval, tree_asleep_out)
 
     k_awake = sleep.K_AWAKE_VAL
     asleep_init = np.array([[0, 1]], dtype=np.int32)
     tree_asleep = wp.array(asleep_init, dtype=int)
+    tree_sleep_policy = wp.zeros((1, 2), dtype=int)
     woke_count = wp.zeros((1,), dtype=int)
 
     wp.launch(
       _test_wake_tree_kernel,
       dim=1,
-      inputs=[2, 0, -1, k_awake],
+      inputs=[2, tree_sleep_policy, 0, -1, k_awake],
       outputs=[tree_asleep, woke_count],
     )
     self.assertEqual(woke_count.numpy()[0], 0)
@@ -905,7 +910,7 @@ class SleepTest(parameterized.TestCase):
     )
 
     # Policy should be AUTO_NEVER (1)
-    self.assertEqual(m.tree_sleep_policy.numpy()[0], int(types.SleepPolicy.AUTO_NEVER))
+    self.assertEqual(m.tree_sleep_policy.numpy()[0, 0], int(types.SleepPolicy.AUTO_NEVER))
 
     with wp.ScopedCapture() as capture:
       mjwarp.step(m, d)
@@ -1718,7 +1723,14 @@ _ARM_XML = """
 """
 
 
-class ActiveDofTest(absltest.TestCase):
+def _step_captured(m: types.Model, d: types.Data, nstep: int):
+  with wp.ScopedCapture() as capture:
+    mjwarp.step(m, d)
+  for _ in range(nstep):
+    wp.capture_launch(capture.graph)
+
+
+class ActiveDofTest(parameterized.TestCase):
   """Tests that the sleep/wake state drives island.update_active_dofs (the active-DOF maps)."""
 
   def test_actuated_tree_seeded(self):
@@ -1846,6 +1858,897 @@ class ActiveDofTest(absltest.TestCase):
     island.update_active_dofs(m, d)
 
     self.assertEqual(d.ncdof.numpy()[0], 4)
+
+  @parameterized.parameters((1, True), (2, True), (2, False))
+  def test_tree_sleep_policy_always(self, nworld, batched_policy):
+    """Verify tree with SleepPolicy.ALWAYS is excluded from active DOFs and stays static."""
+    n_rows = nworld if batched_policy else 1
+    policy_table = np.array(
+      [[int(SleepPolicy.AUTO), int(SleepPolicy.ALWAYS)], [int(SleepPolicy.ALWAYS), int(SleepPolicy.AUTO)]][:n_rows],
+      dtype=np.int32,
+    )
+
+    _, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option sleep_tolerance="0.01">
+          <flag sleep="enable"/>
+        </option>
+        <worldbody>
+          <geom type="plane" size="10 10 .1"/>
+          <body name="body0" pos="-1 0 1">
+            <joint name="jnt0" type="slide"/>
+            <geom size=".1" mass="1.0"/>
+          </body>
+          <body name="body1" pos="1 0 1">
+            <joint name="jnt1" type="slide"/>
+            <geom size=".1" mass="1.0"/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=nworld,
+      batch_sizes={"tree_sleep_policy": nworld} if batched_policy else None,
+      nvmax=1,
+    )
+    m.tree_sleep_policy.assign(policy_table)
+    if not batched_policy and nworld > 1:
+      qpos = d.qpos.numpy().copy()
+      qpos[1, 0] = 0.25
+      d.qpos.assign(qpos)
+
+    _step_captured(m, d, 10)
+
+    tree_awake = d.tree_awake.numpy()
+    body_awake = d.body_awake.numpy()
+    qpos = d.qpos.numpy()
+    qvel = d.qvel.numpy()
+    qacc = d.qacc.numpy()
+
+    for w in range(nworld):
+      active = 1 if (batched_policy and w == 1) else 0
+      always = 1 - active
+      init_qpos = 0.25 if (not batched_policy and w == 1) else 0.0
+      np.testing.assert_array_equal(tree_awake[w], [1 - active, active])
+      self.assertEqual(body_awake[w, always + 1], SleepState.ASLEEP)
+      self.assertLess(qpos[w, active], init_qpos)
+      self.assertEqual(qpos[w, always], 0.0)
+      self.assertNotEqual(qvel[w, active], 0.0)
+      self.assertEqual(qvel[w, always], 0.0)
+      self.assertNotEqual(qacc[w, active], 0.0)
+      self.assertEqual(qacc[w, always], 0.0)
+    if nworld > 1:
+      self.assertFalse(np.allclose(qpos[0], qpos[1]))
+
+  @parameterized.parameters(1, 2)
+  def test_always_wakeup_immunity(self, nworld):
+    """Verify that applied forces and velocities cannot wake up an ALWAYS tree."""
+    policy_table = np.array([[int(SleepPolicy.ALWAYS)], [int(SleepPolicy.AUTO)]][:nworld], dtype=np.int32)
+    _, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option sleep_tolerance="0.01">
+          <flag sleep="enable"/>
+        </option>
+        <worldbody>
+          <geom type="plane" size="10 10 .1"/>
+          <body name="body0" pos="0 0 1">
+            <joint name="jnt0" type="slide"/>
+            <geom size=".1" mass="1.0"/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=nworld,
+      batch_sizes={"tree_sleep_policy": nworld},
+      nvmax=1,
+    )
+    m.tree_sleep_policy.assign(policy_table)
+
+    # Put all trees asleep before applying forces so AUTO wakes while ALWAYS stays asleep
+    d.tree_asleep.zero_()
+    sleep.update_sleep(m, d)
+
+    # Attempt to wake by applying generalized force and linear cartesian force along slide axis
+    qfrc = d.qfrc_applied.numpy().copy()
+    xfrc = d.xfrc_applied.numpy().copy()
+    for w in range(nworld):
+      qfrc[w, 0] = 500.0 * (w + 1)
+      xfrc[w, 1] = [0.0, 0.0, 0.0, 0.0, 0.0, 500.0 * (w + 1)]
+    d.qfrc_applied.assign(qfrc)
+    d.xfrc_applied.assign(xfrc)
+
+    sleep.wake(m, d)
+    d.tree_awake.fill_(-1)
+    d.body_awake.fill_(-1)
+    sleep.update_sleep(m, d)
+
+    tree_awake = d.tree_awake.numpy()
+    body_awake = d.body_awake.numpy()
+    for w in range(nworld):
+      is_always = policy_table[w, 0] == SleepPolicy.ALWAYS
+      self.assertEqual(tree_awake[w, 0], 0 if is_always else 1)
+      self.assertEqual(body_awake[w, 1], SleepState.ASLEEP if is_always else SleepState.AWAKE)
+
+    # Step simulation and verify ALWAYS tree never moves while AUTO tree responds
+    _step_captured(m, d, 5)
+
+    qpos = d.qpos.numpy()
+    qvel = d.qvel.numpy()
+    qacc = d.qacc.numpy()
+    for w in range(nworld):
+      if policy_table[w, 0] == SleepPolicy.ALWAYS:
+        self.assertEqual(qpos[w, 0], 0.0)
+        self.assertEqual(qvel[w, 0], 0.0)
+        self.assertEqual(qacc[w, 0], 0.0)
+      else:
+        self.assertNotEqual(qpos[w, 0], 0.0)
+        self.assertNotEqual(qvel[w, 0], 0.0)
+    if nworld == 2:
+      self.assertFalse(np.allclose(qpos[0], qpos[1]))
+
+  @parameterized.product(
+    nworld=(1, 2),
+    broadphase=(types.BroadphaseType.NXN, types.BroadphaseType.SAP_TILE, types.BroadphaseType.SAP_SEGMENTED),
+  )
+  def test_always_collision_culling(self, nworld, broadphase):
+    """Verify that geoms on ALWAYS bodies are completely culled from collision detection."""
+    policy_table = np.array(
+      [[int(SleepPolicy.ALWAYS), int(SleepPolicy.AUTO)], [int(SleepPolicy.AUTO), int(SleepPolicy.AUTO)]][:nworld],
+      dtype=np.int32,
+    )
+    _, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option timestep="0.01">
+          <flag sleep="enable"/>
+        </option>
+        <worldbody>
+          <geom type="plane" size="10 10 .1"/>
+          <body name="target" pos="0 0 0.2">
+            <freejoint/>
+            <geom size=".1" mass="1.0"/>
+          </body>
+          <body name="dropper" pos="0 0 0.35">
+            <freejoint/>
+            <geom size=".1" mass="1.0"/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """,
+      overrides={"opt.broadphase": broadphase},
+      nworld=nworld,
+      batch_sizes={"tree_sleep_policy": nworld},
+      nvmax=12 if nworld == 2 else 6,
+    )
+    m.tree_sleep_policy.assign(policy_table)
+    qvel = d.qvel.numpy().copy()
+    for w in range(nworld):
+      qvel[w, 8] = -2.0 - 0.5 * w
+    d.qvel.assign(qvel)
+
+    _step_captured(m, d, 20)
+
+    qpos = d.qpos.numpy()
+    tree_awake = d.tree_awake.numpy()
+    body_awake = d.body_awake.numpy()
+    # World 0 (target ALWAYS): target stays frozen and dropper passes straight through onto floor
+    self.assertEqual(qpos[0, 0], 0.0)
+    self.assertEqual(qpos[0, 1], 0.0)
+    self.assertEqual(qpos[0, 2], 0.2)
+    self.assertEqual(tree_awake[0, 0], 0)
+    self.assertEqual(body_awake[0, 1], SleepState.ASLEEP)
+    self.assertLess(float(qpos[0, 9]), 0.15)
+    if nworld == 2:
+      # World 1 (both AUTO): dropper collides with target instead of passing through
+      self.assertEqual(tree_awake[1, 0], 1)
+      self.assertEqual(body_awake[1, 1], SleepState.AWAKE)
+      self.assertLess(float(qpos[1, 2]), 0.15)
+      self.assertGreater(float(qpos[1, 9]), 0.2)
+      self.assertFalse(np.allclose(qpos[0], qpos[1]))
+
+  @parameterized.parameters(1, 2)
+  def test_always_flex_collision_culling(self, nworld):
+    """Verify flex_collision culls SleepPolicy.ALWAYS rigid geoms and flex elements."""
+    _, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option integrator="discrete">
+          <flag sleep="enable"/>
+        </option>
+        <worldbody>
+          <geom type="plane" size="5 5 .1"/>
+          <flexcomp name="cloth" type="grid" count="3 2 1" spacing="0.1 0.1 0.1" pos="0 0 0.25" radius="0.02" mass="0.6">
+            <elasticity young="1e4"/>
+          </flexcomp>
+          <body name="sphere" pos="-0.08 0 0.25">
+            <freejoint/>
+            <geom size="0.04" mass="0.5"/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=nworld,
+      batch_sizes={"tree_sleep_policy": nworld},
+    )
+    # Trees 0..5 are cloth vertices (0..3 at x <= 0); tree 6 is the sphere at x <= 0.
+    policy_table = np.array(
+      [
+        [int(SleepPolicy.ALWAYS)] * 4 + [int(SleepPolicy.AUTO)] * 3,
+        [int(SleepPolicy.AUTO)] * 6 + [int(SleepPolicy.ALWAYS)],
+      ][:nworld],
+      dtype=np.int32,
+    )
+    m.tree_sleep_policy.assign(policy_table)
+
+    d.nacon.fill_(-1)
+    d.qacc.fill_(wp.inf)
+    mjwarp.forward(m, d)
+    # Overlapping cloth-sphere pairs and ALWAYS-element contacts are culled in every world
+    self.assertEqual(d.nacon.numpy()[0], 0)
+    if nworld == 2:
+      qacc = d.qacc.numpy()
+      self.assertFalse(np.allclose(qacc[0], qacc[1]))
+
+  @parameterized.parameters(1, 2)
+  def test_always_constraint_culling(self, nworld):
+    """Verify disabled ALWAYS trees do not allocate limit, frictionloss, or equality rows."""
+    _, _, m_solo, d_solo = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option>
+          <flag sleep="enable"/>
+        </option>
+        <worldbody>
+          <geom type="plane" size="5 5 .1"/>
+          <body name="active_bot" pos="0 0 0.08">
+            <freejoint/>
+            <geom size="0.1" mass="1.0"/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=1,
+      nvmax=6,
+      njmax=4,
+    )
+    d_solo.qacc_warmstart.zero_()
+    d_solo.qacc.fill_(wp.inf)
+    mjwarp.forward(m_solo, d_solo)
+
+    mjm_comp = mujoco.MjModel.from_xml_string(
+      """
+      <mujoco>
+        <option>
+          <flag sleep="enable"/>
+        </option>
+        <worldbody>
+          <geom type="plane" size="5 5 .1"/>
+          <body name="active_bot" pos="0 0 0.08">
+            <freejoint/>
+            <geom size="0.1" mass="1.0"/>
+          </body>
+          <body name="mocap_target" mocap="true" pos="2 0 1.0"/>
+          <body name="disabled_bot" pos="2 0 1.0">
+            <joint name="j_lim" range="0.5 1.0" frictionloss="2.0"/>
+            <geom size="0.1" mass="1.0"/>
+            <body name="disabled_link" pos="0 0 0.2">
+              <joint name="j_mimic" frictionloss="1.5"/>
+              <geom size="0.1" mass="0.5"/>
+            </body>
+          </body>
+        </worldbody>
+        <tendon>
+          <fixed name="disabled_ten" range="0.5 1.0" frictionloss="1.0">
+            <joint joint="j_lim" coef="1.0"/>
+          </fixed>
+        </tendon>
+        <equality>
+          <joint joint1="j_lim" joint2="j_mimic"/>
+          <weld body1="mocap_target" body2="disabled_bot"/>
+        </equality>
+      </mujoco>
+      """
+    )
+    m_comp = mjwarp.put_model(mjm_comp, batch_sizes={"tree_sleep_policy": nworld})
+    # njmax=4 fits only the active robot's 4 pyramidal contact rows
+    d_comp = mjwarp.make_data(mjm_comp, nworld=nworld, nvmax=6, njmax=4)
+    policy_table = np.tile([int(SleepPolicy.AUTO), int(SleepPolicy.ALWAYS)], (nworld, 1))
+    m_comp.tree_sleep_policy.assign(policy_table)
+    if nworld == 2:
+      qpos = d_comp.qpos.numpy().copy()
+      qpos[1, 2] = 0.07
+      d_comp.qpos.assign(qpos)
+
+    d_comp.ne.fill_(-1)
+    d_comp.nf.fill_(-1)
+    d_comp.nl.fill_(-1)
+    d_comp.nefc.fill_(-1)
+    d_comp.qacc.fill_(wp.inf)
+    mjwarp.forward(m_comp, d_comp)
+
+    np.testing.assert_array_equal(d_comp.ne.numpy(), 0)
+    np.testing.assert_array_equal(d_comp.nf.numpy(), 0)
+    np.testing.assert_array_equal(d_comp.nl.numpy(), 0)
+    np.testing.assert_array_equal(d_comp.nefc.numpy(), 4)
+    qacc_comp = d_comp.qacc.numpy()
+    np.testing.assert_allclose(qacc_comp[0, :6], d_solo.qacc.numpy()[0], atol=1e-5, rtol=1e-5)
+    np.testing.assert_array_equal(qacc_comp[:, 6:], 0.0)
+    if nworld == 2:
+      self.assertFalse(np.allclose(qacc_comp[0], qacc_comp[1]))
+
+  @parameterized.parameters(1, 2)
+  def test_always_flexstrain_partial_awake(self, nworld):
+    """Verify FLEXSTRAIN equality constraints stay active when any dynamic flex node is awake."""
+    _, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option integrator="discrete">
+          <flag sleep="enable"/>
+        </option>
+        <worldbody>
+          <flexcomp name="box" type="box" count="2 2 2" spacing="0.2 0.2 0.2" pos="0 0 0.5" dof="trilinear" mass="1.0">
+            <contact selfcollide="none"/>
+            <edge equality="strain"/>
+          </flexcomp>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=nworld,
+      batch_sizes={"tree_sleep_policy": nworld},
+    )
+    # Pin node 0 (or nodes 0..1) with ALWAYS while remaining nodes stay AUTO.
+    policy_table = np.array(
+      [
+        [int(SleepPolicy.ALWAYS)] + [int(SleepPolicy.AUTO)] * 7,
+        [int(SleepPolicy.ALWAYS)] * 2 + [int(SleepPolicy.AUTO)] * 6,
+      ][:nworld],
+      dtype=np.int32,
+    )
+    if nworld == 2:
+      qpos = d.qpos.numpy().copy()
+      qpos[1, 21] += 0.05
+      d.qpos.assign(qpos)
+    m.tree_sleep_policy.assign(policy_table)
+
+    d.ne.fill_(-1)
+    d.nefc.fill_(-1)
+    d.qacc.fill_(wp.inf)
+    mjwarp.forward(m, d)
+
+    ne = d.ne.numpy()
+    qacc = d.qacc.numpy()
+    for w in range(nworld):
+      self.assertGreater(ne[w], 0)
+      np.testing.assert_array_equal(qacc[w, :3], 0.0)
+    if nworld == 2:
+      np.testing.assert_array_equal(qacc[1, 3:6], 0.0)
+      self.assertFalse(np.allclose(qacc[0], qacc[1]))
+
+  @parameterized.parameters(1, 2)
+  def test_wake_equality_before_make_constraint(self, nworld):
+    """Verify waking sleeping AUTO trees via equalities creates their constraints immediately."""
+    mjm, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option gravity="0 0 0" sleep_tolerance="100">
+          <flag sleep="enable" warmstart="disable"/>
+        </option>
+        <worldbody>
+          <body name="mocap_anchor" mocap="true" pos="0 0 1"/>
+          <body name="b0" pos="0 0 1">
+            <joint name="j0" type="slide" range="-0.05 0.05" frictionloss="1.0"/>
+            <geom size="0.1" mass="1.0"/>
+          </body>
+          <body name="b1" pos="0.5 0 1">
+            <joint name="j1" type="slide" frictionloss="1.5"/>
+            <geom size="0.1" mass="1.0"/>
+          </body>
+        </worldbody>
+        <equality>
+          <weld body1="mocap_anchor" body2="b0" active="false"/>
+          <joint joint1="j0" joint2="j1" polycoef="0.1 1 0 0 0" active="false"/>
+        </equality>
+      </mujoco>
+      """,
+      nworld=nworld,
+    )
+    # Let both independent trees settle to sleep before activating any equality.
+    _step_captured(m, d, 1 + types.MJ_MINAWAKE)
+    np.testing.assert_array_equal(d.tree_awake.numpy(), 0)
+
+    eq_active = np.zeros((nworld, 2), dtype=bool)
+    mocap_pos = d.mocap_pos.numpy().copy()
+
+    # World 0 wakes sleeping b0 through a mocap weld.
+    eq_active[0, 0] = True
+    mocap_pos[0, 0] = [0.0, 0.0, 1.2]
+    if nworld == 2:
+      # World 1 wakes both sleeping b0 and b1 (in distinct sleep cycles) through a joint equality.
+      eq_active[1, 1] = True
+
+    d.eq_active.assign(eq_active)
+    d.mocap_pos.assign(mocap_pos)
+
+    d.ne.fill_(-1)
+    d.nf.fill_(-1)
+    d.nl.fill_(-1)
+    d.nefc.fill_(-1)
+    d.qacc.fill_(wp.inf)
+    mjwarp.forward(m, d)
+
+    ne = d.ne.numpy()
+    nf = d.nf.numpy()
+    nl = d.nl.numpy()
+    nefc = d.nefc.numpy()
+    tree_awake = d.tree_awake.numpy()
+    qacc = d.qacc.numpy()
+    for w in range(nworld):
+      mjd_ref = mujoco.MjData(mjm)
+      for _ in range(1 + types.MJ_MINAWAKE):
+        mujoco.mj_step(mjm, mjd_ref)
+      mjd_ref.eq_active[:] = eq_active[w]
+      mjd_ref.mocap_pos[:] = mocap_pos[w]
+      mujoco.mj_forward(mjm, mjd_ref)
+
+      self.assertGreater(mjd_ref.ne, 0)
+      self.assertGreater(mjd_ref.nf, 0)
+      self.assertEqual(ne[w], mjd_ref.ne)
+      self.assertEqual(nf[w], mjd_ref.nf)
+      self.assertEqual(nl[w], mjd_ref.nl)
+      self.assertEqual(nefc[w], mjd_ref.nefc)
+      np.testing.assert_array_equal(tree_awake[w], mjd_ref.tree_awake)
+      np.testing.assert_allclose(qacc[w], mjd_ref.qacc, atol=1e-4, rtol=1e-4)
+
+    if nworld == 2:
+      self.assertFalse(np.allclose(qacc[0], qacc[1]))
+
+  @parameterized.product(
+    nworld=(1, 2),
+    jacobian=(mujoco.mjtJacobian.mjJAC_DENSE, mujoco.mjtJacobian.mjJAC_SPARSE),
+  )
+  def test_always_discrete_solver(self, nworld, jacobian):
+    """Verify DISCRETE + SLEEP + ALWAYS solves accurately with make_data and coupled constraints."""
+    mjm, _, m, _ = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option integrator="discrete">
+          <flag sleep="enable" warmstart="disable"/>
+        </option>
+        <worldbody>
+          <geom type="plane" size="5 5 .1"/>
+          <body name="b0" pos="0 0 0.08">
+            <joint name="j0" type="slide"/>
+            <geom size="0.1" mass="1"/>
+          </body>
+          <body name="b1" pos="1 0 0.08">
+            <joint name="j1" type="slide"/>
+            <geom size="0.1" mass="1"/>
+          </body>
+        </worldbody>
+        <tendon>
+          <fixed name="t0" stiffness="50" damping="2" range="-0.05 0.05">
+            <joint joint="j0" coef="1"/>
+            <joint joint="j1" coef="1"/>
+          </fixed>
+        </tendon>
+      </mujoco>
+      """,
+      overrides={"opt.jacobian": jacobian},
+      nworld=nworld,
+      batch_sizes={"tree_sleep_policy": nworld},
+    )
+    # make_data leaves d.M zeroed on sleeping DOFs, exercising Hessian masking on every solve
+    d = mjwarp.make_data(mjm, nworld=nworld)
+    policy_table = np.array(
+      [[int(SleepPolicy.AUTO), int(SleepPolicy.ALWAYS)], [int(SleepPolicy.ALWAYS), int(SleepPolicy.AUTO)]][:nworld],
+      dtype=np.int32,
+    )
+    m.tree_sleep_policy.assign(policy_table)
+
+    # Displace each world's awake body to hit both the floor contact and the coupled tendon limit
+    qpos0 = np.zeros((nworld, mjm.nq), dtype=np.float32)
+    qpos0[0, 0] = -0.06
+    if nworld == 2:
+      qpos0[1, 1] = -0.08
+    d.qpos.assign(qpos0)
+
+    d.qacc.fill_(wp.inf)
+    d.solver_niter.fill_(-1)
+    mjwarp.forward(m, d)
+
+    # Single-tree MuJoCo C reference with matching tendon_invweight0
+    mjm_ref = mujoco.MjModel.from_xml_string(
+      """
+      <mujoco>
+        <option integrator="discrete">
+          <flag warmstart="disable"/>
+        </option>
+        <worldbody>
+          <geom type="plane" size="5 5 .1"/>
+          <body name="b0" pos="0 0 0.08">
+            <joint name="j0" type="slide"/>
+            <geom size="0.1" mass="1"/>
+          </body>
+        </worldbody>
+        <tendon>
+          <fixed name="t0" stiffness="50" damping="2" range="-0.05 0.05">
+            <joint joint="j0" coef="1"/>
+          </fixed>
+        </tendon>
+      </mujoco>
+      """
+    )
+    mjm_ref.tendon_invweight0[:] = mjm.tendon_invweight0[:]
+
+    def _ref_data(qpos_val: float, nstep: int = 0) -> mujoco.MjData:
+      mjd_ref = mujoco.MjData(mjm_ref)
+      mjd_ref.qpos[0] = qpos_val
+      if nstep == 0:
+        mujoco.mj_forward(mjm_ref, mjd_ref)
+      else:
+        for _ in range(nstep):
+          mujoco.mj_step(mjm_ref, mjd_ref)
+      return mjd_ref
+
+    qacc = d.qacc.numpy()
+    solver_niter = d.solver_niter.numpy()
+    self.assertTrue(np.all(np.isfinite(qacc)))
+    for w in range(nworld):
+      mjd_ref = _ref_data(float(qpos0[w, w]))
+      self.assertEqual(qacc[w, 1 - w], 0.0)
+      np.testing.assert_allclose(qacc[w, w], mjd_ref.qacc[0], atol=1e-4, rtol=1e-4)
+      self.assertLess(solver_niter[w], mjm.opt.iterations)
+
+    # Reset and run multi-step rollout via graph capture to cover incremental Hessian updates
+    mjwarp.reset_data(m, d)
+    d.qpos.assign(qpos0)
+    _step_captured(m, d, 5)
+
+    qpos = d.qpos.numpy()
+    qvel = d.qvel.numpy()
+    qacc = d.qacc.numpy()
+    for w in range(nworld):
+      mjd_ref = _ref_data(float(qpos0[w, w]), nstep=5)
+      self.assertEqual(qpos[w, 1 - w], 0.0)
+      self.assertEqual(qvel[w, 1 - w], 0.0)
+      self.assertEqual(qacc[w, 1 - w], 0.0)
+      np.testing.assert_allclose(qpos[w, w], mjd_ref.qpos[0], atol=1e-4, rtol=1e-4)
+      np.testing.assert_allclose(qvel[w, w], mjd_ref.qvel[0], atol=1e-4, rtol=1e-4)
+    if nworld == 2:
+      self.assertFalse(np.allclose(qacc[0], qacc[1]))
+
+  @parameterized.parameters(1, 2)
+  def test_always_clamps_qvel_and_qacc(self, nworld):
+    """Verify steady-state wake clamps externally set qvel and qacc on ALWAYS trees."""
+    mjm, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option>
+          <flag sleep="enable"/>
+        </option>
+        <worldbody>
+          <body name="b0" pos="0 0 1">
+            <joint name="j0" type="slide"/>
+            <geom size="0.1" mass="1"/>
+          </body>
+          <body name="b1" pos="1 0 1">
+            <joint name="j1" type="slide"/>
+            <geom size="0.1" mass="1"/>
+          </body>
+        </worldbody>
+        <tendon>
+          <fixed name="t0" damping="10">
+            <joint joint="j0" coef="1"/>
+            <joint joint="j1" coef="1"/>
+          </fixed>
+        </tendon>
+      </mujoco>
+      """,
+      nworld=nworld,
+      batch_sizes={"tree_sleep_policy": nworld},
+    )
+    policy_table = np.array(
+      [[int(SleepPolicy.AUTO), int(SleepPolicy.ALWAYS)], [int(SleepPolicy.ALWAYS), int(SleepPolicy.AUTO)]][:nworld],
+      dtype=np.int32,
+    )
+    m.tree_sleep_policy.assign(policy_table)
+
+    # Reference run with clean zero qvel/qacc on ALWAYS DOFs
+    mjwarp.reset_data(m, d)
+    qvel_clean = np.zeros((nworld, mjm.nv), dtype=np.float32)
+    qvel_clean[0, 0] = 1.0
+    if nworld == 2:
+      qvel_clean[1, 1] = -2.0
+    d.qvel.assign(qvel_clean)
+    d.qacc.fill_(wp.inf)
+    mjwarp.forward(m, d)
+    qacc_ref = d.qacc.numpy().copy()
+
+    # Dirty run: ALWAYS trees are already in steady-state sleep, then receive external qvel/qacc
+    mjwarp.reset_data(m, d)
+    qvel_dirty = qvel_clean.copy()
+    qacc_dirty = np.full((nworld, mjm.nv), np.inf, dtype=np.float32)
+    qvel_dirty[0, 1] = 25.0
+    qacc_dirty[0, 1] = 9.0
+    if nworld == 2:
+      qvel_dirty[1, 0] = -30.0
+      qacc_dirty[1, 0] = -11.0
+    d.qvel.assign(qvel_dirty)
+    d.qacc.assign(qacc_dirty)
+    mjwarp.forward(m, d)
+
+    qvel = d.qvel.numpy()
+    qacc = d.qacc.numpy()
+    for w in range(nworld):
+      self.assertEqual(qvel[w, 1 - w], 0.0)
+      self.assertEqual(qacc[w, 1 - w], 0.0)
+    np.testing.assert_allclose(qacc, qacc_ref, atol=1e-5, rtol=1e-5)
+    if nworld == 2:
+      self.assertFalse(np.allclose(qacc[0], qacc[1]))
+
+  @parameterized.product(nworld=(1, 2), interp=(False, True))
+  def test_always_flex_collision_wakes_auto_vertices(self, nworld, interp):
+    """Verify flex contacts wake sleeping AUTO vertices/nodes when vertex/node 0 is ALWAYS."""
+    if interp:
+      mjm, _, m, d = test_data.fixture(
+        xml="""
+        <mujoco>
+          <option gravity="0 0 0" integrator="discrete">
+            <flag sleep="enable"/>
+          </option>
+          <worldbody>
+            <flexcomp name="box" type="box" count="2 2 2" spacing="0.2 0.2 0.2" pos="0 0 0.5" dof="trilinear" mass="1">
+              <contact selfcollide="none"/>
+            </flexcomp>
+            <body name="sphere" pos="0 0 0.5">
+              <freejoint/>
+              <geom size="0.15" mass="1"/>
+            </body>
+          </worldbody>
+        </mujoco>
+        """,
+        nworld=nworld,
+        batch_sizes={"tree_sleep_policy": nworld},
+      )
+    else:
+      mjm, _, m, d = test_data.fixture(
+        xml="""
+        <mujoco>
+          <option gravity="0 0 0">
+            <flag sleep="enable"/>
+          </option>
+          <worldbody>
+            <flexcomp name="cloth" type="grid" count="2 2 1" spacing="0.2 0.2 0.2" pos="0 0 0.5" radius="0.02" mass="0.4">
+              <edge damping="0.1"/>
+              <contact selfcollide="none"/>
+            </flexcomp>
+            <body name="sphere" pos="-0.08 -0.08 0.5">
+              <freejoint/>
+              <geom size="0.06" mass="1"/>
+            </body>
+          </worldbody>
+        </mujoco>
+        """,
+        nworld=nworld,
+        batch_sizes={"tree_sleep_policy": nworld},
+      )
+
+    ntree_flex = mjm.ntree - 1
+    policy_table = np.tile(
+      [int(SleepPolicy.ALWAYS)] + [int(SleepPolicy.AUTO)] * ntree_flex,
+      (nworld, 1),
+    ).astype(np.int32)
+    m.tree_sleep_policy.assign(policy_table)
+
+    # Put all flex vertices/nodes to sleep in individual self-cycles while keeping the sphere awake
+    tree_asleep = d.tree_asleep.numpy().copy()
+    tree_asleep[:, :ntree_flex] = np.arange(ntree_flex, dtype=np.int32)
+    d.tree_asleep.assign(tree_asleep)
+    sleep.update_sleep(m, d)
+
+    # Move world 1's sphere away from the flex so only world 0 collides
+    if nworld == 2:
+      qpos = d.qpos.numpy().copy()
+      qpos[1, mjm.jnt_qposadr[-1]] = 5.0
+      d.qpos.assign(qpos)
+
+    d.nacon.fill_(-1)
+    mjwarp.forward(m, d)
+
+    tree_awake = d.tree_awake.numpy()
+    self.assertGreater(d.nacon.numpy()[0], 0)
+    self.assertEqual(tree_awake[0, 0], 0)
+    if interp:
+      np.testing.assert_array_equal(tree_awake[0, 1:ntree_flex], 1)
+    else:
+      self.assertTrue(np.any(tree_awake[0, 1:ntree_flex] == 1))
+    if nworld == 2:
+      np.testing.assert_array_equal(tree_awake[1, :ntree_flex], 0)
+
+  @parameterized.parameters(1, 2)
+  def test_always_runtime_transition_unlinks_sleep_cycle(self, nworld):
+    """Verify runtime AUTO -> ALWAYS transition wakes and unlinks remaining cycle members."""
+    _, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option timestep="0.01" sleep_tolerance="0.05">
+          <flag sleep="enable"/>
+        </option>
+        <worldbody>
+          <geom type="plane" size="5 5 .1"/>
+          <body name="box0" pos="0 0 0.1">
+            <freejoint/>
+            <geom type="box" size=".1 .1 .1" mass="1.0"/>
+          </body>
+          <body name="box1" pos="0 0 0.3">
+            <freejoint/>
+            <geom type="box" size=".1 .1 .1" mass="1.0"/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=nworld,
+      batch_sizes={"tree_sleep_policy": nworld},
+    )
+    # Settle both stacked boxes into a 2-tree sleep cycle [1, 0]
+    with wp.ScopedCapture() as capture:
+      mjwarp.step(m, d)
+    for _ in range(10 + types.MJ_MINAWAKE):
+      wp.capture_launch(capture.graph)
+
+    tree_asleep = d.tree_asleep.numpy()
+    tree_awake = d.tree_awake.numpy()
+    for w in range(nworld):
+      np.testing.assert_array_equal(tree_asleep[w], [1, 0])
+      np.testing.assert_array_equal(tree_awake[w], [0, 0])
+
+    # Flip the supporting bottom box to ALWAYS in world 0 only
+    policy_table = np.array(
+      [[int(SleepPolicy.ALWAYS), int(SleepPolicy.AUTO)], [int(SleepPolicy.AUTO), int(SleepPolicy.AUTO)]][:nworld],
+      dtype=np.int32,
+    )
+    m.tree_sleep_policy.assign(policy_table)
+
+    # Step 20 times: world 0 must unlink box1 so it falls instead of floating in a broken lasso
+    for _ in range(20):
+      wp.capture_launch(capture.graph)
+
+    tree_asleep = d.tree_asleep.numpy()
+    tree_awake = d.tree_awake.numpy()
+    qpos = d.qpos.numpy()
+    self.assertEqual(tree_asleep[0, 0], 0)
+    self.assertEqual(tree_awake[0, 0], 0)
+    self.assertEqual(tree_awake[0, 1], 1)
+    np.testing.assert_allclose(qpos[0, 2], 0.1, atol=1e-2)
+    self.assertLess(float(qpos[0, 9]), 0.25)
+
+    if nworld == 2:
+      np.testing.assert_array_equal(tree_asleep[1], [1, 0])
+      np.testing.assert_array_equal(tree_awake[1], [0, 0])
+      self.assertGreater(float(qpos[1, 9]), 0.29)
+      self.assertFalse(np.allclose(qpos[0], qpos[1]))
+
+  @parameterized.parameters(1, 2)
+  def test_always_zeroes_cvel_and_cdof_dot(self, nworld):
+    """Verify put_data and runtime AUTO -> ALWAYS transition zero cvel and cdof_dot."""
+    mjm, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option>
+          <flag sleep="enable" warmstart="disable"/>
+        </option>
+        <worldbody>
+          <body name="b0" pos="0 0 1">
+            <joint name="j0" axis="0 1 0"/>
+            <geom size="0.1" mass="1"/>
+            <body name="b0_child" pos="0.2 0 0">
+              <joint name="j0_child" axis="1 0 0"/>
+              <geom size="0.08" mass="0.5"/>
+              <site name="s0" pos="0.1 0 0"/>
+            </body>
+          </body>
+          <body name="b1" pos="1 0 1">
+            <joint name="j1" axis="0 1 0"/>
+            <geom size="0.1" mass="1"/>
+            <body name="b1_child" pos="0.2 0 0">
+              <joint name="j1_child" axis="1 0 0"/>
+              <geom size="0.08" mass="0.5"/>
+              <site name="s1" pos="0.1 0 0"/>
+            </body>
+          </body>
+        </worldbody>
+        <equality>
+          <weld body1="b0_child" body2="b1_child"/>
+        </equality>
+        <sensor>
+          <gyro site="s0"/>
+          <velocimeter site="s0"/>
+          <gyro site="s1"/>
+          <velocimeter site="s1"/>
+        </sensor>
+      </mujoco>
+      """,
+      nworld=nworld,
+      batch_sizes={"tree_sleep_policy": nworld},
+    )
+    # put_data zeroes cvel and cdof_dot on ALWAYS bodies/DOFs alongside qvel and qacc
+    mjd_dirty = mujoco.MjData(mjm)
+    mjd_dirty.qvel[:] = [2.0, 3.0, 4.0, 5.0]
+    mujoco.mj_forward(mjm, mjd_dirty)
+    self.assertTrue(np.any(mjd_dirty.cvel[3:5] != 0.0))
+    self.assertTrue(np.any(mjd_dirty.cdof_dot[2:4] != 0.0))
+
+    mjm_always = copy.deepcopy(mjm)
+    mjm_always.tree_sleep_policy[1] = int(SleepPolicy.ALWAYS)
+    d_put = mjwarp.put_data(mjm_always, mjd_dirty, nworld=nworld)
+    cvel_put = d_put.cvel.numpy()
+    cdof_dot_put = d_put.cdof_dot.numpy()
+    np.testing.assert_array_equal(d_put.qvel.numpy()[:, 2:4], 0.0)
+    np.testing.assert_array_equal(d_put.qacc.numpy()[:, 2:4], 0.0)
+    np.testing.assert_array_equal(cdof_dot_put[:, 2:4], 0.0)
+    np.testing.assert_array_equal(cvel_put[:, 3:5], 0.0)
+    self.assertTrue(np.any(cvel_put[:, 1:3] != 0.0))
+    self.assertTrue(np.any(cdof_dot_put[:, :2] != 0.0))
+
+    # Runtime AUTO -> ALWAYS zeroes stale cvel/cdof_dot so weld and sensors match clean reference
+    policy_table = np.array(
+      [[int(SleepPolicy.AUTO), int(SleepPolicy.ALWAYS)], [int(SleepPolicy.ALWAYS), int(SleepPolicy.AUTO)]][:nworld],
+      dtype=np.int32,
+    )
+
+    # Clean reference: ALWAYS trees start with zero cvel and cdof_dot
+    m.tree_sleep_policy.assign(policy_table)
+    mjwarp.reset_data(m, d)
+    qvel_init = np.zeros((nworld, mjm.nv), dtype=np.float32)
+    qvel_init[0] = [2.0, 3.0, 0.0, 0.0]
+    if nworld == 2:
+      qvel_init[1] = [0.0, 0.0, -2.5, 4.0]
+    d.qvel.assign(qvel_init)
+    d.qacc.fill_(wp.inf)
+    d.sensordata.fill_(wp.inf)
+    mjwarp.forward(m, d)
+    qacc_ref = d.qacc.numpy().copy()
+    sensordata_ref = d.sensordata.numpy().copy()
+
+    # Populate non-zero cvel and cdof_dot on both trees while both are AUTO
+    m.tree_sleep_policy.assign(np.full((nworld, 2), int(SleepPolicy.AUTO), dtype=np.int32))
+    mjwarp.reset_data(m, d)
+    qvel_both = np.zeros((nworld, mjm.nv), dtype=np.float32)
+    qvel_both[0] = [2.0, 3.0, 6.0, 7.0]
+    if nworld == 2:
+      qvel_both[1] = [-5.0, 6.0, -2.5, 4.0]
+    d.qvel.assign(qvel_both)
+    mjwarp.forward(m, d)
+    self.assertTrue(np.any(d.cvel.numpy()[:, 1:] != 0.0))
+    self.assertTrue(np.any(d.cdof_dot.numpy() != 0.0))
+
+    # Flip one tree per world to ALWAYS without resetting Data
+    m.tree_sleep_policy.assign(policy_table)
+    d.qacc.fill_(wp.inf)
+    d.sensordata.fill_(wp.inf)
+    mjwarp.forward(m, d)
+
+    qvel = d.qvel.numpy()
+    qacc = d.qacc.numpy()
+    cvel = d.cvel.numpy()
+    cdof_dot = d.cdof_dot.numpy()
+    sensordata = d.sensordata.numpy()
+    for w in range(nworld):
+      always = 1 - w
+      dofs = slice(2 * always, 2 * always + 2)
+      bodies = slice(1 + 2 * always, 3 + 2 * always)
+      sensors = slice(6 * always, 6 * always + 6)
+      np.testing.assert_array_equal(qvel[w, dofs], 0.0)
+      np.testing.assert_array_equal(qacc[w, dofs], 0.0)
+      np.testing.assert_array_equal(cvel[w, bodies], 0.0)
+      np.testing.assert_array_equal(cdof_dot[w, dofs], 0.0)
+      np.testing.assert_array_equal(sensordata[w, sensors], 0.0)
+    if nworld == 2:
+      self.assertFalse(np.allclose(qacc[0], qacc[1]))
+      self.assertFalse(np.allclose(sensordata[0], sensordata[1]))
+    np.testing.assert_allclose(qacc, qacc_ref, atol=1e-5, rtol=1e-5)
+    np.testing.assert_allclose(sensordata, sensordata_ref, atol=1e-5, rtol=1e-5)
 
 
 if __name__ == "__main__":

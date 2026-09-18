@@ -35,10 +35,12 @@ from mujoco_warp._src.types import MJ_MINMU
 from mujoco_warp._src.types import MJ_MINVAL
 from mujoco_warp._src.types import ContactType
 from mujoco_warp._src.types import Data
+from mujoco_warp._src.types import EnableBit
 from mujoco_warp._src.types import GeomType
 from mujoco_warp._src.types import IntegratorType
 from mujoco_warp._src.types import Model
 from mujoco_warp._src.types import OverflowType
+from mujoco_warp._src.types import SleepPolicy
 from mujoco_warp._src.types import mat23
 from mujoco_warp._src.types import mat63
 from mujoco_warp._src.types import vec5
@@ -50,6 +52,75 @@ wp.set_module_options({"enable_backward": False, "default_grid_stride": False})
 _FPS_SLOTS: int = 8  # candidates per thread kept in registers during FPS
 ENABLE_SAT_PREFILTER: bool = True
 _FLEX_CONTACT_DEDUP_TOLERANCE: float = 1e-3
+
+
+@wp.func
+def _flex_interp_sleep_always(
+  # Model:
+  body_treeid: wp.array[int],
+  tree_sleep_policy: wp.array2d[int],
+  flex_nodeadr: wp.array[int],
+  flex_nodenum: wp.array[int],
+  flex_nodebodyid: wp.array[int],
+  # In:
+  worldid: int,
+  flexid: int,
+) -> bool:
+  has_always = bool(False)
+  w_policy = worldid % tree_sleep_policy.shape[0]
+  nadr = flex_nodeadr[flexid]
+  for j in range(flex_nodenum[flexid]):
+    t = body_treeid[flex_nodebodyid[nadr + j]]
+    if t >= 0:
+      if tree_sleep_policy[w_policy, t] != SleepPolicy.ALWAYS:
+        return False
+      has_always = True
+  return has_always
+
+
+@wp.func
+def _flex_elem_sleep_always(
+  # Model:
+  body_treeid: wp.array[int],
+  tree_sleep_policy: wp.array2d[int],
+  flex_dim: wp.array[int],
+  flex_interp: wp.array[int],
+  flex_nodeadr: wp.array[int],
+  flex_nodenum: wp.array[int],
+  flex_vertadr: wp.array[int],
+  flex_elemadr: wp.array[int],
+  flex_elemdataadr: wp.array[int],
+  flex_nodebodyid: wp.array[int],
+  flex_vertbodyid: wp.array[int],
+  flex_elem: wp.array[int],
+  # In:
+  worldid: int,
+  flexid: int,
+  elemid: int,
+) -> bool:
+  if flex_interp[flexid] != 0:
+    return _flex_interp_sleep_always(
+      body_treeid,
+      tree_sleep_policy,
+      flex_nodeadr,
+      flex_nodenum,
+      flex_nodebodyid,
+      worldid,
+      flexid,
+    )
+
+  has_always = bool(False)
+  w_policy = worldid % tree_sleep_policy.shape[0]
+  dim = flex_dim[flexid]
+  vadr = flex_vertadr[flexid]
+  edata = flex_elemdataadr[flexid] + (elemid - flex_elemadr[flexid]) * (dim + 1)
+  for j in range(dim + 1):
+    t = body_treeid[flex_vertbodyid[vadr + flex_elem[edata + j]]]
+    if t >= 0:
+      if tree_sleep_policy[w_policy, t] != SleepPolicy.ALWAYS:
+        return False
+      has_always = True
+  return has_always
 
 
 @wp.func
@@ -992,13 +1063,15 @@ def _collide_mesh_convex(
 
 
 @cache_kernel
-def _flex_plane_narrowphase(warn_overflow: int):
+def _flex_plane_narrowphase(warn_overflow: int, enable_sleep: bool = False):
   @wp.kernel(module="unique", enable_backward=False)
   def kernel(
     # Model:
     ngeom: int,
     qpos0: wp.array2d[float],
+    body_treeid: wp.array[int],
     jnt_qposadr: wp.array[int],
+    tree_sleep_policy: wp.array2d[int],
     geom_type: wp.array[int],
     geom_contype: wp.array[int],
     geom_conaffinity: wp.array[int],
@@ -1008,11 +1081,15 @@ def _flex_plane_narrowphase(warn_overflow: int):
     flex_conaffinity: wp.array[int],
     flex_margin: wp.array[float],
     flex_gap: wp.array[float],
+    flex_interp: wp.array[int],
+    flex_nodeadr: wp.array[int],
+    flex_nodenum: wp.array[int],
     flex_vertadr: wp.array[int],
     flex_elemadr: wp.array[int],
     flex_elemnum: wp.array[int],
     flex_elemdataadr: wp.array[int],
     flex_plasticadr: wp.array[int],
+    flex_nodebodyid: wp.array[int],
     flex_vertbodyid: wp.array[int],
     flex_elem: wp.array[int],
     flex_radius: wp.array[float],
@@ -1057,6 +1134,22 @@ def _flex_plane_narrowphase(warn_overflow: int):
     worldid, vertid = wp.tid()
 
     flexid = flex_vertflexid[vertid]
+    if wp.static(enable_sleep):
+      if flex_interp[flexid] != 0:
+        if _flex_interp_sleep_always(
+          body_treeid,
+          tree_sleep_policy,
+          flex_nodeadr,
+          flex_nodenum,
+          flex_nodebodyid,
+          worldid,
+          flexid,
+        ):
+          return
+      else:
+        vtree = body_treeid[flex_vertbodyid[vertid]]
+        if vtree >= 0 and tree_sleep_policy[worldid % tree_sleep_policy.shape[0], vtree] == SleepPolicy.ALWAYS:
+          return
     radius = flex_radius[flexid]
     flex_margin_val = flex_margin[flexid] + flex_gap[flexid]
     local_vertid = vertid - flex_vertadr[flexid]
@@ -1409,19 +1502,25 @@ def _flex_sap_project(
 
 
 @cache_kernel
-def _flex_sap_sweep(is_self: bool, warn_overflow: int, enable_sat: bool = True):
+def _flex_sap_sweep(is_self: bool, warn_overflow: int, enable_sat: bool = True, enable_sleep: bool = False):
   @wp.kernel(module="unique", enable_backward=False)
   def kernel(
     # Model:
+    body_treeid: wp.array[int],
+    tree_sleep_policy: wp.array2d[int],
     flex_contype: wp.array[int],
     flex_conaffinity: wp.array[int],
     flex_margin: wp.array[float],
     flex_gap: wp.array[float],
     flex_selfcollide: wp.array[int],
     flex_dim: wp.array[int],
+    flex_interp: wp.array[int],
+    flex_nodeadr: wp.array[int],
+    flex_nodenum: wp.array[int],
     flex_vertadr: wp.array[int],
     flex_elemadr: wp.array[int],
     flex_elemdataadr: wp.array[int],
+    flex_nodebodyid: wp.array[int],
     flex_vertbodyid: wp.array[int],
     flex_elem: wp.array[int],
     flex_radius: wp.array[float],
@@ -1508,6 +1607,42 @@ def _flex_sap_sweep(is_self: bool, warn_overflow: int, enable_sat: bool = True):
 
       if _flex_element_aabb_filter(lower1, upper1, lower2, upper2):
         continue
+
+      if wp.static(enable_sleep):
+        if _flex_elem_sleep_always(
+          body_treeid,
+          tree_sleep_policy,
+          flex_dim,
+          flex_interp,
+          flex_nodeadr,
+          flex_nodenum,
+          flex_vertadr,
+          flex_elemadr,
+          flex_elemdataadr,
+          flex_nodebodyid,
+          flex_vertbodyid,
+          flex_elem,
+          worldid,
+          flexid1,
+          elem1,
+        ) or _flex_elem_sleep_always(
+          body_treeid,
+          tree_sleep_policy,
+          flex_dim,
+          flex_interp,
+          flex_nodeadr,
+          flex_nodenum,
+          flex_vertadr,
+          flex_elemadr,
+          flex_elemdataadr,
+          flex_nodebodyid,
+          flex_vertbodyid,
+          flex_elem,
+          worldid,
+          flexid2,
+          elem2,
+        ):
+          continue
 
       dim1 = flex_dim[flexid1]
       vert_adr1 = flex_vertadr[flexid1]
@@ -1973,14 +2108,16 @@ def _flex_narrowphase(warn_overflow: int):
 
 
 @cache_kernel
-def _flex_narrowphase_elem_detect(warn_overflow: int):
+def _flex_narrowphase_elem_detect(warn_overflow: int, enable_sleep: bool = False):
   @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
   def kernel(
     # Model:
     ngeom: int,
     opt_ccd_tolerance: wp.array[float],
     qpos0: wp.array2d[float],
+    body_treeid: wp.array[int],
     jnt_qposadr: wp.array[int],
+    tree_sleep_policy: wp.array2d[int],
     geom_type: wp.array[int],
     geom_contype: wp.array[int],
     geom_conaffinity: wp.array[int],
@@ -1996,11 +2133,15 @@ def _flex_narrowphase_elem_detect(warn_overflow: int):
     flex_gap: wp.array[float],
     flex_activelayers: wp.array[int],
     flex_dim: wp.array[int],
+    flex_interp: wp.array[int],
+    flex_nodeadr: wp.array[int],
+    flex_nodenum: wp.array[int],
     flex_vertadr: wp.array[int],
     flex_elemadr: wp.array[int],
     flex_elemnum: wp.array[int],
     flex_elemdataadr: wp.array[int],
     flex_plasticadr: wp.array[int],
+    flex_nodebodyid: wp.array[int],
     flex_vertbodyid: wp.array[int],
     flex_elem: wp.array[int],
     flex_elemlayer: wp.array[int],
@@ -2066,6 +2207,25 @@ def _flex_narrowphase_elem_detect(warn_overflow: int):
     worldid, elemid = wp.tid()
 
     flexid = flex_elemflexid[elemid]
+    if wp.static(enable_sleep):
+      if _flex_elem_sleep_always(
+        body_treeid,
+        tree_sleep_policy,
+        flex_dim,
+        flex_interp,
+        flex_nodeadr,
+        flex_nodenum,
+        flex_vertadr,
+        flex_elemadr,
+        flex_elemdataadr,
+        flex_nodebodyid,
+        flex_vertbodyid,
+        flex_elem,
+        worldid,
+        flexid,
+        elemid,
+      ):
+        return
     f_dim = flex_dim[flexid]
 
     # skip inactive elements of 3D flexes, see mj_isElemActive
@@ -2243,6 +2403,9 @@ def _flex_narrowphase_elem_detect(warn_overflow: int):
     f_conaffinity = flex_conaffinity[flexid]
     flex_aabb_min_val = flex_aabb_min_in[worldid, flexid]
     flex_aabb_max_val = flex_aabb_max_in[worldid, flexid]
+    w_policy = int(0)
+    if wp.static(enable_sleep):
+      w_policy = worldid % tree_sleep_policy.shape[0]
 
     for geomid in range(ngeom):
       gtype = geom_type[geomid]
@@ -2265,6 +2428,12 @@ def _flex_narrowphase_elem_detect(warn_overflow: int):
       b = geom_bodyid[geomid]
       if b >= 0 and (b == b0 or b == b1 or b == b2 or b == b3):
         continue
+
+      if wp.static(enable_sleep):
+        if b >= 0:
+          gtree = body_treeid[b]
+          if gtree >= 0 and tree_sleep_policy[w_policy, gtree] == SleepPolicy.ALWAYS:
+            continue
 
       geom_margin_val = geom_margin[worldid % geom_margin.shape[0], geomid] + geom_gap[worldid % geom_gap.shape[0], geomid]
       margin = geom_margin_val + elem_margin
@@ -3494,13 +3663,16 @@ def _detect_plane_flex_candidates(
   if m.nflexvert == 0 or not m.has_plane_geom:
     return
 
+  enable_sleep = bool(m.opt.enableflags & EnableBit.SLEEP)
   wp.launch(
-    _flex_plane_narrowphase(int(m.opt.warn_overflow)),
+    _flex_plane_narrowphase(int(m.opt.warn_overflow), enable_sleep),
     dim=(d.nworld, m.nflexvert),
     inputs=[
       m.ngeom,
       m.qpos0,
+      m.body_treeid,
       m.jnt_qposadr,
+      m.tree_sleep_policy,
       m.geom_type,
       m.geom_contype,
       m.geom_conaffinity,
@@ -3510,11 +3682,15 @@ def _detect_plane_flex_candidates(
       m.flex_conaffinity,
       m.flex_margin,
       m.flex_gap,
+      m.flex_interp,
+      m.flex_nodeadr,
+      m.flex_nodenum,
       m.flex_vertadr,
       m.flex_elemadr,
       m.flex_elemnum,
       m.flex_elemdataadr,
       m.flex_plasticadr,
+      m.flex_nodebodyid,
       m.flex_vertbodyid,
       m.flex_elem,
       m.flex_radius,
@@ -3563,15 +3739,18 @@ def _detect_elem_geom_candidates(
   ws: FlexWorkspace,
 ):
   """Detect candidates between 1D/2D/3D flex elements and geoms."""
+  enable_sleep = bool(m.opt.enableflags & EnableBit.SLEEP)
   epa_iterations = m.opt.ccd_iterations
   wp.launch(
-    _flex_narrowphase_elem_detect(int(m.opt.warn_overflow)),
+    _flex_narrowphase_elem_detect(int(m.opt.warn_overflow), enable_sleep),
     dim=(d.nworld, m.nflexelem),
     inputs=[
       m.ngeom,
       m.opt.ccd_tolerance,
       m.qpos0,
+      m.body_treeid,
       m.jnt_qposadr,
+      m.tree_sleep_policy,
       m.geom_type,
       m.geom_contype,
       m.geom_conaffinity,
@@ -3587,11 +3766,15 @@ def _detect_elem_geom_candidates(
       m.flex_gap,
       m.flex_activelayers,
       m.flex_dim,
+      m.flex_interp,
+      m.flex_nodeadr,
+      m.flex_nodenum,
       m.flex_vertadr,
       m.flex_elemadr,
       m.flex_elemnum,
       m.flex_elemdataadr,
       m.flex_plasticadr,
+      m.flex_nodebodyid,
       m.flex_vertbodyid,
       m.flex_elem,
       m.flex_elemlayer,
@@ -3869,19 +4052,26 @@ def _flex_sap_collision(
   nsweep = 5 * d.nworld * m.nflexelem
   d.ncollision.zero_()
 
+  enable_sleep = bool(m.opt.enableflags & EnableBit.SLEEP)
   wp.launch(
-    _flex_sap_sweep(is_self, int(m.opt.warn_overflow), enable_sat),
+    _flex_sap_sweep(is_self, int(m.opt.warn_overflow), enable_sat, enable_sleep),
     dim=nsweep,
     inputs=[
+      m.body_treeid,
+      m.tree_sleep_policy,
       m.flex_contype,
       m.flex_conaffinity,
       m.flex_margin,
       m.flex_gap,
       m.flex_selfcollide,
       m.flex_dim,
+      m.flex_interp,
+      m.flex_nodeadr,
+      m.flex_nodenum,
       m.flex_vertadr,
       m.flex_elemadr,
       m.flex_elemdataadr,
+      m.flex_nodebodyid,
       m.flex_vertbodyid,
       m.flex_elem,
       m.flex_radius,

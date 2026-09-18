@@ -29,6 +29,7 @@ from mujoco_warp import ConeType
 from mujoco_warp import SolverType
 from mujoco_warp import test_data
 from mujoco_warp._src import island
+from mujoco_warp._src import sleep
 from mujoco_warp._src import solver
 from mujoco_warp._src import types
 from mujoco_warp._src import warp_util
@@ -3427,6 +3428,143 @@ class CompactSolverTest(parameterized.TestCase):
     mujoco.mj_forward(mjm, mjd)
     self.assertGreater(mjd.nefc, 0)
     np.testing.assert_allclose(d.qacc.numpy()[0], mjd.qacc, atol=1e-2, rtol=1e-3)
+
+  @parameterized.parameters(1, 2)
+  def test_active_dof_compaction_heterogeneous(self, nworld):
+    """Verify compaction and compact solving across heterogeneous active trees."""
+    # Tree 0 (slide joint): nv=1; Tree 1 (free joint): nv=6
+    policy_table = np.array(
+      [
+        [int(types.SleepPolicy.AUTO), int(types.SleepPolicy.ALWAYS)],
+        [int(types.SleepPolicy.ALWAYS), int(types.SleepPolicy.AUTO)],
+      ][:nworld],
+      dtype=np.int32,
+    )
+
+    _, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option>
+          <flag sleep="enable"/>
+        </option>
+        <worldbody>
+          <geom type="plane" size="10 10 .1"/>
+          <body name="body0" pos="-1 0 1">
+            <joint name="jnt0" type="slide"/>
+            <geom size=".1" mass="1.0"/>
+          </body>
+          <body name="body1" pos="1 0 1">
+            <freejoint name="jnt1"/>
+            <geom type="box" size=".1 .1 .1" mass="1.0"/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=nworld,
+      batch_sizes={"tree_sleep_policy": nworld},
+      nvmax=6,
+    )
+    m.tree_sleep_policy.assign(policy_table)
+
+    sleep.wake(m, d)
+    d.tree_awake.fill_(-1)
+    d.body_awake.fill_(-1)
+    sleep.update_sleep(m, d)
+
+    d.ncdof.fill_(-1)
+    d.dof_cdof.fill_(-1)
+    island.update_active_dofs(m, d)
+
+    ncdof = d.ncdof.numpy()
+    dof_cdof = d.dof_cdof.numpy()
+    self.assertEqual(ncdof[0], 1)
+    self.assertEqual(dof_cdof[0, 0], 0)
+    np.testing.assert_array_equal(dof_cdof[0, 1:7], -1)
+
+    if nworld > 1:
+      self.assertEqual(ncdof[1], 6)
+      self.assertEqual(dof_cdof[1, 0], -1)
+      np.testing.assert_array_equal(dof_cdof[1, 1:7], np.arange(6))
+
+    with wp.ScopedCapture() as capture:
+      mjw.step(m, d)
+    for _ in range(5):
+      wp.capture_launch(capture.graph)
+
+    qacc = d.qacc.numpy()
+    self.assertNotEqual(qacc[0, 0], 0.0)
+    np.testing.assert_array_equal(qacc[0, 1:7], 0.0)
+
+    if nworld > 1:
+      self.assertEqual(qacc[1, 0], 0.0)
+      self.assertNotEqual(qacc[1, 3], 0.0)
+
+  @parameterized.parameters(1, 2)
+  def test_modular_gripper_swapping_via_weld(self, nworld):
+    """Verify modular subtree swapping using weld equalities and SleepPolicy.ALWAYS."""
+    policy_table = np.array(
+      [
+        [int(types.SleepPolicy.AUTO), int(types.SleepPolicy.AUTO), int(types.SleepPolicy.ALWAYS)],
+        [int(types.SleepPolicy.AUTO), int(types.SleepPolicy.ALWAYS), int(types.SleepPolicy.AUTO)],
+      ][:nworld],
+      dtype=np.int32,
+    )
+    eq_active = np.array([[True, False], [False, True]][:nworld], dtype=bool)
+
+    _, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option>
+          <flag sleep="enable"/>
+        </option>
+        <worldbody>
+          <body name="arm" pos="0 0 1">
+            <joint name="arm_jnt" type="slide"/>
+            <geom type="capsule" size=".05 .2" mass="2.0"/>
+            <site name="flange" pos="0 0 -.2"/>
+          </body>
+          <body name="gripper_a" pos="0 0 0.7">
+            <freejoint name="grip_a_free"/>
+            <geom type="box" size=".05 .05 .05" mass="0.5"/>
+            <site name="attachment_a" pos="0 0 .1"/>
+          </body>
+          <body name="gripper_b" pos="0 0 0.7">
+            <freejoint name="grip_b_free"/>
+            <geom size=".05" mass="0.3"/>
+            <site name="attachment_b" pos="0 0 .1"/>
+          </body>
+        </worldbody>
+        <equality>
+          <weld name="weld_a" site1="flange" site2="attachment_a"/>
+          <weld name="weld_b" site1="flange" site2="attachment_b"/>
+        </equality>
+      </mujoco>
+      """,
+      nworld=nworld,
+      batch_sizes={"tree_sleep_policy": nworld},
+      nvmax=7,
+    )
+    m.tree_sleep_policy.assign(policy_table)
+    d.eq_active.assign(eq_active)
+
+    with wp.ScopedCapture() as capture:
+      mjw.step(m, d)
+    for _ in range(20):
+      wp.capture_launch(capture.graph)
+
+    qpos = d.qpos.numpy()
+    qacc = d.qacc.numpy()
+    # Active gripper falls with arm while the ALWAYS gripper remains static
+    for w in range(nworld):
+      active_z = 3 + 7 * w
+      frozen_z = 10 - 7 * w
+      frozen_dofs = slice(7 - 6 * w, 13 - 6 * w)
+      self.assertLess(qpos[w, 0], 0.0)
+      self.assertLess(qpos[w, active_z], 0.7)
+      self.assertEqual(qpos[w, frozen_z], 0.7)
+      np.testing.assert_array_equal(qacc[w, frozen_dofs], 0.0)
+    if nworld == 2:
+      self.assertFalse(np.allclose(qpos[0], qpos[1]))
 
 
 if __name__ == "__main__":

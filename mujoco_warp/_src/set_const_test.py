@@ -55,7 +55,8 @@ def _setconst_output_fields(*groups: str, pure_only: bool = False) -> frozenset[
   return frozenset(
     name
     for name, access in mujoco.MjModel._setconst_fields.items()
-    if any(access[i] == mujoco.mjSC_OUT if pure_only else (access[i] & mujoco.mjSC_OUT) for i in indices)
+    if name != "tree_sleep_policy"
+    and any(access[i] == mujoco.mjSC_OUT if pure_only else (access[i] & mujoco.mjSC_OUT) for i in indices)
     and _is_batched_model_field(name)
   )
 

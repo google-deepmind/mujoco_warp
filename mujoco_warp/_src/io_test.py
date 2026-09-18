@@ -2957,6 +2957,25 @@ class IOTest(parameterized.TestCase):
     with self.assertRaises(NotImplementedError):
       mjwarp.put_model(mjm)
 
+  def test_tree_sleep_policy_always_requires_sleep_flag(self):
+    """Verify loading a model with SleepPolicy.ALWAYS without sleep flag raises ValueError."""
+    mjm, _, _, _ = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <body>
+            <geom size="1"/>
+            <joint type="slide"/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """
+    )
+    mjm.tree_sleep_policy[0] = types.SleepPolicy.ALWAYS
+
+    with self.assertRaises(ValueError):
+      mjwarp.put_model(mjm)
+
   def test_reset_data_sleep(self):
     """Verify resetting sleep-related fields on a multi-world setup."""
     mjm, _, m, d = test_data.fixture(
@@ -3009,6 +3028,129 @@ class IOTest(parameterized.TestCase):
       d.body_awake.numpy()[1],
       [types.SleepState.ASLEEP, types.SleepState.ASLEEP],
     )
+
+  @parameterized.parameters(1, 2)
+  def test_reset_data_sleep_always(self, nworld):
+    """Verify resetting sleep-related fields preserves SleepPolicy.ALWAYS."""
+    policy_table = np.array([[int(types.SleepPolicy.ALWAYS)], [int(types.SleepPolicy.AUTO)]][:nworld], dtype=np.int32)
+    _, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option>
+          <flag sleep="enable"/>
+        </option>
+        <worldbody>
+          <body>
+            <geom size="1"/>
+            <joint type="slide"/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=nworld,
+      batch_sizes={"tree_sleep_policy": nworld},
+    )
+    m.tree_sleep_policy.assign(policy_table)
+    # Sleep policy is defined on Model, NOT on Data
+    self.assertIn("tree_sleep_policy", {f.name for f in dataclasses.fields(types.Model)})
+    self.assertNotIn("tree_sleep_policy", {f.name for f in dataclasses.fields(types.Data)})
+
+    tested_fields = [d.tree_asleep, d.tree_awake, d.body_awake, d.ntree_awake, d.nv_awake]
+    for field in tested_fields:
+      field.fill_(-1)
+    d.cvel.fill_(wp.spatial_vector(1.0, 2.0, 3.0, 4.0, 5.0, 6.0))
+    d.cdof_dot.fill_(wp.spatial_vector(1.0, 2.0, 3.0, 4.0, 5.0, 6.0))
+
+    mjwarp.reset_data(m, d)
+
+    tree_asleep = d.tree_asleep.numpy()
+    tree_awake = d.tree_awake.numpy()
+    body_awake = d.body_awake.numpy()
+    ntree_awake = d.ntree_awake.numpy()
+    nv_awake = d.nv_awake.numpy()
+    cvel = d.cvel.numpy()
+    cdof_dot = d.cdof_dot.numpy()
+    expected_awake = np.where(policy_table == types.SleepPolicy.ALWAYS, 0, 1)
+
+    for w in range(nworld):
+      is_always = policy_table[w, 0] == types.SleepPolicy.ALWAYS
+      np.testing.assert_array_equal(tree_asleep[w], [0 if is_always else -(1 + types.MJ_MINAWAKE)])
+      np.testing.assert_array_equal(tree_awake[w], expected_awake[w])
+      expected_state = types.SleepState.ASLEEP if is_always else types.SleepState.AWAKE
+      np.testing.assert_array_equal(body_awake[w], [types.SleepState.STATIC, expected_state])
+      self.assertEqual(ntree_awake[w], 0 if is_always else 1)
+      self.assertEqual(nv_awake[w], 0 if is_always else 1)
+      if is_always:
+        np.testing.assert_array_equal(cvel[w, 1], 0.0)
+        np.testing.assert_array_equal(cdof_dot[w, 0], 0.0)
+
+    # Policy on Model is unchanged by reset
+    np.testing.assert_array_equal(m.tree_sleep_policy.numpy(), policy_table)
+
+    # Step simulation then full reset again
+    with wp.ScopedCapture() as capture:
+      mjwarp.step(m, d)
+    for _ in range(10):
+      wp.capture_launch(capture.graph)
+
+    for field in tested_fields:
+      field.fill_(-1)
+    mjwarp.reset_data(m, d)
+    np.testing.assert_array_equal(m.tree_sleep_policy.numpy(), policy_table)
+    np.testing.assert_array_equal(d.tree_awake.numpy(), expected_awake)
+
+    # Partial reset by world preserves policy on Model and restores the reset world
+    for w in range(nworld):
+      tree_awake = d.tree_awake.numpy().copy()
+      tree_awake[w] = -1
+      d.tree_awake.assign(tree_awake)
+      mask = np.zeros(nworld, dtype=bool)
+      mask[w] = True
+      mjwarp.reset_data(m, d, reset=wp.array(mask, dtype=bool))
+      np.testing.assert_array_equal(m.tree_sleep_policy.numpy(), policy_table)
+      np.testing.assert_array_equal(d.tree_awake.numpy(), expected_awake)
+
+  @parameterized.parameters(1, 2)
+  def test_reset_data_keyframe_sleep_always(self, nworld):
+    """Verify reset_data_keyframe clamps velocities of ALWAYS trees to zero."""
+    policy_table = np.array([[int(types.SleepPolicy.ALWAYS)], [int(types.SleepPolicy.AUTO)]][:nworld], dtype=np.int32)
+    _, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option>
+          <flag sleep="enable"/>
+        </option>
+        <worldbody>
+          <body>
+            <geom size="1"/>
+            <joint type="slide"/>
+          </body>
+        </worldbody>
+        <keyframe>
+          <key time="0.5" qpos="0.3" qvel="0.4"/>
+        </keyframe>
+      </mujoco>
+      """,
+      nworld=nworld,
+      batch_sizes={"tree_sleep_policy": nworld},
+      keyframe=0,
+    )
+    m.tree_sleep_policy.assign(policy_table)
+    d.qpos.fill_(wp.inf)
+    d.qvel.fill_(wp.inf)
+    d.ntree_awake.fill_(-1)
+
+    mjwarp.reset_data_keyframe(m, d, 0)
+
+    np.testing.assert_array_equal(m.tree_sleep_policy.numpy(), policy_table)
+    qpos = d.qpos.numpy()
+    qvel = d.qvel.numpy()
+    ntree_awake = d.ntree_awake.numpy()
+    for w in range(nworld):
+      is_always = policy_table[w, 0] == types.SleepPolicy.ALWAYS
+      self.assertEqual(qpos[w, 0], 0.3)
+      self.assertEqual(qvel[w, 0], 0.0 if is_always else 0.4)
+      self.assertEqual(ntree_awake[w], 0 if is_always else 1)
 
   def test_ls_parallel_deprecation(self):
     _, _, m, _ = test_data.fixture(xml="<mujoco/>")
