@@ -25,6 +25,7 @@ import mujoco_warp as mjw
 from mujoco_warp import ConeType
 from mujoco_warp import DisableBit
 from mujoco_warp import test_data
+from mujoco_warp._src import util_pkg
 
 # tolerance for difference between MuJoCo and MJWarp passive force calculations - mostly
 # due to float precision
@@ -420,9 +421,53 @@ class PassiveTest(parameterized.TestCase):
       keyframe=0,
     )
 
-    d.qfrc_fluid.zero_()
+    d.qfrc_fluid.fill_(wp.inf)
     mjw.forward(m, d)
-    np.testing.assert_allclose(d.qfrc_fluid.numpy()[0], mjd.qfrc_fluid, atol=5e-4, rtol=5e-4)
+    self.assertTrue(np.isfinite(d.qfrc_fluid.numpy()[0]).all())
+    if util_pkg.check_version("mujoco>=3.13.1"):
+      np.testing.assert_allclose(d.qfrc_fluid.numpy()[0], mjd.qfrc_fluid, atol=5e-4, rtol=5e-4)
+
+  def test_kutta_lift_low_speed_scaling(self):
+    """Verify exact v^2 scaling of Kutta lift at low speeds."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option density="1.225"/>
+        <worldbody>
+          <body>
+            <freejoint/>
+            <geom type="ellipsoid" size=".025 .01 .001" euler="0 -30 0"
+                  fluidshape="ellipsoid"/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """
+    )
+
+    # reference lift/v^2 at v = 10 m/s
+    qvel = np.zeros(mjm.nv, dtype=float)
+    qvel[0] = 10.0
+    mjd.qvel[0] = 10.0
+    wp.copy(d.qvel, wp.array([qvel], dtype=float))
+
+    mujoco.mj_forward(mjm, mjd)
+    d.qfrc_fluid.fill_(wp.inf)
+    mjw.forward(m, d)
+
+    warp_force = d.qfrc_fluid.numpy()[0]
+    np.testing.assert_allclose(warp_force, mjd.qfrc_fluid, atol=1e-6, rtol=1e-5)
+
+    ref_lift_coeff = warp_force[2] / (10.0 * 10.0)
+    self.assertGreater(ref_lift_coeff, 0.0)
+
+    # verify exact v^2 scaling at low speeds (1 m/s, 0.1 m/s, 1 cm/s, 1 mm/s)
+    for v in (1.0, 0.1, 0.01, 0.001):
+      qvel[0] = v
+      wp.copy(d.qvel, wp.array([qvel], dtype=float))
+      d.qfrc_fluid.fill_(wp.inf)
+      mjw.forward(m, d)
+      lift_coeff = d.qfrc_fluid.numpy()[0, 2] / (v * v)
+      np.testing.assert_allclose(lift_coeff, ref_lift_coeff, atol=1e-12 * ref_lift_coeff, rtol=1e-5)
 
   def test_adhesion_gap_force(self):
     """Test contact creation and passive attraction in the gap band without collision."""
