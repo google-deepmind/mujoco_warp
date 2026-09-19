@@ -133,21 +133,68 @@ def _next_velocity(
   qvel_out[worldid, dofid] = qvel_in[worldid, dofid] + qacc_scale_in * qacc_in[worldid, dofid] * timestep
 
 
+@wp.func
+def _wrap_period(
+  # Model:
+  jnt_type: wp.array[int],
+  # In:
+  trntype: int,
+  dyntype: int,
+  gaintype: int,
+  biastype: int,
+  trnid: wp.vec2i,
+  gainprm: vec10,
+  biasprm: vec10,
+  gear: wp.spatial_vector,
+) -> float:
+  # servo shape: fixed gain, affine bias, matching kp, setpoint input
+  is_servo = (
+    gaintype == GainType.FIXED
+    and biastype == BiasType.AFFINE
+    and gainprm[0] == -biasprm[1]
+    and (dyntype == DynType.NONE or dyntype == DynType.INTEGRATOR)
+  )
+  if not is_servo:
+    return 0.0
+
+  # site transmission with refsite and purely rotational gear
+  if trntype == TrnType.SITE and trnid[1] >= 0 and gear[0] == 0.0 and gear[1] == 0.0 and gear[2] == 0.0:
+    rot_gear = wp.vec3(gear[3], gear[4], gear[5])
+    return wp.static(2.0 * wp.pi) * wp.length(rot_gear)
+
+  # joint transmission on a ball joint
+  if trntype == TrnType.JOINT or trntype == TrnType.JOINTINPARENT:
+    jntid = trnid[0]
+    if jnt_type.shape[0] > 0 and jntid >= 0 and jntid < jnt_type.shape[0]:
+      if jnt_type[jntid] == JointType.BALL:
+        lin_gear = wp.vec3(gear[0], gear[1], gear[2])
+        return wp.static(2.0 * wp.pi) * wp.length(lin_gear)
+
+  return 0.0
+
+
 @wp.kernel
 def _next_activation(
   # Model:
   opt_timestep: wp.array[float],
+  jnt_type: wp.array[int],
+  actuator_trntype: wp.array[int],
   actuator_dyntype: wp.array[int],
+  actuator_gaintype: wp.array[int],
+  actuator_biastype: wp.array[int],
   actuator_actadr: wp.array[int],
   actuator_actnum: wp.array[int],
+  actuator_trnid: wp.array[wp.vec2i],
   actuator_dynprm: wp.array2d[vec10],
   actuator_gainprm: wp.array2d[vec10],
   actuator_biasprm: wp.array2d[vec10],
   actuator_actlimited: wp.array[bool],
   actuator_actrange: wp.array2d[wp.vec2],
+  actuator_gear: wp.array2d[wp.spatial_vector],
   # Data in:
   act_in: wp.array2d[float],
   act_dot_in: wp.array2d[float],
+  actuator_length_in: wp.array2d[float],
   actuator_velocity_in: wp.array2d[float],
   # In:
   act_dot_scale: float,
@@ -217,6 +264,30 @@ def _next_activation(
         act_dot_scale,
         limit and actuator_actlimited[uid],
       )
+      if dyntype == DynType.INTEGRATOR:
+        gaintype = actuator_gaintype[uid]
+        biastype = actuator_biastype[uid]
+        gainprm = actuator_gainprm[actuator_gainprm_id, uid]
+        biasprm = actuator_biasprm[actuator_biasprm_id, uid]
+        trntype = actuator_trntype[uid]
+        trnid = actuator_trnid[uid]
+        gear = actuator_gear[worldid % actuator_gear.shape[0], uid]
+        period = _wrap_period(
+          jnt_type,
+          trntype,
+          dyntype,
+          gaintype,
+          biastype,
+          trnid,
+          gainprm,
+          biasprm,
+          gear,
+        )
+        if period > 0.0:
+          length = actuator_length_in[worldid, uid]
+          err = act - length
+          act -= period * wp.round(err / period)
+
       act_out[worldid, j] = act
 
 
@@ -301,16 +372,23 @@ def _advance(m: Model, d: Data, qacc: wp.array, qvel: Optional[wp.array] = None)
     dim=(d.nworld, m.nu),
     inputs=[
       m.opt.timestep,
+      m.jnt_type,
+      m.actuator_trntype,
       m.actuator_dyntype,
+      m.actuator_gaintype,
+      m.actuator_biastype,
       m.actuator_actadr,
       m.actuator_actnum,
+      m.actuator_trnid,
       m.actuator_dynprm,
       m.actuator_gainprm,
       m.actuator_biasprm,
       m.actuator_actlimited,
       m.actuator_actrange,
+      m.actuator_gear,
       d.act,
       d.act_dot,
+      d.actuator_length,
       d.actuator_velocity,
       1.0,
       True,
@@ -466,16 +544,23 @@ def _rk_perturb_state(
       dim=(d.nworld, m.nu),
       inputs=[
         m.opt.timestep,
+        m.jnt_type,
+        m.actuator_trntype,
         m.actuator_dyntype,
+        m.actuator_gaintype,
+        m.actuator_biastype,
         m.actuator_actadr,
         m.actuator_actnum,
+        m.actuator_trnid,
         m.actuator_dynprm,
         m.actuator_gainprm,
         m.actuator_biasprm,
         m.actuator_actlimited,
         m.actuator_actrange,
+        m.actuator_gear,
         act_t0,
         d.act_dot,
+        d.actuator_length,
         d.actuator_velocity,
         scale,
         False,
@@ -1183,6 +1268,8 @@ def _actuator_force(
   # Model:
   na: int,
   opt_timestep: wp.array[float],
+  jnt_type: wp.array[int],
+  actuator_trntype: wp.array[int],
   actuator_dyntype: wp.array[int],
   actuator_gaintype: wp.array[int],
   actuator_biastype: wp.array[int],
@@ -1191,6 +1278,7 @@ def _actuator_force(
   actuator_ctrlspec: wp.array[int],
   actuator_actadr: wp.array[int],
   actuator_actnum: wp.array[int],
+  actuator_trnid: wp.array[wp.vec2i],
   actuator_dynprm: wp.array2d[vec10],
   actuator_gainprm: wp.array2d[vec10],
   actuator_biasprm: wp.array2d[vec10],
@@ -1201,6 +1289,7 @@ def _actuator_force(
   actuator_forcerange: wp.array2d[wp.vec2],
   actuator_ctrllimited: wp.array[bool],
   actuator_ctrlrange: wp.array2d[wp.vec2],
+  actuator_gear: wp.array2d[wp.spatial_vector],
   actuator_acc0: wp.array2d[float],
   actuator_lengthrange: wp.array2d[wp.vec2],
   # Data in:
@@ -1229,10 +1318,10 @@ def _actuator_force(
   ctrl_act = ctrl
   u_first = ctrl
 
+  dyntype = actuator_dyntype[uid]
   act_first = actuator_actadr[uid]
   if na and act_first >= 0:
     act_last = act_first + actuator_actnum[uid] - 1
-    dyntype = actuator_dyntype[uid]
     dynprm = actuator_dynprm[worldid % actuator_dynprm.shape[0], uid]
 
     if dyntype == DynType.INTEGRATOR:
@@ -1471,6 +1560,24 @@ def _actuator_force(
       K = gainprm[1]
       bias -= gain * K * velocity
 
+  trntype = actuator_trntype[uid]
+  trnid = actuator_trnid[uid]
+  gear = actuator_gear[worldid % actuator_gear.shape[0], uid]
+  period = _wrap_period(
+    jnt_type,
+    trntype,
+    dyntype,
+    gaintype,
+    biastype,
+    trnid,
+    gainprm,
+    biasprm,
+    gear,
+  )
+  if period > 0.0:
+    err = ctrl_act - length
+    ctrl_act -= period * wp.round(err / period)
+
   force = gain * ctrl_act + bias
 
   if actuator_forcelimited[uid]:
@@ -1620,6 +1727,8 @@ def fwd_actuation(m: Model, d: Data):
     inputs=[
       m.na,
       m.opt.timestep,
+      m.jnt_type,
+      m.actuator_trntype,
       m.actuator_dyntype,
       m.actuator_gaintype,
       m.actuator_biastype,
@@ -1628,6 +1737,7 @@ def fwd_actuation(m: Model, d: Data):
       m.actuator_ctrlspec,
       m.actuator_actadr,
       m.actuator_actnum,
+      m.actuator_trnid,
       m.actuator_dynprm,
       m.actuator_gainprm,
       m.actuator_biasprm,
@@ -1638,6 +1748,7 @@ def fwd_actuation(m: Model, d: Data):
       m.actuator_forcerange,
       m.actuator_ctrllimited,
       m.actuator_ctrlrange,
+      m.actuator_gear,
       m.actuator_acc0,
       m.actuator_lengthrange,
       d.act,
