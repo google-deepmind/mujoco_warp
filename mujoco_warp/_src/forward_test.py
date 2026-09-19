@@ -30,6 +30,8 @@ from mujoco_warp import EnableBit
 from mujoco_warp import GainType
 from mujoco_warp import IntegratorType
 from mujoco_warp import test_data
+from mujoco_warp._src import sleep
+from mujoco_warp._src import types
 
 # tolerance for difference between MuJoCo and mjwarp smooth calculations - mostly
 # due to float precision
@@ -2231,6 +2233,82 @@ class DCMotorTest(parameterized.TestCase):
     self.assertTrue(
       np.isinf(d.cfrc_ext.numpy()[0]).all(), "cfrc_ext should remain inf when RNE is not requested and sensors disabled"
     )
+
+  @parameterized.parameters(1, 2)
+  def test_heterogeneous_kinematic_tree(self, nworld):
+    """Verify active robot in heterogeneous composite model matches isolated trajectory."""
+    _, _, m_iso, d_iso = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option>
+          <flag sleep="enable" island="enable"/>
+        </option>
+        <worldbody>
+          <geom type="plane" size="10 10 .1"/>
+          <body name="body_a" pos="0 0 1">
+            <joint name="jnt_a" type="hinge" axis="0 1 0"/>
+            <geom type="capsule" size=".05 .3" mass="1.0"/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=1,
+      nvmax=1,
+    )
+    d_iso.qacc.fill_(wp.inf)
+    for _ in range(20):
+      mjw.step(m_iso, d_iso)
+
+    policy_table = np.tile([int(types.SleepPolicy.AUTO), int(types.SleepPolicy.ALWAYS)], (nworld, 1))
+    _, _, m_comp, d_comp = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option>
+          <flag sleep="enable" island="enable"/>
+        </option>
+        <worldbody>
+          <geom type="plane" size="10 10 .1"/>
+          <body name="body_a" pos="0 0 1">
+            <joint name="jnt_a" type="hinge" axis="0 1 0"/>
+            <geom type="capsule" size=".05 .3" mass="1.0"/>
+          </body>
+          <body name="body_b" pos="2 0 1">
+            <joint name="jnt_b" type="slide" axis="0 0 1"/>
+            <geom type="box" size=".1 .1 .1" mass="2.0"/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=nworld,
+      batch_sizes={"tree_sleep_policy": nworld},
+      nvmax=1,
+    )
+    m_comp.tree_sleep_policy = wp.array(policy_table, dtype=int)
+
+    d_comp.tree_awake.fill_(-1)
+    d_comp.body_awake.fill_(-1)
+    sleep.update_sleep(m_comp, d_comp)
+
+    d_comp.qacc.fill_(wp.inf)
+    for _ in range(20):
+      mjw.step(m_comp, d_comp)
+
+    qpos_iso = d_iso.qpos.numpy()[0]
+    qvel_iso = d_iso.qvel.numpy()[0]
+    qacc_iso = d_iso.qacc.numpy()[0]
+
+    for w in range(nworld):
+      qpos_comp = d_comp.qpos.numpy()[w, :1]
+      qvel_comp = d_comp.qvel.numpy()[w, :1]
+      qacc_comp = d_comp.qacc.numpy()[w, :1]
+
+      np.testing.assert_allclose(qpos_comp, qpos_iso, atol=1e-5, rtol=1e-5)
+      np.testing.assert_allclose(qvel_comp, qvel_iso, atol=1e-5, rtol=1e-5)
+      np.testing.assert_allclose(qacc_comp, qacc_iso, atol=1e-5, rtol=1e-5)
+
+      self.assertEqual(d_comp.qpos.numpy()[w, 1], 0.0)
+      self.assertEqual(d_comp.qvel.numpy()[w, 1], 0.0)
+      self.assertEqual(d_comp.qacc.numpy()[w, 1], 0.0)
 
 
 if __name__ == "__main__":

@@ -322,11 +322,13 @@ class SleepPolicy(enum.IntEnum):
     AUTO: compiler chooses sleep policy
     AUTO_NEVER: compiler sleep policy: never
     AUTO_ALLOWED: compiler sleep policy: allowed
+    ALWAYS: per-world sleep policy: permanently asleep (requires sleep and island flags).
   """
 
   AUTO = mujoco.mjtSleepPolicy.mjSLEEP_AUTO
   AUTO_NEVER = mujoco.mjtSleepPolicy.mjSLEEP_AUTO_NEVER
   AUTO_ALLOWED = mujoco.mjtSleepPolicy.mjSLEEP_AUTO_ALLOWED
+  ALWAYS = 6
   # unsupported: NEVER, ALLOWED, INIT
 
 
@@ -1158,7 +1160,7 @@ class Model:
     tree_bodynum: number of bodies in tree (incl. root)      (ntree,)
     tree_dofadr: start address of tree's dofs                (ntree,)
     tree_dofnum: number of dofs in tree                      (ntree,)
-    tree_sleep_policy: tree sleep policy (SleepPolicy)       (ntree,)
+    tree_sleep_policy: tree sleep policy (SleepPolicy)       (*, ntree)
     geom_type: geometric type (GeomType)                     (ngeom,)
     geom_contype: geom contact type                          (ngeom,)
     geom_conaffinity: geom contact affinity                  (ngeom,)
@@ -1660,7 +1662,7 @@ class Model:
   tree_bodynum: array("ntree", int)
   tree_dofadr: array("ntree", int)
   tree_dofnum: array("ntree", int)
-  tree_sleep_policy: array("ntree", int)
+  tree_sleep_policy: array("*", "ntree", int)
   geom_type: array("ngeom", int)
   geom_contype: array("ngeom", int)
   geom_conaffinity: array("ngeom", int)

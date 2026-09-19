@@ -315,6 +315,9 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
   if (mjm.opt.enableflags & mujoco.mjtEnableBit.mjENBL_SLEEP) and mjm.opt.solver != mujoco.mjtSolver.mjSOL_NEWTON:
     raise ValueError(f"sleeping requires the Newton solver (got solver={types.SolverType(mjm.opt.solver).name})")
 
+  if np.any(mjm.tree_sleep_policy == types.SleepPolicy.ALWAYS) and not (mjm.opt.enableflags & mujoco.mjtEnableBit.mjENBL_SLEEP):
+    raise ValueError("SleepPolicy.ALWAYS requires sleeping to be enabled (<flag sleep='enable'/>).")
+
   collision_sensors = (mujoco.mjtSensor.mjSENS_GEOMDIST, mujoco.mjtSensor.mjSENS_GEOMNORMAL, mujoco.mjtSensor.mjSENS_GEOMFROMTO)
   is_collision_sensor = np.isin(mjm.sensor_type, collision_sensors)
 
@@ -1640,7 +1643,10 @@ def _initial_body_awake(mjm: mujoco.MjModel, nworld: int, init_asleep: bool) -> 
       else:
         body_awake_np[:, b] = int(types.SleepState.STATIC)
     else:
-      body_awake_np[:, b] = int(types.SleepState.ASLEEP) if init_asleep else int(types.SleepState.AWAKE)
+      if mjm.tree_sleep_policy[tree] == types.SleepPolicy.ALWAYS:
+        body_awake_np[:, b] = int(types.SleepState.ASLEEP)
+      else:
+        body_awake_np[:, b] = int(types.SleepState.ASLEEP) if init_asleep else int(types.SleepState.AWAKE)
   return body_awake_np
 
 
@@ -1840,8 +1846,17 @@ def make_data(
     "efc_islandid": None,
     # compact arrays (populated by _allocate_compact_arrays; skip eager allocation)
     **{name: None for name in _COMPACT_DATA_FIELDS},
-    "tree_asleep": wp.array(np.full((nworld, mjm.ntree), -(1 + types.MJ_MINAWAKE), dtype=np.int32), dtype=int),
-    "tree_awake": wp.array(np.ones((nworld, mjm.ntree), dtype=np.int32), dtype=int),
+    "tree_asleep": wp.array(
+      np.tile(
+        [t if mjm.tree_sleep_policy[t] == types.SleepPolicy.ALWAYS else -(1 + types.MJ_MINAWAKE) for t in range(mjm.ntree)],
+        (nworld, 1),
+      ),
+      dtype=int,
+    ),
+    "tree_awake": wp.array(
+      np.tile([0 if mjm.tree_sleep_policy[t] == types.SleepPolicy.ALWAYS else 1 for t in range(mjm.ntree)], (nworld, 1)),
+      dtype=int,
+    ),
     "body_awake": wp.array(_initial_body_awake(mjm, nworld, False), dtype=int),
   }
   for f in dataclasses.fields(types.Data):
@@ -1983,6 +1998,13 @@ def put_data(
   # Capture sleep state before mj_kinematics, which resets tree_asleep as a side effect.
   tree_asleep_init = mjd.tree_asleep.copy()
   body_awake_init = mjd.body_awake.copy()
+  for t in range(mjm.ntree):
+    if mjm.tree_sleep_policy[t] == types.SleepPolicy.ALWAYS:
+      tree_asleep_init[t] = t
+  for b in range(mjm.nbody):
+    t = mjm.body_treeid[b]
+    if t >= 0 and mjm.tree_sleep_policy[t] == types.SleepPolicy.ALWAYS:
+      body_awake_init[b] = int(types.SleepState.ASLEEP)
 
   # Ensure kinematic state is populated. mujoco.MjData() does not call mj_kinematics, so a freshly
   # created mjd has zero geom positions. Static geoms are never updated by the physics loop
@@ -2616,6 +2638,7 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
     ntree: int,
     body_mocapid: wp.array[int],
     body_treeid: wp.array[int],
+    tree_sleep_policy: wp.array2d[int],
     # In:
     mj_minawake: int,
     reset_in: wp.array[bool],
@@ -2633,17 +2656,27 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
         return
 
     if elemid < ntree:
-      tree_asleep_out[worldid, elemid] = -(1 + mj_minawake)
-      tree_awake_out[worldid, elemid] = 1
+      policy = tree_sleep_policy[worldid % tree_sleep_policy.shape[0], elemid]
+      if policy == types.SleepPolicy.ALWAYS:
+        tree_asleep_out[worldid, elemid] = elemid
+        tree_awake_out[worldid, elemid] = 0
+      else:
+        tree_asleep_out[worldid, elemid] = -(1 + mj_minawake)
+        tree_awake_out[worldid, elemid] = 1
 
     if elemid < nbody:
-      if body_treeid[elemid] < 0:
+      tree = body_treeid[elemid]
+      if tree < 0:
         if body_mocapid[elemid] >= 0:
           body_awake_out[worldid, elemid] = int(types.SleepState.AWAKE)
         else:
           body_awake_out[worldid, elemid] = int(types.SleepState.STATIC)
       else:
-        body_awake_out[worldid, elemid] = int(types.SleepState.AWAKE)
+        policy = tree_sleep_policy[worldid % tree_sleep_policy.shape[0], tree]
+        if policy == types.SleepPolicy.ALWAYS:
+          body_awake_out[worldid, elemid] = int(types.SleepState.ASLEEP)
+        else:
+          body_awake_out[worldid, elemid] = int(types.SleepState.AWAKE)
       body_awake_ind_out[worldid, elemid] = elemid
 
     if elemid < nv:
@@ -2710,7 +2743,7 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
   wp.launch(
     reset_sleep,
     dim=(d.nworld, max(m.ntree, m.nbody, m.nv)),
-    inputs=[m.nv, m.nbody, m.ntree, m.body_mocapid, m.body_treeid, types.MJ_MINAWAKE, reset_input],
+    inputs=[m.nv, m.nbody, m.ntree, m.body_mocapid, m.body_treeid, m.tree_sleep_policy, types.MJ_MINAWAKE, reset_input],
     outputs=[
       d.tree_asleep,
       d.tree_awake,
@@ -2839,6 +2872,8 @@ def reset_data_keyframe(m: types.Model, d: types.Data, key: int | wp.array):
     nu: int,
     na: int,
     nmocap: int,
+    dof_treeid: wp.array[int],
+    tree_sleep_policy: wp.array2d[int],
     key_time: wp.array[float],
     key_qpos: wp.array2d[float],
     key_qvel: wp.array2d[float],
@@ -2864,11 +2899,16 @@ def reset_data_keyframe(m: types.Model, d: types.Data, key: int | wp.array):
       return
 
     key = key_in[worldid]
+    w_policy = worldid % tree_sleep_policy.shape[0]
     time_out[worldid] = key_time[key]
     for i in range(nq):
       qpos_out[worldid, i] = key_qpos[key, i]
     for i in range(nv):
-      qvel_out[worldid, i] = key_qvel[key, i]
+      tree = dof_treeid[i]
+      if tree >= 0 and tree_sleep_policy[w_policy, tree] == types.SleepPolicy.ALWAYS:
+        qvel_out[worldid, i] = 0.0
+      else:
+        qvel_out[worldid, i] = key_qvel[key, i]
     for i in range(na):
       act_out[worldid, i] = key_act[key, i]
     for i in range(nmocap):
@@ -2886,6 +2926,8 @@ def reset_data_keyframe(m: types.Model, d: types.Data, key: int | wp.array):
       m.nu,
       m.na,
       m.nmocap,
+      m.dof_treeid,
+      m.tree_sleep_policy,
       m.key_time,
       m.key_qpos,
       m.key_qvel,
@@ -2906,6 +2948,10 @@ def reset_data_keyframe(m: types.Model, d: types.Data, key: int | wp.array):
       d.mocap_quat,
     ],
   )
+
+  sleep_enabled = bool(m.opt.enableflags & types.EnableBit.SLEEP)
+  if sleep_enabled:
+    sleep.update_sleep(m, d)
 
 
 def override_model(model: types.Model | mujoco.MjModel, overrides: dict[str, Any] | Sequence[str]):
