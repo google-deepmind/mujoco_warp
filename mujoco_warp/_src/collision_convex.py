@@ -631,7 +631,7 @@ def ccd_hfield_kernel_builder(
       )
 
       # contact 2: point furthest from min_pos - pos1 line
-      dist_min1 = wp.cross(min_normal, min_pos - pos1)
+      dist_min1 = wp.normalize(wp.cross(min_normal, min_pos - pos1))
 
       id2 = int(-1)
       dist_12 = float(-MJ_MAXVAL)
@@ -688,8 +688,8 @@ def ccd_hfield_kernel_builder(
       )
 
       # contact 3: point furthest from other triangle edge
-      vec_min2 = wp.cross(min_normal, min_pos - pos2)
-      vec_12 = wp.cross(min_normal, pos1 - pos2)
+      vec_min2 = wp.normalize(wp.cross(min_normal, min_pos - pos2))
+      vec_12 = wp.normalize(wp.cross(min_normal, pos1 - pos2))
 
       id3 = int(-1)
       dist3 = float(-MJ_MAXVAL)
