@@ -16,6 +16,8 @@ its original gear and shaft designs.
 
 The board and RJ45 connectors belong to the
 [NIST Assembly Task Board 1 design family](https://www.nist.gov/el/intelligent-systems-division-73500/robotic-grasping-and-manipulation-assembly/assembly).
+The asset contributor confirmed that these local meshes use the same
+[BSD-3-Clause terms](LICENSE.factory.txt) as the Factory assembly parts.
 NIST provides the [board designs](https://www.nist.gov/document/gmclaserplatezip),
 [connector-housing STL files](https://www.nist.gov/document/connectorhousingszip),
 [component CAD files](https://www.nist.gov/document/task-board-1-cad-zip) and
@@ -27,5 +29,4 @@ used for the local board and connector conversions were not retained.
 The benchmark exports preserve the supplied geometry, applying USD transforms
 and triangulation to write OBJ files in meters. They do not include the source
 USD layers, local conversion paths or account metadata. The Factory license
-notice above applies to the identified Factory sources, rather than assigning
-a new common license to every source asset.
+notice is retained for the Factory sources and the local board and RJ45 exports.

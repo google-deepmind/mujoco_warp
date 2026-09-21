@@ -156,5 +156,5 @@
     "snapshot_commit": "1bfa43bdfb741e7a3044477c92883d824ed92b19",
     "scope": "Earlier profiling study with sparse optimizations; not a performance measurement of the current benchmark PR head."
   },
-  "asset_attribution": "See assets/nist/README.md and retained Factory BSD terms. Exact upstream archive versions for local board and connector conversions were not retained."
+  "asset_attribution": "See assets/nist/README.md and retained Factory BSD-3-Clause terms. The asset contributor confirmed the same license for the local RJ45 connector and NIST board meshes. Exact upstream archive versions for those conversions were not retained."
 }
