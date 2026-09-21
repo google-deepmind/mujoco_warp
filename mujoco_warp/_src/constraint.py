@@ -4312,7 +4312,7 @@ def _efc_contact_update(cone_type: types.ConeType, flg_adhesion: bool):
     body_invweight0_id = worldid % body_invweight0.shape[0]
     invweight = body_invweight0[body_invweight0_id, body1][0] + body_invweight0[body_invweight0_id, body2][0]
 
-    invweight_scale = float(1.0)
+    invweight_scale = 1.0
     ref = solref_in[conid]
     pos_aref = pos
 
@@ -4374,7 +4374,7 @@ def _efc_contact_update(cone_type: types.ConeType, flg_adhesion: bool):
     )
 
     # Preserve elliptic friction ratios after _efc_row floors normal regularization.
-    if wp.static(IS_ELLIPTIC):
+    if wp.static(IS_ELLIPTIC) and dimid > 0:
       efc_D_out[worldid, efcid] /= invweight_scale
 
     if wp.static(flg_adhesion):
@@ -4748,7 +4748,7 @@ def _efc_contact_update_flex(cone_type: types.ConeType, flg_adhesion: bool = Fal
 
     invweight = invweight1 + invweight2
 
-    invweight_scale = float(1.0)
+    invweight_scale = 1.0
     ref = solref_in[conid]
     pos_aref = pos
 
@@ -4810,7 +4810,7 @@ def _efc_contact_update_flex(cone_type: types.ConeType, flg_adhesion: bool = Fal
     )
 
     # Preserve elliptic friction ratios after _efc_row floors normal regularization.
-    if wp.static(IS_ELLIPTIC):
+    if wp.static(IS_ELLIPTIC) and dimid > 0:
       efc_D_out[worldid, efcid] /= invweight_scale
 
     if wp.static(flg_adhesion):
