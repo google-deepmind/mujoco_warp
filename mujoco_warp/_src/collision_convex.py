@@ -413,6 +413,9 @@ def ccd_hfield_kernel_builder(
     count = int(0)
     noverflow = int(0)
     for r in range(rmin, rmax):
+      if noverflow > 0:
+        break
+
       # pre-initialize first 2 vertices
       for init_i in range(2):
         x = dx * float(cmin) - size[0]
@@ -431,11 +434,14 @@ def ccd_hfield_kernel_builder(
         prism[5, 2] = z
 
       for c in range(cmin + 1, cmax + 1):
+        if noverflow > 0:
+          break
+
         # add both triangles from this cell
         for i in range(2):
           if count >= MJ_MAXCONPAIR:
-            noverflow += 1
-            continue
+            noverflow = 1
+            break
 
           # add vert
           x = dx * float(c) - size[0]
@@ -524,6 +530,10 @@ def ccd_hfield_kernel_builder(
           MJ_MAXCONPAIR,
         )
       wp.atomic_or(overflow_out, worldid, OverflowType.HFIELD)
+
+    # skip write when no prisms collide
+    if count == 0:
+      return
 
     # contact 0: minimum distance
     write_contact(
