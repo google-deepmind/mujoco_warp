@@ -119,7 +119,7 @@ docstring-code-format = true
 docstring-code-line-length = 100
 
 [tool.pytest.ini_options]
-testpaths = ["mujoco_warp"]
+testpaths = ["mujoco_warp", "benchmarks/run_test.py", "contrib/prepare_sdf_test.py"]
 norecursedirs = ["benchmarks", "contrib"]
 
 [tool.setuptools]

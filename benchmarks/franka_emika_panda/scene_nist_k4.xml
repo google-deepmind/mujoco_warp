@@ -1,0 +1,278 @@
+<mujoco model="Panda NIST K4 saved states with source board">
+  <compiler angle="radian" fusestatic="false" />
+  <asset>
+    <texture type="skybox" builtin="gradient" rgb1="0.3 0.5 0.7" rgb2="0 0 0" width="512" height="3072" />
+    <texture type="2d" name="groundplane" builtin="checker" mark="edge" rgb1="0.2 0.3 0.4" rgb2="0.1 0.2 0.3" markrgb="0.8 0.8 0.8" width="300" height="300" />
+    <material name="groundplane" texture="groundplane" texuniform="true" texrepeat="5 5" reflectance="0.2" />
+    <mesh name="fixed_0_mesh_0" file="assets/nist/bolt_m8_00.obj" />
+    <mesh name="held_0_mesh_0" file="assets/nist/nut_m8_00.obj" />
+    <mesh name="fixed_1_mesh_0" file="assets/nist/rj45_socket_00.obj" />
+    <mesh name="held_1_mesh_0" file="assets/nist/rj45_plug_00.obj" />
+    <mesh name="fixed_2_mesh_0" file="assets/nist/gear_base_00.obj" />
+    <mesh name="held_2_mesh_0" file="assets/nist/gear_large_00.obj" />
+    <mesh name="fixed_3_mesh_0" file="assets/nist/round_hole_8mm_00.obj" />
+    <mesh name="held_3_mesh_0" file="assets/nist/round_peg_8mm_00.obj" />
+    <mesh name="panda_mesh_00" file="assets/link0_0.obj" />
+    <mesh name="panda_mesh_01" file="assets/link0_1.obj" />
+    <mesh name="panda_mesh_02" file="assets/link0_2.obj" />
+    <mesh name="panda_mesh_03" file="assets/link0_3.obj" />
+    <mesh name="panda_mesh_04" file="assets/link0_4.obj" />
+    <mesh name="panda_mesh_05" file="assets/link0_5.obj" />
+    <mesh name="panda_mesh_06" file="assets/link0_7.obj" />
+    <mesh name="panda_mesh_07" file="assets/link0_8.obj" />
+    <mesh name="panda_mesh_08" file="assets/link0_9.obj" />
+    <mesh name="panda_mesh_09" file="assets/link0_10.obj" />
+    <mesh name="panda_mesh_10" file="assets/link0_11.obj" />
+    <mesh name="panda_mesh_11" file="assets/link0.stl" />
+    <mesh name="panda_mesh_12" file="assets/link1.obj" />
+    <mesh name="panda_mesh_13" file="assets/link1.stl" />
+    <mesh name="panda_mesh_14" file="assets/link2.obj" />
+    <mesh name="panda_mesh_15" file="assets/link2.stl" />
+    <mesh name="panda_mesh_16" file="assets/link3_0.obj" />
+    <mesh name="panda_mesh_17" file="assets/link3_1.obj" />
+    <mesh name="panda_mesh_18" file="assets/link3_2.obj" />
+    <mesh name="panda_mesh_19" file="assets/link3_3.obj" />
+    <mesh name="panda_mesh_20" file="assets/link3.stl" />
+    <mesh name="panda_mesh_21" file="assets/link4_0.obj" />
+    <mesh name="panda_mesh_22" file="assets/link4_1.obj" />
+    <mesh name="panda_mesh_23" file="assets/link4_2.obj" />
+    <mesh name="panda_mesh_24" file="assets/link4_3.obj" />
+    <mesh name="panda_mesh_25" file="assets/link4.stl" />
+    <mesh name="panda_mesh_26" file="assets/link5_0.obj" />
+    <mesh name="panda_mesh_27" file="assets/link5_1.obj" />
+    <mesh name="panda_mesh_28" file="assets/link5_2.obj" />
+    <mesh name="panda_mesh_29" file="assets/link5_collision_0.obj" />
+    <mesh name="panda_mesh_30" file="assets/link5_collision_1.obj" />
+    <mesh name="panda_mesh_31" file="assets/link5_collision_2.obj" />
+    <mesh name="panda_mesh_32" file="assets/link6_0.obj" />
+    <mesh name="panda_mesh_33" file="assets/link6_1.obj" />
+    <mesh name="panda_mesh_34" file="assets/link6_2.obj" />
+    <mesh name="panda_mesh_35" file="assets/link6_3.obj" />
+    <mesh name="panda_mesh_36" file="assets/link6_4.obj" />
+    <mesh name="panda_mesh_37" file="assets/link6_5.obj" />
+    <mesh name="panda_mesh_38" file="assets/link6_6.obj" />
+    <mesh name="panda_mesh_39" file="assets/link6_7.obj" />
+    <mesh name="panda_mesh_40" file="assets/link6_8.obj" />
+    <mesh name="panda_mesh_41" file="assets/link6_9.obj" />
+    <mesh name="panda_mesh_42" file="assets/link6_10.obj" />
+    <mesh name="panda_mesh_43" file="assets/link6_11.obj" />
+    <mesh name="panda_mesh_44" file="assets/link6_12.obj" />
+    <mesh name="panda_mesh_45" file="assets/link6_13.obj" />
+    <mesh name="panda_mesh_46" file="assets/link6_14.obj" />
+    <mesh name="panda_mesh_47" file="assets/link6_15.obj" />
+    <mesh name="panda_mesh_48" file="assets/link6_16.obj" />
+    <mesh name="panda_mesh_49" file="assets/link6.stl" />
+    <mesh name="panda_mesh_50" file="assets/link7_0.obj" />
+    <mesh name="panda_mesh_51" file="assets/link7_1.obj" />
+    <mesh name="panda_mesh_52" file="assets/link7_2.obj" />
+    <mesh name="panda_mesh_53" file="assets/link7_3.obj" />
+    <mesh name="panda_mesh_54" file="assets/link7_4.obj" />
+    <mesh name="panda_mesh_55" file="assets/link7_5.obj" />
+    <mesh name="panda_mesh_56" file="assets/link7_6.obj" />
+    <mesh name="panda_mesh_57" file="assets/link7_7.obj" />
+    <mesh name="panda_mesh_58" file="assets/link7.stl" />
+    <mesh name="panda_mesh_59" file="assets/hand_0.obj" />
+    <mesh name="panda_mesh_60" file="assets/hand_1.obj" />
+    <mesh name="panda_mesh_61" file="assets/hand_2.obj" />
+    <mesh name="panda_mesh_62" file="assets/hand_3.obj" />
+    <mesh name="panda_mesh_63" file="assets/hand_4.obj" />
+    <mesh name="panda_mesh_64" file="assets/hand.stl" />
+    <mesh name="panda_mesh_65" file="assets/finger_0.obj" />
+    <mesh name="panda_mesh_66" file="assets/finger_1.obj" />
+    <mesh name="panda_mesh_67" file="assets/finger_0.obj" />
+    <mesh name="panda_mesh_68" file="assets/finger_0.obj" />
+    <mesh name="panda_mesh_69" file="assets/finger_1.obj" />
+    <mesh name="panda_mesh_70" file="assets/finger_0.obj" />
+    <mesh name="nist_board_visual_0" file="assets/nist/nistboard-visual-00.obj" />
+  </asset>
+  <worldbody>
+    <body name="panda_link0" gravcomp="1" pos="0 0 0" quat="1 0 0 0">
+      <inertial pos="-0.041018 -0.00014 0.049974" quat="0.00630473 0.751245 0.00741774 0.659952" mass="0.629769" diaginertia="0.00430465 0.00387984 0.00313051" />
+      <body name="panda_link1" pos="0 0 0.333" gravcomp="1">
+        <inertial pos="0.003875 0.002081 -0.04762" quat="0.711549 0.006344 -0.0131126 0.702485" mass="4.97068" diaginertia="0.707137 0.703435 0.00852456" />
+        <joint name="panda_joint1" solimplimit="0.8999999761581421 0.949999988079071 0.001000000047497451 0.5 2" solreffriction="0.02" solimpfriction="0.9 0.95 0.001" range="-2.8973 2.8973" actuatorfrcrange="-87 87" armature="0.6057" limited="true" actuatorfrclimited="true" solreflimit="0.0004946280387230217 1.005415678024292" />
+        <body name="panda_link2" quat="-0.707107 0.707107 0 0" gravcomp="1">
+          <inertial pos="-0.003141 -0.02872 0.003495" quat="-0.168174 0.828366 -0.122877 0.520027" mass="0.646926" diaginertia="0.0310327 0.0283001 0.00273425" />
+          <joint name="panda_joint2" solimplimit="0.8999999761581421 0.949999988079071 0.001000000047497451 0.5 2" solreffriction="0.02" solimpfriction="0.9 0.95 0.001" range="-1.7628 1.7628" actuatorfrcrange="-87 87" armature="0.6057" limited="true" actuatorfrclimited="true" solreflimit="0.001514321891590953 0.574613630771637" />
+          <body name="panda_link3" pos="0 -0.316 0" quat="-0.707107 -0.707107 0 0" gravcomp="1">
+            <inertial pos="0.027518 0.039252 -0.066502" quat="0.662773 -0.0067846 0.252053 0.705093" mass="3.2286" diaginertia="0.0415014 0.0414793 0.00124636" />
+            <joint name="panda_joint3" solimplimit="0.8999999761581421 0.949999988079071 0.001000000047497451 0.5 2" solreffriction="0.02" solimpfriction="0.9 0.95 0.001" range="-2.8973 2.8973" actuatorfrcrange="-87 87" armature="0.4625" limited="true" actuatorfrclimited="true" solreflimit="0.0003704954579006881 1.161698818206787" />
+            <body name="panda_link4" pos="0.0825 0 0" quat="0.707107 0.707107 0 0" gravcomp="1">
+              <inertial pos="-0.05317 0.104419 0.027454" quat="0.65058 0.529822 -0.0962035 0.535518" mass="3.58789" diaginertia="0.0349596 0.0281483 0.0106201" />
+              <joint name="panda_joint4" solimplimit="0.8999999761581421 0.949999988079071 0.001000000047497451 0.5 2" solreffriction="0.02" solimpfriction="0.9 0.95 0.001" range="-3.0718 -0.0698" actuatorfrcrange="-87 87" armature="0.4625" limited="true" actuatorfrclimited="true" solreflimit="0.0004804723721463233 1.020118951797485" />
+              <body name="panda_link5" pos="-0.0825 0.384 0" quat="0.707107 -0.707107 0 0" gravcomp="1">
+                <inertial pos="-0.011953 0.041065 -0.038437" quat="0.987313 -0.0121954 0.0719187 -0.141037" mass="1.22595" diaginertia="0.0367625 0.0288531 0.00803437" />
+                <joint name="panda_joint5" solimplimit="0.8999999761581421 0.949999988079071 0.001000000047497451 0.5 2" solreffriction="0.02" solimpfriction="0.9 0.95 0.001" range="-2.8973 2.8973" actuatorfrcrange="-12 12" armature="0.2055" limited="true" actuatorfrclimited="true" solreflimit="0.0001677879190538079 1.726253747940063" />
+                <body name="panda_link6" quat="0.707107 0.707107 0 0" gravcomp="1">
+                  <inertial pos="0.060149 -0.014117 -0.010517" quat="0.101075 0.59332 0.0287227 0.798079" mass="1.66656" diaginertia="0.00584276 0.00431037 0.00159787" />
+                  <joint name="panda_joint6" solimplimit="0.8999999761581421 0.949999988079071 0.001000000047497451 0.5 2" solreffriction="0.02" solimpfriction="0.9 0.95 0.001" range="-0.0175 3.7525" actuatorfrcrange="-12 12" armature="0.2055" limited="true" actuatorfrclimited="true" solreflimit="0.0001793916308088228 1.669490337371826" />
+                  <body name="panda_link7" pos="0.088 0 0" quat="0.707107 0.707107 0 0" gravcomp="1">
+                    <inertial pos="0.010517 -0.004252 0.061597" quat="0.992939 -0.0762041 0.0733595 -0.0537066" mass="0.735522" diaginertia="0.0127345 0.0101055 0.00451803" />
+                    <joint name="panda_joint7" solimplimit="0.8999999761581421 0.949999988079071 0.001000000047497451 0.5 2" solreffriction="0.02" solimpfriction="0.9 0.95 0.001" range="-2.8973 2.8973" actuatorfrcrange="-12 12" armature="0.2055" limited="true" actuatorfrclimited="true" solreflimit="0.0001479245984228328 1.838504910469055" />
+                    <body name="panda_hand" pos="0 0 0.107" quat="0.92388 0 0 -0.382683" gravcomp="1">
+                      <inertial pos="-0.01 0 0.03" mass="0.73" diaginertia="0.001 0.0025 0.0017" />
+                      <geom name="/panda/Geometry/panda_link0/panda_link1/panda_link2/panda_link3/panda_link4/panda_link5/panda_link6/panda_link7/panda_hand/gripper_65" size="0.005" pos="7.45058e-09 0 0.1" quat="1 0 0 7.45058e-09" contype="0" conaffinity="0" friction="1 0.005 0.0001" solref="0.001" solimp="0.9 0.95 0.001" gap="0.1" group="2" />
+                      <geom name="/panda/Geometry/panda_link0/panda_link1/panda_link2/panda_link3/panda_link4/panda_link5/panda_link6/panda_link7/panda_hand/hand_capsule_80" size="0.04 0.06" pos="0 0 0.03" quat="0.707107 0.707107 0 0" type="capsule" contype="2" conaffinity="1" friction="0.75 0.005 0.0001" solref="0.001 1" solimp="0.9 0.95 0.001" group="3" margin="0" gap="0" />
+                      <body name="panda_leftfinger" pos="0 0 0.0584" gravcomp="1">
+                        <inertial pos="0 0 0" mass="0.015" diaginertia="2.375e-06 2.375e-06 7.5e-07" />
+                        <joint name="panda_finger_joint1" type="slide" solimplimit="0.8999999761581421 0.949999988079071 0.001000000047497451 0.5 2" solreffriction="0.02" solimpfriction="0.9 0.95 0.001" range="0 0.04" actuatorfrcrange="-70 70" armature="0.1" axis="0 1 0" limited="true" actuatorfrclimited="true" solreflimit="0.004599018953740597 0.3297253847122192" />
+                        <geom name="/panda/Geometry/panda_link0/panda_link1/panda_link2/panda_link3/panda_link4/panda_link5/panda_link6/panda_link7/panda_hand/panda_leftfinger/Box_69" size="0.011 0.0075 0.01" pos="7.45058e-09 0.0185 0.011" quat="1 0 0 -9.92517e-09" type="box" contype="0" conaffinity="0" friction="1 0.005 0.0001" solref="0.001" solimp="0.9 0.95 0.001" gap="0.1" group="2" />
+                        <geom name="/panda/Geometry/panda_link0/panda_link1/panda_link2/panda_link3/panda_link4/panda_link5/panda_link6/panda_link7/panda_hand/panda_leftfinger/Box_1_70" size="0.011 0.0044 0.0019" pos="3.72529e-09 0.0068 0.00220001" quat="1 0 0 -2.08374e-09" type="box" contype="0" conaffinity="0" friction="1 0.005 0.0001" solref="0.001" solimp="0.9 0.95 0.001" gap="0.1" group="2" />
+                        <geom name="/panda/Geometry/panda_link0/panda_link1/panda_link2/panda_link3/panda_link4/panda_link5/panda_link6/panda_link7/panda_hand/panda_leftfinger/Box_2_71" size="0.00875 0.0035 0.01175" pos="0 0.0159 0.02835" quat="0.970143 0.242535 2.74049e-09 -1.26028e-08" type="box" contype="0" conaffinity="0" friction="1 0.005 0.0001" solref="0.001" solimp="0.9 0.95 0.001" gap="0.1" group="2" />
+                        <geom name="/panda/Geometry/panda_link0/panda_link1/panda_link2/panda_link3/panda_link4/panda_link5/panda_link6/panda_link7/panda_hand/panda_leftfinger/left_finger_pad_78" size="0.00875 0.0076 0.00825" pos="0 0.00758 0.04525" type="box" contype="2" conaffinity="1" friction="0.75 0.005 0.0001" solref="0.001 1" solimp="0.9 0.95 0.001" group="3" margin="0" gap="0" />
+                        <geom name="panda_finger_0_66" pos="7.45058e-09 0 0" quat="1 0 0 7.45058e-09" type="mesh" contype="0" conaffinity="0" friction="1 0.005 0.0001" solref="0.001" solimp="0.9 0.95 0.001" gap="0.1" mesh="panda_mesh_65" group="2" />
+                        <geom name="panda_finger_1_67" pos="7.45058e-09 0 0" quat="1 0 0 7.45058e-09" type="mesh" contype="0" conaffinity="0" friction="1 0.005 0.0001" solref="0.001" solimp="0.9 0.95 0.001" gap="0.1" mesh="panda_mesh_66" group="2" />
+                        <geom name="panda_finger_0_68" pos="7.45058e-09 0 0" quat="1 0 0 7.45058e-09" type="mesh" contype="0" conaffinity="0" friction="1 0.005 0.0001" solref="0.001" solimp="0.9 0.95 0.001" gap="0.1" mesh="panda_mesh_67" group="2" />
+                      </body>
+                      <body name="panda_rightfinger" pos="0 0 0.0584" quat="0 0 0 -1" gravcomp="1">
+                        <inertial pos="0 0 0" mass="0.015" diaginertia="2.375e-06 2.375e-06 7.5e-07" />
+                        <joint name="panda_finger_joint2" type="slide" solimplimit="0.8999999761581421 0.949999988079071 0.001000000047497451 0.5 2" solreffriction="0.02" solimpfriction="0.9 0.95 0.001" range="0 0.04" actuatorfrcrange="-1 1" armature="0.1" axis="0 1 0" limited="true" actuatorfrclimited="true" solreflimit="0.004599019419401884 0.3297253847122192" />
+                        <geom name="/panda/Geometry/panda_link0/panda_link1/panda_link2/panda_link3/panda_link4/panda_link5/panda_link6/panda_link7/panda_hand/panda_rightfinger/Box_75" size="0.011 0.0075 0.01" pos="-3.72529e-09 0.0185 0.011" quat="1 0 0 -7.14948e-09" type="box" contype="0" conaffinity="0" friction="1 0.005 0.0001" solref="0.001" solimp="0.9 0.95 0.001" gap="0.1" group="2" />
+                        <geom name="/panda/Geometry/panda_link0/panda_link1/panda_link2/panda_link3/panda_link4/panda_link5/panda_link6/panda_link7/panda_hand/panda_rightfinger/Box_1_76" size="0.011 0.0044 0.0019" pos="-3.72529e-09 0.0068 0.00220001" quat="1 0 0 -4.77605e-09" type="box" contype="0" conaffinity="0" friction="1 0.005 0.0001" solref="0.001" solimp="0.9 0.95 0.001" gap="0.1" group="2" />
+                        <geom name="/panda/Geometry/panda_link0/panda_link1/panda_link2/panda_link3/panda_link4/panda_link5/panda_link6/panda_link7/panda_hand/panda_rightfinger/Box_2_77" size="0.00875 0.0035 0.01175" pos="-7.45058e-09 0.0159 0.02835" quat="0.970143 0.242535 -2.01698e-09 -9.93177e-09" type="box" contype="0" conaffinity="0" friction="1 0.005 0.0001" solref="0.001" solimp="0.9 0.95 0.001" gap="0.1" group="2" />
+                        <geom name="/panda/Geometry/panda_link0/panda_link1/panda_link2/panda_link3/panda_link4/panda_link5/panda_link6/panda_link7/panda_hand/panda_rightfinger/right_finger_pad_79" size="0.00875 0.0076 0.00825" pos="0 0.00758 0.04525" type="box" contype="2" conaffinity="1" friction="0.75 0.005 0.0001" solref="0.001 1" solimp="0.9 0.95 0.001" group="3" margin="0" gap="0" />
+                        <geom name="panda_finger_0_72" pos="-3.72529e-09 0 0" quat="1 0 0 1.05367e-08" type="mesh" contype="0" conaffinity="0" friction="1 0.005 0.0001" solref="0.001" solimp="0.9 0.95 0.001" gap="0.1" mesh="panda_mesh_68" group="2" />
+                        <geom name="panda_finger_1_73" pos="-3.72529e-09 0 0" quat="1 0 0 1.05367e-08" type="mesh" contype="0" conaffinity="0" friction="1 0.005 0.0001" solref="0.001" solimp="0.9 0.95 0.001" gap="0.1" mesh="panda_mesh_69" group="2" />
+                        <geom name="panda_finger_0_74" pos="-3.72529e-09 0 0" quat="1 0 0 1.05367e-08" type="mesh" contype="0" conaffinity="0" friction="1 0.005 0.0001" solref="0.001" solimp="0.9 0.95 0.001" gap="0.1" mesh="panda_mesh_70" group="2" />
+                      </body>
+                      <site name="panda_hand_site" pos="0 0 0" size="0.005" rgba="0 1 0 1" />
+                      <site name="grasp_site" pos="0 0 0.107" quat="0 0 -1 0" size="0.005" rgba="1 0 0 1" />
+                      <geom name="panda_hand_0_59" pos="7.45058e-09 0 0" quat="1 0 0 7.45058e-09" type="mesh" contype="0" conaffinity="0" friction="1 0.005 0.0001" solref="0.001" solimp="0.9 0.95 0.001" gap="0.1" mesh="panda_mesh_59" group="2" />
+                      <geom name="panda_hand_1_60" pos="7.45058e-09 0 0" quat="1 0 0 7.45058e-09" type="mesh" contype="0" conaffinity="0" friction="1 0.005 0.0001" solref="0.001" solimp="0.9 0.95 0.001" gap="0.1" mesh="panda_mesh_60" group="2" />
+                      <geom name="panda_hand_2_61" pos="7.45058e-09 0 0" quat="1 0 0 7.45058e-09" type="mesh" contype="0" conaffinity="0" friction="1 0.005 0.0001" solref="0.001" solimp="0.9 0.95 0.001" gap="0.1" mesh="panda_mesh_61" group="2" />
+                      <geom name="panda_hand_3_62" pos="7.45058e-09 0 0" quat="1 0 0 7.45058e-09" type="mesh" contype="0" conaffinity="0" friction="1 0.005 0.0001" solref="0.001" solimp="0.9 0.95 0.001" gap="0.1" mesh="panda_mesh_62" group="2" />
+                      <geom name="panda_hand_4_63" pos="7.45058e-09 0 0" quat="1 0 0 7.45058e-09" type="mesh" contype="0" conaffinity="0" friction="1 0.005 0.0001" solref="0.001" solimp="0.9 0.95 0.001" gap="0.1" mesh="panda_mesh_63" group="2" />
+                      <geom name="panda_hand_c_64" pos="7.45058e-09 0 0" quat="1 0 0 7.45058e-09" type="mesh" contype="0" conaffinity="0" friction="1 0.005 0.0001" solref="0.001" solimp="0.9 0.95 0.001" gap="0.1" mesh="panda_mesh_64" group="2" />
+                    </body>
+                    <geom name="panda_link7_0_50" pos="0 0 0" quat="1 0 0 0" type="mesh" contype="0" conaffinity="0" friction="1 0.005 0.0001" solref="0.001" solimp="0.9 0.95 0.001" gap="0.1" mesh="panda_mesh_50" group="2" />
+                    <geom name="panda_link7_1_51" pos="0 0 0" quat="1 0 0 0" type="mesh" contype="0" conaffinity="0" friction="1 0.005 0.0001" solref="0.001" solimp="0.9 0.95 0.001" gap="0.1" mesh="panda_mesh_51" group="2" />
+                    <geom name="panda_link7_2_52" pos="0 0 0" quat="1 0 0 0" type="mesh" contype="0" conaffinity="0" friction="1 0.005 0.0001" solref="0.001" solimp="0.9 0.95 0.001" gap="0.1" mesh="panda_mesh_52" group="2" />
+                    <geom name="panda_link7_3_53" pos="0 0 0" type="mesh" contype="0" conaffinity="0" friction="1 0.005 0.0001" solref="0.001" solimp="0.9 0.95 0.001" gap="0.1" mesh="panda_mesh_53" group="2" />
+                    <geom name="panda_link7_4_54" pos="0 0 0" type="mesh" contype="0" conaffinity="0" friction="1 0.005 0.0001" solref="0.001" solimp="0.9 0.95 0.001" gap="0.1" mesh="panda_mesh_54" group="2" />
+                    <geom name="panda_link7_5_55" pos="0 0 0" quat="1 0 0 0" type="mesh" contype="0" conaffinity="0" friction="1 0.005 0.0001" solref="0.001" solimp="0.9 0.95 0.001" gap="0.1" mesh="panda_mesh_55" group="2" />
+                    <geom name="panda_link7_6_56" pos="0 0 0" quat="1 0 0 0" type="mesh" contype="0" conaffinity="0" friction="1 0.005 0.0001" solref="0.001" solimp="0.9 0.95 0.001" gap="0.1" mesh="panda_mesh_56" group="2" />
+                    <geom name="panda_link7_7_57" pos="0 0 0" quat="1 0 0 0" type="mesh" contype="0" conaffinity="0" friction="1 0.005 0.0001" solref="0.001" solimp="0.9 0.95 0.001" gap="0.1" mesh="panda_mesh_57" group="2" />
+                    <geom name="panda_link7_c_58" pos="0 0 0" quat="1 0 0 0" type="mesh" contype="0" conaffinity="0" friction="1 0.005 0.0001" solref="0.001" solimp="0.9 0.95 0.001" gap="0.1" mesh="panda_mesh_58" group="2" />
+                  </body>
+                  <geom name="panda_link6_0_32" pos="0 -2.38419e-07 0" quat="1 1.95928e-07 0 0" type="mesh" contype="0" conaffinity="0" friction="1 0.005 0.0001" solref="0.001" solimp="0.9 0.95 0.001" gap="0.1" mesh="panda_mesh_32" group="2" />
+                  <geom name="panda_link6_1_33" pos="0 -2.38419e-07 0" quat="1 1.95928e-07 0 0" type="mesh" contype="0" conaffinity="0" friction="1 0.005 0.0001" solref="0.001" solimp="0.9 0.95 0.001" gap="0.1" mesh="panda_mesh_33" group="2" />
+                  <geom name="panda_link6_2_34" pos="0 -2.38419e-07 0" quat="1 1.95928e-07 0 0" type="mesh" contype="0" conaffinity="0" friction="1 0.005 0.0001" solref="0.001" solimp="0.9 0.95 0.001" gap="0.1" mesh="panda_mesh_34" group="2" />
+                  <geom name="panda_link6_3_35" pos="0 -2.38419e-07 0" quat="1 1.95928e-07 0 0" type="mesh" contype="0" conaffinity="0" friction="1 0.005 0.0001" solref="0.001" solimp="0.9 0.95 0.001" gap="0.1" mesh="panda_mesh_35" group="2" />
+                  <geom name="panda_link6_4_36" pos="0 -2.38419e-07 0" quat="1 1.95928e-07 0 0" type="mesh" contype="0" conaffinity="0" friction="1 0.005 0.0001" solref="0.001" solimp="0.9 0.95 0.001" gap="0.1" mesh="panda_mesh_36" group="2" />
+                  <geom name="panda_link6_5_37" pos="0 -2.38419e-07 0" quat="1 1.95928e-07 0 0" type="mesh" contype="0" conaffinity="0" friction="1 0.005 0.0001" solref="0.001" solimp="0.9 0.95 0.001" gap="0.1" mesh="panda_mesh_37" group="2" />
+                  <geom name="panda_link6_6_38" pos="0 -2.38419e-07 0" quat="1 1.95928e-07 0 0" type="mesh" contype="0" conaffinity="0" friction="1 0.005 0.0001" solref="0.001" solimp="0.9 0.95 0.001" gap="0.1" mesh="panda_mesh_38" group="2" />
+                  <geom name="panda_link6_7_39" pos="0 -2.38419e-07 0" quat="1 1.95928e-07 0 0" type="mesh" contype="0" conaffinity="0" friction="1 0.005 0.0001" solref="0.001" solimp="0.9 0.95 0.001" gap="0.1" mesh="panda_mesh_39" group="2" />
+                  <geom name="panda_link6_8_40" pos="0 -2.38419e-07 0" quat="1 1.95928e-07 0 0" type="mesh" contype="0" conaffinity="0" friction="1 0.005 0.0001" solref="0.001" solimp="0.9 0.95 0.001" gap="0.1" mesh="panda_mesh_40" group="2" />
+                  <geom name="panda_link6_9_41" pos="0 -2.38419e-07 0" quat="1 1.95928e-07 0 0" type="mesh" contype="0" conaffinity="0" friction="1 0.005 0.0001" solref="0.001" solimp="0.9 0.95 0.001" gap="0.1" mesh="panda_mesh_41" group="2" />
+                  <geom name="panda_link6_10_42" pos="0 -2.38419e-07 0" quat="1 1.95928e-07 0 0" type="mesh" contype="0" conaffinity="0" friction="1 0.005 0.0001" solref="0.001" solimp="0.9 0.95 0.001" gap="0.1" mesh="panda_mesh_42" group="2" />
+                  <geom name="panda_link6_11_43" pos="0 -2.38419e-07 0" quat="1 1.95928e-07 0 0" type="mesh" contype="0" conaffinity="0" friction="1 0.005 0.0001" solref="0.001" solimp="0.9 0.95 0.001" gap="0.1" mesh="panda_mesh_43" group="2" />
+                  <geom name="panda_link6_12_44" pos="0 -2.38419e-07 0" quat="1 1.95928e-07 0 0" type="mesh" contype="0" conaffinity="0" friction="1 0.005 0.0001" solref="0.001" solimp="0.9 0.95 0.001" gap="0.1" mesh="panda_mesh_44" group="2" />
+                  <geom name="panda_link6_13_45" pos="0 -2.38419e-07 0" quat="1 1.95928e-07 0 0" type="mesh" contype="0" conaffinity="0" friction="1 0.005 0.0001" solref="0.001" solimp="0.9 0.95 0.001" gap="0.1" mesh="panda_mesh_45" group="2" />
+                  <geom name="panda_link6_14_46" pos="0 -2.38419e-07 0" quat="1 1.95928e-07 0 0" type="mesh" contype="0" conaffinity="0" friction="1 0.005 0.0001" solref="0.001" solimp="0.9 0.95 0.001" gap="0.1" mesh="panda_mesh_46" group="2" />
+                  <geom name="panda_link6_15_47" pos="0 -2.38419e-07 0" quat="1 1.95928e-07 0 0" type="mesh" contype="0" conaffinity="0" friction="1 0.005 0.0001" solref="0.001" solimp="0.9 0.95 0.001" gap="0.1" mesh="panda_mesh_47" group="2" />
+                  <geom name="panda_link6_16_48" pos="0 -2.38419e-07 0" quat="1 1.95928e-07 0 0" type="mesh" contype="0" conaffinity="0" friction="1 0.005 0.0001" solref="0.001" solimp="0.9 0.95 0.001" gap="0.1" mesh="panda_mesh_48" group="2" />
+                  <geom name="panda_link6_c_49" pos="0 -2.38419e-07 0" quat="1 1.95928e-07 0 0" type="mesh" contype="0" conaffinity="0" friction="1 0.005 0.0001" solref="0.001" solimp="0.9 0.95 0.001" gap="0.1" mesh="panda_mesh_49" group="2" />
+                </body>
+                <geom name="panda_link5_0_26" type="mesh" contype="0" conaffinity="0" friction="1 0.005 0.0001" solref="0.001" solimp="0.9 0.95 0.001" gap="0.1" mesh="panda_mesh_26" group="2" />
+                <geom name="panda_link5_1_27" type="mesh" contype="0" conaffinity="0" friction="1 0.005 0.0001" solref="0.001" solimp="0.9 0.95 0.001" gap="0.1" mesh="panda_mesh_27" group="2" />
+                <geom name="panda_link5_2_28" type="mesh" contype="0" conaffinity="0" friction="1 0.005 0.0001" solref="0.001" solimp="0.9 0.95 0.001" gap="0.1" mesh="panda_mesh_28" group="2" />
+                <geom name="panda_link5_c0_29" type="mesh" contype="0" conaffinity="0" friction="1 0.005 0.0001" solref="0.001" solimp="0.9 0.95 0.001" gap="0.1" mesh="panda_mesh_29" group="2" />
+                <geom name="panda_link5_c1_30" type="mesh" contype="0" conaffinity="0" friction="1 0.005 0.0001" solref="0.001" solimp="0.9 0.95 0.001" gap="0.1" mesh="panda_mesh_30" group="2" />
+                <geom name="panda_link5_c2_31" type="mesh" contype="0" conaffinity="0" friction="1 0.005 0.0001" solref="0.001" solimp="0.9 0.95 0.001" gap="0.1" mesh="panda_mesh_31" group="2" />
+              </body>
+              <geom name="panda_link4_0_21" pos="7.45058e-09 -1.19209e-07 0" quat="1 1.95928e-07 0 0" type="mesh" contype="0" conaffinity="0" friction="1 0.005 0.0001" solref="0.001" solimp="0.9 0.95 0.001" gap="0.1" mesh="panda_mesh_21" group="2" />
+              <geom name="panda_link4_1_22" pos="7.45058e-09 -1.19209e-07 0" quat="1 1.95928e-07 0 0" type="mesh" contype="0" conaffinity="0" friction="1 0.005 0.0001" solref="0.001" solimp="0.9 0.95 0.001" gap="0.1" mesh="panda_mesh_22" group="2" />
+              <geom name="panda_link4_2_23" pos="7.45058e-09 -1.19209e-07 0" quat="1 1.95928e-07 0 0" type="mesh" contype="0" conaffinity="0" friction="1 0.005 0.0001" solref="0.001" solimp="0.9 0.95 0.001" gap="0.1" mesh="panda_mesh_23" group="2" />
+              <geom name="panda_link4_3_24" pos="7.45058e-09 -1.19209e-07 0" quat="1 1.95928e-07 0 0" type="mesh" contype="0" conaffinity="0" friction="1 0.005 0.0001" solref="0.001" solimp="0.9 0.95 0.001" gap="0.1" mesh="panda_mesh_24" group="2" />
+              <geom name="panda_link4_c_25" pos="7.45058e-09 -1.19209e-07 0" quat="1 1.95928e-07 0 0" type="mesh" contype="0" conaffinity="0" friction="1 0.005 0.0001" solref="0.001" solimp="0.9 0.95 0.001" gap="0.1" mesh="panda_mesh_25" group="2" />
+            </body>
+            <geom name="panda_link3_0_16" type="mesh" contype="0" conaffinity="0" friction="1 0.005 0.0001" solref="0.001" solimp="0.9 0.95 0.001" gap="0.1" mesh="panda_mesh_16" group="2" />
+            <geom name="panda_link3_1_17" type="mesh" contype="0" conaffinity="0" friction="1 0.005 0.0001" solref="0.001" solimp="0.9 0.95 0.001" gap="0.1" mesh="panda_mesh_17" group="2" />
+            <geom name="panda_link3_2_18" type="mesh" contype="0" conaffinity="0" friction="1 0.005 0.0001" solref="0.001" solimp="0.9 0.95 0.001" gap="0.1" mesh="panda_mesh_18" group="2" />
+            <geom name="panda_link3_3_19" type="mesh" contype="0" conaffinity="0" friction="1 0.005 0.0001" solref="0.001" solimp="0.9 0.95 0.001" gap="0.1" mesh="panda_mesh_19" group="2" />
+            <geom name="panda_link3_c_20" type="mesh" contype="0" conaffinity="0" friction="1 0.005 0.0001" solref="0.001" solimp="0.9 0.95 0.001" gap="0.1" mesh="panda_mesh_20" group="2" />
+          </body>
+          <geom name="panda_link2_14" pos="0 5.96046e-08 0" quat="1 -1.95928e-07 0 0" type="mesh" contype="0" conaffinity="0" friction="1 0.005 0.0001" solref="0.001" solimp="0.9 0.95 0.001" gap="0.1" mesh="panda_mesh_14" group="2" />
+          <geom name="panda_link2_c_15" pos="0 5.96046e-08 0" quat="1 -1.95928e-07 0 0" type="mesh" contype="0" conaffinity="0" friction="1 0.005 0.0001" solref="0.001" solimp="0.9 0.95 0.001" gap="0.1" mesh="panda_mesh_15" group="2" />
+        </body>
+        <geom name="panda_link1_12" type="mesh" contype="0" conaffinity="0" friction="1 0.005 0.0001" solref="0.001" solimp="0.9 0.95 0.001" gap="0.1" mesh="panda_mesh_12" group="2" />
+        <geom name="panda_link1_c_13" type="mesh" contype="0" conaffinity="0" friction="1 0.005 0.0001" solref="0.001" solimp="0.9 0.95 0.001" gap="0.1" mesh="panda_mesh_13" group="2" />
+      </body>
+      <geom name="panda_link0_0_0" type="mesh" contype="0" conaffinity="0" friction="1 0.005 0.0001" solref="0.001" solimp="0.9 0.95 0.001" gap="0.1" mesh="panda_mesh_00" group="2" />
+      <geom name="panda_link0_1_1" type="mesh" contype="0" conaffinity="0" friction="1 0.005 0.0001" solref="0.001" solimp="0.9 0.95 0.001" gap="0.1" mesh="panda_mesh_01" group="2" />
+      <geom name="panda_link0_2_2" type="mesh" contype="0" conaffinity="0" friction="1 0.005 0.0001" solref="0.001" solimp="0.9 0.95 0.001" gap="0.1" mesh="panda_mesh_02" group="2" />
+      <geom name="panda_link0_3_3" type="mesh" contype="0" conaffinity="0" friction="1 0.005 0.0001" solref="0.001" solimp="0.9 0.95 0.001" gap="0.1" mesh="panda_mesh_03" group="2" />
+      <geom name="panda_link0_4_4" type="mesh" contype="0" conaffinity="0" friction="1 0.005 0.0001" solref="0.001" solimp="0.9 0.95 0.001" gap="0.1" mesh="panda_mesh_04" group="2" />
+      <geom name="panda_link0_5_5" type="mesh" contype="0" conaffinity="0" friction="1 0.005 0.0001" solref="0.001" solimp="0.9 0.95 0.001" gap="0.1" mesh="panda_mesh_05" group="2" />
+      <geom name="panda_link0_7_6" type="mesh" contype="0" conaffinity="0" friction="1 0.005 0.0001" solref="0.001" solimp="0.9 0.95 0.001" gap="0.1" mesh="panda_mesh_06" group="2" />
+      <geom name="panda_link0_8_7" type="mesh" contype="0" conaffinity="0" friction="1 0.005 0.0001" solref="0.001" solimp="0.9 0.95 0.001" gap="0.1" mesh="panda_mesh_07" group="2" />
+      <geom name="panda_link0_9_8" type="mesh" contype="0" conaffinity="0" friction="1 0.005 0.0001" solref="0.001" solimp="0.9 0.95 0.001" gap="0.1" mesh="panda_mesh_08" group="2" />
+      <geom name="panda_link0_10_9" type="mesh" contype="0" conaffinity="0" friction="1 0.005 0.0001" solref="0.001" solimp="0.9 0.95 0.001" gap="0.1" mesh="panda_mesh_09" group="2" />
+      <geom name="panda_link0_11_10" type="mesh" contype="0" conaffinity="0" friction="1 0.005 0.0001" solref="0.001" solimp="0.9 0.95 0.001" gap="0.1" mesh="panda_mesh_10" group="2" />
+      <geom name="panda_link0_c_11" type="mesh" contype="0" conaffinity="0" friction="1 0.005 0.0001" solref="0.001" solimp="0.9 0.95 0.001" gap="0.1" mesh="panda_mesh_11" group="2" />
+    </body>
+    <light pos="0.5 0 1.5" dir="0 0 -1" directional="true" />
+    <geom name="ground" type="plane" size="2 2 .1" pos="0 0 0" contype="1" conaffinity="3" friction=".5 .005 .0001" solref=".02 1" material="groundplane" />
+    <body name="fixed_0" pos="0.590179443359375 -0.04102325439453125 0.00339999608695507" quat="-0.7845113277435303 0 0 -0.6201145648956299">
+      <geom name="fixed_0_0" contype="1" conaffinity="3" condim="3" friction=".75 .005 .0001" solref=".0025 1" margin="0" gap="0.005" rgba=".4 .5 .6 1" type="sdf" mesh="fixed_0_mesh_0" />
+    </body>
+    <body name="held_0" pos="0.6115379333496094 -0.04399490356445312 0.06829738616943359" quat="0.04441239684820175 -0.05174290016293526 0.7590740323066711 -0.6474387049674988">
+      <freejoint name="held_0_free" />
+      <inertial pos="-1.708681520540267e-05 8.663899643579498e-05 0.01258983742445707" mass="0.029999999329447746" fullinertia="1.055171403801069e-05 1.055175058832901e-05 1.089793974211716e-05 -2.148391048395482e-10 1.750292411006882e-10 8.613897789500058e-11" />
+      <geom name="held_0_0" contype="1" conaffinity="3" condim="3" friction=".75 .005 .0001" solref=".0025 1" margin="0" gap="0.005" rgba=".7 .4 .1 1" type="sdf" mesh="held_0_mesh_0" />
+    </body>
+    <body name="fixed_1" pos="0.3667831420898438 0.3203284740447998 0.02060000039637089" quat="-0.6201145648956299 0 0 0.7845113277435303">
+      <geom name="fixed_1_0" contype="1" conaffinity="3" condim="3" friction=".75 .005 .0001" solref=".0025 1" margin="0" gap="0.005" rgba=".4 .5 .6 1" type="sdf" mesh="fixed_1_mesh_0" />
+    </body>
+    <body name="held_1" pos="0.1800003051757812 -0.4200000762939453 0.1541969180107117" quat="0.6368288993835449 -0.3011859953403473 -0.0923679918050766 0.7037073969841003">
+      <freejoint name="held_1_free" />
+      <inertial pos="-5.325392339727841e-05 0.0002999053976964206 0.03957438468933105" mass="0.05000000074505806" fullinertia="2.107380649045808e-05 2.083644838217879e-05 1.059027541965406e-05 8.437511973824474e-12 -2.601802577828494e-07 -1.01442992894718e-10" />
+      <geom name="held_1_0" contype="1" conaffinity="3" condim="3" friction=".75 .005 .0001" solref=".0025 1" margin="0" gap="0.005" rgba=".7 .4 .1 1" type="sdf" mesh="held_1_mesh_0" />
+    </body>
+    <body name="fixed_2" pos="0.4631309509277344 -0.01076841354370117 0.02080000005662441" quat="-0.116244912147522 0 0 -0.9932109117507935">
+      <geom name="fixed_2_0" contype="1" conaffinity="3" condim="3" friction=".75 .005 .0001" solref=".0025 1" margin="0" gap="0.005" rgba=".4 .5 .6 1" type="sdf" mesh="fixed_2_mesh_0" />
+    </body>
+    <body name="held_2" pos="0.2800006866455078 -0.4200000762939453 0.1717201471328735" quat="0.27434241771698 -0.5135901570320129 0.430914044380188 -0.6894015669822693">
+      <freejoint name="held_2_free" />
+      <inertial pos="-0.03025004640221596 -5.258033866084588e-07 0.01450787577778101" mass="0.01899999938905239" fullinertia="1.435604079029872e-05 1.435643732998869e-05 1.688442696628044e-05 -7.877883068108105e-11 -1.130855717228207e-12 -2.177050206775277e-11" />
+      <geom name="held_2_0" contype="1" conaffinity="3" condim="3" friction=".75 .005 .0001" solref=".0025 1" margin="0" gap="0.005" rgba=".7 .4 .1 1" type="sdf" mesh="held_2_mesh_0" />
+    </body>
+    <body name="fixed_3" pos="0.5858001708984375 0.2683491706848145 0.02070000022649765" quat="-0.116244912147522 0 0 -0.9932109117507935">
+      <geom name="fixed_3_0" contype="1" conaffinity="3" condim="3" friction=".75 .005 .0001" solref=".0025 1" margin="0" gap="0.005" rgba=".4 .5 .6 1" type="sdf" mesh="fixed_3_mesh_0" />
+    </body>
+    <body name="held_3" pos="0.3799991607666016 -0.4200000762939453 0.1633712649345398" quat="0.2039145082235336 -0.649048388004303 -0.1135196089744568 -0.7240638136863708">
+      <freejoint name="held_3_free" />
+      <inertial pos="9.56319112788151e-08 -4.813456300212238e-09 0.02500023134052753" mass="0.01899999938905239" fullinertia="1.40150216591428e-05 1.401501620217459e-05 1.015108561512989e-05 -3.785934673400382e-12 9.659782739326883e-13 -1.190466562134285e-12" />
+      <geom name="held_3_0" contype="1" conaffinity="3" condim="3" friction=".75 .005 .0001" solref=".0025 1" margin="0" gap="0.005" rgba=".7 .4 .1 1" type="sdf" mesh="held_3_mesh_0" />
+    </body>
+    <body name="nist_board" pos="0.6188564300537109 -0.09644317626953125 0.020600000396370888" quat="0.0 0.784511289712929 0.6201145348344582 0.0">
+      <geom name="nist_board_collision" type="box" pos="0.19232847446867662 -0.191768517928605 0.015155968587500806" size="0.1925 0.1923075 0.015" contype="1" conaffinity="3" condim="3" friction=".75 .005 .0001" solref=".0025 1" margin="0" gap="0" group="3" rgba=".6 .6 .6 0" />
+      <geom name="nist_board_visual_0" type="mesh" mesh="nist_board_visual_0" contype="0" conaffinity="0" group="2" rgba="0.9923273921012878 0.9258489012718201 0.8273624777793884 1.0" />
+    </body>
+  </worldbody>
+  <equality>
+    <joint name="finger_coupling" joint1="panda_finger_joint2" joint2="panda_finger_joint1" polycoef="-0 1 0 0 0" solref="0.01999999955296516 1" solimp="0.8999999761581421 0.949999988079071 0.001000000047497451 0.5 2" />
+    <joint name="finger_coupling_reciprocal" joint1="panda_finger_joint1" joint2="panda_finger_joint2" polycoef="0 1 0 0 0" solref="0.01999999955296516 1" solimp="0.8999999761581421 0.949999988079071 0.001000000047497451 0.5 2" />
+  </equality>
+  <actuator>
+    <position name="arm_position1" joint="panda_joint1" kp="600" kv="50" forcelimited="false" />
+    <position name="arm_position2" joint="panda_joint2" kp="600" kv="50" forcelimited="false" />
+    <position name="arm_position3" joint="panda_joint3" kp="600" kv="50" forcelimited="false" />
+    <position name="arm_position4" joint="panda_joint4" kp="600" kv="50" forcelimited="false" />
+    <position name="arm_position5" joint="panda_joint5" kp="250" kv="30" forcelimited="false" />
+    <position name="arm_position6" joint="panda_joint6" kp="150" kv="25" forcelimited="false" />
+    <position name="arm_position7" joint="panda_joint7" kp="50" kv="15" forcelimited="false" />
+    <position name="finger_position" joint="panda_finger_joint1" kp="350" kv="175" ctrllimited="true" ctrlrange="0 0.04" forcelimited="false" />
+  </actuator>
+  <option timestep="0.00125" integrator="implicitfast" solver="Newton" jacobian="sparse" cone="pyramidal" impratio="1" tolerance="1e-6" iterations="100" ls_iterations="50" sdf_initpoints="40" sdf_iterations="10" />
+  <statistic center="0.5 0 0.3" extent="0.8" />
+  <visual>
+    <headlight diffuse="0.6 0.6 0.6" ambient="0.3 0.3 0.3" specular="0 0 0" />
+    <rgba haze="0.15 0.25 0.35 1" />
+    <global azimuth="185" elevation="-22" offwidth="1920" offheight="1080" />
+    <scale contactwidth="0.05" contactheight="0.02" forcewidth="0.05" com="0.05" framewidth="0.01" framelength="0.2" />
+  </visual>
+  <keyframe>
+    <key name="initial" qpos="-0.07879788428544998 0.6161670684814453 -0.05130477249622345 -1.892013669013977 0.4001479744911194 2.403586864471436 1.786362171173096 0.006825000047683716 0.006825000047683716 0.6115379333496094 -0.04399490356445312 0.06829738616943359 0.04441239684820175 -0.05174290016293526 0.7590740323066711 -0.6474387049674988 0.1800003051757812 -0.4200000762939453 0.1541969180107117 0.6368288993835449 -0.3011859953403473 -0.0923679918050766 0.7037073969841003 0.2800006866455078 -0.4200000762939453 0.1717201471328735 0.27434241771698 -0.5135901570320129 0.430914044380188 -0.6894015669822693 0.3799991607666016 -0.4200000762939453 0.1633712649345398 0.2039145082235336 -0.649048388004303 -0.1135196089744568 -0.7240638136863708" qvel="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0" ctrl="-0.07879788428544998 0.6161670684814453 -0.05130477249622345 -1.892013669013977 0.4001479744911194 2.403586864471436 1.786362171173096 0.006825000047683716" />
+  </keyframe>
+</mujoco>

@@ -237,6 +237,63 @@ def init_structs(
     return m, d, rc, ctrls
 
 
+def load_state_profile(path: str, mjm: mujoco.MjModel) -> dict[str, np.ndarray]:
+  """Load independent pre-step states without interpolation or downsampling."""
+  if REPLAY.value or NOISE_STD.value or NOISE_RATE.value:
+    raise ValueError("State profiling requires no replay and noise_std=noise_rate=0")
+  if KEYFRAME.value != 0 or mjm.nkey == 0:
+    raise ValueError("State profiling requires reset keyframe 0")
+  if any(getattr(mjm, field) for field in ("na", "nhistory", "nmocap", "nplugin", "nsensor", "ntendon", "nuserdata")):
+    raise ValueError("State profiling supports only qpos/qvel state, without activation, history, mocap, plugins or sensors")
+  if mjm.opt.enableflags & mujoco.mjtEnableBit.mjENBL_SLEEP:
+    raise ValueError("State profiling requires sleeping disabled")
+  if mjm.opt.disableflags & mujoco.mjtDisableBit.mjDSBL_WARMSTART:
+    raise ValueError("State profiling keeps warmstart enabled and restores its value to zero")
+  if wp.config.deterministic != wp.DeterministicMode.NOT_GUARANTEED:
+    raise ValueError("State profiling performance requires deterministic mode off")
+  with np.load(path, allow_pickle=False) as data:
+    if set(data.files) != {"qpos", "qvel", "ctrl", "times"}:
+      raise ValueError("State profile must contain only qpos, qvel, ctrl and times")
+    states = {key: data[key] for key in data.files}
+  count = len(states["times"]) if states["times"].ndim == 1 else 0
+  shapes = {"qpos": (count, mjm.nq), "qvel": (count, mjm.nv), "ctrl": (count, mjm.nu), "times": (count,)}
+  for key, shape in shapes.items():
+    if not count or states[key].shape != shape or states[key].dtype != np.float32 or not np.isfinite(states[key]).all():
+      raise ValueError(f"State profile {key} must be finite float32 with nonempty shape {shape}")
+  if np.any(np.diff(states["times"]) <= 0):
+    raise ValueError("State profile times must be strictly increasing")
+  if not flags.FLAGS["nstep"].using_default_value and NSTEP.value != count:
+    raise ValueError("State profiling measures every saved state; nstep must equal the state count")
+  flags.FLAGS.nstep = count
+  return states
+
+
+@wp.kernel
+def _restore_state(
+  # Data in:
+  qpos_in: wp.array2d[float],
+  qvel_in: wp.array2d[float],
+  ctrl_in: wp.array2d[float],
+  # In:
+  times_in: wp.array[float],
+  index: wp.array[int],
+  # Data out:
+  time_out: wp.array[float],
+  qpos_out: wp.array2d[float],
+  qvel_out: wp.array2d[float],
+  ctrl_out: wp.array2d[float],
+):
+  world = wp.tid()
+  frame = index[0]
+  for i in range(qpos_out.shape[1]):
+    qpos_out[world, i] = qpos_in[frame, i]
+  for i in range(qvel_out.shape[1]):
+    qvel_out[world, i] = qvel_in[frame, i]
+  for i in range(ctrl_out.shape[1]):
+    ctrl_out[world, i] = ctrl_in[frame, i]
+  time_out[world] = times_in[frame]
+
+
 def unroll(
   fn: Callable[..., None],
   m: mjw.Model,
@@ -244,6 +301,7 @@ def unroll(
   rc: mjw.RenderContext | None,
   callback: Callable[[int, dict, float], None] | None = None,
   ctrls: list[np.ndarray] | None = None,
+  states: dict[str, np.ndarray] | None = None,
 ) -> dict:
   """Unroll a function on batched Data and return some statistics.
 
@@ -254,20 +312,46 @@ def unroll(
     rc: Render context (optional).
     callback: Optional callback called after each step with (step count, trace, latency).
     ctrls: Optional control trajectory.
+    states: Optional independent states; reset and restoration are outside measured execution.
 
   Returns:
     jit_duration: Time to JIT capture the function.
   """
   with wp.ScopedDevice(wp.get_device(DEVICE.value)):
+    jit_beg = time.perf_counter()
+    if states is not None:
+      if fn is not mjw.step or rc is not None or ctrls is not None:
+        raise ValueError("Independent state profiling supports only step with no control replay")
+      state_index = wp.zeros(1, dtype=int)
+      state_arrays = [wp.array(states[key], dtype=float) for key in ("qpos", "qvel", "ctrl", "times")]
+      restore_args = state_arrays + [state_index, d.time, d.qpos, d.qvel, d.ctrl]
+      # Compile before capturing; restoration has a separate graph and no step event timers.
+      mjw.step(m, d)
+      mjw.reset_data_keyframe(m, d, 0)
+      wp.launch(_restore_state, d.nworld, inputs=restore_args)
+      wp.synchronize()
+      with wp.ScopedCapture() as restoration:
+        # The reset clears warmstart, applied forces and other transient state.
+        mjw.reset_data_keyframe(m, d, 0)
+        wp.launch(_restore_state, d.nworld, inputs=restore_args)
     with warp_util.EventTracer(enabled=EVENT_TRACE.value) as tracer:
-      jit_beg = time.perf_counter()
       with wp.ScopedCapture() as capture:
         fn(*(m, d) if rc is None else (m, d, rc))
       jit_end = time.perf_counter()
 
+      if states is not None:
+        for _ in range(3):
+          wp.capture_launch(restoration.graph)
+          wp.capture_launch(capture.graph)
+        wp.synchronize()
+
       for i in range(NSTEP.value):
         with wp.ScopedStream(wp.get_stream()):
-          if ctrls is not None:
+          if states is not None:
+            state_index.assign(np.array([i], dtype=np.int32))
+            wp.capture_launch(restoration.graph)
+            wp.synchronize()
+          elif ctrls is not None:
             center = wp.array(ctrls[i], dtype=wp.float32)
             wp.launch(
               _ctrl_noise,

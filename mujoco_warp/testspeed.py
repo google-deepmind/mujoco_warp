@@ -49,6 +49,7 @@ _FUNCS = {
 }
 
 _FUNCTION = flags.DEFINE_enum("function", "step", _FUNCS.keys(), "the function to benchmark")
+_STATE_PROFILE = flags.DEFINE_string("state_profile", None, "NPZ of independent saved states; restoration excluded from timing")
 _CLEAR_WARP_CACHE = flags.DEFINE_bool("clear_warp_cache", False, "clear warp caches (kernel, LTO, CUDA compute)")
 _MEASURE_ALLOC = flags.DEFINE_bool("measure_alloc", False, "print a report of contacts and constraints per step")
 _MEASURE_SOLVER = flags.DEFINE_bool("measure_solver", False, "print a report of solver iterations per step")
@@ -167,8 +168,15 @@ def _main(argv: Sequence[str]):
     print(f"Loading model from: {path}...\n")
 
   mjm = cli.load_model(path)
+  states = None
+  if _STATE_PROFILE.value:
+    if _FUNCTION.value != "step":
+      raise ValueError("state_profile measures one native step per saved state")
+    states = cli.load_state_profile(_STATE_PROFILE.value, mjm)
   free_mem_at_init = wp.get_device(device).free_memory
   m, d, rc, ctrls = cli.init_structs(_FUNCS[_FUNCTION.value], mjm)
+  if states is not None:
+    ctrls = None
   warn_overflow = m.opt.warn_overflow
   m.opt.warn_overflow = warn_overflow if _OVERFLOW_BEHAVIOR.value == "continue" else 0
   timestep = m.opt.timestep.numpy()[0]
@@ -248,24 +256,29 @@ def _main(argv: Sequence[str]):
       )
 
     print(f"Data\n  nworld: {d.nworld} naconmax: {d.naconmax} njmax: {d.njmax}")
-    print(
-      f"Rolling out {cli.NSTEP.value} {_FUNCTION.value}s at dt = {f'{timestep:g}' if timestep < 0.001 else f'{timestep:.3f}'}..."
-    )
+    if states is not None:
+      print(f"Profiling {cli.NSTEP.value} independent saved states; reset/restoration excluded, zero warmstart...")
+      print("Native GPU events report physics cost; run_time/steps_per_second include launch and synchronization overhead.")
+    else:
+      print(
+        f"Rolling out {cli.NSTEP.value} {_FUNCTION.value}s at dt = {f'{timestep:g}' if timestep < 0.001 else f'{timestep:.3f}'}..."
+      )
 
-  nacon, nefc, solver_niter = [], [], []
+  nacon, nefc, solver_niter, state_samples = [], [], [], []
   runtime = 0.0
   trace = {}
 
   def callback(step, step_trace, latency):
     nonlocal runtime, trace
     runtime += latency
-    nacon.append(np.max([d.nacon.numpy()[0], d.ncollision.numpy()[0]]))
-    nefc.append(np.max(d.nefc.numpy()))
+    contacts, candidates, rows = int(d.nacon.numpy()[0]), int(d.ncollision.numpy()[0]), d.nefc.numpy()
+    nacon.append(max(contacts, candidates))
+    nefc.append(np.max(rows))
     solver_niter.append(d.solver_niter.numpy())
     trace = _sum_trace(trace, step_trace)
-
+    overflow = d.overflow.numpy()
     if _OVERFLOW_BEHAVIOR.value == "error":
-      overflows = d.overflow.numpy() & warn_overflow
+      overflows = overflow & warn_overflow
       if np.any(overflows != 0):
         world_ids = np.where(overflows != 0)[0]
         n_worlds = len(world_ids)
@@ -278,6 +291,31 @@ def _main(argv: Sequence[str]):
         if n_worlds > 10:
           print(f"  ... and {n_worlds - 10} more worlds (reporting truncated to first 10)")
         sys.exit(1)
+
+    if states is not None and any(not np.isfinite(value.numpy()).all() for value in (d.qpos, d.qvel, d.qacc)):
+      raise ValueError(f"Nonfinite native state after saved sample {step}")
+    if states is not None and _MEASURE_ALLOC.value:
+      sample = dict(
+        sample=step,
+        rows_mean=float(rows.mean()),
+        rows_min=int(rows.min()),
+        rows_max=int(rows.max()),
+        detected_contacts=contacts,
+        broadphase_candidates=candidates,
+      )
+      if d.nworld == 1 and not np.any(overflow):
+        jacobian = d.efc.J.numpy()[0]
+        if m.is_sparse:
+          addresses, counts = d.efc.J_rowadr.numpy()[0], d.efc.J_rownnz.numpy()[0]
+          nonzero = sum(
+            np.count_nonzero(np.abs(jacobian[0, addresses[r] : addresses[r] + counts[r]]) > 1e-12) for r in range(int(rows[0]))
+          )
+        else:
+          nonzero = np.count_nonzero(np.abs(jacobian[: rows[0], : mjm.nv]) > 1e-12)
+        sample.update(
+          jacobian_numerical_nonzeros=int(nonzero), jacobian_numerical_density=float(nonzero / max(1, int(rows[0]) * mjm.nv))
+        )
+      state_samples.append(sample)
 
   if _FUNCTION.value == "render":
     with wp.ScopedCapture() as step_capture:
@@ -296,7 +334,7 @@ def _main(argv: Sequence[str]):
 
     jit_duration = cli.unroll(refit_and_render, m, d, rc, render_callback, ctrls)
   else:
-    jit_duration = cli.unroll(_FUNCS[_FUNCTION.value], m, d, rc, callback, ctrls)
+    jit_duration = cli.unroll(_FUNCS[_FUNCTION.value], m, d, rc, callback, ctrls, states)
 
   nconverged = np.sum(~np.any(np.isnan(d.qpos.numpy()), axis=1))
   steps = cli.NWORLD.value * cli.NSTEP.value
@@ -373,6 +411,16 @@ Total converged worlds: {nconverged} / {d.nworld}""")
       "solver_niter_mean": np.mean(solver_niter),
       "solver_niter_p95": np.percentile(solver_niter, 95),
     }
+    if states is not None:
+      metrics.update(
+        profile_mode="independent_saved_states",
+        state_samples=cli.NSTEP.value,
+        restore_in_timing=False,
+        runtime_scope="host_synchronized_step_launch",
+        event_scope="native_gpu_step",
+      )
+      if _MEASURE_ALLOC.value:
+        metrics["state_profile_samples"] = state_samples
     if _FORMAT.value == "short":
       for k, v in (metrics | _flatten_trace(trace)).items():
         print(f"{k}: {v}")

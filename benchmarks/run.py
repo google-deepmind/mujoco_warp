@@ -105,16 +105,21 @@ def _assemble_benchmark(bm: dict):
   # copy benchmark module files on top
   shutil.copytree(bm["_dir"], benchmark_dir, dirs_exist_ok=True)
 
+  if "prepare" in bm:
+    input_dir = bm["_dir"].resolve().parents[1]
+    command = [arg.format(input_dir=input_dir, benchmark_dir=benchmark_dir.resolve()) for arg in bm["prepare"]]
+    uv_run(*command, cwd=input_dir)
+
 
 def _bm_flags(bm: dict, benchmark_root: Path, exclude: tuple = ()) -> list:
   """Build --flag=value CLI args from a benchmark dict, shared by testspeed and viewer."""
-  skip = ("name", "assets", "mjcf", "_dir", *exclude)
+  skip = ("name", "assets", "mjcf", "prepare", "_dir", *exclude)
   cmd = []
   for field, value in bm.items():
     if field in skip:
       continue
-    if field == "replay":
-      cmd.append(f"--replay={(benchmark_root / value)}")
+    if field in ("replay", "state_profile"):
+      cmd.append(f"--{field}={(benchmark_root / value)}")
     elif isinstance(value, (list, tuple)):
       for item in value:
         cmd.append(f"--{field}={item}")
@@ -193,6 +198,8 @@ def main():
       log.error("--view: no benchmarks matched the regex filter '%s'", _ARGS.filter)
       sys.exit(1)
     bm = benchmarks[0]
+    if "state_profile" in bm:
+      raise ValueError("Saved-state profiling has no continuous viewer replay; view the source policy-state video")
     _assemble_benchmark(bm)
     _view_benchmark(bm, input_dir)
   else:

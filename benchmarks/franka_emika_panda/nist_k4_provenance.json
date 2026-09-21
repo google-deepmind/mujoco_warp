@@ -1,0 +1,160 @@
+{
+  "mode": "Independent source-collected states; native MJWarp saved-state physics",
+  "source_row": 1549,
+  "selection": "User-selected mixed K4 video: M8 nut, RJ45 connector, large gear and 8 mm rod. The source NIST board is restored as a physical static box with authored noncolliding visuals.",
+  "variants": [
+    "nut_thread_m8",
+    "rj45",
+    "gear_mesh_large",
+    "rod_insert_8mm"
+  ],
+  "state_samples": 559,
+  "source_policy_seconds": 22.36,
+  "source_tape_sha256": "b3f81c31bfa752e48b9ab079b2192a3033d1eb35ba7c92eea82fe56e39ccd9a8",
+  "source_model_sha256": "e8f571fb8bf742cd79fb0276ef73636566eecba9a526361a6ba922047197828d",
+  "source_summary_sha256": "826aeebd07a9f0278ebfdf2241a82bafd0b5ad0686fe7726c58d25475aa48fe4",
+  "compact_arrays": {
+    "qpos": {
+      "shape": [
+        559,
+        37
+      ],
+      "dtype": "float32",
+      "sha256": "4765a08f3905b16d3409092ed5bf732131b4eae210c93947435ee090cbd45666"
+    },
+    "qvel": {
+      "shape": [
+        559,
+        33
+      ],
+      "dtype": "float32",
+      "sha256": "5b369c03ca6be148ddd12878c198fdb98674eed2a8577349a9b8bb832880c781"
+    },
+    "ctrl": {
+      "shape": [
+        559,
+        8
+      ],
+      "dtype": "float32",
+      "sha256": "e1f529c412217ffc3e1609ef28e3076f168df8f2df212b7e63707373ab57a6f0"
+    },
+    "times": {
+      "shape": [
+        559
+      ],
+      "dtype": "float32",
+      "sha256": "8417aa09d106c4cb054d344c4e04640928294674f5ef9a7c59a21c1bafa2dbc9"
+    }
+  },
+  "compact_npz_sha256": "8debde2702ffc19afc196b49c3a765225e97b7d6490915337963d95d581fb553",
+  "assembly_meshes": [
+    {
+      "file": "assets/nist/bolt_m8_00.obj",
+      "sha256": "5c2fd4e49bd5e1a39b1a74b0bb692d6cd3d548d8394dd2f1c0914bbac82219c4",
+      "source_usd": "Assets/Props/NIST/bolt_m8.usd",
+      "source_sha256": "8ca1cb7006802f3b7cfba2e9cb9b0b8a5748a0dc6ea7279d73fa21c1a593ab40"
+    },
+    {
+      "file": "assets/nist/nut_m8_00.obj",
+      "sha256": "b60044e6434168b826c18f40fa626613b889309fe2047b1d69834a7fb0961680",
+      "source_usd": "Assets/Props/NIST/nut_m8.usd",
+      "source_sha256": "6f2a1ec92c152f94ae4e5590a7a9cdc07fa7541e7e1908f36713f5873c74427d"
+    },
+    {
+      "file": "assets/nist/rj45_socket_00.obj",
+      "sha256": "5fa90200043637442ee486c7f53051052ffe0fcf27695ee65dfff1dea04b4ad1",
+      "source_usd": "Assets/Props/NIST/rj45_socket.usd",
+      "source_sha256": "9dfa91b4da1021b78c133296a63e4868a56fa00472def02613c1bfaceb9447e6"
+    },
+    {
+      "file": "assets/nist/rj45_plug_00.obj",
+      "sha256": "9add41811d858c3965d72bc34bf43c993936088df376a7095592fe8d9e2e41d2",
+      "source_usd": "Assets/Props/NIST/rj45_plug.usd",
+      "source_sha256": "c2aa007cf5e11aefad881aed3b6f6148b4df57346f8b26e548daf7ed8ab23fc2"
+    },
+    {
+      "file": "assets/nist/gear_base_00.obj",
+      "sha256": "ad2cfb7e5b2ecc048a0cb2ef069aada6b6c3c330d415f392bd9a5f1ab3a3ff50",
+      "source_usd": "Assets/Props/NIST/gear_base.usd",
+      "source_sha256": "b372e04c1a76a77eddc0a2fec00e138d49f1122ddb4c37b1846e0ace4cc010d5"
+    },
+    {
+      "file": "assets/nist/gear_large_00.obj",
+      "sha256": "0bde4d50a33cc9dd44a9f56450311ff7bb88b4f3449ead269fa087b2e0449b27",
+      "source_usd": "Assets/Props/NIST/gear_large.usd",
+      "source_sha256": "3850098b89d06351dbd124678c6c3691720b6c59b7f383358ff8b7ab235ba43f"
+    },
+    {
+      "file": "assets/nist/round_hole_8mm_00.obj",
+      "sha256": "b4a7a436672d305c983984cfe41514c9e59016cd10dd45ff2f1a15374b8e6282",
+      "source_usd": "Assets/Props/NIST/round_hole_8mm.usd",
+      "source_sha256": "93e069d1e783f40fa360c819ea94a8608de98cd572aec889872a74f5ddeb364f"
+    },
+    {
+      "file": "assets/nist/round_peg_8mm_00.obj",
+      "sha256": "621b6c0408cf5e233fefbbe86c1fb8687d567792bb40fab42ae4a471028a7850",
+      "source_usd": "Assets/Props/NIST/round_peg_8mm.usd",
+      "source_sha256": "14666e26ec64aa6408d3a448e4d4a17c4b4ba61f67751c2e7d7863d2eaf4df73"
+    },
+    {
+      "file": "assets/nist/nistboard-visual-00.obj",
+      "sha256": "85a05ee2f8166dafa4c69b1c6797ea8c2b1f2bdecac3adb4de5a5f9f226c1604",
+      "source_usd": "Assets/Props/NIST/Taskboard/nistboard.usd",
+      "source_sha256": "41938419e573a5d76db16c5fe40bce26f6dbc1a207f8a2b77cce7d16e8f1b3c6"
+    }
+  ],
+  "robot_visual_assets": {
+    "source": "https://github.com/google-deepmind/mujoco_menagerie.git",
+    "ref": "affef0836947b64cc06c4ab1cbf0152835693374",
+    "physics": "Only noncolliding robot meshes are replaced. Body, joint, inertia, actuation and three robot colliders are retained."
+  },
+  "reference_protocol": {
+    "worlds": 4096,
+    "contacts": 600,
+    "constraints": 704,
+    "ccd": 64,
+    "repeats": 3,
+    "step_seconds": 0.00125,
+    "state_interval_seconds": 0.04,
+    "steps_per_sample": 1,
+    "warmstart": "enabled; value restored to zero",
+    "sleeping": false,
+    "restore_in_timing": false
+  },
+  "physics_scope": "One ground at source tabletop z=0 plus the source NIST board at its recorded fixed pose. The board is the only added physical body. Source-existing intersections and all observed states are retained. Native nominal materials/contact algorithms differ from collection; no successful continuous native replay is claimed.",
+  "reset_keyframe": "MuJoCo compiles normalized keyframe quaternions; state profiling replaces all qpos/qvel/ctrl/time with the exact saved values before each measured step.",
+  "board": {
+    "source_usd": "Assets/Props/NIST/Taskboard/nistboard.usd",
+    "source_sha256": "41938419e573a5d76db16c5fe40bce26f6dbc1a207f8a2b77cce7d16e8f1b3c6",
+    "position": [
+      0.6188564300537109,
+      -0.09644317626953125,
+      0.020600000396370888
+    ],
+    "quaternion_wxyz": [
+      0.0,
+      0.784511289712929,
+      0.6201145348344582,
+      0.0
+    ],
+    "box_center": [
+      0.19232847446867662,
+      -0.191768517928605,
+      0.015155968587500806
+    ],
+    "box_half_extents": [
+      0.1925,
+      0.1923075,
+      0.015
+    ],
+    "contact": "Native nominal assembly settings: friction .75/.005/.0001, solref .0025/1, zero margin/gap.",
+    "integration_sha256": "e9c6d56b1589b3f48b2f4482578b3c9ddbd00452d1c19f3262649bc845d9bb55"
+  },
+  "historical_measured_engine": {
+    "commit": "5ab9d7697ebef73f5bd4fa622f850cde374a5482",
+    "diff_sha256": "26aac608b2c99e4ef16ffe74aae8fd090a62ea3e6b7e68531e0fda31183157e9",
+    "snapshot_commit": "1bfa43bdfb741e7a3044477c92883d824ed92b19",
+    "scope": "Earlier profiling study with sparse optimizations; not a performance measurement of the current benchmark PR head."
+  },
+  "asset_attribution": "See assets/nist/README.md and retained Factory BSD terms. Exact upstream archive versions for local board and connector conversions were not retained."
+}

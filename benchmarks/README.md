@@ -91,7 +91,17 @@ Fields:
 - `njmax`: Maximum number of constraints per world.
 - `nstep`: (Optional) Number of steps per rollout.
 - `replay`: (Optional) NPZ file with ctrl sequence to replay.
+- `state_profile`: (Optional) NPZ with independent float32 `qpos`, `qvel`, `ctrl`
+  and `times` arrays. Each saved state is restored before one timed native step;
+  reset/restoration is excluded. This requires `noise_std=0`, `noise_rate=0`,
+  sleeping disabled and reset keyframe 0. It measures all saved states, with
+  warmstart enabled and its value reset to zero. It cannot be combined with
+  `replay` and has no continuous `--view` mode.
 - `assets`: (Optional) List of asset mappings (see below).
+- `prepare`: (Optional) Argument list for a preparation command, executed with `uv run`
+  after assets and local files have been assembled, before timing or viewing. Arguments
+  may use `{input_dir}` for the repository and `{benchmark_dir}` for the assembled
+  benchmark directory. Generated model files belong in the assembled directory.
 
 ### `ASSETS` List
 
