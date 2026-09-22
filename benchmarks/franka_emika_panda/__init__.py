@@ -18,17 +18,17 @@ BENCHMARKS = [
 
 BENCHMARKS += [
   {
-    "name": f"panda_nist_k4_states_{layout}",
+    "name": "panda_nist_assembly",
     "mjcf": "scene_nist_k4.mjb",
-    "state_profile": "nist_k4_states.npz",
+    "replay": "nist_k4_replay.npz",
     "nworld": 4096,
-    "nstep": 559,
+    "nstep": 1000,
     "nconmax": 600,
     "njmax": 704,
     "nccdmax": 64,
     "noise_std": 0,
     "noise_rate": 0,
-    "override": [f"opt.jacobian={layout}"],
+    "override": ["opt.jacobian=sparse"],
     "assets": [(ASSETS[0], "franka_emika_panda")],
     "prepare": [
       "python",
@@ -38,5 +38,4 @@ BENCHMARKS += [
       "--depth=8",
     ],
   }
-  for layout in ("dense", "sparse")
 ]

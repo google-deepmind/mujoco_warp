@@ -123,42 +123,34 @@ def test_testspeed_receives_only_runtime_flags(benchmark, monkeypatch, prepare):
   ]
 
 
-def test_state_profile_path_is_resolved_and_viewer_rejected(benchmark, monkeypatch):
-  benchmark.pop("replay")
-  benchmark["state_profile"] = "saved states.npz"
-  commands = []
-  monkeypatch.setattr(run, "uv_run", lambda *args, **kwargs: commands.append(args) or subprocess.CompletedProcess(args, 0, ""))
-  run._run_benchmark(benchmark, benchmark["_dir"].parents[1])
-  assembled = Path(run._ARGS.assets_root) / benchmark["name"]
-  assert f"--state_profile={assembled / 'saved states.npz'}" in commands[0]
-  assert not any(arg.startswith("--replay=") for arg in commands[0])
-  monkeypatch.setattr(run, "_discover_benchmarks", lambda _: iter([benchmark]))
-  monkeypatch.setattr(run.sys, "argv", ["run.py", "--input", str(benchmark["_dir"].parents[1]), "--view"])
-  monkeypatch.setattr(run, "_assemble_benchmark", lambda _: pytest.fail("Unsupported viewer mode must not prepare assets"))
-  with pytest.raises(ValueError, match="no continuous viewer replay"):
-    run.main()
-
-
-def test_k4_package_preserves_all_selected_states_and_separate_layouts():
+def test_assembly_package_has_initial_only_control_replay():
   package = Path(__file__).parent / "franka_emika_panda"
   assert {path.relative_to(package).as_posix() for path in package.rglob("*.py")} == {"__init__.py"}
   assert not list(package.rglob("*.mjb")), "Compiled models must remain outside the source package"
   for pattern in ("*.pt", "*.pth", "*.ckpt", "*.usd", "*.usda"):
     assert not list(package.rglob(pattern)), "No policy or source-environment runtime dependencies"
-  variants = [item for item in BENCHMARKS if item["name"].startswith("panda_nist_k4_states_")]
-  assert len(variants) == 2
-  assert {item["override"][0] for item in variants} == {"opt.jacobian=dense", "opt.jacobian=sparse"}
+  variants = [item for item in BENCHMARKS if item["name"] == "panda_nist_assembly"]
+  assert len(variants) == 1
   for item in variants:
-    assert "replay" not in item
-    assert (item["nworld"], item["nstep"], item["nconmax"], item["njmax"], item["nccdmax"]) == (4096, 559, 600, 704, 64)
+    assert "state_profile" not in item
+    assert all(item[key] > 0 for key in ("nworld", "nstep", "nconmax", "njmax", "nccdmax"))
     assert item["noise_std"] == item["noise_rate"] == 0
+    assert item["override"] == ["opt.jacobian=sparse"]
+    assert item["replay"] == "nist_k4_replay.npz"
+  assert not list(package.glob("*_states.npz")), "Runtime replay retains only the initial state"
+  with np.load(package / variants[0]["replay"], allow_pickle=False) as replay:
+    assert set(replay.files) == {"qpos", "qvel", "ctrl", "times"}
+    assert replay["qpos"].shape == (1, 37) and replay["qvel"].shape == (1, 33)
+    assert replay["ctrl"].ndim == 2 and replay["ctrl"].shape[1] == 8 and len(replay["ctrl"]) > 0
+    assert replay["times"].shape == (len(replay["ctrl"]) + 1,), "Use explicit control interval boundaries"
+    assert replay["times"][0] == 0 and np.all(np.diff(replay["times"]) > 0)
+    for key in ("qpos", "qvel", "ctrl"):
+      assert replay[key].dtype in (np.float32, np.float64)
+    for key in replay.files:
+      assert np.isfinite(replay[key]).all()
   provenance = json.loads((package / "nist_k4_provenance.json").read_text())
-  assert provenance["source_row"] == 1549 and provenance["state_samples"] == 559
-  with np.load(package / variants[0]["state_profile"], allow_pickle=False) as states:
-    assert set(states.files) == {"qpos", "qvel", "ctrl", "times"}
-    for key, entry in provenance["compact_arrays"].items():
-      assert list(states[key].shape) == entry["shape"] and states[key].dtype == np.float32
-      assert hashlib.sha256(states[key].tobytes()).hexdigest() == entry["sha256"]
+  assert provenance["source_row"] == 1549
+  assert hashlib.sha256((package / variants[0]["replay"]).read_bytes()).hexdigest() == provenance["replay_sha256"]
   scene = ET.parse(package / "scene_nist_k4.xml").getroot()
   assert len(scene.findall(".//geom[@type='plane']")) == 1
   assert len(scene.findall(".//freejoint")) + len(scene.findall(".//joint[@type='free']")) == 4
@@ -186,3 +178,13 @@ def test_package_replaces_previous_sparse_contact_case():
   assert not (package / "scene_sparse_contact.xml").exists()
   assert not any("sparse_contact" in item["name"] or "threading" in item["name"] for item in BENCHMARKS)
   assert not list(package.glob("*k3*")) and not (package / "scene_nist_threading.xml").exists()
+
+
+def test_continuous_replay_has_no_saved_state_runtime():
+  root = Path(__file__).parents[1]
+  for name in ("benchmarks/run.py", "mujoco_warp/_src/cli.py", "mujoco_warp/testspeed.py"):
+    source = (root / name).read_text()
+    assert "state_profile" not in source and "_restore_state" not in source
+  cli_source = (root / "mujoco_warp/_src/cli.py").read_text()
+  assert "reset_data_keyframe" not in cli_source, "Replay initializes once and preserves solver history"
+  assert not (root / "mujoco_warp/testspeed_test.py").exists(), "No obsolete saved-state diagnostic tests"

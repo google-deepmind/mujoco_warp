@@ -118,8 +118,8 @@ def _bm_flags(bm: dict, benchmark_root: Path, exclude: tuple = ()) -> list:
   for field, value in bm.items():
     if field in skip:
       continue
-    if field in ("replay", "state_profile"):
-      cmd.append(f"--{field}={(benchmark_root / value)}")
+    if field == "replay":
+      cmd.append(f"--replay={(benchmark_root / value)}")
     elif isinstance(value, (list, tuple)):
       for item in value:
         cmd.append(f"--{field}={item}")
@@ -198,8 +198,6 @@ def main():
       log.error("--view: no benchmarks matched the regex filter '%s'", _ARGS.filter)
       sys.exit(1)
     bm = benchmarks[0]
-    if "state_profile" in bm:
-      raise ValueError("Saved-state profiling has no continuous viewer replay; view the source policy-state video")
     _assemble_benchmark(bm)
     _view_benchmark(bm, input_dir)
   else:

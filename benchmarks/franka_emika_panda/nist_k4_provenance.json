@@ -1,52 +1,11 @@
 {
-  "mode": "Independent source-collected states; native MJWarp saved-state physics",
   "source_row": 1549,
-  "selection": "User-selected mixed K4 video: M8 nut, RJ45 connector, large gear and 8 mm rod. The source NIST board is restored as a physical static box with authored noncolliding visuals.",
   "variants": [
     "nut_thread_m8",
     "rj45",
     "gear_mesh_large",
     "rod_insert_8mm"
   ],
-  "state_samples": 559,
-  "source_policy_seconds": 22.36,
-  "source_tape_sha256": "b3f81c31bfa752e48b9ab079b2192a3033d1eb35ba7c92eea82fe56e39ccd9a8",
-  "source_model_sha256": "e8f571fb8bf742cd79fb0276ef73636566eecba9a526361a6ba922047197828d",
-  "source_summary_sha256": "826aeebd07a9f0278ebfdf2241a82bafd0b5ad0686fe7726c58d25475aa48fe4",
-  "compact_arrays": {
-    "qpos": {
-      "shape": [
-        559,
-        37
-      ],
-      "dtype": "float32",
-      "sha256": "4765a08f3905b16d3409092ed5bf732131b4eae210c93947435ee090cbd45666"
-    },
-    "qvel": {
-      "shape": [
-        559,
-        33
-      ],
-      "dtype": "float32",
-      "sha256": "5b369c03ca6be148ddd12878c198fdb98674eed2a8577349a9b8bb832880c781"
-    },
-    "ctrl": {
-      "shape": [
-        559,
-        8
-      ],
-      "dtype": "float32",
-      "sha256": "e1f529c412217ffc3e1609ef28e3076f168df8f2df212b7e63707373ab57a6f0"
-    },
-    "times": {
-      "shape": [
-        559
-      ],
-      "dtype": "float32",
-      "sha256": "8417aa09d106c4cb054d344c4e04640928294674f5ef9a7c59a21c1bafa2dbc9"
-    }
-  },
-  "compact_npz_sha256": "8debde2702ffc19afc196b49c3a765225e97b7d6490915337963d95d581fb553",
   "assembly_meshes": [
     {
       "file": "assets/nist/bolt_m8_00.obj",
@@ -108,21 +67,6 @@
     "ref": "affef0836947b64cc06c4ab1cbf0152835693374",
     "physics": "Only noncolliding robot meshes are replaced. Body, joint, inertia, actuation and three robot colliders are retained."
   },
-  "reference_protocol": {
-    "worlds": 4096,
-    "contacts": 600,
-    "constraints": 704,
-    "ccd": 64,
-    "repeats": 3,
-    "step_seconds": 0.00125,
-    "state_interval_seconds": 0.04,
-    "steps_per_sample": 1,
-    "warmstart": "enabled; value restored to zero",
-    "sleeping": false,
-    "restore_in_timing": false
-  },
-  "physics_scope": "One ground at source tabletop z=0 plus the source NIST board at its recorded fixed pose. The board is the only added physical body. Source-existing intersections and all observed states are retained. Native nominal materials/contact algorithms differ from collection; no successful continuous native replay is claimed.",
-  "reset_keyframe": "MuJoCo compiles normalized keyframe quaternions; state profiling replaces all qpos/qvel/ctrl/time with the exact saved values before each measured step.",
   "board": {
     "source_usd": "Assets/Props/NIST/Taskboard/nistboard.usd",
     "source_sha256": "41938419e573a5d76db16c5fe40bce26f6dbc1a207f8a2b77cce7d16e8f1b3c6",
@@ -150,11 +94,90 @@
     "contact": "Native nominal assembly settings: friction .75/.005/.0001, solref .0025/1, zero margin/gap.",
     "integration_sha256": "e9c6d56b1589b3f48b2f4482578b3c9ddbd00452d1c19f3262649bc845d9bb55"
   },
-  "historical_measured_engine": {
-    "commit": "5ab9d7697ebef73f5bd4fa622f850cde374a5482",
-    "diff_sha256": "26aac608b2c99e4ef16ffe74aae8fd090a62ea3e6b7e68531e0fda31183157e9",
-    "snapshot_commit": "1bfa43bdfb741e7a3044477c92883d824ed92b19",
-    "scope": "Earlier profiling study with sparse optimizations; not a performance measurement of the current benchmark PR head."
+  "asset_attribution": "See assets/nist/README.md and retained Factory BSD-3-Clause terms. The asset contributor confirmed the same license for the local RJ45 connector and NIST board meshes. Exact upstream archive versions for those conversions were not retained.",
+  "mode": "Continuous native control replay",
+  "selection": "One Panda with an M8 nut/bolt, RJ45 connector, large gear and 8 mm rod on the NIST board and one ground plane.",
+  "replay_sha256": "68181eda4bf568bf4777be0c4aa52727e684afbb14706d3119c1448bce284dc8",
+  "model_sha256": "a0bc61dda0cae9e215ae0d4492e024a99443115adf2ae513cc469a43169629ae",
+  "controls": 3159,
+  "control_interval_seconds": 0.01,
+  "physics_interval_seconds": 0.00125,
+  "duration_seconds": 31.59,
+  "initial_state": "Original policy capture initial qpos and qvel, assigned once; all four assemblies incomplete; zero initial warmstart.",
+  "stop": "Tape ends at first simultaneous success in the source policy capture. Fixed-control replay success is not established.",
+  "runtime": "Existing io.load_trajectory and cli.unroll; no policy, per-step state restoration, resets, or external collision pipeline.",
+  "source_capture_sha256": "e64a9d2abbf4481d3fa32d642b4a69e4a7bc2349d26ce00e847dec1fa08f72e8",
+  "validation": {
+    "source_capture": "Successful native policy capture on the original engine; 31.59 simulated seconds.",
+    "previous_fixed_control_replays": "No full assembly success in two sparse runs and one dense run.",
+    "capacities": {
+      "contacts": 600,
+      "constraints": 704,
+      "ccd": 64
+    },
+    "timing": "Three independent processes per layout at 4096 worlds; original numerical engine, initial-only controls, no overflow.",
+    "full_control_replay": {
+      "dense": {
+        "duration_seconds": 31.59,
+        "termination_reason": "tape_end",
+        "wall_seconds": 42.14938764902763,
+        "finite": true,
+        "overflow": false,
+        "peak_rows": 586,
+        "peak_contacts": 430,
+        "terminal_slot_success": [
+          false,
+          true,
+          false,
+          false
+        ]
+      },
+      "sparse": {
+        "duration_seconds": 31.59,
+        "termination_reason": "tape_end",
+        "wall_seconds": 36.97764560789801,
+        "finite": true,
+        "overflow": false,
+        "peak_rows": 582,
+        "peak_contacts": 360,
+        "terminal_slot_success": [
+          false,
+          false,
+          false,
+          false
+        ]
+      }
+    }
   },
-  "asset_attribution": "See assets/nist/README.md and retained Factory BSD-3-Clause terms. The asset contributor confirmed the same license for the local RJ45 connector and NIST board meshes. Exact upstream archive versions for those conversions were not retained."
+  "timing_window": {
+    "worlds": 4096,
+    "physics_steps": 1000,
+    "seconds": 1.25,
+    "scope": "Initial continuous prefix only; not the full episode.",
+    "statistic": "Median of three process means per layout; event times exclude compilation and host control updates.",
+    "hardware": "RTX 5090, physical GPU1",
+    "software": {
+      "mujoco": "3.12.1.dev968306640",
+      "warp": "1.15.0",
+      "numpy": "2.3.4"
+    },
+    "results": {
+      "dense": {
+        "solver_ms": 2.3141216946393253,
+        "step_ms": 29.65739507472515,
+        "collision_ms": 26.244917032659053,
+        "process_wall_seconds": 40.59658145904541
+      },
+      "sparse": {
+        "solver_ms": 1.495754528388381,
+        "step_ms": 28.453713134050368,
+        "collision_ms": 26.157959144055845,
+        "process_wall_seconds": 37.51639747619629
+      }
+    }
+  },
+  "engine": {
+    "commit": "9cf0cff5aae8820ce87526972bf1256b9d7e9a00",
+    "description": "Original benchmark engine with existing SDF corrections; solver, constraint and collision implementation unchanged."
+  }
 }
