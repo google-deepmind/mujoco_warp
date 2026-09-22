@@ -144,6 +144,7 @@ def test_assembly_package_has_initial_only_control_replay():
     assert replay["ctrl"].ndim == 2 and replay["ctrl"].shape[1] == 8 and len(replay["ctrl"]) > 0
     assert replay["times"].shape == (len(replay["ctrl"]) + 1,), "Use explicit control interval boundaries"
     assert replay["times"][0] == 0 and np.all(np.diff(replay["times"]) > 0)
+    assert variants[0]["nstep"] == round(replay["times"][-1] / 0.00125), "Time the complete control tape"
     for key in ("qpos", "qvel", "ctrl"):
       assert replay[key].dtype in (np.float32, np.float64)
     for key in replay.files:

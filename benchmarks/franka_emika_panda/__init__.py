@@ -22,7 +22,7 @@ BENCHMARKS += [
     "mjcf": "scene_nist_k4.mjb",
     "replay": "nist_k4_replay.npz",
     "nworld": 4096,
-    "nstep": 1000,
+    "nstep": 2400,
     "nconmax": 600,
     "njmax": 704,
     "nccdmax": 64,

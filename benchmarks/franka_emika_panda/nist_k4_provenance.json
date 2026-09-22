@@ -95,89 +95,75 @@
     "integration_sha256": "e9c6d56b1589b3f48b2f4482578b3c9ddbd00452d1c19f3262649bc845d9bb55"
   },
   "asset_attribution": "See assets/nist/README.md and retained Factory BSD-3-Clause terms. The asset contributor confirmed the same license for the local RJ45 connector and NIST board meshes. Exact upstream archive versions for those conversions were not retained.",
-  "mode": "Continuous native control replay",
-  "selection": "One Panda with an M8 nut/bolt, RJ45 connector, large gear and 8 mm rod on the NIST board and one ground plane.",
-  "replay_sha256": "68181eda4bf568bf4777be0c4aa52727e684afbb14706d3119c1448bce284dc8",
+  "mode": "Continuous native threading control replay",
+  "selection": "Final three seconds of M8 nut threading with one Panda on the NIST board. RJ45 connector, large gear and 8 mm rod are already assembled at the start of this segment.",
+  "replay_sha256": "28d1b4f6b3c843b18960b0e315d79035ee08998c408428513a184bf2e3322860",
   "model_sha256": "a0bc61dda0cae9e215ae0d4492e024a99443115adf2ae513cc469a43169629ae",
-  "controls": 3159,
+  "controls": 300,
   "control_interval_seconds": 0.01,
   "physics_interval_seconds": 0.00125,
-  "duration_seconds": 31.59,
-  "initial_state": "Original policy capture initial qpos and qvel, assigned once; all four assemblies incomplete; zero initial warmstart.",
-  "stop": "Tape ends at first simultaneous success in the source policy capture. Fixed-control replay success is not established.",
+  "duration_seconds": 3.0,
+  "initial_state": "Source state at 28.59 seconds: nut partly threaded and incomplete; other three assemblies complete. Positions and velocities assigned once, with zero initial solver warmstart.",
+  "stop": "End of the three-second recorded control tape; no runtime task-success logic or resets.",
   "runtime": "Existing io.load_trajectory and cli.unroll; no policy, per-step state restoration, resets, or external collision pipeline.",
   "source_capture_sha256": "e64a9d2abbf4481d3fa32d642b4a69e4a7bc2349d26ce00e847dec1fa08f72e8",
   "validation": {
-    "source_capture": "Successful native policy capture on the original engine; 31.59 simulated seconds.",
-    "previous_fixed_control_replays": "No full assembly success in two sparse runs and one dense run.",
+    "threading_motion": "All six independent one-world replays rotate and advance the nut: 2.709\u20133.215 turns and 3.487\u20134.120 mm axial advance. The benchmark exercises rotation and axial advance of an engaged nut.",
+    "original_policy_completion_flag": {
+      "sparse": "1/3 runs meet the original strict geometric completion threshold.",
+      "dense": "0/3 runs meet that threshold.",
+      "interpretation": "Retained as source task diagnostics; not a benchmark pass/fail condition."
+    },
+    "initialization": "The source mid-episode qacc_warmstart was not recorded. Standard replay starts solver history from zero and preserves it continuously afterward.",
+    "finite": true,
+    "overflow": false,
     "capacities": {
       "contacts": 600,
       "constraints": 704,
       "ccd": 64
-    },
-    "timing": "Three independent processes per layout at 4096 worlds; original numerical engine, initial-only controls, no overflow.",
-    "full_control_replay": {
-      "dense": {
-        "duration_seconds": 31.59,
-        "termination_reason": "tape_end",
-        "wall_seconds": 42.14938764902763,
-        "finite": true,
-        "overflow": false,
-        "peak_rows": 586,
-        "peak_contacts": 430,
-        "terminal_slot_success": [
-          false,
-          true,
-          false,
-          false
-        ]
-      },
-      "sparse": {
-        "duration_seconds": 31.59,
-        "termination_reason": "tape_end",
-        "wall_seconds": 36.97764560789801,
-        "finite": true,
-        "overflow": false,
-        "peak_rows": 582,
-        "peak_contacts": 360,
-        "terminal_slot_success": [
-          false,
-          false,
-          false,
-          false
-        ]
-      }
     }
   },
   "timing_window": {
     "worlds": 4096,
-    "physics_steps": 1000,
-    "seconds": 1.25,
-    "scope": "Initial continuous prefix only; not the full episode.",
-    "statistic": "Median of three process means per layout; event times exclude compilation and host control updates.",
-    "hardware": "RTX 5090, physical GPU1",
+    "physics_steps": 2400,
+    "seconds": 3.0,
+    "scope": "Complete continuous threading control tape.",
     "software": {
       "mujoco": "3.12.1.dev968306640",
       "warp": "1.15.0",
       "numpy": "2.3.4"
     },
+    "hardware": "NVIDIA RTX 5090, physical GPU1",
+    "statistic": "Median of three independent processes per layout; complete 2400-step continuous tape. Event times exclude compilation and host control uploads.",
     "results": {
       "dense": {
-        "solver_ms": 2.3141216946393253,
-        "step_ms": 29.65739507472515,
-        "collision_ms": 26.244917032659053,
-        "process_wall_seconds": 40.59658145904541
+        "solver_ms": 1.3128786275784174,
+        "collision_ms": 40.74822538137436,
+        "sdf_ms": 40.69789321819941,
+        "constraints_ms": 0.35479191978151603,
+        "step_ms": 42.808270030816395,
+        "process_wall_seconds": 109.98928117752075
       },
       "sparse": {
-        "solver_ms": 1.495754528388381,
-        "step_ms": 28.453713134050368,
-        "collision_ms": 26.157959144055845,
-        "process_wall_seconds": 37.51639747619629
+        "solver_ms": 0.9608221997072299,
+        "collision_ms": 40.5303391178449,
+        "sdf_ms": 40.47998071591059,
+        "constraints_ms": 0.21998669259871045,
+        "step_ms": 42.100756514072415,
+        "process_wall_seconds": 108.30498456954956
       }
-    }
+    },
+    "overflow": false
   },
   "engine": {
     "commit": "9cf0cff5aae8820ce87526972bf1256b9d7e9a00",
     "description": "Original benchmark engine with existing SDF corrections; solver, constraint and collision implementation unchanged."
+  },
+  "source_window": {
+    "start_seconds": 28.59,
+    "end_seconds": 31.59,
+    "initial_state_index": 2859,
+    "control_indices": "[2859:3159]",
+    "source_control_interval_seconds": 0.01
   }
 }
