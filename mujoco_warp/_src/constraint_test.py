@@ -162,6 +162,73 @@ class ConstraintTest(parameterized.TestCase):
 
   @parameterized.parameters(
     *itertools.product(
+      (1, 2),  # nworld
+      (3, 4, 6),  # condim
+      (0.5, 20.0),  # impratio
+      (False, True),  # hinged
+      (False, True),  # with_flex
+    )
+  )
+  def test_elliptic_regularization_floor(self, nworld, condim, impratio, hinged, with_flex):
+    joint = '<joint type="hinge" axis="0 1 0"/>' if hinged else "<freejoint/>"
+    flex = '<flexcomp name="unused" type="grid" count="2 2 2" spacing=".1 .1 .1" pos="0 0 5" dim="3"/>' if with_flex else ""
+
+    mjm, mjd, m, d = test_data.fixture(
+      xml=f"""
+        <mujoco>
+          <option cone="elliptic" impratio="{impratio}"/>
+          <worldbody>
+            <geom name="ground" type="plane" size="1 1 .1"/>
+            <body pos="0 0 .09">
+              {joint}
+              <inertial pos="0 0 0" mass="1" diaginertia="1 1 1"/>
+              <geom name="ball" type="sphere" pos=".1 0 0" size=".1"/>
+            </body>
+            {flex}
+          </worldbody>
+          <contact>
+            <pair geom1="ground" geom2="ball" condim="{condim}" friction=".7 .3 .02 .004 .006"/>
+          </contact>
+        </mujoco>
+      """,
+      nworld=nworld,
+    )
+    self.assertEqual(mjm.body_invweight0[1, 0] == 0, hinged)
+    self.assertEqual(mjd.ncon, 1)
+
+    mjds = [mjd]
+    if nworld == 2:
+      mjd1 = mujoco.MjData(mjm)
+      qpos = d.qpos.numpy()
+      qpos[1, 0] += 0.05
+      d.qpos.assign(qpos)
+      mjd1.qpos[:] = qpos[1]
+      mujoco.mj_forward(mjm, mjd1)
+      self.assertEqual(mjd1.ncon, 1)
+      mjds.append(mjd1)
+
+      # Refresh per-world contact data after changing the second world's state.
+      mjw.fwd_kinematics(m, d)
+      mjw.collision(m, d)
+
+    d.efc.D.fill_(wp.inf)
+    mjw.make_constraint(m, d)
+
+    nacon = d.nacon.numpy()[0]
+    worldid = d.contact.worldid.numpy()[:nacon]
+    address = d.contact.efc_address.numpy()
+    for w in range(nworld):
+      conids = np.flatnonzero(worldid == w)
+      self.assertLen(conids, 1)
+      actual_address = address[conids[0], :condim]
+      self.assertTrue(np.all(actual_address >= 0))
+      native_address = mjds[w].contact[0].efc_address
+      expected = mjds[w].efc_D[native_address : native_address + condim]
+      actual = d.efc.D.numpy()[w, actual_address]
+      np.testing.assert_allclose(actual, expected, rtol=5e-5, atol=0)
+
+  @parameterized.parameters(
+    *itertools.product(
       ("constraints.xml", "flex/floppy.xml", "flex/moving_base_strain.xml"),
       (mujoco.mjtCone.mjCONE_PYRAMIDAL, mujoco.mjtCone.mjCONE_ELLIPTIC),
       (mujoco.mjtJacobian.mjJAC_DENSE, mujoco.mjtJacobian.mjJAC_SPARSE),
