@@ -83,14 +83,15 @@ def load_model(path: epath.Path) -> mujoco.MjModel:
       raise FileNotFoundError(f"file not found: {path}\nalso tried: {resource_path}")
     path = resource_path
 
-  from mujoco_warp.test_data.collision_sdf.utils import register_sdf_plugins as register_sdf_plugins
-
-  register_sdf_plugins(mjw)
-
   if path.suffix == ".mjb":
     mjm = mujoco.MjModel.from_binary_path(path.as_posix())
   else:
     spec = mujoco.MjSpec.from_file(path.as_posix())
+    if any(p.plugin_name.startswith("mujoco.sdf") for p in spec.plugins):
+      from mujoco_warp.test_data.collision_sdf.utils import register_sdf_plugins as register_sdf_plugins
+
+      register_sdf_plugins(mjw)
+
     mjm = spec.compile()
 
   if OVERRIDE.value:
