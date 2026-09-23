@@ -336,6 +336,32 @@ class BroadphaseTest(parameterized.TestCase):
     ctx = broadphase_caller(m, d)
     self.assertEqual(d.ncollision.numpy()[0], 0)
 
+  @parameterized.parameters(list(BroadphaseType))
+  def test_broadphase_missing_mesh(self, broadphase):
+    """A mesh geom whose batched geom_dataid is -1 takes no pair, even below a plane."""
+    _MJCF = """
+      <mujoco>
+        <asset>
+          <mesh name="tetrahedron" vertex="0 0 0  .1 0 0  0 .1 0  0 0 .1"/>
+        </asset>
+        <worldbody>
+          <geom type="plane" size="1 1 .01"/>
+          <body pos="0 0 -1">
+            <freejoint/>
+            <geom type="mesh" mesh="tetrahedron"/>
+          </body>
+        </worldbody>
+      </mujoco>
+    """
+    _, _, m, d = test_data.fixture(xml=_MJCF, nworld=2)
+    m.opt.broadphase = broadphase
+    dataid = np.tile(m.geom_dataid.numpy(), (2, 1))
+    dataid[1, 1] = -1
+    m.geom_dataid = wp.array(dataid, dtype=int)
+    ctx = broadphase_caller(m, d)
+    self.assertEqual(d.ncollision.numpy()[0], 1)
+    self.assertEqual(ctx.collision_worldid.numpy()[0], 0)
+
 
 if __name__ == "__main__":
   wp.init()

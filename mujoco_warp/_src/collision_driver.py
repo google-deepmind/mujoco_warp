@@ -335,6 +335,19 @@ def _broadphase_filter(opt_broadphase_filter: int, ngeom_aabb: int, ngeom_rbound
 
 
 @wp.func
+def _mesh_missing(
+  # Model:
+  geom_type: wp.array[int],
+  geom_dataid: wp.array2d[int],
+  # In:
+  geom: int,
+  worldid: int,
+) -> bool:
+  # with per-world meshes (batched geom_dataid), a mesh geom with dataid -1 is absent from a world
+  return geom_type[geom] == GeomType.MESH and geom_dataid[worldid % geom_dataid.shape[0], geom] < 0
+
+
+@wp.func
 def _add_geom_pair(
   # Model:
   geom_type: wp.array[int],
@@ -427,6 +440,7 @@ def _sap_broadphase(
   ngeom_rbound: int,
   ngeom_margin: int,
   ngeom_gap: int,
+  ngeom_dataid: int,
   enable_sleep: bool = False,
   incremental: bool = False,
 ):
@@ -436,6 +450,7 @@ def _sap_broadphase(
     ngeom: int,
     geom_type: wp.array[int],
     geom_bodyid: wp.array[int],
+    geom_dataid: wp.array2d[int],
     geom_aabb: wp.array3d[wp.vec3],
     geom_rbound: wp.array2d[float],
     geom_margin: wp.array2d[float],
@@ -490,6 +505,10 @@ def _sap_broadphase(
       pairid = nxn_pairid[idx]
       if pairid[0] < -1 and pairid[1] < 0:
         continue
+
+      if wp.static(ngeom_dataid > 1):
+        if _mesh_missing(geom_type, geom_dataid, geom1, worldid) or _mesh_missing(geom_type, geom_dataid, geom2, worldid):
+          continue
 
       if wp.static(enable_sleep):
         b1 = geom_bodyid[geom1]
@@ -654,6 +673,7 @@ def sap_broadphase(
       m.geom_rbound.shape[0],
       m.geom_margin.shape[0],
       m.geom_gap.shape[0],
+      m.geom_dataid.shape[0],
       enable_sleep,
       incremental,
     ),
@@ -662,6 +682,7 @@ def sap_broadphase(
       m.ngeom,
       m.geom_type,
       m.geom_bodyid,
+      m.geom_dataid,
       m.geom_aabb,
       m.geom_rbound,
       m.geom_margin,
@@ -688,6 +709,7 @@ def _nxn_broadphase(
   ngeom_rbound: int,
   ngeom_margin: int,
   ngeom_gap: int,
+  ngeom_dataid: int,
   enable_sleep: bool = False,
   incremental: bool = False,
 ):
@@ -696,6 +718,7 @@ def _nxn_broadphase(
     # Model:
     geom_type: wp.array[int],
     geom_bodyid: wp.array[int],
+    geom_dataid: wp.array2d[int],
     geom_aabb: wp.array3d[wp.vec3],
     geom_rbound: wp.array2d[float],
     geom_margin: wp.array2d[float],
@@ -721,6 +744,10 @@ def _nxn_broadphase(
     geom = nxn_geom_pair[elementid]
     geom1 = geom[0]
     geom2 = geom[1]
+
+    if wp.static(ngeom_dataid > 1):
+      if _mesh_missing(geom_type, geom_dataid, geom1, worldid) or _mesh_missing(geom_type, geom_dataid, geom2, worldid):
+        return
 
     if wp.static(enable_sleep):
       b1 = geom_bodyid[geom1]
@@ -830,6 +857,7 @@ def nxn_broadphase(
         m.geom_rbound.shape[0],
         m.geom_margin.shape[0],
         m.geom_gap.shape[0],
+        m.geom_dataid.shape[0],
         enable_sleep,
         incremental,
       ),
@@ -837,6 +865,7 @@ def nxn_broadphase(
       inputs=[
         m.geom_type,
         m.geom_bodyid,
+        m.geom_dataid,
         m.geom_aabb,
         m.geom_rbound,
         m.geom_margin,
