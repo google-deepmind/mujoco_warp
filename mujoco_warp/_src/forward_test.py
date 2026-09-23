@@ -448,6 +448,96 @@ class ForwardTest(parameterized.TestCase):
         err_msg=f"step {i} qvel mismatch for free root + massless child ({integrator})",
       )
 
+  @parameterized.parameters(1, 2)
+  def test_free_root_inertial_fluid_child(self, nworld):
+    """Verify free root with inertial child carrying fluid geom matches MuJoCo."""
+    mjm, mjd, m_warp, d_warp = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option timestep="0.005" density="1.2" viscosity="0.002" wind="1 2 3"/>
+        <worldbody>
+          <body name="root" pos="0.1 -0.2 0.5" euler="20 -30 40">
+            <joint type="free"/>
+            <geom type="sphere" size=".1" mass="1"/>
+            <body name="child" pos="0 0 0.2">
+              <geom type="ellipsoid" size=".1 .2 .3" mass="0.5" fluidshape="ellipsoid"/>
+            </body>
+          </body>
+        </worldbody>
+        <keyframe>
+          <key qpos="0.1 -0.2 0.5 1 0 0 0" qvel="1 -0.5 0.8 5 -3 2"/>
+        </keyframe>
+      </mujoco>
+      """,
+      keyframe=0,
+      overrides={"opt.integrator": IntegratorType.IMPLICIT},
+      nworld=nworld,
+    )
+
+    self.assertTrue(bool(m_warp.body_is_free.numpy().any()))
+
+    mj_datas = [mjd]
+    if nworld == 2:
+      mjd2 = mujoco.MjData(mjm)
+      mujoco.mj_resetDataKeyframe(mjm, mjd2, 0)
+      qvel_np = d_warp.qvel.numpy()
+      qvel_np[1, 0] += 2.0
+      d_warp.qvel = wp.array(qvel_np, dtype=float)
+      mjd2.qvel[0] += 2.0
+      mj_datas.append(mjd2)
+
+    for i in range(10):
+      mjw.step(m_warp, d_warp)
+      for w in range(nworld):
+        mujoco.mj_step(mjm, mj_datas[w])
+        np.testing.assert_allclose(
+          d_warp.qvel.numpy()[w],
+          mj_datas[w].qvel,
+          atol=1e-3,
+          rtol=1e-3,
+          err_msg=f"step {i} qvel mismatch for world {w}",
+        )
+
+    if nworld == 2:
+      self.assertFalse(np.allclose(d_warp.qvel.numpy()[0], d_warp.qvel.numpy()[1]))
+
+  def test_free_rigid_subtree_gyro_stable(self):
+    """Verify free root with inertial child remains stable under implicitfast."""
+    _, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option integrator="implicitfast" timestep="0.001" gravity="0 0 0">
+          <flag energy="enable"/>
+        </option>
+        <worldbody>
+          <body>
+            <freejoint/>
+            <body>
+              <inertial pos="0 0 0" mass="0.12"
+                        diaginertia="0.00017231 0.00000658 0.00017243"/>
+            </body>
+          </body>
+        </worldbody>
+        <keyframe>
+          <key qvel="0 0 0 100 30 100"/>
+        </keyframe>
+      </mujoco>
+      """,
+      keyframe=0,
+    )
+
+    self.assertTrue(bool(m.body_is_free.numpy().any()))
+
+    d.energy.fill_(wp.inf)
+    mjw.forward(m, d)
+    initial_energy = float(d.energy.numpy()[0, 1])
+
+    for i in range(20):
+      d.energy.fill_(wp.inf)
+      mjw.step(m, d)
+      energy = float(d.energy.numpy()[0, 1])
+      self.assertLess(energy, 1.01 * initial_energy, f"step {i}")
+
   @parameterized.parameters(mujoco.mjtJacobian.mjJAC_SPARSE, mujoco.mjtJacobian.mjJAC_DENSE)
   def test_implicit_tendon_damping(self, jacobian):
     mjm, mjd, m, d = test_data.fixture(
