@@ -127,6 +127,7 @@ def test_assembly_package_has_initial_only_control_replay():
   package = Path(__file__).parent / "franka_emika_panda"
   assert {path.relative_to(package).as_posix() for path in package.rglob("*.py")} == {"__init__.py"}
   assert not list(package.rglob("*.mjb")), "Compiled models must remain outside the source package"
+  assert not list(package.rglob("*.obj")), "Mesh assets must be fetched from pinned sources"
   for pattern in ("*.pt", "*.pth", "*.ckpt", "*.usd", "*.usda"):
     assert not list(package.rglob(pattern)), "No policy or source-environment runtime dependencies"
   variants = [item for item in BENCHMARKS if item["name"] == "panda_nist_assembly"]
@@ -160,8 +161,16 @@ def test_assembly_package_has_initial_only_control_replay():
   for mesh in scene.findall("./asset/mesh"):
     path = Path(mesh.get("file"))
     assert not path.is_absolute() and ".." not in path.parts
-  for asset in provenance["assembly_meshes"]:
-    assert hashlib.sha256((package / asset["file"]).read_bytes()).hexdigest() == asset["sha256"]
+  assets = provenance["assembly_assets"]
+  assert len(assets["ref"]) == 40
+  assert (
+    {"source": assets["source"], "ref": assets["ref"]},
+    assets["path"],
+    assets["destination"],
+  ) in variants[0]["assets"]
+  assert {asset["file"] for asset in provenance["assembly_meshes"]} == {
+    mesh.get("file") for mesh in scene.findall("./asset/mesh") if Path(mesh.get("file")).parent == Path(assets["destination"])
+  }
 
   board = scene.find("./worldbody/body[@name='nist_board']")
   assert board is not None and board.find("geom[@type='box']") is not None

@@ -6,6 +6,12 @@
     "gear_mesh_large",
     "rod_insert_8mm"
   ],
+  "assembly_assets": {
+    "source": "https://github.com/ooctipus/mujoco_warp.git",
+    "ref": "0613dbfa348fddea85cda81a85a31fdec60237db",
+    "path": "benchmarks/franka_emika_panda/assets/nist",
+    "destination": "assets/nist"
+  },
   "assembly_meshes": [
     {
       "file": "assets/nist/bolt_m8_00.obj",
@@ -94,7 +100,7 @@
     "contact": "Native nominal assembly settings: friction .75/.005/.0001, solref .0025/1, zero margin/gap.",
     "integration_sha256": "e9c6d56b1589b3f48b2f4482578b3c9ddbd00452d1c19f3262649bc845d9bb55"
   },
-  "asset_attribution": "See assets/nist/README.md and retained Factory BSD-3-Clause terms. The asset contributor confirmed the same license for the local RJ45 connector and NIST board meshes. Exact upstream archive versions for those conversions were not retained.",
+  "asset_attribution": "See assets/nist/README.md and retained Factory BSD-3-Clause terms in the downloaded asset snapshot. The asset contributor confirmed the same license for the local RJ45 connector and NIST board meshes. Exact upstream archive versions for those conversions were not retained.",
   "mode": "Continuous native threading control replay",
   "selection": "Final three seconds of M8 nut threading with one Panda on the NIST board. RJ45 connector, large gear and 8 mm rod are already assembled at the start of this segment.",
   "replay_sha256": "28d1b4f6b3c843b18960b0e315d79035ee08998c408428513a184bf2e3322860",
@@ -107,6 +113,7 @@
   "stop": "End of the three-second recorded control tape; no runtime task-success logic or resets.",
   "runtime": "Existing io.load_trajectory and cli.unroll; no policy, per-step state restoration, resets, or external collision pipeline.",
   "source_capture_sha256": "e64a9d2abbf4481d3fa32d642b4a69e4a7bc2349d26ce00e847dec1fa08f72e8",
+  "measurement_scope": "The validation, timing_window and compiled model_sha256 fields describe the historical pre-rebase engine revision, not current main.",
   "validation": {
     "threading_motion": "All six independent one-world replays rotate and advance the nut: 2.709\u20133.215 turns and 3.487\u20134.120 mm axial advance. The benchmark exercises rotation and axial advance of an engaged nut.",
     "original_policy_completion_flag": {

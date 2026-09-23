@@ -27,6 +27,7 @@ an RJ45 connector, large gear and 8 mm rod, already assembled at this point in
 the recorded episode. It uses one ground plane, native SDF collision for the
 assembly parts, and Panda visuals from the pinned Menagerie assets. Offline
 preparation builds depth-8 SDFs into an MJB outside the source package.
+The runner fetches the assembly meshes and license notices from a pinned Git snapshot.
 
 The replay starts with the nut partly threaded and contains one initial
 position/velocity state followed by 300 policy-recorded actuator targets at 10 ms
@@ -39,8 +40,9 @@ CUDA_VISIBLE_DEVICES=1 uv run python benchmarks/run.py -f '^panda_nist_assembly$
 CUDA_VISIBLE_DEVICES=1 uv run python benchmarks/run.py -f '^panda_nist_assembly$' --view
 ```
 
-Profiling uses MuJoCo 3.12.1.dev968306640 and Warp 1.15.0. To reproduce those
-timings, use an environment with these versions and run with `uv run --no-sync`.
+The validation and timings in the provenance file were recorded before the rebase,
+using MuJoCo 3.12.1.dev968306640, Warp 1.15.0 and the engine revision recorded there.
+They are historical results, not measurements of current main.
 
 Replay and asset hashes are recorded in [nist_k4_provenance.json](nist_k4_provenance.json).
-See [asset attribution](assets/nist/README.md) for the source designs and license notices.
+See [asset attribution](https://github.com/ooctipus/mujoco_warp/blob/0613dbfa348fddea85cda81a85a31fdec60237db/benchmarks/franka_emika_panda/assets/nist/README.md) for the source designs and license notices.
