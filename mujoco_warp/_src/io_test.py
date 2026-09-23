@@ -645,6 +645,52 @@ class IOTest(parameterized.TestCase):
     np.testing.assert_allclose(mjd.M, mjd_ref.M)
 
   @parameterized.named_parameters(
+    ("constraint_only", 0.1, False, types.ContactType.CONSTRAINT, 1),
+    ("sensor_only", 1.0, True, types.ContactType.SENSOR, 0),
+    (
+      "constraint_and_sensor",
+      0.1,
+      True,
+      types.ContactType.CONSTRAINT | types.ContactType.SENSOR,
+      1,
+    ),
+  )
+  def test_get_data_into_filters_sensor_contacts(self, body_z, sensor, expected_type, expected_ncon):
+    """Tests that get_data_into exports only contacts used by the constraint solver."""
+    sensor_xml = '<sensor><distance geom1="a" geom2="b" cutoff="2"/></sensor>' if sensor else ""
+    mjm, mjd, m, d = test_data.fixture(
+      xml=f"""
+        <mujoco>
+          <worldbody>
+            <body>
+              <freejoint/>
+              <geom name="a" type="sphere" size=".1"/>
+            </body>
+            <body pos="0 0 {body_z}">
+              <freejoint/>
+              <geom name="b" type="sphere" size=".1"/>
+            </body>
+          </worldbody>
+          {sensor_xml}
+        </mujoco>
+      """,
+      nworld=2,
+    )
+
+    mjwarp.forward(m, d)
+
+    nacon = d.nacon.numpy()[0]
+    self.assertEqual(nacon, d.nworld)
+    np.testing.assert_array_equal(d.contact.type.numpy()[:nacon], np.full(nacon, int(expected_type)))
+    self.assertEqual(mjd.ncon, expected_ncon)
+
+    for world_id in range(d.nworld):
+      result = mujoco.MjData(mjm)
+      mjwarp.get_data_into(result, mjm, d, world_id=world_id)
+      self.assertEqual(result.ncon, expected_ncon)
+      self.assertEqual(result.nefc, mjd.nefc)
+
+  @parameterized.named_parameters(
     dict(testcase_name="nworld=1", nworld=1, world_id=0),
     dict(testcase_name="nworld=2_world_id=1", nworld=2, world_id=1),
   )

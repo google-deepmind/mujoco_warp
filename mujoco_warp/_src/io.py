@@ -2174,8 +2174,11 @@ def get_data_into(
   nacon = min(d.nacon.numpy()[0], d.naconmax)
   nefc = min(d.nefc.numpy()[world_id], d.njmax)
 
-  ncon_filter = np.zeros_like(d.contact.worldid.numpy(), dtype=bool)
-  ncon_filter[:nacon] = d.contact.worldid.numpy()[:nacon] == world_id
+  contact_worldid = d.contact.worldid.numpy()
+  contact_type = d.contact.type.numpy()
+  ncon_filter = np.zeros_like(contact_worldid, dtype=bool)
+  is_constraint = (contact_type[:nacon] & types.ContactType.CONSTRAINT) != 0
+  ncon_filter[:nacon] = (contact_worldid[:nacon] == world_id) & is_constraint
   ncon = ncon_filter.sum()
 
   if ncon != result.ncon or nefc != result.nefc:
