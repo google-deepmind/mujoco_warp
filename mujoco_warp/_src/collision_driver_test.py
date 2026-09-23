@@ -1015,56 +1015,90 @@ class CollisionTest(parameterized.TestCase):
     np.testing.assert_equal(d.nacon.numpy()[0], 4)
     self.assertTrue(d.overflow.numpy()[0] & types.OverflowType.HFIELD)
 
-  def test_hfield_sparse_subgrid_contacts(self):
+  @parameterized.parameters(1, 2)
+  def test_hfield_sparse_subgrid_contacts(self, nworld):
     """Tests that non-colliding prisms in the subgrid do not starve active contacts."""
-    # the box is rotated 45 deg, so its subgrid is a large square while the box itself only
-    # occupies the diagonal: 1458 prisms, of which more than MJ_MAXCONPAIR are in contact
-    _XML = """
-    <mujoco>
-      <asset>
-        <hfield name="hfield" nrow="40" ncol="40" size="1 1 .1 .1"/>
-      </asset>
-      <worldbody>
-        <body pos="0 0 .095" euler="0 0 45">
-          <freejoint/>
-          <geom type="box" size=".9 .02 .1"/>
-        </body>
-        <geom type="hfield" hfield="hfield"/>
-      </worldbody>
-    </mujoco>
-    """
+    # The box is rotated 45 deg, so its subgrid is a large square while the box itself only
+    # occupies the diagonal: 1458 prisms, of which more than MJ_MAXCONPAIR are in contact.
+    _, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <asset>
+          <hfield name="hfield" nrow="40" ncol="40" size="1 1 .1 .1"/>
+        </asset>
+        <worldbody>
+          <body pos="0 0 .095" euler="0 0 45">
+            <freejoint/>
+            <geom type="box" size=".9 .02 .1"/>
+          </body>
+          <geom type="hfield" hfield="hfield"/>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=nworld,
+    )
 
-    _, _, m, d = test_data.fixture(xml=_XML)
+    if nworld == 2:
+      # Vary world 1 so it does not collide.
+      qpos = d.qpos.numpy()
+      qpos[1, 2] += 1.0
+      d.qpos.assign(qpos)
+      mjw.kinematics(m, d)
+
+    d.nacon.fill_(-1)
+    d.overflow.zero_()
 
     mjw.collision(m, d)
 
-    np.testing.assert_equal(d.nacon.numpy()[0], 4)
+    nacon = d.nacon.numpy()[0]
+    np.testing.assert_equal(nacon, 4)
+    np.testing.assert_equal(d.contact.worldid.numpy()[:nacon], 0)
     self.assertTrue(d.overflow.numpy()[0] & types.OverflowType.HFIELD)
 
-  def test_hfield_sparse_subgrid_no_overflow(self):
-    """Tests that non-colliding prisms in the subgrid do not report an overflow."""
-    # as above at a coarser resolution: 72 prisms, far fewer than MJ_MAXCONPAIR in contact
-    _XML = """
-    <mujoco>
-      <asset>
-        <hfield name="hfield" nrow="9" ncol="9" size="1 1 .1 .1"/>
-      </asset>
-      <worldbody>
-        <body pos="0 0 .095" euler="0 0 45">
-          <freejoint/>
-          <geom type="box" size=".9 .02 .1"/>
-        </body>
-        <geom type="hfield" hfield="hfield"/>
-      </worldbody>
-    </mujoco>
-    """
+    if nworld == 2:
+      self.assertFalse(d.overflow.numpy()[1] & types.OverflowType.HFIELD)
 
-    _, _, m, d = test_data.fixture(xml=_XML)
+  @parameterized.parameters(1, 2)
+  def test_hfield_sparse_subgrid_no_overflow(self, nworld):
+    """Tests that non-colliding prisms in the subgrid do not report an overflow."""
+    # As above at a coarser resolution: 72 prisms, far fewer than MJ_MAXCONPAIR in contact.
+    _, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <asset>
+          <hfield name="hfield" nrow="9" ncol="9" size="1 1 .1 .1"/>
+        </asset>
+        <worldbody>
+          <body pos="0 0 .095" euler="0 0 45">
+            <freejoint/>
+            <geom type="box" size=".9 .02 .1"/>
+          </body>
+          <geom type="hfield" hfield="hfield"/>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=nworld,
+    )
+
+    if nworld == 2:
+      # Vary world 1 so it does not collide.
+      qpos = d.qpos.numpy()
+      qpos[1, 2] += 1.0
+      d.qpos.assign(qpos)
+      mjw.kinematics(m, d)
+
+    d.nacon.fill_(-1)
+    d.overflow.zero_()
 
     mjw.collision(m, d)
 
-    np.testing.assert_equal(d.nacon.numpy()[0], 4)
+    nacon = d.nacon.numpy()[0]
+    np.testing.assert_equal(nacon, 4)
+    np.testing.assert_equal(d.contact.worldid.numpy()[:nacon], 0)
     self.assertFalse(d.overflow.numpy()[0] & types.OverflowType.HFIELD)
+
+    if nworld == 2:
+      self.assertFalse(d.overflow.numpy()[1] & types.OverflowType.HFIELD)
 
   def test_min_friction(self):
     with self.assertWarns(UserWarning):
