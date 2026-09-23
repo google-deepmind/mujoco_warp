@@ -133,6 +133,9 @@ def test_assembly_package_has_initial_only_control_replay():
   variants = [item for item in BENCHMARKS if item["name"] == "panda_nist_assembly"]
   assert len(variants) == 1
   for item in variants:
+    assert all(repo["source"].startswith("https://github.com/google-deepmind/") for repo, *_ in item["assets"]), (
+      "Benchmark assets must use MuJoCo-owned repositories, not a contributor fork"
+    )
     assert "state_profile" not in item
     assert all(item[key] > 0 for key in ("nworld", "nstep", "nconmax", "njmax", "nccdmax"))
     assert item["noise_std"] == item["noise_rate"] == 0
@@ -162,12 +165,6 @@ def test_assembly_package_has_initial_only_control_replay():
     path = Path(mesh.get("file"))
     assert not path.is_absolute() and ".." not in path.parts
   assets = provenance["assembly_assets"]
-  assert len(assets["ref"]) == 40
-  assert (
-    {"source": assets["source"], "ref": assets["ref"]},
-    assets["path"],
-    assets["destination"],
-  ) in variants[0]["assets"]
   assert {asset["file"] for asset in provenance["assembly_meshes"]} == {
     mesh.get("file") for mesh in scene.findall("./asset/mesh") if Path(mesh.get("file")).parent == Path(assets["destination"])
   }

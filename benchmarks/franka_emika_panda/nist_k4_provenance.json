@@ -7,9 +7,7 @@
     "rod_insert_8mm"
   ],
   "assembly_assets": {
-    "source": "https://github.com/ooctipus/mujoco_warp.git",
-    "ref": "0613dbfa348fddea85cda81a85a31fdec60237db",
-    "path": "benchmarks/franka_emika_panda/assets/nist",
+    "status": "awaiting MuJoCo-owned asset upload",
     "destination": "assets/nist"
   },
   "assembly_meshes": [
@@ -100,7 +98,7 @@
     "contact": "Native nominal assembly settings: friction .75/.005/.0001, solref .0025/1, zero margin/gap.",
     "integration_sha256": "e9c6d56b1589b3f48b2f4482578b3c9ddbd00452d1c19f3262649bc845d9bb55"
   },
-  "asset_attribution": "See assets/nist/README.md and retained Factory BSD-3-Clause terms in the downloaded asset snapshot. The asset contributor confirmed the same license for the local RJ45 connector and NIST board meshes. Exact upstream archive versions for those conversions were not retained.",
+  "asset_attribution": "The prepared upload includes assets/nist/README.md and the Factory BSD-3-Clause terms. The asset contributor confirmed the same license for the local RJ45 connector and NIST board meshes. Exact upstream archive versions for those conversions were not retained.",
   "mode": "Continuous native threading control replay",
   "selection": "Final three seconds of M8 nut threading with one Panda on the NIST board. RJ45 connector, large gear and 8 mm rod are already assembled at the start of this segment.",
   "replay_sha256": "28d1b4f6b3c843b18960b0e315d79035ee08998c408428513a184bf2e3322860",

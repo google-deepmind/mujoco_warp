@@ -3,10 +3,6 @@ ASSETS = [
     "source": "https://github.com/google-deepmind/mujoco_menagerie.git",
     "ref": "affef0836947b64cc06c4ab1cbf0152835693374",
   },
-  {
-    "source": "https://github.com/ooctipus/mujoco_warp.git",
-    "ref": "0613dbfa348fddea85cda81a85a31fdec60237db",
-  },
 ]
 
 BENCHMARKS = [
@@ -35,7 +31,7 @@ BENCHMARKS += [
     "override": ["opt.jacobian=sparse"],
     "assets": [
       (ASSETS[0], "franka_emika_panda"),
-      (ASSETS[1], "benchmarks/franka_emika_panda/assets/nist", "assets/nist"),
+      # TODO: Add the NIST meshes after upload to a MuJoCo-owned repository.
     ],
     "prepare": [
       "python",
