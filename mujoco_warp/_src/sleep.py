@@ -108,7 +108,7 @@ def _update_sleep_trees(
   is_awake = int(tree_asleep_in[worldid, treeid] < 0)
   tree_awake_out[worldid, treeid] = is_awake
   if is_awake == 1:
-    wp.atomic_add(ntree_awake_out, worldid, 1)
+    wp.atomic_add(ntree_awake_out, worldid, 1)  # kernel_analyzer: ignore[determinism]
 
 
 @wp.kernel
@@ -145,7 +145,7 @@ def _update_sleep_bodies(
   body_awake_out[worldid, bodyid] = state
 
   if state != SleepState.ASLEEP:
-    idx = wp.atomic_add(nbody_awake_out, worldid, 1)
+    idx = wp.atomic_add(nbody_awake_out, worldid, 1)  # kernel_analyzer: ignore[determinism]
     body_awake_ind_out[worldid, idx] = bodyid
 
 
@@ -163,7 +163,7 @@ def _update_sleep_dofs(
   worldid, dofid = wp.tid()
   bodyid = dof_bodyid[dofid]
   if body_treeid[bodyid] >= 0 and body_awake_in[worldid, bodyid] == SleepState.AWAKE:
-    idx = wp.atomic_add(nv_awake_out, worldid, 1)
+    idx = wp.atomic_add(nv_awake_out, worldid, 1)  # kernel_analyzer: ignore[determinism]
     dof_awake_ind_out[worldid, idx] = dofid
 
 
@@ -882,7 +882,7 @@ def _check_island_can_sleep(
     as_val = tree_asleep_in[worldid, treeid]
     if as_val < -1:
       # Not ready to sleep yet
-      wp.atomic_min(island_can_sleep_out, worldid, island_id, 0)
+      wp.atomic_min(island_can_sleep_out, worldid, island_id, 0)  # kernel_analyzer: ignore[determinism]
 
 
 @wp.kernel

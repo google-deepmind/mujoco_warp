@@ -16,6 +16,7 @@
 """Tests for the core MuJoCo Warp types."""
 
 import dataclasses
+from unittest import mock
 
 import mujoco
 import numpy as np
@@ -23,9 +24,14 @@ import warp as wp
 from absl.testing import absltest
 from absl.testing import parameterized
 
+from mujoco_warp import test_data
+from mujoco_warp._src.collision_driver import collision
+from mujoco_warp._src.constraint import make_constraint
+from mujoco_warp._src.forward import step
 from mujoco_warp._src.io import override_model
-from mujoco_warp._src.io import put_model
+from mujoco_warp._src.island import island
 from mujoco_warp._src.types import Data
+from mujoco_warp._src.types import DeterminismType
 from mujoco_warp._src.types import Model
 from mujoco_warp._src.types import Option
 from mujoco_warp._src.types import OverflowType
@@ -105,8 +111,11 @@ class TypesTest(parameterized.TestCase):
     self.assertEqual(int(OverflowType.ALL), (1 << 12) - 1)
 
   def test_option_warn_overflow(self):
-    mjm = mujoco.MjModel.from_xml_string("<mujoco/>")
-    m = put_model(mjm)
+    _, _, m, _ = test_data.fixture(
+      xml="""
+      <mujoco/>
+      """
+    )
 
     # Defaults to ALL
     self.assertEqual(m.opt.warn_overflow, int(OverflowType.ALL))
@@ -126,16 +135,126 @@ class TypesTest(parameterized.TestCase):
     self.assertTrue(bool(m.opt.warn_overflow & OverflowType.CCD))
 
     # Test override_model support
-    override_model(m, {"opt.warn_overflow": 0})
-    self.assertEqual(m.opt.warn_overflow, 0)
+    for override, expected in [
+      ({"opt.warn_overflow": 0}, 0),
+      ({"opt.warn_overflow": "CCD"}, int(OverflowType.CCD)),
+      (["opt.warn_overflow=ALL"], int(OverflowType.ALL)),
+      (
+        ["opt.warn_overflow=~ITERATIONS|~LS_ITERATIONS"],
+        int(OverflowType.ALL) & ~OverflowType.ITERATIONS & ~OverflowType.LS_ITERATIONS,
+      ),
+    ]:
+      override_model(m, override)
+      self.assertEqual(m.opt.warn_overflow, expected)
 
-    override_model(m, {"opt.warn_overflow": "CCD"})
-    self.assertEqual(m.opt.warn_overflow, int(OverflowType.CCD))
+  def test_determinism_type_flags(self):
+    self.assertEqual(int(DeterminismType.NONE), 0)
+    self.assertEqual(int(DeterminismType.CONTACTS), 1 << 0)
+    self.assertEqual(int(DeterminismType.CONSTRAINT), 1 << 1)
+    self.assertEqual(int(DeterminismType.ATOMICS), 1 << 2)
+    self.assertEqual(int(DeterminismType.ISLANDS), 1 << 3)
+    self.assertEqual(int(DeterminismType.ALL), (1 << 0) | (1 << 1) | (1 << 2) | (1 << 3))
 
-    m = put_model(mjm)
-    override_model(m, ["opt.warn_overflow=~ITERATIONS|~LS_ITERATIONS"])
-    expected = int(OverflowType.ALL) & ~OverflowType.ITERATIONS & ~OverflowType.LS_ITERATIONS
-    self.assertEqual(m.opt.warn_overflow, expected)
+  def test_option_deterministic(self):
+    _, _, m, _ = test_data.fixture(
+      xml="""
+      <mujoco/>
+      """
+    )
+
+    # Defaults to NONE
+    self.assertEqual(m.opt.deterministic, int(DeterminismType.NONE))
+    self.assertFalse(bool(m.opt.deterministic))
+
+    # Setting boolean True converts to ALL
+    m.opt.deterministic = True
+    self.assertEqual(m.opt.deterministic, int(DeterminismType.ALL))
+    self.assertTrue(bool(m.opt.deterministic & DeterminismType.CONTACTS))
+    self.assertTrue(bool(m.opt.deterministic & DeterminismType.CONSTRAINT))
+    self.assertTrue(bool(m.opt.deterministic & DeterminismType.ATOMICS))
+    self.assertTrue(bool(m.opt.deterministic & DeterminismType.ISLANDS))
+
+    # Setting boolean False converts to NONE
+    m.opt.deterministic = False
+    self.assertEqual(m.opt.deterministic, int(DeterminismType.NONE))
+    self.assertFalse(bool(m.opt.deterministic))
+
+    # Setting individual flags with orthogonality check
+    flags = (
+      DeterminismType.CONTACTS,
+      DeterminismType.CONSTRAINT,
+      DeterminismType.ATOMICS,
+      DeterminismType.ISLANDS,
+    )
+    for flag in flags:
+      m.opt.deterministic = flag
+      self.assertEqual(m.opt.deterministic, int(flag))
+      for other in flags:
+        self.assertEqual(bool(m.opt.deterministic & other), flag == other)
+
+    # Test override_model support
+    for override, expected in [
+      ({"opt.deterministic": 0}, int(DeterminismType.NONE)),
+      ({"opt.deterministic": True}, int(DeterminismType.ALL)),
+      ({"opt.deterministic": "CONTACTS"}, int(DeterminismType.CONTACTS)),
+      (
+        ["opt.deterministic=CONSTRAINT|ATOMICS|ISLANDS"],
+        int(DeterminismType.CONSTRAINT | DeterminismType.ATOMICS | DeterminismType.ISLANDS),
+      ),
+      (["opt.deterministic=ALL"], int(DeterminismType.ALL)),
+      (["opt.deterministic=~CONTACTS"], int(DeterminismType.ALL) & ~DeterminismType.CONTACTS),
+    ]:
+      override_model(m, override)
+      self.assertEqual(m.opt.deterministic, expected)
+
+  @parameterized.parameters(1, 2)
+  def test_determinism_pipeline_hooks(self, nworld):
+    """Tests that sort hooks and atomic determinism modes execute cleanly across the pipeline."""
+    _, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <body pos="0 0 0.05">
+            <freejoint/>
+            <geom type="sphere" size=".1"/>
+          </body>
+          <geom type="plane" size="1 1 .1"/>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=nworld,
+    )
+
+    if nworld == 2:
+      qpos = d.qpos.numpy()
+      qpos[1, 2] += 0.5
+      d.qpos.assign(qpos)
+
+    # 1. Step with atomics modes
+    for flag in (DeterminismType.NONE, DeterminismType.ATOMICS, DeterminismType.ALL):
+      m.opt.deterministic = flag
+      d.qacc.fill_(wp.inf)
+      step(m, d)
+      self.assertFalse(np.any(np.isinf(d.qacc.numpy())))
+
+    # 2. Test sort hooks
+    with mock.patch("mujoco_warp._src.collision_driver._sort_contacts") as mock_sort_contacts:
+      m.opt.deterministic = DeterminismType.CONTACTS
+      collision(m, d)
+      self.assertTrue(mock_sort_contacts.called)
+
+    with mock.patch("mujoco_warp._src.constraint._sort_constraints") as mock_sort_constraints:
+      m.opt.deterministic = DeterminismType.CONSTRAINT
+      make_constraint(m, d)
+      self.assertTrue(mock_sort_constraints.called)
+
+    with mock.patch("mujoco_warp._src.island._sort_islands") as mock_sort_islands:
+      m.opt.deterministic = DeterminismType.ISLANDS
+      island(m, d)
+      self.assertTrue(mock_sort_islands.called)
+
+    if nworld == 2:
+      self.assertFalse(np.allclose(d.qacc.numpy()[0], d.qacc.numpy()[1]))
 
 
 if __name__ == "__main__":

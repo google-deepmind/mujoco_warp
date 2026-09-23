@@ -34,6 +34,7 @@ from mujoco_warp._src.support import xfrc_accumulate
 from mujoco_warp._src.types import MJ_MINVAL
 from mujoco_warp._src.types import BiasType
 from mujoco_warp._src.types import Data
+from mujoco_warp._src.types import DeterminismType
 from mujoco_warp._src.types import DisableBit
 from mujoco_warp._src.types import DynType
 from mujoco_warp._src.types import EnableBit
@@ -1499,22 +1500,30 @@ def _actuator_force(
   actuator_force_out[worldid, uid] = force
 
 
-@wp.kernel
-def _tendon_actuator_force(
-  # Model:
-  actuator_trntype: wp.array[int],
-  actuator_trnid: wp.array[wp.vec2i],
-  # Data in:
-  actuator_force_in: wp.array2d[float],
-  # Out:
-  ten_actfrc_out: wp.array2d[float],
-):
-  worldid, actid = wp.tid()
+@cache_kernel
+def _tendon_actuator_force(deterministic: bool = False):
+  module_options = {"enable_backward": False}
+  if deterministic:
+    module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
 
-  if actuator_trntype[actid] == TrnType.TENDON:
-    tenid = actuator_trnid[actid][0]
-    # TODO(team): only compute for tendons with force limits?
-    wp.atomic_add(ten_actfrc_out[worldid], tenid, actuator_force_in[worldid, actid])
+  @wp.kernel(module="unique", module_options=module_options)
+  def kernel(
+    # Model:
+    actuator_trntype: wp.array[int],
+    actuator_trnid: wp.array[wp.vec2i],
+    # Data in:
+    actuator_force_in: wp.array2d[float],
+    # Out:
+    ten_actfrc_out: wp.array2d[float],
+  ):
+    worldid, actid = wp.tid()
+
+    if actuator_trntype[actid] == TrnType.TENDON:
+      tenid = actuator_trnid[actid][0]
+      # TODO(team): only compute for tendons with force limits?
+      wp.atomic_add(ten_actfrc_out[worldid], tenid, actuator_force_in[worldid, actid])
+
+  return kernel
 
 
 @wp.kernel
@@ -1543,27 +1552,36 @@ def _tendon_actuator_force_clamp(
         actuator_force_out[worldid, actid] *= actfrcrange[1] / ten_actfrc
 
 
-@wp.kernel
-def _qfrc_actuator(
-  # Data in:
-  moment_rownnz_in: wp.array2d[int],
-  moment_rowadr_in: wp.array2d[int],
-  moment_colind_in: wp.array2d[int],
-  actuator_moment_in: wp.array2d[float],
-  actuator_force_in: wp.array2d[float],
-  # Data out:
-  qfrc_actuator_out: wp.array2d[float],
-):
-  worldid, actid = wp.tid()
+@cache_kernel
+def _qfrc_actuator(deterministic: bool = False):
+  module_options = {"enable_backward": False}
+  if deterministic:
+    module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
 
-  rownnz = moment_rownnz_in[worldid, actid]
-  rowadr = moment_rowadr_in[worldid, actid]
+  @wp.kernel(module="unique", module_options=module_options)
+  def kernel(
+    # Data in:
+    moment_rownnz_in: wp.array2d[int],
+    moment_rowadr_in: wp.array2d[int],
+    moment_colind_in: wp.array2d[int],
+    actuator_moment_in: wp.array2d[float],
+    actuator_force_in: wp.array2d[float],
+    # Data out:
+    qfrc_actuator_out: wp.array2d[float],
+  ):
+    worldid, actid = wp.tid()
 
-  for i in range(rownnz):
-    sparseid = rowadr + i
-    colind = moment_colind_in[worldid, sparseid]
-    qfrc = actuator_moment_in[worldid, sparseid] * actuator_force_in[worldid, actid]
-    wp.atomic_add(qfrc_actuator_out[worldid], colind, qfrc)
+    rownnz = moment_rownnz_in[worldid, actid]
+    rowadr = moment_rowadr_in[worldid, actid]
+    act_force = actuator_force_in[worldid, actid]
+
+    for i in range(rownnz):
+      sparseid = rowadr + i
+      colind = moment_colind_in[worldid, sparseid]
+      qfrc = actuator_moment_in[worldid, sparseid] * act_force
+      wp.atomic_add(qfrc_actuator_out[worldid], colind, qfrc)
+
+  return kernel
 
 
 @wp.kernel
@@ -1660,7 +1678,7 @@ def fwd_actuation(m: Model, d: Data):
     # total actuator force at tendon
     ten_actfrc = wp.zeros((d.nworld, m.ntendon), dtype=float)
     wp.launch(
-      _tendon_actuator_force,
+      _tendon_actuator_force(bool(m.opt.deterministic & DeterminismType.ATOMICS)),
       dim=(d.nworld, m.nactuator),
       inputs=[m.actuator_trntype, m.actuator_trnid, d.actuator_force],
       outputs=[ten_actfrc],
@@ -1676,7 +1694,7 @@ def fwd_actuation(m: Model, d: Data):
   # TODO(team): optimize performance
   d.qfrc_actuator.zero_()
   wp.launch(
-    _qfrc_actuator,
+    _qfrc_actuator(bool(m.opt.deterministic & DeterminismType.ATOMICS)),
     dim=(d.nworld, m.nactuator),
     inputs=[
       d.moment_rownnz,

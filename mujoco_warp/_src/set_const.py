@@ -25,6 +25,7 @@ from mujoco_warp._src.types import MJ_MINVAL
 from mujoco_warp._src.types import BiasType
 from mujoco_warp._src.types import TrnType
 from mujoco_warp._src.types import vec10
+from mujoco_warp._src.warp_util import cache_kernel
 
 wp.set_module_options({"default_grid_stride": False})
 
@@ -42,18 +43,26 @@ def _init_subtreemass(
   body_subtreemass_out[body_subtreemass_id, bodyid] = body_mass_in[body_mass_id, bodyid]
 
 
-@wp.kernel
-def _accumulate_subtreemass(
-  body_parentid: wp.array[int],
-  body_subtreemass_io: wp.array2d[float],
-  body_tree_: wp.array[int],
-):
-  worldid, nodeid = wp.tid()
-  body_subtreemass_id = worldid % body_subtreemass_io.shape[0]
-  bodyid = body_tree_[nodeid]
-  parentid = body_parentid[bodyid]
-  if bodyid != 0:
-    wp.atomic_add(body_subtreemass_io, body_subtreemass_id, parentid, body_subtreemass_io[body_subtreemass_id, bodyid])
+@cache_kernel
+def _accumulate_subtreemass(deterministic: bool = False):
+  module_options = {"enable_backward": False}
+  if deterministic:
+    module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
+
+  @wp.kernel(module="unique", module_options=module_options)
+  def kernel(
+    body_parentid: wp.array[int],
+    body_subtreemass_io: wp.array2d[float],
+    body_tree_: wp.array[int],
+  ):
+    worldid, nodeid = wp.tid()
+    body_subtreemass_id = worldid % body_subtreemass_io.shape[0]
+    bodyid = body_tree_[nodeid]
+    parentid = body_parentid[bodyid]
+    if bodyid != 0:
+      wp.atomic_add(body_subtreemass_io, body_subtreemass_id, parentid, body_subtreemass_io[body_subtreemass_id, bodyid])
+
+  return kernel
 
 
 @wp.kernel
@@ -625,7 +634,7 @@ def set_const_fixed(m: types.Model, d: types.Data):
   for i in reversed(range(len(m.body_tree))):
     body_tree = m.body_tree[i]
     wp.launch(
-      _accumulate_subtreemass,
+      _accumulate_subtreemass(bool(m.opt.deterministic & types.DeterminismType.ATOMICS)),
       dim=(nworld_subtreemass, body_tree.size),
       inputs=[m.body_parentid, m.body_subtreemass, body_tree],
     )

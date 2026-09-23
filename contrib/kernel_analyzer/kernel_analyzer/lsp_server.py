@@ -43,7 +43,7 @@ class KernelAnalyzerLanguageServer(LanguageServer):
     self.issues: Dict[str, List[Any]] = {}
 
 
-_server = KernelAnalyzerLanguageServer("kernel-analyzer", "v0.8.0")
+_server = KernelAnalyzerLanguageServer("kernel-analyzer", "v0.9.0")
 
 
 @_server.feature(types.INITIALIZE)
@@ -63,7 +63,7 @@ async def initialize(client: LanguageServer, params: InitializeParams):
     ),
     server_info=InitializeResultServerInfoType(
       name="kernel-analyzer",
-      version="v0.8.0",
+      version="v0.9.0",
     ),
   )
 
@@ -74,9 +74,20 @@ async def initialize(client: LanguageServer, params: InitializeParams):
 async def validate(ls: KernelAnalyzerLanguageServer, params):
   """Validate the document using core_logic.ast_analyzer."""
   config = await ls.get_configuration_async(
-    WorkspaceConfigurationParams(items=[ConfigurationItem(scope_uri="", section="kernelAnalyzer.typesPath")])
+    WorkspaceConfigurationParams(
+      items=[
+        ConfigurationItem(scope_uri="", section="kernelAnalyzer.typesPath"),
+        ConfigurationItem(scope_uri="", section="kernelAnalyzer.checkAtomic"),
+        ConfigurationItem(scope_uri="", section="kernelAnalyzer.checkDeterministic"),
+      ]
+    )
   )
   type_source = Path(config[0]).read_text()
+  check_atomic = (
+    bool(config[1])
+    if len(config) > 1 and config[1] is not None
+    else (bool(config[2]) if len(config) > 2 and config[2] is not None else True)
+  )
 
   text_doc = ls.workspace.get_text_document(params.text_document.uri)
   source = text_doc.source
@@ -85,7 +96,7 @@ async def validate(ls: KernelAnalyzerLanguageServer, params):
   logging.info(f"Validating document: {text_doc.uri}")
 
   try:
-    issues = ast_analyzer.analyze(source, text_doc.uri, type_source)
+    issues = ast_analyzer.analyze(source, text_doc.uri, type_source, check_atomic=check_atomic)
     logging.info(f"Analyzer found {len(issues)} issues in {text_doc.uri}")
     # store for potential future use (code actions)
     ls.issues[text_doc.uri] = issues

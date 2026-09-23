@@ -24,6 +24,10 @@ from absl import logging
 _VERBOSE = flags.DEFINE_bool("verbose", False, "Enable debug logging.")
 _OUTPUT = flags.DEFINE_enum("output", "console", ["console", "github"], "Analyzer output format.")
 _TYPES_PATH = flags.DEFINE_string("types", "", "Path to mujoco_warp types.py.")
+_CHECK_ATOMIC = flags.DEFINE_bool(
+  "check_atomic", True, "Enforce that kernels with atomic operations have a deterministic factory."
+)
+_CHECK_DETERMINISTIC = flags.DEFINE_bool("check_deterministic", None, "Deprecated alias for --check_atomic.")
 
 
 def main(argv):
@@ -65,7 +69,8 @@ def main(argv):
       types_source = types_path.read_text(encoding="utf-8")
       content = filepath.read_text(encoding="utf-8")
 
-      file_issues = ast_analyzer.analyze(content, str(filepath), types_source)
+      check_atomic = _CHECK_DETERMINISTIC.value if _CHECK_DETERMINISTIC.value is not None else _CHECK_ATOMIC.value
+      file_issues = ast_analyzer.analyze(content, str(filepath), types_source, check_atomic=check_atomic)
       issues.extend(file_issues)
 
       for issue in file_issues:

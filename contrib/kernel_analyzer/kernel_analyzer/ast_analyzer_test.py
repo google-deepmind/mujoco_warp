@@ -517,5 +517,146 @@ def foo(a: int):
     self.assertEqual(len(inv_issues), 0)
 
 
+class TestDeterministicFactory(absltest.TestCase):
+  def test_factory_missing_deterministic_arg_raises_issue(self):
+    bad_code = """
+import warp as wp
+
+def test_factory(n: int):
+  @wp.kernel(module="unique")
+  def kernel(arr_out: wp.array[int]):
+    wp.atomic_add(arr_out, 0, 1)
+"""
+    issues = ast_analyzer.analyze(bad_code, "test.py", "", check_atomic=True)
+    det_issues = [i for i in issues if isinstance(i, ast_analyzer.MissingDeterministicFactory)]
+    self.assertEqual(len(det_issues), 1)
+
+    # Verify check_deterministic works as a backwards-compatible alias
+    issues_alias = ast_analyzer.analyze(bad_code, "test.py", "", check_deterministic=True)
+    det_issues_alias = [i for i in issues_alias if isinstance(i, ast_analyzer.MissingDeterministicFactory)]
+    self.assertEqual(len(det_issues_alias), 1)
+
+  def test_top_level_kernel_with_atomics_raises_issue(self):
+    bad_code = """
+import warp as wp
+
+@wp.kernel
+def kernel(arr_out: wp.array[int]):
+  wp.atomic_add(arr_out, 0, 1)
+"""
+    issues = ast_analyzer.analyze(bad_code, "test.py", "", check_atomic=True)
+    det_issues = [i for i in issues if isinstance(i, ast_analyzer.MissingDeterministicFactory)]
+    self.assertEqual(len(det_issues), 1)
+
+  def test_kernel_with_atomics_in_deterministic_factory_passes(self):
+    good_code = """
+import warp as wp
+
+def test_factory(n: int, deterministic: bool = False):
+  @wp.kernel(module="unique")
+  def kernel(arr_out: wp.array[int]):
+    wp.atomic_add(arr_out, 0, 1)
+"""
+    issues = ast_analyzer.analyze(good_code, "test.py", "", check_atomic=True)
+    det_issues = [i for i in issues if isinstance(i, ast_analyzer.MissingDeterministicFactory)]
+    self.assertEqual(len(det_issues), 0)
+
+  def test_kernel_without_atomics_passes(self):
+    good_code = """
+import warp as wp
+
+def test_factory(n: int):
+  @wp.kernel(module="unique")
+  def kernel(arr_out: wp.array[int]):
+    arr_out[0] = 1
+"""
+    issues = ast_analyzer.analyze(good_code, "test.py", "", check_atomic=True)
+    det_issues = [i for i in issues if isinstance(i, ast_analyzer.MissingDeterministicFactory)]
+    self.assertEqual(len(det_issues), 0)
+
+  def test_ignore_suppresses_atomic_issue(self):
+    ignored_code = """
+import warp as wp
+
+@wp.kernel
+def kernel(arr_out: wp.array[int]):
+  wp.atomic_add(arr_out, 0, 1)  # kernel_analyzer: ignore
+"""
+    issues = ast_analyzer.analyze(ignored_code, "test.py", "", check_atomic=True)
+    det_issues = [i for i in issues if isinstance(i, ast_analyzer.MissingDeterministicFactory)]
+    self.assertEqual(len(det_issues), 0)
+
+  def test_func_with_atomics_missing_deterministic_factory(self):
+    bad_code = """
+import warp as wp
+
+@wp.func
+def helper(arr_out: wp.array[int]):
+  wp.atomic_add(arr_out, 0, 1)
+"""
+    issues = ast_analyzer.analyze(bad_code, "test.py", "", check_atomic=True)
+    det_issues = [i for i in issues if isinstance(i, ast_analyzer.MissingDeterministicFactory)]
+    self.assertEqual(len(det_issues), 1)
+
+  def test_func_with_atomics_in_deterministic_factory_passes(self):
+    good_code = """
+import warp as wp
+
+def test_factory(n: int, deterministic: bool = False):
+  @wp.func
+  def helper(arr_out: wp.array[int]):
+    wp.atomic_add(arr_out, 0, 1)
+"""
+    issues = ast_analyzer.analyze(good_code, "test.py", "", check_atomic=True)
+    det_issues = [i for i in issues if isinstance(i, ast_analyzer.MissingDeterministicFactory)]
+    self.assertEqual(len(det_issues), 0)
+
+  def test_bitwise_atomics_natively_ignored(self):
+    code = """
+import warp as wp
+
+@wp.kernel
+def kernel(flags_out: wp.array[int]):
+  wp.atomic_or(flags_out, 0, 1)
+  wp.atomic_and(flags_out, 0, 2)
+  wp.atomic_xor(flags_out, 0, 4)
+"""
+    issues = ast_analyzer.analyze(code, "test.py", "", check_atomic=True)
+    det_issues = [i for i in issues if isinstance(i, ast_analyzer.MissingDeterministicFactory)]
+    self.assertEqual(len(det_issues), 0)
+
+  def test_ignore_determinism_with_reason_comment(self):
+    code = """
+import warp as wp
+
+@wp.kernel
+def kernel(arr_out: wp.array[int]):
+  wp.atomic_add(arr_out, 0, 1)  # kernel_analyzer: ignore[atomic]
+  wp.atomic_add(arr_out, 0, 1)  # kernel_analyzer: ignore[determinism]
+"""
+    issues = ast_analyzer.analyze(code, "test.py", "", check_atomic=True)
+    det_issues = [i for i in issues if isinstance(i, ast_analyzer.MissingDeterministicFactory)]
+    self.assertEqual(len(det_issues), 0)
+
+  def test_block_off_determinism(self):
+    code = """
+import warp as wp
+
+# kernel_analyzer: off[atomic]
+@wp.kernel
+def kernel1(arr_out: wp.array[int]):
+  wp.atomic_add(arr_out, 0, 1)
+# kernel_analyzer: on[atomic]
+
+@wp.kernel
+def kernel2(arr_out: wp.array[int]):
+  wp.atomic_add(arr_out, 0, 1)
+"""
+    issues = ast_analyzer.analyze(code, "test.py", "", check_atomic=True)
+    det_issues = [i for i in issues if isinstance(i, ast_analyzer.MissingDeterministicFactory)]
+    self.assertEqual(len(det_issues), 1)
+    self.assertEqual(det_issues[0].kernel, "kernel2")
+
+
 if __name__ == "__main__":
   absltest.main()

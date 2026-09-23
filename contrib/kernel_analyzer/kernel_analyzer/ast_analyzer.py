@@ -143,6 +143,12 @@ class BitwiseInversionInBoolean(Issue):
     return 'bitwise NOT (~) used as boolean condition; use "not (...)", "!= 0", or explicit flag checks'
 
 
+@dataclasses.dataclass
+class MissingDeterministicFactory(Issue):
+  def __str__(self):
+    return f'"{self.kernel}" contains atomic operations but is not enclosed in a kernel factory with a "deterministic" argument'
+
+
 # TODO(team): add argument order analyzer.
 # this one is tricky because just verifying order does not tell you if the arguments
 # match the parameter signature.
@@ -245,8 +251,15 @@ def _is_parenthesized(source_lines: List[str], node: ast.AST) -> bool:
   return has_open and has_close
 
 
-def analyze(source: str, filename: str, type_source: str) -> List[Issue]:
+def analyze(
+  source: str,
+  filename: str,
+  type_source: str,
+  check_atomic: bool = False,
+  check_deterministic: Optional[bool] = None,
+) -> List[Issue]:
   """Parses Python code and finds functions with unsorted simple parameters."""
+  check_atomic_val = check_deterministic if check_deterministic is not None else check_atomic
   logging.info(f"Analyzing {filename}...")
 
   # get class fields and types for Model and Data
@@ -306,12 +319,12 @@ def analyze(source: str, filename: str, type_source: str) -> List[Issue]:
     """Check if decorator is wp.func."""
     return name and (name == "wp.func" or name.startswith("wp.func("))
 
-  def _analyze_function(node: ast.FunctionDef, is_nested: bool):
+  def _analyze_function(node: ast.FunctionDef, is_nested: bool, enclosing_func: Optional[ast.FunctionDef] = None):
     """Analyze a function definition for kernel issues."""
     # Recursively check nested functions first
     for child in ast.iter_child_nodes(node):
       if isinstance(child, ast.FunctionDef):
-        _analyze_function(child, is_nested=True)
+        _analyze_function(child, is_nested=True, enclosing_func=node)
 
     # Find wp.kernel or wp.func decorator
     decorator = None
@@ -326,6 +339,23 @@ def analyze(source: str, filename: str, type_source: str) -> List[Issue]:
     if is_nested and _is_kernel(decorator):
       if 'module="unique"' not in decorator and "module='unique'" not in decorator:
         issues.append(MissingModuleUnique(node, node.name))
+
+    # Kernels and functions with atomics must be inside a deterministic factory.
+    if check_atomic_val and (_is_kernel(decorator) or _is_func(decorator)):
+      has_det = False
+      if is_nested and enclosing_func is not None:
+        has_det = any(a.arg == "deterministic" for a in enclosing_func.args.args + enclosing_func.args.kwonlyargs)
+      if not has_det:
+        for sub in ast.walk(node):
+          if (
+            isinstance(sub, ast.Call)
+            and isinstance(sub.func, ast.Attribute)
+            and isinstance(sub.func.value, ast.Name)
+            and sub.func.value.id == "wp"
+            and sub.func.attr.startswith("atomic_")
+            and sub.func.attr not in ("atomic_or", "atomic_and", "atomic_xor")
+          ):
+            issues.append(MissingDeterministicFactory(sub, node.name))
 
     _analyze_kernel(node)
 
@@ -575,17 +605,45 @@ def analyze(source: str, filename: str, type_source: str) -> List[Issue]:
           issues.append(BitwiseInversionInBoolean(t, ""))
 
   # skip issues in ignored lines
-  ignore_lines = set()
-  ignoring = False
-  for lineno, line in enumerate(source_lines, 1):  # lineno is 1-indexed
-    if "# kernel_analyzer: off" in line:
-      ignoring = True
-    elif "# kernel_analyzer: on" in line:
-      ignoring = False
-    if "# kernel_analyzer: ignore" in line or ignoring:
-      ignore_lines.add(lineno)
+  # Supports # kernel_analyzer: ignore, ignore[rule], off/on, off[rule]/on[rule]
+  ignore_lines: Dict[int, Set[str]] = {}
+  active_off_rules: Set[str] = set()
 
-  filtered_issues = [i for i in issues if i.node.lineno not in ignore_lines]
+  for lineno, line in enumerate(source_lines, 1):  # lineno is 1-indexed
+    m_off = re.search(r"#\s*kernel_analyzer:\s*off(?:\[(.*?)\])?", line)
+    if m_off:
+      active_off_rules.add(m_off.group(1).strip() if m_off.group(1) else "*")
+    m_on = re.search(r"#\s*kernel_analyzer:\s*on(?:\[(.*?)\])?", line)
+    if m_on:
+      rule = m_on.group(1).strip() if m_on.group(1) else "*"
+      active_off_rules.discard(rule)
+      if rule == "*":
+        active_off_rules.clear()
+
+    m_ign = re.search(r"#\s*kernel_analyzer:\s*ignore(?:\[(.*?)\])?", line)
+    rules_to_ignore = set(active_off_rules)
+    if m_ign:
+      rules_to_ignore.add(m_ign.group(1).strip() if m_ign.group(1) else "*")
+
+    if rules_to_ignore:
+      ignore_lines[lineno] = rules_to_ignore
+
+  def _is_ignored(iss: Issue) -> bool:
+    start_line = iss.node.lineno
+    end_line = getattr(iss.node, "end_lineno", start_line)
+    matched_rules: Set[str] = set()
+    for l in range(start_line, end_line + 1):
+      if l in ignore_lines:
+        matched_rules.update(ignore_lines[l])
+    if not matched_rules:
+      return False
+    if "*" in matched_rules:
+      return True
+    if isinstance(iss, MissingDeterministicFactory):
+      return any("atomic" in r.lower() or "determin" in r.lower() for r in matched_rules)
+    return False
+
+  filtered_issues = [i for i in issues if not _is_ignored(i)]
   filter_count, ignore_count = len(filtered_issues), len(issues) - len(filtered_issues)
 
   logging.info(f"Finished analyzing {filename}. Found {filter_count} issues, ignoring {ignore_count} issues.")

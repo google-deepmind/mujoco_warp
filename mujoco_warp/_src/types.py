@@ -255,6 +255,26 @@ class DataType(enum.IntFlag):
   # unsupported: AXIS, QUATERNION
 
 
+class DeterminismType(enum.IntFlag):
+  """Bitmask for deterministic execution.
+
+  Attributes:
+    NONE: non-deterministic execution
+    CONTACTS: stable contact ordering via geometric radix sort
+    CONSTRAINT: canonical constraint row ordering
+    ATOMICS: invariant floating-point atomic reductions
+    ISLANDS: canonical island ordering
+    ALL: all determinism features
+  """
+
+  NONE = 0
+  CONTACTS = 1 << 0
+  CONSTRAINT = 1 << 1
+  ATOMICS = 1 << 2
+  ISLANDS = 1 << 3
+  ALL = CONTACTS | CONSTRAINT | ATOMICS | ISLANDS
+
+
 class DisableBit(enum.IntFlag):
   """Disable default feature bitflags.
 
@@ -930,6 +950,7 @@ class Option:
     contact_sensor_maxmatch: max number of contacts considered by contact sensor matching criteria
                              contacts matched after this value is exceded will be ignored
     warn_overflow: overflow warning bitmask (OverflowType)
+    deterministic: determinism bitmask (DeterminismType)
   """
 
   timestep: array("*", float)
@@ -961,6 +982,7 @@ class Option:
   run_rne_postconstraint: bool
   contact_sensor_maxmatch: int
   warn_overflow: int
+  deterministic: int
 
   @property
   def warn_overflow(self) -> int:
@@ -971,6 +993,18 @@ class Option:
     if isinstance(value, bool):
       value = int(OverflowType.ALL) if value else 0
     self._warn_overflow = value
+
+  @property
+  def deterministic(self) -> int:
+    return self._deterministic
+
+  @deterministic.setter
+  def deterministic(self, value: bool | int | None):
+    if isinstance(value, bool):
+      value = int(DeterminismType.ALL) if value else int(DeterminismType.NONE)
+    elif value is None:
+      value = int(DeterminismType.NONE)
+    self._deterministic = int(value)
 
   # TODO(team): remove in future version
   @property

@@ -23,12 +23,14 @@ from mujoco_warp._src.support import next_act
 from mujoco_warp._src.types import MJ_MINVAL
 from mujoco_warp._src.types import BiasType
 from mujoco_warp._src.types import Data
+from mujoco_warp._src.types import DeterminismType
 from mujoco_warp._src.types import DisableBit
 from mujoco_warp._src.types import DynType
 from mujoco_warp._src.types import GainType
 from mujoco_warp._src.types import IntegratorType
 from mujoco_warp._src.types import Model
 from mujoco_warp._src.types import vec10
+from mujoco_warp._src.warp_util import cache_kernel
 from mujoco_warp._src.warp_util import event_scope
 
 wp.set_module_options({"enable_backward": False, "default_grid_stride": False})
@@ -174,47 +176,55 @@ def _nonzero_mask(x: float) -> float:
   return 0.0
 
 
-@wp.kernel
-def _qderiv_actuator_passive_actuation_sparse(
-  # Model:
-  M_elemid: wp.array2d[int],
-  # Data in:
-  moment_rownnz_in: wp.array2d[int],
-  moment_rowadr_in: wp.array2d[int],
-  moment_colind_in: wp.array2d[int],
-  actuator_moment_in: wp.array2d[float],
-  # In:
-  vel_in: wp.array2d[float],
-  # Out:
-  qDeriv_out: wp.array2d[float],
-):
-  worldid, actid = wp.tid()
+@cache_kernel
+def _qderiv_actuator_passive_actuation_sparse(deterministic: bool = False):
+  module_options = {"enable_backward": False}
+  if deterministic:
+    module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
 
-  vel = vel_in[worldid, actid]
-  if vel == 0.0:
-    return
+  @wp.kernel(module="unique", module_options=module_options)
+  def kernel(
+    # Model:
+    M_elemid: wp.array2d[int],
+    # Data in:
+    moment_rownnz_in: wp.array2d[int],
+    moment_rowadr_in: wp.array2d[int],
+    moment_colind_in: wp.array2d[int],
+    actuator_moment_in: wp.array2d[float],
+    # In:
+    vel_in: wp.array2d[float],
+    # Out:
+    qDeriv_out: wp.array2d[float],
+  ):
+    worldid, actid = wp.tid()
 
-  rownnz = moment_rownnz_in[worldid, actid]
-  rowadr = moment_rowadr_in[worldid, actid]
+    vel = vel_in[worldid, actid]
+    if vel == 0.0:
+      return
 
-  for i in range(rownnz):
-    rowadri = rowadr + i
-    moment_i = actuator_moment_in[worldid, rowadri]
-    if moment_i == 0.0:
-      continue
-    dofi = moment_colind_in[worldid, rowadri]
+    rownnz = moment_rownnz_in[worldid, actid]
+    rowadr = moment_rowadr_in[worldid, actid]
 
-    for j in range(i + 1):
-      rowadrj = rowadr + j
-      moment_j = actuator_moment_in[worldid, rowadrj]
-      if moment_j == 0.0:
+    for i in range(rownnz):
+      rowadri = rowadr + i
+      moment_i = actuator_moment_in[worldid, rowadri]
+      if moment_i == 0.0:
         continue
-      dofj = moment_colind_in[worldid, rowadrj]
+      dofi = moment_colind_in[worldid, rowadri]
 
-      elemid = M_elemid[dofi, dofj]
-      if elemid >= 0:
-        contrib = moment_i * moment_j * vel
-        wp.atomic_add(qDeriv_out[worldid], elemid, contrib)
+      for j in range(i + 1):
+        rowadrj = rowadr + j
+        moment_j = actuator_moment_in[worldid, rowadrj]
+        if moment_j == 0.0:
+          continue
+        dofj = moment_colind_in[worldid, rowadrj]
+
+        elemid = M_elemid[dofi, dofj]
+        if elemid >= 0:
+          contrib = moment_i * moment_j * vel
+          wp.atomic_add(qDeriv_out[worldid], elemid, contrib)
+
+  return kernel
 
 
 @wp.kernel
@@ -459,52 +469,68 @@ def deriv_rne_cacc_cfrcbody_forward(
   Dcfrcbody_out[worldid, bodyid, dofid] = term1 + term2
 
 
-@wp.kernel
-def deriv_rne_cfrcbody_backward(
-  # Model:
-  body_parentid: wp.array[int],
-  # In:
-  body_tree_: wp.array[int],
-  # Out:
-  Dcfrcbody_out: wp.array3d[wp.spatial_vector],
-):
-  """Backward pass: accumulate d(cfrc_body) from children to parents."""
-  worldid, nodeid, dofid = wp.tid()
-  bodyid = body_tree_[nodeid]
-  pid = body_parentid[bodyid]
+@cache_kernel
+def deriv_rne_cfrcbody_backward(deterministic: bool = False):
+  module_options = {"enable_backward": False}
+  if deterministic:
+    module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
 
-  # body_tree never contains bodyid=0 (worldbody), so pid >= 0 is always valid.
-  # Siblings at the same level may share a parent; atomic_add handles this.
-  val = Dcfrcbody_out[worldid, bodyid, dofid]
-  wp.atomic_add(Dcfrcbody_out[worldid, pid], dofid, val)
+  @wp.kernel(module="unique", module_options=module_options)
+  def kernel(
+    # Model:
+    body_parentid: wp.array[int],
+    # In:
+    body_tree_: wp.array[int],
+    # Out:
+    Dcfrcbody_out: wp.array3d[wp.spatial_vector],
+  ):
+    """Backward pass: accumulate d(cfrc_body) from children to parents."""
+    worldid, nodeid, dofid = wp.tid()
+    bodyid = body_tree_[nodeid]
+    pid = body_parentid[bodyid]
+
+    # body_tree never contains bodyid=0 (worldbody), so pid >= 0 is always valid.
+    # Siblings at the same level may share a parent; atomic_add handles this.
+    val = Dcfrcbody_out[worldid, bodyid, dofid]
+    wp.atomic_add(Dcfrcbody_out[worldid, pid], dofid, val)
+
+  return kernel
 
 
-@wp.kernel
-def deriv_rne_body2jnt_sparse(
-  # Model:
-  dof_bodyid: wp.array[int],
-  # Data in:
-  cdof_in: wp.array2d[wp.spatial_vector],
-  # In:
-  timestep: wp.array[float],
-  Di: wp.array[int],
-  Dj: wp.array[int],
-  Dcfrcbody_in: wp.array3d[wp.spatial_vector],
-  # Out:
-  qDeriv_out: wp.array2d[float],
-):
-  """Project body-space RNE derivatives into joint-space qDeriv (sparse)."""
-  worldid, elemid = wp.tid()
-  dt = timestep[worldid % timestep.shape[0]]
+@cache_kernel
+def deriv_rne_body2jnt_sparse(deterministic: bool = False):
+  module_options = {"enable_backward": False}
+  if deterministic:
+    module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
 
-  i = Di[elemid]
-  j = Dj[elemid]
+  @wp.kernel(module="unique", module_options=module_options)
+  def kernel(
+    # Model:
+    dof_bodyid: wp.array[int],
+    # Data in:
+    cdof_in: wp.array2d[wp.spatial_vector],
+    # In:
+    timestep: wp.array[float],
+    Di: wp.array[int],
+    Dj: wp.array[int],
+    Dcfrcbody_in: wp.array3d[wp.spatial_vector],
+    # Out:
+    qDeriv_out: wp.array2d[float],
+  ):
+    """Project body-space RNE derivatives into joint-space qDeriv (sparse)."""
+    worldid, elemid = wp.tid()
+    dt = timestep[worldid % timestep.shape[0]]
 
-  body_i = dof_bodyid[i]
-  dcfrc = Dcfrcbody_in[worldid, body_i, j]
-  term = wp.dot(cdof_in[worldid, i], dcfrc)
+    i = Di[elemid]
+    j = Dj[elemid]
 
-  wp.atomic_add(qDeriv_out[worldid], elemid, dt * term)
+    body_i = dof_bodyid[i]
+    dcfrc = Dcfrcbody_in[worldid, body_i, j]
+    term = wp.dot(cdof_in[worldid, i], dcfrc)
+
+    wp.atomic_add(qDeriv_out[worldid], elemid, dt * term)
+
+  return kernel
 
 
 def deriv_rne_vel(m: Model, d: Data, out: wp.array2d[float]):
@@ -564,7 +590,7 @@ def deriv_rne_vel(m: Model, d: Data, out: wp.array2d[float]):
   # Backward pass: accumulate Dcfrcbody from children to parents
   for body_tree in reversed(m.body_tree):
     wp.launch(
-      deriv_rne_cfrcbody_backward,
+      deriv_rne_cfrcbody_backward(bool(m.opt.deterministic & DeterminismType.ATOMICS)),
       dim=(d.nworld, body_tree.size, m.nv),
       inputs=[m.body_parentid, body_tree],
       outputs=[Dcfrcbody],
@@ -572,7 +598,7 @@ def deriv_rne_vel(m: Model, d: Data, out: wp.array2d[float]):
 
   # Project body-space derivatives into joint-space qDeriv (always sparse D-structure)
   wp.launch(
-    deriv_rne_body2jnt_sparse,
+    deriv_rne_body2jnt_sparse(bool(m.opt.deterministic & DeterminismType.ATOMICS)),
     dim=(d.nworld, m.qD_fullm_i.size),
     inputs=[m.dof_bodyid, d.cdof, m.opt.timestep, m.qD_fullm_i, m.qD_fullm_j, Dcfrcbody],
     outputs=[out],
@@ -864,102 +890,110 @@ def _deriv_ellipsoid_fluid(
   return qderiv_contrib
 
 
-@wp.kernel
-def _qderiv_ellipsoid_fluid(
-  # Model:
-  opt_timestep: wp.array[float],
-  opt_wind: wp.array[wp.vec3],
-  opt_density: wp.array[float],
-  opt_viscosity: wp.array[float],
-  opt_integrator: int,
-  body_parentid: wp.array[int],
-  body_rootid: wp.array[int],
-  body_geomnum: wp.array[int],
-  body_geomadr: wp.array[int],
-  dof_bodyid: wp.array[int],
-  geom_type: wp.array[int],
-  geom_size: wp.array2d[wp.vec3],
-  geom_fluid: wp.array2d[float],
-  body_fluid_ellipsoid_adr: wp.array[int],
-  body_isdofancestor: wp.array2d[int],
-  M_elemid: wp.array2d[int],
-  # Data in:
-  xipos_in: wp.array2d[wp.vec3],
-  geom_xpos_in: wp.array2d[wp.vec3],
-  geom_xmat_in: wp.array2d[wp.mat33],
-  subtree_com_in: wp.array2d[wp.vec3],
-  cdof_in: wp.array2d[wp.spatial_vector],
-  cvel_in: wp.array2d[wp.spatial_vector],
-  # In:
-  Mi: wp.array[int],
-  Mj: wp.array[int],
-  # Out:
-  qDeriv_out: wp.array2d[float],
-):
-  """Compute ellipsoid fluid force derivative contribution to qDeriv.
+@cache_kernel
+def _qderiv_ellipsoid_fluid(deterministic: bool = False):
+  module_options = {"enable_backward": False}
+  if deterministic:
+    module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
 
-  Parallelized over (world, fluid_body, elem). For each fluid body and DOF
-  pair, computes the 6x6 derivative matrix B in local geom frame via
-  _deriv_ellipsoid_fluid and accumulates J_i^T @ B @ J_j into qDeriv.
-  """
-  worldid, fluid_idx, elemid = wp.tid()
+  @wp.kernel(module="unique", module_options=module_options)
+  def kernel(
+    # Model:
+    opt_timestep: wp.array[float],
+    opt_wind: wp.array[wp.vec3],
+    opt_density: wp.array[float],
+    opt_viscosity: wp.array[float],
+    opt_integrator: int,
+    body_parentid: wp.array[int],
+    body_rootid: wp.array[int],
+    body_geomnum: wp.array[int],
+    body_geomadr: wp.array[int],
+    dof_bodyid: wp.array[int],
+    geom_type: wp.array[int],
+    geom_size: wp.array2d[wp.vec3],
+    geom_fluid: wp.array2d[float],
+    body_fluid_ellipsoid_adr: wp.array[int],
+    body_isdofancestor: wp.array2d[int],
+    M_elemid: wp.array2d[int],
+    # Data in:
+    xipos_in: wp.array2d[wp.vec3],
+    geom_xpos_in: wp.array2d[wp.vec3],
+    geom_xmat_in: wp.array2d[wp.mat33],
+    subtree_com_in: wp.array2d[wp.vec3],
+    cdof_in: wp.array2d[wp.spatial_vector],
+    cvel_in: wp.array2d[wp.spatial_vector],
+    # In:
+    Mi: wp.array[int],
+    Mj: wp.array[int],
+    # Out:
+    qDeriv_out: wp.array2d[float],
+  ):
+    """Compute ellipsoid fluid force derivative contribution to qDeriv.
 
-  bodyid = body_fluid_ellipsoid_adr[fluid_idx]
+    Parallelized over (world, fluid_body, elem). For each fluid body and DOF
+    pair, computes the 6x6 derivative matrix B in local geom frame via
+    _deriv_ellipsoid_fluid and accumulates J_i^T @ B @ J_j into qDeriv.
+    """
+    worldid, fluid_idx, elemid = wp.tid()
 
-  dofiid = Mi[elemid]
-  dofjid = Mj[elemid]
+    bodyid = body_fluid_ellipsoid_adr[fluid_idx]
 
-  madr = M_elemid[dofiid, dofjid]
-  if madr < 0:
-    return
+    dofiid = Mi[elemid]
+    dofjid = Mj[elemid]
 
-  # dofiid is the "deeper" DOF (Mi >= Mj in tree ordering).
-  # Any body that has dofiid in its chain also has dofjid.
-  bodyid_i = dof_bodyid[dofiid]
+    madr = M_elemid[dofiid, dofjid]
+    if madr < 0:
+      return
 
-  if bodyid_i == 0:
-    return
+    # dofiid is the "deeper" DOF (Mi >= Mj in tree ordering).
+    # Any body that has dofiid in its chain also has dofjid.
+    bodyid_i = dof_bodyid[dofiid]
 
-  if body_isdofancestor[bodyid, dofiid] == 0:
-    return
+    if bodyid_i == 0:
+      return
 
-  wind = opt_wind[worldid % opt_wind.shape[0]]
-  density = opt_density[worldid % opt_density.shape[0]]
-  viscosity = opt_viscosity[worldid % opt_viscosity.shape[0]]
-  timestep = opt_timestep[worldid % opt_timestep.shape[0]]
+    if body_isdofancestor[bodyid, dofiid] == 0:
+      return
 
-  if density <= 0.0 and viscosity <= 0.0:
-    return
+    wind = opt_wind[worldid % opt_wind.shape[0]]
+    density = opt_density[worldid % opt_density.shape[0]]
+    viscosity = opt_viscosity[worldid % opt_viscosity.shape[0]]
+    timestep = opt_timestep[worldid % opt_timestep.shape[0]]
 
-  cdof_i = cdof_in[worldid, dofiid]
-  cdof_j = cdof_in[worldid, dofjid]
+    if density <= 0.0 and viscosity <= 0.0:
+      return
 
-  contrib = _deriv_ellipsoid_fluid(
-    opt_integrator,
-    geom_type,
-    geom_size,
-    geom_fluid,
-    xipos_in,
-    geom_xpos_in,
-    geom_xmat_in,
-    subtree_com_in,
-    cvel_in,
-    worldid,
-    bodyid,
-    body_rootid[bodyid],
-    body_geomadr[bodyid],
-    body_geomnum[bodyid],
-    cdof_i,
-    cdof_j,
-    wind,
-    density,
-    viscosity,
-  )
+    cdof_i = cdof_in[worldid, dofiid]
+    cdof_j = cdof_in[worldid, dofjid]
 
-  contrib *= timestep
+    contrib = _deriv_ellipsoid_fluid(
+      opt_integrator,
+      geom_type,
+      geom_size,
+      geom_fluid,
+      xipos_in,
+      geom_xpos_in,
+      geom_xmat_in,
+      subtree_com_in,
+      cvel_in,
+      worldid,
+      bodyid,
+      body_rootid[bodyid],
+      body_geomadr[bodyid],
+      body_geomnum[bodyid],
+      cdof_i,
+      cdof_j,
+      wind,
+      density,
+      viscosity,
+    )
 
-  if contrib != 0.0:
-    wp.atomic_add(qDeriv_out[worldid], madr, -contrib)
+    contrib *= timestep
+
+    if contrib != 0.0:
+      wp.atomic_add(qDeriv_out[worldid], madr, -contrib)
+
+  return kernel
 
 
 @wp.func
@@ -1055,101 +1089,109 @@ def _get_jac_column_local(
   return wp.spatial_vector(jacr_loc, jacp_loc)
 
 
-@wp.kernel
-def _qderiv_box_fluid(
-  # Model:
-  opt_timestep: wp.array[float],
-  opt_wind: wp.array[wp.vec3],
-  opt_density: wp.array[float],
-  opt_viscosity: wp.array[float],
-  opt_integrator: int,
-  body_parentid: wp.array[int],
-  body_rootid: wp.array[int],
-  body_mass: wp.array2d[float],
-  body_inertia: wp.array2d[wp.vec3],
-  dof_bodyid: wp.array[int],
-  body_fluid_box_adr: wp.array[int],
-  body_isdofancestor: wp.array2d[int],
-  M_elemid: wp.array2d[int],
-  # Data in:
-  xipos_in: wp.array2d[wp.vec3],
-  ximat_in: wp.array2d[wp.mat33],
-  subtree_com_in: wp.array2d[wp.vec3],
-  cdof_in: wp.array2d[wp.spatial_vector],
-  cvel_in: wp.array2d[wp.spatial_vector],
-  # In:
-  Mi: wp.array[int],
-  Mj: wp.array[int],
-  # Out:
-  qDeriv_out: wp.array2d[float],
-):
-  worldid, fluid_idx, elemid = wp.tid()
+@cache_kernel
+def _qderiv_box_fluid(deterministic: bool = False):
+  module_options = {"enable_backward": False}
+  if deterministic:
+    module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
 
-  bodyid = body_fluid_box_adr[fluid_idx]
+  @wp.kernel(module="unique", module_options=module_options)
+  def kernel(
+    # Model:
+    opt_timestep: wp.array[float],
+    opt_wind: wp.array[wp.vec3],
+    opt_density: wp.array[float],
+    opt_viscosity: wp.array[float],
+    opt_integrator: int,
+    body_parentid: wp.array[int],
+    body_rootid: wp.array[int],
+    body_mass: wp.array2d[float],
+    body_inertia: wp.array2d[wp.vec3],
+    dof_bodyid: wp.array[int],
+    body_fluid_box_adr: wp.array[int],
+    body_isdofancestor: wp.array2d[int],
+    M_elemid: wp.array2d[int],
+    # Data in:
+    xipos_in: wp.array2d[wp.vec3],
+    ximat_in: wp.array2d[wp.mat33],
+    subtree_com_in: wp.array2d[wp.vec3],
+    cdof_in: wp.array2d[wp.spatial_vector],
+    cvel_in: wp.array2d[wp.spatial_vector],
+    # In:
+    Mi: wp.array[int],
+    Mj: wp.array[int],
+    # Out:
+    qDeriv_out: wp.array2d[float],
+  ):
+    worldid, fluid_idx, elemid = wp.tid()
 
-  dofiid = Mi[elemid]
-  dofjid = Mj[elemid]
+    bodyid = body_fluid_box_adr[fluid_idx]
 
-  madr = M_elemid[dofiid, dofjid]
-  if madr < 0:
-    return
+    dofiid = Mi[elemid]
+    dofjid = Mj[elemid]
 
-  bodyid_i = dof_bodyid[dofiid]
+    madr = M_elemid[dofiid, dofjid]
+    if madr < 0:
+      return
 
-  if bodyid_i == 0:
-    return
+    bodyid_i = dof_bodyid[dofiid]
 
-  if body_isdofancestor[bodyid, dofiid] == 0:
-    return
+    if bodyid_i == 0:
+      return
 
-  wind = opt_wind[worldid % opt_wind.shape[0]]
-  density = opt_density[worldid % opt_density.shape[0]]
-  viscosity = opt_viscosity[worldid % opt_viscosity.shape[0]]
-  timestep = opt_timestep[worldid % opt_timestep.shape[0]]
+    if body_isdofancestor[bodyid, dofiid] == 0:
+      return
 
-  if density <= 0.0 and viscosity <= 0.0:
-    return
+    wind = opt_wind[worldid % opt_wind.shape[0]]
+    density = opt_density[worldid % opt_density.shape[0]]
+    viscosity = opt_viscosity[worldid % opt_viscosity.shape[0]]
+    timestep = opt_timestep[worldid % opt_timestep.shape[0]]
 
-  # Body velocity and kinematics
-  b_ipos = xipos_in[worldid, bodyid]
-  b_imat = ximat_in[worldid, bodyid]
-  subtree_root = subtree_com_in[worldid, body_rootid[bodyid]]
+    if density <= 0.0 and viscosity <= 0.0:
+      return
 
-  vel_subtree = cvel_in[worldid, bodyid]
-  v_subtree_ang = wp.vec3(vel_subtree[0], vel_subtree[1], vel_subtree[2])
-  v_subtree_lin = wp.vec3(vel_subtree[3], vel_subtree[4], vel_subtree[5])
+    # Body velocity and kinematics
+    b_ipos = xipos_in[worldid, bodyid]
+    b_imat = ximat_in[worldid, bodyid]
+    subtree_root = subtree_com_in[worldid, body_rootid[bodyid]]
 
-  lin_com = v_subtree_lin - wp.cross(b_ipos - subtree_root, v_subtree_ang)
-  b_imat_T = wp.transpose(b_imat)
-  v_local_ang = b_imat_T @ v_subtree_ang
-  v_local_lin = b_imat_T @ lin_com
-  wind_local = b_imat_T @ wind
+    vel_subtree = cvel_in[worldid, bodyid]
+    v_subtree_ang = wp.vec3(vel_subtree[0], vel_subtree[1], vel_subtree[2])
+    v_subtree_lin = wp.vec3(vel_subtree[3], vel_subtree[4], vel_subtree[5])
 
-  lvel = wp.spatial_vector(v_local_ang, v_local_lin - wind_local)
+    lin_com = v_subtree_lin - wp.cross(b_ipos - subtree_root, v_subtree_ang)
+    b_imat_T = wp.transpose(b_imat)
+    v_local_ang = b_imat_T @ v_subtree_ang
+    v_local_lin = b_imat_T @ lin_com
+    wind_local = b_imat_T @ wind
 
-  B = _deriv_box_fluid(
-    opt_integrator,
-    body_mass,
-    body_inertia,
-    worldid,
-    bodyid,
-    lvel,
-    density,
-    viscosity,
-  )
+    lvel = wp.spatial_vector(v_local_ang, v_local_lin - wind_local)
 
-  # Jacobian transformation: J_i^T @ B @ J_j
-  J_i = _get_jac_column_local(
-    body_parentid, body_rootid, dof_bodyid, subtree_com_in, cdof_in, b_ipos, bodyid, dofiid, worldid, b_imat
-  )
-  J_j = _get_jac_column_local(
-    body_parentid, body_rootid, dof_bodyid, subtree_com_in, cdof_in, b_ipos, bodyid, dofjid, worldid, b_imat
-  )
+    B = _deriv_box_fluid(
+      opt_integrator,
+      body_mass,
+      body_inertia,
+      worldid,
+      bodyid,
+      lvel,
+      density,
+      viscosity,
+    )
 
-  contrib = wp.dot(J_i, B @ J_j) * timestep
+    # Jacobian transformation: J_i^T @ B @ J_j
+    J_i = _get_jac_column_local(
+      body_parentid, body_rootid, dof_bodyid, subtree_com_in, cdof_in, b_ipos, bodyid, dofiid, worldid, b_imat
+    )
+    J_j = _get_jac_column_local(
+      body_parentid, body_rootid, dof_bodyid, subtree_com_in, cdof_in, b_ipos, bodyid, dofjid, worldid, b_imat
+    )
 
-  if contrib != 0.0:
-    wp.atomic_add(qDeriv_out[worldid], madr, -contrib)
+    contrib = wp.dot(J_i, B @ J_j) * timestep
+
+    if contrib != 0.0:
+      wp.atomic_add(qDeriv_out[worldid], madr, -contrib)
+
+  return kernel
 
 
 @event_scope
@@ -1197,7 +1239,7 @@ def deriv_smooth_vel(m: Model, d: Data, out: wp.array2d[float]):
       )
       # out (qDeriv) is in M-structure.
       wp.launch(
-        _qderiv_actuator_passive_actuation_sparse,
+        _qderiv_actuator_passive_actuation_sparse(bool(m.opt.deterministic & DeterminismType.ATOMICS)),
         dim=(d.nworld, m.nactuator),
         inputs=[
           m.M_elemid,
@@ -1253,7 +1295,7 @@ def deriv_smooth_vel(m: Model, d: Data, out: wp.array2d[float]):
   if m.has_fluid:
     if m.body_fluid_ellipsoid_adr.size > 0:
       wp.launch(
-        _qderiv_ellipsoid_fluid,
+        _qderiv_ellipsoid_fluid(bool(m.opt.deterministic & DeterminismType.ATOMICS)),
         dim=(d.nworld, m.body_fluid_ellipsoid_adr.size, Mi.size),
         inputs=[
           m.opt.timestep,
@@ -1285,7 +1327,7 @@ def deriv_smooth_vel(m: Model, d: Data, out: wp.array2d[float]):
       )
     if m.body_fluid_box_adr.size > 0:
       wp.launch(
-        _qderiv_box_fluid,
+        _qderiv_box_fluid(bool(m.opt.deterministic & DeterminismType.ATOMICS)),
         dim=(d.nworld, m.body_fluid_box_adr.size, Mi.size),
         inputs=[
           m.opt.timestep,
