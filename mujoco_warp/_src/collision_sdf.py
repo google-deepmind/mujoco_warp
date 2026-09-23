@@ -363,16 +363,17 @@ def find_oct(
       & int(oct_child[node][6] == -1)
       & int(oct_child[node][7] == -1)
     ) != 0:
-      # Convert derivatives of cell coordinates to derivatives of physical coordinates.
-      inv_cell = wp.cw_div(wp.vec3(1.0), vmax - vmin)
-      for j in range(8):
-        if not grad:
+      if not grad:
+        for j in range(8):
           rx[j] = (
             (coord[0] if j & 1 else 1.0 - coord[0])
             * (coord[1] if j & 2 else 1.0 - coord[1])
             * (coord[2] if j & 4 else 1.0 - coord[2])
           )
-        else:
+      else:
+        # Convert derivatives of cell coordinates to derivatives of physical coordinates.
+        inv_cell = wp.cw_div(wp.vec3(1.0), vmax - vmin)
+        for j in range(8):
           # fmt: off
           rx[j] = ((1.0 if j & 1 else -1.0) * (coord[1] if j & 2 else 1.0 - coord[1])
                    * (coord[2] if j & 4 else 1.0 - coord[2]) * inv_cell[0])

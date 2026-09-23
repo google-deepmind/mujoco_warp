@@ -1310,7 +1310,8 @@ class CollisionTest(parameterized.TestCase):
     wp.launch(volume_gradient_step_test, dim=1, inputs=[volume], outputs=[result])
     np.testing.assert_allclose(result.numpy()[0], [1e-6, 1e-4, 1e-4, -0.000499], rtol=1e-5, atol=1e-9)
 
-  def test_sdf_disjoint_bounds_with_candidate_gap(self):
+  @parameterized.parameters(1, 2)
+  def test_sdf_disjoint_bounds_with_candidate_gap(self, nworld):
     """A candidate gap must not seed SDF minimization inside an empty AABB intersection."""
     mjm, mjd, m, d = test_data.fixture(
       xml="""
@@ -1327,12 +1328,31 @@ class CollisionTest(parameterized.TestCase):
         </body>
       </worldbody>
     </mujoco>
-    """
+    """,
+      nworld=nworld,
     )
     mujoco.mj_collision(mjm, mjd)
-    mjw.collision(m, d)
     self.assertEqual(mjd.ncon, 0)
-    self.assertEqual(d.nacon.numpy()[0], 0)
+
+    if nworld == 2:
+      mjd.qpos[2] = 0.015
+      mujoco.mj_kinematics(mjm, mjd)
+      mujoco.mj_collision(mjm, mjd)
+      self.assertGreater(mjd.ncon, 0)
+      qpos = d.qpos.numpy()
+      qpos[1] = mjd.qpos
+      d.qpos.assign(qpos)
+      mjw.kinematics(m, d)
+
+    d.nacon.fill_(-1)
+    mjw.collision(m, d)
+    nacon = d.nacon.numpy()[0]
+    if nworld == 1:
+      self.assertEqual(nacon, 0)
+    else:
+      self.assertGreater(nacon, 0)
+      np.testing.assert_array_equal(d.contact.worldid.numpy()[:nacon], 1)
+      self.assertLess(d.contact.dist.numpy()[:nacon].min(), 0)
 
   def test_ccd_margin_dist(self):
     """Tests that CCD contact dist matches MuJoCo when margin > 0.
