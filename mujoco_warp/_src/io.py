@@ -2209,17 +2209,21 @@ def get_data_into(
     contact_efc_address = d.contact.efc_address.numpy()[ncon_filter]
 
     efc_idx_c = []
-    contact_efc_address_ordered = [ne + nf + nl]
+    contact_efc_address_ordered = []
+    efc_offset = ne + nf + nl
     for i in range(ncon):
+      if contact_efc_address[i, 0] < 0:
+        contact_efc_address_ordered.append(-1)
+        continue
       dim = contact_dim[i]
       if mjm.opt.cone == mujoco.mjtCone.mjCONE_PYRAMIDAL:
         ndim = np.maximum(1, 2 * (dim - 1))
       else:
         ndim = dim
       efc_idx_c.append(contact_efc_address[i, :ndim])
-      if i < ncon - 1:
-        contact_efc_address_ordered.append(contact_efc_address_ordered[-1] + ndim)
-    efc_idx = np.concatenate((efc_idx_efl, *efc_idx_c))
+      contact_efc_address_ordered.append(efc_offset)
+      efc_offset += ndim
+    efc_idx = np.concatenate((efc_idx_efl, *efc_idx_c)) if efc_idx_c else efc_idx_efl
     contact_efc_address_ordered = np.array(contact_efc_address_ordered)
   else:
     efc_idx = np.array(np.arange(nefc))
