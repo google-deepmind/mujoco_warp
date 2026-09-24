@@ -293,6 +293,47 @@ def _muscle_dynamics_timescale(dctrl, tau_act, tau_deact, smooth_width):
   return output.numpy()[0]
 
 
+def _dcmotor_resistance(
+  act: np.ndarray,
+  worldid: int,
+  actadr: int,
+  dynprm: np.ndarray,
+  gainprm: np.ndarray,
+) -> float:
+  res = wp.empty(1, dtype=float)
+  act_wp = wp.array2d(act, dtype=float)
+
+  @wp.kernel(module="unique")
+  def dcmotor_resistance_kernel(
+    # Data in:
+    act_in: wp.array2d[float],
+    # In:
+    worldid: int,
+    actadr: int,
+    dynprm: vec10,
+    gainprm: vec10,
+    # Out:
+    res_out: wp.array[float],
+  ):
+    res_out[0] = util_misc.dcmotor_resistance(act_in, worldid, actadr, dynprm, gainprm)
+
+  wp.launch(
+    dcmotor_resistance_kernel,
+    dim=(1,),
+    inputs=[
+      act_wp,
+      worldid,
+      actadr,
+      vec10(*dynprm),
+      vec10(*gainprm),
+    ],
+    outputs=[
+      res,
+    ],
+  )
+  return float(res.numpy()[0])
+
+
 class UtilMiscTest(parameterized.TestCase):
   def test_is_intersect(self):
     self.assertFalse(
@@ -565,6 +606,32 @@ class UtilMiscTest(parameterized.TestCase):
   )
   def test_muscle_gain_length(self, input, output):
     _assert_eq(_muscle_gain_length(input, 0.5, 1.5), output, "length-gain")
+
+  def test_dcmotor_resistance(self):
+    # Non-thermal motor (dynprm[2] == 0) returns nominal resistance
+    dynprm = np.zeros(10)
+    gainprm = np.zeros(10)
+    gainprm[0] = 2.5
+    act = np.zeros((1, 5))
+    r = _dcmotor_resistance(act, 0, 0, dynprm, gainprm)
+    self.assertAlmostEqual(r, 2.5)
+
+    # Thermal motor (dynprm[2] > 0) with temperature rise
+    dynprm[2] = 1.0  # thermal resistance
+    dynprm[4] = 25.0  # Ta
+    gainprm[0] = 2.0  # R0
+    gainprm[2] = 0.004  # alpha
+    gainprm[3] = 25.0  # T0
+    act[0, 0] = 250.0  # T rise
+    # R = R0 * (1 + alpha * (T + Ta - T0)) = 2.0 * (1 + 0.004 * 250) = 4.0
+    r = _dcmotor_resistance(act, 0, 0, dynprm, gainprm)
+    self.assertAlmostEqual(r, 4.0)
+
+    # Minimum clamp check
+    gainprm[0] = -1.0
+    dynprm[2] = 0.0
+    r = _dcmotor_resistance(act, 0, 0, dynprm, gainprm)
+    self.assertAlmostEqual(r, MJ_MINVAL)
 
   # TODO(team): test util_misc.muscle_gain
   # TODO(team): test util_misc.muscle_bias
