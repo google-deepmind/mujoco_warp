@@ -336,10 +336,11 @@ class BroadphaseTest(parameterized.TestCase):
     ctx = broadphase_caller(m, d)
     self.assertEqual(d.ncollision.numpy()[0], 0)
 
-  @parameterized.parameters(list(BroadphaseType))
-  def test_broadphase_missing_mesh(self, broadphase):
+  @parameterized.product(broadphase=list(BroadphaseType), nworld=[1, 2])
+  def test_broadphase_missing_mesh(self, broadphase, nworld):
     """A mesh geom whose batched geom_dataid is -1 takes no pair, even below a plane."""
-    _MJCF = """
+    _, _, m, d = test_data.fixture(
+      xml="""
       <mujoco>
         <asset>
           <mesh name="tetrahedron" vertex="0 0 0  .1 0 0  0 .1 0  0 0 .1"/>
@@ -352,15 +353,34 @@ class BroadphaseTest(parameterized.TestCase):
           </body>
         </worldbody>
       </mujoco>
-    """
-    _, _, m, d = test_data.fixture(xml=_MJCF, nworld=2)
+      """,
+      nworld=nworld,
+    )
     m.opt.broadphase = broadphase
-    dataid = np.tile(m.geom_dataid.numpy(), (2, 1))
-    dataid[1, 1] = -1
-    m.geom_dataid = wp.array(dataid, dtype=int)
-    ctx = broadphase_caller(m, d)
+
+    if nworld == 2:
+      qpos = d.qpos.numpy()
+      qpos[1, 2] = -2.0
+      d.qpos.assign(qpos)
+      mjw.kinematics(m, d)
+
+      dataid = np.tile(m.geom_dataid.numpy(), (2, 1))
+      dataid[0, 1] = -1  # absent in world 0, present in world 1
+      m.geom_dataid = wp.array(dataid, dtype=int)
+
+    ctx = collision_driver.create_collision_context(d.naconmax)
+    ctx.collision_pair.fill_(wp.vec2i(-1, -1))
+    ctx.collision_worldid.fill_(-1)
+    d.ncollision.zero_()
+
+    if m.opt.broadphase == BroadphaseType.NXN:
+      collision_driver.nxn_broadphase(m, d, ctx)
+    else:
+      collision_driver.sap_broadphase(m, d, ctx)
+
     self.assertEqual(d.ncollision.numpy()[0], 1)
-    self.assertEqual(ctx.collision_worldid.numpy()[0], 0)
+    self.assertEqual(ctx.collision_worldid.numpy()[0], 1 if nworld == 2 else 0)
+    np.testing.assert_array_equal(ctx.collision_pair.numpy()[0], [0, 1])
 
 
 if __name__ == "__main__":
