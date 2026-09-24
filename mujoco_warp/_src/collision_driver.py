@@ -344,7 +344,7 @@ def _mesh_missing(
   dataid_id: int,
 ) -> bool:
   # with per-world meshes (batched geom_dataid), a mesh geom with dataid -1 is absent from a world
-  return geomtype == GeomType.MESH and geom_dataid[dataid_id, geom] < 0  # kernel_analyzer: ignore
+  return (geomtype == GeomType.MESH) and (geom_dataid[dataid_id, geom] < 0)  # kernel_analyzer: ignore
 
 
 @wp.func
