@@ -1117,6 +1117,11 @@ def _linesearch_iterative_kernel(
       q1_abs = wp.sqrt(2.0 * wp.max(rows[0], 0.0) * wp.max(rows[2], 0.0)) + wp.abs(ctx_quad_gauss[1])
       noise_floor = _ALPHA_NOISE_EPS * wp.max(1.0, math.safe_div(q1_abs, p0[2]))
 
+    # set acceptance tolerance to avoid exceeding gtol in f32
+    acc_rows = p0_sum[0]
+    acc_q1 = wp.sqrt(2.0 * wp.max(acc_rows[0], 0.0) * wp.max(acc_rows[2], 0.0)) + wp.abs(ctx_quad_gauss[1])
+    gtol_accept = wp.max(gtol, _ALPHA_NOISE_EPS * acc_q1)
+
     # lo_in at lo_alpha_in = -p0[1] / p0[2]
     lo_alpha_in = -math.safe_div(p0[1], p0[2])
 
@@ -1176,7 +1181,7 @@ def _linesearch_iterative_kernel(
     lo_in = _eval_pt(ctx_quad_gauss, lo_alpha_in) + lo_in_sum[0]
 
     # accept Newton step if derivative is small and cost improved
-    initial_converged = wp.abs(lo_in[1]) < gtol and lo_in[0] < 0.0
+    initial_converged = wp.abs(lo_in[1]) < gtol_accept and lo_in[0] < 0.0
     ls_converged = initial_converged
 
     # main iterative loop - skip if already converged
@@ -1307,9 +1312,32 @@ def _linesearch_iterative_kernel(
         hi_alpha = wp.where(swap_hi_lo_next, lo_next_alpha, hi_alpha)
         swap_hi = swap_hi_hi_next or swap_hi_mid or swap_hi_lo_next
 
+        # accept the lowest-cost converged candidate regardless of the sign of its derivative
+        conv_lo = wp.abs(lo_next[1]) < gtol_accept and lo_next[0] < 0.0
+        conv_hi = wp.abs(hi_next[1]) < gtol_accept and hi_next[0] < 0.0
+        conv_mid = wp.abs(mid[1]) < gtol_accept and mid[0] < 0.0
+        converged = conv_lo or conv_hi or conv_mid
+        if converged:
+          conv_pt = wp.vec3(types.MJ_MAXVAL, 0.0, 0.0)
+          conv_alpha = float(0.0)
+          if conv_lo and lo_next[0] < conv_pt[0]:
+            conv_pt = lo_next
+            conv_alpha = lo_next_alpha
+          if conv_hi and hi_next[0] < conv_pt[0]:
+            conv_pt = hi_next
+            conv_alpha = hi_next_alpha
+          if conv_mid and mid[0] < conv_pt[0]:
+            conv_pt = mid
+            conv_alpha = mid_alpha
+          lo = conv_pt
+          lo_alpha = conv_alpha
+          hi = conv_pt
+          hi_alpha = conv_alpha
+
         # check for convergence
         ls_done = (
-          (not swap_lo and not swap_hi)
+          converged
+          or (not swap_lo and not swap_hi)
           or (lo[0] < 0.0 and lo[1] < 0.0 and lo[1] > -gtol)
           or (hi[0] < 0.0 and hi[1] > 0.0 and hi[1] < gtol)
         )
