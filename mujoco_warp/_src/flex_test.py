@@ -822,6 +822,18 @@ class FlexPassiveForcesTest(parameterized.TestCase):
 
     for w in range(nworld):
       np.testing.assert_allclose(
+        d.qfrc_spring.numpy()[w],
+        mjd.qfrc_spring,
+        atol=atol,
+        err_msg=f"qfrc_spring mismatch for world {w}",
+      )
+      np.testing.assert_allclose(
+        d.qfrc_damper.numpy()[w],
+        mjd.qfrc_damper,
+        atol=atol,
+        err_msg=f"qfrc_damper mismatch for world {w}",
+      )
+      np.testing.assert_allclose(
         d.qfrc_passive.numpy()[w],
         mjd.qfrc_passive,
         atol=atol,
@@ -879,6 +891,156 @@ class FlexPassiveForcesTest(parameterized.TestCase):
         atol=atol,
         err_msg=f"qfrc_spring mismatch for interpolated elastic2d={elastic2d} dof={dof} (world {w})",
       )
+
+  @parameterized.product(
+    disableflags=[0, DisableBit.SPRING, DisableBit.DAMPER],
+    nworld=[1, 2],
+  )
+  def test_flex_bending_welded_and_rotated_vertex(self, disableflags, nworld):
+    """Tests 2D flex passive forces with rotated frame and welded child vertex."""
+    mjm, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option timestep="0.002"/>
+        <worldbody>
+          <body name="turned" euler="90 35 20">
+            <body name="v0" pos="0 0 0">
+              <inertial pos="0 0 0" mass="0.1" diaginertia="1e-4 1e-4 1e-4"/>
+              <joint type="slide" axis="1 0 0"/>
+              <joint type="slide" axis="0 1 0"/>
+              <joint type="slide" axis="0 0 1"/>
+            </body>
+            <body name="v1" pos="0.1 0 0">
+              <inertial pos="0 0 0" mass="0.1" diaginertia="1e-4 1e-4 1e-4"/>
+              <joint type="slide" axis="1 0 0"/>
+              <joint type="slide" axis="0 1 0"/>
+              <joint type="slide" axis="0 0 1"/>
+            </body>
+            <body name="v2" pos="0 0.1 0">
+              <inertial pos="0 0 0" mass="0.1" diaginertia="1e-4 1e-4 1e-4"/>
+              <joint type="slide" axis="1 0 0"/>
+              <joint type="slide" axis="0 1 0"/>
+              <joint type="slide" axis="0 0 1"/>
+            </body>
+            <body name="carrier" pos="0.1 0.1 0">
+              <inertial pos="0 0 0" mass="0.1" diaginertia="1e-4 1e-4 1e-4"/>
+              <joint type="slide" axis="1 0 0"/>
+              <joint type="slide" axis="0 1 0"/>
+              <joint type="slide" axis="0 0 1"/>
+              <body name="v3_welded" pos="0 0 0">
+                <inertial pos="0 0 0" mass="0.1" diaginertia="1e-4 1e-4 1e-4"/>
+              </body>
+            </body>
+          </body>
+        </worldbody>
+        <deformable>
+          <flex name="patch" dim="2" body="v0 v1 v2 v3_welded" element="0 1 2 1 3 2">
+            <contact selfcollide="none" contype="0" conaffinity="0"/>
+            <elasticity young="1e4" poisson="0.3" thickness="0.01"
+                        elastic2d="both" damping="0.02"/>
+          </flex>
+        </deformable>
+      </mujoco>
+      """,
+      overrides={"opt.disableflags": DisableBit.CONTACT | disableflags},
+      nworld=nworld,
+    )
+
+    # Unrotated reference model with direct 3-DOF vertex bodies (by SE(3) invariance of
+    # stretch+bending and weld equivalence, local slide-DOF forces must match mjm_ref).
+    mjm_ref, mjd_ref, _, _ = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option timestep="0.002"/>
+        <worldbody>
+          <body name="v0" pos="0 0 0">
+            <inertial pos="0 0 0" mass="0.1" diaginertia="1e-4 1e-4 1e-4"/>
+            <joint type="slide" axis="1 0 0"/>
+            <joint type="slide" axis="0 1 0"/>
+            <joint type="slide" axis="0 0 1"/>
+          </body>
+          <body name="v1" pos="0.1 0 0">
+            <inertial pos="0 0 0" mass="0.1" diaginertia="1e-4 1e-4 1e-4"/>
+            <joint type="slide" axis="1 0 0"/>
+            <joint type="slide" axis="0 1 0"/>
+            <joint type="slide" axis="0 0 1"/>
+          </body>
+          <body name="v2" pos="0 0.1 0">
+            <inertial pos="0 0 0" mass="0.1" diaginertia="1e-4 1e-4 1e-4"/>
+            <joint type="slide" axis="1 0 0"/>
+            <joint type="slide" axis="0 1 0"/>
+            <joint type="slide" axis="0 0 1"/>
+          </body>
+          <body name="v3" pos="0.1 0.1 0">
+            <inertial pos="0 0 0" mass="0.1" diaginertia="1e-4 1e-4 1e-4"/>
+            <joint type="slide" axis="1 0 0"/>
+            <joint type="slide" axis="0 1 0"/>
+            <joint type="slide" axis="0 0 1"/>
+          </body>
+        </worldbody>
+        <deformable>
+          <flex name="patch" dim="2" body="v0 v1 v2 v3" element="0 1 2 1 3 2">
+            <contact selfcollide="none" contype="0" conaffinity="0"/>
+            <elasticity young="1e4" poisson="0.3" thickness="0.01"
+                        elastic2d="both" damping="0.02"/>
+          </flex>
+        </deformable>
+      </mujoco>
+      """,
+      overrides={"opt.disableflags": DisableBit.CONTACT | disableflags},
+    )
+
+    # Uniform rigid velocity across all 4 vertices (including welded carrier):
+    # damper force must vanish by translation invariance.
+    mjds_ref = [mjd_ref]
+    qvel_worlds = [np.tile([0.7, -0.4, 1.2], 4).astype(np.float32)]
+    if nworld == 2:
+      mjd_ref1 = mujoco.MjData(mjm_ref)
+      qvel_worlds.append(np.tile([-0.5, 0.9, -0.3], 4).astype(np.float32))
+      mjds_ref.append(mjd_ref1)
+
+    for w in range(nworld):
+      mjds_ref[w].qvel[:] = qvel_worlds[w]
+      mujoco.mj_forward(mjm_ref, mjds_ref[w])
+    d.qvel.assign(np.stack(qvel_worlds))
+    for arr in (d.qfrc_spring, d.qfrc_damper, d.qfrc_passive):
+      arr.fill_(wp.inf)
+
+    mjw.forward(m, d)
+
+    for w in range(nworld):
+      np.testing.assert_allclose(d.flexedge_velocity.numpy()[w], 0.0, atol=1e-6)
+      np.testing.assert_allclose(d.qfrc_damper.numpy()[w], 0.0, atol=1e-5)
+      np.testing.assert_allclose(d.qfrc_spring.numpy()[w], mjds_ref[w].qfrc_spring, atol=1e-4)
+
+    # Non-uniform out-of-plane deformation and velocity: verify exact spring/damper parity.
+    rng = np.random.default_rng(42)
+    qpos_worlds = []
+    qvel_worlds = []
+    for w in range(nworld):
+      qpos_w = rng.uniform(-5e-3, 5e-3, size=mjm.nq).astype(np.float32)
+      qvel_w = rng.uniform(-0.5, 0.5, size=mjm.nv).astype(np.float32)
+      qpos_worlds.append(qpos_w)
+      qvel_worlds.append(qvel_w)
+      mjds_ref[w].qpos[:] = qpos_w
+      mjds_ref[w].qvel[:] = qvel_w
+      mujoco.mj_forward(mjm_ref, mjds_ref[w])
+
+    d.qpos.assign(np.stack(qpos_worlds))
+    d.qvel.assign(np.stack(qvel_worlds))
+    for arr in (d.qfrc_spring, d.qfrc_damper, d.qfrc_passive):
+      arr.fill_(wp.inf)
+
+    mjw.forward(m, d)
+
+    for w in range(nworld):
+      np.testing.assert_allclose(d.flexedge_velocity.numpy()[w], mjds_ref[w].flexedge_velocity, atol=1e-4)
+      np.testing.assert_allclose(d.qfrc_spring.numpy()[w], mjds_ref[w].qfrc_spring, atol=5e-4, rtol=5e-4)
+      np.testing.assert_allclose(d.qfrc_damper.numpy()[w], mjds_ref[w].qfrc_damper, atol=5e-4, rtol=5e-4)
+      np.testing.assert_allclose(d.qfrc_passive.numpy()[w], mjds_ref[w].qfrc_passive, atol=5e-4, rtol=5e-4)
+
+    if nworld == 2:
+      self.assertFalse(np.allclose(d.qfrc_passive.numpy()[0], d.qfrc_passive.numpy()[1]))
 
 
 class FlexCollisionTest(parameterized.TestCase):

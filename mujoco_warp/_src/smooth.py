@@ -347,6 +347,7 @@ def _flex_nodes(
 def _flex_edges(
   # Model:
   body_rootid: wp.array[int],
+  body_weldid: wp.array[int],
   body_dofnum: wp.array[int],
   body_dofadr: wp.array[int],
   flex_vertadr: wp.array[int],
@@ -386,6 +387,8 @@ def _flex_edges(
     flexedge_velocity_out[worldid, edgeid] = 0.0
     return
 
+  b1 = body_weldid[b1]
+  b2 = body_weldid[b2]
   dofnum1 = body_dofnum[b1]
   dofnum2 = body_dofnum[b2]
 
@@ -638,6 +641,7 @@ def flex(m: Model, d: Data):
     dim=(d.nworld, m.nflexedge),
     inputs=[
       m.body_rootid,
+      m.body_weldid,
       m.body_dofnum,
       m.body_dofadr,
       m.flex_vertadr,
