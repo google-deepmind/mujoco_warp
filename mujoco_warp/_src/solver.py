@@ -1111,16 +1111,15 @@ def _linesearch_iterative_kernel(
     # so Cauchy-Schwarz bounds the row total by sums already reduced for p0; the
     # smooth term is added exactly. Friction linear rows fall outside the bound,
     # which only lowers the floor toward the fixed 8-ulp base.
-    noise_floor = float(0.0)
-    if wp.static(INCREMENTAL):
-      rows = p0_sum[0]
-      q1_abs = wp.sqrt(2.0 * wp.max(rows[0], 0.0) * wp.max(rows[2], 0.0)) + wp.abs(ctx_quad_gauss[1])
-      noise_floor = _ALPHA_NOISE_EPS * wp.max(1.0, math.safe_div(q1_abs, p0[2]))
+    rows = p0_sum[0]
+    q1_abs = wp.sqrt(2.0 * wp.max(rows[0], 0.0) * wp.max(rows[2], 0.0)) + wp.abs(ctx_quad_gauss[1])
 
     # set acceptance tolerance to avoid exceeding gtol in f32
-    acc_rows = p0_sum[0]
-    acc_q1 = wp.sqrt(2.0 * wp.max(acc_rows[0], 0.0) * wp.max(acc_rows[2], 0.0)) + wp.abs(ctx_quad_gauss[1])
-    gtol_accept = wp.max(gtol, _ALPHA_NOISE_EPS * acc_q1)
+    gtol_accept = wp.max(gtol, _ALPHA_NOISE_EPS * q1_abs)
+
+    noise_floor = float(0.0)
+    if wp.static(INCREMENTAL):
+      noise_floor = _ALPHA_NOISE_EPS * wp.max(1.0, math.safe_div(q1_abs, p0[2]))
 
     # lo_in at lo_alpha_in = -p0[1] / p0[2]
     lo_alpha_in = -math.safe_div(p0[1], p0[2])
