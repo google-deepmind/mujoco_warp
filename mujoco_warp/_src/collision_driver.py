@@ -35,6 +35,7 @@ from mujoco_warp._src.types import DisableBit
 from mujoco_warp._src.types import EnableBit
 from mujoco_warp._src.types import GeomType
 from mujoco_warp._src.types import Model
+from mujoco_warp._src.types import SleepPolicy
 from mujoco_warp._src.types import SleepState
 from mujoco_warp._src.types import mat23
 from mujoco_warp._src.types import mat63
@@ -453,6 +454,8 @@ def _sap_broadphase(
   def kernel(
     # Model:
     ngeom: int,
+    body_treeid: wp.array[int],
+    tree_sleep_policy: wp.array2d[int],
     geom_type: wp.array[int],
     geom_bodyid: wp.array[int],
     geom_dataid: wp.array2d[int],
@@ -520,8 +523,17 @@ def _sap_broadphase(
           continue
 
       if wp.static(enable_sleep):
+        w_policy = worldid % tree_sleep_policy.shape[0]
         b1 = geom_bodyid[geom1]
+        t1 = body_treeid[b1]
+        if t1 >= 0 and tree_sleep_policy[w_policy, t1] == SleepPolicy.ALWAYS:
+          continue
+
         b2 = geom_bodyid[geom2]
+        t2 = body_treeid[b2]
+        if t2 >= 0 and tree_sleep_policy[w_policy, t2] == SleepPolicy.ALWAYS:
+          continue
+
         s1 = body_awake_in[worldid, b1]
         s2 = body_awake_in[worldid, b2]
         if s1 == SleepState.ASLEEP and s2 == SleepState.ASLEEP:
@@ -689,6 +701,8 @@ def sap_broadphase(
     dim=nsweep,
     inputs=[
       m.ngeom,
+      m.body_treeid,
+      m.tree_sleep_policy,
       m.geom_type,
       m.geom_bodyid,
       m.geom_dataid,
@@ -725,6 +739,8 @@ def _nxn_broadphase(
   @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
   def kernel(
     # Model:
+    body_treeid: wp.array[int],
+    tree_sleep_policy: wp.array2d[int],
     geom_type: wp.array[int],
     geom_bodyid: wp.array[int],
     geom_dataid: wp.array2d[int],
@@ -762,8 +778,17 @@ def _nxn_broadphase(
         return
 
     if wp.static(enable_sleep):
+      w_policy = worldid % tree_sleep_policy.shape[0]
       b1 = geom_bodyid[geom1]
+      t1 = body_treeid[b1]
+      if t1 >= 0 and tree_sleep_policy[w_policy, t1] == SleepPolicy.ALWAYS:
+        return
+
       b2 = geom_bodyid[geom2]
+      t2 = body_treeid[b2]
+      if t2 >= 0 and tree_sleep_policy[w_policy, t2] == SleepPolicy.ALWAYS:
+        return
+
       s1 = body_awake_in[worldid, b1]
       s2 = body_awake_in[worldid, b2]
       if s1 == SleepState.ASLEEP and s2 == SleepState.ASLEEP:
@@ -876,6 +901,8 @@ def nxn_broadphase(
       ),
       dim=(d.nworld, m.nxn_geom_pair_filtered.shape[0]),
       inputs=[
+        m.body_treeid,
+        m.tree_sleep_policy,
         m.geom_type,
         m.geom_bodyid,
         m.geom_dataid,
