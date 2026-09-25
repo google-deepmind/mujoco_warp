@@ -636,45 +636,61 @@ class SolverTest(parameterized.TestCase):
     self.assertGreater(d.qacc.numpy()[0, 0], 0.03)
     self.assertGreater(ctx.improvement.numpy()[0], 5.0e-4)
 
-  def test_linesearch_accepts_converged_newton_point(self):
+  @parameterized.parameters(1, 2)
+  def test_linesearch_accepts_converged_newton_point(self, nworld):
     """Linesearch should accept a Newton point at the minimizer whatever its derivative sign."""
     _, _, m, d = test_data.fixture(
-      "constraints.xml",
+      xml="""
+      <mujoco>
+        <worldbody>
+          <body>
+            <joint type="slide"/>
+            <geom size="0.1"/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """,
       overrides={
         "opt.cone": ConeType.PYRAMIDAL,
         "opt.jacobian": mujoco.mjtJacobian.mjJAC_DENSE,
         "opt.iterations": 0,
         "opt.ls_iterations": 50,
       },
+      nworld=nworld,
+      njmax=2,
     )
     ctx = solver._create_solver_context(m, d)
 
-    # cost 0.5 * (alpha - 4)^2 from an equality row plus 0.5 * (alpha - 1)^2 from an inequality row
-    # active for alpha < 1: Newton from 0 lands on 2.5, Newton from 2.5 lands exactly on the
-    # minimizer alpha = 4, where the derivative is exactly zero and bracketing alone rejects it
-    d.ne = wp.array([1], dtype=int)
-    d.nf = wp.array([0], dtype=int)
-    d.nefc = wp.array([2], dtype=int)
-    d.nacon = wp.array([0], dtype=int)
+    # cost 0.5 * (alpha - target)^2 from an equality row plus 0.5 * (alpha - 1)^2 from an
+    # inequality row active for alpha < 1: Newton from 0 undershoots, and the second Newton step
+    # lands exactly on the minimizer alpha = target, where the derivative is zero and bracketing
+    # alone rejects it
+    d.ne.fill_(1)
+    d.nf.fill_(0)
+    d.nefc.fill_(2)
+    d.nacon.fill_(0)
     d.M.zero_()
     d.qacc.zero_()
     d.efc.Ma.zero_()
     d.qfrc_smooth.zero_()
 
     efc_j = np.zeros(d.efc.J.shape, dtype=np.float32)
-    efc_j[0, :2, 0] = 1.0
+    efc_j[:, :2, 0] = 1.0
     d.efc.J.assign(efc_j)
 
     efc_d = np.zeros(d.efc.D.shape, dtype=np.float32)
-    efc_d[0, :2] = 1.0
+    efc_d[:, :2] = 1.0
     d.efc.D.assign(efc_d)
     d.efc.frictionloss.zero_()
 
     search = np.zeros(ctx.search.shape, dtype=np.float32)
-    search[0, 0] = 1.0
+    search[:, 0] = 1.0
     ctx.search.assign(search)
+
+    targets = np.array([4.0, 6.0][:nworld], dtype=np.float32)
     jaref = np.zeros(ctx.Jaref.shape, dtype=np.float32)
-    jaref[0, :2] = [-4.0, -1.0]
+    jaref[:, 0] = -targets
+    jaref[:, 1] = -1.0
     ctx.Jaref.assign(jaref)
     ctx.search_dot.fill_(1.0)
     ctx.done.fill_(False)
@@ -682,7 +698,7 @@ class SolverTest(parameterized.TestCase):
 
     solver._linesearch(m, d, ctx)
 
-    np.testing.assert_allclose(d.qacc.numpy()[0, 0], 4.0, rtol=1e-6)
+    np.testing.assert_allclose(d.qacc.numpy()[:, 0], targets, rtol=1e-6)
 
   def test_linesearch_iterations_overflow(self):
     """Linesearch records overflow when iteration limit reached without convergence."""
