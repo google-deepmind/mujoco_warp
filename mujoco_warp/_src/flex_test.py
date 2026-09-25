@@ -1196,6 +1196,89 @@ class FlexPassiveForcesTest(parameterized.TestCase):
     if nworld == 2:
       self.assertFalse(np.allclose(d.qfrc_passive.numpy()[0], d.qfrc_passive.numpy()[1]))
 
+  @parameterized.parameters(1, 2)
+  def test_flex_elasticity_dynamic_stiffness_stride(self, nworld):
+    """Tests dynamic stiffness_size resolution across 24-stride 3D flex and multi-flex models."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <flexcomp name="tet" type="grid" count="2 2 2" spacing="0.1 0.1 0.1" dim="3" mass="1">
+            <elasticity young="1e4" poisson="0.3" damping="1e-2"/>
+          </flexcomp>
+          <flexcomp name="rope" type="grid" count="3 1 1" spacing="0.1 0.1 0.1" pos="0 0.5 0" dim="1" mass="1">
+            <edge stiffness="50" damping="1e-2"/>
+          </flexcomp>
+          <flexcomp name="cloth" type="grid" count="2 2 1" spacing="0.1 0.1 0.1" pos="0 1.0 0" dim="2" mass="1">
+            <elasticity young="3e3" poisson="0.3" thickness="1e-2" damping="1e-2" elastic2d="stretch"/>
+          </flexcomp>
+        </worldbody>
+      </mujoco>
+      """,
+      qpos_noise=0.05,
+      qvel_noise=0.05,
+      nworld=nworld,
+    )
+
+    mjds = [mjd]
+    if nworld == 2:
+      mjd1 = mujoco.MjData(mjm)
+      qpos = d.qpos.numpy()
+      qvel = d.qvel.numpy()
+      qpos[1] += 0.02
+      qvel[1] += 0.05
+      d.qpos.assign(qpos)
+      d.qvel.assign(qvel)
+      mjd1.qpos[:] = qpos[1]
+      mjd1.qvel[:] = qvel[1]
+      mujoco.mj_forward(mjm, mjd1)
+      mjds.append(mjd1)
+
+    # Ensure 3D flex (flex 0) uses a 24-coefficient stride per element in m.flex_stiffness
+    nelem0 = int(mjm.flex_elemnum[0])
+    adr2 = int(mjm.flex_stiffnessadr[2])
+    stride0 = adr2 // nelem0
+    if stride0 == 21:
+      stiff_np = mjm.flex_stiffness
+      tet_stiff = stiff_np[:adr2].reshape(nelem0, 21)
+      tet_stiff_24 = np.pad(tet_stiff, ((0, 0), (0, 3)), mode="constant")
+      new_stiff = np.concatenate([tet_stiff_24.reshape(-1), stiff_np[adr2:]])
+      new_adr = mjm.flex_stiffnessadr.copy()
+      new_adr[2] = 24 * nelem0
+      m.flex_stiffness = wp.array(new_stiff, dtype=float)
+      m.flex_stiffnessadr = wp.array(new_adr, dtype=int)
+
+    for arr in (d.qfrc_spring, d.qfrc_damper, d.qfrc_passive):
+      arr.fill_(wp.inf)
+
+    mjw.kinematics(m, d)
+    mjw.com_pos(m, d)
+    mjw.flex(m, d)
+    mjw.passive(m, d)
+
+    for w in range(nworld):
+      np.testing.assert_allclose(
+        d.qfrc_spring.numpy()[w],
+        mjds[w].qfrc_spring,
+        atol=_TOLERANCE,
+        err_msg=f"qfrc_spring mismatch for world {w}",
+      )
+      np.testing.assert_allclose(
+        d.qfrc_damper.numpy()[w],
+        mjds[w].qfrc_damper,
+        atol=_TOLERANCE,
+        err_msg=f"qfrc_damper mismatch for world {w}",
+      )
+      np.testing.assert_allclose(
+        d.qfrc_passive.numpy()[w],
+        mjds[w].qfrc_passive,
+        atol=_TOLERANCE,
+        err_msg=f"qfrc_passive mismatch for world {w}",
+      )
+
+    if nworld == 2:
+      self.assertFalse(np.allclose(d.qfrc_passive.numpy()[0], d.qfrc_passive.numpy()[1]))
+
 
 class FlexCollisionTest(parameterized.TestCase):
   """Tests for flex collisions."""
