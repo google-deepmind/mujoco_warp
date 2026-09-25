@@ -92,6 +92,10 @@ Fields:
 - `nstep`: (Optional) Number of steps per rollout.
 - `replay`: (Optional) NPZ file with ctrl sequence to replay.
 - `assets`: (Optional) List of asset mappings (see below).
+- `prepare`: (Optional) Argument list for a preparation command, executed with `uv run`
+  after assets and local files have been assembled, before timing or viewing. Arguments
+  may use `{input_dir}` for the repository and `{benchmark_dir}` for the assembled
+  benchmark directory. Generated model files belong in the assembled directory.
 
 ### `ASSETS` List
 

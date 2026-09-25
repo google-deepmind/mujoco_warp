@@ -1,0 +1,174 @@
+{
+  "source_row": 1549,
+  "variants": [
+    "nut_thread_m8",
+    "rj45",
+    "gear_mesh_large",
+    "rod_insert_8mm"
+  ],
+  "assembly_assets": {
+    "status": "awaiting MuJoCo-owned asset upload",
+    "destination": "assets/nist"
+  },
+  "assembly_meshes": [
+    {
+      "file": "assets/nist/bolt_m8_00.obj",
+      "sha256": "5c2fd4e49bd5e1a39b1a74b0bb692d6cd3d548d8394dd2f1c0914bbac82219c4",
+      "source_usd": "Assets/Props/NIST/bolt_m8.usd",
+      "source_sha256": "8ca1cb7006802f3b7cfba2e9cb9b0b8a5748a0dc6ea7279d73fa21c1a593ab40"
+    },
+    {
+      "file": "assets/nist/nut_m8_00.obj",
+      "sha256": "b60044e6434168b826c18f40fa626613b889309fe2047b1d69834a7fb0961680",
+      "source_usd": "Assets/Props/NIST/nut_m8.usd",
+      "source_sha256": "6f2a1ec92c152f94ae4e5590a7a9cdc07fa7541e7e1908f36713f5873c74427d"
+    },
+    {
+      "file": "assets/nist/rj45_socket_00.obj",
+      "sha256": "5fa90200043637442ee486c7f53051052ffe0fcf27695ee65dfff1dea04b4ad1",
+      "source_usd": "Assets/Props/NIST/rj45_socket.usd",
+      "source_sha256": "9dfa91b4da1021b78c133296a63e4868a56fa00472def02613c1bfaceb9447e6"
+    },
+    {
+      "file": "assets/nist/rj45_plug_00.obj",
+      "sha256": "9add41811d858c3965d72bc34bf43c993936088df376a7095592fe8d9e2e41d2",
+      "source_usd": "Assets/Props/NIST/rj45_plug.usd",
+      "source_sha256": "c2aa007cf5e11aefad881aed3b6f6148b4df57346f8b26e548daf7ed8ab23fc2"
+    },
+    {
+      "file": "assets/nist/gear_base_00.obj",
+      "sha256": "ad2cfb7e5b2ecc048a0cb2ef069aada6b6c3c330d415f392bd9a5f1ab3a3ff50",
+      "source_usd": "Assets/Props/NIST/gear_base.usd",
+      "source_sha256": "b372e04c1a76a77eddc0a2fec00e138d49f1122ddb4c37b1846e0ace4cc010d5"
+    },
+    {
+      "file": "assets/nist/gear_large_00.obj",
+      "sha256": "0bde4d50a33cc9dd44a9f56450311ff7bb88b4f3449ead269fa087b2e0449b27",
+      "source_usd": "Assets/Props/NIST/gear_large.usd",
+      "source_sha256": "3850098b89d06351dbd124678c6c3691720b6c59b7f383358ff8b7ab235ba43f"
+    },
+    {
+      "file": "assets/nist/round_hole_8mm_00.obj",
+      "sha256": "b4a7a436672d305c983984cfe41514c9e59016cd10dd45ff2f1a15374b8e6282",
+      "source_usd": "Assets/Props/NIST/round_hole_8mm.usd",
+      "source_sha256": "93e069d1e783f40fa360c819ea94a8608de98cd572aec889872a74f5ddeb364f"
+    },
+    {
+      "file": "assets/nist/round_peg_8mm_00.obj",
+      "sha256": "621b6c0408cf5e233fefbbe86c1fb8687d567792bb40fab42ae4a471028a7850",
+      "source_usd": "Assets/Props/NIST/round_peg_8mm.usd",
+      "source_sha256": "14666e26ec64aa6408d3a448e4d4a17c4b4ba61f67751c2e7d7863d2eaf4df73"
+    },
+    {
+      "file": "assets/nist/nistboard-visual-00.obj",
+      "sha256": "85a05ee2f8166dafa4c69b1c6797ea8c2b1f2bdecac3adb4de5a5f9f226c1604",
+      "source_usd": "Assets/Props/NIST/Taskboard/nistboard.usd",
+      "source_sha256": "41938419e573a5d76db16c5fe40bce26f6dbc1a207f8a2b77cce7d16e8f1b3c6"
+    }
+  ],
+  "robot_visual_assets": {
+    "source": "https://github.com/google-deepmind/mujoco_menagerie.git",
+    "ref": "affef0836947b64cc06c4ab1cbf0152835693374",
+    "physics": "Only noncolliding robot meshes are replaced. Body, joint, inertia, actuation and three robot colliders are retained."
+  },
+  "board": {
+    "source_usd": "Assets/Props/NIST/Taskboard/nistboard.usd",
+    "source_sha256": "41938419e573a5d76db16c5fe40bce26f6dbc1a207f8a2b77cce7d16e8f1b3c6",
+    "position": [
+      0.6188564300537109,
+      -0.09644317626953125,
+      0.020600000396370888
+    ],
+    "quaternion_wxyz": [
+      0.0,
+      0.784511289712929,
+      0.6201145348344582,
+      0.0
+    ],
+    "box_center": [
+      0.19232847446867662,
+      -0.191768517928605,
+      0.015155968587500806
+    ],
+    "box_half_extents": [
+      0.1925,
+      0.1923075,
+      0.015
+    ],
+    "contact": "Native nominal assembly settings: friction .75/.005/.0001, solref .0025/1, zero margin/gap.",
+    "integration_sha256": "e9c6d56b1589b3f48b2f4482578b3c9ddbd00452d1c19f3262649bc845d9bb55"
+  },
+  "asset_attribution": "The prepared upload includes assets/nist/README.md and the Factory BSD-3-Clause terms. The asset contributor confirmed the same license for the local RJ45 connector and NIST board meshes. Exact upstream archive versions for those conversions were not retained.",
+  "mode": "Continuous native threading control replay",
+  "selection": "Final three seconds of M8 nut threading with one Panda on the NIST board. RJ45 connector, large gear and 8 mm rod are already assembled at the start of this segment.",
+  "replay_sha256": "28d1b4f6b3c843b18960b0e315d79035ee08998c408428513a184bf2e3322860",
+  "model_sha256": "a0bc61dda0cae9e215ae0d4492e024a99443115adf2ae513cc469a43169629ae",
+  "controls": 300,
+  "control_interval_seconds": 0.01,
+  "physics_interval_seconds": 0.00125,
+  "duration_seconds": 3.0,
+  "initial_state": "Source state at 28.59 seconds: nut partly threaded and incomplete; other three assemblies complete. Positions and velocities assigned once, with zero initial solver warmstart.",
+  "stop": "End of the three-second recorded control tape; no runtime task-success logic or resets.",
+  "runtime": "Existing io.load_trajectory and cli.unroll; no policy, per-step state restoration, resets, or external collision pipeline.",
+  "source_capture_sha256": "e64a9d2abbf4481d3fa32d642b4a69e4a7bc2349d26ce00e847dec1fa08f72e8",
+  "measurement_scope": "The validation, timing_window and compiled model_sha256 fields describe the historical pre-rebase engine revision, not current main.",
+  "validation": {
+    "threading_motion": "All six independent one-world replays rotate and advance the nut: 2.709\u20133.215 turns and 3.487\u20134.120 mm axial advance. The benchmark exercises rotation and axial advance of an engaged nut.",
+    "original_policy_completion_flag": {
+      "sparse": "1/3 runs meet the original strict geometric completion threshold.",
+      "dense": "0/3 runs meet that threshold.",
+      "interpretation": "Retained as source task diagnostics; not a benchmark pass/fail condition."
+    },
+    "initialization": "The source mid-episode qacc_warmstart was not recorded. Standard replay starts solver history from zero and preserves it continuously afterward.",
+    "finite": true,
+    "overflow": false,
+    "capacities": {
+      "contacts": 600,
+      "constraints": 704,
+      "ccd": 64
+    }
+  },
+  "timing_window": {
+    "worlds": 4096,
+    "physics_steps": 2400,
+    "seconds": 3.0,
+    "scope": "Complete continuous threading control tape.",
+    "software": {
+      "mujoco": "3.12.1.dev968306640",
+      "warp": "1.15.0",
+      "numpy": "2.3.4"
+    },
+    "hardware": "NVIDIA RTX 5090, physical GPU1",
+    "statistic": "Median of three independent processes per layout; complete 2400-step continuous tape. Event times exclude compilation and host control uploads.",
+    "results": {
+      "dense": {
+        "solver_ms": 1.3128786275784174,
+        "collision_ms": 40.74822538137436,
+        "sdf_ms": 40.69789321819941,
+        "constraints_ms": 0.35479191978151603,
+        "step_ms": 42.808270030816395,
+        "process_wall_seconds": 109.98928117752075
+      },
+      "sparse": {
+        "solver_ms": 0.9608221997072299,
+        "collision_ms": 40.5303391178449,
+        "sdf_ms": 40.47998071591059,
+        "constraints_ms": 0.21998669259871045,
+        "step_ms": 42.100756514072415,
+        "process_wall_seconds": 108.30498456954956
+      }
+    },
+    "overflow": false
+  },
+  "engine": {
+    "commit": "9cf0cff5aae8820ce87526972bf1256b9d7e9a00",
+    "description": "Original benchmark engine with existing SDF corrections; solver, constraint and collision implementation unchanged."
+  },
+  "source_window": {
+    "start_seconds": 28.59,
+    "end_seconds": 31.59,
+    "initial_state_index": 2859,
+    "control_indices": "[2859:3159]",
+    "source_control_interval_seconds": 0.01
+  }
+}

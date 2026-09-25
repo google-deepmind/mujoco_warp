@@ -105,10 +105,15 @@ def _assemble_benchmark(bm: dict):
   # copy benchmark module files on top
   shutil.copytree(bm["_dir"], benchmark_dir, dirs_exist_ok=True)
 
+  if "prepare" in bm:
+    input_dir = bm["_dir"].resolve().parents[1]
+    command = [arg.format(input_dir=input_dir, benchmark_dir=benchmark_dir.resolve()) for arg in bm["prepare"]]
+    uv_run(*command, cwd=input_dir)
+
 
 def _bm_flags(bm: dict, benchmark_root: Path, exclude: tuple = ()) -> list:
   """Build --flag=value CLI args from a benchmark dict, shared by testspeed and viewer."""
-  skip = ("name", "assets", "mjcf", "_dir", *exclude)
+  skip = ("name", "assets", "mjcf", "prepare", "_dir", *exclude)
   cmd = []
   for field, value in bm.items():
     if field in skip:
