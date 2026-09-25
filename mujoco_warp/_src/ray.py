@@ -115,7 +115,7 @@ def _ray_quad(a: float, b: float, c: float) -> Tuple[float, wp.vec2]:
   det = wp.sqrt(det)
 
   # compute the two solutions
-  den = safe_div(1.0, a)
+  den = 1.0 / a
   x0 = (-b - det) * den
   x1 = (-b + det) * den
   x = wp.vec2(x0, x1)

@@ -235,23 +235,12 @@ def _compute_bvh_bounds(
       lower_bound = pos
       upper_bound = pos
 
-  bound_scale = wp.max(
-    1.0,
-    wp.max(
-      wp.max(wp.abs(lower_bound[0]), wp.abs(upper_bound[0])),
-      wp.max(
-        wp.max(wp.abs(lower_bound[1]), wp.abs(upper_bound[1])),
-        wp.max(wp.abs(lower_bound[2]), wp.abs(upper_bound[2])),
-      ),
-    ),
-  )
+  bound_scale = wp.max(1.0, wp.max(wp.max(wp.abs(lower_bound), wp.abs(upper_bound))))
   inflate = wp.vec3(BVH_BOUNDS_REL_TOL * bound_scale)
-  lower_bound -= inflate
-  upper_bound += inflate
-
-  lower_out[worldid * bvh_ngeom + geom_local_id] = lower_bound
-  upper_out[worldid * bvh_ngeom + geom_local_id] = upper_bound
-  group_out[worldid * bvh_ngeom + geom_local_id] = worldid
+  out_idx = worldid * bvh_ngeom + geom_local_id
+  lower_out[out_idx] = lower_bound - inflate
+  upper_out[out_idx] = upper_bound + inflate
+  group_out[out_idx] = worldid
 
 
 @wp.kernel
