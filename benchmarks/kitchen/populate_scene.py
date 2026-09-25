@@ -63,8 +63,7 @@ _MENAGERIE_ROBOTS = {
   "a1": "unitree_a1/a1.xml",
   "go1": "unitree_go1/go1.xml",
   "go2": "unitree_go2/go2.xml",
-  # TODO(team): Comment this out after the magnetometer sensor has been implemented
-  # "cassie": "agility_cassie/cassie.xml",
+  "cassie": "agility_cassie/cassie.xml",
 }
 
 _INPUT = flags.DEFINE_string("input", _SCRIPT_DIR + "/kitchen.xml", "the input scene to populate")
@@ -102,7 +101,7 @@ def main(argv: Sequence[str]):
 
   # add robot to environment
   frame = spec.worldbody.add_frame(pos=offset)
-  frame.attach_body(robot.body("pelvis"), "robot")
+  frame.attach_body(robot.worldbody.first_body(), "robot")
 
   ## Saving the model to xml
   spec_xml = spec.to_xml().replace("assets/", f"{combined_assets_path}/assets/")
