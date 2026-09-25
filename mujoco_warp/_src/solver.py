@@ -1286,36 +1286,13 @@ def _linesearch_iterative_kernel(
         hi_next = gauss_hi + wp.vec3(result[0, 1], result[1, 1], result[2, 1])
         mid = gauss_mid + wp.vec3(result[0, 2], result[1, 2], result[2, 2])
 
-        # bracket swapping
-        # swap lo:
-        swap_lo_lo_next = _in_bracket(lo, lo_next)
-        lo = wp.where(swap_lo_lo_next, lo_next, lo)
-        lo_alpha = wp.where(swap_lo_lo_next, lo_next_alpha, lo_alpha)
-        swap_lo_mid = _in_bracket(lo, mid)
-        lo = wp.where(swap_lo_mid, mid, lo)
-        lo_alpha = wp.where(swap_lo_mid, mid_alpha, lo_alpha)
-        swap_lo_hi_next = _in_bracket(lo, hi_next)
-        lo = wp.where(swap_lo_hi_next, hi_next, lo)
-        lo_alpha = wp.where(swap_lo_hi_next, hi_next_alpha, lo_alpha)
-        swap_lo = swap_lo_lo_next or swap_lo_mid or swap_lo_hi_next
-
-        # swap hi:
-        swap_hi_hi_next = _in_bracket(hi, hi_next)
-        hi = wp.where(swap_hi_hi_next, hi_next, hi)
-        hi_alpha = wp.where(swap_hi_hi_next, hi_next_alpha, hi_alpha)
-        swap_hi_mid = _in_bracket(hi, mid)
-        hi = wp.where(swap_hi_mid, mid, hi)
-        hi_alpha = wp.where(swap_hi_mid, mid_alpha, hi_alpha)
-        swap_hi_lo_next = _in_bracket(hi, lo_next)
-        hi = wp.where(swap_hi_lo_next, lo_next, hi)
-        hi_alpha = wp.where(swap_hi_lo_next, lo_next_alpha, hi_alpha)
-        swap_hi = swap_hi_hi_next or swap_hi_mid or swap_hi_lo_next
-
         # accept the lowest-cost converged candidate regardless of the sign of its derivative
         conv_lo = wp.abs(lo_next[1]) < gtol_accept and lo_next[0] < 0.0
         conv_hi = wp.abs(hi_next[1]) < gtol_accept and hi_next[0] < 0.0
         conv_mid = wp.abs(mid[1]) < gtol_accept and mid[0] < 0.0
         converged = conv_lo or conv_hi or conv_mid
+        swap_lo = False
+        swap_hi = False
         if converged:
           conv_pt = wp.vec3(types.MJ_MAXVAL, 0.0, 0.0)
           conv_alpha = float(0.0)
@@ -1332,6 +1309,31 @@ def _linesearch_iterative_kernel(
           lo_alpha = conv_alpha
           hi = conv_pt
           hi_alpha = conv_alpha
+        else:
+          # bracket swapping
+          # swap lo:
+          swap_lo_lo_next = _in_bracket(lo, lo_next)
+          lo = wp.where(swap_lo_lo_next, lo_next, lo)
+          lo_alpha = wp.where(swap_lo_lo_next, lo_next_alpha, lo_alpha)
+          swap_lo_mid = _in_bracket(lo, mid)
+          lo = wp.where(swap_lo_mid, mid, lo)
+          lo_alpha = wp.where(swap_lo_mid, mid_alpha, lo_alpha)
+          swap_lo_hi_next = _in_bracket(lo, hi_next)
+          lo = wp.where(swap_lo_hi_next, hi_next, lo)
+          lo_alpha = wp.where(swap_lo_hi_next, hi_next_alpha, lo_alpha)
+          swap_lo = swap_lo_lo_next or swap_lo_mid or swap_lo_hi_next
+
+          # swap hi:
+          swap_hi_hi_next = _in_bracket(hi, hi_next)
+          hi = wp.where(swap_hi_hi_next, hi_next, hi)
+          hi_alpha = wp.where(swap_hi_hi_next, hi_next_alpha, hi_alpha)
+          swap_hi_mid = _in_bracket(hi, mid)
+          hi = wp.where(swap_hi_mid, mid, hi)
+          hi_alpha = wp.where(swap_hi_mid, mid_alpha, hi_alpha)
+          swap_hi_lo_next = _in_bracket(hi, lo_next)
+          hi = wp.where(swap_hi_lo_next, lo_next, hi)
+          hi_alpha = wp.where(swap_hi_lo_next, lo_next_alpha, hi_alpha)
+          swap_hi = swap_hi_hi_next or swap_hi_mid or swap_hi_lo_next
 
         # check for convergence
         ls_done = (
