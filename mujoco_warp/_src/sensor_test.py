@@ -438,13 +438,13 @@ class SensorTest(parameterized.TestCase):
     if nworld == 2:
       mjd1 = mujoco.MjData(mjm)
       qpos = d.qpos.numpy()
-      qpos[1, 0] = -0.5
+      qpos[1, 0] = -2.0
       d.qpos.assign(qpos)
       mjd1.qpos[:] = qpos[1]
       mujoco.mj_forward(mjm, mjd1)
       mjds.append(mjd1)
-      mjw.kinematics(m, d)
 
+    mjw.kinematics(m, d)
     d.sensordata.fill_(wp.inf)
     mjw.sensor_pos(m, d)
 
