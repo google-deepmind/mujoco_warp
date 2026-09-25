@@ -110,12 +110,12 @@ def _ray_eliminate(
 def _ray_quad(a: float, b: float, c: float) -> Tuple[float, wp.vec2]:
   """Compute solutions from quadratic: a*x^2 + 2*b*x + c = 0."""
   det = b * b - a * c
-  if det < MJ_MINVAL:
+  if det < 0.0 or a < MJ_MINVAL:
     return -1.0, wp.vec2(-1.0, -1.0)
   det = wp.sqrt(det)
 
   # compute the two solutions
-  den = safe_div(1.0, a)
+  den = 1.0 / a
   x0 = (-b - det) * den
   x1 = (-b + det) * den
   x = wp.vec2(x0, x1)

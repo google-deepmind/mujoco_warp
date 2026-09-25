@@ -104,6 +104,64 @@ class RayTest(parameterized.TestCase):
     _assert_eq(bvh_geomid_np, geomid_np, "geom_id")
     _assert_eq(bvh_dist_np, dist_np, "dist")
 
+  @parameterized.product(
+    case=[
+      ("sphere", "sphere", ".5", (-2.0, 0.5, 0.0), (1.0, 0.0, 0.0)),
+      ("capsule_barrel", "capsule", ".5 1", (-2.0, 0.5, 0.0), (1.0, 0.0, 0.0)),
+      ("capsule_cap", "capsule", ".5 1", (-2.0, 0.0, 1.5), (1.0, 0.0, 0.0)),
+      ("capsule_axis_hit", "capsule", ".5 1", (0.0, 0.0, 2.0), (0.0, 0.0, -1.0)),
+      ("capsule_axis_miss", "capsule", ".5 1", (0.6, 0.0, 0.5), (0.0, 0.0, -1.0)),
+      ("ellipsoid", "ellipsoid", ".5 1 1", (-2.0, 1.0, 0.0), (1.0, 0.0, 0.0)),
+      ("cylinder", "cylinder", ".5 1", (-2.0, 0.5, 0.0), (1.0, 0.0, 0.0)),
+      ("cylinder_axis_hit", "cylinder", ".5 1", (0.0, 0.0, 2.0), (0.0, 0.0, -1.0)),
+      ("cylinder_axis_miss", "cylinder", ".5 1", (0.6, 0.0, 0.5), (0.0, 0.0, -1.0)),
+      ("box", "box", ".5 .5 .5", (-1.5, 2.5, 0.5), (1.0, -1.0, 0.0)),
+    ],
+    nworld=[1, 2],
+  )
+  def test_ray_tangent(self, case, nworld):
+    """Tests that tangent and axis-parallel primitive ray intersections match MuJoCo."""
+    _, geom_type, size, point, direction = case
+    mjm, mjd, m, d = test_data.fixture(
+      xml=f"""
+        <mujoco>
+          <worldbody>
+            <geom type="{geom_type}" size="{size}"/>
+          </worldbody>
+        </mujoco>
+      """,
+      nworld=nworld,
+    )
+
+    direction_np = np.array(direction, dtype=np.float64)
+    pnts = [np.array(point, dtype=np.float64)]
+    if nworld == 2:
+      pnts.append(pnts[0] - 0.5 * direction_np)
+
+    pnt = wp.array([[wp.vec3(*p)] for p in pnts], dtype=wp.vec3)
+    vec = wp.array([[wp.vec3(*direction)] for _ in range(nworld)], dtype=wp.vec3)
+
+    dist, geomid, normal = mjw.ray(m, d, pnt, vec)
+    rc = mjw.create_render_context(mjm, nworld=nworld)
+    bvh_dist, bvh_geomid, bvh_normal = mjw.ray(m, d, pnt, vec, rc=rc)
+
+    for world_id in range(nworld):
+      mj_geomid = np.full(1, -1, dtype=np.int32)
+      mj_normal = np.zeros(3, dtype=np.float64)
+      mj_dist = mujoco.mj_ray(mjm, mjd, pnts[world_id], direction_np, None, True, -1, mj_geomid, mj_normal)
+
+      _assert_eq(geomid.numpy()[world_id, 0], mj_geomid[0], f"geom_id_world_{world_id}")
+      _assert_eq(dist.numpy()[world_id, 0], mj_dist, f"dist_world_{world_id}")
+      _assert_eq(normal.numpy()[world_id, 0], mj_normal, f"normal_world_{world_id}")
+
+      _assert_eq(bvh_geomid.numpy()[world_id, 0], mj_geomid[0], f"bvh_geom_id_world_{world_id}")
+      _assert_eq(bvh_dist.numpy()[world_id, 0], mj_dist, f"bvh_dist_world_{world_id}")
+      _assert_eq(bvh_normal.numpy()[world_id, 0], mj_normal, f"bvh_normal_world_{world_id}")
+
+    if nworld == 2 and dist.numpy()[0, 0] >= 0:
+      self.assertFalse(np.allclose(dist.numpy()[0], dist.numpy()[1]))
+      self.assertFalse(np.allclose(bvh_dist.numpy()[0], bvh_dist.numpy()[1]))
+
   def test_ray_sphere(self):
     """Tests ray<>sphere matches MuJoCo."""
     mjm, mjd, m, d = test_data.fixture("ray.xml")

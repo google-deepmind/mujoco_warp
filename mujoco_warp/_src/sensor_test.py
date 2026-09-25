@@ -411,6 +411,49 @@ class SensorTest(parameterized.TestCase):
 
       _assert_eq(d.sensordata.numpy()[0], mjd.sensordata, "sensordata")
 
+  @parameterized.parameters(1, 2)
+  def test_rangefinder_tangent(self, nworld):
+    """Tests that tangent rangefinder intersections match MuJoCo."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+        <mujoco>
+          <compiler angle="degree"/>
+          <worldbody>
+            <geom type="sphere" size=".5"/>
+            <body pos="-2 .5 0" euler="0 90 0">
+              <inertial pos="0 0 0" mass="1" diaginertia="1 1 1"/>
+              <joint type="slide" axis="0 0 1"/>
+              <site name="rangefinder"/>
+            </body>
+          </worldbody>
+          <sensor>
+            <rangefinder site="rangefinder"/>
+          </sensor>
+        </mujoco>
+      """,
+      nworld=nworld,
+    )
+
+    mjds = [mjd]
+    if nworld == 2:
+      mjd1 = mujoco.MjData(mjm)
+      qpos = d.qpos.numpy()
+      qpos[1, 0] = -2.0
+      d.qpos.assign(qpos)
+      mjd1.qpos[:] = qpos[1]
+      mujoco.mj_forward(mjm, mjd1)
+      mjds.append(mjd1)
+
+    mjw.kinematics(m, d)
+    d.sensordata.fill_(wp.inf)
+    mjw.sensor_pos(m, d)
+
+    for world_id in range(nworld):
+      _assert_eq(d.sensordata.numpy()[world_id], mjds[world_id].sensordata, f"sensordata_world_{world_id}")
+
+    if nworld == 2:
+      self.assertFalse(np.allclose(d.sensordata.numpy()[0], d.sensordata.numpy()[1]))
+
   def test_touch_sensor(self):
     """Test touch sensor."""
     for keyframe in range(2):

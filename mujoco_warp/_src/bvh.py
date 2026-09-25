@@ -34,6 +34,9 @@ wp.set_module_options({"enable_backward": False, "default_grid_stride": False})
 # Render splats out to this density response, balancing extent and coverage.
 SPLAT_MIN_RESPONSE = 0.01
 
+# Expand scene bounds so exact boundary tangencies reach geom intersection tests.
+BVH_BOUNDS_REL_TOL = 1.0e-6
+
 
 @event_scope
 def refit_bvh(m: Model, d: Data, rc: RenderContext):
@@ -232,9 +235,12 @@ def _compute_bvh_bounds(
       lower_bound = pos
       upper_bound = pos
 
-  lower_out[worldid * bvh_ngeom + geom_local_id] = lower_bound
-  upper_out[worldid * bvh_ngeom + geom_local_id] = upper_bound
-  group_out[worldid * bvh_ngeom + geom_local_id] = worldid
+  bound_scale = wp.max(1.0, wp.max(wp.max(wp.abs(lower_bound), wp.abs(upper_bound))))
+  inflate = wp.vec3(BVH_BOUNDS_REL_TOL * bound_scale)
+  out_idx = worldid * bvh_ngeom + geom_local_id
+  lower_out[out_idx] = lower_bound - inflate
+  upper_out[out_idx] = upper_bound + inflate
+  group_out[out_idx] = worldid
 
 
 @wp.kernel
