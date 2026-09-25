@@ -104,6 +104,39 @@ class RayTest(parameterized.TestCase):
     _assert_eq(bvh_geomid_np, geomid_np, "geom_id")
     _assert_eq(bvh_dist_np, dist_np, "dist")
 
+  @parameterized.named_parameters(
+    ("sphere", "sphere", ".5", (-2.0, 0.5, 0.0), (1.0, 0.0, 0.0)),
+    ("capsule", "capsule", ".5 1", (-2.0, 0.5, 0.0), (1.0, 0.0, 0.0)),
+    ("ellipsoid", "ellipsoid", ".5 1 1", (-2.0, 1.0, 0.0), (1.0, 0.0, 0.0)),
+    ("cylinder", "cylinder", ".5 1", (-2.0, 0.5, 0.0), (1.0, 0.0, 0.0)),
+    ("box", "box", ".5 .5 .5", (-1.5, 2.5, 0.5), (1.0, -1.0, 0.0)),
+  )
+  def test_ray_tangent(self, geom_type, size, point, direction):
+    """Tests that tangent primitive ray intersections match MuJoCo."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml=f"""
+        <mujoco>
+          <worldbody>
+            <geom type="{geom_type}" size="{size}"/>
+          </worldbody>
+        </mujoco>
+      """
+    )
+
+    pnt = wp.array([wp.vec3(*point)], dtype=wp.vec3).reshape((1, 1))
+    vec = wp.array([wp.vec3(*direction)], dtype=wp.vec3).reshape((1, 1))
+    mj_geomid = np.full(1, -1, dtype=np.int32)
+    mj_dist = mujoco.mj_ray(mjm, mjd, np.array(point), np.array(direction), None, True, -1, mj_geomid)
+
+    dist, geomid, _ = mjw.ray(m, d, pnt, vec)
+    _assert_eq(geomid.numpy()[0, 0], mj_geomid[0], "geom_id")
+    _assert_eq(dist.numpy()[0, 0], mj_dist, "dist")
+
+    rc = mjw.create_render_context(mjm)
+    dist, geomid, _ = mjw.ray(m, d, pnt, vec, rc=rc)
+    _assert_eq(geomid.numpy()[0, 0], mj_geomid[0], "bvh geom_id")
+    _assert_eq(dist.numpy()[0, 0], mj_dist, "bvh dist")
+
   def test_ray_sphere(self):
     """Tests ray<>sphere matches MuJoCo."""
     mjm, mjd, m, d = test_data.fixture("ray.xml")

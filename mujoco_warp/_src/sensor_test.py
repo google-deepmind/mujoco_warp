@@ -411,6 +411,33 @@ class SensorTest(parameterized.TestCase):
 
       _assert_eq(d.sensordata.numpy()[0], mjd.sensordata, "sensordata")
 
+  @parameterized.parameters(1, 2)
+  def test_rangefinder_tangent(self, nworld):
+    """Tests that tangent rangefinder intersections match MuJoCo."""
+    _, mjd, m, d = test_data.fixture(
+      xml="""
+        <mujoco>
+          <compiler angle="degree"/>
+          <worldbody>
+            <geom type="sphere" size=".5"/>
+            <body pos="-2 .5 0" euler="0 90 0">
+              <site name="rangefinder"/>
+            </body>
+          </worldbody>
+          <sensor>
+            <rangefinder site="rangefinder"/>
+          </sensor>
+        </mujoco>
+      """,
+      nworld=nworld,
+    )
+
+    d.sensordata.fill_(wp.inf)
+    mjw.sensor_pos(m, d)
+
+    expected = np.tile(mjd.sensordata, (nworld, 1))
+    _assert_eq(d.sensordata.numpy(), expected, "sensordata")
+
   def test_touch_sensor(self):
     """Test touch sensor."""
     for keyframe in range(2):
