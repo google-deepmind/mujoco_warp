@@ -1324,7 +1324,9 @@ def _linesearch_iterative_kernel(
           swap_lo = swap_lo_lo_next or swap_lo_mid or swap_lo_hi_next
 
           # swap hi:
-          swap_hi_hi_next = _in_bracket(hi, hi_next)
+          # also accept a Newton step that crosses the minimizer from an undershooting hi,
+          # turning the one-sided search into an opposite-sign bracket
+          swap_hi_hi_next = _in_bracket(hi, hi_next) or (hi[1] < 0.0 and hi_next[1] > 0.0)
           hi = wp.where(swap_hi_hi_next, hi_next, hi)
           hi_alpha = wp.where(swap_hi_hi_next, hi_next_alpha, hi_alpha)
           swap_hi_mid = _in_bracket(hi, mid)
