@@ -4533,7 +4533,7 @@ def tendon(m: Model, d: Data):
   d.ten_length.zero_()
   d.ten_J.zero_()
 
-  # Cartesian 3D points fro geom wrap points
+  # Cartesian 3D points for geom wrap points
   wrap_geom_xpos = wp.empty((d.nworld, m.nwrap), dtype=wp.spatial_vector)
 
   # process joint tendons

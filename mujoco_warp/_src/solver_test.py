@@ -227,6 +227,7 @@ class SolverTest(parameterized.TestCase):
         wp.array([4.0e-12], dtype=float),
         wp.array([1.0e-6], dtype=float),
         wp.array([2.0e-6], dtype=float),
+        wp.array([1.0], dtype=float),
         done,
       ],
       outputs=[solver_niter, overflow, nsolving, done],
@@ -255,6 +256,7 @@ class SolverTest(parameterized.TestCase):
         wp.array([1.0], dtype=float),
         wp.array([1.0], dtype=float),
         wp.array([1.0], dtype=float),
+        wp.array([1.0], dtype=float),
         done,
       ],
       outputs=[solver_niter, overflow, nsolving, done],
@@ -264,6 +266,35 @@ class SolverTest(parameterized.TestCase):
     self.assertEqual(solver_niter.numpy()[0], 1)
     self.assertEqual(nsolving.numpy()[0], 0)
     self.assertTrue(overflow.numpy()[0] & types.OverflowType.ITERATIONS)
+
+  def test_solve_done_zero_alpha_early_out(self):
+    """Newton terminates immediately without overflow when linesearch alpha == 0."""
+    solver_niter = wp.zeros(1, dtype=int)
+    nsolving = wp.ones(1, dtype=int)
+    done = wp.zeros(1, dtype=bool)
+    overflow = wp.zeros(1, dtype=int)
+
+    wp.launch(
+      solver._solve_done(types.OverflowType.NONE),
+      dim=1,
+      inputs=[
+        1,
+        wp.array([1.0e-6], dtype=float),
+        100,
+        wp.array([1.0], dtype=float),
+        wp.array([1.0], dtype=float),
+        wp.array([1.0], dtype=float),
+        wp.array([0.0], dtype=float),
+        wp.array([0.0], dtype=float),
+        done,
+      ],
+      outputs=[solver_niter, overflow, nsolving, done],
+    )
+
+    self.assertTrue(done.numpy()[0])
+    self.assertEqual(solver_niter.numpy()[0], 1)
+    self.assertEqual(nsolving.numpy()[0], 0)
+    self.assertEqual(overflow.numpy()[0], 0)
 
   def test_solve_cg_finalize_iterations_overflow(self):
     """CG records overflow when iteration limit reached without convergence."""
@@ -287,6 +318,7 @@ class SolverTest(parameterized.TestCase):
         wp.zeros((1, 1), dtype=float),
         wp.array([1.0], dtype=float),
         wp.array([1.0], dtype=float),
+        wp.array([1.0], dtype=float),
         done,
       ],
       outputs=[solver_niter, overflow, beta, nsolving, done],
@@ -296,6 +328,39 @@ class SolverTest(parameterized.TestCase):
     self.assertEqual(solver_niter.numpy()[0], 1)
     self.assertEqual(nsolving.numpy()[0], 0)
     self.assertTrue(overflow.numpy()[0] & types.OverflowType.ITERATIONS)
+
+  def test_solve_cg_finalize_zero_alpha_early_out(self):
+    """CG terminates immediately without overflow when linesearch alpha == 0."""
+    solver_niter = wp.zeros(1, dtype=int)
+    nsolving = wp.ones(1, dtype=int)
+    done = wp.zeros(1, dtype=bool)
+    overflow = wp.zeros(1, dtype=int)
+    beta = wp.zeros(1, dtype=float)
+
+    wp.launch(
+      solver._solve_beta_finalize_tiled(types.OverflowType.NONE),
+      dim=(1, 32),
+      inputs=[
+        1,
+        wp.array([1.0e-6], dtype=float),
+        100,
+        wp.array([1.0], dtype=float),
+        wp.zeros((1, 1), dtype=float),
+        wp.zeros((1, 1), dtype=float),
+        wp.zeros((1, 1), dtype=float),
+        wp.zeros((1, 1), dtype=float),
+        wp.array([1.0], dtype=float),
+        wp.array([1.0], dtype=float),
+        wp.array([0.0], dtype=float),
+        done,
+      ],
+      outputs=[solver_niter, overflow, beta, nsolving, done],
+    )
+
+    self.assertTrue(done.numpy()[0])
+    self.assertEqual(solver_niter.numpy()[0], 1)
+    self.assertEqual(nsolving.numpy()[0], 0)
+    self.assertEqual(overflow.numpy()[0], 0)
 
   # Transition cases use powers of two so the exact delta is below the absolute-cost ulp.
   @parameterized.named_parameters(
@@ -1688,6 +1753,39 @@ class CompactSolverTest(absltest.TestCase):
       1e-5,
       f"qfrc_constraint should be zeroed, but got max abs: {np.max(np.abs(qfrc_constraint_post))}",
     )
+
+  def test_discrete_cg_init_context_prec_fold(self):
+    """Verifies solver.init_context folds constraint/contact metric into d.efm_L for CG solver."""
+    _, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option integrator="discrete" solver="CG" timestep="0.005"/>
+        <worldbody>
+          <geom type="plane" size="1 1 0.1"/>
+          <flexcomp name="string" type="grid" dim="2" count="2 2 1" spacing="0.05 0.05 1"
+                    pos="0 0 0.002" radius="0.005" mass="0.05">
+            <contact passive="true" selfcollide="none"/>
+            <elasticity young="1e4" poisson="0.2" thickness="1e-3" elastic2d="stretch"/>
+          </flexcomp>
+        </worldbody>
+        <equality>
+          <connect body1="string_0" anchor="0 0 0"/>
+        </equality>
+      </mujoco>
+      """,
+      qvel_noise=0.2,
+    )
+
+    mjw.forward(m, d)
+
+    # Re-run eff_build to get original 3x3 blocks in d.efm_L
+    solver.derivative.eff_build(m, d)
+    efm_L_unfolded = d.efm_L.numpy().copy()
+
+    ctx = solver._create_solver_context(m, d)
+    solver.init_context(m, d, ctx, grad=True)
+    efm_L_folded = d.efm_L.numpy()
+    self.assertFalse(np.allclose(efm_L_unfolded, efm_L_folded))
 
 
 if __name__ == "__main__":

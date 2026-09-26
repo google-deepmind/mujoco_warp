@@ -30,8 +30,10 @@ from mujoco_warp._src.types import MJ_MAXCONPAIR
 from mujoco_warp._src.types import MJ_MAXVAL
 from mujoco_warp._src.types import MJ_MINMU
 from mujoco_warp._src.types import MJ_MINVAL
+from mujoco_warp._src.types import ContactType
 from mujoco_warp._src.types import Data
 from mujoco_warp._src.types import GeomType
+from mujoco_warp._src.types import IntegratorType
 from mujoco_warp._src.types import Model
 from mujoco_warp._src.types import OverflowType
 from mujoco_warp._src.types import mat63
@@ -2286,8 +2288,11 @@ def _write_filtered_contacts(warn_overflow: int):
   @wp.kernel(module="unique", enable_backward=False)
   def kernel(
     # Model:
+    opt_integrator: int,
+    body_weldid: wp.array[int],
     geom_type: wp.array[int],
     geom_condim: wp.array[int],
+    geom_bodyid: wp.array[int],
     geom_priority: wp.array[int],
     geom_solmix: wp.array2d[float],
     geom_solref: wp.array2d[wp.vec2],
@@ -2303,7 +2308,9 @@ def _write_filtered_contacts(warn_overflow: int):
     flex_friction: wp.array[wp.vec3],
     flex_margin: wp.array[float],
     flex_gap: wp.array[float],
+    flex_passive: wp.array[int],
     flex_dim: wp.array[int],
+    flex_interp: wp.array[int],
     # Data in:
     naconmax_in: int,
     # In:
@@ -2442,7 +2449,19 @@ def _write_filtered_contacts(warn_overflow: int):
     contact_elem_out[id_] = cand_elem[i]
     contact_vert_out[id_] = cand_vert[i]
     contact_worldid_out[id_] = cand_worldid[i]
-    contact_type_out[id_] = 1
+    f0 = cand_flex[i][0]
+    f1 = cand_flex[i][1]
+    g0 = cand_geom[i][0]
+    g1 = cand_geom[i][1]
+    wants = (
+      (f0 >= 0 and flex_passive[f0] != 0 and flex_interp[f0] == 0 and flex_dim[f0] >= 2)
+      or (f1 >= 0 and flex_passive[f1] != 0 and flex_interp[f1] == 0 and flex_dim[f1] >= 2)
+    ) and opt_integrator == int(IntegratorType.DISCRETE)
+    ok = (f0 >= 0 or (g0 >= 0 and body_weldid[geom_bodyid[g0]] == 0)) and (
+      f1 >= 0 or (g1 >= 0 and body_weldid[geom_bodyid[g1]] == 0)
+    )
+    is_passive = wants and ok
+    contact_type_out[id_] = int(ContactType.PASSIVE) if is_passive else int(ContactType.CONSTRAINT)
     contact_geomcollisionid_out[id_] = 0
 
   return kernel
@@ -3223,8 +3242,11 @@ def _filter_and_write_contacts(
     _write_filtered_contacts(int(m.opt.warn_overflow)),
     dim=d.naconmax,
     inputs=[
+      m.opt.integrator,
+      m.body_weldid,
       m.geom_type,
       m.geom_condim,
+      m.geom_bodyid,
       m.geom_priority,
       m.geom_solmix,
       m.geom_solref,
@@ -3240,7 +3262,9 @@ def _filter_and_write_contacts(
       m.flex_friction,
       m.flex_margin,
       m.flex_gap,
+      m.flex_passive,
       m.flex_dim,
+      m.flex_interp,
       d.naconmax,
       ws.ncand,
       ws.dist,

@@ -2603,6 +2603,66 @@ class FlexDynamicsTest(parameterized.TestCase):
       )
 
   @parameterized.parameters(1, 2)
+  def test_drape_discrete(self, nworld):
+    """Tests 20 steps of cloth drape with discrete integrator and passive contact."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option solver="CG" integrator="discrete" gravity="0 0 -9.81"/>
+        <worldbody>
+          <geom type="sphere" size="0.2" pos="0 0 0"/>
+          <flexcomp name="cloth" type="grid" count="5 5 1" spacing="0.08 0.08 0.08" pos="0 0 0.202" dim="2" mass="0.1">
+            <contact passive="true" contype="1" conaffinity="1"/>
+            <elasticity young="1e3" poisson="0.3" thickness="1e-3" damping="1e-3" elastic2d="both"/>
+          </flexcomp>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=nworld,
+    )
+
+    mjds = [mjd]
+    if nworld == 2:
+      mjd1 = mujoco.MjData(mjm)
+      qpos = d.qpos.numpy()
+      qpos[1, 2] += 0.002
+      d.qpos = wp.array(qpos, dtype=float, device=d.qpos.device)
+      mjd1.qpos[:] = qpos[1]
+      mjds.append(mjd1)
+
+    for step in range(20):
+      for w in range(nworld):
+        mujoco.mj_step(mjm, mjds[w])
+      d.qacc.fill_(wp.inf)
+      mjw.step(m, d)
+
+      # Passive contact must not generate constraints in either C or Warp
+      for w in range(nworld):
+        self.assertEqual(mjds[w].nefc, 0, f"MuJoCo C has non-zero nefc at step {step}")
+        self.assertEqual(int(d.nefc.numpy()[w]), 0, f"MuJoCo Warp has non-zero nefc at step {step}")
+
+    # Verify contacts engaged
+    self.assertGreater(int(d.nacon.numpy()[0]), 0, "Expected active passive contacts")
+
+    # Verify qpos and qvel match MuJoCo C
+    for w in range(nworld):
+      np.testing.assert_allclose(
+        d.qpos.numpy()[w],
+        mjds[w].qpos,
+        atol=1e-2,
+        err_msg=f"qpos mismatch after 20 steps discrete drape for world {w}",
+      )
+      np.testing.assert_allclose(
+        d.qvel.numpy()[w],
+        mjds[w].qvel,
+        atol=0.5,
+        err_msg=f"qvel mismatch after 20 steps discrete drape for world {w}",
+      )
+
+    if nworld == 2:
+      self.assertFalse(np.allclose(d.qpos.numpy()[0], d.qpos.numpy()[1]))
+
+  @parameterized.parameters(1, 2)
   def test_multiflex(self, nworld):
     """Tests multiflex model with different flex dimensions."""
     mjm, mjd, m, d = test_data.fixture("flex/multiflex.xml", qpos_noise=0.02, nworld=nworld)
