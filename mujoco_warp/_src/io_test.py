@@ -1438,131 +1438,270 @@ class IOTest(parameterized.TestCase):
       """
       )
 
-  @parameterized.parameters(*_IO_TEST_MODELS)
-  def test_reset_data(self, xml):
-    reset_datafield = [
-      "ne",
-      "nf",
-      "nl",
-      "nefc",
-      "time",
-      "energy",
+  def test_reset_data(self):
+    """Verifies reset_data recursively resets all fields, supporting selective per-world reset."""
+    constant_fields = {
+      "ctol",
+      "cls_tol",
+      "cdof_tri_row",
+      "cdof_tri_col",
+      "xquat",
+      "xmat",
+      "ximat",
+      "xanchor",
+      "xaxis",
+      "geom_xpos",
+      "geom_xmat",
+      "site_xpos",
+      "site_xmat",
+      "cam_xpos",
+      "cam_xmat",
+      "light_xpos",
+      "light_xdir",
+    }
+    state_fields = {
       "qpos",
       "qvel",
       "act",
       "ctrl",
-      "eq_active",
-      "qfrc_applied",
-      "xfrc_applied",
-      "qacc",
-      "qacc_warmstart",
-      "act_dot",
-      "sensordata",
+      "time",
       "mocap_pos",
       "mocap_quat",
-      "M",
+      "qfrc_applied",
+      "xfrc_applied",
+      "eq_active",
+      "userdata",
+      "history",
       "tree_asleep",
+      "ntree_awake",
+      "nbody_awake",
+      "nv_awake",
       "tree_awake",
       "body_awake",
       "body_awake_ind",
       "dof_awake_ind",
-      "ntree_awake",
-      "nbody_awake",
-      "nv_awake",
-    ]
+    }
+    minus_one_fields = {
+      "tree_island",
+      "dof_island",
+      "dof_islandid",
+      "efc_islandid",
+      "dof_cdof",
+      "cdof_dof",
+      "efc_address",
+    }
 
-    mjm, mjd, m, d = test_data.fixture(xml)
-    naconmax = d.naconmax
+    def get_data_arrays(obj, prefix=""):
+      arrays = []
+      if dataclasses.is_dataclass(obj):
+        for f in dataclasses.fields(obj):
+          val = getattr(obj, f.name)
+          name = f"{prefix}.{f.name}" if prefix else f.name
+          arrays.extend(get_data_arrays(val, name))
+      elif isinstance(obj, wp.array):
+        arrays.append((prefix, obj))
+      return arrays
 
-    # data fields
-    for arr in reset_datafield:
-      attr = getattr(d, arr)
-      if attr.dtype == float:
-        attr.fill_(wp.nan)
-      else:
-        attr.fill_(-1)
+    # Fixture A: Dense Jacobian + delay actuator + mocap + tendon + sensor + child body
+    _, _, mA, dA = test_data.fixture(
+      xml="""
+      <mujoco>
+        <size nuserdata="4"/>
+        <worldbody>
+          <camera name="cam" pos="0 0 1"/>
+          <light name="light" pos="0 0 1"/>
+          <geom type="plane" size="2 2 .1"/>
+          <body name="mocap" mocap="true" pos="1 1 1">
+            <geom type="box" size=".1 .1 .1"/>
+          </body>
+          <body name="b1" pos="0 0 1">
+            <joint name="j1" type="slide" axis="0 0 1"/>
+            <geom name="g1" type="sphere" size="0.1" mass="1"/>
+            <site name="s1" pos="0 0 0"/>
+            <body name="b2" pos="0 0 0.5">
+              <joint name="j2" type="hinge" axis="0 1 0"/>
+              <geom name="g2" type="sphere" size="0.1" mass="1"/>
+              <site name="s2" pos="0 0 0"/>
+            </body>
+          </body>
+          <flexcomp name="rope" type="grid" count="3 1 1" spacing="0.1 0.1 0.1" dim="1" mass="1"/>
+        </worldbody>
+        <equality>
+          <connect body1="b1" body2="b2" anchor="0 0 0"/>
+        </equality>
+        <tendon>
+          <spatial name="t1">
+            <site site="s1"/>
+            <site site="s2"/>
+          </spatial>
+        </tendon>
+        <actuator>
+          <general joint="j1" name="a1" dyntype="filter" dynprm="0.1"/>
+          <motor joint="j2" delay="0.0" nsample="3"/>
+        </actuator>
+        <sensor>
+          <jointpos joint="j1"/>
+          <touch site="s1"/>
+        </sensor>
+      </mujoco>
+      """,
+      nworld=2,
+      nconmax=20,
+      njmax=40,
+    )
 
-    for arr in d.contact.__dataclass_fields__:
-      attr = getattr(d.contact, arr)
-      if attr.dtype == float:
-        attr.fill_(wp.nan)
-      else:
-        attr.fill_(-1)
-
-    mujoco.mj_resetData(mjm, mjd)
-
-    # set nacon in order to zero all contact memory
-    wp.copy(d.nacon, wp.array([naconmax], dtype=int))
-    mjwarp.reset_data(m, d)
-
-    for arr in reset_datafield:
-      d_arr = getattr(d, arr).numpy()
-      for i in range(d_arr.shape[0]):
-        di_arr = d_arr[i]
-        if arr == "M":
-          di_arr = di_arr.reshape(-1)[: mjd.M.size]
-        _assert_eq(di_arr, getattr(mjd, arr), arr)
-
-    _assert_eq(d.nacon.numpy(), 0, "nacon")
-
-    for arr in d.contact.__dataclass_fields__:
-      if arr == "efc_address":
-        _assert_eq(getattr(d.contact, arr).numpy(), -1, arr)
-      else:
-        _assert_eq(getattr(d.contact, arr).numpy(), 0.0, arr)
-
-  def test_reset_data_world(self):
-    """Tests per-world reset."""
-    mjm = mujoco.MjModel.from_xml_string("""
-    <mujoco>
-      <worldbody>
-        <body>
-          <geom type="sphere" size="1"/>
-          <joint type="slide"/>
-        </body>
-      </worldbody>
-    </mujoco>
+    # Fixture B: Sparse Jacobian + 3D trilinear flexcomp with shell elements
+    mjm_b = mujoco.MjModel.from_xml_string("""
+      <mujoco>
+        <option jacobian="sparse"/>
+        <worldbody>
+          <flexcomp type="grid" count="3 3 3" spacing="0.1 0.1 0.1" pos="0 0 0.5"
+                    name="cube" dim="3" mass="1" radius="0.005" dof="trilinear">
+            <contact selfcollide="none"/>
+          </flexcomp>
+        </worldbody>
+      </mujoco>
     """)
-    m = mjwarp.put_model(mjm)
-    d = mjwarp.make_data(mjm, nworld=2)
+    mjm_b.flex_interp[0] = -1
+    mjd_b = mujoco.MjData(mjm_b)
+    mB = mjwarp.put_model(mjm_b)
+    dB = mjwarp.put_data(mjm_b, mjd_b, nworld=2, nvmax=mjm_b.nv)
 
-    # nonzero values
-    qvel = wp.array(np.array([[1.0], [2.0]]), dtype=float)
+    tested_fields = set()
 
-    wp.copy(d.qvel, qvel)
+    for m, d in [(mA, dA), (mB, dB)]:
+      all_arrays = get_data_arrays(d)
 
-    # reset both worlds
-    mjwarp.reset_data(m, d)
+      # Populate real dynamics (contacts, constraints, forces) before reset
+      mjwarp.forward(m, d)
 
-    _assert_eq(d.qvel.numpy()[0], 0.0, "qvel[0]")
-    _assert_eq(d.qvel.numpy()[1], 0.0, "qvel[1]")
+      # 1. Fill all arrays based on array type with wp.inf, -2, or True
+      for name, arr in all_arrays:
+        field_key = name.split(".")[-1]
+        if field_key in constant_fields or arr.size == 0:
+          continue
+        scalar_type = getattr(arr.dtype, "_wp_scalar_type_", arr.dtype)
+        if wp.types.type_is_float(scalar_type):
+          if hasattr(arr.dtype, "_shape_"):
+            num = int(np.prod(arr.dtype._shape_))
+            arr.fill_(arr.dtype(*(wp.inf for _ in range(num))))
+          else:
+            arr.fill_(wp.inf)
+        elif wp.types.type_is_int(scalar_type):
+          if hasattr(arr.dtype, "_shape_"):
+            num = int(np.prod(arr.dtype._shape_))
+            arr.fill_(arr.dtype(*(-2 for _ in range(num))))
+          else:
+            arr.fill_(-2)
+        elif arr.dtype == wp.bool:
+          arr.fill_(True)
 
-    wp.copy(d.qvel, qvel)
+      # 2. Selective reset: reset world 0 only, keep world 1 unreset
+      mjwarp.reset_data(m, d, reset=wp.array([True, False], dtype=bool))
 
-    # don't reset second world
-    reset10 = wp.array(np.array([True, False]), dtype=bool)
-    mjwarp.reset_data(m, d, reset=reset10)
+      failures = []
+      for name, arr in all_arrays:
+        field_key = name.split(".")[-1]
+        if field_key in constant_fields or arr.size == 0:
+          continue
 
-    _assert_eq(d.qvel.numpy()[0], 0.0, "qvel[0]")
-    _assert_eq(d.qvel.numpy()[1], 2.0, "qvel[1]")
+        tested_fields.add(name)
+        np_arr = arr.numpy()
+        is_batched = np_arr.shape[0] == d.nworld
+        is_state = field_key in state_fields
 
-    wp.copy(d.qvel, qvel)
+        # Special case: body_awake contains SleepState.AWAKE (1) for dynamic bodies
+        # and SleepState.STATIC (-1) for static bodies.
+        if field_key == "body_awake":
+          if not np.any(np_arr[0] == 1):
+            failures.append(f"{name} [world 0] not reset to AWAKE")
+          if is_batched and not np.all(np_arr[1] == -2):
+            failures.append(f"{name} [world 1] state was overwritten (expected -2)")
+          continue
 
-    # don't reset both worlds
-    reset00 = wp.array(np.array([False, False], dtype=bool))
-    mjwarp.reset_data(m, d, reset=reset00)
+        # World 0 (reset): must be initialized correctly
+        w0 = np_arr[0] if is_batched else np_arr
+        if np.issubdtype(np_arr.dtype, np.floating):
+          if np.any(np.isinf(w0)):
+            failures.append(f"{name} [world 0] not reset (contains inf)")
+        elif np.issubdtype(np_arr.dtype, np.integer):
+          if field_key in minus_one_fields:
+            if not np.all(w0 == -1):
+              failures.append(f"{name} [world 0] not reset to -1")
+          elif np.any(w0 == -2):
+            failures.append(f"{name} [world 0] not reset (contains -2)")
 
-    _assert_eq(d.qvel.numpy()[0], 1.0, "qvel[0]")
-    _assert_eq(d.qvel.numpy()[1], 2.0, "qvel[1]")
+        # World 1 (unreset): state fields retain non-default states; derived fields are reset
+        if is_batched:
+          w1 = np_arr[1]
+          if is_state:
+            if np.issubdtype(np_arr.dtype, np.floating):
+              if not np.any(np.isinf(w1)):
+                failures.append(f"{name} [world 1] state was overwritten (expected inf)")
+            elif np.issubdtype(np_arr.dtype, np.integer):
+              if not np.any(w1 == -2):
+                failures.append(f"{name} [world 1] state was overwritten (expected -2)")
+            elif np_arr.dtype == bool:
+              if not np.all(w1):
+                failures.append(f"{name} [world 1] state was overwritten (expected True)")
+          else:
+            if np.issubdtype(np_arr.dtype, np.floating):
+              if np.any(np.isinf(w1)):
+                failures.append(f"{name} [world 1] derived field not reset (contains inf)")
+            elif np.issubdtype(np_arr.dtype, np.integer):
+              if field_key in minus_one_fields:
+                if not np.all(w1 == -1):
+                  failures.append(f"{name} [world 1] derived field not reset to -1")
+              elif np.any(w1 == -2):
+                failures.append(f"{name} [world 1] derived field not reset (contains -2)")
 
-    wp.copy(d.qvel, qvel)
+      self.assertEmpty(failures, f"Reset verification failures: {failures}")
 
-    # int arrays are tolerated as a reset mask (nonzero means reset)
-    reset10_int = wp.array(np.array([1, 0]), dtype=int)
-    mjwarp.reset_data(m, d, reset=reset10_int)
+    # Coverage assertion: 100% of non-constant arrays across Data, Contact, Constraint are tested
+    all_expected = {name for name, _ in get_data_arrays(dA)} | {name for name, _ in get_data_arrays(dB)}
+    non_constant = {n for n in all_expected if n.split(".")[-1] not in constant_fields}
+    self.assertEmpty(non_constant - tested_fields, "All active arrays must be tested with non-zero size.")
 
-    _assert_eq(d.qvel.numpy()[0], 0.0, "qvel[0]")
-    _assert_eq(d.qvel.numpy()[1], 2.0, "qvel[1]")
+    # 3. Specific state variable defaults for reset world 0 on Fixture A
+    _assert_eq(dA.qpos.numpy()[0], mA.qpos0.numpy()[0], "world 0 qpos")
+    _assert_eq(dA.qvel.numpy()[0], np.zeros(mA.nv), "world 0 qvel")
+    _assert_eq(dA.time.numpy()[0], 0.0, "world 0 time")
+    _assert_eq(dA.ctrl.numpy()[0], np.zeros(mA.nu), "world 0 ctrl")
+    _assert_eq(dA.act.numpy()[0], np.zeros(mA.na), "world 0 act")
+    _assert_eq(dA.qfrc_applied.numpy()[0], np.zeros(mA.nv), "world 0 qfrc_applied")
+
+    # 4. Symmetric inverted mask: reset world 1, keep world 0 unreset
+    qpos0_before = dA.qpos.numpy()[0].copy()
+    time0_before = float(dA.time.numpy()[0])
+    dA.qpos.assign(np.full_like(dA.qpos.numpy(), 9.99))
+    dA.time.assign(np.array([42.0, 99.0]))
+    mjwarp.reset_data(mA, dA, reset=wp.array([False, True], dtype=bool))
+    _assert_eq(dA.qpos.numpy()[1], mA.qpos0.numpy()[0], "world 1 qpos reset by [False, True]")
+    _assert_eq(dA.time.numpy()[1], 0.0, "world 1 time reset by [False, True]")
+    _assert_eq(dA.qpos.numpy()[0], np.full(mA.nq, 9.99), "world 0 qpos preserved by [False, True]")
+    _assert_eq(float(dA.time.numpy()[0]), 42.0, "world 0 time preserved by [False, True]")
+
+    # 5. Integer reset mask: reset world 1 using int array (nonzero means reset)
+    mjwarp.reset_data(mA, dA, reset=wp.array([0, 1], dtype=int))
+    _assert_eq(dA.qpos.numpy()[1], mA.qpos0.numpy()[0], "world 1 qpos reset by int mask")
+    _assert_eq(dA.qvel.numpy()[1], np.zeros(mA.nv), "world 1 qvel reset by int mask")
+    _assert_eq(dA.time.numpy()[1], 0.0, "world 1 time reset by int mask")
+
+    # 6. No-op reset: state fields preserved when no worlds are reset
+    qvel_before = dA.qvel.numpy().copy()
+    mjwarp.reset_data(mA, dA, reset=wp.array([False, False], dtype=bool))
+    _assert_eq(dA.qvel.numpy(), qvel_before, "qvel preserved on no-op reset")
+
+    # 7. Physics continuation: forward pass executes cleanly and repopulates dependent fields
+    mjwarp.forward(mA, dA)
+    self.assertGreater(int(dA.nacon.numpy()[0]), 0)
+    self.assertGreater(int(dA.nefc.numpy()[0]), 0)
+
+    # 8. Default reset (reset=None): resets all worlds to default state
+    mjwarp.reset_data(mA, dA)
+    _assert_eq(dA.qpos.numpy()[0], mA.qpos0.numpy()[0], "world 0 qpos reset with reset=None")
+    _assert_eq(dA.qpos.numpy()[1], mA.qpos0.numpy()[0], "world 1 qpos reset with reset=None")
+    _assert_eq(dA.qvel.numpy(), np.zeros((2, mA.nv)), "all worlds qvel reset with reset=None")
 
   def test_reset_data_reset_invalid(self):
     """Tests that reset_data validates the reset argument."""

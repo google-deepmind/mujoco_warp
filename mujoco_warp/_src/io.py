@@ -2437,109 +2437,7 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
   sleep_enabled = bool(m.opt.enableflags & types.EnableBit.SLEEP)
 
   @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
-  def reset_xfrc_applied(reset_in: wp.array[bool], xfrc_applied_out: wp.array2d[wp.spatial_vector]):
-    worldid, bodyid, elemid = wp.tid()
-
-    if wp.static(reset is not None):
-      if not reset_in[worldid]:
-        return
-
-    xfrc_applied_out[worldid, bodyid][elemid] = 0.0
-
-  @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
-  def reset_M(reset_in: wp.array[bool], M_out: wp.array2d[float]):
-    worldid, elemid = wp.tid()
-
-    if wp.static(reset is not None):
-      if not reset_in[worldid]:
-        return
-
-    M_out[worldid, elemid] = 0.0
-
-  @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
-  def reset_nworld(
-    # Model:
-    nq: int,
-    nv: int,
-    nu: int,
-    na: int,
-    nbody: int,
-    ntree: int,
-    neq: int,
-    nuserdata: int,
-    nsensordata: int,
-    qpos0: wp.array2d[float],
-    eq_active0: wp.array[bool],
-    # Data in:
-    nworld_in: int,
-    # In:
-    reset_in: wp.array[bool],
-    # Data out:
-    solver_niter_out: wp.array[int],
-    ne_out: wp.array[int],
-    nf_out: wp.array[int],
-    nl_out: wp.array[int],
-    nefc_out: wp.array[int],
-    ntree_awake_out: wp.array[int],
-    nbody_awake_out: wp.array[int],
-    nv_awake_out: wp.array[int],
-    time_out: wp.array[float],
-    energy_out: wp.array[wp.vec2],
-    qpos_out: wp.array2d[float],
-    qvel_out: wp.array2d[float],
-    act_out: wp.array2d[float],
-    qacc_warmstart_out: wp.array2d[float],
-    ctrl_out: wp.array2d[float],
-    qfrc_applied_out: wp.array2d[float],
-    eq_active_out: wp.array2d[bool],
-    qacc_out: wp.array2d[float],
-    act_dot_out: wp.array2d[float],
-    userdata_out: wp.array2d[float],
-    sensordata_out: wp.array2d[float],
-    nacon_out: wp.array[int],
-    overflow_out: wp.array[int],
-  ):
-    worldid = wp.tid()
-
-    if wp.static(reset is not None):
-      if not reset_in[worldid]:
-        return
-
-    solver_niter_out[worldid] = 0
-    if worldid == 0:
-      nacon_out[0] = 0
-    ne_out[worldid] = 0
-    nf_out[worldid] = 0
-    nl_out[worldid] = 0
-    nefc_out[worldid] = 0
-    time_out[worldid] = 0.0
-    energy_out[worldid] = wp.vec2(0.0, 0.0)
-    ntree_awake_out[worldid] = ntree
-    nbody_awake_out[worldid] = nbody
-    nv_awake_out[worldid] = nv
-    qpos0_id = worldid % qpos0.shape[0]
-    for i in range(nq):
-      qpos_out[worldid, i] = qpos0[qpos0_id, i]
-      if i < nv:
-        qvel_out[worldid, i] = 0.0
-        qacc_warmstart_out[worldid, i] = 0.0
-        qfrc_applied_out[worldid, i] = 0.0
-        qacc_out[worldid, i] = 0.0
-    for i in range(nu):
-      ctrl_out[worldid, i] = 0.0
-      if i < na:
-        act_out[worldid, i] = 0.0
-        act_dot_out[worldid, i] = 0.0
-    for i in range(neq):
-      eq_active_out[worldid, i] = eq_active0[i]
-    for i in range(nsensordata):
-      sensordata_out[worldid, i] = 0.0
-    for i in range(nuserdata):
-      userdata_out[worldid, i] = 0.0
-    overflow_out[worldid] = 0
-
-  @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
-  def reset_mocap(
+  def reset_body_state(
     # Model:
     body_mocapid: wp.array[int],
     body_pos: wp.array2d[wp.vec3],
@@ -2547,6 +2445,7 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
     # In:
     reset_in: wp.array[bool],
     # Data out:
+    xfrc_applied_out: wp.array2d[wp.spatial_vector],
     mocap_pos_out: wp.array2d[wp.vec3],
     mocap_quat_out: wp.array2d[wp.quat],
   ):
@@ -2556,18 +2455,420 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
       if not reset_in[worldid]:
         return
 
-    mocapid = body_mocapid[bodyid]
+    xfrc_applied_out[worldid, bodyid] = wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
 
+    mocapid = body_mocapid[bodyid]
     if mocapid >= 0:
       mocap_pos_out[worldid, mocapid] = body_pos[worldid % body_pos.shape[0], bodyid]
       mocap_quat_out[worldid, mocapid] = body_quat[worldid % body_quat.shape[0], bodyid]
 
   @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
-  def reset_contact(
-    # Data in:
-    nacon_in: wp.array[int],
+  def reset_state_and_counters_nworld(
+    # Model:
+    nq: int,
+    nv: int,
+    nu: int,
+    na: int,
+    nbody: int,
+    ntree: int,
+    neq: int,
+    nuserdata: int,
+    qpos0: wp.array2d[float],
+    eq_active0: wp.array[bool],
     # In:
     reset_in: wp.array[bool],
+    # Data out:
+    solver_niter_out: wp.array[int],
+    ne_out: wp.array[int],
+    nf_out: wp.array[int],
+    nl_out: wp.array[int],
+    nefc_out: wp.array[int],
+    nisland_out: wp.array[int],
+    nidof_out: wp.array[int],
+    ntree_awake_out: wp.array[int],
+    nbody_awake_out: wp.array[int],
+    nv_awake_out: wp.array[int],
+    time_out: wp.array[float],
+    energy_out: wp.array[wp.vec2],
+    qpos_out: wp.array2d[float],
+    qvel_out: wp.array2d[float],
+    act_out: wp.array2d[float],
+    ctrl_out: wp.array2d[float],
+    qfrc_applied_out: wp.array2d[float],
+    eq_active_out: wp.array2d[bool],
+    userdata_out: wp.array2d[float],
+    ncdof_out: wp.array[int],
+    nacon_out: wp.array[int],
+    ncollision_out: wp.array[int],
+    overflow_out: wp.array[int],
+    # Out:
+    jtdaj_nblock_out: wp.array[int],
+  ):
+    worldid = wp.tid()
+
+    solver_niter_out[worldid] = 0
+    ne_out[worldid] = 0
+    nf_out[worldid] = 0
+    nl_out[worldid] = 0
+    nefc_out[worldid] = 0
+    nisland_out[worldid] = 0
+    nidof_out[worldid] = 0
+    energy_out[worldid] = wp.vec2(0.0, 0.0)
+    ncdof_out[worldid] = 0
+    overflow_out[worldid] = 0
+    jtdaj_nblock_out[worldid] = 0
+    if worldid == 0:
+      nacon_out[0] = 0
+      ncollision_out[0] = 0
+
+    if wp.static(reset is not None):
+      if not reset_in[worldid]:
+        return
+
+    ntree_awake_out[worldid] = ntree
+    nbody_awake_out[worldid] = nbody
+    nv_awake_out[worldid] = nv
+    time_out[worldid] = 0.0
+
+    qpos0_id = worldid % qpos0.shape[0]
+    for i in range(nq):
+      qpos_out[worldid, i] = qpos0[qpos0_id, i]
+    for i in range(nv):
+      qvel_out[worldid, i] = 0.0
+      qfrc_applied_out[worldid, i] = 0.0
+    for i in range(nu):
+      ctrl_out[worldid, i] = 0.0
+    for i in range(na):
+      act_out[worldid, i] = 0.0
+    for i in range(neq):
+      eq_active_out[worldid, i] = eq_active0[i]
+    for i in range(nuserdata):
+      userdata_out[worldid, i] = 0.0
+
+  @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
+  def reset_nv_arrays(
+    # Data out:
+    qacc_warmstart_out: wp.array2d[float],
+    qacc_out: wp.array2d[float],
+    cdof_out: wp.array2d[wp.spatial_vector],
+    qLDiagInv_out: wp.array2d[float],
+    cdof_dot_out: wp.array2d[wp.spatial_vector],
+    qfrc_bias_out: wp.array2d[float],
+    qfrc_spring_out: wp.array2d[float],
+    qfrc_damper_out: wp.array2d[float],
+    qfrc_gravcomp_out: wp.array2d[float],
+    qfrc_fluid_out: wp.array2d[float],
+    qfrc_adhesion_out: wp.array2d[float],
+    qfrc_passive_out: wp.array2d[float],
+    qfrc_actuator_out: wp.array2d[float],
+    qfrc_smooth_out: wp.array2d[float],
+    qacc_smooth_out: wp.array2d[float],
+    qfrc_constraint_out: wp.array2d[float],
+    qfrc_inverse_out: wp.array2d[float],
+    # Out:
+    efc_Ma_out: wp.array2d[float],
+    # Data out:
+    dof_island_out: wp.array2d[int],
+    map_dof2idof_out: wp.array2d[int],
+    map_idof2dof_out: wp.array2d[int],
+    dof_islandid_out: wp.array2d[int],
+    dof_cdof_out: wp.array2d[int],
+  ):
+    worldid, dofid = wp.tid()
+    qacc_warmstart_out[worldid, dofid] = 0.0
+    qacc_out[worldid, dofid] = 0.0
+    cdof_out[worldid, dofid] = wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+    qLDiagInv_out[worldid, dofid] = 0.0
+    cdof_dot_out[worldid, dofid] = wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+    qfrc_bias_out[worldid, dofid] = 0.0
+    qfrc_spring_out[worldid, dofid] = 0.0
+    qfrc_damper_out[worldid, dofid] = 0.0
+    qfrc_gravcomp_out[worldid, dofid] = 0.0
+    qfrc_fluid_out[worldid, dofid] = 0.0
+    qfrc_adhesion_out[worldid, dofid] = 0.0
+    qfrc_passive_out[worldid, dofid] = 0.0
+    qfrc_actuator_out[worldid, dofid] = 0.0
+    qfrc_smooth_out[worldid, dofid] = 0.0
+    qacc_smooth_out[worldid, dofid] = 0.0
+    qfrc_constraint_out[worldid, dofid] = 0.0
+    qfrc_inverse_out[worldid, dofid] = 0.0
+    efc_Ma_out[worldid, dofid] = 0.0
+    dof_island_out[worldid, dofid] = -1
+    map_dof2idof_out[worldid, dofid] = dofid
+    map_idof2dof_out[worldid, dofid] = dofid
+    dof_islandid_out[worldid, dofid] = -1
+    dof_cdof_out[worldid, dofid] = -1
+
+  @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
+  def reset_nbody_arrays(
+    # Data out:
+    xpos_out: wp.array2d[wp.vec3],
+    xipos_out: wp.array2d[wp.vec3],
+    subtree_com_out: wp.array2d[wp.vec3],
+    cinert_out: wp.array2d[types.vec10],
+    crb_out: wp.array2d[types.vec10],
+    cvel_out: wp.array2d[wp.spatial_vector],
+    subtree_linvel_out: wp.array2d[wp.vec3],
+    subtree_angmom_out: wp.array2d[wp.vec3],
+    cacc_out: wp.array2d[wp.spatial_vector],
+    cfrc_int_out: wp.array2d[wp.spatial_vector],
+    cfrc_ext_out: wp.array2d[wp.spatial_vector],
+  ):
+    worldid, bodyid = wp.tid()
+    xpos_out[worldid, bodyid] = wp.vec3(0.0, 0.0, 0.0)
+    xipos_out[worldid, bodyid] = wp.vec3(0.0, 0.0, 0.0)
+    subtree_com_out[worldid, bodyid] = wp.vec3(0.0, 0.0, 0.0)
+    cinert_out[worldid, bodyid] = types.vec10(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+    crb_out[worldid, bodyid] = types.vec10(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+    cvel_out[worldid, bodyid] = wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+    subtree_linvel_out[worldid, bodyid] = wp.vec3(0.0, 0.0, 0.0)
+    subtree_angmom_out[worldid, bodyid] = wp.vec3(0.0, 0.0, 0.0)
+    cacc_out[worldid, bodyid] = wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+    cfrc_int_out[worldid, bodyid] = wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+    cfrc_ext_out[worldid, bodyid] = wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+
+  @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
+  def reset_tree_island_arrays(
+    # Data out:
+    tree_island_out: wp.array2d[int],
+    island_dofadr_out: wp.array2d[int],
+    island_idofadr_out: wp.array2d[int],
+    island_nv_out: wp.array2d[int],
+    island_nefc_out: wp.array2d[int],
+    island_ne_out: wp.array2d[int],
+    island_nf_out: wp.array2d[int],
+    island_iefcadr_out: wp.array2d[int],
+  ):
+    worldid, treeid = wp.tid()
+    tree_island_out[worldid, treeid] = -1
+    island_dofadr_out[worldid, treeid] = 0
+    island_idofadr_out[worldid, treeid] = 0
+    island_nv_out[worldid, treeid] = 0
+    island_nefc_out[worldid, treeid] = 0
+    island_ne_out[worldid, treeid] = 0
+    island_nf_out[worldid, treeid] = 0
+    island_iefcadr_out[worldid, treeid] = 0
+
+  @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
+  def reset_inertia_matrices(
+    # Data out:
+    M_out: wp.array2d[float],
+    qLD_out: wp.array2d[float],
+    qLU_out: wp.array2d[float],
+  ):
+    worldid, idx = wp.tid()
+    if idx < M_out.shape[1]:
+      M_out[worldid, idx] = 0.0
+    if idx < qLD_out.shape[1]:
+      qLD_out[worldid, idx] = 0.0
+    if idx < qLU_out.shape[1]:
+      qLU_out[worldid, idx] = 0.0
+
+  @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
+  def reset_efc_arrays(
+    # Data in:
+    njmax_in: int,
+    # Data out:
+    efc_type_out: wp.array2d[int],
+    efc_id_out: wp.array2d[int],
+    efc_jtdaj_adr_out: wp.array2d[int],
+    efc_jtdaj_nrow_out: wp.array2d[int],
+    efc_pos_out: wp.array2d[float],
+    efc_margin_out: wp.array2d[float],
+    efc_D_out: wp.array2d[float],
+    efc_vel_out: wp.array2d[float],
+    efc_aref_out: wp.array2d[float],
+    efc_frictionloss_out: wp.array2d[float],
+    efc_force_out: wp.array2d[float],
+    efc_state_out: wp.array2d[int],
+    efc_island_out: wp.array2d[int],
+    efc_Jqvel_out: wp.array2d[float],
+    # Data out:
+    map_efc2iefc_out: wp.array2d[int],
+    map_iefc2efc_out: wp.array2d[int],
+    efc_islandid_out: wp.array2d[int],
+    # Out:
+    J_rownnz_out: wp.array2d[int],
+    J_rowadr_out: wp.array2d[int],
+  ):
+    worldid, idx = wp.tid()
+    efc_D_out[worldid, idx] = 0.0
+    efc_state_out[worldid, idx] = 0
+    if idx < njmax_in:
+      efc_type_out[worldid, idx] = 0
+      efc_id_out[worldid, idx] = 0
+      efc_jtdaj_adr_out[worldid, idx] = 0
+      efc_jtdaj_nrow_out[worldid, idx] = 0
+      efc_pos_out[worldid, idx] = 0.0
+      efc_margin_out[worldid, idx] = 0.0
+      efc_vel_out[worldid, idx] = 0.0
+      efc_aref_out[worldid, idx] = 0.0
+      efc_frictionloss_out[worldid, idx] = 0.0
+      efc_force_out[worldid, idx] = 0.0
+      efc_island_out[worldid, idx] = 0
+      efc_Jqvel_out[worldid, idx] = 0.0
+      map_efc2iefc_out[worldid, idx] = 0
+      map_iefc2efc_out[worldid, idx] = 0
+      efc_islandid_out[worldid, idx] = -1
+      if J_rownnz_out.shape[1] > 0:
+        J_rownnz_out[worldid, idx] = 0
+        J_rowadr_out[worldid, idx] = 0
+
+  @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
+  def reset_efc_dense_J(
+    # Out:
+    J_out: wp.array3d[float],
+  ):
+    worldid, i, j = wp.tid()
+    J_out[worldid, i, j] = 0.0
+
+  @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
+  def reset_efc_sparse_J(
+    # Out:
+    J_out: wp.array3d[float],
+    J_colind_out: wp.array3d[int],
+  ):
+    worldid, i, j = wp.tid()
+    J_out[worldid, i, j] = 0.0
+    J_colind_out[worldid, i, j] = 0
+
+  @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
+  def reset_actuator_tendon_sensor_arrays(
+    # Model:
+    nu: int,
+    na: int,
+    ntendon: int,
+    nwrap: int,
+    nsensordata: int,
+    # Data out:
+    act_dot_out: wp.array2d[float],
+    sensordata_out: wp.array2d[float],
+    ten_wrapadr_out: wp.array2d[int],
+    ten_wrapnum_out: wp.array2d[int],
+    ten_J_out: wp.array2d[float],
+    ten_length_out: wp.array2d[float],
+    wrap_obj_out: wp.array2d[wp.vec2i],
+    wrap_xpos_out: wp.array2d[wp.spatial_vector],
+    actuator_length_out: wp.array2d[float],
+    moment_rownnz_out: wp.array2d[int],
+    moment_rowadr_out: wp.array2d[int],
+    moment_colind_out: wp.array2d[int],
+    actuator_moment_out: wp.array2d[float],
+    ten_velocity_out: wp.array2d[float],
+    actuator_velocity_out: wp.array2d[float],
+    actuator_force_out: wp.array2d[float],
+  ):
+    worldid, idx = wp.tid()
+    if idx < na:
+      act_dot_out[worldid, idx] = 0.0
+    if idx < nsensordata:
+      sensordata_out[worldid, idx] = 0.0
+    if idx < nu:
+      actuator_length_out[worldid, idx] = 0.0
+      actuator_velocity_out[worldid, idx] = 0.0
+      actuator_force_out[worldid, idx] = 0.0
+      moment_rownnz_out[worldid, idx] = 0
+      moment_rowadr_out[worldid, idx] = 0
+    if idx < moment_colind_out.shape[1]:
+      moment_colind_out[worldid, idx] = 0
+      actuator_moment_out[worldid, idx] = 0.0
+    if idx < ntendon:
+      ten_length_out[worldid, idx] = 0.0
+      ten_velocity_out[worldid, idx] = 0.0
+      ten_wrapadr_out[worldid, idx] = 0
+      ten_wrapnum_out[worldid, idx] = 0
+    if idx < ten_J_out.shape[1]:
+      ten_J_out[worldid, idx] = 0.0
+    if idx < nwrap:
+      wrap_obj_out[worldid, idx] = wp.vec2i(0, 0)
+      wrap_xpos_out[worldid, idx] = wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+
+  @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
+  def reset_compact_vector_arrays(
+    # Data out:
+    cdof_dof_out: wp.array2d[int],
+    crhs_out: wp.array3d[float],
+    cx_out: wp.array3d[float],
+    cMa_out: wp.array2d[float],
+    cqfrc_smooth_out: wp.array2d[float],
+    cqacc_smooth_out: wp.array2d[float],
+    cqacc_warmstart_out: wp.array2d[float],
+    cqacc_out: wp.array2d[float],
+    cqfrc_constraint_out: wp.array2d[float],
+  ):
+    worldid, idx = wp.tid()
+    cdof_dof_out[worldid, idx] = -1
+    cMa_out[worldid, idx] = 0.0
+    cqfrc_smooth_out[worldid, idx] = 0.0
+    cqacc_smooth_out[worldid, idx] = 0.0
+    cqacc_warmstart_out[worldid, idx] = 0.0
+    cqacc_out[worldid, idx] = 0.0
+    cqfrc_constraint_out[worldid, idx] = 0.0
+    crhs_out[worldid, idx, 0] = 0.0
+    cx_out[worldid, idx, 0] = 0.0
+
+  @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
+  def reset_compact_matrix_arrays(
+    # Data out:
+    cM_out: wp.array3d[float],
+    cqLD_out: wp.array3d[float],
+  ):
+    worldid, i, j = wp.tid()
+    cM_out[worldid, i, j] = 0.0
+    cqLD_out[worldid, i, j] = 0.0
+
+  @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
+  def reset_compact_J(
+    # Data out:
+    cJ_out: wp.array3d[float],
+  ):
+    worldid, i, j = wp.tid()
+    cJ_out[worldid, i, j] = 0.0
+
+  @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
+  def reset_flex_arrays(
+    # Model:
+    nflex: int,
+    nflexnode: int,
+    nflexvert: int,
+    nflexedge: int,
+    # Data out:
+    flexvert_xpos_out: wp.array2d[wp.vec3],
+    flexedge_J_out: wp.array2d[float],
+    flexedge_length_out: wp.array2d[float],
+    flexedge_velocity_out: wp.array2d[float],
+    flex_aabb_min_out: wp.array2d[wp.vec3],
+    flex_aabb_max_out: wp.array2d[wp.vec3],
+    flexnode_xpos_out: wp.array2d[wp.vec3],
+  ):
+    worldid, idx = wp.tid()
+    if idx < nflexedge:
+      flexedge_length_out[worldid, idx] = 0.0
+      flexedge_velocity_out[worldid, idx] = 0.0
+    if idx < flexedge_J_out.shape[1]:
+      flexedge_J_out[worldid, idx] = 0.0
+    if idx < nflexvert:
+      flexvert_xpos_out[worldid, idx] = wp.vec3(0.0, 0.0, 0.0)
+    if idx < nflexnode:
+      flexnode_xpos_out[worldid, idx] = wp.vec3(0.0, 0.0, 0.0)
+    if idx < nflex:
+      flex_aabb_min_out[worldid, idx] = wp.vec3(0.0, 0.0, 0.0)
+      flex_aabb_max_out[worldid, idx] = wp.vec3(0.0, 0.0, 0.0)
+
+  @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
+  def reset_flex_face_arrays(
+    # Data out:
+    face_xpos_out: wp.array3d[wp.vec3],
+    face_quat_out: wp.array2d[wp.quat],
+  ):
+    worldid, faceid = wp.tid()
+    for k in range(9):
+      face_xpos_out[worldid, faceid, k] = wp.vec3(0.0, 0.0, 0.0)
+    face_quat_out[worldid, faceid] = wp.quat(0.0, 0.0, 0.0, 0.0)
+
+  @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
+  def reset_contact_all(
+    # In:
     nefcaddress: int,
     # Data out:
     contact_dist_out: wp.array[float],
@@ -2590,15 +2891,6 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
     contact_adhesion_out: wp.array[float],
   ):
     conid = wp.tid()
-
-    if conid >= nacon_in[0]:
-      return
-
-    worldid = contact_worldid_out[conid]
-    if wp.static(reset is not None):
-      if worldid >= 0:
-        if not reset_in[worldid]:
-          return
 
     contact_dist_out[conid] = 0.0
     contact_pos_out[conid] = wp.vec3(0.0)
@@ -2679,27 +2971,198 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
   else:
     raise ValueError(f"reset must be None or a wp.array, got {type(reset)}.")
 
-  wp.launch(reset_xfrc_applied, dim=(d.nworld, m.nbody, 6), inputs=[reset_input], outputs=[d.xfrc_applied])
+  # Set mocap_pos/quat = body_pos/quat for mocap bodies, zero xfrc_applied
   wp.launch(
-    reset_M,
-    dim=(d.nworld, d.M.shape[1]),
-    inputs=[reset_input],
-    outputs=[d.M],
-  )
-
-  # set mocap_pos/quat = body_pos/quat for mocap bodies
-  wp.launch(
-    reset_mocap,
+    reset_body_state,
     dim=(d.nworld, m.nbody),
     inputs=[m.body_mocapid, m.body_pos, m.body_quat, reset_input],
-    outputs=[d.mocap_pos, d.mocap_quat],
+    outputs=[d.xfrc_applied, d.mocap_pos, d.mocap_quat],
   )
 
-  # clear contacts
   wp.launch(
-    reset_contact,
+    reset_sleep,
+    dim=(d.nworld, max(m.ntree, m.nbody, m.nv)),
+    inputs=[m.nv, m.nbody, m.ntree, m.body_mocapid, m.body_treeid, types.MJ_MINAWAKE, reset_input],
+    outputs=[
+      d.tree_asleep,
+      d.tree_awake,
+      d.body_awake,
+      d.body_awake_ind,
+      d.dof_awake_ind,
+    ],
+  )
+
+  wp.launch(
+    reset_state_and_counters_nworld,
+    dim=d.nworld,
+    inputs=[
+      m.nq,
+      m.nv,
+      m.nu,
+      m.na,
+      m.nbody,
+      m.ntree,
+      m.neq,
+      m.nuserdata,
+      m.qpos0,
+      m.eq_active0,
+      reset_input,
+    ],
+    outputs=[
+      d.solver_niter,
+      d.ne,
+      d.nf,
+      d.nl,
+      d.nefc,
+      d.nisland,
+      d.nidof,
+      d.ntree_awake,
+      d.nbody_awake,
+      d.nv_awake,
+      d.time,
+      d.energy,
+      d.qpos,
+      d.qvel,
+      d.act,
+      d.ctrl,
+      d.qfrc_applied,
+      d.eq_active,
+      d.userdata,
+      d.ncdof,
+      d.nacon,
+      d.ncollision,
+      d.overflow,
+      d.efc.jtdaj_nblock,
+    ],
+  )
+
+  if m.nhistory > 0:
+    history.reset_history(m, d, reset=reset_input)
+
+  if sleep_enabled:
+    sleep.update_sleep(m, d)
+
+  # Reset all dependent / derived fields across all worlds.
+  wp.launch(
+    reset_nv_arrays,
+    dim=(d.nworld, m.nv),
+    inputs=[],
+    outputs=[
+      d.qacc_warmstart,
+      d.qacc,
+      d.cdof,
+      d.qLDiagInv,
+      d.cdof_dot,
+      d.qfrc_bias,
+      d.qfrc_spring,
+      d.qfrc_damper,
+      d.qfrc_gravcomp,
+      d.qfrc_fluid,
+      d.qfrc_adhesion,
+      d.qfrc_passive,
+      d.qfrc_actuator,
+      d.qfrc_smooth,
+      d.qacc_smooth,
+      d.qfrc_constraint,
+      d.qfrc_inverse,
+      d.efc.Ma,
+      d.dof_island,
+      d.map_dof2idof,
+      d.map_idof2dof,
+      d.dof_islandid,
+      d.dof_cdof,
+    ],
+  )
+
+  wp.launch(
+    reset_nbody_arrays,
+    dim=(d.nworld, m.nbody),
+    inputs=[],
+    outputs=[
+      d.xpos,
+      d.xipos,
+      d.subtree_com,
+      d.cinert,
+      d.crb,
+      d.cvel,
+      d.subtree_linvel,
+      d.subtree_angmom,
+      d.cacc,
+      d.cfrc_int,
+      d.cfrc_ext,
+    ],
+  )
+
+  wp.launch(
+    reset_tree_island_arrays,
+    dim=(d.nworld, m.ntree),
+    inputs=[],
+    outputs=[
+      d.tree_island,
+      d.island_dofadr,
+      d.island_idofadr,
+      d.island_nv,
+      d.island_nefc,
+      d.island_ne,
+      d.island_nf,
+      d.island_iefcadr,
+    ],
+  )
+
+  max_inertia = max(d.M.shape[1], d.qLD.shape[1], d.qLU.shape[1])
+  wp.launch(
+    reset_inertia_matrices,
+    dim=(d.nworld, max_inertia),
+    inputs=[],
+    outputs=[d.M, d.qLD, d.qLU],
+  )
+
+  wp.launch(
+    reset_efc_arrays,
+    dim=(d.nworld, d.efc.D.shape[1]),
+    inputs=[d.njmax],
+    outputs=[
+      d.efc.type,
+      d.efc.id,
+      d.efc.jtdaj_adr,
+      d.efc.jtdaj_nrow,
+      d.efc.pos,
+      d.efc.margin,
+      d.efc.D,
+      d.efc.vel,
+      d.efc.aref,
+      d.efc.frictionloss,
+      d.efc.force,
+      d.efc.state,
+      d.efc.island,
+      d.efc.Jqvel,
+      d.map_efc2iefc,
+      d.map_iefc2efc,
+      d.efc_islandid,
+      d.efc.J_rownnz,
+      d.efc.J_rowadr,
+    ],
+  )
+
+  if d.efc.J_rownnz.shape[1] > 0:
+    wp.launch(
+      reset_efc_sparse_J,
+      dim=(d.nworld, d.efc.J.shape[1], d.efc.J.shape[2]),
+      inputs=[],
+      outputs=[d.efc.J, d.efc.J_colind],
+    )
+  else:
+    wp.launch(
+      reset_efc_dense_J,
+      dim=(d.nworld, d.efc.J.shape[1], d.efc.J.shape[2]),
+      inputs=[],
+      outputs=[d.efc.J],
+    )
+
+  wp.launch(
+    reset_contact_all,
     dim=d.naconmax,
-    inputs=[d.nacon, reset_input, d.contact.efc_address.shape[1]],
+    inputs=[d.contact.efc_address.shape[1]],
     outputs=[
       d.contact.dist,
       d.contact.pos,
@@ -2722,69 +3185,92 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
     ],
   )
 
-  wp.launch(
-    reset_sleep,
-    dim=(d.nworld, max(m.ntree, m.nbody, m.nv)),
-    inputs=[m.nv, m.nbody, m.ntree, m.body_mocapid, m.body_treeid, types.MJ_MINAWAKE, reset_input],
-    outputs=[
-      d.tree_asleep,
-      d.tree_awake,
-      d.body_awake,
-      d.body_awake_ind,
-      d.dof_awake_ind,
-    ],
+  max_actuator_tendon = max(
+    m.na,
+    m.nsensordata,
+    m.nu,
+    d.moment_colind.shape[1],
+    m.ntendon,
+    d.ten_J.shape[1],
+    m.nwrap,
   )
-
   wp.launch(
-    reset_nworld,
-    dim=d.nworld,
-    inputs=[
-      m.nq,
-      m.nv,
-      m.nu,
-      m.na,
-      m.nbody,
-      m.ntree,
-      m.neq,
-      m.nuserdata,
-      m.nsensordata,
-      m.qpos0,
-      m.eq_active0,
-      d.nworld,
-      reset_input,
-    ],
+    reset_actuator_tendon_sensor_arrays,
+    dim=(d.nworld, max_actuator_tendon),
+    inputs=[m.nu, m.na, m.ntendon, m.nwrap, m.nsensordata],
     outputs=[
-      d.solver_niter,
-      d.ne,
-      d.nf,
-      d.nl,
-      d.nefc,
-      d.ntree_awake,
-      d.nbody_awake,
-      d.nv_awake,
-      d.time,
-      d.energy,
-      d.qpos,
-      d.qvel,
-      d.act,
-      d.qacc_warmstart,
-      d.ctrl,
-      d.qfrc_applied,
-      d.eq_active,
-      d.qacc,
       d.act_dot,
-      d.userdata,
       d.sensordata,
-      d.nacon,
-      d.overflow,
+      d.ten_wrapadr,
+      d.ten_wrapnum,
+      d.ten_J,
+      d.ten_length,
+      d.wrap_obj,
+      d.wrap_xpos,
+      d.actuator_length,
+      d.moment_rownnz,
+      d.moment_rowadr,
+      d.moment_colind,
+      d.actuator_moment,
+      d.ten_velocity,
+      d.actuator_velocity,
+      d.actuator_force,
     ],
   )
 
-  if m.nhistory > 0:
-    history.reset_history(m, d, reset=reset_input)
+  if d.cMa.shape[0] > 0:
+    wp.launch(
+      reset_compact_vector_arrays,
+      dim=(d.nworld, d.nvmax_pad),
+      inputs=[],
+      outputs=[
+        d.cdof_dof,
+        d.crhs,
+        d.cx,
+        d.cMa,
+        d.cqfrc_smooth,
+        d.cqacc_smooth,
+        d.cqacc_warmstart,
+        d.cqacc,
+        d.cqfrc_constraint,
+      ],
+    )
+    wp.launch(
+      reset_compact_matrix_arrays,
+      dim=(d.nworld, d.nvmax_pad, d.nvmax_pad),
+      inputs=[],
+      outputs=[d.cM, d.cqLD],
+    )
+    if d.cJ.shape[0] > 0:
+      wp.launch(
+        reset_compact_J,
+        dim=(d.nworld, d.njmax_pad, d.nvmax_pad),
+        inputs=[],
+        outputs=[d.cJ],
+      )
 
-  if sleep_enabled:
-    sleep.update_sleep(m, d)
+  if m.nflex > 0:
+    max_flex = max(m.nflexedge, d.flexedge_J.shape[1], m.nflexvert, m.nflexnode, m.nflex)
+    wp.launch(
+      reset_flex_arrays,
+      dim=(d.nworld, max_flex),
+      inputs=[m.nflex, m.nflexnode, m.nflexvert, m.nflexedge],
+      outputs=[
+        d.flexvert_xpos,
+        d.flexedge_J,
+        d.flexedge_length,
+        d.flexedge_velocity,
+        d.flex_aabb_min,
+        d.flex_aabb_max,
+        d.flexnode_xpos,
+      ],
+    )
+    wp.launch(
+      reset_flex_face_arrays,
+      dim=(d.nworld, m.nflexface),
+      inputs=[],
+      outputs=[d.face_xpos, d.face_quat],
+    )
 
 
 def reset_data_keyframe(m: types.Model, d: types.Data, key: int | wp.array):
