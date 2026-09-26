@@ -1358,6 +1358,58 @@ class SensorTest(parameterized.TestCase):
     mjw.sensor_acc(m, d, skip_rne_postconstraint=True)
     self.assertFalse(d.cacc.numpy().any())
 
+  @parameterized.parameters(1, 2)
+  def test_camprojection_depth_guard(self, nworld):
+    """Tests camprojection depth guard at zero, near-zero, and normal depth."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <camera name="cam" pos="0 0 0"/>
+          <body name="body" pos="0 0 0">
+            <joint name="slide_x" type="slide" axis="1 0 0"/>
+            <geom type="sphere" size="0.01"/>
+            <site name="site_zero" pos="0.1 0 0"/>
+            <site name="site_near_neg" pos="0.1 0 1e-16"/>
+            <site name="site_near_pos" pos="0.1 0 -1e-16"/>
+            <site name="site_normal" pos="0.1 0 -1"/>
+          </body>
+        </worldbody>
+        <sensor>
+          <camprojection camera="cam" site="site_zero"/>
+          <camprojection camera="cam" site="site_near_neg"/>
+          <camprojection camera="cam" site="site_near_pos"/>
+          <camprojection camera="cam" site="site_normal"/>
+        </sensor>
+      </mujoco>
+      """,
+      nworld=nworld,
+    )
+
+    mjds = [mjd]
+    if nworld == 2:
+      mjd1 = mujoco.MjData(mjm)
+      qpos = d.qpos.numpy()
+      qpos[1] += 0.05
+      d.qpos.assign(qpos)
+      mjd1.qpos[:] = qpos[1]
+      mujoco.mj_forward(mjm, mjd1)
+      mjds.append(mjd1)
+      mjw.kinematics(m, d)
+      mjw.com_pos(m, d)
+
+    d.sensordata.fill_(wp.inf)
+    mjw.sensor_pos(m, d)
+
+    sensordata = d.sensordata.numpy()
+    self.assertTrue(np.all(np.isfinite(sensordata)))
+
+    for w in range(nworld):
+      _assert_eq(sensordata[w], mjds[w].sensordata, f"camprojection_world_{w}")
+
+    if nworld == 2:
+      self.assertFalse(np.allclose(sensordata[0], sensordata[1]))
+
 
 if __name__ == "__main__":
   wp.init()
