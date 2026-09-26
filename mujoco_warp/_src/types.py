@@ -1506,10 +1506,12 @@ class Model:
                     (excluding limit velocity sensors)
     sensor_limitvel_adr: address for limit velocity sensors
     sensor_acc_adr: addresses for acceleration sensors
+                    (excluding touch, limit force, and tendon actuator force sensors)
+    sensor_stage_pos_adr: addresses for all stage-pos sensors
+    sensor_stage_vel_adr: addresses for all stage-vel sensors
+    sensor_stage_acc_adr: addresses for all stage-acc sensors
     sensor_rangefinder_adr: addresses for rangefinder sensors
     rangefinder_sensor_adr: map sensor id to rangefinder id
-                    (excluding touch sensors)
-                    (excluding limit force sensors)
     sensor_collision_start_adr: address for sensor's first
                                 item in collision
     collision_sensor_adr: map sensor id to collision id      (nsensor,)
@@ -2004,6 +2006,9 @@ class Model:
   sensor_vel_adr: array("nsensor_vel", int)
   sensor_limitvel_adr: array("nsensor_limitvel", int)
   sensor_acc_adr: array("nsensor_acc", int)
+  sensor_stage_pos_adr: array("nsensor_stage_pos", int)
+  sensor_stage_vel_adr: array("nsensor_stage_vel", int)
+  sensor_stage_acc_adr: array("nsensor_stage_acc", int)
   sensor_rangefinder_adr: array("nrangefinder", int)
   rangefinder_sensor_adr: array("nsensor", int)
   sensor_collision_start_adr: array("nsensor_collision_start_adr", int)

@@ -858,15 +858,18 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
   m.sensor_limitvel_adr = np.nonzero(
     (mjm.sensor_type == mujoco.mjtSensor.mjSENS_JOINTLIMITVEL) | (mjm.sensor_type == mujoco.mjtSensor.mjSENS_TENDONLIMITVEL)
   )[0]
+  acc_excluded_sensors = (
+    mujoco.mjtSensor.mjSENS_TOUCH,
+    mujoco.mjtSensor.mjSENS_JOINTLIMITFRC,
+    mujoco.mjtSensor.mjSENS_TENDONLIMITFRC,
+    mujoco.mjtSensor.mjSENS_TENDONACTFRC,
+  )
   m.sensor_acc_adr = np.nonzero(
-    (mjm.sensor_needstage == mujoco.mjtStage.mjSTAGE_ACC)
-    & (
-      (mjm.sensor_type != mujoco.mjtSensor.mjSENS_TOUCH)
-      | (mjm.sensor_type != mujoco.mjtSensor.mjSENS_JOINTLIMITFRC)
-      | (mjm.sensor_type != mujoco.mjtSensor.mjSENS_TENDONLIMITFRC)
-      | (mjm.sensor_type != mujoco.mjtSensor.mjSENS_TENDONACTFRC)
-    )
+    (mjm.sensor_needstage == mujoco.mjtStage.mjSTAGE_ACC) & ~np.isin(mjm.sensor_type, acc_excluded_sensors)
   )[0]
+  m.sensor_stage_pos_adr = np.nonzero(mjm.sensor_needstage == mujoco.mjtStage.mjSTAGE_POS)[0]
+  m.sensor_stage_vel_adr = np.nonzero(mjm.sensor_needstage == mujoco.mjtStage.mjSTAGE_VEL)[0]
+  m.sensor_stage_acc_adr = np.nonzero(mjm.sensor_needstage == mujoco.mjtStage.mjSTAGE_ACC)[0]
   m.sensor_rangefinder_adr = np.nonzero(mjm.sensor_type == mujoco.mjtSensor.mjSENS_RANGEFINDER)[0]
   m.rangefinder_sensor_adr = np.full(mjm.nsensor, -1)
   m.rangefinder_sensor_adr[m.sensor_rangefinder_adr] = np.arange(len(m.sensor_rangefinder_adr))
@@ -1168,6 +1171,9 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
       "nsensor_vel": len(m.sensor_vel_adr),
       "nsensor_limitvel": len(m.sensor_limitvel_adr),
       "nsensor_acc": len(m.sensor_acc_adr),
+      "nsensor_stage_pos": len(m.sensor_stage_pos_adr),
+      "nsensor_stage_vel": len(m.sensor_stage_vel_adr),
+      "nsensor_stage_acc": len(m.sensor_stage_acc_adr),
       "nsensor_touch": len(m.sensor_touch_adr),
       "nsensor_limitfrc": len(m.sensor_limitfrc_adr),
       "nsensor_tendonactfrc": len(m.sensor_tendonactfrc_adr),
