@@ -641,6 +641,29 @@ def dcmotor_slots(dynprm: types.vec10, gainprm: types.vec10) -> types.vec6i:
 
 
 @wp.func
+def dcmotor_resistance(
+  # Data in:
+  act_in: wp.array2d[float],
+  # In:
+  worldid: int,
+  actadr: int,
+  dynprm: types.vec10,
+  gainprm: types.vec10,
+) -> float:
+  """Compute DC motor winding resistance at operating temperature."""
+  R = gainprm[0]
+  if actadr >= 0 and dynprm[2] > 0.0:
+    slots = dcmotor_slots(dynprm, gainprm)
+    if slots[2] >= 0:
+      T = act_in[worldid, actadr + slots[2]]
+      alpha = gainprm[2]
+      T0 = gainprm[3]
+      Ta = dynprm[4]
+      R *= 1.0 + alpha * (T + Ta - T0)
+  return wp.max(MJ_MINVAL, R)
+
+
+@wp.func
 def lugre_stribeck(velocity: float, F_C: float, F_S: float, v_S: float) -> float:
   ratio = velocity / wp.max(MJ_MINVAL, v_S)
   return F_C + (F_S - F_C) * wp.exp(-ratio * ratio)
