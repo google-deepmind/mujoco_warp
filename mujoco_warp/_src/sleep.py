@@ -98,6 +98,8 @@ def _zero_sleep_counters(
 
 @wp.kernel
 def _update_sleep_trees(
+  # Model:
+  tree_sleep_policy: wp.array2d[int],
   # Data in:
   tree_asleep_in: wp.array2d[int],
   # Data out:
@@ -105,6 +107,10 @@ def _update_sleep_trees(
   tree_awake_out: wp.array2d[int],
 ):
   worldid, treeid = wp.tid()
+  if tree_sleep_policy[worldid % tree_sleep_policy.shape[0], treeid] == SleepPolicy.ALWAYS:
+    tree_awake_out[worldid, treeid] = 0
+    return
+
   is_awake = int(tree_asleep_in[worldid, treeid] < 0)
   tree_awake_out[worldid, treeid] = is_awake
   if is_awake == 1:
@@ -118,6 +124,7 @@ def _update_sleep_bodies(
   body_rootid: wp.array[int],
   body_mocapid: wp.array[int],
   body_treeid: wp.array[int],
+  tree_sleep_policy: wp.array2d[int],
   # Data in:
   tree_awake_in: wp.array2d[int],
   # In:
@@ -140,7 +147,11 @@ def _update_sleep_bodies(
     else:
       state = SleepState.AWAKE if flg_staticawake != 0 else SleepState.STATIC
   else:
-    state = SleepState.AWAKE if tree_awake_in[worldid, tree] == 1 else SleepState.ASLEEP
+    policy = tree_sleep_policy[worldid % tree_sleep_policy.shape[0], tree]
+    if policy == SleepPolicy.ALWAYS:
+      state = SleepState.ASLEEP
+    else:
+      state = SleepState.AWAKE if tree_awake_in[worldid, tree] == 1 else SleepState.ASLEEP
 
   body_awake_out[worldid, bodyid] = state
 
@@ -180,7 +191,7 @@ def update_sleep(m: types.Model, d: types.Data, flg_staticawake: int = 0):
   wp.launch(
     _update_sleep_trees,
     dim=(d.nworld, m.ntree),
-    inputs=[d.tree_asleep],
+    inputs=[m.tree_sleep_policy, d.tree_asleep],
     outputs=[d.ntree_awake, d.tree_awake],
   )
 
@@ -192,6 +203,7 @@ def update_sleep(m: types.Model, d: types.Data, flg_staticawake: int = 0):
       m.body_rootid,
       m.body_mocapid,
       m.body_treeid,
+      m.tree_sleep_policy,
       d.tree_awake,
       flg_staticawake,
     ],
@@ -227,7 +239,7 @@ def update_sleep_trees(m: types.Model, d: types.Data):
   wp.launch(
     _update_sleep_trees,
     dim=(d.nworld, m.ntree),
-    inputs=[d.tree_asleep],
+    inputs=[m.tree_sleep_policy, d.tree_asleep],
     outputs=[d.ntree_awake, d.tree_awake],
   )
 
@@ -236,6 +248,7 @@ def update_sleep_trees(m: types.Model, d: types.Data):
 def _wake_tree(
   # Model:
   ntree: int,
+  tree_sleep_policy: wp.array2d[int],
   # In:
   worldid: int,
   treeid: int,
@@ -245,6 +258,10 @@ def _wake_tree(
 ) -> int:
   """Wakes tree treeid and its associated cycle, returning number of woke trees."""
   if treeid < 0 or treeid >= ntree:
+    return 0
+
+  w_policy = worldid % tree_sleep_policy.shape[0]
+  if tree_sleep_policy[w_policy, treeid] == SleepPolicy.ALWAYS:
     return 0
 
   asleep_val = tree_asleep_out[worldid, treeid]
@@ -260,8 +277,9 @@ def _wake_tree(
     if next_tree < 0 or next_tree >= ntree:
       break
 
-    tree_asleep_out[worldid, current] = wakeval
-    nwoke += 1
+    if tree_sleep_policy[w_policy, current] != SleepPolicy.ALWAYS:
+      tree_asleep_out[worldid, current] = wakeval
+      nwoke += 1
     current = next_tree
     if current == treeid:
       break
@@ -277,7 +295,7 @@ def _tree_can_sleep(
   dof_length: wp.array[float],
   tree_dofadr: wp.array[int],
   tree_dofnum: wp.array[int],
-  tree_sleep_policy: wp.array[int],
+  tree_sleep_policy: wp.array2d[int],
   # Data in:
   qvel_in: wp.array2d[float],
   qfrc_applied_in: wp.array2d[float],
@@ -287,8 +305,8 @@ def _tree_can_sleep(
   treeid: int,
   sleep_tolerance: float,
 ) -> bool:
-  policy = tree_sleep_policy[treeid]
-  if policy == SleepPolicy.AUTO_NEVER:
+  policy = tree_sleep_policy[worldid % tree_sleep_policy.shape[0], treeid]
+  if policy == SleepPolicy.AUTO_NEVER or policy == SleepPolicy.ALWAYS:
     return False
 
   # check xfrc_applied
@@ -330,7 +348,7 @@ def _wake_kernel(
   dof_length: wp.array[float],
   tree_dofadr: wp.array[int],
   tree_dofnum: wp.array[int],
-  tree_sleep_policy: wp.array[int],
+  tree_sleep_policy: wp.array2d[int],
   # Data in:
   qvel_in: wp.array2d[float],
   qfrc_applied_in: wp.array2d[float],
@@ -340,6 +358,9 @@ def _wake_kernel(
   tree_asleep_out: wp.array2d[int],  # kernel_analyzer: ignore
 ):
   worldid, treeid = wp.tid()
+
+  if tree_sleep_policy[worldid % tree_sleep_policy.shape[0], treeid] == SleepPolicy.ALWAYS:
+    return
 
   asleep = int(tree_asleep_out[worldid, treeid] >= 0)
   if asleep == 0:
@@ -360,7 +381,7 @@ def _wake_kernel(
     treeid,
     0.0,  # zero tolerance
   ):
-    _wake_tree(ntree, worldid, treeid, K_AWAKE_VAL, tree_asleep_out)
+    _wake_tree(ntree, tree_sleep_policy, worldid, treeid, K_AWAKE_VAL, tree_asleep_out)
 
 
 @wp.kernel
@@ -368,6 +389,7 @@ def _wake_collision_kernel(
   # Model:
   ntree: int,
   body_treeid: wp.array[int],
+  tree_sleep_policy: wp.array2d[int],
   geom_bodyid: wp.array[int],
   # Data in:
   tree_awake_in: wp.array2d[int],
@@ -408,9 +430,12 @@ def _wake_collision_kernel(
 
   # wake sleeping tree
   sleeping_tree = tree2 if awake1 == 1 else tree1
+  if tree_sleep_policy[worldid % tree_sleep_policy.shape[0], sleeping_tree] == SleepPolicy.ALWAYS:
+    return
+
   wakeval = tree_asleep_out[worldid, tree1] if awake1 == 1 else tree_asleep_out[worldid, tree2]
 
-  _wake_tree(ntree, worldid, sleeping_tree, wakeval, tree_asleep_out)
+  _wake_tree(ntree, tree_sleep_policy, worldid, sleeping_tree, wakeval, tree_asleep_out)
 
 
 @wp.kernel
@@ -420,6 +445,7 @@ def _wake_tendon_kernel(
   ntendon: int,
   body_treeid: wp.array[int],
   jnt_bodyid: wp.array[int],
+  tree_sleep_policy: wp.array2d[int],
   geom_bodyid: wp.array[int],
   site_bodyid: wp.array[int],
   tendon_adr: wp.array[int],
@@ -480,7 +506,7 @@ def _wake_tendon_kernel(
 
         if t >= 0:
           if tree_awake_in[worldid, t] == 0:
-            _wake_tree(ntree, worldid, t, wakeval, tree_asleep_out)
+            _wake_tree(ntree, tree_sleep_policy, worldid, t, wakeval, tree_asleep_out)
 
 
 @wp.func
@@ -537,6 +563,7 @@ def _wake_tendon_trees(
   ntree: int,
   body_treeid: wp.array[int],
   jnt_bodyid: wp.array[int],
+  tree_sleep_policy: wp.array2d[int],
   geom_bodyid: wp.array[int],
   site_bodyid: wp.array[int],
   tendon_adr: wp.array[int],
@@ -572,7 +599,7 @@ def _wake_tendon_trees(
 
     if t >= 0:
       if tree_awake_in[worldid, t] == 0:
-        _wake_tree(ntree, worldid, t, wakeval, tree_asleep_out)
+        _wake_tree(ntree, tree_sleep_policy, worldid, t, wakeval, tree_asleep_out)
 
 
 @wp.kernel
@@ -582,6 +609,7 @@ def _wake_equality_kernel(
   neq: int,
   body_treeid: wp.array[int],
   jnt_bodyid: wp.array[int],
+  tree_sleep_policy: wp.array2d[int],
   geom_bodyid: wp.array[int],
   site_bodyid: wp.array[int],
   eq_type: wp.array[int],
@@ -622,6 +650,12 @@ def _wake_equality_kernel(
       tree1 = body_treeid[jnt_bodyid[id1]] if id1 >= 0 else -1
       tree2 = body_treeid[jnt_bodyid[id2]] if id2 >= 0 else -1
 
+    w_policy = worldid % tree_sleep_policy.shape[0]
+    if (tree1 >= 0 and tree_sleep_policy[w_policy, tree1] == SleepPolicy.ALWAYS) or (
+      tree2 >= 0 and tree_sleep_policy[w_policy, tree2] == SleepPolicy.ALWAYS
+    ):
+      return
+
     s1 = tree_awake_in[worldid, tree1] if tree1 >= 0 else SleepState.STATIC
     s2 = tree_awake_in[worldid, tree2] if tree2 >= 0 else SleepState.STATIC
 
@@ -636,11 +670,11 @@ def _wake_equality_kernel(
       cycle1 = _sleep_cycle(tree_asleep_out, ntree, worldid, tree1)
       cycle2 = _sleep_cycle(tree_asleep_out, ntree, worldid, tree2)
       if cycle1 != cycle2:
-        _wake_tree(ntree, worldid, tree1, K_AWAKE_VAL, tree_asleep_out)
-        _wake_tree(ntree, worldid, tree2, K_AWAKE_VAL, tree_asleep_out)
+        _wake_tree(ntree, tree_sleep_policy, worldid, tree1, K_AWAKE_VAL, tree_asleep_out)
+        _wake_tree(ntree, tree_sleep_policy, worldid, tree2, K_AWAKE_VAL, tree_asleep_out)
     else:
       sleeping_tree = tree1 if s1 == SleepState.ASLEEP else tree2
-      _wake_tree(ntree, worldid, sleeping_tree, K_AWAKE_VAL, tree_asleep_out)
+      _wake_tree(ntree, tree_sleep_policy, worldid, sleeping_tree, K_AWAKE_VAL, tree_asleep_out)
 
   elif eqtype == EqType.TENDON:
     ten1 = id1
@@ -685,6 +719,7 @@ def _wake_equality_kernel(
         ntree,
         body_treeid,
         jnt_bodyid,
+        tree_sleep_policy,
         geom_bodyid,
         site_bodyid,
         tendon_adr,
@@ -701,6 +736,7 @@ def _wake_equality_kernel(
         ntree,
         body_treeid,
         jnt_bodyid,
+        tree_sleep_policy,
         geom_bodyid,
         site_bodyid,
         tendon_adr,
@@ -749,6 +785,7 @@ def wake_collision(m: types.Model, d: types.Data):
     inputs=[
       m.ntree,
       m.body_treeid,
+      m.tree_sleep_policy,
       m.geom_bodyid,
       d.tree_awake,
       d.contact.geom,
@@ -773,6 +810,7 @@ def wake_tendon(m: types.Model, d: types.Data):
       m.ntendon,
       m.body_treeid,
       m.jnt_bodyid,
+      m.tree_sleep_policy,
       m.geom_bodyid,
       m.site_bodyid,
       m.tendon_adr,
@@ -803,6 +841,7 @@ def wake_equality(m: types.Model, d: types.Data):
       m.neq,
       m.body_treeid,
       m.jnt_bodyid,
+      m.tree_sleep_policy,
       m.geom_bodyid,
       m.site_bodyid,
       m.eq_type,
@@ -828,7 +867,7 @@ def _sweep_awake_trees(  # kernel_analyzer: ignore
   dof_length: wp.array[float],
   tree_dofadr: wp.array[int],
   tree_dofnum: wp.array[int],
-  tree_sleep_policy: wp.array[int],
+  tree_sleep_policy: wp.array2d[int],
   # Data in:
   qvel_in: wp.array2d[float],
   qfrc_applied_in: wp.array2d[float],
@@ -839,6 +878,9 @@ def _sweep_awake_trees(  # kernel_analyzer: ignore
   tree_asleep_out: wp.array2d[int],  # kernel_analyzer: ignore
 ):
   worldid, treeid = wp.tid()
+  if tree_sleep_policy[worldid % tree_sleep_policy.shape[0], treeid] == SleepPolicy.ALWAYS:
+    return
+
   sleep_tolerance = opt_sleep_tolerance[worldid % opt_sleep_tolerance.shape[0]]
   as_val = tree_asleep_out[worldid, treeid]
   if as_val >= 0:

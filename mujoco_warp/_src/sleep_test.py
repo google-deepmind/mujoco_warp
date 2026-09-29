@@ -445,6 +445,7 @@ class SleepTest(parameterized.TestCase):
     def _test_wake_tree_kernel(
       # Model:
       ntree: int,
+      tree_sleep_policy: wp.array2d[int],
       # In:
       worldid: int,
       target_tree: int,
@@ -454,20 +455,21 @@ class SleepTest(parameterized.TestCase):
       # Out:
       woke_count_out: wp.array[int],
     ):
-      woke_count_out[0] = sleep._wake_tree(ntree, worldid, target_tree, wakeval, tree_asleep_out)
+      woke_count_out[0] = sleep._wake_tree(ntree, tree_sleep_policy, worldid, target_tree, wakeval, tree_asleep_out)
 
     k_awake = sleep.K_AWAKE_VAL
 
     # Setup array: shape (1, 4)
     asleep_init = np.array([[k_awake, 2, 1, 3]], dtype=np.int32)
     tree_asleep = wp.array(asleep_init, dtype=int)
+    tree_sleep_policy = wp.zeros((1, 4), dtype=int)
     woke_count = wp.zeros((1,), dtype=int)
 
     # Launch kernel to execute the wp.func on device
     wp.launch(
       _test_wake_tree_kernel,
       dim=1,
-      inputs=[4, 0, 0, k_awake],
+      inputs=[4, tree_sleep_policy, 0, 0, k_awake],
       outputs=[tree_asleep, woke_count],
     )
     self.assertEqual(woke_count.numpy()[0], 0)
@@ -477,7 +479,7 @@ class SleepTest(parameterized.TestCase):
     wp.launch(
       _test_wake_tree_kernel,
       dim=1,
-      inputs=[4, 0, 1, k_awake],
+      inputs=[4, tree_sleep_policy, 0, 1, k_awake],
       outputs=[tree_asleep, woke_count],
     )
     self.assertEqual(woke_count.numpy()[0], 2)
@@ -487,7 +489,7 @@ class SleepTest(parameterized.TestCase):
     wp.launch(
       _test_wake_tree_kernel,
       dim=1,
-      inputs=[4, 0, 3, k_awake],
+      inputs=[4, tree_sleep_policy, 0, 3, k_awake],
       outputs=[tree_asleep, woke_count],
     )
     self.assertEqual(woke_count.numpy()[0], 1)
@@ -499,23 +501,25 @@ class SleepTest(parameterized.TestCase):
     @wp.kernel(module="unique", enable_backward=False)
     def _test_wake_tree_kernel(
       ntree: int,
+      tree_sleep_policy: wp.array2d[int],
       worldid: int,
       target_tree: int,
       wakeval: int,
       tree_asleep_out: wp.array2d[int],
       woke_count_out: wp.array[int],
     ):
-      woke_count_out[0] = sleep._wake_tree(ntree, worldid, target_tree, wakeval, tree_asleep_out)
+      woke_count_out[0] = sleep._wake_tree(ntree, tree_sleep_policy, worldid, target_tree, wakeval, tree_asleep_out)
 
     k_awake = sleep.K_AWAKE_VAL
     asleep_init = np.array([[0, 1]], dtype=np.int32)
     tree_asleep = wp.array(asleep_init, dtype=int)
+    tree_sleep_policy = wp.zeros((1, 2), dtype=int)
     woke_count = wp.zeros((1,), dtype=int)
 
     wp.launch(
       _test_wake_tree_kernel,
       dim=1,
-      inputs=[2, 0, -1, k_awake],
+      inputs=[2, tree_sleep_policy, 0, -1, k_awake],
       outputs=[tree_asleep, woke_count],
     )
     self.assertEqual(woke_count.numpy()[0], 0)
@@ -782,7 +786,7 @@ class SleepTest(parameterized.TestCase):
     )
 
     # Policy should be AUTO_NEVER (1)
-    self.assertEqual(m.tree_sleep_policy.numpy()[0], int(types.SleepPolicy.AUTO_NEVER))
+    self.assertEqual(m.tree_sleep_policy.numpy()[0, 0], int(types.SleepPolicy.AUTO_NEVER))
 
     # tree should never sleep
     for _ in range(15):
@@ -929,7 +933,7 @@ _ARM_XML = """
 """
 
 
-class ActiveDofTest(absltest.TestCase):
+class ActiveDofTest(parameterized.TestCase):
   """Tests that the sleep/wake state drives island.update_active_dofs (the active-DOF maps)."""
 
   def test_actuated_tree_seeded(self):
@@ -1057,6 +1061,194 @@ class ActiveDofTest(absltest.TestCase):
     island.update_active_dofs(m, d)
 
     self.assertEqual(d.ncdof.numpy()[0], 4)
+
+  @parameterized.parameters(1, 2)
+  def test_tree_sleep_policy_always(self, nworld):
+    """Verify tree with SleepPolicy.ALWAYS is excluded from active DOFs and stays static."""
+    if nworld == 1:
+      policy_table = np.array(
+        [[int(types.SleepPolicy.AUTO), int(types.SleepPolicy.ALWAYS)]],
+        dtype=np.int32,
+      )
+    else:
+      policy_table = np.array(
+        [
+          [int(types.SleepPolicy.AUTO), int(types.SleepPolicy.ALWAYS)],
+          [int(types.SleepPolicy.ALWAYS), int(types.SleepPolicy.AUTO)],
+        ],
+        dtype=np.int32,
+      )
+
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option sleep_tolerance="0.01">
+          <flag sleep="enable" island="enable"/>
+        </option>
+        <worldbody>
+          <geom type="plane" size="10 10 .1"/>
+          <body name="body0" pos="-1 0 1">
+            <joint name="jnt0" type="slide" axis="0 0 1"/>
+            <geom type="sphere" size=".1" mass="1.0"/>
+          </body>
+          <body name="body1" pos="1 0 1">
+            <joint name="jnt1" type="slide" axis="0 0 1"/>
+            <geom type="sphere" size=".1" mass="1.0"/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=nworld,
+      batch_sizes={"tree_sleep_policy": nworld},
+      nvmax=1,
+    )
+    m.tree_sleep_policy = wp.array(policy_table, dtype=int)
+
+    d.tree_awake.fill_(-1)
+    d.body_awake.fill_(-1)
+    sleep.update_sleep(m, d)
+
+    tree_awake = d.tree_awake.numpy()
+    body_awake = d.body_awake.numpy()
+    np.testing.assert_array_equal(tree_awake[0], [1, 0])
+    self.assertEqual(body_awake[0, 2], SleepState.ASLEEP)
+    if nworld > 1:
+      np.testing.assert_array_equal(tree_awake[1], [0, 1])
+      self.assertEqual(body_awake[1, 1], SleepState.ASLEEP)
+
+    d.qacc.fill_(wp.inf)
+    # Step simulation 10 times
+    for _ in range(10):
+      mjwarp.step(m, d)
+
+    # In world 0: tree 0 fell under gravity, tree 1 stayed at initial position
+    qpos = d.qpos.numpy()
+    qvel = d.qvel.numpy()
+    qacc = d.qacc.numpy()
+    self.assertLess(qpos[0, 0], 0.0)
+    self.assertEqual(qpos[0, 1], 0.0)
+    self.assertNotEqual(qvel[0, 0], 0.0)
+    self.assertEqual(qvel[0, 1], 0.0)
+    self.assertNotEqual(qacc[0, 0], 0.0)
+    self.assertEqual(qacc[0, 1], 0.0)
+
+    # In world 1: tree 1 fell under gravity, tree 0 stayed at initial position
+    if nworld > 1:
+      self.assertEqual(qpos[1, 0], 0.0)
+      self.assertLess(qpos[1, 1], 0.0)
+      self.assertEqual(qvel[1, 0], 0.0)
+      self.assertNotEqual(qvel[1, 1], 0.0)
+      self.assertEqual(qacc[1, 0], 0.0)
+      self.assertNotEqual(qacc[1, 1], 0.0)
+
+  @parameterized.parameters(1, 2)
+  def test_always_wakeup_immunity(self, nworld):
+    """Verify that applied forces and velocities cannot wake up an ALWAYS tree."""
+    policy_table = np.full((nworld, 1), int(types.SleepPolicy.ALWAYS), dtype=np.int32)
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option sleep_tolerance="0.01">
+          <flag sleep="enable" island="enable"/>
+        </option>
+        <worldbody>
+          <geom type="plane" size="10 10 .1"/>
+          <body name="body0" pos="0 0 1">
+            <joint name="jnt0" type="slide" axis="0 0 1"/>
+            <geom type="sphere" size=".1" mass="1.0"/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=nworld,
+      batch_sizes={"tree_sleep_policy": nworld},
+      nvmax=1,
+    )
+    m.tree_sleep_policy = wp.array(policy_table, dtype=int)
+
+    d.tree_awake.fill_(-1)
+    d.body_awake.fill_(-1)
+    sleep.update_sleep(m, d)
+
+    # Attempt to wake by applying generalized force and cartesian wrench
+    qfrc = d.qfrc_applied.numpy()
+    xfrc = d.xfrc_applied.numpy()
+    for w in range(nworld):
+      qfrc[w, 0] = 500.0
+      xfrc[w, 1] = [0.0, 0.0, 500.0, 0.0, 0.0, 0.0]
+    d.qfrc_applied = wp.array(qfrc, dtype=float)
+    d.xfrc_applied = wp.array(xfrc, dtype=wp.spatial_vector)
+
+    sleep.wake(m, d)
+    d.tree_awake.fill_(-1)
+    d.body_awake.fill_(-1)
+    sleep.update_sleep(m, d)
+
+    for w in range(nworld):
+      self.assertEqual(d.tree_awake.numpy()[w, 0], 0)
+      self.assertEqual(d.body_awake.numpy()[w, 1], SleepState.ASLEEP)
+
+    # Step simulation and verify tree never moves
+    d.qacc.fill_(wp.inf)
+    for _ in range(5):
+      mjwarp.step(m, d)
+
+    for w in range(nworld):
+      self.assertEqual(d.qpos.numpy()[w, 0], 0.0)
+      self.assertEqual(d.qvel.numpy()[w, 0], 0.0)
+      self.assertEqual(d.qacc.numpy()[w, 0], 0.0)
+
+  @parameterized.parameters(1, 2)
+  def test_always_collision_culling(self, nworld):
+    """Verify that geoms on ALWAYS bodies are completely culled from collision detection."""
+    policy_table = np.tile([int(types.SleepPolicy.ALWAYS), int(types.SleepPolicy.AUTO)], (nworld, 1))
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option>
+          <flag sleep="enable" island="enable"/>
+        </option>
+        <worldbody>
+          <geom type="plane" size="10 10 .1"/>
+          <!-- Disabled sphere at z=1.0 -->
+          <body name="target" pos="0 0 1">
+            <joint type="free"/>
+            <geom type="sphere" size=".5" mass="1.0"/>
+          </body>
+          <!-- Active falling sphere directly above at z=2.0 -->
+          <body name="dropper" pos="0 0 2">
+            <joint type="free"/>
+            <geom type="sphere" size=".5" mass="1.0"/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=nworld,
+      batch_sizes={"tree_sleep_policy": nworld},
+      nvmax=6,
+    )
+    m.tree_sleep_policy = wp.array(policy_table, dtype=int)
+
+    d.tree_awake.fill_(-1)
+    d.body_awake.fill_(-1)
+    sleep.update_sleep(m, d)
+
+    # Dropper should fall freely straight through the disabled target
+    # With gravity -9.81 m/s^2, in 0.7s (350 steps) it falls through target onto floor (z=0.5)
+    for _ in range(350):
+      mjwarp.step(m, d)
+
+    # Target tree remains at initial position and never woke up
+    qpos = d.qpos.numpy()
+    for w in range(nworld):
+      self.assertEqual(qpos[w, 0], 0.0)
+      self.assertEqual(qpos[w, 1], 0.0)
+      self.assertEqual(qpos[w, 2], 1.0)
+      self.assertEqual(d.tree_awake.numpy()[w, 0], 0)
+      self.assertEqual(d.body_awake.numpy()[w, 1], SleepState.ASLEEP)
+
+      # Dropper fell through target (z=1.0) and landed on the floor (z=0.5)
+      self.assertAlmostEqual(float(qpos[w, 9]), 0.5, delta=0.01)
 
 
 if __name__ == "__main__":
