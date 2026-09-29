@@ -1096,31 +1096,28 @@ def sphere_box(
 
 
 @wp.func
-def capsule_box(
+def capsule_box_witness(
   # In:
   capsule_pos: wp.vec3,
   capsule_axis: wp.vec3,
-  capsule_radius: float,
   capsule_half_length: float,
   box_pos: wp.vec3,
   box_rot: wp.mat33,
   box_size: wp.vec3,
-) -> Tuple[wp.vec2, mat23f, mat23f]:
-  """Core contact geometry calculation for capsule-box collision.
+) -> Tuple[wp.vec2, wp.vec3i]:
+  """Returns the capsule segment coordinate, second-contact offset, and closest feature.
 
   Args:
     capsule_pos: Center position of the capsule.
     capsule_axis: Axis direction of the capsule.
-    capsule_radius: Radius of the capsule.
     capsule_half_length: Half length of the capsule.
     box_pos: Center position of the box.
     box_rot: Rotation matrix of the box.
     box_size: Half-extents of the box along each axis.
 
   Returns:
-    - Vector of contact distances (MJ_MAXVAL for unpopulated contacts).
-    - Matrix of contact positions (one per row).
-    - Matrix of contact normal vectors (one per row).
+    - Primary segment coordinate and second-contact offset (-4 if absent).
+    - Encoded closest-feature type, corner, and edge.
   """
   # Based on the mjc implementation
   boxmatT = wp.transpose(box_rot)
@@ -1265,32 +1262,9 @@ def capsule_box(
         cledge = j  # axis index of closest box edge
         cltype = ct  # encoded collision configuration
 
-  best = wp.float32(0.0)
-
-  p = wp.vec2(pos.x, pos.y)
-  dd = wp.vec2(halfaxis.x, halfaxis.y)
-  s = wp.vec2(box_size[0], box_size[1])
   secondpos = wp.float32(-4.0)
-
-  uu = dd.x * s.y
-  vv = dd.y * s.x
-  w_neg = dd.x * p.y - dd.y * p.x < 0
-
-  best = wp.float32(-1.0)
-
-  ee1 = uu - vv
-  ee2 = uu + vv
-
-  if wp.abs(ee1) > best:
-    best = wp.abs(ee1)
-    c1 = wp.where((ee1 < 0) == w_neg, 0, 3)
-
-  if wp.abs(ee2) > best:
-    best = wp.abs(ee2)
-    c1 = wp.where((ee2 > 0) == w_neg, 1, 2)
-
   if cltype == -4:  # invalid type
-    return wp.vec2(MJ_MAXVAL), mat23f(), mat23f()
+    return wp.vec2(0.0, secondpos), wp.vec3i(-4, 0, 0)
 
   if cltype >= 0 and cltype // 3 != 1:  # closest to a corner of the box
     c1 = axisdir ^ clcorner
@@ -1407,23 +1381,132 @@ def capsule_box(
 
       secondpos *= wp.float32(mul)
 
-  # create sphere in original orientation at first contact point
-  s1_pos_l = pos + halfaxis * bestsegmentpos
-  s1_pos_g = box_rot @ s1_pos_l + box_pos
+  return wp.vec2(bestsegmentpos, secondpos), wp.vec3i(cltype, wp.max(clcorner, 0), wp.max(cledge, 0))
 
-  # collide with sphere using core function
-  dist1, pos1, normal1 = sphere_box(s1_pos_g, capsule_radius, box_pos, box_rot, box_size)
 
-  if secondpos > -3:  # secondpos was modified
-    s2_pos_l = pos + halfaxis * (secondpos + bestsegmentpos)
-    s2_pos_g = box_rot @ s2_pos_l + box_pos
+@wp.func
+def _capsule_box_primary(
+  # In:
+  capsule_pos: wp.vec3,
+  capsule_axis: wp.vec3,
+  capsule_half_length: float,
+  box_pos: wp.vec3,
+  box_rot: wp.mat33,
+  box_size: wp.vec3,
+  feature: wp.vec3i,
+) -> float:
+  """Recomputes the primary segment coordinate with the closest feature fixed."""
+  cltype, clcorner, cledge = feature[0], feature[1], feature[2]
+  if cltype < 0:
+    return wp.where(cltype == -3, -1.0, 1.0)
 
-    # collide with sphere using core function
-    dist2, pos2, normal2 = sphere_box(s2_pos_g, capsule_radius, box_pos, box_rot, box_size)
-  else:
-    dist2 = MJ_MAXVAL
-    pos2 = wp.vec3()
-    normal2 = wp.vec3()
+  s1 = cltype // 3
+  s2 = cltype - 3 * s1
+  if s2 == 0:
+    return -1.0
+  if s2 == 2:
+    return 1.0
+
+  boxmatT = wp.transpose(box_rot)
+  pos = boxmatT @ (capsule_pos - box_pos)
+  halfaxis = (boxmatT @ capsule_axis) * capsule_half_length
+  bx = wp.where(cledge == 0, 0.0, wp.where((clcorner & 1) != 0, box_size[0], -box_size[0]))
+  by = wp.where(cledge == 1, 0.0, wp.where((clcorner & 2) != 0, box_size[1], -box_size[1]))
+  bz = wp.where(cledge == 2, 0.0, wp.where((clcorner & 4) != 0, box_size[2], -box_size[2]))
+  dif = wp.vec3(bx, by, bz) - pos
+  sj = wp.where(cledge == 0, box_size[0], wp.where(cledge == 1, box_size[1], box_size[2]))
+  dj = wp.where(cledge == 0, dif[0], wp.where(cledge == 1, dif[1], dif[2]))
+  hj = wp.where(cledge == 0, halfaxis[0], wp.where(cledge == 1, halfaxis[1], halfaxis[2]))
+  u = -sj * dj
+  v = wp.dot(halfaxis, dif)
+  ma = sj * sj
+  mb = -sj * hj
+  mc = capsule_half_length * capsule_half_length
+  if s1 == 1:
+    return safe_div(ma * v - mb * u, ma * mc - mb * mb)
+  return safe_div(v + wp.where(s1 == 2, -mb, mb), mc)
+
+
+@wp.func
+def _capsule_box_contact(
+  # In:
+  capsule_pos: wp.vec3,
+  capsule_axis: wp.vec3,
+  capsule_radius: float,
+  capsule_half_length: float,
+  box_pos: wp.vec3,
+  box_rot: wp.mat33,
+  box_size: wp.vec3,
+  segment: float,
+) -> Tuple[float, wp.vec3, wp.vec3]:
+  boxmatT = wp.transpose(box_rot)
+  pos = boxmatT @ (capsule_pos - box_pos)
+  halfaxis = (boxmatT @ capsule_axis) * capsule_half_length
+  center = box_rot @ (pos + halfaxis * segment) + box_pos
+  return sphere_box(center, capsule_radius, box_pos, box_rot, box_size)
+
+
+@wp.func
+def capsule_box_from_witness(
+  # In:
+  capsule_pos: wp.vec3,
+  capsule_axis: wp.vec3,
+  capsule_radius: float,
+  capsule_half_length: float,
+  box_pos: wp.vec3,
+  box_rot: wp.mat33,
+  box_size: wp.vec3,
+  slot: int,
+  segment: wp.vec2,
+  feature: wp.vec3i,
+) -> Tuple[float, wp.vec3, wp.vec3]:
+  """Replays one capsule-box contact with the discrete witness fixed."""
+  primary = _capsule_box_primary(capsule_pos, capsule_axis, capsule_half_length, box_pos, box_rot, box_size, feature)
+  return _capsule_box_contact(
+    capsule_pos,
+    capsule_axis,
+    capsule_radius,
+    capsule_half_length,
+    box_pos,
+    box_rot,
+    box_size,
+    primary + wp.where(slot == 0, 0.0, segment[1]),
+  )
+
+
+@wp.func
+def capsule_box(
+  # In:
+  capsule_pos: wp.vec3,
+  capsule_axis: wp.vec3,
+  capsule_radius: float,
+  capsule_half_length: float,
+  box_pos: wp.vec3,
+  box_rot: wp.mat33,
+  box_size: wp.vec3,
+) -> Tuple[wp.vec2, mat23f, mat23f]:
+  """Core contact geometry calculation for capsule-box collision."""
+  segment, feature = capsule_box_witness(capsule_pos, capsule_axis, capsule_half_length, box_pos, box_rot, box_size)
+  if feature[0] == -4:
+    return wp.vec2(MJ_MAXVAL), mat23f(), mat23f()
+
+  dist1, pos1, normal1 = _capsule_box_contact(
+    capsule_pos, capsule_axis, capsule_radius, capsule_half_length, box_pos, box_rot, box_size, segment[0]
+  )
+  dist2 = float(MJ_MAXVAL)
+  pos2 = wp.vec3()
+  normal2 = wp.vec3()
+  if segment[1] > -3.0:
+    dist2, pos2, normal2 = _capsule_box_contact(
+      capsule_pos,
+      capsule_axis,
+      capsule_radius,
+      capsule_half_length,
+      box_pos,
+      box_rot,
+      box_size,
+      segment[0] + segment[1],
+    )
 
   return (
     wp.vec2(dist1, dist2),

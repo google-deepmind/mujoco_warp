@@ -29,6 +29,9 @@ from mujoco_warp._src.types import Data as Data
 # isort: on
 
 
+from mujoco_warp._src.adjoint import backward_context as backward_context
+from mujoco_warp._src.adjoint import create_backward_context as create_backward_context
+from mujoco_warp._src.adjoint import enable_grad as enable_grad
 from mujoco_warp._src.bvh import refit_bvh as refit_bvh
 from mujoco_warp._src.bvh import refit_splat_bvh as refit_splat_bvh
 from mujoco_warp._src.collision_driver import collision as collision
@@ -100,6 +103,7 @@ from mujoco_warp._src.support import jac as jac
 from mujoco_warp._src.support import mul_m as mul_m
 from mujoco_warp._src.support import set_state as set_state
 from mujoco_warp._src.support import xfrc_accumulate as xfrc_accumulate
+from mujoco_warp._src.types import BackwardContext as BackwardContext
 from mujoco_warp._src.types import BiasType as BiasType
 from mujoco_warp._src.types import BroadphaseFilter as BroadphaseFilter
 from mujoco_warp._src.types import BroadphaseType as BroadphaseType
