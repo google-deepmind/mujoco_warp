@@ -909,9 +909,10 @@ class SolverTest(parameterized.TestCase):
 
     if wp.get_device().is_cuda:
       dim_block = (wp.get_device().sm_count * 6 * 256 + m.dof_tri_row.size - 1) // m.dof_tri_row.size
+      nblocks_perblock = (d.naconmax + dim_block - 1) // dim_block
     else:
-      dim_block = d.naconmax
-    nblocks_perblock = (d.naconmax + dim_block - 1) // dim_block
+      dim_block = 1
+      nblocks_perblock = d.naconmax
     wp.launch(
       solver._update_gradient_JTCJ_dense,
       dim=(dim_block, m.dof_tri_row.size),
