@@ -526,11 +526,10 @@ class SolverTest(parameterized.TestCase):
         awake = np.ones((nworld, m.ntree), dtype=int)
         awake[:, 0] = 0
         data.tree_awake.assign(awake)
-      data.qacc.fill_(float("inf"))
-      data.qfrc_constraint.fill_(float("inf"))
-      data.efc.force.fill_(float("inf"))
-      data.efc.state.fill_(-1)
-      data.solver_niter.fill_(-1)
+      for arr in (data.qacc, data.qfrc_constraint, data.efc.force):
+        arr.fill_(wp.inf)
+      for arr in (data.efc.state, data.solver_niter):
+        arr.fill_(-1)
       with mock.patch.object(solver, "efc_threads_per_world", return_value=width):
         solver.solve(m, data)
       if compact:
@@ -538,35 +537,37 @@ class SolverTest(parameterized.TestCase):
         np.testing.assert_array_equal(data.dof_cdof.numpy()[:, 6:], np.tile(np.arange(12), (nworld, 1)))
       results.append(data)
     reference, actual = results
-    np.testing.assert_array_equal(actual.solver_niter.numpy(), reference.solver_niter.numpy())
-    self.assertTrue((actual.solver_niter.numpy() >= 0).all())
+    niter = actual.solver_niter.numpy()
+    np.testing.assert_array_equal(niter, reference.solver_niter.numpy())
+    self.assertTrue((niter >= 0).all())
     if nworld == 2:
       self.assertFalse(np.allclose(*actual.qacc.numpy()))
     for name in ("qacc", "qfrc_constraint"):
-      np.testing.assert_allclose(getattr(actual, name).numpy(), getattr(reference, name).numpy(), atol=5e-3, rtol=5e-3)
-      self.assertTrue(np.isfinite(getattr(actual, name).numpy()).all())
+      value = getattr(actual, name).numpy()
+      np.testing.assert_allclose(value, getattr(reference, name).numpy(), atol=_TOLERANCE, rtol=_TOLERANCE)
+      self.assertTrue(np.isfinite(value).all())
+    force, state = actual.efc.force.numpy(), actual.efc.state.numpy()
+    reference_force, reference_state = reference.efc.force.numpy(), reference.efc.state.numpy()
     for worldid, nefc in enumerate(reference.nefc.numpy()):
-      np.testing.assert_allclose(
-        actual.efc.force.numpy()[worldid, :nefc], reference.efc.force.numpy()[worldid, :nefc], atol=5e-3, rtol=5e-3
-      )
-      np.testing.assert_array_equal(actual.efc.state.numpy()[worldid, :nefc], reference.efc.state.numpy()[worldid, :nefc])
-      self.assertTrue(np.isfinite(actual.efc.force.numpy()[worldid, :nefc]).all())
-      self.assertTrue((actual.efc.state.numpy()[worldid, :nefc] >= 0).all())
+      np.testing.assert_allclose(force[worldid, :nefc], reference_force[worldid, :nefc], atol=_TOLERANCE, rtol=_TOLERANCE)
+      np.testing.assert_array_equal(state[worldid, :nefc], reference_state[worldid, :nefc])
+      self.assertTrue(np.isfinite(force[worldid, :nefc]).all())
+      self.assertTrue((state[worldid, :nefc] >= 0).all())
 
   @parameterized.parameters(32, 64, 128)
   def test_sparse_constraint_gradient_fusion(self, block_dim):
     """Fused evaluation preserves changed, stable, done and exhausted worlds across warps."""
     nworld, nv, njmax = 4, 35, 69
-    ne = wp.array([1] * nworld, dtype=int)
-    nf = wp.array([1] * nworld, dtype=int)
-    nefc = wp.array([njmax] * nworld, dtype=int)
-    rownnz = wp.array(np.ones((nworld, njmax), dtype=int), dtype=int)
+    ne = wp.ones(nworld, dtype=int)
+    nf = wp.ones(nworld, dtype=int)
+    nefc = wp.full(nworld, njmax, dtype=int)
+    rownnz = wp.ones((nworld, njmax), dtype=int)
     rowadr = wp.array(np.tile(np.arange(njmax), (nworld, 1)), dtype=int)
     columns = np.arange(njmax) % nv
     colind = wp.array(np.tile(columns, (nworld, 1, 1)), dtype=int)
-    jacobian = wp.array(np.ones((nworld, 1, njmax)), dtype=float)
-    diagonal = wp.array(np.full((nworld, njmax), 2.0), dtype=float)
-    frictionloss = wp.array(np.ones((nworld, njmax)), dtype=float)
+    jacobian = wp.ones((nworld, 1, njmax), dtype=float)
+    diagonal = wp.full((nworld, njmax), 2.0, dtype=float)
+    frictionloss = wp.ones((nworld, njmax), dtype=float)
     jaref = np.full((nworld, njmax), -1.0)
     jaref[:, 1] = 2.0
     jaref[:, 2::2] = 1.0
@@ -576,20 +577,20 @@ class SolverTest(parameterized.TestCase):
     old_state[0, 1] = types.ConstraintState.LINEARNEG  # force changes without a quadratic flip
     old_state[0, 2:] = types.ConstraintState.SATISFIED
     state = wp.array(old_state, dtype=int)
-    force = wp.array(np.full((nworld, njmax), np.inf), dtype=float)
-    ma = wp.array(np.full((nworld, nv), 3.0), dtype=float)
-    smooth = wp.array(np.ones((nworld, nv)), dtype=float)
+    force = wp.full((nworld, njmax), wp.inf, dtype=float)
+    ma = wp.full((nworld, nv), 3.0, dtype=float)
+    smooth = wp.ones((nworld, nv), dtype=float)
     alpha = wp.array([0.1, 0.5, 0.2, 0.3], dtype=float)
     done = wp.array([False, False, True, False], dtype=bool)
     exhausted = wp.array([False, False, False, True], dtype=bool)
-    qfrc = wp.array(np.full((nworld, nv), 9.0), dtype=float)
-    grad = wp.array(np.full((nworld, nv), 8.0), dtype=float)
+    qfrc = wp.full((nworld, nv), 9.0, dtype=float)
+    grad = wp.full((nworld, nv), 8.0, dtype=float)
     grad_dot = wp.array([np.inf, 14.0, 5.0, np.inf], dtype=float)
     decrement = wp.array([np.inf, 8.0, 6.0, np.inf], dtype=float)
     grad_scale = wp.array([np.inf, 2.0, 7.0, np.inf], dtype=float)
-    changed_ids = wp.array(np.full((nworld, njmax), -1), dtype=int)
-    quad_changed = wp.array([-1] * nworld, dtype=int)
-    changed = wp.array([-1] * nworld, dtype=int)
+    changed_ids = wp.full((nworld, njmax), -1, dtype=int)
+    quad_changed = wp.full(nworld, -1, dtype=int)
+    changed = wp.full(nworld, -1, dtype=int)
     search_unchanged = wp.zeros(nworld, dtype=bool)
 
     wp.launch_tiled(

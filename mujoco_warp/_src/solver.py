@@ -99,8 +99,7 @@ def _create_solver_context(
     search=wp.empty((nworld, nv), dtype=float),
     mv=wp.empty((nworld, nv), dtype=float),
     jv=wp.empty((nworld, njmax), dtype=float),
-    # Only elliptic line search stores per-row quadratic coefficients.
-    quad=wp.empty((nworld, njmax if m.opt.cone == types.ConeType.ELLIPTIC else 0), dtype=wp.vec3),
+    quad=wp.empty((nworld, njmax), dtype=wp.vec3),
     alpha=wp.empty((nworld,), dtype=float),
     grad_scale=wp.empty((nworld,), dtype=float),
     improvement=wp.empty((nworld,), dtype=float),
@@ -2042,21 +2041,9 @@ def _update_constraint_qfrc_gradient_sparse_tiled(nv: int):
       is_equality = efcid < ne
       is_friction = not is_equality and efcid < ne + nf
       frictionloss = efc_frictionloss_in[worldid, efcid] if is_friction else 0.0
-      res = _eval_constraint(
-        is_equality,
-        is_friction,
-        False,
-        ctx_Jaref_in[worldid, efcid],
-        efc_D_in[worldid, efcid],
-        frictionloss,
-        efcid,
-        -1,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-      )
+      Jaref = ctx_Jaref_in[worldid, efcid]
+      D = efc_D_in[worldid, efcid]
+      res = _eval_constraint(is_equality, is_friction, False, Jaref, D, frictionloss, efcid, -1, 0.0, 0.0, 0.0, 0.0, 0.0)
       new_state = int(res[1])
       efc_force_out[worldid, efcid] = res[0]
       efc_state_out[worldid, efcid] = new_state
@@ -3936,8 +3923,6 @@ def _solver_iteration(
     incremental
     and m.is_sparse
     and not compact
-    and not _sparse_compact(ctx)
-    and m.opt.cone == types.ConeType.PYRAMIDAL
     and m.nv <= 50
     # Discrete sleeping needs separate force zeroing before gradient evaluation.
     and not (m.opt.integrator == types.IntegratorType.DISCRETE and (m.opt.enableflags & types.EnableBit.SLEEP))
@@ -4087,7 +4072,9 @@ def init_context(m: types.Model, d: types.Data, ctx: SolverContext | InverseCont
   # if we are only using 1 thread, it makes sense to do more dofs as we can also skip the
   # init kernel. For more than 1 thread, dofs_per_thread is lower for better load balancing.
 
-  if m.is_sparse:
+  sc = _sparse_compact(ctx)
+  sparse = sc or m.is_sparse
+  if sparse:
     # Sparse J has few nonzeros per row, one thread handles them all.
     dofs_per_thread = m.nv
     threads_per_efc = 1
@@ -4101,12 +4088,7 @@ def init_context(m: types.Model, d: types.Data, ctx: SolverContext | InverseCont
   if threads_per_efc > 1:
     ctx.Jaref.zero_()
 
-  sc = _sparse_compact(ctx)
   dj = ctx.compact_d_full if sc else d
-  if sc:
-    dofs_per_thread = m.nv
-    threads_per_efc = 1
-  sparse = sc or m.is_sparse
   efc_stride = efc_threads_per_world(d.nworld, d.njmax, d.qacc.device) if sparse else d.njmax
   wp.launch(
     _solve_init_jaref_kernel(sparse, m.nv, dofs_per_thread, sc),

@@ -15,12 +15,13 @@
 
 """Tests for Warp launch utilities."""
 
-import ast
-from pathlib import Path
+import inspect
 from types import SimpleNamespace
 
 from absl.testing import absltest
 
+from mujoco_warp._src import constraint
+from mujoco_warp._src import solver
 from mujoco_warp._src import warp_util
 
 
@@ -39,27 +40,12 @@ class WarpUtilTest(absltest.TestCase):
 
   def test_sparse_launch_structure(self):
     """Keep one launch-sizing owner and constraint evaluation out of iterative line search."""
-    directory = Path(__file__).parent
-    forbidden = {"WORLD_WARP", "world_warp", "launch_world_warp_enabled"}
-    owners = []
-    for module in ("constraint", "solver", "warp_util"):
-      tree = ast.parse((directory / f"{module}.py").read_text())
-      for node in ast.walk(tree):
-        if isinstance(node, ast.Name):
-          self.assertNotIn(node.id, forbidden)
-        elif isinstance(node, ast.arg):
-          self.assertNotIn(node.arg, forbidden)
-        elif isinstance(node, ast.FunctionDef):
-          self.assertNotIn(node.name, forbidden)
-          if node.name == "efc_threads_per_world":
-            owners.append(module)
-      if module == "solver":
-        for node in tree.body:
-          if isinstance(node, ast.FunctionDef) and node.name in ("_linesearch_iterative_kernel", "_linesearch_iterative"):
-            names = {child.id for child in ast.walk(node) if isinstance(child, ast.Name)}
-            self.assertNotIn("_eval_constraint", names)
-            self.assertNotIn("fuse_constraint_update", names)
-    self.assertEqual(owners, ["warp_util"])
+    self.assertEqual(warp_util.efc_threads_per_world.__module__, warp_util.__name__)
+    for module in (constraint, solver, warp_util):
+      self.assertNotRegex(inspect.getsource(module), r"\b(WORLD_WARP|world_warp|launch_world_warp_enabled)\b")
+      self.assertIs(module.efc_threads_per_world, warp_util.efc_threads_per_world)
+    for function in (solver._linesearch_iterative_kernel, solver._linesearch_iterative):
+      self.assertNotRegex(inspect.getsource(function), r"\b(_eval_constraint|fuse_constraint_update)\b")
 
 
 if __name__ == "__main__":

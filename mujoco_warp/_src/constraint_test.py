@@ -169,7 +169,7 @@ class ConstraintTest(parameterized.TestCase):
   )
   def test_contact_row_stride(self, cone, nworld, jacobian):
     """Active contact rows match MuJoCo across launch widths and heterogeneous worlds."""
-    mjm, mjd, m, d = test_data.fixture(
+    mjm, _, m, d = test_data.fixture(
       xml="""
       <mujoco>
         <option gravity="0 0 0"/>

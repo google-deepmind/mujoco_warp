@@ -3288,9 +3288,8 @@ def _efc_contact_jac_sparse(cone_type: types.ConeType):
       rownnz = efc_J_rownnz_in[worldid, efcid]
 
       Jqvel = float(0.0)
-      nnz = int(0)
 
-      while nnz < rownnz:
+      for nnz in range(rownnz):
         jac1p, jac1r = support.jac_dof(
           body_parentid,
           body_rootid,
@@ -3351,7 +3350,6 @@ def _efc_contact_jac_sparse(cone_type: types.ConeType):
         sparseid = rowadr + nnz
         efc_J_colind_out[worldid, 0, sparseid] = da
         efc_J_out[worldid, 0, sparseid] = J
-        nnz += 1
         Jqvel += J * qvel_in[worldid, da]
 
         # Advance tree pointers and recompute da for next iteration
