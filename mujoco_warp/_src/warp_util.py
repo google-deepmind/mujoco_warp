@@ -167,6 +167,13 @@ def cache_kernel(func):
   return wrapper
 
 
+def efc_threads_per_world(nworld: int, njmax: int, device) -> int:
+  """Size constraint-row launches for four GPU occupancy waves, with at least one warp per world."""
+  if not device.is_cuda:
+    return njmax
+  return max(32, min(njmax, 4 * device.sm_count * 32 // max(1, nworld)))
+
+
 def check_toolkit_driver():
   wp.init()
   if wp.get_device().is_cuda:
