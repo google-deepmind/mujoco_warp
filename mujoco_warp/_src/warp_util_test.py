@@ -17,6 +17,7 @@
 
 import inspect
 from types import SimpleNamespace
+from unittest import mock
 
 from absl.testing import absltest
 
@@ -37,6 +38,19 @@ class WarpUtilTest(absltest.TestCase):
     self.assertEqual(widths[-1], 32)
     self.assertEqual(widths, sorted(widths, reverse=True))
     self.assertGreater(len(set(widths)), 2)
+
+  def test_iterative_efc_threads_per_world(self):
+    """Iterative launches use kernel occupancy while contact launches keep their width."""
+    cpu = SimpleNamespace(is_cuda=False)
+    gpu = SimpleNamespace(is_cuda=True, sm_count=170)
+    kernel = object()
+    with mock.patch.object(warp_util.wp, "get_suggested_block_size", return_value=(640, 340)) as occupancy:
+      self.assertEqual(warp_util.efc_threads_per_world(2048, 384, cpu, kernel), 384)
+      self.assertEqual(warp_util.efc_threads_per_world(2048, 384, gpu), 32)
+      occupancy.assert_not_called()
+      widths = [warp_util.efc_threads_per_world(nworld, 384, gpu, kernel) for nworld in (2048, 4096, 8192)]
+      self.assertEqual(widths, [384, 288, 128])
+      self.assertEqual(occupancy.call_args_list, [mock.call(kernel, gpu)] * 3)
 
   def test_sparse_launch_structure(self):
     """Keep one launch-sizing owner and constraint evaluation out of iterative line search."""

@@ -2274,9 +2274,10 @@ def _update_constraint(
   """Update constraint arrays and generalized forces after each solve iteration."""
   sc = _sparse_compact(ctx)
   sparse = sc or m.is_sparse
-  efc_stride = efc_threads_per_world(d.nworld, d.njmax, d.qacc.device) if sparse else d.njmax
+  kernel = _update_constraint_efc(track_changes)
+  efc_stride = efc_threads_per_world(d.nworld, d.njmax, d.qacc.device, kernel) if sparse else d.njmax
   wp.launch(
-    _update_constraint_efc(track_changes),
+    kernel,
     dim=(d.nworld, efc_stride),
     inputs=[
       m.opt.impratio_invsqrt,
@@ -2311,8 +2312,10 @@ def _update_constraint(
       inputs=[changed, ctx.done],
       outputs=[d.qfrc_constraint],
     )
+    kernel = _update_constraint_init_qfrc_constraint_sparse(sc)
+    efc_stride = efc_threads_per_world(d.nworld, d.njmax, d.qacc.device, kernel)
     wp.launch(
-      _update_constraint_init_qfrc_constraint_sparse(sc),
+      kernel,
       dim=(d.nworld, efc_stride),
       inputs=[
         d.nefc,

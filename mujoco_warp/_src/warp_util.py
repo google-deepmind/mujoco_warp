@@ -167,10 +167,15 @@ def cache_kernel(func):
   return wrapper
 
 
-def efc_threads_per_world(nworld: int, njmax: int, device) -> int:
-  """Target four warps per SM, with at least one warp per world."""
+def efc_threads_per_world(nworld: int, njmax: int, device, kernel: wp.Kernel | None = None) -> int:
+  """Size row launches, using kernel occupancy for iterative solver updates."""
   if not device.is_cuda:
     return njmax
+  if kernel is not None:
+    # Budget six resident waves as converged worlds stop contributing work.
+    block_size, min_grid_size = wp.get_suggested_block_size(kernel, device)
+    warps = 6 * block_size * min_grid_size // 32
+    return max(32, min(njmax, 32 * (warps // max(1, nworld))))
   return max(32, min(njmax, 4 * device.sm_count * 32 // max(1, nworld)))
 
 
