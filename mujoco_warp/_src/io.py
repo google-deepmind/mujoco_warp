@@ -2339,8 +2339,9 @@ def get_data_into(
   contact_worldid = d.contact.worldid.numpy()
   contact_type = d.contact.type.numpy()
   ncon_filter = np.zeros_like(contact_worldid, dtype=bool)
-  is_constraint = (contact_type[:nacon] & types.ContactType.CONSTRAINT) != 0
-  ncon_filter[:nacon] = (contact_worldid[:nacon] == world_id) & is_constraint
+  exported_type = types.ContactType.CONSTRAINT | types.ContactType.PASSIVE
+  is_exported = (contact_type[:nacon] & exported_type) != 0
+  ncon_filter[:nacon] = (contact_worldid[:nacon] == world_id) & is_exported
   ncon = ncon_filter.sum()
 
   if ncon != result.ncon or nefc != result.nefc:
@@ -2481,6 +2482,8 @@ def get_data_into(
   result.contact.adhesion[:ncon] = d.contact.adhesion.numpy()[ncon_filter]
   result.contact.dim[:ncon] = d.contact.dim.numpy()[ncon_filter]
   result.contact.geom[:ncon] = d.contact.geom.numpy()[ncon_filter]
+  is_passive = (contact_type[ncon_filter] & types.ContactType.PASSIVE) != 0
+  result.contact.exclude[:ncon] = np.where(is_passive, 4, 0)
   if mjm.nflex > 0:
     result.contact.flex[:ncon] = d.contact.flex.numpy()[ncon_filter]
     result.contact.elem[:ncon] = d.contact.elem.numpy()[ncon_filter]
