@@ -36,6 +36,11 @@ from mujoco_warp._src.set_const import set_length_range as set_length_range
 
 wp.set_module_options({"default_grid_stride": False})
 
+# MuJoCo contact exclusion flags (mjdata.h):
+# 0: include, 1: in gap, 2: fused, 3: no dofs, 4: passive.
+CONTACT_EXCLUDE_INCLUDE = 0
+CONTACT_EXCLUDE_PASSIVE = 4
+
 
 def _create_array(data: Any, spec, sizes: dict[str, int], batch_size: int = 1) -> wp.array | None:
   """Creates a warp array and populates it with data.
@@ -2169,7 +2174,7 @@ def put_data(
   contact.worldid = wp.array(contact.worldid, dtype=int)
   con_type = np.ones(mjd.ncon, dtype=int)
   if mjd.ncon > 0:
-    con_type[mjd.contact.exclude[: mjd.ncon] == 4] = int(types.ContactType.PASSIVE)
+    con_type[mjd.contact.exclude[: mjd.ncon] == CONTACT_EXCLUDE_PASSIVE] = int(types.ContactType.PASSIVE)
   contact.type = wp.array(
     np.pad(np.tile(con_type, nworld), (0, naconmax - nworld * mjd.ncon), constant_values=1),
     dtype=int,
@@ -2483,7 +2488,7 @@ def get_data_into(
   result.contact.dim[:ncon] = d.contact.dim.numpy()[ncon_filter]
   result.contact.geom[:ncon] = d.contact.geom.numpy()[ncon_filter]
   is_passive = (contact_type[ncon_filter] & types.ContactType.PASSIVE) != 0
-  result.contact.exclude[:ncon] = np.where(is_passive, 4, 0)
+  result.contact.exclude[:ncon] = np.where(is_passive, CONTACT_EXCLUDE_PASSIVE, CONTACT_EXCLUDE_INCLUDE)
   if mjm.nflex > 0:
     result.contact.flex[:ncon] = d.contact.flex.numpy()[ncon_filter]
     result.contact.elem[:ncon] = d.contact.elem.numpy()[ncon_filter]

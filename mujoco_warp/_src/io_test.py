@@ -761,7 +761,7 @@ class IOTest(parameterized.TestCase):
 
     if nworld == 2:
       qpos = d.qpos.numpy()
-      qpos[1, 2] += 1.0
+      qpos[1, 0] += 0.5
       d.qpos.assign(qpos)
 
     d.nacon.fill_(-1)
@@ -784,9 +784,13 @@ class IOTest(parameterized.TestCase):
       contact_filter = (contact_worldid[:nacon] == world_id) & ((contact_type[:nacon] & exported_type) != 0)
       expected_type = contact_type[:nacon][contact_filter]
       is_passive = (expected_type & types.ContactType.PASSIVE) != 0
+      is_constraint = ~is_passive
       self.assertGreater(is_passive.sum(), 0)
+      self.assertGreater(is_constraint.sum(), 0)
 
       result = mujoco.MjData(mjm)
+      mjwarp.get_data_into(result, mjm, d, world_id=world_id)
+      result.contact.exclude.fill(-1)
       mjwarp.get_data_into(result, mjm, d, world_id=world_id)
       exported_counts.append(result.ncon)
 
@@ -794,8 +798,10 @@ class IOTest(parameterized.TestCase):
       _assert_eq(result.contact.dist[: result.ncon], contact_dist[:nacon][contact_filter], f"contact_dist_world_{world_id}")
       _assert_eq(result.contact.geom[: result.ncon], contact_geom[:nacon][contact_filter], f"contact_geom_world_{world_id}")
       _assert_eq(result.contact.flex[: result.ncon], contact_flex[:nacon][contact_filter], f"contact_flex_world_{world_id}")
-      np.testing.assert_array_equal(result.contact.exclude[: result.ncon][is_passive], 4)
+      np.testing.assert_array_equal(result.contact.exclude[: result.ncon][is_passive], io.CONTACT_EXCLUDE_PASSIVE)
       np.testing.assert_array_equal(result.contact.efc_address[: result.ncon][is_passive], -1)
+      np.testing.assert_array_equal(result.contact.exclude[: result.ncon][is_constraint], io.CONTACT_EXCLUDE_INCLUDE)
+      self.assertTrue(np.all(result.contact.efc_address[: result.ncon][is_constraint] >= 0))
 
     if nworld == 2:
       self.assertNotEqual(exported_counts[0], exported_counts[1])
