@@ -4374,6 +4374,7 @@ def _efc_contact_update(cone_type: types.ConeType, flg_adhesion: bool, is_discre
 
       invweight = body_invweight0[body_invweight0_id, body1][0] + body_invweight0[body_invweight0_id, body2][0]
 
+      invweight_scale = 1.0
       ref = solref_in[conid]
       pos_aref = pos
 
@@ -4385,13 +4386,14 @@ def _efc_contact_update(cone_type: types.ConeType, flg_adhesion: bool, is_discre
           if solreffriction[0] or solreffriction[1]:
             ref = solreffriction
 
-          invweight = invweight * impratio_invsqrt * impratio_invsqrt
+          invweight_scale = impratio_invsqrt * impratio_invsqrt
           friction = friction_in[conid]
 
           if dimid > 1:
             fri0 = friction[0]
             frii = friction[dimid - 1]
-            invweight *= fri0 * fri0 / (frii * frii)
+            fri = fri0 * fri0 / (frii * frii)
+            invweight_scale *= fri
 
           pos_aref = 0.0
       else:
@@ -4437,6 +4439,9 @@ def _efc_contact_update(cone_type: types.ConeType, flg_adhesion: bool, is_discre
 
       if wp.static(IS_ELLIPTIC):
         if dimid > 0:
+          # Preserve elliptic friction ratios after _efc_row floors normal regularization.
+          efc_D_out[worldid, efcid] /= invweight_scale
+
           b_fri = _contact_kbimp(opt_disableflags, timestep, ref, solimp_in[conid], pos, is_discrete)[1]
           f_fri = 1.0 + timestep * b_fri if is_discrete else 1.0
           efc_aref_out[worldid, efcid] = -b_fri * Jqvel / f_fri
@@ -4812,6 +4817,7 @@ def _efc_contact_update_flex(cone_type: types.ConeType, flg_adhesion: bool = Fal
 
     invweight = invweight1 + invweight2
 
+    invweight_scale = 1.0
     ref = solref_in[conid]
     pos_aref = pos
 
@@ -4823,14 +4829,14 @@ def _efc_contact_update_flex(cone_type: types.ConeType, flg_adhesion: bool = Fal
         if solreffriction[0] or solreffriction[1]:
           ref = solreffriction
 
-        invweight = invweight * impratio_invsqrt * impratio_invsqrt
+        invweight_scale = impratio_invsqrt * impratio_invsqrt
         friction = friction_in[conid]
 
         if dimid > 1:
           fri0 = friction[0]
           frii = friction[dimid - 1]
           fri = fri0 * fri0 / (frii * frii)
-          invweight *= fri
+          invweight_scale *= fri
 
         pos_aref = 0.0
     else:
@@ -4876,6 +4882,9 @@ def _efc_contact_update_flex(cone_type: types.ConeType, flg_adhesion: bool = Fal
 
     if wp.static(IS_ELLIPTIC):
       if dimid > 0:
+        # Preserve elliptic friction ratios after _efc_row floors normal regularization.
+        efc_D_out[worldid, efcid] /= invweight_scale
+
         b_fri = _contact_kbimp(opt_disableflags, timestep, ref, solimp_in[conid], pos, is_discrete)[1]
         f_fri = 1.0 + timestep * b_fri if is_discrete else 1.0
         efc_aref_out[worldid, efcid] = -b_fri * Jqvel / f_fri

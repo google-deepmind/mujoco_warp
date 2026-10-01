@@ -901,8 +901,9 @@ class SetConstTest(parameterized.TestCase):
     self.assertEqual(acc0_np.shape, (1, mjm.nu))
     _assert_eq(acc0_np[0], mjm.actuator_acc0, "actuator_acc0")
 
-  def test_set_const_dampratio(self):
-    """Test dampratio resolution for position actuator matches MuJoCo."""
+  @parameterized.parameters(1, 2)
+  def test_set_const_dampratio(self, nworld):
+    """Test dampratio resolution uses operational-space inertia 1 / (J * inv(M) * J')."""
     mjm, mjd, m, d = test_data.fixture(
       xml="""
     <mujoco>
@@ -915,34 +916,75 @@ class SetConstTest(parameterized.TestCase):
             <geom type="capsule" size="0.05" fromto="0 0 0 0.5 0 0" mass="1.0"/>
           </body>
         </body>
+        <body>
+          <joint name="s1" type="slide"/>
+          <geom size=".1" mass="1"/>
+        </body>
+        <body>
+          <joint name="s2" type="slide"/>
+          <geom size=".1" mass="1"/>
+        </body>
       </worldbody>
+      <tendon>
+        <fixed name="t1" armature="3">
+          <joint joint="s1" coef="1"/>
+          <joint joint="s2" coef="1e-6"/>
+        </fixed>
+      </tendon>
       <actuator>
         <position joint="j1" kp="100" dampratio="1.0"/>
         <position joint="j2" kp="50" dampratio="0.5"/>
+        <position tendon="t1" kp="9" dampratio="1.0"/>
       </actuator>
     </mujoco>
-    """
+    """,
+      nworld=nworld,
+      batch_sizes={"actuator_biasprm": nworld, "dof_armature": nworld},
     )
 
-    # Set new dampratio values (positive biasprm[2]) to exercise resolution
-    new_dampratio = [2.0, 0.8]
-    for i in range(mjm.nu):
-      mjm.actuator_biasprm[i, 2] = new_dampratio[i]
-    mujoco.mj_setConst(mjm, mjd)
+    if nworld == 2:
+      armature = m.dof_armature.numpy()
+      armature[1] = [0.5, 0.25, 1.0, 0.0]
+      m.dof_armature.assign(armature)
 
+    # Set positive biasprm[2] (dampratio) per world to exercise resolution
+    dampratios = np.array([[2.0, 0.8, 1.0], [1.5, 1.2, 0.5]])[:nworld]
     bp = m.actuator_biasprm.numpy()
-    for i in range(mjm.nu):
-      bp[0, i, 2] = new_dampratio[i]
-    wp.copy(m.actuator_biasprm, wp.array(bp, dtype=m.actuator_biasprm.dtype))
+    bp[:, :, 2] = dampratios
+    m.actuator_biasprm.assign(bp)
+
     mjwarp.set_const(m, d)
 
     biasprm_np = m.actuator_biasprm.numpy()
-    for i in range(mjm.nu):
-      _assert_eq(
-        biasprm_np[0, i, 2],
-        mjm.actuator_biasprm[i, 2],
-        f"actuator_biasprm[{i}][2]",
-      )
+    armature_np = m.dof_armature.numpy()
+    for w in range(nworld):
+      mjm.dof_armature[:] = armature_np[w]
+      mujoco.mj_setConst(mjm, mjd)
+      for i in range(mjm.nu):
+        moment = np.zeros((1, mjm.nv))
+        mujoco.mju_sparse2dense(
+          moment,
+          mjd.actuator_moment,
+          mjd.moment_rownnz[i : i + 1],
+          mjd.moment_rowadr[i : i + 1],
+          mjd.moment_colind,
+        )
+        tmp = np.zeros((1, mjm.nv))
+        mujoco.mj_solveM(mjm, mjd, tmp, moment)
+        ref_mass = 1.0 / np.dot(moment[0], tmp[0])
+        kp = mjm.actuator_gainprm[i, 0]
+        expected = -dampratios[w, i] * 2.0 * np.sqrt(kp * ref_mass)
+        _assert_eq(
+          biasprm_np[w, i, 2],
+          expected,
+          f"actuator_biasprm[{w}][{i}][2]",
+        )
+      # t1: mass = (1 + dof_armature[2]) + 3 (tendon armature), tiny s2 coef does not blow up
+      expected_t1 = -dampratios[w, 2] * 2.0 * np.sqrt(9.0 * (4.0 + armature_np[w, 2]))
+      _assert_eq(biasprm_np[w, 2, 2], expected_t1, f"tendon_dampratio_world_{w}")
+
+    if nworld == 2:
+      self.assertFalse(np.allclose(biasprm_np[0, :, 2], biasprm_np[1, :, 2]))
 
   def test_set_const_dampratio_explicit_kv(self):
     """Test actuator with explicit negative kv is NOT modified by dampratio."""
