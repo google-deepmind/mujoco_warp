@@ -15,51 +15,56 @@
 
 """Tests for Warp launch utilities."""
 
-import inspect
-from types import SimpleNamespace
 from unittest import mock
 
+import warp as wp
 from absl.testing import absltest
+from absl.testing import parameterized
 
-from mujoco_warp._src import constraint
-from mujoco_warp._src import solver
 from mujoco_warp._src import warp_util
 
 
-class WarpUtilTest(absltest.TestCase):
-  def test_efc_threads_per_world(self):
-    """Launch widths span capacity to one warp without a separate kernel variant."""
-    cpu = SimpleNamespace(is_cuda=False)
-    gpu = SimpleNamespace(is_cuda=True, sm_count=128)
-    for capacity in (0, 16, 384):
-      self.assertEqual(warp_util.efc_threads_per_world(2048, capacity, cpu), capacity)
-    widths = [warp_util.efc_threads_per_world(nworld, 384, gpu) for nworld in (1, 128, 256, 512, 2048)]
-    self.assertEqual(widths[0], 384)
-    self.assertEqual(widths[-1], 32)
-    self.assertEqual(widths, sorted(widths, reverse=True))
-    self.assertGreater(len(set(widths)), 2)
-
-  def test_iterative_efc_threads_per_world(self):
-    """Iterative launches use kernel occupancy while contact launches keep their width."""
-    cpu = SimpleNamespace(is_cuda=False)
-    gpu = SimpleNamespace(is_cuda=True, sm_count=170)
-    kernel = object()
-    with mock.patch.object(warp_util.wp, "get_suggested_block_size", return_value=(640, 340)) as occupancy:
-      self.assertEqual(warp_util.efc_threads_per_world(2048, 384, cpu, kernel), 384)
-      self.assertEqual(warp_util.efc_threads_per_world(2048, 384, gpu), 32)
+class WarpUtilTest(parameterized.TestCase):
+  def test_efc_threads_per_world_cpu(self):
+    """CPU launches use capacity without querying CUDA occupancy."""
+    device = wp.get_device("cpu")
+    kernel = mock.Mock(spec=wp.Kernel)
+    with mock.patch.object(wp, "get_suggested_block_size") as occupancy:
+      for capacity in (0, 16, 32, 65, 384):
+        self.assertEqual(warp_util.efc_threads_per_world(2048, capacity, device, kernel), capacity)
       occupancy.assert_not_called()
-      widths = [warp_util.efc_threads_per_world(nworld, 384, gpu, kernel) for nworld in (2048, 4096, 8192)]
-      self.assertEqual(widths, [384, 288, 128])
-      self.assertEqual(occupancy.call_args_list, [mock.call(kernel, gpu)] * 3)
 
-  def test_sparse_launch_structure(self):
-    """Keep one launch-sizing owner and constraint evaluation out of iterative line search."""
-    self.assertEqual(warp_util.efc_threads_per_world.__module__, warp_util.__name__)
-    for module in (constraint, solver, warp_util):
-      self.assertNotRegex(inspect.getsource(module), r"\b(WORLD_WARP|world_warp|launch_world_warp_enabled)\b")
-      self.assertIs(module.efc_threads_per_world, warp_util.efc_threads_per_world)
-    for function in (solver._linesearch_iterative_kernel, solver._linesearch_iterative):
-      self.assertNotRegex(inspect.getsource(function), r"\b(_eval_constraint|fuse_constraint_update)\b")
+  @parameterized.parameters(0, 1, 16, 31, 32)
+  def test_efc_threads_per_world_small_capacity(self, capacity):
+    """Small and empty row buffers never launch beyond their capacity."""
+    device = wp.get_device()
+    kernel = mock.Mock(spec=wp.Kernel)
+    with mock.patch.object(wp, "get_suggested_block_size") as occupancy:
+      self.assertEqual(warp_util.efc_threads_per_world(2048, capacity, device, kernel), capacity)
+      occupancy.assert_not_called()
+
+  @parameterized.parameters(
+    (1, 384, 6, 384),
+    (512, 385, 6, 384),
+    (2048, 384, 6, 384),
+    (4096, 384, 6, 288),
+    (8192, 384, 6, 128),
+    (8192, 384, 1, 32),
+    (513, 1024, 1, 416),
+    (0, 65, 1, 64),
+  )
+  def test_efc_threads_per_world_cuda(self, nworld, capacity, num_waves, expected):
+    """Kernel occupancy controls whole-warp widths even for uneven batch sizes."""
+    device = wp.get_device()
+    if not device.is_cuda:
+      self.skipTest("CUDA launch sizing")
+    kernel = mock.Mock(spec=wp.Kernel)
+    with mock.patch.object(warp_util.wp, "get_suggested_block_size", return_value=(640, 340)) as occupancy:
+      width = warp_util.efc_threads_per_world(nworld, capacity, device, kernel, num_waves)
+      self.assertEqual(width, expected)
+      self.assertLessEqual(width, capacity)
+      self.assertEqual(width % 32, 0)
+      occupancy.assert_called_once_with(kernel, device)
 
 
 if __name__ == "__main__":

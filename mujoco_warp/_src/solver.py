@@ -1590,12 +1590,10 @@ def _linesearch(m: types.Model, d: types.Data, ctx: SolverContext):
   # mv = M @ search (common to both parallel and iterative)
   _mul_m_compact_aware(m, d, ctx, ctx.mv, ctx.search, skip)
 
-  # Fuse jv computation in-kernel for small nv (iterative only, dense only)
-  # Sparse mode requires pre-computed jv since in-kernel uses dense indexing
-  # the sparse-compact J path reads the full model's sparse J structures;
-  # dense full models keep the gathered dense cJ path
+  # Fuse small dense models, or sparse models with enough CUDA worlds.
+  # Sparse compact solves retain the full model's sparse J traversal.
   sc = _sparse_compact(ctx)
-  fuse_jv = m.nv <= 50 and not sc and (not m.is_sparse or efc_threads_per_world(d.nworld, d.njmax, d.qacc.device) == 32)
+  fuse_jv = m.nv <= 50 and not sc and (not m.is_sparse or (d.qacc.device.is_cuda and d.nworld >= 4 * d.qacc.device.sm_count))
 
   # jv = J @ search (when not fused into iterative kernel)
   if not fuse_jv:
@@ -2021,14 +2019,15 @@ def _update_constraint_qfrc_gradient_sparse_tiled(nv: int):
     ctx_search_unchanged_out: wp.array[bool],
   ):
     worldid, tid = wp.tid()
-    done = ctx_done_in[worldid]
-    if tid == 0:
-      quad_changed_count_out[worldid] = 0
-      state_changed_count_out[worldid] = 0
-      ctx_search_unchanged_out[worldid] = done
-    if done:
+    if ctx_done_in[worldid]:
+      if tid == 0:
+        quad_changed_count_out[worldid] = 0
+        state_changed_count_out[worldid] = 0
+        ctx_search_unchanged_out[worldid] = True
       return
 
+    if tid == 0:
+      quad_changed_count_out[worldid] = 0
     # Counter initialization must precede row atomics in every warp of the block.
     _syncthreads()
     ne = ne_in[worldid]
@@ -3929,7 +3928,8 @@ def _solver_iteration(
     and m.nv <= 50
     # Discrete sleeping needs separate force zeroing before gradient evaluation.
     and not (m.opt.integrator == types.IntegratorType.DISCRETE and (m.opt.enableflags & types.EnableBit.SLEEP))
-    and efc_threads_per_world(d.nworld, d.njmax, d.qacc.device) == 32
+    and d.qacc.device.is_cuda
+    and d.nworld >= 4 * d.qacc.device.sm_count
   )
   _linesearch(m, d, ctx)
 
@@ -3984,7 +3984,7 @@ def _solver_iteration(
         ctx.grad_scale,
         ctx.search_unchanged,
       ],
-      block_dim=m.block_dim.linesearch_iterative,
+      block_dim=m.block_dim.update_constraint_qfrc_gradient_sparse_tiled,
     )
   else:
     _update_constraint(m, d, ctx, track_changes=incremental, stable_fast=incremental)
@@ -4092,9 +4092,10 @@ def init_context(m: types.Model, d: types.Data, ctx: SolverContext | InverseCont
     ctx.Jaref.zero_()
 
   dj = ctx.compact_d_full if sc else d
-  efc_stride = efc_threads_per_world(d.nworld, d.njmax, d.qacc.device) if sparse else d.njmax
+  jaref_kernel = _solve_init_jaref_kernel(sparse, m.nv, dofs_per_thread, sc)
+  efc_stride = efc_threads_per_world(d.nworld, d.njmax, d.qacc.device, jaref_kernel) if sparse else d.njmax
   wp.launch(
-    _solve_init_jaref_kernel(sparse, m.nv, dofs_per_thread, sc),
+    jaref_kernel,
     dim=(d.nworld, efc_stride, threads_per_efc),
     inputs=[
       d.nefc,

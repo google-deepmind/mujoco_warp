@@ -2865,13 +2865,16 @@ def _efc_contact_init(cone_type: types.ConeType, is_sparse: bool, newton: bool, 
         rownnz += 1
 
       rowadr = wp.atomic_add(efc_nnz_out, worldid, rownnz * ndim)
-      if rowadr + rownnz * ndim > njmax_nnz_in:
-        return
+      end = rowadr + rownnz * ndim
       for dim in range(ndim):
         efcid = base_efcid + dim
         if efcid < njmax_in:
-          efc_J_rowadr_out[worldid, efcid] = rowadr + dim * rownnz
-          efc_J_rownnz_out[worldid, efcid] = rownnz
+          if end > njmax_nnz_in:
+            efc_J_rowadr_out[worldid, efcid] = end
+            efc_J_rownnz_out[worldid, efcid] = 0
+          else:
+            efc_J_rowadr_out[worldid, efcid] = rowadr + dim * rownnz
+            efc_J_rownnz_out[worldid, efcid] = rownnz
 
   return kernel
 
@@ -3207,13 +3210,16 @@ def _efc_contact_init_flex(cone_type: types.ConeType, is_sparse: bool, newton: b
           rownnz += 1
 
       rowadr = wp.atomic_add(efc_nnz_out, worldid, rownnz * ndim)
-      if rowadr + rownnz * ndim > njmax_nnz_in:
-        return
+      end = rowadr + rownnz * ndim
       for dim in range(ndim):
         efcid = base_efcid + dim
         if efcid < njmax_in:
-          efc_J_rowadr_out[worldid, efcid] = rowadr + dim * rownnz
-          efc_J_rownnz_out[worldid, efcid] = rownnz
+          if end > njmax_nnz_in:
+            efc_J_rowadr_out[worldid, efcid] = end
+            efc_J_rownnz_out[worldid, efcid] = 0
+          else:
+            efc_J_rowadr_out[worldid, efcid] = rowadr + dim * rownnz
+            efc_J_rownnz_out[worldid, efcid] = rownnz
 
   return kernel
 
@@ -4327,7 +4333,6 @@ def _efc_contact_update(cone_type: types.ConeType, flg_adhesion: bool, is_discre
     nl_in: wp.array[int],
     nefc_in: wp.array[int],
     contact_efc_address_in: wp.array2d[int],
-    efc_id_in: wp.array2d[int],
     efc_Jqvel_in: wp.array2d[float],
     njmax_in: int,
     # In:
@@ -4359,7 +4364,7 @@ def _efc_contact_update(cone_type: types.ConeType, flg_adhesion: bool, is_discre
     body_invweight0_id = worldid % body_invweight0.shape[0]
 
     for efcid in range(efcid_start, efcid_end, efc_stride_in):
-      conid = efc_id_in[worldid, efcid]
+      conid = efc_id_out[worldid, efcid]
       dimid = efcid - contact_efc_address_in[conid, 0]
       condim = condim_in[conid]
 
@@ -5581,7 +5586,6 @@ def make_constraint(m: types.Model, d: types.Data):
     # contact
     if not (m.opt.disableflags & types.DisableBit.CONTACT):
       nmaxdim = int(m.nmaxpyramid) if m.opt.cone == types.ConeType.PYRAMIDAL else int(m.nmaxcondim)
-      efc_threads = efc_threads_per_world(d.nworld, d.njmax, d.qvel.device)
 
       # Reinterpret to avoid unnecessary loads
       contact_frame_2d = wp.array(
@@ -5737,8 +5741,10 @@ def make_constraint(m: types.Model, d: types.Data):
             ],
           )
         else:
+          kernel = _efc_contact_jac_sparse(m.opt.cone)
+          efc_threads = efc_threads_per_world(d.nworld, d.njmax, d.qvel.device, kernel)
           wp.launch(
-            _efc_contact_jac_sparse(m.opt.cone),
+            kernel,
             dim=(d.nworld, efc_threads),
             inputs=[
               m.body_parentid,
@@ -5935,8 +5941,10 @@ def make_constraint(m: types.Model, d: types.Data):
           ],
         )
       else:
+        kernel = _efc_contact_update(m.opt.cone, m.flg_adhesion, is_discrete)
+        efc_threads = efc_threads_per_world(d.nworld, d.njmax, d.qvel.device, kernel, num_waves=1)
         wp.launch(
-          _efc_contact_update(m.opt.cone, m.flg_adhesion, is_discrete),
+          kernel,
           dim=(d.nworld, efc_threads),
           inputs=[
             m.opt.timestep,
@@ -5949,7 +5957,6 @@ def make_constraint(m: types.Model, d: types.Data):
             d.nl,
             d.nefc,
             d.contact.efc_address,
-            d.efc.id,
             d.efc.Jqvel,
             d.njmax,
             d.contact.dist,

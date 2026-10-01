@@ -167,16 +167,14 @@ def cache_kernel(func):
   return wrapper
 
 
-def efc_threads_per_world(nworld: int, njmax: int, device, kernel: wp.Kernel | None = None) -> int:
-  """Size row launches, using kernel occupancy for iterative solver updates."""
-  if not device.is_cuda:
+def efc_threads_per_world(nworld: int, njmax: int, device, kernel: wp.Kernel, num_waves: int = 6) -> int:
+  """Size row launches from kernel occupancy, capped at capacity and aligned to warps."""
+  if not device.is_cuda or njmax <= 32:
     return njmax
-  if kernel is not None:
-    # Budget six resident waves as converged worlds stop contributing work.
-    block_size, min_grid_size = wp.get_suggested_block_size(kernel, device)
-    warps = 6 * block_size * min_grid_size // 32
-    return max(32, min(njmax, 32 * (warps // max(1, nworld))))
-  return max(32, min(njmax, 4 * device.sm_count * 32 // max(1, nworld)))
+  block_size, min_grid_size = wp.get_suggested_block_size(kernel, device)
+  # Iterative updates need extra waves as converged worlds stop contributing work.
+  warps = max(1, num_waves * block_size * min_grid_size // (32 * max(1, nworld)))
+  return 32 * min(njmax // 32, warps)
 
 
 def check_toolkit_driver():

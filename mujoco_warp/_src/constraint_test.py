@@ -28,6 +28,7 @@ import mujoco_warp as mjw
 from mujoco_warp import ConeType
 from mujoco_warp import test_data
 from mujoco_warp._src import constraint
+from mujoco_warp._src import forward
 
 # tolerance for difference between MuJoCo and MJWarp constraint calculations,
 # mostly due to float precision
@@ -221,29 +222,31 @@ class ConstraintTest(parameterized.TestCase):
 
     mjw.fwd_kinematics(m, d)
     mjw.collision(m, d)
-    fields = ("D", "vel", "aref", "pos", "margin", "frictionloss")
     for width in (32, d.njmax):
       for arr in (d.ne, d.nf, d.nl, d.nefc, d.efc.type, d.efc.id, d.efc.J_rownnz, d.efc.J_rowadr, d.efc.J_colind):
         arr.fill_(-1)
-      for arr in (d.efc.J, d.efc.Jqvel, *(getattr(d.efc, field) for field in fields)):
+      for arr in (d.efc.J, d.efc.Jqvel, d.efc.D, d.efc.vel, d.efc.aref, d.efc.pos, d.efc.margin, d.efc.frictionloss):
         arr.fill_(wp.inf)
       d.contact.efc_address.fill_(-1)
 
       with mock.patch.object(constraint, "efc_threads_per_world", return_value=width):
         mjw.make_constraint(m, d)
 
-      efc = {field: getattr(d.efc, field).numpy() for field in (*fields, "type", "id", "J", "Jqvel")}
       if nworld == 2:
         common_rows = min(reference.nefc for reference in mjds)
-        self.assertFalse(np.allclose(efc["aref"][0, :common_rows], efc["aref"][1, :common_rows]))
+        aref = d.efc.aref.numpy()
+        self.assertFalse(np.allclose(aref[0, :common_rows], aref[1, :common_rows]))
       contact_geom = d.contact.geom.numpy()
       contact_efc_address = d.contact.efc_address.numpy()
+      efc_J = d.efc.J.numpy()
       for world, reference in enumerate(mjds):
         nefc = reference.nefc
-        for field in ("ne", "nf", "nl", "nefc"):
-          self.assertEqual(getattr(d, field).numpy()[world], getattr(reference, field))
+        self.assertEqual(d.ne.numpy()[world], reference.ne)
+        self.assertEqual(d.nf.numpy()[world], reference.nf)
+        self.assertEqual(d.nl.numpy()[world], reference.nl)
+        self.assertEqual(d.nefc.numpy()[world], reference.nefc)
         order = np.arange(nefc)
-        ids = efc["id"][world, :nefc].copy()
+        ids = d.efc.id.numpy()[world, :nefc].copy()
         contact_ids = {tuple(con.geom): i for i, con in enumerate(reference.contact)}
         start = reference.ne + reference.nf + reference.nl
         for row in range(start, nefc):
@@ -263,20 +266,74 @@ class ConstraintTest(parameterized.TestCase):
             self.assertTrue(np.all((colind[adr : adr + nnz] >= 0) & (colind[adr : adr + nnz] < mjm.nv)))
           actual_j = np.zeros((nefc, mjm.nv))
           reference_j = np.zeros_like(actual_j)
-          mujoco.mju_sparse2dense(actual_j, efc["J"][world, 0], rownnz, rowadr, colind)
+          mujoco.mju_sparse2dense(actual_j, efc_J[world, 0], rownnz, rowadr, colind)
           mujoco.mju_sparse2dense(
             reference_j, reference.efc_J, reference.efc_J_rownnz, reference.efc_J_rowadr, reference.efc_J_colind
           )
         else:
-          actual_j = efc["J"][world, :nefc, : mjm.nv]
+          actual_j = efc_J[world, :nefc, : mjm.nv]
           reference_j = reference.efc_J.reshape(nefc, mjm.nv)
 
         _assert_eq(actual_j, reference_j[order], "J")
         np.testing.assert_array_equal(ids, reference.efc_id[order])
-        np.testing.assert_array_equal(efc["type"][world, :nefc], reference.efc_type[order])
-        for field in fields:
-          _assert_eq(efc[field][world, :nefc], getattr(reference, f"efc_{field}")[order], field)
-        _assert_eq(efc["Jqvel"][world, start:nefc], reference.efc_vel[order[start:]], "Jqvel")
+        np.testing.assert_array_equal(d.efc.type.numpy()[world, :nefc], reference.efc_type[order])
+        _assert_eq(d.efc.D.numpy()[world, :nefc], reference.efc_D[order], "D")
+        _assert_eq(d.efc.vel.numpy()[world, :nefc], reference.efc_vel[order], "vel")
+        _assert_eq(d.efc.aref.numpy()[world, :nefc], reference.efc_aref[order], "aref")
+        _assert_eq(d.efc.pos.numpy()[world, :nefc], reference.efc_pos[order], "pos")
+        _assert_eq(d.efc.margin.numpy()[world, :nefc], reference.efc_margin[order], "margin")
+        _assert_eq(d.efc.frictionloss.numpy()[world, :nefc], reference.efc_frictionloss[order], "frictionloss")
+        _assert_eq(d.efc.Jqvel.numpy()[world, start:nefc], reference.efc_vel[order[start:]], "Jqvel")
+
+  @parameterized.product(cone=(ConeType.PYRAMIDAL, ConeType.ELLIPTIC), nworld=(1, 2), flex=(False, True))
+  def test_contact_sparse_nnz_overflow(self, cone, nworld, flex):
+    """Overflow clears stale row metadata without hiding the required sparse capacity."""
+    body = (
+      '<flexcomp name="cloth" type="grid" count="2 2 1" spacing=".3 .3 .1" pos="0 0 .015" radius=".02" dim="2">'
+      '<contact condim="3" selfcollide="none"/></flexcomp>'
+      if flex
+      else '<body pos="0 0 .09"><freejoint/><geom type="sphere" size=".1" condim="3"/></body>'
+    )
+    _, mjd, m, d = test_data.fixture(
+      xml=f"""
+      <mujoco>
+        <option><flag equality="disable"/></option>
+        <worldbody>
+          <geom type="plane" size="1 1 .1"/>
+          {body}
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=nworld,
+      njmax=64,
+      overrides={"opt.cone": cone, "opt.jacobian": mujoco.mjtJacobian.mjJAC_SPARSE},
+    )
+    self.assertGreater(mjd.nefc, 1)
+    self.assertEqual(mjd.ne + mjd.nf + mjd.nl, 0)
+    self.assertTrue(np.all(d.efc.J_rownnz.numpy()[:, : mjd.nefc] > 0))
+
+    # Keep the backing allocation so stale metadata fails safely without an illegal memory access.
+    d.njmax_nnz = 1
+    d.efc.J_rownnz.fill_(1)
+    d.efc.J_rowadr.zero_()
+    d.efc.J.fill_(wp.inf)
+    d.efc.J_colind.fill_(-1)
+    d.efc.Jqvel.fill_(wp.inf)
+    mjw.make_constraint(m, d)
+
+    np.testing.assert_array_equal(d.nefc.numpy(), np.full(nworld, mjd.nefc))
+    np.testing.assert_array_equal(d.efc.J_rownnz.numpy()[:, : mjd.nefc], 0)
+    rowadr = d.efc.J_rowadr.numpy()[:, : mjd.nefc]
+    self.assertTrue(np.all(rowadr > d.njmax_nnz))
+    np.testing.assert_array_equal(rowadr.max(axis=1), np.full(nworld, mjd.efc_J_rownnz.sum()))
+    np.testing.assert_array_equal(d.efc.Jqvel.numpy()[:, : mjd.nefc], 0)
+    self.assertTrue(np.isinf(d.efc.J.numpy()).all())
+    np.testing.assert_array_equal(d.efc.J_colind.numpy(), -1)
+
+    m.opt.warn_overflow = 0
+    d.overflow.zero_()
+    forward._advance(m, d, d.qacc)
+    np.testing.assert_array_equal(d.overflow.numpy(), np.full(nworld, int(mjw.OverflowType.NJMAX_NNZ)))
 
   @parameterized.parameters(
     *itertools.product(
