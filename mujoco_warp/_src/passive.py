@@ -103,92 +103,87 @@ def _spring_damper_dof_passive(
     ndof = 6
   elif jnttype == JointType.BALL:
     ndof = 3
-  for i in range(ndof):
-    force = float(0.0)
-    if not (opt_disableflags & DisableBit.DAMPER):
-      damping = dof_damping[worldid % dof_damping.shape[0], dofid + i]
-      dpoly = dof_dampingpoly[worldid % dof_dampingpoly.shape[0], dofid + i]
-      v = qvel_in[worldid, dofid + i]
-      force = -v * util_misc._poly_force(damping, dpoly, v, 1)
-    qfrc_damper_out[worldid, dofid + i] = force
+  if opt_disableflags & DisableBit.DAMPER:
+    for i in range(ndof):
+      qfrc_damper_out[worldid, dofid + i] = 0.0
+  else:
+    dof_damping_id = worldid % dof_damping.shape[0]
+    dof_dampingpoly_id = worldid % dof_dampingpoly.shape[0]
+    for i in range(ndof):
+      damping = dof_damping[dof_damping_id, dofid + i]
+      dpoly = dof_dampingpoly[dof_dampingpoly_id, dofid + i]
+      if damping != 0.0 or dpoly[0] != 0.0 or dpoly[1] != 0.0:
+        v = qvel_in[worldid, dofid + i]
+        qfrc_damper_out[worldid, dofid + i] = -v * util_misc._poly_force(damping, dpoly, v, 1)
+      else:
+        qfrc_damper_out[worldid, dofid + i] = 0.0
 
   if not has_stiffness:
-    if jnttype == JointType.FREE:
-      for i in range(6):
-        qfrc_spring_out[worldid, dofid + i] = 0.0
-    elif jnttype == JointType.BALL:
-      for i in range(3):
-        qfrc_spring_out[worldid, dofid + i] = 0.0
-    else:
-      qfrc_spring_out[worldid, dofid] = 0.0
-
-  if not has_stiffness:
+    for i in range(ndof):
+      qfrc_spring_out[worldid, dofid + i] = 0.0
     return
   qposid = jnt_qposadr[jntid]
   qpos_spring_id = worldid % qpos_spring.shape[0]
 
   if jnttype == JointType.FREE:
     # spring
-    if has_stiffness:
-      dif = wp.vec3(
-        qpos_in[worldid, qposid + 0] - qpos_spring[qpos_spring_id, qposid + 0],
-        qpos_in[worldid, qposid + 1] - qpos_spring[qpos_spring_id, qposid + 1],
-        qpos_in[worldid, qposid + 2] - qpos_spring[qpos_spring_id, qposid + 2],
-      )
-      r = wp.length(dif)
-      k = util_misc._poly_force(stiffness, spoly, r, 0)
-      qfrc_spring_out[worldid, dofid + 0] = -k * dif[0]
-      qfrc_spring_out[worldid, dofid + 1] = -k * dif[1]
-      qfrc_spring_out[worldid, dofid + 2] = -k * dif[2]
+    dif = wp.vec3(
+      qpos_in[worldid, qposid + 0] - qpos_spring[qpos_spring_id, qposid + 0],
+      qpos_in[worldid, qposid + 1] - qpos_spring[qpos_spring_id, qposid + 1],
+      qpos_in[worldid, qposid + 2] - qpos_spring[qpos_spring_id, qposid + 2],
+    )
+    r = wp.length(dif)
+    k = util_misc._poly_force(stiffness, spoly, r, 0)
+    qfrc_spring_out[worldid, dofid + 0] = -k * dif[0]
+    qfrc_spring_out[worldid, dofid + 1] = -k * dif[1]
+    qfrc_spring_out[worldid, dofid + 2] = -k * dif[2]
 
-      rot = wp.quat(
-        qpos_in[worldid, qposid + 3],
-        qpos_in[worldid, qposid + 4],
-        qpos_in[worldid, qposid + 5],
-        qpos_in[worldid, qposid + 6],
-      )
-      rot = wp.normalize(rot)
-      ref = wp.quat(
-        qpos_spring[qpos_spring_id, qposid + 3],
-        qpos_spring[qpos_spring_id, qposid + 4],
-        qpos_spring[qpos_spring_id, qposid + 5],
-        qpos_spring[qpos_spring_id, qposid + 6],
-      )
-      dif = math.quat_sub(rot, ref)
-      r_rot = wp.length(dif)
-      k_rot = util_misc._poly_force(stiffness, spoly, r_rot, 0)
-      qfrc_spring_out[worldid, dofid + 3] = -k_rot * dif[0]
-      qfrc_spring_out[worldid, dofid + 4] = -k_rot * dif[1]
-      qfrc_spring_out[worldid, dofid + 5] = -k_rot * dif[2]
+    rot = wp.quat(
+      qpos_in[worldid, qposid + 3],
+      qpos_in[worldid, qposid + 4],
+      qpos_in[worldid, qposid + 5],
+      qpos_in[worldid, qposid + 6],
+    )
+    rot = wp.normalize(rot)
+    ref = wp.quat(
+      qpos_spring[qpos_spring_id, qposid + 3],
+      qpos_spring[qpos_spring_id, qposid + 4],
+      qpos_spring[qpos_spring_id, qposid + 5],
+      qpos_spring[qpos_spring_id, qposid + 6],
+    )
+    dif = math.quat_sub(rot, ref)
+    r_rot = wp.length(dif)
+    k_rot = util_misc._poly_force(stiffness, spoly, r_rot, 0)
+    qfrc_spring_out[worldid, dofid + 3] = -k_rot * dif[0]
+    qfrc_spring_out[worldid, dofid + 4] = -k_rot * dif[1]
+    qfrc_spring_out[worldid, dofid + 5] = -k_rot * dif[2]
 
   elif jnttype == JointType.BALL:
     # spring
-    if has_stiffness:
-      rot = wp.quat(
-        qpos_in[worldid, qposid + 0],
-        qpos_in[worldid, qposid + 1],
-        qpos_in[worldid, qposid + 2],
-        qpos_in[worldid, qposid + 3],
-      )
-      rot = wp.normalize(rot)
-      ref = wp.quat(
-        qpos_spring[qpos_spring_id, qposid + 0],
-        qpos_spring[qpos_spring_id, qposid + 1],
-        qpos_spring[qpos_spring_id, qposid + 2],
-        qpos_spring[qpos_spring_id, qposid + 3],
-      )
-      dif = math.quat_sub(rot, ref)
-      r = wp.length(dif)
-      k = util_misc._poly_force(stiffness, spoly, r, 0)
-      qfrc_spring_out[worldid, dofid + 0] = -k * dif[0]
-      qfrc_spring_out[worldid, dofid + 1] = -k * dif[1]
-      qfrc_spring_out[worldid, dofid + 2] = -k * dif[2]
+    rot = wp.quat(
+      qpos_in[worldid, qposid + 0],
+      qpos_in[worldid, qposid + 1],
+      qpos_in[worldid, qposid + 2],
+      qpos_in[worldid, qposid + 3],
+    )
+    rot = wp.normalize(rot)
+    ref = wp.quat(
+      qpos_spring[qpos_spring_id, qposid + 0],
+      qpos_spring[qpos_spring_id, qposid + 1],
+      qpos_spring[qpos_spring_id, qposid + 2],
+      qpos_spring[qpos_spring_id, qposid + 3],
+    )
+    dif = math.quat_sub(rot, ref)
+    r = wp.length(dif)
+    k = util_misc._poly_force(stiffness, spoly, r, 0)
+    qfrc_spring_out[worldid, dofid + 0] = -k * dif[0]
+    qfrc_spring_out[worldid, dofid + 1] = -k * dif[1]
+    qfrc_spring_out[worldid, dofid + 2] = -k * dif[2]
 
   else:  # mjJNT_SLIDE, mjJNT_HINGE
     # spring
-    if has_stiffness:
-      fdif = qpos_in[worldid, qposid] - qpos_spring[qpos_spring_id, qposid]
-      qfrc_spring_out[worldid, dofid] = -fdif * util_misc._poly_force(stiffness, spoly, fdif, 0)
+    fdif = qpos_in[worldid, qposid] - qpos_spring[qpos_spring_id, qposid]
+    qfrc_spring_out[worldid, dofid] = -fdif * util_misc._poly_force(stiffness, spoly, fdif, 0)
 
 
 @wp.kernel

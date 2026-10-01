@@ -90,9 +90,9 @@ class PassiveTest(parameterized.TestCase):
       mjm.dof_damping[:] = damping[world]
       mjm.dof_dampingpoly[:] = poly[world]
       mjd.qvel[:] = velocity[world]
-      mujoco.mj_forward(mjm, mjd)
-      np.testing.assert_allclose(d.qfrc_damper.numpy()[world], mjd.qfrc_damper, atol=1e-5, rtol=1e-5)
-      np.testing.assert_allclose(d.qfrc_passive.numpy()[world], mjd.qfrc_passive, atol=1e-5, rtol=1e-5)
+      mujoco.mj_passive(mjm, mjd)
+      _assert_eq(d.qfrc_damper.numpy()[world], mjd.qfrc_damper, f"qfrc_damper_world_{world}")
+      _assert_eq(d.qfrc_passive.numpy()[world], mjd.qfrc_passive, f"qfrc_passive_world_{world}")
     if nworld == 2 and not damper:
       self.assertFalse(np.allclose(d.qfrc_damper.numpy()[0], d.qfrc_damper.numpy()[1]))
 
