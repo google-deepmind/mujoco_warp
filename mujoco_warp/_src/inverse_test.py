@@ -209,6 +209,115 @@ class InverseTest(parameterized.TestCase):
     _assert_eq(d.qfrc_inverse.numpy()[0], qfrc_inverse, "qfrc_inverse")
     _assert_eq(d.qacc.numpy()[0], qacc, "qacc")
 
+  @parameterized.parameters(1, 2)
+  def test_discrete_acc_discrete(self, nworld):
+    _, _, m, d = test_data.fixture(xml=_XML, nworld=nworld, overrides={"opt.integrator": IntegratorType.DISCRETE})
+    qacc = wp.zeros((nworld, m.nv), dtype=float)
+    d.qacc.fill_(1.23)
+    if nworld == 2:
+      qacc_np = d.qacc.numpy()
+      qacc_np[1] = 4.56
+      d.qacc.assign(qacc_np)
+    inverse.discrete_acc(m, d, qacc)
+    for w in range(nworld):
+      _assert_eq(qacc.numpy()[w], d.qacc.numpy()[w], f"qacc_{w}")
+    if nworld == 2:
+      self.assertFalse(np.allclose(qacc.numpy()[0], qacc.numpy()[1]))
+
+  @parameterized.parameters(1, 2)
+  def test_discrete_joint_inverse_consistency(self, nworld):
+    """Native discrete inverse dynamics recovers zero applied force for contacting damped joint."""
+    _, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option timestep="0.01" integrator="discrete" solver="CG" tolerance="1e-14" iterations="200"/>
+        <worldbody>
+          <geom type="plane" size="1 1 .1"/>
+          <body pos="0 0 .1">
+            <joint name="hinge" type="hinge" axis="0 1 0" damping="2" stiffness="50" springref="10"/>
+            <geom type="capsule" size=".02" fromto="0 0 0 .5 0 0" mass="1"/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=nworld,
+    )
+    for _ in range(20):
+      d.qacc.fill_(wp.inf)
+      mjw.step(m, d)
+
+    qvel = np.full((nworld, 1), 0.1, dtype=np.float32)
+    if nworld == 2:
+      qvel[1, 0] = -0.15
+    d.qvel = wp.array(qvel, dtype=float, device=d.qvel.device)
+
+    d.qacc.fill_(wp.inf)
+    mjw.forward(m, d)
+    self.assertGreater(int(d.nacon.numpy()[0]), 0)
+
+    d.qfrc_inverse.fill_(wp.inf)
+    mjw.inverse(m, d)
+
+    qfrc_passive = d.qfrc_passive.numpy()
+    qfrc_constraint = d.qfrc_constraint.numpy()
+    qfrc_bias = d.qfrc_bias.numpy()
+    qfrc_inv = d.qfrc_inverse.numpy()
+
+    for w in range(nworld):
+      scale = np.linalg.norm(qfrc_passive[w]) + np.linalg.norm(qfrc_constraint[w]) + np.linalg.norm(qfrc_bias[w])
+      self.assertGreater(scale, 0.0)
+      rel_err = np.linalg.norm(qfrc_inv[w]) / scale
+      self.assertLess(rel_err, 1e-4)
+
+    if nworld == 2:
+      self.assertFalse(np.allclose(qfrc_passive[0], qfrc_passive[1]))
+
+  @parameterized.parameters(1, 2)
+  def test_discrete_free_joint_inverse_consistency(self, nworld):
+    """Forward/inverse consistency for tumbling free joint with stiffness and damping."""
+    _, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option integrator="discrete" timestep="0.005"/>
+        <worldbody>
+          <geom type="plane" size="2 2 .1"/>
+          <body pos="0 0 .5">
+            <joint type="free" stiffness="30" damping="2"/>
+            <geom type="box" size=".2 .15 .1" mass="2" pos=".02 -.01 .03"/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=nworld,
+    )
+    qvel = np.zeros((nworld, 6), dtype=np.float32)
+    qvel[0] = [0.3, 0.0, -0.2, 0.5, -0.3, 8.0]
+    if nworld == 2:
+      qvel[1] = [-0.2, 0.1, 0.4, -0.4, 0.6, -5.0]
+    d.qvel = wp.array(qvel, dtype=float, device=d.qvel.device)
+
+    # In flight, tumbling spin, no constraints.
+    for _ in range(20):
+      d.qacc.fill_(wp.inf)
+      mjw.step(m, d)
+
+    d.qacc.fill_(wp.inf)
+    mjw.forward(m, d)
+    self.assertEqual(int(d.nacon.numpy()[0]), 0)
+
+    d.qfrc_inverse.fill_(wp.inf)
+    mjw.inverse(m, d)
+    qfrc_inv = d.qfrc_inverse.numpy()
+    qfrc_pass = d.qfrc_passive.numpy()
+
+    for w in range(nworld):
+      scale = 1.0 + float(np.linalg.norm(qfrc_pass[w]))
+      err = float(np.linalg.norm(qfrc_inv[w])) / scale
+      self.assertLess(err, 5e-5)
+
+    if nworld == 2:
+      self.assertFalse(np.allclose(qfrc_inv[0], qfrc_inv[1]))
+
 
 if __name__ == "__main__":
   wp.init()

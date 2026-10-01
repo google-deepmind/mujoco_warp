@@ -21,6 +21,8 @@ import warp as wp
 from absl.testing import absltest
 from absl.testing import parameterized
 
+from mujoco_warp import CtrlChart
+from mujoco_warp import GainType
 from mujoco_warp import State
 from mujoco_warp import get_data_into
 from mujoco_warp import get_state
@@ -33,6 +35,9 @@ from mujoco_warp import reset_history
 from mujoco_warp import set_state
 from mujoco_warp import step
 from mujoco_warp import test_data
+from mujoco_warp._src import util_pkg
+from mujoco_warp._src.history import _reset_actuator_history_kernel
+from mujoco_warp._src.history import read_ctrl_delayed
 
 _TOLERANCE = 1e-8
 
@@ -69,7 +74,12 @@ class PublicAPITest(absltest.TestCase):
     time_arr = d.time
     warp_result = wp.empty(d.nworld, dtype=float)
     read_ctrl(m, d, 0, time_arr, interp=-1, result=warp_result)
-    mj_result = mujoco.mj_readCtrl(mjm, mjd, 0, mjd.time, -1)
+    if util_pkg.check_version("mujoco>=3.13.1.dev984848064"):
+      mj_result = np.zeros(1)
+      mujoco.mj_readCtrl(mjm, mjd, 0, mjd.time, mj_result, -1)
+      mj_result = mj_result[0]
+    else:
+      mj_result = mujoco.mj_readCtrl(mjm, mjd, 0, mjd.time, -1)
     np.testing.assert_allclose(
       warp_result.numpy()[0],
       mj_result,
@@ -80,7 +90,12 @@ class PublicAPITest(absltest.TestCase):
     # compare with explicit interp=0 (ZOH)
     warp_result_zoh = wp.empty(d.nworld, dtype=float)
     read_ctrl(m, d, 0, time_arr, interp=0, result=warp_result_zoh)
-    mj_result_zoh = mujoco.mj_readCtrl(mjm, mjd, 0, mjd.time, 0)
+    if util_pkg.check_version("mujoco>=3.13.1.dev984848064"):
+      mj_result_zoh = np.zeros(1)
+      mujoco.mj_readCtrl(mjm, mjd, 0, mjd.time, mj_result_zoh, 0)
+      mj_result_zoh = mj_result_zoh[0]
+    else:
+      mj_result_zoh = mujoco.mj_readCtrl(mjm, mjd, 0, mjd.time, 0)
     np.testing.assert_allclose(
       warp_result_zoh.numpy()[0],
       mj_result_zoh,
@@ -241,13 +256,60 @@ class PublicAPITest(absltest.TestCase):
     time_arr = wp.array([query_time], dtype=float)
     warp_result = wp.empty(d.nworld, dtype=float)
     read_ctrl(m, d, 0, time_arr, interp=0, result=warp_result)
-    mj_result = mujoco.mj_readCtrl(mjm, mjd, 0, query_time, 0)
+    if util_pkg.check_version("mujoco>=3.13.1.dev984848064"):
+      mj_result = np.zeros(1)
+      mujoco.mj_readCtrl(mjm, mjd, 0, query_time, mj_result, 0)
+      mj_result = mj_result[0]
+    else:
+      mj_result = mujoco.mj_readCtrl(mjm, mjd, 0, query_time, 0)
     np.testing.assert_allclose(
       warp_result.numpy()[0],
       mj_result,
       atol=_TOLERANCE,
       err_msg="init_ctrl_history read mismatch",
     )
+
+  def test_init_ctrl_history_mimo(self):
+    """Test init_ctrl_history and read_ctrl with multi-input actuator."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <body>
+            <joint name="hinge" type="hinge"/>
+            <geom size="0.1" mass="1"/>
+          </body>
+        </worldbody>
+        <actuator>
+          <dcmotor joint="hinge" motorconst="1.0" resistance="1.0" input="pos vel ff"
+                   delay="0.02" nsample="3"/>
+        </actuator>
+      </mujoco>
+      """
+    )
+    self.assertEqual(int(m.actuator_ctrlnum.numpy()[0]), 3)
+
+    nhistory = 2 + 3 + 3 * 3
+    if m.nhistory < nhistory:
+      m.nhistory = nhistory
+      d.history = wp.zeros((d.nworld, nhistory), dtype=float)
+
+    times = np.array([0.0, 0.01, 0.02])
+    values = np.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [7.0, 8.0, 9.0]])
+    times_wp = wp.array(times, dtype=float)
+    values_wp = wp.array(values.reshape(1, 9), dtype=float)
+    init_ctrl_history(m, d, 0, times_wp, values_wp)
+
+    # ZOH read at 0.03 (lookup at 0.01 -> [4.0, 5.0, 6.0])
+    res = wp.empty((d.nworld, 3), dtype=float)
+    res.fill_(wp.inf)
+    read_ctrl(m, d, 0, wp.array([0.03], dtype=float), 0, res)
+    np.testing.assert_allclose(res.numpy()[0], [4.0, 5.0, 6.0])
+
+    # Linear interpolation at 0.035 (lookup at 0.015 -> [5.5, 6.5, 7.5])
+    res.fill_(wp.inf)
+    read_ctrl(m, d, 0, wp.array([0.035], dtype=float), 1, res)
+    np.testing.assert_allclose(res.numpy()[0], [5.5, 6.5, 7.5])
 
   def test_init_sensor_history(self):
     """Test init_sensor_history sets buffer correctly."""
@@ -406,6 +468,65 @@ class MultiWorldDelayTest(parameterized.TestCase):
           atol=_TOLERANCE,
           err_msg=f"nworld={nworld} delay={delay} world={w} step {nzero}",
         )
+
+  @parameterized.parameters(1, 2)
+  def test_actuator_delay_mimo(self, nworld):
+    """Test delayed actuation with multi-input actuator delays all controls."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option timestep="0.01" gravity="0 0 0"/>
+        <worldbody>
+          <body>
+            <joint name="hinge" type="hinge"/>
+            <geom size="0.1" mass="1"/>
+          </body>
+        </worldbody>
+        <actuator>
+          <dcmotor joint="hinge" motorconst="1.0" resistance="1.0" input="pos vel ff"
+                   delay="0.02" nsample="2"/>
+        </actuator>
+      </mujoco>
+      """,
+      nworld=nworld,
+    )
+    self.assertEqual(int(m.actuator_ctrlnum.numpy()[0]), 3)
+
+    nhistory = 2 + 2 + 2 * 3
+    if m.nhistory < nhistory:
+      m.nhistory = nhistory
+      d.history = wp.zeros((nworld, nhistory), dtype=float)
+      reset_history(m, d)
+
+    ctrl_in = np.zeros((nworld, m.nu), dtype=float)
+    ctrl_in[0] = [1.0, 2.0, 5.0]
+    if nworld == 2:
+      ctrl_in[1] = [2.0, 4.0, 10.0]
+    d.ctrl = wp.array(ctrl_in, dtype=float)
+
+    delayed_ctrl = wp.empty((d.nworld, m.nu), dtype=float)
+
+    # Before step 1 (t=0.0):
+    delayed_ctrl.fill_(wp.inf)
+    read_ctrl_delayed(m, d, delayed_ctrl)
+    for w in range(nworld):
+      np.testing.assert_allclose(delayed_ctrl.numpy()[w], [0.0, 0.0, 0.0])
+
+    # Step 1: advances t from 0.0 to 0.01
+    step(m, d)
+    delayed_ctrl.fill_(wp.inf)
+    read_ctrl_delayed(m, d, delayed_ctrl)
+    for w in range(nworld):
+      np.testing.assert_allclose(delayed_ctrl.numpy()[w], [0.0, 0.0, 0.0])
+
+    # Step 2: advances t from 0.01 to 0.02 (delayed inputs arrive at t=0.02)
+    step(m, d)
+    delayed_ctrl.fill_(wp.inf)
+    read_ctrl_delayed(m, d, delayed_ctrl)
+    np.testing.assert_allclose(delayed_ctrl.numpy()[0], [1.0, 2.0, 5.0])
+    if nworld == 2:
+      np.testing.assert_allclose(delayed_ctrl.numpy()[1], [2.0, 4.0, 10.0])
+      self.assertFalse(np.allclose(delayed_ctrl.numpy()[0], delayed_ctrl.numpy()[1]))
 
   @parameterized.parameters(1, 2)
   def test_sensor_delay(self, nworld):
@@ -612,7 +733,12 @@ class InterpolationTest(parameterized.TestCase):
     time_arr = d.time
     warp_result = wp.empty(d.nworld, dtype=float)
     read_ctrl(m, d, 0, time_arr, interp=2, result=warp_result)
-    mj_result = mujoco.mj_readCtrl(mjm, mjd, 0, mjd.time, 2)
+    if util_pkg.check_version("mujoco>=3.13.1.dev984848064"):
+      mj_result = np.zeros(1)
+      mujoco.mj_readCtrl(mjm, mjd, 0, mjd.time, mj_result, 2)
+      mj_result = mj_result[0]
+    else:
+      mj_result = mujoco.mj_readCtrl(mjm, mjd, 0, mjd.time, 2)
     np.testing.assert_allclose(warp_result.numpy()[0], mj_result, atol=_TOLERANCE, err_msg="read_ctrl cubic interp mismatch")
 
 
@@ -1638,6 +1764,49 @@ class BatchedDelayTest(parameterized.TestCase):
     reset_history(m, d)
     mujoco.mj_resetData(mjm, mjd)
     np.testing.assert_allclose(d.history.numpy()[0], mjd.history, atol=1e-6)
+
+  def test_reset_actuator_history_so3_quat(self):
+    """Test SO(3) quaternion actuator history initializes to identity quat."""
+    nworld = 2
+    nactuator = 1
+    nsample = 3
+    dim = 4
+
+    opt_timestep = wp.array([0.01], dtype=float)
+    actuator_ctrlnum = wp.array([dim], dtype=int)
+    actuator_gaintype = wp.array([GainType.SO3], dtype=int)
+    actuator_ctrlspec = wp.array([CtrlChart.QUAT], dtype=int)
+    actuator_history = wp.array([[(nsample, 0)]], dtype=wp.vec2i)
+    actuator_historyadr = wp.array([[0]], dtype=int)
+    reset_in = wp.empty(0, dtype=bool)
+
+    nhistory = 2 + nsample + nsample * dim
+    history = wp.empty((nworld, nhistory), dtype=float)
+    history.fill_(wp.inf)
+
+    wp.launch(
+      _reset_actuator_history_kernel,
+      dim=(nworld, nactuator),
+      inputs=[
+        opt_timestep,
+        actuator_gaintype,
+        actuator_ctrlnum,
+        actuator_ctrlspec,
+        actuator_history,
+        actuator_historyadr,
+        reset_in,
+      ],
+      outputs=[history],
+    )
+
+    hist_np = history.numpy()
+    values_offset = 2 + nsample
+    for w in range(nworld):
+      for j in range(nsample):
+        w_val = hist_np[w, values_offset + 4 * j]
+        xyz = hist_np[w, values_offset + 4 * j + 1 : values_offset + 4 * j + 4]
+        np.testing.assert_equal(w_val, 1.0)
+        np.testing.assert_allclose(xyz, [0.0, 0.0, 0.0])
 
 
 if __name__ == "__main__":

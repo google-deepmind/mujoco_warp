@@ -30,6 +30,11 @@ from mujoco_warp._src import types
 from mujoco_warp._src.collision_core import Geom
 from mujoco_warp._src.collision_driver import MJ_COLLISION_TABLE
 from mujoco_warp._src.collision_primitive import plane_convex
+from mujoco_warp._src.collision_sdf import MeshData
+from mujoco_warp._src.collision_sdf import OptimizationParams
+from mujoco_warp._src.collision_sdf import VolumeData
+from mujoco_warp._src.collision_sdf import gradient_step
+from mujoco_warp._src.collision_sdf import sample_volume_grad
 from mujoco_warp._src.math import upper_trid_index
 from mujoco_warp._src.types import CollisionType
 from mujoco_warp.test_data.collision_sdf.utils import register_sdf_plugins
@@ -41,6 +46,22 @@ _TOLERANCE = 5e-5
 def plane_convex_test(convex_in: Geom, dist_out: wp.array[wp.vec4]):
   dist, pos, normal = plane_convex(wp.vec3(0.0, 0.0, 1.0), wp.vec3(0.0), convex_in)
   dist_out[0] = dist
+
+
+@wp.kernel
+def volume_gradient_test(volume: VolumeData, result_out: wp.array[wp.vec3]):
+  result_out[0] = sample_volume_grad(wp.vec3(0.0), volume)
+
+
+@wp.kernel
+def volume_gradient_step_test(volume: VolumeData, result_out: wp.array[wp.vec4]):
+  params = OptimizationParams()
+  params.rel_mat = wp.identity(3, dtype=float)
+  mesh = MeshData()
+  dist, point = gradient_step(
+    types.GeomType.SDF, wp.vec3(1e-6, 1e-4, 1e-4), params, -1, -1, 1, True, volume, volume, mesh, mesh
+  )
+  result_out[0] = wp.vec4(point[0], point[1], point[2], dist)
 
 
 def _assert_eq(a, b, name):
@@ -1013,6 +1034,92 @@ class CollisionTest(parameterized.TestCase):
     mjw.collision(m, d)
 
     np.testing.assert_equal(d.nacon.numpy()[0], 4)
+    self.assertTrue(d.overflow.numpy()[0] & types.OverflowType.HFIELD)
+
+  @parameterized.parameters(1, 2)
+  def test_hfield_sparse_subgrid_contacts(self, nworld):
+    """Tests that non-colliding prisms in the subgrid do not starve active contacts."""
+    # The box is rotated 45 deg, so its subgrid is a large square while the box itself only
+    # occupies the diagonal: 1458 prisms, of which more than MJ_MAXCONPAIR are in contact.
+    _, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <asset>
+          <hfield name="hfield" nrow="40" ncol="40" size="1 1 .1 .1"/>
+        </asset>
+        <worldbody>
+          <body pos="0 0 .095" euler="0 0 45">
+            <freejoint/>
+            <geom type="box" size=".9 .02 .1"/>
+          </body>
+          <geom type="hfield" hfield="hfield"/>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=nworld,
+    )
+
+    if nworld == 2:
+      # Vary world 1 so it does not collide.
+      qpos = d.qpos.numpy()
+      qpos[1, 2] += 1.0
+      d.qpos.assign(qpos)
+      mjw.kinematics(m, d)
+
+    d.nacon.fill_(-1)
+    d.overflow.zero_()
+
+    mjw.collision(m, d)
+
+    nacon = d.nacon.numpy()[0]
+    np.testing.assert_equal(nacon, 4)
+    np.testing.assert_equal(d.contact.worldid.numpy()[:nacon], 0)
+    self.assertTrue(d.overflow.numpy()[0] & types.OverflowType.HFIELD)
+
+    if nworld == 2:
+      self.assertFalse(d.overflow.numpy()[1] & types.OverflowType.HFIELD)
+
+  @parameterized.parameters(1, 2)
+  def test_hfield_sparse_subgrid_no_overflow(self, nworld):
+    """Tests that non-colliding prisms in the subgrid do not report an overflow."""
+    # As above at a coarser resolution: 72 prisms, far fewer than MJ_MAXCONPAIR in contact.
+    _, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <asset>
+          <hfield name="hfield" nrow="9" ncol="9" size="1 1 .1 .1"/>
+        </asset>
+        <worldbody>
+          <body pos="0 0 .095" euler="0 0 45">
+            <freejoint/>
+            <geom type="box" size=".9 .02 .1"/>
+          </body>
+          <geom type="hfield" hfield="hfield"/>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=nworld,
+    )
+
+    if nworld == 2:
+      # Vary world 1 so it does not collide.
+      qpos = d.qpos.numpy()
+      qpos[1, 2] += 1.0
+      d.qpos.assign(qpos)
+      mjw.kinematics(m, d)
+
+    d.nacon.fill_(-1)
+    d.overflow.zero_()
+
+    mjw.collision(m, d)
+
+    nacon = d.nacon.numpy()[0]
+    np.testing.assert_equal(nacon, 4)
+    np.testing.assert_equal(d.contact.worldid.numpy()[:nacon], 0)
+    self.assertFalse(d.overflow.numpy()[0] & types.OverflowType.HFIELD)
+
+    if nworld == 2:
+      self.assertFalse(d.overflow.numpy()[1] & types.OverflowType.HFIELD)
 
   def test_min_friction(self):
     with self.assertWarns(UserWarning):
@@ -1253,6 +1360,85 @@ class CollisionTest(parameterized.TestCase):
     for i in range(mjw_ncon):
       test_dist = d.contact.dist.numpy()[i]
       self.assertLess(test_dist, 0.1, f"Contact {i} dist={test_dist} not indicating penetration")
+
+  def test_sdf_volume_gradient_physical_coordinates(self):
+    """A linear field's physical gradient is independent of anisotropic cell size."""
+    half_size = np.array([0.002, 0.004, 0.008], dtype=np.float32)
+    corners = np.array([[half_size[k] * (1 if i & (1 << k) else -1) for k in range(3)] for i in range(8)])
+    expected = np.array([1.0, 2.0, 3.0])
+    volume = VolumeData()
+    volume.center = wp.vec3(0.0)
+    volume.half_size = wp.vec3(*half_size)
+    volume.oct_child = wp.array([[-1] * 8], dtype=types.vec8i)
+    volume.oct_aabb = wp.array(np.array([[np.zeros(3), half_size]]), dtype=wp.vec3)
+    volume.oct_coeff = wp.array([corners @ expected], dtype=types.vec8)
+    volume.root = 0
+    volume.valid = True
+    result = wp.zeros(1, dtype=wp.vec3)
+    wp.launch(volume_gradient_test, dim=1, inputs=[volume], outputs=[result])
+    np.testing.assert_allclose(result.numpy()[0], expected, rtol=1e-6, atol=1e-6)
+
+  def test_sdf_gradient_step_preserves_better_iterate(self):
+    """A failed line search keeps the previous point and distance, matching CPU MuJoCo."""
+    signs = np.array([[1 if i & (1 << k) else -1 for k in range(3)] for i in range(8)])
+    centers = np.vstack((np.zeros((1, 3)), signs * 0.0005))
+    half_sizes = np.vstack((np.full((1, 3), 0.001), np.full((8, 3), 0.0005)))
+    corners = centers[:, None, :] + signs * half_sizes[:, None, :]
+    volume = VolumeData()
+    volume.center = wp.vec3(0.0)
+    volume.half_size = wp.vec3(0.001)
+    volume.oct_aabb = wp.array(np.stack((centers, half_sizes), axis=1), dtype=wp.vec3)
+    volume.oct_child = wp.array(np.vstack((np.arange(1, 9), np.full((8, 8), -1))), dtype=types.vec8i)
+    volume.oct_coeff = wp.array(np.abs(corners[:, :, 0]) - 0.0005, dtype=types.vec8)
+    volume.root = 0
+    volume.valid = True
+    result = wp.zeros(1, dtype=wp.vec4)
+    wp.launch(volume_gradient_step_test, dim=1, inputs=[volume], outputs=[result])
+    np.testing.assert_allclose(result.numpy()[0], [1e-6, 1e-4, 1e-4, -0.000499], rtol=1e-5, atol=1e-9)
+
+  @parameterized.parameters(1, 2)
+  def test_sdf_disjoint_bounds_with_candidate_gap(self, nworld):
+    """A candidate gap must not seed SDF minimization inside an empty AABB intersection."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+    <mujoco>
+      <asset>
+        <mesh name="cube" scale=".01 .01 .01"
+          vertex="1 1 1  1 1 -1  1 -1 1  1 -1 -1  -1 1 1  -1 1 -1  -1 -1 1  -1 -1 -1"/>
+      </asset>
+      <worldbody>
+        <geom type="sdf" mesh="cube" gap=".01"/>
+        <body pos="0 0 .022">
+          <freejoint/>
+          <geom type="sdf" mesh="cube" gap=".01"/>
+        </body>
+      </worldbody>
+    </mujoco>
+    """,
+      nworld=nworld,
+    )
+    mujoco.mj_collision(mjm, mjd)
+    self.assertEqual(mjd.ncon, 0)
+
+    if nworld == 2:
+      mjd.qpos[2] = 0.015
+      mujoco.mj_kinematics(mjm, mjd)
+      mujoco.mj_collision(mjm, mjd)
+      self.assertGreater(mjd.ncon, 0)
+      qpos = d.qpos.numpy()
+      qpos[1] = mjd.qpos
+      d.qpos.assign(qpos)
+      mjw.kinematics(m, d)
+
+    d.nacon.fill_(-1)
+    mjw.collision(m, d)
+    nacon = d.nacon.numpy()[0]
+    if nworld == 1:
+      self.assertEqual(nacon, 0)
+    else:
+      self.assertGreater(nacon, 0)
+      np.testing.assert_array_equal(d.contact.worldid.numpy()[:nacon], 1)
+      self.assertLess(d.contact.dist.numpy()[:nacon].min(), 0)
 
   def test_ccd_margin_dist(self):
     """Tests that CCD contact dist matches MuJoCo when margin > 0.

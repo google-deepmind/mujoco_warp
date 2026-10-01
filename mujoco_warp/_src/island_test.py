@@ -208,7 +208,7 @@ class IslandDiscoveryConstraintsTest(absltest.TestCase):
         <worldbody>
           <flexcomp name="f" type="grid" dim="1" count="3 1 1" spacing=".05 .05 .05" radius=".01" mass="1">
             <edge equality="true"/>
-            <contact internal="false" selfcollide="none"/>
+            <contact selfcollide="none"/>
           </flexcomp>
         </worldbody>
       </mujoco>

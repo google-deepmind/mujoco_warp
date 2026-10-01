@@ -346,17 +346,15 @@ def _flex_nodes(
 @wp.kernel
 def _flex_edges(
   # Model:
-  nflex: int,
   body_rootid: wp.array[int],
-  body_dofnum: wp.array[int],
-  body_dofadr: wp.array[int],
   flex_vertadr: wp.array[int],
-  flex_edgeadr: wp.array[int],
-  flex_edgenum: wp.array[int],
   flex_vertbodyid: wp.array[int],
   flex_edge: wp.array[wp.vec2i],
+  flexedge_J_rownnz: wp.array[int],
   flexedge_J_rowadr: wp.array[int],
   flexedge_J_colind: wp.array[int],
+  body_isdofancestor: wp.array2d[int],
+  flex_edgeflexid: wp.array[int],
   # Data in:
   qvel_in: wp.array2d[float],
   subtree_com_in: wp.array2d[wp.vec3],
@@ -368,11 +366,7 @@ def _flex_edges(
   flexedge_velocity_out: wp.array2d[float],
 ):
   worldid, edgeid = wp.tid()
-  for i in range(nflex):
-    locid = edgeid - flex_edgeadr[i]
-    if locid >= 0 and locid < flex_edgenum[i]:
-      f = i
-      break
+  f = flex_edgeflexid[edgeid]
 
   vbase = flex_vertadr[f]
   v = flex_edge[edgeid]
@@ -384,65 +378,40 @@ def _flex_edges(
   vec = pos2 - pos1
   edge, edge_length = math.normalize_with_norm(vec)
   flexedge_length_out[worldid, edgeid] = edge_length
-  # TODO(quaglino): use Jacobian
+
   b1 = flex_vertbodyid[vbase0]
   b2 = flex_vertbodyid[vbase1]
 
-  # skip Jacobian/velocity for trilinear flex (vertbodyid == -1)
-  if b1 < 0 or b2 < 0:
+  rownnz = flexedge_J_rownnz[edgeid]
+  if b1 < 0 or b2 < 0 or rownnz == 0:
     flexedge_velocity_out[worldid, edgeid] = 0.0
     return
 
-  dofnum1 = body_dofnum[b1]
-  dofnum2 = body_dofnum[b2]
-
-  # velocity via Jacobian: sum_k J_k * qvel_k for each body
-  vel = float(0.0)
-  if dofnum1 > 0:
-    dofi = body_dofadr[b1]
-    offset1 = pos1 - wp.vec3(subtree_com_in[worldid, body_rootid[b1]])
-    for k in range(dofnum1):
-      cdof = cdof_in[worldid, dofi + k]
-      cdof_ang = wp.spatial_top(cdof)
-      cdof_lin = wp.spatial_bottom(cdof)
-      jacp1 = cdof_lin + wp.cross(cdof_ang, offset1)
-      vel -= wp.dot(jacp1, edge) * qvel_in[worldid, dofi + k]
-  if dofnum2 > 0:
-    dofj = body_dofadr[b2]
-    offset2 = pos2 - wp.vec3(subtree_com_in[worldid, body_rootid[b2]])
-    for k in range(dofnum2):
-      cdof = cdof_in[worldid, dofj + k]
-      cdof_ang = wp.spatial_top(cdof)
-      cdof_lin = wp.spatial_bottom(cdof)
-      jacp2 = cdof_lin + wp.cross(cdof_ang, offset2)
-      vel += wp.dot(jacp2, edge) * qvel_in[worldid, dofj + k]
-  flexedge_velocity_out[worldid, edgeid] = vel
-
   rowadr = flexedge_J_rowadr[edgeid]
-  nnz_offset = 0
+  root1 = body_rootid[b1]
+  root2 = body_rootid[b2]
+  com1 = subtree_com_in[worldid, root1]
+  com2 = com1 if root2 == root1 else subtree_com_in[worldid, root2]
+  offset1 = pos1 - com1
+  offset2 = pos2 - com2
+  vel = float(0.0)
 
-  # body1 DOFs: b1 is in subtree, b2 is not -> jacdif = 0 - jacp1 = -jacp1
-  if dofnum1 > 0:
-    dofi = body_dofadr[b1]
-    offset1 = pos1 - wp.vec3(subtree_com_in[worldid, body_rootid[b1]])
-    for k in range(dofnum1):
-      cdof = cdof_in[worldid, dofi + k]
-      cdof_ang = wp.spatial_top(cdof)
-      cdof_lin = wp.spatial_bottom(cdof)
+  for i in range(rownnz):
+    dofid = flexedge_J_colind[rowadr + i]
+    cdof = cdof_in[worldid, dofid]
+    cdof_ang = wp.spatial_top(cdof)
+    cdof_lin = wp.spatial_bottom(cdof)
+    J_val = float(0.0)
+    if body_isdofancestor[b1, dofid] != 0:
       jacp1 = cdof_lin + wp.cross(cdof_ang, offset1)
-      flexedge_J_out[worldid, rowadr + nnz_offset + k] = wp.dot(-jacp1, edge)
-    nnz_offset += dofnum1
-
-  # body2 DOFs: b2 is in subtree, b1 is not -> jacdif = jacp2 - 0 = jacp2
-  if dofnum2 > 0:
-    dofj = body_dofadr[b2]
-    offset2 = pos2 - wp.vec3(subtree_com_in[worldid, body_rootid[b2]])
-    for k in range(dofnum2):
-      cdof = cdof_in[worldid, dofj + k]
-      cdof_ang = wp.spatial_top(cdof)
-      cdof_lin = wp.spatial_bottom(cdof)
+      J_val -= wp.dot(jacp1, edge)
+    if body_isdofancestor[b2, dofid] != 0:
       jacp2 = cdof_lin + wp.cross(cdof_ang, offset2)
-      flexedge_J_out[worldid, rowadr + nnz_offset + k] = wp.dot(jacp2, edge)
+      J_val += wp.dot(jacp2, edge)
+    flexedge_J_out[worldid, rowadr + i] = J_val
+    vel += J_val * qvel_in[worldid, dofid]
+
+  flexedge_velocity_out[worldid, edgeid] = vel
 
 
 @event_scope
@@ -644,17 +613,15 @@ def flex(m: Model, d: Data):
     _flex_edges,
     dim=(d.nworld, m.nflexedge),
     inputs=[
-      m.nflex,
       m.body_rootid,
-      m.body_dofnum,
-      m.body_dofadr,
       m.flex_vertadr,
-      m.flex_edgeadr,
-      m.flex_edgenum,
       m.flex_vertbodyid,
       m.flex_edge,
+      m.flexedge_J_rownnz,
       m.flexedge_J_rowadr,
       m.flexedge_J_colind,
+      m.body_isdofancestor,
+      m.flex_edgeflexid,
       d.qvel,
       d.subtree_com,
       d.cdof,
@@ -4566,7 +4533,7 @@ def tendon(m: Model, d: Data):
   d.ten_length.zero_()
   d.ten_J.zero_()
 
-  # Cartesian 3D points fro geom wrap points
+  # Cartesian 3D points for geom wrap points
   wrap_geom_xpos = wp.empty((d.nworld, m.nwrap), dtype=wp.spatial_vector)
 
   # process joint tendons

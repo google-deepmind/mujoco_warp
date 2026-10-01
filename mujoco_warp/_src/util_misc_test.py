@@ -275,6 +275,97 @@ def _muscle_gain_length(length, lmin, lmax):
   return output.numpy()[0]
 
 
+def _muscle_gain_length_deriv(length, lmin, lmax):
+  @wp.kernel(module="unique")
+  def muscle_gain_length_deriv(length: float, lmin: float, lmax: float, out: wp.array[float]):
+    out[0] = util_misc.muscle_gain_length_deriv(length, lmin, lmax)
+
+  output = wp.empty(1, dtype=float)
+  wp.launch(muscle_gain_length_deriv, dim=(1,), inputs=[length, lmin, lmax], outputs=[output])
+
+  return output.numpy()[0]
+
+
+def _muscle_gain(len_, vel, lengthrange, acc0, prm):
+  @wp.kernel(module="unique")
+  def muscle_gain(len_: float, vel: float, lengthrange: wp.vec2, acc0: float, prm: vec10, out: wp.array[float]):
+    out[0] = util_misc.muscle_gain(len_, vel, lengthrange, acc0, prm)
+
+  output = wp.empty(1, dtype=float)
+  wp.launch(
+    muscle_gain,
+    dim=(1,),
+    inputs=[len_, vel, wp.vec2(*lengthrange), acc0, vec10(*prm)],
+    outputs=[output],
+  )
+
+  return output.numpy()[0]
+
+
+def _muscle_gain_len_deriv(len_, vel, lengthrange, acc0, prm):
+  @wp.kernel(module="unique")
+  def muscle_gain_len_deriv(len_: float, vel: float, lengthrange: wp.vec2, acc0: float, prm: vec10, out: wp.array[float]):
+    out[0] = util_misc.muscle_gain_len_deriv(len_, vel, lengthrange, acc0, prm)
+
+  output = wp.empty(1, dtype=float)
+  wp.launch(
+    muscle_gain_len_deriv,
+    dim=(1,),
+    inputs=[len_, vel, wp.vec2(*lengthrange), acc0, vec10(*prm)],
+    outputs=[output],
+  )
+
+  return output.numpy()[0]
+
+
+def _muscle_bias(len_, lengthrange, acc0, prm):
+  @wp.kernel(module="unique")
+  def muscle_bias(len_: float, lengthrange: wp.vec2, acc0: float, prm: vec10, out: wp.array[float]):
+    out[0] = util_misc.muscle_bias(len_, lengthrange, acc0, prm)
+
+  output = wp.empty(1, dtype=float)
+  wp.launch(
+    muscle_bias,
+    dim=(1,),
+    inputs=[len_, wp.vec2(*lengthrange), acc0, vec10(*prm)],
+    outputs=[output],
+  )
+
+  return output.numpy()[0]
+
+
+def _muscle_bias_len_deriv(len_, lengthrange, acc0, prm):
+  @wp.kernel(module="unique")
+  def muscle_bias_len_deriv(len_: float, lengthrange: wp.vec2, acc0: float, prm: vec10, out: wp.array[float]):
+    out[0] = util_misc.muscle_bias_len_deriv(len_, lengthrange, acc0, prm)
+
+  output = wp.empty(1, dtype=float)
+  wp.launch(
+    muscle_bias_len_deriv,
+    dim=(1,),
+    inputs=[len_, wp.vec2(*lengthrange), acc0, vec10(*prm)],
+    outputs=[output],
+  )
+
+  return output.numpy()[0]
+
+
+def _muscle_gain_vel_deriv(len_, vel, lengthrange, acc0, prm):
+  @wp.kernel(module="unique")
+  def muscle_gain_vel_deriv(len_: float, vel: float, lengthrange: wp.vec2, acc0: float, prm: vec10, out: wp.array[float]):
+    out[0] = util_misc.muscle_gain_vel_deriv(len_, vel, lengthrange, acc0, prm)
+
+  output = wp.empty(1, dtype=float)
+  wp.launch(
+    muscle_gain_vel_deriv,
+    dim=(1,),
+    inputs=[len_, vel, wp.vec2(*lengthrange), acc0, vec10(*prm)],
+    outputs=[output],
+  )
+
+  return output.numpy()[0]
+
+
 def _muscle_dynamics_timescale(dctrl, tau_act, tau_deact, smooth_width):
   @wp.kernel(module="unique")
   def muscle_gain_length(
@@ -565,6 +656,73 @@ class UtilMiscTest(parameterized.TestCase):
   )
   def test_muscle_gain_length(self, input, output):
     _assert_eq(_muscle_gain_length(input, 0.5, 1.5), output, "length-gain")
+
+  @parameterized.parameters(
+    (0.25, 0.0),
+    (0.5, 0.0),
+    (0.625, 2.0),
+    (0.75, 4.0),
+    (0.875, 2.0),
+    (1.0, 0.0),
+    (1.125, -2.0),
+    (1.25, -4.0),
+    (1.375, -2.0),
+    (1.5, 0.0),
+    (1.75, 0.0),
+  )
+  def test_muscle_gain_length_deriv(self, length, expected):
+    lmin, lmax = 0.5, 1.5
+    deriv = _muscle_gain_length_deriv(length, lmin, lmax)
+    _assert_eq(deriv, expected, "muscle_gain_length_deriv")
+    if length in (0.25, 0.625, 0.875, 1.125, 1.375, 1.75):
+      eps = 1e-2
+      fd = (_muscle_gain_length(length + eps, lmin, lmax) - _muscle_gain_length(length - eps, lmin, lmax)) / (2.0 * eps)
+      _assert_eq(deriv, fd, "muscle_gain_length_deriv_fd")
+
+  @parameterized.product(
+    len_=(-0.5, -0.05, 0.45, 1.0, 1.6, 2.1),
+    vel=(-3.5, -1.5, 0.3, 0.9),
+    force=(-1.0, 150.0),
+  )
+  def test_muscle_gain_len_deriv(self, len_, vel, force):
+    lengthrange = (0.2, 0.8)
+    acc0 = 2.0
+    prm = np.array([0.75, 1.05, force, 200.0, 0.5, 1.6, 1.5, 1.3, 1.2, 0.0], dtype=np.float32)
+    deriv = _muscle_gain_len_deriv(len_, vel, lengthrange, acc0, prm)
+    eps = 1e-2
+    fd = (_muscle_gain(len_ + eps, vel, lengthrange, acc0, prm) - _muscle_gain(len_ - eps, vel, lengthrange, acc0, prm)) / (
+      2.0 * eps
+    )
+    _assert_eq(deriv, fd, "muscle_gain_len_deriv")
+
+  @parameterized.product(
+    len_=(0.4, 1.0, 1.6),
+    force=(-1.0, 150.0),
+  )
+  def test_muscle_bias_len_deriv(self, len_, force):
+    lengthrange = (0.2, 0.8)
+    acc0 = 2.0
+    prm = np.array([0.75, 1.05, force, 200.0, 0.5, 1.6, 1.5, 1.3, 1.2, 0.0], dtype=np.float32)
+    deriv = _muscle_bias_len_deriv(len_, lengthrange, acc0, prm)
+    eps = 1e-2
+    fd = (_muscle_bias(len_ + eps, lengthrange, acc0, prm) - _muscle_bias(len_ - eps, lengthrange, acc0, prm)) / (2.0 * eps)
+    _assert_eq(deriv, fd, "muscle_bias_len_deriv")
+
+  @parameterized.product(
+    vel=(-3.5, -1.5, 0.3, 0.9),
+    force=(-1.0, 150.0),
+  )
+  def test_muscle_gain_vel_deriv(self, vel, force):
+    len_ = 0.45
+    lengthrange = (0.2, 0.8)
+    acc0 = 2.0
+    prm = np.array([0.75, 1.05, force, 200.0, 0.5, 1.6, 1.5, 1.3, 1.2, 0.0], dtype=np.float32)
+    deriv = _muscle_gain_vel_deriv(len_, vel, lengthrange, acc0, prm)
+    eps = 1e-2
+    fd = (_muscle_gain(len_, vel + eps, lengthrange, acc0, prm) - _muscle_gain(len_, vel - eps, lengthrange, acc0, prm)) / (
+      2.0 * eps
+    )
+    _assert_eq(deriv, fd, "muscle_gain_vel_deriv")
 
   # TODO(team): test util_misc.muscle_gain
   # TODO(team): test util_misc.muscle_bias

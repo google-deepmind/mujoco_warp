@@ -644,6 +644,88 @@ class IOTest(parameterized.TestCase):
     np.testing.assert_allclose(mjd.qLD, mjd_ref.qLD)
     np.testing.assert_allclose(mjd.M, mjd_ref.M)
 
+  @parameterized.parameters(1, 2)
+  def test_get_data_into_filters_sensor_contacts(self, nworld):
+    """Tests that get_data_into exports only constraint contacts and preserves efc ordering."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+        <mujoco>
+          <worldbody>
+            <body>
+              <freejoint/>
+              <geom name="a" type="sphere" size=".1"/>
+            </body>
+            <body pos="0 0 .15">
+              <freejoint/>
+              <geom name="b" type="sphere" size=".1"/>
+            </body>
+            <body pos=".24 0 0">
+              <freejoint/>
+              <geom name="c" type="sphere" size=".1" margin=".02" gap=".05"/>
+            </body>
+            <body pos="0 0 1">
+              <freejoint/>
+              <geom name="d" type="sphere" size=".1"/>
+            </body>
+          </worldbody>
+          <sensor>
+            <distance geom1="a" geom2="b" cutoff="2"/>
+            <distance geom1="a" geom2="d" cutoff="2"/>
+          </sensor>
+        </mujoco>
+      """,
+      nworld=nworld,
+      nconmax=8,
+      njmax=8,
+    )
+
+    mjds = [mjd]
+    if nworld == 2:
+      mjd1 = mujoco.MjData(mjm)
+      qpos = d.qpos.numpy()
+      qpos[1, 9] = 0.6
+      d.qpos.assign(qpos)
+      mjd1.qpos[:] = qpos[1]
+      mujoco.mj_forward(mjm, mjd1)
+      mjds.append(mjd1)
+
+    d.nacon.fill_(-1)
+    d.nefc.fill_(-1)
+    d.sensordata.fill_(wp.inf)
+    d.contact.dist.fill_(wp.inf)
+    d.contact.worldid.fill_(-1)
+    d.contact.type.fill_(-1)
+    d.contact.efc_address.fill_(-1)
+    d.efc.pos.fill_(wp.inf)
+
+    mjwarp.forward(m, d)
+
+    for world_id in range(nworld):
+      result = mujoco.MjData(mjm)
+      mjwarp.get_data_into(result, mjm, d, world_id=world_id)
+      self.assertEqual(result.ncon, mjds[world_id].ncon)
+      self.assertEqual(result.nefc, mjds[world_id].nefc)
+      _assert_eq(result.sensordata, mjds[world_id].sensordata, f"sensordata_world_{world_id}")
+      _assert_eq(
+        result.contact.dist[: result.ncon],
+        mjds[world_id].contact.dist[: mjds[world_id].ncon],
+        f"contact_dist_world_{world_id}",
+      )
+      _assert_eq(
+        result.contact.efc_address[: result.ncon],
+        mjds[world_id].contact.efc_address[: mjds[world_id].ncon],
+        f"efc_address_world_{world_id}",
+      )
+      _assert_eq(
+        result.efc_pos[: result.nefc],
+        mjds[world_id].efc_pos[: mjds[world_id].nefc],
+        f"efc_pos_world_{world_id}",
+      )
+
+    if nworld == 2:
+      self.assertNotEqual(mjds[0].ncon, mjds[1].ncon)
+      self.assertFalse(np.allclose(d.sensordata.numpy()[0], d.sensordata.numpy()[1]))
+
   @parameterized.named_parameters(
     dict(testcase_name="nworld=1", nworld=1, world_id=0),
     dict(testcase_name="nworld=2_world_id=1", nworld=2, world_id=1),
@@ -2753,21 +2835,6 @@ class IOTest(parameterized.TestCase):
     with warnings.catch_warnings():
       warnings.simplefilter("error")
       mjwarp.put_model(mjm)
-
-  def test_flex_internal_collision(self):
-    """Test that flex internal collision raises NotImplementedError."""
-    xml = """
-      <mujoco>
-        <worldbody>
-          <flexcomp name="cloth" type="grid" count="3 3 1" spacing=".2 .2 .1" pos="0 0 0"
-                    radius=".02" dim="2" mass=".5">
-            <contact selfcollide="none" internal="true" margin="0.05"/>
-          </flexcomp>
-        </worldbody>
-      </mujoco>
-      """
-    with self.assertRaises(NotImplementedError):
-      test_data.fixture(xml=xml)
 
 
 if __name__ == "__main__":

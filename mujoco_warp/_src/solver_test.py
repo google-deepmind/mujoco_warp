@@ -85,18 +85,19 @@ def _elliptic_dense_hessian_reference(m, d, ctx):
       jac[dim] = efc_J[worldid, efcid, : m.nv]
 
     t = max(np.linalg.norm(u[1:]), types.MJ_MINVAL)
-    ttt = max(t * t * t, types.MJ_MINVAL)
+    inv_t = 1.0 / t
+    mu_n_over_t = mu * u[0] * inv_t
     cone = np.zeros((condim, condim))
     for dim1 in range(condim):
       for dim2 in range(dim1 + 1):
         if dim1 == 0 and dim2 == 0:
           value = 1.0
         elif dim2 == 0:
-          value = -mu / t * u[dim1]
+          value = -mu * (u[dim1] * inv_t)
         else:
-          value = mu * u[0] / ttt * u[dim1] * u[dim2]
+          value = mu_n_over_t * (u[dim1] * inv_t) * (u[dim2] * inv_t)
           if dim1 == dim2:
-            value += mu2 - mu * u[0] / t
+            value += mu2 - mu_n_over_t
         value *= dm * scale[dim1] * scale[dim2]
         cone[dim1, dim2] = value
         cone[dim2, dim1] = value
@@ -153,18 +154,19 @@ def _elliptic_sparse_hessian_reference(m, d, ctx):
       jac[dim, cols] = efc_J[worldid, 0, rowadr : rowadr + rownnz]
 
     t = max(np.linalg.norm(u[1:]), types.MJ_MINVAL)
-    ttt = max(t * t * t, types.MJ_MINVAL)
+    inv_t = 1.0 / t
+    mu_n_over_t = mu * u[0] * inv_t
     cone = np.zeros((condim, condim))
     for dim1 in range(condim):
       for dim2 in range(dim1 + 1):
         if dim1 == 0 and dim2 == 0:
           value = 1.0
         elif dim2 == 0:
-          value = -mu / t * u[dim1]
+          value = -mu * (u[dim1] * inv_t)
         else:
-          value = mu * u[0] / ttt * u[dim1] * u[dim2]
+          value = mu_n_over_t * (u[dim1] * inv_t) * (u[dim2] * inv_t)
           if dim1 == dim2:
-            value += mu2 - mu * u[0] / t
+            value += mu2 - mu_n_over_t
         value *= dm * scale[dim1] * scale[dim2]
         cone[dim1, dim2] = value
         cone[dim2, dim1] = value
@@ -225,6 +227,7 @@ class SolverTest(parameterized.TestCase):
         wp.array([4.0e-12], dtype=float),
         wp.array([1.0e-6], dtype=float),
         wp.array([2.0e-6], dtype=float),
+        wp.array([1.0], dtype=float),
         done,
       ],
       outputs=[solver_niter, overflow, nsolving, done],
@@ -253,6 +256,7 @@ class SolverTest(parameterized.TestCase):
         wp.array([1.0], dtype=float),
         wp.array([1.0], dtype=float),
         wp.array([1.0], dtype=float),
+        wp.array([1.0], dtype=float),
         done,
       ],
       outputs=[solver_niter, overflow, nsolving, done],
@@ -262,6 +266,35 @@ class SolverTest(parameterized.TestCase):
     self.assertEqual(solver_niter.numpy()[0], 1)
     self.assertEqual(nsolving.numpy()[0], 0)
     self.assertTrue(overflow.numpy()[0] & types.OverflowType.ITERATIONS)
+
+  def test_solve_done_zero_alpha_early_out(self):
+    """Newton terminates immediately without overflow when linesearch alpha == 0."""
+    solver_niter = wp.zeros(1, dtype=int)
+    nsolving = wp.ones(1, dtype=int)
+    done = wp.zeros(1, dtype=bool)
+    overflow = wp.zeros(1, dtype=int)
+
+    wp.launch(
+      solver._solve_done(types.OverflowType.NONE),
+      dim=1,
+      inputs=[
+        1,
+        wp.array([1.0e-6], dtype=float),
+        100,
+        wp.array([1.0], dtype=float),
+        wp.array([1.0], dtype=float),
+        wp.array([1.0], dtype=float),
+        wp.array([0.0], dtype=float),
+        wp.array([0.0], dtype=float),
+        done,
+      ],
+      outputs=[solver_niter, overflow, nsolving, done],
+    )
+
+    self.assertTrue(done.numpy()[0])
+    self.assertEqual(solver_niter.numpy()[0], 1)
+    self.assertEqual(nsolving.numpy()[0], 0)
+    self.assertEqual(overflow.numpy()[0], 0)
 
   def test_solve_cg_finalize_iterations_overflow(self):
     """CG records overflow when iteration limit reached without convergence."""
@@ -285,6 +318,7 @@ class SolverTest(parameterized.TestCase):
         wp.zeros((1, 1), dtype=float),
         wp.array([1.0], dtype=float),
         wp.array([1.0], dtype=float),
+        wp.array([1.0], dtype=float),
         done,
       ],
       outputs=[solver_niter, overflow, beta, nsolving, done],
@@ -294,6 +328,39 @@ class SolverTest(parameterized.TestCase):
     self.assertEqual(solver_niter.numpy()[0], 1)
     self.assertEqual(nsolving.numpy()[0], 0)
     self.assertTrue(overflow.numpy()[0] & types.OverflowType.ITERATIONS)
+
+  def test_solve_cg_finalize_zero_alpha_early_out(self):
+    """CG terminates immediately without overflow when linesearch alpha == 0."""
+    solver_niter = wp.zeros(1, dtype=int)
+    nsolving = wp.ones(1, dtype=int)
+    done = wp.zeros(1, dtype=bool)
+    overflow = wp.zeros(1, dtype=int)
+    beta = wp.zeros(1, dtype=float)
+
+    wp.launch(
+      solver._solve_beta_finalize_tiled(types.OverflowType.NONE),
+      dim=(1, 32),
+      inputs=[
+        1,
+        wp.array([1.0e-6], dtype=float),
+        100,
+        wp.array([1.0], dtype=float),
+        wp.zeros((1, 1), dtype=float),
+        wp.zeros((1, 1), dtype=float),
+        wp.zeros((1, 1), dtype=float),
+        wp.zeros((1, 1), dtype=float),
+        wp.array([1.0], dtype=float),
+        wp.array([1.0], dtype=float),
+        wp.array([0.0], dtype=float),
+        done,
+      ],
+      outputs=[solver_niter, overflow, beta, nsolving, done],
+    )
+
+    self.assertTrue(done.numpy()[0])
+    self.assertEqual(solver_niter.numpy()[0], 1)
+    self.assertEqual(nsolving.numpy()[0], 0)
+    self.assertEqual(overflow.numpy()[0], 0)
 
   # Transition cases use powers of two so the exact delta is below the absolute-cost ulp.
   @parameterized.named_parameters(
@@ -634,6 +701,70 @@ class SolverTest(parameterized.TestCase):
     self.assertGreater(d.qacc.numpy()[0, 0], 0.03)
     self.assertGreater(ctx.improvement.numpy()[0], 5.0e-4)
 
+  @parameterized.parameters(1, 2)
+  def test_linesearch_accepts_converged_newton_point(self, nworld):
+    """Linesearch should accept a Newton point at the minimizer whatever its derivative sign."""
+    _, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <body>
+            <joint type="slide"/>
+            <geom size="0.1"/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """,
+      overrides={
+        "opt.cone": ConeType.PYRAMIDAL,
+        "opt.jacobian": mujoco.mjtJacobian.mjJAC_DENSE,
+        "opt.iterations": 0,
+        "opt.ls_iterations": 50,
+      },
+      nworld=nworld,
+      njmax=2,
+    )
+    ctx = solver._create_solver_context(m, d)
+
+    # cost 0.5 * (alpha - target)^2 from an equality row plus 0.5 * (alpha - 1)^2 from an
+    # inequality row active for alpha < 1: Newton from 0 undershoots, and the second Newton step
+    # lands exactly on the minimizer alpha = target, where the derivative is zero and bracketing
+    # alone rejects it
+    d.ne.fill_(1)
+    d.nf.fill_(0)
+    d.nefc.fill_(2)
+    d.nacon.fill_(0)
+    d.M.zero_()
+    d.qacc.zero_()
+    d.efc.Ma.zero_()
+    d.qfrc_smooth.zero_()
+
+    efc_j = np.zeros(d.efc.J.shape, dtype=np.float32)
+    efc_j[:, :2, 0] = 1.0
+    d.efc.J.assign(efc_j)
+
+    efc_d = np.zeros(d.efc.D.shape, dtype=np.float32)
+    efc_d[:, :2] = 1.0
+    d.efc.D.assign(efc_d)
+    d.efc.frictionloss.zero_()
+
+    search = np.zeros(ctx.search.shape, dtype=np.float32)
+    search[:, 0] = 1.0
+    ctx.search.assign(search)
+
+    targets = np.array([4.0, 6.0][:nworld], dtype=np.float32)
+    jaref = np.zeros(ctx.Jaref.shape, dtype=np.float32)
+    jaref[:, 0] = -targets
+    jaref[:, 1] = -1.0
+    ctx.Jaref.assign(jaref)
+    ctx.search_dot.fill_(1.0)
+    ctx.done.fill_(False)
+    ctx.search_unchanged.fill_(False)
+
+    solver._linesearch(m, d, ctx)
+
+    np.testing.assert_allclose(d.qacc.numpy()[:, 0], targets, rtol=1e-6)
+
   def test_linesearch_iterations_overflow(self):
     """Linesearch records overflow when iteration limit reached without convergence."""
     _, _, m, d = test_data.fixture(
@@ -878,6 +1009,35 @@ class SolverTest(parameterized.TestCase):
       rtol=1e-5,
       atol=1e-6,
     )
+
+  @parameterized.parameters("dense", "sparse")
+  def test_elliptic_hessian_scale_invariance(self, jacobian):
+    """Cone curvature is degree-0 homogeneous: scaling Jaref leaves Hessian unchanged."""
+    mjm, mjd, m, _ = test_data.fixture(
+      xml=f"""
+      <mujoco>
+        <option cone="elliptic" solver="Newton" jacobian="{jacobian}"/>
+        <worldbody>
+          <geom type="plane" size="1 1 .1" friction="1 0.01 0.001"/>
+          <body pos="0 0 0.02"><freejoint/><geom type="box" size="0.04 0.05 0.03" mass="0.5"/></body>
+        </worldbody>
+      </mujoco>
+      """
+    )
+    mjd.qvel[0] = 1.5
+    mujoco.mj_forward(mjm, mjd)
+
+    d = mjw.put_data(mjm, mjd)
+    ctx = solver._create_solver_context(m, d)
+    solver.init_context(m, d, ctx, grad=True)
+    jaref = ctx.Jaref.numpy().copy()
+
+    def _get_h(scale):
+      ctx.Jaref = wp.array(jaref * scale, dtype=float, device=ctx.Jaref.device)
+      solver._update_gradient(m, d, ctx)
+      return ctx.h.numpy()[:, : m.nv, : m.nv].copy()
+
+    np.testing.assert_allclose(_get_h(1e-8), _get_h(1.0), rtol=1e-5, atol=1e-6)
 
   @parameterized.parameters(
     (ConeType.PYRAMIDAL, SolverType.CG, 25, 5),
@@ -1593,6 +1753,39 @@ class CompactSolverTest(absltest.TestCase):
       1e-5,
       f"qfrc_constraint should be zeroed, but got max abs: {np.max(np.abs(qfrc_constraint_post))}",
     )
+
+  def test_discrete_cg_init_context_prec_fold(self):
+    """Verifies solver.init_context folds constraint/contact metric into d.efm_L for CG solver."""
+    _, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option integrator="discrete" solver="CG" timestep="0.005"/>
+        <worldbody>
+          <geom type="plane" size="1 1 0.1"/>
+          <flexcomp name="string" type="grid" dim="2" count="2 2 1" spacing="0.05 0.05 1"
+                    pos="0 0 0.002" radius="0.005" mass="0.05">
+            <contact passive="true" selfcollide="none"/>
+            <elasticity young="1e4" poisson="0.2" thickness="1e-3" elastic2d="stretch"/>
+          </flexcomp>
+        </worldbody>
+        <equality>
+          <connect body1="string_0" anchor="0 0 0"/>
+        </equality>
+      </mujoco>
+      """,
+      qvel_noise=0.2,
+    )
+
+    mjw.forward(m, d)
+
+    # Re-run eff_build to get original 3x3 blocks in d.efm_L
+    solver.derivative.eff_build(m, d)
+    efm_L_unfolded = d.efm_L.numpy().copy()
+
+    ctx = solver._create_solver_context(m, d)
+    solver.init_context(m, d, ctx, grad=True)
+    efm_L_folded = d.efm_L.numpy()
+    self.assertFalse(np.allclose(efm_L_unfolded, efm_L_folded))
 
 
 if __name__ == "__main__":
