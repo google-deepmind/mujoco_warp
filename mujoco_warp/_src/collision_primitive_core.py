@@ -23,6 +23,8 @@ from mujoco_warp._src.math import normalize_with_norm
 from mujoco_warp._src.math import safe_div
 from mujoco_warp._src.types import MJ_MAXVAL
 from mujoco_warp._src.types import MJ_MINVAL
+from mujoco_warp._src.types import mat53
+from mujoco_warp._src.types import mat113
 from mujoco_warp._src.types import vec5
 from mujoco_warp._src.types import vec11
 
@@ -42,14 +44,6 @@ class mat43f(wp.types.matrix(shape=(4, 3), dtype=wp.float32)):
 
 
 class mat83f(wp.types.matrix(shape=(8, 3), dtype=wp.float32)):
-  pass
-
-
-class mat53f(wp.types.matrix(shape=(5, 3), dtype=wp.float32)):
-  pass
-
-
-class mat113f(wp.types.matrix(shape=(11, 3), dtype=wp.float32)):
   pass
 
 
@@ -1554,7 +1548,7 @@ def box_triangle(
   t3: wp.vec3,
   tri_radius: float,
   margin: float,
-) -> Tuple[vec11, mat113f, mat113f]:
+) -> Tuple[vec11, mat113, mat113]:
   """Core contact geometry calculation for box-triangle collision.
 
   Port of mjraw_BoxTriangle from engine_collision_primitive.c
@@ -1576,8 +1570,8 @@ def box_triangle(
     - Matrix of contact normal vectors (one per row).
   """
   contact_dist = vec11(MJ_MAXVAL)
-  contact_pos = mat113f()
-  contact_normal = mat113f()
+  contact_pos = mat113()
+  contact_normal = mat113()
 
   box_rotT = wp.transpose(box_rot)
 
@@ -1646,7 +1640,7 @@ def capsule_triangle(
   t3: wp.vec3,
   tri_radius: float,
   margin: float,
-) -> Tuple[vec5, mat53f, mat53f]:
+) -> Tuple[vec5, mat53, mat53]:
   """Core contact geometry calculation for capsule-triangle collision.
 
   Port of mjraw_CapsuleTriangle from engine_collision_primitive.c
@@ -1669,8 +1663,8 @@ def capsule_triangle(
     - Matrix of contact normal vectors (one per row).
   """
   contact_dist = vec5(MJ_MAXVAL)
-  contact_pos = mat53f()
-  contact_normal = mat53f()
+  contact_pos = mat53()
+  contact_normal = mat53()
 
   p1 = capsule_pos - capsule_axis * capsule_half_length
   p2 = capsule_pos + capsule_axis * capsule_half_length
@@ -1687,6 +1681,7 @@ def capsule_triangle(
 
   ab = p2 - p1
   ab_len_sq = 4.0 * capsule_half_length * capsule_half_length
+  inv_ab_len_sq = 1.0 / wp.max(MJ_MINVAL, ab_len_sq)
 
   for vi in range(3):
     vert = wp.vec3(0.0)
@@ -1698,7 +1693,7 @@ def capsule_triangle(
       vert = t3
 
     vec = vert - p1
-    t_param = wp.dot(vec, ab) / wp.max(MJ_MINVAL, ab_len_sq)
+    t_param = wp.dot(vec, ab) * inv_ab_len_sq
 
     if t_param > MJ_MINVAL and t_param < 1.0 - MJ_MINVAL:
       closest = p1 + ab * t_param

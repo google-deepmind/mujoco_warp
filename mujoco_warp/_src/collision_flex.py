@@ -458,12 +458,44 @@ def _collide_geom_triangle_detect(
   if gtype == int(GeomType.SPHERE):
     sphere_radius = size_val[0]
     dist, contact_pos, nrm = collision_primitive_core.sphere_triangle(pos, sphere_radius, t1, t2, t3, tri_radius, margin)
-    if dist < margin:
+    _write_candidate(
+      max_candidates,
+      dist,
+      contact_pos,
+      nrm,
+      geomid,
+      -1,
+      flexid,
+      elemid,
+      vertex_id,
+      worldid,
+      warn_overflow,
+      overflow_out,
+      cand_dist_out,
+      cand_pos_out,
+      cand_nrm_out,
+      cand_geom_out,
+      cand_flex_out,
+      cand_elem_out,
+      cand_vert_out,
+      cand_worldid_out,
+      ncand_out,
+    )
+    return
+
+  if gtype == int(GeomType.CAPSULE):
+    cap_radius = size_val[0]
+    cap_half_len = size_val[1]
+    cap_axis = wp.vec3(rot[0, 2], rot[1, 2], rot[2, 2])
+    cap_dists, cap_poss, cap_nrms = collision_primitive_core.capsule_triangle(
+      pos, cap_axis, cap_radius, cap_half_len, t1, t2, t3, tri_radius, margin
+    )
+    for i in range(5):
       _write_candidate(
         max_candidates,
-        dist,
-        contact_pos,
-        nrm,
+        cap_dists[i],
+        cap_poss[i],
+        cap_nrms[i],
         geomid,
         -1,
         flexid,
@@ -484,135 +516,66 @@ def _collide_geom_triangle_detect(
       )
     return
 
-  if gtype == int(GeomType.CAPSULE):
-    cap_radius = size_val[0]
-    cap_half_len = size_val[1]
-    cap_axis = wp.vec3(rot[0, 2], rot[1, 2], rot[2, 2])
-    cap_dists, cap_poss, cap_nrms = collision_primitive_core.capsule_triangle(
-      pos, cap_axis, cap_radius, cap_half_len, t1, t2, t3, tri_radius, margin
-    )
-    for i in range(5):
-      if cap_dists[i] < margin:
-        _write_candidate(
-          max_candidates,
-          cap_dists[i],
-          cap_poss[i],
-          cap_nrms[i],
-          geomid,
-          -1,
-          flexid,
-          elemid,
-          vertex_id,
-          worldid,
-          warn_overflow,
-          overflow_out,
-          cand_dist_out,
-          cand_pos_out,
-          cand_nrm_out,
-          cand_geom_out,
-          cand_flex_out,
-          cand_elem_out,
-          cand_vert_out,
-          cand_worldid_out,
-          ncand_out,
-        )
-    return
-
   if gtype == int(GeomType.BOX):
     box_dists, box_poss, box_nrms = collision_primitive_core.box_triangle(pos, rot, size_val, t1, t2, t3, tri_radius, margin)
     for i in range(11):
-      if box_dists[i] < margin:
-        _write_candidate(
-          max_candidates,
-          box_dists[i],
-          box_poss[i],
-          box_nrms[i],
-          geomid,
-          -1,
-          flexid,
-          elemid,
-          vertex_id,
-          worldid,
-          warn_overflow,
-          overflow_out,
-          cand_dist_out,
-          cand_pos_out,
-          cand_nrm_out,
-          cand_geom_out,
-          cand_flex_out,
-          cand_elem_out,
-          cand_vert_out,
-          cand_worldid_out,
-          ncand_out,
-        )
+      _write_candidate(
+        max_candidates,
+        box_dists[i],
+        box_poss[i],
+        box_nrms[i],
+        geomid,
+        -1,
+        flexid,
+        elemid,
+        vertex_id,
+        worldid,
+        warn_overflow,
+        overflow_out,
+        cand_dist_out,
+        cand_pos_out,
+        cand_nrm_out,
+        cand_geom_out,
+        cand_flex_out,
+        cand_elem_out,
+        cand_vert_out,
+        cand_worldid_out,
+        ncand_out,
+      )
     return
-
-  # Cylinder returns up to 2 contacts
-  dists = wp.vec2(collision_primitive_core.MJ_MAXVAL, collision_primitive_core.MJ_MAXVAL)
-  poss = collision_primitive_core.mat23f(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
-  nrms = collision_primitive_core.mat23f(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
 
   if gtype == int(GeomType.CYLINDER):
     cyl_radius = size_val[0]
     cyl_half_height = size_val[1]
     cyl_axis = wp.vec3(rot[0, 2], rot[1, 2], rot[2, 2])
-    dists, poss, nrms = collision_primitive_core.cylinder_triangle(
+    cyl_dists, cyl_poss, cyl_nrms = collision_primitive_core.cylinder_triangle(
       pos, cyl_axis, cyl_radius, cyl_half_height, t1, t2, t3, tri_radius
     )
-
-  # Write up to 2 contacts
-  if dists[0] < margin:
-    p1 = wp.vec3(poss[0, 0], poss[0, 1], poss[0, 2])
-    n1 = wp.vec3(nrms[0, 0], nrms[0, 1], nrms[0, 2])
-    _write_candidate(
-      max_candidates,
-      dists[0],
-      p1,
-      n1,
-      geomid,
-      -1,
-      flexid,
-      elemid,
-      vertex_id,
-      worldid,
-      warn_overflow,
-      overflow_out,
-      cand_dist_out,
-      cand_pos_out,
-      cand_nrm_out,
-      cand_geom_out,
-      cand_flex_out,
-      cand_elem_out,
-      cand_vert_out,
-      cand_worldid_out,
-      ncand_out,
-    )
-  if dists[1] < margin:
-    p2 = wp.vec3(poss[1, 0], poss[1, 1], poss[1, 2])
-    n2 = wp.vec3(nrms[1, 0], nrms[1, 1], nrms[1, 2])
-    _write_candidate(
-      max_candidates,
-      dists[1],
-      p2,
-      n2,
-      geomid,
-      -1,
-      flexid,
-      elemid,
-      vertex_id,
-      worldid,
-      warn_overflow,
-      overflow_out,
-      cand_dist_out,
-      cand_pos_out,
-      cand_nrm_out,
-      cand_geom_out,
-      cand_flex_out,
-      cand_elem_out,
-      cand_vert_out,
-      cand_worldid_out,
-      ncand_out,
-    )
+    for i in range(2):
+      if cyl_dists[i] < margin:
+        _write_candidate(
+          max_candidates,
+          cyl_dists[i],
+          cyl_poss[i],
+          cyl_nrms[i],
+          geomid,
+          -1,
+          flexid,
+          elemid,
+          vertex_id,
+          worldid,
+          warn_overflow,
+          overflow_out,
+          cand_dist_out,
+          cand_pos_out,
+          cand_nrm_out,
+          cand_geom_out,
+          cand_flex_out,
+          cand_elem_out,
+          cand_vert_out,
+          cand_worldid_out,
+          ncand_out,
+        )
 
 
 @wp.func

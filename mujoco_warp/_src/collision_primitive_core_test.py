@@ -193,8 +193,8 @@ def box_triangle_kernel(
   margin: float,
   # Out:
   dist_out: wp.array[collision_primitive_core.vec11],
-  pos_out: wp.array[collision_primitive_core.mat113f],
-  normal_out: wp.array[collision_primitive_core.mat113f],
+  pos_out: wp.array[collision_primitive_core.mat113],
+  normal_out: wp.array[collision_primitive_core.mat113],
 ):
   dist, pos, normal = collision_primitive_core.box_triangle(box_pos, box_rot, box_size, t1, t2, t3, tri_radius, margin)
   dist_out[0] = dist
@@ -218,8 +218,8 @@ class BoxTriangleTest(parameterized.TestCase):
   ):
     """Helper to run the box_triangle kernel and return results."""
     dist = wp.zeros(1, dtype=collision_primitive_core.vec11)
-    pos = wp.zeros(1, dtype=collision_primitive_core.mat113f)
-    normal = wp.zeros(1, dtype=collision_primitive_core.mat113f)
+    pos = wp.zeros(1, dtype=collision_primitive_core.mat113)
+    normal = wp.zeros(1, dtype=collision_primitive_core.mat113)
 
     wp.launch(
       box_triangle_kernel,
@@ -393,8 +393,8 @@ def capsule_triangle_kernel(
   margin: float,
   # Out:
   dist_out: wp.array[collision_primitive_core.vec5],
-  pos_out: wp.array[collision_primitive_core.mat53f],
-  normal_out: wp.array[collision_primitive_core.mat53f],
+  pos_out: wp.array[collision_primitive_core.mat53],
+  normal_out: wp.array[collision_primitive_core.mat53],
 ):
   dist, pos, normal = collision_primitive_core.capsule_triangle(
     capsule_pos, capsule_axis, capsule_radius, capsule_half_length, t1, t2, t3, tri_radius, margin
@@ -421,8 +421,8 @@ class CapsuleTriangleTest(parameterized.TestCase):
   ):
     """Helper to run the capsule_triangle kernel and return results."""
     dist = wp.zeros(1, dtype=collision_primitive_core.vec5)
-    pos = wp.zeros(1, dtype=collision_primitive_core.mat53f)
-    normal = wp.zeros(1, dtype=collision_primitive_core.mat53f)
+    pos = wp.zeros(1, dtype=collision_primitive_core.mat53)
+    normal = wp.zeros(1, dtype=collision_primitive_core.mat53)
 
     wp.launch(
       capsule_triangle_kernel,
