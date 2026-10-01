@@ -2998,6 +2998,108 @@ class FlexContactParityTest(parameterized.TestCase):
       self._assert_contact_parity(w_contacts, m_contacts)
 
   @parameterized.parameters(1, 2)
+  def test_contact_box_all_corners_within_margin(self, nworld):
+    # all 4 bottom corners of the tilted box are within margin of the same triangle
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <geom type="box" size="0.01 0.01 0.01" pos="-0.033 -0.066 0.0612" euler="1 -2 15" margin="0.002"/>
+          <flexcomp name="cloth" type="grid" count="3 3 1" spacing="0.1 0.1 0.1" pos="0 0 0.05" dim="2" mass="1">
+            <contact condim="3"/>
+          </flexcomp>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=nworld,
+    )
+
+    qpos = d.qpos.numpy().copy()
+    if nworld == 2:
+      qpos[1, 2::3] += 1e-4
+      d.qpos.assign(qpos)
+
+    d.nacon.fill_(-1)
+    for arr in (d.flexvert_xpos, d.contact.dist, d.contact.pos, d.contact.frame):
+      arr.fill_(wp.inf)
+    for arr in (d.contact.geom, d.contact.flex, d.contact.elem, d.contact.vert):
+      arr.fill_(-1)
+
+    mjw.kinematics(m, d)
+    mjw.flex(m, d)
+    mjw.collision(m, d)
+
+    self.assertEqual(d.nacon.numpy()[0], nworld * 4)
+
+    w_contacts_all = []
+    for w in range(nworld):
+      mjd.qpos[:] = qpos[w]
+      mujoco.mj_kinematics(mjm, mjd)
+      mujoco.mj_flex(mjm, mjd)
+      mujoco.mj_collision(mjm, mjd)
+      self.assertEqual(mjd.ncon, 4)
+
+      w_contacts = self._get_sorted_contacts(d, d.nacon.numpy()[0], world_idx=w, is_warp=True)
+      m_contacts = self._get_sorted_contacts(mjd, mjd.ncon, is_warp=False)
+      self._assert_contact_parity(w_contacts, m_contacts)
+      w_contacts_all.append(w_contacts)
+
+    if nworld == 2:
+      self.assertFalse(np.allclose([c["dist"] for c in w_contacts_all[0]], [c["dist"] for c in w_contacts_all[1]]))
+
+  @parameterized.parameters(1, 2)
+  def test_contact_capsule_side_triangle_vertex(self, nworld):
+    # triangle vertex touches the capsule side, capsule end caps are beyond margin
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <geom type="capsule" size="0.01 0.03" pos="-0.1 0.1 0.1" zaxis="1 1 0"/>
+          <flexcomp name="cloth" type="grid" count="3 3 1" spacing="0.1 0.1 0.1" pos="0 0 0.05" dim="2" mass="1">
+            <contact condim="3"/>
+          </flexcomp>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=nworld,
+    )
+
+    # Displace vertex 2 (only in element 3) Z upward to penetrate the capsule side
+    qpos = d.qpos.numpy().copy()
+    qpos[:, 8] = 0.042
+    if nworld == 2:
+      qpos[1, 8] = 0.044
+    d.qpos.assign(qpos)
+
+    d.nacon.fill_(-1)
+    for arr in (d.flexvert_xpos, d.contact.dist, d.contact.pos, d.contact.frame):
+      arr.fill_(wp.inf)
+    for arr in (d.contact.geom, d.contact.flex, d.contact.elem, d.contact.vert):
+      arr.fill_(-1)
+
+    mjw.kinematics(m, d)
+    mjw.flex(m, d)
+    mjw.collision(m, d)
+
+    self.assertEqual(d.nacon.numpy()[0], nworld * 1)
+
+    w_contacts_all = []
+    for w in range(nworld):
+      mjd.qpos[:] = qpos[w]
+      mujoco.mj_kinematics(mjm, mjd)
+      mujoco.mj_flex(mjm, mjd)
+      mujoco.mj_collision(mjm, mjd)
+      self.assertEqual(mjd.ncon, 1)
+
+      w_contacts = self._get_sorted_contacts(d, d.nacon.numpy()[0], world_idx=w, is_warp=True)
+      m_contacts = self._get_sorted_contacts(mjd, mjd.ncon, is_warp=False)
+      self._assert_contact_parity(w_contacts, m_contacts)
+      w_contacts_all.append(w_contacts)
+
+    if nworld == 2:
+      self.assertFalse(np.allclose(w_contacts_all[0][0]["dist"], w_contacts_all[1][0]["dist"]))
+
+  @parameterized.parameters(1, 2)
   def test_contact_flex_flex_rope_margin(self, nworld):
     xml = """
     <mujoco>
