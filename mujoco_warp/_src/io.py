@@ -26,6 +26,7 @@ from mujoco_warp._src import history
 from mujoco_warp._src import sleep
 from mujoco_warp._src import support
 from mujoco_warp._src import types
+from mujoco_warp._src import util_pkg
 from mujoco_warp._src import warp_util
 from mujoco_warp._src.collision_driver import MJ_COLLISION_TABLE
 from mujoco_warp._src.set_const import set_const as set_const
@@ -176,6 +177,34 @@ def _get_nflexface(mjm: mujoco.MjModel) -> int:
   return nflexface
 
 
+def _flex_body_simple(mjm: mujoco.MjModel, body: int) -> bool:
+  b = int(mjm.body_weldid[body])
+  if mjm.body_dofnum[b] != 3 or mjm.body_jntnum[b] != 3:
+    return False
+  if mjm.body_dofnum[mjm.body_weldid[mjm.body_parentid[b]]] != 0:
+    return False
+  jadr = int(mjm.body_jntadr[b])
+  for j in range(3):
+    if mjm.jnt_type[jadr + j] != mujoco.mjtJoint.mjJNT_SLIDE:
+      return False
+    for k in range(3):
+      target = 1.0 if j == k else 0.0
+      if abs(float(mjm.jnt_axis[jadr + j, k]) - target) > types.MJ_MINVAL:
+        return False
+  return True
+
+
+def _flex_simple(mjm: mujoco.MjModel, f: int) -> bool:
+  for v in range(int(mjm.flex_vertadr[f]), int(mjm.flex_vertadr[f] + mjm.flex_vertnum[f])):
+    bodyid = int(mjm.flex_vertbodyid[v])
+    if bodyid < 0:
+      continue
+    b = int(mjm.body_weldid[bodyid])
+    if mjm.body_dofnum[b] != 0 and not _flex_body_simple(mjm, b):
+      return False
+  return True
+
+
 def _get_efm_data(mjm: mujoco.MjModel) -> mujoco.MjData | None:
   """Runs position kinematics under discrete integrator on a temp MjData for flex stiffness."""
   if mjm.nflex == 0:
@@ -187,6 +216,9 @@ def _get_efm_data(mjm: mujoco.MjModel) -> mujoco.MjData | None:
     mjm_tmp.flex_vertbodyid[:] = np.where(
       mjm_tmp.flex_vertbodyid >= 0, mjm_tmp.body_weldid[mjm_tmp.flex_vertbodyid], mjm_tmp.flex_vertbodyid
     )
+  for f in range(mjm_tmp.nflex):
+    if not _flex_simple(mjm_tmp, f):
+      mjm_tmp.flex_rigid[f] = True
   d = mujoco.MjData(mjm_tmp)
   mujoco.mj_fwdPosition(mjm_tmp, d)
   return d
@@ -484,6 +516,38 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
   m.has_flex_passive = bool(
     mjm.nflex > 0 and np.any((mjm.flex_passive != 0) & (mjm.flex_rigid == 0) & (mjm.flex_interp == 0) & (mjm.flex_dim >= 2))
   )
+  m.has_flex_snh = bool(
+    types.FLEX_STIFFNESS_3D == 24
+    and any(
+      mjm.flex_interp[f] == 0
+      and mjm.flex_dim[f] == 3
+      and mjm.flex_stiffnessadr[f] >= 0
+      and mjm.flex_elemnum[f] > 0
+      and mjm.flex_stiffness[mjm.flex_stiffnessadr[f] + 21] != 0
+      for f in range(mjm.nflex)
+    )
+  )
+  if m.has_flex_snh and mjm.opt.integrator != mujoco.mjtIntegrator.mjINT_DISCRETE:
+    raise ValueError("stable Neo-Hookean elasticity requires integrator='discrete'")
+  flex_simple = np.array([_flex_simple(mjm, f) for f in range(mjm.nflex)], dtype=bool)
+  m.flex_simple = flex_simple
+  m.has_non_simple_flex = bool(
+    mjm.nflex > 0
+    and any(
+      mjm.flex_interp[f] == 0
+      and not mjm.flex_rigid[f]
+      and mjm.flex_dim[f] >= 2
+      and not flex_simple[f]
+      and (mjm.flex_bendingadr[f] >= 0 or (mjm.flex_stiffnessadr[f] >= 0 and mjm.flex_stiffness[mjm.flex_stiffnessadr[f]] != 0))
+      for f in range(mjm.nflex)
+    )
+  )
+  if (
+    mjm.opt.integrator == mujoco.mjtIntegrator.mjINT_DISCRETE
+    and mjm.opt.solver == mujoco.mjtSolver.mjSOL_NEWTON
+    and m.has_non_simple_flex
+  ):
+    raise ValueError("discrete integrator: flex with general attachments requires solver='CG'")
   m.has_tendon_stiffness = bool(mjm.ntendon > 0 and (np.any(m.tendon_stiffness != 0) or np.any(m.tendon_stiffnesspoly != 0)))
   m.has_tendon_damping = bool(mjm.ntendon > 0 and (np.any(m.tendon_damping != 0) or np.any(m.tendon_dampingpoly != 0)))
   m.has_efm_actuator = bool(
@@ -536,10 +600,16 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
     (mjm.flex_interp[f] != 0 or mjm.flex_edgeequality[f] != 2)
     and mjm.flex_stiffnessadr[f] >= 0
     and not mjm.flex_rigid[f]
-    and np.any(mjm.flex_stiffness[mjm.flex_stiffnessadr[f] : mjm.flex_stiffnessadr[f] + 21 * mjm.flex_elemnum[f]] != 0)
+    and np.any(
+      mjm.flex_stiffness[
+        mjm.flex_stiffnessadr[f] : mjm.flex_stiffnessadr[f]
+        + (types.FLEX_STIFFNESS_3D if mjm.flex_dim[f] == 3 else 21) * mjm.flex_elemnum[f]
+      ]
+      != 0
+    )
     for f in range(mjm.nflex)
   )
-  m.efm0_active = bool(mjm.nefm0dof > 0 and not has_stretch_or_interp and not m.has_flex_passive)
+  m.efm0_active = bool(mjm.nefm0dof > 0 and not has_stretch_or_interp and not m.has_flex_passive and not m.has_non_simple_flex)
   if m.efm0_active:
     dofblk[:] = -1
     for d_idx in mjm.efm0_dofid:
@@ -2441,6 +2511,10 @@ def get_data_into(
     result.flexedge_J[:] = d.flexedge_J.numpy()[world_id].reshape(-1)
   result.flexedge_length[:] = d.flexedge_length.numpy()[world_id]
   result.flexedge_velocity[:] = d.flexedge_velocity.numpy()[world_id]
+  if mjm.nflex > 0 and util_pkg.check_version("mujoco>=3.14.1.dev990351372"):
+    result.flex_hessian_valid[:] = d.flex_hessian_valid.numpy()[world_id]
+    result.flexvert_hessian[:] = d.flexvert_hessian.numpy()[world_id]
+    result.flexedge_hessian[:] = d.flexedge_hessian.numpy()[world_id].reshape((-1, 9))
   result.actuator_length[:] = d.actuator_length.numpy()[world_id]
   result.moment_rownnz[:] = d.moment_rownnz.numpy()[world_id]
   result.moment_rowadr[:] = d.moment_rowadr.numpy()[world_id]
@@ -2636,6 +2710,7 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
     na: int,
     nbody: int,
     ntree: int,
+    nflex: int,
     neq: int,
     nuserdata: int,
     nsensordata: int,
@@ -2667,6 +2742,7 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
     act_dot_out: wp.array2d[float],
     userdata_out: wp.array2d[float],
     sensordata_out: wp.array2d[float],
+    flex_hessian_valid_out: wp.array2d[bool],
     nacon_out: wp.array[int],
     overflow_out: wp.array[int],
   ):
@@ -2703,6 +2779,8 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
         act_dot_out[worldid, i] = 0.0
     for i in range(neq):
       eq_active_out[worldid, i] = eq_active0[i]
+    for i in range(nflex):
+      flex_hessian_valid_out[worldid, i] = False
     for i in range(nsensordata):
       sensordata_out[worldid, i] = 0.0
     for i in range(nuserdata):
@@ -2916,6 +2994,7 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
       m.na,
       m.nbody,
       m.ntree,
+      m.nflex,
       m.neq,
       m.nuserdata,
       m.nsensordata,
@@ -2946,6 +3025,7 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
       d.act_dot,
       d.userdata,
       d.sensordata,
+      d.flex_hessian_valid,
       d.nacon,
       d.overflow,
     ],

@@ -31,6 +31,7 @@ from mujoco_warp import GainType
 from mujoco_warp import IntegratorType
 from mujoco_warp import SolverType
 from mujoco_warp import test_data
+from mujoco_warp._src import util_pkg
 
 # tolerance for difference between MuJoCo and mjwarp smooth calculations - mostly
 # due to float precision
@@ -2984,6 +2985,121 @@ class DiscreteIntegratorTest(parameterized.TestCase):
     _assert_eq(d.qacc.numpy()[0], mjd.qacc, "qacc")
     if nworld == 2:
       self.assertFalse(np.allclose(d.qacc.numpy()[0], d.qacc.numpy()[1]))
+
+  @absltest.skipIf(
+    not util_pkg.check_version("mujoco>=3.14.1.dev990351372"),
+    "Requires MuJoCo >= 3.14.1.dev990351372",
+  )
+  def test_snh_requires_discrete_integrator(self):
+    """Verifies that 3D SNH flex requires integrator='discrete' in put_model and forward/step."""
+    spec = mujoco.MjSpec.from_string(
+      """
+      <mujoco>
+        <option integrator="discrete" timestep="0.005" gravity="0 0 0"/>
+        <worldbody>
+          <flexcomp name="tet" type="direct" dim="3" mass="1"
+                    point="0 0 0  1 0 0  0 1 0  0 0 1" element="0 1 2 3">
+            <contact contype="0" conaffinity="0" selfcollide="none"/>
+            <elasticity young="1000" poisson="0.3" damping="0.1"/>
+          </flexcomp>
+        </worldbody>
+      </mujoco>
+      """
+    )
+    spec.flexes[0].elastic3d = 1
+    mjm = spec.compile()
+    mjd = mujoco.MjData(mjm)
+    m = mjw.put_model(mjm)
+    d = mjw.put_data(mjm, mjd)
+
+    # Succeeds under DISCRETE
+    mjw.forward(m, d)
+    mjw.step(m, d)
+
+    non_discrete = (
+      IntegratorType.EULER,
+      IntegratorType.RK4,
+      IntegratorType.IMPLICIT,
+      IntegratorType.IMPLICITFAST,
+    )
+    for integrator in non_discrete:
+      mjm.opt.integrator = int(integrator)
+      with self.assertRaisesRegex(ValueError, "stable Neo-Hookean elasticity requires integrator='discrete'"):
+        mjw.put_model(mjm)
+
+      m.opt.integrator = int(integrator)
+      with self.assertRaisesRegex(ValueError, "stable Neo-Hookean elasticity requires integrator='discrete'"):
+        mjw.forward(m, d)
+      with self.assertRaisesRegex(ValueError, "stable Neo-Hookean elasticity requires integrator='discrete'"):
+        mjw.step(m, d)
+      with self.assertRaisesRegex(ValueError, "stable Neo-Hookean elasticity requires integrator='discrete'"):
+        mjw.step1(m, d)
+
+    # 3D StVK (elastic3d=0) succeeds under explicit integrators (EULER and RK4)
+    for integrator in (IntegratorType.EULER, IntegratorType.RK4):
+      _, _, m_stvk, d_stvk = test_data.fixture(
+        xml="""
+        <mujoco>
+          <option timestep="0.005" gravity="0 0 0"/>
+          <worldbody>
+            <flexcomp name="tet" type="direct" dim="3" mass="1"
+                      point="0 0 0  1 0 0  0 1 0  0 0 1" element="0 1 2 3">
+              <contact contype="0" conaffinity="0" selfcollide="none"/>
+              <elasticity young="1000" poisson="0.3" damping="0.1"/>
+            </flexcomp>
+          </worldbody>
+        </mujoco>
+        """,
+        overrides={"opt.integrator": integrator},
+      )
+      mjw.forward(m_stvk, d_stvk)
+
+  @absltest.skipIf(
+    not util_pkg.check_version("mujoco>=3.14.1.dev990351372"),
+    "Requires MuJoCo >= 3.14.1.dev990351372",
+  )
+  @absltest.skipIf(not wp.get_device().is_cuda, "requires CUDA device")
+  @parameterized.parameters(1, 2)
+  def test_discrete_snh_graph_capture(self, nworld):
+    """Verifies that discrete integrator with 3D SNH flex is compatible with CUDA graph capture."""
+    spec = mujoco.MjSpec.from_string(
+      """
+      <mujoco>
+        <option solver="CG" integrator="discrete" timestep="0.005"/>
+        <worldbody>
+          <flexcomp name="tet" type="direct" dim="3" mass="1"
+                    point="0 0 0  1 0 0  0 1 0  0 0 1" element="0 1 2 3">
+            <contact contype="0" conaffinity="0" selfcollide="none"/>
+            <elasticity young="1000" poisson="0.3" damping="0.1"/>
+            <pin id="0 1 2"/>
+          </flexcomp>
+        </worldbody>
+      </mujoco>
+      """
+    )
+    spec.flexes[0].elastic3d = 1
+    mjm = spec.compile()
+    mjd = mujoco.MjData(mjm)
+    m = mjw.put_model(mjm)
+    d = mjw.put_data(mjm, mjd, nworld=nworld)
+    if nworld == 2:
+      qpos = d.qpos.numpy()
+      qpos[1, 2] = -0.05
+      d.qpos.assign(qpos)
+
+    # Warmup
+    mjw.step(m, d)
+
+    with wp.ScopedCapture() as capture:
+      mjw.step(m, d)
+
+    wp.capture_launch(capture.graph)
+    qpos = d.qpos.numpy()
+    qvel = d.qvel.numpy()
+    self.assertTrue(np.all(np.isfinite(qpos)))
+    self.assertTrue(np.all(np.isfinite(qvel)))
+    if nworld == 2:
+      self.assertFalse(np.allclose(qpos[0], qpos[1]))
 
 
 if __name__ == "__main__":

@@ -56,9 +56,11 @@ wp.set_module_options({"enable_backward": False})
 def check_discrete(m: Model):
   """Validate model configuration for discrete integrator."""
   if m.opt.integrator != IntegratorType.DISCRETE:
+    if m.has_flex_snh:
+      raise ValueError("stable Neo-Hookean elasticity requires integrator='discrete'")
     if m.has_flex_passive:
       raise ValueError("passive flex contact requires an integrator with the effective metric: set integrator='discrete'")
-    if m.opt.integrator in (IntegratorType.IMPLICIT, IntegratorType.IMPLICITFAST) and m.nefmK > 0:
+    if m.opt.integrator in (IntegratorType.IMPLICIT, IntegratorType.IMPLICITFAST) and (m.nefmK > 0 or m.has_non_simple_flex):
       raise ValueError(
         "flex elasticity is no longer integrated implicitly under integrator='implicit' and 'implicitfast': "
         "set integrator='discrete'"
@@ -68,6 +70,8 @@ def check_discrete(m: Model):
     raise NotImplementedError(
       "Discrete integrator: shell (flex_interp < 0) and quadratic (flex_interp >= 2) interpolated flexes are not supported"
     )
+  if m.opt.solver == SolverType.NEWTON and m.has_non_simple_flex:
+    raise ValueError("discrete integrator: flex with general attachments requires solver='CG'")
   if m.opt.solver == SolverType.NEWTON and not m.flex_interp_assemblable:
     raise ValueError(
       "Discrete integrator: Newton solver requires interpolated flex nodes to be on 3-DOF slider bodies; use solver='CG'"
@@ -75,7 +79,7 @@ def check_discrete(m: Model):
   if m.opt.enableflags & EnableBit.SLEEP:
     if m.opt.disableflags & DisableBit.ISLAND:
       raise ValueError("Discrete integrator: sleep without islands not yet supported")
-    if m.nefmK > 0 or m.has_flex_passive or not m.flex_interp_assemblable:
+    if m.nefmK > 0 or m.has_non_simple_flex or m.has_flex_passive or not m.flex_interp_assemblable:
       raise ValueError("Discrete integrator: sleep with flex not yet supported")
 
 
@@ -1177,7 +1181,7 @@ def _discrete_free_gyro_kernel(has_fluid: bool, has_flex_passive: bool, is_inver
 
 
 def _launch_discrete_free_gyro(m: Model, d: Data, out: wp.array2d[float], qacc: wp.array2d[float], is_inverse: bool):
-  if m.opt.integrator != IntegratorType.DISCRETE or not m.flex_interp_assemblable:
+  if m.opt.integrator != IntegratorType.DISCRETE or not m.flex_interp_assemblable or m.has_non_simple_flex:
     return
   has_fluid = m.has_fluid and not ((m.opt.disableflags & DisableBit.SPRING) and (m.opt.disableflags & DisableBit.DAMPER))
   if m.has_flex_passive and m.body_freeadr.size > 0:

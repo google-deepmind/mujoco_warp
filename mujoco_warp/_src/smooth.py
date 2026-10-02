@@ -572,6 +572,8 @@ def _flex_face_kinematics(
 
 @event_scope
 def flex(m: Model, d: Data):
+  if m.nflex > 0:
+    d.flex_hessian_valid.zero_()
   # Compute node positions first (needed for interpolated vertex positions)
   wp.launch(
     _flex_nodes,
