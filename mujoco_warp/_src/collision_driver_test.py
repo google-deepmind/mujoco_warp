@@ -462,6 +462,46 @@ class CollisionTest(parameterized.TestCase):
           </worldbody>
         </mujoco>
         """,
+    # a plate tilted 3 degrees, its bottom face 1 to 6 mm into the plane:
+    # the shallow edge is more than 1 mm above the deepest vertex
+    "mesh_plane_tilted_plate": """
+        <mujoco>
+          <asset>
+            <mesh name="plate"
+            vertex="
+              -0.05 -0.05 -0.005  0.05 -0.05 -0.005  0.05 0.05 -0.005  -0.05 0.05 -0.005
+              -0.05 -0.05 0.005   0.05 -0.05 0.005   0.05 0.05 0.005   -0.05 0.05 0.005
+            "/>
+          </asset>
+          <worldbody>
+            <geom size="40 40 40" type="plane"/>
+            <body pos="0 0 0.0014" euler="3 0 0">
+              <freejoint/>
+              <geom type="mesh" mesh="plate"/>
+            </body>
+          </worldbody>
+        </mujoco>
+        """,
+    # the same plate with an octagonal top face: 12 vertices, the graph search
+    "mesh_plane_tilted_plate_graph": """
+        <mujoco>
+          <asset>
+            <mesh name="plate"
+            vertex="
+              -0.05 -0.05 -0.005  0.05 -0.05 -0.005  0.05 0.05 -0.005  -0.05 0.05 -0.005
+              0.045 0.0 0.005  0.0318 0.0318 0.005  0.0 0.045 0.005  -0.0318 0.0318 0.005
+              -0.045 0.0 0.005  -0.0318 -0.0318 0.005  0.0 -0.045 0.005  0.0318 -0.0318 0.005
+            "/>
+          </asset>
+          <worldbody>
+            <geom size="40 40 40" type="plane"/>
+            <body pos="0 0 0.0014" euler="3 0 0">
+              <freejoint/>
+              <geom type="mesh" mesh="plate"/>
+            </body>
+          </worldbody>
+        </mujoco>
+        """,
     "sphere_box_shallow": """
         <mujoco>
           <worldbody>
