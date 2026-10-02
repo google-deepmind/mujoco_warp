@@ -732,7 +732,7 @@ class IOTest(parameterized.TestCase):
     mjm, mjd, m, d = test_data.fixture(
       xml="""
         <mujoco>
-          <option integrator="discrete" timestep="0.002">
+          <option integrator="discrete">
             <flag spring="disable"/>
           </option>
           <worldbody>
