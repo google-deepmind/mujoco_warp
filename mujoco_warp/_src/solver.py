@@ -1203,8 +1203,11 @@ def _linesearch_iterative_kernel(
     lo_in_sum = wp.tile_reduce(wp.add, lo_in_tile)
     lo_in = _eval_pt(ctx_quad_gauss, lo_alpha_in) + lo_in_sum[0]
 
+    # a slope at alpha = 0 below rounding noise means the start is already the line minimum
+    stationary = wp.abs(p0[1]) < _ALPHA_NOISE_EPS * q1_abs
+
     # accept Newton step if derivative is small and cost improved
-    initial_converged = wp.abs(lo_in[1]) < gtol_accept and lo_in[0] < 0.0
+    initial_converged = stationary or (wp.abs(lo_in[1]) < gtol_accept and lo_in[0] < 0.0)
     ls_converged = initial_converged
 
     # main iterative loop - skip if already converged
@@ -1380,6 +1383,9 @@ def _linesearch_iterative_kernel(
         if ls_done:
           ls_converged = True
           break
+    elif stationary:
+      alpha = 0.0
+      improvement = 0.0
     else:
       alpha = lo_alpha_in
       improvement = -lo_in[0]
