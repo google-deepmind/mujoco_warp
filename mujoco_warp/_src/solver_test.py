@@ -1359,6 +1359,95 @@ class SolverTest(parameterized.TestCase):
     self.assertGreater(qfrc[0], 0.0, "early-converged world was zeroed")
     self.assertGreater(qfrc[1], 0.0)
 
+  @parameterized.parameters(1, 2)
+  def test_linesearch_elliptic_partial_njmax_overflow(self, nworld):
+    """Tests elliptic contact and equality overflow when nefc > njmax."""
+    _, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option cone="elliptic" solver="CG" iterations="5" ls_iterations="5"/>
+        <worldbody>
+          <geom type="plane" size="5 5 0.1"/>
+          <body name="b1" pos="0 0 1.0">
+            <freejoint/>
+            <geom type="sphere" size="0.1" condim="3" friction="0.8 0.8 0.01"/>
+          </body>
+          <body name="b2" pos="0.5 0 1.0">
+            <freejoint/>
+            <geom type="sphere" size="0.1" condim="3" friction="0.8 0.8 0.01"/>
+          </body>
+        </worldbody>
+        <equality>
+          <connect body1="b1" body2="b2" anchor="0 0 0" active="false"/>
+          <connect body1="b2" body2="world" anchor="0.5 0 1.0" active="false"/>
+        </equality>
+      </mujoco>
+      """,
+      nworld=nworld,
+      njmax=5,
+    )
+
+    qpos = d.qpos.numpy()
+    qvel = d.qvel.numpy()
+    qpos[:, 2] = 0.05
+    qpos[:, 9] = 0.06
+    qvel[:, 0] = 1.0
+    if nworld == 2:
+      qpos[1, 2] = 0.04
+      qpos[1, 9] = 0.03
+      qvel[1, 0] = 2.0
+    d.qpos.assign(qpos)
+    d.qvel.assign(qvel)
+
+    mjw.fwd_position(m, d)
+    mjw.fwd_velocity(m, d)
+    mjw.fwd_actuation(m, d)
+
+    self.assertTrue(np.all(d.nefc.numpy() == 6))
+    efc_addr = d.contact.efc_address.numpy()[: 2 * nworld, :3]
+    self.assertEqual(np.sum(efc_addr[:, 0] >= 0), nworld)
+    self.assertEqual(np.sum(efc_addr[:, 0] == -1), nworld)
+    np.testing.assert_array_equal(d.efc.id.numpy()[:, 3:5], np.full((nworld, 2), -1))
+
+    if nworld == 2:
+      ctx = solver._create_solver_context(m, d)
+      solver.init_context(m, d, ctx, grad=True)
+      quad_np = ctx.quad.numpy()
+      sentinel = np.array([42.0, 43.0, 44.0], dtype=np.float32)
+      quad_np[0, 0] = sentinel
+      ctx.quad.assign(quad_np)
+      ctx.done.assign(np.array([True, False], dtype=bool))
+      solver._linesearch(m, d, ctx)
+      np.testing.assert_allclose(ctx.quad.numpy()[0, 0], sentinel)
+
+    d.qacc.fill_(wp.inf)
+    d.qfrc_constraint.fill_(wp.inf)
+    d.efc.force.fill_(wp.inf)
+    d.efc.state.fill_(-1)
+
+    mjw.solve(m, d)
+
+    self.assertTrue(np.all(np.isfinite(d.qacc.numpy())))
+    self.assertTrue(np.all(np.isfinite(d.qfrc_constraint.numpy())))
+    np.testing.assert_array_equal(d.efc.force.numpy()[:, 3:5], np.zeros((nworld, 2), dtype=np.float32))
+    if nworld == 2:
+      self.assertFalse(np.allclose(d.qacc.numpy()[0], d.qacc.numpy()[1]))
+
+    d.eq_active.fill_(True)
+    mjw.fwd_position(m, d)
+    mjw.fwd_velocity(m, d)
+    mjw.fwd_actuation(m, d)
+    self.assertTrue(np.all(d.ne.numpy() > d.njmax))
+
+    d.qacc.fill_(wp.inf)
+    d.qfrc_constraint.fill_(wp.inf)
+    d.efc.force.fill_(wp.inf)
+    d.efc.state.fill_(-1)
+    mjw.solve(m, d)
+    self.assertTrue(np.all(np.isfinite(d.qacc.numpy())))
+    if nworld == 2:
+      self.assertFalse(np.allclose(d.qacc.numpy()[0], d.qacc.numpy()[1]))
+
 
 _FRICTION_CHAIN_XML = """
 <mujoco>

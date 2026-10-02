@@ -1358,6 +1358,99 @@ class SensorTest(parameterized.TestCase):
     mjw.sensor_acc(m, d, skip_rne_postconstraint=True)
     self.assertFalse(d.cacc.numpy().any())
 
+  @parameterized.parameters(1, 2)
+  def test_contact_sensor_maxmatch_overflow(self, nworld):
+    """Tests contact sensor when matching contacts exceed opt.contact_sensor_maxmatch."""
+    _, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <geom name="floor" type="plane" size="5 5 0.1"/>
+          <body pos="-0.2 0 0.05">
+            <freejoint/>
+            <geom name="s1" type="sphere" size="0.1"/>
+          </body>
+          <body pos="0.2 0 0.08">
+            <freejoint/>
+            <geom name="s2" type="sphere" size="0.1"/>
+          </body>
+        </worldbody>
+        <sensor>
+          <contact geom1="floor" reduce="mindist" num="2" data="found dist"/>
+          <contact geom1="floor" reduce="netforce" num="1" data="force torque"/>
+        </sensor>
+      </mujoco>
+      """,
+      nworld=nworld,
+      overrides={"opt.contact_sensor_maxmatch": 1},
+    )
+
+    if nworld == 2:
+      qpos = d.qpos.numpy()
+      qpos[1, 2] = 0.03
+      d.qpos.assign(qpos)
+
+    mjw.fwd_position(m, d)
+    mjw.fwd_velocity(m, d)
+    mjw.fwd_actuation(m, d)
+    mjw.solve(m, d)
+
+    d.sensordata.fill_(wp.inf)
+    mjw.sensor_acc(m, d)
+
+    sdata = d.sensordata.numpy()
+    self.assertTrue(np.all(np.isfinite(sdata)))
+    np.testing.assert_array_equal(sdata[:, 2:4], np.zeros((nworld, 2), dtype=np.float32))
+    if nworld == 2:
+      self.assertFalse(np.allclose(sdata[0], sdata[1]))
+
+  @parameterized.parameters(1, 2)
+  def test_touch_sensor_partial_pyramidal_overflow(self, nworld):
+    """Tests touch sensor when a pyramidal contact partially overflows njmax."""
+    _, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option cone="pyramidal"/>
+        <worldbody>
+          <geom type="plane" size="5 5 0.1"/>
+          <body pos="0 0 1.0">
+            <freejoint/>
+            <geom type="sphere" size="0.1" pos="-0.02 0 0" condim="3"/>
+            <geom type="sphere" size="0.1" pos="0.02 0 0" condim="3"/>
+            <site name="touch_site" size="0.15"/>
+          </body>
+        </worldbody>
+        <sensor>
+          <touch site="touch_site"/>
+        </sensor>
+      </mujoco>
+      """,
+      nworld=nworld,
+      njmax=5,
+    )
+
+    qpos = d.qpos.numpy()
+    qpos[:, 2] = 0.05
+    if nworld == 2:
+      qpos[1, 2] = 0.04
+    d.qpos.assign(qpos)
+
+    mjw.fwd_position(m, d)
+    efc_force = np.zeros((nworld, d.efc.force.shape[1]), dtype=np.float32)
+    efc_force[0] = [10.0, 20.0, 5.0, 5.0, 999.0]
+    if nworld == 2:
+      efc_force[1] = [15.0, 25.0, 10.0, 10.0, 999.0]
+    d.efc.force.assign(efc_force)
+
+    d.sensordata.zero_()
+    mjw.sensor_acc(m, d)
+
+    sdata = d.sensordata.numpy()
+    np.testing.assert_allclose(sdata[0, 0], 40.0)
+    if nworld == 2:
+      np.testing.assert_allclose(sdata[1, 0], 60.0)
+      self.assertFalse(np.allclose(sdata[0], sdata[1]))
+
 
 if __name__ == "__main__":
   wp.init()

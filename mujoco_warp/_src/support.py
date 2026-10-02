@@ -368,10 +368,13 @@ def contact_force_fn(
 ) -> wp.spatial_vector:
   """Extract 6D force:torque for one contact, in contact frame by default."""
   force = wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+  if contact_id < 0 or contact_id >= wp.min(nacon_in[0], contact_dim_in.shape[0]):
+    return force
+
   condim = contact_dim_in[contact_id]
   efc_address = contact_efc_address_in[contact_id, 0]
 
-  if contact_id >= 0 and contact_id <= nacon_in[0] and efc_address >= 0:
+  if efc_address >= 0:
     if opt_cone == ConeType.PYRAMIDAL:
       force = _decode_pyramid(
         njmax_in,
@@ -382,8 +385,7 @@ def contact_force_fn(
       )
     else:
       for i in range(condim):
-        if contact_efc_address_in[contact_id, i] < njmax_in:
-          force[i] = efc_force_in[worldid, contact_efc_address_in[contact_id, i]]
+        force[i] = efc_force_in[worldid, contact_efc_address_in[contact_id, i]]
 
     # report net interface force: solver cone force minus adhesive pull
     force[0] -= contact_adhesion_in[contact_id]
@@ -421,7 +423,8 @@ def contact_force_kernel(
 
   contactid = contact_ids[tid]
 
-  if contactid >= nacon_in[0]:
+  if contactid < 0 or contactid >= wp.min(nacon_in[0], contact_worldid_in.shape[0]):
+    out[tid] = wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
     return
 
   worldid = contact_worldid_in[contactid]

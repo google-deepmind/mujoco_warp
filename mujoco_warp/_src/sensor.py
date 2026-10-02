@@ -1853,7 +1853,7 @@ def _sensor_acc(
 
     adr = sensor_adr[sensorid]
     contactsensorid = sensor_adr_to_contact_adr[sensorid]
-    nmatch = sensor_contact_nmatch_in[worldid, contactsensorid]
+    nmatch = wp.min(sensor_contact_nmatch_in[worldid, contactsensorid], sensor_contact_matchid_in.shape[2])
 
     if reduce == 3:  # netforce
       # Single-pass computation: first compute centroid, then wrench about centroid
@@ -2005,7 +2005,7 @@ def _sensor_acc(
           out[adr_slot + 2] = dir * contact_tangent[2]
 
       # zero remaining slots
-      for i in range(nmatch, num):
+      for i in range(nslots, num):
         for j in range(size):
           out[adr + i * size + j] = 0.0
 

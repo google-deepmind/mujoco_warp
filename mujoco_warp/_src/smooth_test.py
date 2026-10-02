@@ -951,6 +951,68 @@ class SmoothTest(parameterized.TestCase):
     )
     _assert_eq(wp_actuator_moment, actuator_moment, "actuator_moment")
 
+  @parameterized.parameters(1, 2)
+  def test_transmission_body_moment_njmax_overflow(self, nworld):
+    """Tests body transmission and rne_postconstraint when constraints partially overflow njmax."""
+    _, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option cone="pyramidal"/>
+        <worldbody>
+          <geom type="plane" size="5 5 0.1"/>
+          <body name="b1" pos="0 0 1.0">
+            <freejoint/>
+            <geom type="sphere" size="0.1" pos="-0.1 0 0" condim="3"/>
+            <geom type="sphere" size="0.1" pos="0.1 0 0" condim="3"/>
+          </body>
+        </worldbody>
+        <equality>
+          <weld body1="b1" active="false"/>
+        </equality>
+        <actuator>
+          <adhesion name="adhere" body="b1" ctrlrange="0 1"/>
+        </actuator>
+      </mujoco>
+      """,
+      nworld=nworld,
+      njmax=5,
+    )
+
+    qpos = d.qpos.numpy()
+    qpos[:, 2] = 0.05
+    if nworld == 2:
+      qpos[1, 2] = 0.04
+      qpos[1, 4] = 0.1
+    d.qpos.assign(qpos)
+
+    mjw.kinematics(m, d)
+    mjw.com_pos(m, d)
+    mjw.crb(m, d)
+    mjw.collision(m, d)
+    mjw.make_constraint(m, d)
+
+    efc_J = d.efc.J.numpy()
+    efc_J[:, -1, :] = 1e6
+    d.efc.J.assign(efc_J)
+
+    d.actuator_length.fill_(wp.inf)
+    d.actuator_moment.fill_(wp.inf)
+    mjw.transmission(m, d)
+
+    moment = d.actuator_moment.numpy()
+    self.assertTrue(np.all(np.isfinite(moment)))
+    self.assertLess(np.max(np.abs(moment)), 100.0)
+    self.assertGreater(np.max(np.abs(moment)), 0.0)
+    if nworld == 2:
+      self.assertFalse(np.allclose(moment[0], moment[1]))
+
+    d.eq_active.fill_(True)
+    mjw.make_constraint(m, d)
+    d.efc.force.fill_(10.0)
+    d.cfrc_ext.fill_(wp.spatial_vector(wp.inf, wp.inf, wp.inf, wp.inf, wp.inf, wp.inf))
+    mjw.rne_postconstraint(m, d)
+    self.assertTrue(np.all(np.isfinite(d.cfrc_ext.numpy())))
+
   def test_subtree_vel(self):
     """Tests subtree_vel."""
     mjm, mjd, m, d = test_data.fixture("pendula.xml")

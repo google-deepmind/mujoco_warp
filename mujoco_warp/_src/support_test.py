@@ -172,6 +172,68 @@ class SupportTest(parameterized.TestCase):
 
     _assert_eq(force.numpy()[0], mj_force, "contact force with adhesion")
 
+  @parameterized.product(
+    nworld=(1, 2),
+    cone=(ConeType.PYRAMIDAL, ConeType.ELLIPTIC),
+  )
+  def test_contact_force_bounds_and_partial_overflow(self, nworld, cone):
+    """Tests contact_force with out-of-bounds contact IDs and partial njmax overflow."""
+    _, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <geom type="plane" size="5 5 0.1"/>
+          <body pos="0 0 1.0">
+            <freejoint/>
+            <geom type="sphere" size="0.1" pos="-0.2 0 0" condim="3"/>
+            <geom type="sphere" size="0.1" pos="0.2 0 0" condim="3"/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=nworld,
+      njmax=5,
+      overrides={"opt.cone": cone},
+    )
+
+    qpos = d.qpos.numpy()
+    qpos[:, 2] = 0.05
+    if nworld == 2:
+      qpos[1, 2] = 0.04
+    d.qpos.assign(qpos)
+    mjwarp.fwd_position(m, d)
+
+    efc_force = np.full((nworld, d.efc.force.shape[1]), 10.0, dtype=np.float32)
+    if nworld == 2:
+      efc_force[1] = 20.0
+    d.efc.force.assign(efc_force)
+
+    efc_addr = d.contact.efc_address.numpy()[: 2 * nworld, 0]
+    valid_ids = np.where(efc_addr >= 0)[0].astype(np.int32)
+    overflow_ids = np.where(efc_addr == -1)[0].astype(np.int32)
+    self.assertEqual(len(valid_ids), nworld)
+    self.assertEqual(len(overflow_ids), nworld)
+
+    force_valid = wp.empty(nworld, dtype=wp.spatial_vector)
+    force_valid.fill_(wp.spatial_vector(wp.inf, wp.inf, wp.inf, wp.inf, wp.inf, wp.inf))
+    mjwarp.contact_force(m, d, wp.array(valid_ids, dtype=int), False, force_valid)
+    force_valid_np = force_valid.numpy()
+    self.assertTrue(np.all(np.isfinite(force_valid_np)))
+    self.assertGreater(np.linalg.norm(force_valid_np[0]), 0.0)
+    if nworld == 2:
+      self.assertFalse(np.allclose(force_valid_np[0], force_valid_np[1]))
+
+    force_overflow = wp.empty(nworld, dtype=wp.spatial_vector)
+    force_overflow.fill_(wp.spatial_vector(wp.inf, wp.inf, wp.inf, wp.inf, wp.inf, wp.inf))
+    mjwarp.contact_force(m, d, wp.array(overflow_ids, dtype=int), False, force_overflow)
+    np.testing.assert_allclose(force_overflow.numpy(), np.zeros((nworld, 6), dtype=np.float32))
+
+    oob_ids = wp.array([-1, d.naconmax], dtype=int)
+    oob_force = wp.empty(2, dtype=wp.spatial_vector)
+    oob_force.fill_(wp.spatial_vector(wp.inf, wp.inf, wp.inf, wp.inf, wp.inf, wp.inf))
+    mjwarp.contact_force(m, d, oob_ids, True, oob_force)
+    np.testing.assert_allclose(oob_force.numpy(), np.zeros((2, 6), dtype=np.float32))
+
   @parameterized.parameters("constraints.xml", "pendula.xml")
   def test_get_state(self, xml):
     mjm, mjd, m, d = test_data.fixture(xml, keyframe=0, ctrl_noise=1.0, qfrc_noise=1.0, xfrc_noise=1.0, mocap_noise=1.0)

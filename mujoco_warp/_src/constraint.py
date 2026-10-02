@@ -224,6 +224,31 @@ def _efc_row(
   id_out[worldid, efcid] = id
 
 
+@wp.func
+def _clear_efc_row(
+  # In:
+  worldid: int,
+  efcid: int,
+  # Out:
+  type_out: wp.array2d[int],
+  id_out: wp.array2d[int],
+  pos_out: wp.array2d[float],
+  margin_out: wp.array2d[float],
+  D_out: wp.array2d[float],
+  vel_out: wp.array2d[float],
+  aref_out: wp.array2d[float],
+  frictionloss_out: wp.array2d[float],
+):
+  D_out[worldid, efcid] = 0.0
+  vel_out[worldid, efcid] = 0.0
+  aref_out[worldid, efcid] = 0.0
+  pos_out[worldid, efcid] = 0.0
+  margin_out[worldid, efcid] = 0.0
+  frictionloss_out[worldid, efcid] = 0.0
+  type_out[worldid, efcid] = -1
+  id_out[worldid, efcid] = -1
+
+
 @cache_kernel
 def _equality_connect(is_sparse: bool, newton: bool, is_discrete: bool = False):
   @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
@@ -297,13 +322,27 @@ def _equality_connect(is_sparse: bool, newton: bool, is_discrete: bool = False):
     wp.atomic_add(ne_out, worldid, 3)
     efcid = wp.atomic_add(nefc_out, worldid, 3)
 
-    if efcid >= njmax_in - 3:
+    if efcid + 3 > njmax_in:
+      for r in range(efcid, njmax_in):
+        if wp.static(is_sparse):
+          efc_J_rownnz_out[worldid, r] = 0
+          efc_J_rowadr_out[worldid, r] = 0
+        else:
+          for i in range(nv):
+            efc_J_out[worldid, r, i] = 0.0
+        _clear_efc_row(
+          worldid,
+          r,
+          efc_type_out,
+          efc_id_out,
+          efc_pos_out,
+          efc_margin_out,
+          efc_D_out,
+          efc_vel_out,
+          efc_aref_out,
+          efc_frictionloss_out,
+        )
       return
-
-    if wp.static(is_sparse and newton):
-      jgid = wp.atomic_add(efc_jtdaj_nblock_out, worldid, 1)
-      efc_jtdaj_adr_out[worldid, jgid] = efcid
-      efc_jtdaj_nrow_out[worldid, jgid] = 3
 
     efcid0 = efcid + 0
     efcid1 = efcid + 1
@@ -357,7 +396,27 @@ def _equality_connect(is_sparse: bool, newton: bool, is_discrete: bool = False):
       # get rowadr
       rowadr = wp.atomic_add(efc_nnz_out, worldid, 3 * rownnz)
       if rowadr + 3 * rownnz > njmax_nnz_in:
+        for i in range(3):
+          r = efcid + i
+          efc_J_rownnz_out[worldid, r] = 0
+          efc_J_rowadr_out[worldid, r] = rowadr + (i + 1) * rownnz
+          _clear_efc_row(
+            worldid,
+            r,
+            efc_type_out,
+            efc_id_out,
+            efc_pos_out,
+            efc_margin_out,
+            efc_D_out,
+            efc_vel_out,
+            efc_aref_out,
+            efc_frictionloss_out,
+          )
         return
+      if wp.static(newton):
+        jgid = wp.atomic_add(efc_jtdaj_nblock_out, worldid, 1)
+        efc_jtdaj_adr_out[worldid, jgid] = efcid
+        efc_jtdaj_nrow_out[worldid, jgid] = 3
       efc_J_rowadr_out[worldid, efcid0] = rowadr
       efc_J_rowadr_out[worldid, efcid1] = rowadr + rownnz
       efc_J_rowadr_out[worldid, efcid2] = rowadr + 2 * rownnz
@@ -625,11 +684,6 @@ def _equality_joint(is_sparse: bool, newton: bool, is_discrete: bool = False):
     if efcid >= njmax_in:
       return
 
-    if wp.static(is_sparse and newton):
-      jgid = wp.atomic_add(efc_jtdaj_nblock_out, worldid, 1)
-      efc_jtdaj_adr_out[worldid, jgid] = efcid
-      efc_jtdaj_nrow_out[worldid, jgid] = 1
-
     jntid_1 = eq_obj1id[eqid]
     jntid_2 = eq_obj2id[eqid]
     data = eq_data[worldid % eq_data.shape[0], eqid]
@@ -643,10 +697,28 @@ def _equality_joint(is_sparse: bool, newton: bool, is_discrete: bool = False):
         rownnz = 2
       else:
         rownnz = 1
-      efc_J_rownnz_out[worldid, efcid] = rownnz
       rowadr = wp.atomic_add(efc_nnz_out, worldid, rownnz)
       if rowadr + rownnz > njmax_nnz_in:
+        efc_J_rownnz_out[worldid, efcid] = 0
+        efc_J_rowadr_out[worldid, efcid] = rowadr + rownnz
+        _clear_efc_row(
+          worldid,
+          efcid,
+          efc_type_out,
+          efc_id_out,
+          efc_pos_out,
+          efc_margin_out,
+          efc_D_out,
+          efc_vel_out,
+          efc_aref_out,
+          efc_frictionloss_out,
+        )
         return
+      if wp.static(newton):
+        jgid = wp.atomic_add(efc_jtdaj_nblock_out, worldid, 1)
+        efc_jtdaj_adr_out[worldid, jgid] = efcid
+        efc_jtdaj_nrow_out[worldid, jgid] = 1
+      efc_J_rownnz_out[worldid, efcid] = rownnz
       efc_J_rowadr_out[worldid, efcid] = rowadr
       efc_J_colind_out[worldid, 0, rowadr] = dofadr1
       efc_J_out[worldid, 0, rowadr] = 1.0
@@ -771,11 +843,6 @@ def _equality_tendon(is_sparse: bool, newton: bool, is_discrete: bool = False):
     if efcid >= njmax_in:
       return
 
-    if wp.static(is_sparse and newton):
-      jgid = wp.atomic_add(efc_jtdaj_nblock_out, worldid, 1)
-      efc_jtdaj_adr_out[worldid, jgid] = efcid
-      efc_jtdaj_nrow_out[worldid, jgid] = 1
-
     obj1id = eq_obj1id[eqid]
     obj2id = eq_obj2id[eqid]
 
@@ -832,7 +899,25 @@ def _equality_tendon(is_sparse: bool, newton: bool, is_discrete: bool = False):
 
       rowadr = wp.atomic_add(efc_nnz_out, worldid, rownnz)
       if rowadr + rownnz > njmax_nnz_in:
+        efc_J_rownnz_out[worldid, efcid] = 0
+        efc_J_rowadr_out[worldid, efcid] = rowadr + rownnz
+        _clear_efc_row(
+          worldid,
+          efcid,
+          efc_type_out,
+          efc_id_out,
+          efc_pos_out,
+          efc_margin_out,
+          efc_D_out,
+          efc_vel_out,
+          efc_aref_out,
+          efc_frictionloss_out,
+        )
         return
+      if wp.static(newton):
+        jgid = wp.atomic_add(efc_jtdaj_nblock_out, worldid, 1)
+        efc_jtdaj_adr_out[worldid, jgid] = efcid
+        efc_jtdaj_nrow_out[worldid, jgid] = 1
       efc_J_rowadr_out[worldid, efcid] = rowadr
 
     ptr1 = int(0)
@@ -976,11 +1061,6 @@ def _equality_flex(is_sparse: bool, newton: bool, is_discrete: bool = False):
     if efcid >= njmax_in:
       return
 
-    if wp.static(is_sparse and newton):
-      jgid = wp.atomic_add(efc_jtdaj_nblock_out, worldid, 1)
-      efc_jtdaj_adr_out[worldid, jgid] = efcid
-      efc_jtdaj_nrow_out[worldid, jgid] = 1
-
     pos = flexedge_length_in[worldid, edgeid] - flexedge_length0[edgeid]
     solref = eq_solref[worldid % eq_solref.shape[0], eqid]
     solimp = eq_solimp[worldid % eq_solimp.shape[0], eqid]
@@ -991,10 +1071,28 @@ def _equality_flex(is_sparse: bool, newton: bool, is_discrete: bool = False):
     flex_rowadr = flexedge_J_rowadr[edgeid]
 
     if wp.static(is_sparse):
-      efc_J_rownnz_out[worldid, efcid] = rownnz
       efc_rowadr = wp.atomic_add(efc_nnz_out, worldid, rownnz)
       if efc_rowadr + rownnz > njmax_nnz_in:
+        efc_J_rownnz_out[worldid, efcid] = 0
+        efc_J_rowadr_out[worldid, efcid] = efc_rowadr + rownnz
+        _clear_efc_row(
+          worldid,
+          efcid,
+          efc_type_out,
+          efc_id_out,
+          efc_pos_out,
+          efc_margin_out,
+          efc_D_out,
+          efc_vel_out,
+          efc_aref_out,
+          efc_frictionloss_out,
+        )
         return
+      if wp.static(newton):
+        jgid = wp.atomic_add(efc_jtdaj_nblock_out, worldid, 1)
+        efc_jtdaj_adr_out[worldid, jgid] = efcid
+        efc_jtdaj_nrow_out[worldid, jgid] = 1
+      efc_J_rownnz_out[worldid, efcid] = rownnz
       efc_J_rowadr_out[worldid, efcid] = efc_rowadr
       for i in range(rownnz):
         flex_sparseid = flex_rowadr + i
@@ -1118,13 +1216,27 @@ def _equality_weld(is_sparse: bool, newton: bool, is_discrete: bool = False):
     wp.atomic_add(ne_out, worldid, 6)
     efcid = wp.atomic_add(nefc_out, worldid, 6)
 
-    if efcid >= njmax_in - 6:
+    if efcid + 6 > njmax_in:
+      for r in range(efcid, njmax_in):
+        if wp.static(is_sparse):
+          efc_J_rownnz_out[worldid, r] = 0
+          efc_J_rowadr_out[worldid, r] = 0
+        else:
+          for i in range(nv):
+            efc_J_out[worldid, r, i] = 0.0
+        _clear_efc_row(
+          worldid,
+          r,
+          efc_type_out,
+          efc_id_out,
+          efc_pos_out,
+          efc_margin_out,
+          efc_D_out,
+          efc_vel_out,
+          efc_aref_out,
+          efc_frictionloss_out,
+        )
       return
-
-    if wp.static(is_sparse and newton):
-      jgid = wp.atomic_add(efc_jtdaj_nblock_out, worldid, 1)
-      efc_jtdaj_adr_out[worldid, jgid] = efcid
-      efc_jtdaj_nrow_out[worldid, jgid] = 6
 
     efcid0 = efcid + 0
     efcid1 = efcid + 1
@@ -1224,7 +1336,27 @@ def _equality_weld(is_sparse: bool, newton: bool, is_discrete: bool = False):
       # get rowadr
       rowadr = wp.atomic_add(efc_nnz_out, worldid, 6 * rownnz)
       if rowadr + 6 * rownnz > njmax_nnz_in:
+        for i in range(6):
+          r = efcid + i
+          efc_J_rownnz_out[worldid, r] = 0
+          efc_J_rowadr_out[worldid, r] = rowadr + (i + 1) * rownnz
+          _clear_efc_row(
+            worldid,
+            r,
+            efc_type_out,
+            efc_id_out,
+            efc_pos_out,
+            efc_margin_out,
+            efc_D_out,
+            efc_vel_out,
+            efc_aref_out,
+            efc_frictionloss_out,
+          )
         return
+      if wp.static(newton):
+        jgid = wp.atomic_add(efc_jtdaj_nblock_out, worldid, 1)
+        efc_jtdaj_adr_out[worldid, jgid] = efcid
+        efc_jtdaj_nrow_out[worldid, jgid] = 6
       efc_J_rowadr_out[worldid, efcid0] = rowadr
       efc_J_rowadr_out[worldid, efcid1] = rowadr + rownnz
       efc_J_rowadr_out[worldid, efcid2] = rowadr + 2 * rownnz
@@ -1692,11 +1824,6 @@ def _equality_flexstrain(is_sparse: bool, newton: bool, is_discrete: bool = Fals
       if efcid >= njmax_in:
         return
 
-      if wp.static(is_sparse and newton):
-        jgid = wp.atomic_add(efc_jtdaj_nblock_out, worldid, 1)
-        efc_jtdaj_adr_out[worldid, jgid] = efcid
-        efc_jtdaj_nrow_out[worldid, jgid] = 6
-
       # Read eigenvector from stiffness data
       eigvec_base = k_base + 1 + eig * ndof_cell
 
@@ -1748,10 +1875,28 @@ def _equality_flexstrain(is_sparse: bool, newton: bool, is_discrete: bool = Fals
 
       efc_rowadr = int(0)
       if wp.static(is_sparse):
-        efc_J_rownnz_out[worldid, efcid] = rownnz
         efc_rowadr = wp.atomic_add(efc_nnz_out, worldid, rownnz)
         if efc_rowadr + rownnz > njmax_nnz_in:
+          efc_J_rownnz_out[worldid, efcid] = 0
+          efc_J_rowadr_out[worldid, efcid] = efc_rowadr + rownnz
+          _clear_efc_row(
+            worldid,
+            efcid,
+            efc_type_out,
+            efc_id_out,
+            efc_pos_out,
+            efc_margin_out,
+            efc_D_out,
+            efc_vel_out,
+            efc_aref_out,
+            efc_frictionloss_out,
+          )
           return
+        if wp.static(newton):
+          jgid = wp.atomic_add(efc_jtdaj_nblock_out, worldid, 1)
+          efc_jtdaj_adr_out[worldid, jgid] = efcid
+          efc_jtdaj_nrow_out[worldid, jgid] = 1
+        efc_J_rownnz_out[worldid, efcid] = rownnz
         efc_J_rowadr_out[worldid, efcid] = efc_rowadr
       else:
         for q in range(nv):
@@ -1896,16 +2041,29 @@ def _friction_dof(is_sparse: bool, newton: bool, is_discrete: bool = False):
     if efcid >= njmax_in:
       return
 
-    if wp.static(is_sparse and newton):
-      jgid = wp.atomic_add(efc_jtdaj_nblock_out, worldid, 1)
-      efc_jtdaj_adr_out[worldid, jgid] = efcid
-      efc_jtdaj_nrow_out[worldid, jgid] = 1
-
     if wp.static(is_sparse):
-      efc_J_rownnz_out[worldid, efcid] = 1
       rowadr = wp.atomic_add(efc_nnz_out, worldid, 1)
       if rowadr + 1 > njmax_nnz_in:
+        efc_J_rownnz_out[worldid, efcid] = 0
+        efc_J_rowadr_out[worldid, efcid] = rowadr + 1
+        _clear_efc_row(
+          worldid,
+          efcid,
+          efc_type_out,
+          efc_id_out,
+          efc_pos_out,
+          efc_margin_out,
+          efc_D_out,
+          efc_vel_out,
+          efc_aref_out,
+          efc_frictionloss_out,
+        )
         return
+      if wp.static(newton):
+        jgid = wp.atomic_add(efc_jtdaj_nblock_out, worldid, 1)
+        efc_jtdaj_adr_out[worldid, jgid] = efcid
+        efc_jtdaj_nrow_out[worldid, jgid] = 1
+      efc_J_rownnz_out[worldid, efcid] = 1
       efc_J_rowadr_out[worldid, efcid] = rowadr
       efc_J_colind_out[worldid, 0, rowadr] = dofid
       efc_J_out[worldid, 0, rowadr] = 1.0
@@ -2004,20 +2162,33 @@ def _friction_tendon(is_sparse: bool, newton: bool, is_discrete: bool = False):
     if efcid >= njmax_in:
       return
 
-    if wp.static(is_sparse and newton):
-      jgid = wp.atomic_add(efc_jtdaj_nblock_out, worldid, 1)
-      efc_jtdaj_adr_out[worldid, jgid] = efcid
-      efc_jtdaj_nrow_out[worldid, jgid] = 1
-
     Jqvel = float(0.0)
 
     rownnz_tenJ = ten_J_rownnz[tenid]
     rowadr_tenJ = ten_J_rowadr[tenid]
     if wp.static(is_sparse):
-      efc_J_rownnz_out[worldid, efcid] = rownnz_tenJ
       rowadr_efc = wp.atomic_add(efc_nnz_out, worldid, rownnz_tenJ)
       if rowadr_efc + rownnz_tenJ > njmax_nnz_in:
+        efc_J_rownnz_out[worldid, efcid] = 0
+        efc_J_rowadr_out[worldid, efcid] = rowadr_efc + rownnz_tenJ
+        _clear_efc_row(
+          worldid,
+          efcid,
+          efc_type_out,
+          efc_id_out,
+          efc_pos_out,
+          efc_margin_out,
+          efc_D_out,
+          efc_vel_out,
+          efc_aref_out,
+          efc_frictionloss_out,
+        )
         return
+      if wp.static(newton):
+        jgid = wp.atomic_add(efc_jtdaj_nblock_out, worldid, 1)
+        efc_jtdaj_adr_out[worldid, jgid] = efcid
+        efc_jtdaj_nrow_out[worldid, jgid] = 1
+      efc_J_rownnz_out[worldid, efcid] = rownnz_tenJ
       efc_J_rowadr_out[worldid, efcid] = rowadr_efc
 
       for i in range(rownnz_tenJ):
@@ -2136,20 +2307,33 @@ def _limit_slide_hinge(is_sparse: bool, newton: bool, is_discrete: bool = False)
       if efcid >= njmax_in:
         return
 
-      if wp.static(is_sparse and newton):
-        jgid = wp.atomic_add(efc_jtdaj_nblock_out, worldid, 1)
-        efc_jtdaj_adr_out[worldid, jgid] = efcid
-        efc_jtdaj_nrow_out[worldid, jgid] = 1
-
       dofadr = jnt_dofadr[jntid]
 
       J = float(dist_min < dist_max) * 2.0 - 1.0
 
       if wp.static(is_sparse):
-        efc_J_rownnz_out[worldid, efcid] = 1
         rowadr = wp.atomic_add(efc_nnz_out, worldid, 1)
         if rowadr + 1 > njmax_nnz_in:
+          efc_J_rownnz_out[worldid, efcid] = 0
+          efc_J_rowadr_out[worldid, efcid] = rowadr + 1
+          _clear_efc_row(
+            worldid,
+            efcid,
+            efc_type_out,
+            efc_id_out,
+            efc_pos_out,
+            efc_margin_out,
+            efc_D_out,
+            efc_vel_out,
+            efc_aref_out,
+            efc_frictionloss_out,
+          )
           return
+        if wp.static(newton):
+          jgid = wp.atomic_add(efc_jtdaj_nblock_out, worldid, 1)
+          efc_jtdaj_adr_out[worldid, jgid] = efcid
+          efc_jtdaj_nrow_out[worldid, jgid] = 1
+        efc_J_rownnz_out[worldid, efcid] = 1
         efc_J_rowadr_out[worldid, efcid] = rowadr
         efc_J_colind_out[worldid, 0, rowadr] = dofadr
         efc_J_out[worldid, 0, rowadr] = J
@@ -2259,21 +2443,34 @@ def _limit_ball(is_sparse: bool, newton: bool, is_discrete: bool = False):
       if efcid >= njmax_in:
         return
 
-      if wp.static(is_sparse and newton):
-        jgid = wp.atomic_add(efc_jtdaj_nblock_out, worldid, 1)
-        efc_jtdaj_adr_out[worldid, jgid] = efcid
-        efc_jtdaj_nrow_out[worldid, jgid] = 1
-
       dofadr = jnt_dofadr[jntid]
       dof0 = dofadr + 0
       dof1 = dofadr + 1
       dof2 = dofadr + 2
 
       if wp.static(is_sparse):
-        efc_J_rownnz_out[worldid, efcid] = 3
         rowadr = wp.atomic_add(efc_nnz_out, worldid, 3)
         if rowadr + 3 > njmax_nnz_in:
+          efc_J_rownnz_out[worldid, efcid] = 0
+          efc_J_rowadr_out[worldid, efcid] = rowadr + 3
+          _clear_efc_row(
+            worldid,
+            efcid,
+            efc_type_out,
+            efc_id_out,
+            efc_pos_out,
+            efc_margin_out,
+            efc_D_out,
+            efc_vel_out,
+            efc_aref_out,
+            efc_frictionloss_out,
+          )
           return
+        if wp.static(newton):
+          jgid = wp.atomic_add(efc_jtdaj_nblock_out, worldid, 1)
+          efc_jtdaj_adr_out[worldid, jgid] = efcid
+          efc_jtdaj_nrow_out[worldid, jgid] = 1
+        efc_J_rownnz_out[worldid, efcid] = 3
         efc_J_rowadr_out[worldid, efcid] = rowadr
 
         sparseid0 = rowadr + 0
@@ -2394,21 +2591,34 @@ def _limit_tendon(is_sparse: bool, newton: bool, is_discrete: bool = False):
       if efcid >= njmax_in:
         return
 
-      if wp.static(is_sparse and newton):
-        jgid = wp.atomic_add(efc_jtdaj_nblock_out, worldid, 1)
-        efc_jtdaj_adr_out[worldid, jgid] = efcid
-        efc_jtdaj_nrow_out[worldid, jgid] = 1
-
       Jqvel = float(0.0)
       scl = float(dist_min < dist_max) * 2.0 - 1.0
 
       rownnz_tenJ = ten_J_rownnz[tenid]
       rowadr_tenJ = ten_J_rowadr[tenid]
       if wp.static(is_sparse):
-        efc_J_rownnz_out[worldid, efcid] = rownnz_tenJ
         rowadr_efc = wp.atomic_add(efc_nnz_out, worldid, rownnz_tenJ)
         if rowadr_efc + rownnz_tenJ > njmax_nnz_in:
+          efc_J_rownnz_out[worldid, efcid] = 0
+          efc_J_rowadr_out[worldid, efcid] = rowadr_efc + rownnz_tenJ
+          _clear_efc_row(
+            worldid,
+            efcid,
+            efc_type_out,
+            efc_id_out,
+            efc_pos_out,
+            efc_margin_out,
+            efc_D_out,
+            efc_vel_out,
+            efc_aref_out,
+            efc_frictionloss_out,
+          )
           return
+        if wp.static(newton):
+          jgid = wp.atomic_add(efc_jtdaj_nblock_out, worldid, 1)
+          efc_jtdaj_adr_out[worldid, jgid] = efcid
+          efc_jtdaj_nrow_out[worldid, jgid] = 1
+        efc_J_rownnz_out[worldid, efcid] = rownnz_tenJ
         efc_J_rowadr_out[worldid, efcid] = rowadr_efc
 
         for i in range(rownnz_tenJ):
@@ -2786,12 +2996,19 @@ def _efc_contact_init(cone_type: types.ConeType, is_sparse: bool, newton: bool, 
     # Data out:
     nefc_out: wp.array[int],
     contact_efc_address_out: wp.array2d[int],
+    efc_type_out: wp.array2d[int],
     efc_id_out: wp.array2d[int],
     efc_jtdaj_adr_out: wp.array2d[int],
     efc_jtdaj_nrow_out: wp.array2d[int],
     efc_jtdaj_nblock_out: wp.array[int],
     efc_J_rownnz_out: wp.array2d[int],
     efc_J_rowadr_out: wp.array2d[int],
+    efc_pos_out: wp.array2d[float],
+    efc_margin_out: wp.array2d[float],
+    efc_D_out: wp.array2d[float],
+    efc_vel_out: wp.array2d[float],
+    efc_aref_out: wp.array2d[float],
+    efc_frictionloss_out: wp.array2d[float],
     # Out:
     efc_nnz_out: wp.array[int],
   ):
@@ -2827,20 +3044,33 @@ def _efc_contact_init(cone_type: types.ConeType, is_sparse: bool, newton: bool, 
 
     # Allocate contiguous block of efcids for all dimids
     base_efcid = wp.atomic_add(nefc_out, worldid, ndim)
+    if base_efcid + ndim > njmax_in:
+      for dim in range(ndim):
+        contact_efc_address_out[conid, dim] = -1
+        efcid = base_efcid + dim
+        if efcid < njmax_in:
+          if wp.static(IS_SPARSE):
+            efc_J_rownnz_out[worldid, efcid] = 0
+            efc_J_rowadr_out[worldid, efcid] = 0
+          _clear_efc_row(
+            worldid,
+            efcid,
+            efc_type_out,
+            efc_id_out,
+            efc_pos_out,
+            efc_margin_out,
+            efc_D_out,
+            efc_vel_out,
+            efc_aref_out,
+            efc_frictionloss_out,
+          )
+      return
+
     for dim in range(ndim):
       efcid = base_efcid + dim
-      if efcid >= njmax_in:
-        contact_efc_address_out[conid, dim] = -1
-      else:
-        contact_efc_address_out[conid, dim] = efcid
-        # This is redundant with the _efc_row call later but needed for the jac calculation
-        efc_id_out[worldid, efcid] = conid
-
-    if wp.static(is_sparse and newton):
-      if base_efcid < njmax_in:
-        jgid = wp.atomic_add(efc_jtdaj_nblock_out, worldid, 1)
-        efc_jtdaj_adr_out[worldid, jgid] = base_efcid
-        efc_jtdaj_nrow_out[worldid, jgid] = wp.min(ndim, njmax_in - base_efcid)
+      contact_efc_address_out[conid, dim] = efcid
+      # This is redundant with the _efc_row call later but needed for the jac calculation
+      efc_id_out[worldid, efcid] = conid
 
     if wp.static(IS_SPARSE):
       geom = geom_in[conid]
@@ -2865,12 +3095,32 @@ def _efc_contact_init(cone_type: types.ConeType, is_sparse: bool, newton: bool, 
 
       rowadr = wp.atomic_add(efc_nnz_out, worldid, rownnz * ndim)
       if rowadr + rownnz * ndim > njmax_nnz_in:
+        for dim in range(ndim):
+          contact_efc_address_out[conid, dim] = -1
+          efcid = base_efcid + dim
+          efc_J_rowadr_out[worldid, efcid] = rowadr + (dim + 1) * rownnz
+          efc_J_rownnz_out[worldid, efcid] = 0
+          _clear_efc_row(
+            worldid,
+            efcid,
+            efc_type_out,
+            efc_id_out,
+            efc_pos_out,
+            efc_margin_out,
+            efc_D_out,
+            efc_vel_out,
+            efc_aref_out,
+            efc_frictionloss_out,
+          )
         return
+      if wp.static(newton):
+        jgid = wp.atomic_add(efc_jtdaj_nblock_out, worldid, 1)
+        efc_jtdaj_adr_out[worldid, jgid] = base_efcid
+        efc_jtdaj_nrow_out[worldid, jgid] = ndim
       for dim in range(ndim):
         efcid = base_efcid + dim
-        if efcid < njmax_in:
-          efc_J_rowadr_out[worldid, efcid] = rowadr + dim * rownnz
-          efc_J_rownnz_out[worldid, efcid] = rownnz
+        efc_J_rowadr_out[worldid, efcid] = rowadr + dim * rownnz
+        efc_J_rownnz_out[worldid, efcid] = rownnz
 
   return kernel
 
@@ -2922,12 +3172,19 @@ def _efc_contact_init_flex(cone_type: types.ConeType, is_sparse: bool, newton: b
     # Data out:
     nefc_out: wp.array[int],
     contact_efc_address_out: wp.array2d[int],
+    efc_type_out: wp.array2d[int],
     efc_id_out: wp.array2d[int],
     efc_jtdaj_adr_out: wp.array2d[int],
     efc_jtdaj_nrow_out: wp.array2d[int],
     efc_jtdaj_nblock_out: wp.array[int],
     efc_J_rownnz_out: wp.array2d[int],
     efc_J_rowadr_out: wp.array2d[int],
+    efc_pos_out: wp.array2d[float],
+    efc_margin_out: wp.array2d[float],
+    efc_D_out: wp.array2d[float],
+    efc_vel_out: wp.array2d[float],
+    efc_aref_out: wp.array2d[float],
+    efc_frictionloss_out: wp.array2d[float],
     # Out:
     efc_nnz_out: wp.array[int],
   ):
@@ -2963,20 +3220,33 @@ def _efc_contact_init_flex(cone_type: types.ConeType, is_sparse: bool, newton: b
 
     # Allocate contiguous block of efcids for all dimids
     base_efcid = wp.atomic_add(nefc_out, worldid, ndim)
+    if base_efcid + ndim > njmax_in:
+      for dim in range(ndim):
+        contact_efc_address_out[conid, dim] = -1
+        efcid = base_efcid + dim
+        if efcid < njmax_in:
+          if wp.static(IS_SPARSE):
+            efc_J_rownnz_out[worldid, efcid] = 0
+            efc_J_rowadr_out[worldid, efcid] = 0
+          _clear_efc_row(
+            worldid,
+            efcid,
+            efc_type_out,
+            efc_id_out,
+            efc_pos_out,
+            efc_margin_out,
+            efc_D_out,
+            efc_vel_out,
+            efc_aref_out,
+            efc_frictionloss_out,
+          )
+      return
+
     for dim in range(ndim):
       efcid = base_efcid + dim
-      if efcid >= njmax_in:
-        contact_efc_address_out[conid, dim] = -1
-      else:
-        contact_efc_address_out[conid, dim] = efcid
-        # This is redundant with the _efc_row call later but needed for the jac calculation
-        efc_id_out[worldid, efcid] = conid
-
-    if wp.static(is_sparse and newton):
-      if base_efcid < njmax_in:
-        jgid = wp.atomic_add(efc_jtdaj_nblock_out, worldid, 1)
-        efc_jtdaj_adr_out[worldid, jgid] = base_efcid
-        efc_jtdaj_nrow_out[worldid, jgid] = wp.min(ndim, njmax_in - base_efcid)
+      contact_efc_address_out[conid, dim] = efcid
+      # This is redundant with the _efc_row call later but needed for the jac calculation
+      efc_id_out[worldid, efcid] = conid
 
     if wp.static(IS_SPARSE):
       geom = geom_in[conid]
@@ -3207,12 +3477,32 @@ def _efc_contact_init_flex(cone_type: types.ConeType, is_sparse: bool, newton: b
 
       rowadr = wp.atomic_add(efc_nnz_out, worldid, rownnz * ndim)
       if rowadr + rownnz * ndim > njmax_nnz_in:
+        for dim in range(ndim):
+          contact_efc_address_out[conid, dim] = -1
+          efcid = base_efcid + dim
+          efc_J_rowadr_out[worldid, efcid] = rowadr + (dim + 1) * rownnz
+          efc_J_rownnz_out[worldid, efcid] = 0
+          _clear_efc_row(
+            worldid,
+            efcid,
+            efc_type_out,
+            efc_id_out,
+            efc_pos_out,
+            efc_margin_out,
+            efc_D_out,
+            efc_vel_out,
+            efc_aref_out,
+            efc_frictionloss_out,
+          )
         return
+      if wp.static(newton):
+        jgid = wp.atomic_add(efc_jtdaj_nblock_out, worldid, 1)
+        efc_jtdaj_adr_out[worldid, jgid] = base_efcid
+        efc_jtdaj_nrow_out[worldid, jgid] = ndim
       for dim in range(ndim):
         efcid = base_efcid + dim
-        if efcid < njmax_in:
-          efc_J_rowadr_out[worldid, efcid] = rowadr + dim * rownnz
-          efc_J_rownnz_out[worldid, efcid] = rownnz
+        efc_J_rowadr_out[worldid, efcid] = rowadr + dim * rownnz
+        efc_J_rownnz_out[worldid, efcid] = rownnz
 
   return kernel
 
@@ -3918,6 +4208,14 @@ def _efc_contact_jac_dense(tile_size: int, cone_type: types.ConeType):
 
     for efcid in range(efcid_start, efcid_end):
       conid = efc_id_in[worldid, efcid]
+      if conid < 0:
+        wp.tile_store(
+          efc_J_out[worldid, efcid],
+          wp.tile_zeros(shape=TILE_SIZE, dtype=float),
+          offset=dof_start,
+          bounds_check=True,
+        )
+        continue
 
       # Recompute per-contact data only when contact changes
       if conid != prev_conid:
@@ -4062,6 +4360,14 @@ def _efc_contact_jac_dense_flex(tile_size: int, cone_type: types.ConeType):
 
     for efcid in range(efcid_start, efcid_end):
       conid = efc_id_in[worldid, efcid]
+      if conid < 0:
+        wp.tile_store(
+          efc_J_out[worldid, efcid],
+          wp.tile_zeros(shape=TILE_SIZE, dtype=float),
+          offset=dof_start,
+          bounds_check=True,
+        )
+        continue
 
       # Recompute per-contact data only when contact changes
       if conid != prev_conid:
@@ -5658,12 +5964,19 @@ def make_constraint(m: types.Model, d: types.Data):
           outputs=[
             d.nefc,
             d.contact.efc_address,
+            d.efc.type,
             d.efc.id,
             d.efc.jtdaj_adr,
             d.efc.jtdaj_nrow,
             d.efc.jtdaj_nblock,
             d.efc.J_rownnz,
             d.efc.J_rowadr,
+            d.efc.pos,
+            d.efc.margin,
+            d.efc.D,
+            d.efc.vel,
+            d.efc.aref,
+            d.efc.frictionloss,
             efc_nnz,
           ],
         )
@@ -5691,12 +6004,19 @@ def make_constraint(m: types.Model, d: types.Data):
           outputs=[
             d.nefc,
             d.contact.efc_address,
+            d.efc.type,
             d.efc.id,
             d.efc.jtdaj_adr,
             d.efc.jtdaj_nrow,
             d.efc.jtdaj_nblock,
             d.efc.J_rownnz,
             d.efc.J_rowadr,
+            d.efc.pos,
+            d.efc.margin,
+            d.efc.D,
+            d.efc.vel,
+            d.efc.aref,
+            d.efc.frictionloss,
             efc_nnz,
           ],
         )

@@ -947,9 +947,9 @@ def _linesearch_iterative_kernel(
     if ctx_done_in[worldid]:
       return
 
-    ne = ne_in[worldid]
-    nf = nf_in[worldid]
     nefc = wp.min(njmax_in, nefc_in[worldid])
+    ne = wp.min(nefc, ne_in[worldid])
+    nf = wp.min(nefc - ne, nf_in[worldid])
 
     # jv = J @ search (fused for small nv); on unchanged search the buffer
     # already holds jv (see _linesearch).
@@ -989,6 +989,7 @@ def _linesearch_iterative_kernel(
           if conid < nacon:
             efcid0 = contact_efc_address_in[conid, 0]
             if efcid == efcid0:
+              dim = contact_dim_in[conid]
               Jaref = ctx_Jaref_in[worldid, efcid]
               jv = ctx_jv_in[worldid, efcid]
               efc_D = efc_D_in[worldid, efcid]
@@ -997,7 +998,6 @@ def _linesearch_iterative_kernel(
               quad = wp.vec3(0.5 * Jaref * Jaref * efc_D, jvD * Jaref, 0.5 * jv * jvD)
 
               # primary row: accumulate secondary rows and write quad, quad1, quad2
-              dim = contact_dim_in[conid]
               friction = contact_friction_in[conid]
               mu = friction[0] * impratio_invsqrt
 
@@ -1009,22 +1009,21 @@ def _linesearch_iterative_kernel(
               vv = float(0.0)
               for j in range(1, dim):
                 efcidj = contact_efc_address_in[conid, j]
-                if efcidj >= 0:
-                  jvj = ctx_jv_in[worldid, efcidj]
-                  jarefj = ctx_Jaref_in[worldid, efcidj]
-                  dj = efc_D_in[worldid, efcidj]
-                  DJj = dj * jarefj
+                jvj = ctx_jv_in[worldid, efcidj]
+                jarefj = ctx_Jaref_in[worldid, efcidj]
+                dj = efc_D_in[worldid, efcidj]
+                DJj = dj * jarefj
 
-                  quad += wp.vec3(0.5 * jarefj * DJj, jvj * DJj, 0.5 * jvj * dj * jvj)
+                quad += wp.vec3(0.5 * jarefj * DJj, jvj * DJj, 0.5 * jvj * dj * jvj)
 
-                  # rescale to make primal cone circular
-                  frictionj = friction[j - 1]
-                  uj = jarefj * frictionj
-                  vj = jvj * frictionj
+                # rescale to make primal cone circular
+                frictionj = friction[j - 1]
+                uj = jarefj * frictionj
+                vj = jvj * frictionj
 
-                  uu += uj * uj
-                  uv += uj * vj
-                  vv += vj * vj
+                uu += uj * uj
+                uv += uj * vj
+                vv += vj * vj
 
               ctx_quad_out[worldid, efcid] = quad
 
@@ -1072,22 +1071,23 @@ def _linesearch_iterative_kernel(
     for efcid in range(ne + tid, nefc, wp.block_dim()):
       if wp.static(IS_ELLIPTIC):
         efc_type = efc_type_in[worldid, efcid]
-        efc_id = 0
         contact_friction = types.vec5(0.0)
-        efc_addr0 = int(0)
+        efc_addr0 = -1
         ctx_quad = wp.vec3(0.0)
         quad1 = wp.vec3(0.0)
         quad2 = wp.vec3(0.0)
 
         if efc_type == types.ConstraintType.CONTACT_ELLIPTIC:
           efc_id = efc_id_in[worldid, efcid]
-          contact_friction = contact_friction_in[efc_id]
-          efc_addr0 = contact_efc_address_in[efc_id, 0]
-          efc_addr1 = contact_efc_address_in[efc_id, 1]
-          efc_addr2 = contact_efc_address_in[efc_id, 2]
-          ctx_quad = ctx_quad_in[worldid, efcid]
-          quad1 = ctx_quad_in[worldid, efc_addr1]
-          quad2 = ctx_quad_in[worldid, efc_addr2]
+          if efc_id < nacon:
+            efc_addr0 = contact_efc_address_in[efc_id, 0]
+            if efcid == efc_addr0:
+              contact_friction = contact_friction_in[efc_id]
+              efc_addr1 = contact_efc_address_in[efc_id, 1]
+              efc_addr2 = contact_efc_address_in[efc_id, 2]
+              ctx_quad = ctx_quad_in[worldid, efcid]
+              quad1 = ctx_quad_in[worldid, efc_addr1]
+              quad2 = ctx_quad_in[worldid, efc_addr2]
 
         local_p0 += _compute_efc_eval_pt_alpha_zero(
           efcid,
@@ -1152,22 +1152,23 @@ def _linesearch_iterative_kernel(
     for efcid in range(ne + tid, nefc, wp.block_dim()):
       if wp.static(IS_ELLIPTIC):
         efc_type = efc_type_in[worldid, efcid]
-        efc_id = 0
         contact_friction = types.vec5(0.0)
-        efc_addr0 = int(0)
+        efc_addr0 = -1
         ctx_quad = wp.vec3(0.0)
         quad1 = wp.vec3(0.0)
         quad2 = wp.vec3(0.0)
 
         if efc_type == types.ConstraintType.CONTACT_ELLIPTIC:
           efc_id = efc_id_in[worldid, efcid]
-          contact_friction = contact_friction_in[efc_id]
-          efc_addr0 = contact_efc_address_in[efc_id, 0]
-          efc_addr1 = contact_efc_address_in[efc_id, 1]
-          efc_addr2 = contact_efc_address_in[efc_id, 2]
-          ctx_quad = ctx_quad_in[worldid, efcid]
-          quad1 = ctx_quad_in[worldid, efc_addr1]
-          quad2 = ctx_quad_in[worldid, efc_addr2]
+          if efc_id < nacon:
+            efc_addr0 = contact_efc_address_in[efc_id, 0]
+            if efcid == efc_addr0:
+              contact_friction = contact_friction_in[efc_id]
+              efc_addr1 = contact_efc_address_in[efc_id, 1]
+              efc_addr2 = contact_efc_address_in[efc_id, 2]
+              ctx_quad = ctx_quad_in[worldid, efcid]
+              quad1 = ctx_quad_in[worldid, efc_addr1]
+              quad2 = ctx_quad_in[worldid, efc_addr2]
 
         local_lo_in += _compute_efc_eval_pt(
           efcid,
@@ -1231,22 +1232,23 @@ def _linesearch_iterative_kernel(
         for efcid in range(ne + tid, nefc, wp.block_dim()):
           if wp.static(IS_ELLIPTIC):
             efc_type = efc_type_in[worldid, efcid]
-            efc_id = 0
             contact_friction = types.vec5(0.0)
-            efc_addr0 = int(0)
+            efc_addr0 = -1
             ctx_quad = wp.vec3(0.0)
             quad1 = wp.vec3(0.0)
             quad2 = wp.vec3(0.0)
 
             if efc_type == types.ConstraintType.CONTACT_ELLIPTIC:
               efc_id = efc_id_in[worldid, efcid]
-              contact_friction = contact_friction_in[efc_id]
-              efc_addr0 = contact_efc_address_in[efc_id, 0]
-              efc_addr1 = contact_efc_address_in[efc_id, 1]
-              efc_addr2 = contact_efc_address_in[efc_id, 2]
-              ctx_quad = ctx_quad_in[worldid, efcid]
-              quad1 = ctx_quad_in[worldid, efc_addr1]
-              quad2 = ctx_quad_in[worldid, efc_addr2]
+              if efc_id < nacon:
+                efc_addr0 = contact_efc_address_in[efc_id, 0]
+                if efcid == efc_addr0:
+                  contact_friction = contact_friction_in[efc_id]
+                  efc_addr1 = contact_efc_address_in[efc_id, 1]
+                  efc_addr2 = contact_efc_address_in[efc_id, 2]
+                  ctx_quad = ctx_quad_in[worldid, efcid]
+                  quad1 = ctx_quad_in[worldid, efc_addr1]
+                  quad2 = ctx_quad_in[worldid, efc_addr2]
 
             r_lo, r_hi, r_mid = _compute_efc_eval_pt_3alphas(
               efcid,
@@ -1848,27 +1850,21 @@ def _update_constraint_efc(track_changes: bool):
 
     if is_elliptic:
       conid = efc_id_in[worldid, efcid]
-      if conid >= nacon_in[0]:
-        return
-      efcid0 = contact_efc_address_in[conid, 0]
-      if efcid0 < 0:
-        return
+      if conid < nacon_in[0]:
+        dim = contact_dim_in[conid]
+        efcid0 = contact_efc_address_in[conid, 0]
+        friction = contact_friction_in[conid]
+        mu = friction[0] * opt_impratio_invsqrt[worldid % opt_impratio_invsqrt.shape[0]]
+        jaref0 = ctx_Jaref_in[worldid, efcid0]
+        D0 = efc_D_in[worldid, efcid0]
 
-      dim = contact_dim_in[conid]
-      friction = contact_friction_in[conid]
-      mu = friction[0] * opt_impratio_invsqrt[worldid % opt_impratio_invsqrt.shape[0]]
-      jaref0 = ctx_Jaref_in[worldid, efcid0]
-      D0 = efc_D_in[worldid, efcid0]
-
-      for j in range(1, dim):
-        efcidj = contact_efc_address_in[conid, j]
-        if efcidj < 0:
-          return
-        frictionj = friction[j - 1]
-        uj = ctx_Jaref_in[worldid, efcidj] * frictionj
-        TT += uj * uj
-        if efcid == efcidj:
-          ufrictionj = uj * frictionj
+        for j in range(1, dim):
+          efcidj = contact_efc_address_in[conid, j]
+          frictionj = friction[j - 1]
+          uj = ctx_Jaref_in[worldid, efcidj] * frictionj
+          TT += uj * uj
+          if efcid == efcidj:
+            ufrictionj = uj * frictionj
 
     res = _eval_constraint(
       is_equality,

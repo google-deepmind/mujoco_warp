@@ -1525,6 +1525,8 @@ def _count_equality_constraints(
 
   # Get the equality constraint ID and its type
   eq_id = efc_id_in[worldid, efcid]
+  if eq_id < 0:
+    return
   eq_constraint_type = eq_type[eq_id]
 
   # Count by type (each connect has 3 rows, each weld has 6 rows)
@@ -1580,6 +1582,8 @@ def _cfrc_ext_equality(
   )
 
   id = efc_id_in[worldid, efcid]
+  if id < 0:
+    return
   eq_data_ = eq_data[worldid % eq_data.shape[0], id]
   body_semantic = eq_objtype[id] == ObjType.BODY
 
@@ -3128,9 +3132,11 @@ def _transmission_body_moment(
   if contact_exclude == 0:
     contact_dim = contact_dim_in[conid]
     contact_efc_address = contact_efc_address_in[conid]
+    efcid0 = contact_efc_address[0]
+    if efcid0 < 0:
+      return
 
     if contact_dim == 1 or opt_cone == ConeType.ELLIPTIC:
-      efcid0 = contact_efc_address[0]
       if efc_is_sparse:
         rownnz = efc_J_rownnz_in[worldid, efcid0]
         if dofid < rownnz:

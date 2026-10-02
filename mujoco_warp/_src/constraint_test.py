@@ -779,6 +779,173 @@ class ConstraintTest(parameterized.TestCase):
     if nworld == 2:
       self.assertFalse(np.allclose(d.efc.aref.numpy()[0, :nefc], d.efc.aref.numpy()[1, :nefc]))
 
+  @parameterized.parameters(1, 2)
+  def test_equality_njmax_boundary_and_partial_overflow(self, nworld):
+    """Tests connect and weld equality constraints at exact njmax boundary and partial overflow."""
+    for eq_tag, rows in (
+      ('<connect body1="b1" body2="b2" anchor="0 0 0" active="false"/>', 3),
+      ('<weld body1="b1" body2="b2" active="false"/>', 6),
+    ):
+      mjm, mjd, m, d = test_data.fixture(
+        xml=f"""
+        <mujoco>
+          <worldbody>
+            <body name="b1" pos="0 0 0">
+              <freejoint/>
+              <geom size="0.1"/>
+            </body>
+            <body name="b2" pos="0.5 0 0">
+              <freejoint/>
+              <geom size="0.1"/>
+            </body>
+          </worldbody>
+          <equality>
+            {eq_tag}
+          </equality>
+        </mujoco>
+        """,
+        nworld=nworld,
+        njmax=rows,
+      )
+
+      d.eq_active.fill_(True)
+      mjd.eq_active[:] = 1
+      mjds = [mjd]
+      if nworld == 2:
+        mjd1 = mujoco.MjData(mjm)
+        qpos = d.qpos.numpy()
+        qpos[1, 0] += 0.25
+        d.qpos.assign(qpos)
+        mjd1.qpos[:] = qpos[1]
+        mjd1.eq_active[:] = 1
+        mjds.append(mjd1)
+
+      mjw.kinematics(m, d)
+      mjw.com_pos(m, d)
+      mjw.crb(m, d)
+      d.efc.D.fill_(wp.inf)
+      d.efc.aref.fill_(wp.inf)
+      d.efc.pos.fill_(wp.inf)
+      d.efc.type.fill_(-1)
+      mjw.make_constraint(m, d)
+
+      for w in range(nworld):
+        mujoco.mj_forward(mjm, mjds[w])
+        _assert_eq(d.efc.D.numpy()[w, :rows], mjds[w].efc_D, f"efc_D_exact_w{w}")
+        _assert_eq(d.efc.pos.numpy()[w, :rows], mjds[w].efc_pos, f"efc_pos_exact_w{w}")
+      if nworld == 2:
+        self.assertFalse(np.allclose(d.efc.pos.numpy()[0, :rows], d.efc.pos.numpy()[1, :rows]))
+
+      _, _, m_partial, d_partial = test_data.fixture(
+        xml=f"""
+        <mujoco>
+          <worldbody>
+            <body name="b1" pos="0 0 0">
+              <freejoint/>
+              <geom size="0.1"/>
+            </body>
+            <body name="b2" pos="0.5 0 0">
+              <freejoint/>
+              <geom size="0.1"/>
+            </body>
+          </worldbody>
+          <equality>
+            {eq_tag}
+          </equality>
+        </mujoco>
+        """,
+        nworld=nworld,
+        njmax=rows - 1,
+      )
+      d_partial.eq_active.fill_(True)
+      mjw.kinematics(m_partial, d_partial)
+      mjw.com_pos(m_partial, d_partial)
+      mjw.crb(m_partial, d_partial)
+      d_partial.efc.D.fill_(wp.inf)
+      d_partial.efc.aref.fill_(wp.inf)
+      d_partial.efc.pos.fill_(wp.inf)
+      d_partial.efc.type.fill_(99)
+      mjw.make_constraint(m_partial, d_partial)
+
+      np.testing.assert_array_equal(
+        d_partial.efc.D.numpy()[:, : rows - 1],
+        np.zeros((nworld, rows - 1), dtype=np.float32),
+      )
+      np.testing.assert_array_equal(
+        d_partial.efc.type.numpy()[:, : rows - 1],
+        np.full((nworld, rows - 1), -1, dtype=np.int32),
+      )
+
+  @parameterized.parameters(1, 2)
+  def test_sparse_njmax_nnz_overflow(self, nworld):
+    """Tests sparse constraint generation when njmax_nnz overflows."""
+    _, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option jacobian="sparse" solver="Newton"/>
+        <worldbody>
+          <geom type="plane" size="5 5 0.1"/>
+          <body name="b1" pos="0 0 1.0">
+            <freejoint/>
+            <geom type="sphere" size="0.1" condim="3"/>
+          </body>
+          <body name="b2" pos="0.5 0 1.0">
+            <joint name="j1" type="hinge" limited="true" range="-0.1 0.1"/>
+            <geom type="sphere" size="0.1"/>
+          </body>
+        </worldbody>
+        <equality>
+          <connect body1="b1" body2="b2" anchor="0 0 0" active="false"/>
+          <joint joint1="j1" active="false"/>
+        </equality>
+      </mujoco>
+      """,
+      nworld=nworld,
+      njmax=16,
+      njmax_nnz=22,
+    )
+
+    qpos = d.qpos.numpy()
+    qpos[:, 2] = 0.05
+    qpos[:, 7] = 0.5
+    if nworld == 2:
+      qpos[1, 2] = 0.04
+      qpos[1, 7] = 0.6
+    d.qpos.assign(qpos)
+    d.eq_active.fill_(True)
+
+    mjw.kinematics(m, d)
+    mjw.com_pos(m, d)
+    mjw.crb(m, d)
+    mjw.collision(m, d)
+
+    d.efc.J_rownnz.fill_(-1)
+    d.efc.J_rowadr.fill_(999999)
+    mjw.make_constraint(m, d)
+
+    nefc = np.minimum(d.nefc.numpy(), d.njmax)
+    rownnz = d.efc.J_rownnz.numpy()
+    rowadr = d.efc.J_rowadr.numpy()
+    nblock = d.efc.jtdaj_nblock.numpy()
+    jtdaj_adr = d.efc.jtdaj_adr.numpy()
+    jtdaj_nrow = d.efc.jtdaj_nrow.numpy()
+    for w in range(nworld):
+      for r in range(nefc[w]):
+        self.assertGreaterEqual(rownnz[w, r], 0)
+        if rownnz[w, r] > 0:
+          self.assertLessEqual(rowadr[w, r] + rownnz[w, r], d.njmax_nnz)
+        else:
+          self.assertNotEqual(rowadr[w, r], 999999)
+      for b in range(nblock[w]):
+        r0 = jtdaj_adr[w, b]
+        nr = jtdaj_nrow[w, b]
+        for r in range(r0, r0 + nr):
+          self.assertGreater(rownnz[w, r], 0)
+          self.assertLessEqual(rowadr[w, r] + rownnz[w, r], d.njmax_nnz)
+    np.testing.assert_array_equal(d.contact.efc_address.numpy()[:nworld, 0], np.full(nworld, -1))
+    if nworld == 2:
+      self.assertFalse(np.allclose(d.efc.pos.numpy()[0, :4], d.efc.pos.numpy()[1, :4]))
+
 
 if __name__ == "__main__":
   absltest.main()
