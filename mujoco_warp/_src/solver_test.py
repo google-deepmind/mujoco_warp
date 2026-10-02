@@ -900,7 +900,7 @@ class SolverTest(parameterized.TestCase):
     ctx.done.fill_(False)
     wp.launch(
       solver._update_gradient_init_h_sparse(False),
-      dim=(d.nworld, m.nv_pad, m.nv_pad),
+      dim=(d.nworld, m.nv_pad * (m.nv_pad + 1) // 2),
       inputs=[m.nv, m.M_elemid, d.M, d.cdof_dof, ctx.done],
       outputs=[ctx.h],
     )

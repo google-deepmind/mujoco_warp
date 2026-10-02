@@ -2322,6 +2322,19 @@ def _update_gradient_grad_tiled(
     ctx_grad_dot_out[worldid] = grad_dot_sum[0]
 
 
+@wp.func
+def _upper_triangle_index(elementid: int, n: int):
+  """Row-major (i, j), j >= i, of an n x n upper-triangle element; consecutive ids share a row."""
+  # rows start at s(i) = i * n - i * (i - 1) / 2; invert, then correct float rounding
+  b = float(2 * n + 1)
+  i = int((b - wp.sqrt(b * b - 8.0 * float(elementid))) * 0.5)
+  if i * n - i * (i - 1) // 2 > elementid:
+    i -= 1
+  elif (i + 1) * n - (i + 1) * i // 2 <= elementid:
+    i += 1
+  return i, i + elementid - (i * n - i * (i - 1) // 2)
+
+
 @cache_kernel
 def _update_gradient_init_h_sparse(compact: bool):
   COMPACT = compact
@@ -2339,28 +2352,27 @@ def _update_gradient_init_h_sparse(compact: bool):
     # Out:
     ctx_h_out: wp.array3d[float],
   ):
-    worldid, i, j = wp.tid()
+    worldid, elementid = wp.tid()
 
     if ctx_done_in[worldid]:
       return
 
-    # only write the upper triangle; Cholesky reads the upper triangle only
-    if j < i:
-      return
+    # one thread per upper-triangle element: Cholesky reads the upper triangle only
+    i, j = _upper_triangle_index(elementid, ctx_h_out.shape[1])
 
     if wp.static(COMPACT):
       dof_i = cdof_dof_in[worldid, i]
       dof_j = cdof_dof_in[worldid, j]
-      if dof_i < 0 or dof_j < 0:
-        # per-world padded block: identity keeps the factorization well conditioned
-        ctx_h_out[worldid, i, j] = wp.where(i == j, 1.0, 0.0)
-        return
+      padding = dof_i < 0 or dof_j < 0
     else:
       dof_i = i
       dof_j = j
-      if i >= nv or j >= nv:
-        ctx_h_out[worldid, i, j] = 0.0
-        return
+      padding = j >= nv
+
+    # identity on padded dofs keeps the factorization well conditioned
+    if padding:
+      ctx_h_out[worldid, i, j] = wp.where(i == j, 1.0, 0.0)
+      return
 
     # sparse M is stored in the lower triangle, so look up (larger, smaller)
     elemid = M_elemid[wp.max(dof_i, dof_j), wp.min(dof_i, dof_j)]
@@ -2957,13 +2969,6 @@ def _cholesky_factorize_solve(
       block_dim=m.block_dim.update_gradient_cholesky,
     )
   else:
-    wp.launch(
-      _padding_h,
-      dim=(d.nworld, m.nv_pad - m.nv),
-      inputs=[m.nv, ctx.done],
-      outputs=[ctx.h],
-    )
-
     if skip_unchanged:
       wp.launch_tiled(
         _update_gradient_cholesky_blocked_skip_unchanged(types.TILE_SIZE_JTDAJ_DENSE, m.nv_pad, m.nv, skip_noflip),
@@ -3310,7 +3315,7 @@ def _update_gradient(m: types.Model, d: types.Data, ctx: SolverContext, compact:
       m_mat = dj.qH if is_discrete else dj.M
       wp.launch(
         _update_gradient_init_h_sparse(sc),
-        dim=(d.nworld, m.nv_pad, m.nv_pad),
+        dim=(d.nworld, m.nv_pad * (m.nv_pad + 1) // 2),
         inputs=[mj.nv, mj.M_elemid, m_mat, dj.cdof_dof, ctx.done],
         outputs=[ctx.h],
       )
@@ -3384,6 +3389,9 @@ def _update_gradient(m: types.Model, d: types.Data, ctx: SolverContext, compact:
           outputs=[ctx.h],
           block_dim=m.block_dim.update_gradient_JTDAJ_dense,
         )
+      if m.nv > _BLOCK_CHOLESKY_DIM:
+        # the dense tile zeros padded dofs; the blocked Cholesky needs an identity there
+        wp.launch(_padding_h, dim=(d.nworld, m.nv_pad - m.nv), inputs=[m.nv, ctx.done], outputs=[ctx.h])
 
     if is_discrete:
       wp.launch(
