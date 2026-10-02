@@ -1544,6 +1544,77 @@ class RenderTest(parameterized.TestCase):
     else:
       self.assertEqual(green_count, 0, f"Flex at dist {dist} should be clipped")
 
+  @parameterized.parameters(1, 2)
+  def test_transparent_objects_do_not_occlude(self, nworld: int):
+    """Objects with rgba[3] == 0 must not occlude camera or shadow rays."""
+    mjm, _, m, d = test_data.fixture(
+      xml="""
+    <mujoco>
+      <visual>
+        <headlight active="0"/>
+      </visual>
+      <asset>
+        <material name="transparent_mat" rgba="1 0 0 0"/>
+        <material name="opaque_mat" rgba="1 0 0 1"/>
+      </asset>
+      <worldbody>
+        <light directional="true"/>
+        <camera pos="0 0 3"/>
+        <geom name="occluder_geom" type="box" pos="0 0 2" size="0.5 0.5 0.1" rgba="1 0 0 0"/>
+        <geom name="occluder_mat" type="box" pos="0 0 1.5" size="0.5 0.5 0.1" material="transparent_mat"/>
+        <geom name="occluder_override" type="box" pos="0 0 1" size="0.5 0.5 0.1" material="opaque_mat" rgba="1 0 0 0"/>
+        <body pos="0 0 -1">
+          <joint type="slide"/>
+          <geom name="target" type="box" size="0.5 0.5 0.1" rgba="0 1 0 1"/>
+        </body>
+        <flexcomp name="occluder_flex" count="2 2 1" spacing="1 1 1" pos="0 0 0.5" rgba="1 0 0 0">
+          <edge damping="0.1"/>
+        </flexcomp>
+      </worldbody>
+    </mujoco>
+    """,
+      nworld=nworld,
+    )
+    rc = mjw.create_render_context(
+      mjm,
+      nworld=nworld,
+      cam_res=(16, 16),
+      render_rgb=True,
+      render_depth=True,
+      render_seg=True,
+      use_shadows=True,
+      use_ambient_lighting=False,
+      enable_specular=False,
+      shadow_light_fraction=0.0,
+    )
+
+    if nworld == 2:
+      qpos = d.qpos.numpy()
+      qpos[1, 0] = -0.5
+      d.qpos.assign(qpos)
+      mjw.kinematics(m, d)
+      mjw.refit_bvh(m, d, rc)
+
+    rc.rgb_data.fill_(wp.uint32(0))
+    rc.depth_data.fill_(wp.inf)
+    rc.seg_data.fill_(wp.vec2i(-1, -1))
+    mjw.render(m, d, rc)
+
+    target_id = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_GEOM, "target")
+    center_idx = 8 * 16 + 8
+    seg = rc.seg_data.numpy()[:, center_idx]
+    depth = rc.depth_data.numpy()[:, center_idx]
+    rgb = _unpack_rgb(rc.rgb_data.numpy()[:, center_idx])
+
+    for w in range(nworld):
+      np.testing.assert_array_equal(seg[w], [target_id, int(mjw.ObjType.GEOM)])
+      _assert_eq(depth[w], 3.9 + 0.5 * w, f"depth_world_{w}")
+      self.assertGreater(int(rgb[w, 1]), 100)
+      self.assertEqual(int(rgb[w, 0]), 0)
+
+    if nworld == 2:
+      self.assertFalse(np.allclose(depth[0], depth[1]))
+
 
 if __name__ == "__main__":
   wp.init()
