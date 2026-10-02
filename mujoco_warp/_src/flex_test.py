@@ -2161,6 +2161,49 @@ class FlexCollisionTest(parameterized.TestCase):
     nacon = int(d.nacon.numpy()[0])
     self.assertEqual(nacon, types.MJ_MAXCONPAIR * nworld)
 
+  def test_flex_sat_queue_overflow_keeps_contacts(self):
+    """Pairs past a full SAT queue skip the prefilter: more candidates, identical contacts."""
+    xml = """
+      <mujoco>
+        <worldbody>
+          <flexcomp name="cloth" type="grid" count="6 6 1" spacing=".05 .05 .05" pos="0 0 0"
+                    radius=".02" dim="2" mass=".5">
+            <contact selfcollide="auto" contype="1" conaffinity="1"/>
+          </flexcomp>
+        </worldbody>
+      </mujoco>
+      """
+
+    def run(queue_per_elem):
+      _, _, m, d = test_data.fixture(xml=xml, qpos_noise=0.03, nworld=2, nconmax=3000)
+      orig = collision_flex._FLEX_SAT_QUEUE_PER_ELEM
+      try:
+        collision_flex._FLEX_SAT_QUEUE_PER_ELEM = queue_per_elem
+        mjw.kinematics(m, d)
+        mjw.flex(m, d)
+        ws = collision_flex._allocate_flex_workspace(m, d)
+        ctx = collision_core.create_collision_context(d.naconmax)
+        sap_data = collision_flex._run_flex_sap_sort(m, d)
+        collision_flex._flex_sap_collision(m, d, ctx, ws, is_self=True, sap_data=sap_data, enable_sat=True)
+      finally:
+        collision_flex._FLEX_SAT_QUEUE_PER_ELEM = orig
+      n = int(d.ncollision.numpy()[0])
+      pairs = {tuple(p) for p in np.c_[ctx.collision_worldid.numpy()[:n], ctx.collision_pair.numpy()[:n]]}
+      nacon = int(d.nacon.numpy()[0])
+      contacts = np.c_[d.contact.worldid.numpy()[:nacon], d.contact.pos.numpy()[:nacon], d.contact.dist.numpy()[:nacon]]
+      return pairs, contacts[np.lexsort(contacts.T[::-1])]
+
+    queued, contacts_queued = run(collision_flex._FLEX_SAT_QUEUE_PER_ELEM)
+    partial, contacts_partial = run(1)
+    unfiltered, contacts_unfiltered = run(0)
+
+    self.assertGreater(len(contacts_queued), 0)
+    self.assertLess(len(queued), len(partial))
+    self.assertLess(len(partial), len(unfiltered))
+    self.assertTrue(queued <= partial <= unfiltered)
+    np.testing.assert_allclose(contacts_partial, contacts_queued, atol=1e-6)
+    np.testing.assert_allclose(contacts_unfiltered, contacts_queued, atol=1e-6)
+
   def test_flex_sat_prefilter_conservative(self):
     """Test that broadphase SAT prefilter is conservative and yields identical contacts."""
     xml = """
