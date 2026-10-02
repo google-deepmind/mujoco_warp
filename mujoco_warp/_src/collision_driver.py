@@ -31,6 +31,7 @@ from mujoco_warp._src.types import BroadphaseFilter
 from mujoco_warp._src.types import BroadphaseType
 from mujoco_warp._src.types import CollisionType
 from mujoco_warp._src.types import Data
+from mujoco_warp._src.types import DeterminismType
 from mujoco_warp._src.types import DisableBit
 from mujoco_warp._src.types import EnableBit
 from mujoco_warp._src.types import GeomType
@@ -365,7 +366,7 @@ def _add_geom_pair(
   collision_pairid_out: wp.array[wp.vec2i],
   collision_worldid_out: wp.array[int],
 ):
-  cid = wp.atomic_add(ncollision_out, 0, 1)
+  cid = wp.atomic_add(ncollision_out, 0, 1)  # kernel_analyzer: ignore[atomic]
 
   if cid >= naconmax_in:
     return
@@ -923,6 +924,12 @@ def _narrowphase(m: Model, d: Data, ctx: CollisionContext):
     sdf_narrowphase(m, d, ctx)
 
 
+def _sort_contacts(m: Model, d: Data):
+  """Deterministic contact sort."""
+  # TODO(team): Implementation contact sorting.
+  pass
+
+
 @event_scope
 def collision(
   m: Model,
@@ -982,3 +989,6 @@ def collision(
 
   if m.callback.contactfilter:
     m.callback.contactfilter(m, d)
+
+  if m.opt.deterministic & DeterminismType.CONTACTS:
+    _sort_contacts(m, d)

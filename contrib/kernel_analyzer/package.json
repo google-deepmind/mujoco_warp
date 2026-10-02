@@ -2,7 +2,7 @@
   "name": "kernel-analyzer",
   "displayName": "Kernel Analyzer",
   "description": "VS Code extension to detect issues with MJWarp kernels.",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "publisher": "Newton",
   "private": true,
   "license": "Apache-2.0",
@@ -40,6 +40,11 @@
           "type": "string",
           "default": "types.py",
           "description": "Path for finding types.py"
+        },
+        "kernelAnalyzer.checkAtomic": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enforce that kernels containing atomic operations are enclosed in a kernel factory with a deterministic argument"
         }
       }
     }
