@@ -91,7 +91,7 @@ def plane_convex(plane_normal: wp.vec3, plane_pos: wp.vec3, convex: Geom) -> Tup
     if max_support < 0:
       return contact_dist, contact_pos, plane_normal
 
-    threshold = max_support - 1e-3
+    threshold = wp.max(0.0, max_support - 1e-3)
 
     # find point (b) furthest from a
     b_dist = wp.float32(-_HUGE_VAL)
