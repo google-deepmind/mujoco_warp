@@ -462,6 +462,26 @@ class CollisionTest(parameterized.TestCase):
           </worldbody>
         </mujoco>
         """,
+    # bottom face 0.2 mm into the plane, a wider rim 0.3 mm above it:
+    # the rim is within 1 mm of the deepest vertex
+    "mesh_plane_rim_above_plane": """
+        <mujoco>
+          <asset>
+            <mesh name="plate"
+            vertex="
+              -0.01 -0.01 -0.0002  0.01 -0.01 -0.0002  0.01 0.01 -0.0002  -0.01 0.01 -0.0002
+              -0.05 -0.05 0.0003   0.05 -0.05 0.0003   0.05 0.05 0.0003   -0.05 0.05 0.0003
+            "/>
+          </asset>
+          <worldbody>
+            <geom size="40 40 40" type="plane"/>
+            <body>
+              <freejoint/>
+              <geom type="mesh" mesh="plate"/>
+            </body>
+          </worldbody>
+        </mujoco>
+        """,
     # a plate tilted 3 degrees, its bottom face 1 to 6 mm into the plane:
     # the shallow edge is more than 1 mm above the deepest vertex
     "mesh_plane_tilted_plate": """
