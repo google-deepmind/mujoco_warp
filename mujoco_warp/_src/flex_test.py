@@ -737,6 +737,19 @@ class FlexPassiveForcesTest(parameterized.TestCase):
         """,
         _TOLERANCE,
       ),
+      # 3D SVK Elasticity with damping (dof=full)
+      (
+        """
+        <mujoco>
+          <worldbody>
+            <flexcomp name="softbody" type="grid" count="3 3 3" spacing="0.1 0.1 0.1" dim="3" mass="1" dof="full">
+              <elasticity young="1e4" poisson="0.3" damping="1e-3"/>
+            </flexcomp>
+          </worldbody>
+        </mujoco>
+        """,
+        _TOLERANCE,
+      ),
       # 2D Cloth with bending/stretching (elastic2d=both)
       (
         """
