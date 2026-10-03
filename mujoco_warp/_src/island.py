@@ -106,7 +106,7 @@ def _is_repeated_fixed_support_efc(
   )
 
 
-@wp.kernel
+@wp.kernel(module="unique")
 def _island_dsu(
   # Model:
   nv: int,

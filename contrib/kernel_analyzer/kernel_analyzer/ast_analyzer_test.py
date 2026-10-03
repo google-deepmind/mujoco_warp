@@ -517,5 +517,60 @@ def foo(a: int):
     self.assertEqual(len(inv_issues), 0)
 
 
+class TestSharedModuleCustomBlockDim(absltest.TestCase):
+  """Tests for shared module custom block_dim enforcement."""
+
+  def test_shared_kernel_custom_block_dim_raises_issue(self):
+    """Top-level kernel launched with block_dim without unique module must raise issue."""
+    code = """
+import warp as wp
+
+@wp.kernel
+def bad_shared_kernel(x: int):
+  pass
+
+def launch_it():
+  wp.launch(bad_shared_kernel, dim=1, inputs=[1], block_dim=64)
+"""
+    issues = ast_analyzer.analyze(code, "test.py", "")
+    shared_issues = [i for i in issues if isinstance(i, ast_analyzer.SharedModuleCustomBlockDim)]
+    self.assertEqual(len(shared_issues), 1, shared_issues)
+    self.assertEqual(shared_issues[0].kernel, "bad_shared_kernel")
+
+  def test_unique_kernel_custom_block_dim_no_issue(self):
+    """Kernel with module='unique' launched with custom block_dim raises no issue."""
+    code = """
+import warp as wp
+
+@wp.kernel(module="unique")
+def ok_unique_kernel(x: int):
+  pass
+
+def launch_it():
+  wp.launch(ok_unique_kernel, dim=1, inputs=[1], block_dim=64)
+"""
+    issues = ast_analyzer.analyze(code, "test.py", "")
+    shared_issues = [i for i in issues if isinstance(i, ast_analyzer.SharedModuleCustomBlockDim)]
+    self.assertEqual(len(shared_issues), 0, shared_issues)
+
+  def test_module_level_block_dim_allows_shared_launch(self):
+    """Module-level wp.set_module_options(block_dim=...) allows shared launch."""
+    code = """
+import warp as wp
+
+wp.set_module_options({"block_dim": 64})
+
+@wp.kernel
+def ok_shared_kernel(x: int):
+  pass
+
+def launch_it():
+  wp.launch(ok_shared_kernel, dim=1, inputs=[1], block_dim=64)
+"""
+    issues = ast_analyzer.analyze(code, "test.py", "")
+    shared_issues = [i for i in issues if isinstance(i, ast_analyzer.SharedModuleCustomBlockDim)]
+    self.assertEqual(len(shared_issues), 0, shared_issues)
+
+
 if __name__ == "__main__":
   absltest.main()

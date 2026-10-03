@@ -392,6 +392,10 @@ class IslandDiscoveryExecutionTest(absltest.TestCase):
     np.testing.assert_array_equal(d.tree_island.numpy(), expected_labels)
     np.testing.assert_array_equal(d.nisland.numpy(), expected_nisland)
 
+  def test_island_dsu_module_is_unique(self):
+    """Ensure _island_dsu does not trigger shared module recompilation."""
+    self.assertNotEqual(island._island_dsu.module, island._compress_roots.module)
+
 
 class IslandMappingTest(absltest.TestCase):
   """Tests downstream DOF and constraint mapping parity against MuJoCo C."""
