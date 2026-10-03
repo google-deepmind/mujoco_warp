@@ -455,7 +455,8 @@ class CollisionTest(parameterized.TestCase):
           </asset>
           <worldbody>
             <geom size="40 40 40" type="plane"/>
-            <body pos="0.0 2.0 0.0" euler="90 90 0">
+            <!-- Avoid equally aligned faces whose normals tie in float32. -->
+            <body pos="0.0 2.0 0.0" euler="89 88 0">
               <freejoint/>
               <geom size="0.2 0.2 0.2" type="mesh" mesh="poly"/>
             </body>
@@ -670,9 +671,6 @@ class CollisionTest(parameterized.TestCase):
   @parameterized.parameters(_FIXTURES.keys())
   def test_collision(self, fixture):
     """Tests collisions with different geometries."""
-    # TODO(team): warp plane-mesh implementation needs updating to match mujoco
-    if fixture == "mesh_plane_complex":
-      return
     mjm, mjd, m, d = test_data.fixture(xml=self._FIXTURES[fixture])
 
     mujoco.mj_collision(mjm, mjd)
@@ -699,12 +697,82 @@ class CollisionTest(parameterized.TestCase):
           break
       np.testing.assert_equal(result, True, f"Contact {i} not found in Gjk results")
 
-    # mujoco and mujoco warp have different heuristics for generating multiple contacts
-    # for plane<>mesh collisions
-    if "mesh_plane" in fixture:
-      self.assertGreaterEqual(d.nacon.numpy()[0], mjd.ncon)
-    else:
-      self.assertEqual(d.nacon.numpy()[0], mjd.ncon)
+    self.assertEqual(d.nacon.numpy()[0], mjd.ncon)
+
+  @parameterized.named_parameters((fixture, fixture) for fixture in _FIXTURES if fixture.startswith("mesh_plane"))
+  def test_plane_mesh_contact_selection(self, fixture):
+    """Matches MuJoCo's contact face and order; the whole-mesh spread heuristic fails."""
+    mjm, mjd, m, d = test_data.fixture(xml=self._FIXTURES[fixture])
+    self._assert_plane_mesh_contacts(mjm, mjd, m, d)
+
+  def test_plane_mesh_center_filter(self):
+    """Rejects vertices above the mesh center (mutant: without_mesh_center_filter)."""
+    xml = self._FIXTURES["mesh_plane_complex"].replace('pos="0.0 2.0 0.0"', 'pos="0.0 2.0 -0.1"')
+    mjm, mjd, m, d = test_data.fixture(xml=xml)
+    self._assert_plane_mesh_contacts(mjm, mjd, m, d)
+    self.assertEqual(mjd.ncon, 2)
+
+  @parameterized.named_parameters(
+    ("graph", False, 0.014, 0.0, 0.0, 0.0),
+    ("exhaustive", True, 0.014, 0.0, 0.0, 0.0),
+    ("margin_gap", False, 0.024, 0.003, 0.005, 0.0),
+    ("far_plane_origin", False, 0.014, 0.0, 0.0, 1e6),
+  )
+  def test_plane_mesh_polygon_contacts(self, exhaustive, height, margin, gap, plane_x):
+    """Prunes an offset hexagonal face, including separated contacts and a distant plane origin."""
+    face = [(-0.07, -0.04), (0.03, -0.05), (0.08, -0.01), (0.06, 0.04), (-0.01, 0.065), (-0.065, 0.025)]
+    vertices = " ".join(f"{x} {y} {z}" for z in (-0.02, 0.02) for x, y in face)
+    xml = f"""
+      <mujoco>
+        <asset>
+          <mesh name="dummy" vertex="0 0 0  0.01 0 0  0 0.01 0  0 0 0.01"/>
+          <mesh name="prism" vertex="{vertices}"/>
+        </asset>
+        <worldbody>
+          <geom type="mesh" mesh="dummy" pos="0 0 2" contype="0" conaffinity="0"/>
+          <geom type="plane" size="0 0 0.01" pos="{plane_x} 0 0"/>
+          <body pos="0 0 {height}" euler="1 1.5 0">
+            <freejoint/>
+            <geom type="mesh" mesh="prism" margin="{margin}" gap="{gap}"/>
+          </body>
+        </worldbody>
+      </mujoco>
+    """
+    mjm, mjd, m, d = test_data.fixture(xml=xml)
+    mesh_id = mjm.mesh("prism").id
+    self.assertGreater(mjm.mesh_vertadr[mesh_id], 0)
+    self.assertGreater(mjm.mesh_polyadr[mesh_id], 0)
+    poly_start = mjm.mesh_polyadr[mesh_id]
+    poly_stop = poly_start + mjm.mesh_polynum[mesh_id]
+    self.assertEqual(max(mjm.mesh_polyvertnum[poly_start:poly_stop]), len(face))
+    if exhaustive:
+      m.mesh_graphadr.fill_(-1)
+
+    self._assert_plane_mesh_contacts(mjm, mjd, m, d)
+    self.assertEqual(mjd.ncon, 4)
+    if margin:
+      self.assertGreater(min(mjd.contact.dist), 0.0)
+      self.assertLess(min(mjd.contact.dist), margin)
+      self.assertGreater(max(mjd.contact.dist), margin)
+      self.assertLess(max(mjd.contact.dist), margin + gap)
+
+  def _assert_plane_mesh_contacts(self, mjm, mjd, m, d):
+    """Compares contact geometry in order with MuJoCo's independent C implementation."""
+    mujoco.mj_collision(mjm, mjd)
+    mjw.collision(m, d)
+
+    ncon = mjd.ncon
+    self.assertGreater(ncon, 0)
+    self.assertEqual(d.nacon.numpy()[0], ncon)
+    dist = d.contact.dist.numpy()[:ncon]
+    pos = d.contact.pos.numpy()[:ncon]
+    normal = d.contact.frame.numpy()[:ncon, 0]
+    self.assertTrue(np.isfinite(dist).all())
+    self.assertTrue(np.isfinite(pos).all())
+    self.assertTrue(np.isfinite(normal).all())
+    np.testing.assert_allclose(dist, mjd.contact.dist[:ncon], atol=1e-4)
+    np.testing.assert_allclose(pos, mjd.contact.pos[:ncon], atol=1e-4)
+    np.testing.assert_allclose(normal, mjd.contact.frame[:ncon, :3], atol=1e-4)
 
   def test_mesh_mesh_common_translation(self):
     """Test collision against translation."""
