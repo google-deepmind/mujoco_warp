@@ -278,6 +278,7 @@ def _apply_ft(
   jac = wp.spatial_vector(cdof[3], cdof[4], cdof[5], cdof[0], cdof[1], cdof[2])
 
   dofbodyid = dof_bodyid[dofid]
+  subtree_com = subtree_com_in[worldid, body_rootid[dofbodyid]]
   accumul = float(0.0)
 
   # Bodies in a subtree are contiguous in MuJoCo's depth-first order.
@@ -285,7 +286,7 @@ def _apply_ft(
     ft_body = ft_in[worldid, bodyid]
     if ft_body == wp.spatial_vector():
       continue
-    offset = xipos_in[worldid, bodyid] - subtree_com_in[worldid, body_rootid[bodyid]]
+    offset = xipos_in[worldid, bodyid] - subtree_com
     cross_term = wp.cross(rotational_cdof, offset)
     accumul += wp.dot(jac, ft_body) + wp.dot(cross_term, wp.spatial_top(ft_body))
 
