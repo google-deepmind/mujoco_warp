@@ -589,6 +589,11 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
     bodies.setdefault(body_depth[i], []).append(i)
   m.body_tree = tuple(wp.array(bodies[i], dtype=int) for i in sorted(bodies))
 
+  # Subtree sizes include the body itself; parents precede their descendants.
+  m.body_subtreenum = np.ones(mjm.nbody, dtype=int)
+  for i in reversed(range(1, mjm.nbody)):
+    m.body_subtreenum[mjm.body_parentid[i]] += m.body_subtreenum[i]
+
   # branch-based traversal data
   children_count = np.bincount(mjm.body_parentid[1:], minlength=mjm.nbody)
   ancestor_chain = lambda b: ancestor_chain(mjm.body_parentid[b]) + [b] if b else []
