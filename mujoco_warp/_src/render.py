@@ -564,6 +564,7 @@ def vertex_normal(n: wp.vec3, face: wp.vec3) -> wp.vec3:
   return n
 
 
+# TODO(team): consider precomputing transparent geom/flex filtering
 @wp.func
 def _geom_rgba(
   # Model:

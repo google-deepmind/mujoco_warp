@@ -1442,16 +1442,27 @@ class RenderTest(parameterized.TestCase):
     ("material_rgba_fallback", "", 2),
   )
   def test_geom_rgba_precedence_over_material(self, geom_rgba_attr: str, exp_channel: int):
-    """Custom geom rgba overrides material rgba matching native MuJoCo behavior."""
+    """Custom geom rgba overrides material rgba and rgba[3] == 0 objects do not occlude."""
     mjm, mjd, m, d = test_data.fixture(
       xml=f"""
     <mujoco>
+      <visual>
+        <headlight active="0"/>
+      </visual>
       <asset>
         <material name="blue_mat" rgba="0 0 1 1"/>
+        <material name="transparent_mat" rgba="0 1 0 0"/>
       </asset>
       <worldbody>
+        <light pos="0 -4 0" dir="0 1 0" directional="true"/>
         <camera pos="0 -4 0" xyaxes="1 0 0 0 0 1" fovy="45"/>
-        <geom type="box" size="0.5 0.5 0.5" {geom_rgba_attr} material="blue_mat"/>
+        <geom name="occluder_geom" type="box" pos="0 -3 0" size="0.5 0.1 0.5" rgba="0 1 0 0"/>
+        <geom name="occluder_mat" type="box" pos="0 -2.5 0" size="0.5 0.1 0.5" material="transparent_mat"/>
+        <geom name="occluder_override" type="box" pos="0 -2 0" size="0.5 0.1 0.5" material="blue_mat" rgba="0 1 0 0"/>
+        <geom name="target" type="box" size="0.5 0.5 0.5" {geom_rgba_attr} material="blue_mat"/>
+        <flexcomp name="occluder_flex" count="2 2 1" spacing="1 1 1" pos="0 -1.5 0" euler="90 0 0" rgba="0 1 0 0">
+          <edge damping="0.1"/>
+        </flexcomp>
       </worldbody>
     </mujoco>
     """,
@@ -1462,15 +1473,30 @@ class RenderTest(parameterized.TestCase):
       nworld=1,
       cam_res=(32, 32),
       render_rgb=True,
+      render_depth=True,
+      render_seg=True,
       use_textures=False,
+      use_shadows=True,
+      use_ambient_lighting=False,
       enable_specular=False,
+      shadow_light_fraction=0.0,
     )
+    rc.rgb_data.fill_(wp.uint32(0))
+    rc.depth_data.fill_(wp.inf)
+    rc.seg_data.fill_(wp.vec2i(-1, -1))
     mjw.render(m, d, rc)
+
     rgb = _unpack_rgb(rc.rgb_data.numpy()[0]).reshape(32, 32, 3)
     self.assertGreater(np.count_nonzero(rgb[..., exp_channel] > 100), 50)
     other_channel = 2 if exp_channel == 0 else 0
     box_pixels = rgb[..., exp_channel] > 100
     self.assertTrue(np.all(rgb[box_pixels, other_channel] == 0))
+    self.assertTrue(np.all(rgb[box_pixels, 1] == 0))
+
+    target_id = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_GEOM, "target")
+    center_idx = 16 * 32 + 16
+    np.testing.assert_array_equal(rc.seg_data.numpy()[0, center_idx], [target_id, int(mjw.ObjType.GEOM)])
+    _assert_eq(rc.depth_data.numpy()[0, center_idx], 3.5, "depth")
 
   @parameterized.named_parameters(
     ("inside", 0.5, True),
@@ -1543,77 +1569,6 @@ class RenderTest(parameterized.TestCase):
       self.assertGreater(green_count, 0, f"Flex at dist {dist} should be visible")
     else:
       self.assertEqual(green_count, 0, f"Flex at dist {dist} should be clipped")
-
-  @parameterized.parameters(1, 2)
-  def test_transparent_objects_do_not_occlude(self, nworld: int):
-    """Objects with rgba[3] == 0 must not occlude camera or shadow rays."""
-    mjm, _, m, d = test_data.fixture(
-      xml="""
-    <mujoco>
-      <visual>
-        <headlight active="0"/>
-      </visual>
-      <asset>
-        <material name="transparent_mat" rgba="1 0 0 0"/>
-        <material name="opaque_mat" rgba="1 0 0 1"/>
-      </asset>
-      <worldbody>
-        <light directional="true"/>
-        <camera pos="0 0 3"/>
-        <geom name="occluder_geom" type="box" pos="0 0 2" size="0.5 0.5 0.1" rgba="1 0 0 0"/>
-        <geom name="occluder_mat" type="box" pos="0 0 1.5" size="0.5 0.5 0.1" material="transparent_mat"/>
-        <geom name="occluder_override" type="box" pos="0 0 1" size="0.5 0.5 0.1" material="opaque_mat" rgba="1 0 0 0"/>
-        <body pos="0 0 -1">
-          <joint type="slide"/>
-          <geom name="target" type="box" size="0.5 0.5 0.1" rgba="0 1 0 1"/>
-        </body>
-        <flexcomp name="occluder_flex" count="2 2 1" spacing="1 1 1" pos="0 0 0.5" rgba="1 0 0 0">
-          <edge damping="0.1"/>
-        </flexcomp>
-      </worldbody>
-    </mujoco>
-    """,
-      nworld=nworld,
-    )
-    rc = mjw.create_render_context(
-      mjm,
-      nworld=nworld,
-      cam_res=(16, 16),
-      render_rgb=True,
-      render_depth=True,
-      render_seg=True,
-      use_shadows=True,
-      use_ambient_lighting=False,
-      enable_specular=False,
-      shadow_light_fraction=0.0,
-    )
-
-    if nworld == 2:
-      qpos = d.qpos.numpy()
-      qpos[1, 0] = -0.5
-      d.qpos.assign(qpos)
-      mjw.kinematics(m, d)
-      mjw.refit_bvh(m, d, rc)
-
-    rc.rgb_data.fill_(wp.uint32(0))
-    rc.depth_data.fill_(wp.inf)
-    rc.seg_data.fill_(wp.vec2i(-1, -1))
-    mjw.render(m, d, rc)
-
-    target_id = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_GEOM, "target")
-    center_idx = 8 * 16 + 8
-    seg = rc.seg_data.numpy()[:, center_idx]
-    depth = rc.depth_data.numpy()[:, center_idx]
-    rgb = _unpack_rgb(rc.rgb_data.numpy()[:, center_idx])
-
-    for w in range(nworld):
-      np.testing.assert_array_equal(seg[w], [target_id, int(mjw.ObjType.GEOM)])
-      _assert_eq(depth[w], 3.9 + 0.5 * w, f"depth_world_{w}")
-      self.assertGreater(int(rgb[w, 1]), 100)
-      self.assertEqual(int(rgb[w, 0]), 0)
-
-    if nworld == 2:
-      self.assertFalse(np.allclose(depth[0], depth[1]))
 
 
 if __name__ == "__main__":
