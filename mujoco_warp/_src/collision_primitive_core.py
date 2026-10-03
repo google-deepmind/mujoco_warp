@@ -1769,28 +1769,30 @@ def cylinder_triangle(
       dist_raw = wp.length(diff)
 
       if dist_raw < cylinder_radius + tri_radius:
-        if dist_raw > MJ_MINVAL:
+        dist_to_side = cylinder_radius - dist_raw
+        cylinder_height = 2.0 * cylinder_half_height
+        dist_to_p2 = (1.0 - t_param) * cylinder_height
+        dist_to_p1 = t_param * cylinder_height
+
+        if dist_raw > MJ_MINVAL and (
+          dist_raw >= cylinder_radius or (dist_to_side <= dist_to_p1 and dist_to_side <= dist_to_p2)
+        ):
           nrm = diff / dist_raw
           d = dist_raw - cylinder_radius - tri_radius
           p = (closest + vert + nrm * (cylinder_radius - tri_radius)) * 0.5
+        elif dist_to_p2 < dist_to_side and dist_to_p2 <= dist_to_p1:
+          nrm = cylinder_axis
+          d = -dist_to_p2 - tri_radius
+          p = vert - nrm * (tri_radius + d * 0.5)
+        elif dist_to_p1 < dist_to_side:
+          nrm = -cylinder_axis
+          d = -dist_to_p1 - tri_radius
+          p = vert - nrm * (tri_radius + d * 0.5)
         else:
-          dist_to_side = cylinder_radius
-          dist_to_p2 = (1.0 - t_param) * wp.sqrt(ab_len_sq)
-          dist_to_p1 = t_param * wp.sqrt(ab_len_sq)
-
-          if dist_to_p2 < dist_to_side and dist_to_p2 < dist_to_p1:
-            nrm = cylinder_axis
-            d = -dist_to_p2 - tri_radius
-            p = vert
-          elif dist_to_p1 < dist_to_side:
-            nrm = -cylinder_axis
-            d = -dist_to_p1 - tri_radius
-            p = vert
-          else:
-            tri_normal = wp.normalize(wp.cross(t2 - t1, t3 - t1))
-            nrm = tri_normal
-            d = -cylinder_radius - tri_radius
-            p = closest
+          tri_normal = wp.normalize(wp.cross(t2 - t1, t3 - t1))
+          nrm = tri_normal
+          d = -cylinder_radius - tri_radius
+          p = closest
 
         if cnt == 0:
           dist1 = d
@@ -1884,10 +1886,16 @@ def cylinder_triangle(
     v = t2 if edge_idx == 0 else (t3 if edge_idx == 1 else t1)
 
     closest_axis, closest_edge = closest_segment_to_segment_points(p1, p2, u, v)
+    s_edge = wp.abs(wp.dot(closest_edge - cylinder_pos, cylinder_axis))
+    d_axial = s_edge - cylinder_half_height
+    if d_axial >= tri_radius:
+      continue
+
     diff = closest_edge - closest_axis
     dist_raw = wp.length(diff)
+    dist_to_cap = wp.max(0.0, -d_axial) + tri_radius
 
-    if dist_raw < cylinder_radius + tri_radius:
+    if dist_raw < cylinder_radius + tri_radius and (dist_raw >= cylinder_radius or (cylinder_radius - dist_raw) <= dist_to_cap):
       if dist_raw > MJ_MINVAL:
         nrm = diff / dist_raw
         d = dist_raw - cylinder_radius - tri_radius

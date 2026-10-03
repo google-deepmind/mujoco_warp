@@ -81,6 +81,7 @@ class BlockDim:
     contact_jac_tiled: contact Jacobian tiled block dimension (solver)
     qderiv_actuator_dense: qderiv actuator dense block dimension (derivative)
     eff_pcg: effective-metric PCG block dimension (derivative)
+    ipc_merit: IPC merit function reduction block dimension (ipc)
     render: render block dimension (render)
   """
 
@@ -117,6 +118,8 @@ class BlockDim:
   # derivative
   qderiv_actuator_dense: int = 32
   eff_pcg: int = 128
+  # ipc
+  ipc_merit: int = 64
   # render
   render: int = 64
 
@@ -309,11 +312,13 @@ class EnableBit(enum.IntFlag):
     ENERGY: energy computation
     INVDISCRETE: discrete-time inverse dynamics
     SLEEP: sleeping
+    IPC: IPC flex contact mode of the discrete integrator
   """
 
   ENERGY = mujoco.mjtEnableBit.mjENBL_ENERGY
   INVDISCRETE = mujoco.mjtEnableBit.mjENBL_INVDISCRETE
   SLEEP = mujoco.mjtEnableBit.mjENBL_SLEEP
+  IPC = mujoco.mjtEnableBit.mjENBL_IPC
   # unsupported: OVERRIDE, FWDINV, ISLAND, DIAGEXACT
 
 
@@ -2287,6 +2292,8 @@ class Data:
     flexvert_xpos: cartesian flex vertex positions              (nworld, nflexvert, 3)
     flexedge_J: edge length Jacobian                            (nworld, nJfe)
     flexedge_length: flex edge lengths                          (nworld, nflexedge)
+    flexvert_lambda: flex contact multiplier                    (nworld, nflexvert)
+    flexvert_conage: flex contact age                           (nworld, nflexvert)
     ten_wrapadr: start address of tendon's path                 (nworld, ntendon)
     ten_wrapnum: number of wrap points in path                  (nworld, ntendon)
     ten_J: tendon Jacobian                                      (nworld, nJten)
@@ -2448,6 +2455,8 @@ class Data:
   flexvert_xpos: array("nworld", "nflexvert", wp.vec3)
   flexedge_J: array("nworld", "nJfe", float)
   flexedge_length: array("nworld", "nflexedge", float)
+  flexvert_lambda: array("nworld", "nflexvert", float)
+  flexvert_conage: array("nworld", "nflexvert", int)
   ten_wrapadr: array("nworld", "ntendon", int)
   ten_wrapnum: array("nworld", "ntendon", int)
   ten_J: array("nworld", "nJten", float)
@@ -2604,6 +2613,12 @@ class SolverContext:
   # the full-coordinate Data, set by solve_compact (None natively)
   compact_m_full: Optional["Model"] = None
   compact_d_full: Optional["Data"] = None
+  nsolving: Optional[wp.array] = None
+  qfrc_smooth_eff: Optional[wp.array] = None
+  qfrc_smooth_eff_ready: bool = False
+  epB: Optional[wp.array] = None
+  epL: Optional[wp.array] = None
+  efm_con: Optional[tuple] = None
 
 
 @dataclasses.dataclass

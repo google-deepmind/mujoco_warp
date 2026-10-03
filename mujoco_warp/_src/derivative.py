@@ -2074,7 +2074,14 @@ def _eff_flex_stretch_stiff(
     for x in range(3):
       dvec[e, x] = xp0[x] - xp1[x]
 
-  stiffness_adr = stiffness_adr_base + local_elemid * 21
+  stiffness_end = flex_stiffness.shape[0]
+  for i in range(f + 1, flex_stiffnessadr.shape[0]):
+    next_adr = flex_stiffnessadr[i]
+    if next_adr >= 0:
+      stiffness_end = next_adr
+      break
+  stiffness_size = int((stiffness_end - stiffness_adr_base) / flex_elemnum[f])
+  stiffness_adr = stiffness_adr_base + local_elemid * stiffness_size
   metric = wp.matrix(shape=(6, 6), dtype=float)
   id = int(0)
   for e1 in range(nedge):
@@ -2659,7 +2666,14 @@ def _eff_flex_stretch_shift(
       ge += dx * dwx
     g[e] = ge
 
-  stiffness_adr = stiffness_adr_base + local_elemid * 21
+  stiffness_end = flex_stiffness.shape[0]
+  for i in range(f + 1, flex_stiffnessadr.shape[0]):
+    next_adr = flex_stiffnessadr[i]
+    if next_adr >= 0:
+      stiffness_end = next_adr
+      break
+  stiffness_size = int((stiffness_end - stiffness_adr_base) / flex_elemnum[f])
+  stiffness_adr = stiffness_adr_base + local_elemid * stiffness_size
   metric = wp.matrix(shape=(6, 6), dtype=float)
   id = int(0)
   for e1 in range(nedge):
@@ -4022,12 +4036,13 @@ def _eff_factor_folded_blocks(
 
 
 @event_scope
-def eff_prec_fold(m: Model, d: Data, out: Optional[wp.array] = None) -> wp.array:
+def eff_prec_fold(m: Model, d: Data, out: Optional[wp.array] = None, epB: Optional[wp.array] = None) -> wp.array:
   """Folds rank-1 metric terms and active/inactive efc rows into 3x3 preconditioner blocks."""
   epL = out if out is not None else wp.empty_like(d.efm_L)
   if m.nefmdof == 0:
     return epL
-  epB = wp.empty_like(d.efm_L)
+  if epB is None:
+    epB = wp.empty_like(d.efm_L)
   dofblk = m.efm_dofblk
 
   wp.launch(

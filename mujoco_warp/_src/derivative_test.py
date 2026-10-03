@@ -1648,8 +1648,12 @@ class DerivativeTest(parameterized.TestCase):
     mjw.forward(m, d)
 
     _assert_eq(d.efm_diag.numpy()[0], mjd.efm_diag, "efm_diag")
-    _assert_eq(d.efm_ts.numpy()[0], mjd.efm_ts, "efm_ts")
-    _assert_eq(d.efm_as.numpy()[0], mjd.efm_as, "efm_as")
+    expected_efm_ts = np.zeros(mjm.ntendon)
+    expected_efm_ts[mjd.efm_tid[: mjd.nefmT]] = mjd.efm_ts[: mjd.nefmT]
+    _assert_eq(d.efm_ts.numpy()[0], expected_efm_ts, "efm_ts")
+    expected_efm_as = np.zeros(mjm.nu)
+    expected_efm_as[mjd.efm_aid[: mjd.nefmA]] = mjd.efm_as[: mjd.nefmA]
+    _assert_eq(d.efm_as.numpy()[0], expected_efm_as, "efm_as")
     _assert_eq(d.efm_c.numpy()[0], mjd.efm_c, "efm_c")
     _assert_eq(d.efm_ca.numpy()[0], mjd.efm_ca, "efm_ca")
     _assert_eq(d.qacc_smooth.numpy()[0], mjd.qacc_smooth, "qacc_smooth")

@@ -693,6 +693,27 @@ class CylinderTriangleTest(parameterized.TestCase):
 
     self.assertLess(dist[0], collision_primitive_core.MJ_MAXVAL)
 
+  def test_flat_cylinder_cap_off_axis_penetration(self):
+    """Off-axis triangle vertices penetrating a flat cylinder cap report axial cap contact."""
+    # Wide flat disk cylinder with top cap at z = 0.016
+    cylinder_pos = np.array([0.0, 0.0, 0.008])
+    cylinder_axis = np.array([0.0, 0.0, 1.0])
+    cylinder_radius = 0.102
+    cylinder_half_height = 0.008
+    tri_radius = 0.001
+    # Off-axis triangle vertices at r ~ 0.05..0.06 m penetrating top cap by 0.5 mm (z = 0.0155)
+    t1 = np.array([0.05, 0.0, 0.0155])
+    t2 = np.array([0.06, 0.0, 0.0155])
+    t3 = np.array([0.05, 0.01, 0.0155])
+
+    dist, pos, normal = self._run_cylinder_triangle(
+      cylinder_pos, cylinder_axis, cylinder_radius, cylinder_half_height, t1, t2, t3, tri_radius
+    )
+
+    expected_dist = -(0.016 - 0.0155) - tri_radius
+    np.testing.assert_allclose(dist[0], expected_dist, atol=1e-5)
+    np.testing.assert_allclose(normal[0], [0.0, 0.0, 1.0], atol=1e-5)
+
 
 if __name__ == "__main__":
   absltest.main()

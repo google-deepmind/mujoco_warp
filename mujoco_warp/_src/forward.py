@@ -21,6 +21,7 @@ from mujoco_warp._src import collision_driver
 from mujoco_warp._src import constraint
 from mujoco_warp._src import derivative
 from mujoco_warp._src import history
+from mujoco_warp._src import ipc
 from mujoco_warp._src import island
 from mujoco_warp._src import math
 from mujoco_warp._src import passive
@@ -55,6 +56,13 @@ wp.set_module_options({"enable_backward": False})
 
 def check_discrete(m: Model):
   """Validate model configuration for discrete integrator."""
+  if m.opt.enableflags & EnableBit.IPC:
+    if m.opt.integrator != IntegratorType.DISCRETE:
+      raise ValueError("Flag IPC requires integrator='discrete'")
+    if m.opt.solver != SolverType.CG:
+      raise ValueError("Flag IPC requires solver='CG'")
+    if m.opt.enableflags & EnableBit.SLEEP:
+      raise ValueError("Flag IPC does not support flag sleep")
   if m.opt.integrator != IntegratorType.DISCRETE:
     if m.has_flex_passive:
       raise ValueError("passive flex contact requires an integrator with the effective metric: set integrator='discrete'")
@@ -318,7 +326,7 @@ def _next_time_builder(warn_overflow: int):
   return _next_time
 
 
-def _advance(m: Model, d: Data, qacc: wp.array, qvel: Optional[wp.array] = None):
+def advance(m: Model, d: Data, qacc: wp.array, qvel: Optional[wp.array] = None):
   """Advance state and time given activation derivatives and acceleration."""
   # TODO(team): can we assume static timesteps?
 
@@ -457,9 +465,9 @@ def euler(m: Model, d: Data):
       outputs=[M],
     )
     smooth.factor_solve_i(m, d, M, qLD, qLDiagInv, qacc, d.efc.Ma)
-    _advance(m, d, qacc)
+    advance(m, d, qacc)
   else:
-    _advance(m, d, d.qacc)
+    advance(m, d, d.qacc)
 
 
 def _rk_perturb_state(
@@ -599,7 +607,7 @@ def rungekutta4(m: Model, d: Data):
     wp.copy(d.act, act_t0)
     wp.copy(d.act_dot, act_dot_rk)
 
-  _advance(m, d, qacc_rk, qvel_rk)
+  advance(m, d, qacc_rk, qvel_rk)
 
 
 @wp.kernel
@@ -1264,7 +1272,7 @@ def implicit(m: Model, d: Data):
     qacc = wp.empty((d.nworld, m.nv), dtype=float)
     smooth.factor_solve_lu(m, d, d.qLU, qacc, d.efc.Ma)
     _launch_implicit_free_body_solve(m, d, qacc)
-    _advance(m, d, qacc)
+    advance(m, d, qacc)
   elif (m.opt.disableflags & (DisableBit.ACTUATION | DisableBit.SPRING | DisableBit.DAMPER)) != (
     DisableBit.ACTUATION | DisableBit.SPRING | DisableBit.DAMPER
   ):
@@ -1289,9 +1297,9 @@ def implicit(m: Model, d: Data):
     qacc = wp.empty((d.nworld, m.nv), dtype=float)
     smooth.factor_solve_i(m, d, qDeriv, qLD, qLDiagInv, qacc, d.efc.Ma)
     _launch_implicit_free_body_solve(m, d, qacc)
-    _advance(m, d, qacc)
+    advance(m, d, qacc)
   else:
-    _advance(m, d, d.qacc)
+    advance(m, d, d.qacc)
 
 
 @event_scope
@@ -2055,6 +2063,22 @@ def _energy_vel(m: Model, d: Data):
       sensor.energy_vel(m, d)
 
 
+def _solve_and_sensor_acc(m: Model, d: Data):
+  skip_constraint = ipc.ipc_skip_constraint(m)
+  if not skip_constraint:
+    solver.solve(m, d)
+  else:
+    wp.copy(d.qacc, d.qacc_smooth)
+    d.solver_niter.zero_()
+
+  if m.opt.integrator == IntegratorType.DISCRETE:
+    _launch_discrete_free_gyro(m, d, d.qacc, d.qacc, False)
+  if not skip_constraint:
+    if m.opt.run_rne_postconstraint or (not (m.opt.disableflags & DisableBit.SENSOR) and m.sensor_rne_postconstraint):
+      smooth.rne_postconstraint(m, d)
+    sensor.sensor_acc(m, d, skip_rne_postconstraint=True)
+
+
 @event_scope
 def forward(m: Model, d: Data):
   """Forward dynamics."""
@@ -2078,19 +2102,16 @@ def forward(m: Model, d: Data):
       m.callback.control(m, d)
   fwd_actuation(m, d)
   fwd_acceleration(m, d, factorize=True)
-
-  solver.solve(m, d)
-  if m.opt.integrator == IntegratorType.DISCRETE:
-    _launch_discrete_free_gyro(m, d, d.qacc, d.qacc, False)
-  if m.opt.run_rne_postconstraint or (not (m.opt.disableflags & DisableBit.SENSOR) and m.sensor_rne_postconstraint):
-    smooth.rne_postconstraint(m, d)
-  sensor.sensor_acc(m, d, skip_rne_postconstraint=True)
+  _solve_and_sensor_acc(m, d)
 
 
 @event_scope
 def discrete(m: Model, d: Data):
   """Advance simulation using discrete integrator."""
-  _advance(m, d, d.qacc)
+  if m.opt.enableflags & EnableBit.IPC:
+    ipc.ipc(m, d)
+  else:
+    advance(m, d, d.qacc)
 
 
 @event_scope
@@ -2135,12 +2156,7 @@ def step2(m: Model, d: Data):
   """Advance simulation in two phases: after input is set by user."""
   fwd_actuation(m, d)
   fwd_acceleration(m, d)
-  solver.solve(m, d)
-  if m.opt.integrator == IntegratorType.DISCRETE:
-    _launch_discrete_free_gyro(m, d, d.qacc, d.qacc, False)
-  if m.opt.run_rne_postconstraint or (not (m.opt.disableflags & DisableBit.SENSOR) and m.sensor_rne_postconstraint):
-    smooth.rne_postconstraint(m, d)
-  sensor.sensor_acc(m, d, skip_rne_postconstraint=True)
+  _solve_and_sensor_acc(m, d)
 
   # integrate with Euler, implicitfast, or discrete
   if m.opt.integrator in (IntegratorType.IMPLICITFAST, IntegratorType.IMPLICIT):
