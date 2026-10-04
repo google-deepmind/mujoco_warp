@@ -19,6 +19,7 @@ from absl.testing import absltest
 from absl.testing import parameterized
 
 from mujoco_warp._src import types
+from mujoco_warp._src.math import closest_segment_point
 from mujoco_warp._src.math import closest_segment_to_segment_points
 from mujoco_warp._src.math import free_bias_vel_blocks
 from mujoco_warp._src.math import lu_factor_6x6
@@ -69,6 +70,42 @@ def _free_bias_vel_blocks_kernel(
     for c in range(3):
       lin_out[r, c] = lin[r, c]
       rot_out[r, c] = rot[r, c]
+
+
+@wp.kernel
+def _closest_segment_point_kernel(
+  # In:
+  a: wp.vec3,
+  b: wp.vec3,
+  point: wp.vec3,
+  # Out:
+  closest_out: wp.array[wp.vec3],
+):
+  closest_out[0] = closest_segment_point(a, b, point)
+
+
+class ClosestSegmentPointTest(parameterized.TestCase):
+  """Tests point projections onto short and degenerate segments."""
+
+  @parameterized.named_parameters(
+    ("interior", [-0.001, 0, 0], [0.001, 0, 0], [0, 0.00015, 0], [0, 0, 0]),
+    ("endpoint", [-0.001, 0, 0], [0.001, 0, 0], [0.001, 0.00015, 0], [0.001, 0, 0]),
+    ("reversed", [0.001, 0, 0], [-0.001, 0, 0], [0, 0.00015, 0], [0, 0, 0]),
+    ("before", [-0.001, 0, 0], [0.001, 0, 0], [-0.003, 0.00015, 0], [-0.001, 0, 0]),
+    ("after", [-0.001, 0, 0], [0.001, 0, 0], [0.003, 0.00015, 0], [0.001, 0, 0]),
+    ("diagonal", [0, 0, 0], [0.002, 0.002, 0.002], [0.001, 0.002, 0], [0.001, 0.001, 0.001]),
+    ("zero_length", [0.001, -0.002, 0.003], [0.001, -0.002, 0.003], [1, 2, 3], [0.001, -0.002, 0.003]),
+  )
+  def test_closest_segment_point(self, a, b, point, expected):
+    """Projection must not shrink toward the first endpoint as the segment gets shorter."""
+    closest = wp.empty(1, dtype=wp.vec3)
+    wp.launch(
+      _closest_segment_point_kernel,
+      dim=1,
+      inputs=[wp.vec3(a), wp.vec3(b), wp.vec3(point)],
+      outputs=[closest],
+    )
+    np.testing.assert_allclose(closest.numpy()[0], expected, atol=1e-9, rtol=1e-6)
 
 
 class ClosestSegmentSegmentPointsTest(absltest.TestCase):

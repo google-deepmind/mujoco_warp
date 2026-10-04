@@ -775,6 +775,43 @@ class CollisionTest(parameterized.TestCase):
     self.assertEqual(m.nxn_geom_pair.numpy().shape[0], 3)
     np.testing.assert_equal(m.nxn_pairid.numpy()[:][:, 0], np.array([-2, -1, -1]))
 
+  @parameterized.product(scale=[1.0, 0.001], sphere_pos=[(0, 0.15, 0), (1, 0.15, 0), (1.1, 0.1, 0), (0, 0.3, 0)])
+  def test_sphere_capsule_scale(self, scale, sphere_pos):
+    """Sphere-capsule contacts match MuJoCo for ordinary and millimeter-scale segments."""
+    pos = " ".join(str(value * scale) for value in sphere_pos)
+    _, mjd, m, d = test_data.fixture(
+      xml=f"""
+      <mujoco>
+        <option gravity="0 0 0"/>
+        <worldbody>
+          <geom type="capsule" size="{0.1 * scale}" fromto="{-scale} 0 0 {scale} 0 0"/>
+          <body pos="{pos}">
+            <freejoint/>
+            <inertial pos="0 0 0" mass="1" diaginertia="1 1 1"/>
+            <geom type="sphere" size="{0.1 * scale}"/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """,
+      nconmax=8,
+      njmax=32,
+    )
+    # Discard contacts copied by put_data: these assertions must check freshly
+    # computed Warp contacts, including their geometry and normal.
+    d.contact.dist.fill_(wp.inf)
+    d.contact.pos.fill_(wp.inf)
+    d.contact.frame.fill_(wp.inf)
+    mjw.kinematics(m, d)
+    mjw.collision(m, d)
+
+    expected_ncon = 0 if sphere_pos[1] > 0.2 else 1
+    self.assertEqual(mjd.ncon, expected_ncon)
+    self.assertEqual(d.nacon.numpy()[0], mjd.ncon)
+    if mjd.ncon:
+      np.testing.assert_allclose(d.contact.dist.numpy()[0], mjd.contact.dist[0], atol=2e-6 * scale, rtol=1e-5)
+      np.testing.assert_allclose(d.contact.pos.numpy()[0], mjd.contact.pos[0], atol=2e-6 * scale, rtol=1e-5)
+      np.testing.assert_allclose(d.contact.frame.numpy()[0, 0], mjd.contact.frame[0, :3], atol=2e-5)
+
   def test_plane_meshtet(self):
     # tetrahedron, separated in z by 0.1
     convex = Geom()
