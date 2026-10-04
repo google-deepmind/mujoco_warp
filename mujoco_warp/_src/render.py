@@ -377,11 +377,13 @@ def _texture_mesh(
     if texcoord_offset >= 0:
       face_adr = mesh_faceadr[mesh_id] + f
       coords = mesh_facetexcoord[face_adr]
-      uv0 = mesh_texcoord[texcoord_offset + coords[0]]
-      uv1 = mesh_texcoord[texcoord_offset + coords[1]]
-      uv2 = mesh_texcoord[texcoord_offset + coords[2]]
-      uv = uv0 * bary_u + uv1 * bary_v + uv2 * (1.0 - bary_u - bary_v)
-      has_uv = True
+      # OBJ faces can omit individual UV indices even when the mesh has texcoords.
+      if coords[0] >= 0 and coords[1] >= 0 and coords[2] >= 0:
+        uv0 = mesh_texcoord[texcoord_offset + coords[0]]
+        uv1 = mesh_texcoord[texcoord_offset + coords[1]]
+        uv2 = mesh_texcoord[texcoord_offset + coords[2]]
+        uv = uv0 * bary_u + uv1 * bary_v + uv2 * (1.0 - bary_u - bary_v)
+        has_uv = True
 
   if not has_uv:
     # Fallback to OBJECT_PLANE texgen for untextured mesh (render_gl3.c:163-200)

@@ -344,6 +344,74 @@ class RenderTest(parameterized.TestCase):
     self.assertTrue(np.all(rgb[:, 0] > rgb[:, 1]), "mesh should read as red from its texture")
     self.assertTrue(np.all(rgb[:, 0] > rgb[:, 2]), "mesh should read as red from its texture")
 
+  @parameterized.product(corner=(0, 1, 2), preceding_uv=(False, True))
+  def test_render_mesh_missing_face_texcoord(self, corner, preceding_uv):
+    """Incomplete OBJ face UVs use mesh projection without reading adjacent UV data."""
+    vertices = "v 1 1 1\nv 1 -1 -1\nv -1 1 -1\nv -1 -1 1\n"
+    faces = ((1, 3, 2), (1, 2, 4), (1, 4, 3), (2, 3, 4))
+    # An earlier mesh makes offset - 1 an in-bounds read of another mesh's UVs.
+    prefix = (
+      '<mesh name="prefix" vertex="1 1 1  1 -1 -1  -1 1 -1  -1 -1 1" texcoord="0.75 0.75  0.75 0.75  0.75 0.75  0.75 0.75"/>'
+      if preceding_uv
+      else ""
+    )
+    xml = f"""
+    <mujoco>
+      <asset>
+        <texture name="checker" type="2d" builtin="checker" rgb1="1 0 0" rgb2="0 1 0" width="16" height="16"/>
+        <material name="mat" texture="checker"/>
+        {prefix}
+        <mesh name="mesh" file="mesh.obj"/>
+      </asset>
+      <worldbody>
+        <camera pos="0 -4 0" xyaxes="1 0 0 0 0 1"/>
+        <geom type="mesh" mesh="mesh" material="mat"/>
+      </worldbody>
+    </mujoco>
+    """
+
+    def render(uv_mode):
+      obj = vertices + ("vt 0.125 0.125\n" if uv_mode != "absent" else "")
+      for face in faces:
+        obj += (
+          "f "
+          + " ".join(
+            str(vertex) if uv_mode == "absent" or (uv_mode == "missing" and i == corner) else f"{vertex}/1"
+            for i, vertex in enumerate(face)
+          )
+          + "\n"
+        )
+      mjm = mujoco.MjModel.from_xml_string(xml, assets={"mesh.obj": obj.encode()})
+      mesh_id = mjm.mesh("mesh").id
+      if uv_mode == "absent":
+        self.assertEqual(mjm.mesh_texcoordadr[mesh_id], -1)
+      else:
+        self.assertEqual(mjm.mesh_texcoordadr[mesh_id], 4 if preceding_uv else 0)
+        face_adr = mjm.mesh_faceadr[mesh_id]
+        coords = mjm.mesh_facetexcoord[face_adr : face_adr + len(faces)]
+        expected = np.zeros_like(coords)
+        if uv_mode == "missing":
+          expected[:, corner] = -1
+        np.testing.assert_array_equal(coords, expected)
+      mjd = mujoco.MjData(mjm)
+      mujoco.mj_forward(mjm, mjd)
+      m, d = mjw.put_model(mjm), mjw.put_data(mjm, mjd)
+      rc = mjw.create_render_context(mjm, cam_res=(32, 32), render_rgb=True, render_seg=True)
+      mjw.render(m, d, rc)
+      mask = rc.seg_data.numpy()[0, :, 1] == int(mjw.ObjType.GEOM)
+      self.assertTrue(np.any(mask), "Expected the mesh to be hit")
+      rgb = _unpack_rgb(rc.rgb_data.numpy()[0])[mask]
+      return rgb
+
+    projected = render("absent")
+    self.assertTrue(np.any(projected[:, 0] > projected[:, 1]))
+    self.assertTrue(np.any(projected[:, 1] > projected[:, 0]))
+    np.testing.assert_array_equal(render("missing"), projected)
+    # Complete face UVs must still select the explicit, constant texture coordinate.
+    valid = render("valid")
+    self.assertFalse(np.array_equal(valid, projected))
+    self.assertNotEqual(np.any(valid[:, 0] > valid[:, 1]), np.any(valid[:, 1] > valid[:, 0]))
+
   def test_disable_ambient_lighting(self):
     xml = """
     <mujoco>
