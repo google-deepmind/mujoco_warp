@@ -3438,11 +3438,11 @@ def _update_gradient(m: types.Model, d: types.Data, ctx: SolverContext, compact:
         # depend on the kernel's occupancy, which determines how many blocks can
         # simultaneously run on the SM. TODO: This factor can be tuned further.
         dim_block = ceil((sm_count * 6 * 256) / m.dof_tri_row.size)
+        nblocks_perblock = int((d.naconmax + dim_block - 1) / dim_block)
       else:
         # fall back for CPU
-        dim_block = d.naconmax
-
-      nblocks_perblock = int((d.naconmax + dim_block - 1) / dim_block)
+        dim_block = 1
+        nblocks_perblock = d.naconmax
 
       wp.launch(
         _update_gradient_JTCJ_dense,
