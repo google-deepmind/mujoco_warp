@@ -72,18 +72,6 @@ def _free_bias_vel_blocks_kernel(
       rot_out[r, c] = rot[r, c]
 
 
-@wp.kernel
-def _closest_segment_point_kernel(
-  # In:
-  a: wp.vec3,
-  b: wp.vec3,
-  point: wp.vec3,
-  # Out:
-  closest_out: wp.array[wp.vec3],
-):
-  closest_out[0] = closest_segment_point(a, b, point)
-
-
 class ClosestSegmentPointTest(parameterized.TestCase):
   """Tests point projections onto short and degenerate segments."""
 
@@ -98,14 +86,8 @@ class ClosestSegmentPointTest(parameterized.TestCase):
   )
   def test_closest_segment_point(self, a, b, point, expected):
     """Projection must not shrink toward the first endpoint as the segment gets shorter."""
-    closest = wp.empty(1, dtype=wp.vec3)
-    wp.launch(
-      _closest_segment_point_kernel,
-      dim=1,
-      inputs=[wp.vec3(a), wp.vec3(b), wp.vec3(point)],
-      outputs=[closest],
-    )
-    np.testing.assert_allclose(closest.numpy()[0], expected, atol=1e-9, rtol=1e-6)
+    closest = closest_segment_point(wp.vec3(a), wp.vec3(b), wp.vec3(point))
+    self.assertSequenceAlmostEqual(closest, expected, 6)
 
 
 class ClosestSegmentSegmentPointsTest(absltest.TestCase):

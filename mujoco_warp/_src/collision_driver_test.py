@@ -782,13 +782,12 @@ class CollisionTest(parameterized.TestCase):
     _, mjd, m, d = test_data.fixture(
       xml=f"""
       <mujoco>
-        <option gravity="0 0 0"/>
         <worldbody>
           <geom type="capsule" size="{0.1 * scale}" fromto="{-scale} 0 0 {scale} 0 0"/>
           <body pos="{pos}">
             <freejoint/>
             <inertial pos="0 0 0" mass="1" diaginertia="1 1 1"/>
-            <geom type="sphere" size="{0.1 * scale}"/>
+            <geom size="{0.1 * scale}"/>
           </body>
         </worldbody>
       </mujoco>

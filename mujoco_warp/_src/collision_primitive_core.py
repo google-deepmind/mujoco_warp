@@ -17,7 +17,6 @@ from typing import Tuple
 
 import warp as wp
 
-from mujoco_warp._src.math import closest_segment_point
 from mujoco_warp._src.math import closest_segment_to_segment_points
 from mujoco_warp._src.math import normalize_with_norm
 from mujoco_warp._src.math import safe_div
@@ -113,11 +112,14 @@ def sphere_capsule(
     - Matrix of contact positions (one per row).
     - Matrix of contact normal vectors (one per row).
   """
-  # Calculate capsule segment
-  segment = capsule_axis * capsule_half_length
-
-  # Find closest point on capsule centerline to sphere center
-  pt = closest_segment_point(capsule_pos - segment, capsule_pos + segment, sphere_pos)
+  # Project the sphere center directly onto the capsule centerline.
+  offset = sphere_pos - capsule_pos
+  projection = wp.clamp(
+    wp.dot(capsule_axis, offset),
+    -capsule_half_length,
+    capsule_half_length,
+  )
+  pt = capsule_pos + capsule_axis * projection
 
   # Use sphere-sphere collision between sphere and closest point
   return sphere_sphere(sphere_pos, sphere_radius, pt, capsule_radius)
