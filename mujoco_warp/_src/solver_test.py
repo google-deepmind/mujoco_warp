@@ -787,6 +787,73 @@ class SolverTest(parameterized.TestCase):
     self.assertFalse(d.overflow.numpy()[0] & types.OverflowType.LS_ITERATIONS)
     self.assertEqual(ctx.alpha.numpy()[0], 0.0)
 
+  def _slide_linesearch(self, efc_D, frictionloss, jaref):
+    """Line search on friction rows of one slide joint whose slopes cancel exactly at alpha = 0."""
+    _, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option solver="CG" jacobian="dense" iterations="0" ls_iterations="50"/>
+        <worldbody>
+          <body><joint type="slide"/><geom type="sphere" size="0.1" mass="1"/></body>
+        </worldbody>
+      </mujoco>
+      """,
+      njmax=5,
+    )
+    ctx = solver._create_solver_context(m, d)
+    d.ne.zero_()
+    d.nf.fill_(5)
+    d.nefc.fill_(5)
+    d.nacon.zero_()
+    d.M.fill_(1.0)
+    d.qacc.zero_()
+    d.efc.Ma.zero_()
+    d.qfrc_smooth.zero_()
+    d.efc.J.fill_(1.0)
+    d.efc.D.assign(np.array([efc_D], dtype=np.float32))
+    d.efc.frictionloss.assign(np.array([frictionloss], dtype=np.float32))
+    ctx.Jaref.assign(np.array([jaref], dtype=np.float32))
+    ctx.search.fill_(2.0**-24)
+    ctx.search_dot.fill_(2.0**-48)
+    ctx.done.fill_(False)
+    ctx.search_unchanged.fill_(False)
+    d.overflow.zero_()
+
+    solver._linesearch(m, d, ctx)
+    return d, ctx
+
+  def test_linesearch_converges_when_float32_drops_slope_terms(self):
+    """Line search should converge at a minimum whose slope float32 cannot resolve."""
+    # from newton-physics/newton#4212: the float32 reduction loses the small slope terms, and no
+    # step strictly improves the cost
+    stiffness = 2.0**8
+    offset = 2.0**28
+    large = stiffness * offset
+    small = 8.0
+    small_offset = 1.5 * 2.0**10
+    d, ctx = self._slide_linesearch(
+      [stiffness, 1.0, 1.0, 1.0, 1.0],
+      [2 * large, small, large, 0.0, small],
+      [offset, small_offset, -16 * large, 0.0, -small_offset],
+    )
+
+    self.assertFalse(d.overflow.numpy()[0] & types.OverflowType.LS_ITERATIONS)
+    self.assertEqual(ctx.alpha.numpy()[0], 0.0)
+
+  def test_linesearch_rejects_rounding_improvement_at_stationary_start(self):
+    """Line search should not take a step whose cost improvement is float32 rounding."""
+    # the slope at alpha = 0 is exactly zero, but rounding of the ~1e18 costs reports an improvement
+    large = 2.0**36
+    small = 8.0
+    d, ctx = self._slide_linesearch(
+      [1.0, 1.0, 1.0, 1.0, 1.0],
+      [large, small, large, 0.0, small],
+      [1.0e9, 1.0e9, -1.0e9, 1.0e9, -1.0e9],
+    )
+
+    self.assertEqual(ctx.alpha.numpy()[0], 0.0)
+    self.assertEqual(d.qacc.numpy()[0, 0], 0.0)
+
   @parameterized.parameters(1, 2)
   def test_linesearch_accepts_converged_newton_point(self, nworld):
     """Linesearch should accept a Newton point at the minimizer whatever its derivative sign."""
