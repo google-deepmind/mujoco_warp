@@ -143,6 +143,101 @@ class BitwiseInversionInBoolean(Issue):
     return 'bitwise NOT (~) used as boolean condition; use "not (...)", "!= 0", or explicit flag checks'
 
 
+@dataclasses.dataclass
+class InvalidNumpyDtype(Issue):
+  dtype_expr: str
+
+  def __str__(self):
+    return (
+      f'invalid numpy dtype "{self.dtype_expr}" (may create a numpy object array); '
+      "use a numpy/builtin scalar type (int, float, bool, np.*) or wp.dtype_to_numpy(...)"
+    )
+
+
+_NP_DTYPE_POS_ARGS = {
+  "zeros": 1,
+  "ones": 1,
+  "empty": 1,
+  "array": 1,
+  "asarray": 1,
+  "asanyarray": 1,
+  "ascontiguousarray": 1,
+  "asfortranarray": 1,
+  "frombuffer": 1,
+  "fromfile": 1,
+  "fromiter": 1,
+  "fromstring": 1,
+  "identity": 1,
+  "zeros_like": 1,
+  "ones_like": 1,
+  "empty_like": 1,
+  "full": 2,
+  "full_like": 2,
+  "eye": 3,
+  "tri": 3,
+  "arange": 3,
+}
+_SAFE_BUILTIN_DTYPES = {"int", "float", "bool", "complex", "str", "bytes"}
+_DISALLOWED_NP_DTYPES = {"object_", "object0", "void"}
+_DISALLOWED_STR_DTYPES = {"object", "O", "|O"}
+
+
+def _attr_root_name(node: ast.AST) -> Optional[str]:
+  """Return root identifier for an attribute chain like np.random.default_rng."""
+  while isinstance(node, ast.Attribute):
+    node = node.value
+  return node.id if isinstance(node, ast.Name) else None
+
+
+def _expr_root_name(node: ast.AST) -> Optional[str]:
+  """Return root identifier for an attribute/subscript chain like mjd.contact.dist[i]."""
+  while isinstance(node, (ast.Attribute, ast.Subscript)):
+    node = node.value
+  return node.id if isinstance(node, ast.Name) else None
+
+
+def _extract_numpy_dtype_arg(call_node: ast.Call) -> Optional[ast.AST]:
+  """Extract the dtype argument node from a NumPy or .astype() call if present."""
+  if not isinstance(call_node.func, ast.Attribute):
+    return None
+  func_name = call_node.func.attr
+  is_np = _attr_root_name(call_node.func.value) in ("np", "numpy")
+  if not is_np and func_name != "astype":
+    return None
+  for kw in call_node.keywords:
+    if kw.arg == "dtype":
+      return kw.value
+  pos_idx = 0 if func_name == "astype" else _NP_DTYPE_POS_ARGS.get(func_name)
+  if pos_idx is not None and len(call_node.args) > pos_idx:
+    return call_node.args[pos_idx]
+  return None
+
+
+def _is_valid_numpy_dtype(node: ast.AST, np_vars: set, local_assigns: Dict[str, ast.AST]) -> bool:
+  """Check if a dtype AST node is a safe NumPy/builtin dtype."""
+  if isinstance(node, ast.IfExp):
+    return _is_valid_numpy_dtype(node.body, np_vars, local_assigns) and _is_valid_numpy_dtype(
+      node.orelse, np_vars, local_assigns
+    )
+  if isinstance(node, ast.Constant):
+    return node.value is None or (isinstance(node.value, str) and node.value not in _DISALLOWED_STR_DTYPES)
+  if isinstance(node, ast.Name):
+    if node.id in _SAFE_BUILTIN_DTYPES:
+      return True
+    if node.id in local_assigns and local_assigns[node.id] is not node:
+      return _is_valid_numpy_dtype(local_assigns[node.id], np_vars, {})
+    return False
+  if isinstance(node, ast.Attribute):
+    if _attr_root_name(node.value) in ("np", "numpy"):
+      return node.attr not in _DISALLOWED_NP_DTYPES
+    if node.attr == "dtype":
+      return _expr_root_name(node.value) in np_vars
+    return False
+  if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+    return node.func.attr in ("dtype_to_numpy", "dtype")
+  return False
+
+
 # TODO(team): add argument order analyzer.
 # this one is tricky because just verifying order does not tell you if the arguments
 # match the parameter signature.
@@ -543,7 +638,25 @@ def analyze(source: str, filename: str, type_source: str) -> List[Issue]:
     if isinstance(node, ast.FunctionDef):
       _analyze_function(node, is_nested=False)
 
-  # Check operator precedence disambiguation throughout the file
+  local_assigns: Dict[str, ast.AST] = {}
+  np_vars = {"mjm", "mjd"}
+  for sub_node in ast.walk(tree):
+    if isinstance(sub_node, ast.FunctionDef):
+      for param in sub_node.args.args + sub_node.args.posonlyargs + sub_node.args.kwonlyargs:
+        if param.annotation and "ndarray" in ast.unparse(param.annotation):
+          np_vars.add(param.arg)
+    elif isinstance(sub_node, ast.Assign) and len(sub_node.targets) == 1 and isinstance(sub_node.targets[0], ast.Name):
+      name = sub_node.targets[0].id
+      local_assigns[name] = sub_node.value
+      val_src = ast.unparse(sub_node.value)
+      if any(s in val_src for s in ("np.", "numpy.", ".astype(", ".numpy(")):
+        np_vars.add(name)
+    elif isinstance(sub_node, ast.If) and "ndarray" in ast.unparse(sub_node.test):
+      for stmt in sub_node.body:
+        if isinstance(stmt, ast.Assign) and len(stmt.targets) == 1 and isinstance(stmt.targets[0], ast.Name):
+          np_vars.add(stmt.targets[0].id)
+
+  # Check operator precedence disambiguation and numpy dtypes throughout the file
   for sub_node in ast.walk(tree):
     # 1. Compare with bitwise operator
     if isinstance(sub_node, ast.Compare):
@@ -573,6 +686,12 @@ def analyze(source: str, filename: str, type_source: str) -> List[Issue]:
       for t in tests:
         if isinstance(t, ast.UnaryOp) and isinstance(t.op, ast.Invert):
           issues.append(BitwiseInversionInBoolean(t, ""))
+
+    elif isinstance(sub_node, ast.Call):
+      dtype_node = _extract_numpy_dtype_arg(sub_node)
+      if dtype_node is not None and not _is_valid_numpy_dtype(dtype_node, np_vars, local_assigns):
+        dtype_expr = ast.get_source_segment(source, dtype_node) or ast.unparse(dtype_node)
+        issues.append(InvalidNumpyDtype(dtype_node, "", dtype_expr))
 
   # skip issues in ignored lines
   ignore_lines = set()

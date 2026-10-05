@@ -516,6 +516,65 @@ def foo(a: int):
     inv_issues = [i for i in issues if isinstance(i, ast_analyzer.BitwiseInversionInBoolean)]
     self.assertEqual(len(inv_issues), 0)
 
+  def test_invalid_numpy_dtype(self):
+    bad_code = """
+import numpy as np
+import warp as wp
+
+def foo(f, g, spec, m, d, x, shape, cond):
+  a1 = np.full(shape, 0, dtype=f.type.dtype)
+  a2 = np.full(shape, 0, dtype=g.type.dtype)
+  a3 = np.full(shape, 0, dtype=wp.uint64)
+  a4 = np.zeros(shape, wp.float32)
+  a5 = x.astype(wp.int32)
+  a6 = np.zeros(shape, dtype=wp.vec3)
+  a7 = np.zeros(shape, dtype=spec.dtype)
+  a8 = np.zeros(shape, dtype=m.qpos0.dtype)
+  a9 = np.zeros(shape, dtype=d.efc.D.dtype)
+  dt = g.type.dtype
+  a10 = np.zeros(shape, dtype=dt)
+  a11 = np.zeros(shape, dtype=g.type)
+  a12 = np.zeros(shape, dtype=int if cond else wp.float32)
+  a13 = np.zeros(shape, dtype=object)
+  a14 = np.zeros(shape, dtype=np.object_)
+  a15 = np.zeros(shape, dtype="O")
+"""
+    issues = ast_analyzer.analyze(bad_code, "test.py", "")
+    dtype_issues = [i for i in issues if isinstance(i, ast_analyzer.InvalidNumpyDtype)]
+    self.assertEqual(len(dtype_issues), 15, dtype_issues)
+
+    good_code = """
+import numpy as np
+import warp as wp
+
+def bar(f, mjm, mjd, shape, nv, typ, obj, attr, val, arr_param: np.ndarray):
+  b1 = np.full(shape, 0, dtype=wp.dtype_to_numpy(f.type.dtype))
+  b2 = np.zeros(shape, dtype=np.int32)
+  b3 = np.ones(shape, dtype=int)
+  b4 = np.empty(shape, dtype=float)
+  b5 = np.zeros(shape, dtype=bool)
+  b6 = np.zeros(shape, dtype=None)
+  b7 = np.zeros(shape, dtype="f4")
+  b8 = np.zeros(shape, dtype=mjm.qpos0.dtype)
+  b9 = np.zeros(shape, dtype=mjd.contact.dist.dtype)
+  b10 = np.zeros(shape, dtype=arr_param.dtype)
+  A = np.random.default_rng(42).normal(size=(nv, nv)).astype(np.float32)
+  A = A @ A.T + np.eye(nv, dtype=A.dtype) * 0.1
+  vertex_properties = [("x", "f4"), ("y", "f4")]
+  dt = np.dtype(vertex_properties)
+  v = mjm.qpos0.view(wp.uint32)
+  if typ is np.ndarray and isinstance(val, str):
+    arr = getattr(obj, attr)
+    val = np.array([1.0], dtype=arr.dtype)
+  elif typ is np.ndarray:
+    arr = getattr(obj, attr)
+    val = np.asarray(val, dtype=arr.dtype)
+  ignored = np.zeros(shape, dtype=f.type.dtype)  # kernel_analyzer: ignore
+"""
+    issues = ast_analyzer.analyze(good_code, "test.py", "")
+    dtype_issues = [i for i in issues if isinstance(i, ast_analyzer.InvalidNumpyDtype)]
+    self.assertEqual(len(dtype_issues), 0, dtype_issues)
+
 
 if __name__ == "__main__":
   absltest.main()
