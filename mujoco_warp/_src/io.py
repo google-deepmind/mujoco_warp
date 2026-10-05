@@ -117,7 +117,7 @@ def _create_constraint(
 
     if mjd is not None:
       shape = tuple(sizes[dim] if isinstance(dim, str) else dim for dim in f.type.shape)
-      val = np.full(shape, -1 if f.name == "island" else 0, dtype=f.type.dtype)
+      val = np.full(shape, -1 if f.name == "island" else 0, dtype=wp.dtype_to_numpy(f.type.dtype))
       if f.name == "D":
         val[:, : mjd.nefc] = np.tile(efc_D_src, (nworld, 1))
       elif f.name == "aref":
