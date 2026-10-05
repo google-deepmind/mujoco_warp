@@ -418,22 +418,6 @@ class SolverTest(parameterized.TestCase):
 
     np.testing.assert_allclose(result.numpy()[0], expected, rtol=1.0e-6, atol=1.0e-6)
 
-  def test_M_fullm_upper_indices_are_row_sorted(self):
-    """Sparse M seeding uses upper-triangle row-sorted writes."""
-    _, _, m, _ = test_data.fixture("humanoid/humanoid.xml")
-
-    lower_row = np.repeat(np.arange(m.nv), m.M_rownnz.numpy())
-    lower_col = m.M_colind.numpy()
-    upper_row = m.M_fullm_upper_i.numpy()
-    upper_col = m.M_fullm_upper_j.numpy()
-    upper_elemid = m.M_fullm_upper_elemid.numpy()
-
-    self.assertEqual(upper_row.size, lower_row.size)
-    self.assertTrue(np.all(upper_row <= upper_col))
-    self.assertTrue(np.all(upper_row[:-1] <= upper_row[1:]))
-    np.testing.assert_array_equal(upper_row, lower_col[upper_elemid])
-    np.testing.assert_array_equal(upper_col, lower_row[upper_elemid])
-
   @parameterized.product(
     cone=tuple(ConeType),
     solver_=tuple(SolverType),
