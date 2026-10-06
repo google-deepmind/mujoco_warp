@@ -776,10 +776,9 @@ class GJKTest(parameterized.TestCase):
     depth = mujoco.mj_geomDistance(mjm, mjd, 0, 1, 1.0, None)
     self.assertLess(depth, 0.0)
 
-    dist, _, _, _ = _geom_dist(
-      m, d, 0, 1, pos1=wp.vec3(0.0, 0.0, 0.0), mat1=wp.mat33(*rot1), pos2=wp.vec3(*pos2), mat2=wp.mat33(*rot2)
-    )
-    self.assertTrue(np.isfinite(dist))
+    d.geom_xpos.assign(mjd.geom_xpos[None])
+    d.geom_xmat.assign(mjd.geom_xmat.reshape(1, 2, 3, 3))
+    dist, _, _, _ = _geom_dist(m, d, 0, 1)
     self.assertAlmostEqual(dist, depth, delta=1e-6)
 
   def test_box_box_float(self):
