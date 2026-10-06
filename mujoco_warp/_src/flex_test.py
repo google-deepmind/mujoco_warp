@@ -4044,10 +4044,10 @@ class FlexContactParityTest(parameterized.TestCase):
       xml="""
       <mujoco>
         <worldbody>
-          <geom type="sphere" size="0.015" pos="0.038 0.052 0.084"/>
+          <geom size="0.015" pos="0.038 0.052 0.084"/>
           <flexcomp name="cube" type="grid" count="4 4 4" spacing="0.05 0.05 0.05"
                     radius="0.01" dim="3" mass="1">
-            <contact condim="3" selfcollide="none" activelayers="1"/>
+            <contact selfcollide="none" activelayers="1"/>
             <elasticity young="1e3"/>
           </flexcomp>
         </worldbody>
@@ -4102,27 +4102,27 @@ class FlexContactParityTest(parameterized.TestCase):
                                         -0.05 -0.05 0.05   0.05 -0.05 0.05   0.05 0.05 0.05   -0.05 0.05 0.05"/>
         </asset>
         <worldbody>
-          <geom type="sphere" size="0.02" pos="-0.066 -0.033 0.06"/>
-          <geom type="sphere" size="0.02" pos="0.5 0 0.025"/>
+          <geom size="0.02" pos="-0.066 -0.033 0.06"/>
+          <geom size="0.02" pos="0.5 0 0.025"/>
           <geom type="mesh" mesh="box_mesh" pos="1.0 0 0.05"/>
           <flexcomp name="cloth0" type="grid" count="3 3 1" spacing="0.1 0.1 0.1" pos="0 0 1.0" dim="2" mass="1">
-            <contact condim="3" selfcollide="none"/>
+            <contact selfcollide="none"/>
             <edge equality="true"/>
           </flexcomp>
           <flexcomp name="cloth1" type="grid" count="3 3 1" spacing="0.1 0.1 0.1" pos="0 0 0.05" dim="2" mass="1">
-            <contact condim="3" selfcollide="none"/>
+            <contact selfcollide="none"/>
             <edge equality="true"/>
           </flexcomp>
           <flexcomp name="tet2" type="direct" dim="3" radius="0.01" mass="0.5"
                     point="0.5 0 -0.01  0.55 0 -0.06  0.5 0.05 -0.06  0.45 0 -0.06"
                     element="0 1 2 3">
-            <contact condim="3" selfcollide="none" margin="0.02"/>
+            <contact selfcollide="none" margin="0.02"/>
             <elasticity young="1e3"/>
           </flexcomp>
           <flexcomp name="tet3" type="direct" dim="3" radius="0.01" mass="0.5"
                     point="1.0 0 -0.01  1.05 0 -0.06  1.0 0.05 -0.06  0.95 0 -0.06"
                     element="0 1 2 3">
-            <contact condim="3" selfcollide="none" margin="0.02"/>
+            <contact selfcollide="none" margin="0.02"/>
             <elasticity young="1e3"/>
           </flexcomp>
         </worldbody>
@@ -4179,7 +4179,7 @@ class FlexContactParityTest(parameterized.TestCase):
                                      -0.02 -0.04 0.02   0.02 -0.04 0.02   0.02 0.04 0.02   -0.02 0.04 0.02"/>
         </asset>
         <worldbody>
-          <geom type="sphere" size="0.02" pos="-0.5 0 0.075"/>
+          <geom size="0.02" pos="-0.5 0 0.075"/>
           <geom type="capsule" size="0.015 0.04" pos="-0.3 0 0.08" euler="90 0 0"/>
           <geom type="box" size="0.02 0.03 0.02" pos="-0.1 0.005 0.075" euler="5 10 0"/>
           <geom type="cylinder" size="0.02 0.03" pos="0.1 0 0.075" euler="90 0 0"/>
@@ -4187,7 +4187,7 @@ class FlexContactParityTest(parameterized.TestCase):
           <geom type="mesh" mesh="prism" pos="0.5 0 0.075" euler="5 0 0"/>
           <flexcomp name="cable" type="grid" dim="1" count="7 1 1" spacing="0.2 0.1 0.1"
                     pos="0 0 0.1" radius="0.01" mass="0.7">
-            <contact condim="3" selfcollide="none"/>
+            <contact selfcollide="none"/>
             <edge equality="true"/>
           </flexcomp>
         </worldbody>

@@ -487,19 +487,30 @@ def _collide_geom_capsule_detect(
       )
     return
 
+  dists = wp.vec2(collision_primitive_core.MJ_MAXVAL, collision_primitive_core.MJ_MAXVAL)
+  poss = collision_primitive_core.mat23f(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+  nrms = collision_primitive_core.mat23f(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+
   if gtype == int(GeomType.CAPSULE):
     g_radius = size_val[0]
     g_half_len = size_val[1]
     g_axis = wp.vec3(rot[0, 2], rot[1, 2], rot[2, 2])
-    cap_dists, cap_poss, cap_nrms = collision_primitive_core.capsule_capsule(
+    dists, poss, nrms = collision_primitive_core.capsule_capsule(
       pos, g_axis, g_radius, g_half_len, cap_pos, cap_axis, cap_radius, cap_half_len, margin
     )
-    for i in range(2):
+  elif gtype == int(GeomType.BOX):
+    dists, poss, box_nrms = collision_primitive_core.capsule_box(
+      cap_pos, cap_axis, cap_radius, cap_half_len, pos, rot, size_val
+    )
+    nrms = -box_nrms
+
+  for i in range(2):
+    if dists[i] < margin:
       _write_candidate(
         max_candidates,
-        cap_dists[i],
-        cap_poss[i],
-        cap_nrms[i],
+        dists[i],
+        poss[i],
+        nrms[i],
         geomid,
         -1,
         flexid,
@@ -518,37 +529,6 @@ def _collide_geom_capsule_detect(
         cand_worldid_out,
         ncand_out,
       )
-    return
-
-  if gtype == int(GeomType.BOX):
-    box_dists, box_poss, box_nrms = collision_primitive_core.capsule_box(
-      cap_pos, cap_axis, cap_radius, cap_half_len, pos, rot, size_val
-    )
-    for i in range(2):
-      if box_dists[i] < margin:
-        _write_candidate(
-          max_candidates,
-          box_dists[i],
-          box_poss[i],
-          -box_nrms[i],
-          geomid,
-          -1,
-          flexid,
-          elemid,
-          vertex_id,
-          worldid,
-          warn_overflow,
-          overflow_out,
-          cand_dist_out,
-          cand_pos_out,
-          cand_nrm_out,
-          cand_geom_out,
-          cand_flex_out,
-          cand_elem_out,
-          cand_vert_out,
-          cand_worldid_out,
-          ncand_out,
-        )
 
 
 @wp.func
@@ -1876,7 +1856,7 @@ def _flex_narrowphase_elem_detect(warn_overflow: int):
         tolerance = opt_ccd_tolerance[worldid % opt_ccd_tolerance.shape[0]]
 
         geom2_r = elem_radius if f_dim == 2 else 0.0
-        geom2_rbound = (r_elem + elem_radius) if f_dim == 1 else r_elem
+        geom2_rbound = r_elem if f_dim == 2 else (r_elem + elem_radius)
         _collide_mesh_convex(
           mesh_vertadr,
           mesh_vertnum,
@@ -3302,9 +3282,6 @@ def _detect_elem_geom_candidates(
   ws: FlexWorkspace,
 ):
   """Detect candidates between 1D/2D/3D flex elements and geoms."""
-  if m.nflexelem == 0 or not (m.has_1d_flex or m.has_2d_flex or m.has_3d_flex):
-    return
-
   epa_iterations = m.opt.ccd_iterations
   wp.launch(
     _flex_narrowphase_elem_detect(int(m.opt.warn_overflow)),
@@ -3530,13 +3507,13 @@ def _flex_geom_collision(
   if ws.flex_num_groups is not None:
     ws.flex_num_groups.zero_()
 
-  # 1. Plane collisions (flex vertices vs infinite planes)
+  # Plane collisions (flex vertices vs infinite planes)
   _detect_plane_flex_candidates(m, d, ws)
 
-  # 2. 1D cable, 2D cloth, and 3D softbody element collisions (elements vs rigid geoms)
+  # 1D cable, 2D cloth, and 3D softbody element collisions (elements vs rigid geoms)
   _detect_elem_geom_candidates(m, d, ws)
 
-  # 3. Contact writing pass
+  # Contact writing pass
   _filter_and_write_contacts(m, d, ws, enable_fps=False)
 
 
