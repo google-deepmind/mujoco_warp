@@ -281,16 +281,14 @@ def _apply_ft(
   dofbodyid = dof_bodyid[dofid]
   accumul = float(0.0)
 
+  # bodies are in depth-first preorder: the subtree of dofbodyid ends at the first later body
+  # whose parent precedes dofbodyid
   for bodyid in range(dofbodyid, nbody):
+    if bodyid > dofbodyid and body_parentid[bodyid] < dofbodyid:
+      break
     ft_body = ft_in[worldid, bodyid]
     if ft_body == wp.spatial_vector():
       continue
-    # any body that is in the subtree of dofbodyid is part of the jacobian
-    parentid = bodyid
-    while parentid != 0 and parentid != dofbodyid:
-      parentid = body_parentid[parentid]
-    if parentid == 0:
-      continue  # body is not part of the subtree
     offset = xipos_in[worldid, bodyid] - subtree_com_in[worldid, body_rootid[bodyid]]
     cross_term = wp.cross(rotational_cdof, offset)
     accumul += wp.dot(jac, ft_body) + wp.dot(cross_term, wp.spatial_top(ft_body))

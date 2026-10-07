@@ -329,10 +329,10 @@ def _gravity_force(
   opt_gravity: wp.array[wp.vec3],
   body_parentid: wp.array[int],
   body_rootid: wp.array[int],
+  body_dofnum: wp.array[int],
+  body_dofadr: wp.array[int],
   body_mass: wp.array2d[float],
   body_gravcomp: wp.array2d[float],
-  dof_bodyid: wp.array[int],
-  body_isdofancestor: wp.array2d[int],
   # Data in:
   xipos_in: wp.array2d[wp.vec3],
   subtree_com_in: wp.array2d[wp.vec3],
@@ -340,19 +340,23 @@ def _gravity_force(
   # Data out:
   qfrc_gravcomp_out: wp.array2d[float],
 ):
-  worldid, bodyid, dofid = wp.tid()
+  worldid, bodyid = wp.tid()
   bodyid += 1  # skip world body
   gravcomp = body_gravcomp[worldid % body_gravcomp.shape[0], bodyid]
   gravity = opt_gravity[worldid % opt_gravity.shape[0]]
 
   if gravcomp:
     force = -gravity * body_mass[worldid % body_mass.shape[0], bodyid] * gravcomp
-    pos = xipos_in[worldid, bodyid]
-    jac, _ = support.jac_dof(
-      body_parentid, body_rootid, dof_bodyid, body_isdofancestor, subtree_com_in, cdof_in, pos, bodyid, dofid, worldid
-    )
+    offset = xipos_in[worldid, bodyid] - subtree_com_in[worldid, body_rootid[bodyid]]
 
-    wp.atomic_add(qfrc_gravcomp_out[worldid], dofid, wp.dot(jac, force))
+    # only the dofs of bodyid and its ancestors have a nonzero jacobian at bodyid
+    ancestorid = bodyid
+    while ancestorid > 0:
+      for dofid in range(body_dofadr[ancestorid], body_dofadr[ancestorid] + body_dofnum[ancestorid]):
+        cdof = cdof_in[worldid, dofid]
+        jac = wp.spatial_bottom(cdof) + wp.cross(wp.spatial_top(cdof), offset)
+        wp.atomic_add(qfrc_gravcomp_out[worldid], dofid, wp.dot(jac, force))
+      ancestorid = body_parentid[ancestorid]
 
 
 @wp.kernel
@@ -3568,15 +3572,15 @@ def passive(m: Model, d: Data):
   if gravity_enabled:
     wp.launch(
       _gravity_force,
-      dim=(d.nworld, m.nbody - 1, m.nv),
+      dim=(d.nworld, m.nbody - 1),
       inputs=[
         m.opt.gravity,
         m.body_parentid,
         m.body_rootid,
+        m.body_dofnum,
+        m.body_dofadr,
         m.body_mass,
         m.body_gravcomp,
-        m.dof_bodyid,
-        m.body_isdofancestor,
         d.xipos,
         d.subtree_com,
         d.cdof,
