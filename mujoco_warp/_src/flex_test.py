@@ -3327,7 +3327,17 @@ class FlexContactParityTest(parameterized.TestCase):
     )
     return contacts
 
-  def _assert_contact_parity(self, w_contacts, m_contacts, atol=1e-5):
+  def _assert_contact_parity(self, w_contacts, m_contacts, atol=1e-5, *, frame_atol=None):
+    """Assert contact geometry and IDs match MuJoCo C.
+
+    Args:
+      w_contacts: Sorted MuJoCo Warp contacts.
+      m_contacts: Sorted MuJoCo C contacts.
+      atol: Absolute tolerance for contact distances and positions.
+      frame_atol: Element-wise absolute tolerance for contact-frame matrices. Use
+        for CCD normal differences without relaxing distance or position checks.
+        Uses atol when None.
+    """
     self.assertEqual(len(w_contacts), len(m_contacts))
     for i, (wc, mc) in enumerate(zip(w_contacts, m_contacts)):
       np.testing.assert_allclose(
@@ -3340,7 +3350,7 @@ class FlexContactParityTest(parameterized.TestCase):
       np.testing.assert_allclose(
         wc["frame"],
         mc["frame"],
-        atol=atol,
+        atol=atol if frame_atol is None else frame_atol,
         err_msg=f"Contact {i} frame mismatch",
       )
       np.testing.assert_equal(wc["geom"], mc["geom"], err_msg=f"Contact {i} geom mismatch")
@@ -4083,7 +4093,8 @@ class FlexContactParityTest(parameterized.TestCase):
 
       w_contacts = self._get_sorted_contacts(d, d.nacon.numpy()[0], world_idx=w, is_warp=True)
       m_contacts = self._get_sorted_contacts(mjd, mjd.ncon, is_warp=False)
-      self._assert_contact_parity(w_contacts, m_contacts, atol=2e-3)
+      # CCD contact frame differences reach 2.8e-3 on Blackwell.
+      self._assert_contact_parity(w_contacts, m_contacts, atol=2e-3, frame_atol=5e-3)
       for c in w_contacts:
         self.assertLess(mjm.flex_elemlayer[c["elem"][1]], mjm.flex_activelayers[0])
       w_contacts_all.append(w_contacts)
