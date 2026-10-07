@@ -2360,12 +2360,11 @@ def _update_gradient_init_h_sparse(compact: bool):
     # one thread per upper-triangle element: Cholesky reads the upper triangle only
     i, j = _upper_triangle_index(elementid, ctx_h_out.shape[1])
 
+    # cdof_dof is increasing with a -1 tail, so with j >= i only dof_j can flag padding
     if wp.static(COMPACT):
-      dof_i = cdof_dof_in[worldid, i]
       dof_j = cdof_dof_in[worldid, j]
-      padding = dof_i < 0 or dof_j < 0
+      padding = dof_j < 0
     else:
-      dof_i = i
       dof_j = j
       padding = j >= nv
 
@@ -2374,8 +2373,12 @@ def _update_gradient_init_h_sparse(compact: bool):
       ctx_h_out[worldid, i, j] = wp.where(i == j, 1.0, 0.0)
       return
 
-    # sparse M is stored in the lower triangle, so look up (larger, smaller)
-    elemid = M_elemid[wp.max(dof_i, dof_j), wp.min(dof_i, dof_j)]
+    dof_i = i
+    if wp.static(COMPACT):
+      dof_i = cdof_dof_in[worldid, i]
+
+    # sparse M is stored in the lower triangle and dof_j >= dof_i
+    elemid = M_elemid[dof_j, dof_i]
     if elemid >= 0:
       ctx_h_out[worldid, i, j] = M_in[worldid, elemid]
     else:
