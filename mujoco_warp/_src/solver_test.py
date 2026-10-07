@@ -709,12 +709,14 @@ class SolverTest(parameterized.TestCase):
       xml="""
       <mujoco>
         <worldbody>
-          <geom type="plane" size="5 5 .1"/>
-          <body pos="0 0 .049"><freejoint/><geom type="box" size=".05 .05 .05"/></body>
+          <geom type="plane" size="5 5 0.1"/>
+          <body pos="0 0 0.049">
+            <freejoint/>
+            <geom type="box" size="0.05 0.05 0.05"/>
+          </body>
         </worldbody>
       </mujoco>
-      """,
-      overrides={"opt.cone": ConeType.PYRAMIDAL},
+      """
     )
     ctx = solver._create_solver_context(m, d)
 
@@ -781,6 +783,7 @@ class SolverTest(parameterized.TestCase):
     ctx.search_unchanged.zero_()
     ctx.done.fill_(False)
     d.overflow.zero_()
+    ctx.alpha.fill_(wp.inf)
 
     solver._linesearch(m, d, ctx)
 
@@ -792,9 +795,12 @@ class SolverTest(parameterized.TestCase):
     _, _, m, d = test_data.fixture(
       xml="""
       <mujoco>
-        <option solver="CG" jacobian="dense" iterations="0" ls_iterations="50"/>
+        <option solver="CG" jacobian="dense" iterations="0"/>
         <worldbody>
-          <body><joint type="slide"/><geom type="sphere" size="0.1" mass="1"/></body>
+          <body>
+            <joint type="slide"/>
+            <geom size="0.1" mass="1"/>
+          </body>
         </worldbody>
       </mujoco>
       """,
@@ -818,6 +824,7 @@ class SolverTest(parameterized.TestCase):
     ctx.done.fill_(False)
     ctx.search_unchanged.fill_(False)
     d.overflow.zero_()
+    ctx.alpha.fill_(wp.inf)
 
     solver._linesearch(m, d, ctx)
     return d, ctx

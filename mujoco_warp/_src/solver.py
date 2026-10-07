@@ -1145,76 +1145,80 @@ def _linesearch_iterative_kernel(
     if wp.static(INCREMENTAL):
       noise_floor = _ALPHA_NOISE_EPS * wp.max(1.0, math.safe_div(q1_abs, p0[2]))
 
-    # lo_in at lo_alpha_in = -p0[1] / p0[2]
-    lo_alpha_in = -math.safe_div(p0[1], p0[2])
-
-    local_lo_in = wp.vec3(0.0)
-    for efcid in range(ne + tid, nefc, wp.block_dim()):
-      if wp.static(IS_ELLIPTIC):
-        efc_type = efc_type_in[worldid, efcid]
-        efc_id = 0
-        contact_friction = types.vec5(0.0)
-        efc_addr0 = int(0)
-        ctx_quad = wp.vec3(0.0)
-        quad1 = wp.vec3(0.0)
-        quad2 = wp.vec3(0.0)
-
-        if efc_type == types.ConstraintType.CONTACT_ELLIPTIC:
-          efc_id = efc_id_in[worldid, efcid]
-          contact_friction = contact_friction_in[efc_id]
-          efc_addr0 = contact_efc_address_in[efc_id, 0]
-          efc_addr1 = contact_efc_address_in[efc_id, 1]
-          efc_addr2 = contact_efc_address_in[efc_id, 2]
-          ctx_quad = ctx_quad_in[worldid, efcid]
-          quad1 = ctx_quad_in[worldid, efc_addr1]
-          quad2 = ctx_quad_in[worldid, efc_addr2]
-
-        local_lo_in += _compute_efc_eval_pt(
-          efcid,
-          lo_alpha_in,
-          ne,
-          nf,
-          impratio_invsqrt,
-          efc_type,
-          efc_D_in[worldid],
-          efc_frictionloss_in[worldid],
-          ctx_Jaref_in[worldid, efcid],
-          ctx_jv_in[worldid, efcid],
-          ctx_quad,
-          contact_friction,
-          efc_addr0,
-          quad1,
-          quad2,
-        )
-      else:
-        # direct evaluation for pyramidal cones (no intermediate quad)
-        local_lo_in += _compute_efc_eval_pt(
-          efcid,
-          lo_alpha_in,
-          ne,
-          nf,
-          efc_D_in[worldid, efcid],
-          efc_frictionloss_in[worldid],
-          ctx_Jaref_in[worldid, efcid],
-          ctx_jv_in[worldid, efcid],
-        )
-
-    lo_in_tile = wp.tile(local_lo_in, preserve_type=True)
-    lo_in_sum = wp.tile_reduce(wp.add, lo_in_tile)
-    lo_in = _eval_pt(ctx_quad_gauss, lo_alpha_in) + lo_in_sum[0]
+    alpha = float(0.0)
+    improvement = float(0.0)
 
     # a slope at alpha = 0 below rounding noise means the start is already the line minimum
-    stationary = wp.abs(p0[1]) < _ALPHA_NOISE_EPS * q1_abs
+    ls_converged = wp.abs(p0[1]) < _ALPHA_NOISE_EPS * q1_abs
 
-    # accept Newton step if derivative is small and cost improved
-    initial_converged = stationary or (wp.abs(lo_in[1]) < gtol_accept and lo_in[0] < 0.0)
-    ls_converged = initial_converged
+    # lo_in at lo_alpha_in = -p0[1] / p0[2]
+    lo_alpha_in = -math.safe_div(p0[1], p0[2])
+    lo_in = wp.vec3(0.0)
+
+    if not ls_converged:
+      local_lo_in = wp.vec3(0.0)
+      for efcid in range(ne + tid, nefc, wp.block_dim()):
+        if wp.static(IS_ELLIPTIC):
+          efc_type = efc_type_in[worldid, efcid]
+          efc_id = 0
+          contact_friction = types.vec5(0.0)
+          efc_addr0 = int(0)
+          ctx_quad = wp.vec3(0.0)
+          quad1 = wp.vec3(0.0)
+          quad2 = wp.vec3(0.0)
+
+          if efc_type == types.ConstraintType.CONTACT_ELLIPTIC:
+            efc_id = efc_id_in[worldid, efcid]
+            contact_friction = contact_friction_in[efc_id]
+            efc_addr0 = contact_efc_address_in[efc_id, 0]
+            efc_addr1 = contact_efc_address_in[efc_id, 1]
+            efc_addr2 = contact_efc_address_in[efc_id, 2]
+            ctx_quad = ctx_quad_in[worldid, efcid]
+            quad1 = ctx_quad_in[worldid, efc_addr1]
+            quad2 = ctx_quad_in[worldid, efc_addr2]
+
+          local_lo_in += _compute_efc_eval_pt(
+            efcid,
+            lo_alpha_in,
+            ne,
+            nf,
+            impratio_invsqrt,
+            efc_type,
+            efc_D_in[worldid],
+            efc_frictionloss_in[worldid],
+            ctx_Jaref_in[worldid, efcid],
+            ctx_jv_in[worldid, efcid],
+            ctx_quad,
+            contact_friction,
+            efc_addr0,
+            quad1,
+            quad2,
+          )
+        else:
+          # direct evaluation for pyramidal cones (no intermediate quad)
+          local_lo_in += _compute_efc_eval_pt(
+            efcid,
+            lo_alpha_in,
+            ne,
+            nf,
+            efc_D_in[worldid, efcid],
+            efc_frictionloss_in[worldid],
+            ctx_Jaref_in[worldid, efcid],
+            ctx_jv_in[worldid, efcid],
+          )
+
+      lo_in_tile = wp.tile(local_lo_in, preserve_type=True)
+      lo_in_sum = wp.tile_reduce(wp.add, lo_in_tile)
+      lo_in = _eval_pt(ctx_quad_gauss, lo_alpha_in) + lo_in_sum[0]
+
+      # accept Newton step if derivative is small and cost improved
+      if wp.abs(lo_in[1]) < gtol_accept and lo_in[0] < 0.0:
+        ls_converged = True
+        alpha = lo_alpha_in
+        improvement = -lo_in[0]
 
     # main iterative loop - skip if already converged
-    if not initial_converged:
-      alpha = float(0.0)
-      improvement = float(0.0)
-
+    if not ls_converged:
       # initialize bounds
       lo_less = lo_in[1] < p0[1]
       lo = wp.where(lo_less, lo_in, p0_delta)
@@ -1383,12 +1387,6 @@ def _linesearch_iterative_kernel(
         if ls_done:
           ls_converged = True
           break
-    elif stationary:
-      alpha = 0.0
-      improvement = 0.0
-    else:
-      alpha = lo_alpha_in
-      improvement = -lo_in[0]
 
     # qacc and Ma update
     for dofid in range(tid, nv, wp.block_dim()):
