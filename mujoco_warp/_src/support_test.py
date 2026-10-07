@@ -88,22 +88,36 @@ class SupportTest(parameterized.TestCase):
     mjm, mjd, m, d = test_data.fixture(
       xml="""
       <mujoco>
-        <default><geom size="0.1" contype="0" conaffinity="0"/></default>
+        <default>
+          <geom size="0.1" contype="0" conaffinity="0"/>
+        </default>
         <worldbody>
           <body name="root">
-            <freejoint/><geom/>
+            <freejoint/>
+            <geom/>
             <body pos="0.3 0 0">
-              <joint type="ball"/><geom/>
-              <body pos="0.2 0 0"><geom/></body>
+              <joint type="ball"/>
+              <geom/>
+              <body pos="0.2 0 0">
+                <geom/>
+              </body>
             </body>
             <body name="sibling" pos="0 0.3 0">
-              <joint axis="1 0 0"/><geom/>
-              <body pos="0 0.2 0"><joint type="slide"/><geom/></body>
+              <joint axis="1 0 0"/>
+              <geom/>
+              <body pos="0 0.2 0">
+                <joint type="slide"/>
+                <geom/>
+              </body>
             </body>
           </body>
           <body name="other" pos="1 0 0">
-            <freejoint/><geom/>
-            <body pos="0 0 0.3"><joint/><geom/></body>
+            <freejoint/>
+            <geom/>
+            <body pos="0 0 0.3">
+              <joint/>
+              <geom/>
+            </body>
           </body>
         </worldbody>
       </mujoco>
