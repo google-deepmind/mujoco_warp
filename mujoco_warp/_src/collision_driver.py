@@ -722,7 +722,7 @@ def _nxn_broadphase(
   enable_sleep: bool = False,
   incremental: bool = False,
 ):
-  @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
+  @wp.kernel(module="unique", enable_backward=False, grid_stride=True)
   def kernel(
     # Model:
     geom_type: wp.array[int],
@@ -862,6 +862,9 @@ def nxn_broadphase(
     cond = wp.zeros(1, dtype=int)
     wp.launch(_any_awake_changed, dim=(d.nworld, m.nbody), inputs=[d.body_awake, awake_prev], outputs=[cond])
 
+  device = d.geom_xpos.device
+  max_blocks = 64 * device.sm_count if device.is_cuda else 0
+
   def _launch():
     wp.launch(
       _nxn_broadphase(
@@ -875,6 +878,8 @@ def nxn_broadphase(
         incremental,
       ),
       dim=(d.nworld, m.nxn_geom_pair_filtered.shape[0]),
+      block_dim=128,
+      max_blocks=max_blocks,
       inputs=[
         m.geom_type,
         m.geom_bodyid,
