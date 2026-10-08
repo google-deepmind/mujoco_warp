@@ -13,6 +13,7 @@
 # limitations under the License.
 # ==============================================================================
 
+import mujoco
 import numpy as np
 import warp as wp
 from absl.testing import absltest
@@ -729,6 +730,56 @@ class GJKTest(parameterized.TestCase):
     )
     dist, _, _, _ = _geom_dist(m, d, 0, 1)
     self.assertAlmostEqual(-1.0, dist, places=6)
+
+  @parameterized.parameters(
+    # Float32 capsule end-cap poses from M-Colley's report and proposed regression:
+    # https://github.com/google-deepmind/mujoco_warp/issues/1740
+    # (capsule rotation, ellipsoid position, ellipsoid rotation)
+    (
+      (-0.07982016, 0.9632121, 0.25661483, -0.9521492, 0.0025194245, -0.30562323, -0.2950265, -0.2687305, 0.91692054),
+      (-0.11622479, -0.078617394, -0.2301344),
+      (-0.96931815, 0.026906298, 0.24433327, 0.05312106, -0.94757426, 0.31508982, 0.24000177, 0.31840146, 0.91707146),
+    ),
+    (
+      (-0.85816115, -0.5115816, 0.04293883, -0.38595876, 0.5877526, -0.71104336, 0.3385193, -0.6267624, -0.7018358),
+      (-0.092015855, 0.18866421, 0.19911431),
+      (-0.1679216, -0.02555217, 0.98546916, -0.13113488, -0.9902009, -0.048019927, 0.9770394, -0.13729295, 0.1629253),
+    ),
+    (
+      (-0.21769324, 0.92632174, 0.30746993, 0.39167076, -0.20563573, 0.8968322, 0.89398193, 0.31566125, -0.31804755),
+      (-0.008578893, -0.21548684, 0.19597416),
+      (-0.73874855, -0.2729476, 0.6162387, 0.31930435, -0.9469435, -0.03664221, 0.59354466, 0.16969833, 0.7867065),
+    ),
+  )
+  def test_capsule_ellipsoid_small_simplex(self, rot1, pos2, rot2):
+    """Test capsule-ellipsoid depth when the final GJK simplex is small and far from the origin.
+
+    The capsule is shrunk to its core segment, so the simplex is about the radius from the origin
+    while its edges are a fraction of a millimeter long. In float32 its barycentric coordinates
+    then need not sum to one, which scales the GJK iterate toward or away from the origin.
+    """
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <geom type="capsule" size="0.042 0.14"/>
+          <geom type="ellipsoid" size="0.095 0.14 0.14"/>
+        </worldbody>
+      </mujoco>
+      """
+    )
+
+    # Native MuJoCo receives the same float32 sizes and poses as the Warp kernel.
+    mjm.geom_size[:] = mjm.geom_size.astype(np.float32)
+    mjd.geom_xpos[:] = np.array([[0.0, 0.0, 0.0], pos2], dtype=np.float32)
+    mjd.geom_xmat[:] = np.array([rot1, rot2], dtype=np.float32)
+    depth = mujoco.mj_geomDistance(mjm, mjd, 0, 1, 1.0, None)
+    self.assertLess(depth, 0.0)
+
+    d.geom_xpos.assign(mjd.geom_xpos[None])
+    d.geom_xmat.assign(mjd.geom_xmat.reshape(1, 2, 3, 3))
+    dist, _, _, _ = _geom_dist(m, d, 0, 1)
+    self.assertAlmostEqual(dist, depth, delta=1e-6)
 
   def test_box_box_float(self):
     """Test box-box under float32."""

@@ -550,7 +550,10 @@ def _S2D(s1: wp.vec3, s2: wp.vec3, s3: wp.vec3) -> wp.vec3:
 
   # all the same sign, p_o is inside the 2-simplex
   if comp1 and comp2 and comp3:
-    return wp.vec3(C31 / M_max, C32 / M_max, C33 / M_max)
+    # Use the cofactor sum to preserve partition of unity for small or thin simplices.
+    # M_max is algebraically equal, but its independent float32 rounding can scale the weights.
+    cofactor_sum = C31 + C32 + C33
+    return wp.vec3(C31 / cofactor_sum, C32 / cofactor_sum, C33 / cofactor_sum)
 
   # find the smallest distance, and use the corresponding barycentric coordinates
   dmin = FLOAT_MAX
