@@ -809,7 +809,7 @@ class FlexPassiveForcesTest(parameterized.TestCase):
   )
   def test_passive_forces_parity(self, xml_and_atol, nworld):
     xml, atol = xml_and_atol
-    mjm, mjd, m, d = test_data.fixture(xml=xml, qpos_noise=0.05, qvel_noise=0.05, njmax_nnz=20000, nworld=nworld)
+    mjm, mjd, m, d = test_data.fixture(xml=xml, qpos_noise=0.05, qvel_noise=0.05, njmax_nnz=30000, nworld=nworld)
     for arr in (d.qfrc_spring, d.qfrc_damper, d.qfrc_passive):
       arr.fill_(wp.inf)
 
