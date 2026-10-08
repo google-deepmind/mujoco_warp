@@ -700,6 +700,57 @@ class PassiveTest(parameterized.TestCase):
     self.assertGreater(nefc, 0)
     _assert_eq(d.efc.aref.numpy()[0, :nefc], mjd.efc_aref[:nefc], "efc_aref")
 
+  @parameterized.parameters(1, 2)
+  def test_flex_passive_pinned_carrier_jacobian(self, nworld):
+    """Verify passive flex contact applies spring and damper forces to pinned carrier bodies."""
+    mjm, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option integrator="discrete" solver="CG"/>
+        <worldbody>
+          <geom pos="0 0 -0.03" size="0.05"/>
+          <body name="carrier">
+            <joint type="slide"/>
+            <geom size="0.01" pos="1 0 0" mass="1"/>
+            <flexcomp name="cloth" type="grid" dim="2" count="2 2 1" spacing="0.04 0.04 1"
+                      radius="0.005" mass="0.05">
+              <pin id="0 1"/>
+              <contact passive="true" selfcollide="none"/>
+              <elasticity young="500" poisson="0.3" thickness="0.005" elastic2d="stretch" damping="0.05"/>
+            </flexcomp>
+          </body>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=nworld,
+    )
+    qpos = d.qpos.numpy()
+    qvel = d.qvel.numpy()
+    qvel[0, 0] = -0.2
+    if nworld == 2:
+      qpos[1, 0] = -0.005
+      qvel[1, 0] = -0.4
+    d.qpos.assign(qpos)
+    d.qvel.assign(qvel)
+
+    d.qfrc_spring.fill_(wp.inf)
+    d.qfrc_damper.fill_(wp.inf)
+    d.qacc.fill_(wp.inf)
+    mjw.forward(m, d)
+
+    mjds = [mujoco.MjData(mjm) for _ in range(nworld)]
+    for w in range(nworld):
+      mjds[w].qpos[:] = qpos[w]
+      mjds[w].qvel[:] = qvel[w]
+      mujoco.mj_forward(mjm, mjds[w])
+      self.assertGreater(abs(float(mjds[w].qfrc_spring[0])), 0.1)
+      _assert_eq(d.qfrc_spring.numpy()[w], mjds[w].qfrc_spring, f"qfrc_spring_{w}")
+      _assert_eq(d.qfrc_damper.numpy()[w], mjds[w].qfrc_damper, f"qfrc_damper_{w}")
+      _assert_eq(d.qacc.numpy()[w], mjds[w].qacc, f"qacc_{w}")
+
+    if nworld == 2:
+      self.assertFalse(np.allclose(d.qfrc_spring.numpy()[0], d.qfrc_spring.numpy()[1]))
+
 
 if __name__ == "__main__":
   wp.init()

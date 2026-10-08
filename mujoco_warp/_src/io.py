@@ -501,10 +501,61 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
       raise NotImplementedError("Flex-SDF collision is not implemented.")
     if (mjm.geom_type == mujoco.mjtGeom.mjGEOM_HFIELD).any():
       raise NotImplementedError("Flex-HField collision is not implemented.")
-    if hasattr(mjm, "flex_internal") and (mjm.flex_internal != 0).any():
-      raise NotImplementedError("Flex internal collisions are not implemented.")
-    if (mjm.flex_rigid != 0).any():
+    is_ipc = bool(mjm.opt.enableflags & mujoco.mjtEnableBit.mjENBL_IPC)
+    is_ipc_or_discrete = is_ipc or (mjm.opt.integrator == mujoco.mjtIntegrator.mjINT_DISCRETE)
+    if np.any((mjm.flex_rigid != 0) & ~(is_ipc_or_discrete & (mjm.flex_dim == 2))):
       raise NotImplementedError("Rigid flexes are not implemented.")
+    if is_ipc and np.any(mjm.flex_dim == 2):
+      nvertbody = np.bincount(mjm.flex_vertbodyid, minlength=mjm.nbody)
+      isflexvert_body = np.zeros(mjm.nbody, dtype=bool)
+      free_vert = np.zeros(mjm.nflexvert, dtype=bool)
+      flex_vert_3d = mjm.flex_vert.reshape(-1, 3) if mjm.flex_vert.size >= 3 * mjm.nflexvert else None
+      for fi in range(mjm.nflex):
+        if mjm.flex_dim[fi] != 2:
+          continue
+        va = int(mjm.flex_vertadr[fi])
+        vn = int(mjm.flex_vertnum[fi])
+        centered = bool(mjm.flex_centered[fi])
+        for vg in range(va, va + vn):
+          bid = int(mjm.flex_vertbodyid[vg])
+          ja = int(mjm.body_jntadr[bid])
+          at_origin = centered or (flex_vert_3d is not None and np.all(flex_vert_3d[vg] == 0.0))
+          if (
+            int(mjm.body_jntnum[bid]) == 3
+            and np.all(mjm.jnt_type[ja : ja + 3] == mujoco.mjtJoint.mjJNT_SLIDE)
+            and nvertbody[bid] == 1
+            and at_origin
+          ):
+            free_vert[vg] = True
+            isflexvert_body[bid] = True
+      isartictree = np.zeros(mjm.ntree, dtype=bool)
+      for b in range(1, mjm.nbody):
+        if int(mjm.body_dofnum[b]) > 0 and not isflexvert_body[b]:
+          isartictree[int(mjm.dof_treeid[int(mjm.body_dofadr[b])])] = True
+      for fi in range(mjm.nflex):
+        if mjm.flex_dim[fi] != 2:
+          continue
+        va = int(mjm.flex_vertadr[fi])
+        vn = int(mjm.flex_vertnum[fi])
+        for vg in range(va, va + vn):
+          b = int(mjm.flex_vertbodyid[vg])
+          t = int(mjm.body_treeid[b]) if b > 0 else -1
+          if free_vert[vg]:
+            if t >= 0 and isartictree[t]:
+              raise ValueError(
+                "IPC mode: flex has free vertices under a jointed body; pin them or attach the flex to a static body"
+              )
+          elif b > 0 and t >= 0 and isartictree[t]:
+            curr = b
+            while curr > 0:
+              ja = int(mjm.body_jntadr[curr])
+              jn = int(mjm.body_jntnum[curr])
+              if np.any(mjm.jnt_type[ja : ja + jn] != mujoco.mjtJoint.mjJNT_SLIDE):
+                raise ValueError(
+                  "IPC mode: flex is pinned to a body whose chain moves on a joint that is not a slide; "
+                  "pin flexes to static bodies or to bodies on slide joints only"
+                )
+              curr = int(mjm.body_parentid[curr])
   m.nmaxcondim = np.concatenate(condim_arrays).max()
   m.nmaxpyramid = np.maximum(1, 2 * (m.nmaxcondim - 1))
   m.has_sdf_geom = (mjm.geom_type == mujoco.mjtGeom.mjGEOM_SDF).any()
@@ -514,7 +565,9 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
     mjm.nflex > 0 and np.any((mjm.flex_selfcollide != 0) & ((mjm.flex_contype & mjm.flex_conaffinity) != 0))
   )
   m.has_flex_passive = bool(
-    mjm.nflex > 0 and np.any((mjm.flex_passive != 0) & (mjm.flex_rigid == 0) & (mjm.flex_interp == 0) & (mjm.flex_dim >= 2))
+    mjm.nflex > 0
+    and not bool(mjm.opt.enableflags & types.EnableBit.IPC)
+    and np.any((mjm.flex_passive != 0) & (mjm.flex_rigid == 0) & (mjm.flex_interp == 0) & (mjm.flex_dim >= 2))
   )
   m.has_flex_snh = bool(
     types.FLEX_STIFFNESS_3D == 24
@@ -1410,7 +1463,15 @@ def _default_nconmax(mjm: mujoco.MjModel, mjd: Optional[mujoco.MjData] = None) -
   valid_sizes = (2 + (np.arange(19) % 2)) * (2 ** (np.arange(19) // 2 + 3))  # 16, 24, 32, 48, ... 8192
   has_sdf = (mjm.geom_type == mujoco.mjtGeom.mjGEOM_SDF).any()
   has_flex = mjm.nflex > 0
-  nconmax = max(mjm.nv * 0.35 * (mjm.nhfield > 0) * 10 + 45, 256 * has_flex, 64 * has_sdf, mjd.ncon if mjd else 0)
+  has_ipc = bool(mjm.opt.enableflags & mujoco.mjtEnableBit.mjENBL_IPC)
+  has_2d_flex = bool(mjm.nflex > 0 and np.any(mjm.flex_dim == 2))
+  if has_ipc and has_2d_flex:
+    flex_ncon = max(4096, int(mjm.nflexelem * 24))
+  elif has_ipc or has_2d_flex:
+    flex_ncon = max(512, int(mjm.nflexelem * 4))
+  else:
+    flex_ncon = 256 * has_flex
+  nconmax = max(mjm.nv * 0.35 * (mjm.nhfield > 0) * 10 + 45, flex_ncon, 64 * has_sdf, mjd.ncon if mjd else 0)
   if nconmax > valid_sizes[-1]:
     return int(nconmax)
   return int(valid_sizes[np.searchsorted(valid_sizes, nconmax)])
@@ -1425,7 +1486,13 @@ def _default_njmax(mjm: mujoco.MjModel, mjd: Optional[mujoco.MjData] = None) -> 
   valid_sizes = (2 + (np.arange(19) % 2)) * (2 ** (np.arange(19) // 2 + 3))  # 16, 24, 32, 48, ... 8192
   has_sdf = (mjm.geom_type == mujoco.mjtGeom.mjGEOM_SDF).any()
   has_flex = mjm.nflex > 0
-  njmax = max(mjm.nv * 2.26 * (mjm.nhfield > 0) * 18 + 53, 512 * has_flex, 256 * has_sdf, mjd.nefc if mjd else 0)
+  has_ipc = bool(mjm.opt.enableflags & mujoco.mjtEnableBit.mjENBL_IPC)
+  has_2d_flex = bool(mjm.nflex > 0 and np.any(mjm.flex_dim == 2))
+  if has_ipc or has_2d_flex:
+    flex_nj = max(2048, int(mjm.nflexelem * 8))
+  else:
+    flex_nj = 512 * has_flex
+  njmax = max(mjm.nv * 2.26 * (mjm.nhfield > 0) * 18 + 53, flex_nj, 256 * has_sdf, mjd.nefc if mjd else 0)
   if njmax > valid_sizes[-1]:
     return int(njmax)
   return int(valid_sizes[np.searchsorted(valid_sizes, njmax)])
@@ -2504,6 +2571,8 @@ def get_data_into(
   result.cdof[:] = d.cdof.numpy()[world_id]
   result.cinert[:] = d.cinert.numpy()[world_id]
   result.flexvert_xpos[:] = d.flexvert_xpos.numpy()[world_id]
+  result.flexvert_lambda[:] = d.flexvert_lambda.numpy()[world_id]
+  result.flexvert_conage[:] = d.flexvert_conage.numpy()[world_id]
   if mjm.nflexedge > 0:
     result.flexedge_J[:] = d.flexedge_J.numpy()[world_id].reshape(-1)
   result.flexedge_length[:] = d.flexedge_length.numpy()[world_id]
@@ -2708,6 +2777,7 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
     nbody: int,
     ntree: int,
     nflex: int,
+    nflexvert: int,
     neq: int,
     nuserdata: int,
     nsensordata: int,
@@ -2740,6 +2810,8 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
     userdata_out: wp.array2d[float],
     sensordata_out: wp.array2d[float],
     flex_hessian_valid_out: wp.array2d[bool],
+    flexvert_lambda_out: wp.array2d[float],
+    flexvert_conage_out: wp.array2d[int],
     nacon_out: wp.array[int],
     overflow_out: wp.array[int],
   ):
@@ -2778,6 +2850,9 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
       eq_active_out[worldid, i] = eq_active0[i]
     for i in range(nflex):
       flex_hessian_valid_out[worldid, i] = False
+    for i in range(nflexvert):
+      flexvert_lambda_out[worldid, i] = 0.0
+      flexvert_conage_out[worldid, i] = 0
     for i in range(nsensordata):
       sensordata_out[worldid, i] = 0.0
     for i in range(nuserdata):
@@ -2992,6 +3067,7 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
       m.nbody,
       m.ntree,
       m.nflex,
+      m.nflexvert,
       m.neq,
       m.nuserdata,
       m.nsensordata,
@@ -3023,6 +3099,8 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
       d.userdata,
       d.sensordata,
       d.flex_hessian_valid,
+      d.flexvert_lambda,
+      d.flexvert_conage,
       d.nacon,
       d.overflow,
     ],

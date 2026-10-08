@@ -903,6 +903,51 @@ class SleepTest(parameterized.TestCase):
     # World 0: box1 (awake) and box2 (asleep) do NOT collide. So box2 MUST remain asleep!
     self.assertEqual(d.tree_awake.numpy()[0, 1], 0, "World 0 box2 should remain asleep (no collision with box1)")
 
+  @parameterized.parameters(1, 2)
+  def test_wake_tendon_discrete_metric(self, nworld):
+    """Verify damped/stiff tendon wakes coupled tree under discrete integrator."""
+    _, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option integrator="discrete">
+          <flag sleep="enable" island="enable"/>
+        </option>
+        <worldbody>
+          <body name="b1" pos="0 0 0.5">
+            <joint name="j1" type="slide"/>
+            <geom size=".1"/>
+          </body>
+          <body name="b2" pos="1 0 0.5">
+            <joint name="j2" type="slide"/>
+            <geom size=".1"/>
+          </body>
+        </worldbody>
+        <tendon>
+          <fixed name="ten" damping="2.0">
+            <joint joint="j1" coef="1.0"/>
+            <joint joint="j2" coef="-1.0"/>
+          </fixed>
+        </tendon>
+      </mujoco>
+      """,
+      nworld=nworld,
+    )
+    tree_asleep = d.tree_asleep.numpy()
+    tree_asleep[0, 0] = sleep.K_AWAKE_VAL
+    tree_asleep[0, 1] = 1
+    if nworld == 2:
+      tree_asleep[1, 0] = 0
+      tree_asleep[1, 1] = 1
+    d.tree_asleep = wp.array(tree_asleep, dtype=int, device=d.tree_asleep.device)
+    sleep.update_sleep(m, d)
+
+    sleep.wake_tendon(m, d)
+    sleep.update_sleep(m, d)
+
+    self.assertEqual(int(d.tree_awake.numpy()[0, 1]), 1)
+    if nworld == 2:
+      self.assertEqual(int(d.tree_awake.numpy()[1, 1]), 0)
+
 
 # An actuated 2-hinge arm (tree 0, dofs 0-1) plus two free bodies
 # (tree 1, dofs 2-7 and tree 2, dofs 8-13).

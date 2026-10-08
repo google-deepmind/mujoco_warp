@@ -443,7 +443,7 @@ class SolverTest(parameterized.TestCase):
       # solve with 0 iterations just initializes constraints and then exits
       d.efc.force.fill_(wp.inf)
       d.qfrc_constraint.fill_(wp.inf)
-      ctx = solver._create_solver_context(m, d)
+      ctx = solver.create_solver_context(m, d)
       solver._solve(m, d, ctx)
 
       # Get the ordering indices based on efc_force, efc_state for MJWarp
@@ -492,7 +492,7 @@ class SolverTest(parameterized.TestCase):
       mjw.step(m, d)
 
       # Create a SolverContext to access internal solver arrays
-      ctx = solver._create_solver_context(m, d)
+      ctx = solver.create_solver_context(m, d)
       solver._solve(m, d, ctx)
 
       # Calculate target values
@@ -557,7 +557,7 @@ class SolverTest(parameterized.TestCase):
     )
 
     # Create SolverContext and initialize
-    ctx = solver._create_solver_context(m, d)
+    ctx = solver.create_solver_context(m, d)
     solver.init_context(m, d, ctx, grad=True)
 
     # Calculate Mgrad with Mujoco C
@@ -580,7 +580,7 @@ class SolverTest(parameterized.TestCase):
       },
     )
 
-    ctx = solver._create_solver_context(m, d)
+    ctx = solver.create_solver_context(m, d)
 
     d.ne = wp.array([0], dtype=int)
     d.nf = wp.array([0], dtype=int)
@@ -648,7 +648,7 @@ class SolverTest(parameterized.TestCase):
         "opt.ls_iterations": 50,
       },
     )
-    ctx = solver._create_solver_context(m, d)
+    ctx = solver.create_solver_context(m, d)
 
     # Exercise derivative convergence with a loose scaled tolerance.
     m.stat.meaninertia.fill_(1.0e9)
@@ -868,7 +868,7 @@ class SolverTest(parameterized.TestCase):
       nworld=nworld,
       njmax=2,
     )
-    ctx = solver._create_solver_context(m, d)
+    ctx = solver.create_solver_context(m, d)
 
     # cost 0.5 * (alpha - target)^2 from an equality row plus 0.5 * (alpha - 1)^2 from an
     # inequality row active for alpha < 1: Newton from 0 undershoots, and the second Newton step
@@ -920,7 +920,7 @@ class SolverTest(parameterized.TestCase):
         "opt.ls_iterations": 0,
       },
     )
-    ctx = solver._create_solver_context(m, d)
+    ctx = solver.create_solver_context(m, d)
 
     m.stat.meaninertia.fill_(1.0e9)
     d.ne = wp.array([1], dtype=int)
@@ -1037,7 +1037,7 @@ class SolverTest(parameterized.TestCase):
     self.assertEqual(set(mjd.contact.dim[: mjd.ncon]), set(condims))
 
     d = mjw.put_data(mjm, mjd)
-    ctx = solver._create_solver_context(m, d)
+    ctx = solver.create_solver_context(m, d)
     solver.init_context(m, d, ctx, grad=True)
     fused_h = ctx.h.numpy().copy()
 
@@ -1143,7 +1143,7 @@ class SolverTest(parameterized.TestCase):
     self.assertEqual(set(mjd.contact.dim[: mjd.ncon]), set(condims))
 
     d = mjw.put_data(mjm, mjd)
-    ctx = solver._create_solver_context(m, d)
+    ctx = solver.create_solver_context(m, d)
     solver.init_context(m, d, ctx, grad=True)
     ctx.h.zero_()
     ctx.done.fill_(False)
@@ -1204,7 +1204,7 @@ class SolverTest(parameterized.TestCase):
     mujoco.mj_forward(mjm, mjd)
 
     d = mjw.put_data(mjm, mjd)
-    ctx = solver._create_solver_context(m, d)
+    ctx = solver.create_solver_context(m, d)
     solver.init_context(m, d, ctx, grad=True)
     jaref = ctx.Jaref.numpy().copy()
 
@@ -1459,7 +1459,7 @@ class SolverTest(parameterized.TestCase):
         d.qacc.zero_()
         d.qfrc_constraint.zero_()
         d.efc.force.zero_()
-        ctx = solver._create_solver_context(m, d)
+        ctx = solver.create_solver_context(m, d)
         solver.init_context(m, d, ctx, grad=True)
         any_changes = False
         ctx.search_unchanged.fill_(False)
@@ -1958,7 +1958,7 @@ class CompactSolverTest(absltest.TestCase):
     solver.derivative.eff_build(m, d)
     efm_L_unfolded = d.efm_L.numpy().copy()
 
-    ctx = solver._create_solver_context(m, d)
+    ctx = solver.create_solver_context(m, d)
     solver.init_context(m, d, ctx, grad=True)
     efm_L_folded = d.efm_L.numpy()
     self.assertFalse(np.allclose(efm_L_unfolded, efm_L_folded))

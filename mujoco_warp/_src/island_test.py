@@ -298,6 +298,61 @@ class IslandDiscoveryConstraintsTest(absltest.TestCase):
     np.testing.assert_array_equal(d.nisland.numpy(), np.zeros(d.nworld, dtype=np.int32))
     np.testing.assert_array_equal(d.tree_island.numpy(), np.full((d.nworld, mjm.ntree), -1, dtype=np.int32))
 
+  def test_discrete_metric_couplings(self):
+    """Under discrete integrator, metric tendons and actuators couple trees into one island."""
+    for coupling_xml in (
+      """
+      <tendon>
+        <spatial damping="2">
+          <site site="s0"/>
+          <site site="s1"/>
+        </spatial>
+      </tendon>
+      """,
+      """
+      <actuator>
+        <position site="s0" refsite="s1" kp="1" kv="1"/>
+      </actuator>
+      """,
+    ):
+      with self.subTest(coupling=coupling_xml.strip().splitlines()[0]):
+        mjm, mjd, m, d = test_data.fixture(
+          xml=f"""
+          <mujoco>
+            <option integrator="discrete"/>
+            <worldbody>
+              <geom type="plane" size="2 2 0.1"/>
+              <body name="b0" pos="-0.5 0 0.08">
+                <freejoint/>
+                <geom size="0.1"/>
+                <site name="s0"/>
+              </body>
+              <body name="b1" pos="0.5 0 0.08">
+                <freejoint/>
+                <geom size="0.1"/>
+                <site name="s1"/>
+              </body>
+            </worldbody>
+            {coupling_xml}
+          </mujoco>
+          """,
+          nworld=2,
+        )
+        qpos = d.qpos.numpy()
+        qpos[1, 2] = 1.0
+        qpos[1, 9] = 1.0
+        d.qpos = wp.array(qpos, dtype=float, device=d.qpos.device)
+        mjwarp.fwd_position(m, d)
+
+        d.nisland.fill_(-1)
+        d.tree_island.fill_(-1)
+        island.island(m, d)
+
+        self.assertEqual(mjd.nisland, 1)
+        np.testing.assert_array_equal(d.nisland.numpy(), np.array([1, 0], dtype=np.int32))
+        np.testing.assert_array_equal(d.tree_island.numpy()[0], mjd.tree_island[: mjm.ntree])
+        np.testing.assert_array_equal(d.tree_island.numpy()[1], np.full(mjm.ntree, -1, dtype=np.int32))
+
 
 class IslandDiscoveryExecutionTest(absltest.TestCase):
   """Tests multi-world execution, idempotency, and CUDA graph capturability."""

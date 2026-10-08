@@ -25,6 +25,7 @@ import mujoco_warp as mjw
 from mujoco_warp import test_data
 from mujoco_warp._src import derivative
 from mujoco_warp._src import forward
+from mujoco_warp._src import solver
 from mujoco_warp._src import types
 from mujoco_warp._src import util_pkg
 
@@ -1910,8 +1911,12 @@ class DerivativeTest(parameterized.TestCase):
     mjw.forward(m, d)
 
     _assert_eq(d.efm_diag.numpy()[0], mjd.efm_diag, "efm_diag")
-    _assert_eq(d.efm_ts.numpy()[0], mjd.efm_ts, "efm_ts")
-    _assert_eq(d.efm_as.numpy()[0], mjd.efm_as, "efm_as")
+    expected_efm_ts = np.zeros(mjm.ntendon)
+    expected_efm_ts[mjd.efm_tid[: mjd.nefmT]] = mjd.efm_ts[: mjd.nefmT]
+    _assert_eq(d.efm_ts.numpy()[0], expected_efm_ts, "efm_ts")
+    expected_efm_as = np.zeros(mjm.nu)
+    expected_efm_as[mjd.efm_aid[: mjd.nefmA]] = mjd.efm_as[: mjd.nefmA]
+    _assert_eq(d.efm_as.numpy()[0], expected_efm_as, "efm_as")
     _assert_eq(d.efm_c.numpy()[0], mjd.efm_c, "efm_c")
     _assert_eq(d.efm_ca.numpy()[0], mjd.efm_ca, "efm_ca")
     _assert_eq(d.qacc_smooth.numpy()[0], mjd.qacc_smooth, "qacc_smooth")
@@ -3439,6 +3444,125 @@ class DerivativeTest(parameterized.TestCase):
 
     if nworld == 2:
       self.assertFalse(np.allclose(d.qacc.numpy()[0], d.qacc.numpy()[1]))
+
+  @parameterized.parameters(1, 2)
+  def test_eff_solve_pcg_overflow(self, nworld):
+    """Verifies eff_solve sets OverflowType.ITERATIONS when PCG does not converge."""
+    _, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option gravity="0 0 0" integrator="discrete" solver="CG" iterations="1" tolerance="1e-10"/>
+        <worldbody>
+          <flexcomp name="cloth" type="grid" dim="2" count="3 3 1" spacing="0.05 0.05 1"
+                    radius="0.005" mass="0.09">
+            <contact contype="0" conaffinity="0" selfcollide="none"/>
+            <elasticity young="5000" poisson="0.3" thickness="0.005" elastic2d="both" damping="0.1"/>
+          </flexcomp>
+        </worldbody>
+      </mujoco>
+      """,
+      qpos_noise=0.01,
+      nworld=nworld,
+    )
+    mjw.fwd_position(m, d)
+    mjw.fwd_velocity(m, d)
+
+    qfrc = np.zeros((nworld, m.nv), dtype=np.float32)
+    qfrc[0] = np.linspace(-1.0, 1.0, m.nv, dtype=np.float32)
+    d.qacc_smooth.fill_(wp.inf)
+    d.overflow.zero_()
+
+    derivative.eff_solve(m, d, d.qacc_smooth, qfrc=wp.array(qfrc, dtype=float))
+
+    self.assertTrue(bool(int(d.overflow.numpy()[0]) & int(types.OverflowType.ITERATIONS)))
+    if nworld == 2:
+      self.assertEqual(int(d.overflow.numpy()[1]), 0)
+
+  @parameterized.product(
+    nworld=(1, 2),
+    jacobian=(mujoco.mjtJacobian.mjJAC_DENSE, mujoco.mjtJacobian.mjJAC_SPARSE),
+  )
+  def test_eff_prec_fold_uncovered_dense(self, nworld, jacobian):
+    """Verifies eff_prec_fold folds active constraints into a dense uncovered Cholesky factor."""
+    mjm, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option integrator="discrete" solver="CG">
+          <flag ipc="enable"/>
+        </option>
+        <worldbody>
+          <body name="arm" pos="1 0 0">
+            <joint name="j0" axis="0 1 0" damping="2" limited="true" range="-0.1 0.1"/>
+            <geom type="capsule" fromto="0 0 0 0.2 0 0" size="0.02" mass="1"/>
+            <body pos="0.2 0 0">
+              <joint name="j1" axis="0 1 0" damping="1" limited="true" range="-0.1 0.1"/>
+              <geom type="capsule" fromto="0 0 0 0.2 0 0" size="0.02" mass="1"/>
+            </body>
+          </body>
+          <flexcomp name="cloth" type="grid" dim="2" count="2 2 1" spacing="0.05 0.05 1"
+                    radius="0.005" mass="0.05" pos="0 0 0.5">
+            <contact selfcollide="none"/>
+            <elasticity young="500" poisson="0.3" thickness="0.005" elastic2d="stretch" damping="0.05"/>
+          </flexcomp>
+        </worldbody>
+        <equality>
+          <joint joint1="j0" joint2="j1"/>
+        </equality>
+      </mujoco>
+      """,
+      nworld=nworld,
+      overrides={"opt.jacobian": jacobian},
+    )
+    qpos = d.qpos.numpy()
+    qpos[0, 0] = 0.2
+    qpos[0, 1] = -0.2
+    if nworld == 2:
+      qpos[1, 0] = -0.25
+      qpos[1, 1] = 0.15
+    d.qpos.assign(qpos)
+    qvel = d.qvel.numpy()
+    qvel[0, :2] = [1.0, -0.5]
+    if nworld == 2:
+      qvel[1, :2] = [-0.8, 0.6]
+    d.qvel.assign(qvel)
+
+    mjw.fwd_position(m, d)
+    mjw.fwd_velocity(m, d)
+    mjw.fwd_actuation(m, d)
+
+    ctx = solver.create_solver_context(m, d)
+    d.qacc.assign(d.qacc_smooth)
+    ctx.Mgrad.fill_(wp.inf)
+    solver.init_context(m, d, ctx, grad=True)
+
+    mjds = [mujoco.MjData(mjm) for _ in range(nworld)]
+    for w in range(nworld):
+      mjds[w].qpos[:] = qpos[w]
+      mjds[w].qvel[:] = qvel[w]
+      mujoco.mj_forwardSkip(mjm, mjds[w], mujoco.mjtStage.mjSTAGE_NONE, 1)
+      mj_M = np.zeros((mjm.nv, mjm.nv))
+      mujoco.mju_sym2dense(mj_M, mjds[w].M, mjm.M_rownnz, mjm.M_rowadr, mjm.M_colind)
+      S_uu = mj_M[:2, :2] + np.diag(d.efm_diag.numpy()[w, :2])
+      nefc_w = int(d.nefc.numpy()[w])
+      D_w = d.efc.D.numpy()[w, :nefc_w]
+      if m.is_sparse:
+        J_dense = np.zeros((nefc_w, m.nv))
+        rownnz = d.efc.J_rownnz.numpy()[w, :nefc_w]
+        rowadr = d.efc.J_rowadr.numpy()[w, :nefc_w]
+        colind = d.efc.J_colind.numpy()[w, 0]
+        J_val = d.efc.J.numpy()[w, 0]
+        for r in range(nefc_w):
+          for k in range(rownnz[r]):
+            J_dense[r, colind[rowadr[r] + k]] = J_val[rowadr[r] + k]
+      else:
+        J_dense = d.efc.J.numpy()[w, :nefc_w, : m.nv]
+      J_u = J_dense[:, :2]
+      S_uu += J_u.T @ (D_w[:, None] * J_u)
+      want_u = np.linalg.solve(S_uu, ctx.grad.numpy()[w, :2])
+      np.testing.assert_allclose(ctx.Mgrad.numpy()[w, :2], want_u, atol=1e-4, rtol=1e-4)
+
+    if nworld == 2:
+      self.assertFalse(np.allclose(ctx.Mgrad.numpy()[0, :2], ctx.Mgrad.numpy()[1, :2]))
 
 
 if __name__ == "__main__":

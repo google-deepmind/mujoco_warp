@@ -23,11 +23,14 @@ from mujoco_warp._src import passive
 from mujoco_warp._src import smooth
 from mujoco_warp._src import support
 from mujoco_warp._src import util_misc
+from mujoco_warp._src.block_cholesky import create_blocked_cholesky_factorize_solve_func
+from mujoco_warp._src.block_cholesky import create_blocked_cholesky_solve_func
 from mujoco_warp._src.passive import build_efm_contact
 from mujoco_warp._src.passive import ellipsoid_max_moment
 from mujoco_warp._src.passive import geom_semiaxes
 from mujoco_warp._src.support import next_act
 from mujoco_warp._src.types import MJ_MINVAL
+from mujoco_warp._src.types import TILE_SIZE_JTDAJ_DENSE
 from mujoco_warp._src.types import BiasType
 from mujoco_warp._src.types import Data
 from mujoco_warp._src.types import DisableBit
@@ -37,6 +40,7 @@ from mujoco_warp._src.types import GainType
 from mujoco_warp._src.types import IntegratorType
 from mujoco_warp._src.types import JointType
 from mujoco_warp._src.types import Model
+from mujoco_warp._src.types import OverflowType
 from mujoco_warp._src.types import vec6
 from mujoco_warp._src.types import vec10
 from mujoco_warp._src.warp_util import cache_kernel
@@ -2880,6 +2884,28 @@ def _pcg_beta_and_p_update_tiled(
     efm_p_out[worldid, dofid] = efm_z_in[worldid, dofid] + beta * efm_p_out[worldid, dofid]
 
 
+@cache_kernel
+def _pcg_check_convergence_warning(warn_overflow: int):
+  @wp.kernel(module="unique", enable_backward=False)
+  def kernel(
+    # In:
+    efm_done_in: wp.array[bool],
+    # Data out:
+    overflow_out: wp.array[int],
+  ):
+    worldid = wp.tid()
+    if not efm_done_in[worldid]:
+      if wp.static(bool(warn_overflow & OverflowType.ITERATIONS)):
+        wp.printf(
+          "eff_solve PCG did not converge (world %d)\n"
+          "To disable the print warning: m.opt.warn_overflow &= ~mjw.OverflowType.ITERATIONS (or = 0 for all)\n",
+          worldid,
+        )
+      overflow_out[worldid] = overflow_out[worldid] | wp.static(OverflowType.ITERATIONS)
+
+  return kernel
+
+
 @wp.kernel
 def _eff_contact_shift(
   # Model:
@@ -3751,13 +3777,363 @@ def _eff_factor_folded_blocks(
   )
 
 
+@wp.kernel
+def _eff_build_uncovered_map(
+  # Model:
+  nv: int,
+  efm_dofblk: wp.array[int],
+  # Out:
+  epU_out: wp.array[int],
+  ep_loc_out: wp.array[int],
+):
+  tid = wp.tid()
+  if tid != 0:
+    return
+  cnt = int(0)
+  for i in range(nv):
+    if efm_dofblk[i] < 0:
+      epU_out[cnt] = i
+      ep_loc_out[i] = cnt
+      cnt += 1
+    else:
+      ep_loc_out[i] = -1
+
+
+@wp.kernel
+def _eff_build_dense_uncovered_base(
+  # Model:
+  M_rownnz: wp.array[int],
+  M_rowadr: wp.array[int],
+  M_colind: wp.array[int],
+  has_fluid: bool,
+  # Data in:
+  M_in: wp.array2d[float],
+  efm_diag_in: wp.array2d[float],
+  efm_fluid_in: wp.array2d[float],
+  # In:
+  epU_in: wp.array[int],
+  ep_loc_in: wp.array[int],
+  # Out:
+  epS_out: wp.array3d[float],
+):
+  worldid, ua = wp.tid()
+  i = epU_in[ua]
+  wp.atomic_add(epS_out, worldid, ua, ua, efm_diag_in[worldid, i])
+  rowadr = M_rowadr[i]
+  rownnz = M_rownnz[i]
+  for a in range(rowadr, rowadr + rownnz):
+    j = M_colind[a]
+    ub = ep_loc_in[j]
+    if ub < 0:
+      continue
+    v = M_in[worldid, a]
+    if has_fluid:
+      v += efm_fluid_in[worldid, a]
+    wp.atomic_add(epS_out, worldid, ua, ub, v)
+    if ub != ua:
+      wp.atomic_add(epS_out, worldid, ub, ua, v)
+
+
+@wp.kernel
+def _eff_fold_dense_uncovered_tendon(
+  # Model:
+  ten_J_rownnz: wp.array[int],
+  ten_J_rowadr: wp.array[int],
+  ten_J_colind: wp.array[int],
+  # Data in:
+  ten_J_in: wp.array2d[float],
+  efm_ts_in: wp.array2d[float],
+  # In:
+  ep_loc_in: wp.array[int],
+  # Out:
+  epS_out: wp.array3d[float],
+):
+  worldid, t = wp.tid()
+  s = efm_ts_in[worldid, t]
+  if s == 0.0:
+    return
+  rowadr = ten_J_rowadr[t]
+  rownnz = ten_J_rownnz[t]
+  for a in range(rownnz):
+    ia = ten_J_colind[rowadr + a]
+    ua = ep_loc_in[ia]
+    if ua < 0:
+      continue
+    s_va = s * ten_J_in[worldid, rowadr + a]
+    for b in range(rownnz):
+      ib = ten_J_colind[rowadr + b]
+      ub = ep_loc_in[ib]
+      if ub >= 0:
+        vb = ten_J_in[worldid, rowadr + b]
+        wp.atomic_add(epS_out, worldid, ua, ub, s_va * vb)
+
+
+@wp.kernel
+def _eff_fold_dense_uncovered_actuator(
+  # Data in:
+  moment_rownnz_in: wp.array2d[int],
+  moment_rowadr_in: wp.array2d[int],
+  moment_colind_in: wp.array2d[int],
+  actuator_moment_in: wp.array2d[float],
+  efm_as_in: wp.array2d[float],
+  # In:
+  ep_loc_in: wp.array[int],
+  # Out:
+  epS_out: wp.array3d[float],
+):
+  worldid, u = wp.tid()
+  s = efm_as_in[worldid, u]
+  if s == 0.0:
+    return
+  rowadr = moment_rowadr_in[worldid, u]
+  rownnz = moment_rownnz_in[worldid, u]
+  for a in range(rownnz):
+    ia = moment_colind_in[worldid, rowadr + a]
+    ua = ep_loc_in[ia]
+    if ua < 0:
+      continue
+    s_va = s * actuator_moment_in[worldid, rowadr + a]
+    for b in range(rownnz):
+      ib = moment_colind_in[worldid, rowadr + b]
+      ub = ep_loc_in[ib]
+      if ub >= 0:
+        vb = actuator_moment_in[worldid, rowadr + b]
+        wp.atomic_add(epS_out, worldid, ua, ub, s_va * vb)
+
+
+@wp.kernel
+def _eff_fold_dense_uncovered_contact(
+  # Data in:
+  contact_worldid_in: wp.array[int],
+  nacon_in: wp.array[int],
+  # In:
+  efm_con_dof_in: wp.array2d[int],
+  efm_con_val_in: wp.array2d[float],
+  efm_con_scale_in: wp.array[float],
+  efm_con_nnz_in: wp.array[int],
+  ep_loc_in: wp.array[int],
+  # Out:
+  epS_out: wp.array3d[float],
+):
+  cid = wp.tid()
+  if cid >= nacon_in[0]:
+    return
+  scale = efm_con_scale_in[cid]
+  if scale == 0.0:
+    return
+  worldid = contact_worldid_in[cid]
+  nnz = efm_con_nnz_in[cid]
+  for a in range(nnz):
+    ia = efm_con_dof_in[cid, a]
+    ua = ep_loc_in[ia]
+    if ua < 0:
+      continue
+    scale_va = scale * efm_con_val_in[cid, a]
+    for b in range(nnz):
+      ib = efm_con_dof_in[cid, b]
+      ub = ep_loc_in[ib]
+      if ub >= 0:
+        vb = efm_con_val_in[cid, b]
+        wp.atomic_add(epS_out, worldid, ua, ub, scale_va * vb)
+
+
+@wp.kernel
+def _eff_fold_dense_uncovered_efc(
+  # Model:
+  is_sparse: bool,
+  # Data in:
+  nefc_in: wp.array[int],
+  efc_J_rownnz_in: wp.array2d[int],
+  efc_J_rowadr_in: wp.array2d[int],
+  efc_J_colind_in: wp.array3d[int],
+  efc_J_in: wp.array3d[float],
+  efc_D_in: wp.array2d[float],
+  # In:
+  n_u: int,
+  epU_in: wp.array[int],
+  ep_loc_in: wp.array[int],
+  # Out:
+  epS_out: wp.array3d[float],
+):
+  worldid, r = wp.tid()
+  if r >= nefc_in[worldid]:
+    return
+  D = efc_D_in[worldid, r]
+  if D <= 0.0:
+    return
+  if is_sparse:
+    adr = efc_J_rowadr_in[worldid, r]
+    nnz = efc_J_rownnz_in[worldid, r]
+    for a in range(nnz):
+      ia = efc_J_colind_in[worldid, 0, adr + a]
+      ua = ep_loc_in[ia]
+      if ua < 0:
+        continue
+      D_ja = D * efc_J_in[worldid, 0, adr + a]
+      for b in range(nnz):
+        ib = efc_J_colind_in[worldid, 0, adr + b]
+        ub = ep_loc_in[ib]
+        if ub >= 0:
+          jb = efc_J_in[worldid, 0, adr + b]
+          wp.atomic_add(epS_out, worldid, ua, ub, D_ja * jb)
+  else:
+    for ua in range(n_u):
+      ia = epU_in[ua]
+      ja = efc_J_in[worldid, r, ia]
+      if ja == 0.0:
+        continue
+      D_ja = D * ja
+      for ub in range(n_u):
+        ib = epU_in[ub]
+        jb = efc_J_in[worldid, r, ib]
+        if jb != 0.0:
+          wp.atomic_add(epS_out, worldid, ua, ub, D_ja * jb)
+
+
+@wp.kernel
+def _eff_pad_and_clamp_dense_uncovered(
+  # In:
+  n_u: int,
+  # Out:
+  epS_out: wp.array3d[float],
+):
+  worldid, ua = wp.tid()
+  if ua < n_u:
+    epS_out[worldid, ua, ua] = wp.max(epS_out[worldid, ua, ua], MJ_MINVAL)
+  else:
+    epS_out[worldid, ua, ua] = 1.0
+
+
+@cache_kernel
+def _eff_cholesky_factor(tile_size: int):
+  @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
+  def kernel(
+    # Out:
+    epS_out: wp.array3d[float],
+  ):
+    worldid = wp.tid()
+    TILE_SIZE = wp.static(tile_size)
+    mat_tile = wp.tile_load(epS_out[worldid], shape=(TILE_SIZE, TILE_SIZE))
+    wp.tile_cholesky_inplace(mat_tile, fill_mode="upper")
+    wp.tile_store(epS_out[worldid], mat_tile)
+
+  return kernel
+
+
+@cache_kernel
+def _eff_cholesky_factor_blocked(tile_size: int, matrix_size: int):
+  @wp.kernel(module="unique", enable_backward=False, grid_stride=False, module_options={"enable_mathdx_gemm": False})
+  def kernel(
+    # In:
+    epS_in: wp.array3d[float],
+    epS_rhs_in: wp.array3d[float],
+    # Out:
+    epS_factor_out: wp.array3d[float],
+    epS_sol_out: wp.array3d[float],
+  ):
+    worldid = wp.tid()
+    TILE_SIZE = wp.static(tile_size)
+    wp.static(create_blocked_cholesky_factorize_solve_func(TILE_SIZE, matrix_size))(
+      epS_in[worldid],
+      epS_rhs_in[worldid],
+      matrix_size,
+      epS_factor_out[worldid],
+      epS_sol_out[worldid],
+    )
+
+  return kernel
+
+
+@wp.kernel
+def _eff_gather_uncovered_rhs(
+  # In:
+  n_u: int,
+  epU_in: wp.array[int],
+  vec_in: wp.array2d[float],
+  # Out:
+  epS_rhs_out: wp.array2d[float],
+):
+  worldid, ua = wp.tid()
+  if ua < n_u:
+    epS_rhs_out[worldid, ua] = vec_in[worldid, epU_in[ua]]
+  else:
+    epS_rhs_out[worldid, ua] = 0.0
+
+
+@cache_kernel
+def _eff_cholesky_solve(tile_size: int):
+  @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
+  def kernel(
+    # In:
+    epS_in: wp.array3d[float],
+    epS_rhs_in: wp.array2d[float],
+    # Out:
+    epS_sol_out: wp.array2d[float],
+  ):
+    worldid = wp.tid()
+    TILE_SIZE = wp.static(tile_size)
+    mat_tile = wp.tile_load(epS_in[worldid], shape=(TILE_SIZE, TILE_SIZE))
+    rhs_tile = wp.tile_load(epS_rhs_in[worldid], shape=TILE_SIZE)
+    sol_tile = wp.tile_cholesky_solve(mat_tile, rhs_tile, fill_mode="upper")
+    wp.tile_store(epS_sol_out[worldid], sol_tile)
+
+  return kernel
+
+
+@cache_kernel
+def _eff_cholesky_solve_blocked(tile_size: int, matrix_size: int):
+  @wp.kernel(module="unique", enable_backward=False, grid_stride=False, module_options={"enable_mathdx_gemm": False})
+  def kernel(
+    # In:
+    epS_factor_in: wp.array3d[float],
+    epS_rhs_in: wp.array3d[float],
+    # Out:
+    epS_sol_out: wp.array3d[float],
+  ):
+    worldid = wp.tid()
+    TILE_SIZE = wp.static(tile_size)
+    wp.static(create_blocked_cholesky_solve_func(TILE_SIZE, matrix_size))(
+      epS_factor_in[worldid],
+      epS_rhs_in[worldid],
+      matrix_size,
+      epS_sol_out[worldid],
+    )
+
+  return kernel
+
+
+@wp.kernel
+def _eff_scatter_uncovered_sol(
+  # In:
+  epU_in: wp.array[int],
+  epS_sol_in: wp.array2d[float],
+  # Out:
+  res_out: wp.array2d[float],
+):
+  worldid, ua = wp.tid()
+  res_out[worldid, epU_in[ua]] = epS_sol_in[worldid, ua]
+
+
 @event_scope
-def eff_prec_fold(m: Model, d: Data, out: Optional[wp.array] = None) -> wp.array:
+def eff_prec_fold(
+  m: Model,
+  d: Data,
+  out: Optional[wp.array] = None,
+  epB: Optional[wp.array] = None,
+  efm_con: Optional[tuple] = None,
+  epS: Optional[wp.array] = None,
+  epS_factor: Optional[wp.array] = None,
+  epS_rhs: Optional[wp.array] = None,
+  epS_sol: Optional[wp.array] = None,
+  epU: Optional[wp.array] = None,
+  ep_loc: Optional[wp.array] = None,
+) -> wp.array:
   """Folds rank-1 metric terms and active/inactive efc rows into 3x3 preconditioner blocks."""
   epL = out if out is not None else wp.empty_like(d.efm_L)
   if m.nefmdof == 0:
     return epL
-  epB = wp.empty_like(d.efm_L)
+  if epB is None:
+    epB = wp.empty_like(d.efm_L)
   dofblk = m.efm_dofblk
 
   wp.launch(
@@ -3828,8 +4204,11 @@ def eff_prec_fold(m: Model, d: Data, out: Optional[wp.array] = None) -> wp.array
       outputs=[epB],
     )
 
+  con_tuple = efm_con
   if m.has_flex_passive:
-    efm_con_dof, efm_con_val, efm_con_scale, _, efm_con_nnz = build_efm_contact(m, d)
+    if con_tuple is None:
+      con_tuple = build_efm_contact(m, d)
+    efm_con_dof, efm_con_val, efm_con_scale, _, efm_con_nnz = con_tuple
     wp.launch(
       _eff_fold_contact_rank1,
       dim=d.naconmax,
@@ -3852,6 +4231,116 @@ def eff_prec_fold(m: Model, d: Data, out: Optional[wp.array] = None) -> wp.array
     inputs=[epB],
     outputs=[epL],
   )
+
+  if epS is not None and epU is not None and ep_loc is not None:
+    n_u = epU.shape[0]
+    n_u_pad = epS.shape[1]
+    wp.launch(
+      _eff_build_uncovered_map,
+      dim=1,
+      inputs=[m.nv, dofblk],
+      outputs=[epU, ep_loc],
+    )
+    epS.zero_()
+    wp.launch(
+      _eff_build_dense_uncovered_base,
+      dim=(d.nworld, n_u),
+      inputs=[
+        m.M_rownnz,
+        m.M_rowadr,
+        m.M_colind,
+        m.has_fluid,
+        d.M,
+        d.efm_diag,
+        d.efm_fluid,
+        epU,
+        ep_loc,
+      ],
+      outputs=[epS],
+    )
+    wp.launch(
+      _eff_fold_dense_uncovered_tendon,
+      dim=(d.nworld, m.ntendon),
+      inputs=[
+        m.ten_J_rownnz,
+        m.ten_J_rowadr,
+        m.ten_J_colind,
+        d.ten_J,
+        d.efm_ts,
+        ep_loc,
+      ],
+      outputs=[epS],
+    )
+    wp.launch(
+      _eff_fold_dense_uncovered_actuator,
+      dim=(d.nworld, m.nactuator),
+      inputs=[
+        d.moment_rownnz,
+        d.moment_rowadr,
+        d.moment_colind,
+        d.actuator_moment,
+        d.efm_as,
+        ep_loc,
+      ],
+      outputs=[epS],
+    )
+    if m.has_flex_passive and con_tuple is not None:
+      efm_con_dof, efm_con_val, efm_con_scale, _, efm_con_nnz = con_tuple
+      wp.launch(
+        _eff_fold_dense_uncovered_contact,
+        dim=d.naconmax,
+        inputs=[
+          d.contact.worldid,
+          d.nacon,
+          efm_con_dof,
+          efm_con_val,
+          efm_con_scale,
+          efm_con_nnz,
+          ep_loc,
+        ],
+        outputs=[epS],
+      )
+    wp.launch(
+      _eff_fold_dense_uncovered_efc,
+      dim=(d.nworld, d.njmax),
+      inputs=[
+        m.is_sparse,
+        d.nefc,
+        d.efc.J_rownnz,
+        d.efc.J_rowadr,
+        d.efc.J_colind,
+        d.efc.J,
+        d.efc.D,
+        n_u,
+        epU,
+        ep_loc,
+      ],
+      outputs=[epS],
+    )
+    wp.launch(
+      _eff_pad_and_clamp_dense_uncovered,
+      dim=(d.nworld, n_u_pad),
+      inputs=[n_u],
+      outputs=[epS],
+    )
+    if n_u <= 32:
+      wp.launch_tiled(
+        _eff_cholesky_factor(n_u),
+        dim=d.nworld,
+        inputs=[],
+        outputs=[epS],
+        block_dim=m.block_dim.update_gradient_cholesky,
+      )
+    elif epS_factor is not None and epS_rhs is not None and epS_sol is not None:
+      epS_rhs.zero_()
+      wp.launch_tiled(
+        _eff_cholesky_factor_blocked(TILE_SIZE_JTDAJ_DENSE, n_u_pad),
+        dim=d.nworld,
+        inputs=[epS, epS_rhs.reshape(shape=(d.nworld, n_u_pad, 1))],
+        outputs=[epS_factor, epS_sol.reshape(shape=(d.nworld, n_u_pad, 1))],
+        block_dim=m.block_dim.update_gradient_cholesky_blocked,
+      )
+
   return epL
 
 
@@ -3862,6 +4351,11 @@ def eff_prec(
   res: wp.array2d[float],
   vec: wp.array2d[float],
   epL: Optional[wp.array] = None,
+  epS: Optional[wp.array] = None,
+  epS_factor: Optional[wp.array] = None,
+  epS_rhs: Optional[wp.array] = None,
+  epS_sol: Optional[wp.array] = None,
+  epU: Optional[wp.array] = None,
 ):
   """Preconditions residual vector using 3x3 flex block Cholesky and backbone qHLD."""
   if m.efm0_active:
@@ -3912,6 +4406,53 @@ def eff_prec(
         outputs=[res],
       )
     return
+
+  if epS is not None and epU is not None and epS_rhs is not None and epS_sol is not None:
+    n_u = epU.shape[0]
+    n_u_pad = epS.shape[1]
+    wp.launch(
+      _eff_gather_uncovered_rhs,
+      dim=(d.nworld, n_u_pad),
+      inputs=[n_u, epU, vec],
+      outputs=[epS_rhs],
+    )
+    if n_u <= 32:
+      wp.launch_tiled(
+        _eff_cholesky_solve(n_u),
+        dim=d.nworld,
+        inputs=[epS, epS_rhs],
+        outputs=[epS_sol],
+        block_dim=m.block_dim.update_gradient_cholesky,
+      )
+    elif epS_factor is not None:
+      wp.launch_tiled(
+        _eff_cholesky_solve_blocked(TILE_SIZE_JTDAJ_DENSE, n_u_pad),
+        dim=d.nworld,
+        inputs=[epS_factor, epS_rhs.reshape(shape=(d.nworld, n_u_pad, 1))],
+        outputs=[epS_sol.reshape(shape=(d.nworld, n_u_pad, 1))],
+        block_dim=m.block_dim.update_gradient_cholesky_blocked,
+      )
+    wp.launch(
+      _eff_scatter_uncovered_sol,
+      dim=(d.nworld, n_u),
+      inputs=[epU, epS_sol],
+      outputs=[res],
+    )
+    wp.launch(
+      _eff_block_solve,
+      dim=(d.nworld, m.nefmdof),
+      inputs=[m.efm_dofid, L_arr, vec],
+      outputs=[res],
+    )
+    if m.opt.enableflags & EnableBit.SLEEP:
+      wp.launch(
+        _zero_sleeping_dofs,
+        dim=(d.nworld, m.nv),
+        inputs=[m.dof_treeid, d.tree_awake],
+        outputs=[res],
+      )
+    return
+
   dofblk = m.efm_dofblk
   wp.launch(
     _eff_copy_backbone_rhs,
@@ -4063,3 +4604,10 @@ def eff_solve(m: Model, d: Data, qacc: wp.array2d[float], qfrc: Optional[wp.arra
     else:
       for _ in range(max_it):
         _pcg_iteration()
+
+  wp.launch(
+    _pcg_check_convergence_warning(int(m.opt.warn_overflow)),
+    dim=d.nworld,
+    inputs=[efm_done],
+    outputs=[d.overflow],
+  )
