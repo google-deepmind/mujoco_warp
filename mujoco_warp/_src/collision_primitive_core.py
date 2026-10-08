@@ -171,37 +171,29 @@ def capsule_capsule(
   mc = wp.dot(axis2, axis2)
   u = -wp.dot(axis1, dif)
   v = wp.dot(axis2, dif)
-  det = ma * mc - mb * mb
+  # determinant via cross product to avoid cancellation for parallel axes
+  cross = wp.cross(axis1, axis2)
+  det = wp.length_sq(cross)
 
   # non-parallel axes: 1 contact
-  if wp.abs(det) >= MJ_MINVAL:
-    inv_det = 1.0 / det
-    x1 = (mc * u - mb * v) * inv_det
-    x2 = (ma * v - mb * u) * inv_det
-
-    if x1 > 1.0:
-      x1 = 1.0
-      x2 = (v - mb) / mc
-    elif x1 < -1.0:
-      x1 = -1.0
-      x2 = (v + mb) / mc
-
-    if x2 > 1.0:
-      x2 = 1.0
-      x1 = wp.clamp((u - mb) / ma, -1.0, 1.0)
-    elif x2 < -1.0:
-      x2 = -1.0
-      x1 = wp.clamp((u + mb) / ma, -1.0, 1.0)
+  if det > 1.0e-8 * ma * mc:  # sin^2(0.006 deg)
+    # find projections, clip to segments (Ericson, Real-Time Collision Detection, 5.1.8)
+    # Binet-Cauchy identity: mc*u - mb*v = (axis1 x axis2)' * (axis2 x dif)
+    cross_dif = wp.cross(axis2, dif)
+    x1 = wp.clamp(wp.dot(cross, cross_dif) / det, -1.0, 1.0)
+    x2 = (v - mb * x1) / mc
+    if wp.abs(x2) > 1.0:
+      x2 = wp.clamp(x2, -1.0, 1.0)
+      x1 = wp.clamp((u - mb * x2) / ma, -1.0, 1.0)
 
     # find nearest points
     vec1 = cap1_pos + axis1 * x1
     vec2 = cap2_pos + axis2 * x2
 
     dist, pos, normal = sphere_sphere(vec1, cap1_radius, vec2, cap2_radius)
-    if dist <= margin:
-      contact_dist[0] = dist
-      contact_pos[0] = pos
-      contact_normal[0] = normal
+    contact_dist[0] = dist
+    contact_pos[0] = pos
+    contact_normal[0] = normal
 
   # parallel axes: test all 4 endpoint pairs, keep first 2 that pass margin check
   else:
@@ -209,45 +201,47 @@ def capsule_capsule(
 
     # x1 = 1: test positive end of capsule 1
     vec1 = cap1_pos + axis1
-    x2 = wp.clamp((v - mb) / mc, -1.0, 1.0)
+    x2 = wp.clamp(safe_div(v - mb, mc), -1.0, 1.0)
     vec2 = cap2_pos + axis2 * x2
     dist, pos, normal = sphere_sphere(vec1, cap1_radius, vec2, cap2_radius)
+    contact_dist[0] = dist
+    contact_pos[0] = pos
+    contact_normal[0] = normal
     if dist <= margin:
-      contact_dist[contact_count] = dist
-      contact_pos[contact_count] = pos
-      contact_normal[contact_count] = normal
       contact_count += 1
 
     # x1 = -1: test negative end of capsule 1
     vec1 = cap1_pos - axis1
-    x2 = wp.clamp((v + mb) / mc, -1.0, 1.0)
+    x2 = wp.clamp(safe_div(v + mb, mc), -1.0, 1.0)
     vec2 = cap2_pos + axis2 * x2
     dist, pos, normal = sphere_sphere(vec1, cap1_radius, vec2, cap2_radius)
-    if dist <= margin:
+    if dist <= margin or dist < contact_dist[0]:
       contact_dist[contact_count] = dist
       contact_pos[contact_count] = pos
       contact_normal[contact_count] = normal
-      contact_count += 1
+      if dist <= margin:
+        contact_count += 1
 
     # x2 = 1: test positive end of capsule 2
     if contact_count < 2:
       vec2 = cap2_pos + axis2
-      x1 = wp.clamp((u - mb) / ma, -1.0, 1.0)
+      x1 = wp.clamp(safe_div(u - mb, ma), -1.0, 1.0)
       vec1 = cap1_pos + axis1 * x1
       dist, pos, normal = sphere_sphere(vec1, cap1_radius, vec2, cap2_radius)
-      if dist <= margin:
+      if dist <= margin or dist < contact_dist[0]:
         contact_dist[contact_count] = dist
         contact_pos[contact_count] = pos
         contact_normal[contact_count] = normal
-        contact_count += 1
+        if dist <= margin:
+          contact_count += 1
 
     # x2 = -1: test negative end of capsule 2
     if contact_count < 2:
       vec2 = cap2_pos - axis2
-      x1 = wp.clamp((u + mb) / ma, -1.0, 1.0)
+      x1 = wp.clamp(safe_div(u + mb, ma), -1.0, 1.0)
       vec1 = cap1_pos + axis1 * x1
       dist, pos, normal = sphere_sphere(vec1, cap1_radius, vec2, cap2_radius)
-      if dist <= margin:
+      if dist <= margin or dist < contact_dist[0]:
         contact_dist[contact_count] = dist
         contact_pos[contact_count] = pos
         contact_normal[contact_count] = normal

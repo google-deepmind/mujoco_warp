@@ -1760,6 +1760,39 @@ class CollisionTest(parameterized.TestCase):
     self.assertEqual(int(d.nacon.numpy()[0]), 1)
     self.assertTrue(np.isfinite(float(d.contact.dist.numpy()[0])))
 
+  def test_capsule_capsule_parallel(self):
+    """Tests parallel capsule-capsule contacts with independently rounded body rotations."""
+    _, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <body euler="15 35 55">
+            <freejoint/>
+            <geom type="capsule" size="0.01 1.5" pos="0 0.005 0"/>
+          </body>
+          <body euler="15 0 0">
+            <body euler="0 35 55">
+              <geom type="capsule" size="0.01 1.2" pos="0 -0.005 0.1"/>
+            </body>
+          </body>
+        </worldbody>
+      </mujoco>
+      """
+    )
+
+    d.nacon.fill_(-1)
+    d.contact.dist.fill_(wp.inf)
+    d.contact.pos.fill_(wp.inf)
+    d.contact.frame.fill_(wp.inf)
+    mjw.collision(m, d)
+
+    nacon = int(d.nacon.numpy()[0])
+    self.assertEqual(nacon, 2)
+    self.assertEqual(nacon, mjd.ncon)
+    _assert_eq(d.contact.dist.numpy()[:nacon], mjd.contact.dist[:nacon], "dist")
+    _assert_eq(d.contact.pos.numpy()[:nacon], mjd.contact.pos[:nacon], "pos")
+    _assert_eq(d.contact.frame.numpy()[:nacon].reshape(-1, 9), mjd.contact.frame[:nacon], "frame")
+
 
 if __name__ == "__main__":
   absltest.main()
