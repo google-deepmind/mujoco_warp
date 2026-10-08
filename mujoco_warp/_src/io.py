@@ -751,6 +751,7 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
   weld_parentid2 = mjm.body_weldid[mjm.body_parentid[weldid2]]
 
   self_collision = weldid1 == weldid2
+  no_dofs = (mjm.body_dofnum[weldid1] == 0) & (mjm.body_dofnum[weldid2] == 0)
   parent_child_collision = (
     filterparent & (weldid1 != 0) & (weldid2 != 0) & ((weldid1 == weld_parentid2) | (weldid2 == weld_parentid1))
   )
@@ -758,7 +759,7 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
   exclude = np.isin((bodyid1 << 16) + bodyid2, mjm.exclude_signature)
 
   nxn_pairid_contact = -1 * np.ones(len(geom1), dtype=int)
-  nxn_pairid_contact[~(mask & ~self_collision & ~parent_child_collision & ~exclude)] = -2
+  nxn_pairid_contact[~(mask & ~self_collision & ~no_dofs & ~parent_child_collision & ~exclude)] = -2
 
   # contact pairs
   def upper_tri_index(n, i, j):
