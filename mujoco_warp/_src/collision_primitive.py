@@ -115,10 +115,8 @@ def _hull4(
 
 
 @wp.func
-def plane_convex(plane_normal: wp.vec3, plane_pos: wp.vec3, convex: Geom) -> Tuple[wp.vec4, mat43, wp.vec3]:
+def plane_convex(plane_normal: wp.vec3, plane_pos: wp.vec3, convex: Geom, margin: float) -> Tuple[wp.vec4, mat43, wp.vec3]:
   """Core contact geometry calculation for plane-convex collision."""
-  _HUGE_VAL = 1e6
-
   contact_dist = wp.vec4(MJ_MAXVAL)
   contact_pos = mat43()
 
@@ -126,7 +124,7 @@ def plane_convex(plane_normal: wp.vec3, plane_pos: wp.vec3, convex: Geom) -> Tup
   local_normal = wp.transpose(convex.rot) @ plane_normal
   local_dir = -local_normal
   vertindex = int(-1)
-  max_support = wp.float32(-_HUGE_VAL)
+  max_support = wp.float32(-MJ_MAXVAL)
 
   if convex.graphadr == -1 or convex.vertnum < 10:
     for i in range(convex.vertnum):
@@ -164,7 +162,8 @@ def plane_convex(plane_normal: wp.vec3, plane_pos: wp.vec3, convex: Geom) -> Tup
   contact_dist[0] = dist0
   contact_pos[0] = v0 - 0.5 * dist0 * plane_normal
 
-  if convex.mesh_polynum <= 0:
+  # Separated past margin, write_contact drops every contact: skip the incident face.
+  if convex.mesh_polynum <= 0 or dist0 > margin:
     return contact_dist, contact_pos, plane_normal
 
   # Choose the incident face most anti-aligned with the plane normal.
@@ -804,7 +803,7 @@ def plane_convex_wrapper(
   nacon_out: wp.array[int],
 ):
   """Calculates contacts between a plane and a convex object."""
-  dist, pos, normal = plane_convex(plane.normal, plane.pos, convex)
+  dist, pos, normal = plane_convex(plane.normal, plane.pos, convex, margin + gap)
 
   frame = make_frame(normal)
   for i in range(4):

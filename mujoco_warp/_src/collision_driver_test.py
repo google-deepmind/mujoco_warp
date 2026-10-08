@@ -44,7 +44,7 @@ _TOLERANCE = 5e-5
 
 @wp.kernel
 def plane_convex_test(convex_in: Geom, dist_out: wp.array[wp.vec4]):
-  dist, pos, normal = plane_convex(wp.vec3(0.0, 0.0, 1.0), wp.vec3(0.0), convex_in)
+  dist, pos, normal = plane_convex(wp.vec3(0.0, 0.0, 1.0), wp.vec3(0.0), convex_in, 0.0)
   dist_out[0] = dist
 
 
@@ -759,6 +759,11 @@ class CollisionTest(parameterized.TestCase):
   def _assert_plane_mesh_contacts(self, mjm, mjd, m, d):
     """Compares contact geometry in order with MuJoCo's independent C implementation."""
     mujoco.mj_collision(mjm, mjd)
+    # Discard the contacts put_data copied from MuJoCo: the assertions must read Warp's own.
+    d.nacon.fill_(-1)
+    d.contact.dist.fill_(wp.inf)
+    d.contact.pos.fill_(wp.inf)
+    d.contact.frame.fill_(wp.inf)
     mjw.collision(m, d)
 
     ncon = mjd.ncon
