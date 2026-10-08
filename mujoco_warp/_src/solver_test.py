@@ -15,6 +15,8 @@
 
 """Tests for solver functions."""
 
+from unittest import mock
+
 import mujoco
 import numpy as np
 import warp as wp
@@ -469,6 +471,247 @@ class SolverTest(parameterized.TestCase):
       _assert_eq(efc_sorted_state, mjd_sorted_state, "efc_state")
       _assert_eq(efc_sorted_force, mjd_sorted_force, "efc_force")
       _assert_eq(qfrc_constraint, mjd.qfrc_constraint, "qfrc_constraint")
+
+  @parameterized.product(nworld=(1, 2), compact=(False, True))
+  def test_sparse_efc_threads(self, nworld, compact):
+    """Strided sparse rows preserve full and compact solves with different contacts per world."""
+    _, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option jacobian="sparse" cone="pyramidal" solver="Newton" iterations="10"/>
+        <worldbody>
+          <geom type="plane" size="5 5 .1"/>
+          <body pos="0 0 .095"><freejoint/><geom type="box" size=".1 .1 .1"/></body>
+          <body pos=".5 0 .095"><freejoint/><geom type="box" size=".1 .1 .1"/></body>
+          <body pos="1 0 .095"><freejoint/><geom type="box" size=".1 .1 .1"/></body>
+        </worldbody>
+      </mujoco>
+      """,
+      qvel_noise=0.1,
+      nworld=nworld,
+      njmax=128,
+      overrides={"opt.enableflags": types.EnableBit.SLEEP if compact else 0},
+    )
+    qpos = d.qpos.numpy()
+    qvel = d.qvel.numpy()
+    if nworld == 2:
+      qpos[1, 2] += 0.5
+      qvel[1] *= -0.5
+    d.qpos.assign(qpos)
+    d.qvel.assign(qvel)
+    mjw.forward(m, d)
+    self.assertGreater(d.nefc.numpy()[0], 32)
+    if nworld == 2:
+      self.assertNotEqual(*d.nefc.numpy())
+    if compact:
+      awake = np.ones((nworld, m.ntree), dtype=int)
+      awake[:, 0] = 0
+      d.tree_awake.assign(awake)
+    results = []
+    for width in (d.njmax, 32):
+      for arr in (d.qacc, d.qfrc_constraint, d.efc.force):
+        arr.fill_(wp.inf)
+      for arr in (d.efc.state, d.solver_niter):
+        arr.fill_(-1)
+      # Cross the CUDA fusion threshold with a small fixture; compact solves stay unfused.
+      with (
+        mock.patch.object(solver, "efc_threads_per_world", return_value=width),
+        mock.patch.object(d.qacc.device, "sm_count", 0 if width == 32 else 1),
+        mock.patch.object(
+          solver, "_update_constraint_qfrc_gradient_sparse_tiled", wraps=solver._update_constraint_qfrc_gradient_sparse_tiled
+        ) as fused,
+      ):
+        solver.solve(m, d)
+      self.assertEqual(fused.called, d.qacc.device.is_cuda and width == 32 and not compact)
+      if compact:
+        np.testing.assert_array_equal(d.dof_cdof.numpy()[:, :6], -1)
+        np.testing.assert_array_equal(d.dof_cdof.numpy()[:, 6:], np.tile(np.arange(12), (nworld, 1)))
+      results.append(
+        (d.qacc.numpy(), d.qfrc_constraint.numpy(), d.efc.force.numpy(), d.efc.state.numpy(), d.solver_niter.numpy())
+      )
+    reference_qacc, reference_qfrc, reference_force, reference_state, reference_niter = results[0]
+    qacc, qfrc_constraint, force, state, niter = results[1]
+    np.testing.assert_array_equal(niter, reference_niter)
+    self.assertTrue((niter >= 0).all())
+    if nworld == 2:
+      self.assertFalse(np.allclose(*qacc))
+    for value, reference in ((qacc, reference_qacc), (qfrc_constraint, reference_qfrc)):
+      np.testing.assert_allclose(value, reference, atol=_TOLERANCE, rtol=_TOLERANCE)
+      self.assertTrue(np.isfinite(value).all())
+    for worldid, nefc in enumerate(d.nefc.numpy()):
+      np.testing.assert_allclose(force[worldid, :nefc], reference_force[worldid, :nefc], atol=_TOLERANCE, rtol=_TOLERANCE)
+      np.testing.assert_array_equal(state[worldid, :nefc], reference_state[worldid, :nefc])
+      self.assertTrue(np.isfinite(force[worldid, :nefc]).all())
+      self.assertTrue((state[worldid, :nefc] >= 0).all())
+
+  @parameterized.product(jacobian=(mujoco.mjtJacobian.mjJAC_DENSE, mujoco.mjtJacobian.mjJAC_SPARSE), njmax=(0, 32))
+  def test_constraint_fusion_cpu(self, jacobian, njmax):
+    """Zero and one-warp row capacities do not enable sparse fusion on CPU."""
+    with wp.ScopedDevice("cpu"):
+      _, _, m, d = test_data.fixture(
+        xml="""
+        <mujoco>
+          <worldbody>
+            <body><freejoint/><geom type="sphere" size=".1"/></body>
+          </worldbody>
+        </mujoco>
+        """,
+        njmax=njmax,
+        overrides={"opt.jacobian": jacobian},
+      )
+      ctx = solver._create_solver_context(m, d)
+      nsolving = wp.ones(1, dtype=int)
+      if m.is_sparse and njmax == 0:
+        ctx.done.zero_()
+        ctx.ls_exhausted.fill_(True)
+        ctx.quad_changed_count.zero_()
+        ctx.state_changed_count.zero_()
+        solver._update_constraint(m, d, ctx, track_changes=True, stable_fast=True)
+        np.testing.assert_array_equal(ctx.state_changed_count.numpy(), 0)
+        np.testing.assert_array_equal(ctx.quad_changed_count.numpy(), 0)
+      with (
+        mock.patch.object(solver, "_mul_m_compact_aware"),
+        mock.patch.object(solver, "_linesearch_iterative") as linesearch,
+        mock.patch.object(wp, "launch"),
+      ):
+        solver._linesearch(m, d, ctx)
+      linesearch.assert_called_once_with(m, d, ctx, jacobian == mujoco.mjtJacobian.mjJAC_DENSE)
+      with (
+        mock.patch.object(solver, "_linesearch"),
+        mock.patch.object(solver, "_update_constraint") as update,
+        mock.patch.object(solver, "_update_gradient_incremental"),
+        mock.patch.object(wp, "launch"),
+        mock.patch.object(wp, "launch_tiled") as tiled,
+      ):
+        solver._solver_iteration(m, d, ctx, nsolving)
+      update.assert_called_once_with(m, d, ctx, track_changes=True, stable_fast=True)
+      tiled.assert_not_called()
+
+  @parameterized.parameters(32, 64, 128)
+  def test_sparse_constraint_gradient_fusion(self, block_dim):
+    """Fused evaluation preserves changed, stable, done and exhausted worlds across warps."""
+    if not wp.get_device().is_cuda:
+      self.skipTest("Sparse constraint gradient fusion requires CUDA.")
+    _, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option jacobian="sparse"/>
+        <worldbody>
+          <replicate count="35" offset=".3 0 0">
+            <body><joint type="slide"/><geom type="sphere" size=".1"/></body>
+          </replicate>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=4,
+      njmax=69,
+      njmax_nnz=69,
+    )
+    ctx = solver._create_solver_context(m, d)
+    m.block_dim.update_constraint_qfrc_gradient_sparse_tiled = block_dim
+    d.ne.fill_(1)
+    d.nf.fill_(1)
+    d.nefc.fill_(d.njmax)
+    d.efc.J_rownnz.fill_(1)
+    d.efc.J_rowadr.assign(np.tile(np.arange(d.njmax), (d.nworld, 1)))
+    columns = np.arange(d.njmax) % m.nv
+    d.efc.J_colind.assign(np.tile(columns, (d.nworld, 1, 1)))
+    d.efc.J.fill_(1.0)
+    d.efc.D.fill_(2.0)
+    d.efc.frictionloss.fill_(1.0)
+    jaref = np.full((d.nworld, d.njmax), -1.0)
+    jaref[:, 1] = 2.0
+    jaref[:, 2::2] = 1.0
+    expected_state = np.where(jaref < 0, types.ConstraintState.QUADRATIC, types.ConstraintState.SATISFIED)
+    expected_state[:, 1] = types.ConstraintState.LINEARPOS
+    old_state = expected_state.copy()
+    old_state[0, 1] = types.ConstraintState.LINEARNEG  # force changes without a quadratic flip
+    old_state[0, 2:] = types.ConstraintState.SATISFIED
+    padded_state = np.full(d.efc.state.shape, -1, dtype=int)
+    padded_state[:, : d.njmax] = old_state
+    d.efc.state.assign(padded_state)
+    d.efc.force.fill_(wp.inf)
+    d.efc.Ma.fill_(3.0)
+    d.qfrc_smooth.fill_(1.0)
+    ctx.Jaref.assign(jaref)
+    ctx.alpha.assign(np.array([0.1, 0.5, 0.2, 0.3]))
+    ctx.done.assign(np.array([False, False, True, False]))
+    ctx.ls_exhausted.assign(np.array([False, False, False, True]))
+    d.qfrc_constraint.fill_(9.0)
+    ctx.grad.fill_(8.0)
+    ctx.grad_dot.assign(np.array([np.inf, 14.0, 5.0, np.inf]))
+    ctx.newton_decrement.assign(np.array([np.inf, 8.0, 6.0, np.inf]))
+    ctx.grad_scale.assign(np.array([np.inf, 2.0, 7.0, np.inf]))
+    ctx.quad_changed_ids.fill_(-1)
+    ctx.quad_changed_count.fill_(-1)
+    ctx.state_changed_count.fill_(-1)
+    ctx.search_unchanged.zero_()
+
+    wp.launch_tiled(
+      solver._update_constraint_qfrc_gradient_sparse_tiled(m.nv),
+      dim=d.nworld,
+      inputs=[
+        d.ne,
+        d.nf,
+        d.nefc,
+        d.qfrc_smooth,
+        d.efc.J_rownnz,
+        d.efc.J_rowadr,
+        d.efc.J_colind,
+        d.efc.J,
+        d.efc.D,
+        d.efc.frictionloss,
+        d.efc.Ma,
+        d.njmax,
+        ctx.Jaref,
+        ctx.ls_exhausted,
+        ctx.alpha,
+        ctx.done,
+      ],
+      outputs=[
+        d.qfrc_constraint,
+        d.efc.force,
+        d.efc.state,
+        ctx.quad_changed_ids,
+        ctx.quad_changed_count,
+        ctx.state_changed_count,
+        ctx.grad,
+        ctx.grad_dot,
+        ctx.newton_decrement,
+        ctx.grad_scale,
+        ctx.search_unchanged,
+      ],
+      block_dim=m.block_dim.update_constraint_qfrc_gradient_sparse_tiled,
+    )
+
+    expected_force = np.maximum(-2.0 * jaref, 0.0)
+    expected_force[:, 1] = -1.0
+    expected_qfrc = np.bincount(columns, weights=expected_force[0], minlength=m.nv)
+    expected_grad = 2.0 - expected_qfrc
+    for worldid in (0, 3):
+      np.testing.assert_allclose(d.qfrc_constraint.numpy()[worldid, : m.nv], expected_qfrc)
+      np.testing.assert_allclose(ctx.grad.numpy()[worldid, : m.nv], expected_grad)
+      self.assertAlmostEqual(ctx.grad_dot.numpy()[worldid], expected_grad @ expected_grad)
+    np.testing.assert_array_equal(d.qfrc_constraint.numpy()[1:3], 9.0)
+    np.testing.assert_array_equal(ctx.grad.numpy()[1:3], 8.0)
+    np.testing.assert_allclose(ctx.grad_dot.numpy()[1:3], [7.875, 5.0])
+    np.testing.assert_allclose(ctx.newton_decrement.numpy(), [0.0, 4.5, 6.0, 0.0])
+    np.testing.assert_allclose(ctx.grad_scale.numpy(), [1.0, 1.5, 7.0, 1.0])
+    np.testing.assert_array_equal(ctx.search_unchanged.numpy(), [False, True, True, False])
+    np.testing.assert_array_equal(
+      ctx.state_changed_count.numpy(), [np.count_nonzero(old_state[0] != expected_state[0]), 0, 0, 1]
+    )
+    flipped = np.flatnonzero(
+      (old_state[0] == types.ConstraintState.QUADRATIC) != (expected_state[0] == types.ConstraintState.QUADRATIC)
+    )
+    np.testing.assert_array_equal(ctx.quad_changed_count.numpy(), [len(flipped), 0, 0, 0])
+    np.testing.assert_array_equal(np.sort(ctx.quad_changed_ids.numpy()[0, : len(flipped)]), flipped)
+    for worldid in (0, 1, 3):
+      np.testing.assert_array_equal(d.efc.state.numpy()[worldid, : d.njmax], expected_state[worldid])
+      np.testing.assert_allclose(d.efc.force.numpy()[worldid], expected_force[worldid])
+    np.testing.assert_array_equal(d.efc.state.numpy()[2, : d.njmax], old_state[2])
+    np.testing.assert_array_equal(d.efc.state.numpy()[:, d.njmax :], -1)
+    self.assertTrue(np.isinf(d.efc.force.numpy()[2]).all())
 
   @parameterized.product(
     cone=(ConeType.PYRAMIDAL, ConeType.ELLIPTIC),

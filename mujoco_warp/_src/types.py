@@ -76,6 +76,7 @@ class BlockDim:
     update_gradient_JTDAJ_sparse: update gradient JTDAJ sparse block dimension (solver)
     update_gradient_JTDAJ_dense: update gradient JTDAJ dense block dimension (solver)
     linesearch_iterative: linesearch iterative block dimension (solver)
+    update_constraint_qfrc_gradient_sparse_tiled: sparse gradient block dimension (solver)
     update_gradient_grad: update gradient grad block dimension (solver)
     solve_beta_accumulate: solve beta accumulate block dimension (solver)
     solve_search_update_cg: solve search update CG block dimension (solver)
@@ -108,6 +109,7 @@ class BlockDim:
   update_gradient_JTDAJ_sparse: int = 128
   update_gradient_JTDAJ_dense: int = 128
   linesearch_iterative: int = 32
+  update_constraint_qfrc_gradient_sparse_tiled: int = 32
   update_gradient_grad: int = 256
   solve_beta_accumulate: int = 256
   solve_search_update_cg: int = 256
