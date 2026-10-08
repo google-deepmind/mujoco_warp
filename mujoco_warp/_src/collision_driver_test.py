@@ -1760,6 +1760,63 @@ class CollisionTest(parameterized.TestCase):
     self.assertEqual(int(d.nacon.numpy()[0]), 1)
     self.assertTrue(np.isfinite(float(d.contact.dist.numpy()[0])))
 
+  @parameterized.product(
+    broadphase=(BroadphaseType.NXN, BroadphaseType.SAP_TILE),
+    nworld=(1, 2),
+  )
+  def test_mocap_collision_filter(self, broadphase, nworld):
+    """Contacts between DOF-less bodies (mocap-static, mocap-mocap) are filtered."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <geom type="plane" size="2 2 0.01"/>
+          <body mocap="true" pos="0 0 0.05">
+            <geom size="0.1"/>
+          </body>
+          <body mocap="true" pos="0.05 0 0.05">
+            <geom size="0.1"/>
+          </body>
+          <body pos="0.5 0 0.08">
+            <freejoint/>
+            <geom size="0.1"/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """,
+      overrides={"opt.broadphase": broadphase},
+      nworld=nworld,
+    )
+    self.assertEqual(mjd.ncon, 1)
+
+    mjds = [mjd]
+    if nworld == 2:
+      mjd1 = mujoco.MjData(mjm)
+      qpos = d.qpos.numpy()
+      qpos[1, 2] = 0.06
+      d.qpos.assign(qpos)
+      mjd1.qpos[:] = qpos[1]
+      mujoco.mj_forward(mjm, mjd1)
+      self.assertEqual(mjd1.ncon, 1)
+      mjds.append(mjd1)
+      mjw.fwd_kinematics(m, d)
+
+    d.nacon.fill_(-1)
+    d.contact.dist.fill_(wp.inf)
+    mjw.collision(m, d)
+
+    nacon = int(d.nacon.numpy()[0])
+    self.assertEqual(nacon, nworld)
+    worldid = d.contact.worldid.numpy()[:nacon]
+    dist = d.contact.dist.numpy()[:nacon]
+    for w in range(nworld):
+      conids = np.flatnonzero(worldid == w)
+      self.assertLen(conids, 1)
+      np.testing.assert_allclose(dist[conids[0]], mjds[w].contact[0].dist, atol=1e-5)
+
+    if nworld == 2:
+      self.assertFalse(np.allclose(dist[worldid == 0], dist[worldid == 1]))
+
 
 if __name__ == "__main__":
   absltest.main()
