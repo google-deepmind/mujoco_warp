@@ -16,19 +16,27 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
+        branch: [main, deepmind]
         python-version: ["3.10", "3.14"]
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ matrix.branch }}
       - name: Install uv
-        uses: astral-sh/setup-uv@v7
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
         with:
           version: "0.9.27"
           python-version: ${{ matrix.python-version }}
       - name: Set up Python ${{ matrix.python-version }}
         run: uv python install
       - name: Update dependencies to latest (including pre-releases)
+        if: matrix.branch == 'main'
         run: |
           uv lock --upgrade
+      - name: Update mujoco to latest dev version
+        if: matrix.branch == 'deepmind'
+        run: |
+          uv lock --upgrade-package mujoco
       - name: Show updated dependency tree
         run: |
           uv tree
