@@ -563,6 +563,119 @@ class MultiWorldDelayTest(parameterized.TestCase):
             err_msg=f"nworld={nworld} delay={delay} world={w} step {i}",
           )
 
+  @parameterized.parameters(1, 2)
+  def test_delayed_joint_limit_force(self, nworld):
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option timestep="0.01"/>
+        <worldbody>
+          <body>
+            <joint name="slide" type="slide" range="0 1"/>
+            <geom size="0.1" mass="1"/>
+          </body>
+        </worldbody>
+        <actuator>
+          <motor joint="slide"/>
+        </actuator>
+        <sensor>
+          <jointlimitfrc joint="slide" delay="0.02" nsample="5"/>
+        </sensor>
+      </mujoco>
+      """,
+      nworld=nworld,
+    )
+
+    mjds = [mjd]
+    qpos = d.qpos.numpy()
+    qpos[0, 0] = 1.05
+    mjd.qpos[0] = 1.05
+
+    if nworld == 2:
+      mjd1 = mujoco.MjData(mjm)
+      qpos[1, 0] = 1.15
+      mjd1.qpos[0] = 1.15
+      mjds.append(mjd1)
+
+    d.qpos.assign(qpos)
+
+    all_warp_outputs = [[] for _ in range(nworld)]
+
+    for _ in range(6):
+      d.sensordata.fill_(wp.inf)
+      step(m, d)
+      for w in range(nworld):
+        mujoco.mj_step(mjm, mjds[w])
+        all_warp_outputs[w].append(d.sensordata.numpy()[w, 0])
+        np.testing.assert_allclose(
+          d.sensordata.numpy()[w],
+          mjds[w].sensordata,
+          rtol=1e-3,
+          atol=1e-3,
+        )
+
+    if nworld == 2:
+      self.assertFalse(np.allclose(all_warp_outputs[0], all_warp_outputs[1]))
+
+  @parameterized.parameters(1, 2)
+  def test_delayed_tendon_limit_force(self, nworld):
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option timestep="0.01"/>
+        <worldbody>
+          <body>
+            <joint name="slide" type="slide"/>
+            <geom size="0.1" mass="1"/>
+            <site name="s1" pos="0 0 0"/>
+          </body>
+          <site name="s2" pos="0 0 1"/>
+        </worldbody>
+        <tendon>
+          <spatial name="ten" range="0 0.5">
+            <site site="s1"/>
+            <site site="s2"/>
+          </spatial>
+        </tendon>
+        <sensor>
+          <tendonlimitfrc tendon="ten" delay="0.02" nsample="5"/>
+        </sensor>
+      </mujoco>
+      """,
+      nworld=nworld,
+    )
+
+    mjds = [mjd]
+    qpos = d.qpos.numpy()
+    qpos[0, 0] = -0.7
+    mjd.qpos[0] = -0.7
+
+    if nworld == 2:
+      mjd1 = mujoco.MjData(mjm)
+      qpos[1, 0] = -0.9
+      mjd1.qpos[0] = -0.9
+      mjds.append(mjd1)
+
+    d.qpos.assign(qpos)
+
+    all_warp_outputs = [[] for _ in range(nworld)]
+
+    for _ in range(6):
+      d.sensordata.fill_(wp.inf)
+      step(m, d)
+      for w in range(nworld):
+        mujoco.mj_step(mjm, mjds[w])
+        all_warp_outputs[w].append(d.sensordata.numpy()[w, 0])
+        np.testing.assert_allclose(
+          d.sensordata.numpy()[w],
+          mjds[w].sensordata,
+          rtol=1e-3,
+          atol=1e-3,
+        )
+
+    if nworld == 2:
+      self.assertFalse(np.allclose(all_warp_outputs[0], all_warp_outputs[1]))
+
 
 class MultiActuatorSensorDelayTest(absltest.TestCase):
   """Test delay with multiple actuators/sensors with different delays."""

@@ -957,8 +957,7 @@ def sensor_pos(m: Model, d: Data):
   )
 
   # apply sensor delay/interval for position sensors
-  history.apply_sensor_delay(m, d, m.sensor_pos_adr)
-  history.apply_sensor_delay(m, d, m.sensor_limitpos_adr)
+  history.apply_sensor_delay(m, d, m.sensor_stage_pos_adr)
 
   if m.callback.sensor:
     m.callback.sensor(m, d, Stage.POS)
@@ -1503,8 +1502,7 @@ def sensor_vel(m: Model, d: Data):
   )
 
   # apply sensor delay/interval for velocity sensors
-  history.apply_sensor_delay(m, d, m.sensor_vel_adr)
-  history.apply_sensor_delay(m, d, m.sensor_limitvel_adr)
+  history.apply_sensor_delay(m, d, m.sensor_stage_vel_adr)
 
   if m.callback.sensor:
     m.callback.sensor(m, d, Stage.VEL)
@@ -2841,8 +2839,7 @@ def sensor_acc(m: Model, d: Data, skip_rne_postconstraint: bool = False):
   )
 
   # apply sensor delay/interval for acceleration sensors
-  history.apply_sensor_delay(m, d, m.sensor_acc_adr)
-  history.apply_sensor_delay(m, d, m.sensor_limitfrc_adr)
+  history.apply_sensor_delay(m, d, m.sensor_stage_acc_adr)
 
   if m.callback.sensor:
     m.callback.sensor(m, d, Stage.ACC)
