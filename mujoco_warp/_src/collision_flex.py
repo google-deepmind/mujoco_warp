@@ -47,6 +47,9 @@ wp.set_module_options({"enable_backward": False, "default_grid_stride": False})
 _FPS_BLOCK_SIZE: int = 64
 ENABLE_SAT_PREFILTER: bool = True
 _FLEX_CONTACT_DEDUP_TOLERANCE: float = 1e-3
+_FLEX_SAP_CHUNK: int = 32
+# triangle pairs queued per flex element for the dense SAT pass; the rest skip the prefilter
+_FLEX_SAT_QUEUE_PER_ELEM: int = 8
 
 
 @wp.func
@@ -1181,29 +1184,45 @@ def _flex_sap_sweep(is_self: bool, warn_overflow: int, enable_sat: bool = True):
     aabb_lower_in: wp.array2d[wp.vec3],
     aabb_upper_in: wp.array2d[wp.vec3],
     max_pairs: int,
+    sat_queue_cap: int,
     # Data out:
     ncollision_out: wp.array[int],
     overflow_out: wp.array[int],
     # Out:
     collision_pair_out: wp.array[wp.vec2i],
     collision_worldid_out: wp.array[int],
+    sat_queue_out: wp.array[wp.vec3i],
+    nsat_queue_out: wp.array[int],
   ):
-    worldelemid = wp.tid()
+    # threads take chunks of _FLEX_SAP_CHUNK consecutive pairs and binary search once per chunk
+    worldelemid = wp.tid() * wp.static(_FLEX_SAP_CHUNK)
 
     nworldelem = cumulative_sum_in.shape[0]
     nworkpackages = cumulative_sum_in[nworldelem - 1]
 
+    chunkend = int(0)
+    i = int(0)
+    ibegin = int(0)
+    iend = int(0)
     while worldelemid < nworkpackages:
-      i = sap_binary_search(cumulative_sum_in, worldelemid, 0, nworldelem)
-      j = i + worldelemid + 1
-      if i > 0:
-        j -= cumulative_sum_in[i - 1]
+      if worldelemid >= chunkend:
+        chunkend = worldelemid + wp.static(_FLEX_SAP_CHUNK)
+        i = sap_binary_search(cumulative_sum_in, worldelemid, 0, nworldelem)
+        ibegin = wp.where(i > 0, cumulative_sum_in[wp.max(i - 1, 0)], 0)
+        iend = cumulative_sum_in[i]
+      while worldelemid >= iend:
+        i += 1
+        ibegin = iend
+        iend = cumulative_sum_in[i]
+      j = i + worldelemid + 1 - ibegin
+      worldelemid += 1
+      if worldelemid == chunkend:
+        worldelemid += (nsweep_in - 1) * wp.static(_FLEX_SAP_CHUNK)
 
       worldid = i // nelem
-      i = i % nelem
       j = j % nelem
 
-      elem1 = sort_index_in[worldid, i]
+      elem1 = sort_index_in[worldid, i % nelem]
       elem2 = sort_index_in[worldid, j]
 
       flexid1 = flex_elemflexid[elem1]
@@ -1211,11 +1230,9 @@ def _flex_sap_sweep(is_self: bool, warn_overflow: int, enable_sat: bool = True):
 
       if wp.static(is_self):
         if flexid1 != flexid2 or flex_selfcollide[flexid1] == 0 or (flex_contype[flexid1] & flex_conaffinity[flexid1]) == 0:
-          worldelemid += nsweep_in
           continue
       else:
         if flexid1 == flexid2:
-          worldelemid += nsweep_in
           continue
 
       if elem1 > elem2:
@@ -1225,8 +1242,6 @@ def _flex_sap_sweep(is_self: bool, warn_overflow: int, enable_sat: bool = True):
         tmpid = flexid1
         flexid1 = flexid2
         flexid2 = tmpid
-
-      worldelemid += nsweep_in
 
       if not wp.static(is_self):
         if _flex_element_aabb_filter(
@@ -1301,21 +1316,11 @@ def _flex_sap_sweep(is_self: bool, warn_overflow: int, enable_sat: bool = True):
       if dim1 == 2:
         dim2 = dim1 if wp.static(is_self) else flex_dim[flexid2]
         if dim2 == 2 and wp.static(enable_sat):
-          r1 = flex_radius[flexid1]
-          cutoff = float(2.0) * r1
-          if not wp.static(is_self):
-            cutoff = (
-              r1 + flex_radius[flexid2] + flex_margin[flexid1] + flex_margin[flexid2] + flex_gap[flexid1] + flex_gap[flexid2]
-            )
-          cutoff_sq = cutoff * cutoff
-          p0 = flexvert_xpos_in[worldid, vert_adr1 + v1_indices[0]]
-          p1 = flexvert_xpos_in[worldid, vert_adr1 + v1_indices[1]]
-          p2 = flexvert_xpos_in[worldid, vert_adr1 + v1_indices[2]]
-          vadr2 = vert_adr1 if wp.static(is_self) else flex_vertadr[flexid2]
-          q0 = flexvert_xpos_in[worldid, vadr2 + v2_indices[0]]
-          q1 = flexvert_xpos_in[worldid, vadr2 + v2_indices[1]]
-          q2 = flexvert_xpos_in[worldid, vadr2 + v2_indices[2]]
-          if _triangle_sat_separated(p0, p1, p2, q0, q1, q2, cutoff_sq):
+          # few pairs reach the SAT test: queue them for a dense pass so the sweep stays light on
+          # registers; past a full queue a pair skips this conservative prefilter
+          slot = wp.atomic_add(nsat_queue_out, 0, 1)
+          if slot < sat_queue_cap:
+            sat_queue_out[slot] = wp.vec3i(worldid, elem1, elem2)
             continue
 
       idx = wp.atomic_add(ncollision_out, 0, 1)
@@ -1331,6 +1336,73 @@ def _flex_sap_sweep(is_self: bool, warn_overflow: int, enable_sat: bool = True):
 
       collision_pair_out[idx] = wp.vec2i(elem1, elem2)
       collision_worldid_out[idx] = worldid
+
+  return kernel
+
+
+@cache_kernel
+def _flex_sap_sat(is_self: bool, warn_overflow: int):
+  @wp.kernel(module="unique", enable_backward=False)
+  def kernel(
+    # Model:
+    flex_margin: wp.array[float],
+    flex_gap: wp.array[float],
+    flex_vertadr: wp.array[int],
+    flex_elemadr: wp.array[int],
+    flex_elemdataadr: wp.array[int],
+    flex_elem: wp.array[int],
+    flex_radius: wp.array[float],
+    flex_elemflexid: wp.array[int],
+    # Data in:
+    flexvert_xpos_in: wp.array2d[wp.vec3],
+    # In:
+    sat_queue_in: wp.array[wp.vec3i],
+    nsat_queue_in: wp.array[int],
+    max_pairs: int,
+    # Data out:
+    ncollision_out: wp.array[int],
+    overflow_out: wp.array[int],
+    # Out:
+    collision_pair_out: wp.array[wp.vec2i],
+    collision_worldid_out: wp.array[int],
+  ):
+    tid = wp.tid()
+    if tid >= nsat_queue_in[0]:
+      return
+
+    worldid, elem1, elem2 = sat_queue_in[tid][0], sat_queue_in[tid][1], sat_queue_in[tid][2]
+    flexid1 = flex_elemflexid[elem1]
+    flexid2 = flex_elemflexid[elem2]
+    r1 = flex_radius[flexid1]
+    cutoff = float(2.0) * r1
+    if not wp.static(is_self):
+      cutoff = r1 + flex_radius[flexid2] + flex_margin[flexid1] + flex_margin[flexid2] + flex_gap[flexid1] + flex_gap[flexid2]
+    data1 = flex_elemdataadr[flexid1] + (elem1 - flex_elemadr[flexid1]) * 3
+    data2 = flex_elemdataadr[flexid2] + (elem2 - flex_elemadr[flexid2]) * 3
+    vadr1 = flex_vertadr[flexid1]
+    vadr2 = flex_vertadr[flexid2]
+    p0 = flexvert_xpos_in[worldid, vadr1 + flex_elem[data1]]
+    p1 = flexvert_xpos_in[worldid, vadr1 + flex_elem[data1 + 1]]
+    p2 = flexvert_xpos_in[worldid, vadr1 + flex_elem[data1 + 2]]
+    q0 = flexvert_xpos_in[worldid, vadr2 + flex_elem[data2]]
+    q1 = flexvert_xpos_in[worldid, vadr2 + flex_elem[data2 + 1]]
+    q2 = flexvert_xpos_in[worldid, vadr2 + flex_elem[data2 + 2]]
+    if _triangle_sat_separated(p0, p1, p2, q0, q1, q2, cutoff * cutoff):
+      return
+
+    idx = wp.atomic_add(ncollision_out, 0, 1)
+    if idx >= max_pairs:
+      if wp.static(bool(warn_overflow & OverflowType.BROADPHASE)):
+        wp.printf(
+          "Flex SAP buffer overflow - please increase naconmax beyond %u\n"
+          "To disable the print warning: m.opt.warn_overflow &= ~mjw.OverflowType.BROADPHASE (or = 0 for all)\n",
+          max_pairs,
+        )
+      wp.atomic_or(overflow_out, worldid, wp.static(OverflowType.BROADPHASE))
+      return
+
+    collision_pair_out[idx] = wp.vec2i(elem1, elem2)
+    collision_worldid_out[idx] = worldid
 
   return kernel
 
@@ -3544,6 +3616,9 @@ def _flex_sap_collision(
   sap_sort_index, sap_cumsum, elem_aabb_lower, elem_aabb_upper = sap_data
   nsweep = 5 * d.nworld * m.nflexelem
   d.ncollision.zero_()
+  sat_queue_cap = _FLEX_SAT_QUEUE_PER_ELEM * d.nworld * m.nflexelem if enable_sat else 0
+  sat_queue = wp.empty(sat_queue_cap, dtype=wp.vec3i)
+  nsat_queue = wp.zeros(1, dtype=int)
 
   wp.launch(
     _flex_sap_sweep(is_self, int(m.opt.warn_overflow), enable_sat),
@@ -3572,14 +3647,38 @@ def _flex_sap_collision(
       elem_aabb_lower,
       elem_aabb_upper,
       d.naconmax,
+      sat_queue_cap,
     ],
     outputs=[
       d.ncollision,
       d.overflow,
       ctx.collision_pair,
       ctx.collision_worldid,
+      sat_queue,
+      nsat_queue,
     ],
   )
+
+  if enable_sat:
+    wp.launch(
+      _flex_sap_sat(is_self, int(m.opt.warn_overflow)),
+      dim=sat_queue_cap,
+      inputs=[
+        m.flex_margin,
+        m.flex_gap,
+        m.flex_vertadr,
+        m.flex_elemadr,
+        m.flex_elemdataadr,
+        m.flex_elem,
+        m.flex_radius,
+        m.flex_elemflexid,
+        d.flexvert_xpos,
+        sat_queue,
+        nsat_queue,
+        d.naconmax,
+      ],
+      outputs=[d.ncollision, d.overflow, ctx.collision_pair, ctx.collision_worldid],
+    )
 
   _run_flex_narrowphase(
     m,
