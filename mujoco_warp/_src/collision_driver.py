@@ -722,7 +722,7 @@ def _nxn_broadphase(
   enable_sleep: bool = False,
   incremental: bool = False,
 ):
-  @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
+  @wp.kernel(module="unique", enable_backward=False, grid_stride=True)
   def kernel(
     # Model:
     geom_type: wp.array[int],
@@ -863,18 +863,22 @@ def nxn_broadphase(
     wp.launch(_any_awake_changed, dim=(d.nworld, m.nbody), inputs=[d.body_awake, awake_prev], outputs=[cond])
 
   def _launch():
+    kernel = _nxn_broadphase(
+      m.opt.broadphase_filter,
+      m.geom_aabb.shape[0],
+      m.geom_rbound.shape[0],
+      m.geom_margin.shape[0],
+      m.geom_gap.shape[0],
+      m.geom_dataid.shape[0],
+      enable_sleep,
+      incremental,
+    )
+    block_size, min_grid_size = wp.get_suggested_block_size(kernel, d.geom_xpos.device)
     wp.launch(
-      _nxn_broadphase(
-        m.opt.broadphase_filter,
-        m.geom_aabb.shape[0],
-        m.geom_rbound.shape[0],
-        m.geom_margin.shape[0],
-        m.geom_gap.shape[0],
-        m.geom_dataid.shape[0],
-        enable_sleep,
-        incremental,
-      ),
+      kernel,
       dim=(d.nworld, m.nxn_geom_pair_filtered.shape[0]),
+      block_dim=m.block_dim.nxn_broadphase,
+      max_blocks=8 * block_size * min_grid_size // m.block_dim.nxn_broadphase,
       inputs=[
         m.geom_type,
         m.geom_bodyid,
