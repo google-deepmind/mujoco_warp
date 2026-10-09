@@ -674,11 +674,57 @@ class SensorTest(parameterized.TestCase):
       keyframe=0,
     )
 
-    d.sensordata.zero_()
+    d.sensordata.fill_(wp.inf)
     mjw.sensor_acc(m, d)
     sensordata = d.sensordata.numpy()[0]
     _assert_eq(sensordata, mjd.sensordata, "sensordata")
     self.assertTrue(sensordata.any())  # check that sensordata is not empty
+
+  @parameterized.parameters(1, 2)
+  def test_contact_sensor_netforce_empty(self, nworld):
+    """Test contact sensor with netforce reduction when nmatch is zero."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <body name="b1" pos="0 0 1">
+            <freejoint/>
+            <geom size="0.1"/>
+          </body>
+          <body name="b2" pos="0 0 2">
+            <freejoint/>
+            <geom size="0.1"/>
+          </body>
+        </worldbody>
+        <sensor>
+          <contact body1="b1" body2="b2" reduce="netforce" num="2" data="found force torque dist pos normal tangent"/>
+        </sensor>
+      </mujoco>
+      """,
+      nworld=nworld,
+    )
+
+    mjds = [mjd]
+    if nworld == 2:
+      mjd1 = mujoco.MjData(mjm)
+      qpos = d.qpos.numpy()
+      qpos[1, 9] = 1.1
+      d.qpos.assign(qpos)
+      mjd1.qpos[:] = qpos[1]
+      mujoco.mj_forward(mjm, mjd1)
+      mjw.forward(m, d)
+      mjds.append(mjd1)
+
+    d.sensordata.fill_(wp.inf)
+    mjw.sensor_acc(m, d)
+
+    sensordata = d.sensordata.numpy()
+    for w in range(nworld):
+      _assert_eq(sensordata[w], mjds[w].sensordata, f"sensordata_world_{w}")
+    _assert_eq(sensordata[0], np.zeros(mjm.nsensordata), "sensordata_world_0_zeros")
+
+    if nworld == 2:
+      self.assertFalse(np.allclose(sensordata[0], sensordata[1]))
 
   @parameterized.parameters(
     ("box", "box", "box", "box"),
@@ -934,7 +980,7 @@ class SensorTest(parameterized.TestCase):
     )
 
     d.sensordata.fill_(wp.inf)
-    mjw.sensor_acc(m, d)
+    mjw.sensor_vel(m, d)
 
     warp_sensordata = d.sensordata.numpy()
     for w in range(nworld):
@@ -976,10 +1022,10 @@ class SensorTest(parameterized.TestCase):
     # set on mjModel.
     mjm.sensor_cutoff[0] = cutoff_val
     m.sensor_cutoff.fill_(cutoff_val)
-    mujoco.mj_sensorAcc(mjm, mjd)
+    mujoco.mj_sensorVel(mjm, mjd)
 
     d.sensordata.fill_(wp.inf)
-    mjw.sensor_acc(m, d)
+    mjw.sensor_vel(m, d)
 
     sensordata = d.sensordata.numpy()
     for w in range(nworld):
@@ -1235,14 +1281,14 @@ class SensorTest(parameterized.TestCase):
 
     d.overflow.fill_(0)
     d.sensordata.fill_(wp.inf)
-    mjw.sensor_acc(m, d)
+    mjw.sensor_vel(m, d)
 
     # Overflow should NOT be set because there are only 2 distinct contacting geoms
     overflow_vals = d.overflow.numpy()
     for w in range(nworld):
       self.assertFalse(bool(overflow_vals[w] & OverflowType.TACTILE), f"Overflow set for world {w}")
 
-    mujoco.mj_sensorAcc(mjm, mjd)
+    mujoco.mj_sensorVel(mjm, mjd)
     sensordata = d.sensordata.numpy()
     for w in range(nworld):
       # Vertex 4 corresponds to geom_a, vertex 5 corresponds to geom_b
