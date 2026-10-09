@@ -29,6 +29,7 @@ wp.set_module_options({"enable_backward": False})
 
 FLOAT_MIN = -1e30
 FLOAT_MAX = 1e30
+EPA_WITNESS_TOL = 1e-3
 
 MINVAL = 1e-15
 MINVAL2 = 1e-30
@@ -975,7 +976,29 @@ def _epa_witness(
   v2 = pt.vert[2 * face[1]] - pt.vert[2 * face[1] + 1]
   v3 = pt.vert[2 * face[2]] - pt.vert[2 * face[2] + 1]
 
-  coordinates = _tri_affine_coord(v1, v2, v3, pt.face_pr[face_idx])
+  n = pt.face_pr[face_idx]
+  coordinates = _tri_affine_coord(v1, v2, v3, n)
+
+  # coplanar faces tie for closest, so the selected face may not contain the witness; extrapolating
+  # outside it is inaccurate and unbounded for sliver faces, so use the face the ray along n exits
+  if wp.min(coordinates) < -EPA_WITNESS_TOL:
+    for i in range(pt.nface):
+      if _is_face_deleted(pt.face[i]):
+        continue
+      face_i = _get_face_verts(pt.face[i])
+      u1 = pt.vert[2 * face_i[0]] - pt.vert[2 * face_i[0] + 1]
+      u2 = pt.vert[2 * face_i[1]] - pt.vert[2 * face_i[1] + 1]
+      u3 = pt.vert[2 * face_i[2]] - pt.vert[2 * face_i[2] + 1]
+      c = wp.vec3(wp.dot(wp.cross(u2, u3), n), wp.dot(wp.cross(u3, u1), n), wp.dot(wp.cross(u1, u2), n))
+      s = c[0] + c[1] + c[2]
+      # skip faces parallel to n or hit behind the origin
+      if s == 0.0 or wp.dot(u1, wp.cross(u2, u3)) / s <= 0.0:
+        continue
+      if wp.min(c / s) >= -EPA_WITNESS_TOL:
+        face = face_i
+        coordinates = c / s
+        break
+
   l1 = coordinates[0]
   l2 = coordinates[1]
   l3 = coordinates[2]

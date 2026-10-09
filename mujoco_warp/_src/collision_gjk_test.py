@@ -715,6 +715,27 @@ class GJKTest(parameterized.TestCase):
     dist, _, _, _ = _geom_dist(m, d, 0, 1, pos2=pos, mat2=rot)
     self.assertAlmostEqual(dist, -0.0016624178339902445)
 
+  def test_cylinder_box_side_witness(self):
+    """Test cylinder side resting on a box face: EPA ends on coplanar faces that tie for closest."""
+    # cylinder at the origin as in the collision driver, which shifts geom1 there
+    _, _, m, d = test_data.fixture(
+      xml="""
+       <mujoco>
+         <worldbody>
+           <geom type="cylinder" size=".05 .12"/>
+           <geom type="box" size=".5 .5 .5" pos="-0.5415780544281006 -0.02145402319729328 0.49598589539527893"/>
+         </worldbody>
+       </mujoco>
+       """
+    )
+
+    dist, _, x1, x2 = _geom_dist(m, d, 0, 1)
+    self.assertLess(dist, 0.0)
+
+    # witnesses must lie where the cylinder side overlaps the box face: z in [-0.004, 0.12]
+    for x in (x1, x2):
+      self.assertBetween(x[2], 0.49598589539527893 - 0.5 - 1e-4, 0.12 + 1e-4)
+
   def test_cylinder_capsule(self):
     """Test cylinder and a capsule with CCD fallback."""
     _, _, m, d = test_data.fixture(
