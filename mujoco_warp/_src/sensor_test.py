@@ -539,6 +539,7 @@ class SensorTest(parameterized.TestCase):
     _, mjd, m, d = test_data.fixture(xml=_MJCF, keyframe=0)
 
     d.sensordata.zero_()
+    mjw.sensor_pos(m, d)
     mjw.sensor_acc(m, d)
 
     sensordata = d.sensordata.numpy()[0]
@@ -581,7 +582,7 @@ class SensorTest(parameterized.TestCase):
     _, _, m, d = test_data.fixture(xml=_MJCF, keyframe=0)
 
     d.sensordata.zero_()
-    mjw.sensor_acc(m, d)
+    mjw.sensor_pos(m, d)
 
     _assert_eq(d.sensordata.numpy()[0], np.array([4, 4, 4, 2, 1, 0, 1]), "found")
 
@@ -616,7 +617,7 @@ class SensorTest(parameterized.TestCase):
     _, _, m, d = test_data.fixture(xml=_MJCF, keyframe=0)
 
     d.sensordata.fill_(wp.inf)
-    mjw.sensor_acc(m, d)
+    mjw.sensor_pos(m, d)
 
     _assert_eq(d.nacon.numpy()[0], 2, "nacon")
     _assert_eq(d.sensordata.numpy()[0], 0, "found")
@@ -646,7 +647,7 @@ class SensorTest(parameterized.TestCase):
     )
 
     d.sensordata.zero_()
-    mjw.sensor_acc(m, d)
+    mjw.sensor_pos(m, d)
 
     _assert_eq(d.sensordata.numpy()[0], mjd.sensordata, "sensordata")
 
@@ -725,6 +726,66 @@ class SensorTest(parameterized.TestCase):
 
     if nworld == 2:
       self.assertFalse(np.allclose(sensordata[0], sensordata[1]))
+
+  @parameterized.parameters(1, 2)
+  def test_contact_sensor_stage(self, nworld):
+    """Test contact sensor stage selection between POS and ACC stages."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <geom type="plane" size="1 1 1"/>
+          <body pos="0 0 0.08">
+            <freejoint/>
+            <geom size="0.1"/>
+          </body>
+        </worldbody>
+        <sensor>
+          <contact name="pos_found" data="found dist pos normal tangent" reduce="mindist"/>
+          <contact name="acc_force" data="found force"/>
+          <contact name="acc_torque" data="torque"/>
+          <contact name="acc_maxforce" data="found dist" reduce="maxforce"/>
+          <contact name="acc_netforce" data="found dist" reduce="netforce"/>
+        </sensor>
+      </mujoco>
+      """,
+      nworld=nworld,
+    )
+
+    mjds = [mjd]
+    if nworld == 2:
+      mjd1 = mujoco.MjData(mjm)
+      qpos = d.qpos.numpy()
+      qpos[1, 2] = 0.06
+      d.qpos.assign(qpos)
+      mjd1.qpos[:] = qpos[1]
+      mujoco.mj_forward(mjm, mjd1)
+      mjds.append(mjd1)
+      mjw.forward(m, d)
+
+    pos_dim = int(mjm.sensor_dim[0])
+
+    # POS stage should populate only pos_found and leave ACC-stage contact sensors untouched
+    d.sensordata.fill_(wp.inf)
+    mjw.sensor_pos(m, d)
+    sensordata_pos = d.sensordata.numpy()
+    for w in range(nworld):
+      _assert_eq(sensordata_pos[w, :pos_dim], mjds[w].sensordata[:pos_dim], f"pos_sensordata_world_{w}")
+      self.assertTrue(np.isinf(sensordata_pos[w, pos_dim:]).all())
+
+    if nworld == 2:
+      self.assertFalse(np.allclose(sensordata_pos[0, :pos_dim], sensordata_pos[1, :pos_dim]))
+
+    # ACC stage should populate only ACC-stage contact sensors and leave pos_found untouched
+    d.sensordata.fill_(wp.inf)
+    mjw.sensor_acc(m, d)
+    sensordata_acc = d.sensordata.numpy()
+    for w in range(nworld):
+      self.assertTrue(np.isinf(sensordata_acc[w, :pos_dim]).all())
+      _assert_eq(sensordata_acc[w, pos_dim:], mjds[w].sensordata[pos_dim:], f"acc_sensordata_world_{w}")
+
+    if nworld == 2:
+      self.assertFalse(np.allclose(sensordata_acc[0, pos_dim:], sensordata_acc[1, pos_dim:]))
 
   @parameterized.parameters(
     ("box", "box", "box", "box"),
