@@ -1072,6 +1072,32 @@ class CollisionTest(parameterized.TestCase):
     np.testing.assert_equal(d.nacon.numpy()[0], 4)
     self.assertTrue(d.overflow.numpy()[0] & types.OverflowType.HFIELD)
 
+  def test_hfield_small_maxconpair(self):
+    _XML = """
+    <mujoco>
+        <asset>
+        <hfield name="hfield" nrow="10" ncol="10" size="1e-2 1e-2 1 1"/>
+        </asset>
+        <worldbody>
+        <body>
+            <joint type="slide" axis="0 0 1"/>
+            <geom type="box" size="1e-1 1e-1 .1"/>
+        </body>
+        <geom type="hfield" hfield="hfield"/>
+        </worldbody>
+        <keyframe>
+        <key qpos=".099"/>
+        </keyframe>
+    </mujoco>
+    """
+
+    _, _, m, d = test_data.fixture(xml=_XML, keyframe=0)
+
+    mjw.collision(m, d)
+
+    np.testing.assert_equal(d.nacon.numpy()[0], 4)
+    self.assertTrue(d.overflow.numpy()[0] & types.OverflowType.HFIELD)
+
   @parameterized.parameters(1, 2)
   def test_hfield_sparse_subgrid_contacts(self, nworld):
     """Tests that non-colliding prisms in the subgrid do not starve active contacts."""
