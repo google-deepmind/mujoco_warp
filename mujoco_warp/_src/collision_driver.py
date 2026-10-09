@@ -711,6 +711,10 @@ def sap_broadphase(
   )
 
 
+_NXN_BLOCK_DIM = 128
+_NXN_OVERSUBSCRIBE_WAVES = 8
+
+
 @cache_kernel
 def _nxn_broadphase(
   opt_broadphase_filter: int,
@@ -722,7 +726,13 @@ def _nxn_broadphase(
   enable_sleep: bool = False,
   incremental: bool = False,
 ):
-  @wp.kernel(module="unique", enable_backward=False, grid_stride=True)
+  @wp.kernel(
+    module="unique",
+    module_options={"block_dim": _NXN_BLOCK_DIM},
+    enable_backward=False,
+    grid_stride=True,
+    launch_bounds=_NXN_BLOCK_DIM,
+  )
   def kernel(
     # Model:
     geom_type: wp.array[int],
@@ -862,23 +872,27 @@ def nxn_broadphase(
     cond = wp.zeros(1, dtype=int)
     wp.launch(_any_awake_changed, dim=(d.nworld, m.nbody), inputs=[d.body_awake, awake_prev], outputs=[cond])
 
+  kernel = _nxn_broadphase(
+    m.opt.broadphase_filter,
+    m.geom_aabb.shape[0],
+    m.geom_rbound.shape[0],
+    m.geom_margin.shape[0],
+    m.geom_gap.shape[0],
+    m.geom_dataid.shape[0],
+    enable_sleep,
+    incremental,
+  )
   device = d.geom_xpos.device
-  max_blocks = 64 * device.sm_count if device.is_cuda else 0
+  max_blocks = 0
+  if device.is_cuda:
+    block_size, min_grid_size = wp.get_suggested_block_size(kernel, device)
+    max_blocks = _NXN_OVERSUBSCRIBE_WAVES * block_size * min_grid_size // _NXN_BLOCK_DIM
 
   def _launch():
     wp.launch(
-      _nxn_broadphase(
-        m.opt.broadphase_filter,
-        m.geom_aabb.shape[0],
-        m.geom_rbound.shape[0],
-        m.geom_margin.shape[0],
-        m.geom_gap.shape[0],
-        m.geom_dataid.shape[0],
-        enable_sleep,
-        incremental,
-      ),
+      kernel,
       dim=(d.nworld, m.nxn_geom_pair_filtered.shape[0]),
-      block_dim=128,
+      block_dim=_NXN_BLOCK_DIM,
       max_blocks=max_blocks,
       inputs=[
         m.geom_type,
