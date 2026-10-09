@@ -712,9 +712,6 @@ def sap_broadphase(
   )
 
 
-_NXN_OVERSUBSCRIBE_WAVES = 8
-
-
 @cache_kernel
 def _nxn_broadphase(
   opt_broadphase_filter: int,
@@ -725,15 +722,8 @@ def _nxn_broadphase(
   ngeom_dataid: int,
   enable_sleep: bool = False,
   incremental: bool = False,
-  block_dim: int = BlockDim.nxn_broadphase,
 ):
-  @wp.kernel(
-    module="unique",
-    module_options={"block_dim": block_dim},
-    enable_backward=False,
-    grid_stride=True,
-    launch_bounds=block_dim,
-  )
+  @wp.kernel(module="unique", module_options={"block_dim": BlockDim.nxn_broadphase}, enable_backward=False, grid_stride=True)
   def kernel(
     # Model:
     geom_type: wp.array[int],
@@ -873,30 +863,23 @@ def nxn_broadphase(
     cond = wp.zeros(1, dtype=int)
     wp.launch(_any_awake_changed, dim=(d.nworld, m.nbody), inputs=[d.body_awake, awake_prev], outputs=[cond])
 
-  block_dim = m.block_dim.nxn_broadphase
-  kernel = _nxn_broadphase(
-    m.opt.broadphase_filter,
-    m.geom_aabb.shape[0],
-    m.geom_rbound.shape[0],
-    m.geom_margin.shape[0],
-    m.geom_gap.shape[0],
-    m.geom_dataid.shape[0],
-    enable_sleep,
-    incremental,
-    block_dim,
-  )
-  device = d.geom_xpos.device
-  max_blocks = 0
-  if device.is_cuda:
-    block_size, min_grid_size = wp.get_suggested_block_size(kernel, device)
-    max_blocks = _NXN_OVERSUBSCRIBE_WAVES * block_size * min_grid_size // block_dim
-
   def _launch():
+    kernel = _nxn_broadphase(
+      m.opt.broadphase_filter,
+      m.geom_aabb.shape[0],
+      m.geom_rbound.shape[0],
+      m.geom_margin.shape[0],
+      m.geom_gap.shape[0],
+      m.geom_dataid.shape[0],
+      enable_sleep,
+      incremental,
+    )
+    block_size, min_grid_size = wp.get_suggested_block_size(kernel, d.geom_xpos.device)
     wp.launch(
       kernel,
       dim=(d.nworld, m.nxn_geom_pair_filtered.shape[0]),
-      block_dim=block_dim,
-      max_blocks=max_blocks,
+      block_dim=m.block_dim.nxn_broadphase,
+      max_blocks=8 * block_size * min_grid_size // m.block_dim.nxn_broadphase,
       inputs=[
         m.geom_type,
         m.geom_bodyid,

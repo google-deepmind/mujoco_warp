@@ -157,11 +157,12 @@ class BroadphaseTest(parameterized.TestCase):
     ncollision = d3.ncollision.numpy()[0]
     np.testing.assert_allclose(ncollision, 4)
 
-    actual = sorted(
-      (int(worldid), *map(int, pair))
-      for worldid, pair in zip(ctx3.collision_worldid.numpy()[:ncollision], ctx3.collision_pair.numpy()[:ncollision])
-    )
-    self.assertEqual(actual, [(0, 0, 1), (1, 0, 1), (1, 0, 2), (1, 1, 2)])
+    collision_pairs = [[[0, 1]], [[0, 1], [0, 2], [1, 2]]]
+    worldids = [0, 1, 1, 1]
+    for i in range(ncollision):
+      worldid = ctx3.collision_worldid.numpy()[i]
+      self.assertTrue(worldid == worldids[i])
+      self.assertTrue([ctx3.collision_pair.numpy()[i][0], ctx3.collision_pair.numpy()[i][1]] in collision_pairs[worldid])
 
     # one world and zero collisions: contype and conaffinity incompatibility
     mjm4, _, m4, d4 = test_data.fixture(xml=_XML, keyframe=1)
