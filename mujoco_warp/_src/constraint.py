@@ -20,6 +20,9 @@ import warp as wp
 from mujoco_warp._src import math
 from mujoco_warp._src import support
 from mujoco_warp._src import types
+from mujoco_warp._src.contact_force import _physical_contact_row
+from mujoco_warp._src.contact_force import validate_contact_force_params
+from mujoco_warp._src.contact_force import validate_contact_force_timestep
 from mujoco_warp._src.types import ConstraintType
 from mujoco_warp._src.types import ContactType
 from mujoco_warp._src.types import DisableBit
@@ -4315,7 +4318,7 @@ def _efc_contact_jac_dense_flex(tile_size: int, cone_type: types.ConeType):
 
 
 @cache_kernel
-def _efc_contact_update(cone_type: types.ConeType, flg_adhesion: bool, is_discrete: bool = False):
+def _efc_contact_update(cone_type: types.ConeType, flg_adhesion: bool, is_discrete: bool = False, force_params: bool = False):
   IS_ELLIPTIC = cone_type == types.ConeType.ELLIPTIC
 
   @wp.kernel(module="unique", enable_backward=False, grid_stride=True)
@@ -4342,6 +4345,7 @@ def _efc_contact_update(cone_type: types.ConeType, flg_adhesion: bool, is_discre
     solimp_in: wp.array[vec5],
     adhesion_in: wp.array[float],
     type_in: wp.array[int],
+    force_params_in: wp.array[wp.vec2],
     # Data out:
     efc_type_out: wp.array2d[int],
     efc_id_out: wp.array2d[int],
@@ -4351,6 +4355,9 @@ def _efc_contact_update(cone_type: types.ConeType, flg_adhesion: bool, is_discre
     efc_vel_out: wp.array2d[float],
     efc_aref_out: wp.array2d[float],
     efc_frictionloss_out: wp.array2d[float],
+    # Out:
+    force_error_out: wp.array[int],
+    force_active_out: wp.array[int],
   ):
     conid, dimid = wp.tid()
 
@@ -4462,6 +4469,27 @@ def _efc_contact_update(cone_type: types.ConeType, flg_adhesion: bool, is_discre
         b_fri = _contact_kbimp(opt_disableflags, timestep, ref, solimp_in[conid], pos, is_discrete)[1]
         f_fri = 1.0 + timestep * b_fri if is_discrete else 1.0
         efc_aref_out[worldid, efcid] = -b_fri * Jqvel / f_fri
+
+    if wp.static(force_params):
+      physical = force_params_in[conid]
+      if physical[0] != 0.0 or physical[1] != 0.0:
+        physical_row, error = _physical_contact_row(
+          physical,
+          timestep,
+          pos_aref,
+          Jqvel,
+          condim,
+          dimid,
+          IS_ELLIPTIC,
+          friction_in[conid],
+          impratio_invsqrt,
+        )
+        efc_D_out[worldid, efcid] = physical_row[0]
+        efc_aref_out[worldid, efcid] = physical_row[1]
+        if error:
+          wp.atomic_or(force_error_out, worldid, error)
+        else:
+          wp.atomic_or(force_active_out, worldid, 1)
 
     if wp.static(flg_adhesion):
       if adhesion_in[conid] != 0.0 and (dimid == 0 or not wp.static(IS_ELLIPTIC)):
@@ -5041,6 +5069,9 @@ def _add_surface_vel(is_pyramidal: bool):
 @event_scope
 def make_constraint(m: types.Model, d: types.Data):
   """Creates constraint jacobians and other supporting data."""
+  force_params = validate_contact_force_params(m, d)
+  if force_params:
+    validate_contact_force_timestep(m, d)
   newton = m.opt.solver == types.SolverType.NEWTON
   is_discrete = m.opt.integrator == types.IntegratorType.DISCRETE
   efc_nnz = wp.empty((d.nworld,), dtype=int)
@@ -5947,7 +5978,7 @@ def make_constraint(m: types.Model, d: types.Data):
         )
       else:
         wp.launch(
-          _efc_contact_update(m.opt.cone, m.flg_adhesion, is_discrete),
+          _efc_contact_update(m.opt.cone, m.flg_adhesion, is_discrete, force_params),
           dim=(d.naconmax, nmaxdim),
           inputs=[
             m.opt.timestep,
@@ -5969,6 +6000,7 @@ def make_constraint(m: types.Model, d: types.Data):
             d.contact.solimp,
             d.contact.adhesion,
             d.contact.type,
+            d.contact.force_params,
           ],
           outputs=[
             d.efc.type,
@@ -5979,6 +6011,8 @@ def make_constraint(m: types.Model, d: types.Data):
             d.efc.vel,
             d.efc.aref,
             d.efc.frictionloss,
+            d.contact.force_error,
+            d.contact.force_active,
           ],
         )
 

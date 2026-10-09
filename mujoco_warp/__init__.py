@@ -37,6 +37,10 @@ from mujoco_warp._src.collision_driver import sap_broadphase as sap_broadphase
 from mujoco_warp._src.collision_primitive import primitive_narrowphase as primitive_narrowphase
 from mujoco_warp._src.collision_sdf import sdf_narrowphase as sdf_narrowphase
 from mujoco_warp._src.constraint import make_constraint as make_constraint
+from mujoco_warp._src.contact_force import check_contact_force_params as check_contact_force_params
+from mujoco_warp._src.contact_force import enable_contact_force_params as enable_contact_force_params
+from mujoco_warp._src.contact_force import launch_contact_force_graph as launch_contact_force_graph
+from mujoco_warp._src.contact_force import reset_contact_force_params as reset_contact_force_params
 from mujoco_warp._src.derivative import deriv_smooth_vel as deriv_smooth_vel
 from mujoco_warp._src.forward import discrete as discrete
 from mujoco_warp._src.forward import euler as euler

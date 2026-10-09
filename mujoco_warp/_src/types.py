@@ -2150,6 +2150,9 @@ class Contact:
     solref: constraint solver reference, normal direction            (naconmax, 2)
     solreffriction: constraint solver reference, friction directions (naconmax, 2)
     solimp: constraint solver impedance                              (naconmax, 5)
+    force_params: experimental external normal spring [N/m], damper [N s/m]; empty by default
+    force_error: sticky per-world physical-contact error bits; empty by default
+    force_active: internal derived per-world physical-row activity; empty by default
     dim: contact space dimensionality: 1, 3, 4 or 6                  (naconmax,)
     geom: geom ids; -1 for flex                                      (naconmax, 2)
     flex: flex ids; -1 for geom                                      (naconmax, 2)
@@ -2181,6 +2184,9 @@ class Contact:
   type: array("naconmax", int)
   geomcollisionid: array("naconmax", int)
   adhesion: array("naconmax", float)
+  force_params: array("naconmax", wp.vec2) = None
+  force_error: array("nworld", int) = None
+  force_active: array("nworld", int) = None
 
 
 @dataclasses.dataclass

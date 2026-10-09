@@ -855,6 +855,15 @@ def _compute_efc_eval_pt_3alphas_elliptic(
 # =============================================================================
 
 
+@wp.func
+def _compensated_add_vec3(total: wp.vec3, correction: wp.vec3, value: wp.vec3) -> tuple[wp.vec3, wp.vec3]:
+  """Accumulate cost, derivative, and curvature without losing small row terms."""
+  adjusted = value - correction
+  updated = total + adjusted
+  correction = (updated - total) - adjusted
+  return updated, correction
+
+
 @cache_kernel
 def _linesearch_iterative_kernel(
   ls_iterations: int,
@@ -863,6 +872,7 @@ def _linesearch_iterative_kernel(
   is_sparse: bool,
   incremental: bool,
   warn_overflow: int,
+  compensated: bool = False,
 ):
   """Factory for iterative linesearch kernel.
 
@@ -873,8 +883,10 @@ def _linesearch_iterative_kernel(
     is_sparse: Use sparse matrix representation for constraint Jacobian.
     incremental: Use incremental linesearch updates.
     warn_overflow: Overflow warning bitmask.
+    compensated: Compensate serial CPU row sums for physical-contact solves.
   """
   LS_ITERATIONS = ls_iterations
+  COMPENSATED = compensated
   IS_ELLIPTIC = cone_type == types.ConeType.ELLIPTIC
   FUSE_JV = fuse_jv
   INCREMENTAL = incremental
@@ -922,6 +934,7 @@ def _linesearch_iterative_kernel(
     njmax_in: int,
     nacon_in: wp.array[int],
     # In:
+    force_active_in: wp.array[int],
     ctx_search_unchanged_in: wp.array[bool],
     ctx_Jaref_in: wp.array2d[float],
     ctx_search_in: wp.array2d[float],
@@ -946,6 +959,10 @@ def _linesearch_iterative_kernel(
 
     if ctx_done_in[worldid]:
       return
+
+    use_compensation = False
+    if wp.static(COMPENSATED):
+      use_compensation = force_active_in[worldid] != 0
 
     ne = ne_in[worldid]
     nf = nf_in[worldid]
@@ -1069,6 +1086,7 @@ def _linesearch_iterative_kernel(
 
     # p0 via parallel reduction over non-equality constraints
     local_p0 = wp.vec3(0.0)
+    local_p0_correction = wp.vec3(0.0)
     for efcid in range(ne + tid, nefc, wp.block_dim()):
       if wp.static(IS_ELLIPTIC):
         efc_type = efc_type_in[worldid, efcid]
@@ -1089,7 +1107,7 @@ def _linesearch_iterative_kernel(
           quad1 = ctx_quad_in[worldid, efc_addr1]
           quad2 = ctx_quad_in[worldid, efc_addr2]
 
-        local_p0 += _compute_efc_eval_pt_alpha_zero(
+        local_p0_value = _compute_efc_eval_pt_alpha_zero(
           efcid,
           ne,
           nf,
@@ -1105,9 +1123,13 @@ def _linesearch_iterative_kernel(
           quad1,
           quad2,
         )
+        if use_compensation:
+          local_p0, local_p0_correction = _compensated_add_vec3(local_p0, local_p0_correction, local_p0_value)
+        else:
+          local_p0 += local_p0_value
       else:
         # direct evaluation for pyramidal cones (no intermediate quad)
-        local_p0 += _compute_efc_eval_pt_alpha_zero(
+        local_p0_value = _compute_efc_eval_pt_alpha_zero(
           efcid,
           ne,
           nf,
@@ -1116,6 +1138,10 @@ def _linesearch_iterative_kernel(
           ctx_Jaref_in[worldid, efcid],
           ctx_jv_in[worldid, efcid],
         )
+        if use_compensation:
+          local_p0, local_p0_correction = _compensated_add_vec3(local_p0, local_p0_correction, local_p0_value)
+        else:
+          local_p0 += local_p0_value
 
     # at this point, every thread has computed some contributions to p0 in local_p0
     # we now create a tile of all local_p0 contributions and reduce them to a single value
@@ -1157,6 +1183,7 @@ def _linesearch_iterative_kernel(
 
     if not ls_converged:
       local_lo_in = wp.vec3(0.0)
+      local_lo_in_correction = wp.vec3(0.0)
       for efcid in range(ne + tid, nefc, wp.block_dim()):
         if wp.static(IS_ELLIPTIC):
           efc_type = efc_type_in[worldid, efcid]
@@ -1177,7 +1204,7 @@ def _linesearch_iterative_kernel(
             quad1 = ctx_quad_in[worldid, efc_addr1]
             quad2 = ctx_quad_in[worldid, efc_addr2]
 
-          local_lo_in += _compute_efc_eval_pt(
+          local_lo_in_value = _compute_efc_eval_pt(
             efcid,
             lo_alpha_in,
             ne,
@@ -1194,9 +1221,13 @@ def _linesearch_iterative_kernel(
             quad1,
             quad2,
           )
+          if use_compensation:
+            local_lo_in, local_lo_in_correction = _compensated_add_vec3(local_lo_in, local_lo_in_correction, local_lo_in_value)
+          else:
+            local_lo_in += local_lo_in_value
         else:
           # direct evaluation for pyramidal cones (no intermediate quad)
-          local_lo_in += _compute_efc_eval_pt(
+          local_lo_in_value = _compute_efc_eval_pt(
             efcid,
             lo_alpha_in,
             ne,
@@ -1206,6 +1237,10 @@ def _linesearch_iterative_kernel(
             ctx_Jaref_in[worldid, efcid],
             ctx_jv_in[worldid, efcid],
           )
+          if use_compensation:
+            local_lo_in, local_lo_in_correction = _compensated_add_vec3(local_lo_in, local_lo_in_correction, local_lo_in_value)
+          else:
+            local_lo_in += local_lo_in_value
 
       lo_in_tile = wp.tile(local_lo_in, preserve_type=True)
       lo_in_sum = wp.tile_reduce(wp.add, lo_in_tile)
@@ -1232,8 +1267,11 @@ def _linesearch_iterative_kernel(
         mid_alpha = 0.5 * (lo_alpha + hi_alpha)
 
         local_lo = wp.vec3(0.0)
+        local_lo_correction = wp.vec3(0.0)
         local_hi = wp.vec3(0.0)
+        local_hi_correction = wp.vec3(0.0)
         local_mid = wp.vec3(0.0)
+        local_mid_correction = wp.vec3(0.0)
 
         for efcid in range(ne + tid, nefc, wp.block_dim()):
           if wp.static(IS_ELLIPTIC):
@@ -1288,9 +1326,18 @@ def _linesearch_iterative_kernel(
               ctx_Jaref_in[worldid, efcid],
               ctx_jv_in[worldid, efcid],
             )
-          local_lo += r_lo
-          local_hi += r_hi
-          local_mid += r_mid
+          if use_compensation:
+            local_lo, local_lo_correction = _compensated_add_vec3(local_lo, local_lo_correction, r_lo)
+          else:
+            local_lo += r_lo
+          if use_compensation:
+            local_hi, local_hi_correction = _compensated_add_vec3(local_hi, local_hi_correction, r_hi)
+          else:
+            local_hi += r_hi
+          if use_compensation:
+            local_mid, local_mid_correction = _compensated_add_vec3(local_mid, local_mid_correction, r_mid)
+          else:
+            local_mid += r_mid
 
         # reduce with packed mat33 (3 vec3s into columns: col0=lo, col1=hi, col2=mid)
         local_combined = wp.mat33(
@@ -1431,6 +1478,9 @@ def _linesearch_iterative(m: types.Model, d: types.Data, ctx: SolverContext, fus
       m.is_sparse,
       _use_incremental(m),
       int(m.opt.warn_overflow),
+      # CPU executes these row reductions serially. Keep the GPU reduction policy
+      # unchanged: compensation can alter its adaptive line-search work.
+      d.qvel.device.is_cpu and d.contact.force_params is not None and bool(d.contact.force_params.size),
     ),
     dim=d.nworld,
     inputs=[
@@ -1456,6 +1506,7 @@ def _linesearch_iterative(m: types.Model, d: types.Data, ctx: SolverContext, fus
       d.efc.frictionloss,
       d.njmax,
       d.nacon,
+      d.contact.force_active,
       ctx.search_unchanged,
       ctx.Jaref,
       ctx.search,
@@ -1996,8 +2047,9 @@ def _qfrc_constraint_from_grad(
 
 
 @cache_kernel
-def _update_constraint_init_qfrc_constraint_dense(stable_fast: bool):
+def _update_constraint_init_qfrc_constraint_dense(stable_fast: bool, compensated: bool = False):
   STABLE_FAST = stable_fast
+  COMPENSATED = compensated
 
   @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
   def kernel(
@@ -2007,6 +2059,7 @@ def _update_constraint_init_qfrc_constraint_dense(stable_fast: bool):
     efc_force_in: wp.array2d[float],
     njmax_in: int,
     # In:
+    force_active_in: wp.array[int],
     state_changed_count_in: wp.array[int],
     ctx_done_in: wp.array[bool],
     # Data out:
@@ -2022,11 +2075,24 @@ def _update_constraint_init_qfrc_constraint_dense(stable_fast: bool):
       if state_changed_count_in[worldid] == 0:
         return
 
+    use_compensation = False
+    if wp.static(COMPENSATED):
+      use_compensation = force_active_in[worldid] != 0
+
     sum_qfrc = float(0.0)
+    correction = float(0.0)
     for efcid in range(min(njmax_in, nefc_in[worldid])):
       efc_J = efc_J_in[worldid, efcid, dofid]
       force = efc_force_in[worldid, efcid]
-      sum_qfrc += efc_J * force
+      if use_compensation:
+        # Small physical area weights must not lose their summed wrench when
+        # a patch is split into many rows. Keep the legacy path unchanged.
+        value = efc_J * force - correction
+        total = sum_qfrc + value
+        correction = (total - sum_qfrc) - value
+        sum_qfrc = total
+      else:
+        sum_qfrc += efc_J * force
 
     qfrc_constraint_out[worldid, dofid] = sum_qfrc
 
@@ -2195,9 +2261,11 @@ def _update_constraint(
     )
   else:
     wp.launch(
-      _update_constraint_init_qfrc_constraint_dense(stable_fast),
+      _update_constraint_init_qfrc_constraint_dense(
+        stable_fast, d.contact.force_params is not None and bool(d.contact.force_params.size)
+      ),
       dim=(d.nworld, m.nv),
-      inputs=[d.nefc, d.efc.J, d.efc.force, d.njmax, changed, ctx.done],
+      inputs=[d.nefc, d.efc.J, d.efc.force, d.njmax, d.contact.force_active, changed, ctx.done],
       outputs=[d.qfrc_constraint],
     )
   if m.opt.integrator == types.IntegratorType.DISCRETE and (m.opt.enableflags & types.EnableBit.SLEEP):

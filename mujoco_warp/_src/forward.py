@@ -29,6 +29,7 @@ from mujoco_warp._src import sleep
 from mujoco_warp._src import smooth
 from mujoco_warp._src import solver
 from mujoco_warp._src import util_misc
+from mujoco_warp._src.contact_force import check_contact_force_params_eager
 from mujoco_warp._src.support import next_act
 from mujoco_warp._src.support import xfrc_accumulate
 from mujoco_warp._src.types import MJ_MINVAL
@@ -2172,6 +2173,7 @@ def forward(m: Model, d: Data):
   _energy_pos(m, d)
 
   fwd_velocity(m, d)
+  check_contact_force_params_eager(d)
   sensor.sensor_vel(m, d)
   _energy_vel(m, d)
 
@@ -2223,6 +2225,7 @@ def step1(m: Model, d: Data):
   _energy_pos(m, d)
 
   fwd_velocity(m, d)
+  check_contact_force_params_eager(d)
   sensor.sensor_vel(m, d)
 
   _energy_vel(m, d)
@@ -2235,6 +2238,7 @@ def step1(m: Model, d: Data):
 @event_scope
 def step2(m: Model, d: Data):
   """Advance simulation in two phases: after input is set by user."""
+  check_contact_force_params_eager(d)
   fwd_actuation(m, d)
   fwd_acceleration(m, d)
   solver.solve(m, d)
