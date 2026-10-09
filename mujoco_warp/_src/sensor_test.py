@@ -23,12 +23,8 @@ from absl.testing import parameterized
 
 import mujoco_warp as mjw
 from mujoco_warp import DisableBit
-from mujoco_warp import GeomType
 from mujoco_warp import test_data
 from mujoco_warp._src import util_pkg
-from mujoco_warp._src.collision_core import create_collision_context
-from mujoco_warp._src.collision_driver import MJ_COLLISION_TABLE
-from mujoco_warp._src.types import CollisionType
 from mujoco_warp._src.types import OverflowType
 
 # tolerance for difference between MuJoCo and MJWarp calculations - mostly
@@ -43,74 +39,6 @@ def _assert_eq(a, b, name):
 
 
 class SensorTest(parameterized.TestCase):
-  def setUp(self):
-    super().setUp()
-
-    ## initialize primitive colliders
-    # clear cache
-    mjw._src.collision_primitive._PRIMITIVE_COLLISION_TYPES.clear()
-    mjw._src.collision_primitive._PRIMITIVE_COLLISION_FUNC.clear()
-
-    # map enum to string
-    geom_str = {
-      GeomType.PLANE: "plane",
-      GeomType.SPHERE: "sphere",
-      GeomType.CAPSULE: "capsule",
-      GeomType.ELLIPSOID: "ellipsoid",
-      GeomType.CYLINDER: "cylinder",
-      GeomType.BOX: "box",
-      GeomType.MESH: "mesh",
-    }
-
-    # generate kernel
-    for geomtype in mjw._src.collision_primitive._PRIMITIVE_COLLISIONS.keys():
-      if geomtype[0] == GeomType.PLANE:
-        obj0 = '<geom type="plane" size="10 10 .01"/>'
-      else:
-        obj0 = f"""
-        <body>
-          <geom type="{geom_str[geomtype[0]]}" size=".1 .1 .1"/>
-          <joint/>
-        </body>
-      """
-
-      if geomtype[1] == GeomType.MESH:
-        obj1 = f"""
-          <body>
-            <geom type="{geom_str[geomtype[1]]}" mesh="mesh" size=".1 .1 .1"/>
-            <joint/>
-          </body>
-        """
-        mesh = """
-        <asset>
-          <mesh name="mesh" builtin="sphere" params="0"/>
-        </asset>
-        """
-      else:
-        obj1 = f"""
-          <body>
-            <geom type="{geom_str[geomtype[1]]}" size=".1 .1 .1"/>
-            <joint/>
-          </body>
-        """
-        mesh = ""
-
-      _, _, m, d = test_data.fixture(
-        xml=f"""
-      <mujoco>
-        {mesh}
-        <worldbody>
-        {obj0}
-        {obj1}
-        </worldbody>
-      </mujoco>
-      """
-      )
-
-      ctx = create_collision_context(d.naconmax)
-      primitive_pairs = [key for key, value in MJ_COLLISION_TABLE.items() if value == CollisionType.PRIMITIVE]
-      mjw.primitive_narrowphase(m, d, ctx, primitive_pairs)
-
   def test_sensor(self):
     """Test sensors."""
     _, mjd, m, d = test_data.fixture(

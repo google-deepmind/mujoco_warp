@@ -1760,6 +1760,36 @@ class CollisionTest(parameterized.TestCase):
     self.assertEqual(int(d.nacon.numpy()[0]), 1)
     self.assertTrue(np.isfinite(float(d.contact.dist.numpy()[0])))
 
+  def test_native_ccd_disable_does_not_mutate_global_table(self):
+    initial_type = MJ_COLLISION_TABLE[(GeomType.BOX, GeomType.BOX)]
+    self.assertEqual(initial_type, CollisionType.CONVEX)
+
+    _, mjd, m, d = test_data.fixture(xml="""
+      <mujoco>
+        <worldbody>
+          <body name="body1" pos="0 0 0.51">
+            <freejoint/>
+            <geom name="box1" type="box" size="0.5 0.5 0.5"/>
+          </body>
+          <body name="body2" pos="0 0 1.49">
+            <freejoint/>
+            <geom name="box2" type="box" size="0.5 0.5 0.5"/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """)
+    m.opt.disableflags |= DisableBit.NATIVECCD
+    mjw.collision(m, d)
+
+    self.assertEqual(
+        MJ_COLLISION_TABLE[(GeomType.BOX, GeomType.BOX)], initial_type
+    )
+
+    m.opt.disableflags &= ~DisableBit.NATIVECCD
+    d.nacon.fill_(-1)
+    mjw.collision(m, d)
+    self.assertEqual(d.nacon.numpy()[0], mjd.ncon)
+
 
 if __name__ == "__main__":
   absltest.main()
