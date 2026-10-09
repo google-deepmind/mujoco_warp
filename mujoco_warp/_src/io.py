@@ -1966,6 +1966,9 @@ def make_data(
 
   contact_kwargs = {}
   for f in dataclasses.fields(types.Contact):
+    if f.name in ("force_params", "force_error", "force_active"):
+      contact_kwargs[f.name] = wp.empty(0, dtype=wp.vec2 if f.name == "force_params" else int)
+      continue
     if f.name in ["flex", "elem", "vert"]:
       contact_kwargs[f.name] = wp.full(naconmax, wp.vec2i(-1, -1)) if mjm.nflex > 0 else wp.empty(0, dtype=wp.vec2i)
     else:
@@ -2213,6 +2216,9 @@ def put_data(
   # create contact
   contact_kwargs = {"efc_address": None, "worldid": None, "type": None, "geomcollisionid": None}
   for f in dataclasses.fields(types.Contact):
+    if f.name in ("force_params", "force_error", "force_active"):
+      contact_kwargs[f.name] = wp.empty(0, dtype=wp.vec2 if f.name == "force_params" else int)
+      continue
     if f.name in contact_kwargs:
       continue
     if f.name in ["flex", "elem", "vert"] and mjm.nflex == 0:
@@ -2676,6 +2682,8 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
     ValueError: If reset is specified but its shape is not (d.nworld,) or its
       dtype is not bool or integer.
   """
+  from mujoco_warp._src.contact_force import reset_contact_force_params
+
   sleep_enabled = bool(m.opt.enableflags & types.EnableBit.SLEEP)
 
   @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
@@ -2924,6 +2932,8 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
       raise ValueError(f"reset array must be of bool or integer type, got {reset.dtype}.")
   else:
     raise ValueError(f"reset must be None or a wp.array, got {type(reset)}.")
+
+  reset_contact_force_params(d, reset_input if reset is not None else None)
 
   wp.launch(reset_xfrc_applied, dim=(d.nworld, m.nbody, 6), inputs=[reset_input], outputs=[d.xfrc_applied])
   wp.launch(

@@ -949,6 +949,9 @@ def collision(
   incremental sleeping pass: contacts are appended to the existing buffer and only pairs involving
   a newly-awakened body are emitted.
   """
+  if d.contact.force_params is not None and d.contact.force_params.size:
+    raise ValueError("Physical contact coefficients require externally supplied contacts.")
+
   if d.naconmax == 0 or m.opt.disableflags & (DisableBit.CONSTRAINT | DisableBit.CONTACT):
     d.nacon.zero_()
     return
