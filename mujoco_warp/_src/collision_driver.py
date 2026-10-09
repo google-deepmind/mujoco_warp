@@ -27,6 +27,7 @@ from mujoco_warp._src.collision_primitive import primitive_narrowphase
 from mujoco_warp._src.collision_sdf import sdf_narrowphase
 from mujoco_warp._src.math import upper_tri_index
 from mujoco_warp._src.types import MJ_MAXVAL
+from mujoco_warp._src.types import BlockDim
 from mujoco_warp._src.types import BroadphaseFilter
 from mujoco_warp._src.types import BroadphaseType
 from mujoco_warp._src.types import CollisionType
@@ -711,7 +712,6 @@ def sap_broadphase(
   )
 
 
-_NXN_BLOCK_DIM = 128
 _NXN_OVERSUBSCRIBE_WAVES = 8
 
 
@@ -725,13 +725,14 @@ def _nxn_broadphase(
   ngeom_dataid: int,
   enable_sleep: bool = False,
   incremental: bool = False,
+  block_dim: int = BlockDim.nxn_broadphase,
 ):
   @wp.kernel(
     module="unique",
-    module_options={"block_dim": _NXN_BLOCK_DIM},
+    module_options={"block_dim": block_dim},
     enable_backward=False,
     grid_stride=True,
-    launch_bounds=_NXN_BLOCK_DIM,
+    launch_bounds=block_dim,
   )
   def kernel(
     # Model:
@@ -872,6 +873,7 @@ def nxn_broadphase(
     cond = wp.zeros(1, dtype=int)
     wp.launch(_any_awake_changed, dim=(d.nworld, m.nbody), inputs=[d.body_awake, awake_prev], outputs=[cond])
 
+  block_dim = m.block_dim.nxn_broadphase
   kernel = _nxn_broadphase(
     m.opt.broadphase_filter,
     m.geom_aabb.shape[0],
@@ -881,18 +883,19 @@ def nxn_broadphase(
     m.geom_dataid.shape[0],
     enable_sleep,
     incremental,
+    block_dim,
   )
   device = d.geom_xpos.device
   max_blocks = 0
   if device.is_cuda:
     block_size, min_grid_size = wp.get_suggested_block_size(kernel, device)
-    max_blocks = _NXN_OVERSUBSCRIBE_WAVES * block_size * min_grid_size // _NXN_BLOCK_DIM
+    max_blocks = _NXN_OVERSUBSCRIBE_WAVES * block_size * min_grid_size // block_dim
 
   def _launch():
     wp.launch(
       kernel,
       dim=(d.nworld, m.nxn_geom_pair_filtered.shape[0]),
-      block_dim=_NXN_BLOCK_DIM,
+      block_dim=block_dim,
       max_blocks=max_blocks,
       inputs=[
         m.geom_type,
