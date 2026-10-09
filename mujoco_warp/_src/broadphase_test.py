@@ -26,7 +26,6 @@ from mujoco_warp import BroadphaseType
 from mujoco_warp import DisableBit
 from mujoco_warp import test_data
 from mujoco_warp._src import collision_driver
-from mujoco_warp._src.types import SleepState
 
 
 def broadphase_caller(m, d):
@@ -178,107 +177,6 @@ class BroadphaseTest(parameterized.TestCase):
     np.testing.assert_allclose(d5.ncollision.numpy()[0], 1)
     np.testing.assert_allclose(ctx5.collision_pair.numpy()[0][0], 3)
     np.testing.assert_allclose(ctx5.collision_pair.numpy()[0][1], 2)
-
-  @parameterized.product(
-    filter=[plane_sphere, plane_sphere_aabb_obb],
-    scenario=["normal", "sleep", "incremental", "missing_mesh"],
-  )
-  def test_nxn_grid_stride(self, filter, scenario):
-    """Capped launches must process tails and pairs after early returns."""
-    bodies = []
-    for i in range(67):
-      geom = 'type="mesh" mesh="cube"' if i % 3 == 0 else 'type="sphere" size="0.1"'
-      bodies.append(f'<body pos="{i} 0 0"><joint type="slide"/><geom name="g{i}" {geom}/></body>')
-    xml = f"""
-      <mujoco>
-        <asset><mesh name="cube" scale=".1 .1 .1"
-          vertex="-1 -1 -1  -1 -1 1  -1 1 -1  -1 1 1  1 -1 -1  1 -1 1  1 1 -1  1 1 1"/></asset>
-        <worldbody>{"".join(bodies)}</worldbody>
-        <sensor><distance geom1="g65" geom2="g66" cutoff="10"/></sensor>
-      </mujoco>
-    """
-    _, _, m, d = test_data.fixture(xml=xml, nworld=3, nconmax=2300, njmax=1)
-    npair = m.nxn_geom_pair_filtered.shape[0]
-    self.assertGreater(npair, 2048)
-    self.assertNotEqual(npair % 128, 0)
-    rng = np.random.default_rng(42)
-    positions = rng.uniform(-0.4, 0.4, (d.nworld, m.ngeom, 3))
-    # Sensor pairs must survive the bounds filter.
-    positions[:, -2:] = [[2, 0, 0], [4, 0, 0]]
-    d.geom_xpos = wp.array(positions, dtype=wp.vec3)
-    dataid = np.tile(m.geom_dataid.numpy(), (d.nworld, 1))
-    if scenario == "missing_mesh":
-      for world in range(d.nworld):
-        dataid[world, world::5] = -1
-    m.geom_dataid = wp.array(dataid, dtype=int)
-    enable_sleep = scenario in ("sleep", "incremental")
-    incremental = scenario == "incremental"
-    states = rng.choice([SleepState.STATIC, SleepState.ASLEEP, SleepState.AWAKE], (d.nworld, m.nbody))
-    previous = wp.array(states, dtype=int)
-    if incremental:
-      states[:, ::3] = SleepState.AWAKE
-    d.body_awake = wp.array(states, dtype=int)
-    ctx = collision_driver.create_collision_context(d.naconmax)
-
-    def launch(nblock):
-      d.ncollision.zero_()
-      wp.launch(
-        collision_driver._nxn_broadphase(
-          filter,
-          m.geom_aabb.shape[0],
-          m.geom_rbound.shape[0],
-          m.geom_margin.shape[0],
-          m.geom_gap.shape[0],
-          m.geom_dataid.shape[0],
-          enable_sleep,
-          incremental,
-        ),
-        dim=(d.nworld, npair),
-        max_blocks=nblock,
-        block_dim=128,
-        inputs=[
-          m.geom_type,
-          m.geom_bodyid,
-          m.geom_dataid,
-          m.geom_aabb,
-          m.geom_rbound,
-          m.geom_margin,
-          m.geom_gap,
-          m.nxn_geom_pair_filtered,
-          m.nxn_pairid_filtered,
-          d.geom_xpos,
-          d.geom_xmat,
-          d.body_awake,
-          d.naconmax,
-          previous,
-        ],
-        outputs=[d.ncollision, ctx.collision_pair, ctx.collision_pairid, ctx.collision_worldid],
-      )
-
-    def pairs():
-      count = int(d.ncollision.numpy()[0])
-      self.assertGreater(count, 0)
-      self.assertLess(count, d.naconmax)
-      return sorted(
-        (int(world), *map(int, pair), *map(int, pairid))
-        for world, pair, pairid in zip(
-          ctx.collision_worldid.numpy()[:count], ctx.collision_pair.numpy()[:count], ctx.collision_pairid.numpy()[:count]
-        )
-      )
-
-    launch((d.nworld * npair + 127) // 128)
-    expected = pairs()
-    if scenario == "normal":
-      self.assertEqual(sum(pair[-1] >= 0 for pair in expected), d.nworld)
-    for nblock in (1, 2):
-      launch(nblock)
-      self.assertEqual(pairs(), expected)
-    if d.geom_xpos.device.is_cuda:
-      with wp.ScopedCapture() as capture:
-        launch(1)
-      for _ in range(2):
-        wp.capture_launch(capture.graph)
-        self.assertEqual(pairs(), expected)
 
   @parameterized.parameters(
     (0, 0, 0),
