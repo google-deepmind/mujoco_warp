@@ -1518,6 +1518,27 @@ class IOTest(parameterized.TestCase):
       """
       )
 
+  @parameterized.parameters(7, 8)
+  def test_contact_sensor_vel_unsupported(self, bit):
+    """Contact sensor with linvel (bit 7) or angvel (bit 8) raises NotImplementedError."""
+    mjm = mujoco.MjModel.from_xml_string("""
+      <mujoco>
+        <worldbody>
+          <geom type="plane" size="1 1 1"/>
+          <body>
+            <freejoint/>
+            <geom size="0.1"/>
+          </body>
+        </worldbody>
+        <sensor>
+          <contact data="found"/>
+        </sensor>
+      </mujoco>
+    """)
+    mjm.sensor_intprm[0, 0] |= 1 << bit
+    with self.assertRaises(NotImplementedError):
+      put_model(mjm)
+
   @parameterized.parameters(*_IO_TEST_MODELS)
   def test_reset_data(self, xml):
     reset_datafield = [
