@@ -95,8 +95,11 @@ def length_circle(p0: wp.vec2, p1: wp.vec2, ind: int, radius: float) -> float:
   cross = p0[1] * p1[0] - p0[0] * p1[1]
   angle = wp.atan2(wp.abs(cross), wp.dot(p0, p1))
 
-  # flip if necessary
-  if (cross > 0.0 and ind != 0) or (cross < 0.0 and ind == 0):
+  # At wrap onset the tangent points can coincide to float32 precision.
+  # Their cross-product sign is then rounding noise; flipping this nearly zero
+  # angle would spuriously add a full circumference to the tendon length.
+  # Eight float32 ulps leave ordinary long arcs unchanged.
+  if angle > 8.0 * 1.1920929e-7 and ((cross > 0.0 and ind != 0) or (cross < 0.0 and ind == 0)):
     angle = 2.0 * wp.pi - angle
 
   return radius * angle

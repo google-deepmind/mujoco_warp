@@ -559,6 +559,39 @@ class UtilMiscTest(parameterized.TestCase):
       _assert_eq(wpnt0, np.array([0.00339341, 0.01461112]), "wpnt0")
       _assert_eq(wpnt1, np.array([0.00339232, 0.01461137]), "wpnt1")
 
+  @parameterized.named_parameters(
+    ("no_side", (MJ_MAXVAL, MJ_MAXVAL)),
+    ("side_site", (-0.0160741229, -0.0119005293)),
+  )
+  def test_wrap_circle_near_tangency_does_not_add_full_circle(self, side):
+    # Deterministic real case from #1772. Before the fix, float32 rounding
+    # produces a 2*pi*r arc (94.2 mm) instead of a vanishing wrap.
+    radius = 0.015
+    endpoints = np.array(
+      [0.0526477359, -0.0963205993, -0.0934890732, 0.101067334],
+      dtype=np.float32,
+    )
+    wlen, p0, p1 = _wrap_circle(endpoints, np.array(side), radius)
+    self.assertGreaterEqual(wlen, 0.0)
+    self.assertLess(wlen, 1.0e-6)
+    np.testing.assert_allclose(np.linalg.norm(p0), radius, rtol=1.0e-5)
+    np.testing.assert_allclose(np.linalg.norm(p1), radius, rtol=1.0e-5)
+
+  @parameterized.named_parameters(
+    ("negative_cross", (0.015, 0.0), (0.015, 4.0e-10), 0),
+    ("positive_cross", (0.015, 0.0), (0.015, -4.0e-10), 1),
+  )
+  def test_length_circle_does_not_flip_rounding_scale_angles(self, p0, p1, ind):
+    # The near-coincident points make the sign test unreliable at this scale.
+    length = _length_circle(
+      np.array(p0, dtype=np.float32),
+      np.array(p1, dtype=np.float32),
+      ind,
+      0.015,
+    )
+    self.assertGreaterEqual(length, 0.0)
+    self.assertLess(length, 1.0e-8)
+
   def test_wrap_inside(self):
     wlen, wpnt0, wpnt1 = _wrap_inside(np.array([1, 0, 0, 1]), 0.7071)
     _assert_eq(wlen, 0.0, "wlen")
