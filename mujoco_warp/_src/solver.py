@@ -1929,8 +1929,9 @@ def _zero_qfrc_constraint_sparse(
 
 
 @cache_kernel
-def _update_constraint_init_qfrc_constraint_sparse(compact: bool):
+def _update_constraint_init_qfrc_constraint_sparse(compact: bool, final: bool = False):
   COMPACT = compact
+  FINAL = final
 
   @wp.kernel(module="unique", enable_backward=False, grid_stride=True)
   def kernel(
@@ -1950,11 +1951,11 @@ def _update_constraint_init_qfrc_constraint_sparse(compact: bool):
   ):
     worldid, efcid = wp.tid()
 
-    if ctx_done_in[worldid]:
-      return
-
-    if state_changed_count_in[worldid] == 0:
-      return
+    if wp.static(not FINAL):
+      if ctx_done_in[worldid]:
+        return
+      if state_changed_count_in[worldid] == 0:
+        return
 
     if efcid >= nefc_in[worldid]:
       return
@@ -1978,26 +1979,10 @@ def _update_constraint_init_qfrc_constraint_sparse(compact: bool):
   return kernel
 
 
-@wp.kernel
-def _qfrc_constraint_from_grad(
-  # Data in:
-  qfrc_smooth_in: wp.array2d[float],
-  efc_Ma_in: wp.array2d[float],
-  # In:
-  ctx_grad_in: wp.array2d[float],
-  ctx_grad_scale_in: wp.array[float],
-  # Data out:
-  qfrc_constraint_out: wp.array2d[float],
-):
-  worldid, dofid = wp.tid()
-
-  grad = ctx_grad_scale_in[worldid] * ctx_grad_in[worldid, dofid]
-  qfrc_constraint_out[worldid, dofid] = efc_Ma_in[worldid, dofid] - qfrc_smooth_in[worldid, dofid] - grad
-
-
 @cache_kernel
-def _update_constraint_init_qfrc_constraint_dense(stable_fast: bool):
+def _update_constraint_init_qfrc_constraint_dense(stable_fast: bool, final: bool = False):
   STABLE_FAST = stable_fast
+  FINAL = final
 
   @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
   def kernel(
@@ -2014,8 +1999,9 @@ def _update_constraint_init_qfrc_constraint_dense(stable_fast: bool):
   ):
     worldid, dofid = wp.tid()
 
-    if ctx_done_in[worldid]:
-      return
+    if wp.static(not FINAL):
+      if ctx_done_in[worldid]:
+        return
 
     # Fast path: stale qfrc_constraint is never read; recovered after the solve.
     if wp.static(STABLE_FAST):
@@ -3953,6 +3939,7 @@ def solve(m: types.Model, d: types.Data):
 
   if d.njmax == 0 or m.nv == 0:
     wp.copy(d.qacc, d.qacc_smooth)
+    d.qfrc_constraint.zero_()
     d.solver_niter.fill_(0)
   else:
     ctx = _create_solver_context(m, d)
@@ -4025,16 +4012,37 @@ def _solve(m: types.Model, d: types.Data, ctx: SolverContext, compact: bool = Fa
     for _ in range(m.opt.iterations):
       _solver_iteration(m, d, ctx, nsolving, compact=compact)
 
-  # Recover qfrc_constraint (the compacted buffer when run under solve_compact):
-  # the fast path leaves it stale, and the per-iteration zeroing wiped it for
-  # worlds that converged early.
+  # Aggregate the stored forces, including worlds that converged early.  Recovering
+  # this from the scaled cached gradient assumes an exact Newton direction and can
+  # disagree with efc.force after finite-precision Hessian assembly and solves.
   if _use_incremental(m):
-    wp.launch(
-      _qfrc_constraint_from_grad,
-      dim=(d.nworld, m.nv),
-      inputs=[d.qfrc_smooth, d.efc.Ma, ctx.grad, ctx.grad_scale],
-      outputs=[d.qfrc_constraint],
-    )
+    sc = _sparse_compact(ctx)
+    if m.is_sparse or sc:
+      dj = ctx.compact_d_full if sc else d
+      d.qfrc_constraint.zero_()
+      wp.launch(
+        _update_constraint_init_qfrc_constraint_sparse(sc, True),
+        dim=(d.nworld, d.njmax),
+        inputs=[
+          d.nefc,
+          dj.efc.J_rownnz,
+          dj.efc.J_rowadr,
+          dj.efc.J_colind,
+          dj.efc.J,
+          d.efc.force,
+          dj.dof_cdof,
+          d.nefc,
+          ctx.done,
+        ],
+        outputs=[d.qfrc_constraint],
+      )
+    else:
+      wp.launch(
+        _update_constraint_init_qfrc_constraint_dense(False, True),
+        dim=(d.nworld, m.nv),
+        inputs=[d.nefc, d.efc.J, d.efc.force, d.njmax, d.nefc, ctx.done],
+        outputs=[d.qfrc_constraint],
+      )
   if m.opt.integrator == types.IntegratorType.DISCRETE and (m.opt.enableflags & types.EnableBit.SLEEP):
     wp.launch(
       derivative._zero_sleeping_dofs,

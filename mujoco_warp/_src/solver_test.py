@@ -209,6 +209,99 @@ def _eval_elliptic_delta(
 
 
 class SolverTest(parameterized.TestCase):
+  @parameterized.parameters((1, "dense"), (2, "dense"), (1, "sparse"), (2, "sparse"))
+  def test_normal_force_export_consistency(self, nworld, jacobian):
+    """Newton exports the generalized force of its stored normal forces."""
+    _, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option solver="Newton" iterations="100" ls_iterations="50" tolerance="1e-10">
+          <flag warmstart="disable" eulerdamp="disable"/>
+        </option>
+        <default>
+          <joint damping="0" frictionloss="0" limited="false"/>
+          <geom condim="1" friction="0 0 0" solref="0.01 1" solimp="0.9999 0.9999 0.001"/>
+        </default>
+        <worldbody>
+          <geom type="plane" size="2 2 .1"/>
+          <body pos="0 0 .099">
+            <joint type="slide" axis="0 0 1"/>
+            <inertial pos="0 0 0" mass="1.7" diaginertia=".02 .03 .04"/>
+            <geom type="sphere" size=".1"/>
+            <body pos=".18 0 0">
+              <joint type="hinge" axis="0 1 0"/>
+              <inertial pos=".08 0 0" mass=".4" diaginertia=".002 .003 .004"/>
+              <geom type="sphere" pos=".12 0 0" size=".1"/>
+            </body>
+          </body>
+        </worldbody>
+      </mujoco>
+      """,
+      overrides={"opt.jacobian": jacobian},
+      nworld=nworld,
+      nconmax=16,
+      njmax=16,
+    )
+    velocity = np.tile(np.array([-0.06, 0.2], dtype=np.float32), (nworld, 1))
+    if nworld == 2:
+      velocity[1] = [-0.11, 0.31]
+    d.qvel.assign(velocity)
+    d.qacc.fill_(wp.inf)
+    d.efc.force.fill_(wp.inf)
+    d.qfrc_constraint.fill_(wp.inf)
+    mjw.forward(m, d)
+    force = d.efc.force.numpy()
+    jac = d.efc.J.numpy()
+    exported = d.qfrc_constraint.numpy()
+    self.assertTrue(np.isfinite(exported[:, : m.nv]).all())
+    self.assertTrue(np.isfinite(d.qacc.numpy()[:, : m.nv]).all())
+    for world in range(nworld):
+      rows = int(d.nefc.numpy()[world])
+      self.assertGreater(rows, 0)
+      self.assertTrue(np.isfinite(force[world, :rows]).all())
+      if m.is_sparse:
+        dense = np.zeros((rows, m.nv))
+        rowadr = d.efc.J_rowadr.numpy()[world]
+        rownnz = d.efc.J_rownnz.numpy()[world]
+        colind = d.efc.J_colind.numpy()[world, 0]
+        for row in range(rows):
+          slots = slice(rowadr[row], rowadr[row] + rownnz[row])
+          dense[row, colind[slots]] = jac[world, 0, slots]
+      else:
+        dense = jac[world, :rows, : m.nv].astype(np.float64)
+      expected = dense.T @ force[world, :rows].astype(np.float64)
+      np.testing.assert_allclose(exported[world, : m.nv], expected, rtol=1e-5, atol=1e-5)
+    np.testing.assert_array_equal(d.overflow.numpy(), 0)
+    if nworld == 2:
+      self.assertFalse(np.allclose(exported[0], exported[1]))
+
+  @parameterized.parameters((1, "dense"), (2, "dense"), (1, "sparse"), (2, "sparse"))
+  def test_qfrc_constraint_zero_capacity(self, nworld, jacobian):
+    """A solve with no constraint capacity clears the generalized constraint force."""
+    _, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <body pos="0 0 1">
+            <freejoint/>
+            <geom type="sphere" size=".1" contype="0" conaffinity="0"/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """,
+      overrides={"opt.jacobian": jacobian},
+      nworld=nworld,
+      nconmax=0,
+      njmax=0,
+    )
+    self.assertEqual(d.njmax, 0)
+    d.qfrc_constraint.fill_(wp.inf)
+    mjw.forward(m, d)
+    np.testing.assert_array_equal(d.qfrc_constraint.numpy(), 0)
+    np.testing.assert_array_equal(d.qacc.numpy(), d.qacc_smooth.numpy())
+    np.testing.assert_array_equal(d.solver_niter.numpy(), 0)
+    np.testing.assert_array_equal(d.overflow.numpy(), 0)
+
   def test_newton_decrement_termination(self):
     """Newton stops when only its local model predicts convergence."""
     solver_niter = wp.zeros(1, dtype=int)
