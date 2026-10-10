@@ -2657,6 +2657,9 @@ class SolverContext:
   beta: wp.array[float]
   h: wp.array3d[float]
   hfactor: wp.array3d[float]
+  # Scratch allocated before conditional solver bodies, reused across iterations.
+  jtdaj_maximum: wp.array[int]
+  jtdaj_buckets: wp.array2d[int]
   quad_changed_ids: wp.array2d[int]
   quad_changed_count: wp.array[int]
   # the full-coordinate Data, set by solve_compact (None natively)

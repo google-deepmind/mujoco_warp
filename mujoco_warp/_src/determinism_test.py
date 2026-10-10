@@ -857,10 +857,12 @@ class HessianBucketTest(parameterized.TestCase):
     ]
     kernel = solver._JTDACJ_sparse(False, mjw.ConeType.PYRAMIDAL, 3, 128, True, 1)
     h = wp.zeros((nworld, 1, 1), dtype=float)
+    maximum = wp.empty(1, dtype=int)
+    buckets = wp.empty((4, 1), dtype=int)
 
     def launch():
       """Accumulate one Hessian with the currently selected dispatch mode."""
-      solver._launch_jtdaj_sparse(m, d, kernel, inputs, h, 32, 128, counts, done)
+      solver._launch_jtdaj_sparse(m, d, kernel, inputs, h, 32, 128, counts, done, maximum, buckets)
 
     launch()
     expected = h.numpy().copy()
@@ -880,6 +882,18 @@ class HessianBucketTest(parameterized.TestCase):
         h.zero_()
         wp.capture_launch(capture.graph)
         np.testing.assert_array_equal(h.numpy(), expected)
+      condition = wp.ones(1, dtype=int)
+
+      def iteration():
+        """Model dispatch inside the enclosing conditional solver loop."""
+        launch()
+        condition.zero_()
+
+      with wp.ScopedCapture() as capture:
+        wp.capture_while(condition, while_body=iteration)
+      h.zero_()
+      wp.capture_launch(capture.graph)
+      np.testing.assert_array_equal(h.numpy(), expected)
 
 
 class FullStepGraphTest(parameterized.TestCase):
