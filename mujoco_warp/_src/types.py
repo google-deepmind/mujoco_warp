@@ -262,9 +262,13 @@ class DeterminismType(enum.IntFlag):
 
   CONTACTS orders collision records and CONSTRAINT allocates rows in fixed order.
   ATOMICS enables deterministic reductions. ISLANDS remains reserved, so ALL does
-  not yet guarantee deterministic full simulation with island processing. RUN_TO_RUN arithmetic also
-  does not promise cross-device or
-  cross-batch bitwise equality.
+  not yet guarantee deterministic full simulation with island processing. RUN_TO_RUN
+  arithmetic does not promise cross-device or cross-batch bitwise equality.
+
+  Conditional CUDA Graph execution requires Warp 1.18 or later for deterministic
+  scratch allocations. On older Warp versions, graph_conditional=False permits
+  unrolled graph capture, but its scratch memory grows with solver iterations and
+  can exceed device memory at large batch sizes. Eager execution remains available.
 
   Attributes:
     NONE: non-deterministic execution
