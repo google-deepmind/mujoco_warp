@@ -96,22 +96,29 @@ class DeterministicArithmeticTest(parameterized.TestCase):
     expected = np.tile(mjd.qfrc_actuator, (d.nworld, 1))
     np.testing.assert_array_equal(d.qfrc_actuator.numpy(), expected)
 
-  @parameterized.parameters(False, True)
-  def test_public_sparse_factor_solve(self, captured):
+  @parameterized.product(captured=(False, True), mixed=(False, True))
+  def test_public_sparse_factor_solve(self, captured, mixed):
     """Exercise deterministic factor_m/solve_m above the dense block threshold."""
     if captured and not wp.get_device().is_cuda:
       self.skipTest("CUDA graph required")
     n = 66
     chain = "".join('<body pos="0 0 .05"><joint axis="0 1 0" armature="1"/><geom type="sphere" size=".02"/>' for _ in range(n))
-    xml = "<mujoco><worldbody>" + chain + "</body>" * n + "</worldbody></mujoco>"
+    bodies = chain + "</body>" * n
+    if mixed:
+      small = "".join('<body pos="0 0 .05"><joint armature="1"/><geom size=".02"/>' for _ in range(7))
+      bodies += '<body pos="1 0 0">' + small + "</body>" * 8
+      bodies += '<body pos="2 0 0"><freejoint/><geom size=".1"/></body>'
+    xml = "<mujoco><worldbody>" + bodies + "</worldbody></mujoco>"
     mjm, mjd, m, d = test_data.fixture(xml=xml, nworld=9)
     m.opt.deterministic = DeterminismType.ATOMICS
     self.assertGreater(len(m.qLD_updates), 0)
-    rhs = np.linspace(0.1, 1.0, n)
-    reference = np.zeros((1, n))
+    if mixed:
+      self.assertGreater(m.qLD_block_total, 0)
+    rhs = np.linspace(0.1, 1.0, m.nv)
+    reference = np.zeros((1, m.nv))
     mujoco.mj_solveM(mjm, mjd, reference, rhs[None])
     vector = wp.array(np.tile(rhs, (d.nworld, 1)), dtype=float)
-    result = wp.zeros((d.nworld, n), dtype=float)
+    result = wp.zeros((d.nworld, m.nv), dtype=float)
 
     def factor_solve():
       mjw.factor_m(m, d)

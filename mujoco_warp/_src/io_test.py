@@ -2201,8 +2201,8 @@ class IOTest(parameterized.TestCase):
 
   def test_put_data_nefc_zero_dense(self):
     """put_data succeeds for dense models with nefc=0 and non-empty efc_J."""
-    # A tendon with frictionloss causes MuJoCo to pre-allocate efc_J with
-    # size nv even when nefc=0, causing reshape((0, nv)) to fail.
+    # Allocate a dense Jacobian with tendon friction, then exercise an empty
+    # active prefix without discarding that buffer (reshape((0, nv)) must work).
     mjm = mujoco.MjModel.from_xml_string("""
       <mujoco>
         <worldbody>
