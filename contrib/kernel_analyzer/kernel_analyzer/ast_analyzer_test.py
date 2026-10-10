@@ -599,6 +599,33 @@ def launch_it():
 
 
 class TestDeterministicFactory(absltest.TestCase):
+  def test_inline_ignore_does_not_suppress_function_diagnostic(self):
+    code = """
+import warp as wp
+
+def factory():
+  @wp.kernel
+  def kernel(arr_out: wp.array[float]):
+    arr_out[0] = 1.0  # kernel_analyzer: ignore
+"""
+    issues = ast_analyzer.analyze(code, "test.py", "", check_atomic=True)
+    self.assertTrue(any(isinstance(issue, ast_analyzer.MissingModuleUnique) for issue in issues))
+
+  def test_multiline_atomic_ignore_remains_local(self):
+    code = """
+import warp as wp
+
+def factory():
+  @wp.kernel
+  def kernel(arr_out: wp.array[float]):
+    wp.atomic_add(
+      arr_out, 0, 1.0  # kernel_analyzer: ignore[atomic]
+    )
+"""
+    issues = ast_analyzer.analyze(code, "test.py", "", check_atomic=True)
+    self.assertTrue(any(isinstance(issue, ast_analyzer.MissingModuleUnique) for issue in issues))
+    self.assertFalse(any(isinstance(issue, ast_analyzer.MissingDeterministicFactory) for issue in issues))
+
   def test_factory_missing_deterministic_arg_raises_issue(self):
     bad_code = """
 import warp as wp
