@@ -1612,6 +1612,7 @@ def _tendon_actuator_force(
   # Data out:
   sensordata_out: wp.array2d[float],
 ):
+  """Build the actuator-to-tendon force accumulation kernel."""
   worldid, tenactfrcid, actid = wp.tid()
   sensorid = sensor_tendonactfrc_adr[tenactfrcid]
 
@@ -2066,6 +2067,11 @@ def _sensor_acc(
 
 @cache_kernel
 def _sensor_touch(deterministic: bool = False):
+  """Build the contact-force accumulation kernel for touch sensors.
+
+  With deterministic=True, floating-point reductions use Warp RUN_TO_RUN.
+  The default preserves the ordinary kernel path.
+  """
   module_options = {"enable_backward": False}
   if deterministic:
     module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
@@ -2868,6 +2874,11 @@ def _energy_pos_zero(
 
 @cache_kernel
 def _energy_pos_gravity(deterministic: bool = False):
+  """Build the gravitational potential-energy reduction kernel.
+
+  With deterministic=True, floating-point reductions use Warp RUN_TO_RUN.
+  The default preserves the ordinary kernel path.
+  """
   module_options = {"enable_backward": False}
   if deterministic:
     module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
@@ -2898,6 +2909,11 @@ def _energy_pos_gravity(deterministic: bool = False):
 
 @cache_kernel
 def _energy_pos_passive_joint(deterministic: bool = False):
+  """Build the joint-spring potential-energy reduction kernel.
+
+  With deterministic=True, floating-point reductions use Warp RUN_TO_RUN.
+  The default preserves the ordinary kernel path.
+  """
   module_options = {"enable_backward": False}
   if deterministic:
     module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
@@ -2998,6 +3014,11 @@ def _energy_pos_passive_joint(deterministic: bool = False):
 
 @cache_kernel
 def _energy_pos_passive_tendon(deterministic: bool = False):
+  """Build the tendon-spring potential-energy reduction kernel.
+
+  With deterministic=True, floating-point reductions use Warp RUN_TO_RUN.
+  The default preserves the ordinary kernel path.
+  """
   module_options = {"enable_backward": False}
   if deterministic:
     module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
@@ -3045,6 +3066,11 @@ def _energy_pos_passive_tendon(deterministic: bool = False):
 
 @cache_kernel
 def _energy_pos_passive_flex(deterministic: bool = False):
+  """Build the flex-spring potential-energy reduction kernel.
+
+  With deterministic=True, floating-point reductions use Warp RUN_TO_RUN.
+  The default preserves the ordinary kernel path.
+  """
   module_options = {"enable_backward": False}
   if deterministic:
     module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN

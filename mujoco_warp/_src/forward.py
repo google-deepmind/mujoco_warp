@@ -1861,6 +1861,11 @@ def _actuator_force(
 
 @cache_kernel
 def _tendon_actuator_force(deterministic: bool = False):
+  """Build the actuator-to-tendon force accumulation kernel.
+
+  With deterministic=True, floating-point reductions use Warp RUN_TO_RUN.
+  The default preserves the ordinary kernel path.
+  """
   module_options = {"enable_backward": False}
   if deterministic:
     module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
@@ -1913,6 +1918,12 @@ def _tendon_actuator_force_clamp(
 
 @cache_kernel
 def _qfrc_actuator(deterministic: bool = False, max_records: int = 1):
+  """Build the actuator-moment projection into generalized forces.
+
+  With deterministic=True, floating-point reductions use Warp RUN_TO_RUN.
+  The default preserves the ordinary kernel path.
+  max_records bounds scatter records per target per thread in deterministic mode.
+  """
   module_options = {"enable_backward": False}
   if deterministic:
     module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN

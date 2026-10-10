@@ -669,6 +669,11 @@ def _subtree_com_init(
 
 @cache_kernel
 def _subtree_com_acc(deterministic: bool = False):
+  """Build one level of the subtree center-of-mass accumulation.
+
+  With deterministic=True, floating-point reductions use Warp RUN_TO_RUN.
+  The default preserves the ordinary kernel path.
+  """
   module_options = {"enable_backward": False}
   if deterministic:
     module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
@@ -1007,6 +1012,11 @@ def camlight(m: Model, d: Data):
 
 @cache_kernel
 def _crb_accumulate(deterministic: bool = False):
+  """Build one level of composite rigid-body inertia accumulation.
+
+  With deterministic=True, floating-point reductions use Warp RUN_TO_RUN.
+  The default preserves the ordinary kernel path.
+  """
   module_options = {"enable_backward": False}
   if deterministic:
     module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
@@ -1092,6 +1102,11 @@ def crb(m: Model, d: Data):
 
 @cache_kernel
 def _tendon_armature(deterministic: bool = False):
+  """Build the tendon armature contribution to the mass matrix.
+
+  With deterministic=True, floating-point reductions use Warp RUN_TO_RUN.
+  The default preserves the ordinary kernel path.
+  """
   module_options = {"enable_backward": False}
   if deterministic:
     module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
@@ -1183,6 +1198,12 @@ def tendon_armature(m: Model, d: Data):
 
 @cache_kernel
 def _qLD_acc(deterministic: bool = False, max_records: int = 1):
+  """Build the sparse LDL factorization update kernel.
+
+  With deterministic=True, floating-point reductions use Warp RUN_TO_RUN.
+  The default preserves the ordinary kernel path.
+  max_records bounds scatter records per target per thread in deterministic mode.
+  """
   module_options = {"enable_backward": False}
   if deterministic:
     module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
@@ -1473,6 +1494,11 @@ def _rne_cfrc(m: Model, d: Data, flg_cfrc_ext: bool = False):
 
 @cache_kernel
 def _cfrc_backward(deterministic: bool = False):
+  """Build one backward level of body-force accumulation.
+
+  With deterministic=True, floating-point reductions use Warp RUN_TO_RUN.
+  The default preserves the ordinary kernel path.
+  """
   module_options = {"enable_backward": False}
   if deterministic:
     module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
@@ -1498,6 +1524,7 @@ def _cfrc_backward(deterministic: bool = False):
 
 
 def _rne_cfrc_backward(m: Model, d: Data):
+  """Build the backward recursive Newton-Euler force accumulation."""
   for body_tree in reversed(m.body_tree):
     wp.launch(
       _cfrc_backward(bool(m.opt.deterministic & DeterminismType.ATOMICS)),
@@ -1594,6 +1621,11 @@ def _count_equality_constraints(
 
 @cache_kernel
 def _cfrc_ext_equality(deterministic: bool = False):
+  """Build external body-force contributions from equality constraints.
+
+  With deterministic=True, floating-point reductions use Warp RUN_TO_RUN.
+  The default preserves the ordinary kernel path.
+  """
   module_options = {"enable_backward": False}
   if deterministic:
     module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
@@ -1732,6 +1764,11 @@ def transform_force(force: wp.vec3, torque: wp.vec3, offset: wp.vec3) -> wp.spat
 
 @cache_kernel
 def _cfrc_ext_contact(deterministic: bool = False):
+  """Build external body-force contributions from contacts.
+
+  With deterministic=True, floating-point reductions use Warp RUN_TO_RUN.
+  The default preserves the ordinary kernel path.
+  """
   module_options = {"enable_backward": False}
   if deterministic:
     module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
@@ -1804,6 +1841,11 @@ def _cfrc_ext_contact(deterministic: bool = False):
 
 @cache_kernel
 def _cfrc_ext_tendon_constraint(deterministic: bool = False):
+  """Build external body forces from tendon constraints.
+
+  With deterministic=True, floating-point reductions use Warp RUN_TO_RUN.
+  The default preserves the ordinary kernel path.
+  """
   module_options = {"enable_backward": False}
   if deterministic:
     module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
@@ -1869,6 +1911,11 @@ def _cfrc_ext_tendon_constraint(deterministic: bool = False):
 
 @cache_kernel
 def _cfrc_ext_tendon_actuator(deterministic: bool = False):
+  """Build external body forces from tendon actuators.
+
+  With deterministic=True, floating-point reductions use Warp RUN_TO_RUN.
+  The default preserves the ordinary kernel path.
+  """
   module_options = {"enable_backward": False}
   if deterministic:
     module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
@@ -1901,6 +1948,11 @@ def _cfrc_ext_tendon_actuator(deterministic: bool = False):
 
 @cache_kernel
 def _cfrc_ext_spatial_tendon(deterministic: bool = False):
+  """Build body-force contributions along spatial tendons.
+
+  With deterministic=True, floating-point reductions use Warp RUN_TO_RUN.
+  The default preserves the ordinary kernel path.
+  """
   module_options = {"enable_backward": False}
   if deterministic:
     module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
@@ -2477,6 +2529,11 @@ def _tendon_dot(
 
 @cache_kernel
 def _tendon_bias_coef(deterministic: bool = False):
+  """Build tendon coefficients used in bias-force evaluation.
+
+  With deterministic=True, floating-point reductions use Warp RUN_TO_RUN.
+  The default preserves the ordinary kernel path.
+  """
   module_options = {"enable_backward": False}
   if deterministic:
     module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
@@ -2518,6 +2575,11 @@ def _tendon_bias_coef(deterministic: bool = False):
 
 @cache_kernel
 def _tendon_bias_qfrc(deterministic: bool = False):
+  """Build tendon bias-force contributions in generalized coordinates.
+
+  With deterministic=True, floating-point reductions use Warp RUN_TO_RUN.
+  The default preserves the ordinary kernel path.
+  """
   module_options = {"enable_backward": False}
   if deterministic:
     module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
@@ -3172,6 +3234,11 @@ def _transmission(
 
 @cache_kernel
 def _transmission_body_moment(deterministic: bool = False):
+  """Build body-transmission moment contributions for actuators.
+
+  With deterministic=True, floating-point reductions use Warp RUN_TO_RUN.
+  The default preserves the ordinary kernel path.
+  """
   module_options = {"enable_backward": False}
   if deterministic:
     module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
@@ -4018,6 +4085,11 @@ def _subtree_vel_forward(
 
 @cache_kernel
 def _linear_momentum(deterministic: bool = False):
+  """Build the subtree linear-momentum reduction kernel.
+
+  With deterministic=True, floating-point reductions use Warp RUN_TO_RUN.
+  The default preserves the ordinary kernel path.
+  """
   module_options = {"enable_backward": False}
   if deterministic:
     module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
@@ -4046,6 +4118,11 @@ def _linear_momentum(deterministic: bool = False):
 
 @cache_kernel
 def _angular_momentum(deterministic: bool = False):
+  """Build the subtree angular-momentum reduction kernel.
+
+  With deterministic=True, floating-point reductions use Warp RUN_TO_RUN.
+  The default preserves the ordinary kernel path.
+  """
   module_options = {"enable_backward": False}
   if deterministic:
     module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
@@ -4150,6 +4227,11 @@ def subtree_vel(m: Model, d: Data):
 
 @cache_kernel
 def _joint_tendon(deterministic: bool = False):
+  """Build fixed-tendon lengths, velocities and sparse Jacobian entries.
+
+  With deterministic=True, floating-point reductions use Warp RUN_TO_RUN.
+  The default preserves the ordinary kernel path.
+  """
   module_options = {"enable_backward": False}
   if deterministic:
     module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
@@ -4243,6 +4325,11 @@ def _accumulate_jac_chain(
 
 @cache_kernel
 def _spatial_site_tendon(deterministic: bool = False):
+  """Build spatial-tendon contributions from site wrapping segments.
+
+  With deterministic=True, floating-point reductions use Warp RUN_TO_RUN.
+  The default preserves the ordinary kernel path.
+  """
   module_options = {"enable_backward": False}
   if deterministic:
     module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
@@ -4334,6 +4421,11 @@ def _spatial_site_tendon(deterministic: bool = False):
 
 @cache_kernel
 def _spatial_geom_tendon(deterministic: bool = False):
+  """Build spatial-tendon contributions from geom wrapping segments.
+
+  With deterministic=True, floating-point reductions use Warp RUN_TO_RUN.
+  The default preserves the ordinary kernel path.
+  """
   module_options = {"enable_backward": False}
   if deterministic:
     module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN

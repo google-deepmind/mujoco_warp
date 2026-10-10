@@ -30,6 +30,7 @@ _CHECK_ATOMIC = flags.DEFINE_bool(
 
 
 def main(argv):
+  """Analyze kernel sources and report convention or atomic-factory violations."""
   log_level = logging.DEBUG if _VERBOSE.value else logging.WARNING
   logging.set_verbosity(log_level)
 

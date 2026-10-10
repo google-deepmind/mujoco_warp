@@ -1502,6 +1502,11 @@ def _linesearch_zero_jv(
 
 @cache_kernel
 def _linesearch_jv_fused_kernel(is_sparse: bool, nv: int, dofs_per_thread: int, compact: bool, deterministic: bool = False):
+  """Build the fused constraint-Jacobian/search-direction product.
+
+  With deterministic=True, floating-point reductions use Warp RUN_TO_RUN.
+  The default preserves the ordinary kernel path.
+  """
   COMPACT = compact
   module_options = {"enable_backward": False}
   if deterministic:
@@ -1682,6 +1687,11 @@ def _solve_init_efc(
 
 @cache_kernel
 def _solve_init_jaref_kernel(is_sparse: bool, nv: int, dofs_per_thread: int, compact: bool, deterministic: bool = False):
+  """Build the initial constraint residual evaluation kernel.
+
+  With deterministic=True, floating-point reductions use Warp RUN_TO_RUN.
+  The default preserves the ordinary kernel path.
+  """
   COMPACT = compact
   module_options = {"enable_backward": False}
   if deterministic:
@@ -1938,6 +1948,11 @@ def _zero_qfrc_constraint_sparse(
 
 @cache_kernel
 def _update_constraint_init_qfrc_constraint_sparse(compact: bool, deterministic: bool = False):
+  """Build the sparse constraint-force projection kernel.
+
+  With deterministic=True, floating-point reductions use Warp RUN_TO_RUN.
+  The default preserves the ordinary kernel path.
+  """
   COMPACT = compact
   module_options = {"enable_backward": False}
   if deterministic:
@@ -2093,6 +2108,11 @@ def _update_gradient_h_incremental(
 
 @cache_kernel
 def _update_gradient_h_incremental_sparse(compact: bool, deterministic: bool = False):
+  """Build sparse Hessian updates for changed constraint rows.
+
+  With deterministic=True, floating-point reductions use Warp RUN_TO_RUN.
+  The default preserves the ordinary kernel path.
+  """
   COMPACT = compact
   module_options = {"enable_backward": False}
   if deterministic:
@@ -2274,6 +2294,11 @@ def _update_gradient_zero_grad_dot(stable_fast: bool):
 
 @cache_kernel
 def _update_gradient_grad(stable_fast: bool, deterministic: bool = False):
+  """Build the solver gradient and gradient-norm reduction kernel.
+
+  With deterministic=True, floating-point reductions use Warp RUN_TO_RUN.
+  The default preserves the ordinary kernel path.
+  """
   STABLE_FAST = stable_fast
   module_options = {"enable_backward": False}
   if deterministic:
@@ -2410,6 +2435,11 @@ def _update_gradient_init_h_sparse(compact: bool):
 
 @cache_kernel
 def _add_tendon_metric_dense(deterministic: bool = False):
+  """Build the dense Hessian contribution from tendon metrics.
+
+  With deterministic=True, floating-point reductions use Warp RUN_TO_RUN.
+  The default preserves the ordinary kernel path.
+  """
   module_options = {"enable_backward": False}
   if deterministic:
     module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
@@ -2450,6 +2480,11 @@ def _add_tendon_metric_dense(deterministic: bool = False):
 
 @cache_kernel
 def _add_actuator_metric_dense(deterministic: bool = False):
+  """Build the dense Hessian contribution from actuator metrics.
+
+  With deterministic=True, floating-point reductions use Warp RUN_TO_RUN.
+  The default preserves the ordinary kernel path.
+  """
   module_options = {"enable_backward": False}
   if deterministic:
     module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
@@ -2489,6 +2524,11 @@ def _add_actuator_metric_dense(deterministic: bool = False):
 
 @cache_kernel
 def _add_efmK_metric_dense(deterministic: bool = False):
+  """Build the dense Hessian contribution from flex stiffness.
+
+  With deterministic=True, floating-point reductions use Warp RUN_TO_RUN.
+  The default preserves the ordinary kernel path.
+  """
   module_options = {"enable_backward": False}
   if deterministic:
     module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
@@ -2521,6 +2561,11 @@ def _add_efmK_metric_dense(deterministic: bool = False):
 
 @cache_kernel
 def _add_flexcon_metric_dense(deterministic: bool = False):
+  """Build the dense Hessian contribution from flex-contact metrics.
+
+  With deterministic=True, floating-point reductions use Warp RUN_TO_RUN.
+  The default preserves the ordinary kernel path.
+  """
   module_options = {"enable_backward": False}
   if deterministic:
     module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
@@ -3074,6 +3119,11 @@ def _JTDACJ_sparse(
   block_dim: int = types.BlockDim.update_gradient_JTDAJ_sparse,
   deterministic: bool = False,
 ):
+  """Build sparse constraint Hessian accumulation with a fixed launch block size.
+
+  With deterministic=True, floating-point reductions use Warp RUN_TO_RUN.
+  The default preserves the ordinary kernel path.
+  """
   COMPACT = compact
   ELLIPTIC = cone_type == types.ConeType.ELLIPTIC
   MAX_CONDIM = max_condim
@@ -3344,6 +3394,7 @@ def _jtdaj_groups_per_world(nworld: int, njmax: int, kernel: wp.Kernel) -> int:
 
 def _update_gradient(m: types.Model, d: types.Data, ctx: SolverContext, compact: bool = False):
   # grad = Ma - qfrc_smooth - qfrc_constraint
+  """Update solver gradient and, for Newton, its constraint Hessian."""
   if m.opt.solver == types.SolverType.CG:
     wp.launch_tiled(
       _update_gradient_grad_tiled,
@@ -3935,6 +3986,7 @@ def _solver_iteration(
 
 
 def init_context(m: types.Model, d: types.Data, ctx: SolverContext | InverseContext, grad: bool = True, compact: bool = False):
+  """Initialize solver workspace for the model and selected constraint layout."""
   if m.opt.integrator == types.IntegratorType.DISCRETE:
     if m.nefmdof > 0 and m.opt.solver == types.SolverType.CG:
       derivative.eff_prec_fold(m, d, out=d.efm_L)

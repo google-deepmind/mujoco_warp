@@ -3870,6 +3870,11 @@ def _efc_contact_jac_sparse_flex(cone_type: types.ConeType):
 
 @cache_kernel
 def _efc_contact_jac_dense(tile_size: int, cone_type: types.ConeType, deterministic: bool = False):
+  """Build the dense rigid-contact Jacobian velocity kernel.
+
+  With deterministic=True, floating-point reductions use Warp RUN_TO_RUN.
+  The default preserves the ordinary kernel path.
+  """
   TILE_SIZE = tile_size
   IS_ELLIPTIC = cone_type == types.ConeType.ELLIPTIC
   module_options = {"enable_backward": False}
@@ -4002,6 +4007,11 @@ def _efc_contact_jac_dense(tile_size: int, cone_type: types.ConeType, determinis
 
 @cache_kernel
 def _efc_contact_jac_dense_flex(tile_size: int, cone_type: types.ConeType, deterministic: bool = False):
+  """Build the dense flex-contact Jacobian velocity kernel.
+
+  With deterministic=True, floating-point reductions use Warp RUN_TO_RUN.
+  The default preserves the ordinary kernel path.
+  """
   TILE_SIZE = tile_size
   IS_ELLIPTIC = cone_type == types.ConeType.ELLIPTIC
   module_options = {"enable_backward": False}

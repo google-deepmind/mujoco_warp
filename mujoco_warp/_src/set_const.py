@@ -44,6 +44,11 @@ def _init_subtreemass(
 
 @cache_kernel
 def _accumulate_subtreemass(deterministic: bool = False):
+  """Build the child-to-parent subtree-mass accumulation kernel.
+
+  With deterministic=True, floating-point reductions use Warp RUN_TO_RUN.
+  The default preserves the ordinary kernel path.
+  """
   module_options = {"enable_backward": False}
   if deterministic:
     module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN

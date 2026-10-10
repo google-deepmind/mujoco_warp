@@ -24,6 +24,7 @@ from absl.testing import parameterized
 import mujoco_warp as mjw
 from mujoco_warp import DeterminismType
 from mujoco_warp import test_data
+from mujoco_warp._src import derivative
 from mujoco_warp._src import smooth
 from mujoco_warp._src import types
 
@@ -131,6 +132,64 @@ class DeterministicArithmeticTest(parameterized.TestCase):
       for _ in range(3):
         wp.capture_launch(capture.graph)
     np.testing.assert_allclose(result.numpy(), np.tile(reference, (d.nworld, 1)), rtol=1e-4, atol=1e-5)
+
+  @parameterized.product(nworld=(1, 2), captured=(False, True))
+  def test_refactored_flex_arithmetic(self, nworld, captured):
+    """Main's flex Hessian and scatter paths retain numerical parity with ATOMICS."""
+    if captured and not wp.get_device().is_cuda:
+      self.skipTest("CUDA graph required")
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""<mujoco>
+        <option integrator="discrete" gravity="0 0 0" timestep=".005"/>
+        <worldbody>
+          <flexcomp name="box" type="grid" count="2 2 2" spacing=".1 .1 .1" dim="3" mass="1">
+            <contact contype="0" conaffinity="0" selfcollide="none"/>
+            <elasticity young="1000" poisson=".3" damping=".03"/>
+          </flexcomp>
+        </worldbody>
+      </mujoco>""",
+      nworld=nworld,
+    )
+    qpos = np.tile(mjd.qpos, (nworld, 1)).astype(np.float32)
+    qvel = np.tile(np.linspace(-0.03, 0.04, mjm.nv, dtype=np.float32), (nworld, 1))
+    qpos[0, 0] += 0.01
+    if nworld == 2:
+      qpos[1, 0] -= 0.02
+      qvel[1] *= -1.5
+    d.qpos.assign(qpos)
+    d.qvel.assign(qvel)
+
+    def evaluate():
+      d.qfrc_spring.fill_(wp.inf)
+      d.qfrc_damper.fill_(wp.inf)
+      d.efm_c.fill_(wp.inf)
+      d.flex_hessian_valid.zero_()
+      mjw.fwd_position(m, d)
+      mjw.fwd_velocity(m, d)
+      mjw.passive(m, d)
+      derivative.eff_shift(m, d)
+
+    m.opt.deterministic = DeterminismType.NONE
+    evaluate()
+    fields = (d.qfrc_spring, d.qfrc_damper, d.efm_c, d.flexvert_hessian, d.flexedge_hessian)
+    reference = [a.numpy().copy() for a in fields]
+    m.opt.deterministic = DeterminismType.ATOMICS
+    evaluate()
+    if captured:
+      with wp.ScopedCapture() as capture:
+        evaluate()
+      for _ in range(3):
+        wp.capture_launch(capture.graph)
+    for a, expected in zip(fields, reference):
+      np.testing.assert_allclose(a.numpy(), expected, rtol=1e-5, atol=1e-5)
+    for world in range(nworld):
+      mjd.qpos[:] = qpos[world]
+      mjd.qvel[:] = qvel[world]
+      mujoco.mj_forward(mjm, mjd)
+      np.testing.assert_allclose(d.qfrc_spring.numpy()[world], mjd.qfrc_spring, rtol=1e-5, atol=1e-5)
+      np.testing.assert_allclose(d.qfrc_damper.numpy()[world], mjd.qfrc_damper, rtol=1e-5, atol=1e-5)
+    if nworld == 2:
+      self.assertFalse(np.allclose(d.qfrc_spring.numpy()[0], d.qfrc_spring.numpy()[1]))
 
 
 if __name__ == "__main__":

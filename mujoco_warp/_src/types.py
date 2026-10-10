@@ -258,15 +258,20 @@ class DataType(enum.IntFlag):
 
 
 class DeterminismType(enum.IntFlag):
-  """Bitmask for deterministic execution.
+  """Select deterministic arithmetic and reserved ordering hooks.
+
+  Only ATOMICS currently implements deterministic execution. CONTACTS, CONSTRAINT
+  and ISLANDS select placeholder hooks; ALL does not yet guarantee deterministic
+  full simulation. RUN_TO_RUN arithmetic also does not promise cross-device or
+  cross-batch bitwise equality.
 
   Attributes:
     NONE: non-deterministic execution
-    CONTACTS: stable contact ordering via geometric radix sort
-    CONSTRAINT: canonical constraint row ordering
-    ATOMICS: invariant floating-point atomic reductions
-    ISLANDS: canonical island ordering
-    ALL: all determinism features
+    CONTACTS: reserved hook for stable contact ordering
+    CONSTRAINT: reserved hook for canonical constraint row ordering
+    ATOMICS: opt in to deterministic floating-point reduction kernels
+    ISLANDS: reserved hook for canonical island ordering
+    ALL: enable arithmetic and all reserved ordering hooks
   """
 
   NONE = 0
@@ -1010,10 +1015,12 @@ class Option:
 
   @property
   def deterministic(self) -> int:
+    """Return the configured DeterminismType bitmask, including reserved hooks."""
     return self._deterministic
 
   @deterministic.setter
   def deterministic(self, value: bool | int | None):
+    """Set a bitmask; True selects ALL and False or None selects NONE."""
     if isinstance(value, bool):
       value = int(DeterminismType.ALL) if value else int(DeterminismType.NONE)
     elif value is None:

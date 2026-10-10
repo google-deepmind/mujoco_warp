@@ -157,6 +157,8 @@ class WarpCallInStatic(Issue):
 
 @dataclasses.dataclass
 class MissingDeterministicFactory(Issue):
+  """Report an atomic operation outside a configurable deterministic factory."""
+
   def __str__(self):
     return f'"{self.kernel}" contains atomic operations but is not enclosed in a kernel factory with a "deterministic" argument'
 

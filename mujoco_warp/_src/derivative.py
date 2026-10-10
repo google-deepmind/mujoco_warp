@@ -3322,7 +3322,7 @@ def eff_shift(m: Model, d: Data):
     passive.flex_stretch_mul(m, d, d.efm_c, d.qvel, s1_in=-1.0, s2_in=0.0, use_timestep=True, non_simple_only=False)
 
     wp.launch(
-      _eff_flex_interp_mul(False, True, deterministic=bool(m.opt.deterministic & DeterminismType.ATOMICS)),
+      _eff_flex_interp_mul(False, True, bool(m.opt.deterministic & DeterminismType.ATOMICS)),
       dim=(d.nworld, m.nflexintcell),
       inputs=[
         m.opt.timestep,
@@ -3575,7 +3575,7 @@ def eff_mul_m(
         outputs=[res],
       )
     wp.launch(
-      _eff_mul_add_tendon(check_skip, deterministic=bool(m.opt.deterministic & DeterminismType.ATOMICS)),
+      _eff_mul_add_tendon(check_skip, bool(m.opt.deterministic & DeterminismType.ATOMICS)),
       dim=(d.nworld, m.ntendon),
       inputs=[
         m.ten_J_rownnz,
@@ -3589,7 +3589,7 @@ def eff_mul_m(
       outputs=[res],
     )
     wp.launch(
-      _eff_mul_add_actuator(check_skip, deterministic=bool(m.opt.deterministic & DeterminismType.ATOMICS)),
+      _eff_mul_add_actuator(check_skip, bool(m.opt.deterministic & DeterminismType.ATOMICS)),
       dim=(d.nworld, m.nactuator),
       inputs=[
         d.moment_rownnz,
@@ -3608,7 +3608,7 @@ def eff_mul_m(
       else:
         efm_con_dof, efm_con_val, efm_con_scale, _, efm_con_nnz = efm_con
       wp.launch(
-        _eff_mul_add_contact(check_skip, deterministic=bool(m.opt.deterministic & DeterminismType.ATOMICS)),
+        _eff_mul_add_contact(check_skip, bool(m.opt.deterministic & DeterminismType.ATOMICS)),
         dim=d.naconmax,
         inputs=[
           d.contact.worldid,
@@ -3646,7 +3646,7 @@ def eff_mul_m(
       (m.opt.disableflags & DisableBit.SPRING) and (m.opt.disableflags & DisableBit.DAMPER)
     ):
       wp.launch(
-        _eff_flex_interp_mul(check_skip, False, deterministic=bool(m.opt.deterministic & DeterminismType.ATOMICS)),
+        _eff_flex_interp_mul(check_skip, False, bool(m.opt.deterministic & DeterminismType.ATOMICS)),
         dim=(d.nworld, m.nflexintcell),
         inputs=[
           m.opt.timestep,

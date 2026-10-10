@@ -1648,7 +1648,7 @@ def flex_scatter(
   check_skip = skip is not None
   skip_arr = skip if check_skip else m.body_is_free
   wp.launch(
-    _flex_scatter_kernel(check_skip, deterministic=bool(m.opt.deterministic & DeterminismType.ATOMICS)),
+    _flex_scatter_kernel(check_skip, bool(m.opt.deterministic & DeterminismType.ATOMICS)),
     dim=(d.nworld, m.nflexvert),
     inputs=[
       m.body_rootid,
@@ -2172,7 +2172,7 @@ def flex_hessian_mul(
     outputs=[res],
   )
   wp.launch(
-    _flex_hessian_mul_edge(check_skip, deterministic=bool(m.opt.deterministic & DeterminismType.ATOMICS)),
+    _flex_hessian_mul_edge(check_skip, bool(m.opt.deterministic & DeterminismType.ATOMICS)),
     dim=(d.nworld, m.nflexedge),
     inputs=[
       m.opt.timestep,
@@ -2378,7 +2378,7 @@ def flex_bend_mul(
   check_skip = skip is not None
   skip_arr = skip if check_skip else m.body_is_free
   wp.launch(
-    _flex_bend_mul(check_skip, deterministic=bool(m.opt.deterministic & DeterminismType.ATOMICS)),
+    _flex_bend_mul(check_skip, bool(m.opt.deterministic & DeterminismType.ATOMICS)),
     dim=(d.nworld, m.nflexedge),
     inputs=[
       m.opt.timestep,
