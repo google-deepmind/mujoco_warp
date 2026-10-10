@@ -2386,7 +2386,13 @@ def _write_filtered_contacts(warn_overflow: int, deterministic: bool = False):
     )
     is_passive = wants and ok
     contact_type_out[id_] = int(ContactType.PASSIVE) if is_passive else int(ContactType.CONSTRAINT)
-    contact_geomcollisionid_out[id_] = i if wp.static(deterministic) else 0
+    if wp.static(deterministic):
+      # Separate flex-geom, flex-self and flex-flex passes, each of which starts
+      # a fresh canonical candidate array at index zero.
+      phase = 0 if geomid >= 0 else (1 if f0 == f1 else 2)
+      contact_geomcollisionid_out[id_] = phase * naconmax_in + i
+    else:
+      contact_geomcollisionid_out[id_] = 0
 
   return kernel
 
@@ -3256,7 +3262,7 @@ def _filter_and_write_contacts(
     _run_filter_flex_fps(m, d, ws, nmax_groups)
 
   wp.launch(
-    _write_filtered_contacts(int(m.opt.warn_overflow)),
+    _write_filtered_contacts(int(m.opt.warn_overflow), deterministic),
     dim=d.naconmax,
     inputs=[
       m.opt.integrator,

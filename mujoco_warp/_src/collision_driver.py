@@ -1056,7 +1056,7 @@ def _sort_contacts(m: Model, d: Data):
   # Each world owns one contiguous key range, split into rigid subkeys below and
   # flex subkeys above, so sorted contacts are world-major and world-contiguous.
   rigid_key_space = m.ngeom * m.ngeom * gcid_max
-  flex_key_space = d.naconmax if m.nflex > 0 else 0
+  flex_key_space = 3 * d.naconmax if m.nflex > 0 else 0
   world_key_space = rigid_key_space + flex_key_space
   if d.nworld * world_key_space > 2**63 - 1:
     raise RuntimeError(
