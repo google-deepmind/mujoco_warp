@@ -2626,6 +2626,9 @@ class InverseContext:
   quad_changed_count: wp.array[int]
   state_changed_count: wp.array[int]
   ls_exhausted: wp.array[bool]
+  # Force projection dispatch scratch, allocated outside conditional loops.
+  qfrc_maximum: wp.array[int]
+  qfrc_buckets: wp.array2d[int]
   # the full-coordinate Data, set by solve_compact (None natively)
   compact_m_full: Optional["Model"] = None
   compact_d_full: Optional["Data"] = None
@@ -2662,6 +2665,9 @@ class SolverContext:
   jtdaj_buckets: wp.array2d[int]
   quad_changed_ids: wp.array2d[int]
   quad_changed_count: wp.array[int]
+  # Force projection dispatch scratch, allocated outside conditional loops.
+  qfrc_maximum: wp.array[int]
+  qfrc_buckets: wp.array2d[int]
   # the full-coordinate Data, set by solve_compact (None natively)
   compact_m_full: Optional["Model"] = None
   compact_d_full: Optional["Data"] = None

@@ -14,6 +14,7 @@
 # ==============================================================================
 """Tests for GPU determinism (contact sorting + constraint row allocation)."""
 
+import copy
 import hashlib
 
 import mujoco
@@ -914,6 +915,88 @@ class HessianBucketTest(parameterized.TestCase):
       h.zero_()
       wp.capture_launch(capture.graph)
       np.testing.assert_array_equal(h.numpy(), expected)
+
+
+class ForceProjectionBucketTest(parameterized.TestCase):
+  """Verify bounded native force reductions against the full-capacity path."""
+
+  @parameterized.parameters(
+    (0, 15),
+    (128, 15),
+    (129, 15),
+    (256, 15),
+    (257, 15),
+    (512, 15),
+    (129, 16),
+    (129, 17),
+    (129, 35),
+    (129, 35, True),
+  )
+  def test_force_bucket_matches_full_capacity(self, count, width, compact=False):
+    """Retain heterogeneous contributions, completed worlds and unchanged worlds."""
+    nworld, njmax = 4, 512
+    children = "".join(
+      '<body><joint type="slide"/><geom type="sphere" size=".01" contype="0" conaffinity="0"/></body>' for _ in range(35)
+    )
+    _, _, m, d = test_data.fixture(xml=f"<mujoco><worldbody>{children}</worldbody></mujoco>", nworld=nworld, njmax=njmax)
+    m.opt.deterministic = mjw.DeterminismType.ALL
+    m.opt.graph_conditional = False
+    ctx = solver._create_solver_context(m, d)
+    ctx.done.assign(np.array([False, False, False, True]))
+    d.nefc.assign(np.array([count, count // 2, njmax, njmax], dtype=np.int32))
+    changed = wp.array([count, count // 2, 0, njmax], dtype=int)
+    d.efc.J_rownnz = wp.full((nworld, njmax), width, dtype=int)
+    d.efc.J_rowadr = wp.array(np.tile(np.arange(njmax, dtype=np.int32) * m.nv, (nworld, 1)), dtype=int)
+    d.efc.J_colind = wp.array(np.tile(np.arange(m.nv, dtype=np.int32), (nworld, 1, njmax)), dtype=int)
+    rng = np.random.default_rng(57)
+    jacobian = rng.uniform(-2, 2, (nworld, njmax, m.nv)).astype(np.float32)
+    force = rng.uniform(-2, 2, (nworld, njmax)).astype(np.float32)
+    force[:, ::7] = 0.0
+    d.efc.J = wp.array(jacobian.reshape(nworld, 1, -1))
+    d.efc.force = wp.array(force)
+    if compact:
+      ctx.compact_m_full = m
+      m = copy.copy(m)
+      m.nv = 16
+      columns = np.arange(ctx.compact_m_full.nv, dtype=np.int32)
+      columns[16:] = -1
+      d.dof_cdof = wp.array(np.tile(columns, (nworld, 1)), dtype=int)
+
+    def launch():
+      """Reset rebuilt worlds only, then accumulate with the selected bounds."""
+      wp.launch(
+        solver._zero_qfrc_constraint_sparse, dim=(nworld, m.nv), inputs=[changed, ctx.done], outputs=[d.qfrc_constraint]
+      )
+      solver._launch_qfrc_constraint_sparse(m, d, ctx, compact, d, changed)
+
+    d.qfrc_constraint.fill_(7.0)
+    launch()
+    expected = d.qfrc_constraint.numpy().copy()
+    used_width = m.nv if compact else width
+    for world, nrow in enumerate((count, count // 2)):
+      if nrow:
+        reference = (jacobian[world, :nrow, :used_width].astype(np.float64) * force[world, :nrow, None]).sum(axis=0)
+        np.testing.assert_allclose(expected[world, :used_width], reference, rtol=1e-5, atol=1e-5)
+    np.testing.assert_array_equal(expected[2:], 7.0)
+    m.opt.graph_conditional = True
+    d.qfrc_constraint.fill_(7.0)
+    launch()
+    np.testing.assert_array_equal(d.qfrc_constraint.numpy(), expected)
+    if wp.get_device().is_cuda and tuple(map(int, wp.__version__.split(".")[:2])) >= (1, 18):
+      condition = wp.ones(1, dtype=int)
+
+      def iteration():
+        """Exercise dispatch inside a captured solver loop with preallocated scratch."""
+        launch()
+        condition.zero_()
+
+      with wp.ScopedCapture() as capture:
+        wp.capture_while(condition, while_body=iteration)
+      for _ in range(2):
+        d.qfrc_constraint.fill_(7.0)
+        condition.fill_(1)
+        wp.capture_launch(capture.graph)
+        np.testing.assert_array_equal(d.qfrc_constraint.numpy(), expected)
 
 
 class FullStepGraphTest(parameterized.TestCase):

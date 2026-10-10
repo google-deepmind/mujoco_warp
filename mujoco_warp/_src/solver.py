@@ -61,6 +61,8 @@ def create_inverse_context(m: types.Model, d: types.Data) -> InverseContext:
     quad_changed_count=wp.empty((0,), dtype=int),
     state_changed_count=wp.empty((0,), dtype=int),
     ls_exhausted=wp.empty((0,), dtype=bool),
+    qfrc_maximum=wp.empty(2, dtype=int),
+    qfrc_buckets=wp.empty((6, 1), dtype=int),
   )
 
 
@@ -109,6 +111,8 @@ def _create_solver_context(
     beta=wp.empty((nworld,), dtype=float) if alloc_mgrad else wp.empty((0,), dtype=float),
     h=wp.empty((nworld, nv_pad, nv_pad), dtype=float) if alloc_h else wp.empty((nworld, 0, 0), dtype=float),
     hfactor=wp.empty((nworld, nv_pad, nv_pad), dtype=float) if alloc_hfactor else wp.empty((nworld, 0, 0), dtype=float),
+    qfrc_maximum=wp.empty(2, dtype=int),
+    qfrc_buckets=wp.empty((6, 1), dtype=int),
     jtdaj_maximum=wp.empty(2, dtype=int),
     jtdaj_buckets=wp.empty((10, 1), dtype=int),
     quad_changed_ids=wp.empty((nworld, njmax), dtype=int) if alloc_incremental else wp.empty((nworld, 0), dtype=int),
@@ -2008,6 +2012,68 @@ def _update_constraint_init_qfrc_constraint_sparse(compact: bool, deterministic:
 
 
 @wp.kernel
+def _max_active_qfrc_rows(
+  # Data in:
+  nefc_in: wp.array[int],
+  # In:
+  rownnz_in: wp.array2d[int],
+  changed_in: wp.array[int],
+  done_in: wp.array[bool],
+  # Out:
+  maximum_out: wp.array[int],
+):
+  """Find sufficient row and support bounds for live sparse force projections."""
+  worldid, row = wp.tid()
+  if not done_in[worldid] and changed_in[worldid] != 0 and row < nefc_in[worldid]:
+    # Integer maximum is order independent. Overflow reporting remains upstream;
+    # retain the same bounded row domain as the original full-capacity launch.
+    if row == 0:
+      wp.atomic_max(maximum_out, 0, wp.min(nefc_in[worldid], rownnz_in.shape[1]))  # kernel_analyzer: ignore[atomic]
+    wp.atomic_max(maximum_out, 1, rownnz_in[worldid, row])  # kernel_analyzer: ignore[atomic]
+
+
+def _launch_qfrc_constraint_sparse(m, d, ctx, compact, dj, changed):
+  """Project sparse forces with sufficient device-selected native scatter bounds.
+
+  Canonical row order and RUN_TO_RUN arithmetic are unchanged. Full-capacity
+  and full-width fallbacks retain every contribution, including compact solves.
+  """
+  deterministic = bool(m.opt.deterministic & types.DeterminismType.ATOMICS)
+  nv = ctx.compact_m_full.nv if compact else m.nv
+  inputs = [d.nefc, dj.efc.J_rownnz, dj.efc.J_rowadr, dj.efc.J_colind, dj.efc.J, d.efc.force, dj.dof_cdof, changed, ctx.done]
+
+  def launch_rows(rows, width):
+    """Preserve canonical source slots while bounding unused scatter records."""
+    wp.launch(
+      _update_constraint_init_qfrc_constraint_sparse(compact, deterministic, width),
+      dim=(d.nworld, rows),
+      inputs=inputs,
+      outputs=[d.qfrc_constraint],
+    )
+
+  if deterministic and m.opt.graph_conditional:
+    ctx.qfrc_maximum.zero_()
+    wp.launch(
+      _max_active_qfrc_rows,
+      dim=(d.nworld, d.njmax),
+      inputs=[d.nefc, dj.efc.J_rownnz, changed, ctx.done],
+      outputs=[ctx.qfrc_maximum],
+    )
+    lower, index = 0, 0
+    for upper in sorted({min(d.njmax, size) for size in (128, 256, d.njmax)}):
+      width_lower = -1
+      for width in sorted({min(nv, 16), nv}):
+        active = ctx.qfrc_buckets[index]
+        wp.launch(_jtdaj_bucket_active, dim=1, inputs=[ctx.qfrc_maximum, lower, upper, width_lower, width], outputs=[active])
+        wp.capture_if(active, on_true=launch_rows, rows=upper, width=width)
+        width_lower = width
+        index += 1
+      lower = upper
+  else:
+    launch_rows(d.njmax, nv)
+
+
+@wp.kernel
 def _qfrc_constraint_from_grad(
   # Data in:
   qfrc_smooth_in: wp.array2d[float],
@@ -2224,12 +2290,7 @@ def _update_constraint(
       inputs=[changed, ctx.done],
       outputs=[d.qfrc_constraint],
     )
-    wp.launch(
-      _update_constraint_init_qfrc_constraint_sparse(sc, bool(m.opt.deterministic & types.DeterminismType.ATOMICS), m.nv),
-      dim=(d.nworld, d.njmax),
-      inputs=[d.nefc, dj.efc.J_rownnz, dj.efc.J_rowadr, dj.efc.J_colind, dj.efc.J, d.efc.force, dj.dof_cdof, changed, ctx.done],
-      outputs=[d.qfrc_constraint],
-    )
+    _launch_qfrc_constraint_sparse(m, d, ctx, sc, dj, changed)
   else:
     wp.launch(
       _update_constraint_init_qfrc_constraint_dense(stable_fast),
