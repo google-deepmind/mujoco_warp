@@ -15,7 +15,6 @@
 """Tests for GPU determinism (contact sorting + constraint row allocation)."""
 
 import hashlib
-from types import SimpleNamespace
 
 import mujoco
 import numpy as np
@@ -825,18 +824,38 @@ class SleepDeterminismTest(absltest.TestCase):
 class HessianBucketTest(parameterized.TestCase):
   """Exercise every bucket boundary with heterogeneous sparse Hessian sources."""
 
-  @parameterized.parameters(0, 16, 17, 64, 65, 256, 257, 512)
-  def test_bucket_matches_full_capacity(self, count):
+  @parameterized.parameters(
+    (0, 15),
+    (16, 15),
+    (17, 15),
+    (64, 15),
+    (65, 15),
+    (128, 15),
+    (129, 15),
+    (256, 15),
+    (257, 15),
+    (512, 15),
+    (65, 16),
+    (65, 17),
+    (65, 35),
+  )
+  def test_bucket_matches_full_capacity(self, count, width):
     """Capacity dispatch preserves all contributions, including the full fallback."""
     nworld, njmax = 4, 512
-    m = SimpleNamespace(nv=1, opt=SimpleNamespace(deterministic=mjw.DeterminismType.ALL, graph_conditional=False))
+    children = "".join(
+      '<body><joint type="slide"/><geom type="sphere" size=".01" contype="0" conaffinity="0"/></body>' for _ in range(35)
+    )
+    _, _, m, d = test_data.fixture(xml=f"<mujoco><worldbody>{children}</worldbody></mujoco>", nworld=nworld, njmax=njmax)
+    m.opt.deterministic = mjw.DeterminismType.ALL
+    m.opt.graph_conditional = False
     counts = wp.array([count, count // 2, 0, njmax], dtype=int)
     done = wp.array([False, False, False, True], dtype=bool)
-    d = SimpleNamespace(nworld=nworld, njmax=njmax, efc=SimpleNamespace(jtdaj_nblock=counts))
     rowadr = wp.array(np.tile(np.arange(njmax, dtype=np.int32), (nworld, 1)), dtype=int)
     ones = wp.ones((nworld, njmax), dtype=int)
+    support = wp.full((nworld, njmax), width, dtype=int)
+    sparse_adr = wp.array(rowadr.numpy() * m.nv, dtype=int)
     rng = np.random.default_rng(42)
-    jacobian = wp.array(rng.uniform(-2, 2, (nworld, 1, njmax)).astype(np.float32))
+    jacobian = wp.array(rng.uniform(-2, 2, (nworld, 1, njmax * m.nv)).astype(np.float32))
     inputs = [
       wp.ones(1, dtype=float),
       wp.zeros(1, dtype=types.vec5),
@@ -845,9 +864,9 @@ class HessianBucketTest(parameterized.TestCase):
       rowadr,
       ones,
       counts,
-      ones,
-      rowadr,
-      wp.zeros((nworld, 1, njmax), dtype=int),
+      support,
+      sparse_adr,
+      wp.array(np.tile(np.arange(m.nv, dtype=np.int32), (nworld, 1, njmax)), dtype=int),
       jacobian,
       wp.ones((nworld, njmax), dtype=float),
       wp.full((nworld, njmax), int(types.ConstraintState.QUADRATIC), dtype=int),
@@ -855,14 +874,15 @@ class HessianBucketTest(parameterized.TestCase):
       wp.zeros((nworld, njmax), dtype=float),
       done,
     ]
-    kernel = solver._JTDACJ_sparse(False, mjw.ConeType.PYRAMIDAL, 3, 128, True, 1)
-    h = wp.zeros((nworld, 1, 1), dtype=float)
-    maximum = wp.empty(1, dtype=int)
-    buckets = wp.empty((4, 1), dtype=int)
+    kernel = solver._JTDACJ_sparse(False, mjw.ConeType.PYRAMIDAL, 3, 128, True, m.nv)
+    narrow = solver._JTDACJ_sparse(False, mjw.ConeType.PYRAMIDAL, 3, 128, True, 16)
+    h = wp.zeros((nworld, m.nv, m.nv), dtype=float)
+    maximum = wp.empty(2, dtype=int)
+    buckets = wp.empty((10, 1), dtype=int)
 
     def launch():
       """Accumulate one Hessian with the currently selected dispatch mode."""
-      solver._launch_jtdaj_sparse(m, d, kernel, inputs, h, 32, 128, counts, done, maximum, buckets)
+      solver._launch_jtdaj_sparse(m, d, kernel, narrow, inputs, h, 32, 128, counts, rowadr, support, done, maximum, buckets)
 
     launch()
     expected = h.numpy().copy()

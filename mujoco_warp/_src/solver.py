@@ -109,8 +109,8 @@ def _create_solver_context(
     beta=wp.empty((nworld,), dtype=float) if alloc_mgrad else wp.empty((0,), dtype=float),
     h=wp.empty((nworld, nv_pad, nv_pad), dtype=float) if alloc_h else wp.empty((nworld, 0, 0), dtype=float),
     hfactor=wp.empty((nworld, nv_pad, nv_pad), dtype=float) if alloc_hfactor else wp.empty((nworld, 0, 0), dtype=float),
-    jtdaj_maximum=wp.empty(1, dtype=int),
-    jtdaj_buckets=wp.empty((4, 1), dtype=int),
+    jtdaj_maximum=wp.empty(2, dtype=int),
+    jtdaj_buckets=wp.empty((10, 1), dtype=int),
     quad_changed_ids=wp.empty((nworld, njmax), dtype=int) if alloc_incremental else wp.empty((nworld, 0), dtype=int),
     quad_changed_count=wp.empty((nworld,), dtype=int) if alloc_incremental else wp.empty((0,), dtype=int),
     state_changed_count=wp.empty((nworld,), dtype=int) if alloc_incremental else wp.empty((0,), dtype=int),
@@ -3405,21 +3405,29 @@ def _jtdaj_groups_per_world(nworld: int, njmax: int, kernel: wp.Kernel) -> int:
 
 
 @wp.kernel
-def _max_active_jtdaj_blocks(counts: wp.array[int], done: wp.array[bool], maximum_out: wp.array[int]):
-  """Find the largest live Hessian block count without a host readback."""
-  worldid = wp.tid()
-  if not done[worldid]:
+def _max_active_jtdaj_blocks(
+  counts: wp.array[int], heads: wp.array2d[int], rownnz: wp.array2d[int], done: wp.array[bool], maximum_out: wp.array[int]
+):
+  """Find live Hessian block and support bounds without a host readback."""
+  worldid, slot = wp.tid()
+  if not done[worldid] and slot < counts[worldid]:
     # Integer maximum is order independent.
-    wp.atomic_max(maximum_out, 0, counts[worldid])  # kernel_analyzer: ignore[atomic]
+    if slot == 0:
+      wp.atomic_max(maximum_out, 0, counts[worldid])  # kernel_analyzer: ignore[atomic]
+    wp.atomic_max(maximum_out, 1, rownnz[worldid, heads[worldid, slot]])  # kernel_analyzer: ignore[atomic]
 
 
 @wp.kernel
-def _jtdaj_bucket_active(maximum: wp.array[int], lower: int, upper: int, active_out: wp.array[int]):
+def _jtdaj_bucket_active(
+  maximum: wp.array[int], lower: int, upper: int, width_lower: int, width_upper: int, active_out: wp.array[int]
+):
   """Select exactly one sufficient scatter capacity, or none for an empty solve."""
-  active_out[0] = int(maximum[0] > lower and maximum[0] <= upper)
+  active_out[0] = int(maximum[0] > lower and maximum[0] <= upper and maximum[1] > width_lower and maximum[1] <= width_upper)
 
 
-def _launch_jtdaj_sparse(m, d, kernel, inputs, h, threads_per_group, block_dim, counts, done, maximum, buckets):
+def _launch_jtdaj_sparse(
+  m, d, kernel, narrow_kernel, inputs, h, threads_per_group, block_dim, counts, heads, rownnz, done, maximum, buckets
+):
   """Bound captured scatter work using device-selected capacity buckets.
 
   Each selected capacity covers every active world's blocks, retaining one
@@ -3428,16 +3436,16 @@ def _launch_jtdaj_sparse(m, d, kernel, inputs, h, threads_per_group, block_dim, 
   """
   deterministic = bool(m.opt.deterministic & types.DeterminismType.ATOMICS)
 
-  def launch_groups(groups):
+  def launch_groups(groups, width):
     """Launch independent worlds with a bounded native scatter workspace."""
     worlds_per_launch = d.nworld
     if deterministic:
-      records_per_lane = max(1, (m.nv * (m.nv + 1) // 2 + threads_per_group - 1) // threads_per_group)
+      records_per_lane = max(1, (width * (width + 1) // 2 + threads_per_group - 1) // threads_per_group)
       records_per_world = groups * threads_per_group * records_per_lane
       worlds_per_launch = max(1, min(d.nworld, (1 << 24) // records_per_world))
     for world_start in range(0, d.nworld, worlds_per_launch):
       wp.launch(
-        kernel,
+        narrow_kernel if width < m.nv else kernel,
         dim=(min(worlds_per_launch, d.nworld - world_start), groups, threads_per_group),
         inputs=[*inputs, groups, world_start],
         outputs=[h],
@@ -3446,15 +3454,20 @@ def _launch_jtdaj_sparse(m, d, kernel, inputs, h, threads_per_group, block_dim, 
 
   if deterministic and m.opt.graph_conditional:
     maximum.zero_()
-    wp.launch(_max_active_jtdaj_blocks, dim=d.nworld, inputs=[counts, done], outputs=[maximum])
+    wp.launch(_max_active_jtdaj_blocks, dim=(d.nworld, d.njmax), inputs=[counts, heads, rownnz, done], outputs=[maximum])
     lower = 0
-    for index, upper in enumerate(sorted({min(d.njmax, size) for size in (16, 64, 256, d.njmax)})):
-      active = buckets[index]
-      wp.launch(_jtdaj_bucket_active, dim=1, inputs=[maximum, lower, upper], outputs=[active])
-      wp.capture_if(active, on_true=launch_groups, groups=upper)
+    index = 0
+    for upper in sorted({min(d.njmax, size) for size in (16, 64, 128, 256, d.njmax)}):
+      width_lower = -1
+      for width in sorted({min(m.nv, 16), m.nv}):
+        active = buckets[index]
+        wp.launch(_jtdaj_bucket_active, dim=1, inputs=[maximum, lower, upper, width_lower, width], outputs=[active])
+        wp.capture_if(active, on_true=launch_groups, groups=upper, width=width)
+        width_lower = width
+        index += 1
       lower = upper
   else:
-    launch_groups(d.njmax if deterministic else _jtdaj_groups_per_world(d.nworld, d.njmax, kernel))
+    launch_groups(d.njmax if deterministic else _jtdaj_groups_per_world(d.nworld, d.njmax, kernel), m.nv)
 
 
 def _update_gradient(m: types.Model, d: types.Data, ctx: SolverContext, compact: bool = False):
@@ -3514,6 +3527,9 @@ def _update_gradient(m: types.Model, d: types.Data, ctx: SolverContext, compact:
       jtdaj_kernel = _JTDACJ_sparse(
         sc, m.opt.cone, max_condim, block_dim, bool(m.opt.deterministic & types.DeterminismType.ATOMICS), m.nv
       )
+      narrow_kernel = _JTDACJ_sparse(
+        sc, m.opt.cone, max_condim, block_dim, bool(m.opt.deterministic & types.DeterminismType.ATOMICS), min(m.nv, 16)
+      )
       jtdaj_inputs = [
         m.opt.impratio_invsqrt,
         d.contact.friction,
@@ -3536,11 +3552,14 @@ def _update_gradient(m: types.Model, d: types.Data, ctx: SolverContext, compact:
         m,
         d,
         jtdaj_kernel,
+        narrow_kernel,
         jtdaj_inputs,
         ctx.h,
         threads_per_group,
         block_dim,
         dj.efc.jtdaj_nblock,
+        dj.efc.jtdaj_adr,
+        dj.efc.J_rownnz,
         ctx.done,
         ctx.jtdaj_maximum,
         ctx.jtdaj_buckets,
