@@ -487,6 +487,7 @@ class SolverDeterminismTest(parameterized.TestCase):
     nsteps = 100
 
     def run():
+      """Run an independent trajectory and return its recorded state."""
       overrides = {"opt.jacobian": jacobian}
       _, _, m, d = test_data.fixture(path=path, nworld=nworld, overrides=overrides)
       m.opt.deterministic = True
@@ -512,6 +513,7 @@ class SolverDeterminismTest(parameterized.TestCase):
     nsteps = 50
 
     def run(det):
+      """Run an independent trajectory and return its recorded state."""
       _, _, m, d = test_data.fixture(path="humanoid/humanoid.xml", nworld=1, overrides={"opt.jacobian": "SPARSE"})
       m.opt.deterministic = det
       for _ in range(nsteps):
@@ -657,6 +659,7 @@ class SDFDeterminismTest(absltest.TestCase):
     nsteps = 30
 
     def run():
+      """Run an independent trajectory and return its recorded state."""
       mjm, _, m, d = test_data.fixture(xml=_SDF_PLANE_CUBE, nworld=4, overrides={"opt.jacobian": "SPARSE"})
       m.opt.deterministic = True
       for _ in range(nsteps):
@@ -734,6 +737,7 @@ class FlexDeterminismTest(absltest.TestCase):
     nworld = d.nworld
 
     def snapshot():
+      """Return active constraint data for an exact repeat comparison."""
       mjw.make_constraint(m, d)
       nefc = d.nefc.numpy().copy()
       fields = {}

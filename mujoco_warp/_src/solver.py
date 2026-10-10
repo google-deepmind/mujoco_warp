@@ -1947,16 +1947,17 @@ def _zero_qfrc_constraint_sparse(
 
 
 @cache_kernel
-def _update_constraint_init_qfrc_constraint_sparse(compact: bool, deterministic: bool = False):
+def _update_constraint_init_qfrc_constraint_sparse(compact: bool, deterministic: bool = False, nv: int = 1):
   """Build the sparse constraint-force projection kernel.
 
   With deterministic=True, floating-point reductions use Warp RUN_TO_RUN.
-  The default preserves the ordinary kernel path.
+  The nv bound covers the dynamic sparse-row loop; the default keeps ordinary execution.
   """
   COMPACT = compact
   module_options = {"enable_backward": False}
   if deterministic:
     module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
+    module_options["deterministic_max_records"] = max(1, nv)
 
   @wp.kernel(module="unique", enable_backward=False, grid_stride=True, module_options=module_options)
   def kernel(
@@ -2222,7 +2223,7 @@ def _update_constraint(
       outputs=[d.qfrc_constraint],
     )
     wp.launch(
-      _update_constraint_init_qfrc_constraint_sparse(sc, bool(m.opt.deterministic & types.DeterminismType.ATOMICS)),
+      _update_constraint_init_qfrc_constraint_sparse(sc, bool(m.opt.deterministic & types.DeterminismType.ATOMICS), m.nv),
       dim=(d.nworld, d.njmax),
       inputs=[d.nefc, dj.efc.J_rownnz, dj.efc.J_rowadr, dj.efc.J_colind, dj.efc.J, d.efc.force, dj.dof_cdof, changed, ctx.done],
       outputs=[d.qfrc_constraint],
@@ -3122,11 +3123,12 @@ def _JTDACJ_sparse(
   max_condim: int,
   block_dim: int = types.BlockDim.update_gradient_JTDAJ_sparse,
   deterministic: bool = False,
+  nv: int = 1,
 ):
   """Build sparse constraint Hessian accumulation with a fixed launch block size.
 
   With deterministic=True, floating-point reductions use Warp RUN_TO_RUN.
-  The default preserves the ordinary kernel path.
+  Deterministic launches assign one block per slot; nv bounds its triangular scatter count.
   """
   COMPACT = compact
   ELLIPTIC = cone_type == types.ConeType.ELLIPTIC
@@ -3134,6 +3136,8 @@ def _JTDACJ_sparse(
   module_options = {"enable_backward": False}
   if deterministic:
     module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
+    lanes = block_dim if ELLIPTIC else _JTDAJ_THREADS_PER_GROUP
+    module_options["deterministic_max_records"] = max(1, (nv * (nv + 1) // 2 + lanes - 1) // lanes)
 
   def make_curvature_terms(condim: int):
     @wp.func
@@ -3451,9 +3455,13 @@ def _update_gradient(m: types.Model, d: types.Data, ctx: SolverContext, compact:
       threads_per_group = 1 if elliptic and wp.get_device().is_cpu else _JTDAJ_THREADS_PER_GROUP
       block_dim = threads_per_group if elliptic else mj.block_dim.update_gradient_JTDAJ_sparse
       jtdaj_kernel = _JTDACJ_sparse(
-        sc, m.opt.cone, max_condim, block_dim, bool(m.opt.deterministic & types.DeterminismType.ATOMICS)
+        sc, m.opt.cone, max_condim, block_dim, bool(m.opt.deterministic & types.DeterminismType.ATOMICS), m.nv
       )
-      groups_per_world = _jtdaj_groups_per_world(d.nworld, d.njmax, jtdaj_kernel)
+      groups_per_world = (
+        d.njmax
+        if m.opt.deterministic & types.DeterminismType.ATOMICS
+        else _jtdaj_groups_per_world(d.nworld, d.njmax, jtdaj_kernel)
+      )
       jtdaj_inputs = [
         m.opt.impratio_invsqrt,
         d.contact.friction,

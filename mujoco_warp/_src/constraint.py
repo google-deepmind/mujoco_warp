@@ -3840,6 +3840,7 @@ def _efc_contact_count(cone_type: types.ConeType, is_sparse: bool, flg_adhesion:
     efcid_count_out: wp.array2d[int],
     nnz_count_out: wp.array2d[int],
   ):
+    """Count active contact rows and sparse entries before fixed-order allocation."""
     conid = wp.tid()
 
     efcid_count_out[conid, 0] = 0
@@ -3940,6 +3941,7 @@ def _efc_contact_count_flex(cone_type: types.ConeType, is_sparse: bool, flg_adhe
     efcid_count_out: wp.array2d[int],
     nnz_count_out: wp.array2d[int],
   ):
+    """Count active contact rows and sparse entries before fixed-order allocation."""
     conid = wp.tid()
 
     efcid_count_out[conid, 0] = 0
