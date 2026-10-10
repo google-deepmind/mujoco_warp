@@ -832,7 +832,7 @@ class FullStepGraphTest(parameterized.TestCase):
       for i in range(37)
     )
     _, _, m, d = test_data.fixture(
-      xml=f"""<mujoco><option iterations="2" ls_iterations="4" jacobian="sparse"/>
+      xml=f"""<mujoco><option iterations="20" ls_iterations="50" jacobian="sparse"/>
         <worldbody><geom type="plane" size="2 2 .1"/>
           <body pos="0 0 .09"><freejoint/><geom type="box" size=".1 .08 .1"/>
             {children}</body></worldbody></mujoco>""",
