@@ -2202,7 +2202,7 @@ class IOTest(parameterized.TestCase):
   def test_put_data_nefc_zero_dense(self):
     """put_data succeeds for dense models with nefc=0 and non-empty efc_J."""
     # Allocate a dense Jacobian with tendon friction, then exercise an empty
-    # active prefix without discarding that buffer (reshape((0, nv)) must work).
+    # active prefix without discarding that buffer; put_data must ignore padding.
     mjm = mujoco.MjModel.from_xml_string("""
       <mujoco>
         <worldbody>
@@ -2231,8 +2231,8 @@ class IOTest(parameterized.TestCase):
 
     # Current MuJoCo activates the tendon friction row. Explicitly retain the
     # allocated Jacobian while setting its active constraint prefix to zero.
-    self.assertGreater(mjd.efc_J.size, 0)
     mjd.nefc = 0
+    self.assertGreater(mjd.efc_J.size, 0)
 
     self.assertFalse(mujoco.mj_isSparse(mjm))
     self.assertEqual(mjd.nefc, 0)
