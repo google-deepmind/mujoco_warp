@@ -16,7 +16,6 @@
 """Tests for the core MuJoCo Warp types."""
 
 import dataclasses
-from unittest import mock
 
 import mujoco
 import numpy as np
@@ -26,11 +25,8 @@ from absl.testing import parameterized
 
 from mujoco_warp import test_data
 from mujoco_warp._src import util_pkg
-from mujoco_warp._src.collision_driver import collision
-from mujoco_warp._src.constraint import make_constraint
 from mujoco_warp._src.forward import step
 from mujoco_warp._src.io import override_model
-from mujoco_warp._src.island import island
 from mujoco_warp._src.types import Data
 from mujoco_warp._src.types import DeterminismType
 from mujoco_warp._src.types import IntegratorType
@@ -215,8 +211,8 @@ class TypesTest(parameterized.TestCase):
       self.assertEqual(m.opt.deterministic, expected)
 
   @parameterized.parameters(1, 2)
-  def test_determinism_pipeline_hooks(self, nworld):
-    """Tests that sort hooks and atomic determinism modes execute cleanly across the pipeline."""
+  def test_determinism_pipeline_modes(self, nworld):
+    """Selective ordering and arithmetic modes preserve finite heterogeneous simulation states."""
     _, _, m, d = test_data.fixture(
       xml="""
       <mujoco>
@@ -252,27 +248,17 @@ class TypesTest(parameterized.TestCase):
     # Step with atomics modes
     for integrator in (IntegratorType.EULER, IntegratorType.DISCRETE):
       m.opt.integrator = integrator
-      for flag in (DeterminismType.NONE, DeterminismType.ATOMICS, DeterminismType.ALL):
+      for flag in (
+        DeterminismType.NONE,
+        DeterminismType.CONTACTS,
+        DeterminismType.CONSTRAINT,
+        DeterminismType.ATOMICS,
+        DeterminismType.ALL,
+      ):
         m.opt.deterministic = flag
         d.qacc.fill_(wp.inf)
         step(m, d)
-        self.assertFalse(np.any(np.isinf(d.qacc.numpy())))
-
-    # Test sort hooks
-    with mock.patch("mujoco_warp._src.collision_driver._sort_contacts") as mock_sort_contacts:
-      m.opt.deterministic = DeterminismType.CONTACTS
-      collision(m, d)
-      self.assertTrue(mock_sort_contacts.called)
-
-    with mock.patch("mujoco_warp._src.constraint._sort_constraints") as mock_sort_constraints:
-      m.opt.deterministic = DeterminismType.CONSTRAINT
-      make_constraint(m, d)
-      self.assertTrue(mock_sort_constraints.called)
-
-    with mock.patch("mujoco_warp._src.island._sort_islands") as mock_sort_islands:
-      m.opt.deterministic = DeterminismType.ISLANDS
-      island(m, d)
-      self.assertTrue(mock_sort_islands.called)
+        self.assertTrue(np.isfinite(d.qacc.numpy()).all())
 
     if nworld == 2:
       self.assertFalse(np.allclose(d.qacc.numpy()[0], d.qacc.numpy()[1]))

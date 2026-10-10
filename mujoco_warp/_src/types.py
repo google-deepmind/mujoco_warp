@@ -258,20 +258,21 @@ class DataType(enum.IntFlag):
 
 
 class DeterminismType(enum.IntFlag):
-  """Select deterministic arithmetic and reserved ordering hooks.
+  """Select deterministic arithmetic and contact/constraint ordering.
 
-  Only ATOMICS currently implements deterministic execution. CONTACTS, CONSTRAINT
-  and ISLANDS select placeholder hooks; ALL does not yet guarantee deterministic
-  full simulation. RUN_TO_RUN arithmetic also does not promise cross-device or
+  CONTACTS orders collision records and CONSTRAINT allocates rows in fixed order.
+  ATOMICS enables deterministic reductions. ISLANDS remains reserved, so ALL does
+  not yet guarantee deterministic full simulation with island processing. RUN_TO_RUN arithmetic also
+  does not promise cross-device or
   cross-batch bitwise equality.
 
   Attributes:
     NONE: non-deterministic execution
-    CONTACTS: reserved hook for stable contact ordering
-    CONSTRAINT: reserved hook for canonical constraint row ordering
+    CONTACTS: canonical contact and flex candidate ordering
+    CONSTRAINT: count/scan/emit constraint rows, including contact ordering
     ATOMICS: opt in to deterministic floating-point reduction kernels
     ISLANDS: reserved hook for canonical island ordering
-    ALL: enable arithmetic and all reserved ordering hooks
+    ALL: enable arithmetic, contact/constraint ordering and the reserved island hook
   """
 
   NONE = 0

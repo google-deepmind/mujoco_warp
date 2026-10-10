@@ -33,6 +33,7 @@ from mujoco_warp._src.types import MJ_MINMU
 from mujoco_warp._src.types import MJ_MINVAL
 from mujoco_warp._src.types import ContactType
 from mujoco_warp._src.types import Data
+from mujoco_warp._src.types import DeterminismType
 from mujoco_warp._src.types import GeomType
 from mujoco_warp._src.types import IntegratorType
 from mujoco_warp._src.types import Model
@@ -2207,7 +2208,7 @@ def _filter_flex_candidates_sorted(
 
 
 @cache_kernel
-def _write_filtered_contacts(warn_overflow: int):
+def _write_filtered_contacts(warn_overflow: int, deterministic: bool = False):
   @wp.kernel(module="unique", enable_backward=False)
   def kernel(
     # Model:
@@ -2385,7 +2386,7 @@ def _write_filtered_contacts(warn_overflow: int):
     )
     is_passive = wants and ok
     contact_type_out[id_] = int(ContactType.PASSIVE) if is_passive else int(ContactType.CONSTRAINT)
-    contact_geomcollisionid_out[id_] = 0
+    contact_geomcollisionid_out[id_] = i if wp.static(deterministic) else 0
 
   return kernel
 
@@ -3085,6 +3086,89 @@ def _run_filter_flex_fps(
       _fps_iteration()
 
 
+@cache_kernel
+def _candidate_sort_key(column: int, initialize: bool):
+  """Build one exact-bit lexicographic key component for candidate records."""
+
+  @wp.kernel(module="unique", enable_backward=False)
+  def kernel(
+    # In:
+    ncand_in: wp.array[int],
+    source_in: wp.array2d[int],
+    # Out:
+    indices_out: wp.array[int],
+    keys_out: wp.array[wp.int64],
+  ):
+    """Keep the inactive tail after the active candidates on every stable sort pass."""
+    i = wp.tid()
+    if wp.static(initialize):
+      indices_out[i] = i
+    if i < ncand_in[0]:
+      keys_out[i] = wp.int64(source_in[indices_out[i], column])
+    else:
+      keys_out[i] = wp.int64(9223372036854775807)
+
+  return kernel
+
+
+@cache_kernel
+def _gather_candidates(dtype):
+  """Build a field gather for canonical candidate storage."""
+
+  @wp.kernel(module="unique", enable_backward=False)
+  def kernel(
+    # In:
+    ncand_in: wp.array[int],
+    indices_in: wp.array[int],
+    source_in: wp.array[dtype],
+    # Out:
+    target_out: wp.array[dtype],
+  ):
+    """Gather the active prefix without modifying inactive storage."""
+    i = wp.tid()
+    if i < ncand_in[0]:
+      target_out[i] = source_in[indices_in[i]]
+
+  return kernel
+
+
+def _canonicalize_candidates(ws: FlexWorkspace):
+  """Order candidate contents before deduplication and FPS use candidate-index ties.
+
+  Integer views preserve exact float bits, including signed zeros. Equal keys
+  describe identical records, so their original atomic allocation order cannot
+  affect the retained payload. No quantization or host readback is involved.
+  This opt-in flex path favors complete keys over packed-key range assumptions.
+  """
+  fields = (ws.worldid, ws.geom, ws.flex, ws.elem, ws.vert, ws.dist, ws.pos, ws.nrm)
+  capacity = ws.dist.shape[0]
+  if not capacity:
+    return
+  indices = wp.empty(2 * capacity, dtype=int)
+  keys = wp.empty(2 * capacity, dtype=wp.int64)
+  initialize = True
+  for array in reversed(fields):
+    bits = array.view(wp.int32)
+    bits = bits.reshape((capacity, bits.size // capacity))
+    for column in reversed(range(bits.shape[1])):
+      wp.launch(
+        _candidate_sort_key(column, initialize),
+        dim=capacity,
+        inputs=[ws.ncand, bits],
+        outputs=[indices, keys],
+      )
+      wp.utils.radix_sort_pairs(keys, indices, capacity)
+      initialize = False
+  for array in fields:
+    source = wp.clone(array)
+    wp.launch(
+      _gather_candidates(array.dtype),
+      dim=capacity,
+      inputs=[ws.ncand, indices, source],
+      outputs=[array],
+    )
+
+
 def _filter_and_write_contacts(
   m: Model,
   d: Data,
@@ -3092,6 +3176,9 @@ def _filter_and_write_contacts(
   enable_fps: bool = False,
 ):
   """Deduplicates candidates, optionally applies FPS filtering, and writes contacts to d.contact."""
+  deterministic = bool(m.opt.deterministic & (DeterminismType.CONTACTS | DeterminismType.CONSTRAINT))
+  if deterministic:
+    _canonicalize_candidates(ws)
   wp.launch(
     _compute_filter_key,
     dim=d.naconmax,

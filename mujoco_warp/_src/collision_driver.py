@@ -929,6 +929,62 @@ def _narrowphase(m: Model, d: Data, ctx: CollisionContext):
     sdf_narrowphase(m, d, ctx)
 
 
+# Maximum geomcollisionid packed into rigid sort keys. Primitive box<>box
+# generates at most 8 contacts; SDF pairs generate up to sdf_initpoints, so the
+# key width is raised to that when SDF geoms are present.
+_CONTACT_SORT_GCID_MAX = 8
+
+
+@cache_kernel
+def _compute_contact_sort_keys(has_flex: bool):
+  """Build world-major rigid keys and canonical flex-candidate keys."""
+
+  @wp.kernel(module="unique", enable_backward=False)
+  def kernel(
+    # Model:
+    ngeom: int,
+    nflex: int,
+    nflexvert: int,
+    nflexelem: int,
+    # Data in:
+    contact_geom_in: wp.array[wp.vec2i],
+    contact_flex_in: wp.array[wp.vec2i],
+    contact_elem_in: wp.array[wp.vec2i],
+    contact_vert_in: wp.array[wp.vec2i],
+    contact_worldid_in: wp.array[int],
+    contact_geomcollisionid_in: wp.array[int],
+    nacon_in: wp.array[int],
+    # In:
+    gcid_max: int,
+    world_key_space: wp.int64,
+    flex_subkey_base: wp.int64,
+    # Out:
+    sort_keys_out: wp.array[wp.int64],
+    sort_indices_out: wp.array[int],
+  ):
+    """Compute composite sort keys for deterministic contact ordering."""
+    cid = wp.tid()
+    sort_indices_out[cid] = cid
+    if cid >= nacon_in[0]:
+      sort_keys_out[cid] = wp.int64(9223372036854775807)  # INT64_MAX: inactive contacts sort to end
+      return
+    geom = contact_geom_in[cid]
+    wid = contact_worldid_in[cid]
+    gcid = contact_geomcollisionid_in[cid]
+    # Worldid is the leading radix so each world's contacts stay contiguous after
+    # sorting, which the per-world constraint row scan relies on.
+    world_key = wp.int64(wid) * world_key_space
+    if wp.static(has_flex):
+      if geom[1] < 0:
+        sort_keys_out[cid] = world_key + flex_subkey_base + wp.int64(gcid)
+        return
+    key = wp.int64(geom[0]) * wp.int64(ngeom) + wp.int64(geom[1])
+    key = key * wp.int64(gcid_max) + wp.int64(gcid)
+    sort_keys_out[cid] = world_key + key
+
+  return kernel
+
+
 @cache_kernel
 def _permute_contact_field(dtype, ndim: int):
   """Build an active-contact gather for a scalar/vector field or a two-dimensional array."""
@@ -987,9 +1043,58 @@ def _permute_contacts(d: Data, permutation: wp.array):
 
 
 def _sort_contacts(m: Model, d: Data):
-  """Deterministic contact sort."""
-  # TODO(team): Implementation contact sorting.
-  pass
+  """Sort contacts by (worldid, geom0, geom1, geomcollisionid) for determinism."""
+  if d.naconmax == 0:
+    return
+
+  # Rigid keys pack (worldid, geom0, geom1, gcid); the gcid width must cover the
+  # largest per-pair manifold so every contact of a pair gets a unique key.
+  gcid_max = _CONTACT_SORT_GCID_MAX
+  if m.has_sdf_geom:
+    gcid_max = max(gcid_max, m.opt.sdf_initpoints)
+
+  # Each world owns one contiguous key range, split into rigid subkeys below and
+  # flex subkeys above, so sorted contacts are world-major and world-contiguous.
+  rigid_key_space = m.ngeom * m.ngeom * gcid_max
+  flex_key_space = d.naconmax if m.nflex > 0 else 0
+  world_key_space = rigid_key_space + flex_key_space
+  if d.nworld * world_key_space > 2**63 - 1:
+    raise RuntimeError(
+      f"opt.deterministic: contact sort keys exceed int64 (nworld={d.nworld}, per-world rigid key "
+      f"space={rigid_key_space}, flex key space={flex_key_space}). Reduce nworld, ngeom or flex sizes."
+    )
+
+  # Allocate sort buffers (radix_sort_pairs needs 2x capacity for internal use).
+  sort_keys = wp.empty(2 * d.naconmax, dtype=wp.int64)
+  sort_indices = wp.empty(2 * d.naconmax, dtype=int)
+
+  # Step 1: Compute sort keys and initialise indices to identity.
+  wp.launch(
+    _compute_contact_sort_keys(m.nflex > 0),
+    dim=d.naconmax,
+    inputs=[
+      m.ngeom,
+      m.nflex,
+      m.nflexvert,
+      m.nflexelem,
+      d.contact.geom,
+      d.contact.flex,
+      d.contact.elem,
+      d.contact.vert,
+      d.contact.worldid,
+      d.contact.geomcollisionid,
+      d.nacon,
+      gcid_max,
+      wp.int64(world_key_space),
+      wp.int64(rigid_key_space),
+    ],
+    outputs=[sort_keys, sort_indices],
+  )
+
+  # Step 2: Stable radix sort on keys, carrying indices.
+  wp.utils.radix_sort_pairs(sort_keys, sort_indices, d.naconmax)
+
+  _permute_contacts(d, sort_indices)
 
 
 @event_scope
