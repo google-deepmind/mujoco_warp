@@ -3402,6 +3402,59 @@ def _jtdaj_groups_per_world(nworld: int, njmax: int, kernel: wp.Kernel) -> int:
   return max(1, min(njmax, _JTDAJ_OVERSUBSCRIBE_WAVES * device_warps // nworld))
 
 
+@wp.kernel
+def _max_active_jtdaj_blocks(counts: wp.array[int], done: wp.array[bool], maximum_out: wp.array[int]):
+  """Find the largest live Hessian block count without a host readback."""
+  worldid = wp.tid()
+  if not done[worldid]:
+    # Integer maximum is order independent.
+    wp.atomic_max(maximum_out, 0, counts[worldid])  # kernel_analyzer: ignore[atomic]
+
+
+@wp.kernel
+def _jtdaj_bucket_active(maximum: wp.array[int], lower: int, upper: int, active_out: wp.array[int]):
+  """Select exactly one sufficient scatter capacity, or none for an empty solve."""
+  active_out[0] = int(maximum[0] > lower and maximum[0] <= upper)
+
+
+def _launch_jtdaj_sparse(m, d, kernel, inputs, h, threads_per_group, block_dim, done):
+  """Bound captured scatter work using device-selected capacity buckets.
+
+  Each selected capacity covers every active world's blocks, retaining one
+  source slot per block and its canonical reduction order. The full njmax
+  fallback preserves capacity; no contacts or constraints are discarded.
+  """
+  deterministic = bool(m.opt.deterministic & types.DeterminismType.ATOMICS)
+
+  def launch_groups(groups):
+    """Launch independent worlds with a bounded native scatter workspace."""
+    worlds_per_launch = d.nworld
+    if deterministic:
+      records_per_lane = max(1, (m.nv * (m.nv + 1) // 2 + threads_per_group - 1) // threads_per_group)
+      records_per_world = groups * threads_per_group * records_per_lane
+      worlds_per_launch = max(1, min(d.nworld, (1 << 24) // records_per_world))
+    for world_start in range(0, d.nworld, worlds_per_launch):
+      wp.launch(
+        kernel,
+        dim=(min(worlds_per_launch, d.nworld - world_start), groups, threads_per_group),
+        inputs=[*inputs, groups, world_start],
+        outputs=[h],
+        block_dim=block_dim,
+      )
+
+  if deterministic and m.opt.graph_conditional:
+    maximum = wp.zeros(1, dtype=int)
+    wp.launch(_max_active_jtdaj_blocks, dim=d.nworld, inputs=[d.efc.jtdaj_nblock, done], outputs=[maximum])
+    lower = 0
+    for upper in sorted({min(d.njmax, size) for size in (16, 64, 256, d.njmax)}):
+      active = wp.empty(1, dtype=int)
+      wp.launch(_jtdaj_bucket_active, dim=1, inputs=[maximum, lower, upper], outputs=[active])
+      wp.capture_if(active, on_true=launch_groups, groups=upper)
+      lower = upper
+  else:
+    launch_groups(d.njmax if deterministic else _jtdaj_groups_per_world(d.nworld, d.njmax, kernel))
+
+
 def _update_gradient(m: types.Model, d: types.Data, ctx: SolverContext, compact: bool = False):
   # grad = Ma - qfrc_smooth - qfrc_constraint
   """Update solver gradient and, for Newton, its constraint Hessian."""
@@ -3459,11 +3512,6 @@ def _update_gradient(m: types.Model, d: types.Data, ctx: SolverContext, compact:
       jtdaj_kernel = _JTDACJ_sparse(
         sc, m.opt.cone, max_condim, block_dim, bool(m.opt.deterministic & types.DeterminismType.ATOMICS), m.nv
       )
-      groups_per_world = (
-        d.njmax
-        if m.opt.deterministic & types.DeterminismType.ATOMICS
-        else _jtdaj_groups_per_world(d.nworld, d.njmax, jtdaj_kernel)
-      )
       jtdaj_inputs = [
         m.opt.impratio_invsqrt,
         d.contact.friction,
@@ -3481,24 +3529,8 @@ def _update_gradient(m: types.Model, d: types.Data, ctx: SolverContext, compact:
         dj.dof_cdof,
         ctx.Jaref,
         ctx.done,
-        groups_per_world,
       ]
-      worlds_per_launch = d.nworld
-      if m.opt.deterministic & types.DeterminismType.ATOMICS:
-        # Graph capture reserves worst-case scatter storage rather than the eager
-        # active count. Bound each independent-world launch to avoid Warp's int32
-        # workspace shape limit without changing any world's reduction order.
-        records_per_lane = max(1, (m.nv * (m.nv + 1) // 2 + threads_per_group - 1) // threads_per_group)
-        records_per_world = groups_per_world * threads_per_group * records_per_lane
-        worlds_per_launch = max(1, min(d.nworld, (1 << 24) // records_per_world))
-      for world_start in range(0, d.nworld, worlds_per_launch):
-        wp.launch(
-          jtdaj_kernel,
-          dim=(min(worlds_per_launch, d.nworld - world_start), groups_per_world, threads_per_group),
-          inputs=[*jtdaj_inputs, world_start],
-          outputs=[ctx.h],
-          block_dim=block_dim,
-        )
+      _launch_jtdaj_sparse(m, d, jtdaj_kernel, jtdaj_inputs, ctx.h, threads_per_group, block_dim, ctx.done)
     else:
       m_mat = d.qH if is_discrete else d.M
       if compact:

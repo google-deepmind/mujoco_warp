@@ -15,6 +15,7 @@
 """Tests for GPU determinism (contact sorting + constraint row allocation)."""
 
 import hashlib
+from types import SimpleNamespace
 
 import mujoco
 import numpy as np
@@ -25,6 +26,7 @@ from absl.testing import parameterized
 import mujoco_warp as mjw
 from mujoco_warp import test_data
 from mujoco_warp._src import collision_driver
+from mujoco_warp._src import solver
 
 _NSTEPS = 10
 _CONTACT_FIELDS = (
@@ -817,6 +819,66 @@ class SleepDeterminismTest(absltest.TestCase):
     for _ in range(50):
       mjw.step(m, d)
     self.assertFalse(np.isnan(d.qacc.numpy()).any(), "qacc contains NaN after 50 det+SLEEP steps")
+
+
+class HessianBucketTest(parameterized.TestCase):
+  """Exercise every bucket boundary with heterogeneous sparse Hessian sources."""
+
+  @parameterized.parameters(0, 16, 17, 64, 65, 256, 257, 512)
+  def test_bucket_matches_full_capacity(self, count):
+    """Capacity dispatch preserves all contributions, including the full fallback."""
+    nworld, njmax = 4, 512
+    m = SimpleNamespace(nv=1, opt=SimpleNamespace(deterministic=mjw.DeterminismType.ALL, graph_conditional=False))
+    counts = wp.array([count, count // 2, 0, njmax], dtype=int)
+    done = wp.array([False, False, False, True], dtype=bool)
+    d = SimpleNamespace(nworld=nworld, njmax=njmax, efc=SimpleNamespace(jtdaj_nblock=counts))
+    rowadr = wp.array(np.tile(np.arange(njmax, dtype=np.int32), (nworld, 1)), dtype=int)
+    ones = wp.ones((nworld, njmax), dtype=int)
+    rng = np.random.default_rng(42)
+    jacobian = wp.array(rng.uniform(-2, 2, (nworld, 1, njmax)).astype(np.float32))
+    inputs = [
+      wp.ones(1, dtype=float),
+      wp.zeros(1, dtype=mjw._src.types.vec5),
+      wp.full(1, 3, dtype=int),
+      wp.zeros((nworld, njmax), dtype=int),
+      rowadr,
+      ones,
+      counts,
+      ones,
+      rowadr,
+      wp.zeros((nworld, 1, njmax), dtype=int),
+      jacobian,
+      wp.ones((nworld, njmax), dtype=float),
+      wp.full((nworld, njmax), int(mjw._src.types.ConstraintState.QUADRATIC), dtype=int),
+      wp.zeros((nworld, 1), dtype=int),
+      wp.zeros((nworld, njmax), dtype=float),
+      done,
+    ]
+    kernel = solver._JTDACJ_sparse(False, mjw.ConeType.PYRAMIDAL, 3, 128, True, 1)
+    h = wp.zeros((nworld, 1, 1), dtype=float)
+
+    def launch():
+      """Accumulate one Hessian with the currently selected dispatch mode."""
+      solver._launch_jtdaj_sparse(m, d, kernel, inputs, h, 32, 128, done)
+
+    launch()
+    expected = h.numpy().copy()
+    self.assertEqual(expected[2, 0, 0], 0.0)
+    self.assertEqual(expected[3, 0, 0], 0.0)
+    if count:
+      self.assertGreater(expected[0, 0, 0], 0.0)
+    m.opt.graph_conditional = True
+    h.zero_()
+    launch()
+    np.testing.assert_array_equal(h.numpy(), expected)
+    # Warp 1.18 adds deterministic scratch allocation in conditional graphs.
+    if wp.get_device().is_cuda and tuple(map(int, wp.__version__.split(".")[:2])) >= (1, 18):
+      with wp.ScopedCapture() as capture:
+        launch()
+      for _ in range(2):
+        h.zero_()
+        wp.capture_launch(capture.graph)
+        np.testing.assert_array_equal(h.numpy(), expected)
 
 
 class FullStepGraphTest(parameterized.TestCase):
