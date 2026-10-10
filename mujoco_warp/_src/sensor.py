@@ -32,6 +32,7 @@ from mujoco_warp._src.types import ConstraintType
 from mujoco_warp._src.types import ContactType
 from mujoco_warp._src.types import Data
 from mujoco_warp._src.types import DataType
+from mujoco_warp._src.types import DeterminismType
 from mujoco_warp._src.types import DisableBit
 from mujoco_warp._src.types import GeomType
 from mujoco_warp._src.types import JointType
@@ -1611,6 +1612,7 @@ def _tendon_actuator_force(
   # Data out:
   sensordata_out: wp.array2d[float],
 ):
+  """Build the actuator-to-tendon force accumulation kernel."""
   worldid, tenactfrcid, actid = wp.tid()
   sensorid = sensor_tendonactfrc_adr[tenactfrcid]
 
@@ -2063,83 +2065,97 @@ def _sensor_acc(
     _write_vector(sensor_type, sensor_datatype, sensor_adr, sensor_cutoff, sensorid, 3, vec3, out)
 
 
-@wp.kernel
-def _sensor_touch(
-  # Model:
-  opt_cone: int,
-  geom_bodyid: wp.array[int],
-  site_type: wp.array[int],
-  site_bodyid: wp.array[int],
-  site_size: wp.array[wp.vec3],
-  sensor_objid: wp.array[int],
-  sensor_adr: wp.array[int],
-  sensor_touch_adr: wp.array[int],
-  # Data in:
-  site_xpos_in: wp.array2d[wp.vec3],
-  site_xmat_in: wp.array2d[wp.mat33],
-  contact_pos_in: wp.array[wp.vec3],
-  contact_frame_in: wp.array[wp.mat33],
-  contact_dim_in: wp.array[int],
-  contact_geom_in: wp.array[wp.vec2i],
-  contact_efc_address_in: wp.array2d[int],
-  contact_worldid_in: wp.array[int],
-  efc_force_in: wp.array2d[float],
-  nacon_in: wp.array[int],
-  # Data out:
-  sensordata_out: wp.array2d[float],
-):
-  conid, sensortouchadrid = wp.tid()
+@cache_kernel
+def _sensor_touch(deterministic: bool = False):
+  """Build the contact-force accumulation kernel for touch sensors.
 
-  if conid >= nacon_in[0]:
-    return
+  With deterministic=True, floating-point reductions use Warp RUN_TO_RUN.
+  The default preserves the ordinary kernel path.
+  """
+  module_options = {"enable_backward": False}
+  if deterministic:
+    module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
 
-  sensorid = sensor_touch_adr[sensortouchadrid]
+  @wp.kernel(module="unique", module_options=module_options)
+  def kernel(
+    # Model:
+    opt_cone: int,
+    geom_bodyid: wp.array[int],
+    site_type: wp.array[int],
+    site_bodyid: wp.array[int],
+    site_size: wp.array[wp.vec3],
+    sensor_objid: wp.array[int],
+    sensor_adr: wp.array[int],
+    sensor_touch_adr: wp.array[int],
+    # Data in:
+    site_xpos_in: wp.array2d[wp.vec3],
+    site_xmat_in: wp.array2d[wp.mat33],
+    contact_pos_in: wp.array[wp.vec3],
+    contact_frame_in: wp.array[wp.mat33],
+    contact_dim_in: wp.array[int],
+    contact_geom_in: wp.array[wp.vec2i],
+    contact_efc_address_in: wp.array2d[int],
+    contact_worldid_in: wp.array[int],
+    efc_force_in: wp.array2d[float],
+    nacon_in: wp.array[int],
+    # Data out:
+    sensordata_out: wp.array2d[float],
+  ):
+    """Evaluate the contact-force accumulation kernel for touch sensors."""
+    conid, sensortouchadrid = wp.tid()
 
-  objid = sensor_objid[sensorid]
-  bodyid = site_bodyid[objid]
-
-  # find contact in sensor zone, add normal force
-
-  # contacting bodies
-  geom = contact_geom_in[conid]
-  conbody = wp.vec2i(geom_bodyid[geom[0]], geom_bodyid[geom[1]])
-
-  # select contacts involving sensorized body
-  worldid = contact_worldid_in[conid]
-  efc_address0 = contact_efc_address_in[conid, 0]
-  if efc_address0 >= 0 and (bodyid == conbody[0] or bodyid == conbody[1]):
-    # get contact normal force
-    normalforce = efc_force_in[worldid, efc_address0]
-
-    if opt_cone == ConeType.PYRAMIDAL:
-      dim = contact_dim_in[conid]
-      for i in range(1, 2 * (dim - 1)):
-        normalforce += efc_force_in[worldid, contact_efc_address_in[conid, i]]
-
-    if normalforce <= 0.0:
+    if conid >= nacon_in[0]:
       return
 
-    # convert contact normal force to global frame, normalize
-    frame = contact_frame_in[conid]
-    conray = wp.vec3(frame[0, 0], frame[0, 1], frame[0, 2]) * normalforce
-    conray, _ = math.normalize_with_norm(conray)
+    sensorid = sensor_touch_adr[sensortouchadrid]
 
-    # flip ray direction if sensor is on body2
-    if bodyid == conbody[1]:
-      conray = -conray
+    objid = sensor_objid[sensorid]
+    bodyid = site_bodyid[objid]
 
-    # add if ray-zone intersection (always true when contact.pos inside zone)
-    dist, normal = ray.ray_geom(
-      site_xpos_in[worldid, objid],
-      site_xmat_in[worldid, objid],
-      site_size[objid],
-      contact_pos_in[conid],
-      conray,
-      site_type[objid],
-    )
-    if dist >= 0.0:
-      adr = sensor_adr[sensorid]
-      wp.atomic_add(sensordata_out[worldid], adr, normalforce)
+    # find contact in sensor zone, add normal force
+
+    # contacting bodies
+    geom = contact_geom_in[conid]
+    conbody = wp.vec2i(geom_bodyid[geom[0]], geom_bodyid[geom[1]])
+
+    # select contacts involving sensorized body
+    worldid = contact_worldid_in[conid]
+    efc_address0 = contact_efc_address_in[conid, 0]
+    if efc_address0 >= 0 and (bodyid == conbody[0] or bodyid == conbody[1]):
+      # get contact normal force
+      normalforce = efc_force_in[worldid, efc_address0]
+
+      if opt_cone == ConeType.PYRAMIDAL:
+        dim = contact_dim_in[conid]
+        for i in range(1, 2 * (dim - 1)):
+          normalforce += efc_force_in[worldid, contact_efc_address_in[conid, i]]
+
+      if normalforce <= 0.0:
+        return
+
+      # convert contact normal force to global frame, normalize
+      frame = contact_frame_in[conid]
+      conray = wp.vec3(frame[0, 0], frame[0, 1], frame[0, 2]) * normalforce
+      conray, _ = math.normalize_with_norm(conray)
+
+      # flip ray direction if sensor is on body2
+      if bodyid == conbody[1]:
+        conray = -conray
+
+      # add if ray-zone intersection (always true when contact.pos inside zone)
+      dist, normal = ray.ray_geom(
+        site_xpos_in[worldid, objid],
+        site_xmat_in[worldid, objid],
+        site_size[objid],
+        contact_pos_in[conid],
+        conray,
+        site_type[objid],
+      )
+      if dist >= 0.0:
+        adr = sensor_adr[sensorid]
+        wp.atomic_add(sensordata_out[worldid], adr, normalforce)
+
+  return kernel
 
 
 @wp.func
@@ -2199,7 +2215,7 @@ def _preprocess_tactile_contacts_kernel(warn_overflow: int):
       bit_mask = wp.uint32(1) << wp.uint32(geom % 32)
       old_seen = wp.atomic_or(weld_geom_seen_out[worldid, tactile_idx], word_idx, bit_mask)
       if (old_seen & bit_mask) == wp.uint32(0):
-        idx = wp.atomic_add(weld_geom_count_out[worldid], tactile_idx, 1)
+        idx = wp.atomic_add(weld_geom_count_out[worldid], tactile_idx, 1)  # kernel_analyzer: ignore[atomic]
         if idx < MJ_MAXCONPAIR:
           weld_geom_list_out[worldid, tactile_idx, idx] = geom
         else:
@@ -2500,7 +2516,7 @@ def _contact_match_builder(warn_overflow: int):
         if not match22:
           dir = -1.0
 
-    contactmatchid = wp.atomic_add(sensor_contact_nmatch_out[worldid], contactsensorid, 1)
+    contactmatchid = wp.atomic_add(sensor_contact_nmatch_out[worldid], contactsensorid, 1)  # kernel_analyzer: ignore[atomic]
 
     if contactmatchid >= opt_contact_sensor_maxmatch:
       if wp.static(bool(warn_overflow & OverflowType.CONTACT_MATCH)):
@@ -2586,7 +2602,7 @@ def sensor_acc(m: Model, d: Data, skip_rne_postconstraint: bool = False):
     return
 
   wp.launch(
-    _sensor_touch,
+    _sensor_touch(bool(m.opt.deterministic & DeterminismType.ATOMICS)),
     dim=(d.naconmax, m.sensor_touch_adr.size),
     inputs=[
       m.opt.cone,
@@ -2857,192 +2873,248 @@ def _energy_pos_zero(
   energy_out[worldid][0] = 0.0
 
 
-@wp.kernel
-def _energy_pos_gravity(
-  # Model:
-  opt_gravity: wp.array[wp.vec3],
-  body_mass: wp.array2d[float],
-  # Data in:
-  xipos_in: wp.array2d[wp.vec3],
-  # Data out:
-  energy_out: wp.array[wp.vec2],
-):
-  worldid, bodyid = wp.tid()
-  gravity = opt_gravity[worldid % opt_gravity.shape[0]]
-  bodyid += 1  # skip world body
+@cache_kernel
+def _energy_pos_gravity(deterministic: bool = False):
+  """Build the gravitational potential-energy reduction kernel.
 
-  energy = wp.vec2(
-    body_mass[worldid % body_mass.shape[0], bodyid] * wp.dot(gravity, xipos_in[worldid, bodyid]),
-    0.0,
-  )
+  With deterministic=True, floating-point reductions use Warp RUN_TO_RUN.
+  The default preserves the ordinary kernel path.
+  """
+  module_options = {"enable_backward": False}
+  if deterministic:
+    module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
 
-  wp.atomic_sub(energy_out, worldid, energy)
-
-
-@wp.kernel
-def _energy_pos_passive_joint(
-  # Model:
-  qpos_spring: wp.array2d[float],
-  jnt_type: wp.array[int],
-  jnt_qposadr: wp.array[int],
-  jnt_stiffness: wp.array2d[float],
-  jnt_stiffnesspoly: wp.array2d[wp.vec2],
-  # Data in:
-  qpos_in: wp.array2d[float],
-  # Data out:
-  energy_out: wp.array[wp.vec2],
-):
-  worldid, jntid = wp.tid()
-  jnt_stiffness_id = worldid % jnt_stiffness.shape[0]
-  stiffness = jnt_stiffness[jnt_stiffness_id, jntid]
-  spoly = jnt_stiffnesspoly[worldid % jnt_stiffnesspoly.shape[0], jntid]
-
-  if stiffness == 0.0 and spoly[0] == 0.0 and spoly[1] == 0.0:
-    return
-
-  padr = jnt_qposadr[jntid]
-  jnttype = jnt_type[jntid]
-  qpos_spring_id = worldid % qpos_spring.shape[0]
-
-  if jnttype == JointType.FREE:
-    dif0 = wp.vec3(
-      qpos_in[worldid, padr + 0] - qpos_spring[qpos_spring_id, padr + 0],
-      qpos_in[worldid, padr + 1] - qpos_spring[qpos_spring_id, padr + 1],
-      qpos_in[worldid, padr + 2] - qpos_spring[qpos_spring_id, padr + 2],
-    )
-
-    # convert quaternion difference into angular "velocity"
-    quat1 = wp.quat(
-      qpos_in[worldid, padr + 3],
-      qpos_in[worldid, padr + 4],
-      qpos_in[worldid, padr + 5],
-      qpos_in[worldid, padr + 6],
-    )
-    quat1 = wp.normalize(quat1)
-
-    quat_spring = wp.quat(
-      qpos_spring[qpos_spring_id, padr + 3],
-      qpos_spring[qpos_spring_id, padr + 4],
-      qpos_spring[qpos_spring_id, padr + 5],
-      qpos_spring[qpos_spring_id, padr + 6],
-    )
-
-    dif1 = math.quat_sub(quat1, quat_spring)
-
-    r0 = wp.length(dif0)
-    r1 = wp.length(dif1)
+  @wp.kernel(module="unique", module_options=module_options)
+  def kernel(
+    # Model:
+    opt_gravity: wp.array[wp.vec3],
+    body_mass: wp.array2d[float],
+    # Data in:
+    xipos_in: wp.array2d[wp.vec3],
+    # Data out:
+    energy_out: wp.array[wp.vec2],
+  ):
+    """Evaluate the gravitational potential-energy reduction kernel."""
+    worldid, bodyid = wp.tid()
+    gravity = opt_gravity[worldid % opt_gravity.shape[0]]
+    bodyid += 1  # skip world body
 
     energy = wp.vec2(
-      poly_potential(stiffness, spoly, r0, 0) + poly_potential(stiffness, spoly, r1, 0),
+      body_mass[worldid % body_mass.shape[0], bodyid] * wp.dot(gravity, xipos_in[worldid, bodyid]),
       0.0,
     )
 
+    wp.atomic_sub(energy_out, worldid, energy)
+
+  return kernel
+
+
+@cache_kernel
+def _energy_pos_passive_joint(deterministic: bool = False):
+  """Build the joint-spring potential-energy reduction kernel.
+
+  With deterministic=True, floating-point reductions use Warp RUN_TO_RUN.
+  The default preserves the ordinary kernel path.
+  """
+  module_options = {"enable_backward": False}
+  if deterministic:
+    module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
+
+  @wp.kernel(module="unique", module_options=module_options)
+  def kernel(
+    # Model:
+    qpos_spring: wp.array2d[float],
+    jnt_type: wp.array[int],
+    jnt_qposadr: wp.array[int],
+    jnt_stiffness: wp.array2d[float],
+    jnt_stiffnesspoly: wp.array2d[wp.vec2],
+    # Data in:
+    qpos_in: wp.array2d[float],
+    # Data out:
+    energy_out: wp.array[wp.vec2],
+  ):
+    """Evaluate the joint-spring potential-energy reduction kernel."""
+    worldid, jntid = wp.tid()
+    jnt_stiffness_id = worldid % jnt_stiffness.shape[0]
+    stiffness = jnt_stiffness[jnt_stiffness_id, jntid]
+    spoly = jnt_stiffnesspoly[worldid % jnt_stiffnesspoly.shape[0], jntid]
+
+    if stiffness == 0.0 and spoly[0] == 0.0 and spoly[1] == 0.0:
+      return
+
+    padr = jnt_qposadr[jntid]
+    jnttype = jnt_type[jntid]
+    qpos_spring_id = worldid % qpos_spring.shape[0]
+
+    if jnttype == JointType.FREE:
+      dif0 = wp.vec3(
+        qpos_in[worldid, padr + 0] - qpos_spring[qpos_spring_id, padr + 0],
+        qpos_in[worldid, padr + 1] - qpos_spring[qpos_spring_id, padr + 1],
+        qpos_in[worldid, padr + 2] - qpos_spring[qpos_spring_id, padr + 2],
+      )
+
+      # convert quaternion difference into angular "velocity"
+      quat1 = wp.quat(
+        qpos_in[worldid, padr + 3],
+        qpos_in[worldid, padr + 4],
+        qpos_in[worldid, padr + 5],
+        qpos_in[worldid, padr + 6],
+      )
+      quat1 = wp.normalize(quat1)
+
+      quat_spring = wp.quat(
+        qpos_spring[qpos_spring_id, padr + 3],
+        qpos_spring[qpos_spring_id, padr + 4],
+        qpos_spring[qpos_spring_id, padr + 5],
+        qpos_spring[qpos_spring_id, padr + 6],
+      )
+
+      dif1 = math.quat_sub(quat1, quat_spring)
+
+      r0 = wp.length(dif0)
+      r1 = wp.length(dif1)
+
+      energy = wp.vec2(
+        poly_potential(stiffness, spoly, r0, 0) + poly_potential(stiffness, spoly, r1, 0),
+        0.0,
+      )
+
+      wp.atomic_add(energy_out, worldid, energy)
+
+    elif jnttype == JointType.BALL:
+      quat = wp.quat(
+        qpos_in[worldid, padr + 0],
+        qpos_in[worldid, padr + 1],
+        qpos_in[worldid, padr + 2],
+        qpos_in[worldid, padr + 3],
+      )
+      quat = wp.normalize(quat)
+
+      quat_spring = wp.quat(
+        qpos_spring[qpos_spring_id, padr + 0],
+        qpos_spring[qpos_spring_id, padr + 1],
+        qpos_spring[qpos_spring_id, padr + 2],
+        qpos_spring[qpos_spring_id, padr + 3],
+      )
+
+      dif = math.quat_sub(quat, quat_spring)
+      r = wp.length(dif)
+      energy = wp.vec2(
+        poly_potential(stiffness, spoly, r, 0),
+        0.0,
+      )
+      wp.atomic_add(energy_out, worldid, energy)
+    elif jnttype == JointType.SLIDE or jnttype == JointType.HINGE:
+      dif_ = qpos_in[worldid, padr] - qpos_spring[qpos_spring_id, padr]
+      energy = wp.vec2(
+        poly_potential(stiffness, spoly, dif_, 0),
+        0.0,
+      )
+      wp.atomic_add(energy_out, worldid, energy)
+
+  return kernel
+
+
+@cache_kernel
+def _energy_pos_passive_tendon(deterministic: bool = False):
+  """Build the tendon-spring potential-energy reduction kernel.
+
+  With deterministic=True, floating-point reductions use Warp RUN_TO_RUN.
+  The default preserves the ordinary kernel path.
+  """
+  module_options = {"enable_backward": False}
+  if deterministic:
+    module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
+
+  @wp.kernel(module="unique", module_options=module_options)
+  def kernel(
+    # Model:
+    tendon_stiffness: wp.array2d[float],
+    tendon_stiffnesspoly: wp.array2d[wp.vec2],
+    tendon_lengthspring: wp.array2d[wp.vec2],
+    # Data in:
+    ten_length_in: wp.array2d[float],
+    # Data out:
+    energy_out: wp.array[wp.vec2],
+  ):
+    """Evaluate the tendon-spring potential-energy reduction kernel."""
+    worldid, tenid = wp.tid()
+
+    tendon_stiffness_id = worldid % tendon_stiffness.shape[0]
+    stiffness = tendon_stiffness[tendon_stiffness_id, tenid]
+    spoly = tendon_stiffnesspoly[worldid % tendon_stiffnesspoly.shape[0], tenid]
+
+    if stiffness == 0.0 and spoly[0] == 0.0 and spoly[1] == 0.0:
+      return
+
+    length = ten_length_in[worldid, tenid]
+
+    # compute spring displacement
+    tendon_lengthspring_id = worldid % tendon_lengthspring.shape[0]
+    lengthspring = tendon_lengthspring[tendon_lengthspring_id, tenid]
+    lower = lengthspring[0]
+    upper = lengthspring[1]
+
+    if length > upper:
+      x = length - upper
+    elif length < lower:
+      x = length - lower
+    else:
+      x = 0.0
+
+    energy = wp.vec2(poly_potential(stiffness, spoly, x, 0), 0.0)
     wp.atomic_add(energy_out, worldid, energy)
 
-  elif jnttype == JointType.BALL:
-    quat = wp.quat(
-      qpos_in[worldid, padr + 0],
-      qpos_in[worldid, padr + 1],
-      qpos_in[worldid, padr + 2],
-      qpos_in[worldid, padr + 3],
-    )
-    quat = wp.normalize(quat)
+  return kernel
 
-    quat_spring = wp.quat(
-      qpos_spring[qpos_spring_id, padr + 0],
-      qpos_spring[qpos_spring_id, padr + 1],
-      qpos_spring[qpos_spring_id, padr + 2],
-      qpos_spring[qpos_spring_id, padr + 3],
-    )
 
-    dif = math.quat_sub(quat, quat_spring)
-    r = wp.length(dif)
-    energy = wp.vec2(
-      poly_potential(stiffness, spoly, r, 0),
-      0.0,
-    )
+@cache_kernel
+def _energy_pos_passive_flex(deterministic: bool = False):
+  """Build the flex-spring potential-energy reduction kernel.
+
+  With deterministic=True, floating-point reductions use Warp RUN_TO_RUN.
+  The default preserves the ordinary kernel path.
+  """
+  module_options = {"enable_backward": False}
+  if deterministic:
+    module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
+
+  @wp.kernel(module="unique", module_options=module_options)
+  def kernel(
+    # Model:
+    flex_dim: wp.array[int],
+    flexedge_length0: wp.array[float],
+    flex_edgestiffness: wp.array[float],
+    flexedge_rigid: wp.array[bool],
+    flex_edgeflexid: wp.array[int],
+    # Data in:
+    flexedge_length_in: wp.array2d[float],
+    # Data out:
+    energy_out: wp.array[wp.vec2],
+  ):
+    """Evaluate the flex-spring potential-energy reduction kernel."""
+    worldid, edgeid = wp.tid()
+
+    if flexedge_rigid[edgeid]:
+      return
+
+    f = flex_edgeflexid[edgeid]
+
+    if flex_dim[f] > 1:
+      return
+
+    stiffness = flex_edgestiffness[f]
+    if stiffness == 0.0:
+      return
+
+    displacement = flexedge_length0[edgeid] - flexedge_length_in[worldid, edgeid]
+    if displacement == 0.0:
+      return
+
+    energy = wp.vec2(0.5 * stiffness * displacement * displacement, 0.0)
     wp.atomic_add(energy_out, worldid, energy)
-  elif jnttype == JointType.SLIDE or jnttype == JointType.HINGE:
-    dif_ = qpos_in[worldid, padr] - qpos_spring[qpos_spring_id, padr]
-    energy = wp.vec2(
-      poly_potential(stiffness, spoly, dif_, 0),
-      0.0,
-    )
-    wp.atomic_add(energy_out, worldid, energy)
 
-
-@wp.kernel
-def _energy_pos_passive_tendon(
-  # Model:
-  tendon_stiffness: wp.array2d[float],
-  tendon_stiffnesspoly: wp.array2d[wp.vec2],
-  tendon_lengthspring: wp.array2d[wp.vec2],
-  # Data in:
-  ten_length_in: wp.array2d[float],
-  # Data out:
-  energy_out: wp.array[wp.vec2],
-):
-  worldid, tenid = wp.tid()
-
-  tendon_stiffness_id = worldid % tendon_stiffness.shape[0]
-  stiffness = tendon_stiffness[tendon_stiffness_id, tenid]
-  spoly = tendon_stiffnesspoly[worldid % tendon_stiffnesspoly.shape[0], tenid]
-
-  if stiffness == 0.0 and spoly[0] == 0.0 and spoly[1] == 0.0:
-    return
-
-  length = ten_length_in[worldid, tenid]
-
-  # compute spring displacement
-  tendon_lengthspring_id = worldid % tendon_lengthspring.shape[0]
-  lengthspring = tendon_lengthspring[tendon_lengthspring_id, tenid]
-  lower = lengthspring[0]
-  upper = lengthspring[1]
-
-  if length > upper:
-    x = length - upper
-  elif length < lower:
-    x = length - lower
-  else:
-    x = 0.0
-
-  energy = wp.vec2(poly_potential(stiffness, spoly, x, 0), 0.0)
-  wp.atomic_add(energy_out, worldid, energy)
-
-
-@wp.kernel
-def _energy_pos_passive_flex(
-  # Model:
-  flex_dim: wp.array[int],
-  flexedge_length0: wp.array[float],
-  flex_edgestiffness: wp.array[float],
-  flexedge_rigid: wp.array[bool],
-  flex_edgeflexid: wp.array[int],
-  # Data in:
-  flexedge_length_in: wp.array2d[float],
-  # Data out:
-  energy_out: wp.array[wp.vec2],
-):
-  worldid, edgeid = wp.tid()
-
-  if flexedge_rigid[edgeid]:
-    return
-
-  f = flex_edgeflexid[edgeid]
-
-  if flex_dim[f] > 1:
-    return
-
-  stiffness = flex_edgestiffness[f]
-  if stiffness == 0.0:
-    return
-
-  displacement = flexedge_length0[edgeid] - flexedge_length_in[worldid, edgeid]
-  if displacement == 0.0:
-    return
-
-  energy = wp.vec2(0.5 * stiffness * displacement * displacement, 0.0)
-  wp.atomic_add(energy_out, worldid, energy)
+  return kernel
 
 
 def energy_pos(m: Model, d: Data):
@@ -3052,13 +3124,16 @@ def energy_pos(m: Model, d: Data):
   # init potential energy: -sum_i(body_i.mass * dot(gravity, body_i.pos))
   if not (m.opt.disableflags & DisableBit.GRAVITY):
     wp.launch(
-      _energy_pos_gravity, dim=(d.nworld, m.nbody - 1), inputs=[m.opt.gravity, m.body_mass, d.xipos], outputs=[d.energy]
+      _energy_pos_gravity(bool(m.opt.deterministic & DeterminismType.ATOMICS)),
+      dim=(d.nworld, m.nbody - 1),
+      inputs=[m.opt.gravity, m.body_mass, d.xipos],
+      outputs=[d.energy],
     )
 
   if not (m.opt.disableflags & DisableBit.SPRING):
     # add joint-level springs
     wp.launch(
-      _energy_pos_passive_joint,
+      _energy_pos_passive_joint(bool(m.opt.deterministic & DeterminismType.ATOMICS)),
       dim=(d.nworld, m.njnt),
       inputs=[
         m.qpos_spring,
@@ -3074,7 +3149,7 @@ def energy_pos(m: Model, d: Data):
     # add tendon-level springs
     if m.ntendon:
       wp.launch(
-        _energy_pos_passive_tendon,
+        _energy_pos_passive_tendon(bool(m.opt.deterministic & DeterminismType.ATOMICS)),
         dim=(d.nworld, m.ntendon),
         inputs=[
           m.tendon_stiffness,
@@ -3087,7 +3162,7 @@ def energy_pos(m: Model, d: Data):
 
     # add 1d flex-level springs
     wp.launch(
-      _energy_pos_passive_flex,
+      _energy_pos_passive_flex(bool(m.opt.deterministic & DeterminismType.ATOMICS)),
       dim=(d.nworld, m.nflexedge),
       inputs=[
         m.flex_dim,

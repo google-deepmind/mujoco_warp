@@ -257,6 +257,36 @@ class DataType(enum.IntFlag):
   # unsupported: AXIS, QUATERNION
 
 
+class DeterminismType(enum.IntFlag):
+  """Select deterministic arithmetic and contact/constraint ordering.
+
+  CONTACTS orders collision records and CONSTRAINT allocates rows in fixed order.
+  ATOMICS enables deterministic reductions. ISLANDS remains reserved, so ALL does
+  not yet guarantee deterministic full simulation with island processing. RUN_TO_RUN
+  arithmetic does not promise cross-device or cross-batch bitwise equality.
+
+  Conditional CUDA Graph execution requires Warp 1.18 or later for deterministic
+  scratch allocations. On older Warp versions, graph_conditional=False permits
+  unrolled graph capture, but its scratch memory grows with solver iterations and
+  can exceed device memory at large batch sizes. Eager execution remains available.
+
+  Attributes:
+    NONE: non-deterministic execution
+    CONTACTS: canonical contact and flex candidate ordering
+    CONSTRAINT: count/scan/emit constraint rows, including contact ordering
+    ATOMICS: opt in to deterministic floating-point reduction kernels
+    ISLANDS: reserved hook for canonical island ordering
+    ALL: enable arithmetic, contact/constraint ordering and the reserved island hook
+  """
+
+  NONE = 0
+  CONTACTS = 1 << 0
+  CONSTRAINT = 1 << 1
+  ATOMICS = 1 << 2
+  ISLANDS = 1 << 3
+  ALL = CONTACTS | CONSTRAINT | ATOMICS | ISLANDS
+
+
 class DisableBit(enum.IntFlag):
   """Disable default feature bitflags.
 
@@ -944,6 +974,7 @@ class Option:
     contact_sensor_maxmatch: max number of contacts considered by contact sensor matching criteria
                              contacts matched after this value is exceded will be ignored
     warn_overflow: overflow warning bitmask (OverflowType)
+    deterministic: determinism bitmask (DeterminismType)
   """
 
   timestep: array("*", float)
@@ -975,6 +1006,7 @@ class Option:
   run_rne_postconstraint: bool
   contact_sensor_maxmatch: int
   warn_overflow: int
+  deterministic: int
 
   @property
   def warn_overflow(self) -> int:
@@ -985,6 +1017,20 @@ class Option:
     if isinstance(value, bool):
       value = int(OverflowType.ALL) if value else 0
     self._warn_overflow = value
+
+  @property
+  def deterministic(self) -> int:
+    """Return the configured DeterminismType bitmask, including reserved hooks."""
+    return self._deterministic
+
+  @deterministic.setter
+  def deterministic(self, value: bool | int | None):
+    """Set a bitmask; True selects ALL and False or None selects NONE."""
+    if isinstance(value, bool):
+      value = int(DeterminismType.ALL) if value else int(DeterminismType.NONE)
+    elif value is None:
+      value = int(DeterminismType.NONE)
+    self._deterministic = int(value)
 
   # TODO(team): remove in future version
   @property
@@ -2580,6 +2626,9 @@ class InverseContext:
   quad_changed_count: wp.array[int]
   state_changed_count: wp.array[int]
   ls_exhausted: wp.array[bool]
+  # Force projection dispatch scratch, allocated outside conditional loops.
+  qfrc_maximum: wp.array[int]
+  qfrc_buckets: wp.array2d[int]
   # the full-coordinate Data, set by solve_compact (None natively)
   compact_m_full: Optional["Model"] = None
   compact_d_full: Optional["Data"] = None
@@ -2611,8 +2660,14 @@ class SolverContext:
   beta: wp.array[float]
   h: wp.array3d[float]
   hfactor: wp.array3d[float]
+  # Scratch allocated before conditional solver bodies, reused across iterations.
+  jtdaj_maximum: wp.array[int]
+  jtdaj_buckets: wp.array2d[int]
   quad_changed_ids: wp.array2d[int]
   quad_changed_count: wp.array[int]
+  # Force projection dispatch scratch, allocated outside conditional loops.
+  qfrc_maximum: wp.array[int]
+  qfrc_buckets: wp.array2d[int]
   # the full-coordinate Data, set by solve_compact (None natively)
   compact_m_full: Optional["Model"] = None
   compact_d_full: Optional["Data"] = None

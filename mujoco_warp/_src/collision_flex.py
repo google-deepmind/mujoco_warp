@@ -33,6 +33,7 @@ from mujoco_warp._src.types import MJ_MINMU
 from mujoco_warp._src.types import MJ_MINVAL
 from mujoco_warp._src.types import ContactType
 from mujoco_warp._src.types import Data
+from mujoco_warp._src.types import DeterminismType
 from mujoco_warp._src.types import GeomType
 from mujoco_warp._src.types import IntegratorType
 from mujoco_warp._src.types import Model
@@ -392,7 +393,7 @@ def _write_candidate(
   if dist >= MJ_MAXVAL:
     return
 
-  candid = wp.atomic_add(ncand_out, 0, 1)
+  candid = wp.atomic_add(ncand_out, 0, 1)  # kernel_analyzer: ignore[atomic]
   if candid >= max_candidates:
     if warn_overflow:
       wp.printf(
@@ -1318,7 +1319,7 @@ def _flex_sap_sweep(is_self: bool, warn_overflow: int, enable_sat: bool = True):
           if _triangle_sat_separated(p0, p1, p2, q0, q1, q2, cutoff_sq):
             continue
 
-      idx = wp.atomic_add(ncollision_out, 0, 1)
+      idx = wp.atomic_add(ncollision_out, 0, 1)  # kernel_analyzer: ignore[atomic]
       if idx >= max_pairs:
         if wp.static(bool(warn_overflow & OverflowType.BROADPHASE)):
           wp.printf(
@@ -1841,7 +1842,7 @@ def _flex_narrowphase_elem_detect(warn_overflow: int):
         continue
 
       if gtype == int(GeomType.MESH):
-        ccdid = wp.atomic_add(nccd, 0, 1)
+        ccdid = wp.atomic_add(nccd, 0, 1)  # kernel_analyzer: ignore[atomic]
         if ccdid >= naccdmax_in:
           if wp.static(bool(warn_overflow & OverflowType.CCD)):
             wp.printf(
@@ -1973,7 +1974,7 @@ def _flex_narrowphase_elem_detect(warn_overflow: int):
         )
 
       else:
-        ccdid = wp.atomic_add(nccd, 0, 1)
+        ccdid = wp.atomic_add(nccd, 0, 1)  # kernel_analyzer: ignore[atomic]
         if ccdid >= naccdmax_in:
           if wp.static(bool(warn_overflow & OverflowType.CCD)):
             wp.printf(
@@ -2207,7 +2208,7 @@ def _filter_flex_candidates_sorted(
 
 
 @cache_kernel
-def _write_filtered_contacts(warn_overflow: int):
+def _write_filtered_contacts(warn_overflow: int, deterministic: bool = False):
   @wp.kernel(module="unique", enable_backward=False)
   def kernel(
     # Model:
@@ -2344,7 +2345,7 @@ def _write_filtered_contacts(warn_overflow: int):
     if cand_dist[i] >= margin:
       return
 
-    id_ = wp.atomic_add(nacon_out, 0, 1)
+    id_ = wp.atomic_add(nacon_out, 0, 1)  # kernel_analyzer: ignore[atomic]
     if id_ >= naconmax_in:
       if wp.static(bool(warn_overflow & OverflowType.NARROWPHASE)):
         wp.printf(
@@ -2385,7 +2386,13 @@ def _write_filtered_contacts(warn_overflow: int):
     )
     is_passive = wants and ok
     contact_type_out[id_] = int(ContactType.PASSIVE) if is_passive else int(ContactType.CONSTRAINT)
-    contact_geomcollisionid_out[id_] = 0
+    if wp.static(deterministic):
+      # Separate flex-geom, flex-self and flex-flex passes, each of which starts
+      # a fresh canonical candidate array at index zero.
+      phase = 0 if geomid >= 0 else (1 if f0 == f1 else 2)
+      contact_geomcollisionid_out[id_] = phase * naconmax_in + i
+    else:
+      contact_geomcollisionid_out[id_] = 0
 
   return kernel
 
@@ -2626,7 +2633,7 @@ def _parallel_fps_resolve_seed(
     selected_cidx_out[g] = -1
     return
 
-  wp.atomic_add(fps_groups_active_out, 0, 1)
+  wp.atomic_add(fps_groups_active_out, 0, 1)  # kernel_analyzer: ignore[atomic]
 
   min_d = float(1e10)
   sel_cidx = int(-1)
@@ -2747,7 +2754,7 @@ def _parallel_fps_resolve_max(
     fps_min_dist_out[sel_cidx] = -1e10
   else:
     selected_cidx_out[g] = -1
-    wp.atomic_sub(fps_groups_active_out, 0, 1)
+    wp.atomic_sub(fps_groups_active_out, 0, 1)  # kernel_analyzer: ignore[atomic]
 
 
 @wp.kernel
@@ -3085,6 +3092,89 @@ def _run_filter_flex_fps(
       _fps_iteration()
 
 
+@cache_kernel
+def _candidate_sort_key(column: int, initialize: bool):
+  """Build one exact-bit lexicographic key component for candidate records."""
+
+  @wp.kernel(module="unique", enable_backward=False)
+  def kernel(
+    # In:
+    ncand_in: wp.array[int],
+    source_in: wp.array2d[int],
+    # Out:
+    indices_out: wp.array[int],
+    keys_out: wp.array[wp.int64],
+  ):
+    """Keep the inactive tail after the active candidates on every stable sort pass."""
+    i = wp.tid()
+    if wp.static(initialize):
+      indices_out[i] = i
+    if i < ncand_in[0]:
+      keys_out[i] = wp.int64(source_in[indices_out[i], column])
+    else:
+      keys_out[i] = wp.int64(9223372036854775807)
+
+  return kernel
+
+
+@cache_kernel
+def _gather_candidates(dtype):
+  """Build a field gather for canonical candidate storage."""
+
+  @wp.kernel(module="unique", enable_backward=False)
+  def kernel(
+    # In:
+    ncand_in: wp.array[int],
+    indices_in: wp.array[int],
+    source_in: wp.array[dtype],
+    # Out:
+    target_out: wp.array[dtype],
+  ):
+    """Gather the active prefix without modifying inactive storage."""
+    i = wp.tid()
+    if i < ncand_in[0]:
+      target_out[i] = source_in[indices_in[i]]
+
+  return kernel
+
+
+def _canonicalize_candidates(ws: FlexWorkspace):
+  """Order candidate contents before deduplication and FPS use candidate-index ties.
+
+  Integer views preserve exact float bits, including signed zeros. Equal keys
+  describe identical records, so their original atomic allocation order cannot
+  affect the retained payload. No quantization or host readback is involved.
+  This opt-in flex path favors complete keys over packed-key range assumptions.
+  """
+  fields = (ws.worldid, ws.geom, ws.flex, ws.elem, ws.vert, ws.dist, ws.pos, ws.nrm)
+  capacity = ws.dist.shape[0]
+  if not capacity:
+    return
+  indices = wp.empty(2 * capacity, dtype=int)
+  keys = wp.empty(2 * capacity, dtype=wp.int64)
+  initialize = True
+  for array in reversed(fields):
+    bits = array.view(wp.int32)
+    bits = bits.reshape((capacity, bits.size // capacity))
+    for column in reversed(range(bits.shape[1])):
+      wp.launch(
+        _candidate_sort_key(column, initialize),
+        dim=capacity,
+        inputs=[ws.ncand, bits],
+        outputs=[indices, keys],
+      )
+      wp.utils.radix_sort_pairs(keys, indices, capacity)
+      initialize = False
+  for array in fields:
+    source = wp.clone(array)
+    wp.launch(
+      _gather_candidates(array.dtype),
+      dim=capacity,
+      inputs=[ws.ncand, indices, source],
+      outputs=[array],
+    )
+
+
 def _filter_and_write_contacts(
   m: Model,
   d: Data,
@@ -3092,6 +3182,9 @@ def _filter_and_write_contacts(
   enable_fps: bool = False,
 ):
   """Deduplicates candidates, optionally applies FPS filtering, and writes contacts to d.contact."""
+  deterministic = bool(m.opt.deterministic & (DeterminismType.CONTACTS | DeterminismType.CONSTRAINT))
+  if deterministic:
+    _canonicalize_candidates(ws)
   wp.launch(
     _compute_filter_key,
     dim=d.naconmax,
@@ -3169,7 +3262,7 @@ def _filter_and_write_contacts(
     _run_filter_flex_fps(m, d, ws, nmax_groups)
 
   wp.launch(
-    _write_filtered_contacts(int(m.opt.warn_overflow)),
+    _write_filtered_contacts(int(m.opt.warn_overflow), deterministic),
     dim=d.naconmax,
     inputs=[
       m.opt.integrator,
