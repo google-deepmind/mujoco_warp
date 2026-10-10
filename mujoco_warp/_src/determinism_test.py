@@ -802,5 +802,63 @@ class SleepDeterminismTest(absltest.TestCase):
     self.assertFalse(np.isnan(d.qacc.numpy()).any(), "qacc contains NaN after 50 det+SLEEP steps")
 
 
+class FullStepGraphTest(parameterized.TestCase):
+  """Compare complete deterministic steps in eager and CUDA Graph execution."""
+
+  @parameterized.product(nworld=(1, 2), jacobian=("DENSE", "SPARSE"))
+  def test_graph_matches_eager(self, nworld, jacobian):
+    """Replay contact generation, allocation and solving with heterogeneous initial states."""
+    if not wp.get_device().is_cuda:
+      self.skipTest("CUDA graph required")
+    _, _, m, d = test_data.fixture(
+      xml="""<mujoco><option iterations="10" ls_iterations="50"/>
+        <worldbody><geom type="plane" size="2 2 .1"/>
+          <body pos="0 0 .09"><freejoint/><geom type="box" size=".1 .08 .1"/></body>
+        </worldbody></mujoco>""",
+      nworld=nworld,
+      overrides={"opt.jacobian": jacobian},
+      nconmax=16,
+      njmax=32,
+    )
+    m.opt.deterministic = mjw.DeterminismType.ALL
+    # Warp deterministic reductions allocate scratch; conditional graph bodies
+    # cannot contain those allocations. Capture the supported fixed-iteration path.
+    m.opt.graph_conditional = False
+    qpos = d.qpos.numpy()
+    qvel = d.qvel.numpy()
+    qvel[:, 0] = np.linspace(0.1, 0.3, nworld)
+    if nworld == 2:
+      qpos[1, 0] = 0.3
+      qpos[1, 2] += 0.005
+
+    def reset():
+      """Restore all simulation state, then apply the same heterogeneous inputs."""
+      mjw.reset_data(m, d)
+      d.qpos.assign(qpos)
+      d.qvel.assign(qvel)
+
+    reset()
+    mjw.step(m, d)
+    reset()
+    expected = []
+    for _ in range(3):
+      mjw.step(m, d)
+      self.assertFalse(d.overflow.numpy().any())
+      expected.append({name: getattr(d, name).numpy().copy() for name in ("qpos", "qvel", "qacc")})
+    self.assertGreater(d.nacon.numpy()[0], 0)
+    reset()
+    with wp.ScopedCapture() as capture:
+      mjw.step(m, d)
+    for values in expected:
+      wp.capture_launch(capture.graph)
+      self.assertFalse(d.overflow.numpy().any())
+      for name, value in values.items():
+        actual = getattr(d, name).numpy()
+        self.assertTrue(np.isfinite(actual).all(), name)
+        np.testing.assert_array_equal(actual, value, err_msg=name)
+    if nworld == 2:
+      self.assertFalse(np.array_equal(d.qpos.numpy()[0], d.qpos.numpy()[1]))
+
+
 if __name__ == "__main__":
   absltest.main()
