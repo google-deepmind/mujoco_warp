@@ -219,6 +219,7 @@ def _qderiv_actuator_passive_actuation_sparse(deterministic: bool = False):
     # Out:
     qDeriv_out: wp.array2d[float],
   ):
+    """Evaluate qderiv actuator passive actuation sparse."""
     worldid, actid = wp.tid()
 
     vel = vel_in[worldid, actid]
@@ -1158,6 +1159,7 @@ def _qderiv_box_fluid(deterministic: bool = False):
     # Out:
     qDeriv_out: wp.array2d[float],
   ):
+    """Evaluate qderiv box fluid."""
     worldid, fluid_idx, elemid = wp.tid()
 
     bodyid = body_fluid_box_adr[fluid_idx]
@@ -1538,6 +1540,7 @@ def _eff_tendon_shift(deterministic: bool = False):
     efm_c_out: wp.array2d[float],
     efm_ts_out: wp.array2d[float],
   ):
+    """Evaluate eff tendon shift."""
     worldid, tenid = wp.tid()
     h = opt_timestep[worldid % opt_timestep.shape[0]]
 
@@ -1627,6 +1630,7 @@ def _eff_actuator_actuation(deterministic: bool = False):
     efm_ca_out: wp.array2d[float],
     efm_as_out: wp.array2d[float],
   ):
+    """Evaluate eff actuator actuation."""
     worldid, actid = wp.tid()
     h = opt_timestep[worldid % opt_timestep.shape[0]]
 
@@ -1806,6 +1810,7 @@ def _eff_add_tendon_qH_diag(deterministic: bool = False):
     # Data out:
     qH_out: wp.array2d[float],
   ):
+    """Evaluate eff add tendon qH diag."""
     worldid, t = wp.tid()
     ts = efm_ts_in[worldid, t]
     if ts == 0.0:
@@ -1844,6 +1849,7 @@ def _eff_add_actuator_qH_diag(deterministic: bool = False):
     # Data out:
     qH_out: wp.array2d[float],
   ):
+    """Evaluate eff add actuator qH diag."""
     worldid, a = wp.tid()
     as_val = efm_as_in[worldid, a]
     if as_val == 0.0:
@@ -2119,6 +2125,7 @@ def _eff_flex_stretch_stiff_vert(deterministic: bool = False):
     # Data out:
     efm_K_val_out: wp.array2d[float],
   ):
+    """Evaluate eff flex stretch stiff vert."""
     worldid, vertid = wp.tid()
     timestep = opt_timestep[worldid % opt_timestep.shape[0]]
 
@@ -2193,6 +2200,7 @@ def _eff_flex_stretch_stiff_edge(deterministic: bool = False):
     # Data out:
     efm_K_val_out: wp.array2d[float],
   ):
+    """Evaluate eff flex stretch stiff edge."""
     worldid, edgeid, side = wp.tid()
     timestep = opt_timestep[worldid % opt_timestep.shape[0]]
 
@@ -2278,6 +2286,7 @@ def _eff_flex_bend_stiff(deterministic: bool = False):
     # Data out:
     efm_K_val_out: wp.array2d[float],
   ):
+    """Evaluate eff flex bend stiff."""
     worldid, edgeid = wp.tid()
     timestep = opt_timestep[worldid % opt_timestep.shape[0]]
 
@@ -2384,6 +2393,7 @@ def _eff_flex_interp_stiff(deterministic: bool = False):
     # Data out:
     efm_K_val_out: wp.array2d[float],
   ):
+    """Evaluate eff flex interp stiff."""
     worldid, cellid = wp.tid()
     timestep = opt_timestep[worldid % opt_timestep.shape[0]]
 
@@ -3754,6 +3764,7 @@ def _eff_fold_tendon(deterministic: bool = False):
     # Out:
     epB_out: wp.array2d[float],
   ):
+    """Evaluate eff fold tendon."""
     worldid, t = wp.tid()
     s = efm_ts_in[worldid, t]
     if s == 0.0:
@@ -3797,6 +3808,7 @@ def _eff_fold_actuator(deterministic: bool = False):
     # Out:
     epB_out: wp.array2d[float],
   ):
+    """Evaluate eff fold actuator."""
     worldid, u = wp.tid()
     s = efm_as_in[worldid, u]
     if s == 0.0:
@@ -3841,6 +3853,7 @@ def _eff_fold_efc_sparse(deterministic: bool = False):
     # Out:
     epB_out: wp.array2d[float],
   ):
+    """Evaluate eff fold efc sparse."""
     worldid, r = wp.tid()
     if r >= nefc_in[worldid]:
       return
@@ -3888,6 +3901,7 @@ def _eff_fold_contact_rank1(deterministic: bool = False):
     # Out:
     epB_out: wp.array2d[float],
   ):
+    """Evaluate eff fold contact rank1."""
     cid = wp.tid()
     if cid >= nacon_in[0]:
       return

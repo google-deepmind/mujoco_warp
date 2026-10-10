@@ -2458,6 +2458,7 @@ def _add_tendon_metric_dense(deterministic: bool = False):
     # Out:
     h_out: wp.array3d[float],
   ):
+    """Evaluate the dense Hessian contribution from tendon metrics."""
     worldid, t = wp.tid()
     if ctx_done_in[worldid]:
       return
@@ -2502,6 +2503,7 @@ def _add_actuator_metric_dense(deterministic: bool = False):
     # Out:
     h_out: wp.array3d[float],
   ):
+    """Evaluate the dense Hessian contribution from actuator metrics."""
     worldid, a = wp.tid()
     if ctx_done_in[worldid]:
       return
@@ -2546,6 +2548,7 @@ def _add_efmK_metric_dense(deterministic: bool = False):
     # Out:
     h_out: wp.array3d[float],
   ):
+    """Evaluate the dense Hessian contribution from flex stiffness."""
     worldid, r = wp.tid()
     if ctx_done_in[worldid]:
       return
@@ -2584,6 +2587,7 @@ def _add_flexcon_metric_dense(deterministic: bool = False):
     # Out:
     h_out: wp.array3d[float],
   ):
+    """Evaluate the dense Hessian contribution from flex-contact metrics."""
     cid = wp.tid()
     if cid >= nacon_in[0]:
       return

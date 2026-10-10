@@ -59,6 +59,7 @@ def _accumulate_subtreemass(deterministic: bool = False):
     body_subtreemass_io: wp.array2d[float],
     body_tree_: wp.array[int],
   ):
+    """Evaluate the child-to-parent subtree-mass accumulation kernel."""
     worldid, nodeid = wp.tid()
     body_subtreemass_id = worldid % body_subtreemass_io.shape[0]
     bodyid = body_tree_[nodeid]

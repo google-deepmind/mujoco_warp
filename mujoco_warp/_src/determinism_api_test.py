@@ -30,6 +30,8 @@ from mujoco_warp._src import types
 
 
 class DeterministicArithmeticTest(parameterized.TestCase):
+  """Check deterministic arithmetic against reference results in eager and graph execution."""
+
   @parameterized.product(nv=(2, 5), captured=(False, True), deterministic=(False, True))
   def test_sparse_substitution_dependencies(self, nv, captured, deterministic):
     """Dependent substitution stages must see the preceding level's writes."""
@@ -62,6 +64,7 @@ class DeterministicArithmeticTest(parameterized.TestCase):
     kernel = smooth._solve_LD_sparse_fused(nv, len(offsets) - 1, deterministic)
 
     def solve():
+      """Launch the sparse substitution kernel into the reusable result buffer."""
       wp.launch(kernel, dim=(worlds, block_dim), inputs=inputs, outputs=[result], block_dim=block_dim)
 
     solve()
@@ -122,6 +125,7 @@ class DeterministicArithmeticTest(parameterized.TestCase):
     result = wp.zeros((d.nworld, m.nv), dtype=float)
 
     def factor_solve():
+      """Factor the mass matrix and solve the same right-hand side."""
       mjw.factor_m(m, d)
       mjw.solve_m(m, d, result, vector)
 
@@ -160,6 +164,7 @@ class DeterministicArithmeticTest(parameterized.TestCase):
     d.qvel.assign(qvel)
 
     def evaluate():
+      """Recompute flex forces and the implicit force shift from fixed state."""
       d.qfrc_spring.fill_(wp.inf)
       d.qfrc_damper.fill_(wp.inf)
       d.efm_c.fill_(wp.inf)

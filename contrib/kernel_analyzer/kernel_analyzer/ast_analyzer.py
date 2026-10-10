@@ -160,6 +160,7 @@ class MissingDeterministicFactory(Issue):
   """Report an atomic operation outside a configurable deterministic factory."""
 
   def __str__(self):
+    """Describe the missing configurable factory for this atomic operation."""
     return f'"{self.kernel}" contains atomic operations but is not enclosed in a kernel factory with a "deterministic" argument'
 
 
@@ -683,6 +684,7 @@ def analyze(
       ignore_lines[lineno] = rules_to_ignore
 
   def _is_ignored(iss: Issue) -> bool:
+    """Check suppression rules without extending a declaration into its body."""
     start_line = iss.node.lineno
     # Function-level diagnostics belong to the declaration, not its entire body.
     end_line = (

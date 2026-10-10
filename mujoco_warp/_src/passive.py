@@ -222,6 +222,7 @@ def _spring_damper_tendon_passive(deterministic: bool = False):
     qfrc_spring_out: wp.array2d[float],
     qfrc_damper_out: wp.array2d[float],
   ):
+    """Evaluate spring damper tendon passive."""
     worldid, tenid, dofid_sparse = wp.tid()
 
     stiffness = tendon_stiffness[worldid % tendon_stiffness.shape[0], tenid]
@@ -296,6 +297,7 @@ def _spring_damper_flexedge_passive(deterministic: bool = False):
     qfrc_spring_out: wp.array2d[float],
     qfrc_damper_out: wp.array2d[float],
   ):
+    """Evaluate spring damper flexedge passive."""
     worldid, edgeid = wp.tid()
 
     if flexedge_rigid[edgeid]:
@@ -366,6 +368,7 @@ def _gravity_force(deterministic: bool = False):
     # Data out:
     qfrc_gravcomp_out: wp.array2d[float],
   ):
+    """Evaluate gravity force."""
     worldid, bodyid, dofid = wp.tid()
     bodyid += 1  # skip world body
     gravcomp = body_gravcomp[worldid % body_gravcomp.shape[0], bodyid]
@@ -673,6 +676,7 @@ def _qfrc_adhesion(deterministic: bool = False):
     # Data out:
     qfrc_adhesion_out: wp.array2d[float],
   ):
+    """Evaluate qfrc adhesion."""
     cid = wp.tid()
     if cid >= nacon_in[0]:
       return
@@ -1475,6 +1479,7 @@ def flex_scatter_vert(deterministic: bool = False):
     # Out:
     res_out: wp.array2d[float],
   ):
+    """Evaluate flex scatter vert."""
     if f_world[0] == 0.0 and f_world[1] == 0.0 and f_world[2] == 0.0:
       return
     bodyid = flex_vertbodyid[gvert]
@@ -1748,6 +1753,7 @@ def _flex_hessian_elem(deterministic: bool = False):
     # Data out:
     flexedge_hessian_out: wp.array2d[wp.mat33],
   ):
+    """Evaluate flex hessian elem."""
     worldid, elemid = wp.tid()
     f = flex_elemflexid[elemid]
     if flex_hessian_valid_in[worldid, f]:
@@ -1852,6 +1858,7 @@ def _flex_hessian_diag(deterministic: bool = False):
     # Data out:
     flexvert_hessian_out: wp.array2d[vec6],
   ):
+    """Evaluate flex hessian diag."""
     worldid, edgeid = wp.tid()
     f = flex_edgeflexid[edgeid]
     if flex_hessian_valid_in[worldid, f]:
@@ -2453,6 +2460,7 @@ def _flex_elasticity(deterministic: bool = False):
     flex_spring_body_force_out: wp.array2d[wp.spatial_vector],
     flex_damper_body_force_out: wp.array2d[wp.spatial_vector],
   ):
+    """Evaluate flex elasticity."""
     worldid, elemid = wp.tid()
     timestep = opt_timestep[worldid % opt_timestep.shape[0]]
 
@@ -2604,6 +2612,7 @@ def _flex_bending(deterministic: bool = False):
     flex_spring_body_force_out: wp.array2d[wp.spatial_vector],
     flex_damper_body_force_out: wp.array2d[wp.spatial_vector],
   ):
+    """Evaluate flex bending."""
     worldid, edgeid = wp.tid()
 
     f = flex_edgeflexid[edgeid]
@@ -2893,6 +2902,7 @@ def _apply_face_forces(deterministic: bool = False):
     # Out:
     body_force_out: wp.array2d[wp.spatial_vector],
   ):
+    """Evaluate apply face forces."""
     idx = int(0)
     for l0 in range(3):
       if l0 > order_abs:
@@ -2952,6 +2962,7 @@ def _flex_passive_bend_interp(deterministic: bool = False):
     # Out:
     flex_spring_body_force_out: wp.array2d[wp.spatial_vector],
   ):
+    """Evaluate flex passive bend interp."""
     worldid, bend_edge_id = wp.tid()
 
     mapping = flex_bend_interp_map[bend_edge_id]

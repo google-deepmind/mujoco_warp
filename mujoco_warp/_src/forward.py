@@ -1880,6 +1880,7 @@ def _tendon_actuator_force(deterministic: bool = False):
     # Out:
     ten_actfrc_out: wp.array2d[float],
   ):
+    """Evaluate the actuator-to-tendon force accumulation kernel."""
     worldid, actid = wp.tid()
 
     if actuator_trntype[actid] == TrnType.TENDON:
@@ -1941,6 +1942,7 @@ def _qfrc_actuator(deterministic: bool = False, max_records: int = 1):
     # Data out:
     qfrc_actuator_out: wp.array2d[float],
   ):
+    """Evaluate the actuator-moment projection into generalized forces."""
     worldid, actid = wp.tid()
 
     rownnz = moment_rownnz_in[worldid, actid]

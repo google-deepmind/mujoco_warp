@@ -689,6 +689,7 @@ def _subtree_com_acc(deterministic: bool = False):
     # Data out:
     subtree_com_out: wp.array2d[wp.vec3],
   ):
+    """Evaluate one level of the subtree center-of-mass accumulation."""
     worldid, nodeid = wp.tid()
     bodyid = body_tree_[nodeid]
     pid = body_parentid[bodyid]
@@ -1032,6 +1033,7 @@ def _crb_accumulate(deterministic: bool = False):
     # Data out:
     crb_out: wp.array2d[vec10],
   ):
+    """Evaluate one level of composite rigid-body inertia accumulation."""
     worldid, nodeid = wp.tid()
     bodyid = body_tree_[nodeid]
     pid = body_parentid[bodyid]
@@ -1126,6 +1128,7 @@ def _tendon_armature(deterministic: bool = False):
     # Data out:
     M_out: wp.array2d[float],
   ):
+    """Evaluate the tendon armature contribution to the mass matrix."""
     worldid, tenid, dofid = wp.tid()
 
     armature = tendon_armature[worldid % tendon_armature.shape[0], tenid]
@@ -1220,6 +1223,7 @@ def _qLD_acc(deterministic: bool = False, max_records: int = 1):
     # Out:
     L_out: wp.array2d[float],
   ):
+    """Evaluate the sparse LDL factorization update kernel."""
     worldid, nodeid = wp.tid()
     update = qLD_updates_[nodeid]
     i, k, Madr_ki = update[0], update[1], update[2]
@@ -1514,6 +1518,7 @@ def _cfrc_backward(deterministic: bool = False):
     # Data out:
     cfrc_int_out: wp.array2d[wp.spatial_vector],
   ):
+    """Evaluate one backward level of body-force accumulation."""
     worldid, nodeid = wp.tid()
     bodyid = body_tree_[nodeid]
     pid = body_parentid[bodyid]
@@ -1654,6 +1659,7 @@ def _cfrc_ext_equality(deterministic: bool = False):
     # Data out:
     cfrc_ext_out: wp.array2d[wp.spatial_vector],
   ):
+    """Evaluate external body-force contributions from equality constraints."""
     worldid, eqid = wp.tid()
 
     ne_connect = ne_connect_in[worldid]
@@ -1795,6 +1801,7 @@ def _cfrc_ext_contact(deterministic: bool = False):
     # Data out:
     cfrc_ext_out: wp.array2d[wp.spatial_vector],
   ):
+    """Evaluate external body-force contributions from contacts."""
     contactid = wp.tid()
 
     if contactid >= nacon_in[0]:
@@ -1868,6 +1875,7 @@ def _cfrc_ext_tendon_constraint(deterministic: bool = False):
     # Out:
     ten_frc_out: wp.array2d[float],
   ):
+    """Evaluate external body forces from tendon constraints."""
     worldid, efcid = wp.tid()
     if efcid >= nefc_in[worldid]:
       return
@@ -1931,6 +1939,7 @@ def _cfrc_ext_tendon_actuator(deterministic: bool = False):
     # Out:
     ten_frc_out: wp.array2d[float],
   ):
+    """Evaluate external body forces from tendon actuators."""
     worldid, actid = wp.tid()
     if actuator_trntype[actid] != TrnType.TENDON:
       return
@@ -1995,6 +2004,7 @@ def _cfrc_ext_spatial_tendon(deterministic: bool = False):
     # Data out:
     cfrc_ext_out: wp.array2d[wp.spatial_vector],
   ):
+    """Evaluate body-force contributions along spatial tendons."""
     worldid, tenid = wp.tid()
 
     # fixed tendon: acts through the joints
@@ -2552,6 +2562,7 @@ def _tendon_bias_coef(deterministic: bool = False):
     # Out:
     ten_bias_coef_out: wp.array2d[float],
   ):
+    """Evaluate tendon coefficients used in bias-force evaluation."""
     worldid, tenid, dofid_sparse = wp.tid()
 
     armature = tendon_armature[worldid % tendon_armature.shape[0], tenid]
@@ -2598,6 +2609,7 @@ def _tendon_bias_qfrc(deterministic: bool = False):
     # Out:
     qfrc_out: wp.array2d[float],
   ):
+    """Evaluate tendon bias-force contributions in generalized coordinates."""
     worldid, tenid, dofid = wp.tid()
 
     armature = tendon_armature[worldid % tendon_armature.shape[0], tenid]
@@ -3278,6 +3290,7 @@ def _transmission_body_moment(deterministic: bool = False):
     # Out:
     actuator_trntype_body_ncon_out: wp.array2d[int],
   ):
+    """Evaluate body-transmission moment contributions for actuators."""
     trnbodyid, conid, dofid = wp.tid()
     actid = actuator_trntype_body_adr[trnbodyid]
     bodyid = actuator_trnid[actid][0]
@@ -4106,6 +4119,7 @@ def _linear_momentum(deterministic: bool = False):
     # Data out:
     subtree_linvel_out: wp.array2d[wp.vec3],
   ):
+    """Evaluate the subtree linear-momentum reduction kernel."""
     worldid, nodeid = wp.tid()
     bodyid = body_tree_[nodeid]
     if bodyid:
@@ -4143,6 +4157,7 @@ def _angular_momentum(deterministic: bool = False):
     # Data out:
     subtree_angmom_out: wp.array2d[wp.vec3],
   ):
+    """Evaluate the subtree angular-momentum reduction kernel."""
     worldid, nodeid = wp.tid()
     bodyid = body_tree_[nodeid]
 
@@ -4254,6 +4269,7 @@ def _joint_tendon(deterministic: bool = False):
     ten_J_out: wp.array2d[float],
     ten_length_out: wp.array2d[float],
   ):
+    """Evaluate fixed-tendon lengths, velocities and sparse Jacobian entries."""
     worldid, wrapid = wp.tid()
 
     tenid = tendon_jnt_adr[wrapid]
@@ -4357,6 +4373,7 @@ def _spatial_site_tendon(deterministic: bool = False):
     ten_J_out: wp.array2d[float],
     ten_length_out: wp.array2d[float],
   ):
+    """Evaluate spatial-tendon contributions from site wrapping segments."""
     worldid, elementid = wp.tid()
 
     # site pairs
@@ -4461,6 +4478,7 @@ def _spatial_geom_tendon(deterministic: bool = False):
     # Out:
     wrap_geom_xpos_out: wp.array2d[wp.spatial_vector],
   ):
+    """Evaluate spatial-tendon contributions from geom wrapping segments."""
     worldid, elementid = wp.tid()
     wrap_adr = wrap_geom_adr[elementid]
     tenid = tendon_geom_adr[elementid]

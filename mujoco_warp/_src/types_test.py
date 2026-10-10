@@ -153,6 +153,7 @@ class TypesTest(parameterized.TestCase):
       self.assertEqual(m.opt.warn_overflow, expected)
 
   def test_determinism_type_flags(self):
+    """Verify the determinism flags compose into the ALL bitmask."""
     self.assertEqual(int(DeterminismType.NONE), 0)
     self.assertEqual(int(DeterminismType.CONTACTS), 1 << 0)
     self.assertEqual(int(DeterminismType.CONSTRAINT), 1 << 1)
@@ -161,6 +162,7 @@ class TypesTest(parameterized.TestCase):
     self.assertEqual(int(DeterminismType.ALL), (1 << 0) | (1 << 1) | (1 << 2) | (1 << 3))
 
   def test_option_deterministic(self):
+    """Verify boolean, integer and None option assignments normalize correctly."""
     _, _, m, _ = test_data.fixture(
       xml="""
       <mujoco/>

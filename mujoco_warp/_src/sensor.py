@@ -2101,6 +2101,7 @@ def _sensor_touch(deterministic: bool = False):
     # Data out:
     sensordata_out: wp.array2d[float],
   ):
+    """Evaluate the contact-force accumulation kernel for touch sensors."""
     conid, sensortouchadrid = wp.tid()
 
     if conid >= nacon_in[0]:
@@ -2893,6 +2894,7 @@ def _energy_pos_gravity(deterministic: bool = False):
     # Data out:
     energy_out: wp.array[wp.vec2],
   ):
+    """Evaluate the gravitational potential-energy reduction kernel."""
     worldid, bodyid = wp.tid()
     gravity = opt_gravity[worldid % opt_gravity.shape[0]]
     bodyid += 1  # skip world body
@@ -2931,6 +2933,7 @@ def _energy_pos_passive_joint(deterministic: bool = False):
     # Data out:
     energy_out: wp.array[wp.vec2],
   ):
+    """Evaluate the joint-spring potential-energy reduction kernel."""
     worldid, jntid = wp.tid()
     jnt_stiffness_id = worldid % jnt_stiffness.shape[0]
     stiffness = jnt_stiffness[jnt_stiffness_id, jntid]
@@ -3034,6 +3037,7 @@ def _energy_pos_passive_tendon(deterministic: bool = False):
     # Data out:
     energy_out: wp.array[wp.vec2],
   ):
+    """Evaluate the tendon-spring potential-energy reduction kernel."""
     worldid, tenid = wp.tid()
 
     tendon_stiffness_id = worldid % tendon_stiffness.shape[0]
@@ -3088,6 +3092,7 @@ def _energy_pos_passive_flex(deterministic: bool = False):
     # Data out:
     energy_out: wp.array[wp.vec2],
   ):
+    """Evaluate the flex-spring potential-energy reduction kernel."""
     worldid, edgeid = wp.tid()
 
     if flexedge_rigid[edgeid]:
