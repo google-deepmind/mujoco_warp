@@ -15,6 +15,8 @@
 
 """Numerical regressions for opt-in deterministic arithmetic."""
 
+import dataclasses
+
 import mujoco
 import numpy as np
 import warp as wp
@@ -24,6 +26,7 @@ from absl.testing import parameterized
 import mujoco_warp as mjw
 from mujoco_warp import DeterminismType
 from mujoco_warp import test_data
+from mujoco_warp._src import collision_driver
 from mujoco_warp._src import derivative
 from mujoco_warp._src import smooth
 from mujoco_warp._src import types
@@ -195,6 +198,77 @@ class DeterministicArithmeticTest(parameterized.TestCase):
       np.testing.assert_allclose(d.qfrc_damper.numpy()[world], mjd.qfrc_damper, rtol=1e-5, atol=1e-5)
     if nworld == 2:
       self.assertFalse(np.allclose(d.qfrc_spring.numpy()[0], d.qfrc_spring.numpy()[1]))
+
+
+class ContactPermutationTest(parameterized.TestCase):
+  """Preserve contact payload associations across schema-aware GPU permutations."""
+
+  @parameterized.product(nworld=(1, 2), optional_fields=(False, True), captured=(False, True))
+  def test_all_contact_fields(self, nworld, optional_fields, captured):
+    """Carry adhesion, flex metadata and all constraint-address columns with each row."""
+    if captured and not wp.get_device().is_cuda:
+      self.skipTest("CUDA graph required")
+    _, _, _, d = test_data.fixture(
+      xml="""<mujoco><worldbody>
+        <geom type="plane" size="1 1 .1"/>
+        <body pos="0 0 .09"><freejoint/><geom type="box" size=".1 .1 .1"/></body>
+      </worldbody></mujoco>""",
+      nworld=nworld,
+      nconmax=8,
+    )
+    capacity = d.naconmax
+    active = 3 * nworld
+    self.assertGreater(capacity, active)
+    d.nacon.assign(np.array([active], dtype=np.int32))
+    if optional_fields:
+      for name in ("flex", "elem", "vert"):
+        setattr(d.contact, name, wp.zeros(capacity, dtype=wp.vec2i))
+    else:
+      self.assertEqual(d.contact.flex.size, 0)
+    # Adhesion is deliberately nonuniform: a permutation must not leave it behind.
+    d.contact.adhesion = wp.zeros(capacity, dtype=float)
+    permutation = np.arange(capacity, dtype=np.int32)
+    permutation[:active] = np.roll(np.arange(active), 1)
+    indices = wp.array(permutation, dtype=int)
+    original, device_original = {}, {}
+    for index, field in enumerate(dataclasses.fields(d.contact)):
+      array = getattr(d.contact, field.name)
+      values = array.numpy()
+      values = (np.arange(values.size).reshape(values.shape) + 1000 * index).astype(values.dtype)
+      if field.name == "worldid":
+        values[:] = np.arange(capacity) % nworld
+      array.assign(values)
+      original[field.name] = values
+      device_original[field.name] = wp.clone(array)
+
+    def permute():
+      """Restore inputs on device before applying the same permutation."""
+      for name, source in device_original.items():
+        wp.copy(getattr(d.contact, name), source)
+      collision_driver._permute_contacts(d, indices)
+
+    permute()
+    if captured:
+      with wp.ScopedCapture() as capture:
+        permute()
+      for _ in range(3):
+        wp.capture_launch(capture.graph)
+    for name, values in original.items():
+      expected = values.copy()
+      if values.shape[0]:
+        expected[:active] = values[permutation[:active]]
+      np.testing.assert_array_equal(getattr(d.contact, name).numpy(), expected, err_msg=name)
+
+  def test_empty_prefix(self):
+    """Zero active contacts leave all allocated rows untouched."""
+    _, _, _, d = test_data.fixture(
+      xml="""<mujoco><worldbody><body><freejoint/><geom size=".1"/></body></worldbody></mujoco>""",
+      nconmax=2,
+    )
+    d.nacon.zero_()
+    d.contact.dist.fill_(3.0)
+    collision_driver._permute_contacts(d, wp.zeros(d.naconmax, dtype=int))
+    np.testing.assert_array_equal(d.contact.dist.numpy(), np.full(d.naconmax, 3.0))
 
 
 if __name__ == "__main__":

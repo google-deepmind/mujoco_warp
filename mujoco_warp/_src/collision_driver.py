@@ -13,6 +13,7 @@
 # limitations under the License.
 # ==============================================================================
 
+import dataclasses
 from typing import Optional
 
 import warp as wp
@@ -926,6 +927,63 @@ def _narrowphase(m: Model, d: Data, ctx: CollisionContext):
 
   if m.has_sdf_geom:
     sdf_narrowphase(m, d, ctx)
+
+
+@cache_kernel
+def _permute_contact_field(dtype, ndim: int):
+  """Build an active-contact gather for a scalar/vector field or a two-dimensional array."""
+  if ndim == 1:
+
+    @wp.kernel(module="unique", enable_backward=False)
+    def kernel(
+      nacon_in: wp.array[int],
+      permutation_in: wp.array[int],
+      source_in: wp.array(dtype=dtype),
+      target_out: wp.array(dtype=dtype),
+    ):
+      """Gather active contact rows while leaving inactive storage unchanged."""
+      cid = wp.tid()
+      if cid < nacon_in[0]:
+        target_out[cid] = source_in[permutation_in[cid]]
+
+  elif ndim == 2:
+
+    @wp.kernel(module="unique", enable_backward=False)
+    def kernel(
+      nacon_in: wp.array[int],
+      permutation_in: wp.array[int],
+      source_in: wp.array2d(dtype=dtype),
+      target_out: wp.array2d(dtype=dtype),
+    ):
+      """Gather every column of active contact rows, including constraint addresses."""
+      cid, col = wp.tid()
+      if cid < nacon_in[0]:
+        target_out[cid, col] = source_in[permutation_in[cid], col]
+
+  else:
+    raise ValueError(f"Unsupported contact field dimensionality: {ndim}")
+  return kernel
+
+
+def _permute_contacts(d: Data, permutation: wp.array):
+  """Apply a device permutation to all allocated contact fields in place.
+
+  The caller supplies a permutation of the active contact prefix, with entries
+  in [0, nacon). All fields follow the same permutation, including adhesion and
+  efc_address. Empty optional fields and inactive rows are preserved. Iterating
+  the Contact schema avoids a separate field list drifting as the schema evolves.
+  """
+  for field in dataclasses.fields(d.contact):
+    target = getattr(d.contact, field.name)
+    if not target.size:
+      continue
+    source = wp.clone(target)
+    wp.launch(
+      _permute_contact_field(target.dtype, target.ndim),
+      dim=target.shape,
+      inputs=[d.nacon, permutation, source],
+      outputs=[target],
+    )
 
 
 def _sort_contacts(m: Model, d: Data):
