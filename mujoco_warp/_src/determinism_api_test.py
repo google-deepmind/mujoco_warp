@@ -29,8 +29,8 @@ from mujoco_warp._src import types
 
 
 class DeterministicArithmeticTest(parameterized.TestCase):
-  @parameterized.product(nv=(2, 5), captured=(False, True))
-  def test_sparse_substitution_dependencies(self, nv, captured):
+  @parameterized.product(nv=(2, 5), captured=(False, True), deterministic=(False, True))
+  def test_sparse_substitution_dependencies(self, nv, captured, deterministic):
     """Dependent substitution stages must see the preceding level's writes."""
     if captured and not wp.get_device().is_cuda:
       self.skipTest("CUDA graph required")
@@ -58,7 +58,7 @@ class DeterministicArithmeticTest(parameterized.TestCase):
       wp.array(offsets, dtype=int),
       wp.array(np.tile(rhs, (worlds, 1)), dtype=float),
     ]
-    kernel = smooth._solve_LD_sparse_fused(nv, len(offsets) - 1, True)
+    kernel = smooth._solve_LD_sparse_fused(nv, len(offsets) - 1, deterministic)
 
     def solve():
       wp.launch(kernel, dim=(worlds, block_dim), inputs=inputs, outputs=[result], block_dim=block_dim)
@@ -96,8 +96,11 @@ class DeterministicArithmeticTest(parameterized.TestCase):
     expected = np.tile(mjd.qfrc_actuator, (d.nworld, 1))
     np.testing.assert_array_equal(d.qfrc_actuator.numpy(), expected)
 
-  def test_public_sparse_factor_solve(self):
+  @parameterized.parameters(False, True)
+  def test_public_sparse_factor_solve(self, captured):
     """Exercise deterministic factor_m/solve_m above the dense block threshold."""
+    if captured and not wp.get_device().is_cuda:
+      self.skipTest("CUDA graph required")
     n = 66
     chain = "".join('<body pos="0 0 .05"><joint axis="0 1 0" armature="1"/><geom type="sphere" size=".02"/>' for _ in range(n))
     xml = "<mujoco><worldbody>" + chain + "</body>" * n + "</worldbody></mujoco>"
@@ -109,8 +112,17 @@ class DeterministicArithmeticTest(parameterized.TestCase):
     mujoco.mj_solveM(mjm, mjd, reference, rhs[None])
     vector = wp.array(np.tile(rhs, (d.nworld, 1)), dtype=float)
     result = wp.zeros((d.nworld, n), dtype=float)
-    mjw.factor_m(m, d)
-    mjw.solve_m(m, d, result, vector)
+
+    def factor_solve():
+      mjw.factor_m(m, d)
+      mjw.solve_m(m, d, result, vector)
+
+    factor_solve()
+    if captured:
+      with wp.ScopedCapture() as capture:
+        factor_solve()
+      for _ in range(3):
+        wp.capture_launch(capture.graph)
     np.testing.assert_allclose(result.numpy(), np.tile(reference, (d.nworld, 1)), rtol=1e-4, atol=1e-5)
 
 

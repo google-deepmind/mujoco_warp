@@ -2229,6 +2229,11 @@ class IOTest(parameterized.TestCase):
     mjd = mujoco.MjData(mjm)
     mujoco.mj_forward(mjm, mjd)
 
+    # Current MuJoCo activates the tendon friction row. Explicitly retain the
+    # allocated Jacobian while setting its active constraint prefix to zero.
+    self.assertGreater(mjd.efc_J.size, 0)
+    mjd.nefc = 0
+
     self.assertFalse(mujoco.mj_isSparse(mjm))
     self.assertEqual(mjd.nefc, 0)
 

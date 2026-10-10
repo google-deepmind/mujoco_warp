@@ -1182,10 +1182,11 @@ def tendon_armature(m: Model, d: Data):
 
 
 @cache_kernel
-def _qLD_acc(deterministic: bool = False):
+def _qLD_acc(deterministic: bool = False, max_records: int = 1):
   module_options = {"enable_backward": False}
   if deterministic:
     module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
+    module_options["deterministic_max_records"] = max_records
 
   @wp.kernel(module="unique", module_options=module_options)
   def kernel(
@@ -1233,10 +1234,11 @@ def _factor_i_sparse(m: Model, d: Data, M: wp.array2d[float], L: wp.array2d[floa
   """Sparse L'*D*L factorization of inertia-like matrix M, assumed spd."""
   wp.copy(L, M)
 
+  deterministic = bool(m.opt.deterministic & DeterminismType.ATOMICS)
   for i in reversed(range(len(m.qLD_updates))):
     qLD_updates = m.qLD_updates[i]
     wp.launch(
-      _qLD_acc(bool(m.opt.deterministic & DeterminismType.ATOMICS)),
+      _qLD_acc(deterministic, m.nv if deterministic else 1),
       dim=(d.nworld, qLD_updates.size),
       inputs=[m.M_rownnz, m.M_rowadr, qLD_updates, L],
       outputs=[L],
@@ -3469,10 +3471,24 @@ def _solve_LD_sparse_fused(nv: int, nlevels: int, deterministic: bool = False):
       level_offset = level_offsets[level_idx]
       level_size = level_offsets[level_idx + 1] - level_offset
 
-      for u in range(tid, level_size, BLOCK_DIM):
-        update = all_updates[level_offset + u]
-        i, k, Madr_ki = update[0], update[1], update[2]
-        wp.atomic_sub(x_out[worldid], i, L[worldid, Madr_ki] * x_out[worldid, k])
+      if wp.static(deterministic):
+        # A deferred atomic reduction would only finish after the entire kernel,
+        # too late for the next level. Give each destination one ordered gather.
+        for dofid in range(tid, NV, BLOCK_DIM):
+          value = x_out[worldid, dofid]
+          updated = bool(False)
+          for u in range(level_size):
+            update = all_updates[level_offset + u]
+            if update[0] == dofid:
+              updated = True
+              value -= L[worldid, update[2]] * x_out[worldid, update[1]]
+          if updated:
+            x_out[worldid, dofid] = value
+      else:
+        for u in range(tid, level_size, BLOCK_DIM):
+          update = all_updates[level_offset + u]
+          i, k, Madr_ki = update[0], update[1], update[2]
+          wp.atomic_sub(x_out[worldid], i, L[worldid, Madr_ki] * x_out[worldid, k])
       _syncthreads()
 
     # Diagonal multiply (sparse-block dofs only)
@@ -3487,10 +3503,22 @@ def _solve_LD_sparse_fused(nv: int, nlevels: int, deterministic: bool = False):
       level_offset = level_offsets[level_idx]
       level_size = level_offsets[level_idx + 1] - level_offset
 
-      for u in range(tid, level_size, BLOCK_DIM):
-        update = all_updates[level_offset + u]
-        i, k, Madr_ki = update[0], update[1], update[2]
-        wp.atomic_sub(x_out[worldid], k, L[worldid, Madr_ki] * x_out[worldid, i])
+      if wp.static(deterministic):
+        for dofid in range(tid, NV, BLOCK_DIM):
+          value = x_out[worldid, dofid]
+          updated = bool(False)
+          for u in range(level_size):
+            update = all_updates[level_offset + u]
+            if update[1] == dofid:
+              updated = True
+              value -= L[worldid, update[2]] * x_out[worldid, update[0]]
+          if updated:
+            x_out[worldid, dofid] = value
+      else:
+        for u in range(tid, level_size, BLOCK_DIM):
+          update = all_updates[level_offset + u]
+          i, k, Madr_ki = update[0], update[1], update[2]
+          wp.atomic_sub(x_out[worldid], k, L[worldid, Madr_ki] * x_out[worldid, i])
       _syncthreads()
 
   return kernel

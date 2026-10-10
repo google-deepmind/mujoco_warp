@@ -1912,10 +1912,12 @@ def _tendon_actuator_force_clamp(
 
 
 @cache_kernel
-def _qfrc_actuator(deterministic: bool = False):
+def _qfrc_actuator(deterministic: bool = False, max_records: int = 1):
   module_options = {"enable_backward": False}
   if deterministic:
     module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
+    # Each sparse moment row has at most nv entries, emitted by one thread.
+    module_options["deterministic_max_records"] = max_records
 
   @wp.kernel(module="unique", module_options=module_options)
   def kernel(
@@ -2055,8 +2057,9 @@ def fwd_actuation(m: Model, d: Data):
 
     # TODO(team): optimize performance
     d.qfrc_actuator.zero_()
+    deterministic = bool(m.opt.deterministic & DeterminismType.ATOMICS)
     wp.launch(
-      _qfrc_actuator(bool(m.opt.deterministic & DeterminismType.ATOMICS)),
+      _qfrc_actuator(deterministic, m.nv if deterministic else 1),
       dim=(d.nworld, m.nactuator),
       inputs=[
         d.moment_rownnz,

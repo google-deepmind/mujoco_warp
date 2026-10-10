@@ -682,7 +682,10 @@ def analyze(
 
   def _is_ignored(iss: Issue) -> bool:
     start_line = iss.node.lineno
-    end_line = iss.node.end_lineno or start_line
+    # Function-level diagnostics belong to the declaration, not its entire body.
+    end_line = (
+      start_line if isinstance(iss.node, (ast.FunctionDef, ast.AsyncFunctionDef)) else (iss.node.end_lineno or start_line)
+    )
     matched_rules: Set[str] = set()
     for l in range(start_line, end_line + 1):
       if l in ignore_lines:
