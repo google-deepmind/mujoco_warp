@@ -27,6 +27,7 @@ import mujoco_warp as mjw
 from mujoco_warp import test_data
 from mujoco_warp._src import collision_driver
 from mujoco_warp._src import solver
+from mujoco_warp._src import types
 
 _NSTEPS = 10
 _CONTACT_FIELDS = (
@@ -838,7 +839,7 @@ class HessianBucketTest(parameterized.TestCase):
     jacobian = wp.array(rng.uniform(-2, 2, (nworld, 1, njmax)).astype(np.float32))
     inputs = [
       wp.ones(1, dtype=float),
-      wp.zeros(1, dtype=mjw._src.types.vec5),
+      wp.zeros(1, dtype=types.vec5),
       wp.full(1, 3, dtype=int),
       wp.zeros((nworld, njmax), dtype=int),
       rowadr,
@@ -849,7 +850,7 @@ class HessianBucketTest(parameterized.TestCase):
       wp.zeros((nworld, 1, njmax), dtype=int),
       jacobian,
       wp.ones((nworld, njmax), dtype=float),
-      wp.full((nworld, njmax), int(mjw._src.types.ConstraintState.QUADRATIC), dtype=int),
+      wp.full((nworld, njmax), int(types.ConstraintState.QUADRATIC), dtype=int),
       wp.zeros((nworld, 1), dtype=int),
       wp.zeros((nworld, njmax), dtype=float),
       done,
@@ -859,7 +860,7 @@ class HessianBucketTest(parameterized.TestCase):
 
     def launch():
       """Accumulate one Hessian with the currently selected dispatch mode."""
-      solver._launch_jtdaj_sparse(m, d, kernel, inputs, h, 32, 128, done)
+      solver._launch_jtdaj_sparse(m, d, kernel, inputs, h, 32, 128, counts, done)
 
     launch()
     expected = h.numpy().copy()

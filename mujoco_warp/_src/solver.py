@@ -3417,7 +3417,7 @@ def _jtdaj_bucket_active(maximum: wp.array[int], lower: int, upper: int, active_
   active_out[0] = int(maximum[0] > lower and maximum[0] <= upper)
 
 
-def _launch_jtdaj_sparse(m, d, kernel, inputs, h, threads_per_group, block_dim, done):
+def _launch_jtdaj_sparse(m, d, kernel, inputs, h, threads_per_group, block_dim, counts, done):
   """Bound captured scatter work using device-selected capacity buckets.
 
   Each selected capacity covers every active world's blocks, retaining one
@@ -3444,7 +3444,7 @@ def _launch_jtdaj_sparse(m, d, kernel, inputs, h, threads_per_group, block_dim, 
 
   if deterministic and m.opt.graph_conditional:
     maximum = wp.zeros(1, dtype=int)
-    wp.launch(_max_active_jtdaj_blocks, dim=d.nworld, inputs=[d.efc.jtdaj_nblock, done], outputs=[maximum])
+    wp.launch(_max_active_jtdaj_blocks, dim=d.nworld, inputs=[counts, done], outputs=[maximum])
     lower = 0
     for upper in sorted({min(d.njmax, size) for size in (16, 64, 256, d.njmax)}):
       active = wp.empty(1, dtype=int)
@@ -3530,7 +3530,7 @@ def _update_gradient(m: types.Model, d: types.Data, ctx: SolverContext, compact:
         ctx.Jaref,
         ctx.done,
       ]
-      _launch_jtdaj_sparse(m, d, jtdaj_kernel, jtdaj_inputs, ctx.h, threads_per_group, block_dim, ctx.done)
+      _launch_jtdaj_sparse(m, d, jtdaj_kernel, jtdaj_inputs, ctx.h, threads_per_group, block_dim, dj.efc.jtdaj_nblock, ctx.done)
     else:
       m_mat = d.qH if is_discrete else d.M
       if compact:
