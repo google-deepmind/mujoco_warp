@@ -6215,7 +6215,7 @@ def make_constraint(m: types.Model, d: types.Data):
   det = bool(m.opt.deterministic & types.DeterminismType.CONSTRAINT)
 
   if det:
-    if not (m.opt.deterministic & types.DeterminismType.CONTACTS):
+    if not m.opt.run_collision_detection or not (m.opt.deterministic & types.DeterminismType.CONTACTS):
       collision_driver._sort_contacts(m, d)
     s = _ensure_det_scratch(m, d)
     efc_nnz = s["efc_nnz"]

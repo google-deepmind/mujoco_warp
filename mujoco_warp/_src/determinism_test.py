@@ -210,6 +210,23 @@ class ContactSortDeterminismTest(parameterized.TestCase):
         err_msg=f"{field} was not permuted into deterministic order",
       )
 
+  def test_external_contacts_are_sorted_before_constraint_scan(self):
+    """Externally supplied contacts must form contiguous per-world scan ranges."""
+    _, _, m, d = test_data.fixture(path="collision.xml", nworld=2)
+    m.opt.deterministic = mjw.DeterminismType.ALL
+    mjw.forward(m, d)
+    expected_nefc = d.nefc.numpy().copy()
+    nacon = int(d.nacon.numpy()[0])
+    self.assertGreater(nacon, 0)
+    original = _copy_contact_fields(d)
+    permutation = np.arange(nacon)[::-1]
+    _write_contact_fields(d, _permute_active_contacts(original, nacon, permutation))
+    m.opt.run_collision_detection = False
+    mjw.make_constraint(m, d)
+    self.assertTrue((np.diff(d.contact.worldid.numpy()[:nacon]) >= 0).all())
+    np.testing.assert_array_equal(d.nefc.numpy(), expected_nefc)
+    self.assertFalse(d.overflow.numpy().any())
+
   def test_deterministic_flag_default_false(self):
     """The deterministic flag defaults to False."""
     _, _, m, _ = test_data.fixture(path="collision.xml")

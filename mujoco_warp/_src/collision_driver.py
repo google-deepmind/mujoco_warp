@@ -1043,7 +1043,7 @@ def _permute_contacts(d: Data, permutation: wp.array):
 
 
 def _sort_contacts(m: Model, d: Data):
-  """Sort contacts by (worldid, geom0, geom1, geomcollisionid) for determinism."""
+  """Sort rigid manifold and canonical flex candidate keys within each world."""
   if d.naconmax == 0:
     return
 
