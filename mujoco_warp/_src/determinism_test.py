@@ -822,6 +822,51 @@ class SleepDeterminismTest(absltest.TestCase):
 class FullStepGraphTest(parameterized.TestCase):
   """Compare complete deterministic steps in eager and CUDA Graph execution."""
 
+  def test_large_sparse_graph_workspace(self):
+    """Capture a batched articulated solve whose unsplit scatter workspace exceeds int32."""
+    if not wp.get_device().is_cuda:
+      self.skipTest("CUDA graph required")
+    children = "".join(
+      f'<body pos="0 {i * 0.03} .2"><joint type="hinge"/><geom type="sphere" '
+      'size=".01" mass=".01" contype="0" conaffinity="0"/></body>'
+      for i in range(37)
+    )
+    _, _, m, d = test_data.fixture(
+      xml=f"""<mujoco><option iterations="2" ls_iterations="4" jacobian="sparse"/>
+        <worldbody><geom type="plane" size="2 2 .1"/>
+          <body pos="0 0 .09"><freejoint/><geom type="box" size=".1 .08 .1"/>
+            {children}</body></worldbody></mujoco>""",
+      nworld=144,
+      nconmax=16,
+      njmax=512,
+    )
+    m.opt.deterministic = mjw.DeterminismType.ALL
+    m.opt.graph_conditional = False
+    qpos = d.qpos.numpy().copy()
+    qvel = d.qvel.numpy().copy()
+    qvel[:, 0] = np.linspace(0.1, 0.3, d.nworld)
+
+    def reset():
+      """Restore the same heterogeneous initial state before each execution mode."""
+      mjw.reset_data(m, d)
+      d.qpos.assign(qpos)
+      d.qvel.assign(qvel)
+
+    reset()
+    mjw.step(m, d)
+    self.assertFalse(d.overflow.numpy().any())
+    expected = {name: getattr(d, name).numpy().copy() for name in ("qpos", "qvel", "qacc")}
+    reset()
+    with wp.ScopedCapture() as capture:
+      mjw.step(m, d)
+    wp.capture_launch(capture.graph)
+    self.assertFalse(d.overflow.numpy().any())
+    self.assertGreater(d.nacon.numpy()[0], 0)
+    for name, value in expected.items():
+      actual = getattr(d, name).numpy()
+      self.assertTrue(np.isfinite(actual).all())
+      np.testing.assert_array_equal(actual, value, err_msg=name)
+
   @parameterized.product(nworld=(1, 2), jacobian=("DENSE", "SPARSE"))
   def test_graph_matches_eager(self, nworld, jacobian):
     """Replay contact generation, allocation and solving with heterogeneous initial states."""

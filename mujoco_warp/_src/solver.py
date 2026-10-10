@@ -3308,10 +3308,12 @@ def _JTDACJ_sparse(
     ctx_Jaref_in: wp.array2d[float],
     ctx_done_in: wp.array[bool],
     groups_per_world: int,
+    world_start: int,
     # Out:
     h_out: wp.array3d[float],
   ):
     worldid, slot, lane = wp.tid()
+    worldid += world_start
     if wp.static(ELLIPTIC):
       lanes = wp.block_dim()
     else:
@@ -3481,13 +3483,22 @@ def _update_gradient(m: types.Model, d: types.Data, ctx: SolverContext, compact:
         ctx.done,
         groups_per_world,
       ]
-      wp.launch(
-        jtdaj_kernel,
-        dim=(d.nworld, groups_per_world, threads_per_group),
-        inputs=jtdaj_inputs,
-        outputs=[ctx.h],
-        block_dim=block_dim,
-      )
+      worlds_per_launch = d.nworld
+      if m.opt.deterministic & types.DeterminismType.ATOMICS:
+        # Graph capture reserves worst-case scatter storage rather than the eager
+        # active count. Bound each independent-world launch to avoid Warp's int32
+        # workspace shape limit without changing any world's reduction order.
+        records_per_lane = max(1, (m.nv * (m.nv + 1) // 2 + threads_per_group - 1) // threads_per_group)
+        records_per_world = groups_per_world * threads_per_group * records_per_lane
+        worlds_per_launch = max(1, min(d.nworld, (1 << 24) // records_per_world))
+      for world_start in range(0, d.nworld, worlds_per_launch):
+        wp.launch(
+          jtdaj_kernel,
+          dim=(min(worlds_per_launch, d.nworld - world_start), groups_per_world, threads_per_group),
+          inputs=[*jtdaj_inputs, world_start],
+          outputs=[ctx.h],
+          block_dim=block_dim,
+        )
     else:
       m_mat = d.qH if is_discrete else d.M
       if compact:
