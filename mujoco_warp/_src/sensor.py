@@ -2558,7 +2558,6 @@ def _contact_sort(maxmatch: int):
   ):
     worldid, contactsensorid = wp.tid()
 
-    worldid, contactsensorid = wp.tid()
     sensorid = sensor_contact_adr[contactsensorid]
 
     reduce = sensor_intprm[sensorid, 1]
