@@ -15,6 +15,8 @@
 
 """Tests for set_const functions."""
 
+import copy
+
 import mujoco
 import numpy as np
 import warp as wp
@@ -1080,6 +1082,58 @@ class SetConstTest(parameterized.TestCase):
     expected_hi = mjm.tendon_range[0, 1]
     np.testing.assert_allclose(lr_np[0, 0, 0], expected_lo, atol=1e-5)
     np.testing.assert_allclose(lr_np[0, 0, 1], expected_hi, atol=1e-5)
+
+  @parameterized.parameters(1, 2)
+  def test_set_const_geom_bound(self, nworld):
+    """Test geom bounds follow geom_size and hfield_size as in mj_setConst."""
+    mjm, _, m, d = test_data.fixture(
+      xml="""
+    <mujoco>
+      <asset>
+        <hfield name="terrain" nrow="2" ncol="2" size="1 1 .5 .1"/>
+      </asset>
+      <worldbody>
+        <geom type="plane" size="5 5 .1"/>
+        <geom type="hfield" hfield="terrain"/>
+        <body>
+          <freejoint/>
+          <geom size=".1"/>
+          <geom type="capsule" size=".1 .2"/>
+          <geom type="cylinder" size=".1 .3"/>
+          <geom type="ellipsoid" size=".1 .2 .3"/>
+          <geom type="box" size=".1 .2 .3" pos=".5 0 0"/>
+        </body>
+      </worldbody>
+    </mujoco>
+    """,
+      nworld=nworld,
+      batch_sizes={"geom_size": nworld, "geom_aabb": nworld, "geom_rbound": nworld},
+    )
+
+    scales = [1.5, 0.5][:nworld]
+    size = m.geom_size.numpy()
+    for w in range(nworld):
+      size[w, 2:] *= scales[w]
+    m.geom_size.assign(size)
+    hfield_size = m.hfield_size.numpy() * 2.0
+    m.hfield_size.assign(hfield_size)
+
+    mjwarp.set_const(m, d)
+
+    aabb = m.geom_aabb.numpy().reshape(nworld, -1, 6)
+    rbound = m.geom_rbound.numpy()
+    for w in range(nworld):
+      mjm_w = copy.copy(mjm)
+      mjm_w.geom_size[2:] *= scales[w]
+      mjm_w.hfield_size[:] = hfield_size
+      mujoco.mj_setConst(mjm_w, mujoco.MjData(mjm_w))
+      _assert_eq(m.geom_size.numpy()[w], mjm_w.geom_size, f"geom_size_world_{w}")
+      _assert_eq(aabb[w, 0] / mujoco.mjMAXVAL, mjm_w.geom_aabb[0] / mujoco.mjMAXVAL, f"geom_aabb_plane_world_{w}")
+      _assert_eq(aabb[w, 1:], mjm_w.geom_aabb[1:], f"geom_aabb_world_{w}")
+      _assert_eq(rbound[w], mjm_w.geom_rbound, f"geom_rbound_world_{w}")
+
+    if nworld == 2:
+      self.assertFalse(np.allclose(rbound[0], rbound[1]))
 
 
 # TODO(team): test set_const_0 sparse
