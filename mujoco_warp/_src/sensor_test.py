@@ -682,6 +682,7 @@ class SensorTest(parameterized.TestCase):
 
   @parameterized.parameters(
     ("box", "box", "box", "box"),
+    ("capsule", "capsule", "capsule", "capsule"),
     ("sphere", "capsule", "ellipsoid", "cylinder"),
     ("capsule", "box", "cylinder", "sphere"),
     ("capsule", "cylinder", "box", "ellipsoid"),
@@ -786,6 +787,45 @@ class SensorTest(parameterized.TestCase):
     mjw.sensor_pos(m, d)
 
     _assert_eq(d.sensordata.numpy()[0], mjd.sensordata, "sensordata")
+
+  def test_sensor_collision_capsule_capsule(self):
+    """Tests collision sensors between separated capsules (parallel and near-parallel)."""
+    _, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <body euler="15 35 55">
+            <geom name="a" type="capsule" size="0.01 1.5" pos="0 0.05 0"/>
+          </body>
+          <body euler="15 0 0">
+            <body euler="0 35 55">
+              <geom name="b" type="capsule" size="0.01 1.2" pos="0 -0.05 0.1"/>
+              <geom name="c" type="capsule" size="0.01 1.2" pos="0 -0.05 2.75"/>
+              <geom name="d" type="capsule" size="0.01 1.2" pos="0 -0.05 0.1" euler="0 0.1 0"/>
+            </body>
+          </body>
+        </worldbody>
+        <sensor>
+          <distance geom1="a" geom2="b" cutoff="0.1"/>
+          <normal geom1="a" geom2="b" cutoff="0.1"/>
+          <distance geom1="a" geom2="c" cutoff="0.1"/>
+          <normal geom1="a" geom2="c" cutoff="0.1"/>
+          <fromto geom1="a" geom2="c" cutoff="0.1"/>
+          <distance geom1="a" geom2="d" cutoff="0.1"/>
+          <normal geom1="a" geom2="d" cutoff="0.1"/>
+          <fromto geom1="a" geom2="d" cutoff="0.1"/>
+        </sensor>
+      </mujoco>
+      """
+    )
+
+    d.sensordata.fill_(wp.inf)
+    mjw.collision(m, d)
+    mjw.sensor_pos(m, d)
+
+    sensordata = d.sensordata.numpy()[0]
+    _assert_eq(sensordata[:18], mjd.sensordata[:18], "sensordata")
+    np.testing.assert_allclose(sensordata[18:24], mjd.sensordata[18:24], atol=2e-3)
 
   @parameterized.parameters("sphere", "capsule", "ellipsoid", "cylinder", "box")
   def test_sensor_collision_plane(self, type_):
