@@ -3502,7 +3502,7 @@ def _update_gradient(m: types.Model, d: types.Data, ctx: SolverContext, compact:
   if is_discrete and (m.opt.enableflags & types.EnableBit.SLEEP):
     wp.launch(
       derivative._zero_sleeping_dofs,
-      dim=(d.nworld, ctx.Mgrad.shape[1]),
+      dim=(d.nworld, min(m.nv, ctx.Mgrad.shape[1])),
       inputs=[m.dof_treeid, d.tree_awake],
       outputs=[ctx.Mgrad],
     )
@@ -3577,7 +3577,7 @@ def _update_gradient_incremental(m: types.Model, d: types.Data, ctx: SolverConte
   if m.opt.integrator == types.IntegratorType.DISCRETE and (m.opt.enableflags & types.EnableBit.SLEEP):
     wp.launch(
       derivative._zero_sleeping_dofs,
-      dim=(d.nworld, ctx.Mgrad.shape[1]),
+      dim=(d.nworld, min(m.nv, ctx.Mgrad.shape[1])),
       inputs=[m.dof_treeid, d.tree_awake],
       outputs=[ctx.Mgrad],
     )
