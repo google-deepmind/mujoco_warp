@@ -1791,7 +1791,7 @@ class CollisionTest(parameterized.TestCase):
     self.assertEqual(d.nacon.numpy()[0], mjd.ncon)
 
   @parameterized.product(
-    broadphase=(BroadphaseType.NXN, BroadphaseType.SAP_TILE),
+    broadphase=list(BroadphaseType),
     nworld=(1, 2),
   )
   def test_mocap_collision_filter(self, broadphase, nworld):
