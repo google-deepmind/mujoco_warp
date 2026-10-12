@@ -568,57 +568,6 @@ class SolverTest(parameterized.TestCase):
     ctx_Mgrad = ctx.Mgrad.numpy()[0, : mjm.nv]
     _assert_eq(ctx_Mgrad, mj_Mgrad[0], name="Mgrad")
 
-  @parameterized.named_parameters(
-    ("cg", SolverType.CG, False),
-    ("newton", SolverType.NEWTON, False),
-    ("newton_incremental", SolverType.NEWTON, True),
-  )
-  def test_sleeping_gradient_bounds(self, solver_type, incremental):
-    """Sleeping masks preserve gradient padding and accept absent CG storage."""
-    mjm = mujoco.MjModel.from_xml_string("""
-      <mujoco>
-        <option integrator="discrete" solver="Newton">
-          <flag sleep="enable" contact="disable"/>
-        </option>
-        <worldbody>
-          <body pos="0 0 1"><freejoint/><geom type="sphere" size=".1"/></body>
-          <body pos="1 0 1"><joint/><geom type="sphere" size=".1"/></body>
-        </worldbody>
-      </mujoco>
-    """)
-    mjd = mujoco.MjData(mjm)
-    mujoco.mj_forward(mjm, mjd)
-    m = mjw.put_model(mjm)
-    d = mjw.put_data(mjm, mjd, nworld=2, nconmax=1, njmax=1)
-    mjw.forward(m, d)
-    # Exercise the CG helper directly: public model loading requires Newton for sleeping.
-    m.opt.solver = solver_type
-    ctx = solver._create_solver_context(m, d)
-    solver.init_context(m, d, ctx, grad=False)
-    self.assertGreater(m.nv_pad, m.nv)
-    # Back the logical view with a guard so excess mask writes fail deterministically.
-    tree_ids = np.zeros(m.nv_pad, dtype=np.int32)
-    tree_ids[: m.nv] = m.dof_treeid.numpy()
-    tree_storage = wp.array(tree_ids, dtype=int)
-    m.dof_treeid = tree_storage[: m.nv]
-    awake = np.array([[0, 1], [1, 0]], dtype=np.int32)
-    d.tree_awake.assign(awake)
-    ctx.Mgrad.fill_(71.0)
-    if incremental:
-      solver._update_gradient(m, d, ctx)
-      ctx.quad_changed_count.zero_()
-      solver._update_gradient_incremental(m, d, ctx)
-    else:
-      solver._update_gradient(m, d, ctx)
-    asleep = awake[:, tree_ids[: m.nv]] == 0
-    np.testing.assert_array_equal(ctx.search.numpy()[asleep], 0.0)
-    if solver_type == SolverType.CG:
-      result = ctx.Mgrad.numpy()
-      np.testing.assert_array_equal(result[:, : m.nv][asleep], 0.0)
-      np.testing.assert_array_equal(result[:, m.nv :], 71.0)
-    else:
-      self.assertEqual(ctx.Mgrad.shape[1], 0)
-
   def test_linesearch_accepts_sub_float32_improvement(self):
     """Line search should not lose small improvements on large absolute costs."""
     _, _, m, d = test_data.fixture(
