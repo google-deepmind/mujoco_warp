@@ -705,6 +705,72 @@ class CollisionTest(parameterized.TestCase):
     mjm, mjd, m, d = test_data.fixture(xml=self._FIXTURES[fixture])
     self._assert_plane_mesh_contacts(mjm, mjd, m, d)
 
+  @parameterized.product(
+    nworld=(1, 2),
+    pose=(
+      (0, -0.83, 0.05584914712945161, -0.8560905225955404, -0.10673411382536688, -0.4633517822388993, -0.2025388159441144),
+      (0, -0.83, 0.0642848458667993, 0.8220642719158898, 0.3367511555474028, -0.4571611242273419, 0.04257579796175299),
+    ),
+  )
+  def test_plane_mesh_near_duplicate_vertices(self, nworld, pose):
+    """The hull climb must cross near-duplicate vertices to reach the penetrating face."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <asset>
+          <mesh name="slab" vertex="
+            -0.05 -0.05 -0.0015  -0.05 -0.05 0.0015
+            -0.05 0.05 -0.0015  -0.05 0.05 0.0015
+            0.05 -0.05 -0.0015  0.05 -0.05 0.0015
+            0.05 0.05 -0.0015  0.05 0.05 0.0015
+            -0.04999999996966069 -0.0499999926320289 -0.0015000067610710214
+            -0.05000000632398498 -0.05000000322856228 0.0014999929584376998
+            -0.04999999957912315 0.05000000937864624 -0.0015000034443950895
+            -0.05000000715365375 0.05000000564754581 0.0015000041146645635
+            0.0500000011251663 -0.050000009931591774 -0.0015000003122269067
+            0.05000000439768453 -0.05000000850194788 0.0014999971056515096
+            0.04999999354293904 0.049999995620384916 -0.0015000062550248137
+            0.04999999821535283 0.04999999037843422 0.001500002059248979"/>
+        </asset>
+        <worldbody>
+          <geom type="plane" size="0 0 0.01"/>
+          <body>
+            <freejoint/>
+            <geom type="mesh" mesh="slab"/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=nworld,
+    )
+    qpos = np.tile(pose, (nworld, 1))
+    if nworld == 2:
+      qpos[1, 2] -= 0.002
+    d.qpos.assign(qpos)
+    mjw.kinematics(m, d)
+    d.nacon.fill_(-1)
+    d.contact.dist.fill_(wp.inf)
+    d.contact.pos.fill_(wp.inf)
+    d.contact.frame.fill_(wp.inf)
+    mjw.collision(m, d)
+
+    ncon = int(d.nacon.numpy()[0])
+    worldid = d.contact.worldid.numpy()[:ncon]
+    dist = d.contact.dist.numpy()[:ncon]
+    pos = d.contact.pos.numpy()[:ncon]
+    normal = d.contact.frame.numpy()[:ncon, 0]
+    for world in range(nworld):
+      mjd.qpos[:] = qpos[world]
+      mujoco.mj_forward(mjm, mjd)
+      conids = np.flatnonzero(worldid == world)
+      self.assertGreater(mjd.ncon, 0)
+      self.assertLen(conids, mjd.ncon)
+      _assert_eq(dist[conids], mjd.contact.dist[: mjd.ncon], "dist")
+      _assert_eq(pos[conids], mjd.contact.pos[: mjd.ncon], "pos")
+      _assert_eq(normal[conids], mjd.contact.frame[: mjd.ncon, :3], "normal")
+    if nworld == 2:
+      self.assertFalse(np.isclose(np.min(dist[worldid == 0]), np.min(dist[worldid == 1])))
+
   def test_plane_mesh_center_filter(self):
     """Rejects vertices above the mesh center (mutant: without_mesh_center_filter)."""
     xml = self._FIXTURES["mesh_plane_complex"].replace('pos="0.0 2.0 0.0"', 'pos="0.0 2.0 -0.1"')
