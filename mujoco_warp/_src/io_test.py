@@ -1512,11 +1512,22 @@ class IOTest(parameterized.TestCase):
     with self.assertRaises(NotImplementedError):
       test_data.fixture(
         xml="""
+        <mujoco>
+          <option noslip_iterations="1" integrator="discrete"/>
+        </mujoco>
+        """
+      )
+
+  def test_noslip_options(self):
+    _, _, m, _ = test_data.fixture(
+      xml="""
       <mujoco>
-        <option noslip_iterations="1"/>
+        <option noslip_iterations="3" noslip_tolerance="1e-3"/>
       </mujoco>
       """
-      )
+    )
+    self.assertEqual(m.opt.noslip_iterations, 3)
+    np.testing.assert_allclose(m.opt.noslip_tolerance.numpy(), [1e-3])
 
   @parameterized.parameters(7, 8)
   def test_contact_sensor_vel_unsupported(self, bit):
