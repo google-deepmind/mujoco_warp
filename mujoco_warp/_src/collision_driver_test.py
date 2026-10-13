@@ -1214,20 +1214,12 @@ class CollisionTest(parameterized.TestCase):
     _assert_eq(d.contact.dim.numpy()[0], mjd.contact.dim[0], "dim")
 
   def test_box_box_face_penetration_depth(self):
-    """Tests box-box face-to-face penetration depth calculation.
-
-    This test validates the bugfix for box-box collision depth calculation.
-    Two aligned boxes with face-to-face contact should report correct penetration depth.
-
-    Note: MuJoCo's native collision detection has a bug in box-box face-to-face
-    penetration depth calculation (it reports half the correct depth). This test
-    verifies that mujoco_warp reports the analytically correct depth.
-    """
-    mjm, mjd, m, d = test_data.fixture(
+    """Tests box-box face-to-face penetration depth calculation."""
+    _, mjd, m, d = test_data.fixture(
       xml="""
     <mujoco>
       <worldbody>
-        <body pos="0 0 0">
+        <body>
           <geom type="box" size="0.5 0.5 0.5"/>
         </body>
         <body pos="0 0 0.8">
@@ -1235,34 +1227,37 @@ class CollisionTest(parameterized.TestCase):
           <geom type="box" size="0.5 0.5 0.5"/>
         </body>
       </worldbody>
-      <keyframe>
-        <key qpos="0 0 0.8 1 0 0 0"/>
-      </keyframe>
     </mujoco>
-    """,
-      keyframe=0,
+    """
     )
 
-    mujoco.mj_collision(mjm, mjd)
+    d.contact.dist.fill_(wp.inf)
     mjw.collision(m, d)
 
     # Both boxes have size 0.5, so faces are at z=0.5 and z=0.3 (0.8-0.5)
     # Penetration depth should be 0.5 - 0.3 = 0.2
     expected_penetration = -0.2
 
-    self.assertGreater(d.nacon.numpy()[0], 0, "Should have contacts")
+    nacon = d.nacon.numpy()[0]
+    self.assertGreater(nacon, 0, "Should have contacts")
     self.assertGreater(mjd.ncon, 0, "MuJoCo should have contacts")
 
-    # Verify that mujoco_warp reports the analytically correct penetration depth
-    # Note: We do NOT compare against MuJoCo's output here because MuJoCo has a bug
-    # that causes it to report half the correct penetration depth for face-to-face contacts
-    for i in range(d.nacon.numpy()[0]):
-      mjw_dist = d.contact.dist.numpy()[i]
+    for i in range(mjd.ncon):
+      mj_dist = mjd.contact.dist[i]
       self.assertAlmostEqual(
-        mjw_dist,
+        mj_dist,
         expected_penetration,
         places=2,
-        msg=f"Contact {i}: Expected penetration {expected_penetration:.4f}, got {mjw_dist:.4f}",
+        msg=f"MuJoCo contact {i}: Expected penetration {expected_penetration:.4f}, got {mj_dist:.4f}",
+      )
+
+    mjw_dist = d.contact.dist.numpy()
+    for i in range(nacon):
+      self.assertAlmostEqual(
+        mjw_dist[i],
+        expected_penetration,
+        places=2,
+        msg=f"Contact {i}: Expected penetration {expected_penetration:.4f}, got {mjw_dist[i]:.4f}",
       )
 
   _SDF_VOLUME = {
@@ -1760,35 +1755,516 @@ class CollisionTest(parameterized.TestCase):
     self.assertEqual(int(d.nacon.numpy()[0]), 1)
     self.assertTrue(np.isfinite(float(d.contact.dist.numpy()[0])))
 
-  def test_native_ccd_disable_does_not_mutate_global_table(self):
-    initial_type = MJ_COLLISION_TABLE[(GeomType.BOX, GeomType.BOX)]
-    self.assertEqual(initial_type, CollisionType.CONVEX)
 
-    _, mjd, m, d = test_data.fixture(xml="""
-      <mujoco>
-        <worldbody>
-          <body name="body1" pos="0 0 0.51">
-            <freejoint/>
-            <geom name="box1" type="box" size="0.5 0.5 0.5"/>
-          </body>
-          <body name="body2" pos="0 0 1.49">
-            <freejoint/>
-            <geom name="box2" type="box" size="0.5 0.5 0.5"/>
-          </body>
-        </worldbody>
-      </mujoco>
-      """)
-    m.opt.disableflags |= DisableBit.NATIVECCD
+# box-box primitive collider parity with MuJoCo's mjc_BoxBox
+
+_BOX_BOX_TOL = 1e-5
+
+
+def _rot(axis, angle_deg):
+  """Returns the rotation matrix for a rotation of angle_deg degrees about axis."""
+  quat = np.zeros(4)
+  mujoco.mju_axisAngle2Quat(quat, np.array(axis, dtype=float), np.deg2rad(angle_deg))
+  mat = np.zeros(9)
+  mujoco.mju_quat2Mat(mat, quat)
+  return mat.reshape(3, 3)
+
+
+_I3 = np.eye(3)
+_SQRT2 = np.sqrt(2.0)
+_SQRT3 = np.sqrt(3.0)
+
+# user-reported regression: resting stack of two equal boxes, MuJoCo gives 4 contacts
+_REPRO_MAT1 = np.array([[1.0, 0.0, -5.68e-7], [0.0, 1.0, 0.0], [5.68e-7, 0.0, 1.0]])
+_REPRO_MAT2 = np.array([[1.0, 0.0, -3e-9], [0.0, 1.0, 0.0], [3e-9, 0.0, 1.0]])
+
+# name: (size1, size2, pos1, mat1, pos2, mat2, geom margin, pair margin, expected ncon)
+_BOX_BOX_CASES = {
+  "repro_resting_stack": (
+    (0.05, 0.05, 0.05),
+    (0.05, 0.05, 0.05),
+    (0.5, 0.0, 0.04460844),
+    _REPRO_MAT1,
+    (0.5, 0.0, 0.141257583),
+    _REPRO_MAT2,
+    0.001,
+    None,
+    4,
+  ),
+  "stack_aligned": (
+    (0.1, 0.1, 0.1),
+    (0.1, 0.1, 0.1),
+    (0, 0, 0.1),
+    _I3,
+    (0, 0, 0.299),
+    _I3,
+    0.0,
+    None,
+    4,
+  ),
+  "stack_perturbed": (
+    (0.1, 0.1, 0.1),
+    (0.1, 0.1, 0.1),
+    (0, 0, 0.1),
+    _I3,
+    (0.01, -0.02, 0.2985),
+    _rot((0, 0, 1), 0.3) @ _rot((1, 0, 0), 0.2) @ _rot((0, 1, 0), -0.1),
+    0.0,
+    None,
+    None,
+  ),
+  "stack_rotated_small": (
+    (0.1, 0.1, 0.1),
+    (0.1, 0.1, 0.1),
+    (0, 0, 0.1),
+    _rot((1, 1, 0), 0.05),
+    (0.0, 0.0, 0.2995),
+    _rot((0, 0, 1), 2.0),
+    0.0,
+    None,
+    None,
+  ),
+  "unequal_small_on_big": (
+    (0.3, 0.3, 0.1),
+    (0.05, 0.08, 0.03),
+    (0, 0, 0),
+    _I3,
+    (0.05, 0.02, 0.129),
+    _rot((0, 0, 1), 20.0),
+    0.0,
+    None,
+    4,
+  ),
+  "unequal_big_on_small": (
+    (0.05, 0.08, 0.03),
+    (0.3, 0.3, 0.1),
+    (0, 0, 0),
+    _I3,
+    (0.02, 0.0, 0.129),
+    _rot((0, 0, 1), 10.0),
+    0.0,
+    None,
+    4,
+  ),
+  "unequal_overhang": (
+    (0.2, 0.1, 0.05),
+    (0.1, 0.2, 0.05),
+    (0, 0, 0),
+    _I3,
+    (0.05, 0.03, 0.099),
+    _rot((0, 0, 1), 5.0),
+    0.0,
+    None,
+    None,
+  ),
+  "octagon": (
+    (0.1, 0.1, 0.1),
+    (0.1, 0.1, 0.1),
+    (0, 0, 0),
+    _I3,
+    (0, 0, 0.199),
+    _rot((0, 0, 1), 45.0),
+    0.0,
+    None,
+    8,
+  ),
+  "face_vertex": (
+    (0.5, 0.5, 0.5),
+    (0.2, 0.2, 0.2),
+    (0, 0, 0),
+    _I3,
+    (0.1, -0.05, 0.5 + 0.2 * _SQRT3 - 0.01),
+    _rot((1, 0, 0), 45.0) @ _rot((0, 1, 0), np.rad2deg(np.arctan(1.0 / _SQRT2))),
+    0.0,
+    None,
+    1,
+  ),
+  "tilted_edge_on_face": (
+    (0.5, 0.5, 0.5),
+    (0.1, 0.1, 0.1),
+    (0, 0, 0),
+    _I3,
+    (
+      0.05,
+      0.1,
+      0.5 + 0.1 * (np.cos(np.deg2rad(10)) + np.sin(np.deg2rad(10))) - 0.005,
+    ),
+    _rot((1, 0, 0), 10.0),
+    0.0,
+    None,
+    2,
+  ),
+  "edge_edge": (
+    (0.2, 0.2, 0.2),
+    (0.2, 0.2, 0.2),
+    (0, 0, 0),
+    _rot((1, 0, 0), 45.0),
+    (0.01, 0.02, 0.4 * _SQRT2 - 0.01),
+    _rot((0, 1, 0), 45.0),
+    0.0,
+    None,
+    1,
+  ),
+  "edge_edge_skew": (
+    (0.2, 0.3, 0.2),
+    (0.1, 0.2, 0.15),
+    (0, 0, 0),
+    _rot((1, 0, 0), 45.0),
+    (0.03, -0.02, 0.2 * _SQRT2 + 0.15 * _SQRT2 - 0.008),
+    _rot((0, 0, 1), 30.0) @ _rot((0, 1, 0), 45.0),
+    0.0,
+    None,
+    1,
+  ),
+  "edge_near_parallel_1e-3": (
+    (0.2, 0.2, 0.2),
+    (0.2, 0.2, 0.2),
+    (0, 0, 0),
+    _rot((1, 0, 0), 45.0),
+    (0.05, 0.0, 0.4 * _SQRT2 - 0.01),
+    _rot((0, 0, 1), np.rad2deg(1e-3)) @ _rot((1, 0, 0), 45.0),
+    0.0,
+    None,
+    None,
+  ),
+  "edge_near_parallel_1e-4": (
+    (0.2, 0.2, 0.2),
+    (0.2, 0.2, 0.2),
+    (0, 0, 0),
+    _rot((1, 0, 0), 45.0),
+    (0.05, 0.0, 0.4 * _SQRT2 - 0.01),
+    _rot((0, 0, 1), np.rad2deg(1e-4)) @ _rot((1, 0, 0), 45.0),
+    0.0,
+    None,
+    None,
+  ),
+  "deep": (
+    (0.2, 0.2, 0.2),
+    (0.2, 0.2, 0.2),
+    (0, 0, 0),
+    _I3,
+    (0.03, 0.02, 0.25),
+    _rot((0, 0, 1), 15.0) @ _rot((1, 0, 0), 5.0),
+    0.0,
+    None,
+    None,
+  ),
+  "nested": (
+    (0.3, 0.3, 0.3),
+    (0.25, 0.25, 0.25),
+    (0, 0, 0),
+    _I3,
+    (0.01, 0, 0),
+    _rot((0, 0, 1), 10.0),
+    0.0,
+    None,
+    None,
+  ),
+  "margin_within": (
+    (0.1, 0.1, 0.1),
+    (0.1, 0.1, 0.1),
+    (0, 0, 0),
+    _I3,
+    (0, 0, 0.2005),
+    _I3,
+    0.001,
+    None,
+    4,
+  ),
+  "margin_beyond": (
+    (0.1, 0.1, 0.1),
+    (0.1, 0.1, 0.1),
+    (0, 0, 0),
+    _I3,
+    (0, 0, 0.203),
+    _I3,
+    0.001,
+    None,
+    0,
+  ),
+  "margin_within_rotated": (
+    (0.1, 0.1, 0.1),
+    (0.1, 0.1, 0.1),
+    (0, 0, 0),
+    _I3,
+    (0.02, 0.0, 0.2008),
+    _rot((0, 0, 1), 30.0),
+    0.001,
+    None,
+    None,
+  ),
+  # the explicit pair margin overrides the (zero) geom margins, also in the broadphase
+  "pair_margin_penetrating": (
+    (0.1, 0.1, 0.1),
+    (0.1, 0.1, 0.1),
+    (0, 0, 0),
+    _I3,
+    (0.03, -0.01, 0.199),
+    _rot((0, 0, 1), 25.0),
+    0.0,
+    0.01,
+    None,
+  ),
+  "pair_margin_beyond": ((0.1, 0.1, 0.1), (0.1, 0.1, 0.1), (0, 0, 0), _I3, (0, 0, 0.212), _I3, 0.0, 0.01, 0),
+  "edge_margin_within": (
+    (0.2, 0.2, 0.2),
+    (0.2, 0.2, 0.2),
+    (0, 0, 0),
+    _rot((1, 0, 0), 45.0),
+    (0.01, 0.02, 0.4 * _SQRT2 + 0.0005),
+    _rot((0, 1, 0), 45.0),
+    0.001,
+    None,
+    1,
+  ),
+  "edge_margin_beyond": (
+    (0.2, 0.2, 0.2),
+    (0.2, 0.2, 0.2),
+    (0, 0, 0),
+    _rot((1, 0, 0), 45.0),
+    (0.01, 0.02, 0.4 * _SQRT2 + 0.003),
+    _rot((0, 1, 0), 45.0),
+    0.001,
+    None,
+    0,
+  ),
+}
+
+
+def _box_box_xml(size1, size2, margin, pair_margin, swap):
+  """Returns a model with two free boxes; swap puts box2 first (geom 0)."""
+  contype = 'contype="0" conaffinity="0"' if pair_margin is not None else ""
+  bodies = [
+    (
+      '<body name="box1"><freejoint/><geom name="box1" type="box"'
+      f' size="{size1[0]} {size1[1]} {size1[2]}" margin="{margin}"'
+      f" {contype}/></body>"
+    ),
+    (
+      '<body name="box2"><freejoint/><geom name="box2" type="box"'
+      f' size="{size2[0]} {size2[1]} {size2[2]}" margin="{margin}"'
+      f" {contype}/></body>"
+    ),
+  ]
+  if swap:
+    bodies = bodies[::-1]
+  pair = ""
+  if pair_margin is not None:
+    pair = f'<contact><pair geom1="box1" geom2="box2" margin="{pair_margin}"/></contact>'
+  return f"""
+    <mujoco>
+      <option>
+        <flag nativeccd="disable" multiccd="disable"/>
+      </option>
+      <worldbody>
+        {bodies[0]}
+        {bodies[1]}
+      </worldbody>
+      {pair}
+    </mujoco>
+  """
+
+
+def _random_rotation(rng):
+  quat = rng.normal(size=4)
+  quat /= np.linalg.norm(quat)
+  mat = np.zeros(9)
+  mujoco.mju_quat2Mat(mat, quat)
+  return mat.reshape(3, 3)
+
+
+def _random_near_aligned_rotation(rng, angle_deg):
+  """Returns a random signed axis permutation, perturbed by a small random rotation."""
+  perm = np.eye(3)[rng.permutation(3)] * rng.choice([-1.0, 1.0], size=3)[:, None]
+  if np.linalg.det(perm) < 0:
+    perm[0] = -perm[0]
+  axis = rng.normal(size=3)
+  return _rot(axis / np.linalg.norm(axis), rng.normal(scale=angle_deg)) @ perm
+
+
+def _random_box_box_poses(rng, size1, size2, npose):
+  """Returns random box poses near contact, half of them nearly face-aligned."""
+  size1, size2 = np.array(size1), np.array(size2)
+  poses = []
+  for k in range(npose):
+    smin = min(size1.min(), size2.min())
+    offset = np.zeros(3)
+    if k % 2:
+      # generic poses: mostly vertex-face and edge-edge contacts
+      mat1, mat2 = _random_rotation(rng), _random_rotation(rng)
+      u = rng.normal(size=3)
+      u /= np.linalg.norm(u)
+    else:
+      # nearly face-aligned poses, shifted along a face: face-face contact patches
+      mat1 = _random_near_aligned_rotation(rng, 0.5)
+      mat2 = _random_near_aligned_rotation(rng, 0.5)
+      u = mat1[:, rng.integers(3)] * rng.choice([-1.0, 1.0])
+      offset = rng.uniform(-1.0, 1.0, size=3) * (size1 + size2)
+      offset -= np.dot(offset, u) * u
+    support = np.sum(size1 * np.abs(mat1.T @ u)) + np.sum(size2 * np.abs(mat2.T @ u))
+    delta = rng.uniform(-0.3 * smin, 0.02)
+    pos1 = rng.uniform(-0.5, 0.5, size=3)
+    poses.append((pos1, mat1, pos1 + (support + delta) * u + offset, mat2))
+  return poses
+
+
+class BoxBoxTest(parameterized.TestCase):
+  """Tests the box-box primitive collider against MuJoCo's mjc_BoxBox."""
+
+  def _compare(
+    self,
+    size1,
+    size2,
+    poses,
+    margin=0.0,
+    pair_margin=None,
+    swap=False,
+    borderline=0.0,
+  ):
+    """Collides box poses with MuJoCo and MJWarp and compares the contacts.
+
+    Args:
+      size1: Half-sizes of box1.
+      size2: Half-sizes of box2.
+      poses: List of (pos1, mat1, pos2, mat2), one MJWarp world each.
+      margin: Geom margin of both boxes.
+      pair_margin: If not None, collide the boxes through an explicit pair with
+        this margin.
+      swap: If True, box2 is geom 0.
+      borderline: Contacts with dist within this value of the margin are
+        ignored.
+
+    Returns:
+      Number of MuJoCo contacts per pose.
+    """
+    mjm = mujoco.MjModel.from_xml_string(_box_box_xml(size1, size2, margin, pair_margin, swap))
+    mjd = mujoco.MjData(mjm)
+    geomid = [mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_GEOM, name) for name in ("box1", "box2")]
+    total_margin = pair_margin if pair_margin is not None else 2 * margin
+
+    npose = len(poses)
+    geom_xpos = np.zeros((npose, mjm.ngeom, 3))
+    geom_xmat = np.zeros((npose, mjm.ngeom, 3, 3))
+    expected = []
+    for w, (pos1, mat1, pos2, mat2) in enumerate(poses):
+      for g, pos, mat in zip(geomid, (pos1, pos2), (mat1, mat2)):
+        qposadr = mjm.jnt_qposadr[mjm.body_jntadr[mjm.geom_bodyid[g]]]
+        mjd.qpos[qposadr : qposadr + 3] = pos
+        quat = np.zeros(4)
+        mujoco.mju_mat2Quat(quat, np.asarray(mat, dtype=float).flatten())
+        mjd.qpos[qposadr + 3 : qposadr + 7] = quat
+      mujoco.mj_kinematics(mjm, mjd)
+      # use the exact poses, not the quaternion round trip
+      for g, pos, mat in zip(geomid, (pos1, pos2), (mat1, mat2)):
+        mjd.geom_xpos[g] = pos
+        mjd.geom_xmat[g] = np.asarray(mat, dtype=float).flatten()
+      mujoco.mj_collision(mjm, mjd)
+      geom_xpos[w] = mjd.geom_xpos
+      geom_xmat[w] = mjd.geom_xmat.reshape(-1, 3, 3)
+      expected.append(
+        [
+          (
+            mjd.contact.dist[i],
+            mjd.contact.pos[i].copy(),
+            mjd.contact.frame[i].copy(),
+          )
+          for i in range(mjd.ncon)
+        ]
+      )
+
+    m = mjw.put_model(mjm)
+    d = mjw.put_data(mjm, mjd, nworld=npose, nconmax=16)
+    d.geom_xpos.assign(geom_xpos.astype(np.float32))
+    d.geom_xmat.assign(geom_xmat.astype(np.float32))
+    # put_data copies the contacts of the last MuJoCo pose to every world
+    d.contact.dist.fill_(wp.inf)
+    d.contact.pos.fill_(wp.inf)
+    d.contact.frame.fill_(wp.inf)
+    d.contact.geom.fill_(-1)
+    d.contact.worldid.fill_(-1)
     mjw.collision(m, d)
 
-    self.assertEqual(
-        MJ_COLLISION_TABLE[(GeomType.BOX, GeomType.BOX)], initial_type
-    )
+    nacon = d.nacon.numpy()[0]
+    worldid = d.contact.worldid.numpy()[:nacon]
+    dist = d.contact.dist.numpy()[:nacon]
+    pos = d.contact.pos.numpy()[:nacon]
+    frame = d.contact.frame.numpy()[:nacon].reshape(-1, 9)
+    geom = d.contact.geom.numpy()[:nacon]
 
-    m.opt.disableflags &= ~DisableBit.NATIVECCD
-    d.nacon.fill_(-1)
-    mjw.collision(m, d)
-    self.assertEqual(d.nacon.numpy()[0], mjd.ncon)
+    def keep(con_dist):
+      return borderline <= 0.0 or abs(con_dist - total_margin) > borderline
+
+    ncon = []
+    for w in range(npose):
+      exp = [c for c in expected[w] if keep(c[0])]
+      act = [i for i in np.nonzero(worldid == w)[0] if keep(dist[i])]
+      ncon.append(len(exp))
+      msg = f"pose {w}: {poses[w]}"
+      self.assertLen(act, len(exp), f"contact count mismatch, {msg}")
+      used = set()
+      for exp_dist, exp_pos, exp_frame in exp:
+        match = None
+        for i in act:
+          if i in used:
+            continue
+          if (
+            abs(dist[i] - exp_dist) < _BOX_BOX_TOL
+            and np.allclose(pos[i], exp_pos, rtol=0.0, atol=_BOX_BOX_TOL)
+            and np.allclose(frame[i], exp_frame, rtol=0.0, atol=_BOX_BOX_TOL)
+          ):
+            match = i
+            break
+        self.assertIsNotNone(
+          match,
+          f"MuJoCo contact (dist={exp_dist}, pos={exp_pos},"
+          f" frame={exp_frame}) not found in MJWarp contacts"
+          f" dist={dist[act]}, pos={pos[act]}, frame={frame[act]}; {msg}",
+        )
+        used.add(match)
+        np.testing.assert_array_equal(geom[match], [min(geomid), max(geomid)])
+    return ncon
+
+  @parameterized.product(case=list(_BOX_BOX_CASES.keys()), swap=(False, True))
+  def test_box_box(self, case, swap):
+    """Tests box-box contacts match MuJoCo for hand-crafted configurations."""
+    size1, size2, pos1, mat1, pos2, mat2, margin, pair_margin, expected_ncon = _BOX_BOX_CASES[case]
+    poses = [
+      (
+        np.array(pos1, dtype=float),
+        np.array(mat1),
+        np.array(pos2, dtype=float),
+        np.array(mat2),
+      )
+    ]
+    ncon = self._compare(size1, size2, poses, margin=margin, pair_margin=pair_margin, swap=swap)
+    if expected_ncon is not None:
+      self.assertEqual(ncon[0], expected_ncon, "unexpected MuJoCo contact count")
+
+  def test_box_box_random(self):
+    """Tests box-box contacts match MuJoCo for 200 random poses near contact."""
+    rng = np.random.default_rng(12345)
+    ncon = []
+    for size1, size2, margin in (
+      ((0.1, 0.1, 0.1), (0.1, 0.1, 0.1), 0.0),
+      ((0.1, 0.1, 0.1), (0.1, 0.1, 0.1), 0.005),
+      ((0.3, 0.2, 0.05), (0.08, 0.12, 0.1), 0.0),
+      ((0.05, 0.4, 0.1), (0.25, 0.04, 0.15), 0.005),
+    ):
+      for swap in (False, True):
+        poses = _random_box_box_poses(rng, size1, size2, 25)
+        ncon += self._compare(
+          size1,
+          size2,
+          poses,
+          margin=margin,
+          swap=swap,
+          borderline=_BOX_BOX_TOL,
+        )
+    self.assertLen(ncon, 200)
+    # the sweep must exercise multi-point face patches, single contacts, and no contact
+    self.assertGreater(sum(n > 1 for n in ncon), 10)
+    self.assertGreater(sum(n == 1 for n in ncon), 10)
+    self.assertGreater(sum(n == 0 for n in ncon), 10)
 
 
 if __name__ == "__main__":
