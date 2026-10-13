@@ -833,6 +833,131 @@ class CollisionTest(parameterized.TestCase):
     wp.launch(plane_convex_test, inputs=[convex], outputs=[dist], dim=1)
     self.assertTrue((dist.numpy() > 0.05).all())
 
+  @parameterized.product(
+    margin_type=["geom", "pair"],
+    multiccd=["enable", "disable"],
+    z=[0.195, 0.205],  # penetrating, within margin
+  )
+  def test_box_box_margin(self, margin_type, multiccd, z):
+    """Box-box contacts with margin match MuJoCo's primitive box-box collider."""
+    geom_margin = 'margin="0.01"' if margin_type == "geom" else ""
+    pair = '<pair geom1="box1" geom2="box2" margin="0.01"/>' if margin_type == "pair" else ""
+    _, mjd, m, d = test_data.fixture(
+      xml=f"""
+      <mujoco>
+        <option>
+          <flag multiccd="{multiccd}"/>
+        </option>
+        <worldbody>
+          <body>
+            <freejoint/>
+            <geom name="box1" type="box" size=".1 .1 .1" {geom_margin}/>
+          </body>
+          <body pos="0.02 0.01 {z}" euler="0 0 10">
+            <freejoint/>
+            <geom name="box2" type="box" size=".1 .1 .1" {geom_margin}/>
+          </body>
+        </worldbody>
+        <contact>
+          {pair}
+        </contact>
+      </mujoco>
+      """
+    )
+    self.assertTrue(m.has_boxbox_margin)
+
+    d.contact.dist.fill_(wp.inf)
+    d.contact.pos.fill_(wp.inf)
+    d.contact.frame.fill_(wp.inf)
+    d.contact.includemargin.fill_(wp.inf)
+    mjw.collision(m, d)
+
+    nacon = d.nacon.numpy()[0]
+    self.assertGreater(mjd.ncon, 0)
+    self.assertEqual(nacon, mjd.ncon)
+
+    dist = d.contact.dist.numpy()[:nacon]
+    pos = d.contact.pos.numpy()[:nacon]
+    frame = d.contact.frame.numpy()[:nacon].reshape((nacon, 9))
+    includemargin = d.contact.includemargin.numpy()[:nacon]
+    for i in range(mjd.ncon):
+      # contact ordering may differ, match each MuJoCo contact to a MJWarp contact
+      match = np.isclose(dist, mjd.contact.dist[i], atol=1e-6) & np.all(np.isclose(pos, mjd.contact.pos[i], atol=1e-6), axis=1)
+      self.assertTrue(match.any(), f"MuJoCo contact {i} not found in MJWarp contacts")
+      j = int(np.nonzero(match)[0][0])
+      np.testing.assert_allclose(frame[j][:3], mjd.contact.frame[i][:3], atol=1e-6)
+      np.testing.assert_allclose(includemargin[j], mjd.contact.includemargin[i], atol=1e-6)
+
+  @parameterized.product(
+    broadphase=list(BroadphaseType),
+    broadphase_filter=[
+      types.BroadphaseFilter.PLANE | types.BroadphaseFilter.SPHERE,
+      types.BroadphaseFilter.PLANE | types.BroadphaseFilter.AABB,
+      types.BroadphaseFilter.PLANE | types.BroadphaseFilter.OBB,
+    ],
+    margins=[
+      # (pair margin, pair gap, geom margin): explicit pair settings override the geom margins
+      (0.1, 0.0, 0.0),
+      (0.1, 0.05, 0.0),
+      (0.0, 0.0, 0.1),
+      (0.03, 0.0, 0.1),
+    ],
+  )
+  def test_contact_pair_margin_broadphase(self, broadphase, broadphase_filter, margins):
+    """Explicit contact pairs use the pair margin and gap in the broadphase, as in MuJoCo."""
+    pair_margin, pair_gap, geom_margin = margins
+    _, mjd, m, d = test_data.fixture(
+      xml=f"""
+      <mujoco>
+        <worldbody>
+          <geom name="floor" type="plane" size="1 1 .1" margin="{geom_margin}"/>
+          <body pos="0 0 0.15">
+            <freejoint/>
+            <geom name="sphere1" size=".1" margin="{geom_margin}"/>
+          </body>
+          <body pos="0.25 0 0.15">
+            <freejoint/>
+            <geom name="sphere2" size=".1" margin="{geom_margin}"/>
+          </body>
+          <body pos="0.55 0.01 0.15" euler="0 0 20">
+            <freejoint/>
+            <geom name="box" type="box" size=".1 .1 .1" margin="{geom_margin}"/>
+          </body>
+        </worldbody>
+        <contact>
+          <pair geom1="sphere1" geom2="sphere2" margin="{pair_margin}" gap="{pair_gap}"/>
+          <pair geom1="sphere2" geom2="box" margin="{pair_margin}" gap="{pair_gap}"/>
+          <pair geom1="floor" geom2="sphere1" margin="{pair_margin}" gap="{pair_gap}"/>
+          <pair geom1="floor" geom2="box" margin="{pair_margin}" gap="{pair_gap}"/>
+        </contact>
+      </mujoco>
+      """,
+      overrides={
+        "opt.broadphase": broadphase,
+        "opt.broadphase_filter": broadphase_filter,
+      },
+    )
+
+    d.contact.dist.fill_(wp.inf)
+    d.contact.includemargin.fill_(wp.inf)
+    d.contact.geom.fill_(-1)
+    mjw.collision(m, d)
+
+    nacon = d.nacon.numpy()[0]
+    self.assertEqual(nacon, mjd.ncon)
+    geom = d.contact.geom.numpy()[:nacon]
+    dist = d.contact.dist.numpy()[:nacon]
+    includemargin = d.contact.includemargin.numpy()[:nacon]
+    for i in range(mjd.ncon):
+      match = np.all(np.sort(geom, axis=1) == np.sort(mjd.contact.geom[i]), axis=1)
+      match &= np.isclose(dist, mjd.contact.dist[i], atol=1e-5)
+      self.assertTrue(
+        match.any(),
+        f"MuJoCo contact {i} (geoms {mjd.contact.geom[i]}) not found in MJWarp contacts",
+      )
+      j = int(np.nonzero(match)[0][0])
+      np.testing.assert_allclose(includemargin[j], mjd.contact.includemargin[i], atol=1e-6)
+
   @parameterized.parameters(list(BroadphaseType))
   def test_contact_pair(self, broadphase):
     """Tests contact pair."""

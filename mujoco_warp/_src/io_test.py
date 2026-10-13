@@ -2554,9 +2554,11 @@ class IOTest(parameterized.TestCase):
     geom_pos = m.geom_pos.numpy()
     self.assertEqual(geom_pos.shape[0], nworld)
 
-  def test_margin_multiccd_box_box(self):
-    """MULTICCD + box-box with margin raises NotImplementedError."""
-    mjm = mujoco.MjModel.from_xml_string("""
+  @parameterized.parameters(0, mujoco.mjtDisableBit.mjDSBL_MULTICCD)
+  def test_margin_box_box(self, disableflags):
+    """Box-box with margin uses the primitive collider (as in MuJoCo), with or without MULTICCD."""
+    _, _, m, _ = test_data.fixture(
+      xml="""
       <mujoco>
         <worldbody>
           <body>
@@ -2569,9 +2571,30 @@ class IOTest(parameterized.TestCase):
           </body>
         </worldbody>
       </mujoco>
-    """)
-    with self.assertRaises(NotImplementedError):
-      mjwarp.put_model(mjm)
+      """,
+      overrides={"opt.disableflags": disableflags},
+    )
+    self.assertTrue(m.has_boxbox_margin)
+
+  def test_no_margin_box_box(self):
+    """Box-box without margin keeps using the convex collider."""
+    _, _, m, _ = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <body>
+            <freejoint/>
+            <geom type="box" size=".1 .1 .1"/>
+          </body>
+          <body pos="0 0 .5">
+            <freejoint/>
+            <geom type="box" size=".1 .1 .1"/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """
+    )
+    self.assertFalse(m.has_boxbox_margin)
 
   def test_margin_multiccd_box_mesh(self):
     """MULTICCD + box-mesh with margin raises NotImplementedError."""
@@ -2638,27 +2661,27 @@ class IOTest(parameterized.TestCase):
     mjwarp.put_model(mjm)
 
   def test_margin_pair_box_box(self):
-    """Pair with margin on box-box raises NotImplementedError."""
-    with self.assertRaises(NotImplementedError):
-      mjwarp.put_model(
-        mujoco.MjModel.from_xml_string("""
-        <mujoco>
-          <worldbody>
-            <body>
-              <freejoint/>
-              <geom name="b1" type="box" size=".1 .1 .1"/>
-            </body>
-            <body pos="0 0 .5">
-              <freejoint/>
-              <geom name="b2" type="box" size=".1 .1 .1"/>
-            </body>
-          </worldbody>
-          <contact>
-            <pair geom1="b1" geom2="b2" margin="0.01"/>
-          </contact>
-        </mujoco>
-      """)
-      )
+    """Pair with margin on box-box uses the primitive collider (as in MuJoCo)."""
+    _, _, m, _ = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <body>
+            <freejoint/>
+            <geom name="b1" type="box" size=".1 .1 .1"/>
+          </body>
+          <body pos="0 0 .5">
+            <freejoint/>
+            <geom name="b2" type="box" size=".1 .1 .1"/>
+          </body>
+        </worldbody>
+        <contact>
+          <pair geom1="b1" geom2="b2" margin="0.01"/>
+        </contact>
+      </mujoco>
+      """
+    )
+    self.assertTrue(m.has_boxbox_margin)
 
   @parameterized.parameters(*_IO_TEST_MODELS)
   def test_kernel_recompilation(self, xml):
