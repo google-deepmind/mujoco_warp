@@ -2511,6 +2511,36 @@ class DiscreteIntegratorTest(parameterized.TestCase):
     qpos = d.qpos.numpy()[0]
     self.assertFalse(np.isnan(qpos).any())
 
+  @absltest.skipIf(not wp.get_device().is_cuda, "Skipping test that requires GPU.")
+  @parameterized.parameters("CG", "Newton")
+  def test_discrete_flex_passive_contact_graph_capture(self, solver):
+    """Discrete integrator with passive flex contacts is compatible with CUDA graph capture."""
+    _, _, m, d = test_data.fixture(
+      xml=f"""
+      <mujoco>
+        <option solver="{solver}" integrator="discrete"/>
+        <worldbody>
+          <geom type="plane" size="1 1 0.1"/>
+          <flexcomp name="cloth" type="grid" count="3 3 1" spacing="0.05 0.05 0.05" pos="0 0 0.01"
+                    radius="0.02" dim="2" mass="0.5">
+            <contact passive="true" selfcollide="none"/>
+            <elasticity young="1e3" damping="0.1"/>
+          </flexcomp>
+        </worldbody>
+      </mujoco>
+      """,
+    )
+    self.assertTrue(m.has_flex_passive)
+
+    # Warmup
+    mjw.step(m, d)
+
+    with wp.ScopedCapture() as capture:
+      mjw.step(m, d)
+
+    wp.capture_launch(capture.graph)
+    self.assertTrue(np.isfinite(d.qpos.numpy()).all())
+
   @parameterized.parameters(1, 2)
   def test_discrete_contact_coupling_joint_damping(self, nworld):
     """Under discrete, contact solve and joint damper share metric solve, avoiding split error."""
