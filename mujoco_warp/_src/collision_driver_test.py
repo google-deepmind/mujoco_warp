@@ -1828,6 +1828,30 @@ class CollisionTest(parameterized.TestCase):
       1,
       None,
     ),
+    (
+      "capsule_cylinder_horizontal_shallow",
+      "cylinder",
+      "2 1",
+      "",
+      "capsule",
+      "0.5 0.5",
+      1.4,
+      ' euler="90 0 0"',
+      2,
+      (-0.5, 0.5),
+    ),
+    (
+      "capsule_cylinder_horizontal_deep",
+      "cylinder",
+      "2 1",
+      "",
+      "capsule",
+      "0.5 0.5",
+      0.9,
+      ' euler="90 0 0"',
+      2,
+      (-0.5, 0.5),
+    ),
   )
   def test_cylinder_multiccd(
     self,
@@ -1866,6 +1890,73 @@ class CollisionTest(parameterized.TestCase):
     if expected_y_coords is not None:
       pos = d.contact.pos.numpy()[:expected_ncon]
       # Check that contact points are at the two ends of the horizontal cylinder axis
+      y_coords = sorted([float(p[1]) for p in pos])
+      self.assertAlmostEqual(y_coords[0], expected_y_coords[0], delta=0.05)
+      self.assertAlmostEqual(y_coords[1], expected_y_coords[1], delta=0.05)
+
+    # with MultiCCD disabled, should find 1 contact
+    m.opt.disableflags |= int(types.DisableBit.MULTICCD)
+    d.nacon.fill_(-1)
+    d.contact.dist.fill_(wp.inf)
+    d.contact.pos.fill_(wp.inf)
+    d.contact.frame.fill_(wp.inf)
+    mjw.collision(m, d)
+    self.assertEqual(int(d.nacon.numpy()[0]), 1)
+    self.assertTrue(np.isfinite(float(d.contact.dist.numpy()[0])))
+
+  @parameterized.named_parameters(
+    ("shallow", 1.4, ' euler="90 0 0"', "0.5 0.5", False, 2, -0.1, (-0.5, 0.5)),
+    ("deep", 0.9, ' euler="90 0 0"', "0.5 0.5", False, 2, -0.6, (-0.5, 0.5)),
+    ("reversed", 1.4, ' euler="90 0 0"', "0.5 0.5", True, 2, -0.1, (-0.5, 0.5)),
+    ("clipped", 1.4, ' euler="90 0 0"', "0.5 2.0", False, 2, -0.1, (-1.0, 1.0)),
+    ("tilted", 1.4, ' euler="70 0 0"', "0.5 0.5", False, 1, None, None),
+  )
+  def test_capsule_mesh_multiccd(
+    self,
+    z2: float,
+    euler: str,
+    cap_size: str,
+    reverse: bool,
+    expected_ncon: int,
+    expected_dist: float | None,
+    expected_y_coords: tuple[float, float] | None,
+  ):
+    """Test capsule-mesh MultiCCD contacts and fallback with MultiCCD disabled."""
+    geom_mesh = '<geom type="mesh" mesh="cube"/>'
+    body_cap = f"""
+      <body pos="0 0 {z2}">
+        <freejoint/>
+        <geom type="capsule" size="{cap_size}"{euler}/>
+      </body>
+    """
+    bodies = f"{body_cap}\n          {geom_mesh}" if reverse else f"{geom_mesh}\n          {body_cap}"
+    _, _, m, d = test_data.fixture(
+      xml=f"""
+      <mujoco>
+        <asset>
+          <mesh name="cube"
+            vertex="-1 -1 -1  1 -1 -1  1 1 -1  -1 1 -1
+                    -1 -1  1  1 -1  1  1 1  1  -1 1  1"/>
+        </asset>
+        <worldbody>
+          {bodies}
+        </worldbody>
+      </mujoco>
+      """
+    )
+    d.nacon.fill_(-1)
+    d.contact.dist.fill_(wp.inf)
+    d.contact.pos.fill_(wp.inf)
+    d.contact.frame.fill_(wp.inf)
+    mjw.collision(m, d)
+    self.assertEqual(int(d.nacon.numpy()[0]), expected_ncon)
+    dists = d.contact.dist.numpy()[:expected_ncon]
+    self.assertTrue(np.all(np.isfinite(dists)))
+    if expected_dist is not None:
+      np.testing.assert_allclose(dists, expected_dist, atol=1e-4)
+
+    if expected_y_coords is not None:
+      pos = d.contact.pos.numpy()[:expected_ncon]
       y_coords = sorted([float(p[1]) for p in pos])
       self.assertAlmostEqual(y_coords[0], expected_y_coords[0], delta=0.05)
       self.assertAlmostEqual(y_coords[1], expected_y_coords[1], delta=0.05)
