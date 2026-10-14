@@ -18,6 +18,7 @@ import numpy as np
 import warp as wp
 
 from mujoco_warp._src import bvh
+from mujoco_warp._src import render_optix
 from mujoco_warp._src import types
 from mujoco_warp._src import warp_util
 from mujoco_warp._src.types import ProjectionType
@@ -348,6 +349,7 @@ def create_render_context(
   splat_adr: np.ndarray | None = None,
   splat_group_id: np.ndarray | None = None,
   deterministic: bool = False,
+  backend: str = "bvh",
 ) -> RenderContext:
   """Creates a render context on device.
 
@@ -407,6 +409,7 @@ def create_render_context(
                     use the first splat group.
     deterministic: Whether to use deterministic execution for flex BVH vertex
                    normal accumulation.
+    backend: Ray-casting backend, "bvh" (Warp BVH) or "optix" (requires mujoco-warp[optix]).
 
   Returns:
     The render context containing rendering fields and output arrays on device.
@@ -801,7 +804,18 @@ def create_render_context(
     splat_count=splat_count,
   )
 
-  bvh.build_scene_bvh(mjm, mjd, rc, nworld)
+  if backend == "optix":
+    # render imports this module. OptiX pipelines compile here rather than on the
+    # first render, which may happen during CUDA graph capture.
+    from mujoco_warp._src import render  # noqa: PLC0415
+
+    rc.optix = render_optix.create_scene(mjm, mjd, rc, nworld)
+    rc._megakernel = render._build_megakernel(mjm.nlight, rc)
+    rc.optix.pipeline = render_optix.create_pipeline(rc.optix, rc._megakernel, rc.geom_ray_types, rc.enable_backface_culling)
+  elif backend == "bvh":
+    bvh.build_scene_bvh(mjm, mjd, rc, nworld)
+  else:
+    raise ValueError(f"backend must be 'bvh' or 'optix', got {backend!r}")
 
   warp_util.mark_batched(rc)
   return rc
