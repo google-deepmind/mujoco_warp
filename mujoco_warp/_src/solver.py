@@ -61,6 +61,8 @@ def create_inverse_context(m: types.Model, d: types.Data) -> InverseContext:
     quad_changed_count=wp.empty((0,), dtype=int),
     state_changed_count=wp.empty((0,), dtype=int),
     ls_exhausted=wp.empty((0,), dtype=bool),
+    qfrc_maximum=wp.empty(2, dtype=int),
+    qfrc_buckets=wp.empty((6, 1), dtype=int),
   )
 
 
@@ -109,6 +111,10 @@ def _create_solver_context(
     beta=wp.empty((nworld,), dtype=float) if alloc_mgrad else wp.empty((0,), dtype=float),
     h=wp.empty((nworld, nv_pad, nv_pad), dtype=float) if alloc_h else wp.empty((nworld, 0, 0), dtype=float),
     hfactor=wp.empty((nworld, nv_pad, nv_pad), dtype=float) if alloc_hfactor else wp.empty((nworld, 0, 0), dtype=float),
+    qfrc_maximum=wp.empty(2, dtype=int),
+    qfrc_buckets=wp.empty((6, 1), dtype=int),
+    jtdaj_maximum=wp.empty(2, dtype=int),
+    jtdaj_buckets=wp.empty((10, 1), dtype=int),
     quad_changed_ids=wp.empty((nworld, njmax), dtype=int) if alloc_incremental else wp.empty((nworld, 0), dtype=int),
     quad_changed_count=wp.empty((nworld,), dtype=int) if alloc_incremental else wp.empty((0,), dtype=int),
     state_changed_count=wp.empty((nworld,), dtype=int) if alloc_incremental else wp.empty((0,), dtype=int),
@@ -1501,10 +1507,18 @@ def _linesearch_zero_jv(
 
 
 @cache_kernel
-def _linesearch_jv_fused_kernel(is_sparse: bool, nv: int, dofs_per_thread: int, compact: bool):
-  COMPACT = compact
+def _linesearch_jv_fused_kernel(is_sparse: bool, nv: int, dofs_per_thread: int, compact: bool, deterministic: bool = False):
+  """Build the fused constraint-Jacobian/search-direction product.
 
-  @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
+  With deterministic=True, floating-point reductions use Warp RUN_TO_RUN.
+  The default preserves the ordinary kernel path.
+  """
+  COMPACT = compact
+  module_options = {"enable_backward": False}
+  if deterministic:
+    module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
+
+  @wp.kernel(module="unique", module_options=module_options, grid_stride=False)
   def kernel(
     # Data in:
     nefc_in: wp.array[int],
@@ -1620,7 +1634,9 @@ def _linesearch(m: types.Model, d: types.Data, ctx: SolverContext):
       )
 
     wp.launch(
-      _linesearch_jv_fused_kernel(sc or m.is_sparse, m.nv, dofs_per_thread, sc),
+      _linesearch_jv_fused_kernel(
+        sc or m.is_sparse, m.nv, dofs_per_thread, sc, bool(m.opt.deterministic & types.DeterminismType.ATOMICS)
+      ),
       dim=(d.nworld, d.njmax, threads_per_efc),
       inputs=[d.nefc, dj.efc.J_rownnz, dj.efc.J_rowadr, dj.efc.J_colind, dj.efc.J, dj.dof_cdof, ctx.search, skip],
       outputs=[ctx.jv],
@@ -1676,10 +1692,18 @@ def _solve_init_efc(
 
 
 @cache_kernel
-def _solve_init_jaref_kernel(is_sparse: bool, nv: int, dofs_per_thread: int, compact: bool):
-  COMPACT = compact
+def _solve_init_jaref_kernel(is_sparse: bool, nv: int, dofs_per_thread: int, compact: bool, deterministic: bool = False):
+  """Build the initial constraint residual evaluation kernel.
 
-  @wp.kernel(module="unique", enable_backward=False, grid_stride=True)
+  With deterministic=True, floating-point reductions use Warp RUN_TO_RUN.
+  The default preserves the ordinary kernel path.
+  """
+  COMPACT = compact
+  module_options = {"enable_backward": False}
+  if deterministic:
+    module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
+
+  @wp.kernel(module="unique", module_options=module_options, grid_stride=True)
   def kernel(
     # Data in:
     nefc_in: wp.array[int],
@@ -1778,7 +1802,7 @@ def _solve_init_search_cg_tiled(
       scale = 1.0 / (meaninertia * float(wp.max(1, nv)))
       if wp.max(0.0, 0.5 * scale * grad_mgrad_sum[0]) < tolerance:
         ctx_done_out[worldid] = True
-        wp.atomic_sub(nsolving_out, 0, 1)
+        wp.atomic_sub(nsolving_out, 0, 1)  # kernel_analyzer: ignore[atomic]
 
 
 @cache_kernel
@@ -1822,7 +1846,7 @@ def _update_constraint_efc(track_changes: bool):
     # ray exhausted); count it as a state change so the fast path rebuilds them.
     if wp.static(TRACK_CHANGES):
       if efcid == 0 and ctx_ls_exhausted_in[worldid]:
-        wp.atomic_add(state_changed_count_out, worldid, 1)
+        wp.atomic_add(state_changed_count_out, worldid, 1)  # kernel_analyzer: ignore[atomic]
 
     if efcid >= nefc_in[worldid]:
       return
@@ -1898,12 +1922,12 @@ def _update_constraint_efc(track_changes: bool):
       old_quad = old_state == types.ConstraintState.QUADRATIC.value
       new_quad = new_state == types.ConstraintState.QUADRATIC.value
       if old_quad != new_quad:
-        idx = wp.atomic_add(quad_changed_count_out, worldid, 1)
+        idx = wp.atomic_add(quad_changed_count_out, worldid, 1)  # kernel_analyzer: ignore[atomic]
         quad_changed_ids_out[worldid, idx] = efcid
       # LINEARNEG <-> LINEARPOS friction transitions change the force without
       # changing the quadratic flag (or H); the fast path must still see them.
       if old_state != new_state:
-        wp.atomic_add(state_changed_count_out, worldid, 1)
+        wp.atomic_add(state_changed_count_out, worldid, 1)  # kernel_analyzer: ignore[atomic]
 
   return kernel
 
@@ -1929,10 +1953,19 @@ def _zero_qfrc_constraint_sparse(
 
 
 @cache_kernel
-def _update_constraint_init_qfrc_constraint_sparse(compact: bool):
-  COMPACT = compact
+def _update_constraint_init_qfrc_constraint_sparse(compact: bool, deterministic: bool = False, nv: int = 1):
+  """Build the sparse constraint-force projection kernel.
 
-  @wp.kernel(module="unique", enable_backward=False, grid_stride=True)
+  With deterministic=True, floating-point reductions use Warp RUN_TO_RUN.
+  The nv bound covers the dynamic sparse-row loop; the default keeps ordinary execution.
+  """
+  COMPACT = compact
+  module_options = {"enable_backward": False}
+  if deterministic:
+    module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
+    module_options["deterministic_max_records"] = max(1, nv)
+
+  @wp.kernel(module="unique", enable_backward=False, grid_stride=True, module_options=module_options)
   def kernel(
     # Data in:
     nefc_in: wp.array[int],
@@ -1976,6 +2009,68 @@ def _update_constraint_init_qfrc_constraint_sparse(compact: bool):
       wp.atomic_add(qfrc_constraint_out[worldid], colind, efc_J * force)
 
   return kernel
+
+
+@wp.kernel
+def _max_active_qfrc_rows(
+  # Data in:
+  nefc_in: wp.array[int],
+  # In:
+  rownnz_in: wp.array2d[int],
+  changed_in: wp.array[int],
+  done_in: wp.array[bool],
+  # Out:
+  maximum_out: wp.array[int],
+):
+  """Find sufficient row and support bounds for live sparse force projections."""
+  worldid, row = wp.tid()
+  if not done_in[worldid] and changed_in[worldid] != 0 and row < nefc_in[worldid]:
+    # Integer maximum is order independent. Overflow reporting remains upstream;
+    # retain the same bounded row domain as the original full-capacity launch.
+    if row == 0:
+      wp.atomic_max(maximum_out, 0, wp.min(nefc_in[worldid], rownnz_in.shape[1]))  # kernel_analyzer: ignore[atomic]
+    wp.atomic_max(maximum_out, 1, rownnz_in[worldid, row])  # kernel_analyzer: ignore[atomic]
+
+
+def _launch_qfrc_constraint_sparse(m, d, ctx, compact, dj, changed):
+  """Project sparse forces with sufficient device-selected native scatter bounds.
+
+  Canonical row order and RUN_TO_RUN arithmetic are unchanged. Full-capacity
+  and full-width fallbacks retain every contribution, including compact solves.
+  """
+  deterministic = bool(m.opt.deterministic & types.DeterminismType.ATOMICS)
+  nv = ctx.compact_m_full.nv if compact else m.nv
+  inputs = [d.nefc, dj.efc.J_rownnz, dj.efc.J_rowadr, dj.efc.J_colind, dj.efc.J, d.efc.force, dj.dof_cdof, changed, ctx.done]
+
+  def launch_rows(rows, width):
+    """Preserve canonical source slots while bounding unused scatter records."""
+    wp.launch(
+      _update_constraint_init_qfrc_constraint_sparse(compact, deterministic, width),
+      dim=(d.nworld, rows),
+      inputs=inputs,
+      outputs=[d.qfrc_constraint],
+    )
+
+  if deterministic and m.opt.graph_conditional:
+    ctx.qfrc_maximum.zero_()
+    wp.launch(
+      _max_active_qfrc_rows,
+      dim=(d.nworld, d.njmax),
+      inputs=[d.nefc, dj.efc.J_rownnz, changed, ctx.done],
+      outputs=[ctx.qfrc_maximum],
+    )
+    lower, index = 0, 0
+    for upper in sorted({min(d.njmax, size) for size in (128, 256, d.njmax)}):
+      width_lower = -1
+      for width in sorted({min(nv, 16), nv}):
+        active = ctx.qfrc_buckets[index]
+        wp.launch(_jtdaj_bucket_active, dim=1, inputs=[ctx.qfrc_maximum, lower, upper, width_lower, width], outputs=[active])
+        wp.capture_if(active, on_true=launch_rows, rows=upper, width=width)
+        width_lower = width
+        index += 1
+      lower = upper
+  else:
+    launch_rows(d.njmax, nv)
 
 
 @wp.kernel
@@ -2081,10 +2176,18 @@ def _update_gradient_h_incremental(
 
 
 @cache_kernel
-def _update_gradient_h_incremental_sparse(compact: bool):
-  COMPACT = compact
+def _update_gradient_h_incremental_sparse(compact: bool, deterministic: bool = False):
+  """Build sparse Hessian updates for changed constraint rows.
 
-  @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
+  With deterministic=True, floating-point reductions use Warp RUN_TO_RUN.
+  The default preserves the ordinary kernel path.
+  """
+  COMPACT = compact
+  module_options = {"enable_backward": False}
+  if deterministic:
+    module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
+
+  @wp.kernel(module="unique", module_options=module_options, grid_stride=False)
   def kernel(
     # Data in:
     efc_J_rownnz_in: wp.array2d[int],
@@ -2187,12 +2290,7 @@ def _update_constraint(
       inputs=[changed, ctx.done],
       outputs=[d.qfrc_constraint],
     )
-    wp.launch(
-      _update_constraint_init_qfrc_constraint_sparse(sc),
-      dim=(d.nworld, d.njmax),
-      inputs=[d.nefc, dj.efc.J_rownnz, dj.efc.J_rowadr, dj.efc.J_colind, dj.efc.J, d.efc.force, dj.dof_cdof, changed, ctx.done],
-      outputs=[d.qfrc_constraint],
-    )
+    _launch_qfrc_constraint_sparse(m, d, ctx, sc, dj, changed)
   else:
     wp.launch(
       _update_constraint_init_qfrc_constraint_dense(stable_fast),
@@ -2259,10 +2357,18 @@ def _update_gradient_zero_grad_dot(stable_fast: bool):
 
 
 @cache_kernel
-def _update_gradient_grad(stable_fast: bool):
-  STABLE_FAST = stable_fast
+def _update_gradient_grad(stable_fast: bool, deterministic: bool = False):
+  """Build the solver gradient and gradient-norm reduction kernel.
 
-  @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
+  With deterministic=True, floating-point reductions use Warp RUN_TO_RUN.
+  The default preserves the ordinary kernel path.
+  """
+  STABLE_FAST = stable_fast
+  module_options = {"enable_backward": False}
+  if deterministic:
+    module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
+
+  @wp.kernel(module="unique", module_options=module_options, grid_stride=False)
   def kernel(
     # Data in:
     qfrc_smooth_in: wp.array2d[float],
@@ -2391,123 +2497,179 @@ def _update_gradient_init_h_sparse(compact: bool):
   return kernel
 
 
-@wp.kernel(module="unique", enable_backward=False)
-def _add_tendon_metric_dense(
-  # Model:
-  ten_J_rownnz: wp.array[int],
-  ten_J_rowadr: wp.array[int],
-  ten_J_colind: wp.array[int],
-  # Data in:
-  ten_J_in: wp.array2d[float],
-  efm_ts_in: wp.array2d[float],
-  # In:
-  ctx_done_in: wp.array[bool],
-  # Out:
-  h_out: wp.array3d[float],
-):
-  worldid, t = wp.tid()
-  if ctx_done_in[worldid]:
-    return
-  ts = efm_ts_in[worldid, t]
-  if ts != 0.0:
-    radr = ten_J_rowadr[t]
-    rnnz = ten_J_rownnz[t]
-    for i in range(rnnz):
-      c1 = ten_J_colind[radr + i]
-      v1 = ten_J_in[worldid, radr + i]
-      ts_v1 = ts * v1
-      for j in range(rnnz):
-        c2 = ten_J_colind[radr + j]
-        if c2 > c1:
-          v2 = ten_J_in[worldid, radr + j]
-          wp.atomic_add(h_out, worldid, c1, c2, ts_v1 * v2)
+@cache_kernel
+def _add_tendon_metric_dense(deterministic: bool = False):
+  """Build the dense Hessian contribution from tendon metrics.
+
+  With deterministic=True, floating-point reductions use Warp RUN_TO_RUN.
+  The default preserves the ordinary kernel path.
+  """
+  module_options = {"enable_backward": False}
+  if deterministic:
+    module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
+
+  @wp.kernel(module="unique", module_options=module_options)
+  def kernel(
+    # Model:
+    ten_J_rownnz: wp.array[int],
+    ten_J_rowadr: wp.array[int],
+    ten_J_colind: wp.array[int],
+    # Data in:
+    ten_J_in: wp.array2d[float],
+    efm_ts_in: wp.array2d[float],
+    # In:
+    ctx_done_in: wp.array[bool],
+    # Out:
+    h_out: wp.array3d[float],
+  ):
+    """Evaluate the dense Hessian contribution from tendon metrics."""
+    worldid, t = wp.tid()
+    if ctx_done_in[worldid]:
+      return
+    ts = efm_ts_in[worldid, t]
+    if ts != 0.0:
+      radr = ten_J_rowadr[t]
+      rnnz = ten_J_rownnz[t]
+      for i in range(rnnz):
+        c1 = ten_J_colind[radr + i]
+        v1 = ten_J_in[worldid, radr + i]
+        ts_v1 = ts * v1
+        for j in range(rnnz):
+          c2 = ten_J_colind[radr + j]
+          if c2 > c1:
+            v2 = ten_J_in[worldid, radr + j]
+            wp.atomic_add(h_out, worldid, c1, c2, ts_v1 * v2)
+
+  return kernel
 
 
-@wp.kernel(module="unique", enable_backward=False)
-def _add_actuator_metric_dense(
-  # Data in:
-  moment_rownnz_in: wp.array2d[int],
-  moment_rowadr_in: wp.array2d[int],
-  moment_colind_in: wp.array2d[int],
-  actuator_moment_in: wp.array2d[float],
-  efm_as_in: wp.array2d[float],
-  # In:
-  ctx_done_in: wp.array[bool],
-  # Out:
-  h_out: wp.array3d[float],
-):
-  worldid, a = wp.tid()
-  if ctx_done_in[worldid]:
-    return
-  as_val = efm_as_in[worldid, a]
-  if as_val != 0.0:
-    radr = moment_rowadr_in[worldid, a]
-    rnnz = moment_rownnz_in[worldid, a]
-    for i in range(rnnz):
-      c1 = moment_colind_in[worldid, radr + i]
-      v1 = actuator_moment_in[worldid, radr + i]
-      as_v1 = as_val * v1
-      for j in range(rnnz):
-        c2 = moment_colind_in[worldid, radr + j]
-        if c2 > c1:
-          v2 = actuator_moment_in[worldid, radr + j]
-          wp.atomic_add(h_out, worldid, c1, c2, as_v1 * v2)
+@cache_kernel
+def _add_actuator_metric_dense(deterministic: bool = False):
+  """Build the dense Hessian contribution from actuator metrics.
+
+  With deterministic=True, floating-point reductions use Warp RUN_TO_RUN.
+  The default preserves the ordinary kernel path.
+  """
+  module_options = {"enable_backward": False}
+  if deterministic:
+    module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
+
+  @wp.kernel(module="unique", module_options=module_options)
+  def kernel(
+    # Data in:
+    moment_rownnz_in: wp.array2d[int],
+    moment_rowadr_in: wp.array2d[int],
+    moment_colind_in: wp.array2d[int],
+    actuator_moment_in: wp.array2d[float],
+    efm_as_in: wp.array2d[float],
+    # In:
+    ctx_done_in: wp.array[bool],
+    # Out:
+    h_out: wp.array3d[float],
+  ):
+    """Evaluate the dense Hessian contribution from actuator metrics."""
+    worldid, a = wp.tid()
+    if ctx_done_in[worldid]:
+      return
+    as_val = efm_as_in[worldid, a]
+    if as_val != 0.0:
+      radr = moment_rowadr_in[worldid, a]
+      rnnz = moment_rownnz_in[worldid, a]
+      for i in range(rnnz):
+        c1 = moment_colind_in[worldid, radr + i]
+        v1 = actuator_moment_in[worldid, radr + i]
+        as_v1 = as_val * v1
+        for j in range(rnnz):
+          c2 = moment_colind_in[worldid, radr + j]
+          if c2 > c1:
+            v2 = actuator_moment_in[worldid, radr + j]
+            wp.atomic_add(h_out, worldid, c1, c2, as_v1 * v2)
+
+  return kernel
 
 
-@wp.kernel(module="unique", enable_backward=False)
-def _add_efmK_metric_dense(
-  # Model:
-  efm_K_rownnz: wp.array[int],
-  efm_K_rowadr: wp.array[int],
-  efm_K_colind: wp.array[int],
-  # Data in:
-  efm_K_val_in: wp.array2d[float],
-  # In:
-  ctx_done_in: wp.array[bool],
-  # Out:
-  h_out: wp.array3d[float],
-):
-  worldid, r = wp.tid()
-  if ctx_done_in[worldid]:
-    return
-  radr = efm_K_rowadr[r]
-  rnnz = efm_K_rownnz[r]
-  for k in range(rnnz):
-    c = efm_K_colind[radr + k]
-    if c >= r:
-      wp.atomic_add(h_out, worldid, r, c, efm_K_val_in[worldid, radr + k])
+@cache_kernel
+def _add_efmK_metric_dense(deterministic: bool = False):
+  """Build the dense Hessian contribution from flex stiffness.
+
+  With deterministic=True, floating-point reductions use Warp RUN_TO_RUN.
+  The default preserves the ordinary kernel path.
+  """
+  module_options = {"enable_backward": False}
+  if deterministic:
+    module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
+
+  @wp.kernel(module="unique", module_options=module_options)
+  def kernel(
+    # Model:
+    efm_K_rownnz: wp.array[int],
+    efm_K_rowadr: wp.array[int],
+    efm_K_colind: wp.array[int],
+    # Data in:
+    efm_K_val_in: wp.array2d[float],
+    # In:
+    ctx_done_in: wp.array[bool],
+    # Out:
+    h_out: wp.array3d[float],
+  ):
+    """Evaluate the dense Hessian contribution from flex stiffness."""
+    worldid, r = wp.tid()
+    if ctx_done_in[worldid]:
+      return
+    radr = efm_K_rowadr[r]
+    rnnz = efm_K_rownnz[r]
+    for k in range(rnnz):
+      c = efm_K_colind[radr + k]
+      if c >= r:
+        wp.atomic_add(h_out, worldid, r, c, efm_K_val_in[worldid, radr + k])
+
+  return kernel
 
 
-@wp.kernel(module="unique", enable_backward=False)
-def _add_flexcon_metric_dense(
-  # Data in:
-  contact_worldid_in: wp.array[int],
-  nacon_in: wp.array[int],
-  # In:
-  efm_con_dof_in: wp.array2d[int],
-  efm_con_val_in: wp.array2d[float],
-  efm_con_scale_in: wp.array[float],
-  efm_con_nnz_in: wp.array[int],
-  ctx_done_in: wp.array[bool],
-  # Out:
-  h_out: wp.array3d[float],
-):
-  cid = wp.tid()
-  if cid >= nacon_in[0]:
-    return
-  worldid = contact_worldid_in[cid]
-  if ctx_done_in[worldid]:
-    return
-  scale = efm_con_scale_in[cid]
-  nnz = efm_con_nnz_in[cid]
-  if scale != 0.0 and nnz > 0:
-    for i in range(nnz):
-      c1 = efm_con_dof_in[cid, i]
-      s_v1 = scale * efm_con_val_in[cid, i]
-      for j in range(nnz):
-        c2 = efm_con_dof_in[cid, j]
-        if c2 >= c1:
-          wp.atomic_add(h_out, worldid, c1, c2, s_v1 * efm_con_val_in[cid, j])
+@cache_kernel
+def _add_flexcon_metric_dense(deterministic: bool = False):
+  """Build the dense Hessian contribution from flex-contact metrics.
+
+  With deterministic=True, floating-point reductions use Warp RUN_TO_RUN.
+  The default preserves the ordinary kernel path.
+  """
+  module_options = {"enable_backward": False}
+  if deterministic:
+    module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
+
+  @wp.kernel(module="unique", module_options=module_options)
+  def kernel(
+    # Data in:
+    contact_worldid_in: wp.array[int],
+    nacon_in: wp.array[int],
+    # In:
+    efm_con_dof_in: wp.array2d[int],
+    efm_con_val_in: wp.array2d[float],
+    efm_con_scale_in: wp.array[float],
+    efm_con_nnz_in: wp.array[int],
+    ctx_done_in: wp.array[bool],
+    # Out:
+    h_out: wp.array3d[float],
+  ):
+    """Evaluate the dense Hessian contribution from flex-contact metrics."""
+    cid = wp.tid()
+    if cid >= nacon_in[0]:
+      return
+    worldid = contact_worldid_in[cid]
+    if ctx_done_in[worldid]:
+      return
+    scale = efm_con_scale_in[cid]
+    nnz = efm_con_nnz_in[cid]
+    if scale != 0.0 and nnz > 0:
+      for i in range(nnz):
+        c1 = efm_con_dof_in[cid, i]
+        s_v1 = scale * efm_con_val_in[cid, i]
+        for j in range(nnz):
+          c2 = efm_con_dof_in[cid, j]
+          if c2 >= c1:
+            wp.atomic_add(h_out, worldid, c1, c2, s_v1 * efm_con_val_in[cid, j])
+
+  return kernel
 
 
 @wp.func
@@ -3023,10 +3185,22 @@ def _JTDACJ_sparse(
   cone_type: types.ConeType,
   max_condim: int,
   block_dim: int = types.BlockDim.update_gradient_JTDAJ_sparse,
+  deterministic: bool = False,
+  nv: int = 1,
 ):
+  """Build sparse constraint Hessian accumulation with a fixed launch block size.
+
+  With deterministic=True, floating-point reductions use Warp RUN_TO_RUN.
+  Deterministic launches assign one block per slot; nv bounds its triangular scatter count.
+  """
   COMPACT = compact
   ELLIPTIC = cone_type == types.ConeType.ELLIPTIC
   MAX_CONDIM = max_condim
+  module_options = {"enable_backward": False}
+  if deterministic:
+    module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
+    lanes = block_dim if ELLIPTIC else _JTDAJ_THREADS_PER_GROUP
+    module_options["deterministic_max_records"] = max(1, (nv * (nv + 1) // 2 + lanes - 1) // lanes)
 
   def make_curvature_terms(condim: int):
     @wp.func
@@ -3173,8 +3347,7 @@ def _JTDACJ_sparse(
 
   @wp.kernel(
     module="unique",
-    module_options={"block_dim": block_dim},
-    enable_backward=False,
+    module_options={**module_options, "block_dim": block_dim},
     grid_stride=True,
   )
   def kernel(
@@ -3198,10 +3371,12 @@ def _JTDACJ_sparse(
     ctx_Jaref_in: wp.array2d[float],
     ctx_done_in: wp.array[bool],
     groups_per_world: int,
+    world_start: int,
     # Out:
     h_out: wp.array3d[float],
   ):
     worldid, slot, lane = wp.tid()
+    worldid += world_start
     if wp.static(ELLIPTIC):
       lanes = wp.block_dim()
     else:
@@ -3290,8 +3465,75 @@ def _jtdaj_groups_per_world(nworld: int, njmax: int, kernel: wp.Kernel) -> int:
   return max(1, min(njmax, _JTDAJ_OVERSUBSCRIBE_WAVES * device_warps // nworld))
 
 
+@wp.kernel
+def _max_active_jtdaj_blocks(
+  counts: wp.array[int], heads: wp.array2d[int], rownnz: wp.array2d[int], done: wp.array[bool], maximum_out: wp.array[int]
+):
+  """Find live Hessian block and support bounds without a host readback."""
+  worldid, slot = wp.tid()
+  if not done[worldid] and slot < counts[worldid]:
+    # Integer maximum is order independent.
+    if slot == 0:
+      wp.atomic_max(maximum_out, 0, counts[worldid])  # kernel_analyzer: ignore[atomic]
+    wp.atomic_max(maximum_out, 1, rownnz[worldid, heads[worldid, slot]])  # kernel_analyzer: ignore[atomic]
+
+
+@wp.kernel
+def _jtdaj_bucket_active(
+  maximum: wp.array[int], lower: int, upper: int, width_lower: int, width_upper: int, active_out: wp.array[int]
+):
+  """Select exactly one sufficient scatter capacity, or none for an empty solve."""
+  active_out[0] = int(maximum[0] > lower and maximum[0] <= upper and maximum[1] > width_lower and maximum[1] <= width_upper)
+
+
+def _launch_jtdaj_sparse(
+  m, d, kernel, narrow_kernel, inputs, h, threads_per_group, block_dim, counts, heads, rownnz, done, maximum, buckets
+):
+  """Bound captured scatter work using device-selected capacity buckets.
+
+  Each selected capacity covers every active world's blocks, retaining one
+  source slot per block and its canonical reduction order. The full njmax
+  fallback preserves capacity; no contacts or constraints are discarded.
+  """
+  deterministic = bool(m.opt.deterministic & types.DeterminismType.ATOMICS)
+
+  def launch_groups(groups, width):
+    """Launch independent worlds with a bounded native scatter workspace."""
+    worlds_per_launch = d.nworld
+    if deterministic:
+      records_per_lane = max(1, (width * (width + 1) // 2 + threads_per_group - 1) // threads_per_group)
+      records_per_world = groups * threads_per_group * records_per_lane
+      worlds_per_launch = max(1, min(d.nworld, (1 << 24) // records_per_world))
+    for world_start in range(0, d.nworld, worlds_per_launch):
+      wp.launch(
+        narrow_kernel if width < m.nv else kernel,
+        dim=(min(worlds_per_launch, d.nworld - world_start), groups, threads_per_group),
+        inputs=[*inputs, groups, world_start],
+        outputs=[h],
+        block_dim=block_dim,
+      )
+
+  if deterministic and m.opt.graph_conditional:
+    maximum.zero_()
+    wp.launch(_max_active_jtdaj_blocks, dim=(d.nworld, d.njmax), inputs=[counts, heads, rownnz, done], outputs=[maximum])
+    lower = 0
+    index = 0
+    for upper in sorted({min(d.njmax, size) for size in (16, 64, 128, 256, d.njmax)}):
+      width_lower = -1
+      for width in sorted({min(m.nv, 16), m.nv}):
+        active = buckets[index]
+        wp.launch(_jtdaj_bucket_active, dim=1, inputs=[maximum, lower, upper, width_lower, width], outputs=[active])
+        wp.capture_if(active, on_true=launch_groups, groups=upper, width=width)
+        width_lower = width
+        index += 1
+      lower = upper
+  else:
+    launch_groups(d.njmax if deterministic else _jtdaj_groups_per_world(d.nworld, d.njmax, kernel), m.nv)
+
+
 def _update_gradient(m: types.Model, d: types.Data, ctx: SolverContext, compact: bool = False):
   # grad = Ma - qfrc_smooth - qfrc_constraint
+  """Update solver gradient and, for Newton, its constraint Hessian."""
   if m.opt.solver == types.SolverType.CG:
     wp.launch_tiled(
       _update_gradient_grad_tiled,
@@ -3308,7 +3550,7 @@ def _update_gradient(m: types.Model, d: types.Data, ctx: SolverContext, compact:
       outputs=[ctx.grad_dot, ctx.newton_decrement, ctx.grad_scale, ctx.search_unchanged],
     )
     wp.launch(
-      _update_gradient_grad(False),
+      _update_gradient_grad(False, bool(m.opt.deterministic & types.DeterminismType.ATOMICS)),
       dim=(d.nworld, m.nv),
       inputs=[d.qfrc_smooth, d.qfrc_constraint, d.efc.Ma, d.nefc, ctx.done],
       outputs=[ctx.grad, ctx.grad_dot],
@@ -3343,8 +3585,12 @@ def _update_gradient(m: types.Model, d: types.Data, ctx: SolverContext, compact:
       elliptic = m.opt.cone == types.ConeType.ELLIPTIC
       threads_per_group = 1 if elliptic and wp.get_device().is_cpu else _JTDAJ_THREADS_PER_GROUP
       block_dim = threads_per_group if elliptic else mj.block_dim.update_gradient_JTDAJ_sparse
-      jtdaj_kernel = _JTDACJ_sparse(sc, m.opt.cone, max_condim, block_dim)
-      groups_per_world = _jtdaj_groups_per_world(d.nworld, d.njmax, jtdaj_kernel)
+      jtdaj_kernel = _JTDACJ_sparse(
+        sc, m.opt.cone, max_condim, block_dim, bool(m.opt.deterministic & types.DeterminismType.ATOMICS), m.nv
+      )
+      narrow_kernel = _JTDACJ_sparse(
+        sc, m.opt.cone, max_condim, block_dim, bool(m.opt.deterministic & types.DeterminismType.ATOMICS), min(m.nv, 16)
+      )
       jtdaj_inputs = [
         m.opt.impratio_invsqrt,
         d.contact.friction,
@@ -3362,14 +3608,22 @@ def _update_gradient(m: types.Model, d: types.Data, ctx: SolverContext, compact:
         dj.dof_cdof,
         ctx.Jaref,
         ctx.done,
-        groups_per_world,
       ]
-      wp.launch(
+      _launch_jtdaj_sparse(
+        m,
+        d,
         jtdaj_kernel,
-        dim=(d.nworld, groups_per_world, threads_per_group),
-        inputs=jtdaj_inputs,
-        outputs=[ctx.h],
-        block_dim=block_dim,
+        narrow_kernel,
+        jtdaj_inputs,
+        ctx.h,
+        threads_per_group,
+        block_dim,
+        dj.efc.jtdaj_nblock,
+        dj.efc.jtdaj_adr,
+        dj.efc.J_rownnz,
+        ctx.done,
+        ctx.jtdaj_maximum,
+        ctx.jtdaj_buckets,
       )
     else:
       m_mat = d.qH if is_discrete else d.M
@@ -3412,20 +3666,20 @@ def _update_gradient(m: types.Model, d: types.Data, ctx: SolverContext, compact:
 
     if is_discrete:
       wp.launch(
-        _add_tendon_metric_dense,
+        _add_tendon_metric_dense(bool(m.opt.deterministic & types.DeterminismType.ATOMICS)),
         dim=(d.nworld, m.ntendon),
         inputs=[m.ten_J_rownnz, m.ten_J_rowadr, m.ten_J_colind, d.ten_J, d.efm_ts, ctx.done],
         outputs=[ctx.h],
       )
       wp.launch(
-        _add_actuator_metric_dense,
+        _add_actuator_metric_dense(bool(m.opt.deterministic & types.DeterminismType.ATOMICS)),
         dim=(d.nworld, m.nactuator),
         inputs=[d.moment_rownnz, d.moment_rowadr, d.moment_colind, d.actuator_moment, d.efm_as, ctx.done],
         outputs=[ctx.h],
       )
       if m.nefmK > 0:
         wp.launch(
-          _add_efmK_metric_dense,
+          _add_efmK_metric_dense(bool(m.opt.deterministic & types.DeterminismType.ATOMICS)),
           dim=(d.nworld, m.nv),
           inputs=[m.efm_K_rownnz, m.efm_K_rowadr, m.efm_K_colind, d.efm_K_val, ctx.done],
           outputs=[ctx.h],
@@ -3433,7 +3687,7 @@ def _update_gradient(m: types.Model, d: types.Data, ctx: SolverContext, compact:
       if m.has_flex_passive:
         efm_con_dof, efm_con_val, efm_con_scale, _, efm_con_nnz = derivative.build_efm_contact(m, d)
         wp.launch(
-          _add_flexcon_metric_dense,
+          _add_flexcon_metric_dense(bool(m.opt.deterministic & types.DeterminismType.ATOMICS)),
           dim=d.naconmax,
           inputs=[
             d.contact.worldid,
@@ -3529,7 +3783,7 @@ def _update_gradient_incremental(m: types.Model, d: types.Data, ctx: SolverConte
   )
 
   wp.launch(
-    _update_gradient_grad(stable_fast),
+    _update_gradient_grad(stable_fast, bool(m.opt.deterministic & types.DeterminismType.ATOMICS)),
     dim=(d.nworld, m.nv),
     inputs=[d.qfrc_smooth, d.qfrc_constraint, d.efc.Ma, changed, ctx.done],
     outputs=[ctx.grad, ctx.grad_dot],
@@ -3539,7 +3793,7 @@ def _update_gradient_incremental(m: types.Model, d: types.Data, ctx: SolverConte
   sc = _sparse_compact(ctx)
   if m.is_sparse or sc:
     dj = ctx.compact_d_full if sc else d
-    inc_kernel = _update_gradient_h_incremental_sparse(sc)
+    inc_kernel = _update_gradient_h_incremental_sparse(sc, bool(m.opt.deterministic & types.DeterminismType.ATOMICS))
     slots = _jtdaj_groups_per_world(d.nworld, ctx.quad_changed_ids.shape[1], inc_kernel)
     wp.launch(
       inc_kernel,
@@ -3702,7 +3956,7 @@ def _solve_beta_finalize_tiled(warn_overflow: int):
             )
           overflow_out[worldid] = overflow_out[worldid] | OverflowType.ITERATIONS
         ctx_done_out[worldid] = True
-        wp.atomic_add(nsolving_out, 0, -1)
+        wp.atomic_add(nsolving_out, 0, -1)  # kernel_analyzer: ignore[atomic]
 
   return kernel
 
@@ -3760,7 +4014,7 @@ def _solve_done(warn_overflow: int):
           )
         overflow_out[worldid] = overflow_out[worldid] | OverflowType.ITERATIONS
       ctx_done_out[worldid] = True
-      wp.atomic_add(nsolving_out, 0, -1)
+      wp.atomic_add(nsolving_out, 0, -1)  # kernel_analyzer: ignore[atomic]
 
   return kernel
 
@@ -3776,7 +4030,13 @@ _ALPHA_NOISE_EPS = 8.0 * 1.1920929e-07  # 8 * float32 eps
 
 def _use_incremental(m: types.Model) -> bool:
   """Whether constraint state changes are tracked for incremental H updates."""
-  return m.opt.solver == types.SolverType.NEWTON and m.opt.cone != types.ConeType.ELLIPTIC
+  # Changed-row lists are allocated atomically. RUN_TO_RUN reductions require
+  # stable source indices, so deterministic arithmetic uses a full rebuild.
+  return (
+    m.opt.solver == types.SolverType.NEWTON
+    and m.opt.cone != types.ConeType.ELLIPTIC
+    and not (m.opt.deterministic & types.DeterminismType.ATOMICS)
+  )
 
 
 @wp.kernel(grid_stride=True)
@@ -3881,6 +4141,7 @@ def _solver_iteration(
 
 
 def init_context(m: types.Model, d: types.Data, ctx: SolverContext | InverseContext, grad: bool = True, compact: bool = False):
+  """Initialize solver workspace for the model and selected constraint layout."""
   if m.opt.integrator == types.IntegratorType.DISCRETE:
     if m.nefmdof > 0 and m.opt.solver == types.SolverType.CG:
       derivative.eff_prec_fold(m, d, out=d.efm_L)
@@ -3926,7 +4187,9 @@ def init_context(m: types.Model, d: types.Data, ctx: SolverContext | InverseCont
     dofs_per_thread = m.nv
     threads_per_efc = 1
   wp.launch(
-    _solve_init_jaref_kernel(sc or m.is_sparse, m.nv, dofs_per_thread, sc),
+    _solve_init_jaref_kernel(
+      sc or m.is_sparse, m.nv, dofs_per_thread, sc, bool(m.opt.deterministic & types.DeterminismType.ATOMICS)
+    ),
     dim=(d.nworld, d.njmax, threads_per_efc),
     inputs=[d.nefc, d.qacc, dj.efc.J_rownnz, dj.efc.J_rowadr, dj.efc.J_colind, dj.efc.J, d.efc.aref, dj.dof_cdof],
     outputs=[ctx.Jaref],
