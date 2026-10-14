@@ -3226,6 +3226,7 @@ def _update_gradient(m: types.Model, d: types.Data, ctx: SolverContext, compact:
         nblocks_perblock = int((d.naconmax + dim_block - 1) / dim_block)
       else:
         # fall back for CPU
+        # TODO(team): support non-CUDA parallelism
         dim_block = 1
         nblocks_perblock = d.naconmax
 
