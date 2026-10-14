@@ -14,7 +14,7 @@
 # ==============================================================================
 import dataclasses
 import enum
-from typing import Callable, Optional
+from typing import Any, Callable, Optional
 
 import mujoco
 import numpy as np
@@ -2730,6 +2730,7 @@ class RenderContext:
     splat_bvh_id: Splat BVH id
     splat_group_root: Per-world selected splat BVH root
     splat_count: Number of splats
+    optix: OptiX scene and pipeline when rendering with backend="optix", else None
   """
 
   nrender: int
@@ -2813,4 +2814,5 @@ class RenderContext:
   splat_group_root: array("nworld", int)
   splat_count: int
   geom_ray_types: tuple = ()
+  optix: Optional[Any] = None
   _megakernel: Optional[wp.Kernel] = None
