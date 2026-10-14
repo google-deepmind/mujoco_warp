@@ -30,7 +30,6 @@ from mujoco_warp._src import types
 from mujoco_warp._src.collision_core import Geom
 from mujoco_warp._src.collision_driver import MJ_COLLISION_TABLE
 from mujoco_warp._src.collision_primitive import plane_convex
-from mujoco_warp._src.collision_sdf import MeshData
 from mujoco_warp._src.collision_sdf import OptimizationParams
 from mujoco_warp._src.collision_sdf import VolumeData
 from mujoco_warp._src.collision_sdf import ellipsoid
@@ -60,10 +59,7 @@ def volume_gradient_test(volume: VolumeData, result_out: wp.array[wp.vec3]):
 def volume_gradient_step_test(volume: VolumeData, result_out: wp.array[wp.vec4]):
   params = OptimizationParams()
   params.rel_mat = wp.identity(3, dtype=float)
-  mesh = MeshData()
-  dist, point = gradient_step(
-    types.GeomType.SDF, wp.vec3(1e-6, 1e-4, 1e-4), params, -1, -1, 1, True, 2.0, volume, volume, mesh, mesh
-  )
+  dist, point = gradient_step(types.GeomType.SDF, wp.vec3(1e-6, 1e-4, 1e-4), params, -1, -1, 1, True, 2.0, volume, volume)
   result_out[0] = wp.vec4(point[0], point[1], point[2], dist)
 
 
@@ -2345,6 +2341,25 @@ class CollisionTest(parameterized.TestCase):
           </worldbody>
         </mujoco>
     """,
+    "mesh_sdf": """
+        <mujoco>
+          <asset>
+            <mesh name="cube_mesh"
+             vertex="1 1 1  1 1 -1  1 -1 1  1 -1 -1  -1 1 1  -1 1 -1  -1 -1 1  -1 -1 -1"/>
+            <mesh name="cube_sdf"
+             vertex="1 1 1  1 1 -1  1 -1 1  1 -1 -1  -1 1 1  -1 1 -1  -1 -1 1  -1 -1 -1"/>
+          </asset>
+          <worldbody>
+            <body>
+              <geom type="mesh" mesh="cube_mesh"/>
+            </body>
+            <body pos="0 0 1.5" euler="30 0 0">
+              <freejoint/>
+              <geom type="sdf" mesh="cube_sdf"/>
+            </body>
+          </worldbody>
+        </mujoco>
+    """,
   }
 
   @parameterized.parameters(_SDF_VOLUME.keys())
@@ -2362,9 +2377,17 @@ class CollisionTest(parameterized.TestCase):
     self.assertEqual(mj_ncon > 0, mjw_ncon > 0, f"MJ ncon={mj_ncon}, MJW ncon={mjw_ncon}")
 
     # all detected contacts should have negative distance (penetration)
-    for i in range(mjw_ncon):
-      test_dist = d.contact.dist.numpy()[i]
+    dists = d.contact.dist.numpy()[:mjw_ncon]
+    for i, test_dist in enumerate(dists):
       self.assertLess(test_dist, 0.1, f"Contact {i} dist={test_dist} not indicating penetration")
+
+    if fixture == "mesh_sdf" and mjw_ncon > 0:
+      normals = d.contact.frame.numpy()[:mjw_ncon, 0]
+      found_expected = any(abs(n[0]) < 1e-3 and abs(n[1] - (-0.5)) < 1e-2 and abs(n[2] - 0.8660254) < 1e-2 for n in normals)
+      self.assertTrue(
+        found_expected,
+        f"Expected 30-deg normal not found in detected contacts: {normals}",
+      )
 
   def test_sdf_among_other_candidates(self):
     """SDF pairs give the same contacts with and without other collision candidates."""
@@ -2499,7 +2522,7 @@ class CollisionTest(parameterized.TestCase):
       </asset>
       <worldbody>
         <geom type="sdf" mesh="cube" gap=".01"/>
-        <body pos="0 0 .022">
+        <body pos="0 0 .05">
           <freejoint/>
           <geom type="sdf" mesh="cube" gap=".01"/>
         </body>
