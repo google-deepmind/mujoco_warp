@@ -336,6 +336,17 @@ def upper_trid_index(n: int, i: int, j: int) -> int:
   return (i * (2 * n - i - 1)) // 2 + j
 
 
+def upper_trid_index_host(n: int, i: int, j: int) -> int:
+  """Python version of upper_trid_index for host code.
+
+  Calling a wp.func from python goes through warp's overload resolution, which is slow
+  for per-step host code like the collision drivers.
+  """
+  if j < i:
+    i, j = j, i
+  return (i * (2 * n - i - 1)) // 2 + j
+
+
 @wp.func
 def free_bias_vel_blocks(
   # In:

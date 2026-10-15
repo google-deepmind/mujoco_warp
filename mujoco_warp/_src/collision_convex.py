@@ -36,7 +36,7 @@ from mujoco_warp._src.collision_primitive import contact_params
 from mujoco_warp._src.collision_primitive import geom_collision_pair
 from mujoco_warp._src.collision_primitive import write_contact
 from mujoco_warp._src.math import make_frame
-from mujoco_warp._src.math import upper_trid_index
+from mujoco_warp._src.math import upper_trid_index_host
 from mujoco_warp._src.types import MJ_MAX_EPAFACES
 from mujoco_warp._src.types import MJ_MAX_EPAHORIZON
 from mujoco_warp._src.types import MJ_MAXCONPAIR
@@ -1267,7 +1267,7 @@ def convex_narrowphase(m: Model, d: Data, ctx: CollisionContext, collision_table
   """
 
   def _pair_count(p1: int, p2: int) -> Tuple[int, int]:
-    idx = upper_trid_index(len(GeomType), p1, p2)
+    idx = upper_trid_index_host(len(GeomType), p1, p2)
     return m.geom_pair_type_count[idx], idx
 
   ncollision = sum(_pair_count(g[0].value, g[1].value)[0] for g in collision_table)

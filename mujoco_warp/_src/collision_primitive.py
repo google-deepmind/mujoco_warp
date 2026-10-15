@@ -35,7 +35,7 @@ from mujoco_warp._src.collision_primitive_core import sphere_capsule
 from mujoco_warp._src.collision_primitive_core import sphere_cylinder
 from mujoco_warp._src.collision_primitive_core import sphere_sphere
 from mujoco_warp._src.math import make_frame
-from mujoco_warp._src.math import upper_trid_index
+from mujoco_warp._src.math import upper_trid_index_host
 from mujoco_warp._src.types import MJ_MAXVAL
 from mujoco_warp._src.types import Data
 from mujoco_warp._src.types import GeomType
@@ -1475,7 +1475,7 @@ def primitive_narrowphase(m: Model, d: Data, ctx: CollisionContext, collision_ta
   for types, func in _PRIMITIVE_COLLISIONS.items():
     if types not in collision_table:
       continue
-    idx = upper_trid_index(len(GeomType), types[0].value, types[1].value)
+    idx = upper_trid_index_host(len(GeomType), types[0].value, types[1].value)
     if m.geom_pair_type_count[idx]:
       primitive_collision_types.append(types)
       primitive_collision_func.append(func)

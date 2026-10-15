@@ -26,6 +26,7 @@ from mujoco_warp._src.math import lu_factor_6x6
 from mujoco_warp._src.math import lu_solve_6x6
 from mujoco_warp._src.math import upper_tri_index
 from mujoco_warp._src.math import upper_trid_index
+from mujoco_warp._src.math import upper_trid_index_host
 
 
 @wp.kernel
@@ -189,9 +190,16 @@ class ClosestSegmentSegmentPointsTest(absltest.TestCase):
         arr.append(upper_trid_index(10, i, j))
     self.assertEqual(arr, list(range(0, 55)))
 
-  def test_upper_trid_index10(self):
+  def test_upper_trid_index_symmetric(self):
     """Tests upper_trid_index works with symmetric matrix."""
     self.assertEqual(upper_trid_index(10, 1, 5), upper_trid_index(10, 5, 1))
+
+  def test_upper_trid_index_host(self):
+    """Tests upper_trid_index_host matches upper_trid_index."""
+    for n in (1, 2, 5, 10, 13):
+      for i in range(n):
+        for j in range(n):
+          self.assertEqual(upper_trid_index_host(n, i, j), upper_trid_index(n, i, j))
 
 
 class DenseLUTest(parameterized.TestCase):
