@@ -38,6 +38,7 @@ from mujoco_warp._src.collision_primitive import primitive_narrowphase as primit
 from mujoco_warp._src.collision_sdf import sdf_narrowphase as sdf_narrowphase
 from mujoco_warp._src.constraint import make_constraint as make_constraint
 from mujoco_warp._src.derivative import deriv_smooth_vel as deriv_smooth_vel
+from mujoco_warp._src.diff import differentiable as _differentiable
 from mujoco_warp._src.forward import discrete as discrete
 from mujoco_warp._src.forward import euler as euler
 from mujoco_warp._src.forward import forward as forward
@@ -125,3 +126,5 @@ from mujoco_warp._src.types import SolverType as SolverType
 from mujoco_warp._src.types import State as State
 from mujoco_warp._src.types import Statistic as Statistic
 from mujoco_warp._src.types import TrnType as TrnType
+
+_differentiable(globals())
