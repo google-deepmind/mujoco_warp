@@ -441,6 +441,7 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
   opt.graph_conditional = True
   opt.run_collision_detection = True
   opt.warn_overflow = int(types.OverflowType.ALL)
+  opt.deterministic = int(types.DeterminismType.NONE)
   opt.run_rne_postconstraint = False
   contact_sensor_maxmatch_id = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_NUMERIC, "contact_sensor_maxmatch")
   if contact_sensor_maxmatch_id > -1:
@@ -3183,6 +3184,7 @@ def override_model(model: types.Model | mujoco.MjModel, overrides: dict[str, Any
     "opt.integrator": types.IntegratorType,
     "opt.solver": types.SolverType,
     "opt.warn_overflow": types.OverflowType,
+    "opt.deterministic": types.DeterminismType,
   }
   # MuJoCo pybind11 enums don't support iteration, so we provide explicit mappings
   mj_enum_fields = {
@@ -3198,6 +3200,7 @@ def override_model(model: types.Model | mujoco.MjModel, overrides: dict[str, Any
     "opt.graph_conditional",
     "opt.contact_sensor_maxmatch",
     "opt.warn_overflow",
+    "opt.deterministic",
     "opt.run_collision_detection",
     "opt.run_rne_postconstraint",
   }
@@ -3233,6 +3236,14 @@ def override_model(model: types.Model | mujoco.MjModel, overrides: dict[str, Any
         continue
 
       typ = type(getattr(obj, attr))
+
+      if key == "opt.deterministic":
+        if isinstance(val, str) and val.upper() in ("TRUE", "FALSE"):
+          val = val.upper() == "TRUE"
+        if isinstance(val, (bool, np.bool_)):
+          val = int(types.DeterminismType.ALL if val else types.DeterminismType.NONE)
+        elif isinstance(val, str) and val.isdigit():
+          val = int(val)
 
       if key in mj_enum_fields and isinstance(val, str):
         enum_member = val.strip().upper()

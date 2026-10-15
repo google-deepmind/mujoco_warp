@@ -23,9 +23,9 @@ import warp as wp
 from absl.testing import absltest
 from absl.testing import parameterized
 
+from mujoco_warp import test_data
 from mujoco_warp._src import util_pkg
 from mujoco_warp._src.io import override_model
-from mujoco_warp._src.io import put_model
 from mujoco_warp._src.types import Data
 from mujoco_warp._src.types import Model
 from mujoco_warp._src.types import Option
@@ -109,8 +109,11 @@ class TypesTest(parameterized.TestCase):
     self.assertEqual(int(OverflowType.ALL), (1 << 12) - 1)
 
   def test_option_warn_overflow(self):
-    mjm = mujoco.MjModel.from_xml_string("<mujoco/>")
-    m = put_model(mjm)
+    _, _, m, _ = test_data.fixture(
+      xml="""
+      <mujoco/>
+      """
+    )
 
     # Defaults to ALL
     self.assertEqual(m.opt.warn_overflow, int(OverflowType.ALL))
@@ -130,16 +133,17 @@ class TypesTest(parameterized.TestCase):
     self.assertTrue(bool(m.opt.warn_overflow & OverflowType.CCD))
 
     # Test override_model support
-    override_model(m, {"opt.warn_overflow": 0})
-    self.assertEqual(m.opt.warn_overflow, 0)
-
-    override_model(m, {"opt.warn_overflow": "CCD"})
-    self.assertEqual(m.opt.warn_overflow, int(OverflowType.CCD))
-
-    m = put_model(mjm)
-    override_model(m, ["opt.warn_overflow=~ITERATIONS|~LS_ITERATIONS"])
-    expected = int(OverflowType.ALL) & ~OverflowType.ITERATIONS & ~OverflowType.LS_ITERATIONS
-    self.assertEqual(m.opt.warn_overflow, expected)
+    for override, expected in [
+      ({"opt.warn_overflow": 0}, 0),
+      ({"opt.warn_overflow": "CCD"}, int(OverflowType.CCD)),
+      (["opt.warn_overflow=ALL"], int(OverflowType.ALL)),
+      (
+        ["opt.warn_overflow=~ITERATIONS|~LS_ITERATIONS"],
+        int(OverflowType.ALL) & ~OverflowType.ITERATIONS & ~OverflowType.LS_ITERATIONS,
+      ),
+    ]:
+      override_model(m, override)
+      self.assertEqual(m.opt.warn_overflow, expected)
 
 
 if __name__ == "__main__":
