@@ -2500,6 +2500,7 @@ def _efc_contact_init(cone_type: types.ConeType, is_sparse: bool, newton: bool, 
     efc_jtdaj_nblock_out: wp.array[int],
     efc_J_rownnz_out: wp.array2d[int],
     efc_J_rowadr_out: wp.array2d[int],
+    efc_Jqvel_out: wp.array2d[float],
     # Out:
     efc_nnz_out: wp.array[int],
   ):
@@ -2543,6 +2544,8 @@ def _efc_contact_init(cone_type: types.ConeType, is_sparse: bool, newton: bool, 
         contact_efc_address_out[conid, dim] = efcid
         # This is redundant with the _efc_row call later but needed for the jac calculation
         efc_id_out[worldid, efcid] = conid
+        # the sparse Jacobian kernel accumulates into this
+        efc_Jqvel_out[worldid, efcid] = 0.0
 
     if wp.static(is_sparse and newton):
       if base_efcid < njmax_in:
@@ -2925,10 +2928,28 @@ def _efc_contact_init_flex(cone_type: types.ConeType, is_sparse: bool, newton: b
   return kernel
 
 
+# lanes per contact in _efc_contact_jac_sparse
+_CONTACT_JAC_LANES = 8
+
+
+@wp.func
+def _dof_chain_advance(dof_parentid: wp.array[int], da1: int, da2: int, n: int):
+  """Advance the merged DOF chains of two bodies by n nonzeros."""
+  for _ in range(n):
+    da = wp.max(da1, da2)
+    if da1 == da:
+      da1 = dof_parentid[da1]
+    if da2 == da:
+      da2 = dof_parentid[da2]
+  return da1, da2
+
+
 @cache_kernel
-def _efc_contact_jac_sparse(cone_type: types.ConeType):
+def _efc_contact_jac_sparse(cone_type: types.ConeType, nmaxdim: int):
   IS_ELLIPTIC = cone_type == types.ConeType.ELLIPTIC
 
+  # Lane k of a contact computes the k-th nonzero for all of the contact's rows, so lanes write
+  # consecutive addresses; one thread per row would scatter every store across sectors.
   @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
   def kernel(
     # Model:
@@ -2956,51 +2977,39 @@ def _efc_contact_jac_sparse(cone_type: types.ConeType):
     frame_in: wp.array2d[wp.vec3],
     friction_in: wp.array2d[float],
     worldid_in: wp.array[int],
+    ncontact_per_pass: int,
     # Data out:
     efc_J_colind_out: wp.array3d[int],
     efc_J_out: wp.array3d[float],
     efc_Jqvel_out: wp.array2d[float],
   ):
-    conid, dimid = wp.tid()
+    tid = wp.tid()
+    lane = tid % _CONTACT_JAC_LANES
 
-    if conid >= nacon_in[0]:
-      return
+    for conid in range(tid / _CONTACT_JAC_LANES, nacon_in[0], ncontact_per_pass):
+      efcid0 = contact_efc_address_in[conid, 0]
+      if efcid0 < 0:
+        continue
 
-    efcid = contact_efc_address_in[conid, dimid]
-    if efcid < 0:
-      return
+      worldid = worldid_in[conid]
+      condim = condim_in[conid]
 
-    worldid = worldid_in[conid]
-    condim = condim_in[conid]
+      geom = geom_in[conid]
+      body1 = body_weldid[geom_bodyid[geom[0]]]
+      body2 = body_weldid[geom_bodyid[geom[1]]]
 
-    geom = geom_in[conid]
-    body1 = body_weldid[geom_bodyid[geom[0]]]
-    body2 = body_weldid[geom_bodyid[geom[1]]]
-
-    con_pos = pos_in[conid]
-
-    if not wp.static(IS_ELLIPTIC):
+      con_pos = pos_in[conid]
       frame_0 = frame_in[conid, 0]
-      if condim > 1:
-        dimid2 = dimid / 2 + 1
-        frii = friction_in[conid, dimid2 - 1]
 
-    da1 = int(body_dofadr[body1] + body_dofnum[body1] - 1)
-    da2 = int(body_dofadr[body2] + body_dofnum[body2] - 1)
-    da = wp.max(da1, da2)
+      # all rows of a contact share the same nonzeros
+      rownnz = efc_J_rownnz_in[worldid, efcid0]
 
-    rowadr = efc_J_rowadr_in[worldid, efcid]
-    rownnz = efc_J_rownnz_in[worldid, efcid]
+      da1 = int(body_dofadr[body1] + body_dofnum[body1] - 1)
+      da2 = int(body_dofadr[body2] + body_dofnum[body2] - 1)
+      da1, da2 = _dof_chain_advance(dof_parentid, da1, da2, lane)
 
-    Jqvel = float(0.0)
-    nnz = int(0)
-    dofid = int(da)
-
-    while True:
-      if nnz >= rownnz:
-        break
-
-      if dofid == da:
+      for nnz in range(lane, rownnz, _CONTACT_JAC_LANES):
+        dofid = wp.max(da1, da2)
         jac1p, jac1r = support.jac_dof(
           body_parentid,
           body_rootid,
@@ -3028,51 +3037,51 @@ def _efc_contact_jac_sparse(cone_type: types.ConeType):
 
         jacp_dif = jac2p - jac1p
         jacr_dif = jac2r - jac1r
+        qvel = qvel_in[worldid, dofid]
 
-        if wp.static(IS_ELLIPTIC):
-          J = float(0.0)
-          if dimid < 3:
-            frame_row = frame_in[conid, dimid]
-            for xyz in range(3):
-              J += frame_row[xyz] * jacp_dif[xyz]
+        for dimid in range(nmaxdim):
+          efcid = contact_efc_address_in[conid, dimid]
+          if efcid < 0:
+            continue
+
+          if wp.static(IS_ELLIPTIC):
+            J = float(0.0)
+            if dimid < 3:
+              frame_row = frame_in[conid, dimid]
+              for xyz in range(3):
+                J += frame_row[xyz] * jacp_dif[xyz]
+            else:
+              frame_row = frame_in[conid, dimid - 3]
+              for xyz in range(3):
+                J += frame_row[xyz] * jacr_dif[xyz]
           else:
-            frame_row = frame_in[conid, dimid - 3]
-            for xyz in range(3):
-              J += frame_row[xyz] * jacr_dif[xyz]
-        else:
-          J = float(0.0)
-          Ji = float(0.0)
+            J = float(0.0)
+            Ji = float(0.0)
+            dimid2 = dimid / 2 + 1
 
-          for xyz in range(3):
-            J += frame_0[xyz] * jacp_dif[xyz]
+            for xyz in range(3):
+              J += frame_0[xyz] * jacp_dif[xyz]
+
+              if condim > 1:
+                if dimid2 < 3:
+                  Ji += frame_in[conid, dimid2][xyz] * jacp_dif[xyz]
+                else:
+                  Ji += frame_in[conid, dimid2 - 3][xyz] * jacr_dif[xyz]
 
             if condim > 1:
-              if dimid2 < 3:
-                Ji += frame_in[conid, dimid2][xyz] * jacp_dif[xyz]
+              frii = friction_in[conid, dimid2 - 1]
+              if dimid % 2 == 0:
+                J += Ji * frii
               else:
-                Ji += frame_in[conid, dimid2 - 3][xyz] * jacr_dif[xyz]
+                J -= Ji * frii
 
-          if condim > 1:
-            if dimid % 2 == 0:
-              J += Ji * frii
-            else:
-              J -= Ji * frii
+          sparseid = efc_J_rowadr_in[worldid, efcid] + nnz
+          efc_J_colind_out[worldid, 0, sparseid] = dofid
+          efc_J_out[worldid, 0, sparseid] = J
+          # rows are zeroed by _efc_contact_init
+          wp.atomic_add(efc_Jqvel_out, worldid, efcid, J * qvel)
 
-        sparseid = rowadr + nnz
-        efc_J_colind_out[worldid, 0, sparseid] = dofid
-        efc_J_out[worldid, 0, sparseid] = J
-        nnz += 1
-        Jqvel += J * qvel_in[worldid, dofid]
-
-        # Advance tree pointers and recompute da for next iteration
-        if da1 == da:
-          da1 = dof_parentid[da1]
-        if da2 == da:
-          da2 = dof_parentid[da2]
-        da = wp.max(da1, da2)
-        dofid = da
-
-    efc_Jqvel_out[worldid, efcid] = Jqvel
+        da1, da2 = _dof_chain_advance(dof_parentid, da1, da2, _CONTACT_JAC_LANES)
 
   return kernel
 
@@ -5405,6 +5414,7 @@ def make_constraint(m: types.Model, d: types.Data):
             d.efc.jtdaj_nblock,
             d.efc.J_rownnz,
             d.efc.J_rowadr,
+            d.efc.Jqvel,
             efc_nnz,
           ],
         )
@@ -5461,9 +5471,13 @@ def make_constraint(m: types.Model, d: types.Data):
             ],
           )
         else:
+          # cover the active contacts with a GPU-sized grid rather than naconmax
+          ncontact_per_pass = d.naconmax
+          if wp.get_device().is_cuda:
+            ncontact_per_pass = min(ncontact_per_pass, 256 * wp.get_device().sm_count)
           wp.launch(
-            _efc_contact_jac_sparse(m.opt.cone),
-            dim=(d.naconmax, nmaxdim),
+            _efc_contact_jac_sparse(m.opt.cone, nmaxdim),
+            dim=max(ncontact_per_pass, 1) * _CONTACT_JAC_LANES,
             inputs=[
               m.body_parentid,
               m.body_rootid,
@@ -5487,6 +5501,7 @@ def make_constraint(m: types.Model, d: types.Data):
               contact_frame_2d,
               contact_friction_2d,
               d.contact.worldid,
+              ncontact_per_pass,
             ],
             outputs=[
               d.efc.J_colind,
