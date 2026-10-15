@@ -613,6 +613,89 @@ class IOTest(parameterized.TestCase):
     self.assertEqual(d.naconmax, nconmax_expected)
     self.assertEqual(d.njmax, njmax_expected)
 
+  @parameterized.product(make_data=(False, True), nworld=(1, 2))
+  def test_default_contact_capacity_with_collision_sensors(self, make_data, nworld):
+    """Collision sensors must leave room for physical contacts with default allocation."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <body name="a" pos="0 5 1">
+            <replicate count="8" offset="1 0 0">
+              <geom type="sphere" size=".01" contype="0" conaffinity="0"/>
+            </replicate>
+          </body>
+          <body name="b" pos="0 10 1">
+            <replicate count="8" offset="1 0 0">
+              <geom type="sphere" size=".01" contype="0" conaffinity="0"/>
+            </replicate>
+          </body>
+          <geom type="plane" size="5 5 .1"/>
+          <body pos="0 0 .09">
+            <freejoint/>
+            <geom type="box" size=".1 .1 .1"/>
+          </body>
+        </worldbody>
+        <sensor><distance body1="a" body2="b" cutoff=".05"/></sensor>
+      </mujoco>
+      """,
+      nworld=nworld,
+    )
+    if make_data:
+      d = mjwarp.make_data(mjm, nworld=nworld)
+    qpos = np.tile(mjd.qpos, (nworld, 1))
+    if nworld == 2:
+      qpos[1, 2] = 0.08
+    d.qpos.assign(qpos)
+    d.qacc.fill_(wp.inf)
+    d.sensordata.fill_(wp.inf)
+    mjwarp.forward(m, d)
+
+    self.assertLessEqual(d.ncollision.numpy()[0], d.naconmax)
+    self.assertLessEqual(d.nacon.numpy()[0], d.naconmax)
+    qacc = d.qacc.numpy()
+    sensordata = d.sensordata.numpy()
+    for world in range(nworld):
+      mjd.qpos[:] = qpos[world]
+      mujoco.mj_forward(mjm, mjd)
+      np.testing.assert_allclose(qacc[world, 2], mjd.qacc[2], rtol=1e-5, atol=1e-5)
+      np.testing.assert_allclose(sensordata[world], mjd.sensordata, rtol=1e-5, atol=1e-5)
+    if nworld == 2:
+      self.assertFalse(np.allclose(qacc[0], qacc[1]))
+
+  @parameterized.named_parameters(
+    ("no_sensor", "", 48),
+    ("other_sensor", '<framepos objtype="body" objname="a"/>', 48),
+    ("geom_geom", '<distance geom1="a0" geom2="b0"/>', 48),
+    ("geom_body", '<normal geom1="a0" body2="b"/>', 64),
+    ("body_geom", '<fromto body1="a" geom2="b0"/>', 64),
+    ("body_body", '<distance body1="a" body2="b"/>', 128),
+    ("duplicate", '<distance geom1="a0" geom2="b0"/>' * 64, 48),
+    ("reversed", '<distance body1="a" body2="b"/><normal body1="b" body2="a"/>', 128),
+  )
+  def test_collision_sensor_contact_capacity(self, sensors, expected):
+    """Count unique geom pairs, including body expansion."""
+    _, _, _, d = test_data.fixture(
+      xml=f"""
+      <mujoco>
+        <worldbody>
+          <body name="a">
+            <replicate count="8" offset="1 0 0">
+              <geom name="a" type="sphere" size=".01" contype="0" conaffinity="0"/>
+            </replicate>
+          </body>
+          <body name="b" pos="0 5 0">
+            <replicate count="8" offset="1 0 0">
+              <geom name="b" type="sphere" size=".01" contype="0" conaffinity="0"/>
+            </replicate>
+          </body>
+        </worldbody>
+        <sensor>{sensors}</sensor>
+      </mujoco>
+    """
+    )
+    self.assertEqual(d.naconmax, expected)
+
   def test_get_data_into_m(self):
     mjm = mujoco.MjModel.from_xml_string("""
       <mujoco>

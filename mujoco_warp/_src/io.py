@@ -1402,6 +1402,21 @@ def _default_nconmax(mjm: mujoco.MjModel, mjd: Optional[mujoco.MjData] = None) -
   has_sdf = (mjm.geom_type == mujoco.mjtGeom.mjGEOM_SDF).any()
   has_flex = mjm.nflex > 0
   nconmax = max(mjm.nv * 0.35 * (mjm.nhfield > 0) * 10 + 45, 256 * has_flex, 64 * has_sdf, mjd.ncon if mjd else 0)
+  collision_sensors = (mujoco.mjtSensor.mjSENS_GEOMDIST, mujoco.mjtSensor.mjSENS_GEOMNORMAL, mujoco.mjtSensor.mjSENS_GEOMFROMTO)
+  sensor_pairs = set()
+  for sensorid in np.flatnonzero(np.isin(mjm.sensor_type, collision_sensors)):
+    objid, refid = mjm.sensor_objid[sensorid], mjm.sensor_refid[sensorid]
+    geoms1 = (objid,)
+    geoms2 = (refid,)
+    if mjm.sensor_objtype[sensorid] == mujoco.mjtObj.mjOBJ_BODY:
+      start = mjm.body_geomadr[objid]
+      geoms1 = range(start, start + mjm.body_geomnum[objid])
+    if mjm.sensor_reftype[sensorid] == mujoco.mjtObj.mjOBJ_BODY:
+      start = mjm.body_geomadr[refid]
+      geoms2 = range(start, start + mjm.body_geomnum[refid])
+    sensor_pairs.update((min(g1, g2), max(g1, g2)) for g1 in geoms1 for g2 in geoms2)
+  # shortcut: one slot per sensor pair; raise capacity explicitly for multicontact pairs.
+  nconmax += len(sensor_pairs)
   if nconmax > valid_sizes[-1]:
     return int(nconmax)
   return int(valid_sizes[np.searchsorted(valid_sizes, nconmax)])
@@ -1860,8 +1875,11 @@ def make_data(
   Args:
     mjm: The model containing kinematic and dynamic information (host).
     nworld: Number of worlds.
-    nconmax: Number of contacts to allocate per world. Contacts exist in large
-             heterogeneous arrays: one world may have more than nconmax contacts.
+    nconmax: Number of contacts to allocate per world, including collision-sensor entries
+             even beyond their cutoff. The default estimates physical contacts plus one slot
+             per unique sensor geom pair; pairs producing multiple contacts may need more.
+             Contacts share a global buffer: one world may have more than nconmax contacts.
+             Overflow can drop physical contacts and change the simulation.
     nccdmax: Number of CCD contacts to allocate per world. Same semantics as nconmax.
     njmax: Number of constraints to allocate per world. Constraint arrays are
            batched by world: no world may have more than njmax constraints.
@@ -2082,8 +2100,11 @@ def put_data(
     mjm: The model containing kinematic and dynamic information (host).
     mjd: The data object containing current state and output arrays (host).
     nworld: The number of worlds.
-    nconmax: Number of contacts to allocate per world.  Contacts exist in large
-             heterogenous arrays: one world may have more than nconmax contacts.
+    nconmax: Number of contacts to allocate per world, including collision-sensor entries
+             even beyond their cutoff. The default estimates physical contacts plus one slot
+             per unique sensor geom pair; pairs producing multiple contacts may need more.
+             Contacts share a global buffer: one world may have more than nconmax contacts.
+             Overflow can drop physical contacts and change the simulation.
     nccdmax: Number of CCD contacts to allocate per world. Same semantics as nconmax.
     njmax: Number of constraints to allocate per world.  Constraint arrays are
            batched by world: no world may have more than njmax constraints.
