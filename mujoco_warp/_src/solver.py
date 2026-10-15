@@ -2326,24 +2326,16 @@ def _update_gradient_grad_tiled(
     ctx_grad_dot_out[worldid] = grad_dot_sum[0]
 
 
-@wp.func
-def _upper_triangle_index(elementid: int, n: int):
-  """Row-major (i, j), j >= i, of an n x n upper-triangle element; consecutive ids share a row."""
-  # rows start at s(i) = i * n - i * (i - 1) / 2; invert, then correct float rounding
-  b = float(2 * n + 1)
-  i = int((b - wp.sqrt(b * b - 8.0 * float(elementid))) * 0.5)
-  if i * n - i * (i - 1) // 2 > elementid:
-    i -= 1
-  elif (i + 1) * n - (i + 1) * i // 2 <= elementid:
-    i += 1
-  return i, i + elementid - (i * n - i * (i - 1) // 2)
+# sparse Newton Hessian init: lanes per (world, row), row-start alignment (floats per 32 B sector)
+_INIT_H_LANES = 8
+_INIT_H_ALIGN = 8
 
 
 @cache_kernel
 def _update_gradient_init_h_sparse(compact: bool):
   COMPACT = compact
 
-  @wp.kernel(module="unique", enable_backward=False, grid_stride=True)
+  @wp.kernel(module="unique", enable_backward=False)
   def kernel(
     # Model:
     nv: int,
@@ -2356,37 +2348,43 @@ def _update_gradient_init_h_sparse(compact: bool):
     # Out:
     ctx_h_out: wp.array3d[float],
   ):
-    worldid, elementid = wp.tid()
+    worldid, i, lane = wp.tid()
 
     if ctx_done_in[worldid]:
       return
 
-    # one thread per upper-triangle element: Cholesky reads the upper triangle only
-    i, j = _upper_triangle_index(elementid, ctx_h_out.shape[1])
-
-    # cdof_dof is increasing with a -1 tail, so with j >= i only dof_j can flag padding
-    if wp.static(COMPACT):
-      dof_j = cdof_dof_in[worldid, j]
-      padding = dof_j < 0
-    else:
-      dof_j = j
-      padding = j >= nv
-
-    # identity on padded dofs keeps the factorization well conditioned
-    if padding:
-      ctx_h_out[worldid, i, j] = wp.where(i == j, 1.0, 0.0)
-      return
-
-    dof_i = i
+    # cdof_dof is increasing with a -1 tail, so a padded row only meets padded columns
     if wp.static(COMPACT):
       dof_i = cdof_dof_in[worldid, i]
-
-    # sparse M is stored in the lower triangle and dof_j >= dof_i
-    elemid = M_elemid[dof_j, dof_i]
-    if elemid >= 0:
-      ctx_h_out[worldid, i, j] = M_in[worldid, elemid]
+      padded_row = dof_i < 0
     else:
-      ctx_h_out[worldid, i, j] = 0.0
+      dof_i = i
+      padded_row = i >= nv
+
+    # Cholesky reads the upper triangle only, but a row starting at the diagonal leaves a partial
+    # first sector, which costs a DRAM read once h is not in L2. Start at the sector boundary (rows
+    # are sector aligned since nv_pad is a multiple of 16); nothing reads the zeros left of it.
+    n = ctx_h_out.shape[1]
+    start = (i // wp.static(_INIT_H_ALIGN)) * wp.static(_INIT_H_ALIGN)
+    for j in range(start + lane, n, wp.static(_INIT_H_LANES)):
+      h = float(0.0)
+      if j >= i:
+        if padded_row:
+          # identity on padded dofs keeps the factorization well conditioned
+          h = wp.where(i == j, 1.0, 0.0)
+        else:
+          if wp.static(COMPACT):
+            dof_j = cdof_dof_in[worldid, j]
+            padded = dof_j < 0
+          else:
+            dof_j = j
+            padded = j >= nv
+          if not padded:
+            # sparse M is stored in the lower triangle and dof_j >= dof_i
+            elemid = M_elemid[dof_j, dof_i]
+            if elemid >= 0:
+              h = M_in[worldid, elemid]
+      ctx_h_out[worldid, i, j] = h
 
   return kernel
 
@@ -3332,7 +3330,7 @@ def _update_gradient(m: types.Model, d: types.Data, ctx: SolverContext, compact:
       m_mat = dj.qH if is_discrete else dj.M
       wp.launch(
         _update_gradient_init_h_sparse(sc),
-        dim=(d.nworld, m.nv_pad * (m.nv_pad + 1) // 2),
+        dim=(d.nworld, m.nv_pad, _INIT_H_LANES),
         inputs=[mj.nv, mj.M_elemid, m_mat, dj.cdof_dof, ctx.done],
         outputs=[ctx.h],
       )
