@@ -465,6 +465,16 @@ class UtilMiscTest(parameterized.TestCase):
       )
     )
 
+    # Two segments that meet at their shared tangent point are not crossing.
+    self.assertFalse(
+      _is_intersect(
+        np.array([0.112450145, 0.138992026], dtype=np.float32),
+        np.array([-0.010828755, 0.010379695], dtype=np.float32),
+        np.array([-0.138847992, -0.12317808], dtype=np.float32),
+        np.array([-0.010828755, 0.010379695], dtype=np.float32),
+      )
+    )
+
   def test_length_circle(self):
     _assert_eq(
       _length_circle(np.array([0, 1]), np.array([1, 0]), 0, 1.0),
@@ -499,6 +509,26 @@ class UtilMiscTest(parameterized.TestCase):
       atol=1e-8,
       rtol=1e-3,
     )
+
+    # Vanishing arc with a rounding-scale cross product sign.
+    np.testing.assert_allclose(
+      _length_circle(
+        np.array([-0.0111310557, 0.0100548286], dtype=np.float32),
+        np.array([-0.0111310557, 0.0100548295], dtype=np.float32),
+        1,
+        0.015,
+      ),
+      0.0,
+      atol=1e-8,
+    )
+
+    for p0, p1, ind in (
+      ((0.015, 0.0), (0.015, 4.0e-10), 0),
+      ((0.015, 0.0), (0.015, -4.0e-10), 1),
+    ):
+      length = _length_circle(np.array(p0, dtype=np.float32), np.array(p1, dtype=np.float32), ind, 0.015)
+      self.assertGreaterEqual(length, 0.0)
+      self.assertLess(length, 1.0e-8)
 
   def test_wrap_circle(self):
     # no wrap
@@ -558,6 +588,45 @@ class UtilMiscTest(parameterized.TestCase):
       np.testing.assert_allclose(wlen, 1.12535e-6, atol=1e-8, rtol=1e-3)
       _assert_eq(wpnt0, np.array([0.00339341, 0.01461112]), "wpnt0")
       _assert_eq(wpnt1, np.array([0.00339232, 0.01461137]), "wpnt1")
+
+    # Wrap onset: nearly collinear segments, vanishing arc, and coincident tangent points.
+    for end, expected_wlen, expected_wpnt0, expected_wpnt1 in (
+      (
+        np.array([0.158835, -0.02149, -0.190895, 0.059719], dtype=np.float32),
+        1.12535e-6,
+        np.array([0.00339341, 0.01461112]),
+        np.array([0.00339232, 0.01461137]),
+      ),
+      (
+        np.array([0.102367133, 0.135701373, -0.106919013, -0.0959858745], dtype=np.float32),
+        0.0,
+        np.array([-0.0111310557, 0.0100548286]),
+        np.array([-0.0111310557, 0.0100548295]),
+      ),
+      (
+        np.array([0.112450145, 0.138992026, -0.138847992, -0.12317808], dtype=np.float32),
+        0.0,
+        np.array([-0.010828755, 0.010379695]),
+        np.array([-0.010828755, 0.010379695]),
+      ),
+    ):
+      for side in (np.array([MJ_MAXVAL, MJ_MAXVAL]), np.array([0.0, 0.015])):
+        wlen, wpnt0, wpnt1 = _wrap_circle(end, side, 0.015)
+        np.testing.assert_allclose(wlen, expected_wlen, atol=1e-8, rtol=1e-3)
+        _assert_eq(wpnt0, expected_wpnt0, "wpnt0")
+        _assert_eq(wpnt1, expected_wpnt1, "wpnt1")
+
+    # Original issue reproducer: near-coincident tangents with and without a side site.
+    for side in ((MJ_MAXVAL, MJ_MAXVAL), (-0.0160741229, -0.0119005293)):
+      wlen, wpnt0, wpnt1 = _wrap_circle(
+        np.array([0.0526477359, -0.0963205993, -0.0934890732, 0.101067334], dtype=np.float32),
+        np.array(side),
+        0.015,
+      )
+      self.assertGreaterEqual(wlen, 0.0)
+      self.assertLess(wlen, 1.0e-6)
+      np.testing.assert_allclose(np.linalg.norm(wpnt0), 0.015, rtol=1.0e-5)
+      np.testing.assert_allclose(np.linalg.norm(wpnt1), 0.015, rtol=1.0e-5)
 
   def test_wrap_inside(self):
     wlen, wpnt0, wpnt1 = _wrap_inside(np.array([1, 0, 0, 1]), 0.7071)
