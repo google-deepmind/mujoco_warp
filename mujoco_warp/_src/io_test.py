@@ -1623,6 +1623,36 @@ class IOTest(parameterized.TestCase):
       else:
         _assert_eq(getattr(d.contact, arr).numpy(), 0.0, arr)
 
+  def test_reset_data_act(self):
+    """Tests that reset_data zeros all activation states when na > nu."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <body>
+            <joint name="joint"/>
+            <geom size="1"/>
+          </body>
+        </worldbody>
+        <actuator>
+          <dcmotor joint="joint" motorconst="0.05" resistance="2.0" inductance="0.01" thermal="10 5 0 0.004 25 25"/>
+        </actuator>
+      </mujoco>
+      """
+    )
+    self.assertGreater(m.na, m.nu)
+
+    d.ctrl.fill_(wp.inf)
+    d.act.fill_(wp.inf)
+    d.act_dot.fill_(wp.inf)
+
+    mujoco.mj_resetData(mjm, mjd)
+    mjwarp.reset_data(m, d)
+
+    _assert_eq(d.ctrl.numpy()[0], mjd.ctrl, "ctrl")
+    _assert_eq(d.act.numpy()[0], mjd.act, "act")
+    _assert_eq(d.act_dot.numpy()[0], mjd.act_dot, "act_dot")
+
   def test_reset_data_world(self):
     """Tests per-world reset."""
     mjm = mujoco.MjModel.from_xml_string("""
