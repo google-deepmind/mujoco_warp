@@ -5474,7 +5474,7 @@ def make_constraint(m: types.Model, d: types.Data):
           # cover the active contacts with a GPU-sized grid rather than naconmax
           ncontact_per_pass = d.naconmax
           if wp.get_device().is_cuda:
-            ncontact_per_pass = min(ncontact_per_pass, 256 * wp.get_device().sm_count)
+            ncontact_per_pass = min(ncontact_per_pass, 1024 * wp.get_device().sm_count)
           wp.launch(
             _efc_contact_jac_sparse(m.opt.cone, nmaxdim),
             dim=max(ncontact_per_pass, 1) * _CONTACT_JAC_LANES,
