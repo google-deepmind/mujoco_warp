@@ -277,12 +277,15 @@ class ConstraintTest(parameterized.TestCase):
         _assert_eq(actual_j, reference_j[order], "J")
         np.testing.assert_array_equal(ids, reference.efc_id[order])
         np.testing.assert_array_equal(d.efc.type.numpy()[world, :nefc], reference.efc_type[order])
-        _assert_eq(d.efc.D.numpy()[world, :nefc], reference.efc_D[order], "D")
-        _assert_eq(d.efc.vel.numpy()[world, :nefc], reference.efc_vel[order], "vel")
-        _assert_eq(d.efc.aref.numpy()[world, :nefc], reference.efc_aref[order], "aref")
-        _assert_eq(d.efc.pos.numpy()[world, :nefc], reference.efc_pos[order], "pos")
-        _assert_eq(d.efc.margin.numpy()[world, :nefc], reference.efc_margin[order], "margin")
-        _assert_eq(d.efc.frictionloss.numpy()[world, :nefc], reference.efc_frictionloss[order], "frictionloss")
+        for actual, expected in (
+          (d.efc.D, reference.efc_D),
+          (d.efc.vel, reference.efc_vel),
+          (d.efc.aref, reference.efc_aref),
+          (d.efc.pos, reference.efc_pos),
+          (d.efc.margin, reference.efc_margin),
+          (d.efc.frictionloss, reference.efc_frictionloss),
+        ):
+          _assert_eq(actual.numpy()[world, :nefc], expected[order], "efc")
         _assert_eq(d.efc.Jqvel.numpy()[world, start:nefc], reference.efc_vel[order[start:]], "Jqvel")
 
   @parameterized.product(cone=(ConeType.PYRAMIDAL, ConeType.ELLIPTIC), nworld=(1, 2), flex=(False, True))

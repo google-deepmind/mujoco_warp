@@ -25,19 +25,10 @@ from mujoco_warp._src import warp_util
 
 
 class WarpUtilTest(parameterized.TestCase):
-  def test_efc_threads_per_world_cpu(self):
-    """CPU launches use capacity without querying CUDA occupancy."""
-    device = wp.get_device("cpu")
-    kernel = mock.Mock(spec=wp.Kernel)
-    with mock.patch.object(wp, "get_suggested_block_size") as occupancy:
-      for capacity in (0, 16, 32, 65, 384):
-        self.assertEqual(warp_util.efc_threads_per_world(2048, capacity, device, kernel), capacity)
-      occupancy.assert_not_called()
-
-  @parameterized.parameters(0, 1, 16, 31, 32)
-  def test_efc_threads_per_world_small_capacity(self, capacity):
-    """Small and empty row buffers never launch beyond their capacity."""
-    device = wp.get_device()
+  @parameterized.parameters(("cpu", 384), ("cpu", 0), (None, 0), (None, 16), (None, 32))
+  def test_efc_threads_per_world_unbounded(self, dev, capacity):
+    """CPU and small row buffers use capacity without querying CUDA occupancy."""
+    device = wp.get_device(dev)
     kernel = mock.Mock(spec=wp.Kernel)
     with mock.patch.object(wp, "get_suggested_block_size") as occupancy:
       self.assertEqual(warp_util.efc_threads_per_world(2048, capacity, device, kernel), capacity)

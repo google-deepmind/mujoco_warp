@@ -856,6 +856,33 @@ def _compute_efc_eval_pt_3alphas_elliptic(
 # =============================================================================
 
 
+@wp.func_native(snippet="WP_TILE_SYNC();")
+def _syncthreads():
+  pass
+
+
+@wp.func
+def _sparse_row_dot(
+  # Data in:
+  efc_J_rownnz_in: wp.array2d[int],
+  efc_J_rowadr_in: wp.array2d[int],
+  efc_J_colind_in: wp.array3d[int],
+  efc_J_in: wp.array3d[float],
+  # In:
+  worldid: int,
+  efcid: int,
+  vec_in: wp.array2d[float],
+) -> float:
+  val = float(0.0)
+  rownnz = efc_J_rownnz_in[worldid, efcid]
+  rowadr = efc_J_rowadr_in[worldid, efcid]
+  for k in range(rownnz):
+    sparseid = rowadr + k
+    colind = efc_J_colind_in[worldid, 0, sparseid]
+    val += efc_J_in[worldid, 0, sparseid] * vec_in[worldid, colind]
+  return val
+
+
 @cache_kernel
 def _linesearch_iterative_kernel(
   ls_iterations: int,
@@ -880,11 +907,6 @@ def _linesearch_iterative_kernel(
   FUSE_JV = fuse_jv
   INCREMENTAL = incremental
   IS_SPARSE = is_sparse
-
-  # Native snippet for CUDA __syncthreads()
-  @wp.func_native(snippet="WP_TILE_SYNC();")
-  def _syncthreads():
-    pass
 
   # Select specialized helper functions based on cone type
   if IS_ELLIPTIC:
@@ -960,15 +982,10 @@ def _linesearch_iterative_kernel(
         recompute_jv = not ctx_search_unchanged_in[worldid]
       if recompute_jv:
         for efcid in range(tid, nefc, wp.block_dim()):
-          jv = float(0.0)
           if wp.static(IS_SPARSE):
-            rownnz = efc_J_rownnz_in[worldid, efcid]
-            rowadr = efc_J_rowadr_in[worldid, efcid]
-            for k in range(rownnz):
-              sparseid = rowadr + k
-              colind = efc_J_colind_in[worldid, 0, sparseid]
-              jv += efc_J_in[worldid, 0, sparseid] * ctx_search_in[worldid, colind]
+            jv = _sparse_row_dot(efc_J_rownnz_in, efc_J_rowadr_in, efc_J_colind_in, efc_J_in, worldid, efcid, ctx_search_in)
           else:
+            jv = float(0.0)
             for i in range(nv):
               jv += efc_J_in[worldid, efcid, i] * ctx_search_in[worldid, i]
           ctx_jv_out[worldid, efcid] = jv
@@ -1498,8 +1515,9 @@ def _linesearch_zero_jv(
 
 
 @cache_kernel
-def _linesearch_jv_fused_kernel(is_sparse: bool, nv: int, dofs_per_thread: int, compact: bool):
+def _mul_jac_vec_kernel(is_sparse: bool, nv: int, dofs_per_thread: int, compact: bool, subtract_aref: bool):
   COMPACT = compact
+  SUBTRACT_AREF = subtract_aref
 
   @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
   def kernel(
@@ -1509,64 +1527,104 @@ def _linesearch_jv_fused_kernel(is_sparse: bool, nv: int, dofs_per_thread: int, 
     efc_J_rowadr_in: wp.array2d[int],
     efc_J_colind_in: wp.array3d[int],
     efc_J_in: wp.array3d[float],
+    efc_aref_in: wp.array2d[float],
     dof_cdof_in: wp.array2d[int],
+    njmax_in: int,
     # In:
-    ctx_search_in: wp.array2d[float],
+    vec_in: wp.array2d[float],
     skip_in: wp.array[bool],
+    efc_stride: int,
     # Out:
-    ctx_jv_out: wp.array2d[float],
+    out: wp.array2d[float],
   ):
     worldid, efcid, dofstart = wp.tid()
-
-    if efcid >= nefc_in[worldid]:
-      return
-
     if skip_in[worldid]:
       return
+    nefc = wp.min(nefc_in[worldid], njmax_in)
 
-    jv_out = float(0.0)
-
-    if wp.static(dofs_per_thread >= nv):
-      if wp.static(is_sparse):
-        # Sparse: iterate over non-zero entries in the row
-        rownnz = efc_J_rownnz_in[worldid, efcid]
-        rowadr = efc_J_rowadr_in[worldid, efcid]
-        for k in range(rownnz):
-          sparseid = rowadr + k
-          colind = efc_J_colind_in[worldid, 0, sparseid]
-          if wp.static(COMPACT):
-            colind = dof_cdof_in[worldid, colind]
-            if colind < 0:
-              continue
-          jv_out += efc_J_in[worldid, 0, sparseid] * ctx_search_in[worldid, colind]
-      else:
-        for i in range(wp.static(min(dofs_per_thread, nv))):
-          jv_out += efc_J_in[worldid, efcid, i] * ctx_search_in[worldid, i]
-      ctx_jv_out[worldid, efcid] = jv_out
-
-    else:
-      if wp.static(is_sparse):
-        # Sparse: thread 0 handles entire row (sparse entries << nv typically)
-        if dofstart == 0:
+    if wp.static(is_sparse):
+      for efcid in range(efcid, nefc, efc_stride):
+        if wp.static(COMPACT):
+          val = float(0.0)
           rownnz = efc_J_rownnz_in[worldid, efcid]
           rowadr = efc_J_rowadr_in[worldid, efcid]
           for k in range(rownnz):
             sparseid = rowadr + k
-            colind = efc_J_colind_in[worldid, 0, sparseid]
-            if wp.static(COMPACT):
-              colind = dof_cdof_in[worldid, colind]
-              if colind < 0:
-                continue
-            jv_out += efc_J_in[worldid, 0, sparseid] * ctx_search_in[worldid, colind]
-          ctx_jv_out[worldid, efcid] = jv_out
-      else:
-        for i in range(wp.static(dofs_per_thread)):
-          ii = dofstart * wp.static(dofs_per_thread) + i
-          if ii < nv:
-            jv_out += efc_J_in[worldid, efcid, ii] * ctx_search_in[worldid, ii]
-        wp.atomic_add(ctx_jv_out, worldid, efcid, jv_out)
+            colind = dof_cdof_in[worldid, efc_J_colind_in[worldid, 0, sparseid]]
+            if colind >= 0:
+              val += efc_J_in[worldid, 0, sparseid] * vec_in[worldid, colind]
+        else:
+          val = _sparse_row_dot(efc_J_rownnz_in, efc_J_rowadr_in, efc_J_colind_in, efc_J_in, worldid, efcid, vec_in)
+        if wp.static(SUBTRACT_AREF):
+          val -= efc_aref_in[worldid, efcid]
+        out[worldid, efcid] = val
+      return
+
+    if efcid >= nefc:
+      return
+
+    val = float(0.0)
+    if wp.static(dofs_per_thread >= nv):
+      for i in range(wp.static(min(dofs_per_thread, nv))):
+        val += efc_J_in[worldid, efcid, i] * vec_in[worldid, i]
+      if wp.static(SUBTRACT_AREF):
+        val -= efc_aref_in[worldid, efcid]
+      out[worldid, efcid] = val
+    else:
+      for i in range(wp.static(dofs_per_thread)):
+        ii = dofstart * wp.static(dofs_per_thread) + i
+        if ii < nv:
+          val += efc_J_in[worldid, efcid, ii] * vec_in[worldid, ii]
+      if wp.static(SUBTRACT_AREF):
+        if dofstart == 0:
+          val -= efc_aref_in[worldid, efcid]
+      wp.atomic_add(out, worldid, efcid, val)
 
   return kernel
+
+
+def _mul_jac_vec(
+  m: types.Model,
+  d: types.Data,
+  ctx: SolverContext | InverseContext,
+  vec: wp.array2d[float],
+  out: wp.array2d[float],
+  skip: wp.array[bool],
+  subtract_aref: bool = False,
+):
+  sc = _sparse_compact(ctx)
+  sparse = sc or m.is_sparse
+  if sparse:
+    dofs_per_thread = m.nv
+    threads_per_efc = 1
+  else:
+    dofs_per_thread = 20 if m.nv > 50 else 50
+    threads_per_efc = ceil(m.nv / dofs_per_thread)
+
+  if threads_per_efc > 1:
+    wp.launch(_linesearch_zero_jv, dim=(d.nworld, d.njmax), inputs=[d.nefc, skip], outputs=[out])
+
+  dj = ctx.compact_d_full if sc else d
+  kernel = _mul_jac_vec_kernel(sparse, m.nv, dofs_per_thread, sc, subtract_aref)
+  efc_stride = efc_threads_per_world(d.nworld, d.njmax, d.qacc.device, kernel) if sparse else d.njmax
+  wp.launch(
+    kernel,
+    dim=(d.nworld, efc_stride, threads_per_efc),
+    inputs=[
+      d.nefc,
+      dj.efc.J_rownnz,
+      dj.efc.J_rowadr,
+      dj.efc.J_colind,
+      dj.efc.J,
+      d.efc.aref,
+      dj.dof_cdof,
+      d.njmax,
+      vec,
+      skip,
+      efc_stride,
+    ],
+    outputs=[out],
+  )
 
 
 @event_scope
@@ -1597,29 +1655,7 @@ def _linesearch(m: types.Model, d: types.Data, ctx: SolverContext):
 
   # jv = J @ search (when not fused into iterative kernel)
   if not fuse_jv:
-    dj = ctx.compact_d_full if sc else d
-    if sc or m.is_sparse:
-      # Sparse J has few nonzeros per row, one thread handles them all.
-      dofs_per_thread = m.nv
-      threads_per_efc = 1
-    else:
-      dofs_per_thread = 20 if m.nv > 50 else 50
-      threads_per_efc = ceil(m.nv / dofs_per_thread)
-
-    if threads_per_efc > 1:
-      wp.launch(
-        _linesearch_zero_jv,
-        dim=(d.nworld, d.njmax),
-        inputs=[d.nefc, skip],
-        outputs=[ctx.jv],
-      )
-
-    wp.launch(
-      _linesearch_jv_fused_kernel(sc or m.is_sparse, m.nv, dofs_per_thread, sc),
-      dim=(d.nworld, d.njmax, threads_per_efc),
-      inputs=[d.nefc, dj.efc.J_rownnz, dj.efc.J_rowadr, dj.efc.J_colind, dj.efc.J, dj.dof_cdof, ctx.search, skip],
-      outputs=[ctx.jv],
-    )
+    _mul_jac_vec(m, d, ctx, ctx.search, ctx.jv, skip)
 
   _linesearch_iterative(m, d, ctx, fuse_jv)
 
@@ -1668,67 +1704,6 @@ def _solve_init_efc(
   solver_niter_out[worldid] = 0
   ctx_done_out[worldid] = False
   ctx_search_dot_out[worldid] = 0.0
-
-
-@cache_kernel
-def _solve_init_jaref_kernel(is_sparse: bool, nv: int, dofs_per_thread: int, compact: bool):
-  COMPACT = compact
-
-  @wp.kernel(module="unique", enable_backward=False, grid_stride=True)
-  def kernel(
-    # Data in:
-    nefc_in: wp.array[int],
-    qacc_in: wp.array2d[float],
-    efc_J_rownnz_in: wp.array2d[int],
-    efc_J_rowadr_in: wp.array2d[int],
-    efc_J_colind_in: wp.array3d[int],
-    efc_J_in: wp.array3d[float],
-    efc_aref_in: wp.array2d[float],
-    dof_cdof_in: wp.array2d[int],
-    njmax_in: int,
-    # In:
-    efc_stride: int,
-    # Out:
-    ctx_Jaref_out: wp.array2d[float],
-  ):
-    worldid, efcid, dofstart = wp.tid()
-
-    if wp.static(is_sparse):
-      for efcid in range(efcid, wp.min(nefc_in[worldid], njmax_in), efc_stride):
-        jaref = float(0.0)
-        rownnz = efc_J_rownnz_in[worldid, efcid]
-        rowadr = efc_J_rowadr_in[worldid, efcid]
-        for i in range(rownnz):
-          sparseid = rowadr + i
-          colind = efc_J_colind_in[worldid, 0, sparseid]
-          if wp.static(COMPACT):
-            colind = dof_cdof_in[worldid, colind]
-            if colind < 0:
-              continue
-          jaref += efc_J_in[worldid, 0, sparseid] * qacc_in[worldid, colind]
-        ctx_Jaref_out[worldid, efcid] = jaref - efc_aref_in[worldid, efcid]
-      return
-
-    if efcid >= wp.min(nefc_in[worldid], njmax_in):
-      return
-    jaref = float(0.0)
-    if wp.static(dofs_per_thread >= nv):
-      for i in range(wp.static(min(dofs_per_thread, nv))):
-        jaref += efc_J_in[worldid, efcid, i] * qacc_in[worldid, i]
-      ctx_Jaref_out[worldid, efcid] = jaref - efc_aref_in[worldid, efcid]
-
-    else:
-      for i in range(wp.static(dofs_per_thread)):
-        ii = dofstart * wp.static(dofs_per_thread) + i
-        if ii < nv:
-          jaref += efc_J_in[worldid, efcid, ii] * qacc_in[worldid, ii]
-
-      if dofstart == 0:
-        wp.atomic_add(ctx_Jaref_out, worldid, efcid, jaref - efc_aref_in[worldid, efcid])
-      else:
-        wp.atomic_add(ctx_Jaref_out, worldid, efcid, jaref)
-
-  return kernel
 
 
 @wp.kernel
@@ -1933,7 +1908,7 @@ def _zero_qfrc_constraint_sparse(
 def _update_constraint_init_qfrc_constraint_sparse(compact: bool):
   COMPACT = compact
 
-  @wp.kernel(module="unique", enable_backward=False, grid_stride=True)
+  @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
   def kernel(
     # Data in:
     nefc_in: wp.array[int],
@@ -1980,10 +1955,6 @@ def _update_constraint_init_qfrc_constraint_sparse(compact: bool):
 
 @cache_kernel
 def _update_constraint_qfrc_gradient_sparse_tiled(nv: int):
-  @wp.func_native(snippet="WP_TILE_SYNC();")
-  def _syncthreads():
-    pass
-
   @wp.kernel(module="unique", enable_backward=False)
   def kernel(
     # Data in:
@@ -2032,10 +2003,11 @@ def _update_constraint_qfrc_gradient_sparse_tiled(nv: int):
     _syncthreads()
     ne = ne_in[worldid]
     nf = nf_in[worldid]
+    nefc = wp.min(nefc_in[worldid], njmax_in)
     changed = int(0)
     if tid == 0 and ctx_ls_exhausted_in[worldid]:
       changed = 1
-    for efcid in range(tid, wp.min(nefc_in[worldid], njmax_in), wp.block_dim()):
+    for efcid in range(tid, nefc, wp.block_dim()):
       old_state = efc_state_out[worldid, efcid]
       is_equality = efcid < ne
       is_friction = not is_equality and efcid < ne + nf
@@ -2061,9 +2033,7 @@ def _update_constraint_qfrc_gradient_sparse_tiled(nv: int):
       if tid == 0:
         sigma = ctx_grad_scale_out[worldid]
         new_sigma = sigma - ctx_alpha_in[worldid]
-        ratio = float(0.0)
-        if sigma != 0.0:
-          ratio = new_sigma / sigma
+        ratio = math.safe_div(new_sigma, sigma)
         ctx_grad_dot_out[worldid] *= ratio * ratio
         ctx_newton_decrement_out[worldid] *= ratio * ratio
         ctx_grad_scale_out[worldid] = new_sigma
@@ -2073,7 +2043,7 @@ def _update_constraint_qfrc_gradient_sparse_tiled(nv: int):
       qfrc_constraint_out[worldid, dofid] = 0.0
     # All DOFs must be zero before any warp accumulates J^T f.
     _syncthreads()
-    for efcid in range(tid, wp.min(nefc_in[worldid], njmax_in), wp.block_dim()):
+    for efcid in range(tid, nefc, wp.block_dim()):
       force = efc_force_out[worldid, efcid]
       if force == 0.0:
         continue
@@ -3920,6 +3890,8 @@ def _solver_iteration(
 ):
   # Small sparse pyramidal Newton models can evaluate constraint states,
   # generalized forces, and the gradient together in one block per world.
+  _linesearch(m, d, ctx)
+
   incremental = _use_incremental(m)
   fuse_constraint_update = (
     incremental
@@ -3931,20 +3903,6 @@ def _solver_iteration(
     and d.qacc.device.is_cuda
     and d.nworld >= 4 * d.qacc.device.sm_count
   )
-  _linesearch(m, d, ctx)
-
-  # Incremental H is only valid for non-elliptic cones. The elliptic cone
-  # path in _update_constraint_efc has early returns that skip state change
-  # tracking, and the additional JTCJ Hessian term depends on Jaref which
-  # changes every iteration.
-  if incremental and not fuse_constraint_update:
-    # Must complete before _update_constraint_efc which atomically increments.
-    wp.launch(
-      _zero_change_counters,
-      dim=d.nworld,
-      outputs=[ctx.quad_changed_count, ctx.state_changed_count],
-    )
-
   # The tracking also enables the stable-state fast path: worlds with no state
   # flips this iteration were exactly quadratic over the step, so grad/search
   # only changed by a scalar along the same ray. Skip their qfrc/grad/
@@ -3987,6 +3945,9 @@ def _solver_iteration(
       block_dim=m.block_dim.update_constraint_qfrc_gradient_sparse_tiled,
     )
   else:
+    if incremental:
+      # Must complete before _update_constraint_efc atomically increments.
+      wp.launch(_zero_change_counters, dim=d.nworld, outputs=[ctx.quad_changed_count, ctx.state_changed_count])
     _update_constraint(m, d, ctx, track_changes=incremental, stable_fast=incremental)
 
   if incremental:
@@ -4071,46 +4032,7 @@ def init_context(m: types.Model, d: types.Data, ctx: SolverContext | InverseCont
   )
 
   # jaref = d.efc_J @ d.qacc - d.efc_aref
-
-  # if we are only using 1 thread, it makes sense to do more dofs as we can also skip the
-  # init kernel. For more than 1 thread, dofs_per_thread is lower for better load balancing.
-
-  sc = _sparse_compact(ctx)
-  sparse = sc or m.is_sparse
-  if sparse:
-    # Sparse J has few nonzeros per row, one thread handles them all.
-    dofs_per_thread = m.nv
-    threads_per_efc = 1
-  elif m.nv > 50:
-    dofs_per_thread = 20
-    threads_per_efc = ceil(m.nv / dofs_per_thread)
-  else:
-    dofs_per_thread = 50
-    threads_per_efc = ceil(m.nv / dofs_per_thread)
-  # we need to clear the jaref array if we're doing atomic adds.
-  if threads_per_efc > 1:
-    ctx.Jaref.zero_()
-
-  dj = ctx.compact_d_full if sc else d
-  jaref_kernel = _solve_init_jaref_kernel(sparse, m.nv, dofs_per_thread, sc)
-  efc_stride = efc_threads_per_world(d.nworld, d.njmax, d.qacc.device, jaref_kernel) if sparse else d.njmax
-  wp.launch(
-    jaref_kernel,
-    dim=(d.nworld, efc_stride, threads_per_efc),
-    inputs=[
-      d.nefc,
-      d.qacc,
-      dj.efc.J_rownnz,
-      dj.efc.J_rowadr,
-      dj.efc.J_colind,
-      dj.efc.J,
-      d.efc.aref,
-      dj.dof_cdof,
-      d.njmax,
-      efc_stride,
-    ],
-    outputs=[ctx.Jaref],
-  )
+  _mul_jac_vec(m, d, ctx, d.qacc, ctx.Jaref, ctx.done, subtract_aref=True)
 
   # Ma = M @ qacc
   _mul_m_compact_aware(m, d, ctx, d.efc.Ma, d.qacc, ctx.done)

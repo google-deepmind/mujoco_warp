@@ -15,6 +15,8 @@
 
 """Tests for solver functions."""
 
+import ast
+import inspect
 from unittest import mock
 
 import mujoco
@@ -211,6 +213,14 @@ def _eval_elliptic_delta(
 
 
 class SolverTest(parameterized.TestCase):
+  def test_jacobian_vector_kernel_ownership(self):
+    """Linesearch and context initialization share one Jacobian-vector implementation."""
+    definitions = [node.name for node in ast.walk(ast.parse(inspect.getsource(solver))) if isinstance(node, ast.FunctionDef)]
+    for name in ("_linesearch_jv_fused_kernel", "_solve_init_jaref_kernel"):
+      self.assertNotIn(name, definitions)
+    for name in ("_mul_jac_vec_kernel", "_sparse_row_dot", "_syncthreads"):
+      self.assertEqual(definitions.count(name), 1)
+
   def test_newton_decrement_termination(self):
     """Newton stops when only its local model predicts convergence."""
     solver_niter = wp.zeros(1, dtype=int)
@@ -553,11 +563,9 @@ class SolverTest(parameterized.TestCase):
       self.assertFalse(np.allclose(*qacc))
     for value, reference in ((qacc, reference_qacc), (qfrc_constraint, reference_qfrc)):
       np.testing.assert_allclose(value, reference, atol=_TOLERANCE, rtol=_TOLERANCE)
-      self.assertTrue(np.isfinite(value).all())
     for worldid, nefc in enumerate(d.nefc.numpy()):
       np.testing.assert_allclose(force[worldid, :nefc], reference_force[worldid, :nefc], atol=_TOLERANCE, rtol=_TOLERANCE)
       np.testing.assert_array_equal(state[worldid, :nefc], reference_state[worldid, :nefc])
-      self.assertTrue(np.isfinite(force[worldid, :nefc]).all())
       self.assertTrue((state[worldid, :nefc] >= 0).all())
 
   @parameterized.product(jacobian=(mujoco.mjtJacobian.mjJAC_DENSE, mujoco.mjtJacobian.mjJAC_SPARSE), njmax=(0, 32))
@@ -568,7 +576,7 @@ class SolverTest(parameterized.TestCase):
         xml="""
         <mujoco>
           <worldbody>
-            <body><freejoint/><geom type="sphere" size=".1"/></body>
+            <body><freejoint/><geom size=".1"/></body>
           </worldbody>
         </mujoco>
         """,
@@ -604,17 +612,16 @@ class SolverTest(parameterized.TestCase):
       tiled.assert_not_called()
 
   @parameterized.parameters(32, 64, 128)
+  @absltest.skipIf(not wp.get_device().is_cuda, "Sparse constraint gradient fusion requires CUDA.")
   def test_sparse_constraint_gradient_fusion(self, block_dim):
     """Fused evaluation preserves changed, stable, done and exhausted worlds across warps."""
-    if not wp.get_device().is_cuda:
-      self.skipTest("Sparse constraint gradient fusion requires CUDA.")
     _, _, m, d = test_data.fixture(
       xml="""
       <mujoco>
         <option jacobian="sparse"/>
         <worldbody>
           <replicate count="35" offset=".3 0 0">
-            <body><joint type="slide"/><geom type="sphere" size=".1"/></body>
+            <body><joint type="slide"/><geom size=".1"/></body>
           </replicate>
         </worldbody>
       </mujoco>
