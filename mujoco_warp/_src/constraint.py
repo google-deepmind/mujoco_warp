@@ -23,6 +23,7 @@ from mujoco_warp._src import types
 from mujoco_warp._src.types import ConstraintType
 from mujoco_warp._src.types import ContactType
 from mujoco_warp._src.types import DisableBit
+from mujoco_warp._src.types import OverflowType
 from mujoco_warp._src.types import vec5
 from mujoco_warp._src.types import vec6
 from mujoco_warp._src.types import vec11
@@ -109,6 +110,32 @@ def _reserve_efc_nnz(
   if rowadr + nnz > njmax_nnz_in:
     return -1
   return rowadr
+
+
+@cache_kernel
+def _efc_nnz_overflow(warn_overflow: int):
+  @wp.kernel(module="unique", enable_backward=False)
+  def kernel(
+    # Data in:
+    njmax_nnz_in: int,
+    # In:
+    efc_nnz_in: wp.array[int],
+    # Data out:
+    overflow_out: wp.array[int],
+  ):
+    worldid = wp.tid()
+
+    # the counter only exceeds njmax_nnz once a reservation failed and its rows were dropped
+    if efc_nnz_in[worldid] > njmax_nnz_in:
+      if wp.static(bool(warn_overflow & OverflowType.NJMAX_NNZ)):
+        wp.printf(
+          "njmax_nnz overflow - please increase njmax_nnz beyond %u\n"
+          "To disable the print warning: m.opt.warn_overflow &= ~mjw.OverflowType.NJMAX_NNZ (or = 0 for all)\n",
+          njmax_nnz_in,
+        )
+      overflow_out[worldid] = overflow_out[worldid] | OverflowType.NJMAX_NNZ
+
+  return kernel
 
 
 @wp.func
@@ -5756,6 +5783,14 @@ def make_constraint(m: types.Model, d: types.Data):
             d.efc.frictionloss,
           ],
         )
+
+  if m.is_sparse:
+    wp.launch(
+      _efc_nnz_overflow(int(m.opt.warn_overflow)),
+      dim=d.nworld,
+      inputs=[d.njmax_nnz, efc_nnz],
+      outputs=[d.overflow],
+    )
 
 
 @cache_kernel

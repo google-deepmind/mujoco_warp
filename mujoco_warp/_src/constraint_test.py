@@ -377,10 +377,9 @@ class ConstraintTest(parameterized.TestCase):
       efc_address = d.contact.efc_address.numpy()[:nacon]
       _assert_eq(efc_address, -1, f"efc_address (cone={cone})")
 
-  @parameterized.parameters(*itertools.product((ConeType.PYRAMIDAL, ConeType.ELLIPTIC), (1, 2)))
-  def test_njmax_nnz_overflow_rows(self, cone, nworld):
+  @parameterized.parameters(*itertools.product((ConeType.PYRAMIDAL, ConeType.ELLIPTIC), (1, 2), (True, False)))
+  def test_njmax_nnz_overflow_rows(self, cone, nworld, overflow):
     """Rows that do not fit in njmax_nnz are dropped instead of keeping stale sparse layouts."""
-    _NJMAX_NNZ = 30
     mjm, mjd, m, d = test_data.fixture(
       xml="""
       <mujoco>
@@ -403,10 +402,10 @@ class ConstraintTest(parameterized.TestCase):
       """,
       overrides={"opt.cone": cone},
       nworld=nworld,
-      njmax_nnz=_NJMAX_NNZ,
+      njmax_nnz=30 if overflow else None,
     )
     self.assertTrue(m.is_sparse)
-    self.assertLessEqual(mjm.nv, _NJMAX_NNZ)
+    self.assertLessEqual(mjm.nv, d.njmax_nnz)
 
     # limit and contacts active: needs more Jacobian storage than njmax_nnz
     mujoco.mj_resetDataKeyframe(mjm, mjd, 0)
@@ -415,6 +414,7 @@ class ConstraintTest(parameterized.TestCase):
     # stale layout from a previous step: rows covering the whole storage
     d.efc.J_rowadr.fill_(0)
     d.efc.J_rownnz.fill_(mjm.nv)
+    d.overflow.zero_()
 
     mjw.fwd_position(m, d)
 
@@ -423,13 +423,15 @@ class ConstraintTest(parameterized.TestCase):
     rowadr = d.efc.J_rowadr.numpy()
     rownnz = d.efc.J_rownnz.numpy()
     colind = d.efc.J_colind.numpy()
+    nnz_overflow = d.overflow.numpy() & int(mjw.OverflowType.NJMAX_NNZ)
     for worldid in range(nworld):
+      self.assertEqual(bool(nnz_overflow[worldid]), overflow)
       nrow = min(nefc[worldid], d.njmax)
       self.assertGreater(nrow, 0)
       adr, nnz = rowadr[worldid, :nrow], rownnz[worldid, :nrow]
 
       np.testing.assert_array_less(-1, adr)
-      np.testing.assert_array_less(adr + nnz, _NJMAX_NNZ + 1)
+      np.testing.assert_array_less(adr + nnz, d.njmax_nnz + 1)
       order = np.argsort(adr)
       np.testing.assert_array_less((adr + nnz)[order][:-1], adr[order][1:] + 1, err_msg="overlapping rows")
 
