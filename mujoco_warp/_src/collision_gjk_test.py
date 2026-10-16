@@ -46,6 +46,7 @@ def _geom_dist(
   horizon_size: int | None = None,
   warn_overflow: bool = True,
   overflow_out: wp.array | None = None,
+  return_all: bool = False,
 ):
   # we run multiccd on static scenes so these need to be initialized
   has_cylinder = GeomType.CYLINDER in (m.geom_type.numpy()[gid1], m.geom_type.numpy()[gid2])
@@ -120,6 +121,9 @@ def _geom_dist(
     dist_out: wp.array[float],
     ncon_out: wp.array[int],
     pos_out: wp.array[wp.vec3],
+    w1_out: wp.array[wp.vec3],
+    w2_out: wp.array[wp.vec3],
+    dists_out: wp.array[float],
   ):
     worldid = wp.tid()
 
@@ -214,7 +218,7 @@ def _geom_dist(
     )
 
     if multiccd and idx >= 0:
-      ncon, witness1, witness2, _ = multicontact(
+      ncon, witness1, witness2, dists = multicontact(
         polygon,
         clipped,
         pnormal,
@@ -240,15 +244,25 @@ def _geom_dist(
       ncon_out[0] = ncon
       pos_out[0] = witness1[0]
       pos_out[1] = witness2[0]
+      for i in range(ncon):
+        w1_out[i] = witness1[i]
+        w2_out[i] = witness2[i]
+        dists_out[i] = dists[i] if ncon > 1 else dist
     else:
       dist_out[0] = dist
       ncon_out[0] = ncon
       pos_out[0] = x1
       pos_out[1] = x2
+      w1_out[0] = x1
+      w2_out[0] = x2
+      dists_out[0] = dist
 
   dist_out = wp.array(shape=(1,), dtype=float)
   ncon_out = wp.array(shape=(1,), dtype=int)
   pos_out = wp.array(shape=(2,), dtype=wp.vec3)
+  w1_out = wp.array(shape=(4,), dtype=wp.vec3)
+  w2_out = wp.array(shape=(4,), dtype=wp.vec3)
+  dists_out = wp.array(shape=(4,), dtype=float)
   wp.launch(
     _ccd_kernel,
     dim=1,
@@ -297,8 +311,14 @@ def _geom_dist(
       dist_out,
       ncon_out,
       pos_out,
+      w1_out,
+      w2_out,
+      dists_out,
     ],
   )
+  if return_all:
+    ncon = int(ncon_out.numpy()[0])
+    return dist_out.numpy()[0], ncon, w1_out.numpy()[:ncon], w2_out.numpy()[:ncon], dists_out.numpy()[:ncon]
   return dist_out.numpy()[0], ncon_out.numpy()[0], pos_out.numpy()[0], pos_out.numpy()[1]
 
 
@@ -1342,6 +1362,141 @@ class GJKTest(parameterized.TestCase):
     )
     # Expected dist is negative penetration depth: -0.05
     np.testing.assert_allclose(out_dist.numpy()[0], -0.05, atol=1e-4)
+
+  def test_box_box_margin_shallow_multiccd(self):
+    """Test shallow penetration (within margin) of two boxes with multicontact."""
+    _, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <geom name="geom1" type="box" pos="0 0 2.05" size="1 1 1"/>
+          <geom name="geom2" type="box" pos="0 0 0" size="10 10 1"/>
+        </worldbody>
+      </mujoco>
+      """
+    )
+    # Shallow margin band: distance = +0.05, margin = 0.1 -> depth = -0.05
+    dist, ncon, w1, w2, dists = _geom_dist(m, d, 0, 1, multiccd=True, margin=0.1, return_all=True)
+    self.assertEqual(ncon, 4)
+    self.assertAlmostEqual(dist, -0.05, places=5)
+    pos = 0.5 * (w1 + w2)
+    for i in range(4):
+      self.assertAlmostEqual(dists[i], -0.05, places=5)
+      direction = (w1[i] - w2[i]) / np.linalg.norm(w1[i] - w2[i])
+      np.testing.assert_allclose(direction, [0.0, 0.0, -1.0], atol=1e-5)
+    expected_pos = np.array([[-1.0, 1.0, 1.025], [1.0, 1.0, 1.025], [1.0, -1.0, 1.025], [-1.0, -1.0, 1.025]])
+    np.testing.assert_allclose(pos, expected_pos, atol=1e-5)
+
+  def test_box_box_margin_touching_multiccd(self):
+    """Test touching boxes with margin and multicontact."""
+    _, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <geom name="geom1" type="box" pos="0 0 2.0" size="1 1 1"/>
+          <geom name="geom2" type="box" pos="0 0 0" size="10 10 1"/>
+        </worldbody>
+      </mujoco>
+      """
+    )
+    # Touching faces: distance = 0.0, margin = 0.1 -> depth = -0.1
+    dist, ncon, w1, w2, dists = _geom_dist(m, d, 0, 1, multiccd=True, margin=0.1, return_all=True)
+    self.assertEqual(ncon, 4)
+    self.assertAlmostEqual(dist, -0.1, places=5)
+    pos = 0.5 * (w1 + w2)
+    for i in range(4):
+      self.assertAlmostEqual(dists[i], -0.1, places=5)
+      direction = (w1[i] - w2[i]) / np.linalg.norm(w1[i] - w2[i])
+      np.testing.assert_allclose(direction, [0.0, 0.0, -1.0], atol=1e-5)
+    expected_pos = np.array([[-1.0, 1.0, 1.0], [1.0, 1.0, 1.0], [1.0, -1.0, 1.0], [-1.0, -1.0, 1.0]])
+    np.testing.assert_allclose(pos, expected_pos, atol=1e-5)
+
+  def test_box_box_margin_deep_multiccd(self):
+    """Test deep penetration (overlapping geoms) of two boxes with margin and multicontact."""
+    _, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <geom name="geom1" type="box" pos="0 0 1.9" size="1 1 1"/>
+          <geom name="geom2" type="box" pos="0 0 0" size="10 10 1"/>
+        </worldbody>
+      </mujoco>
+      """
+    )
+    # Deep penetration: distance = -0.1, margin = 0.1 -> depth = -0.2
+    dist, ncon, w1, w2, dists = _geom_dist(m, d, 0, 1, multiccd=True, margin=0.1, return_all=True)
+    self.assertEqual(ncon, 4)
+    self.assertAlmostEqual(dist, -0.2, places=5)
+    pos = 0.5 * (w1 + w2)
+    for i in range(4):
+      self.assertAlmostEqual(dists[i], -0.2, places=5)
+      direction = (w1[i] - w2[i]) / np.linalg.norm(w1[i] - w2[i])
+      np.testing.assert_allclose(direction, [0.0, 0.0, -1.0], atol=1e-5)
+    expected_pos = np.array([[-1.0, 1.0, 0.95], [1.0, 1.0, 0.95], [1.0, -1.0, 0.95], [-1.0, -1.0, 0.95]])
+    np.testing.assert_allclose(pos, expected_pos, atol=1e-5)
+
+  def test_box_edge_margin_multiccd(self):
+    """Test box edge against box face with margin and multicontact."""
+    _, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <geom name="geom1" pos="1.10164554 -0.11389316 0.74"
+                quat="-0.348312918 0 0 0.937378318" type="box" size="0.65 0.48 0.04"/>
+          <geom name="geom2" type="box" size="0.1 1.2 1.4" pos="1.45 0 1.425"/>
+        </worldbody>
+      </mujoco>
+      """
+    )
+    # Same geometry as BoxEdgeFlipped (uninflated x1[0] = 1.907368) with geom2
+    # shifted +0.05 in x (uninflated x2[0] = 1.35) and margin = 0.1 (0.05 each).
+    _, ncon, x1, x2 = _geom_dist(m, d, 0, 1, multiccd=True, margin=0.1)
+    self.assertEqual(ncon, 2)
+    np.testing.assert_allclose(x1, np.array([1.907368 + 0.05, -0.052973, 0.700000]), atol=1e-4)
+    np.testing.assert_allclose(x2, np.array([1.350000 - 0.05, -0.052973, 0.700000]), atol=1e-4)
+
+  def test_mesh_mesh_margin_multiccd(self):
+    """Test mesh-mesh face-face and edge-face collisions with margin and multicontact."""
+    _, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <asset>
+          <mesh name="box" vertex="-1 -1 -1 1 -1 -1 1 1 -1 1 1 1 1 -1 1 -1 1 -1 -1 1 1 -1 -1 1"
+                scale="1 1 .01"/>
+          <mesh name="pentaprism"
+                vertex="1 0 0 0.309 0.951 0 -0.809 0.588 0 -0.809 -0.588 0 0.309 -0.951 0
+                        1 0 1 0.309 0.951 1 -0.809 0.588 1 -0.809 -0.588 1 0.309 -0.951 1"
+                scale=".2 .2 .1"/>
+        </asset>
+        <worldbody>
+          <geom name="geom1" type="mesh" pos="0 0 -0.01" mesh="box"/>
+          <geom name="geom2" type="mesh" pos="0 0 -0.001" mesh="pentaprism"/>
+          <geom name="geom3" type="mesh" pos="0 0 0.19" euler="0 90 0" mesh="pentaprism"/>
+        </worldbody>
+      </mujoco>
+      """
+    )
+    # deep penetration face-face: distance = -0.001, margin = 0.1 -> depth = -0.101
+    dist, ncon, w1, w2, dists = _geom_dist(m, d, 0, 1, multiccd=True, margin=0.1, return_all=True)
+    self.assertEqual(ncon, 4)
+    self.assertAlmostEqual(dist, -0.101, places=5)
+    pos = 0.5 * (w1 + w2)
+    for i in range(4):
+      self.assertAlmostEqual(dists[i], -0.101, places=5)
+      direction = (w1[i] - w2[i]) / np.linalg.norm(w1[i] - w2[i])
+      np.testing.assert_allclose(direction, [0.0, 0.0, 1.0], atol=1e-5)
+      self.assertAlmostEqual(pos[i][2], -0.0005, places=5)
+
+    # deep penetration edge-face: distance = -0.01, margin = 0.1 -> depth = -0.11
+    dist, ncon, w1, w2, dists = _geom_dist(m, d, 0, 2, multiccd=True, margin=0.1, return_all=True)
+    self.assertEqual(ncon, 2)
+    self.assertAlmostEqual(dist, -0.11, places=5)
+    pos = 0.5 * (w1 + w2)
+    for i in range(2):
+      self.assertAlmostEqual(dists[i], -0.11, places=5)
+      direction = (w1[i] - w2[i]) / np.linalg.norm(w1[i] - w2[i])
+      np.testing.assert_allclose(direction, [0.0, 0.0, 1.0], atol=1e-5)
+      self.assertAlmostEqual(pos[i][2], -0.005, places=5)
 
 
 if __name__ == "__main__":
