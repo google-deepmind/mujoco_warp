@@ -625,6 +625,9 @@ class ConstraintTest(parameterized.TestCase):
     keyframe = 0 if "<keyframe>" in xml else None
     mjm, mjd, m, d = test_data.fixture(xml=xml, keyframe=keyframe, overrides={"opt.cone": cone, "opt.jacobian": jacobian})
 
+    d.efc.vel.fill_(wp.inf)
+    d.efc.aref.fill_(wp.inf)
+
     mjw.make_constraint(m, d)
 
     _assert_efc_eq(mjm, m, d, mjd, mjd.nefc, "surfacevel", m.nv)
@@ -632,28 +635,43 @@ class ConstraintTest(parameterized.TestCase):
   @parameterized.product(cone=[ConeType.PYRAMIDAL, ConeType.ELLIPTIC])
   def test_contact_surfacevel(self, cone):
     """Externally written contact.surfacevel matches the equivalent geom surfacevel."""
-    xml = """
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
       <mujoco>
         <worldbody>
-          <geom type="plane" size="5 5 .1" condim="6" surfacevel="{}"/>
+          <geom type="plane" size="5 5 .1" condim="6" surfacevel=".3 -.2 0  0 0 1"/>
           <body pos="0 0 .099">
             <freejoint/>
             <geom type="box" size=".1 .1 .1" mass="1" condim="6"/>
           </body>
         </worldbody>
       </mujoco>
-    """
-    surfacevel = ".3 -.2 0  0 0 1"
-    mjm, mjd, m, d = test_data.fixture(xml=xml.format(surfacevel), overrides={"opt.cone": cone})
-    _, _, m_ext, d_ext = test_data.fixture(xml=xml.format("0 0 0  0 0 0"), overrides={"opt.cone": cone})
+      """,
+      overrides={"opt.cone": cone},
+    )
+    _, _, m_ext, d_ext = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <geom type="plane" size="5 5 .1" condim="6"/>
+          <body pos="0 0 .099">
+            <freejoint/>
+            <geom type="box" size=".1 .1 .1" mass="1" condim="6"/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """,
+      overrides={"opt.cone": cone},
+    )
 
     mjw.collision(m, d)
     mjw.collision(m_ext, d_ext)
     self.assertFalse(m_ext.flg_surfacevel)
     m_ext.flg_surfacevel = True
     wp.copy(d_ext.contact.surfacevel, d.contact.surfacevel)
+    d_ext.efc.vel.fill_(wp.inf)
+    d_ext.efc.aref.fill_(wp.inf)
 
-    mjw.make_constraint(m, d)
     mjw.make_constraint(m_ext, d_ext)
 
     _assert_efc_eq(mjm, m_ext, d_ext, mjd, mjd.nefc, "contact_surfacevel", m.nv)

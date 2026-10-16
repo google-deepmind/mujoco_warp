@@ -13,7 +13,6 @@
 # limitations under the License.
 # ==============================================================================
 
-
 import warp as wp
 
 from mujoco_warp._src import math
@@ -4021,6 +4020,40 @@ def _efc_contact_jac_dense_flex(tile_size: int, cone_type: types.ConeType):
   return kernel
 
 
+@wp.func
+def _contact_surfacevel_bias(
+  # In:
+  is_pyramidal: bool,
+  condim: int,
+  dimid: int,
+  friction: vec5,
+  frame_in: wp.array2d[wp.vec3],
+  surfacevel_in: wp.array[vec6],
+  conid: int,
+) -> float:
+  """Surface velocity contribution to the projected velocity of contact row dimid."""
+  row = dimid
+  scale = float(1.0)
+  if is_pyramidal and condim > 1:
+    # pyramid edges 2(k-1), 2(k-1)+1 span normal +/- mu_k * direction k
+    row = dimid // 2 + 1
+    scale = friction[row - 1]
+    if dimid % 2 == 1:
+      scale = -scale
+
+  # tangents (rows 1, 2) and spin about the normal (row 3) only
+  if row < 1 or row > 3:
+    return 0.0
+
+  surfacevel = surfacevel_in[conid]
+  if surfacevel == vec6(0.0):
+    return 0.0
+
+  if row == 3:
+    return scale * wp.dot(frame_in[conid, 0], wp.vec3(surfacevel[3], surfacevel[4], surfacevel[5]))
+  return scale * wp.dot(frame_in[conid, row], wp.vec3(surfacevel[0], surfacevel[1], surfacevel[2]))
+
+
 @cache_kernel
 def _efc_contact_update(cone_type: types.ConeType, flg_adhesion: bool, flg_surfacevel: bool, is_discrete: bool = False):
   IS_ELLIPTIC = cone_type == types.ConeType.ELLIPTIC
@@ -4095,19 +4128,9 @@ def _efc_contact_update(cone_type: types.ConeType, flg_adhesion: bool, flg_surfa
     Jqvel = efc_Jqvel_in[worldid, efcid]
 
     if wp.static(flg_surfacevel):
-      row = dimid
-      scale = float(1.0)
-      if not wp.static(IS_ELLIPTIC) and condim > 1:
-        # pyramid edges 2(k-1), 2(k-1)+1 span normal +/- mu_k * direction k
-        row = dimid // 2 + 1
-        scale = friction_in[conid][row - 1]
-        if dimid % 2 == 1:
-          scale = -scale
-      # tangents (rows 1, 2) and spin about the normal (row 3) only
-      if row >= 1 and row <= 3:
-        surfacevel = surfacevel_in[conid]
-        if not (surfacevel == vec6(0.0)):
-          Jqvel += scale * _contact_surfacevel_row(frame_in[conid, row % 3], surfacevel, row)
+      Jqvel += _contact_surfacevel_bias(
+        not wp.static(IS_ELLIPTIC), condim, dimid, friction_in[conid], frame_in, surfacevel_in, conid
+      )
 
     body1 = geom_bodyid[geom[0]]
     body2 = geom_bodyid[geom[1]]
@@ -4296,19 +4319,9 @@ def _efc_contact_update_flex(
     Jqvel = efc_Jqvel_in[worldid, efcid]
 
     if wp.static(flg_surfacevel):
-      row = dimid
-      scale = float(1.0)
-      if not wp.static(IS_ELLIPTIC) and condim > 1:
-        # pyramid edges 2(k-1), 2(k-1)+1 span normal +/- mu_k * direction k
-        row = dimid // 2 + 1
-        scale = friction_in[conid][row - 1]
-        if dimid % 2 == 1:
-          scale = -scale
-      # tangents (rows 1, 2) and spin about the normal (row 3) only
-      if row >= 1 and row <= 3:
-        surfacevel = surfacevel_in[conid]
-        if not (surfacevel == vec6(0.0)):
-          Jqvel += scale * _contact_surfacevel_row(frame_in[conid, row % 3], surfacevel, row)
+      Jqvel += _contact_surfacevel_bias(
+        not wp.static(IS_ELLIPTIC), condim, dimid, friction_in[conid], frame_in, surfacevel_in, conid
+      )
 
     body_invweight0_id = worldid % body_invweight0.shape[0]
     invweight1 = float(0.0)
@@ -4659,18 +4672,6 @@ def _efc_contact_update_flex(
           efc_aref_out[worldid, efcid] += (1.0 / efc_D) * adhesion
 
   return kernel
-
-
-@wp.func
-def _contact_surfacevel_row(
-  # In:
-  frame_row: wp.vec3,
-  surfacevel: vec6,
-  row: int,
-) -> float:
-  if row == 3:
-    return wp.dot(frame_row, wp.vec3(surfacevel[3], surfacevel[4], surfacevel[5]))
-  return wp.dot(frame_row, wp.vec3(surfacevel[0], surfacevel[1], surfacevel[2]))
 
 
 @event_scope

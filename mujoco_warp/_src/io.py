@@ -2242,17 +2242,17 @@ def put_data(
     dtype=int,
   )
   contact.geomcollisionid = wp.empty((naconmax,), dtype=int)  # TODO(team): set values
+  # relative surface velocity at the contact point, geom[1] minus geom[0]
   surfacevel = np.zeros((mjd.ncon, 6))
-  for i in range(mjd.ncon):
-    for side, sign in ((0, -1.0), (1, 1.0)):
-      g = mjd.contact.geom[i, side]
-      if g < 0:
-        continue
-      sv = mjm.geom_surfacevel[g]
-      xmat = mjd.geom_xmat[g].reshape((3, 3))
-      ang = xmat @ sv[3:]
-      lin = xmat @ sv[:3] + np.cross(ang, mjd.contact.pos[i] - mjd.geom_xpos[g])
-      surfacevel[i] += sign * np.concatenate((lin, ang))
+  for side, sign in ((0, -1.0), (1, 1.0)):
+    geom = mjd.contact.geom[: mjd.ncon, side]
+    valid = geom >= 0
+    g = geom[valid]
+    sv = mjm.geom_surfacevel[g]
+    xmat = mjd.geom_xmat[g].reshape((-1, 3, 3))
+    ang = np.einsum("nij,nj->ni", xmat, sv[:, 3:])
+    lin = np.einsum("nij,nj->ni", xmat, sv[:, :3]) + np.cross(ang, mjd.contact.pos[: mjd.ncon][valid] - mjd.geom_xpos[g])
+    surfacevel[valid] += sign * np.concatenate((lin, ang), axis=1)
   surfacevel = np.pad(np.tile(surfacevel, (nworld, 1)), ((0, naconmax - nworld * mjd.ncon), (0, 0)))
   contact.surfacevel = wp.array(surfacevel, dtype=types.vec6)
 
