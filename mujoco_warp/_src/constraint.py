@@ -2937,6 +2937,8 @@ def _dof_chain_advance(dof_parentid: wp.array[int], da1: int, da2: int, n: int):
   """Advance the merged DOF chains of two bodies by n nonzeros."""
   for _ in range(n):
     da = wp.max(da1, da2)
+    if da < 0:
+      break
     if da1 == da:
       da1 = dof_parentid[da1]
     if da2 == da:
@@ -2969,6 +2971,7 @@ def _efc_contact_jac_sparse(cone_type: types.ConeType, nmaxdim: int):
     contact_efc_address_in: wp.array2d[int],
     efc_J_rownnz_in: wp.array2d[int],
     efc_J_rowadr_in: wp.array2d[int],
+    naconmax_in: int,
     nacon_in: wp.array[int],
     # In:
     condim_in: wp.array[int],
@@ -2986,7 +2989,7 @@ def _efc_contact_jac_sparse(cone_type: types.ConeType, nmaxdim: int):
     tid = wp.tid()
     lane = tid % _CONTACT_JAC_LANES
 
-    for conid in range(tid / _CONTACT_JAC_LANES, nacon_in[0], ncontact_per_pass):
+    for conid in range(tid / _CONTACT_JAC_LANES, min(nacon_in[0], naconmax_in), ncontact_per_pass):
       efcid0 = contact_efc_address_in[conid, 0]
       if efcid0 < 0:
         continue
@@ -5471,7 +5474,8 @@ def make_constraint(m: types.Model, d: types.Data):
             ],
           )
         else:
-          # cover the active contacts with a GPU-sized grid rather than naconmax
+          # Loop over the active contacts with a GPU-sized grid rather than launching naconmax
+          # threads; several waves, since longer per-thread loops over contacts are slower.
           ncontact_per_pass = d.naconmax
           if wp.get_device().is_cuda:
             ncontact_per_pass = min(ncontact_per_pass, 1024 * wp.get_device().sm_count)
@@ -5494,6 +5498,7 @@ def make_constraint(m: types.Model, d: types.Data):
               d.contact.efc_address,
               d.efc.J_rownnz,
               d.efc.J_rowadr,
+              d.naconmax,
               d.nacon,
               d.contact.dim,
               d.contact.geom,
