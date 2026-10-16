@@ -31,6 +31,7 @@ from mujoco_warp import GainType
 from mujoco_warp import IntegratorType
 from mujoco_warp import SolverType
 from mujoco_warp import test_data
+from mujoco_warp._src import util_pkg
 
 # tolerance for difference between MuJoCo and mjwarp smooth calculations - mostly
 # due to float precision
@@ -90,6 +91,47 @@ class ForwardTest(parameterized.TestCase):
       _assert_eq(d.act.numpy()[0], mjd.act, "act")
 
     # TODO(team): test actearly
+
+  @parameterized.parameters(IntegratorType.EULER, IntegratorType.RK4)
+  def test_rotational_setpoint_wrapping(self, integrator):
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+    <mujoco>
+      <worldbody>
+        <body>
+          <joint name="ball" type="ball"/>
+          <geom type="sphere" size=".1"/>
+          <site name="s1"/>
+        </body>
+        <site name="s0"/>
+      </worldbody>
+      <actuator>
+        <position joint="ball" kp="100" gear="1.5 0 0"/>
+        <general site="s1" refsite="s0" gaintype="fixed" biastype="affine" gainprm="50" biasprm="0 -50 0" gear="0 0 0 1.2 0 0"/>
+        <general joint="ball" dyntype="integrator" gaintype="fixed" biastype="affine" gainprm="40" biasprm="0 -40 0" gear="2 0 0"/>
+      </actuator>
+      <keyframe>
+        <key qpos="1 0 0 0" ctrl="10 -15 8" act="12"/>
+      </keyframe>
+    </mujoco>
+    """,
+      overrides={"opt.integrator": integrator},
+      keyframe=0,
+    )
+
+    for arr in (d.actuator_force, d.qfrc_actuator):
+      arr.fill_(wp.inf)
+
+    mjw.fwd_actuation(m, d)
+
+    _assert_eq(d.actuator_force.numpy()[0], mjd.actuator_force, "actuator_force")
+    _assert_eq(d.qfrc_actuator.numpy()[0], mjd.qfrc_actuator, "qfrc_actuator")
+
+    # next activations and step
+    mujoco.mj_step(mjm, mjd)
+    mjw.step(m, d)
+
+    _assert_eq(d.act.numpy()[0], mjd.act, "act")
 
   @parameterized.parameters(0, DisableBit.CLAMPCTRL)
   def test_clampctrl(self, disableflags):
@@ -448,6 +490,96 @@ class ForwardTest(parameterized.TestCase):
         rtol=1e-3,
         err_msg=f"step {i} qvel mismatch for free root + massless child ({integrator})",
       )
+
+  @parameterized.parameters(1, 2)
+  def test_free_root_inertial_fluid_child(self, nworld):
+    """Verify free root with inertial child carrying fluid geom matches MuJoCo."""
+    mjm, mjd, m_warp, d_warp = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option timestep="0.005" density="1.2" viscosity="0.002" wind="1 2 3"/>
+        <worldbody>
+          <body name="root" pos="0.1 -0.2 0.5" euler="20 -30 40">
+            <joint type="free"/>
+            <geom type="sphere" size=".1" mass="1"/>
+            <body name="child" pos="0 0 0.2">
+              <geom type="ellipsoid" size=".1 .2 .3" mass="0.5" fluidshape="ellipsoid"/>
+            </body>
+          </body>
+        </worldbody>
+        <keyframe>
+          <key qpos="0.1 -0.2 0.5 1 0 0 0" qvel="1 -0.5 0.8 5 -3 2"/>
+        </keyframe>
+      </mujoco>
+      """,
+      keyframe=0,
+      overrides={"opt.integrator": IntegratorType.IMPLICIT},
+      nworld=nworld,
+    )
+
+    self.assertTrue(bool(m_warp.body_is_free.numpy().any()))
+
+    mj_datas = [mjd]
+    if nworld == 2:
+      mjd2 = mujoco.MjData(mjm)
+      mujoco.mj_resetDataKeyframe(mjm, mjd2, 0)
+      qvel_np = d_warp.qvel.numpy()
+      qvel_np[1, 0] += 2.0
+      d_warp.qvel = wp.array(qvel_np, dtype=float)
+      mjd2.qvel[0] += 2.0
+      mj_datas.append(mjd2)
+
+    for i in range(10):
+      mjw.step(m_warp, d_warp)
+      for w in range(nworld):
+        mujoco.mj_step(mjm, mj_datas[w])
+        np.testing.assert_allclose(
+          d_warp.qvel.numpy()[w],
+          mj_datas[w].qvel,
+          atol=1e-3,
+          rtol=1e-3,
+          err_msg=f"step {i} qvel mismatch for world {w}",
+        )
+
+    if nworld == 2:
+      self.assertFalse(np.allclose(d_warp.qvel.numpy()[0], d_warp.qvel.numpy()[1]))
+
+  def test_free_rigid_subtree_gyro_stable(self):
+    """Verify free root with inertial child remains stable under implicitfast."""
+    _, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option integrator="implicitfast" timestep="0.001" gravity="0 0 0">
+          <flag energy="enable"/>
+        </option>
+        <worldbody>
+          <body>
+            <freejoint/>
+            <body>
+              <inertial pos="0 0 0" mass="0.12"
+                        diaginertia="0.00017231 0.00000658 0.00017243"/>
+            </body>
+          </body>
+        </worldbody>
+        <keyframe>
+          <key qvel="0 0 0 100 30 100"/>
+        </keyframe>
+      </mujoco>
+      """,
+      keyframe=0,
+    )
+
+    self.assertTrue(bool(m.body_is_free.numpy().any()))
+
+    d.energy.fill_(wp.inf)
+    mjw.forward(m, d)
+    initial_energy = float(d.energy.numpy()[0, 1])
+
+    for i in range(20):
+      d.energy.fill_(wp.inf)
+      mjw.step(m, d)
+      energy = float(d.energy.numpy()[0, 1])
+      self.assertLess(energy, 1.01 * initial_energy, f"step {i}")
 
   @parameterized.parameters(mujoco.mjtJacobian.mjJAC_SPARSE, mujoco.mjtJacobian.mjJAC_DENSE)
   def test_implicit_tendon_damping(self, jacobian):
@@ -2510,6 +2642,36 @@ class DiscreteIntegratorTest(parameterized.TestCase):
     qpos = d.qpos.numpy()[0]
     self.assertFalse(np.isnan(qpos).any())
 
+  @absltest.skipIf(not wp.get_device().is_cuda, "Skipping test that requires GPU.")
+  @parameterized.parameters("CG", "Newton")
+  def test_discrete_flex_passive_contact_graph_capture(self, solver):
+    """Discrete integrator with passive flex contacts is compatible with CUDA graph capture."""
+    _, _, m, d = test_data.fixture(
+      xml=f"""
+      <mujoco>
+        <option solver="{solver}" integrator="discrete"/>
+        <worldbody>
+          <geom type="plane" size="1 1 0.1"/>
+          <flexcomp name="cloth" type="grid" count="3 3 1" spacing="0.05 0.05 0.05" pos="0 0 0.01"
+                    radius="0.02" dim="2" mass="0.5">
+            <contact passive="true" selfcollide="none"/>
+            <elasticity young="1e3" damping="0.1"/>
+          </flexcomp>
+        </worldbody>
+      </mujoco>
+      """,
+    )
+    self.assertTrue(m.has_flex_passive)
+
+    # Warmup
+    mjw.step(m, d)
+
+    with wp.ScopedCapture() as capture:
+      mjw.step(m, d)
+
+    wp.capture_launch(capture.graph)
+    self.assertTrue(np.isfinite(d.qpos.numpy()).all())
+
   @parameterized.parameters(1, 2)
   def test_discrete_contact_coupling_joint_damping(self, nworld):
     """Under discrete, contact solve and joint damper share metric solve, avoiding split error."""
@@ -2984,6 +3146,121 @@ class DiscreteIntegratorTest(parameterized.TestCase):
     _assert_eq(d.qacc.numpy()[0], mjd.qacc, "qacc")
     if nworld == 2:
       self.assertFalse(np.allclose(d.qacc.numpy()[0], d.qacc.numpy()[1]))
+
+  @absltest.skipIf(
+    not util_pkg.check_version("mujoco>=3.14.1.dev990351372"),
+    "Requires MuJoCo >= 3.14.1.dev990351372",
+  )
+  def test_snh_requires_discrete_integrator(self):
+    """Verifies that 3D SNH flex requires integrator='discrete' in put_model and forward/step."""
+    spec = mujoco.MjSpec.from_string(
+      """
+      <mujoco>
+        <option integrator="discrete" timestep="0.005" gravity="0 0 0"/>
+        <worldbody>
+          <flexcomp name="tet" type="direct" dim="3" mass="1"
+                    point="0 0 0  1 0 0  0 1 0  0 0 1" element="0 1 2 3">
+            <contact contype="0" conaffinity="0" selfcollide="none"/>
+            <elasticity young="1000" poisson="0.3" damping="0.1"/>
+          </flexcomp>
+        </worldbody>
+      </mujoco>
+      """
+    )
+    spec.flexes[0].elastic3d = 1
+    mjm = spec.compile()
+    mjd = mujoco.MjData(mjm)
+    m = mjw.put_model(mjm)
+    d = mjw.put_data(mjm, mjd)
+
+    # Succeeds under DISCRETE
+    mjw.forward(m, d)
+    mjw.step(m, d)
+
+    non_discrete = (
+      IntegratorType.EULER,
+      IntegratorType.RK4,
+      IntegratorType.IMPLICIT,
+      IntegratorType.IMPLICITFAST,
+    )
+    for integrator in non_discrete:
+      mjm.opt.integrator = int(integrator)
+      with self.assertRaisesRegex(ValueError, "stable Neo-Hookean elasticity requires integrator='discrete'"):
+        mjw.put_model(mjm)
+
+      m.opt.integrator = int(integrator)
+      with self.assertRaisesRegex(ValueError, "stable Neo-Hookean elasticity requires integrator='discrete'"):
+        mjw.forward(m, d)
+      with self.assertRaisesRegex(ValueError, "stable Neo-Hookean elasticity requires integrator='discrete'"):
+        mjw.step(m, d)
+      with self.assertRaisesRegex(ValueError, "stable Neo-Hookean elasticity requires integrator='discrete'"):
+        mjw.step1(m, d)
+
+    # 3D StVK (elastic3d=0) succeeds under explicit integrators (EULER and RK4)
+    for integrator in (IntegratorType.EULER, IntegratorType.RK4):
+      _, _, m_stvk, d_stvk = test_data.fixture(
+        xml="""
+        <mujoco>
+          <option timestep="0.005" gravity="0 0 0"/>
+          <worldbody>
+            <flexcomp name="tet" type="direct" dim="3" mass="1"
+                      point="0 0 0  1 0 0  0 1 0  0 0 1" element="0 1 2 3">
+              <contact contype="0" conaffinity="0" selfcollide="none"/>
+              <elasticity young="1000" poisson="0.3" damping="0.1"/>
+            </flexcomp>
+          </worldbody>
+        </mujoco>
+        """,
+        overrides={"opt.integrator": integrator},
+      )
+      mjw.forward(m_stvk, d_stvk)
+
+  @absltest.skipIf(
+    not util_pkg.check_version("mujoco>=3.14.1.dev990351372"),
+    "Requires MuJoCo >= 3.14.1.dev990351372",
+  )
+  @absltest.skipIf(not wp.get_device().is_cuda, "requires CUDA device")
+  @parameterized.parameters(1, 2)
+  def test_discrete_snh_graph_capture(self, nworld):
+    """Verifies that discrete integrator with 3D SNH flex is compatible with CUDA graph capture."""
+    spec = mujoco.MjSpec.from_string(
+      """
+      <mujoco>
+        <option solver="CG" integrator="discrete" timestep="0.005"/>
+        <worldbody>
+          <flexcomp name="tet" type="direct" dim="3" mass="1"
+                    point="0 0 0  1 0 0  0 1 0  0 0 1" element="0 1 2 3">
+            <contact contype="0" conaffinity="0" selfcollide="none"/>
+            <elasticity young="1000" poisson="0.3" damping="0.1"/>
+            <pin id="0 1 2"/>
+          </flexcomp>
+        </worldbody>
+      </mujoco>
+      """
+    )
+    spec.flexes[0].elastic3d = 1
+    mjm = spec.compile()
+    mjd = mujoco.MjData(mjm)
+    m = mjw.put_model(mjm)
+    d = mjw.put_data(mjm, mjd, nworld=nworld)
+    if nworld == 2:
+      qpos = d.qpos.numpy()
+      qpos[1, 2] = -0.05
+      d.qpos.assign(qpos)
+
+    # Warmup
+    mjw.step(m, d)
+
+    with wp.ScopedCapture() as capture:
+      mjw.step(m, d)
+
+    wp.capture_launch(capture.graph)
+    qpos = d.qpos.numpy()
+    qvel = d.qvel.numpy()
+    self.assertTrue(np.all(np.isfinite(qpos)))
+    self.assertTrue(np.all(np.isfinite(qvel)))
+    if nworld == 2:
+      self.assertFalse(np.allclose(qpos[0], qpos[1]))
 
 
 if __name__ == "__main__":

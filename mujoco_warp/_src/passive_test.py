@@ -39,6 +39,63 @@ def _assert_eq(a, b, name):
 
 
 class PassiveTest(parameterized.TestCase):
+  @parameterized.product(nworld=(1, 2), damper=(0, DisableBit.DAMPER))
+  def test_per_dof_damping(self, nworld, damper):
+    """Tests independent damping coefficients for every DOF of free and ball joints."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option gravity="0 0 0"/>
+        <worldbody>
+          <body>
+            <joint type="free"/>
+            <geom size="0.1" contype="0" conaffinity="0"/>
+          </body>
+          <body pos="1 0 0">
+            <joint type="ball"/>
+            <geom size="0.1" contype="0" conaffinity="0"/>
+          </body>
+          <body pos="2 0 0">
+            <joint type="hinge"/>
+            <joint type="slide"/>
+            <geom size="0.1" contype="0" conaffinity="0"/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=nworld,
+      overrides={"opt.disableflags": damper},
+      batch_sizes={"dof_damping": nworld, "dof_dampingpoly": nworld},
+    )
+    damping = np.tile(np.arange(mjm.nv, dtype=np.float32), (nworld, 1))
+    poly = np.zeros((nworld, mjm.nv, 2), dtype=np.float32)
+    poly[:, 2::2, 0] = 0.3
+    poly[:, 3::2, 1] = 0.2
+    # Include zero damping on the first free DOF and polynomial-only damping on another.
+    damping[:, 2] = 0.0
+    velocity = np.tile(np.linspace(-0.5, 0.7, mjm.nv, dtype=np.float32), (nworld, 1))
+    if nworld == 2:
+      damping[1] *= 0.5
+      poly[1] *= 2.0
+      velocity[1] *= -1.5
+    m.dof_damping.assign(damping)
+    m.dof_dampingpoly.assign(poly)
+    d.qvel.assign(velocity)
+    d.qfrc_damper.fill_(wp.inf)
+    d.qfrc_passive.fill_(wp.inf)
+
+    mjw.passive(m, d)
+
+    for world in range(nworld):
+      mjm.dof_damping[:] = damping[world]
+      mjm.dof_dampingpoly[:] = poly[world]
+      mjd.qvel[:] = velocity[world]
+      mujoco.mj_passive(mjm, mjd)
+      _assert_eq(d.qfrc_damper.numpy()[world], mjd.qfrc_damper, f"qfrc_damper_world_{world}")
+      _assert_eq(d.qfrc_passive.numpy()[world], mjd.qfrc_passive, f"qfrc_passive_world_{world}")
+    if nworld == 2 and not damper:
+      self.assertFalse(np.allclose(d.qfrc_damper.numpy()[0], d.qfrc_damper.numpy()[1]))
+
   @parameterized.product(spring=(0, DisableBit.SPRING), damper=(0, DisableBit.DAMPER), gravity=(0, DisableBit.GRAVITY))
   def test_passive(self, spring, damper, gravity):
     """Tests passive."""

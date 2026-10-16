@@ -726,6 +726,86 @@ class IOTest(parameterized.TestCase):
       self.assertNotEqual(mjds[0].ncon, mjds[1].ncon)
       self.assertFalse(np.allclose(d.sensordata.numpy()[0], d.sensordata.numpy()[1]))
 
+  @parameterized.parameters(1, 2)
+  def test_get_data_into_preserves_passive_contacts(self, nworld):
+    """Tests that get_data_into exports passive flex contacts without EFC rows."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+        <mujoco>
+          <option integrator="discrete">
+            <flag spring="disable"/>
+          </option>
+          <worldbody>
+            <geom type="plane" size="1 1 0.1"/>
+            <body pos="0 0 0.02">
+              <freejoint/>
+              <geom type="sphere" size="0.05" mass="1.0"/>
+            </body>
+            <flexcomp name="f" type="grid" count="2 2 1" spacing="0.1 0.1 0.1"
+                      pos="0 0 0.01" radius="0.02" mass="1.0" dim="2">
+              <contact passive="true" selfcollide="none"/>
+              <elasticity young="100" damping="1"/>
+            </flexcomp>
+          </worldbody>
+        </mujoco>
+      """,
+      nworld=nworld,
+      nconmax=64,
+      njmax=128,
+    )
+
+    roundtrip = mujoco.MjData(mjm)
+    mjwarp.get_data_into(roundtrip, mjm, d)
+    self.assertEqual(roundtrip.ncon, mjd.ncon)
+    np.testing.assert_array_equal(roundtrip.contact.exclude[: roundtrip.ncon], mjd.contact.exclude[: mjd.ncon])
+
+    if nworld == 2:
+      qpos = d.qpos.numpy()
+      qpos[1, 0] += 0.5
+      d.qpos.assign(qpos)
+
+    d.nacon.fill_(-1)
+    d.contact.dist.fill_(wp.inf)
+    d.contact.worldid.fill_(-1)
+    d.contact.type.fill_(-1)
+    d.contact.efc_address.fill_(-1)
+    mjwarp.forward(m, d)
+
+    nacon = min(int(d.nacon.numpy()[0]), d.naconmax)
+    contact_worldid = d.contact.worldid.numpy()
+    contact_type = d.contact.type.numpy()
+    contact_dist = d.contact.dist.numpy()
+    contact_geom = d.contact.geom.numpy()
+    contact_flex = d.contact.flex.numpy()
+    exported_type = types.ContactType.CONSTRAINT | types.ContactType.PASSIVE
+    exported_counts = []
+
+    for world_id in range(nworld):
+      contact_filter = (contact_worldid[:nacon] == world_id) & ((contact_type[:nacon] & exported_type) != 0)
+      expected_type = contact_type[:nacon][contact_filter]
+      is_passive = (expected_type & types.ContactType.PASSIVE) != 0
+      is_constraint = ~is_passive
+      self.assertGreater(is_passive.sum(), 0)
+      self.assertGreater(is_constraint.sum(), 0)
+
+      result = mujoco.MjData(mjm)
+      mjwarp.get_data_into(result, mjm, d, world_id=world_id)
+      result.contact.exclude.fill(-1)
+      mjwarp.get_data_into(result, mjm, d, world_id=world_id)
+      exported_counts.append(result.ncon)
+
+      self.assertEqual(result.ncon, contact_filter.sum())
+      _assert_eq(result.contact.dist[: result.ncon], contact_dist[:nacon][contact_filter], f"contact_dist_world_{world_id}")
+      _assert_eq(result.contact.geom[: result.ncon], contact_geom[:nacon][contact_filter], f"contact_geom_world_{world_id}")
+      _assert_eq(result.contact.flex[: result.ncon], contact_flex[:nacon][contact_filter], f"contact_flex_world_{world_id}")
+      np.testing.assert_array_equal(result.contact.exclude[: result.ncon][is_passive], io.CONTACT_EXCLUDE_PASSIVE)
+      np.testing.assert_array_equal(result.contact.efc_address[: result.ncon][is_passive], -1)
+      np.testing.assert_array_equal(result.contact.exclude[: result.ncon][is_constraint], io.CONTACT_EXCLUDE_INCLUDE)
+      self.assertTrue(np.all(result.contact.efc_address[: result.ncon][is_constraint] >= 0))
+
+    if nworld == 2:
+      self.assertNotEqual(exported_counts[0], exported_counts[1])
+
   @parameterized.named_parameters(
     dict(testcase_name="nworld=1", nworld=1, world_id=0),
     dict(testcase_name="nworld=2_world_id=1", nworld=2, world_id=1),
@@ -1432,11 +1512,43 @@ class IOTest(parameterized.TestCase):
     with self.assertRaises(NotImplementedError):
       test_data.fixture(
         xml="""
+        <mujoco>
+          <option noslip_iterations="1" integrator="discrete"/>
+        </mujoco>
+        """
+      )
+
+  def test_noslip_options(self):
+    _, _, m, _ = test_data.fixture(
+      xml="""
       <mujoco>
-        <option noslip_iterations="1"/>
+        <option noslip_iterations="3" noslip_tolerance="1e-3"/>
       </mujoco>
       """
-      )
+    )
+    self.assertEqual(m.opt.noslip_iterations, 3)
+    np.testing.assert_allclose(m.opt.noslip_tolerance.numpy(), [1e-3])
+
+  @parameterized.parameters(7, 8)
+  def test_contact_sensor_vel_unsupported(self, bit):
+    """Contact sensor with linvel (bit 7) or angvel (bit 8) raises NotImplementedError."""
+    mjm = mujoco.MjModel.from_xml_string("""
+      <mujoco>
+        <worldbody>
+          <geom type="plane" size="1 1 1"/>
+          <body>
+            <freejoint/>
+            <geom size="0.1"/>
+          </body>
+        </worldbody>
+        <sensor>
+          <contact data="found"/>
+        </sensor>
+      </mujoco>
+    """)
+    mjm.sensor_intprm[0, 0] |= 1 << bit
+    with self.assertRaises(NotImplementedError):
+      put_model(mjm)
 
   @parameterized.parameters(*_IO_TEST_MODELS)
   def test_reset_data(self, xml):
@@ -2442,9 +2554,11 @@ class IOTest(parameterized.TestCase):
     geom_pos = m.geom_pos.numpy()
     self.assertEqual(geom_pos.shape[0], nworld)
 
-  def test_margin_multiccd_box_box(self):
-    """MULTICCD + box-box with margin raises NotImplementedError."""
-    mjm = mujoco.MjModel.from_xml_string("""
+  @parameterized.parameters(0, mujoco.mjtDisableBit.mjDSBL_MULTICCD)
+  def test_margin_box_box(self, disableflags):
+    """Box-box with margin uses the primitive collider (as in MuJoCo), with or without MULTICCD."""
+    _, _, m, _ = test_data.fixture(
+      xml="""
       <mujoco>
         <worldbody>
           <body>
@@ -2457,9 +2571,30 @@ class IOTest(parameterized.TestCase):
           </body>
         </worldbody>
       </mujoco>
-    """)
-    with self.assertRaises(NotImplementedError):
-      mjwarp.put_model(mjm)
+      """,
+      overrides={"opt.disableflags": disableflags},
+    )
+    self.assertTrue(m.has_boxbox_margin)
+
+  def test_no_margin_box_box(self):
+    """Box-box without margin keeps using the convex collider."""
+    _, _, m, _ = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <body>
+            <freejoint/>
+            <geom type="box" size=".1 .1 .1"/>
+          </body>
+          <body pos="0 0 .5">
+            <freejoint/>
+            <geom type="box" size=".1 .1 .1"/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """
+    )
+    self.assertFalse(m.has_boxbox_margin)
 
   def test_margin_multiccd_box_mesh(self):
     """MULTICCD + box-mesh with margin raises NotImplementedError."""
@@ -2526,27 +2661,27 @@ class IOTest(parameterized.TestCase):
     mjwarp.put_model(mjm)
 
   def test_margin_pair_box_box(self):
-    """Pair with margin on box-box raises NotImplementedError."""
-    with self.assertRaises(NotImplementedError):
-      mjwarp.put_model(
-        mujoco.MjModel.from_xml_string("""
-        <mujoco>
-          <worldbody>
-            <body>
-              <freejoint/>
-              <geom name="b1" type="box" size=".1 .1 .1"/>
-            </body>
-            <body pos="0 0 .5">
-              <freejoint/>
-              <geom name="b2" type="box" size=".1 .1 .1"/>
-            </body>
-          </worldbody>
-          <contact>
-            <pair geom1="b1" geom2="b2" margin="0.01"/>
-          </contact>
-        </mujoco>
-      """)
-      )
+    """Pair with margin on box-box uses the primitive collider (as in MuJoCo)."""
+    _, _, m, _ = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <body>
+            <freejoint/>
+            <geom name="b1" type="box" size=".1 .1 .1"/>
+          </body>
+          <body pos="0 0 .5">
+            <freejoint/>
+            <geom name="b2" type="box" size=".1 .1 .1"/>
+          </body>
+        </worldbody>
+        <contact>
+          <pair geom1="b1" geom2="b2" margin="0.01"/>
+        </contact>
+      </mujoco>
+      """
+    )
+    self.assertTrue(m.has_boxbox_margin)
 
   @parameterized.parameters(*_IO_TEST_MODELS)
   def test_kernel_recompilation(self, xml):
@@ -2747,59 +2882,15 @@ class IOTest(parameterized.TestCase):
     self.assertEqual(m.has_2d_flex, False)
     self.assertEqual(m.has_3d_flex, True)
 
-  # TODO(team): remove after implementing multicontact support for CCD pairs.
-  @parameterized.parameters(
-    ("capsule", "cylinder"),
-    ("capsule", "mesh"),
-  )
-  def test_unsupported_multiccd_warning(self, geom1_type, geom2_type):
-    """Tests warning for unsupported multicontact CCD pairs when MULTICCD is enabled."""
-
-    def _make_geom_xml(gtype: str) -> str:
-      if gtype == "mesh":
-        return '<geom type="mesh" mesh="m"/>'
-      elif gtype in ("cylinder", "capsule"):
-        return f'<geom type="{gtype}" size=".1 .1"/>'
-      elif gtype == "sphere":
-        return '<geom type="sphere" size=".1"/>'
-      else:
-        return f'<geom type="{gtype}" size=".1 .1 .1"/>'
-
-    mesh_asset = '<mesh name="m" vertex="0 0 0 1 0 0 0 1 0 0 0 1"/>' if "mesh" in (geom1_type, geom2_type) else ""
-    xml = f"""
-      <mujoco>
-        <asset>
-          {mesh_asset}
-        </asset>
-        <worldbody>
-          <body>
-            <freejoint/>
-            {_make_geom_xml(geom1_type)}
-          </body>
-          <body pos="0 0 .5">
-            <freejoint/>
-            {_make_geom_xml(geom2_type)}
-          </body>
-        </worldbody>
-      </mujoco>
-    """
-    mjm = mujoco.MjModel.from_xml_string(xml)
-
-    with self.assertWarns(UserWarning):
-      mjwarp.put_model(mjm)
-
-    mjm.opt.disableflags |= mujoco.mjtDisableBit.mjDSBL_MULTICCD
-    with warnings.catch_warnings():
-      warnings.simplefilter("error")
-      mjwarp.put_model(mjm)
-
   @parameterized.parameters(
     ("cylinder", "box"),
     ("cylinder", "cylinder"),
     ("cylinder", "mesh"),
+    ("capsule", "cylinder"),
+    ("capsule", "mesh"),
   )
   def test_supported_cylinder_multiccd_no_warning(self, geom1_type, geom2_type):
-    """Tests that supported cylinder MultiCCD pairs emit no warning."""
+    """Tests that supported cylinder and capsule MultiCCD pairs emit no warning."""
 
     def _make_geom_xml(gtype: str) -> str:
       if gtype == "mesh":

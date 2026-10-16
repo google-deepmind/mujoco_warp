@@ -706,6 +706,10 @@ class RayTest(parameterized.TestCase):
     _assert_eq(dist_bvh.numpy(), dist.numpy(), "bvh dist")
     _assert_eq(normal_bvh.numpy()[:, :2], normal.numpy()[:, :2], "bvh normal")
 
+  def test_ray_module_is_unique(self):
+    """Ensure _ray does not share a module with _ray_bvh."""
+    self.assertNotEqual(mjw._src.ray._ray.module, mjw._src.ray._ray_bvh.module)
+
 
 if __name__ == "__main__":
   absltest.main()

@@ -67,7 +67,7 @@ def _is_intersect(p1: np.array, p2: np.array, p3: np.array, p4: np.array) -> boo
 
 
 def _length_circle(p0: np.array, p1: np.array, ind: int, radius: float) -> float:
-  length = wp.empty(1, dtype=float)
+  length = wp.full(1, wp.inf, dtype=float)
 
   @wp.kernel(module="unique")
   def length_circle(
@@ -93,9 +93,9 @@ def _length_circle(p0: np.array, p1: np.array, ind: int, radius: float) -> float
 
 
 def _wrap_circle(end: np.array, side: np.array, radius: float) -> Tuple[float, np.array, np.array]:
-  length = wp.empty(1, dtype=float)
-  wpnt0 = wp.empty(1, dtype=wp.vec2)
-  wpnt1 = wp.empty(1, dtype=wp.vec2)
+  length = wp.full(1, wp.inf, dtype=float)
+  wpnt0 = wp.full(1, wp.vec2(wp.inf), dtype=wp.vec2)
+  wpnt1 = wp.full(1, wp.vec2(wp.inf), dtype=wp.vec2)
 
   @wp.kernel(module="unique")
   def wrap_circle(
@@ -131,9 +131,9 @@ def _wrap_circle(end: np.array, side: np.array, radius: float) -> Tuple[float, n
 
 
 def _wrap_inside(end: np.array, radius: float) -> Tuple[float, np.array, np.array]:
-  length = wp.empty(1, dtype=float)
-  wpnt0 = wp.empty(1, dtype=wp.vec2)
-  wpnt1 = wp.empty(1, dtype=wp.vec2)
+  length = wp.full(1, wp.inf, dtype=float)
+  wpnt0 = wp.full(1, wp.vec2(wp.inf), dtype=wp.vec2)
+  wpnt1 = wp.full(1, wp.vec2(wp.inf), dtype=wp.vec2)
 
   @wp.kernel(module="unique")
   def wrap_inside(
@@ -172,9 +172,9 @@ def _wrap(
   geomtype: int,
   side: np.array,
 ) -> Tuple[float, np.array, np.array]:
-  length = wp.empty(1, dtype=float)
-  wpnt0 = wp.empty(1, dtype=wp.vec3)
-  wpnt1 = wp.empty(1, dtype=wp.vec3)
+  length = wp.full(1, wp.inf, dtype=float)
+  wpnt0 = wp.full(1, wp.vec3(wp.inf), dtype=wp.vec3)
+  wpnt1 = wp.full(1, wp.vec3(wp.inf), dtype=wp.vec3)
 
   @wp.kernel(module="unique")
   def wrap(
@@ -384,6 +384,48 @@ def _muscle_dynamics_timescale(dctrl, tau_act, tau_deact, smooth_width):
   return output.numpy()[0]
 
 
+def _dcmotor_resistance(
+  act: np.ndarray,
+  worldid: int,
+  actadr: int,
+  dynprm: np.ndarray,
+  gainprm: np.ndarray,
+) -> float:
+  res = wp.empty(1, dtype=float)
+  res.fill_(wp.inf)
+  act_wp = wp.array2d(act, dtype=float)
+
+  @wp.kernel(module="unique")
+  def dcmotor_resistance_kernel(
+    # Data in:
+    act_in: wp.array2d[float],
+    # In:
+    worldid: int,
+    actadr: int,
+    dynprm: vec10,
+    gainprm: vec10,
+    # Out:
+    res_out: wp.array[float],
+  ):
+    res_out[0] = util_misc.dcmotor_resistance(act_in, worldid, actadr, dynprm, gainprm)
+
+  wp.launch(
+    dcmotor_resistance_kernel,
+    dim=(1,),
+    inputs=[
+      act_wp,
+      worldid,
+      actadr,
+      vec10(*dynprm),
+      vec10(*gainprm),
+    ],
+    outputs=[
+      res,
+    ],
+  )
+  return float(res.numpy()[0])
+
+
 class UtilMiscTest(parameterized.TestCase):
   def test_is_intersect(self):
     self.assertFalse(
@@ -413,6 +455,16 @@ class UtilMiscTest(parameterized.TestCase):
       )
     )
 
+    # wrap-onset tangent segments that meet just past their endpoints (a > 1, b > 1)
+    self.assertFalse(
+      _is_intersect(
+        np.array([0.158835, -0.02149], dtype=np.float32),
+        np.array([0.00339341, 0.01461112], dtype=np.float32),
+        np.array([-0.190895, 0.059719], dtype=np.float32),
+        np.array([0.00339232, 0.01461137], dtype=np.float32),
+      )
+    )
+
   def test_length_circle(self):
     _assert_eq(
       _length_circle(np.array([0, 1]), np.array([1, 0]), 0, 1.0),
@@ -435,6 +487,19 @@ class UtilMiscTest(parameterized.TestCase):
       "length_circle",
     )
 
+    # small wrap-onset arc angle (theta ~ 7.5e-5 rad) where dot(p0n, p1n) rounds to 1.0 in float32
+    np.testing.assert_allclose(
+      _length_circle(
+        np.array([0.00339341, 0.01461112], dtype=np.float32),
+        np.array([0.00339232, 0.01461137], dtype=np.float32),
+        1,
+        0.015,
+      ),
+      1.12535e-6,
+      atol=1e-8,
+      rtol=1e-3,
+    )
+
   def test_wrap_circle(self):
     # no wrap
     wlen, wpnt0, wpnt1 = _wrap_circle(np.array([1, 0, 0, 1]), np.array([MJ_MAXVAL, MJ_MAXVAL]), 0.1)
@@ -452,13 +517,13 @@ class UtilMiscTest(parameterized.TestCase):
     wlen, wpnt0, wpnt1 = _wrap_circle(
       np.array([np.sqrt(2.0), 0, 0, np.sqrt(2.0)]), np.array([MJ_MAXVAL, MJ_MAXVAL]), 1.0 + 5e-4
     )
-    _assert_eq(wlen, 0.0, "wlen")
+    _assert_eq(wlen, 1e-3, "wlen")
     _assert_eq(wpnt0, np.array([np.sqrt(2.0) / 2.0, np.sqrt(2.0) / 2.0]), "wpnt0")
     _assert_eq(wpnt1, np.array([np.sqrt(2.0) / 2.0, np.sqrt(2.0) / 2.0]), "wpnt1")
 
     # wrap
     wlen, wpnt0, wpnt1 = _wrap_circle(np.array([np.sqrt(2.0), 0, 0, np.sqrt(2.0)]), np.array([0.0, 0.0]), 1.0 + 5e-4)
-    _assert_eq(wlen, 0.0, "wlen")
+    _assert_eq(wlen, 1e-3, "wlen")
     _assert_eq(wpnt0, np.array([np.sqrt(2.0) / 2.0, np.sqrt(2.0) / 2.0]), "wpnt0")
     _assert_eq(wpnt1, np.array([np.sqrt(2.0) / 2.0, np.sqrt(2.0) / 2.0]), "wpnt1")
 
@@ -482,6 +547,17 @@ class UtilMiscTest(parameterized.TestCase):
     _assert_eq(wlen, 0.0, "wlen")
     _assert_eq(wpnt0, np.array([-0.1, 0]), "wpnt0")
     _assert_eq(wpnt1, np.array([-0.1, 0]), "wpnt1")
+
+    # wrap onset where tangent segments are nearly collinear
+    for side in (np.array([MJ_MAXVAL, MJ_MAXVAL]), np.array([0.0, 0.015])):
+      wlen, wpnt0, wpnt1 = _wrap_circle(
+        np.array([0.158835, -0.02149, -0.190895, 0.059719], dtype=np.float32),
+        side,
+        0.015,
+      )
+      np.testing.assert_allclose(wlen, 1.12535e-6, atol=1e-8, rtol=1e-3)
+      _assert_eq(wpnt0, np.array([0.00339341, 0.01461112]), "wpnt0")
+      _assert_eq(wpnt1, np.array([0.00339232, 0.01461137]), "wpnt1")
 
   def test_wrap_inside(self):
     wlen, wpnt0, wpnt1 = _wrap_inside(np.array([1, 0, 0, 1]), 0.7071)
@@ -528,6 +604,18 @@ class UtilMiscTest(parameterized.TestCase):
     _assert_eq(wlen, 0.0, "wlen")
     _assert_eq(wpnt0, np.array([0, 0.1]), "wpnt0")
     _assert_eq(wpnt1, np.array([0, 0.1]), "wpnt1")
+
+    for end, radius, pnt in (
+      (np.array([2.0, 0.0, -0.7, 0.7]), 0.5, np.array([0.125786, 0.483919])),
+      (np.array([2.0, 0.0, -0.7, -0.7]), 0.5, np.array([0.125786, -0.483919])),
+      (np.array([1.0, 0.0, -1.4, 1.4]), 0.5, np.array([0.251405, 0.432199])),
+      (np.array([1.666667, 0.0, -2.185531, 1.213859]), 0.5, np.array([0.150223, 0.4769])),
+      (np.array([1.0, 0.0, -1.425755, 1.402577]), 0.5, np.array([0.2502, 0.432897])),
+    ):
+      wlen, wpnt0, wpnt1 = _wrap_inside(end, radius)
+      _assert_eq(wlen, 0.0, "wlen")
+      _assert_eq(wpnt0, pnt, "wpnt0")
+      _assert_eq(wpnt1, pnt, "wpnt1")
 
   @parameterized.parameters(WrapType.SPHERE, WrapType.CYLINDER)
   def test_wrap(self, wraptype):
@@ -723,6 +811,32 @@ class UtilMiscTest(parameterized.TestCase):
       2.0 * eps
     )
     _assert_eq(deriv, fd, "muscle_gain_vel_deriv")
+
+  def test_dcmotor_resistance(self):
+    # Non-thermal motor (dynprm[2] == 0) returns nominal resistance
+    dynprm = np.zeros(10)
+    gainprm = np.zeros(10)
+    gainprm[0] = 2.5
+    act = np.zeros((1, 5))
+    r = _dcmotor_resistance(act, 0, 0, dynprm, gainprm)
+    self.assertAlmostEqual(r, 2.5)
+
+    # Thermal motor (dynprm[2] > 0) with temperature rise
+    dynprm[2] = 1.0  # thermal resistance
+    dynprm[4] = 25.0  # Ta
+    gainprm[0] = 2.0  # R0
+    gainprm[2] = 0.004  # alpha
+    gainprm[3] = 25.0  # T0
+    act[0, 0] = 250.0  # T rise
+    # R = R0 * (1 + alpha * (T + Ta - T0)) = 2.0 * (1 + 0.004 * 250) = 4.0
+    r = _dcmotor_resistance(act, 0, 0, dynprm, gainprm)
+    self.assertAlmostEqual(r, 4.0)
+
+    # Minimum clamp check
+    gainprm[0] = -1.0
+    dynprm[2] = 0.0
+    r = _dcmotor_resistance(act, 0, 0, dynprm, gainprm)
+    self.assertAlmostEqual(r, MJ_MINVAL)
 
   # TODO(team): test util_misc.muscle_gain
   # TODO(team): test util_misc.muscle_bias

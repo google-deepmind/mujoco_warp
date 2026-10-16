@@ -19,6 +19,7 @@ import warp as wp
 
 from mujoco_warp._src import history
 from mujoco_warp._src import math
+from mujoco_warp._src import passive
 from mujoco_warp._src import smooth
 from mujoco_warp._src import support
 from mujoco_warp._src import util_misc
@@ -78,8 +79,13 @@ def _qderiv_actuator_passive_vel(
 
   actuator_gainprm_id = worldid % actuator_gainprm.shape[0]
   actuator_biasprm_id = worldid % actuator_biasprm.shape[0]
+  actuator_dynprm_id = worldid % actuator_dynprm.shape[0]
+  opt_timestep_id = worldid % opt_timestep.shape[0]
 
   bias = float(0.0)
+  R_dcmotor = float(0.0)
+  K_dcmotor = float(0.0)
+  te_dcmotor = float(0.0)
 
   if actuator_gaintype[actid] == GainType.AFFINE:
     gain = actuator_gainprm[actuator_gainprm_id, actid][2]
@@ -93,28 +99,27 @@ def _qderiv_actuator_passive_vel(
     )
   elif actuator_gaintype[actid] == GainType.DCMOTOR:
     gain = 0.0
-    dynprm = actuator_dynprm[worldid % actuator_dynprm.shape[0], actid]
+    dynprm = actuator_dynprm[actuator_dynprm_id, actid]
     gainprm = actuator_gainprm[actuator_gainprm_id, actid]
     te = dynprm[0]
+    K = gainprm[1]
 
-    # controller velocity derivative: dV/dω
+    # controller velocity derivative dV/dω using nameplate resistance
     dVdw = 0.0
     if (actuator_ctrlspec[actid] & 7) != 0:
-      R = wp.max(MJ_MINVAL, gainprm[0])
-      K = gainprm[1]
-      dVdw = -gainprm[6] * R / K + K
+      R0 = wp.max(MJ_MINVAL, gainprm[0])
+      dVdw = -gainprm[6] * R0 / K + K
+
+    # winding resistance at current temperature
+    R = util_misc.dcmotor_resistance(act_in, worldid, actuator_actadr[actid], dynprm, gainprm)
 
     if te > 0.0:
       # stateful current with actearly: d(K*next_act)/dω
       # includes both back-EMF (-K) and controller (dVdw) through act_dot
-      R = wp.max(MJ_MINVAL, gainprm[0])
-      K = gainprm[1]
-      s = 1.0 - wp.exp(-opt_timestep[worldid % opt_timestep.shape[0]] / te)
+      s = 1.0 - wp.exp(-opt_timestep[opt_timestep_id] / te)
       bias += K * (dVdw - K) * s / R
     elif dVdw != 0.0:
       # stateless: controller terms only (back-EMF handled in bias block)
-      R = wp.max(MJ_MINVAL, gainprm[0])
-      K = gainprm[1]
       bias += K * dVdw / R
 
     # LuGre: force includes -sigma1*z_dot, z_dot = a*z + v
@@ -122,31 +127,27 @@ def _qderiv_actuator_passive_vel(
     sigma1 = dynprm[6]
     if sigma1 > 0.0:
       bias -= sigma1
+
+    R_dcmotor = R
+    K_dcmotor = K
+    te_dcmotor = te
   else:
     gain = 0.0
 
   if actuator_biastype[actid] == BiasType.AFFINE:
     bias += actuator_biasprm[actuator_biasprm_id, actid][2]
   elif actuator_biastype[actid] == BiasType.DCMOTOR:
-    dynprm = actuator_dynprm[worldid % actuator_dynprm.shape[0], actid]
-    te = dynprm[0]
-    if te <= 0.0:
-      gainprm = actuator_gainprm[actuator_gainprm_id, actid]
-      R = gainprm[0]
-      K = gainprm[1]
-
-      slots = util_misc.dcmotor_slots(dynprm, gainprm)
-      slot_Ta = slots[2]
-
-      if slot_Ta >= 0:
-        adr = actuator_actadr[actid] + slot_Ta
-        T = act_in[worldid, adr]
-        alpha = gainprm[2]
-        T0 = gainprm[3]
-        Ta = dynprm[4]
-        R *= 1.0 + alpha * (T + Ta - T0)
-
-      bias += -K * K / wp.max(MJ_MINVAL, R)
+    if R_dcmotor > 0.0:
+      if te_dcmotor <= 0.0:
+        bias += -K_dcmotor * K_dcmotor / R_dcmotor
+    else:
+      dynprm = actuator_dynprm[actuator_dynprm_id, actid]
+      te = dynprm[0]
+      if te <= 0.0:
+        gainprm = actuator_gainprm[actuator_gainprm_id, actid]
+        K = gainprm[1]
+        R = util_misc.dcmotor_resistance(act_in, worldid, actuator_actadr[actid], dynprm, gainprm)
+        bias += -K * K / R
 
   if bias == 0.0 and gain == 0.0:
     vel_out[worldid, actid] = 0.0
@@ -168,9 +169,9 @@ def _qderiv_actuator_passive_vel(
       # use next activation if actearly is set (matching forward pass)
       if actuator_actearly[actid]:
         act = next_act(
-          opt_timestep[worldid % opt_timestep.shape[0]],
+          opt_timestep[opt_timestep_id],
           actuator_dyntype[actid],
-          actuator_dynprm[worldid % actuator_dynprm.shape[0], actid],
+          actuator_dynprm[actuator_dynprm_id, actid],
           actuator_actrange[worldid % actuator_actrange.shape[0], actid],
           act_in[worldid, act_adr],
           act_dot_in[worldid, act_adr],
@@ -1994,7 +1995,70 @@ def _find_csr_col(rowadr: int, rownnz: int, target_col: int, colind: wp.array[in
 
 
 @wp.kernel
-def _eff_flex_stretch_stiff(
+def _eff_flex_stretch_stiff_vert(
+  # Model:
+  opt_timestep: wp.array[float],
+  opt_disableflags: int,
+  body_weldid: wp.array[int],
+  body_dofnum: wp.array[int],
+  body_dofadr: wp.array[int],
+  flex_dim: wp.array[int],
+  flex_interp: wp.array[int],
+  flex_stiffnessadr: wp.array[int],
+  flex_vertbodyid: wp.array[int],
+  flex_stiffness: wp.array[float],
+  flex_damping: wp.array[float],
+  flex_rigid: wp.array[bool],
+  efm_K_rownnz: wp.array[int],
+  efm_K_rowadr: wp.array[int],
+  efm_K_colind: wp.array[int],
+  flex_vertflexid: wp.array[int],
+  flex_simple: wp.array[bool],
+  # Data in:
+  xmat_in: wp.array2d[wp.mat33],
+  flexvert_hessian_in: wp.array2d[vec6],
+  # Data out:
+  efm_K_val_out: wp.array2d[float],
+):
+  worldid, vertid = wp.tid()
+  timestep = opt_timestep[worldid % opt_timestep.shape[0]]
+
+  f = flex_vertflexid[vertid]
+  if f < 0 or flex_interp[f] != 0 or flex_rigid[f] or flex_dim[f] < 2 or not flex_simple[f]:
+    return
+
+  stiffness_adr = flex_stiffnessadr[f]
+  if stiffness_adr < 0 or flex_stiffness[stiffness_adr] == 0.0:
+    return
+
+  s1 = 0.0 if (opt_disableflags & DisableBit.SPRING) else timestep * timestep
+  s2 = 0.0 if (opt_disableflags & DisableBit.DAMPER) else timestep
+  scale = s1 + s2 * flex_damping[f]
+  if scale == 0.0:
+    return
+
+  bi = body_weldid[flex_vertbodyid[vertid]]
+  if body_dofnum[bi] != 3:
+    return
+  dof_i = body_dofadr[bi]
+  if efm_K_rownnz[dof_i] == 0:
+    return
+
+  h = flexvert_hessian_in[worldid, vertid]
+  block = wp.mat33(h[0], h[1], h[2], h[1], h[3], h[4], h[2], h[4], h[5])
+  R_bi = xmat_in[worldid, bi]
+  blkd = scale * (wp.transpose(R_bi) * block * R_bi)
+
+  for r in range(3):
+    row = dof_i + r
+    idx = _find_csr_col(efm_K_rowadr[row], efm_K_rownnz[row], dof_i, efm_K_colind)
+    if idx >= 0:
+      for c in range(3):
+        wp.atomic_add(efm_K_val_out, worldid, idx + c, blkd[r, c])
+
+
+@wp.kernel
+def _eff_flex_stretch_stiff_edge(
   # Model:
   opt_timestep: wp.array[float],
   opt_disableflags: int,
@@ -2004,45 +2068,32 @@ def _eff_flex_stretch_stiff(
   flex_dim: wp.array[int],
   flex_interp: wp.array[int],
   flex_vertadr: wp.array[int],
-  flex_edgeadr: wp.array[int],
-  flex_elemadr: wp.array[int],
-  flex_elemnum: wp.array[int],
-  flex_elemdataadr: wp.array[int],
   flex_stiffnessadr: wp.array[int],
-  flex_elemedgeadr: wp.array[int],
   flex_vertbodyid: wp.array[int],
-  flex_elem: wp.array[int],
-  flex_elemedge: wp.array[int],
-  flexedge_length0: wp.array[float],
+  flex_edge: wp.array[wp.vec2i],
   flex_stiffness: wp.array[float],
   flex_damping: wp.array[float],
-  flex_centered: wp.array[bool],
+  flex_rigid: wp.array[bool],
   efm_K_rownnz: wp.array[int],
   efm_K_rowadr: wp.array[int],
   efm_K_colind: wp.array[int],
-  flex_elemflexid: wp.array[int],
+  flex_edgeflexid: wp.array[int],
+  flex_simple: wp.array[bool],
   # Data in:
   xmat_in: wp.array2d[wp.mat33],
-  flexvert_xpos_in: wp.array2d[wp.vec3],
-  flexedge_length_in: wp.array2d[float],
+  flexedge_hessian_in: wp.array2d[wp.mat33],
   # Data out:
   efm_K_val_out: wp.array2d[float],
 ):
-  worldid, elemid = wp.tid()
+  worldid, edgeid, side = wp.tid()
   timestep = opt_timestep[worldid % opt_timestep.shape[0]]
 
-  f = flex_elemflexid[elemid]
-
-  if f < 0:
+  f = flex_edgeflexid[edgeid]
+  if f < 0 or flex_interp[f] != 0 or flex_rigid[f] or flex_dim[f] < 2 or not flex_simple[f]:
     return
 
-  if flex_interp[f] != 0 or flex_dim[f] < 2:
-    return
-
-  stiffness_adr_base = flex_stiffnessadr[f]
-  if stiffness_adr_base < 0:
-    return
-  if flex_stiffness[stiffness_adr_base] == 0.0:
+  stiffness_adr = flex_stiffnessadr[f]
+  if stiffness_adr < 0 or flex_stiffness[stiffness_adr] == 0.0:
     return
 
   s1 = 0.0 if (opt_disableflags & DisableBit.SPRING) else timestep * timestep
@@ -2051,111 +2102,31 @@ def _eff_flex_stretch_stiff(
   if scale == 0.0:
     return
 
-  local_elemid = elemid - flex_elemadr[f]
-  dim = flex_dim[f]
-  nvrt = dim + 1
-  nedge = 3 if dim == 2 else 6
-  elem_data_adr = flex_elemdataadr[f] + local_elemid * nvrt
-  vbase = flex_vertadr[f]
-  ebase = flex_edgeadr[f]
+  va = flex_vertadr[f]
+  edge = flex_edge[edgeid]
+  vi = edge[side]
+  vj = edge[1 - side]
 
-  edges = wp.where(
-    dim == 3,
-    wp.matrix(0, 1, 1, 2, 2, 0, 2, 3, 0, 3, 1, 3, shape=(6, 2), dtype=int),
-    wp.matrix(1, 2, 2, 0, 0, 1, 0, 0, 0, 0, 0, 0, shape=(6, 2), dtype=int),
-  )
+  bi = body_weldid[flex_vertbodyid[va + vi]]
+  bj = body_weldid[flex_vertbodyid[va + vj]]
+  if body_dofnum[bi] != 3 or body_dofnum[bj] != 3:
+    return
 
-  dvec = wp.matrix(shape=(6, 3), dtype=float)
-  for e in range(nedge):
-    v0 = flex_elem[elem_data_adr + edges[e, 0]]
-    v1 = flex_elem[elem_data_adr + edges[e, 1]]
-    xp0 = flexvert_xpos_in[worldid, vbase + v0]
-    xp1 = flexvert_xpos_in[worldid, vbase + v1]
-    for x in range(3):
-      dvec[e, x] = xp0[x] - xp1[x]
+  dof_i = body_dofadr[bi]
+  dof_j = body_dofadr[bj]
+  if efm_K_rownnz[dof_i] == 0:
+    return
 
-  stiffness_adr = stiffness_adr_base + local_elemid * 21
-  metric = wp.matrix(shape=(6, 6), dtype=float)
-  id = int(0)
-  for e1 in range(nedge):
-    for e2 in range(e1, nedge):
-      val = flex_stiffness[stiffness_adr + id]
-      metric[e1, e2] = val
-      metric[e2, e1] = val
-      id += 1
+  h = flexedge_hessian_in[worldid, edgeid]
+  block = wp.transpose(h) if side == 1 else h
+  blkd = scale * (wp.transpose(xmat_in[worldid, bi]) * block * xmat_in[worldid, bj])
 
-  delta_elen_sq = vec6(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
-  ee_base = flex_elemedgeadr[f] + local_elemid * nedge
-  for e in range(nedge):
-    idx = flex_elemedge[ee_base + e]
-    elen = flexedge_length_in[worldid, ebase + idx]
-    elen0 = flexedge_length0[ebase + idx]
-    delta_elen_sq[e] = elen * elen - elen0 * elen0
-
-  Me = vec6(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
-  for e1 in range(nedge):
-    me_val = float(0.0)
-    for e2 in range(nedge):
-      me_val += metric[e1, e2] * delta_elen_sq[e2]
-    Me[e1] = wp.max(me_val, 0.0)
-
-  vert_dof = wp.vec4i(-1, -1, -1, -1)
-  vert_body = wp.vec4i(-1, -1, -1, -1)
-  for v in range(nvrt):
-    vert_idx = flex_elem[elem_data_adr + v]
-    bid = body_weldid[flex_vertbodyid[vbase + vert_idx]]
-    vert_body[v] = bid
-    if body_dofnum[bid] == 3:
-      vert_dof[v] = body_dofadr[bid]
-
-  for i in range(nvrt):
-    dof_i = vert_dof[i]
-    if dof_i < 0:
-      continue
-    R_bi = xmat_in[worldid, vert_body[i]]
-    for j in range(nvrt):
-      dof_j = vert_dof[j]
-      if dof_j < 0:
-        continue
-      bj = vert_body[j]
-
-      blk = wp.mat33(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
-      for a in range(nedge):
-        sa = 1.0 if i == edges[a, 0] else (-1.0 if i == edges[a, 1] else 0.0)
-        if sa == 0.0:
-          continue
-        for b in range(nedge):
-          sb = 1.0 if j == edges[b, 0] else (-1.0 if j == edges[b, 1] else 0.0)
-          if sb == 0.0:
-            continue
-          w = 2.0 * scale * metric[a, b] * sa * sb
-          for r in range(3):
-            for c in range(3):
-              blk[r, c] += w * dvec[a, r] * dvec[b, c]
-
-      geo = float(0.0)
-      for a in range(nedge):
-        sa = 1.0 if i == edges[a, 0] else (-1.0 if i == edges[a, 1] else 0.0)
-        sb = 1.0 if j == edges[a, 0] else (-1.0 if j == edges[a, 1] else 0.0)
-        if sa != 0.0 and sb != 0.0:
-          geo += Me[a] * sa * sb
-      geo *= scale
-      blk[0, 0] += geo
-      blk[1, 1] += geo
-      blk[2, 2] += geo
-
-      R_bj = xmat_in[worldid, bj]
-      blkd = wp.transpose(R_bi) * blk * R_bj
-
-      for r in range(3):
-        row = dof_i + r
-        rowadr = efm_K_rowadr[row]
-        rownnz = efm_K_rownnz[row]
-        for c in range(3):
-          col = dof_j + c
-          idx = _find_csr_col(rowadr, rownnz, col, efm_K_colind)
-          if idx >= 0:
-            wp.atomic_add(efm_K_val_out, worldid, idx, blkd[r, c])
+  for r in range(3):
+    row = dof_i + r
+    idx = _find_csr_col(efm_K_rowadr[row], efm_K_rownnz[row], dof_j, efm_K_colind)
+    if idx >= 0:
+      for c in range(3):
+        wp.atomic_add(efm_K_val_out, worldid, idx + c, blkd[r, c])
 
 
 @wp.kernel
@@ -2177,12 +2148,15 @@ def _eff_flex_bend_stiff(
   flex_edgeflap: wp.array[wp.vec2i],
   flex_bending: wp.array[float],
   flex_damping: wp.array[float],
+  flex_rigid: wp.array[bool],
   flex_centered: wp.array[bool],
   efm_K_rownnz: wp.array[int],
   efm_K_rowadr: wp.array[int],
   efm_K_colind: wp.array[int],
   flex_edgeflexid: wp.array[int],
+  flex_simple: wp.array[bool],
   # Data in:
+  xquat_in: wp.array2d[wp.quat],
   xmat_in: wp.array2d[wp.mat33],
   # Data out:
   efm_K_val_out: wp.array2d[float],
@@ -2195,7 +2169,7 @@ def _eff_flex_bend_stiff(
   if f < 0:
     return
 
-  if flex_interp[f] != 0 or flex_dim[f] != 2:
+  if flex_interp[f] != 0 or flex_rigid[f] or flex_dim[f] != 2 or not flex_simple[f]:
     return
 
   bendingadr = flex_bendingadr[f]
@@ -2230,9 +2204,11 @@ def _eff_flex_bend_stiff(
 
   for i in range(4):
     dof_i = dofs[i]
-    if dof_i < 0:
+    if dof_i < 0 or efm_K_rownnz[dof_i] == 0:
       continue
-    R_bi_T = wp.transpose(xmat_in[worldid, bodies[i]])
+    bi = bodies[i]
+    R_bi_T = wp.transpose(xmat_in[worldid, bi])
+    qi = xquat_in[worldid, bi]
     for j in range(4):
       dof_j = dofs[j]
       if dof_j < 0:
@@ -2240,16 +2216,21 @@ def _eff_flex_bend_stiff(
       q = scale * flex_bending[bend_offset + 4 * i + j]
       if q == 0.0:
         continue
-      blkd = q * (R_bi_T * xmat_in[worldid, bodies[j]])
-      for r in range(3):
-        row = dof_i + r
-        rowadr = efm_K_rowadr[row]
-        rownnz = efm_K_rownnz[row]
-        for c in range(3):
-          col = dof_j + c
-          idx = _find_csr_col(rowadr, rownnz, col, efm_K_colind)
+      bj = bodies[j]
+      if bi == bj or qi == xquat_in[worldid, bj]:
+        for r in range(3):
+          row = dof_i + r
+          idx = _find_csr_col(efm_K_rowadr[row], efm_K_rownnz[row], dof_j, efm_K_colind)
           if idx >= 0:
-            wp.atomic_add(efm_K_val_out, worldid, idx, blkd[r, c])
+            wp.atomic_add(efm_K_val_out, worldid, idx + r, q)
+      else:
+        blkd = q * (R_bi_T * xmat_in[worldid, bj])
+        for r in range(3):
+          row = dof_i + r
+          idx = _find_csr_col(efm_K_rowadr[row], efm_K_rownnz[row], dof_j, efm_K_colind)
+          if idx >= 0:
+            for c in range(3):
+              wp.atomic_add(efm_K_val_out, worldid, idx + c, blkd[r, c])
 
 
 @wp.kernel
@@ -2557,236 +2538,6 @@ def _zero_sleeping_dofs(
   worldid, dofid = wp.tid()
   if tree_awake_in[worldid, dof_treeid[dofid]] == 0:
     vec_out[worldid, dofid] = 0.0
-
-
-@wp.kernel
-def _eff_flex_stretch_shift(
-  # Model:
-  opt_timestep: wp.array[float],
-  body_weldid: wp.array[int],
-  body_dofnum: wp.array[int],
-  body_dofadr: wp.array[int],
-  flex_dim: wp.array[int],
-  flex_interp: wp.array[int],
-  flex_vertadr: wp.array[int],
-  flex_edgeadr: wp.array[int],
-  flex_elemadr: wp.array[int],
-  flex_elemnum: wp.array[int],
-  flex_elemdataadr: wp.array[int],
-  flex_stiffnessadr: wp.array[int],
-  flex_elemedgeadr: wp.array[int],
-  flex_vertbodyid: wp.array[int],
-  flex_elem: wp.array[int],
-  flex_elemedge: wp.array[int],
-  flexedge_length0: wp.array[float],
-  flex_stiffness: wp.array[float],
-  flex_centered: wp.array[bool],
-  flex_elemflexid: wp.array[int],
-  # Data in:
-  qvel_in: wp.array2d[float],
-  xmat_in: wp.array2d[wp.mat33],
-  flexvert_xpos_in: wp.array2d[wp.vec3],
-  flexedge_length_in: wp.array2d[float],
-  # Data out:
-  efm_c_out: wp.array2d[float],
-):
-  worldid, elemid = wp.tid()
-  timestep = opt_timestep[worldid % opt_timestep.shape[0]]
-
-  f = flex_elemflexid[elemid]
-
-  if f < 0:
-    return
-
-  if flex_interp[f] != 0 or flex_dim[f] < 2:
-    return
-
-  stiffness_adr_base = flex_stiffnessadr[f]
-  if stiffness_adr_base < 0:
-    return
-  if flex_stiffness[stiffness_adr_base] == 0.0:
-    return
-
-  scale = -timestep
-  if scale == 0.0:
-    return
-
-  local_elemid = elemid - flex_elemadr[f]
-  dim = flex_dim[f]
-  nvrt = dim + 1
-  nedge = 3 if dim == 2 else 6
-  elem_data_adr = flex_elemdataadr[f] + local_elemid * nvrt
-  vbase = flex_vertadr[f]
-  ebase = flex_edgeadr[f]
-
-  edges = wp.where(
-    dim == 3,
-    wp.matrix(0, 1, 1, 2, 2, 0, 2, 3, 0, 3, 1, 3, shape=(6, 2), dtype=int),
-    wp.matrix(1, 2, 2, 0, 0, 1, 0, 0, 0, 0, 0, 0, shape=(6, 2), dtype=int),
-  )
-
-  dvec = wp.matrix(shape=(6, 3), dtype=float)
-  dw = wp.matrix(shape=(6, 3), dtype=float)
-  g = vec6(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
-
-  for e in range(nedge):
-    v0 = flex_elem[elem_data_adr + edges[e, 0]]
-    v1 = flex_elem[elem_data_adr + edges[e, 1]]
-    b0 = body_weldid[flex_vertbodyid[vbase + v0]]
-    b1 = body_weldid[flex_vertbodyid[vbase + v1]]
-
-    w0 = wp.vec3(0.0, 0.0, 0.0)
-    w1 = wp.vec3(0.0, 0.0, 0.0)
-
-    if body_dofnum[b0] == 3:
-      dof0 = body_dofadr[b0]
-      vloc0 = wp.vec3(qvel_in[worldid, dof0], qvel_in[worldid, dof0 + 1], qvel_in[worldid, dof0 + 2])
-      w0 = xmat_in[worldid, b0] * vloc0
-
-    if body_dofnum[b1] == 3:
-      dof1 = body_dofadr[b1]
-      vloc1 = wp.vec3(qvel_in[worldid, dof1], qvel_in[worldid, dof1 + 1], qvel_in[worldid, dof1 + 2])
-      w1 = xmat_in[worldid, b1] * vloc1
-
-    xp0 = flexvert_xpos_in[worldid, vbase + v0]
-    xp1 = flexvert_xpos_in[worldid, vbase + v1]
-    ge = float(0.0)
-    for x in range(3):
-      dx = xp0[x] - xp1[x]
-      dwx = w0[x] - w1[x]
-      dvec[e, x] = dx
-      dw[e, x] = dwx
-      ge += dx * dwx
-    g[e] = ge
-
-  stiffness_adr = stiffness_adr_base + local_elemid * 21
-  metric = wp.matrix(shape=(6, 6), dtype=float)
-  id = int(0)
-  for e1 in range(nedge):
-    for e2 in range(e1, nedge):
-      val = flex_stiffness[stiffness_adr + id]
-      metric[e1, e2] = val
-      metric[e2, e1] = val
-      id += 1
-
-  Me = vec6(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
-  for e1 in range(nedge):
-    me_val = float(0.0)
-    for e2 in range(nedge):
-      idx = flex_elemedge[flex_elemedgeadr[f] + local_elemid * nedge + e2]
-      elen = flexedge_length_in[worldid, ebase + idx]
-      elen0 = flexedge_length0[ebase + idx]
-      me_val += metric[e1, e2] * (elen * elen - elen0 * elen0)
-    Me[e1] = wp.max(me_val, 0.0)
-
-  for e in range(nedge):
-    coef = float(0.0)
-    for a in range(nedge):
-      coef += metric[e, a] * g[a]
-    coef *= 2.0 * scale
-
-    v0 = flex_elem[elem_data_adr + edges[e, 0]]
-    v1 = flex_elem[elem_data_adr + edges[e, 1]]
-    b0 = body_weldid[flex_vertbodyid[vbase + v0]]
-    b1 = body_weldid[flex_vertbodyid[vbase + v1]]
-
-    rw = wp.vec3(0.0, 0.0, 0.0)
-    for x in range(3):
-      rw[x] = coef * dvec[e, x] + scale * Me[e] * dw[e, x]
-
-    if body_dofnum[b0] == 3:
-      rl0 = wp.transpose(xmat_in[worldid, b0]) * rw
-      dof0 = body_dofadr[b0]
-      for x in range(3):
-        wp.atomic_add(efm_c_out, worldid, dof0 + x, rl0[x])
-
-    if body_dofnum[b1] == 3:
-      rl1 = wp.transpose(xmat_in[worldid, b1]) * rw
-      dof1 = body_dofadr[b1]
-      for x in range(3):
-        wp.atomic_sub(efm_c_out, worldid, dof1 + x, rl1[x])
-
-
-@wp.kernel
-def _eff_flex_bend_shift(
-  # Model:
-  opt_timestep: wp.array[float],
-  body_weldid: wp.array[int],
-  body_dofnum: wp.array[int],
-  body_dofadr: wp.array[int],
-  flex_dim: wp.array[int],
-  flex_interp: wp.array[int],
-  flex_vertadr: wp.array[int],
-  flex_edgeadr: wp.array[int],
-  flex_edgenum: wp.array[int],
-  flex_bendingadr: wp.array[int],
-  flex_vertbodyid: wp.array[int],
-  flex_edge: wp.array[wp.vec2i],
-  flex_edgeflap: wp.array[wp.vec2i],
-  flex_bending: wp.array[float],
-  flex_centered: wp.array[bool],
-  flex_edgeflexid: wp.array[int],
-  # Data in:
-  qvel_in: wp.array2d[float],
-  xmat_in: wp.array2d[wp.mat33],
-  # Data out:
-  efm_c_out: wp.array2d[float],
-):
-  worldid, edgeid = wp.tid()
-  timestep = opt_timestep[worldid % opt_timestep.shape[0]]
-
-  f = flex_edgeflexid[edgeid]
-
-  if f < 0:
-    return
-
-  if flex_interp[f] != 0 or flex_dim[f] != 2:
-    return
-
-  bendingadr = flex_bendingadr[f]
-  if bendingadr < 0:
-    return
-
-  scale = -timestep
-  if scale == 0.0:
-    return
-
-  local_edgeid = edgeid - flex_edgeadr[f]
-  ebase = flex_edgeadr[f]
-  vbase = flex_vertadr[f]
-
-  e_edge = local_edgeid + ebase
-  edge = flex_edge[e_edge]
-  flap = flex_edgeflap[e_edge]
-
-  if flap[1] == -1:
-    return
-
-  verts = wp.vec4i(edge[0], edge[1], flap[0], flap[1])
-  bend_offset = bendingadr + 17 * local_edgeid
-
-  for i in range(4):
-    vi = verts[i]
-    bi = body_weldid[flex_vertbodyid[vbase + vi]]
-    if body_dofnum[bi] != 3:
-      continue
-    dof_i = body_dofadr[bi]
-
-    vw = wp.vec3(0.0, 0.0, 0.0)
-    for j in range(4):
-      vj = verts[j]
-      bj = body_weldid[flex_vertbodyid[vbase + vj]]
-      if body_dofnum[bj] != 3:
-        continue
-      dof_j = body_dofadr[bj]
-      vloc_j = wp.vec3(qvel_in[worldid, dof_j], qvel_in[worldid, dof_j + 1], qvel_in[worldid, dof_j + 2])
-      wj = xmat_in[worldid, bj] * vloc_j
-      q = flex_bending[bend_offset + 4 * i + j]
-      vw += q * wj
-
-    vl = wp.transpose(xmat_in[worldid, bi]) * vw
-    for x in range(3):
-      wp.atomic_add(efm_c_out, worldid, dof_i + x, scale * vl[x])
 
 
 @cache_kernel
@@ -3218,13 +2969,43 @@ def eff_build(m: Model, d: Data):
   d.efm_ts.zero_()
   d.efm_as.zero_()
 
+  if m.nflex > 0 and not ((m.opt.disableflags & DisableBit.SPRING) and (m.opt.disableflags & DisableBit.DAMPER)):
+    passive.flex_hessian(m, d)
+
   if m.nefmK > 0:
     d.efm_K_val.zero_()
     d.efm_L.zero_()
 
     wp.launch(
-      _eff_flex_stretch_stiff,
-      dim=(d.nworld, m.nflexelem),
+      _eff_flex_stretch_stiff_vert,
+      dim=(d.nworld, m.nflexvert),
+      inputs=[
+        m.opt.timestep,
+        m.opt.disableflags,
+        m.body_weldid,
+        m.body_dofnum,
+        m.body_dofadr,
+        m.flex_dim,
+        m.flex_interp,
+        m.flex_stiffnessadr,
+        m.flex_vertbodyid,
+        m.flex_stiffness,
+        m.flex_damping,
+        m.flex_rigid,
+        m.efm_K_rownnz,
+        m.efm_K_rowadr,
+        m.efm_K_colind,
+        m.flex_vertflexid,
+        m.flex_simple,
+        d.xmat,
+        d.flexvert_hessian,
+      ],
+      outputs=[d.efm_K_val],
+    )
+
+    wp.launch(
+      _eff_flex_stretch_stiff_edge,
+      dim=(d.nworld, m.nflexedge, 2),
       inputs=[
         m.opt.timestep,
         m.opt.disableflags,
@@ -3234,26 +3015,19 @@ def eff_build(m: Model, d: Data):
         m.flex_dim,
         m.flex_interp,
         m.flex_vertadr,
-        m.flex_edgeadr,
-        m.flex_elemadr,
-        m.flex_elemnum,
-        m.flex_elemdataadr,
         m.flex_stiffnessadr,
-        m.flex_elemedgeadr,
         m.flex_vertbodyid,
-        m.flex_elem,
-        m.flex_elemedge,
-        m.flexedge_length0,
+        m.flex_edge,
         m.flex_stiffness,
         m.flex_damping,
-        m.flex_centered,
+        m.flex_rigid,
         m.efm_K_rownnz,
         m.efm_K_rowadr,
         m.efm_K_colind,
-        m.flex_elemflexid,
+        m.flex_edgeflexid,
+        m.flex_simple,
         d.xmat,
-        d.flexvert_xpos,
-        d.flexedge_length,
+        d.flexedge_hessian,
       ],
       outputs=[d.efm_K_val],
     )
@@ -3278,11 +3052,14 @@ def eff_build(m: Model, d: Data):
         m.flex_edgeflap,
         m.flex_bending,
         m.flex_damping,
+        m.flex_rigid,
         m.flex_centered,
         m.efm_K_rownnz,
         m.efm_K_rowadr,
         m.efm_K_colind,
         m.flex_edgeflexid,
+        m.flex_simple,
+        d.xquat,
         d.xmat,
       ],
       outputs=[d.efm_K_val],
@@ -3393,63 +3170,9 @@ def eff_shift(m: Model, d: Data):
   )
 
   if not (m.opt.disableflags & DisableBit.SPRING):
-    wp.launch(
-      _eff_flex_stretch_shift,
-      dim=(d.nworld, m.nflexelem),
-      inputs=[
-        m.opt.timestep,
-        m.body_weldid,
-        m.body_dofnum,
-        m.body_dofadr,
-        m.flex_dim,
-        m.flex_interp,
-        m.flex_vertadr,
-        m.flex_edgeadr,
-        m.flex_elemadr,
-        m.flex_elemnum,
-        m.flex_elemdataadr,
-        m.flex_stiffnessadr,
-        m.flex_elemedgeadr,
-        m.flex_vertbodyid,
-        m.flex_elem,
-        m.flex_elemedge,
-        m.flexedge_length0,
-        m.flex_stiffness,
-        m.flex_centered,
-        m.flex_elemflexid,
-        d.qvel,
-        d.xmat,
-        d.flexvert_xpos,
-        d.flexedge_length,
-      ],
-      outputs=[d.efm_c],
-    )
-
-    wp.launch(
-      _eff_flex_bend_shift,
-      dim=(d.nworld, m.nflexedge),
-      inputs=[
-        m.opt.timestep,
-        m.body_weldid,
-        m.body_dofnum,
-        m.body_dofadr,
-        m.flex_dim,
-        m.flex_interp,
-        m.flex_vertadr,
-        m.flex_edgeadr,
-        m.flex_edgenum,
-        m.flex_bendingadr,
-        m.flex_vertbodyid,
-        m.flex_edge,
-        m.flex_edgeflap,
-        m.flex_bending,
-        m.flex_centered,
-        m.flex_edgeflexid,
-        d.qvel,
-        d.xmat,
-      ],
-      outputs=[d.efm_c],
-    )
+    passive.flex_hessian(m, d)
+    passive.flex_bend_mul(m, d, d.efm_c, d.qvel, s1_in=-1.0, s2_in=0.0, use_timestep=True, non_simple_only=False)
+    passive.flex_stretch_mul(m, d, d.efm_c, d.qvel, s1_in=-1.0, s2_in=0.0, use_timestep=True, non_simple_only=False)
 
     wp.launch(
       _eff_flex_interp_mul(False, True),
@@ -3668,6 +3391,17 @@ def eff_actuation(m: Model, d: Data):
     smooth._factor_i_sparse(m, d, d.qH, d.qHLD[:, m.qLD_block_total :], d.qHDiagInv)
 
 
+def eff_mul_m_scratch(m: Model, d: Data) -> tuple[Optional[tuple], Optional[tuple]]:
+  """Builds the eff_mul_m efm_con and flex_scratch arguments.
+
+  eff_mul_m allocates them on each call if they are not passed, which is not allowed inside
+  wp.capture_while: build them before the loop instead.
+  """
+  efm_con = build_efm_contact(m, d) if m.has_flex_passive else None
+  flex_scratch = passive.flex_stretch_scratch(m, d) if m.nflex and m.nflexvert else None
+  return efm_con, flex_scratch
+
+
 @event_scope
 def eff_mul_m(
   m: Model,
@@ -3676,8 +3410,13 @@ def eff_mul_m(
   vec: wp.array2d[float],
   skip: Optional[wp.array] = None,
   efm_con: Optional[tuple] = None,
+  flex_scratch: Optional[tuple] = None,
 ):
-  """Multiplies vector by effective metric M_hat = M + h*D + h^2*K."""
+  """Multiplies vector by effective metric M_hat = M + h*D + h^2*K.
+
+  Inside wp.capture_while, where memory cannot be allocated, pass efm_con and flex_scratch
+  from eff_mul_m_scratch, built before the loop.
+  """
   support.mul_m(m, d, res, vec, skip=skip)
   if m.opt.integrator == IntegratorType.DISCRETE:
     check_skip = skip is not None
@@ -3764,6 +3503,22 @@ def eff_mul_m(
           skip_arr,
         ],
         outputs=[res],
+      )
+    if (m.nefmK == 0 or m.has_non_simple_flex) and not (
+      (m.opt.disableflags & DisableBit.SPRING) and (m.opt.disableflags & DisableBit.DAMPER)
+    ):
+      passive.flex_bend_mul(m, d, res, vec, s1_in=1.0, s2_in=1.0, use_timestep=True, non_simple_only=(m.nefmK > 0), skip=skip)
+      passive.flex_stretch_mul(
+        m,
+        d,
+        res,
+        vec,
+        s1_in=1.0,
+        s2_in=1.0,
+        use_timestep=True,
+        non_simple_only=(m.nefmK > 0),
+        skip=skip,
+        scratch=flex_scratch,
       )
     if not m.flex_interp_assemblable and not (
       (m.opt.disableflags & DisableBit.SPRING) and (m.opt.disableflags & DisableBit.DAMPER)
@@ -4241,7 +3996,9 @@ def eff_solve(m: Model, d: Data, qacc: wp.array2d[float], qfrc: Optional[wp.arra
     m.has_tendon_damping and not (m.opt.disableflags & DisableBit.DAMPER)
   )
   has_efm_actuator = m.has_efm_actuator and not (m.opt.disableflags & DisableBit.ACTUATION)
-  has_flex_any = has_spring_or_damper and (m.nefmK > 0 or m.efm0_active or m.has_flex_passive or not m.flex_interp_assemblable)
+  has_flex_any = has_spring_or_damper and (
+    m.nefmK > 0 or m.has_non_simple_flex or m.efm0_active or m.has_flex_passive or not m.flex_interp_assemblable
+  )
   if not has_flex_any and not has_efm_tendon and not has_efm_actuator:
     smooth.solve_LD(m, d, d.qHLD, d.qHDiagInv, qacc, rhs)
     if m.opt.enableflags & EnableBit.SLEEP:
@@ -4255,7 +4012,8 @@ def eff_solve(m: Model, d: Data, qacc: wp.array2d[float], qfrc: Optional[wp.arra
 
   efm_nsolving.fill_(d.nworld)
   efm_iter.zero_()
-  efm_con = build_efm_contact(m, d) if (has_spring_or_damper and m.has_flex_passive) else None
+  # allocated here since _pcg_iteration may run inside wp.capture_while
+  efm_con, flex_scratch = eff_mul_m_scratch(m, d)
 
   eff_prec(m, d, efm_z, rhs)
   wp.launch_tiled(
@@ -4283,7 +4041,7 @@ def eff_solve(m: Model, d: Data, qacc: wp.array2d[float], qfrc: Optional[wp.arra
   max_it = m.opt.iterations
 
   def _pcg_iteration():
-    eff_mul_m(m, d, efm_Ap, efm_p, skip=efm_done, efm_con=efm_con)
+    eff_mul_m(m, d, efm_Ap, efm_p, skip=efm_done, efm_con=efm_con, flex_scratch=flex_scratch)
     wp.launch_tiled(
       _pcg_pAp_step_and_check_tiled,
       dim=d.nworld,

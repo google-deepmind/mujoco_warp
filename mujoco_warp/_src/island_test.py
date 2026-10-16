@@ -298,6 +298,75 @@ class IslandDiscoveryConstraintsTest(absltest.TestCase):
     np.testing.assert_array_equal(d.nisland.numpy(), np.zeros(d.nworld, dtype=np.int32))
     np.testing.assert_array_equal(d.tree_island.numpy(), np.full((d.nworld, mjm.ntree), -1, dtype=np.int32))
 
+  def test_flex_contact_with_zero_row(self):
+    """Flex contacts whose Jacobian rows vanish are in the island of their bodies."""
+    models = {
+      # cloth pinned to a hinged body: pins on the hinge axis touch the plane
+      "pinned_cloth": """
+        <mujoco>
+          <worldbody>
+            <geom type="plane" size="1 1 .1"/>
+            <body name="flap">
+              <joint axis="0 1 0"/>
+              <geom size=".01" pos=".3 0 .1"/>
+              <flexcomp name="cloth" type="grid" count="3 3 1" spacing=".1 .1 .1" dim="2" mass=".1">
+                <pin id="3 4 5"/>
+                <edge equality="true"/>
+              </flexcomp>
+            </body>
+          </worldbody>
+        </mujoco>
+      """,
+      # triangle with vertices in three trees, hinges orthogonal to the box
+      "hinged_triangle": """
+        <mujoco>
+          <option cone="elliptic"/>
+          <worldbody>
+            <geom type="box" size=".2 .2 .05" pos="0 0 -.05"/>
+            <body name="b0" pos=".1 0 0">
+              <joint/>
+              <geom size=".01" pos=".02 0 .1"/>
+            </body>
+            <body name="b1" pos="-.05 .1 0">
+              <joint/>
+              <geom size=".01" pos=".02 0 .1"/>
+            </body>
+            <body name="b2" pos="-.05 -.1 0">
+              <joint/>
+              <geom size=".01" pos=".02 0 .1"/>
+            </body>
+          </worldbody>
+          <deformable>
+            <flex name="triangle" dim="2" body="b0 b1 b2" vertex="0 0 0 0 0 0 0 0 0" element="0 1 2" radius=".005">
+              <edge damping="1"/>
+            </flex>
+          </deformable>
+        </mujoco>
+      """,
+    }
+    for name, xml in models.items():
+      for jac in (mujoco.mjtJacobian.mjJAC_DENSE, mujoco.mjtJacobian.mjJAC_SPARSE):
+        with self.subTest(model=name, jacobian=int(jac)):
+          mjm, mjd, m, d = test_data.fixture(xml=xml, overrides={"opt.jacobian": jac})
+          self.assertGreater(mjd.ncon, 0)
+          mjwarp.fwd_position(m, d)
+
+          d.nisland.fill_(-1)
+          d.tree_island.fill_(-1)
+          island.island(m, d)
+
+          # same islands as MuJoCo: one island with every tree
+          self.assertEqual(mjd.nisland, 1)
+          np.testing.assert_array_equal(d.nisland.numpy(), [mjd.nisland])
+          np.testing.assert_array_equal(d.tree_island.numpy()[0], mjd.tree_island[: mjm.ntree])
+
+          # every constraint row, including the vanishing ones, is in the island
+          d.efc.island.fill_(-1)
+          island.compute_island_mapping(m, d)
+          nefc = d.nefc.numpy()[0]
+          self.assertGreater(nefc, 0)
+          np.testing.assert_array_equal(d.efc.island.numpy()[0, :nefc], np.zeros(nefc, dtype=np.int32))
+
 
 class IslandDiscoveryExecutionTest(absltest.TestCase):
   """Tests multi-world execution, idempotency, and CUDA graph capturability."""
@@ -391,6 +460,10 @@ class IslandDiscoveryExecutionTest(absltest.TestCase):
 
     np.testing.assert_array_equal(d.tree_island.numpy(), expected_labels)
     np.testing.assert_array_equal(d.nisland.numpy(), expected_nisland)
+
+  def test_island_dsu_module_is_unique(self):
+    """Ensure _island_dsu does not trigger shared module recompilation."""
+    self.assertNotEqual(island._island_dsu.module, island._compress_roots.module)
 
 
 class IslandMappingTest(absltest.TestCase):

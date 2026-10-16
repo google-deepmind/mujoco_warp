@@ -20,6 +20,8 @@ import mujoco
 import numpy as np
 import warp as wp
 
+from mujoco_warp._src import util_pkg
+
 MJ_MINVAL = mujoco.mjMINVAL
 MJ_MAXVAL = mujoco.mjMAXVAL
 MJ_MINIMP = mujoco.mjMINIMP  # minimum constraint impedance
@@ -27,6 +29,7 @@ MJ_MAXIMP = mujoco.mjMAXIMP  # maximum constraint impedance
 MJ_MAXCONPAIR = mujoco.mjMAXCONPAIR
 MJ_MINMU = mujoco.mjMINMU  # minimum friction
 MJ_MINAWAKE = mujoco.mjMINAWAKE  # minimum number of timesteps before sleeping
+FLEX_STIFFNESS_3D = 24 if util_pkg.check_version("mujoco>=3.14.1.dev989511280") else 21
 # maximum size (by number of edges) of an horizon in EPA algorithm
 MJ_MAX_EPAHORIZON = 24
 # maximum average number of trianglarfaces EPA can insert at each iteration
@@ -58,8 +61,8 @@ class BlockDim:
 
   Attributes:
     segmented_sort: segmented sort block dimension (collision_driver)
+    nxn_broadphase: NXN broadphase block dimension (collision_driver)
     convex_ccd: convex CCD kernel block dimension (collision_convex)
-    actuator_velocity: actuator velocity block dimension (forward)
     island_dsu: island discovery DSU block dimension (island)
     ray: ray block dimension (ray)
     contact_sort: contact sort block dimension (sensor)
@@ -80,17 +83,15 @@ class BlockDim:
     solve_search_update_cg: solve search update CG block dimension (solver)
     solve_init_search_cg: solve init search CG block dimension (solver)
     contact_jac_tiled: contact Jacobian tiled block dimension (solver)
-    qderiv_actuator_dense: qderiv actuator dense block dimension (derivative)
     eff_pcg: effective-metric PCG block dimension (derivative)
     render: render block dimension (render)
   """
 
   # collision_driver
   segmented_sort: int = 128
+  nxn_broadphase: int = 128
   # collision_convex
   convex_ccd: int = 64
-  # forward
-  actuator_velocity: int = 32
   # island
   island_dsu: int = 32
   # ray
@@ -117,7 +118,6 @@ class BlockDim:
   solve_init_search_cg: int = 256
   contact_jac_tiled: int = 32
   # derivative
-  qderiv_actuator_dense: int = 32
   eff_pcg: int = 128
   # render
   render: int = 64
@@ -862,11 +862,23 @@ class mat43f(wp.types.matrix(shape=(4, 3), dtype=float)):
   pass
 
 
+class mat53f(wp.types.matrix(shape=(5, 3), dtype=float)):
+  pass
+
+
 class mat63f(wp.types.matrix(shape=(6, 3), dtype=float)):
   pass
 
 
+class mat55f(wp.types.matrix(shape=(5, 5), dtype=float)):
+  pass
+
+
 class mat66f(wp.types.matrix(shape=(6, 6), dtype=float)):
+  pass
+
+
+class mat113f(wp.types.matrix(shape=(11, 3), dtype=float)):
   pass
 
 
@@ -879,8 +891,11 @@ vec16 = vec16f
 vec128 = vec_pluginattr
 mat23 = mat23f
 mat43 = mat43f
+mat53 = mat53f
 mat63 = mat63f
+mat55 = mat55f
 mat66 = mat66f
+mat113 = mat113f
 
 
 def array(*args) -> wp.array:
@@ -905,6 +920,7 @@ class Option:
     timestep: simulation timestep
     tolerance: main solver tolerance
     ls_tolerance: CG/Newton linesearch tolerance
+    noslip_tolerance: noslip solver tolerance
     ccd_tolerance: convex collision detection tolerance
     sleep_tolerance: sleep velocity tolerance
     gravity: gravitational acceleration
@@ -917,6 +933,7 @@ class Option:
     solver: solver algorithm (SolverType)
     iterations: number of main solver iterations
     ls_iterations: maximum number of CG/Newton linesearch iterations
+    noslip_iterations: maximum number of noslip solver iterations
     ccd_iterations: number of iterations in convex collision detection
     disableflags: bit flags for disabling standard features
     enableflags: bit flags for enabling optional features
@@ -941,6 +958,7 @@ class Option:
   timestep: array("*", float)
   tolerance: array("*", float)
   ls_tolerance: array("*", float)
+  noslip_tolerance: array("*", float)
   ccd_tolerance: array("*", float)
   sleep_tolerance: array("*", float)
   gravity: array("*", wp.vec3)
@@ -953,6 +971,7 @@ class Option:
   solver: int
   iterations: int
   ls_iterations: int
+  noslip_iterations: int
   ccd_iterations: int
   disableflags: int
   enableflags: int
@@ -1284,6 +1303,7 @@ class Model:
     flexedge_length0: edge lengths in qpos0                  (nflexedge,)
     flexedge_invweight0: inv. inertia for the edge           (nflexedge,)
     flex_radius: radius around primitive element             (nflex,)
+    flex_size: vertex bounding box half sizes in qpos0       (nflex, 3)
     flex_stiffness: finite element stiffness matrix          (nflexstiffness,)
     flex_bending: bending stiffness                          (nflexbending,)
     efm0_dofid: zero-mass flex DOF indices                   (nefm0dof,)
@@ -1295,6 +1315,7 @@ class Model:
     flex_edgestiffness: edge stiffness                       (nflex,)
     flex_edgedamping: edge damping                           (nflex,)
     flex_edgeequality: edge equality type (0:none,1:edge,2:vert,3:strain) (nflex,)
+    flex_rigid: flex is rigid (all vertices on same body)    (nflex,)
     flexedge_rigid: edge is rigid (e.g. vertices welded to same body) (nflexedge,)
     flex_centered: flex vertices are centered at body origin (nflex,)
     flexedge_J_rownnz: number of nonzeros in Jacobian row    (nflexedge,)
@@ -1457,7 +1478,6 @@ class Model:
                       geom distance sensors
     nsensortaxel: number of taxels in all tactile sensors
     ntactileweld: number of unique weld bodies with tactile sensors
-    nsensorcontact: number of contact sensors
     nrangefinder: number of rangefinder sensors
     nmaxcondim: maximum condim across geoms, pairs, and flexes
     nmaxpyramid: maximum number of pyramid directions
@@ -1470,8 +1490,11 @@ class Model:
     has_fluid: True if wind, density, or viscosity are non-zero at put_model time
     flg_surfacevel: whether model has non-zero surfacevel
     has_sdf_geom: whether the model contains SDF geoms
+    has_boxbox_margin: whether any box-box contact pair has a non-zero margin
     has_flex_selfcollide: whether any flex has self-collision enabled
     has_flex_passive: whether any flex has passive contact enabled
+    has_flex_snh: whether any flex uses 3D SNH elasticity
+    has_non_simple_flex: whether any flex has non-simple vertex bodies
     has_tendon_stiffness: whether any tendon has positive stiffness
     has_tendon_damping: whether any tendon has positive damping
     has_efm_actuator: whether any actuator contributes effective metric coupling
@@ -1486,11 +1509,12 @@ class Model:
     max_flex_dim: maximum flex dimension in the model
     block_dim: block dim options
     body_tree: list of body ids by tree level
+    body_subtreenum: number of bodies in subtree, including self (nbody,)
     body_branches: flattened body ids for all branches
     body_branch_start: start index in body_branches for each branch   (nbranch + 1,)
     mocap_bodyid: id of body for mocap                       (nmocap,)
     body_fluid_ellipsoid: does body use ellipsoid fluid      (nbody,)
-    body_is_free: is body a standalone free body             (nbody,)
+    body_is_free: is body root of a free rigid subtree       (nbody,)
     body_fluid_ellipsoid_adr: body ids with ellipsoid fluid  (nbody_fluid_ellipsoid,)
     body_fluid_box_adr: body ids with box fluid              (nbody_fluid_box,)
     body_freeadr: body ids of free bodies                    (nbodyfree,)
@@ -1535,10 +1559,12 @@ class Model:
                     (excluding limit velocity sensors)
     sensor_limitvel_adr: address for limit velocity sensors
     sensor_acc_adr: addresses for acceleration sensors
+                    (excluding touch, contact, limit force, and tendon actuator force sensors)
+    sensor_stage_pos_adr: addresses for all stage-pos sensors
+    sensor_stage_vel_adr: addresses for all stage-vel sensors
+    sensor_stage_acc_adr: addresses for all stage-acc sensors
     sensor_rangefinder_adr: addresses for rangefinder sensors
     rangefinder_sensor_adr: map sensor id to rangefinder id
-                    (excluding touch sensors)
-                    (excluding limit force sensors)
     sensor_collision_start_adr: address for sensor's first
                                 item in collision
     collision_sensor_adr: map sensor id to collision id      (nsensor,)
@@ -1548,8 +1574,8 @@ class Model:
     sensor_e_kinetic: evaluate energy_vel
     sensor_tendonactfrc_adr: address for tendonactfrc sensor
     sensor_subtree_vel: evaluate subtree_vel
-    sensor_contact_adr: addresses for contact sensors        (nsensorcontact,)
-    sensor_adr_to_contact_adr: map sensor adr to contact adr (nsensor,)
+    sensor_contact_pos_adr: addresses for position contact sensors (nsensor_contact_pos,)
+    sensor_contact_acc_adr: addresses for acceleration contact sensors (nsensor_contact_acc,)
     sensor_rne_postconstraint: evaluate rne_postconstraint
     sensor_rangefinder_bodyid: bodyid for rangefinder        (nrangefinder,)
     weld_tactile_id: weld body to tactile weld index         (nbody,)
@@ -1563,9 +1589,6 @@ class Model:
     M_fullm_j: sparse mass matrix addressing
     M_elemid: (row, col) -> CSR madr addresses; -1 if not a chain ancestor
     M_hinit_i: row index of each CSR M entry; for densifying M into the dense Newton H (nC,)
-    M_fullm_upper_i: upper-triangle row indices for solver h seeding
-    M_fullm_upper_j: upper-triangle column indices for solver h seeding
-    M_fullm_upper_elemid: source elemid into M_fullm_i/M_fullm_j
     qD_fullm_i: D-structure row indices for RNE derivatives
     qD_fullm_j: D-structure column indices for RNE derivatives
     M_mulm_rowadr: sparse matmul row pointers
@@ -1577,6 +1600,7 @@ class Model:
     flex_vertflexid: maps each vertex index directly to its flexid          (nflexvert,)
     flex_shelladr: maps each flex to its start shell index                  (nflex,)
     flex_faceadr: maps each flex to its start face index                    (nflex,)
+    flex_simple: whether all vertices of flex are on simple bodies          (nflex,)
     flex_cell_map: precomputed flex cell mapping (nflexintcell,)
     flexstrain_J_rownnz: number of nonzeros in flex strain Jacobian row     (neq_flexstrain,)
     flexstrain_J_rowadr: row start address in colind array (neq_flexstrain,)
@@ -1814,6 +1838,7 @@ class Model:
   flexedge_length0: array("nflexedge", float)
   flexedge_invweight0: array("nflexedge", float)
   flex_radius: array("nflex", float)
+  flex_size: array("nflex", wp.vec3)
   flex_stiffness: array("nflexstiffness", float)
   flex_bending: array("nflexbending", float)
   efm0_dofid: array("nefm0dof", int)
@@ -1825,6 +1850,7 @@ class Model:
   flex_edgestiffness: array("nflex", float)
   flex_edgedamping: array("nflex", float)
   flex_edgeequality: array("nflex", int)
+  flex_rigid: array("nflex", bool)
   flexedge_rigid: array("nflexedge", bool)
   flex_centered: array("nflex", bool)
   flexedge_J_rownnz: array("nflexedge", int)
@@ -1985,7 +2011,6 @@ class Model:
   nsensorcollision: int
   nsensortaxel: int
   ntactileweld: int
-  nsensorcontact: int
   nrangefinder: int
   nmaxcondim: int
   nmaxpyramid: int
@@ -1997,8 +2022,11 @@ class Model:
   has_fluid: bool
   flg_surfacevel: bool
   has_sdf_geom: bool
+  has_boxbox_margin: bool
   has_flex_selfcollide: bool
   has_flex_passive: bool
+  has_flex_snh: bool
+  has_non_simple_flex: bool
   has_tendon_stiffness: bool
   has_tendon_damping: bool
   has_efm_actuator: bool
@@ -2013,6 +2041,7 @@ class Model:
   max_flex_dim: int
   block_dim: BlockDim
   body_tree: tuple[array("nbody", int), ...]
+  body_subtreenum: array("nbody", int)
   body_branches: array("nbody_branches", int)
   body_branch_start: array("nbranch_start", int)
   mocap_bodyid: array("nmocap", int)
@@ -2056,6 +2085,9 @@ class Model:
   sensor_vel_adr: array("nsensor_vel", int)
   sensor_limitvel_adr: array("nsensor_limitvel", int)
   sensor_acc_adr: array("nsensor_acc", int)
+  sensor_stage_pos_adr: array("nsensor_stage_pos", int)
+  sensor_stage_vel_adr: array("nsensor_stage_vel", int)
+  sensor_stage_acc_adr: array("nsensor_stage_acc", int)
   sensor_rangefinder_adr: array("nrangefinder", int)
   rangefinder_sensor_adr: array("nsensor", int)
   sensor_collision_start_adr: array("nsensor_collision_start_adr", int)
@@ -2066,8 +2098,8 @@ class Model:
   sensor_e_kinetic: bool
   sensor_tendonactfrc_adr: array("nsensor_tendonactfrc", int)
   sensor_subtree_vel: bool
-  sensor_contact_adr: array("nsensorcontact", int)
-  sensor_adr_to_contact_adr: array("nsensor", int)
+  sensor_contact_pos_adr: array("nsensor_contact_pos", int)
+  sensor_contact_acc_adr: array("nsensor_contact_acc", int)
   sensor_rne_postconstraint: bool
   sensor_rangefinder_bodyid: array("nrangefinder", int)
   weld_tactile_id: array("nbody", int)
@@ -2083,9 +2115,6 @@ class Model:
   M_fullm_j: array("nM_fullm", int)
   M_elemid: array("nv", "nv", int)  # (row, col) -> CSR madr address; -1 if col is not a chain ancestor of row
   M_hinit_i: array("nC", int)  # row index of each CSR M entry (for densifying M into the dense Newton H)
-  M_fullm_upper_i: array("nM_fullm_upper", int)
-  M_fullm_upper_j: array("nM_fullm_upper", int)
-  M_fullm_upper_elemid: array("nM_fullm_upper", int)
   qD_fullm_i: array("nqD_fullm", int)  # D-structure (full square) row indices for RNE derivatives
   qD_fullm_j: array("nqD_fullm", int)  # D-structure (full square) column indices for RNE derivatives
   # Gather-based sparse mul_m indices (thread per DOF, no atomics)
@@ -2098,6 +2127,7 @@ class Model:
   flex_vertflexid: array("nflexvert", int)
   flex_shelladr: array("nflex", int)
   flex_faceadr: array("nflex", int)
+  flex_simple: array("nflex", bool)
   flex_cell_map: array("nflexintcell", wp.vec4i)
   flexstrain_J_rownnz: array("neq_flexstrain", int)
   flexstrain_J_rowadr: array("neq_flexstrain", int)
@@ -2277,6 +2307,9 @@ class Data:
     cdof: com-based motion axis of each dof (rot:lin)           (nworld, nv, 6)
     cinert: com-based body inertia and mass                     (nworld, nbody, 10)
     flexvert_xpos: cartesian flex vertex positions              (nworld, nflexvert, 3)
+    flex_hessian_valid: whether flex stretch Hessian is current (nworld, nflex)
+    flexvert_hessian: diagonal 3x3 blocks of stretch Hessian    (nworld, nflexvert, 6)
+    flexedge_hessian: off-diagonal 3x3 blocks of stretch Hessian (nworld, nflexedge, 3, 3)
     flexedge_J: edge length Jacobian                            (nworld, nJfe)
     flexedge_length: flex edge lengths                          (nworld, nflexedge)
     ten_wrapadr: start address of tendon's path                 (nworld, ntendon)
@@ -2438,6 +2471,9 @@ class Data:
   cdof: array("nworld", "nv", wp.spatial_vector)
   cinert: array("nworld", "nbody", vec10)
   flexvert_xpos: array("nworld", "nflexvert", wp.vec3)
+  flex_hessian_valid: array("nworld", "nflex", bool)
+  flexvert_hessian: array("nworld", "nflexvert", vec6)
+  flexedge_hessian: array("nworld", "nflexedge", wp.mat33)
   flexedge_J: array("nworld", "nJfe", float)
   flexedge_length: array("nworld", "nflexedge", float)
   ten_wrapadr: array("nworld", "ntendon", int)
@@ -2563,6 +2599,9 @@ class InverseContext:
   # the full-coordinate Data, set by solve_compact (None natively)
   compact_m_full: Optional["Model"] = None
   compact_d_full: Optional["Data"] = None
+  # discrete integrator effective-metric scratch (see SolverContext)
+  efm_con: Optional[tuple] = None
+  flex_scratch: Optional[tuple] = None
 
 
 @dataclasses.dataclass
@@ -2596,6 +2635,10 @@ class SolverContext:
   # the full-coordinate Data, set by solve_compact (None natively)
   compact_m_full: Optional["Model"] = None
   compact_d_full: Optional["Data"] = None
+  # discrete integrator effective-metric scratch built before the solver loop, which may run
+  # inside wp.capture_while where memory cannot be allocated (None otherwise)
+  efm_con: Optional[tuple] = None
+  flex_scratch: Optional[tuple] = None
 
 
 @dataclasses.dataclass

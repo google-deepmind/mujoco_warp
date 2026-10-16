@@ -545,6 +545,61 @@ class GJKTest(parameterized.TestCase):
     _, ncon, _, _ = _geom_dist(m, d, 0, 1, multiccd=True)
     self.assertEqual(ncon, expected_ncon)
 
+  @parameterized.named_parameters(
+    ("shallow", 1.4, ' euler="90 0 0"', "0.5 0.5", False, 2, -0.1),
+    ("epa_fallback", 0.9, ' euler="90 0 0"', "0.5 0.5", False, 2, -0.6),
+    ("reversed", 1.4, ' euler="90 0 0"', "0.5 0.5", True, 2, -0.1),
+    ("clipped", 1.4, ' euler="90 0 0"', "0.5 2.0", False, 2, -0.1),
+    ("tilted", 1.4, ' euler="70 0 0"', "0.5 0.5", False, 1, None),
+  )
+  def test_capsule_mesh_ccd(
+    self,
+    pos_z: float,
+    euler: str,
+    cap_size: str,
+    reverse: bool,
+    expected_ncon: int,
+    expected_dist: float | None,
+  ):
+    """Test capsule-mesh multiccd."""
+    geom_mesh = '<geom name="mesh" type="mesh" mesh="cube"/>'
+    geom_cap = f'<geom name="cap" type="capsule" pos="0 0 {pos_z}"{euler} size="{cap_size}"/>'
+    geoms = f"{geom_cap}\n           {geom_mesh}" if reverse else f"{geom_mesh}\n           {geom_cap}"
+    _, _, m, d = test_data.fixture(
+      xml=f"""
+       <mujoco>
+         <asset>
+           <mesh name="cube"
+             vertex="-1 -1 -1  1 -1 -1  1 1 -1  -1 1 -1
+                     -1 -1  1  1 -1  1  1 1  1  -1 1  1"/>
+         </asset>
+         <worldbody>
+           {geoms}
+         </worldbody>
+       </mujoco>
+       """
+    )
+    dist, ncon, _, _ = _geom_dist(m, d, 0, 1, multiccd=True)
+    self.assertEqual(ncon, expected_ncon)
+    if expected_dist is not None:
+      self.assertAlmostEqual(dist, expected_dist, places=5)
+
+  def test_capsule_cylinder_ccd(self):
+    """Test capsule-cylinder multiccd."""
+    _, _, m, d = test_data.fixture(
+      xml="""
+       <mujoco>
+         <worldbody>
+           <geom name="cyl" type="cylinder" size="2 1"/>
+           <geom name="cap" type="capsule" pos="0 0 1.4" euler="90 0 0" size="0.5 0.5"/>
+         </worldbody>
+       </mujoco>
+       """
+    )
+    dist, ncon, _, _ = _geom_dist(m, d, 0, 1, multiccd=True)
+    self.assertEqual(ncon, 2)
+    self.assertAlmostEqual(dist, -0.1, places=5)
+
   def test_mesh_mesh_ccd(self):
     """Test mesh-mesh multiccd."""
     _, _, m, d = test_data.fixture(
