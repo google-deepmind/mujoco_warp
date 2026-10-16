@@ -377,6 +377,68 @@ class ConstraintTest(parameterized.TestCase):
       efc_address = d.contact.efc_address.numpy()[:nacon]
       _assert_eq(efc_address, -1, f"efc_address (cone={cone})")
 
+  @parameterized.parameters(*itertools.product((ConeType.PYRAMIDAL, ConeType.ELLIPTIC), (1, 2)))
+  def test_njmax_nnz_overflow_rows(self, cone, nworld):
+    """Rows that do not fit in njmax_nnz are dropped instead of keeping stale sparse layouts."""
+    _NJMAX_NNZ = 30
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option jacobian="sparse"/>
+        <worldbody>
+          <geom type="plane" size="10 10 .01"/>
+          <body pos="0 0 1">
+            <joint type="hinge" range="-.1 .1"/>
+            <geom type="sphere" size=".05" contype="0" conaffinity="0"/>
+          </body>
+          <body pos="1 0 1"><freejoint/><geom type="sphere" size=".1"/></body>
+          <body pos="2 0 1"><freejoint/><geom type="sphere" size=".1"/></body>
+          <body pos="3 0 1"><freejoint/><geom type="sphere" size=".1"/></body>
+          <body pos="4 0 1"><freejoint/><geom type="sphere" size=".1"/></body>
+        </worldbody>
+        <keyframe>
+          <key qpos=".5  1 0 .09 1 0 0 0  2 0 .09 1 0 0 0  3 0 .09 1 0 0 0  4 0 .09 1 0 0 0"/>
+        </keyframe>
+      </mujoco>
+      """,
+      overrides={"opt.cone": cone},
+      nworld=nworld,
+      njmax_nnz=_NJMAX_NNZ,
+    )
+    self.assertTrue(m.is_sparse)
+    self.assertLessEqual(mjm.nv, _NJMAX_NNZ)
+
+    # limit and contacts active: needs more Jacobian storage than njmax_nnz
+    mujoco.mj_resetDataKeyframe(mjm, mjd, 0)
+    d.qpos.assign(np.tile(mjd.qpos, (nworld, 1)))
+
+    # stale layout from a previous step: rows covering the whole storage
+    d.efc.J_rowadr.fill_(0)
+    d.efc.J_rownnz.fill_(mjm.nv)
+
+    mjw.fwd_position(m, d)
+
+    nefc = d.nefc.numpy()
+    efc_type = d.efc.type.numpy()
+    rowadr = d.efc.J_rowadr.numpy()
+    rownnz = d.efc.J_rownnz.numpy()
+    colind = d.efc.J_colind.numpy()
+    for worldid in range(nworld):
+      nrow = min(nefc[worldid], d.njmax)
+      self.assertGreater(nrow, 0)
+      adr, nnz = rowadr[worldid, :nrow], rownnz[worldid, :nrow]
+
+      np.testing.assert_array_less(-1, adr)
+      np.testing.assert_array_less(adr + nnz, _NJMAX_NNZ + 1)
+      order = np.argsort(adr)
+      np.testing.assert_array_less((adr + nnz)[order][:-1], adr[order][1:] + 1, err_msg="overlapping rows")
+
+      is_contact = efc_type[worldid, :nrow] >= int(mujoco.mjtConstraint.mjCNSTR_CONTACT_FRICTIONLESS)
+      _assert_eq(nnz[is_contact], 6, "contact rownnz")
+      for a, n in zip(adr, nnz):
+        cols = colind[worldid, 0, a : a + n]
+        self.assertTrue(np.all((cols >= 0) & (cols < mjm.nv)), f"colind {cols}")
+
   @parameterized.parameters(
     *itertools.product(
       ("jdotv/connect_2d.xml", "jdotv/connect_3d.xml", "jdotv/weld_3d.xml"),
