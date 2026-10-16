@@ -1076,6 +1076,29 @@ class GJKTest(parameterized.TestCase):
     np.testing.assert_allclose(x1, np.array([1.907368, -0.052973, 0.700000]), atol=1e-4)
     np.testing.assert_allclose(x2, np.array([1.300000, -0.052973, 0.700000]), atol=1e-4)
 
+  def test_tilted_box_box_multiccd(self):
+    """Test witness points for tilted box-box face contact."""
+    _, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <geom type="box" pos="0 0 0.08" euler="5 0 0" size="0.1 0.1 0.1"/>
+          <geom type="box" pos="0 0 -0.05" size="1 1 0.05"/>
+        </worldbody>
+      </mujoco>
+      """
+    )
+    _, ncon, x1, x2 = _geom_dist(m, d, 0, 1, multiccd=True)
+    cos5 = np.cos(np.deg2rad(5.0))
+    sin5 = np.sin(np.deg2rad(5.0))
+    y_upper = 0.1 * cos5 + 0.1 * sin5
+    z_upper = 0.08 + 0.1 * sin5 - 0.1 * cos5
+    self.assertEqual(ncon, 4)
+    np.testing.assert_allclose(
+      x1, np.array([-0.1, y_upper, z_upper]), atol=1e-5
+    )
+    np.testing.assert_allclose(x2, np.array([-0.1, y_upper, 0.0]), atol=1e-5)
+
   @parameterized.parameters(0.0, 0.1)
   def test_hfield_support(self, margin: float):
     """Test support function for height field geoms."""
