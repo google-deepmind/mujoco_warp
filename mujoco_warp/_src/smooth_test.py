@@ -184,6 +184,52 @@ class SmoothTest(parameterized.TestCase):
     _assert_eq(d.light_xpos.numpy()[0], mjd.light_xpos, "light_xpos")
     _assert_eq(d.light_xdir.numpy()[0], mjd.light_xdir, "light_xdir")
 
+  @parameterized.parameters(1, 2)
+  def test_camlight_normalization_fallback(self, nworld):
+    """Tests target camera and light normalization fallbacks."""
+    xml = """
+    <mujoco>
+      <worldbody>
+        <body name="target">
+          <joint type="slide" axis="1 0 0"/>
+          <geom size=".1" mass="1"/>
+        </body>
+        <camera mode="targetbody" target="target" pos="0 0 1"/>
+        <camera mode="targetbody" target="target" pos="0 0 0"/>
+        <light mode="targetbody" target="target" pos="0 0 0"/>
+      </worldbody>
+    </mujoco>
+    """
+    mjm, _, m, d = test_data.fixture(xml=xml, nworld=nworld)
+
+    qpos = np.zeros((nworld, mjm.nq), dtype=np.float32)
+    if nworld == 2:
+      qpos[1, 0] = 0.25
+    d.qpos.assign(qpos)
+
+    references = []
+    for worldid in range(nworld):
+      mjd = mujoco.MjData(mjm)
+      mjd.qpos[:] = qpos[worldid]
+      mujoco.mj_kinematics(mjm, mjd)
+      mujoco.mj_comPos(mjm, mjd)
+      mujoco.mj_camlight(mjm, mjd)
+      references.append(mjd)
+
+    mjw.kinematics(m, d)
+    mjw.com_pos(m, d)
+    d.cam_xpos.fill_(wp.inf)
+    d.cam_xmat.fill_(wp.inf)
+    d.light_xpos.fill_(wp.inf)
+    d.light_xdir.fill_(wp.inf)
+    mjw.camlight(m, d)
+
+    for worldid, mjd in enumerate(references):
+      _assert_eq(d.cam_xpos.numpy()[worldid], mjd.cam_xpos, "cam_xpos")
+      _assert_eq(d.cam_xmat.numpy()[worldid], mjd.cam_xmat.reshape((-1, 3, 3)), "cam_xmat")
+      _assert_eq(d.light_xpos.numpy()[worldid], mjd.light_xpos, "light_xpos")
+      _assert_eq(d.light_xdir.numpy()[worldid], mjd.light_xdir, "light_xdir")
+
   @parameterized.parameters(mujoco.mjtJacobian.mjJAC_SPARSE, mujoco.mjtJacobian.mjJAC_DENSE)
   def test_crb(self, jacobian):
     """Tests crb."""

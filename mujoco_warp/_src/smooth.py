@@ -825,6 +825,16 @@ def com_pos(m: Model, d: Data):
   )
 
 
+@wp.func
+def _normalize3(vec: wp.vec3) -> wp.vec3:
+  length = wp.length(vec)
+  if length < MJ_MINVAL:
+    vec = wp.vec3(1.0, 0.0, 0.0)
+  else:
+    vec /= length
+  return vec
+
+
 @wp.kernel
 def _cam_local_to_global(
   # Model:
@@ -873,10 +883,10 @@ def _cam_local_to_global(
     if cam_mode[camid] == CamLightType.TARGETBODYCOM:
       pos = subtree_com_in[worldid, cam_targetbodyid[camid]]
     # zaxis = -desired camera direction, in global frame
-    mat_3 = wp.normalize(cam_xpos_out[worldid, camid] - pos)
+    mat_3 = _normalize3(cam_xpos_out[worldid, camid] - pos)
     # xaxis: orthogonal to zaxis and to (0,0,1)
-    mat_1 = wp.normalize(wp.cross(wp.vec3(0.0, 0.0, 1.0), mat_3))
-    mat_2 = wp.normalize(wp.cross(mat_3, mat_1))
+    mat_1 = _normalize3(wp.cross(wp.vec3(0.0, 0.0, 1.0), mat_3))
+    mat_2 = _normalize3(wp.cross(mat_3, mat_1))
     # fmt: off
     cam_xmat_out[worldid, camid] = wp.mat33(
       mat_1[0], mat_2[0], mat_3[0],
@@ -948,7 +958,7 @@ def _light_local_to_global(
     light_xpos_out[worldid, lightid] = xpos + math.rot_vec_quat(light_pos[light_pos_id, lightid], xquat)
     light_xdir_out[worldid, lightid] = math.rot_vec_quat(light_dir[light_dir_id, lightid], xquat)
 
-  light_xdir_out[worldid, lightid] = wp.normalize(light_xdir_out[worldid, lightid])
+  light_xdir_out[worldid, lightid] = _normalize3(light_xdir_out[worldid, lightid])
 
 
 @event_scope
