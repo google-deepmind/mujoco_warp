@@ -2586,8 +2586,8 @@ class IOTest(parameterized.TestCase):
 
   @parameterized.parameters(0, mujoco.mjtDisableBit.mjDSBL_MULTICCD)
   def test_margin_box_box(self, disableflags):
-    """Box-box with margin uses the primitive collider (as in MuJoCo), with or without MULTICCD."""
-    _, _, m, _ = test_data.fixture(
+    """Box-box with margin succeeds without error, with or without MULTICCD."""
+    test_data.fixture(
       xml="""
       <mujoco>
         <worldbody>
@@ -2604,30 +2604,9 @@ class IOTest(parameterized.TestCase):
       """,
       overrides={"opt.disableflags": disableflags},
     )
-    self.assertTrue(m.has_boxbox_margin)
-
-  def test_no_margin_box_box(self):
-    """Box-box without margin keeps using the convex collider."""
-    _, _, m, _ = test_data.fixture(
-      xml="""
-      <mujoco>
-        <worldbody>
-          <body>
-            <freejoint/>
-            <geom type="box" size=".1 .1 .1"/>
-          </body>
-          <body pos="0 0 .5">
-            <freejoint/>
-            <geom type="box" size=".1 .1 .1"/>
-          </body>
-        </worldbody>
-      </mujoco>
-      """
-    )
-    self.assertFalse(m.has_boxbox_margin)
 
   def test_margin_multiccd_box_mesh(self):
-    """MULTICCD + box-mesh with margin raises NotImplementedError."""
+    """MULTICCD + box-mesh with margin succeeds without error."""
     mjm = mujoco.MjModel.from_xml_string("""
       <mujoco>
         <worldbody>
@@ -2645,11 +2624,10 @@ class IOTest(parameterized.TestCase):
         </asset>
       </mujoco>
     """)
-    with self.assertRaises(NotImplementedError):
-      mjwarp.put_model(mjm)
+    mjwarp.put_model(mjm)
 
   def test_margin_multiccd_mesh_mesh(self):
-    """MULTICCD + mesh-mesh with margin raises NotImplementedError."""
+    """MULTICCD + mesh-mesh with margin succeeds without error."""
     mjm = mujoco.MjModel.from_xml_string("""
       <mujoco>
         <worldbody>
@@ -2667,8 +2645,7 @@ class IOTest(parameterized.TestCase):
         </asset>
       </mujoco>
     """)
-    with self.assertRaises(NotImplementedError):
-      mjwarp.put_model(mjm)
+    mjwarp.put_model(mjm)
 
   def test_margin_box_box_nativeccd_disabled(self):
     """Box-box with margin and NATIVECCD disabled succeeds without error."""
@@ -2691,8 +2668,8 @@ class IOTest(parameterized.TestCase):
     mjwarp.put_model(mjm)
 
   def test_margin_pair_box_box(self):
-    """Pair with margin on box-box uses the primitive collider (as in MuJoCo)."""
-    _, _, m, _ = test_data.fixture(
+    """Pair with margin on box-box succeeds without error."""
+    test_data.fixture(
       xml="""
       <mujoco>
         <worldbody>
@@ -2711,7 +2688,6 @@ class IOTest(parameterized.TestCase):
       </mujoco>
       """
     )
-    self.assertTrue(m.has_boxbox_margin)
 
   @parameterized.parameters(*_IO_TEST_MODELS)
   def test_kernel_recompilation(self, xml):
