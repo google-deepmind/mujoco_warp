@@ -1721,24 +1721,31 @@ def _equality_flexstrain(is_sparse: bool, newton: bool, is_discrete: bool = Fals
     rownnz = flexstrain_J_rownnz[eqstrainid]
     fs_rowadr = flexstrain_J_rowadr[eqstrainid]
 
-    # Loop over eigenmodes
-    for eig in range(neig):
-      efc_rowadr = int(0)
-      if wp.static(is_sparse):
-        efc_rowadr = _reserve_efc_nnz(njmax_in, njmax_nnz_in, worldid, 1, rownnz, nefc_out, efc_nnz_out)
-        if efc_rowadr < 0:
-          return
-
-      wp.atomic_add(ne_out, worldid, 1)
-      efcid = wp.atomic_add(nefc_out, worldid, 1)
-
-      if efcid >= njmax_in:
+    # the eigenmode rows of a cell share their columns: allocate them as one block
+    efc_rowadr0 = int(0)
+    if wp.static(is_sparse):
+      efc_rowadr0 = _reserve_efc_nnz(njmax_in, njmax_nnz_in, worldid, neig, rownnz, nefc_out, efc_nnz_out)
+      if efc_rowadr0 < 0:
         return
 
-      if wp.static(is_sparse and newton):
-        jgid = wp.atomic_add(efc_jtdaj_nblock_out, worldid, 1)
-        efc_jtdaj_adr_out[worldid, jgid] = efcid
-        efc_jtdaj_nrow_out[worldid, jgid] = 6
+    wp.atomic_add(ne_out, worldid, neig)
+    efcid0 = wp.atomic_add(nefc_out, worldid, neig)
+
+    if efcid0 >= njmax_in:
+      return
+
+    # rows past njmax are dropped
+    nrow = wp.min(neig, njmax_in - efcid0)
+
+    if wp.static(is_sparse and newton):
+      jgid = wp.atomic_add(efc_jtdaj_nblock_out, worldid, 1)
+      efc_jtdaj_adr_out[worldid, jgid] = efcid0
+      efc_jtdaj_nrow_out[worldid, jgid] = nrow
+
+    # Loop over eigenmodes
+    for eig in range(nrow):
+      efcid = efcid0 + eig
+      efc_rowadr = efc_rowadr0 + eig * rownnz
 
       # Read eigenvector from stiffness data
       eigvec_base = k_base + 1 + eig * ndof_cell

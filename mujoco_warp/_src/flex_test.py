@@ -691,6 +691,37 @@ class FlexConstraintTest(parameterized.TestCase):
         err_msg=f"qfrc_constraint mismatch for trilinear flex contacts (world {w})",
       )
 
+  @parameterized.parameters(1, 2)
+  def test_flexstrain_jtdaj_blocks(self, nworld):
+    """Each flex strain row is in exactly one JTDAJ block whose rows share the head columns."""
+    _, _, m, d = test_data.fixture(
+      "flex/moving_base_strain.xml",
+      overrides={"opt.jacobian": mujoco.mjtJacobian.mjJAC_SPARSE, "opt.solver": mujoco.mjtSolver.mjSOL_NEWTON},
+      nworld=nworld,
+    )
+    d.efc.jtdaj_adr.fill_(-1)
+    d.efc.jtdaj_nrow.fill_(-1)
+
+    mjw.fwd_position(m, d)
+
+    nefc = d.nefc.numpy()
+    nblock = d.efc.jtdaj_nblock.numpy()
+    jtdaj_adr = d.efc.jtdaj_adr.numpy()
+    jtdaj_nrow = d.efc.jtdaj_nrow.numpy()
+    rowadr = d.efc.J_rowadr.numpy()
+    rownnz = d.efc.J_rownnz.numpy()
+    colind = d.efc.J_colind.numpy()
+    for w in range(nworld):
+      self.assertGreater(nefc[w], 1)
+      count = np.zeros(nefc[w], dtype=int)
+      for head, nrow in zip(jtdaj_adr[w, : nblock[w]], jtdaj_nrow[w, : nblock[w]]):
+        self.assertLessEqual(head + nrow, nefc[w])
+        head_cols = colind[w, 0, rowadr[w, head] : rowadr[w, head] + rownnz[w, head]]
+        for row in range(head, head + nrow):
+          count[row] += 1
+          np.testing.assert_array_equal(colind[w, 0, rowadr[w, row] : rowadr[w, row] + rownnz[w, row]], head_cols)
+      np.testing.assert_array_equal(count, 1)
+
   @parameterized.product(
     xml=("flex/floppy.xml", "flex/moving_base_strain.xml"),
     cone=(mujoco.mjtCone.mjCONE_PYRAMIDAL, mujoco.mjtCone.mjCONE_ELLIPTIC),
