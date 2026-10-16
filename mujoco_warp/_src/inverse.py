@@ -87,6 +87,9 @@ def discrete_acc(m: Model, d: Data, qacc: wp.array2d[float]):
   """
   qfrc = wp.empty((d.nworld, m.nv), dtype=float)
 
+  if m.opt.enableflags & EnableBit.IPC:
+    raise ValueError("discrete inverse dynamics is not supported with flag ipc")
+
   if m.opt.integrator == IntegratorType.RK4:
     raise NotImplementedError("discrete inverse dynamics is not supported by RK4 integrator")
   elif m.opt.integrator == IntegratorType.EULER:
@@ -201,7 +204,7 @@ def inverse(m: Model, d: Data):
 
   if is_discrete:
     derivative.eff_mul_m(m, d, d.qfrc_inverse, d.qacc)
-    forward._launch_discrete_free_gyro(m, d, d.qfrc_inverse, d.qacc, True)
+    forward.launch_discrete_free_gyro(m, d, d.qfrc_inverse, d.qacc, True)
     wp.launch(
       _qfrc_inverse_discrete,
       dim=(d.nworld, m.nv),

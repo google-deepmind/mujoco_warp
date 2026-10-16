@@ -25,6 +25,7 @@ from mujoco_warp._src.types import MJ_MINVAL
 from mujoco_warp._src.types import ContactType
 from mujoco_warp._src.types import Data
 from mujoco_warp._src.types import DisableBit
+from mujoco_warp._src.types import EnableBit
 from mujoco_warp._src.types import GeomType
 from mujoco_warp._src.types import IntegratorType
 from mujoco_warp._src.types import JointType
@@ -76,6 +77,83 @@ def ellipsoid_max_moment(size: wp.vec3, dir: int) -> float:
   d1 = size[(dir + 1) % 3]
   d2 = size[(dir + 2) % 3]
   return wp.static(8.0 / 15.0 * wp.pi) * d0 * _pow4(wp.max(d1, d2))
+
+
+@wp.func
+def flex_bend_convex(flex_bending: wp.array[float], bend_offset: int) -> bool:
+  """Whether the edge bending stencil is convex: trace(s * c * c') >= 0."""
+  trace = flex_bending[bend_offset] + flex_bending[bend_offset + 5]
+  trace += flex_bending[bend_offset + 10] + flex_bending[bend_offset + 15]
+  return trace >= 0.0
+
+
+@wp.func
+def _add_con_dof(
+  # In:
+  cid: int,
+  dof: int,
+  val: float,
+  nnz: int,
+  # Out:
+  efm_con_dof_out: wp.array2d[int],
+  efm_con_val_out: wp.array2d[float],
+) -> int:
+  for idx in range(nnz):
+    if efm_con_dof_out[cid, idx] == dof:
+      efm_con_val_out[cid, idx] += val
+      return nnz
+  if nnz >= efm_con_dof_out.shape[1]:
+    return nnz
+  efm_con_dof_out[cid, nnz] = dof
+  efm_con_val_out[cid, nnz] = val
+  return nnz + 1
+
+
+@wp.func
+def _add_body_normal_jac(
+  # Model:
+  body_rootid: wp.array[int],
+  body_weldid: wp.array[int],
+  body_dofnum: wp.array[int],
+  body_dofadr: wp.array[int],
+  body_simple: wp.array[int],
+  dof_parentid: wp.array[int],
+  # Data in:
+  xmat_in: wp.array2d[wp.mat33],
+  subtree_com_in: wp.array2d[wp.vec3],
+  cdof_in: wp.array2d[wp.spatial_vector],
+  # In:
+  worldid: int,
+  cid: int,
+  raw_bodyid: int,
+  pos: wp.vec3,
+  normal: wp.vec3,
+  weight: float,
+  nnz: int,
+  # Out:
+  efm_con_dof_out: wp.array2d[int],
+  efm_con_val_out: wp.array2d[float],
+) -> int:
+  if raw_bodyid < 0:
+    return nnz
+  b = body_weldid[raw_bodyid]
+  dofnum = body_dofnum[b]
+  if dofnum == 0:
+    return nnz
+  da = body_dofadr[b]
+  if body_simple[b] == 2 and dofnum == 3:
+    n_loc = wp.transpose(xmat_in[worldid, b]) @ normal
+    for ax in range(3):
+      nnz = _add_con_dof(cid, da + ax, weight * n_loc[ax], nnz, efm_con_dof_out, efm_con_val_out)
+    return nnz
+  offset = pos - subtree_com_in[worldid, body_rootid[b]]
+  i = da + dofnum - 1
+  while i >= 0:
+    cdof = cdof_in[worldid, i]
+    column = wp.spatial_bottom(cdof) + wp.cross(wp.spatial_top(cdof), offset)
+    nnz = _add_con_dof(cid, i, weight * wp.dot(normal, column), nnz, efm_con_dof_out, efm_con_val_out)
+    i = dof_parentid[i]
+  return nnz
 
 
 @wp.kernel
@@ -1551,6 +1629,11 @@ def _flex_scatter_kernel(check_skip: bool):
   return kernel
 
 
+def flex_passive_contact(m: Model) -> bool:
+  """Returns True if passive flex contacts are active (IPC owns flex contact when enabled)."""
+  return m.has_flex_passive and not (m.opt.enableflags & EnableBit.IPC)
+
+
 def flex_gather(
   m: Model,
   d: Data,
@@ -2246,6 +2329,9 @@ def _flex_bend_mul(check_skip: bool):
     vbase = flex_vertadr[f]
     local_edgeid = edgeid - flex_edgeadr[f]
     bend_offset = bendingadr + 17 * local_edgeid
+    # keep only convex stencils so the metric stays SPD
+    if not flex_bend_convex(flex_bending, bend_offset):
+      return
     verts = wp.vec4i(edge[0], edge[1], flap[0], flap[1])
 
     wvec = mat43()
@@ -3104,33 +3190,16 @@ def _flex_contact_stiffness(
   return 5.0e7 * mmin
 
 
-@wp.func
-def _add_con_dof(
-  # In:
-  cid: int,
-  dof: int,
-  val: float,
-  nnz: int,
-  # Out:
-  efm_con_dof_out: wp.array2d[int],
-  efm_con_val_out: wp.array2d[float],
-) -> int:
-  for idx in range(nnz):
-    if efm_con_dof_out[cid, idx] == dof:
-      efm_con_val_out[cid, idx] += val
-      return nnz
-  efm_con_dof_out[cid, nnz] = dof
-  efm_con_val_out[cid, nnz] = val
-  return nnz + 1
-
-
 @wp.kernel
 def _eff_contact_build(
   # Model:
   opt_timestep: wp.array[float],
+  body_rootid: wp.array[int],
   body_weldid: wp.array[int],
   body_dofnum: wp.array[int],
   body_dofadr: wp.array[int],
+  body_simple: wp.array[int],
+  dof_parentid: wp.array[int],
   geom_bodyid: wp.array[int],
   flex_dim: wp.array[int],
   flex_vertadr: wp.array[int],
@@ -3141,6 +3210,8 @@ def _eff_contact_build(
   M_rowadr: wp.array[int],
   # Data in:
   xmat_in: wp.array2d[wp.mat33],
+  subtree_com_in: wp.array2d[wp.vec3],
+  cdof_in: wp.array2d[wp.spatial_vector],
   flexvert_xpos_in: wp.array2d[wp.vec3],
   M_in: wp.array2d[float],
   contact_dist_in: wp.array[float],
@@ -3173,6 +3244,8 @@ def _eff_contact_build(
 
   worldid = contact_worldid_in[cid]
   timestep = opt_timestep[worldid % opt_timestep.shape[0]]
+  geom0 = contact_geom_in[cid][0]
+  geom1 = contact_geom_in[cid][1]
   flex0 = contact_flex_in[cid][0]
   flex1 = contact_flex_in[cid][1]
   elem0 = contact_elem_in[cid][0]
@@ -3217,12 +3290,26 @@ def _eff_contact_build(
   if flex0 >= 0:
     if vert0 >= 0:
       gv = flex_vertadr[flex0] + vert0
-      b = body_weldid[flex_vertbodyid[gv]]
-      if body_dofnum[b] == 3:
-        da = body_dofadr[b]
-        n_loc = wp.transpose(xmat_in[worldid, b]) @ normal
-        for ax in range(3):
-          nnz = _add_con_dof(cid, da + ax, -n_loc[ax], nnz, efm_con_dof_out, efm_con_val_out)
+      nnz = _add_body_normal_jac(
+        body_rootid,
+        body_weldid,
+        body_dofnum,
+        body_dofadr,
+        body_simple,
+        dof_parentid,
+        xmat_in,
+        subtree_com_in,
+        cdof_in,
+        worldid,
+        cid,
+        flex_vertbodyid[gv],
+        pos,
+        normal,
+        -1.0,
+        nnz,
+        efm_con_dof_out,
+        efm_con_val_out,
+      )
     elif elem0 >= 0:
       dim0 = flex_dim[flex0]
       nvrt0 = dim0 + 1
@@ -3248,23 +3335,72 @@ def _eff_contact_build(
         for j in range(n0):
           wj = w0[j] * inv_sum0
           gv = v0[j]
-          b = body_weldid[flex_vertbodyid[gv]]
-          if body_dofnum[b] == 3:
-            da = body_dofadr[b]
-            n_loc = wp.transpose(xmat_in[worldid, b]) @ normal
-            for ax in range(3):
-              nnz = _add_con_dof(cid, da + ax, -wj * n_loc[ax], nnz, efm_con_dof_out, efm_con_val_out)
+          nnz = _add_body_normal_jac(
+            body_rootid,
+            body_weldid,
+            body_dofnum,
+            body_dofadr,
+            body_simple,
+            dof_parentid,
+            xmat_in,
+            subtree_com_in,
+            cdof_in,
+            worldid,
+            cid,
+            flex_vertbodyid[gv],
+            pos,
+            normal,
+            -wj,
+            nnz,
+            efm_con_dof_out,
+            efm_con_val_out,
+          )
+  elif geom0 >= 0:
+    nnz = _add_body_normal_jac(
+      body_rootid,
+      body_weldid,
+      body_dofnum,
+      body_dofadr,
+      body_simple,
+      dof_parentid,
+      xmat_in,
+      subtree_com_in,
+      cdof_in,
+      worldid,
+      cid,
+      geom_bodyid[geom0],
+      pos,
+      normal,
+      -1.0,
+      nnz,
+      efm_con_dof_out,
+      efm_con_val_out,
+    )
 
   # Side 1 (sign = +1.0)
   if flex1 >= 0:
     if vert1 >= 0:
       gv = flex_vertadr[flex1] + vert1
-      b = body_weldid[flex_vertbodyid[gv]]
-      if body_dofnum[b] == 3:
-        da = body_dofadr[b]
-        n_loc = wp.transpose(xmat_in[worldid, b]) @ normal
-        for ax in range(3):
-          nnz = _add_con_dof(cid, da + ax, n_loc[ax], nnz, efm_con_dof_out, efm_con_val_out)
+      nnz = _add_body_normal_jac(
+        body_rootid,
+        body_weldid,
+        body_dofnum,
+        body_dofadr,
+        body_simple,
+        dof_parentid,
+        xmat_in,
+        subtree_com_in,
+        cdof_in,
+        worldid,
+        cid,
+        flex_vertbodyid[gv],
+        pos,
+        normal,
+        1.0,
+        nnz,
+        efm_con_dof_out,
+        efm_con_val_out,
+      )
     elif elem1 >= 0:
       dim1 = flex_dim[flex1]
       nvrt1 = dim1 + 1
@@ -3290,12 +3426,47 @@ def _eff_contact_build(
         for j in range(n1):
           wj = w1[j] * inv_sum1
           gv = v1[j]
-          b = body_weldid[flex_vertbodyid[gv]]
-          if body_dofnum[b] == 3:
-            da = body_dofadr[b]
-            n_loc = wp.transpose(xmat_in[worldid, b]) @ normal
-            for ax in range(3):
-              nnz = _add_con_dof(cid, da + ax, wj * n_loc[ax], nnz, efm_con_dof_out, efm_con_val_out)
+          nnz = _add_body_normal_jac(
+            body_rootid,
+            body_weldid,
+            body_dofnum,
+            body_dofadr,
+            body_simple,
+            dof_parentid,
+            xmat_in,
+            subtree_com_in,
+            cdof_in,
+            worldid,
+            cid,
+            flex_vertbodyid[gv],
+            pos,
+            normal,
+            wj,
+            nnz,
+            efm_con_dof_out,
+            efm_con_val_out,
+          )
+  elif geom1 >= 0:
+    nnz = _add_body_normal_jac(
+      body_rootid,
+      body_weldid,
+      body_dofnum,
+      body_dofadr,
+      body_simple,
+      dof_parentid,
+      xmat_in,
+      subtree_com_in,
+      cdof_in,
+      worldid,
+      cid,
+      geom_bodyid[geom1],
+      pos,
+      normal,
+      1.0,
+      nnz,
+      efm_con_dof_out,
+      efm_con_val_out,
+    )
 
   # Compact zero entries
   real_nnz = int(0)
@@ -3319,14 +3490,15 @@ def build_efm_contact(
   m: Model, d: Data, rebuild: bool = True
 ) -> tuple[wp.array2d[int], wp.array2d[float], wp.array[float], wp.array[float], wp.array[int]]:
   """Allocates and builds rank-1 passive flex contact metric terms."""
-  efm_con_dof = wp.zeros((d.naconmax, 24), dtype=int)
-  efm_con_val = wp.zeros((d.naconmax, 24), dtype=float)
+  max_con_dof = max(1, min(m.nv, 24 + max(0, m.nv - 3 * m.nefmdof)))
+  efm_con_dof = wp.zeros((d.naconmax, max_con_dof), dtype=int)
+  efm_con_val = wp.zeros((d.naconmax, max_con_dof), dtype=float)
   efm_con_scale = wp.zeros(d.naconmax, dtype=float)
   efm_con_force = wp.zeros(d.naconmax, dtype=float)
   efm_con_nnz = wp.zeros(d.naconmax, dtype=int)
   if (
     rebuild
-    and m.has_flex_passive
+    and flex_passive_contact(m)
     and not ((m.opt.disableflags & DisableBit.SPRING) and (m.opt.disableflags & DisableBit.DAMPER))
   ):
     wp.launch(
@@ -3334,9 +3506,12 @@ def build_efm_contact(
       dim=d.naconmax,
       inputs=[
         m.opt.timestep,
+        m.body_rootid,
         m.body_weldid,
         m.body_dofnum,
         m.body_dofadr,
+        m.body_simple,
+        m.dof_parentid,
         m.geom_bodyid,
         m.flex_dim,
         m.flex_vertadr,
@@ -3346,6 +3521,8 @@ def build_efm_contact(
         m.M_rownnz,
         m.M_rowadr,
         d.xmat,
+        d.subtree_com,
+        d.cdof,
         d.flexvert_xpos,
         d.M,
         d.contact.dist,
@@ -3640,7 +3817,7 @@ def passive(m: Model, d: Data):
     if m.has_flex_snh and not dsbl_damper:
       flex_hessian(m, d)
       flex_stretch_mul(m, d, d.qfrc_damper, d.qvel, s1_in=0.0, s2_in=-1.0, use_timestep=False, snh_only=True)
-    if m.opt.integrator == IntegratorType.DISCRETE and m.has_flex_passive:
+    if m.opt.integrator == IntegratorType.DISCRETE and flex_passive_contact(m):
       efm_con_dof, efm_con_val, _, efm_con_force, efm_con_nnz = build_efm_contact(m, d, rebuild=True)
       wp.launch(
         _eff_contact_force,

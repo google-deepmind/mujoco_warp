@@ -318,6 +318,29 @@ class InverseTest(parameterized.TestCase):
     if nworld == 2:
       self.assertFalse(np.allclose(qfrc_inv[0], qfrc_inv[1]))
 
+  def test_inverse_ipc_invdiscrete_unsupported(self):
+    """Verifies discrete inverse raises ValueError when IPC and INVDISCRETE are enabled."""
+    _, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option integrator="discrete" solver="CG">
+          <flag ipc="enable"/>
+        </option>
+        <worldbody>
+          <body>
+            <joint type="slide"/>
+            <geom size="0.1" mass="1"/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """,
+    )
+    m.opt.enableflags |= mjw.EnableBit.INVDISCRETE
+    with self.assertRaisesRegex(ValueError, "discrete inverse dynamics is not supported with flag ipc"):
+      mjw.forward(m, d)
+    with self.assertRaisesRegex(ValueError, "discrete inverse dynamics is not supported with flag ipc"):
+      mjw.inverse(m, d)
+
 
 if __name__ == "__main__":
   wp.init()
