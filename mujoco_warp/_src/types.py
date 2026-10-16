@@ -1656,6 +1656,12 @@ class Model:
     flex_shelladr: maps each flex to its start shell index                  (nflex,)
     flex_faceadr: maps each flex to its start face index                    (nflex,)
     flex_simple: whether all vertices of flex are on simple bodies          (nflex,)
+    flex_efcnum: number of edge equality rows (non-rigid edges)             (nflex,)
+    flex_efcnnz: number of Jacobian nonzeros in edge equality rows          (nflex,)
+    flexedge_efcadr: row of the edge among its flex's edge equality rows,   (nflexedge,)
+                     -1 if the edge has no row
+    flexedge_efcnnzadr: Jacobian nonzero offset of the edge among its       (nflexedge,)
+                        flex's edge equality rows
     flex_cell_map: precomputed flex cell mapping (nflexintcell,)
     flexstrain_J_rownnz: number of nonzeros in flex strain Jacobian row     (neq_flexstrain,)
     flexstrain_J_rowadr: row start address in colind array (neq_flexstrain,)
@@ -2184,6 +2190,10 @@ class Model:
   flex_shelladr: array("nflex", int)
   flex_faceadr: array("nflex", int)
   flex_simple: array("nflex", bool)
+  flex_efcnum: array("nflex", int)
+  flex_efcnnz: array("nflex", int)
+  flexedge_efcadr: array("nflexedge", int)
+  flexedge_efcnnzadr: array("nflexedge", int)
   flex_cell_map: array("nflexintcell", wp.vec4i)
   flexstrain_J_rownnz: array("neq_flexstrain", int)
   flexstrain_J_rowadr: array("neq_flexstrain", int)

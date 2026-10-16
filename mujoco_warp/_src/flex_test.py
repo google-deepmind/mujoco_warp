@@ -750,6 +750,84 @@ class FlexConstraintTest(parameterized.TestCase):
 
     _assert_efc_eq(mjm, m, d, mjd, mjd.nefc, "efc", m.nv, nworld)
 
+  @parameterized.product(
+    jacobian=(mujoco.mjtJacobian.mjJAC_DENSE, mujoco.mjtJacobian.mjJAC_SPARSE),
+    njmax_and_nnz=((64, None), (4, None), (64, 10)),
+    nworld=(1, 2),
+  )
+  def test_flex_edge_equality_rows(self, jacobian, njmax_and_nnz, nworld):
+    """Edge equality rows follow edge order, skip rigid edges, and keep the rows that fit."""
+    njmax, njmax_nnz = njmax_and_nnz
+    sparse = jacobian == mujoco.mjtJacobian.mjJAC_SPARSE
+    if njmax_nnz is not None and not sparse:
+      self.skipTest("njmax_nnz only applies to sparse Jacobians")
+
+    # equality disabled during setup so the initial state fits in njmax
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <flexcomp name="rope" type="grid" count="8 1 1" spacing="0.1 0.1 0.1" dim="1" mass="1">
+            <pin id="0 1"/>
+            <edge equality="true"/>
+          </flexcomp>
+        </worldbody>
+      </mujoco>
+      """,
+      qpos_noise=0.05,
+      overrides={"opt.jacobian": jacobian, "opt.disableflags": DisableBit.EQUALITY},
+      nworld=nworld,
+      njmax=njmax,
+      njmax_nnz=njmax_nnz,
+    )
+    self.assertTrue(m.flexedge_rigid.numpy()[0])
+    nrow = mjm.nflexedge - 1
+
+    m.opt.disableflags = 0
+    mjm.opt.disableflags = 0
+    mujoco.mj_forward(mjm, mjd)
+    self.assertEqual(mjd.nefc, nrow)
+    mj_J = np.zeros((mjd.nefc, mjm.nv))
+    if mujoco.mj_isSparse(mjm):
+      mujoco.mju_sparse2dense(mj_J, mjd.efc_J, mjd.efc_J_rownnz, mjd.efc_J_rowadr, mjd.efc_J_colind)
+    else:
+      mj_J = mjd.efc_J.reshape(mjd.nefc, mjm.nv)
+
+    for arr in (d.efc.J, d.efc.D, d.efc.pos):
+      arr.fill_(wp.nan)
+    d.overflow.zero_()
+
+    mjw.make_constraint(m, d)
+
+    nnz_overflow = d.overflow.numpy() & int(mjw.OverflowType.NJMAX_NNZ)
+    for w in range(nworld):
+      if njmax_nnz is not None:
+        # the rows of a flex are dropped together
+        self.assertEqual(d.nefc.numpy()[w], 0)
+        self.assertTrue(nnz_overflow[w])
+        continue
+
+      self.assertEqual(d.nefc.numpy()[w], nrow)
+      self.assertEqual(d.ne.numpy()[w], nrow)
+      self.assertFalse(nnz_overflow[w])
+      n = min(nrow, njmax)
+      if sparse:
+        J = np.zeros((n, mjm.nv))
+        mujoco.mju_sparse2dense(
+          J,
+          d.efc.J.numpy()[w, 0].astype(np.float64),
+          d.efc.J_rownnz.numpy()[w, :n],
+          d.efc.J_rowadr.numpy()[w, :n],
+          d.efc.J_colind.numpy()[w, 0],
+        )
+        rowadr, rownnz = d.efc.J_rowadr.numpy()[w, :n], d.efc.J_rownnz.numpy()[w, :n]
+        np.testing.assert_array_less(rowadr + rownnz, d.njmax_nnz + 1)
+      else:
+        J = d.efc.J.numpy()[w, :n, : mjm.nv]
+      np.testing.assert_allclose(J, mj_J[:n], atol=_TOLERANCE, err_msg="J")
+      np.testing.assert_allclose(d.efc.pos.numpy()[w, :n], mjd.efc_pos[:n], atol=_TOLERANCE, err_msg="pos")
+      np.testing.assert_allclose(d.efc.D.numpy()[w, :n], mjd.efc_D[:n], rtol=_TOLERANCE, err_msg="D")
+
 
 class FlexPassiveForcesTest(parameterized.TestCase):
   """Tests for flex passive forces parity with MuJoCo."""

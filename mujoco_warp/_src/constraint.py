@@ -107,7 +107,20 @@ def _reserve_efc_nnz(
   if nrow <= 0:
     return 0
 
-  nnz = nrow * rownnz
+  return _reserve_nnz(njmax_nnz_in, worldid, nrow * rownnz, efc_nnz_out)
+
+
+@wp.func
+def _reserve_nnz(
+  # Data in:
+  njmax_nnz_in: int,
+  # In:
+  worldid: int,
+  nnz: int,
+  # Out:
+  efc_nnz_out: wp.array[int],
+) -> int:
+  """Reserves nnz sparse Jacobian entries, returns their address or -1 if they do not fit."""
   rowadr = wp.atomic_add(efc_nnz_out, worldid, nnz)  # kernel_analyzer: ignore[atomic]
   if rowadr + nnz > njmax_nnz_in:
     return -1
@@ -962,6 +975,78 @@ def _equality_tendon(is_sparse: bool, newton: bool, is_discrete: bool = False):
 
 
 @cache_kernel
+def _equality_flex_alloc(is_sparse: bool, newton: bool):
+  @wp.kernel(module="unique", enable_backward=False)
+  def kernel(
+    # Model:
+    flex_edgeadr: wp.array[int],
+    flex_edgenum: wp.array[int],
+    flexedge_J_rownnz: wp.array[int],
+    eq_obj1id: wp.array[int],
+    eq_flex_adr: wp.array[int],
+    flex_efcnum: wp.array[int],
+    flex_efcnnz: wp.array[int],
+    flexedge_efcadr: wp.array[int],
+    # Data in:
+    eq_active_in: wp.array2d[bool],
+    njmax_in: int,
+    njmax_nnz_in: int,
+    # Data out:
+    ne_out: wp.array[int],
+    nefc_out: wp.array[int],
+    efc_jtdaj_nblock_out: wp.array[int],
+    # Out:
+    block_out: wp.array2d[wp.vec3i],
+    efc_nnz_out: wp.array[int],
+  ):
+    """Allocates the edge equality rows of a flex as one block.
+
+    block_out holds the first efc row, sparse Jacobian address, and jtdaj block of the rows, or -1
+    as first efc row if no rows were allocated.
+    """
+    worldid, eqflexid = wp.tid()
+    block_out[worldid, eqflexid] = wp.vec3i(-1, 0, 0)
+
+    eqid = eq_flex_adr[eqflexid]
+    if not eq_active_in[worldid, eqid]:
+      return
+
+    flexid = eq_obj1id[eqid]
+    nrow = flex_efcnum[flexid]
+    if nrow == 0:
+      return
+
+    rowadr = int(0)
+    if wp.static(is_sparse):
+      # nefc only grows, so at most this many rows of the block will be allocated below njmax
+      nfit = wp.min(nrow, njmax_in - nefc_out[worldid])
+      if nfit > 0:
+        nnz = flex_efcnnz[flexid]
+        if nfit < nrow:
+          nnz = int(0)
+          edgeadr = flex_edgeadr[flexid]
+          for edgeid in range(edgeadr, edgeadr + flex_edgenum[flexid]):
+            row = flexedge_efcadr[edgeid]
+            if row >= 0 and row < nfit:
+              nnz += flexedge_J_rownnz[edgeid]
+        rowadr = _reserve_nnz(njmax_nnz_in, worldid, nnz, efc_nnz_out)
+        if rowadr < 0:
+          return
+
+    wp.atomic_add(ne_out, worldid, nrow)  # kernel_analyzer: ignore[atomic]
+    efcid = wp.atomic_add(nefc_out, worldid, nrow)  # kernel_analyzer: ignore[atomic]
+
+    jtdajadr = int(0)
+    if wp.static(is_sparse and newton):
+      if efcid < njmax_in:
+        jtdajadr = wp.atomic_add(efc_jtdaj_nblock_out, worldid, wp.min(nrow, njmax_in - efcid))  # kernel_analyzer: ignore[atomic]
+
+    block_out[worldid, eqflexid] = wp.vec3i(efcid, rowadr, jtdajadr)
+
+  return kernel
+
+
+@cache_kernel
 def _equality_flex(is_sparse: bool, newton: bool, is_discrete: bool = False):
   @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
   def kernel(
@@ -969,12 +1054,10 @@ def _equality_flex(is_sparse: bool, newton: bool, is_discrete: bool = False):
     nv: int,
     opt_timestep: wp.array[float],
     opt_disableflags: int,
-    flex_interp: wp.array[int],
     flex_edgeadr: wp.array[int],
     flex_edgenum: wp.array[int],
     flexedge_length0: wp.array[float],
     flexedge_invweight0: wp.array[float],
-    flexedge_rigid: wp.array[bool],
     flexedge_J_rownnz: wp.array[int],
     flexedge_J_rowadr: wp.array[int],
     flexedge_J_colind: wp.array[int],
@@ -982,21 +1065,20 @@ def _equality_flex(is_sparse: bool, newton: bool, is_discrete: bool = False):
     eq_solref: wp.array2d[wp.vec2],
     eq_solimp: wp.array2d[vec5],
     eq_flex_adr: wp.array[int],
+    flexedge_efcadr: wp.array[int],
+    flexedge_efcnnzadr: wp.array[int],
     # Data in:
     qvel_in: wp.array2d[float],
-    eq_active_in: wp.array2d[bool],
     flexedge_J_in: wp.array2d[float],
     flexedge_length_in: wp.array2d[float],
     njmax_in: int,
-    njmax_nnz_in: int,
+    # In:
+    block_in: wp.array2d[wp.vec3i],
     # Data out:
-    ne_out: wp.array[int],
-    nefc_out: wp.array[int],
     efc_type_out: wp.array2d[int],
     efc_id_out: wp.array2d[int],
     efc_jtdaj_adr_out: wp.array2d[int],
     efc_jtdaj_nrow_out: wp.array2d[int],
-    efc_jtdaj_nblock_out: wp.array[int],
     efc_J_rownnz_out: wp.array2d[int],
     efc_J_rowadr_out: wp.array2d[int],
     efc_J_colind_out: wp.array3d[int],
@@ -1007,44 +1089,38 @@ def _equality_flex(is_sparse: bool, newton: bool, is_discrete: bool = False):
     efc_vel_out: wp.array2d[float],
     efc_aref_out: wp.array2d[float],
     efc_frictionloss_out: wp.array2d[float],
-    # Out:
-    efc_nnz_out: wp.array[int],
   ):
     worldid, eqflexid, edgeid = wp.tid()
-    eqid = eq_flex_adr[eqflexid]
 
-    if not eq_active_in[worldid, eqid]:
+    # rows were allocated by _equality_flex_alloc
+    block = block_in[worldid, eqflexid]
+    if block[0] < 0:
       return
 
-    flexid = eq_obj1id[eqid]
-
-    # skip edge-based equality for interpolated (trilinear/quadratic) flex
-    if flex_interp[flexid] != 0:
-      return
-
+    flexid = eq_obj1id[eq_flex_adr[eqflexid]]
     if edgeid < flex_edgeadr[flexid] or edgeid >= flex_edgeadr[flexid] + flex_edgenum[flexid]:
       return
 
-    if flexedge_rigid[edgeid]:
+    # rigid edges and interpolated flexes have no rows
+    row = flexedge_efcadr[edgeid]
+    if row < 0:
       return
+
+    efcid = block[0] + row
+    if efcid >= njmax_in:
+      return
+
+    eqid = eq_flex_adr[eqflexid]
+
+    if wp.static(is_sparse and newton):
+      jgid = block[2] + row
+      efc_jtdaj_adr_out[worldid, jgid] = efcid
+      efc_jtdaj_nrow_out[worldid, jgid] = 1
 
     rownnz = flexedge_J_rownnz[edgeid]
     efc_rowadr = int(0)
     if wp.static(is_sparse):
-      efc_rowadr = _reserve_efc_nnz(nefc_out, njmax_in, njmax_nnz_in, worldid, 1, rownnz, efc_nnz_out)
-      if efc_rowadr < 0:
-        return
-
-    wp.atomic_add(ne_out, worldid, 1)  # kernel_analyzer: ignore[atomic]
-    efcid = wp.atomic_add(nefc_out, worldid, 1)  # kernel_analyzer: ignore[atomic]
-
-    if efcid >= njmax_in:
-      return
-
-    if wp.static(is_sparse and newton):
-      jgid = wp.atomic_add(efc_jtdaj_nblock_out, worldid, 1)  # kernel_analyzer: ignore[atomic]
-      efc_jtdaj_adr_out[worldid, jgid] = efcid
-      efc_jtdaj_nrow_out[worldid, jgid] = 1
+      efc_rowadr = block[1] + flexedge_efcnnzadr[edgeid]
 
     pos = flexedge_length_in[worldid, edgeid] - flexedge_length0[edgeid]
     solref = eq_solref[worldid % eq_solref.shape[0], eqid]
@@ -5101,6 +5177,25 @@ def make_constraint(m: types.Model, d: types.Data):
       )
 
       if m.nflex > 0:
+        flex_block = wp.empty((d.nworld, m.eq_flex_adr.size), dtype=wp.vec3i)
+        wp.launch(
+          _equality_flex_alloc(m.is_sparse, newton),
+          dim=(d.nworld, m.eq_flex_adr.size),
+          inputs=[
+            m.flex_edgeadr,
+            m.flex_edgenum,
+            m.flexedge_J_rownnz,
+            m.eq_obj1id,
+            m.eq_flex_adr,
+            m.flex_efcnum,
+            m.flex_efcnnz,
+            m.flexedge_efcadr,
+            d.eq_active,
+            d.njmax,
+            d.njmax_nnz,
+          ],
+          outputs=[d.ne, d.nefc, d.efc.jtdaj_nblock, flex_block, efc_nnz],
+        )
         wp.launch(
           _equality_flex(m.is_sparse, newton, is_discrete),
           dim=(d.nworld, m.eq_flex_adr.size, m.nflexedge),
@@ -5108,12 +5203,10 @@ def make_constraint(m: types.Model, d: types.Data):
             m.nv,
             m.opt.timestep,
             m.opt.disableflags,
-            m.flex_interp,
             m.flex_edgeadr,
             m.flex_edgenum,
             m.flexedge_length0,
             m.flexedge_invweight0,
-            m.flexedge_rigid,
             m.flexedge_J_rownnz,
             m.flexedge_J_rowadr,
             m.flexedge_J_colind,
@@ -5121,21 +5214,19 @@ def make_constraint(m: types.Model, d: types.Data):
             m.eq_solref,
             m.eq_solimp,
             m.eq_flex_adr,
+            m.flexedge_efcadr,
+            m.flexedge_efcnnzadr,
             d.qvel,
-            d.eq_active,
             d.flexedge_J,
             d.flexedge_length,
             d.njmax,
-            d.njmax_nnz,
+            flex_block,
           ],
           outputs=[
-            d.ne,
-            d.nefc,
             d.efc.type,
             d.efc.id,
             d.efc.jtdaj_adr,
             d.efc.jtdaj_nrow,
-            d.efc.jtdaj_nblock,
             d.efc.J_rownnz,
             d.efc.J_rowadr,
             d.efc.J_colind,
@@ -5146,7 +5237,6 @@ def make_constraint(m: types.Model, d: types.Data):
             d.efc.vel,
             d.efc.aref,
             d.efc.frictionloss,
-            efc_nnz,
           ],
         )
 
