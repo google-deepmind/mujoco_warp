@@ -378,6 +378,137 @@ class ConstraintTest(parameterized.TestCase):
       _assert_eq(efc_address, -1, f"efc_address (cone={cone})")
 
   @parameterized.parameters(
+    *itertools.product(("connect", "weld"), (mujoco.mjtJacobian.mjJAC_DENSE, mujoco.mjtJacobian.mjJAC_SPARSE))
+  )
+  def test_equality_rows_past_njmax(self, eq_type, jacobian):
+    """Equality blocks that straddle njmax keep the rows that fit."""
+    nrow = 3 if eq_type == "connect" else 6
+    for njmax in (nrow - 1, nrow):
+      mjm, mjd, m, d = test_data.fixture(
+        xml=f"""
+        <mujoco>
+          <option>
+            <flag contact="disable"/>
+          </option>
+          <worldbody>
+            <body name="body" pos="0 0 1">
+              <freejoint/>
+              <geom type="box" size=".1 .2 .3"/>
+            </body>
+          </worldbody>
+          <equality>
+            <{eq_type} body1="body" anchor=".1 .2 .3" active="false"/>
+          </equality>
+          <keyframe>
+            <key qpos=".1 .2 1.3 .9 .1 .2 .3"/>
+          </keyframe>
+        </mujoco>
+        """,
+        keyframe=0,
+        njmax=njmax,
+        overrides={"opt.jacobian": jacobian},
+      )
+
+      mjd.eq_active[0] = 1
+      mujoco.mj_forward(mjm, mjd)
+      self.assertEqual(mjd.nefc, nrow)
+      mj_J = np.zeros((mjd.nefc, mjm.nv))
+      if mujoco.mj_isSparse(mjm):
+        mujoco.mju_sparse2dense(mj_J, mjd.efc_J, mjd.efc_J_rownnz, mjd.efc_J_rowadr, mjd.efc_J_colind)
+      else:
+        mj_J = mjd.efc_J.reshape(mjd.nefc, mjm.nv)
+
+      d.eq_active.fill_(True)
+      for arr in (d.nefc, d.ne, d.efc.type):
+        arr.fill_(-1)
+      for arr in (d.efc.J, d.efc.D, d.efc.vel, d.efc.aref, d.efc.pos):
+        arr.fill_(wp.nan)
+
+      mjw.make_constraint(m, d)
+
+      self.assertEqual(d.nefc.numpy()[0], nrow)
+      n = min(nrow, njmax)
+      if m.is_sparse:
+        J = np.zeros((n, mjm.nv))
+        mujoco.mju_sparse2dense(
+          J,
+          d.efc.J.numpy()[0, 0].astype(np.float64),
+          d.efc.J_rownnz.numpy()[0, :n],
+          d.efc.J_rowadr.numpy()[0, :n],
+          d.efc.J_colind.numpy()[0, 0],
+        )
+      else:
+        J = d.efc.J.numpy()[0, :n, : mjm.nv]
+      _assert_eq(J, mj_J[:n], "J")
+      _assert_eq(d.efc.type.numpy()[0, :n], mjd.efc_type[:n], "type")
+      for field in ("pos", "D", "vel", "aref"):
+        _assert_eq(getattr(d.efc, field).numpy()[0, :n], getattr(mjd, f"efc_{field}")[:n], field)
+
+  @parameterized.parameters(*itertools.product((ConeType.PYRAMIDAL, ConeType.ELLIPTIC), (1, 2), (True, False)))
+  def test_njmax_nnz_overflow_rows(self, cone, nworld, overflow):
+    """Rows that do not fit in njmax_nnz are dropped instead of keeping stale sparse layouts."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option jacobian="sparse"/>
+        <worldbody>
+          <geom type="plane" size="10 10 .01"/>
+          <body pos="0 0 1">
+            <joint type="hinge" range="-.1 .1"/>
+            <geom type="sphere" size=".05" contype="0" conaffinity="0"/>
+          </body>
+          <body pos="1 0 1"><freejoint/><geom type="sphere" size=".1"/></body>
+          <body pos="2 0 1"><freejoint/><geom type="sphere" size=".1"/></body>
+          <body pos="3 0 1"><freejoint/><geom type="sphere" size=".1"/></body>
+          <body pos="4 0 1"><freejoint/><geom type="sphere" size=".1"/></body>
+        </worldbody>
+        <keyframe>
+          <key qpos=".5  1 0 .09 1 0 0 0  2 0 .09 1 0 0 0  3 0 .09 1 0 0 0  4 0 .09 1 0 0 0"/>
+        </keyframe>
+      </mujoco>
+      """,
+      overrides={"opt.cone": cone},
+      nworld=nworld,
+      njmax_nnz=30 if overflow else None,
+    )
+    self.assertTrue(m.is_sparse)
+    self.assertLessEqual(mjm.nv, d.njmax_nnz)
+
+    # limit and contacts active: needs more Jacobian storage than njmax_nnz
+    mujoco.mj_resetDataKeyframe(mjm, mjd, 0)
+    d.qpos.assign(np.tile(mjd.qpos, (nworld, 1)))
+
+    # stale layout from a previous step: rows covering the whole storage
+    d.efc.J_rowadr.fill_(0)
+    d.efc.J_rownnz.fill_(mjm.nv)
+    d.overflow.zero_()
+
+    mjw.fwd_position(m, d)
+
+    nefc = d.nefc.numpy()
+    efc_type = d.efc.type.numpy()
+    rowadr = d.efc.J_rowadr.numpy()
+    rownnz = d.efc.J_rownnz.numpy()
+    colind = d.efc.J_colind.numpy()
+    nnz_overflow = d.overflow.numpy() & int(mjw.OverflowType.NJMAX_NNZ)
+    for worldid in range(nworld):
+      self.assertEqual(bool(nnz_overflow[worldid]), overflow)
+      nrow = min(nefc[worldid], d.njmax)
+      self.assertGreater(nrow, 0)
+      adr, nnz = rowadr[worldid, :nrow], rownnz[worldid, :nrow]
+
+      np.testing.assert_array_less(-1, adr)
+      np.testing.assert_array_less(adr + nnz, d.njmax_nnz + 1)
+      order = np.argsort(adr)
+      np.testing.assert_array_less((adr + nnz)[order][:-1], adr[order][1:] + 1, err_msg="overlapping rows")
+
+      is_contact = efc_type[worldid, :nrow] >= int(mujoco.mjtConstraint.mjCNSTR_CONTACT_FRICTIONLESS)
+      _assert_eq(nnz[is_contact], 6, "contact rownnz")
+      for a, n in zip(adr, nnz):
+        cols = colind[worldid, 0, a : a + n]
+        self.assertTrue(np.all((cols >= 0) & (cols < mjm.nv)), f"colind {cols}")
+
+  @parameterized.parameters(
     *itertools.product(
       ("jdotv/connect_2d.xml", "jdotv/connect_3d.xml", "jdotv/weld_3d.xml"),
       (mujoco.mjtJacobian.mjJAC_DENSE, mujoco.mjtJacobian.mjJAC_SPARSE),
