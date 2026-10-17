@@ -537,7 +537,7 @@ class IOTest(parameterized.TestCase):
         self.assertEqual(val.shape, getattr(d, attr).shape, f"{attr} shape mismatch")
 
   def test_put_data_builds_jtdaj_block_list(self):
-    """put_data builds the sparse-Newton JTDAJ block list straight from the loaded efc.
+    """put_data builds the sparse JTDAJ block list straight from the loaded efc.
 
     make_constraint builds efc.jtdaj_* while assembling constraints, but put_data does not run it;
     it must populate the list so a put_data state is directly solvable, matching make_constraint.

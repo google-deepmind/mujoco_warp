@@ -592,6 +592,38 @@ class SolverTest(parameterized.TestCase):
       _assert_eq(efc_sorted_force, mjd_sorted_force, "efc_force")
       _assert_eq(qfrc_constraint, mjd.qfrc_constraint, "qfrc_constraint")
 
+  @parameterized.product(cone=tuple(ConeType), solver_=tuple(SolverType), nworld=(1, 2))
+  def test_qfrc_constraint_sparse_blocks(self, cone, solver_, nworld):
+    """Sparse qfrc_constraint sums J' efc_force over each world's own constraint blocks."""
+    mjm, _, m, _ = test_data.fixture(
+      "constraints.xml",
+      overrides={"opt.solver": solver_, "opt.cone": cone, "opt.jacobian": mujoco.mjtJacobian.mjJAC_SPARSE},
+    )
+    keys = [1, 2][:nworld]
+    d = mjw.make_data(mjm, nworld=nworld, nconmax=64, njmax=256)
+    d.qpos.assign(mjm.key_qpos[keys])
+    d.qvel.assign(mjm.key_qvel[keys])
+    d.qfrc_constraint.fill_(wp.inf)
+    mjw.forward(m, d)
+
+    nefc = d.nefc.numpy()
+    rownnz = d.efc.J_rownnz.numpy()
+    rowadr = d.efc.J_rowadr.numpy()
+    colind = d.efc.J_colind.numpy()[:, 0]
+    efc_J = d.efc.J.numpy()[:, 0]
+    efc_force = d.efc.force.numpy()
+    qfrc_constraint = d.qfrc_constraint.numpy()
+    for worldid in range(nworld):
+      expected = np.zeros(m.nv)
+      for row in range(nefc[worldid]):
+        nz = slice(rowadr[worldid, row], rowadr[worldid, row] + rownnz[worldid, row])
+        np.add.at(expected, colind[worldid, nz], efc_J[worldid, nz] * efc_force[worldid, row])
+      # summation order differs; tolerance is relative to the largest entry
+      np.testing.assert_allclose(qfrc_constraint[worldid], expected, rtol=1e-5, atol=1e-5 * np.abs(expected).max())
+    if nworld == 2:
+      self.assertNotEqual(*d.efc.jtdaj_nblock.numpy())
+      self.assertFalse(np.allclose(qfrc_constraint[0], qfrc_constraint[1]))
+
   @parameterized.product(
     cone=(ConeType.PYRAMIDAL, ConeType.ELLIPTIC),
     jacobian=(mujoco.mjtJacobian.mjJAC_DENSE, mujoco.mjtJacobian.mjJAC_SPARSE),

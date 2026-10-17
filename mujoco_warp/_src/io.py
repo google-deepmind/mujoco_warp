@@ -88,8 +88,6 @@ def _create_constraint(
   """Construct a types.Constraint with standard and island local fields allocated properly."""
   efc_kwargs = {"J_rownnz": None, "J_rowadr": None, "J_colind": None, "J": None}
   sparse = is_sparse(mjm)
-  # The JTDAJ block list is only consumed by the sparse Newton Hessian assembly (_JTDACJ_sparse).
-  jtdaj_active = sparse and mjm.opt.solver == mujoco.mjtSolver.mjSOL_NEWTON
 
   efc_D_src = mjd.efc_D if mjd is not None else None
   efc_aref_src = mjd.efc_aref if mjd is not None else None
@@ -108,7 +106,7 @@ def _create_constraint(
 
   for f in dataclasses.fields(types.Constraint):
     if f.name in ("jtdaj_adr", "jtdaj_nrow"):
-      efc_kwargs[f.name] = wp.empty((nworld, njmax if jtdaj_active else 0), dtype=int)
+      efc_kwargs[f.name] = wp.empty((nworld, njmax if sparse else 0), dtype=int)
     elif f.name == "jtdaj_nblock":
       efc_kwargs[f.name] = wp.empty((nworld,), dtype=int)
     else:
@@ -2247,8 +2245,8 @@ def put_data(
   efc = _create_constraint(mjm, nworld, njmax, sizes, mjd)
 
   # make_constraint builds the block list in-kernel; put_data does not run it, so build it here
-  # -- otherwise solving a put_data state would assemble an empty J^T D J.
-  if is_sparse(mjm) and mjm.opt.solver == mujoco.mjtSolver.mjSOL_NEWTON:
+  # -- otherwise solving a put_data state would find no blocks.
+  if is_sparse(mjm):
     jtdaj_adr, jtdaj_nrow = _jtdaj_groups(mjd)
     nblock = jtdaj_adr.shape[0]
     adr_row = np.zeros(njmax, dtype=int)

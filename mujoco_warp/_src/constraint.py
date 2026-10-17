@@ -286,7 +286,7 @@ def _efc_row(
 
 
 @cache_kernel
-def _equality_connect(is_sparse: bool, newton: bool, is_discrete: bool = False):
+def _equality_connect(is_sparse: bool, is_discrete: bool = False):
   @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
   def kernel(
     # Model:
@@ -407,7 +407,7 @@ def _equality_connect(is_sparse: bool, newton: bool, is_discrete: bool = False):
     # rows past njmax are dropped
     nrow = wp.min(3, njmax_in - efcid)
 
-    if wp.static(is_sparse and newton):
+    if wp.static(is_sparse):
       jgid = wp.atomic_add(efc_jtdaj_nblock_out, worldid, 1)
       efc_jtdaj_adr_out[worldid, jgid] = efcid
       efc_jtdaj_nrow_out[worldid, jgid] = nrow
@@ -619,7 +619,7 @@ def _equality_connect(is_sparse: bool, newton: bool, is_discrete: bool = False):
 
 
 @cache_kernel
-def _equality_joint(is_sparse: bool, newton: bool, is_discrete: bool = False):
+def _equality_joint(is_sparse: bool, is_discrete: bool = False):
   @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
   def kernel(
     # Model:
@@ -686,7 +686,7 @@ def _equality_joint(is_sparse: bool, newton: bool, is_discrete: bool = False):
     if efcid >= njmax_in:
       return
 
-    if wp.static(is_sparse and newton):
+    if wp.static(is_sparse):
       jgid = wp.atomic_add(efc_jtdaj_nblock_out, worldid, 1)
       efc_jtdaj_adr_out[worldid, jgid] = efcid
       efc_jtdaj_nrow_out[worldid, jgid] = 1
@@ -765,7 +765,7 @@ def _equality_joint(is_sparse: bool, newton: bool, is_discrete: bool = False):
 
 
 @cache_kernel
-def _equality_tendon(is_sparse: bool, newton: bool, is_discrete: bool = False):
+def _equality_tendon(is_sparse: bool, is_discrete: bool = False):
   @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
   def kernel(
     # Model:
@@ -882,7 +882,7 @@ def _equality_tendon(is_sparse: bool, newton: bool, is_discrete: bool = False):
     if efcid >= njmax_in:
       return
 
-    if wp.static(is_sparse and newton):
+    if wp.static(is_sparse):
       jgid = wp.atomic_add(efc_jtdaj_nblock_out, worldid, 1)
       efc_jtdaj_adr_out[worldid, jgid] = efcid
       efc_jtdaj_nrow_out[worldid, jgid] = 1
@@ -959,7 +959,7 @@ def _equality_tendon(is_sparse: bool, newton: bool, is_discrete: bool = False):
 
 
 @cache_kernel
-def _equality_flex(is_sparse: bool, newton: bool, is_discrete: bool = False):
+def _equality_flex(is_sparse: bool, is_discrete: bool = False):
   @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
   def kernel(
     # Model:
@@ -1038,7 +1038,7 @@ def _equality_flex(is_sparse: bool, newton: bool, is_discrete: bool = False):
     if efcid >= njmax_in:
       return
 
-    if wp.static(is_sparse and newton):
+    if wp.static(is_sparse):
       jgid = wp.atomic_add(efc_jtdaj_nblock_out, worldid, 1)
       efc_jtdaj_adr_out[worldid, jgid] = efcid
       efc_jtdaj_nrow_out[worldid, jgid] = 1
@@ -1103,7 +1103,7 @@ def _equality_flex(is_sparse: bool, newton: bool, is_discrete: bool = False):
 
 
 @cache_kernel
-def _equality_weld(is_sparse: bool, newton: bool, is_discrete: bool = False):
+def _equality_weld(is_sparse: bool, is_discrete: bool = False):
   @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
   def kernel(
     # Model:
@@ -1268,7 +1268,7 @@ def _equality_weld(is_sparse: bool, newton: bool, is_discrete: bool = False):
     nrow_pos = wp.min(nrow, 3)
     nrow_rot = nrow - nrow_pos
 
-    if wp.static(is_sparse and newton):
+    if wp.static(is_sparse):
       jgid = wp.atomic_add(efc_jtdaj_nblock_out, worldid, 1)
       efc_jtdaj_adr_out[worldid, jgid] = efcid
       efc_jtdaj_nrow_out[worldid, jgid] = nrow
@@ -1556,7 +1556,7 @@ def _equality_weld(is_sparse: bool, newton: bool, is_discrete: bool = False):
 
 
 @cache_kernel
-def _equality_flexstrain(is_sparse: bool, newton: bool, is_discrete: bool = False):
+def _equality_flexstrain(is_sparse: bool, is_discrete: bool = False):
   @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
   def kernel(
     # Model:
@@ -1737,7 +1737,7 @@ def _equality_flexstrain(is_sparse: bool, newton: bool, is_discrete: bool = Fals
     # rows past njmax are dropped
     nrow = wp.min(neig, njmax_in - efcid0)
 
-    if wp.static(is_sparse and newton):
+    if wp.static(is_sparse):
       jgid = wp.atomic_add(efc_jtdaj_nblock_out, worldid, 1)
       efc_jtdaj_adr_out[worldid, jgid] = efcid0
       efc_jtdaj_nrow_out[worldid, jgid] = nrow
@@ -1890,7 +1890,7 @@ def _equality_flexstrain(is_sparse: bool, newton: bool, is_discrete: bool = Fals
 
 
 @cache_kernel
-def _friction_dof(is_sparse: bool, newton: bool, is_discrete: bool = False):
+def _friction_dof(is_sparse: bool, is_discrete: bool = False):
   @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
   def kernel(
     # Model:
@@ -1945,7 +1945,7 @@ def _friction_dof(is_sparse: bool, newton: bool, is_discrete: bool = False):
     if efcid >= njmax_in:
       return
 
-    if wp.static(is_sparse and newton):
+    if wp.static(is_sparse):
       jgid = wp.atomic_add(efc_jtdaj_nblock_out, worldid, 1)
       efc_jtdaj_adr_out[worldid, jgid] = efcid
       efc_jtdaj_nrow_out[worldid, jgid] = 1
@@ -1996,7 +1996,7 @@ def _friction_dof(is_sparse: bool, newton: bool, is_discrete: bool = False):
 
 
 @cache_kernel
-def _friction_tendon(is_sparse: bool, newton: bool, is_discrete: bool = False):
+def _friction_tendon(is_sparse: bool, is_discrete: bool = False):
   @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
   def kernel(
     # Model:
@@ -2057,7 +2057,7 @@ def _friction_tendon(is_sparse: bool, newton: bool, is_discrete: bool = False):
     if efcid >= njmax_in:
       return
 
-    if wp.static(is_sparse and newton):
+    if wp.static(is_sparse):
       jgid = wp.atomic_add(efc_jtdaj_nblock_out, worldid, 1)
       efc_jtdaj_adr_out[worldid, jgid] = efcid
       efc_jtdaj_nrow_out[worldid, jgid] = 1
@@ -2125,7 +2125,7 @@ def _friction_tendon(is_sparse: bool, newton: bool, is_discrete: bool = False):
 
 
 @cache_kernel
-def _limit_slide_hinge(is_sparse: bool, newton: bool, is_discrete: bool = False):
+def _limit_slide_hinge(is_sparse: bool, is_discrete: bool = False):
   @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
   def kernel(
     # Model:
@@ -2191,7 +2191,7 @@ def _limit_slide_hinge(is_sparse: bool, newton: bool, is_discrete: bool = False)
       if efcid >= njmax_in:
         return
 
-      if wp.static(is_sparse and newton):
+      if wp.static(is_sparse):
         jgid = wp.atomic_add(efc_jtdaj_nblock_out, worldid, 1)
         efc_jtdaj_adr_out[worldid, jgid] = efcid
         efc_jtdaj_nrow_out[worldid, jgid] = 1
@@ -2246,7 +2246,7 @@ def _limit_slide_hinge(is_sparse: bool, newton: bool, is_discrete: bool = False)
 
 
 @cache_kernel
-def _limit_ball(is_sparse: bool, newton: bool, is_discrete: bool = False):
+def _limit_ball(is_sparse: bool, is_discrete: bool = False):
   @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
   def kernel(
     # Model:
@@ -2317,7 +2317,7 @@ def _limit_ball(is_sparse: bool, newton: bool, is_discrete: bool = False):
       if efcid >= njmax_in:
         return
 
-      if wp.static(is_sparse and newton):
+      if wp.static(is_sparse):
         jgid = wp.atomic_add(efc_jtdaj_nblock_out, worldid, 1)
         efc_jtdaj_adr_out[worldid, jgid] = efcid
         efc_jtdaj_nrow_out[worldid, jgid] = 1
@@ -2387,7 +2387,7 @@ def _limit_ball(is_sparse: bool, newton: bool, is_discrete: bool = False):
 
 
 @cache_kernel
-def _limit_tendon(is_sparse: bool, newton: bool, is_discrete: bool = False):
+def _limit_tendon(is_sparse: bool, is_discrete: bool = False):
   @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
   def kernel(
     # Model:
@@ -2456,7 +2456,7 @@ def _limit_tendon(is_sparse: bool, newton: bool, is_discrete: bool = False):
       if efcid >= njmax_in:
         return
 
-      if wp.static(is_sparse and newton):
+      if wp.static(is_sparse):
         jgid = wp.atomic_add(efc_jtdaj_nblock_out, worldid, 1)
         efc_jtdaj_adr_out[worldid, jgid] = efcid
         efc_jtdaj_nrow_out[worldid, jgid] = 1
@@ -2525,7 +2525,7 @@ def _limit_tendon(is_sparse: bool, newton: bool, is_discrete: bool = False):
 
 
 @cache_kernel
-def _efc_contact_init(cone_type: types.ConeType, is_sparse: bool, newton: bool, flg_adhesion: bool):
+def _efc_contact_init(cone_type: types.ConeType, is_sparse: bool, flg_adhesion: bool):
   IS_ELLIPTIC = cone_type == types.ConeType.ELLIPTIC
   IS_SPARSE = is_sparse
 
@@ -2628,7 +2628,7 @@ def _efc_contact_init(cone_type: types.ConeType, is_sparse: bool, newton: bool, 
         # This is redundant with the _efc_row call later but needed for the jac calculation
         efc_id_out[worldid, efcid] = conid
 
-    if wp.static(is_sparse and newton):
+    if wp.static(is_sparse):
       if base_efcid < njmax_in:
         jgid = wp.atomic_add(efc_jtdaj_nblock_out, worldid, 1)
         efc_jtdaj_adr_out[worldid, jgid] = base_efcid
@@ -2645,7 +2645,7 @@ def _efc_contact_init(cone_type: types.ConeType, is_sparse: bool, newton: bool, 
 
 
 @cache_kernel
-def _efc_contact_init_flex(cone_type: types.ConeType, is_sparse: bool, newton: bool, flg_adhesion: bool):
+def _efc_contact_init_flex(cone_type: types.ConeType, is_sparse: bool, flg_adhesion: bool):
   IS_ELLIPTIC = cone_type == types.ConeType.ELLIPTIC
   IS_SPARSE = is_sparse
   HAS_FLEX = True
@@ -2974,7 +2974,7 @@ def _efc_contact_init_flex(cone_type: types.ConeType, is_sparse: bool, newton: b
         # This is redundant with the _efc_row call later but needed for the jac calculation
         efc_id_out[worldid, efcid] = conid
 
-    if wp.static(is_sparse and newton):
+    if wp.static(is_sparse):
       if base_efcid < njmax_in:
         jgid = wp.atomic_add(efc_jtdaj_nblock_out, worldid, 1)
         efc_jtdaj_adr_out[worldid, jgid] = base_efcid
@@ -4814,7 +4814,6 @@ def _add_surface_vel(is_pyramidal: bool):
 @event_scope
 def make_constraint(m: types.Model, d: types.Data):
   """Creates constraint jacobians and other supporting data."""
-  newton = m.opt.solver == types.SolverType.NEWTON
   is_discrete = m.opt.integrator == types.IntegratorType.DISCRETE
   efc_nnz = wp.empty((d.nworld,), dtype=int)
 
@@ -4827,7 +4826,7 @@ def make_constraint(m: types.Model, d: types.Data):
   if not (m.opt.disableflags & types.DisableBit.CONSTRAINT):
     if not (m.opt.disableflags & types.DisableBit.EQUALITY):
       wp.launch(
-        _equality_connect(m.is_sparse, newton, is_discrete),
+        _equality_connect(m.is_sparse, is_discrete),
         dim=(d.nworld, m.eq_connect_adr.size),
         inputs=[
           m.nv,
@@ -4889,7 +4888,7 @@ def make_constraint(m: types.Model, d: types.Data):
         ],
       )
       wp.launch(
-        _equality_weld(m.is_sparse, newton, is_discrete),
+        _equality_weld(m.is_sparse, is_discrete),
         dim=(d.nworld, m.eq_wld_adr.size),
         inputs=[
           m.nv,
@@ -4953,7 +4952,7 @@ def make_constraint(m: types.Model, d: types.Data):
         ],
       )
       wp.launch(
-        _equality_joint(m.is_sparse, newton, is_discrete),
+        _equality_joint(m.is_sparse, is_discrete),
         dim=(d.nworld, m.eq_jnt_adr.size),
         inputs=[
           m.nv,
@@ -4997,7 +4996,7 @@ def make_constraint(m: types.Model, d: types.Data):
         ],
       )
       wp.launch(
-        _equality_tendon(m.is_sparse, newton, is_discrete),
+        _equality_tendon(m.is_sparse, is_discrete),
         dim=(d.nworld, m.eq_ten_adr.size),
         inputs=[
           m.nv,
@@ -5045,7 +5044,7 @@ def make_constraint(m: types.Model, d: types.Data):
 
       if m.nflex > 0:
         wp.launch(
-          _equality_flex(m.is_sparse, newton, is_discrete),
+          _equality_flex(m.is_sparse, is_discrete),
           dim=(d.nworld, m.eq_flex_adr.size, m.nflexedge),
           inputs=[
             m.nv,
@@ -5095,7 +5094,7 @@ def make_constraint(m: types.Model, d: types.Data):
 
         if m.eq_flexstrain_adr.size:
           wp.launch(
-            _equality_flexstrain(m.is_sparse, newton, is_discrete),
+            _equality_flexstrain(m.is_sparse, is_discrete),
             dim=(d.nworld, m.eq_flexstrain_adr.size),
             inputs=[
               m.nv,
@@ -5161,7 +5160,7 @@ def make_constraint(m: types.Model, d: types.Data):
 
     if not (m.opt.disableflags & types.DisableBit.FRICTIONLOSS):
       wp.launch(
-        _friction_dof(m.is_sparse, newton, is_discrete),
+        _friction_dof(m.is_sparse, is_discrete),
         dim=(d.nworld, m.nv),
         inputs=[
           m.nv,
@@ -5198,7 +5197,7 @@ def make_constraint(m: types.Model, d: types.Data):
       )
 
       wp.launch(
-        _friction_tendon(m.is_sparse, newton, is_discrete),
+        _friction_tendon(m.is_sparse, is_discrete),
         dim=(d.nworld, m.ntendon),
         inputs=[
           m.nv,
@@ -5241,7 +5240,7 @@ def make_constraint(m: types.Model, d: types.Data):
     # limit
     if not (m.opt.disableflags & types.DisableBit.LIMIT):
       wp.launch(
-        _limit_ball(m.is_sparse, newton, is_discrete),
+        _limit_ball(m.is_sparse, is_discrete),
         dim=(d.nworld, m.jnt_limited_ball_adr.size),
         inputs=[
           m.nv,
@@ -5283,7 +5282,7 @@ def make_constraint(m: types.Model, d: types.Data):
       )
 
       wp.launch(
-        _limit_slide_hinge(m.is_sparse, newton, is_discrete),
+        _limit_slide_hinge(m.is_sparse, is_discrete),
         dim=(d.nworld, m.jnt_limited_slide_hinge_adr.size),
         inputs=[
           m.nv,
@@ -5325,7 +5324,7 @@ def make_constraint(m: types.Model, d: types.Data):
       )
 
       wp.launch(
-        _limit_tendon(m.is_sparse, newton, is_discrete),
+        _limit_tendon(m.is_sparse, is_discrete),
         dim=(d.nworld, m.tendon_limited_adr.size),
         inputs=[
           m.nv,
@@ -5391,7 +5390,7 @@ def make_constraint(m: types.Model, d: types.Data):
       has_flex = m.nflex > 0
       if has_flex:
         wp.launch(
-          _efc_contact_init_flex(m.opt.cone, m.is_sparse, newton, m.flg_adhesion),
+          _efc_contact_init_flex(m.opt.cone, m.is_sparse, m.flg_adhesion),
           dim=d.naconmax,
           inputs=[
             m.body_parentid,
@@ -5442,7 +5441,7 @@ def make_constraint(m: types.Model, d: types.Data):
         )
       else:
         wp.launch(
-          _efc_contact_init(m.opt.cone, m.is_sparse, newton, m.flg_adhesion),
+          _efc_contact_init(m.opt.cone, m.is_sparse, m.flg_adhesion),
           dim=d.naconmax,
           inputs=[
             m.body_weldid,

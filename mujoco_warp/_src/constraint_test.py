@@ -257,6 +257,47 @@ class ConstraintTest(parameterized.TestCase):
       _assert_efc_eq(mjm, m, d, mjd, mjd.nefc, "efc", m.nv)
 
   @parameterized.parameters(
+    *itertools.product(
+      ("constraints.xml", "flex/moving_base_strain.xml"),
+      (mujoco.mjtCone.mjCONE_PYRAMIDAL, mujoco.mjtCone.mjCONE_ELLIPTIC),
+      (mujoco.mjtSolver.mjSOL_NEWTON, mujoco.mjtSolver.mjSOL_CG),
+    )
+  )
+  def test_jtdaj_blocks(self, xml, cone, solver):
+    """Every efc row is in exactly one block, and a block's rows share their Jacobian columns."""
+    for key in range(3):
+      mjm, mjd, m, d = test_data.fixture(
+        xml,
+        keyframe=key,
+        overrides={
+          "opt.cone": cone,
+          "opt.jacobian": mujoco.mjtJacobian.mjJAC_SPARSE,
+          "opt.solver": solver,
+        },
+      )
+      d.efc.jtdaj_nblock.fill_(-1)
+
+      if mjm.nflex > 0:
+        mjw.fwd_position(m, d)
+      mjw.make_constraint(m, d)
+
+      nblock = d.efc.jtdaj_nblock.numpy()[0]
+      adr = d.efc.jtdaj_adr.numpy()[0, :nblock]
+      nrow = d.efc.jtdaj_nrow.numpy()[0, :nblock]
+      order = np.argsort(adr)
+      adr, nrow = adr[order], nrow[order]
+      np.testing.assert_array_equal(adr, np.cumsum(nrow) - nrow)
+      _assert_eq(nrow.sum(), mjd.nefc, "rows in blocks")
+
+      rownnz = d.efc.J_rownnz.numpy()[0]
+      rowadr = d.efc.J_rowadr.numpy()[0]
+      colind = d.efc.J_colind.numpy()[0, 0]
+      for head, n in zip(adr, nrow):
+        head_cols = colind[rowadr[head] : rowadr[head] + rownnz[head]]
+        for row in range(head + 1, head + n):
+          np.testing.assert_array_equal(colind[rowadr[row] : rowadr[row] + rownnz[row]], head_cols, f"block at row {head}")
+
+  @parameterized.parameters(
     mujoco.mjtJacobian.mjJAC_DENSE,
     mujoco.mjtJacobian.mjJAC_SPARSE,
   )
