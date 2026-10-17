@@ -63,7 +63,7 @@ _XML = """
 
 class InverseTest(parameterized.TestCase):
   @parameterized.product(
-    integrator=(IntegratorType.EULER, IntegratorType.IMPLICITFAST),
+    integrator=(IntegratorType.EULER, IntegratorType.IMPLICIT, IntegratorType.IMPLICITFAST),
     jacobian=(mujoco.mjtJacobian.mjJAC_SPARSE, mujoco.mjtJacobian.mjJAC_DENSE),
     invdiscrete=(True, False),
   )
