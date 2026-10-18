@@ -36,11 +36,6 @@ MINVAL2 = 1e-30
 MAXVAL = 1e15
 MAXVAL2 = 1e30
 
-# polytope minimal interior distance to origin
-MIN_DIST2 = 1e-10
-MIN_DIST3 = 1e-10
-MIN_DIST4 = 1e-17
-
 # minimal tolerance for EPA
 MIN_EPATOL = 1e-7
 
@@ -94,8 +89,8 @@ class Polytope:
   # 10 bits per each vertex index, while the last significant bits are for
   # invalid and deleted face
   face: wp.array[int]
-  face_pr: wp.array[wp.vec3]
-  face_norm2: wp.array[float]
+  face_normal: wp.array[wp.vec3]
+  face_dist: wp.array[float]
   nface: int
 
   # edges that make up the horizon when adding new vertices to polytope
@@ -247,29 +242,27 @@ def support(geom: Geom, geomtype: int, dir: wp.vec3) -> SupportPoint:
 
 
 @wp.func
-def _attach_face(pt: Polytope, idx: int, v1: int, v2: int, v3: int) -> float:
-  # out of memory, returning 0 will force EPA to return early without contact
-  if pt.nface == pt.face.shape[0]:
-    return 0.0
+def _attach_face(pt: Polytope, idx: int, v1: int, v2: int, v3: int) -> bool:
+  """Attaches a face by its outward plane, which does not depend on where the origin is.
 
-  # compute witness point v
+  Returns False if the face has no area or the polytope is out of memory.
+  """
+  if pt.nface == pt.face.shape[0]:
+    return False
+
   p1 = pt.vert[2 * v1] - pt.vert[2 * v1 + 1]
   p2 = pt.vert[2 * v2] - pt.vert[2 * v2 + 1]
   p3 = pt.vert[2 * v3] - pt.vert[2 * v3 + 1]
-  r, ret = _project_origin_plane(p3, p2, p1)
-  if ret:
-    return 0.0
+  n = wp.cross(p2 - p1, p3 - p1)
+  norm = wp.norm_l2(n)
+  if norm < MINVAL:
+    return False
+  n = wp.where(wp.dot(n, p1 - pt.center) < 0.0, -n, n) / norm
 
-  # ensure projection points outward from the polytope
-  if wp.dot(r, p1 - pt.center) < 0.0:
-    r = -r
-
-  face = v1 + (v2 << 10) + (v3 << 20)
-  pt.face[idx] = face
-  pt.face_pr[idx] = r
-
-  pt.face_norm2[idx] = wp.dot(r, r)
-  return pt.face_norm2[idx]
+  pt.face[idx] = v1 + (v2 << 10) + (v3 << 20)
+  pt.face_normal[idx] = n
+  pt.face_dist[idx] = wp.dot(n, p1)
+  return True
 
 
 @wp.func
@@ -976,7 +969,7 @@ def _epa_witness(
   v2 = pt.vert[2 * face[1]] - pt.vert[2 * face[1] + 1]
   v3 = pt.vert[2 * face[2]] - pt.vert[2 * face[2] + 1]
 
-  coordinates = _tri_affine_coord(v1, v2, v3, pt.face_pr[face_idx])
+  coordinates = _tri_affine_coord(v1, v2, v3, pt.face_dist[face_idx] * pt.face_normal[face_idx])
   l1 = coordinates[0]
   l2 = coordinates[1]
   l3 = coordinates[2]
@@ -1037,7 +1030,7 @@ def _epa_witness(
   x1[1] = v1[1] * l1 + v2[1] * l2 + v3[1] * l3
   x1[2] = v1[2] * l1 + v2[2] * l2 + v3[2] * l3
 
-  return x1, x2, -wp.sqrt(pt.face_norm2[face_idx])
+  return x1, x2, -pt.face_dist[face_idx]
 
 
 @wp.func
@@ -1094,27 +1087,27 @@ def _polytope2(
   _epa_support(pt, 4, geom1, geom2, geomtype1, geomtype2, d3 / wp.norm_l2(d3))
 
   # build hexahedron
-  if _attach_face(pt, 0, 0, 2, 3) < MIN_DIST2:
+  if not _attach_face(pt, 0, 0, 2, 3):
     pt.status = -1
     return pt, _replace_simplex3(pt, 0, 2, 3)
 
-  if _attach_face(pt, 1, 0, 4, 2) < MIN_DIST2:
+  if not _attach_face(pt, 1, 0, 4, 2):
     pt.status = -1
     return pt, _replace_simplex3(pt, 0, 4, 2)
 
-  if _attach_face(pt, 2, 0, 3, 4) < MIN_DIST2:
+  if not _attach_face(pt, 2, 0, 3, 4):
     pt.status = -1
     return pt, _replace_simplex3(pt, 0, 3, 4)
 
-  if _attach_face(pt, 3, 1, 3, 2) < MIN_DIST2:
+  if not _attach_face(pt, 3, 1, 3, 2):
     pt.status = -1
     return pt, _replace_simplex3(pt, 1, 3, 2)
 
-  if _attach_face(pt, 4, 1, 2, 4) < MIN_DIST2:
+  if not _attach_face(pt, 4, 1, 2, 4):
     pt.status = -1
     return pt, _replace_simplex3(pt, 1, 2, 4)
 
-  if _attach_face(pt, 5, 1, 4, 3) < MIN_DIST2:
+  if not _attach_face(pt, 5, 1, 4, 3):
     pt.status = -1
     return pt, _replace_simplex3(pt, 1, 4, 3)
 
@@ -1200,22 +1193,22 @@ def _polytope3(
     return pt
 
   # create hexahedron for EPA
-  if _attach_face(pt, 0, 4, 0, 1) < MIN_DIST3:
+  if not _attach_face(pt, 0, 4, 0, 1):
     pt.status = 6
     return pt
-  if _attach_face(pt, 1, 4, 2, 0) < MIN_DIST3:
+  if not _attach_face(pt, 1, 4, 2, 0):
     pt.status = 7
     return pt
-  if _attach_face(pt, 2, 4, 1, 2) < MIN_DIST3:
+  if not _attach_face(pt, 2, 4, 1, 2):
     pt.status = 8
     return pt
-  if _attach_face(pt, 3, 3, 1, 0) < MIN_DIST3:
+  if not _attach_face(pt, 3, 3, 1, 0):
     pt.status = 9
     return pt
-  if _attach_face(pt, 4, 3, 0, 2) < MIN_DIST3:
+  if not _attach_face(pt, 4, 3, 0, 2):
     pt.status = 10
     return pt
-  if _attach_face(pt, 5, 3, 2, 1) < MIN_DIST3:
+  if not _attach_face(pt, 5, 3, 2, 1):
     pt.status = 11
     return pt
 
@@ -1258,48 +1251,22 @@ def _polytope4(
   pt.vert_index[6] = simplex_index1[3]
   pt.vert_index[7] = simplex_index2[3]
 
-  dist = wp.vec4()
-  idx = int(0)
-
-  # if the origin is on a face, replace the 3-simplex with a 2-simplex
-  dist[0] = _attach_face(pt, 0, 0, 1, 2)
-  if dist[0] < MIN_DIST4:
+  # if a face is degenerate, replace the 3-simplex with a 2-simplex
+  if not _attach_face(pt, 0, 0, 1, 2):
     pt.status = -1
     return pt, _replace_simplex3(pt, 0, 1, 2)
 
-  dist[1] = _attach_face(pt, 1, 0, 3, 1)
-  if dist[1] < MIN_DIST4:
+  if not _attach_face(pt, 1, 0, 3, 1):
     pt.status = -1
     return pt, _replace_simplex3(pt, 0, 3, 1)
-  idx = wp.where(dist[0] < dist[1], 0, 1)
 
-  dist[2] = _attach_face(pt, 2, 0, 2, 3)
-  if dist[2] < MIN_DIST4:
+  if not _attach_face(pt, 2, 0, 2, 3):
     pt.status = -1
     return pt, _replace_simplex3(pt, 0, 2, 3)
-  idx = wp.where(dist[2] < dist[idx], 2, idx)
 
-  dist[3] = _attach_face(pt, 3, 3, 2, 1)
-  if dist[3] < MIN_DIST4:
+  if not _attach_face(pt, 3, 3, 2, 1):
     pt.status = -1
     return pt, _replace_simplex3(pt, 3, 2, 1)
-  idx = wp.where(dist[3] < dist[idx], 3, idx)
-
-  if not _test_tetra(simplex[0], simplex[1], simplex[2], simplex[3]):
-    if dist[idx] > MINVAL:
-      pt.status = 12
-      return pt, GJKResult()
-
-    # fallback to closest face
-    pt.status = -1
-    if idx == 0:
-      return pt, _replace_simplex3(pt, 0, 1, 2)
-    elif idx == 1:
-      return pt, _replace_simplex3(pt, 0, 3, 1)
-    elif idx == 2:
-      return pt, _replace_simplex3(pt, 0, 2, 3)
-    else:
-      return pt, _replace_simplex3(pt, 3, 2, 1)
 
   # set polytope counts
   pt.nvert = 4
@@ -1356,7 +1323,6 @@ def _epa(
 ) -> Tuple[float, wp.vec3, wp.vec3, int]:
   """Recover penetration data from two geoms in contact given an initial polytope."""
   upper = FLOAT_MAX
-  upper2 = FLOAT_MAX
   idx = int(-1)
   pidx = int(-1)
   epsilon = wp.where(is_discrete, MIN_EPATOL, tolerance)
@@ -1369,38 +1335,31 @@ def _epa(
   for _ in range(epa_iterations):
     pidx = idx
     idx = int(-1)
-    lower2 = float(FLOAT_MAX)
+    lower = float(FLOAT_MAX)
 
-    # find the face closest to the origin (lower bound for penetration depth)
+    # find the face closest to the origin (lower bound for penetration depth); the origin may lie on
+    # or, by rounding, slightly outside a face, which only makes its distance zero or negative
     for i in range(pt.nface):
-      if not _is_invalid_face(pt.face[i]) and pt.face_norm2[i] < lower2:
+      if not _is_invalid_face(pt.face[i]) and pt.face_dist[i] < lower:
         idx = i
-        lower2 = pt.face_norm2[i]
+        lower = pt.face_dist[i]
 
     # face not valid, return previous face
-    if lower2 > upper2 or idx < 0:
+    if lower > upper or idx < 0:
       idx = pidx
       break
 
-    # check if lower bound is 0
-    if lower2 <= 0.0:
-      break
-
     # compute support point w from the closest face's normal
-    lower = wp.sqrt(lower2)
     wi = pt.nvert
-    face_pr = pt.face_pr[idx]
-    i1, i2 = _epa_support(pt, wi, geom1, geom2, geomtype1, geomtype2, face_pr / lower)
+    face_normal = pt.face_normal[idx]
+    i1, i2 = _epa_support(pt, wi, geom1, geom2, geomtype1, geomtype2, face_normal)
     w = pt.vert[2 * wi] - pt.vert[2 * wi + 1]
     geom1.index = i1
     geom2.index = i2
     pt.nvert += 1
 
-    # upper bound for kth iteration (dot product before normalizing for better precision)
-    upper_k = wp.dot(face_pr, w) / lower
-    if upper_k < upper:
-      upper = upper_k
-      upper2 = upper * upper
+    # upper bound for kth iteration
+    upper = wp.min(upper, wp.dot(face_normal, w))
 
     if upper - lower < epsilon:
       break
@@ -1437,7 +1396,7 @@ def _epa(
       if _is_face_deleted(pt.face[i]):
         continue
 
-      if wp.dot(pt.face_pr[i], w) - pt.face_norm2[i] > 1e-10:
+      if wp.dot(pt.face_normal[i], w) > pt.face_dist[i]:
         nvalid = wp.where(_is_invalid_face(pt.face[i]), nvalid, nvalid - 1)
         pt.face[i] = _delete_face(pt.face[i])
         face = _get_face_verts(pt.face[i])
@@ -1458,14 +1417,15 @@ def _epa(
     # insert w as new vertex and attach faces along the horizon
     for i in range(pt.nhorizon):
       edge = _get_edge(pt.horizon[i])
-      dist2 = _attach_face(pt, pt.nface, wi, edge[0], edge[1])
-      if dist2 == 0.0:
+      if not _attach_face(pt, pt.nface, wi, edge[0], edge[1]):
         idx = -1
         break
 
       pt.nface += 1
 
-      if dist2 >= lower2 and dist2 <= upper2:
+      # a new face closer than the lower bound only exists by rounding, when the origin is on the
+      # boundary, and then it is the answer, so only faces beyond the upper bound are pruned
+      if pt.face_dist[pt.nface - 1] <= upper:
         nvalid += 1
       else:
         pt.face[pt.nface - 1] = _invalidate_face(pt.face[pt.nface - 1])
@@ -2717,8 +2677,8 @@ def epa_phase(
   vert: wp.array[wp.vec3],
   vert_index: wp.array[int],
   face: wp.array[int],
-  face_pr: wp.array[wp.vec3],
-  face_norm2: wp.array[float],
+  face_normal: wp.array[wp.vec3],
+  face_dist: wp.array[float],
   horizon: wp.array[int],
   warn_overflow: bool,
   worldid: int,
@@ -2733,8 +2693,8 @@ def epa_phase(
   pt.vert = vert
   pt.vert_index = vert_index
   pt.face = face
-  pt.face_pr = face_pr
-  pt.face_norm2 = face_norm2
+  pt.face_normal = face_normal
+  pt.face_dist = face_dist
   pt.horizon = horizon
 
   if result.dim == 2:
@@ -2790,7 +2750,7 @@ def epa_phase(
       geomtype2,
     )
 
-  # origin on boundary (objects are not considered penetrating)
+  # no starting polytope with volume (e.g. flat support), so there is no depth to recover
   if pt.status:
     return result.dist, 1, result.x1, result.x2, -1
 
@@ -2823,8 +2783,8 @@ def ccd(
   vert: wp.array[wp.vec3],
   vert_index: wp.array[int],
   face: wp.array[int],
-  face_pr: wp.array[wp.vec3],
-  face_norm2: wp.array[float],
+  face_normal: wp.array[wp.vec3],
+  face_dist: wp.array[float],
   horizon: wp.array[int],
   warn_overflow: bool,
   worldid: int,
@@ -2851,8 +2811,8 @@ def ccd(
     vert,
     vert_index,
     face,
-    face_pr,
-    face_norm2,
+    face_normal,
+    face_dist,
     horizon,
     warn_overflow,
     worldid,
