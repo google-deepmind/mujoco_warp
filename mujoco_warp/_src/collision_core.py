@@ -486,8 +486,8 @@ class CollisionContext:
     epa_vert: vertices in EPA polytope              (naccdmax, 10 + 2 * epa_iterations)
     epa_vert_index: vertex indices in EPA polytope  (naccdmax, 10 + 2 * epa_iterations)
     epa_face: polytope faces (three indices)        (naccdmax, 6 + MJ_MAX_EPAFACES * epa_iterations)
-    epa_pr: projection of origin on polytope faces  (naccdmax, 6 + MJ_MAX_EPAFACES * epa_iterations)
-    epa_norm2: epa_pr * epa_pr                      (naccdmax, 6 + MJ_MAX_EPAFACES * epa_iterations)
+    epa_normal: outward unit face normals           (naccdmax, 6 + MJ_MAX_EPAFACES * epa_iterations)
+    epa_dist: signed origin-face distance           (naccdmax, 6 + MJ_MAX_EPAFACES * epa_iterations)
     epa_horizon: index pair (i, j) of horizon edges (naccdmax, MJ_MAX_EPAHORIZON)
     multiccd_polygon: clipped contact surface       (naccdmax, 2 * npolygonmax)
     multiccd_clipped: clipped contact surface (tmp) (naccdmax, 2 * npolygonmax)
@@ -512,8 +512,8 @@ class CollisionContext:
   epa_vert: wp.array = None
   epa_vert_index: wp.array = None
   epa_face: wp.array = None
-  epa_pr: wp.array = None
-  epa_norm2: wp.array = None
+  epa_normal: wp.array = None
+  epa_dist: wp.array = None
   epa_horizon: wp.array = None
   multiccd_polygon: wp.array = None
   multiccd_clipped: wp.array = None
