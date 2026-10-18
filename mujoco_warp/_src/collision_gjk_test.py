@@ -1050,9 +1050,9 @@ class GJKTest(parameterized.TestCase):
     dist, _, _, _ = _geom_dist(m, d, 0, 1, multiccd=False, pos1=pos1, mat1=rot1, pos2=pos2, mat2=rot2)
     self.assertAlmostEqual(dist, -0.00011578822, 6)  # dist = -0.00011579410621457821 - MJC 64 bit precision
 
-    # same configuration with an undersized horizon buffer sets the overflow bit
+    # an undersized horizon buffer sets the overflow bit and keeps the contact
     overflow = wp.zeros(1, dtype=int)
-    _geom_dist(
+    dist, ncon, _, _ = _geom_dist(
       m,
       d,
       0,
@@ -1067,6 +1067,8 @@ class GJKTest(parameterized.TestCase):
       overflow_out=overflow,
     )
     self.assertTrue(overflow.numpy()[0] & OverflowType.EPA_HORIZON)
+    self.assertEqual(ncon, 1)
+    self.assertLess(dist, 0.0)
 
   def test_box_box_rotation(self):
     """Test box-box with slight rotation which should give 4 contacts."""

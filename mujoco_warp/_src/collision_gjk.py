@@ -1382,16 +1382,6 @@ def _epa(
     pt.nhorizon = _add_edge(pt, face[0], face[1])
     pt.nhorizon = _add_edge(pt, face[1], face[2])
     pt.nhorizon = _add_edge(pt, face[2], face[0])
-    if pt.nhorizon == -1:
-      if warn_overflow:
-        wp.printf(
-          "Warning: EPA horizon = %d isn't large enough.\n"
-          "To disable the print warning: m.opt.warn_overflow &= ~mjw.OverflowType.EPA_HORIZON (or = 0 for all)\n",
-          pt.horizon.shape[0],
-        )
-      wp.atomic_or(overflow_out, worldid, OverflowType.EPA_HORIZON)
-      idx = -1
-      break
 
     # compute horizon for w
     for i in range(pt.nface):
@@ -1405,22 +1395,24 @@ def _epa(
         pt.nhorizon = _add_edge(pt, face[0], face[1])
         pt.nhorizon = _add_edge(pt, face[1], face[2])
         pt.nhorizon = _add_edge(pt, face[2], face[0])
-        if pt.nhorizon == -1:
-          if warn_overflow:
-            wp.printf(
-              "Warning: EPA horizon = %d isn't large enough.\n"
-              "To disable the print warning: m.opt.warn_overflow &= ~mjw.OverflowType.EPA_HORIZON (or = 0 for all)\n",
-              pt.horizon.shape[0],
-            )
-          wp.atomic_or(overflow_out, worldid, OverflowType.EPA_HORIZON)
-          idx = -1
-          break
+
+    # the polytope cannot grow past this point, so the closest face so far is the answer
+    if pt.nhorizon == -1:
+      if warn_overflow:
+        wp.printf(
+          "Warning: EPA horizon = %d isn't large enough.\n"
+          "To disable the print warning: m.opt.warn_overflow &= ~mjw.OverflowType.EPA_HORIZON (or = 0 for all)\n",
+          pt.horizon.shape[0],
+        )
+      wp.atomic_or(overflow_out, worldid, OverflowType.EPA_HORIZON)
+      break
 
     # insert w as new vertex and attach faces along the horizon
+    attached = bool(True)
     for i in range(pt.nhorizon):
       edge = _get_edge(pt.horizon[i])
-      if not _attach_face(pt, pt.nface, wi, edge[0], edge[1]):
-        idx = -1
+      attached = _attach_face(pt, pt.nface, wi, edge[0], edge[1])
+      if not attached:
         break
 
       pt.nface += 1
@@ -1432,8 +1424,8 @@ def _epa(
       else:
         pt.face[pt.nface - 1] = _invalidate_face(pt.face[pt.nface - 1])
 
-    # no face candidates left
-    if nvalid == 0 or idx == -1:
+    # no face candidates left, or a horizon edge is collinear with w or the face buffer is full
+    if nvalid == 0 or not attached:
       break
 
     # clear horizon
