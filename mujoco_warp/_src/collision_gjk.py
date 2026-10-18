@@ -1111,13 +1111,15 @@ def _polytope2(
     pt.status = -1
     return pt, _replace_simplex3(pt, 1, 4, 3)
 
-  # check hexahedron is convex
+  # the hexahedron is not convex when the segment misses the triangle of the supports, which
+  # rounding also decides when the segment passes through an edge of it: build from a 2-simplex
+  # instead, whose edge holds the origin
   v2 = pt.vert[4] - pt.vert[5]
   v3 = pt.vert[6] - pt.vert[7]
   v4 = pt.vert[8] - pt.vert[9]
   if not _ray_triangle(simplex[0], simplex[1], v2, v3, v4):
-    pt.status = 1
-    return pt, GJKResult()
+    pt.status = -1
+    return pt, _replace_simplex3(pt, 0, 1, 2)
 
   # set polytope counts
   pt.nvert = 5

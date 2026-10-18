@@ -649,6 +649,34 @@ class GJKTest(parameterized.TestCase):
     dist, _, _, _ = _geom_dist(m, d, 0, 1)
     self.assertAlmostEqual(dist_mujoco, dist, delta=1e-7)
 
+  def test_box_box_settling_plates(self):
+    """Test box-box distance for two plates of a settling stack under the Newton solver."""
+    # GJK ends on a segment through the origin that passes through an edge of the supports' triangle
+    _, _, m, d = test_data.fixture(
+      xml="""
+    <mujoco>
+      <worldbody>
+        <body>
+          <freejoint/>
+          <geom type="box" size="0.105 0.148 0.002"/>
+        </body>
+        <body>
+          <freejoint/>
+          <geom type="box" size="0.105 0.148 0.002"/>
+        </body>
+      </worldbody>
+      <keyframe>
+        <key qpos="-3.9997736e-13 -3.11562321e-12 0.0451529063 1 2.1904524e-10 3.41666868e-11 1.38465998e-17
+                   -2.85402019e-13 -3.63993948e-12 0.0487857275 1 -1.11090651e-11 -4.36697692e-11 2.02276117e-17"/>
+      </keyframe>
+    </mujoco>
+    """,
+      keyframe=0,
+    )
+    kinematics(m, d)
+    dist, _, _, _ = _geom_dist(m, d, 0, 1)
+    self.assertAlmostEqual(-0.000367179, dist, delta=1e-7)
+
   def test_box_edge(self):
     """Test box edge."""
     _, _, m, d = test_data.fixture(
