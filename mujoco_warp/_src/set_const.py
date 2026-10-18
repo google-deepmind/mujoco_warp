@@ -582,9 +582,25 @@ def _set_length_range(
 # kernel_analyzer: on
 
 
+def _check_per_world_outputs(nworld: int, **outputs: wp.array):
+  """Raise if an output written once per world has fewer leading rows than worlds computed."""
+  for name, array in outputs.items():
+    if array.shape[0] < nworld:
+      raise ValueError(
+        f"set_const computes {nworld} worlds but {name} has {array.shape[0]} leading row(s), so every world "
+        f"would write the same row. Batch {name} together with its source fields (put_model batch_sizes) or "
+        f"assign an array with {nworld} rows."
+      )
+
+
 def _set_bound(m: types.Model):
   """Compute geom bounding boxes and spheres."""
   nworld_geom = np.max([m.geom_dataid.shape[0], m.geom_size.shape[0], m.geom_aabb.shape[0], m.geom_rbound.shape[0]])
+  per_world_outputs = {"geom_aabb": m.geom_aabb, "geom_rbound": m.geom_rbound}
+  if m.nhfield > 0 and m.geom_dataid.shape[0] > 1:
+    # Height field geoms write geom_size from their world's height field.
+    per_world_outputs["geom_size"] = m.geom_size
+  _check_per_world_outputs(nworld_geom, **per_world_outputs)
   wp.launch(
     _compute_geom_bound,
     dim=(nworld_geom, m.ngeom),
@@ -595,7 +611,8 @@ def _set_bound(m: types.Model):
 
 def _set_fixed(m: types.Model):
   """Compute fixed quantities (do not depend on qpos0)."""
-  nworld_subtreemass = m.body_subtreemass.shape[0]
+  nworld_subtreemass = max(m.body_mass.shape[0], m.body_subtreemass.shape[0])
+  _check_per_world_outputs(nworld_subtreemass, body_subtreemass=m.body_subtreemass)
   wp.launch(_init_subtreemass, dim=(nworld_subtreemass, m.nbody), inputs=[m.body_mass], outputs=[m.body_subtreemass])
   det_atomics = bool(m.opt.deterministic & types.DeterminismType.ATOMICS)
   subtreemass_in = wp.empty_like(m.body_subtreemass) if det_atomics else m.body_subtreemass
@@ -850,6 +867,10 @@ def set_const(
     - actuator_length0: not in mjwarp
     - dof_length, flexedge_length0, flexedge_invweight0: unbatched in mjwarp
     - tendon_lengthspring (from qpos_spring): SPRING group unsupported in mjwarp
+
+  Fixed quantities are written once per world of their sources. A field with fewer leading rows
+  than that is rejected rather than letting every world write the same row (put_model batches
+  these fields along with their sources).
 
   Args:
     m: The model containing kinematic and dynamic information (device).
