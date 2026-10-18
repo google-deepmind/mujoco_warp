@@ -87,7 +87,6 @@ def _create_constraint(
 ) -> types.Constraint:
   """Construct a types.Constraint with standard and island local fields allocated properly."""
   efc_kwargs = {"J_rownnz": None, "J_rowadr": None, "J_colind": None, "J": None}
-  sparse = is_sparse(mjm)
 
   efc_D_src = mjd.efc_D if mjd is not None else None
   efc_aref_src = mjd.efc_aref if mjd is not None else None
@@ -105,13 +104,8 @@ def _create_constraint(
       efc_aref_src = mjd_tmp.efc_aref
 
   for f in dataclasses.fields(types.Constraint):
-    if f.name in ("jtdaj_adr", "jtdaj_nrow"):
-      efc_kwargs[f.name] = wp.empty((nworld, njmax if sparse else 0), dtype=int)
-    elif f.name == "jtdaj_nblock":
-      efc_kwargs[f.name] = wp.empty((nworld,), dtype=int)
-    else:
-      if f.name in efc_kwargs:
-        continue
+    if f.name in efc_kwargs:
+      continue
 
     if mjd is not None:
       shape = tuple(sizes[dim] if isinstance(dim, str) else dim for dim in f.type.shape)
@@ -2736,6 +2730,7 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
     userdata_out: wp.array2d[float],
     sensordata_out: wp.array2d[float],
     flex_hessian_valid_out: wp.array2d[bool],
+    efc_jtdaj_nblock_out: wp.array[int],
     nacon_out: wp.array[int],
     overflow_out: wp.array[int],
   ):
@@ -2752,6 +2747,7 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
     nf_out[worldid] = 0
     nl_out[worldid] = 0
     nefc_out[worldid] = 0
+    efc_jtdaj_nblock_out[worldid] = 0
     time_out[worldid] = 0.0
     energy_out[worldid] = wp.vec2(0.0, 0.0)
     ntree_awake_out[worldid] = ntree
@@ -3019,6 +3015,7 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
       d.userdata,
       d.sensordata,
       d.flex_hessian_valid,
+      d.efc.jtdaj_nblock,
       d.nacon,
       d.overflow,
     ],

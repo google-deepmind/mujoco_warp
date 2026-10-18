@@ -536,10 +536,16 @@ class IOTest(parameterized.TestCase):
       if isinstance(val, wp.array):
         self.assertEqual(val.shape, getattr(d, attr).shape, f"{attr} shape mismatch")
 
-  @parameterized.parameters(("constraints.xml", 2), ("flex/rope.xml", None))
-  def test_put_data_builds_jtdaj_block_list(self, xml, keyframe):
+  @parameterized.product(
+    scene=(("constraints.xml", 2), ("flex/rope.xml", None)),
+    solver=(mujoco.mjtSolver.mjSOL_NEWTON, mujoco.mjtSolver.mjSOL_CG),
+  )
+  def test_put_data_builds_jtdaj_block_list(self, scene, solver):
     """put_data builds the JTDAJ block list that make_constraint builds for the same state."""
-    mjm, mjd, m, d = test_data.fixture(xml, keyframe=keyframe, overrides={"opt.jacobian": mujoco.mjtJacobian.mjJAC_SPARSE})
+    xml, keyframe = scene
+    mjm, mjd, m, d = test_data.fixture(
+      xml, keyframe=keyframe, overrides={"opt.jacobian": mujoco.mjtJacobian.mjJAC_SPARSE, "opt.solver": solver}
+    )
     self.assertTrue(m.is_sparse)
     self.assertGreater(mjd.nefc, 0)
 
@@ -558,6 +564,20 @@ class IOTest(parameterized.TestCase):
 
     np.testing.assert_array_equal(put_adr, adr)
     np.testing.assert_array_equal(put_nrow, nrow)
+
+  def test_reset_data_clears_jtdaj_block_list(self):
+    """reset_data empties the JTDAJ block list of the worlds it resets, along with nefc."""
+    _, _, m, d = test_data.fixture(
+      "constraints.xml", keyframe=2, nworld=2, overrides={"opt.jacobian": mujoco.mjtJacobian.mjJAC_SPARSE}
+    )
+    mjwarp.forward(m, d)
+    nblock = d.efc.jtdaj_nblock.numpy()
+    self.assertTrue((nblock > 0).all())
+
+    mjwarp.reset_data(m, d, reset=wp.array([True, False], dtype=bool))
+
+    _assert_eq(d.nefc.numpy()[0], 0, "nefc")
+    _assert_eq(d.efc.jtdaj_nblock.numpy(), [0, nblock[1]], "jtdaj_nblock")
 
   @parameterized.parameters(types.Model, types.Data, types.RenderContext)
   def test_is_batched_metadata(self, dataclass_type):
