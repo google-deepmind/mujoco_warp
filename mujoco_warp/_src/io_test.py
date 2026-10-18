@@ -2182,7 +2182,14 @@ class IOTest(parameterized.TestCase):
     np.testing.assert_allclose(m.geom_size.numpy(), np.repeat(m_default.geom_size.numpy(), 2, axis=0))
     np.testing.assert_allclose(m.mat_rgba.numpy(), np.repeat(m_default.mat_rgba.numpy(), 4, axis=0))
 
-    # field has batched dimension and defaults to batch size 1
+    # fields that set_const_fixed derives from geom_size follow its batch size
+    self.assertEqual(tuple(m.geom_aabb.shape), (2, mjm.ngeom, 2))
+    self.assertEqual(tuple(m.geom_rbound.shape), (2, mjm.ngeom))
+    np.testing.assert_allclose(m.geom_aabb.numpy(), np.repeat(m_default.geom_aabb.numpy(), 2, axis=0))
+    np.testing.assert_allclose(m.geom_rbound.numpy(), np.repeat(m_default.geom_rbound.numpy(), 2, axis=0))
+
+    # every other field has batched dimension and defaults to batch size 1
+    expected_batch_sizes = {**batch_sizes, "geom_aabb": 2, "geom_rbound": 2}
     for f in dataclasses.fields(types.Model):
       if not warp_util.is_array_spec(f.type):
         continue
@@ -2191,7 +2198,7 @@ class IOTest(parameterized.TestCase):
         continue
       val = getattr(m, f.name)
       if val is not None:
-        expected = batch_sizes.get(f.name, 1)
+        expected = expected_batch_sizes.get(f.name, 1)
         self.assertEqual(val.shape[0], expected, f"Field {f.name} does not have batch dimension {expected}")
 
     red_id = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_TEXTURE, "red")
