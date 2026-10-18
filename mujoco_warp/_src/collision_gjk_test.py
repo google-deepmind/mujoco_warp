@@ -649,11 +649,26 @@ class GJKTest(parameterized.TestCase):
     dist, _, _, _ = _geom_dist(m, d, 0, 1)
     self.assertAlmostEqual(dist_mujoco, dist, delta=1e-7)
 
-  def test_box_box_settling_plates(self):
-    """Test box-box distance for two plates of a settling stack under the Newton solver."""
+  @parameterized.named_parameters(
     # GJK ends on a segment through the origin that passes through an edge of the supports' triangle
+    (
+      "segment_on_edge",
+      "-3.9997736e-13 -3.11562321e-12 0.0451529063 1 2.1904524e-10 3.41666868e-11 1.38465998e-17",
+      "-2.85402019e-13 -3.63993948e-12 0.0487857275 1 -1.11090651e-11 -4.36697692e-11 2.02276117e-17",
+      -0.000367179,
+    ),
+    # the starting hexahedron is nearly flat, within nanometers of its center
+    (
+      "flat_hexahedron",
+      "-6.13740178e-13 4.22930246e-13 0.0416328236 1 -1.1288534e-10 -1.64971467e-10 -2.11745933e-18",
+      "-1.19552025e-12 6.30510509e-13 0.0451529063 1 8.28539598e-11 2.07634014e-11 -7.54522391e-18",
+      -0.00047992,
+    ),
+  )
+  def test_box_box_settling_plates(self, qpos1: str, qpos2: str, dist_mujoco: float):
+    """Test box-box distance for two plates of a settling stack under the Newton solver."""
     _, _, m, d = test_data.fixture(
-      xml="""
+      xml=f"""
     <mujoco>
       <worldbody>
         <body>
@@ -666,8 +681,7 @@ class GJKTest(parameterized.TestCase):
         </body>
       </worldbody>
       <keyframe>
-        <key qpos="-3.9997736e-13 -3.11562321e-12 0.0451529063 1 2.1904524e-10 3.41666868e-11 1.38465998e-17
-                   -2.85402019e-13 -3.63993948e-12 0.0487857275 1 -1.11090651e-11 -4.36697692e-11 2.02276117e-17"/>
+        <key qpos="{qpos1} {qpos2}"/>
       </keyframe>
     </mujoco>
     """,
@@ -675,7 +689,7 @@ class GJKTest(parameterized.TestCase):
     )
     kinematics(m, d)
     dist, _, _, _ = _geom_dist(m, d, 0, 1)
-    self.assertAlmostEqual(-0.000367179, dist, delta=1e-7)
+    self.assertAlmostEqual(dist_mujoco, dist, delta=1e-7)
 
   def test_box_edge(self):
     """Test box edge."""

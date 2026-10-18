@@ -82,8 +82,8 @@ class Polytope:
   vert_index: wp.array[int]
   nvert: int
 
-  # center point of polytope
-  center: wp.vec3
+  # +1 if the faces are wound counterclockwise seen from outside, -1 if clockwise
+  orient: float
 
   # faces in polytope
   # 10 bits per each vertex index, while the last significant bits are for
@@ -245,7 +245,8 @@ def support(geom: Geom, geomtype: int, dir: wp.vec3) -> SupportPoint:
 def _attach_face(pt: Polytope, idx: int, v1: int, v2: int, v3: int) -> bool:
   """Attaches a face by its outward plane, which does not depend on where the origin is.
 
-  Returns False if the face has no area or the polytope is out of memory.
+  The face is wound like the polytope, so its outward side follows from its winding. Returns False
+  if the face has no area or the polytope is out of memory.
   """
   if pt.nface == pt.face.shape[0]:
     return False
@@ -257,7 +258,7 @@ def _attach_face(pt: Polytope, idx: int, v1: int, v2: int, v3: int) -> bool:
   norm = wp.norm_l2(n)
   if norm < MINVAL:
     return False
-  n = wp.where(wp.dot(n, p1 - pt.center) < 0.0, -n, n) / norm
+  n = pt.orient * n / norm
 
   pt.face[idx] = v1 + (v2 << 10) + (v3 << 20)
   pt.face_normal[idx] = n
@@ -944,10 +945,13 @@ def _add_edge(pt: Polytope, e1: int, e2: int) -> int:
   if n < 0:
     return -1
 
-  edge = (wp.min(e1, e2) << 10) | wp.max(e1, e2)
+  # an edge is directed as in its deleted face, and is interior if the other face across it, which
+  # holds it reversed, is deleted too
+  edge = e1 + (e2 << 10)
+  twin = e2 + (e1 << 10)
 
   for i in range(n):
-    if edge == pt.horizon[i]:
+    if twin == pt.horizon[i]:
       pt.horizon[i] = pt.horizon[n - 1]
       return n - 1
 
@@ -1050,9 +1054,6 @@ def _polytope2(
   """Create polytope for EPA given a 1-simplex from GJK."""
   diff = simplex[1] - simplex[0]
 
-  # set the polytope center
-  pt.center = 0.5 * (simplex[0] + simplex[1])
-
   # find component with smallest magnitude (so cross product is largest)
   value = FLOAT_MAX
   index = 0
@@ -1085,8 +1086,13 @@ def _polytope2(
   _epa_support(pt, 2, geom1, geom2, geomtype1, geomtype2, d1 / wp.norm_l2(d1))
   _epa_support(pt, 3, geom1, geom2, geomtype1, geomtype2, d2 / wp.norm_l2(d2))
   _epa_support(pt, 4, geom1, geom2, geomtype1, geomtype2, d3 / wp.norm_l2(d3))
+  v2 = pt.vert[4] - pt.vert[5]
+  v3 = pt.vert[6] - pt.vert[7]
+  v4 = pt.vert[8] - pt.vert[9]
 
-  # build hexahedron
+  # build hexahedron, whose faces are wound consistently, so the volume across the ring of supports
+  # decides which way they face
+  pt.orient = wp.sign(_det3(v3 - v2, v4 - v2, simplex[0] - simplex[1]))
   if not _attach_face(pt, 0, 0, 2, 3):
     pt.status = -1
     return pt, _replace_simplex3(pt, 0, 2, 3)
@@ -1114,9 +1120,6 @@ def _polytope2(
   # the hexahedron is not convex when the segment misses the triangle of the supports, which
   # rounding also decides when the segment passes through an edge of it: build from a 2-simplex
   # instead, whose edge holds the origin
-  v2 = pt.vert[4] - pt.vert[5]
-  v3 = pt.vert[6] - pt.vert[7]
-  v4 = pt.vert[8] - pt.vert[9]
   if not _ray_triangle(simplex[0], simplex[1], v2, v3, v4):
     pt.status = -1
     return pt, _replace_simplex3(pt, 0, 1, 2)
@@ -1144,9 +1147,6 @@ def _polytope3(
   geomtype2: int,
 ) -> Polytope:
   """Create polytope for EPA given a 2-simplex from GJK."""
-  # set the polytope center
-  pt.center = (simplex[0] + simplex[1] + simplex[2]) * wp.static(1.0 / 3.0)
-
   # get normals in both directions
   n = wp.cross(simplex[1] - simplex[0], simplex[2] - simplex[0])
   norm = wp.norm_l2(n)
@@ -1194,7 +1194,9 @@ def _polytope3(
     pt.status = 5
     return pt
 
-  # create hexahedron for EPA
+  # create hexahedron for EPA, whose faces are wound consistently, so the volume across the
+  # 2-simplex decides which way they face
+  pt.orient = wp.sign(_det3(v2 - v1, v3 - v1, v5 - v4))
   if not _attach_face(pt, 0, 4, 0, 1):
     pt.status = 6
     return pt
@@ -1232,9 +1234,6 @@ def _polytope4(
   simplex_index2: wp.vec4i,
 ) -> Tuple[Polytope, GJKResult]:
   """Create polytope for EPA given a 3-simplex from GJK."""
-  # set the polytope center
-  pt.center = 0.25 * (simplex[0] + simplex[1] + simplex[2] + simplex[3])
-
   pt.vert[0] = simplex1[0]
   pt.vert[1] = simplex2[0]
   pt.vert[2] = simplex1[1]
@@ -1253,7 +1252,9 @@ def _polytope4(
   pt.vert_index[6] = simplex_index1[3]
   pt.vert_index[7] = simplex_index2[3]
 
+  # the faces are wound consistently, so the volume of the tetrahedron decides which way they face;
   # if a face is degenerate, replace the 3-simplex with a 2-simplex
+  pt.orient = wp.sign(_det3(simplex[1] - simplex[0], simplex[2] - simplex[0], simplex[0] - simplex[3]))
   if not _attach_face(pt, 0, 0, 1, 2):
     pt.status = -1
     return pt, _replace_simplex3(pt, 0, 1, 2)
