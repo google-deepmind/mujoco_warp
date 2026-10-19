@@ -2951,6 +2951,7 @@ def _dof_chain_advance(dof_parentid: wp.array[int], da1: int, da2: int, n: int) 
 @cache_kernel
 def _efc_contact_jac_sparse(cone_type: types.ConeType, nmaxdim: int):
   IS_ELLIPTIC = cone_type == types.ConeType.ELLIPTIC
+  vecdim = wp.types.vector(length=nmaxdim, dtype=float)
 
   # Lane k of a contact computes the k-th nonzero for all of the contact's rows, so lanes write
   # consecutive addresses; one thread per row would scatter every store across sectors.
@@ -3017,6 +3018,8 @@ def _efc_contact_jac_sparse(cone_type: types.ConeType, nmaxdim: int):
       da2 = int(body_dofadr[body2] + body_dofnum[body2] - 1)
       da1, da2 = _dof_chain_advance(dof_parentid, da1, da2, lane)
 
+      # per-lane partial sums, so a lane issues one atomic per row rather than one per nonzero
+      Jqvel = vecdim()
       for nnz in range(lane, rownnz, _CONTACT_JAC_LANES):
         dofid = wp.max(da1, da2)
         jac1p, jac1r = support.jac_dof(
@@ -3087,11 +3090,16 @@ def _efc_contact_jac_sparse(cone_type: types.ConeType, nmaxdim: int):
           sparseid = efc_J_rowadr_in[worldid, efcid] + nnz
           efc_J_colind_out[worldid, 0, sparseid] = dofid
           efc_J_out[worldid, 0, sparseid] = J
-          # rows are zeroed by _efc_contact_init
-          wp.atomic_add(efc_Jqvel_out, worldid, efcid, J * qvel)
+          Jqvel[dimid] += J * qvel
 
         if nnz + _CONTACT_JAC_LANES < rownnz:
           da1, da2 = _dof_chain_advance(dof_parentid, da1, da2, _CONTACT_JAC_LANES)
+
+      for dimid in range(nmaxdim):
+        efcid = contact_efc_address_in[conid, dimid]
+        if efcid >= 0:
+          # rows are zeroed by _efc_contact_init
+          wp.atomic_add(efc_Jqvel_out, worldid, efcid, Jqvel[dimid])
 
   return kernel
 
