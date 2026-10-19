@@ -2544,8 +2544,9 @@ def _efc_contact_init(cone_type: types.ConeType, is_sparse: bool, newton: bool, 
         contact_efc_address_out[conid, dim] = efcid
         # This is redundant with the _efc_row call later but needed for the jac calculation
         efc_id_out[worldid, efcid] = conid
-        # the sparse Jacobian kernel accumulates into this
-        efc_Jqvel_out[worldid, efcid] = 0.0
+        if wp.static(IS_SPARSE):
+          # the sparse Jacobian kernel accumulates into this
+          efc_Jqvel_out[worldid, efcid] = 0.0
 
     if wp.static(is_sparse and newton):
       if base_efcid < njmax_in:
@@ -2933,11 +2934,12 @@ _CONTACT_JAC_LANES = 8
 
 
 @wp.func
-def _dof_chain_advance(dof_parentid: wp.array[int], da1: int, da2: int, n: int):
+def _dof_chain_advance(dof_parentid: wp.array[int], da1: int, da2: int, n: int) -> Tuple[int, int]:
   """Advance the merged DOF chains of two bodies by n nonzeros."""
   for _ in range(n):
     da = wp.max(da1, da2)
-    if da < 0:
+    # common dofs and the ends of the chains are not nonzeros
+    if da < 0 or da1 == da2:
       break
     if da1 == da:
       da1 = dof_parentid[da1]
@@ -2989,12 +2991,18 @@ def _efc_contact_jac_sparse(cone_type: types.ConeType, nmaxdim: int):
     tid = wp.tid()
     lane = tid % _CONTACT_JAC_LANES
 
-    for conid in range(tid / _CONTACT_JAC_LANES, min(nacon_in[0], naconmax_in), ncontact_per_pass):
+    for conid in range(tid / _CONTACT_JAC_LANES, wp.min(nacon_in[0], naconmax_in), ncontact_per_pass):
       efcid0 = contact_efc_address_in[conid, 0]
       if efcid0 < 0:
         continue
 
       worldid = worldid_in[conid]
+
+      # all rows of a contact share the same nonzeros
+      rownnz = efc_J_rownnz_in[worldid, efcid0]
+      if lane >= rownnz:
+        continue
+
       condim = condim_in[conid]
 
       geom = geom_in[conid]
@@ -3002,10 +3010,8 @@ def _efc_contact_jac_sparse(cone_type: types.ConeType, nmaxdim: int):
       body2 = body_weldid[geom_bodyid[geom[1]]]
 
       con_pos = pos_in[conid]
-      frame_0 = frame_in[conid, 0]
-
-      # all rows of a contact share the same nonzeros
-      rownnz = efc_J_rownnz_in[worldid, efcid0]
+      if not wp.static(IS_ELLIPTIC):
+        frame_0 = frame_in[conid, 0]
 
       da1 = int(body_dofadr[body1] + body_dofnum[body1] - 1)
       da2 = int(body_dofadr[body2] + body_dofnum[body2] - 1)
@@ -3084,7 +3090,8 @@ def _efc_contact_jac_sparse(cone_type: types.ConeType, nmaxdim: int):
           # rows are zeroed by _efc_contact_init
           wp.atomic_add(efc_Jqvel_out, worldid, efcid, J * qvel)
 
-        da1, da2 = _dof_chain_advance(dof_parentid, da1, da2, _CONTACT_JAC_LANES)
+        if nnz + _CONTACT_JAC_LANES < rownnz:
+          da1, da2 = _dof_chain_advance(dof_parentid, da1, da2, _CONTACT_JAC_LANES)
 
   return kernel
 
