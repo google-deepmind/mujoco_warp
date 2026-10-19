@@ -2128,6 +2128,42 @@ def _update_gradient_h_incremental_sparse(compact: bool):
   return kernel
 
 
+def _update_qfrc_constraint(
+  m: types.Model,
+  d: types.Data,
+  ctx: SolverContext | InverseContext,
+  stable_fast: bool = False,
+  final: bool = False,
+):
+  """qfrc_constraint = efc_J' * efc_force."""
+  changed = ctx.state_changed_count if stable_fast else d.nefc
+  sc = _sparse_compact(ctx)
+  if m.is_sparse or sc:
+    dj = ctx.compact_d_full if sc else d
+    if final:
+      d.qfrc_constraint.zero_()
+    else:
+      wp.launch(
+        _zero_qfrc_constraint_sparse,
+        dim=(d.nworld, m.nv),
+        inputs=[changed, ctx.done],
+        outputs=[d.qfrc_constraint],
+      )
+    wp.launch(
+      _update_constraint_init_qfrc_constraint_sparse(sc, final),
+      dim=(d.nworld, d.njmax),
+      inputs=[d.nefc, dj.efc.J_rownnz, dj.efc.J_rowadr, dj.efc.J_colind, dj.efc.J, d.efc.force, dj.dof_cdof, changed, ctx.done],
+      outputs=[d.qfrc_constraint],
+    )
+  else:
+    wp.launch(
+      _update_constraint_init_qfrc_constraint_dense(stable_fast, final),
+      dim=(d.nworld, m.nv),
+      inputs=[d.nefc, d.efc.J, d.efc.force, d.njmax, changed, ctx.done],
+      outputs=[d.qfrc_constraint],
+    )
+
+
 def _update_constraint(
   m: types.Model,
   d: types.Data,
@@ -2163,29 +2199,7 @@ def _update_constraint(
 
   # qfrc_constraint = efc_J.T @ efc_force. Fast-path worlds with no state flips
   # skip the rebuild; the public value is recovered after the solve.
-  changed = ctx.state_changed_count if stable_fast else d.nefc
-  sc = _sparse_compact(ctx)
-  if m.is_sparse or sc:
-    dj = ctx.compact_d_full if sc else d
-    wp.launch(
-      _zero_qfrc_constraint_sparse,
-      dim=(d.nworld, m.nv),
-      inputs=[changed, ctx.done],
-      outputs=[d.qfrc_constraint],
-    )
-    wp.launch(
-      _update_constraint_init_qfrc_constraint_sparse(sc),
-      dim=(d.nworld, d.njmax),
-      inputs=[d.nefc, dj.efc.J_rownnz, dj.efc.J_rowadr, dj.efc.J_colind, dj.efc.J, d.efc.force, dj.dof_cdof, changed, ctx.done],
-      outputs=[d.qfrc_constraint],
-    )
-  else:
-    wp.launch(
-      _update_constraint_init_qfrc_constraint_dense(stable_fast),
-      dim=(d.nworld, m.nv),
-      inputs=[d.nefc, d.efc.J, d.efc.force, d.njmax, changed, ctx.done],
-      outputs=[d.qfrc_constraint],
-    )
+  _update_qfrc_constraint(m, d, ctx, stable_fast=stable_fast)
   if m.opt.integrator == types.IntegratorType.DISCRETE and (m.opt.enableflags & types.EnableBit.SLEEP):
     wp.launch(
       derivative._zero_sleeping_dofs,
@@ -4016,33 +4030,7 @@ def _solve(m: types.Model, d: types.Data, ctx: SolverContext, compact: bool = Fa
   # this from the scaled cached gradient assumes an exact Newton direction and can
   # disagree with efc.force after finite-precision Hessian assembly and solves.
   if _use_incremental(m):
-    sc = _sparse_compact(ctx)
-    if m.is_sparse or sc:
-      dj = ctx.compact_d_full if sc else d
-      d.qfrc_constraint.zero_()
-      wp.launch(
-        _update_constraint_init_qfrc_constraint_sparse(sc, True),
-        dim=(d.nworld, d.njmax),
-        inputs=[
-          d.nefc,
-          dj.efc.J_rownnz,
-          dj.efc.J_rowadr,
-          dj.efc.J_colind,
-          dj.efc.J,
-          d.efc.force,
-          dj.dof_cdof,
-          d.nefc,
-          ctx.done,
-        ],
-        outputs=[d.qfrc_constraint],
-      )
-    else:
-      wp.launch(
-        _update_constraint_init_qfrc_constraint_dense(False, True),
-        dim=(d.nworld, m.nv),
-        inputs=[d.nefc, d.efc.J, d.efc.force, d.njmax, d.nefc, ctx.done],
-        outputs=[d.qfrc_constraint],
-      )
+    _update_qfrc_constraint(m, d, ctx, final=True)
   if m.opt.integrator == types.IntegratorType.DISCRETE and (m.opt.enableflags & types.EnableBit.SLEEP):
     wp.launch(
       derivative._zero_sleeping_dofs,
