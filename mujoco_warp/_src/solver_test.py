@@ -15,7 +15,9 @@
 
 """Tests for solver functions."""
 
+import contextlib
 import copy
+from unittest import mock
 
 import mujoco
 import numpy as np
@@ -2001,7 +2003,8 @@ class SolverTest(parameterized.TestCase):
         else:
           self.assertFalse(active[case])
 
-  def test_incremental_vs_full_hessian(self):
+  @parameterized.parameters(False, True)
+  def test_incremental_vs_full_hessian(self, f64):
     """Tests that incremental Hessian updates produce same result as full recomputation."""
     total_any_changes = False
     for keyframe in range(3):
@@ -2013,6 +2016,7 @@ class SolverTest(parameterized.TestCase):
           "opt.solver": SolverType.NEWTON,
           "opt.iterations": 5,
           "opt.ls_iterations": 10,
+          "opt.newton_hessian_float64": f64,
         },
       )
 
@@ -2097,43 +2101,68 @@ class SolverTest(parameterized.TestCase):
     self.assertGreater(qfrc[0], 0.0, "early-converged world was zeroed")
     self.assertGreater(qfrc[1], 0.0)
 
-  @parameterized.parameters(ConeType.ELLIPTIC, ConeType.PYRAMIDAL)
-  def test_newton_hessian_float64(self, cone):
-    """A light cable on a plane: the float32 Hessian is indefinite, the float64 one matches MuJoCo.
+  def _light_cable(self, cone, f64, sleep=False):
+    """The light cable: 64 box links of 17 mg on a plane, stiff contacts at impratio 100."""
+    return test_data.fixture(
+      xml=_LIGHT_CABLE_XML,
+      overrides={
+        "opt.cone": cone,
+        "opt.newton_hessian_float64": f64,
+        "opt.enableflags": types.EnableBit.SLEEP if sleep else 0,
+      },
+      nconmax=320,
+      njmax=2048,
+    )
+
+  @parameterized.parameters(
+    (ConeType.ELLIPTIC, False, True),
+    (ConeType.PYRAMIDAL, False, True),
+    (ConeType.PYRAMIDAL, True, True),
+    (ConeType.ELLIPTIC, True, False),  # this compact float32 solve happens to stay finite
+  )
+  def test_newton_hessian_float64(self, cone, sleep, float32_fails):
+    """Run the light cable finite and on MuJoCo with the float64 Hessian, where float32 fails.
 
     Links of 17 mg with rotational inertia ~1e-11 make the smallest eigenvalues of M tiny, while
     stiff contacts at impratio 100 make J'DJ large: the float32 assembly of H = M + J'DJ is
-    indefinite and its Cholesky returns NaN. With newton_hessian_float64 the Hessian is assembled
-    and factored in float64.
+    indefinite and its Cholesky returns NaN. Under sleep the compact solve builds its own context
+    from a replaced model, which must keep the option.
     """
     for f64 in (False, True):
-      mjm, mjd, m, d = test_data.fixture(
-        xml="""
-        <mujoco>
-          <option timestep="1e-4" impratio="100" solver="Newton" iterations="30" ls_iterations="50"/>
-          <worldbody>
-            <geom type="plane" size="1 1 .1"/>
-            <composite type="cable" curve="s" count="65 1 1" size="0.16" offset="0 0 0.00084" initial="free">
-              <joint kind="main" damping="1e-6" armature="1e-11"/>
-              <geom type="box" size="0.00125 0.004 0.00085" mass="1.69e-05" condim="4" friction="0.5 0.00025 1e-05"
-                    solref="-9e6 -6000" solimp="0.9924 0.9924 0.001 0.5 2"/>
-            </composite>
-          </worldbody>
-        </mujoco>
-        """,
-        overrides={"opt.cone": cone, "opt.newton_hessian_float64": f64},
-        nconmax=256,
-        njmax=2048,
-      )
-      for _ in range(5):
-        mjw.step(m, d)
-        mujoco.mj_step(mjm, mjd)
+      mjm, mjd, m, d = self._light_cable(cone, f64, sleep)
+      with _recording_contexts() as contexts, _watching_solve_compact() as compact:
+        for _ in range(5):
+          mjw.step(m, d)
+          mujoco.mj_step(mjm, mjd)
+          if f64:
+            self.assertGreater(d.nefc.numpy()[0], 0)
+      self.assertEqual(compact.called, sleep)
+      dtype = wp.float64 if f64 else wp.float32
+      self.assertEqual({(c.h.dtype, c.hfactor.dtype) for c in contexts}, {(dtype, dtype)})
       qpos = d.qpos.numpy()[0]
       if f64:
         np.testing.assert_allclose(qpos, mjd.qpos, atol=1e-5)
-      else:
+      elif float32_fails:
         # keeps the test meaningful: the float32 Hessian of this model fails
         self.assertFalse(np.isfinite(qpos).all())
+
+  @parameterized.parameters("dense", "sparse")
+  def test_newton_hessian_float64_compact_dtypes(self, jacobian):
+    """Keep the float64 Hessian and factor in the compact solve, with dense and sparse Jacobians."""
+    for f64 in (False, True):
+      _, _, m, d = test_data.fixture(
+        xml=_box_stack_xml(6, 3, jacobian),
+        overrides={"opt.newton_hessian_float64": f64, "opt.enableflags": types.EnableBit.SLEEP},
+      )
+      self.assertEqual(m.is_sparse, jacobian == "sparse")
+      with _recording_contexts() as contexts, _watching_solve_compact() as compact:
+        for _ in range(10):
+          mjw.step(m, d)
+          self.assertGreater(d.nefc.numpy()[0], 0)
+      self.assertTrue(compact.called)
+      dtype = wp.float64 if f64 else wp.float32
+      self.assertEqual({(c.h.dtype, c.hfactor.dtype) for c in contexts}, {(dtype, dtype)})
+      self.assertTrue(np.isfinite(d.qpos.numpy()).all())
 
   @parameterized.parameters("dense", "sparse")
   def test_newton_hessian_float64_assembly(self, jacobian):
@@ -2161,22 +2190,9 @@ class SolverTest(parameterized.TestCase):
     self.assertEqual(ctx.h.dtype, wp.float64)
 
     nv = m.nv
-    rowadr, rownnz, colind = m.M_rowadr.numpy(), m.M_rownnz.numpy(), m.M_colind.numpy()
-    mval = d.M.numpy()[0].astype(np.float64)
-    M = np.zeros((nv, nv))
-    for i in range(nv):
-      for k in range(rowadr[i], rowadr[i] + rownnz[i]):
-        M[i, colind[k]] = M[colind[k], i] = mval[k]
+    M = _dense_inertia(m, d)
     nefc = d.nefc.numpy()[0]
-    J = np.zeros((nefc, nv))
-    if m.is_sparse:
-      J_rownnz, J_rowadr = d.efc.J_rownnz.numpy()[0], d.efc.J_rowadr.numpy()[0]
-      J_colind, J_val = d.efc.J_colind.numpy()[0, 0], d.efc.J.numpy()[0, 0]
-      for r in range(nefc):
-        for k in range(J_rowadr[r], J_rowadr[r] + J_rownnz[r]):
-          J[r, J_colind[k]] = J_val[k]
-    else:
-      J = d.efc.J.numpy()[0, :nefc, :nv].astype(np.float64)
+    J = _dense_jacobian(m, d)
     quadratic = d.efc.state.numpy()[0, :nefc] == types.ConstraintState.QUADRATIC.value
     D = np.where(quadratic, d.efc.D.numpy()[0, :nefc].astype(np.float64), 0.0)
     self.assertGreater(quadratic.sum(), 0)
@@ -2197,26 +2213,13 @@ class SolverTest(parameterized.TestCase):
   def test_newton_hessian_float64_matches_float32(self, nbody, condim, cone, nworld, sleep):
     """On a well-conditioned scene the float64 Hessian gives the float32 result.
 
-    The first box rests on the plane, so every step has constraints.
+    The first box rests on the plane, so every step has constraints. With two worlds, world 1 is
+    kicked, so the worlds differ.
     """
     qpos = []
     for f64 in (False, True):
       _, _, m, d = test_data.fixture(
-        xml=f"""
-        <mujoco>
-          <option solver="Newton" iterations="20"/>
-          <worldbody>
-            <geom type="plane" size="2 2 .1" condim="{condim}"/>
-            {
-          "".join(
-            f'<body pos="{0.1 * i:.2f} 0 {0.019 + 0.07 * i:.3f}" euler="{9 * i} {5 * i} 0"><freejoint/>'
-            f'<geom type="box" size=".04 .03 .02" mass="{0.1 + 0.05 * i:.2f}" condim="{condim}"/></body>'
-            for i in range(nbody)
-          )
-        }
-          </worldbody>
-        </mujoco>
-        """,
+        xml=_box_stack_xml(nbody, condim),
         overrides={
           "opt.cone": cone,
           "opt.newton_hessian_float64": f64,
@@ -2224,12 +2227,16 @@ class SolverTest(parameterized.TestCase):
         },
         nworld=nworld,
       )
+      if nworld > 1:
+        _kick_world_one(d)
       for _ in range(40):
         mjw.step(m, d)
         self.assertGreater(d.nefc.numpy().min(), 0)
       qpos.append(d.qpos.numpy())
     self.assertTrue(np.isfinite(qpos[1]).all())
     np.testing.assert_allclose(qpos[1], qpos[0], atol=1e-4)
+    if nworld > 1:
+      self.assertGreater(np.abs(qpos[1][1] - qpos[1][0]).max(), 1e-2)
 
   @parameterized.parameters("tendon", "actuator")
   def test_newton_hessian_float64_discrete_metric(self, kind):
@@ -2318,37 +2325,77 @@ class SolverTest(parameterized.TestCase):
 
   @parameterized.parameters(ConeType.ELLIPTIC, ConeType.PYRAMIDAL)
   def test_newton_hessian_float64_search_is_descent(self, cone):
-    """On the light cable the mixed-precision step is a descent direction for the float32 gradient.
+    """Near rest on the light cable, the rounded direction is still a descent direction.
 
-    It is an inexact Newton step: the float64 direction is rounded to float32, and the merit is
-    float32.
+    This is the regime where the inexactness shows: the gradient is near the tolerance, and the
+    float64 direction rounded to float32 leaves a residual of a few percent of the gradient in the
+    float64 Newton system. It stays a descent direction for the float32 gradient.
     """
-    _, _, m, d = test_data.fixture(
-      xml="""
-      <mujoco>
-        <option timestep="1e-4" impratio="100" solver="Newton" iterations="30" ls_iterations="50"/>
-        <worldbody>
-          <geom type="plane" size="1 1 .1"/>
-          <composite type="cable" curve="s" count="65 1 1" size="0.16" offset="0 0 0.00084" initial="free">
-            <joint kind="main" damping="1e-6" armature="1e-11"/>
-            <geom type="box" size="0.00125 0.004 0.00085" mass="1.69e-05" condim="4" friction="0.5 0.00025 1e-05"
-                  solref="-9e6 -6000" solimp="0.9924 0.9924 0.001 0.5 2"/>
-          </composite>
-        </worldbody>
-      </mujoco>
-      """,
-      overrides={"opt.cone": cone, "opt.newton_hessian_float64": True},
-      nconmax=256,
-      njmax=2048,
-    )
+    _, _, m, d = self._light_cable(cone, True)
     for _ in range(5):
       mjw.step(m, d)
     ctx = solver._create_solver_context(m, d)
     solver.init_context(m, d, ctx, grad=True)
-    grad = ctx.grad.numpy()[0, : m.nv].astype(np.float64)
-    search = ctx.search.numpy()[0].astype(np.float64)
+    grad, search, h = _newton_system(m, ctx)
     self.assertTrue(np.isfinite(search).all())
     self.assertLess(grad @ search, 0.0)
+    self.assertLess(np.linalg.norm(h @ search + grad), 0.25 * np.linalg.norm(grad))
+
+  def test_newton_hessian_float64_line_search(self):
+    """Take real line-search steps on the light cable from a cold start.
+
+    From qacc_smooth with the links pressed into the plane, every iteration of the mixed-precision
+    solve lowers the primal cost (evaluated in float64 from the solver's arrays), and each rounded
+    direction solves the float64 Newton system to within float32 accuracy: a small residual, and
+    -g.p equal to p'Hp. The active set settles before convergence, so the incremental path reuses
+    the factor, and the result matches a solve that rebuilds the Hessian every iteration.
+    """
+    mjm, mjd, m, d = self._light_cable(ConeType.PYRAMIDAL, True)
+    mjw.forward(m, d)
+    M, J = _dense_inertia(m, d), _dense_jacobian(m, d)
+    nefc, nv = J.shape
+    np.testing.assert_array_equal(d.efc.type.numpy()[0, :nefc], types.ConstraintType.CONTACT_PYRAMIDAL)
+    aref = d.efc.aref.numpy()[0, :nefc].astype(np.float64)
+    efc_d = d.efc.D.numpy()[0, :nefc].astype(np.float64)
+    qacc_smooth = d.qacc_smooth.numpy()[0, :nv].astype(np.float64)
+
+    def cost(data):
+      qacc = data.qacc.numpy()[0, :nv].astype(np.float64)
+      jaref = J @ qacc - aref
+      return 0.5 * (qacc - qacc_smooth) @ M @ (qacc - qacc_smooth) + 0.5 * np.sum(efc_d * np.minimum(jaref, 0.0) ** 2)
+
+    def cold_context(data):
+      wp.copy(data.qacc, data.qacc_smooth)
+      ctx = solver._create_solver_context(m, data)
+      solver.init_context(m, data, ctx, grad=True)
+      ctx.search_unchanged.zero_()
+      return ctx
+
+    ctx = cold_context(d)
+    nsolving = wp.full(shape=(1,), value=d.nworld, dtype=int)
+    costs, reused = [cost(d)], False
+    for _ in range(m.opt.iterations):
+      if ctx.done.numpy()[0]:
+        break
+      grad, search, h = _newton_system(m, ctx)
+      self.assertLess(np.linalg.norm(h @ search + grad), 0.05 * np.linalg.norm(grad))
+      self.assertAlmostEqual(-grad @ search / (search @ h @ search), 1.0, delta=1e-3)
+      solver._solver_iteration(m, d, ctx, nsolving)
+      costs.append(cost(d))
+      reused |= ctx.state_changed_count.numpy()[0] == 0  # this iteration kept the factor
+    self.assertTrue(ctx.done.numpy()[0])
+    self.assertTrue(reused, "the active set never settled before convergence")
+    self.assertLess(costs[1], 1e-3 * costs[0])
+    np.testing.assert_array_less(np.diff(costs), 0.0)
+
+    d_full = mjw.put_data(mjm, mjd, nconmax=320, njmax=2048)
+    mjw.forward(m, d_full)
+    ctx = cold_context(d_full)
+    for _ in range(m.opt.iterations):
+      solver._linesearch(m, d_full, ctx)
+      solver._update_constraint(m, d_full, ctx)
+      solver._update_gradient(m, d_full, ctx)
+    self.assertAlmostEqual(cost(d_full), costs[-1], delta=1e-6 * costs[-1])
 
   def test_newton_hessian_float64_graph_capture(self):
     """The option is read when kernels are built: a captured step replays the float64 solve."""
@@ -2356,6 +2403,8 @@ class SolverTest(parameterized.TestCase):
       self.skipTest("graph capture needs CUDA")
     _, _, m, d = test_data.fixture("humanoid/humanoid.xml", overrides={"opt.newton_hessian_float64": True}, nworld=2)
     _, _, _, d_ref = test_data.fixture("humanoid/humanoid.xml", overrides={"opt.newton_hessian_float64": True}, nworld=2)
+    _kick_world_one(d)
+    _kick_world_one(d_ref)
     mjw.step(m, d)
     mjw.step(m, d_ref)
     with wp.ScopedCapture() as capture:
@@ -2365,6 +2414,97 @@ class SolverTest(parameterized.TestCase):
     for _ in range(6):
       mjw.step(m, d_ref)
     np.testing.assert_allclose(d.qpos.numpy(), d_ref.qpos.numpy(), atol=1e-5)
+    self.assertGreater(np.abs(d.qpos.numpy()[1] - d.qpos.numpy()[0]).max(), 1e-3)
+
+
+_LIGHT_CABLE_XML = """
+<mujoco>
+  <option timestep="1e-4" impratio="100" solver="Newton" iterations="30" ls_iterations="50"/>
+  <worldbody>
+    <geom type="plane" size="1 1 .1"/>
+    <composite type="cable" curve="s" count="65 1 1" size="0.16" offset="0 0 0.00084" initial="free">
+      <joint kind="main" damping="1e-6" armature="1e-11"/>
+      <geom type="box" size="0.00125 0.004 0.00085" mass="1.69e-05" condim="4" friction="0.5 0.00025 1e-05"
+            solref="-9e6 -6000" solimp="0.9924 0.9924 0.001 0.5 2"/>
+    </composite>
+  </worldbody>
+</mujoco>
+"""
+
+
+def _box_stack_xml(nbody, condim, jacobian="auto"):
+  """Free boxes over a plane; the first rests on it, so every step has constraints."""
+  bodies = "".join(
+    f'<body pos="{0.1 * i:.2f} 0 {0.019 + 0.07 * i:.3f}" euler="{9 * i} {5 * i} 0"><freejoint/>'
+    f'<geom type="box" size=".04 .03 .02" mass="{0.1 + 0.05 * i:.2f}" condim="{condim}"/></body>'
+    for i in range(nbody)
+  )
+  return f"""
+  <mujoco>
+    <option solver="Newton" iterations="20" jacobian="{jacobian}"/>
+    <worldbody>
+      <geom type="plane" size="2 2 .1" condim="{condim}"/>
+      {bodies}
+    </worldbody>
+  </mujoco>
+  """
+
+
+def _kick_world_one(d):
+  """Give world 1 a different velocity from world 0 (the last free body's linear and angular)."""
+  qvel = d.qvel.numpy()
+  qvel[1, -6:] += (0.3, -0.2, 0.1, 2.0, -1.0, 0.5)
+  d.qvel.assign(qvel)
+
+
+@contextlib.contextmanager
+def _recording_contexts():
+  """Record every solver context built, the compact solve's own included."""
+  contexts, create = [], solver._create_solver_context
+
+  def record(m, d):
+    contexts.append(create(m, d))
+    return contexts[-1]
+
+  with mock.patch.object(solver, "_create_solver_context", side_effect=record):
+    yield contexts
+
+
+def _watching_solve_compact():
+  return mock.patch.object(solver, "solve_compact", wraps=solver.solve_compact)
+
+
+def _dense_inertia(m, d):
+  """World 0's M in float64 from its CSR storage."""
+  rowadr, rownnz, colind = m.M_rowadr.numpy(), m.M_rownnz.numpy(), m.M_colind.numpy()
+  val = d.M.numpy()[0].astype(np.float64)
+  M = np.zeros((m.nv, m.nv))
+  for i in range(m.nv):
+    for k in range(rowadr[i], rowadr[i] + rownnz[i]):
+      M[i, colind[k]] = M[colind[k], i] = val[k]
+  return M
+
+
+def _dense_jacobian(m, d):
+  """World 0's constraint Jacobian in float64, from dense or sparse storage."""
+  nefc = d.nefc.numpy()[0]
+  if not m.is_sparse:
+    return d.efc.J.numpy()[0, :nefc, : m.nv].astype(np.float64)
+  J = np.zeros((nefc, m.nv))
+  rownnz, rowadr = d.efc.J_rownnz.numpy()[0], d.efc.J_rowadr.numpy()[0]
+  colind, val = d.efc.J_colind.numpy()[0, 0], d.efc.J.numpy()[0, 0]
+  for r in range(nefc):
+    for k in range(rowadr[r], rowadr[r] + rownnz[r]):
+      J[r, colind[k]] = val[k]
+  return J
+
+
+def _newton_system(m, ctx):
+  """World 0's gradient, search direction and (symmetric, float64) Hessian from a solver context."""
+  h = ctx.h.numpy()[0, : m.nv, : m.nv].astype(np.float64)
+  grad = ctx.grad.numpy()[0, : m.nv].astype(np.float64)
+  search = ctx.search.numpy()[0, : m.nv].astype(np.float64)
+  return grad, search, np.triu(h) + np.triu(h, 1).T
 
 
 _FRICTION_CHAIN_XML = """

@@ -45,14 +45,11 @@ def _htype(m: types.Model) -> type:
   """Scalar type of the Newton Hessian (ctx.h, ctx.hfactor), its assembly and its factorization.
 
   float64 when `m.opt.newton_hessian_float64` is set, else float32. On light bodies under stiff
-  contacts (impratio > 1 inflates the friction rows), H = M + J'DJ is SPD in float64 but its
-  float32 assembly is indefinite: the entry rounding, ~eps32 * |J'DJ|, exceeds the smallest
-  eigenvalues of M, and the Cholesky takes the square root of a negative pivot. With float64,
-  every Hessian contribution is formed and summed in float64 from the float32 J, D, M and contact
-  inputs, and the factor and solve run in float64. The gradient, the search direction and
-  everything else stay float32, so each step is an inexact Newton step: the float64 direction is
-  rounded to float32 and the line search runs in float32, which bounds convergence by float32
-  precision, not float64. H and its factor take 16 * nworld * nv_pad^2 bytes for blocked solves.
+  contacts, H = M + J'DJ can be SPD in float64 but indefinite once assembled in float32. With
+  float64, every Hessian contribution is formed and summed in float64 from the float32 inputs, and
+  the factor and solve run in float64. The gradient, the search direction and the line search stay
+  float32, so each step is an inexact Newton step and accuracy is limited by float32. H and its
+  factor take 16 * nworld * nv_pad^2 bytes for blocked solves.
   """
   return wp.float64 if m.opt.newton_hessian_float64 else float
 
