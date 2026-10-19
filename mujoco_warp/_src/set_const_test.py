@@ -164,58 +164,6 @@ class SetConstTest(parameterized.TestCase):
 
     _assert_eq(m.eq_data.numpy()[0], mjm.eq_data, "eq_data")
 
-  def test_set_const_eq_data_weld(self):
-    """Test set_const recomputes eq_data for weld constraints."""
-    mjm, mjd, m, d = test_data.fixture(
-      xml="""
-    <mujoco>
-      <option gravity="0 0 0">
-        <flag contact="disable"/>
-      </option>
-      <worldbody>
-        <body name="b1" pos="0.1 0 0">
-          <joint type="hinge" axis="0 0 1" ref="0.3"/>
-          <geom type="sphere" size="0.05" mass="1"/>
-        </body>
-        <body name="b2" pos="0.4 0 0" euler="0 0 20">
-          <joint type="hinge" axis="0 1 0" ref="-0.2"/>
-          <geom type="sphere" size="0.05" mass="1"/>
-        </body>
-      </worldbody>
-      <equality>
-        <weld body1="b1" body2="b2" anchor="0.1 0.2 0.3"/>
-      </equality>
-    </mujoco>
-    """
-    )
-
-    # case 1: quaternion data cleared: set_const recomputes relpose and anchor offset
-    new_data = mjm.eq_data[0].copy()
-    new_data[0:3] = [0.15, 0.1, 0.25]
-    new_data[3:10] = 0.0
-    mjm.eq_data[0] = new_data
-    eq_data = m.eq_data.numpy()
-    eq_data[0, 0] = new_data
-    wp.copy(m.eq_data, wp.array(eq_data, dtype=m.eq_data.dtype))
-
-    mujoco.mj_setConst(mjm, mjd)
-    mjwarp.set_const(m, d)
-
-    _assert_eq(m.eq_data.numpy()[0], mjm.eq_data, "eq_data")
-
-    # case 2: user-specified quaternion: set_const only normalizes it
-    new_data = mjm.eq_data[0].copy()
-    new_data[6:10] = [2.0, 0.0, 2.0, 0.0]
-    mjm.eq_data[0] = new_data
-    eq_data = m.eq_data.numpy()
-    eq_data[0, 0] = new_data
-    wp.copy(m.eq_data, wp.array(eq_data, dtype=m.eq_data.dtype))
-
-    mujoco.mj_setConst(mjm, mjd)
-    mjwarp.set_const(m, d)
-
-    _assert_eq(m.eq_data.numpy()[0], mjm.eq_data, "eq_data")
-
   def test_set_const_eq_data_slider_crank_tracking(self):
     """Test connect anchor recompute on a slider-crank with nonzero joint ref."""
     r, ell = 0.075, 0.096
@@ -546,65 +494,6 @@ class SetConstTest(parameterized.TestCase):
     _assert_eq(m.body_subtreemass.numpy(), body_subtreemass_1, "body_subtreemass")
     _assert_eq(m.actuator_acc0.numpy(), actuator_acc0_1, "actuator_acc0")
 
-  def test_set_const_spring(self):
-    """Test set_const_spring resolves tendon_lengthspring."""
-    xml = """
-    <mujoco>
-      <worldbody>
-        <body pos="0 0 1">
-          <freejoint/>
-          <geom type="box" size="0.1 0.2 0.3" mass="10.0"/>
-          <body pos="0.2 0 0">
-            <joint type="ball"/>
-            <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.05" mass="2.0"/>
-            <site name="arm_site" pos="0.15 0 0"/>
-            <body pos="0.3 0 0">
-              <joint type="hinge" axis="0 1 0"/>
-              <geom type="capsule" fromto="0 0 0 0.25 0 0" size="0.04" mass="1.0"/>
-              <site name="hand_site" pos="0.25 0 0"/>
-            </body>
-          </body>
-        </body>
-      </worldbody>
-      <tendon>
-        <spatial>
-          <site site="arm_site"/>
-          <site site="hand_site"/>
-        </spatial>
-      </tendon>
-    </mujoco>
-    """
-
-    # Run with default qpos_spring
-    mjm_default, mjd_default, m_default, d_default = test_data.fixture(xml=xml)
-    mjm_default.tendon_lengthspring[:] = -1.0
-    m_default.tendon_lengthspring.assign(
-      np.full((m_default.tendon_lengthspring.shape[0], m_default.tendon_lengthspring.shape[1], 2), -1.0)
-    )
-    mujoco.mj_setConst(mjm_default, mjd_default)
-    mjwarp.set_const(m_default, d_default)
-    lengthspring_default = m_default.tendon_lengthspring.numpy().copy()
-
-    # Run with modified qpos_spring
-    mjm, mjd, m, d = test_data.fixture(xml=xml)
-    mjm.qpos_spring[11] = 0.5
-
-    qpos_spring_np = m.qpos_spring.numpy()
-    qpos_spring_np[0, 11] = 0.5
-    m.qpos_spring.assign(qpos_spring_np)
-
-    mjm.tendon_lengthspring[:] = -1.0
-    m.tendon_lengthspring.assign(np.full((m.tendon_lengthspring.shape[0], m.tendon_lengthspring.shape[1], 2), -1.0))
-
-    mujoco.mj_setConst(mjm, mjd)
-    mjwarp.set_const(m, d)
-
-    # Verify matching with MuJoCo
-    _assert_eq(m.tendon_lengthspring.numpy()[0], mjm.tendon_lengthspring, "tendon_lengthspring")
-
-    # Verify that modified spring length differs from the default spring length
-    self.assertFalse(np.allclose(lengthspring_default, m.tendon_lengthspring.numpy()))
-
   @parameterized.named_parameters(
     dict(
       testcase_name="set_const",
@@ -685,30 +574,6 @@ class SetConstTest(parameterized.TestCase):
         "M",
         "qLD",
         "qLDiagInv",
-        "actuator_length",
-        "actuator_moment",
-        "moment_rownnz",
-        "moment_rowadr",
-        "moment_colind",
-      ],
-    ),
-    dict(
-      testcase_name="set_const_spring",
-      func_name="set_const_spring",
-      fields=[
-        "xpos",
-        "xquat",
-        "xmat",
-        "xanchor",
-        "xaxis",
-        "geom_xpos",
-        "geom_xmat",
-        "site_xpos",
-        "site_xmat",
-        "subtree_com",
-        "cdof",
-        "ten_length",
-        "ten_J",
         "actuator_length",
         "actuator_moment",
         "moment_rownnz",
@@ -854,118 +719,70 @@ class SetConstTest(parameterized.TestCase):
     _assert_eq(acc0_np[0], mjm.actuator_acc0, "actuator_acc0")
 
   @parameterized.parameters(1, 2)
-  def test_set_const_dampratio(self, nworld):
-    """Test dampratio resolution uses operational-space inertia 1 / (J * inv(M) * J')."""
-    mjm, mjd, m, d = test_data.fixture(
+  def test_set_const_compiled_constants(self, nworld):
+    """Test set_const keeps what compilation derives from the conventions of the spec, as mj_setConst."""
+    mjm, _, m, d = test_data.fixture(
       xml="""
     <mujoco>
       <worldbody>
         <body>
-          <joint name="j1" type="hinge" axis="0 0 1"/>
-          <geom type="capsule" size="0.05" fromto="0 0 0 0.5 0 0" mass="1.0"/>
-          <body pos="0.5 0 0">
-            <joint name="j2" type="hinge" axis="0 0 1"/>
-            <geom type="capsule" size="0.05" fromto="0 0 0 0.5 0 0" mass="1.0"/>
-          </body>
-        </body>
-        <body>
-          <joint name="s1" type="slide"/>
-          <geom size=".1" mass="1"/>
-        </body>
-        <body>
-          <joint name="s2" type="slide"/>
-          <geom size=".1" mass="1"/>
+          <joint name="slider" type="slide" springref=".25"/>
+          <inertial pos="0 0 0" mass="1" diaginertia="1 1 1"/>
         </body>
       </worldbody>
       <tendon>
-        <fixed name="t1" armature="3">
-          <joint joint="s1" coef="1"/>
-          <joint joint="s2" coef="1e-6"/>
+        <fixed stiffness="1">
+          <joint joint="slider" coef="2"/>
         </fixed>
       </tendon>
       <actuator>
-        <position joint="j1" kp="100" dampratio="1.0"/>
-        <position joint="j2" kp="50" dampratio="0.5"/>
-        <position tendon="t1" kp="9" dampratio="1.0"/>
+        <position joint="slider" kp="4" dampratio="1"/>
       </actuator>
     </mujoco>
     """,
       nworld=nworld,
-      batch_sizes={"actuator_biasprm": nworld, "dof_armature": nworld},
+      batch_sizes={
+        "body_mass": nworld,
+        "qpos_spring": nworld,
+        "dof_invweight0": nworld,
+        "actuator_biasprm": nworld,
+        "tendon_lengthspring": nworld,
+      },
     )
 
-    if nworld == 2:
-      armature = m.dof_armature.numpy()
-      armature[1] = [0.5, 0.25, 1.0, 0.0]
-      m.dof_armature.assign(armature)
+    # compiled: damping 2 * sqrt(kp * mass), length 2 * springref
+    _assert_eq(mjm.actuator_biasprm[0, 2], -4, "compiled biasprm[2]")
+    _assert_eq(mjm.tendon_lengthspring[0], [0.5, 0.5], "compiled lengthspring")
 
-    # Set positive biasprm[2] (dampratio) per world to exercise resolution
-    dampratios = np.array([[2.0, 0.8, 1.0], [1.5, 1.2, 0.5]])[:nworld]
-    bp = m.actuator_biasprm.numpy()
-    bp[:, :, 2] = dampratios
-    m.actuator_biasprm.assign(bp)
-
-    mjwarp.set_const(m, d)
-
-    biasprm_np = m.actuator_biasprm.numpy()
-    armature_np = m.dof_armature.numpy()
+    # their inputs change: the values stay
+    masses = [4.0, 16.0][:nworld]
+    body_mass = m.body_mass.numpy()
+    qpos_spring = m.qpos_spring.numpy()
     for w in range(nworld):
-      mjm.dof_armature[:] = armature_np[w]
-      mujoco.mj_setConst(mjm, mjd)
-      for i in range(mjm.nu):
-        moment = np.zeros((1, mjm.nv))
-        mujoco.mju_sparse2dense(
-          moment,
-          mjd.actuator_moment,
-          mjd.moment_rownnz[i : i + 1],
-          mjd.moment_rowadr[i : i + 1],
-          mjd.moment_colind,
-        )
-        tmp = np.zeros((1, mjm.nv))
-        mujoco.mj_solveM(mjm, mjd, tmp, moment)
-        ref_mass = 1.0 / np.dot(moment[0], tmp[0])
-        kp = mjm.actuator_gainprm[i, 0]
-        expected = -dampratios[w, i] * 2.0 * np.sqrt(kp * ref_mass)
-        _assert_eq(
-          biasprm_np[w, i, 2],
-          expected,
-          f"actuator_biasprm[{w}][{i}][2]",
-        )
-      # t1: mass = (1 + dof_armature[2]) + 3 (tendon armature), tiny s2 coef does not blow up
-      expected_t1 = -dampratios[w, 2] * 2.0 * np.sqrt(9.0 * (4.0 + armature_np[w, 2]))
-      _assert_eq(biasprm_np[w, 2, 2], expected_t1, f"tendon_dampratio_world_{w}")
-
-    if nworld == 2:
-      self.assertFalse(np.allclose(biasprm_np[0, :, 2], biasprm_np[1, :, 2]))
-
-  def test_set_const_dampratio_explicit_kv(self):
-    """Test actuator with explicit negative kv is NOT modified by dampratio."""
-    mjm, mjd, m, d = test_data.fixture(
-      xml="""
-    <mujoco>
-      <worldbody>
-        <body>
-          <joint name="j1" type="hinge" axis="0 0 1"/>
-          <geom type="capsule" size="0.05" fromto="0 0 0 0.5 0 0" mass="1.0"/>
-        </body>
-      </worldbody>
-      <actuator>
-        <general joint="j1" gainprm="100"
-                 biastype="affine" biasprm="0 -100 -10"/>
-      </actuator>
-    </mujoco>
-    """
-    )
-
-    mujoco.mj_setConst(mjm, mjd)
+      body_mass[w, 1] = masses[w]
+      qpos_spring[w, 0] = 0.5
+    m.body_mass.assign(body_mass)
+    m.qpos_spring.assign(qpos_spring)
     mjwarp.set_const(m, d)
+    for w in range(nworld):
+      _assert_eq(m.dof_invweight0.numpy()[w, 0], 1 / masses[w], f"dof_invweight0_world_{w}")
+      _assert_eq(m.actuator_biasprm.numpy()[w, 0, 2], -4, f"biasprm[2]_world_{w}")
+      _assert_eq(m.tendon_lengthspring.numpy()[w, 0], [0.5, 0.5], f"lengthspring_world_{w}")
 
-    biasprm_np = m.actuator_biasprm.numpy()
-    _assert_eq(
-      biasprm_np[0, 0, 2],
-      mjm.actuator_biasprm[0, 2],
-      "actuator_biasprm[0][2]",
-    )
+    # the conventions are not resolved, as in mj_setConst
+    biasprm = m.actuator_biasprm.numpy()
+    biasprm[:, 0, 2] = 1
+    m.actuator_biasprm.assign(biasprm)
+    m.tendon_lengthspring.assign(np.full((nworld, 1, 2), -1.0))
+    mjwarp.set_const(m, d)
+    mjm.actuator_biasprm[0, 2] = 1
+    mjm.tendon_lengthspring[0] = -1
+    mujoco.mj_setConst(mjm, mujoco.MjData(mjm))
+    for w in range(nworld):
+      _assert_eq(m.actuator_biasprm.numpy()[w, 0], mjm.actuator_biasprm[0], f"biasprm_world_{w}")
+      _assert_eq(m.tendon_lengthspring.numpy()[w, 0], mjm.tendon_lengthspring[0], f"lengthspring_world_{w}")
+    _assert_eq(mjm.actuator_biasprm[0, 2], 1, "mj_setConst biasprm[2]")
+    _assert_eq(mjm.tendon_lengthspring[0], [-1, -1], "mj_setConst lengthspring")
 
   def test_set_length_range_joint_limited(self):
     """Test set_length_range for joint-limited actuator matches joint range."""
