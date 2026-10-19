@@ -895,7 +895,8 @@ def _linesearch_iterative_kernel(
     _compute_efc_eval_pt_alpha_zero = _compute_efc_eval_pt_alpha_zero_pyramidal
     _compute_efc_eval_pt_3alphas = _compute_efc_eval_pt_3alphas_pyramidal
 
-  @wp.kernel(module="unique", enable_backward=False, grid_stride=True)
+  # fast math only approximates div/sqrt here; keep transcendentals out of this kernel
+  @wp.kernel(module="unique", enable_backward=False, grid_stride=True, module_options={"fast_math": True})
   def kernel(
     # Model:
     nv: int,
