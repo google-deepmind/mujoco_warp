@@ -2490,6 +2490,25 @@ class CompactSolverTest(absltest.TestCase):
       f"qfrc_constraint should be zeroed, but got max abs: {np.max(np.abs(qfrc_constraint_post))}",
     )
 
+  def test_solve_compact_sparse_qfrc_constraint_without_constraints(self):
+    """The compact solve of a sparse model zeroes qfrc_constraint in a world without constraints."""
+    mjm = mujoco.MjModel.from_xml_string(_COMPACT_CONTACT_XML)
+    mjm.opt.enableflags |= mujoco.mjtEnableBit.mjENBL_SLEEP  # compact newton solver
+    mjm.opt.disableflags |= mujoco.mjtDisableBit.mjDSBL_CONTACT
+    mjd = mujoco.MjData(mjm)
+    mjd.qvel[:] = 0.1
+    mujoco.mj_forward(mjm, mjd)
+    m = mjw.put_model(mjm)
+    d = mjw.put_data(mjm, mjd, nvmax=mjm.nv)
+    self.assertTrue(m.is_sparse)
+    d.cqfrc_constraint.fill_(np.nan)  # the compacted buffer is allocated uninitialized
+
+    mjw.forward(m, d)
+
+    self.assertEqual(d.nefc.numpy()[0], 0)
+    np.testing.assert_allclose(d.qfrc_constraint.numpy(), 0.0, atol=1e-6)
+    np.testing.assert_allclose(d.qacc.numpy()[0], mjd.qacc, rtol=1e-4, atol=1e-5)
+
   def test_discrete_cg_init_context_prec_fold(self):
     """Verifies solver.init_context folds constraint/contact metric into d.efm_L for CG solver."""
     _, _, m, d = test_data.fixture(
