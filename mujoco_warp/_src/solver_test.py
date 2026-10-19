@@ -162,18 +162,18 @@ def _qcqp_kernel(
   active_out[tid] = int(active)
 
 
-def _elliptic_dense_hessian_reference(m, d, ctx):
+def _elliptic_dense_hessian_reference(m, d, ctx, dtype=np.float32):
   contact_dim = d.contact.dim.numpy()
   contact_dist = d.contact.dist.numpy()
   contact_efc_address = d.contact.efc_address.numpy()
-  contact_friction = d.contact.friction.numpy()
+  contact_friction = d.contact.friction.numpy().astype(dtype)
   contact_includemargin = d.contact.includemargin.numpy()
   contact_worldid = d.contact.worldid.numpy()
-  efc_D = d.efc.D.numpy()
-  efc_J = d.efc.J.numpy()
+  efc_D = d.efc.D.numpy().astype(dtype)
+  efc_J = d.efc.J.numpy().astype(dtype)
   efc_state = d.efc.state.numpy()
-  impratio_invsqrt = m.opt.impratio_invsqrt.numpy()
-  jaref = ctx.Jaref.numpy()
+  impratio_invsqrt = m.opt.impratio_invsqrt.numpy().astype(dtype)
+  jaref = ctx.Jaref.numpy().astype(dtype)
   h = np.zeros((d.nworld, m.nv, m.nv), dtype=np.float64)
 
   for conid in range(d.nacon.numpy()[0]):
@@ -1240,8 +1240,9 @@ class SolverTest(parameterized.TestCase):
     self.assertNotEqual(solver._update_gradient_grad_tiled.module, shared_module)
     self.assertNotEqual(solver._solve_search_update_cg_tiled.module, shared_module)
 
-  def test_elliptic_dense_hessian(self):
-    """Structured dense cone contraction matches the reference Hessian."""
+  @parameterized.parameters(False, True)
+  def test_elliptic_dense_hessian(self, f64):
+    """Structured dense cone contraction matches the reference Hessian, float32 or float64."""
     condims = (3, 4, 6)
     bodies = "".join(
       f'<body pos="{i * 0.25 - 0.25:.3f} 0 0.020">'
@@ -1257,7 +1258,7 @@ class SolverTest(parameterized.TestCase):
       </worldbody>
     </mujoco>
     """
-    mjm, mjd, m, _ = test_data.fixture(xml=xml)
+    mjm, mjd, m, _ = test_data.fixture(xml=xml, overrides={"opt.newton_hessian_float64": f64})
     self.assertFalse(m.is_sparse)
 
     mjd.qvel[0::6] = 1.5
@@ -1276,8 +1277,9 @@ class SolverTest(parameterized.TestCase):
     else:
       dim_block = 1
       nblocks_perblock = d.naconmax
+    self.assertEqual(ctx.h.dtype, wp.float64 if f64 else wp.float32)
     wp.launch(
-      solver._update_gradient_JTCJ_dense,
+      solver._update_gradient_JTCJ_dense_typed(solver._htype(m)),
       dim=(dim_block, m.dof_tri_row.size),
       inputs=[
         m.opt.impratio_invsqrt,
@@ -1304,9 +1306,9 @@ class SolverTest(parameterized.TestCase):
 
     np.testing.assert_allclose(
       ctx.h.numpy()[:, : m.nv, : m.nv],
-      _elliptic_dense_hessian_reference(m, d, ctx),
-      rtol=1e-5,
-      atol=1e-6,
+      _elliptic_dense_hessian_reference(m, d, ctx, np.float64 if f64 else np.float32),
+      rtol=1e-12 if f64 else 1e-5,
+      atol=1e-12 if f64 else 1e-6,
     )
 
   @parameterized.parameters("dense", "sparse")
@@ -2094,6 +2096,275 @@ class SolverTest(parameterized.TestCase):
 
     self.assertGreater(qfrc[0], 0.0, "early-converged world was zeroed")
     self.assertGreater(qfrc[1], 0.0)
+
+  @parameterized.parameters(ConeType.ELLIPTIC, ConeType.PYRAMIDAL)
+  def test_newton_hessian_float64(self, cone):
+    """A light cable on a plane: the float32 Hessian is indefinite, the float64 one matches MuJoCo.
+
+    Links of 17 mg with rotational inertia ~1e-11 make the smallest eigenvalues of M tiny, while
+    stiff contacts at impratio 100 make J'DJ large: the float32 assembly of H = M + J'DJ is
+    indefinite and its Cholesky returns NaN. With newton_hessian_float64 the Hessian is assembled
+    and factored in float64.
+    """
+    for f64 in (False, True):
+      mjm, mjd, m, d = test_data.fixture(
+        xml="""
+        <mujoco>
+          <option timestep="1e-4" impratio="100" solver="Newton" iterations="30" ls_iterations="50"/>
+          <worldbody>
+            <geom type="plane" size="1 1 .1"/>
+            <composite type="cable" curve="s" count="65 1 1" size="0.16" offset="0 0 0.00084" initial="free">
+              <joint kind="main" damping="1e-6" armature="1e-11"/>
+              <geom type="box" size="0.00125 0.004 0.00085" mass="1.69e-05" condim="4" friction="0.5 0.00025 1e-05"
+                    solref="-9e6 -6000" solimp="0.9924 0.9924 0.001 0.5 2"/>
+            </composite>
+          </worldbody>
+        </mujoco>
+        """,
+        overrides={"opt.cone": cone, "opt.newton_hessian_float64": f64},
+        nconmax=256,
+        njmax=2048,
+      )
+      for _ in range(5):
+        mjw.step(m, d)
+        mujoco.mj_step(mjm, mjd)
+      qpos = d.qpos.numpy()[0]
+      if f64:
+        np.testing.assert_allclose(qpos, mjd.qpos, atol=1e-5)
+      else:
+        # keeps the test meaningful: the float32 Hessian of this model fails
+        self.assertFalse(np.isfinite(qpos).all())
+
+  @parameterized.parameters("dense", "sparse")
+  def test_newton_hessian_float64_assembly(self, jacobian):
+    """The float64 H equals M + J'DJ assembled in NumPy float64 from the same float32 inputs."""
+    _, _, m, d = test_data.fixture(
+      xml=f"""
+      <mujoco>
+        <option cone="pyramidal" solver="Newton" jacobian="{jacobian}"/>
+        <worldbody>
+          <geom type="plane" size="2 2 .1"/>
+          <body pos="0 0 .029"><freejoint/><geom type="box" size=".04 .05 .03" mass=".5"/></body>
+          <body pos=".2 0 .019"><freejoint/><geom type="capsule" size=".02 .04" euler="0 90 0" mass=".01"/></body>
+          <body pos=".4 0 .009"><freejoint/><geom type="sphere" size=".01" mass="1e-4"/></body>
+          <body pos=".6 0 .029"><freejoint/><geom type="box" size=".03 .03 .03" mass="2"/></body>
+          <body pos=".8 0 .019"><freejoint/><geom type="cylinder" size=".02 .02" mass=".05"/></body>
+          <body pos="1 0 .049"><freejoint/><geom type="ellipsoid" size=".05 .04 .05" mass=".3"/></body>
+        </worldbody>
+      </mujoco>
+      """,
+      overrides={"opt.newton_hessian_float64": True},
+      qvel_noise=0.1,
+    )
+    ctx = solver._create_solver_context(m, d)
+    solver.init_context(m, d, ctx, grad=True)
+    self.assertEqual(ctx.h.dtype, wp.float64)
+
+    nv = m.nv
+    rowadr, rownnz, colind = m.M_rowadr.numpy(), m.M_rownnz.numpy(), m.M_colind.numpy()
+    mval = d.M.numpy()[0].astype(np.float64)
+    M = np.zeros((nv, nv))
+    for i in range(nv):
+      for k in range(rowadr[i], rowadr[i] + rownnz[i]):
+        M[i, colind[k]] = M[colind[k], i] = mval[k]
+    nefc = d.nefc.numpy()[0]
+    J = np.zeros((nefc, nv))
+    if m.is_sparse:
+      J_rownnz, J_rowadr = d.efc.J_rownnz.numpy()[0], d.efc.J_rowadr.numpy()[0]
+      J_colind, J_val = d.efc.J_colind.numpy()[0, 0], d.efc.J.numpy()[0, 0]
+      for r in range(nefc):
+        for k in range(J_rowadr[r], J_rowadr[r] + J_rownnz[r]):
+          J[r, J_colind[k]] = J_val[k]
+    else:
+      J = d.efc.J.numpy()[0, :nefc, :nv].astype(np.float64)
+    quadratic = d.efc.state.numpy()[0, :nefc] == types.ConstraintState.QUADRATIC.value
+    D = np.where(quadratic, d.efc.D.numpy()[0, :nefc].astype(np.float64), 0.0)
+    self.assertGreater(quadratic.sum(), 0)
+    h_ref = M + J.T @ (D[:, None] * J)
+
+    upper = np.triu_indices(nv)
+    np.testing.assert_allclose(ctx.h.numpy()[0, :nv, :nv][upper], h_ref[upper], rtol=1e-12, atol=1e-12)
+
+  @parameterized.parameters(
+    (5, 3, ConeType.PYRAMIDAL, 1, False),  # nv 30: single tile
+    (6, 3, ConeType.PYRAMIDAL, 1, False),  # nv 36: blocked, padded
+    (6, 1, ConeType.PYRAMIDAL, 1, False),
+    (6, 4, ConeType.ELLIPTIC, 1, False),
+    (6, 6, ConeType.ELLIPTIC, 1, False),
+    (6, 3, ConeType.ELLIPTIC, 2, False),  # two worlds
+    (6, 3, ConeType.PYRAMIDAL, 1, True),  # sleep: the compact solve
+  )
+  def test_newton_hessian_float64_matches_float32(self, nbody, condim, cone, nworld, sleep):
+    """On a well-conditioned scene the float64 Hessian gives the float32 result.
+
+    The first box rests on the plane, so every step has constraints.
+    """
+    qpos = []
+    for f64 in (False, True):
+      _, _, m, d = test_data.fixture(
+        xml=f"""
+        <mujoco>
+          <option solver="Newton" iterations="20"/>
+          <worldbody>
+            <geom type="plane" size="2 2 .1" condim="{condim}"/>
+            {
+          "".join(
+            f'<body pos="{0.1 * i:.2f} 0 {0.019 + 0.07 * i:.3f}" euler="{9 * i} {5 * i} 0"><freejoint/>'
+            f'<geom type="box" size=".04 .03 .02" mass="{0.1 + 0.05 * i:.2f}" condim="{condim}"/></body>'
+            for i in range(nbody)
+          )
+        }
+          </worldbody>
+        </mujoco>
+        """,
+        overrides={
+          "opt.cone": cone,
+          "opt.newton_hessian_float64": f64,
+          "opt.enableflags": types.EnableBit.SLEEP if sleep else 0,
+        },
+        nworld=nworld,
+      )
+      for _ in range(40):
+        mjw.step(m, d)
+        self.assertGreater(d.nefc.numpy().min(), 0)
+      qpos.append(d.qpos.numpy())
+    self.assertTrue(np.isfinite(qpos[1]).all())
+    np.testing.assert_allclose(qpos[1], qpos[0], atol=1e-4)
+
+  @parameterized.parameters("tendon", "actuator")
+  def test_newton_hessian_float64_discrete_metric(self, kind):
+    """A stiff tendon or actuator metric on 1e-8 kg bodies matches MuJoCo.
+
+    The float32 qH rounds the mass away against the metric, so the float64 Hessian assembles M
+    and each metric part itself.
+    """
+    tendon = 'stiffness="1e8" springlength=".001"' if kind == "tendon" else ""
+    actuator = '<actuator><position tendon="t" kp="1e8"/></actuator>' if kind == "actuator" else ""
+    mjm, mjd, m, d = test_data.fixture(
+      xml=f"""
+      <mujoco>
+        <option integrator="discrete" solver="Newton" jacobian="dense" timestep=".01" gravity="0 0 0">
+          <flag contact="disable"/>
+        </option>
+        <worldbody>
+          <body><joint name="a" type="slide" axis="1 0 0"/><geom size=".01" mass="1e-8"/></body>
+          <body pos="0 .1 0"><joint name="b" type="slide" axis="1 0 0"/><geom size=".01" mass="1e-8"/></body>
+        </worldbody>
+        <tendon><fixed name="t" {tendon}><joint joint="a" coef="1"/><joint joint="b" coef=".1"/></fixed></tendon>
+        {actuator}
+      </mujoco>
+      """,
+      overrides={"opt.newton_hessian_float64": True},
+      njmax=8,
+    )
+    d.ctrl.fill_(0.001)
+    mjd.ctrl[:] = 0.001
+    mjw.step(m, d)
+    mujoco.mj_step(mjm, mjd)
+    np.testing.assert_allclose(d.qpos.numpy()[0], mjd.qpos, rtol=1e-6, atol=1e-10)
+
+  def test_newton_hessian_float64_discrete_flex(self):
+    """Discrete integrator with flex passive terms: the float64 Hessian gives the float32 result."""
+    qpos = []
+    for f64 in (False, True):
+      _, _, m, d = test_data.fixture(
+        xml="""
+        <mujoco>
+          <option integrator="discrete" solver="Newton" timestep="0.005"/>
+          <worldbody>
+            <geom type="plane" size="1 1 0.1"/>
+            <flexcomp name="string" type="grid" dim="2" count="3 3 1" spacing="0.05 0.05 1"
+                      pos="0 0 0.002" radius="0.005" mass="0.05">
+              <contact passive="true" selfcollide="none"/>
+              <elasticity young="1e4" poisson="0.2" thickness="1e-3" elastic2d="stretch"/>
+            </flexcomp>
+          </worldbody>
+        </mujoco>
+        """,
+        overrides={"opt.newton_hessian_float64": f64},
+        qvel_noise=0.2,
+      )
+      for _ in range(20):
+        mjw.step(m, d)
+      qpos.append(d.qpos.numpy())
+    self.assertTrue(np.isfinite(qpos[1]).all())
+    np.testing.assert_allclose(qpos[1], qpos[0], atol=1e-4)
+
+  @parameterized.parameters((1e-3, 1, 1e-3), (1e-3, 100, 1e-6), (1e-4, 100, 1e-8))
+  def test_newton_hessian_float64_discrete_fluid(self, timestep, impratio, mass):
+    """Discrete integrator with ellipsoid fluid forces on light bodies matches MuJoCo."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml=f"""
+      <mujoco>
+        <option integrator="discrete" solver="Newton" jacobian="dense" timestep="{timestep}"
+                density="1000" viscosity="1" impratio="{impratio}"/>
+        <worldbody>
+          <geom type="plane" size="1 1 .1"/>
+          <body pos="0 0 .02"><freejoint/>
+            <geom type="capsule" size=".002 .01" mass="{mass}" fluidshape="ellipsoid" euler="30 40 0"/>
+          </body>
+          <body pos=".03 0 .0021"><freejoint/>
+            <geom type="sphere" size=".002" mass="{mass}" fluidshape="ellipsoid"/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """,
+      overrides={"opt.newton_hessian_float64": True},
+    )
+    for _ in range(50):
+      mjw.step(m, d)
+      mujoco.mj_step(mjm, mjd)
+    np.testing.assert_allclose(d.qpos.numpy()[0], mjd.qpos, atol=1e-6)
+
+  @parameterized.parameters(ConeType.ELLIPTIC, ConeType.PYRAMIDAL)
+  def test_newton_hessian_float64_search_is_descent(self, cone):
+    """On the light cable the mixed-precision step is a descent direction for the float32 gradient.
+
+    It is an inexact Newton step: the float64 direction is rounded to float32, and the merit is
+    float32.
+    """
+    _, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option timestep="1e-4" impratio="100" solver="Newton" iterations="30" ls_iterations="50"/>
+        <worldbody>
+          <geom type="plane" size="1 1 .1"/>
+          <composite type="cable" curve="s" count="65 1 1" size="0.16" offset="0 0 0.00084" initial="free">
+            <joint kind="main" damping="1e-6" armature="1e-11"/>
+            <geom type="box" size="0.00125 0.004 0.00085" mass="1.69e-05" condim="4" friction="0.5 0.00025 1e-05"
+                  solref="-9e6 -6000" solimp="0.9924 0.9924 0.001 0.5 2"/>
+          </composite>
+        </worldbody>
+      </mujoco>
+      """,
+      overrides={"opt.cone": cone, "opt.newton_hessian_float64": True},
+      nconmax=256,
+      njmax=2048,
+    )
+    for _ in range(5):
+      mjw.step(m, d)
+    ctx = solver._create_solver_context(m, d)
+    solver.init_context(m, d, ctx, grad=True)
+    grad = ctx.grad.numpy()[0, : m.nv].astype(np.float64)
+    search = ctx.search.numpy()[0].astype(np.float64)
+    self.assertTrue(np.isfinite(search).all())
+    self.assertLess(grad @ search, 0.0)
+
+  def test_newton_hessian_float64_graph_capture(self):
+    """The option is read when kernels are built: a captured step replays the float64 solve."""
+    if not wp.get_device().is_cuda:
+      self.skipTest("graph capture needs CUDA")
+    _, _, m, d = test_data.fixture("humanoid/humanoid.xml", overrides={"opt.newton_hessian_float64": True}, nworld=2)
+    _, _, _, d_ref = test_data.fixture("humanoid/humanoid.xml", overrides={"opt.newton_hessian_float64": True}, nworld=2)
+    mjw.step(m, d)
+    mjw.step(m, d_ref)
+    with wp.ScopedCapture() as capture:
+      mjw.step(m, d)
+    for _ in range(5):
+      wp.capture_launch(capture.graph)
+    for _ in range(6):
+      mjw.step(m, d_ref)
+    np.testing.assert_allclose(d.qpos.numpy(), d_ref.qpos.numpy(), atol=1e-5)
 
 
 _FRICTION_CHAIN_XML = """

@@ -950,6 +950,10 @@ class Option:
       sensors are disabled or no sensors are present
     contact_sensor_maxmatch: max number of contacts considered by contact sensor matching criteria
                              contacts matched after this value is exceded will be ignored
+    newton_hessian_float64: if True, the Newton solver assembles, factors and solves its constraint
+      Hessian in float64 (the gradient, the search direction and everything else stay float32); for
+      stiff contacts on light bodies, where the float32 Hessian can be indefinite. Read when the
+      solver kernels are built: set it before the first step or graph capture
     warn_overflow: overflow warning bitmask (OverflowType)
   """
 
@@ -983,6 +987,7 @@ class Option:
   run_collision_detection: bool
   run_rne_postconstraint: bool
   contact_sensor_maxmatch: int
+  newton_hessian_float64: bool
   warn_overflow: int
 
   @property
@@ -2626,8 +2631,8 @@ class SolverContext:
   prev_grad: wp.array2d[float]
   prev_Mgrad: wp.array2d[float]
   beta: wp.array[float]
-  h: wp.array3d[float]
-  hfactor: wp.array3d[float]
+  h: wp.array3d  # float32, or float64 with opt.newton_hessian_float64
+  hfactor: wp.array3d  # as h
   quad_changed_ids: wp.array2d[int]
   quad_changed_count: wp.array[int]
   # the full-coordinate Data, set by solve_compact (None natively)
