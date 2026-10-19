@@ -420,9 +420,10 @@ def _equality_connect(is_sparse: bool, newton: bool, is_discrete: bool = False):
       da1 = int(body_dofadr[body1] + body_dofnum[body1] - 1)
       da2 = int(body_dofadr[body2] + body_dofnum[body2] - 1)
 
-      for i in range(nrow):
-        efc_J_rowadr_out[worldid, efcid + i] = rowadr + i * rownnz
-        efc_J_rownnz_out[worldid, efcid + i] = rownnz
+      for i in range(3):
+        if i < nrow:
+          efc_J_rowadr_out[worldid, efcid + i] = rowadr + i * rownnz
+          efc_J_rownnz_out[worldid, efcid + i] = rownnz
 
       # compute J and colind
       nnz = int(0)
@@ -495,10 +496,12 @@ def _equality_connect(is_sparse: bool, newton: bool, is_discrete: bool = False):
         )
         j1mj2_dot = jacp1_dot - jacp2_dot
 
-        for i in range(nrow):
-          sparseid = rowadr + i * rownnz + nnz
-          efc_J_colind_out[worldid, 0, sparseid] = da
-          efc_J_out[worldid, 0, sparseid] = j1mj2[i]
+        # constant indices keep j1mj2 in registers
+        for i in range(3):
+          if i < nrow:
+            sparseid = rowadr + i * rownnz + nnz
+            efc_J_colind_out[worldid, 0, sparseid] = da
+            efc_J_out[worldid, 0, sparseid] = j1mj2[i]
 
         qvel = qvel_in[worldid, da]
         Jqvel += j1mj2 * qvel
@@ -570,8 +573,9 @@ def _equality_connect(is_sparse: bool, newton: bool, is_discrete: bool = False):
         )
         j1mj2_dot = jacp1_dot - jacp2_dot
 
-        for i in range(nrow):
-          efc_J_out[worldid, efcid + i, dofid] = j1mj2[i]
+        for i in range(3):
+          if i < nrow:
+            efc_J_out[worldid, efcid + i, dofid] = j1mj2[i]
 
         qvel = qvel_in[worldid, dofid]
         Jqvel += j1mj2 * qvel
@@ -1265,8 +1269,6 @@ def _equality_weld(is_sparse: bool, newton: bool, is_discrete: bool = False):
 
     # rows past njmax are dropped
     nrow = wp.min(6, njmax_in - efcid)
-    nrow_pos = wp.min(nrow, 3)
-    nrow_rot = nrow - nrow_pos
 
     if wp.static(is_sparse and newton):
       jgid = wp.atomic_add(efc_jtdaj_nblock_out, worldid, 1)
@@ -1283,9 +1285,10 @@ def _equality_weld(is_sparse: bool, newton: bool, is_discrete: bool = False):
       da1 = int(body_dofadr[body1] + body_dofnum[body1] - 1)
       da2 = int(body_dofadr[body2] + body_dofnum[body2] - 1)
 
-      for i in range(nrow):
-        efc_J_rowadr_out[worldid, efcid + i] = rowadr + i * rownnz
-        efc_J_rownnz_out[worldid, efcid + i] = rownnz
+      for i in range(6):
+        if i < nrow:
+          efc_J_rowadr_out[worldid, efcid + i] = rowadr + i * rownnz
+          efc_J_rownnz_out[worldid, efcid + i] = rownnz
 
       # compute J and colind
       nnz = int(0)
@@ -1365,14 +1368,16 @@ def _equality_weld(is_sparse: bool, newton: bool, is_discrete: bool = False):
         jacdifp_dot = jacp1_dot - jacp2_dot
         jacdifr_dot = jacr1_dot - jacr2_dot
 
-        for i in range(nrow_pos):
-          sparseid = rowadr + i * rownnz + nnz
-          efc_J_colind_out[worldid, 0, sparseid] = da
-          efc_J_out[worldid, 0, sparseid] = jacdifp[i]
-        for i in range(nrow_rot):
-          sparseid = rowadr + (3 + i) * rownnz + nnz
-          efc_J_colind_out[worldid, 0, sparseid] = da
-          efc_J_out[worldid, 0, sparseid] = jacdifr[i]
+        # constant indices keep jacdifp and jacdifr in registers
+        for i in range(3):
+          if i < nrow:
+            sparseid = rowadr + i * rownnz + nnz
+            efc_J_colind_out[worldid, 0, sparseid] = da
+            efc_J_out[worldid, 0, sparseid] = jacdifp[i]
+          if 3 + i < nrow:
+            sparseid = rowadr + (3 + i) * rownnz + nnz
+            efc_J_colind_out[worldid, 0, sparseid] = da
+            efc_J_out[worldid, 0, sparseid] = jacdifr[i]
 
         Jqvelp += jacdifp * qvel_in[worldid, da]
         Jqvelr += jacdifr * qvel_in[worldid, da]
@@ -1409,8 +1414,9 @@ def _equality_weld(is_sparse: bool, newton: bool, is_discrete: bool = False):
 
         jacdifp = jacp1 - jacp2
 
-        for i in range(nrow_pos):
-          efc_J_out[worldid, efcid + i, dofid] = jacdifp[i]
+        for i in range(3):
+          if i < nrow:
+            efc_J_out[worldid, efcid + i, dofid] = jacdifp[i]
 
         jacdifr = (jacr1 - jacr2) * torquescale
         jacdifrq = math.mul_quat(math.quat_mul_axis(quat1, jacdifr), quat)
@@ -1454,8 +1460,9 @@ def _equality_weld(is_sparse: bool, newton: bool, is_discrete: bool = False):
         jacdifp_dot = jacp1_dot - jacp2_dot
         jacdifr_dot = jacr1_dot - jacr2_dot
 
-        for i in range(nrow_rot):
-          efc_J_out[worldid, efcid + 3 + i, dofid] = jacdifr[i]
+        for i in range(3):
+          if 3 + i < nrow:
+            efc_J_out[worldid, efcid + 3 + i, dofid] = jacdifr[i]
 
         Jqvelp += jacdifp * qvel_in[worldid, dofid]
         Jqvelr += jacdifr * qvel_in[worldid, dofid]
@@ -1494,63 +1501,65 @@ def _equality_weld(is_sparse: bool, newton: bool, is_discrete: bool = False):
 
     Jdotv_r = wp.vec3(t1[1] + t2[1] + t3[1], t1[2] + t2[2] + t3[2], t1[3] + t2[3] + t3[3]) * 0.5 * torquescale
 
-    for i in range(nrow_pos):
-      _efc_row(
-        opt_disableflags,
-        worldid,
-        timestep,
-        efcid + i,
-        cpos[i],
-        pos_imp,
-        invweight_t,
-        solref,
-        solimp,
-        0.0,
-        Jqvelp[i],
-        0.0,
-        ConstraintType.EQUALITY,
-        eqid,
-        is_discrete,
-        Jdotv_p[i],
-        efc_type_out,
-        efc_id_out,
-        efc_pos_out,
-        efc_margin_out,
-        efc_D_out,
-        efc_vel_out,
-        efc_aref_out,
-        efc_frictionloss_out,
-      )
+    for i in range(3):
+      if i < nrow:
+        _efc_row(
+          opt_disableflags,
+          worldid,
+          timestep,
+          efcid + i,
+          cpos[i],
+          pos_imp,
+          invweight_t,
+          solref,
+          solimp,
+          0.0,
+          Jqvelp[i],
+          0.0,
+          ConstraintType.EQUALITY,
+          eqid,
+          is_discrete,
+          Jdotv_p[i],
+          efc_type_out,
+          efc_id_out,
+          efc_pos_out,
+          efc_margin_out,
+          efc_D_out,
+          efc_vel_out,
+          efc_aref_out,
+          efc_frictionloss_out,
+        )
 
     invweight_r = body_invweight0[body_invweight0_id, body1][1] + body_invweight0[body_invweight0_id, body2][1]
 
-    for i in range(nrow_rot):
-      _efc_row(
-        opt_disableflags,
-        worldid,
-        timestep,
-        efcid + 3 + i,
-        crot[i],
-        pos_imp,
-        invweight_r,
-        solref,
-        solimp,
-        0.0,
-        Jqvelr[i],
-        0.0,
-        ConstraintType.EQUALITY,
-        eqid,
-        is_discrete,
-        Jdotv_r[i],
-        efc_type_out,
-        efc_id_out,
-        efc_pos_out,
-        efc_margin_out,
-        efc_D_out,
-        efc_vel_out,
-        efc_aref_out,
-        efc_frictionloss_out,
-      )
+    for i in range(3):
+      if 3 + i < nrow:
+        _efc_row(
+          opt_disableflags,
+          worldid,
+          timestep,
+          efcid + 3 + i,
+          crot[i],
+          pos_imp,
+          invweight_r,
+          solref,
+          solimp,
+          0.0,
+          Jqvelr[i],
+          0.0,
+          ConstraintType.EQUALITY,
+          eqid,
+          is_discrete,
+          Jdotv_r[i],
+          efc_type_out,
+          efc_id_out,
+          efc_pos_out,
+          efc_margin_out,
+          efc_D_out,
+          efc_vel_out,
+          efc_aref_out,
+          efc_frictionloss_out,
+        )
 
   return kernel
 
