@@ -2624,6 +2624,8 @@ def _efc_contact_init(cone_type: types.ConeType, is_sparse: bool, newton: bool, 
 
       rowadr = _reserve_efc_nnz(njmax_in, njmax_nnz_in, worldid, ndim, rownnz, nefc_out, efc_nnz_out)
       if rowadr < 0:
+        for dim in range(ndim):
+          contact_efc_address_out[conid, dim] = -1
         return
 
     # Allocate contiguous block of efcids for all dimids
@@ -2970,6 +2972,8 @@ def _efc_contact_init_flex(cone_type: types.ConeType, is_sparse: bool, newton: b
 
       rowadr = _reserve_efc_nnz(njmax_in, njmax_nnz_in, worldid, ndim, rownnz, nefc_out, efc_nnz_out)
       if rowadr < 0:
+        for dim in range(ndim):
+          contact_efc_address_out[conid, dim] = -1
         return
 
     # Allocate contiguous block of efcids for all dimids
