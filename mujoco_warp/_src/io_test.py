@@ -2737,6 +2737,30 @@ class IOTest(parameterized.TestCase):
     with self.assertRaises(NotImplementedError):
       mjwarp.put_model(mjm)
 
+  def test_flex_rod_hinge_map(self):
+    """Verify put_model maps each 1D rod bending hinge to its flex and flex_bending address."""
+    mjm, _, m, _ = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <flexcomp name="cloth" type="grid" count="3 3 1" spacing="0.1 0.1 0.1" dim="2" mass="1">
+            <elasticity young="1e3" thickness="1e-2" elastic2d="bend"/>
+          </flexcomp>
+          <flexcomp name="rope" type="grid" count="3 1 1" spacing="0.1 0.1 0.1" pos="0 1 0" radius="0.01" dim="1" mass="1"/>
+          <flexcomp name="rod" type="grid" count="4 1 1" spacing="0.1 0.1 0.1" pos="0 2 0" radius="0.01" dim="1" mass="1">
+            <elasticity young="1e7"/>
+          </flexcomp>
+        </worldbody>
+      </mujoco>
+      """
+    )
+    rod = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_FLEX, "rod")
+    adr = mjm.flex_bendingadr[rod]
+    self.assertGreater(adr, 0)
+    self.assertEqual(m.nflexrodhinge, 2)
+    np.testing.assert_array_equal(m.flex_rodhinge_map.numpy(), [[rod, adr + 1], [rod, adr + 1 + types.ROD_HINGE_SIZE]])
+    self.assertTrue(m.has_flex_stiff_dim23)
+
   @parameterized.parameters(
     # quadratic flexes are rejected before the self-collision check
     ("trilinear", "Self-collision of interpolated flexes"),

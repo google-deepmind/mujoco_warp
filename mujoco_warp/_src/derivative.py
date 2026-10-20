@@ -26,6 +26,9 @@ from mujoco_warp._src import util_misc
 from mujoco_warp._src.passive import build_efm_contact
 from mujoco_warp._src.passive import ellipsoid_max_moment
 from mujoco_warp._src.passive import geom_semiaxes
+from mujoco_warp._src.passive import rod_hinge
+from mujoco_warp._src.passive import rod_hinge_jacobian
+from mujoco_warp._src.passive import rod_hinge_weights
 from mujoco_warp._src.support import next_act
 from mujoco_warp._src.types import EFM_CON_MAX_DOF
 from mujoco_warp._src.types import FLEX_INTERP_MAX_NODES
@@ -2351,6 +2354,92 @@ def _eff_flex_bend_stiff(deterministic: bool = False):
 
 
 @cache_kernel
+def _eff_flex_rod_stiff(deterministic: bool = False):
+  module_options = {"enable_backward": False}
+  if deterministic:
+    module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
+
+  @wp.kernel(module="unique", module_options=module_options)
+  def kernel(
+    # Model:
+    opt_timestep: wp.array[float],
+    opt_disableflags: int,
+    body_weldid: wp.array[int],
+    body_dofnum: wp.array[int],
+    body_dofadr: wp.array[int],
+    flex_vertadr: wp.array[int],
+    flex_vertbodyid: wp.array[int],
+    flex_bending: wp.array[float],
+    flex_damping: wp.array[float],
+    efm_K_rownnz: wp.array[int],
+    efm_K_rowadr: wp.array[int],
+    efm_K_colind: wp.array[int],
+    flex_simple: wp.array[bool],
+    flex_rodhinge_map: wp.array[wp.vec2i],
+    # Data in:
+    xmat_in: wp.array2d[wp.mat33],
+    flexvert_xpos_in: wp.array2d[wp.vec3],
+    # Data out:
+    efm_K_val_out: wp.array2d[float],
+  ):
+    """Adds the rod hinge stiffness J'(h^2 Wk + h damping Wd)J in the vertex body frames."""
+    worldid, hingeid = wp.tid()
+    mapping = flex_rodhinge_map[hingeid]
+    f = mapping[0]
+    adr = mapping[1]
+    if not flex_simple[f]:
+      return
+
+    timestep = opt_timestep[worldid % opt_timestep.shape[0]]
+    s1 = 0.0 if (opt_disableflags & DisableBit.SPRING) else timestep * timestep
+    s2 = 0.0 if (opt_disableflags & DisableBit.DAMPER) else timestep
+    sd = s2 * flex_damping[f]
+    if s1 == 0.0 and sd == 0.0:
+      return
+
+    vbase = flex_vertadr[f]
+    verts = wp.vec3i(vbase + int(flex_bending[adr]), vbase + int(flex_bending[adr + 1]), vbase + int(flex_bending[adr + 2]))
+    ok, kb, A0, A1 = rod_hinge(
+      flexvert_xpos_in[worldid, verts[0]], flexvert_xpos_in[worldid, verts[1]], flexvert_xpos_in[worldid, verts[2]]
+    )
+    if not ok:
+      return
+
+    # W = s1 * Wk + s2 * damping * Wd, with Wk = 2k I
+    k = flex_bending[adr + 3]
+    _, Wd = rod_hinge_weights(kb, k)
+    W = (2.0 * s1 * k) * wp.identity(n=3, dtype=float) + sd * Wd
+
+    dofs = wp.vec3i(-1, -1, -1)
+    bodies = wp.vec3i(-1, -1, -1)
+    for i in range(3):
+      bodyid = flex_vertbodyid[verts[i]]
+      if bodyid >= 0:
+        bi = body_weldid[bodyid]
+        bodies[i] = bi
+        if body_dofnum[bi] == 3:
+          dofs[i] = body_dofadr[bi]
+
+    for i in range(3):
+      dof_i = dofs[i]
+      if dof_i >= 0 and efm_K_rownnz[dof_i] > 0:
+        JiT_W = wp.transpose(rod_hinge_jacobian(A0, A1, i)) * W
+        R_bi_T = wp.transpose(xmat_in[worldid, bodies[i]])
+        for j in range(3):
+          dof_j = dofs[j]
+          if dof_j >= 0:
+            blkd = R_bi_T * (JiT_W * rod_hinge_jacobian(A0, A1, j)) * xmat_in[worldid, bodies[j]]
+            for r in range(3):
+              row = dof_i + r
+              idx = _find_csr_col(efm_K_rowadr[row], efm_K_rownnz[row], dof_j, efm_K_colind)
+              if idx >= 0:
+                for c in range(3):
+                  wp.atomic_add(efm_K_val_out, worldid, idx + c, blkd[r, c])
+
+  return kernel
+
+
+@cache_kernel
 def _eff_flex_interp_stiff(deterministic: bool = False):
   module_options = {"enable_backward": False}
   if deterministic:
@@ -3209,6 +3298,30 @@ def eff_build(m: Model, d: Data):
       outputs=[d.efm_K_val],
     )
 
+    wp.launch(
+      _eff_flex_rod_stiff(det_atomics),
+      dim=(d.nworld, m.nflexrodhinge),
+      inputs=[
+        m.opt.timestep,
+        m.opt.disableflags,
+        m.body_weldid,
+        m.body_dofnum,
+        m.body_dofadr,
+        m.flex_vertadr,
+        m.flex_vertbodyid,
+        m.flex_bending,
+        m.flex_damping,
+        m.efm_K_rownnz,
+        m.efm_K_rowadr,
+        m.efm_K_colind,
+        m.flex_simple,
+        m.flex_rodhinge_map,
+        d.xmat,
+        d.flexvert_xpos,
+      ],
+      outputs=[d.efm_K_val],
+    )
+
     if m.flex_interp_assemblable:
       wp.launch(
         _eff_flex_interp_stiff(det_atomics),
@@ -3317,6 +3430,7 @@ def eff_shift(m: Model, d: Data):
   if not (m.opt.disableflags & DisableBit.SPRING):
     passive.flex_hessian(m, d)
     passive.flex_bend_mul(m, d, d.efm_c, d.qvel, s1_in=-1.0, s2_in=0.0, use_timestep=True, non_simple_only=False)
+    passive.flex_rod_mul(m, d, d.efm_c, d.qvel, s1_in=-1.0, s2_in=0.0, use_timestep=True, non_simple_only=False)
     passive.flex_stretch_mul(m, d, d.efm_c, d.qvel, s1_in=-1.0, s2_in=0.0, use_timestep=True, non_simple_only=False)
 
     wp.launch(
@@ -3655,6 +3769,7 @@ def eff_mul_m(
       (m.opt.disableflags & DisableBit.SPRING) and (m.opt.disableflags & DisableBit.DAMPER)
     ):
       passive.flex_bend_mul(m, d, res, vec, s1_in=1.0, s2_in=1.0, use_timestep=True, non_simple_only=(m.nefmK > 0), skip=skip)
+      passive.flex_rod_mul(m, d, res, vec, s1_in=1.0, s2_in=1.0, use_timestep=True, non_simple_only=(m.nefmK > 0), skip=skip)
       passive.flex_stretch_mul(
         m,
         d,

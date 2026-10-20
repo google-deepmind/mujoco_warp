@@ -5221,6 +5221,295 @@ class FlexEdgeTest(parameterized.TestCase):
       self.assertNotAlmostEqual(float(d.energy.numpy()[0, 0]), float(d.energy.numpy()[1, 0]))
 
 
+_ROD_XML = """
+<mujoco>
+  <option integrator="discrete"/>
+  <worldbody>
+    <flexcomp name="cloth" type="grid" count="3 3 1" spacing="0.1 0.1 0.1" pos="0 0 1" dim="2" mass="1">
+      <contact selfcollide="none" contype="0" conaffinity="0"/>
+      <elasticity young="1e3" thickness="1e-2" damping="1e-3" elastic2d="bend"/>
+    </flexcomp>
+    <flexcomp name="rod" type="grid" count="8 1 1" spacing="0.05 0.05 0.05" radius="0.01" dim="1" mass="0.1">
+      <contact selfcollide="none" contype="0" conaffinity="0"/>
+      <elasticity young="1e7" damping="0.01"/>
+      <pin id="0 1"/>
+    </flexcomp>
+    <flexcomp name="box_rod" type="grid" count="5 1 1" spacing="0.05 0.05 0.05" pos="0 0.5 0" radius="0.01" dim="1"
+              mass="0.1">
+      <contact selfcollide="none" contype="0" conaffinity="0"/>
+      <elasticity young="1e6" damping="0.02" section="box" sectionsize="0.02 0.01"/>
+    </flexcomp>
+  </worldbody>
+</mujoco>
+"""
+
+# rod on an articulated (non-simple) attachment: vertices are slide bodies of a hinged arm
+_ROD_ARTICULATED_XML = """
+<mujoco>
+  <option integrator="discrete" solver="CG"/>
+  <worldbody>
+    <body name="arm" pos="0 0 1">
+      <joint name="hinge" axis="0 1 0" damping="0.1"/>
+      <geom size="0.02" mass="0.1"/>
+      <flexcomp name="rod" type="grid" count="6 1 1" spacing="0.05 0.05 0.05" pos="0.125 0 0" radius="0.01" dim="1"
+                mass="0.1">
+        <contact selfcollide="none" contype="0" conaffinity="0"/>
+        <elasticity young="1e6" damping="0.01"/>
+        <pin id="0 1"/>
+      </flexcomp>
+    </body>
+  </worldbody>
+</mujoco>
+"""
+
+
+@absltest.skipIf(not util_pkg.check_version("mujoco>=3.16.1"), "Requires MuJoCo >= 3.16.1")
+class FlexRodBendingTest(parameterized.TestCase):
+  """Tests for 1D flex discrete elastic rod bending parity with MuJoCo."""
+
+  @parameterized.product(
+    xml=[_ROD_XML, _ROD_ARTICULATED_XML],
+    nworld=[1, 2],
+    spring=(0, DisableBit.SPRING),
+    damper=(0, DisableBit.DAMPER),
+  )
+  def test_rod_passive_parity(self, xml, nworld, spring, damper):
+    """Rod bending spring and damper forces match MuJoCo C, including articulated attachments."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml=xml,
+      qpos_noise=0.02,
+      qvel_noise=0.5,
+      overrides={"opt.disableflags": spring | damper},
+      nworld=nworld,
+    )
+    self.assertGreater(m.nflexrodhinge, 0)
+
+    mjds = [mjd]
+    if nworld == 2:
+      mjd1 = mujoco.MjData(mjm)
+      qpos = d.qpos.numpy()
+      qvel = d.qvel.numpy()
+      qpos[1] += 0.01 * np.cos(np.arange(mjm.nq))
+      qvel[1] -= 0.3 * np.sin(np.arange(mjm.nv))
+      d.qpos.assign(qpos)
+      d.qvel.assign(qvel)
+      mjd1.qpos[:] = qpos[1]
+      mjd1.qvel[:] = qvel[1]
+      mjds.append(mjd1)
+
+    for arr in (d.qfrc_spring, d.qfrc_damper, d.qfrc_passive):
+      arr.fill_(wp.inf)
+    mjw.fwd_position(m, d)
+    mjw.fwd_velocity(m, d)
+    for w in range(nworld):
+      mujoco.mj_fwdPosition(mjm, mjds[w])
+      mujoco.mj_fwdVelocity(mjm, mjds[w])
+
+    qfrc_spring = d.qfrc_spring.numpy()
+    qfrc_damper = d.qfrc_damper.numpy()
+    qfrc_passive = d.qfrc_passive.numpy()
+    for w in range(nworld):
+      scale = max(1.0, np.abs(mjds[w].qfrc_spring).max(), np.abs(mjds[w].qfrc_damper).max())
+      np.testing.assert_allclose(qfrc_spring[w], mjds[w].qfrc_spring, atol=1e-5 * scale, rtol=1e-4, err_msg=f"spring {w}")
+      np.testing.assert_allclose(qfrc_damper[w], mjds[w].qfrc_damper, atol=1e-5 * scale, rtol=1e-4, err_msg=f"damper {w}")
+      np.testing.assert_allclose(qfrc_passive[w], mjds[w].qfrc_passive, atol=1e-5 * scale, rtol=1e-4, err_msg=f"passive {w}")
+      if not spring:
+        self.assertGreater(np.abs(mjds[w].qfrc_spring).max(), 1e-3)
+      if not damper:
+        self.assertGreater(np.abs(mjds[w].qfrc_damper).max(), 1e-3)
+
+    if nworld == 2:
+      if not spring:
+        self.assertFalse(np.allclose(qfrc_spring[0], qfrc_spring[1]))
+      if not damper:
+        self.assertFalse(np.allclose(qfrc_damper[0], qfrc_damper[1]))
+
+  @parameterized.parameters(1, 2)
+  def test_rod_effective_metric(self, nworld):
+    """Rod hinge stiffness in efm_K_val, the velocity shift efm_c and qacc_smooth match MuJoCo C."""
+    mjm, mjd, m, d = test_data.fixture(xml=_ROD_XML, qpos_noise=0.02, qvel_noise=0.5, nworld=nworld)
+    self.assertGreater(m.nefmK, 0)
+
+    mjds = [mjd]
+    if nworld == 2:
+      mjd1 = mujoco.MjData(mjm)
+      qpos = d.qpos.numpy()
+      qvel = d.qvel.numpy()
+      qpos[1] += 0.01 * np.cos(np.arange(mjm.nq))
+      qvel[1] -= 0.3 * np.sin(np.arange(mjm.nv))
+      d.qpos.assign(qpos)
+      d.qvel.assign(qvel)
+      mjd1.qpos[:] = qpos[1]
+      mjd1.qvel[:] = qvel[1]
+      mjds.append(mjd1)
+
+    for w in range(nworld):
+      mujoco.mj_forward(mjm, mjds[w])
+    d.efm_K_val.fill_(wp.inf)
+    d.efm_c.fill_(wp.inf)
+    d.qacc_smooth.fill_(wp.inf)
+    mjw.forward(m, d)
+
+    efm_K_val = d.efm_K_val.numpy()
+    efm_c = d.efm_c.numpy()
+    qacc_smooth = d.qacc_smooth.numpy()
+    for w in range(nworld):
+      kscale = np.abs(mjds[w].efm_K_val).max()
+      np.testing.assert_allclose(efm_K_val[w], mjds[w].efm_K_val, atol=1e-5 * kscale, rtol=1e-4, err_msg=f"efm_K_val {w}")
+      cscale = max(1.0, np.abs(mjds[w].efm_c).max())
+      np.testing.assert_allclose(efm_c[w], mjds[w].efm_c, atol=1e-5 * cscale, rtol=1e-4, err_msg=f"efm_c {w}")
+      # qacc_smooth solves MuJoCo C's effective metric system M + K; the float32 PCG converges to a
+      # relative residual of about 1e-6, so its solution is checked through the residual
+      M = np.zeros((mjm.nv, mjm.nv))
+      mujoco.mju_sym2dense(M, mjds[w].M, mjm.M_rownnz, mjm.M_rowadr, mjm.M_colind)
+      K = _sparse2dense(mjds[w].efm_K_rownnz, mjds[w].efm_K_rowadr, mjds[w].efm_K_colind, mjds[w].efm_K_val, M.shape)
+      rhs = mjds[w].qfrc_smooth + mjds[w].efm_c
+      residual = np.linalg.norm((M + K) @ qacc_smooth[w] - rhs) / np.linalg.norm(rhs)
+      self.assertLess(residual, 1e-4, f"qacc_smooth residual {w}")
+
+    if nworld == 2:
+      self.assertFalse(np.allclose(efm_K_val[0], efm_K_val[1]))
+      self.assertFalse(np.allclose(efm_c[0], efm_c[1]))
+
+  @parameterized.product(
+    xml=[
+      _ROD_XML,
+      _ROD_ARTICULATED_XML,
+      # slider-crank-like mechanism: a rod clamped by two point equalities at each end to hinged fittings
+      """
+      <mujoco>
+        <option integrator="discrete"/>
+        <default>
+          <equality solref="0.005 1"/>
+        </default>
+        <worldbody>
+          <body name="crank" pos="-0.3 0 0.5">
+            <joint name="drive" axis="0 1 0" damping="0.1"/>
+            <geom type="cylinder" size="0.1 0.02" euler="90 0 0" mass="0.4"/>
+            <body name="left_fitting" pos="0.1 0 0">
+              <joint axis="0 1 0" damping="0.01"/>
+              <geom type="box" size="0.02 0.02 0.02" mass="0.03"/>
+            </body>
+          </body>
+          <body name="slider" pos="0.4 0 0.5">
+            <joint name="slide" type="slide" axis="1 0 0" damping="5"/>
+            <geom type="box" size="0.04 0.04 0.04" mass="0.5"/>
+            <body name="right_fitting">
+              <joint axis="0 1 0" damping="0.01"/>
+              <geom type="box" size="0.02 0.02 0.02" mass="0.03"/>
+            </body>
+          </body>
+          <body name="frame" pos="-0.2 0 0.5">
+            <flexcomp name="rod" type="grid" count="9 1 1" spacing="0.075 0.075 0.075" pos="0.3 0 0" dim="1" mass="0.15"
+                      radius="0.02">
+              <elasticity young="2e6" damping="0.005" section="box" sectionsize="0.03 0.02"/>
+              <edge equality="true" solref="0.005 1"/>
+              <contact selfcollide="none" contype="0" conaffinity="0"/>
+            </flexcomp>
+          </body>
+        </worldbody>
+        <equality>
+          <connect body1="rod_0" body2="left_fitting" anchor="0 0 0"/>
+          <connect body1="rod_1" body2="left_fitting" anchor="0 0 0"/>
+          <connect body1="rod_7" body2="right_fitting" anchor="0 0 0"/>
+          <connect body1="rod_8" body2="right_fitting" anchor="0 0 0"/>
+        </equality>
+        <actuator>
+          <general joint="drive" biastype="affine" gainprm="5" biasprm="10 0 -5"/>
+        </actuator>
+      </mujoco>
+      """,
+      # dipper-like arm: a rod clamped around a hinged fulcrum, with a free tip mass
+      """
+      <mujoco>
+        <option integrator="discrete"/>
+        <default>
+          <equality solref="0.005 1"/>
+        </default>
+        <worldbody>
+          <body name="fulcrum" pos="0 0 1">
+            <joint name="arm" axis="0 1 0" range="-0.45 0.45" damping="1"/>
+            <geom type="box" size="0.04 0.05 0.04" mass="0.15"/>
+          </body>
+          <body name="tip" pos="0.8 0 1">
+            <freejoint/>
+            <geom type="box" size="0.04 0.05 0.04" mass="0.2"/>
+          </body>
+          <body name="frame" pos="0 0 1">
+            <flexcomp name="arm_flex" type="grid" count="11 1 1" spacing="0.1 0.1 0.1" pos="0.3 0 0" dim="1" mass="0.3"
+                      radius="0.03">
+              <elasticity young="3e7" damping="0.007" section="box" sectionsize="0.0375 0.0325"/>
+              <edge equality="true" solref="0.005 1"/>
+              <contact selfcollide="none" contype="0" conaffinity="0"/>
+            </flexcomp>
+          </body>
+        </worldbody>
+        <equality>
+          <connect body1="arm_flex_1" body2="fulcrum" anchor="0 0 0"/>
+          <connect body1="arm_flex_3" body2="fulcrum" anchor="0 0 0"/>
+          <connect body1="arm_flex_9" body2="tip" anchor="0 0 0"/>
+          <connect body1="arm_flex_10" body2="tip" anchor="0 0 0"/>
+        </equality>
+      </mujoco>
+      """,
+    ],
+    nworld=[1, 2],
+  )
+  def test_rod_dynamics(self, xml, nworld):
+    """Short discrete-integrator trajectories with rods match MuJoCo C (CSR and matrix-free)."""
+    mjm, mjd, m, d = test_data.fixture(xml=xml, qvel_noise=0.1, nworld=nworld)
+
+    mjds = [mjd]
+    if nworld == 2:
+      mjd1 = mujoco.MjData(mjm)
+      qvel = d.qvel.numpy()
+      qvel[1] *= -1.0
+      d.qvel.assign(qvel)
+      mjd1.qpos[:] = mjd.qpos
+      mjd1.qvel[:] = qvel[1]
+      mjds.append(mjd1)
+
+    for _ in range(10):
+      for w in range(nworld):
+        mujoco.mj_step(mjm, mjds[w])
+      mjw.step(m, d)
+
+    qpos = d.qpos.numpy()
+    qvel = d.qvel.numpy()
+    for w in range(nworld):
+      np.testing.assert_allclose(qpos[w], mjds[w].qpos, atol=1e-4, err_msg=f"qpos {w}")
+      np.testing.assert_allclose(qvel[w], mjds[w].qvel, atol=1e-2, err_msg=f"qvel {w}")
+
+    if nworld == 2:
+      self.assertFalse(np.allclose(qpos[0], qpos[1]))
+
+  @parameterized.parameters("Euler", "implicitfast")
+  def test_rod_explicit_integrators(self, integrator):
+    """Rod bending is integrated explicitly by the other integrators, as in MuJoCo C."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml=f"""
+      <mujoco>
+        <option integrator="{integrator}" timestep="1e-4"/>
+        <worldbody>
+          <flexcomp name="rod" type="grid" count="8 1 1" spacing="0.05 0.05 0.05" radius="0.01" dim="1" mass="0.1">
+            <contact selfcollide="none" contype="0" conaffinity="0"/>
+            <elasticity young="1e7" damping="0.01"/>
+            <pin id="0 1"/>
+          </flexcomp>
+        </worldbody>
+      </mujoco>
+      """,
+      qvel_noise=0.1,
+    )
+
+    for _ in range(10):
+      mujoco.mj_step(mjm, mjd)
+      mjw.step(m, d)
+
+    np.testing.assert_allclose(d.qpos.numpy()[0], mjd.qpos, atol=1e-5)
+    np.testing.assert_allclose(d.qvel.numpy()[0], mjd.qvel, atol=1e-3)
+
+
 if __name__ == "__main__":
   wp.init()
   absltest.main()
