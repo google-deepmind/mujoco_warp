@@ -377,8 +377,9 @@ class ConstraintTest(parameterized.TestCase):
       efc_address = d.contact.efc_address.numpy()[:nacon]
       _assert_eq(efc_address, -1, f"efc_address (cone={cone})")
 
-  @parameterized.parameters(
-    *itertools.product(("connect", "weld"), (mujoco.mjtJacobian.mjJAC_DENSE, mujoco.mjtJacobian.mjJAC_SPARSE))
+  @parameterized.product(
+    eq_type=("connect", "weld"),
+    jacobian=(mujoco.mjtJacobian.mjJAC_DENSE, mujoco.mjtJacobian.mjJAC_SPARSE),
   )
   def test_equality_rows_past_njmax(self, eq_type, jacobian):
     """Equality blocks that straddle njmax keep the rows that fit."""
@@ -422,7 +423,7 @@ class ConstraintTest(parameterized.TestCase):
       for arr in (d.nefc, d.ne, d.efc.type):
         arr.fill_(-1)
       for arr in (d.efc.J, d.efc.D, d.efc.vel, d.efc.aref, d.efc.pos):
-        arr.fill_(wp.nan)
+        arr.fill_(wp.inf)
 
       mjw.make_constraint(m, d)
 
@@ -441,10 +442,16 @@ class ConstraintTest(parameterized.TestCase):
         J = d.efc.J.numpy()[0, :n, : mjm.nv]
       _assert_eq(J, mj_J[:n], "J")
       _assert_eq(d.efc.type.numpy()[0, :n], mjd.efc_type[:n], "type")
-      for field in ("pos", "D", "vel", "aref"):
-        _assert_eq(getattr(d.efc, field).numpy()[0, :n], getattr(mjd, f"efc_{field}")[:n], field)
+      _assert_eq(d.efc.pos.numpy()[0, :n], mjd.efc_pos[:n], "pos")
+      _assert_eq(d.efc.D.numpy()[0, :n], mjd.efc_D[:n], "D")
+      _assert_eq(d.efc.vel.numpy()[0, :n], mjd.efc_vel[:n], "vel")
+      _assert_eq(d.efc.aref.numpy()[0, :n], mjd.efc_aref[:n], "aref")
 
-  @parameterized.parameters(*itertools.product((ConeType.PYRAMIDAL, ConeType.ELLIPTIC), (1, 2), (True, False)))
+  @parameterized.product(
+    cone=(ConeType.PYRAMIDAL, ConeType.ELLIPTIC),
+    nworld=(1, 2),
+    overflow=(True, False),
+  )
   def test_njmax_nnz_overflow_rows(self, cone, nworld, overflow):
     """Rows that do not fit in njmax_nnz are dropped instead of keeping stale sparse layouts."""
     mjm, mjd, m, d = test_data.fixture(
@@ -454,13 +461,25 @@ class ConstraintTest(parameterized.TestCase):
         <worldbody>
           <geom type="plane" size="10 10 .01"/>
           <body pos="0 0 1">
-            <joint type="hinge" range="-.1 .1"/>
-            <geom type="sphere" size=".05" contype="0" conaffinity="0"/>
+            <joint range="-.1 .1"/>
+            <geom size=".05" contype="0" conaffinity="0"/>
           </body>
-          <body pos="1 0 1"><freejoint/><geom type="sphere" size=".1"/></body>
-          <body pos="2 0 1"><freejoint/><geom type="sphere" size=".1"/></body>
-          <body pos="3 0 1"><freejoint/><geom type="sphere" size=".1"/></body>
-          <body pos="4 0 1"><freejoint/><geom type="sphere" size=".1"/></body>
+          <body pos="1 0 1">
+            <freejoint/>
+            <geom size=".1"/>
+          </body>
+          <body pos="2 0 1">
+            <freejoint/>
+            <geom size=".1"/>
+          </body>
+          <body pos="3 0 1">
+            <freejoint/>
+            <geom size=".1"/>
+          </body>
+          <body pos="4 0 1">
+            <freejoint/>
+            <geom size=".1"/>
+          </body>
         </worldbody>
         <keyframe>
           <key qpos=".5  1 0 .09 1 0 0 0  2 0 .09 1 0 0 0  3 0 .09 1 0 0 0  4 0 .09 1 0 0 0"/>

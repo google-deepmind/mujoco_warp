@@ -84,14 +84,13 @@ def _zero_constraint_counts(
 @wp.func
 def _reserve_efc_nnz(
   # Data in:
+  nefc_in: wp.array[int],
   njmax_in: int,
   njmax_nnz_in: int,
   # In:
   worldid: int,
   nrow: int,
   rownnz: int,
-  # Data out:
-  nefc_out: wp.array[int],
   # Out:
   efc_nnz_out: wp.array[int],
 ) -> int:
@@ -104,7 +103,7 @@ def _reserve_efc_nnz(
     Address of the reserved storage, or -1 if it does not fit and the rows must be dropped.
   """
   # nefc only grows, so at most this many rows of the block will be allocated below njmax
-  nrow = wp.min(nrow, njmax_in - nefc_out[worldid])
+  nrow = wp.min(nrow, njmax_in - nefc_in[worldid])
   if nrow <= 0:
     return 0
 
@@ -394,7 +393,7 @@ def _equality_connect(is_sparse: bool, newton: bool, is_discrete: bool = False):
           pda2 = dof_parentid[pda2]
         rownnz += 1
 
-      rowadr = _reserve_efc_nnz(njmax_in, njmax_nnz_in, worldid, 3, rownnz, nefc_out, efc_nnz_out)
+      rowadr = _reserve_efc_nnz(nefc_out, njmax_in, njmax_nnz_in, worldid, 3, rownnz, efc_nnz_out)
       if rowadr < 0:
         return
 
@@ -680,7 +679,7 @@ def _equality_joint(is_sparse: bool, newton: bool, is_discrete: bool = False):
     rowadr = int(0)
     if wp.static(is_sparse):
       rownnz = wp.where(jntid_2 > -1, 2, 1)
-      rowadr = _reserve_efc_nnz(njmax_in, njmax_nnz_in, worldid, 1, rownnz, nefc_out, efc_nnz_out)
+      rowadr = _reserve_efc_nnz(nefc_out, njmax_in, njmax_nnz_in, worldid, 1, rownnz, efc_nnz_out)
       if rowadr < 0:
         return
 
@@ -876,7 +875,7 @@ def _equality_tendon(is_sparse: bool, newton: bool, is_discrete: bool = False):
           p2 += 1
         rownnz += 1
 
-      rowadr = _reserve_efc_nnz(njmax_in, njmax_nnz_in, worldid, 1, rownnz, nefc_out, efc_nnz_out)
+      rowadr = _reserve_efc_nnz(nefc_out, njmax_in, njmax_nnz_in, worldid, 1, rownnz, efc_nnz_out)
       if rowadr < 0:
         return
 
@@ -1032,7 +1031,7 @@ def _equality_flex(is_sparse: bool, newton: bool, is_discrete: bool = False):
     rownnz = flexedge_J_rownnz[edgeid]
     efc_rowadr = int(0)
     if wp.static(is_sparse):
-      efc_rowadr = _reserve_efc_nnz(njmax_in, njmax_nnz_in, worldid, 1, rownnz, nefc_out, efc_nnz_out)
+      efc_rowadr = _reserve_efc_nnz(nefc_out, njmax_in, njmax_nnz_in, worldid, 1, rownnz, efc_nnz_out)
       if efc_rowadr < 0:
         return
 
@@ -1257,7 +1256,7 @@ def _equality_weld(is_sparse: bool, newton: bool, is_discrete: bool = False):
           pda2 = dof_parentid[da]
         rownnz += 1
 
-      rowadr = _reserve_efc_nnz(njmax_in, njmax_nnz_in, worldid, 6, rownnz, nefc_out, efc_nnz_out)
+      rowadr = _reserve_efc_nnz(nefc_out, njmax_in, njmax_nnz_in, worldid, 6, rownnz, efc_nnz_out)
       if rowadr < 0:
         return
 
@@ -1733,7 +1732,7 @@ def _equality_flexstrain(is_sparse: bool, newton: bool, is_discrete: bool = Fals
     # the eigenmode rows of a cell share their columns: allocate them as one block
     efc_rowadr0 = int(0)
     if wp.static(is_sparse):
-      efc_rowadr0 = _reserve_efc_nnz(njmax_in, njmax_nnz_in, worldid, neig, rownnz, nefc_out, efc_nnz_out)
+      efc_rowadr0 = _reserve_efc_nnz(nefc_out, njmax_in, njmax_nnz_in, worldid, neig, rownnz, efc_nnz_out)
       if efc_rowadr0 < 0:
         return
 
@@ -1944,7 +1943,7 @@ def _friction_dof(is_sparse: bool, newton: bool, is_discrete: bool = False):
 
     rowadr = int(0)
     if wp.static(is_sparse):
-      rowadr = _reserve_efc_nnz(njmax_in, njmax_nnz_in, worldid, 1, 1, nefc_out, efc_nnz_out)
+      rowadr = _reserve_efc_nnz(nefc_out, njmax_in, njmax_nnz_in, worldid, 1, 1, efc_nnz_out)
       if rowadr < 0:
         return
 
@@ -2056,7 +2055,7 @@ def _friction_tendon(is_sparse: bool, newton: bool, is_discrete: bool = False):
     rownnz_tenJ = ten_J_rownnz[tenid]
     rowadr_efc = int(0)
     if wp.static(is_sparse):
-      rowadr_efc = _reserve_efc_nnz(njmax_in, njmax_nnz_in, worldid, 1, rownnz_tenJ, nefc_out, efc_nnz_out)
+      rowadr_efc = _reserve_efc_nnz(nefc_out, njmax_in, njmax_nnz_in, worldid, 1, rownnz_tenJ, efc_nnz_out)
       if rowadr_efc < 0:
         return
 
@@ -2190,7 +2189,7 @@ def _limit_slide_hinge(is_sparse: bool, newton: bool, is_discrete: bool = False)
     if active:
       rowadr = int(0)
       if wp.static(is_sparse):
-        rowadr = _reserve_efc_nnz(njmax_in, njmax_nnz_in, worldid, 1, 1, nefc_out, efc_nnz_out)
+        rowadr = _reserve_efc_nnz(nefc_out, njmax_in, njmax_nnz_in, worldid, 1, 1, efc_nnz_out)
         if rowadr < 0:
           return
 
@@ -2316,7 +2315,7 @@ def _limit_ball(is_sparse: bool, newton: bool, is_discrete: bool = False):
     if active:
       rowadr = int(0)
       if wp.static(is_sparse):
-        rowadr = _reserve_efc_nnz(njmax_in, njmax_nnz_in, worldid, 1, 3, nefc_out, efc_nnz_out)
+        rowadr = _reserve_efc_nnz(nefc_out, njmax_in, njmax_nnz_in, worldid, 1, 3, efc_nnz_out)
         if rowadr < 0:
           return
 
@@ -2455,7 +2454,7 @@ def _limit_tendon(is_sparse: bool, newton: bool, is_discrete: bool = False):
       rownnz_tenJ = ten_J_rownnz[tenid]
       rowadr_efc = int(0)
       if wp.static(is_sparse):
-        rowadr_efc = _reserve_efc_nnz(njmax_in, njmax_nnz_in, worldid, 1, rownnz_tenJ, nefc_out, efc_nnz_out)
+        rowadr_efc = _reserve_efc_nnz(nefc_out, njmax_in, njmax_nnz_in, worldid, 1, rownnz_tenJ, efc_nnz_out)
         if rowadr_efc < 0:
           return
 
@@ -2622,7 +2621,7 @@ def _efc_contact_init(cone_type: types.ConeType, is_sparse: bool, newton: bool, 
           da2 = dof_parentid[da2]
         rownnz += 1
 
-      rowadr = _reserve_efc_nnz(njmax_in, njmax_nnz_in, worldid, ndim, rownnz, nefc_out, efc_nnz_out)
+      rowadr = _reserve_efc_nnz(nefc_out, njmax_in, njmax_nnz_in, worldid, ndim, rownnz, efc_nnz_out)
       if rowadr < 0:
         for dim in range(ndim):
           contact_efc_address_out[conid, dim] = -1
@@ -2970,7 +2969,7 @@ def _efc_contact_init_flex(cone_type: types.ConeType, is_sparse: bool, newton: b
 
           rownnz += 1
 
-      rowadr = _reserve_efc_nnz(njmax_in, njmax_nnz_in, worldid, ndim, rownnz, nefc_out, efc_nnz_out)
+      rowadr = _reserve_efc_nnz(nefc_out, njmax_in, njmax_nnz_in, worldid, ndim, rownnz, efc_nnz_out)
       if rowadr < 0:
         for dim in range(ndim):
           contact_efc_address_out[conid, dim] = -1
