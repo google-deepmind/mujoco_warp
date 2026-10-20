@@ -360,10 +360,10 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
   if (mjm.sensor_plugin != -1).any():
     raise NotImplementedError("Sensor plugins not supported.")
 
-  # TODO(team): contact sensor linvel and angvel (mjSTAGE_VEL)
+  # TODO(team): contact sensor linvel and angvel for flex contacts (contact Jacobian)
   contact_dataspec = mjm.sensor_intprm[mjm.sensor_type == mujoco.mjtSensor.mjSENS_CONTACT, 0]
-  if (contact_dataspec & ((1 << 7) | (1 << 8))).any():
-    raise NotImplementedError("Contact sensor linvel and angvel not supported.")
+  if mjm.nflex and (contact_dataspec & ((1 << 7) | (1 << 8))).any():
+    raise NotImplementedError("Contact sensor linvel and angvel not supported for models with flexes.")
 
   if mjm.nflex > 0:
     for fi in range(mjm.nflex):
@@ -1039,6 +1039,7 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
     (mjm.sensor_needstage == mujoco.mjtStage.mjSTAGE_VEL)
     & (mjm.sensor_type != mujoco.mjtSensor.mjSENS_JOINTLIMITVEL)
     & (mjm.sensor_type != mujoco.mjtSensor.mjSENS_TENDONLIMITVEL)
+    & ~is_contact
   )[0]
   m.sensor_limitvel_adr = np.nonzero(
     (mjm.sensor_type == mujoco.mjtSensor.mjSENS_JOINTLIMITVEL) | (mjm.sensor_type == mujoco.mjtSensor.mjSENS_TENDONLIMITVEL)
@@ -1070,6 +1071,7 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
   subtreevel_sensors = (mujoco.mjtSensor.mjSENS_SUBTREELINVEL, mujoco.mjtSensor.mjSENS_SUBTREEANGMOM)
   m.sensor_subtree_vel = np.isin(mjm.sensor_type, subtreevel_sensors).any()
   m.sensor_contact_pos_adr = np.nonzero(is_contact & (mjm.sensor_needstage == mujoco.mjtStage.mjSTAGE_POS))[0]
+  m.sensor_contact_vel_adr = np.nonzero(is_contact & (mjm.sensor_needstage == mujoco.mjtStage.mjSTAGE_VEL))[0]
   m.sensor_contact_acc_adr = np.nonzero(is_contact & (mjm.sensor_needstage == mujoco.mjtStage.mjSTAGE_ACC))[0]
   m.sensor_rne_postconstraint = np.isin(
     mjm.sensor_type,
@@ -1357,6 +1359,7 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
       "nsensor_limitfrc": len(m.sensor_limitfrc_adr),
       "nsensor_tendonactfrc": len(m.sensor_tendonactfrc_adr),
       "nsensor_contact_pos": len(m.sensor_contact_pos_adr),
+      "nsensor_contact_vel": len(m.sensor_contact_vel_adr),
       "nsensor_contact_acc": len(m.sensor_contact_acc_adr),
       "nsensor_collision_start_adr": len(m.sensor_collision_start_adr),
       "nqLD_all_updates": len(m.qLD_all_updates),
