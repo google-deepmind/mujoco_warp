@@ -1846,12 +1846,15 @@ class DerivativeTest(parameterized.TestCase):
     )
 
     self.assertEqual(m.nefmdof, 9)
+    self.assertEqual(m.nefmL, 9 * m.nefmdof)
     d.ctrl.fill_(0.1)
+    d.efm_L.fill_(wp.inf)
     mjw.forward(m, d)
     epL = derivative.eff_prec_fold(m, d)
     res = wp.zeros_like(d.qacc)
     derivative.eff_prec(m, d, res, d.qfrc_smooth, epL=epL)
 
+    self.assertTrue(np.all(np.isfinite(d.efm_L.numpy())))
     self.assertTrue(np.all(np.isfinite(epL.numpy())))
     self.assertTrue(np.all(np.isfinite(res.numpy())))
     self.assertGreater(np.linalg.norm(res.numpy()), 0.0)
