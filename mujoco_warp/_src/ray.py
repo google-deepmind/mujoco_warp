@@ -475,6 +475,59 @@ def ray_box(pos: wp.vec3, mat: wp.mat33, size: wp.vec3, pnt: wp.vec3, vec: wp.ve
   return x, all, normal
 
 
+def make_ray_primitive(geom_ray_types: Tuple[int]) -> wp.Function:
+  """Build a ray-primitive intersection specialized to the geom types present in the scene.
+
+  Branches for absent types are removed at compile time via wp.static.
+  """
+
+  @wp.func
+  def ray_primitive(
+    gtype: int, pos: wp.vec3, mat: wp.mat33, size: wp.vec3, pnt: wp.vec3, vec: wp.vec3
+  ) -> Tuple[float, wp.vec3]:
+    d = float(-1.0)
+    n = wp.vec3(0.0, 0.0, 0.0)
+    if wp.static(int(GeomType.PLANE) in geom_ray_types):
+      if gtype == GeomType.PLANE:
+        d, n = ray_plane(pos, mat, size, pnt, vec)
+    if wp.static(int(GeomType.SPHERE) in geom_ray_types):
+      if gtype == GeomType.SPHERE:
+        d, n = ray_sphere(pos, size[0] * size[0], pnt, vec)
+    if wp.static(int(GeomType.ELLIPSOID) in geom_ray_types):
+      if gtype == GeomType.ELLIPSOID:
+        d, n = ray_ellipsoid(pos, mat, size, pnt, vec)
+    if wp.static(int(GeomType.CAPSULE) in geom_ray_types):
+      if gtype == GeomType.CAPSULE:
+        d, n = ray_capsule(pos, mat, size, pnt, vec)
+    if wp.static(int(GeomType.CYLINDER) in geom_ray_types):
+      if gtype == GeomType.CYLINDER:
+        d, n = ray_cylinder(pos, mat, size, pnt, vec)
+    if wp.static(int(GeomType.BOX) in geom_ray_types):
+      if gtype == GeomType.BOX:
+        d, _, n = ray_box(pos, mat, size, pnt, vec)
+    return d, n
+
+  return ray_primitive
+
+
+@wp.func
+def geom_color(
+  # Model:
+  geom_matid: wp.array2d[int],
+  geom_rgba: wp.array2d[wp.vec4],
+  mat_rgba: wp.array2d[wp.vec4],
+  # In:
+  worldid: int,
+  geom_id: int,
+) -> Tuple[wp.vec4, int]:
+  """Returns a geom's rendered color, which falls back to its material color, and material id."""
+  g_rgba = geom_rgba[worldid % geom_rgba.shape[0], geom_id]
+  mat_id = geom_matid[worldid % geom_matid.shape[0], geom_id]
+  if mat_id >= 0 and g_rgba[0] == 0.5 and g_rgba[1] == 0.5 and g_rgba[2] == 0.5 and g_rgba[3] == 1.0:
+    return mat_rgba[worldid % mat_rgba.shape[0], mat_id], mat_id
+  return g_rgba, mat_id
+
+
 @wp.func
 def ray_hfield(
   # Model:

@@ -22,6 +22,7 @@ import numpy as np
 import warp as wp
 
 from mujoco_warp._src import math as mjmath
+from mujoco_warp._src import render_optix
 from mujoco_warp._src.types import MJ_MAXVAL
 from mujoco_warp._src.types import Data
 from mujoco_warp._src.types import GeomType
@@ -38,6 +39,9 @@ SPLAT_MIN_RESPONSE = 0.01
 @event_scope
 def refit_bvh(m: Model, d: Data, rc: RenderContext):
   """Refit the dynamic BVH structures in the render context."""
+  if rc.optix is not None:
+    render_optix.refit(m, d, rc)
+    return
   refit_scene_bvh(m, d, rc)
   if m.nflex:
     refit_flex_bvh(m, d, rc)

@@ -19,19 +19,17 @@ from typing import Tuple
 import warp as wp
 
 from mujoco_warp._src import math
+from mujoco_warp._src import render_optix
 from mujoco_warp._src.bvh import SPLAT_MIN_RESPONSE
 from mujoco_warp._src.ray import RAY_TOL_ABS
 from mujoco_warp._src.ray import RAY_TOL_REL
-from mujoco_warp._src.ray import ray_box
+from mujoco_warp._src.ray import geom_color
+from mujoco_warp._src.ray import make_ray_primitive
 from mujoco_warp._src.ray import ray_capsule
-from mujoco_warp._src.ray import ray_cylinder
-from mujoco_warp._src.ray import ray_ellipsoid
 from mujoco_warp._src.ray import ray_flex_with_bvh
 from mujoco_warp._src.ray import ray_flex_with_bvh_anyhit
 from mujoco_warp._src.ray import ray_mesh_with_bvh
 from mujoco_warp._src.ray import ray_mesh_with_bvh_anyhit
-from mujoco_warp._src.ray import ray_plane
-from mujoco_warp._src.ray import ray_sphere
 from mujoco_warp._src.render_util import compute_ray
 from mujoco_warp._src.render_util import pack_rgba_to_uint32
 from mujoco_warp._src.types import MJ_MAXVAL
@@ -567,23 +565,6 @@ def vertex_normal(n: wp.vec3, face: wp.vec3) -> wp.vec3:
 
 
 # TODO(team): consider precomputing transparent geom/flex filtering
-@wp.func
-def _geom_rgba(
-  # Model:
-  geom_matid: wp.array2d[int],
-  geom_rgba: wp.array2d[wp.vec4],
-  mat_rgba: wp.array2d[wp.vec4],
-  # In:
-  worldid: int,
-  geom_id: int,
-) -> Tuple[wp.vec4, int]:
-  g_rgba = geom_rgba[worldid % geom_rgba.shape[0], geom_id]
-  mat_id = geom_matid[worldid % geom_matid.shape[0], geom_id]
-  if mat_id >= 0 and g_rgba[0] == 0.5 and g_rgba[1] == 0.5 and g_rgba[2] == 0.5 and g_rgba[3] == 1.0:
-    return mat_rgba[worldid % mat_rgba.shape[0], mat_id], mat_id
-  return g_rgba, mat_id
-
-
 def _make_cast_ray(geom_ray_types: Tuple[int], first_hit: bool = False) -> wp.Function:
   """Build a ray-cast func specialized to the geom types present in the scene.
 
@@ -597,6 +578,7 @@ def _make_cast_ray(geom_ray_types: Tuple[int], first_hit: bool = False) -> wp.Fu
       intersections and returns on the first hit within max_dist. The result is
       still the full tuple; callers test geom_id != -1 to detect a hit.
   """
+  ray_primitive = make_ray_primitive(geom_ray_types)
 
   @wp.func
   def cast_ray(
@@ -662,25 +644,24 @@ def _make_cast_ray(geom_ray_types: Tuple[int], first_hit: bool = False) -> wp.Fu
 
       if local_id < bvh_ngeom:
         gi = enabled_geom_ids[local_id]
-        rgba, _ = _geom_rgba(geom_matid, geom_rgba, mat_rgba, worldid, gi)
+        rgba, _ = geom_color(geom_matid, geom_rgba, mat_rgba, worldid, gi)
         if rgba[3] == 0.0:
           continue
         gtype = geom_type[gi]
+        d, n = ray_primitive(
+          gtype,
+          geom_xpos_in[worldid, gi],
+          geom_xmat_in[worldid, gi],
+          geom_size[worldid % geom_size.shape[0], gi],
+          ray_origin_world,
+          ray_dir_world,
+        )
       else:
         gi = local_id - bvh_ngeom
         gtype = GeomType.FLEX
 
       hit_geom_id = gi
 
-      if wp.static(int(GeomType.PLANE) in geom_ray_types):
-        if gtype == GeomType.PLANE:
-          d, n = ray_plane(
-            geom_xpos_in[worldid, gi],
-            geom_xmat_in[worldid, gi],
-            geom_size[worldid % geom_size.shape[0], gi],
-            ray_origin_world,
-            ray_dir_world,
-          )
       if wp.static(int(GeomType.HFIELD) in geom_ray_types):
         if gtype == GeomType.HFIELD:
           d, n, u, v, f, geom_hfield_id = ray_mesh_with_bvh(
@@ -692,50 +673,6 @@ def _make_cast_ray(geom_ray_types: Tuple[int], first_hit: bool = False) -> wp.Fu
             ray_dir_world,
             query_dist,
             cull_backfaces,
-          )
-      if wp.static(int(GeomType.SPHERE) in geom_ray_types):
-        if gtype == GeomType.SPHERE:
-          d, n = ray_sphere(
-            geom_xpos_in[worldid, gi],
-            geom_size[worldid % geom_size.shape[0], gi][0] * geom_size[worldid % geom_size.shape[0], gi][0],
-            ray_origin_world,
-            ray_dir_world,
-          )
-      if wp.static(int(GeomType.ELLIPSOID) in geom_ray_types):
-        if gtype == GeomType.ELLIPSOID:
-          d, n = ray_ellipsoid(
-            geom_xpos_in[worldid, gi],
-            geom_xmat_in[worldid, gi],
-            geom_size[worldid % geom_size.shape[0], gi],
-            ray_origin_world,
-            ray_dir_world,
-          )
-      if wp.static(int(GeomType.CAPSULE) in geom_ray_types):
-        if gtype == GeomType.CAPSULE:
-          d, n = ray_capsule(
-            geom_xpos_in[worldid, gi],
-            geom_xmat_in[worldid, gi],
-            geom_size[worldid % geom_size.shape[0], gi],
-            ray_origin_world,
-            ray_dir_world,
-          )
-      if wp.static(int(GeomType.CYLINDER) in geom_ray_types):
-        if gtype == GeomType.CYLINDER:
-          d, n = ray_cylinder(
-            geom_xpos_in[worldid, gi],
-            geom_xmat_in[worldid, gi],
-            geom_size[worldid % geom_size.shape[0], gi],
-            ray_origin_world,
-            ray_dir_world,
-          )
-      if wp.static(int(GeomType.BOX) in geom_ray_types):
-        if gtype == GeomType.BOX:
-          d, all, n = ray_box(
-            geom_xpos_in[worldid, gi],
-            geom_xmat_in[worldid, gi],
-            geom_size[worldid % geom_size.shape[0], gi],
-            ray_origin_world,
-            ray_dir_world,
           )
       if wp.static(int(GeomType.MESH) in geom_ray_types or int(GeomType.SDF) in geom_ray_types):
         if gtype == GeomType.MESH or gtype == GeomType.SDF:
@@ -990,15 +927,19 @@ def _aa_resolve(
   )
 
 
-def _build_megakernel(m: Model, rc: RenderContext):
+def _build_megakernel(nlight: int, rc: RenderContext):
   """Construct the specialised megakernel for this context."""
   has_splats = rc.splat_count > 0
 
   # Specialize the ray-cast helpers to the geom types present in the scene so the
   # compiler eliminates intersection branches for absent types.
   geom_ray_types = rc.geom_ray_types
-  cast_ray = _make_cast_ray(geom_ray_types, first_hit=False)
-  cast_ray_first_hit = _make_cast_ray(geom_ray_types, first_hit=True)
+  if rc.optix is None:
+    cast_ray = _make_cast_ray(geom_ray_types, first_hit=False)
+    cast_ray_first_hit = _make_cast_ray(geom_ray_types, first_hit=True)
+  else:
+    cast_ray = render_optix.make_cast_ray(geom_ray_types, rc.optix, first_hit=False)
+    cast_ray_first_hit = render_optix.make_cast_ray(geom_ray_types, rc.optix, first_hit=True)
   compute_lighting = _make_compute_lighting(cast_ray_first_hit)
   sample_texture = _make_sample_texture(geom_ray_types)
 
@@ -1011,7 +952,7 @@ def _build_megakernel(m: Model, rc: RenderContext):
     float((bg >> 8) & 0xFF) / 255.0,
     float(bg & 0xFF) / 255.0,
   )
-  M_NLIGHT = m.nlight
+  M_NLIGHT = nlight
 
   aa = rc.samples_per_pixel * rc.samples_per_pixel > 1
 
@@ -1306,7 +1247,7 @@ def _build_megakernel(m: Model, rc: RenderContext):
       # We encode flex_id in mesh_id for flex ray hits during cast_ray
       color = flex_rgba[mesh_id]
     else:
-      color, mat_id = _geom_rgba(geom_matid, geom_rgba, mat_rgba, worldid, geom_id)
+      color, mat_id = geom_color(geom_matid, geom_rgba, mat_rgba, worldid, geom_id)
 
     base_color = wp.vec3(color[0], color[1], color[2])
 
@@ -1504,7 +1445,7 @@ def render(m: Model, d: Data, rc: RenderContext):
   # Specialising the megakernel costs more than launching it, so keep it on the
   # context: the static configuration it closes over is fixed at creation.
   if rc._megakernel is None:
-    rc._megakernel = _build_megakernel(m, rc)
+    rc._megakernel = _build_megakernel(m.nlight, rc)
   _render_megakernel = rc._megakernel
 
   nsamples = rc.samples_per_pixel * rc.samples_per_pixel
@@ -1512,95 +1453,95 @@ def render(m: Model, d: Data, rc: RenderContext):
     rc.aa_accum.zero_()
 
   for sample in range(nsamples):
-    wp.launch(
-      kernel=_render_megakernel,
-      dim=(d.nworld, rc.total_rays),
-      inputs=[
-        m.geom_type,
-        m.geom_dataid,
-        m.geom_matid,
-        m.geom_size,
-        m.geom_rgba,
-        m.cam_projection,
-        m.cam_fovy,
-        m.cam_sensorsize,
-        m.cam_intrinsic,
-        m.light_type,
-        m.light_castshadow,
-        m.light_active,
-        m.light_attenuation,
-        m.light_cutoff,
-        m.light_exponent,
-        m.light_ambient,
-        m.light_diffuse,
-        m.light_specular,
-        m.flex_vertadr,
-        m.flex_edge,
-        m.flex_radius,
-        m.mesh_faceadr,
-        m.mesh_normaladr,
-        m.mesh_normal,
-        m.mat_texid,
-        m.mat_texuniform,
-        m.mat_texrepeat,
-        m.mat_emission,
-        m.mat_specular,
-        m.mat_shininess,
-        m.mat_rgba,
-        d.geom_xpos,
-        d.geom_xmat,
-        d.cam_xpos,
-        d.cam_xmat,
-        d.light_xpos,
-        d.light_xdir,
-        d.flexvert_xpos,
-        rc.nrender,
-        rc.use_shadows,
-        rc.bvh_ngeom,
-        rc.bvh_nflexgeom,
-        rc.cam_res,
-        rc.cam_id_map,
-        rc.ray,
-        rc.ray_offset,
-        sample * rc.total_rays,
-        rc.rgb_adr,
-        rc.depth_adr,
-        rc.seg_adr,
-        rc.render_rgb,
-        rc.render_depth,
-        rc.render_seg,
-        rc.bvh_id,
-        rc.group_root,
-        rc.flex_bvh_id,
-        rc.flex_group_root,
-        rc.enabled_geom_ids,
-        rc.mesh_bvh_id,
-        rc.mesh_facetexcoord,
-        rc.mesh_facenormal,
-        rc.mesh_texcoord,
-        rc.mesh_texcoord_offsets,
-        rc.hfield_bvh_id,
-        rc.flex_rgba,
-        rc.flex_geom_flexid,
-        rc.flex_geom_edgeid,
-        rc.skybox_tex_id,
-        rc.skybox_face_width,
-        rc.textures,
-        rc.splat_position,
-        rc.splat_rotation,
-        rc.splat_scale,
-        rc.splat_rgba,
-        rc.splat_bvh_id,
-        rc.splat_group_root,
-      ],
-      outputs=[
-        rc.rgb_data,
-        rc.aa_accum,
-        rc.depth_data,
-        rc.seg_data,
-      ],
-      block_dim=m.block_dim.render,
-    )
+    inputs = [
+      m.geom_type,
+      m.geom_dataid,
+      m.geom_matid,
+      m.geom_size,
+      m.geom_rgba,
+      m.cam_projection,
+      m.cam_fovy,
+      m.cam_sensorsize,
+      m.cam_intrinsic,
+      m.light_type,
+      m.light_castshadow,
+      m.light_active,
+      m.light_attenuation,
+      m.light_cutoff,
+      m.light_exponent,
+      m.light_ambient,
+      m.light_diffuse,
+      m.light_specular,
+      m.flex_vertadr,
+      m.flex_edge,
+      m.flex_radius,
+      m.mesh_faceadr,
+      m.mesh_normaladr,
+      m.mesh_normal,
+      m.mat_texid,
+      m.mat_texuniform,
+      m.mat_texrepeat,
+      m.mat_emission,
+      m.mat_specular,
+      m.mat_shininess,
+      m.mat_rgba,
+      d.geom_xpos,
+      d.geom_xmat,
+      d.cam_xpos,
+      d.cam_xmat,
+      d.light_xpos,
+      d.light_xdir,
+      d.flexvert_xpos,
+      rc.nrender,
+      rc.use_shadows,
+      rc.bvh_ngeom,
+      rc.bvh_nflexgeom,
+      rc.cam_res,
+      rc.cam_id_map,
+      rc.ray,
+      rc.ray_offset,
+      sample * rc.total_rays,
+      rc.rgb_adr,
+      rc.depth_adr,
+      rc.seg_adr,
+      rc.render_rgb,
+      rc.render_depth,
+      rc.render_seg,
+      rc.bvh_id,
+      rc.group_root,
+      rc.flex_bvh_id,
+      rc.flex_group_root,
+      rc.enabled_geom_ids,
+      rc.mesh_bvh_id,
+      rc.mesh_facetexcoord,
+      rc.mesh_facenormal,
+      rc.mesh_texcoord,
+      rc.mesh_texcoord_offsets,
+      rc.hfield_bvh_id,
+      rc.flex_rgba,
+      rc.flex_geom_flexid,
+      rc.flex_geom_edgeid,
+      rc.skybox_tex_id,
+      rc.skybox_face_width,
+      rc.textures,
+      rc.splat_position,
+      rc.splat_rotation,
+      rc.splat_scale,
+      rc.splat_rgba,
+      rc.splat_bvh_id,
+      rc.splat_group_root,
+    ]
+    outputs = [
+      rc.rgb_data,
+      rc.aa_accum,
+      rc.depth_data,
+      rc.seg_data,
+    ]
+    dim = (d.nworld, rc.total_rays)
+    if rc.optix is None:
+      wp.launch(_render_megakernel, dim=dim, inputs=inputs, outputs=outputs, block_dim=m.block_dim.render)
+    else:
+      render_optix.launch(rc, dim, inputs + outputs)
 
   if nsamples > 1:
     wp.launch(_aa_resolve, dim=rc.rgb_data.shape, inputs=[rc.aa_accum, 1.0 / float(nsamples)], outputs=[rc.rgb_data])
