@@ -192,6 +192,48 @@ class ForwardTest(parameterized.TestCase):
     _assert_eq(d.qvel.numpy()[0], mjd.qvel, "qvel")
     _assert_eq(d.act.numpy()[0], mjd.act, "act")
 
+  def test_rungekutta4_sensors(self):
+    """Sensors after an rk4 step are from the start of the step, energy from the last stage."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+        <mujoco>
+          <option integrator="RK4">
+            <flag constraint="disable" energy="enable"/>
+          </option>
+          <worldbody>
+            <body>
+              <joint name="j0" type="hinge" stiffness="3"/>
+              <geom type="capsule" size=".05" fromto="0 0 0 .3 0 0"/>
+              <body pos=".3 0 0">
+                <joint name="j1" type="hinge"/>
+                <geom type="capsule" size=".05" fromto="0 0 0 .3 0 0"/>
+                <site name="tip" pos=".3 0 0"/>
+              </body>
+            </body>
+          </worldbody>
+          <sensor>
+            <jointpos joint="j0"/>
+            <jointvel joint="j1"/>
+            <framepos objtype="site" objname="tip"/>
+            <accelerometer site="tip"/>
+            <e_potential/>
+            <e_kinetic/>
+          </sensor>
+          <keyframe>
+            <key qpos=".1 .2" qvel="2 -3"/>
+          </keyframe>
+        </mujoco>
+        """,
+      keyframe=0,
+    )
+
+    mujoco.mj_step(mjm, mjd)
+    mjw.step(m, d)
+
+    _assert_eq(d.qpos.numpy()[0], mjd.qpos, "qpos")
+    _assert_eq(d.sensordata.numpy()[0], mjd.sensordata, "sensordata")
+    _assert_eq(d.energy.numpy()[0], mjd.energy, "energy")
+
   def test_rungekutta4(self):
     mjm, mjd, m, d = test_data.fixture(
       xml="""

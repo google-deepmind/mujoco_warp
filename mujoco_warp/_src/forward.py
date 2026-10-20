@@ -674,7 +674,8 @@ def rungekutta4(m: Model, d: Data):
   for i in range(3):
     a, b = float(A[i]), B[i + 1]
     _rk_perturb_state(m, d, a, qpos_t0, qvel_t0, act_t0)
-    forward(m, d)
+    # sensors keep their values from the start of the step, as in mj_RungeKutta
+    _forward(m, d, skip_sensor=True)
     _rk_accumulate(m, d, b, qvel_rk, qacc_rk, act_dot_rk)
 
   wp.copy(d.qpos, qpos_t0)
@@ -2168,23 +2169,21 @@ def fwd_acceleration(m: Model, d: Data, factorize: bool = False):
     smooth.solve_m(m, d, d.qacc_smooth, d.qfrc_smooth)
 
 
-def _energy_pos(m: Model, d: Data):
+def _energy_pos(m: Model, d: Data, skip_sensor: bool = False):
   if m.opt.enableflags & EnableBit.ENERGY:
-    if m.sensor_e_potential == 0:  # not computed by sensor
+    if m.sensor_e_potential == 0 or skip_sensor:  # not computed by sensor
       sensor.energy_pos(m, d)
   else:
     d.energy.zero_()
 
 
-def _energy_vel(m: Model, d: Data):
+def _energy_vel(m: Model, d: Data, skip_sensor: bool = False):
   if m.opt.enableflags & EnableBit.ENERGY:
-    if m.sensor_e_kinetic == 0:  # not computed by sensor
+    if m.sensor_e_kinetic == 0 or skip_sensor:  # not computed by sensor
       sensor.energy_vel(m, d)
 
 
-@event_scope
-def forward(m: Model, d: Data):
-  """Forward dynamics."""
+def _forward(m: Model, d: Data, skip_sensor: bool):
   check_discrete(m)
   sleep_enabled = bool(m.opt.enableflags & EnableBit.SLEEP) and not bool(m.opt.disableflags & DisableBit.ISLAND)
   if sleep_enabled:
@@ -2192,13 +2191,15 @@ def forward(m: Model, d: Data):
     sleep.update_sleep(m, d)
 
   fwd_position(m, d, factorize=False)
-  d.sensordata.zero_()
-  sensor.sensor_pos(m, d)
-  _energy_pos(m, d)
+  if not skip_sensor:
+    d.sensordata.zero_()
+    sensor.sensor_pos(m, d)
+  _energy_pos(m, d, skip_sensor)
 
   fwd_velocity(m, d)
-  sensor.sensor_vel(m, d)
-  _energy_vel(m, d)
+  if not skip_sensor:
+    sensor.sensor_vel(m, d)
+  _energy_vel(m, d, skip_sensor)
 
   if not (m.opt.disableflags & DisableBit.ACTUATION):
     if m.callback.control:
@@ -2209,9 +2210,17 @@ def forward(m: Model, d: Data):
   solver.solve(m, d)
   if m.opt.integrator == IntegratorType.DISCRETE:
     _launch_discrete_free_gyro(m, d, d.qacc, d.qacc, False)
-  if m.opt.run_rne_postconstraint or (not (m.opt.disableflags & DisableBit.SENSOR) and m.sensor_rne_postconstraint):
+  sensor_rne = not skip_sensor and not (m.opt.disableflags & DisableBit.SENSOR) and m.sensor_rne_postconstraint
+  if m.opt.run_rne_postconstraint or sensor_rne:
     smooth.rne_postconstraint(m, d)
-  sensor.sensor_acc(m, d, skip_rne_postconstraint=True)
+  if not skip_sensor:
+    sensor.sensor_acc(m, d, skip_rne_postconstraint=True)
+
+
+@event_scope
+def forward(m: Model, d: Data):
+  """Forward dynamics."""
+  _forward(m, d, skip_sensor=False)
 
 
 @event_scope
