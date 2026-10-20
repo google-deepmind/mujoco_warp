@@ -25,6 +25,7 @@ from absl.testing import parameterized
 
 import mujoco_warp as mjwarp
 from mujoco_warp import test_data
+from mujoco_warp._src import util_pkg
 from mujoco_warp._src.set_const import set_length_range
 
 
@@ -165,7 +166,7 @@ class SetConstTest(parameterized.TestCase):
     _assert_eq(m.eq_data.numpy()[0], mjm.eq_data, "eq_data")
 
   def test_set_const_eq_data_weld(self):
-    """Test set_const recomputes eq_data for weld constraints."""
+    """Test weld data updates match the installed MuJoCo version."""
     mjm, mjd, m, d = test_data.fixture(
       xml="""
     <mujoco>
@@ -189,7 +190,7 @@ class SetConstTest(parameterized.TestCase):
     """
     )
 
-    # case 1: quaternion data cleared: set_const recomputes relpose and anchor offset
+    # Older MuJoCo resolves a cleared quaternion; newer versions preserve the input.
     new_data = mjm.eq_data[0].copy()
     new_data[0:3] = [0.15, 0.1, 0.25]
     new_data[3:10] = 0.0
@@ -203,7 +204,7 @@ class SetConstTest(parameterized.TestCase):
 
     _assert_eq(m.eq_data.numpy()[0], mjm.eq_data, "eq_data")
 
-    # case 2: user-specified quaternion: set_const only normalizes it
+    # Older MuJoCo normalizes a supplied quaternion; newer versions preserve it.
     new_data = mjm.eq_data[0].copy()
     new_data[6:10] = [2.0, 0.0, 2.0, 0.0]
     mjm.eq_data[0] = new_data
@@ -215,6 +216,38 @@ class SetConstTest(parameterized.TestCase):
     mjwarp.set_const(m, d)
 
     _assert_eq(m.eq_data.numpy()[0], mjm.eq_data, "eq_data")
+
+  @parameterized.parameters(1, 2)
+  def test_set_const_eq_data_site_connect(self, nworld):
+    """Test unused site-connect data follows MuJoCo's preservation behavior."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <site name="s1"/>
+          <body pos="0 0 1">
+            <joint type="slide"/>
+            <geom size="0.1" mass="1"/>
+            <site name="s2"/>
+          </body>
+        </worldbody>
+        <equality>
+          <connect site1="s1" site2="s2"/>
+        </equality>
+      </mujoco>
+      """,
+      nworld=nworld,
+      batch_sizes={"eq_data": nworld},
+    )
+    eq_data = np.arange(1, 1 + nworld * 11, dtype=np.float32).reshape(nworld, 1, 11)
+    m.eq_data.assign(eq_data)
+
+    mjwarp.set_const_0(m, d)
+
+    for worldid in range(nworld):
+      mjm.eq_data[:] = eq_data[worldid]
+      mujoco.mj_setConst(mjm, mjd)
+      _assert_eq(m.eq_data.numpy()[worldid], mjm.eq_data, f"eq_data[{worldid}]")
 
   def test_set_const_eq_data_slider_crank_tracking(self):
     """Test connect anchor recompute on a slider-crank with nonzero joint ref."""
@@ -595,9 +628,11 @@ class SetConstTest(parameterized.TestCase):
     _assert_eq(m.body_subtreemass.numpy(), body_subtreemass_1, "body_subtreemass")
     _assert_eq(m.actuator_acc0.numpy(), actuator_acc0_1, "actuator_acc0")
 
-  def test_set_const_spring(self):
-    """Test set_const_spring resolves tendon_lengthspring."""
-    xml = """
+  @parameterized.parameters("set_const", "set_const_spring")
+  def test_set_const_spring(self, func_name):
+    """Test tendon spring length updates match the installed MuJoCo version."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
     <mujoco>
       <worldbody>
         <body pos="0 0 1">
@@ -623,19 +658,17 @@ class SetConstTest(parameterized.TestCase):
       </tendon>
     </mujoco>
     """
+    )
 
     # Run with default qpos_spring
-    mjm_default, mjd_default, m_default, d_default = test_data.fixture(xml=xml)
-    mjm_default.tendon_lengthspring[:] = -1.0
-    m_default.tendon_lengthspring.assign(
-      np.full((m_default.tendon_lengthspring.shape[0], m_default.tendon_lengthspring.shape[1], 2), -1.0)
-    )
-    mujoco.mj_setConst(mjm_default, mjd_default)
-    mjwarp.set_const(m_default, d_default)
-    lengthspring_default = m_default.tendon_lengthspring.numpy().copy()
+    mjm.tendon_lengthspring[:] = -1.0
+    m.tendon_lengthspring.fill_(-1.0)
+    mujoco.mj_setConst(mjm, mjd)
+    getattr(mjwarp, func_name)(m, d)
+    _assert_eq(m.tendon_lengthspring.numpy()[0], mjm.tendon_lengthspring, "default tendon_lengthspring")
+    lengthspring_default = m.tendon_lengthspring.numpy().copy()
 
     # Run with modified qpos_spring
-    mjm, mjd, m, d = test_data.fixture(xml=xml)
     mjm.qpos_spring[11] = 0.5
 
     qpos_spring_np = m.qpos_spring.numpy()
@@ -643,16 +676,19 @@ class SetConstTest(parameterized.TestCase):
     m.qpos_spring.assign(qpos_spring_np)
 
     mjm.tendon_lengthspring[:] = -1.0
-    m.tendon_lengthspring.assign(np.full((m.tendon_lengthspring.shape[0], m.tendon_lengthspring.shape[1], 2), -1.0))
+    m.tendon_lengthspring.fill_(-1.0)
 
     mujoco.mj_setConst(mjm, mjd)
-    mjwarp.set_const(m, d)
+    getattr(mjwarp, func_name)(m, d)
 
     # Verify matching with MuJoCo
     _assert_eq(m.tendon_lengthspring.numpy()[0], mjm.tendon_lengthspring, "tendon_lengthspring")
 
-    # Verify that modified spring length differs from the default spring length
-    self.assertFalse(np.allclose(lengthspring_default, m.tendon_lengthspring.numpy()))
+    # A qpos_spring change affects unresolved lengths only on older MuJoCo versions.
+    if util_pkg.check_version("mujoco<3.16.1.dev1002690311"):
+      self.assertFalse(np.allclose(lengthspring_default, m.tendon_lengthspring.numpy()))
+    else:
+      _assert_eq(m.tendon_lengthspring.numpy(), lengthspring_default, "preserved tendon_lengthspring")
 
   @parameterized.named_parameters(
     dict(
@@ -961,7 +997,11 @@ class SetConstTest(parameterized.TestCase):
     armature_np = m.dof_armature.numpy()
     for w in range(nworld):
       mjm.dof_armature[:] = armature_np[w]
+      mjm.actuator_biasprm[:, 2] = dampratios[w]
       mujoco.mj_setConst(mjm, mjd)
+      if util_pkg.check_version("mujoco>=3.16.1.dev1002690311"):
+        _assert_eq(biasprm_np[w], mjm.actuator_biasprm, f"actuator_biasprm[{w}]")
+        continue
       for i in range(mjm.nu):
         moment = np.zeros((1, mjm.nv))
         mujoco.mju_sparse2dense(

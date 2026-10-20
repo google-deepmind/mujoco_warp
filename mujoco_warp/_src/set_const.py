@@ -21,11 +21,17 @@ import warp as wp
 from mujoco_warp._src import math as mjmath
 from mujoco_warp._src import smooth
 from mujoco_warp._src import types
+from mujoco_warp._src import util_pkg
 from mujoco_warp._src.types import MJ_MINVAL
 from mujoco_warp._src.types import BiasType
 from mujoco_warp._src.types import TrnType
 
 wp.set_module_options({"default_grid_stride": False})
+
+# Newer MuJoCo resolves spec conventions only during compilation (mujoco@55c1b585a).
+# TODO(team): Remove this guard and legacy code once the minimum supported stable
+# MuJoCo release includes this change.
+_RESOLVE_COMPILER_DEFAULTS = util_pkg.check_version("mujoco<3.16.1.dev1002690311")
 
 
 # TODO: Update kernel_analyzer to support Model fields as outputs so it can be enabled here.
@@ -98,6 +104,9 @@ def _compute_eq_data0(
 
   eqtype = eq_type[eqid]
   objtype = eq_objtype[eqid]
+  if wp.static(not _RESOLVE_COMPILER_DEFAULTS):
+    if eqtype != int(types.EqType.CONNECT.value) or objtype != int(types.ObjType.BODY.value):
+      return
   data = eq_data_out[eq_data_id, eqid]
 
   if eqtype == int(types.EqType.CONNECT.value):
@@ -689,17 +698,20 @@ def set_const_fixed(m: types.Model, d: types.Data):
 def set_const_0(m: types.Model, d: types.Data, restore: bool = True):
   """Compute quantities that depend on qpos0.
 
+  With MuJoCo >= 3.16.1.dev1002690311, weld data, model statistics, and actuator damping
+  are left unchanged, matching mj_setConst.
+
   Computes:
     - tendon_length0: tendon resting lengths
-    - eq_data: connect/weld anchor data, recomputed so the constraint is
-      satisfied at qpos0
+    - eq_data: connect anchor data, recomputed so the constraint is satisfied at qpos0;
+      weld data is also resolved on older MuJoCo versions
     - dof_invweight0: inverse inertia for DOFs
     - body_invweight0: inverse spatial inertia for bodies
     - tendon_invweight0: inverse weight for tendons
     - cam_pos0, cam_poscom0, cam_mat0: camera references
     - light_pos0, light_poscom0, light_dir0: light references
     - actuator_acc0: acceleration from unit actuator force
-    - actuator_biasprm[2] (dampratio resolution): for position actuators where
+    - actuator_biasprm[2] (dampratio resolution, older MuJoCo only): for position actuators where
       gainprm[0] == -biasprm[1] and biasprm[2] > 0, converts dampratio to
       damping via biasprm[2] = -dampratio * 2 * sqrt(kp * reflected_mass)
 
@@ -722,13 +734,14 @@ def set_const_0(m: types.Model, d: types.Data, restore: bool = True):
   smooth.factor_m(m, d)
   smooth.transmission(m, d)
 
-  # Compute meaninertia from M diagonal at qpos0
-  wp.launch(
-    _compute_meaninertia,
-    dim=m.stat.meaninertia.shape[0],
-    inputs=[m.nv, m.M_rownnz, m.M_rowadr, d.M],
-    outputs=[m.stat.meaninertia],
-  )
+  if _RESOLVE_COMPILER_DEFAULTS:
+    # Compute meaninertia from M diagonal at qpos0.
+    wp.launch(
+      _compute_meaninertia,
+      dim=m.stat.meaninertia.shape[0],
+      inputs=[m.nv, m.M_rownnz, m.M_rowadr, d.M],
+      outputs=[m.stat.meaninertia],
+    )
 
   wp.launch(_copy_tendon_length0, dim=(m.tendon_length0.shape[0], m.ntendon), inputs=[d.ten_length], outputs=[m.tendon_length0])
 
@@ -860,19 +873,20 @@ def set_const_0(m: types.Model, d: types.Data, restore: bool = True):
       wp.launch(
         _compute_actuator_acc0, dim=m.actuator_acc0.shape[0], inputs=[actid, m.nv, act_result_vec], outputs=[m.actuator_acc0]
       )
-      wp.launch(
-        _resolve_dampratio,
-        dim=m.actuator_biasprm.shape[0],
-        inputs=[
-          m.actuator_biastype,
-          m.actuator_gainprm,
-          actid,
-          m.nv,
-          act_moment_vec,
-          act_result_vec,
-        ],
-        outputs=[m.actuator_biasprm],
-      )
+      if _RESOLVE_COMPILER_DEFAULTS:
+        wp.launch(
+          _resolve_dampratio,
+          dim=m.actuator_biasprm.shape[0],
+          inputs=[
+            m.actuator_biastype,
+            m.actuator_gainprm,
+            actid,
+            m.nv,
+            act_moment_vec,
+            act_result_vec,
+          ],
+          outputs=[m.actuator_biasprm],
+        )
 
   wp.copy(d.qpos, qpos_saved)
 
@@ -891,10 +905,13 @@ def set_const_0(m: types.Model, d: types.Data, restore: bool = True):
 def set_const_spring(m: types.Model, d: types.Data, restore: bool = True):
   """Compute quantities that depend on qpos_spring.
 
+  With MuJoCo >= 3.16.1.dev1002690311, tendon spring lengths are left unchanged
+  and this function is a no-op.
+
   Computes:
     - tendon_lengthspring: spring resting length range
   """
-  if m.ntendon == 0:
+  if not _RESOLVE_COMPILER_DEFAULTS or m.ntendon == 0:
     return
 
   qpos_saved = wp.clone(d.qpos)
@@ -929,6 +946,10 @@ def set_const(m: types.Model, d: types.Data, restore: bool = True):
   allowing modifications that would otherwise be unsafe. It should be called
   after modifying model parameters at runtime.
 
+  With MuJoCo >= 3.16.1.dev1002690311, weld data, model statistics, tendon spring lengths,
+  and actuator damping are left unchanged. On older versions these values are
+  recomputed, including resolving unspecified weld poses, spring lengths, and damping ratios.
+
   Model fields that can be modified safely with set_const:
 
   ==================================  ==============================================
@@ -940,10 +961,10 @@ def set_const(m: types.Model, d: types.Data, restore: bool = True):
   body_pos, body_quat                 Unsafe for static bodies (invalidates BVH).
   body_gravcomp                       If changing from 0 to >0 bodies, required.
   dof_armature
-  eq_data                             For connect/weld, offsets computed if not set.
+  eq_data                             Connect anchors; weld defaults on older MuJoCo.
   geom_size, hfield_size              Bounds of primitive and height field geoms.
   tendon_stiffness, tendon_damping    Only if changing from/to zero.
-  actuator_gainprm, actuator_biasprm  For position actuators with dampratio.
+  actuator_gainprm, actuator_biasprm  Dampratio resolution on older MuJoCo only.
   ==================================  ==============================================
 
   For selective updates, use the sub-functions directly based on what changed:
@@ -970,7 +991,7 @@ def set_const(m: types.Model, d: types.Data, restore: bool = True):
       - cam_pos0, cam_poscom0, cam_mat0: camera references
       - light_pos0, light_poscom0, light_dir0: light references
       - actuator_acc0: acceleration from unit actuator force
-      - actuator_biasprm[2] (dampratio resolution)
+      - actuator_biasprm[2] (dampratio resolution on older MuJoCo only)
 
   Skips: actuator_length0 (not in mjwarp).
 
