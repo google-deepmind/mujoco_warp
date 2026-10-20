@@ -935,6 +935,7 @@ class Option:
     ccd_iterations: number of iterations in convex collision detection
     disableflags: bit flags for disabling standard features
     enableflags: bit flags for enabling optional features
+    disableactuator: bit flags for disabling actuators by group
     sdf_initpoints: number of starting points for gradient descent
     sdf_iterations: max number of iterations for gradient descent
 
@@ -973,6 +974,7 @@ class Option:
   ccd_iterations: int
   disableflags: int
   enableflags: int
+  disableactuator: int
   sdf_initpoints: int
   sdf_iterations: int
   # warp only fields:
@@ -1418,6 +1420,7 @@ class Model:
     actuator_history: history buffer sizes                   (*, nactuator, 2)
     actuator_historyadr: history buffer address              (*, nactuator)
     actuator_delay: delay in seconds                         (*, nactuator)
+    actuator_group: group for visibility and disabling       (nactuator,)
     actuator_forcelimited: is force limited                  (nactuator,)
     actuator_forcerange: range of forces                     (*, nactuator, 2)
     actuator_ctrllimited: is control limited                 (nu,)
@@ -1953,6 +1956,7 @@ class Model:
   actuator_history: array("*", "nactuator", wp.vec2i)
   actuator_historyadr: array("*", "nactuator", int)
   actuator_delay: array("*", "nactuator", float)
+  actuator_group: array("nactuator", int)
   actuator_forcelimited: array("nactuator", bool)
   actuator_forcerange: array("*", "nactuator", wp.vec2)
   actuator_ctrllimited: array("nu", bool)
