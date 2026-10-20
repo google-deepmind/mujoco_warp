@@ -2738,6 +2738,29 @@ class IOTest(parameterized.TestCase):
       mjwarp.put_model(mjm)
 
   @parameterized.parameters(
+    # quadratic flexes are rejected before the self-collision check
+    ("trilinear", "Self-collision of interpolated flexes"),
+    ("quadratic", "Quadratic flex interpolation"),
+  )
+  def test_flex_interp_selfcollide_error(self, dof, message):
+    """Verify loading an interpolated flex with self-collision raises NotImplementedError."""
+    xml = f"""
+    <mujoco>
+      <worldbody>
+        <flexcomp type="grid" count="3 3 3" spacing="0.1 0.1 0.1"
+                  pos="0 0 0.5" name="cube" dim="3" mass="1" radius="0.005"
+                  dof="{dof}">
+          <contact selfcollide="auto"/>
+        </flexcomp>
+      </worldbody>
+    </mujoco>
+    """
+    mjm = mujoco.MjModel.from_xml_string(xml)
+
+    with self.assertRaisesRegex(NotImplementedError, message):
+      mjwarp.put_model(mjm)
+
+  @parameterized.parameters(
     mujoco.mjtSleepPolicy.mjSLEEP_NEVER,
     mujoco.mjtSleepPolicy.mjSLEEP_ALLOWED,
     mujoco.mjtSleepPolicy.mjSLEEP_INIT,
