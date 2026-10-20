@@ -1583,6 +1583,8 @@ def sensor_vel(m: Model, d: Data):
 def _accelerometer(
   # Model:
   body_rootid: wp.array[int],
+  body_weldid: wp.array[int],
+  body_dofnum: wp.array[int],
   site_bodyid: wp.array[int],
   # Data in:
   site_xpos_in: wp.array2d[wp.vec3],
@@ -1595,6 +1597,9 @@ def _accelerometer(
   objid: int,
 ) -> wp.vec3:
   bodyid = site_bodyid[objid]
+  if body_dofnum[body_weldid[bodyid]] == 0:
+    # dof-less body (static or mocap): match mj_objectAcceleration
+    return wp.vec3(0.0)
   rot = site_xmat_in[worldid, objid]
   rotT = wp.transpose(rot)
   cvel = cvel_in[worldid, bodyid]
@@ -1751,6 +1756,8 @@ def _limit_frc(
 def _framelinacc(
   # Model:
   body_rootid: wp.array[int],
+  body_weldid: wp.array[int],
+  body_dofnum: wp.array[int],
   geom_bodyid: wp.array[int],
   site_bodyid: wp.array[int],
   cam_bodyid: wp.array[int],
@@ -1787,6 +1794,10 @@ def _framelinacc(
     bodyid = 0
     pos = wp.vec3(0.0)
 
+  if body_dofnum[body_weldid[bodyid]] == 0:
+    # dof-less body (static or mocap): match mj_objectAcceleration
+    return wp.vec3(0.0)
+
   cacc = cacc_in[worldid, bodyid]
   cvel = cvel_in[worldid, bodyid]
   offset = pos - subtree_com_in[worldid, body_rootid[bodyid]]
@@ -1801,6 +1812,8 @@ def _framelinacc(
 @wp.func
 def _frameangacc(
   # Model:
+  body_weldid: wp.array[int],
+  body_dofnum: wp.array[int],
   geom_bodyid: wp.array[int],
   site_bodyid: wp.array[int],
   cam_bodyid: wp.array[int],
@@ -1822,6 +1835,10 @@ def _frameangacc(
   else:  # UNKNOWN
     bodyid = 0
 
+  if body_dofnum[body_weldid[bodyid]] == 0:
+    # dof-less body (static or mocap): match mj_objectAcceleration
+    return wp.vec3(0.0)
+
   return wp.spatial_top(cacc_in[worldid, bodyid])
 
 
@@ -1829,6 +1846,8 @@ def _frameangacc(
 def _sensor_acc(
   # Model:
   body_rootid: wp.array[int],
+  body_weldid: wp.array[int],
+  body_dofnum: wp.array[int],
   jnt_dofadr: wp.array[int],
   geom_bodyid: wp.array[int],
   site_bodyid: wp.array[int],
@@ -1864,7 +1883,17 @@ def _sensor_acc(
 
   if sensortype == SensorType.ACCELEROMETER:
     vec3 = _accelerometer(
-      body_rootid, site_bodyid, site_xpos_in, site_xmat_in, subtree_com_in, cvel_in, cacc_in, worldid, objid
+      body_rootid,
+      body_weldid,
+      body_dofnum,
+      site_bodyid,
+      site_xpos_in,
+      site_xmat_in,
+      subtree_com_in,
+      cvel_in,
+      cacc_in,
+      worldid,
+      objid,
     )
     _write_vector(sensor_type, sensor_datatype, sensor_adr, sensor_cutoff, sensorid, 3, vec3, out)
   elif sensortype == SensorType.FORCE:
@@ -1883,6 +1912,8 @@ def _sensor_acc(
     objtype = sensor_objtype[sensorid]
     vec3 = _framelinacc(
       body_rootid,
+      body_weldid,
+      body_dofnum,
       geom_bodyid,
       site_bodyid,
       cam_bodyid,
@@ -1902,6 +1933,8 @@ def _sensor_acc(
   elif sensortype == SensorType.FRAMEANGACC:
     objtype = sensor_objtype[sensorid]
     vec3 = _frameangacc(
+      body_weldid,
+      body_dofnum,
       geom_bodyid,
       site_bodyid,
       cam_bodyid,
@@ -2795,6 +2828,8 @@ def sensor_acc(m: Model, d: Data, skip_rne_postconstraint: bool = False):
     dim=(d.nworld, m.sensor_acc_adr.size),
     inputs=[
       m.body_rootid,
+      m.body_weldid,
+      m.body_dofnum,
       m.jnt_dofadr,
       m.geom_bodyid,
       m.site_bodyid,
