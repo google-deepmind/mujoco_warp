@@ -49,6 +49,7 @@ wp.set_module_options({"enable_backward": False, "default_grid_stride": False})
 def _qderiv_actuator_passive_vel(
   # Model:
   opt_timestep: wp.array[float],
+  opt_disableactuator: int,
   actuator_dyntype: wp.array[int],
   actuator_gaintype: wp.array[int],
   actuator_biastype: wp.array[int],
@@ -61,6 +62,7 @@ def _qderiv_actuator_passive_vel(
   actuator_actlimited: wp.array[bool],
   actuator_actrange: wp.array2d[wp.vec2],
   actuator_actearly: wp.array[bool],
+  actuator_group: wp.array[int],
   actuator_forcelimited: wp.array[bool],
   actuator_forcerange: wp.array2d[wp.vec2],
   actuator_acc0: wp.array2d[float],
@@ -76,6 +78,11 @@ def _qderiv_actuator_passive_vel(
   vel_out: wp.array2d[float],
 ):
   worldid, actid = wp.tid()
+
+  # disabled actuators contribute no derivative
+  if util_misc.actuator_disabled(opt_disableactuator, actuator_group[actid]):
+    vel_out[worldid, actid] = 0.0
+    return
 
   actuator_gainprm_id = worldid % actuator_gainprm.shape[0]
   actuator_biasprm_id = worldid % actuator_biasprm.shape[0]
@@ -1205,6 +1212,7 @@ def deriv_smooth_vel(m: Model, d: Data, out: wp.array2d[float]):
         dim=(d.nworld, m.nactuator),
         inputs=[
           m.opt.timestep,
+          m.opt.disableactuator,
           m.actuator_dyntype,
           m.actuator_gaintype,
           m.actuator_biastype,
@@ -1217,6 +1225,7 @@ def deriv_smooth_vel(m: Model, d: Data, out: wp.array2d[float]):
           m.actuator_actlimited,
           m.actuator_actrange,
           m.actuator_actearly,
+          m.actuator_group,
           m.actuator_forcelimited,
           m.actuator_forcerange,
           m.actuator_acc0,

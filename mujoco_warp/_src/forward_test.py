@@ -158,6 +158,47 @@ class ForwardTest(parameterized.TestCase):
 
     _assert_eq(d.ctrl.numpy()[0], mjd.ctrl, "ctrl")
 
+  @parameterized.product(
+    disableactuator=(0, 1 << 1, (1 << 1) | (1 << 2)),
+    integrator=(IntegratorType.EULER, IntegratorType.IMPLICITFAST, IntegratorType.IMPLICIT, IntegratorType.RK4),
+  )
+  def test_actuator_group_disable(self, disableactuator, integrator):
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+    <mujoco>
+      <worldbody>
+        <body>
+          <joint name="arm" axis="0 1 0" damping=".1"/>
+          <geom type="capsule" size=".02" fromto="0 0 0 .5 0 0"/>
+          <body pos=".5 0 0">
+            <joint name="hand" axis="0 1 0" damping=".1"/>
+            <geom type="capsule" size=".02" fromto="0 0 0 0 0 .3"/>
+          </body>
+        </body>
+      </worldbody>
+      <actuator>
+        <motor joint="arm" gear="3" group="0"/>
+        <position joint="hand" kp="20" kv="2" group="1"/>
+        <intvelocity joint="arm" kp="10" actrange="-1 1" group="2"/>
+        <muscle joint="hand" lengthrange="-1 1" group="2"/>
+      </actuator>
+      <keyframe>
+        <key qpos=".3 -.2" qvel="1 -.5" act=".2 .4" ctrl=".5 .7 .3 .6"/>
+      </keyframe>
+    </mujoco>
+    """,
+      keyframe=0,
+      overrides={"opt.integrator": integrator, "opt.disableactuator": disableactuator},
+    )
+
+    mujoco.mj_step(mjm, mjd)
+    mjw.step(m, d)
+
+    _assert_eq(d.actuator_force.numpy()[0], mjd.actuator_force, "actuator_force")
+    _assert_eq(d.act.numpy()[0], mjd.act, "act")
+    _assert_eq(d.qvel.numpy()[0], mjd.qvel, "qvel")
+    _assert_eq(d.qpos.numpy()[0], mjd.qpos, "qpos")
+
   def test_fwd_acceleration(self):
     _, mjd, m, d = test_data.fixture("humanoid/humanoid.xml", qvel_noise=0.01, ctrl_noise=0.1)
 

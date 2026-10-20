@@ -204,6 +204,7 @@ def _wrap_period(
 def _next_activation(
   # Model:
   opt_timestep: wp.array[float],
+  opt_disableactuator: int,
   jnt_type: wp.array[int],
   actuator_trntype: wp.array[int],
   actuator_dyntype: wp.array[int],
@@ -217,6 +218,7 @@ def _next_activation(
   actuator_biasprm: wp.array2d[vec10],
   actuator_actlimited: wp.array[bool],
   actuator_actrange: wp.array2d[wp.vec2],
+  actuator_group: wp.array[int],
   actuator_gear: wp.array2d[wp.spatial_vector],
   # Data in:
   act_in: wp.array2d[float],
@@ -240,6 +242,11 @@ def _next_activation(
   actnum = actuator_actnum[uid]
   dyntype = actuator_dyntype[uid]
 
+  # disabled actuators do not advance their activation
+  act_dot_mask = 1.0
+  if util_misc.actuator_disabled(opt_disableactuator, actuator_group[uid]):
+    act_dot_mask = 0.0
+
   if dyntype == DynType.DCMOTOR:
     dynprm = actuator_dynprm[actuator_dynprm_id, uid]
     gainprm = actuator_gainprm[actuator_gainprm_id, uid]
@@ -249,7 +256,7 @@ def _next_activation(
     for j in range(actadr, actadr + actnum):
       offset = j - actadr
       act = act_in[worldid, j]
-      act_dot = act_dot_in[worldid, j]
+      act_dot = act_dot_mask * act_dot_in[worldid, j]
 
       if offset == slots[4]:  # current
         R = gainprm[0]
@@ -287,7 +294,7 @@ def _next_activation(
         actuator_dynprm[actuator_dynprm_id, uid],
         actuator_actrange[actuator_actrange_id, uid],
         act_in[worldid, j],
-        act_dot_in[worldid, j],
+        act_dot_mask * act_dot_in[worldid, j],
         act_dot_scale,
         limit and actuator_actlimited[uid],
       )
@@ -399,6 +406,7 @@ def _advance(m: Model, d: Data, qacc: wp.array, qvel: Optional[wp.array] = None)
     dim=(d.nworld, m.nactuator),
     inputs=[
       m.opt.timestep,
+      m.opt.disableactuator,
       m.jnt_type,
       m.actuator_trntype,
       m.actuator_dyntype,
@@ -412,6 +420,7 @@ def _advance(m: Model, d: Data, qacc: wp.array, qvel: Optional[wp.array] = None)
       m.actuator_biasprm,
       m.actuator_actlimited,
       m.actuator_actrange,
+      m.actuator_group,
       m.actuator_gear,
       d.act,
       d.act_dot,
@@ -571,6 +580,7 @@ def _rk_perturb_state(
       dim=(d.nworld, m.nactuator),
       inputs=[
         m.opt.timestep,
+        0,  # rk4 stages integrate the raw act_dot, as in mj_RungeKutta
         m.jnt_type,
         m.actuator_trntype,
         m.actuator_dyntype,
@@ -584,6 +594,7 @@ def _rk_perturb_state(
         m.actuator_biasprm,
         m.actuator_actlimited,
         m.actuator_actrange,
+        m.actuator_group,
         m.actuator_gear,
         act_t0,
         d.act_dot,
@@ -1555,6 +1566,7 @@ def _actuator_force(
   # Model:
   na: int,
   opt_timestep: wp.array[float],
+  opt_disableactuator: int,
   jnt_type: wp.array[int],
   actuator_trntype: wp.array[int],
   actuator_dyntype: wp.array[int],
@@ -1572,6 +1584,7 @@ def _actuator_force(
   actuator_actlimited: wp.array[bool],
   actuator_actrange: wp.array2d[wp.vec2],
   actuator_actearly: wp.array[bool],
+  actuator_group: wp.array[int],
   actuator_forcelimited: wp.array[bool],
   actuator_forcerange: wp.array2d[wp.vec2],
   actuator_ctrllimited: wp.array[bool],
@@ -1880,6 +1893,10 @@ def _actuator_force(
       z_dot = act_dot_out[worldid, adr]
       force -= sigma0 * z + sigma1 * z_dot
 
+  # disabled actuators produce no force, but act_dot is still computed
+  if util_misc.actuator_disabled(opt_disableactuator, actuator_group[uid]):
+    force = 0.0
+
   actuator_force_out[worldid, uid] = force
 
 
@@ -2003,6 +2020,7 @@ def fwd_actuation(m: Model, d: Data):
       inputs=[
         m.na,
         m.opt.timestep,
+        m.opt.disableactuator,
         m.jnt_type,
         m.actuator_trntype,
         m.actuator_dyntype,
@@ -2020,6 +2038,7 @@ def fwd_actuation(m: Model, d: Data):
         m.actuator_actlimited,
         m.actuator_actrange,
         m.actuator_actearly,
+        m.actuator_group,
         m.actuator_forcelimited,
         m.actuator_forcerange,
         m.actuator_ctrllimited,
