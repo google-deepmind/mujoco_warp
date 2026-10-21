@@ -324,16 +324,12 @@ def _next_time_builder(warn_overflow: int):
   def _next_time(
     # Model:
     opt_timestep: wp.array[float],
-    is_sparse: bool,
     # Data in:
     nefc_in: wp.array[int],
     time_in: wp.array[float],
-    efc_J_rownnz_in: wp.array2d[int],
-    efc_J_rowadr_in: wp.array2d[int],
     nworld_in: int,
     naconmax_in: int,
     njmax_in: int,
-    njmax_nnz_in: int,
     nacon_in: wp.array[int],
     ncollision_in: wp.array[int],
     # Data out:
@@ -352,17 +348,6 @@ def _next_time_builder(warn_overflow: int):
           njmax_in,
         )
       overflow_out[worldid] = overflow_out[worldid] | OverflowType.NEFC
-    elif nefc > 0 and is_sparse:
-      efcid = wp.min(nefc, njmax_in) - 1
-      efc_nnz = efc_J_rowadr_in[worldid, efcid] + efc_J_rownnz_in[worldid, efcid]
-      if efc_nnz > njmax_nnz_in:
-        if wp.static(bool(warn_overflow & OverflowType.NJMAX_NNZ)):
-          wp.printf(
-            "njmax_nnz overflow - please increase njmax_nnz beyond %u\n"
-            "To disable the print warning: m.opt.warn_overflow &= ~mjw.OverflowType.NJMAX_NNZ (or = 0 for all)\n",
-            njmax_nnz_in,
-          )
-        overflow_out[worldid] = overflow_out[worldid] | OverflowType.NJMAX_NNZ
 
     ncollision = ncollision_in[0]
     if ncollision > naconmax_in:
@@ -448,15 +433,11 @@ def _advance(m: Model, d: Data, qacc: wp.array, qvel: Optional[wp.array] = None)
     dim=d.nworld,
     inputs=[
       m.opt.timestep,
-      m.is_sparse,
       d.nefc,
       d.time,
-      d.efc.J_rownnz,
-      d.efc.J_rowadr,
       d.nworld,
       d.naconmax,
       d.njmax,
-      d.njmax_nnz,
       d.nacon,
       d.ncollision,
     ],
