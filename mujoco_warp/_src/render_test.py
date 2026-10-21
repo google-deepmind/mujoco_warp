@@ -1593,6 +1593,38 @@ class RenderTest(parameterized.TestCase):
     rgb = _unpack_rgb(rc.rgb_data.numpy())
     np.testing.assert_allclose(rgb, np.broadcast_to(expected_color, rgb.shape), atol=1)
 
+  @parameterized.parameters(0.1, 0.5)
+  def test_znear_clipping_splat(self, znear: float):
+    """Clipping splats preserves camera-relative depth and geometry occlusion."""
+    mjm, _, m, d = test_data.fixture(
+      xml=f"""
+      <mujoco>
+        <statistic extent="1"/>
+        <visual>
+          <map znear="{znear}" zfar="3"/>
+          <headlight ambient="1 1 1" diffuse="0 0 0" specular="0 0 0"/>
+        </visual>
+        <worldbody>
+          <camera name="camera"/>
+          <geom type="box" pos="0 0 -2" size="10 10 0.1" rgba="0 1 0 1"/>
+        </worldbody>
+      </mujoco>
+      """,
+    )
+    rc = mjw.create_render_context(
+      mjm,
+      cam_res=(3, 3),
+      render_rgb=True,
+      render_depth=True,
+      use_shadows=False,
+      **_sample_splats([0.0, 0.0, -0.2], [0.02, 0.02, 0.02], [1.0, 0.0, 0.0, 1.0]),
+    )
+    rc.depth_data.fill_(wp.inf)
+    mjw.render(m, d, rc)
+    clipped = znear > 0.2
+    np.testing.assert_allclose(rc.depth_data.numpy()[0, 4], 1.9 if clipped else 0.2, atol=1e-5)
+    np.testing.assert_allclose(_unpack_rgb(rc.rgb_data.numpy())[0, 4], [0, 255, 0] if clipped else [255, 0, 0], atol=1)
+
   @parameterized.named_parameters(
     ("inside", 0.5, True),
     ("clipped", 5.0, False),
