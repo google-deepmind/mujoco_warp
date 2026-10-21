@@ -626,8 +626,10 @@ def _gjk_support(
   simplex: mat43,
   n: int,
   is_discrete: bool,
-) -> Tuple[SupportPoint, SupportPoint]:
+) -> Tuple[SupportPoint, SupportPoint, wp.vec3]:
+  """Returns the support points along -x_k, its direction tuned, and x_k along that direction."""
   dir_neg = x_k / x_norm
+  x_dir = x_k
 
   # tuning for discrete geoms when direction is noisy
   if is_discrete and x_norm < 1e-4:
@@ -640,6 +642,7 @@ def _gjk_support(
         dir_norm = wp.length(dir_neg)
         if dir_norm > MINVAL:
           dir_neg = dir_neg / dir_norm
+          x_dir = x_norm * dir_neg
     elif n == 3:
       e1 = simplex[1] - simplex[0]
       e2 = simplex[2] - simplex[0]
@@ -647,10 +650,11 @@ def _gjk_support(
       normal_norm = wp.length(normal)
       if normal_norm > MINVAL:
         dir_neg = wp.sign(wp.dot(dir_neg, normal)) * normal / normal_norm
+        x_dir = x_norm * dir_neg
 
   sp1 = support(geom1, geomtype1, -dir_neg)
   sp2 = support(geom2, geomtype2, dir_neg)
-  return sp1, sp2
+  return sp1, sp2, x_dir
 
 
 @wp.func
@@ -691,8 +695,9 @@ def gjk(
     if xnorm < min_norm or wp.abs(xnorm_prev - xnorm) < MINVAL:
       break
 
-    # compute the support point with direction tuning
-    sp1, sp2 = _gjk_support(geom1, geom2, geomtype1, geomtype2, x_k, xnorm, simplex, n, is_discrete)
+    # compute the support point with direction tuning; the tests below read x_dir, x_k along the
+    # direction searched in, since in float32 x_k's own direction can be off by more than the gap
+    sp1, sp2, x_dir = _gjk_support(geom1, geom2, geomtype1, geomtype2, x_k, xnorm, simplex, n, is_discrete)
     simplex1[n] = sp1.point
     geom1.index = sp1.cached_index
     simplex_index1[n] = sp1.vertex_index
@@ -706,12 +711,12 @@ def gjk(
 
     # stopping criteria using the Frank-Wolfe duality gap given by
     #  |f(x_k) - f(x_min)|^2 <= < grad f(x_k), (x_k - simplex[n]) >
-    if wp.dot(x_k, x_k - simplex[n]) < epsilon:
+    if wp.dot(x_dir, x_dir - simplex[n]) < epsilon:
       break
 
     # the lower bound on distance between the two geoms is (lower / x_norm)
     # if lower > 0, then the geoms are separated
-    lower = wp.dot(x_k, simplex[n])
+    lower = wp.dot(x_dir, simplex[n])
     if cutoff == 0.0:
       if lower > 0.0:
         result = GJKResult()
