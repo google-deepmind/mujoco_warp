@@ -793,8 +793,10 @@ class FlexConstraintTest(parameterized.TestCase):
     else:
       mj_J = mjd.efc_J.reshape(mjd.nefc, mjm.nv)
 
+    for arr in (d.ne, d.nefc, d.efc.J_rownnz, d.efc.J_rowadr, d.efc.J_colind):
+      arr.fill_(-1)
     for arr in (d.efc.J, d.efc.D, d.efc.pos):
-      arr.fill_(wp.nan)
+      arr.fill_(wp.inf)
     d.overflow.zero_()
 
     mjw.make_constraint(m, d)
