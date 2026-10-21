@@ -2657,13 +2657,14 @@ def _sensor_contact(
       if dist:
         out[adr_slot] = contact_dist_in[cid]
         adr_slot += 1
-      if pos:
+      if pos or linvel:
         contact_pos = contact_pos_in[cid]
+      if pos:
         out[adr_slot + 0] = contact_pos[0]
         out[adr_slot + 1] = contact_pos[1]
         out[adr_slot + 2] = contact_pos[2]
         adr_slot += 3
-      if normal or tangent:
+      if normal or tangent or linvel or angvel:
         frame = contact_frame_in[cid]
       if normal:
         contact_normal = frame[0]
@@ -2679,25 +2680,27 @@ def _sensor_contact(
         adr_slot += 3
       if linvel or angvel:
         # velocity of geom[1] relative to geom[0] at the contact point, in the contact frame
-        con_frame = contact_frame_in[cid]
-        con_pos = contact_pos_in[cid]
         con_geom = contact_geom_in[cid]
         body0 = geom_bodyid[con_geom[0]]
         body1 = geom_bodyid[con_geom[1]]
         cvel0 = cvel_in[worldid, body0]
         cvel1 = cvel_in[worldid, body1]
-        dif0 = con_pos - subtree_com_in[worldid, body_rootid[body0]]
-        dif1 = con_pos - subtree_com_in[worldid, body_rootid[body1]]
-        rel_lin = _transform_spatial(cvel1, dif1) - _transform_spatial(cvel0, dif0)
-        rel_ang = wp.spatial_top(cvel1) - wp.spatial_top(cvel0)
       if linvel:
-        lin_local = con_frame @ rel_lin
+        root0 = body_rootid[body0]
+        root1 = body_rootid[body1]
+        com0 = subtree_com_in[worldid, root0]
+        if root1 == root0:
+          com1 = com0
+        else:
+          com1 = subtree_com_in[worldid, root1]
+        rel_lin = _transform_spatial(cvel1, contact_pos - com1) - _transform_spatial(cvel0, contact_pos - com0)
+        lin_local = frame @ rel_lin
         out[adr_slot + 0] = lin_local[0]
         out[adr_slot + 1] = lin_local[1]
         out[adr_slot + 2] = dir * lin_local[2]
         adr_slot += 3
       if angvel:
-        ang_local = con_frame @ rel_ang
+        ang_local = frame @ (wp.spatial_top(cvel1) - wp.spatial_top(cvel0))
         out[adr_slot + 0] = ang_local[0]
         out[adr_slot + 1] = ang_local[1]
         out[adr_slot + 2] = dir * ang_local[2]

@@ -751,7 +751,7 @@ class SensorTest(parameterized.TestCase):
             <geom name="ball" type="sphere" size=".1"/>
           </body>
           <body name="arm" pos=".5 0 .3">
-            <joint type="hinge" axis="0 1 0"/>
+            <joint axis="0 1 0"/>
             <geom type="capsule" size=".02" fromto="0 0 0 0 0 -.1" contype="0" conaffinity="0"/>
             <body name="box" pos="0 0 -.21">
               <joint type="slide" axis="1 0 0"/>
@@ -785,7 +785,7 @@ class SensorTest(parameterized.TestCase):
 
     self.assertEqual(m.sensor_contact_vel_adr.size, int(mjm.sensor_needstage[0] == mujoco.mjtStage.mjSTAGE_VEL))
 
-    d.sensordata.zero_()
+    d.sensordata.fill_(wp.inf)
     mjw.sensor_pos(m, d)
     mjw.sensor_vel(m, d)
     mjw.sensor_acc(m, d)
