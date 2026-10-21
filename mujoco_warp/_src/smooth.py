@@ -40,7 +40,7 @@ from mujoco_warp._src.types import TrnType
 from mujoco_warp._src.types import WrapType
 from mujoco_warp._src.types import vec5
 from mujoco_warp._src.types import vec10
-from mujoco_warp._src.types import vec11
+from mujoco_warp._src.types import vec12
 from mujoco_warp._src.warp_util import cache_kernel
 from mujoco_warp._src.warp_util import event_scope
 
@@ -1653,7 +1653,7 @@ def _cfrc_ext_equality(deterministic: bool = False):
     eq_obj1id: wp.array[int],
     eq_obj2id: wp.array[int],
     eq_objtype: wp.array[int],
-    eq_data: wp.array2d[vec11],
+    eq_data: wp.array2d[vec12],
     # Data in:
     xpos_in: wp.array2d[wp.vec3],
     xquat_in: wp.array2d[wp.quat],
@@ -1859,7 +1859,7 @@ def _cfrc_ext_tendon_constraint(deterministic: bool = False):
     eq_type: wp.array[int],
     eq_obj1id: wp.array[int],
     eq_obj2id: wp.array[int],
-    eq_data: wp.array2d[vec11],
+    eq_data: wp.array2d[vec12],
     tendon_range: wp.array2d[wp.vec2],
     tendon_length0: wp.array2d[float],
     # Data in:
