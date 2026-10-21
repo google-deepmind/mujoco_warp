@@ -271,6 +271,88 @@ class ForwardTest(parameterized.TestCase):
 
     _assert_eq(d.energy.numpy()[0], mjd.energy, "energy")
 
+  def test_rungekutta4_stage_time(self):
+    """Intermediate rk4 stages read delayed controls at t0 + a_i * h."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option integrator="RK4" timestep=".01">
+          <flag constraint="disable"/>
+        </option>
+        <worldbody>
+          <body>
+            <joint name="slide" type="slide" axis="1 0 0"/>
+            <geom size=".1" mass="1"/>
+          </body>
+        </worldbody>
+        <actuator>
+          <motor joint="slide" delay=".015" nsample="4" interp="linear"/>
+        </actuator>
+      </mujoco>
+      """
+    )
+
+    for i in range(6):
+      mjd.ctrl[0] = np.sin(i)
+      d.ctrl.fill_(float(mjd.ctrl[0]))
+      mujoco.mj_step(mjm, mjd)
+      mjw.step(m, d)
+
+    _assert_eq(d.qpos.numpy()[0], mjd.qpos, "qpos")
+    _assert_eq(d.qvel.numpy()[0], mjd.qvel, "qvel")
+    _assert_eq(d.time.numpy()[0], mjd.time, "time")
+
+  def test_rungekutta4_dcmotor(self):
+    """Rk4 stages integrate dc motor states with the stage timestep and keep the stage-3 act_dot."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option integrator="RK4" timestep=".0002">
+          <flag constraint="disable"/>
+        </option>
+        <worldbody>
+          <body>
+            <joint name="slide1" type="slide" axis="0 0 1"/>
+            <geom size=".03"/>
+          </body>
+          <body pos="0 .1 0">
+            <joint name="slide2" type="slide" axis="0 0 1"/>
+            <geom size=".03"/>
+          </body>
+          <body pos="0 .2 0">
+            <joint name="hinge" armature=".1"/>
+            <geom size=".03"/>
+          </body>
+          <body pos="0 .3 0">
+            <joint name="slide3" type="slide" axis="0 0 1"/>
+            <geom size=".03"/>
+          </body>
+        </worldbody>
+        <actuator>
+          <dcmotor joint="slide1" motorconst="2" resistance=".5" inductance=".001" input="voltage"/>
+          <dcmotor joint="slide2" motorconst="1" resistance="1" inductance=".001" input="pos vel" controller="10 0 5"/>
+          <dcmotor joint="hinge" motorconst=".05" resistance="2" input="none" lugre="1e4 100 .005 .008 .1"/>
+          <general joint="slide3" dyntype="filter" dynprm=".05" gainprm="1"/>
+        </actuator>
+        <keyframe>
+          <key qpos=".1 -.2 .3 .05" qvel=".5 -1 .02 .7" ctrl="1 .5 0 -1"/>
+        </keyframe>
+      </mujoco>
+      """,
+      keyframe=0,
+    )
+
+    for _ in range(3):
+      mujoco.mj_step(mjm, mjd)
+      mjw.step(m, d)
+
+    _assert_eq(d.qpos.numpy()[0], mjd.qpos, "qpos")
+    _assert_eq(d.qvel.numpy()[0], mjd.qvel, "qvel")
+    _assert_eq(d.act.numpy()[0], mjd.act, "act")
+    _assert_eq(d.act_dot.numpy()[0], mjd.act_dot, "act_dot")
+    _assert_eq(d.qacc.numpy()[0], mjd.qacc, "qacc")
+    self.assertEqual(mjd.warning[mujoco.mjtWarning.mjWARN_BADQPOS].number, 0)
+
   def test_rungekutta4(self):
     mjm, mjd, m, d = test_data.fixture(
       xml="""
