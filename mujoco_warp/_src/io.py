@@ -131,19 +131,23 @@ def _create_constraint(
   return types.Constraint(**efc_kwargs)
 
 
-def _jtdaj_groups(mjd: mujoco.MjData) -> tuple[np.ndarray, np.ndarray]:
-  """Group loaded efc rows into JTDAJ blocks: maximal runs sharing (efc_type, efc_id).
+def _jtdaj_groups(
+  mjd: mujoco.MjData, rownnz: np.ndarray, rowadr: np.ndarray, colind: np.ndarray
+) -> tuple[np.ndarray, np.ndarray]:
+  """Group loaded efc rows into JTDAJ blocks: maximal runs sharing efc_type, efc_id and columns.
 
-  MuJoCo lays each constraint's rows out contiguously, so this reproduces the block list
-  make_constraint builds in-kernel. Returns block start rows (adr) and lengths (nrow).
+  Rows of one instance can differ in columns (flex edge equalities share one efc_id), so the
+  columns are compared too. Returns block start rows (adr) and lengths (nrow).
   """
   nefc = mjd.nefc
   if nefc == 0:
     return np.zeros(0, dtype=int), np.zeros(0, dtype=int)
   etype = mjd.efc_type[:nefc]
   eid = mjd.efc_id[:nefc]
+  cols = [tuple(colind[rowadr[i] : rowadr[i] + rownnz[i]]) for i in range(nefc)]
+  new_cols = np.array([cols[i] != cols[i - 1] for i in range(1, nefc)], dtype=bool)
   boundary = np.ones(nefc, dtype=bool)
-  boundary[1:] = (etype[1:] != etype[:-1]) | (eid[1:] != eid[:-1])
+  boundary[1:] = (etype[1:] != etype[:-1]) | (eid[1:] != eid[:-1]) | new_cols
   adr = np.flatnonzero(boundary)
   nrow = np.diff(np.append(adr, nefc))
   return adr, nrow
@@ -2246,19 +2250,6 @@ def put_data(
   # create efc
   efc = _create_constraint(mjm, nworld, njmax, sizes, mjd)
 
-  # make_constraint builds the block list in-kernel; put_data does not run it, so build it here
-  # -- otherwise solving a put_data state would assemble an empty J^T D J.
-  if is_sparse(mjm) and mjm.opt.solver == mujoco.mjtSolver.mjSOL_NEWTON:
-    jtdaj_adr, jtdaj_nrow = _jtdaj_groups(mjd)
-    nblock = jtdaj_adr.shape[0]
-    adr_row = np.zeros(njmax, dtype=int)
-    nrow_row = np.zeros(njmax, dtype=int)
-    adr_row[:nblock] = jtdaj_adr
-    nrow_row[:nblock] = jtdaj_nrow
-    efc.jtdaj_adr = wp.array(np.tile(adr_row, (nworld, 1)), dtype=int)
-    efc.jtdaj_nrow = wp.array(np.tile(nrow_row, (nworld, 1)), dtype=int)
-    efc.jtdaj_nblock = wp.array(np.full(nworld, nblock, dtype=int), dtype=int)
-
   if is_sparse(mjm):
     J_rownnz = np.zeros(njmax, dtype=np.int32)
     J_rowadr = np.zeros(njmax, dtype=np.int32)
@@ -2281,6 +2272,19 @@ def put_data(
     efc.J_rowadr = wp.array(np.tile(J_rowadr, (nworld, 1)), dtype=int)
     efc.J_colind = wp.array(np.tile(J_colind, (nworld, 1)).reshape((nworld, 1, -1)), dtype=int)
     efc.J = wp.array(np.tile(J, (nworld, 1)).reshape((nworld, 1, -1)), dtype=float)
+
+    # make_constraint builds the block list in-kernel; put_data does not run it, so build it here
+    # -- otherwise solving a put_data state would assemble an empty J^T D J.
+    if mjm.opt.solver == mujoco.mjtSolver.mjSOL_NEWTON:
+      jtdaj_adr, jtdaj_nrow = _jtdaj_groups(mjd, J_rownnz, J_rowadr, J_colind)
+      nblock = jtdaj_adr.shape[0]
+      adr_row = np.zeros(njmax, dtype=int)
+      nrow_row = np.zeros(njmax, dtype=int)
+      adr_row[:nblock] = jtdaj_adr
+      nrow_row[:nblock] = jtdaj_nrow
+      efc.jtdaj_adr = wp.array(np.tile(adr_row, (nworld, 1)), dtype=int)
+      efc.jtdaj_nrow = wp.array(np.tile(nrow_row, (nworld, 1)), dtype=int)
+      efc.jtdaj_nblock = wp.array(np.full(nworld, nblock, dtype=int), dtype=int)
   else:
     efc.J_rownnz = wp.zeros((nworld, 0), dtype=int)
     efc.J_rowadr = wp.zeros((nworld, 0), dtype=int)
