@@ -1018,25 +1018,27 @@ def _equality_flex_alloc(is_sparse: bool, newton: bool):
       # nefc only grows, so at most this many rows of the block will be allocated below njmax
       nfit = wp.min(nrow, njmax_in - nefc_out[worldid])
       if nfit > 0:
-        nnz = flex_efcnnz[flexid]
+        nnz = int(0)
         if nfit < nrow:
-          nnz = int(0)
           edgeadr = flex_edgeadr[flexid]
           for edgeid in range(edgeadr, edgeadr + flex_edgenum[flexid]):
             row = flexedge_efcadr[edgeid]
             if row >= 0 and row < nfit:
               nnz += flexedge_J_rownnz[edgeid]
+        else:
+          nnz = flex_efcnnz[flexid]
         rowadr = _reserve_nnz(njmax_nnz_in, worldid, nnz, efc_nnz_out)
         if rowadr < 0:
           return
 
     wp.atomic_add(ne_out, worldid, nrow)
     efcid = wp.atomic_add(nefc_out, worldid, nrow)
+    if efcid >= njmax_in:
+      return
 
     jtdajadr = int(0)
     if wp.static(is_sparse and newton):
-      if efcid < njmax_in:
-        jtdajadr = wp.atomic_add(efc_jtdaj_nblock_out, worldid, wp.min(nrow, njmax_in - efcid))
+      jtdajadr = wp.atomic_add(efc_jtdaj_nblock_out, worldid, wp.min(nrow, njmax_in - efcid))
 
     block_out[worldid, eqflexid] = wp.vec3i(efcid, rowadr, jtdajadr)
 
@@ -1094,8 +1096,10 @@ def _equality_flex(is_sparse: bool, newton: bool, is_discrete: bool = False):
     if block[0] < 0:
       return
 
-    flexid = eq_obj1id[eq_flex_adr[eqflexid]]
-    if edgeid < flex_edgeadr[flexid] or edgeid >= flex_edgeadr[flexid] + flex_edgenum[flexid]:
+    eqid = eq_flex_adr[eqflexid]
+    flexid = eq_obj1id[eqid]
+    edgeadr = flex_edgeadr[flexid]
+    if edgeid < edgeadr or edgeid >= edgeadr + flex_edgenum[flexid]:
       return
 
     # rigid edges and interpolated flexes have no rows
@@ -1106,8 +1110,6 @@ def _equality_flex(is_sparse: bool, newton: bool, is_discrete: bool = False):
     efcid = block[0] + row
     if efcid >= njmax_in:
       return
-
-    eqid = eq_flex_adr[eqflexid]
 
     if wp.static(is_sparse and newton):
       jgid = block[2] + row
