@@ -1123,6 +1123,8 @@ class FlexPassiveForcesTest(parameterized.TestCase):
   def test_flex_elastic2d_interp(self, elastic2d_and_atol, nworld):
     """Tests 2D interpolated flex passive forces (bending and stretching)."""
     elastic2d, atol = elastic2d_and_atol
+    if elastic2d != "bend" and not util_pkg.check_version("mujoco>=3.16.1"):
+      self.skipTest("Requires MuJoCo >= 3.16.1")
     dof = "trilinear"
     xml = f"""
     <mujoco>
@@ -1163,6 +1165,82 @@ class FlexPassiveForcesTest(parameterized.TestCase):
         atol=atol,
         err_msg=f"qfrc_spring mismatch for interpolated elastic2d={elastic2d} dof={dof} (world {w})",
       )
+
+  @absltest.skipIf(not util_pkg.check_version("mujoco>=3.16.1"), "Requires MuJoCo >= 3.16.1")
+  @parameterized.product(
+    elastic2d=["bend", "stretch", "both"],
+    nworld=[1, 2],
+  )
+  def test_flex_elastic2d_interp_discrete(self, elastic2d, nworld):
+    """Tests 2D interpolated flex passive forces and discrete integrator metric."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml=f"""
+      <mujoco>
+        <option integrator="discrete" solver="CG">
+          <flag contact="disable"/>
+        </option>
+        <worldbody>
+          <flexcomp type="grid" count="4 4 4" spacing=".025 .05 .025" pos="0 0 1"
+                    dim="3" cellcount="1 2 2" radius=".001"
+                    mass="5" name="softbody" dof="trilinear">
+            <elasticity young="1e4" poisson="0.3" damping="1e-3"
+                        elastic2d="{elastic2d}" thickness="0.03"/>
+            <contact selfcollide="none"/>
+          </flexcomp>
+        </worldbody>
+      </mujoco>
+      """,
+      qpos_noise=0.01,
+      qvel_noise=0.01,
+      nworld=nworld,
+    )
+    mjds = [mjd]
+    if nworld == 2:
+      mjd1 = mujoco.MjData(mjm)
+      qpos = d.qpos.numpy()
+      qpos[1] += 0.005
+      d.qpos.assign(qpos)
+      mjd1.qpos[:] = qpos[1]
+      mjd1.qvel[:] = d.qvel.numpy()[1]
+      mjds.append(mjd1)
+
+    for arr in (d.qfrc_spring, d.qfrc_damper, d.qfrc_passive, d.qacc):
+      arr.fill_(wp.inf)
+
+    mjw.forward(m, d)
+    for w in range(nworld):
+      mujoco.mj_forward(mjm, mjds[w])
+
+    if elastic2d == "bend":
+      self.assertEqual(m.nflexintcell, 0)
+    else:
+      self.assertEqual(m.nflexintcell, 2 * (2 * 2 + 1 * 2 + 1 * 2))
+
+    qfrc_spring = d.qfrc_spring.numpy()
+    qfrc_damper = d.qfrc_damper.numpy()
+    qacc = d.qacc.numpy()
+    for w in range(nworld):
+      np.testing.assert_allclose(
+        qfrc_spring[w],
+        mjds[w].qfrc_spring,
+        atol=5e-3,
+        err_msg=f"qfrc_spring mismatch for discrete interpolated elastic2d={elastic2d} (world {w})",
+      )
+      np.testing.assert_allclose(
+        qfrc_damper[w],
+        mjds[w].qfrc_damper,
+        atol=5e-3,
+        err_msg=f"qfrc_damper mismatch for discrete interpolated elastic2d={elastic2d} (world {w})",
+      )
+      np.testing.assert_allclose(
+        qacc[w],
+        mjds[w].qacc,
+        atol=5e-2,
+        rtol=5e-3,
+        err_msg=f"qacc mismatch for discrete interpolated elastic2d={elastic2d} (world {w})",
+      )
+    if nworld == 2:
+      self.assertFalse(np.allclose(qfrc_spring[0], qfrc_spring[1]))
 
   @parameterized.product(
     case=[
