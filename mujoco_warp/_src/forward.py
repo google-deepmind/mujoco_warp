@@ -675,7 +675,7 @@ def rungekutta4(m: Model, d: Data):
     a, b = float(A[i]), B[i + 1]
     _rk_perturb_state(m, d, a, qpos_t0, qvel_t0, act_t0)
     # sensors keep their values from the start of the step, as in mj_RungeKutta
-    _forward(m, d, skip_sensor=True)
+    forward(m, d, skip_sensor=True)
     _rk_accumulate(m, d, b, qvel_rk, qacc_rk, act_dot_rk)
 
   wp.copy(d.qpos, qpos_t0)
@@ -2171,7 +2171,7 @@ def fwd_acceleration(m: Model, d: Data, factorize: bool = False):
 
 def _energy_pos(m: Model, d: Data, skip_sensor: bool = False):
   if m.opt.enableflags & EnableBit.ENERGY:
-    if m.sensor_e_potential == 0 or skip_sensor:  # not computed by sensor
+    if m.sensor_e_potential == 0 or (m.opt.disableflags & DisableBit.SENSOR) or skip_sensor:  # not computed by sensor
       sensor.energy_pos(m, d)
   else:
     d.energy.zero_()
@@ -2179,11 +2179,13 @@ def _energy_pos(m: Model, d: Data, skip_sensor: bool = False):
 
 def _energy_vel(m: Model, d: Data, skip_sensor: bool = False):
   if m.opt.enableflags & EnableBit.ENERGY:
-    if m.sensor_e_kinetic == 0 or skip_sensor:  # not computed by sensor
+    if m.sensor_e_kinetic == 0 or (m.opt.disableflags & DisableBit.SENSOR) or skip_sensor:  # not computed by sensor
       sensor.energy_vel(m, d)
 
 
-def _forward(m: Model, d: Data, skip_sensor: bool):
+@event_scope
+def forward(m: Model, d: Data, skip_sensor: bool = False):
+  """Forward dynamics."""
   check_discrete(m)
   sleep_enabled = bool(m.opt.enableflags & EnableBit.SLEEP) and not bool(m.opt.disableflags & DisableBit.ISLAND)
   if sleep_enabled:
@@ -2215,12 +2217,6 @@ def _forward(m: Model, d: Data, skip_sensor: bool):
     smooth.rne_postconstraint(m, d)
   if not skip_sensor:
     sensor.sensor_acc(m, d, skip_rne_postconstraint=True)
-
-
-@event_scope
-def forward(m: Model, d: Data):
-  """Forward dynamics."""
-  _forward(m, d, skip_sensor=False)
 
 
 @event_scope
