@@ -164,6 +164,79 @@ class SetConstTest(parameterized.TestCase):
 
     _assert_eq(m.eq_data.numpy()[0], mjm.eq_data, "eq_data")
 
+  @parameterized.parameters(1, 2)
+  def test_set_const_eq_data_weld(self, nworld):
+    """Test set_const recomputes eq_data for marked weld constraints."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+    <mujoco>
+      <worldbody>
+        <body name="b1" pos="0.1 0 0">
+          <joint ref="0.3"/>
+          <geom size="0.05"/>
+        </body>
+        <body name="b2" pos="0.4 0 0" euler="0 0 20">
+          <joint axis="0 1 0" ref="-0.2"/>
+          <geom size="0.05"/>
+        </body>
+        <body name="mocap" mocap="true" pos="0 0.5 0"/>
+      </worldbody>
+      <equality>
+        <weld body1="b1" body2="b2" anchor="0.1 0.2 0.3"/>
+        <weld body1="mocap" body2="b2"/>
+      </equality>
+    </mujoco>
+    """,
+      nworld=nworld,
+      batch_sizes={"eq_data": nworld},
+    )
+
+    # displaced mocap pose in Data must not affect set_const weld pose, and is restored
+    mjd.mocap_pos[0] = [5.0, 6.0, 7.0]
+    mocap_pos = d.mocap_pos.numpy()
+    mocap_pos[:, 0] = [5.0, 6.0, 7.0]
+    d.mocap_pos.assign(mocap_pos)
+
+    # case 1: marked weld (data[11] != 0): set_const recomputes relpose and anchor offset
+    anchors = np.array([[0.15, 0.1, 0.25], [0.25, -0.05, 0.1]])[:nworld]
+    eq_data = m.eq_data.numpy()
+    for w in range(nworld):
+      eq_data[w, 0, 0:3] = anchors[w]
+      eq_data[w, 0, 3:10] = 0.0
+      eq_data[w, 1, 3:10] = 0.0
+    wp.copy(m.eq_data, wp.array(eq_data, dtype=m.eq_data.dtype))
+
+    mjwarp.set_const(m, d)
+    _assert_eq(d.mocap_pos.numpy()[:, 0], mocap_pos[:, 0], "mocap_pos_restored")
+
+    eq_data_np = m.eq_data.numpy()
+    for w in range(nworld):
+      mjm.eq_data[0, 0:3] = anchors[w]
+      mjm.eq_data[0, 3:10] = 0.0
+      mjm.eq_data[1, 3:10] = 0.0
+      mujoco.mj_setConst(mjm, mjd)
+      _assert_eq(eq_data_np[w], mjm.eq_data, f"eq_data_world_{w}")
+      self.assertTrue(np.any(eq_data_np[w, 0, 3:10] != 0.0))
+
+    if nworld == 2:
+      self.assertFalse(np.allclose(eq_data_np[0, 0, 3:6], eq_data_np[1, 0, 3:6]))
+
+    # case 2: unmarked weld (data[11] == 0): set_const leaves relpose unchanged
+    new_data = mjm.eq_data[0].copy()
+    new_data[3:10] = [0.5, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0]
+    new_data[11] = 0.0
+    mjm.eq_data[0] = new_data
+    eq_data[:, 0] = new_data
+    wp.copy(m.eq_data, wp.array(eq_data, dtype=m.eq_data.dtype))
+
+    mujoco.mj_setConst(mjm, mjd)
+    mjwarp.set_const(m, d)
+
+    eq_data_np = m.eq_data.numpy()
+    for w in range(nworld):
+      _assert_eq(eq_data_np[w], mjm.eq_data, f"unmarked_eq_data_world_{w}")
+      _assert_eq(eq_data_np[w, 0, 3:10], new_data[3:10], f"unmarked_relpose_world_{w}")
+
   def test_set_const_eq_data_slider_crank_tracking(self):
     """Test connect anchor recompute on a slider-crank with nonzero joint ref."""
     r, ell = 0.075, 0.096
