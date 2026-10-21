@@ -530,36 +530,104 @@ class SetConstTest(parameterized.TestCase):
     np.testing.assert_allclose(m.body_subtreemass.numpy()[0, 3], 30.0, rtol=1e-6)
     np.testing.assert_allclose(m.body_subtreemass.numpy()[0, 4], 40.0, rtol=1e-6)
 
-  def test_set_const_camera_light_positions(self):
-    """Test camera and light reference position computations."""
-    mjm, mjd, m, d = test_data.fixture(
+  @parameterized.product(change=["none", "body_mass", "orientation", "pose"], nworld=[1, 2])
+  def test_set_const_camera_light_positions(self, change, nworld):
+    """Camera and light references come from the pose in fixed mode at qpos0, in every mode."""
+    refs = ("cam_poscom0", "cam_pos0", "cam_mat0", "light_poscom0", "light_pos0", "light_dir0")
+    # with 2 worlds, the fields that differ between the worlds are batched
+    batched = {
+      "none": (),
+      "body_mass": ("body_mass", "body_subtreemass", "cam_poscom0", "light_poscom0"),
+      "orientation": ("cam_quat", "light_dir", "cam_mat0", "light_dir0"),
+      "pose": ("body_pos", "body_quat", "cam_pos", "cam_quat", "light_pos", "light_dir") + refs,
+    }[change]
+    mjm, _, m, d = test_data.fixture(
       xml="""
     <mujoco>
+      <default>
+        <camera pos=".1 .2 .3" euler="10 20 30"/>
+        <light pos=".3 .2 .1" dir="0 .6 -.8"/>
+      </default>
       <worldbody>
-        <body name="body1" pos="1 2 3">
-          <joint name="j1" type="hinge" axis="0 0 1"/>
-          <geom name="g1" type="sphere" size="0.1" mass="1.0"/>
-          <camera name="cam1" pos="0.1 0.2 0.3"/>
-          <light name="light1" pos="0.4 0.5 0.6" dir="0 0 -1"/>
-        </body>
-        <body name="body2" pos="4 5 6">
-          <joint name="j2" type="hinge" axis="0 0 1"/>
-          <geom name="g2" type="sphere" size="0.1" mass="1.0"/>
+        <camera/>
+        <camera mode="track"/>
+        <camera mode="trackcom"/>
+        <camera mode="targetbody" target="torso"/>
+        <camera mode="targetbodycom" target="torso"/>
+        <light/>
+        <light mode="track"/>
+        <light mode="trackcom"/>
+        <light mode="targetbody" target="torso"/>
+        <light mode="targetbodycom" target="torso"/>
+        <body name="torso" pos="0 0 1" euler="0 0 30">
+          <freejoint/>
+          <geom size=".1" mass="2"/>
+          <body name="arm" pos=".2 0 0" euler="0 30 0">
+            <joint axis="0 1 0"/>
+            <geom type="capsule" size=".05" fromto="0 0 0 .3 0 0" mass="1"/>
+            <camera/>
+            <camera mode="track"/>
+            <camera mode="trackcom"/>
+            <camera mode="targetbody" target="torso"/>
+            <camera mode="targetbodycom" target="torso"/>
+            <light/>
+            <light mode="track"/>
+            <light mode="trackcom"/>
+            <light mode="targetbody" target="torso"/>
+            <light mode="targetbodycom" target="torso"/>
+            <body name="hand" pos=".3 0 0">
+              <geom size=".05" mass=".5"/>
+            </body>
+          </body>
         </body>
       </worldbody>
     </mujoco>
-    """
+    """,
+      nworld=nworld,
+      batch_sizes=dict.fromkeys(batched, nworld),
     )
 
-    mujoco.mj_setConst(mjm, mjd)
+    mjm_worlds = []
+    for worldid in range(nworld):
+      mjm_w = copy.copy(mjm)
+      if change == "body_mass":
+        mjm_w.body_mass[3] = 2.0 + worldid  # hand: moves the subtree com of the arm, the torso and the world
+      elif change == "orientation":
+        delta = 0.1 * (worldid + 1)
+        mjm_w.cam_quat[:] = [np.cos(delta), np.sin(delta), 0.0, 0.0]
+        mjm_w.light_dir[:] = [0.0, np.sin(delta), -np.cos(delta)]
+      elif change == "pose":
+        delta = 0.1 * (worldid + 1)
+        quat = [np.cos(delta), np.sin(delta), 0.0, 0.0]
+        mjm_w.body_pos[2] += delta  # arm
+        mjm_w.body_quat[2] = quat
+        mjm_w.cam_pos[:] += delta
+        mjm_w.cam_quat[:] = quat
+        mjm_w.light_pos[:] += delta
+        mjm_w.light_dir[:] = [0.0, np.sin(delta), -np.cos(delta)]
+      mjm_worlds.append(mjm_w)
+
+    # an unbatched field keeps one row, the same in every world
+    for field in ("body_mass", "body_pos", "body_quat", "cam_pos", "cam_quat", "light_pos", "light_dir"):
+      value = np.stack([getattr(mjm_w, field) for mjm_w in mjm_worlds])
+      getattr(m, field).assign(value[: getattr(m, field).shape[0]])
+    for field in refs:
+      getattr(m, field).fill_(wp.inf)
+
     mjwarp.set_const(m, d)
 
-    _assert_eq(m.cam_pos0.numpy()[0, 0], mjm.cam_pos0[0], "cam_pos0")
-    _assert_eq(m.cam_poscom0.numpy()[0, 0], mjm.cam_poscom0[0], "cam_poscom0")
-    _assert_eq(m.cam_mat0.numpy()[0, 0].flatten(), mjm.cam_mat0[0], "cam_mat0")
-    _assert_eq(m.light_pos0.numpy()[0, 0], mjm.light_pos0[0], "light_pos0")
-    _assert_eq(m.light_poscom0.numpy()[0, 0], mjm.light_poscom0[0], "light_poscom0")
-    _assert_eq(m.light_dir0.numpy()[0, 0], mjm.light_dir0[0], "light_dir0")
+    for worldid, mjm_w in enumerate(mjm_worlds):
+      mujoco.mj_setConst(mjm_w, mujoco.MjData(mjm_w))
+      for field in refs:
+        actual = getattr(m, field).numpy()
+        expected = getattr(mjm_w, field)
+        actual = actual[worldid % actual.shape[0]].reshape(expected.shape)
+        np.testing.assert_allclose(actual, expected, rtol=1e-5, atol=1e-5, err_msg=f"{field}[{worldid}]")
+
+    if nworld == 2:
+      for field in set(refs) & set(batched):
+        value = getattr(m, field).numpy()
+        self.assertFalse(np.allclose(value[0], value[1]), field)
 
   def test_set_const_idempotent(self):
     """Test calling set_const twice gives same results."""
