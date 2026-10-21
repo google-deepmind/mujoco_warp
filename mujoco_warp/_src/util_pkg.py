@@ -22,9 +22,10 @@ import re
 def _parse_version(version_str: str) -> tuple[tuple[int, int | str], ...]:
   """Parse a version string into comparable components.
 
-  Dot-separated components form the version. Hyphen-separated suffixes (e.g.,
-  "-newton") are treated as local build identifiers and stripped before
-  parsing. Each component is wrapped in a tuple: (0, int) for numeric parts,
+  Dot-separated components are split into numeric and non-numeric runs so that
+  suffixes such as dev9 and dev10 sort numerically. Hyphen-separated suffixes
+  (e.g., "-newton") are treated as local build identifiers and stripped before
+  parsing. Each run is wrapped in a tuple: (0, int) for numeric parts,
   (-1, str) for non-numeric. A (0, 0) sentinel is appended so that stable
   releases sort above pre-release suffixes during Python tuple comparison
   (e.g., 1.2.3 >= 1.2.3.dev). Non-numeric components are compared
@@ -40,7 +41,7 @@ def _parse_version(version_str: str) -> tuple[tuple[int, int | str], ...]:
   """
   # Strip local build identifier (e.g., "3.9.0-newton" -> "3.9.0")
   version_str = version_str.split("-", 1)[0]
-  parts = version_str.split(".")
+  parts = re.findall(r"\d+|[^\d.]+", version_str)
   return tuple([(0, int(p)) if p.isdigit() else (-1, p) for p in parts] + [(0, 0)])
 
 
@@ -50,8 +51,9 @@ def check_version(spec: str) -> bool:
   Supports operators: >=, <=, >, <, ==, !=
 
   Version comparison rules:
-  - Both '.' and '-' are treated as separators
-  - Numeric components are compared numerically
+  - Dot-separated components are split into numeric and non-numeric runs
+  - Hyphen-separated local build identifiers are stripped
+  - Numeric components, including pre-release build numbers, are compared numerically
   - Non-numeric components are compared lexicographically
   - Stable releases are greater than pre-releases (e.g., 1.2.3 >= 1.2.3.dev)
 

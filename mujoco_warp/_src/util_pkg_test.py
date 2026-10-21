@@ -34,7 +34,7 @@ class ParseVersionTest(parameterized.TestCase):
     ("1.0.0", ((0, 1), (0, 0), (0, 0), (0, 0))),
     ("3.5.0", ((0, 3), (0, 5), (0, 0), (0, 0))),
     ("1.20.0", ((0, 1), (0, 20), (0, 0), (0, 0))),
-    ("3.5.0.dev869102767", ((0, 3), (0, 5), (0, 0), (-1, "dev869102767"), (0, 0))),
+    ("3.5.0.dev869102767", ((0, 3), (0, 5), (0, 0), (-1, "dev"), (0, 869102767), (0, 0))),
     # hyphen-separated suffixes are stripped as local build identifiers
     ("3.5.0-foobar", ((0, 3), (0, 5), (0, 0), (0, 0))),
     ("1.0.0-alpha", ((0, 1), (0, 0), (0, 0), (0, 0))),
@@ -74,6 +74,13 @@ class CheckVersionTest(parameterized.TestCase):
     ("pkg>3.5.0", "3.5.0.dev869102767", False),  # dev version < base
     ("pkg>=3.5.0", "3.5.0", True),  # exact match
     ("pkg>=3.5.0.dev", "3.5.0", True),  # clean release > dev
+    # Development build numbers must sort numerically across digit counts.
+    ("pkg<3.16.1.dev1002690311", "3.16.1.dev999309006", True),
+    ("pkg>=3.16.1.dev1002690311", "3.16.1.dev999309006", False),
+    ("pkg>=3.16.1.dev1002690311", "3.16.1.dev1002690311", True),
+    ("pkg>3.16.1.dev999309006", "3.16.1.dev1002690311", True),
+    ("pkg<3.5.0.dev10", "3.5.0.dev9", True),
+    ("pkg>3.5.0.dev9", "3.5.0.dev10", True),
     # hyphen-separated suffixes are stripped (local build identifiers)
     ("pkg>=3.5.0", "3.5.0-foobar", True),  # 3.5.0-foobar == 3.5.0
     ("pkg>=3.9.0", "3.9.0-newton", True),  # 3.9.0-newton == 3.9.0
