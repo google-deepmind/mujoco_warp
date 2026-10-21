@@ -974,6 +974,33 @@ class SetConstTest(parameterized.TestCase):
     if nworld == 2:
       self.assertFalse(np.allclose(rbound[0], rbound[1]))
 
+  def test_set_const_ignores_contacts(self):
+    """Test actuator_acc0 of an adhesion actuator does not depend on the contacts in d."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+    <mujoco>
+      <worldbody>
+        <geom type="plane" size="1 1 .1"/>
+        <body name="box" pos="0 0 .1">
+          <freejoint/>
+          <geom type="box" size=".1 .1 .1"/>
+        </body>
+      </worldbody>
+      <actuator>
+        <adhesion body="box" ctrlrange="0 1"/>
+      </actuator>
+    </mujoco>
+    """
+    )
+    nacon = d.nacon.numpy()[0]
+    self.assertGreater(nacon, 0)  # the box rests on the plane
+
+    mujoco.mj_setConst(mjm, mjd)
+    mjwarp.set_const_0(m, d)
+
+    _assert_eq(m.actuator_acc0.numpy()[0], mjm.actuator_acc0, "actuator_acc0")
+    self.assertEqual(d.nacon.numpy()[0], nacon)  # the contacts are restored
+
 
 # TODO(team): test set_const_0 sparse
 
