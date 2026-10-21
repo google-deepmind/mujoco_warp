@@ -563,6 +563,23 @@ class IOTest(parameterized.TestCase):
     np.testing.assert_array_equal(put_adr, adr)
     np.testing.assert_array_equal(put_nrow, nrow)
 
+  def test_reset_data_clears_jtdaj_block_list(self):
+    """reset_data empties the JTDAJ block list of the worlds it resets, along with nefc."""
+    _, _, m, d = test_data.fixture(
+      "constraints.xml",
+      keyframe=2,
+      nworld=2,
+      overrides={"opt.jacobian": mujoco.mjtJacobian.mjJAC_SPARSE, "opt.solver": mujoco.mjtSolver.mjSOL_NEWTON},
+    )
+    mjwarp.forward(m, d)
+    nblock = d.efc.jtdaj_nblock.numpy()
+    self.assertTrue((nblock > 0).all())
+
+    mjwarp.reset_data(m, d, reset=wp.array([True, False], dtype=bool))
+
+    _assert_eq(d.nefc.numpy()[0], 0, "nefc")
+    _assert_eq(d.efc.jtdaj_nblock.numpy(), [0, nblock[1]], "jtdaj_nblock")
+
   @parameterized.parameters(types.Model, types.Data, types.RenderContext)
   def test_is_batched_metadata(self, dataclass_type):
     """Verify that all fields specified with 'nworld' or '*' are marked with _is_batched=True."""
