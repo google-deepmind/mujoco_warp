@@ -2266,16 +2266,17 @@ def put_data(
     efc.J = wp.array(np.tile(J, (nworld, 1)).reshape((nworld, 1, -1)), dtype=float)
 
     # make_constraint builds the block list in-kernel; put_data does not run it, so build it here
-    # -- otherwise solving a put_data state would find no blocks.
-    jtdaj_adr, jtdaj_nrow = _jtdaj_groups(mjd, J_rownnz, J_rowadr, J_colind)
-    nblock = jtdaj_adr.shape[0]
-    adr_row = np.zeros(njmax, dtype=int)
-    nrow_row = np.zeros(njmax, dtype=int)
-    adr_row[:nblock] = jtdaj_adr
-    nrow_row[:nblock] = jtdaj_nrow
-    efc.jtdaj_adr = wp.array(np.tile(adr_row, (nworld, 1)), dtype=int)
-    efc.jtdaj_nrow = wp.array(np.tile(nrow_row, (nworld, 1)), dtype=int)
-    efc.jtdaj_nblock = wp.array(np.full(nworld, nblock, dtype=int), dtype=int)
+    # -- otherwise solving a put_data state would assemble an empty J^T D J.
+    if mjm.opt.solver == mujoco.mjtSolver.mjSOL_NEWTON:
+      jtdaj_adr, jtdaj_nrow = _jtdaj_groups(mjd, J_rownnz, J_rowadr, J_colind)
+      nblock = jtdaj_adr.shape[0]
+      adr_row = np.zeros(njmax, dtype=int)
+      nrow_row = np.zeros(njmax, dtype=int)
+      adr_row[:nblock] = jtdaj_adr
+      nrow_row[:nblock] = jtdaj_nrow
+      efc.jtdaj_adr = wp.array(np.tile(adr_row, (nworld, 1)), dtype=int)
+      efc.jtdaj_nrow = wp.array(np.tile(nrow_row, (nworld, 1)), dtype=int)
+      efc.jtdaj_nblock = wp.array(np.full(nworld, nblock, dtype=int), dtype=int)
   else:
     efc.J_rownnz = wp.zeros((nworld, 0), dtype=int)
     efc.J_rowadr = wp.zeros((nworld, 0), dtype=int)

@@ -269,9 +269,8 @@ class ConstraintTest(parameterized.TestCase):
       ("flex/moving_base_strain.xml", None),
     ),
     cone=(mujoco.mjtCone.mjCONE_PYRAMIDAL, mujoco.mjtCone.mjCONE_ELLIPTIC),
-    solver=(mujoco.mjtSolver.mjSOL_NEWTON, mujoco.mjtSolver.mjSOL_CG),
   )
-  def test_jtdaj_blocks(self, scene, cone, solver):
+  def test_jtdaj_blocks(self, scene, cone):
     """Every efc row is in one block, whose rows share columns and are stored back to back."""
     xml, keyframe = scene
     mjm, _, m, d = test_data.fixture(
@@ -280,7 +279,7 @@ class ConstraintTest(parameterized.TestCase):
       overrides={
         "opt.cone": cone,
         "opt.jacobian": mujoco.mjtJacobian.mjJAC_SPARSE,
-        "opt.solver": solver,
+        "opt.solver": mujoco.mjtSolver.mjSOL_NEWTON,
       },
     )
     d.efc.jtdaj_adr.fill_(-1)

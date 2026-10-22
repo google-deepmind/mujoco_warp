@@ -536,17 +536,13 @@ class IOTest(parameterized.TestCase):
       if isinstance(val, wp.array):
         self.assertEqual(val.shape, getattr(d, attr).shape, f"{attr} shape mismatch")
 
-  @parameterized.product(
-    scene=(("constraints.xml", 2), ("flex/rope.xml", None)),
-    solver=(mujoco.mjtSolver.mjSOL_NEWTON, mujoco.mjtSolver.mjSOL_CG),
-  )
-  def test_put_data_builds_jtdaj_block_list(self, scene, solver):
+  @parameterized.parameters(("constraints.xml", 2), ("flex/rope.xml", None))
+  def test_put_data_builds_jtdaj_block_list(self, xml, keyframe):
     """put_data builds the JTDAJ block list that make_constraint builds for the same state."""
-    xml, keyframe = scene
     mjm, mjd, m, d = test_data.fixture(
       xml,
       keyframe=keyframe,
-      overrides={"opt.jacobian": mujoco.mjtJacobian.mjJAC_SPARSE, "opt.solver": solver},
+      overrides={"opt.jacobian": mujoco.mjtJacobian.mjJAC_SPARSE, "opt.solver": mujoco.mjtSolver.mjSOL_NEWTON},
     )
     self.assertTrue(m.is_sparse)
     self.assertGreater(mjd.nefc, 0)

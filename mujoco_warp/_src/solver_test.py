@@ -593,8 +593,8 @@ class SolverTest(parameterized.TestCase):
       _assert_eq(qfrc_constraint, mjd.qfrc_constraint, "qfrc_constraint")
 
   @parameterized.product(cone=tuple(ConeType), solver_=tuple(SolverType), nworld=(1, 2))
-  def test_qfrc_constraint_sparse_blocks(self, cone, solver_, nworld):
-    """Sparse qfrc_constraint sums J' efc_force over each world's own constraint blocks."""
+  def test_qfrc_constraint_sparse(self, cone, solver_, nworld):
+    """Sparse qfrc_constraint is J' efc_force over each world's own constraint rows."""
     mjm, _, m, _ = test_data.fixture(
       "constraints.xml",
       overrides={"opt.solver": solver_, "opt.cone": cone, "opt.jacobian": mujoco.mjtJacobian.mjJAC_SPARSE},
@@ -621,7 +621,7 @@ class SolverTest(parameterized.TestCase):
       # summation order differs; tolerance is relative to the largest entry
       np.testing.assert_allclose(qfrc_constraint[worldid], expected, rtol=1e-5, atol=1e-5 * np.abs(expected).max())
     if nworld == 2:
-      self.assertNotEqual(*d.efc.jtdaj_nblock.numpy())
+      self.assertNotEqual(*nefc)
       self.assertFalse(np.allclose(qfrc_constraint[0], qfrc_constraint[1]))
 
   @parameterized.product(
