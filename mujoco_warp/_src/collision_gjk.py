@@ -993,7 +993,9 @@ def _epa_witness(
   i1 = pt.vert_index[2 * face[0]]
   i2 = pt.vert_index[2 * face[1]]
   i3 = pt.vert_index[2 * face[2]]
-  if geomtype1 == GeomType.HFIELD and (i1 != i2 or i1 != i3):
+  # Keep geometric witnesses for boxes: projecting a side contact onto a
+  # horizontal plane can turn separation from ground into downward penetration.
+  if geomtype1 == GeomType.HFIELD and geomtype2 != GeomType.BOX and (i1 != i2 or i1 != i3):
     # TODO(kbayes): Fix case where geom2 is near bottom of height field or "extreme" prism heights
     n = wp.vec3(0.0, 0.0, 1.0)
 
@@ -2484,7 +2486,8 @@ def _inflate(
   x1 = result.x1
   x2 = result.x2
 
-  if geomtype1 == GeomType.HFIELD:
+  # Box edge contacts need the GJK witnesses, including their separation sign.
+  if geomtype1 == GeomType.HFIELD and geomtype2 != GeomType.BOX:
     v = result.simplex_index1[0]
     is_side = bool(False)
     for i in range(result.dim):
