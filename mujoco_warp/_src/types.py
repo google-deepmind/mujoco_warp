@@ -758,19 +758,23 @@ class ObjType(enum.IntEnum):
     UNKNOWN: unknown object type
     BODY: body
     XBODY: body, used to access regular frame instead of i-frame
+    JOINT: joint
     GEOM: geom
     FLEX: flex
     SITE: site
     CAMERA: camera
+    TENDON: tendon
   """
 
   UNKNOWN = mujoco.mjtObj.mjOBJ_UNKNOWN
   BODY = mujoco.mjtObj.mjOBJ_BODY
   XBODY = mujoco.mjtObj.mjOBJ_XBODY
+  JOINT = mujoco.mjtObj.mjOBJ_JOINT
   GEOM = mujoco.mjtObj.mjOBJ_GEOM
   FLEX = mujoco.mjtObj.mjOBJ_FLEX
   SITE = mujoco.mjtObj.mjOBJ_SITE
   CAMERA = mujoco.mjtObj.mjOBJ_CAMERA
+  TENDON = mujoco.mjtObj.mjOBJ_TENDON
 
 
 class EqType(enum.IntEnum):
@@ -1225,6 +1229,7 @@ class Model:
     jnt_qposadr: start addr in 'qpos' for joint's data       (njnt,)
     jnt_dofadr: start addr in 'qvel' for joint's data        (njnt,)
     jnt_bodyid: id of joint's body                           (njnt,)
+    jnt_actuatorid: actuator contributing damping/armature   (njnt,)
     jnt_limited: does joint have limits                      (njnt,)
     jnt_actfrclimited: does joint have actuator force limits (njnt,)
     jnt_actgravcomp: is gravcomp force applied via actuators (njnt,)
@@ -1431,6 +1436,7 @@ class Model:
     eq_data: numeric data for constraint                     (*, neq, mjNEQDATA)
     tendon_adr: address of first object in tendon's path     (ntendon,)
     tendon_num: number of objects in tendon's path           (ntendon,)
+    tendon_actuatorid: actuator adding damping/armature      (ntendon,)
     ten_J_rownnz: number of non-zeros in each tendon row     (ntendon,)
     ten_J_rowadr: row start address for sparse ten_J         (ntendon,)
     ten_J_colind: column indices in sparse ten_J             (nJten,)
@@ -1475,6 +1481,9 @@ class Model:
     actuator_history: history buffer sizes                   (*, nactuator, 2)
     actuator_historyadr: history buffer address              (*, nactuator)
     actuator_delay: delay in seconds                         (*, nactuator)
+    actuator_damping: linear damping coefficient             (*, nactuator)
+    actuator_dampingpoly: high-order damping coefficients    (*, nactuator, 2)
+    actuator_armature: armature added to target              (*, nactuator)
     actuator_forcelimited: is force limited                  (nactuator,)
     actuator_forcerange: range of forces                     (*, nactuator, 2)
     actuator_ctrllimited: is control limited                 (nu,)
@@ -1761,6 +1770,7 @@ class Model:
   jnt_qposadr: array("njnt", int)
   jnt_dofadr: array("njnt", int)
   jnt_bodyid: array("njnt", int)
+  jnt_actuatorid: array("njnt", int)
   jnt_limited: array("njnt", int)
   jnt_actfrclimited: array("njnt", bool)
   jnt_actgravcomp: array("njnt", int)
@@ -1967,6 +1977,7 @@ class Model:
   eq_data: array("*", "neq", vec12)
   tendon_adr: array("ntendon", int)
   tendon_num: array("ntendon", int)
+  tendon_actuatorid: array("ntendon", int)
   ten_J_rownnz: array("ntendon", int)
   ten_J_rowadr: array("ntendon", int)
   ten_J_colind: array("nJten", int)
@@ -2011,6 +2022,9 @@ class Model:
   actuator_history: array("*", "nactuator", wp.vec2i)
   actuator_historyadr: array("*", "nactuator", int)
   actuator_delay: array("*", "nactuator", float)
+  actuator_damping: array("*", "nactuator", float)
+  actuator_dampingpoly: array("*", "nactuator", wp.vec2)
+  actuator_armature: array("*", "nactuator", float)
   actuator_forcelimited: array("nactuator", bool)
   actuator_forcerange: array("*", "nactuator", wp.vec2)
   actuator_ctrllimited: array("nu", bool)
