@@ -20,9 +20,12 @@ import warp as wp
 from mujoco_warp._src.math import motion_cross
 from mujoco_warp._src.math import safe_div
 from mujoco_warp._src.types import MJ_MINVAL
+from mujoco_warp._src.types import BiasType
 from mujoco_warp._src.types import ConeType
 from mujoco_warp._src.types import Data
+from mujoco_warp._src.types import DisableBit
 from mujoco_warp._src.types import DynType
+from mujoco_warp._src.types import GainType
 from mujoco_warp._src.types import JointType
 from mujoco_warp._src.types import Model
 from mujoco_warp._src.types import State
@@ -149,6 +152,57 @@ def compute_interp_cell_quat(
           idx += 1
 
   return mat33_to_quat_polar(F)
+
+
+@wp.func
+def eff_tendon_possible(
+  # Model:
+  opt_disableflags: int,
+  tendon_stiffness: wp.array2d[float],
+  tendon_stiffnesspoly: wp.array2d[wp.vec2],
+  tendon_damping: wp.array2d[float],
+  tendon_dampingpoly: wp.array2d[wp.vec2],
+  # In:
+  worldid: int,
+  tenid: int,
+) -> bool:
+  if not (opt_disableflags & DisableBit.SPRING):
+    if tendon_stiffness[worldid % tendon_stiffness.shape[0], tenid] != 0.0:
+      return True
+    spoly = tendon_stiffnesspoly[worldid % tendon_stiffnesspoly.shape[0], tenid]
+    if spoly[0] != 0.0 or spoly[1] != 0.0:
+      return True
+  if not (opt_disableflags & DisableBit.DAMPER):
+    if tendon_damping[worldid % tendon_damping.shape[0], tenid] != 0.0:
+      return True
+    dpoly = tendon_dampingpoly[worldid % tendon_dampingpoly.shape[0], tenid]
+    if dpoly[0] != 0.0 or dpoly[1] != 0.0:
+      return True
+  return False
+
+
+@wp.func
+def eff_actuator_possible(
+  # Model:
+  opt_disableflags: int,
+  actuator_gaintype: wp.array[int],
+  actuator_biastype: wp.array[int],
+  # In:
+  actid: int,
+) -> bool:
+  if opt_disableflags & DisableBit.ACTUATION:
+    return False
+  gaintype = actuator_gaintype[actid]
+  biastype = actuator_biastype[actid]
+  return (
+    biastype == BiasType.AFFINE
+    or biastype == BiasType.DCMOTOR
+    or biastype == BiasType.MUSCLE
+    or gaintype == GainType.AFFINE
+    or gaintype == GainType.SO3
+    or gaintype == GainType.MUSCLE
+    or gaintype == GainType.DCMOTOR
+  )
 
 
 @cache_kernel

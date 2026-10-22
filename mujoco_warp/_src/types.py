@@ -82,7 +82,16 @@ class BlockDim:
     solve_search_update_cg: solve search update CG block dimension (solver)
     solve_init_search_cg: solve init search CG block dimension (solver)
     contact_jac_tiled: contact Jacobian tiled block dimension (solver)
+    warmstart_cost: discrete warmstart cost comparison block dimension (solver)
     eff_pcg: effective-metric PCG block dimension (derivative)
+    discrete_free_gyro: discrete free-body gyroscopic solve block dimension (forward)
+    eff_chol_factor: effective-metric Cholesky factor and symbolic scan block dimension (derivative)
+    eff_chol_solve: effective-metric Cholesky solve block dimension (derivative)
+    eff_chol_root: effective-metric Cholesky dense root tile block dimension (derivative)
+    eff_chol_etree: effective-metric Cholesky elimination tree block dimension (derivative)
+    ipc_merit: IPC merit function reduction block dimension (ipc)
+    ipc_publish: IPC working-set row assignment block dimension (ipc)
+    ipc_bp_scan: IPC flex broadphase grid bucket scan block dimension (collision_continuous)
     render: render block dimension (render)
   """
 
@@ -115,8 +124,18 @@ class BlockDim:
   solve_search_update_cg: int = 256
   solve_init_search_cg: int = 256
   contact_jac_tiled: int = 32
+  warmstart_cost: int = 256
   # derivative
   eff_pcg: int = 128
+  discrete_free_gyro: int = 128
+  eff_chol_factor: int = 512
+  eff_chol_solve: int = 1024
+  eff_chol_root: int = 64
+  eff_chol_etree: int = 32
+  # ipc
+  ipc_merit: int = 64
+  ipc_publish: int = 256
+  ipc_bp_scan: int = 256
   # render
   render: int = 64
 
@@ -168,6 +187,7 @@ class OverflowType(enum.IntFlag):
     ITERATIONS: solver iteration limit reached
     LS_ITERATIONS: linesearch iteration limit reached
     TACTILE: tactile sensor collision pair overflow
+    PRECONDITIONER: flex Cholesky preconditioner factor overflow
     ALL: all overflows
   """
 
@@ -184,6 +204,7 @@ class OverflowType(enum.IntFlag):
   ITERATIONS = 1 << 9
   LS_ITERATIONS = 1 << 10
   TACTILE = 1 << 11
+  PRECONDITIONER = 1 << 12
   ALL = (
     NEFC
     | NJMAX_NNZ
@@ -197,6 +218,7 @@ class OverflowType(enum.IntFlag):
     | ITERATIONS
     | LS_ITERATIONS
     | TACTILE
+    | PRECONDITIONER
   )
 
 
@@ -309,11 +331,13 @@ class EnableBit(enum.IntFlag):
     ENERGY: energy computation
     INVDISCRETE: discrete-time inverse dynamics
     SLEEP: sleeping
+    IPC: IPC flex contact mode of the discrete integrator
   """
 
   ENERGY = mujoco.mjtEnableBit.mjENBL_ENERGY
   INVDISCRETE = mujoco.mjtEnableBit.mjENBL_INVDISCRETE
   SLEEP = mujoco.mjtEnableBit.mjENBL_SLEEP
+  IPC = mujoco.mjtEnableBit.mjENBL_IPC
   # unsupported: OVERRIDE, FWDINV, ISLAND, DIAGEXACT
 
 
@@ -1499,7 +1523,9 @@ class Model:
     efm0_active: whether zero-mass flex Cholesky preconditioner is active
     flex_interp_assemblable: whether interpolated flex stiffness can be assembled into efm_K
     has_unsupported_flex_interp: whether model has unsupported flex interpolation orders
+    ipc_flex_error: IPC 2D flex topology validation error message, or empty string if valid
     has_ellipsoid_geom: whether the model contains ellipsoid geoms
+    has_cylinder_geom: whether the model contains cylinder geoms
     has_plane_geom: whether the model contains plane geoms
     has_1d_flex: whether the model contains 1D flexes
     has_2d_flex: whether the model contains 2D flexes
@@ -1579,6 +1605,14 @@ class Model:
     weld_tactile_id: weld body to tactile weld index         (nbody,)
     taxel_vertadr: tactile sensor vertex address             (nsensortaxel,)
     taxel_sensorid: address for tactile sensors
+    nefmcholptr: number of covered vertices plus one
+    nefmcholL: number of offdiagonal blocks of the static covered-block factor
+    nefmcholadj: number of covered-block flex edge neighbors
+    efm_chol: whether the covered flex block of the metric can use a Cholesky preconditioner
+    efm_chol_rank: elimination rank of each covered vertex      (nefmdof,)
+    efm_chol_vert: covered vertex at each elimination rank      (nefmdof,)
+    efm_chol_adjptr: flex edge adjacency start per vertex       (nefmcholptr,)
+    efm_chol_adj: flex edge neighbors of each covered vertex    (nefmcholadj,)
     M_tiles: scalar and tiled block-factorization groups
     qLD_updates: sparse factor updates grouped by tree level
     qLD_all_updates: tuple of all levels concatenated
@@ -2031,7 +2065,9 @@ class Model:
   efm0_active: bool
   flex_interp_assemblable: bool
   has_unsupported_flex_interp: bool
+  ipc_flex_error: str
   has_ellipsoid_geom: bool
+  has_cylinder_geom: bool
   has_plane_geom: bool
   has_1d_flex: bool
   has_2d_flex: bool
@@ -2103,6 +2139,14 @@ class Model:
   weld_tactile_id: array("nbody", int)
   taxel_vertadr: array("nsensortaxel", int)
   taxel_sensorid: array("nsensortaxel", int)
+  nefmcholptr: int
+  nefmcholL: int
+  nefmcholadj: int
+  efm_chol: bool
+  efm_chol_rank: array("nefmdof", int)
+  efm_chol_vert: array("nefmdof", int)
+  efm_chol_adjptr: array("nefmcholptr", int)
+  efm_chol_adj: array("nefmcholadj", int)
   M_tiles: tuple[TileSet, ...]
   qLD_updates: tuple[array("nqLD_all_updates", wp.vec3i), ...]
   qLD_all_updates: array("nqLD_all_updates", wp.vec3i)
@@ -2310,6 +2354,8 @@ class Data:
     flexedge_hessian: off-diagonal 3x3 blocks of stretch Hessian (nworld, nflexedge, 3, 3)
     flexedge_J: edge length Jacobian                            (nworld, nJfe)
     flexedge_length: flex edge lengths                          (nworld, nflexedge)
+    flexvert_lambda: flex contact multiplier                    (nworld, nflexvert)
+    flexvert_conage: flex contact age                           (nworld, nflexvert)
     ten_wrapadr: start address of tendon's path                 (nworld, ntendon)
     ten_wrapnum: number of wrap points in path                  (nworld, ntendon)
     ten_J: tendon Jacobian                                      (nworld, nJten)
@@ -2474,6 +2520,8 @@ class Data:
   flexedge_hessian: array("nworld", "nflexedge", wp.mat33)
   flexedge_J: array("nworld", "nJfe", float)
   flexedge_length: array("nworld", "nflexedge", float)
+  flexvert_lambda: array("nworld", "nflexvert", float)
+  flexvert_conage: array("nworld", "nflexvert", int)
   ten_wrapadr: array("nworld", "ntendon", int)
   ten_wrapnum: array("nworld", "ntendon", int)
   ten_J: array("nworld", "nJten", float)
@@ -2633,10 +2681,108 @@ class SolverContext:
   # the full-coordinate Data, set by solve_compact (None natively)
   compact_m_full: Optional["Model"] = None
   compact_d_full: Optional["Data"] = None
+  nsolving: Optional[wp.array] = None
+  qfrc_smooth_eff: Optional[wp.array] = None
+  qfrc_smooth_eff_ready: bool = False
+  epB: Optional[wp.array] = None
+  epL: Optional[wp.array] = None
+  epS: Optional[wp.array] = None
+  epS_factor: Optional[wp.array] = None
+  epS_rhs: Optional[wp.array] = None
+  epS_sol: Optional[wp.array] = None
+  epU: Optional[wp.array] = None
+  ep_loc: Optional[wp.array] = None
   # discrete integrator effective-metric scratch built before the solver loop, which may run
   # inside wp.capture_while where memory cannot be allocated (None otherwise)
   efm_con: Optional[tuple] = None
   flex_scratch: Optional[tuple] = None
+  eff_chol: Optional["EffCholContext"] = None
+
+
+@dataclasses.dataclass
+class EffCholContext:
+  """Workspace for the Cholesky preconditioner of the covered flex block of the metric.
+
+  Each solve's symbolic factorization extends the static flex-edge pattern by the vertex pairs the
+  folded terms couple, in the model's elimination order (Model.efm_chol_rank), and factors the
+  covered block as L S L' (unit diagonal L, block-diagonal S) by elimination-tree level. Vertices
+  are indexed by elimination rank.
+
+  Attributes:
+    Ld: diagonal blocks of the matrix, then its pivots S        (nworld, nefmdof)
+    Lo: offdiagonal blocks of the matrix, then of L in L S L'   (nworld, nlmax)
+    Sinv: inverse pivots S^-1                                   (nworld, nefmdof)
+    colptr: factor column start                                 (nworld, nefmdof + 1)
+    rowind: factor offdiagonal block rows, sorted per column    (nworld, nlmax)
+    lvlptr: elimination-tree level start                        (nworld, nefmdof + 1)
+    lvlcol: factor columns grouped by level                     (nworld, nefmdof)
+    pairptr: rank-1 update count prefix over lvlcol             (nworld, nefmdof + 1)
+    entptr: offdiagonal block count prefix over lvlcol          (nworld, nefmdof + 1)
+    nlevel: number of elimination-tree levels                   (nworld,)
+    lvlent: offdiagonal block start per level, in level order   (nworld, nefmdof + 1)
+    ent: offdiagonal blocks in level order (column, block, row) (nworld, nlmax)
+    xcount: number of extra vertex pairs                        (nworld,)
+    xpair: distinct extra vertex pairs coupled by folded terms  (nworld, nxmax)
+    xhash: hash set of the extra pair keys                      (nworld, nxhash)
+    aptr: lower adjacency row start                             (nworld, nefmdof + 1)
+    aend: lower adjacency row end after deduplication           (nworld, nefmdof)
+    adj: lower adjacency (earlier neighbors), sorted per row    (nworld, namax)
+    adjpost: lower adjacency sorted per row by postorder        (nworld, namax)
+    parent: elimination tree parent                             (nworld, nefmdof)
+    first: first postorder index of the subtree                 (nworld, nefmdof)
+    post: postorder index                                       (nworld, nefmdof)
+    level: elimination tree level                               (nworld, nefmdof)
+    cnt: row or column counts                                   (nworld, nefmdof)
+    cur: fill cursors                                           (nworld, nefmdof)
+    rootlv: first level of the dense root                       (nworld,)
+    nroot: number of dense root vertices                        (nworld,)
+    rpos: position of each vertex in the dense root, or -1      (nworld, nefmdof)
+    ridx: covered vector index of each dense root dof           (nworld, nrd)
+    D: dense root Schur complement, Cholesky factor, then Dinv' (nworld, nrd, nrd)
+    Dinv: inverse of the dense root's Cholesky factor           (nworld, nrd, nrd)
+    mindiag: pivot threshold                                    (nworld,)
+    rvec: dense root vector                                     (nworld, nrd)
+    y: covered vector in elimination order                      (nworld, 1, 3 * nefmdof)
+    acc: backward-solve accumulator                             (nworld, 3 * nefmdof)
+    status: whether the factor is valid and full rank           (nworld,)
+  """
+
+  Ld: wp.array2d[wp.mat33]
+  Lo: wp.array2d[wp.mat33]
+  Sinv: wp.array2d[wp.mat33]
+  colptr: wp.array2d[int]
+  rowind: wp.array2d[int]
+  lvlptr: wp.array2d[int]
+  lvlcol: wp.array2d[int]
+  pairptr: wp.array2d[int]
+  entptr: wp.array2d[int]
+  nlevel: wp.array[int]
+  lvlent: wp.array2d[int]
+  ent: wp.array2d[wp.vec3i]
+  xcount: wp.array[int]
+  xpair: wp.array2d[wp.vec2i]
+  xhash: wp.array2d[int]
+  aptr: wp.array2d[int]
+  aend: wp.array2d[int]
+  adj: wp.array2d[int]
+  adjpost: wp.array2d[int]
+  parent: wp.array2d[int]
+  first: wp.array2d[int]
+  post: wp.array2d[int]
+  level: wp.array2d[int]
+  cnt: wp.array2d[int]
+  cur: wp.array2d[int]
+  rootlv: wp.array[int]
+  nroot: wp.array[int]
+  rpos: wp.array2d[int]
+  ridx: wp.array2d[int]
+  D: wp.array3d[float]
+  Dinv: wp.array3d[float]
+  mindiag: wp.array[float]
+  rvec: wp.array2d[float]
+  y: wp.array3d[float]
+  acc: wp.array2d[float]
+  status: wp.array[bool]
 
 
 @dataclasses.dataclass

@@ -23,26 +23,337 @@ from mujoco_warp._src import passive
 from mujoco_warp._src import smooth
 from mujoco_warp._src import support
 from mujoco_warp._src import util_misc
+from mujoco_warp._src.block_cholesky import create_blocked_cholesky_factorize_solve_func
+from mujoco_warp._src.block_cholesky import create_blocked_cholesky_solve_func
 from mujoco_warp._src.passive import build_efm_contact
 from mujoco_warp._src.passive import ellipsoid_max_moment
 from mujoco_warp._src.passive import geom_semiaxes
 from mujoco_warp._src.support import next_act
 from mujoco_warp._src.types import MJ_MINVAL
+from mujoco_warp._src.types import TILE_SIZE_JTDAJ_DENSE
 from mujoco_warp._src.types import BiasType
 from mujoco_warp._src.types import Data
 from mujoco_warp._src.types import DisableBit
 from mujoco_warp._src.types import DynType
+from mujoco_warp._src.types import EffCholContext
 from mujoco_warp._src.types import EnableBit
 from mujoco_warp._src.types import GainType
 from mujoco_warp._src.types import IntegratorType
 from mujoco_warp._src.types import JointType
 from mujoco_warp._src.types import Model
+from mujoco_warp._src.types import OverflowType
 from mujoco_warp._src.types import vec6
 from mujoco_warp._src.types import vec10
 from mujoco_warp._src.warp_util import cache_kernel
 from mujoco_warp._src.warp_util import event_scope
 
 wp.set_module_options({"enable_backward": False, "default_grid_stride": False})
+
+
+@wp.func
+def _eff_block_solve_vertex(
+  # Model:
+  efm_dofid: wp.array[int],
+  # Data in:
+  efm_L_in: wp.array2d[float],
+  # In:
+  rhs_in: wp.array2d[float],
+  worldid: int,
+  k: int,
+  # Out:
+  res_out: wp.array2d[float],
+):
+  """3x3 block solve of covered vertex k."""
+  i = efm_dofid[k]
+  base = 9 * k
+  L00 = efm_L_in[worldid, base + 0]
+  L10 = efm_L_in[worldid, base + 3]
+  L11 = efm_L_in[worldid, base + 4]
+  L20 = efm_L_in[worldid, base + 6]
+  L21 = efm_L_in[worldid, base + 7]
+  L22 = efm_L_in[worldid, base + 8]
+
+  b0 = rhs_in[worldid, i]
+  b1 = rhs_in[worldid, i + 1]
+  b2 = rhs_in[worldid, i + 2]
+
+  r0 = b0 / L00
+  r1 = (b1 - L10 * r0) / L11
+  r2 = (b2 - (L20 * r0 + L21 * r1)) / L22
+  x2 = r2 / L22
+  x1 = (r1 - L21 * x2) / L11
+  x0 = (r0 - L10 * x1 - L20 * x2) / L00
+
+  res_out[worldid, i] = x0
+  res_out[worldid, i + 1] = x1
+  res_out[worldid, i + 2] = x2
+
+
+@wp.func
+def _eff_chol_find(adr: int, num: int, ind: wp.array[int], target: int) -> int:
+  """Position of target in the sorted ind[adr : adr + num], or -1."""
+  lo = adr
+  hi = adr + num - 1
+  while lo <= hi:
+    mid = (lo + hi) // 2
+    c = ind[mid]
+    if c == target:
+      return mid
+    elif c < target:
+      lo = mid + 1
+    else:
+      hi = mid - 1
+  return -1
+
+
+@wp.func
+def _eff_chol_block(colptr: wp.array[int], rowind: wp.array[int], row: int, col: int) -> int:
+  """Index of offdiagonal block (row, col), row > col in elimination order, or -1."""
+  return _eff_chol_find(colptr[col], colptr[col + 1] - colptr[col], rowind, row)
+
+
+@wp.func
+def _eff_chol_unit(r: int, c: int, v: float) -> wp.mat33:
+  out = wp.mat33(0.0)
+  out[r, c] = v
+  return out
+
+
+@wp.func
+def _eff_chol_col(colind: wp.array[int], adr: int, a: int, dense: bool) -> int:
+  if dense:
+    return a
+  return colind[adr + a]
+
+
+@wp.func
+def _eff_chol_hash_insert(table: wp.array[int], key: int) -> bool:
+  """Inserts a positive key into an open-addressing hash set; False if it is already present.
+
+  A full table admits the key, so the pair list overflows and reports instead.
+  """
+  size = table.shape[0]
+  h = (key * 1640531527) & (size - 1)
+  for _ in range(size):
+    old = wp.atomic_cas(table, h, 0, key)
+    if old == 0:
+      return True
+    if old == key:
+      return False
+    h = (h + 1) & (size - 1)
+  return True
+
+
+@wp.func
+def _eff_chol_row_pairs(
+  # Model:
+  efm_dofblk: wp.array[int],
+  efm_chol_adjptr: wp.array[int],
+  efm_chol_adj: wp.array[int],
+  # In:
+  worldid: int,
+  colind: wp.array[int],
+  val: wp.array[float],
+  adr: int,
+  nnz: int,
+  dense: bool,
+  # Out:
+  xcount_out: wp.array[int],
+  xpair_out: wp.array2d[wp.vec2i],
+  xhash_out: wp.array2d[int],
+):
+  """Records the distinct vertex pairs a folded term couples that no flex edge joins.
+
+  A per-world open-addressing hash set of the pair keys drops pairs another term already added.
+  """
+  for a in range(nnz):
+    if val[adr + a] == 0.0:
+      continue
+    k = efm_dofblk[_eff_chol_col(colind, adr, a, dense)]
+    if k < 0:
+      continue
+    for b in range(a + 1, nnz):
+      if val[adr + b] == 0.0:
+        continue
+      q = efm_dofblk[_eff_chol_col(colind, adr, b, dense)]
+      if q < 0 or q == k:
+        continue
+      if _eff_chol_find(efm_chol_adjptr[k], efm_chol_adjptr[k + 1] - efm_chol_adjptr[k], efm_chol_adj, q) >= 0:
+        continue
+      lo = wp.min(k, q)
+      hi = wp.max(k, q)
+      if _eff_chol_hash_insert(xhash_out[worldid], lo * EFF_CHOL_KEY + hi + 1):
+        x = wp.atomic_add(xcount_out, worldid, 1)
+        if x < xpair_out.shape[1]:
+          xpair_out[worldid, x] = wp.vec2i(lo, hi)
+
+
+@wp.func
+def _eff_chol_row_fold(
+  # Model:
+  efm_dofid: wp.array[int],
+  efm_dofblk: wp.array[int],
+  efm_chol_rank: wp.array[int],
+  # In:
+  worldid: int,
+  scale: float,
+  colind: wp.array[int],
+  val: wp.array[float],
+  adr: int,
+  nnz: int,
+  dense: bool,
+  colptr: wp.array[int],
+  rowind: wp.array[int],
+  # Out:
+  Ld_out: wp.array2d[wp.mat33],
+  Lo_out: wp.array2d[wp.mat33],
+):
+  """Adds scale * v * v' of a folded term to the covered block (its pairs are in the pattern)."""
+  for a in range(nnz):
+    ia = _eff_chol_col(colind, adr, a, dense)
+    k = efm_dofblk[ia]
+    va = val[adr + a]
+    if k < 0 or va == 0.0:
+      continue
+    ca = ia - efm_dofid[k]
+    rk = efm_chol_rank[k]
+    sva = scale * va
+    for b in range(nnz):
+      ib = _eff_chol_col(colind, adr, b, dense)
+      q = efm_dofblk[ib]
+      vb = val[adr + b]
+      if q < 0 or vb == 0.0:
+        continue
+      cb = ib - efm_dofid[q]
+      rq = efm_chol_rank[q]
+      if k == q:
+        wp.atomic_add(Ld_out[worldid], rk, _eff_chol_unit(ca, cb, sva * vb))
+      elif rk > rq:
+        blk = _eff_chol_block(colptr, rowind, rk, rq)
+        if blk >= 0:
+          wp.atomic_add(Lo_out[worldid], blk, _eff_chol_unit(ca, cb, sva * vb))
+
+
+@wp.func
+def _eff_chol_allowed(aptr: wp.array[int], aend: wp.array[int], adj: wp.array[int], rk: int, rq: int) -> bool:
+  """Whether the vertices at ranks rk and rq share a flex edge or are coupled by a folded term."""
+  hi = wp.max(rk, rq)
+  return _eff_chol_find(aptr[hi], aend[hi] - aptr[hi], adj, wp.min(rk, rq)) >= 0
+
+
+@wp.func
+def _eff_chol_block_scan(local: int) -> int:
+  """Exclusive prefix of one value per thread over the block."""
+  return wp.untile(wp.tile_scan_exclusive(wp.tile(local)))
+
+
+@wp.func
+def _eff_chol_block_sum(local: int) -> int:
+  """Sum of one value per thread over the block, on every thread."""
+  return wp.tile_sum(wp.tile(local))[0]
+
+
+@wp.func
+def _eff_chol_row_walk(
+  # In:
+  i: int,
+  k: int,
+  prev: int,
+  fill: bool,
+  parent: wp.array[int],
+  first: wp.array[int],
+  post: wp.array[int],
+  # Out:
+  cnt_out: wp.array[int],
+  rowind_out: wp.array[int],
+):
+  """Visits the factor entries (i, t) of row i reached from its neighbor k.
+
+  The walk climbs the elimination tree from k toward i and stops at the first ancestor of prev, the
+  previous neighbor in postorder, whose path already visited the rest.
+  """
+  t = k
+  while t >= 0 and t != i:
+    if prev >= 0 and first[t] <= post[prev] and post[prev] <= post[t]:
+      return
+    slot = wp.atomic_add(cnt_out, t, 1)
+    if fill:
+      rowind_out[slot] = i
+    t = parent[t]
+
+
+@wp.func
+def _eff_chol_lower_bound(adr: int, num: int, ind: wp.array[int], target: int) -> int:
+  """First position in the sorted ind[adr : adr + num] holding a value >= target."""
+  lo = adr
+  hi = adr + num
+  while lo < hi:
+    mid = (lo + hi) // 2
+    if ind[mid] < target:
+      lo = mid + 1
+    else:
+      hi = mid
+  return lo
+
+
+@wp.func
+def _eff_chol_level_col(entptr: wp.array[int], cstart: int, cend: int, u: int) -> int:
+  """Position c in [cstart, cend) of the column holding flattened entry u."""
+  lo = cstart
+  hi = cend - 1
+  while lo < hi:
+    mid = (lo + hi + 1) // 2
+    if entptr[mid] <= u:
+      lo = mid
+    else:
+      hi = mid - 1
+  return lo
+
+
+@wp.func
+def _eff_chol_diag(A: wp.mat33, mindiag: float) -> wp.mat33:
+  """Cholesky factor of a 3x3 diagonal block, pivots clamped to mindiag."""
+  l00 = wp.sqrt(wp.max(A[0, 0], mindiag))
+  l10 = A[1, 0] / l00
+  l20 = A[2, 0] / l00
+  l11 = wp.sqrt(wp.max(A[1, 1] - l10 * l10, mindiag))
+  l21 = (A[2, 1] - l20 * l10) / l11
+  l22 = wp.sqrt(wp.max(A[2, 2] - l20 * l20 - l21 * l21, mindiag))
+  return wp.mat33(l00, 0.0, 0.0, l10, l11, 0.0, l20, l21, l22)
+
+
+@wp.func
+def _eff_chol_diag_ok(A: wp.mat33, mindiag: float) -> bool:
+  """Whether every pivot of a 3x3 diagonal block exceeds mindiag."""
+  if not (A[0, 0] > mindiag):
+    return False
+  l00 = wp.sqrt(A[0, 0])
+  l10 = A[1, 0] / l00
+  l20 = A[2, 0] / l00
+  d1 = A[1, 1] - l10 * l10
+  if not (d1 > mindiag):
+    return False
+  l21 = (A[2, 1] - l20 * l10) / wp.sqrt(d1)
+  return A[2, 2] - l20 * l20 - l21 * l21 > mindiag
+
+
+@wp.func
+def _eff_chol_inv_lower(L: wp.mat33) -> wp.mat33:
+  """Inverse of a lower-triangular 3x3 block."""
+  a = 1.0 / L[0, 0]
+  b = 1.0 / L[1, 1]
+  c = 1.0 / L[2, 2]
+  i10 = -L[1, 0] * a * b
+  i21 = -L[2, 1] * b * c
+  i20 = -(L[2, 0] * a + L[2, 1] * i10) * c
+  return wp.mat33(a, 0.0, 0.0, i10, b, 0.0, i20, i21, c)
+
+
+@wp.func
+def _eff_chol_sinv(A: wp.mat33, mindiag: float) -> wp.mat33:
+  """Inverse of a diagonal block through its clamped 3x3 Cholesky factor, (L L')^-1."""
+  Li = _eff_chol_inv_lower(_eff_chol_diag(A, mindiag))
+  return wp.transpose(Li) * Li
 
 
 @wp.kernel
@@ -2194,6 +2505,10 @@ def _eff_flex_bend_stiff(
   verts = wp.vec4i(edge[0], edge[1], flap[0], flap[1])
   bend_offset = bendingadr + 17 * local_edgeid
 
+  # keep only convex stencils so the metric stays SPD
+  if not passive.flex_bend_convex(flex_bending, bend_offset):
+    return
+
   dofs = wp.vec4i(-1, -1, -1, -1)
   bodies = wp.vec4i(-1, -1, -1, -1)
   for k in range(4):
@@ -2430,7 +2745,7 @@ def _eff_factor_blocks(
 
 
 @wp.kernel
-def _eff_block_solve(
+def eff_block_solve(
   # Model:
   efm_dofid: wp.array[int],
   # Data in:
@@ -2441,29 +2756,7 @@ def _eff_block_solve(
   res_out: wp.array2d[float],
 ):
   worldid, k = wp.tid()
-  i = efm_dofid[k]
-  base = 9 * k
-  L00 = efm_L_in[worldid, base + 0]
-  L10 = efm_L_in[worldid, base + 3]
-  L11 = efm_L_in[worldid, base + 4]
-  L20 = efm_L_in[worldid, base + 6]
-  L21 = efm_L_in[worldid, base + 7]
-  L22 = efm_L_in[worldid, base + 8]
-
-  b0 = rhs_in[worldid, i]
-  b1 = rhs_in[worldid, i + 1]
-  b2 = rhs_in[worldid, i + 2]
-
-  r0 = b0 / L00
-  r1 = (b1 - L10 * r0) / L11
-  r2 = (b2 - (L20 * r0 + L21 * r1)) / L22
-  x2 = r2 / L22
-  x1 = (r1 - L21 * x2) / L11
-  x0 = (r0 - L10 * x1 - L20 * x2) / L00
-
-  res_out[worldid, i] = x0
-  res_out[worldid, i + 1] = x1
-  res_out[worldid, i + 2] = x2
+  _eff_block_solve_vertex(efm_dofid, efm_L_in, rhs_in, worldid, k, res_out)
 
 
 @wp.kernel
@@ -2527,7 +2820,7 @@ def _eff_prec_efm0_solve(
 
 
 @wp.kernel
-def _zero_sleeping_dofs(
+def zero_sleeping_dofs(
   # Model:
   dof_treeid: wp.array[int],
   # Data in:
@@ -2868,16 +3161,38 @@ def _pcg_beta_and_p_update_tiled(
   for dofid in range(tid, nv, BLOCK_DIM):
     local_rznew += efm_r_in[worldid, dofid] * efm_z_in[worldid, dofid]
 
+  rz = efm_rz_in[worldid]
   rz_tile = wp.tile(local_rznew, preserve_type=True)
   rz_sum = wp.tile_reduce(wp.add, rz_tile)
   rznew = rz_sum[0]
-  rz = efm_rz_in[worldid]
   beta = math.safe_div(rznew, rz)
   if tid == 0:
     efm_rz_out[worldid] = rznew
 
   for dofid in range(tid, nv, BLOCK_DIM):
     efm_p_out[worldid, dofid] = efm_z_in[worldid, dofid] + beta * efm_p_out[worldid, dofid]
+
+
+@cache_kernel
+def _pcg_check_convergence_warning(warn_overflow: int):
+  @wp.kernel(module="unique", enable_backward=False)
+  def kernel(
+    # In:
+    efm_done_in: wp.array[bool],
+    # Data out:
+    overflow_out: wp.array[int],
+  ):
+    worldid = wp.tid()
+    if not efm_done_in[worldid]:
+      if wp.static(bool(warn_overflow & OverflowType.ITERATIONS)):
+        wp.printf(
+          "eff_solve PCG did not converge (world %d)\n"
+          "To disable the print warning: m.opt.warn_overflow &= ~mjw.OverflowType.ITERATIONS (or = 0 for all)\n",
+          worldid,
+        )
+      overflow_out[worldid] = overflow_out[worldid] | wp.static(OverflowType.ITERATIONS)
+
+  return kernel
 
 
 @wp.kernel
@@ -3203,7 +3518,7 @@ def eff_shift(m: Model, d: Data):
       outputs=[d.efm_c],
     )
 
-  if m.has_flex_passive and not ((m.opt.disableflags & DisableBit.SPRING) and (m.opt.disableflags & DisableBit.DAMPER)):
+  if passive.flex_passive_contact(m):
     efm_con_dof, efm_con_val, efm_con_scale, _, efm_con_nnz = build_efm_contact(m, d)
     wp.launch(
       _eff_contact_shift,
@@ -3397,7 +3712,7 @@ def eff_mul_m_scratch(m: Model, d: Data) -> tuple[Optional[tuple], Optional[tupl
   eff_mul_m allocates them on each call if they are not passed, which is not allowed inside
   wp.capture_while: build them before the loop instead.
   """
-  efm_con = build_efm_contact(m, d) if m.has_flex_passive else None
+  efm_con = build_efm_contact(m, d) if passive.flex_passive_contact(m) else None
   flex_scratch = passive.flex_stretch_scratch(m, d) if m.nflex and m.nflexvert else None
   return efm_con, flex_scratch
 
@@ -3471,7 +3786,7 @@ def eff_mul_m(
       ],
       outputs=[res],
     )
-    if m.has_flex_passive:
+    if passive.flex_passive_contact(m):
       if efm_con is None:
         efm_con_dof, efm_con_val, efm_con_scale, _, efm_con_nnz = build_efm_contact(m, d)
       else:
@@ -3553,7 +3868,7 @@ def eff_mul_m(
       )
     if m.opt.enableflags & EnableBit.SLEEP:
       wp.launch(
-        _zero_sleeping_dofs,
+        zero_sleeping_dofs,
         dim=(d.nworld, m.nv),
         inputs=[m.dof_treeid, d.tree_awake],
         outputs=[res],
@@ -3776,13 +4091,410 @@ def _eff_factor_folded_blocks(
   )
 
 
+@wp.kernel
+def _eff_build_uncovered_map(
+  # Model:
+  nv: int,
+  efm_dofblk: wp.array[int],
+  # Out:
+  epU_out: wp.array[int],
+  ep_loc_out: wp.array[int],
+):
+  cnt = int(0)
+  for i in range(nv):
+    if efm_dofblk[i] < 0:
+      epU_out[cnt] = i
+      ep_loc_out[i] = cnt
+      cnt += 1
+    else:
+      ep_loc_out[i] = -1
+
+
+@wp.kernel
+def _eff_build_dense_uncovered_base(
+  # Model:
+  M_rownnz: wp.array[int],
+  M_rowadr: wp.array[int],
+  M_colind: wp.array[int],
+  has_fluid: bool,
+  # Data in:
+  M_in: wp.array2d[float],
+  efm_diag_in: wp.array2d[float],
+  efm_fluid_in: wp.array2d[float],
+  # In:
+  epU_in: wp.array[int],
+  ep_loc_in: wp.array[int],
+  # Out:
+  epS_out: wp.array3d[float],
+):
+  worldid, ua = wp.tid()
+  i = epU_in[ua]
+  wp.atomic_add(epS_out, worldid, ua, ua, efm_diag_in[worldid, i])
+  rowadr = M_rowadr[i]
+  rownnz = M_rownnz[i]
+  for a in range(rowadr, rowadr + rownnz):
+    j = M_colind[a]
+    ub = ep_loc_in[j]
+    if ub < 0:
+      continue
+    v = M_in[worldid, a]
+    if has_fluid:
+      v += efm_fluid_in[worldid, a]
+    wp.atomic_add(epS_out, worldid, ua, ub, v)
+    if ub != ua:
+      wp.atomic_add(epS_out, worldid, ub, ua, v)
+
+
+@wp.kernel
+def _eff_fold_dense_uncovered_tendon(
+  # Model:
+  ten_J_rownnz: wp.array[int],
+  ten_J_rowadr: wp.array[int],
+  ten_J_colind: wp.array[int],
+  # Data in:
+  ten_J_in: wp.array2d[float],
+  efm_ts_in: wp.array2d[float],
+  # In:
+  ep_loc_in: wp.array[int],
+  # Out:
+  epS_out: wp.array3d[float],
+):
+  worldid, t = wp.tid()
+  s = efm_ts_in[worldid, t]
+  if s == 0.0:
+    return
+  rowadr = ten_J_rowadr[t]
+  rownnz = ten_J_rownnz[t]
+  for a in range(rownnz):
+    ia = ten_J_colind[rowadr + a]
+    ua = ep_loc_in[ia]
+    if ua < 0:
+      continue
+    s_va = s * ten_J_in[worldid, rowadr + a]
+    for b in range(rownnz):
+      ib = ten_J_colind[rowadr + b]
+      ub = ep_loc_in[ib]
+      if ub >= 0:
+        vb = ten_J_in[worldid, rowadr + b]
+        wp.atomic_add(epS_out, worldid, ua, ub, s_va * vb)
+
+
+@wp.kernel
+def _eff_fold_dense_uncovered_actuator(
+  # Data in:
+  moment_rownnz_in: wp.array2d[int],
+  moment_rowadr_in: wp.array2d[int],
+  moment_colind_in: wp.array2d[int],
+  actuator_moment_in: wp.array2d[float],
+  efm_as_in: wp.array2d[float],
+  # In:
+  ep_loc_in: wp.array[int],
+  # Out:
+  epS_out: wp.array3d[float],
+):
+  worldid, u = wp.tid()
+  s = efm_as_in[worldid, u]
+  if s == 0.0:
+    return
+  rowadr = moment_rowadr_in[worldid, u]
+  rownnz = moment_rownnz_in[worldid, u]
+  for a in range(rownnz):
+    ia = moment_colind_in[worldid, rowadr + a]
+    ua = ep_loc_in[ia]
+    if ua < 0:
+      continue
+    s_va = s * actuator_moment_in[worldid, rowadr + a]
+    for b in range(rownnz):
+      ib = moment_colind_in[worldid, rowadr + b]
+      ub = ep_loc_in[ib]
+      if ub >= 0:
+        vb = actuator_moment_in[worldid, rowadr + b]
+        wp.atomic_add(epS_out, worldid, ua, ub, s_va * vb)
+
+
+@wp.kernel
+def _eff_fold_dense_uncovered_contact(
+  # Data in:
+  contact_worldid_in: wp.array[int],
+  nacon_in: wp.array[int],
+  # In:
+  efm_con_dof_in: wp.array2d[int],
+  efm_con_val_in: wp.array2d[float],
+  efm_con_scale_in: wp.array[float],
+  efm_con_nnz_in: wp.array[int],
+  ep_loc_in: wp.array[int],
+  # Out:
+  epS_out: wp.array3d[float],
+):
+  cid = wp.tid()
+  if cid >= nacon_in[0]:
+    return
+  scale = efm_con_scale_in[cid]
+  if scale == 0.0:
+    return
+  worldid = contact_worldid_in[cid]
+  nnz = efm_con_nnz_in[cid]
+  for a in range(nnz):
+    ia = efm_con_dof_in[cid, a]
+    ua = ep_loc_in[ia]
+    if ua < 0:
+      continue
+    scale_va = scale * efm_con_val_in[cid, a]
+    for b in range(nnz):
+      ib = efm_con_dof_in[cid, b]
+      ub = ep_loc_in[ib]
+      if ub >= 0:
+        vb = efm_con_val_in[cid, b]
+        wp.atomic_add(epS_out, worldid, ua, ub, scale_va * vb)
+
+
+@wp.kernel
+def _eff_fold_dense_uncovered_efc(
+  # Model:
+  is_sparse: bool,
+  # Data in:
+  nefc_in: wp.array[int],
+  efc_J_rownnz_in: wp.array2d[int],
+  efc_J_rowadr_in: wp.array2d[int],
+  efc_J_colind_in: wp.array3d[int],
+  efc_J_in: wp.array3d[float],
+  efc_D_in: wp.array2d[float],
+  # In:
+  n_u: int,
+  epU_in: wp.array[int],
+  ep_loc_in: wp.array[int],
+  # Out:
+  epS_out: wp.array3d[float],
+):
+  worldid, r = wp.tid()
+  if r >= nefc_in[worldid]:
+    return
+  D = efc_D_in[worldid, r]
+  if D <= 0.0:
+    return
+  if is_sparse:
+    adr = efc_J_rowadr_in[worldid, r]
+    nnz = efc_J_rownnz_in[worldid, r]
+    for a in range(nnz):
+      ia = efc_J_colind_in[worldid, 0, adr + a]
+      ua = ep_loc_in[ia]
+      if ua < 0:
+        continue
+      D_ja = D * efc_J_in[worldid, 0, adr + a]
+      for b in range(nnz):
+        ib = efc_J_colind_in[worldid, 0, adr + b]
+        ub = ep_loc_in[ib]
+        if ub >= 0:
+          jb = efc_J_in[worldid, 0, adr + b]
+          wp.atomic_add(epS_out, worldid, ua, ub, D_ja * jb)
+  else:
+    for ua in range(n_u):
+      ia = epU_in[ua]
+      ja = efc_J_in[worldid, r, ia]
+      if ja == 0.0:
+        continue
+      D_ja = D * ja
+      for ub in range(n_u):
+        ib = epU_in[ub]
+        jb = efc_J_in[worldid, r, ib]
+        if jb != 0.0:
+          wp.atomic_add(epS_out, worldid, ua, ub, D_ja * jb)
+
+
+@wp.kernel
+def _eff_pad_and_clamp_dense_uncovered(
+  # In:
+  n_u: int,
+  # Out:
+  epS_out: wp.array3d[float],
+):
+  worldid, ua = wp.tid()
+  if ua < n_u:
+    epS_out[worldid, ua, ua] = wp.max(epS_out[worldid, ua, ua], MJ_MINVAL)
+  else:
+    epS_out[worldid, ua, ua] = 1.0
+
+
+@cache_kernel
+def _eff_cholesky_factor(tile_size: int):
+  @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
+  def kernel(
+    # Out:
+    epS_out: wp.array3d[float],
+  ):
+    worldid = wp.tid()
+    TILE_SIZE = wp.static(tile_size)
+    mat_tile = wp.tile_load(epS_out[worldid], shape=(TILE_SIZE, TILE_SIZE))
+    wp.tile_cholesky_inplace(mat_tile, fill_mode="upper")
+    wp.tile_store(epS_out[worldid], mat_tile)
+
+  return kernel
+
+
+@cache_kernel
+def _eff_cholesky_factor_blocked(tile_size: int, matrix_size: int):
+  @wp.kernel(module="unique", enable_backward=False, grid_stride=False, module_options={"enable_mathdx_gemm": False})
+  def kernel(
+    # In:
+    epS_in: wp.array3d[float],
+    epS_rhs_in: wp.array3d[float],
+    # Out:
+    epS_factor_out: wp.array3d[float],
+    epS_sol_out: wp.array3d[float],
+  ):
+    worldid = wp.tid()
+    TILE_SIZE = wp.static(tile_size)
+    wp.static(create_blocked_cholesky_factorize_solve_func(TILE_SIZE, matrix_size))(
+      epS_in[worldid],
+      epS_rhs_in[worldid],
+      matrix_size,
+      epS_factor_out[worldid],
+      epS_sol_out[worldid],
+    )
+
+  return kernel
+
+
+# the uncovered dense block's inverse is formed when its padded size fits one shared-memory tile
+EFF_UNCOVERED_INV_MAX = 64
+
+
+@cache_kernel
+def _eff_uncovered_inverse(size: int, factored: bool):
+  @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
+  def kernel(
+    # In:
+    epS_factor_in: wp.array3d[float],
+    # Out:
+    epS_out: wp.array3d[float],
+  ):
+    """Overwrites epS with the inverse of the uncovered block, A^-1 = U^-1 U^-T for A = U'U.
+
+    Without factored, epS holds A and is factored here.
+    """
+    worldid = wp.tid()
+    if wp.static(factored):
+      U = wp.tile_load(epS_factor_in[worldid], shape=(size, size), storage="shared")
+    else:
+      U = wp.tile_load(epS_out[worldid], shape=(size, size), storage="shared")
+      wp.tile_cholesky_inplace(U, fill_mode="upper")
+    eye = wp.tile_diag_add(wp.tile_zeros(shape=(size, size), dtype=float), wp.tile_ones(shape=size, dtype=float))
+    Y = wp.tile_upper_solve(U, eye)
+    inv = wp.tile_zeros(shape=(size, size), dtype=float)
+    wp.tile_matmul(Y, wp.tile_transpose(Y), inv)
+    wp.tile_store(epS_out[worldid], inv)
+
+  return kernel
+
+
+@wp.kernel
+def _eff_uncovered_inv_mul(
+  # In:
+  n_u: int,
+  epU_in: wp.array[int],
+  epS_in: wp.array3d[float],
+  vec_in: wp.array2d[float],
+  # Out:
+  res_out: wp.array2d[float],
+):
+  """Res = A^-1 vec on uncovered dof a, from the uncovered block's inverse."""
+  worldid, a = wp.tid()
+  s = float(0.0)
+  for b in range(n_u):
+    s += epS_in[worldid, a, b] * vec_in[worldid, epU_in[b]]
+  res_out[worldid, epU_in[a]] = s
+
+
+@wp.kernel
+def _eff_gather_uncovered_rhs(
+  # In:
+  n_u: int,
+  epU_in: wp.array[int],
+  vec_in: wp.array2d[float],
+  # Out:
+  epS_rhs_out: wp.array2d[float],
+):
+  worldid, ua = wp.tid()
+  if ua < n_u:
+    epS_rhs_out[worldid, ua] = vec_in[worldid, epU_in[ua]]
+  else:
+    epS_rhs_out[worldid, ua] = 0.0
+
+
+@cache_kernel
+def _eff_cholesky_solve(tile_size: int):
+  @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
+  def kernel(
+    # In:
+    epS_in: wp.array3d[float],
+    epS_rhs_in: wp.array2d[float],
+    # Out:
+    epS_sol_out: wp.array2d[float],
+  ):
+    worldid = wp.tid()
+    TILE_SIZE = wp.static(tile_size)
+    mat_tile = wp.tile_load(epS_in[worldid], shape=(TILE_SIZE, TILE_SIZE))
+    rhs_tile = wp.tile_load(epS_rhs_in[worldid], shape=TILE_SIZE)
+    sol_tile = wp.tile_cholesky_solve(mat_tile, rhs_tile, fill_mode="upper")
+    wp.tile_store(epS_sol_out[worldid], sol_tile)
+
+  return kernel
+
+
+@cache_kernel
+def _eff_cholesky_solve_blocked(tile_size: int, matrix_size: int):
+  @wp.kernel(module="unique", enable_backward=False, grid_stride=False, module_options={"enable_mathdx_gemm": False})
+  def kernel(
+    # In:
+    epS_factor_in: wp.array3d[float],
+    epS_rhs_in: wp.array3d[float],
+    # Out:
+    epS_sol_out: wp.array3d[float],
+  ):
+    worldid = wp.tid()
+    TILE_SIZE = wp.static(tile_size)
+    wp.static(create_blocked_cholesky_solve_func(TILE_SIZE, matrix_size))(
+      epS_factor_in[worldid],
+      epS_rhs_in[worldid],
+      matrix_size,
+      epS_sol_out[worldid],
+    )
+
+  return kernel
+
+
+@wp.kernel
+def _eff_scatter_uncovered_sol(
+  # In:
+  epU_in: wp.array[int],
+  epS_sol_in: wp.array2d[float],
+  # Out:
+  res_out: wp.array2d[float],
+):
+  worldid, ua = wp.tid()
+  res_out[worldid, epU_in[ua]] = epS_sol_in[worldid, ua]
+
+
 @event_scope
-def eff_prec_fold(m: Model, d: Data, out: Optional[wp.array] = None) -> wp.array:
+def eff_prec_fold(
+  m: Model,
+  d: Data,
+  out: Optional[wp.array] = None,
+  epB: Optional[wp.array] = None,
+  efm_con: Optional[tuple] = None,
+  epS: Optional[wp.array] = None,
+  epS_factor: Optional[wp.array] = None,
+  epS_rhs: Optional[wp.array] = None,
+  epS_sol: Optional[wp.array] = None,
+  epU: Optional[wp.array] = None,
+  ep_loc: Optional[wp.array] = None,
+) -> wp.array:
   """Folds rank-1 metric terms and active/inactive efc rows into 3x3 preconditioner blocks."""
   epL = out if out is not None else wp.empty_like(d.efm_L)
   if m.nefmdof == 0:
     return epL
-  epB = wp.empty_like(d.efm_L)
+  if epB is None:
+    epB = wp.empty_like(d.efm_L)
   dofblk = m.efm_dofblk
 
   wp.launch(
@@ -3853,8 +4565,11 @@ def eff_prec_fold(m: Model, d: Data, out: Optional[wp.array] = None) -> wp.array
       outputs=[epB],
     )
 
-  if m.has_flex_passive:
-    efm_con_dof, efm_con_val, efm_con_scale, _, efm_con_nnz = build_efm_contact(m, d)
+  con_tuple = efm_con
+  if passive.flex_passive_contact(m):
+    if con_tuple is None:
+      con_tuple = build_efm_contact(m, d)
+    efm_con_dof, efm_con_val, efm_con_scale, _, efm_con_nnz = con_tuple
     wp.launch(
       _eff_fold_contact_rank1,
       dim=d.naconmax,
@@ -3877,7 +4592,1918 @@ def eff_prec_fold(m: Model, d: Data, out: Optional[wp.array] = None) -> wp.array
     inputs=[epB],
     outputs=[epL],
   )
+
+  if epS is not None and epU is not None and ep_loc is not None:
+    n_u = epU.shape[0]
+    n_u_pad = epS.shape[1]
+    wp.launch(
+      _eff_build_uncovered_map,
+      dim=1,
+      inputs=[m.nv, dofblk],
+      outputs=[epU, ep_loc],
+    )
+    epS.zero_()
+    wp.launch(
+      _eff_build_dense_uncovered_base,
+      dim=(d.nworld, n_u),
+      inputs=[
+        m.M_rownnz,
+        m.M_rowadr,
+        m.M_colind,
+        m.has_fluid,
+        d.M,
+        d.efm_diag,
+        d.efm_fluid,
+        epU,
+        ep_loc,
+      ],
+      outputs=[epS],
+    )
+    wp.launch(
+      _eff_fold_dense_uncovered_tendon,
+      dim=(d.nworld, m.ntendon),
+      inputs=[
+        m.ten_J_rownnz,
+        m.ten_J_rowadr,
+        m.ten_J_colind,
+        d.ten_J,
+        d.efm_ts,
+        ep_loc,
+      ],
+      outputs=[epS],
+    )
+    wp.launch(
+      _eff_fold_dense_uncovered_actuator,
+      dim=(d.nworld, m.nactuator),
+      inputs=[
+        d.moment_rownnz,
+        d.moment_rowadr,
+        d.moment_colind,
+        d.actuator_moment,
+        d.efm_as,
+        ep_loc,
+      ],
+      outputs=[epS],
+    )
+    if passive.flex_passive_contact(m) and con_tuple is not None:
+      efm_con_dof, efm_con_val, efm_con_scale, _, efm_con_nnz = con_tuple
+      wp.launch(
+        _eff_fold_dense_uncovered_contact,
+        dim=d.naconmax,
+        inputs=[
+          d.contact.worldid,
+          d.nacon,
+          efm_con_dof,
+          efm_con_val,
+          efm_con_scale,
+          efm_con_nnz,
+          ep_loc,
+        ],
+        outputs=[epS],
+      )
+    wp.launch(
+      _eff_fold_dense_uncovered_efc,
+      dim=(d.nworld, d.njmax),
+      inputs=[
+        m.is_sparse,
+        d.nefc,
+        d.efc.J_rownnz,
+        d.efc.J_rowadr,
+        d.efc.J_colind,
+        d.efc.J,
+        d.efc.D,
+        n_u,
+        epU,
+        ep_loc,
+      ],
+      outputs=[epS],
+    )
+    wp.launch(
+      _eff_pad_and_clamp_dense_uncovered,
+      dim=(d.nworld, n_u_pad),
+      inputs=[n_u],
+      outputs=[epS],
+    )
+    if n_u_pad <= EFF_UNCOVERED_INV_MAX and (n_u <= 32 or epS_factor is not None):
+      factored = n_u > 32
+      if factored:
+        epS_rhs.zero_()
+        wp.launch_tiled(
+          _eff_cholesky_factor_blocked(TILE_SIZE_JTDAJ_DENSE, n_u_pad),
+          dim=d.nworld,
+          inputs=[epS, epS_rhs.reshape(shape=(d.nworld, n_u_pad, 1))],
+          outputs=[epS_factor, epS_sol.reshape(shape=(d.nworld, n_u_pad, 1))],
+          block_dim=m.block_dim.update_gradient_cholesky_blocked,
+        )
+      wp.launch_tiled(
+        _eff_uncovered_inverse(n_u_pad, factored),
+        dim=d.nworld,
+        inputs=[epS_factor if factored else epS],
+        outputs=[epS],
+        block_dim=m.block_dim.update_gradient_cholesky,
+      )
+    elif n_u <= 32:
+      wp.launch_tiled(
+        _eff_cholesky_factor(n_u),
+        dim=d.nworld,
+        inputs=[],
+        outputs=[epS],
+        block_dim=m.block_dim.update_gradient_cholesky,
+      )
+    elif epS_factor is not None and epS_rhs is not None and epS_sol is not None:
+      epS_rhs.zero_()
+      wp.launch_tiled(
+        _eff_cholesky_factor_blocked(TILE_SIZE_JTDAJ_DENSE, n_u_pad),
+        dim=d.nworld,
+        inputs=[epS, epS_rhs.reshape(shape=(d.nworld, n_u_pad, 1))],
+        outputs=[epS_factor, epS_sol.reshape(shape=(d.nworld, n_u_pad, 1))],
+        block_dim=m.block_dim.update_gradient_cholesky_blocked,
+      )
+
   return epL
+
+
+# MuJoCo C EFF_CHOL_PIVOT: pivots below this fraction of the largest diagonal are rank deficient
+EFF_CHOL_PIVOT = 1.0e-12
+# vertex pair key stride: covered blocks have at most 8192 vertices (Model.efm_chol)
+EFF_CHOL_KEY = 8192
+# dense root: the top levels of the elimination tree (at most ROOT_MAX vertices, used from ROOT_MIN)
+# are factored as one dense block in ROOT_TILE x ROOT_TILE tiles
+EFF_CHOL_ROOT_MAX = 448
+EFF_CHOL_ROOT_MIN = 8
+# bytes of D and Dinv over all worlds, sized to stay resident in a large L2 (96 MB on RTX 6000 Ada)
+EFF_CHOL_ROOT_BYTES = 80 * 1024 * 1024
+EFF_CHOL_ROOT_TILE = 32
+# dense root solve: rows split into chunks of this many columns
+EFF_CHOL_ROOT_CHUNK = 32
+
+
+@wp.func_native(snippet="WP_TILE_SYNC();")
+def _eff_chol_sync(): ...
+
+
+def eff_chol_active(m: Model) -> bool:
+  """Whether the covered flex block uses the Cholesky preconditioner (MuJoCo C effCholApplies)."""
+  return bool(m.efm_chol and m.opt.integrator == IntegratorType.DISCRETE and (m.opt.enableflags & EnableBit.IPC))
+
+
+def create_eff_chol_context(m: Model, nworld: int, njmax: int) -> EffCholContext:
+  """Allocates the covered-block Cholesky preconditioner workspace.
+
+  The per-solve pattern grows with the vertex pairs the folded terms couple, so the buffers scale
+  with njmax: room for six pairs per constraint row, and a factor of four times the static factor's
+  blocks plus two blocks per pair. A world that outgrows them reports OverflowType.PRECONDITIONER
+  and leaves the preconditioner on its 3x3 blocks for that solve.
+  """
+  nb = m.nefmdof
+  nxmax = max(6 * njmax, 1)
+  namax = m.nefmcholadj // 2 + nxmax
+  nlmax = 4 * m.nefmcholL + 2 * nxmax
+  tile = EFF_CHOL_ROOT_TILE
+  # dense root size: the largest whose D and Dinv over all worlds stay within the L2-sized budget
+  rmax = min(nb, EFF_CHOL_ROOT_MAX, int((EFF_CHOL_ROOT_BYTES / (8 * max(nworld, 1))) ** 0.5) // 3)
+  nrd = (3 * rmax + tile - 1) // tile * tile
+  return EffCholContext(
+    Ld=wp.empty((nworld, nb), dtype=wp.mat33),
+    Lo=wp.empty((nworld, nlmax), dtype=wp.mat33),
+    Sinv=wp.empty((nworld, nb), dtype=wp.mat33),
+    colptr=wp.empty((nworld, nb + 1), dtype=int),
+    rowind=wp.empty((nworld, nlmax), dtype=int),
+    lvlptr=wp.empty((nworld, nb + 1), dtype=int),
+    lvlcol=wp.empty((nworld, nb), dtype=int),
+    pairptr=wp.empty((nworld, nb + 1), dtype=int),
+    entptr=wp.empty((nworld, nb + 1), dtype=int),
+    nlevel=wp.empty(nworld, dtype=int),
+    lvlent=wp.empty((nworld, nb + 1), dtype=int),
+    ent=wp.empty((nworld, nlmax), dtype=wp.vec3i),
+    xcount=wp.empty(nworld, dtype=int),
+    xpair=wp.empty((nworld, nxmax), dtype=wp.vec2i),
+    xhash=wp.empty((nworld, 1 << (2 * nxmax - 1).bit_length()), dtype=int),
+    aptr=wp.empty((nworld, nb + 1), dtype=int),
+    aend=wp.empty((nworld, nb), dtype=int),
+    adj=wp.empty((nworld, namax), dtype=int),
+    adjpost=wp.empty((nworld, namax), dtype=int),
+    parent=wp.empty((nworld, nb), dtype=int),
+    first=wp.empty((nworld, nb), dtype=int),
+    post=wp.empty((nworld, nb), dtype=int),
+    level=wp.empty((nworld, nb), dtype=int),
+    cnt=wp.empty((nworld, nb), dtype=int),
+    cur=wp.empty((nworld, nb), dtype=int),
+    rootlv=wp.empty(nworld, dtype=int),
+    nroot=wp.empty(nworld, dtype=int),
+    rpos=wp.empty((nworld, nb), dtype=int),
+    ridx=wp.empty((nworld, nrd), dtype=int),
+    D=wp.empty((nworld, nrd, nrd), dtype=float),
+    Dinv=wp.empty((nworld, nrd, nrd), dtype=float),
+    mindiag=wp.empty(nworld, dtype=float),
+    rvec=wp.empty((nworld, nrd), dtype=float),
+    y=wp.empty((nworld, 1, 3 * nb), dtype=float),
+    acc=wp.empty((nworld, 3 * nb), dtype=float),
+    status=wp.empty(nworld, dtype=bool),
+  )
+
+
+@wp.kernel
+def _eff_chol_rank1_tendon(
+  # Model:
+  ten_J_rownnz: wp.array[int],
+  ten_J_rowadr: wp.array[int],
+  ten_J_colind: wp.array[int],
+  efm_dofid: wp.array[int],
+  efm_dofblk: wp.array[int],
+  efm_chol_rank: wp.array[int],
+  efm_chol_adjptr: wp.array[int],
+  efm_chol_adj: wp.array[int],
+  # Data in:
+  ten_J_in: wp.array2d[float],
+  efm_ts_in: wp.array2d[float],
+  # In:
+  fold: bool,
+  colptr_in: wp.array2d[int],
+  rowind_in: wp.array2d[int],
+  status_in: wp.array[bool],
+  # Out:
+  xcount_out: wp.array[int],
+  xpair_out: wp.array2d[wp.vec2i],
+  xhash_out: wp.array2d[int],
+  Ld_out: wp.array2d[wp.mat33],
+  Lo_out: wp.array2d[wp.mat33],
+):
+  worldid, t = wp.tid()
+  if fold and not status_in[worldid]:
+    return
+  s = efm_ts_in[worldid, t]
+  if s <= 0.0:
+    return
+  adr = ten_J_rowadr[t]
+  nnz = ten_J_rownnz[t]
+  if fold:
+    _eff_chol_row_fold(
+      efm_dofid,
+      efm_dofblk,
+      efm_chol_rank,
+      worldid,
+      s,
+      ten_J_colind,
+      ten_J_in[worldid],
+      adr,
+      nnz,
+      False,
+      colptr_in[worldid],
+      rowind_in[worldid],
+      Ld_out,
+      Lo_out,
+    )
+  else:
+    _eff_chol_row_pairs(
+      efm_dofblk,
+      efm_chol_adjptr,
+      efm_chol_adj,
+      worldid,
+      ten_J_colind,
+      ten_J_in[worldid],
+      adr,
+      nnz,
+      False,
+      xcount_out,
+      xpair_out,
+      xhash_out,
+    )
+
+
+@wp.kernel
+def _eff_chol_rank1_actuator(
+  # Model:
+  efm_dofid: wp.array[int],
+  efm_dofblk: wp.array[int],
+  efm_chol_rank: wp.array[int],
+  efm_chol_adjptr: wp.array[int],
+  efm_chol_adj: wp.array[int],
+  # Data in:
+  moment_rownnz_in: wp.array2d[int],
+  moment_rowadr_in: wp.array2d[int],
+  moment_colind_in: wp.array2d[int],
+  actuator_moment_in: wp.array2d[float],
+  efm_as_in: wp.array2d[float],
+  # In:
+  fold: bool,
+  colptr_in: wp.array2d[int],
+  rowind_in: wp.array2d[int],
+  status_in: wp.array[bool],
+  # Out:
+  xcount_out: wp.array[int],
+  xpair_out: wp.array2d[wp.vec2i],
+  xhash_out: wp.array2d[int],
+  Ld_out: wp.array2d[wp.mat33],
+  Lo_out: wp.array2d[wp.mat33],
+):
+  worldid, u = wp.tid()
+  if fold and not status_in[worldid]:
+    return
+  s = efm_as_in[worldid, u]
+  if s <= 0.0:
+    return
+  adr = moment_rowadr_in[worldid, u]
+  nnz = moment_rownnz_in[worldid, u]
+  if fold:
+    _eff_chol_row_fold(
+      efm_dofid,
+      efm_dofblk,
+      efm_chol_rank,
+      worldid,
+      s,
+      moment_colind_in[worldid],
+      actuator_moment_in[worldid],
+      adr,
+      nnz,
+      False,
+      colptr_in[worldid],
+      rowind_in[worldid],
+      Ld_out,
+      Lo_out,
+    )
+  else:
+    _eff_chol_row_pairs(
+      efm_dofblk,
+      efm_chol_adjptr,
+      efm_chol_adj,
+      worldid,
+      moment_colind_in[worldid],
+      actuator_moment_in[worldid],
+      adr,
+      nnz,
+      False,
+      xcount_out,
+      xpair_out,
+      xhash_out,
+    )
+
+
+@wp.kernel
+def _eff_chol_efc_sparse(
+  # Model:
+  efm_dofid: wp.array[int],
+  efm_dofblk: wp.array[int],
+  efm_chol_rank: wp.array[int],
+  efm_chol_adjptr: wp.array[int],
+  efm_chol_adj: wp.array[int],
+  # Data in:
+  nefc_in: wp.array[int],
+  efc_J_rownnz_in: wp.array2d[int],
+  efc_J_rowadr_in: wp.array2d[int],
+  efc_J_colind_in: wp.array3d[int],
+  efc_J_in: wp.array3d[float],
+  efc_D_in: wp.array2d[float],
+  # In:
+  fold: bool,
+  colptr_in: wp.array2d[int],
+  rowind_in: wp.array2d[int],
+  status_in: wp.array[bool],
+  # Out:
+  xcount_out: wp.array[int],
+  xpair_out: wp.array2d[wp.vec2i],
+  xhash_out: wp.array2d[int],
+  Ld_out: wp.array2d[wp.mat33],
+  Lo_out: wp.array2d[wp.mat33],
+):
+  worldid, r = wp.tid()
+  if fold and not status_in[worldid]:
+    return
+  if r >= nefc_in[worldid]:
+    return
+  D = efc_D_in[worldid, r]
+  if D <= 0.0:
+    return
+  adr = efc_J_rowadr_in[worldid, r]
+  nnz = efc_J_rownnz_in[worldid, r]
+  if fold:
+    _eff_chol_row_fold(
+      efm_dofid,
+      efm_dofblk,
+      efm_chol_rank,
+      worldid,
+      D,
+      efc_J_colind_in[worldid, 0],
+      efc_J_in[worldid, 0],
+      adr,
+      nnz,
+      False,
+      colptr_in[worldid],
+      rowind_in[worldid],
+      Ld_out,
+      Lo_out,
+    )
+  else:
+    _eff_chol_row_pairs(
+      efm_dofblk,
+      efm_chol_adjptr,
+      efm_chol_adj,
+      worldid,
+      efc_J_colind_in[worldid, 0],
+      efc_J_in[worldid, 0],
+      adr,
+      nnz,
+      False,
+      xcount_out,
+      xpair_out,
+      xhash_out,
+    )
+
+
+@wp.kernel
+def _eff_chol_efc_dense(
+  # Model:
+  nv: int,
+  efm_dofid: wp.array[int],
+  efm_dofblk: wp.array[int],
+  efm_chol_rank: wp.array[int],
+  efm_chol_adjptr: wp.array[int],
+  efm_chol_adj: wp.array[int],
+  # Data in:
+  nefc_in: wp.array[int],
+  efc_J_in: wp.array3d[float],
+  efc_D_in: wp.array2d[float],
+  # In:
+  fold: bool,
+  colptr_in: wp.array2d[int],
+  rowind_in: wp.array2d[int],
+  status_in: wp.array[bool],
+  # Out:
+  xcount_out: wp.array[int],
+  xpair_out: wp.array2d[wp.vec2i],
+  xhash_out: wp.array2d[int],
+  Ld_out: wp.array2d[wp.mat33],
+  Lo_out: wp.array2d[wp.mat33],
+):
+  worldid, r = wp.tid()
+  if fold and not status_in[worldid]:
+    return
+  if r >= nefc_in[worldid]:
+    return
+  D = efc_D_in[worldid, r]
+  if D <= 0.0:
+    return
+  if fold:
+    _eff_chol_row_fold(
+      efm_dofid,
+      efm_dofblk,
+      efm_chol_rank,
+      worldid,
+      D,
+      efm_dofid,
+      efc_J_in[worldid, r],
+      0,
+      nv,
+      True,
+      colptr_in[worldid],
+      rowind_in[worldid],
+      Ld_out,
+      Lo_out,
+    )
+  else:
+    _eff_chol_row_pairs(
+      efm_dofblk,
+      efm_chol_adjptr,
+      efm_chol_adj,
+      worldid,
+      efm_dofid,
+      efc_J_in[worldid, r],
+      0,
+      nv,
+      True,
+      xcount_out,
+      xpair_out,
+      xhash_out,
+    )
+
+
+@wp.kernel
+def _eff_chol_adj_count(
+  # Model:
+  efm_chol_rank: wp.array[int],
+  efm_chol_vert: wp.array[int],
+  efm_chol_adjptr: wp.array[int],
+  efm_chol_adj: wp.array[int],
+  # Out:
+  cnt_out: wp.array2d[int],
+):
+  """Counts the flex edge neighbors earlier in the elimination order of the vertex at rank i."""
+  worldid, i = wp.tid()
+  k = efm_chol_vert[i]
+  c = int(0)
+  for p in range(efm_chol_adjptr[k], efm_chol_adjptr[k + 1]):
+    if efm_chol_rank[efm_chol_adj[p]] < i:
+      c += 1
+  cnt_out[worldid, i] = c
+
+
+@wp.kernel
+def _eff_chol_adj_count_extra(
+  # Model:
+  efm_chol_rank: wp.array[int],
+  # In:
+  xcount_in: wp.array[int],
+  xpair_in: wp.array2d[wp.vec2i],
+  # Out:
+  cnt_out: wp.array2d[int],
+):
+  """Counts each extra pair on the row of its later vertex in the elimination order."""
+  worldid, x = wp.tid()
+  if x >= xcount_in[worldid]:
+    return
+  pr = xpair_in[worldid, x]
+  wp.atomic_add(cnt_out, worldid, wp.max(efm_chol_rank[pr[0]], efm_chol_rank[pr[1]]), 1)
+
+
+@wp.kernel(module="unique", enable_backward=False)
+def _eff_chol_adj_scan(
+  # Model:
+  nefmdof: int,
+  # In:
+  cnt_in: wp.array2d[int],
+  # Out:
+  aptr_out: wp.array2d[int],
+):
+  """Row starts of the lower adjacency, one block per world."""
+  worldid, tid = wp.tid()
+  nthread = wp.block_dim()
+  chunk = (nefmdof + nthread - 1) // nthread
+  s0 = wp.min(tid * chunk, nefmdof)
+  s1 = wp.min(s0 + chunk, nefmdof)
+  local = int(0)
+  for i in range(s0, s1):
+    local += cnt_in[worldid, i]
+  run = _eff_chol_block_scan(local)
+  for i in range(s0, s1):
+    aptr_out[worldid, i] = run
+    run += cnt_in[worldid, i]
+  if tid == nthread - 1:
+    aptr_out[worldid, nefmdof] = run
+
+
+@wp.kernel
+def _eff_chol_adj_fill(
+  # Model:
+  efm_chol_rank: wp.array[int],
+  efm_chol_vert: wp.array[int],
+  efm_chol_adjptr: wp.array[int],
+  efm_chol_adj: wp.array[int],
+  # In:
+  aptr_in: wp.array2d[int],
+  # Out:
+  adj_out: wp.array2d[int],
+  cur_out: wp.array2d[int],
+):
+  """Writes the earlier flex edge neighbors of the vertex at rank i, by rank."""
+  worldid, i = wp.tid()
+  k = efm_chol_vert[i]
+  pos = aptr_in[worldid, i]
+  for p in range(efm_chol_adjptr[k], efm_chol_adjptr[k + 1]):
+    r = efm_chol_rank[efm_chol_adj[p]]
+    if r < i:
+      adj_out[worldid, pos] = r
+      pos += 1
+  cur_out[worldid, i] = pos
+
+
+@wp.kernel
+def _eff_chol_adj_fill_extra(
+  # Model:
+  efm_chol_rank: wp.array[int],
+  # In:
+  xcount_in: wp.array[int],
+  xpair_in: wp.array2d[wp.vec2i],
+  # Out:
+  adj_out: wp.array2d[int],
+  cur_out: wp.array2d[int],
+):
+  """Appends each extra pair to the row of its later vertex in the elimination order."""
+  worldid, x = wp.tid()
+  if x >= xcount_in[worldid]:
+    return
+  pr = xpair_in[worldid, x]
+  ra = efm_chol_rank[pr[0]]
+  rb = efm_chol_rank[pr[1]]
+  slot = wp.atomic_add(cur_out, worldid, wp.max(ra, rb), 1)
+  adj_out[worldid, slot] = wp.min(ra, rb)
+
+
+@wp.kernel
+def _eff_chol_adj_sort(
+  # In:
+  aptr_in: wp.array2d[int],
+  # Out:
+  aend_out: wp.array2d[int],
+  adj_out: wp.array2d[int],
+):
+  """Sorts and deduplicates the lower adjacency of the vertex at rank i."""
+  worldid, i = wp.tid()
+  start = aptr_in[worldid, i]
+  end = aptr_in[worldid, i + 1]
+  adj = adj_out[worldid]
+  for p in range(start + 1, end):
+    v = adj[p]
+    q = p
+    while q > start and adj[q - 1] > v:
+      adj[q] = adj[q - 1]
+      q -= 1
+    adj[q] = v
+  wpos = start
+  for p in range(start, end):
+    if p == start or adj[p] != adj[p - 1]:
+      adj[wpos] = adj[p]
+      wpos += 1
+  aend_out[worldid, i] = wpos
+
+
+@wp.kernel(module="unique", enable_backward=False)
+def _eff_chol_etree(
+  # Model:
+  nefmdof: int,
+  # In:
+  aptr_in: wp.array2d[int],
+  aend_in: wp.array2d[int],
+  adj_in: wp.array2d[int],
+  # Out:
+  parent_out: wp.array2d[int],
+  first_out: wp.array2d[int],
+  post_out: wp.array2d[int],
+  level_out: wp.array2d[int],
+  cnt_out: wp.array2d[int],
+  cur_out: wp.array2d[int],
+  lvlptr_out: wp.array2d[int],
+  lvlcol_out: wp.array2d[int],
+  nlevel_out: wp.array[int],
+  rootlv_out: wp.array[int],
+  nroot_out: wp.array[int],
+  rpos_out: wp.array2d[int],
+  ridx_out: wp.array2d[int],
+):
+  """Elimination tree, postorder intervals and levels of the lower adjacency, one block per world.
+
+  The tree uses Liu's algorithm with path compression; the threads climb from a row's neighbors
+  together. Each vertex's subtree occupies the postorder interval [first, post], and the levels
+  group the columns that factor together. The top levels become the dense root (rpos: position in
+  the root, or -1).
+  """
+  worldid, tid = wp.tid()
+  nthread = wp.block_dim()
+  nb = nefmdof
+  parent = parent_out[worldid]
+  first = first_out[worldid]
+  post = post_out[worldid]
+  level = level_out[worldid]
+  cnt = cnt_out[worldid]
+  cur = cur_out[worldid]
+  aptr = aptr_in[worldid]
+  aend = aend_in[worldid]
+  adj = adj_in[worldid]
+
+  rpos = rpos_out[worldid]
+  lvlptr = lvlptr_out[worldid]
+  lvlcol = lvlcol_out[worldid]
+
+  # elimination tree: cur holds the compressed ancestors; concurrent climbs only write i into cur
+  # and parent, so a thread reading i stops where another thread's climb continues
+  for j in range(tid, nb, nthread):
+    parent[j] = -1
+    cur[j] = -1
+    first[j] = 1
+    level[j] = 0
+    rpos[j] = -1
+  _eff_chol_sync()
+  for i in range(nb):
+    for p in range(aptr[i] + tid, aend[i], nthread):
+      r = adj[p]
+      while r >= 0:
+        a = cur[r]
+        cur[r] = i
+        if a < 0:
+          parent[r] = i
+          r = -1
+        elif a == i:
+          r = -1
+        else:
+          r = a
+    _eff_chol_sync()
+
+  # subtree sizes (in first) and levels: children precede their parents
+  if tid == 0:
+    for j in range(nb):
+      p = parent[j]
+      if p >= 0:
+        first[p] += first[j]
+        level[p] = wp.max(level[p], level[j] + 1)
+  _eff_chol_sync()
+
+  # columns grouped by level, cnt is the level cursor
+  nlevel_local = int(0)
+  for j in range(tid, nb, nthread):
+    nlevel_local = wp.max(nlevel_local, level[j] + 1)
+  nlevel = wp.tile_reduce(wp.max, wp.tile(nlevel_local))[0]
+  for lv in range(tid, nlevel + 1, nthread):
+    lvlptr[lv] = 0
+  _eff_chol_sync()
+  for j in range(tid, nb, nthread):
+    wp.atomic_add(lvlptr, level[j] + 1, 1)
+  _eff_chol_sync()
+
+  if tid == 0:
+    for lv in range(nlevel):
+      lvlptr[lv + 1] += lvlptr[lv]
+      cnt[lv] = lvlptr[lv]
+
+    # postorder intervals: parents precede their children in reverse order, cur is the child cursor
+    root = int(0)
+    for jr in range(nb):
+      j = nb - 1 - jr
+      size = first[j]
+      p = parent[j]
+      start = root
+      if p < 0:
+        root += size
+      else:
+        start = cur[p]
+        cur[p] = start + size
+      first[j] = start
+      post[j] = start + size - 1
+      cur[j] = start
+  _eff_chol_sync()
+
+  # stable scatter by level, a chunk of columns at a time: rank among the chunk's columns on a level
+  for c0 in range(0, nb, nthread):
+    j = c0 + tid
+    lv = int(-1)
+    if j < nb:
+      lv = level[j]
+    rank = int(0)
+    last = bool(True)
+    for k in range(c0, wp.min(c0 + nthread, nb)):
+      if level[k] == lv:
+        if k < j:
+          rank += 1
+        elif k > j:
+          last = False
+    if j < nb:
+      lvlcol[cnt[lv] + rank] = j
+    _eff_chol_sync()
+    if j < nb and last:
+      cnt[lv] += rank + 1
+    _eff_chol_sync()
+  for j in range(tid, nb, nthread):
+    cnt[j] = 0
+
+  # dense root: the top levels, as many as fit; closed under ancestors, which sit on higher levels
+  rmax = wp.min(EFF_CHOL_ROOT_MAX, ridx_out.shape[1] // 3)
+  r0 = nlevel
+  while r0 > 0 and lvlptr[nlevel] - lvlptr[r0 - 1] <= rmax:
+    r0 -= 1
+  nroot = lvlptr[nlevel] - lvlptr[r0]
+  if nroot < EFF_CHOL_ROOT_MIN:
+    nroot = 0
+    r0 = nlevel
+  for i in range(tid, nroot, nthread):
+    c = lvlcol[lvlptr[r0] + i]
+    rpos[c] = i
+    for a in range(3):
+      ridx_out[worldid, 3 * i + a] = 3 * c + a
+  if tid == 0:
+    nlevel_out[worldid] = nlevel
+    rootlv_out[worldid] = r0
+    nroot_out[worldid] = nroot
+
+
+@wp.kernel
+def _eff_chol_row_count(
+  # In:
+  aptr_in: wp.array2d[int],
+  aend_in: wp.array2d[int],
+  adj_in: wp.array2d[int],
+  parent_in: wp.array2d[int],
+  first_in: wp.array2d[int],
+  post_in: wp.array2d[int],
+  # Out:
+  adjpost_out: wp.array2d[int],
+  cnt_out: wp.array2d[int],
+):
+  """Sorts the lower adjacency of row i by postorder and counts its factor entries per column."""
+  worldid, i = wp.tid()
+  start = aptr_in[worldid, i]
+  end = aend_in[worldid, i]
+  post = post_in[worldid]
+  adjpost = adjpost_out[worldid]
+  for p in range(start, end):
+    v = adj_in[worldid, p]
+    key = post[v]
+    q = p
+    while q > start and post[adjpost[q - 1]] > key:
+      adjpost[q] = adjpost[q - 1]
+      q -= 1
+    adjpost[q] = v
+  prev = int(-1)
+  for p in range(start, end):
+    k = adjpost[p]
+    _eff_chol_row_walk(i, k, prev, False, parent_in[worldid], first_in[worldid], post, cnt_out[worldid], cnt_out[worldid])
+    prev = k
+
+
+@cache_kernel
+def _eff_chol_col_scan(warn_overflow: int):
+  @wp.kernel(module="unique", enable_backward=False)
+  def kernel(
+    # Model:
+    nefmdof: int,
+    # Data in:
+    njmax_in: int,
+    # In:
+    xcount_in: wp.array[int],
+    xpair_in: wp.array2d[wp.vec2i],
+    cnt_in: wp.array2d[int],
+    lvlcol_in: wp.array2d[int],
+    # Data out:
+    overflow_out: wp.array[int],
+    # Out:
+    colptr_out: wp.array2d[int],
+    rowind_out: wp.array2d[int],
+    pairptr_out: wp.array2d[int],
+    entptr_out: wp.array2d[int],
+    cur_out: wp.array2d[int],
+    status_out: wp.array[bool],
+  ):
+    """Column starts of the factor and the per-level entry and update prefixes, one block per world.
+
+    A world whose extra pairs or factor entries outgrow the buffers reports overflow and leaves the
+    preconditioner on its 3x3 blocks (status False).
+    """
+    worldid, tid = wp.tid()
+    nthread = wp.block_dim()
+    nb = nefmdof
+    chunk = (nb + nthread - 1) // nthread
+    s0 = wp.min(tid * chunk, nb)
+    s1 = wp.min(s0 + chunk, nb)
+    cnt = cnt_in[worldid]
+    lvlcol = lvlcol_in[worldid]
+
+    nnz_local = int(0)
+    ent_local = int(0)
+    pair_local = int(0)
+    for i in range(s0, s1):
+      nnz_local += cnt[i]
+      ln = cnt[lvlcol[i]]
+      ent_local += ln
+      pair_local += ln * (ln + 1) // 2
+    nnz = _eff_chol_block_scan(nnz_local)
+    ent = _eff_chol_block_scan(ent_local)
+    pair = _eff_chol_block_scan(pair_local)
+    total = _eff_chol_block_sum(nnz_local)
+    for i in range(s0, s1):
+      colptr_out[worldid, i] = nnz
+      cur_out[worldid, i] = nnz
+      nnz += cnt[i]
+      entptr_out[worldid, i] = ent
+      pairptr_out[worldid, i] = pair
+      ln = cnt[lvlcol[i]]
+      ent += ln
+      pair += ln * (ln + 1) // 2
+    if tid == nthread - 1:
+      colptr_out[worldid, nb] = nnz
+      entptr_out[worldid, nb] = ent
+      pairptr_out[worldid, nb] = pair
+
+    if tid == 0:
+      xcount = xcount_in[worldid]
+      ok = xcount <= xpair_in.shape[1] and total <= rowind_out.shape[1]
+      status_out[worldid] = ok
+      if not ok:
+        if wp.static(bool(warn_overflow & OverflowType.PRECONDITIONER)):
+          wp.printf(
+            "flex Cholesky preconditioner overflow (%d vertex pairs, %d factor blocks) - please increase njmax beyond %d\n"
+            "To disable the print warning: m.opt.warn_overflow &= ~mjw.OverflowType.PRECONDITIONER (or = 0 for all)\n",
+            xcount,
+            total,
+            njmax_in,
+          )
+        overflow_out[worldid] = overflow_out[worldid] | wp.static(OverflowType.PRECONDITIONER)
+
+  return kernel
+
+
+@wp.kernel
+def _eff_chol_row_fill(
+  # In:
+  aptr_in: wp.array2d[int],
+  aend_in: wp.array2d[int],
+  adjpost_in: wp.array2d[int],
+  parent_in: wp.array2d[int],
+  first_in: wp.array2d[int],
+  post_in: wp.array2d[int],
+  status_in: wp.array[bool],
+  # Out:
+  cur_out: wp.array2d[int],
+  rowind_out: wp.array2d[int],
+):
+  """Writes row i into the factor columns it reaches."""
+  worldid, i = wp.tid()
+  if not status_in[worldid]:
+    return
+  prev = int(-1)
+  for p in range(aptr_in[worldid, i], aend_in[worldid, i]):
+    k = adjpost_in[worldid, p]
+    _eff_chol_row_walk(
+      i, k, prev, True, parent_in[worldid], first_in[worldid], post_in[worldid], cur_out[worldid], rowind_out[worldid]
+    )
+    prev = k
+
+
+@wp.kernel
+def _eff_chol_col_sort(
+  # In:
+  colptr_in: wp.array2d[int],
+  status_in: wp.array[bool],
+  # Out:
+  rowind_out: wp.array2d[int],
+  Lo_out: wp.array2d[wp.mat33],
+):
+  """Sorts the rows of factor column j and clears its blocks."""
+  worldid, j = wp.tid()
+  if not status_in[worldid]:
+    return
+  start = colptr_in[worldid, j]
+  end = colptr_in[worldid, j + 1]
+  rowind = rowind_out[worldid]
+  # Shell sort: columns near the root are long
+  gap = int(1)
+  while 3 * gap + 1 < end - start:
+    gap = 3 * gap + 1
+  while gap > 0:
+    for p in range(start + gap, end):
+      v = rowind[p]
+      q = p
+      while q >= start + gap and rowind[q - gap] > v:
+        rowind[q] = rowind[q - gap]
+        q -= gap
+      rowind[q] = v
+    gap = gap // 3
+  for p in range(start, end):
+    Lo_out[worldid, p] = wp.mat33(0.0)
+
+
+@wp.kernel
+def _eff_chol_level_entries(
+  # In:
+  colptr_in: wp.array2d[int],
+  rowind_in: wp.array2d[int],
+  lvlptr_in: wp.array2d[int],
+  lvlcol_in: wp.array2d[int],
+  entptr_in: wp.array2d[int],
+  level_in: wp.array2d[int],
+  nlevel_in: wp.array[int],
+  status_in: wp.array[bool],
+  # Out:
+  lvlent_out: wp.array2d[int],
+  ent_out: wp.array2d[wp.vec3i],
+):
+  """Lists the offdiagonal blocks in level order as (column, block, row), and each level's start."""
+  worldid, c = wp.tid()
+  if not status_in[worldid]:
+    return
+  j = lvlcol_in[worldid, c]
+  lv = level_in[worldid, j]
+  e0 = entptr_in[worldid, c]
+  if lvlptr_in[worldid, lv] == c:
+    lvlent_out[worldid, lv] = e0
+  if c == 0:
+    nlevel = nlevel_in[worldid]
+    lvlent_out[worldid, nlevel] = entptr_in[worldid, lvlptr_in[worldid, nlevel]]
+  base = colptr_in[worldid, j]
+  for q in range(colptr_in[worldid, j + 1] - base):
+    ent_out[worldid, e0 + q] = wp.vec3i(j, base + q, rowind_in[worldid, base + q])
+
+
+@wp.kernel
+def _eff_chol_fill_mk(
+  # Model:
+  M_rownnz: wp.array[int],
+  M_rowadr: wp.array[int],
+  M_colind: wp.array[int],
+  efm_K_rownnz: wp.array[int],
+  efm_K_rowadr: wp.array[int],
+  efm_K_colind: wp.array[int],
+  efm_dofid: wp.array[int],
+  efm_dofblk: wp.array[int],
+  efm_chol_rank: wp.array[int],
+  # Data in:
+  M_in: wp.array2d[float],
+  efm_K_val_in: wp.array2d[float],
+  # In:
+  colptr_in: wp.array2d[int],
+  rowind_in: wp.array2d[int],
+  aptr_in: wp.array2d[int],
+  aend_in: wp.array2d[int],
+  adj_in: wp.array2d[int],
+  status_in: wp.array[bool],
+  # Out:
+  Ld_out: wp.array2d[wp.mat33],
+  Lo_out: wp.array2d[wp.mat33],
+):
+  """Adds row a of vertex k's M and K blocks to the factor pattern.
+
+  A K block between vertices that are neither joined by a flex edge nor coupled by a folded term is
+  dropped, its Frobenius norm added to both diagonal blocks by the vertex earlier in dof order.
+  """
+  worldid, k, a = wp.tid()
+  if not status_in[worldid]:
+    return
+  i0 = efm_dofid[k]
+  i = i0 + a
+  rk = efm_chol_rank[k]
+  aptr = aptr_in[worldid]
+  aend = aend_in[worldid]
+  adj = adj_in[worldid]
+  diag = wp.mat33(0.0)
+  dropped = float(0.0)
+  kadr = efm_K_rowadr[i]
+  for j in range(kadr, kadr + efm_K_rownnz[i]):
+    col = efm_K_colind[j]
+    q = efm_dofblk[col]
+    if q < 0:
+      continue
+    v = efm_K_val_in[worldid, j]
+    q0 = efm_dofid[q]
+    rq = efm_chol_rank[q]
+    if q == k:
+      diag[a, col - q0] = diag[a, col - q0] + v
+    elif _eff_chol_allowed(aptr, aend, adj, rk, rq):
+      if rk > rq:
+        blk = _eff_chol_block(colptr_in[worldid], rowind_in[worldid], rk, rq)
+        if blk >= 0:
+          wp.atomic_add(Lo_out[worldid], blk, _eff_chol_unit(a, col - q0, v))
+    elif q > k:
+      # the block's first entry in the earliest row holding it computes the norm
+      if j > kadr and efm_K_colind[j - 1] >= q0:
+        continue
+      seen = bool(False)
+      for a2 in range(a):
+        adr2 = efm_K_rowadr[i0 + a2]
+        end2 = adr2 + efm_K_rownnz[i0 + a2]
+        lb = _eff_chol_lower_bound(adr2, end2 - adr2, efm_K_colind, q0)
+        if lb < end2 and efm_K_colind[lb] < q0 + 3:
+          seen = True
+      if seen:
+        continue
+      f2 = float(0.0)
+      for a2 in range(3):
+        adr2 = efm_K_rowadr[i0 + a2]
+        end2 = adr2 + efm_K_rownnz[i0 + a2]
+        lb = _eff_chol_lower_bound(adr2, end2 - adr2, efm_K_colind, q0)
+        while lb < end2 and efm_K_colind[lb] < q0 + 3:
+          kv = efm_K_val_in[worldid, lb]
+          f2 += kv * kv
+          lb += 1
+      f = wp.sqrt(f2)
+      dropped += f
+      wp.atomic_add(Ld_out[worldid], rq, wp.mat33(f, 0.0, 0.0, 0.0, f, 0.0, 0.0, 0.0, f))
+  madr = M_rowadr[i]
+  for j in range(madr, madr + M_rownnz[i]):
+    col = M_colind[j]
+    if col >= i0:
+      diag[a, col - i0] = diag[a, col - i0] + M_in[worldid, j]
+      if col != i:
+        diag[col - i0, a] = diag[col - i0, a] + M_in[worldid, j]
+  diag += wp.mat33(dropped, 0.0, 0.0, 0.0, dropped, 0.0, 0.0, 0.0, dropped)
+  wp.atomic_add(Ld_out[worldid], rk, diag)
+
+
+@wp.kernel(module="unique", enable_backward=False)
+def _eff_chol_factor_sparse(
+  # Model:
+  nefmdof: int,
+  # In:
+  colptr_in: wp.array2d[int],
+  rowind_in: wp.array2d[int],
+  lvlptr_in: wp.array2d[int],
+  lvlcol_in: wp.array2d[int],
+  pairptr_in: wp.array2d[int],
+  lvlent_in: wp.array2d[int],
+  ent_in: wp.array2d[wp.vec3i],
+  rootlv_in: wp.array[int],
+  rpos_in: wp.array2d[int],
+  # Out:
+  Ld_out: wp.array2d[wp.mat33],
+  Lo_out: wp.array2d[wp.mat33],
+  Sinv_out: wp.array2d[wp.mat33],
+  D_out: wp.array3d[float],
+  mindiag_out: wp.array[float],
+  status_out: wp.array[bool],
+):
+  """Blocked right-looking factorization L S L' by elimination-tree level, one block per world.
+
+  L has identity diagonal blocks and S is block diagonal (the Schur complement pivots), so the
+  solve needs no 3x3 triangular solves. Each level stores its pivots' inverses in Sinv and scales
+  its offdiagonal blocks L_ij = A_ij S_jj^-1, each thread inverting the pivot it needs, then
+  applies its rank-1 updates L_ia S_jj L_ib' to Ld and Lo. Both phases are flattened across the
+  level's columns so narrow levels near the root still use the whole block. The levels below the
+  dense root run here; their updates of the root go to its dense Schur complement D.
+  """
+  worldid, tid = wp.tid()
+  ok = status_out[worldid]
+  # every thread reads status before any pivot can clear it
+  _eff_chol_sync()
+  if not ok:
+    return
+  nthread = wp.block_dim()
+  colptr = colptr_in[worldid]
+  rowind = rowind_in[worldid]
+  lvlptr = lvlptr_in[worldid]
+  lvlcol = lvlcol_in[worldid]
+  pairptr = pairptr_in[worldid]
+  lvlent = lvlent_in[worldid]
+  ent = ent_in[worldid]
+  rpos = rpos_in[worldid]
+  D = D_out[worldid]
+  local = float(0.0)
+  for j in range(tid, nefmdof, nthread):
+    Ajj = Ld_out[worldid, j]
+    local = wp.max(local, wp.max(Ajj[0, 0], wp.max(Ajj[1, 1], Ajj[2, 2])))
+  maxdiag = wp.tile_max(wp.tile(local))[0]
+  mindiag = wp.max(MJ_MINVAL, EFF_CHOL_PIVOT * maxdiag)
+  if tid == 0:
+    mindiag_out[worldid] = mindiag
+  for lv in range(rootlv_in[worldid]):
+    cstart = lvlptr[lv]
+    cend = lvlptr[lv + 1]
+    # the level's columns have received every update from their descendants
+    for c in range(cstart + tid, cend, nthread):
+      j = lvlcol[c]
+      A = Ld_out[worldid, j]
+      if not _eff_chol_diag_ok(A, mindiag):
+        status_out[worldid] = False
+      Sinv_out[worldid, j] = _eff_chol_sinv(A, mindiag)
+    # offdiagonal blocks L_ij = A_ij S_jj^-1
+    for u in range(lvlent[lv] + tid, lvlent[lv + 1], nthread):
+      e = ent[u]
+      j = e[0]
+      p = e[1]
+      Lo_out[worldid, p] = Lo_out[worldid, p] * _eff_chol_sinv(Ld_out[worldid, j], mindiag)
+    _eff_chol_sync()
+    # rank-1 updates of the ancestors L_ia S_jj L_ib': pair u of the level -> (column, row a, row b)
+    for u in range(pairptr[cstart] + tid, pairptr[cend], nthread):
+      c = _eff_chol_level_col(pairptr, cstart, cend, u)
+      j = lvlcol[c]
+      p = u - pairptr[c]
+      a = int((wp.sqrt(8.0 * float(p) + 1.0) - 1.0) * 0.5)
+      while (a + 1) * (a + 2) // 2 <= p:
+        a += 1
+      while a * (a + 1) // 2 > p:
+        a -= 1
+      b = p - a * (a + 1) // 2
+      base = colptr[j]
+      ra = rowind[base + a]
+      P = Lo_out[worldid, base + a] * Ld_out[worldid, j]
+      Q = Lo_out[worldid, base + b]
+      PQ = P * wp.transpose(Q)
+      rb = rowind[base + b]
+      kb = rpos[rb]
+      if kb >= 0:
+        # rows above a root vertex are root vertices
+        ka = rpos[ra]
+        for x in range(3):
+          for z in range(3):
+            wp.atomic_sub(D, 3 * ka + x, 3 * kb + z, PQ[x, z])
+      elif a == b:
+        wp.atomic_sub(Ld_out[worldid], ra, PQ)
+      else:
+        blk = _eff_chol_block(colptr, rowind, ra, rb)
+        if blk >= 0:
+          wp.atomic_sub(Lo_out[worldid], blk, PQ)
+    _eff_chol_sync()
+
+
+@wp.kernel
+def _eff_chol_root_gather(
+  # In:
+  colptr_in: wp.array2d[int],
+  rowind_in: wp.array2d[int],
+  lvlptr_in: wp.array2d[int],
+  lvlcol_in: wp.array2d[int],
+  rootlv_in: wp.array[int],
+  nroot_in: wp.array[int],
+  rpos_in: wp.array2d[int],
+  Ld_in: wp.array2d[wp.mat33],
+  Lo_in: wp.array2d[wp.mat33],
+  status_in: wp.array[bool],
+  # Out:
+  Sinv_out: wp.array2d[wp.mat33],
+  D_out: wp.array3d[float],
+  Dinv_out: wp.array3d[float],
+):
+  """Writes the dense root into D and the identity into Dinv, both zeroed before.
+
+  D receives the root's lower triangle with identity on its padding; Dinv starts the inverse factor.
+  """
+  worldid, q = wp.tid()
+  if not status_in[worldid]:
+    return
+  nroot = nroot_in[worldid]
+  if q >= 3 * nroot:
+    # padding keeps the dense tiles positive definite
+    D_out[worldid, q, q] = 1.0
+    Dinv_out[worldid, q, q] = 1.0
+    return
+  if q % 3 != 0:
+    return
+  for a in range(3):
+    Dinv_out[worldid, q + a, q + a] = 1.0
+  i = q // 3
+  c = lvlcol_in[worldid, lvlptr_in[worldid, rootlv_in[worldid]] + i]
+  A = Ld_in[worldid, c]
+  for a in range(3):
+    for b in range(3):
+      D_out[worldid, q + a, q + b] = A[a, b]
+  # the root's pivots live in its dense factor
+  Sinv_out[worldid, c] = wp.identity(3, dtype=float)
+  for p in range(colptr_in[worldid, c], colptr_in[worldid, c + 1]):
+    k = rpos_in[worldid, rowind_in[worldid, p]]
+    G = Lo_in[worldid, p]
+    for a in range(3):
+      for b in range(3):
+        D_out[worldid, 3 * k + a, q + b] = G[a, b]
+
+
+@wp.kernel(module="unique", enable_backward=False)
+def _eff_chol_root_panel(
+  # In:
+  k: int,
+  nroot_in: wp.array[int],
+  status_in: wp.array[bool],
+  # Out:
+  D_out: wp.array3d[float],
+  Dinv_out: wp.array3d[float],
+):
+  """Step k of the dense root's Cholesky and inverse factor, one tile per block.
+
+  Tile t > k is L_tk = D_tk L_kk^-T, tile t <= k is row k of the inverse factor X_kt = L_kk^-1 B_kt;
+  each block factors D_kk itself.
+  """
+  worldid, t, tid = wp.tid()
+  ko = k * EFF_CHOL_ROOT_TILE
+  to = t * EFF_CHOL_ROOT_TILE
+  n = 3 * nroot_in[worldid]
+  if not status_in[worldid] or ko >= n or to >= n:
+    return
+  L = wp.tile_load(D_out[worldid], shape=(EFF_CHOL_ROOT_TILE, EFF_CHOL_ROOT_TILE), offset=(ko, ko), storage="shared")
+  wp.tile_cholesky_inplace(L)
+  if t > k:
+    B = wp.tile_load(D_out[worldid], shape=(EFF_CHOL_ROOT_TILE, EFF_CHOL_ROOT_TILE), offset=(to, ko), storage="shared")
+    Xt = wp.tile_lower_solve(L, wp.tile_transpose(B))
+    wp.tile_store(D_out[worldid], wp.tile_transpose(Xt), offset=(to, ko))
+  else:
+    B = wp.tile_load(Dinv_out[worldid], shape=(EFF_CHOL_ROOT_TILE, EFF_CHOL_ROOT_TILE), offset=(ko, to), storage="shared")
+    wp.tile_store(Dinv_out[worldid], wp.tile_lower_solve(L, B), offset=(ko, to))
+
+
+@wp.kernel(module="unique", enable_backward=False)
+def _eff_chol_root_update(
+  # In:
+  k: int,
+  nroot_in: wp.array[int],
+  status_in: wp.array[bool],
+  # Out:
+  D_out: wp.array3d[float],
+  Dinv_out: wp.array3d[float],
+):
+  """Updates after step k of the dense root, one tile (i, j) per block.
+
+  Trailing D_ij -= L_ik L_jk' for k < j <= i, inverse rows B_ij -= L_ik X_kj for j <= k < i, and
+  tile (k, k) stores L_kk.
+  """
+  worldid, i, j, tid = wp.tid()
+  n = 3 * nroot_in[worldid]
+  ko = k * EFF_CHOL_ROOT_TILE
+  io = i * EFF_CHOL_ROOT_TILE
+  jo = j * EFF_CHOL_ROOT_TILE
+  if not status_in[worldid] or io >= n or j > i or i < k:
+    return
+  if i == k:
+    if j == k:
+      L = wp.tile_load(D_out[worldid], shape=(EFF_CHOL_ROOT_TILE, EFF_CHOL_ROOT_TILE), offset=(ko, ko), storage="shared")
+      wp.tile_cholesky_inplace(L)
+      wp.tile_store(D_out[worldid], L, offset=(ko, ko))
+    return
+  Lik = wp.tile_load(D_out[worldid], shape=(EFF_CHOL_ROOT_TILE, EFF_CHOL_ROOT_TILE), offset=(io, ko), storage="shared")
+  if j > k:
+    Ljk = wp.tile_load(D_out[worldid], shape=(EFF_CHOL_ROOT_TILE, EFF_CHOL_ROOT_TILE), offset=(jo, ko), storage="shared")
+    Aij = wp.tile_load(D_out[worldid], shape=(EFF_CHOL_ROOT_TILE, EFF_CHOL_ROOT_TILE), offset=(io, jo), storage="shared")
+    wp.tile_matmul(Lik, wp.tile_transpose(Ljk), Aij, alpha=-1.0)
+    wp.tile_store(D_out[worldid], Aij, offset=(io, jo))
+  else:
+    Xkj = wp.tile_load(Dinv_out[worldid], shape=(EFF_CHOL_ROOT_TILE, EFF_CHOL_ROOT_TILE), offset=(ko, jo), storage="shared")
+    Bij = wp.tile_load(Dinv_out[worldid], shape=(EFF_CHOL_ROOT_TILE, EFF_CHOL_ROOT_TILE), offset=(io, jo), storage="shared")
+    wp.tile_matmul(Lik, Xkj, Bij, alpha=-1.0)
+    wp.tile_store(Dinv_out[worldid], Bij, offset=(io, jo))
+
+
+@wp.kernel
+def _eff_chol_root_check(
+  # In:
+  nroot_in: wp.array[int],
+  mindiag_in: wp.array[float],
+  D_in: wp.array3d[float],
+  # Out:
+  status_out: wp.array[bool],
+):
+  """Rank-deficient dense root: a pivot L_qq^2 at or below the sparse factor's threshold."""
+  worldid, q = wp.tid()
+  if q >= 3 * nroot_in[worldid]:
+    return
+  L = D_in[worldid, q, q]
+  if not (L * L > mindiag_in[worldid]):
+    status_out[worldid] = False
+
+
+@wp.kernel
+def _eff_chol_root_transpose(
+  # In:
+  nroot_in: wp.array[int],
+  Dinv_in: wp.array3d[float],
+  status_in: wp.array[bool],
+  # Out:
+  D_out: wp.array3d[float],
+):
+  """Stores the inverse factor transposed in D, so both solve sweeps read it coalesced."""
+  worldid, r, c = wp.tid()
+  n = 3 * nroot_in[worldid]
+  if not status_in[worldid] or r >= n or c > r:
+    return
+  D_out[worldid, c, r] = Dinv_in[worldid, r, c]
+
+
+@wp.kernel(module="unique", enable_backward=False)
+def _eff_chol_solve_sparse(
+  # Model:
+  efm_dofid: wp.array[int],
+  efm_chol_vert: wp.array[int],
+  # Data in:
+  efm_L_in: wp.array2d[float],
+  # In:
+  vec_in: wp.array2d[float],
+  epU_in: wp.array[int],
+  epS_in: wp.array3d[float],
+  lvlptr_in: wp.array2d[int],
+  nlevel_in: wp.array[int],
+  lvlent_in: wp.array2d[int],
+  ent_in: wp.array2d[wp.vec3i],
+  rootlv_in: wp.array[int],
+  nroot_in: wp.array[int],
+  ridx_in: wp.array2d[int],
+  Lo_in: wp.array2d[wp.mat33],
+  Sinv_in: wp.array2d[wp.mat33],
+  status_in: wp.array[bool],
+  # Out:
+  y_out: wp.array3d[float],
+  acc_out: wp.array2d[float],
+  rvec_out: wp.array2d[float],
+  res_out: wp.array2d[float],
+):
+  """Res = (L S L')^-1 vec on the covered dofs by elimination-tree level, one block per world.
+
+  vec is gathered into elimination order in y and the result scattered from acc. A world without a
+  valid factor takes its 3x3 block solves from efm_L (when given) instead. With epU, the uncovered
+  dofs take the inverse of their dense block epS.
+
+  Below the dense root, each level scatters L_ij y_j to its ancestors' y (unit diagonal), one sync
+  per level; then acc = S^-1 y, and the dense root's input is gathered into rvec. The dense root
+  (_eff_chol_root_solve) and the backward sweep (_eff_chol_solve_backward) follow.
+  """
+  worldid, tid = wp.tid()
+  nthread = wp.block_dim()
+  nb = efm_chol_vert.shape[0]
+  # uncovered dofs, from the inverse of their dense block (when given): one product per thread
+  n_u = epU_in.shape[0]
+  for a in range(tid, n_u, nthread):
+    res_out[worldid, epU_in[a]] = 0.0
+  _eff_chol_sync()
+  for u in range(tid, n_u * n_u, nthread):
+    a = u // n_u
+    b = u - a * n_u
+    wp.atomic_add(res_out, worldid, epU_in[a], epS_in[worldid, a, b] * vec_in[worldid, epU_in[b]])
+  if not status_in[worldid]:
+    if efm_L_in.shape[1] > 0:
+      for k in range(tid, nb, nthread):
+        _eff_block_solve_vertex(efm_dofid, efm_L_in, vec_in, worldid, k, res_out)
+    return
+  lvlptr = lvlptr_in[worldid]
+  lvlent = lvlent_in[worldid]
+  ent = ent_in[worldid]
+  Lo = Lo_in[worldid]
+  Sinv = Sinv_in[worldid]
+  x = y_out[worldid, 0]
+  acc = acc_out[worldid]
+  nlevel = nlevel_in[worldid]
+  r0 = rootlv_in[worldid]
+  nr = 3 * nroot_in[worldid]
+  ridx = ridx_in[worldid]
+  rvec = rvec_out[worldid]
+  # gather: y in elimination order
+  for j in range(tid, nb, nthread):
+    i = efm_dofid[efm_chol_vert[j]]
+    x[3 * j] = vec_in[worldid, i]
+    x[3 * j + 1] = vec_in[worldid, i + 1]
+    x[3 * j + 2] = vec_in[worldid, i + 2]
+  _eff_chol_sync()
+  # forward: L w = y in place
+  for lv in range(r0):
+    for u in range(lvlent[lv] + tid, lvlent[lv + 1], nthread):
+      e = ent[u]
+      j = e[0]
+      i = e[2]
+      upd = Lo[e[1]] * wp.vec3(x[3 * j], x[3 * j + 1], x[3 * j + 2])
+      wp.atomic_sub(x, 3 * i, upd[0])
+      wp.atomic_sub(x, 3 * i + 1, upd[1])
+      wp.atomic_sub(x, 3 * i + 2, upd[2])
+    _eff_chol_sync()
+  # pivots: acc = S^-1 w (S_R = I), then the dense root's input in rvec and its outputs zeroed
+  for j in range(tid, nb, nthread):
+    v = Sinv[j] * wp.vec3(x[3 * j], x[3 * j + 1], x[3 * j + 2])
+    acc[3 * j] = v[0]
+    acc[3 * j + 1] = v[1]
+    acc[3 * j + 2] = v[2]
+  _eff_chol_sync()
+  for r in range(tid, nr, nthread):
+    rvec[r] = x[ridx[r]]
+    x[ridx[r]] = 0.0
+    acc[ridx[r]] = 0.0
+
+
+@wp.kernel
+def _eff_chol_root_solve(
+  # In:
+  transpose: bool,
+  nroot_in: wp.array[int],
+  ridx_in: wp.array2d[int],
+  D_in: wp.array3d[float],
+  Dinv_in: wp.array3d[float],
+  rvec_in: wp.array2d[float],
+  status_in: wp.array[bool],
+  # Out:
+  y_out: wp.array3d[float],
+  acc_out: wp.array2d[float],
+):
+  """One column chunk of a dense root row, over all blocks.
+
+  Forward, acc_R += X y_R from rvec (X' read coalesced from D); with transpose, y_R += X' acc_R.
+  """
+  worldid, u = wp.tid()
+  if not status_in[worldid]:
+    return
+  nr = 3 * nroot_in[worldid]
+  q = u // D_in.shape[1]
+  r = u - q * D_in.shape[1]
+  if r >= nr:
+    return
+  ridx = ridx_in[worldid]
+  v = float(0.0)
+  if transpose:
+    c1 = nr - q * EFF_CHOL_ROOT_CHUNK
+    if c1 <= r:
+      return
+    acc = acc_out[worldid]
+    for c in range(wp.max(c1 - EFF_CHOL_ROOT_CHUNK, r), c1):
+      v += Dinv_in[worldid, c, r] * acc[ridx[c]]
+    wp.atomic_add(y_out[worldid, 0], ridx[r], v)
+  else:
+    c0 = q * EFF_CHOL_ROOT_CHUNK
+    if c0 > r:
+      return
+    for c in range(c0, wp.min(c0 + EFF_CHOL_ROOT_CHUNK, r + 1)):
+      v += D_in[worldid, c, r] * rvec_in[worldid, c]
+    wp.atomic_add(acc_out[worldid], ridx[r], v)
+
+
+@wp.kernel(module="unique", enable_backward=False)
+def _eff_chol_solve_backward(
+  # Model:
+  efm_dofid: wp.array[int],
+  efm_chol_vert: wp.array[int],
+  # In:
+  lvlent_in: wp.array2d[int],
+  ent_in: wp.array2d[wp.vec3i],
+  rootlv_in: wp.array[int],
+  nroot_in: wp.array[int],
+  ridx_in: wp.array2d[int],
+  Lo_in: wp.array2d[wp.mat33],
+  y_in: wp.array3d[float],
+  status_in: wp.array[bool],
+  # Out:
+  acc_out: wp.array2d[float],
+  res_out: wp.array2d[float],
+):
+  """Backward sweep L' y = acc below the dense root, one block per world, and the scatter to res."""
+  worldid, tid = wp.tid()
+  if not status_in[worldid]:
+    return
+  nthread = wp.block_dim()
+  nb = efm_chol_vert.shape[0]
+  lvlent = lvlent_in[worldid]
+  ent = ent_in[worldid]
+  Lo = Lo_in[worldid]
+  x = y_in[worldid, 0]
+  acc = acc_out[worldid]
+  r0 = rootlv_in[worldid]
+  ridx = ridx_in[worldid]
+  for r in range(tid, 3 * nroot_in[worldid], nthread):
+    acc[ridx[r]] = x[ridx[r]]
+  _eff_chol_sync()
+  for lvr in range(r0):
+    lv = r0 - 1 - lvr
+    for u in range(lvlent[lv] + tid, lvlent[lv + 1], nthread):
+      e = ent[u]
+      j = e[0]
+      i = e[2]
+      t = wp.transpose(Lo[e[1]]) * wp.vec3(acc[3 * i], acc[3 * i + 1], acc[3 * i + 2])
+      wp.atomic_sub(acc, 3 * j, t[0])
+      wp.atomic_sub(acc, 3 * j + 1, t[1])
+      wp.atomic_sub(acc, 3 * j + 2, t[2])
+    _eff_chol_sync()
+  for j in range(tid, nb, nthread):
+    i = efm_dofid[efm_chol_vert[j]]
+    res_out[worldid, i] = acc[3 * j]
+    res_out[worldid, i + 1] = acc[3 * j + 1]
+    res_out[worldid, i + 2] = acc[3 * j + 2]
+
+
+def eff_chol_factor(m: Model, d: Data, chol: EffCholContext, fold: bool):
+  """Assembles and factors the covered flex block of the metric (MuJoCo C effCholFill).
+
+  The matrix is M + K on the covered vertex triples. K couplings between vertices that are neither
+  joined by a flex edge nor coupled by a folded term are dropped, each replaced by its Frobenius
+  norm on both diagonal blocks. With fold, the tendon and actuator rank-1 terms and every efc row
+  (scaled by efc_D) are folded in, and the vertex pairs they couple join the pattern
+  (mj_effCholFoldFactor). The factor runs in the model's elimination order on the static flex-edge
+  pattern extended by those pairs, its symbolic structure computed in parallel from the elimination
+  tree and row subtrees. A rank-deficient factor, or one that outgrows its buffers (reported as
+  OverflowType.PRECONDITIONER), leaves the preconditioner on its 3x3 blocks (status False).
+  """
+  nb = m.nefmdof
+  nxmax = chol.xpair.shape[1]
+  chol.Ld.zero_()
+  chol.xcount.zero_()
+  if fold:
+    chol.xhash.zero_()
+
+  def fold_terms(fold_pass: bool):
+    rows_in = [fold_pass, chol.colptr, chol.rowind, chol.status]
+    rows_out = [chol.xcount, chol.xpair, chol.xhash, chol.Ld, chol.Lo]
+    wp.launch(
+      _eff_chol_rank1_tendon,
+      dim=(d.nworld, m.ntendon),
+      inputs=[
+        m.ten_J_rownnz,
+        m.ten_J_rowadr,
+        m.ten_J_colind,
+        m.efm_dofid,
+        m.efm_dofblk,
+        m.efm_chol_rank,
+        m.efm_chol_adjptr,
+        m.efm_chol_adj,
+        d.ten_J,
+        d.efm_ts,
+      ]
+      + rows_in,
+      outputs=rows_out,
+    )
+    wp.launch(
+      _eff_chol_rank1_actuator,
+      dim=(d.nworld, m.nactuator),
+      inputs=[
+        m.efm_dofid,
+        m.efm_dofblk,
+        m.efm_chol_rank,
+        m.efm_chol_adjptr,
+        m.efm_chol_adj,
+        d.moment_rownnz,
+        d.moment_rowadr,
+        d.moment_colind,
+        d.actuator_moment,
+        d.efm_as,
+      ]
+      + rows_in,
+      outputs=rows_out,
+    )
+    if m.is_sparse:
+      wp.launch(
+        _eff_chol_efc_sparse,
+        dim=(d.nworld, d.njmax),
+        inputs=[
+          m.efm_dofid,
+          m.efm_dofblk,
+          m.efm_chol_rank,
+          m.efm_chol_adjptr,
+          m.efm_chol_adj,
+          d.nefc,
+          d.efc.J_rownnz,
+          d.efc.J_rowadr,
+          d.efc.J_colind,
+          d.efc.J,
+          d.efc.D,
+        ]
+        + rows_in,
+        outputs=rows_out,
+      )
+    else:
+      wp.launch(
+        _eff_chol_efc_dense,
+        dim=(d.nworld, d.njmax),
+        inputs=[
+          m.nv,
+          m.efm_dofid,
+          m.efm_dofblk,
+          m.efm_chol_rank,
+          m.efm_chol_adjptr,
+          m.efm_chol_adj,
+          d.nefc,
+          d.efc.J,
+          d.efc.D,
+        ]
+        + rows_in,
+        outputs=rows_out,
+      )
+
+  # vertex pairs the folded terms couple that no flex edge joins
+  if fold:
+    fold_terms(False)
+
+  # lower adjacency in elimination order: flex edges plus the extra pairs, sorted and deduplicated
+  static_adj = [m.efm_chol_rank, m.efm_chol_vert, m.efm_chol_adjptr, m.efm_chol_adj]
+  wp.launch(_eff_chol_adj_count, dim=(d.nworld, nb), inputs=static_adj, outputs=[chol.cnt])
+  if fold:
+    wp.launch(
+      _eff_chol_adj_count_extra, dim=(d.nworld, nxmax), inputs=[m.efm_chol_rank, chol.xcount, chol.xpair], outputs=[chol.cnt]
+    )
+  wp.launch_tiled(
+    _eff_chol_adj_scan, dim=d.nworld, inputs=[nb, chol.cnt], outputs=[chol.aptr], block_dim=m.block_dim.eff_chol_factor
+  )
+  wp.launch(_eff_chol_adj_fill, dim=(d.nworld, nb), inputs=static_adj + [chol.aptr], outputs=[chol.adj, chol.cur])
+  if fold:
+    wp.launch(
+      _eff_chol_adj_fill_extra,
+      dim=(d.nworld, nxmax),
+      inputs=[m.efm_chol_rank, chol.xcount, chol.xpair],
+      outputs=[chol.adj, chol.cur],
+    )
+  wp.launch(_eff_chol_adj_sort, dim=(d.nworld, nb), inputs=[chol.aptr], outputs=[chol.aend, chol.adj])
+
+  # symbolic factorization: elimination tree, then the row subtrees give the factor's columns
+  wp.launch_tiled(
+    _eff_chol_etree,
+    dim=d.nworld,
+    inputs=[nb, chol.aptr, chol.aend, chol.adj],
+    outputs=[
+      chol.parent,
+      chol.first,
+      chol.post,
+      chol.level,
+      chol.cnt,
+      chol.cur,
+      chol.lvlptr,
+      chol.lvlcol,
+      chol.nlevel,
+      chol.rootlv,
+      chol.nroot,
+      chol.rpos,
+      chol.ridx,
+    ],
+    block_dim=m.block_dim.eff_chol_etree,
+  )
+  tree = [chol.parent, chol.first, chol.post]
+  wp.launch(
+    _eff_chol_row_count,
+    dim=(d.nworld, nb),
+    inputs=[chol.aptr, chol.aend, chol.adj] + tree,
+    outputs=[chol.adjpost, chol.cnt],
+  )
+  wp.launch_tiled(
+    _eff_chol_col_scan(m.opt.warn_overflow),
+    dim=d.nworld,
+    inputs=[nb, d.njmax, chol.xcount, chol.xpair, chol.cnt, chol.lvlcol],
+    outputs=[d.overflow, chol.colptr, chol.rowind, chol.pairptr, chol.entptr, chol.cur, chol.status],
+    block_dim=m.block_dim.eff_chol_factor,
+  )
+  wp.launch(
+    _eff_chol_row_fill,
+    dim=(d.nworld, nb),
+    inputs=[chol.aptr, chol.aend, chol.adjpost] + tree + [chol.status],
+    outputs=[chol.cur, chol.rowind],
+  )
+  wp.launch(_eff_chol_col_sort, dim=(d.nworld, nb), inputs=[chol.colptr, chol.status], outputs=[chol.rowind, chol.Lo])
+  wp.launch(
+    _eff_chol_level_entries,
+    dim=(d.nworld, nb),
+    inputs=[chol.colptr, chol.rowind, chol.lvlptr, chol.lvlcol, chol.entptr, chol.level, chol.nlevel, chol.status],
+    outputs=[chol.lvlent, chol.ent],
+  )
+
+  # numeric assembly and factorization
+  if fold:
+    fold_terms(True)
+  wp.launch(
+    _eff_chol_fill_mk,
+    dim=(d.nworld, nb, 3),
+    inputs=[
+      m.M_rownnz,
+      m.M_rowadr,
+      m.M_colind,
+      m.efm_K_rownnz,
+      m.efm_K_rowadr,
+      m.efm_K_colind,
+      m.efm_dofid,
+      m.efm_dofblk,
+      m.efm_chol_rank,
+      d.M,
+      d.efm_K_val,
+      chol.colptr,
+      chol.rowind,
+      chol.aptr,
+      chol.aend,
+      chol.adj,
+      chol.status,
+    ],
+    outputs=[chol.Ld, chol.Lo],
+  )
+  chol.D.zero_()
+  chol.Dinv.zero_()
+  wp.launch(
+    _eff_chol_root_gather,
+    dim=(d.nworld, chol.D.shape[1]),
+    inputs=[
+      chol.colptr,
+      chol.rowind,
+      chol.lvlptr,
+      chol.lvlcol,
+      chol.rootlv,
+      chol.nroot,
+      chol.rpos,
+      chol.Ld,
+      chol.Lo,
+      chol.status,
+    ],
+    outputs=[chol.Sinv, chol.D, chol.Dinv],
+  )
+  wp.launch_tiled(
+    _eff_chol_factor_sparse,
+    dim=d.nworld,
+    inputs=[
+      nb,
+      chol.colptr,
+      chol.rowind,
+      chol.lvlptr,
+      chol.lvlcol,
+      chol.pairptr,
+      chol.lvlent,
+      chol.ent,
+      chol.rootlv,
+      chol.rpos,
+    ],
+    outputs=[chol.Ld, chol.Lo, chol.Sinv, chol.D, chol.mindiag, chol.status],
+    block_dim=m.block_dim.eff_chol_factor,
+  )
+
+  # dense root: blocked right-looking Cholesky by tile panel, the inverse factor alongside
+  ntile = chol.D.shape[1] // EFF_CHOL_ROOT_TILE
+  root = [chol.nroot, chol.status]
+  for k in range(ntile):
+    wp.launch_tiled(
+      _eff_chol_root_panel,
+      dim=(d.nworld, ntile),
+      inputs=[k] + root,
+      outputs=[chol.D, chol.Dinv],
+      block_dim=m.block_dim.eff_chol_root,
+    )
+    wp.launch_tiled(
+      _eff_chol_root_update,
+      dim=(d.nworld, ntile, ntile),
+      inputs=[k] + root,
+      outputs=[chol.D, chol.Dinv],
+      block_dim=m.block_dim.eff_chol_root,
+    )
+  wp.launch(
+    _eff_chol_root_check, dim=(d.nworld, chol.D.shape[1]), inputs=[chol.nroot, chol.mindiag, chol.D], outputs=[chol.status]
+  )
+  nrd = chol.D.shape[1]
+  wp.launch(_eff_chol_root_transpose, dim=(d.nworld, nrd, nrd), inputs=[chol.nroot, chol.Dinv, chol.status], outputs=[chol.D])
+
+
+def eff_chol_solve(
+  m: Model,
+  d: Data,
+  chol: EffCholContext,
+  res: wp.array2d[float],
+  vec: wp.array2d[float],
+  efm_L: Optional[wp.array] = None,
+  epU: Optional[wp.array] = None,
+  epS_inv: Optional[wp.array] = None,
+):
+  """Overwrites res on the covered dofs with H^-1 * vec where the factor is valid.
+
+  With efm_L, a world without a valid factor takes its covered dofs' 3x3 block solves instead.
+  With epU and epS_inv, the uncovered dofs take the inverse of their dense block.
+  """
+  wp.launch_tiled(
+    _eff_chol_solve_sparse,
+    dim=d.nworld,
+    inputs=[
+      m.efm_dofid,
+      m.efm_chol_vert,
+      efm_L if efm_L is not None else wp.empty((d.nworld, 0), dtype=float),
+      vec,
+      epU if epU is not None else wp.empty(0, dtype=int),
+      epS_inv if epS_inv is not None else wp.empty((d.nworld, 0, 0), dtype=float),
+      chol.lvlptr,
+      chol.nlevel,
+      chol.lvlent,
+      chol.ent,
+      chol.rootlv,
+      chol.nroot,
+      chol.ridx,
+      chol.Lo,
+      chol.Sinv,
+      chol.status,
+    ],
+    outputs=[chol.y, chol.acc, chol.rvec, res],
+    block_dim=m.block_dim.eff_chol_solve,
+  )
+  # dense root over all blocks: acc_R = X y_R, then y_R = X' acc_R
+  nrd = chol.D.shape[1]
+  ntask = nrd * ((nrd + EFF_CHOL_ROOT_CHUNK - 1) // EFF_CHOL_ROOT_CHUNK)
+  for transpose in (False, True):
+    wp.launch(
+      _eff_chol_root_solve,
+      dim=(d.nworld, ntask),
+      inputs=[transpose, chol.nroot, chol.ridx, chol.D, chol.Dinv, chol.rvec, chol.status],
+      outputs=[chol.y, chol.acc],
+    )
+  wp.launch_tiled(
+    _eff_chol_solve_backward,
+    dim=d.nworld,
+    inputs=[
+      m.efm_dofid,
+      m.efm_chol_vert,
+      chol.lvlent,
+      chol.ent,
+      chol.rootlv,
+      chol.nroot,
+      chol.ridx,
+      chol.Lo,
+      chol.y,
+      chol.status,
+    ],
+    outputs=[chol.acc, res],
+    block_dim=m.block_dim.eff_chol_solve,
+  )
+
+
+def _eff_uncovered_solve(
+  m: Model,
+  d: Data,
+  res: wp.array2d[float],
+  vec: wp.array2d[float],
+  epS: wp.array,
+  epS_factor: Optional[wp.array],
+  epS_rhs: wp.array,
+  epS_sol: wp.array,
+  epU: wp.array,
+):
+  """Res = A^-1 vec on the uncovered dofs by Cholesky solves of the uncovered block."""
+  n_u = epU.shape[0]
+  n_u_pad = epS.shape[1]
+  wp.launch(
+    _eff_gather_uncovered_rhs,
+    dim=(d.nworld, n_u_pad),
+    inputs=[n_u, epU, vec],
+    outputs=[epS_rhs],
+  )
+  if n_u <= 32:
+    wp.launch_tiled(
+      _eff_cholesky_solve(n_u),
+      dim=d.nworld,
+      inputs=[epS, epS_rhs],
+      outputs=[epS_sol],
+      block_dim=m.block_dim.update_gradient_cholesky,
+    )
+  elif epS_factor is not None:
+    wp.launch_tiled(
+      _eff_cholesky_solve_blocked(TILE_SIZE_JTDAJ_DENSE, n_u_pad),
+      dim=d.nworld,
+      inputs=[epS_factor, epS_rhs.reshape(shape=(d.nworld, n_u_pad, 1))],
+      outputs=[epS_sol.reshape(shape=(d.nworld, n_u_pad, 1))],
+      block_dim=m.block_dim.update_gradient_cholesky_blocked,
+    )
+  wp.launch(
+    _eff_scatter_uncovered_sol,
+    dim=(d.nworld, n_u),
+    inputs=[epU, epS_sol],
+    outputs=[res],
+  )
 
 
 @event_scope
@@ -3887,8 +6513,17 @@ def eff_prec(
   res: wp.array2d[float],
   vec: wp.array2d[float],
   epL: Optional[wp.array] = None,
+  epS: Optional[wp.array] = None,
+  epS_factor: Optional[wp.array] = None,
+  epS_rhs: Optional[wp.array] = None,
+  epS_sol: Optional[wp.array] = None,
+  epU: Optional[wp.array] = None,
+  eff_chol: Optional[EffCholContext] = None,
 ):
-  """Preconditions residual vector using 3x3 flex block Cholesky and backbone qHLD."""
+  """Preconditions residual vector using 3x3 flex block Cholesky and backbone qHLD.
+
+  With eff_chol, the covered flex dofs use its Cholesky factor where it is full rank.
+  """
   if m.efm0_active:
     if m.nefm0dof < m.nv:
       wp.launch(
@@ -3914,7 +6549,7 @@ def eff_prec(
     )
     if m.opt.enableflags & EnableBit.SLEEP:
       wp.launch(
-        _zero_sleeping_dofs,
+        zero_sleeping_dofs,
         dim=(d.nworld, m.nv),
         inputs=[m.dof_treeid, d.tree_awake],
         outputs=[res],
@@ -3923,20 +6558,54 @@ def eff_prec(
 
   L_arr = epL if epL is not None else d.efm_L
   if 3 * m.nefmdof == m.nv:
-    wp.launch(
-      _eff_block_solve,
-      dim=(d.nworld, m.nefmdof),
-      inputs=[m.efm_dofid, L_arr, vec],
-      outputs=[res],
-    )
+    if eff_chol is not None:
+      eff_chol_solve(m, d, eff_chol, res, vec, efm_L=L_arr)
+    else:
+      wp.launch(
+        eff_block_solve,
+        dim=(d.nworld, m.nefmdof),
+        inputs=[m.efm_dofid, L_arr, vec],
+        outputs=[res],
+      )
     if m.opt.enableflags & EnableBit.SLEEP:
       wp.launch(
-        _zero_sleeping_dofs,
+        zero_sleeping_dofs,
         dim=(d.nworld, m.nv),
         inputs=[m.dof_treeid, d.tree_awake],
         outputs=[res],
       )
     return
+
+  if epS is not None and epU is not None and epS_rhs is not None and epS_sol is not None:
+    n_u = epU.shape[0]
+    n_u_pad = epS.shape[1]
+    inverse = n_u_pad <= EFF_UNCOVERED_INV_MAX and (n_u <= 32 or epS_factor is not None)
+    if inverse and eff_chol is not None:
+      # the Cholesky solve kernel applies the uncovered block's inverse too
+      eff_chol_solve(m, d, eff_chol, res, vec, efm_L=L_arr, epU=epU, epS_inv=epS)
+    elif inverse:
+      wp.launch(_eff_uncovered_inv_mul, dim=(d.nworld, n_u), inputs=[n_u, epU, epS, vec], outputs=[res])
+    else:
+      _eff_uncovered_solve(m, d, res, vec, epS, epS_factor, epS_rhs, epS_sol, epU)
+    if eff_chol is not None:
+      if not inverse:
+        eff_chol_solve(m, d, eff_chol, res, vec, efm_L=L_arr)
+    else:
+      wp.launch(
+        eff_block_solve,
+        dim=(d.nworld, m.nefmdof),
+        inputs=[m.efm_dofid, L_arr, vec],
+        outputs=[res],
+      )
+    if m.opt.enableflags & EnableBit.SLEEP:
+      wp.launch(
+        zero_sleeping_dofs,
+        dim=(d.nworld, m.nv),
+        inputs=[m.dof_treeid, d.tree_awake],
+        outputs=[res],
+      )
+    return
+
   dofblk = m.efm_dofblk
   wp.launch(
     _eff_copy_backbone_rhs,
@@ -3945,15 +6614,18 @@ def eff_prec(
     outputs=[res],
   )
   smooth.solve_LD(m, d, d.qHLD, d.qHDiagInv, res, res)
-  wp.launch(
-    _eff_block_solve,
-    dim=(d.nworld, m.nefmdof),
-    inputs=[m.efm_dofid, L_arr, vec],
-    outputs=[res],
-  )
+  if eff_chol is not None:
+    eff_chol_solve(m, d, eff_chol, res, vec, efm_L=L_arr)
+  else:
+    wp.launch(
+      eff_block_solve,
+      dim=(d.nworld, m.nefmdof),
+      inputs=[m.efm_dofid, L_arr, vec],
+      outputs=[res],
+    )
   if m.opt.enableflags & EnableBit.SLEEP:
     wp.launch(
-      _zero_sleeping_dofs,
+      zero_sleeping_dofs,
       dim=(d.nworld, m.nv),
       inputs=[m.dof_treeid, d.tree_awake],
       outputs=[res],
@@ -3997,13 +6669,13 @@ def eff_solve(m: Model, d: Data, qacc: wp.array2d[float], qfrc: Optional[wp.arra
   )
   has_efm_actuator = m.has_efm_actuator and not (m.opt.disableflags & DisableBit.ACTUATION)
   has_flex_any = has_spring_or_damper and (
-    m.nefmK > 0 or m.has_non_simple_flex or m.efm0_active or m.has_flex_passive or not m.flex_interp_assemblable
+    m.nefmK > 0 or m.has_non_simple_flex or m.efm0_active or passive.flex_passive_contact(m) or not m.flex_interp_assemblable
   )
   if not has_flex_any and not has_efm_tendon and not has_efm_actuator:
     smooth.solve_LD(m, d, d.qHLD, d.qHDiagInv, qacc, rhs)
     if m.opt.enableflags & EnableBit.SLEEP:
       wp.launch(
-        _zero_sleeping_dofs,
+        zero_sleeping_dofs,
         dim=(d.nworld, m.nv),
         inputs=[m.dof_treeid, d.tree_awake],
         outputs=[qacc],
@@ -4015,7 +6687,13 @@ def eff_solve(m: Model, d: Data, qacc: wp.array2d[float], qfrc: Optional[wp.arra
   # allocated here since _pcg_iteration may run inside wp.capture_while
   efm_con, flex_scratch = eff_mul_m_scratch(m, d)
 
-  eff_prec(m, d, efm_z, rhs)
+  # under IPC the covered block is preconditioned by the Cholesky factor of M + K (mj_effSolve)
+  eff_chol = None
+  if eff_chol_active(m):
+    eff_chol = create_eff_chol_context(m, d.nworld, d.njmax)
+    eff_chol_factor(m, d, eff_chol, fold=False)
+
+  eff_prec(m, d, efm_z, rhs, eff_chol=eff_chol)
   wp.launch_tiled(
     _pcg_init_tiled,
     dim=d.nworld,
@@ -4062,7 +6740,7 @@ def eff_solve(m: Model, d: Data, qacc: wp.array2d[float], qfrc: Optional[wp.arra
       ],
       block_dim=m.block_dim.eff_pcg,
     )
-    eff_prec(m, d, efm_z, efm_r)
+    eff_prec(m, d, efm_z, efm_r, eff_chol=eff_chol)
     wp.launch_tiled(
       _pcg_beta_and_p_update_tiled,
       dim=d.nworld,
@@ -4084,8 +6762,15 @@ def eff_solve(m: Model, d: Data, qacc: wp.array2d[float], qfrc: Optional[wp.arra
     )
 
   if max_it > 0:
-    if m.opt.graph_conditional and wp.get_device().is_cuda:
+    if m.opt.graph_conditional:
       wp.capture_while(efm_nsolving, while_body=_pcg_iteration)
     else:
       for _ in range(max_it):
         _pcg_iteration()
+
+  wp.launch(
+    _pcg_check_convergence_warning(int(m.opt.warn_overflow)),
+    dim=d.nworld,
+    inputs=[efm_done],
+    outputs=[d.overflow],
+  )

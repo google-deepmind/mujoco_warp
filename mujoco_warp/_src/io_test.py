@@ -1584,6 +1584,8 @@ class IOTest(parameterized.TestCase):
       "ntree_awake",
       "nbody_awake",
       "nv_awake",
+      "flexvert_lambda",
+      "flexvert_conage",
     ]
 
     mjm, mjd, m, d = test_data.fixture(xml)
@@ -2929,6 +2931,34 @@ class IOTest(parameterized.TestCase):
     with warnings.catch_warnings():
       warnings.simplefilter("error")
       mjwarp.put_model(mjm)
+
+  @parameterized.parameters(1, 2)
+  def test_flexvert_lambda_io_sync(self, nworld):
+    """Test that get_data copies flexvert_lambda and flexvert_conage to host MjData."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <flexcomp name="cloth" type="grid" count="2 2 1" spacing=".1 .1 .1" radius=".01" dim="2" mass=".1">
+            <contact selfcollide="none"/>
+          </flexcomp>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=nworld,
+    )
+
+    test_lambda = np.array([[1.5 + w, 2.5 + w, 3.5 + w, 4.5 + w] for w in range(nworld)], dtype=np.float32)
+    test_conage = np.array([[-1 + w, 0 + w, 2 + w, 5 + w] for w in range(nworld)], dtype=np.int32)
+    d.flexvert_lambda.assign(test_lambda)
+    d.flexvert_conage.assign(test_conage)
+
+    for w in range(nworld):
+      mjd.flexvert_lambda.fill(np.inf)
+      mjd.flexvert_conage.fill(-1)
+      io.get_data_into(mjd, mjm, d, world_id=w)
+      np.testing.assert_allclose(mjd.flexvert_lambda, test_lambda[w], atol=1e-5)
+      np.testing.assert_array_equal(mjd.flexvert_conage, test_conage[w])
 
 
 if __name__ == "__main__":

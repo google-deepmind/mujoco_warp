@@ -106,7 +106,8 @@ class TypesTest(parameterized.TestCase):
     self.assertEqual(int(OverflowType.ITERATIONS), 1 << 9)
     self.assertEqual(int(OverflowType.LS_ITERATIONS), 1 << 10)
     self.assertEqual(int(OverflowType.TACTILE), 1 << 11)
-    self.assertEqual(int(OverflowType.ALL), (1 << 12) - 1)
+    self.assertEqual(int(OverflowType.PRECONDITIONER), 1 << 12)
+    self.assertEqual(int(OverflowType.ALL), (1 << 13) - 1)
 
   def test_option_warn_overflow(self):
     mjm = mujoco.MjModel.from_xml_string("<mujoco/>")

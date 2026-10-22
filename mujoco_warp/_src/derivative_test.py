@@ -25,6 +25,7 @@ import mujoco_warp as mjw
 from mujoco_warp import test_data
 from mujoco_warp._src import derivative
 from mujoco_warp._src import forward
+from mujoco_warp._src import solver
 from mujoco_warp._src import types
 from mujoco_warp._src import util_pkg
 
@@ -1920,8 +1921,12 @@ class DerivativeTest(parameterized.TestCase):
     mjw.forward(m, d)
 
     _assert_eq(d.efm_diag.numpy()[0], mjd.efm_diag, "efm_diag")
-    _assert_eq(d.efm_ts.numpy()[0], mjd.efm_ts, "efm_ts")
-    _assert_eq(d.efm_as.numpy()[0], mjd.efm_as, "efm_as")
+    expected_efm_ts = np.zeros(mjm.ntendon)
+    expected_efm_ts[mjd.efm_tid[: mjd.nefmT]] = mjd.efm_ts[: mjd.nefmT]
+    _assert_eq(d.efm_ts.numpy()[0], expected_efm_ts, "efm_ts")
+    expected_efm_as = np.zeros(mjm.nu)
+    expected_efm_as[mjd.efm_aid[: mjd.nefmA]] = mjd.efm_as[: mjd.nefmA]
+    _assert_eq(d.efm_as.numpy()[0], expected_efm_as, "efm_as")
     _assert_eq(d.efm_c.numpy()[0], mjd.efm_c, "efm_c")
     _assert_eq(d.efm_ca.numpy()[0], mjd.efm_ca, "efm_ca")
     _assert_eq(d.qacc_smooth.numpy()[0], mjd.qacc_smooth, "qacc_smooth")
@@ -2235,6 +2240,529 @@ class DerivativeTest(parameterized.TestCase):
     for w in range(nworld):
       expected_efm0 = np.linalg.solve(A_efm0, vec_np[w, efm0_dofid])
       _assert_eq(res_np[w, efm0_dofid], expected_efm0, f"efm0_cross_coord_world_{w}")
+
+  @parameterized.parameters(1, 2)
+  def test_discrete_flex_nonconvex_bend_stencil(self, nworld):
+    """Tests that bending stencils of creases sharper than 90 degrees are excluded from metric."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option solver="CG" integrator="discrete"/>
+        <worldbody>
+          <flexcomp name="crease" type="direct" radius="0.005" mass="0.1" point="0 0 0  0.1 0 0  0.05 0.08 0  0.05 0.06 0.06  0.05 0.05 0.03" element="0 1 2  1 0 3  0 4 1">
+            <contact selfcollide="none" contype="0" conaffinity="0"/>
+            <elasticity young="1e4" poisson="0.2" damping="0.05" elastic2d="both" thickness="0.01"/>
+          </flexcomp>
+        </worldbody>
+      </mujoco>
+      """,
+      qvel_noise=0.1,
+      nworld=nworld,
+    )
+    bending = mjm.flex_bending[mjm.flex_bendingadr[0] :].reshape(-1, 17)
+    self.assertLess(np.min(bending[:, 0] + bending[:, 5] + bending[:, 10] + bending[:, 15]), 0.0)
+    mjds = [mjd]
+    if nworld == 2:
+      qvel_np = d.qvel.numpy()
+      qvel_np[1] = qvel_np[0] * 1.5 + 0.05
+      d.qvel.assign(qvel_np)
+      mjd1 = mujoco.MjData(mjm)
+      mjd1.qpos[:] = d.qpos.numpy()[1]
+      mjd1.qvel[:] = qvel_np[1]
+      mjds.append(mjd1)
+
+    d.efm_K_val.fill_(wp.inf)
+    d.efm_c.fill_(wp.inf)
+    d.qacc_smooth.fill_(wp.inf)
+
+    for mjd_w in mjds:
+      mujoco.mj_forward(mjm, mjd_w)
+    mjw.forward(m, d)
+    efm_K_val = d.efm_K_val.numpy()
+    efm_c_np = d.efm_c.numpy()
+    qacc_smooth_np = d.qacc_smooth.numpy()
+    for w, mjd_w in enumerate(mjds):
+      _assert_eq(efm_K_val[w], mjd_w.efm_K_val, f"efm_K_val_w{w}")
+      _assert_eq(efm_c_np[w], mjd_w.efm_c, f"efm_c_w{w}")
+      _assert_eq(qacc_smooth_np[w], mjd_w.qacc_smooth, f"qacc_smooth_w{w}")
+    if nworld == 2:
+      self.assertFalse(np.allclose(efm_c_np[0], efm_c_np[1]))
+
+  def _eff_chol_reference(self, mjm, m, d, w, fold):
+    """MuJoCo C's covered-block matrix H' (vertex-major) and its allowed vertex pairs."""
+    nb = m.nefmdof
+    dofid = m.efm_dofid.numpy()
+    cov = np.concatenate([np.arange(i, i + 3) for i in dofid])
+    blk = np.full(mjm.nv, -1)
+    for k, i in enumerate(dofid):
+      blk[i : i + 3] = k
+    allowed = set()
+    for v0, v1 in mjm.flex_edge:
+      k0 = blk[mjm.body_dofadr[mjm.flex_vertbodyid[v0]]]
+      k1 = blk[mjm.body_dofadr[mjm.flex_vertbodyid[v1]]]
+      allowed |= {(k0, k1), (k1, k0)}
+
+    def csr(rowadr, rownnz, colind, val, nrow):
+      out = np.zeros((nrow, mjm.nv))
+      for i in range(nrow):
+        sl = slice(rowadr[i], rowadr[i] + rownnz[i])
+        out[i, colind[sl]] = val[sl]
+      return out
+
+    M = csr(m.M_rowadr.numpy(), m.M_rownnz.numpy(), m.M_colind.numpy(), d.M.numpy()[w], mjm.nv)
+    M = np.tril(M) + np.tril(M, -1).T
+    K = csr(m.efm_K_rowadr.numpy(), m.efm_K_rownnz.numpy(), m.efm_K_colind.numpy(), d.efm_K_val.numpy()[w], mjm.nv)
+
+    n = 3 * nb
+    H = np.zeros((n, n))
+    if fold:
+      rows, scales = [], []
+      nefc = d.nefc.numpy()[w]
+      if m.is_sparse:
+        J = csr(
+          d.efc.J_rowadr.numpy()[w],
+          d.efc.J_rownnz.numpy()[w],
+          d.efc.J_colind.numpy()[w, 0],
+          d.efc.J.numpy()[w, 0],
+          nefc,
+        )
+      else:
+        J = d.efc.J.numpy()[w, :nefc, : mjm.nv]
+      rows += list(J)
+      scales += list(d.efc.D.numpy()[w, :nefc])
+      if mjm.ntendon:
+        rows += list(
+          csr(m.ten_J_rowadr.numpy(), m.ten_J_rownnz.numpy(), m.ten_J_colind.numpy(), d.ten_J.numpy()[w], mjm.ntendon)
+        )
+        scales += list(d.efm_ts.numpy()[w])
+      if mjm.nu:
+        rows += list(
+          csr(
+            d.moment_rowadr.numpy()[w],
+            d.moment_rownnz.numpy()[w],
+            d.moment_colind.numpy()[w],
+            d.actuator_moment.numpy()[w],
+            mjm.nu,
+          )
+        )
+        scales += list(d.efm_as.numpy()[w])
+      for row, s in zip(rows, scales):
+        if s <= 0.0:
+          continue
+        H += s * np.outer(row[cov], row[cov])
+        ks = {blk[c] for c in np.nonzero(row)[0] if blk[c] >= 0}
+        allowed |= {(a, b) for a in ks for b in ks if a != b}
+    for k in range(nb):
+      i0 = dofid[k]
+      H[3 * k : 3 * k + 3, 3 * k : 3 * k + 3] += M[i0 : i0 + 3, i0 : i0 + 3] + K[i0 : i0 + 3, i0 : i0 + 3]
+      for q in range(nb):
+        B = K[i0 : i0 + 3, dofid[q] : dofid[q] + 3]
+        if q == k or not B.any():
+          continue
+        if (k, q) in allowed:
+          H[3 * k : 3 * k + 3, 3 * q : 3 * q + 3] += B
+        elif q > k:
+          # dropped off-pattern block: its Frobenius norm on both diagonal blocks
+          f = np.linalg.norm(B)
+          H[3 * k : 3 * k + 3, 3 * k : 3 * k + 3] += f * np.eye(3)
+          H[3 * q : 3 * q + 3, 3 * q : 3 * q + 3] += f * np.eye(3)
+    return H, cov, allowed
+
+  def _assert_eff_chol(self, mjm, m, d, chol, w, fold):
+    """Checks one world's symbolic structure, levels, factor, and solve against the reference."""
+    nb = m.nefmdof
+    H, cov, allowed = self._eff_chol_reference(mjm, m, d, w, fold)
+    rank = m.efm_chol_rank.numpy()
+
+    # symbolic factorization of the allowed pattern in the model's elimination order
+    struct = [set() for _ in range(nb)]
+    for k, q in allowed:
+      if rank[k] > rank[q]:
+        struct[rank[q]].add(int(rank[k]))
+    parent = np.full(nb, -1)
+    for j in range(nb):
+      if struct[j]:
+        parent[j] = min(struct[j])
+        struct[parent[j]] |= struct[j] - {parent[j]}
+    colptr = np.concatenate([[0], np.cumsum([len(s) for s in struct])])
+    rowind = np.array([r for s in struct for r in sorted(s)], dtype=int)
+    np.testing.assert_array_equal(chol.colptr.numpy()[w], colptr, err_msg="colptr")
+    np.testing.assert_array_equal(chol.rowind.numpy()[w, : colptr[nb]], rowind, err_msg="rowind")
+
+    # levels: a permutation of the columns, every parent on a later level
+    nlevel = chol.nlevel.numpy()[w]
+    lvlptr = chol.lvlptr.numpy()[w, : nlevel + 1]
+    lvlcol = chol.lvlcol.numpy()[w]
+    np.testing.assert_array_equal(np.sort(lvlcol), np.arange(nb))
+    self.assertEqual(lvlptr[0], 0)
+    self.assertEqual(lvlptr[-1], nb)
+    level = np.empty(nb, dtype=int)
+    for lv in range(nlevel):
+      self.assertGreater(lvlptr[lv + 1], lvlptr[lv])
+      level[lvlcol[lvlptr[lv] : lvlptr[lv + 1]]] = lv
+    for j in range(nb):
+      if parent[j] >= 0:
+        self.assertGreater(level[parent[j]], level[j])
+    ln = np.diff(colptr)[lvlcol]
+    np.testing.assert_array_equal(chol.entptr.numpy()[w], np.concatenate([[0], np.cumsum(ln)]), err_msg="entptr")
+    np.testing.assert_array_equal(
+      chol.pairptr.numpy()[w], np.concatenate([[0], np.cumsum(ln * (ln + 1) // 2)]), err_msg="pairptr"
+    )
+
+    # factor: L S L' reproduces H' in elimination order
+    vert = m.efm_chol_vert.numpy()
+    perm = np.concatenate([np.arange(3 * k, 3 * k + 3) for k in vert])
+    Hr = H[np.ix_(perm, perm)]
+    L = np.eye(3 * nb)
+    S = np.eye(3 * nb)
+    Sinv = chol.Sinv.numpy()[w]
+    Lo = chol.Lo.numpy()[w]
+    rpos = chol.rpos.numpy()[w]
+    for j in range(nb):
+      if rpos[j] >= 0:
+        continue
+      S[3 * j : 3 * j + 3, 3 * j : 3 * j + 3] = np.linalg.inv(Sinv[j])
+      for p in range(colptr[j], colptr[j + 1]):
+        i = rowind[p]
+        L[3 * i : 3 * i + 3, 3 * j : 3 * j + 3] = Lo[p]
+    # dense root: the top levels' columns, factored as L_R L_R' with S_R = I
+    nr = 3 * chol.nroot.numpy()[w]
+    root = chol.ridx.numpy()[w, :nr]
+    self.assertTrue(np.all(rpos[root[::3] // 3] == np.arange(nr // 3)))
+    L[np.ix_(root, root)] = np.linalg.inv(np.tril(chol.Dinv.numpy()[w, :nr, :nr]))
+    np.testing.assert_allclose(L @ S @ L.T, Hr, rtol=0.0, atol=1e-5 * np.abs(Hr).max(), err_msg="factor")
+    return H, cov
+
+  @parameterized.product(jacobian=["dense", "sparse"], nworld=[1, 2])
+  def test_discrete_flex_ipc_cholesky_preconditioner(self, jacobian, nworld):
+    """Tests the covered-block Cholesky preconditioner under IPC against MuJoCo C's assembly.
+
+    The equalities couple vertices no flex edge joins, so their pairs extend the factor's pattern.
+    """
+    mjm, mjd, m, d = test_data.fixture(
+      xml=f"""
+      <mujoco>
+        <option solver="CG" integrator="discrete" jacobian="{jacobian}">
+          <flag ipc="enable"/>
+        </option>
+        <worldbody>
+          <body pos="0.07 0.07 0.215">
+            <freejoint/>
+            <geom size="0.02" mass="0.05"/>
+          </body>
+          <flexcomp name="cloth" type="grid" count="4 4 1" spacing="0.05 0.05 0.05" pos="0 0 0.2" dim="2" radius="0.002" mass="0.1">
+            <contact selfcollide="none"/>
+            <elasticity young="1e4" poisson="0.2" damping="0.01" elastic2d="both" thickness="0.002"/>
+          </flexcomp>
+        </worldbody>
+        <equality>
+          <connect body1="cloth_0" body2="cloth_15" anchor="0 0 0"/>
+          <connect body1="cloth_3" body2="cloth_12" anchor="0 0 0"/>
+        </equality>
+      </mujoco>
+      """,
+      nworld=nworld,
+    )
+    self.assertTrue(m.efm_chol)
+    self.assertEqual(m.is_sparse, jacobian == "sparse")
+    if nworld == 2:
+      qpos_np = d.qpos.numpy()
+      qpos_np[1, 7:] += 0.002 * np.sin(np.arange(mjm.nq - 7))
+      d.qpos = wp.array(qpos_np, dtype=float)
+
+    d.qacc_smooth.fill_(wp.inf)
+    d.nefc.fill_(-1)
+    mujoco.mj_forward(mjm, mjd)
+    mjw.forward(m, d)
+    _assert_eq(d.qacc_smooth.numpy()[0], mjd.qacc_smooth, "qacc_smooth")
+    self.assertGreater(d.nefc.numpy()[0], 0)
+
+    vec_np = np.random.default_rng(1).uniform(-1.0, 1.0, size=(nworld, mjm.nv)).astype(np.float32)
+    for fold in (False, True):
+      chol = derivative.create_eff_chol_context(m, nworld, d.njmax)
+      d.overflow.zero_()
+      derivative.eff_chol_factor(m, d, chol, fold=fold)
+      res = wp.full((nworld, mjm.nv), wp.inf, dtype=float)
+      derivative.eff_chol_solve(m, d, chol, res, wp.array(vec_np, dtype=float))
+      np.testing.assert_array_equal(chol.status.numpy(), True)
+      np.testing.assert_array_equal(d.overflow.numpy(), 0)
+      # each connect's 3 rows couple one pair of opposite corners, recorded once
+      np.testing.assert_array_equal(chol.xcount.numpy(), 2 if fold else 0)
+      res_np = res.numpy()
+      xs = []
+      for w in range(nworld):
+        H, cov = self._assert_eff_chol(mjm, m, d, chol, w, fold)
+        x = np.linalg.solve(H, vec_np[w, cov])
+        np.testing.assert_allclose(res_np[w, cov], x, rtol=1e-3, atol=1e-3 * np.abs(x).max(), err_msg=f"solve fold={fold}")
+        xs.append(x)
+      if nworld == 2:
+        self.assertFalse(np.allclose(xs[0], xs[1]))
+
+  @parameterized.parameters(1, 2)
+  def test_discrete_flex_ipc_cholesky_tendon_actuator(self, nworld):
+    """Tests that tendon and actuator rank-1 terms fold into the covered block and its pattern."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option solver="CG" integrator="discrete">
+          <flag ipc="enable" gravity="disable"/>
+        </option>
+        <worldbody>
+          <body name="v0">
+            <inertial pos="0 0 0" mass="0.1" diaginertia="1e-4 1e-4 1e-4"/>
+            <joint name="v0x" type="slide" axis="1 0 0"/>
+            <joint type="slide" axis="0 1 0"/>
+            <joint type="slide"/>
+          </body>
+          <body name="v1" pos="0.1 0 0">
+            <inertial pos="0 0 0" mass="0.1" diaginertia="1e-4 1e-4 1e-4"/>
+            <joint type="slide" axis="1 0 0"/>
+            <joint type="slide" axis="0 1 0"/>
+            <joint type="slide"/>
+          </body>
+          <body name="v2" pos="0.2 0 0">
+            <inertial pos="0 0 0" mass="0.1" diaginertia="1e-4 1e-4 1e-4"/>
+            <joint name="v2x" type="slide" axis="1 0 0"/>
+            <joint type="slide" axis="0 1 0"/>
+            <joint type="slide"/>
+          </body>
+          <body name="v3" pos="0 0.1 0">
+            <inertial pos="0 0 0" mass="0.1" diaginertia="1e-4 1e-4 1e-4"/>
+            <joint type="slide" axis="1 0 0"/>
+            <joint name="v3y" type="slide" axis="0 1 0"/>
+            <joint type="slide"/>
+          </body>
+          <body name="v4" pos="0.1 0.1 0">
+            <inertial pos="0 0 0" mass="0.1" diaginertia="1e-4 1e-4 1e-4"/>
+            <joint type="slide" axis="1 0 0"/>
+            <joint type="slide" axis="0 1 0"/>
+            <joint type="slide"/>
+          </body>
+          <body name="v5" pos="0.2 0.1 0">
+            <inertial pos="0 0 0" mass="0.1" diaginertia="1e-4 1e-4 1e-4"/>
+            <joint name="v5x" type="slide" axis="1 0 0"/>
+            <joint type="slide" axis="0 1 0"/>
+            <joint type="slide"/>
+          </body>
+        </worldbody>
+        <deformable>
+          <flex name="patch" dim="2" body="v0 v1 v2 v3 v4 v5" element="0 1 3 1 4 3 1 2 4 2 5 4">
+            <contact contype="0" conaffinity="0" selfcollide="none"/>
+            <elasticity young="1e4" thickness="0.01" elastic2d="both" damping="0.02"/>
+          </flex>
+        </deformable>
+        <tendon>
+          <fixed name="spring" stiffness="50" damping="1">
+            <joint joint="v0x" coef="1"/>
+            <joint joint="v5x" coef="-1"/>
+          </fixed>
+          <fixed name="drive">
+            <joint joint="v2x" coef="1"/>
+            <joint joint="v3y" coef="1"/>
+          </fixed>
+        </tendon>
+        <actuator>
+          <general tendon="drive" gainprm="1" biastype="affine" biasprm="0 0 -2"/>
+        </actuator>
+      </mujoco>
+      """,
+      nworld=nworld,
+    )
+    self.assertTrue(m.efm_chol)
+    if nworld == 2:
+      qvel_np = d.qvel.numpy()
+      qvel_np[1] += 0.1 * np.cos(np.arange(mjm.nv))
+      d.qvel = wp.array(qvel_np, dtype=float)
+      qpos_np = d.qpos.numpy()
+      qpos_np[1] += 0.01 * np.sin(np.arange(mjm.nq))
+      d.qpos = wp.array(qpos_np, dtype=float)
+    d.nefc.fill_(-1)
+    d.efm_ts.fill_(wp.inf)
+    d.efm_as.fill_(wp.inf)
+    mjw.forward(m, d)
+    self.assertEqual(d.nefc.numpy()[0], 0)
+    # the spring tendon and the velocity-dependent actuator fold, the bare drive tendon does not
+    self.assertTrue(np.all(d.efm_ts.numpy()[:, 0] > 0.0))
+    self.assertTrue(np.all(d.efm_ts.numpy()[:, 1] == 0.0))
+    self.assertTrue(np.all(d.efm_as.numpy() > 0.0))
+
+    vec_np = np.random.default_rng(2).uniform(-1.0, 1.0, size=(nworld, mjm.nv)).astype(np.float32)
+    chol = derivative.create_eff_chol_context(m, nworld, d.njmax)
+    derivative.eff_chol_factor(m, d, chol, fold=True)
+    res = wp.full((nworld, mjm.nv), wp.inf, dtype=float)
+    derivative.eff_chol_solve(m, d, chol, res, wp.array(vec_np, dtype=float))
+    np.testing.assert_array_equal(chol.status.numpy(), True)
+    # spring couples v0-v5, drive couples v2-v3: neither is a flex edge
+    np.testing.assert_array_equal(chol.xcount.numpy(), 2)
+    res_np = res.numpy()
+    Hs = []
+    for w in range(nworld):
+      H, cov = self._assert_eff_chol(mjm, m, d, chol, w, True)
+      x = np.linalg.solve(H, vec_np[w, cov])
+      np.testing.assert_allclose(res_np[w, cov], x, rtol=1e-3, atol=1e-3 * np.abs(x).max())
+      Hs.append(H)
+    if nworld == 2:
+      self.assertFalse(np.allclose(Hs[0], Hs[1]))
+
+  def test_discrete_flex_ipc_cholesky_overflow(self):
+    """Tests that a world outgrowing the factor buffers reports overflow and uses its 3x3 blocks."""
+    mjm, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option solver="CG" integrator="discrete" jacobian="dense">
+          <flag ipc="enable"/>
+        </option>
+        <worldbody>
+          <body pos="0.07 0.07 0.215">
+            <freejoint/>
+            <geom size="0.02" mass="0.05"/>
+          </body>
+          <flexcomp name="cloth" type="grid" count="4 4 1" spacing="0.05 0.05 0.05" pos="0 0 0.2" dim="2" radius="0.002" mass="0.1">
+            <contact selfcollide="none"/>
+            <elasticity young="1e4" poisson="0.2" damping="0.01" elastic2d="both" thickness="0.002"/>
+          </flexcomp>
+        </worldbody>
+        <equality>
+          <connect body1="cloth_0" body2="cloth_15" anchor="0 0 0"/>
+          <connect body1="cloth_3" body2="cloth_12" anchor="0 0 0"/>
+        </equality>
+      </mujoco>
+      """,
+      nworld=2,
+    )
+    d.efc.D.fill_(wp.inf)
+    mjw.forward(m, d)
+    # world 0 folds no efc rows, world 1 folds the connects' 2 pairs into room for 1
+    D_np = d.efc.D.numpy()
+    D_np[0] = 0.0
+    d.efc.D = wp.array(D_np, dtype=float)
+
+    vec_np = np.random.default_rng(3).uniform(-1.0, 1.0, size=(2, mjm.nv)).astype(np.float32)
+    chol = derivative.create_eff_chol_context(m, 2, 0)
+    d.overflow.zero_()
+    derivative.eff_chol_factor(m, d, chol, fold=True)
+    res = wp.full((2, mjm.nv), wp.inf, dtype=float)
+    derivative.eff_chol_solve(m, d, chol, res, wp.array(vec_np, dtype=float))
+
+    np.testing.assert_array_equal(chol.xcount.numpy(), [0, 2])
+    np.testing.assert_array_equal(chol.status.numpy(), [True, False])
+    overflow = d.overflow.numpy()
+    self.assertEqual(overflow[0], 0)
+    self.assertTrue(overflow[1] & types.OverflowType.PRECONDITIONER)
+    H, cov = self._assert_eff_chol(mjm, m, d, chol, 0, True)
+    x = np.linalg.solve(H, vec_np[0, cov])
+    np.testing.assert_allclose(res.numpy()[0, cov], x, rtol=1e-3, atol=1e-3 * np.abs(x).max())
+    # the overflowed world leaves the covered dofs to the 3x3 block preconditioner
+    np.testing.assert_array_equal(res.numpy()[1], np.inf)
+    vec = wp.array(vec_np, dtype=float)
+    res_fallback = wp.full((2, mjm.nv), wp.inf, dtype=float)
+    derivative.eff_chol_solve(m, d, chol, res_fallback, vec, efm_L=d.efm_L)
+    res_block = wp.full((2, mjm.nv), wp.inf, dtype=float)
+    wp.launch(derivative.eff_block_solve, dim=(2, m.nefmdof), inputs=[m.efm_dofid, d.efm_L, vec], outputs=[res_block])
+    np.testing.assert_allclose(res_fallback.numpy()[0, cov], res.numpy()[0, cov], rtol=1e-6, atol=1e-7)
+    np.testing.assert_array_equal(res_fallback.numpy()[1], res_block.numpy()[1])
+
+    # without folded terms the static pattern always fits
+    d.overflow.zero_()
+    derivative.eff_chol_factor(m, d, chol, fold=False)
+    np.testing.assert_array_equal(chol.status.numpy(), True)
+    np.testing.assert_array_equal(d.overflow.numpy(), 0)
+
+  def test_discrete_flex_ipc_cholesky_rank_deficient(self):
+    """Tests that a rank-deficient world falls back to its 3x3 blocks without reporting overflow."""
+    mjm, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option solver="CG" integrator="discrete" jacobian="dense">
+          <flag ipc="enable"/>
+        </option>
+        <worldbody>
+          <body pos="0.07 0.07 0.215">
+            <freejoint/>
+            <geom size="0.02" mass="0.05"/>
+          </body>
+          <flexcomp name="cloth" type="grid" count="4 4 1" spacing="0.05 0.05 0.05" pos="0 0 0.2" dim="2" radius="0.002" mass="0.1">
+            <contact selfcollide="none"/>
+            <elasticity young="1e4" poisson="0.2" damping="0.01" elastic2d="both" thickness="0.002"/>
+          </flexcomp>
+        </worldbody>
+        <equality>
+          <connect body1="cloth_0" body2="cloth_15" anchor="0 0 0"/>
+          <connect body1="cloth_3" body2="cloth_12" anchor="0 0 0"/>
+        </equality>
+      </mujoco>
+      """,
+      nworld=2,
+    )
+    d.M.fill_(wp.inf)
+    d.efm_K_val.fill_(wp.inf)
+    mjw.forward(m, d)
+    M_np = d.M.numpy()
+    M_np[1] = 0.0
+    d.M = wp.array(M_np, dtype=float)
+    K_np = d.efm_K_val.numpy()
+    K_np[1] = 0.0
+    d.efm_K_val = wp.array(K_np, dtype=float)
+
+    vec_np = np.random.default_rng(4).uniform(-1.0, 1.0, size=(2, mjm.nv)).astype(np.float32)
+    chol = derivative.create_eff_chol_context(m, 2, d.njmax)
+    d.overflow.zero_()
+    derivative.eff_chol_factor(m, d, chol, fold=False)
+    res = wp.full((2, mjm.nv), wp.inf, dtype=float)
+    derivative.eff_chol_solve(m, d, chol, res, wp.array(vec_np, dtype=float))
+
+    np.testing.assert_array_equal(chol.status.numpy(), [True, False])
+    np.testing.assert_array_equal(d.overflow.numpy(), 0)
+    H, cov = self._eff_chol_reference(mjm, m, d, 0, False)[:2]
+    x = np.linalg.solve(H, vec_np[0, cov])
+    np.testing.assert_allclose(res.numpy()[0, cov], x, rtol=1e-3, atol=1e-3 * np.abs(x).max())
+    np.testing.assert_array_equal(res.numpy()[1], np.inf)
+
+  @absltest.skipIf(not wp.get_device().is_cuda, "CUDA graph capture requires a CUDA device")
+  def test_discrete_flex_ipc_cholesky_graph_capture(self):
+    """Tests that the factor and solve capture into a CUDA graph and match eager execution."""
+    mjm, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option solver="CG" integrator="discrete" jacobian="sparse">
+          <flag ipc="enable"/>
+        </option>
+        <worldbody>
+          <body pos="0.07 0.07 0.215">
+            <freejoint/>
+            <geom size="0.02" mass="0.05"/>
+          </body>
+          <flexcomp name="cloth" type="grid" count="4 4 1" spacing="0.05 0.05 0.05" pos="0 0 0.2" dim="2" radius="0.002" mass="0.1">
+            <contact selfcollide="none"/>
+            <elasticity young="1e4" poisson="0.2" damping="0.01" elastic2d="both" thickness="0.002"/>
+          </flexcomp>
+        </worldbody>
+        <equality>
+          <connect body1="cloth_0" body2="cloth_15" anchor="0 0 0"/>
+          <connect body1="cloth_3" body2="cloth_12" anchor="0 0 0"/>
+        </equality>
+      </mujoco>
+      """,
+      nworld=1,
+    )
+    d.M.fill_(wp.inf)
+    d.efm_K_val.fill_(wp.inf)
+    mjw.forward(m, d)
+    vec = wp.array(np.random.default_rng(5).uniform(-1.0, 1.0, size=(1, mjm.nv)).astype(np.float32), dtype=float)
+
+    chol = derivative.create_eff_chol_context(m, 1, d.njmax)
+    res_eager = wp.full((1, mjm.nv), wp.inf, dtype=float)
+    derivative.eff_chol_factor(m, d, chol, fold=True)
+    derivative.eff_chol_solve(m, d, chol, res_eager, vec)
+
+    res_graph = wp.full((1, mjm.nv), wp.inf, dtype=float)
+    with wp.ScopedCapture() as capture:
+      derivative.eff_chol_factor(m, d, chol, fold=True)
+      derivative.eff_chol_solve(m, d, chol, res_graph, vec)
+    wp.capture_launch(capture.graph)
+    np.testing.assert_array_equal(chol.status.numpy(), True)
+    cov = np.concatenate([np.arange(i, i + 3) for i in m.efm_dofid.numpy()])
+    np.testing.assert_allclose(res_graph.numpy()[0, cov], res_eager.numpy()[0, cov], rtol=1e-5, atol=1e-6)
 
   @parameterized.product(
     elastic2d=["bend", "both"],
@@ -3457,6 +3985,187 @@ class DerivativeTest(parameterized.TestCase):
 
     if nworld == 2:
       self.assertFalse(np.allclose(d.qacc.numpy()[0], d.qacc.numpy()[1]))
+
+  @parameterized.parameters(1, 2)
+  def test_eff_solve_pcg_overflow(self, nworld):
+    """Verifies eff_solve sets OverflowType.ITERATIONS when PCG does not converge."""
+    _, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option gravity="0 0 0" integrator="discrete" solver="CG" iterations="1" tolerance="1e-10"/>
+        <worldbody>
+          <flexcomp name="cloth" count="3 3 1" spacing="0.05 0.05 1" radius="0.005" mass="0.09">
+            <contact contype="0" conaffinity="0" selfcollide="none"/>
+            <elasticity young="5000" thickness="0.005" elastic2d="both" damping="0.1"/>
+          </flexcomp>
+        </worldbody>
+      </mujoco>
+      """,
+      qpos_noise=0.01,
+      nworld=nworld,
+    )
+    mjw.fwd_position(m, d)
+    mjw.fwd_velocity(m, d)
+
+    qfrc = np.zeros((nworld, m.nv), dtype=np.float32)
+    qfrc[0] = np.linspace(-1.0, 1.0, m.nv, dtype=np.float32)
+    d.qacc_smooth.fill_(wp.inf)
+    d.overflow.zero_()
+
+    derivative.eff_solve(m, d, d.qacc_smooth, qfrc=wp.array(qfrc, dtype=float))
+
+    overflow_np = d.overflow.numpy()
+    self.assertTrue(bool(int(overflow_np[0]) & int(types.OverflowType.ITERATIONS)))
+    if nworld == 2:
+      self.assertEqual(int(overflow_np[1]), 0)
+
+  @parameterized.product(
+    nworld=(1, 2),
+    jacobian=(mujoco.mjtJacobian.mjJAC_DENSE, mujoco.mjtJacobian.mjJAC_SPARSE),
+  )
+  def test_eff_prec_fold_uncovered_dense(self, nworld, jacobian):
+    """Verifies eff_prec_fold folds active constraints into a dense uncovered Cholesky factor."""
+    mjm, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option integrator="discrete" solver="CG">
+          <flag ipc="enable"/>
+        </option>
+        <worldbody>
+          <body name="arm" pos="1 0 0">
+            <joint name="j0" axis="0 1 0" damping="2" limited="true" range="-0.1 0.1"/>
+            <geom type="capsule" fromto="0 0 0 0.2 0 0" size="0.02" mass="1"/>
+            <body pos="0.2 0 0">
+              <joint name="j1" axis="0 1 0" damping="1" limited="true" range="-0.1 0.1"/>
+              <geom type="capsule" fromto="0 0 0 0.2 0 0" size="0.02" mass="1"/>
+            </body>
+          </body>
+          <flexcomp name="cloth" type="grid" dim="2" count="2 2 1" spacing="0.05 0.05 1" radius="0.005" mass="0.05" pos="0 0 0.5">
+            <contact selfcollide="none"/>
+            <elasticity young="500" thickness="0.005" elastic2d="stretch" damping="0.05"/>
+          </flexcomp>
+        </worldbody>
+        <equality>
+          <joint joint1="j0" joint2="j1"/>
+        </equality>
+      </mujoco>
+      """,
+      nworld=nworld,
+      overrides={"opt.jacobian": jacobian},
+    )
+    qpos = d.qpos.numpy()
+    qpos[0, 0] = 0.2
+    qpos[0, 1] = -0.2
+    if nworld == 2:
+      qpos[1, 0] = -0.25
+      qpos[1, 1] = 0.15
+    d.qpos.assign(qpos)
+    qvel = d.qvel.numpy()
+    qvel[0, :2] = [1.0, -0.5]
+    if nworld == 2:
+      qvel[1, :2] = [-0.8, 0.6]
+    d.qvel.assign(qvel)
+
+    mjw.fwd_position(m, d)
+    mjw.fwd_velocity(m, d)
+    mjw.fwd_actuation(m, d)
+
+    ctx = solver.create_solver_context(m, d)
+    d.qacc.assign(d.qacc_smooth)
+    ctx.Mgrad.fill_(wp.inf)
+    solver.init_context(m, d, ctx, grad=True)
+
+    efm_diag_np = d.efm_diag.numpy()
+    nefc_np = d.nefc.numpy()
+    efc_D_np = d.efc.D.numpy()
+    efc_J_np = d.efc.J.numpy()
+    if m.is_sparse:
+      J_rownnz_np = d.efc.J_rownnz.numpy()
+      J_rowadr_np = d.efc.J_rowadr.numpy()
+      J_colind_np = d.efc.J_colind.numpy()
+    grad_np = ctx.grad.numpy()
+    Mgrad_np = ctx.Mgrad.numpy()
+    mjds = [mujoco.MjData(mjm) for _ in range(nworld)]
+    for w in range(nworld):
+      mjds[w].qpos[:] = qpos[w]
+      mjds[w].qvel[:] = qvel[w]
+      mujoco.mj_forwardSkip(mjm, mjds[w], mujoco.mjtStage.mjSTAGE_NONE, 1)
+      mj_M = np.zeros((mjm.nv, mjm.nv))
+      mujoco.mju_sym2dense(mj_M, mjds[w].M, mjm.M_rownnz, mjm.M_rowadr, mjm.M_colind)
+      S_uu = mj_M[:2, :2] + np.diag(efm_diag_np[w, :2])
+      nefc_w = int(nefc_np[w])
+      D_w = efc_D_np[w, :nefc_w]
+      if m.is_sparse:
+        J_dense = np.zeros((nefc_w, m.nv))
+        rownnz = J_rownnz_np[w, :nefc_w]
+        rowadr = J_rowadr_np[w, :nefc_w]
+        colind = J_colind_np[w, 0]
+        J_val = efc_J_np[w, 0]
+        for r in range(nefc_w):
+          for k in range(rownnz[r]):
+            J_dense[r, colind[rowadr[r] + k]] = J_val[rowadr[r] + k]
+      else:
+        J_dense = efc_J_np[w, :nefc_w, : m.nv]
+      J_u = J_dense[:, :2]
+      S_uu += J_u.T @ (D_w[:, None] * J_u)
+      want_u = np.linalg.solve(S_uu, grad_np[w, :2])
+      np.testing.assert_allclose(Mgrad_np[w, :2], want_u, atol=1e-4, rtol=1e-4)
+
+    if nworld == 2:
+      self.assertFalse(np.allclose(Mgrad_np[0, :2], Mgrad_np[1, :2]))
+
+  @parameterized.parameters(1, 2)
+  def test_eff_mul_m_passive_flex_disabled_spring_damper(self, nworld):
+    """Tests that eff_mul_m ignores passive flex contact when SPRING and DAMPER are disabled."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option integrator="discrete"/>
+        <worldbody>
+          <geom name="floor" type="plane" size="2 2 0.01"/>
+          <flexcomp name="f0" count="2 2 1" spacing="0.06 0.06 0.06" pos="0 0 0.005" radius="0.015" mass="0.4">
+            <contact passive="true" selfcollide="none"/>
+            <elasticity young="1000" damping="0.05"/>
+          </flexcomp>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=nworld,
+    )
+    qvel = d.qvel.numpy()
+    qfrc = d.qfrc_applied.numpy()
+    qvel[0] = -0.2
+    qfrc[0, 0] = 1.0
+    mjds = [mjd]
+    mjd.qvel[:] = qvel[0]
+    mjd.qfrc_applied[:] = qfrc[0]
+    if nworld == 2:
+      mjd1 = mujoco.MjData(mjm)
+      qvel[1] = -0.4
+      qfrc[1, 0] = 3.0
+      mjd1.qvel[:] = qvel[1]
+      mjd1.qfrc_applied[:] = qfrc[1]
+      mjds.append(mjd1)
+    d.qvel.assign(qvel)
+    d.qfrc_applied.assign(qfrc)
+
+    mjw.forward(m, d)
+    efm_con = derivative.build_efm_contact(m, d)
+    self.assertGreater(int(efm_con[4].numpy().max()), 0)
+    mjm.opt.disableflags |= mujoco.mjtDisableBit.mjDSBL_SPRING | mujoco.mjtDisableBit.mjDSBL_DAMPER
+    m.opt.disableflags = int(mjm.opt.disableflags)
+    mjw.forward(m, d)
+
+    res_wp = wp.full_like(d.qacc_smooth, wp.inf)
+    derivative.eff_mul_m(m, d, res_wp, d.qacc_smooth, efm_con=efm_con)
+    res_np = res_wp.numpy()
+    for w in range(nworld):
+      mujoco.mj_forward(mjm, mjds[w])
+      expected = np.zeros(mjm.nv)
+      mujoco.mj_mulM(mjm, mjds[w], expected, mjds[w].qacc_smooth)
+      _assert_eq(res_np[w], expected, f"eff_mul_m_disabled_spring_damper_w{w}")
+    if nworld == 2:
+      self.assertFalse(np.allclose(res_np[0], res_np[1]))
 
 
 if __name__ == "__main__":

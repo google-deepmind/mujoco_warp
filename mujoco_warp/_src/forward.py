@@ -21,6 +21,7 @@ from mujoco_warp._src import collision_driver
 from mujoco_warp._src import constraint
 from mujoco_warp._src import derivative
 from mujoco_warp._src import history
+from mujoco_warp._src import ipc
 from mujoco_warp._src import island
 from mujoco_warp._src import math
 from mujoco_warp._src import passive
@@ -55,10 +56,21 @@ wp.set_module_options({"enable_backward": False})
 
 def check_discrete(m: Model):
   """Validate model configuration for discrete integrator."""
+  if m.opt.enableflags & EnableBit.IPC:
+    if m.opt.integrator != IntegratorType.DISCRETE:
+      raise ValueError("Flag IPC requires integrator='discrete'")
+    if m.opt.solver != SolverType.CG:
+      raise ValueError("Flag IPC requires solver='CG'")
+    if m.opt.enableflags & EnableBit.SLEEP:
+      raise ValueError("Flag IPC does not support flag sleep")
+    if m.opt.enableflags & EnableBit.INVDISCRETE:
+      raise ValueError("discrete inverse dynamics is not supported with flag ipc")
+    if m.ipc_flex_error:
+      raise ValueError(m.ipc_flex_error)
   if m.opt.integrator != IntegratorType.DISCRETE:
     if m.has_flex_snh:
       raise ValueError("stable Neo-Hookean elasticity requires integrator='discrete'")
-    if m.has_flex_passive:
+    if passive.flex_passive_contact(m):
       raise ValueError("passive flex contact requires an integrator with the effective metric: set integrator='discrete'")
     if m.opt.integrator in (IntegratorType.IMPLICIT, IntegratorType.IMPLICITFAST) and (m.nefmK > 0 or m.has_non_simple_flex):
       raise ValueError(
@@ -77,7 +89,7 @@ def check_discrete(m: Model):
   if m.opt.enableflags & EnableBit.SLEEP:
     if m.opt.disableflags & DisableBit.ISLAND:
       raise ValueError("Discrete integrator: sleep without islands not yet supported")
-    if m.nefmK > 0 or m.has_non_simple_flex or m.has_flex_passive or not m.flex_interp_assemblable:
+    if m.nefmK > 0 or m.has_non_simple_flex or passive.flex_passive_contact(m) or not m.flex_interp_assemblable:
       raise ValueError("Discrete integrator: sleep with flex not yet supported")
 
 
@@ -389,7 +401,7 @@ def _next_time_builder(warn_overflow: int):
   return _next_time
 
 
-def _advance(m: Model, d: Data, qacc: wp.array, qvel: Optional[wp.array] = None):
+def advance(m: Model, d: Data, qacc: wp.array, qvel: Optional[wp.array] = None):
   """Advance state and time given activation derivatives and acceleration."""
   # TODO(team): can we assume static timesteps?
 
@@ -535,9 +547,9 @@ def euler(m: Model, d: Data):
       outputs=[M],
     )
     smooth.factor_solve_i(m, d, M, qLD, qLDiagInv, qacc, d.efc.Ma)
-    _advance(m, d, qacc)
+    advance(m, d, qacc)
   else:
-    _advance(m, d, d.qacc)
+    advance(m, d, d.qacc)
 
 
 def _rk_perturb_state(
@@ -684,7 +696,7 @@ def rungekutta4(m: Model, d: Data):
     wp.copy(d.act, act_t0)
     wp.copy(d.act_dot, act_dot_rk)
 
-  _advance(m, d, qacc_rk, qvel_rk)
+  advance(m, d, qacc_rk, qvel_rk)
 
 
 @wp.kernel
@@ -1116,8 +1128,10 @@ def _launch_implicit_free_body_solve(m: Model, d: Data, qacc: wp.array2d[float])
 
 
 @cache_kernel
-def _discrete_free_gyro_kernel(has_fluid: bool, has_flex_passive: bool, is_inverse: bool, is_sparse: bool):
-  @wp.kernel(module="unique")
+def _discrete_free_gyro_kernel(
+  has_fluid: bool, has_flex_passive: bool, is_inverse: bool, is_sparse: bool, has_skip: bool = False
+):
+  @wp.kernel(module="unique", enable_backward=False)
   def _discrete_free_gyro(
     # Model:
     nactuator: int,
@@ -1164,10 +1178,16 @@ def _discrete_free_gyro_kernel(has_fluid: bool, has_flex_passive: bool, is_inver
     efm_con_dof_in: wp.array2d[int],
     efm_con_scale_in: wp.array[float],
     efm_con_nnz_in: wp.array[int],
+    skip_in: wp.array[int],
     # Out:
     out: wp.array2d[float],
   ):
-    worldid, freeid = wp.tid()
+    """One block per free body: the threads scan the couplings, then one thread solves."""
+    worldid, freeid, tid = wp.tid()
+    nthread = wp.block_dim()
+    if wp.static(has_skip):
+      if skip_in[worldid] != 0:
+        return
     bodyid = body_freeadr[freeid]
     dof_adr = body_dofadr[bodyid]
 
@@ -1180,8 +1200,9 @@ def _discrete_free_gyro_kernel(has_fluid: bool, has_flex_passive: bool, is_inver
     for r in range(6):
       if efm_K_rownnz[dof_adr + r] != 0:
         return
-    nefc = nefc_in[worldid]
-    for i in range(nefc):
+    coupled = int(0)
+    nefc = wp.min(nefc_in[worldid], efc_J_rownnz_in.shape[1] if wp.static(is_sparse) else efc_J_in.shape[1])
+    for i in range(tid, nefc, nthread):
       if wp.static(is_sparse):
         radr = efc_J_rowadr_in[worldid, i]
         rnnz = efc_J_rownnz_in[worldid, i]
@@ -1189,34 +1210,36 @@ def _discrete_free_gyro_kernel(has_fluid: bool, has_flex_passive: bool, is_inver
           c = efc_J_colind_in[worldid, 0, radr + j]
           if c >= dof_adr and c < dof_adr + 6:
             if efc_J_in[worldid, 0, radr + j] != 0.0:
-              return
+              coupled = 1
       else:
         for r in range(6):
           if efc_J_in[worldid, i, dof_adr + r] != 0.0:
-            return
-    for t in range(ntendon):
+            coupled = 1
+    for t in range(tid, ntendon, nthread):
       if efm_ts_in[worldid, t] != 0.0:
         radr = ten_J_rowadr[t]
         for j in range(ten_J_rownnz[t]):
           c = ten_J_colind[radr + j]
           if c >= dof_adr and c < dof_adr + 6:
-            return
-    for a in range(nactuator):
+            coupled = 1
+    for a in range(tid, nactuator, nthread):
       if efm_as_in[worldid, a] != 0.0:
         radr = moment_rowadr_in[worldid, a]
         for j in range(moment_rownnz_in[worldid, a]):
           c = moment_colind_in[worldid, radr + j]
           if c >= dof_adr and c < dof_adr + 6:
-            return
+            coupled = 1
     if wp.static(has_flex_passive):
-      nacon = nacon_in[0]
-      for cid in range(nacon):
+      nacon = wp.min(nacon_in[0], contact_worldid_in.shape[0])
+      for cid in range(tid, nacon, nthread):
         if contact_worldid_in[cid] == worldid and efm_con_scale_in[cid] != 0.0:
           nnz = efm_con_nnz_in[cid]
           for j in range(nnz):
             c = efm_con_dof_in[cid, j]
             if c >= dof_adr and c < dof_adr + 6:
-              return
+              coupled = 1
+    if wp.tile_max(wp.tile(coupled))[0] != 0 or tid != 0:
+      return
 
     timestep = opt_timestep[worldid % opt_timestep.shape[0]]
     crb = crb_in[worldid, bodyid]
@@ -1290,19 +1313,29 @@ def _discrete_free_gyro_kernel(has_fluid: bool, has_flex_passive: bool, is_inver
   return _discrete_free_gyro
 
 
-def _launch_discrete_free_gyro(m: Model, d: Data, out: wp.array2d[float], qacc: wp.array2d[float], is_inverse: bool):
+def launch_discrete_free_gyro(
+  m: Model,
+  d: Data,
+  out: wp.array2d[float],
+  qacc: wp.array2d[float],
+  is_inverse: bool,
+  skip: Optional[wp.array] = None,
+):
   if m.opt.integrator != IntegratorType.DISCRETE or not m.flex_interp_assemblable or m.has_non_simple_flex:
     return
   has_fluid = m.has_fluid and not ((m.opt.disableflags & DisableBit.SPRING) and (m.opt.disableflags & DisableBit.DAMPER))
-  if m.has_flex_passive and m.body_freeadr.size > 0:
+  if passive.flex_passive_contact(m) and m.body_freeadr.size > 0:
     efm_con_dof, _, efm_con_scale, _, efm_con_nnz = passive.build_efm_contact(m, d)
   else:
     efm_con_dof = wp.empty((0, 0), dtype=int, device=d.qacc.device)
     efm_con_scale = wp.empty(0, dtype=float, device=d.qacc.device)
     efm_con_nnz = wp.empty(0, dtype=int, device=d.qacc.device)
-  wp.launch(
-    _discrete_free_gyro_kernel(has_fluid, m.has_flex_passive, is_inverse, m.is_sparse),
+  has_skip = skip is not None
+  skip_arr = skip if has_skip else d.nefc
+  wp.launch_tiled(
+    _discrete_free_gyro_kernel(has_fluid, passive.flex_passive_contact(m), is_inverse, m.is_sparse, has_skip),
     dim=(d.nworld, m.body_freeadr.size),
+    block_dim=m.block_dim.discrete_free_gyro,
     inputs=[
       m.nactuator,
       m.ntendon,
@@ -1346,6 +1379,7 @@ def _launch_discrete_free_gyro(m: Model, d: Data, out: wp.array2d[float], qacc: 
       efm_con_dof,
       efm_con_scale,
       efm_con_nnz,
+      skip_arr,
     ],
     outputs=[out],
   )
@@ -1376,7 +1410,7 @@ def implicit(m: Model, d: Data):
     qacc = wp.empty((d.nworld, m.nv), dtype=float)
     smooth.factor_solve_lu(m, d, d.qLU, qacc, d.efc.Ma)
     _launch_implicit_free_body_solve(m, d, qacc)
-    _advance(m, d, qacc)
+    advance(m, d, qacc)
   elif (m.opt.disableflags & (DisableBit.ACTUATION | DisableBit.SPRING | DisableBit.DAMPER)) != (
     DisableBit.ACTUATION | DisableBit.SPRING | DisableBit.DAMPER
   ):
@@ -1401,9 +1435,9 @@ def implicit(m: Model, d: Data):
     qacc = wp.empty((d.nworld, m.nv), dtype=float)
     smooth.factor_solve_i(m, d, qDeriv, qLD, qLDiagInv, qacc, d.efc.Ma)
     _launch_implicit_free_body_solve(m, d, qacc)
-    _advance(m, d, qacc)
+    advance(m, d, qacc)
   else:
-    _advance(m, d, d.qacc)
+    advance(m, d, d.qacc)
 
 
 @event_scope
@@ -2182,6 +2216,21 @@ def _energy_vel(m: Model, d: Data):
       sensor.energy_vel(m, d)
 
 
+def _solve_and_sensor_acc(m: Model, d: Data):
+  skip_constraint = ipc.ipc_skip_constraint(m)
+  if not skip_constraint:
+    solver.solve(m, d)
+    if m.opt.integrator == IntegratorType.DISCRETE:
+      launch_discrete_free_gyro(m, d, d.qacc, d.qacc, False)
+    if m.opt.run_rne_postconstraint or (not (m.opt.disableflags & DisableBit.SENSOR) and m.sensor_rne_postconstraint):
+      smooth.rne_postconstraint(m, d)
+    sensor.sensor_acc(m, d, skip_rne_postconstraint=True)
+  else:
+    wp.copy(d.qacc, d.qacc_smooth)
+    d.solver_niter.zero_()
+    sensor.sensor_acc(m, d)
+
+
 @event_scope
 def forward(m: Model, d: Data):
   """Forward dynamics."""
@@ -2205,19 +2254,16 @@ def forward(m: Model, d: Data):
       m.callback.control(m, d)
   fwd_actuation(m, d)
   fwd_acceleration(m, d, factorize=True)
-
-  solver.solve(m, d)
-  if m.opt.integrator == IntegratorType.DISCRETE:
-    _launch_discrete_free_gyro(m, d, d.qacc, d.qacc, False)
-  if m.opt.run_rne_postconstraint or (not (m.opt.disableflags & DisableBit.SENSOR) and m.sensor_rne_postconstraint):
-    smooth.rne_postconstraint(m, d)
-  sensor.sensor_acc(m, d, skip_rne_postconstraint=True)
+  _solve_and_sensor_acc(m, d)
 
 
 @event_scope
 def discrete(m: Model, d: Data):
   """Advance simulation using discrete integrator."""
-  _advance(m, d, d.qacc)
+  if m.opt.enableflags & EnableBit.IPC:
+    ipc.ipc(m, d)
+  else:
+    advance(m, d, d.qacc)
 
 
 @event_scope
@@ -2262,12 +2308,7 @@ def step2(m: Model, d: Data):
   """Advance simulation in two phases: after input is set by user."""
   fwd_actuation(m, d)
   fwd_acceleration(m, d)
-  solver.solve(m, d)
-  if m.opt.integrator == IntegratorType.DISCRETE:
-    _launch_discrete_free_gyro(m, d, d.qacc, d.qacc, False)
-  if m.opt.run_rne_postconstraint or (not (m.opt.disableflags & DisableBit.SENSOR) and m.sensor_rne_postconstraint):
-    smooth.rne_postconstraint(m, d)
-  sensor.sensor_acc(m, d, skip_rne_postconstraint=True)
+  _solve_and_sensor_acc(m, d)
 
   # integrate with Euler, implicitfast, or discrete
   if m.opt.integrator in (IntegratorType.IMPLICITFAST, IntegratorType.IMPLICIT):

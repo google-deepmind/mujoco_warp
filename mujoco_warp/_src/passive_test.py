@@ -711,6 +711,88 @@ class PassiveTest(parameterized.TestCase):
     self.assertGreater(nefc, 0)
     _assert_eq(d.efc.aref.numpy()[0, :nefc], mjd.efc_aref[:nefc], "efc_aref")
 
+  @parameterized.product(
+    mode=("pinned", "carrier", "reordered_slides", "hinge_vert"),
+    nworld=(1, 2),
+  )
+  def test_flex_passive_pinned_carrier_jacobian(self, mode, nworld):
+    """Verify passive flex contact on pinned, carrier, reordered-slide, and hinge vertices."""
+    inertia = '<inertial pos="0 0 0" mass="0.1" diaginertia="1e-4 1e-4 1e-4"/>'
+    slides = '<joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/>'
+    if mode == "pinned":
+      v0_xml = f'<body name="v0" pos="0 -0.05 0.015">{inertia}</body>'
+    elif mode == "carrier":
+      v0_xml = (
+        '<body name="carrier" pos="0 0 0.05">'
+        '<inertial pos="0 0 0" mass="0.2" diaginertia="1e-3 1e-3 1e-3"/>'
+        '<joint name="hinge" axis="0 1 0"/>'
+        f'<body name="v0" pos="0 -0.05 -0.035">{inertia}{slides}</body>'
+        "</body>"
+      )
+    elif mode == "reordered_slides":
+      v0_xml = (
+        f'<body name="v0" pos="0 -0.05 0.015">{inertia}'
+        '<joint type="slide" axis="0 1 0"/><joint type="slide" axis="-1 0 0"/><joint type="slide" axis="0 0 1"/></body>'
+      )
+    elif mode == "hinge_vert":
+      v0_xml = f'<body name="v0" pos="0 -0.05 0.015">{inertia}<joint pos="0.03 0 0" axis="1 1 0"/></body>'
+
+    mjm, _, m, d = test_data.fixture(
+      xml=f"""
+      <mujoco>
+        <option integrator="discrete" solver="CG" jacobian="sparse" timestep="0.001"/>
+        <worldbody>
+          <geom pos="0.01 -0.02 -0.03" size="0.05"/>
+          {v0_xml}
+          <body name="v1" pos="0.05 0.05 0.002">
+            {inertia}
+            {slides}
+          </body>
+          <body name="v2" pos="-0.05 0.05 0.008">
+            {inertia}
+            {slides}
+          </body>
+        </worldbody>
+        <deformable>
+          <flex name="cloth" body="v0 v1 v2" element="0 1 2" radius="0.01">
+            <contact passive="true" selfcollide="none"/>
+            <elasticity young="500" thickness="0.005" elastic2d="stretch" damping="0.05"/>
+          </flex>
+        </deformable>
+      </mujoco>
+      """,
+      nworld=nworld,
+    )
+    qpos = d.qpos.numpy()
+    qvel = d.qvel.numpy()
+    qvel[0, :] = -0.2
+    if nworld == 2:
+      qpos[1, 0] = -0.002
+      qvel[1, :] = -0.4
+    d.qpos.assign(qpos)
+    d.qvel.assign(qvel)
+
+    d.qfrc_spring.fill_(wp.inf)
+    d.qfrc_damper.fill_(wp.inf)
+    d.qacc.fill_(wp.inf)
+    mjw.forward(m, d)
+
+    qfrc_spring = d.qfrc_spring.numpy()
+    qfrc_damper = d.qfrc_damper.numpy()
+    qacc = d.qacc.numpy()
+    mjds = [mujoco.MjData(mjm) for _ in range(nworld)]
+    for w in range(nworld):
+      mjds[w].qpos[:] = qpos[w]
+      mjds[w].qvel[:] = qvel[w]
+      mujoco.mj_forward(mjm, mjds[w])
+      self.assertGreater(abs(float(mjds[w].qfrc_spring[0])), 0.1)
+      _assert_eq(qfrc_spring[w], mjds[w].qfrc_spring, f"qfrc_spring_{mode}_{w}")
+      _assert_eq(qfrc_damper[w], mjds[w].qfrc_damper, f"qfrc_damper_{mode}_{w}")
+      _assert_eq(qacc[w], mjds[w].qacc, f"qacc_{mode}_{w}")
+
+    if nworld == 2:
+      self.assertFalse(np.allclose(qfrc_spring[0], qfrc_spring[1]))
+
 
 if __name__ == "__main__":
   wp.init()

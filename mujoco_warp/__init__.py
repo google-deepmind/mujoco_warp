@@ -62,6 +62,7 @@ from mujoco_warp._src.io import put_data as put_data
 from mujoco_warp._src.io import put_model as put_model
 from mujoco_warp._src.io import reset_data as reset_data
 from mujoco_warp._src.io import reset_data_keyframe as reset_data_keyframe
+from mujoco_warp._src.ipc import ipc as ipc
 from mujoco_warp._src.island import island as island
 from mujoco_warp._src.passive import passive as passive
 from mujoco_warp._src.ray import ray as ray
