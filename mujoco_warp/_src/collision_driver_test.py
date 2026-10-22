@@ -1017,7 +1017,8 @@ class CollisionTest(parameterized.TestCase):
     mj_dist = mjd.contact.dist[: mjd.ncon]
     mj_pos = mjd.contact.pos[: mjd.ncon]
     for j in range(nacon):
-      # CCD multicontact prunes the clipped polygon to 4 contacts (a subset of mjc_BoxBox's contacts)
+      # CCD multicontact prunes the clipped polygon to 4 contacts
+      # (a subset of mjc_BoxBox's contacts)
       match = np.isclose(mj_dist, dist[j], atol=1e-6) & np.all(np.isclose(mj_pos, pos[j], atol=1e-6), axis=1)
       self.assertTrue(match.any(), f"MJWarp contact {j} not found in MuJoCo contacts")
       i = int(np.nonzero(match)[0][0])

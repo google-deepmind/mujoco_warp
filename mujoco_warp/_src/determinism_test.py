@@ -38,6 +38,7 @@ from mujoco_warp._src import collision_driver
 from mujoco_warp._src import constraint
 from mujoco_warp._src import render_util
 from mujoco_warp._src import set_const
+from mujoco_warp._src import util_pkg
 from mujoco_warp._src import warp_util
 from mujoco_warp._src.io import override_model
 from mujoco_warp._src.types import DeterminismType
@@ -306,6 +307,7 @@ _FLEX_CASES = (
       "passive._flex_bending",
       "passive._flex_elasticity",
       "passive._flex_passive_interp",
+      "passive._flex_rod_bending",
       "passive._spring_damper_flexedge_passive",
       "sensor._energy_pos_passive_flex",
     ),
@@ -317,12 +319,14 @@ _FLEX_CASES = (
       "derivative._eff_flex_bend_stiff",
       "derivative._eff_flex_interp_mul",
       "derivative._eff_flex_interp_stiff",
+      "derivative._eff_flex_rod_stiff",
       "derivative._eff_flex_stretch_stiff_edge",
       "derivative._eff_flex_stretch_stiff_vert",
       "passive._flex_bend_mul",
       "passive._flex_hessian_diag",
       "passive._flex_hessian_elem",
       "passive._flex_hessian_mul_edge",
+      "passive._flex_rod_mul",
       "passive._flex_scatter_kernel",
       "solver._add_efmK_metric_dense",
     ),
@@ -575,6 +579,7 @@ class DeterminismTest(parameterized.TestCase):
         <worldbody>
           <flexcomp name="rope" type="grid" count="5 1 1" spacing=".1 .1 .1" dim="1" pos="0 1 1">
             <edge stiffness="10" damping=".1"/>
+            <elasticity young="1e4" damping="1e-2"/>
           </flexcomp>
           <flexcomp name="cloth" type="grid" count="4 4 1" spacing=".1 .1 .1" pos="0 0 1">
             <edge damping=".1"/>
@@ -594,6 +599,11 @@ class DeterminismTest(parameterized.TestCase):
       nworld=2,
       qvel_noise=0.1,
     )
+    # TODO(team): remove version check once mujoco >= 3.16.1 is required.
+    if not util_pkg.check_version("mujoco>=3.16.1"):
+      covers = tuple(
+        c for c in covers if c not in ("derivative._eff_flex_rod_stiff", "passive._flex_rod_bending", "passive._flex_rod_mul")
+      )
     with _record_launches() as launches:
       rc = render_util.create_render_context(mjm, nworld=2, cam_res=(8, 8), deterministic=True)
     if not overrides:

@@ -1112,6 +1112,8 @@ class FlexPassiveForcesTest(parameterized.TestCase):
     if nworld == 2:
       self.assertFalse(np.allclose(d.qfrc_passive.numpy()[0], d.qfrc_passive.numpy()[1]))
 
+  # TODO(team): remove version check once mujoco >= 3.16.1 is required.
+  @absltest.skipIf(not util_pkg.check_version("mujoco>=3.16.1"), "Requires MuJoCo >= 3.16.1")
   @parameterized.product(
     elastic2d_and_atol=[
       ("bend", 5e-3),
@@ -1123,8 +1125,6 @@ class FlexPassiveForcesTest(parameterized.TestCase):
   def test_flex_elastic2d_interp(self, elastic2d_and_atol, nworld):
     """Tests 2D interpolated flex passive forces (bending and stretching)."""
     elastic2d, atol = elastic2d_and_atol
-    if elastic2d != "bend" and not util_pkg.check_version("mujoco>=3.16.1"):
-      self.skipTest("Requires MuJoCo >= 3.16.1")
     dof = "trilinear"
     xml = f"""
     <mujoco>
@@ -1166,6 +1166,7 @@ class FlexPassiveForcesTest(parameterized.TestCase):
         err_msg=f"qfrc_spring mismatch for interpolated elastic2d={elastic2d} dof={dof} (world {w})",
       )
 
+  # TODO(team): remove version check once mujoco >= 3.16.1 is required.
   @absltest.skipIf(not util_pkg.check_version("mujoco>=3.16.1"), "Requires MuJoCo >= 3.16.1")
   @parameterized.product(
     elastic2d=["bend", "stretch", "both"],
@@ -5341,6 +5342,7 @@ _ROD_ARTICULATED_XML = """
 """
 
 
+# TODO(team): remove version check once mujoco >= 3.16.1 is required.
 @absltest.skipIf(not util_pkg.check_version("mujoco>=3.16.1"), "Requires MuJoCo >= 3.16.1")
 class FlexRodBendingTest(parameterized.TestCase):
   """Tests for 1D flex discrete elastic rod bending parity with MuJoCo."""
@@ -5453,7 +5455,8 @@ class FlexRodBendingTest(parameterized.TestCase):
     xml=[
       _ROD_XML,
       _ROD_ARTICULATED_XML,
-      # slider-crank-like mechanism: a rod clamped by two point equalities at each end to hinged fittings
+      # slider-crank-like mechanism: a rod clamped by two point equalities
+      # at each end to hinged fittings
       """
       <mujoco>
         <option integrator="discrete"/>

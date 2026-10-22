@@ -494,6 +494,9 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
 
   # create model
   m = types.Model(**{f.name: getattr(mjm, f.name, None) for f in dataclasses.fields(types.Model)})
+  # TODO(team): remove version check once mujoco >= 3.16.1 is required.
+  if not util_pkg.check_version("mujoco>=3.16.1"):
+    m.eq_data = np.pad(mjm.eq_data, ((0, 0), (0, 1)))
 
   # fold actuator damping into dof_damping and tendon_damping (matching mj_actuatorDamping)
   if mjm.nactuator > 0 and (np.any(mjm.actuator_damping != 0) or np.any(mjm.actuator_dampingpoly != 0)):
