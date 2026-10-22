@@ -4333,6 +4333,55 @@ class FlexContactConstraintTest(parameterized.TestCase):
 
     _assert_efc_eq(mjm, m, d, mjd, mjd.nefc, f"efc_flex_dim{m.flex_dim.numpy()[0]}", m.nv, nworld)
 
+  @parameterized.parameters(True, False)
+  def test_efc_address_stale(self, overflow):
+    """Flex contacts without constraint rows have efc_address -1, not stale values."""
+    _, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option jacobian="sparse"/>
+        <worldbody>
+          <geom type="plane" size="1 1 .01"/>
+          <flexcomp name="cloth" type="grid" count="3 3 1" spacing=".1 .1 .1" pos="0 0 1" radius=".01" dim="2"
+                    mass=".5">
+            <contact condim="3" selfcollide="none" margin=".02" gap=".01"/>
+            <edge equality="false"/>
+          </flexcomp>
+        </worldbody>
+      </mujoco>
+      """,
+      njmax_nnz=40 if overflow else None,
+    )
+
+    # tilt the cloth onto the plane: the lower vertices are active, the upper ones in the gap zone
+    qpos = mjd.qpos.reshape(-1, 3).copy()
+    qpos[:, 2] = np.linspace(-0.995, -0.975, len(qpos))
+    d.qpos.assign(qpos.reshape(1, -1))
+
+    d.contact.efc_address.fill_(0)
+    mjw.fwd_kinematics(m, d)
+    mjw.collision(m, d)
+
+    nacon = d.nacon.numpy()[0]
+    active = d.contact.dist.numpy()[:nacon] < d.contact.includemargin.numpy()[:nacon]
+    self.assertTrue(np.any(active) and not np.all(active))
+    np.testing.assert_array_equal(d.contact.efc_address.numpy()[:nacon][~active], -1)
+
+    # stale addresses on active contacts are reset by make_constraint
+    efc_address = d.contact.efc_address.numpy()
+    efc_address[:nacon][active] = 0
+    d.contact.efc_address.assign(efc_address)
+    mjw.make_constraint(m, d)
+
+    # pyramidal condim 3: 4 rows per contact
+    efc_address = d.contact.efc_address.numpy()[:nacon, :4]
+    efc_id = d.efc.id.numpy()[0]
+    dropped = efc_address[:, 0] < 0
+    self.assertEqual(np.any(dropped[active]), overflow)
+    np.testing.assert_array_equal(efc_address[active & dropped], -1)
+    for conid in np.flatnonzero(active & ~dropped):
+      np.testing.assert_array_equal(efc_id[efc_address[conid]], conid)
+
   @parameterized.parameters(1, 2)
   def test_flex_3d_simplex_collision(self, nworld):
     """Test 3D simplex flex collision and constraint generation."""
