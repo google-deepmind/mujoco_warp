@@ -96,6 +96,96 @@ class PassiveTest(parameterized.TestCase):
     if nworld == 2 and not damper:
       self.assertFalse(np.allclose(d.qfrc_damper.numpy()[0], d.qfrc_damper.numpy()[1]))
 
+  @parameterized.parameters(1, 2)
+  def test_actuator_damping(self, nworld):
+    """Tests actuator damping contribution to joint and tendon damping."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option gravity="0 0 0"/>
+        <worldbody>
+          <body>
+            <joint name="j0" axis="0 1 0"/>
+            <geom type="capsule" size=".05" fromto="0 0 0 .3 0 0"/>
+            <body pos=".3 0 0">
+              <joint name="j1" axis="0 1 0"/>
+              <geom type="capsule" size=".05" fromto="0 0 0 .3 0 0"/>
+              <body pos=".3 0 0">
+                <joint name="j2" type="slide" axis="1 0 0"/>
+                <geom size=".05"/>
+              </body>
+            </body>
+          </body>
+        </worldbody>
+        <tendon>
+          <fixed name="t0">
+            <joint joint="j1" coef="1"/>
+            <joint joint="j2" coef="-.5"/>
+          </fixed>
+        </tendon>
+        <actuator>
+          <general joint="j0" gear="2" damping=".3 .1 .05"/>
+          <general joint="j0" gear="-3" damping=".1 0 0"/>
+          <general jointinparent="j1" gear="1.5" damping=".2 0 .1"/>
+          <general tendon="t0" gear="2" damping=".4 .2 0"/>
+        </actuator>
+        <keyframe>
+          <key qpos=".1 .2 .05" qvel=".3 -.4 .5"/>
+        </keyframe>
+      </mujoco>
+      """,
+      keyframe=0,
+      nworld=nworld,
+      batch_sizes={
+        "actuator_damping": nworld,
+        "actuator_dampingpoly": nworld,
+        "actuator_gear": nworld,
+      },
+    )
+
+    # actuator damping is not folded into joint and tendon damping
+    _assert_eq(m.dof_damping.numpy()[0], mjm.dof_damping, "dof_damping")
+    _assert_eq(m.dof_dampingpoly.numpy()[0], mjm.dof_dampingpoly, "dof_dampingpoly")
+    _assert_eq(m.tendon_damping.numpy()[0], mjm.tendon_damping, "tendon_damping")
+    _assert_eq(
+      m.tendon_dampingpoly.numpy()[0],
+      mjm.tendon_dampingpoly,
+      "tendon_dampingpoly",
+    )
+
+    damping = np.tile(mjm.actuator_damping, (nworld, 1))
+    poly = np.tile(mjm.actuator_dampingpoly, (nworld, 1, 1))
+    gear = np.tile(mjm.actuator_gear, (nworld, 1, 1))
+    if nworld == 2:
+      damping[1] *= 2.0
+      poly[1] *= 0.5
+      gear[1] *= 1.5
+    m.actuator_damping.assign(damping)
+    m.actuator_dampingpoly.assign(poly)
+    m.actuator_gear.assign(gear)
+    d.qfrc_damper.fill_(wp.inf)
+    d.qfrc_passive.fill_(wp.inf)
+
+    mjw.passive(m, d)
+
+    for world in range(nworld):
+      mjm.actuator_damping[:] = damping[world]
+      mjm.actuator_dampingpoly[:] = poly[world]
+      mjm.actuator_gear[:] = gear[world]
+      mujoco.mj_passive(mjm, mjd)
+      _assert_eq(
+        d.qfrc_damper.numpy()[world],
+        mjd.qfrc_damper,
+        f"qfrc_damper_world_{world}",
+      )
+      _assert_eq(
+        d.qfrc_passive.numpy()[world],
+        mjd.qfrc_passive,
+        f"qfrc_passive_world_{world}",
+      )
+    if nworld == 2:
+      self.assertFalse(np.allclose(d.qfrc_damper.numpy()[0], d.qfrc_damper.numpy()[1]))
+
   @parameterized.product(spring=(0, DisableBit.SPRING), damper=(0, DisableBit.DAMPER), gravity=(0, DisableBit.GRAVITY))
   def test_passive(self, spring, damper, gravity):
     """Tests passive."""

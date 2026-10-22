@@ -1987,8 +1987,8 @@ class DerivativeTest(parameterized.TestCase):
           </spatial>
         </tendon>
         <actuator>
-          <general joint="j0" gear="2.5" damping="1.5" gaintype="fixed" gainprm="10"/>
-          <general tendon="t0" gear="1.8" damping="1.2" gaintype="fixed" gainprm="5"/>
+          <general joint="j0" gear="2.5" damping="1.5 0.4 0.2" gaintype="fixed" gainprm="10"/>
+          <general tendon="t0" gear="1.8" damping="1.2 0.3 0.1" gaintype="fixed" gainprm="5"/>
           <muscle tendon="t0" lengthrange="0.2 0.6"/>
         </actuator>
         <keyframe>
@@ -1997,7 +1997,6 @@ class DerivativeTest(parameterized.TestCase):
       </mujoco>
       """,
       keyframe=0,
-      overrides={"actuator_dampingpoly": np.array([[0.4, 0.2], [0.3, 0.1], [0.0, 0.0]])},
       nworld=nworld,
     )
     if nworld == 2:

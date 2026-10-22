@@ -1508,6 +1508,107 @@ class SmoothTest(parameterized.TestCase):
     mjw._src.smooth.tendon_bias(m, d, d.qfrc_bias)
     _assert_eq(d.qfrc_bias.numpy()[0], mjd.qfrc_bias, "qfrc_bias")
 
+  @parameterized.product(jacobian=(mujoco.mjtJacobian.mjJAC_SPARSE, mujoco.mjtJacobian.mjJAC_DENSE), nworld=(1, 2))
+  def test_actuator_armature(self, jacobian, nworld):
+    """Tests actuator armature contribution to joint and tendon armature."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option gravity="0 0 -10"/>
+        <worldbody>
+          <site name="s0" pos="0 0 .5"/>
+          <body>
+            <joint name="j0" axis="0 1 0"/>
+            <geom type="capsule" size=".05" fromto="0 0 0 .3 0 0"/>
+            <site name="s1" pos=".2 0 .05"/>
+            <body pos=".3 0 0">
+              <joint name="j1" axis="0 1 0"/>
+              <geom type="capsule" size=".05" fromto="0 0 0 .3 0 0"/>
+              <site name="s2" pos=".2 0 .05"/>
+              <body pos=".3 0 0">
+                <joint name="j2" type="slide" axis="1 0 0"/>
+                <geom size=".05"/>
+              </body>
+            </body>
+          </body>
+        </worldbody>
+        <tendon>
+          <fixed name="t0">
+            <joint joint="j1" coef="1"/>
+            <joint joint="j2" coef="-.5"/>
+          </fixed>
+          <spatial name="t1">
+            <site site="s0"/>
+            <site site="s1"/>
+          </spatial>
+          <spatial name="t2" damping=".2">
+            <site site="s0"/>
+            <site site="s2"/>
+          </spatial>
+        </tendon>
+        <actuator>
+          <motor joint="j0" gear="2" armature=".3"/>
+          <motor joint="j0" gear="-3" armature=".1"/>
+          <general jointinparent="j1" gear="1.5" armature=".2"/>
+          <motor tendon="t0" gear="2" armature=".4"/>
+          <motor tendon="t1" gear="2" armature=".4" damping=".3 .1 0"/>
+          <motor tendon="t2" gear="1.5" armature=".2"/>
+          <motor tendon="t2" gear="-3" armature=".1" damping=".2"/>
+        </actuator>
+        <keyframe>
+          <key qpos=".3 -.4 .05" qvel="1.5 -2 .5"/>
+        </keyframe>
+      </mujoco>
+      """,
+      keyframe=0,
+      nworld=nworld,
+      overrides={"opt.jacobian": jacobian},
+      batch_sizes={"actuator_armature": nworld, "actuator_gear": nworld},
+    )
+
+    # actuator armature is not folded into joint and tendon armature
+    _assert_eq(m.dof_armature.numpy()[0], mjm.dof_armature, "dof_armature")
+    _assert_eq(m.tendon_armature.numpy()[0], mjm.tendon_armature, "tendon_armature")
+
+    armature = np.tile(mjm.actuator_armature, (nworld, 1))
+    gear = np.tile(mjm.actuator_gear, (nworld, 1, 1))
+    if nworld == 2:
+      armature[1] *= 2.0
+      gear[1] *= 0.5
+    m.actuator_armature.assign(armature)
+    m.actuator_gear.assign(gear)
+
+    d.M.fill_(wp.inf)
+    mjw._src.smooth.crb(m, d)
+    mjw._src.smooth.tendon_armature(m, d)
+    M = d.M.numpy()
+
+    d.qfrc_bias.fill_(wp.inf)
+    mjw._src.smooth.rne(m, d)
+    mjw._src.smooth.tendon_bias(m, d, d.qfrc_bias)
+    qfrc_bias = d.qfrc_bias.numpy()
+
+    d.qacc.fill_(wp.inf)
+    mjw.forward(m, d)
+    for arr in (d.cacc, d.cfrc_int, d.cfrc_ext):
+      arr.fill_(wp.inf)
+    mjw.rne_postconstraint(m, d)
+
+    for world in range(nworld):
+      mjm.actuator_armature[:] = armature[world]
+      mjm.actuator_gear[:] = gear[world]
+      mujoco.mj_forward(mjm, mjd)
+      mujoco.mj_rnePostConstraint(mjm, mjd)
+      _assert_eq(M[world], mjd.M, f"M_world_{world}")
+      _assert_eq(qfrc_bias[world], mjd.qfrc_bias, f"qfrc_bias_world_{world}")
+      _assert_eq(d.qacc.numpy()[world], mjd.qacc, f"qacc_world_{world}")
+      _assert_eq(d.cacc.numpy()[world], mjd.cacc, f"cacc_world_{world}")
+      _assert_eq(d.cfrc_int.numpy()[world], mjd.cfrc_int, f"cfrc_int_world_{world}")
+      _assert_eq(d.cfrc_ext.numpy()[world], mjd.cfrc_ext, f"cfrc_ext_world_{world}")
+    if nworld == 2:
+      self.assertFalse(np.allclose(M[0], M[1]))
+      self.assertFalse(np.allclose(qfrc_bias[0], qfrc_bias[1]))
+
 
 if __name__ == "__main__":
   wp.init()
