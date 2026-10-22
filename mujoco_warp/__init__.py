@@ -119,6 +119,7 @@ from mujoco_warp._src.types import JointType as JointType
 from mujoco_warp._src.types import ObjType as ObjType
 from mujoco_warp._src.types import Option as Option
 from mujoco_warp._src.types import OverflowType as OverflowType
+from mujoco_warp._src.types import RayDataField as RayDataField
 from mujoco_warp._src.types import RenderContext as RenderContext
 from mujoco_warp._src.types import SolverType as SolverType
 from mujoco_warp._src.types import State as State
