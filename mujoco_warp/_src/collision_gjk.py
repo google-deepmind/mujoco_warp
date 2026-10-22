@@ -993,7 +993,8 @@ def _epa_witness(
   i1 = pt.vert_index[2 * face[0]]
   i2 = pt.vert_index[2 * face[1]]
   i3 = pt.vert_index[2 * face[2]]
-  if geomtype1 == GeomType.HFIELD and (i1 != i2 or i1 != i3):
+  # Rounded flex triangles use the EPA witnesses, including prism side and bottom faces.
+  if geomtype1 == GeomType.HFIELD and geomtype2 != GeomType.TRIANGLE and (i1 != i2 or i1 != i3):
     # TODO(kbayes): Fix case where geom2 is near bottom of height field or "extreme" prism heights
     n = wp.vec3(0.0, 0.0, 1.0)
 
