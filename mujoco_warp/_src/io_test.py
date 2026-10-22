@@ -1584,6 +1584,38 @@ class IOTest(parameterized.TestCase):
       "ntree_awake",
       "nbody_awake",
       "nv_awake",
+      "nisland",
+      "nidof",
+      # derived dynamics
+      "xpos",
+      "xipos",
+      "subtree_com",
+      "cdof",
+      "cinert",
+      "crb",
+      "ten_length",
+      "ten_velocity",
+      "actuator_length",
+      "actuator_velocity",
+      "cvel",
+      "cdof_dot",
+      "qfrc_bias",
+      "qfrc_spring",
+      "qfrc_damper",
+      "qfrc_gravcomp",
+      "qfrc_fluid",
+      "qfrc_passive",
+      "subtree_linvel",
+      "subtree_angmom",
+      "actuator_force",
+      "qfrc_actuator",
+      "qfrc_smooth",
+      "qacc_smooth",
+      "qfrc_constraint",
+      "qfrc_inverse",
+      "cacc",
+      "cfrc_int",
+      "cfrc_ext",
     ]
 
     mjm, mjd, m, d = test_data.fixture(xml)
@@ -1678,6 +1710,67 @@ class IOTest(parameterized.TestCase):
 
     _assert_eq(d.qvel.numpy()[0], 0.0, "qvel[0]")
     _assert_eq(d.qvel.numpy()[1], 2.0, "qvel[1]")
+
+  def test_reset_data_world_derived(self):
+    """Tests per-world reset clears derived dynamics and island state."""
+    mjm = mujoco.MjModel.from_xml_string("""
+    <mujoco>
+      <option>
+        <flag sleep="enable"/>
+      </option>
+      <worldbody>
+        <geom type="plane" size="10 10 .1"/>
+        <body pos="0 0 .08">
+          <freejoint/>
+          <geom type="sphere" size=".1"/>
+        </body>
+      </worldbody>
+    </mujoco>
+    """)
+    m = mjwarp.put_model(mjm)
+    d = mjwarp.make_data(mjm, nworld=2)
+    mjwarp.forward(m, d)
+
+    derived = ("xpos", "xipos", "subtree_com", "qfrc_bias", "qfrc_smooth", "qacc_smooth", "qfrc_constraint")
+    before = {name: getattr(d, name).numpy().copy() for name in derived}
+    nisland_before = d.nisland.numpy().copy()
+
+    # the penetrating sphere produces contact forces and an island in both worlds
+    self.assertTrue(np.any(before["qfrc_constraint"][0] != 0.0))
+    np.testing.assert_array_equal(nisland_before, [1, 1])
+
+    mjwarp.reset_data(m, d, reset=wp.array(np.array([True, False]), dtype=bool))
+
+    mjd = mujoco.MjData(mjm)
+    mujoco.mj_resetData(mjm, mjd)
+    for name in derived:
+      arr = getattr(d, name).numpy()
+      _assert_eq(arr[0], getattr(mjd, name), f"{name}[0]")
+      _assert_eq(arr[1], before[name][1], f"{name}[1]")
+
+    np.testing.assert_array_equal(d.nisland.numpy(), [0, nisland_before[1]])
+    np.testing.assert_array_equal(d.nidof.numpy()[0], 0)
+    np.testing.assert_array_equal(d.tree_island.numpy()[0], -1)
+    np.testing.assert_array_equal(d.dof_island.numpy()[0], -1)
+
+    # without sleep, reset clears the derived kinematics as well
+    mjm.opt.enableflags &= ~int(mujoco.mjtEnableBit.mjENBL_SLEEP)
+    m = mjwarp.put_model(mjm)
+    d = mjwarp.make_data(mjm, nworld=2)
+    mjwarp.forward(m, d)
+    before = {name: getattr(d, name).numpy().copy() for name in derived}
+    mjwarp.reset_data(m, d, reset=wp.array(np.array([True, False]), dtype=bool))
+    mujoco.mj_resetData(mjm, mjd)
+    for name in derived:
+      arr = getattr(d, name).numpy()
+      _assert_eq(arr[0], getattr(mjd, name), f"{name}[0] no sleep")
+      _assert_eq(arr[1], before[name][1], f"{name}[1] no sleep")
+    _assert_eq(d.xpos.numpy()[0], 0.0, "xpos[0] no sleep")
+
+    # forward after reset recomputes the same state in the reset world
+    mjwarp.forward(m, d)
+    for name in derived:
+      _assert_eq(getattr(d, name).numpy()[0], before[name][0], f"{name}[0] after forward")
 
   def test_reset_data_reset_invalid(self):
     """Tests that reset_data validates the reset argument."""
