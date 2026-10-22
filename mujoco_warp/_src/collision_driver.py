@@ -38,6 +38,7 @@ from mujoco_warp._src.types import Model
 from mujoco_warp._src.types import SleepState
 from mujoco_warp._src.types import mat23
 from mujoco_warp._src.types import mat63
+from mujoco_warp._src.types import vec6
 from mujoco_warp._src.warp_util import cache_kernel
 from mujoco_warp._src.warp_util import event_scope
 
@@ -1060,6 +1061,66 @@ def _narrowphase(m: Model, d: Data, ctx: CollisionContext):
     sdf_narrowphase(m, d, ctx)
 
 
+@wp.func
+def _geom_surface_velocity(
+  # In:
+  geom_xpos_val: wp.vec3,
+  geom_xmat_val: wp.mat33,
+  surfacevel_val: vec6,
+  point_val: wp.vec3,
+) -> vec6:
+  lin_local = wp.vec3(surfacevel_val[0], surfacevel_val[1], surfacevel_val[2])
+  ang_local = wp.vec3(surfacevel_val[3], surfacevel_val[4], surfacevel_val[5])
+
+  angular = geom_xmat_val * ang_local
+  linear = geom_xmat_val * lin_local + wp.cross(angular, point_val - geom_xpos_val)
+
+  return vec6(linear[0], linear[1], linear[2], angular[0], angular[1], angular[2])
+
+
+@wp.kernel
+def _contact_surfacevel(
+  # Model:
+  geom_surfacevel: wp.array2d[vec6],
+  # Data in:
+  geom_xpos_in: wp.array2d[wp.vec3],
+  geom_xmat_in: wp.array2d[wp.mat33],
+  contact_pos_in: wp.array[wp.vec3],
+  contact_geom_in: wp.array[wp.vec2i],
+  contact_worldid_in: wp.array[int],
+  nacon_in: wp.array[int],
+  # Data out:
+  contact_surfacevel_out: wp.array[vec6],
+):
+  conid = wp.tid()
+
+  if conid >= nacon_in[0]:
+    return
+
+  geom = contact_geom_in[conid]
+  worldid = contact_worldid_in[conid]
+  pos = contact_pos_in[conid]
+  sv_id = worldid % geom_surfacevel.shape[0]
+  x_id = worldid % geom_xpos_in.shape[0]
+
+  # geom[1] minus geom[0]; flex sides (geom < 0) have no surface velocity
+  sv = vec6(0.0)
+  for side in range(2):
+    g = geom[side]
+    if g < 0:
+      continue
+    sv_local = geom_surfacevel[sv_id, g]
+    if sv_local == vec6(0.0):
+      continue
+    sv_world = _geom_surface_velocity(geom_xpos_in[x_id, g], geom_xmat_in[x_id, g], sv_local, pos)
+    if side == 0:
+      sv -= sv_world
+    else:
+      sv += sv_world
+
+  contact_surfacevel_out[conid] = sv
+
+
 @event_scope
 def collision(
   m: Model,
@@ -1116,6 +1177,14 @@ def collision(
   # It therefore only runs on the full pass.
   if m.nflex > 0 and not incremental:
     flex_collision(m, d, ctx)
+
+  if m.flg_surfacevel:
+    wp.launch(
+      _contact_surfacevel,
+      dim=d.naconmax,
+      inputs=[m.geom_surfacevel, d.geom_xpos, d.geom_xmat, d.contact.pos, d.contact.geom, d.contact.worldid, d.nacon],
+      outputs=[d.contact.surfacevel],
+    )
 
   if m.callback.contactfilter:
     m.callback.contactfilter(m, d)

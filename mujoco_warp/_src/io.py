@@ -2206,7 +2206,7 @@ def put_data(
     mujoco.mj_factorM(mjm, mjd)
 
   # create contact
-  contact_kwargs = {"efc_address": None, "worldid": None, "type": None, "geomcollisionid": None}
+  contact_kwargs = {"efc_address": None, "worldid": None, "type": None, "geomcollisionid": None, "surfacevel": None}
   for f in dataclasses.fields(types.Contact):
     if f.name in contact_kwargs:
       continue
@@ -2242,6 +2242,19 @@ def put_data(
     dtype=int,
   )
   contact.geomcollisionid = wp.empty((naconmax,), dtype=int)  # TODO(team): set values
+  # relative surface velocity at the contact point, geom[1] minus geom[0]
+  surfacevel = np.zeros((mjd.ncon, 6))
+  for side, sign in ((0, -1.0), (1, 1.0)):
+    geom = mjd.contact.geom[: mjd.ncon, side]
+    valid = geom >= 0
+    g = geom[valid]
+    sv = mjm.geom_surfacevel[g]
+    xmat = mjd.geom_xmat[g].reshape((-1, 3, 3))
+    ang = np.einsum("nij,nj->ni", xmat, sv[:, 3:])
+    lin = np.einsum("nij,nj->ni", xmat, sv[:, :3]) + np.cross(ang, mjd.contact.pos[: mjd.ncon][valid] - mjd.geom_xpos[g])
+    surfacevel[valid] += sign * np.concatenate((lin, ang), axis=1)
+  surfacevel = np.pad(np.tile(surfacevel, (nworld, 1)), ((0, naconmax - nworld * mjd.ncon), (0, 0)))
+  contact.surfacevel = wp.array(surfacevel, dtype=types.vec6)
 
   # create efc
   efc = _create_constraint(mjm, nworld, njmax, sizes, mjd)
@@ -2829,6 +2842,7 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
     contact_type_out: wp.array[int],
     contact_geomcollisionid_out: wp.array[int],
     contact_adhesion_out: wp.array[float],
+    contact_surfacevel_out: wp.array[types.vec6],
   ):
     conid = wp.tid()
 
@@ -2863,6 +2877,7 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
     contact_type_out[conid] = 0
     contact_geomcollisionid_out[conid] = 0
     contact_adhesion_out[conid] = 0.0
+    contact_surfacevel_out[conid] = types.vec6(0.0)
 
   @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
   def reset_sleep(
@@ -2960,6 +2975,7 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
       d.contact.type,
       d.contact.geomcollisionid,
       d.contact.adhesion,
+      d.contact.surfacevel,
     ],
   )
 

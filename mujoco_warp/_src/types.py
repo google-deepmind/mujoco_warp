@@ -1486,7 +1486,9 @@ class Model:
     qLD_block_adr: packed factor offset; Q_LD_BLOCK_* sentinel otherwise (nv,)
     flg_adhesion: flag indicating if model has passive adhesion
     has_fluid: True if wind, density, or viscosity are non-zero at put_model time
-    flg_surfacevel: whether model has non-zero surfacevel
+    flg_surfacevel: whether contacts may carry surface velocity; set
+                    from geom_surfacevel, may be set by the user to
+                    apply externally written contact.surfacevel
     has_sdf_geom: whether the model contains SDF geoms
     has_boxbox_margin: whether any box-box contact pair has a non-zero margin
     has_flex_selfcollide: whether any flex has self-collision enabled
@@ -2177,6 +2179,9 @@ class Contact:
     geomcollisionid: i-th contact generated for geom                 (naconmax,)
                      helps uniquely identity contact when multiple
                      contacts are generated for geom pair
+    adhesion: adhesive force along the contact normal                (naconmax,)
+    surfacevel: surface velocity of geom[1] relative to geom[0]      (naconmax, 6)
+                at pos in world frame: lin, ang
   """
 
   dist: array("naconmax", float)
@@ -2197,6 +2202,7 @@ class Contact:
   type: array("naconmax", int)
   geomcollisionid: array("naconmax", int)
   adhesion: array("naconmax", float)
+  surfacevel: array("naconmax", vec6)
 
 
 @dataclasses.dataclass
