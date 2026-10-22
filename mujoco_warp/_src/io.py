@@ -87,9 +87,6 @@ def _create_constraint(
 ) -> types.Constraint:
   """Construct a types.Constraint with standard and island local fields allocated properly."""
   efc_kwargs = {"J_rownnz": None, "J_rowadr": None, "J_colind": None, "J": None}
-  sparse = is_sparse(mjm)
-  # The JTDAJ block list is only consumed by the sparse Newton Hessian assembly (_JTDACJ_sparse).
-  jtdaj_active = sparse and mjm.opt.solver == mujoco.mjtSolver.mjSOL_NEWTON
 
   efc_D_src = mjd.efc_D if mjd is not None else None
   efc_aref_src = mjd.efc_aref if mjd is not None else None
@@ -107,13 +104,8 @@ def _create_constraint(
       efc_aref_src = mjd_tmp.efc_aref
 
   for f in dataclasses.fields(types.Constraint):
-    if f.name in ("jtdaj_adr", "jtdaj_nrow"):
-      efc_kwargs[f.name] = wp.empty((nworld, njmax if jtdaj_active else 0), dtype=int)
-    elif f.name == "jtdaj_nblock":
-      efc_kwargs[f.name] = wp.empty((nworld,), dtype=int)
-    else:
-      if f.name in efc_kwargs:
-        continue
+    if f.name in efc_kwargs:
+      continue
 
     if mjd is not None:
       shape = tuple(sizes[dim] if isinstance(dim, str) else dim for dim in f.type.shape)
@@ -131,19 +123,23 @@ def _create_constraint(
   return types.Constraint(**efc_kwargs)
 
 
-def _jtdaj_groups(mjd: mujoco.MjData) -> tuple[np.ndarray, np.ndarray]:
-  """Group loaded efc rows into JTDAJ blocks: maximal runs sharing (efc_type, efc_id).
+def _jtdaj_groups(
+  mjd: mujoco.MjData, rownnz: np.ndarray, rowadr: np.ndarray, colind: np.ndarray
+) -> tuple[np.ndarray, np.ndarray]:
+  """Group loaded efc rows into JTDAJ blocks: maximal runs sharing efc_type, efc_id and columns.
 
-  MuJoCo lays each constraint's rows out contiguously, so this reproduces the block list
-  make_constraint builds in-kernel. Returns block start rows (adr) and lengths (nrow).
+  Rows of one instance can differ in columns (flex edge equalities share one efc_id), so the
+  columns are compared too. Returns block start rows (adr) and lengths (nrow).
   """
   nefc = mjd.nefc
   if nefc == 0:
     return np.zeros(0, dtype=int), np.zeros(0, dtype=int)
   etype = mjd.efc_type[:nefc]
   eid = mjd.efc_id[:nefc]
+  cols = [tuple(colind[rowadr[i] : rowadr[i] + rownnz[i]]) for i in range(nefc)]
+  new_cols = np.array([cols[i] != cols[i - 1] for i in range(1, nefc)], dtype=bool)
   boundary = np.ones(nefc, dtype=bool)
-  boundary[1:] = (etype[1:] != etype[:-1]) | (eid[1:] != eid[:-1])
+  boundary[1:] = (etype[1:] != etype[:-1]) | (eid[1:] != eid[:-1]) | new_cols
   adr = np.flatnonzero(boundary)
   nrow = np.diff(np.append(adr, nefc))
   return adr, nrow
@@ -2246,19 +2242,6 @@ def put_data(
   # create efc
   efc = _create_constraint(mjm, nworld, njmax, sizes, mjd)
 
-  # make_constraint builds the block list in-kernel; put_data does not run it, so build it here
-  # -- otherwise solving a put_data state would assemble an empty J^T D J.
-  if is_sparse(mjm) and mjm.opt.solver == mujoco.mjtSolver.mjSOL_NEWTON:
-    jtdaj_adr, jtdaj_nrow = _jtdaj_groups(mjd)
-    nblock = jtdaj_adr.shape[0]
-    adr_row = np.zeros(njmax, dtype=int)
-    nrow_row = np.zeros(njmax, dtype=int)
-    adr_row[:nblock] = jtdaj_adr
-    nrow_row[:nblock] = jtdaj_nrow
-    efc.jtdaj_adr = wp.array(np.tile(adr_row, (nworld, 1)), dtype=int)
-    efc.jtdaj_nrow = wp.array(np.tile(nrow_row, (nworld, 1)), dtype=int)
-    efc.jtdaj_nblock = wp.array(np.full(nworld, nblock, dtype=int), dtype=int)
-
   if is_sparse(mjm):
     J_rownnz = np.zeros(njmax, dtype=np.int32)
     J_rowadr = np.zeros(njmax, dtype=np.int32)
@@ -2281,6 +2264,19 @@ def put_data(
     efc.J_rowadr = wp.array(np.tile(J_rowadr, (nworld, 1)), dtype=int)
     efc.J_colind = wp.array(np.tile(J_colind, (nworld, 1)).reshape((nworld, 1, -1)), dtype=int)
     efc.J = wp.array(np.tile(J, (nworld, 1)).reshape((nworld, 1, -1)), dtype=float)
+
+    # make_constraint builds the block list in-kernel; put_data does not run it, so build it here
+    # -- otherwise solving a put_data state would assemble an empty J^T D J.
+    if mjm.opt.solver == mujoco.mjtSolver.mjSOL_NEWTON:
+      jtdaj_adr, jtdaj_nrow = _jtdaj_groups(mjd, J_rownnz, J_rowadr, J_colind)
+      nblock = jtdaj_adr.shape[0]
+      adr_row = np.zeros(njmax, dtype=int)
+      nrow_row = np.zeros(njmax, dtype=int)
+      adr_row[:nblock] = jtdaj_adr
+      nrow_row[:nblock] = jtdaj_nrow
+      efc.jtdaj_adr = wp.array(np.tile(adr_row, (nworld, 1)), dtype=int)
+      efc.jtdaj_nrow = wp.array(np.tile(nrow_row, (nworld, 1)), dtype=int)
+      efc.jtdaj_nblock = wp.array(np.full(nworld, nblock, dtype=int), dtype=int)
   else:
     efc.J_rownnz = wp.zeros((nworld, 0), dtype=int)
     efc.J_rowadr = wp.zeros((nworld, 0), dtype=int)
@@ -2735,6 +2731,7 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
     userdata_out: wp.array2d[float],
     sensordata_out: wp.array2d[float],
     flex_hessian_valid_out: wp.array2d[bool],
+    efc_jtdaj_nblock_out: wp.array[int],
     nacon_out: wp.array[int],
     overflow_out: wp.array[int],
   ):
@@ -2751,6 +2748,7 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
     nf_out[worldid] = 0
     nl_out[worldid] = 0
     nefc_out[worldid] = 0
+    efc_jtdaj_nblock_out[worldid] = 0
     time_out[worldid] = 0.0
     energy_out[worldid] = wp.vec2(0.0, 0.0)
     ntree_awake_out[worldid] = ntree
@@ -3018,6 +3016,7 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
       d.userdata,
       d.sensordata,
       d.flex_hessian_valid,
+      d.efc.jtdaj_nblock,
       d.nacon,
       d.overflow,
     ],
