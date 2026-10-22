@@ -339,6 +339,102 @@ class SensorTest(parameterized.TestCase):
 
       _assert_eq(d.sensordata.numpy()[0], mjd.sensordata, "sensordata")
 
+  @parameterized.parameters(1, 2)
+  def test_rangefinder_camera(self, nworld):
+    """Test camera-attached rangefinder sensors."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <asset>
+          <hfield name="hfield" nrow="5" ncol="5" size="2 2 .3 .1"
+                  elevation=".7 .1 .4 .9 .0
+                             .3 .6 .2 .8 .5
+                             .1 .4 .7 .0 .9
+                             .2 .5 .8 .3 .6
+                             .4 .7 .1 .9 .2"/>
+          <mesh name="ss" builtin="supersphere" params="5 .2 .3" scale=".4 .42 .5"/>
+        </asset>
+        <worldbody>
+          <camera name="unused"/>
+          <camera name="world_cam" pos="0 0 2" resolution="2 2" fovy="60"/>
+          <geom type="hfield" hfield="hfield" pos="0 0 -.3"/>
+          <geom pos="0 0 .4" size=".4"/>
+          <geom type="mesh" mesh="ss" pos="1 0.5 .35" euler="20 0 30"/>
+          <geom type="cylinder" pos="-0.8 0.8 .4" size=".4 .5" euler="0 40 0"/>
+          <geom type="capsule" pos="0.5 -0.7 -.2" size=".3 .5" zaxis="1 0.5 0"/>
+          <geom type="ellipsoid" pos="-0.5 -0.5 .2" size=".4 .3 .25"/>
+          <body name="body0" pos="1 0 2" euler="0 20 90">
+            <joint name="slide0" type="slide"/>
+            <geom type="box" pos="0 0 .3" size=".2 .2 .2"/>
+            <site name="site0" pos="0 0 -.3" euler="180 0 0"/>
+            <site name="site_miss" pos="0 0 .6"/>
+            <camera name="persp" resolution="4 3" fovy="60"/>
+            <camera name="intr" resolution="3 2" sensorsize="3 2" focal="1.2 .8" principal=".1 -.1"/>
+          </body>
+          <body name="body1" pos="-1 0 2" euler="0 -20 -90">
+            <geom type="box" pos="0 0 .3" size=".2 .2 .2"/>
+            <camera name="ortho" resolution="2 3" fovy="1.5" projection="orthographic"/>
+          </body>
+        </worldbody>
+        <sensor>
+          <jointpos joint="slide0"/>
+          <rangefinder site="site0" data="dist depth"/>
+          <rangefinder camera="persp" data="dist dir origin point normal depth" cutoff="2.5"/>
+          <framepos objtype="body" objname="body0"/>
+          <rangefinder site="site_miss" data="dist dir origin point normal depth"/>
+          <rangefinder camera="intr" delay="0.004" nsample="3" interp="linear"/>
+          <rangefinder camera="ortho" data="dist dir origin point normal depth"/>
+          <framepos objtype="body" objname="body1"/>
+          <rangefinder camera="world_cam" data="dist dir origin point normal depth" cutoff="0.5"/>
+        </sensor>
+      </mujoco>
+      """,
+      nworld=nworld,
+    )
+
+    # verify total ray count and per-ray/per-sensor address mappings
+    self.assertEqual(m.nrangefinder, 30)
+    np.testing.assert_array_equal(m.rangefinder_sensor_adr.numpy(), [-1, 0, 1, -1, 13, 14, 20, -1, 26])
+    np.testing.assert_array_equal(m.sensor_rangefinder_adr.numpy(), np.repeat([1, 2, 4, 5, 6, 8], [1, 12, 1, 6, 6, 4]))
+    np.testing.assert_array_equal(m.sensor_rangefinder_bodyid.numpy(), np.repeat([1, 1, 1, 1, 2, 0], [1, 12, 1, 6, 6, 4]))
+
+    # perturb second world to verify per-world batched raycasting
+    mjds = [mjd]
+    if nworld == 2:
+      mjd1 = mujoco.MjData(mjm)
+      qpos = d.qpos.numpy()
+      qpos[1, 0] = 0.25
+      d.qpos.assign(qpos)
+      mjd1.qpos[:] = qpos[1]
+      mujoco.mj_kinematics(mjm, mjd1)
+      mujoco.mj_camlight(mjm, mjd1)
+      mjw.kinematics(m, d)
+      mjw.camlight(m, d)
+      mjds.append(mjd1)
+
+    d.sensordata.fill_(wp.inf)
+
+    mjw.sensor_pos(m, d)
+
+    # compare all sensor outputs against MuJoCo C reference per world
+    sensordata = d.sensordata.numpy()
+    for w in range(nworld):
+      mujoco.mj_sensorPos(mjm, mjds[w])
+      _assert_eq(sensordata[w], mjds[w].sensordata, f"sensordata_world_{w}")
+
+    if nworld == 2:
+      self.assertFalse(np.allclose(sensordata[0], sensordata[1]))
+
+    # step to verify delayed camera rangefinder history insertion and readout
+    for _ in range(3):
+      mjw.step(m, d)
+      for w in range(nworld):
+        mujoco.mj_step(mjm, mjds[w])
+
+    sensordata = d.sensordata.numpy()
+    for w in range(nworld):
+      _assert_eq(sensordata[w], mjds[w].sensordata, f"step_sensordata_world_{w}")
+
   def test_touch_sensor(self):
     """Test touch sensor."""
     for keyframe in range(2):

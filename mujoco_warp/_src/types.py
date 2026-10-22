@@ -731,6 +731,26 @@ class SensorType(enum.IntEnum):
   USER = mujoco.mjtSensor.mjSENS_USER
 
 
+class RayDataField(enum.IntEnum):
+  """Ray data fields for rangefinder sensors.
+
+  Attributes:
+    DIST: distance from ray origin to nearest surface
+    DIR: normalized ray direction
+    ORIGIN: ray origin
+    POINT: point at which ray intersects nearest surface
+    NORMAL: surface normal at intersection point
+    DEPTH: depth along z-axis
+  """
+
+  DIST = mujoco.mjtRayDataField.mjRAYDATA_DIST
+  DIR = mujoco.mjtRayDataField.mjRAYDATA_DIR
+  ORIGIN = mujoco.mjtRayDataField.mjRAYDATA_ORIGIN
+  POINT = mujoco.mjtRayDataField.mjRAYDATA_POINT
+  NORMAL = mujoco.mjtRayDataField.mjRAYDATA_NORMAL
+  DEPTH = mujoco.mjtRayDataField.mjRAYDATA_DEPTH
+
+
 class ObjType(enum.IntEnum):
   """Type of object.
 
@@ -1513,7 +1533,7 @@ class Model:
                       geom distance sensors
     nsensortaxel: number of taxels in all tactile sensors
     ntactileweld: number of unique weld bodies with tactile sensors
-    nrangefinder: number of rangefinder sensors
+    nrangefinder: number of rangefinder rays
     nmaxcondim: maximum condim across geoms, pairs, and flexes
     nmaxpyramid: maximum number of pyramid directions
     nflexintcell: total interp cells (non-strain) for passive forces
@@ -1598,8 +1618,8 @@ class Model:
     sensor_stage_pos_adr: addresses for all stage-pos sensors
     sensor_stage_vel_adr: addresses for all stage-vel sensors
     sensor_stage_acc_adr: addresses for all stage-acc sensors
-    sensor_rangefinder_adr: addresses for rangefinder sensors
-    rangefinder_sensor_adr: map sensor id to rangefinder id
+    sensor_rangefinder_adr: map rangefinder ray id to sensor id (nrangefinder,)
+    rangefinder_sensor_adr: map sensor id to starting rangefinder ray id (nsensor,)
     sensor_collision_start_adr: address for sensor's first
                                 item in collision
     collision_sensor_adr: map sensor id to collision id      (nsensor,)
