@@ -31,6 +31,7 @@ MJ_MAXCONPAIR = mujoco.mjMAXCONPAIR
 MJ_MINMU = mujoco.mjMINMU  # minimum friction
 MJ_MINAWAKE = mujoco.mjMINAWAKE  # minimum number of timesteps before sleeping
 FLEX_STIFFNESS_3D = 24 if util_pkg.check_version("mujoco>=3.14.1.dev989511280") else 21
+ROD_HINGE_SIZE = 4  # 1D rod hinge data in flex_bending: [v_prev, v, v_next, k]
 # maximum size (by number of edges) of an horizon in EPA algorithm
 MJ_MAX_EPAHORIZON = 24
 # maximum average number of trianglarfaces EPA can insert at each iteration
@@ -730,6 +731,26 @@ class SensorType(enum.IntEnum):
   USER = mujoco.mjtSensor.mjSENS_USER
 
 
+class RayDataField(enum.IntEnum):
+  """Ray data fields for rangefinder sensors.
+
+  Attributes:
+    DIST: distance from ray origin to nearest surface
+    DIR: normalized ray direction
+    ORIGIN: ray origin
+    POINT: point at which ray intersects nearest surface
+    NORMAL: surface normal at intersection point
+    DEPTH: depth along z-axis
+  """
+
+  DIST = mujoco.mjtRayDataField.mjRAYDATA_DIST
+  DIR = mujoco.mjtRayDataField.mjRAYDATA_DIR
+  ORIGIN = mujoco.mjtRayDataField.mjRAYDATA_ORIGIN
+  POINT = mujoco.mjtRayDataField.mjRAYDATA_POINT
+  NORMAL = mujoco.mjtRayDataField.mjRAYDATA_NORMAL
+  DEPTH = mujoco.mjtRayDataField.mjRAYDATA_DEPTH
+
+
 class ObjType(enum.IntEnum):
   """Type of object.
 
@@ -873,6 +894,10 @@ class vec11f(wp.types.vector(length=11, dtype=float)):
   pass
 
 
+class vec12f(wp.types.vector(length=12, dtype=float)):
+  pass
+
+
 class vec_pluginattr(wp.types.vector(length=_NPLUGINATTR, dtype=float)):
   pass
 
@@ -910,6 +935,7 @@ vec6 = vec6f
 vec8 = vec8f
 vec10 = vec10f
 vec11 = vec11f
+vec12 = vec12f
 vec16 = vec16f
 vec128 = vec_pluginattr
 mat23 = mat23f
@@ -1057,17 +1083,6 @@ class Option:
 
 
 @dataclasses.dataclass
-class Statistic:
-  """Model statistics (in qpos0).
-
-  Attributes:
-    meaninertia: mean diagonal inertia (per-world)
-  """
-
-  meaninertia: array("*", float)
-
-
-@dataclasses.dataclass
 class TileSet:
   """Tiling configuration for decomposable block diagonal matrix.
 
@@ -1178,7 +1193,6 @@ class Model:
     nsensordata: number of elements in sensor data vector
     nhistory: number of history buffer entries
     opt: physics options
-    stat: model statistics
     qpos0: qpos values at default pose                       (*, nq)
     qpos_spring: reference pose for springs                  (*, nq)
     body_parentid: id of body's parent                       (nbody,)
@@ -1519,7 +1533,7 @@ class Model:
                       geom distance sensors
     nsensortaxel: number of taxels in all tactile sensors
     ntactileweld: number of unique weld bodies with tactile sensors
-    nrangefinder: number of rangefinder sensors
+    nrangefinder: number of rangefinder rays
     nmaxcondim: maximum condim across geoms, pairs, and flexes
     nmaxpyramid: maximum number of pyramid directions
     nflexintcell: total interp cells (non-strain) for passive forces
@@ -1531,11 +1545,11 @@ class Model:
     has_fluid: True if wind, density, or viscosity are non-zero at put_model time
     flg_surfacevel: whether model has non-zero surfacevel
     has_sdf_geom: whether the model contains SDF geoms
-    has_boxbox_margin: whether any box-box contact pair has a non-zero margin
     has_flex_selfcollide: whether any flex has self-collision enabled
     has_flex_passive: whether any flex has passive contact enabled
     has_flex_snh: whether any flex uses 3D SNH elasticity
     has_non_simple_flex: whether any flex has non-simple vertex bodies
+    has_flex_stiff_dim23: whether any 2D or 3D flex contributes elastic stiffness
     has_tendon_stiffness: whether any tendon has positive stiffness
     has_tendon_damping: whether any tendon has positive damping
     has_efm_actuator: whether any actuator contributes effective metric coupling
@@ -1604,8 +1618,8 @@ class Model:
     sensor_stage_pos_adr: addresses for all stage-pos sensors
     sensor_stage_vel_adr: addresses for all stage-vel sensors
     sensor_stage_acc_adr: addresses for all stage-acc sensors
-    sensor_rangefinder_adr: addresses for rangefinder sensors
-    rangefinder_sensor_adr: map sensor id to rangefinder id
+    sensor_rangefinder_adr: map rangefinder ray id to sensor id (nrangefinder,)
+    rangefinder_sensor_adr: map sensor id to starting rangefinder ray id (nsensor,)
     sensor_collision_start_adr: address for sensor's first
                                 item in collision
     collision_sensor_adr: map sensor id to collision id      (nsensor,)
@@ -1654,6 +1668,8 @@ class Model:
     nflexface: number of interpolated flex shell faces
     flex_face_map: mapping of face index to flex and local element face indices
     flex_face: global node indices of each face                             (nflexface, 9)
+    nflexrodhinge: number of 1D rod bending hinges
+    flex_rodhinge_map: flex id and flex_bending address of each rod hinge   (nflexrodhinge, 2)
   """
 
   nq: int
@@ -1713,7 +1729,6 @@ class Model:
   nsensordata: int
   nhistory: int
   opt: Option
-  stat: Statistic
   qpos0: array("*", "nq", float)
   qpos_spring: array("*", "nq", float)
   body_parentid: array("nbody", int)
@@ -1949,7 +1964,7 @@ class Model:
   eq_active0: array("neq", bool)
   eq_solref: array("*", "neq", wp.vec2)
   eq_solimp: array("*", "neq", vec5)
-  eq_data: array("*", "neq", vec11)
+  eq_data: array("*", "neq", vec12)
   tendon_adr: array("ntendon", int)
   tendon_num: array("ntendon", int)
   ten_J_rownnz: array("ntendon", int)
@@ -2063,11 +2078,11 @@ class Model:
   has_fluid: bool
   flg_surfacevel: bool
   has_sdf_geom: bool
-  has_boxbox_margin: bool
   has_flex_selfcollide: bool
   has_flex_passive: bool
   has_flex_snh: bool
   has_non_simple_flex: bool
+  has_flex_stiff_dim23: bool
   has_tendon_stiffness: bool
   has_tendon_damping: bool
   has_efm_actuator: bool
@@ -2180,6 +2195,8 @@ class Model:
   nflexface: int
   flex_face_map: array("nflexface", wp.vec2i)
   flex_face: array("nflexface", 9, int)
+  nflexrodhinge: int
+  flex_rodhinge_map: array("nflexrodhinge", wp.vec2i)
 
 
 class ContactType(enum.IntFlag):
@@ -2430,8 +2447,6 @@ class Data:
     ncdof: number of active (compacted) DOFs per world          (nworld,)
     dof_cdof: global DOF -> compacted DOF; -1 if inactive       (nworld, nv)
     cdof_dof: compacted DOF -> global DOF; -1 if unused         (nworld, nvmax_pad)
-    ctol: compacted-solve main tolerance (nv/nvmax_pad scaled)  (1,)
-    cls_tol: compacted-solve linesearch tolerance               (1,)
     cdof_tri_row: row index of compacted Hessian dof-pairs      (nvmax_pad_sq,)
     cdof_tri_col: col index of compacted Hessian dof-pairs      (nvmax_pad_sq,)
     cM: compacted dense inertia                                 (nworld, nvmax_pad, nvmax_pad)
@@ -2591,8 +2606,6 @@ class Data:
   ncdof: array("nworld", int)
   dof_cdof: array("nworld", "nv", int)
   cdof_dof: array("nworld", "nvmax_pad", int)
-  ctol: array(1, float)
-  cls_tol: array(1, float)
   cdof_tri_row: array("nvmax_pad_sq", int)
   cdof_tri_col: array("nvmax_pad_sq", int)
   cM: array("nworld", "nvmax_pad", "nvmax_pad", float)
@@ -2673,6 +2686,7 @@ class SolverContext:
   hfactor: wp.array3d[float]
   quad_changed_ids: wp.array2d[int]
   quad_changed_count: wp.array[int]
+  inertia_scale: wp.array[float]
   # the full-coordinate Data, set by solve_compact (None natively)
   compact_m_full: Optional["Model"] = None
   compact_d_full: Optional["Data"] = None
