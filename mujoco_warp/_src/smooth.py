@@ -1031,7 +1031,8 @@ def _M(
 ):
   worldid, dofid = wp.tid()
   bodyid = dof_bodyid[dofid]
-  madr_ij = M_rowadr[dofid] + M_rownnz[dofid] - 1
+  rowadr = M_rowadr[dofid]
+  madr_ij = rowadr + M_rownnz[dofid] - 1
 
   # init M(i,i) with armature inertia
   M_out[worldid, madr_ij] = dof_armature[worldid % dof_armature.shape[0], dofid]
@@ -1039,8 +1040,9 @@ def _M(
   # precompute buf = crb_body_i * cdof_i
   buf = math.inert_vec(crb_in[worldid, bodyid], cdof_in[worldid, dofid])
 
-  # sparse backward pass over ancestors
-  while dofid >= 0:
+  # sparse backward pass over the ancestors stored in this row; rows of simple dofs are
+  # diagonal-only, so stop at the row start instead of walking into the previous row
+  while dofid >= 0 and madr_ij >= rowadr:
     M_out[worldid, madr_ij] += wp.dot(cdof_in[worldid, dofid], buf)
     madr_ij -= 1
     dofid = dof_parentid[dofid]
