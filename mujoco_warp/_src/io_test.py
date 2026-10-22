@@ -544,7 +544,9 @@ class IOTest(parameterized.TestCase):
     """put_data builds the JTDAJ block list that make_constraint builds for the same state."""
     xml, keyframe = scene
     mjm, mjd, m, d = test_data.fixture(
-      xml, keyframe=keyframe, overrides={"opt.jacobian": mujoco.mjtJacobian.mjJAC_SPARSE, "opt.solver": solver}
+      xml,
+      keyframe=keyframe,
+      overrides={"opt.jacobian": mujoco.mjtJacobian.mjJAC_SPARSE, "opt.solver": solver},
     )
     self.assertTrue(m.is_sparse)
     self.assertGreater(mjd.nefc, 0)
@@ -568,7 +570,10 @@ class IOTest(parameterized.TestCase):
   def test_reset_data_clears_jtdaj_block_list(self):
     """reset_data empties the JTDAJ block list of the worlds it resets, along with nefc."""
     _, _, m, d = test_data.fixture(
-      "constraints.xml", keyframe=2, nworld=2, overrides={"opt.jacobian": mujoco.mjtJacobian.mjJAC_SPARSE}
+      "constraints.xml",
+      keyframe=2,
+      nworld=2,
+      overrides={"opt.jacobian": mujoco.mjtJacobian.mjJAC_SPARSE, "opt.solver": mujoco.mjtSolver.mjSOL_NEWTON},
     )
     mjwarp.forward(m, d)
     nblock = d.efc.jtdaj_nblock.numpy()
