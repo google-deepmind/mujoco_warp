@@ -331,6 +331,97 @@ def _eval_elliptic_delta(
 
 
 class SolverTest(parameterized.TestCase):
+  @parameterized.product(nworld=(1, 2), jacobian=("dense", "sparse"))
+  def test_normal_force_export_consistency(self, nworld, jacobian):
+    """Newton exports the generalized force of its stored normal forces."""
+    _, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option tolerance="1e-10">
+          <flag warmstart="disable"/>
+        </option>
+        <default>
+          <geom condim="1" solref="0.01 1" solimp="0.9999 0.9999 0.001"/>
+        </default>
+        <worldbody>
+          <geom type="plane" size="2 2 .1"/>
+          <body pos="0 0 .099">
+            <joint type="slide" axis="0 0 1"/>
+            <inertial pos="0 0 0" mass="1.7" diaginertia=".02 .03 .04"/>
+            <geom size=".1"/>
+            <body pos=".18 0 0">
+              <joint axis="0 1 0"/>
+              <inertial pos=".08 0 0" mass=".4" diaginertia=".002 .003 .004"/>
+              <geom pos=".12 0 0" size=".1"/>
+            </body>
+          </body>
+        </worldbody>
+      </mujoco>
+      """,
+      overrides={"opt.jacobian": jacobian},
+      nworld=nworld,
+      nconmax=16,
+      njmax=16,
+    )
+    velocity = np.tile(np.array([-0.06, 0.2], dtype=np.float32), (nworld, 1))
+    if nworld == 2:
+      velocity[1] = [-0.11, 0.31]
+    d.qvel.assign(velocity)
+    d.qacc.fill_(wp.inf)
+    d.efc.force.fill_(wp.inf)
+    d.qfrc_constraint.fill_(wp.inf)
+    mjw.forward(m, d)
+    force = d.efc.force.numpy()
+    jac = d.efc.J.numpy()
+    exported = d.qfrc_constraint.numpy()
+    self.assertTrue(np.isfinite(exported[:, : m.nv]).all())
+    self.assertTrue(np.isfinite(d.qacc.numpy()[:, : m.nv]).all())
+    for world in range(nworld):
+      nefc = int(d.nefc.numpy()[world])
+      self.assertGreater(nefc, 0)
+      self.assertTrue(np.isfinite(force[world, :nefc]).all())
+      if m.is_sparse:
+        dense = np.zeros((nefc, m.nv))
+        mujoco.mju_sparse2dense(
+          dense,
+          jac[world, 0],
+          d.efc.J_rownnz.numpy()[world, :nefc],
+          d.efc.J_rowadr.numpy()[world, :nefc],
+          d.efc.J_colind.numpy()[world, 0],
+        )
+      else:
+        dense = jac[world, :nefc, : m.nv].astype(np.float64)
+      expected = dense.T @ force[world, :nefc].astype(np.float64)
+      np.testing.assert_allclose(exported[world, : m.nv], expected, rtol=1e-5, atol=1e-5)
+    np.testing.assert_array_equal(d.overflow.numpy(), 0)
+    if nworld == 2:
+      self.assertFalse(np.allclose(exported[0], exported[1]))
+
+  @parameterized.parameters(1, 2)
+  def test_qfrc_constraint_zero_capacity(self, nworld):
+    """A solve with no constraint capacity clears the generalized constraint force."""
+    _, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <body pos="0 0 1">
+            <freejoint/>
+            <geom size=".1" contype="0" conaffinity="0"/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=nworld,
+      nconmax=0,
+      njmax=0,
+    )
+    d.qfrc_constraint.fill_(wp.inf)
+    mjw.forward(m, d)
+    np.testing.assert_array_equal(d.qfrc_constraint.numpy(), 0)
+    np.testing.assert_array_equal(d.qacc.numpy(), d.qacc_smooth.numpy())
+    np.testing.assert_array_equal(d.solver_niter.numpy(), 0)
+    np.testing.assert_array_equal(d.overflow.numpy(), 0)
+
   def test_newton_decrement_termination(self):
     """Newton stops when only its local model predicts convergence."""
     solver_niter = wp.zeros(1, dtype=int)
@@ -2415,7 +2506,7 @@ class CompactSolverTest(absltest.TestCase):
     np.testing.assert_array_equal(out[0, 2:], np.zeros(m.nv - 2))
 
   def test_constrained_solve_equivalence_all_active(self):
-    """With every tree active and nvmax=nv, the compacted Newton solve matches baseline qacc."""
+    """The all-active compact solve matches qacc and exports consistent constraint forces."""
     for cone in ("pyramidal", "elliptic"):
       with self.subTest(cone=cone):
         xml = _COMPACT_CONTACT_XML.replace('iterations="20"', f'iterations="20" cone="{cone}"')
@@ -2429,9 +2520,22 @@ class CompactSolverTest(absltest.TestCase):
         island.update_active_dofs(m, d)
         self.assertEqual(d.ncdof.numpy()[0], m.nv)
 
+        d.cqfrc_constraint.fill_(wp.inf)
         solver.solve_compact(m, d)
 
         np.testing.assert_allclose(d.qacc.numpy(), baseline_qacc, rtol=1e-3, atol=1e-4)
+        nefc = int(d.nefc.numpy()[0])
+        jac = np.zeros((nefc, m.nv))
+        mujoco.mju_sparse2dense(
+          jac,
+          d.efc.J.numpy()[0, 0],
+          d.efc.J_rownnz.numpy()[0, :nefc],
+          d.efc.J_rowadr.numpy()[0, :nefc],
+          d.efc.J_colind.numpy()[0, 0],
+        )
+        expected = jac.T @ d.efc.force.numpy()[0, :nefc].astype(np.float64)
+        np.testing.assert_allclose(d.qfrc_constraint.numpy()[0, : m.nv], expected, rtol=1e-5, atol=1e-5)
+        np.testing.assert_array_equal(d.overflow.numpy(), 0)
 
   def test_solve_compact_populates_islands(self):
     """When using the compact solver via mjw.solve, island mapping fields are updated."""
