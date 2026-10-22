@@ -1277,7 +1277,7 @@ class SolverTest(parameterized.TestCase):
       dim_block = 1
       nblocks_perblock = d.naconmax
     wp.launch(
-      solver._update_gradient_JTCJ_dense,
+      solver._update_gradient_JTCJ_dense(0),
       dim=(dim_block, m.dof_tri_row.size),
       inputs=[
         m.opt.impratio_invsqrt,

@@ -4464,7 +4464,7 @@ class FlexBVHTest(parameterized.TestCase):
     flexvert_norm = wp.zeros((nworld, nvert), dtype=wp.vec3)
 
     wp.launch(
-      kernel=bvh.accumulate_flex_vertex_normals,
+      kernel=bvh.accumulate_flex_vertex_normals(),
       dim=(nworld, nelem),
       inputs=[1, flex_dim, flex_vertadr, flex_elemadr, flex_elemnum, flex_elemdataadr, flex_elem, flexvert_xpos],
       outputs=[flexvert_norm],
