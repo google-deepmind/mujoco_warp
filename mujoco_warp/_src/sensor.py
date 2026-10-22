@@ -1685,7 +1685,7 @@ def _tendon_actuator_force(
 
   if actuator_trntype[actid] == TrnType.TENDON and actuator_trnid[actid][0] == sensor_objid[sensorid]:
     adr = sensor_adr[sensorid]
-    sensordata_out[worldid, adr] += actuator_force_in[worldid, actid]
+    wp.atomic_add(sensordata_out, worldid, adr, actuator_force_in[worldid, actid])
 
 
 @wp.kernel

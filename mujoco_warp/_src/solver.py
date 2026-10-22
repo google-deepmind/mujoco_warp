@@ -2787,7 +2787,7 @@ def _update_gradient_JTCJ_dense(
       tangent_dot,
     )
 
-    ctx_h_out[worldid, dof1id, dof2id] += h
+    wp.atomic_add(ctx_h_out, worldid, dof1id, dof2id, h)
 
 
 @cache_kernel

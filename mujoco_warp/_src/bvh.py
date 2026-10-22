@@ -663,9 +663,9 @@ def accumulate_flex_vertex_normals(
 
   face_nrm = wp.cross(v1 - v0, v2 - v0)
   face_nrm = wp.normalize(face_nrm)
-  flexvert_norm_out[worldid, i0] += face_nrm
-  flexvert_norm_out[worldid, i1] += face_nrm
-  flexvert_norm_out[worldid, i2] += face_nrm
+  wp.atomic_add(flexvert_norm_out, worldid, i0, face_nrm)
+  wp.atomic_add(flexvert_norm_out, worldid, i1, face_nrm)
+  wp.atomic_add(flexvert_norm_out, worldid, i2, face_nrm)
 
 
 @wp.kernel

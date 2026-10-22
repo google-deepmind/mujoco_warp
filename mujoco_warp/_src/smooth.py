@@ -3927,10 +3927,11 @@ def _angular_momentum(
   dL = wp.cross(dx, dp)
 
   # add to subtree i
-  subtree_angmom_out[worldid, bodyid] += dL
+  angmom = subtree_angmom_out[worldid, bodyid] + dL
+  subtree_angmom_out[worldid, bodyid] = angmom
 
   # add to parent
-  wp.atomic_add(subtree_angmom_out[worldid], pid, subtree_angmom_out[worldid, bodyid])
+  wp.atomic_add(subtree_angmom_out[worldid], pid, angmom)
 
   # momentum wrt parent
   dx = com - com_parent
