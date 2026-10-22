@@ -1234,6 +1234,70 @@ class SmoothTest(parameterized.TestCase):
       self.assertFalse(np.allclose(d.ten_J.numpy()[0], d.ten_J.numpy()[1]))
       self.assertFalse(np.allclose(d.wrap_xpos.numpy()[0], d.wrap_xpos.numpy()[1]))
 
+  @parameterized.parameters(1, 2)
+  def test_tendon_fixed_batch_wrap_prm(self, nworld):
+    """Tests per-world fixed tendon coefficients via batched wrap_prm."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <body>
+            <joint name="j0"/>
+            <geom size="0.1"/>
+            <body pos="0 0 0.2">
+              <joint name="j1"/>
+              <geom size="0.1"/>
+            </body>
+          </body>
+        </worldbody>
+        <tendon>
+          <fixed>
+            <joint joint="j0" coef="1"/>
+          </fixed>
+          <fixed>
+            <joint joint="j0" coef="1"/>
+            <joint joint="j1" coef="-1"/>
+          </fixed>
+        </tendon>
+        <keyframe>
+          <key qpos="0.3 0.5"/>
+        </keyframe>
+      </mujoco>
+      """,
+      keyframe=0,
+      nworld=nworld,
+      batch_sizes={"wrap_prm": nworld},
+    )
+
+    mjds = [mjd]
+    if nworld == 2:
+      # vary second fixed tendon's joint coefficients in world 1
+      wrap_prm = m.wrap_prm.numpy()
+      wrap_prm[1, 1:] = [2.0, -3.0]
+      m.wrap_prm.assign(wrap_prm)
+      mjm.wrap_prm[:] = wrap_prm[1]
+      mjd1 = mujoco.MjData(mjm)
+      mujoco.mj_resetDataKeyframe(mjm, mjd1, 0)
+      mujoco.mj_tendon(mjm, mjd1)
+      mjds.append(mjd1)
+
+    # reset tested tendon outputs before kernel launch
+    for arr in (d.ten_length, d.ten_J):
+      arr.fill_(wp.inf)
+
+    mjw.tendon(m, d)
+
+    # verify per-world CPU parity and distinct world outputs
+    ten_length = d.ten_length.numpy()
+    ten_J = d.ten_J.numpy()
+    for w in range(nworld):
+      _assert_eq(ten_length[w], mjds[w].ten_length, f"ten_length (world {w})")
+      _assert_eq(ten_J[w], mjds[w].ten_J, f"ten_J (world {w})")
+
+    if nworld == 2:
+      self.assertFalse(np.allclose(ten_length[0], ten_length[1]))
+      self.assertFalse(np.allclose(ten_J[0], ten_J[1]))
+
   @parameterized.parameters(mujoco.mjtJacobian.mjJAC_SPARSE, mujoco.mjtJacobian.mjJAC_DENSE)
   def test_factor_solve_i(self, jacobian):
     mjm, mjd, m, d = test_data.fixture(

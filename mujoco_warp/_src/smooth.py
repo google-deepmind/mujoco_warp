@@ -1830,7 +1830,7 @@ def _cfrc_ext_spatial_tendon(
   tendon_lengthspring: wp.array2d[wp.vec2],
   wrap_type: wp.array[int],
   wrap_objid: wp.array[int],
-  wrap_prm: wp.array[float],
+  wrap_prm: wp.array2d[float],
   # Data in:
   qacc_in: wp.array2d[float],
   subtree_com_in: wp.array2d[wp.vec3],
@@ -1906,7 +1906,7 @@ def _cfrc_ext_spatial_tendon(
 
     # pulley: divides the force in the next branch, skip its marker in the path
     if wtype == WrapType.PULLEY:
-      scaled_frc = frc / wrap_prm[j]
+      scaled_frc = math.safe_div(frc, wrap_prm[worldid % wrap_prm.shape[0], j])
       prevbody = -1
       p += 1
       continue
@@ -2244,7 +2244,7 @@ def _tendon_dot(
   tendon_armature: wp.array2d[float],
   wrap_type: wp.array[int],
   wrap_objid: wp.array[int],
-  wrap_prm: wp.array[float],
+  wrap_prm: wp.array2d[float],
   # Data in:
   site_xpos_in: wp.array2d[wp.vec3],
   subtree_com_in: wp.array2d[wp.vec3],
@@ -2281,7 +2281,7 @@ def _tendon_dot(
     if (type0 == pulley) or (type1 == pulley):
       # get divisor
       if type0 == pulley:
-        divisor = wrap_prm[adr + j]
+        divisor = wrap_prm[worldid % wrap_prm.shape[0], adr + j]
 
       j += 1
       continue
@@ -3992,7 +3992,7 @@ def _joint_tendon(
   ten_J_rowadr: wp.array[int],
   ten_J_colind: wp.array[int],
   wrap_objid: wp.array[int],
-  wrap_prm: wp.array[float],
+  wrap_prm: wp.array2d[float],
   tendon_jnt_adr: wp.array[int],
   wrap_jnt_adr: wp.array[int],
   # Data in:
@@ -4006,7 +4006,7 @@ def _joint_tendon(
   tenid = tendon_jnt_adr[wrapid]
   wrapjntid = wrap_jnt_adr[wrapid]
   wrapobjid = wrap_objid[wrapjntid]
-  prm = wrap_prm[wrapjntid]
+  prm = wrap_prm[worldid % wrap_prm.shape[0], wrapjntid]
 
   # add to length
   L = prm * qpos_in[worldid, jnt_qposadr[wrapobjid]]
@@ -4166,7 +4166,7 @@ def _spatial_geom_tendon(
   ten_J_colind: wp.array[int],
   wrap_type: wp.array[int],
   wrap_objid: wp.array[int],
-  wrap_prm: wp.array[float],
+  wrap_prm: wp.array2d[float],
   tendon_geom_adr: wp.array[int],
   wrap_geom_adr: wp.array[int],
   wrap_pulley_scale: wp.array[float],
@@ -4210,7 +4210,7 @@ def _spatial_geom_tendon(
   bodyid_site1 = site_bodyid[wrap_objid_site1]
 
   # find wrap object sidesite (if it exists)
-  sideid = int(wp.round(wrap_prm[wrap_adr]))
+  sideid = int(wp.round(wrap_prm[worldid % wrap_prm.shape[0], wrap_adr]))
   if sideid >= 0:
     side = site_xpos_in[worldid, sideid]
   else:
