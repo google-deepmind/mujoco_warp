@@ -35,7 +35,6 @@ from mujoco_warp._src.io import make_trajectory
 
 
 class UnrollTest(parameterized.TestCase):
-  @absltest.skipIf(not wp.get_device().is_cuda, "Skipping test that requires GPU.")
   @parameterized.parameters(ConeType.PYRAMIDAL, ConeType.ELLIPTIC)
   def test_aloha_lifts_pot(self, cone):
     """Aloha lifts a pot into the air."""

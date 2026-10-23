@@ -376,8 +376,11 @@ class SmoothTest(parameterized.TestCase):
     """Tests force and torque sensor readings on weld lever models."""
     mjm, _, m, d = test_data.fixture(xml=xml)
 
-    for _ in range(20):
+    with wp.ScopedCapture() as capture:
       mjw.step(m, d)
+
+    for _ in range(20):
+      wp.capture_launch(capture.graph)
 
     _assert_eq(d.sensordata.numpy()[0], mjm.sensor_user.flatten(), "weld force/torque sensor readings")
 

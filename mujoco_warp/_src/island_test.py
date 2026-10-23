@@ -369,7 +369,7 @@ class IslandDiscoveryConstraintsTest(absltest.TestCase):
 
 
 class IslandDiscoveryExecutionTest(absltest.TestCase):
-  """Tests multi-world execution, idempotency, and CUDA graph capturability."""
+  """Tests multi-world execution, idempotency, and graph capturability."""
 
   def test_inactive_world_prefix_ignored(self):
     """A world with nefc=0 leaves all trees inactive even if njmax > 0."""
@@ -415,22 +415,24 @@ class IslandDiscoveryExecutionTest(absltest.TestCase):
     )
     mjwarp.fwd_position(m, d)
 
+    with wp.ScopedCapture() as capture:
+      island.island(m, d)
+
     d.nisland.fill_(-1)
     d.tree_island.fill_(-1)
-    island.island(m, d)
+    wp.capture_launch(capture.graph)
     expected_labels = d.tree_island.numpy().copy()
     expected_nisland = d.nisland.numpy().copy()
 
     for _ in range(3):
       d.tree_island.fill_(-1)
       d.nisland.fill_(-1)
-      island.island(m, d)
+      wp.capture_launch(capture.graph)
       np.testing.assert_array_equal(d.tree_island.numpy(), expected_labels)
       np.testing.assert_array_equal(d.nisland.numpy(), expected_nisland)
 
-  @absltest.skipIf(not wp.get_device().is_cuda, "CUDA graph capture requires a CUDA device.")
-  def test_cuda_graph_capture_and_replay(self):
-    """Direct DSU is capturable in CUDA graphs with zero host synchronizations."""
+  def test_graph_capture_and_replay(self):
+    """Direct DSU is capturable in graphs with zero host synchronizations."""
     mjm, mjd, m, d = test_data.fixture(
       xml="""
       <mujoco>

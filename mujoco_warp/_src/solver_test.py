@@ -46,6 +46,11 @@ def _assert_eq(a, b, name, tol=_TOLERANCE * 20):
   np.testing.assert_allclose(a, b, err_msg=err_msg, atol=tol, rtol=tol)
 
 
+def _set_inertia_scale(m, d, ctx):
+  """Set the inverse trace of M, as init_context does, for tests which skip it."""
+  wp.launch(solver._inertia_scale, dim=d.nworld, inputs=[m.nv, m.M_rownnz, m.M_rowadr, d.M], outputs=[ctx.inertia_scale])
+
+
 def _noslip_model(mjm, noslip_iterations):
   mjm = copy.deepcopy(mjm)
   mjm.opt.noslip_iterations = noslip_iterations
@@ -344,7 +349,6 @@ class SolverTest(parameterized.TestCase):
       solver._solve_done(types.OverflowType.NONE),
       dim=1,
       inputs=[
-        1,
         wp.array([1.0e-6], dtype=float),
         2,
         wp.array([1.0], dtype=float),
@@ -373,7 +377,6 @@ class SolverTest(parameterized.TestCase):
       solver._solve_done(types.OverflowType.NONE),
       dim=1,
       inputs=[
-        1,
         wp.array([1.0e-6], dtype=float),
         1,
         wp.array([1.0], dtype=float),
@@ -402,7 +405,6 @@ class SolverTest(parameterized.TestCase):
       solver._solve_done(types.OverflowType.NONE),
       dim=1,
       inputs=[
-        1,
         wp.array([1.0e-6], dtype=float),
         100,
         wp.array([1.0], dtype=float),
@@ -705,6 +707,7 @@ class SolverTest(parameterized.TestCase):
     )
 
     ctx = solver._create_solver_context(m, d)
+    _set_inertia_scale(m, d, ctx)
 
     d.ne = wp.array([0], dtype=int)
     d.nf = wp.array([0], dtype=int)
@@ -775,7 +778,7 @@ class SolverTest(parameterized.TestCase):
     ctx = solver._create_solver_context(m, d)
 
     # Exercise derivative convergence with a loose scaled tolerance.
-    m.stat.meaninertia.fill_(1.0e9)
+    ctx.inertia_scale.fill_(1.0 / (1.0e9 * m.nv))
     d.ne = wp.array([1], dtype=int)
     d.nf = wp.array([0], dtype=int)
     d.nefc = wp.array([4], dtype=int)
@@ -827,6 +830,7 @@ class SolverTest(parameterized.TestCase):
       """
     )
     ctx = solver._create_solver_context(m, d)
+    _set_inertia_scale(m, d, ctx)
 
     efc_J = [
       [0.0, 1.0, 1.0, -5.3886324e-05, 0.05, -0.05],
@@ -915,6 +919,7 @@ class SolverTest(parameterized.TestCase):
       njmax=5,
     )
     ctx = solver._create_solver_context(m, d)
+    _set_inertia_scale(m, d, ctx)
     d.ne.zero_()
     d.nf.fill_(5)
     d.nefc.fill_(5)
@@ -993,6 +998,7 @@ class SolverTest(parameterized.TestCase):
       njmax=2,
     )
     ctx = solver._create_solver_context(m, d)
+    _set_inertia_scale(m, d, ctx)
 
     # cost 0.5 * (alpha - target)^2 from an equality row plus 0.5 * (alpha - 1)^2 from an
     # inequality row active for alpha < 1: Newton from 0 undershoots, and the second Newton step
@@ -1046,7 +1052,7 @@ class SolverTest(parameterized.TestCase):
     )
     ctx = solver._create_solver_context(m, d)
 
-    m.stat.meaninertia.fill_(1.0e9)
+    ctx.inertia_scale.fill_(1.0 / (1.0e9 * m.nv))
     d.ne = wp.array([1], dtype=int)
     d.nf = wp.array([0], dtype=int)
     d.nefc = wp.array([4], dtype=int)
@@ -1281,7 +1287,7 @@ class SolverTest(parameterized.TestCase):
       nblocks_perblock = d.naconmax
     self.assertEqual(ctx.h.dtype, wp.float64 if f64 else wp.float32)
     wp.launch(
-      solver._update_gradient_JTCJ_dense_typed(solver._htype(m)),
+      solver._update_gradient_JTCJ_dense(0, solver._htype(m)),
       dim=(dim_block, m.dof_tri_row.size),
       inputs=[
         m.opt.impratio_invsqrt,
@@ -1826,8 +1832,11 @@ class SolverTest(parameterized.TestCase):
     qvel[1] *= 0.5
     d.qvel.assign(qvel)
 
-    for _ in range(nstep):
+    with wp.ScopedCapture() as capture:
       mjw.step(m, d)
+
+    for _ in range(nstep):
+      wp.capture_launch(capture.graph)
 
     for worldid in range(nworld):
       mjd_world = mujoco.MjData(mjm)
@@ -1871,9 +1880,12 @@ class SolverTest(parameterized.TestCase):
     )
     mjds = _noslip_worlds(mjm, mjd, d, nworld, [-0.5, 0.0, 0.0, 0.0, 0.0, -1.0, 0.5, 0.0, 0.0, 0.0, 0.0, 0.0])
 
+    with wp.ScopedCapture() as capture:
+      mjw.step(m, d)
+
     nstep = 50
     for _ in range(nstep):
-      mjw.step(m, d)
+      wp.capture_launch(capture.graph)
 
     for worldid, mjd_world in enumerate(mjds):
       mujoco.mj_step(mjm, mjd_world, nstep)
@@ -2551,10 +2563,13 @@ class SolverFastPathTest(parameterized.TestCase):
     qvel = rng.uniform(-8.0, 8.0, size=(nworld, mjm.nv)).astype(np.float32)
     wp.copy(d.qvel, wp.array(qvel, dtype=float))
 
+    with wp.ScopedCapture() as capture:
+      mjw.step(m, d)
+
     max_rel = 0.0
     cap_steps = 0
     for _ in range(20):
-      mjw.step(m, d)
+      wp.capture_launch(capture.graph)
       cap_steps += int(d.solver_niter.numpy().max() >= mjm.opt.iterations)
       nefc = d.nefc.numpy()
       J = d.efc.J.numpy()

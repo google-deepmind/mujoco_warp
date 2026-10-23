@@ -14,6 +14,8 @@
 # ==============================================================================
 """Tests for render functions."""
 
+import os
+
 import mujoco
 import numpy as np
 import warp as wp
@@ -22,6 +24,7 @@ from absl.testing import parameterized
 
 import mujoco_warp as mjw
 from mujoco_warp import test_data
+from mujoco_warp._src import util_pkg
 
 try:
   mujoco.Renderer(mujoco.MjModel.from_xml_string("<mujoco/>"))
@@ -139,6 +142,29 @@ class RenderTest(parameterized.TestCase):
     rgb = rc.rgb_data.numpy()
 
     self.assertNotEqual(np.unique(rgb).shape[0], 1)
+
+  @absltest.skipIf(
+    not util_pkg.check_version("mujoco>=3.16.1"),
+    "Requires MuJoCo >= 3.16.1",
+  )
+  def test_render_texture_by_reference(self):
+    """A scene with a by-reference file texture renders the same image as its eager compile."""
+    path = os.path.join(os.path.dirname(test_data.__file__), "mug", "mug.xml")
+    spec = mujoco.MjSpec.from_file(path)
+    spec.compiler.passthrough = mujoco.mjtPassthrough.mjPASSTHROUGH_TEXTURES
+    mjm_ref = spec.compile()
+    self.assertEqual(mjm_ref.tex_adr[0], -1, "tex_adr")
+    mjm, mjd, m, d = test_data.fixture("mug/mug.xml")
+    m_ref, d_ref = mjw.put_model(mjm_ref), mjw.put_data(mjm_ref, mjd)
+
+    rgb = []
+    for mjm_i, m_i, d_i in ((mjm, m, d), (mjm_ref, m_ref, d_ref)):
+      rc = mjw.create_render_context(mjm_i, cam_res=(64, 64), render_rgb=True, use_textures=True)
+      mjw.render(m_i, d_i, rc)
+      rgb.append(rc.rgb_data.numpy().copy())
+
+    self.assertNotEqual(np.unique(rgb[0]).shape[0], 1)
+    np.testing.assert_array_equal(rgb[0], rgb[1])
 
   @absltest.skipIf(not wp.get_device().is_cuda, "Skipping test that requires CUDA.")
   def test_render_graph_capture(self):
