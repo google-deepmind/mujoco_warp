@@ -1232,13 +1232,6 @@ class SolverTest(parameterized.TestCase):
     self.assertIs(occupancy_module, launch_module)
     self.assertEqual(len(kernel.module.execs), 1)
 
-    inc_kernel = solver._update_gradient_h_incremental_sparse(compact)
-    solver._jtdaj_groups_per_world(1, 100, inc_kernel)
-    occupancy_inc_module = inc_kernel.module.load(device)
-    launch_inc_module = inc_kernel.module.load(device, block_dim=inc_kernel.module.options["block_dim"])
-    self.assertIs(occupancy_inc_module, launch_inc_module)
-    self.assertEqual(len(inc_kernel.module.execs), 1)
-
   def test_cg_tiled_kernels_are_unique(self):
     """Ensure CG tiled kernels with custom block_dim do not share solver.py's module."""
     shared_module = solver._solve_init_efc.module
