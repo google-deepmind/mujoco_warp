@@ -2468,7 +2468,8 @@ def _add_tendon_metric_dense(max_ten_J_rownnz: int, htype: type = float, diagona
   module_options = {"enable_backward": False}
   if deterministic:
     module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
-    module_options["deterministic_max_records"] = max_ten_J_rownnz * (max_ten_J_rownnz - 1) // 2
+    # one record per dof pair c2 > c1 of the tendon, and per dof with the diagonal
+    module_options["deterministic_max_records"] = max_ten_J_rownnz * (max_ten_J_rownnz + (1 if diagonal else -1)) // 2
 
   @wp.kernel(module="unique", module_options=module_options)
   def kernel(
@@ -2510,7 +2511,7 @@ def _add_actuator_metric_dense(nv: int, htype: type = float, diagonal: bool = Fa
   module_options = {"enable_backward": False}
   if deterministic:
     module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
-    module_options["deterministic_max_records"] = nv * (nv - 1) // 2
+    module_options["deterministic_max_records"] = nv * (nv + (1 if diagonal else -1)) // 2
 
   @wp.kernel(module="unique", module_options=module_options)
   def kernel(
