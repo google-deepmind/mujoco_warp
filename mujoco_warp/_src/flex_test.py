@@ -691,6 +691,43 @@ class FlexConstraintTest(parameterized.TestCase):
         err_msg=f"qfrc_constraint mismatch for trilinear flex contacts (world {w})",
       )
 
+  @parameterized.parameters(1, 2)
+  def test_trilinear_element_contact_qfrc_constraint(self, nworld):
+    """Test qfrc_constraint parity for trilinear flex element contacts with a dense Jacobian."""
+    # the sphere touches the interior of a bottom triangle of the flex, where the trilinear
+    # basis restricted to the face is bilinear in the reference coordinates of the contact
+    xml = """
+    <mujoco>
+      <option gravity="0 0 -9.81" jacobian="dense"/>
+      <worldbody>
+        <geom type="sphere" size="0.05"/>
+        <flexcomp type="grid" count="3 3 3" spacing="0.1 0.1 0.1" pos="0.045 0.025 0.15"
+                  name="cube" dim="3" mass="1" radius="0.001" cellcount="1 1 1" dof="trilinear">
+          <elasticity young="1e4" poisson="0.3" damping="1e-3"/>
+          <contact selfcollide="none"/>
+        </flexcomp>
+      </worldbody>
+    </mujoco>
+    """
+    mjm, mjd, m, d = test_data.fixture(xml=xml, nworld=nworld)
+    d.qfrc_constraint.fill_(wp.inf)
+    mjw.forward(m, d)
+
+    # the contacts are element contacts
+    self.assertGreater(mjd.ncon, 0)
+    self.assertTrue((mjd.contact.elem[:, 1] >= 0).all())
+
+    nacon = d.nacon.numpy()[0]
+    self.assertEqual(nacon, mjd.ncon * nworld, "Total contacts mismatch")
+
+    for w in range(nworld):
+      np.testing.assert_allclose(
+        d.qfrc_constraint.numpy()[w],
+        mjd.qfrc_constraint,
+        atol=1e-4,
+        err_msg=f"qfrc_constraint mismatch for trilinear flex element contacts (world {w})",
+      )
+
   @parameterized.product(
     xml=("flex/floppy.xml", "flex/moving_base_strain.xml"),
     cone=(mujoco.mjtCone.mjCONE_PYRAMIDAL, mujoco.mjtCone.mjCONE_ELLIPTIC),
