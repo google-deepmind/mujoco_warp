@@ -291,6 +291,11 @@ _TREE_CASES = (
   ),
   dict(testcase_name="discrete_cg", overrides={"opt.integrator": "DISCRETE", "opt.solver": "CG"}, covers=()),
   dict(
+    testcase_name="discrete_float64",
+    overrides={"opt.integrator": "DISCRETE", "opt.newton_hessian_float64": True},
+    covers=(),
+  ),
+  dict(
     testcase_name="dense_blocks",
     overrides={"opt.jacobian": "DENSE"},
     covers=("smooth._qLD_acc", "smooth._solve_LD_sparse_level"),
@@ -378,6 +383,12 @@ _CONTACT_CASES = (
   ),
   dict(testcase_name="elliptic_sparse", overrides={"opt.jacobian": "SPARSE", "opt.cone": "ELLIPTIC"}, covers=()),
   dict(testcase_name="discrete", overrides={"opt.integrator": "DISCRETE"}, covers=()),
+  dict(
+    testcase_name="elliptic_dense_float64",
+    overrides={"opt.jacobian": "DENSE", "opt.cone": "ELLIPTIC", "opt.newton_hessian_float64": True},
+    covers=(),
+  ),
+  dict(testcase_name="sparse_float64", overrides={"opt.jacobian": "SPARSE", "opt.newton_hessian_float64": True}, covers=()),
 )
 
 _SLEEP_CASES = (dict(testcase_name="euler", overrides={}, covers=("sleep._update_sleep_bodies", "sleep._update_sleep_dofs")),)
