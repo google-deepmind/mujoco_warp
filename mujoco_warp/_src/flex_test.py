@@ -413,6 +413,42 @@ class FlexKinematicsTest(parameterized.TestCase):
       )
       np.testing.assert_allclose(flexedge_J, mj_flexedge_J, atol=_TOLERANCE, err_msg=f"flexedge_J mismatch (world {w})")
 
+  @parameterized.parameters(1, 2)
+  def test_flex_trilinear_pruned_cell_extrapolation(self, nworld):
+    """Tests that trilinear flex vertices in pruned/empty cells extrapolate from nearest active cell."""
+    xml = """
+    <mujoco>
+      <worldbody>
+        <flexcomp name="ellipsoid" type="ellipsoid" count="6 6 6" spacing="0.06 0.06 0.06"
+                  dim="3" dof="trilinear" cellcount="4 4 4" mass="1">
+          <elasticity young="1e4" poisson="0.3"/>
+          <contact selfcollide="none"/>
+        </flexcomp>
+      </worldbody>
+    </mujoco>
+    """
+    mjm, mjd, m, d = test_data.fixture(xml=xml, qpos_noise=0.05, qvel_noise=0.05, nworld=nworld)
+
+    d.flexvert_xpos.fill_(wp.inf)
+    d.flexnode_xpos.fill_(wp.inf)
+
+    mjw.kinematics(m, d)
+    mjw.com_pos(m, d)
+    mjw.flex(m, d)
+
+    mujoco.mj_kinematics(mjm, mjd)
+    mujoco.mj_comPos(mjm, mjd)
+    mujoco.mj_flex(mjm, mjd)
+
+    for w in range(nworld):
+      np.testing.assert_allclose(
+        d.flexvert_xpos.numpy()[w, : mjm.nflexvert],
+        mjd.flexvert_xpos[: mjm.nflexvert],
+        rtol=1e-5,
+        atol=1e-5,
+        err_msg=f"flexvert_xpos mismatch (world {w})",
+      )
+
 
 class FlexConstraintTest(parameterized.TestCase):
   """Tests for flex constraints parity with MuJoCo."""
