@@ -15,12 +15,15 @@
 
 import warp as wp
 
+from mujoco_warp._src import support
 from mujoco_warp._src import types
 from mujoco_warp._src.types import DeterminismType
 from mujoco_warp._src.types import EqType
+from mujoco_warp._src.types import IntegratorType
 from mujoco_warp._src.types import ObjType
 from mujoco_warp._src.types import SleepPolicy
 from mujoco_warp._src.types import SleepState
+from mujoco_warp._src.types import SolverType
 from mujoco_warp._src.types import WrapType
 from mujoco_warp._src.warp_util import cache_kernel
 from mujoco_warp._src.warp_util import event_scope
@@ -436,6 +439,9 @@ def _wake_tendon_kernel(
   # Model:
   ntree: int,
   ntendon: int,
+  opt_integrator: int,
+  opt_solver: int,
+  opt_disableflags: int,
   body_treeid: wp.array[int],
   jnt_bodyid: wp.array[int],
   geom_bodyid: wp.array[int],
@@ -445,6 +451,10 @@ def _wake_tendon_kernel(
   tendon_limited: wp.array[int],
   tendon_range: wp.array2d[wp.vec2],
   tendon_margin: wp.array2d[float],
+  tendon_stiffness: wp.array2d[float],
+  tendon_stiffnesspoly: wp.array2d[wp.vec2],
+  tendon_damping: wp.array2d[float],
+  tendon_dampingpoly: wp.array2d[wp.vec2],
   wrap_type: wp.array[int],
   wrap_objid: wp.array[int],
   # Data in:
@@ -481,9 +491,24 @@ def _wake_tendon_kernel(
         if val < wakeval:
           wakeval = val
 
-  # Pass 2: If at least one tree is awake and the limit is active, wake up all sleeping trees
+  # Pass 2: If any tree is awake and limit or discrete metric is active, wake sleeping trees
   if any_awake == 1:
-    if _tendon_limit_active(tendon_limited, tendon_range, tendon_margin, ten_length_in, worldid, tenid):
+    active = _tendon_limit_active(tendon_limited, tendon_range, tendon_margin, ten_length_in, worldid, tenid)
+    if (
+      not active
+      and opt_integrator == IntegratorType.DISCRETE
+      and (opt_solver == SolverType.CG or opt_solver == SolverType.NEWTON)
+    ):
+      active = support.eff_tendon_possible(
+        opt_disableflags,
+        tendon_stiffness,
+        tendon_stiffnesspoly,
+        tendon_damping,
+        tendon_dampingpoly,
+        worldid,
+        tenid,
+      )
+    if active:
       for i in range(num):
         idx = adr + i
         t_type = wrap_type[idx]
@@ -789,6 +814,9 @@ def wake_tendon(m: types.Model, d: types.Data):
     inputs=[
       m.ntree,
       m.ntendon,
+      m.opt.integrator,
+      m.opt.solver,
+      m.opt.disableflags,
       m.body_treeid,
       m.jnt_bodyid,
       m.geom_bodyid,
@@ -798,6 +826,10 @@ def wake_tendon(m: types.Model, d: types.Data):
       m.tendon_limited,
       m.tendon_range,
       m.tendon_margin,
+      m.tendon_stiffness,
+      m.tendon_stiffnesspoly,
+      m.tendon_damping,
+      m.tendon_dampingpoly,
       m.wrap_type,
       m.wrap_objid,
       d.ten_length,

@@ -21,8 +21,6 @@ import mujoco
 import numpy as np
 import warp as wp
 
-from mujoco_warp._src import util_pkg
-
 MJ_MINVAL = mujoco.mjMINVAL
 MJ_MAXVAL = mujoco.mjMAXVAL
 MJ_MINIMP = mujoco.mjMINIMP  # minimum constraint impedance
@@ -30,7 +28,7 @@ MJ_MAXIMP = mujoco.mjMAXIMP  # maximum constraint impedance
 MJ_MAXCONPAIR = mujoco.mjMAXCONPAIR
 MJ_MINMU = mujoco.mjMINMU  # minimum friction
 MJ_MINAWAKE = mujoco.mjMINAWAKE  # minimum number of timesteps before sleeping
-FLEX_STIFFNESS_3D = 24 if util_pkg.check_version("mujoco>=3.14.1.dev989511280") else 21
+FLEX_STIFFNESS_3D = 24
 ROD_HINGE_SIZE = 4  # 1D rod hinge data in flex_bending: [v_prev, v, v_next, k]
 # maximum size (by number of edges) of an horizon in EPA algorithm
 MJ_MAX_EPAHORIZON = 24
@@ -90,7 +88,9 @@ class BlockDim:
     solve_search_update_cg: solve search update CG block dimension (solver)
     solve_init_search_cg: solve init search CG block dimension (solver)
     contact_jac_tiled: contact Jacobian tiled block dimension (solver)
+    warmstart_cost: discrete warmstart cost comparison block dimension (solver)
     eff_pcg: effective-metric PCG block dimension (derivative)
+    discrete_free_gyro: discrete free-body gyroscopic solve block dimension (forward)
     render: render block dimension (render)
   """
 
@@ -123,8 +123,10 @@ class BlockDim:
   solve_search_update_cg: int = 256
   solve_init_search_cg: int = 256
   contact_jac_tiled: int = 32
+  warmstart_cost: int = 256
   # derivative
   eff_pcg: int = 128
+  discrete_free_gyro: int = 128
   # render
   render: int = 64
 
@@ -1557,6 +1559,7 @@ class Model:
     flex_interp_assemblable: whether interpolated flex stiffness can be assembled into efm_K
     has_unsupported_flex_interp: whether model has unsupported flex interpolation orders
     has_ellipsoid_geom: whether the model contains ellipsoid geoms
+    has_cylinder_geom: whether the model contains cylinder geoms
     has_plane_geom: whether the model contains plane geoms
     has_1d_flex: whether the model contains 1D flexes
     has_2d_flex: whether the model contains 2D flexes
@@ -2090,6 +2093,7 @@ class Model:
   flex_interp_assemblable: bool
   has_unsupported_flex_interp: bool
   has_ellipsoid_geom: bool
+  has_cylinder_geom: bool
   has_plane_geom: bool
   has_1d_flex: bool
   has_2d_flex: bool
@@ -2690,6 +2694,8 @@ class SolverContext:
   # the full-coordinate Data, set by solve_compact (None natively)
   compact_m_full: Optional["Model"] = None
   compact_d_full: Optional["Data"] = None
+  nsolving: Optional[wp.array] = None
+  qfrc_smooth_eff: Optional[wp.array] = None
   # discrete integrator effective-metric scratch built before the solver loop, which may run
   # inside wp.capture_while where memory cannot be allocated (None otherwise)
   efm_con: Optional[tuple] = None

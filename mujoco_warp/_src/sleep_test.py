@@ -920,6 +920,64 @@ class SleepTest(parameterized.TestCase):
     # World 0: box1 (awake) and box2 (asleep) do NOT collide. So box2 MUST remain asleep!
     self.assertEqual(d.tree_awake.numpy()[0, 1], 0, "World 0 box2 should remain asleep (no collision with box1)")
 
+  @parameterized.parameters(1, 2)
+  def test_wake_tendon_discrete_metric(self, nworld):
+    """Verify damped/stiff tendon wakes coupled tree under discrete integrator."""
+    _, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option integrator="discrete">
+          <flag sleep="enable" island="enable"/>
+        </option>
+        <worldbody>
+          <body name="b1" pos="0 0 0.5">
+            <joint name="j1" type="slide"/>
+            <geom size=".1"/>
+          </body>
+          <body name="b2" pos="1 0 0.5">
+            <joint name="j2" type="slide"/>
+            <geom size=".1"/>
+          </body>
+        </worldbody>
+        <tendon>
+          <fixed name="ten" damping="2.0">
+            <joint joint="j1" coef="1"/>
+            <joint joint="j2" coef="-1"/>
+          </fixed>
+        </tendon>
+      </mujoco>
+      """,
+      nworld=nworld,
+    )
+    tree_asleep = d.tree_asleep.numpy()
+    tree_asleep[0, 0] = sleep.K_AWAKE_VAL
+    tree_asleep[0, 1] = 1
+    if nworld == 2:
+      tree_asleep[1, 0] = 0
+      tree_asleep[1, 1] = 1
+    d.tree_asleep.assign(tree_asleep)
+    sleep.update_sleep(m, d)
+
+    sleep.wake_tendon(m, d)
+    d.tree_awake.fill_(-1)
+    sleep.update_sleep(m, d)
+
+    tree_awake = d.tree_awake.numpy()
+    self.assertEqual(int(tree_awake[0, 1]), 1)
+    if nworld == 2:
+      self.assertEqual(int(tree_awake[1, 1]), 0)
+
+    # Under PGS, passive tendon stiffness/damping does not wake sleeping trees
+    m.opt.solver = int(mujoco.mjtSolver.mjSOL_PGS)
+    tree_asleep[0, 0] = sleep.K_AWAKE_VAL
+    tree_asleep[0, 1] = 1
+    d.tree_asleep.assign(tree_asleep)
+    sleep.update_sleep(m, d)
+    sleep.wake_tendon(m, d)
+    d.tree_awake.fill_(-1)
+    sleep.update_sleep(m, d)
+    self.assertEqual(int(d.tree_awake.numpy()[0, 1]), 0)
+
 
 # An actuated 2-hinge arm (tree 0, dofs 0-1) plus two free bodies
 # (tree 1, dofs 2-7 and tree 2, dofs 8-13).

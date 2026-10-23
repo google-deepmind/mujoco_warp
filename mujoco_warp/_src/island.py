@@ -20,9 +20,13 @@ import warp as wp
 from mujoco_warp._src import support
 from mujoco_warp._src import types
 from mujoco_warp._src.types import ConstraintType
+from mujoco_warp._src.types import EnableBit
 from mujoco_warp._src.types import EqType
+from mujoco_warp._src.types import IntegratorType
 from mujoco_warp._src.types import ObjType
 from mujoco_warp._src.types import OverflowType
+from mujoco_warp._src.types import SolverType
+from mujoco_warp._src.types import TrnType
 from mujoco_warp._src.warp_util import cache_kernel
 from mujoco_warp._src.warp_util import event_scope
 
@@ -73,6 +77,40 @@ def _dsu_union(parent: wp.array2d[int], worldid: int, tree0: int, tree1: int, tr
     previous = wp.atomic_cas(parent, worldid, high_root, high_root, low_root)  # kernel_analyzer: ignore[atomic]
     if previous == high_root:
       return
+
+
+@wp.func
+def _union_tendon_trees(
+  # Model:
+  opt_enableflags: int,
+  dof_treeid: wp.array[int],
+  ten_J_rownnz: wp.array[int],
+  ten_J_rowadr: wp.array[int],
+  ten_J_colind: wp.array[int],
+  # Data in:
+  tree_awake_in: wp.array2d[int],
+  # In:
+  worldid: int,
+  tenid: int,
+  # Data out:
+  tree_island_out: wp.array2d[int],
+  # Out:
+  island_parent_out: wp.array2d[int],
+):
+  start = ten_J_rowadr[tenid]
+  end = start + ten_J_rownnz[tenid]
+  sleep_enabled = bool(opt_enableflags & EnableBit.SLEEP)
+  tree1 = int(-1)
+  for j in range(start, end):
+    tree2 = dof_treeid[ten_J_colind[j]]
+    if tree2 < 0:
+      continue
+    if sleep_enabled and tree_awake_in[worldid, tree2] == 0:
+      continue
+    if tree1 < 0:
+      tree1 = tree2
+    elif tree1 != tree2:
+      _dsu_union(island_parent_out, worldid, tree1, tree2, tree_island_out)
 
 
 @wp.kernel
@@ -362,6 +400,88 @@ def _island_dsu(
 
 
 @wp.kernel
+def _island_dsu_metric_couplings(
+  # Model:
+  nactuator: int,
+  ntendon: int,
+  opt_disableflags: int,
+  opt_enableflags: int,
+  body_treeid: wp.array[int],
+  dof_treeid: wp.array[int],
+  site_bodyid: wp.array[int],
+  ten_J_rownnz: wp.array[int],
+  ten_J_rowadr: wp.array[int],
+  ten_J_colind: wp.array[int],
+  tendon_stiffness: wp.array2d[float],
+  tendon_stiffnesspoly: wp.array2d[wp.vec2],
+  tendon_damping: wp.array2d[float],
+  tendon_dampingpoly: wp.array2d[wp.vec2],
+  actuator_trntype: wp.array[int],
+  actuator_gaintype: wp.array[int],
+  actuator_biastype: wp.array[int],
+  actuator_trnid: wp.array[wp.vec2i],
+  # Data in:
+  nefc_in: wp.array[int],
+  tree_awake_in: wp.array2d[int],
+  # Data out:
+  tree_island_out: wp.array2d[int],
+  # Out:
+  island_parent_out: wp.array2d[int],
+):
+  worldid, idx = wp.tid()
+  if nefc_in[worldid] == 0:
+    return
+
+  if idx < ntendon:
+    if support.eff_tendon_possible(
+      opt_disableflags,
+      tendon_stiffness,
+      tendon_stiffnesspoly,
+      tendon_damping,
+      tendon_dampingpoly,
+      worldid,
+      idx,
+    ):
+      _union_tendon_trees(
+        opt_enableflags,
+        dof_treeid,
+        ten_J_rownnz,
+        ten_J_rowadr,
+        ten_J_colind,
+        tree_awake_in,
+        worldid,
+        idx,
+        tree_island_out,
+        island_parent_out,
+      )
+
+  if idx < nactuator:
+    if support.eff_actuator_possible(opt_disableflags, actuator_gaintype, actuator_biastype, idx):
+      trntype = actuator_trntype[idx]
+      trnid = actuator_trnid[idx]
+      if trntype == TrnType.TENDON:
+        _union_tendon_trees(
+          opt_enableflags,
+          dof_treeid,
+          ten_J_rownnz,
+          ten_J_rowadr,
+          ten_J_colind,
+          tree_awake_in,
+          worldid,
+          trnid[0],
+          tree_island_out,
+          island_parent_out,
+        )
+      elif trntype == TrnType.SITE or trntype == TrnType.SLIDERCRANK:
+        tree1 = body_treeid[site_bodyid[trnid[0]]]
+        tree2 = body_treeid[site_bodyid[trnid[1]]] if trnid[1] >= 0 else -1
+        if tree1 >= 0 and tree2 >= 0 and tree1 != tree2:
+          sleep_enabled = bool(opt_enableflags & EnableBit.SLEEP)
+          if not sleep_enabled or (tree_awake_in[worldid, tree1] != 0 and tree_awake_in[worldid, tree2] != 0):
+            _dsu_union(island_parent_out, worldid, tree1, tree2, tree_island_out)
+
+
+@wp.kernel
 def _compress_roots(
   # Data in:
   tree_island_in: wp.array2d[int],
@@ -487,6 +607,38 @@ def direct_dsu(m: types.Model, d: types.Data, island_parent: wp.array2d[int]):
     ],
     block_dim=types.BlockDim.island_dsu,
   )
+  if (
+    m.opt.integrator == IntegratorType.DISCRETE
+    and m.opt.solver in (SolverType.CG, SolverType.NEWTON)
+    and (m.has_tendon_stiffness or m.has_tendon_damping or m.has_efm_actuator)
+  ):
+    wp.launch(
+      _island_dsu_metric_couplings,
+      dim=(d.nworld, max(m.ntendon, m.nactuator)),
+      inputs=[
+        m.nactuator,
+        m.ntendon,
+        m.opt.disableflags,
+        m.opt.enableflags,
+        m.body_treeid,
+        m.dof_treeid,
+        m.site_bodyid,
+        m.ten_J_rownnz,
+        m.ten_J_rowadr,
+        m.ten_J_colind,
+        m.tendon_stiffness,
+        m.tendon_stiffnesspoly,
+        m.tendon_damping,
+        m.tendon_dampingpoly,
+        m.actuator_trntype,
+        m.actuator_gaintype,
+        m.actuator_biastype,
+        m.actuator_trnid,
+        d.nefc,
+        d.tree_awake,
+      ],
+      outputs=[d.tree_island, island_parent],
+    )
   wp.launch(
     _compress_roots,
     dim=(d.nworld, m.ntree),

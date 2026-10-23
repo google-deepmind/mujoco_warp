@@ -1923,8 +1923,12 @@ class DerivativeTest(parameterized.TestCase):
     mjw.forward(m, d)
 
     _assert_eq(d.efm_diag.numpy()[0], mjd.efm_diag, "efm_diag")
-    _assert_eq(d.efm_ts.numpy()[0], mjd.efm_ts, "efm_ts")
-    _assert_eq(d.efm_as.numpy()[0], mjd.efm_as, "efm_as")
+    expected_efm_ts = np.zeros(mjm.ntendon)
+    expected_efm_ts[mjd.efm_tid[: mjd.nefmT]] = mjd.efm_ts[: mjd.nefmT]
+    _assert_eq(d.efm_ts.numpy()[0], expected_efm_ts, "efm_ts")
+    expected_efm_as = np.zeros(mjm.nu)
+    expected_efm_as[mjd.efm_aid[: mjd.nefmA]] = mjd.efm_as[: mjd.nefmA]
+    _assert_eq(d.efm_as.numpy()[0], expected_efm_as, "efm_as")
     _assert_eq(d.efm_c.numpy()[0], mjd.efm_c, "efm_c")
     _assert_eq(d.efm_ca.numpy()[0], mjd.efm_ca, "efm_ca")
     _assert_eq(d.qacc_smooth.numpy()[0], mjd.qacc_smooth, "qacc_smooth")
@@ -2238,6 +2242,52 @@ class DerivativeTest(parameterized.TestCase):
     for w in range(nworld):
       expected_efm0 = np.linalg.solve(A_efm0, vec_np[w, efm0_dofid])
       _assert_eq(res_np[w, efm0_dofid], expected_efm0, f"efm0_cross_coord_world_{w}")
+
+  @parameterized.parameters(1, 2)
+  def test_discrete_flex_nonconvex_bend_stencil(self, nworld):
+    """Tests that bending stencils of creases sharper than 90 degrees are excluded from metric."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option solver="CG" integrator="discrete"/>
+        <worldbody>
+          <flexcomp name="crease" type="direct" radius="0.005" mass="0.1" point="0 0 0  0.1 0 0  0.05 0.08 0  0.05 0.06 0.06  0.05 0.05 0.03" element="0 1 2  1 0 3  0 4 1">
+            <contact selfcollide="none" contype="0" conaffinity="0"/>
+            <elasticity young="1e4" poisson="0.2" damping="0.05" elastic2d="both" thickness="0.01"/>
+          </flexcomp>
+        </worldbody>
+      </mujoco>
+      """,
+      qvel_noise=0.1,
+      nworld=nworld,
+    )
+    bending = mjm.flex_bending[mjm.flex_bendingadr[0] :].reshape(-1, 17)
+    self.assertLess(np.min(bending[:, 0] + bending[:, 5] + bending[:, 10] + bending[:, 15]), 0.0)
+    mjds = [mjd]
+    if nworld == 2:
+      mjd1 = mujoco.MjData(mjm)
+      qvel_np = d.qvel.numpy()
+      qvel_np[1] = qvel_np[0] * 1.5 + 0.05
+      d.qvel.assign(qvel_np)
+      mjd1.qpos[:] = d.qpos.numpy()[1]
+      mjd1.qvel[:] = qvel_np[1]
+      mjds.append(mjd1)
+
+    d.efm_K_val.fill_(wp.inf)
+    d.efm_c.fill_(wp.inf)
+    d.qacc_smooth.fill_(wp.inf)
+
+    mjw.forward(m, d)
+    efm_K_val = d.efm_K_val.numpy()
+    efm_c = d.efm_c.numpy()
+    qacc_smooth = d.qacc_smooth.numpy()
+    for w in range(nworld):
+      mujoco.mj_forward(mjm, mjds[w])
+      _assert_eq(efm_K_val[w], mjds[w].efm_K_val, f"efm_K_val_w{w}")
+      _assert_eq(efm_c[w], mjds[w].efm_c, f"efm_c_w{w}")
+      _assert_eq(qacc_smooth[w], mjds[w].qacc_smooth, f"qacc_smooth_w{w}")
+    if nworld == 2:
+      self.assertFalse(np.allclose(efm_c[0], efm_c[1]))
 
   @parameterized.product(
     elastic2d=["bend", "both"],
@@ -3460,6 +3510,156 @@ class DerivativeTest(parameterized.TestCase):
 
     if nworld == 2:
       self.assertFalse(np.allclose(d.qacc.numpy()[0], d.qacc.numpy()[1]))
+
+  @parameterized.parameters(1, 2)
+  def test_eff_solve_pcg_overflow(self, nworld):
+    """Verifies eff_solve sets OverflowType.ITERATIONS when PCG does not converge."""
+    _, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option gravity="0 0 0" integrator="discrete" solver="CG" iterations="1" tolerance="1e-10"/>
+        <worldbody>
+          <flexcomp name="cloth" count="3 3 1" spacing="0.05 0.05 1" radius="0.005" mass="0.09">
+            <contact contype="0" conaffinity="0" selfcollide="none"/>
+            <elasticity young="5000" thickness="0.005" elastic2d="both" damping="0.1"/>
+          </flexcomp>
+        </worldbody>
+      </mujoco>
+      """,
+      qpos_noise=0.01,
+      nworld=nworld,
+    )
+    mjw.fwd_position(m, d)
+    mjw.fwd_velocity(m, d)
+
+    qfrc = np.zeros((nworld, m.nv), dtype=np.float32)
+    qfrc[0] = np.linspace(-1.0, 1.0, m.nv, dtype=np.float32)
+    d.qacc_smooth.fill_(wp.inf)
+    d.overflow.zero_()
+
+    derivative.eff_solve(m, d, d.qacc_smooth, qfrc=wp.array(qfrc, dtype=float))
+
+    overflow = d.overflow.numpy()
+    self.assertTrue(bool(int(overflow[0]) & int(types.OverflowType.ITERATIONS)))
+    if nworld == 2:
+      self.assertEqual(int(overflow[1]), 0)
+
+  @parameterized.parameters(1, 2)
+  def test_eff_mul_m_passive_flex_disabled_spring_damper(self, nworld):
+    """Tests that eff_mul_m ignores passive flex contact when SPRING and DAMPER are disabled."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option integrator="discrete"/>
+        <worldbody>
+          <geom name="floor" type="plane" size="2 2 0.01"/>
+          <flexcomp name="f0" count="2 2 1" spacing="0.06 0.06 0.06" pos="0 0 0.005" radius="0.015" mass="0.4">
+            <contact passive="true" selfcollide="none"/>
+            <elasticity young="1000" damping="0.05"/>
+          </flexcomp>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=nworld,
+    )
+    qvel = d.qvel.numpy()
+    qfrc = d.qfrc_applied.numpy()
+    qvel[0] = -0.2
+    qfrc[0, 0] = 1.0
+    mjds = [mjd]
+    mjd.qvel[:] = qvel[0]
+    mjd.qfrc_applied[:] = qfrc[0]
+    if nworld == 2:
+      mjd1 = mujoco.MjData(mjm)
+      qvel[1] = -0.4
+      qfrc[1, 0] = 3.0
+      mjd1.qvel[:] = qvel[1]
+      mjd1.qfrc_applied[:] = qfrc[1]
+      mjds.append(mjd1)
+    d.qvel.assign(qvel)
+    d.qfrc_applied.assign(qfrc)
+
+    mjw.forward(m, d)
+    efm_con = derivative.build_efm_contact(m, d)
+    self.assertGreater(int(efm_con[4].numpy().max()), 0)
+    mjm.opt.disableflags |= mujoco.mjtDisableBit.mjDSBL_SPRING | mujoco.mjtDisableBit.mjDSBL_DAMPER
+    m.opt.disableflags = int(mjm.opt.disableflags)
+    mjw.forward(m, d)
+
+    res_wp = wp.full_like(d.qacc_smooth, wp.inf)
+    derivative.eff_mul_m(m, d, res_wp, d.qacc_smooth, efm_con=efm_con)
+    res_np = res_wp.numpy()
+    for w in range(nworld):
+      mujoco.mj_forward(mjm, mjds[w])
+      expected = np.zeros(mjm.nv)
+      mujoco.mj_mulM(mjm, mjds[w], expected, mjds[w].qacc_smooth)
+      _assert_eq(res_np[w], expected, f"eff_mul_m_disabled_spring_damper_w{w}")
+    if nworld == 2:
+      self.assertFalse(np.allclose(res_np[0], res_np[1]))
+
+  @parameterized.parameters(1, 2)
+  def test_discrete_free_gyro_skips_stiff_flex_tree_only(self, nworld):
+    """Tests that discrete free-body gyro skips stiff-flex trees while running on uncoupled ones."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option integrator="discrete" solver="CG" timestep="0.005" gravity="0 0 0"/>
+        <worldbody>
+          <body name="free_coupled" pos="0 0 0.5">
+            <freejoint/>
+            <geom type="box" size="0.1 0.15 0.2" mass="1.5" contype="0" conaffinity="0"/>
+          </body>
+          <body name="free_uncoupled" pos="1 0 0.5">
+            <freejoint/>
+            <geom type="box" size="0.1 0.2 0.3" mass="2.0" contype="0" conaffinity="0"/>
+          </body>
+          <body name="v0" pos="0.2 0 0.5">
+            <inertial pos="0 0 0" mass="0.1" diaginertia="1e-3 1e-3 1e-3"/>
+            <joint type="slide" axis="1 0 0"/>
+            <joint type="slide" axis="0 1 0"/>
+            <joint type="slide" axis="0 0 1"/>
+          </body>
+          <body name="v1" pos="0.2 0.2 0.5">
+            <inertial pos="0 0 0" mass="0.1" diaginertia="1e-3 1e-3 1e-3"/>
+            <joint type="slide" axis="1 0 0"/>
+            <joint type="slide" axis="0 1 0"/>
+            <joint type="slide" axis="0 0 1"/>
+          </body>
+        </worldbody>
+        <deformable>
+          <flex name="patch" dim="2" body="free_coupled v0 v1"
+                vertex="0 0 0  0 0 0  0 0 0" element="0 1 2">
+            <contact selfcollide="none" contype="0" conaffinity="0"/>
+            <elasticity young="500" poisson="0.3" thickness="0.01" elastic2d="stretch" damping="0.05"/>
+          </flex>
+        </deformable>
+      </mujoco>
+      """,
+      qvel_noise=2.0,
+      nworld=nworld,
+    )
+    mjds = [mjd]
+    if nworld == 2:
+      mjd1 = mujoco.MjData(mjm)
+      qvel = d.qvel.numpy()
+      qvel[1] = qvel[0] * 1.4 - 0.3
+      d.qvel.assign(qvel)
+      mjd1.qpos[:] = d.qpos.numpy()[1]
+      mjd1.qvel[:] = qvel[1]
+      mjds.append(mjd1)
+
+    d.qacc_smooth.fill_(wp.inf)
+    d.qacc.fill_(wp.inf)
+    mjw.forward(m, d)
+
+    qacc_smooth = d.qacc_smooth.numpy()
+    qacc = d.qacc.numpy()
+    for w in range(nworld):
+      mujoco.mj_forward(mjm, mjds[w])
+      _assert_eq(qacc_smooth[w], mjds[w].qacc_smooth, f"qacc_smooth_w{w}")
+      _assert_eq(qacc[w], mjds[w].qacc, f"qacc_w{w}")
+    if nworld == 2:
+      self.assertFalse(np.allclose(qacc[0], qacc[1]))
 
 
 if __name__ == "__main__":

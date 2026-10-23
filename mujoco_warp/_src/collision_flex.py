@@ -652,39 +652,6 @@ def _collide_geom_triangle_detect(
       )
     return
 
-  if gtype == int(GeomType.CYLINDER):
-    cyl_radius = size_val[0]
-    cyl_half_height = size_val[1]
-    cyl_axis = wp.vec3(rot[0, 2], rot[1, 2], rot[2, 2])
-    cyl_dists, cyl_poss, cyl_nrms = collision_primitive_core.cylinder_triangle(
-      pos, cyl_axis, cyl_radius, cyl_half_height, t1, t2, t3, tri_radius
-    )
-    for i in range(2):
-      if cyl_dists[i] < margin:
-        _write_candidate(
-          max_candidates,
-          cyl_dists[i],
-          cyl_poss[i],
-          cyl_nrms[i],
-          geomid,
-          -1,
-          flexid,
-          elemid,
-          vertex_id,
-          worldid,
-          warn_overflow,
-          overflow_out,
-          cand_dist_out,
-          cand_pos_out,
-          cand_nrm_out,
-          cand_geom_out,
-          cand_flex_out,
-          cand_elem_out,
-          cand_vert_out,
-          cand_worldid_out,
-          ncand_out,
-        )
-
 
 @wp.func
 def _collide_mesh_convex(
@@ -837,7 +804,7 @@ def _collide_mesh_convex(
             best_normal = wp.normalize(geom_rot @ best_normal_local)
 
       normal = wp.where(wp.dot(best_normal, gjk_normal) >= 0.0, best_normal, -best_normal)
-      contact_pos = 0.5 * (w1 + w2)
+      contact_pos = 0.5 * (w1 + w2) - 0.5 * geom2_radius * normal
 
       _write_candidate(
         max_candidates,
@@ -862,6 +829,69 @@ def _collide_mesh_convex(
         cand_worldid_out,
         ncand_out,
       )
+
+
+@wp.func
+def _fix_cylinder_normal(
+  # In:
+  gpos: wp.vec3,
+  grot: wp.mat33,
+  gsize: wp.vec3,
+  pos: wp.vec3,
+  normal: wp.vec3,
+) -> wp.vec3:
+  """Analytic cylinder normal for cylinder : 2D flex contacts (MuJoCo C mjc_fixNormal)."""
+  pos1 = wp.transpose(grot) @ (pos - gpos)
+  # keep the collider normal near the flat wall, unless 4x closer to the round wall
+  if wp.abs(pos1[2]) > 0.95 * gsize[1]:
+    return normal
+  dst1 = wp.abs(gsize[1] - wp.abs(pos1[2]))
+  dst2 = wp.abs(gsize[0] - wp.sqrt(pos1[0] * pos1[0] + pos1[1] * pos1[1]))
+  if dst1 < 0.25 * dst2:
+    return normal
+  return grot @ wp.normalize(wp.vec3(pos1[0], pos1[1], 0.0))
+
+
+@wp.func
+def _is_passive_flex_cand(
+  # Model:
+  opt_integrator: int,
+  body_weldid: wp.array[int],
+  geom_bodyid: wp.array[int],
+  flex_passive: wp.array[int],
+  flex_dim: wp.array[int],
+  flex_interp: wp.array[int],
+  flex_rigid: wp.array[bool],
+  # In:
+  geom_pair: wp.vec2i,
+  flex_pair: wp.vec2i,
+) -> bool:
+  if opt_integrator != int(IntegratorType.DISCRETE):
+    return False
+  f0 = flex_pair[0]
+  f1 = flex_pair[1]
+  g0 = geom_pair[0]
+  g1 = geom_pair[1]
+  wants = (f0 >= 0 and not flex_rigid[f0] and flex_passive[f0] != 0 and flex_interp[f0] == 0 and flex_dim[f0] >= 2) or (
+    f1 >= 0 and not flex_rigid[f1] and flex_passive[f1] != 0 and flex_interp[f1] == 0 and flex_dim[f1] >= 2
+  )
+  ok = (f0 >= 0 or (g0 >= 0 and body_weldid[geom_bodyid[g0]] == 0)) and (
+    f1 >= 0 or (g1 >= 0 and body_weldid[geom_bodyid[g1]] == 0)
+  )
+  return wants and ok
+
+
+@wp.func
+def _is_reducible_flex_cand(
+  # Model:
+  flex_interp: wp.array[int],
+  flex_rigid: wp.array[bool],
+  # In:
+  flex_pair: wp.vec2i,
+) -> bool:
+  f0 = flex_pair[0]
+  f1 = flex_pair[1]
+  return (f0 >= 0 and (flex_rigid[f0] or flex_interp[f0] != 0)) and (f1 >= 0 and (flex_rigid[f1] or flex_interp[f1] != 0))
 
 
 @cache_kernel
@@ -1520,7 +1550,7 @@ def _flex_narrowphase(warn_overflow: int):
         center2 += workspace_verts_out[offset2 + idx]
       center2 = center2 / float(dim2 + 1)
 
-      tol = opt_ccd_tolerance[0 % opt_ccd_tolerance.shape[0]]
+      tol = opt_ccd_tolerance[worldid % opt_ccd_tolerance.shape[0]]
 
       dist, ncontact, w1, w2, _ = ccd(
         tol,
@@ -1937,12 +1967,7 @@ def _flex_narrowphase_elem_detect(warn_overflow: int):
           ncand_out,
         )
 
-      elif f_dim == 2 and (
-        gtype == int(GeomType.SPHERE)
-        or gtype == int(GeomType.CAPSULE)
-        or gtype == int(GeomType.BOX)
-        or gtype == int(GeomType.CYLINDER)
-      ):
+      elif f_dim == 2 and (gtype == int(GeomType.SPHERE) or gtype == int(GeomType.CAPSULE) or gtype == int(GeomType.BOX)):
         _collide_geom_triangle_detect(
           max_candidates,
           gtype,
@@ -1995,7 +2020,12 @@ def _flex_narrowphase_elem_detect(warn_overflow: int):
 
         r_geom = wp.length(geom_size_val)
         if wp.length(centroid - geom_pos) <= r_geom + r_elem + margin + elem_radius + 0.04:
-          ccd_cutoff = (margin + elem_radius) if f_dim == 2 else margin
+          # cylinder : triangle sees the triangle swept by the flex radius, as MuJoCo C's
+          # support does (deep penetrations of the bare triangle give in-plane escape directions)
+          swept = f_dim == 2 and gtype == int(GeomType.CYLINDER)
+          if swept:
+            geom2.margin = 2.0 * elem_radius
+          ccd_cutoff = (margin + elem_radius) if (f_dim == 2 and not swept) else margin
           dist, ncontact, w1, w2, idx = ccd(
             tolerance,
             ccd_cutoff,
@@ -2018,7 +2048,9 @@ def _flex_narrowphase_elem_detect(warn_overflow: int):
             overflow_out,
           )
 
-          cand_dist = (dist - elem_radius) if f_dim == 2 else dist
+          cand_dist = (dist - elem_radius) if (f_dim == 2 and not swept) else dist
+          if swept:
+            geom2.margin = 0.0
           if ncontact > 0 and cand_dist < margin:
             diff = (w1 - w2) if dist < 0.0 else (w2 - w1)
             normal = wp.normalize(diff)
@@ -2027,7 +2059,10 @@ def _flex_narrowphase_elem_detect(warn_overflow: int):
 
             contact_pos = 0.5 * (w1 + w2)
             if f_dim == 2:
-              contact_pos -= 0.5 * elem_radius * normal
+              if swept:
+                normal = _fix_cylinder_normal(geom_pos, geom_rot, geom_size_val, contact_pos, normal)
+              else:
+                contact_pos -= 0.5 * elem_radius * normal
 
             _write_candidate(
               max_candidates,
@@ -2130,6 +2165,14 @@ def _compare_candidate(
 # TODO(thowell): Figure out an FPS version that utilizes a configurable mj_maxconpair.
 @wp.kernel
 def _filter_flex_candidates_sorted(
+  # Model:
+  opt_integrator: int,
+  body_weldid: wp.array[int],
+  geom_bodyid: wp.array[int],
+  flex_passive: wp.array[int],
+  flex_dim: wp.array[int],
+  flex_interp: wp.array[int],
+  flex_rigid: wp.array[bool],
   # In:
   ncand: wp.array[int],
   epsilon: float,
@@ -2137,6 +2180,10 @@ def _filter_flex_candidates_sorted(
   sort_val: wp.array[int],
   cand_dist: wp.array[float],
   cand_pos: wp.array[wp.vec3],
+  cand_geom: wp.array[wp.vec2i],
+  cand_flex: wp.array[wp.vec2i],
+  cand_elem: wp.array[wp.vec2i],
+  cand_vert: wp.array[wp.vec2i],
   # Out:
   cand_active_out: wp.array[int],
 ):
@@ -2161,6 +2208,22 @@ def _filter_flex_candidates_sorted(
   pos_i = cand_pos[i]
   dist_i = cand_dist[i]
   eps2 = epsilon * epsilon
+  is_passive = _is_passive_flex_cand(
+    opt_integrator,
+    body_weldid,
+    geom_bodyid,
+    flex_passive,
+    flex_dim,
+    flex_interp,
+    flex_rigid,
+    cand_geom[i],
+    cand_flex[i],
+  )
+  elem_i = wp.vec2i(-1, -1)
+  vert_i = wp.vec2i(-1, -1)
+  if is_passive:
+    elem_i = cand_elem[i]
+    vert_i = cand_vert[i]
 
   keep = int(1)
 
@@ -2175,12 +2238,13 @@ def _filter_flex_candidates_sorted(
       break
 
     oj = sort_val[j]
-    pos_j = cand_pos[oj]
-    diff = pos_i - pos_j
-    if wp.dot(diff, diff) < eps2:
-      if _compare_candidate(dist_i, cand_dist[oj], i, oj):
-        keep = 0
-        break
+    if not is_passive or (cand_elem[oj] == elem_i and cand_vert[oj] == vert_i):
+      pos_j = cand_pos[oj]
+      diff = pos_i - pos_j
+      if wp.dot(diff, diff) < eps2:
+        if _compare_candidate(dist_i, cand_dist[oj], i, oj):
+          keep = 0
+          break
     j -= 1
 
   # Compare with same-key neighbors (forward)
@@ -2195,12 +2259,13 @@ def _filter_flex_candidates_sorted(
         break
 
       oj = sort_val[j]
-      pos_j = cand_pos[oj]
-      diff = pos_i - pos_j
-      if wp.dot(diff, diff) < eps2:
-        if _compare_candidate(dist_i, cand_dist[oj], i, oj):
-          keep = 0
-          break
+      if not is_passive or (cand_elem[oj] == elem_i and cand_vert[oj] == vert_i):
+        pos_j = cand_pos[oj]
+        diff = pos_i - pos_j
+        if wp.dot(diff, diff) < eps2:
+          if _compare_candidate(dist_i, cand_dist[oj], i, oj):
+            keep = 0
+            break
       j += 1
 
   cand_active_out[i] = keep
@@ -2234,6 +2299,7 @@ def _write_filtered_contacts(warn_overflow: int):
     flex_passive: wp.array[int],
     flex_dim: wp.array[int],
     flex_interp: wp.array[int],
+    flex_rigid: wp.array[bool],
     # Data in:
     naconmax_in: int,
     # In:
@@ -2261,11 +2327,11 @@ def _write_filtered_contacts(warn_overflow: int):
     contact_flex_out: wp.array[wp.vec2i],
     contact_elem_out: wp.array[wp.vec2i],
     contact_vert_out: wp.array[wp.vec2i],
+    contact_efc_address_out: wp.array2d[int],
     contact_worldid_out: wp.array[int],
     contact_type_out: wp.array[int],
     contact_geomcollisionid_out: wp.array[int],
     nacon_out: wp.array[int],
-    # Data out:
     overflow_out: wp.array[int],
   ):
     i = wp.tid()
@@ -2372,18 +2438,21 @@ def _write_filtered_contacts(warn_overflow: int):
     contact_elem_out[id_] = cand_elem[i]
     contact_vert_out[id_] = cand_vert[i]
     contact_worldid_out[id_] = cand_worldid[i]
-    f0 = cand_flex[i][0]
-    f1 = cand_flex[i][1]
-    g0 = cand_geom[i][0]
-    g1 = cand_geom[i][1]
-    wants = (
-      (f0 >= 0 and flex_passive[f0] != 0 and flex_interp[f0] == 0 and flex_dim[f0] >= 2)
-      or (f1 >= 0 and flex_passive[f1] != 0 and flex_interp[f1] == 0 and flex_dim[f1] >= 2)
-    ) and opt_integrator == int(IntegratorType.DISCRETE)
-    ok = (f0 >= 0 or (g0 >= 0 and body_weldid[geom_bodyid[g0]] == 0)) and (
-      f1 >= 0 or (g1 >= 0 and body_weldid[geom_bodyid[g1]] == 0)
+    # clear the rows of whatever contact last used this slot (constraint construction writes only
+    # this contact's dims, and the Jacobian kernels skip -1 entries)
+    for k in range(contact_efc_address_out.shape[1]):
+      contact_efc_address_out[id_, k] = -1
+    is_passive = _is_passive_flex_cand(
+      opt_integrator,
+      body_weldid,
+      geom_bodyid,
+      flex_passive,
+      flex_dim,
+      flex_interp,
+      flex_rigid,
+      cand_geom[i],
+      cand_flex[i],
     )
-    is_passive = wants and ok
     contact_type_out[id_] = int(ContactType.PASSIVE) if is_passive else int(ContactType.CONSTRAINT)
     contact_geomcollisionid_out[id_] = 0
 
@@ -2500,6 +2569,9 @@ def _tie_break_fps(
 
 @wp.kernel
 def _parallel_fps_find_seed(
+  # Model:
+  flex_interp: wp.array[int],
+  flex_rigid: wp.array[bool],
   # In:
   flex_group_start_indices_in: wp.array[int],
   flex_num_groups_in: wp.array[int],
@@ -2507,6 +2579,7 @@ def _parallel_fps_find_seed(
   cand_active_sorted: wp.array[int],
   sort_val: wp.array[int],
   cand_dist: wp.array[float],
+  cand_flex: wp.array[wp.vec2i],
   cand_elem: wp.array[wp.vec2i],
   cand_geom: wp.array[wp.vec2i],
   # Out:
@@ -2526,7 +2599,11 @@ def _parallel_fps_find_seed(
     return
 
   first_cand_idx = sort_val[g_start]
-  if cand_geom[first_cand_idx][0] >= 0:
+  if cand_geom[first_cand_idx][0] >= 0 or not _is_reducible_flex_cand(
+    flex_interp,
+    flex_rigid,
+    cand_flex[first_cand_idx],
+  ):
     scratch_count_out[g, tid] = 0
     scratch_cidx_out[g, tid] = -1
     return
@@ -2876,10 +2953,20 @@ class FlexWorkspace:
 
 def _allocate_flex_workspace(m: Model, d: Data) -> FlexWorkspace:
   epa_iterations = m.opt.ccd_iterations
-  has_epa = m.nmesh > 0 or m.has_ellipsoid_geom or m.has_flex_selfcollide or m.nflex > 1 or m.has_1d_flex or m.has_3d_flex
+  # cylinder : triangle uses the general convex collider (MuJoCo C mjc_ConvexElem)
+  cylinder_elem = m.has_cylinder_geom and m.has_2d_flex
+  has_epa = (
+    m.nmesh > 0
+    or m.has_ellipsoid_geom
+    or cylinder_elem
+    or m.has_flex_selfcollide
+    or m.nflex > 1
+    or m.has_1d_flex
+    or m.has_3d_flex
+  )
   capacity = d.naccdmax if has_epa else 1
 
-  needs_nccd = m.nmesh > 0 or m.has_ellipsoid_geom or m.has_1d_flex or m.has_3d_flex
+  needs_nccd = m.nmesh > 0 or m.has_ellipsoid_geom or cylinder_elem or m.has_1d_flex or m.has_3d_flex
   nccd = wp.zeros(1, dtype=int) if needs_nccd else None
 
   has_fps = m.has_flex_selfcollide or m.nflex > 1
@@ -2974,14 +3061,19 @@ def _run_filter_flex_fps(
     _parallel_fps_find_seed,
     dim=(nmax_groups, _FPS_BLOCK_SIZE),
     inputs=[
+      m.flex_interp,
+      m.flex_rigid,
       ws.flex_group_start_indices,
       ws.flex_num_groups,
       ws.ncand,
       ws.cand_active_sorted,
       ws.filter_val,
       ws.dist,
+      ws.flex,
       ws.elem,
       ws.geom,
+    ],
+    outputs=[
       ws.fps_scratch_dist,
       ws.fps_scratch_cidx,
       ws.fps_scratch_count,
@@ -3116,12 +3208,23 @@ def _filter_and_write_contacts(
     _filter_flex_candidates_sorted,
     dim=d.naconmax,
     inputs=[
+      m.opt.integrator,
+      m.body_weldid,
+      m.geom_bodyid,
+      m.flex_passive,
+      m.flex_dim,
+      m.flex_interp,
+      m.flex_rigid,
       ws.ncand,
       _FLEX_CONTACT_DEDUP_TOLERANCE,
       ws.filter_key,
       ws.filter_val,
       ws.dist,
       ws.pos,
+      ws.geom,
+      ws.flex,
+      ws.elem,
+      ws.vert,
     ],
     outputs=[ws.cand_active],
   )
@@ -3195,6 +3298,7 @@ def _filter_and_write_contacts(
       m.flex_passive,
       m.flex_dim,
       m.flex_interp,
+      m.flex_rigid,
       d.naconmax,
       ws.ncand,
       ws.dist,
@@ -3221,6 +3325,7 @@ def _filter_and_write_contacts(
       d.contact.flex,
       d.contact.elem,
       d.contact.vert,
+      d.contact.efc_address,
       d.contact.worldid,
       d.contact.type,
       d.contact.geomcollisionid,

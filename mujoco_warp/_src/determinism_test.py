@@ -36,12 +36,14 @@ from mujoco_warp import test_data
 from mujoco_warp._src import bvh
 from mujoco_warp._src import collision_driver
 from mujoco_warp._src import constraint
+from mujoco_warp._src import derivative
 from mujoco_warp._src import render_util
 from mujoco_warp._src import set_const
 from mujoco_warp._src import util_pkg
 from mujoco_warp._src import warp_util
 from mujoco_warp._src.io import override_model
 from mujoco_warp._src.types import DeterminismType
+from mujoco_warp._src.types import SolverType
 
 # steps per run, and runs compared bitwise with the first deterministic run
 _NSTEP = 3
@@ -730,8 +732,9 @@ class DeterminismTest(parameterized.TestCase):
       qvel_noise=0.1,
       ctrl_noise=0.5,
     )
+    extra = (lambda m, d: derivative.eff_prec_fold(m, d, out=d.efm_L)) if m.opt.solver == SolverType.CG else None
     # stiff passive contacts amplify differences in summation order
-    self._check_scene(mjm, m, d, covers, replay=True, tol=1e-2)
+    self._check_scene(mjm, m, d, covers, replay=True, extra=extra, tol=1e-2)
 
   @parameterized.named_parameters(*_CONTACT_CASES)
   def test_contact(self, overrides, covers):
