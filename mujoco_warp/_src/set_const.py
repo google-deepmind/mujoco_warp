@@ -21,9 +21,8 @@ import warp as wp
 from mujoco_warp._src import math as mjmath
 from mujoco_warp._src import smooth
 from mujoco_warp._src import types
-from mujoco_warp._src.types import MJ_MINVAL
-from mujoco_warp._src.types import BiasType
 from mujoco_warp._src.types import TrnType
+from mujoco_warp._src.warp_util import cache_kernel
 
 wp.set_module_options({"default_grid_stride": False})
 
@@ -41,18 +40,25 @@ def _init_subtreemass(
   body_subtreemass_out[body_subtreemass_id, bodyid] = body_mass_in[body_mass_id, bodyid]
 
 
-@wp.kernel
-def _accumulate_subtreemass(
-  body_parentid: wp.array[int],
-  body_subtreemass_io: wp.array2d[float],
-  body_tree_: wp.array[int],
-):
-  worldid, nodeid = wp.tid()
-  body_subtreemass_id = worldid % body_subtreemass_io.shape[0]
-  bodyid = body_tree_[nodeid]
-  parentid = body_parentid[bodyid]
-  if bodyid != 0:
-    wp.atomic_add(body_subtreemass_io, body_subtreemass_id, parentid, body_subtreemass_io[body_subtreemass_id, bodyid])
+@cache_kernel
+def _accumulate_subtreemass(deterministic: bool = False):
+  module_options = {"enable_backward": False, "deterministic": wp.DeterministicMode.RUN_TO_RUN} if deterministic else {}
+
+  @wp.kernel(module="unique", module_options=module_options)
+  def kernel(
+    body_parentid: wp.array[int],
+    body_subtreemass_in: wp.array2d[float],
+    body_tree_: wp.array[int],
+    body_subtreemass_out: wp.array2d[float],
+  ):
+    worldid, nodeid = wp.tid()
+    body_subtreemass_id = worldid % body_subtreemass_in.shape[0]
+    bodyid = body_tree_[nodeid]
+    parentid = body_parentid[bodyid]
+    if bodyid != 0:
+      wp.atomic_add(body_subtreemass_out, body_subtreemass_id, parentid, body_subtreemass_in[body_subtreemass_id, bodyid])
+
+  return kernel
 
 
 @wp.kernel
@@ -63,6 +69,21 @@ def _copy_qpos0_to_qpos(
   worldid, i = wp.tid()
   qpos0_id = worldid % qpos0.shape[0]
   qpos_out[worldid, i] = qpos0[qpos0_id, i]
+
+
+@wp.kernel
+def _copy_body_to_mocap(
+  body_mocapid: wp.array[int],
+  body_pos: wp.array2d[wp.vec3],
+  body_quat: wp.array2d[wp.quat],
+  mocap_pos_out: wp.array2d[wp.vec3],
+  mocap_quat_out: wp.array2d[wp.quat],
+):
+  worldid, bodyid = wp.tid()
+  mocapid = body_mocapid[bodyid]
+  if mocapid >= 0:
+    mocap_pos_out[worldid, mocapid] = body_pos[worldid % body_pos.shape[0], bodyid]
+    mocap_quat_out[worldid, mocapid] = body_quat[worldid % body_quat.shape[0], bodyid]
 
 
 @wp.kernel
@@ -87,106 +108,115 @@ def _compute_eq_data0(
   xquat_in: wp.array2d[wp.quat],
   xmat_in: wp.array2d[wp.mat33],
   # Out:
-  eq_data_out: wp.array2d[types.vec11],
+  eq_data_out: wp.array2d[types.vec12],
 ):
-  """Compute eq_data for connect/weld constraints.
+  """Compute the data of equality constraints between bodies which follows from qpos0.
 
-  Kinematics must have been evaluated at qpos0 so the constraint is satisfied at qpos0.
+  The anchor of connects in the second body, and the relative pose of welds which are marked in
+  data[11] for it to be computed. Kinematics must have been evaluated at qpos0.
   """
   worldid, eqid = wp.tid()
-  eq_data_id = worldid % eq_data_out.shape[0]
 
-  eqtype = eq_type[eqid]
-  objtype = eq_objtype[eqid]
-  data = eq_data_out[eq_data_id, eqid]
-
-  if eqtype == int(types.EqType.CONNECT.value):
-    if objtype == int(types.ObjType.BODY.value):
-      obj1id = eq_obj1id[eqid]
-      obj2id = eq_obj2id[eqid]
-
-      # data[0:3] = anchor in body1 local frame; map to global frame
-      anchor1 = wp.vec3(data[0], data[1], data[2])
-      pos = xpos_in[worldid, obj1id] + xmat_in[worldid, obj1id] @ anchor1
-
-      # data[3:6] = anchor position in body2 local frame
-      anchor2 = wp.transpose(xmat_in[worldid, obj2id]) @ (pos - xpos_in[worldid, obj2id])
-      data[3] = anchor2[0]
-      data[4] = anchor2[1]
-      data[5] = anchor2[2]
-      eq_data_out[eq_data_id, eqid] = data
-    elif objtype == int(types.ObjType.SITE.value):
-      # site-based connect, eq_data is unused
-      eq_data_out[eq_data_id, eqid] = types.vec11(0.0)
-  elif eqtype == int(types.EqType.WELD.value):
-    if objtype == int(types.ObjType.BODY.value):
-      quat = wp.quat(data[6], data[7], data[8], data[9])
-      if wp.length_sq(quat) > 0.0:
-        # user has set quaternion data: normalize it and keep the remaining data
-        quat = wp.normalize(quat)
-        data[6] = quat[0]
-        data[7] = quat[1]
-        data[8] = quat[2]
-        data[9] = quat[3]
-        eq_data_out[eq_data_id, eqid] = data
-      else:
-        obj1id = eq_obj1id[eqid]
-        obj2id = eq_obj2id[eqid]
-
-        # data[0:3] = anchor in body2 local frame; map to global frame
-        anchor2 = wp.vec3(data[0], data[1], data[2])
-        pos = xpos_in[worldid, obj2id] + xmat_in[worldid, obj2id] @ anchor2
-
-        # data[3:6] = anchor position in body1 local frame
-        anchor1 = wp.transpose(xmat_in[worldid, obj1id]) @ (pos - xpos_in[worldid, obj1id])
-        data[3] = anchor1[0]
-        data[4] = anchor1[1]
-        data[5] = anchor1[2]
-
-        # data[6:10] = neg(xquat1) * xquat2 = "xquat2 - xquat1" in body1 local frame
-        relquat = mjmath.mul_quat(mjmath.quat_inv(xquat_in[worldid, obj1id]), xquat_in[worldid, obj2id])
-        data[6] = relquat[0]
-        data[7] = relquat[1]
-        data[8] = relquat[2]
-        data[9] = relquat[3]
-        eq_data_out[eq_data_id, eqid] = data
-
-
-@wp.kernel
-def _resolve_tendon_lengthspring(
-  ten_length_in: wp.array2d[float],
-  tendon_lengthspring_out: wp.array2d[wp.vec2],
-):
-  worldid, tenid = wp.tid()
-  tendon_lengthspring_id = worldid % tendon_lengthspring_out.shape[0]
-  val = tendon_lengthspring_out[tendon_lengthspring_id, tenid]
-  if val[0] == -1.0 and val[1] == -1.0:
-    l = ten_length_in[worldid, tenid]
-    tendon_lengthspring_out[tendon_lengthspring_id, tenid] = wp.vec2(l, l)
-
-
-@wp.kernel
-def _compute_meaninertia(
-  nv: int,
-  M_rownnz_in: wp.array[int],
-  M_rowadr_in: wp.array[int],
-  M_in: wp.array2d[float],
-  meaninertia_out: wp.array[float],
-):
-  """Compute mean diagonal inertia from M at qpos0."""
-  worldid = wp.tid()
-
-  if nv == 0:
-    meaninertia_out[worldid % meaninertia_out.shape[0]] = 1.0  # Default from MuJoCo
+  if eq_objtype[eqid] != int(types.ObjType.BODY.value):
     return
 
-  total = float(0.0)
-  for i in range(nv):
-    # CSR row diagonal is the last entry: M_rowadr_in[i] + M_rownnz_in[i] - 1
-    madr = M_rowadr_in[i] + M_rownnz_in[i] - 1
-    total += M_in[worldid, madr]
+  eqtype = eq_type[eqid]
+  eq_data_id = worldid % eq_data_out.shape[0]
+  data = eq_data_out[eq_data_id, eqid]
+  obj1id = eq_obj1id[eqid]
+  obj2id = eq_obj2id[eqid]
 
-  meaninertia_out[worldid % meaninertia_out.shape[0]] = total / float(nv)
+  if eqtype == int(types.EqType.CONNECT.value):
+    # data[0:3] = anchor in body1 local frame; map to global frame
+    anchor1 = wp.vec3(data[0], data[1], data[2])
+    pos = xpos_in[worldid, obj1id] + xmat_in[worldid, obj1id] @ anchor1
+
+    # data[3:6] = anchor position in body2 local frame
+    anchor2 = wp.transpose(xmat_in[worldid, obj2id]) @ (pos - xpos_in[worldid, obj2id])
+    data[3] = anchor2[0]
+    data[4] = anchor2[1]
+    data[5] = anchor2[2]
+    eq_data_out[eq_data_id, eqid] = data
+  elif eqtype == int(types.EqType.WELD.value) and data[11] != 0.0:
+    # data[0:3] = anchor in body2 local frame; map to global frame
+    anchor2 = wp.vec3(data[0], data[1], data[2])
+    pos = xpos_in[worldid, obj2id] + xmat_in[worldid, obj2id] @ anchor2
+
+    # data[3:6] = anchor position in body1 local frame
+    anchor1 = wp.transpose(xmat_in[worldid, obj1id]) @ (pos - xpos_in[worldid, obj1id])
+    data[3] = anchor1[0]
+    data[4] = anchor1[1]
+    data[5] = anchor1[2]
+
+    # data[6:10] = neg(xquat1) * xquat2 = "xquat2 - xquat1" in body1 local frame
+    relquat = mjmath.mul_quat(mjmath.quat_inv(xquat_in[worldid, obj1id]), xquat_in[worldid, obj2id])
+    data[6] = relquat[0]
+    data[7] = relquat[1]
+    data[8] = relquat[2]
+    data[9] = relquat[3]
+    eq_data_out[eq_data_id, eqid] = data
+
+
+@wp.kernel
+def _compute_geom_bound(
+  # Model:
+  geom_type: wp.array[int],
+  geom_dataid: wp.array2d[int],
+  hfield_size: wp.array[wp.vec4],
+  # Out:
+  geom_size_out: wp.array2d[wp.vec3],
+  geom_aabb_out: wp.array3d[wp.vec3],
+  geom_rbound_out: wp.array2d[float],
+):
+  """Compute the bounding box and sphere of geoms whose bounds follow from their size.
+
+  The size of a height field geom follows its height field. Mesh and SDF geoms keep the bounds of
+  their mesh.
+  """
+  worldid, geomid = wp.tid()
+  gtype = geom_type[geomid]
+  if gtype == int(types.GeomType.MESH.value) or gtype == int(types.GeomType.SDF.value):
+    return
+
+  geom_size_id = worldid % geom_size_out.shape[0]
+  size = geom_size_out[geom_size_id, geomid]
+  lo = wp.vec3(0.0)
+  hi = wp.vec3(0.0)
+  rbound = float(0.0)
+
+  if gtype == int(types.GeomType.HFIELD.value):
+    hsize = hfield_size[geom_dataid[worldid % geom_dataid.shape[0], geomid]]
+    geom_size_out[geom_size_id, geomid] = wp.vec3(hsize[0], hsize[1], 0.25 * hsize[2] + 0.5 * hsize[3])
+    lo = wp.vec3(-hsize[0], -hsize[1], -hsize[3])
+    hi = wp.vec3(hsize[0], hsize[1], hsize[2])
+    rbound = wp.sqrt(hsize[0] * hsize[0] + hsize[1] * hsize[1] + wp.max(hsize[2] * hsize[2], hsize[3] * hsize[3]))
+  elif gtype == int(types.GeomType.PLANE.value):
+    lo = wp.vec3(-types.MJ_MAXVAL)
+    hi = wp.vec3(types.MJ_MAXVAL, types.MJ_MAXVAL, 0.0)
+  else:
+    if gtype == int(types.GeomType.SPHERE.value):
+      hi = wp.vec3(size[0])
+      rbound = size[0]
+    elif gtype == int(types.GeomType.CAPSULE.value):
+      hi = wp.vec3(size[0], size[0], size[0] + size[1])
+      rbound = size[0] + size[1]
+    elif gtype == int(types.GeomType.CYLINDER.value):
+      hi = wp.vec3(size[0], size[0], size[1])
+      rbound = wp.sqrt(size[0] * size[0] + size[1] * size[1])
+    elif gtype == int(types.GeomType.ELLIPSOID.value):
+      hi = size
+      rbound = wp.max(wp.max(size[0], size[1]), size[2])
+    elif gtype == int(types.GeomType.BOX.value):
+      hi = size
+      rbound = wp.length(size)
+    else:
+      hi = size
+    lo = -hi
+
+  geom_aabb_id = worldid % geom_aabb_out.shape[0]
+  geom_aabb_out[geom_aabb_id, geomid, 0] = 0.5 * (hi + lo)
+  geom_aabb_out[geom_aabb_id, geomid, 1] = 0.5 * (hi - lo)
+  geom_rbound_out[worldid % geom_rbound_out.shape[0], geomid] = rbound
 
 
 @wp.kernel
@@ -504,55 +534,6 @@ def _compute_actuator_acc0(
 
 
 @wp.kernel
-def _resolve_dampratio(
-  # Model:
-  actuator_biastype: wp.array[int],
-  actuator_gainprm: wp.array2d[types.vec10],
-  # In:
-  actid: int,
-  nv: int,
-  act_moment_vec_in: wp.array2d[float],
-  act_result_vec_in: wp.array2d[float],
-  # Out:
-  actuator_biasprm_out: wp.array2d[types.vec10],
-):
-  worldid = wp.tid()
-  biastype = actuator_biastype[actid]
-
-  # only affine bias (position actuators)
-  if biastype != BiasType.AFFINE:
-    return
-
-  gainprm_id = worldid % actuator_gainprm.shape[0]
-  biasprm_id = worldid % actuator_biasprm_out.shape[0]
-  kp = actuator_gainprm[gainprm_id, actid][0]
-
-  biasprm = actuator_biasprm_out[biasprm_id, actid]
-  # dampratio condition: gainprm[0] == -biasprm[1] and biasprm[2] > 0
-  if wp.abs(kp + biasprm[1]) > MJ_MINVAL:
-    return
-  if biasprm[2] <= 0.0:
-    return
-
-  dampratio = biasprm[2]
-
-  # compute reflected mass: 1 / (J * inv(M) * J')
-  invweight = float(0.0)
-  for i in range(nv):
-    invweight += act_moment_vec_in[worldid, i] * act_result_vec_in[worldid, i]
-
-  mass = float(0.0)
-  if invweight > MJ_MINVAL:
-    mass = 1.0 / invweight
-
-  damping = dampratio * 2.0 * wp.sqrt(kp * mass)
-
-  # write -damping to biasprm[2]
-  biasprm[2] = -damping
-  actuator_biasprm_out[biasprm_id, actid] = biasprm
-
-
-@wp.kernel
 def _set_length_range(
   actuator_trntype: wp.array[int],
   actuator_trnid: wp.array[wp.vec2i],
@@ -597,6 +578,9 @@ def set_const_fixed(m: types.Model, d: types.Data):
 
   Computes:
     - body_subtreemass: mass of body and all descendants (depends on body_mass)
+    - geom_aabb, geom_rbound: bounding box and sphere of primitive and height
+      field geoms (depends on geom_size and hfield_size)
+    - geom_size of height field geoms (depends on hfield_size)
 
   Args:
     m: The model containing kinematic and dynamic information (device).
@@ -604,13 +588,26 @@ def set_const_fixed(m: types.Model, d: types.Data):
   """
   nworld_subtreemass = m.body_subtreemass.shape[0]
   wp.launch(_init_subtreemass, dim=(nworld_subtreemass, m.nbody), inputs=[m.body_mass], outputs=[m.body_subtreemass])
+  det_atomics = bool(m.opt.deterministic & types.DeterminismType.ATOMICS)
+  subtreemass_in = wp.empty_like(m.body_subtreemass) if det_atomics else m.body_subtreemass
   for i in reversed(range(len(m.body_tree))):
     body_tree = m.body_tree[i]
+    if det_atomics:
+      wp.copy(subtreemass_in, m.body_subtreemass)
     wp.launch(
-      _accumulate_subtreemass,
+      _accumulate_subtreemass(det_atomics),
       dim=(nworld_subtreemass, body_tree.size),
-      inputs=[m.body_parentid, m.body_subtreemass, body_tree],
+      inputs=[m.body_parentid, subtreemass_in, body_tree],
+      outputs=[m.body_subtreemass],
     )
+
+  nworld_geom = np.max([m.geom_dataid.shape[0], m.geom_size.shape[0], m.geom_aabb.shape[0], m.geom_rbound.shape[0]])
+  wp.launch(
+    _compute_geom_bound,
+    dim=(nworld_geom, m.ngeom),
+    inputs=[m.geom_type, m.geom_dataid, m.hfield_size],
+    outputs=[m.geom_size, m.geom_aabb, m.geom_rbound],
+  )
 
 
 def set_const_0(m: types.Model, d: types.Data, restore: bool = True):
@@ -618,17 +615,14 @@ def set_const_0(m: types.Model, d: types.Data, restore: bool = True):
 
   Computes:
     - tendon_length0: tendon resting lengths
-    - eq_data: connect/weld anchor data, recomputed so the constraint is
-      satisfied at qpos0
+    - eq_data: anchor of connects between bodies in the second body, and
+      relative pose of welds between bodies marked in eq_data[11]
     - dof_invweight0: inverse inertia for DOFs
     - body_invweight0: inverse spatial inertia for bodies
     - tendon_invweight0: inverse weight for tendons
     - cam_pos0, cam_poscom0, cam_mat0: camera references
     - light_pos0, light_poscom0, light_dir0: light references
     - actuator_acc0: acceleration from unit actuator force
-    - actuator_biasprm[2] (dampratio resolution): for position actuators where
-      gainprm[0] == -biasprm[1] and biasprm[2] > 0, converts dampratio to
-      damping via biasprm[2] = -dampratio * 2 * sqrt(kp * reflected_mass)
 
   Args:
     m: The model containing kinematic and dynamic information (device).
@@ -636,8 +630,23 @@ def set_const_0(m: types.Model, d: types.Data, restore: bool = True):
     restore: Whether to restore state fields to correspond to d.qpos.
   """
   qpos_saved = wp.clone(d.qpos)
+  mocap_pos_saved = wp.clone(d.mocap_pos) if m.nmocap else None
+  mocap_quat_saved = wp.clone(d.mocap_quat) if m.nmocap else None
+
+  # the constants do not depend on the contacts of d, which transmission averages for adhesion
+  # actuators: hide them while the constants are computed, as mj_setConst clears them
+  nacon_saved = wp.clone(d.nacon) if m.nacttrnbody else None
+  if m.nacttrnbody:
+    d.nacon.zero_()
 
   wp.launch(_copy_qpos0_to_qpos, dim=(d.nworld, m.nq), inputs=[m.qpos0], outputs=[d.qpos])
+  if m.nmocap:
+    wp.launch(
+      _copy_body_to_mocap,
+      dim=(d.nworld, m.nbody),
+      inputs=[m.body_mocapid, m.body_pos, m.body_quat],
+      outputs=[d.mocap_pos, d.mocap_quat],
+    )
 
   smooth.kinematics(m, d)
   smooth.com_pos(m, d)
@@ -648,14 +657,6 @@ def set_const_0(m: types.Model, d: types.Data, restore: bool = True):
   smooth.tendon_armature(m, d)
   smooth.factor_m(m, d)
   smooth.transmission(m, d)
-
-  # Compute meaninertia from M diagonal at qpos0
-  wp.launch(
-    _compute_meaninertia,
-    dim=m.stat.meaninertia.shape[0],
-    inputs=[m.nv, m.M_rownnz, m.M_rowadr, d.M],
-    outputs=[m.stat.meaninertia],
-  )
 
   wp.launch(_copy_tendon_length0, dim=(m.tendon_length0.shape[0], m.ntendon), inputs=[d.ten_length], outputs=[m.tendon_length0])
 
@@ -771,7 +772,6 @@ def set_const_0(m: types.Model, d: types.Data, restore: bool = True):
   )
 
   # actuator_acc0[i] = ||inv(M) * actuator_moment[i]|| - acceleration from unit actuator force
-  # and resolve dampratio using 1 / (J * inv(M) * J')
   if m.nactuator > 0 and m.nv > 0:
     act_moment_vec = wp.zeros((d.nworld, m.nv), dtype=float)
     act_result_vec = wp.zeros((d.nworld, m.nv), dtype=float)
@@ -787,21 +787,13 @@ def set_const_0(m: types.Model, d: types.Data, restore: bool = True):
       wp.launch(
         _compute_actuator_acc0, dim=m.actuator_acc0.shape[0], inputs=[actid, m.nv, act_result_vec], outputs=[m.actuator_acc0]
       )
-      wp.launch(
-        _resolve_dampratio,
-        dim=m.actuator_biasprm.shape[0],
-        inputs=[
-          m.actuator_biastype,
-          m.actuator_gainprm,
-          actid,
-          m.nv,
-          act_moment_vec,
-          act_result_vec,
-        ],
-        outputs=[m.actuator_biasprm],
-      )
 
   wp.copy(d.qpos, qpos_saved)
+  if m.nmocap:
+    wp.copy(d.mocap_pos, mocap_pos_saved)
+    wp.copy(d.mocap_quat, mocap_quat_saved)
+  if m.nacttrnbody:
+    wp.copy(d.nacon, nacon_saved)
 
   if restore:
     smooth.kinematics(m, d)
@@ -812,40 +804,6 @@ def set_const_0(m: types.Model, d: types.Data, restore: bool = True):
     smooth.crb(m, d)
     smooth.tendon_armature(m, d)
     smooth.factor_m(m, d)
-    smooth.transmission(m, d)
-
-
-def set_const_spring(m: types.Model, d: types.Data, restore: bool = True):
-  """Compute quantities that depend on qpos_spring.
-
-  Computes:
-    - tendon_lengthspring: spring resting length range
-  """
-  if m.ntendon == 0:
-    return
-
-  qpos_saved = wp.clone(d.qpos)
-
-  wp.launch(_copy_qpos0_to_qpos, dim=(d.nworld, m.nq), inputs=[m.qpos_spring], outputs=[d.qpos])
-
-  smooth.kinematics(m, d)
-  smooth.com_pos(m, d)
-  smooth.tendon(m, d)
-  smooth.transmission(m, d)
-
-  wp.launch(
-    _resolve_tendon_lengthspring,
-    dim=(m.tendon_lengthspring.shape[0], m.ntendon),
-    inputs=[d.ten_length],
-    outputs=[m.tendon_lengthspring],
-  )
-
-  wp.copy(d.qpos, qpos_saved)
-
-  if restore:
-    smooth.kinematics(m, d)
-    smooth.com_pos(m, d)
-    smooth.tendon(m, d)
     smooth.transmission(m, d)
 
 
@@ -861,16 +819,15 @@ def set_const(m: types.Model, d: types.Data, restore: bool = True):
   ==================================  ==============================================
   Field                               Notes
   ==================================  ==============================================
-  qpos0, qpos_spring
+  qpos0
   body_mass, body_inertia,            Mass and inertia are usually scaled together
   body_ipos, body_iquat               since inertia is sum(m * r^2).
   body_pos, body_quat                 Unsafe for static bodies (invalidates BVH).
   body_gravcomp                       If changing from 0 to >0 bodies, required.
   dof_armature
-  eq_data                             For connect/weld, offsets computed if not set.
-  hfield_size
+  eq_data                             Connect anchors, marked weld poses.
+  geom_size, hfield_size              Bounds of primitive and height field geoms.
   tendon_stiffness, tendon_damping    Only if changing from/to zero.
-  actuator_gainprm, actuator_biasprm  For position actuators with dampratio.
   ==================================  ==============================================
 
   For selective updates, use the sub-functions directly based on what changed:
@@ -880,6 +837,7 @@ def set_const(m: types.Model, d: types.Data, restore: bool = True):
   ==============  ===============
   body_mass       set_const
   body_gravcomp   set_const_fixed
+  geom_size       set_const_fixed
   body_inertia    set_const_0
   qpos0           set_const_0
   ==============  ===============
@@ -887,6 +845,7 @@ def set_const(m: types.Model, d: types.Data, restore: bool = True):
   Computes:
     - Fixed quantities (via set_const_fixed):
       - body_subtreemass: mass of body and all descendants
+      - geom_aabb, geom_rbound: bounds of primitive and height field geoms
     - qpos0-dependent quantities (via set_const_0):
       - tendon_length0: tendon resting lengths
       - dof_invweight0: inverse inertia for DOFs
@@ -895,7 +854,6 @@ def set_const(m: types.Model, d: types.Data, restore: bool = True):
       - cam_pos0, cam_poscom0, cam_mat0: camera references
       - light_pos0, light_poscom0, light_dir0: light references
       - actuator_acc0: acceleration from unit actuator force
-      - actuator_biasprm[2] (dampratio resolution)
 
   Skips: actuator_length0 (not in mjwarp).
 
@@ -906,7 +864,6 @@ def set_const(m: types.Model, d: types.Data, restore: bool = True):
   """
   set_const_fixed(m, d)
   set_const_0(m, d, restore=False)
-  set_const_spring(m, d, restore=False)
 
   if restore:
     smooth.kinematics(m, d)

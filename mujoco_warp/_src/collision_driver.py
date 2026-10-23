@@ -31,6 +31,7 @@ from mujoco_warp._src.types import BroadphaseFilter
 from mujoco_warp._src.types import BroadphaseType
 from mujoco_warp._src.types import CollisionType
 from mujoco_warp._src.types import Data
+from mujoco_warp._src.types import DeterminismType
 from mujoco_warp._src.types import DisableBit
 from mujoco_warp._src.types import EnableBit
 from mujoco_warp._src.types import GeomType
@@ -279,7 +280,15 @@ def _obb_filter(
   return True
 
 
-def _broadphase_filter(opt_broadphase_filter: int, ngeom_aabb: int, ngeom_rbound: int, ngeom_margin: int, ngeom_gap: int):
+def _broadphase_filter(
+  opt_broadphase_filter: int,
+  ngeom_aabb: int,
+  ngeom_rbound: int,
+  ngeom_margin: int,
+  ngeom_gap: int,
+  npair_margin: int,
+  npair_gap: int,
+):
   @wp.func
   def func(
     # Model:
@@ -287,12 +296,15 @@ def _broadphase_filter(opt_broadphase_filter: int, ngeom_aabb: int, ngeom_rbound
     geom_rbound: wp.array2d[float],
     geom_margin: wp.array2d[float],
     geom_gap: wp.array2d[float],
+    pair_margin: wp.array2d[float],
+    pair_gap: wp.array2d[float],
     # Data in:
     geom_xpos_in: wp.array2d[wp.vec3],
     geom_xmat_in: wp.array2d[wp.mat33],
     # In:
     geom1: int,
     geom2: int,
+    pairid: int,
     worldid: int,
   ) -> bool:
     # 1: plane
@@ -306,12 +318,20 @@ def _broadphase_filter(opt_broadphase_filter: int, ngeom_aabb: int, ngeom_rbound
 
     rbound_id = worldid % ngeom_rbound if wp.static(ngeom_rbound > 1) else 0
     rbound1, rbound2 = geom_rbound[rbound_id, geom1], geom_rbound[rbound_id, geom2]  # kernel_analyzer: ignore
-    margin_id = worldid % ngeom_margin if wp.static(ngeom_margin > 1) else 0
-    margin1, margin2 = geom_margin[margin_id, geom1], geom_margin[margin_id, geom2]  # kernel_analyzer: ignore
-    gap_id = worldid % ngeom_gap if wp.static(ngeom_gap > 1) else 0
-    gap1, gap2 = geom_gap[gap_id, geom1], geom_gap[gap_id, geom2]  # kernel_analyzer: ignore
-    effective_margin1 = margin1 + gap1
-    effective_margin2 = margin2 + gap2
+    effective_margin1 = float(0.0)
+    effective_margin2 = float(0.0)
+    if pairid >= 0:
+      # explicit contact pairs use the pair margin and gap (the filters use the sum of the margins)
+      pair_margin_id = worldid % npair_margin if wp.static(npair_margin > 1) else 0
+      pair_gap_id = worldid % npair_gap if wp.static(npair_gap > 1) else 0
+      effective_margin1 = pair_margin[pair_margin_id, pairid] + pair_gap[pair_gap_id, pairid]  # kernel_analyzer: ignore
+    else:
+      margin_id = worldid % ngeom_margin if wp.static(ngeom_margin > 1) else 0
+      margin1, margin2 = geom_margin[margin_id, geom1], geom_margin[margin_id, geom2]  # kernel_analyzer: ignore
+      gap_id = worldid % ngeom_gap if wp.static(ngeom_gap > 1) else 0
+      gap1, gap2 = geom_gap[gap_id, geom1], geom_gap[gap_id, geom2]  # kernel_analyzer: ignore
+      effective_margin1 = margin1 + gap1
+      effective_margin2 = margin2 + gap2
     xpos1, xpos2 = geom_xpos_in[worldid, geom1], geom_xpos_in[worldid, geom2]
     xmat1, xmat2 = geom_xmat_in[worldid, geom1], geom_xmat_in[worldid, geom2]
 
@@ -365,7 +385,7 @@ def _add_geom_pair(
   collision_pairid_out: wp.array[wp.vec2i],
   collision_worldid_out: wp.array[int],
 ):
-  cid = wp.atomic_add(ncollision_out, 0, 1)
+  cid = wp.atomic_add(ncollision_out, 0, 1)  # kernel_analyzer: ignore[atomic]
 
   if cid >= naconmax_in:
     return
@@ -381,7 +401,29 @@ def _add_geom_pair(
 
 
 @cache_kernel
-def _sap_project(opt_broadphase: int, ngeom_dataid: int):
+def _sap_pair_margin(npair_margin: int, npair_gap: int):
+  @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
+  def sap_pair_margin(
+    # Model:
+    pair_geom1: wp.array[int],
+    pair_geom2: wp.array[int],
+    pair_margin: wp.array2d[float],
+    pair_gap: wp.array2d[float],
+    # Out:
+    geom_pair_margin_out: wp.array2d[float],
+  ):
+    batchid, pairid = wp.tid()
+    pair_margin_id = batchid % npair_margin if wp.static(npair_margin > 1) else 0
+    pair_gap_id = batchid % npair_gap if wp.static(npair_gap > 1) else 0
+    margin = pair_margin[pair_margin_id, pairid] + pair_gap[pair_gap_id, pairid]  # kernel_analyzer: ignore
+    wp.atomic_max(geom_pair_margin_out, batchid, pair_geom1[pairid], margin)  # kernel_analyzer: ignore[atomic]
+    wp.atomic_max(geom_pair_margin_out, batchid, pair_geom2[pairid], margin)  # kernel_analyzer: ignore[atomic]
+
+  return sap_pair_margin
+
+
+@cache_kernel
+def _sap_project(opt_broadphase: int, ngeom_dataid: int, ngeom_pair_margin: int):
   @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
   def sap_project(
     # Model:
@@ -396,6 +438,7 @@ def _sap_project(opt_broadphase: int, ngeom_dataid: int):
     nworld_in: int,
     # In:
     direction_in: wp.vec3,
+    geom_pair_margin_in: wp.array2d[float],
     # Out:
     projection_lower_out: wp.array2d[float],
     projection_upper_out: wp.array2d[float],
@@ -425,7 +468,10 @@ def _sap_project(opt_broadphase: int, ngeom_dataid: int):
       # geom is a plane
       rbound = MJ_MAXVAL
 
-    radius = rbound + geom_margin[worldid % geom_margin.shape[0], geomid] + geom_gap[worldid % geom_gap.shape[0], geomid]
+    margin = geom_margin[worldid % geom_margin.shape[0], geomid] + geom_gap[worldid % geom_gap.shape[0], geomid]
+    # explicit contact pairs use the pair margin and gap, which can exceed the geom margins
+    pair_margin_id = worldid % ngeom_pair_margin if wp.static(ngeom_pair_margin > 1) else 0
+    radius = rbound + wp.max(margin, geom_pair_margin_in[pair_margin_id, geomid])
     center = wp.dot(direction_in, xpos)
 
     if not wp.isnan(center):
@@ -445,6 +491,8 @@ def _sap_broadphase(
   ngeom_rbound: int,
   ngeom_margin: int,
   ngeom_gap: int,
+  npair_margin: int,
+  npair_gap: int,
   ngeom_dataid: int,
   enable_sleep: bool = False,
   incremental: bool = False,
@@ -460,6 +508,8 @@ def _sap_broadphase(
     geom_rbound: wp.array2d[float],
     geom_margin: wp.array2d[float],
     geom_gap: wp.array2d[float],
+    pair_margin: wp.array2d[float],
+    pair_gap: wp.array2d[float],
     nxn_pairid: wp.array[wp.vec2i],
     # Data in:
     geom_xpos_in: wp.array2d[wp.vec3],
@@ -542,8 +592,29 @@ def _sap_broadphase(
             continue
 
       if (
-        wp.static(_broadphase_filter(opt_broadphase_filter, ngeom_aabb, ngeom_rbound, ngeom_margin, ngeom_gap))(
-          geom_aabb, geom_rbound, geom_margin, geom_gap, geom_xpos_in, geom_xmat_in, geom1, geom2, worldid
+        wp.static(
+          _broadphase_filter(
+            opt_broadphase_filter,
+            ngeom_aabb,
+            ngeom_rbound,
+            ngeom_margin,
+            ngeom_gap,
+            npair_margin,
+            npair_gap,
+          )
+        )(
+          geom_aabb,
+          geom_rbound,
+          geom_margin,
+          geom_gap,
+          pair_margin,
+          pair_gap,
+          geom_xpos_in,
+          geom_xmat_in,
+          geom1,
+          geom2,
+          pairid[0],
+          worldid,
         )
         or pairid[1] >= 0
       ):
@@ -637,10 +708,33 @@ def sap_broadphase(
   cumulative_sum = wp.empty((d.nworld, m.ngeom), dtype=int)
   segmented_index = wp.empty(d.nworld + 1 if m.opt.broadphase == BroadphaseType.SAP_SEGMENTED else 0, dtype=int)
 
+  # largest margin + gap of the explicit contact pairs containing each geom, per world only if the
+  # pair margins or gaps are batched
+  npair_margin, npair_gap = m.pair_margin.shape[0], m.pair_gap.shape[0]
+  ngeom_pair_margin = d.nworld if max(npair_margin, npair_gap) > 1 else 1
+  geom_pair_margin = wp.zeros((ngeom_pair_margin, m.ngeom), dtype=float)
   wp.launch(
-    kernel=_sap_project(m.opt.broadphase, m.geom_dataid.shape[0]),
+    _sap_pair_margin(npair_margin, npair_gap),
+    dim=(ngeom_pair_margin, m.npair),
+    inputs=[m.pair_geom1, m.pair_geom2, m.pair_margin, m.pair_gap],
+    outputs=[geom_pair_margin],
+  )
+
+  wp.launch(
+    kernel=_sap_project(m.opt.broadphase, m.geom_dataid.shape[0], ngeom_pair_margin),
     dim=(d.nworld, m.ngeom),
-    inputs=[m.ngeom, m.geom_type, m.geom_dataid, m.geom_rbound, m.geom_margin, m.geom_gap, d.geom_xpos, d.nworld, direction],
+    inputs=[
+      m.ngeom,
+      m.geom_type,
+      m.geom_dataid,
+      m.geom_rbound,
+      m.geom_margin,
+      m.geom_gap,
+      d.geom_xpos,
+      d.nworld,
+      direction,
+      geom_pair_margin,
+    ],
     outputs=[
       projection_lower.reshape((-1, m.ngeom)),
       projection_upper,
@@ -682,6 +776,8 @@ def sap_broadphase(
       m.geom_rbound.shape[0],
       m.geom_margin.shape[0],
       m.geom_gap.shape[0],
+      m.pair_margin.shape[0],
+      m.pair_gap.shape[0],
       m.geom_dataid.shape[0],
       enable_sleep,
       incremental,
@@ -696,6 +792,8 @@ def sap_broadphase(
       m.geom_rbound,
       m.geom_margin,
       m.geom_gap,
+      m.pair_margin,
+      m.pair_gap,
       m.nxn_pairid,
       d.geom_xpos,
       d.geom_xmat,
@@ -707,7 +805,12 @@ def sap_broadphase(
       nsweep,
       awake_prev_in,
     ],
-    outputs=[d.ncollision, ctx.collision_pair, ctx.collision_pairid, ctx.collision_worldid],
+    outputs=[
+      d.ncollision,
+      ctx.collision_pair,
+      ctx.collision_pairid,
+      ctx.collision_worldid,
+    ],
   )
 
 
@@ -718,6 +821,8 @@ def _nxn_broadphase(
   ngeom_rbound: int,
   ngeom_margin: int,
   ngeom_gap: int,
+  npair_margin: int,
+  npair_gap: int,
   ngeom_dataid: int,
   enable_sleep: bool = False,
   incremental: bool = False,
@@ -732,6 +837,8 @@ def _nxn_broadphase(
     geom_rbound: wp.array2d[float],
     geom_margin: wp.array2d[float],
     geom_gap: wp.array2d[float],
+    pair_margin: wp.array2d[float],
+    pair_gap: wp.array2d[float],
     nxn_geom_pair: wp.array[wp.vec2i],
     nxn_pairid: wp.array[wp.vec2i],
     # Data in:
@@ -788,8 +895,29 @@ def _nxn_broadphase(
 
     pairid = nxn_pairid[elementid]
     if (
-      wp.static(_broadphase_filter(opt_broadphase_filter, ngeom_aabb, ngeom_rbound, ngeom_margin, ngeom_gap))(
-        geom_aabb, geom_rbound, geom_margin, geom_gap, geom_xpos_in, geom_xmat_in, geom1, geom2, worldid
+      wp.static(
+        _broadphase_filter(
+          opt_broadphase_filter,
+          ngeom_aabb,
+          ngeom_rbound,
+          ngeom_margin,
+          ngeom_gap,
+          npair_margin,
+          npair_gap,
+        )
+      )(
+        geom_aabb,
+        geom_rbound,
+        geom_margin,
+        geom_gap,
+        pair_margin,
+        pair_gap,
+        geom_xpos_in,
+        geom_xmat_in,
+        geom1,
+        geom2,
+        pairid[0],
+        worldid,
       )
       or pairid[1] >= 0
     ):
@@ -869,6 +997,8 @@ def nxn_broadphase(
       m.geom_rbound.shape[0],
       m.geom_margin.shape[0],
       m.geom_gap.shape[0],
+      m.pair_margin.shape[0],
+      m.pair_gap.shape[0],
       m.geom_dataid.shape[0],
       enable_sleep,
       incremental,
@@ -887,6 +1017,8 @@ def nxn_broadphase(
         m.geom_rbound,
         m.geom_margin,
         m.geom_gap,
+        m.pair_margin,
+        m.pair_gap,
         m.nxn_geom_pair_filtered,
         m.nxn_pairid_filtered,
         d.geom_xpos,
@@ -925,6 +1057,12 @@ def _narrowphase(m: Model, d: Data, ctx: CollisionContext):
 
   if m.has_sdf_geom:
     sdf_narrowphase(m, d, ctx)
+
+
+def _sort_contacts(m: Model, d: Data):
+  """Deterministic contact sort."""
+  # TODO(team): Implementation contact sorting.
+  pass
 
 
 @event_scope
@@ -986,3 +1124,6 @@ def collision(
 
   if m.callback.contactfilter:
     m.callback.contactfilter(m, d)
+
+  if m.opt.deterministic & DeterminismType.CONTACTS:
+    _sort_contacts(m, d)
