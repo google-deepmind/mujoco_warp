@@ -2065,119 +2065,6 @@ def _update_constraint_init_qfrc_constraint_dense(stable_fast: bool):
   return kernel
 
 
-@wp.kernel
-def _update_gradient_h_incremental(
-  # Data in:
-  efc_J_in: wp.array3d[float],
-  efc_D_in: wp.array2d[float],
-  efc_state_in: wp.array2d[int],
-  # In:
-  quad_changed_ids_in: wp.array2d[int],
-  quad_changed_count_in: wp.array[int],
-  # Out:
-  ctx_h_out: wp.array3d[float],
-):
-  """Incrementally update upper triangle of H for changed constraints.
-
-  Each thread handles one unique (i, j) element and writes it to the upper triangle.
-  For each changed constraint, adds or subtracts D * J[i] * J[j].
-  """
-  worldid, elementid = wp.tid()
-
-  n_changes = quad_changed_count_in[worldid]
-  if n_changes == 0:
-    return
-
-  # Upper-triangle enumeration: elementid -> (row, col) where row <= col.
-  col = (int(wp.sqrt(float(1 + 8 * elementid))) - 1) // 2
-  row = elementid - (col * (col + 1)) // 2
-
-  delta = float(0.0)
-  for change_idx in range(n_changes):
-    efcid = quad_changed_ids_in[worldid, change_idx]
-    Jrow = efc_J_in[worldid, efcid, row]
-    if Jrow == 0.0:
-      continue
-    Jcol = efc_J_in[worldid, efcid, col]
-    if Jcol == 0.0:
-      continue
-
-    D = efc_D_in[worldid, efcid]
-    if efc_state_in[worldid, efcid] == types.ConstraintState.QUADRATIC.value:
-      delta += D * Jrow * Jcol
-    else:
-      delta -= D * Jrow * Jcol
-
-  if delta != 0.0:
-    ctx_h_out[worldid, row, col] += delta
-
-
-@cache_kernel
-def _update_gradient_h_incremental_sparse(compact: bool, max_records: int = 0, deterministic: bool = False):
-  COMPACT = compact
-  module_options = {"enable_backward": False}
-  if deterministic:
-    module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
-    module_options["deterministic_max_records"] = max_records
-
-  @wp.kernel(module="unique", module_options=module_options, grid_stride=False)
-  def kernel(
-    # Data in:
-    efc_J_rownnz_in: wp.array2d[int],
-    efc_J_rowadr_in: wp.array2d[int],
-    efc_J_colind_in: wp.array3d[int],
-    efc_J_in: wp.array3d[float],
-    efc_D_in: wp.array2d[float],
-    efc_state_in: wp.array2d[int],
-    dof_cdof_in: wp.array2d[int],
-    # In:
-    quad_changed_ids_in: wp.array2d[int],
-    quad_changed_count_in: wp.array[int],
-    slots_per_world: int,
-    # Out:
-    ctx_h_out: wp.array3d[float],
-  ):
-    """Incrementally update upper triangle of H for changed constraints (sparse J).
-
-    One warp per changed constraint row: the lanes split the row's upper-triangular
-    entries (same sqrt triangular-number decode as _JTDACJ_sparse), replacing the
-    serial nnz^2 loop that dominated this kernel.
-    """
-    worldid, slot, lane = wp.tid()
-
-    n_changes = quad_changed_count_in[worldid]
-    for change_idx in range(slot, n_changes, slots_per_world):
-      efcid = quad_changed_ids_in[worldid, change_idx]
-      D = efc_D_in[worldid, efcid]
-      sign = float(0.0)
-      if efc_state_in[worldid, efcid] == types.ConstraintState.QUADRATIC.value:
-        sign = D
-      else:
-        sign = -D
-
-      rownnz = efc_J_rownnz_in[worldid, efcid]
-      rowadr = efc_J_rowadr_in[worldid, efcid]
-      n_entries = rownnz * (rownnz + 1) // 2
-
-      for entry in range(lane, n_entries, wp.static(_JTDAJ_THREADS_PER_GROUP)):
-        ii = int((wp.sqrt(float(8 * entry + 1)) - 1.0) * 0.5)
-        jj = entry - ii * (ii + 1) // 2
-        Ji = efc_J_in[worldid, 0, rowadr + ii]
-        Jj = efc_J_in[worldid, 0, rowadr + jj]
-        h = sign * Ji * Jj
-        if h != 0.0:
-          colindi = efc_J_colind_in[worldid, 0, rowadr + ii]
-          colindj = efc_J_colind_in[worldid, 0, rowadr + jj]
-          if wp.static(COMPACT):
-            colindi = dof_cdof_in[worldid, colindi]
-            colindj = dof_cdof_in[worldid, colindj]
-            if colindi < 0 or colindj < 0:
-              continue
-          wp.atomic_add(ctx_h_out[worldid, wp.min(colindi, colindj)], wp.max(colindi, colindj), h)
-
-  return kernel
-
-
 def _update_constraint(
   m: types.Model,
   d: types.Data,
@@ -3374,6 +3261,190 @@ def _jtdaj_groups_per_world(nworld: int, njmax: int, kernel: wp.Kernel) -> int:
   return max(1, min(njmax, _JTDAJ_OVERSUBSCRIBE_WAVES * device_warps // nworld))
 
 
+def _rebuild_hessian(m: types.Model, d: types.Data, ctx: SolverContext, compact: bool = False, stable_fast: bool = False):
+  """Rebuild H from current constraints instead of subtracting rounded stiff terms."""
+  is_discrete = m.opt.integrator == types.IntegratorType.DISCRETE
+  # h = M + (efc_J.T * efc_D * active) @ efc_J
+  sc = _sparse_compact(ctx)
+  if m.is_sparse or sc:
+    mj = ctx.compact_m_full if sc else m
+    dj = ctx.compact_d_full if sc else d
+    m_mat = dj.qH if is_discrete else dj.M
+    wp.launch(
+      _update_gradient_init_h_sparse(sc),
+      dim=(d.nworld, m.nv_pad, _INIT_H_LANES),
+      inputs=[mj.nv, mj.M_elemid, m_mat, dj.cdof_dof, ctx.done],
+      outputs=[ctx.h],
+    )
+
+    max_condim = 3
+    if m.opt.cone == types.ConeType.ELLIPTIC and m.nmaxcondim > 3:
+      max_condim = int(m.nmaxcondim)
+    elliptic = m.opt.cone == types.ConeType.ELLIPTIC
+    threads_per_group = 1 if elliptic and wp.get_device().is_cpu else _JTDAJ_THREADS_PER_GROUP
+    block_dim = threads_per_group if elliptic else mj.block_dim.update_gradient_JTDAJ_sparse
+    jtdaj_kernel = _JTDACJ_sparse(sc, m.opt.cone, max_condim, block_dim)
+    groups_per_world = _jtdaj_groups_per_world(d.nworld, d.njmax, jtdaj_kernel)
+    if bool(m.opt.deterministic & types.DeterminismType.ATOMICS):
+      entries_per_lane = ceil((mj.nv * (mj.nv + 1) // 2) / threads_per_group)
+      max_records = ceil(d.njmax / groups_per_world) * entries_per_lane
+      jtdaj_kernel = _JTDACJ_sparse(sc, m.opt.cone, max_condim, block_dim, max_records, True)
+    jtdaj_inputs = [
+      m.opt.impratio_invsqrt,
+      d.contact.friction,
+      d.contact.dim,
+      d.efc.id,
+      dj.efc.jtdaj_adr,
+      dj.efc.jtdaj_nrow,
+      dj.efc.jtdaj_nblock,
+      dj.efc.J_rownnz,
+      dj.efc.J_rowadr,
+      dj.efc.J_colind,
+      dj.efc.J,
+      d.efc.D,
+      d.efc.state,
+      dj.dof_cdof,
+      ctx.Jaref,
+      ctx.done,
+      groups_per_world,
+    ]
+    wp.launch(
+      jtdaj_kernel,
+      dim=(d.nworld, groups_per_world, threads_per_group),
+      inputs=jtdaj_inputs,
+      outputs=[ctx.h],
+      block_dim=block_dim,
+    )
+  else:
+    m_mat = d.qH if is_discrete else d.M
+    if compact:
+      # compact path: d.M is the dense 3D compact inertia block (nworld, nv_pad, nv_pad)
+      wp.launch_tiled(
+        _update_gradient_JTDAJ_dense_tiled_compact(m.nv_pad, types.TILE_SIZE_JTDAJ_DENSE, d.njmax),
+        dim=d.nworld,
+        inputs=[
+          d.nefc,
+          m_mat,
+          d.efc.J,
+          d.efc.D,
+          d.efc.state,
+          ctx.done,
+        ],
+        outputs=[ctx.h],
+        block_dim=m.block_dim.update_gradient_JTDAJ_dense,
+      )
+    else:
+      wp.launch_tiled(
+        _update_gradient_JTDAJ_dense_tiled(m.nv_pad, types.TILE_SIZE_JTDAJ_DENSE, d.njmax, m.M_colind.shape[0]),
+        dim=d.nworld,
+        inputs=[
+          m.M_colind,
+          m.M_hinit_i,
+          d.nefc,
+          m_mat,
+          d.efc.J,
+          d.efc.D,
+          d.efc.state,
+          ctx.done,
+        ],
+        outputs=[ctx.h],
+        block_dim=m.block_dim.update_gradient_JTDAJ_dense,
+      )
+    if m.nv > _BLOCK_CHOLESKY_DIM:
+      # the dense tile zeros padded dofs; the blocked Cholesky needs an identity there
+      wp.launch(_padding_h, dim=(d.nworld, m.nv_pad - m.nv), inputs=[m.nv, ctx.done], outputs=[ctx.h])
+
+  det_atomics = bool(m.opt.deterministic & types.DeterminismType.ATOMICS)
+  if is_discrete:
+    wp.launch(
+      _add_tendon_metric_dense(m.max_ten_J_rownnz if det_atomics else 0, det_atomics),
+      dim=(d.nworld, m.ntendon),
+      inputs=[m.ten_J_rownnz, m.ten_J_rowadr, m.ten_J_colind, d.ten_J, d.efm_ts, ctx.done],
+      outputs=[ctx.h],
+    )
+    wp.launch(
+      _add_actuator_metric_dense(m.nv if det_atomics else 0, det_atomics),
+      dim=(d.nworld, m.nactuator),
+      inputs=[d.moment_rownnz, d.moment_rowadr, d.moment_colind, d.actuator_moment, d.efm_as, ctx.done],
+      outputs=[ctx.h],
+    )
+    if m.nefmK > 0:
+      wp.launch(
+        _add_efmK_metric_dense(m.nv if det_atomics else 0, det_atomics),
+        dim=(d.nworld, m.nv),
+        inputs=[m.efm_K_rownnz, m.efm_K_rowadr, m.efm_K_colind, d.efm_K_val, ctx.done],
+        outputs=[ctx.h],
+      )
+    if m.has_flex_passive:
+      efm_con = ctx.efm_con if ctx.efm_con is not None else derivative.build_efm_contact(m, d)
+      efm_con_dof, efm_con_val, efm_con_scale, _, efm_con_nnz = efm_con
+      wp.launch(
+        _add_flexcon_metric_dense(det_atomics),
+        dim=d.naconmax,
+        inputs=[
+          d.contact.worldid,
+          d.nacon,
+          efm_con_dof,
+          efm_con_val,
+          efm_con_scale,
+          efm_con_nnz,
+          ctx.done,
+        ],
+        outputs=[ctx.h],
+      )
+
+  if m.opt.cone == types.ConeType.ELLIPTIC and not (m.is_sparse or sc):
+    # Optimization: launching update_gradient_JTCJ with limited number of blocks on a GPU.
+    # Profiling suggests that only a fraction of blocks out of the original
+    # d.njmax blocks do the actual work. It aims to minimize #CTAs with no
+    # effective work. It launches with #blocks that's proportional to the number
+    # of SMs on the GPU. We can now query the SM count:
+    # https://github.com/NVIDIA/warp/commit/f3814e7e5459e5fd13032cf0fddb3daddd510f30
+
+    if wp.get_device().is_cuda:
+      sm_count = wp.get_device().sm_count
+
+      # Here we assume one block has 256 threads. We use a factor of 6, which
+      # can be changed in the future to fine-tune the perf. The optimal factor will
+      # depend on the kernel's occupancy, which determines how many blocks can
+      # simultaneously run on the SM. TODO: This factor can be tuned further.
+      dim_block = ceil((sm_count * 6 * 256) / m.dof_tri_row.size)
+      nblocks_perblock = int((d.naconmax + dim_block - 1) / dim_block)
+    else:
+      # fall back for CPU
+      # TODO(team): support non-CUDA parallelism
+      dim_block = 1
+      nblocks_perblock = d.naconmax
+
+    wp.launch(
+      _update_gradient_JTCJ_dense(nblocks_perblock if det_atomics else 0, det_atomics),
+      dim=(dim_block, m.dof_tri_row.size),
+      inputs=[
+        m.opt.impratio_invsqrt,
+        m.dof_tri_row,
+        m.dof_tri_col,
+        d.contact.dist,
+        d.contact.includemargin,
+        d.contact.friction,
+        d.contact.dim,
+        d.contact.efc_address,
+        d.contact.worldid,
+        d.efc.J,
+        d.efc.D,
+        d.efc.state,
+        d.naconmax,
+        d.nacon,
+        ctx.Jaref,
+        ctx.done,
+        nblocks_perblock,
+        dim_block,
+      ],
+      outputs=[ctx.h],
+    )
+
+  _cholesky_factorize_solve(m, d, ctx, skip_unchanged=stable_fast, skip_noflip=stable_fast)
+
+
 def _update_gradient(m: types.Model, d: types.Data, ctx: SolverContext, compact: bool = False):
   # grad = Ma - qfrc_smooth - qfrc_constraint
   if m.opt.solver == types.SolverType.CG:
@@ -3408,185 +3479,7 @@ def _update_gradient(m: types.Model, d: types.Data, ctx: SolverContext, compact:
     else:
       smooth.solve_m(m, d, ctx.Mgrad, ctx.grad, x_scratch=ctx.solve_ld_scratch)
   elif m.opt.solver == types.SolverType.NEWTON:
-    # h = M + (efc_J.T * efc_D * active) @ efc_J
-    sc = _sparse_compact(ctx)
-    if m.is_sparse or sc:
-      mj = ctx.compact_m_full if sc else m
-      dj = ctx.compact_d_full if sc else d
-      m_mat = dj.qH if is_discrete else dj.M
-      wp.launch(
-        _update_gradient_init_h_sparse(sc),
-        dim=(d.nworld, m.nv_pad, _INIT_H_LANES),
-        inputs=[mj.nv, mj.M_elemid, m_mat, dj.cdof_dof, ctx.done],
-        outputs=[ctx.h],
-      )
-
-      max_condim = 3
-      if m.opt.cone == types.ConeType.ELLIPTIC and m.nmaxcondim > 3:
-        max_condim = int(m.nmaxcondim)
-      elliptic = m.opt.cone == types.ConeType.ELLIPTIC
-      threads_per_group = 1 if elliptic and wp.get_device().is_cpu else _JTDAJ_THREADS_PER_GROUP
-      block_dim = threads_per_group if elliptic else mj.block_dim.update_gradient_JTDAJ_sparse
-      jtdaj_kernel = _JTDACJ_sparse(sc, m.opt.cone, max_condim, block_dim)
-      groups_per_world = _jtdaj_groups_per_world(d.nworld, d.njmax, jtdaj_kernel)
-      if bool(m.opt.deterministic & types.DeterminismType.ATOMICS):
-        entries_per_lane = ceil((mj.nv * (mj.nv + 1) // 2) / threads_per_group)
-        max_records = ceil(d.njmax / groups_per_world) * entries_per_lane
-        jtdaj_kernel = _JTDACJ_sparse(sc, m.opt.cone, max_condim, block_dim, max_records, True)
-      jtdaj_inputs = [
-        m.opt.impratio_invsqrt,
-        d.contact.friction,
-        d.contact.dim,
-        d.efc.id,
-        dj.efc.jtdaj_adr,
-        dj.efc.jtdaj_nrow,
-        dj.efc.jtdaj_nblock,
-        dj.efc.J_rownnz,
-        dj.efc.J_rowadr,
-        dj.efc.J_colind,
-        dj.efc.J,
-        d.efc.D,
-        d.efc.state,
-        dj.dof_cdof,
-        ctx.Jaref,
-        ctx.done,
-        groups_per_world,
-      ]
-      wp.launch(
-        jtdaj_kernel,
-        dim=(d.nworld, groups_per_world, threads_per_group),
-        inputs=jtdaj_inputs,
-        outputs=[ctx.h],
-        block_dim=block_dim,
-      )
-    else:
-      m_mat = d.qH if is_discrete else d.M
-      if compact:
-        # compact path: d.M is the dense 3D compact inertia block (nworld, nv_pad, nv_pad)
-        wp.launch_tiled(
-          _update_gradient_JTDAJ_dense_tiled_compact(m.nv_pad, types.TILE_SIZE_JTDAJ_DENSE, d.njmax),
-          dim=d.nworld,
-          inputs=[
-            d.nefc,
-            m_mat,
-            d.efc.J,
-            d.efc.D,
-            d.efc.state,
-            ctx.done,
-          ],
-          outputs=[ctx.h],
-          block_dim=m.block_dim.update_gradient_JTDAJ_dense,
-        )
-      else:
-        wp.launch_tiled(
-          _update_gradient_JTDAJ_dense_tiled(m.nv_pad, types.TILE_SIZE_JTDAJ_DENSE, d.njmax, m.M_colind.shape[0]),
-          dim=d.nworld,
-          inputs=[
-            m.M_colind,
-            m.M_hinit_i,
-            d.nefc,
-            m_mat,
-            d.efc.J,
-            d.efc.D,
-            d.efc.state,
-            ctx.done,
-          ],
-          outputs=[ctx.h],
-          block_dim=m.block_dim.update_gradient_JTDAJ_dense,
-        )
-      if m.nv > _BLOCK_CHOLESKY_DIM:
-        # the dense tile zeros padded dofs; the blocked Cholesky needs an identity there
-        wp.launch(_padding_h, dim=(d.nworld, m.nv_pad - m.nv), inputs=[m.nv, ctx.done], outputs=[ctx.h])
-
-    det_atomics = bool(m.opt.deterministic & types.DeterminismType.ATOMICS)
-    if is_discrete:
-      wp.launch(
-        _add_tendon_metric_dense(m.max_ten_J_rownnz if det_atomics else 0, det_atomics),
-        dim=(d.nworld, m.ntendon),
-        inputs=[m.ten_J_rownnz, m.ten_J_rowadr, m.ten_J_colind, d.ten_J, d.efm_ts, ctx.done],
-        outputs=[ctx.h],
-      )
-      wp.launch(
-        _add_actuator_metric_dense(m.nv if det_atomics else 0, det_atomics),
-        dim=(d.nworld, m.nactuator),
-        inputs=[d.moment_rownnz, d.moment_rowadr, d.moment_colind, d.actuator_moment, d.efm_as, ctx.done],
-        outputs=[ctx.h],
-      )
-      if m.nefmK > 0:
-        wp.launch(
-          _add_efmK_metric_dense(m.nv if det_atomics else 0, det_atomics),
-          dim=(d.nworld, m.nv),
-          inputs=[m.efm_K_rownnz, m.efm_K_rowadr, m.efm_K_colind, d.efm_K_val, ctx.done],
-          outputs=[ctx.h],
-        )
-      if m.has_flex_passive:
-        efm_con = ctx.efm_con if ctx.efm_con is not None else derivative.build_efm_contact(m, d)
-        efm_con_dof, efm_con_val, efm_con_scale, _, efm_con_nnz = efm_con
-        wp.launch(
-          _add_flexcon_metric_dense(det_atomics),
-          dim=d.naconmax,
-          inputs=[
-            d.contact.worldid,
-            d.nacon,
-            efm_con_dof,
-            efm_con_val,
-            efm_con_scale,
-            efm_con_nnz,
-            ctx.done,
-          ],
-          outputs=[ctx.h],
-        )
-
-    if m.opt.cone == types.ConeType.ELLIPTIC and not (m.is_sparse or sc):
-      # Optimization: launching update_gradient_JTCJ with limited number of blocks on a GPU.
-      # Profiling suggests that only a fraction of blocks out of the original
-      # d.njmax blocks do the actual work. It aims to minimize #CTAs with no
-      # effective work. It launches with #blocks that's proportional to the number
-      # of SMs on the GPU. We can now query the SM count:
-      # https://github.com/NVIDIA/warp/commit/f3814e7e5459e5fd13032cf0fddb3daddd510f30
-
-      if wp.get_device().is_cuda:
-        sm_count = wp.get_device().sm_count
-
-        # Here we assume one block has 256 threads. We use a factor of 6, which
-        # can be changed in the future to fine-tune the perf. The optimal factor will
-        # depend on the kernel's occupancy, which determines how many blocks can
-        # simultaneously run on the SM. TODO: This factor can be tuned further.
-        dim_block = ceil((sm_count * 6 * 256) / m.dof_tri_row.size)
-        nblocks_perblock = int((d.naconmax + dim_block - 1) / dim_block)
-      else:
-        # fall back for CPU
-        # TODO(team): support non-CUDA parallelism
-        dim_block = 1
-        nblocks_perblock = d.naconmax
-
-      wp.launch(
-        _update_gradient_JTCJ_dense(nblocks_perblock if det_atomics else 0, det_atomics),
-        dim=(dim_block, m.dof_tri_row.size),
-        inputs=[
-          m.opt.impratio_invsqrt,
-          m.dof_tri_row,
-          m.dof_tri_col,
-          d.contact.dist,
-          d.contact.includemargin,
-          d.contact.friction,
-          d.contact.dim,
-          d.contact.efc_address,
-          d.contact.worldid,
-          d.efc.J,
-          d.efc.D,
-          d.efc.state,
-          d.naconmax,
-          d.nacon,
-          ctx.Jaref,
-          ctx.done,
-          nblocks_perblock,
-          dim_block,
-        ],
-        outputs=[ctx.h],
-      )
-
-    _cholesky_factorize_solve(m, d, ctx)
+    _rebuild_hessian(m, d, ctx, compact=compact)
   else:
     raise ValueError(f"Unknown solver type: {m.opt.solver}")
 
@@ -3606,10 +3499,9 @@ def _update_gradient(m: types.Model, d: types.Data, ctx: SolverContext, compact:
 
 
 def _update_gradient_incremental(m: types.Model, d: types.Data, ctx: SolverContext, stable_fast: bool = False):
-  """Incremental gradient update: update H for changed constraints + re-factorize.
+  """Update the gradient fast path and rebuild the current constraint Hessian.
 
-  Skips the full J^T*D*J rebuild by applying only the delta from constraints
-  that changed QUADRATIC state, then re-factorizes and solves.
+  Keep stable-state gradient reuse, but avoid cancellation from Hessian downdates.
   """
   changed = ctx.state_changed_count if stable_fast else d.nefc
   wp.launch(
@@ -3627,50 +3519,10 @@ def _update_gradient_incremental(m: types.Model, d: types.Data, ctx: SolverConte
     outputs=[ctx.grad, ctx.grad_dot],
   )
 
-  # Update upper triangle of H with delta from changed constraints.
-  sc = _sparse_compact(ctx)
-  if m.is_sparse or sc:
-    mj = ctx.compact_m_full if sc else m
-    dj = ctx.compact_d_full if sc else d
-    inc_kernel = _update_gradient_h_incremental_sparse(sc)
-    slots = _jtdaj_groups_per_world(d.nworld, ctx.quad_changed_ids.shape[1], inc_kernel)
-    if det_atomics:
-      entries_per_lane = ceil((mj.nv * (mj.nv + 1) // 2) / _JTDAJ_THREADS_PER_GROUP)
-      max_records = ceil(ctx.quad_changed_ids.shape[1] / slots) * entries_per_lane
-      inc_kernel = _update_gradient_h_incremental_sparse(sc, max_records, True)
-    wp.launch(
-      inc_kernel,
-      dim=(d.nworld, slots, _JTDAJ_THREADS_PER_GROUP),
-      inputs=[
-        dj.efc.J_rownnz,
-        dj.efc.J_rowadr,
-        dj.efc.J_colind,
-        dj.efc.J,
-        d.efc.D,
-        d.efc.state,
-        dj.dof_cdof,
-        ctx.quad_changed_ids,
-        ctx.quad_changed_count,
-        slots,
-      ],
-      outputs=[ctx.h],
-    )
-  else:
-    tri_dim = m.nv * (m.nv + 1) // 2
-    wp.launch(
-      _update_gradient_h_incremental,
-      dim=(d.nworld, tri_dim),
-      inputs=[
-        d.efc.J,
-        d.efc.D,
-        d.efc.state,
-        ctx.quad_changed_ids,
-        ctx.quad_changed_count,
-      ],
-      outputs=[ctx.h],
-    )
+  # A float32 downdate can erase M when a stiff constraint leaves the active set.
+  # Reuse the full builder, including discrete metrics and compact indexing.
+  _rebuild_hessian(m, d, ctx, compact=d.M.ndim == 3, stable_fast=stable_fast)
 
-  _cholesky_factorize_solve(m, d, ctx, skip_unchanged=True, skip_noflip=stable_fast)
   if m.opt.integrator == types.IntegratorType.DISCRETE and (m.opt.enableflags & types.EnableBit.SLEEP):
     wp.launch(
       derivative._zero_sleeping_dofs,
@@ -3871,7 +3723,7 @@ _ALPHA_NOISE_EPS = 8.0 * 1.1920929e-07  # 8 * float32 eps
 
 
 def _use_incremental(m: types.Model) -> bool:
-  """Whether constraint state changes are tracked for incremental H updates."""
+  """Whether constraint state changes are tracked for stable-state gradient reuse."""
   return m.opt.solver == types.SolverType.NEWTON and m.opt.cone != types.ConeType.ELLIPTIC
 
 
