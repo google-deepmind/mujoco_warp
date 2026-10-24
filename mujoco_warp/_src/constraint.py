@@ -765,17 +765,6 @@ def _equality_tendon(is_sparse: bool, newton: bool, is_discrete: bool = False):
     if not eq_active_in[worldid, eqid]:
       return
 
-    wp.atomic_add(ne_out, worldid, 1)  # kernel_analyzer: ignore[atomic]
-    efcid = wp.atomic_add(nefc_out, worldid, 1)  # kernel_analyzer: ignore[atomic]
-
-    if efcid >= njmax_in:
-      return
-
-    if wp.static(is_sparse and newton):
-      jgid = wp.atomic_add(efc_jtdaj_nblock_out, worldid, 1)  # kernel_analyzer: ignore[atomic]
-      efc_jtdaj_adr_out[worldid, jgid] = efcid
-      efc_jtdaj_nrow_out[worldid, jgid] = 1
-
     obj1id = eq_obj1id[eqid]
     obj2id = eq_obj2id[eqid]
 
@@ -811,6 +800,25 @@ def _equality_tendon(is_sparse: bool, newton: bool, is_discrete: bool = False):
     if deriv != 0.0:
       rownnz2 = ten_J_rownnz[obj2id]
       rowadr2 = ten_J_rowadr[obj2id]
+
+    # skip constraints with an empty Jacobian, as MuJoCo does in mj_addConstraint; tendon2's
+    # dofs count even when deriv is 0, since MuJoCo's sparse merge keeps them
+    if rownnz1 == 0:
+      if obj2id == -1:
+        return
+      if ten_J_rownnz[obj2id] == 0:
+        return
+
+    wp.atomic_add(ne_out, worldid, 1)  # kernel_analyzer: ignore[atomic]
+    efcid = wp.atomic_add(nefc_out, worldid, 1)  # kernel_analyzer: ignore[atomic]
+
+    if efcid >= njmax_in:
+      return
+
+    if wp.static(is_sparse and newton):
+      jgid = wp.atomic_add(efc_jtdaj_nblock_out, worldid, 1)  # kernel_analyzer: ignore[atomic]
+      efc_jtdaj_adr_out[worldid, jgid] = efcid
+      efc_jtdaj_nrow_out[worldid, jgid] = 1
 
     if wp.static(is_sparse):
       # TODO(team): pre-compute rownnz
@@ -1995,7 +2003,9 @@ def _friction_tendon(is_sparse: bool, newton: bool, is_discrete: bool = False):
     tendon_frictionloss_id = worldid % tendon_frictionloss.shape[0]
 
     frictionloss = tendon_frictionloss[tendon_frictionloss_id, tenid]
-    if frictionloss <= 0.0:
+    rownnz_tenJ = ten_J_rownnz[tenid]
+    # skip tendons with an empty Jacobian, as MuJoCo does in mj_addConstraint
+    if frictionloss <= 0.0 or rownnz_tenJ == 0:
       return
 
     wp.atomic_add(nf_out, worldid, 1)  # kernel_analyzer: ignore[atomic]
@@ -2011,7 +2021,6 @@ def _friction_tendon(is_sparse: bool, newton: bool, is_discrete: bool = False):
 
     Jqvel = float(0.0)
 
-    rownnz_tenJ = ten_J_rownnz[tenid]
     rowadr_tenJ = ten_J_rowadr[tenid]
     if wp.static(is_sparse):
       efc_J_rownnz_out[worldid, efcid] = rownnz_tenJ
@@ -2385,7 +2394,9 @@ def _limit_tendon(is_sparse: bool, newton: bool, is_discrete: bool = False):
     tendon_margin_id = worldid % tendon_margin.shape[0]
     tenmargin = tendon_margin[tendon_margin_id, tenid]
     pos = wp.min(dist_min, dist_max) - tenmargin
-    active = pos < 0
+    rownnz_tenJ = ten_J_rownnz[tenid]
+    # skip tendons with an empty Jacobian, as MuJoCo does in mj_addConstraint
+    active = pos < 0 and rownnz_tenJ > 0
 
     if active:
       wp.atomic_add(nl_out, worldid, 1)  # kernel_analyzer: ignore[atomic]
@@ -2402,7 +2413,6 @@ def _limit_tendon(is_sparse: bool, newton: bool, is_discrete: bool = False):
       Jqvel = float(0.0)
       scl = float(dist_min < dist_max) * 2.0 - 1.0
 
-      rownnz_tenJ = ten_J_rownnz[tenid]
       rowadr_tenJ = ten_J_rowadr[tenid]
       if wp.static(is_sparse):
         efc_J_rownnz_out[worldid, efcid] = rownnz_tenJ
