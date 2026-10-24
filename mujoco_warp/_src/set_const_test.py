@@ -1009,6 +1009,80 @@ class SetConstTest(parameterized.TestCase):
     _assert_eq(m.actuator_acc0.numpy()[0], mjm.actuator_acc0, "actuator_acc0")
     self.assertEqual(d.nacon.numpy()[0], nacon)  # the contacts are restored
 
+  def test_set_const_fixed_batched_sources_expand_derived_fields(self):
+    """Batching a source in put_model batches the fields set_const_fixed derives from it."""
+    mjm, _, m, d = test_data.fixture(
+      xml="""
+    <mujoco>
+      <worldbody>
+        <geom type="plane" size="5 5 .1"/>
+        <body>
+          <freejoint/>
+          <geom type="box" size=".1 .2 .3" mass="1"/>
+          <body pos="0 0 1">
+            <joint type="hinge"/>
+            <geom type="sphere" size=".1" mass="2"/>
+          </body>
+        </body>
+      </worldbody>
+    </mujoco>
+    """,
+      nworld=2,
+      batch_sizes={"geom_size": 2, "body_mass": 2},
+    )
+    # geom_aabb / geom_rbound follow geom_size and body_subtreemass follows body_mass, so every
+    # world gets its own derived row instead of all worlds writing row 0.
+    self.assertEqual(m.geom_aabb.shape[0], 2)
+    self.assertEqual(m.geom_rbound.shape[0], 2)
+    self.assertEqual(m.body_subtreemass.shape[0], 2)
+
+    scales = [1.5, 0.5]
+    size = m.geom_size.numpy()
+    mass = m.body_mass.numpy()
+    for w in range(2):
+      size[w, 1:] *= scales[w]
+      mass[w] *= scales[w]
+    m.geom_size.assign(size)
+    m.body_mass.assign(mass)
+
+    mjwarp.set_const_fixed(m, d)
+
+    aabb = m.geom_aabb.numpy().reshape(2, -1, 6)
+    rbound = m.geom_rbound.numpy()
+    subtreemass = m.body_subtreemass.numpy()
+    for w in range(2):
+      mjm_w = copy.copy(mjm)
+      mjm_w.geom_size[1:] *= scales[w]
+      mjm_w.body_mass[:] *= scales[w]
+      mujoco.mj_setConst(mjm_w, mujoco.MjData(mjm_w))
+      _assert_eq(aabb[w, 1:], mjm_w.geom_aabb[1:], f"geom_aabb_world_{w}")
+      _assert_eq(rbound[w], mjm_w.geom_rbound, f"geom_rbound_world_{w}")
+      _assert_eq(subtreemass[w], mjm_w.body_subtreemass, f"body_subtreemass_world_{w}")
+
+  def test_set_const_fixed_rejects_shared_derived_rows(self):
+    """A batched source with an unbatched derived field makes every world write the same row."""
+    _, _, m, d = test_data.fixture(
+      xml="""
+    <mujoco>
+      <worldbody>
+        <body>
+          <freejoint/>
+          <geom type="box" size=".1 .2 .3" mass="1"/>
+        </body>
+      </worldbody>
+    </mujoco>
+    """,
+      nworld=2,
+    )
+    m.geom_size = wp.array(np.tile(m.geom_size.numpy(), (2, 1, 1)), dtype=wp.vec3)
+    with self.assertRaisesRegex(ValueError, "geom_aabb"):
+      mjwarp.set_const_fixed(m, d)
+
+    m.geom_size = wp.array(m.geom_size.numpy()[:1], dtype=wp.vec3)
+    m.body_mass = wp.array(np.tile(m.body_mass.numpy(), (2, 1)), dtype=float)
+    with self.assertRaisesRegex(ValueError, "body_subtreemass"):
+      mjwarp.set_const_fixed(m, d)
+
 
 # TODO(team): test set_const_0 sparse
 
