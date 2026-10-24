@@ -36,6 +36,83 @@ def _assert_eq(a, b, name):
 
 
 class SetConstTest(parameterized.TestCase):
+  @parameterized.product(nworld=(1, 2), restore=(False, True))
+  def test_camera_light_references_do_not_depend_on_previous_references(self, nworld, restore):
+    """Recompute each world's references from local poses, including tracking modes."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option gravity="0 0 0"/>
+        <worldbody>
+          <body name="base">
+            <freejoint/>
+            <geom type="sphere" size="0.1" mass="1"/>
+            <body name="target" pos="0.3 0.4 0.2">
+              <geom type="sphere" size="0.1" mass="2"/>
+            </body>
+            <camera mode="fixed" pos="0.2 0.1 1"/>
+            <camera mode="track" pos="0.2 0.1 1"/>
+            <camera mode="trackcom" pos="0.2 0.1 1"/>
+            <camera mode="targetbody" target="target" pos="0.2 0.1 1"/>
+            <camera mode="targetbodycom" target="target" pos="0.2 0.1 1"/>
+            <light mode="fixed" pos="0.2 0.1 1" dir="1 0 -1"/>
+            <light mode="track" pos="0.2 0.1 1" dir="1 0 -1"/>
+            <light mode="trackcom" pos="0.2 0.1 1" dir="1 0 -1"/>
+            <light mode="targetbody" target="target" pos="0.2 0.1 1"/>
+            <light mode="targetbodycom" target="target" pos="0.2 0.1 1"/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=nworld,
+      qvel_noise=0.1,
+    )
+    fields = ("cam_pos0", "cam_poscom0", "cam_mat0", "light_pos0", "light_poscom0", "light_dir0")
+    poses = np.repeat(mjm.qpos0[None], nworld, axis=0)
+    poses[0, 0] = 0.2
+    if nworld == 2:
+      poses[1, 0] = 0.8
+      poses[1, 3:7] = (np.sqrt(0.5), 0, 0, np.sqrt(0.5))
+    m.qpos0 = wp.array(poses, dtype=float)
+    for field in fields:
+      array = getattr(m, field)
+      setattr(m, field, wp.full((nworld, *array.shape[1:]), wp.inf, dtype=array.dtype))
+    for field in ("cam_xpos", "cam_xmat", "light_xpos", "light_xdir"):
+      getattr(d, field).fill_(wp.inf)
+    qpos_before, qvel_before = d.qpos.numpy(), d.qvel.numpy()
+
+    expected = []
+    for worldid in range(nworld):
+      native = copy.copy(mjm)
+      native.qpos0[:] = poses[worldid]
+      state = mujoco.MjData(native)
+      mujoco.mj_setConst(native, state)
+      expected.append(native)
+
+    mjwarp.set_const_0(m, d, restore=restore)
+
+    np.testing.assert_array_equal(d.qpos.numpy(), qpos_before)
+    np.testing.assert_array_equal(d.qvel.numpy(), qvel_before)
+    for field in fields:
+      actual = getattr(m, field).numpy()
+      reference = np.stack([getattr(native, field).reshape(actual.shape[1:]) for native in expected])
+      np.testing.assert_allclose(actual, reference, atol=1e-5, rtol=1e-5, err_msg=field)
+    if nworld == 2:
+      self.assertFalse(np.allclose(m.cam_pos0.numpy()[0], m.cam_pos0.numpy()[1]))
+      self.assertFalse(np.allclose(m.light_dir0.numpy()[0], m.light_dir0.numpy()[1]))
+
+    if not restore:
+      mjwarp.forward(m, d)
+    for worldid, native in enumerate(expected):
+      state = mujoco.MjData(native)
+      state.qpos[:] = qpos_before[worldid]
+      state.qvel[:] = qvel_before[worldid]
+      mujoco.mj_forward(native, state)
+      for field in ("cam_xpos", "cam_xmat", "light_xpos", "light_xdir"):
+        actual = getattr(d, field).numpy()[worldid]
+        reference = getattr(state, field).reshape(actual.shape)
+        np.testing.assert_allclose(actual, reference, atol=1e-5, rtol=1e-5, err_msg=field)
+
   def test_set_const_qpos0_modification(self):
     """Test set_const recomputes fields after qpos0 modification."""
     mjm, mjd, m, d = test_data.fixture(

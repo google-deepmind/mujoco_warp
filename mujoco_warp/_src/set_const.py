@@ -450,52 +450,60 @@ def _compute_tendon_dot_product(
 def _compute_cam_pos0(
   cam_bodyid: wp.array[int],
   cam_targetbodyid: wp.array[int],
-  cam_xpos_in: wp.array2d[wp.vec3],
-  cam_xmat_in: wp.array2d[wp.mat33],
+  cam_pos: wp.array2d[wp.vec3],
+  cam_quat: wp.array2d[wp.quat],
   xpos_in: wp.array2d[wp.vec3],
+  xquat_in: wp.array2d[wp.quat],
   subtree_com_in: wp.array2d[wp.vec3],
   cam_pos0_out: wp.array2d[wp.vec3],
   cam_poscom0_out: wp.array2d[wp.vec3],
   cam_mat0_out: wp.array2d[wp.mat33],
 ):
   worldid, camid = wp.tid()
-  cam_pos0_id = worldid % cam_pos0_out.shape[0]
   bodyid = cam_bodyid[camid]
   targetid = cam_targetbodyid[camid]
-  cam_xpos = cam_xpos_in[worldid, camid]
+  body_xpos = xpos_in[worldid, bodyid]
+  body_xquat = xquat_in[worldid, bodyid]
+  cam_xpos = body_xpos + mjmath.rot_vec_quat(cam_pos[worldid % cam_pos.shape[0], camid], body_xquat)
 
-  cam_pos0_out[cam_pos0_id, camid] = cam_xpos - xpos_in[worldid, bodyid]
+  cam_pos0_out[worldid % cam_pos0_out.shape[0], camid] = cam_xpos - body_xpos
   if targetid >= 0:
-    cam_poscom0_out[cam_pos0_id, camid] = cam_xpos - subtree_com_in[worldid, targetid]
+    cam_poscom0_out[worldid % cam_poscom0_out.shape[0], camid] = cam_xpos - subtree_com_in[worldid, targetid]
   else:
-    cam_poscom0_out[cam_pos0_id, camid] = cam_xpos - subtree_com_in[worldid, bodyid]
-  cam_mat0_out[cam_pos0_id, camid] = cam_xmat_in[worldid, camid]
+    cam_poscom0_out[worldid % cam_poscom0_out.shape[0], camid] = cam_xpos - subtree_com_in[worldid, bodyid]
+  cam_mat0_out[worldid % cam_mat0_out.shape[0], camid] = mjmath.quat_to_mat(
+    mjmath.mul_quat(body_xquat, cam_quat[worldid % cam_quat.shape[0], camid])
+  )
 
 
 @wp.kernel
 def _compute_light_pos0(
   light_bodyid: wp.array[int],
   light_targetbodyid: wp.array[int],
-  light_xpos_in: wp.array2d[wp.vec3],
-  light_xdir_in: wp.array2d[wp.vec3],
+  light_pos: wp.array2d[wp.vec3],
+  light_dir: wp.array2d[wp.vec3],
   xpos_in: wp.array2d[wp.vec3],
+  xquat_in: wp.array2d[wp.quat],
   subtree_com_in: wp.array2d[wp.vec3],
   light_pos0_out: wp.array2d[wp.vec3],
   light_poscom0_out: wp.array2d[wp.vec3],
   light_dir0_out: wp.array2d[wp.vec3],
 ):
   worldid, lightid = wp.tid()
-  light_pos0_id = worldid % light_pos0_out.shape[0]
   bodyid = light_bodyid[lightid]
   targetid = light_targetbodyid[lightid]
-  light_xpos = light_xpos_in[worldid, lightid]
+  body_xpos = xpos_in[worldid, bodyid]
+  body_xquat = xquat_in[worldid, bodyid]
+  light_xpos = body_xpos + mjmath.rot_vec_quat(light_pos[worldid % light_pos.shape[0], lightid], body_xquat)
 
-  light_pos0_out[light_pos0_id, lightid] = light_xpos - xpos_in[worldid, bodyid]
+  light_pos0_out[worldid % light_pos0_out.shape[0], lightid] = light_xpos - body_xpos
   if targetid >= 0:
-    light_poscom0_out[light_pos0_id, lightid] = light_xpos - subtree_com_in[worldid, targetid]
+    light_poscom0_out[worldid % light_poscom0_out.shape[0], lightid] = light_xpos - subtree_com_in[worldid, targetid]
   else:
-    light_poscom0_out[light_pos0_id, lightid] = light_xpos - subtree_com_in[worldid, bodyid]
-  light_dir0_out[light_pos0_id, lightid] = light_xdir_in[worldid, lightid]
+    light_poscom0_out[worldid % light_poscom0_out.shape[0], lightid] = light_xpos - subtree_com_in[worldid, bodyid]
+  light_dir0_out[worldid % light_dir0_out.shape[0], lightid] = mjmath.rot_vec_quat(
+    light_dir[worldid % light_dir.shape[0], lightid], body_xquat
+  )
 
 
 @wp.kernel
@@ -650,7 +658,6 @@ def set_const_0(m: types.Model, d: types.Data, restore: bool = True):
 
   smooth.kinematics(m, d)
   smooth.com_pos(m, d)
-  smooth.camlight(m, d)
   smooth.flex(m, d)
   smooth.tendon(m, d)
   smooth.crb(m, d)
@@ -759,7 +766,7 @@ def set_const_0(m: types.Model, d: types.Data, restore: bool = True):
   wp.launch(
     _compute_cam_pos0,
     dim=(nworld_cam, m.ncam),
-    inputs=[m.cam_bodyid, m.cam_targetbodyid, d.cam_xpos, d.cam_xmat, d.xpos, d.subtree_com],
+    inputs=[m.cam_bodyid, m.cam_targetbodyid, m.cam_pos, m.cam_quat, d.xpos, d.xquat, d.subtree_com],
     outputs=[m.cam_pos0, m.cam_poscom0, m.cam_mat0],
   )
 
@@ -767,7 +774,7 @@ def set_const_0(m: types.Model, d: types.Data, restore: bool = True):
   wp.launch(
     _compute_light_pos0,
     dim=(nworld_light, m.nlight),
-    inputs=[m.light_bodyid, m.light_targetbodyid, d.light_xpos, d.light_xdir, d.xpos, d.subtree_com],
+    inputs=[m.light_bodyid, m.light_targetbodyid, m.light_pos, m.light_dir, d.xpos, d.xquat, d.subtree_com],
     outputs=[m.light_pos0, m.light_poscom0, m.light_dir0],
   )
 
