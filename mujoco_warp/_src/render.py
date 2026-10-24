@@ -1167,8 +1167,12 @@ def _build_megakernel(m: Model, rc: RenderContext):
       ray_origin_world += cam_mat_world @ ray_offset_local_cam
     ray_dir_world = cam_mat_world @ ray_dir_local_cam
 
+    # Start primary rays on the near plane, keeping the camera origin for shading.
+    near_dist = wp.static(rc_static["znear"]) / wp.max(-ray_dir_local_cam[2], 1e-6)
+    primary_origin_world = ray_origin_world + near_dist * ray_dir_world
+
     if wp.static(rc_static["zfar"] > 0.0):
-      max_cam_dist = wp.static(rc_static["zfar"]) / wp.max(-ray_dir_local_cam[2], 1e-6)
+      max_cam_dist = (wp.static(rc_static["zfar"]) - wp.static(rc_static["znear"])) / wp.max(-ray_dir_local_cam[2], 1e-6)
     else:
       max_cam_dist = float(MJ_MAXVAL)
 
@@ -1198,11 +1202,13 @@ def _build_megakernel(m: Model, rc: RenderContext):
       flex_geom_edgeid,
       flex_bvh_id,
       flex_group_root,
-      ray_origin_world,
+      primary_origin_world,
       ray_dir_world,
       max_cam_dist,
       wp.static(rc_static["enable_backface_culling"]),
     )
+    # Restore camera-relative distances for depth, hit points, and attenuation.
+    dist += near_dist
 
     if wp.static(rc_static["zfar"] > 0.0):
       if geom_id != -1 and (dist * -ray_dir_local_cam[2]) > wp.static(rc_static["zfar"]):
@@ -1238,10 +1244,12 @@ def _build_megakernel(m: Model, rc: RenderContext):
         splat_rgba,
         splat_bvh_id,
         splat_group_root[worldid],
-        ray_origin_world,
+        primary_origin_world,
         ray_dir_world,
-        dist,
+        dist - near_dist,
       )
+      if splat_depth > 0.0:
+        splat_depth += near_dist
 
     # Depth and seg are single-sample outputs: only the first pass writes them.
     if ray_base == 0 and render_seg[camid] and geom_id != -1:
