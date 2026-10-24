@@ -1,0 +1,37 @@
+assets/factory_nut.obj and assets/factory_bolt.obj are converted NVIDIA Isaac Lab Factory assets:
+https://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/5.1/Isaac/IsaacLab/Factory/factory_nut_m16.usd
+https://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/5.1/Isaac/IsaacLab/Factory/factory_bolt_m16.usd
+
+Copyright NVIDIA CORPORATION & AFFILIATES. Original asset terms apply; conversion
+does not relicense these assets under this repository's Apache-2.0 license.
+
+
+Thread collision geometry was generated with mjfit, by Younghyo Park:
+https://github.com/younghyopark/mjfit/tree/5833f465896e1e06bc4be4f003be847f5183a4db
+The mjfit MIT license is reproduced below.
+
+The Franka model is derived from benchmarks/franka_emika_panda/panda.xml.
+Its meshes are fetched from MuJoCo Menagerie at the revision in __init__.py;
+the upstream Franka asset license is preserved by the benchmark assembler.
+
+MIT License
+
+Copyright (c) 2026 Younghyo Park
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
