@@ -1534,16 +1534,13 @@ class IOTest(parameterized.TestCase):
     np.testing.assert_allclose(m.opt.noslip_tolerance.numpy(), [1e-3])
 
   @parameterized.parameters(7, 8)
-  def test_contact_sensor_vel_unsupported(self, bit):
-    """Contact sensor with linvel (bit 7) or angvel (bit 8) raises NotImplementedError."""
+  def test_contact_sensor_vel_flex_unsupported(self, bit):
+    """Contact sensor linvel (bit 7) or angvel (bit 8) with flex raises NotImplementedError."""
     mjm = mujoco.MjModel.from_xml_string("""
       <mujoco>
         <worldbody>
           <geom type="plane" size="1 1 1"/>
-          <body>
-            <freejoint/>
-            <geom size="0.1"/>
-          </body>
+          <flexcomp name="rope" type="grid" count="3 1 1" spacing=".1 .1 .1" pos="0 0 .5" dim="1" radius=".01"/>
         </worldbody>
         <sensor>
           <contact data="found"/>

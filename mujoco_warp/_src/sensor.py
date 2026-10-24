@@ -1773,6 +1773,8 @@ def sensor_vel(m: Model, d: Data):
     )
 
   # apply sensor delay/interval for velocity sensors
+  _eval_sensor_contact(m, d, m.sensor_contact_vel_adr)
+
   history.apply_sensor_delay(m, d, m.sensor_stage_vel_adr)
 
   if m.callback.sensor:
@@ -2672,12 +2674,17 @@ def _sensor_contact(
   sensor_intprm: wp.array2d[int],
   sensor_dim: wp.array[int],
   sensor_adr: wp.array[int],
+  body_rootid: wp.array[int],
+  geom_bodyid: wp.array[int],
   # Data in:
+  subtree_com_in: wp.array2d[wp.vec3],
+  cvel_in: wp.array2d[wp.spatial_vector],
   contact_dist_in: wp.array[float],
   contact_pos_in: wp.array[wp.vec3],
   contact_frame_in: wp.array[wp.mat33],
   contact_friction_in: wp.array[vec5],
   contact_dim_in: wp.array[int],
+  contact_geom_in: wp.array[wp.vec2i],
   contact_efc_address_in: wp.array2d[int],
   contact_adhesion_in: wp.array[float],
   efc_force_in: wp.array2d[float],
@@ -2699,7 +2706,7 @@ def _sensor_contact(
   reduce = sensor_intprm[sensorid, 1]
   dim = sensor_dim[sensorid]
 
-  # found, force, torque, dist, pos, normal, tangent
+  # found, force, torque, dist, pos, normal, tangent, linvel, angvel
   # TODO(thowell): precompute slot size
   found = False
   force = False
@@ -2708,9 +2715,11 @@ def _sensor_contact(
   pos = False
   normal = False
   tangent = False
+  linvel = False
+  angvel = False
 
   size = int(0)
-  for i in range(7):
+  for i in range(9):
     if dataspec & (1 << i):
       if i == 0:
         found = True
@@ -2732,6 +2741,12 @@ def _sensor_contact(
         size += 3
       elif i == 6:
         tangent = True
+        size += 3
+      elif i == 7:
+        linvel = True
+        size += 3
+      elif i == 8:
+        angvel = True
         size += 3
 
   num = dim // size  # number of slots
@@ -2878,13 +2893,14 @@ def _sensor_contact(
       if dist:
         out[adr_slot] = contact_dist_in[cid]
         adr_slot += 1
-      if pos:
+      if pos or linvel:
         contact_pos = contact_pos_in[cid]
+      if pos:
         out[adr_slot + 0] = contact_pos[0]
         out[adr_slot + 1] = contact_pos[1]
         out[adr_slot + 2] = contact_pos[2]
         adr_slot += 3
-      if normal or tangent:
+      if normal or tangent or linvel or angvel:
         frame = contact_frame_in[cid]
       if normal:
         contact_normal = frame[0]
@@ -2897,6 +2913,33 @@ def _sensor_contact(
         out[adr_slot + 0] = dir * contact_tangent[0]
         out[adr_slot + 1] = dir * contact_tangent[1]
         out[adr_slot + 2] = dir * contact_tangent[2]
+        adr_slot += 3
+      if linvel or angvel:
+        # velocity of geom[1] relative to geom[0] at the contact point, in the contact frame
+        con_geom = contact_geom_in[cid]
+        body0 = geom_bodyid[con_geom[0]]
+        body1 = geom_bodyid[con_geom[1]]
+        cvel0 = cvel_in[worldid, body0]
+        cvel1 = cvel_in[worldid, body1]
+      if linvel:
+        root0 = body_rootid[body0]
+        root1 = body_rootid[body1]
+        com0 = subtree_com_in[worldid, root0]
+        if root1 == root0:
+          com1 = com0
+        else:
+          com1 = subtree_com_in[worldid, root1]
+        rel_lin = _transform_spatial(cvel1, contact_pos - com1) - _transform_spatial(cvel0, contact_pos - com0)
+        lin_local = frame @ rel_lin
+        out[adr_slot + 0] = lin_local[0]
+        out[adr_slot + 1] = lin_local[1]
+        out[adr_slot + 2] = dir * lin_local[2]
+        adr_slot += 3
+      if angvel:
+        ang_local = frame @ (wp.spatial_top(cvel1) - wp.spatial_top(cvel0))
+        out[adr_slot + 0] = ang_local[0]
+        out[adr_slot + 1] = ang_local[1]
+        out[adr_slot + 2] = dir * ang_local[2]
 
     # zero remaining slots
     for i in range(nslots, num):
@@ -2968,11 +3011,16 @@ def _eval_sensor_contact(m: Model, d: Data, sensor_contact_adr: wp.array[int]):
       m.sensor_intprm,
       m.sensor_dim,
       m.sensor_adr,
+      m.body_rootid,
+      m.geom_bodyid,
+      d.subtree_com,
+      d.cvel,
       d.contact.dist,
       d.contact.pos,
       d.contact.frame,
       d.contact.friction,
       d.contact.dim,
+      d.contact.geom,
       d.contact.efc_address,
       d.contact.adhesion,
       d.efc.force,
