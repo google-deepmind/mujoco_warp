@@ -2121,6 +2121,38 @@ class CollisionTest(parameterized.TestCase):
     self.assertAlmostEqual(dot, 1.0, places=4, msg=f"Frame normal misaligned for {type1}-{type2} at z={z2}")
     self.assertAlmostEqual(float(d.contact.dist.numpy()[0]), expected_dist, places=4)
 
+  @parameterized.parameters("enable", "disable")
+  def test_cylinder_box_shallow_parity(self, multiccd):
+    """Test a cylinder lying on a box with 16.5 um penetration against MuJoCo C."""
+    _, mjd, m, d = test_data.fixture(
+      xml=f"""
+      <mujoco>
+        <option ccd_tolerance="1e-8">
+          <flag multiccd="{multiccd}"/>
+        </option>
+        <worldbody>
+          <geom type="box" size="0.35875 0.585 0.006" pos="0.66125 -0.025 0.744"/>
+          <body pos="0.49133633746319805 -0.28182415790655796 0.7854842383627328"
+                quat="0.4249830167428455 0.4056756931584754 0.5791691787286295 -0.5651369125011616">
+            <freejoint/>
+            <geom type="cylinder" size="0.0355 0.03668333333333333"/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """
+    )
+    d.nacon.fill_(-1)
+    d.contact.dist.fill_(wp.inf)
+    d.contact.frame.fill_(wp.inf)
+    mjw.kinematics(m, d)
+    mjw.collision(m, d)
+
+    nacon = int(d.nacon.numpy()[0])
+    self.assertEqual(nacon, mjd.ncon)
+    np.testing.assert_allclose(np.sort(d.contact.dist.numpy()[:nacon]), np.sort(mjd.contact.dist), atol=1e-6)
+    for normal in d.contact.frame.numpy()[:nacon, 0]:
+      np.testing.assert_allclose(normal, mjd.contact.frame[0, :3], atol=1e-2)
+
   @parameterized.named_parameters(
     (
       "cylinder_box_face_to_face",

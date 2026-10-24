@@ -1339,6 +1339,15 @@ def _is_invalid_face(face: int) -> bool:
 
 
 @wp.func
+def _is_sliver(v1: wp.vec3, v2: wp.vec3, v3: wp.vec3) -> bool:
+  """Return true if two vertices of the triangle coincide to float32 precision."""
+  e1 = wp.length_sq(v2 - v1)
+  e2 = wp.length_sq(v3 - v1)
+  e3 = wp.length_sq(v3 - v2)
+  return wp.min(wp.min(e1, e2), e3) < 1.0e-12 * wp.max(wp.max(e1, e2), e3)
+
+
+@wp.func
 def _epa(
   # In:
   tolerance: float,
@@ -1465,7 +1474,11 @@ def _epa(
 
       pt.nface += 1
 
-      if dist2 >= lower2 and dist2 <= upper2:
+      # a near-repeated support point (smooth geoms skip the repeated vertex check) makes a sliver
+      # face with a noisy normal: keep it in the polytope, but never select it
+      v1 = pt.vert[2 * edge[0]] - pt.vert[2 * edge[0] + 1]
+      v2 = pt.vert[2 * edge[1]] - pt.vert[2 * edge[1] + 1]
+      if dist2 >= lower2 and dist2 <= upper2 and not _is_sliver(w, v1, v2):
         nvalid += 1
       else:
         pt.face[pt.nface - 1] = _invalidate_face(pt.face[pt.nface - 1])
