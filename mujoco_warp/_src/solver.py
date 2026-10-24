@@ -4085,8 +4085,10 @@ def _solve(m: types.Model, d: types.Data, ctx: SolverContext, compact: bool = Fa
     ctx.efm_con, ctx.flex_scratch = derivative.eff_mul_m_scratch(m, d)
 
   warmstart = not (m.opt.disableflags & types.DisableBit.WARMSTART)
+  # the sparse qfrc_constraint rebuild skips worlds without constraints, so zero them here; the
+  # compact solve of a sparse model takes that path although m (the compacted model) is dense
   wp.launch(
-    _solve_init_dof(warmstart, m.is_sparse),
+    _solve_init_dof(warmstart, m.is_sparse or _sparse_compact(ctx)),
     dim=(d.nworld, m.nv),
     inputs=[d.nefc, d.qacc_warmstart, d.qacc_smooth],
     outputs=[d.qacc, d.qfrc_constraint],
