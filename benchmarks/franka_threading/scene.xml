@@ -1331,5 +1331,5 @@
     <global offwidth="1280" offheight="720" azimuth="-34" elevation="-16" />
     <headlight diffuse=".7 .7 .7" ambient=".3 .3 .3" specular="0 0 0" />
   </visual>
-  <statistic center=".5 0 .292" extent=".16" />
+  <statistic center=".5 0 .292" extent=".10" />
 </mujoco>
