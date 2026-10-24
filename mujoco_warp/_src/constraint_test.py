@@ -82,7 +82,8 @@ def _assert_efc_eq(mjm, m, d, mjd, nefc, name, nv, tol=_TOLERANCE):
     mj_efc_J = np.zeros((mjd.nefc, mjm.nv))
     mujoco.mju_sparse2dense(mj_efc_J, mjd.efc_J, mjd.efc_J_rownnz, mjd.efc_J_rowadr, mjd.efc_J_colind)
   else:
-    mj_efc_J = mjd.efc_J.reshape((mjd.nefc, mjm.nv))
+    # efc_J can be preallocated for rows that are later dropped (empty Jacobian)
+    mj_efc_J = mjd.efc_J[: mjd.nefc * mjm.nv].reshape((mjd.nefc, mjm.nv))
 
   if nv > 0:
     mjd_sorted_J = mj_efc_J[mjd_sort_indices].reshape(-1)
@@ -274,6 +275,52 @@ class ConstraintTest(parameterized.TestCase):
 
       _assert_eq(d.nefc.numpy()[0], mjd.nefc, "nefc")
       _assert_eq(d.nl.numpy()[0], mjd.nl, "nl")
+      _assert_efc_eq(mjm, m, d, mjd, mjd.nefc, "efc", m.nv)
+
+  @parameterized.product(
+    jacobian=(mujoco.mjtJacobian.mjJAC_DENSE, mujoco.mjtJacobian.mjJAC_SPARSE),
+    dofless=(False, True),
+  )
+  def test_tendon_empty_jacobian(self, jacobian, dofless):
+    """Tendons with an empty Jacobian do not add equality, friction or limit rows."""
+    # spatial tendons between world sites have no dofs; with dofless=True no
+    # tendon has dofs, so nJten is 0
+    body = "" if dofless else '<body pos="0 0 1"><freejoint/><geom size=".1"/><site name="b"/></body>'
+    tendon = "" if dofless else '<spatial frictionloss="1"><site site="w1"/><site site="b"/></spatial>'
+    mjm, mjd, m, d = test_data.fixture(
+      xml=f"""
+      <mujoco>
+        <worldbody>
+          <site name="w1"/>
+          <site name="w2" pos="1 0 0"/>
+          {body}
+        </worldbody>
+        <tendon>
+          <spatial name="empty" frictionloss="1"><site site="w1"/><site site="w2"/></spatial>
+          <spatial limited="true" range="0 .5"><site site="w1"/><site site="w2"/></spatial>
+          {tendon}
+        </tendon>
+        <equality>
+          <tendon tendon1="empty" polycoef=".5 0 0 0 0"/>
+        </equality>
+      </mujoco>
+    """,
+      overrides={"opt.jacobian": jacobian},
+      qvel_noise=0.1,
+    )
+
+    for arr in (d.nefc, d.ne, d.nf, d.nl, d.efc.type):
+      arr.fill_(-1)
+    for arr in (d.efc.J, d.efc.D, d.efc.vel, d.efc.aref, d.efc.pos, d.efc.margin):
+      arr.fill_(wp.inf)
+
+    mjw.make_constraint(m, d)
+
+    _assert_eq(d.nefc.numpy()[0], mjd.nefc, "nefc")
+    _assert_eq(d.ne.numpy()[0], mjd.ne, "ne")
+    _assert_eq(d.nf.numpy()[0], mjd.nf, "nf")
+    _assert_eq(d.nl.numpy()[0], mjd.nl, "nl")
+    if not dofless:
       _assert_efc_eq(mjm, m, d, mjd, mjd.nefc, "efc", m.nv)
 
   @parameterized.parameters(
