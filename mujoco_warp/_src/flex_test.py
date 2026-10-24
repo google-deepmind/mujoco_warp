@@ -5637,9 +5637,9 @@ class FlexRodBendingTest(parameterized.TestCase):
     if nworld == 2:
       self.assertFalse(np.allclose(qpos[0], qpos[1]))
 
-  @parameterized.parameters("Euler", "implicitfast")
+  @parameterized.parameters("Euler", "RK4")
   def test_rod_explicit_integrators(self, integrator):
-    """Rod bending is integrated explicitly by the other integrators, as in MuJoCo C."""
+    """Rod bending is integrated explicitly by Euler and RK4, as in MuJoCo C."""
     mjm, mjd, m, d = test_data.fixture(
       xml=f"""
       <mujoco>
@@ -5662,6 +5662,37 @@ class FlexRodBendingTest(parameterized.TestCase):
 
     np.testing.assert_allclose(d.qpos.numpy()[0], mjd.qpos, atol=1e-5)
     np.testing.assert_allclose(d.qvel.numpy()[0], mjd.qvel, atol=1e-3)
+
+    for implicit in (types.IntegratorType.IMPLICIT, types.IntegratorType.IMPLICITFAST):
+      m.opt.integrator = int(implicit)
+      with self.assertRaisesRegex(ValueError, "flex elasticity is no longer integrated implicitly"):
+        mjw.forward(m, d)
+
+  @parameterized.parameters('stiffness="10"', 'damping="1"')
+  def test_edge_stiffness_damping_disallowed_in_discrete(self, edge_attr):
+    """Flex edge stiffness and damping are disallowed under the discrete integrator."""
+    _, _, m, d = test_data.fixture(
+      xml=f"""
+      <mujoco>
+        <worldbody>
+          <flexcomp name="rope" type="grid" count="3 1 1" spacing="0.1 0.1 0.1" radius="0.01" dim="1" mass="1">
+            <edge {edge_attr}/>
+          </flexcomp>
+        </worldbody>
+      </mujoco>
+      """,
+    )
+    for integrator in (
+      types.IntegratorType.EULER,
+      types.IntegratorType.RK4,
+      types.IntegratorType.IMPLICIT,
+      types.IntegratorType.IMPLICITFAST,
+    ):
+      m.opt.integrator = int(integrator)
+      mjw.forward(m, d)
+    m.opt.integrator = int(types.IntegratorType.DISCRETE)
+    with self.assertRaisesRegex(ValueError, "discrete integrator: flex edge stiffness and damping are not supported"):
+      mjw.forward(m, d)
 
 
 if __name__ == "__main__":

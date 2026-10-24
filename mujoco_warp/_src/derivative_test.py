@@ -2852,7 +2852,6 @@ class DerivativeTest(parameterized.TestCase):
           </flex>
           <flex name="cable" dim="1" body="v0 v1"
                 vertex="0 0 0  0 0 0" element="0 1">
-            <edge stiffness="50"/>
             <contact selfcollide="none"/>
           </flex>
         </deformable>
