@@ -700,6 +700,7 @@ def _subtree_div(
   # Model:
   body_subtreemass: wp.array2d[float],
   # Data in:
+  xipos_in: wp.array2d[wp.vec3],
   subtree_com_in: wp.array2d[wp.vec3],
   # Data out:
   subtree_com_out: wp.array2d[wp.vec3],
@@ -707,7 +708,10 @@ def _subtree_div(
   worldid, bodyid = wp.tid()
   com = subtree_com_in[worldid, bodyid]
   mass = body_subtreemass[worldid % body_subtreemass.shape[0], bodyid]
-  if mass != 0.0:
+  # massless subtree: use the body inertial frame, as in mj_comPos
+  if mass < MJ_MINVAL:
+    subtree_com_out[worldid, bodyid] = xipos_in[worldid, bodyid]
+  else:
     subtree_com_out[worldid, bodyid] = com / mass
 
 
@@ -825,7 +829,7 @@ def com_pos(m: Model, d: Data):
       outputs=[d.subtree_com],
     )
 
-  wp.launch(_subtree_div, dim=(d.nworld, m.nbody), inputs=[m.body_subtreemass, d.subtree_com], outputs=[d.subtree_com])
+  wp.launch(_subtree_div, dim=(d.nworld, m.nbody), inputs=[m.body_subtreemass, d.xipos, d.subtree_com], outputs=[d.subtree_com])
   wp.launch(
     _cinert,
     dim=(d.nworld, m.nbody),

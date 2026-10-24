@@ -169,6 +169,32 @@ class SmoothTest(parameterized.TestCase):
     _assert_eq(d.cinert.numpy()[0], mjd.cinert, "cinert")
     _assert_eq(d.cdof.numpy()[0], mjd.cdof, "cdof")
 
+  def test_com_pos_massless_subtree(self):
+    """Tests com_pos for a subtree without mass."""
+    _, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <body pos="0 0 1">
+            <joint type="hinge" axis="0 1 0"/>
+            <geom type="capsule" size=".05" fromto="0 0 0 .5 0 0"/>
+            <body name="massless" pos=".5 0 0">
+              <site name="site"/>
+            </body>
+          </body>
+        </worldbody>
+        <keyframe>
+          <key qpos=".5"/>
+        </keyframe>
+      </mujoco>
+    """,
+      keyframe=0,
+    )
+
+    d.subtree_com.fill_(wp.inf)
+    mjw.com_pos(m, d)
+    _assert_eq(d.subtree_com.numpy()[0], mjd.subtree_com, "subtree_com")
+
   def test_camlight(self):
     """Tests camlight."""
     _, mjd, m, d = test_data.fixture("pendula.xml")
