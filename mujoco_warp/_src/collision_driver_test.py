@@ -882,15 +882,18 @@ class CollisionTest(parameterized.TestCase):
 
     nacon = d.nacon.numpy()[0]
     worldid = d.contact.worldid.numpy()[:nacon]
+    dist = d.contact.dist.numpy()[:nacon]
+    pos = d.contact.pos.numpy()[:nacon]
+    frame = d.contact.frame.numpy()[:nacon].reshape(-1, 9)
     for i in range(nworld):
       mjd.qpos[:] = qpos[i]
       mujoco.mj_forward(mjm, mjd)
       self.assertEqual(mjd.ncon, 3 if i == 0 else 0)
       self.assertEqual((worldid == i).sum(), mjd.ncon)
       # float32: depths and positions to 0.1 um; the normal, from points 0.14 mm apart, to 1e-4
-      np.testing.assert_allclose(d.contact.dist.numpy()[:nacon][worldid == i], mjd.contact.dist, atol=1e-7)
-      np.testing.assert_allclose(d.contact.pos.numpy()[:nacon][worldid == i], mjd.contact.pos, atol=1e-7)
-      np.testing.assert_allclose(d.contact.frame.numpy()[:nacon][worldid == i].reshape(-1, 9), mjd.contact.frame, atol=1e-4)
+      np.testing.assert_allclose(dist[worldid == i], mjd.contact.dist, atol=1e-7)
+      np.testing.assert_allclose(pos[worldid == i], mjd.contact.pos, atol=1e-7)
+      np.testing.assert_allclose(frame[worldid == i], mjd.contact.frame, atol=1e-4)
 
   def test_box_mesh_gjk_tuned_direction(self):
     """Matches MuJoCo for a mesh resting on a table-sized box, where GJK tunes its direction.
