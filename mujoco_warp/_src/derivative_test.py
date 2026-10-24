@@ -1872,6 +1872,7 @@ class DerivativeTest(parameterized.TestCase):
   @parameterized.parameters(1, 2)
   def test_eff_joint_tendon_actuator(self, nworld):
     """Tests effective metric build, shift, actuation, mul_m, and solve."""
+    # Inactive entries leave gaps between packed metric indices and object IDs.
     mjm, mjd, m, d = test_data.fixture(
       xml="""
       <mujoco>
@@ -1890,6 +1891,9 @@ class DerivativeTest(parameterized.TestCase):
           </body>
         </worldbody>
         <tendon>
+          <fixed name="inactive">
+            <joint joint="j0" coef="1"/>
+          </fixed>
           <spatial name="t0" stiffness="80" damping="4">
             <site site="s0"/>
             <site site="s2"/>
@@ -1897,6 +1901,7 @@ class DerivativeTest(parameterized.TestCase):
         </tendon>
         <actuator>
           <position joint="j0" kp="30" kv="2" delay="0.01" nsample="4"/>
+          <motor name="inactive" joint="j0"/>
           <dcmotor joint="j1" motorconst="1.5" resistance="0.8"/>
           <muscle tendon="t0" lengthrange="0.1 0.6"/>
         </actuator>
@@ -1907,10 +1912,16 @@ class DerivativeTest(parameterized.TestCase):
       ctrl_noise=0.2,
       nworld=nworld,
     )
+    mjds = [mjd]
     if nworld == 2:
       qvel_np = d.qvel.numpy()
       qvel_np[1] = qvel_np[0] * 1.5 + 0.1
       d.qvel = wp.array(qvel_np, dtype=float)
+      mjd1 = mujoco.MjData(mjm)
+      # Preserve delayed actuator history in world 1's CPU reference.
+      mujoco.mj_copyData(mjd1, mjm, mjd)
+      mjd1.qvel[:] = qvel_np[1]
+      mjds.append(mjd1)
 
     d.efm_diag.fill_(wp.inf)
     d.efm_ts.fill_(wp.inf)
@@ -1919,12 +1930,27 @@ class DerivativeTest(parameterized.TestCase):
     d.efm_ca.fill_(wp.inf)
     d.qacc_smooth.fill_(wp.inf)
 
-    mujoco.mj_forward(mjm, mjd)
+    for mjd_ref in mjds:
+      mujoco.mj_forward(mjm, mjd_ref)
     mjw.forward(m, d)
 
     _assert_eq(d.efm_diag.numpy()[0], mjd.efm_diag, "efm_diag")
-    _assert_eq(d.efm_ts.numpy()[0], mjd.efm_ts, "efm_ts")
-    _assert_eq(d.efm_as.numpy()[0], mjd.efm_as, "efm_as")
+    for w, mjd_ref in enumerate(mjds):
+      self.assertEqual(mjd_ref.nefmT, 1)
+      self.assertEqual(mjd_ref.efm_tid[0], 1)
+      self.assertIn(0, mjd_ref.efm_aid[: mjd_ref.nefmA])
+      self.assertIn(2, mjd_ref.efm_aid[: mjd_ref.nefmA])
+      self.assertNotIn(1, mjd_ref.efm_aid[: mjd_ref.nefmA])
+      # MuJoCo packs active values; MJWarp indexes them by tendon/actuator ID.
+      # Poison unused CPU tails so accidental full-array comparisons always fail.
+      mjd_ref.efm_ts[mjd_ref.nefmT :] = np.nan
+      mjd_ref.efm_as[mjd_ref.nefmA :] = np.nan
+      expected_ts = np.zeros(mjm.ntendon)
+      expected_ts[mjd_ref.efm_tid[: mjd_ref.nefmT]] = mjd_ref.efm_ts[: mjd_ref.nefmT]
+      expected_as = np.zeros(mjm.nactuator)
+      expected_as[mjd_ref.efm_aid[: mjd_ref.nefmA]] = mjd_ref.efm_as[: mjd_ref.nefmA]
+      _assert_eq(d.efm_ts.numpy()[w], expected_ts, "efm_ts")
+      _assert_eq(d.efm_as.numpy()[w], expected_as, "efm_as")
     _assert_eq(d.efm_c.numpy()[0], mjd.efm_c, "efm_c")
     _assert_eq(d.efm_ca.numpy()[0], mjd.efm_ca, "efm_ca")
     _assert_eq(d.qacc_smooth.numpy()[0], mjd.qacc_smooth, "qacc_smooth")
