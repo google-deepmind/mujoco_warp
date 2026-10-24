@@ -2756,7 +2756,7 @@ class IOTest(parameterized.TestCase):
     self.assertGreater(adr, 0)
     self.assertEqual(m.nflexrodhinge, 2)
     np.testing.assert_array_equal(m.flex_rodhinge_map.numpy(), [[rod, adr + 1], [rod, adr + 1 + types.ROD_HINGE_SIZE]])
-    self.assertTrue(m.has_flex_stiff_dim23)
+    self.assertFalse(m.has_flex_edge_stiff_damp)
 
   @parameterized.parameters(
     # quadratic flexes are rejected before the self-collision check
