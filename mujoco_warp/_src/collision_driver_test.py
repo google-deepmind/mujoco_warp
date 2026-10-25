@@ -1735,6 +1735,36 @@ class CollisionTest(parameterized.TestCase):
     for p in mjd.contact.pos:
       self.assertLess(np.min(np.linalg.norm(pos - p, axis=1)), 1e-5)
 
+  def test_mesh_mesh_vertex_near_edge_normal(self):
+    """Tests the normal of a cube vertex 1e-7 m from a cube edge, which GJK finds apart."""
+    _, mjd, m, d = test_data.fixture(
+      xml="""
+    <mujoco>
+      <asset>
+        <mesh name="cube" vertex="-0.05 -0.05 -0.05  -0.05 -0.05 0.05  -0.05 0.05 -0.05  -0.05 0.05 0.05
+                                  0.05 -0.05 -0.05  0.05 -0.05 0.05  0.05 0.05 -0.05  0.05 0.05 0.05"/>
+      </asset>
+      <worldbody>
+        <geom name="a" type="mesh" mesh="cube"/>
+        <body pos="0.00675470007 -0.124891281 -0.0860344515" quat="-0.0391251755 -0.22609981 -0.969588031 0.0851301787">
+          <freejoint/>
+          <geom name="b" type="mesh" mesh="cube"/>
+        </body>
+      </worldbody>
+      <sensor>
+        <normal geom1="a" geom2="b" cutoff="1"/>
+      </sensor>
+    </mujoco>
+    """
+    )
+    mjw.kinematics(m, d)
+    d.contact.frame.fill_(wp.inf)
+    mjw.collision(m, d)
+
+    self.assertEqual(int(d.nacon.numpy()[0]), 1)
+    # the closest direction lies between the two faces at the edge, not along either of them
+    self.assertGreater(np.dot(d.contact.frame.numpy()[0, 0], mjd.sensordata[:3]), np.cos(np.radians(5.0)))
+
   def test_box_box_face_penetration_depth(self):
     """Tests box-box face-to-face penetration depth calculation."""
     _, mjd, m, d = test_data.fixture(

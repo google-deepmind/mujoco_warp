@@ -2710,6 +2710,11 @@ def epa_phase(
   if not _supports_multiccd(geom1, geom2, geomtype1, geomtype2):
     idx = -1
 
+  # the origin is outside the polytope, so the geoms are apart, and GJK found how far and along
+  # which direction; the closest face only bounds that gap along its own normal
+  if dist > 0.0:
+    return result.dist, 1, result.x1, result.x2, idx
+
   return dist, 1, x1, x2, idx
 
 
