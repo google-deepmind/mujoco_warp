@@ -964,6 +964,16 @@ def _add_edge(pt: Polytope, e1: int, e2: int) -> int:
 
 
 @wp.func
+def _touches_horizon(pt: Polytope, face: wp.vec3i) -> bool:
+  for j in range(3):
+    twin = face[(j + 1) % 3] + (face[j] << 10)
+    for i in range(pt.nhorizon):
+      if pt.horizon[i] == twin:
+        return True
+  return False
+
+
+@wp.func
 def _epa_witness(
   pt: Polytope, geom1: Geom, geom2: Geom, geomtype1: int, geomtype2: int, face_idx: int
 ) -> Tuple[wp.vec3, wp.vec3, float]:
@@ -1384,18 +1394,27 @@ def _epa(
     pt.nhorizon = _add_edge(pt, face[1], face[2])
     pt.nhorizon = _add_edge(pt, face[2], face[0])
 
-    # compute horizon for w
-    for i in range(pt.nface):
-      if _is_face_deleted(pt.face[i]):
-        continue
+    # delete only the visible faces connected to the closest one, so the deleted region stays one
+    # piece and the horizon one loop; a face listed before the face connecting it waits a pass
+    revisit = bool(True)
+    while revisit and pt.nhorizon >= 0:
+      revisit = bool(False)
+      skipped = bool(False)
+      for i in range(pt.nface):
+        if _is_face_deleted(pt.face[i]):
+          continue
 
-      if wp.dot(pt.face_normal[i], w) > pt.face_dist[i]:
-        nvalid = wp.where(_is_invalid_face(pt.face[i]), nvalid, nvalid - 1)
-        pt.face[i] = _delete_face(pt.face[i])
-        face = _get_face_verts(pt.face[i])
-        pt.nhorizon = _add_edge(pt, face[0], face[1])
-        pt.nhorizon = _add_edge(pt, face[1], face[2])
-        pt.nhorizon = _add_edge(pt, face[2], face[0])
+        if wp.dot(pt.face_normal[i], w) > pt.face_dist[i]:
+          face = _get_face_verts(pt.face[i])
+          if _touches_horizon(pt, face):
+            nvalid = wp.where(_is_invalid_face(pt.face[i]), nvalid, nvalid - 1)
+            pt.face[i] = _delete_face(pt.face[i])
+            pt.nhorizon = _add_edge(pt, face[0], face[1])
+            pt.nhorizon = _add_edge(pt, face[1], face[2])
+            pt.nhorizon = _add_edge(pt, face[2], face[0])
+            revisit = skipped
+          else:
+            skipped = bool(True)
 
     # the polytope cannot grow past this point, so the closest face so far is the answer
     if pt.nhorizon == -1:

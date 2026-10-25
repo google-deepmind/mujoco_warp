@@ -1678,6 +1678,51 @@ class CollisionTest(parameterized.TestCase):
     _assert_eq(d.contact.includemargin.numpy()[0], mjd.contact.includemargin[0], "includemargin")
     _assert_eq(d.contact.dim.numpy()[0], mjd.contact.dim[0], "dim")
 
+  @parameterized.named_parameters(
+    # the points EPA adds lie on the planes of faces it already has, so rounding alone decides
+    # which faces they see
+    (
+      "settling",
+      "-2.2348577e-07 6.56473844e-08 0.0453241728 1 -3.84717641e-05 -2.61477526e-05 -2.60637769e-08",
+      "-3.1359869e-07 3.70566198e-07 0.0491158552 1 -4.04455423e-05 -1.14625118e-05 -1.53755355e-08",
+    ),
+  )
+  def test_mesh_mesh_plates(self, qpos1: str, qpos2: str):
+    """Tests mesh-mesh contacts for two plates of a stack."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml=f"""
+    <mujoco>
+      <asset>
+        <mesh name="plate" vertex="-0.105 -0.148 -0.002  -0.105 -0.148 0.002  -0.105 0.148 -0.002  -0.105 0.148 0.002
+                                   0.105 -0.148 -0.002  0.105 -0.148 0.002  0.105 0.148 -0.002  0.105 0.148 0.002"/>
+      </asset>
+      <worldbody>
+        <body>
+          <freejoint/>
+          <geom type="mesh" mesh="plate"/>
+        </body>
+        <body>
+          <freejoint/>
+          <geom type="mesh" mesh="plate"/>
+        </body>
+      </worldbody>
+      <keyframe>
+        <key qpos="{qpos1} {qpos2}"/>
+      </keyframe>
+    </mujoco>
+    """,
+      keyframe=0,
+    )
+    mjw.kinematics(m, d)
+    d.contact.dist.fill_(wp.inf)
+    d.contact.frame.fill_(wp.inf)
+    mjw.collision(m, d)
+
+    nacon = int(d.nacon.numpy()[0])
+    self.assertEqual(nacon, mjd.ncon)
+    np.testing.assert_allclose(np.sort(d.contact.dist.numpy()[:nacon]), np.sort(mjd.contact.dist), atol=1e-7)
+    np.testing.assert_allclose(d.contact.frame.numpy()[:nacon, 0], mjd.contact.frame[:, :3], atol=1e-4)
+
   def test_box_box_face_penetration_depth(self):
     """Tests box-box face-to-face penetration depth calculation."""
     _, mjd, m, d = test_data.fixture(
