@@ -191,13 +191,7 @@ def _geom_dist(
       geom2.mesh_polymapnum = mesh_polymapnum
       geom2.mesh_polymap = mesh_polymap
 
-    (
-      dist,
-      ncon,
-      x1,
-      x2,
-      idx,
-    ) = ccd(
+    contact = ccd(
       tolerance[0],
       1.0e30,
       iterations,
@@ -219,8 +213,13 @@ def _geom_dist(
       overflow_out,
     )
 
+    dist = contact.dist
+    ncon = int(1)
+    x1 = contact.x1
+    x2 = contact.x2
+    idx = contact.face
     if multiccd and idx >= 0:
-      ncon, witness1, witness2, dists = multicontact(
+      ncon, witness1, witness2, dists, _normal = multicontact(
         polygon,
         clipped,
         pnormal,
@@ -237,6 +236,7 @@ def _geom_dist(
         face[idx],
         x1,
         x2,
+        contact.normal,
         geom1,
         geom2,
         geomtype1,
@@ -1512,7 +1512,7 @@ class GJKTest(parameterized.TestCase):
 
       centroid = (polyvert_in[0] + polyvert_in[1] + polyvert_in[2] + polyvert_in[3]) * 0.25
 
-      dist, ncontact, w1, w2, idx = ccd(
+      contact = ccd(
         1e-6,
         10.0,
         100,
@@ -1533,7 +1533,7 @@ class GJKTest(parameterized.TestCase):
         0,
         overflow,
       )
-      out_dist[0] = dist
+      out_dist[0] = contact.dist
 
     ccd_iterations = 100
     out_dist = wp.empty(1, dtype=float)

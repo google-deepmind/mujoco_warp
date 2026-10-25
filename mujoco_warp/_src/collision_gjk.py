@@ -106,6 +106,15 @@ class SupportPoint:
   vertex_index: int
 
 
+@wp.struct
+class ConvexContact:
+  dist: float
+  normal: wp.vec3  # unit, from geom1 to geom2, given by the stage that found dist
+  x1: wp.vec3
+  x2: wp.vec3
+  face: int  # EPA face for multicontact, -1 if none
+
+
 @wp.func
 def _discrete_geoms(g1: int, g2: int) -> bool:
   return (g1 == GeomType.MESH or g1 == GeomType.BOX or g1 == GeomType.HFIELD) and (
@@ -940,9 +949,7 @@ def _touches_horizon(pt: Polytope, face: wp.vec3i) -> bool:
 
 
 @wp.func
-def _epa_witness(
-  pt: Polytope, geom1: Geom, geom2: Geom, geomtype1: int, geomtype2: int, face_idx: int
-) -> Tuple[wp.vec3, wp.vec3, float]:
+def _epa_witness(pt: Polytope, geom1: Geom, geom2: Geom, geomtype1: int, geomtype2: int, face_idx: int) -> ConvexContact:
   face = _get_face_verts(pt.face[face_idx])
   # compute affine coordinates for witness points on plane defined by face
   v1 = pt.vert[2 * face[0]] - pt.vert[2 * face[0] + 1]
@@ -999,7 +1006,13 @@ def _epa_witness(
       p = wp.where(coordinates2[1] > 0, b, p)
       p = wp.where(coordinates2[0] > 0, a, p)
       x1 = x2 - wp.dot(x2 - p, n) * n
-    return x1, x2, -wp.norm_l2(x1 - x2)
+    contact = ConvexContact()
+    contact.dist = -wp.norm_l2(x1 - x2)
+    contact.normal = wp.normalize(x1 - x2)
+    contact.x1 = x1
+    contact.x2 = x2
+    contact.face = face_idx
+    return contact
 
   # face on geom 1
   v1 = pt.vert[2 * face[0]]
@@ -1010,7 +1023,13 @@ def _epa_witness(
   x1[1] = v1[1] * l1 + v2[1] * l2 + v3[1] * l3
   x1[2] = v1[2] * l1 + v2[2] * l2 + v3[2] * l3
 
-  return x1, x2, -pt.face_dist[face_idx]
+  contact = ConvexContact()
+  contact.dist = -pt.face_dist[face_idx]
+  contact.normal = pt.face_normal[face_idx]
+  contact.x1 = x1
+  contact.x2 = x2
+  contact.face = face_idx
+  return contact
 
 
 @wp.func
@@ -1150,6 +1169,15 @@ def _polytope3(
 
 
 @wp.func
+def _flat_side_normal(pt: Polytope, simplex: mat43) -> wp.vec3:
+  """Returns the outward normal of the side of the 2-simplex where polytope3 found no extent."""
+  n = wp.normalize(wp.cross(simplex[1] - simplex[0], simplex[2] - simplex[0]))
+  below = wp.dot(n, simplex[0] - (pt.vert[6] - pt.vert[7]))
+  above = wp.dot(n, pt.vert[8] - pt.vert[9] - simplex[0])
+  return wp.where(above < below, n, -n)
+
+
+@wp.func
 def _polytope4(
   # In:
   pt: Polytope,
@@ -1249,7 +1277,7 @@ def _epa(
   worldid: int,
   # Data out:
   overflow_out: wp.array[int],
-) -> Tuple[float, wp.vec3, wp.vec3, int]:
+) -> ConvexContact:
   """Recover penetration data from two geoms in contact given an initial polytope."""
   upper = FLOAT_MAX
   idx = int(-1)
@@ -1367,11 +1395,13 @@ def _epa(
     # clear horizon
     pt.nhorizon = 0
 
-  # return from valid face
   if idx > -1:
-    x1, x2, dist = _epa_witness(pt, geom1, geom2, geomtype1, geomtype2, idx)
-    return dist, x1, x2, idx
-  return 0.0, wp.vec3(), wp.vec3(), -1
+    return _epa_witness(pt, geom1, geom2, geomtype1, geomtype2, idx)
+
+  contact = ConvexContact()
+  contact.dist = FLOAT_MAX
+  contact.face = -1
+  return contact
 
 
 @wp.func
@@ -2191,11 +2221,12 @@ def multicontact(
   epa_face: int,
   x1: wp.vec3,
   x2: wp.vec3,
+  normal: wp.vec3,
   geom1: Geom,
   geom2: Geom,
   geomtype1: int,
   geomtype2: int,
-) -> Tuple[int, mat43, mat43, wp.vec4]:
+) -> Tuple[int, mat43, mat43, wp.vec4, wp.vec3]:
   witness1 = mat43()
   witness2 = mat43()
   dists = wp.vec4()
@@ -2229,8 +2260,8 @@ def multicontact(
   v1 = feature_vertex1[0]
   v2 = feature_vertex2[0]
 
-  dir = x2 - x1
-  dir_neg = -dir
+  dir = -normal
+  dir_neg = normal
 
   # get all possible face normals for each geom
   nnorms1 = 0
@@ -2312,7 +2343,7 @@ def multicontact(
         nnorms1, v1 = _capsule_edge_normals(geom1.rot, geom1.pos, geom1.size, x1, n1, endvert)
       nres, res = _aligned_face_edge(n1, nnorms1, n2, nnorms2, dir)
       if not nres:
-        return 1, witness1, witness2, dists
+        return 1, witness1, witness2, dists, normal
       is_edge_contact_geom1 = 1
 
     # check if face-edge collision
@@ -2349,11 +2380,11 @@ def multicontact(
         nnorms2, v2 = _capsule_edge_normals(geom2.rot, geom2.pos, geom2.size, x2, n2, endvert)
       nres, res = _aligned_face_edge(n2, nnorms2, n1, nnorms1, dir_neg)
       if not nres:
-        return 1, witness1, witness2, dists
+        return 1, witness1, witness2, dists, normal
       is_edge_contact_geom2 = 1
     else:
       # no multi-contact
-      return 1, witness1, witness2, dists
+      return 1, witness1, witness2, dists, normal
 
   i = res[0]
   j = res[1]
@@ -2411,7 +2442,7 @@ def multicontact(
   # face1 is an edge; clip face1 against face2
   if is_edge_contact_geom1:
     wit_dir = -n2[j]
-    normal = wit_dir
+    clip_normal = wit_dir
     nclipped, clipped1, clipped2, d = _polygon_clip(
       plane_normal, plane_dist, face2, nface2, face1, nface1, n2[j], wit_dir, margin, polygon, clipped
     )
@@ -2421,39 +2452,41 @@ def multicontact(
   # face2 is an edge; clip face2 against face1
   elif is_edge_contact_geom2:
     wit_dir = -n1[j]
-    normal = n1[j]
+    clip_normal = n1[j]
     nclipped, clipped_w1, clipped_w2, d = _polygon_clip(
       plane_normal, plane_dist, face1, nface1, face2, nface2, n1[j], wit_dir, margin, polygon, clipped
     )
   # face-face collision
   else:
     wit_dir = n2[j]
-    normal = -n2[j]
+    clip_normal = -n2[j]
     nclipped, clipped_w1, clipped_w2, d = _polygon_clip(
       plane_normal, plane_dist, face1, nface1, face2, nface2, n1[i], wit_dir, margin, polygon, clipped
     )
 
   if nclipped < 1:
-    return 1, witness1, witness2, dists
+    return 1, witness1, witness2, dists, normal
 
   if margin1 != 0.0 or margin2 != 0.0:
     for k in range(nclipped):
       if margin1 != 0.0:
-        clipped_w1[k] = clipped_w1[k] + margin1 * normal
+        clipped_w1[k] = clipped_w1[k] + margin1 * clip_normal
       if margin2 != 0.0:
-        clipped_w2[k] = clipped_w2[k] - margin2 * normal
+        clipped_w2[k] = clipped_w2[k] - margin2 * clip_normal
       d[k] -= margin
 
-  return nclipped, clipped_w1, clipped_w2, d
+  return nclipped, clipped_w1, clipped_w2, d, clip_normal
 
 
 @wp.func
 def _inflate(
   result: GJKResult, geom1: Geom, geom2: Geom, geomtype1: int, geomtype2: int, margin1: float, margin2: float
-) -> Tuple[float, wp.vec3, wp.vec3]:
+) -> ConvexContact:
   dist = result.dist
   x1 = result.x1
   x2 = result.x2
+  contact = ConvexContact()
+  contact.face = -1
 
   if geomtype1 == GeomType.HFIELD:
     v = result.simplex_index1[0]
@@ -2481,17 +2514,24 @@ def _inflate(
         p = wp.where(coordinates[1] > 0.0, b, p)
         p = wp.where(coordinates[0] > 0.0, a, p)
         x1 = x2 - wp.dot(x2 - p, n) * n
-      dist = -wp.norm_l2(x1 - x2)
-      return dist, x1, x2
+      contact.dist = -wp.norm_l2(x1 - x2)
+      contact.normal = wp.normalize(x1 - x2)
+      contact.x1 = x1
+      contact.x2 = x2
+      return contact
 
+  # the cores are farther apart than the tolerance, so their direction holds for the inflated geoms
   n = wp.normalize(x2 - x1)
   if margin1 > 0.0:
     x1 += margin1 * n
 
   if margin2 > 0.0:
     x2 -= margin2 * n
-  dist -= margin1 + margin2
-  return dist, x1, x2
+  contact.dist = dist - (margin1 + margin2)
+  contact.normal = n
+  contact.x1 = x1
+  contact.x2 = x2
+  return contact
 
 
 @wp.func
@@ -2531,6 +2571,19 @@ def _gjk_simplex_to_epa(
 
 
 @wp.func
+def _gjk_contact(result: GJKResult, fallback: wp.vec3) -> ConvexContact:
+  """Returns the distance found by GJK along its direction, or along fallback if its points meet."""
+  dir = result.x2 - result.x1
+  contact = ConvexContact()
+  contact.dist = result.dist
+  contact.normal = wp.normalize(wp.where(wp.length_sq(dir) > 0.0, dir, fallback))
+  contact.x1 = result.x1
+  contact.x2 = result.x2
+  contact.face = -1
+  return contact
+
+
+@wp.func
 def gjk_phase(
   # In:
   tolerance: float,
@@ -2542,7 +2595,7 @@ def gjk_phase(
   geomtype2: int,
   x_1: wp.vec3,
   x_2: wp.vec3,
-) -> Tuple[bool, float, int, wp.vec3, wp.vec3, GJKResult, Geom, Geom]:
+) -> Tuple[bool, ConvexContact, GJKResult, Geom, Geom]:
   """Run GJK phase of CCD."""
   orig_margin1 = geom1.margin
   orig_margin2 = geom2.margin
@@ -2584,13 +2637,13 @@ def gjk_phase(
         geom1.size = orig_size1
         geom2.margin = orig_margin2
         geom2.size = orig_size2
-        return False, result.dist, 1, result.x1, result.x2, empty, geom1, geom2
-      dist, x1, x2 = _inflate(result, geom1, geom2, geomtype1, geomtype2, full_margin1, full_margin2)
+        return False, _gjk_contact(result, x_2 - x_1), empty, geom1, geom2
+      contact = _inflate(result, geom1, geom2, geomtype1, geomtype2, full_margin1, full_margin2)
       geom1.margin = orig_margin1
       geom1.size = orig_size1
       geom2.margin = orig_margin2
       geom2.size = orig_size2
-      return False, dist, 1, x1, x2, result, geom1, geom2
+      return False, contact, result, geom1, geom2
 
     # deep penetration: reset initial conditions and rerun GJK + EPA
     geom1.margin = orig_margin1
@@ -2606,9 +2659,9 @@ def gjk_phase(
 
   # no penetration depth to recover
   if result.dist > tolerance or result.dim < 2 or result.separated:
-    return False, result.dist, 1, result.x1, result.x2, empty, geom1, geom2
+    return False, _gjk_contact(result, x_2 - x_1), empty, geom1, geom2
 
-  return True, result.dist, 1, result.x1, result.x2, result, geom1, geom2
+  return True, _gjk_contact(result, x_2 - x_1), result, geom1, geom2
 
 
 @wp.func
@@ -2631,8 +2684,8 @@ def epa_phase(
   worldid: int,
   # Data out:
   overflow_out: wp.array[int],
-) -> Tuple[float, int, wp.vec3, wp.vec3, int]:
-  """Run EPA given GJK result. Returns (dist, ncontact, x1, x2, multiccd_idx)."""
+) -> ConvexContact:
+  """Run EPA given GJK result."""
   pt = Polytope()
   pt.nface = 0
   pt.nvert = 0
@@ -2696,26 +2749,27 @@ def epa_phase(
       geomtype2,
     )
 
-  # no starting polytope with volume (e.g. flat support), so there is no depth to recover
+  # no starting polytope with volume: the Minkowski difference is flat beside the 2-simplex, which
+  # GJK found within the tolerance of the origin; where the geoms touch exactly, they touch across
+  # that flat side
   if pt.status:
-    return result.dist, 1, result.x1, result.x2, -1
+    return _gjk_contact(result, _flat_side_normal(pt, result.simplex))
 
   is_discrete = _discrete_geoms(geomtype1, geomtype2) and (geom1.margin == 0.0 and geom2.margin == 0.0)
-  dist, x1, x2, idx = _epa(
+  contact = _epa(
     tolerance, epa_iterations, pt, geom1, geom2, geomtype1, geomtype2, is_discrete, warn_overflow, worldid, overflow_out
   )
-  if idx == -1:
-    return FLOAT_MAX, 0, wp.vec3(), wp.vec3(), -1
-
   if not _supports_multiccd(geom1, geom2, geomtype1, geomtype2):
-    idx = -1
+    contact.face = -1
 
   # the origin is outside the polytope, so the geoms are apart, and GJK found how far and along
   # which direction; the closest face only bounds that gap along its own normal
-  if dist > 0.0:
-    return result.dist, 1, result.x1, result.x2, idx
+  if contact.dist > 0.0:
+    face_idx = contact.face
+    contact = _gjk_contact(result, contact.normal)
+    contact.face = face_idx
 
-  return dist, 1, x1, x2, idx
+  return contact
 
 
 @wp.func
@@ -2741,16 +2795,15 @@ def ccd(
   worldid: int,
   # Data out:
   overflow_out: wp.array[int],
-) -> Tuple[float, int, wp.vec3, wp.vec3, int]:
+) -> ConvexContact:
   """General convex collision detection via GJK/EPA."""
-  needs_epa, dist, ncontact, x1, x2, result, geom1, geom2 = gjk_phase(
+  needs_epa, contact, result, geom1, geom2 = gjk_phase(
     tolerance, cutoff, gjk_iterations, geom1, geom2, geomtype1, geomtype2, x_1, x_2
   )
   if not needs_epa:
-    idx = -1
-    if dist < 0.0 and result.dim > 0 and _supports_multiccd(geom1, geom2, geomtype1, geomtype2):
-      idx = _gjk_simplex_to_epa(result, vert, vert_index, face)
-    return dist, ncontact, x1, x2, idx
+    if contact.dist < 0.0 and result.dim > 0 and _supports_multiccd(geom1, geom2, geomtype1, geomtype2):
+      contact.face = _gjk_simplex_to_epa(result, vert, vert_index, face)
+    return contact
   return epa_phase(
     tolerance,
     epa_iterations,

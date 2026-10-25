@@ -759,7 +759,7 @@ def _collide_mesh_convex(
 
   r_geom = wp.length(geom_size_val)
   if wp.length(geom2_pos - geom_center) <= r_geom + geom2_bounding_radius + margin + geom2_radius + 0.04:
-    dist, ncontact, w1, w2, idx = ccd(
+    contact = ccd(
       tolerance,
       margin + geom2_radius,
       ccd_iterations,
@@ -781,12 +781,12 @@ def _collide_mesh_convex(
       overflow_out,
     )
 
-    if ncontact > 0 and dist < margin + geom2_radius:
-      diff = (w1 - w2) if dist < 0.0 else (w2 - w1)
-      gjk_normal = wp.normalize(diff)
-      if wp.length_sq(diff) < 1e-12:
-        gjk_normal = wp.normalize(geom2_pos - geom_center)
-
+    dist = contact.dist
+    w1 = contact.x1
+    w2 = contact.x2
+    idx = contact.face
+    if dist < margin + geom2_radius:
+      gjk_normal = contact.normal
       best_normal = gjk_normal
       if did >= 0:
         w1_local = wp.transpose(geom_rot) @ (w1 - mesh_geom_pos)
@@ -1522,7 +1522,7 @@ def _flex_narrowphase(warn_overflow: int):
 
       tol = opt_ccd_tolerance[0 % opt_ccd_tolerance.shape[0]]
 
-      dist, ncontact, w1, w2, _ = ccd(
+      contact = ccd(
         tol,
         radius1 + radius2 + mix_margin,
         gjk_iterations,
@@ -1544,15 +1544,14 @@ def _flex_narrowphase(warn_overflow: int):
         overflow_out,
       )
 
-      if ncontact > 0 and dist < 0.0:
-        phys_dist = dist + mix_margin
-        pos = 0.5 * (w1 + w2)
-        nrm = wp.normalize(w1 - w2)
+      if contact.dist < 0.0:
+        phys_dist = contact.dist + mix_margin
+        pos = 0.5 * (contact.x1 + contact.x2)
         _write_candidate(
           max_candidates,
           phys_dist,
           pos,
-          nrm,
+          contact.normal,
           -2,
           flexid1,
           flexid2,
@@ -1996,7 +1995,7 @@ def _flex_narrowphase_elem_detect(warn_overflow: int):
         r_geom = wp.length(geom_size_val)
         if wp.length(centroid - geom_pos) <= r_geom + r_elem + margin + elem_radius + 0.04:
           ccd_cutoff = (margin + elem_radius) if f_dim == 2 else margin
-          dist, ncontact, w1, w2, idx = ccd(
+          contact = ccd(
             tolerance,
             ccd_cutoff,
             ccd_iterations,
@@ -2018,14 +2017,11 @@ def _flex_narrowphase_elem_detect(warn_overflow: int):
             overflow_out,
           )
 
+          dist = contact.dist
           cand_dist = (dist - elem_radius) if f_dim == 2 else dist
-          if ncontact > 0 and cand_dist < margin:
-            diff = (w1 - w2) if dist < 0.0 else (w2 - w1)
-            normal = wp.normalize(diff)
-            if wp.length_sq(diff) < 1e-12:
-              normal = wp.normalize(centroid - geom_pos)
-
-            contact_pos = 0.5 * (w1 + w2)
+          if cand_dist < margin:
+            normal = contact.normal
+            contact_pos = 0.5 * (contact.x1 + contact.x2)
             if f_dim == 2:
               contact_pos -= 0.5 * elem_radius * normal
 
