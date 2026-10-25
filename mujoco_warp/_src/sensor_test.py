@@ -976,6 +976,36 @@ class SensorTest(parameterized.TestCase):
 
     _assert_eq(d.sensordata.numpy()[0], mjd.sensordata, "sensordata")
 
+  @parameterized.parameters(1e-6, -1e-6)
+  def test_sensor_collision_shallow(self, dist):
+    """Tests collision sensors for two spheres a micrometer apart, away from the origin."""
+    pos = 1.0 + (0.2 + dist) * np.array([0.48, -0.6, 0.64])
+    _, mjd, m, d = test_data.fixture(
+      xml=f"""
+      <mujoco>
+        <worldbody>
+          <geom name="sphere0" type="sphere" size=".1" pos="1 1 1"/>
+          <body pos="{pos[0]:.17g} {pos[1]:.17g} {pos[2]:.17g}">
+            <freejoint/>
+            <geom name="sphere1" type="sphere" size=".1"/>
+          </body>
+        </worldbody>
+        <sensor>
+          <normal geom1="sphere0" geom2="sphere1" cutoff="1"/>
+          <normal geom1="sphere1" geom2="sphere0" cutoff="1"/>
+          <fromto geom1="sphere0" geom2="sphere1" cutoff="1"/>
+          <fromto geom1="sphere1" geom2="sphere0" cutoff="1"/>
+        </sensor>
+      </mujoco>
+      """
+    )
+
+    d.sensordata.fill_(wp.inf)
+    mjw.collision(m, d)
+    mjw.sensor_pos(m, d)
+
+    _assert_eq(d.sensordata.numpy()[0], mjd.sensordata, "sensordata")
+
   @parameterized.parameters(0, 1)
   def test_insidesite(self, keyframe):
     _, mjd, m, d = test_data.fixture(
