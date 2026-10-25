@@ -899,41 +899,6 @@ def _replace_simplex3(pt: Polytope, v1: int, v2: int, v3: int) -> GJKResult:
 
 
 @wp.func
-def _rotmat(axis: wp.vec3) -> wp.mat33:
-  n = wp.norm_l2(axis)
-  u1 = axis[0] / n
-  u2 = axis[1] / n
-  u3 = axis[2] / n
-
-  sin = 0.86602540378  # sin(120 deg)
-  cos = -0.5  # cos(120 deg)
-  R = wp.mat33()
-  R[0, 0] = cos + u1 * u1 * (1.0 - cos)
-  R[0, 1] = u1 * u2 * (1.0 - cos) - u3 * sin
-  R[0, 2] = u1 * u3 * (1.0 - cos) + u2 * sin
-  R[1, 0] = u2 * u1 * (1.0 - cos) + u3 * sin
-  R[1, 1] = cos + u2 * u2 * (1.0 - cos)
-  R[1, 2] = u2 * u3 * (1.0 - cos) - u1 * sin
-  R[2, 0] = u1 * u3 * (1.0 - cos) - u2 * sin
-  R[2, 1] = u2 * u3 * (1.0 - cos) + u1 * sin
-  R[2, 2] = cos + u3 * u3 * (1.0 - cos)
-  return R
-
-
-@wp.func
-def _ray_triangle(v1: wp.vec3, v2: wp.vec3, v3: wp.vec3, v4: wp.vec3, v5: wp.vec3) -> int:
-  vol1 = _det3(v3 - v1, v4 - v1, v2 - v1)
-  vol2 = _det3(v4 - v1, v5 - v1, v2 - v1)
-  vol3 = _det3(v5 - v1, v3 - v1, v2 - v1)
-
-  if vol1 >= 0.0 and vol2 >= 0.0 and vol3 >= 0.0:
-    return 1
-  if vol1 <= 0.0 and vol2 <= 0.0 and vol3 <= 0.0:
-    return -1
-  return 0
-
-
-@wp.func
 def _get_edge(edge: int) -> wp.vec2i:
   return wp.vec2i(edge & 0x3FF, (edge >> 10) & 0x3FF)
 
@@ -1060,8 +1025,8 @@ def _polytope2(
   geom2: Geom,
   geomtype1: int,
   geomtype2: int,
-) -> Tuple[Polytope, GJKResult]:
-  """Create polytope for EPA given a 1-simplex from GJK."""
+) -> GJKResult:
+  """Grow a 1-simplex from GJK into a 2-simplex for polytope3 with one support point."""
   diff = simplex[1] - simplex[0]
 
   # find component with smallest magnitude (so cross product is largest)
@@ -1075,14 +1040,8 @@ def _polytope2(
   # cross product with best coordinate axis
   e = wp.vec3(0.0, 0.0, 0.0)
   e[index] = 1.0
-  d1 = wp.cross(e, diff)
+  d = wp.cross(e, diff)
 
-  # rotate around the line segment to get three more points spaced 120 degrees apart
-  R = _rotmat(diff)
-  d2 = R @ d1
-  d3 = R @ d2
-
-  # save vertices and get indices for each one
   pt.vert[0] = simplex1[0]
   pt.vert[1] = simplex2[0]
   pt.vert[2] = simplex1[1]
@@ -1093,52 +1052,8 @@ def _polytope2(
   pt.vert_index[2] = simplex_index1[1]
   pt.vert_index[3] = simplex_index2[1]
 
-  _epa_support(pt, 2, geom1, geom2, geomtype1, geomtype2, d1 / wp.norm_l2(d1))
-  _epa_support(pt, 3, geom1, geom2, geomtype1, geomtype2, d2 / wp.norm_l2(d2))
-  _epa_support(pt, 4, geom1, geom2, geomtype1, geomtype2, d3 / wp.norm_l2(d3))
-  v2 = pt.vert[4] - pt.vert[5]
-  v3 = pt.vert[6] - pt.vert[7]
-  v4 = pt.vert[8] - pt.vert[9]
-
-  # build hexahedron, whose faces are wound consistently, so the volume across the ring of supports
-  # decides which way they face
-  pt.orient = wp.sign(_det3(v3 - v2, v4 - v2, simplex[0] - simplex[1]))
-  if not _attach_face(pt, 0, 0, 2, 3):
-    pt.status = -1
-    return pt, _replace_simplex3(pt, 0, 2, 3)
-
-  if not _attach_face(pt, 1, 0, 4, 2):
-    pt.status = -1
-    return pt, _replace_simplex3(pt, 0, 4, 2)
-
-  if not _attach_face(pt, 2, 0, 3, 4):
-    pt.status = -1
-    return pt, _replace_simplex3(pt, 0, 3, 4)
-
-  if not _attach_face(pt, 3, 1, 3, 2):
-    pt.status = -1
-    return pt, _replace_simplex3(pt, 1, 3, 2)
-
-  if not _attach_face(pt, 4, 1, 2, 4):
-    pt.status = -1
-    return pt, _replace_simplex3(pt, 1, 2, 4)
-
-  if not _attach_face(pt, 5, 1, 4, 3):
-    pt.status = -1
-    return pt, _replace_simplex3(pt, 1, 4, 3)
-
-  # the hexahedron is not convex when the segment misses the triangle of the supports, which
-  # rounding also decides when the segment passes through an edge of it: build from a 2-simplex
-  # instead, whose edge holds the origin
-  if not _ray_triangle(simplex[0], simplex[1], v2, v3, v4):
-    pt.status = -1
-    return pt, _replace_simplex3(pt, 0, 1, 2)
-
-  # set polytope counts
-  pt.nvert = 5
-  pt.nface = 6
-  pt.status = 0
-  return pt, GJKResult()
+  _epa_support(pt, 2, geom1, geom2, geomtype1, geomtype2, d / wp.norm_l2(d))
+  return _replace_simplex3(pt, 0, 1, 2)
 
 
 @wp.func
@@ -2712,7 +2627,7 @@ def epa_phase(
   pt.horizon = horizon
 
   if result.dim == 2:
-    pt, new_result = _polytope2(
+    new_result = _polytope2(
       pt,
       result.simplex,
       result.simplex1,
@@ -2724,13 +2639,12 @@ def epa_phase(
       geomtype1,
       geomtype2,
     )
-    if pt.status == -1:
-      result.simplex = new_result.simplex
-      result.simplex1 = new_result.simplex1
-      result.simplex2 = new_result.simplex2
-      result.simplex_index1 = new_result.simplex_index1
-      result.simplex_index2 = new_result.simplex_index2
-      result.dim = 3
+    result.simplex = new_result.simplex
+    result.simplex1 = new_result.simplex1
+    result.simplex2 = new_result.simplex2
+    result.simplex_index1 = new_result.simplex_index1
+    result.simplex_index2 = new_result.simplex_index2
+    result.dim = 3
   elif result.dim == 4:
     pt, new_result = _polytope4(
       pt,
@@ -2748,7 +2662,7 @@ def epa_phase(
       result.simplex_index2 = new_result.simplex_index2
       result.dim = 3
 
-  # polytope2 and polytope4 may need to fallback here
+  # polytope2 always continues here, and polytope4 may fall back here
   if result.dim == 3:
     pt = _polytope3(
       pt,

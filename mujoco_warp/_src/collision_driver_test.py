@@ -1686,6 +1686,8 @@ class CollisionTest(parameterized.TestCase):
       "-2.2348577e-07 6.56473844e-08 0.0453241728 1 -3.84717641e-05 -2.61477526e-05 -2.60637769e-08",
       "-3.1359869e-07 3.70566198e-07 0.0491158552 1 -4.04455423e-05 -1.14625118e-05 -1.53755355e-08",
     ),
+    # GJK ends on a segment through the origin along the plates' normal
+    ("aligned", "0 0 0 1 0 0 0", "0 0 0.0034358762 1 0 0 0"),
   )
   def test_mesh_mesh_plates(self, qpos1: str, qpos2: str):
     """Tests mesh-mesh contacts for two plates of a stack."""
