@@ -1,6 +1,6 @@
 <mujoco model="aloha cube lift">
   <compiler angle="radian" meshdir="aloha/assets" autolimits="true" />
-  <option cone="elliptic" impratio="10" timestep=".002" integrator="implicitfast" iterations="50" ls_iterations="60" />
+  <option cone="elliptic" impratio="10" timestep=".002" integrator="implicitfast" iterations="50" ls_iterations="50" />
   <asset>
     <material name="black" rgba="0.15 0.15 0.15 1" />
     <mesh file="vx300s_1_base.stl" scale="0.001 0.001 0.001" />

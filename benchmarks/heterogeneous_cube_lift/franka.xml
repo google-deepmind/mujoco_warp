@@ -1,6 +1,6 @@
 <mujoco model="franka cube lift">
   <compiler angle="radian" meshdir="franka_emika_panda/assets" autolimits="true" />
-  <option integrator="implicitfast" timestep=".002" iterations="50" ls_iterations="60" cone="elliptic" impratio="10" />
+  <option integrator="implicitfast" timestep=".002" iterations="50" ls_iterations="50" cone="elliptic" impratio="10" />
   <default>
     <default class="panda">
       <material specular="0.5" shininess="0.25" />

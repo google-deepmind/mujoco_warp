@@ -67,7 +67,7 @@ def model(kind, assets, sleeping=True):
   spec.option.cone = mujoco.mjtCone.mjCONE_ELLIPTIC
   spec.option.impratio = 10
   spec.option.iterations = 50
-  spec.option.ls_iterations = 60
+  spec.option.ls_iterations = 50
   spec.option.enableflags = int(mujoco.mjtEnableBit.mjENBL_SLEEP) if sleeping else 0
   initial = {}
   for name in KINDS if kind == "mixed" else (kind,):

@@ -1,5 +1,5 @@
 <mujoco model="so101 cube lift">
-  <option integrator="implicitfast" timestep=".002" cone="elliptic" iterations="50" ls_iterations="60" impratio="10" />
+  <option integrator="implicitfast" timestep=".002" cone="elliptic" iterations="50" ls_iterations="50" impratio="10" />
   <compiler angle="radian" meshdir="robotstudio_so101/assets" autolimits="true" />
   <visual>
     <scale contactwidth="0.1" contactheight="0.05" forcewidth="0.02" framelength="0.75" framewidth="0.025" camera="0.2" />
