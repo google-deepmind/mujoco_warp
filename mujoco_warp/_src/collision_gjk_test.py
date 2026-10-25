@@ -24,6 +24,7 @@ from mujoco_warp import Model
 from mujoco_warp import kinematics
 from mujoco_warp import test_data
 from mujoco_warp._src.collision_core import Geom
+from mujoco_warp._src.collision_gjk import _polygon_quad
 from mujoco_warp._src.collision_gjk import ccd
 from mujoco_warp._src.collision_gjk import multicontact
 from mujoco_warp._src.collision_gjk import support
@@ -1271,6 +1272,33 @@ class GJKTest(parameterized.TestCase):
     self.assertEqual(ncon, 2)
     np.testing.assert_allclose(x1, np.array([1.907368, -0.052973, 0.700000]), atol=1e-4)
     np.testing.assert_allclose(x2, np.array([1.300000, -0.052973, 0.700000]), atol=1e-4)
+
+  def test_polygon_quad_chamfered_rectangle(self):
+    """Test that multicontact takes one vertex near each corner of a chamfered rectangle."""
+
+    @wp.kernel(module="unique", enable_backward=False)
+    def _test_kernel(polygon_in: wp.array[wp.vec3], npolygon_in: int, quad_out: wp.array[int]):
+      quad, nquad = _polygon_quad(polygon_in, npolygon_in, wp.vec3(0.0, 0.0, 1.0))
+      for i in range(nquad):
+        quad_out[i] = quad[i]
+
+    # the overlap of two nearly coincident plates has two vertices near each corner
+    polygon = wp.array(
+      [
+        [0.105, 0.147, 0.0],
+        [0.104, 0.148, 0.0],
+        [-0.104, 0.148, 0.0],
+        [-0.105, 0.147, 0.0],
+        [-0.105, -0.147, 0.0],
+        [-0.104, -0.148, 0.0],
+        [0.104, -0.148, 0.0],
+        [0.105, -0.147, 0.0],
+      ],
+      dtype=wp.vec3,
+    )
+    quad = wp.full(4, -1, dtype=int)
+    wp.launch(_test_kernel, dim=1, inputs=[polygon, 8], outputs=[quad])
+    self.assertEqual(sorted(quad.numpy() // 2), [0, 1, 2, 3])
 
   def test_tilted_box_box_multiccd(self):
     """Test witness points for tilted box-box face contact."""

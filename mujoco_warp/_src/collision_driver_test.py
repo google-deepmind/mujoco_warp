@@ -1688,6 +1688,12 @@ class CollisionTest(parameterized.TestCase):
     ),
     # GJK ends on a segment through the origin along the plates' normal
     ("aligned", "0 0 0 1 0 0 0", "0 0 0.0034358762 1 0 0 0"),
+    # the overlap polygon has several quadrilaterals of maximum area
+    (
+      "corners",
+      "-9.54490389e-08 -1.99749746e-08 0.0417061523 1 -2.58696158e-08 -2.99900393e-07 3.40919755e-08",
+      "1.37795581e-07 -6.99507439e-08 0.0453387462 1 -1.30752824e-06 1.24143435e-06 -1.10396066e-07",
+    ),
   )
   def test_mesh_mesh_plates(self, qpos1: str, qpos2: str):
     """Tests mesh-mesh contacts for two plates of a stack."""
@@ -1718,12 +1724,16 @@ class CollisionTest(parameterized.TestCase):
     mjw.kinematics(m, d)
     d.contact.dist.fill_(wp.inf)
     d.contact.frame.fill_(wp.inf)
+    d.contact.pos.fill_(wp.inf)
     mjw.collision(m, d)
 
     nacon = int(d.nacon.numpy()[0])
     self.assertEqual(nacon, mjd.ncon)
     np.testing.assert_allclose(np.sort(d.contact.dist.numpy()[:nacon]), np.sort(mjd.contact.dist), atol=1e-7)
     np.testing.assert_allclose(d.contact.frame.numpy()[:nacon, 0], mjd.contact.frame[:, :3], atol=1e-4)
+    pos = d.contact.pos.numpy()[:nacon]
+    for p in mjd.contact.pos:
+      self.assertLess(np.min(np.linalg.norm(pos - p, axis=1)), 1e-5)
 
   def test_box_box_face_penetration_depth(self):
     """Tests box-box face-to-face penetration depth calculation."""

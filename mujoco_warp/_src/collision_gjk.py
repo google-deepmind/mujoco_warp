@@ -19,6 +19,7 @@ from typing import Tuple
 import warp as wp
 
 from mujoco_warp._src.collision_core import Geom
+from mujoco_warp._src.math import orthogonals
 from mujoco_warp._src.math import safe_div
 from mujoco_warp._src.types import GeomType
 from mujoco_warp._src.types import OverflowType
@@ -1374,48 +1375,65 @@ def _epa(
 
 
 @wp.func
-def _area4(a: wp.vec3, b: wp.vec3, c: wp.vec3, d: wp.vec3) -> float:
-  """Computes area of a quadrilateral embedded in 3D space."""
-  return 0.5 * wp.norm_l2(wp.cross(a - c, b - d))
+def _polygon_quad(polygon: wp.array[wp.vec3], npolygon: int, n: wp.vec3) -> Tuple[wp.vec4i, int]:
+  """Returns up to four vertices that span a convex polygon (npolygon > 4) with normal n.
 
+  As in Gregorius, "Robust Contact Creation for Physics Simulations" (GDC 2015): the support
+  vertex along a direction fixed to the contact frame, the vertex farthest from it, the vertex
+  making the largest triangle with those two, and the vertex adding the most area outside that
+  triangle. Anchoring the first vertex to the frame keeps the choice from step to step where
+  several quadrilaterals span the polygon equally, e.g. on symmetric polygons, which a search for
+  the maximum area resolves by rounding. The direction is off the frame axes so that faces aligned
+  with the frame do not tie.
+  """
+  t1, t2 = orthogonals(n)
+  anchor = 2.0 * t1 + t2
 
-@wp.func
-def _polygon_quad(polygon: wp.array[wp.vec3], npolygon: int) -> wp.vec4i:
-  """Returns the indices of a quadrilateral of maximum area in a convex polygon (npolygon > 4)."""
-  b = int(1)
-  c = int(2)
-  d = int(3)
-  res = wp.vec4i(0, b, c, d)
-  m = _area4(polygon[0], polygon[b], polygon[c], polygon[d])
-  for a in range(npolygon):
-    while True:
-      m_next = _area4(polygon[a], polygon[b], polygon[c], polygon[(d + 1) % npolygon])
-      if m_next <= m:
-        break
-      m = m_next
-      d = (d + 1) % npolygon
-      res = wp.vec4i(a, b, c, d)
-      while True:
-        m_next = _area4(polygon[a], polygon[b], polygon[(c + 1) % npolygon], polygon[d])
-        if m_next <= m:
-          break
-        m = m_next
-        c = (c + 1) % npolygon
-        res = wp.vec4i(a, b, c, d)
-      while True:
-        m_next = _area4(polygon[a], polygon[(b + 1) % npolygon], polygon[c], polygon[d])
-        if m_next <= m:
-          break
-        m = m_next
-        b = (b + 1) % npolygon
-        res = wp.vec4i(a, b, c, d)
-    if b == a:
-      b = (b + 1) % npolygon
-      if c == b:
-        c = (c + 1) % npolygon
-        if d == c:
-          d = (d + 1) % npolygon
-  return res
+  a = int(0)
+  for i in range(1, npolygon):
+    if wp.dot(polygon[i] - polygon[a], anchor) > 0.0:
+      a = i
+
+  b = a
+  max_dist2 = float(0.0)
+  for i in range(npolygon):
+    dist2 = wp.length_sq(polygon[i] - polygon[a])
+    if dist2 > max_dist2:
+      b = i
+      max_dist2 = dist2
+
+  ab = polygon[b] - polygon[a]
+  c = a
+  max_area = float(0.0)
+  for i in range(npolygon):
+    area = wp.abs(wp.dot(wp.cross(ab, polygon[i] - polygon[a]), n))
+    if area > max_area:
+      c = i
+      max_area = area
+  if c == a:
+    return wp.vec4i(a, b, a, a), 2
+
+  # orient abc counterclockwise about n, so a vertex outside an edge has negative area with it
+  if wp.dot(wp.cross(ab, polygon[c] - polygon[a]), n) < 0.0:
+    tmp = b
+    b = c
+    c = tmp
+
+  d = a
+  max_added = float(0.0)
+  for i in range(npolygon):
+    p = polygon[i]
+    added_ab = -wp.dot(wp.cross(polygon[b] - polygon[a], p - polygon[a]), n)
+    added_bc = -wp.dot(wp.cross(polygon[c] - polygon[b], p - polygon[b]), n)
+    added_ca = -wp.dot(wp.cross(polygon[a] - polygon[c], p - polygon[c]), n)
+    added = wp.max(added_ab, wp.max(added_bc, added_ca))
+    if added > max_added:
+      d = i
+      max_added = added
+  if d == a:
+    return wp.vec4i(a, b, c, a), 3
+
+  return wp.vec4i(a, b, c, d), 4
 
 
 # return number (1, 2 or 3) of dimensions of a simplex; reorder vertices if necessary
@@ -2122,13 +2140,13 @@ def _polygon_clip(
     return 2, witness1, witness2, dists
 
   if npolygon > 4:
-    quad = _polygon_quad(polygon_out, npolygon)
-    for i in range(4):
+    quad, nquad = _polygon_quad(polygon_out, npolygon, n)
+    for i in range(nquad):
       w1, w2, d = _witness_on_face(polygon_out[quad[i]], face1[0], n, dir)
       witness1[i] = w1
       witness2[i] = w2
       dists[i] = d
-    return 4, witness1, witness2, dists
+    return nquad, witness1, witness2, dists
 
   # no pruning needed
   for i in range(npolygon):
