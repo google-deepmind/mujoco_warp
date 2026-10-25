@@ -57,7 +57,11 @@ def advance(index_out: wp.array[int]):
 
 
 def model(kind, assets, sleeping=True):
-  spec = mujoco.MjSpec.from_string('<mujoco><worldbody><geom name="floor" type="plane" size="0 0 .05"/></worldbody></mujoco>')
+  spec = mujoco.MjSpec.from_string(
+    '<mujoco><visual><headlight diffuse=".6 .6 .6" ambient=".3 .3 .3" specular="0 0 0"/>'
+    '<rgba haze=".15 .25 .35 1"/></visual><worldbody>'
+    '<light pos="1.5 0 3" dir="0 0 -1" directional="true"/></worldbody></mujoco>'
+  )
   spec.option.timestep = 0.002
   spec.option.integrator = mujoco.mjtIntegrator.mjINT_IMPLICITFAST
   spec.option.cone = mujoco.mjtCone.mjCONE_ELLIPTIC
@@ -72,17 +76,20 @@ def model(kind, assets, sleeping=True):
     folder = {"franka": "franka_emika_panda", "aloha": "aloha", "so101": "robotstudio_so101"}[name]
     for mesh in child.meshes:
       mesh.file = str(assets / folder / "assets" / Path(mesh.file).name)
-    child.delete(child.geom("floor"))
+    if initial:
+      child.delete(child.geom("floor"))
+    for light in list(child.lights):
+      child.delete(light)
     cm = child.compile()
     replay = np.load(Path(__file__).parent / f"{name}.npz")
     qpos = replay["qpos"][0].copy()
     offset = 1.5 * KINDS.index(name)
     for cube in CUBES[name]:
-      qpos[cm.joint(cube + "_joint").qposadr[0] + 1] += offset
+      qpos[cm.joint(cube + "_joint").qposadr[0]] += offset
     initial[prefix] = cm, qpos, replay["ctrl"]
     for key in list(child.keys):
       child.delete(key)
-    spec.attach(child, prefix=prefix, frame=spec.worldbody.add_frame(pos=[0, offset, 0]))
+    spec.attach(child, prefix=prefix, frame=spec.worldbody.add_frame(pos=[offset, 0, 0]))
   mjm = spec.compile()
   mjd = mujoco.MjData(mjm)
   controls = np.zeros((2500, mjm.nu), dtype=np.float32)

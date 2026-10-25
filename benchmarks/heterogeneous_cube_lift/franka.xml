@@ -236,10 +236,9 @@
       </body>
     </body>
     <geom name="floor" type="plane" size="0 0 .05" material="groundplane" contype="1" conaffinity="1" />
-    <geom name="cube_stand" type="box" pos="0.4506331308 0 0.2708615847" size="0.045 0.045 0.2708615847" rgba=".35 .4 .45 1" />
-    <body name="cube" pos="0.4506331308 0 0.5567231694" quat="1 0 0 0">
+    <body name="cube" pos="0.45 0 0.02" quat="1 0 0 0">
       <freejoint name="cube_joint" />
-      <geom name="cube" type="box" size="0.015 0.015 0.015" mass=".025" friction="1 .005 .0001" rgba=".85 .3 .1 1" condim="4" />
+      <geom name="cube" type="box" size="0.02 0.02 0.02" mass=".025" friction="1 .005 .0001" rgba=".85 .3 .1 1" condim="4" />
     </body>
     <light pos="0 0 2" dir="0 0 -1" diffuse=".6 .6 .6" />
   </worldbody>
@@ -267,10 +266,11 @@
   </contact>
   <visual>
     <global offwidth="1280" offheight="720" azimuth="135" elevation="-20" />
+    <rgba haze=".15 .25 .35 1" />
     <headlight ambient=".4 .4 .4" diffuse=".7 .7 .7" specular="0 0 0" />
   </visual>
-  <statistic center=".3 0 .35" extent=".7333333333" />
+  <statistic center="0.2 0 0.2" extent=".8" />
   <keyframe>
-    <key name="grasp" qpos="0 -0.3 0 -1.8 0 1.5 -0.7853 0.04 0.04 0.4506331308 0 0.5567231694 1 0 0 0" ctrl="0 -0.3 0 -1.8 0 1.5 -0.7853 255" />
+    <key name="grasp" qpos="-4.934646386e-15 0.1645961195 4.536225143e-15 -2.566655995 -1.876904956e-15 2.731252115 -0.7853 0.04 0.04 0.45 0 0.02 1 0 0 0" ctrl="-4.934646386e-15 0.1645961195 4.536225143e-15 -2.566655995 -1.876904956e-15 2.731252115 -0.7853 255" />
   </keyframe>
 </mujoco>

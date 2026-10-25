@@ -122,16 +122,17 @@
                       <joint name="left/left_finger" class="left_finger" />
                       <geom pos="0.0141637 0.0211727 0.06" class="visual" quat="1 1 1 -1" type="mesh" mesh="vx300s_8_custom_finger_left" />
                       <site name="left/left_finger" pos="0.015 -0.06 0.02" />
-                      <geom name="left/left_finger_link/pad" type="box" pos="0.015 -0.06 0.018" size=".008 .015 .002" class="collision" condim="4" friction="1 .005 .0001" />
+                      <geom name="left/left_finger_link/pad" type="box" pos="0.015 -0.08 0.018" size=".008 .015 .002" class="collision" condim="4" friction="1 .005 .0001" />
                     </body>
                     <body name="left/right_finger_link" pos="-0.0191 -0.0141637 0.0211727" quat="1 1 1 1" gravcomp="1">
                       <inertial pos="0.0143711 0.0284792 0.0121421" quat="0.461317 0.537615 -0.545478 0.447894" mass="0.0862932" diaginertia="5.86828e-05 4.46887e-05 1.83949e-05" />
                       <joint name="left/right_finger" class="right_finger" />
                       <geom pos="0.0141637 -0.0211727 0.0597067" class="visual" quat="1 -1 -1 -1" type="mesh" mesh="vx300s_8_custom_finger_right" />
                       <site name="left/right_finger" pos="0.015 0.06 0.02" />
-                      <geom name="left/right_finger_link/pad" type="box" pos="0.015 0.06 0.018" size=".008 .015 .002" class="collision" condim="4" friction="1 .005 .0001" />
+                      <geom name="left/right_finger_link/pad" type="box" pos="0.015 0.08 0.018" size=".008 .015 .002" class="collision" condim="4" friction="1 .005 .0001" />
                     </body>
                   </body>
+                  <site name="grasp_left" pos="0.1361733339 6.659680282e-07 -0.0007557329463" group="5" />
                 </body>
               </body>
             </body>
@@ -188,16 +189,17 @@
                       <joint name="right/left_finger" class="left_finger" />
                       <geom pos="0.0141637 0.0211727 0.06" class="visual" quat="1 1 1 -1" type="mesh" mesh="vx300s_8_custom_finger_left" />
                       <site name="right/left_finger" pos="0.015 -0.06 0.02" />
-                      <geom name="right/left_finger_link/pad" type="box" pos="0.015 -0.06 0.018" size=".008 .015 .002" class="collision" condim="4" friction="1 .005 .0001" />
+                      <geom name="right/left_finger_link/pad" type="box" pos="0.015 -0.08 0.018" size=".008 .015 .002" class="collision" condim="4" friction="1 .005 .0001" />
                     </body>
                     <body name="right/right_finger_link" pos="-0.0191 -0.0141637 0.0211727" quat="1 1 1 1" gravcomp="1">
                       <inertial pos="0.0143711 0.0284792 0.0121421" quat="0.461317 0.537615 -0.545478 0.447894" mass="0.0862932" diaginertia="5.86828e-05 4.46887e-05 1.83949e-05" />
                       <joint name="right/right_finger" class="right_finger" />
                       <geom pos="0.0141637 -0.0211727 0.0597067" class="visual" quat="1 -1 -1 -1" type="mesh" mesh="vx300s_8_custom_finger_right" />
                       <site name="right/right_finger" pos="0.015 0.06 0.02" />
-                      <geom name="right/right_finger_link/pad" type="box" pos="0.015 0.06 0.018" size=".008 .015 .002" class="collision" condim="4" friction="1 .005 .0001" />
+                      <geom name="right/right_finger_link/pad" type="box" pos="0.015 0.08 0.018" size=".008 .015 .002" class="collision" condim="4" friction="1 .005 .0001" />
                     </body>
                   </body>
+                  <site name="grasp_right" pos="0.1361733339 6.659680282e-07 -0.0007557329463" group="5" />
                 </body>
               </body>
             </body>
@@ -206,15 +208,13 @@
       </body>
     </body>
     <geom name="floor" type="plane" size="0 0 .05" material="groundplane" contype="1" conaffinity="1" />
-    <geom name="cube_left_stand" type="box" pos="-0.2006670417 -0.01899933403 0.1462581975" size="0.045 0.045 0.1462581975" rgba=".35 .4 .45 1" />
-    <body name="cube_left" pos="-0.2006670417 -0.01899933403 0.307516395" quat="1 0 0 0">
+    <body name="cube_left" pos="-0.18 -0.019 0.02" quat="1 0 0 0">
       <freejoint name="cube_left_joint" />
-      <geom name="cube_left" type="box" size="0.015 0.015 0.015" mass=".025" friction="1 .005 .0001" rgba=".85 .3 .1 1" condim="4" />
+      <geom name="cube_left" type="box" size="0.02 0.02 0.02" mass=".025" friction="1 .005 .0001" rgba=".85 .3 .1 1" condim="4" />
     </body>
-    <geom name="cube_right_stand" type="box" pos="0.2006670417 -0.01900066597 0.1462581975" size="0.045 0.045 0.1462581975" rgba=".35 .4 .45 1" />
-    <body name="cube_right" pos="0.2006670417 -0.01900066597 0.307516395" quat="1 0 0 0">
+    <body name="cube_right" pos="0.18 -0.019 0.02" quat="1 0 0 0">
       <freejoint name="cube_right_joint" />
-      <geom name="cube_right" type="box" size="0.015 0.015 0.015" mass=".025" friction="1 .005 .0001" rgba=".85 .3 .1 1" condim="4" />
+      <geom name="cube_right" type="box" size="0.02 0.02 0.02" mass=".025" friction="1 .005 .0001" rgba=".85 .3 .1 1" condim="4" />
     </body>
     <light pos="0 0 2" dir="0 0 -1" diffuse=".6 .6 .6" />
   </worldbody>
@@ -243,11 +243,12 @@
     <position class="finger" name="right/gripper" joint="right/left_finger" />
   </actuator>
   <visual>
-    <global offwidth="1280" offheight="720" azimuth="100" elevation="-20" />
+    <global offwidth="1280" offheight="720" azimuth="135" elevation="-20" />
+    <rgba haze=".15 .25 .35 1" />
     <headlight ambient=".4 .4 .4" diffuse=".7 .7 .7" specular="0 0 0" />
   </visual>
-  <statistic center="0 0 .24" extent="1" />
+  <statistic center="0 0 0.2" extent=".8" />
   <keyframe>
-    <key name="grasp" qpos="0 -0.96 1.16 0 -0.2 0 0.028 0.028 0 -0.96 1.16 0 -0.2 0 0.028 0.028 -0.2006670417 -0.01899933403 0.307516395 1 0 0 0 0.2006670417 -0.01900066597 0.307516395 1 0 0 0" ctrl="0 -0.96 1.16 0 -0.2 0 0.028 0 -0.96 1.16 0 -0.2 0 0.028" />
+    <key name="grasp" qpos="-2.2983774e-06 -0.1057979637 0.613090535 -8.757922485e-14 1.063503755 -2.298377218e-06 0.035 0.035 -2.2983774e-06 -0.1057979637 0.613090535 -8.757922876e-14 1.063503755 -2.298377218e-06 0.035 0.035 -0.18 -0.019 0.02 1 0 0 0 0.18 -0.019 0.02 1 0 0 0" ctrl="-2.2983774e-06 -0.1057979637 0.613090535 -8.757922485e-14 1.063503755 -2.298377218e-06 0.035 -2.2983774e-06 -0.1057979637 0.613090535 -8.757922876e-14 1.063503755 -2.298377218e-06 0.035" />
   </keyframe>
 </mujoco>

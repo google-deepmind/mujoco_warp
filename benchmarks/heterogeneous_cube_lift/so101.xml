@@ -4,6 +4,7 @@
   <visual>
     <scale contactwidth="0.1" contactheight="0.05" forcewidth="0.02" framelength="0.75" framewidth="0.025" camera="0.2" />
     <global offwidth="1280" offheight="720" azimuth="135" elevation="-20" />
+    <rgba haze=".15 .25 .35 1" />
     <headlight ambient=".4 .4 .4" diffuse=".7 .7 .7" specular="0 0 0" />
   </visual>
   <default>
@@ -144,6 +145,7 @@
                   <geom name="moving_jaw_box2" class="collision_gripper" type="box" size="0.001 0.004 0.004" pos="-0.0113 -0.076 0.01875" friction="1 .005 .0001" />
                   <geom name="moving_jaw_box3" class="collision_gripper" type="box" size="0.001 0.005 0.006" pos="-0.0093 -0.067 0.01875" friction="1 .005 .0001" />
                 </body>
+                <site name="grasp" pos=".005 0 -.099" group="5" />
               </body>
             </body>
           </body>
@@ -151,8 +153,7 @@
       </body>
     </body>
     <geom name="floor" type="plane" size="0 0 .05" material="groundplane" contype="1" conaffinity="1" />
-    <geom name="cube_stand" type="box" pos="0.1797319558 -0.000421101456 0.03095669204" size="0.045 0.045 0.03095669204" rgba=".35 .4 .45 1" />
-    <body name="cube" pos="0.1797319558 -0.000421101456 0.07391338407" quat="0.9997038027 0 -7.806255642e-17 -0.02433735426">
+    <body name="cube" pos="0.18 0 0.012" quat="0.9997038027 0 -7.806255642e-17 -0.02433735426">
       <freejoint name="cube_joint" />
       <geom name="cube" type="box" size="0.012 0.012 0.012" mass=".025" friction="1 .005 .0001" rgba=".85 .3 .1 1" condim="4" />
     </body>
@@ -167,8 +168,8 @@
     <position class="sts3215" name="gripper" joint="gripper" ctrlrange="-0.17453 1.74533" />
   </actuator>
   <visual />
-  <statistic center=".12 0 .14" extent=".4333333333" />
+  <statistic center="0 0 0.2" extent=".8" />
   <keyframe>
-    <key name="grasp" qpos="0 -0.5 0.5 1.570796327 0 0.35 0.1797319558 -0.000421101456 0.07391338407 0.9997038027 0 -7.806255642e-17 -0.02433735426" ctrl="0 -0.5 0.5 1.570796327 0 0.35" />
+    <key name="grasp" qpos="-0.003092450288 -0.4981586819 0.5127386699 1.556216339 -0.003092450289 0.35 0.18 0 0.012 0.9997038027 0 -7.806255642e-17 -0.02433735426" ctrl="-0.003092450288 -0.4981586819 0.5127386699 1.556216339 -0.003092450289 0.35" />
   </keyframe>
 </mujoco>
