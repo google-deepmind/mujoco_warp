@@ -25,6 +25,8 @@ import mujoco_warp as mjw
 from mujoco_warp import test_data
 from mujoco_warp._src import derivative
 from mujoco_warp._src import forward
+from mujoco_warp._src import types
+from mujoco_warp._src import util_pkg
 
 # tolerance for difference between MuJoCo and mjwarp smooth calculations - mostly
 # due to float precision
@@ -199,8 +201,11 @@ class DerivativeTest(parameterized.TestCase):
       keyframe=0,
     )
 
-    for _ in range(10):
+    with wp.ScopedCapture() as capture:
       mjw.step(m, d)
+
+    for _ in range(10):
+      wp.capture_launch(capture.graph)
 
     mjw.get_data_into(mjd, mjm, d)
     self.assertFalse(np.any(np.isnan(mjd.qpos)))
@@ -570,15 +575,20 @@ class DerivativeTest(parameterized.TestCase):
     error_implicit = 0.0
     error_euler = 0.0
 
+    with wp.ScopedCapture() as capture_impl:
+      mjw.step(m_impl, d_impl)
+    with wp.ScopedCapture() as capture_euler:
+      mjw.step(m_euler, d_euler)
+
     for _ in range(nsteps_large):
       # ground truth: small steps with Euler
       mujoco.mj_step(mjm_gt, mjd_gt, nsubstep)
 
       # implicit at large timestep
-      mjw.step(m_impl, d_impl)
+      wp.capture_launch(capture_impl.graph)
 
       # euler at large timestep
-      mjw.step(m_euler, d_euler)
+      wp.capture_launch(capture_euler.graph)
 
       # accumulate errors
       gt_qpos = mjd_gt.qpos[0]
@@ -1108,6 +1118,108 @@ class DerivativeTest(parameterized.TestCase):
       err_msg="stateful should converge to stateless as te->0",
     )
 
+  @parameterized.parameters(1, 2)
+  def test_dcmotor_thermal_derivative(self, nworld):
+    """Verify hot winding resistance is used for stateless and stateful DC motor derivatives."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option integrator="implicitfast"/>
+        <worldbody>
+          <body>
+            <joint name="sl_bemf" type="slide"/>
+            <geom size="0.1" mass="1"/>
+          </body>
+          <body>
+            <joint name="sf_bemf" type="slide"/>
+            <geom size="0.1" mass="1"/>
+          </body>
+          <body>
+            <joint name="sl_ctrl" type="slide"/>
+            <geom size="0.1" mass="1"/>
+          </body>
+          <body>
+            <joint name="sf_ctrl" type="slide"/>
+            <geom size="0.1" mass="1"/>
+          </body>
+        </worldbody>
+        <actuator>
+          <dcmotor joint="sl_bemf" motorconst="1" resistance="1"
+                   thermal="1 1 0 0.004 25 25"/>
+          <dcmotor joint="sf_bemf" motorconst="1" resistance="1"
+                   inductance="0 0.01" thermal="1 1 0 0.004 25 25"/>
+          <dcmotor joint="sl_ctrl" motorconst="1" resistance="1"
+                   input="vel" controller="0 0 5"
+                   thermal="1 1 0 0.004 25 25"/>
+          <dcmotor joint="sf_ctrl" motorconst="1" resistance="1"
+                   input="vel" controller="0 0 5"
+                   inductance="0 0.01" thermal="1 1 0 0.004 25 25"/>
+        </actuator>
+      </mujoco>
+      """,
+      nworld=nworld,
+    )
+
+    # World 0: 250-degree rise -> R = 2.0; World 1: 500-degree rise -> R = 3.0.
+    temp_rises = [250.0, 500.0]
+    mjds = []
+    act_np = d.act.numpy()
+    qvel_np = d.qvel.numpy()
+    for w in range(nworld):
+      mjd_w = mjd if w == 0 else mujoco.MjData(mjm)
+      for i in range(4):
+        mjd_w.act[mjm.actuator_actadr[i]] = temp_rises[w]
+        mjd_w.qvel[i] = 0.5
+      mujoco.mj_forward(mjm, mjd_w)
+      act_np[w] = mjd_w.act
+      qvel_np[w] = mjd_w.qvel
+      mjds.append(mjd_w)
+
+    d.act.assign(act_np)
+    d.qvel.assign(qvel_np)
+
+    out = wp.empty((nworld, m.nC), dtype=float)
+    out.fill_(wp.inf)
+
+    forward.fwd_position(m, d, factorize=False)
+    forward.fwd_velocity(m, d)
+    derivative.deriv_smooth_vel(m, d, out)
+
+    dt = mjm.opt.timestep
+    te = 0.01
+    s = 1.0 - np.exp(-dt / te)
+    out_np = out.numpy()
+
+    for w in range(nworld):
+      R = 1.0 * (1.0 + 0.004 * temp_rises[w])
+      expected_qderiv = np.array(
+        [
+          -1.0 / R,  # stateless back-EMF: -K^2 / R
+          -1.0 * s / R,  # stateful back-EMF: -K^2 * s / R
+          -5.0 * (1.0 / R),  # stateless ctrl: -kd * (R0 / R)
+          -5.0 * (1.0 / R) * s,  # stateful ctrl: -kd * (R0 / R) * s
+        ]
+      )
+      actual_qderiv = (1.0 - out_np[w, :4]) / dt
+
+      np.testing.assert_allclose(
+        actual_qderiv,
+        expected_qderiv,
+        atol=1e-4,
+        err_msg=f"thermal DCMotor velocity derivative vs expected (world {w})",
+      )
+
+      mujoco.mj_step(mjm, mjds[w])
+      np.testing.assert_allclose(
+        actual_qderiv,
+        mjds[w].qDeriv[:4],
+        atol=1e-4,
+        err_msg=f"thermal DCMotor velocity derivative vs mjd.qDeriv (world {w})",
+      )
+
+    if nworld == 2:
+      self.assertFalse(np.allclose(out_np[0], out_np[1]))
+
   _FLUID_SCENARIOS = {
     "basic": """
       <mujoco>
@@ -1291,6 +1403,2063 @@ class DerivativeTest(parameterized.TestCase):
       _assert_eq(mjw_out[mask], mj_out[mask], name)
     else:
       _assert_eq(mjw_out, mj_out, name)
+
+  @parameterized.parameters(1, 2)
+  def test_discrete_flex_stiffness_and_solve(self, nworld):
+    """Tests discrete flex stiffness assembly, velocity shift, and PCG solve."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option solver="CG" integrator="discrete"/>
+        <worldbody>
+          <flexcomp name="cloth" type="grid" count="6 6 1" spacing="0.05 0.05 0.05"
+                    radius=".005" dim="2" mass="0.5" pos="0 0 1" dof="full">
+            <contact selfcollide="none" contype="0" conaffinity="0"/>
+            <elasticity young="1e3" poisson="0.2" damping="0.1" elastic2d="both" thickness="0.01"/>
+          </flexcomp>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=nworld,
+    )
+
+    mjds = [mjd]
+    if nworld == 2:
+      mjd1 = mujoco.MjData(mjm)
+      qpos = d.qpos.numpy()
+      qpos[1, 2] += 0.05
+      d.qpos = wp.array(qpos, dtype=float, device=d.qpos.device)
+      mjd1.qpos[:] = qpos[1]
+      mjds.append(mjd1)
+
+    for w in range(nworld):
+      mujoco.mj_forward(mjm, mjds[w])
+
+    d.qacc_smooth.fill_(wp.inf)
+    d.efm_K_val.fill_(wp.inf)
+    mjw.forward(m, d)
+
+    # Verify efm_K_val matches MuJoCo C exactly
+    for w in range(nworld):
+      np.testing.assert_allclose(d.efm_K_val.numpy()[w], mjds[w].efm_K_val, atol=1e-5, rtol=1e-5)
+
+    # Verify efm_c matches MuJoCo C with non-zero velocity
+    np.random.seed(42)
+    qvel = np.random.randn(nworld, mjm.nv).astype(np.float32)
+    for w in range(nworld):
+      mjds[w].qvel[:] = qvel[w]
+      mujoco.mj_forward(mjm, mjds[w])
+    d.qvel = wp.array(qvel, dtype=float, device=d.qvel.device)
+    d.efm_c.fill_(wp.inf)
+    mjw.forward(m, d)
+    for w in range(nworld):
+      np.testing.assert_allclose(d.efm_c.numpy()[w], mjds[w].efm_c, atol=1e-5, rtol=1e-5)
+      # Verify qacc_smooth from PCG matches MuJoCo C
+      np.testing.assert_allclose(d.qacc_smooth.numpy()[w], mjds[w].qacc_smooth, atol=1e-3, rtol=1e-3)
+
+    if nworld == 2:
+      self.assertFalse(np.allclose(d.efm_c.numpy()[0], d.efm_c.numpy()[1]))
+
+  @parameterized.parameters(1, 2)
+  def test_discrete_flex_3d_tetrahedral(self, nworld):
+    """Verifies discrete flex stiffness and PCG solve for 3D volumetric flex."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option solver="CG" integrator="discrete"/>
+        <worldbody>
+          <flexcomp name="box" type="grid" count="3 3 3" spacing="0.05 0.05 0.05"
+                    radius=".005" dim="3" mass="0.5" pos="0 0 1" dof="full">
+            <contact selfcollide="none" contype="0" conaffinity="0"/>
+            <elasticity young="1e3" poisson="0.2" damping="0.1"/>
+          </flexcomp>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=nworld,
+    )
+
+    mjds = [mjd]
+    qvel = d.qvel.numpy()
+    qvel[0, 0] = 0.1
+    if nworld == 2:
+      mjd1 = mujoco.MjData(mjm)
+      qpos = d.qpos.numpy()
+      qpos[1, 2] += 0.02
+      qvel[1, 2] = -0.2
+      d.qpos = wp.array(qpos, dtype=float, device=d.qpos.device)
+      mjd1.qpos[:] = qpos[1]
+      mjds.append(mjd1)
+
+    d.qvel = wp.array(qvel, dtype=float, device=d.qvel.device)
+    for w in range(nworld):
+      mjds[w].qvel[:] = qvel[w]
+      mujoco.mj_forward(mjm, mjds[w])
+
+    d.qacc_smooth.fill_(wp.inf)
+    d.efm_K_val.fill_(wp.inf)
+    d.efm_c.fill_(wp.inf)
+    mjw.forward(m, d)
+
+    self.assertGreater(m.nefmK, 0)
+    self.assertEqual(int(m.flex_dim.numpy()[0]), 3)
+
+    # Verify CSR stiffness matrix matches MuJoCo C
+    for w in range(nworld):
+      np.testing.assert_allclose(d.efm_K_val.numpy()[w], mjds[w].efm_K_val, atol=1e-5, rtol=1e-5)
+      # Verify velocity shift c = -h*K*v matches MuJoCo C
+      np.testing.assert_allclose(d.efm_c.numpy()[w], mjds[w].efm_c, atol=1e-5, rtol=1e-5)
+      # Verify qacc_smooth from PCG matches MuJoCo C
+      np.testing.assert_allclose(d.qacc_smooth.numpy()[w], mjds[w].qacc_smooth, atol=1e-3, rtol=1e-3)
+
+    if nworld == 2:
+      self.assertFalse(np.allclose(d.efm_K_val.numpy()[0], d.efm_K_val.numpy()[1]))
+      self.assertFalse(np.allclose(d.efm_c.numpy()[0], d.efm_c.numpy()[1]))
+
+  @absltest.skipIf(
+    not util_pkg.check_version("mujoco>=3.14.1.dev990351372"),
+    "Requires MuJoCo >= 3.14.1.dev990351372",
+  )
+  @parameterized.product(
+    config=["deformed", "collapsed", "inverted"],
+    nworld=[1, 2],
+  )
+  def test_discrete_flex_3d_snh_psd_projection(self, config, nworld):
+    """Verifies SNH PSD-projected material Hessian, velocity shift, and inversion recovery."""
+    spec = mujoco.MjSpec.from_string(
+      """
+      <mujoco>
+        <option solver="CG" integrator="discrete" timestep="0.01" gravity="0 0 0"/>
+        <worldbody>
+          <body name="v0">
+            <inertial pos="0 0 0" mass="1" diaginertia="1 1 1"/>
+            <joint type="slide" axis="1 0 0"/>
+            <joint type="slide" axis="0 1 0"/>
+            <joint type="slide" axis="0 0 1"/>
+          </body>
+          <body name="v1" pos="1 0 0">
+            <inertial pos="0 0 0" mass="1" diaginertia="1 1 1"/>
+            <joint type="slide" axis="1 0 0"/>
+            <joint type="slide" axis="0 1 0"/>
+            <joint type="slide" axis="0 0 1"/>
+          </body>
+          <body name="v2" pos="0 1 0">
+            <inertial pos="0 0 0" mass="1" diaginertia="1 1 1"/>
+            <joint type="slide" axis="1 0 0"/>
+            <joint type="slide" axis="0 1 0"/>
+            <joint type="slide" axis="0 0 1"/>
+          </body>
+          <body name="v3" pos="0 0 1">
+            <inertial pos="0 0 0" mass="1" diaginertia="1 1 1"/>
+            <joint type="slide" axis="1 0 0"/>
+            <joint type="slide" axis="0 1 0"/>
+            <joint type="slide" axis="0 0 1"/>
+          </body>
+        </worldbody>
+        <deformable>
+          <flex name="tet" dim="3" body="v0 v1 v2 v3"
+                vertex="0 0 0  0 0 0  0 0 0  0 0 0" element="0 1 2 3">
+            <contact selfcollide="none" contype="0" conaffinity="0"/>
+            <elasticity young="1200" poisson="0.3" damping="0.1"/>
+          </flex>
+        </deformable>
+      </mujoco>
+      """
+    )
+    spec.flexes[0].elastic3d = 1
+    mjm = spec.compile()
+    mjd = mujoco.MjData(mjm)
+    m = mjw.put_model(mjm)
+    d = mjw.put_data(mjm, mjd, nworld=nworld)
+
+    damping, h = 0.1, 0.01
+    qpos = np.zeros((nworld, mjm.nq), dtype=np.float32)
+    qvel = np.zeros((nworld, mjm.nv), dtype=np.float32)
+    if config == "deformed":
+      qpos[0] = np.array([0.02, -0.01, 0.03, 0.14, 0.03, -0.04, -0.02, 0.09, 0.01, 0.05, -0.03, 0.18], dtype=np.float32)
+    elif config == "collapsed":
+      qpos[0] = np.array([0.0, 0.0, 0.0, 0.08, 0.02, 0.0, -0.03, 0.11, 0.0, 0.25, 0.30, -1.0], dtype=np.float32)
+    else:
+      qpos[0] = np.array([0.0, 0.0, 0.0, 0.10, -0.03, 0.02, -0.04, 0.08, -0.01, 0.15, 0.12, -1.7], dtype=np.float32)
+    qvel[0] = np.array([0.3, -0.4, 0.2, -0.5, 0.2, -0.1, 0.4, -0.3, 0.5, -0.2, 0.6, -0.8], dtype=np.float32)
+    if nworld == 2:
+      qpos[1] = qpos[0] + np.array(
+        [0.01, -0.02, 0.01, 0.03, 0.01, -0.01, -0.02, 0.02, 0.01, -0.01, 0.02, -0.15], dtype=np.float32
+      )
+      qvel[1] = qvel[0] * 1.4 - 0.15
+
+    d.qpos.assign(qpos)
+    d.qvel.assign(qvel)
+    for arr in (d.efm_K_val, d.efm_L, d.efm_c, d.qfrc_damper, d.qacc_smooth, d.qacc):
+      arr.fill_(wp.inf)
+
+    mjw.forward(m, d)
+
+    scale = h * h + h * damping
+    rownnz = m.efm_K_rownnz.numpy()
+    rowadr = m.efm_K_rowadr.numpy()
+    colind = m.efm_K_colind.numpy()
+    v_elem = mjm.flex_elem[:4]
+    xpos0 = np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]], dtype=np.float64)
+    Dm = np.column_stack([xpos0[v_elem[v + 1]] - xpos0[v_elem[0]] for v in range(3)])
+    Dm_inv = np.linalg.inv(Dm)
+    vol0 = abs(np.linalg.det(Dm)) / 6.0
+    grad_n = np.zeros((4, 3), dtype=np.float64)
+    grad_n[1:] = Dm_inv
+    grad_n[0] = -np.sum(grad_n[1:], axis=0)
+    mu_v = -72.0 * mjm.flex_stiffness[21] * vol0 * vol0
+    lambda_v = 2.0 * mjm.flex_stiffness[22] - mu_v
+
+    for w in range(nworld):
+      val_w = d.efm_K_val.numpy()[w]
+      K_dense = np.zeros((mjm.nv, mjm.nv), dtype=np.float64)
+      for r in range(mjm.nv):
+        for k in range(rownnz[r]):
+          K_dense[r, colind[rowadr[r] + k]] = val_w[rowadr[r] + k] / scale
+
+      xpos_w = xpos0 + qpos[w].reshape(4, 3).astype(np.float64)
+      Ds = np.column_stack([xpos_w[v_elem[v + 1]] - xpos_w[v_elem[0]] for v in range(3)])
+      F = Ds @ Dm_inv
+      H9 = np.zeros((9, 9), dtype=np.float64)
+      cof = np.zeros(9, dtype=np.float64)
+      for i in range(3):
+        for a in range(3):
+          for j in range(3):
+            for b in range(3):
+              for l in range(3):
+                for c in range(3):
+                  eps_ijl = (i - j) * (j - l) * (l - i) // 2
+                  eps_abc = (a - b) * (b - c) * (c - a) // 2
+                  term = eps_ijl * eps_abc * F[l, c]
+                  H9[3 * i + a, 3 * j + b] += term
+                  cof[3 * i + a] += 0.5 * term * F[j, b]
+      J = float(np.dot(F[0], cof[:3]))
+      H9 = mu_v * np.eye(9) + lambda_v * np.outer(cof, cof) + (lambda_v * (J - 1.0) - mu_v) * H9
+      evals, evecs = np.linalg.eigh(H9)
+      H9_proj = (evecs * np.maximum(0.0, evals)) @ evecs.T
+      H_ref = np.zeros((12, 12), dtype=np.float64)
+      for i in range(4):
+        vi = v_elem[i]
+        for j in range(4):
+          vj = v_elem[j]
+          for x in range(3):
+            for y in range(3):
+              H_ref[3 * vi + x, 3 * vj + y] = grad_n[i] @ H9_proj[3 * x : 3 * x + 3, 3 * y : 3 * y + 3] @ grad_n[j]
+
+      np.testing.assert_allclose(K_dense, H_ref, atol=5e-3, rtol=1e-4)
+      np.testing.assert_allclose(K_dense, K_dense.T, atol=1e-4)
+      k_evals = np.linalg.eigvalsh(0.5 * (K_dense + K_dense.T))
+      norm_K = float(np.max(np.abs(k_evals)))
+      self.assertGreaterEqual(float(np.min(k_evals)), -1e-6 * max(norm_K, 1.0))
+      np.testing.assert_allclose(d.efm_c.numpy()[w], -h * (H_ref @ qvel[w]), atol=5e-3, rtol=1e-4)
+      np.testing.assert_allclose(d.qfrc_damper.numpy()[w], -damping * (H_ref @ qvel[w]), atol=5e-2, rtol=1e-4)
+      self.assertTrue(np.all(np.isfinite(d.efm_L.numpy()[w])))
+      self.assertTrue(np.all(np.isfinite(d.qacc_smooth.numpy()[w])))
+
+    if nworld == 2:
+      self.assertFalse(np.allclose(d.efm_K_val.numpy()[0], d.efm_K_val.numpy()[1]))
+      self.assertFalse(np.allclose(d.efm_c.numpy()[0], d.efm_c.numpy()[1]))
+
+    if config == "inverted" and nworld == 1:
+      d.qvel.zero_()
+      with wp.ScopedCapture() as capture:
+        mjw.step(m, d)
+      for _ in range(80):
+        wp.capture_launch(capture.graph)
+      xpos_final = xpos0 + d.qpos.numpy()[0].reshape(4, 3)
+      Ds_final = np.column_stack([xpos_final[v_elem[v + 1]] - xpos_final[v_elem[0]] for v in range(3)])
+      self.assertGreater(float(np.linalg.det(Ds_final @ Dm_inv)), 0.1)
+
+  @parameterized.parameters(1, 2)
+  def test_eff_contact_stiffness_and_scale(self, nworld):
+    """Verifies passive flex contact stiffness and scale calculation."""
+    _, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option solver="CG" integrator="discrete" timestep="0.002" gravity="0 0 0"/>
+        <worldbody>
+          <geom type="sphere" size="0.2" pos="0 0 0"/>
+          <flexcomp name="cloth" type="grid" count="3 3 1" spacing="0.1 0.1 0.1" pos="0 0 0.19" dim="2" mass="0.09">
+            <contact passive="true" contype="1" conaffinity="1"/>
+            <elasticity young="1e3" poisson="0.3" thickness="1e-3" damping="0" elastic2d="both"/>
+          </flexcomp>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=nworld,
+    )
+
+    if nworld == 2:
+      qpos = d.qpos.numpy()
+      qpos[1, 2] += 0.005
+      d.qpos = wp.array(qpos, dtype=float, device=d.qpos.device)
+
+    d.qacc.fill_(wp.inf)
+    d.qfrc_spring.fill_(wp.inf)
+    mjw.forward(m, d)
+    _, _, efm_con_scale, _, _ = derivative.build_efm_contact(m, d)
+    scales = efm_con_scale.numpy()
+    active_scales = scales[scales > 0]
+    self.assertGreater(len(active_scales), 0)
+    np.testing.assert_allclose(active_scales, 2.0, atol=1e-5)
+    if nworld == 2:
+      self.assertFalse(np.allclose(d.qfrc_spring.numpy()[0], d.qfrc_spring.numpy()[1]))
+
+  @parameterized.parameters(1, 2)
+  def test_eff_contact_force_and_jacobian(self, nworld):
+    """Verifies passive flex contact normal Jacobian and repulsive forces."""
+    _, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option solver="CG" integrator="discrete" timestep="0.002" gravity="0 0 0"/>
+        <worldbody>
+          <geom type="sphere" size="0.2" pos="0 0 0"/>
+          <flexcomp name="cloth" type="grid" count="3 3 1" spacing="0.1 0.1 0.1" pos="0 0 0.19" dim="2" mass="0.09">
+            <contact passive="true" contype="1" conaffinity="1"/>
+            <elasticity young="1e3" poisson="0.3" thickness="1e-3" damping="0" elastic2d="both"/>
+          </flexcomp>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=nworld,
+    )
+
+    if nworld == 2:
+      qpos = d.qpos.numpy()
+      qpos[1, 2] += 0.005
+      d.qpos = wp.array(qpos, dtype=float, device=d.qpos.device)
+
+    d.qacc.fill_(wp.inf)
+    d.qfrc_spring.fill_(wp.inf)
+    mjw.forward(m, d)
+    for w in range(nworld):
+      # Spring force on generalized coordinates should be non-zero and repulsive
+      qfrc_spring = d.qfrc_spring.numpy()[w]
+      self.assertGreater(np.max(np.abs(qfrc_spring)), 0)
+
+    # Passive contact forces should be positive (repulsive)
+    efm_con_dof, efm_con_val, _, efm_con_force, efm_con_nnz = derivative.build_efm_contact(m, d)
+    forces = efm_con_force.numpy()
+    active_forces = forces[forces > 0]
+    self.assertGreater(len(active_forces), 0)
+
+    # For each contact, check that Jacobian row DOFs are valid and NNZ > 0
+    con_nnz = efm_con_nnz.numpy()
+    con_dof = efm_con_dof.numpy()
+    con_val = efm_con_val.numpy()
+    for i in range(len(forces)):
+      if forces[i] > 0:
+        nnz_i = con_nnz[i]
+        self.assertIn(nnz_i, (3, 9))
+        dofs = con_dof[i, :nnz_i]
+        self.assertTrue(np.all(dofs >= 0) and np.all(dofs < m.nv))
+        vals = con_val[i, :nnz_i]
+        self.assertGreater(np.sum(vals**2), 0)
+
+    if nworld == 2:
+      self.assertFalse(np.allclose(d.qfrc_spring.numpy()[0], d.qfrc_spring.numpy()[1]))
+
+  @parameterized.parameters(1, 2)
+  def test_eff_contact_shift_and_mul_add(self, nworld):
+    """Verifies contact velocity shift and PCG curvature operator positive semi-definiteness."""
+    _, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option solver="CG" integrator="discrete" timestep="0.002" gravity="0 0 0"/>
+        <worldbody>
+          <geom type="sphere" size="0.2" pos="0 0 0"/>
+          <flexcomp name="cloth" type="grid" count="3 3 1" spacing="0.1 0.1 0.1" pos="0 0 0.19" dim="2" mass="0.09">
+            <contact passive="true" contype="1" conaffinity="1"/>
+            <elasticity young="1e3" poisson="0.3" thickness="1e-3" damping="0" elastic2d="both"/>
+          </flexcomp>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=nworld,
+    )
+
+    if nworld == 2:
+      qpos = d.qpos.numpy()
+      qpos[1, 2] += 0.005
+      d.qpos = wp.array(qpos, dtype=float, device=d.qpos.device)
+
+    d.qacc.fill_(wp.inf)
+    mjw.forward(m, d)
+
+    # Velocity shift: non-zero qvel induces shift in efm_c
+    qvel = np.ones((nworld, m.nv), dtype=np.float32)
+    if nworld == 2:
+      qvel[1] = -1.0
+    d.qvel = wp.array(qvel, dtype=float, device=d.qvel.device)
+    d.efm_c.fill_(wp.inf)
+    derivative.eff_shift(m, d)
+    for w in range(nworld):
+      efm_c = d.efm_c.numpy()[w]
+      self.assertGreater(np.max(np.abs(efm_c)), 0)
+
+    # Curvature operator: eff_mul_m adds h^2 * k * J_n^T (J_n p)
+    np.random.seed(42)
+    p_vec = np.random.randn(nworld, m.nv).astype(np.float32)
+    wp_p = wp.array(p_vec, dtype=float, device=d.qvel.device)
+    res_with_contact = wp.zeros_like(wp_p)
+    derivative.eff_mul_m(m, d, res_with_contact, wp_p)
+
+    # Disable passive contact to get metric without contact
+    m.has_flex_passive = False
+    res_without_contact = wp.zeros_like(wp_p)
+    derivative.eff_mul_m(m, d, res_without_contact, wp_p)
+    m.has_flex_passive = True
+
+    delta_res = res_with_contact.numpy() - res_without_contact.numpy()
+    for w in range(nworld):
+      curvature = float(np.dot(p_vec[w], delta_res[w]))
+      self.assertGreaterEqual(curvature, -1e-6, "Contact metric must be positive semi-definite")
+
+    if nworld == 2:
+      self.assertFalse(np.allclose(delta_res[0], delta_res[1]))
+
+  @parameterized.parameters(
+    mujoco.mjtJacobian.mjJAC_DENSE,
+    mujoco.mjtJacobian.mjJAC_SPARSE,
+  )
+  def test_flex_preconditioner_block_allocation(self, jacobian):
+    """Verifies flex 3x3 preconditioner block folding for tendon, actuator, efc, and contact."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option solver="CG" integrator="discrete" timestep="0.005"/>
+        <worldbody>
+          <geom type="plane" size="1 1 0.1"/>
+          <site name="anchor" pos="0 0 0.2"/>
+          <flexcomp name="string" type="grid" dim="2" count="3 3 1" spacing="0.05 0.05 1" pos="0 0 0.001" radius="0.005" mass="0.05">
+            <contact passive="true" contype="1" conaffinity="1"/>
+            <elasticity young="1e4" poisson="0.2" thickness="1e-3" elastic2d="stretch"/>
+          </flexcomp>
+          <body pos="0.1 0 0.002">
+            <joint name="j" type="slide" axis="0 0 1" limited="true" range="-0.01 0.01"/>
+            <geom type="sphere" size="0.01" mass="0.1"/>
+            <site name="s_body" pos="0 0 0"/>
+          </body>
+        </worldbody>
+        <tendon>
+          <spatial name="ten" stiffness="50" damping="2">
+            <site site="anchor"/>
+            <site site="s_body"/>
+          </spatial>
+        </tendon>
+        <actuator>
+          <position tendon="ten" kp="20" kv="1"/>
+        </actuator>
+      </mujoco>
+      """,
+      overrides={"opt.jacobian": jacobian},
+    )
+
+    self.assertEqual(m.nefmdof, 9)
+    self.assertEqual(m.nefmL, 9 * m.nefmdof)
+    d.ctrl.fill_(0.1)
+    d.efm_L.fill_(wp.inf)
+    mjw.forward(m, d)
+    epL = derivative.eff_prec_fold(m, d)
+    res = wp.zeros_like(d.qacc)
+    derivative.eff_prec(m, d, res, d.qfrc_smooth, epL=epL)
+
+    self.assertTrue(np.all(np.isfinite(d.efm_L.numpy())))
+    self.assertTrue(np.all(np.isfinite(epL.numpy())))
+    self.assertTrue(np.all(np.isfinite(res.numpy())))
+    self.assertGreater(np.linalg.norm(res.numpy()), 0.0)
+
+  @parameterized.parameters(1, 2)
+  def test_eff_joint_tendon_actuator(self, nworld):
+    """Tests effective metric build, shift, actuation, mul_m, and solve."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option integrator="discrete" timestep="0.005"/>
+        <worldbody>
+          <site name="s0" pos="0 0 0"/>
+          <body pos="0 0 0.2">
+            <joint name="j0" type="slide" axis="0 0 1" stiffness="40" damping="3"/>
+            <geom type="sphere" size="0.05" mass="0.5"/>
+            <site name="s1" pos="0 0 0"/>
+            <body pos="0 0 0.2">
+              <joint name="j1" type="slide" axis="0 0 1" stiffness="25" damping="2"/>
+              <geom type="sphere" size="0.05" mass="0.4"/>
+              <site name="s2" pos="0 0 0"/>
+            </body>
+          </body>
+        </worldbody>
+        <tendon>
+          <spatial name="t0" stiffness="80" damping="4">
+            <site site="s0"/>
+            <site site="s2"/>
+          </spatial>
+        </tendon>
+        <actuator>
+          <position joint="j0" kp="30" kv="2" delay="0.01" nsample="4"/>
+          <dcmotor joint="j1" motorconst="1.5" resistance="0.8"/>
+          <muscle tendon="t0" lengthrange="0.1 0.6"/>
+        </actuator>
+      </mujoco>
+      """,
+      qpos_noise=0.02,
+      qvel_noise=0.2,
+      ctrl_noise=0.2,
+      nworld=nworld,
+    )
+    if nworld == 2:
+      qvel_np = d.qvel.numpy()
+      qvel_np[1] = qvel_np[0] * 1.5 + 0.1
+      d.qvel = wp.array(qvel_np, dtype=float)
+
+    d.efm_diag.fill_(wp.inf)
+    d.efm_ts.fill_(wp.inf)
+    d.efm_as.fill_(wp.inf)
+    d.efm_c.fill_(wp.inf)
+    d.efm_ca.fill_(wp.inf)
+    d.qacc_smooth.fill_(wp.inf)
+
+    mujoco.mj_forward(mjm, mjd)
+    mjw.forward(m, d)
+
+    _assert_eq(d.efm_diag.numpy()[0], mjd.efm_diag, "efm_diag")
+    _assert_eq(d.efm_ts.numpy()[0], mjd.efm_ts, "efm_ts")
+    _assert_eq(d.efm_as.numpy()[0], mjd.efm_as, "efm_as")
+    _assert_eq(d.efm_c.numpy()[0], mjd.efm_c, "efm_c")
+    _assert_eq(d.efm_ca.numpy()[0], mjd.efm_ca, "efm_ca")
+    _assert_eq(d.qacc_smooth.numpy()[0], mjd.qacc_smooth, "qacc_smooth")
+    if nworld == 2:
+      self.assertFalse(np.allclose(d.qacc_smooth.numpy()[0], d.qacc_smooth.numpy()[1]))
+
+    res_wp = wp.zeros_like(d.qacc_smooth)
+    derivative.eff_mul_m(m, d, res_wp, d.qacc_smooth)
+    expected_rhs = mjd.qfrc_smooth + mjd.efm_c + mjd.efm_ca
+    _assert_eq(res_wp.numpy()[0], expected_rhs, "eff_mul_m")
+
+  @parameterized.product(
+    scenario=("basic", "inertia_box"),
+    nworld=(1, 2),
+  )
+  def test_eff_fluid(self, scenario, nworld):
+    """Tests discrete integrator fluid drag blocks (efm_fluid, qH, eff_mul_m)."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml=self._FLUID_SCENARIOS[scenario],
+      keyframe=0,
+      overrides={"opt.integrator": mujoco.mjtIntegrator.mjINT_DISCRETE},
+      nworld=nworld,
+    )
+    if nworld == 2:
+      qvel_np = d.qvel.numpy()
+      qvel_np[1] = qvel_np[0] * 1.5 + 0.2
+      d.qvel = wp.array(qvel_np, dtype=float)
+
+    d.efm_fluid.fill_(wp.inf)
+    d.qH.fill_(wp.inf)
+    d.qacc_smooth.fill_(wp.inf)
+
+    mujoco.mj_forward(mjm, mjd)
+    mjw.forward(m, d)
+
+    _assert_eq(d.efm_fluid.numpy()[0], mjd.efm_fluid, f"efm_fluid ({scenario})")
+    _assert_eq(d.qH.numpy()[0], mjd.M + mjd.efm_fluid, f"qH ({scenario})")
+    _assert_eq(d.qacc_smooth.numpy()[0], mjd.qacc_smooth, f"qacc_smooth ({scenario})")
+    if nworld == 2:
+      self.assertFalse(np.allclose(d.efm_fluid.numpy()[0], d.efm_fluid.numpy()[1]))
+
+    res_wp = wp.zeros_like(d.qacc_smooth)
+    derivative.eff_mul_m(m, d, res_wp, d.qacc_smooth)
+    expected_rhs = mjd.qfrc_smooth + mjd.efm_c
+    _assert_eq(res_wp.numpy()[0], expected_rhs, f"eff_mul_m ({scenario})")
+
+  @parameterized.parameters(1, 2)
+  def test_discrete_muscle_and_actuator_damping(self, nworld):
+    """Tests discrete integrator with active muscle actuators and actuator damping/dampingpoly."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option integrator="discrete" timestep="0.005"/>
+        <worldbody>
+          <site name="s0" pos="0 0 0"/>
+          <body pos="0 0 0.2">
+            <joint name="j0" type="slide" axis="0 0 1" stiffness="40" damping="3"/>
+            <geom type="sphere" size="0.05" mass="0.5"/>
+            <body pos="0 0 0.2">
+              <joint name="j1" type="slide" axis="0 0 1" stiffness="25" damping="2"/>
+              <geom type="sphere" size="0.05" mass="0.4"/>
+              <site name="s1" pos="0 0 0"/>
+            </body>
+          </body>
+        </worldbody>
+        <tendon>
+          <spatial name="t0" stiffness="50" damping="2">
+            <site site="s0"/>
+            <site site="s1"/>
+          </spatial>
+        </tendon>
+        <actuator>
+          <general joint="j0" gear="2.5" damping="1.5" gaintype="fixed" gainprm="10"/>
+          <general tendon="t0" gear="1.8" damping="1.2" gaintype="fixed" gainprm="5"/>
+          <muscle tendon="t0" lengthrange="0.2 0.6"/>
+        </actuator>
+        <keyframe>
+          <key qpos="0.03 -0.02" qvel="0.4 -0.3" ctrl="0.5 -0.2 0.8" act="0.6"/>
+        </keyframe>
+      </mujoco>
+      """,
+      keyframe=0,
+      overrides={"actuator_dampingpoly": np.array([[0.4, 0.2], [0.3, 0.1], [0.0, 0.0]])},
+      nworld=nworld,
+    )
+    if nworld == 2:
+      qvel_np = d.qvel.numpy()
+      qvel_np[1] = [0.7, -0.5]
+      d.qvel = wp.array(qvel_np, dtype=float)
+
+    d.efm_diag.fill_(wp.inf)
+    d.efm_ts.fill_(wp.inf)
+    d.efm_as.fill_(wp.inf)
+    d.efm_c.fill_(wp.inf)
+    d.efm_ca.fill_(wp.inf)
+    d.qacc_smooth.fill_(wp.inf)
+
+    mujoco.mj_forward(mjm, mjd)
+    mjw.forward(m, d)
+
+    _assert_eq(d.efm_diag.numpy()[0], mjd.efm_diag, "efm_diag")
+    _assert_eq(d.efm_ts.numpy()[0], mjd.efm_ts, "efm_ts")
+    self.assertEqual(mjd.nefmA, 1)
+    self.assertEqual(mjd.efm_aid[0], 2)
+    np.testing.assert_allclose(d.efm_as.numpy()[0, 2], mjd.efm_as[0], rtol=1e-3, atol=1e-4)
+    _assert_eq(d.efm_c.numpy()[0], mjd.efm_c, "efm_c")
+    _assert_eq(d.efm_ca.numpy()[0], mjd.efm_ca, "efm_ca")
+    _assert_eq(d.qacc_smooth.numpy()[0], mjd.qacc_smooth, "qacc_smooth")
+    if nworld == 2:
+      self.assertFalse(np.allclose(d.qacc_smooth.numpy()[0], d.qacc_smooth.numpy()[1]))
+
+  @parameterized.parameters(1, 2)
+  def test_discrete_flex_interp_and_pinned(self, nworld):
+    """Tests discrete integrator with pinned non-centered flex."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option integrator="discrete" timestep="0.002"/>
+        <worldbody>
+          <flexcomp name="pinned_flex" type="grid" count="3 2 1" spacing="0.05 0.05 0.05"
+                    pos="0.3 0 0.3" dim="2" radius="0.01" mass="0.2" dof="full">
+            <pin id="0 1"/>
+            <contact selfcollide="none"/>
+            <elasticity young="2000" damping="0.01" thickness="0.01" elastic2d="both"/>
+          </flexcomp>
+        </worldbody>
+      </mujoco>
+      """,
+      qpos_noise=0.005,
+      qvel_noise=0.1,
+      nworld=nworld,
+    )
+    if nworld == 2:
+      qvel_np = d.qvel.numpy()
+      qvel_np[1] = qvel_np[0] * 1.5 + 1.0
+      d.qvel = wp.array(qvel_np, dtype=float)
+
+    d.efm_L.fill_(wp.inf)
+    d.efm_c.fill_(wp.inf)
+    d.qacc_smooth.fill_(wp.inf)
+
+    mujoco.mj_forward(mjm, mjd)
+    mjw.forward(m, d)
+
+    _assert_eq(d.efm_L.numpy()[0], mjd.efm_L, "efm_L")
+    _assert_eq(d.efm_c.numpy()[0], mjd.efm_c, "efm_c")
+    _assert_eq(d.qacc_smooth.numpy()[0], mjd.qacc_smooth, "qacc_smooth")
+    if nworld == 2:
+      self.assertFalse(np.allclose(d.qacc_smooth.numpy()[0], d.qacc_smooth.numpy()[1]))
+
+  @parameterized.parameters(1, 2)
+  def test_discrete_flex_passive_contact_rotated(self, nworld):
+    """Tests passive flex contact under discrete integrator with rotated body and dynamic geom."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option integrator="discrete" timestep="0.002"/>
+        <worldbody>
+          <geom name="floor" type="plane" size="2 2 0.01"/>
+          <body name="dyn_obstacle" pos="0.2 0 0.02">
+            <joint type="slide" axis="1 0 0"/>
+            <geom type="box" size="0.1 0.1 0.02" mass="1.0"/>
+          </body>
+          <flexcomp name="f0" type="grid" count="2 2 1" spacing="0.06 0.06 0.06"
+                    pos="0 0 0.005" euler="25 35 15" dim="2" radius="0.015" mass="0.4" dof="full">
+            <contact selfcollide="none"/>
+          </flexcomp>
+        </worldbody>
+      </mujoco>
+      """,
+      qvel_noise=0.2,
+      nworld=nworld,
+    )
+    if nworld == 2:
+      qvel_np = d.qvel.numpy()
+      qvel_np[1] = qvel_np[0] * 1.5 + 0.05
+      d.qvel = wp.array(qvel_np, dtype=float)
+
+    d.efm_c.fill_(wp.inf)
+    d.qacc_smooth.fill_(wp.inf)
+    d.qacc.fill_(wp.inf)
+
+    mujoco.mj_forward(mjm, mjd)
+    mjw.forward(m, d)
+
+    _assert_eq(d.efm_c.numpy()[0], mjd.efm_c, "efm_c")
+    _assert_eq(d.qacc_smooth.numpy()[0], mjd.qacc_smooth, "qacc_smooth")
+    _assert_eq(d.qacc.numpy()[0], mjd.qacc, "qacc")
+    if nworld == 2:
+      self.assertFalse(np.allclose(d.qacc.numpy()[0], d.qacc.numpy()[1]))
+
+  @parameterized.parameters(1, 2)
+  def test_discrete_flex_trilinear_interp_rotated(self, nworld):
+    """Tests trilinear interpolated flex (flex_interp=1) with rotated body and cell frames."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option solver="CG" integrator="discrete" timestep="0.002"/>
+        <worldbody>
+          <flexcomp name="interp_box" type="grid" count="3 3 3" spacing="0.05 0.05 0.05"
+                    pos="0.1 -0.1 0.3" euler="25 -30 40" dim="3" radius="0.005" mass="0.5" dof="trilinear">
+            <contact selfcollide="none" contype="0" conaffinity="0"/>
+            <elasticity young="2e3" poisson="0.25" damping="0.05"/>
+          </flexcomp>
+        </worldbody>
+      </mujoco>
+      """,
+      qpos_noise=0.01,
+      qvel_noise=0.1,
+      nworld=nworld,
+    )
+    if nworld == 2:
+      qvel_np = d.qvel.numpy()
+      qvel_np[1] = qvel_np[0] * 1.5 + 0.05
+      d.qvel = wp.array(qvel_np, dtype=float)
+
+    d.efm_K_val.fill_(wp.inf)
+    d.efm_c.fill_(wp.inf)
+    d.qacc_smooth.fill_(wp.inf)
+    d.qacc.fill_(wp.inf)
+
+    mujoco.mj_forward(mjm, mjd)
+    mjw.forward(m, d)
+
+    _assert_eq(d.efm_K_val.numpy()[0], mjd.efm_K_val, "efm_K_val")
+    _assert_eq(d.efm_c.numpy()[0], mjd.efm_c, "efm_c")
+    _assert_eq(d.qacc_smooth.numpy()[0], mjd.qacc_smooth, "qacc_smooth")
+    _assert_eq(d.qacc.numpy()[0], mjd.qacc, "qacc")
+    if nworld == 2:
+      self.assertFalse(np.allclose(d.qacc.numpy()[0], d.qacc.numpy()[1]))
+
+  @parameterized.parameters(1, 2)
+  def test_discrete_flex_bend_only_efm0_and_rotated(self, nworld):
+    """Tests 2D bending-only flex with efm0_L sparse Cholesky preconditioner and rotated bodies."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option solver="CG" integrator="discrete" timestep="0.002"/>
+        <worldbody>
+          <body pos="0 0 0.5">
+            <joint type="slide" axis="0 0 1" stiffness="20" damping="1"/>
+            <geom type="sphere" size="0.02" mass="0.1"/>
+          </body>
+          <flexcomp name="bend_cloth" type="grid" count="4 4 1" spacing="0.05 0.05 0.05"
+                    pos="0 0 0.4" euler="30 20 -15" dim="2" radius="0.005" mass="0.4" dof="full">
+            <contact selfcollide="none" contype="0" conaffinity="0"/>
+            <elasticity young="1e3" poisson="0.2" damping="0.05" elastic2d="bend" thickness="0.02"/>
+          </flexcomp>
+        </worldbody>
+      </mujoco>
+      """,
+      qpos_noise=0.005,
+      qvel_noise=0.1,
+      nworld=nworld,
+    )
+    if nworld == 2:
+      qvel_np = d.qvel.numpy()
+      qvel_np[1] = qvel_np[0] * 1.5 + 0.05
+      d.qvel = wp.array(qvel_np, dtype=float)
+
+    self.assertTrue(m.efm0_active)
+    self.assertGreater(m.nefm0dof, 0)
+
+    d.efm_c.fill_(wp.inf)
+    d.qacc_smooth.fill_(wp.inf)
+    d.qacc.fill_(wp.inf)
+
+    mujoco.mj_forward(mjm, mjd)
+    mjw.forward(m, d)
+
+    _assert_eq(d.efm_c.numpy()[0], mjd.efm_c, "efm_c")
+    _assert_eq(d.qacc_smooth.numpy()[0], mjd.qacc_smooth, "qacc_smooth")
+    _assert_eq(d.qacc.numpy()[0], mjd.qacc, "qacc")
+    if nworld == 2:
+      self.assertFalse(np.allclose(d.qacc.numpy()[0], d.qacc.numpy()[1]))
+
+    # Verify _eff_prec_efm0_solve with cross-coordinate (off-axis) couplings in efm0_L.
+    n0 = m.nefm0dof
+    efm0_dofid = m.efm0_dofid.numpy()
+    L_dense = np.eye(n0, dtype=np.float64) * 2.5
+    rownnz = []
+    rowadr = []
+    colind = []
+    vals = []
+    for i in range(n0):
+      rowadr.append(len(colind))
+      for c in range(max(0, i - 5), i):
+        # Include cross-coordinate couplings where (i - c) % 3 != 0
+        val = 0.15 * ((i + 1) / (n0 + 1)) * (-1.0 if (i + c) % 2 else 1.0)
+        L_dense[i, c] = val
+        colind.append(c)
+        vals.append(val)
+      colind.append(i)
+      vals.append(L_dense[i, i])
+      rownnz.append(len(colind) - rowadr[-1])
+
+    m.efm0_L_rownnz = wp.array(rownnz, dtype=int)
+    m.efm0_L_rowadr = wp.array(rowadr, dtype=int)
+    m.efm0_L_colind = wp.array(colind, dtype=int)
+    m.efm0_L = wp.array(vals, dtype=float)
+
+    rng = np.random.default_rng(123)
+    vec_np = rng.uniform(-1.0, 1.0, size=(nworld, mjm.nv)).astype(np.float32)
+    vec_wp = wp.array(vec_np, dtype=float)
+    res_wp = wp.full((nworld, mjm.nv), wp.inf, dtype=float)
+
+    derivative.eff_prec(m, d, res_wp, vec_wp)
+    res_np = res_wp.numpy()
+
+    A_efm0 = L_dense.T @ L_dense
+    for w in range(nworld):
+      expected_efm0 = np.linalg.solve(A_efm0, vec_np[w, efm0_dofid])
+      _assert_eq(res_np[w, efm0_dofid], expected_efm0, f"efm0_cross_coord_world_{w}")
+
+  @parameterized.product(
+    elastic2d=["bend", "both"],
+    nworld=[1, 2],
+  )
+  def test_discrete_flex_welded_and_rotated_vertex(self, elastic2d, nworld):
+    """Tests discrete integrator flex stiffness and shift with rotated frames and welded vertex."""
+    mjm, _, m, d = test_data.fixture(
+      xml=f"""
+      <mujoco>
+        <option integrator="discrete" solver="Newton" timestep="0.002"/>
+        <worldbody>
+          <body name="turned" euler="90 35 20">
+            <body name="v0" pos="0 0 0">
+              <inertial pos="0 0 0" mass="0.1" diaginertia="1e-4 1e-4 1e-4"/>
+              <joint type="slide" axis="1 0 0"/>
+              <joint type="slide" axis="0 1 0"/>
+              <joint type="slide" axis="0 0 1"/>
+            </body>
+            <body name="v1" pos="0.1 0 0">
+              <inertial pos="0 0 0" mass="0.1" diaginertia="1e-4 1e-4 1e-4"/>
+              <joint type="slide" axis="1 0 0"/>
+              <joint type="slide" axis="0 1 0"/>
+              <joint type="slide" axis="0 0 1"/>
+            </body>
+            <body name="v2" pos="0 0.1 0">
+              <inertial pos="0 0 0" mass="0.1" diaginertia="1e-4 1e-4 1e-4"/>
+              <joint type="slide" axis="1 0 0"/>
+              <joint type="slide" axis="0 1 0"/>
+              <joint type="slide" axis="0 0 1"/>
+            </body>
+            <body name="carrier" pos="0.1 0.1 0">
+              <inertial pos="0 0 0" mass="0.05" diaginertia="5e-5 5e-5 5e-5"/>
+              <joint type="slide" axis="1 0 0"/>
+              <joint type="slide" axis="0 1 0"/>
+              <joint type="slide" axis="0 0 1"/>
+              <body name="v3_welded" pos="0 0 0">
+                <inertial pos="0 0 0" mass="0.05" diaginertia="5e-5 5e-5 5e-5"/>
+              </body>
+            </body>
+          </body>
+        </worldbody>
+        <deformable>
+          <flex name="patch" dim="2" body="v0 v1 v2 v3_welded" element="0 1 2 1 3 2">
+            <contact selfcollide="none" contype="0" conaffinity="0"/>
+            <elasticity young="1e4" poisson="0.3" thickness="0.01"
+                        elastic2d="{elastic2d}" damping="0.02"/>
+          </flex>
+        </deformable>
+      </mujoco>
+      """,
+      overrides={"opt.disableflags": mjw.DisableBit.CONTACT | mjw.DisableBit.GRAVITY},
+      nworld=nworld,
+    )
+
+    mjm_ref, mjd_ref, _, _ = test_data.fixture(
+      xml=f"""
+      <mujoco>
+        <option integrator="discrete" solver="Newton" timestep="0.002"/>
+        <worldbody>
+          <body name="v0" pos="0 0 0">
+            <inertial pos="0 0 0" mass="0.1" diaginertia="1e-4 1e-4 1e-4"/>
+            <joint type="slide" axis="1 0 0"/>
+            <joint type="slide" axis="0 1 0"/>
+            <joint type="slide" axis="0 0 1"/>
+          </body>
+          <body name="v1" pos="0.1 0 0">
+            <inertial pos="0 0 0" mass="0.1" diaginertia="1e-4 1e-4 1e-4"/>
+            <joint type="slide" axis="1 0 0"/>
+            <joint type="slide" axis="0 1 0"/>
+            <joint type="slide" axis="0 0 1"/>
+          </body>
+          <body name="v2" pos="0 0.1 0">
+            <inertial pos="0 0 0" mass="0.1" diaginertia="1e-4 1e-4 1e-4"/>
+            <joint type="slide" axis="1 0 0"/>
+            <joint type="slide" axis="0 1 0"/>
+            <joint type="slide" axis="0 0 1"/>
+          </body>
+          <body name="v3" pos="0.1 0.1 0">
+            <inertial pos="0 0 0" mass="0.1" diaginertia="1e-4 1e-4 1e-4"/>
+            <joint type="slide" axis="1 0 0"/>
+            <joint type="slide" axis="0 1 0"/>
+            <joint type="slide" axis="0 0 1"/>
+          </body>
+        </worldbody>
+        <deformable>
+          <flex name="patch" dim="2" body="v0 v1 v2 v3" element="0 1 2 1 3 2">
+            <contact selfcollide="none" contype="0" conaffinity="0"/>
+            <elasticity young="1e4" poisson="0.3" thickness="0.01"
+                        elastic2d="{elastic2d}" damping="0.02"/>
+          </flex>
+        </deformable>
+      </mujoco>
+      """,
+      overrides={"opt.disableflags": mjw.DisableBit.CONTACT | mjw.DisableBit.GRAVITY},
+    )
+
+    rng = np.random.default_rng(42)
+    mjds_ref = [mjd_ref]
+    if nworld == 2:
+      mjds_ref.append(mujoco.MjData(mjm_ref))
+
+    qpos_worlds = []
+    qvel_worlds = []
+    for w in range(nworld):
+      qpos_w = rng.uniform(-5e-3, 5e-3, size=mjm.nq).astype(np.float32)
+      qvel_w = rng.uniform(-0.5, 0.5, size=mjm.nv).astype(np.float32)
+      qpos_worlds.append(qpos_w)
+      qvel_worlds.append(qvel_w)
+      mjds_ref[w].qpos[:] = qpos_w
+      mjds_ref[w].qvel[:] = qvel_w
+      mujoco.mj_forward(mjm_ref, mjds_ref[w])
+
+    d.qpos.assign(np.stack(qpos_worlds))
+    d.qvel.assign(np.stack(qvel_worlds))
+    for arr in (d.efm_c, d.qfrc_spring, d.qfrc_damper, d.qacc_smooth, d.qacc):
+      arr.fill_(wp.inf)
+
+    mjw.forward(m, d)
+
+    for w in range(nworld):
+      if d.efm_K_val.size > 0:
+        _assert_eq(d.efm_K_val.numpy()[w], mjds_ref[w].efm_K_val, f"efm_K_val_w{w}")
+      _assert_eq(d.efm_c.numpy()[w], mjds_ref[w].efm_c, f"efm_c_w{w}")
+      _assert_eq(d.qfrc_spring.numpy()[w], mjds_ref[w].qfrc_spring, f"qfrc_spring_w{w}")
+      _assert_eq(d.qfrc_damper.numpy()[w], mjds_ref[w].qfrc_damper, f"qfrc_damper_w{w}")
+      _assert_eq(d.qacc_smooth.numpy()[w], mjds_ref[w].qacc_smooth, f"qacc_smooth_w{w}")
+      _assert_eq(d.qacc.numpy()[w], mjds_ref[w].qacc, f"qacc_w{w}")
+
+    if nworld == 2:
+      self.assertFalse(np.allclose(d.qacc.numpy()[0], d.qacc.numpy()[1]))
+
+  @parameterized.parameters(1, 2)
+  def test_discrete_free_gyro_sensor_and_passive_contact(self, nworld):
+    """Tests free gyro execution before sensor_acc and rne_postconstraint."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option integrator="discrete" timestep="0.005"/>
+        <worldbody>
+          <body name="spinner" pos="0 0 1">
+            <freejoint/>
+            <geom type="box" size="0.1 0.2 0.3" mass="2.0" pos="0.05 -0.03 0.02"/>
+            <site name="imu" pos="0.05 0.05 0.05"/>
+          </body>
+        </worldbody>
+        <sensor>
+          <accelerometer site="imu"/>
+          <frameangacc objtype="body" objname="spinner"/>
+        </sensor>
+      </mujoco>
+      """,
+      qvel_noise=2.0,
+      nworld=nworld,
+    )
+    if nworld == 2:
+      qvel_np = d.qvel.numpy()
+      qvel_np[1] = qvel_np[0] * 1.5 + 0.1
+      d.qvel = wp.array(qvel_np, dtype=float)
+
+    d.qacc.fill_(wp.inf)
+    d.cacc.fill_(wp.inf)
+    d.sensordata.fill_(wp.inf)
+
+    mujoco.mj_forward(mjm, mjd)
+    mjw.forward(m, d)
+
+    _assert_eq(d.qacc.numpy()[0], mjd.qacc, "qacc")
+    _assert_eq(d.cacc.numpy()[0], mjd.cacc.reshape(-1, 6), "cacc")
+    _assert_eq(d.sensordata.numpy()[0], mjd.sensordata, "sensordata")
+    if nworld == 2:
+      self.assertFalse(np.allclose(d.qacc.numpy()[0], d.qacc.numpy()[1]))
+
+  @parameterized.parameters(1, 2)
+  def test_discrete_sleep(self, nworld):
+    """Tests sleep filtering under discrete integrator."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option integrator="discrete" timestep="0.002" gravity="0 0 0">
+          <flag sleep="enable"/>
+        </option>
+        <worldbody>
+          <geom type="plane" size="2 2 0.01"/>
+          <body name="awake_b" pos="0 0 0.05">
+            <joint type="slide" axis="0 0 1" stiffness="50" damping="2"/>
+            <geom type="sphere" size="0.08" mass="1.0"/>
+          </body>
+          <body name="asleep_b" pos="0.5 0 0.5">
+            <joint type="slide" axis="0 0 1" stiffness="50" damping="2"/>
+            <geom type="sphere" size="0.05" mass="1.0"/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=nworld,
+    )
+
+    # Keep awake_b moving while asleep_b is stationary so C MuJoCo puts tree 1 to sleep naturally
+    mjd.qvel[0] = -1.0
+    for _ in range(mujoco.mjMINAWAKE + 1):
+      mujoco.mj_step(mjm, mjd)
+    self.assertEqual(int(mjd.tree_awake[1]), 0)
+
+    # Inject a non-zero warmstart value on sleeping DOF 1 to verify it is zeroed
+    mjd.qacc_warmstart[1] = 1e6
+    d = mjw.put_data(mjm, mjd, nworld=nworld)
+    if nworld == 2:
+      qvel_np = d.qvel.numpy()
+      qvel_np[1, 0] = -1.5
+      d.qvel = wp.array(qvel_np, dtype=float)
+
+    d.qacc_smooth.fill_(wp.inf)
+    d.qacc.fill_(wp.inf)
+    d.qfrc_constraint.fill_(wp.inf)
+
+    mujoco.mj_forward(mjm, mjd)
+    mjw.forward(m, d)
+
+    self.assertEqual(int(d.tree_awake.numpy()[0, 1]), 0)
+    self.assertEqual(d.qacc_smooth.numpy()[0, 1], 0.0)
+    self.assertEqual(d.qacc.numpy()[0, 1], 0.0)
+    self.assertEqual(d.qfrc_constraint.numpy()[0, 1], 0.0)
+    _assert_eq(d.qacc_smooth.numpy()[0], mjd.qacc_smooth, "qacc_smooth")
+    _assert_eq(d.qacc.numpy()[0], mjd.qacc, "qacc")
+    if nworld == 2:
+      self.assertFalse(np.allclose(d.qacc.numpy()[0], d.qacc.numpy()[1]))
+
+  @parameterized.parameters(1, 2)
+  def test_discrete_disabled_actuation_gravcomp(self, nworld):
+    """Tests disabled actuation does not add gravcomp into qfrc_actuator for discrete integrator."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option integrator="discrete" timestep="0.005">
+          <flag actuation="disable"/>
+        </option>
+        <worldbody>
+          <body gravcomp="1" pos="0 0 1">
+            <joint name="j" type="slide" axis="0 0 1" stiffness="10" damping="2"/>
+            <geom type="sphere" size="0.1" mass="1.0"/>
+          </body>
+        </worldbody>
+        <actuator>
+          <motor joint="j" gear="1"/>
+        </actuator>
+      </mujoco>
+      """,
+      qpos_noise=0.1,
+      ctrl_noise=1.0,
+      nworld=nworld,
+    )
+    if nworld == 2:
+      qpos_np = d.qpos.numpy()
+      qpos_np[1, 0] += 0.2
+      d.qpos = wp.array(qpos_np, dtype=float)
+
+    d.qfrc_actuator.fill_(wp.inf)
+    d.qacc_smooth.fill_(wp.inf)
+    d.qacc.fill_(wp.inf)
+
+    mujoco.mj_forward(mjm, mjd)
+    mjw.forward(m, d)
+
+    _assert_eq(d.qfrc_actuator.numpy()[0], mjd.qfrc_actuator, "qfrc_actuator")
+    _assert_eq(d.qacc_smooth.numpy()[0], mjd.qacc_smooth, "qacc_smooth")
+    _assert_eq(d.qacc.numpy()[0], mjd.qacc, "qacc")
+    if nworld == 2:
+      self.assertFalse(np.allclose(d.qacc.numpy()[0], d.qacc.numpy()[1]))
+
+  @parameterized.parameters(1, 2)
+  def test_discrete_passive_contact_eligibility(self, nworld):
+    """Tests passive flex contact eligibility with disabled spring, 1D flex, and dynamic bodies."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option integrator="discrete" timestep="0.002">
+          <flag spring="disable"/>
+        </option>
+        <worldbody>
+          <geom type="plane" size="1 1 0.1"/>
+          <body pos="0 0 0.02">
+            <freejoint/>
+            <geom type="sphere" size="0.05" mass="1.0"/>
+          </body>
+          <flexcomp name="f" type="grid" count="2 2 1" spacing="0.1 0.1 0.1" pos="0 0 0.01" radius="0.02" mass="1.0" dim="2">
+            <contact passive="true" selfcollide="none"/>
+            <elasticity young="100" damping="1"/>
+          </flexcomp>
+        </worldbody>
+      </mujoco>
+      """,
+      qvel_noise=0.5,
+      nworld=nworld,
+    )
+    # Verify put_data preserves CPU contact classification (exclude == 4 -> PASSIVE)
+    expected_types = np.where(
+      mjd.contact.exclude[: mjd.ncon] == 4,
+      int(types.ContactType.PASSIVE),
+      int(types.ContactType.CONSTRAINT),
+    )
+    np.testing.assert_array_equal(d.contact.type.numpy()[: mjd.ncon], expected_types)
+
+    if nworld == 2:
+      qvel_np = d.qvel.numpy()
+      qvel_np[1] = qvel_np[0] * 1.5 - 0.2
+      d.qvel = wp.array(qvel_np, dtype=float)
+
+    d.qacc.fill_(wp.inf)
+    d.nefc.fill_(-1)
+
+    mujoco.mj_forward(mjm, mjd)
+    mjw.forward(m, d)
+
+    self.assertEqual(int(d.nefc.numpy()[0]), mjd.nefc)
+    _assert_eq(d.qacc.numpy()[0], mjd.qacc, "qacc")
+    if nworld == 2:
+      self.assertFalse(np.allclose(d.qacc.numpy()[0], d.qacc.numpy()[1]))
+
+  @parameterized.parameters(1, 2)
+  def test_discrete_direct_solve_with_motor(self, nworld):
+    """Tests that eff_solve uses direct qH solve when actuators/tendons add no metric coupling."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option integrator="discrete" iterations="0" timestep="0.005"/>
+        <worldbody>
+          <body pos="0 0 1">
+            <joint name="j" type="slide" axis="0 0 1" stiffness="10" damping="2"/>
+            <geom type="sphere" size="0.1" mass="1.0"/>
+          </body>
+        </worldbody>
+        <actuator>
+          <motor joint="j" gear="1"/>
+        </actuator>
+      </mujoco>
+      """,
+      ctrl_noise=2.0,
+      nworld=nworld,
+    )
+    if nworld == 2:
+      ctrl_np = d.ctrl.numpy()
+      ctrl_np[1, 0] += 5.0
+      d.ctrl = wp.array(ctrl_np, dtype=float)
+
+    d.qacc_smooth.fill_(wp.inf)
+    d.qacc.fill_(wp.inf)
+
+    mujoco.mj_forward(mjm, mjd)
+    mjw.forward(m, d)
+
+    _assert_eq(d.qacc_smooth.numpy()[0], mjd.qacc_smooth, "qacc_smooth")
+    _assert_eq(d.qacc.numpy()[0], mjd.qacc, "qacc")
+    if nworld == 2:
+      self.assertFalse(np.allclose(d.qacc.numpy()[0], d.qacc.numpy()[1]))
+
+  @parameterized.product(
+    case=[
+      "muscle",
+      "damper_disabled_servo",
+      "tendon_actuator_damping",
+      "tendon_dampingpoly",
+      "saturated_servo_zero_iterations",
+    ],
+    nworld=[1, 2],
+  )
+  def test_discrete_coupling_eligibility(self, case, nworld):
+    """Tests effective metric coupling eligibility and direct solve fallback."""
+    actuator = ""
+    flag = ""
+    iterations = 100
+    if case == "muscle":
+      actuator = '<muscle tendon="t" lengthrange="0.2 0.6" force="10"/>'
+    elif case == "damper_disabled_servo":
+      actuator = '<position tendon="t" kp="1000"/>'
+      flag = '<flag damper="disable"/>'
+    elif case == "tendon_actuator_damping":
+      actuator = '<general tendon="t" damping="10" gainprm="1"/>'
+    elif case == "saturated_servo_zero_iterations":
+      actuator = '<position tendon="t" kp="1000" forcerange="-1 1"/>'
+      iterations = 0
+
+    mjm, mjd, m, d = test_data.fixture(
+      xml=f"""
+      <mujoco>
+        <option integrator="discrete" timestep="0.01" iterations="{iterations}" gravity="0 0 0">
+          {flag}
+        </option>
+        <worldbody>
+          <body>
+            <joint name="j1" type="slide" axis="1 0 0"/>
+            <geom type="sphere" size="0.1" mass="1" contype="0" conaffinity="0"/>
+          </body>
+          <body pos="1 0 0">
+            <joint name="j2" type="slide" axis="1 0 0"/>
+            <geom type="sphere" size="0.1" mass="2" contype="0" conaffinity="0"/>
+          </body>
+        </worldbody>
+        <tendon>
+          <fixed name="t">
+            <joint joint="j1" coef="1"/>
+            <joint joint="j2" coef="1"/>
+          </fixed>
+        </tendon>
+        <actuator>
+          {actuator}
+        </actuator>
+      </mujoco>
+      """,
+      nworld=nworld,
+    )
+    if case == "tendon_dampingpoly":
+      mjm.tendon_dampingpoly[:] = [[10.0, 0.0]]
+      m = mjw.put_model(mjm)
+    mjd.qpos[:] = [0.2, 0.2]
+    mjd.qvel[:] = [0.1, 0.2]
+    if mjm.nu:
+      mjd.ctrl[:] = [0.5] if case == "muscle" else ([0.0] if case == "tendon_actuator_damping" else [0.1])
+    if mjm.na:
+      mjd.act[:] = [0.5]
+    mujoco.mj_forward(mjm, mjd)
+
+    d = mjw.put_data(mjm, mjd, nworld=nworld)
+    if nworld == 2:
+      qvel_np = d.qvel.numpy()
+      qvel_np[1] = [0.25, 0.35]
+      d.qvel = wp.array(qvel_np, dtype=float)
+      if case == "saturated_servo_zero_iterations":
+        ctrl_np = d.ctrl.numpy()
+        ctrl_np[1] = [0.8]
+        d.ctrl = wp.array(ctrl_np, dtype=float)
+
+    d.qacc_smooth.fill_(wp.inf)
+    d.qacc.fill_(wp.inf)
+
+    mjw.forward(m, d)
+
+    _assert_eq(d.qacc_smooth.numpy()[0], mjd.qacc_smooth, "qacc_smooth")
+    _assert_eq(d.qacc.numpy()[0], mjd.qacc, "qacc")
+    if nworld == 2:
+      self.assertFalse(np.allclose(d.qacc_smooth.numpy()[0], d.qacc_smooth.numpy()[1]))
+
+  @absltest.skipIf(
+    not util_pkg.check_version("mujoco>=3.14.1.dev990351372"),
+    "Requires MuJoCo >= 3.14.1.dev990351372",
+  )
+  @parameterized.product(
+    solver=(mujoco.mjtSolver.mjSOL_CG, mujoco.mjtSolver.mjSOL_NEWTON),
+    nworld=(1, 2),
+  )
+  def test_flex_3d_snh_inversion_recovery(self, solver, nworld):
+    """Tests that a 3D SNH tetrahedron recovers from inversion under discrete integration."""
+    solver_attr = 'solver="CG"' if solver == mujoco.mjtSolver.mjSOL_CG else ""
+    spec = mujoco.MjSpec.from_string(
+      f"""
+      <mujoco>
+        <option gravity="0 0 0" integrator="discrete" {solver_attr} timestep="0.01" tolerance="1e-10"/>
+        <worldbody>
+          <flexcomp name="tet" type="direct" dim="3" mass="1"
+                    point="0 0 0  1 0 0  0 1 0  0 0 1" element="0 1 2 3">
+            <contact contype="0" conaffinity="0" selfcollide="none"/>
+            <elasticity young="1000" poisson=".3" damping=".03"/>
+            <pin id="0 1 2"/>
+          </flexcomp>
+        </worldbody>
+      </mujoco>
+      """
+    )
+    spec.flexes[0].elastic3d = 1
+    mjm = spec.compile()
+    mjd = mujoco.MjData(mjm)
+    m = mjw.put_model(mjm)
+    d = mjw.put_data(mjm, mjd, nworld=nworld)
+
+    # Invert apex v3 to z = -0.5 (qpos[2] = -1.5 -> J = -0.5) in world 0, z = -0.8 in world 1
+    qpos = np.zeros((nworld, mjm.nq), dtype=np.float32)
+    qpos[0, 2] = -1.5
+    if nworld == 2:
+      qpos[1, 2] = -1.8
+    d.qpos.assign(qpos)
+    d.qvel.zero_()
+
+    with wp.ScopedCapture() as capture:
+      mjw.step(m, d)
+
+    wp.capture_launch(capture.graph)
+    if nworld == 2:
+      self.assertFalse(np.allclose(d.qpos.numpy()[0], d.qpos.numpy()[1]))
+
+    for _ in range(299):
+      wp.capture_launch(capture.graph)
+
+    qpos_final = d.qpos.numpy()
+    for w in range(nworld):
+      z_final = 1.0 + float(qpos_final[w, 2])
+      self.assertGreater(z_final, 0.9)
+      np.testing.assert_allclose(qpos_final[w], 0.0, atol=5e-2)
+
+  @absltest.skipIf(
+    not util_pkg.check_version("mujoco>=3.14.1.dev990351372"),
+    "Requires MuJoCo >= 3.14.1.dev990351372",
+  )
+  @parameterized.product(
+    case=((2, False), (3, False), (3, True)),
+    nworld=(1, 2),
+  )
+  def test_flex_hessian_cache_lifetime(self, case, nworld):
+    """Tests flex_hessian_valid, flexvert_hessian, and flexedge_hessian cache lifecycle."""
+    dim, snh = case
+    elem_str = "0 1 2" if dim == 2 else "0 1 2 3"
+    elast_attr = 'thickness="0.05" elastic2d="stretch"' if dim == 2 else ""
+    spec = mujoco.MjSpec.from_string(
+      f"""
+      <mujoco>
+        <option integrator="discrete" timestep="0.005" gravity="0 0 0"/>
+        <worldbody>
+          <body name="v0"><inertial pos="0 0 0" mass="1" diaginertia="1 1 1"/>
+            <joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/>
+          </body>
+          <body name="v1" pos="1 0 0"><inertial pos="0 0 0" mass="1" diaginertia="1 1 1"/>
+            <joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/>
+          </body>
+          <body name="v2" pos="0 1 0"><inertial pos="0 0 0" mass="1" diaginertia="1 1 1"/>
+            <joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/>
+          </body>
+          <body name="v3" pos="0 0 1"><inertial pos="0 0 0" mass="1" diaginertia="1 1 1"/>
+            <joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/>
+          </body>
+        </worldbody>
+        <deformable>
+          <flex name="f" dim="{dim}" body="v0 v1 v2 v3"
+                vertex="0 0 0  0 0 0  0 0 0  0 0 0" element="{elem_str}">
+            <elasticity young="1000" poisson="0.3" damping="0.2" {elast_attr}/>
+            <contact selfcollide="none"/>
+          </flex>
+          <flex name="cable" dim="1" body="v0 v1"
+                vertex="0 0 0  0 0 0" element="0 1">
+            <edge stiffness="50"/>
+            <contact selfcollide="none"/>
+          </flex>
+        </deformable>
+      </mujoco>
+      """
+    )
+    if snh:
+      spec.flexes[0].elastic3d = 1
+    mjm = spec.compile()
+    mjd = mujoco.MjData(mjm)
+    m = mjw.put_model(mjm)
+    d = mjw.put_data(mjm, mjd, nworld=nworld)
+
+    # Initially invalid before forward
+    self.assertFalse(bool(np.any(d.flex_hessian_valid.numpy())))
+
+    qpos = np.zeros((nworld, mjm.nq), dtype=np.float32)
+    qvel = np.zeros((nworld, mjm.nv), dtype=np.float32)
+    qpos[0, 3] = 0.08
+    qpos[0, 7] = 0.05
+    qvel[0, 3] = 0.4
+    qvel[0, 7] = -0.3
+    if nworld == 2:
+      qpos[1, 3] = 0.12
+      qpos[1, 7] = -0.04
+      qvel[1, 3] = -0.5
+      qvel[1, 7] = 0.6
+
+    d.qpos.assign(qpos)
+    d.qvel.assign(qvel)
+    d.flexvert_hessian.fill_(wp.inf)
+    d.flexedge_hessian.fill_(wp.inf)
+
+    mjw.forward(m, d)
+    self.assertTrue(bool(np.all(d.flex_hessian_valid.numpy())))
+
+    vert_hess_ref = d.flexvert_hessian.numpy().copy()
+    edge_hess_ref = d.flexedge_hessian.numpy().copy()
+
+    mjds = [mujoco.MjData(mjm) for _ in range(nworld)]
+    for w in range(nworld):
+      mjds[w].qpos[:] = qpos[w]
+      mjds[w].qvel[:] = qvel[w]
+      mujoco.mj_forward(mjm, mjds[w])
+      _assert_eq(vert_hess_ref[w], mjds[w].flexvert_hessian, f"flexvert_hessian_w{w}")
+      _assert_eq(edge_hess_ref[w], mjds[w].flexedge_hessian.reshape(-1, 3, 3), f"flexedge_hessian_w{w}")
+      if dim == 2:
+        # Unused vertex 3 in 2D flex has zero diagonal Hessian block
+        np.testing.assert_allclose(vert_hess_ref[w, 3], 0.0, atol=1e-7)
+      # 1D cable flex vertices and edge have zero Hessian blocks
+      np.testing.assert_allclose(vert_hess_ref[w, 4:], 0.0, atol=1e-7)
+      np.testing.assert_allclose(edge_hess_ref[w, -1], 0.0, atol=1e-7)
+
+    if nworld == 2:
+      self.assertFalse(np.allclose(vert_hess_ref[0], vert_hess_ref[1]))
+
+    # Round-trip get_data_into and put_data preserves Hessian cache
+    mjd_rt = mujoco.MjData(mjm)
+    mjw.get_data_into(mjd_rt, mjm, d)
+    self.assertTrue(bool(np.all(mjd_rt.flex_hessian_valid)))
+    _assert_eq(mjd_rt.flexvert_hessian, vert_hess_ref[0], "get_data_into_flexvert_hessian")
+    _assert_eq(mjd_rt.flexedge_hessian.reshape(-1, 3, 3), edge_hess_ref[0], "get_data_into_flexedge_hessian")
+    d_rt = mjw.put_data(mjm, mjd_rt, nworld=nworld)
+    self.assertTrue(bool(np.all(d_rt.flex_hessian_valid.numpy())))
+    _assert_eq(d_rt.flexvert_hessian.numpy()[0], vert_hess_ref[0], "put_data_flexvert_hessian")
+    _assert_eq(d_rt.flexedge_hessian.numpy()[0], edge_hess_ref[0], "put_data_flexedge_hessian")
+
+    # Cache hit: scaling cached Hessian by 2.0 while flex_hessian_valid is True is reused
+    d.flexvert_hessian.assign(2.0 * vert_hess_ref)
+    d.flexedge_hessian.assign(2.0 * edge_hess_ref)
+    mjw.passive(m, d)
+    np.testing.assert_allclose(d.flexvert_hessian.numpy(), 2.0 * vert_hess_ref, atol=1e-6)
+    if snh:
+      for w in range(nworld):
+        np.testing.assert_allclose(d.qfrc_damper.numpy()[w], 2.0 * mjds[w].qfrc_damper, atol=1e-3, rtol=1e-3)
+
+    # mjw.flex invalidates cache, and subsequent forward rebuilds exact Hessian
+    mjw.flex(m, d)
+    self.assertFalse(bool(np.any(d.flex_hessian_valid.numpy())))
+    mjw.forward(m, d)
+    self.assertTrue(bool(np.all(d.flex_hessian_valid.numpy())))
+    _assert_eq(d.flexvert_hessian.numpy(), vert_hess_ref, "rebuilt_flexvert_hessian")
+    _assert_eq(d.flexedge_hessian.numpy(), edge_hess_ref, "rebuilt_flexedge_hessian")
+
+    # Selective reset invalidates flex_hessian_valid only on reset world
+    if nworld == 2:
+      d.flexvert_hessian.assign(2.0 * vert_hess_ref)
+      reset_mask = wp.array([True, False], dtype=bool)
+      mjw.reset_data(m, d, reset=reset_mask)
+      self.assertFalse(bool(np.any(d.flex_hessian_valid.numpy()[0])))
+      self.assertTrue(bool(np.all(d.flex_hessian_valid.numpy()[1])))
+      mjw.forward(m, d)
+      self.assertTrue(bool(np.all(d.flex_hessian_valid.numpy())))
+      # World 0 was reset to qpos=0 and rebuilt; world 1 was not reset
+      self.assertFalse(np.allclose(d.flexvert_hessian.numpy()[0], vert_hess_ref[0]))
+      _assert_eq(d.flexvert_hessian.numpy()[1], vert_hess_ref[1], "unreset_world1_flexvert_hessian")
+
+    # Full reset clears flex_hessian_valid across all worlds
+    mjw.reset_data(m, d)
+    self.assertFalse(bool(np.any(d.flex_hessian_valid.numpy())))
+
+    # Under EULER (for StVK), forward does not build the flex Hessian cache
+    if not snh:
+      m.opt.integrator = int(mjw.IntegratorType.EULER)
+      mjw.forward(m, d)
+      self.assertFalse(bool(np.any(d.flex_hessian_valid.numpy())))
+
+  @absltest.skipIf(
+    not util_pkg.check_version("mujoco>=3.14.1.dev990351372"),
+    "Requires MuJoCo >= 3.14.1.dev990351372",
+  )
+  @parameterized.parameters(1, 2)
+  def test_snh_stiffness_through_inversion(self, nworld):
+    """Tests two-tetrahedron SNH stiffness matrix and damping across rank collapse and inversion."""
+    young, poisson, damping, h = 1200.0, 0.3, 0.15, 0.01
+    mu = young / (2.0 * (1.0 + poisson))
+    la = young * poisson / ((1.0 + poisson) * (1.0 - 2.0 * poisson))
+
+    spec = mujoco.MjSpec.from_string(
+      f"""
+      <mujoco>
+        <option integrator="discrete" solver="CG" timestep="{h}" gravity="0 0 0"/>
+        <worldbody>
+          <body name="v0"><inertial pos="0 0 0" mass="1" diaginertia="1 1 1"/>
+            <joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/>
+          </body>
+          <body name="v1" pos="1.2 0.1 -0.1"><inertial pos="0 0 0" mass="1" diaginertia="1 1 1"/>
+            <joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/>
+          </body>
+          <body name="v2" pos="-0.2 0.9 0.2"><inertial pos="0 0 0" mass="1" diaginertia="1 1 1"/>
+            <joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/>
+          </body>
+          <body name="v3" pos="0.3 0.2 1.1"><inertial pos="0 0 0" mass="1" diaginertia="1 1 1"/>
+            <joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/>
+          </body>
+          <body name="v4" pos="0.1 -0.3 -1.0"><inertial pos="0 0 0" mass="1" diaginertia="1 1 1"/>
+            <joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/>
+          </body>
+        </worldbody>
+        <deformable>
+          <flex name="two_tet" dim="3" body="v0 v1 v2 v3 v4"
+                vertex="0 0 0  0 0 0  0 0 0  0 0 0  0 0 0" element="0 1 2 3  0 2 1 4">
+            <elasticity young="{young}" poisson="{poisson}" damping="{damping}"/>
+            <contact selfcollide="none"/>
+          </flex>
+        </deformable>
+      </mujoco>
+      """
+    )
+    spec.flexes[0].elastic3d = 1
+    mjm = spec.compile()
+    mjd = mujoco.MjData(mjm)
+    m = mjw.put_model(mjm)
+    d = mjw.put_data(mjm, mjd, nworld=nworld)
+
+    x0 = np.array([mjm.body_pos[mjm.flex_vertbodyid[v]].copy() for v in range(5)], dtype=np.float64)
+    elems = mjm.flex_elem.reshape(2, 4)
+
+    def build_ref_hessian(q, project_psd=True):
+      pos = x0 + q.reshape(5, 3)
+      H_total = np.zeros((15, 15), dtype=np.float64)
+      for v_elem in elems:
+        Dm = np.column_stack([x0[v_elem[v + 1]] - x0[v_elem[0]] for v in range(3)])
+        Dm_inv = np.linalg.inv(Dm)
+        vol0 = abs(np.linalg.det(Dm)) / 6.0
+        grad_n = np.vstack([-np.sum(Dm_inv, axis=0, keepdims=True), Dm_inv])
+        Ds = np.column_stack([pos[v_elem[v + 1]] - pos[v_elem[0]] for v in range(3)])
+        F = Ds @ Dm_inv
+        mu_v = vol0 * mu
+        lambda_v = vol0 * (la + mu)
+        cof = np.zeros(9, dtype=np.float64)
+        H9 = np.zeros((9, 9), dtype=np.float64)
+        for i in range(3):
+          for a in range(3):
+            for j in range(3):
+              for b in range(3):
+                for l in range(3):
+                  for c in range(3):
+                    eps_ijl = (i - j) * (j - l) * (l - i) // 2
+                    eps_abc = (a - b) * (b - c) * (c - a) // 2
+                    term = eps_ijl * eps_abc * F[l, c]
+                    H9[3 * i + a, 3 * j + b] += term
+                    cof[3 * i + a] += 0.5 * term * F[j, b]
+        J = float(np.dot(F[0], cof[:3]))
+        H9 = mu_v * np.eye(9) + lambda_v * np.outer(cof, cof) + (lambda_v * (J - 1.0) - mu_v) * H9
+        if project_psd:
+          evals, evecs = np.linalg.eigh(H9)
+          H9 = (evecs * np.maximum(0.0, evals)) @ evecs.T
+        for i in range(4):
+          vi = v_elem[i]
+          for j in range(4):
+            vj = v_elem[j]
+            for x in range(3):
+              for y in range(3):
+                H_total[3 * vi + x, 3 * vj + y] += grad_n[i] @ H9[3 * x : 3 * x + 3, 3 * y : 3 * y + 3] @ grad_n[j]
+      return H_total
+
+    def rot_x(a):
+      c, s = np.cos(a), np.sin(a)
+      return np.array([[1.0, 0.0, 0.0], [0.0, c, -s], [0.0, s, c]])
+
+    def rot_y(a):
+      c, s = np.cos(a), np.sin(a)
+      return np.array([[c, 0.0, s], [0.0, 1.0, 0.0], [-s, 0.0, c]])
+
+    def rot_z(a):
+      c, s = np.cos(a), np.sin(a)
+      return np.array([[c, -s, 0.0], [s, c, 0.0], [0.0, 0.0, 1.0]])
+
+    U = rot_z(0.5) @ rot_y(-0.3) @ rot_x(0.4)
+    V = rot_x(-0.6) @ rot_z(0.2) @ rot_y(0.5)
+    qvel = np.zeros((nworld, 15), dtype=np.float32)
+    qvel[0] = np.linspace(-0.4, 0.5, 15, dtype=np.float32)
+    if nworld == 2:
+      qvel[1] = np.linspace(0.5, -0.35, 15, dtype=np.float32)
+
+    rownnz = m.efm_K_rownnz.numpy()
+    rowadr = m.efm_K_rowadr.numpy()
+    colind = m.efm_K_colind.numpy()
+
+    with wp.ScopedCapture() as capture:
+      mjw.forward(m, d)
+
+    for rank in (0, 1, 2, 3):
+      for scale in (-1.0, -0.01, 0.0, 0.01, 1.05):
+        if rank == 0 and scale != 1.05:
+          continue
+        sv0 = np.array([1.3, 1.15, 1.08], dtype=np.float64)
+        for i in range(3 - rank, 3):
+          sv0[i] *= scale
+        F0 = U @ np.diag(sv0) @ V.T
+        q0 = np.zeros(15, dtype=np.float64)
+        for v in range(1, 5):
+          q0[3 * v : 3 * v + 3] = (F0 - np.eye(3)) @ (x0[v] - x0[0])
+
+        qpos_batch = np.zeros((nworld, 15), dtype=np.float32)
+        qpos_batch[0] = q0.astype(np.float32)
+        if nworld == 2:
+          sv1 = sv0.copy()
+          sv1[0] *= 0.94
+          F1 = U @ np.diag(sv1) @ V.T
+          q1 = np.zeros(15, dtype=np.float64)
+          for v in range(1, 5):
+            q1[3 * v : 3 * v + 3] = (F1 - np.eye(3)) @ (x0[v] - x0[0])
+          qpos_batch[1] = q1.astype(np.float32)
+
+        d.qpos.assign(qpos_batch)
+        d.qvel.assign(qvel)
+        for arr in (d.efm_K_val, d.efm_c, d.qfrc_damper):
+          arr.fill_(wp.inf)
+        wp.capture_launch(capture.graph)
+
+        for w in range(nworld):
+          K_dense = np.zeros((15, 15), dtype=np.float64)
+          scale_k = h * h + h * damping
+          k_val = d.efm_K_val.numpy()[w] / scale_k
+          for r in range(15):
+            for k in range(rownnz[r]):
+              c = colind[rowadr[r] + k]
+              K_dense[r, c] = k_val[rowadr[r] + k]
+              if c < r:
+                K_dense[c, r] = K_dense[r, c]
+
+          H_ref = build_ref_hessian(qpos_batch[w].astype(np.float64), project_psd=True)
+          np.testing.assert_allclose(K_dense, H_ref, atol=5e-2, rtol=2e-4)
+          k_evals = np.linalg.eigvalsh(0.5 * (K_dense + K_dense.T))
+          norm_K = float(np.max(np.abs(k_evals)))
+          self.assertGreaterEqual(float(np.min(k_evals)), -1e-6 * max(norm_K, 1.0))
+          np.testing.assert_allclose(d.efm_c.numpy()[w], -h * (H_ref @ qvel[w]), atol=5e-2, rtol=2e-4)
+          np.testing.assert_allclose(d.qfrc_damper.numpy()[w], -damping * (H_ref @ qvel[w]), atol=5e-2, rtol=2e-4)
+          self.assertLessEqual(float(np.dot(qvel[w], d.qfrc_damper.numpy()[w])), 1e-6)
+
+          # When all singular values >= 1 (rank == 0), unprojected Hessian is SPD
+          if rank == 0:
+            H_unproj = build_ref_hessian(qpos_batch[w].astype(np.float64), project_psd=False)
+            np.testing.assert_allclose(K_dense, H_unproj, atol=5e-2, rtol=2e-4)
+
+        if nworld == 2 and rank < 3:
+          self.assertFalse(np.allclose(d.efm_K_val.numpy()[0], d.efm_K_val.numpy()[1]))
+
+  @absltest.skipIf(
+    not util_pkg.check_version("mujoco>=3.14.1.dev990351372"),
+    "Requires MuJoCo >= 3.14.1.dev990351372",
+  )
+  @parameterized.parameters(0.0, 0.3, 0.499)
+  def test_snh_projection_spectral_reference(self, poisson):
+    """Tests SNH PSD projection across spectral cases (repeated, negative, near-zero, zero SVs)."""
+    young = 1200.0
+    mu = young / (2.0 * (1.0 + poisson))
+    la = young * poisson / ((1.0 + poisson) * (1.0 - 2.0 * poisson))
+
+    spec = mujoco.MjSpec.from_string(
+      f"""
+      <mujoco>
+        <option integrator="discrete" solver="CG" timestep="0.01" gravity="0 0 0"/>
+        <worldbody>
+          <body name="v0"><inertial pos="0 0 0" mass="1" diaginertia="1 1 1"/>
+            <joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/>
+          </body>
+          <body name="v1" pos="1.2 0.1 -0.1"><inertial pos="0 0 0" mass="1" diaginertia="1 1 1"/>
+            <joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/>
+          </body>
+          <body name="v2" pos="-0.2 0.9 0.2"><inertial pos="0 0 0" mass="1" diaginertia="1 1 1"/>
+            <joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/>
+          </body>
+          <body name="v3" pos="0.3 0.2 1.1"><inertial pos="0 0 0" mass="1" diaginertia="1 1 1"/>
+            <joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/>
+          </body>
+        </worldbody>
+        <deformable>
+          <flex name="tet" dim="3" body="v0 v1 v2 v3"
+                vertex="0 0 0  0 0 0  0 0 0  0 0 0" element="0 1 2 3">
+            <elasticity young="{young}" poisson="{poisson}" damping="0.1"/>
+            <contact selfcollide="none"/>
+          </flex>
+        </deformable>
+      </mujoco>
+      """
+    )
+    spec.flexes[0].elastic3d = 1
+    mjm = spec.compile()
+    mjd = mujoco.MjData(mjm)
+    m = mjw.put_model(mjm)
+    d = mjw.put_data(mjm, mjd, nworld=1)
+
+    x0 = np.array([mjm.body_pos[mjm.flex_vertbodyid[v]].copy() for v in range(4)], dtype=np.float64)
+    v_elem = mjm.flex_elem[:4]
+    Dm = np.column_stack([x0[v_elem[v + 1]] - x0[v_elem[0]] for v in range(3)])
+    Dm_inv = np.linalg.inv(Dm)
+    vol0 = abs(np.linalg.det(Dm)) / 6.0
+    grad_n = np.vstack([-np.sum(Dm_inv, axis=0, keepdims=True), Dm_inv])
+
+    def rot_x(a):
+      c, s = np.cos(a), np.sin(a)
+      return np.array([[1.0, 0.0, 0.0], [0.0, c, -s], [0.0, s, c]])
+
+    def rot_y(a):
+      c, s = np.cos(a), np.sin(a)
+      return np.array([[c, 0.0, s], [0.0, 1.0, 0.0], [-s, 0.0, c]])
+
+    def rot_z(a):
+      c, s = np.cos(a), np.sin(a)
+      return np.array([[c, -s, 0.0], [s, c, 0.0], [0.0, 0.0, 1.0]])
+
+    U = rot_z(0.5) @ rot_y(-0.3) @ rot_x(0.4)
+    V = rot_x(-0.6) @ rot_z(0.2) @ rot_y(0.5)
+    rownnz = m.efm_K_rownnz.numpy()
+    rowadr = m.efm_K_rowadr.numpy()
+    colind = m.efm_K_colind.numpy()
+
+    spectral_cases = (
+      (1.0, 1.0, 1.0),
+      (1.02, 0.99, 1.01),
+      (2.1, 1.4, 0.65),
+      (1.4, 1.4, 0.7),
+      (1.5, 0.8, 0.8),
+      (-1.2, -1.2, 1.2),
+      (1.3, 1.3, -0.6),
+      (1.4, 0.75, -0.75),
+      (1.3, 0.9, 1e-4),
+      (1.3, 0.9, -1e-4),
+      (1.3, 0.9, 0.0),
+      (1.3, 0.0, 0.0),
+      (0.0, 0.0, 0.0),
+    )
+
+    scale_k = 0.01 * 0.01 + 0.01 * 0.1
+    with wp.ScopedCapture() as capture:
+      mjw.forward(m, d)
+    for sv in spectral_cases:
+      F_target = U @ np.diag(sv) @ V.T
+      q = np.zeros((1, 12), dtype=np.float32)
+      for v in range(1, 4):
+        q[0, 3 * v : 3 * v + 3] = ((F_target - np.eye(3)) @ (x0[v] - x0[0])).astype(np.float32)
+      d.qpos.assign(q)
+      d.qvel.zero_()
+      d.efm_K_val.fill_(wp.inf)
+      wp.capture_launch(capture.graph)
+
+      K_dense = np.zeros((12, 12), dtype=np.float64)
+      k_val = d.efm_K_val.numpy()[0] / scale_k
+      for r in range(12):
+        for k in range(rownnz[r]):
+          c = colind[rowadr[r] + k]
+          K_dense[r, c] = k_val[rowadr[r] + k]
+          if c < r:
+            K_dense[c, r] = K_dense[r, c]
+
+      pos = x0 + q[0].astype(np.float64).reshape(4, 3)
+      Ds = np.column_stack([pos[v_elem[v + 1]] - pos[v_elem[0]] for v in range(3)])
+      F = Ds @ Dm_inv
+      mu_v = vol0 * mu
+      lambda_v = vol0 * (la + mu)
+      cof = np.zeros(9, dtype=np.float64)
+      H9 = np.zeros((9, 9), dtype=np.float64)
+      for i in range(3):
+        for a in range(3):
+          for j in range(3):
+            for b in range(3):
+              for l in range(3):
+                for c in range(3):
+                  eps_ijl = (i - j) * (j - l) * (l - i) // 2
+                  eps_abc = (a - b) * (b - c) * (c - a) // 2
+                  term = eps_ijl * eps_abc * F[l, c]
+                  H9[3 * i + a, 3 * j + b] += term
+                  cof[3 * i + a] += 0.5 * term * F[j, b]
+      J = float(np.dot(F[0], cof[:3]))
+      H9 = mu_v * np.eye(9) + lambda_v * np.outer(cof, cof) + (lambda_v * (J - 1.0) - mu_v) * H9
+      evals, evecs = np.linalg.eigh(H9)
+      H9_proj = (evecs * np.maximum(0.0, evals)) @ evecs.T
+      H_ref = np.zeros((12, 12), dtype=np.float64)
+      for i in range(4):
+        vi = v_elem[i]
+        for j in range(4):
+          vj = v_elem[j]
+          for x in range(3):
+            for y in range(3):
+              H_ref[3 * vi + x, 3 * vj + y] = grad_n[i] @ H9_proj[3 * x : 3 * x + 3, 3 * y : 3 * y + 3] @ grad_n[j]
+
+      np.testing.assert_allclose(K_dense, H_ref, atol=5e-1 if poisson > 0.49 else 5e-2, rtol=5e-4)
+      k_evals = np.linalg.eigvalsh(0.5 * (K_dense + K_dense.T))
+      norm_K = float(np.max(np.abs(k_evals)))
+      self.assertGreaterEqual(float(np.min(k_evals)), -1e-6 * max(norm_K, 1.0))
+
+      # Translation invariance: sum over all 4 vertices along each spatial axis must vanish
+      norm_F = max(float(np.linalg.norm(K_dense)), 1.0)
+      for axis in range(3):
+        trans_sum = K_dense[:, axis::3].sum(axis=1)
+        self.assertLessEqual(float(np.linalg.norm(trans_sum)) / norm_F, 1e-5)
+
+  @absltest.skipIf(
+    not util_pkg.check_version("mujoco>=3.14.1.dev990351372"),
+    "Requires MuJoCo >= 3.14.1.dev990351372",
+  )
+  @parameterized.product(
+    case=((2, False), (3, False), (3, True), ("mixed", True)),
+    nworld=(1, 2),
+  )
+  def test_discrete_flex_stretch_rotated_and_welded_frames(self, case, nworld):
+    """Tests 2D/3D StVK, 3D SNH, and mixed flex models with rotated frames and welded vertices."""
+    dim_or_mixed, snh = case
+    if dim_or_mixed == "mixed":
+      spec = mujoco.MjSpec.from_string(
+        """
+        <mujoco>
+          <option integrator="discrete" solver="CG" timestep="0.002" gravity="0 0 0"/>
+          <worldbody>
+            <body name="turned" euler="90 35 20">
+              <body name="a0"><inertial pos="0 0 0" mass="0.1" diaginertia="1e-4 1e-4 1e-4"/>
+                <joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/>
+              </body>
+              <body name="a1" pos="0.1 0 0"><inertial pos="0 0 0" mass="0.1" diaginertia="1e-4 1e-4 1e-4"/>
+                <joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/>
+              </body>
+              <body name="a2" pos="0 0.1 0"><inertial pos="0 0 0" mass="0.1" diaginertia="1e-4 1e-4 1e-4"/>
+                <joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/>
+              </body>
+              <body name="b0" pos="0.3 0 0"><inertial pos="0 0 0" mass="0.1" diaginertia="1e-4 1e-4 1e-4"/>
+                <joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/>
+              </body>
+              <body name="b1" pos="0.4 0 0"><inertial pos="0 0 0" mass="0.1" diaginertia="1e-4 1e-4 1e-4"/>
+                <joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/>
+              </body>
+              <body name="b2" pos="0.3 0.1 0"><inertial pos="0 0 0" mass="0.1" diaginertia="1e-4 1e-4 1e-4"/>
+                <joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/>
+              </body>
+              <body name="b3_carrier" pos="0.3 0 0.1"><inertial pos="0 0 0" mass="0.05" diaginertia="5e-5 5e-5 5e-5"/>
+                <joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/>
+                <body name="b3_welded"><inertial pos="0 0 0" mass="0.05" diaginertia="5e-5 5e-5 5e-5"/></body>
+              </body>
+            </body>
+          </worldbody>
+          <deformable>
+            <flex name="tri2d" dim="2" body="a0 a1 a2" element="0 1 2">
+              <contact selfcollide="none" contype="0" conaffinity="0"/>
+              <elasticity young="2e3" poisson="0.3" thickness="0.01" elastic2d="stretch" damping="0.05"/>
+            </flex>
+            <flex name="tet3d" dim="3" body="b0 b1 b2 b3_welded" element="0 1 2 3">
+              <contact selfcollide="none" contype="0" conaffinity="0"/>
+              <elasticity young="2e3" poisson="0.3" damping="0.05"/>
+            </flex>
+          </deformable>
+        </mujoco>
+        """
+      )
+      spec.flexes[1].elastic3d = 1
+    else:
+      dim = int(dim_or_mixed)
+      elem_str = "0 1 2  1 3 2" if dim == 2 else "0 1 2 3"
+      elast_attr = 'thickness="0.01" elastic2d="stretch"' if dim == 2 else ""
+      v3_pos = "0.1 0.1 0" if dim == 2 else "0 0 0.1"
+      spec = mujoco.MjSpec.from_string(
+        f"""
+        <mujoco>
+          <option integrator="discrete" timestep="0.002" gravity="0 0 0"/>
+          <worldbody>
+            <body name="turned" euler="90 35 20">
+              <body name="v0"><inertial pos="0 0 0" mass="0.1" diaginertia="1e-4 1e-4 1e-4"/>
+                <joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/>
+              </body>
+              <body name="v1" pos="0.1 0 0"><inertial pos="0 0 0" mass="0.1" diaginertia="1e-4 1e-4 1e-4"/>
+                <joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/>
+              </body>
+              <body name="v2" pos="0 0.1 0"><inertial pos="0 0 0" mass="0.1" diaginertia="1e-4 1e-4 1e-4"/>
+                <joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/>
+              </body>
+              <body name="carrier" pos="{v3_pos}"><inertial pos="0 0 0" mass="0.05" diaginertia="5e-5 5e-5 5e-5"/>
+                <joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/>
+                <body name="v3_welded"><inertial pos="0 0 0" mass="0.05" diaginertia="5e-5 5e-5 5e-5"/></body>
+              </body>
+            </body>
+          </worldbody>
+          <deformable>
+            <flex name="f" dim="{dim}" body="v0 v1 v2 v3_welded" element="{elem_str}">
+              <contact selfcollide="none" contype="0" conaffinity="0"/>
+              <elasticity young="2e3" poisson="0.3" damping="0.05" {elast_attr}/>
+            </flex>
+          </deformable>
+        </mujoco>
+        """
+      )
+      if snh:
+        spec.flexes[0].elastic3d = 1
+
+    mjm = spec.compile()
+    mjd = mujoco.MjData(mjm)
+    m = mjw.put_model(mjm)
+    d = mjw.put_data(mjm, mjd, nworld=nworld)
+
+    self.assertTrue(np.all(m.flex_simple.numpy()))
+    self.assertFalse(m.has_non_simple_flex)
+
+    mujoco.mj_kinematics(mjm, mjd)
+    mujoco.mj_flex(mjm, mjd)
+    xpos0 = mjd.flexvert_xpos.copy()
+
+    qpos = np.zeros((nworld, mjm.nq), dtype=np.float32)
+    qvel = np.zeros((nworld, mjm.nv), dtype=np.float32)
+    qvel[0] = np.linspace(-0.3, 0.25, mjm.nv, dtype=np.float32)
+    if nworld == 2:
+      qvel[1] = np.linspace(0.28, -0.22, mjm.nv, dtype=np.float32)
+    F_worlds = (np.diag([1.06, 1.04, 1.05]), np.diag([1.03, 1.07, 1.04]))
+    for w in range(nworld):
+      F_w = F_worlds[w]
+      for v in range(mjm.nflexvert):
+        bid = mjm.body_weldid[mjm.flex_vertbodyid[v]]
+        da = mjm.body_dofadr[bid]
+        rot = mjd.xmat[bid].reshape(3, 3)
+        dx_world = (F_w - np.eye(3)) @ xpos0[v]
+        qpos[w, da : da + 3] = (rot.T @ dx_world).astype(np.float32)
+
+    d.qpos.assign(qpos)
+    d.qvel.assign(qvel)
+    for arr in (
+      d.flexvert_hessian,
+      d.flexedge_hessian,
+      d.efm_K_val,
+      d.efm_c,
+      d.qfrc_spring,
+      d.qfrc_damper,
+      d.qacc_smooth,
+      d.qacc,
+    ):
+      arr.fill_(wp.inf)
+
+    mjw.forward(m, d)
+
+    mjds = [mujoco.MjData(mjm) for _ in range(nworld)]
+    for w in range(nworld):
+      mjds[w].qpos[:] = qpos[w]
+      mjds[w].qvel[:] = qvel[w]
+      mujoco.mj_forward(mjm, mjds[w])
+      _assert_eq(d.flexvert_hessian.numpy()[w], mjds[w].flexvert_hessian, f"flexvert_hessian_w{w}")
+      _assert_eq(d.flexedge_hessian.numpy()[w], mjds[w].flexedge_hessian.reshape(-1, 3, 3), f"flexedge_hessian_w{w}")
+      _assert_eq(d.efm_K_val.numpy()[w], mjds[w].efm_K_val, f"efm_K_val_w{w}")
+      _assert_eq(d.efm_c.numpy()[w], mjds[w].efm_c, f"efm_c_w{w}")
+      _assert_eq(d.qfrc_spring.numpy()[w], mjds[w].qfrc_spring, f"qfrc_spring_w{w}")
+      _assert_eq(d.qfrc_damper.numpy()[w], mjds[w].qfrc_damper, f"qfrc_damper_w{w}")
+      _assert_eq(d.qacc_smooth.numpy()[w], mjds[w].qacc_smooth, f"qacc_smooth_w{w}")
+      _assert_eq(d.qacc.numpy()[w], mjds[w].qacc, f"qacc_w{w}")
+
+    if nworld == 2:
+      self.assertFalse(np.allclose(d.qacc.numpy()[0], d.qacc.numpy()[1]))
+
+  @absltest.skipIf(
+    not util_pkg.check_version("mujoco>=3.14.1.dev990351372"),
+    "Requires MuJoCo >= 3.14.1.dev990351372",
+  )
+  @parameterized.product(
+    case=("hinge", "ball", "free", "reordered_slides", "moving_ancestor"),
+    nworld=(1, 2),
+  )
+  def test_discrete_flex_articulated_attachments(self, case, nworld):
+    """Tests non-simple flex attachments (flex_simple == False) with 3D SNH and 2D bend."""
+    inertia = '<inertial pos="0 0 0" mass="0.2" diaginertia="0.01 0.02 0.03"/>'
+    slides = '<joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/>'
+    if case == "hinge":
+      v3_xml = f'<body name="v3" pos="0 0 0.2">{inertia}<joint type="hinge" axis="0 1 0"/></body>'
+    elif case == "ball":
+      v3_xml = f'<body name="v3" pos="0 0 0.2">{inertia}<joint type="ball"/></body>'
+    elif case == "free":
+      v3_xml = f'<body name="v3" pos="0 0 0.2">{inertia}<freejoint/></body>'
+    elif case == "reordered_slides":
+      v3_xml = (
+        f'<body name="v3" pos="0 0 0.2">{inertia}'
+        '<joint type="slide" axis="0 1 0"/><joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 0 1"/></body>'
+      )
+    elif case == "moving_ancestor":
+      v3_xml = (
+        f'<body name="carrier" pos="0 0 0.1">{inertia}<joint type="hinge" axis="1 0 0"/>'
+        f'<body name="v3" pos="0 0 0.1">{inertia}{slides}</body></body>'
+      )
+
+    spec = mujoco.MjSpec.from_string(
+      f"""
+      <mujoco>
+        <option integrator="discrete" solver="CG" timestep="0.002" gravity="0 0 0"/>
+        <worldbody>
+          <body name="v0">{inertia}{slides}</body>
+          <body name="v1" pos="0.2 0 0">{inertia}{slides}</body>
+          <body name="v2" pos="0 0.2 0">{inertia}{slides}</body>
+          {v3_xml}
+        </worldbody>
+        <deformable>
+          <flex name="tet" dim="3" body="v0 v1 v2 v3"
+                vertex="0 0 0  0 0 0  0 0 0  0.03 -0.02 0.04" element="0 1 2 3">
+            <contact selfcollide="none" contype="0" conaffinity="0"/>
+            <elasticity young="500" poisson="0.3" damping="0.05"/>
+          </flex>
+          <flex name="patch" dim="2" body="v0 v1 v2 v3"
+                vertex="0 0 0  0 0 0  0 0 0  0.03 -0.02 0.04" element="0 1 2  1 3 2">
+            <contact selfcollide="none" contype="0" conaffinity="0"/>
+            <elasticity young="500" poisson="0.3" thickness="0.01" elastic2d="both" damping="0.05"/>
+          </flex>
+        </deformable>
+      </mujoco>
+      """
+    )
+    spec.flexes[0].elastic3d = 1
+    mjm = spec.compile()
+    mjd = mujoco.MjData(mjm)
+    m = mjw.put_model(mjm)
+    d = mjw.put_data(mjm, mjd, nworld=nworld)
+
+    self.assertFalse(bool(m.flex_simple.numpy()[0]))
+    self.assertFalse(bool(m.flex_simple.numpy()[1]))
+    self.assertTrue(m.has_non_simple_flex)
+
+    qpos = np.zeros((nworld, mjm.nq), dtype=np.float32)
+    qvel = np.zeros((nworld, mjm.nv), dtype=np.float32)
+    qvel[0] = np.linspace(-0.2, 0.18, mjm.nv, dtype=np.float32)
+    if nworld == 2:
+      qvel[1] = np.linspace(0.19, -0.17, mjm.nv, dtype=np.float32)
+    for w in range(nworld):
+      q_w = mjm.qpos0.copy()
+      dq_w = np.zeros(mjm.nv, dtype=np.float64)
+      scale_w = 1.0 if w == 0 else 1.4
+      # Expand v0 (-z), v1 (+x), v2 (+y) so the 3D SNH element is strictly dilated (SPD Hessian)
+      dq_w[2] = -0.025 * scale_w
+      dq_w[3] = 0.02 * scale_w
+      dq_w[7] = 0.02 * scale_w
+      dq_w[9:] = 0.002 * scale_w
+      mujoco.mj_integratePos(mjm, q_w, dq_w, 1.0)
+      qpos[w] = q_w.astype(np.float32)
+
+    d.qpos.assign(qpos)
+    d.qvel.assign(qvel)
+    for arr in (d.qfrc_spring, d.qfrc_damper, d.efm_c, d.qacc_smooth, d.qacc):
+      arr.fill_(wp.inf)
+    mjw.forward(m, d)
+
+    mjds = [mujoco.MjData(mjm) for _ in range(nworld)]
+    for w in range(nworld):
+      mjds[w].qpos[:] = qpos[w]
+      mjds[w].qvel[:] = qvel[w]
+      mujoco.mj_forward(mjm, mjds[w])
+      _assert_eq(d.qfrc_spring.numpy()[w], mjds[w].qfrc_spring, f"qfrc_spring_{case}_w{w}")
+      _assert_eq(d.qfrc_damper.numpy()[w], mjds[w].qfrc_damper, f"qfrc_damper_{case}_w{w}")
+      _assert_eq(d.efm_c.numpy()[w], mjds[w].efm_c, f"efm_c_{case}_w{w}")
+      _assert_eq(d.qacc_smooth.numpy()[w], mjds[w].qacc_smooth, f"qacc_smooth_{case}_w{w}")
+      _assert_eq(d.qacc.numpy()[w], mjds[w].qacc, f"qacc_{case}_w{w}")
+
+    if nworld == 2:
+      self.assertFalse(np.allclose(d.qacc.numpy()[0], d.qacc.numpy()[1]))
 
 
 if __name__ == "__main__":

@@ -19,6 +19,7 @@ from absl.testing import absltest
 from absl.testing import parameterized
 
 from mujoco_warp._src import types
+from mujoco_warp._src.math import closest_segment_point
 from mujoco_warp._src.math import closest_segment_to_segment_points
 from mujoco_warp._src.math import free_bias_vel_blocks
 from mujoco_warp._src.math import lu_factor_6x6
@@ -56,19 +57,36 @@ def _free_bias_vel_blocks_kernel(
   # In:
   mass: float,
   R: wp.mat33,
-  Xi: wp.mat33,
-  inertia: wp.vec3,
+  Iw: wp.mat33,
   s: wp.vec3,
   qvel_rot: wp.vec3,
   # Out:
   lin_out: wp.array2d[float],
   rot_out: wp.array2d[float],
 ):
-  lin, rot = free_bias_vel_blocks(mass, R, Xi, inertia, s, qvel_rot)
+  lin, rot = free_bias_vel_blocks(mass, R, Iw, s, qvel_rot)
   for r in range(3):
     for c in range(3):
       lin_out[r, c] = lin[r, c]
       rot_out[r, c] = rot[r, c]
+
+
+class ClosestSegmentPointTest(parameterized.TestCase):
+  """Tests point projections onto short and degenerate segments."""
+
+  @parameterized.named_parameters(
+    ("interior", [-0.001, 0, 0], [0.001, 0, 0], [0, 0.00015, 0], [0, 0, 0]),
+    ("endpoint", [-0.001, 0, 0], [0.001, 0, 0], [0.001, 0.00015, 0], [0.001, 0, 0]),
+    ("reversed", [0.001, 0, 0], [-0.001, 0, 0], [0, 0.00015, 0], [0, 0, 0]),
+    ("before", [-0.001, 0, 0], [0.001, 0, 0], [-0.003, 0.00015, 0], [-0.001, 0, 0]),
+    ("after", [-0.001, 0, 0], [0.001, 0, 0], [0.003, 0.00015, 0], [0.001, 0, 0]),
+    ("diagonal", [0, 0, 0], [0.002, 0.002, 0.002], [0.001, 0.002, 0], [0.001, 0.001, 0.001]),
+    ("zero_length", [0.001, -0.002, 0.003], [0.001, -0.002, 0.003], [1, 2, 3], [0.001, -0.002, 0.003]),
+  )
+  def test_closest_segment_point(self, a, b, point, expected):
+    """Projection must not shrink toward the first endpoint as the segment gets shorter."""
+    closest = closest_segment_point(wp.vec3(a), wp.vec3(b), wp.vec3(point))
+    self.assertSequenceAlmostEqual(closest, expected, 6)
 
 
 class ClosestSegmentSegmentPointsTest(absltest.TestCase):
@@ -291,8 +309,7 @@ class FreeBiasVelTest(absltest.TestCase):
       inputs=[
         mass,
         wp.mat33(R_np),
-        wp.mat33(Xi_np),
-        wp.vec3(inertia_np),
+        wp.mat33(Iw),
         wp.vec3(s_np),
         wp.vec3(qvel_rot_np),
       ],

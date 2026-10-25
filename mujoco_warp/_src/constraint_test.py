@@ -162,6 +162,73 @@ class ConstraintTest(parameterized.TestCase):
 
   @parameterized.parameters(
     *itertools.product(
+      (1, 2),  # nworld
+      (3, 4, 6),  # condim
+      (0.5, 20.0),  # impratio
+      (False, True),  # hinged
+      (False, True),  # with_flex
+    )
+  )
+  def test_elliptic_regularization_floor(self, nworld, condim, impratio, hinged, with_flex):
+    joint = '<joint type="hinge" axis="0 1 0"/>' if hinged else "<freejoint/>"
+    flex = '<flexcomp name="unused" type="grid" count="2 2 2" spacing=".1 .1 .1" pos="0 0 5" dim="3"/>' if with_flex else ""
+
+    mjm, mjd, m, d = test_data.fixture(
+      xml=f"""
+        <mujoco>
+          <option cone="elliptic" impratio="{impratio}"/>
+          <worldbody>
+            <geom name="ground" type="plane" size="1 1 .1"/>
+            <body pos="0 0 .09">
+              {joint}
+              <inertial pos="0 0 0" mass="1" diaginertia="1 1 1"/>
+              <geom name="ball" type="sphere" pos=".1 0 0" size=".1"/>
+            </body>
+            {flex}
+          </worldbody>
+          <contact>
+            <pair geom1="ground" geom2="ball" condim="{condim}" friction=".7 .3 .02 .004 .006"/>
+          </contact>
+        </mujoco>
+      """,
+      nworld=nworld,
+    )
+    self.assertEqual(mjm.body_invweight0[1, 0] == 0, hinged)
+    self.assertEqual(mjd.ncon, 1)
+
+    mjds = [mjd]
+    if nworld == 2:
+      mjd1 = mujoco.MjData(mjm)
+      qpos = d.qpos.numpy()
+      qpos[1, 0] += 0.05
+      d.qpos.assign(qpos)
+      mjd1.qpos[:] = qpos[1]
+      mujoco.mj_forward(mjm, mjd1)
+      self.assertEqual(mjd1.ncon, 1)
+      mjds.append(mjd1)
+
+      # Refresh per-world contact data after changing the second world's state.
+      mjw.fwd_kinematics(m, d)
+      mjw.collision(m, d)
+
+    d.efc.D.fill_(wp.inf)
+    mjw.make_constraint(m, d)
+
+    nacon = d.nacon.numpy()[0]
+    worldid = d.contact.worldid.numpy()[:nacon]
+    address = d.contact.efc_address.numpy()
+    for w in range(nworld):
+      conids = np.flatnonzero(worldid == w)
+      self.assertLen(conids, 1)
+      actual_address = address[conids[0], :condim]
+      self.assertTrue(np.all(actual_address >= 0))
+      native_address = mjds[w].contact[0].efc_address
+      expected = mjds[w].efc_D[native_address : native_address + condim]
+      actual = d.efc.D.numpy()[w, actual_address]
+      np.testing.assert_allclose(actual, expected, rtol=5e-5, atol=0)
+
+  @parameterized.parameters(
+    *itertools.product(
       ("constraints.xml", "flex/floppy.xml", "flex/moving_base_strain.xml"),
       (mujoco.mjtCone.mjCONE_PYRAMIDAL, mujoco.mjtCone.mjCONE_ELLIPTIC),
       (mujoco.mjtJacobian.mjJAC_DENSE, mujoco.mjtJacobian.mjJAC_SPARSE),
@@ -433,7 +500,7 @@ class ConstraintTest(parameterized.TestCase):
                     dim="3" cellcount="2 1 2" radius=".001"
                     mass="5" dof="trilinear">
             <elasticity young="1e4" poisson="0.3" damping="1e-3"/>
-            <contact condim="3" selfcollide="none" internal="false"/>
+            <contact condim="3" selfcollide="none"/>
           </flexcomp>
         </worldbody>
       </mujoco>
@@ -560,8 +627,157 @@ class ConstraintTest(parameterized.TestCase):
 
     mjw.make_constraint(m, d)
 
-    self.assertGreater(mjd.nefc, 0)
-    _assert_efc_eq(mjm, m, d, mjd, mjd.nefc, "surfacevel", m.nv)
+  @parameterized.parameters(1, 2)
+  def test_discrete_reference_constraint(self, nworld):
+    """Verifies that discrete efc_aref and efc_D match MuJoCo C after forward actuation."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco model="test_discrete_ref">
+        <option integrator="discrete"/>
+        <worldbody>
+          <body name="body1" pos="0 0 1">
+            <joint name="jnt1" type="slide" axis="0 0 1" damping="2.0"/>
+            <geom type="sphere" size="0.1" mass="1.0"/>
+          </body>
+          <body name="body2" pos="0 0 0.5">
+            <joint name="jnt2" type="slide" axis="0 0 1" damping="1.0"/>
+            <geom type="sphere" size="0.1" mass="1.0"/>
+          </body>
+        </worldbody>
+        <equality>
+          <joint joint1="jnt1" joint2="jnt2" polycoef="0 1 0 0 0" solref="0.01 1" solimp="0.9 0.95 0.001"/>
+        </equality>
+        <actuator>
+          <position joint="jnt1" kp="100" dampratio="1"/>
+        </actuator>
+      </mujoco>
+      """,
+      nworld=nworld,
+    )
+
+    mjds = [mjd]
+    if nworld == 2:
+      mjd1 = mujoco.MjData(mjm)
+      ctrl = d.ctrl.numpy()
+      ctrl[1] = 0.5
+      d.ctrl.assign(ctrl)
+      mjd1.ctrl[:] = ctrl[1]
+      qvel = d.qvel.numpy()
+      qvel[1, 0] = 0.8
+      qvel[1, 1] = -0.4
+      d.qvel.assign(qvel)
+      mjd1.qvel[:] = qvel[1]
+      mjds.append(mjd1)
+
+    d.efc.D.fill_(wp.inf)
+    d.efc.aref.fill_(wp.inf)
+
+    mjw.forward(m, d)
+
+    for w in range(nworld):
+      mujoco.mj_forward(mjm, mjds[w])
+      nefc = mjds[w].nefc
+      np.testing.assert_allclose(d.efc.D.numpy()[w, :nefc], mjds[w].efc_D[:nefc], rtol=1e-4, atol=1e-5)
+      np.testing.assert_allclose(d.efc.aref.numpy()[w, :nefc], mjds[w].efc_aref[:nefc], rtol=1e-4, atol=1e-5)
+
+    if nworld == 2:
+      self.assertFalse(np.allclose(d.efc.aref.numpy()[0], d.efc.aref.numpy()[1]))
+
+  @parameterized.parameters(1, 2)
+  def test_regularize_constraint_ceiling(self, nworld):
+    """Verifies that regularize_constraint clamps D within the impedance ceiling."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco model="test_reg_ceiling">
+        <option integrator="discrete"/>
+        <worldbody>
+          <body name="body1" pos="0 0 1">
+            <joint name="jnt1" type="slide" axis="0 0 1"/>
+            <geom type="sphere" size="0.1" mass="1.0"/>
+          </body>
+        </worldbody>
+        <equality>
+          <joint joint1="jnt1" polycoef="0 1 0 0 0" solref="0.001 1" solimp="0.999 0.9999 0.001"/>
+        </equality>
+        <actuator>
+          <velocity joint="jnt1" kv="1000"/>
+        </actuator>
+      </mujoco>
+      """,
+      nworld=nworld,
+    )
+
+    mjds = [mjd]
+    if nworld == 2:
+      mjd1 = mujoco.MjData(mjm)
+      qpos = d.qpos.numpy()
+      qpos[1] = 0.005
+      d.qpos.assign(qpos)
+      mjd1.qpos[:] = qpos[1]
+      ctrl = d.ctrl.numpy()
+      ctrl[1] = 2.0
+      d.ctrl.assign(ctrl)
+      mjd1.ctrl[:] = ctrl[1]
+      mjds.append(mjd1)
+
+    d.efc.D.fill_(wp.inf)
+
+    mjw.forward(m, d)
+
+    for w in range(nworld):
+      mujoco.mj_forward(mjm, mjds[w])
+      nefc = mjds[w].nefc
+      np.testing.assert_allclose(d.efc.D.numpy()[w, :nefc], mjds[w].efc_D[:nefc], rtol=1e-3, atol=1e-4)
+
+    if nworld == 2:
+      self.assertFalse(np.allclose(d.efc.D.numpy()[0], d.efc.D.numpy()[1]))
+
+  @parameterized.product(
+    cone=(mujoco.mjtCone.mjCONE_PYRAMIDAL, mujoco.mjtCone.mjCONE_ELLIPTIC),
+    nworld=(1, 2),
+  )
+  def test_regularize_constraint_contact_and_adhesion(self, cone, nworld):
+    """Verifies regularize_constraint scales contact rows by r0 and updates adhesion aref."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option integrator="discrete" timestep="0.01"/>
+        <worldbody>
+          <geom type="plane" size="2 2 0.01" friction="0.8 0.01 0.001"/>
+          <body name="b0" pos="0 0 0.095">
+            <joint name="jx" type="slide" axis="1 0 0" stiffness="10" damping="0.5"/>
+            <joint name="jz" type="slide" axis="0 0 1" stiffness="500" damping="20"/>
+            <geom type="sphere" size="0.1" mass="1.0" margin="0.02"/>
+          </body>
+        </worldbody>
+        <actuator>
+          <adhesion name="adh" body="b0" ctrlrange="0 10" gain="5"/>
+        </actuator>
+      </mujoco>
+      """,
+      overrides={"opt.cone": cone},
+      nworld=nworld,
+    )
+    mjd.ctrl[0] = 4.0
+    ctrl_np = np.full((nworld, 1), 4.0, dtype=np.float32)
+    if nworld == 2:
+      ctrl_np[1, 0] = 8.0
+      qvel_np = d.qvel.numpy()
+      qvel_np[1] = [0.2, -0.3]
+      d.qvel = wp.array(qvel_np, dtype=float)
+    d.ctrl = wp.array(ctrl_np, dtype=float)
+    d.efc.D.fill_(wp.inf)
+    d.efc.aref.fill_(wp.inf)
+
+    mujoco.mj_forward(mjm, mjd)
+    mjw.forward(m, d)
+
+    nefc = mjd.nefc
+    self.assertGreater(nefc, 1)
+    _assert_eq(d.efc.D.numpy()[0, :nefc], mjd.efc_D[:nefc], "efc_D")
+    _assert_eq(d.efc.aref.numpy()[0, :nefc], mjd.efc_aref[:nefc], "efc_aref")
+    if nworld == 2:
+      self.assertFalse(np.allclose(d.efc.aref.numpy()[0, :nefc], d.efc.aref.numpy()[1, :nefc]))
 
 
 if __name__ == "__main__":

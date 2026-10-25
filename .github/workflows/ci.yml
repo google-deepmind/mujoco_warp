@@ -5,6 +5,9 @@ on:
     branches: [main]
     types: [opened, reopened, synchronize, edited]
 
+permissions:
+  contents: read
+
 jobs:
   format:
     name: Ruff format
@@ -14,9 +17,9 @@ jobs:
         python-version: ["3.14"]
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
       - name: Install uv
-        uses: astral-sh/setup-uv@v7
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
         with:
           version: "0.9.27"
           python-version: ${{ matrix.python-version }}
@@ -34,9 +37,9 @@ jobs:
         python-version: ["3.14"]
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
       - name: Install uv
-        uses: astral-sh/setup-uv@v7
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
         with:
           version: "0.9.27"
           python-version: ${{ matrix.python-version }}
@@ -50,9 +53,9 @@ jobs:
     name: Pre-commit checks
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
       - name: Install uv
-        uses: astral-sh/setup-uv@v7
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
         with:
           version: "0.9.27"
           python-version: "3.14"
@@ -67,15 +70,15 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        python-version: ["3.10", "3.14"]
+        python-version: ["3.11", "3.14"]
         dep-type: ["locked uv", stable]
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
       
       # Setup for locked uv dependencies
       - name: Install uv
         if: matrix.dep-type == 'locked uv'
-        uses: astral-sh/setup-uv@v7
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
         with:
           version: "0.9.27"
           python-version: ${{ matrix.python-version }}
@@ -87,13 +90,13 @@ jobs:
       # Setup for stable dependencies
       - name: Set up Python ${{ matrix.python-version }} (standard)
         if: matrix.dep-type == 'stable'
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: ${{ matrix.python-version }}
           
       # Common Cache step
       - name: Restore Warp kernel cache
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: ~/.cache/warp
           key: warp-kernels-${{ runner.os }}-${{ runner.arch }}-${{ matrix.python-version }}-${{ matrix.dep-type }}-${{ hashFiles('uv.lock', 'mujoco_warp/**/*.py') }}
@@ -130,9 +133,9 @@ jobs:
     name: Kernel analyzer
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
       - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: ${{ matrix.python-version }}
       - name: Install dependencies

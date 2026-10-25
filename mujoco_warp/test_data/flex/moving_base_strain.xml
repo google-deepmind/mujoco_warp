@@ -12,7 +12,7 @@
       <flexcomp type="grid" count="4 4 4" spacing=".05 .05 .05" pos="0 0 -.1"
                 radius=".001" rgba="0 .7 .7 1" mass="1" name="softbody" dof="trilinear" dim="3">
         <edge equality="strain"/>
-        <contact selfcollide="none" internal="false" contype="0" conaffinity="0"/>
+        <contact selfcollide="none" contype="0" conaffinity="0"/>
       </flexcomp>
     </body>
   </worldbody>

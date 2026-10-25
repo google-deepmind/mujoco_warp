@@ -38,6 +38,7 @@ from mujoco_warp._src.collision_primitive import primitive_narrowphase as primit
 from mujoco_warp._src.collision_sdf import sdf_narrowphase as sdf_narrowphase
 from mujoco_warp._src.constraint import make_constraint as make_constraint
 from mujoco_warp._src.derivative import deriv_smooth_vel as deriv_smooth_vel
+from mujoco_warp._src.forward import discrete as discrete
 from mujoco_warp._src.forward import euler as euler
 from mujoco_warp._src.forward import forward as forward
 from mujoco_warp._src.forward import fwd_acceleration as fwd_acceleration
@@ -78,7 +79,6 @@ from mujoco_warp._src.sensor import sensor_vel as sensor_vel
 from mujoco_warp._src.set_const import set_const as set_const
 from mujoco_warp._src.set_const import set_const_0 as set_const_0
 from mujoco_warp._src.set_const import set_const_fixed as set_const_fixed
-from mujoco_warp._src.set_const import set_const_spring as set_const_spring
 from mujoco_warp._src.set_const import set_length_range as set_length_range
 from mujoco_warp._src.smooth import camlight as camlight
 from mujoco_warp._src.smooth import com_pos as com_pos
@@ -107,7 +107,9 @@ from mujoco_warp._src.types import Callback as Callback
 from mujoco_warp._src.types import ConeType as ConeType
 from mujoco_warp._src.types import Constraint as Constraint
 from mujoco_warp._src.types import Contact as Contact
+from mujoco_warp._src.types import CtrlChart as CtrlChart
 from mujoco_warp._src.types import CtrlInput as CtrlInput
+from mujoco_warp._src.types import DeterminismType as DeterminismType
 from mujoco_warp._src.types import DisableBit as DisableBit
 from mujoco_warp._src.types import DynType as DynType
 from mujoco_warp._src.types import EnableBit as EnableBit
@@ -118,10 +120,10 @@ from mujoco_warp._src.types import JointType as JointType
 from mujoco_warp._src.types import ObjType as ObjType
 from mujoco_warp._src.types import Option as Option
 from mujoco_warp._src.types import OverflowType as OverflowType
+from mujoco_warp._src.types import RayDataField as RayDataField
 from mujoco_warp._src.types import RenderContext as RenderContext
 from mujoco_warp._src.types import SleepPolicy as SleepPolicy
 from mujoco_warp._src.types import SleepState as SleepState
 from mujoco_warp._src.types import SolverType as SolverType
 from mujoco_warp._src.types import State as State
-from mujoco_warp._src.types import Statistic as Statistic
 from mujoco_warp._src.types import TrnType as TrnType

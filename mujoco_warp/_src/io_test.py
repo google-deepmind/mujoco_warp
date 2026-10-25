@@ -32,6 +32,7 @@ from mujoco_warp import IntegratorType
 from mujoco_warp import test_data
 from mujoco_warp._src import io
 from mujoco_warp._src import types
+from mujoco_warp._src import util_pkg
 from mujoco_warp._src import warp_util
 from mujoco_warp._src.io import put_model
 
@@ -644,6 +645,168 @@ class IOTest(parameterized.TestCase):
     np.testing.assert_allclose(mjd.qLD, mjd_ref.qLD)
     np.testing.assert_allclose(mjd.M, mjd_ref.M)
 
+  @parameterized.parameters(1, 2)
+  def test_get_data_into_filters_sensor_contacts(self, nworld):
+    """Tests that get_data_into exports only constraint contacts and preserves efc ordering."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+        <mujoco>
+          <worldbody>
+            <body>
+              <freejoint/>
+              <geom name="a" type="sphere" size=".1"/>
+            </body>
+            <body pos="0 0 .15">
+              <freejoint/>
+              <geom name="b" type="sphere" size=".1"/>
+            </body>
+            <body pos=".24 0 0">
+              <freejoint/>
+              <geom name="c" type="sphere" size=".1" margin=".02" gap=".05"/>
+            </body>
+            <body pos="0 0 1">
+              <freejoint/>
+              <geom name="d" type="sphere" size=".1"/>
+            </body>
+          </worldbody>
+          <sensor>
+            <distance geom1="a" geom2="b" cutoff="2"/>
+            <distance geom1="a" geom2="d" cutoff="2"/>
+          </sensor>
+        </mujoco>
+      """,
+      nworld=nworld,
+      nconmax=8,
+      njmax=8,
+    )
+
+    mjds = [mjd]
+    if nworld == 2:
+      mjd1 = mujoco.MjData(mjm)
+      qpos = d.qpos.numpy()
+      qpos[1, 9] = 0.6
+      d.qpos.assign(qpos)
+      mjd1.qpos[:] = qpos[1]
+      mujoco.mj_forward(mjm, mjd1)
+      mjds.append(mjd1)
+
+    d.nacon.fill_(-1)
+    d.nefc.fill_(-1)
+    d.sensordata.fill_(wp.inf)
+    d.contact.dist.fill_(wp.inf)
+    d.contact.worldid.fill_(-1)
+    d.contact.type.fill_(-1)
+    d.contact.efc_address.fill_(-1)
+    d.efc.pos.fill_(wp.inf)
+
+    mjwarp.forward(m, d)
+
+    for world_id in range(nworld):
+      result = mujoco.MjData(mjm)
+      mjwarp.get_data_into(result, mjm, d, world_id=world_id)
+      self.assertEqual(result.ncon, mjds[world_id].ncon)
+      self.assertEqual(result.nefc, mjds[world_id].nefc)
+      _assert_eq(result.sensordata, mjds[world_id].sensordata, f"sensordata_world_{world_id}")
+      _assert_eq(
+        result.contact.dist[: result.ncon],
+        mjds[world_id].contact.dist[: mjds[world_id].ncon],
+        f"contact_dist_world_{world_id}",
+      )
+      _assert_eq(
+        result.contact.efc_address[: result.ncon],
+        mjds[world_id].contact.efc_address[: mjds[world_id].ncon],
+        f"efc_address_world_{world_id}",
+      )
+      _assert_eq(
+        result.efc_pos[: result.nefc],
+        mjds[world_id].efc_pos[: mjds[world_id].nefc],
+        f"efc_pos_world_{world_id}",
+      )
+
+    if nworld == 2:
+      self.assertNotEqual(mjds[0].ncon, mjds[1].ncon)
+      self.assertFalse(np.allclose(d.sensordata.numpy()[0], d.sensordata.numpy()[1]))
+
+  @parameterized.parameters(1, 2)
+  def test_get_data_into_preserves_passive_contacts(self, nworld):
+    """Tests that get_data_into exports passive flex contacts without EFC rows."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+        <mujoco>
+          <option integrator="discrete">
+            <flag spring="disable"/>
+          </option>
+          <worldbody>
+            <geom type="plane" size="1 1 0.1"/>
+            <body pos="0 0 0.02">
+              <freejoint/>
+              <geom type="sphere" size="0.05" mass="1.0"/>
+            </body>
+            <flexcomp name="f" type="grid" count="2 2 1" spacing="0.1 0.1 0.1"
+                      pos="0 0 0.01" radius="0.02" mass="1.0" dim="2">
+              <contact passive="true" selfcollide="none"/>
+              <elasticity young="100" damping="1"/>
+            </flexcomp>
+          </worldbody>
+        </mujoco>
+      """,
+      nworld=nworld,
+      nconmax=64,
+      njmax=128,
+    )
+
+    roundtrip = mujoco.MjData(mjm)
+    mjwarp.get_data_into(roundtrip, mjm, d)
+    self.assertEqual(roundtrip.ncon, mjd.ncon)
+    np.testing.assert_array_equal(roundtrip.contact.exclude[: roundtrip.ncon], mjd.contact.exclude[: mjd.ncon])
+
+    if nworld == 2:
+      qpos = d.qpos.numpy()
+      qpos[1, 0] += 0.5
+      d.qpos.assign(qpos)
+
+    d.nacon.fill_(-1)
+    d.contact.dist.fill_(wp.inf)
+    d.contact.worldid.fill_(-1)
+    d.contact.type.fill_(-1)
+    d.contact.efc_address.fill_(-1)
+    mjwarp.forward(m, d)
+
+    nacon = min(int(d.nacon.numpy()[0]), d.naconmax)
+    contact_worldid = d.contact.worldid.numpy()
+    contact_type = d.contact.type.numpy()
+    contact_dist = d.contact.dist.numpy()
+    contact_geom = d.contact.geom.numpy()
+    contact_flex = d.contact.flex.numpy()
+    exported_type = types.ContactType.CONSTRAINT | types.ContactType.PASSIVE
+    exported_counts = []
+
+    for world_id in range(nworld):
+      contact_filter = (contact_worldid[:nacon] == world_id) & ((contact_type[:nacon] & exported_type) != 0)
+      expected_type = contact_type[:nacon][contact_filter]
+      is_passive = (expected_type & types.ContactType.PASSIVE) != 0
+      is_constraint = ~is_passive
+      self.assertGreater(is_passive.sum(), 0)
+      self.assertGreater(is_constraint.sum(), 0)
+
+      result = mujoco.MjData(mjm)
+      mjwarp.get_data_into(result, mjm, d, world_id=world_id)
+      result.contact.exclude.fill(-1)
+      mjwarp.get_data_into(result, mjm, d, world_id=world_id)
+      exported_counts.append(result.ncon)
+
+      self.assertEqual(result.ncon, contact_filter.sum())
+      _assert_eq(result.contact.dist[: result.ncon], contact_dist[:nacon][contact_filter], f"contact_dist_world_{world_id}")
+      _assert_eq(result.contact.geom[: result.ncon], contact_geom[:nacon][contact_filter], f"contact_geom_world_{world_id}")
+      _assert_eq(result.contact.flex[: result.ncon], contact_flex[:nacon][contact_filter], f"contact_flex_world_{world_id}")
+      np.testing.assert_array_equal(result.contact.exclude[: result.ncon][is_passive], io.CONTACT_EXCLUDE_PASSIVE)
+      np.testing.assert_array_equal(result.contact.efc_address[: result.ncon][is_passive], -1)
+      np.testing.assert_array_equal(result.contact.exclude[: result.ncon][is_constraint], io.CONTACT_EXCLUDE_INCLUDE)
+      self.assertTrue(np.all(result.contact.efc_address[: result.ncon][is_constraint] >= 0))
+
+    if nworld == 2:
+      self.assertNotEqual(exported_counts[0], exported_counts[1])
+
   @parameterized.named_parameters(
     dict(testcase_name="nworld=1", nworld=1, world_id=0),
     dict(testcase_name="nworld=2_world_id=1", nworld=2, world_id=1),
@@ -1054,9 +1217,12 @@ class IOTest(parameterized.TestCase):
     m = mjwarp.put_model(mjm)
     d = mjwarp.put_data(mjm, mjd, nconmax=16, njmax=16)
 
+    with wp.ScopedCapture() as capture:
+      mjwarp.step(m, d)
+
     # let the box fall and settle on the ground
     for _ in range(30):
-      mjwarp.step(m, d)
+      wp.capture_launch(capture.graph)
 
     # check that box is above ground
     # box center should be at z ≈ 0.5 when resting on ground
@@ -1350,11 +1516,43 @@ class IOTest(parameterized.TestCase):
     with self.assertRaises(NotImplementedError):
       test_data.fixture(
         xml="""
+        <mujoco>
+          <option noslip_iterations="1" integrator="discrete"/>
+        </mujoco>
+        """
+      )
+
+  def test_noslip_options(self):
+    _, _, m, _ = test_data.fixture(
+      xml="""
       <mujoco>
-        <option noslip_iterations="1"/>
+        <option noslip_iterations="3" noslip_tolerance="1e-3"/>
       </mujoco>
       """
-      )
+    )
+    self.assertEqual(m.opt.noslip_iterations, 3)
+    np.testing.assert_allclose(m.opt.noslip_tolerance.numpy(), [1e-3])
+
+  @parameterized.parameters(7, 8)
+  def test_contact_sensor_vel_unsupported(self, bit):
+    """Contact sensor with linvel (bit 7) or angvel (bit 8) raises NotImplementedError."""
+    mjm = mujoco.MjModel.from_xml_string("""
+      <mujoco>
+        <worldbody>
+          <geom type="plane" size="1 1 1"/>
+          <body>
+            <freejoint/>
+            <geom size="0.1"/>
+          </body>
+        </worldbody>
+        <sensor>
+          <contact data="found"/>
+        </sensor>
+      </mujoco>
+    """)
+    mjm.sensor_intprm[0, 0] |= 1 << bit
+    with self.assertRaises(NotImplementedError):
+      put_model(mjm)
 
   @parameterized.parameters(*_IO_TEST_MODELS)
   def test_reset_data(self, xml):
@@ -1428,6 +1626,36 @@ class IOTest(parameterized.TestCase):
         _assert_eq(getattr(d.contact, arr).numpy(), -1, arr)
       else:
         _assert_eq(getattr(d.contact, arr).numpy(), 0.0, arr)
+
+  def test_reset_data_act(self):
+    """Tests that reset_data zeros all activation states when na > nu."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <body>
+            <joint name="joint"/>
+            <geom size="1"/>
+          </body>
+        </worldbody>
+        <actuator>
+          <dcmotor joint="joint" motorconst="0.05" resistance="2.0" inductance="0.01" thermal="10 5 0 0.004 25 25"/>
+        </actuator>
+      </mujoco>
+      """
+    )
+    self.assertGreater(m.na, m.nu)
+
+    d.ctrl.fill_(wp.inf)
+    d.act.fill_(wp.inf)
+    d.act_dot.fill_(wp.inf)
+
+    mujoco.mj_resetData(mjm, mjd)
+    mjwarp.reset_data(m, d)
+
+    _assert_eq(d.ctrl.numpy()[0], mjd.ctrl, "ctrl")
+    _assert_eq(d.act.numpy()[0], mjd.act, "act")
+    _assert_eq(d.act_dot.numpy()[0], mjd.act_dot, "act_dot")
 
   def test_reset_data_world(self):
     """Tests per-world reset."""
@@ -2360,9 +2588,11 @@ class IOTest(parameterized.TestCase):
     geom_pos = m.geom_pos.numpy()
     self.assertEqual(geom_pos.shape[0], nworld)
 
-  def test_margin_multiccd_box_box(self):
-    """MULTICCD + box-box with margin raises NotImplementedError."""
-    mjm = mujoco.MjModel.from_xml_string("""
+  @parameterized.parameters(0, mujoco.mjtDisableBit.mjDSBL_MULTICCD)
+  def test_margin_box_box(self, disableflags):
+    """Box-box with margin succeeds without error, with or without MULTICCD."""
+    test_data.fixture(
+      xml="""
       <mujoco>
         <worldbody>
           <body>
@@ -2375,12 +2605,12 @@ class IOTest(parameterized.TestCase):
           </body>
         </worldbody>
       </mujoco>
-    """)
-    with self.assertRaises(NotImplementedError):
-      mjwarp.put_model(mjm)
+      """,
+      overrides={"opt.disableflags": disableflags},
+    )
 
   def test_margin_multiccd_box_mesh(self):
-    """MULTICCD + box-mesh with margin raises NotImplementedError."""
+    """MULTICCD + box-mesh with margin succeeds without error."""
     mjm = mujoco.MjModel.from_xml_string("""
       <mujoco>
         <worldbody>
@@ -2398,11 +2628,10 @@ class IOTest(parameterized.TestCase):
         </asset>
       </mujoco>
     """)
-    with self.assertRaises(NotImplementedError):
-      mjwarp.put_model(mjm)
+    mjwarp.put_model(mjm)
 
   def test_margin_multiccd_mesh_mesh(self):
-    """MULTICCD + mesh-mesh with margin raises NotImplementedError."""
+    """MULTICCD + mesh-mesh with margin succeeds without error."""
     mjm = mujoco.MjModel.from_xml_string("""
       <mujoco>
         <worldbody>
@@ -2420,8 +2649,7 @@ class IOTest(parameterized.TestCase):
         </asset>
       </mujoco>
     """)
-    with self.assertRaises(NotImplementedError):
-      mjwarp.put_model(mjm)
+    mjwarp.put_model(mjm)
 
   def test_margin_box_box_nativeccd_disabled(self):
     """Box-box with margin and NATIVECCD disabled succeeds without error."""
@@ -2444,27 +2672,26 @@ class IOTest(parameterized.TestCase):
     mjwarp.put_model(mjm)
 
   def test_margin_pair_box_box(self):
-    """Pair with margin on box-box raises NotImplementedError."""
-    with self.assertRaises(NotImplementedError):
-      mjwarp.put_model(
-        mujoco.MjModel.from_xml_string("""
-        <mujoco>
-          <worldbody>
-            <body>
-              <freejoint/>
-              <geom name="b1" type="box" size=".1 .1 .1"/>
-            </body>
-            <body pos="0 0 .5">
-              <freejoint/>
-              <geom name="b2" type="box" size=".1 .1 .1"/>
-            </body>
-          </worldbody>
-          <contact>
-            <pair geom1="b1" geom2="b2" margin="0.01"/>
-          </contact>
-        </mujoco>
-      """)
-      )
+    """Pair with margin on box-box succeeds without error."""
+    test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <body>
+            <freejoint/>
+            <geom name="b1" type="box" size=".1 .1 .1"/>
+          </body>
+          <body pos="0 0 .5">
+            <freejoint/>
+            <geom name="b2" type="box" size=".1 .1 .1"/>
+          </body>
+        </worldbody>
+        <contact>
+          <pair geom1="b1" geom2="b2" margin="0.01"/>
+        </contact>
+      </mujoco>
+      """
+    )
 
   @parameterized.parameters(*_IO_TEST_MODELS)
   def test_kernel_recompilation(self, xml):
@@ -2509,6 +2736,57 @@ class IOTest(parameterized.TestCase):
     mjm.eq_type[0] = mujoco.mjtEq.mjEQ_FLEX
 
     with self.assertRaises(NotImplementedError):
+      mjwarp.put_model(mjm)
+
+  # TODO(team): remove version check once mujoco >= 3.16.1 is required.
+  @absltest.skipIf(not util_pkg.check_version("mujoco>=3.16.1"), "Requires MuJoCo >= 3.16.1")
+  def test_flex_rod_hinge_map(self):
+    """Verify put_model maps each 1D rod bending hinge to its flex and flex_bending address."""
+    mjm, _, m, _ = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <flexcomp name="cloth" type="grid" count="3 3 1" spacing="0.1 0.1 0.1" dim="2" mass="1">
+            <elasticity young="1e3" thickness="1e-2" elastic2d="bend"/>
+          </flexcomp>
+          <flexcomp name="rope" type="grid" count="3 1 1" spacing="0.1 0.1 0.1" pos="0 1 0" radius="0.01" dim="1" mass="1"/>
+          <flexcomp name="rod" type="grid" count="4 1 1" spacing="0.1 0.1 0.1" pos="0 2 0" radius="0.01" dim="1" mass="1">
+            <elasticity young="1e7"/>
+          </flexcomp>
+        </worldbody>
+      </mujoco>
+      """
+    )
+    rod = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_FLEX, "rod")
+    adr = mjm.flex_bendingadr[rod]
+    self.assertGreater(adr, 0)
+    self.assertEqual(m.nflexrodhinge, 2)
+    np.testing.assert_array_equal(m.flex_rodhinge_map.numpy(), [[rod, adr + 1], [rod, adr + 1 + types.ROD_HINGE_SIZE]])
+    self.assertTrue(m.has_flex_stiff_dim23)
+
+  # TODO(team): remove version check once mujoco >= 3.16.1 is required.
+  @absltest.skipIf(not util_pkg.check_version("mujoco>=3.16.1"), "Requires MuJoCo >= 3.16.1")
+  @parameterized.parameters(
+    # quadratic flexes are rejected before the self-collision check
+    ("trilinear", "Self-collision of interpolated flexes"),
+    ("quadratic", "Quadratic flex interpolation"),
+  )
+  def test_flex_interp_selfcollide_error(self, dof, message):
+    """Verify loading an interpolated flex with self-collision raises NotImplementedError."""
+    xml = f"""
+    <mujoco>
+      <worldbody>
+        <flexcomp type="grid" count="3 3 3" spacing="0.1 0.1 0.1"
+                  pos="0 0 0.5" name="cube" dim="3" mass="1" radius="0.005"
+                  dof="{dof}">
+          <contact selfcollide="auto"/>
+        </flexcomp>
+      </worldbody>
+    </mujoco>
+    """
+    mjm = mujoco.MjModel.from_xml_string(xml)
+
+    with self.assertRaisesRegex(NotImplementedError, message):
       mjwarp.put_model(mjm)
 
   @parameterized.parameters(
@@ -2849,59 +3127,15 @@ class IOTest(parameterized.TestCase):
     self.assertEqual(m.has_2d_flex, False)
     self.assertEqual(m.has_3d_flex, True)
 
-  # TODO(team): remove after implementing multicontact support for CCD pairs.
-  @parameterized.parameters(
-    ("capsule", "cylinder"),
-    ("capsule", "mesh"),
-  )
-  def test_unsupported_multiccd_warning(self, geom1_type, geom2_type):
-    """Tests warning for unsupported multicontact CCD pairs when MULTICCD is enabled."""
-
-    def _make_geom_xml(gtype: str) -> str:
-      if gtype == "mesh":
-        return '<geom type="mesh" mesh="m"/>'
-      elif gtype in ("cylinder", "capsule"):
-        return f'<geom type="{gtype}" size=".1 .1"/>'
-      elif gtype == "sphere":
-        return '<geom type="sphere" size=".1"/>'
-      else:
-        return f'<geom type="{gtype}" size=".1 .1 .1"/>'
-
-    mesh_asset = '<mesh name="m" vertex="0 0 0 1 0 0 0 1 0 0 0 1"/>' if "mesh" in (geom1_type, geom2_type) else ""
-    xml = f"""
-      <mujoco>
-        <asset>
-          {mesh_asset}
-        </asset>
-        <worldbody>
-          <body>
-            <freejoint/>
-            {_make_geom_xml(geom1_type)}
-          </body>
-          <body pos="0 0 .5">
-            <freejoint/>
-            {_make_geom_xml(geom2_type)}
-          </body>
-        </worldbody>
-      </mujoco>
-    """
-    mjm = mujoco.MjModel.from_xml_string(xml)
-
-    with self.assertWarns(UserWarning):
-      mjwarp.put_model(mjm)
-
-    mjm.opt.disableflags |= mujoco.mjtDisableBit.mjDSBL_MULTICCD
-    with warnings.catch_warnings():
-      warnings.simplefilter("error")
-      mjwarp.put_model(mjm)
-
   @parameterized.parameters(
     ("cylinder", "box"),
     ("cylinder", "cylinder"),
     ("cylinder", "mesh"),
+    ("capsule", "cylinder"),
+    ("capsule", "mesh"),
   )
   def test_supported_cylinder_multiccd_no_warning(self, geom1_type, geom2_type):
-    """Tests that supported cylinder MultiCCD pairs emit no warning."""
+    """Tests that supported cylinder and capsule MultiCCD pairs emit no warning."""
 
     def _make_geom_xml(gtype: str) -> str:
       if gtype == "mesh":
@@ -2937,21 +3171,6 @@ class IOTest(parameterized.TestCase):
     with warnings.catch_warnings():
       warnings.simplefilter("error")
       mjwarp.put_model(mjm)
-
-  def test_flex_internal_collision(self):
-    """Test that flex internal collision raises NotImplementedError."""
-    xml = """
-      <mujoco>
-        <worldbody>
-          <flexcomp name="cloth" type="grid" count="3 3 1" spacing=".2 .2 .1" pos="0 0 0"
-                    radius=".02" dim="2" mass=".5">
-            <contact selfcollide="none" internal="true" margin="0.05"/>
-          </flexcomp>
-        </worldbody>
-      </mujoco>
-      """
-    with self.assertRaises(NotImplementedError):
-      test_data.fixture(xml=xml)
 
 
 if __name__ == "__main__":

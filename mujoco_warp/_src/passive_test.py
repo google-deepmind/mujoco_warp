@@ -25,6 +25,7 @@ import mujoco_warp as mjw
 from mujoco_warp import ConeType
 from mujoco_warp import DisableBit
 from mujoco_warp import test_data
+from mujoco_warp._src import util_pkg
 
 # tolerance for difference between MuJoCo and MJWarp passive force calculations - mostly
 # due to float precision
@@ -38,6 +39,63 @@ def _assert_eq(a, b, name):
 
 
 class PassiveTest(parameterized.TestCase):
+  @parameterized.product(nworld=(1, 2), damper=(0, DisableBit.DAMPER))
+  def test_per_dof_damping(self, nworld, damper):
+    """Tests independent damping coefficients for every DOF of free and ball joints."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option gravity="0 0 0"/>
+        <worldbody>
+          <body>
+            <joint type="free"/>
+            <geom size="0.1" contype="0" conaffinity="0"/>
+          </body>
+          <body pos="1 0 0">
+            <joint type="ball"/>
+            <geom size="0.1" contype="0" conaffinity="0"/>
+          </body>
+          <body pos="2 0 0">
+            <joint type="hinge"/>
+            <joint type="slide"/>
+            <geom size="0.1" contype="0" conaffinity="0"/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=nworld,
+      overrides={"opt.disableflags": damper},
+      batch_sizes={"dof_damping": nworld, "dof_dampingpoly": nworld},
+    )
+    damping = np.tile(np.arange(mjm.nv, dtype=np.float32), (nworld, 1))
+    poly = np.zeros((nworld, mjm.nv, 2), dtype=np.float32)
+    poly[:, 2::2, 0] = 0.3
+    poly[:, 3::2, 1] = 0.2
+    # Include zero damping on the first free DOF and polynomial-only damping on another.
+    damping[:, 2] = 0.0
+    velocity = np.tile(np.linspace(-0.5, 0.7, mjm.nv, dtype=np.float32), (nworld, 1))
+    if nworld == 2:
+      damping[1] *= 0.5
+      poly[1] *= 2.0
+      velocity[1] *= -1.5
+    m.dof_damping.assign(damping)
+    m.dof_dampingpoly.assign(poly)
+    d.qvel.assign(velocity)
+    d.qfrc_damper.fill_(wp.inf)
+    d.qfrc_passive.fill_(wp.inf)
+
+    mjw.passive(m, d)
+
+    for world in range(nworld):
+      mjm.dof_damping[:] = damping[world]
+      mjm.dof_dampingpoly[:] = poly[world]
+      mjd.qvel[:] = velocity[world]
+      mujoco.mj_passive(mjm, mjd)
+      _assert_eq(d.qfrc_damper.numpy()[world], mjd.qfrc_damper, f"qfrc_damper_world_{world}")
+      _assert_eq(d.qfrc_passive.numpy()[world], mjd.qfrc_passive, f"qfrc_passive_world_{world}")
+    if nworld == 2 and not damper:
+      self.assertFalse(np.allclose(d.qfrc_damper.numpy()[0], d.qfrc_damper.numpy()[1]))
+
   @parameterized.product(spring=(0, DisableBit.SPRING), damper=(0, DisableBit.DAMPER), gravity=(0, DisableBit.GRAVITY))
   def test_passive(self, spring, damper, gravity):
     """Tests passive."""
@@ -119,9 +177,12 @@ class PassiveTest(parameterized.TestCase):
       keyframe=0,
     )
 
+    with wp.ScopedCapture() as capture:
+      mjw.step(m, d)
+
     max_err = 0.0
     for _ in range(25):
-      mjw.step(m, d)
+      wp.capture_launch(capture.graph)
       mujoco.mj_step(mjm, mjd)
 
       warp_force = d.qfrc_fluid.numpy()[0]
@@ -395,8 +456,11 @@ class PassiveTest(parameterized.TestCase):
     e0 = d.energy.numpy()[0]
     total_energy = e0[0] + e0[1]
 
-    for _ in range(10):
+    with wp.ScopedCapture() as capture:
       mjw.step(m, d)
+
+    for _ in range(10):
+      wp.capture_launch(capture.graph)
       e = d.energy.numpy()[0]
       self.assertAlmostEqual(e[0] + e[1], total_energy, delta=0.005)
 
@@ -420,9 +484,56 @@ class PassiveTest(parameterized.TestCase):
       keyframe=0,
     )
 
-    d.qfrc_fluid.zero_()
+    d.qfrc_fluid.fill_(wp.inf)
     mjw.forward(m, d)
-    np.testing.assert_allclose(d.qfrc_fluid.numpy()[0], mjd.qfrc_fluid, atol=5e-4, rtol=5e-4)
+    self.assertTrue(np.isfinite(d.qfrc_fluid.numpy()[0]).all())
+    if util_pkg.check_version("mujoco>=3.13.1.dev984716496"):
+      np.testing.assert_allclose(d.qfrc_fluid.numpy()[0], mjd.qfrc_fluid, atol=5e-4, rtol=5e-4)
+
+  def test_kutta_lift_low_speed_scaling(self):
+    """Verify exact v^2 scaling of Kutta lift at low speeds."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option density="1.225"/>
+        <worldbody>
+          <body>
+            <freejoint/>
+            <geom type="ellipsoid" size=".025 .01 .001" euler="0 -30 0"
+                  fluidshape="ellipsoid"/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """
+    )
+
+    # reference lift/v^2 at v = 10 m/s
+    qvel = np.zeros(mjm.nv, dtype=float)
+    qvel[0] = 10.0
+    mjd.qvel[0] = 10.0
+    wp.copy(d.qvel, wp.array([qvel], dtype=float))
+
+    with wp.ScopedCapture() as capture:
+      mjw.forward(m, d)
+
+    mujoco.mj_forward(mjm, mjd)
+    d.qfrc_fluid.fill_(wp.inf)
+    wp.capture_launch(capture.graph)
+
+    warp_force = d.qfrc_fluid.numpy()[0]
+    np.testing.assert_allclose(warp_force, mjd.qfrc_fluid, atol=1e-6, rtol=1e-5)
+
+    ref_lift_coeff = warp_force[2] / (10.0 * 10.0)
+    self.assertGreater(ref_lift_coeff, 0.0)
+
+    # verify exact v^2 scaling at low speeds (1 m/s, 0.1 m/s, 1 cm/s, 1 mm/s)
+    for v in (1.0, 0.1, 0.01, 0.001):
+      qvel[0] = v
+      wp.copy(d.qvel, wp.array([qvel], dtype=float))
+      d.qfrc_fluid.fill_(wp.inf)
+      wp.capture_launch(capture.graph)
+      lift_coeff = d.qfrc_fluid.numpy()[0, 2] / (v * v)
+      np.testing.assert_allclose(lift_coeff, ref_lift_coeff, atol=1e-12 * ref_lift_coeff, rtol=1e-5)
 
   def test_adhesion_gap_force(self):
     """Test contact creation and passive attraction in the gap band without collision."""
@@ -499,9 +610,11 @@ class PassiveTest(parameterized.TestCase):
       """
     )
     d.qfrc_adhesion.fill_(wp.inf)
+    with wp.ScopedCapture() as capture:
+      mjw.step(m, d)
     for _ in range(20):
       mujoco.mj_step(mjm, mjd)
-      mjw.step(m, d)
+      wp.capture_launch(capture.graph)
 
     np.testing.assert_allclose(d.qpos.numpy()[0], mjd.qpos, atol=1e-3)
     np.testing.assert_allclose(

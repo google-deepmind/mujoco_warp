@@ -15,6 +15,7 @@
 
 import warp as wp
 
+from mujoco_warp._src import constraint
 from mujoco_warp._src import derivative
 from mujoco_warp._src import forward
 from mujoco_warp._src import sensor
@@ -53,6 +54,28 @@ def _qfrc_eulerdamp(
 
   damp_deriv = util_misc._poly_force_deriv(damping, dpoly, v, 1)
   qfrc_out[worldid, dofid] += timestep * damp_deriv * qacc_in[worldid, dofid]
+
+
+@wp.kernel
+def _mul_qLU(
+  # Model:
+  D_rownnz: wp.array[int],
+  D_rowadr: wp.array[int],
+  D_colind: wp.array[int],
+  # Data in:
+  qLU_in: wp.array2d[float],
+  # In:
+  vec: wp.array2d[float],
+  # Out:
+  res: wp.array2d[float],
+):
+  worldid, dofid = wp.tid()
+  rowadr = D_rowadr[dofid]
+  val = float(0.0)
+  for k in range(D_rownnz[dofid]):
+    adr = rowadr + k
+    val += qLU_in[worldid, adr] * vec[worldid, D_colind[adr]]
+  res[worldid, dofid] = val
 
 
 @wp.kernel
@@ -107,16 +130,60 @@ def discrete_acc(m: Model, d: Data, qacc: wp.array2d[float]):
       inputs=[m.opt.timestep, m.dof_damping, m.dof_dampingpoly, d.qvel, d.qacc],
       outputs=[qfrc],
     )
+  elif m.opt.integrator == IntegratorType.IMPLICIT:
+    # set qLU = M - dt * qDeriv
+    forward.implicit_qlu(m, d)
+
+    # set qfrc = qLU * qacc
+    wp.launch(
+      _mul_qLU,
+      dim=(d.nworld, m.nv),
+      inputs=[m.D_rownnz, m.D_rowadr, m.D_colind, d.qLU, d.qacc],
+      outputs=[qfrc],
+    )
+    forward.implicit_free_body(m, d, d.qacc, qfrc, solve=False)
   elif m.opt.integrator == IntegratorType.IMPLICITFAST:
     qDeriv = wp.empty((d.nworld, m.nC), dtype=float)
     derivative.deriv_smooth_vel(m, d, qDeriv)
     mul_m(m, d, qfrc, d.qacc, M=qDeriv)
-    smooth.factor_solve_i(m, d, d.M, d.qLD, d.qLDiagInv, qacc, qfrc)
+
+    # standalone free bodies: overwrite block rows with the unsymmetric local product,
+    # including the bias (gyroscopic) derivative
+    forward.implicit_free_body(m, d, d.qacc, qfrc, solve=False)
+  elif m.opt.integrator == IntegratorType.DISCRETE:
+    # Under discrete, qacc is already the discrete step map: INVDISCRETE is implied.
+    wp.copy(qacc, d.qacc)
+    return
   else:
     raise NotImplementedError(f"integrator {m.opt.integrator} not implemented.")
 
   # solve for qacc: qfrc = d.M @ d.qacc
   smooth.solve_m(m, d, qacc, qfrc)
+
+
+@wp.kernel
+def _qfrc_inverse_discrete(
+  # Data in:
+  qfrc_bias_in: wp.array2d[float],
+  qfrc_passive_in: wp.array2d[float],
+  qfrc_constraint_in: wp.array2d[float],
+  efm_c_in: wp.array2d[float],
+  efm_ca_in: wp.array2d[float],
+  # In:
+  Ma: wp.array2d[float],
+  # Data out:
+  qfrc_inverse_out: wp.array2d[float],
+):
+  worldid, dofid = wp.tid()
+
+  qfrc_inverse = qfrc_bias_in[worldid, dofid]
+  qfrc_inverse += Ma[worldid, dofid]
+  qfrc_inverse -= efm_c_in[worldid, dofid]
+  qfrc_inverse -= efm_ca_in[worldid, dofid]
+  qfrc_inverse -= qfrc_passive_in[worldid, dofid]
+  qfrc_inverse -= qfrc_constraint_in[worldid, dofid]
+
+  qfrc_inverse_out[worldid, dofid] = qfrc_inverse
 
 
 @wp.kernel
@@ -147,35 +214,57 @@ def inv_constraint(m: Model, d: Data):
 
 def inverse(m: Model, d: Data):
   """Inverse dynamics."""
+  forward.check_discrete(m)
   forward.fwd_position(m, d)
   sensor.sensor_pos(m, d)
   forward.fwd_velocity(m, d)
   sensor.sensor_vel(m, d)
 
-  invdiscrete = m.opt.enableflags & EnableBit.INVDISCRETE
+  is_discrete = m.opt.integrator == IntegratorType.DISCRETE
+  invdiscrete = (m.opt.enableflags & EnableBit.INVDISCRETE) or is_discrete
   if invdiscrete:
     # save discrete-time qacc and compute continuous-time qacc
     qacc_discrete = wp.clone(d.qacc)
     discrete_acc(m, d, d.qacc)
+
+  if is_discrete:
+    derivative.eff_actuation(m, d)
+    constraint.regularize_constraint(m, d)
 
   inv_constraint(m, d)
   smooth.rne(m, d)
   smooth.tendon_bias(m, d, d.qfrc_bias)
   sensor.sensor_acc(m, d)
 
-  support.mul_m(m, d, d.qfrc_inverse, d.qacc)
-
-  wp.launch(
-    _qfrc_inverse,
-    dim=(d.nworld, m.nv),
-    inputs=[
-      d.qfrc_bias,
-      d.qfrc_passive,
-      d.qfrc_constraint,
-      d.qfrc_inverse,
-    ],
-    outputs=[d.qfrc_inverse],
-  )
+  if is_discrete:
+    derivative.eff_mul_m(m, d, d.qfrc_inverse, d.qacc)
+    forward._launch_discrete_free_gyro(m, d, d.qfrc_inverse, d.qacc, True)
+    wp.launch(
+      _qfrc_inverse_discrete,
+      dim=(d.nworld, m.nv),
+      inputs=[
+        d.qfrc_bias,
+        d.qfrc_passive,
+        d.qfrc_constraint,
+        d.efm_c,
+        d.efm_ca,
+        d.qfrc_inverse,
+      ],
+      outputs=[d.qfrc_inverse],
+    )
+  else:
+    support.mul_m(m, d, d.qfrc_inverse, d.qacc)
+    wp.launch(
+      _qfrc_inverse,
+      dim=(d.nworld, m.nv),
+      inputs=[
+        d.qfrc_bias,
+        d.qfrc_passive,
+        d.qfrc_constraint,
+        d.qfrc_inverse,
+      ],
+      outputs=[d.qfrc_inverse],
+    )
 
   if invdiscrete:
     # restore discrete-time qacc

@@ -25,6 +25,7 @@ from mujoco_warp._src.collision_core import contact_params
 from mujoco_warp._src.collision_core import geom_collision_pair
 from mujoco_warp._src.collision_core import geom_collision_pair_from_types
 from mujoco_warp._src.collision_core import write_contact
+from mujoco_warp._src.collision_gjk import _gjk_simplex_to_epa
 from mujoco_warp._src.collision_gjk import ccd
 from mujoco_warp._src.collision_gjk import epa_phase
 from mujoco_warp._src.collision_gjk import gjk_phase
@@ -288,7 +289,7 @@ def ccd_hfield_kernel_builder(
     if no_hf_collision:
       return
 
-    ccdid = wp.atomic_add(nccd_in, wp.static(geomgeomid), 1)
+    ccdid = wp.atomic_add(nccd_in, wp.static(geomgeomid), 1)  # kernel_analyzer: ignore[atomic]
     if ccdid >= naccdmax_in:
       if wp.static(bool(warn_overflow & OverflowType.CCD)):
         wp.printf(
@@ -411,7 +412,11 @@ def ccd_hfield_kernel_builder(
 
     # process all prisms in subgrid
     count = int(0)
+    noverflow = int(0)
     for r in range(rmin, rmax):
+      if noverflow > 0:
+        break
+
       # pre-initialize first 2 vertices
       for init_i in range(2):
         x = dx * float(cmin) - size[0]
@@ -430,18 +435,14 @@ def ccd_hfield_kernel_builder(
         prism[5, 2] = z
 
       for c in range(cmin + 1, cmax + 1):
+        if noverflow > 0:
+          break
+
         # add both triangles from this cell
         for i in range(2):
           if count >= MJ_MAXCONPAIR:
-            if wp.static(bool(warn_overflow & OverflowType.HFIELD)):
-              wp.printf(
-                "height field collision overflow, number of collisions >= %u - please adjust resolution: \n"
-                "decrease the number of hfield rows/cols or modify size of colliding geom\n"
-                "To disable the print warning: m.opt.warn_overflow &= ~mjw.OverflowType.HFIELD (or = 0 for all)\n",
-                MJ_MAXCONPAIR,
-              )
-            wp.atomic_or(overflow_out, worldid, OverflowType.HFIELD)
-            continue
+            noverflow = 1
+            break
 
           # add vert
           x = dx * float(c) - size[0]
@@ -490,7 +491,8 @@ def ccd_hfield_kernel_builder(
             overflow_out,
           )
 
-          if ncontact == 0:
+          # skip prisms not in contact: ccd reports ncontact == 1 for separated geoms
+          if ncontact == 0 or dist >= margin + gap:
             continue
 
           # cache contact information
@@ -518,6 +520,21 @@ def ccd_hfield_kernel_builder(
             min_id = count
 
           count += 1
+
+    # warn once per pair rather than once per prism that did not fit
+    if noverflow > 0:
+      if wp.static(bool(warn_overflow & OverflowType.HFIELD)):
+        wp.printf(
+          "height field collision overflow, number of collisions >= %u - please adjust resolution: \n"
+          "decrease the number of hfield rows/cols or modify size of colliding geom\n"
+          "To disable the print warning: m.opt.warn_overflow &= ~mjw.OverflowType.HFIELD (or = 0 for all)\n",
+          MJ_MAXCONPAIR,
+        )
+      wp.atomic_or(overflow_out, worldid, OverflowType.HFIELD)
+
+    # skip write when no prisms collide
+    if count == 0:
+      return
 
     # contact 0: minimum distance
     write_contact(
@@ -842,7 +859,7 @@ def ccd_kernel_builder(
     multiccd_idx = int(-1)
 
     if needs_epa:
-      ccdid = wp.atomic_add(nccd_in, geomgeomid, 1)
+      ccdid = wp.atomic_add(nccd_in, geomgeomid, 1)  # kernel_analyzer: ignore[atomic]
       if ccdid >= naccdmax_in:
         if wp.static(bool(warn_overflow & OverflowType.CCD)):
           wp.printf(
@@ -887,11 +904,27 @@ def ccd_kernel_builder(
     witness1[0] = w1
     witness2[0] = w2
 
+    has_face1 = wp.static(geomtype1 == GeomType.BOX or geomtype1 == GeomType.MESH or geomtype1 == GeomType.CYLINDER)
+    has_face2 = wp.static(geomtype2 == GeomType.BOX or geomtype2 == GeomType.MESH or geomtype2 == GeomType.CYLINDER)
+    has_edge1 = wp.static(geomtype1 == GeomType.CAPSULE)
+    has_edge2 = wp.static(geomtype2 == GeomType.CAPSULE)
     if wp.static(
-      (use_multiccd or (geomtype1 == GeomType.BOX and geomtype2 == GeomType.BOX))
-      and (geomtype1 == GeomType.BOX or geomtype1 == GeomType.MESH or geomtype1 == GeomType.CYLINDER)
-      and (geomtype2 == GeomType.BOX or geomtype2 == GeomType.MESH or geomtype2 == GeomType.CYLINDER)
+      (geomtype1 == GeomType.BOX and geomtype2 == GeomType.BOX)
+      or (use_multiccd and ((has_face1 and has_face2) or (has_edge1 and has_face2) or (has_face1 and has_edge2)))
     ):
+      if not needs_epa and dist < margin and gjk_result.dim > 0:
+        ccdid = wp.atomic_add(nccd_in, geomgeomid, 1)  # kernel_analyzer: ignore[atomic]
+        if ccdid >= naccdmax_in:
+          if wp.static(bool(warn_overflow & OverflowType.CCD)):
+            wp.printf(
+              "CCD overflow - please increase naccdmax beyond %u\n"
+              "To disable the print warning: m.opt.warn_overflow &= ~mjw.OverflowType.CCD (or = 0 for all)\n",
+              naccdmax_in,
+            )
+          wp.atomic_or(overflow_out, worldid, OverflowType.CCD)
+          return
+        multiccd_idx = _gjk_simplex_to_epa(gjk_result, epa_vert_in[ccdid], epa_vert_index_in[ccdid], epa_face_in[ccdid])
+
       if wp.static(geomtype1 == GeomType.MESH):
         # verify that geom1 mesh data is present for multicontact
         if geom1.mesh_polyadr < 0:
@@ -967,7 +1000,7 @@ def ccd_kernel_builder(
       write_contact(
         naconmax_in,
         i,
-        dists[i] if ncollision > 1 else dist,
+        dists[i] + margin if ncollision > 1 else dist,
         0.5 * (witness1[i] + witness2[i]) + origin,
         frame,
         margin,
@@ -1252,6 +1285,8 @@ def convex_narrowphase(m: Model, d: Data, ctx: CollisionContext, collision_table
   ncylcyl, _ = _pair_count(GeomType.CYLINDER.value, GeomType.CYLINDER.value)
   ncylbox, _ = _pair_count(GeomType.CYLINDER.value, GeomType.BOX.value)
   ncylmesh, _ = _pair_count(GeomType.CYLINDER.value, GeomType.MESH.value)
+  ncapcyl, _ = _pair_count(GeomType.CAPSULE.value, GeomType.CYLINDER.value)
+  ncapmesh, _ = _pair_count(GeomType.CAPSULE.value, GeomType.MESH.value)
 
   epa_iterations = 16 if nboxbox == ncollision else m.opt.ccd_iterations
 
@@ -1264,10 +1299,10 @@ def convex_narrowphase(m: Model, d: Data, ctx: CollisionContext, collision_table
   nmeshdegmax = 3 if nboxbox > 0 else 0
 
   # need to allocate more memory if there are cylinders or meshes
-  if use_multiccd and ncylcyl + ncylbox + ncylmesh > 0:
+  if use_multiccd and ncylcyl + ncylbox + ncylmesh + ncapcyl > 0:
     npolygonmax = max(m.npolygonmax, 16)
     nmeshdegmax = max(m.nmeshdegmax, 3)
-  elif use_multiccd and nmeshmesh + nboxmesh > 0:
+  elif use_multiccd and nmeshmesh + nboxmesh + ncapmesh > 0:
     minval = 4 if nboxmesh else npolygonmax
     npolygonmax = max(m.npolygonmax, minval)
     nmeshdegmax = max(m.nmeshdegmax, 3)

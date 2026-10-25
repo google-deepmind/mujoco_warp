@@ -31,12 +31,13 @@ def sphere_triangle_kernel(
   t2: wp.vec3,
   t3: wp.vec3,
   tri_radius: float,
+  margin: float,
   # Out:
   dist_out: wp.array[float],
   pos_out: wp.array[wp.vec3],
   normal_out: wp.array[wp.vec3],
 ):
-  dist, pos, normal = sphere_triangle(sphere_pos, sphere_radius, t1, t2, t3, tri_radius)
+  dist, pos, normal = sphere_triangle(sphere_pos, sphere_radius, t1, t2, t3, tri_radius, margin)
   dist_out[0] = dist
   pos_out[0] = pos
   normal_out[0] = normal
@@ -53,6 +54,7 @@ class SphereTriangleTest(parameterized.TestCase):
     t2: np.ndarray,
     t3: np.ndarray,
     tri_radius: float,
+    margin: float = 1.0,
   ):
     """Helper to run the sphere_triangle kernel and return results."""
     dist = wp.zeros(1, dtype=float)
@@ -69,6 +71,7 @@ class SphereTriangleTest(parameterized.TestCase):
         wp.vec3(t2),
         wp.vec3(t3),
         tri_radius,
+        margin,
       ],
       outputs=[dist, pos, normal],
     )
@@ -149,6 +152,33 @@ class SphereTriangleTest(parameterized.TestCase):
     expected_dist = 0.5 - sphere_radius - tri_radius
     np.testing.assert_allclose(dist, expected_dist, atol=1e-5)
 
+  def test_sphere_center_on_triangle(self):
+    """Zero center-to-triangle distance uses the mju_normalize3 fallback normal (1, 0, 0)."""
+    t1 = np.array([0.0, 0.0, 0.0])
+    t2 = np.array([1.0, 0.0, 0.0])
+    t3 = np.array([0.5, 1.0, 0.0])
+    sphere_pos = np.array([0.5, 0.33, 0.0])
+
+    dist, pos, normal = self._run_sphere_triangle(sphere_pos, 0.1, t1, t2, t3, 0.0)
+
+    np.testing.assert_allclose(dist, -0.1, atol=1e-6)
+    np.testing.assert_allclose(normal, [1.0, 0.0, 0.0], atol=1e-6)
+    np.testing.assert_allclose(pos, [0.55, 0.33, 0.0], atol=1e-6)
+
+  @parameterized.parameters(
+    (np.array([0.5, 0.33, 0.5]),),  # rejected by the plane-distance test
+    (np.array([0.5, -0.5, 0.0]),),  # in-plane, rejected by the nearest-point test
+  )
+  def test_sphere_beyond_margin(self, sphere_pos):
+    """Beyond margin + radii there is no contact, as in MuJoCo."""
+    t1 = np.array([0.0, 0.0, 0.0])
+    t2 = np.array([1.0, 0.0, 0.0])
+    t3 = np.array([0.5, 1.0, 0.0])
+
+    dist, _, _ = self._run_sphere_triangle(sphere_pos, 0.2, t1, t2, t3, 0.0, margin=0.01)
+
+    self.assertEqual(dist, collision_primitive_core.MJ_MAXVAL)
+
 
 @wp.kernel
 def box_triangle_kernel(
@@ -160,12 +190,13 @@ def box_triangle_kernel(
   t2: wp.vec3,
   t3: wp.vec3,
   tri_radius: float,
+  margin: float,
   # Out:
-  dist_out: wp.array[wp.vec2],
-  pos_out: wp.array[collision_primitive_core.mat23f],
-  normal_out: wp.array[collision_primitive_core.mat23f],
+  dist_out: wp.array[collision_primitive_core.vec11],
+  pos_out: wp.array[collision_primitive_core.mat113],
+  normal_out: wp.array[collision_primitive_core.mat113],
 ):
-  dist, pos, normal = collision_primitive_core.box_triangle(box_pos, box_rot, box_size, t1, t2, t3, tri_radius)
+  dist, pos, normal = collision_primitive_core.box_triangle(box_pos, box_rot, box_size, t1, t2, t3, tri_radius, margin)
   dist_out[0] = dist
   pos_out[0] = pos
   normal_out[0] = normal
@@ -183,11 +214,12 @@ class BoxTriangleTest(parameterized.TestCase):
     t2: np.ndarray,
     t3: np.ndarray,
     tri_radius: float,
+    margin: float = 1.0,
   ):
     """Helper to run the box_triangle kernel and return results."""
-    dist = wp.zeros(1, dtype=wp.vec2)
-    pos = wp.zeros(1, dtype=collision_primitive_core.mat23f)
-    normal = wp.zeros(1, dtype=collision_primitive_core.mat23f)
+    dist = wp.zeros(1, dtype=collision_primitive_core.vec11)
+    pos = wp.zeros(1, dtype=collision_primitive_core.mat113)
+    normal = wp.zeros(1, dtype=collision_primitive_core.mat113)
 
     wp.launch(
       box_triangle_kernel,
@@ -210,6 +242,7 @@ class BoxTriangleTest(parameterized.TestCase):
         wp.vec3(t2),
         wp.vec3(t3),
         tri_radius,
+        margin,
       ],
       outputs=[dist, pos, normal],
     )
@@ -260,6 +293,91 @@ class BoxTriangleTest(parameterized.TestCase):
 
     self.assertLess(dist[0], collision_primitive_core.MJ_MAXVAL)
 
+  @parameterized.parameters(
+    (np.eye(3),),
+    (np.diag([1.0, -1.0, -1.0]),),  # 180 deg about x: bottom face becomes local +z
+    (np.diag([-1.0, -1.0, 1.0]),),  # 180 deg about z
+  )
+  def test_box_contacts_invariant_to_box_symmetry(self, box_rot):
+    """Rotations that map the box onto itself must yield the same contacts."""
+    t1 = np.array([-1.0, -1.0, 0.0])
+    t2 = np.array([1.0, -1.0, 0.0])
+    t3 = np.array([0.0, 1.5, 0.0])
+    box_pos = np.array([0.0, 0.0, 0.1005])  # bottom face 0.5 mm above the triangle
+    box_size = np.array([0.1, 0.1, 0.1])
+
+    dist, pos, normal = self._run_box_triangle(box_pos, box_rot, box_size, t1, t2, t3, 0.0, margin=0.002)
+
+    # the four bottom corners, as in MuJoCo
+    hit = dist < collision_primitive_core.MJ_MAXVAL
+    self.assertEqual(hit.sum(), 4)
+    self.assertFalse(hit[:3].any())  # no triangle vertex is near the box
+    np.testing.assert_allclose(dist[hit], [0.0005] * 4, atol=1e-6)
+    np.testing.assert_allclose(normal[hit, 2], [-1.0] * 4, atol=1e-6)
+    np.testing.assert_allclose(pos[hit, 2], [0.00025] * 4, atol=1e-6)
+
+  def test_box_beyond_margin(self):
+    """Candidates farther than margin are discarded."""
+    t1 = np.array([-1.0, -1.0, 0.0])
+    t2 = np.array([1.0, -1.0, 0.0])
+    t3 = np.array([0.0, 1.5, 0.0])
+    box_pos = np.array([0.0, 0.0, 0.3])  # bottom face 0.2 above the triangle
+    box_size = np.array([0.1, 0.1, 0.1])
+
+    dist, _, _ = self._run_box_triangle(box_pos, np.eye(3), box_size, t1, t2, t3, 0.0, margin=0.01)
+
+    np.testing.assert_equal(dist, [collision_primitive_core.MJ_MAXVAL] * 11)
+
+  def test_box_returns_all_corners_within_margin(self):
+    """Every corner within margin is returned, in its MuJoCo corner slot."""
+    t1 = np.array([-1.0, -1.0, 0.0])
+    t2 = np.array([1.0, -1.0, 0.0])
+    t3 = np.array([0.0, 1.5, 0.0])
+    cx, sx = np.cos(0.1), np.sin(0.1)
+    cy, sy = np.cos(0.05), np.sin(0.05)
+    rot_x = np.array([[1.0, 0.0, 0.0], [0.0, cx, -sx], [0.0, sx, cx]])
+    rot_y = np.array([[cy, 0.0, sy], [0.0, 1.0, 0.0], [-sy, 0.0, cy]])
+    box_rot = rot_x @ rot_y @ np.diag([1.0, -1.0, -1.0])
+    box_size = np.array([0.1, 0.2, 0.05])
+    signs = np.array([[kx, ky, kz] for kz in (-1, 1) for ky in (-1, 1) for kx in (-1, 1)])
+    corner_offset_z = ((signs * box_size) @ box_rot.T)[:, 2]
+    box_pos = np.array([0.0, 0.0, 0.001 - corner_offset_z.min()])  # lowest corner 1 mm above
+
+    dist, _, normal = self._run_box_triangle(box_pos, box_rot, box_size, t1, t2, t3, 0.0, margin=0.1)
+
+    corner_z = box_pos[2] + corner_offset_z  # corner i has signs[i], i.e. MuJoCo's bit order
+    near = corner_z <= 0.1
+    self.assertBetween(near.sum(), 3, 7, "test setup: need more than two, but not all, corners")
+    np.testing.assert_equal(dist[:3], [collision_primitive_core.MJ_MAXVAL] * 3)  # triangle vertices are far away
+    np.testing.assert_allclose(dist[3:], np.where(near, corner_z, collision_primitive_core.MJ_MAXVAL), rtol=1e-6, atol=1e-6)
+    np.testing.assert_allclose(normal[3:][near, 2], [-1.0] * near.sum(), atol=1e-6)
+
+  def test_box_triangle_vertex_within_margin(self):
+    """A triangle vertex just outside a box face but within margin yields a face contact."""
+    t1 = np.array([0.0, 0.0, 0.101])  # 1 mm above the top face
+    t2 = np.array([0.05, 0.0, 0.2])
+    t3 = np.array([0.0, 0.05, 0.2])
+
+    dist, pos, normal = self._run_box_triangle(np.zeros(3), np.eye(3), np.array([0.1, 0.1, 0.1]), t1, t2, t3, 0.0, margin=0.002)
+
+    np.testing.assert_allclose(dist[0], 0.001, atol=1e-6)
+    np.testing.assert_allclose(normal[0], [0.0, 0.0, 1.0], atol=1e-6)
+    np.testing.assert_allclose(pos[0], [0.0, 0.0, 0.1005], atol=1e-6)
+    np.testing.assert_equal(dist[1:], [collision_primitive_core.MJ_MAXVAL] * 10)
+
+  def test_box_triangle_vertex_at_box_center(self):
+    """A triangle vertex at the box center uses MuJoCo's face normal sign (-1 for zero)."""
+    t1 = np.array([0.0, 0.0, 0.0])
+    t2 = np.array([0.0, 1.0, 2.0])  # triangle in the x = 0 plane, box corners at |x| = 0.1
+    t3 = np.array([0.0, -1.0, 2.0])
+
+    dist, pos, normal = self._run_box_triangle(np.zeros(3), np.eye(3), np.array([0.1, 0.1, 0.1]), t1, t2, t3, 0.0, margin=0.01)
+
+    np.testing.assert_allclose(dist[0], -0.1, atol=1e-6)
+    np.testing.assert_allclose(normal[0], [-1.0, 0.0, 0.0], atol=1e-6)
+    np.testing.assert_allclose(pos[0], [-0.05, 0.0, 0.0], atol=1e-6)
+    np.testing.assert_equal(dist[1:], [collision_primitive_core.MJ_MAXVAL] * 10)
+
 
 @wp.kernel
 def capsule_triangle_kernel(
@@ -272,13 +390,14 @@ def capsule_triangle_kernel(
   t2: wp.vec3,
   t3: wp.vec3,
   tri_radius: float,
+  margin: float,
   # Out:
-  dist_out: wp.array[wp.vec2],
-  pos_out: wp.array[collision_primitive_core.mat23f],
-  normal_out: wp.array[collision_primitive_core.mat23f],
+  dist_out: wp.array[collision_primitive_core.vec5],
+  pos_out: wp.array[collision_primitive_core.mat53],
+  normal_out: wp.array[collision_primitive_core.mat53],
 ):
   dist, pos, normal = collision_primitive_core.capsule_triangle(
-    capsule_pos, capsule_axis, capsule_radius, capsule_half_length, t1, t2, t3, tri_radius
+    capsule_pos, capsule_axis, capsule_radius, capsule_half_length, t1, t2, t3, tri_radius, margin
   )
   dist_out[0] = dist
   pos_out[0] = pos
@@ -298,11 +417,12 @@ class CapsuleTriangleTest(parameterized.TestCase):
     t2: np.ndarray,
     t3: np.ndarray,
     tri_radius: float,
+    margin: float = 1.0,
   ):
     """Helper to run the capsule_triangle kernel and return results."""
-    dist = wp.zeros(1, dtype=wp.vec2)
-    pos = wp.zeros(1, dtype=collision_primitive_core.mat23f)
-    normal = wp.zeros(1, dtype=collision_primitive_core.mat23f)
+    dist = wp.zeros(1, dtype=collision_primitive_core.vec5)
+    pos = wp.zeros(1, dtype=collision_primitive_core.mat53)
+    normal = wp.zeros(1, dtype=collision_primitive_core.mat53)
 
     wp.launch(
       capsule_triangle_kernel,
@@ -316,6 +436,7 @@ class CapsuleTriangleTest(parameterized.TestCase):
         wp.vec3(t2),
         wp.vec3(t3),
         tri_radius,
+        margin,
       ],
       outputs=[dist, pos, normal],
     )
@@ -392,6 +513,48 @@ class CapsuleTriangleTest(parameterized.TestCase):
 
     expected_dist = 0.5 - capsule_half_length - capsule_radius - tri_radius
     np.testing.assert_allclose(dist[0], expected_dist, atol=1e-5)
+
+  def test_triangle_vertex_against_capsule_side(self):
+    """A vertex touching the capsule side is found even when both end caps are far."""
+    t1 = np.array([0.0, 0.0, 0.06])  # 1 cm into the capsule side
+    t2 = np.array([-0.05, 0.0, -0.2])
+    t3 = np.array([0.05, 0.0, -0.2])
+    capsule_pos = np.array([0.0, 0.0, 0.1])
+    capsule_axis = np.array([1.0, 0.0, 0.0])
+
+    dist, pos, normal = self._run_capsule_triangle(capsule_pos, capsule_axis, 0.05, 0.5, t1, t2, t3, 0.0, margin=0.01)
+
+    np.testing.assert_equal(dist[[0, 1, 3, 4]], [collision_primitive_core.MJ_MAXVAL] * 4)
+    np.testing.assert_allclose(dist[2], -0.01, atol=1e-6)  # slot 2: triangle vertex t1
+    np.testing.assert_allclose(normal[2], [0.0, 0.0, -1.0], atol=1e-6)
+    np.testing.assert_allclose(pos[2], [0.0, 0.0, 0.055], atol=1e-6)
+
+  def test_triangle_vertex_on_capsule_axis(self):
+    """A vertex on the capsule axis gets the mju_normalize3 fallback normal (1, 0, 0)."""
+    t1 = np.array([0.0, 0.0, 0.0])
+    t2 = np.array([1.0, 0.0, 0.0])
+    t3 = np.array([0.0, 1.0, 0.0])
+
+    dist, pos, normal = self._run_capsule_triangle(
+      np.zeros(3), np.array([0.0, 0.0, 1.0]), 0.05, 0.5, t1, t2, t3, 0.0, margin=0.01
+    )
+
+    np.testing.assert_equal(dist[[0, 1, 3, 4]], [collision_primitive_core.MJ_MAXVAL] * 4)
+    np.testing.assert_allclose(dist[2], -0.05, atol=1e-6)  # slot 2: triangle vertex t1
+    np.testing.assert_allclose(normal[2], [1.0, 0.0, 0.0], atol=1e-6)
+    np.testing.assert_allclose(pos[2], [0.025, 0.0, 0.0], atol=1e-6)
+
+  def test_capsule_beyond_margin(self):
+    """Candidates farther than margin are discarded."""
+    t1 = np.array([0.0, 0.0, 0.0])
+    t2 = np.array([1.0, 0.0, 0.0])
+    t3 = np.array([0.5, 1.0, 0.0])
+
+    dist, _, _ = self._run_capsule_triangle(
+      np.array([0.5, 0.33, 0.5]), np.array([0.0, 0.0, 1.0]), 0.1, 0.2, t1, t2, t3, 0.0, margin=0.01
+    )
+
+    np.testing.assert_equal(dist, [collision_primitive_core.MJ_MAXVAL] * 5)
 
 
 @wp.kernel
@@ -529,6 +692,170 @@ class CylinderTriangleTest(parameterized.TestCase):
     )
 
     self.assertLess(dist[0], collision_primitive_core.MJ_MAXVAL)
+
+
+@wp.kernel
+def box_box_kernel(
+  # In:
+  box1_pos: wp.vec3,
+  box1_rot: wp.mat33,
+  box1_size: wp.vec3,
+  box2_pos: wp.vec3,
+  box2_rot: wp.mat33,
+  box2_size: wp.vec3,
+  margin: float,
+  # Out:
+  ncon_out: wp.array[int],
+  dist_out: wp.array[collision_primitive_core.vec8f],
+  pos_out: wp.array[collision_primitive_core.mat83f],
+  normal_out: wp.array[wp.vec3],
+):
+  ncon, dist, pos, normal = collision_primitive_core.box_box(
+    box1_pos, box1_rot, box1_size, box2_pos, box2_rot, box2_size, margin
+  )
+  ncon_out[0] = ncon
+  dist_out[0] = dist
+  pos_out[0] = pos
+  normal_out[0] = normal
+
+
+def _rot(axis: int, angle_deg: float) -> np.ndarray:
+  """Returns the rotation matrix for angle_deg about coordinate axis."""
+  c, s = np.cos(np.deg2rad(angle_deg)), np.sin(np.deg2rad(angle_deg))
+  i, j = (axis + 1) % 3, (axis + 2) % 3
+  rot = np.eye(3)
+  rot[i, i], rot[i, j], rot[j, i], rot[j, j] = c, -s, s, c
+  return rot
+
+
+class BoxBoxTest(parameterized.TestCase):
+  """Tests for box_box collision."""
+
+  def _run_box_box(
+    self,
+    box1_pos: np.ndarray,
+    box1_rot: np.ndarray,
+    box1_size: np.ndarray,
+    box2_pos: np.ndarray,
+    box2_rot: np.ndarray,
+    box2_size: np.ndarray,
+    margin: float = 0.0,
+  ):
+    """Helper to run the box_box kernel and return the populated contacts."""
+    ncon = wp.zeros(1, dtype=int)
+    dist = wp.zeros(1, dtype=collision_primitive_core.vec8f)
+    pos = wp.zeros(1, dtype=collision_primitive_core.mat83f)
+    normal = wp.zeros(1, dtype=wp.vec3)
+
+    wp.launch(
+      box_box_kernel,
+      dim=1,
+      inputs=[
+        wp.vec3(box1_pos),
+        wp.mat33(np.asarray(box1_rot, dtype=np.float32)),
+        wp.vec3(box1_size),
+        wp.vec3(box2_pos),
+        wp.mat33(np.asarray(box2_rot, dtype=np.float32)),
+        wp.vec3(box2_size),
+        margin,
+      ],
+      outputs=[ncon, dist, pos, normal],
+    )
+
+    n = ncon.numpy()[0]
+    return dist.numpy()[0][:n], pos.numpy()[0][:n], normal.numpy()[0]
+
+  def _assert_same_points(self, actual: np.ndarray, expected: np.ndarray):
+    """Asserts two point sets are equal up to ordering."""
+    self.assertEqual(len(actual), len(expected))
+    for p in expected:
+      self.assertTrue(np.any(np.all(np.isclose(actual, p, atol=1e-6), axis=1)), f"{p} not found in {actual}")
+
+  def test_box_box_separated(self):
+    """Boxes separated by more than margin have no contacts."""
+    size = np.array([0.1, 0.1, 0.1])
+    dist, _, _ = self._run_box_box(np.zeros(3), np.eye(3), size, np.array([0.0, 0.0, 0.3]), np.eye(3), size, margin=0.05)
+    self.assertEmpty(dist)
+
+  def test_box_box_face_face(self):
+    """Aligned stacked boxes have one contact per incident face corner."""
+    size = np.array([0.1, 0.1, 0.1])
+    dist, pos, normal = self._run_box_box(np.zeros(3), np.eye(3), size, np.array([0.0, 0.0, 0.19]), np.eye(3), size)
+
+    np.testing.assert_allclose(dist, [-0.01] * 4, atol=1e-6)
+    np.testing.assert_allclose(normal, [0.0, 0.0, 1.0], atol=1e-6)
+    # midway between the reference face (z = 0.1) and the incident face (z = 0.09)
+    corners = [[sx * 0.1, sy * 0.1, 0.095] for sx in (-1, 1) for sy in (-1, 1)]
+    self._assert_same_points(pos, np.array(corners))
+
+  def test_box_box_face_face_rotated(self):
+    """An incident face rotated by 45 degrees is clipped to an octagon."""
+    size = np.array([0.1, 0.1, 0.1])
+    dist, pos, normal = self._run_box_box(np.zeros(3), np.eye(3), size, np.array([0.0, 0.0, 0.19]), _rot(2, 45.0), size)
+
+    np.testing.assert_allclose(dist, [-0.01] * 8, atol=1e-6)
+    np.testing.assert_allclose(normal, [0.0, 0.0, 1.0], atol=1e-6)
+    # the rotated square's edges cross the reference face sides at |x| or |y| = 0.1,
+    # 0.1 * (sqrt(2) - 1) from the side centers
+    t = 0.1 * (np.sqrt(2.0) - 1.0)
+    octagon = [[a * 0.1, b * t, 0.095] for a in (-1, 1) for b in (-1, 1)]
+    octagon += [[b * t, a * 0.1, 0.095] for a in (-1, 1) for b in (-1, 1)]
+    self._assert_same_points(pos, np.array(octagon))
+
+  def test_box_box_edge_edge(self):
+    """Crossed edges have a single contact at the midpoint of the closest points."""
+    size = np.array([0.2, 0.2, 0.2])
+    z = 0.4 * np.sqrt(2.0) - 0.001
+    dist, pos, normal = self._run_box_box(
+      np.zeros(3), _rot(0, 45.0), size, np.array([0.01, 0.02, z]), _rot(1, 45.0), size, margin=0.002
+    )
+
+    np.testing.assert_allclose(dist, [-0.001], atol=1e-6)
+    np.testing.assert_allclose(normal, [0.0, 0.0, 1.0], atol=1e-6)
+    # the box1 edge runs along x at z = 0.2 * sqrt(2), the box2 edge along y at x = 0.01
+    np.testing.assert_allclose(pos, [[0.01, 0.0, 0.5 * z]], atol=1e-6)
+
+  def test_box_box_vertex_face(self):
+    """A box vertex penetrating a face has a single contact."""
+    size = np.array([0.1, 0.1, 0.1])
+    # rotate box2 so that its corner (1, 1, 1) points down
+    axis = np.cross([1.0, 1.0, 1.0], [0.0, 0.0, -1.0])
+    axis /= np.linalg.norm(axis)
+    angle = np.arccos(-1.0 / np.sqrt(3.0))
+    k = np.array([[0.0, -axis[2], axis[1]], [axis[2], 0.0, -axis[0]], [-axis[1], axis[0], 0.0]])
+    rot2 = np.eye(3) + np.sin(angle) * k + (1.0 - np.cos(angle)) * k @ k
+    z = 0.1 + 0.1 * np.sqrt(3.0) - 0.005
+    dist, pos, normal = self._run_box_box(np.zeros(3), np.eye(3), size, np.array([0.0, 0.0, z]), rot2, size)
+
+    np.testing.assert_allclose(dist, [-0.005], atol=1e-6)
+    np.testing.assert_allclose(normal, [0.0, 0.0, 1.0], atol=1e-6)
+    np.testing.assert_allclose(pos, [[0.0, 0.0, 0.0975]], atol=1e-6)
+
+  @parameterized.parameters((0.01, 4), (0.004, 0))
+  def test_box_box_margin(self, margin, ncon):
+    """Separated faces produce contacts only within margin."""
+    size = np.array([0.1, 0.1, 0.1])
+    dist, _, _ = self._run_box_box(np.zeros(3), np.eye(3), size, np.array([0.0, 0.0, 0.205]), np.eye(3), size, margin=margin)
+
+    np.testing.assert_allclose(dist, [0.005] * ncon, atol=1e-6)
+
+  @parameterized.parameters(
+    (np.diag([1.0, -1.0, -1.0]),),  # 180 deg about x
+    (np.diag([-1.0, -1.0, 1.0]),),  # 180 deg about z
+  )
+  def test_box_box_invariant_to_box_symmetry(self, sym):
+    """Rotations that map a box onto itself must yield the same contacts."""
+    size1 = np.array([0.3, 0.2, 0.05])
+    size2 = np.array([0.08, 0.12, 0.1])
+    pos2 = np.array([0.05, -0.03, 0.148])
+    rot2 = _rot(2, 20.0) @ _rot(0, 3.0)
+    dist, pos, normal = self._run_box_box(np.zeros(3), np.eye(3), size1, pos2, rot2, size2, margin=0.002)
+    dist_sym, pos_sym, normal_sym = self._run_box_box(np.zeros(3), sym, size1, pos2, rot2 @ sym, size2, margin=0.002)
+
+    self.assertNotEmpty(dist)
+    np.testing.assert_allclose(np.sort(dist_sym), np.sort(dist), atol=1e-6)
+    np.testing.assert_allclose(normal_sym, normal, atol=1e-6)
+    self._assert_same_points(pos_sym, pos)
 
 
 if __name__ == "__main__":

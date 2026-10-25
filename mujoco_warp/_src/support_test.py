@@ -82,6 +82,78 @@ class SupportTest(parameterized.TestCase):
       mujoco.mj_applyFT(mjm, mjd, xfrc[i, :3], xfrc[i, 3:], mjd.xipos[i], i, qfrc_expected)
     np.testing.assert_almost_equal(qfrc.numpy()[0], qfrc_expected, 6)
 
+  @parameterized.product(nworld=(1, 2), flg_add=(False, True), zero_force=(False, True))
+  def test_apply_ft_subtrees(self, nworld, flg_add, zero_force):
+    """Tests force projection across branches, welded bodies, and independent trees."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <default>
+          <geom size="0.1" contype="0" conaffinity="0"/>
+        </default>
+        <worldbody>
+          <body name="root">
+            <freejoint/>
+            <geom/>
+            <body pos="0.3 0 0">
+              <joint type="ball"/>
+              <geom/>
+              <body pos="0.2 0 0">
+                <geom/>
+              </body>
+            </body>
+            <body name="sibling" pos="0 0.3 0">
+              <joint axis="1 0 0"/>
+              <geom/>
+              <body pos="0 0.2 0">
+                <joint type="slide"/>
+                <geom/>
+              </body>
+            </body>
+          </body>
+          <body name="other" pos="1 0 0">
+            <freejoint/>
+            <geom/>
+            <body pos="0 0 0.3">
+              <joint/>
+              <geom/>
+            </body>
+          </body>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=nworld,
+    )
+    qpos = np.tile(mjd.qpos, (nworld, 1))
+    if nworld == 2:
+      mujoco.mj_integratePos(mjm, qpos[1], np.linspace(-0.3, 0.4, mjm.nv), 0.2)
+    d.qpos.assign(qpos)
+    mjwarp.fwd_position(m, d)
+    force = np.linspace(-0.7, 0.9, nworld * mjm.nbody * 6).reshape(nworld, mjm.nbody, 6).astype(np.float32)
+    # A zero-force body must neither end its own subtree nor hide a subtree boundary.
+    for name in ("root", "sibling", "other"):
+      force[:, mjm.body(name).id] = 0.0
+    if zero_force:
+      force[:] = 0.0
+    d.xfrc_applied.assign(force)
+    initial = np.linspace(-0.2, 0.3, nworld * mjm.nv).reshape(nworld, mjm.nv).astype(np.float32)
+    qfrc = wp.array(initial, dtype=float) if flg_add else wp.full((nworld, mjm.nv), wp.inf, dtype=float)
+    if flg_add:
+      mjwarp.xfrc_accumulate(m, d, qfrc)
+    else:
+      support.apply_ft(m, d, d.xfrc_applied, qfrc, False)
+
+    result = qfrc.numpy()
+    for world in range(nworld):
+      mjd.qpos[:] = qpos[world]
+      mujoco.mj_forward(mjm, mjd)
+      expected = initial[world].astype(float) if flg_add else np.zeros(mjm.nv)
+      for body in range(1, mjm.nbody):
+        mujoco.mj_applyFT(mjm, mjd, force[world, body, :3], force[world, body, 3:], mjd.xipos[body], body, expected)
+      _assert_eq(result[world], expected, f"apply_ft_world_{world}")
+    if nworld == 2 and (flg_add or not zero_force):
+      self.assertFalse(np.allclose(result[0], result[1]))
+
   @parameterized.parameters(
     (ConeType.PYRAMIDAL, 1, False),
     (ConeType.PYRAMIDAL, 3, False),
