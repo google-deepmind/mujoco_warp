@@ -813,7 +813,8 @@ def _sensor_pos(
 
     # initialize
     dist = float(sensor_cutoff[sensorid])
-    pnts = vec6(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+    pos = wp.vec3()
+    normal = wp.vec3()
     flip = bool(False)
 
     # check for flip direction
@@ -848,10 +849,12 @@ def _sensor_pos(
             dist = dist_new
 
             if sensortype == SensorType.GEOMNORMAL or sensortype == SensorType.GEOMFROMTO:
-              pnts = vec6(
+              pos = wp.vec3(
                 sensor_collision_in[worldid, collisionid, i, 1],
                 sensor_collision_in[worldid, collisionid, i, 2],
                 sensor_collision_in[worldid, collisionid, i, 3],
+              )
+              normal = wp.vec3(
                 sensor_collision_in[worldid, collisionid, i, 4],
                 sensor_collision_in[worldid, collisionid, i, 5],
                 sensor_collision_in[worldid, collisionid, i, 6],
@@ -863,22 +866,22 @@ def _sensor_pos(
               flip = geomid1 > geomid2
             else:
               flip = False
+    # the segment from geom 1 to geom 2, which points along the contact normal or against it
+    if dist > sensor_cutoff[sensorid] or dist == 0.0:
+      segment = wp.vec3()
+    else:
+      segment = wp.where(flip != (dist < 0.0), -normal, normal)
+
     if sensortype == int(SensorType.GEOMDIST.value):
       _write_scalar(sensor_type, sensor_datatype, sensor_adr, sensor_cutoff, sensorid, dist, out)
     elif sensortype == int(SensorType.GEOMNORMAL.value):
-      if dist <= sensor_cutoff[sensorid]:
-        normal = wp.normalize(wp.vec3(pnts[3] - pnts[0], pnts[4] - pnts[1], pnts[5] - pnts[2]))
-        if flip:
-          normal *= -1.0
-      else:
-        normal = wp.vec3(0.0, 0.0, 0.0)
-      _write_vector(sensor_type, sensor_datatype, sensor_adr, sensor_cutoff, sensorid, 3, normal, out)
+      _write_vector(sensor_type, sensor_datatype, sensor_adr, sensor_cutoff, sensorid, 3, segment, out)
     elif sensortype == int(SensorType.GEOMFROMTO.value):
       if dist <= sensor_cutoff[sensorid]:
-        if flip:
-          fromto = vec6(pnts[3], pnts[4], pnts[5], pnts[0], pnts[1], pnts[2])
-        else:
-          fromto = pnts
+        half = 0.5 * wp.abs(dist) * segment
+        fromto = vec6(
+          pos[0] - half[0], pos[1] - half[1], pos[2] - half[2], pos[0] + half[0], pos[1] + half[1], pos[2] + half[2]
+        )
       else:
         fromto = vec6(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
       _write_vector(sensor_type, sensor_datatype, sensor_adr, sensor_cutoff, sensorid, 6, fromto, out)
@@ -959,17 +962,14 @@ def _sensor_collision(
   dist = contact_dist_in[conid]
   pos = contact_pos_in[conid]
   frame = contact_frame_in[conid]
-  normal = wp.vec3(frame[0, 0], frame[0, 1], frame[0, 2])
-  pnt1 = pos - 0.5 * dist * normal
-  pnt2 = pos + 0.5 * dist * normal
 
   sensor_collision_out[worldid, collisionid, geomcollisionid, 0] = dist
-  sensor_collision_out[worldid, collisionid, geomcollisionid, 1] = pnt1[0]
-  sensor_collision_out[worldid, collisionid, geomcollisionid, 2] = pnt1[1]
-  sensor_collision_out[worldid, collisionid, geomcollisionid, 3] = pnt1[2]
-  sensor_collision_out[worldid, collisionid, geomcollisionid, 4] = pnt2[0]
-  sensor_collision_out[worldid, collisionid, geomcollisionid, 5] = pnt2[1]
-  sensor_collision_out[worldid, collisionid, geomcollisionid, 6] = pnt2[2]
+  sensor_collision_out[worldid, collisionid, geomcollisionid, 1] = pos[0]
+  sensor_collision_out[worldid, collisionid, geomcollisionid, 2] = pos[1]
+  sensor_collision_out[worldid, collisionid, geomcollisionid, 3] = pos[2]
+  sensor_collision_out[worldid, collisionid, geomcollisionid, 4] = frame[0, 0]
+  sensor_collision_out[worldid, collisionid, geomcollisionid, 5] = frame[0, 1]
+  sensor_collision_out[worldid, collisionid, geomcollisionid, 6] = frame[0, 2]
 
 
 @event_scope
