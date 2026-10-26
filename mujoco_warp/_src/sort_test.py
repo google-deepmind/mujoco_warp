@@ -394,6 +394,134 @@ class SortTest(parameterized.TestCase):
       for name, value in reference.items():
         np.testing.assert_array_equal(getattr(d.contact, name).numpy(), value, err_msg=name)
 
+  @parameterized.parameters(
+    *itertools.product((1, 2), ("dense", "sparse"), ("connect", "weld", "interleaved"), ("solved", "forward"))
+  )
+  def test_equality_forces(self, nworld, jacobian, equality, stage):
+    """Sorting preserves equality components and the subtype layout used by force sensors."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option gravity="1 2 -3" tolerance="1e-10"><flag contact="disable"/></option>
+        <worldbody>
+          <body name="a" pos="0 0 1" quat=".5 .5 .5 .5">
+            <freejoint/><geom type="box" size=".1 .12 .15" mass="1"/><site name="sa" pos=".02 .03 .04"/>
+          </body>
+          <body name="b" pos="1 0 1" quat=".5 -.5 .5 .5">
+            <freejoint/><geom type="box" size=".12 .15 .1" mass="2"/><site name="sb" pos="-.03 .02 .01"/>
+          </body>
+          <body name="c" pos="2 0 1" quat=".5 .5 -.5 .5">
+            <freejoint/><geom type="box" size=".15 .1 .12" mass="1.5"/><site name="sc"/>
+          </body>
+          <body name="d" pos="3 0 1" quat=".5 .5 .5 -.5">
+            <freejoint/><geom type="box" size=".1 .15 .12" mass=".8"/><site name="sd"/>
+          </body>
+        </worldbody>
+        <equality>
+          <weld body1="b" anchor="1 0 1"/><connect body1="a" anchor=".03125 -.0625 .015625"/>
+          <weld body1="d" anchor="3 0 1"/><connect body1="c" anchor="-.0625 .015625 .03125"/>
+        </equality>
+        <sensor>
+          <force site="sa"/><torque site="sa"/><force site="sb"/><torque site="sb"/>
+          <force site="sc"/><torque site="sc"/><force site="sd"/><torque site="sd"/>
+        </sensor>
+      </mujoco>
+      """,
+      nworld=nworld,
+      nconmax=0,
+      njmax=32,
+      overrides={"opt.jacobian": jacobian},
+    )
+    # Unequal spatial loads and nonzero velocities expose swaps of both force and torque components.
+    qvel = d.qvel.numpy()
+    applied = d.xfrc_applied.numpy()
+    active = d.eq_active.numpy()
+    for world in range(nworld):
+      for body in range(4):
+        qvel[world, 6 * body : 6 * body + 3] = np.array([0.01, -0.02, 0.03]) * (1 + 0.25 * world)
+      applied[world, 1:] = np.arange(1, mjm.nbody)[:, None] * np.array([0.7, -1.1, 1.9, 0.13, 0.23, -0.31]) * (1 + 0.25 * world)
+      if equality != "interleaved":
+        active[world] = mjm.eq_type == getattr(mujoco.mjtEq, "mjEQ_" + equality.upper())
+    if nworld == 2:
+      # Different active group counts also change the starting offset of the weld partition.
+      active[1, 3] = False
+    d.qvel.assign(qvel)
+    d.xfrc_applied.assign(applied)
+    d.eq_active.assign(active)
+    fields = ("qacc", "qfrc_constraint", "cfrc_ext", "cfrc_int", "sensordata")
+    expected = {name: [] for name in fields}
+    for world in range(nworld):
+      mjd.qvel[:] = qvel[world]
+      mjd.xfrc_applied[:] = applied[world]
+      mjd.eq_active[:] = active[world]
+      mujoco.mj_forward(mjm, mjd)
+      mujoco.mj_rnePostConstraint(mjm, mjd)
+      for name in fields:
+        expected[name].append(getattr(mjd, name).copy())
+
+    def check():
+      for name in fields:
+        np.testing.assert_allclose(getattr(d, name).numpy(), expected[name], rtol=1e-5, atol=1e-5, err_msg=name)
+
+    m.opt.deterministic = mjw.DeterminismType.NONE
+    for name in fields:
+      getattr(d, name).fill_(wp.inf)
+    mjw.forward(m, d)
+    check()
+    if stage == "solved":
+      # Isolate the permutation from the solver: the solved forces must retain their XYZ meaning.
+      # Reverse whole groups to exercise group ordering without scrambling their components.
+      for world, n in enumerate(d.nefc.numpy()):
+        order = np.argsort(-d.efc.id.numpy()[world, :n], kind="stable")
+        for field in dataclasses.fields(d.efc):
+          if field.name.startswith("jtdaj_") or field.name == "Ma":
+            continue
+          if m.is_sparse and field.name in ("J", "J_colind"):
+            continue
+          array = getattr(d.efc, field.name)
+          if array.size:
+            values = array.numpy()
+            values[world, :n] = values[world, order]
+            array.assign(values)
+        if m.is_sparse:
+          nb = int(d.efc.jtdaj_nblock.numpy()[world])
+          starts = d.efc.jtdaj_adr.numpy()
+          starts[world, :nb] = np.argsort(order)[starts[world, :nb]]
+          d.efc.jtdaj_adr.assign(starts)
+      constraint._sort_constraints(m, d)
+      for name in ("cfrc_ext", "cfrc_int", "sensordata"):
+        getattr(d, name).fill_(wp.inf)
+      mjw.rne_postconstraint(m, d)
+      mjw.sensor_acc(m, d)
+    else:
+      m.opt.deterministic = mjw.DeterminismType.CONSTRAINT
+      for name in fields:
+        getattr(d, name).fill_(wp.inf)
+      mjw.forward(m, d)
+    check()
+    if nworld == 2:
+      for name in fields:
+        self.assertFalse(np.array_equal(getattr(d, name).numpy()[0], getattr(d, name).numpy()[1]), msg=name)
+
+    for world in range(nworld):
+      eqids = sorted(np.flatnonzero(active[world]), key=lambda eqid: (mjm.eq_type[eqid], eqid))
+      sizes = [3 if mjm.eq_type[i] == mujoco.mjtEq.mjEQ_CONNECT else 6 for i in eqids]
+      n = int(d.nefc.numpy()[world])
+      np.testing.assert_array_equal(d.efc.id.numpy()[world, :n], np.repeat(eqids, sizes))
+      if m.is_sparse:
+        nb = int(d.efc.jtdaj_nblock.numpy()[world])
+        starts = d.efc.jtdaj_adr.numpy()[world, :nb]
+        widths = d.efc.jtdaj_nrow.numpy()[world, :nb]
+        np.testing.assert_array_equal(widths, sizes)
+        np.testing.assert_array_equal(starts, np.cumsum(sizes) - sizes)
+        # Every remapped block must still cover exactly one equality, with common sparse support.
+        nnz = d.efc.J_rownnz.numpy()[world]
+        adr = d.efc.J_rowadr.numpy()[world]
+        cols = d.efc.J_colind.numpy()[world, 0]
+        for start, width in zip(starts, widths):
+          for row in range(start + 1, start + width):
+            np.testing.assert_array_equal(cols[adr[row] : adr[row] + nnz[row]], cols[adr[start] : adr[start] + nnz[start]])
+
   @parameterized.parameters("dense", "sparse")
   def test_flex_equalities(self, jacobian):
     """Flex edge rows sharing an equality ID are ordered by their Jacobians, not allocation."""

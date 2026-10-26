@@ -211,7 +211,7 @@ def contact_permutation(d: types.Data) -> wp.array:
 
 @wp.struct
 class _ConstraintKeys:
-  primary: wp.array2d[wp.vec3i]
+  primary: wp.array2d[wp.vec4i]
   J: wp.array3d[wp.uint32]
   J_rownnz: wp.array2d[int]
   J_rowadr: wp.array2d[int]
@@ -250,16 +250,34 @@ def _constraint_counts(
 
 @wp.kernel
 def _constraint_primary(
+  # Model:
+  eq_type: wp.array[int],
   # In:
   count_in: wp.array[int],
   type_in: wp.array2d[int],
   id_in: wp.array2d[int],
   # Out:
-  keys_out: wp.array2d[wp.vec3i],
+  keys_out: wp.array2d[wp.vec4i],
 ):
   worldid, row = wp.tid()
   if row < count_in[worldid]:
-    keys_out[worldid, row] = wp.vec3i(type_in[worldid, row], id_in[worldid, row], 0)
+    row_type = type_in[worldid, row]
+    id = id_in[worldid, row]
+    subtype = int(0)
+    component = int(0)
+    if row_type == int(types.ConstraintType.EQUALITY):
+      subtype = eq_type[id]
+      if subtype == int(types.EqType.CONNECT) or subtype == int(types.EqType.WELD):
+        # Assembly emits each group contiguously in XYZ force, then XYZ torque order.
+        # Use the offset within that group, not its nondeterministic allocation address.
+        nrow = 3 if subtype == int(types.EqType.CONNECT) else 6
+        while component + 1 < nrow and row > component:
+          previous = row - component - 1
+          if type_in[worldid, previous] != row_type or id_in[worldid, previous] != id:
+            break
+          component += 1
+    # Force reconstruction requires all connects before welds, regardless of XML equality IDs.
+    keys_out[worldid, row] = wp.vec4i(row_type, subtype, id, component)
 
 
 @wp.kernel
@@ -276,7 +294,7 @@ def _contact_constraint_primary(
   dim_in: wp.array[int],
   is_pyramidal: bool,
   # Out:
-  keys_out: wp.array2d[wp.vec3i],
+  keys_out: wp.array2d[wp.vec4i],
 ):
   rank, component = wp.tid()
   if rank >= nacon_in[0]:
@@ -290,20 +308,19 @@ def _contact_constraint_primary(
   row = efc_address_in[conid, component]
   if row >= 0 and row < count_in[worldid]:
     if type_in[worldid, row] >= int(types.ConstraintType.CONTACT_FRICTIONLESS) and id_in[worldid, row] == conid:
-      keys_out[worldid, row] = wp.vec3i(type_in[worldid, row], rank, component)
+      keys_out[worldid, row] = wp.vec4i(type_in[worldid, row], 0, rank, component)
 
 
 @wp.func
 def _constraint_less(keys: _ConstraintKeys, worldid: int, a: int, b: int) -> bool:
   ka = keys.primary[worldid, a]
   kb = keys.primary[worldid, b]
-  for i in range(3):
+  for i in range(4):
     if ka[i] != kb[i]:
       return ka[i] < kb[i]
 
-  # Equal type/id is not sufficient for flex edges (or the components of an equality).
-  # Compare actual Jacobian rows, not their atomic allocation addresses. Contact components were
-  # already distinguished above, so elliptic cones remain contiguous and normal-first.
+  # Equal type/id is not sufficient for flex edges. Compare actual Jacobian rows, not their atomic
+  # allocation addresses. Connect/weld and contact components were already distinguished above.
   if keys.J_rownnz.shape[1] > 0:
     na = keys.J_rownnz[worldid, a]
     nb = keys.J_rownnz[worldid, b]
@@ -461,14 +478,16 @@ def constraints(m: types.Model, d: types.Data, nnz: wp.array | None = None):
     outputs=[count],
   )
   keys = _ConstraintKeys()
-  keys.primary = wp.empty((d.nworld, d.njmax), dtype=wp.vec3i)
+  keys.primary = wp.empty((d.nworld, d.njmax), dtype=wp.vec4i)
   for name in ("J", "J_rownnz", "J_rowadr", "J_colind", "pos", "margin", "D", "vel", "aref", "frictionloss"):
     value = getattr(d.efc, name)
     if value.dtype == wp.float32:
       value = value.view(wp.uint32)
     setattr(keys, name, value)
   keys.nv = m.nv
-  wp.launch(_constraint_primary, dim=keys.primary.shape, inputs=[count, d.efc.type, d.efc.id], outputs=[keys.primary])
+  wp.launch(
+    _constraint_primary, dim=keys.primary.shape, inputs=[m.eq_type, count, d.efc.type, d.efc.id], outputs=[keys.primary]
+  )
   contact_order = contact_permutation(d)
   wp.launch(
     _contact_constraint_primary,
