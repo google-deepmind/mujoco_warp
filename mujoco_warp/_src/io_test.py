@@ -32,6 +32,7 @@ from mujoco_warp import IntegratorType
 from mujoco_warp import test_data
 from mujoco_warp._src import io
 from mujoco_warp._src import types
+from mujoco_warp._src import util_pkg
 from mujoco_warp._src import warp_util
 from mujoco_warp._src.io import put_model
 
@@ -1626,6 +1627,36 @@ class IOTest(parameterized.TestCase):
       else:
         _assert_eq(getattr(d.contact, arr).numpy(), 0.0, arr)
 
+  def test_reset_data_act(self):
+    """Tests that reset_data zeros all activation states when na > nu."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <body>
+            <joint name="joint"/>
+            <geom size="1"/>
+          </body>
+        </worldbody>
+        <actuator>
+          <dcmotor joint="joint" motorconst="0.05" resistance="2.0" inductance="0.01" thermal="10 5 0 0.004 25 25"/>
+        </actuator>
+      </mujoco>
+      """
+    )
+    self.assertGreater(m.na, m.nu)
+
+    d.ctrl.fill_(wp.inf)
+    d.act.fill_(wp.inf)
+    d.act_dot.fill_(wp.inf)
+
+    mujoco.mj_resetData(mjm, mjd)
+    mjwarp.reset_data(m, d)
+
+    _assert_eq(d.ctrl.numpy()[0], mjd.ctrl, "ctrl")
+    _assert_eq(d.act.numpy()[0], mjd.act, "act")
+    _assert_eq(d.act_dot.numpy()[0], mjd.act_dot, "act_dot")
+
   def test_reset_data_world(self):
     """Tests per-world reset."""
     mjm = mujoco.MjModel.from_xml_string("""
@@ -2559,8 +2590,8 @@ class IOTest(parameterized.TestCase):
 
   @parameterized.parameters(0, mujoco.mjtDisableBit.mjDSBL_MULTICCD)
   def test_margin_box_box(self, disableflags):
-    """Box-box with margin uses the primitive collider (as in MuJoCo), with or without MULTICCD."""
-    _, _, m, _ = test_data.fixture(
+    """Box-box with margin succeeds without error, with or without MULTICCD."""
+    test_data.fixture(
       xml="""
       <mujoco>
         <worldbody>
@@ -2577,30 +2608,9 @@ class IOTest(parameterized.TestCase):
       """,
       overrides={"opt.disableflags": disableflags},
     )
-    self.assertTrue(m.has_boxbox_margin)
-
-  def test_no_margin_box_box(self):
-    """Box-box without margin keeps using the convex collider."""
-    _, _, m, _ = test_data.fixture(
-      xml="""
-      <mujoco>
-        <worldbody>
-          <body>
-            <freejoint/>
-            <geom type="box" size=".1 .1 .1"/>
-          </body>
-          <body pos="0 0 .5">
-            <freejoint/>
-            <geom type="box" size=".1 .1 .1"/>
-          </body>
-        </worldbody>
-      </mujoco>
-      """
-    )
-    self.assertFalse(m.has_boxbox_margin)
 
   def test_margin_multiccd_box_mesh(self):
-    """MULTICCD + box-mesh with margin raises NotImplementedError."""
+    """MULTICCD + box-mesh with margin succeeds without error."""
     mjm = mujoco.MjModel.from_xml_string("""
       <mujoco>
         <worldbody>
@@ -2618,11 +2628,10 @@ class IOTest(parameterized.TestCase):
         </asset>
       </mujoco>
     """)
-    with self.assertRaises(NotImplementedError):
-      mjwarp.put_model(mjm)
+    mjwarp.put_model(mjm)
 
   def test_margin_multiccd_mesh_mesh(self):
-    """MULTICCD + mesh-mesh with margin raises NotImplementedError."""
+    """MULTICCD + mesh-mesh with margin succeeds without error."""
     mjm = mujoco.MjModel.from_xml_string("""
       <mujoco>
         <worldbody>
@@ -2640,8 +2649,7 @@ class IOTest(parameterized.TestCase):
         </asset>
       </mujoco>
     """)
-    with self.assertRaises(NotImplementedError):
-      mjwarp.put_model(mjm)
+    mjwarp.put_model(mjm)
 
   def test_margin_box_box_nativeccd_disabled(self):
     """Box-box with margin and NATIVECCD disabled succeeds without error."""
@@ -2664,8 +2672,8 @@ class IOTest(parameterized.TestCase):
     mjwarp.put_model(mjm)
 
   def test_margin_pair_box_box(self):
-    """Pair with margin on box-box uses the primitive collider (as in MuJoCo)."""
-    _, _, m, _ = test_data.fixture(
+    """Pair with margin on box-box succeeds without error."""
+    test_data.fixture(
       xml="""
       <mujoco>
         <worldbody>
@@ -2684,7 +2692,6 @@ class IOTest(parameterized.TestCase):
       </mujoco>
       """
     )
-    self.assertTrue(m.has_boxbox_margin)
 
   @parameterized.parameters(*_IO_TEST_MODELS)
   def test_kernel_recompilation(self, xml):
@@ -2729,6 +2736,57 @@ class IOTest(parameterized.TestCase):
     mjm.eq_type[0] = mujoco.mjtEq.mjEQ_FLEX
 
     with self.assertRaises(NotImplementedError):
+      mjwarp.put_model(mjm)
+
+  # TODO(team): remove version check once mujoco >= 3.16.1 is required.
+  @absltest.skipIf(not util_pkg.check_version("mujoco>=3.16.1"), "Requires MuJoCo >= 3.16.1")
+  def test_flex_rod_hinge_map(self):
+    """Verify put_model maps each 1D rod bending hinge to its flex and flex_bending address."""
+    mjm, _, m, _ = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <flexcomp name="cloth" type="grid" count="3 3 1" spacing="0.1 0.1 0.1" dim="2" mass="1">
+            <elasticity young="1e3" thickness="1e-2" elastic2d="bend"/>
+          </flexcomp>
+          <flexcomp name="rope" type="grid" count="3 1 1" spacing="0.1 0.1 0.1" pos="0 1 0" radius="0.01" dim="1" mass="1"/>
+          <flexcomp name="rod" type="grid" count="4 1 1" spacing="0.1 0.1 0.1" pos="0 2 0" radius="0.01" dim="1" mass="1">
+            <elasticity young="1e7"/>
+          </flexcomp>
+        </worldbody>
+      </mujoco>
+      """
+    )
+    rod = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_FLEX, "rod")
+    adr = mjm.flex_bendingadr[rod]
+    self.assertGreater(adr, 0)
+    self.assertEqual(m.nflexrodhinge, 2)
+    np.testing.assert_array_equal(m.flex_rodhinge_map.numpy(), [[rod, adr + 1], [rod, adr + 1 + types.ROD_HINGE_SIZE]])
+    self.assertTrue(m.has_flex_stiff_dim23)
+
+  # TODO(team): remove version check once mujoco >= 3.16.1 is required.
+  @absltest.skipIf(not util_pkg.check_version("mujoco>=3.16.1"), "Requires MuJoCo >= 3.16.1")
+  @parameterized.parameters(
+    # quadratic flexes are rejected before the self-collision check
+    ("trilinear", "Self-collision of interpolated flexes"),
+    ("quadratic", "Quadratic flex interpolation"),
+  )
+  def test_flex_interp_selfcollide_error(self, dof, message):
+    """Verify loading an interpolated flex with self-collision raises NotImplementedError."""
+    xml = f"""
+    <mujoco>
+      <worldbody>
+        <flexcomp type="grid" count="3 3 3" spacing="0.1 0.1 0.1"
+                  pos="0 0 0.5" name="cube" dim="3" mass="1" radius="0.005"
+                  dof="{dof}">
+          <contact selfcollide="auto"/>
+        </flexcomp>
+      </worldbody>
+    </mujoco>
+    """
+    mjm = mujoco.MjModel.from_xml_string(xml)
+
+    with self.assertRaisesRegex(NotImplementedError, message):
       mjwarp.put_model(mjm)
 
   @parameterized.parameters(

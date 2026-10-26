@@ -46,6 +46,10 @@ _XML = """
         <joint name="joint2" type="hinge" axis="0 1 0" damping=".2"/>
       </body>
     </body>
+    <body pos="0 1 0">
+      <freejoint/>
+      <geom type="box" size=".1 .2 .3"/>
+    </body>
   </worldbody>
   <actuator>
     <motor joint="joint1"/>
@@ -59,7 +63,7 @@ _XML = """
 
 class InverseTest(parameterized.TestCase):
   @parameterized.product(
-    integrator=(IntegratorType.EULER, IntegratorType.IMPLICITFAST),
+    integrator=(IntegratorType.EULER, IntegratorType.IMPLICIT, IntegratorType.IMPLICITFAST),
     jacobian=(mujoco.mjtJacobian.mjJAC_SPARSE, mujoco.mjtJacobian.mjJAC_DENSE),
     invdiscrete=(True, False),
   )
@@ -76,6 +80,7 @@ class InverseTest(parameterized.TestCase):
 
     # discrete qacc
     if invdiscrete:
+      mjd.qvel[5:8] = [2.0, -3.0, 4.0]
       mjm.opt.enableflags |= mujoco.mjtEnableBit.mjENBL_INVDISCRETE
 
       # save state

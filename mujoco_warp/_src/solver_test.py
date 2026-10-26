@@ -44,6 +44,11 @@ def _assert_eq(a, b, name, tol=_TOLERANCE * 20):
   np.testing.assert_allclose(a, b, err_msg=err_msg, atol=tol, rtol=tol)
 
 
+def _set_inertia_scale(m, d, ctx):
+  """Set the inverse trace of M, as init_context does, for tests which skip it."""
+  wp.launch(solver._inertia_scale, dim=d.nworld, inputs=[m.nv, m.M_rownnz, m.M_rowadr, d.M], outputs=[ctx.inertia_scale])
+
+
 def _noslip_model(mjm, noslip_iterations):
   mjm = copy.deepcopy(mjm)
   mjm.opt.noslip_iterations = noslip_iterations
@@ -342,7 +347,6 @@ class SolverTest(parameterized.TestCase):
       solver._solve_done(types.OverflowType.NONE),
       dim=1,
       inputs=[
-        1,
         wp.array([1.0e-6], dtype=float),
         2,
         wp.array([1.0], dtype=float),
@@ -371,7 +375,6 @@ class SolverTest(parameterized.TestCase):
       solver._solve_done(types.OverflowType.NONE),
       dim=1,
       inputs=[
-        1,
         wp.array([1.0e-6], dtype=float),
         1,
         wp.array([1.0], dtype=float),
@@ -400,7 +403,6 @@ class SolverTest(parameterized.TestCase):
       solver._solve_done(types.OverflowType.NONE),
       dim=1,
       inputs=[
-        1,
         wp.array([1.0e-6], dtype=float),
         100,
         wp.array([1.0], dtype=float),
@@ -703,6 +705,7 @@ class SolverTest(parameterized.TestCase):
     )
 
     ctx = solver._create_solver_context(m, d)
+    _set_inertia_scale(m, d, ctx)
 
     d.ne = wp.array([0], dtype=int)
     d.nf = wp.array([0], dtype=int)
@@ -773,7 +776,7 @@ class SolverTest(parameterized.TestCase):
     ctx = solver._create_solver_context(m, d)
 
     # Exercise derivative convergence with a loose scaled tolerance.
-    m.stat.meaninertia.fill_(1.0e9)
+    ctx.inertia_scale.fill_(1.0 / (1.0e9 * m.nv))
     d.ne = wp.array([1], dtype=int)
     d.nf = wp.array([0], dtype=int)
     d.nefc = wp.array([4], dtype=int)
@@ -825,6 +828,7 @@ class SolverTest(parameterized.TestCase):
       """
     )
     ctx = solver._create_solver_context(m, d)
+    _set_inertia_scale(m, d, ctx)
 
     efc_J = [
       [0.0, 1.0, 1.0, -5.3886324e-05, 0.05, -0.05],
@@ -913,6 +917,7 @@ class SolverTest(parameterized.TestCase):
       njmax=5,
     )
     ctx = solver._create_solver_context(m, d)
+    _set_inertia_scale(m, d, ctx)
     d.ne.zero_()
     d.nf.fill_(5)
     d.nefc.fill_(5)
@@ -991,6 +996,7 @@ class SolverTest(parameterized.TestCase):
       njmax=2,
     )
     ctx = solver._create_solver_context(m, d)
+    _set_inertia_scale(m, d, ctx)
 
     # cost 0.5 * (alpha - target)^2 from an equality row plus 0.5 * (alpha - 1)^2 from an
     # inequality row active for alpha < 1: Newton from 0 undershoots, and the second Newton step
@@ -1044,7 +1050,7 @@ class SolverTest(parameterized.TestCase):
     )
     ctx = solver._create_solver_context(m, d)
 
-    m.stat.meaninertia.fill_(1.0e9)
+    ctx.inertia_scale.fill_(1.0 / (1.0e9 * m.nv))
     d.ne = wp.array([1], dtype=int)
     d.nf = wp.array([0], dtype=int)
     d.nefc = wp.array([4], dtype=int)
@@ -1277,7 +1283,7 @@ class SolverTest(parameterized.TestCase):
       dim_block = 1
       nblocks_perblock = d.naconmax
     wp.launch(
-      solver._update_gradient_JTCJ_dense,
+      solver._update_gradient_JTCJ_dense(0),
       dim=(dim_block, m.dof_tri_row.size),
       inputs=[
         m.opt.impratio_invsqrt,
