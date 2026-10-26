@@ -62,9 +62,10 @@ class SortTest(parameterized.TestCase):
       array = getattr(d.efc, name)
       array.assign(np.tile(np.arange(array.shape[1]) + 10, (nworld, 1)))
     before = [(a, wp.clone(a)) for a in _arrays(d.efc)]
-    addresses = d.contact.efc_address.numpy()
+    # CPU .numpy() arrays alias Warp storage: retain independent pre/post-sort snapshots.
+    addresses = d.contact.efc_address.numpy().copy()
     constraint._sort_constraints(m, d)
-    expected = [a.numpy() for a, _ in before]
+    expected = [a.numpy().copy() for a, _ in before]
     dims = d.contact.dim.numpy()
     worlds = d.contact.worldid.numpy()
     sorted_addresses = d.contact.efc_address.numpy()
@@ -181,8 +182,8 @@ class SortTest(parameterized.TestCase):
       qvel_noise=0.1,
       overrides={"opt.jacobian": jacobian, "opt.cone": cone},
     )
-    qpos = d.qpos.numpy()
-    qvel = d.qvel.numpy()
+    qpos = d.qpos.numpy().copy()
+    qvel = d.qvel.numpy().copy()
     for world in range(nworld):
       qpos[world, 2] -= 0.003 * world
       qvel[world] *= world + 1
@@ -191,7 +192,7 @@ class SortTest(parameterized.TestCase):
     mjw.forward(m, d)
     count = int(d.nacon.numpy()[0])
     self.assertEqual(count, 2 * nworld)
-    fields = {f.name: getattr(d.contact, f.name).numpy() for f in dataclasses.fields(d.contact)}
+    fields = {f.name: getattr(d.contact, f.name).numpy().copy() for f in dataclasses.fields(d.contact)}
     # Do not test uninitialized put_data metadata.
     d.efc.force.zero_()
     d.efc.state.zero_()
@@ -229,7 +230,7 @@ class SortTest(parameterized.TestCase):
             self.assertEqual(ids[worldids[i], address], i)
       if not m.is_sparse:
         result["J"] = d.efc.J.numpy()
-      return result
+      return {name: value.copy() for name, value in result.items()}
 
     reference = None
     rng = np.random.default_rng(42)
@@ -286,8 +287,8 @@ class SortTest(parameterized.TestCase):
       qvel_noise=0.1,
       overrides={"opt.jacobian": jacobian, "opt.cone": cone},
     )
-    qpos = d.qpos.numpy()
-    qvel = d.qvel.numpy()
+    qpos = d.qpos.numpy().copy()
+    qvel = d.qvel.numpy().copy()
     if nworld == 2:
       qpos[1, 2] -= 0.002
       qvel[1] *= 1.5
@@ -320,11 +321,11 @@ class SortTest(parameterized.TestCase):
           sizes = d.efc.jtdaj_nrow.numpy()[world, :nb]
           np.testing.assert_array_equal(starts, np.cumsum(sizes) - sizes)
           self.assertEqual(sum(sizes), n)
-      return result
+      return {name: value.copy() for name, value in result.items()}
 
     m.opt.deterministic = mjw.DeterminismType.NONE
     mjw.forward(m, d)
-    unsorted_qacc = d.qacc.numpy()
+    unsorted_qacc = d.qacc.numpy().copy()
     restore()
     m.opt.deterministic = mjw.DeterminismType.ALL
     mjw.forward(m, d)
@@ -363,7 +364,7 @@ class SortTest(parameterized.TestCase):
       if array.shape[0] == 0:
         array = wp.zeros(d.naconmax, dtype=array.dtype)
         setattr(d.contact, field.name, array)
-      value = array.numpy()
+      value = array.numpy().copy()
       value[:] = rng.integers(0, 100, value.shape)
       reference[field.name] = value
     reference["worldid"][:count] = np.repeat(np.arange(nworld), 8)
@@ -402,7 +403,7 @@ class SortTest(parameterized.TestCase):
     mjm, mjd, m, d = test_data.fixture(
       xml="""
       <mujoco>
-        <option gravity="1 2 -3" tolerance="1e-10"><flag contact="disable"/></option>
+        <option gravity=".25 .5 -.75" tolerance="1e-10"><flag contact="disable"/></option>
         <worldbody>
           <body name="a" pos="0 0 1" quat=".5 .5 .5 .5">
             <freejoint/><geom type="box" size=".1 .12 .15" mass="1"/><site name="sa" pos=".02 .03 .04"/>
@@ -433,13 +434,16 @@ class SortTest(parameterized.TestCase):
       overrides={"opt.jacobian": jacobian},
     )
     # Unequal spatial loads and nonzero velocities expose swaps of both force and torque components.
-    qvel = d.qvel.numpy()
-    applied = d.xfrc_applied.numpy()
-    active = d.eq_active.numpy()
+    # Moderate, binary-exact inputs keep float32 force cancellation within the standard tolerance.
+    qvel = d.qvel.numpy().copy()
+    applied = d.xfrc_applied.numpy().copy()
+    active = d.eq_active.numpy().copy()
     for world in range(nworld):
       for body in range(4):
-        qvel[world, 6 * body : 6 * body + 3] = np.array([0.01, -0.02, 0.03]) * (1 + 0.25 * world)
-      applied[world, 1:] = np.arange(1, mjm.nbody)[:, None] * np.array([0.7, -1.1, 1.9, 0.13, 0.23, -0.31]) * (1 + 0.25 * world)
+        qvel[world, 6 * body : 6 * body + 3] = np.array([0.001953125, -0.00390625, 0.005859375]) * (1 + 0.25 * world)
+      applied[world, 1:] = (
+        np.arange(1, mjm.nbody)[:, None] * np.array([0.25, -0.5, 0.75, 0.03125, 0.0625, -0.09375]) * (1 + 0.25 * world)
+      )
       if equality != "interleaved":
         active[world] = mjm.eq_type == getattr(mujoco.mjtEq, "mjEQ_" + equality.upper())
     if nworld == 2:
@@ -541,7 +545,7 @@ class SortTest(parameterized.TestCase):
       overrides={"opt.jacobian": jacobian},
     )
     mjw.forward(m, d)
-    baseline = d.qacc.numpy()
+    baseline = d.qacc.numpy().copy()
     m.opt.deterministic = mjw.DeterminismType.ALL
     reference = None
     for _ in range(4):
@@ -565,7 +569,7 @@ class SortTest(parameterized.TestCase):
     nnz = wp.full(d.nworld, d.njmax_nnz + 1 if overflow == "nonzeros" else 1, dtype=int)
     if overflow == "rows":
       d.nefc.fill_(d.njmax + 1)
-    before = [(a, a.numpy()) for a in _arrays(d)]
+    before = [(a, a.numpy().copy()) for a in _arrays(d)]
     constraint._sort_constraints(m, d, nnz)
     for a, value in before:
       np.testing.assert_array_equal(a.numpy(), value)
@@ -612,7 +616,7 @@ def _assert_collision_repeat(test, m, d):
     for f in dataclasses.fields(d.contact):
       a = getattr(d.contact, f.name)
       if a.size:
-        current[f.name] = a.numpy()[:count]
+        current[f.name] = a.numpy()[:count].copy()
     for world in range(d.nworld):
       current[world, "J"] = _dense_jacobian(m, d, world)
     if reference is not None:
@@ -624,7 +628,7 @@ def _assert_collision_repeat(test, m, d):
 def _dense_jacobian(m, d, world):
   n = int(d.nefc.numpy()[world])
   if not m.is_sparse:
-    return d.efc.J.numpy()[world, :n, : m.nv]
+    return d.efc.J.numpy()[world, :n, : m.nv].copy()
   result = np.zeros((n, m.nv), dtype=np.float64)
   mujoco.mju_sparse2dense(
     result,
