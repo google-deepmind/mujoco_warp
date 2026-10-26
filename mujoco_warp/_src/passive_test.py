@@ -177,9 +177,12 @@ class PassiveTest(parameterized.TestCase):
       keyframe=0,
     )
 
+    with wp.ScopedCapture() as capture:
+      mjw.step(m, d)
+
     max_err = 0.0
     for _ in range(25):
-      mjw.step(m, d)
+      wp.capture_launch(capture.graph)
       mujoco.mj_step(mjm, mjd)
 
       warp_force = d.qfrc_fluid.numpy()[0]
@@ -453,8 +456,11 @@ class PassiveTest(parameterized.TestCase):
     e0 = d.energy.numpy()[0]
     total_energy = e0[0] + e0[1]
 
-    for _ in range(10):
+    with wp.ScopedCapture() as capture:
       mjw.step(m, d)
+
+    for _ in range(10):
+      wp.capture_launch(capture.graph)
       e = d.energy.numpy()[0]
       self.assertAlmostEqual(e[0] + e[1], total_energy, delta=0.005)
 
@@ -507,9 +513,12 @@ class PassiveTest(parameterized.TestCase):
     mjd.qvel[0] = 10.0
     wp.copy(d.qvel, wp.array([qvel], dtype=float))
 
+    with wp.ScopedCapture() as capture:
+      mjw.forward(m, d)
+
     mujoco.mj_forward(mjm, mjd)
     d.qfrc_fluid.fill_(wp.inf)
-    mjw.forward(m, d)
+    wp.capture_launch(capture.graph)
 
     warp_force = d.qfrc_fluid.numpy()[0]
     np.testing.assert_allclose(warp_force, mjd.qfrc_fluid, atol=1e-6, rtol=1e-5)
@@ -522,7 +531,7 @@ class PassiveTest(parameterized.TestCase):
       qvel[0] = v
       wp.copy(d.qvel, wp.array([qvel], dtype=float))
       d.qfrc_fluid.fill_(wp.inf)
-      mjw.forward(m, d)
+      wp.capture_launch(capture.graph)
       lift_coeff = d.qfrc_fluid.numpy()[0, 2] / (v * v)
       np.testing.assert_allclose(lift_coeff, ref_lift_coeff, atol=1e-12 * ref_lift_coeff, rtol=1e-5)
 
@@ -601,9 +610,11 @@ class PassiveTest(parameterized.TestCase):
       """
     )
     d.qfrc_adhesion.fill_(wp.inf)
+    with wp.ScopedCapture() as capture:
+      mjw.step(m, d)
     for _ in range(20):
       mujoco.mj_step(mjm, mjd)
-      mjw.step(m, d)
+      wp.capture_launch(capture.graph)
 
     np.testing.assert_allclose(d.qpos.numpy()[0], mjd.qpos, atol=1e-3)
     np.testing.assert_allclose(

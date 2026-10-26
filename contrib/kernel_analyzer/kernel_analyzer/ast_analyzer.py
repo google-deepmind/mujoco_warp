@@ -155,6 +155,18 @@ class WarpCallInStatic(Issue):
     return f'"wp.{self.node.func.attr}" not allowed inside wp.static(); use pure Python or math.*'
 
 
+@dataclasses.dataclass
+class MissingDeterministicFactory(Issue):
+  def __str__(self):
+    return f'"{self.kernel}" contains atomic operations but is not enclosed in a kernel factory with a "deterministic" argument'
+
+
+@dataclasses.dataclass
+class MissingDeterministicMaxRecords(Issue):
+  def __str__(self):
+    return f'"{self.kernel}" contains atomic operations in a dynamic loop and must set "deterministic_max_records"'
+
+
 # TODO(team): add argument order analyzer.
 # this one is tricky because just verifying order does not tell you if the arguments
 # match the parameter signature.
@@ -266,7 +278,12 @@ def _is_wp_call(node: ast.AST) -> bool:
   )
 
 
-def analyze(source: str, filename: str, type_source: str) -> List[Issue]:
+def analyze(
+  source: str,
+  filename: str,
+  type_source: str,
+  check_atomic: bool = False,
+) -> List[Issue]:
   """Parses Python code and finds functions with unsorted simple parameters."""
   logging.info(f"Analyzing {filename}...")
 
@@ -316,6 +333,7 @@ def analyze(source: str, filename: str, type_source: str) -> List[Issue]:
         if attr_type.startswith("wp.array"):
           dummy_node = ast.AST()
           dummy_node.lineno = 1
+          dummy_node.end_lineno = 1
           issues.append(DirectWpArrayForbidden(dummy_node, "", attr_name, cls_name))
   source_lines = source.splitlines()
 
@@ -329,12 +347,125 @@ def analyze(source: str, filename: str, type_source: str) -> List[Issue]:
 
   top_kernels: dict[str, bool] = {}
 
-  def _analyze_function(node: ast.FunctionDef, is_nested: bool):
+  # Supports # kernel_analyzer: ignore, ignore[rule], off/on, off[rule]/on[rule]
+  ignore_lines: Dict[int, set[str]] = {}
+  active_off_rules: set[str] = set()
+
+  for lineno, line in enumerate(source_lines, 1):  # lineno is 1-indexed
+    for action, rule in re.findall(r"#\s*kernel_analyzer:\s*(off|on|ignore)(?:\[(.*?)\])?", line):
+      rule = rule.strip() or "*"
+      if action == "off":
+        active_off_rules.add(rule)
+      elif action == "on":
+        active_off_rules.clear() if rule == "*" else active_off_rules.discard(rule)
+      elif action == "ignore":
+        ignore_lines.setdefault(lineno, set()).add(rule)
+    if active_off_rules:
+      ignore_lines.setdefault(lineno, set()).update(active_off_rules)
+
+  def _is_ignored(iss: Issue) -> bool:
+    if isinstance(iss.node, ast.FunctionDef):
+      start_line = min((d.lineno for d in iss.node.decorator_list), default=iss.node.lineno)
+      end_line = iss.node.body[0].lineno - 1 if iss.node.body else iss.node.lineno
+    else:
+      start_line = iss.node.lineno
+      end_line = iss.node.end_lineno or start_line
+    rules = {r for l in range(start_line, end_line + 1) for r in ignore_lines.get(l, ())}
+    return "*" in rules or (
+      isinstance(iss, (MissingDeterministicFactory, MissingDeterministicMaxRecords))
+      and any("atomic" in r.lower() for r in rules)
+    )
+
+  def _is_atomic_call(sub: ast.AST) -> bool:
+    return (
+      isinstance(sub, ast.Call)
+      and isinstance(sub.func, ast.Attribute)
+      and isinstance(sub.func.value, ast.Name)
+      and sub.func.value.id == "wp"
+      and sub.func.attr.startswith("atomic_")
+      and sub.func.attr not in ("atomic_or", "atomic_and", "atomic_xor")
+    )
+
+  def _is_wp_static(sub: ast.AST) -> bool:
+    return (
+      isinstance(sub, ast.Call)
+      and isinstance(sub.func, ast.Attribute)
+      and isinstance(sub.func.value, ast.Name)
+      and sub.func.value.id == "wp"
+      and sub.func.attr == "static"
+    )
+
+  def _has_loop_break(stmts: List[ast.stmt]) -> bool:
+    for s in stmts:
+      if isinstance(s, (ast.Break, ast.Continue)):
+        return True
+      if isinstance(s, ast.If) and (_has_loop_break(s.body) or _has_loop_break(s.orelse)):
+        return True
+    return False
+
+  def _is_unrolled_for(loop: ast.For) -> bool:
+    it = loop.iter
+    if not (isinstance(it, ast.Call) and isinstance(it.func, ast.Name) and it.func.id == "range" and 1 <= len(it.args) <= 3):
+      return False
+    if _has_loop_break(loop.body):
+      return False
+    vals = []
+    for a in it.args:
+      if isinstance(a, ast.Constant) and isinstance(a.value, int):
+        vals.append(a.value)
+      elif (
+        isinstance(a, ast.UnaryOp)
+        and isinstance(a.op, ast.USub)
+        and isinstance(a.operand, ast.Constant)
+        and isinstance(a.operand.value, int)
+      ):
+        vals.append(-a.operand.value)
+      elif _is_wp_static(a):
+        vals.append(None)
+      else:
+        return False
+    if None in vals:
+      return True
+    start = 0 if len(vals) == 1 else vals[0]
+    end = vals[0] if len(vals) == 1 else vals[1]
+    step = 1 if len(vals) < 3 else vals[2]
+    return step != 0 and abs(end - start) // abs(step) <= 16
+
+  top_level_atomic_funcs: Dict[str, List[ast.Call]] = {}
+  called_top_level_atomic_funcs: set[str] = set()
+  atomic_funcs: set[str] = set()
+  dyn_atomic_funcs: set[str] = set()
+
+  def _find_dyn_atomics(curr: ast.AST, in_dyn_loop: bool = False) -> List[ast.Call]:
+    found: List[ast.Call] = []
+    if isinstance(curr, ast.While):
+      found.extend(_find_dyn_atomics(curr.test, in_dyn_loop))
+      for s in curr.body + curr.orelse:
+        found.extend(_find_dyn_atomics(s, True))
+      return found
+    if isinstance(curr, ast.For):
+      found.extend(_find_dyn_atomics(curr.iter, in_dyn_loop))
+      dyn = in_dyn_loop or not _is_unrolled_for(curr)
+      for s in curr.body + curr.orelse:
+        found.extend(_find_dyn_atomics(s, dyn))
+      return found
+    if isinstance(curr, ast.Call):
+      fname = curr.func.id if isinstance(curr.func, ast.Name) else None
+      if ((in_dyn_loop and (_is_atomic_call(curr) or fname in atomic_funcs)) or fname in dyn_atomic_funcs) and not _is_ignored(
+        MissingDeterministicMaxRecords(curr, "")
+      ):
+        found.append(curr)
+    for child in ast.iter_child_nodes(curr):
+      if not isinstance(child, ast.FunctionDef):
+        found.extend(_find_dyn_atomics(child, in_dyn_loop))
+    return found
+
+  def _analyze_function(node: ast.FunctionDef, is_nested: bool, enclosing_func: Optional[ast.FunctionDef] = None):
     """Analyze a function definition for kernel issues."""
     # Recursively check nested functions first
     for child in ast.iter_child_nodes(node):
       if isinstance(child, ast.FunctionDef):
-        _analyze_function(child, is_nested=True)
+        _analyze_function(child, is_nested=True, enclosing_func=node)
 
     # Find wp.kernel or wp.func decorator
     decorator = None
@@ -353,6 +484,36 @@ def analyze(source: str, filename: str, type_source: str) -> List[Issue]:
           issues.append(MissingModuleUnique(node, node.name))
       else:
         top_kernels[node.name] = has_unique
+
+    # Kernels and functions with atomics must be inside a deterministic factory.
+    if check_atomic and (_is_kernel(decorator) or _is_func(decorator)):
+      has_det = (
+        is_nested
+        and enclosing_func is not None
+        and any(a.arg == "deterministic" for a in enclosing_func.args.args + enclosing_func.args.kwonlyargs)
+      )
+      for sub in ast.walk(node):
+        is_atomic_func_call = isinstance(sub, ast.Call) and isinstance(sub.func, ast.Name) and sub.func.id in atomic_funcs
+        if is_atomic_func_call and sub.func.id in top_level_atomic_funcs:
+          called_top_level_atomic_funcs.add(sub.func.id)
+        if (is_atomic_func_call or _is_atomic_call(sub)) and not _is_ignored(MissingDeterministicFactory(sub, node.name)):
+          if _is_func(decorator):
+            atomic_funcs.add(node.name)
+          if not is_nested and _is_func(decorator):
+            top_level_atomic_funcs.setdefault(node.name, []).append(sub)
+          elif not has_det:
+            issues.append(MissingDeterministicFactory(sub, node.name))
+
+      dyn_atomics = _find_dyn_atomics(node)
+      if _is_func(decorator) and dyn_atomics:
+        dyn_atomic_funcs.add(node.name)
+      elif _is_kernel(decorator) and has_det and dyn_atomics:
+        has_max_records = any(
+          isinstance(c, ast.Constant) and c.value == "deterministic_max_records" for c in ast.walk(enclosing_func)
+        )
+        if not has_max_records:
+          for sub in dyn_atomics:
+            issues.append(MissingDeterministicMaxRecords(sub, node.name))
 
     _analyze_kernel(node)
 
@@ -570,6 +731,12 @@ def analyze(source: str, filename: str, type_source: str) -> List[Issue]:
     if isinstance(node, ast.FunctionDef):
       _analyze_function(node, is_nested=False)
 
+  if check_atomic:
+    for fname, atomics in top_level_atomic_funcs.items():
+      if fname not in called_top_level_atomic_funcs:
+        for sub in atomics:
+          issues.append(MissingDeterministicFactory(sub, fname))
+
   # Check operator precedence disambiguation throughout the file
   for sub_node in ast.walk(tree):
     # 1. Compare with bitwise operator
@@ -627,18 +794,7 @@ def analyze(source: str, filename: str, type_source: str) -> List[Issue]:
             if target_name in top_kernels and not top_kernels[target_name]:
               issues.append(SharedModuleCustomBlockDim(sub_node, target_name))
 
-  # skip issues in ignored lines
-  ignore_lines = set()
-  ignoring = False
-  for lineno, line in enumerate(source_lines, 1):  # lineno is 1-indexed
-    if "# kernel_analyzer: off" in line:
-      ignoring = True
-    elif "# kernel_analyzer: on" in line:
-      ignoring = False
-    if "# kernel_analyzer: ignore" in line or ignoring:
-      ignore_lines.add(lineno)
-
-  filtered_issues = [i for i in issues if i.node.lineno not in ignore_lines]
+  filtered_issues = [i for i in issues if not _is_ignored(i)]
   filter_count, ignore_count = len(filtered_issues), len(issues) - len(filtered_issues)
 
   logging.info(f"Finished analyzing {filename}. Found {filter_count} issues, ignoring {ignore_count} issues.")

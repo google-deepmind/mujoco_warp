@@ -34,6 +34,7 @@ from mujoco_warp._src.support import xfrc_accumulate
 from mujoco_warp._src.types import MJ_MINVAL
 from mujoco_warp._src.types import BiasType
 from mujoco_warp._src.types import Data
+from mujoco_warp._src.types import DeterminismType
 from mujoco_warp._src.types import DisableBit
 from mujoco_warp._src.types import DynType
 from mujoco_warp._src.types import EnableBit
@@ -60,7 +61,12 @@ def check_discrete(m: Model):
       raise ValueError("stable Neo-Hookean elasticity requires integrator='discrete'")
     if m.has_flex_passive:
       raise ValueError("passive flex contact requires an integrator with the effective metric: set integrator='discrete'")
-    if m.opt.integrator in (IntegratorType.IMPLICIT, IntegratorType.IMPLICITFAST) and (m.nefmK > 0 or m.has_non_simple_flex):
+    # 1D rod bending is integrated explicitly by all integrators except discrete
+    if (
+      m.opt.integrator in (IntegratorType.IMPLICIT, IntegratorType.IMPLICITFAST)
+      and (m.nefmK > 0 or m.has_non_simple_flex)
+      and m.has_flex_stiff_dim23
+    ):
       raise ValueError(
         "flex elasticity is no longer integrated implicitly under integrator='implicit' and 'implicitfast': "
         "set integrator='discrete'"
@@ -809,7 +815,7 @@ def _project_spatial_B(
 
 
 @wp.kernel
-def _implicit_free_body_solve(
+def _implicit_free_body(
   # Model:
   nbody: int,
   opt_timestep: wp.array[float],
@@ -851,9 +857,10 @@ def _implicit_free_body_solve(
   tree_awake_in: wp.array2d[int],
   cvel_in: wp.array2d[wp.spatial_vector],
   # In:
-  qfrc_in: wp.array2d[float],
-  # Data out:
-  qacc_out: wp.array2d[float],
+  solve: bool,
+  vec_in: wp.array2d[float],
+  # Out:
+  vec_out: wp.array2d[float],
 ):
   worldid, freeid = wp.tid()
   bodyid = body_freeadr[freeid]
@@ -1034,22 +1041,37 @@ def _implicit_free_body_solve(
           for c in range(6):
             A[r, c] -= timestep * J_T_B_J[r, c]
 
-  # 5. Solve A * x = qfrc
-  A_fact, pivot, ok = math.lu_factor_6x6(A)
-  if ok:
-    b_vec = vec6(0.0)
-    for r in range(6):
-      b_vec[r] = qfrc_in[worldid, dof_adr + r]
-    x = math.lu_solve_6x6(A_fact, pivot, b_vec)
-    for r in range(6):
-      qacc_out[worldid, dof_adr + r] = x[r]
-
-
-def _launch_implicit_free_body_solve(m: Model, d: Data, qacc: wp.array2d[float]):
-  if m.body_freeadr.size == 0:
+  # Solve A * vec_out = vec_in
+  if solve:
+    A_fact, pivot, ok = math.lu_factor_6x6(A)
+    if ok:
+      b_vec = vec6(0.0)
+      for r in range(6):
+        b_vec[r] = vec_in[worldid, dof_adr + r]
+      x = math.lu_solve_6x6(A_fact, pivot, b_vec)
+      for r in range(6):
+        vec_out[worldid, dof_adr + r] = x[r]
     return
+
+  # or multiply vec_out = A * vec_in
+  b_vec = vec6(0.0)
+  for r in range(6):
+    b_vec[r] = vec_in[worldid, dof_adr + r]
+  for r in range(6):
+    Ax = float(0.0)
+    for c in range(6):
+      Ax += A[r, c] * b_vec[c]
+    vec_out[worldid, dof_adr + r] = Ax
+
+
+def implicit_free_body(m: Model, d: Data, vec_in: wp.array2d[float], vec_out: wp.array2d[float], solve: bool):
+  """Solves or multiplies by the implicit mass matrix of standalone free bodies.
+
+  Overwrites the free-body rows of vec_out with A^-1 * vec_in (solve) or A * vec_in, where A is
+  the free-body block of M - h * D including the gyroscopic bias derivative.
+  """
   wp.launch(
-    _implicit_free_body_solve,
+    _implicit_free_body,
     dim=(d.nworld, m.body_freeadr.size),
     inputs=[
       m.nbody,
@@ -1090,9 +1112,10 @@ def _launch_implicit_free_body_solve(m: Model, d: Data, qacc: wp.array2d[float])
       d.M,
       d.tree_awake,
       d.cvel,
-      d.efc.Ma,
+      solve,
+      vec_in,
     ],
-    outputs=[qacc],
+    outputs=[vec_out],
   )
 
 
@@ -1332,31 +1355,36 @@ def _launch_discrete_free_gyro(m: Model, d: Data, out: wp.array2d[float], qacc: 
   )
 
 
+def implicit_qlu(m: Model, d: Data):
+  """Sets d.qLU = M - dt * qDeriv in D-structure, including RNE derivatives."""
+  # Smooth velocity derivatives into M-structure
+  qH_M = wp.empty((d.nworld, m.nC), dtype=float)
+  derivative.deriv_smooth_vel(m, d, qH_M)
+
+  # Map qH_M (M-structure) to qLU (D-structure) via mapM2D.
+  wp.launch(
+    _map_m2d,
+    dim=(d.nworld, m.nD),
+    inputs=[m.mapM2D, qH_M],
+    outputs=[d.qLU],
+  )
+
+  # Compute RNE derivatives, scale by timestep, and add in-place to qLU.
+  # Note: inverse dynamics Coriolis enters equations of motion as -qfrc_bias,
+  # so M - dt * df/dv = M + dt * d(qfrc_bias)/dv.
+  derivative.deriv_rne_vel(m, d, d.qLU)
+
+
 @event_scope
 def implicit(m: Model, d: Data):
   """Integrates fully implicit in velocity."""
   if m.opt.integrator == IntegratorType.IMPLICIT:
-    # 1. Smooth velocity derivatives into M-structure
-    qH_M = wp.empty((d.nworld, m.nC), dtype=float)
-    derivative.deriv_smooth_vel(m, d, qH_M)
+    implicit_qlu(m, d)
 
-    # 2. Map qH_M (M-structure) to qLU (D-structure) via mapM2D.
-    wp.launch(
-      _map_m2d,
-      dim=(d.nworld, m.nD),
-      inputs=[m.mapM2D, qH_M],
-      outputs=[d.qLU],
-    )
-
-    # 3. Compute RNE derivatives, scale by timestep, and add in-place to qLU.
-    # Note: inverse dynamics Coriolis enters equations of motion as -qfrc_bias,
-    # so M - dt * df/dv = M + dt * d(qfrc_bias)/dv.
-    derivative.deriv_rne_vel(m, d, d.qLU)
-
-    # 4. Factorize and solve: qacc = qLU \ Ma
+    # Factorize and solve: qacc = qLU \ Ma
     qacc = wp.empty((d.nworld, m.nv), dtype=float)
     smooth.factor_solve_lu(m, d, d.qLU, qacc, d.efc.Ma)
-    _launch_implicit_free_body_solve(m, d, qacc)
+    implicit_free_body(m, d, d.efc.Ma, qacc, solve=True)
     _advance(m, d, qacc)
   elif (m.opt.disableflags & (DisableBit.ACTUATION | DisableBit.SPRING | DisableBit.DAMPER)) != (
     DisableBit.ACTUATION | DisableBit.SPRING | DisableBit.DAMPER
@@ -1366,22 +1394,21 @@ def implicit(m: Model, d: Data):
     qLD = wp.empty_like(d.qLD)
     qLDiagInv = wp.empty((d.nworld, m.nv), dtype=float)
     derivative.deriv_smooth_vel(m, d, qDeriv)
-    if m.body_freeadr.size > 0:
-      wp.launch(
-        _implicit_free_body_reset_m,
-        dim=(d.nworld, m.body_freeadr.size),
-        inputs=[
-          m.body_dofadr,
-          m.M_rownnz,
-          m.M_rowadr,
-          m.body_freeadr,
-          d.M,
-        ],
-        outputs=[qDeriv],
-      )
+    wp.launch(
+      _implicit_free_body_reset_m,
+      dim=(d.nworld, m.body_freeadr.size),
+      inputs=[
+        m.body_dofadr,
+        m.M_rownnz,
+        m.M_rowadr,
+        m.body_freeadr,
+        d.M,
+      ],
+      outputs=[qDeriv],
+    )
     qacc = wp.empty((d.nworld, m.nv), dtype=float)
     smooth.factor_solve_i(m, d, qDeriv, qLD, qLDiagInv, qacc, d.efc.Ma)
-    _launch_implicit_free_body_solve(m, d, qacc)
+    implicit_free_body(m, d, d.efc.Ma, qacc, solve=True)
     _advance(m, d, qacc)
   else:
     _advance(m, d, d.qacc)
@@ -1864,22 +1891,30 @@ def _actuator_force(
   actuator_force_out[worldid, uid] = force
 
 
-@wp.kernel
-def _tendon_actuator_force(
-  # Model:
-  actuator_trntype: wp.array[int],
-  actuator_trnid: wp.array[wp.vec2i],
-  # Data in:
-  actuator_force_in: wp.array2d[float],
-  # Out:
-  ten_actfrc_out: wp.array2d[float],
-):
-  worldid, actid = wp.tid()
+@cache_kernel
+def _tendon_actuator_force(deterministic: bool = False):
+  module_options = {"enable_backward": False}
+  if deterministic:
+    module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
 
-  if actuator_trntype[actid] == TrnType.TENDON:
-    tenid = actuator_trnid[actid][0]
-    # TODO(team): only compute for tendons with force limits?
-    wp.atomic_add(ten_actfrc_out[worldid], tenid, actuator_force_in[worldid, actid])
+  @wp.kernel(module="unique", module_options=module_options)
+  def kernel(
+    # Model:
+    actuator_trntype: wp.array[int],
+    actuator_trnid: wp.array[wp.vec2i],
+    # Data in:
+    actuator_force_in: wp.array2d[float],
+    # Out:
+    ten_actfrc_out: wp.array2d[float],
+  ):
+    worldid, actid = wp.tid()
+
+    if actuator_trntype[actid] == TrnType.TENDON:
+      tenid = actuator_trnid[actid][0]
+      # TODO(team): only compute for tendons with force limits?
+      wp.atomic_add(ten_actfrc_out[worldid], tenid, actuator_force_in[worldid, actid])
+
+  return kernel
 
 
 @wp.kernel
@@ -1908,27 +1943,37 @@ def _tendon_actuator_force_clamp(
         actuator_force_out[worldid, actid] *= actfrcrange[1] / ten_actfrc
 
 
-@wp.kernel
-def _qfrc_actuator(
-  # Data in:
-  moment_rownnz_in: wp.array2d[int],
-  moment_rowadr_in: wp.array2d[int],
-  moment_colind_in: wp.array2d[int],
-  actuator_moment_in: wp.array2d[float],
-  actuator_force_in: wp.array2d[float],
-  # Data out:
-  qfrc_actuator_out: wp.array2d[float],
-):
-  worldid, actid = wp.tid()
+@cache_kernel
+def _qfrc_actuator(nv: int, deterministic: bool = False):
+  module_options = {"enable_backward": False}
+  if deterministic:
+    module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
+    module_options["deterministic_max_records"] = nv
 
-  rownnz = moment_rownnz_in[worldid, actid]
-  rowadr = moment_rowadr_in[worldid, actid]
+  @wp.kernel(module="unique", module_options=module_options)
+  def kernel(
+    # Data in:
+    moment_rownnz_in: wp.array2d[int],
+    moment_rowadr_in: wp.array2d[int],
+    moment_colind_in: wp.array2d[int],
+    actuator_moment_in: wp.array2d[float],
+    actuator_force_in: wp.array2d[float],
+    # Data out:
+    qfrc_actuator_out: wp.array2d[float],
+  ):
+    worldid, actid = wp.tid()
 
-  for i in range(rownnz):
-    sparseid = rowadr + i
-    colind = moment_colind_in[worldid, sparseid]
-    qfrc = actuator_moment_in[worldid, sparseid] * actuator_force_in[worldid, actid]
-    wp.atomic_add(qfrc_actuator_out[worldid], colind, qfrc)
+    rownnz = moment_rownnz_in[worldid, actid]
+    rowadr = moment_rowadr_in[worldid, actid]
+    act_force = actuator_force_in[worldid, actid]
+
+    for i in range(rownnz):
+      sparseid = rowadr + i
+      colind = moment_colind_in[worldid, sparseid]
+      qfrc = actuator_moment_in[worldid, sparseid] * act_force
+      wp.atomic_add(qfrc_actuator_out[worldid], colind, qfrc)
+
+  return kernel
 
 
 @wp.kernel
@@ -2024,11 +2069,12 @@ def fwd_actuation(m: Model, d: Data):
     if m.callback.act_bias:
       m.callback.act_bias(m, d)
 
+    det_atomics = bool(m.opt.deterministic & DeterminismType.ATOMICS)
     if m.ntendon:
       # total actuator force at tendon
       ten_actfrc = wp.zeros((d.nworld, m.ntendon), dtype=float)
       wp.launch(
-        _tendon_actuator_force,
+        _tendon_actuator_force(det_atomics),
         dim=(d.nworld, m.nactuator),
         inputs=[m.actuator_trntype, m.actuator_trnid, d.actuator_force],
         outputs=[ten_actfrc],
@@ -2044,7 +2090,7 @@ def fwd_actuation(m: Model, d: Data):
     # TODO(team): optimize performance
     d.qfrc_actuator.zero_()
     wp.launch(
-      _qfrc_actuator,
+      _qfrc_actuator(m.nv if det_atomics else 0, det_atomics),
       dim=(d.nworld, m.nactuator),
       inputs=[
         d.moment_rownnz,
