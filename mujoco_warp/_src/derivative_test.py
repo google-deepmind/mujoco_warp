@@ -1761,6 +1761,8 @@ class DerivativeTest(parameterized.TestCase):
     if nworld == 2:
       self.assertFalse(np.allclose(d.qfrc_spring.numpy()[0], d.qfrc_spring.numpy()[1]))
 
+  # TODO(team): remove version check once mujoco >= 3.17.1 is required.
+  @absltest.skipIf(not util_pkg.check_version("mujoco>=3.17.1.dev1005593014"), "Requires MuJoCo >= 3.17.1.dev1005593014")
   @parameterized.product(dim=(2, 3), nworld=(1, 2))
   def test_eff_contact_element_weights(self, dim, nworld):
     """Passive flex element contacts weight the element vertices as MuJoCo C does."""

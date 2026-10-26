@@ -1963,6 +1963,7 @@ def _cfrc_ext_tendon_constraint(deterministic: bool = False):
 
   return kernel
 
+
 @cache_kernel
 def _cfrc_ext_tendon_actuator(deterministic: bool = False):
   module_options = {"enable_backward": False}
@@ -2010,6 +2011,7 @@ def _cfrc_ext_spatial_tendon(nwrap: int, deterministic: bool = False):
     site_bodyid: wp.array[int],
     tendon_adr: wp.array[int],
     tendon_num: wp.array[int],
+    tendon_actuatorid: wp.array[int],
     ten_J_rownnz: wp.array[int],
     ten_J_rowadr: wp.array[int],
     ten_J_colind: wp.array[int],
@@ -2022,6 +2024,12 @@ def _cfrc_ext_spatial_tendon(nwrap: int, deterministic: bool = False):
     wrap_type: wp.array[int],
     wrap_objid: wp.array[int],
     wrap_prm: wp.array[float],
+    actuator_trntype: wp.array[int],
+    actuator_trnid: wp.array[wp.vec2i],
+    actuator_damping: wp.array2d[float],
+    actuator_dampingpoly: wp.array2d[wp.vec2],
+    actuator_armature: wp.array2d[float],
+    actuator_gear: wp.array2d[wp.spatial_vector],
     # Data in:
     qacc_in: wp.array2d[float],
     subtree_com_in: wp.array2d[wp.vec3],
@@ -2062,14 +2070,26 @@ def _cfrc_ext_spatial_tendon(nwrap: int, deterministic: bool = False):
         frc += -x * util_misc._poly_force(stiffness, spoly, x, 0)
 
     if not dsbl_damper:
-      damping = tendon_damping[worldid % tendon_damping.shape[0], tenid]
-      dpoly = tendon_dampingpoly[worldid % tendon_dampingpoly.shape[0], tenid]
+      damping, dpoly = util_misc.tendon_damping_total(
+        tendon_actuatorid,
+        tendon_damping,
+        tendon_dampingpoly,
+        actuator_trntype,
+        actuator_trnid,
+        actuator_damping,
+        actuator_dampingpoly,
+        actuator_gear,
+        worldid,
+        tenid,
+      )
       if damping != 0.0 or dpoly[0] != 0.0 or dpoly[1] != 0.0:
         v = ten_velocity_in[worldid, tenid]
         frc += -v * util_misc._poly_force(damping, dpoly, v, 1)
 
     # ten_frc -= armature * tendon acceleration: reaction of the armature inertia
-    armature = tendon_armature[worldid % tendon_armature.shape[0], tenid]
+    armature = util_misc.tendon_armature_total(
+      tendon_actuatorid, tendon_armature, actuator_trntype, actuator_trnid, actuator_armature, actuator_gear, worldid, tenid
+    )
     if armature != 0.0:
       acc = ten_bias_coef_in[worldid, tenid]
       rownnz = ten_J_rownnz[tenid]

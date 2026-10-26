@@ -887,10 +887,11 @@ class CapsuleCapsuleTest(parameterized.TestCase):
 
   @parameterized.product(long_first=[True, False], half_lengths=[(0.3, 0.2), (0.5, 0.25)])
   def test_parallel_overhang(self, long_first, half_lengths):
-    """Parallel capsules where one overhangs the other: two contacts over the overlap, both at distance 0.07.
+    """Parallel capsules where one overhangs the other: two contacts over the overlap.
 
-    With half-lengths (0.5, 0.25), ma * mc - mb^2 is exactly 0 in float32; with (0.3, 0.2) it is not, so a
-    determinant-based parallel test can miss the parallel case.
+    Both contacts at distance 0.07. With half-lengths (0.5, 0.25), ma * mc - mb^2 is exactly
+    0 in float32; with (0.3, 0.2) it is not, so a determinant-based parallel test can miss the
+    parallel case.
     """
     axis = wp.vec3(0.0, 0.0, 1.0)
     long_cap = (wp.vec3(0.0, 0.0, 0.0), axis, 0.05, half_lengths[0])

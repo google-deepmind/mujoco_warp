@@ -263,7 +263,6 @@ def _spring_damper_tendon_passive(deterministic: bool = False):
       worldid,
       tenid,
     )
-    dpoly = tendon_dampingpoly[worldid % tendon_dampingpoly.shape[0], tenid]
 
     has_stiffness = (stiffness != 0.0 or spoly[0] != 0.0 or spoly[1] != 0.0) and not dsbl_spring
     has_damping = (damping != 0.0 or dpoly[0] != 0.0 or dpoly[1] != 0.0) and not dsbl_damper
