@@ -178,9 +178,9 @@ def _spy(module, name, tag, events, d):
 class _Replay:
   """Replays the contact and constraint rows of the first run in later runs.
 
-  CONTACTS and CONSTRAINT are not implemented yet, so collision and make_constraint emit rows in a
-  racy order. Later runs check that the inputs of these stages are bitwise equal to the first run
-  and that their float outputs are bitwise equal up to order, then restore the first run's outputs.
+  These ATOMICS-only tests deliberately leave CONTACTS and CONSTRAINT disabled. Later runs check
+  that stage inputs and float outputs agree up to order, then restore the first run's row order to
+  isolate atomic reductions. Unpatched sorting and capture regressions live in sort_test.py.
   """
 
   def __init__(self, test, d):

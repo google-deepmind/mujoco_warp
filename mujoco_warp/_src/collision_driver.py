@@ -13,10 +13,12 @@
 # limitations under the License.
 # ==============================================================================
 
+import dataclasses
 from typing import Optional
 
 import warp as wp
 
+from mujoco_warp._src import sort
 from mujoco_warp._src.collision_convex import convex_narrowphase
 from mujoco_warp._src.collision_core import CollisionContext
 from mujoco_warp._src.collision_core import create_collision_context
@@ -1061,8 +1063,10 @@ def _narrowphase(m: Model, d: Data, ctx: CollisionContext):
 
 def _sort_contacts(m: Model, d: Data):
   """Deterministic contact sort."""
-  # TODO(team): Implementation contact sorting.
-  pass
+  order = sort.contact_permutation(d)
+  for field in dataclasses.fields(d.contact):
+    value = getattr(d.contact, field.name)
+    sort.gather(d.nacon, order, value, d.naconmax)
 
 
 @event_scope
