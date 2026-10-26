@@ -1634,11 +1634,11 @@ class CollisionTest(parameterized.TestCase):
     </mujoco>
     """
 
-    _, _, m, d = test_data.fixture(xml=_XML, keyframe=0)
+    _, mjd, m, d = test_data.fixture(xml=_XML, keyframe=0)
 
     mjw.collision(m, d)
 
-    np.testing.assert_equal(d.nacon.numpy()[0], 4)
+    np.testing.assert_equal(d.nacon.numpy()[0], mjd.ncon)
     self.assertTrue(d.overflow.numpy()[0] & types.OverflowType.HFIELD)
 
   @parameterized.parameters(1, 2)
@@ -1646,7 +1646,7 @@ class CollisionTest(parameterized.TestCase):
     """Tests that non-colliding prisms in the subgrid do not starve active contacts."""
     # The box is rotated 45 deg, so its subgrid is a large square while the box itself only
     # occupies the diagonal: 1458 prisms, of which more than MJ_MAXCONPAIR are in contact.
-    _, _, m, d = test_data.fixture(
+    _, mjd, m, d = test_data.fixture(
       xml="""
       <mujoco>
         <asset>
@@ -1677,7 +1677,7 @@ class CollisionTest(parameterized.TestCase):
     mjw.collision(m, d)
 
     nacon = d.nacon.numpy()[0]
-    np.testing.assert_equal(nacon, 4)
+    np.testing.assert_equal(nacon, mjd.ncon)
     np.testing.assert_equal(d.contact.worldid.numpy()[:nacon], 0)
     self.assertTrue(d.overflow.numpy()[0] & types.OverflowType.HFIELD)
 
@@ -1688,7 +1688,7 @@ class CollisionTest(parameterized.TestCase):
   def test_hfield_sparse_subgrid_no_overflow(self, nworld):
     """Tests that non-colliding prisms in the subgrid do not report an overflow."""
     # As above at a coarser resolution: 72 prisms, far fewer than MJ_MAXCONPAIR in contact.
-    _, _, m, d = test_data.fixture(
+    _, mjd, m, d = test_data.fixture(
       xml="""
       <mujoco>
         <asset>
@@ -1719,7 +1719,7 @@ class CollisionTest(parameterized.TestCase):
     mjw.collision(m, d)
 
     nacon = d.nacon.numpy()[0]
-    np.testing.assert_equal(nacon, 4)
+    np.testing.assert_equal(nacon, mjd.ncon)
     np.testing.assert_equal(d.contact.worldid.numpy()[:nacon], 0)
     self.assertFalse(d.overflow.numpy()[0] & types.OverflowType.HFIELD)
 
