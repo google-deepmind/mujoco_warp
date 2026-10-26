@@ -2101,8 +2101,10 @@ def _compute_filter_key(
   # Spatial projection key: project position onto diagonal vector u = (1, 1, 1) / sqrt(3).
   # Clamped monotonic 1D integer mapping with 1 um resolution.
   p = cand_pos[i]
-  s = (p[0] + p[1] + p[2]) * wp.static(1.0 / math.sqrt(3.0))
-  spatial_key = wp.clamp(wp.int64(s * 1000000.0) + wp.int64(100000000), wp.int64(0), wp.int64(2147483647))
+  # Float32 projection can separate sub-mm neighbors by more than the search
+  # window after translation. Preserve the input positions' precision in the key.
+  s = (wp.float64(p[0]) + wp.float64(p[1]) + wp.float64(p[2])) * wp.float64(wp.static(1.0 / math.sqrt(3.0)))
+  spatial_key = wp.clamp(wp.int64(s * wp.float64(1000000.0)) + wp.int64(100000000), wp.int64(0), wp.int64(2147483647))
 
   key_out[i] = (group_key << wp.int64(32)) | spatial_key
   val_out[i] = i

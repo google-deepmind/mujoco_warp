@@ -1882,6 +1882,50 @@ class FlexPassiveForcesTest(parameterized.TestCase):
 class FlexCollisionTest(parameterized.TestCase):
   """Tests for flex collisions."""
 
+  @parameterized.product(nworld=(1, 2), offset=(10.0, 50.0), translate=(False, True))
+  def test_contact_dedup_translation(self, nworld, offset, translate):
+    """Nearby candidates must not escape deduplication after a scene translation."""
+    x = 10.000021934509277 if offset == 10.0 else 50.00007247924805
+    first = np.array([x, offset + 0.1, offset + 0.2], dtype=np.float32)
+    second = first + np.float32(0.0005768)
+    positions = np.stack([first, second, first + np.array([0.004, 0, 0], dtype=np.float32)])
+    if not translate:
+      positions -= first
+    epsilon = collision_flex._FLEX_CONTACT_DEDUP_TOLERANCE
+    self.assertLess(np.linalg.norm(positions[1].astype(float) - positions[0]), epsilon)
+    self.assertGreater(np.linalg.norm(positions[2].astype(float) - positions[0]), epsilon)
+
+    count = 3 * nworld
+    capacity = count + 2
+    ncand = wp.array([count], dtype=int)
+    geom = wp.array([[0, -1]] * count, dtype=wp.vec2i)
+    flex = wp.array([[-1, 0]] * count, dtype=wp.vec2i)
+    pos = wp.array(np.tile(positions, (nworld, 1)), dtype=wp.vec3)
+    worldid = wp.array(np.repeat(np.arange(nworld), 3), dtype=int)
+    # Reverse the depth ordering in world 1 so cross-world filtering cannot pass.
+    depths = [[-0.002, -0.001, -0.003], [-0.001, -0.002, -0.003]][:nworld]
+    dist = wp.array(np.array(depths).ravel(), dtype=float)
+    keys = wp.empty(2 * capacity, dtype=wp.int64)
+    values = wp.empty(2 * capacity, dtype=int)
+    active = wp.full(capacity, -1, dtype=int)
+
+    wp.launch(
+      collision_flex._compute_filter_key,
+      dim=capacity,
+      inputs=[1, 1, ncand, geom, flex, pos, worldid],
+      outputs=[keys, values],
+    )
+    wp.utils.radix_sort_pairs(keys, values, capacity)
+    wp.launch(
+      collision_flex._filter_flex_candidates_sorted,
+      dim=capacity,
+      inputs=[ncand, epsilon, keys, values, dist, pos],
+      outputs=[active],
+    )
+    expected = np.array([[1, 0, 1], [0, 1, 1]][:nworld]).ravel()
+    np.testing.assert_array_equal(active.numpy()[:count], expected)
+    np.testing.assert_array_equal(active.numpy()[count:], 0)
+
   @parameterized.parameters(1, 2)
   def test_plane_cloth_collision(self, nworld):
     xml = """
