@@ -16,6 +16,6 @@ BENCHMARKS = [
     "noise_std": 0.0,
     "noise_rate": 1e-6,
     "replay": "threading.npz",
-    "assets": [(ASSETS[0], "franka_emika_panda")],
+    "assets": [(ASSETS[0], "franka_emika_panda/assets", "assets")],
   }
 ]
