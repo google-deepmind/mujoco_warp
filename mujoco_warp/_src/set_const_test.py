@@ -181,14 +181,16 @@ class SetConstTest(parameterized.TestCase):
     new_data[3:6] = 0.0
     mjm.eq_data[0] = new_data
     eq_data = m.eq_data.numpy()
-    eq_data[0, 0] = new_data
+    eq_data[0, 0, : len(new_data)] = new_data
     wp.copy(m.eq_data, wp.array(eq_data, dtype=m.eq_data.dtype))
 
     mujoco.mj_setConst(mjm, mjd)
     mjwarp.set_const(m, d)
 
-    _assert_eq(m.eq_data.numpy()[0], mjm.eq_data, "eq_data")
+    _assert_eq(m.eq_data.numpy()[0, :, : mjm.eq_data.shape[1]], mjm.eq_data, "eq_data")
 
+  # TODO(team): remove version check once mujoco >= 3.16.1 is required.
+  @absltest.skipIf(not util_pkg.check_version("mujoco>=3.16.1"), "Requires MuJoCo >= 3.16.1")
   @parameterized.parameters(1, 2)
   def test_set_const_eq_data_weld(self, nworld):
     """Test set_const recomputes eq_data for marked weld constraints."""
@@ -306,13 +308,13 @@ class SetConstTest(parameterized.TestCase):
     new_data[3:6] = 0.0
     mjm.eq_data[0] = new_data
     eq_data = m.eq_data.numpy()
-    eq_data[0, 0] = new_data
+    eq_data[0, 0, : len(new_data)] = new_data
     wp.copy(m.eq_data, wp.array(eq_data, dtype=m.eq_data.dtype))
 
     mujoco.mj_setConst(mjm, mjd)
     mjwarp.set_const(m, d)
 
-    _assert_eq(m.eq_data.numpy()[0], mjm.eq_data, "eq_data")
+    _assert_eq(m.eq_data.numpy()[0, :, : mjm.eq_data.shape[1]], mjm.eq_data, "eq_data")
 
     # roll out the warp path from qpos0 under a constant crank torque and check
     # the loop against the closed form (joint ref values offset qpos readings)
@@ -321,9 +323,11 @@ class SetConstTest(parameterized.TestCase):
 
     mjwarp.reset_data(m, d)
     d.ctrl.fill_(ctrl)
+    with wp.ScopedCapture() as capture:
+      mjwarp.step(m, d)
     err_wp = 0.0
     for _ in range(10):
-      mjwarp.step(m, d)
+      wp.capture_launch(capture.graph)
       qpos = d.qpos.numpy()[0]
       err_wp = max(err_wp, abs(qpos[2] - qpos0[2] - slider_crank_s(qpos[0] - qpos0[0])))
 
@@ -777,9 +781,11 @@ class SetConstTest(parameterized.TestCase):
     self.assertEqual(acc0_np.shape, (1, mjm.nu))
     _assert_eq(acc0_np[0], mjm.actuator_acc0, "actuator_acc0")
 
+  # TODO(team): remove version check once mujoco >= 3.16.1 is required.
+  @absltest.skipIf(not util_pkg.check_version("mujoco>=3.16.1"), "Requires MuJoCo >= 3.16.1")
   @parameterized.parameters(1, 2)
   def test_set_const_compiled_constants(self, nworld):
-    """Test set_const preserves compiled constants as in mj_setConst."""
+    """Test set_const preserves compiled spec conventions, as mj_setConst."""
     mjm, _, m, d = test_data.fixture(
       xml="""
     <mujoco>
@@ -961,6 +967,8 @@ class SetConstTest(parameterized.TestCase):
     if nworld == 2:
       self.assertFalse(np.allclose(rbound[0], rbound[1]))
 
+  # TODO(team): remove version check once mujoco >= 3.16.1 is required.
+  @absltest.skipIf(not util_pkg.check_version("mujoco>=3.16.1"), "Requires MuJoCo >= 3.16.1")
   def test_set_const_ignores_contacts(self):
     """Test actuator_acc0 of an adhesion actuator does not depend on the contacts in d."""
     mjm, mjd, m, d = test_data.fixture(

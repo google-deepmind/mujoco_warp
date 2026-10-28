@@ -1114,9 +1114,7 @@ class GJKTest(parameterized.TestCase):
     y_upper = 0.1 * cos5 + 0.1 * sin5
     z_upper = 0.08 + 0.1 * sin5 - 0.1 * cos5
     self.assertEqual(ncon, 4)
-    np.testing.assert_allclose(
-      x1, np.array([-0.1, y_upper, z_upper]), atol=1e-5
-    )
+    np.testing.assert_allclose(x1, np.array([-0.1, y_upper, z_upper]), atol=1e-5)
     np.testing.assert_allclose(x2, np.array([-0.1, y_upper, 0.0]), atol=1e-5)
 
   @parameterized.parameters(0.0, 0.1)

@@ -1180,7 +1180,7 @@ class SolverTest(parameterized.TestCase):
     ctx.done.fill_(False)
     wp.launch(
       solver._update_gradient_init_h_sparse(False),
-      dim=(d.nworld, m.nv_pad * (m.nv_pad + 1) // 2),
+      dim=(d.nworld, m.nv_pad, solver._INIT_H_LANES),
       inputs=[m.nv, m.M_elemid, d.M, d.cdof_dof, ctx.done],
       outputs=[ctx.h],
     )
@@ -1286,11 +1286,12 @@ class SolverTest(parameterized.TestCase):
 
     if wp.get_device().is_cuda:
       dim_block = (wp.get_device().sm_count * 6 * 256 + m.dof_tri_row.size - 1) // m.dof_tri_row.size
+      nblocks_perblock = (d.naconmax + dim_block - 1) // dim_block
     else:
-      dim_block = d.naconmax
-    nblocks_perblock = (d.naconmax + dim_block - 1) // dim_block
+      dim_block = 1
+      nblocks_perblock = d.naconmax
     wp.launch(
-      solver._update_gradient_JTCJ_dense,
+      solver._update_gradient_JTCJ_dense(0),
       dim=(dim_block, m.dof_tri_row.size),
       inputs=[
         m.opt.impratio_invsqrt,
@@ -1835,8 +1836,11 @@ class SolverTest(parameterized.TestCase):
     qvel[1] *= 0.5
     d.qvel.assign(qvel)
 
-    for _ in range(nstep):
+    with wp.ScopedCapture() as capture:
       mjw.step(m, d)
+
+    for _ in range(nstep):
+      wp.capture_launch(capture.graph)
 
     for worldid in range(nworld):
       mjd_world = mujoco.MjData(mjm)
@@ -1880,9 +1884,12 @@ class SolverTest(parameterized.TestCase):
     )
     mjds = _noslip_worlds(mjm, mjd, d, nworld, [-0.5, 0.0, 0.0, 0.0, 0.0, -1.0, 0.5, 0.0, 0.0, 0.0, 0.0, 0.0])
 
+    with wp.ScopedCapture() as capture:
+      mjw.step(m, d)
+
     nstep = 50
     for _ in range(nstep):
-      mjw.step(m, d)
+      wp.capture_launch(capture.graph)
 
     for worldid, mjd_world in enumerate(mjds):
       mujoco.mj_step(mjm, mjd_world, nstep)
@@ -2153,10 +2160,13 @@ class SolverFastPathTest(parameterized.TestCase):
     qvel = rng.uniform(-8.0, 8.0, size=(nworld, mjm.nv)).astype(np.float32)
     wp.copy(d.qvel, wp.array(qvel, dtype=float))
 
+    with wp.ScopedCapture() as capture:
+      mjw.step(m, d)
+
     max_rel = 0.0
     cap_steps = 0
     for _ in range(20):
-      mjw.step(m, d)
+      wp.capture_launch(capture.graph)
       cap_steps += int(d.solver_niter.numpy().max() >= mjm.opt.iterations)
       nefc = d.nefc.numpy()
       J = d.efc.J.numpy()

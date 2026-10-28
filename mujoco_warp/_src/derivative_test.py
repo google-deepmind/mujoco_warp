@@ -201,8 +201,11 @@ class DerivativeTest(parameterized.TestCase):
       keyframe=0,
     )
 
-    for _ in range(10):
+    with wp.ScopedCapture() as capture:
       mjw.step(m, d)
+
+    for _ in range(10):
+      wp.capture_launch(capture.graph)
 
     mjw.get_data_into(mjd, mjm, d)
     self.assertFalse(np.any(np.isnan(mjd.qpos)))
@@ -572,15 +575,20 @@ class DerivativeTest(parameterized.TestCase):
     error_implicit = 0.0
     error_euler = 0.0
 
+    with wp.ScopedCapture() as capture_impl:
+      mjw.step(m_impl, d_impl)
+    with wp.ScopedCapture() as capture_euler:
+      mjw.step(m_euler, d_euler)
+
     for _ in range(nsteps_large):
       # ground truth: small steps with Euler
       mujoco.mj_step(mjm_gt, mjd_gt, nsubstep)
 
       # implicit at large timestep
-      mjw.step(m_impl, d_impl)
+      wp.capture_launch(capture_impl.graph)
 
       # euler at large timestep
-      mjw.step(m_euler, d_euler)
+      wp.capture_launch(capture_euler.graph)
 
       # accumulate errors
       gt_qpos = mjd_gt.qpos[0]
@@ -1654,8 +1662,10 @@ class DerivativeTest(parameterized.TestCase):
 
     if config == "inverted" and nworld == 1:
       d.qvel.zero_()
-      for _ in range(80):
+      with wp.ScopedCapture() as capture:
         mjw.step(m, d)
+      for _ in range(80):
+        wp.capture_launch(capture.graph)
       xpos_final = xpos0 + d.qpos.numpy()[0].reshape(4, 3)
       Ds_final = np.column_stack([xpos_final[v_elem[v + 1]] - xpos_final[v_elem[0]] for v in range(3)])
       self.assertGreater(float(np.linalg.det(Ds_final @ Dm_inv)), 0.1)
@@ -1751,6 +1761,8 @@ class DerivativeTest(parameterized.TestCase):
     if nworld == 2:
       self.assertFalse(np.allclose(d.qfrc_spring.numpy()[0], d.qfrc_spring.numpy()[1]))
 
+  # TODO(team): remove version check once mujoco >= 3.17.1 is required.
+  @absltest.skipIf(not util_pkg.check_version("mujoco>=3.17.1.dev1005593014"), "Requires MuJoCo >= 3.17.1.dev1005593014")
   @parameterized.product(dim=(2, 3), nworld=(1, 2))
   def test_eff_contact_element_weights(self, dim, nworld):
     """Passive flex element contacts weight the element vertices as MuJoCo C does."""
@@ -2787,12 +2799,15 @@ class DerivativeTest(parameterized.TestCase):
     d.qpos.assign(qpos)
     d.qvel.zero_()
 
-    mjw.step(m, d)
+    with wp.ScopedCapture() as capture:
+      mjw.step(m, d)
+
+    wp.capture_launch(capture.graph)
     if nworld == 2:
       self.assertFalse(np.allclose(d.qpos.numpy()[0], d.qpos.numpy()[1]))
 
     for _ in range(299):
-      mjw.step(m, d)
+      wp.capture_launch(capture.graph)
 
     qpos_final = d.qpos.numpy()
     for w in range(nworld):
@@ -3059,6 +3074,9 @@ class DerivativeTest(parameterized.TestCase):
     rowadr = m.efm_K_rowadr.numpy()
     colind = m.efm_K_colind.numpy()
 
+    with wp.ScopedCapture() as capture:
+      mjw.forward(m, d)
+
     for rank in (0, 1, 2, 3):
       for scale in (-1.0, -0.01, 0.0, 0.01, 1.05):
         if rank == 0 and scale != 1.05:
@@ -3086,7 +3104,7 @@ class DerivativeTest(parameterized.TestCase):
         d.qvel.assign(qvel)
         for arr in (d.efm_K_val, d.efm_c, d.qfrc_damper):
           arr.fill_(wp.inf)
-        mjw.forward(m, d)
+        wp.capture_launch(capture.graph)
 
         for w in range(nworld):
           K_dense = np.zeros((15, 15), dtype=np.float64)
@@ -3203,6 +3221,8 @@ class DerivativeTest(parameterized.TestCase):
     )
 
     scale_k = 0.01 * 0.01 + 0.01 * 0.1
+    with wp.ScopedCapture() as capture:
+      mjw.forward(m, d)
     for sv in spectral_cases:
       F_target = U @ np.diag(sv) @ V.T
       q = np.zeros((1, 12), dtype=np.float32)
@@ -3211,7 +3231,7 @@ class DerivativeTest(parameterized.TestCase):
       d.qpos.assign(q)
       d.qvel.zero_()
       d.efm_K_val.fill_(wp.inf)
-      mjw.forward(m, d)
+      wp.capture_launch(capture.graph)
 
       K_dense = np.zeros((12, 12), dtype=np.float64)
       k_val = d.efm_K_val.numpy()[0] / scale_k

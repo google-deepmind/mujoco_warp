@@ -32,6 +32,7 @@ from mujoco_warp import IntegratorType
 from mujoco_warp import test_data
 from mujoco_warp._src import io
 from mujoco_warp._src import types
+from mujoco_warp._src import util_pkg
 from mujoco_warp._src import warp_util
 from mujoco_warp._src.io import put_model
 
@@ -1216,9 +1217,12 @@ class IOTest(parameterized.TestCase):
     m = mjwarp.put_model(mjm)
     d = mjwarp.put_data(mjm, mjd, nconmax=16, njmax=16)
 
+    with wp.ScopedCapture() as capture:
+      mjwarp.step(m, d)
+
     # let the box fall and settle on the ground
     for _ in range(30):
-      mjwarp.step(m, d)
+      wp.capture_launch(capture.graph)
 
     # check that box is above ground
     # box center should be at z ≈ 0.5 when resting on ground
@@ -2734,6 +2738,8 @@ class IOTest(parameterized.TestCase):
     with self.assertRaises(NotImplementedError):
       mjwarp.put_model(mjm)
 
+  # TODO(team): remove version check once mujoco >= 3.16.1 is required.
+  @absltest.skipIf(not util_pkg.check_version("mujoco>=3.16.1"), "Requires MuJoCo >= 3.16.1")
   def test_flex_rod_hinge_map(self):
     """Verify put_model maps each 1D rod bending hinge to its flex and flex_bending address."""
     mjm, _, m, _ = test_data.fixture(
@@ -2758,6 +2764,8 @@ class IOTest(parameterized.TestCase):
     np.testing.assert_array_equal(m.flex_rodhinge_map.numpy(), [[rod, adr + 1], [rod, adr + 1 + types.ROD_HINGE_SIZE]])
     self.assertFalse(m.has_flex_edge_stiff_damp)
 
+  # TODO(team): remove version check once mujoco >= 3.16.1 is required.
+  @absltest.skipIf(not util_pkg.check_version("mujoco>=3.16.1"), "Requires MuJoCo >= 3.16.1")
   @parameterized.parameters(
     # quadratic flexes are rejected before the self-collision check
     ("trilinear", "Self-collision of interpolated flexes"),

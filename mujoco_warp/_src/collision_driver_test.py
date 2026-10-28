@@ -1017,7 +1017,8 @@ class CollisionTest(parameterized.TestCase):
     mj_dist = mjd.contact.dist[: mjd.ncon]
     mj_pos = mjd.contact.pos[: mjd.ncon]
     for j in range(nacon):
-      # CCD multicontact prunes the clipped polygon to 4 contacts (a subset of mjc_BoxBox's contacts)
+      # CCD multicontact prunes the clipped polygon to 4 contacts
+      # (a subset of mjc_BoxBox's contacts)
       match = np.isclose(mj_dist, dist[j], atol=1e-6) & np.all(np.isclose(mj_pos, pos[j], atol=1e-6), axis=1)
       self.assertTrue(match.any(), f"MJWarp contact {j} not found in MuJoCo contacts")
       i = int(np.nonzero(match)[0][0])
@@ -2059,25 +2060,27 @@ class CollisionTest(parameterized.TestCase):
       </mujoco>
       """
     )
-    # 1. Inside touching contact: pos="0 0 0.15" -> dist=-0.05
-    mjw.collision(m, d)
+    with wp.ScopedCapture() as capture:
+      mjw.kinematics(m, d)
+      mjw.collision(m, d)
+
+    # Inside touching contact: pos="0 0 0.15" -> dist=-0.05
+    wp.capture_launch(capture.graph)
     self.assertEqual(d.nacon.numpy()[0], 1)
     self.assertEqual(d.contact.dim.numpy()[0], 3)
 
-    # 2. In-gap band: pos="0 0 0.22" (dist=0.02, within margin+gap=0.05)
+    # In-gap band: pos="0 0 0.22" (dist=0.02, within margin+gap=0.05)
     qpos = d.qpos.numpy()
     qpos[0, :3] = np.array([0.0, 0.0, 0.22])
-    d.qpos = wp.from_numpy(qpos, dtype=wp.float32)
-    mjw.kinematics(m, d)
-    mjw.collision(m, d)
+    d.qpos.assign(qpos)
+    wp.capture_launch(capture.graph)
     self.assertEqual(d.nacon.numpy()[0], 1)
     self.assertEqual(d.contact.dim.numpy()[0], 1)
 
-    # 3. Outside gap band: pos="0 0 0.30" (dist=0.10, > gap=0.05) -> constraint released
+    # Outside gap band: pos="0 0 0.30" (dist=0.10, > gap=0.05) -> constraint released
     qpos[0, :3] = np.array([0.0, 0.0, 0.30])
-    d.qpos = wp.from_numpy(qpos, dtype=wp.float32)
-    mjw.kinematics(m, d)
-    mjw.collision(m, d)
+    d.qpos.assign(qpos)
+    wp.capture_launch(capture.graph)
     self.assertEqual(d.nacon.numpy()[0], 0)
 
   @parameterized.parameters(

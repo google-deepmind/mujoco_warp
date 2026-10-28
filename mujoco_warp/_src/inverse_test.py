@@ -247,14 +247,17 @@ class InverseTest(parameterized.TestCase):
       """,
       nworld=nworld,
     )
+    with wp.ScopedCapture() as capture:
+      mjw.step(m, d)
+
     for _ in range(20):
       d.qacc.fill_(wp.inf)
-      mjw.step(m, d)
+      wp.capture_launch(capture.graph)
 
     qvel = np.full((nworld, 1), 0.1, dtype=np.float32)
     if nworld == 2:
       qvel[1, 0] = -0.15
-    d.qvel = wp.array(qvel, dtype=float, device=d.qvel.device)
+    d.qvel.assign(qvel)
 
     d.qacc.fill_(wp.inf)
     mjw.forward(m, d)
@@ -299,12 +302,15 @@ class InverseTest(parameterized.TestCase):
     qvel[0] = [0.3, 0.0, -0.2, 0.5, -0.3, 8.0]
     if nworld == 2:
       qvel[1] = [-0.2, 0.1, 0.4, -0.4, 0.6, -5.0]
-    d.qvel = wp.array(qvel, dtype=float, device=d.qvel.device)
+    d.qvel.assign(qvel)
+
+    with wp.ScopedCapture() as capture:
+      mjw.step(m, d)
 
     # In flight, tumbling spin, no constraints.
     for _ in range(20):
       d.qacc.fill_(wp.inf)
-      mjw.step(m, d)
+      wp.capture_launch(capture.graph)
 
     d.qacc.fill_(wp.inf)
     mjw.forward(m, d)

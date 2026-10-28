@@ -413,9 +413,11 @@ class FlexKinematicsTest(parameterized.TestCase):
       )
       np.testing.assert_allclose(flexedge_J, mj_flexedge_J, atol=_TOLERANCE, err_msg=f"flexedge_J mismatch (world {w})")
 
+  # TODO(team): remove version check once mujoco >= 3.17.1 is required.
+  @absltest.skipIf(not util_pkg.check_version("mujoco>=3.17.1.dev1006378379"), "Requires MuJoCo >= 3.17.1.dev1006378379")
   @parameterized.parameters(1, 2)
   def test_flex_trilinear_pruned_cell_extrapolation(self, nworld):
-    """Tests that trilinear flex vertices in pruned/empty cells extrapolate from nearest active cell."""
+    """Tests trilinear flex vertices in pruned/empty cells extrapolate from nearest active cell."""
     xml = """
     <mujoco>
       <worldbody>
@@ -727,6 +729,8 @@ class FlexConstraintTest(parameterized.TestCase):
         err_msg=f"qfrc_constraint mismatch for trilinear flex contacts (world {w})",
       )
 
+  # TODO(team): remove version check once mujoco >= 3.17.1 is required.
+  @absltest.skipIf(not util_pkg.check_version("mujoco>=3.17.1.dev1005593014"), "Requires MuJoCo >= 3.17.1.dev1005593014")
   @parameterized.parameters(1, 2)
   def test_trilinear_element_contact_qfrc_constraint(self, nworld):
     """Test qfrc_constraint parity for trilinear flex element contacts with a dense Jacobian."""
@@ -1185,6 +1189,8 @@ class FlexPassiveForcesTest(parameterized.TestCase):
     if nworld == 2:
       self.assertFalse(np.allclose(d.qfrc_passive.numpy()[0], d.qfrc_passive.numpy()[1]))
 
+  # TODO(team): remove version check once mujoco >= 3.16.1 is required.
+  @absltest.skipIf(not util_pkg.check_version("mujoco>=3.16.1"), "Requires MuJoCo >= 3.16.1")
   @parameterized.product(
     elastic2d_and_atol=[
       ("bend", 5e-3),
@@ -1196,8 +1202,6 @@ class FlexPassiveForcesTest(parameterized.TestCase):
   def test_flex_elastic2d_interp(self, elastic2d_and_atol, nworld):
     """Tests 2D interpolated flex passive forces (bending and stretching)."""
     elastic2d, atol = elastic2d_and_atol
-    if elastic2d != "bend" and not util_pkg.check_version("mujoco>=3.16.1"):
-      self.skipTest("Requires MuJoCo >= 3.16.1")
     dof = "trilinear"
     xml = f"""
     <mujoco>
@@ -1239,6 +1243,7 @@ class FlexPassiveForcesTest(parameterized.TestCase):
         err_msg=f"qfrc_spring mismatch for interpolated elastic2d={elastic2d} dof={dof} (world {w})",
       )
 
+  # TODO(team): remove version check once mujoco >= 3.16.1 is required.
   @absltest.skipIf(not util_pkg.check_version("mujoco>=3.16.1"), "Requires MuJoCo >= 3.16.1")
   @parameterized.product(
     elastic2d=["bend", "stretch", "both"],
@@ -1624,6 +1629,13 @@ class FlexPassiveForcesTest(parameterized.TestCase):
     V = rot_x(-0.6) @ rot_z(0.2) @ rot_y(0.5)
     mjds = [mujoco.MjData(mjm) for _ in range(nworld)]
 
+    with wp.ScopedCapture() as capture:
+      mjw.kinematics(m, d)
+      mjw.com_pos(m, d)
+      mjw.flex(m, d)
+      mjw.com_vel(m, d)
+      mjw.passive(m, d)
+
     for rank in (1, 2, 3):
       for scale in (1.0, 0.1, 0.0, -0.1, -1.0):
         sv0 = np.array([1.3, 0.85, 1.15], dtype=np.float64)
@@ -1648,11 +1660,7 @@ class FlexPassiveForcesTest(parameterized.TestCase):
         d.qpos.assign(qpos_batch)
         d.qvel.zero_()
         d.qfrc_spring.fill_(wp.inf)
-        mjw.kinematics(m, d)
-        mjw.com_pos(m, d)
-        mjw.flex(m, d)
-        mjw.com_vel(m, d)
-        mjw.passive(m, d)
+        wp.capture_launch(capture.graph)
 
         for w in range(nworld):
           mjds[w].qpos[:] = qpos_batch[w]
@@ -3274,10 +3282,13 @@ class FlexDynamicsTest(parameterized.TestCase):
     xml, atol = xml_and_atol
     mjm, mjd, m, d = test_data.fixture(xml=xml, nworld=nworld)
 
+    with wp.ScopedCapture() as capture:
+      mjw.step(m, d)
+
     # Run 10 steps
     for _ in range(10):
       mujoco.mj_step(mjm, mjd)
-      mjw.step(m, d)
+      wp.capture_launch(capture.graph)
 
     for w in range(nworld):
       np.testing.assert_allclose(
@@ -3312,10 +3323,13 @@ class FlexDynamicsTest(parameterized.TestCase):
     """
     mjm, mjd, m, d = test_data.fixture(xml=xml, nworld=nworld)
 
+    with wp.ScopedCapture() as capture:
+      mjw.step(m, d)
+
     # Run 10 steps
     for _ in range(10):
       mujoco.mj_step(mjm, mjd)
-      mjw.step(m, d)
+      wp.capture_launch(capture.graph)
 
     for w in range(nworld):
       np.testing.assert_allclose(
@@ -3325,6 +3339,8 @@ class FlexDynamicsTest(parameterized.TestCase):
         err_msg=f"qpos mismatch after 10 steps with contact (world {w})",
       )
 
+  # TODO(team): remove version check once mujoco >= 3.17.1 is required.
+  @absltest.skipIf(not util_pkg.check_version("mujoco>=3.17.1.dev1005593014"), "Requires MuJoCo >= 3.17.1.dev1005593014")
   @parameterized.parameters(1, 2)
   def test_drape_dynamics(self, nworld):
     """Test cloth draping over a sphere (bending + collision + dynamics)."""
@@ -3341,10 +3357,13 @@ class FlexDynamicsTest(parameterized.TestCase):
     """
     mjm, mjd, m, d = test_data.fixture(xml=xml, nworld=nworld)
 
+    with wp.ScopedCapture() as capture:
+      mjw.step(m, d)
+
     # Run 50 steps
     for _ in range(50):
       mujoco.mj_step(mjm, mjd)
-      mjw.step(m, d)
+      wp.capture_launch(capture.graph)
 
     for w in range(nworld):
       np.testing.assert_allclose(
@@ -3384,15 +3403,18 @@ class FlexDynamicsTest(parameterized.TestCase):
       mjd1 = mujoco.MjData(mjm)
       qpos = d.qpos.numpy()
       qpos[1, 2] += 0.002
-      d.qpos = wp.array(qpos, dtype=float, device=d.qpos.device)
+      d.qpos.assign(qpos)
       mjd1.qpos[:] = qpos[1]
       mjds.append(mjd1)
+
+    with wp.ScopedCapture() as capture:
+      mjw.step(m, d)
 
     for step in range(20):
       for w in range(nworld):
         mujoco.mj_step(mjm, mjds[w])
       d.qacc.fill_(wp.inf)
-      mjw.step(m, d)
+      wp.capture_launch(capture.graph)
 
       # Passive contact must not generate constraints in either C or Warp
       for w in range(nworld):
@@ -3915,6 +3937,9 @@ class FlexContactParityTest(parameterized.TestCase):
     checkpoints = [0, 250, 500, 1000]
     curr_step = 0
 
+    with wp.ScopedCapture() as capture:
+      mjw.forward(m, d)
+
     for target_step in checkpoints:
       while curr_step < target_step:
         mujoco.mj_step(mjm, mjd)
@@ -3924,7 +3949,7 @@ class FlexContactParityTest(parameterized.TestCase):
       d.qvel.assign(np.tile(mjd.qvel, (nworld, 1)).astype(np.float32))
 
       d.nacon.fill_(-1)
-      mjw.forward(m, d)
+      wp.capture_launch(capture.graph)
       mujoco.mj_forward(mjm, mjd)
 
       for w in range(nworld):
@@ -4253,6 +4278,8 @@ class FlexContactParityTest(parameterized.TestCase):
     if nworld == 2:
       self.assertFalse(np.allclose([c["dist"] for c in w_contacts_all[0]], [c["dist"] for c in w_contacts_all[1]]))
 
+  # TODO(team): remove version check once mujoco >= 3.17.1 is required.
+  @absltest.skipIf(not util_pkg.check_version("mujoco>=3.17.1.dev1005593014"), "Requires MuJoCo >= 3.17.1.dev1005593014")
   @parameterized.parameters(1, 2)
   def test_contact_multiflex_local_elem_id(self, nworld):
     """Test that contacts on flexes after the first store flex-local element IDs."""
@@ -4440,6 +4467,8 @@ class FlexContactConstraintTest(parameterized.TestCase):
     jacobian=(mujoco.mjtJacobian.mjJAC_DENSE, mujoco.mjtJacobian.mjJAC_SPARSE),
     nworld=[1, 2],
   )
+  # TODO(team): remove version check once mujoco >= 3.17.1 is required.
+  @absltest.skipIf(not util_pkg.check_version("mujoco>=3.17.1.dev1005593014"), "Requires MuJoCo >= 3.17.1.dev1005593014")
   def test_flex_barycentric_jacobian(self, xml, cone, jacobian, nworld):
     """Test barycentric contact Jacobian calculation for flex."""
     mjm, mjd, m, d = test_data.fixture(xml=xml, overrides={"opt.cone": cone, "opt.jacobian": jacobian}, nworld=nworld)
@@ -4453,6 +4482,8 @@ class FlexContactConstraintTest(parameterized.TestCase):
 
     _assert_efc_eq(mjm, m, d, mjd, mjd.nefc, f"efc_flex_dim{m.flex_dim.numpy()[0]}", m.nv, nworld)
 
+  # TODO(team): remove version check once mujoco >= 3.17.1 is required.
+  @absltest.skipIf(not util_pkg.check_version("mujoco>=3.17.1.dev1005593014"), "Requires MuJoCo >= 3.17.1.dev1005593014")
   @parameterized.parameters(1, 2)
   def test_flex_3d_simplex_collision(self, nworld):
     """Test 3D simplex flex collision and constraint generation."""
@@ -4534,6 +4565,8 @@ class FlexContactConstraintTest(parameterized.TestCase):
 
     self.assertGreater(d.nacon.numpy()[0], 0, "Expected contacts in Warp for 3D flex vs ellipsoid")
 
+  # TODO(team): remove version check once mujoco >= 3.17.1 is required.
+  @absltest.skipIf(not util_pkg.check_version("mujoco>=3.17.1.dev1005593014"), "Requires MuJoCo >= 3.17.1.dev1005593014")
   @parameterized.parameters(1, 2)
   def test_flex_interpolated(self, nworld):
     """Test collision and constraint generation for interpolated flex shells."""
@@ -4597,7 +4630,7 @@ class FlexBVHTest(parameterized.TestCase):
     flexvert_norm = wp.zeros((nworld, nvert), dtype=wp.vec3)
 
     wp.launch(
-      kernel=bvh.accumulate_flex_vertex_normals,
+      kernel=bvh.accumulate_flex_vertex_normals(),
       dim=(nworld, nelem),
       inputs=[1, flex_dim, flex_vertadr, flex_elemadr, flex_elemnum, flex_elemdataadr, flex_elem, flexvert_xpos],
       outputs=[flexvert_norm],
@@ -5397,6 +5430,7 @@ _ROD_ARTICULATED_XML = """
 """
 
 
+# TODO(team): remove version check once mujoco >= 3.16.1 is required.
 @absltest.skipIf(not util_pkg.check_version("mujoco>=3.16.1"), "Requires MuJoCo >= 3.16.1")
 class FlexRodBendingTest(parameterized.TestCase):
   """Tests for 1D flex discrete elastic rod bending parity with MuJoCo."""
@@ -5509,7 +5543,8 @@ class FlexRodBendingTest(parameterized.TestCase):
     xml=[
       _ROD_XML,
       _ROD_ARTICULATED_XML,
-      # slider-crank-like mechanism: a rod clamped by two point equalities at each end to hinged fittings
+      # slider-crank-like mechanism: a rod clamped by two point equalities
+      # at each end to hinged fittings
       """
       <mujoco>
         <option integrator="discrete"/>
