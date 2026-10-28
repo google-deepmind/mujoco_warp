@@ -801,6 +801,86 @@ class PassiveTest(parameterized.TestCase):
     self.assertGreater(nefc, 0)
     _assert_eq(d.efc.aref.numpy()[0, :nefc], mjd.efc_aref[:nefc], "efc_aref")
 
+  @parameterized.parameters("Euler", "RK4", "implicitfast", "discrete")
+  def test_spring_plastic(self, integrator):
+    """Verify plastic springs for joints and tendons match MuJoCo across integrators."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml=f"""
+      <mujoco>
+        <option gravity="0 0 0" timestep="0.005" integrator="{integrator}">
+          <flag energy="enable"/>
+        </option>
+        <worldbody>
+          <site name="s0"/>
+          <body name="b_slide">
+            <joint name="j_slide" type="slide" axis="1 0 0" stiffness="20" springref="0.1" springyield="0.05" damping="0.5"/>
+            <geom size="0.1" mass="1" contype="0" conaffinity="0"/>
+            <site name="s1"/>
+          </body>
+          <body name="b_hinge" pos="0 1 0">
+            <joint name="j_hinge" stiffness="15" springref="-0.1" springyield="0.08" damping="0.3"/>
+            <geom size="0.1" mass="1" contype="0" conaffinity="0"/>
+          </body>
+          <body name="b_ball" pos="0 2 0">
+            <joint name="j_ball" type="ball" stiffness="12" springyield="0.06" damping="0.2"/>
+            <geom size="0.1" mass="1" contype="0" conaffinity="0"/>
+          </body>
+        </worldbody>
+        <tendon>
+          <fixed name="t_fixed" stiffness="25" springlength="0 0.05" springyield="0.04" damping="0.2">
+            <joint joint="j_slide" coef="1.0"/>
+            <joint joint="j_hinge" coef="-0.5"/>
+          </fixed>
+          <spatial name="t_spatial" stiffness="30" springlength="0.05 0.1" springyield="0.03" damping="0.2">
+            <site site="s0"/>
+            <site site="s1"/>
+          </spatial>
+        </tendon>
+        <keyframe>
+          <key qpos="0.25 -0.3 0.98 0.15 0.12 -0.05"
+               qvel="0.4 -0.5 0.3 -0.2 0.1"
+               plastic="0.12 -0.12 1 0 0 0 0 0.06 0.05 0.11"/>
+        </keyframe>
+      </mujoco>
+      """,
+      keyframe=0,
+    )
+
+    self.assertGreater(m.nplastic, 0)
+    _assert_eq(d.plastic.numpy()[0], mjd.plastic, "initial_plastic")
+
+    for step_idx in range(15):
+      mujoco.mj_step(mjm, mjd)
+      mjw.step(m, d)
+      mujoco.mj_rnePostConstraint(mjm, mjd)
+      mjw.rne_postconstraint(m, d)
+      mujoco.mj_energyPos(mjm, mjd)
+      mjw.energy_pos(m, d)
+
+      _assert_eq(d.plastic.numpy()[0], mjd.plastic, f"plastic_step_{step_idx}")
+      _assert_eq(d.qfrc_spring.numpy()[0], mjd.qfrc_spring, f"qfrc_spring_step_{step_idx}")
+      _assert_eq(d.qfrc_passive.numpy()[0], mjd.qfrc_passive, f"qfrc_passive_step_{step_idx}")
+      _assert_eq(d.qpos.numpy()[0], mjd.qpos, f"qpos_step_{step_idx}")
+      _assert_eq(d.qvel.numpy()[0], mjd.qvel, f"qvel_step_{step_idx}")
+      _assert_eq(d.cfrc_ext.numpy()[0], mjd.cfrc_ext, f"cfrc_ext_step_{step_idx}")
+      _assert_eq(d.energy.numpy()[0, 0], mjd.energy[0], f"energy_pos_step_{step_idx}")
+
+    # Verify State.PLASTIC get_state / set_state and reset_data
+    size = mujoco.mj_stateSize(mjm, mujoco.mjtState.mjSTATE_PLASTIC)
+    mj_state = np.zeros(size)
+    mujoco.mj_getState(mjm, mjd, mj_state, mujoco.mjtState.mjSTATE_PLASTIC)
+    mjw_state = wp.zeros((d.nworld, size), dtype=float)
+    mjw.get_state(m, d, mjw_state, mjw.State.PLASTIC)
+    _assert_eq(mjw_state.numpy()[0], mj_state, "get_state_plastic")
+
+    mujoco.mj_resetData(mjm, mjd)
+    mjw.reset_data(m, d)
+    _assert_eq(d.plastic.numpy()[0], mjd.plastic, "reset_plastic")
+
+    mujoco.mj_setState(mjm, mjd, mj_state, mujoco.mjtState.mjSTATE_PLASTIC)
+    mjw.set_state(m, d, mjw_state, mjw.State.PLASTIC)
+    _assert_eq(d.plastic.numpy()[0], mjd.plastic, "set_state_plastic")
+
 
 if __name__ == "__main__":
   wp.init()
