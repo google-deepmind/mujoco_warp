@@ -848,12 +848,13 @@ def _sensor_pos(
           if dist_new < dist:
             dist = dist_new
 
-            if sensortype == SensorType.GEOMNORMAL or sensortype == SensorType.GEOMFROMTO:
+            if sensortype == SensorType.GEOMFROMTO:
               pos = wp.vec3(
                 sensor_collision_in[worldid, collisionid, i, 1],
                 sensor_collision_in[worldid, collisionid, i, 2],
                 sensor_collision_in[worldid, collisionid, i, 3],
               )
+            if sensortype == SensorType.GEOMNORMAL or sensortype == SensorType.GEOMFROMTO:
               normal = wp.vec3(
                 sensor_collision_in[worldid, collisionid, i, 4],
                 sensor_collision_in[worldid, collisionid, i, 5],
@@ -867,7 +868,7 @@ def _sensor_pos(
             else:
               flip = False
     # the segment from geom 1 to geom 2, which points along the contact normal or against it
-    if dist > sensor_cutoff[sensorid] or dist == 0.0:
+    if dist >= sensor_cutoff[sensorid] or dist == 0.0:
       segment = wp.vec3()
     else:
       segment = wp.where(flip != (dist < 0.0), -normal, normal)
@@ -877,7 +878,7 @@ def _sensor_pos(
     elif sensortype == int(SensorType.GEOMNORMAL.value):
       _write_vector(sensor_type, sensor_datatype, sensor_adr, sensor_cutoff, sensorid, 3, segment, out)
     elif sensortype == int(SensorType.GEOMFROMTO.value):
-      if dist <= sensor_cutoff[sensorid]:
+      if dist < sensor_cutoff[sensorid]:
         half = 0.5 * wp.abs(dist) * segment
         fromto = vec6(
           pos[0] - half[0], pos[1] - half[1], pos[2] - half[2], pos[0] + half[0], pos[1] + half[1], pos[2] + half[2]

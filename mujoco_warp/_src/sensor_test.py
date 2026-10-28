@@ -976,11 +976,12 @@ class SensorTest(parameterized.TestCase):
 
     _assert_eq(d.sensordata.numpy()[0], mjd.sensordata, "sensordata")
 
-  @parameterized.parameters(1e-6, -1e-6)
-  def test_sensor_collision_shallow(self, dist):
+  @parameterized.product(dist=(1e-6, -1e-6), nworld=(1, 2))
+  def test_sensor_collision_shallow(self, dist, nworld):
     """Tests collision sensors for two spheres a micrometer apart, away from the origin."""
-    pos = 1.0 + (0.2 + dist) * np.array([0.48, -0.6, 0.64])
-    _, mjd, m, d = test_data.fixture(
+    direction = np.array([0.48, -0.6, 0.64])
+    pos = 1.0 + (0.2 + dist) * direction
+    mjm, mjd, m, d = test_data.fixture(
       xml=f"""
       <mujoco>
         <worldbody>
@@ -997,14 +998,32 @@ class SensorTest(parameterized.TestCase):
           <fromto geom1="sphere1" geom2="sphere0" cutoff="1"/>
         </sensor>
       </mujoco>
-      """
+      """,
+      nworld=nworld,
     )
+
+    mjds = [mjd]
+    if nworld == 2:
+      # world 1 on the other side of contact
+      mjd1 = mujoco.MjData(mjm)
+      qpos = d.qpos.numpy()
+      qpos[1, :3] = 1.0 + (0.2 - dist) * direction
+      d.qpos.assign(qpos)
+      mjd1.qpos[:] = qpos[1]
+      mujoco.mj_forward(mjm, mjd1)
+      mjw.kinematics(m, d)
+      mjds.append(mjd1)
 
     d.sensordata.fill_(wp.inf)
     mjw.collision(m, d)
     mjw.sensor_pos(m, d)
 
-    _assert_eq(d.sensordata.numpy()[0], mjd.sensordata, "sensordata")
+    sensordata = d.sensordata.numpy()
+    for w in range(nworld):
+      _assert_eq(sensordata[w], mjds[w].sensordata, f"sensordata_world_{w}")
+
+    if nworld == 2:
+      self.assertFalse(np.allclose(sensordata[0], sensordata[1]))
 
   @parameterized.parameters(0, 1)
   def test_insidesite(self, keyframe):
