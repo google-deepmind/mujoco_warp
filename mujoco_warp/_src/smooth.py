@@ -209,14 +209,14 @@ def _site_local_to_global(
   xquat_in: wp.array2d[wp.quat],
   # Data out:
   site_xpos_out: wp.array2d[wp.vec3],
-  site_xmat_out: wp.array2d[wp.mat33],
+  site_xquat_out: wp.array2d[wp.quat],
 ):
   worldid, siteid = wp.tid()
   bodyid = site_bodyid[siteid]
   xpos = xpos_in[worldid, bodyid]
   xquat = xquat_in[worldid, bodyid]
   site_xpos_out[worldid, siteid] = xpos + math.rot_vec_quat(site_pos[worldid % site_pos.shape[0], siteid], xquat)
-  site_xmat_out[worldid, siteid] = math.quat_to_mat(math.mul_quat(xquat, site_quat[worldid % site_quat.shape[0], siteid]))
+  site_xquat_out[worldid, siteid] = math.mul_quat(xquat, site_quat[worldid % site_quat.shape[0], siteid])
 
 
 @wp.kernel
@@ -468,7 +468,7 @@ def kinematics(m: Model, d: Data):
     _site_local_to_global,
     dim=(d.nworld, m.nsite),
     inputs=[m.site_bodyid, m.site_pos, m.site_quat, d.xpos, d.xquat],
-    outputs=[d.site_xpos, d.site_xmat],
+    outputs=[d.site_xpos, d.site_xquat],
   )
 
 
@@ -2932,7 +2932,7 @@ def _transmission(deterministic: bool = False):
     qpos_in: wp.array2d[float],
     xquat_in: wp.array2d[wp.quat],
     site_xpos_in: wp.array2d[wp.vec3],
-    site_xmat_in: wp.array2d[wp.mat33],
+    site_xquat_in: wp.array2d[wp.quat],
     subtree_com_in: wp.array2d[wp.vec3],
     cdof_in: wp.array2d[wp.spatial_vector],
     ten_J_in: wp.array2d[float],
@@ -3021,7 +3021,7 @@ def _transmission(deterministic: bool = False):
       idslider = trnid[1]
       gear0 = gear[0]
       rod = actuator_cranklength[worldid % actuator_cranklength.shape[0], actid]
-      site_xmat = site_xmat_in[worldid, idslider]
+      site_xmat = math.quat_to_mat(site_xquat_in[worldid, idslider])
       axis = wp.vec3(site_xmat[0, 2], site_xmat[1, 2], site_xmat[2, 2])
       site_xpos_id = site_xpos_in[worldid, id]
       site_xpos_idslider = site_xpos_in[worldid, idslider]
@@ -3169,7 +3169,7 @@ def _transmission(deterministic: bool = False):
       # reference site undefined
       if refid == -1:
         # wrench: gear expressed in global frame
-        site_xmat = site_xmat_in[worldid, siteid]
+        site_xmat = math.quat_to_mat(site_xquat_in[worldid, siteid])
         wrench_translation = site_xmat @ gear_translation
         wrench_rotation = site_xmat @ gear_rotational
 
@@ -3245,7 +3245,7 @@ def _transmission(deterministic: bool = False):
 
         site_xpos = site_xpos_in[worldid, siteid]
         ref_xpos = site_xpos_in[worldid, refid]
-        ref_xmat = site_xmat_in[worldid, refid]
+        ref_xmat = math.quat_to_mat(site_xquat_in[worldid, refid])
 
         length = float(0.0)
 
@@ -3555,7 +3555,7 @@ def transmission(m: Model, d: Data):
       d.qpos,
       d.xquat,
       d.site_xpos,
-      d.site_xmat,
+      d.site_xquat,
       d.subtree_com,
       d.cdof,
       d.ten_J,

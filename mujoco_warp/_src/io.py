@@ -1864,7 +1864,7 @@ def _initial_body_awake(mjm: mujoco.MjModel, nworld: int, init_asleep: bool) -> 
 
 
 # Data quaternion fields whose mjData counterpart is a rotation matrix.
-_QUAT_FROM_MAT = {"xiquat": "ximat", "geom_xquat": "geom_xmat"}
+_QUAT_FROM_MAT = {"xiquat": "ximat", "geom_xquat": "geom_xmat", "site_xquat": "site_xmat"}
 
 
 def _quat_to_mat(quat: np.ndarray) -> np.ndarray:
@@ -2545,7 +2545,7 @@ def get_data_into(
   result.geom_xpos[:] = d.geom_xpos.numpy()[world_id]
   result.geom_xmat[:] = _quat_to_mat(d.geom_xquat.numpy()[world_id]).reshape((-1, 9))
   result.site_xpos[:] = d.site_xpos.numpy()[world_id]
-  result.site_xmat[:] = d.site_xmat.numpy()[world_id].reshape((-1, 9))
+  result.site_xmat[:] = _quat_to_mat(d.site_xquat.numpy()[world_id]).reshape((-1, 9))
   result.cam_xpos[:] = d.cam_xpos.numpy()[world_id]
   result.cam_xmat[:] = d.cam_xmat.numpy()[world_id].reshape((-1, 9))
   result.light_xpos[:] = d.light_xpos.numpy()[world_id]
