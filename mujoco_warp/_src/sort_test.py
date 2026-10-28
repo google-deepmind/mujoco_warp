@@ -16,7 +16,6 @@
 """Canonical contact and constraint ordering tests (without replaying stage outputs)."""
 
 import dataclasses
-import itertools
 
 import mujoco
 import numpy as np
@@ -28,21 +27,60 @@ import mujoco_warp as mjw
 from mujoco_warp import test_data
 from mujoco_warp._src import collision_driver
 from mujoco_warp._src import constraint
+from mujoco_warp._src import sort
 from mujoco_warp._src import types
 
 
 class SortTest(parameterized.TestCase):
-  @parameterized.parameters(*itertools.product((1, 2), ("dense", "sparse"), ("pyramidal", "elliptic")))
+  @parameterized.product(nworld=(1, 2), field=("pos", "margin", "D", "vel", "aref", "frictionloss"))
+  def test_constraint_scalar_keys(self, nworld, field):
+    """Each scalar breaks ties in order, including signed zero, infinities, and NaNs."""
+    bits = np.array([0xFFC00001, 0xFF800000, 0xBF800000, 0x80000000, 0, 0x3F800000, 0x7F800000, 0x7FC00001], dtype=np.uint32)
+    rng = np.random.default_rng(42)
+    values = np.stack([rng.permutation(bits) for _ in range(nworld)])
+    ordered = np.where(values >> 31, ~values, values ^ np.uint32(0x80000000))
+    expected = np.argsort(ordered, axis=1)
+    keys = sort._ConstraintKeys()
+    keys.primary = wp.zeros((nworld, len(bits)), dtype=wp.vec4i)
+    keys.J = wp.zeros((nworld, len(bits), 1), dtype=wp.uint32)
+    keys.J_rownnz = wp.empty((nworld, 0), dtype=int)
+    keys.nv = 1
+    later = False
+    for name in ("pos", "margin", "D", "vel", "aref", "frictionloss"):
+      # Earlier fields tie; later fields disagree with this field's order.
+      data = ~values if later else np.zeros_like(values)
+      if name == field:
+        data = values
+        later = True
+      setattr(keys, name, wp.array(data, dtype=wp.uint32))
+    count = wp.full(nworld, len(bits), dtype=int)
+    order = sort.permutation(count, len(bits), keys, sort._constraint_less)
+    np.testing.assert_array_equal(order.numpy(), expected)
+    if nworld == 2:
+      self.assertFalse(np.array_equal(expected[0], expected[1]))
+
+  @parameterized.product(nworld=(1, 2), jacobian=("dense", "sparse"), cone=("pyramidal", "elliptic"))
   def test_unused_contact_addresses(self, nworld, jacobian, cone):
     """Unused contact components cannot overwrite another contact's row key."""
     _, _, m, d = test_data.fixture(
       xml="""
-      <mujoco><worldbody>
-        <geom type="plane" size="5 5 .1" condim="1"/>
-        <body pos="0 0 .09"><freejoint/><geom size=".1" condim="1"/></body>
-        <body pos="1 0 .08"><freejoint/><geom size=".1" condim="6"/></body>
-        <body pos="2 0 .07"><freejoint/><geom size=".1" condim="6"/></body>
-      </worldbody></mujoco>
+      <mujoco>
+        <worldbody>
+          <geom type="plane" size="5 5 .1" condim="1"/>
+          <body pos="0 0 .09">
+            <freejoint/>
+            <geom size=".1" condim="1"/>
+          </body>
+          <body pos="1 0 .08">
+            <freejoint/>
+            <geom size=".1" condim="6"/>
+          </body>
+          <body pos="2 0 .07">
+            <freejoint/>
+            <geom size=".1" condim="6"/>
+          </body>
+        </worldbody>
+      </mujoco>
       """,
       nworld=nworld,
       nconmax=8,
@@ -92,11 +130,22 @@ class SortTest(parameterized.TestCase):
     """Sorting preserves contacts appended for newly awakened bodies after the contact filter."""
     _, _, m, d = test_data.fixture(
       xml="""
-      <mujoco><option><flag sleep="enable"/></option><worldbody>
-        <geom type="plane" size="5 5 .1"/>
-        <body pos="0 0 .09"><freejoint/><geom size=".1"/></body>
-        <body pos="1 0 .08"><freejoint/><geom size=".1"/></body>
-      </worldbody></mujoco>
+      <mujoco>
+        <option>
+          <flag sleep="enable"/>
+        </option>
+        <worldbody>
+          <geom type="plane" size="5 5 .1"/>
+          <body pos="0 0 .09">
+            <freejoint/>
+            <geom size=".1"/>
+          </body>
+          <body pos="1 0 .08">
+            <freejoint/>
+            <geom size=".1"/>
+          </body>
+        </worldbody>
+      </mujoco>
       """,
       nworld=2,
       nconmax=8,
@@ -135,7 +184,10 @@ class SortTest(parameterized.TestCase):
         </asset>
         <worldbody>
           <geom type="sdf" mesh="cube"/>
-          <body pos="0 0 1.8" euler="45 0 0"><freejoint/><geom type="sdf" mesh="cube"/></body>
+          <body pos="0 0 1.8" euler="45 0 0">
+            <freejoint/>
+            <geom type="sdf" mesh="cube"/>
+          </body>
         </worldbody>
       </mujoco>
       """,
@@ -150,13 +202,15 @@ class SortTest(parameterized.TestCase):
     """Real flex contacts retain their feature identity through both sorting stages."""
     _, _, m, d = test_data.fixture(
       xml="""
-      <mujoco><worldbody>
-        <geom type="plane" size="5 5 .1"/>
-        <flexcomp name="cloth" type="grid" count="3 3 1" spacing=".1 .1 .1" dim="2" mass="1" pos="0 0 .01" radius=".02">
-          <edge equality="true"/>
-          <contact selfcollide="none"/>
-        </flexcomp>
-      </worldbody></mujoco>
+      <mujoco>
+        <worldbody>
+          <geom type="plane" size="5 5 .1"/>
+          <flexcomp name="cloth" type="grid" count="3 3 1" spacing=".1 .1 .1" dim="2" mass="1" pos="0 0 .01" radius=".02">
+            <edge equality="true"/>
+            <contact selfcollide="none"/>
+          </flexcomp>
+        </worldbody>
+      </mujoco>
       """,
       nworld=2,
       nconmax=128,
@@ -165,16 +219,29 @@ class SortTest(parameterized.TestCase):
     )
     _assert_collision_repeat(self, m, d)
 
-  @parameterized.parameters(*itertools.product((1, 2, 4), ("dense", "sparse"), ("pyramidal", "elliptic")))
-  def test_interleaved_constraints(self, nworld, jacobian, cone):
-    """Constraint sorting alone handles external contacts with interleaved world IDs."""
+  @parameterized.product(
+    nworld=(1, 2, 4),
+    jacobian=("dense", "sparse"),
+    cone=("pyramidal", "elliptic"),
+    mode=("constraint", "external", "standalone"),
+  )
+  def test_interleaved_constraints(self, nworld, jacobian, cone, mode):
+    """Canonical rows do not assume CONTACTS implies collision actually sorted the input."""
     mjm, mjd, m, d = test_data.fixture(
       xml="""
-      <mujoco><worldbody>
-        <geom type="plane" size="5 5 .1"/>
-        <body pos="0 0 .09"><freejoint/><geom size=".1"/></body>
-        <body pos="1 0 .08"><freejoint/><geom size=".1"/></body>
-      </worldbody></mujoco>
+      <mujoco>
+        <worldbody>
+          <geom type="plane" size="5 5 .1"/>
+          <body pos="0 0 .09">
+            <freejoint/>
+            <geom size=".1"/>
+          </body>
+          <body pos="1 0 .08">
+            <freejoint/>
+            <geom size=".1"/>
+          </body>
+        </worldbody>
+      </mujoco>
       """,
       nworld=nworld,
       nconmax=8,
@@ -198,6 +265,9 @@ class SortTest(parameterized.TestCase):
     d.efc.state.zero_()
     d.efc.island.zero_()
     m.opt.deterministic = mjw.DeterminismType.CONSTRAINT
+    if mode != "constraint":
+      m.opt.deterministic |= mjw.DeterminismType.CONTACTS
+    m.opt.run_collision_detection = mode != "external"
 
     def snapshot():
       result = {}
@@ -242,7 +312,10 @@ class SortTest(parameterized.TestCase):
         shuffled = value.copy()
         shuffled[:count] = value[order]
         getattr(d.contact, name).assign(shuffled)
-      constraint.make_constraint(m, d)
+      if mode == "external":
+        mjw.fwd_position(m, d)
+      else:
+        constraint.make_constraint(m, d)
       current = snapshot()
       if reference is not None:
         for name, value in current.items():
@@ -265,20 +338,36 @@ class SortTest(parameterized.TestCase):
         expected[:] = mjd.efc_J.reshape(expected.shape)
       np.testing.assert_allclose(actual, expected, rtol=1e-5, atol=1e-5)
 
-  @parameterized.parameters(*itertools.product((1, 2), ("dense", "sparse"), ("pyramidal", "elliptic")))
+  @parameterized.product(nworld=(1, 2), jacobian=("dense", "sparse"), cone=("pyramidal", "elliptic"))
   def test_forward_capture(self, nworld, jacobian, cone):
     """Real collision/constraint stages repeat exactly, with and without CUDA capture."""
     mjm, mjd, m, d = test_data.fixture(
       xml="""
-      <mujoco><compiler angle="radian"/>
+      <mujoco>
+        <compiler angle="radian"/>
         <worldbody>
           <geom type="plane" size="5 5 .1"/>
-          <body name="a" pos="0 0 .09"><freejoint/><geom type="box" size=".1 .12 .1"/></body>
-          <body name="b" pos="1 0 .08"><freejoint/><geom type="box" size=".1 .1 .1"/></body>
-          <body pos="2 0 1"><joint name="j1" range=".1 1" frictionloss=".1"/><geom size=".1"/></body>
-          <body pos="3 0 1"><joint name="j2" range=".2 1" frictionloss=".2"/><geom size=".1"/></body>
+          <body name="a" pos="0 0 .09">
+            <freejoint/>
+            <geom type="box" size=".1 .12 .1"/>
+          </body>
+          <body name="b" pos="1 0 .08">
+            <freejoint/>
+            <geom type="box" size=".1 .1 .1"/>
+          </body>
+          <body pos="2 0 1">
+            <joint name="j1" range=".1 1" frictionloss=".1"/>
+            <geom size=".1"/>
+          </body>
+          <body pos="3 0 1">
+            <joint name="j2" range=".2 1" frictionloss=".2"/>
+            <geom size=".1"/>
+          </body>
         </worldbody>
-        <equality><connect body1="a" body2="b" anchor=".5 0 .09"/><joint joint1="j1" joint2="j2"/></equality>
+        <equality>
+          <connect body1="a" body2="b" anchor=".5 0 .09"/>
+          <joint joint1="j1" joint2="j2"/>
+        </equality>
       </mujoco>
       """,
       nworld=nworld,
@@ -348,11 +437,20 @@ class SortTest(parameterized.TestCase):
     if nworld > 1:
       self.assertFalse(np.array_equal(reference["qacc"][0], reference["qacc"][1]))
 
-  @parameterized.parameters(*itertools.product((1, 2), ("geometry", "flex", "material")))
+  @parameterized.product(nworld=(1, 2), key=("geometry", "flex", "material"))
   def test_contact_permutation(self, nworld, key):
     """All fields follow a canonical permutation, including equal pair/point IDs."""
     _, _, m, d = test_data.fixture(
-      xml="""<mujoco><worldbody><body><freejoint/><geom size=".1"/></body></worldbody></mujoco>""",
+      xml="""
+      <mujoco>
+        <worldbody>
+          <body>
+            <freejoint/>
+            <geom size=".1"/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """,
       nworld=nworld,
       nconmax=16,
     )
@@ -395,36 +493,54 @@ class SortTest(parameterized.TestCase):
       for name, value in reference.items():
         np.testing.assert_array_equal(getattr(d.contact, name).numpy(), value, err_msg=name)
 
-  @parameterized.parameters(
-    *itertools.product((1, 2), ("dense", "sparse"), ("connect", "weld", "interleaved"), ("solved", "forward"))
+  @parameterized.product(
+    nworld=(1, 2), jacobian=("dense", "sparse"), equality=("connect", "weld", "interleaved"), stage=("solved", "forward")
   )
   def test_equality_forces(self, nworld, jacobian, equality, stage):
     """Sorting preserves equality components and the subtype layout used by force sensors."""
     mjm, mjd, m, d = test_data.fixture(
       xml="""
       <mujoco>
-        <option gravity=".25 .5 -.75" tolerance="1e-10"><flag contact="disable"/></option>
+        <option gravity=".25 .5 -.75" tolerance="1e-10">
+          <flag contact="disable"/>
+        </option>
         <worldbody>
           <body name="a" pos="0 0 1" quat=".5 .5 .5 .5">
-            <freejoint/><geom type="box" size=".1 .12 .15" mass="1"/><site name="sa" pos=".02 .03 .04"/>
+            <freejoint/>
+            <geom type="box" size=".1 .12 .15" mass="1"/>
+            <site name="sa" pos=".02 .03 .04"/>
           </body>
           <body name="b" pos="1 0 1" quat=".5 -.5 .5 .5">
-            <freejoint/><geom type="box" size=".12 .15 .1" mass="2"/><site name="sb" pos="-.03 .02 .01"/>
+            <freejoint/>
+            <geom type="box" size=".12 .15 .1" mass="2"/>
+            <site name="sb" pos="-.03 .02 .01"/>
           </body>
           <body name="c" pos="2 0 1" quat=".5 .5 -.5 .5">
-            <freejoint/><geom type="box" size=".15 .1 .12" mass="1.5"/><site name="sc"/>
+            <freejoint/>
+            <geom type="box" size=".15 .1 .12" mass="1.5"/>
+            <site name="sc"/>
           </body>
           <body name="d" pos="3 0 1" quat=".5 .5 .5 -.5">
-            <freejoint/><geom type="box" size=".1 .15 .12" mass=".8"/><site name="sd"/>
+            <freejoint/>
+            <geom type="box" size=".1 .15 .12" mass=".8"/>
+            <site name="sd"/>
           </body>
         </worldbody>
         <equality>
-          <weld body1="b" anchor="1 0 1"/><connect body1="a" anchor=".03125 -.0625 .015625"/>
-          <weld body1="d" anchor="3 0 1"/><connect body1="c" anchor="-.0625 .015625 .03125"/>
+          <weld body1="b" anchor="1 0 1"/>
+          <connect body1="a" anchor=".03125 -.0625 .015625"/>
+          <weld body1="d" anchor="3 0 1"/>
+          <connect body1="c" anchor="-.0625 .015625 .03125"/>
         </equality>
         <sensor>
-          <force site="sa"/><torque site="sa"/><force site="sb"/><torque site="sb"/>
-          <force site="sc"/><torque site="sc"/><force site="sd"/><torque site="sd"/>
+          <force site="sa"/>
+          <torque site="sa"/>
+          <force site="sb"/>
+          <torque site="sb"/>
+          <force site="sc"/>
+          <torque site="sc"/>
+          <force site="sd"/>
+          <torque site="sd"/>
         </sensor>
       </mujoco>
       """,
@@ -531,12 +647,14 @@ class SortTest(parameterized.TestCase):
     """Flex edge rows sharing an equality ID are ordered by their Jacobians, not allocation."""
     _, _, m, d = test_data.fixture(
       xml="""
-      <mujoco><worldbody>
-        <flexcomp name="cloth" type="grid" count="3 3 1" spacing=".1 .1 .1" dim="2" mass="1" pos="0 0 1">
-          <edge equality="true"/>
-          <contact contype="0" conaffinity="0"/>
-        </flexcomp>
-      </worldbody></mujoco>
+      <mujoco>
+        <worldbody>
+          <flexcomp name="cloth" type="grid" count="3 3 1" spacing=".1 .1 .1" dim="2" mass="1" pos="0 0 1">
+            <edge equality="true"/>
+            <contact contype="0" conaffinity="0"/>
+          </flexcomp>
+        </worldbody>
+      </mujoco>
       """,
       nworld=2,
       njmax=64,
@@ -560,7 +678,16 @@ class SortTest(parameterized.TestCase):
   def test_constraint_overflow(self, overflow):
     """Do not permute incomplete rows or alter the counters used to report overflow."""
     _, _, m, d = test_data.fixture(
-      xml="""<mujoco><worldbody><body><joint frictionloss=".1"/><geom size=".1"/></body></worldbody></mujoco>""",
+      xml="""
+      <mujoco>
+        <worldbody>
+          <body>
+            <joint frictionloss=".1"/>
+            <geom size=".1"/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """,
       nworld=2,
       njmax=4,
       overrides={"opt.jacobian": "sparse"},
@@ -578,7 +705,16 @@ class SortTest(parameterized.TestCase):
   def test_contact_count_bounds(self, count):
     """Zero, partial, full, and overflowing buffers preserve counts and inactive slots."""
     _, _, m, d = test_data.fixture(
-      xml="""<mujoco><worldbody><body><freejoint/><geom size=".1"/></body></worldbody></mujoco>""",
+      xml="""
+      <mujoco>
+        <worldbody>
+          <body>
+            <freejoint/>
+            <geom size=".1"/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """,
       nconmax=8,
     )
     d.nacon.fill_(count)

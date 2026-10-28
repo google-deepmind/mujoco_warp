@@ -13,7 +13,6 @@
 # limitations under the License.
 # ==============================================================================
 
-import dataclasses
 from typing import Optional
 
 import warp as wp
@@ -1064,9 +1063,29 @@ def _narrowphase(m: Model, d: Data, ctx: CollisionContext):
 def _sort_contacts(m: Model, d: Data):
   """Deterministic contact sort."""
   order = sort.contact_permutation(d)
-  for field in dataclasses.fields(d.contact):
-    value = getattr(d.contact, field.name)
-    sort.gather(d.nacon, order, value, d.naconmax)
+  # Preserve initialized unused-address sentinels along with the other contact fields.
+  for value in (
+    d.contact.dist,
+    d.contact.pos,
+    d.contact.frame,
+    d.contact.includemargin,
+    d.contact.friction,
+    d.contact.solref,
+    d.contact.solreffriction,
+    d.contact.solimp,
+    d.contact.dim,
+    d.contact.geom,
+    d.contact.flex,
+    d.contact.elem,
+    d.contact.vert,
+    d.contact.efc_address,
+    d.contact.worldid,
+    d.contact.type,
+    d.contact.geomcollisionid,
+    d.contact.adhesion,
+  ):
+    if value.size:
+      sort.gather(d.nacon, order, value, d.naconmax)
 
 
 @event_scope
