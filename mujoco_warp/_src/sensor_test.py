@@ -570,6 +570,80 @@ class SensorTest(parameterized.TestCase):
     _assert_eq(sensordata, mjd.sensordata, "sensordata")
     self.assertTrue(sensordata.any())  # check that sensordata is not empty
 
+  @parameterized.parameters(1, 2)
+  def test_contact_sensor_sorted_directions(self, nworld):
+    """Keep opposite contact directions attached to their sorted IDs."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option gravity="0 0 0" cone="elliptic"/>
+        <default><geom condim="6" friction="1 .1 .1"/></default>
+        <worldbody>
+          <geom name="left" type="sphere" size=".1" pos="-.18 0 0"/>
+          <body name="middle">
+            <freejoint/>
+            <geom name="middle" type="sphere" size=".1" mass="1"/>
+          </body>
+          <body pos=".15 0 0">
+            <geom name="right" type="sphere" size=".1"/>
+          </body>
+        </worldbody>
+        <sensor>
+          <contact geom1="middle" reduce="mindist" num="1" data="force torque dist normal tangent"/>
+          <contact geom1="middle" reduce="mindist" num="2" data="force torque dist normal tangent"/>
+          <contact geom1="middle" reduce="maxforce" num="1" data="force torque dist normal tangent"/>
+          <contact geom1="middle" reduce="maxforce" num="2" data="force torque dist normal tangent"/>
+        </sensor>
+      </mujoco>
+      """,
+      nworld=nworld,
+    )
+    # Copy native contacts and prescribe nonzero signed force/torque components
+    # to isolate sensor reporting from collision detection and solver accuracy.
+    worldids = d.contact.worldid.numpy()[: d.nacon.numpy()[0]]
+    contact_geom = d.contact.geom.numpy()
+    contact_dist = d.contact.dist.numpy()
+    contact_pos = d.contact.pos.numpy()
+    contact_frame = d.contact.frame.numpy()
+    efc_force = d.efc.force.numpy()
+    expected = []
+    for worldid in range(nworld):
+      mjd.qpos[0] = -0.025 * worldid
+      mujoco.mj_forward(mjm, mjd)
+      self.assertEqual(mjd.ncon, 2)
+      indices = np.flatnonzero(worldids == worldid)
+      np.testing.assert_array_equal(contact_geom[indices], mjd.contact.geom)
+      contact_dist[indices] = mjd.contact.dist
+      contact_pos[indices] = mjd.contact.pos
+      contact_frame[indices] = mjd.contact.frame.reshape(-1, 3, 3)
+      for contactid, contact in enumerate(mjd.contact):
+        # Reverse the max-force ordering in world 1 as well as the distances.
+        normal_force = (10, 20)[contactid ^ worldid]
+        adr = contact.efc_address
+        mjd.efc_force[adr : adr + 6] = [normal_force, 1, -2, 3, -4, 5]
+      efc_force[worldid, : mjd.nefc] = mjd.efc_force
+      mujoco.mj_sensorPos(mjm, mjd)
+      mujoco.mj_sensorAcc(mjm, mjd)
+      expected.append(mjd.sensordata.copy())
+    d.contact.dist.assign(contact_dist)
+    d.contact.pos.assign(contact_pos)
+    d.contact.frame.assign(contact_frame)
+    d.efc.force.assign(efc_force)
+    d.sensordata.fill_(wp.inf)
+    mjw.sensor_pos(m, d)
+    mjw.sensor_acc(m, d)
+    np.testing.assert_allclose(d.sensordata.numpy(), expected, rtol=1e-5, atol=1e-5)
+    if wp.get_device().is_cuda:
+      with wp.ScopedCapture() as capture:
+        mjw.sensor_pos(m, d)
+        mjw.sensor_acc(m, d)
+      d.sensordata.fill_(wp.inf)
+      wp.capture_launch(capture.graph)
+      np.testing.assert_allclose(d.sensordata.numpy(), expected, rtol=1e-5, atol=1e-5)
+    np.testing.assert_array_equal(d.overflow.numpy(), 0)
+    if nworld == 2:
+      self.assertFalse(np.allclose(expected[0], expected[1]))
+
   def test_contact_sensor_subtree(self):
     """Test contact sensor with subtree matching semantics."""
     _MJCF = """

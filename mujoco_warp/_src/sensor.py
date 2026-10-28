@@ -2631,6 +2631,18 @@ def _contact_match_builder(warn_overflow: int, deterministic: bool = False):
 
 @cache_kernel
 def _contact_sort(maxmatch: int):
+  @wp.func
+  def pack_match(matchid: int, direction: float):
+    return wp.vec2i(matchid, int(direction))
+
+  @wp.func
+  def unpack_matchid(match: wp.vec2i):
+    return match[0]
+
+  @wp.func
+  def unpack_direction(match: wp.vec2i):
+    return float(match[1])
+
   @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
   def contact_sort(
     # Model:
@@ -2640,8 +2652,10 @@ def _contact_sort(maxmatch: int):
     sensor_contact_nmatch_in: wp.array2d[int],
     sensor_contact_matchid_in: wp.array3d[int],
     sensor_contact_criteria_in: wp.array3d[float],
+    sensor_contact_direction_in: wp.array3d[float],
     # Out:
     sensor_contact_matchid_out: wp.array3d[int],
+    sensor_contact_direction_out: wp.array3d[float],
   ):
     worldid, contactsensorid = wp.tid()
     sensorid = sensor_contact_adr_in[contactsensorid]
@@ -2658,8 +2672,12 @@ def _contact_sort(maxmatch: int):
 
     criteria_tile = wp.tile_load(sensor_contact_criteria_in[worldid, contactsensorid], shape=maxmatch)
     matchid_tile = wp.tile_load(sensor_contact_matchid_in[worldid, contactsensorid], shape=maxmatch)
-    wp.tile_sort(criteria_tile, matchid_tile)
-    wp.tile_store(sensor_contact_matchid_out[worldid, contactsensorid], matchid_tile)
+    direction_tile = wp.tile_load(sensor_contact_direction_in[worldid, contactsensorid], shape=maxmatch)
+    # Sort each ID together with its direction, including when criteria tie.
+    match_tile = wp.tile_map(pack_match, matchid_tile, direction_tile)
+    wp.tile_sort(criteria_tile, match_tile)
+    wp.tile_store(sensor_contact_matchid_out[worldid, contactsensorid], wp.tile_map(unpack_matchid, match_tile))
+    wp.tile_store(sensor_contact_direction_out[worldid, contactsensorid], wp.tile_map(unpack_direction, match_tile))
 
   return contact_sort
 
@@ -2913,7 +2931,7 @@ def _eval_sensor_contact(m: Model, d: Data, sensor_contact_adr: wp.array[int]):
   sensor_contact_nmatch = wp.zeros((d.nworld, ncontact), dtype=int)
   sensor_contact_matchid = wp.full((d.nworld, ncontact, maxmatch), -1, dtype=int)
   sensor_contact_criteria = wp.full((d.nworld, ncontact, maxmatch), 1.0e32, dtype=float)
-  sensor_contact_direction = wp.empty((d.nworld, ncontact, maxmatch), dtype=float)
+  sensor_contact_direction = wp.zeros((d.nworld, ncontact, maxmatch), dtype=float)
 
   wp.launch(
     _contact_match_builder(int(m.opt.warn_overflow), bool(m.opt.deterministic & DeterminismType.ATOMICS)),
@@ -2954,8 +2972,15 @@ def _eval_sensor_contact(m: Model, d: Data, sensor_contact_adr: wp.array[int]):
   wp.launch_tiled(
     _contact_sort(maxmatch),
     dim=(d.nworld, ncontact),
-    inputs=[m.sensor_intprm, sensor_contact_adr, sensor_contact_nmatch, sensor_contact_matchid, sensor_contact_criteria],
-    outputs=[sensor_contact_matchid],
+    inputs=[
+      m.sensor_intprm,
+      sensor_contact_adr,
+      sensor_contact_nmatch,
+      sensor_contact_matchid,
+      sensor_contact_criteria,
+      sensor_contact_direction,
+    ],
+    outputs=[sensor_contact_matchid, sensor_contact_direction],
     block_dim=m.block_dim.contact_sort,
   )
 
