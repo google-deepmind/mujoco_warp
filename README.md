@@ -5,6 +5,10 @@
 
 # MuJoCo Warp (MJWarp)
 
+<p align="center">
+  <b>English</b> · <a href="https://github.com/google-deepmind/mujoco_warp/blob/main/README.zh.md">简体中文</a>
+</p>
+
 MJWarp is a GPU-accelerated version of the [MuJoCo](https://github.com/google-deepmind/mujoco) physics simulator, designed for NVIDIA hardware. MJWarp delivers high-throughput, accurate simulation for robotics research.
 
 MJWarp is maintained by [Google DeepMind](https://deepmind.google/) and [NVIDIA](https://www.nvidia.com/) as part of the [Newton](https://github.com/newton-physics/newton) project.
