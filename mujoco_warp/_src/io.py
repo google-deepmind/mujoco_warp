@@ -28,10 +28,6 @@ from mujoco_warp._src import support
 from mujoco_warp._src import types
 from mujoco_warp._src import util_pkg
 from mujoco_warp._src import warp_util
-from mujoco_warp._src.set_const import set_const as set_const
-from mujoco_warp._src.set_const import set_const_0 as set_const_0
-from mujoco_warp._src.set_const import set_const_fixed as set_const_fixed
-from mujoco_warp._src.set_const import set_length_range as set_length_range
 
 wp.set_module_options({"default_grid_stride": False})
 
@@ -498,29 +494,6 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
   if not util_pkg.check_version("mujoco>=3.16.1"):
     m.eq_data = np.pad(mjm.eq_data, ((0, 0), (0, 1)))
 
-  # fold actuator damping into dof_damping and tendon_damping (matching mj_actuatorDamping)
-  if mjm.nactuator > 0 and (np.any(mjm.actuator_damping != 0) or np.any(mjm.actuator_dampingpoly != 0)):
-    m.dof_damping = mjm.dof_damping.copy()
-    m.dof_dampingpoly = mjm.dof_dampingpoly.copy()
-    m.tendon_damping = mjm.tendon_damping.copy()
-    m.tendon_dampingpoly = mjm.tendon_dampingpoly.copy()
-    for k in range(mjm.nactuator):
-      damping_k = float(mjm.actuator_damping[k])
-      poly_k = mjm.actuator_dampingpoly[k]
-      if damping_k == 0.0 and np.all(poly_k == 0.0):
-        continue
-      gear = float(mjm.actuator_gear[k, 0])
-      gear2 = gear * gear
-      trntype = int(mjm.actuator_trntype[k])
-      trnid = int(mjm.actuator_trnid[k, 0])
-      if trntype in (mujoco.mjtTrn.mjTRN_JOINT, mujoco.mjtTrn.mjTRN_JOINTINPARENT):
-        mask = mjm.dof_jntid == trnid
-        m.dof_damping[mask] += damping_k * gear2
-        m.dof_dampingpoly[mask] += poly_k * gear2
-      elif trntype == mujoco.mjtTrn.mjTRN_TENDON:
-        m.tendon_damping[trnid] += damping_k * gear2
-        m.tendon_dampingpoly[trnid] += poly_k * gear2
-
   m.opt = opt
   m.callback = types.Callback()
 
@@ -557,6 +530,8 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
     # TODO(team): skip element pairs driven by a common grid node, as in mjc_ElemSharedNode
     if np.any((mjm.flex_interp != 0) & (mjm.flex_selfcollide != 0) & ((mjm.flex_contype & mjm.flex_conaffinity) != 0)):
       raise NotImplementedError("Self-collision of interpolated flexes (dof=trilinear or quadratic) is not implemented.")
+    if np.any((mjm.flex_interp != 0) & (mjm.flex_passive != 0) & (mjm.flex_dim >= 2)):
+      raise NotImplementedError("Passive contact of interpolated flexes (dof=trilinear or quadratic) is not implemented.")
   m.nmaxcondim = np.concatenate(condim_arrays).max()
   m.nmaxpyramid = np.maximum(1, 2 * (m.nmaxcondim - 1))
   m.has_sdf_geom = (mjm.geom_type == mujoco.mjtGeom.mjGEOM_SDF).any()
@@ -601,8 +576,9 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
       for f in range(mjm.nflex)
     )
   )
-  # 1D rod bending is integrated explicitly under implicit and implicitfast, unlike 2D and 3D
-  m.has_flex_stiff_dim23 = bool(any(mjm.flex_dim[f] > 1 and _eff_flex_stiff_possible(mjm, f) for f in range(mjm.nflex)))
+  m.has_flex_edge_stiff_damp = bool(
+    any(not mjm.flex_rigid[f] and (mjm.flex_edgestiffness[f] > 0 or mjm.flex_edgedamping[f] > 0) for f in range(mjm.nflex))
+  )
   if (
     mjm.opt.integrator == mujoco.mjtIntegrator.mjINT_DISCRETE
     and mjm.opt.solver == mujoco.mjtSolver.mjSOL_NEWTON
@@ -610,7 +586,16 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
   ):
     raise ValueError("discrete integrator: flex with general attachments requires solver='CG'")
   m.has_tendon_stiffness = bool(mjm.ntendon > 0 and (np.any(m.tendon_stiffness != 0) or np.any(m.tendon_stiffnesspoly != 0)))
-  m.has_tendon_damping = bool(mjm.ntendon > 0 and (np.any(m.tendon_damping != 0) or np.any(m.tendon_dampingpoly != 0)))
+  tendon_actuator = mjm.actuator_trntype == mujoco.mjtTrn.mjTRN_TENDON
+  m.has_tendon_damping = bool(
+    mjm.ntendon > 0
+    and (
+      np.any(m.tendon_damping != 0)
+      or np.any(m.tendon_dampingpoly != 0)
+      or np.any(mjm.actuator_damping[tendon_actuator] != 0)
+      or np.any(mjm.actuator_dampingpoly[tendon_actuator] != 0)
+    )
+  )
   m.has_efm_actuator = bool(
     mjm.nu > 0
     and np.any(
@@ -3258,7 +3243,7 @@ def override_model(model: types.Model | mujoco.MjModel, overrides: dict[str, Any
     "opt.run_collision_detection",
     "opt.run_rne_postconstraint",
   }
-  mj_only_fields = {"actuator_dampingpoly", "opt.jacobian", "vis.quality.offsamples"}
+  mj_only_fields = {"opt.jacobian", "vis.quality.offsamples"}
 
   if not isinstance(overrides, dict):
     overrides_dict = {}

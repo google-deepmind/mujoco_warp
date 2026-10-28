@@ -413,6 +413,44 @@ class FlexKinematicsTest(parameterized.TestCase):
       )
       np.testing.assert_allclose(flexedge_J, mj_flexedge_J, atol=_TOLERANCE, err_msg=f"flexedge_J mismatch (world {w})")
 
+  # TODO(team): remove version check once mujoco >= 3.17.1 is required.
+  @absltest.skipIf(not util_pkg.check_version("mujoco>=3.17.1.dev1006378379"), "Requires MuJoCo >= 3.17.1.dev1006378379")
+  @parameterized.parameters(1, 2)
+  def test_flex_trilinear_pruned_cell_extrapolation(self, nworld):
+    """Tests trilinear flex vertices in pruned/empty cells extrapolate from nearest active cell."""
+    xml = """
+    <mujoco>
+      <worldbody>
+        <flexcomp name="ellipsoid" type="ellipsoid" count="6 6 6" spacing="0.06 0.06 0.06"
+                  dim="3" dof="trilinear" cellcount="4 4 4" mass="1">
+          <elasticity young="1e4" poisson="0.3"/>
+          <contact selfcollide="none"/>
+        </flexcomp>
+      </worldbody>
+    </mujoco>
+    """
+    mjm, mjd, m, d = test_data.fixture(xml=xml, qpos_noise=0.05, qvel_noise=0.05, nworld=nworld)
+
+    d.flexvert_xpos.fill_(wp.inf)
+    d.flexnode_xpos.fill_(wp.inf)
+
+    mjw.kinematics(m, d)
+    mjw.com_pos(m, d)
+    mjw.flex(m, d)
+
+    mujoco.mj_kinematics(mjm, mjd)
+    mujoco.mj_comPos(mjm, mjd)
+    mujoco.mj_flex(mjm, mjd)
+
+    for w in range(nworld):
+      np.testing.assert_allclose(
+        d.flexvert_xpos.numpy()[w, : mjm.nflexvert],
+        mjd.flexvert_xpos[: mjm.nflexvert],
+        rtol=1e-5,
+        atol=1e-5,
+        err_msg=f"flexvert_xpos mismatch (world {w})",
+      )
+
 
 class FlexConstraintTest(parameterized.TestCase):
   """Tests for flex constraints parity with MuJoCo."""
@@ -721,6 +759,45 @@ class FlexConstraintTest(parameterized.TestCase):
           count[row] += 1
           np.testing.assert_array_equal(colind[w, 0, rowadr[w, row] : rowadr[w, row] + rownnz[w, row]], head_cols)
       np.testing.assert_array_equal(count, 1)
+
+  # TODO(team): remove version check once mujoco >= 3.17.1 is required.
+  @absltest.skipIf(not util_pkg.check_version("mujoco>=3.17.1.dev1005593014"), "Requires MuJoCo >= 3.17.1.dev1005593014")
+  @parameterized.parameters(1, 2)
+  def test_trilinear_element_contact_qfrc_constraint(self, nworld):
+    """Test qfrc_constraint parity for trilinear flex element contacts with a dense Jacobian."""
+    # the sphere touches the interior of a bottom triangle of the flex, where the trilinear
+    # basis restricted to the face is bilinear in the reference coordinates of the contact
+    xml = """
+    <mujoco>
+      <option gravity="0 0 -9.81" jacobian="dense"/>
+      <worldbody>
+        <geom type="sphere" size="0.05"/>
+        <flexcomp type="grid" count="3 3 3" spacing="0.1 0.1 0.1" pos="0.045 0.025 0.15"
+                  name="cube" dim="3" mass="1" radius="0.001" cellcount="1 1 1" dof="trilinear">
+          <elasticity young="1e4" poisson="0.3" damping="1e-3"/>
+          <contact selfcollide="none"/>
+        </flexcomp>
+      </worldbody>
+    </mujoco>
+    """
+    mjm, mjd, m, d = test_data.fixture(xml=xml, nworld=nworld)
+    d.qfrc_constraint.fill_(wp.inf)
+    mjw.forward(m, d)
+
+    # the contacts are element contacts
+    self.assertGreater(mjd.ncon, 0)
+    self.assertTrue((mjd.contact.elem[:, 1] >= 0).all())
+
+    nacon = d.nacon.numpy()[0]
+    self.assertEqual(nacon, mjd.ncon * nworld, "Total contacts mismatch")
+
+    for w in range(nworld):
+      np.testing.assert_allclose(
+        d.qfrc_constraint.numpy()[w],
+        mjd.qfrc_constraint,
+        atol=1e-4,
+        err_msg=f"qfrc_constraint mismatch for trilinear flex element contacts (world {w})",
+      )
 
   @parameterized.product(
     xml=("flex/floppy.xml", "flex/moving_base_strain.xml"),
@@ -3373,6 +3450,8 @@ class FlexDynamicsTest(parameterized.TestCase):
         err_msg=f"qpos mismatch after 10 steps with contact (world {w})",
       )
 
+  # TODO(team): remove version check once mujoco >= 3.17.1 is required.
+  @absltest.skipIf(not util_pkg.check_version("mujoco>=3.17.1.dev1005593014"), "Requires MuJoCo >= 3.17.1.dev1005593014")
   @parameterized.parameters(1, 2)
   def test_drape_dynamics(self, nworld):
     """Test cloth draping over a sphere (bending + collision + dynamics)."""
@@ -4310,6 +4389,8 @@ class FlexContactParityTest(parameterized.TestCase):
     if nworld == 2:
       self.assertFalse(np.allclose([c["dist"] for c in w_contacts_all[0]], [c["dist"] for c in w_contacts_all[1]]))
 
+  # TODO(team): remove version check once mujoco >= 3.17.1 is required.
+  @absltest.skipIf(not util_pkg.check_version("mujoco>=3.17.1.dev1005593014"), "Requires MuJoCo >= 3.17.1.dev1005593014")
   @parameterized.parameters(1, 2)
   def test_contact_multiflex_local_elem_id(self, nworld):
     """Test that contacts on flexes after the first store flex-local element IDs."""
@@ -4497,6 +4578,8 @@ class FlexContactConstraintTest(parameterized.TestCase):
     jacobian=(mujoco.mjtJacobian.mjJAC_DENSE, mujoco.mjtJacobian.mjJAC_SPARSE),
     nworld=[1, 2],
   )
+  # TODO(team): remove version check once mujoco >= 3.17.1 is required.
+  @absltest.skipIf(not util_pkg.check_version("mujoco>=3.17.1.dev1005593014"), "Requires MuJoCo >= 3.17.1.dev1005593014")
   def test_flex_barycentric_jacobian(self, xml, cone, jacobian, nworld):
     """Test barycentric contact Jacobian calculation for flex."""
     mjm, mjd, m, d = test_data.fixture(xml=xml, overrides={"opt.cone": cone, "opt.jacobian": jacobian}, nworld=nworld)
@@ -4559,6 +4642,8 @@ class FlexContactConstraintTest(parameterized.TestCase):
     for conid in np.flatnonzero(active & ~dropped):
       np.testing.assert_array_equal(efc_id[efc_address[conid]], conid)
 
+  # TODO(team): remove version check once mujoco >= 3.17.1 is required.
+  @absltest.skipIf(not util_pkg.check_version("mujoco>=3.17.1.dev1005593014"), "Requires MuJoCo >= 3.17.1.dev1005593014")
   @parameterized.parameters(1, 2)
   def test_flex_3d_simplex_collision(self, nworld):
     """Test 3D simplex flex collision and constraint generation."""
@@ -4640,6 +4725,8 @@ class FlexContactConstraintTest(parameterized.TestCase):
 
     self.assertGreater(d.nacon.numpy()[0], 0, "Expected contacts in Warp for 3D flex vs ellipsoid")
 
+  # TODO(team): remove version check once mujoco >= 3.17.1 is required.
+  @absltest.skipIf(not util_pkg.check_version("mujoco>=3.17.1.dev1005593014"), "Requires MuJoCo >= 3.17.1.dev1005593014")
   @parameterized.parameters(1, 2)
   def test_flex_interpolated(self, nworld):
     """Test collision and constraint generation for interpolated flex shells."""
@@ -5724,9 +5811,9 @@ class FlexRodBendingTest(parameterized.TestCase):
     if nworld == 2:
       self.assertFalse(np.allclose(qpos[0], qpos[1]))
 
-  @parameterized.parameters("Euler", "implicitfast")
+  @parameterized.parameters("Euler", "RK4")
   def test_rod_explicit_integrators(self, integrator):
-    """Rod bending is integrated explicitly by the other integrators, as in MuJoCo C."""
+    """Rod bending is integrated explicitly by Euler and RK4, as in MuJoCo C."""
     mjm, mjd, m, d = test_data.fixture(
       xml=f"""
       <mujoco>
@@ -5749,6 +5836,37 @@ class FlexRodBendingTest(parameterized.TestCase):
 
     np.testing.assert_allclose(d.qpos.numpy()[0], mjd.qpos, atol=1e-5)
     np.testing.assert_allclose(d.qvel.numpy()[0], mjd.qvel, atol=1e-3)
+
+    for implicit in (types.IntegratorType.IMPLICIT, types.IntegratorType.IMPLICITFAST):
+      m.opt.integrator = int(implicit)
+      with self.assertRaisesRegex(ValueError, "flex elasticity is no longer integrated implicitly"):
+        mjw.forward(m, d)
+
+  @parameterized.parameters('stiffness="10"', 'damping="1"')
+  def test_edge_stiffness_damping_disallowed_in_discrete(self, edge_attr):
+    """Flex edge stiffness and damping are disallowed under the discrete integrator."""
+    _, _, m, d = test_data.fixture(
+      xml=f"""
+      <mujoco>
+        <worldbody>
+          <flexcomp name="rope" type="grid" count="3 1 1" spacing="0.1 0.1 0.1" radius="0.01" dim="1" mass="1">
+            <edge {edge_attr}/>
+          </flexcomp>
+        </worldbody>
+      </mujoco>
+      """,
+    )
+    for integrator in (
+      types.IntegratorType.EULER,
+      types.IntegratorType.RK4,
+      types.IntegratorType.IMPLICIT,
+      types.IntegratorType.IMPLICITFAST,
+    ):
+      m.opt.integrator = int(integrator)
+      mjw.forward(m, d)
+    m.opt.integrator = int(types.IntegratorType.DISCRETE)
+    with self.assertRaisesRegex(ValueError, "discrete integrator: flex edge stiffness and damping are not supported"):
+      mjw.forward(m, d)
 
 
 if __name__ == "__main__":

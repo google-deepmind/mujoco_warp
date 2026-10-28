@@ -858,5 +858,58 @@ class BoxBoxTest(parameterized.TestCase):
     self._assert_same_points(pos_sym, pos)
 
 
+@wp.kernel
+def capsule_capsule_kernel(
+  # In:
+  cap1_pos: wp.vec3,
+  cap1_axis: wp.vec3,
+  cap1_radius: float,
+  cap1_half_length: float,
+  cap2_pos: wp.vec3,
+  cap2_axis: wp.vec3,
+  cap2_radius: float,
+  cap2_half_length: float,
+  # Out:
+  dist_out: wp.array[wp.vec2],
+  pos_out: wp.array[collision_primitive_core.mat23f],
+  normal_out: wp.array[collision_primitive_core.mat23f],
+):
+  dist, pos, normal = collision_primitive_core.capsule_capsule(
+    cap1_pos, cap1_axis, cap1_radius, cap1_half_length, cap2_pos, cap2_axis, cap2_radius, cap2_half_length
+  )
+  dist_out[0] = dist
+  pos_out[0] = pos
+  normal_out[0] = normal
+
+
+class CapsuleCapsuleTest(parameterized.TestCase):
+  """Tests for capsule_capsule collision."""
+
+  @parameterized.product(long_first=[True, False], half_lengths=[(0.3, 0.2), (0.5, 0.25)])
+  def test_parallel_overhang(self, long_first, half_lengths):
+    """Parallel capsules where one overhangs the other: two contacts over the overlap.
+
+    Both contacts at distance 0.07. With half-lengths (0.5, 0.25), ma * mc - mb^2 is exactly
+    0 in float32; with (0.3, 0.2) it is not, so a determinant-based parallel test can miss the
+    parallel case.
+    """
+    axis = wp.vec3(0.0, 0.0, 1.0)
+    long_cap = (wp.vec3(0.0, 0.0, 0.0), axis, 0.05, half_lengths[0])
+    short_cap = (wp.vec3(0.2, 0.0, 0.0), axis, 0.08, half_lengths[1])
+    cap1, cap2 = (long_cap, short_cap) if long_first else (short_cap, long_cap)
+
+    dist = wp.zeros(1, dtype=wp.vec2)
+    pos = wp.zeros(1, dtype=collision_primitive_core.mat23f)
+    normal = wp.zeros(1, dtype=collision_primitive_core.mat23f)
+    wp.launch(capsule_capsule_kernel, dim=1, inputs=[*cap1, *cap2], outputs=[dist, pos, normal])
+
+    # surface distance: 0.2 - (0.05 + 0.08) = 0.07; contacts at both ends of the shorter capsule
+    h = half_lengths[1]
+    nx = 1.0 if long_first else -1.0
+    np.testing.assert_allclose(dist.numpy()[0], [0.07, 0.07], atol=1e-5)
+    np.testing.assert_allclose(pos.numpy()[0], [[0.085, 0.0, -h], [0.085, 0.0, h]], atol=1e-5)
+    np.testing.assert_allclose(normal.numpy()[0], [[nx, 0.0, 0.0], [nx, 0.0, 0.0]], atol=1e-5)
+
+
 if __name__ == "__main__":
   absltest.main()
