@@ -5007,6 +5007,7 @@ class FlexContactNnzTest(parameterized.TestCase):
             <geom type="sphere" size=".05"/>
             <flexcomp name="rope" type="grid" count="4 1 1" spacing=".2 .2 .1" pos="0 0 0" radius=".02" dim="1" mass=".5">
               <contact selfcollide="none" contype="1" conaffinity="1"/>
+              <pin id="0"/>
             </flexcomp>
           </body>
           <geom type="plane" size="1 1 .01"/>
