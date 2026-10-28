@@ -2223,6 +2223,7 @@ def _write_filtered_contacts(warn_overflow: int):
     geom_friction: wp.array2d[wp.vec3],
     geom_margin: wp.array2d[float],
     geom_gap: wp.array2d[float],
+    geom_adhesion: wp.array2d[float],
     flex_condim: wp.array[int],
     flex_priority: wp.array[int],
     flex_solmix: wp.array[float],
@@ -2264,6 +2265,7 @@ def _write_filtered_contacts(warn_overflow: int):
     contact_worldid_out: wp.array[int],
     contact_type_out: wp.array[int],
     contact_geomcollisionid_out: wp.array[int],
+    contact_adhesion_out: wp.array[float],
     nacon_out: wp.array[int],
     # Data out:
     overflow_out: wp.array[int],
@@ -2278,6 +2280,7 @@ def _write_filtered_contacts(warn_overflow: int):
     geomid = cand_geom[i][0]
     worldid = cand_worldid[i]
 
+    adhesion = float(0.0)
     condim = int(0)
     margin = float(0.0)
     gap = float(0.0)
@@ -2287,6 +2290,7 @@ def _write_filtered_contacts(warn_overflow: int):
 
     if geomid >= 0:
       flexid = cand_flex[i][1]
+      adhesion = geom_adhesion[worldid % geom_adhesion.shape[0], geomid]
       geom_margin_val = geom_margin[worldid % geom_margin.shape[0], geomid]
       tri_margin = flex_margin[flexid]
       margin = geom_margin_val + tri_margin
@@ -2386,6 +2390,7 @@ def _write_filtered_contacts(warn_overflow: int):
     is_passive = wants and ok
     contact_type_out[id_] = int(ContactType.PASSIVE) if is_passive else int(ContactType.CONSTRAINT)
     contact_geomcollisionid_out[id_] = 0
+    contact_adhesion_out[id_] = adhesion
 
   return kernel
 
@@ -3184,6 +3189,7 @@ def _filter_and_write_contacts(
       m.geom_friction,
       m.geom_margin,
       m.geom_gap,
+      m.geom_adhesion,
       m.flex_condim,
       m.flex_priority,
       m.flex_solmix,
@@ -3224,6 +3230,7 @@ def _filter_and_write_contacts(
       d.contact.worldid,
       d.contact.type,
       d.contact.geomcollisionid,
+      d.contact.adhesion,
       d.nacon,
       d.overflow,
     ],
