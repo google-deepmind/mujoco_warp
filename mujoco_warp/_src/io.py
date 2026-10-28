@@ -24,6 +24,7 @@ import warp as wp
 
 from mujoco_warp._src import history
 from mujoco_warp._src import sleep
+from mujoco_warp._src import smooth
 from mujoco_warp._src import support
 from mujoco_warp._src import types
 from mujoco_warp._src import util_pkg
@@ -2680,6 +2681,97 @@ def get_data_into(
     result.map_iefc2efc[:nefc] = d.map_iefc2efc.numpy()[world_id, :nefc]
 
 
+# Derived (output) arrays that forward recomputes every step. reset_data zeroes these for
+# the reset worlds so they match mj_resetData instead of keeping values from the previous
+# episode. Kinematics fields seeded once by make_data (xquat, xmat, ximat, geom_xpos,
+# geom_xmat) are intentionally not listed: static geom poses are never recomputed.
+_RESET_ZERO_FLOAT_FIELDS = (
+  "xpos",
+  "xipos",
+  "subtree_com",
+  "cdof",
+  "cinert",
+  "crb",
+  "ten_length",
+  "ten_velocity",
+  "actuator_length",
+  "actuator_velocity",
+  "cvel",
+  "cdof_dot",
+  "qfrc_bias",
+  "qfrc_spring",
+  "qfrc_damper",
+  "qfrc_gravcomp",
+  "qfrc_fluid",
+  "qfrc_adhesion",
+  "qfrc_passive",
+  "subtree_linvel",
+  "subtree_angmom",
+  "actuator_force",
+  "qfrc_actuator",
+  "qfrc_smooth",
+  "qacc_smooth",
+  "qfrc_constraint",
+  "qfrc_inverse",
+  "cacc",
+  "cfrc_int",
+  "cfrc_ext",
+)
+
+# Island arrays reset to the values make_data uses when there are no islands.
+_RESET_ISLAND_INT_FIELDS = (
+  ("tree_island", -1),
+  ("dof_island", -1),
+  ("dof_islandid", -1),
+  ("efc_islandid", -1),
+  ("island_dofadr", 0),
+  ("island_idofadr", 0),
+  ("island_nv", 0),
+  ("island_nefc", 0),
+  ("island_ne", 0),
+  ("island_nf", 0),
+  ("island_iefcadr", 0),
+  ("map_dof2idof", 0),
+  ("map_idof2dof", 0),
+  ("map_efc2iefc", 0),
+  ("map_iefc2efc", 0),
+)
+
+
+@wp.kernel(enable_backward=False)
+def _reset_world_float(reset_in: wp.array[bool], arr_out: wp.array2d[float]):
+  worldid, elemid = wp.tid()
+  if not reset_in[worldid]:
+    return
+  arr_out[worldid, elemid] = 0.0
+
+
+@wp.kernel(enable_backward=False)
+def _reset_world_int(reset_in: wp.array[bool], value: int, arr_out: wp.array2d[int]):
+  worldid, elemid = wp.tid()
+  if not reset_in[worldid]:
+    return
+  arr_out[worldid, elemid] = value
+
+
+def _world_scalar_view(arr: wp.array, scalar_dtype) -> Optional[wp.array]:
+  """Reinterprets a contiguous (nworld, ...) array as a (nworld, n) array of scalars."""
+  if arr is None or arr.size == 0:
+    return None
+  # elements are float32/int32 scalars or vectors/matrices of them (4 bytes per component)
+  elem_bytes = arr.strides[-1]
+  expected_stride = elem_bytes
+  for dim, stride in zip(reversed(arr.shape), reversed(arr.strides)):
+    if stride != expected_stride:
+      raise ValueError(f"cannot reset non-contiguous array with shape {arr.shape}")
+    expected_stride *= dim
+  if elem_bytes % 4:
+    raise ValueError(f"cannot reset array with dtype {arr.dtype}")
+  nworld = arr.shape[0]
+  nscalar = (arr.size // nworld) * (elem_bytes // 4)
+  return wp.array(ptr=arr.ptr, dtype=scalar_dtype, shape=(nworld, nscalar), device=arr.device, copy=False)
+
+
 def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
   """Clear data, set defaults; optionally by world.
 
@@ -2739,6 +2831,8 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
     nf_out: wp.array[int],
     nl_out: wp.array[int],
     nefc_out: wp.array[int],
+    nisland_out: wp.array[int],
+    nidof_out: wp.array[int],
     ntree_awake_out: wp.array[int],
     nbody_awake_out: wp.array[int],
     nv_awake_out: wp.array[int],
@@ -2772,6 +2866,8 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
     nf_out[worldid] = 0
     nl_out[worldid] = 0
     nefc_out[worldid] = 0
+    nisland_out[worldid] = 0
+    nidof_out[worldid] = 0
     time_out[worldid] = 0.0
     energy_out[worldid] = wp.vec2(0.0, 0.0)
     ntree_awake_out[worldid] = ntree
@@ -3022,6 +3118,8 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
       d.nf,
       d.nl,
       d.nefc,
+      d.nisland,
+      d.nidof,
       d.ntree_awake,
       d.nbody_awake,
       d.nv_awake,
@@ -3044,10 +3142,30 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
     ],
   )
 
+  # clear derived dynamics so reset worlds do not keep the previous episode's outputs
+  for name in _RESET_ZERO_FLOAT_FIELDS:
+    view = _world_scalar_view(getattr(d, name, None), wp.float32)
+    if view is not None:
+      wp.launch(_reset_world_float, dim=view.shape, inputs=[reset_input], outputs=[view])
+
+  # clear island metadata (nisland and nidof are cleared in reset_nworld)
+  for name, value in _RESET_ISLAND_INT_FIELDS:
+    view = _world_scalar_view(getattr(d, name, None), wp.int32)
+    if view is not None:
+      wp.launch(_reset_world_int, dim=view.shape, inputs=[reset_input, value], outputs=[view])
+
   if m.nhistory > 0:
     history.reset_history(m, d, reset=reset_input)
 
   if sleep_enabled:
+    # match mj_resetData: with sleep enabled it runs a partial mj_fwdPosition that updates
+    # static values (kinematics, com, camera/light, tendon) before updating sleep state
+    # note: these run for all worlds; worlds that are not reset get values recomputed from
+    # their current state
+    smooth.kinematics(m, d)
+    smooth.com_pos(m, d)
+    smooth.camlight(m, d)
+    smooth.tendon(m, d)
     sleep.update_sleep(m, d)
 
 
