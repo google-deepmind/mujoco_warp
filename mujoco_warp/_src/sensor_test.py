@@ -827,6 +827,7 @@ class SensorTest(parameterized.TestCase):
 
   @parameterized.parameters(
     ("box", "box", "box", "box"),
+    ("capsule", "capsule", "capsule", "capsule"),
     ("sphere", "capsule", "ellipsoid", "cylinder"),
     ("capsule", "box", "cylinder", "sphere"),
     ("capsule", "cylinder", "box", "ellipsoid"),
