@@ -334,15 +334,17 @@ def _broadphase_filter(
       effective_margin1 = margin1 + gap1
       effective_margin2 = margin2 + gap2
     xpos1, xpos2 = geom_xpos_in[worldid, geom1], geom_xpos_in[worldid, geom2]
-    xmat1, xmat2 = quat_to_mat(geom_xquat_in[worldid, geom1]), quat_to_mat(geom_xquat_in[worldid, geom2])
 
+    # orientations are expanded only for pairs that survive the sphere filter
     if rbound1 == 0.0 or rbound2 == 0.0:
       if wp.static(opt_broadphase_filter & BroadphaseFilter.PLANE):
+        xmat1, xmat2 = quat_to_mat(geom_xquat_in[worldid, geom1]), quat_to_mat(geom_xquat_in[worldid, geom2])
         return _plane_filter(rbound1, rbound2, effective_margin1, effective_margin2, xpos1, xpos2, xmat1, xmat2)
     else:
       if wp.static(opt_broadphase_filter & BroadphaseFilter.SPHERE):
         if not _sphere_filter(rbound1, rbound2, effective_margin1, effective_margin2, xpos1, xpos2):
           return False
+      xmat1, xmat2 = quat_to_mat(geom_xquat_in[worldid, geom1]), quat_to_mat(geom_xquat_in[worldid, geom2])
       if wp.static(opt_broadphase_filter & BroadphaseFilter.AABB):
         if not _aabb_filter(center1, center2, size1, size2, effective_margin1, effective_margin2, xpos1, xpos2, xmat1, xmat2):
           return False
