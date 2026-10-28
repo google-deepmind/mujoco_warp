@@ -182,7 +182,7 @@ def _geom_local_to_global(
   xquat_in: wp.array2d[wp.quat],
   # Data out:
   geom_xpos_out: wp.array2d[wp.vec3],
-  geom_xmat_out: wp.array2d[wp.mat33],
+  geom_xquat_out: wp.array2d[wp.quat],
 ):
   worldid, geomid = wp.tid()
   bodyid = geom_bodyid[geomid]
@@ -195,7 +195,7 @@ def _geom_local_to_global(
   xpos = xpos_in[worldid, bodyid]
   xquat = xquat_in[worldid, bodyid]
   geom_xpos_out[worldid, geomid] = xpos + math.rot_vec_quat(geom_pos[worldid % geom_pos.shape[0], geomid], xquat)
-  geom_xmat_out[worldid, geomid] = math.quat_to_mat(math.mul_quat(xquat, geom_quat[worldid % geom_quat.shape[0], geomid]))
+  geom_xquat_out[worldid, geomid] = math.mul_quat(xquat, geom_quat[worldid % geom_quat.shape[0], geomid])
 
 
 @wp.kernel
@@ -461,7 +461,7 @@ def kinematics(m: Model, d: Data):
     _geom_local_to_global,
     dim=(d.nworld, m.ngeom),
     inputs=[m.body_rootid, m.body_weldid, m.body_mocapid, m.geom_bodyid, m.geom_pos, m.geom_quat, d.xpos, d.xquat],
-    outputs=[d.geom_xpos, d.geom_xmat],
+    outputs=[d.geom_xpos, d.geom_xquat],
   )
 
   wp.launch(
@@ -4703,7 +4703,7 @@ def _spatial_geom_tendon(max_ten_J_rownnz: int, deterministic: bool = False):
     wrap_pulley_scale: wp.array[float],
     # Data in:
     geom_xpos_in: wp.array2d[wp.vec3],
-    geom_xmat_in: wp.array2d[wp.mat33],
+    geom_xquat_in: wp.array2d[wp.quat],
     site_xpos_in: wp.array2d[wp.vec3],
     subtree_com_in: wp.array2d[wp.vec3],
     cdof_in: wp.array2d[wp.spatial_vector],
@@ -4731,7 +4731,7 @@ def _spatial_geom_tendon(max_ten_J_rownnz: int, deterministic: bool = False):
 
     # get geom information
     geom_xpos = geom_xpos_in[worldid, wrap_objid_geom]
-    geom_xmat = geom_xmat_in[worldid, wrap_objid_geom]
+    geom_xmat = math.quat_to_mat(geom_xquat_in[worldid, wrap_objid_geom])
     geomsize = geom_size[worldid % geom_size.shape[0], wrap_objid_geom][0]
     geom_type = wrap_type[wrap_adr]
 
@@ -5146,7 +5146,7 @@ def tendon(m: Model, d: Data):
       m.wrap_geom_adr,
       m.wrap_pulley_scale,
       d.geom_xpos,
-      d.geom_xmat,
+      d.geom_xquat,
       d.site_xpos,
       d.subtree_com,
       d.cdof,

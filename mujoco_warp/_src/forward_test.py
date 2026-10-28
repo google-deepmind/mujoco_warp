@@ -668,7 +668,7 @@ class ForwardTest(parameterized.TestCase):
       "xanchor",
       "xaxis",
       "geom_xpos",
-      "geom_xmat",
+      "geom_xquat",
       "site_xmat",
       "subtree_com",
       "cinert",
@@ -715,7 +715,7 @@ class ForwardTest(parameterized.TestCase):
       step1_field += ["flexedge_length", "flexedge_velocity"]
 
     # quaternion fields are compared as the rotation matrices mjData stores
-    mat_of_quat = {"xiquat": "ximat"}
+    mat_of_quat = {"xiquat": "ximat", "geom_xquat": "geom_xmat"}
 
     def _getattr(arr):
       if (len(arr) >= 4) & (arr[:4] == "efc_"):
@@ -723,8 +723,8 @@ class ForwardTest(parameterized.TestCase):
       return getattr(d, arr), False
 
     for arr in step1_field:
-      if arr in ("geom_xpos", "geom_xmat"):
-        # leave geom_xpos and geom_xmat untouched because they have static data
+      if arr in ("geom_xpos", "geom_xquat"):
+        # leave geom_xpos and geom_xquat untouched because they have static data
         continue
       attr, _ = _getattr(arr)
       if arr in ("xquat", "xiquat"):
@@ -778,7 +778,7 @@ class ForwardTest(parameterized.TestCase):
       if arr in mat_of_quat:
         mjd_arr = mjd_arr.reshape(-1)
         d_arr = test_data.quat_to_mat(d_arr).reshape(-1)
-      elif arr in ["geom_xmat", "site_xmat", "cam_xmat"]:
+      elif arr in ["site_xmat", "cam_xmat"]:
         mjd_arr = mjd_arr.reshape(-1)
         d_arr = d_arr.reshape(-1)
       elif arr == "M":

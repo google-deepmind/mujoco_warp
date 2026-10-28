@@ -904,7 +904,7 @@ def _implicit_free_body(
   xipos_in: wp.array2d[wp.vec3],
   xiquat_in: wp.array2d[wp.quat],
   geom_xpos_in: wp.array2d[wp.vec3],
-  geom_xmat_in: wp.array2d[wp.mat33],
+  geom_xquat_in: wp.array2d[wp.quat],
   subtree_com_in: wp.array2d[wp.vec3],
   cdof_in: wp.array2d[wp.spatial_vector],
   crb_in: wp.array2d[vec10],
@@ -1020,7 +1020,7 @@ def _implicit_free_body(
 
           size = geom_size[worldid % geom_size.shape[0], geomid]
           semiaxes = passive.geom_semiaxes(size, geom_type[geomid])
-          geom_rot = geom_xmat_in[worldid, geomid]
+          geom_rot = math.quat_to_mat(geom_xquat_in[worldid, geomid])
           geom_rotT = wp.transpose(geom_rot)
           geom_pos = geom_xpos_in[worldid, geomid]
 
@@ -1179,7 +1179,7 @@ def implicit_free_body(m: Model, d: Data, vec_in: wp.array2d[float], vec_out: wp
       d.xipos,
       d.xiquat,
       d.geom_xpos,
-      d.geom_xmat,
+      d.geom_xquat,
       d.subtree_com,
       d.cdof,
       d.crb,

@@ -2790,7 +2790,7 @@ class BoxBoxTest(parameterized.TestCase):
     m = mjw.put_model(mjm)
     d = mjw.put_data(mjm, mjd, nworld=npose, nconmax=16)
     d.geom_xpos.assign(geom_xpos.astype(np.float32))
-    d.geom_xmat.assign(geom_xmat.astype(np.float32))
+    d.geom_xquat.assign(test_data.mat_to_quat(geom_xmat).astype(np.float32))
     # put_data copies the contacts of the last MuJoCo pose to every world
     d.contact.dist.fill_(wp.inf)
     d.contact.pos.fill_(wp.inf)

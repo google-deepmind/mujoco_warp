@@ -850,7 +850,7 @@ def _deriv_ellipsoid_fluid(
   # Data in:
   xipos_in: wp.array2d[wp.vec3],
   geom_xpos_in: wp.array2d[wp.vec3],
-  geom_xmat_in: wp.array2d[wp.mat33],
+  geom_xquat_in: wp.array2d[wp.quat],
   subtree_com_in: wp.array2d[wp.vec3],
   cvel_in: wp.array2d[wp.spatial_vector],
   # In:
@@ -895,7 +895,7 @@ def _deriv_ellipsoid_fluid(
 
     size = geom_size[worldid % geom_size.shape[0], geomid]
     semiaxes = geom_semiaxes(size, geom_type[geomid])
-    geom_rot = geom_xmat_in[worldid, geomid]
+    geom_rot = math.quat_to_mat(geom_xquat_in[worldid, geomid])
     geom_rotT = wp.transpose(geom_rot)
     geom_pos = geom_xpos_in[worldid, geomid]
 
@@ -992,7 +992,7 @@ def _qderiv_ellipsoid_fluid(deterministic: bool = False):
     # Data in:
     xipos_in: wp.array2d[wp.vec3],
     geom_xpos_in: wp.array2d[wp.vec3],
-    geom_xmat_in: wp.array2d[wp.mat33],
+    geom_xquat_in: wp.array2d[wp.quat],
     subtree_com_in: wp.array2d[wp.vec3],
     cdof_in: wp.array2d[wp.spatial_vector],
     cvel_in: wp.array2d[wp.spatial_vector],
@@ -1047,7 +1047,7 @@ def _qderiv_ellipsoid_fluid(deterministic: bool = False):
       geom_fluid,
       xipos_in,
       geom_xpos_in,
-      geom_xmat_in,
+      geom_xquat_in,
       subtree_com_in,
       cvel_in,
       worldid,
@@ -1407,7 +1407,7 @@ def deriv_smooth_vel(m: Model, d: Data, out: wp.array2d[float]):
         m.M_elemid,
         d.xipos,
         d.geom_xpos,
-        d.geom_xmat,
+        d.geom_xquat,
         d.subtree_com,
         d.cdof,
         d.cvel,
@@ -3636,7 +3636,7 @@ def eff_shift(m: Model, d: Data):
         m.M_elemid,
         d.xipos,
         d.geom_xpos,
-        d.geom_xmat,
+        d.geom_xquat,
         d.subtree_com,
         d.cdof,
         d.cvel,

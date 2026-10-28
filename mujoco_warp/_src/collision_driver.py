@@ -25,6 +25,7 @@ from mujoco_warp._src.collision_core import sap_range
 from mujoco_warp._src.collision_flex import flex_collision
 from mujoco_warp._src.collision_primitive import primitive_narrowphase
 from mujoco_warp._src.collision_sdf import sdf_narrowphase
+from mujoco_warp._src.math import quat_to_mat
 from mujoco_warp._src.math import upper_tri_index
 from mujoco_warp._src.types import MJ_MAXVAL
 from mujoco_warp._src.types import BroadphaseFilter
@@ -300,7 +301,7 @@ def _broadphase_filter(
     pair_gap: wp.array2d[float],
     # Data in:
     geom_xpos_in: wp.array2d[wp.vec3],
-    geom_xmat_in: wp.array2d[wp.mat33],
+    geom_xquat_in: wp.array2d[wp.quat],
     # In:
     geom1: int,
     geom2: int,
@@ -333,7 +334,7 @@ def _broadphase_filter(
       effective_margin1 = margin1 + gap1
       effective_margin2 = margin2 + gap2
     xpos1, xpos2 = geom_xpos_in[worldid, geom1], geom_xpos_in[worldid, geom2]
-    xmat1, xmat2 = geom_xmat_in[worldid, geom1], geom_xmat_in[worldid, geom2]
+    xmat1, xmat2 = quat_to_mat(geom_xquat_in[worldid, geom1]), quat_to_mat(geom_xquat_in[worldid, geom2])
 
     if rbound1 == 0.0 or rbound2 == 0.0:
       if wp.static(opt_broadphase_filter & BroadphaseFilter.PLANE):
@@ -513,7 +514,7 @@ def _sap_broadphase(
     nxn_pairid: wp.array[wp.vec2i],
     # Data in:
     geom_xpos_in: wp.array2d[wp.vec3],
-    geom_xmat_in: wp.array2d[wp.mat33],
+    geom_xquat_in: wp.array2d[wp.quat],
     body_awake_in: wp.array2d[int],
     nworld_in: int,
     naconmax_in: int,
@@ -610,7 +611,7 @@ def _sap_broadphase(
           pair_margin,
           pair_gap,
           geom_xpos_in,
-          geom_xmat_in,
+          geom_xquat_in,
           geom1,
           geom2,
           pairid[0],
@@ -796,7 +797,7 @@ def sap_broadphase(
       m.pair_gap,
       m.nxn_pairid,
       d.geom_xpos,
-      d.geom_xmat,
+      d.geom_xquat,
       d.body_awake,
       d.nworld,
       d.naconmax,
@@ -843,7 +844,7 @@ def _nxn_broadphase(
     nxn_pairid: wp.array[wp.vec2i],
     # Data in:
     geom_xpos_in: wp.array2d[wp.vec3],
-    geom_xmat_in: wp.array2d[wp.mat33],
+    geom_xquat_in: wp.array2d[wp.quat],
     body_awake_in: wp.array2d[int],
     naconmax_in: int,
     # In:
@@ -913,7 +914,7 @@ def _nxn_broadphase(
         pair_margin,
         pair_gap,
         geom_xpos_in,
-        geom_xmat_in,
+        geom_xquat_in,
         geom1,
         geom2,
         pairid[0],
@@ -1022,7 +1023,7 @@ def nxn_broadphase(
         m.nxn_geom_pair_filtered,
         m.nxn_pairid_filtered,
         d.geom_xpos,
-        d.geom_xmat,
+        d.geom_xquat,
         d.body_awake,
         d.naconmax,
         awake_prev_in,

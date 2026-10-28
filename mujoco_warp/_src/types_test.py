@@ -67,7 +67,7 @@ class TypesTest(parameterized.TestCase):
         idx = mj_fields.index("flexvert_xpos") + 1
         mj_fields[idx:idx] = ["flex_hessian_valid", "flexvert_hessian", "flexedge_hessian"]
       # quaternion fields take the place of the rotation matrices they replace
-      quat_of_mat = {"ximat": "xiquat"}
+      quat_of_mat = {"ximat": "xiquat", "geom_xmat": "geom_xquat"}
       mj_fields = [quat_of_mat.get(f, f) for f in mj_fields]
     mj_set, mjw_set = set(mj_fields), set(mjw_fields)
 

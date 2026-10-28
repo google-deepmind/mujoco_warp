@@ -4676,7 +4676,7 @@ def _add_surface_vel(is_pyramidal: bool):
     geom_surfacevel: wp.array2d[vec6],
     # Data in:
     geom_xpos_in: wp.array2d[wp.vec3],
-    geom_xmat_in: wp.array2d[wp.mat33],
+    geom_xquat_in: wp.array2d[wp.quat],
     contact_efc_address_in: wp.array2d[int],
     nacon_in: wp.array[int],
     # In:
@@ -4725,7 +4725,7 @@ def _add_surface_vel(is_pyramidal: bool):
     if has_sv0:
       vw0, ww0 = _geom_surface_velocity(
         geom_xpos_in[geom_x_id, g0],
-        geom_xmat_in[geom_x_id, g0],
+        math.quat_to_mat(geom_xquat_in[geom_x_id, g0]),
         sv0,
         pos,
       )
@@ -4735,7 +4735,7 @@ def _add_surface_vel(is_pyramidal: bool):
     if has_sv1:
       vw1, ww1 = _geom_surface_velocity(
         geom_xpos_in[geom_x_id, g1],
-        geom_xmat_in[geom_x_id, g1],
+        math.quat_to_mat(geom_xquat_in[geom_x_id, g1]),
         sv1,
         pos,
       )
@@ -5622,7 +5622,7 @@ def make_constraint(m: types.Model, d: types.Data):
           inputs=[
             m.geom_surfacevel,
             d.geom_xpos,
-            d.geom_xmat,
+            d.geom_xquat,
             d.contact.efc_address,
             d.nacon,
             d.contact.pos,

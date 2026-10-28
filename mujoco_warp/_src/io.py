@@ -1864,7 +1864,7 @@ def _initial_body_awake(mjm: mujoco.MjModel, nworld: int, init_asleep: bool) -> 
 
 
 # Data quaternion fields whose mjData counterpart is a rotation matrix.
-_QUAT_FROM_MAT = {"xiquat": "ximat"}
+_QUAT_FROM_MAT = {"xiquat": "ximat", "geom_xquat": "geom_xmat"}
 
 
 def _quat_to_mat(quat: np.ndarray) -> np.ndarray:
@@ -2033,7 +2033,7 @@ def make_data(
     efc.J_colind = wp.zeros((nworld, 0, 0), dtype=int)
     efc.J = wp.zeros((nworld, sizes["njmax_pad"], sizes["nv_pad"]), dtype=float)
 
-  # Compute initial kinematic state. Static geom positions (geom_xpos, geom_xmat) are set here
+  # Compute initial kinematic state. Static geom positions (geom_xpos, geom_xquat) are set here
   # and never updated by the physics loop (see smooth.py geom_kinematics), so this call is the
   # only place they are initialized. Also seeds body poses (xquat, xiquat) at qpos0.
   mjd = mujoco.MjData(mjm)
@@ -2060,7 +2060,7 @@ def make_data(
     "xiquat": wp.array(np.tile(_mat_to_quat(mjd.ximat), (nworld, 1)), shape=(nworld, mjm.nbody), dtype=wp.quat),
     # static geoms
     "geom_xpos": wp.array(np.tile(mjd.geom_xpos, (nworld, 1)), shape=(nworld, mjm.ngeom), dtype=wp.vec3),
-    "geom_xmat": wp.array(np.tile(mjd.geom_xmat, (nworld, 1)), shape=(nworld, mjm.ngeom), dtype=wp.mat33),
+    "geom_xquat": wp.array(np.tile(_mat_to_quat(mjd.geom_xmat), (nworld, 1)), shape=(nworld, mjm.ngeom), dtype=wp.quat),
     # mocap
     "mocap_pos": wp.array(np.tile(mjm.body_pos[mocap_body[mocap_id]], (nworld, 1)), shape=(nworld, mjm.nmocap), dtype=wp.vec3),
     "mocap_quat": wp.array(
@@ -2543,7 +2543,7 @@ def get_data_into(
   result.xanchor[:] = d.xanchor.numpy()[world_id]
   result.xaxis[:] = d.xaxis.numpy()[world_id]
   result.geom_xpos[:] = d.geom_xpos.numpy()[world_id]
-  result.geom_xmat[:] = d.geom_xmat.numpy()[world_id].reshape((-1, 9))
+  result.geom_xmat[:] = _quat_to_mat(d.geom_xquat.numpy()[world_id]).reshape((-1, 9))
   result.site_xpos[:] = d.site_xpos.numpy()[world_id]
   result.site_xmat[:] = d.site_xmat.numpy()[world_id].reshape((-1, 9))
   result.cam_xpos[:] = d.cam_xpos.numpy()[world_id]

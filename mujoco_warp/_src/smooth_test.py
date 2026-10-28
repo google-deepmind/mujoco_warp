@@ -151,7 +151,7 @@ class SmoothTest(parameterized.TestCase):
       _assert_eq(d.xipos.numpy()[i], mjd.xipos, "xipos")
       _assert_eq(test_data.quat_to_mat(d.xiquat.numpy()[i]), mjd.ximat.reshape((-1, 3, 3)), "ximat")
       _assert_eq(d.geom_xpos.numpy()[i], mjd.geom_xpos, "geom_xpos")
-      _assert_eq(d.geom_xmat.numpy()[i], mjd.geom_xmat.reshape((-1, 3, 3)), "geom_xmat")
+      _assert_eq(test_data.quat_to_mat(d.geom_xquat.numpy()[i]), mjd.geom_xmat.reshape((-1, 3, 3)), "geom_xmat")
       _assert_eq(d.site_xpos.numpy()[i], mjd.site_xpos, "site_xpos")
       _assert_eq(d.site_xmat.numpy()[i], mjd.site_xmat.reshape((-1, 3, 3)), "site_xmat")
       _assert_eq(d.mocap_pos.numpy()[i], mjd.mocap_pos, "mocap_pos")
