@@ -902,7 +902,7 @@ def _implicit_free_body(
   xpos_in: wp.array2d[wp.vec3],
   xquat_in: wp.array2d[wp.quat],
   xipos_in: wp.array2d[wp.vec3],
-  ximat_in: wp.array2d[wp.mat33],
+  xiquat_in: wp.array2d[wp.quat],
   geom_xpos_in: wp.array2d[wp.vec3],
   geom_xmat_in: wp.array2d[wp.mat33],
   subtree_com_in: wp.array2d[wp.vec3],
@@ -1069,7 +1069,7 @@ def _implicit_free_body(
 
       elif body_mass[worldid % body_mass.shape[0], b] >= MJ_MINVAL:
         b_ipos = xipos_in[worldid, b]
-        b_imat = ximat_in[worldid, b]
+        b_imat = math.quat_to_mat(xiquat_in[worldid, b])
 
         cvel = cvel_in[worldid, b]
         v_subtree_ang = wp.vec3(cvel[0], cvel[1], cvel[2])
@@ -1177,7 +1177,7 @@ def implicit_free_body(m: Model, d: Data, vec_in: wp.array2d[float], vec_out: wp
       d.xpos,
       d.xquat,
       d.xipos,
-      d.ximat,
+      d.xiquat,
       d.geom_xpos,
       d.geom_xmat,
       d.subtree_com,

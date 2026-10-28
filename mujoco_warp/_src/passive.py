@@ -434,7 +434,7 @@ def _fluid_force(
   body_fluid_ellipsoid: wp.array[bool],
   # Data in:
   xipos_in: wp.array2d[wp.vec3],
-  ximat_in: wp.array2d[wp.mat33],
+  xiquat_in: wp.array2d[wp.quat],
   geom_xpos_in: wp.array2d[wp.vec3],
   geom_xmat_in: wp.array2d[wp.mat33],
   subtree_com_in: wp.array2d[wp.vec3],
@@ -462,7 +462,7 @@ def _fluid_force(
 
   # Body kinematics
   xipos = xipos_in[worldid, bodyid]
-  rot = ximat_in[worldid, bodyid]
+  rot = math.quat_to_mat(xiquat_in[worldid, bodyid])
   rotT = wp.transpose(rot)
   cvel = cvel_in[worldid, bodyid]
   ang_global = wp.spatial_top(cvel)
@@ -665,7 +665,7 @@ def _fluid(m: Model, d: Data):
       m.geom_fluid,
       m.body_fluid_ellipsoid,
       d.xipos,
-      d.ximat,
+      d.xiquat,
       d.geom_xpos,
       d.geom_xmat,
       d.subtree_com,

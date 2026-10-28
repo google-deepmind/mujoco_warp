@@ -1187,7 +1187,7 @@ def _qderiv_box_fluid(deterministic: bool = False):
     M_elemid: wp.array2d[int],
     # Data in:
     xipos_in: wp.array2d[wp.vec3],
-    ximat_in: wp.array2d[wp.mat33],
+    xiquat_in: wp.array2d[wp.quat],
     subtree_com_in: wp.array2d[wp.vec3],
     cdof_in: wp.array2d[wp.spatial_vector],
     cvel_in: wp.array2d[wp.spatial_vector],
@@ -1226,7 +1226,7 @@ def _qderiv_box_fluid(deterministic: bool = False):
 
     # Body velocity and kinematics
     b_ipos = xipos_in[worldid, bodyid]
-    b_imat = ximat_in[worldid, bodyid]
+    b_imat = math.quat_to_mat(xiquat_in[worldid, bodyid])
     subtree_root = subtree_com_in[worldid, body_rootid[bodyid]]
 
     vel_subtree = cvel_in[worldid, bodyid]
@@ -1434,7 +1434,7 @@ def deriv_smooth_vel(m: Model, d: Data, out: wp.array2d[float]):
         m.body_isdofancestor,
         m.M_elemid,
         d.xipos,
-        d.ximat,
+        d.xiquat,
         d.subtree_com,
         d.cdof,
         d.cvel,
@@ -3663,7 +3663,7 @@ def eff_shift(m: Model, d: Data):
         m.body_isdofancestor,
         m.M_elemid,
         d.xipos,
-        d.ximat,
+        d.xiquat,
         d.subtree_com,
         d.cdof,
         d.cvel,

@@ -1863,6 +1863,10 @@ def _initial_body_awake(mjm: mujoco.MjModel, nworld: int, init_asleep: bool) -> 
   return body_awake_np
 
 
+# Data quaternion fields whose mjData counterpart is a rotation matrix.
+_QUAT_FROM_MAT = {"xiquat": "ximat"}
+
+
 def _quat_to_mat(quat: np.ndarray) -> np.ndarray:
   """Rotation matrices (..., 3, 3) of quaternions (..., 4), computed like math.quat_to_mat."""
   q0, q1, q2, q3 = np.moveaxis(quat, -1, 0)
@@ -2031,7 +2035,7 @@ def make_data(
 
   # Compute initial kinematic state. Static geom positions (geom_xpos, geom_xmat) are set here
   # and never updated by the physics loop (see smooth.py geom_kinematics), so this call is the
-  # only place they are initialized. Also seeds body poses (xquat, ximat) at qpos0.
+  # only place they are initialized. Also seeds body poses (xquat, xiquat) at qpos0.
   mjd = mujoco.MjData(mjm)
   mujoco.mj_kinematics(mjm, mjd)
 
@@ -2053,7 +2057,7 @@ def make_data(
     "njmax_nnz": njmax_nnz,
     # world body
     "xquat": wp.array(np.tile(mjd.xquat, (nworld, 1)), shape=(nworld, mjm.nbody), dtype=wp.quat),
-    "ximat": wp.array(np.tile(mjd.ximat, (nworld, 1)), shape=(nworld, mjm.nbody), dtype=wp.mat33),
+    "xiquat": wp.array(np.tile(_mat_to_quat(mjd.ximat), (nworld, 1)), shape=(nworld, mjm.nbody), dtype=wp.quat),
     # static geoms
     "geom_xpos": wp.array(np.tile(mjd.geom_xpos, (nworld, 1)), shape=(nworld, mjm.ngeom), dtype=wp.vec3),
     "geom_xmat": wp.array(np.tile(mjd.geom_xmat, (nworld, 1)), shape=(nworld, mjm.ngeom), dtype=wp.mat33),
@@ -2387,7 +2391,9 @@ def put_data(
     if f.name in d_kwargs:
       continue
     val = getattr(mjd, f.name, None)
-    if f.name == "efm_K_val" and val is not None and val.size != sizes["nefmK"]:
+    if f.name in _QUAT_FROM_MAT:
+      val = _mat_to_quat(getattr(mjd, _QUAT_FROM_MAT[f.name]))
+    elif f.name == "efm_K_val" and val is not None and val.size != sizes["nefmK"]:
       val = efm_d.efm_K_val if efm_d else None
     elif f.name == "efm_L" and val is not None:
       val = (efm_d.efm_L if (val.size < sizes["nefmL"] and efm_d) else val)[: sizes["nefmL"]]
@@ -2533,7 +2539,7 @@ def get_data_into(
   result.xquat[:] = d.xquat.numpy()[world_id]
   result.xmat[:] = _quat_to_mat(d.xquat.numpy()[world_id]).reshape((-1, 9))
   result.xipos[:] = d.xipos.numpy()[world_id]
-  result.ximat[:] = d.ximat.numpy()[world_id].reshape((-1, 9))
+  result.ximat[:] = _quat_to_mat(d.xiquat.numpy()[world_id]).reshape((-1, 9))
   result.xanchor[:] = d.xanchor.numpy()[world_id]
   result.xaxis[:] = d.xaxis.numpy()[world_id]
   result.geom_xpos[:] = d.geom_xpos.numpy()[world_id]
