@@ -376,8 +376,11 @@ class SmoothTest(parameterized.TestCase):
     """Tests force and torque sensor readings on weld lever models."""
     mjm, _, m, d = test_data.fixture(xml=xml)
 
-    for _ in range(20):
+    with wp.ScopedCapture() as capture:
       mjw.step(m, d)
+
+    for _ in range(20):
+      wp.capture_launch(capture.graph)
 
     _assert_eq(d.sensordata.numpy()[0], mjm.sensor_user.flatten(), "weld force/torque sensor readings")
 
@@ -921,6 +924,83 @@ class SmoothTest(parameterized.TestCase):
     _assert_eq(d.actuator_length.numpy()[0], mjd.actuator_length, "actuator_length")
     _assert_eq(actuator_moment, mj_actuator_moment, "actuator_moment")
 
+  @parameterized.parameters(1, 2)
+  def test_transmission_refsite_quat(self, nworld):
+    """Tests refsite rotational transmission with non-identity body and site quaternions."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <body quat="1 1 0 0">
+            <site name="reference" quat="1 0 1 0"/>
+          </body>
+          <body name="box">
+            <freejoint/>
+            <geom type="box" size=".05 .07 .03"/>
+            <site name="end_effector" quat="1 1 1 1"/>
+          </body>
+        </worldbody>
+        <actuator>
+          <position name="rx" site="end_effector" refsite="reference" gear="0 0 0 1 0 0"/>
+          <position name="ry" site="end_effector" refsite="reference" gear="0 0 0 0 1 0"/>
+          <position name="rz" site="end_effector" refsite="reference" gear="0 0 0 0 0 1"/>
+        </actuator>
+      </mujoco>
+      """,
+      nworld=nworld,
+    )
+
+    mjds = [mjd]
+    if nworld == 2:
+      mjd1 = mujoco.MjData(mjm)
+      qpos = d.qpos.numpy()
+      qpos[1, 3:7] = [0.5, 0.5, -0.5, 0.5]
+      d.qpos.assign(qpos)
+      mjd1.qpos[:] = qpos[1]
+      mujoco.mj_forward(mjm, mjd1)
+      mjds.append(mjd1)
+      mjw.kinematics(m, d)
+      mjw.com_pos(m, d)
+
+    for arr in (d.actuator_length, d.actuator_moment):
+      arr.fill_(wp.inf)
+    for arr in (d.moment_rownnz, d.moment_rowadr, d.moment_colind):
+      arr.fill_(-1)
+
+    mjw.transmission(m, d)
+
+    _assert_eq(d.actuator_length.numpy()[0], np.zeros(3), "actuator_length_world_0_zero")
+
+    for w in range(nworld):
+      ref_quat = np.zeros(4)
+      site_quat = np.zeros(4)
+      expected_length = np.zeros(3)
+      mujoco.mju_mat2Quat(ref_quat, mjds[w].site_xmat[0])
+      mujoco.mju_mat2Quat(site_quat, mjds[w].site_xmat[1])
+      mujoco.mju_subQuat(expected_length, site_quat, ref_quat)
+      _assert_eq(d.actuator_length.numpy()[w], expected_length, f"actuator_length_world_{w}")
+
+      mj_actuator_moment = np.zeros((mjm.nu, mjm.nv))
+      mujoco.mju_sparse2dense(
+        mj_actuator_moment,
+        mjds[w].actuator_moment,
+        mjds[w].moment_rownnz,
+        mjds[w].moment_rowadr,
+        mjds[w].moment_colind,
+      )
+      actuator_moment = np.zeros((mjm.nu, mjm.nv))
+      mujoco.mju_sparse2dense(
+        actuator_moment,
+        d.actuator_moment.numpy()[w],
+        d.moment_rownnz.numpy()[w],
+        d.moment_rowadr.numpy()[w],
+        d.moment_colind.numpy()[w],
+      )
+      _assert_eq(actuator_moment, mj_actuator_moment, f"actuator_moment_world_{w}")
+
+    if nworld == 2:
+      self.assertFalse(np.allclose(d.actuator_length.numpy()[0], d.actuator_length.numpy()[1]))
+
   @parameterized.product(
     keyframe=list(range(4)), cone=list(ConeType), jacobian=[mujoco.mjtJacobian.mjJAC_DENSE, mujoco.mjtJacobian.mjJAC_SPARSE]
   )
@@ -1430,6 +1510,107 @@ class SmoothTest(parameterized.TestCase):
     mjw._src.smooth.rne(m, d)
     mjw._src.smooth.tendon_bias(m, d, d.qfrc_bias)
     _assert_eq(d.qfrc_bias.numpy()[0], mjd.qfrc_bias, "qfrc_bias")
+
+  @parameterized.product(jacobian=(mujoco.mjtJacobian.mjJAC_SPARSE, mujoco.mjtJacobian.mjJAC_DENSE), nworld=(1, 2))
+  def test_actuator_armature(self, jacobian, nworld):
+    """Tests actuator armature contribution to joint and tendon armature."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option gravity="0 0 -10"/>
+        <worldbody>
+          <site name="s0" pos="0 0 .5"/>
+          <body>
+            <joint name="j0" axis="0 1 0"/>
+            <geom type="capsule" size=".05" fromto="0 0 0 .3 0 0"/>
+            <site name="s1" pos=".2 0 .05"/>
+            <body pos=".3 0 0">
+              <joint name="j1" axis="0 1 0"/>
+              <geom type="capsule" size=".05" fromto="0 0 0 .3 0 0"/>
+              <site name="s2" pos=".2 0 .05"/>
+              <body pos=".3 0 0">
+                <joint name="j2" type="slide" axis="1 0 0"/>
+                <geom size=".05"/>
+              </body>
+            </body>
+          </body>
+        </worldbody>
+        <tendon>
+          <fixed name="t0">
+            <joint joint="j1" coef="1"/>
+            <joint joint="j2" coef="-.5"/>
+          </fixed>
+          <spatial name="t1">
+            <site site="s0"/>
+            <site site="s1"/>
+          </spatial>
+          <spatial name="t2" damping=".2">
+            <site site="s0"/>
+            <site site="s2"/>
+          </spatial>
+        </tendon>
+        <actuator>
+          <motor joint="j0" gear="2" armature=".3"/>
+          <motor joint="j0" gear="-3" armature=".1"/>
+          <general jointinparent="j1" gear="1.5" armature=".2"/>
+          <motor tendon="t0" gear="2" armature=".4"/>
+          <motor tendon="t1" gear="2" armature=".4" damping=".3 .1 0"/>
+          <motor tendon="t2" gear="1.5" armature=".2"/>
+          <motor tendon="t2" gear="-3" armature=".1" damping=".2"/>
+        </actuator>
+        <keyframe>
+          <key qpos=".3 -.4 .05" qvel="1.5 -2 .5"/>
+        </keyframe>
+      </mujoco>
+      """,
+      keyframe=0,
+      nworld=nworld,
+      overrides={"opt.jacobian": jacobian},
+      batch_sizes={"actuator_armature": nworld, "actuator_gear": nworld},
+    )
+
+    # actuator armature is not folded into joint and tendon armature
+    _assert_eq(m.dof_armature.numpy()[0], mjm.dof_armature, "dof_armature")
+    _assert_eq(m.tendon_armature.numpy()[0], mjm.tendon_armature, "tendon_armature")
+
+    armature = np.tile(mjm.actuator_armature, (nworld, 1))
+    gear = np.tile(mjm.actuator_gear, (nworld, 1, 1))
+    if nworld == 2:
+      armature[1] *= 2.0
+      gear[1] *= 0.5
+    m.actuator_armature.assign(armature)
+    m.actuator_gear.assign(gear)
+
+    d.M.fill_(wp.inf)
+    mjw._src.smooth.crb(m, d)
+    mjw._src.smooth.tendon_armature(m, d)
+    M = d.M.numpy()
+
+    d.qfrc_bias.fill_(wp.inf)
+    mjw._src.smooth.rne(m, d)
+    mjw._src.smooth.tendon_bias(m, d, d.qfrc_bias)
+    qfrc_bias = d.qfrc_bias.numpy()
+
+    d.qacc.fill_(wp.inf)
+    mjw.forward(m, d)
+    for arr in (d.cacc, d.cfrc_int, d.cfrc_ext):
+      arr.fill_(wp.inf)
+    mjw.rne_postconstraint(m, d)
+
+    for world in range(nworld):
+      mjm.actuator_armature[:] = armature[world]
+      mjm.actuator_gear[:] = gear[world]
+      mujoco.mj_forward(mjm, mjd)
+      mujoco.mj_rnePostConstraint(mjm, mjd)
+      _assert_eq(M[world], mjd.M, f"M_world_{world}")
+      _assert_eq(qfrc_bias[world], mjd.qfrc_bias, f"qfrc_bias_world_{world}")
+      _assert_eq(d.qacc.numpy()[world], mjd.qacc, f"qacc_world_{world}")
+      _assert_eq(d.cacc.numpy()[world], mjd.cacc, f"cacc_world_{world}")
+      _assert_eq(d.cfrc_int.numpy()[world], mjd.cfrc_int, f"cfrc_int_world_{world}")
+      _assert_eq(d.cfrc_ext.numpy()[world], mjd.cfrc_ext, f"cfrc_ext_world_{world}")
+    if nworld == 2:
+      self.assertFalse(np.allclose(M[0], M[1]))
+      self.assertFalse(np.allclose(qfrc_bias[0], qfrc_bias[1]))
 
 
 if __name__ == "__main__":

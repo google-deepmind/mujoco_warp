@@ -17,14 +17,17 @@
 
 from typing import Tuple
 
+import mujoco
 import numpy as np
 import warp as wp
 from absl.testing import absltest
 from absl.testing import parameterized
 
+import mujoco_warp as mjw
 from mujoco_warp._src import util_misc
 from mujoco_warp._src.types import MJ_MAXVAL
 from mujoco_warp._src.types import MJ_MINVAL
+from mujoco_warp._src.types import ObjType
 from mujoco_warp._src.types import WrapType
 from mujoco_warp._src.types import vec10
 
@@ -426,6 +429,69 @@ def _dcmotor_resistance(
   return float(res.numpy()[0])
 
 
+# multiple actuators on tendon t1 and a joint actuator on j1 with the same transmission id
+_TENDON_ACTUATORS = """
+          <motor tendon="t1" gear="2" damping="3 .5 .1" armature=".5"/>
+          <motor joint="j1" gear="10" damping="100" armature="100"/>
+          <motor tendon="t0" gear="4" damping="1" armature=".25"/>
+          <motor tendon="t1" gear="-3" damping="1 .2 0" armature="2"/>
+"""
+
+
+def _actuator_damping_armature(xml: str, objtype: int, objid: int) -> Tuple[float, np.ndarray, float]:
+  mjm = mujoco.MjModel.from_xml_string(xml)
+  m = mjw.put_model(mjm)
+  actuatorid = mjm.jnt_actuatorid[objid] if objtype == ObjType.JOINT else mjm.tendon_actuatorid[objid]
+  damping = wp.empty(1, dtype=float)
+  dpoly = wp.empty(1, dtype=wp.vec2)
+  armature = wp.empty(1, dtype=float)
+
+  @wp.kernel(module="unique")
+  def actuator_damping_armature(
+    # Model:
+    actuator_trntype: wp.array[int],
+    actuator_trnid: wp.array[wp.vec2i],
+    actuator_damping: wp.array2d[float],
+    actuator_dampingpoly: wp.array2d[wp.vec2],
+    actuator_armature: wp.array2d[float],
+    actuator_gear: wp.array2d[wp.spatial_vector],
+    # In:
+    objtype: int,
+    objid: int,
+    actuatorid: int,
+    # Out:
+    damping_out: wp.array[float],
+    dpoly_out: wp.array[wp.vec2],
+    armature_out: wp.array[float],
+  ):
+    damping, dpoly = util_misc.actuator_target_damping(
+      actuator_trntype, actuator_trnid, actuator_damping, actuator_dampingpoly, actuator_gear, 0, objtype, objid, actuatorid
+    )
+    damping_out[0] = damping
+    dpoly_out[0] = dpoly
+    armature_out[0] = util_misc.actuator_target_armature(
+      actuator_trntype, actuator_trnid, actuator_armature, actuator_gear, 0, objtype, objid, actuatorid
+    )
+
+  wp.launch(
+    actuator_damping_armature,
+    dim=(1,),
+    inputs=[
+      m.actuator_trntype,
+      m.actuator_trnid,
+      m.actuator_damping,
+      m.actuator_dampingpoly,
+      m.actuator_armature,
+      m.actuator_gear,
+      int(objtype),
+      int(objid),
+      int(actuatorid),
+    ],
+    outputs=[damping, dpoly, armature],
+  )
+  return damping.numpy()[0], dpoly.numpy()[0], armature.numpy()[0]
+
+
 class UtilMiscTest(parameterized.TestCase):
   def test_is_intersect(self):
     self.assertFalse(
@@ -607,6 +673,7 @@ class UtilMiscTest(parameterized.TestCase):
 
     for end, radius, pnt in (
       (np.array([2.0, 0.0, -0.7, 0.7]), 0.5, np.array([0.125786, 0.483919])),
+      (np.array([2.0, 0.0, -0.7, -0.7]), 0.5, np.array([0.125786, -0.483919])),
       (np.array([1.0, 0.0, -1.4, 1.4]), 0.5, np.array([0.251405, 0.432199])),
       (np.array([1.666667, 0.0, -2.185531, 1.213859]), 0.5, np.array([0.150223, 0.4769])),
       (np.array([1.0, 0.0, -1.425755, 1.402577]), 0.5, np.array([0.2502, 0.432897])),
@@ -839,6 +906,49 @@ class UtilMiscTest(parameterized.TestCase):
 
   # TODO(team): test util_misc.muscle_gain
   # TODO(team): test util_misc.muscle_bias
+
+  @parameterized.named_parameters(
+    # C UtilityFunctionValues
+    ("values", '<motor joint="j0" gear="5" damping="7" armature="3"/>', ObjType.JOINT, 0, 175.0, [0.0, 0.0], 75.0),
+    # C NonlinearDamping
+    ("nonlinear", '<motor joint="j0" gear="3" damping="2 0.5 0.1"/>', ObjType.JOINT, 0, 18.0, [4.5, 0.9], 0.0),
+    ("tendon_single", _TENDON_ACTUATORS, ObjType.TENDON, 0, 16.0, [0.0, 0.0], 4.0),
+    ("tendon_multiple", _TENDON_ACTUATORS, ObjType.TENDON, 1, 3.0 * 4 + 9, [0.5 * 4 + 0.2 * 9, 0.1 * 4], 0.5 * 4 + 2.0 * 9),
+  )
+  def test_actuator_damping_armature(self, actuators, objtype, objid, damping, dpoly, armature):
+    """Tests actuator damping and armature contributions to joints and tendons."""
+    actual_damping, actual_dpoly, actual_armature = _actuator_damping_armature(
+      f"""
+      <mujoco>
+        <worldbody>
+          <body>
+            <joint name="j0" type="slide" axis="1 0 0"/>
+            <geom size="1"/>
+          </body>
+          <body pos="3 0 0">
+            <joint name="j1" type="slide" axis="1 0 0"/>
+            <geom size="1"/>
+          </body>
+        </worldbody>
+        <tendon>
+          <fixed name="t0">
+            <joint joint="j0" coef="1"/>
+          </fixed>
+          <fixed name="t1">
+            <joint joint="j1" coef="1"/>
+          </fixed>
+        </tendon>
+        <actuator>
+          {actuators}
+        </actuator>
+      </mujoco>
+      """,
+      objtype,
+      objid,
+    )
+    _assert_eq(actual_damping, damping, "damping")
+    _assert_eq(actual_dpoly, dpoly, "dpoly")
+    _assert_eq(actual_armature, armature, "armature")
 
 
 if __name__ == "__main__":
