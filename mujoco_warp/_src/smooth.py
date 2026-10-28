@@ -706,13 +706,12 @@ def _subtree_div(
   subtree_com_out: wp.array2d[wp.vec3],
 ):
   worldid, bodyid = wp.tid()
-  com = subtree_com_in[worldid, bodyid]
   mass = body_subtreemass[worldid % body_subtreemass.shape[0], bodyid]
   # massless subtree: use the body inertial frame, as in mj_comPos
   if mass < MJ_MINVAL:
     subtree_com_out[worldid, bodyid] = xipos_in[worldid, bodyid]
   else:
-    subtree_com_out[worldid, bodyid] = com / mass
+    subtree_com_out[worldid, bodyid] = subtree_com_in[worldid, bodyid] / mass
 
 
 @wp.kernel
