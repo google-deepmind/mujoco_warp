@@ -59,7 +59,7 @@ def volume_gradient_step_test(volume: VolumeData, result_out: wp.array[wp.vec4])
   params.rel_mat = wp.identity(3, dtype=float)
   mesh = MeshData()
   dist, point = gradient_step(
-    types.GeomType.SDF, wp.vec3(1e-6, 1e-4, 1e-4), params, -1, -1, 1, True, volume, volume, mesh, mesh
+    types.GeomType.SDF, wp.vec3(1e-6, 1e-4, 1e-4), params, -1, -1, 1, True, 2.0, volume, volume, mesh, mesh
   )
   result_out[0] = wp.vec4(point[0], point[1], point[2], dist)
 
