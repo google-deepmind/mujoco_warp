@@ -2275,7 +2275,9 @@ def put_data(
     np.pad(np.tile(con_type, nworld), (0, naconmax - nworld * mjd.ncon), constant_values=1),
     dtype=int,
   )
-  contact.geomcollisionid = wp.empty((naconmax,), dtype=int)  # TODO(team): set values
+  # Native contacts have no collision-local ID and are not collision-sensor contacts.
+  # Use a neutral tie breaker; physical contact fields distinguish imported contacts.
+  contact.geomcollisionid = wp.zeros((naconmax,), dtype=int)
 
   # create efc
   efc = _create_constraint(mjm, nworld, njmax, sizes, mjd)

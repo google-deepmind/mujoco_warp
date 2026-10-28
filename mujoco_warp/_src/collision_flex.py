@@ -2261,6 +2261,7 @@ def _write_filtered_contacts(warn_overflow: int):
     contact_flex_out: wp.array[wp.vec2i],
     contact_elem_out: wp.array[wp.vec2i],
     contact_vert_out: wp.array[wp.vec2i],
+    contact_efc_address_out: wp.array2d[int],
     contact_worldid_out: wp.array[int],
     contact_type_out: wp.array[int],
     contact_geomcollisionid_out: wp.array[int],
@@ -2356,6 +2357,8 @@ def _write_filtered_contacts(warn_overflow: int):
       return
 
     contact_dist_out[id_] = cand_dist[i]
+    for dim in range(contact_efc_address_out.shape[1]):
+      contact_efc_address_out[id_, dim] = -1
     contact_pos_out[id_] = cand_pos[i]
     contact_frame_out[id_] = make_frame(cand_nrm[i])
     if geomid >= 0 and geom_type[geomid] == int(GeomType.PLANE):
@@ -3221,6 +3224,7 @@ def _filter_and_write_contacts(
       d.contact.flex,
       d.contact.elem,
       d.contact.vert,
+      d.contact.efc_address,
       d.contact.worldid,
       d.contact.type,
       d.contact.geomcollisionid,

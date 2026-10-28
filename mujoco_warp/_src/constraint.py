@@ -2510,6 +2510,10 @@ def _efc_contact_init(cone_type: types.ConeType, is_sparse: bool, newton: bool, 
     if conid >= nacon_in[0]:
       return
 
+    # Reused contact slots may contain addresses from a different contact dimension.
+    for dim in range(contact_efc_address_out.shape[1]):
+      contact_efc_address_out[conid, dim] = -1
+
     if not (type_in[conid] & ContactType.CONSTRAINT):
       return
 
@@ -2648,6 +2652,10 @@ def _efc_contact_init_flex(cone_type: types.ConeType, is_sparse: bool, newton: b
 
     if conid >= nacon_in[0]:
       return
+
+    # Reused contact slots may contain addresses from a different contact dimension.
+    for dim in range(contact_efc_address_out.shape[1]):
+      contact_efc_address_out[conid, dim] = -1
 
     if not (type_in[conid] & ContactType.CONSTRAINT):
       return
