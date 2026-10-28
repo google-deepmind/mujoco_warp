@@ -35,6 +35,7 @@ from mujoco_warp._src.types import EqType
 from mujoco_warp._src.types import JointType
 from mujoco_warp._src.types import Model
 from mujoco_warp._src.types import ObjType
+from mujoco_warp._src.types import SolverType
 from mujoco_warp._src.types import TileSet
 from mujoco_warp._src.types import TrnType
 from mujoco_warp._src.types import WrapType
@@ -3980,6 +3981,18 @@ def solve_LD(
     _solve_blocks(m, d, L, D, x, y)
   if L.shape[1] > m.qLD_block_total:
     _solve_LD_sparse(m, d, L[:, m.qLD_block_total :], D, x, y, x_scratch=x_scratch)
+
+
+def skip_qacc_smooth(m: Model, d: Data) -> bool:
+  """Whether qacc_smooth and its factorization are skipped (opt.run_qacc_smooth)."""
+  return (
+    (not m.opt.run_qacc_smooth)
+    and (m.opt.solver == SolverType.NEWTON)
+    and (not (m.opt.disableflags & DisableBit.WARMSTART))
+    and (m.opt.noslip_iterations == 0)
+    and (m.opt.iterations > 0)
+    and (d.njmax > 0)
+  )
 
 
 @event_scope

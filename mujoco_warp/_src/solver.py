@@ -1676,9 +1676,10 @@ def _linesearch(m: types.Model, d: types.Data, ctx: SolverContext):
 
 
 @cache_kernel
-def _solve_init_dof(warmstart: bool, sparse: bool):
+def _solve_init_dof(warmstart: bool, sparse: bool, run_qacc_smooth: bool):
   WARMSTART = warmstart
   SPARSE = sparse
+  RUN_QACC_SMOOTH = run_qacc_smooth
 
   @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
   def kernel(
@@ -1692,7 +1693,10 @@ def _solve_init_dof(warmstart: bool, sparse: bool):
   ):
     worldid, dofid = wp.tid()
 
-    if wp.static(WARMSTART):
+    if wp.static(not RUN_QACC_SMOOTH):
+      # without constraint rows, Newton reaches qacc_smooth in one step from the warmstart
+      qacc_out[worldid, dofid] = qacc_warmstart_in[worldid, dofid]
+    elif wp.static(WARMSTART):
       if nefc_in[worldid] > 0:
         qacc_out[worldid, dofid] = qacc_warmstart_in[worldid, dofid]
       else:
@@ -4109,7 +4113,7 @@ def _solve(m: types.Model, d: types.Data, ctx: SolverContext, compact: bool = Fa
 
   warmstart = not (m.opt.disableflags & types.DisableBit.WARMSTART)
   wp.launch(
-    _solve_init_dof(warmstart, m.is_sparse),
+    _solve_init_dof(warmstart, m.is_sparse, not smooth.skip_qacc_smooth(m, d)),
     dim=(d.nworld, m.nv),
     inputs=[d.nefc, d.qacc_warmstart, d.qacc_smooth],
     outputs=[d.qacc, d.qfrc_constraint],

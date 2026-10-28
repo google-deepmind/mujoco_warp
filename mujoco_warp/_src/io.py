@@ -475,6 +475,7 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
   opt.warn_overflow = int(types.OverflowType.ALL)
   opt.deterministic = int(types.DeterminismType.NONE)
   opt.run_rne_postconstraint = False
+  opt.run_qacc_smooth = True
   contact_sensor_maxmatch_id = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_NUMERIC, "contact_sensor_maxmatch")
   if contact_sensor_maxmatch_id > -1:
     opt.contact_sensor_maxmatch = mjm.numeric_data[mjm.numeric_adr[contact_sensor_maxmatch_id]]
@@ -3223,6 +3224,7 @@ def override_model(model: types.Model | mujoco.MjModel, overrides: dict[str, Any
     "opt.deterministic",
     "opt.run_collision_detection",
     "opt.run_rne_postconstraint",
+    "opt.run_qacc_smooth",
   }
   mj_only_fields = {"opt.jacobian", "vis.quality.offsamples"}
 

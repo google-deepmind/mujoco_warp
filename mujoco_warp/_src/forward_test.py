@@ -1001,6 +1001,135 @@ class ForwardTest(parameterized.TestCase):
     np.testing.assert_allclose(d.act.numpy()[0, 0], np.cos(2 * np.pi * frequency * t_next), atol=1e-3)
     np.testing.assert_allclose(d.act.numpy()[0, 1], np.sin(2 * np.pi * frequency * t_next), atol=1e-3)
 
+  @parameterized.product(
+    overrides=[
+      {},
+      {"opt.integrator": IntegratorType.IMPLICITFAST},
+      {"opt.integrator": IntegratorType.DISCRETE},
+      {"opt.jacobian": mujoco.mjtJacobian.mjJAC_SPARSE},
+      {"opt.enableflags": EnableBit.SLEEP},
+      {"opt.solver": SolverType.CG},
+      {"opt.disableflags": DisableBit.WARMSTART},
+      {"opt.noslip_iterations": 5},
+    ],
+    graph_conditional=(True, False),
+  )
+  def test_run_qacc_smooth(self, overrides, graph_conditional):
+    """Tests run_qacc_smooth option in forward and captured steps."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <geom type="plane" size="5 5 .1" margin=".02"/>
+          <body pos="0 0 .1">
+            <freejoint/>
+            <geom type="box" size=".1 .1 .1"/>
+            <body pos=".2 0 0">
+              <joint name="hinge" type="hinge" axis="0 1 0" damping=".5"/>
+              <geom type="capsule" fromto="0 0 0 .2 0 0" size=".03"/>
+            </body>
+          </body>
+          <body pos="1 0 .1">
+            <freejoint/>
+            <geom type="sphere" size=".1"/>
+          </body>
+        </worldbody>
+        <actuator>
+          <position joint="hinge" kp="20" kv="2"/>
+        </actuator>
+      </mujoco>
+      """,
+      qvel_noise=0.5,
+      ctrl_noise=0.5,
+      overrides=overrides | {"opt.graph_conditional": graph_conditional},
+      nworld=2,
+    )
+    # no effect with CG, disabled warmstart or noslip
+    skip = (
+      (m.opt.solver == SolverType.NEWTON)
+      and (not (m.opt.disableflags & DisableBit.WARMSTART))
+      and (m.opt.noslip_iterations == 0)
+    )
+
+    # world 1 in the air: no constraint rows
+    qpos = np.tile(mjd.qpos, (2, 1))
+    qpos[1, [2, 10]] += 1.0
+    qacc = []
+    for qpos_world in qpos:
+      mjd.qpos[:] = qpos_world
+      mujoco.mj_forward(mjm, mjd)
+      qacc.append(mjd.qacc.copy())
+    d.qpos.assign(qpos.astype(np.float32))
+    d.qacc_warmstart.zero_()
+    d_ref = mjw.put_data(mjm, mjd, nworld=2, nvmax=mjm.nv)
+    wp.copy(d_ref.qpos, d.qpos)
+    d_ref.qacc_warmstart.zero_()
+
+    # 1. forward: qacc matches run_qacc_smooth=True and MuJoCo, qacc_smooth is not computed
+    mjw.forward(m, d_ref)
+    m.opt.run_qacc_smooth = False
+    d.qacc.fill_(wp.inf)
+    d.qacc_smooth.fill_(wp.inf)
+    mjw.forward(m, d)
+
+    self.assertGreater(d.nefc.numpy()[0], 0)
+    self.assertEqual(d.nefc.numpy()[1], 0)
+    _assert_eq(d.qacc.numpy(), d_ref.qacc.numpy(), "qacc")
+    if m.opt.solver == SolverType.NEWTON:  # CG stops at its tolerance from a zero warmstart
+      for worldid in range(2):
+        _assert_eq(d.qacc.numpy()[worldid], qacc[worldid], f"qacc world {worldid}")
+    if skip:
+      self.assertTrue(np.isinf(d.qacc_smooth.numpy()).all(), "qacc_smooth should not be computed")
+    else:
+      _assert_eq(d.qacc_smooth.numpy(), d_ref.qacc_smooth.numpy(), "qacc_smooth")
+
+    # 2. captured steps match run_qacc_smooth=True
+    with wp.ScopedCapture() as capture:
+      mjw.step(m, d)
+    m.opt.run_qacc_smooth = True
+    with wp.ScopedCapture() as capture_ref:
+      mjw.step(m, d_ref)
+
+    for _ in range(10):
+      wp.capture_launch(capture.graph)
+      wp.capture_launch(capture_ref.graph)
+
+    _assert_eq(d.qpos.numpy(), d_ref.qpos.numpy(), "qpos")
+    _assert_eq(d.qvel.numpy(), d_ref.qvel.numpy(), "qvel")
+
+  @parameterized.parameters(IntegratorType.EULER, IntegratorType.IMPLICITFAST)
+  def test_run_qacc_smooth_inverse(self, integrator):
+    """Tests that inverse dynamics factorizes M with run_qacc_smooth=False."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <geom type="plane" size="5 5 .1" margin=".02"/>
+          <body pos="0 0 .1">
+            <freejoint/>
+            <geom type="box" size=".1 .1 .1"/>
+            <body pos=".2 0 0">
+              <joint name="hinge" type="hinge" axis="0 1 0" damping=".5"/>
+              <geom type="capsule" fromto="0 0 0 .2 0 0" size=".03"/>
+            </body>
+          </body>
+        </worldbody>
+        <actuator>
+          <position joint="hinge" kp="20" kv="2"/>
+        </actuator>
+      </mujoco>
+      """,
+      qvel_noise=0.5,
+      overrides={"opt.integrator": integrator, "opt.enableflags": EnableBit.INVDISCRETE, "opt.run_qacc_smooth": False},
+    )
+    mujoco.mj_inverse(mjm, mjd)
+
+    d.qLD.fill_(wp.inf)
+    d.qfrc_inverse.fill_(wp.inf)
+    mjw.inverse(m, d)
+
+    _assert_eq(d.qfrc_inverse.numpy()[0], mjd.qfrc_inverse, "qfrc_inverse")
+
 
 class DCMotorTest(parameterized.TestCase):
   def test_dcmotor_stateless_steady_state(self):
