@@ -632,7 +632,77 @@ class ConstraintTest(parameterized.TestCase):
     keyframe = 0 if "<keyframe>" in xml else None
     mjm, mjd, m, d = test_data.fixture(xml=xml, keyframe=keyframe, overrides={"opt.cone": cone, "opt.jacobian": jacobian})
 
+    d.efc.vel.fill_(wp.inf)
+    d.efc.aref.fill_(wp.inf)
     mjw.make_constraint(m, d)
+
+    self.assertGreater(mjd.nefc, 0)
+    _assert_efc_eq(mjm, m, d, mjd, mjd.nefc, "surfacevel", m.nv)
+
+  @absltest.skipIf(not util_pkg.check_version("mujoco>=3.17.1"), "Requires MuJoCo >= 3.17.1")
+  @parameterized.product(
+    cone=(ConeType.PYRAMIDAL, ConeType.ELLIPTIC),
+    nworld=(1, 2),
+  )
+  def test_contact_surfacevel_external(self, cone, nworld):
+    """Applies external contact.surfacevel when geom_surfacevel is zero."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <geom type="plane" size="2 2 0.01" condim="4" friction="0.8 0.02 0.001"/>
+          <body pos="0 0 0.095">
+            <freejoint/>
+            <geom size="0.1" condim="4" friction="0.8 0.02 0.001"/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """,
+      overrides={"opt.cone": cone},
+      nworld=nworld,
+    )
+    self.assertFalse(mjm.flg_surfacevel)
+    self.assertFalse(m.flg_surfacevel)
+    self.assertEqual(mjd.ncon, 1)
+
+    mjm.flg_surfacevel = 1
+    m.flg_surfacevel = True
+
+    sv_worlds = [np.array([0.4, -0.25, 0.8], dtype=np.float32)]
+    if nworld == 2:
+      sv_worlds.append(np.array([-0.3, 0.5, -0.6], dtype=np.float32))
+
+    sv_np = d.contact.surfacevel.numpy()
+    worldid = d.contact.worldid.numpy()[:nworld]
+    mjds = [mjd]
+    if nworld == 2:
+      mjd1 = mujoco.MjData(mjm)
+      mujoco.mj_forward(mjm, mjd1)
+      mjds.append(mjd1)
+
+    for w in range(nworld):
+      conid = int(np.flatnonzero(worldid == w)[0])
+      sv_np[conid] = sv_worlds[w]
+      mjds[w].contact.surfacevel[0] = sv_worlds[w]
+      mujoco.mj_makeConstraint(mjm, mjds[w])
+      mujoco.mj_fwdVelocity(mjm, mjds[w])
+
+    d.contact.surfacevel.assign(sv_np)
+    d.efc.Jqvel.fill_(wp.inf)
+    d.efc.vel.fill_(wp.inf)
+    d.efc.aref.fill_(wp.inf)
+    mjw.make_constraint(m, d)
+
+    nefc = mjd.nefc
+    self.assertGreater(nefc, 1)
+    efc_vel = d.efc.vel.numpy()
+    efc_aref = d.efc.aref.numpy()
+    for w in range(nworld):
+      np.testing.assert_allclose(efc_vel[w, :nefc], mjds[w].efc_vel[:nefc], rtol=1e-5, atol=1e-5)
+      np.testing.assert_allclose(efc_aref[w, :nefc], mjds[w].efc_aref[:nefc], rtol=1e-5, atol=1e-5)
+
+    if nworld == 2:
+      self.assertFalse(np.allclose(efc_vel[0, :nefc], efc_vel[1, :nefc]))
 
   @parameterized.parameters(1, 2)
   def test_discrete_reference_constraint(self, nworld):

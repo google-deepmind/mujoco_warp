@@ -927,7 +927,7 @@ class IOTest(parameterized.TestCase):
 
     # contact
     ncon = int(d.nacon.numpy()[0] / nworld)
-    for field in [
+    contact_fields = [
       "dist",
       "pos",
       "frame",
@@ -936,10 +936,14 @@ class IOTest(parameterized.TestCase):
       "solref",
       "solreffriction",
       "solimp",
+      "adhesion",
       "dim",
       "geom",
       # TODO(team): efc_address
-    ]:
+    ]
+    if util_pkg.check_version("mujoco>=3.17.1"):
+      contact_fields.append("surfacevel")
+    for field in contact_fields:
       _assert_eq(
         getattr(d.contact, field).numpy()[world_id * ncon : world_id * ncon + ncon].reshape(-1),
         getattr(mjd.contact, field).reshape(-1),
@@ -2900,7 +2904,7 @@ class IOTest(parameterized.TestCase):
 
     # For each contact field, verify that it is tiled correctly
     ncon = mjd.ncon
-    for field in [
+    contact_fields = [
       "dist",
       "pos",
       "frame",
@@ -2912,13 +2916,59 @@ class IOTest(parameterized.TestCase):
       "adhesion",
       "dim",
       "geom",
-    ]:
+    ]
+    if util_pkg.check_version("mujoco>=3.17.1"):
+      contact_fields.append("surfacevel")
+    for field in contact_fields:
       val_device = getattr(d.contact, field).numpy()
       val_host = getattr(mjd.contact, field)
       for w in range(nworld):
         device_slice = val_device[w * ncon : (w + 1) * ncon].reshape(-1)
         host_slice = val_host[:ncon].reshape(-1)
         _assert_eq(device_slice, host_slice, f"{field} mismatch in world {w}")
+
+  @absltest.skipIf(not util_pkg.check_version("mujoco>=3.17.1"), "Requires MuJoCo >= 3.17.1")
+  @parameterized.parameters(1, 2)
+  def test_contact_surfacevel_roundtrip(self, nworld):
+    """Tests put_data, get_data_into, and reset_data for non-zero contact.surfacevel."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <geom type="plane" size="2 2 0.01" condim="4" surfacevel="0.4 -0.2 0 0 0 1.2"/>
+          <body pos="0.1 0.2 0.095">
+            <freejoint/>
+            <geom size="0.1" condim="4"/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=nworld,
+    )
+    self.assertEqual(mjd.ncon, 1)
+    expected = mjd.contact.surfacevel[0].copy()
+    self.assertFalse(np.allclose(expected, 0.0))
+
+    surfacevel = d.contact.surfacevel.numpy()
+    for w in range(nworld):
+      np.testing.assert_allclose(surfacevel[w], expected, rtol=1e-5, atol=1e-5)
+
+    with mock.patch.object(util_pkg, "check_version", return_value=False):
+      d_legacy = mjwarp.put_data(mjm, mjd, nworld=nworld)
+    for w in range(nworld):
+      np.testing.assert_allclose(d_legacy.contact.surfacevel.numpy()[w], expected, rtol=1e-5, atol=1e-5)
+
+    if nworld == 2:
+      surfacevel[1] = [-0.5, 0.3, -0.7]
+      d.contact.surfacevel.assign(surfacevel)
+
+    for w in range(nworld):
+      out = mujoco.MjData(mjm)
+      mjwarp.get_data_into(out, mjm, d, world_id=w)
+      np.testing.assert_allclose(out.contact.surfacevel[0], surfacevel[w], rtol=1e-5, atol=1e-5)
+
+    mjwarp.reset_data(m, d)
+    np.testing.assert_array_equal(d.contact.surfacevel.numpy()[:nworld], np.zeros((nworld, 3)))
 
   def test_flex_interp_negative_success(self):
     """Test that put_model succeeds for negative flex_interp (shell elements)."""
