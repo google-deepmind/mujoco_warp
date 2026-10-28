@@ -16,8 +16,11 @@
 """Tests for package version utilities."""
 
 import importlib.metadata
+import subprocess
+import sys
 from unittest import mock
 
+import warp as wp
 from absl.testing import absltest
 from absl.testing import parameterized
 
@@ -114,6 +117,20 @@ class CheckVersionTest(parameterized.TestCase):
     ):
       with self.assertRaises(importlib.metadata.PackageNotFoundError):
         util_pkg.check_version("nonexistent>=1.0.0")
+
+
+class ImportTest(absltest.TestCase):
+  def test_import_does_not_init_warp(self):
+    if sys.executable:
+      subprocess.run(
+        [sys.executable, "-c", "import mujoco_warp, warp as wp; assert wp._src.context.runtime is None"],
+        check=True,
+      )
+    else:
+      import mujoco_warp
+
+      self.assertIsNotNone(mujoco_warp)
+      self.assertIsNone(wp._src.context.runtime)
 
 
 if __name__ == "__main__":
