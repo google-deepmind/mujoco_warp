@@ -1661,6 +1661,9 @@ class CollisionTest(parameterized.TestCase):
       </mujoco>
       """,
       nworld=nworld,
+      # Non-flat surface keeps this a prism-capacity regression. A flat patch
+      # now uses its equivalent analytic plane and has no prism overflow.
+      overrides={"hfield_data": (np.indices((40, 40)).sum(axis=0) % 2).astype(np.float32).ravel() * 0.001},
     )
 
     if nworld == 2:
