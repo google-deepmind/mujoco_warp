@@ -900,7 +900,7 @@ def _implicit_free_body(
   # Data in:
   qvel_in: wp.array2d[float],
   xpos_in: wp.array2d[wp.vec3],
-  xmat_in: wp.array2d[wp.mat33],
+  xquat_in: wp.array2d[wp.quat],
   xipos_in: wp.array2d[wp.vec3],
   ximat_in: wp.array2d[wp.mat33],
   geom_xpos_in: wp.array2d[wp.vec3],
@@ -965,7 +965,7 @@ def _implicit_free_body(
   # 3. Add gyroscopic bias velocity derivative
   crb = crb_in[worldid, bodyid]
   subtree_mass = crb[9]
-  R = xmat_in[worldid, bodyid]
+  R = math.quat_to_mat(xquat_in[worldid, bodyid])
   Iw = wp.mat33(
     crb[0],
     crb[3],
@@ -1175,7 +1175,7 @@ def implicit_free_body(m: Model, d: Data, vec_in: wp.array2d[float], vec_out: wp
       m.body_freeadr,
       d.qvel,
       d.xpos,
-      d.xmat,
+      d.xquat,
       d.xipos,
       d.ximat,
       d.geom_xpos,
@@ -1217,7 +1217,7 @@ def _discrete_free_gyro_kernel(has_fluid: bool, has_flex_passive: bool, is_inver
     qvel_in: wp.array2d[float],
     qacc_in: wp.array2d[float],
     xpos_in: wp.array2d[wp.vec3],
-    xmat_in: wp.array2d[wp.mat33],
+    xquat_in: wp.array2d[wp.quat],
     subtree_com_in: wp.array2d[wp.vec3],
     moment_rownnz_in: wp.array2d[int],
     moment_rowadr_in: wp.array2d[int],
@@ -1341,7 +1341,7 @@ def _discrete_free_gyro_kernel(has_fluid: bool, has_flex_passive: bool, is_inver
             A[c, r] += val
 
     s = subtree_com_in[worldid, bodyid] - xpos_in[worldid, bodyid]
-    lin, rot = math.free_bias_vel_blocks(subtree_mass, xmat_in[worldid, bodyid], Iw, s, qvel_rot)
+    lin, rot = math.free_bias_vel_blocks(subtree_mass, math.quat_to_mat(xquat_in[worldid, bodyid]), Iw, s, qvel_rot)
     h_mass = -timestep * subtree_mass
     for r in range(3):
       for c in range(3):
@@ -1400,7 +1400,7 @@ def _launch_discrete_free_gyro(m: Model, d: Data, out: wp.array2d[float], qacc: 
       d.qvel,
       qacc,
       d.xpos,
-      d.xmat,
+      d.xquat,
       d.subtree_com,
       d.moment_rownnz,
       d.moment_rowadr,

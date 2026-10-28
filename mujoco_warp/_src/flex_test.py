@@ -1085,7 +1085,7 @@ class FlexPassiveForcesTest(parameterized.TestCase):
     # 1. Uniform rigid world-space translation velocity should produce zero damping force.
     d.qpos.zero_()
     mjw.kinematics(m, d)
-    xmat = d.xmat.numpy()
+    xmat = test_data.quat_to_mat(d.xquat.numpy())
     qvel_uniform = np.zeros_like(qvel_noisy)
     v_worlds = [np.array([0.7, -0.4, 1.2]), np.array([-0.5, 0.9, -0.3])]
     for w in range(nworld):

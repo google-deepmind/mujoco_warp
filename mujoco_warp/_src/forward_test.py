@@ -663,7 +663,6 @@ class ForwardTest(parameterized.TestCase):
     step1_field = [
       "xpos",
       "xquat",
-      "xmat",
       "xipos",
       "ximat",
       "xanchor",
@@ -725,8 +724,8 @@ class ForwardTest(parameterized.TestCase):
         # leave geom_xpos and geom_xmat untouched because they have static data
         continue
       attr, _ = _getattr(arr)
-      if arr in ("xquat", "xmat", "ximat"):
-        # xquat, xmat, ximat need to retain identity for world body
+      if arr in ("xquat", "ximat"):
+        # xquat, ximat need to retain identity for world body
         attr = attr[:, 1:]
       if attr.dtype == float:
         attr.fill_(wp.nan)
@@ -773,7 +772,7 @@ class ForwardTest(parameterized.TestCase):
 
       d_arr = d_arr.numpy()[0]
       mjd_arr = getattr(mjd, arr)
-      if arr in ["xmat", "ximat", "geom_xmat", "site_xmat", "cam_xmat"]:
+      if arr in ["ximat", "geom_xmat", "site_xmat", "cam_xmat"]:
         mjd_arr = mjd_arr.reshape(-1)
         d_arr = d_arr.reshape(-1)
       elif arr == "M":

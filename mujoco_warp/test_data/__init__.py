@@ -25,6 +25,15 @@ import mujoco_warp as mjw
 from mujoco_warp._src.io import override_model
 
 
+def quat_to_mat(quat: np.ndarray) -> np.ndarray:
+  """Rotation matrices (..., 3, 3) of quaternions (..., 4)."""
+  quat = np.asarray(quat, dtype=np.float64)
+  mat = np.zeros(quat.shape[:-1] + (9,))
+  for q, m in zip(quat.reshape(-1, 4), mat.reshape(-1, 9)):
+    mujoco.mju_quat2Mat(m, q)
+  return mat.reshape(quat.shape[:-1] + (3, 3))
+
+
 def fixture(
   path: Optional[str] = None,
   xml: Optional[str] = None,

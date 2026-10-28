@@ -169,17 +169,6 @@ def _compute_body_inertial_frames(
 
 
 @wp.kernel
-def _compute_body_matrices(
-  # Data in:
-  xquat_in: wp.array2d[wp.quat],
-  # Data out:
-  xmat_out: wp.array2d[wp.mat33],
-):
-  worldid, bodyid = wp.tid()
-  xmat_out[worldid, bodyid] = math.quat_to_mat(xquat_in[worldid, bodyid])
-
-
-@wp.kernel
 def _geom_local_to_global(
   # Model:
   body_rootid: wp.array[int],
@@ -246,7 +235,7 @@ def _flex_vertices(
   flex_centered: wp.array[bool],
   # Data in:
   xpos_in: wp.array2d[wp.vec3],
-  xmat_in: wp.array2d[wp.mat33],
+  xquat_in: wp.array2d[wp.quat],
   flexnode_xpos_in: wp.array2d[wp.vec3],
   # Data out:
   flexvert_xpos_out: wp.array2d[wp.vec3],
@@ -317,7 +306,7 @@ def _flex_vertices(
     if flex_centered[f]:
       flexvert_xpos_out[worldid, vertid] = xpos
     else:
-      xmat = xmat_in[worldid, bodyid]
+      xmat = math.quat_to_mat(xquat_in[worldid, bodyid])
       local_pos = flex_vert[vertid]
       flexvert_xpos_out[worldid, vertid] = xmat @ local_pos + xpos
 
@@ -333,7 +322,7 @@ def _flex_nodes(
   flex_centered: wp.array[bool],
   # Data in:
   xpos_in: wp.array2d[wp.vec3],
-  xmat_in: wp.array2d[wp.mat33],
+  xquat_in: wp.array2d[wp.quat],
   # Data out:
   flexnode_xpos_out: wp.array2d[wp.vec3],
 ):
@@ -354,7 +343,7 @@ def _flex_nodes(
     if local_pos[0] == 0.0 and local_pos[1] == 0.0 and local_pos[2] == 0.0:
       flexnode_xpos_out[worldid, nodeid] = xpos
     else:
-      xmat = xmat_in[worldid, bodyid]
+      xmat = math.quat_to_mat(xquat_in[worldid, bodyid])
       flexnode_xpos_out[worldid, nodeid] = xmat @ local_pos + xpos
 
 
@@ -459,13 +448,6 @@ def kinematics(m: Model, d: Data):
       d.mocap_quat,
     ],
     outputs=[d.xpos, d.xquat, d.xanchor, d.xaxis],
-  )
-
-  wp.launch(
-    _compute_body_matrices,
-    dim=(d.nworld, m.nbody),
-    inputs=[d.xquat],
-    outputs=[d.xmat],
   )
 
   wp.launch(
@@ -601,7 +583,7 @@ def flex(m: Model, d: Data):
       m.flex_node,
       m.flex_centered,
       d.xpos,
-      d.xmat,
+      d.xquat,
     ],
     outputs=[d.flexnode_xpos],
   )
@@ -622,7 +604,7 @@ def flex(m: Model, d: Data):
       m.flex_vert0,
       m.flex_centered,
       d.xpos,
-      d.xmat,
+      d.xquat,
       d.flexnode_xpos,
     ],
     outputs=[d.flexvert_xpos],
@@ -778,7 +760,7 @@ def _cdof(
   jnt_dofadr: wp.array[int],
   jnt_bodyid: wp.array[int],
   # Data in:
-  xmat_in: wp.array2d[wp.mat33],
+  xquat_in: wp.array2d[wp.quat],
   xanchor_in: wp.array2d[wp.vec3],
   xaxis_in: wp.array2d[wp.vec3],
   subtree_com_in: wp.array2d[wp.vec3],
@@ -790,7 +772,7 @@ def _cdof(
   dofid = jnt_dofadr[jntid]
   jnt_type_ = jnt_type[jntid]
   xaxis = xaxis_in[worldid, jntid]
-  xmat = wp.transpose(xmat_in[worldid, bodyid])
+  xmat = wp.transpose(math.quat_to_mat(xquat_in[worldid, bodyid]))
 
   # compute com-anchor vector
   offset = subtree_com_in[worldid, body_rootid[bodyid]] - xanchor_in[worldid, jntid]
@@ -848,7 +830,7 @@ def com_pos(m: Model, d: Data):
   wp.launch(
     _cdof,
     dim=(d.nworld, m.njnt),
-    inputs=[m.body_rootid, m.jnt_type, m.jnt_dofadr, m.jnt_bodyid, d.xmat, d.xanchor, d.xaxis, d.subtree_com],
+    inputs=[m.body_rootid, m.jnt_type, m.jnt_dofadr, m.jnt_bodyid, d.xquat, d.xanchor, d.xaxis, d.subtree_com],
     outputs=[d.cdof],
   )
 
@@ -1709,7 +1691,6 @@ def _cfrc_ext_equality(deterministic: bool = False):
     # Data in:
     xpos_in: wp.array2d[wp.vec3],
     xquat_in: wp.array2d[wp.quat],
-    xmat_in: wp.array2d[wp.mat33],
     subtree_com_in: wp.array2d[wp.vec3],
     efc_id_in: wp.array2d[int],
     efc_force_in: wp.array2d[float],
@@ -1785,7 +1766,7 @@ def _cfrc_ext_equality(deterministic: bool = False):
         offset = site_pos[worldid % site_pos.shape[0], obj1]
 
       # transform point on body1: local -> global
-      pos = xmat_in[worldid, bodyid1] @ offset + xpos_in[worldid, bodyid1]
+      pos = math.quat_to_mat(xquat_in[worldid, bodyid1]) @ offset + xpos_in[worldid, bodyid1]
 
       # subtree CoM-based torque_force vector
       newpos = subtree_com_in[worldid, body_rootid[bodyid1]]
@@ -1807,7 +1788,7 @@ def _cfrc_ext_equality(deterministic: bool = False):
         offset = site_pos[worldid % site_pos.shape[0], obj2]
 
       # transform point on body2: local -> global
-      pos = xmat_in[worldid, bodyid2] @ offset + xpos_in[worldid, bodyid2]
+      pos = math.quat_to_mat(xquat_in[worldid, bodyid2]) @ offset + xpos_in[worldid, bodyid2]
 
       # subtree CoM-based torque_force vector
       newpos = subtree_com_in[worldid, body_rootid[bodyid2]]
@@ -2206,7 +2187,6 @@ def rne_postconstraint(m: Model, d: Data):
         m.eq_data,
         d.xpos,
         d.xquat,
-        d.xmat,
         d.subtree_com,
         d.efc.id,
         d.efc.force,

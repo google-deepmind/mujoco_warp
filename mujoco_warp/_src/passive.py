@@ -3676,7 +3676,7 @@ def _eff_contact_build(
   M_rownnz: wp.array[int],
   M_rowadr: wp.array[int],
   # Data in:
-  xmat_in: wp.array2d[wp.mat33],
+  xquat_in: wp.array2d[wp.quat],
   flexvert_xpos_in: wp.array2d[wp.vec3],
   M_in: wp.array2d[float],
   contact_dist_in: wp.array[float],
@@ -3756,7 +3756,7 @@ def _eff_contact_build(
       b = body_weldid[flex_vertbodyid[gv]]
       if body_dofnum[b] == 3:
         da = body_dofadr[b]
-        n_loc = wp.transpose(xmat_in[worldid, b]) @ normal
+        n_loc = wp.transpose(math.quat_to_mat(xquat_in[worldid, b])) @ normal
         for ax in range(3):
           nnz = _add_con_dof(cid, da + ax, -n_loc[ax], nnz, efm_con_dof_out, efm_con_val_out)
     elif elem0 >= 0:
@@ -3771,7 +3771,7 @@ def _eff_contact_build(
         b = body_weldid[flex_vertbodyid[gv]]
         if body_dofnum[b] == 3:
           da = body_dofadr[b]
-          n_loc = wp.transpose(xmat_in[worldid, b]) @ normal
+          n_loc = wp.transpose(math.quat_to_mat(xquat_in[worldid, b])) @ normal
           for ax in range(3):
             nnz = _add_con_dof(cid, da + ax, -w0[j] * n_loc[ax], nnz, efm_con_dof_out, efm_con_val_out)
 
@@ -3782,7 +3782,7 @@ def _eff_contact_build(
       b = body_weldid[flex_vertbodyid[gv]]
       if body_dofnum[b] == 3:
         da = body_dofadr[b]
-        n_loc = wp.transpose(xmat_in[worldid, b]) @ normal
+        n_loc = wp.transpose(math.quat_to_mat(xquat_in[worldid, b])) @ normal
         for ax in range(3):
           nnz = _add_con_dof(cid, da + ax, n_loc[ax], nnz, efm_con_dof_out, efm_con_val_out)
     elif elem1 >= 0:
@@ -3797,7 +3797,7 @@ def _eff_contact_build(
         b = body_weldid[flex_vertbodyid[gv]]
         if body_dofnum[b] == 3:
           da = body_dofadr[b]
-          n_loc = wp.transpose(xmat_in[worldid, b]) @ normal
+          n_loc = wp.transpose(math.quat_to_mat(xquat_in[worldid, b])) @ normal
           for ax in range(3):
             nnz = _add_con_dof(cid, da + ax, w1[j] * n_loc[ax], nnz, efm_con_dof_out, efm_con_val_out)
 
@@ -3849,7 +3849,7 @@ def build_efm_contact(
         m.flex_elem,
         m.M_rownnz,
         m.M_rowadr,
-        d.xmat,
+        d.xquat,
         d.flexvert_xpos,
         d.M,
         d.contact.dist,
