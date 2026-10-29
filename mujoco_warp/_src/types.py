@@ -14,6 +14,7 @@
 # ==============================================================================
 import dataclasses
 import enum
+import operator
 from typing import Callable, Optional
 
 import mujoco
@@ -30,6 +31,7 @@ MJ_MAXCONPAIR = mujoco.mjMAXCONPAIR
 MJ_MINMU = mujoco.mjMINMU  # minimum friction
 MJ_MINAWAKE = mujoco.mjMINAWAKE  # minimum number of timesteps before sleeping
 FLEX_STIFFNESS_3D = 24 if util_pkg.check_version("mujoco>=3.14.1.dev989511280") else 21
+ROD_HINGE_SIZE = 4  # 1D rod hinge data in flex_bending: [v_prev, v, v_next, k]
 # maximum size (by number of edges) of an horizon in EPA algorithm
 MJ_MAX_EPAHORIZON = 24
 # maximum average number of trianglarfaces EPA can insert at each iteration
@@ -50,6 +52,12 @@ Q_LD_BLOCK_SPARSE = -1
 
 # maximum number of plugin attributes
 _NPLUGINATTR = 128
+
+# max DOFs per passive flex contact (2 sides * 4 max vertices per 3D tet * 3 DOFs per vertex)
+EFM_CON_MAX_DOF = 24
+
+# max nodes per interpolated flex cell ((2 + 1)^3 for quadratic)
+FLEX_INTERP_MAX_NODES = 27
 
 
 # TODO(team): add check that all wp.launch_tiled 'block_dim' settings are configurable
@@ -255,6 +263,24 @@ class DataType(enum.IntFlag):
   REAL = mujoco.mjtDataType.mjDATATYPE_REAL
   POSITIVE = mujoco.mjtDataType.mjDATATYPE_POSITIVE
   # unsupported: AXIS, QUATERNION
+
+
+class DeterminismType(enum.IntFlag):
+  """Bitmask for deterministic execution.
+
+  Attributes:
+    NONE: non-deterministic execution
+    CONTACTS: stable contact ordering via geometric radix sort
+    CONSTRAINT: canonical constraint row ordering
+    ATOMICS: invariant floating-point atomic reductions
+    ALL: all determinism features
+  """
+
+  NONE = 0
+  CONTACTS = 1 << 0
+  CONSTRAINT = 1 << 1
+  ATOMICS = 1 << 2
+  ALL = CONTACTS | CONSTRAINT | ATOMICS
 
 
 class DisableBit(enum.IntFlag):
@@ -705,6 +731,26 @@ class SensorType(enum.IntEnum):
   USER = mujoco.mjtSensor.mjSENS_USER
 
 
+class RayDataField(enum.IntEnum):
+  """Ray data fields for rangefinder sensors.
+
+  Attributes:
+    DIST: distance from ray origin to nearest surface
+    DIR: normalized ray direction
+    ORIGIN: ray origin
+    POINT: point at which ray intersects nearest surface
+    NORMAL: surface normal at intersection point
+    DEPTH: depth along z-axis
+  """
+
+  DIST = mujoco.mjtRayDataField.mjRAYDATA_DIST
+  DIR = mujoco.mjtRayDataField.mjRAYDATA_DIR
+  ORIGIN = mujoco.mjtRayDataField.mjRAYDATA_ORIGIN
+  POINT = mujoco.mjtRayDataField.mjRAYDATA_POINT
+  NORMAL = mujoco.mjtRayDataField.mjRAYDATA_NORMAL
+  DEPTH = mujoco.mjtRayDataField.mjRAYDATA_DEPTH
+
+
 class ObjType(enum.IntEnum):
   """Type of object.
 
@@ -712,19 +758,23 @@ class ObjType(enum.IntEnum):
     UNKNOWN: unknown object type
     BODY: body
     XBODY: body, used to access regular frame instead of i-frame
+    JOINT: joint
     GEOM: geom
     FLEX: flex
     SITE: site
     CAMERA: camera
+    TENDON: tendon
   """
 
   UNKNOWN = mujoco.mjtObj.mjOBJ_UNKNOWN
   BODY = mujoco.mjtObj.mjOBJ_BODY
   XBODY = mujoco.mjtObj.mjOBJ_XBODY
+  JOINT = mujoco.mjtObj.mjOBJ_JOINT
   GEOM = mujoco.mjtObj.mjOBJ_GEOM
   FLEX = mujoco.mjtObj.mjOBJ_FLEX
   SITE = mujoco.mjtObj.mjOBJ_SITE
   CAMERA = mujoco.mjtObj.mjOBJ_CAMERA
+  TENDON = mujoco.mjtObj.mjOBJ_TENDON
 
 
 class EqType(enum.IntEnum):
@@ -812,6 +862,26 @@ class State(enum.IntEnum):
   # unsupported: PLUGIN
 
 
+class SetConstGroup(enum.IntFlag):
+  """Groups of set_const computations.
+
+  Attributes:
+    NONE: no group
+    FIXED: independent of the configuration
+    KIN0: kinematics in qpos0
+    INERT0: inertia matrix in qpos0
+    ALL: all supported groups
+  """
+
+  NONE = 0
+  # TODO(team): replace hardcoded values with mujoco values
+  FIXED = 1 << 0
+  KIN0 = 1 << 1
+  INERT0 = 1 << 2
+  # unsupported: SPRING
+  ALL = FIXED | KIN0 | INERT0
+
+
 class vec5f(wp.types.vector(length=5, dtype=float)):
   pass
 
@@ -845,6 +915,10 @@ class vec10f(wp.types.vector(length=10, dtype=float)):
 
 
 class vec11f(wp.types.vector(length=11, dtype=float)):
+  pass
+
+
+class vec12f(wp.types.vector(length=12, dtype=float)):
   pass
 
 
@@ -885,6 +959,7 @@ vec6 = vec6f
 vec8 = vec8f
 vec10 = vec10f
 vec11 = vec11f
+vec12 = vec12f
 vec16 = vec16f
 vec128 = vec_pluginattr
 mat23 = mat23f
@@ -948,9 +1023,13 @@ class Option:
       zeros out the contacts at each step)
     run_rne_postconstraint: if True, evaluates rne_postconstraint after the solver step even if
       sensors are disabled or no sensors are present
+    run_qacc_smooth: if False, the Newton solver starts every world from qacc_warmstart and the
+      step skips computing qacc_smooth (left stale) and factorizing M (experimental); ignored with
+      CG, disabled warmstart, noslip, or zero njmax or iterations
     contact_sensor_maxmatch: max number of contacts considered by contact sensor matching criteria
                              contacts matched after this value is exceded will be ignored
     warn_overflow: overflow warning bitmask (OverflowType)
+    deterministic: determinism bitmask (DeterminismType)
   """
 
   timestep: array("*", float)
@@ -982,8 +1061,10 @@ class Option:
   graph_conditional: bool
   run_collision_detection: bool
   run_rne_postconstraint: bool
+  run_qacc_smooth: bool
   contact_sensor_maxmatch: int
   warn_overflow: int
+  deterministic: int
 
   @property
   def warn_overflow(self) -> int:
@@ -994,6 +1075,22 @@ class Option:
     if isinstance(value, bool):
       value = int(OverflowType.ALL) if value else 0
     self._warn_overflow = value
+
+  @property
+  def deterministic(self) -> int:
+    return self._deterministic
+
+  @deterministic.setter
+  def deterministic(self, value: bool | int | None):
+    if value is None or isinstance(value, (bool, np.bool_)):
+      value = DeterminismType.ALL if value else DeterminismType.NONE
+    value = operator.index(value)
+    if value < 0:
+      # complements, e.g. ~DeterminismType.CONTACTS is negative on Python 3.10
+      value &= int(DeterminismType.ALL)
+    if value & ~int(DeterminismType.ALL):
+      raise ValueError(f"deterministic must be a DeterminismType bitmask, got {value}")
+    self._deterministic = value
 
   # TODO(team): remove in future version
   @property
@@ -1011,17 +1108,6 @@ class Option:
   @ls_parallel_min_step.setter
   def ls_parallel_min_step(self, value: float):
     raise AttributeError("ls_parallel_min_step was removed in MuJoCo Warp 3.9.1.")
-
-
-@dataclasses.dataclass
-class Statistic:
-  """Model statistics (in qpos0).
-
-  Attributes:
-    meaninertia: mean diagonal inertia (per-world)
-  """
-
-  meaninertia: array("*", float)
 
 
 @dataclasses.dataclass
@@ -1135,7 +1221,6 @@ class Model:
     nsensordata: number of elements in sensor data vector
     nhistory: number of history buffer entries
     opt: physics options
-    stat: model statistics
     qpos0: qpos values at default pose                       (*, nq)
     qpos_spring: reference pose for springs                  (*, nq)
     body_parentid: id of body's parent                       (nbody,)
@@ -1168,6 +1253,7 @@ class Model:
     jnt_qposadr: start addr in 'qpos' for joint's data       (njnt,)
     jnt_dofadr: start addr in 'qvel' for joint's data        (njnt,)
     jnt_bodyid: id of joint's body                           (njnt,)
+    jnt_actuatorid: actuator contributing damping/armature   (njnt,)
     jnt_limited: does joint have limits                      (njnt,)
     jnt_actfrclimited: does joint have actuator force limits (njnt,)
     jnt_actgravcomp: is gravcomp force applied via actuators (njnt,)
@@ -1288,6 +1374,7 @@ class Model:
     flex_shelldataadr: first shell data address              (nflex,)
     flex_nodebodyid: node body ids                           (nflexnode,)
     flex_vertbodyid: vertex body ids                         (nflexvert,)
+    flex_vertcell: finite cell index for vertex; -1: none    (nflexvert,)
     flex_edge: edge vertex ids (2 per edge)                  (nflexedge, 2)
     flex_edgeflap: adjacent vertex ids (dim=2 only)          (nflexedge, 2)
     flex_elem: element vertex ids (dim+1 per elem)           (nflexelemdata,)
@@ -1374,6 +1461,7 @@ class Model:
     eq_data: numeric data for constraint                     (*, neq, mjNEQDATA)
     tendon_adr: address of first object in tendon's path     (ntendon,)
     tendon_num: number of objects in tendon's path           (ntendon,)
+    tendon_actuatorid: actuator adding damping/armature      (ntendon,)
     ten_J_rownnz: number of non-zeros in each tendon row     (ntendon,)
     ten_J_rowadr: row start address for sparse ten_J         (ntendon,)
     ten_J_colind: column indices in sparse ten_J             (nJten,)
@@ -1418,6 +1506,9 @@ class Model:
     actuator_history: history buffer sizes                   (*, nactuator, 2)
     actuator_historyadr: history buffer address              (*, nactuator)
     actuator_delay: delay in seconds                         (*, nactuator)
+    actuator_damping: linear damping coefficient             (*, nactuator)
+    actuator_dampingpoly: high-order damping coefficients    (*, nactuator, 2)
+    actuator_armature: armature added to target              (*, nactuator)
     actuator_forcelimited: is force limited                  (nactuator,)
     actuator_forcerange: range of forces                     (*, nactuator, 2)
     actuator_ctrllimited: is control limited                 (nu,)
@@ -1476,7 +1567,7 @@ class Model:
                       geom distance sensors
     nsensortaxel: number of taxels in all tactile sensors
     ntactileweld: number of unique weld bodies with tactile sensors
-    nrangefinder: number of rangefinder sensors
+    nrangefinder: number of rangefinder rays
     nmaxcondim: maximum condim across geoms, pairs, and flexes
     nmaxpyramid: maximum number of pyramid directions
     nflexintcell: total interp cells (non-strain) for passive forces
@@ -1488,11 +1579,11 @@ class Model:
     has_fluid: True if wind, density, or viscosity are non-zero at put_model time
     flg_surfacevel: whether model has non-zero surfacevel
     has_sdf_geom: whether the model contains SDF geoms
-    has_boxbox_margin: whether any box-box contact pair has a non-zero margin
     has_flex_selfcollide: whether any flex has self-collision enabled
     has_flex_passive: whether any flex has passive contact enabled
     has_flex_snh: whether any flex uses 3D SNH elasticity
     has_non_simple_flex: whether any flex has non-simple vertex bodies
+    has_flex_edge_stiff_damp: whether any non-rigid flex has edge stiffness or damping
     has_tendon_stiffness: whether any tendon has positive stiffness
     has_tendon_damping: whether any tendon has positive damping
     has_efm_actuator: whether any actuator contributes effective metric coupling
@@ -1561,8 +1652,8 @@ class Model:
     sensor_stage_pos_adr: addresses for all stage-pos sensors
     sensor_stage_vel_adr: addresses for all stage-vel sensors
     sensor_stage_acc_adr: addresses for all stage-acc sensors
-    sensor_rangefinder_adr: addresses for rangefinder sensors
-    rangefinder_sensor_adr: map sensor id to rangefinder id
+    sensor_rangefinder_adr: map rangefinder ray id to sensor id (nrangefinder,)
+    rangefinder_sensor_adr: map sensor id to starting rangefinder ray id (nsensor,)
     sensor_collision_start_adr: address for sensor's first
                                 item in collision
     collision_sensor_adr: map sensor id to collision id      (nsensor,)
@@ -1611,6 +1702,8 @@ class Model:
     nflexface: number of interpolated flex shell faces
     flex_face_map: mapping of face index to flex and local element face indices
     flex_face: global node indices of each face                             (nflexface, 9)
+    nflexrodhinge: number of 1D rod bending hinges
+    flex_rodhinge_map: flex id and flex_bending address of each rod hinge   (nflexrodhinge, 2)
   """
 
   nq: int
@@ -1670,7 +1763,6 @@ class Model:
   nsensordata: int
   nhistory: int
   opt: Option
-  stat: Statistic
   qpos0: array("*", "nq", float)
   qpos_spring: array("*", "nq", float)
   body_parentid: array("nbody", int)
@@ -1703,6 +1795,7 @@ class Model:
   jnt_qposadr: array("njnt", int)
   jnt_dofadr: array("njnt", int)
   jnt_bodyid: array("njnt", int)
+  jnt_actuatorid: array("njnt", int)
   jnt_limited: array("njnt", int)
   jnt_actfrclimited: array("njnt", bool)
   jnt_actgravcomp: array("njnt", int)
@@ -1823,6 +1916,7 @@ class Model:
   flex_shelldataadr: array("nflex", int)
   flex_nodebodyid: array("nflexnode", int)
   flex_vertbodyid: array("nflexvert", int)
+  flex_vertcell: array("nflexvert", int)
   flex_edge: array("nflexedge", wp.vec2i)
   flex_edgeflap: array("nflexedge", wp.vec2i)
   flex_elem: array("nflexelemdata", int)
@@ -1906,9 +2000,10 @@ class Model:
   eq_active0: array("neq", bool)
   eq_solref: array("*", "neq", wp.vec2)
   eq_solimp: array("*", "neq", vec5)
-  eq_data: array("*", "neq", vec11)
+  eq_data: array("*", "neq", vec12)
   tendon_adr: array("ntendon", int)
   tendon_num: array("ntendon", int)
+  tendon_actuatorid: array("ntendon", int)
   ten_J_rownnz: array("ntendon", int)
   ten_J_rowadr: array("ntendon", int)
   ten_J_colind: array("nJten", int)
@@ -1953,6 +2048,9 @@ class Model:
   actuator_history: array("*", "nactuator", wp.vec2i)
   actuator_historyadr: array("*", "nactuator", int)
   actuator_delay: array("*", "nactuator", float)
+  actuator_damping: array("*", "nactuator", float)
+  actuator_dampingpoly: array("*", "nactuator", wp.vec2)
+  actuator_armature: array("*", "nactuator", float)
   actuator_forcelimited: array("nactuator", bool)
   actuator_forcerange: array("*", "nactuator", wp.vec2)
   actuator_ctrllimited: array("nu", bool)
@@ -2020,11 +2118,11 @@ class Model:
   has_fluid: bool
   flg_surfacevel: bool
   has_sdf_geom: bool
-  has_boxbox_margin: bool
   has_flex_selfcollide: bool
   has_flex_passive: bool
   has_flex_snh: bool
   has_non_simple_flex: bool
+  has_flex_edge_stiff_damp: bool
   has_tendon_stiffness: bool
   has_tendon_damping: bool
   has_efm_actuator: bool
@@ -2137,6 +2235,8 @@ class Model:
   nflexface: int
   flex_face_map: array("nflexface", wp.vec2i)
   flex_face: array("nflexface", 9, int)
+  nflexrodhinge: int
+  flex_rodhinge_map: array("nflexrodhinge", wp.vec2i)
 
 
 class ContactType(enum.IntFlag):
@@ -2387,8 +2487,6 @@ class Data:
     ncdof: number of active (compacted) DOFs per world          (nworld,)
     dof_cdof: global DOF -> compacted DOF; -1 if inactive       (nworld, nv)
     cdof_dof: compacted DOF -> global DOF; -1 if unused         (nworld, nvmax_pad)
-    ctol: compacted-solve main tolerance (nv/nvmax_pad scaled)  (1,)
-    cls_tol: compacted-solve linesearch tolerance               (1,)
     cdof_tri_row: row index of compacted Hessian dof-pairs      (nvmax_pad_sq,)
     cdof_tri_col: col index of compacted Hessian dof-pairs      (nvmax_pad_sq,)
     cM: compacted dense inertia                                 (nworld, nvmax_pad, nvmax_pad)
@@ -2548,8 +2646,6 @@ class Data:
   ncdof: array("nworld", int)
   dof_cdof: array("nworld", "nv", int)
   cdof_dof: array("nworld", "nvmax_pad", int)
-  ctol: array(1, float)
-  cls_tol: array(1, float)
   cdof_tri_row: array("nvmax_pad_sq", int)
   cdof_tri_col: array("nvmax_pad_sq", int)
   cM: array("nworld", "nvmax_pad", "nvmax_pad", float)
@@ -2630,6 +2726,7 @@ class SolverContext:
   hfactor: wp.array3d[float]
   quad_changed_ids: wp.array2d[int]
   quad_changed_count: wp.array[int]
+  inertia_scale: wp.array[float]
   # the full-coordinate Data, set by solve_compact (None natively)
   compact_m_full: Optional["Model"] = None
   compact_d_full: Optional["Data"] = None
@@ -2637,6 +2734,7 @@ class SolverContext:
   # inside wp.capture_while where memory cannot be allocated (None otherwise)
   efm_con: Optional[tuple] = None
   flex_scratch: Optional[tuple] = None
+  solve_ld_scratch: Optional[wp.array] = None
 
 
 @dataclasses.dataclass
