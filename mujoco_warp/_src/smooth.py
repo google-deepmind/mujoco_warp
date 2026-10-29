@@ -747,13 +747,15 @@ def _cinert(
 
   res = vec10()
   # res_rot = mat * diag(inert) * mat'
-  tmp = mat @ wp.diag(inert) @ wp.transpose(mat)
-  res[0] = tmp[0, 0]
-  res[1] = tmp[1, 1]
-  res[2] = tmp[2, 2]
-  res[3] = tmp[0, 1]
-  res[4] = tmp[0, 2]
-  res[5] = tmp[1, 2]
+  row0 = wp.cw_mul(mat[0], inert)
+  row1 = wp.cw_mul(mat[1], inert)
+  row2 = wp.cw_mul(mat[2], inert)
+  res[0] = wp.dot(row0, mat[0])
+  res[1] = wp.dot(row1, mat[1])
+  res[2] = wp.dot(row2, mat[2])
+  res[3] = wp.dot(row0, mat[1])
+  res[4] = wp.dot(row0, mat[2])
+  res[5] = wp.dot(row1, mat[2])
   # res_rot -= mass * dif_cross * dif_cross
   res[0] += mass * (dif[1] * dif[1] + dif[2] * dif[2])
   res[1] += mass * (dif[0] * dif[0] + dif[2] * dif[2])
