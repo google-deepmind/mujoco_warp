@@ -37,7 +37,8 @@ from mujoco_warp._src.warp_util import event_scope
 
 wp.set_module_options({"enable_backward": False, "default_grid_stride": False})
 
-_BLOCK_CHOLESKY_DIM = 32
+# Hessians up to this size are one nv x nv tile: faster than the blocked Cholesky's padded tiles
+_BLOCK_CHOLESKY_DIM = 64
 
 
 def create_inverse_context(m: types.Model, d: types.Data) -> InverseContext:

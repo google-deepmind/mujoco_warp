@@ -16,6 +16,7 @@
 """Tests for solver functions."""
 
 import copy
+from unittest import mock
 
 import mujoco
 import numpy as np
@@ -1090,6 +1091,27 @@ class SolverTest(parameterized.TestCase):
     solver._linesearch(m, d, ctx)
 
     self.assertTrue(d.overflow.numpy()[0] & types.OverflowType.LS_ITERATIONS)
+
+  @parameterized.product(
+    cone=(ConeType.PYRAMIDAL, ConeType.ELLIPTIC),
+    jacobian=(mujoco.mjtJacobian.mjJAC_DENSE, mujoco.mjtJacobian.mjJAC_SPARSE),
+    blocked=(False, True),
+  )
+  def test_solve_cholesky(self, cone, jacobian, blocked):
+    """Newton from a cold start: the one-tile and the blocked Cholesky of a 50-DOF Hessian."""
+    for keyframe in range(3):
+      mjm, mjd, m, d = test_data.fixture(
+        "constraints.xml",
+        keyframe=keyframe,
+        overrides={"opt.jacobian": jacobian, "opt.cone": cone, "opt.solver": SolverType.NEWTON, "opt.iterations": 50},
+      )
+      self.assertLessEqual(m.nv, solver._BLOCK_CHOLESKY_DIM)
+      mujoco.mj_forward(mjm, mjd)
+      d.qacc_warmstart.zero_()
+      with mock.patch.object(solver, "_BLOCK_CHOLESKY_DIM", m.nv - 1 if blocked else solver._BLOCK_CHOLESKY_DIM):
+        mjw.solve(m, d)
+      _assert_eq(d.qacc.numpy()[0], mjd.qacc, "qacc")
+      _assert_eq(d.efc.force.numpy()[0, : mjd.nefc], mjd.efc_force, "efc_force")
 
   @parameterized.parameters(
     (ConeType.PYRAMIDAL, SolverType.CG, 10, 5, mujoco.mjtJacobian.mjJAC_DENSE),
