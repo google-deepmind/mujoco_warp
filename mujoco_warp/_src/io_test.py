@@ -496,9 +496,10 @@ class IOTest(parameterized.TestCase):
     np.testing.assert_array_equal(data.qpos, [0.25])
     np.testing.assert_array_equal(data.qvel, [0.5])
 
-  @parameterized.parameters((47, 48), (48, 64), (63, 64), (64, 80))
+  @parameterized.parameters((23, 24), (47, 48), (63, 64), (64, 64), (65, 80), (79, 80), (80, 96))
   def test_augmented_cholesky_padding(self, nv, expected):
-    _, nv_pad = io._get_padded_sizes(nv, 0, False, types.TILE_SIZE_JTDAJ_DENSE, augment_cholesky=True)
+    """16-byte rows up to BLOCK_CHOLESKY_DIM, the blocked Cholesky's augmented tiles past it."""
+    _, nv_pad = io._get_padded_sizes(nv, 0, types.TILE_SIZE_JTDAJ_DENSE, augment_cholesky=True)
     self.assertEqual(nv_pad, expected)
 
   @parameterized.parameters((15, 16), (16, 32), (31, 32), (32, 48))

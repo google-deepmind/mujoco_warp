@@ -501,9 +501,8 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
   m.nv_pad = _get_padded_sizes(
     mjm.nv,
     0,
-    is_sparse(mjm),
     types.TILE_SIZE_JTDAJ_SPARSE if is_sparse(mjm) else types.TILE_SIZE_JTDAJ_DENSE,
-    augment_cholesky=mjm.opt.solver == mujoco.mjtSolver.mjSOL_NEWTON and mjm.nv > 32,
+    augment_cholesky=mjm.opt.solver == mujoco.mjtSolver.mjSOL_NEWTON,
   )[1]
   m.nacttrnbody = (mjm.actuator_trntype == mujoco.mjtTrn.mjTRN_BODY).sum()
   m.nsensortaxel = mjm.mesh_vertnum[mjm.sensor_objid[mjm.sensor_type == mujoco.mjtSensor.mjSENS_TACTILE]].sum()
@@ -1407,12 +1406,17 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
   return m
 
 
-def _get_padded_sizes(nv: int, njmax: int, is_sparse: bool, tile_size: int, augment_cholesky: bool = False):
+def _get_padded_sizes(nv: int, njmax: int, tile_size: int, augment_cholesky: bool = False):
   def round_up(x, multiple):
     return ((x + multiple - 1) // multiple) * multiple
 
   njmax_padded = round_up(njmax, tile_size)
-  nv_padded = round_up(nv + int(augment_cholesky), tile_size) if (is_sparse or nv > 32) else round_up(nv, 4)
+  if nv > types.BLOCK_CHOLESKY_DIM:
+    # the blocked Cholesky's whole tiles and its augmented row
+    nv_padded = round_up(nv + int(augment_cholesky), tile_size)
+  else:
+    # the one-tile Cholesky factors nv_pad: rows of whole 16-byte vectors
+    nv_padded = round_up(nv, 4)
 
   return njmax_padded, nv_padded
 
@@ -1950,9 +1954,8 @@ def make_data(
   sizes["njmax_pad"], sizes["nv_pad"] = _get_padded_sizes(
     mjm.nv,
     njmax,
-    is_sparse(mjm),
     tile_size,
-    augment_cholesky=mjm.opt.solver == mujoco.mjtSolver.mjSOL_NEWTON and mjm.nv > 32,
+    augment_cholesky=mjm.opt.solver == mujoco.mjtSolver.mjSOL_NEWTON,
   )
   sizes["nworld"] = nworld
   sizes["naconmax"] = naconmax
@@ -2185,9 +2188,8 @@ def put_data(
   sizes["njmax_pad"], sizes["nv_pad"] = _get_padded_sizes(
     mjm.nv,
     njmax,
-    is_sparse(mjm),
     tile_size,
-    augment_cholesky=mjm.opt.solver == mujoco.mjtSolver.mjSOL_NEWTON and mjm.nv > 32,
+    augment_cholesky=mjm.opt.solver == mujoco.mjtSolver.mjSOL_NEWTON,
   )
   sizes["nworld"] = nworld
   sizes["naconmax"] = naconmax

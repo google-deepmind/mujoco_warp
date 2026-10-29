@@ -37,9 +37,6 @@ from mujoco_warp._src.warp_util import event_scope
 
 wp.set_module_options({"enable_backward": False, "default_grid_stride": False})
 
-# Hessians up to this size are one nv x nv tile: faster than the blocked Cholesky's padded tiles
-_BLOCK_CHOLESKY_DIM = 64
-
 
 def create_inverse_context(m: types.Model, d: types.Data) -> InverseContext:
   """Create an InverseContext with allocated workspace arrays.
@@ -84,7 +81,7 @@ def _create_solver_context(
   njmax = d.njmax
 
   alloc_h = m.opt.solver == types.SolverType.NEWTON
-  alloc_hfactor = alloc_h and nv > _BLOCK_CHOLESKY_DIM
+  alloc_hfactor = alloc_h and nv > types.BLOCK_CHOLESKY_DIM
   alloc_mgrad = m.opt.solver == types.SolverType.CG
   alloc_incremental = _use_incremental(m)
   alloc_solve_ld_scratch = (
@@ -2431,7 +2428,7 @@ def _update_gradient_init_h_sparse(compact: bool):
 
     # Cholesky reads the upper triangle only, but a row starting at the diagonal leaves a partial
     # first sector, which costs a DRAM read once h is not in L2. Start at the sector boundary (rows
-    # are sector aligned since nv_pad is a multiple of 16); nothing reads the zeros left of it.
+    # are sector aligned when nv_pad is a multiple of 8); nothing reads the zeros left of it.
     n = ctx_h_out.shape[1]
     start = (i // wp.static(_INIT_H_ALIGN)) * wp.static(_INIT_H_ALIGN)
     for j in range(start + lane, n, wp.static(_INIT_H_LANES)):
@@ -2904,7 +2901,8 @@ def _update_gradient_JTCJ_dense(nblocks_perblock: int, deterministic: bool = Fal
 
 
 @cache_kernel
-def _update_gradient_cholesky(tile_size: int, skip_noflip: bool = False):
+def _update_gradient_cholesky(tile_size: int, nv: int, skip_noflip: bool = False):
+  """Newton direction from h factored as one nv_pad tile (an identity on the padding)."""
   SKIP_NOFLIP = skip_noflip
 
   @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
@@ -2937,7 +2935,11 @@ def _update_gradient_cholesky(tile_size: int, skip_noflip: bool = False):
     sums = wp.tile_reduce(wp.add, wp.tile_map(solve_search_sums, input_tile, output_tile))[0]
     ctx_search_dot_out[worldid] = sums[0]
     ctx_newton_decrement_out[worldid] = sums[1]
-    wp.tile_store(ctx_search_out[worldid], wp.tile_map(wp.mul, output_tile, -1.0))
+    search = wp.tile_map(wp.mul, output_tile, -1.0)
+    if wp.static(nv == tile_size):
+      wp.tile_store(ctx_search_out[worldid], search)
+    else:
+      wp.tile_store(ctx_search_out[worldid], wp.tile_view(search, offset=(0,), shape=(nv,)))
 
   return kernel
 
@@ -3079,9 +3081,9 @@ def _cholesky_factorize_solve(
   If skip_unchanged is True (blocked path only), worlds where no constraints
   changed reuse the cached factorization in hfactor instead of refactorizing.
   """
-  if m.nv <= _BLOCK_CHOLESKY_DIM:
+  if m.nv <= types.BLOCK_CHOLESKY_DIM:
     wp.launch_tiled(
-      _update_gradient_cholesky(m.nv, skip_noflip),
+      _update_gradient_cholesky(m.nv_pad, m.nv, skip_noflip),
       dim=d.nworld,
       inputs=[ctx.grad, ctx.h, ctx.state_changed_count if skip_noflip else d.nefc, ctx.done],
       outputs=[ctx.search, ctx.search_dot, ctx.newton_decrement],
@@ -3523,8 +3525,8 @@ def _update_gradient(m: types.Model, d: types.Data, ctx: SolverContext, compact:
           outputs=[ctx.h],
           block_dim=m.block_dim.update_gradient_JTDAJ_dense,
         )
-      if m.nv > _BLOCK_CHOLESKY_DIM:
-        # the dense tile zeros padded dofs; the blocked Cholesky needs an identity there
+      if m.nv_pad > m.nv:
+        # the dense tile zeros padded dofs; the Cholesky factors them, so they need an identity
         wp.launch(_padding_h, dim=(d.nworld, m.nv_pad - m.nv), inputs=[m.nv, ctx.done], outputs=[ctx.h])
 
     det_atomics = bool(m.opt.deterministic & types.DeterminismType.ATOMICS)

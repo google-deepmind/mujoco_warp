@@ -39,6 +39,8 @@ MJ_MAX_EPAFACES = 5
 
 TILE_SIZE_JTDAJ_SPARSE = 16
 TILE_SIZE_JTDAJ_DENSE = 16
+# Newton factors Hessians up to this size as one tile, larger ones with the blocked Cholesky
+BLOCK_CHOLESKY_DIM = 64
 
 # max M block size where dense tile-Cholesky beats sparse LDL (wins to ~64, degrades past ~80)
 M_BLOCK_DENSE_MAX = 64

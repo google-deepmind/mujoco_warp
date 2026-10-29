@@ -1098,18 +1098,20 @@ class SolverTest(parameterized.TestCase):
     blocked=(False, True),
   )
   def test_solve_cholesky(self, cone, jacobian, blocked):
-    """Newton from a cold start: the one-tile and the blocked Cholesky of a 50-DOF Hessian."""
+    """Newton from a cold start: one-tile and blocked Cholesky of a padded 50-DOF Hessian."""
+    # the threshold also sets the padding: the blocked Cholesky's tiles, else nv_pad > nv factored
+    self.enterContext(mock.patch.object(types, "BLOCK_CHOLESKY_DIM", 32 if blocked else types.BLOCK_CHOLESKY_DIM))
     for keyframe in range(3):
       mjm, mjd, m, d = test_data.fixture(
         "constraints.xml",
         keyframe=keyframe,
         overrides={"opt.jacobian": jacobian, "opt.cone": cone, "opt.solver": SolverType.NEWTON, "opt.iterations": 50},
       )
-      self.assertLessEqual(m.nv, solver._BLOCK_CHOLESKY_DIM)
+      self.assertEqual(m.nv > types.BLOCK_CHOLESKY_DIM, blocked)
+      self.assertGreater(m.nv_pad, m.nv)
       mujoco.mj_forward(mjm, mjd)
       d.qacc_warmstart.zero_()
-      with mock.patch.object(solver, "_BLOCK_CHOLESKY_DIM", m.nv - 1 if blocked else solver._BLOCK_CHOLESKY_DIM):
-        mjw.solve(m, d)
+      mjw.solve(m, d)
       _assert_eq(d.qacc.numpy()[0], mjd.qacc, "qacc")
       _assert_eq(d.efc.force.numpy()[0, : mjd.nefc], mjd.efc_force, "efc_force")
 
