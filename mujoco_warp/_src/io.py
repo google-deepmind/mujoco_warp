@@ -131,6 +131,7 @@ def _jtdaj_groups(mjd: mujoco.MjData) -> tuple[np.ndarray, np.ndarray]:
 
   MuJoCo lays each constraint's rows out contiguously, so this reproduces the block list
   make_constraint builds in-kernel. Returns block start rows (adr) and lengths (nrow).
+  DOF friction rows get no block, matching make_constraint.
   """
   nefc = mjd.nefc
   if nefc == 0:
@@ -141,7 +142,8 @@ def _jtdaj_groups(mjd: mujoco.MjData) -> tuple[np.ndarray, np.ndarray]:
   boundary[1:] = (etype[1:] != etype[:-1]) | (eid[1:] != eid[:-1])
   adr = np.flatnonzero(boundary)
   nrow = np.diff(np.append(adr, nefc))
-  return adr, nrow
+  keep = etype[adr] != mujoco.mjtConstraint.mjCNSTR_FRICTION_DOF
+  return adr[keep], nrow[keep]
 
 
 def _flex_has_stiffness(mjm: mujoco.MjModel, f: int) -> bool:
@@ -2368,6 +2370,11 @@ def put_data(
       val = np.zeros(mjm.ntendon, dtype=np.float32)
       if mjd.nefmT > 0 and mjd.efm_ts is not None and mjd.efm_tid is not None:
         val[mjd.efm_tid[: mjd.nefmT]] = mjd.efm_ts[: mjd.nefmT]
+    elif f.name == "dof_frictionadr":
+      # efc address of each DOF's friction row, as make_constraint writes it
+      val = np.full(mjm.nv, -1, dtype=np.int32)
+      rows = np.flatnonzero(mjd.efc_type[: min(mjd.nefc, njmax)] == mujoco.mjtConstraint.mjCNSTR_FRICTION_DOF)
+      val[mjd.efc_id[rows]] = rows
     elif f.name == "efm_as":
       val = np.zeros(mjm.nactuator, dtype=np.float32)
       if mjd.nefmA > 0 and mjd.efm_as is not None and mjd.efm_aid is not None:

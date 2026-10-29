@@ -1847,7 +1847,8 @@ def _equality_flexstrain(is_sparse: bool, newton: bool, is_discrete: bool = Fals
 
 
 @cache_kernel
-def _friction_dof(is_sparse: bool, newton: bool, is_discrete: bool = False):
+def _friction_dof(is_sparse: bool, is_discrete: bool = False):
+  # sparse Newton adds these rows to the Hessian diagonal directly, so they get no JTDAJ block
   @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
   def kernel(
     # Model:
@@ -1867,9 +1868,6 @@ def _friction_dof(is_sparse: bool, newton: bool, is_discrete: bool = False):
     nefc_out: wp.array[int],
     efc_type_out: wp.array2d[int],
     efc_id_out: wp.array2d[int],
-    efc_jtdaj_adr_out: wp.array2d[int],
-    efc_jtdaj_nrow_out: wp.array2d[int],
-    efc_jtdaj_nblock_out: wp.array[int],
     efc_J_rownnz_out: wp.array2d[int],
     efc_J_rowadr_out: wp.array2d[int],
     efc_J_colind_out: wp.array3d[int],
@@ -1880,6 +1878,7 @@ def _friction_dof(is_sparse: bool, newton: bool, is_discrete: bool = False):
     efc_vel_out: wp.array2d[float],
     efc_aref_out: wp.array2d[float],
     efc_frictionloss_out: wp.array2d[float],
+    dof_frictionadr_out: wp.array2d[int],
     # Out:
     efc_nnz_out: wp.array[int],
   ):
@@ -1888,18 +1887,17 @@ def _friction_dof(is_sparse: bool, newton: bool, is_discrete: bool = False):
     dof_frictionloss_id = worldid % dof_frictionloss.shape[0]
 
     if dof_frictionloss[dof_frictionloss_id, dofid] <= 0.0:
+      dof_frictionadr_out[worldid, dofid] = -1
       return
 
     wp.atomic_add(nf_out, worldid, 1)  # kernel_analyzer: ignore[atomic]
     efcid = wp.atomic_add(nefc_out, worldid, 1)  # kernel_analyzer: ignore[atomic]
 
     if efcid >= njmax_in:
+      dof_frictionadr_out[worldid, dofid] = -1
       return
 
-    if wp.static(is_sparse and newton):
-      jgid = wp.atomic_add(efc_jtdaj_nblock_out, worldid, 1)  # kernel_analyzer: ignore[atomic]
-      efc_jtdaj_adr_out[worldid, jgid] = efcid
-      efc_jtdaj_nrow_out[worldid, jgid] = 1
+    dof_frictionadr_out[worldid, dofid] = efcid
 
     if wp.static(is_sparse):
       efc_J_rownnz_out[worldid, efcid] = 1
@@ -5135,7 +5133,7 @@ def make_constraint(m: types.Model, d: types.Data):
 
     if not (m.opt.disableflags & types.DisableBit.FRICTIONLOSS):
       wp.launch(
-        _friction_dof(m.is_sparse, newton, is_discrete),
+        _friction_dof(m.is_sparse, is_discrete),
         dim=(d.nworld, m.nv),
         inputs=[
           m.nv,
@@ -5154,9 +5152,6 @@ def make_constraint(m: types.Model, d: types.Data):
           d.nefc,
           d.efc.type,
           d.efc.id,
-          d.efc.jtdaj_adr,
-          d.efc.jtdaj_nrow,
-          d.efc.jtdaj_nblock,
           d.efc.J_rownnz,
           d.efc.J_rowadr,
           d.efc.J_colind,
@@ -5167,6 +5162,7 @@ def make_constraint(m: types.Model, d: types.Data):
           d.efc.vel,
           d.efc.aref,
           d.efc.frictionloss,
+          d.dof_frictionadr,
           efc_nnz,
         ],
       )
