@@ -701,6 +701,44 @@ class CollisionTest(parameterized.TestCase):
 
     self.assertEqual(d.nacon.numpy()[0], mjd.ncon)
 
+  def test_large_scale_shallow_penetration(self):
+    """Regression for #1851: a 1 mm box-on-ground penetration must not be dropped as separated.
+
+    A thin box rests on a large box ground, tilted a fraction of a degree so its lowest edge sits
+    1 mm below the ground top. The ground's 6.25 m half-length puts the Minkowski-difference
+    vertices ~8 m from the origin, so in float32 GJK stops early on a triangle whose closest-point
+    distance is a small positive value even though its own separation test reports them penetrating.
+    Before the fix that positive distance skipped EPA and no contact was written; MuJoCo C reports
+    two active contacts.
+    """
+    mjm, mjd, m, d = test_data.fixture(
+      keyframe="pen",
+      xml="""
+      <mujoco>
+        <worldbody>
+          <geom type="box" size="3.75 6.25 0.05" pos="0 0 -0.05"/>
+          <body pos="0 0 1">
+            <freejoint/>
+            <geom type="box" size="0.5 2.0 0.25" mass="300"/>
+          </body>
+        </worldbody>
+        <keyframe>
+          <key name="pen" qpos="0 0 0.25074523383753267 0.9999999048070578 0.0004363322991533301 0 0"/>
+        </keyframe>
+      </mujoco>
+      """,
+    )
+
+    mujoco.mj_collision(mjm, mjd)
+    mjw.collision(m, d)
+
+    nacon = int(d.nacon.numpy()[0])
+    self.assertEqual(mjd.ncon, 2)
+    self.assertEqual(nacon, mjd.ncon)
+    # ~1 mm penetration, matching MuJoCo C (before the fix GJK returned +0.75 mm and no contact)
+    self.assertLess(d.contact.dist.numpy()[:nacon].max(), 0.0)
+    _assert_eq(np.sort(d.contact.dist.numpy()[:nacon]), np.sort(mjd.contact.dist[: mjd.ncon]), "dist")
+
   @parameterized.named_parameters((fixture, fixture) for fixture in _FIXTURES if fixture.startswith("mesh_plane"))
   def test_plane_mesh_contact_selection(self, fixture):
     """Matches MuJoCo's contact face and order; the whole-mesh spread heuristic fails."""
