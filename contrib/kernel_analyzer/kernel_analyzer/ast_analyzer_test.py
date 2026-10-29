@@ -598,5 +598,181 @@ def launch_it():
     self.assertEqual(len(shared_issues), 0, shared_issues)
 
 
+class TestDeterministicFactory(absltest.TestCase):
+  def test_missing_deterministic_factory(self):
+    bad_code = """
+import warp as wp
+
+@wp.kernel
+def top_kernel(arr_out: wp.array[int]):
+  wp.atomic_add(arr_out, 0, 1)
+
+@wp.func
+def uncalled_helper(arr_out: wp.array[int]):
+  wp.atomic_add(arr_out, 0, 1)
+
+def bad_factory(n: int):
+  @wp.kernel(module="unique")
+  def nested_kernel(arr_out: wp.array[int]):
+    wp.atomic_add(arr_out, 0, 1)
+"""
+    issues = ast_analyzer.analyze(bad_code, "test.py", "", check_atomic=True)
+    det_issues = [i.kernel for i in issues if isinstance(i, ast_analyzer.MissingDeterministicFactory)]
+    self.assertEqual(det_issues, ["top_kernel", "nested_kernel", "uncalled_helper"])
+
+    good_code = """
+import warp as wp
+
+@wp.kernel
+def bitwise_kernel(flags_out: wp.array[int]):
+  wp.atomic_or(flags_out, 0, 1)
+  wp.atomic_and(flags_out, 0, 2)
+  wp.atomic_xor(flags_out, 0, 4)
+
+def non_atomic_factory(n: int):
+  @wp.kernel(module="unique")
+  def plain_kernel(arr_out: wp.array[int]):
+    arr_out[0] = 1
+
+def det_factory(n: int, deterministic: bool = False):
+  @wp.func
+  def helper(arr_out: wp.array[int]):
+    wp.atomic_add(arr_out, 0, 1)
+
+  @wp.kernel(module="unique")
+  def kernel(arr_out: wp.array[int]):
+    wp.atomic_add(arr_out, 0, 1)
+"""
+    issues = ast_analyzer.analyze(good_code, "test.py", "", check_atomic=True)
+    det_issues = [i for i in issues if isinstance(i, ast_analyzer.MissingDeterministicFactory)]
+    self.assertEqual(len(det_issues), 0)
+
+  def test_top_level_func_with_atomics_called_by_kernels(self):
+    code = """
+import warp as wp
+
+@wp.func
+def scatter_helper(arr_out: wp.array[float]):
+  wp.atomic_add(arr_out, 0, 1.0)
+
+def good_factory(deterministic: bool = False):
+  @wp.kernel(module="unique")
+  def good_kernel(arr_out: wp.array[float]):
+    scatter_helper(arr_out)
+
+def bad_factory(n: int):
+  @wp.kernel(module="unique")
+  def bad_kernel(arr_out: wp.array[float]):
+    scatter_helper(arr_out)
+"""
+    issues = ast_analyzer.analyze(code, "test.py", "", check_atomic=True)
+    det_issues = [i.kernel for i in issues if isinstance(i, ast_analyzer.MissingDeterministicFactory)]
+    self.assertEqual(det_issues, ["bad_kernel"])
+
+  def test_ignore_and_scoping(self):
+    code = """
+import warp as wp
+
+# kernel_analyzer: off[atomic]
+@wp.kernel
+def off_kernel(arr_out: wp.array[int]):
+  wp.atomic_add(arr_out, 0, 1)
+# kernel_analyzer: on[atomic]
+
+@wp.kernel
+def ignored_kernel(arr_out: wp.array[int]):
+  wp.atomic_add(arr_out, 0, 1)  # kernel_analyzer: ignore[atomic]
+
+def factory(n: int):
+  @wp.kernel
+  def missing_unique_kernel(arr_out: wp.array[int]):
+    wp.atomic_add(arr_out, 0, 1)  # kernel_analyzer: ignore
+"""
+    issues = ast_analyzer.analyze(code, "test.py", "", check_atomic=True)
+    det_issues = [i for i in issues if isinstance(i, ast_analyzer.MissingDeterministicFactory)]
+    self.assertEqual(len(det_issues), 0)
+    unique_issues = [i.kernel for i in issues if isinstance(i, ast_analyzer.MissingModuleUnique)]
+    self.assertEqual(unique_issues, ["missing_unique_kernel"])
+
+  def test_deterministic_max_records(self):
+    code = """
+import warp as wp
+
+@wp.func
+def dyn_helper(n: int, arr_out: wp.array[float]):
+  i = 0
+  while i < n:
+    wp.atomic_add(arr_out, i, 1.0)
+    i += 1
+
+def unrolled_factory(deterministic: bool = False):
+  module_options = {"enable_backward": False}
+  if deterministic:
+    module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
+
+  @wp.kernel(module="unique", module_options=module_options)
+  def unrolled_kernel(arr_out: wp.array[float]):
+    for r in range(3):
+      for c in range(3):
+        wp.atomic_add(arr_out, r * 3 + c, 1.0)
+
+def missing_dyn_for_factory(deterministic: bool = False):
+  module_options = {"enable_backward": False}
+  if deterministic:
+    module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
+
+  @wp.kernel(module="unique", module_options=module_options)
+  def dyn_for_kernel(n: int, arr_out: wp.array[float]):
+    for i in range(n):
+      wp.atomic_add(arr_out, i, 1.0)
+
+def missing_continue_factory(deterministic: bool = False):
+  module_options = {"enable_backward": False}
+  if deterministic:
+    module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
+
+  @wp.kernel(module="unique", module_options=module_options)
+  def continue_kernel(arr_out: wp.array[float]):
+    for i in range(4):
+      if i == 0:
+        continue
+      wp.atomic_add(arr_out, i, 1.0)
+
+def missing_func_factory(deterministic: bool = False):
+  module_options = {"enable_backward": False}
+  if deterministic:
+    module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
+
+  @wp.kernel(module="unique", module_options=module_options)
+  def func_kernel(n: int, arr_out: wp.array[float]):
+    dyn_helper(n, arr_out)
+
+def missing_body_static_factory(flag: bool, deterministic: bool = False):
+  module_options = {"enable_backward": False}
+  if deterministic:
+    module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
+
+  @wp.kernel(module="unique", module_options=module_options)
+  def body_static_kernel(arr_out: wp.array[float]):
+    for i in range(32):
+      if wp.static(flag):
+        wp.atomic_add(arr_out, i, 1.0)
+
+def valid_dyn_factory(nv: int, deterministic: bool = False):
+  module_options = {"enable_backward": False}
+  if deterministic:
+    module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
+    module_options["deterministic_max_records"] = nv
+
+  @wp.kernel(module="unique", module_options=module_options)
+  def valid_dyn_kernel(n: int, arr_out: wp.array[float]):
+    for i in range(n):
+      wp.atomic_add(arr_out, i, 1.0)
+"""
+    issues = ast_analyzer.analyze(code, "test.py", "", check_atomic=True)
+    max_rec_issues = [i.kernel for i in issues if isinstance(i, ast_analyzer.MissingDeterministicMaxRecords)]
+    self.assertEqual(max_rec_issues, ["dyn_for_kernel", "continue_kernel", "func_kernel", "body_static_kernel"])
+
+
 if __name__ == "__main__":
   absltest.main()
