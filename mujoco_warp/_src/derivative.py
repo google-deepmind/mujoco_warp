@@ -3775,6 +3775,9 @@ def eff_actuation(m: Model, d: Data):
       outputs=[d.qH],
     )
 
+  if smooth.skip_qacc_smooth(m, d):
+    return
+
   # Factor qH into qHLD and qHDiagInv
   if m.M_tiles:
     smooth._factor_blocks(m, d, d.qH, d.qHLD, d.qHDiagInv)
