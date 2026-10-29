@@ -36,6 +36,7 @@ from mujoco_warp._src.types import JointType
 from mujoco_warp._src.types import Model
 from mujoco_warp._src.types import ObjType
 from mujoco_warp._src.types import SolverType
+from mujoco_warp._src.types import TendonType
 from mujoco_warp._src.types import TileSet
 from mujoco_warp._src.types import TrnType
 from mujoco_warp._src.types import WrapType
@@ -1992,6 +1993,7 @@ def _cfrc_ext_spatial_tendon(nwrap: int, deterministic: bool = False):
     body_rootid: wp.array[int],
     geom_bodyid: wp.array[int],
     site_bodyid: wp.array[int],
+    tendon_type: wp.array[int],
     tendon_adr: wp.array[int],
     tendon_num: wp.array[int],
     tendon_actuatorid: wp.array[int],
@@ -2036,8 +2038,7 @@ def _cfrc_ext_spatial_tendon(nwrap: int, deterministic: bool = False):
     worldid, tenid = wp.tid()
 
     # fixed tendon: acts through the joints
-    adr = tendon_adr[tenid]
-    if wrap_type[adr] == WrapType.JOINT:
+    if tendon_type[tenid] == TendonType.FIXED:
       return
 
     frc = ten_frc_in[worldid, tenid]
@@ -2092,6 +2093,7 @@ def _cfrc_ext_spatial_tendon(nwrap: int, deterministic: bool = False):
     if frc == 0.0:
       return
 
+    adr = tendon_adr[tenid]
     num = tendon_num[tenid]
     p = ten_wrapadr_in[worldid, tenid]
     pend = p + ten_wrapnum_in[worldid, tenid]
@@ -2280,6 +2282,7 @@ def rne_postconstraint(m: Model, d: Data):
           m.jnt_dofadr,
           m.dof_jntid,
           m.site_bodyid,
+          m.tendon_type,
           m.tendon_adr,
           m.tendon_num,
           m.tendon_actuatorid,
@@ -2333,6 +2336,7 @@ def rne_postconstraint(m: Model, d: Data):
         m.body_rootid,
         m.geom_bodyid,
         m.site_bodyid,
+        m.tendon_type,
         m.tendon_adr,
         m.tendon_num,
         m.tendon_actuatorid,
@@ -2463,6 +2467,7 @@ def _tendon_dot(
   jnt_dofadr: wp.array[int],
   dof_jntid: wp.array[int],
   site_bodyid: wp.array[int],
+  tendon_type: wp.array[int],
   tendon_adr: wp.array[int],
   tendon_num: wp.array[int],
   tendon_actuatorid: wp.array[int],
@@ -2495,11 +2500,11 @@ def _tendon_dot(
     return
 
   # fixed tendon has zero Jdot
-  adr = tendon_adr[tenid]
-  if wrap_type[adr] == WrapType.JOINT:
+  if tendon_type[tenid] == TendonType.FIXED:
     return
 
   # process spatial tendon
+  adr = tendon_adr[tenid]
   divisor = float(1.0)
   num = tendon_num[tenid]
   j = int(0)
@@ -2734,6 +2739,7 @@ def tendon_bias(m: Model, d: Data, qfrc: wp.array2d[float]):
       m.jnt_dofadr,
       m.dof_jntid,
       m.site_bodyid,
+      m.tendon_type,
       m.tendon_adr,
       m.tendon_num,
       m.tendon_actuatorid,
@@ -4822,6 +4828,7 @@ def _spatial_geom_tendon(max_ten_J_rownnz: int, deterministic: bool = False):
 def _spatial_tendon_wrap(
   # Model:
   ntendon: int,
+  tendon_type: wp.array[int],
   tendon_adr: wp.array[int],
   tendon_num: wp.array[int],
   wrap_type: wp.array[int],
@@ -4841,16 +4848,16 @@ def _spatial_tendon_wrap(
   wrapcount = int(0)
   wrapgeomid = int(0)
   for i in range(ntendon):
-    adr = tendon_adr[i]
     ten_wrapadr_out[worldid, i] = wrapcount
-    wrapnum = int(0)
-    tendonnum = tendon_num[i]
 
     # process fixed tendon
-    if wrap_type[adr] == WrapType.JOINT:
+    if tendon_type[i] == TendonType.FIXED:
       continue
 
     # process spatial tendon
+    adr = tendon_adr[i]
+    tendonnum = tendon_num[i]
+    wrapnum = int(0)
     j = int(0)
     while j < tendonnum - 1:
       # get 1st and 2nd object
@@ -5078,6 +5085,6 @@ def tendon(m: Model, d: Data):
     wp.launch(
       _spatial_tendon_wrap,
       dim=d.nworld,
-      inputs=[m.ntendon, m.tendon_adr, m.tendon_num, m.wrap_type, m.wrap_objid, d.site_xpos, wrap_geom_xpos],
+      inputs=[m.ntendon, m.tendon_type, m.tendon_adr, m.tendon_num, m.wrap_type, m.wrap_objid, d.site_xpos, wrap_geom_xpos],
       outputs=[d.ten_wrapadr, d.ten_wrapnum, d.wrap_obj, d.wrap_xpos],
     )

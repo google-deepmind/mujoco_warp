@@ -2121,6 +2121,44 @@ class IOTest(parameterized.TestCase):
         m_val = m_val.numpy()
       np.testing.assert_array_equal(m_val, mjm_val, err_msg=f"mismatch: {field}")
 
+  def test_tendon_type(self):
+    """Tests that tendon_type matches mjModel for fixed and spatial tendons."""
+    mjm, _, m, _ = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <site name="site0"/>
+          <body>
+            <joint name="joint0"/>
+            <geom size="0.1"/>
+            <site name="site1" pos="1 0 0"/>
+          </body>
+        </worldbody>
+        <tendon>
+          <spatial>
+            <site site="site0"/>
+            <site site="site1"/>
+          </spatial>
+          <fixed>
+            <joint joint="joint0" coef="1"/>
+          </fixed>
+        </tendon>
+      </mujoco>
+      """
+    )
+
+    # older mujoco: tendon_type is implied by the first wrap object
+    with mock.patch.object(util_pkg, "check_version", return_value=False):
+      m_old = put_model(mjm)
+
+    expected = [types.TendonType.SPATIAL, types.TendonType.FIXED]
+    np.testing.assert_array_equal(m.tendon_type.numpy(), expected)
+    np.testing.assert_array_equal(m_old.tendon_type.numpy(), expected)
+    if util_pkg.check_version("mujoco>=3.17.1"):
+      np.testing.assert_array_equal(mjm.tendon_type, expected)
+      self.assertEqual(types.TendonType.FIXED, mujoco.mjtTendon.mjTENDON_FIXED)
+      self.assertEqual(types.TendonType.SPATIAL, mujoco.mjtTendon.mjTENDON_SPATIAL)
+
   def test_model_batched_fields(self):
     """Test Model batched fields."""
     nworld = 2
