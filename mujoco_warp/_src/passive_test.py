@@ -625,6 +625,128 @@ class PassiveTest(parameterized.TestCase):
       lift_coeff = d.qfrc_fluid.numpy()[0, 2] / (v * v)
       np.testing.assert_allclose(lift_coeff, ref_lift_coeff, atol=1e-12 * ref_lift_coeff, rtol=1e-5)
 
+  @parameterized.parameters(1, 2)
+  def test_ellipsoid_fluid_offcenter_power(self, nworld):
+    """Off-center ellipsoid fluid drag must dissipate energy, not create it (issue #1863).
+
+    The fluid wrench acts at the geom, so it contributes a moment (geom_xpos - xipos) x F
+    about the body center. With that moment omitted the generalized torque is wrong and the
+    passive fluid power can flip sign. Here the fluid is purely viscous (no density, no wind),
+    hence strictly dissipative, so qvel . qfrc_fluid must be non-positive.
+    """
+    _, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option gravity="0 0 0" density="0" viscosity="1"/>
+        <worldbody>
+          <body>
+            <freejoint/>
+            <inertial pos="0 0 0" mass="1" diaginertia="0.1 0.1 0.1"/>
+            <geom type="sphere" size="0.1" pos="1 0 0" fluidshape="ellipsoid"/>
+          </body>
+        </worldbody>
+        <keyframe>
+          <key qvel="0 1 0 0 0 -2"/>
+        </keyframe>
+      </mujoco>
+      """,
+      keyframe=0,
+      nworld=nworld,
+    )
+
+    for arr in (d.qfrc_fluid, d.qfrc_passive):
+      arr.fill_(wp.inf)
+
+    mjw.passive(m, d)
+
+    qfrc = d.qfrc_fluid.numpy()
+    for world in range(nworld):
+      _assert_eq(qfrc[world], mjd.qfrc_fluid, "qfrc_fluid")
+      # purely viscous drag cannot do positive work on the body
+      self.assertLess(float(mjd.qvel @ qfrc[world]), 1e-6)
+
+  @parameterized.parameters(
+    "0.5 0 0",
+    "-0.5 0 0",
+    "0 0.7 0",
+    "0 -0.7 0",
+    "0 0 0.4",
+    "0.3 -0.2 0.5",
+  )
+  def test_ellipsoid_fluid_offcenter_parity(self, geom_pos):
+    """Off-center ellipsoid fluid wrench matches MuJoCo across offset directions.
+
+    Uses a rotated body frame, a rotated geom, and the full phenomenological model (density,
+    viscosity, wind) so the reference-point moment is exercised together with the frame maps.
+    """
+    _, mjd, m, d = test_data.fixture(
+      xml=f"""
+      <mujoco>
+        <option gravity="0 0 0" density="1.3" viscosity="0.07" wind="0.1 0.2 -0.05"/>
+        <worldbody>
+          <body>
+            <freejoint/>
+            <inertial pos="0 0 0" mass="1" diaginertia="0.1 0.2 0.15"/>
+            <geom type="ellipsoid" size="0.1 0.2 0.05" pos="{geom_pos}" euler="20 -35 50"
+                  fluidshape="ellipsoid"/>
+          </body>
+        </worldbody>
+        <keyframe>
+          <key qpos="0 0 0 0.966 0 0.259 0" qvel="0.7 -0.3 0.4 -0.6 0.8 -0.2"/>
+        </keyframe>
+      </mujoco>
+      """,
+      keyframe=0,
+    )
+
+    for arr in (d.qfrc_fluid, d.qfrc_passive):
+      arr.fill_(wp.inf)
+
+    mjw.passive(m, d)
+
+    _assert_eq(d.qfrc_fluid.numpy()[0], mjd.qfrc_fluid, "qfrc_fluid")
+
+  def test_ellipsoid_fluid_offcenter_multibody(self):
+    """Multiple off-center fluid geoms and a hinge child match MuJoCo.
+
+    The root carries two ellipsoid-fluid geoms at distinct offsets (wrench summation), and a
+    hinge-jointed child adds a body whose center differs from the subtree center of mass, so
+    the per-geom moment combines with apply_ft's own center-of-mass transfer without
+    double-counting.
+    """
+    _, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option gravity="0 0 0" density="1.2" viscosity="0.3"/>
+        <worldbody>
+          <body>
+            <freejoint/>
+            <inertial pos="0 0 0" mass="1" diaginertia="0.1 0.1 0.1"/>
+            <geom type="ellipsoid" size="0.08 0.12 0.05" pos="0.3 0 0" fluidshape="ellipsoid"/>
+            <geom type="ellipsoid" size="0.05 0.05 0.1" pos="-0.2 0.15 0" euler="10 20 0"
+                  fluidshape="ellipsoid"/>
+            <body pos="0.5 0 0">
+              <joint type="hinge" axis="0 0 1"/>
+              <inertial pos="0 0 0" mass="0.5" diaginertia="0.02 0.02 0.02"/>
+              <geom type="sphere" size="0.07" pos="0.2 0.1 0" fluidshape="ellipsoid"/>
+            </body>
+          </body>
+        </worldbody>
+        <keyframe>
+          <key qpos="0 0 0 1 0 0 0 0.3" qvel="0.4 -0.2 0.3 0.5 -0.3 0.6 1.5"/>
+        </keyframe>
+      </mujoco>
+      """,
+      keyframe=0,
+    )
+
+    for arr in (d.qfrc_fluid, d.qfrc_passive):
+      arr.fill_(wp.inf)
+
+    mjw.passive(m, d)
+
+    _assert_eq(d.qfrc_fluid.numpy()[0], mjd.qfrc_fluid, "qfrc_fluid")
+
   def test_adhesion_gap_force(self):
     """Test contact creation and passive attraction in the gap band without collision."""
     _, _, m, d = test_data.fixture(

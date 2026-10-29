@@ -591,8 +591,11 @@ def _fluid_force(
       lfrc_force *= coef
 
       # map force/torque from local to world frame: lfrc -> bfrc
-      torque_global += geom_rot @ lfrc_torque
-      force_global += geom_rot @ lfrc_force
+      bfrc_force = geom_rot @ lfrc_force
+      force_global += bfrc_force
+      # the fluid wrench is generated at the geom; add the moment of the force about the
+      # body inertial frame, (geom_xpos - xipos) x F, matching mj_applyFT's point argument
+      torque_global += geom_rot @ lfrc_torque + wp.cross(geom_pos - xipos, bfrc_force)
 
     fluid_applied_out[worldid, bodyid] = wp.spatial_vector(force_global, torque_global)
     return
