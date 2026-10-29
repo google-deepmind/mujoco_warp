@@ -5509,6 +5509,67 @@ _ROD_ARTICULATED_XML = """
 </mujoco>
 """
 
+_ROD_CURVED_XML = """
+<mujoco>
+  <option integrator="discrete"/>
+  <worldbody>
+    <flexcomp name="ring" type="circle" count="10 1 1" spacing="0.15 0.15 0.05" pos="0 0 0.6" radius="0.01" dim="1"
+              mass="0.1">
+      <contact selfcollide="none" contype="0" conaffinity="0"/>
+      <elasticity young="1e6" damping="0.01"/>
+      <edge equality="true" solref="0.005 1"/>
+      <pin id="0 1"/>
+    </flexcomp>
+    <flexcomp name="helix" type="direct" pos="0 0.5 0.5" radius="0.01" dim="1" mass="0.1"
+              point="0.10 0.00 0.00  0.05 0.0866 0.04  -0.05 0.0866 0.08  -0.10 0.00 0.12
+                     -0.05 -0.0866 0.16  0.05 -0.0866 0.20  0.10 0.00 0.24"
+              element="0 1  1 2  2 3  3 4  4 5  5 6">
+      <contact selfcollide="none" contype="0" conaffinity="0"/>
+      <elasticity young="2e6" damping="0.015" section="box" sectionsize="0.015 0.01"/>
+      <pin id="0 1"/>
+    </flexcomp>
+    <flexcomp name="vee" type="direct" pos="0 -0.5 0.5" radius="0.01" dim="1" mass="0.05"
+              point="0 0 0  0.08 0 0  0.13 0.06 0"
+              element="0 1  1 2">
+      <contact selfcollide="none" contype="0" conaffinity="0"/>
+      <elasticity young="1e6" damping="0.01"/>
+      <pin id="0"/>
+    </flexcomp>
+    <!-- straight segment ending in an arc: straight single hinges next to hinge pairs -->
+    <flexcomp name="hook" type="direct" pos="0.5 0 0.5" radius="0.01" dim="1" mass="0.05"
+              point="0 0 0  0.05 0 0  0.10 0 0  0.15 0 0  0.193 0.025 0  0.218 0.068 0  0.218 0.118 0"
+              element="0 1  1 2  2 3  3 4  4 5  5 6">
+      <contact selfcollide="none" contype="0" conaffinity="0"/>
+      <elasticity young="1e6" damping="0.01"/>
+      <pin id="0 1"/>
+    </flexcomp>
+  </worldbody>
+</mujoco>
+"""
+
+_ROD_CURVED_ARTICULATED_XML = """
+<mujoco>
+  <option integrator="discrete" solver="CG"/>
+  <worldbody>
+    <body name="arm" pos="0 0 1">
+      <joint name="hinge" axis="0 1 0" damping="0.1"/>
+      <geom size="0.02" mass="0.1"/>
+      <flexcomp name="arc" type="direct" pos="0.15 0 0" radius="0.01" dim="1" mass="0.1"
+                point="0 -0.15 0  0.075 -0.13 0  0.13 -0.075 0  0.15 0 0  0.13 0.075 0  0.075 0.13 0  0 0.15 0"
+                element="0 1  1 2  2 3  3 4  4 5  5 6">
+        <contact selfcollide="none" contype="0" conaffinity="0"/>
+        <elasticity young="1e6" damping="0.01"/>
+        <pin id="0 1"/>
+      </flexcomp>
+    </body>
+  </worldbody>
+</mujoco>
+"""
+
+
+# curved 1D rod references, see types.ROD_HINGE_SIZE
+_CURVED_RODS = types.ROD_HINGE_SIZE == 10
+
 
 # TODO(team): remove version check once mujoco >= 3.16.1 is required.
 @absltest.skipIf(not util_pkg.check_version("mujoco>=3.16.1"), "Requires MuJoCo >= 3.16.1")
@@ -5516,13 +5577,15 @@ class FlexRodBendingTest(parameterized.TestCase):
   """Tests for 1D flex discrete elastic rod bending parity with MuJoCo."""
 
   @parameterized.product(
-    xml=[_ROD_XML, _ROD_ARTICULATED_XML],
+    xml=[_ROD_XML, _ROD_ARTICULATED_XML, _ROD_CURVED_XML, _ROD_CURVED_ARTICULATED_XML],
     nworld=[1, 2],
     spring=(0, DisableBit.SPRING),
     damper=(0, DisableBit.DAMPER),
   )
   def test_rod_passive_parity(self, xml, nworld, spring, damper):
-    """Rod bending spring and damper forces match MuJoCo C, including articulated attachments."""
+    """Rod spring and damper forces match MuJoCo C, including curved and articulated rods."""
+    if xml in (_ROD_CURVED_XML, _ROD_CURVED_ARTICULATED_XML) and not _CURVED_RODS:
+      self.skipTest("Requires curved 1D flex rod support in MuJoCo")
     mjm, mjd, m, d = test_data.fixture(
       xml=xml,
       qpos_noise=0.02,
@@ -5572,10 +5635,12 @@ class FlexRodBendingTest(parameterized.TestCase):
       if not damper:
         self.assertFalse(np.allclose(qfrc_damper[0], qfrc_damper[1]))
 
-  @parameterized.parameters(1, 2)
-  def test_rod_effective_metric(self, nworld):
+  @parameterized.product(xml=[_ROD_XML, _ROD_CURVED_XML], nworld=[1, 2])
+  def test_rod_effective_metric(self, xml, nworld):
     """Rod hinge stiffness in efm_K_val, the velocity shift efm_c and qacc_smooth match MuJoCo C."""
-    mjm, mjd, m, d = test_data.fixture(xml=_ROD_XML, qpos_noise=0.02, qvel_noise=0.5, nworld=nworld)
+    if xml == _ROD_CURVED_XML and not _CURVED_RODS:
+      self.skipTest("Requires curved 1D flex rod support in MuJoCo")
+    mjm, mjd, m, d = test_data.fixture(xml=xml, qpos_noise=0.02, qvel_noise=0.5, nworld=nworld)
     self.assertGreater(m.nefmK, 0)
 
     mjds = [mjd]
@@ -5623,6 +5688,8 @@ class FlexRodBendingTest(parameterized.TestCase):
     xml=[
       _ROD_XML,
       _ROD_ARTICULATED_XML,
+      _ROD_CURVED_XML,
+      _ROD_CURVED_ARTICULATED_XML,
       # slider-crank-like mechanism: a rod clamped by two point equalities
       # at each end to hinged fittings
       """
@@ -5706,6 +5773,8 @@ class FlexRodBendingTest(parameterized.TestCase):
   )
   def test_rod_dynamics(self, xml, nworld):
     """Short discrete-integrator trajectories with rods match MuJoCo C (CSR and matrix-free)."""
+    if xml in (_ROD_CURVED_XML, _ROD_CURVED_ARTICULATED_XML) and not _CURVED_RODS:
+      self.skipTest("Requires curved 1D flex rod support in MuJoCo")
     mjm, mjd, m, d = test_data.fixture(xml=xml, qvel_noise=0.1, nworld=nworld)
 
     mjds = [mjd]
@@ -5762,6 +5831,31 @@ class FlexRodBendingTest(parameterized.TestCase):
       m.opt.integrator = int(implicit)
       with self.assertRaisesRegex(ValueError, "flex elasticity is no longer integrated implicitly"):
         mjw.forward(m, d)
+
+  @absltest.skipIf(not _CURVED_RODS, "Requires curved 1D flex rod support in MuJoCo")
+  def test_rod_curved_zero_force_at_rest(self):
+    """Curved rods have zero spring force in their reference configuration, and resist bending."""
+    mjm, mjd, m, d = test_data.fixture(xml=_ROD_CURVED_XML)
+    d.qfrc_spring.fill_(wp.inf)
+    mjw.fwd_position(m, d)
+    mjw.fwd_velocity(m, d)
+    mujoco.mj_fwdPosition(mjm, mjd)
+    mujoco.mj_fwdVelocity(mjm, mjd)
+    np.testing.assert_allclose(d.qfrc_spring.numpy()[0], 0.0, atol=1e-5)
+    np.testing.assert_allclose(mjd.qfrc_spring, 0.0, atol=1e-10)
+
+    # displace a ring vertex out of plane, which bends the adjacent hinges
+    qpos = d.qpos.numpy()
+    qpos[0, 5] += 0.02
+    d.qpos.assign(qpos)
+    mjd.qpos[:] = qpos[0]
+    d.qfrc_spring.fill_(wp.inf)
+    mjw.fwd_position(m, d)
+    mjw.fwd_velocity(m, d)
+    mujoco.mj_fwdPosition(mjm, mjd)
+    mujoco.mj_fwdVelocity(mjm, mjd)
+    self.assertGreater(np.abs(mjd.qfrc_spring[5]), 1e-2)
+    np.testing.assert_allclose(d.qfrc_spring.numpy()[0], mjd.qfrc_spring, atol=1e-5, rtol=1e-4)
 
   @parameterized.parameters('stiffness="10"', 'damping="1"')
   def test_edge_stiffness_damping_disallowed_in_discrete(self, edge_attr):
