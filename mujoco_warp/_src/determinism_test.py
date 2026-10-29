@@ -289,7 +289,18 @@ _TREE_CASES = (
       "solver._add_tendon_metric_dense",
     ),
   ),
-  dict(testcase_name="discrete_cg", overrides={"opt.integrator": "DISCRETE", "opt.solver": "CG"}, covers=()),
+  dict(
+    testcase_name="discrete_cg",
+    overrides={"opt.integrator": "DISCRETE", "opt.solver": "CG"},
+    covers=(),
+    # Finite CG convergence needs a larger absolute budget for inverse/body forces.
+    atol_by_field={
+      "d.qfrc_constraint": 2e-3,
+      "d.qfrc_inverse": 2e-3,
+      "d.cfrc_int": 2e-3,
+      "d.cfrc_ext": 2e-3,
+    },
+  ),
   dict(
     testcase_name="dense_blocks",
     overrides={"opt.jacobian": "DENSE"},
@@ -395,7 +406,7 @@ class DeterminismTest(parameterized.TestCase):
         for arg in _RECORDS_ONLY_ARGS[name]:
           self.assertEqual(args.get(arg, 0), 0, f"{name} is called with {arg} != 0 on the default path")
 
-  def _check_scene(self, mjm, m, d, covers, replay=False, extra=None, rc=None, perturb=True, tol=1e-3):
+  def _check_scene(self, mjm, m, d, covers, replay=False, extra=None, rc=None, perturb=True, tol=1e-3, atol_by_field=None):
     """Compares ATOMICS with NONE and checks that ATOMICS is bitwise reproducible.
 
     Returns the arrays after the first ATOMICS run.
@@ -437,8 +448,9 @@ class DeterminismTest(parameterized.TestCase):
     # NONE and ATOMICS only differ in floating-point summation order
     names = [f"d.{field}" for field in _PHYSICS_FIELDS]
     names += [name for name, value in none.items() if name.startswith(("m.", "rc.")) and value.dtype.kind == "f"]
+    atol_by_field = {} if atol_by_field is None else atol_by_field
     for name in names:
-      np.testing.assert_allclose(ref[name], none[name], rtol=tol, atol=tol, err_msg=name)
+      np.testing.assert_allclose(ref[name], none[name], rtol=tol, atol=atol_by_field.get(name, tol), err_msg=name)
     sensor = np.ones(mjm.nsensordata, dtype=bool)
     for i in np.flatnonzero(mjm.sensor_type == mujoco.mjtSensor.mjSENS_CONTACT):
       sensor[mjm.sensor_adr[i] : mjm.sensor_adr[i] + mjm.sensor_dim[i]] = False
@@ -451,7 +463,7 @@ class DeterminismTest(parameterized.TestCase):
     return ref
 
   @parameterized.named_parameters(*_TREE_CASES)
-  def test_tree(self, overrides, covers, sparse_blocks=False):
+  def test_tree(self, overrides, covers, sparse_blocks=False, atol_by_field=None):
     """Tree with tendons, actuators, sensors, fluid, gravity compensation, equality and limits."""
     blocks = mock.patch.multiple("mujoco_warp._src.types", M_BLOCK_SCALAR_MAX=0, M_BLOCK_DENSE_MAX=0)
     with blocks if sparse_blocks else contextlib.nullcontext():
@@ -557,7 +569,7 @@ class DeterminismTest(parameterized.TestCase):
       set_const.set_const(m, d)
       mjw.inverse(m, d)
 
-    ref = self._check_scene(mjm, m, d, covers, extra=extra)
+    ref = self._check_scene(mjm, m, d, covers, extra=extra, atol_by_field=atol_by_field)
 
     # actuator moment rows are in actuator order with ascending columns
     rownnz, rowadr, colind = ref["d.moment_rownnz"], ref["d.moment_rowadr"], ref["d.moment_colind"]
