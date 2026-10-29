@@ -503,7 +503,7 @@ class SolverTest(parameterized.TestCase):
       "cone_to_quadratic",
       2.44140625e-4,
       (33546241.0, -8192.0, 33554432.0),
-      (-0.999755859375, -1.0, 1.0),
+      (-0.999755859375, -1.0, 0.0),
       (-1.0, 1.0, 16777216.0),
       (0.5, 8192.0, 67108864.0),
     ),
@@ -511,7 +511,7 @@ class SolverTest(parameterized.TestCase):
       "quadratic_to_cone",
       2.44140625e-4,
       (33546241.0, -8192.0, 33554432.0),
-      (-1.0, 1.0, 0.9995117783546448),
+      (-1.0, 1.0, 0.0),
       (0.999755859375, 1.0, 16777216.0),
       (-0.5, 0.0, 0.0),
     ),
@@ -522,6 +522,14 @@ class SolverTest(parameterized.TestCase):
       (2.44140625e-4, -2.0, 0.0),
       (0.0, 0.0, 16777216.0),
       (1.0, 16384.0, 134217728.0),
+    ),
+    (
+      "tangential_cancellation",
+      1.0,
+      (0.0, 0.0, 0.0),
+      (0.0, 0.0, 2.0**-26),
+      (-1.0, 1.0, 1.0),
+      (-0.5, 0.0, 1.0),
     ),
   )
   def test_elliptic_shifted_cost_preserves_small_delta(self, alpha, quad, quad1, quad2, expected):

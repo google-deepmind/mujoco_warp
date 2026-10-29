@@ -346,8 +346,10 @@ def _eval_elliptic_reference(
   quad2: wp.vec3,
 ) -> tuple[float, float, float, int]:
   u0 = quad1[0]
-  uu = quad1[2]
+  u_perp_sq = quad1[2]
+  u_par = quad2[0]
   dm = quad2[2]
+  uu = u_par * u_par + u_perp_sq
 
   if uu <= 0.0:
     if u0 < 0.0:
@@ -370,11 +372,14 @@ def _eval_elliptic_alpha_zero(mu: float, quad: wp.vec3, quad1: wp.vec3, quad2: w
   if state0 == int(types.ConstraintState.QUADRATIC):
     return _eval_pt(quad, 0.0)
   if state0 == int(types.ConstraintState.CONE):
-    T0_inv = 1.0 / T0
-    T1 = quad2[0] * T0_inv
-    T2 = (quad2[1] - T1 * T1) * T0_inv
-    r1 = quad1[1] - mu * T1
+    u_perp_sq = quad1[2]
+    u_par = quad2[0]
+    v_norm = quad2[1]
     dm = quad2[2]
+    T0_inv = 1.0 / T0
+    T1 = u_par * v_norm * T0_inv
+    T2 = (u_perp_sq / (T0 * T0)) * (v_norm * v_norm * T0_inv)
+    r1 = quad1[1] - mu * T1
     return wp.vec3(cost0, dm * r0 * r1, dm * (r1 * r1 - mu * r0 * T2))
   return wp.vec3(0.0)
 
@@ -423,14 +428,14 @@ def _eval_elliptic_shifted(
 ) -> wp.vec3:
   u0 = quad1[0]
   v0 = quad1[1]
-  uu = quad1[2]
-  uv = quad2[0]
-  vv = quad2[1]
+  u_perp_sq = quad1[2]
+  u_par = quad2[0]
+  v_norm = quad2[1]
   dm = quad2[2]
 
   N = u0 + alpha * v0
-  Tsqr_delta = alpha * (2.0 * uv + alpha * vv)
-  Tsqr = uu + Tsqr_delta
+  w_par = u_par + alpha * v_norm
+  Tsqr = w_par * w_par + u_perp_sq
 
   if Tsqr <= 0.0:
     if N < 0.0:
@@ -443,13 +448,14 @@ def _eval_elliptic_shifted(
       return _eval_elliptic_quadratic_shifted(mu, quad, alpha, N, Tsqr, u0, T0, dm, state0)
     else:
       T_inv = 1.0 / T
-      T1 = (uv + alpha * vv) * T_inv
-      T2 = (vv - T1 * T1) * T_inv
+      T1 = w_par * v_norm * T_inv
+      T2 = (u_perp_sq / Tsqr) * (v_norm * v_norm * T_inv)
       r = N - mu * T
       r1 = v0 - mu * T1
 
       if state0 == int(types.ConstraintState.CONE):
         # Rationalize T - T0 before forming the small cone residual change.
+        Tsqr_delta = alpha * v_norm * (u_par + w_par)
         T_delta = Tsqr_delta / (T + T0)
         r_delta = alpha * v0 - mu * T_delta
         cost = 0.5 * dm * r_delta * (2.0 * r0 + r_delta)
@@ -1048,9 +1054,12 @@ def _linesearch_iterative_kernel(
               u0 = Jaref * mu
               v0 = jv * mu
 
+              u_tan = types.vec5(0.0)
+              v_tan = types.vec5(0.0)
               uu = float(0.0)
               uv = float(0.0)
               vv = float(0.0)
+              det = float(0.0)
               for j in range(1, dim):
                 efcidj = contact_efc_address_in[conid, j]
                 if efcidj >= 0:
@@ -1066,18 +1075,32 @@ def _linesearch_iterative_kernel(
                   uj = jarefj * frictionj
                   vj = jvj * frictionj
 
+                  for k in range(j - 1):
+                    djk = uj * v_tan[k] - u_tan[k] * vj
+                    det += djk * djk
+                  u_tan[j - 1] = uj
+                  v_tan[j - 1] = vj
+
                   uu += uj * uj
                   uv += uj * vj
                   vv += vj * vj
 
+              v_norm = float(0.0)
+              u_par = float(0.0)
+              u_perp_sq = uu
+              if vv > 0.0:
+                v_norm = wp.sqrt(vv)
+                u_par = uv / v_norm
+                u_perp_sq = det / vv
+
               ctx_quad_out[worldid, efcid] = quad
 
               efcid1 = contact_efc_address_in[conid, 1]
-              ctx_quad_out[worldid, efcid1] = wp.vec3(u0, v0, uu)
+              ctx_quad_out[worldid, efcid1] = wp.vec3(u0, v0, u_perp_sq)
 
               mu2 = mu * mu
               efcid2 = contact_efc_address_in[conid, 2]
-              ctx_quad_out[worldid, efcid2] = wp.vec3(uv, vv, efc_D / (mu2 * (1.0 + mu2)))
+              ctx_quad_out[worldid, efcid2] = wp.vec3(u_par, v_norm, efc_D / (mu2 * (1.0 + mu2)))
 
       _syncthreads()  # ensure all quads are written before reading
 
@@ -1677,9 +1700,10 @@ def _linesearch(m: types.Model, d: types.Data, ctx: SolverContext):
 
 
 @cache_kernel
-def _solve_init_dof(warmstart: bool, sparse: bool):
+def _solve_init_dof(warmstart: bool, sparse: bool, run_qacc_smooth: bool):
   WARMSTART = warmstart
   SPARSE = sparse
+  RUN_QACC_SMOOTH = run_qacc_smooth
 
   @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
   def kernel(
@@ -1693,7 +1717,10 @@ def _solve_init_dof(warmstart: bool, sparse: bool):
   ):
     worldid, dofid = wp.tid()
 
-    if wp.static(WARMSTART):
+    if wp.static(not RUN_QACC_SMOOTH):
+      # without constraint rows, Newton reaches qacc_smooth in one step from the warmstart
+      qacc_out[worldid, dofid] = qacc_warmstart_in[worldid, dofid]
+    elif wp.static(WARMSTART):
       if nefc_in[worldid] > 0:
         qacc_out[worldid, dofid] = qacc_warmstart_in[worldid, dofid]
       else:
@@ -2785,11 +2812,12 @@ def _update_gradient_JTDAJ_dense_tiled(nv_pad: int, tile_size: int, njmax: int, 
 
     nefc = nefc_in[worldid]
 
+    # CSR entries have unique destinations, so initializing M needs no atomics.
     # Densify M's upper triangle from CSR into the shared H tile (Cholesky reads fill_mode="upper").
     # Entry (i, col<=i) of M goes to the upper position (col, i); the lower triangle stays zero.
     m_tile = wp.tile_zeros(shape=(wp.static(nv_pad * nv_pad),), dtype=htype, storage="shared")
     # Uniform trip count from the RUNTIME lane count: every lane iterates iters times (so the
-    # collective tile_scatter_add is always called by all lanes -- a divergent range(rank, nC, bd)
+    # collective scatter is always called by all lanes -- a divergent range(rank, nC, bd)
     # deadlocks). wp.block_dim() is 1 on the CPU backend, so lane 0 then covers every entry.
     lanes = wp.block_dim()
     iters = (nC + lanes - 1) // lanes
@@ -2798,7 +2826,7 @@ def _update_gradient_JTDAJ_dense_tiled(nv_pad: int, tile_size: int, njmax: int, 
       enable = e < nC
       ec = wp.where(enable, e, 0)
       pos = M_colind[ec] * nv_pad + M_hinit_i[ec]
-      wp.tile_scatter_add(m_tile, pos, wp.where(enable, htype(M_in[worldid, ec]), htype(0.0)), enable)
+      wp.tile_scatter_masked(m_tile, pos, htype(M_in[worldid, ec]), enable)
     sum_val = wp.tile_reshape(m_tile, (nv_pad, nv_pad))
 
     # Each tile processes one output tile by looping over all constraints
@@ -4225,7 +4253,7 @@ def _solve(m: types.Model, d: types.Data, ctx: SolverContext, compact: bool = Fa
 
   warmstart = not (m.opt.disableflags & types.DisableBit.WARMSTART)
   wp.launch(
-    _solve_init_dof(warmstart, m.is_sparse),
+    _solve_init_dof(warmstart, m.is_sparse, not smooth.skip_qacc_smooth(m, d)),
     dim=(d.nworld, m.nv),
     inputs=[d.nefc, d.qacc_warmstart, d.qacc_smooth],
     outputs=[d.qacc, d.qfrc_constraint],

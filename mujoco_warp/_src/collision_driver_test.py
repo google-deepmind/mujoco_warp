@@ -59,7 +59,7 @@ def volume_gradient_step_test(volume: VolumeData, result_out: wp.array[wp.vec4])
   params.rel_mat = wp.identity(3, dtype=float)
   mesh = MeshData()
   dist, point = gradient_step(
-    types.GeomType.SDF, wp.vec3(1e-6, 1e-4, 1e-4), params, -1, -1, 1, True, volume, volume, mesh, mesh
+    types.GeomType.SDF, wp.vec3(1e-6, 1e-4, 1e-4), params, -1, -1, 1, True, 2.0, volume, volume, mesh, mesh
   )
   result_out[0] = wp.vec4(point[0], point[1], point[2], dist)
 
@@ -829,6 +829,109 @@ class CollisionTest(parameterized.TestCase):
     self.assertGreater(len(dists1), 0)
     np.testing.assert_allclose(dists0, dists1, atol=1e-5)
     np.testing.assert_array_less(dists1, 0.0)
+
+  @parameterized.named_parameters(
+    ("one_world", 1, 0.0),
+    ("separated_1um", 2, 1e-6),
+    ("separated_10um", 2, 1e-5),
+    ("separated_1mm", 2, 1e-3),
+  )
+  def test_mesh_mesh_gjk_tuned_direction(self, nworld, gap):
+    """Matches MuJoCo where GJK tunes its support direction near the origin.
+
+    The Minkowski difference's vertices lie 0.2 m from the origin, so in float32 GJK's iterate is
+    tilted 0.3 deg off the face normal its support point is searched along. Read along the iterate,
+    the duality gap of that support point, 0.13 m to the side, turned negative: GJK stopped 2 um
+    short of the origin and no contact was written. World 1 is moved out along MuJoCo's contact
+    normal to `gap` from the board, where neither reports a contact.
+    """
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <asset>
+          <mesh name="board" vertex="-.007 -.0946 -.153  .007 -.0946 -.153  -.007 .0946 -.153  .007 .0946 -.153
+                                     -.007 -.0946  .153  .007 -.0946  .153  -.007 .0946  .153  .007 .0946  .153"/>
+          <mesh name="object" vertex="-.0007394 .002954 -.05126  .00003213 .002986 -.04854  -.0004383 .003374 .04446
+                                      -.00002483 .003162 .04452  -.0005316 .003203 .04785  .001198 .001637 .04815"/>
+        </asset>
+        <worldbody>
+          <geom type="mesh" mesh="board"/>
+          <body pos=".0096252 -.0027355 -.021315" quat=".51669 .01087 -.015833 .85596">
+            <freejoint/>
+            <geom type="mesh" mesh="object"/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=nworld,
+    )
+
+    qpos = np.tile(mjd.qpos, (nworld, 1))
+    if nworld == 2:
+      qpos[1, :3] += (gap - mjd.contact.dist.min()) * mjd.contact.frame[0, :3]
+      d.qpos.assign(qpos)
+      mjw.kinematics(m, d)
+
+    # Discard the contacts put_data copied from MuJoCo: the assertions must read Warp's own.
+    d.nacon.fill_(-1)
+    d.contact.dist.fill_(wp.inf)
+    d.contact.pos.fill_(wp.inf)
+    d.contact.frame.fill_(wp.inf)
+    d.contact.worldid.fill_(-1)
+    mjw.collision(m, d)
+
+    nacon = d.nacon.numpy()[0]
+    worldid = d.contact.worldid.numpy()[:nacon]
+    dist = d.contact.dist.numpy()[:nacon]
+    pos = d.contact.pos.numpy()[:nacon]
+    frame = d.contact.frame.numpy()[:nacon].reshape(-1, 9)
+    for i in range(nworld):
+      mjd.qpos[:] = qpos[i]
+      mujoco.mj_forward(mjm, mjd)
+      self.assertEqual(mjd.ncon, 3 if i == 0 else 0)
+      self.assertEqual((worldid == i).sum(), mjd.ncon)
+      # float32: depths and positions to 0.1 um; the normal, from points 0.14 mm apart, to 1e-4
+      np.testing.assert_allclose(dist[worldid == i], mjd.contact.dist, atol=1e-7)
+      np.testing.assert_allclose(pos[worldid == i], mjd.contact.pos, atol=1e-7)
+      np.testing.assert_allclose(frame[worldid == i], mjd.contact.frame, atol=1e-4)
+
+  def test_box_mesh_gjk_tuned_direction(self):
+    """Matches MuJoCo for a mesh resting on a table-sized box, where GJK tunes its direction.
+
+    The box's top face spans 1.2 m, so in float32 GJK's iterate, 19 um from the origin, is tilted
+    1.6 mrad off the face normal; read along the iterate, the duality gap turned negative and GJK
+    stopped short of the 46 um deep contact.
+    """
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <asset>
+          <mesh name="chip" vertex="-.03 -.02 -.006  .03 -.02 -.006  -.03 .02 -.006  .03 .02 -.006
+                                    -.03 -.02  .006  .03 -.02  .006  -.03 .02  .006  .03 .02  .006"/>
+        </asset>
+        <worldbody>
+          <geom type="box" size=".61 .37 .1"/>
+          <body pos=".43669 .13521 .11072" quat="-.71431 -.088377 .081303 .68945">
+            <freejoint/>
+            <geom type="mesh" mesh="chip"/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """
+    )
+
+    d.nacon.fill_(-1)
+    d.contact.dist.fill_(wp.inf)
+    d.contact.pos.fill_(wp.inf)
+    d.contact.frame.fill_(wp.inf)
+    mjw.collision(m, d)
+
+    nacon = d.nacon.numpy()[0]
+    self.assertEqual(mjd.ncon, 1)
+    self.assertEqual(nacon, mjd.ncon)
+    np.testing.assert_allclose(d.contact.dist.numpy()[:nacon], mjd.contact.dist, atol=1e-7)
+    np.testing.assert_allclose(d.contact.pos.numpy()[:nacon], mjd.contact.pos, atol=1e-7)
+    np.testing.assert_allclose(d.contact.frame.numpy()[:nacon].reshape(-1, 9), mjd.contact.frame, atol=1e-4)
 
   _HFIELD_FIXTURES = {
     "hfield_box": """

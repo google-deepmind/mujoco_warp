@@ -2804,18 +2804,14 @@ def _efc_contact_init_flex(cone_type: types.ConeType, is_sparse: bool, newton: b
                 edata_adr = flex_elemdataadr[f] + e * (dim_f + 1)
                 vert_adr_f = flex_vertadr[f]
                 contact_pos = pos_in[conid]
-                total_inv_dist = float(0.0)
+                w_elem = support.flex_elem_weights(
+                  flex_dim, flex_vertadr, flex_elemdataadr, flex_elem, flexvert_xpos_in, f, e, contact_pos, worldid
+                )
                 blended_coord = wp.vec3(0.0, 0.0, 0.0)
                 for vi in range(4):
                   if vi <= dim_f:
                     v_idx = flex_elem[edata_adr + vi]
-                    vpos = flexvert_xpos_in[worldid, vert_adr_f + v_idx]
-                    dist_v = wp.length(contact_pos - vpos)
-                    w_inv = 1.0 / wp.max(1.0e-10, dist_v)
-                    total_inv_dist += w_inv
-                    blended_coord += flex_vert0[vert_adr_f + v_idx] * w_inv
-                if total_inv_dist > 1.0e-10:
-                  blended_coord = blended_coord / total_inv_dist
+                    blended_coord += flex_vert0[vert_adr_f + v_idx] * w_elem[vi]
                 cn = flex_cellnum[f]
                 cx = cn[0]
                 cy = cn[1]
@@ -3251,18 +3247,14 @@ def _efc_contact_jac_sparse_flex(cone_type: types.ConeType):
               dim_f = flex_dim[f]
               edata_adr = flex_elemdataadr[f] + e * (dim_f + 1)
               vert_adr_f = flex_vertadr[f]
-              total_inv_dist = float(0.0)
+              w_elem = support.flex_elem_weights(
+                flex_dim, flex_vertadr, flex_elemdataadr, flex_elem, flexvert_xpos_in, f, e, con_pos, worldid
+              )
               blended_coord = wp.vec3(0.0, 0.0, 0.0)
               for vi in range(4):
                 if vi <= dim_f:
                   v_idx = flex_elem[edata_adr + vi]
-                  vpos = flexvert_xpos_in[worldid, vert_adr_f + v_idx]
-                  dist_v = wp.length(con_pos - vpos)
-                  w_inv = 1.0 / wp.max(1.0e-10, dist_v)
-                  total_inv_dist += w_inv
-                  blended_coord += flex_vert0[vert_adr_f + v_idx] * w_inv
-              if total_inv_dist > 1.0e-10:
-                blended_coord = blended_coord / total_inv_dist
+                  blended_coord += flex_vert0[vert_adr_f + v_idx] * w_elem[vi]
               cn = flex_cellnum[f]
               cx = cn[0]
               cy = cn[1]
@@ -3666,6 +3658,7 @@ def _efc_contact_jac_dense(tile_size: int, cone_type: types.ConeType, njmax: int
       if conid != prev_conid:
         prev_conid = conid
         condim = condim_in[conid]
+        first_efcid = contact_efc_address_in[conid, 0]
 
         geom = geom_in[conid]
         body1 = geom_bodyid[geom[0]]
@@ -3699,7 +3692,7 @@ def _efc_contact_jac_dense(tile_size: int, cone_type: types.ConeType, njmax: int
             Ji_2r_tile = wp.tile_map(wp.dot, jacr_dif_tile, frame_2)
 
       if wp.static(IS_ELLIPTIC):
-        dimid = efcid - contact_efc_address_in[conid, 0]
+        dimid = efcid - first_efcid
         if dimid < 3:
           frame_idx = dimid
         else:
@@ -3714,7 +3707,7 @@ def _efc_contact_jac_dense(tile_size: int, cone_type: types.ConeType, njmax: int
       else:
         J_tile = Ji_0p_tile
         if condim > 1:
-          dimid = efcid - contact_efc_address_in[conid, 0]
+          dimid = efcid - first_efcid
           dimid2 = dimid / 2 + 1
           frii = friction_in[conid, dimid2 - 1]
           frii_sign = frii * (1.0 - 2.0 * float(dimid & 1))
@@ -3734,8 +3727,12 @@ def _efc_contact_jac_dense(tile_size: int, cone_type: types.ConeType, njmax: int
 
       Jqvel_tile = wp.tile_map(wp.mul, J_tile, qvel_tile)
       Jqvel_sum = wp.tile_reduce(wp.add, Jqvel_tile)
-      if tid == 0:
-        wp.atomic_add(efc_Jqvel_out[worldid], efcid, wp.tile_extract(Jqvel_sum, 0))
+      # Tile atomics bypass Warp's deterministic accumulation.
+      if wp.static(deterministic):
+        if tid == 0:
+          wp.atomic_add(efc_Jqvel_out[worldid], efcid, wp.tile_extract(Jqvel_sum, 0))
+      else:
+        wp.tile_atomic_add(efc_Jqvel_out[worldid], Jqvel_sum, offset=efcid)
 
   return kernel
 
@@ -3814,6 +3811,7 @@ def _efc_contact_jac_dense_flex(tile_size: int, cone_type: types.ConeType, njmax
       if conid != prev_conid:
         prev_conid = conid
         condim = condim_in[conid]
+        first_efcid = contact_efc_address_in[conid, 0]
 
         geom = geom_in[conid]
         flex = flex_in[conid]
@@ -4020,7 +4018,7 @@ def _efc_contact_jac_dense_flex(tile_size: int, cone_type: types.ConeType, njmax
             Ji_2r_tile = wp.tile_map(wp.dot, jacr_dif_tile, frame_2)
 
       if wp.static(IS_ELLIPTIC):
-        dimid = efcid - contact_efc_address_in[conid, 0]
+        dimid = efcid - first_efcid
         if dimid < 3:
           frame_idx = dimid
         else:
@@ -4035,7 +4033,7 @@ def _efc_contact_jac_dense_flex(tile_size: int, cone_type: types.ConeType, njmax
       else:
         J_tile = Ji_0p_tile
         if condim > 1:
-          dimid = efcid - contact_efc_address_in[conid, 0]
+          dimid = efcid - first_efcid
           dimid2 = dimid / 2 + 1
           frii = friction_in[conid, dimid2 - 1]
           frii_sign = frii * (1.0 - 2.0 * float(dimid & 1))
@@ -4055,8 +4053,12 @@ def _efc_contact_jac_dense_flex(tile_size: int, cone_type: types.ConeType, njmax
 
       Jqvel_tile = wp.tile_map(wp.mul, J_tile, qvel_tile)
       Jqvel_sum = wp.tile_reduce(wp.add, Jqvel_tile)
-      if tid == 0:
-        wp.atomic_add(efc_Jqvel_out[worldid], efcid, wp.tile_extract(Jqvel_sum, 0))
+      # Tile atomics bypass Warp's deterministic accumulation.
+      if wp.static(deterministic):
+        if tid == 0:
+          wp.atomic_add(efc_Jqvel_out[worldid], efcid, wp.tile_extract(Jqvel_sum, 0))
+      else:
+        wp.tile_atomic_add(efc_Jqvel_out[worldid], Jqvel_sum, offset=efcid)
 
   return kernel
 
@@ -4364,18 +4366,14 @@ def _efc_contact_update_flex(cone_type: types.ConeType, flg_adhesion: bool = Fal
           dim_f = flex_dim[f1]
           edata_adr = flex_elemdataadr[f1] + e * (dim_f + 1)
           vert_adr_f = flex_vertadr[f1]
-          total_inv_dist = float(0.0)
+          w_elem = support.flex_elem_weights(
+            flex_dim, flex_vertadr, flex_elemdataadr, flex_elem, flexvert_xpos_in, f1, e, con_pos, worldid
+          )
           blended_coord = wp.vec3(0.0, 0.0, 0.0)
           for vi in range(4):
             if vi <= dim_f:
               v_idx = flex_elem[edata_adr + vi]
-              vpos = flexvert_xpos_in[worldid, vert_adr_f + v_idx]
-              dist_v = wp.length(con_pos - vpos)
-              w_inv = 1.0 / wp.max(1.0e-10, dist_v)
-              total_inv_dist += w_inv
-              blended_coord += flex_vert0[vert_adr_f + v_idx] * w_inv
-          if total_inv_dist > 1.0e-10:
-            blended_coord = blended_coord / total_inv_dist
+              blended_coord += flex_vert0[vert_adr_f + v_idx] * w_elem[vi]
           cn = flex_cellnum[f1]
           cx = cn[0]
           cy = cn[1]
@@ -4496,18 +4494,14 @@ def _efc_contact_update_flex(cone_type: types.ConeType, flg_adhesion: bool = Fal
           dim_f = flex_dim[f2]
           edata_adr = flex_elemdataadr[f2] + e * (dim_f + 1)
           vert_adr_f = flex_vertadr[f2]
-          total_inv_dist = float(0.0)
+          w_elem = support.flex_elem_weights(
+            flex_dim, flex_vertadr, flex_elemdataadr, flex_elem, flexvert_xpos_in, f2, e, con_pos, worldid
+          )
           blended_coord = wp.vec3(0.0, 0.0, 0.0)
           for vi in range(4):
             if vi <= dim_f:
               v_idx = flex_elem[edata_adr + vi]
-              vpos = flexvert_xpos_in[worldid, vert_adr_f + v_idx]
-              dist_v = wp.length(con_pos - vpos)
-              w_inv = 1.0 / wp.max(1.0e-10, dist_v)
-              total_inv_dist += w_inv
-              blended_coord += flex_vert0[vert_adr_f + v_idx] * w_inv
-          if total_inv_dist > 1.0e-10:
-            blended_coord = blended_coord / total_inv_dist
+              blended_coord += flex_vert0[vert_adr_f + v_idx] * w_elem[vi]
           cn = flex_cellnum[f2]
           cx = cn[0]
           cy = cn[1]

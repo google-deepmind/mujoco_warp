@@ -329,6 +329,82 @@ class InverseTest(parameterized.TestCase):
     if nworld == 2:
       self.assertFalse(np.allclose(qfrc_inv[0], qfrc_inv[1]))
 
+  @parameterized.product(integrator=(IntegratorType.EULER, IntegratorType.IMPLICITFAST), invdiscrete=(True, False))
+  def test_inverse_actuator_damping(self, integrator, invdiscrete):
+    """Tests inverse dynamics with actuator damping and armature."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option gravity="0 0 -10"/>
+        <worldbody>
+          <body>
+            <joint name="j0" axis="0 1 0"/>
+            <geom type="capsule" size=".05" fromto="0 0 0 .3 0 0"/>
+            <body pos=".3 0 0">
+              <joint name="j1" axis="0 1 0"/>
+              <geom type="capsule" size=".05" fromto="0 0 0 .3 0 0"/>
+              <body pos=".3 0 0">
+                <joint name="j2" type="slide" axis="1 0 0"/>
+                <geom size=".05"/>
+              </body>
+            </body>
+          </body>
+          <body pos="0 1 0">
+            <freejoint name="free"/>
+            <geom size=".1"/>
+          </body>
+          <body pos="1 1 0">
+            <joint name="ball" type="ball"/>
+            <geom type="capsule" size=".05" fromto="0 0 0 .3 0 0"/>
+          </body>
+        </worldbody>
+        <tendon>
+          <fixed name="t0">
+            <joint joint="j1" coef="1"/>
+            <joint joint="j2" coef="-.5"/>
+          </fixed>
+        </tendon>
+        <actuator>
+          <motor joint="j0" gear="2" damping=".3 .1 .05" armature=".3"/>
+          <motor joint="j0" gear="-3" damping=".2" armature=".1"/>
+          <general jointinparent="j1" gear="1.5" damping=".2 0 .1" armature=".2"/>
+          <motor tendon="t0" gear="2" damping=".4 .2 0" armature=".4"/>
+          <motor joint="free" gear="2 0 0 0 0 0" damping=".5 .1 .05" armature=".3"/>
+          <motor joint="ball" gear="1.5 0 0" damping=".4 0 .1" armature=".2"/>
+        </actuator>
+        <keyframe>
+          <key qpos=".1 .2 .05 0 1 0 1 0 0 0 1 0 0 0" qvel=".3 -.4 .5 1 -.5 .3 2 -1 .5 .4 -.3 .2"/>
+        </keyframe>
+      </mujoco>
+      """,
+      keyframe=0,
+      overrides={"opt.integrator": integrator, "opt.disableflags": DisableBit.CONTACT},
+    )
+
+    # discrete qacc
+    if invdiscrete:
+      mjm.opt.enableflags |= mujoco.mjtEnableBit.mjENBL_INVDISCRETE
+
+      # compute discrete-time (finite-differenced) qacc
+      qvel = mjd.qvel.copy()
+      mujoco.mj_step(mjm, mjd)
+      qacc_fd = (mjd.qvel - qvel) / mjm.opt.timestep
+      mujoco.mj_resetDataKeyframe(mjm, mjd, 0)
+      mujoco.mj_forward(mjm, mjd)
+      mjd.qacc = qacc_fd
+
+      m = mjw.put_model(mjm)
+      d = mjw.put_data(mjm, mjd)
+
+    mujoco.mj_inverse(mjm, mjd)
+
+    for arr in (d.qfrc_constraint, d.qfrc_inverse):
+      arr.fill_(wp.inf)
+
+    mjw.inverse(m, d)
+
+    _assert_eq(d.qfrc_inverse.numpy()[0], mjd.qfrc_inverse, "qfrc_inverse")
+
 
 if __name__ == "__main__":
   wp.init()
