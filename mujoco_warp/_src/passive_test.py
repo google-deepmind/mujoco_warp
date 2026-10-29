@@ -255,7 +255,8 @@ class PassiveTest(parameterized.TestCase):
         <option density="1.3" viscosity="0.07" wind="0.1 0.2 -0.05" integrator="{integrator}"/>
         <worldbody>
           <body>
-            <geom type="sphere" size="0.1 0.3 0.005" fluidshape="ellipsoid"/>
+            <geom size="0.1 0.3 0.005" fluidshape="ellipsoid"/>
+            <geom size="0.05" pos="0.15 -0.1 0.05" fluidshape="ellipsoid"/>
             <freejoint/>
           </body>
         </worldbody>
@@ -271,7 +272,8 @@ class PassiveTest(parameterized.TestCase):
       mjw.step(m, d)
 
     max_err = 0.0
-    for _ in range(25):
+    for _ in range(20):
+      d.qfrc_fluid.fill_(wp.inf)
       wp.capture_launch(capture.graph)
       mujoco.mj_step(mjm, mjd)
 
