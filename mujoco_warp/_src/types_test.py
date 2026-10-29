@@ -59,6 +59,17 @@ class TypesTest(parameterized.TestCase):
       mj_fields.insert(mj_fields.index("nbuffer") + 3, "stat")
       if not util_pkg.check_version("mujoco>=3.17.1.dev1006378379"):
         mj_fields.insert(mj_fields.index("flex_vertbodyid") + 1, "flex_vertcell")
+      if not util_pkg.check_version("mujoco>=3.17.1"):
+        if "nplastic" not in mj_fields:
+          mj_fields.insert(mj_fields.index("npaths") + 1, "nplastic")
+          mj_fields.insert(mj_fields.index("jnt_group") + 1, "jnt_plasticadr")
+          mj_fields.insert(mj_fields.index("jnt_stiffnesspoly") + 1, "jnt_springyield")
+          mj_fields.insert(mj_fields.index("tendon_group") + 1, "tendon_plasticadr")
+          mj_fields.insert(mj_fields.index("tendon_lengthspring") + 1, "tendon_springyield")
+          mj_fields.insert(mj_fields.index("key_ctrl") + 1, "key_plastic")
+        if "flex_plasticadr" not in mj_fields:
+          mj_fields.insert(mj_fields.index("flex_bendingadr") + 1, "flex_plasticadr")
+          mj_fields.insert(mj_fields.index("flex_damping") + 1, "flex_yield")
     elif mjw_class is Data:
       # TODO(team): remove this reordering after MjData._all_fields order is fixed
       # there's a bug in _all_fields where solver_niter is in the wrong place
@@ -66,6 +77,8 @@ class TypesTest(parameterized.TestCase):
       if not util_pkg.check_version("mujoco>=3.14.1.dev990351372"):
         idx = mj_fields.index("flexvert_xpos") + 1
         mj_fields[idx:idx] = ["flex_hessian_valid", "flexvert_hessian", "flexedge_hessian"]
+      if not util_pkg.check_version("mujoco>=3.17.1") and "plastic" not in mj_fields:
+        mj_fields.insert(mj_fields.index("history") + 1, "plastic")
     mj_set, mjw_set = set(mj_fields), set(mjw_fields)
 
     # first, put any union fields
