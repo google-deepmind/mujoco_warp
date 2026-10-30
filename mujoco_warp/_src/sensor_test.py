@@ -825,17 +825,11 @@ class SensorTest(parameterized.TestCase):
     if nworld == 2:
       self.assertFalse(np.allclose(sensordata_acc[0, pos_dim:], sensordata_acc[1, pos_dim:]))
 
-  @parameterized.product(
-    data=("linvel", "angvel", "found force dist linvel", "pos normal tangent linvel angvel"),
-    geoms=('geom1="plane"', 'geom1="ball" geom2="plane"', 'body1="box"', 'body2="ball"'),
-    reduce=(None, "mindist", "maxforce"),
-    nworld=(1, 2),
-  )
-  def test_contact_sensor_velocity(self, data, geoms, reduce, nworld):
+  @parameterized.parameters(1, 2)
+  def test_contact_sensor_velocity(self, nworld):
     """Test contact sensor linvel and angvel against MuJoCo."""
-    reduce_attr = f' reduce="{reduce}"' if reduce else ""
     mjm, mjd, m, d = test_data.fixture(
-      xml=f"""
+      xml="""
       <mujoco>
         <option cone="elliptic"/>
         <worldbody>
@@ -844,7 +838,7 @@ class SensorTest(parameterized.TestCase):
           </body>
           <body name="ball" pos="0 0 .09">
             <freejoint/>
-            <geom name="ball" type="sphere" size=".1"/>
+            <geom name="ball" size=".1"/>
           </body>
           <body name="arm" pos=".5 0 .3">
             <joint axis="0 1 0"/>
@@ -856,7 +850,13 @@ class SensorTest(parameterized.TestCase):
           </body>
         </worldbody>
         <sensor>
-          <contact {geoms} num="4" data="{data}"{reduce_attr}/>
+          <contact geom1="plane" num="4" data="linvel"/>
+          <contact geom1="ball" geom2="plane" num="4" data="angvel"/>
+          <contact body1="box" num="4" data="pos normal tangent linvel angvel" reduce="mindist"/>
+          <contact body2="ball" num="4" data="linvel angvel" reduce="mindist"/>
+          <contact geom1="plane" num="4" data="found force dist linvel"/>
+          <contact body1="box" num="4" data="pos normal tangent linvel angvel" reduce="maxforce"/>
+          <contact body2="ball" num="4" data="found force dist linvel" reduce="maxforce"/>
         </sensor>
         <keyframe>
           <key qpos="0 0 .09 1 0 0 0 0 0" qvel=".3 -.2 -.4 1.1 -.7 .5 .8 -.6"/>
@@ -879,17 +879,31 @@ class SensorTest(parameterized.TestCase):
       mjw.forward(m, d)
       mjds.append(mjd1)
 
-    self.assertEqual(m.sensor_contact_vel_adr.size, int(mjm.sensor_needstage[0] == mujoco.mjtStage.mjSTAGE_VEL))
+    vel_dim = int(mjm.sensor_adr[4])
 
+    # VEL stage populates only VEL-stage contact sensors
     d.sensordata.fill_(wp.inf)
-    mjw.sensor_pos(m, d)
     mjw.sensor_vel(m, d)
-    mjw.sensor_acc(m, d)
-
-    sensordata = d.sensordata.numpy()
+    sensordata_vel = d.sensordata.numpy()
     for w in range(nworld):
-      _assert_eq(sensordata[w], mjds[w].sensordata, f"sensordata_world_{w}")
-      self.assertTrue(np.abs(sensordata[w]).sum() > 0.0)
+      _assert_eq(sensordata_vel[w, :vel_dim], mjds[w].sensordata[:vel_dim], f"vel_sensordata_world_{w}")
+      self.assertTrue(np.abs(sensordata_vel[w, :vel_dim]).sum() > 0.0)
+      self.assertTrue(np.isinf(sensordata_vel[w, vel_dim:]).all())
+
+    if nworld == 2:
+      self.assertFalse(np.allclose(sensordata_vel[0, :vel_dim], sensordata_vel[1, :vel_dim]))
+
+    # ACC stage populates only ACC-stage contact sensors
+    d.sensordata.fill_(wp.inf)
+    mjw.sensor_acc(m, d)
+    sensordata_acc = d.sensordata.numpy()
+    for w in range(nworld):
+      self.assertTrue(np.isinf(sensordata_acc[w, :vel_dim]).all())
+      _assert_eq(sensordata_acc[w, vel_dim:], mjds[w].sensordata[vel_dim:], f"acc_sensordata_world_{w}")
+      self.assertTrue(np.abs(sensordata_acc[w, vel_dim:]).sum() > 0.0)
+
+    if nworld == 2:
+      self.assertFalse(np.allclose(sensordata_acc[0, vel_dim:], sensordata_acc[1, vel_dim:]))
 
   @parameterized.parameters(
     ("box", "box", "box", "box"),

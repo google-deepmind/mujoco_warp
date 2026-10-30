@@ -27,6 +27,7 @@ from mujoco_warp._src.collision_sdf import sdf
 from mujoco_warp._src.types import MJ_MAXCONPAIR
 from mujoco_warp._src.types import MJ_MAXVAL
 from mujoco_warp._src.types import MJ_MINVAL
+from mujoco_warp._src.types import ConDataField
 from mujoco_warp._src.types import ConeType
 from mujoco_warp._src.types import ConstraintType
 from mujoco_warp._src.types import ContactType
@@ -1772,8 +1773,9 @@ def sensor_vel(m: Model, d: Data):
       ],
     )
 
-  # apply sensor delay/interval for velocity sensors
   _eval_sensor_contact(m, d, m.sensor_contact_vel_adr)
+
+  # apply sensor delay/interval for velocity sensors
 
   history.apply_sensor_delay(m, d, m.sensor_stage_vel_adr)
 
@@ -2671,11 +2673,11 @@ def _sensor_contact(
   # Model:
   opt_cone: int,
   opt_contact_sensor_maxmatch: int,
+  body_rootid: wp.array[int],
+  geom_bodyid: wp.array[int],
   sensor_intprm: wp.array2d[int],
   sensor_dim: wp.array[int],
   sensor_adr: wp.array[int],
-  body_rootid: wp.array[int],
-  geom_bodyid: wp.array[int],
   # Data in:
   subtree_com_in: wp.array2d[wp.vec3],
   cvel_in: wp.array2d[wp.spatial_vector],
@@ -2706,48 +2708,28 @@ def _sensor_contact(
   reduce = sensor_intprm[sensorid, 1]
   dim = sensor_dim[sensorid]
 
-  # found, force, torque, dist, pos, normal, tangent, linvel, angvel
   # TODO(thowell): precompute slot size
-  found = False
-  force = False
-  torque = False
-  dist = False
-  pos = False
-  normal = False
-  tangent = False
-  linvel = False
-  angvel = False
+  found = bool(dataspec & (1 << ConDataField.FOUND))
+  force = bool(dataspec & (1 << ConDataField.FORCE))
+  torque = bool(dataspec & (1 << ConDataField.TORQUE))
+  dist = bool(dataspec & (1 << ConDataField.DIST))
+  pos = bool(dataspec & (1 << ConDataField.POS))
+  normal = bool(dataspec & (1 << ConDataField.NORMAL))
+  tangent = bool(dataspec & (1 << ConDataField.TANGENT))
+  linvel = bool(dataspec & (1 << ConDataField.LINVEL))
+  angvel = bool(dataspec & (1 << ConDataField.ANGVEL))
 
-  size = int(0)
-  for i in range(9):
-    if dataspec & (1 << i):
-      if i == 0:
-        found = True
-        size += 1
-      elif i == 1:
-        force = True
-        size += 3
-      elif i == 2:
-        torque = True
-        size += 3
-      elif i == 3:
-        dist = True
-        size += 1
-      elif i == 4:
-        pos = True
-        size += 3
-      elif i == 5:
-        normal = True
-        size += 3
-      elif i == 6:
-        tangent = True
-        size += 3
-      elif i == 7:
-        linvel = True
-        size += 3
-      elif i == 8:
-        angvel = True
-        size += 3
+  size = (
+    (1 if found else 0)
+    + (3 if force else 0)
+    + (3 if torque else 0)
+    + (1 if dist else 0)
+    + (3 if pos else 0)
+    + (3 if normal else 0)
+    + (3 if tangent else 0)
+    + (3 if linvel else 0)
+    + (3 if angvel else 0)
+  )
 
   num = dim // size  # number of slots
 
@@ -3008,11 +2990,11 @@ def _eval_sensor_contact(m: Model, d: Data, sensor_contact_adr: wp.array[int]):
     inputs=[
       m.opt.cone,
       maxmatch,
+      m.body_rootid,
+      m.geom_bodyid,
       m.sensor_intprm,
       m.sensor_dim,
       m.sensor_adr,
-      m.body_rootid,
-      m.geom_bodyid,
       d.subtree_com,
       d.cvel,
       d.contact.dist,

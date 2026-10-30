@@ -751,6 +751,32 @@ class RayDataField(enum.IntEnum):
   DEPTH = mujoco.mjtRayDataField.mjRAYDATA_DEPTH
 
 
+class ConDataField(enum.IntEnum):
+  """Contact data fields for contact sensors.
+
+  Attributes:
+    FOUND: number of matching contacts found
+    FORCE: contact force in contact frame
+    TORQUE: contact torque in contact frame
+    DIST: penetration distance
+    POS: contact position
+    NORMAL: contact frame normal
+    TANGENT: contact frame first tangent
+    LINVEL: relative linear velocity in contact frame
+    ANGVEL: relative angular velocity in contact frame
+  """
+
+  FOUND = mujoco.mjtConDataField.mjCONDATA_FOUND
+  FORCE = mujoco.mjtConDataField.mjCONDATA_FORCE
+  TORQUE = mujoco.mjtConDataField.mjCONDATA_TORQUE
+  DIST = mujoco.mjtConDataField.mjCONDATA_DIST
+  POS = mujoco.mjtConDataField.mjCONDATA_POS
+  NORMAL = mujoco.mjtConDataField.mjCONDATA_NORMAL
+  TANGENT = mujoco.mjtConDataField.mjCONDATA_TANGENT
+  LINVEL = mujoco.mjtConDataField.mjCONDATA_LINVEL
+  ANGVEL = mujoco.mjtConDataField.mjCONDATA_ANGVEL
+
+
 class ObjType(enum.IntEnum):
   """Type of object.
 

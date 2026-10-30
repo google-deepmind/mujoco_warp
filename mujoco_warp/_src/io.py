@@ -394,7 +394,7 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
 
   # TODO(team): contact sensor linvel and angvel for flex contacts (contact Jacobian)
   contact_dataspec = mjm.sensor_intprm[mjm.sensor_type == mujoco.mjtSensor.mjSENS_CONTACT, 0]
-  if mjm.nflex and (contact_dataspec & ((1 << 7) | (1 << 8))).any():
+  if mjm.nflex and (contact_dataspec & ((1 << types.ConDataField.LINVEL) | (1 << types.ConDataField.ANGVEL))).any():
     raise NotImplementedError("Contact sensor linvel and angvel not supported for models with flexes.")
 
   if mjm.nflex > 0:

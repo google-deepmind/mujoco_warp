@@ -1533,23 +1533,23 @@ class IOTest(parameterized.TestCase):
     self.assertEqual(m.opt.noslip_iterations, 3)
     np.testing.assert_allclose(m.opt.noslip_tolerance.numpy(), [1e-3])
 
-  @parameterized.parameters(7, 8)
-  def test_contact_sensor_vel_flex_unsupported(self, bit):
-    """Contact sensor linvel (bit 7) or angvel (bit 8) with flex raises NotImplementedError."""
-    mjm = mujoco.MjModel.from_xml_string("""
-      <mujoco>
-        <worldbody>
-          <geom type="plane" size="1 1 1"/>
-          <flexcomp name="rope" type="grid" count="3 1 1" spacing=".1 .1 .1" pos="0 0 .5" dim="1" radius=".01"/>
-        </worldbody>
-        <sensor>
-          <contact data="found"/>
-        </sensor>
-      </mujoco>
-    """)
-    mjm.sensor_intprm[0, 0] |= 1 << bit
+  @parameterized.parameters("linvel", "angvel")
+  def test_contact_sensor_vel_flex_unsupported(self, data):
+    """Contact sensor linvel or angvel with flex raises NotImplementedError."""
     with self.assertRaises(NotImplementedError):
-      put_model(mjm)
+      test_data.fixture(
+        xml=f"""
+        <mujoco>
+          <worldbody>
+            <geom type="plane" size="1 1 1"/>
+            <flexcomp name="rope" type="grid" count="3 1 1" spacing=".1 .1 .1" pos="0 0 .5" dim="1" radius=".01"/>
+          </worldbody>
+          <sensor>
+            <contact data="{data}"/>
+          </sensor>
+        </mujoco>
+        """
+      )
 
   @parameterized.parameters(*_IO_TEST_MODELS)
   def test_reset_data(self, xml):
