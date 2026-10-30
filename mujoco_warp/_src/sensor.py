@@ -2516,7 +2516,6 @@ def _contact_match_builder(warn_overflow: int, deterministic: bool = False):
     sensor_contact_nmatch_out: wp.array2d[int],
     sensor_contact_matchid_out: wp.array3d[int],
     sensor_contact_criteria_out: wp.array3d[float],
-    sensor_contact_direction_out: wp.array3d[float],
   ):
     contactsensorid, contactid = wp.tid()
     sensorid = sensor_contact_adr_in[contactsensorid]
@@ -2599,7 +2598,9 @@ def _contact_match_builder(warn_overflow: int, deterministic: bool = False):
       wp.atomic_or(overflow_out, worldid, OverflowType.CONTACT_MATCH)
       return
 
-    sensor_contact_matchid_out[worldid, contactsensorid, contactmatchid] = contactid
+    # Keep direction attached to the ID through sorting without a second payload.
+    # Complement encodes a negative direction even for contact zero (~0 == -1).
+    sensor_contact_matchid_out[worldid, contactsensorid, contactmatchid] = ~contactid if dir < 0.0 else contactid
 
     if reduce == 1:  # mindist
       sensor_contact_criteria_out[worldid, contactsensorid, contactmatchid] = contact_dist_in[contactid]
@@ -2623,26 +2624,11 @@ def _contact_match_builder(warn_overflow: int, deterministic: bool = False):
       )
       sensor_contact_criteria_out[worldid, contactsensorid, contactmatchid] = -force_magnitude
 
-    # contact direction
-    sensor_contact_direction_out[worldid, contactsensorid, contactmatchid] = dir
-
   return _contact_match
 
 
 @cache_kernel
 def _contact_sort(maxmatch: int):
-  @wp.func
-  def pack_match(matchid: int, direction: float):
-    return wp.vec2i(matchid, int(direction))
-
-  @wp.func
-  def unpack_matchid(match: wp.vec2i):
-    return match[0]
-
-  @wp.func
-  def unpack_direction(match: wp.vec2i):
-    return float(match[1])
-
   @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
   def contact_sort(
     # Model:
@@ -2652,10 +2638,8 @@ def _contact_sort(maxmatch: int):
     sensor_contact_nmatch_in: wp.array2d[int],
     sensor_contact_matchid_in: wp.array3d[int],
     sensor_contact_criteria_in: wp.array3d[float],
-    sensor_contact_direction_in: wp.array3d[float],
     # Out:
     sensor_contact_matchid_out: wp.array3d[int],
-    sensor_contact_direction_out: wp.array3d[float],
   ):
     worldid, contactsensorid = wp.tid()
     sensorid = sensor_contact_adr_in[contactsensorid]
@@ -2672,12 +2656,8 @@ def _contact_sort(maxmatch: int):
 
     criteria_tile = wp.tile_load(sensor_contact_criteria_in[worldid, contactsensorid], shape=maxmatch)
     matchid_tile = wp.tile_load(sensor_contact_matchid_in[worldid, contactsensorid], shape=maxmatch)
-    direction_tile = wp.tile_load(sensor_contact_direction_in[worldid, contactsensorid], shape=maxmatch)
-    # Sort each ID together with its direction, including when criteria tie.
-    match_tile = wp.tile_map(pack_match, matchid_tile, direction_tile)
-    wp.tile_sort(criteria_tile, match_tile)
-    wp.tile_store(sensor_contact_matchid_out[worldid, contactsensorid], wp.tile_map(unpack_matchid, match_tile))
-    wp.tile_store(sensor_contact_direction_out[worldid, contactsensorid], wp.tile_map(unpack_direction, match_tile))
+    wp.tile_sort(criteria_tile, matchid_tile)
+    wp.tile_store(sensor_contact_matchid_out[worldid, contactsensorid], matchid_tile)
 
   return contact_sort
 
@@ -2705,7 +2685,6 @@ def _sensor_contact(
   sensor_contact_adr_in: wp.array[int],
   sensor_contact_nmatch_in: wp.array2d[int],
   sensor_contact_matchid_in: wp.array3d[int],
-  sensor_contact_direction_in: wp.array3d[float],
   # Data out:
   sensordata_out: wp.array2d[float],
 ):
@@ -2770,8 +2749,9 @@ def _sensor_contact(
     total_force_magnitude = float(0.0)
 
     for i in range(nmatch):
-      cid = sensor_contact_matchid_in[worldid, contactsensorid, i]
-      dir = sensor_contact_direction_in[worldid, contactsensorid, i]
+      matchid = sensor_contact_matchid_in[worldid, contactsensorid, i]
+      cid = ~matchid if matchid < 0 else matchid
+      dir = -1.0 if matchid < 0 else 1.0
 
       contact_forcetorque = support.contact_force_fn(
         opt_cone,
@@ -2857,11 +2837,10 @@ def _sensor_contact(
   else:
     nslots = wp.min(nmatch, num)
     for i in range(nslots):
-      # sorted contact id
-      cid = sensor_contact_matchid_in[worldid, contactsensorid, i]
-
-      # contact direction
-      dir = sensor_contact_direction_in[worldid, contactsensorid, i]
+      # Decode only valid matches; unused padded slots are bounded by nslots.
+      matchid = sensor_contact_matchid_in[worldid, contactsensorid, i]
+      cid = ~matchid if matchid < 0 else matchid
+      dir = -1.0 if matchid < 0 else 1.0
 
       adr_slot = adr + i * size
 
@@ -2931,7 +2910,6 @@ def _eval_sensor_contact(m: Model, d: Data, sensor_contact_adr: wp.array[int]):
   sensor_contact_nmatch = wp.zeros((d.nworld, ncontact), dtype=int)
   sensor_contact_matchid = wp.full((d.nworld, ncontact, maxmatch), -1, dtype=int)
   sensor_contact_criteria = wp.full((d.nworld, ncontact, maxmatch), 1.0e32, dtype=float)
-  sensor_contact_direction = wp.zeros((d.nworld, ncontact, maxmatch), dtype=float)
 
   wp.launch(
     _contact_match_builder(int(m.opt.warn_overflow), bool(m.opt.deterministic & DeterminismType.ATOMICS)),
@@ -2965,7 +2943,7 @@ def _eval_sensor_contact(m: Model, d: Data, sensor_contact_adr: wp.array[int]):
       d.nacon,
       sensor_contact_adr,
     ],
-    outputs=[d.overflow, sensor_contact_nmatch, sensor_contact_matchid, sensor_contact_criteria, sensor_contact_direction],
+    outputs=[d.overflow, sensor_contact_nmatch, sensor_contact_matchid, sensor_contact_criteria],
   )
 
   # sorting
@@ -2978,9 +2956,8 @@ def _eval_sensor_contact(m: Model, d: Data, sensor_contact_adr: wp.array[int]):
       sensor_contact_nmatch,
       sensor_contact_matchid,
       sensor_contact_criteria,
-      sensor_contact_direction,
     ],
-    outputs=[sensor_contact_matchid, sensor_contact_direction],
+    outputs=[sensor_contact_matchid],
     block_dim=m.block_dim.contact_sort,
   )
 
@@ -3006,7 +2983,6 @@ def _eval_sensor_contact(m: Model, d: Data, sensor_contact_adr: wp.array[int]):
       sensor_contact_adr,
       sensor_contact_nmatch,
       sensor_contact_matchid,
-      sensor_contact_direction,
     ],
     outputs=[d.sensordata],
   )

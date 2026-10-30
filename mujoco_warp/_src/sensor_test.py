@@ -577,21 +577,24 @@ class SensorTest(parameterized.TestCase):
       xml="""
       <mujoco>
         <option gravity="0 0 0" cone="elliptic"/>
-        <default><geom condim="6" friction="1 .1 .1"/></default>
+        <default>
+          <geom condim="6" friction="1 .1 .1"/>
+        </default>
         <worldbody>
-          <geom name="left" type="sphere" size=".1" pos="-.18 0 0"/>
+          <geom name="left" size=".1" pos="-.18 0 0"/>
           <body name="middle">
             <freejoint/>
-            <geom name="middle" type="sphere" size=".1" mass="1"/>
+            <geom name="middle" size=".1" mass="1"/>
           </body>
           <body pos=".15 0 0">
-            <geom name="right" type="sphere" size=".1"/>
+            <geom name="right" size=".1"/>
           </body>
         </worldbody>
         <sensor>
-          <contact geom1="middle" reduce="mindist" num="1" data="force torque dist normal tangent"/>
+          <contact geom1="middle" reduce="mindist" num="2" data="dist normal tangent"/>
+          <contact geom1="middle" reduce="mindist" data="force torque dist normal tangent"/>
           <contact geom1="middle" reduce="mindist" num="2" data="force torque dist normal tangent"/>
-          <contact geom1="middle" reduce="maxforce" num="1" data="force torque dist normal tangent"/>
+          <contact geom1="middle" reduce="maxforce" data="force torque dist normal tangent"/>
           <contact geom1="middle" reduce="maxforce" num="2" data="force torque dist normal tangent"/>
         </sensor>
       </mujoco>
@@ -633,16 +636,16 @@ class SensorTest(parameterized.TestCase):
     mjw.sensor_pos(m, d)
     mjw.sensor_acc(m, d)
     np.testing.assert_allclose(d.sensordata.numpy(), expected, rtol=1e-5, atol=1e-5)
-    if wp.get_device().is_cuda:
-      with wp.ScopedCapture() as capture:
-        mjw.sensor_pos(m, d)
-        mjw.sensor_acc(m, d)
-      d.sensordata.fill_(wp.inf)
-      wp.capture_launch(capture.graph)
-      np.testing.assert_allclose(d.sensordata.numpy(), expected, rtol=1e-5, atol=1e-5)
+    with wp.ScopedCapture() as capture:
+      mjw.sensor_pos(m, d)
+      mjw.sensor_acc(m, d)
+    d.sensordata.fill_(wp.inf)
+    wp.capture_launch(capture.graph)
+    sensordata = d.sensordata.numpy()
+    np.testing.assert_allclose(sensordata, expected, rtol=1e-5, atol=1e-5)
     np.testing.assert_array_equal(d.overflow.numpy(), 0)
     if nworld == 2:
-      self.assertFalse(np.allclose(expected[0], expected[1]))
+      self.assertFalse(np.allclose(sensordata[0], sensordata[1]))
 
   def test_contact_sensor_subtree(self):
     """Test contact sensor with subtree matching semantics."""
