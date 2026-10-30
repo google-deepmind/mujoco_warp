@@ -2469,6 +2469,7 @@ class Data:
     efm_as: actuator metric scale h^2*gp + h*gv                 (nworld, nactuator)
     contact: contact data
     efc: constraint data
+    dof_frictionadr: friction efc address (-1: none) if nf > 0  (nworld, nv)
     tree_island: island ID per tree (-1 if unconstrained)       (nworld, ntree)
     dof_island: island ID per DOF (-1 if unconstrained)         (nworld, nv)
     island_dofadr: island start address in dof vector           (nworld, ntree)
@@ -2628,6 +2629,7 @@ class Data:
   efm_as: array("nworld", "nactuator", float)
   contact: Contact
   efc: Constraint
+  dof_frictionadr: array("nworld", "nv", int)
   tree_island: array("nworld", "ntree", int)
   dof_island: array("nworld", "nv", int)
   island_dofadr: array("nworld", "ntree", int)

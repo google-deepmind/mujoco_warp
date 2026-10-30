@@ -558,15 +558,19 @@ class IOTest(parameterized.TestCase):
     adr = d.efc.jtdaj_adr.numpy()[0, :nblock].copy()
     nrow = d.efc.jtdaj_nrow.numpy()[0, :nblock].copy()
 
-    # the blocks partition the active rows exactly (contiguous, no gaps, covering [0, nefc))
-    self.assertGreater(nblock, 0)
-    self.assertEqual(adr[0], 0)
-    np.testing.assert_array_equal(adr[1:], np.cumsum(nrow)[:-1])
-    self.assertEqual(int(nrow.sum()), mjd.nefc)
-
-    # each block is one constraint instance: a maximal run of rows sharing (efc_type, efc_id)
+    # the blocks partition exactly the rows that are not DOF friction (those get no block)
     etype = mjd.efc_type[: mjd.nefc]
     eid = mjd.efc_id[: mjd.nefc]
+    is_dof_friction = etype == mujoco.mjtConstraint.mjCNSTR_FRICTION_DOF
+    self.assertTrue(is_dof_friction.any())
+    self.assertGreater(nblock, 0)
+    covered = np.zeros(mjd.nefc, dtype=bool)
+    for a, n in zip(adr.tolist(), nrow.tolist()):
+      self.assertFalse(covered[a : a + n].any())
+      covered[a : a + n] = True
+    np.testing.assert_array_equal(covered, ~is_dof_friction)
+
+    # each block is one constraint instance: a maximal run of rows sharing (efc_type, efc_id)
     for a, n in zip(adr.tolist(), nrow.tolist()):
       self.assertTrue((etype[a : a + n] == etype[a]).all())
       self.assertTrue((eid[a : a + n] == eid[a]).all())

@@ -2408,7 +2408,11 @@ def _update_gradient_init_h_sparse(compact: bool):
     nv: int,
     M_elemid: wp.array2d[int],
     # Data in:
+    nf_in: wp.array[int],
     M_in: wp.array2d[float],
+    efc_D_in: wp.array2d[float],
+    efc_state_in: wp.array2d[int],
+    dof_frictionadr_in: wp.array2d[int],
     cdof_dof_in: wp.array2d[int],
     # In:
     ctx_done_in: wp.array[bool],
@@ -2433,6 +2437,15 @@ def _update_gradient_init_h_sparse(compact: bool):
     # are sector aligned since nv_pad is a multiple of 16); nothing reads the zeros left of it.
     n = ctx_h_out.shape[1]
     start = (i // wp.static(_INIT_H_ALIGN)) * wp.static(_INIT_H_ALIGN)
+
+    # a DOF friction row (J = e_dof) has no JTDAJ block: it adds D to the diagonal while quadratic
+    friction_diag = float(0.0)
+    if nf_in[worldid] > 0 and not padded_row and lane == (i - start) % wp.static(_INIT_H_LANES):
+      efcid = dof_frictionadr_in[worldid, dof_i]
+      if efcid >= 0:
+        if efc_state_in[worldid, efcid] == types.ConstraintState.QUADRATIC.value:
+          friction_diag = efc_D_in[worldid, efcid]
+
     for j in range(start + lane, n, wp.static(_INIT_H_LANES)):
       h = float(0.0)
       if j >= i:
@@ -2451,6 +2464,8 @@ def _update_gradient_init_h_sparse(compact: bool):
             elemid = M_elemid[dof_j, dof_i]
             if elemid >= 0:
               h = M_in[worldid, elemid]
+            if j == i:
+              h += friction_diag
       ctx_h_out[worldid, i, j] = h
 
   return kernel
@@ -3445,7 +3460,17 @@ def _update_gradient(m: types.Model, d: types.Data, ctx: SolverContext, compact:
       wp.launch(
         _update_gradient_init_h_sparse(sc),
         dim=(d.nworld, m.nv_pad, _INIT_H_LANES),
-        inputs=[mj.nv, mj.M_elemid, m_mat, dj.cdof_dof, ctx.done],
+        inputs=[
+          mj.nv,
+          mj.M_elemid,
+          d.nf,
+          m_mat,
+          d.efc.D,
+          d.efc.state,
+          d.dof_frictionadr,
+          dj.cdof_dof,
+          ctx.done,
+        ],
         outputs=[ctx.h],
       )
 
