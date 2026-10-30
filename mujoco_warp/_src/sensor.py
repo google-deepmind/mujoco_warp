@@ -27,6 +27,7 @@ from mujoco_warp._src.collision_sdf import sdf
 from mujoco_warp._src.types import MJ_MAXCONPAIR
 from mujoco_warp._src.types import MJ_MAXVAL
 from mujoco_warp._src.types import MJ_MINVAL
+from mujoco_warp._src.types import ConDataField
 from mujoco_warp._src.types import ConeType
 from mujoco_warp._src.types import ConstraintType
 from mujoco_warp._src.types import ContactType
@@ -1773,6 +1774,8 @@ def sensor_vel(m: Model, d: Data):
       ],
     )
 
+  _eval_sensor_contact(m, d, m.sensor_contact_vel_adr)
+
   # apply sensor delay/interval for velocity sensors
   history.apply_sensor_delay(m, d, m.sensor_stage_vel_adr)
 
@@ -2668,15 +2671,20 @@ def _sensor_contact(
   # Model:
   opt_cone: int,
   opt_contact_sensor_maxmatch: int,
+  body_rootid: wp.array[int],
+  geom_bodyid: wp.array[int],
   sensor_intprm: wp.array2d[int],
   sensor_dim: wp.array[int],
   sensor_adr: wp.array[int],
   # Data in:
+  subtree_com_in: wp.array2d[wp.vec3],
+  cvel_in: wp.array2d[wp.spatial_vector],
   contact_dist_in: wp.array[float],
   contact_pos_in: wp.array[wp.vec3],
   contact_frame_in: wp.array[wp.mat33],
   contact_friction_in: wp.array[vec5],
   contact_dim_in: wp.array[int],
+  contact_geom_in: wp.array[wp.vec2i],
   contact_efc_address_in: wp.array2d[int],
   contact_adhesion_in: wp.array[float],
   efc_force_in: wp.array2d[float],
@@ -2697,40 +2705,28 @@ def _sensor_contact(
   reduce = sensor_intprm[sensorid, 1]
   dim = sensor_dim[sensorid]
 
-  # found, force, torque, dist, pos, normal, tangent
   # TODO(thowell): precompute slot size
-  found = False
-  force = False
-  torque = False
-  dist = False
-  pos = False
-  normal = False
-  tangent = False
+  found = bool(dataspec & (1 << ConDataField.FOUND))
+  force = bool(dataspec & (1 << ConDataField.FORCE))
+  torque = bool(dataspec & (1 << ConDataField.TORQUE))
+  dist = bool(dataspec & (1 << ConDataField.DIST))
+  pos = bool(dataspec & (1 << ConDataField.POS))
+  normal = bool(dataspec & (1 << ConDataField.NORMAL))
+  tangent = bool(dataspec & (1 << ConDataField.TANGENT))
+  linvel = bool(dataspec & (1 << ConDataField.LINVEL))
+  angvel = bool(dataspec & (1 << ConDataField.ANGVEL))
 
-  size = int(0)
-  for i in range(7):
-    if dataspec & (1 << i):
-      if i == 0:
-        found = True
-        size += 1
-      elif i == 1:
-        force = True
-        size += 3
-      elif i == 2:
-        torque = True
-        size += 3
-      elif i == 3:
-        dist = True
-        size += 1
-      elif i == 4:
-        pos = True
-        size += 3
-      elif i == 5:
-        normal = True
-        size += 3
-      elif i == 6:
-        tangent = True
-        size += 3
+  size = (
+    (1 if found else 0)
+    + (3 if force else 0)
+    + (3 if torque else 0)
+    + (1 if dist else 0)
+    + (3 if pos else 0)
+    + (3 if normal else 0)
+    + (3 if tangent else 0)
+    + (3 if linvel else 0)
+    + (3 if angvel else 0)
+  )
 
   num = dim // size  # number of slots
 
@@ -2876,13 +2872,14 @@ def _sensor_contact(
       if dist:
         out[adr_slot] = contact_dist_in[cid]
         adr_slot += 1
-      if pos:
+      if pos or linvel:
         contact_pos = contact_pos_in[cid]
+      if pos:
         out[adr_slot + 0] = contact_pos[0]
         out[adr_slot + 1] = contact_pos[1]
         out[adr_slot + 2] = contact_pos[2]
         adr_slot += 3
-      if normal or tangent:
+      if normal or tangent or linvel or angvel:
         frame = contact_frame_in[cid]
       if normal:
         contact_normal = frame[0]
@@ -2895,6 +2892,33 @@ def _sensor_contact(
         out[adr_slot + 0] = dir * contact_tangent[0]
         out[adr_slot + 1] = dir * contact_tangent[1]
         out[adr_slot + 2] = dir * contact_tangent[2]
+        adr_slot += 3
+      if linvel or angvel:
+        # velocity of geom[1] relative to geom[0] at the contact point, in the contact frame
+        con_geom = contact_geom_in[cid]
+        body0 = geom_bodyid[con_geom[0]]
+        body1 = geom_bodyid[con_geom[1]]
+        cvel0 = cvel_in[worldid, body0]
+        cvel1 = cvel_in[worldid, body1]
+      if linvel:
+        root0 = body_rootid[body0]
+        root1 = body_rootid[body1]
+        com0 = subtree_com_in[worldid, root0]
+        if root1 == root0:
+          com1 = com0
+        else:
+          com1 = subtree_com_in[worldid, root1]
+        rel_lin = _transform_spatial(cvel1, contact_pos - com1) - _transform_spatial(cvel0, contact_pos - com0)
+        lin_local = frame @ rel_lin
+        out[adr_slot + 0] = lin_local[0]
+        out[adr_slot + 1] = lin_local[1]
+        out[adr_slot + 2] = dir * lin_local[2]
+        adr_slot += 3
+      if angvel:
+        ang_local = frame @ (wp.spatial_top(cvel1) - wp.spatial_top(cvel0))
+        out[adr_slot + 0] = ang_local[0]
+        out[adr_slot + 1] = ang_local[1]
+        out[adr_slot + 2] = dir * ang_local[2]
 
     # zero remaining slots
     for i in range(nslots, num):
@@ -2968,14 +2992,19 @@ def _eval_sensor_contact(m: Model, d: Data, sensor_contact_adr: wp.array[int]):
     inputs=[
       m.opt.cone,
       maxmatch,
+      m.body_rootid,
+      m.geom_bodyid,
       m.sensor_intprm,
       m.sensor_dim,
       m.sensor_adr,
+      d.subtree_com,
+      d.cvel,
       d.contact.dist,
       d.contact.pos,
       d.contact.frame,
       d.contact.friction,
       d.contact.dim,
+      d.contact.geom,
       d.contact.efc_address,
       d.contact.adhesion,
       d.efc.force,

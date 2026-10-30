@@ -751,6 +751,32 @@ class RayDataField(enum.IntEnum):
   DEPTH = mujoco.mjtRayDataField.mjRAYDATA_DEPTH
 
 
+class ConDataField(enum.IntEnum):
+  """Contact data fields for contact sensors.
+
+  Attributes:
+    FOUND: number of matching contacts found
+    FORCE: contact force in contact frame
+    TORQUE: contact torque in contact frame
+    DIST: penetration distance
+    POS: contact position
+    NORMAL: contact frame normal
+    TANGENT: contact frame first tangent
+    LINVEL: relative linear velocity in contact frame
+    ANGVEL: relative angular velocity in contact frame
+  """
+
+  FOUND = mujoco.mjtConDataField.mjCONDATA_FOUND
+  FORCE = mujoco.mjtConDataField.mjCONDATA_FORCE
+  TORQUE = mujoco.mjtConDataField.mjCONDATA_TORQUE
+  DIST = mujoco.mjtConDataField.mjCONDATA_DIST
+  POS = mujoco.mjtConDataField.mjCONDATA_POS
+  NORMAL = mujoco.mjtConDataField.mjCONDATA_NORMAL
+  TANGENT = mujoco.mjtConDataField.mjCONDATA_TANGENT
+  LINVEL = mujoco.mjtConDataField.mjCONDATA_LINVEL
+  ANGVEL = mujoco.mjtConDataField.mjCONDATA_ANGVEL
+
+
 class ObjType(enum.IntEnum):
   """Type of object.
 
@@ -1664,6 +1690,7 @@ class Model:
     sensor_tendonactfrc_adr: address for tendonactfrc sensor
     sensor_subtree_vel: evaluate subtree_vel
     sensor_contact_pos_adr: addresses for position contact sensors (nsensor_contact_pos,)
+    sensor_contact_vel_adr: addresses for velocity contact sensors (nsensor_contact_vel,)
     sensor_contact_acc_adr: addresses for acceleration contact sensors (nsensor_contact_acc,)
     sensor_rne_postconstraint: evaluate rne_postconstraint
     sensor_rangefinder_bodyid: bodyid for rangefinder        (nrangefinder,)
@@ -2195,6 +2222,7 @@ class Model:
   sensor_tendonactfrc_adr: array("nsensor_tendonactfrc", int)
   sensor_subtree_vel: bool
   sensor_contact_pos_adr: array("nsensor_contact_pos", int)
+  sensor_contact_vel_adr: array("nsensor_contact_vel", int)
   sensor_contact_acc_adr: array("nsensor_contact_acc", int)
   sensor_rne_postconstraint: bool
   sensor_rangefinder_bodyid: array("nrangefinder", int)
