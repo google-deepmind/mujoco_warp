@@ -169,6 +169,54 @@ class SmoothTest(parameterized.TestCase):
     _assert_eq(d.cinert.numpy()[0], mjd.cinert, "cinert")
     _assert_eq(d.cdof.numpy()[0], mjd.cdof, "cdof")
 
+  @parameterized.parameters(1, 2)
+  def test_com_pos_massless_subtree(self, nworld):
+    """Tests com_pos for a subtree without mass."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <body pos="0 0 1">
+            <joint type="hinge" axis="0 1 0"/>
+            <geom type="capsule" size=".05" fromto="0 0 0 .5 0 0"/>
+            <body name="massless" pos=".5 0 0">
+              <site name="site"/>
+            </body>
+          </body>
+        </worldbody>
+        <keyframe>
+          <key qpos=".5"/>
+        </keyframe>
+      </mujoco>
+      """,
+      keyframe=0,
+      nworld=nworld,
+    )
+
+    mjds = [mjd]
+    if nworld == 2:
+      mjd1 = mujoco.MjData(mjm)
+      mujoco.mj_resetDataKeyframe(mjm, mjd1, 0)
+      qpos = d.qpos.numpy()
+      qpos[1] += 0.5
+      d.qpos.assign(qpos)
+      mjd1.qpos[:] = qpos[1]
+      mjds.append(mjd1)
+      mjw.kinematics(m, d)
+      for w in range(nworld):
+        mujoco.mj_kinematics(mjm, mjds[w])
+
+    d.subtree_com.fill_(wp.inf)
+    mjw.com_pos(m, d)
+
+    subtree_com = d.subtree_com.numpy()
+    for w in range(nworld):
+      mujoco.mj_comPos(mjm, mjds[w])
+      _assert_eq(subtree_com[w], mjds[w].subtree_com, f"subtree_com_world_{w}")
+
+    if nworld == 2:
+      self.assertFalse(np.allclose(subtree_com[0], subtree_com[1]))
+
   def test_camlight(self):
     """Tests camlight."""
     _, mjd, m, d = test_data.fixture("pendula.xml")

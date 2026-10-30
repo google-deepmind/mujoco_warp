@@ -729,6 +729,37 @@ class FlexConstraintTest(parameterized.TestCase):
         err_msg=f"qfrc_constraint mismatch for trilinear flex contacts (world {w})",
       )
 
+  @parameterized.parameters(1, 2)
+  def test_flexstrain_jtdaj_blocks(self, nworld):
+    """Each flex strain row is in exactly one JTDAJ block whose rows share the head columns."""
+    _, _, m, d = test_data.fixture(
+      "flex/moving_base_strain.xml",
+      overrides={"opt.jacobian": mujoco.mjtJacobian.mjJAC_SPARSE, "opt.solver": mujoco.mjtSolver.mjSOL_NEWTON},
+      nworld=nworld,
+    )
+    d.efc.jtdaj_adr.fill_(-1)
+    d.efc.jtdaj_nrow.fill_(-1)
+
+    mjw.fwd_position(m, d)
+
+    nefc = d.nefc.numpy()
+    nblock = d.efc.jtdaj_nblock.numpy()
+    jtdaj_adr = d.efc.jtdaj_adr.numpy()
+    jtdaj_nrow = d.efc.jtdaj_nrow.numpy()
+    rowadr = d.efc.J_rowadr.numpy()
+    rownnz = d.efc.J_rownnz.numpy()
+    colind = d.efc.J_colind.numpy()
+    for w in range(nworld):
+      self.assertGreater(nefc[w], 1)
+      count = np.zeros(nefc[w], dtype=int)
+      for head, nrow in zip(jtdaj_adr[w, : nblock[w]], jtdaj_nrow[w, : nblock[w]]):
+        self.assertLessEqual(head + nrow, nefc[w])
+        head_cols = colind[w, 0, rowadr[w, head] : rowadr[w, head] + rownnz[w, head]]
+        for row in range(head, head + nrow):
+          count[row] += 1
+          np.testing.assert_array_equal(colind[w, 0, rowadr[w, row] : rowadr[w, row] + rownnz[w, row]], head_cols)
+      np.testing.assert_array_equal(count, 1)
+
   # TODO(team): remove version check once mujoco >= 3.17.1 is required.
   @absltest.skipIf(not util_pkg.check_version("mujoco>=3.17.1.dev1005593014"), "Requires MuJoCo >= 3.17.1.dev1005593014")
   @parameterized.parameters(1, 2)
@@ -4481,6 +4512,55 @@ class FlexContactConstraintTest(parameterized.TestCase):
       self.assertEqual(d.nefc.numpy()[w], mjd.nefc, "nefc mismatch")
 
     _assert_efc_eq(mjm, m, d, mjd, mjd.nefc, f"efc_flex_dim{m.flex_dim.numpy()[0]}", m.nv, nworld)
+
+  @parameterized.parameters(True, False)
+  def test_efc_address_stale(self, overflow):
+    """Flex contacts without constraint rows have efc_address -1, not stale values."""
+    _, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option jacobian="sparse"/>
+        <worldbody>
+          <geom type="plane" size="1 1 .01"/>
+          <flexcomp name="cloth" type="grid" count="3 3 1" spacing=".1 .1 .1" pos="0 0 1" radius=".01" dim="2"
+                    mass=".5">
+            <contact condim="3" selfcollide="none" margin=".02" gap=".01"/>
+            <edge equality="false"/>
+          </flexcomp>
+        </worldbody>
+      </mujoco>
+      """,
+      njmax_nnz=40 if overflow else None,
+    )
+
+    # tilt the cloth onto the plane: the lower vertices are active, the upper ones in the gap zone
+    qpos = mjd.qpos.reshape(-1, 3).copy()
+    qpos[:, 2] = np.linspace(-0.995, -0.975, len(qpos))
+    d.qpos.assign(qpos.reshape(1, -1))
+
+    d.contact.efc_address.fill_(0)
+    mjw.fwd_kinematics(m, d)
+    mjw.collision(m, d)
+
+    nacon = d.nacon.numpy()[0]
+    active = d.contact.dist.numpy()[:nacon] < d.contact.includemargin.numpy()[:nacon]
+    self.assertTrue(np.any(active) and not np.all(active))
+    np.testing.assert_array_equal(d.contact.efc_address.numpy()[:nacon][~active], -1)
+
+    # stale addresses on active contacts are reset by make_constraint
+    efc_address = d.contact.efc_address.numpy()
+    efc_address[:nacon][active] = 0
+    d.contact.efc_address.assign(efc_address)
+    mjw.make_constraint(m, d)
+
+    # pyramidal condim 3: 4 rows per contact
+    efc_address = d.contact.efc_address.numpy()[:nacon, :4]
+    efc_id = d.efc.id.numpy()[0]
+    dropped = efc_address[:, 0] < 0
+    self.assertEqual(np.any(dropped[active]), overflow)
+    np.testing.assert_array_equal(efc_address[active & dropped], -1)
+    for conid in np.flatnonzero(active & ~dropped):
+      np.testing.assert_array_equal(efc_id[efc_address[conid]], conid)
 
   # TODO(team): remove version check once mujoco >= 3.17.1 is required.
   @absltest.skipIf(not util_pkg.check_version("mujoco>=3.17.1.dev1005593014"), "Requires MuJoCo >= 3.17.1.dev1005593014")

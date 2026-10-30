@@ -714,15 +714,18 @@ def _subtree_div(
   # Model:
   body_subtreemass: wp.array2d[float],
   # Data in:
+  xipos_in: wp.array2d[wp.vec3],
   subtree_com_in: wp.array2d[wp.vec3],
   # Data out:
   subtree_com_out: wp.array2d[wp.vec3],
 ):
   worldid, bodyid = wp.tid()
-  com = subtree_com_in[worldid, bodyid]
   mass = body_subtreemass[worldid % body_subtreemass.shape[0], bodyid]
-  if mass != 0.0:
-    subtree_com_out[worldid, bodyid] = com / mass
+  # massless subtree: use the body inertial frame, as in mj_comPos
+  if mass < MJ_MINVAL:
+    subtree_com_out[worldid, bodyid] = xipos_in[worldid, bodyid]
+  else:
+    subtree_com_out[worldid, bodyid] = subtree_com_in[worldid, bodyid] / mass
 
 
 @wp.kernel
@@ -747,13 +750,15 @@ def _cinert(
 
   res = vec10()
   # res_rot = mat * diag(inert) * mat'
-  tmp = mat @ wp.diag(inert) @ wp.transpose(mat)
-  res[0] = tmp[0, 0]
-  res[1] = tmp[1, 1]
-  res[2] = tmp[2, 2]
-  res[3] = tmp[0, 1]
-  res[4] = tmp[0, 2]
-  res[5] = tmp[1, 2]
+  row0 = wp.cw_mul(mat[0], inert)
+  row1 = wp.cw_mul(mat[1], inert)
+  row2 = wp.cw_mul(mat[2], inert)
+  res[0] = wp.dot(row0, mat[0])
+  res[1] = wp.dot(row1, mat[1])
+  res[2] = wp.dot(row2, mat[2])
+  res[3] = wp.dot(row0, mat[1])
+  res[4] = wp.dot(row0, mat[2])
+  res[5] = wp.dot(row1, mat[2])
   # res_rot -= mass * dif_cross * dif_cross
   res[0] += mass * (dif[1] * dif[1] + dif[2] * dif[2])
   res[1] += mass * (dif[0] * dif[0] + dif[2] * dif[2])
@@ -839,7 +844,7 @@ def com_pos(m: Model, d: Data):
       outputs=[d.subtree_com],
     )
 
-  wp.launch(_subtree_div, dim=(d.nworld, m.nbody), inputs=[m.body_subtreemass, d.subtree_com], outputs=[d.subtree_com])
+  wp.launch(_subtree_div, dim=(d.nworld, m.nbody), inputs=[m.body_subtreemass, d.xipos, d.subtree_com], outputs=[d.subtree_com])
   wp.launch(
     _cinert,
     dim=(d.nworld, m.nbody),
