@@ -1776,7 +1776,6 @@ def sensor_vel(m: Model, d: Data):
   _eval_sensor_contact(m, d, m.sensor_contact_vel_adr)
 
   # apply sensor delay/interval for velocity sensors
-
   history.apply_sensor_delay(m, d, m.sensor_stage_vel_adr)
 
   if m.callback.sensor:
