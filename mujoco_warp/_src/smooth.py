@@ -31,6 +31,7 @@ from mujoco_warp._src.types import ConstraintType
 from mujoco_warp._src.types import Data
 from mujoco_warp._src.types import DeterminismType
 from mujoco_warp._src.types import DisableBit
+from mujoco_warp._src.types import EnableBit
 from mujoco_warp._src.types import EqType
 from mujoco_warp._src.types import JointType
 from mujoco_warp._src.types import Model
@@ -46,6 +47,17 @@ from mujoco_warp._src.warp_util import cache_kernel
 from mujoco_warp._src.warp_util import event_scope
 
 wp.set_module_options({"enable_backward": False})
+
+
+@wp.func
+def _tree_asleep(
+  # Data in:
+  tree_awake_in: wp.array2d[int],
+  # In:
+  worldid: int,
+  treeid: int,
+) -> bool:
+  return treeid >= 0 and tree_awake_in[worldid, treeid] == 0
 
 
 @wp.kernel
@@ -1031,7 +1043,7 @@ def camlight(m: Model, d: Data):
 
 
 @cache_kernel
-def _crb_accumulate(deterministic: bool = False):
+def _crb_accumulate(enable_sleep: bool = False, deterministic: bool = False):
   module_options = {"enable_backward": False}
   if deterministic:
     module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
@@ -1040,8 +1052,10 @@ def _crb_accumulate(deterministic: bool = False):
   def kernel(
     # Model:
     body_parentid: wp.array[int],
+    body_treeid: wp.array[int],
     # Data in:
     crb_in: wp.array2d[vec10],
+    tree_awake_in: wp.array2d[int],
     # In:
     body_tree_: wp.array[int],
     # Data out:
@@ -1052,53 +1066,73 @@ def _crb_accumulate(deterministic: bool = False):
     pid = body_parentid[bodyid]
     if pid == 0:
       return
+    if wp.static(enable_sleep):
+      if _tree_asleep(tree_awake_in, worldid, body_treeid[pid]):
+        return
     wp.atomic_add(crb_out, worldid, pid, crb_in[worldid, bodyid])
 
   return kernel
 
 
-@wp.kernel
-def _M(
-  # Model:
-  jnt_actuatorid: wp.array[int],
-  dof_bodyid: wp.array[int],
-  dof_jntid: wp.array[int],
-  dof_parentid: wp.array[int],
-  dof_armature: wp.array2d[float],
-  actuator_trntype: wp.array[int],
-  actuator_trnid: wp.array[wp.vec2i],
-  actuator_armature: wp.array2d[float],
-  actuator_gear: wp.array2d[wp.spatial_vector],
-  M_rownnz: wp.array[int],
-  M_rowadr: wp.array[int],
-  # Data in:
-  cdof_in: wp.array2d[wp.spatial_vector],
-  crb_in: wp.array2d[vec10],
-  # Data out:
-  M_out: wp.array2d[float],
-):
-  worldid, dofid = wp.tid()
-  bodyid = dof_bodyid[dofid]
-  rowadr = M_rowadr[dofid]
-  madr_ij = rowadr + M_rownnz[dofid] - 1
+@cache_kernel
+def _M(enable_sleep: bool = False):
+  @wp.kernel(module="unique", enable_backward=False)
+  def kernel(
+    # Model:
+    jnt_actuatorid: wp.array[int],
+    dof_bodyid: wp.array[int],
+    dof_jntid: wp.array[int],
+    dof_parentid: wp.array[int],
+    dof_treeid: wp.array[int],
+    dof_armature: wp.array2d[float],
+    actuator_trntype: wp.array[int],
+    actuator_trnid: wp.array[wp.vec2i],
+    actuator_armature: wp.array2d[float],
+    actuator_gear: wp.array2d[wp.spatial_vector],
+    M_rownnz: wp.array[int],
+    M_rowadr: wp.array[int],
+    # Data in:
+    cdof_in: wp.array2d[wp.spatial_vector],
+    crb_in: wp.array2d[vec10],
+    tree_awake_in: wp.array2d[int],
+    # Data out:
+    M_out: wp.array2d[float],
+  ):
+    worldid, dofid = wp.tid()
+    if wp.static(enable_sleep):
+      if _tree_asleep(tree_awake_in, worldid, dof_treeid[dofid]):
+        return
+    bodyid = dof_bodyid[dofid]
+    rowadr = M_rowadr[dofid]
+    madr_ij = rowadr + M_rownnz[dofid] - 1
 
-  # precompute buf = crb_body_i * cdof_i
-  cdof = cdof_in[worldid, dofid]
-  buf = math.inert_vec(crb_in[worldid, bodyid], cdof)
+    # precompute buf = crb_body_i * cdof_i
+    cdof = cdof_in[worldid, dofid]
+    buf = math.inert_vec(crb_in[worldid, bodyid], cdof)
 
-  # M(i,i): armature inertia plus the dof's own term
-  M_out[worldid, madr_ij] = util_misc.dof_armature_total(
-    jnt_actuatorid, dof_jntid, dof_armature, actuator_trntype, actuator_trnid, actuator_armature, actuator_gear, worldid, dofid
-  ) + wp.dot(cdof, buf)
+    # M(i,i): armature inertia plus the dof's own term
+    M_out[worldid, madr_ij] = util_misc.dof_armature_total(
+      jnt_actuatorid,
+      dof_jntid,
+      dof_armature,
+      actuator_trntype,
+      actuator_trnid,
+      actuator_armature,
+      actuator_gear,
+      worldid,
+      dofid,
+    ) + wp.dot(cdof, buf)
 
-  # sparse backward pass over the ancestors stored in this row; rows of simple dofs are
-  # diagonal-only, so stop at the row start instead of walking into the previous row
-  madr_ij -= 1
-  dofid = dof_parentid[dofid]
-  while dofid >= 0 and madr_ij >= rowadr:
-    M_out[worldid, madr_ij] = wp.dot(cdof_in[worldid, dofid], buf)
+    # sparse backward pass over the ancestors stored in this row; rows of simple dofs are
+    # diagonal-only, so stop at the row start instead of walking into the previous row
     madr_ij -= 1
     dofid = dof_parentid[dofid]
+    while dofid >= 0 and madr_ij >= rowadr:
+      M_out[worldid, madr_ij] = wp.dot(cdof_in[worldid, dofid], buf)
+      madr_ij -= 1
+      dofid = dof_parentid[dofid]
+
+  return kernel
 
 
 @event_scope
@@ -1108,6 +1142,7 @@ def crb(m: Model, d: Data):
   Accumulates composite rigid body inertias up the kinematic tree and computes the
   joint-space inertia matrix in either sparse or dense format, depending on model options.
   """
+  enable_sleep = bool(m.opt.enableflags & EnableBit.SLEEP)
   wp.copy(d.crb, d.cinert)
 
   det_atomics = bool(m.opt.deterministic & DeterminismType.ATOMICS)
@@ -1117,21 +1152,21 @@ def crb(m: Model, d: Data):
     if det_atomics:
       wp.copy(crb_in, d.crb)
     wp.launch(
-      _crb_accumulate(det_atomics),
+      _crb_accumulate(enable_sleep, det_atomics),
       dim=(d.nworld, body_tree.size),
-      inputs=[m.body_parentid, crb_in, body_tree],
+      inputs=[m.body_parentid, m.body_treeid, crb_in, d.tree_awake, body_tree],
       outputs=[d.crb],
     )
 
-  d.M.zero_()
   wp.launch(
-    _M,
+    _M(enable_sleep),
     dim=(d.nworld, m.nv),
     inputs=[
       m.jnt_actuatorid,
       m.dof_bodyid,
       m.dof_jntid,
       m.dof_parentid,
+      m.dof_treeid,
       m.dof_armature,
       m.actuator_trntype,
       m.actuator_trnid,
@@ -1141,13 +1176,14 @@ def crb(m: Model, d: Data):
       m.M_rowadr,
       d.cdof,
       d.crb,
+      d.tree_awake,
     ],
     outputs=[d.M],
   )
 
 
 @cache_kernel
-def _tendon_armature(nv: int, deterministic: bool = False):
+def _tendon_armature(nv: int, enable_sleep: bool = False, deterministic: bool = False):
   module_options = {"enable_backward": False}
   if deterministic:
     module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
@@ -1157,6 +1193,7 @@ def _tendon_armature(nv: int, deterministic: bool = False):
   def kernel(
     # Model:
     dof_parentid: wp.array[int],
+    dof_treeid: wp.array[int],
     tendon_actuatorid: wp.array[int],
     ten_J_rownnz: wp.array[int],
     ten_J_rowadr: wp.array[int],
@@ -1170,6 +1207,7 @@ def _tendon_armature(nv: int, deterministic: bool = False):
     M_rowadr: wp.array[int],
     # Data in:
     ten_J_in: wp.array2d[float],
+    tree_awake_in: wp.array2d[int],
     # Data out:
     M_out: wp.array2d[float],
   ):
@@ -1189,6 +1227,11 @@ def _tendon_armature(nv: int, deterministic: bool = False):
     dofid_sparse = dofid
     sparseid = rowadr + dofid_sparse
     dofid = ten_J_colind[sparseid]
+
+    if wp.static(enable_sleep):
+      if _tree_asleep(tree_awake_in, worldid, dof_treeid[dofid]):
+        return
+
     ten_Ji = ten_J_in[worldid, sparseid]
 
     if ten_Ji == 0.0:
@@ -1228,12 +1271,14 @@ def _tendon_armature(nv: int, deterministic: bool = False):
 @event_scope
 def tendon_armature(m: Model, d: Data):
   """Add tendon armature to M."""
+  enable_sleep = bool(m.opt.enableflags & EnableBit.SLEEP)
   det_atomics = bool(m.opt.deterministic & DeterminismType.ATOMICS)
   wp.launch(
-    _tendon_armature(m.nv if det_atomics else 0, det_atomics),
+    _tendon_armature(m.nv if det_atomics else 0, enable_sleep, det_atomics),
     dim=(d.nworld, m.ntendon, m.max_ten_J_rownnz),
     inputs=[
       m.dof_parentid,
+      m.dof_treeid,
       m.tendon_actuatorid,
       m.ten_J_rownnz,
       m.ten_J_rowadr,
@@ -1246,13 +1291,44 @@ def tendon_armature(m: Model, d: Data):
       m.M_rownnz,
       m.M_rowadr,
       d.ten_J,
+      d.tree_awake,
     ],
     outputs=[d.M],
   )
 
 
+@wp.kernel
+def _copy_M_sparse_awake(
+  # Model:
+  dof_treeid: wp.array[int],
+  M_rownnz: wp.array[int],
+  M_rowadr: wp.array[int],
+  # Data in:
+  M_in: wp.array2d[float],
+  tree_awake_in: wp.array2d[int],
+  # Out:
+  L_out: wp.array2d[float],
+):
+  worldid, dofid = wp.tid()
+  if _tree_asleep(tree_awake_in, worldid, dof_treeid[dofid]):
+    return
+  rowadr = M_rowadr[dofid]
+  for j in range(M_rownnz[dofid]):
+    L_out[worldid, rowadr + j] = M_in[worldid, rowadr + j]
+
+
+def copy_M_awake(m: Model, d: Data, M_out: wp.array2d[float], M_in: Optional[wp.array2d[float]] = None):
+  """Copies awake rows of M into M_out, leaving sleeping rows untouched."""
+  wp.launch(
+    _copy_M_sparse_awake,
+    dim=(d.nworld, m.nv),
+    inputs=[m.dof_treeid, m.M_rownnz, m.M_rowadr, d.M if M_in is None else M_in, d.tree_awake],
+    outputs=[M_out],
+  )
+
+
 @cache_kernel
-def _qLD_acc(nv: int, deterministic: bool = False):
+def _qLD_acc(nv: int, enable_sleep: bool = False, deterministic: bool = False):
   module_options = {"enable_backward": False}
   if deterministic:
     module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
@@ -1261,8 +1337,11 @@ def _qLD_acc(nv: int, deterministic: bool = False):
   @wp.kernel(module="unique", module_options=module_options)
   def kernel(
     # Model:
+    dof_treeid: wp.array[int],
     M_rownnz: wp.array[int],
     M_rowadr: wp.array[int],
+    # Data in:
+    tree_awake_in: wp.array2d[int],
     # In:
     qLD_updates_: wp.array[wp.vec3i],
     L_in: wp.array2d[float],
@@ -1272,6 +1351,9 @@ def _qLD_acc(nv: int, deterministic: bool = False):
     worldid, nodeid = wp.tid()
     update = qLD_updates_[nodeid]
     i, k, Madr_ki = update[0], update[1], update[2]
+    if wp.static(enable_sleep):
+      if _tree_asleep(tree_awake_in, worldid, dof_treeid[i]):
+        return
     Madr_i = M_rowadr[i]  # Address of row being updated
     diag_k = M_rowadr[k] + M_rownnz[k] - 1  # Address of diagonal element of k
     # tmp = M(k,i) / M(k,k)
@@ -1286,42 +1368,66 @@ def _qLD_acc(nv: int, deterministic: bool = False):
   return kernel
 
 
-@wp.kernel
-def _qLD_scale(
-  # Model:
-  M_rownnz: wp.array[int],
-  M_rowadr: wp.array[int],
-  # In:
-  qLD_updates_: wp.array[wp.vec3i],
-  L_in: wp.array2d[float],
-  # Out:
-  L_out: wp.array2d[float],
-):
-  worldid, nodeid = wp.tid()
-  update = qLD_updates_[nodeid]
-  k, Madr_ki = update[1], update[2]
-  diag_k = M_rowadr[k] + M_rownnz[k] - 1
-  L_out[worldid, Madr_ki] = L_in[worldid, Madr_ki] / L_in[worldid, diag_k]
+@cache_kernel
+def _qLD_scale(enable_sleep: bool = False):
+  @wp.kernel(module="unique", enable_backward=False)
+  def kernel(
+    # Model:
+    dof_treeid: wp.array[int],
+    M_rownnz: wp.array[int],
+    M_rowadr: wp.array[int],
+    # Data in:
+    tree_awake_in: wp.array2d[int],
+    # In:
+    qLD_updates_: wp.array[wp.vec3i],
+    L_in: wp.array2d[float],
+    # Out:
+    L_out: wp.array2d[float],
+  ):
+    worldid, nodeid = wp.tid()
+    update = qLD_updates_[nodeid]
+    i, k, Madr_ki = update[0], update[1], update[2]
+    if wp.static(enable_sleep):
+      if _tree_asleep(tree_awake_in, worldid, dof_treeid[i]):
+        return
+    diag_k = M_rowadr[k] + M_rownnz[k] - 1
+    L_out[worldid, Madr_ki] = L_in[worldid, Madr_ki] / L_in[worldid, diag_k]
+
+  return kernel
 
 
-@wp.kernel
-def _qLDiag_div(
-  # Model:
-  M_rownnz: wp.array[int],
-  M_rowadr: wp.array[int],
-  # In:
-  L_in: wp.array2d[float],
-  # Out:
-  D_out: wp.array2d[float],
-):
-  worldid, dofid = wp.tid()
-  diag_i = M_rowadr[dofid] + M_rownnz[dofid] - 1  # Address of diagonal element of i
-  D_out[worldid, dofid] = 1.0 / L_in[worldid, diag_i]
+@cache_kernel
+def _qLDiag_div(enable_sleep: bool = False):
+  @wp.kernel(module="unique", enable_backward=False)
+  def kernel(
+    # Model:
+    dof_treeid: wp.array[int],
+    M_rownnz: wp.array[int],
+    M_rowadr: wp.array[int],
+    # Data in:
+    tree_awake_in: wp.array2d[int],
+    # In:
+    L_in: wp.array2d[float],
+    # Out:
+    D_out: wp.array2d[float],
+  ):
+    worldid, dofid = wp.tid()
+    if wp.static(enable_sleep):
+      if _tree_asleep(tree_awake_in, worldid, dof_treeid[dofid]):
+        return
+    diag_i = M_rowadr[dofid] + M_rownnz[dofid] - 1  # Address of diagonal element of i
+    D_out[worldid, dofid] = 1.0 / L_in[worldid, diag_i]
+
+  return kernel
 
 
 def _factor_i_sparse(m: Model, d: Data, M: wp.array2d[float], L: wp.array2d[float], D: wp.array2d[float]):
   """Sparse L'*D*L factorization of inertia-like matrix M, assumed spd."""
-  wp.copy(L, M)
+  enable_sleep = bool(m.opt.enableflags & EnableBit.SLEEP)
+  if enable_sleep:
+    copy_M_awake(m, d, L, M_in=M)
+  else:
+    wp.copy(L, M)
 
   det_atomics = bool(m.opt.deterministic & DeterminismType.ATOMICS)
   L_in = wp.empty_like(L) if det_atomics else L
@@ -1330,31 +1436,38 @@ def _factor_i_sparse(m: Model, d: Data, M: wp.array2d[float], L: wp.array2d[floa
     if det_atomics:
       wp.copy(L_in, L)
     wp.launch(
-      _qLD_acc(m.nv if det_atomics else 0, det_atomics),
+      _qLD_acc(m.nv if det_atomics else 0, enable_sleep, det_atomics),
       dim=(d.nworld, qLD_updates.size),
-      inputs=[m.M_rownnz, m.M_rowadr, qLD_updates, L_in],
+      inputs=[m.dof_treeid, m.M_rownnz, m.M_rowadr, d.tree_awake, qLD_updates, L_in],
       outputs=[L],
     )
     if det_atomics:
       wp.launch(
-        _qLD_scale,
+        _qLD_scale(enable_sleep),
         dim=(d.nworld, qLD_updates.size),
-        inputs=[m.M_rownnz, m.M_rowadr, qLD_updates, L_in],
+        inputs=[m.dof_treeid, m.M_rownnz, m.M_rowadr, d.tree_awake, qLD_updates, L_in],
         outputs=[L],
       )
 
-  wp.launch(_qLDiag_div, dim=(d.nworld, m.nv), inputs=[m.M_rownnz, m.M_rowadr, L], outputs=[D])
+  wp.launch(
+    _qLDiag_div(enable_sleep),
+    dim=(d.nworld, m.nv),
+    inputs=[m.dof_treeid, m.M_rownnz, m.M_rowadr, d.tree_awake, L],
+    outputs=[D],
+  )
 
 
 @cache_kernel
-def _small_cholesky_factorize_block(block_size: int):
+def _small_cholesky_factorize_block(block_size: int, enable_sleep: bool = False):
   @wp.kernel(module="unique", enable_backward=False)
   def kernel(
     # Model:
+    dof_treeid: wp.array[int],
     M_rowadr: wp.array[int],
     qLD_block_adr: wp.array[int],
     # Data in:
     M_in: wp.array2d[float],
+    tree_awake_in: wp.array2d[int],
     # In:
     block_dof: wp.array[int],
     # Out:
@@ -1363,6 +1476,9 @@ def _small_cholesky_factorize_block(block_size: int):
   ):
     worldid, blk = wp.tid()
     start = block_dof[blk]
+    if wp.static(enable_sleep):
+      if _tree_asleep(tree_awake_in, worldid, dof_treeid[start]):
+        return
     size = wp.static(block_size)
     matrix_adr = M_rowadr[start]
 
@@ -1391,7 +1507,7 @@ def _small_cholesky_factorize_block(block_size: int):
 
 
 @cache_kernel
-def _tile_cholesky_factorize_block(tile: TileSet):
+def _tile_cholesky_factorize_block(tile: TileSet, enable_sleep: bool = False):
   # One diagonal block of `block_size` dofs per (world, block) tile group. tile_load_indexed gathers
   # the block's dense slots from CSR via a precomputed per-slot index tile (block_elemid, laid out
   # [block, slot]); structurally absent pairs carry an out-of-bounds index that reads as 0.
@@ -1403,9 +1519,11 @@ def _tile_cholesky_factorize_block(tile: TileSet):
   @wp.kernel(module="unique", enable_backward=False)
   def kernel(
     # Model:
+    dof_treeid: wp.array[int],
     qLD_block_adr: wp.array[int],
     # Data in:
     M_in: wp.array2d[float],
+    tree_awake_in: wp.array2d[int],
     # In:
     block_elemid: wp.array[int],
     block_dof: wp.array[int],
@@ -1414,6 +1532,9 @@ def _tile_cholesky_factorize_block(tile: TileSet):
   ):
     worldid, blk = wp.tid()
     start = block_dof[blk]
+    if wp.static(enable_sleep):
+      if _tree_asleep(tree_awake_in, worldid, dof_treeid[start]):
+        return
 
     idx = wp.tile_load(block_elemid, shape=(block_area,), offset=(blk * block_area,), storage="shared")
     block = wp.tile_load_indexed(M_in[worldid], idx, shape=(block_area,), storage="shared")
@@ -1432,20 +1553,21 @@ def _factor_blocks(
   L: wp.array2d[float],
   D: wp.array2d[float],
 ):
+  enable_sleep = bool(m.opt.enableflags & EnableBit.SLEEP)
   for tile in m.M_tiles:
     if tile.elemid.size == 0:
       wp.launch(
-        _small_cholesky_factorize_block(tile.size),
+        _small_cholesky_factorize_block(tile.size, enable_sleep),
         dim=(d.nworld, tile.adr.size),
-        inputs=[m.M_rowadr, m.qLD_block_adr, M, tile.adr],
+        inputs=[m.dof_treeid, m.M_rowadr, m.qLD_block_adr, M, d.tree_awake, tile.adr],
         outputs=[D, L],
         block_dim=m.block_dim.small_cholesky,
       )
     else:
       wp.launch_tiled(
-        _tile_cholesky_factorize_block(tile),
+        _tile_cholesky_factorize_block(tile, enable_sleep),
         dim=(d.nworld, tile.adr.size),
-        inputs=[m.qLD_block_adr, M, tile.elemid, tile.adr],
+        inputs=[m.dof_treeid, m.qLD_block_adr, M, d.tree_awake, tile.elemid, tile.adr],
         outputs=[L],
         block_dim=m.block_dim.cholesky_factorize,
       )
@@ -1596,9 +1718,12 @@ def _cfrc_backward(deterministic: bool = False):
   return kernel
 
 
-def _rne_cfrc_backward(m: Model, d: Data):
+def _rne_cfrc_backward(m: Model, d: Data, cfrc_int_in: Optional[wp.array] = None):
   det_atomics = bool(m.opt.deterministic & DeterminismType.ATOMICS)
-  cfrc_int_in = wp.empty_like(d.cfrc_int) if det_atomics else d.cfrc_int
+  if det_atomics:
+    cfrc_int_in = cfrc_int_in if cfrc_int_in is not None else wp.empty_like(d.cfrc_int)
+  else:
+    cfrc_int_in = d.cfrc_int
   for body_tree in reversed(m.body_tree):
     if det_atomics:
       wp.copy(cfrc_int_in, d.cfrc_int)
@@ -1626,7 +1751,7 @@ def _qfrc_bias(
 
 
 @event_scope
-def rne(m: Model, d: Data, flg_acc: bool = False):
+def rne(m: Model, d: Data, flg_acc: bool = False, cfrc_int_in: Optional[wp.array] = None):
   """Computes inverse dynamics using the recursive Newton-Euler algorithm.
 
   Computes the bias forces (`qfrc_bias`) and internal forces (`cfrc_int`) for the current state,
@@ -1636,11 +1761,12 @@ def rne(m: Model, d: Data, flg_acc: bool = False):
     m: The model containing kinematic and dynamic information.
     d: The data object containing the current state and output arrays.
     flg_acc: If True, includes joint accelerations in the computation.
+    cfrc_int_in: Optional pre-allocated scratch buffer for deterministic backward pass.
   """
   _rne_cacc_world(m, d)
   _rne_cacc_forward(m, d, flg_acc=flg_acc)
   _rne_cfrc(m, d)
-  _rne_cfrc_backward(m, d)
+  _rne_cfrc_backward(m, d, cfrc_int_in=cfrc_int_in)
   wp.launch(_qfrc_bias, dim=[d.nworld, m.nv], inputs=[m.dof_bodyid, d.cdof, d.cfrc_int], outputs=[d.qfrc_bias])
 
 
@@ -2729,16 +2855,30 @@ def _tendon_bias_qfrc(deterministic: bool = False):
 
 
 @event_scope
-def tendon_bias(m: Model, d: Data, qfrc: wp.array2d[float]):
+def tendon_bias(
+  m: Model,
+  d: Data,
+  qfrc: wp.array2d[float],
+  ten_Jdot: Optional[wp.array] = None,
+  ten_bias_coef: Optional[wp.array] = None,
+):
   """Add bias force due to tendon armature.
 
   Args:
     m: The model containing kinematic and dynamic information.
     d: The data object containing the current state and output arrays.
     qfrc: Force.
+    ten_Jdot: Optional scratch array of shape (nworld, nJten) for tendon Jacobian time derivative.
+    ten_bias_coef: Optional scratch array of shape (nworld, ntendon) for tendon bias coefficients.
   """
+  if m.ntendon == 0 or m.nJten == 0:
+    return
+
   # time derivative of tendon Jacobian
-  ten_Jdot = wp.zeros((d.nworld, m.nJten), dtype=float)
+  if ten_Jdot is None:
+    ten_Jdot = wp.zeros((d.nworld, m.nJten), dtype=float)
+  else:
+    ten_Jdot.zero_()
   wp.launch(
     _tendon_dot,
     dim=(d.nworld, m.ntendon),
@@ -2775,7 +2915,10 @@ def tendon_bias(m: Model, d: Data, qfrc: wp.array2d[float]):
   )
 
   # tendon bias force coefficients
-  ten_bias_coef = wp.zeros((d.nworld, m.ntendon), dtype=float)
+  if ten_bias_coef is None:
+    ten_bias_coef = wp.zeros((d.nworld, m.ntendon), dtype=float)
+  else:
+    ten_bias_coef.zero_()
   wp.launch(
     _tendon_bias_coef(bool(m.opt.deterministic & DeterminismType.ATOMICS)),
     dim=(d.nworld, m.ntendon, m.max_ten_J_rownnz),
@@ -2821,80 +2964,90 @@ def _comvel_root(cvel_out: wp.array2d[wp.spatial_vector]):
   cvel_out[worldid, 0][elementid] = 0.0
 
 
-@wp.kernel
-def _comvel_branch(
-  # Model:
-  body_parentid: wp.array[int],
-  body_jntnum: wp.array[int],
-  body_jntadr: wp.array[int],
-  body_dofadr: wp.array[int],
-  jnt_type: wp.array[int],
-  body_branches: wp.array[int],
-  body_branch_start: wp.array[int],
-  # Data in:
-  qvel_in: wp.array2d[float],
-  cdof_in: wp.array2d[wp.spatial_vector],
-  # Data out:
-  cvel_out: wp.array2d[wp.spatial_vector],
-  cdof_dot_out: wp.array2d[wp.spatial_vector],
-):
-  worldid, branchid = wp.tid()
+@cache_kernel
+def _comvel_branch(enable_sleep: bool = False):
+  @wp.kernel(module="unique", enable_backward=False)
+  def kernel(
+    # Model:
+    body_parentid: wp.array[int],
+    body_jntnum: wp.array[int],
+    body_jntadr: wp.array[int],
+    body_dofadr: wp.array[int],
+    body_treeid: wp.array[int],
+    jnt_type: wp.array[int],
+    body_branches: wp.array[int],
+    body_branch_start: wp.array[int],
+    # Data in:
+    qvel_in: wp.array2d[float],
+    cdof_in: wp.array2d[wp.spatial_vector],
+    tree_awake_in: wp.array2d[int],
+    # Data out:
+    cvel_out: wp.array2d[wp.spatial_vector],
+    cdof_dot_out: wp.array2d[wp.spatial_vector],
+  ):
+    worldid, branchid = wp.tid()
 
-  start = body_branch_start[branchid]
-  end = body_branch_start[branchid + 1]
+    start = body_branch_start[branchid]
+    end = body_branch_start[branchid + 1]
 
-  qvel = qvel_in[worldid]
-  cdof = cdof_in[worldid]
+    if wp.static(enable_sleep):
+      if _tree_asleep(tree_awake_in, worldid, body_treeid[body_branches[start]]):
+        return
 
-  for i in range(start, end):
-    bodyid = body_branches[i]
-    pid = body_parentid[bodyid]
-    cvel = cvel_out[worldid, pid]
-    dofid = body_dofadr[bodyid]
-    jntid = body_jntadr[bodyid]
-    jntnum = body_jntnum[bodyid]
+    qvel = qvel_in[worldid]
+    cdof = cdof_in[worldid]
 
-    if jntnum == 0:
+    for i in range(start, end):
+      bodyid = body_branches[i]
+      pid = body_parentid[bodyid]
+      cvel = cvel_out[worldid, pid]
+      dofid = body_dofadr[bodyid]
+      jntid = body_jntadr[bodyid]
+      jntnum = body_jntnum[bodyid]
+
+      if jntnum == 0:
+        cvel_out[worldid, bodyid] = cvel
+        continue
+
+      for j in range(jntid, jntid + jntnum):
+        jnttype = jnt_type[j]
+
+        if jnttype == JointType.FREE:
+          cvel += cdof[dofid + 0] * qvel[dofid + 0]
+          cvel += cdof[dofid + 1] * qvel[dofid + 1]
+          cvel += cdof[dofid + 2] * qvel[dofid + 2]
+
+          cdof_dot_out[worldid, dofid + 0] = wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+          cdof_dot_out[worldid, dofid + 1] = wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+          cdof_dot_out[worldid, dofid + 2] = wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+          cdof_dot_out[worldid, dofid + 3] = math.motion_cross(cvel, cdof[dofid + 3])
+          cdof_dot_out[worldid, dofid + 4] = math.motion_cross(cvel, cdof[dofid + 4])
+          cdof_dot_out[worldid, dofid + 5] = math.motion_cross(cvel, cdof[dofid + 5])
+
+          cvel += cdof[dofid + 3] * qvel[dofid + 3]
+          cvel += cdof[dofid + 4] * qvel[dofid + 4]
+          cvel += cdof[dofid + 5] * qvel[dofid + 5]
+
+          dofid += 6
+        elif jnttype == JointType.BALL:
+          cdof_dot_out[worldid, dofid + 0] = math.motion_cross(cvel, cdof[dofid + 0])
+          cdof_dot_out[worldid, dofid + 1] = math.motion_cross(cvel, cdof[dofid + 1])
+          cdof_dot_out[worldid, dofid + 2] = math.motion_cross(cvel, cdof[dofid + 2])
+
+          cvel += cdof[dofid + 0] * qvel[dofid + 0]
+          cvel += cdof[dofid + 1] * qvel[dofid + 1]
+          cvel += cdof[dofid + 2] * qvel[dofid + 2]
+
+          dofid += 3
+        else:
+          cdof_dot_out[worldid, dofid] = math.motion_cross(cvel, cdof[dofid])
+          cvel += cdof[dofid] * qvel[dofid]
+
+          dofid += 1
+
       cvel_out[worldid, bodyid] = cvel
-      continue
 
-    for j in range(jntid, jntid + jntnum):
-      jnttype = jnt_type[j]
-
-      if jnttype == JointType.FREE:
-        cvel += cdof[dofid + 0] * qvel[dofid + 0]
-        cvel += cdof[dofid + 1] * qvel[dofid + 1]
-        cvel += cdof[dofid + 2] * qvel[dofid + 2]
-
-        cdof_dot_out[worldid, dofid + 0] = wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
-        cdof_dot_out[worldid, dofid + 1] = wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
-        cdof_dot_out[worldid, dofid + 2] = wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
-        cdof_dot_out[worldid, dofid + 3] = math.motion_cross(cvel, cdof[dofid + 3])
-        cdof_dot_out[worldid, dofid + 4] = math.motion_cross(cvel, cdof[dofid + 4])
-        cdof_dot_out[worldid, dofid + 5] = math.motion_cross(cvel, cdof[dofid + 5])
-
-        cvel += cdof[dofid + 3] * qvel[dofid + 3]
-        cvel += cdof[dofid + 4] * qvel[dofid + 4]
-        cvel += cdof[dofid + 5] * qvel[dofid + 5]
-
-        dofid += 6
-      elif jnttype == JointType.BALL:
-        cdof_dot_out[worldid, dofid + 0] = math.motion_cross(cvel, cdof[dofid + 0])
-        cdof_dot_out[worldid, dofid + 1] = math.motion_cross(cvel, cdof[dofid + 1])
-        cdof_dot_out[worldid, dofid + 2] = math.motion_cross(cvel, cdof[dofid + 2])
-
-        cvel += cdof[dofid + 0] * qvel[dofid + 0]
-        cvel += cdof[dofid + 1] * qvel[dofid + 1]
-        cvel += cdof[dofid + 2] * qvel[dofid + 2]
-
-        dofid += 3
-      else:
-        cdof_dot_out[worldid, dofid] = math.motion_cross(cvel, cdof[dofid])
-        cvel += cdof[dofid] * qvel[dofid]
-
-        dofid += 1
-
-    cvel_out[worldid, bodyid] = cvel
+  return kernel
 
 
 @event_scope
@@ -2904,21 +3057,24 @@ def com_vel(m: Model, d: Data):
   Propagates velocities down the kinematic tree, updating the spatial velocity and
   derivative for each body.
   """
+  enable_sleep = bool(m.opt.enableflags & EnableBit.SLEEP)
   wp.launch(_comvel_root, dim=(d.nworld, 6), inputs=[], outputs=[d.cvel])
 
   wp.launch(
-    _comvel_branch,
+    _comvel_branch(enable_sleep),
     dim=(d.nworld, m.nbranch),
     inputs=[
       m.body_parentid,
       m.body_jntnum,
       m.body_jntadr,
       m.body_dofadr,
+      m.body_treeid,
       m.jnt_type,
       m.body_branches,
       m.body_branch_start,
       d.qvel,
       d.cdof,
+      d.tree_awake,
     ],
     outputs=[d.cvel, d.cdof_dot],
   )
@@ -3687,41 +3843,66 @@ def _solve_LD_sparse_update_fn(
     wp.atomic_sub(x_out[worldid], k, L_in[worldid, Madr_ki] * x_in[worldid, i])
 
 
-@wp.kernel
-def _solve_LD_sparse_copy(
-  # Model:
-  qLD_block_adr: wp.array[int],
-  # In:
-  y_in: wp.array2d[float],
-  # Out:
-  x_out: wp.array2d[float],
-):
-  worldid, dofid = wp.tid()
-  _solve_LD_sparse_copy_fn(qLD_block_adr, y_in, worldid, dofid, x_out)
+@cache_kernel
+def _solve_LD_sparse_copy(enable_sleep: bool = False):
+  @wp.kernel(module="unique", enable_backward=False)
+  def kernel(
+    # Model:
+    dof_treeid: wp.array[int],
+    qLD_block_adr: wp.array[int],
+    # Data in:
+    tree_awake_in: wp.array2d[int],
+    # In:
+    y_in: wp.array2d[float],
+    # Out:
+    x_out: wp.array2d[float],
+  ):
+    worldid, dofid = wp.tid()
+    if wp.static(enable_sleep):
+      if qLD_block_adr[dofid] == Q_LD_BLOCK_SPARSE and _tree_asleep(tree_awake_in, worldid, dof_treeid[dofid]):
+        x_out[worldid, dofid] = 0.0
+        return
+    _solve_LD_sparse_copy_fn(qLD_block_adr, y_in, worldid, dofid, x_out)
 
-
-@wp.kernel
-def _solve_LD_sparse_diag(
-  # Model:
-  qLD_block_adr: wp.array[int],
-  # In:
-  D_in: wp.array2d[float],
-  x_in: wp.array2d[float],
-  # Out:
-  x_out: wp.array2d[float],
-):
-  worldid, dofid = wp.tid()
-  _solve_LD_sparse_diag_fn(qLD_block_adr, D_in, x_in, worldid, dofid, x_out)
+  return kernel
 
 
 @cache_kernel
-def _solve_LD_sparse_level(up: bool, deterministic: bool = False):
+def _solve_LD_sparse_diag(enable_sleep: bool = False):
+  @wp.kernel(module="unique", enable_backward=False)
+  def kernel(
+    # Model:
+    dof_treeid: wp.array[int],
+    qLD_block_adr: wp.array[int],
+    # Data in:
+    tree_awake_in: wp.array2d[int],
+    # In:
+    D_in: wp.array2d[float],
+    x_in: wp.array2d[float],
+    # Out:
+    x_out: wp.array2d[float],
+  ):
+    worldid, dofid = wp.tid()
+    if wp.static(enable_sleep):
+      if _tree_asleep(tree_awake_in, worldid, dof_treeid[dofid]):
+        return
+    _solve_LD_sparse_diag_fn(qLD_block_adr, D_in, x_in, worldid, dofid, x_out)
+
+  return kernel
+
+
+@cache_kernel
+def _solve_LD_sparse_level(up: bool, enable_sleep: bool = False, deterministic: bool = False):
   module_options = {"enable_backward": False}
   if deterministic:
     module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
 
   @wp.kernel(module="unique", module_options=module_options)
   def kernel(
+    # Model:
+    dof_treeid: wp.array[int],
+    # Data in:
+    tree_awake_in: wp.array2d[int],
     # In:
     L_in: wp.array2d[float],
     qLD_updates_: wp.array[wp.vec3i],
@@ -3730,13 +3911,17 @@ def _solve_LD_sparse_level(up: bool, deterministic: bool = False):
     x_out: wp.array2d[float],
   ):
     worldid, nodeid = wp.tid()
-    _solve_LD_sparse_update_fn(L_in, x_in, qLD_updates_[nodeid], worldid, wp.static(up), x_out)
+    update = qLD_updates_[nodeid]
+    if wp.static(enable_sleep):
+      if _tree_asleep(tree_awake_in, worldid, dof_treeid[update[0]]):
+        return
+    _solve_LD_sparse_update_fn(L_in, x_in, update, worldid, wp.static(up), x_out)
 
   return kernel
 
 
 @cache_kernel
-def _solve_LD_sparse_fused(nv: int, nlevels: int):
+def _solve_LD_sparse_fused(nv: int, nlevels: int, enable_sleep: bool = False):
   """Fused sparse backsubstitution: UP + diag + DOWN in one kernel."""
 
   @wp.func_native(snippet="WP_TILE_SYNC();")
@@ -3746,7 +3931,10 @@ def _solve_LD_sparse_fused(nv: int, nlevels: int):
   @wp.kernel(module="unique", enable_backward=False)
   def kernel(
     # Model:
+    dof_treeid: wp.array[int],
     qLD_block_adr: wp.array[int],
+    # Data in:
+    tree_awake_in: wp.array2d[int],
     # In:
     L: wp.array2d[float],
     D: wp.array2d[float],
@@ -3763,7 +3951,14 @@ def _solve_LD_sparse_fused(nv: int, nlevels: int):
 
     # Copy y to x_out for sparse-block dofs only.
     for dofid in range(tid, NV, BLOCK_DIM):
-      _solve_LD_sparse_copy_fn(qLD_block_adr, y, worldid, dofid, x_out)
+      if qLD_block_adr[dofid] == Q_LD_BLOCK_SPARSE:
+        if wp.static(enable_sleep):
+          if _tree_asleep(tree_awake_in, worldid, dof_treeid[dofid]):
+            x_out[worldid, dofid] = 0.0
+          else:
+            x_out[worldid, dofid] = y[worldid, dofid]
+        else:
+          x_out[worldid, dofid] = y[worldid, dofid]
     _syncthreads()
 
     # Forward substitution (all_updates only references sparse-block dofs)
@@ -3773,14 +3968,21 @@ def _solve_LD_sparse_fused(nv: int, nlevels: int):
       level_size = level_offsets[level_idx + 1] - level_offset
 
       for u in range(tid, level_size, BLOCK_DIM):
-        _solve_LD_sparse_update_fn(
-          L, x_out, all_updates[level_offset + u], worldid, True, x_out
-        )  # kernel_analyzer: ignore[atomic]
+        update = all_updates[level_offset + u]
+        i, k, Madr_ki = update[0], update[1], update[2]
+        if wp.static(enable_sleep):
+          if _tree_asleep(tree_awake_in, worldid, dof_treeid[i]):
+            continue
+        wp.atomic_sub(x_out[worldid], i, L[worldid, Madr_ki] * x_out[worldid, k])  # kernel_analyzer: ignore[atomic]
       _syncthreads()
 
     # Diagonal multiply (sparse-block dofs only)
     for dofid in range(tid, NV, BLOCK_DIM):
-      _solve_LD_sparse_diag_fn(qLD_block_adr, D, x_out, worldid, dofid, x_out)
+      if qLD_block_adr[dofid] == Q_LD_BLOCK_SPARSE:
+        if wp.static(enable_sleep):
+          if _tree_asleep(tree_awake_in, worldid, dof_treeid[dofid]):
+            continue
+        x_out[worldid, dofid] *= D[worldid, dofid]
     _syncthreads()
 
     # Backward substitution
@@ -3790,9 +3992,12 @@ def _solve_LD_sparse_fused(nv: int, nlevels: int):
       level_size = level_offsets[level_idx + 1] - level_offset
 
       for u in range(tid, level_size, BLOCK_DIM):
-        _solve_LD_sparse_update_fn(
-          L, x_out, all_updates[level_offset + u], worldid, False, x_out
-        )  # kernel_analyzer: ignore[atomic]
+        update = all_updates[level_offset + u]
+        i, k, Madr_ki = update[0], update[1], update[2]
+        if wp.static(enable_sleep):
+          if _tree_asleep(tree_awake_in, worldid, dof_treeid[i]):
+            continue
+        wp.atomic_sub(x_out[worldid], k, L[worldid, Madr_ki] * x_out[worldid, i])  # kernel_analyzer: ignore[atomic]
       _syncthreads()
 
   return kernel
@@ -3808,24 +4013,35 @@ def _solve_LD_sparse(
   x_scratch: Optional[wp.array] = None,
 ):
   """Computes sparse backsubstitution: x = inv(L'*D*L)*y."""
+  enable_sleep = bool(m.opt.enableflags & EnableBit.SLEEP)
   if m.opt.deterministic & DeterminismType.ATOMICS:
     x_in = x_scratch if x_scratch is not None else wp.empty_like(x)
-    wp.launch(_solve_LD_sparse_copy, dim=(d.nworld, m.nv), inputs=[m.qLD_block_adr, y], outputs=[x])
+    wp.launch(
+      _solve_LD_sparse_copy(enable_sleep),
+      dim=(d.nworld, m.nv),
+      inputs=[m.dof_treeid, m.qLD_block_adr, d.tree_awake, y],
+      outputs=[x],
+    )
     for qLD_updates in reversed(m.qLD_updates):
       wp.copy(x_in, x)
       wp.launch(
-        _solve_LD_sparse_level(True, True),
+        _solve_LD_sparse_level(True, enable_sleep, True),
         dim=(d.nworld, qLD_updates.size),
-        inputs=[L, qLD_updates, x_in],
+        inputs=[m.dof_treeid, d.tree_awake, L, qLD_updates, x_in],
         outputs=[x],
       )
-    wp.launch(_solve_LD_sparse_diag, dim=(d.nworld, m.nv), inputs=[m.qLD_block_adr, D, x], outputs=[x])
+    wp.launch(
+      _solve_LD_sparse_diag(enable_sleep),
+      dim=(d.nworld, m.nv),
+      inputs=[m.dof_treeid, m.qLD_block_adr, d.tree_awake, D, x],
+      outputs=[x],
+    )
     for qLD_updates in m.qLD_updates:
       wp.copy(x_in, x)
       wp.launch(
-        _solve_LD_sparse_level(False, True),
+        _solve_LD_sparse_level(False, enable_sleep, True),
         dim=(d.nworld, qLD_updates.size),
-        inputs=[L, qLD_updates, x_in],
+        inputs=[m.dof_treeid, d.tree_awake, L, qLD_updates, x_in],
         outputs=[x],
       )
     return
@@ -3838,9 +4054,9 @@ def _solve_LD_sparse(
     dim_block = 1
 
   wp.launch(
-    _solve_LD_sparse_fused(m.nv, nlevels),
+    _solve_LD_sparse_fused(m.nv, nlevels, enable_sleep),
     dim=(d.nworld, dim_block),
-    inputs=[m.qLD_block_adr, L, D, m.qLD_all_updates, m.qLD_level_offsets, y],
+    inputs=[m.dof_treeid, m.qLD_block_adr, d.tree_awake, L, D, m.qLD_all_updates, m.qLD_level_offsets, y],
     outputs=[x],
     block_dim=dim_block,
   )
@@ -3873,11 +4089,14 @@ def _small_cholesky_solve(
 
 
 @cache_kernel
-def _small_cholesky_solve_block(block_size: int):
+def _small_cholesky_solve_block(block_size: int, enable_sleep: bool = False):
   @wp.kernel(module="unique", enable_backward=False)
   def kernel(
     # Model:
+    dof_treeid: wp.array[int],
     qLD_block_adr: wp.array[int],
+    # Data in:
+    tree_awake_in: wp.array2d[int],
     # In:
     block_dof: wp.array[int],
     D_in: wp.array2d[float],
@@ -3889,6 +4108,11 @@ def _small_cholesky_solve_block(block_size: int):
     worldid, blk = wp.tid()
     start = block_dof[blk]
     size = wp.static(block_size)
+    if wp.static(enable_sleep):
+      if _tree_asleep(tree_awake_in, worldid, dof_treeid[start]):
+        for i in range(wp.static(block_size)):
+          x_out[worldid, start + i] = 0.0
+        return
     factor_adr = qLD_block_adr[start]
     if factor_adr == Q_LD_BLOCK_COMPACT:
       for i in range(wp.static(block_size)):
@@ -3900,7 +4124,7 @@ def _small_cholesky_solve_block(block_size: int):
 
 
 @cache_kernel
-def _tile_cholesky_solve_block(tile: TileSet):
+def _tile_cholesky_solve_block(tile: TileSet, enable_sleep: bool = False):
   # One diagonal block per (world, block) thread group; no densify, so a 2D grid suffices.
   block_size = tile.size
   block_area = block_size * block_size
@@ -3908,7 +4132,10 @@ def _tile_cholesky_solve_block(tile: TileSet):
   @wp.kernel(module="unique", enable_backward=False)
   def kernel(
     # Model:
+    dof_treeid: wp.array[int],
     qLD_block_adr: wp.array[int],
+    # Data in:
+    tree_awake_in: wp.array2d[int],
     # In:
     block_dof: wp.array[int],
     L_in: wp.array2d[float],
@@ -3918,6 +4145,10 @@ def _tile_cholesky_solve_block(tile: TileSet):
   ):
     worldid, blk = wp.tid()
     start = block_dof[blk]
+    if wp.static(enable_sleep):
+      if _tree_asleep(tree_awake_in, worldid, dof_treeid[start]):
+        wp.tile_store(x[worldid], wp.tile_zeros(shape=(block_size,), dtype=float), offset=(start,))
+        return
 
     L = wp.tile_reshape(
       wp.tile_load(L_in[worldid], shape=(block_area,), offset=(qLD_block_adr[start],)), (block_size, block_size)
@@ -3937,12 +4168,13 @@ def _solve_blocks(
   x: wp.array2d[float],
   y: wp.array2d[float],
 ):
+  enable_sleep = bool(m.opt.enableflags & EnableBit.SLEEP)
   for tile in m.M_tiles:
     if tile.elemid.size == 0:
       wp.launch(
-        _small_cholesky_solve_block(tile.size),
+        _small_cholesky_solve_block(tile.size, enable_sleep),
         dim=(d.nworld, tile.adr.size),
-        inputs=[m.qLD_block_adr, tile.adr, D, L, y],
+        inputs=[m.dof_treeid, m.qLD_block_adr, d.tree_awake, tile.adr, D, L, y],
         outputs=[x],
         block_dim=m.block_dim.small_cholesky,
       )
@@ -3951,9 +4183,9 @@ def _solve_blocks(
       # for better occupancy while moderate blocks still want a couple warps (16/27->64, 60->32).
       block_dim = m.block_dim.cholesky_solve if tile.size <= 40 else 32
       wp.launch_tiled(
-        _tile_cholesky_solve_block(tile),
+        _tile_cholesky_solve_block(tile, enable_sleep),
         dim=(d.nworld, tile.adr.size),
-        inputs=[m.qLD_block_adr, tile.adr, L, y],
+        inputs=[m.dof_treeid, m.qLD_block_adr, d.tree_awake, tile.adr, L, y],
         outputs=[x],
         block_dim=block_dim,
       )
@@ -4015,7 +4247,7 @@ def solve_m(m: Model, d: Data, x: wp.array2d[float], y: wp.array2d[float], x_scr
 
 
 @cache_kernel
-def _tile_cholesky_factorize_solve_block(tile: TileSet):
+def _tile_cholesky_factorize_solve_block(tile: TileSet, enable_sleep: bool = False):
   # Fused factor+solve: densify the block, factor it, and back-substitute in one launch (avoids
   # re-loading the factor). Grid/densify structure matches _tile_cholesky_factorize_block.
   block_size = tile.size
@@ -4024,9 +4256,11 @@ def _tile_cholesky_factorize_solve_block(tile: TileSet):
   @wp.kernel(module="unique", enable_backward=False)
   def kernel(
     # Model:
+    dof_treeid: wp.array[int],
     qLD_block_adr: wp.array[int],
     # Data in:
     M_in: wp.array2d[float],
+    tree_awake_in: wp.array2d[int],
     # In:
     block_elemid: wp.array[int],
     block_dof: wp.array[int],
@@ -4037,6 +4271,10 @@ def _tile_cholesky_factorize_solve_block(tile: TileSet):
   ):
     worldid, blk = wp.tid()
     start = block_dof[blk]
+    if wp.static(enable_sleep):
+      if _tree_asleep(tree_awake_in, worldid, dof_treeid[start]):
+        wp.tile_store(x[worldid], wp.tile_zeros(shape=(block_size,), dtype=float), offset=(start,))
+        return
 
     # Densify the block (see _tile_cholesky_factorize_block for the gather rationale).
     idx = wp.tile_load(block_elemid, shape=(block_area,), offset=(blk * block_area,), storage="shared")
@@ -4054,14 +4292,16 @@ def _tile_cholesky_factorize_solve_block(tile: TileSet):
 
 
 @cache_kernel
-def _small_cholesky_factorize_solve_block(block_size: int):
+def _small_cholesky_factorize_solve_block(block_size: int, enable_sleep: bool = False):
   @wp.kernel(module="unique", enable_backward=False)
   def kernel(
     # Model:
+    dof_treeid: wp.array[int],
     M_rowadr: wp.array[int],
     qLD_block_adr: wp.array[int],
     # Data in:
     M_in: wp.array2d[float],
+    tree_awake_in: wp.array2d[int],
     # In:
     block_dof: wp.array[int],
     y: wp.array2d[float],
@@ -4073,6 +4313,11 @@ def _small_cholesky_factorize_solve_block(block_size: int):
     worldid, blk = wp.tid()
     start = block_dof[blk]
     size = wp.static(block_size)
+    if wp.static(enable_sleep):
+      if _tree_asleep(tree_awake_in, worldid, dof_treeid[start]):
+        for i in range(wp.static(block_size)):
+          x_out[worldid, start + i] = 0.0
+        return
     matrix_adr = M_rowadr[start]
 
     factor_adr = qLD_block_adr[start]
@@ -4120,20 +4365,21 @@ def _factor_solve_blocks(
   x: wp.array2d[float],
   y: wp.array2d[float],
 ):
+  enable_sleep = bool(m.opt.enableflags & EnableBit.SLEEP)
   for tile in m.M_tiles:
     if tile.elemid.size == 0:
       wp.launch(
-        _small_cholesky_factorize_solve_block(tile.size),
+        _small_cholesky_factorize_solve_block(tile.size, enable_sleep),
         dim=(d.nworld, tile.adr.size),
-        inputs=[m.M_rowadr, m.qLD_block_adr, M, tile.adr, y],
+        inputs=[m.dof_treeid, m.M_rowadr, m.qLD_block_adr, M, d.tree_awake, tile.adr, y],
         outputs=[D, x, L],
         block_dim=m.block_dim.small_cholesky,
       )
     else:
       wp.launch_tiled(
-        _tile_cholesky_factorize_solve_block(tile),
+        _tile_cholesky_factorize_solve_block(tile, enable_sleep),
         dim=(d.nworld, tile.adr.size),
-        inputs=[m.qLD_block_adr, M, tile.elemid, tile.adr, y],
+        inputs=[m.dof_treeid, m.qLD_block_adr, M, d.tree_awake, tile.elemid, tile.adr, y],
         outputs=[x, L],
         block_dim=m.block_dim.cholesky_factorize_solve,
       )
@@ -4163,16 +4409,19 @@ def factor_solve_i(m, d, M, L, D, x, y):
 
 
 @cache_kernel
-def _factor_solve_lu_sparse_fused(nv: int):
+def _factor_solve_lu_sparse_fused(nv: int, enable_sleep: bool = False):
   """Fused sparse LU factorization and solve in a single kernel."""
 
   @wp.kernel(module="unique", enable_backward=False)
   def kernel(
     # Model:
+    dof_treeid: wp.array[int],
     D_rownnz: wp.array[int],
     D_rowadr: wp.array[int],
     D_diag: wp.array[int],
     D_colind: wp.array[int],
+    # Data in:
+    tree_awake_in: wp.array2d[int],
     # In:
     qfrc: wp.array2d[float],
     # Data out:
@@ -4189,6 +4438,9 @@ def _factor_solve_lu_sparse_fused(nv: int):
     # process diagonal elements from n-1 down to 0
     for r_rev in range(NV):
       i = NV - 1 - r_rev
+      if wp.static(enable_sleep):
+        if _tree_asleep(tree_awake_in, worldid, dof_treeid[i]):
+          continue
 
       rem_i = int(qacc_out[worldid, i])
       rowadr_i = D_rowadr[i]
@@ -4201,6 +4453,9 @@ def _factor_solve_lu_sparse_fused(nv: int):
       # rows j above i (j < i), processed from i-1 down to 0
       for c in range(i):
         j = i - 1 - c
+        if wp.static(enable_sleep):
+          if _tree_asleep(tree_awake_in, worldid, dof_treeid[j]):
+            continue
 
         # get address of last remaining element of row j
         rem_j = int(qacc_out[worldid, j])
@@ -4238,6 +4493,10 @@ def _factor_solve_lu_sparse_fused(nv: int):
     # Backward substitution: solve (U+I)*qacc = qfrc
     for k_rev in range(NV):
       i = NV - 1 - k_rev
+      if wp.static(enable_sleep):
+        if _tree_asleep(tree_awake_in, worldid, dof_treeid[i]):
+          qacc_out[worldid, i] = 0.0
+          continue
 
       diag_i = D_diag[i]
       rowadr_i = D_rowadr[i]
@@ -4253,6 +4512,10 @@ def _factor_solve_lu_sparse_fused(nv: int):
 
     # Forward substitution: solve L*qacc = qacc
     for i in range(NV):
+      if wp.static(enable_sleep):
+        if _tree_asleep(tree_awake_in, worldid, dof_treeid[i]):
+          continue
+
       diag_i = D_diag[i]
       rowadr_i = D_rowadr[i]
 
@@ -4280,10 +4543,11 @@ def factor_solve_lu(m: Model, d: Data, qLU: wp.array2d[float], qacc: wp.array2d[
     qacc: output array for the solution.
     qfrc: input right-hand side.
   """
+  enable_sleep = bool(m.opt.enableflags & EnableBit.SLEEP)
   wp.launch(
-    _factor_solve_lu_sparse_fused(m.nv),
+    _factor_solve_lu_sparse_fused(m.nv, enable_sleep),
     dim=(d.nworld,),
-    inputs=[m.D_rownnz, m.D_rowadr, m.D_diag, m.D_colind, qfrc],
+    inputs=[m.dof_treeid, m.D_rownnz, m.D_rowadr, m.D_diag, m.D_colind, d.tree_awake, qfrc],
     outputs=[qacc, qLU],
   )
 

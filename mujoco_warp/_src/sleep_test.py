@@ -15,6 +15,8 @@
 
 """Tests for sleep and wake features."""
 
+import copy
+
 import mujoco
 import numpy as np
 import warp as wp
@@ -26,6 +28,7 @@ from mujoco_warp import test_data
 from mujoco_warp._src import forward
 from mujoco_warp._src import island
 from mujoco_warp._src import sleep
+from mujoco_warp._src import smooth
 from mujoco_warp._src import types
 from mujoco_warp._src.types import SleepState
 
@@ -151,11 +154,12 @@ class SleepTest(parameterized.TestCase):
           <flag sleep="enable" island="enable"/>
         </option>
         <worldbody>
+          <geom name="floor" type="plane" size="5 5 .1"/>
           <body name="b1" pos="0 0 0.5">
             <joint name="j1" type="slide" axis="0 0 1"/>
             <geom type="sphere" size=".1"/>
           </body>
-          <body name="b2" pos="1 0 0.5">
+          <body name="b2" pos="1 0 0.08">
             <joint name="j2" type="slide" axis="0 0 1"/>
             <geom type="sphere" size=".1"/>
           </body>
@@ -175,22 +179,30 @@ class SleepTest(parameterized.TestCase):
     tree_asleep = d.tree_asleep.numpy()
     for w in range(nworld):
       tree_asleep[w, 1] = 1  # self-cycle for b2
-    d.tree_asleep = wp.array(tree_asleep, dtype=int)
+    d.tree_asleep.assign(tree_asleep)
     sleep.update_sleep(m, d)
 
     # Force b1 (tree 0) to move down, which will pull on b2 via tendon limit
     qvel = d.qvel.numpy()
     for w in range(nworld):
       qvel[w, 0] = -5.0  # b1 moving down
-    d.qvel = wp.array(qvel, dtype=float)
+    d.qvel.assign(qvel)
 
-    # Run steps to trigger waking
-    mjwarp.step(m, d)
-    mjwarp.step(m, d)
+    # Capture and launch steps so graph-conditional tendon waking is exercised
+    with wp.ScopedCapture() as capture:
+      mjwarp.step(m, d)
 
-    # b2 (tree 1) should be woken up by tendon pull!
+    wp.capture_launch(capture.graph)
+    wp.capture_launch(capture.graph)
+
+    # b2 (tree 1, body 2) should be woken up by tendon pull, refreshing body state,
+    # awake counts, and collision participation with the floor on the waking step
     for w in range(nworld):
       self.assertEqual(d.tree_awake.numpy()[w, 1], 1, f"b2 in world {w} should have woken up due to tendon constraint")
+      self.assertEqual(d.body_awake.numpy()[w, 2], SleepState.AWAKE, f"b2 body_awake in world {w} should be AWAKE")
+      self.assertEqual(d.nbody_awake.numpy()[w], 3, f"nbody_awake in world {w} should include world, b1, and b2")
+      self.assertEqual(d.nv_awake.numpy()[w], 2, f"nv_awake in world {w} should include both DOFs")
+    self.assertEqual(d.nacon.numpy()[0], nworld, "Tendon-woken b2 should participate in floor collision")
 
   @parameterized.parameters(1, 2)
   def test_equality_waking(self, nworld):
@@ -357,7 +369,7 @@ class SleepTest(parameterized.TestCase):
 
   @parameterized.parameters(1, 2)
   def test_slack_tendon_sleeping(self, nworld):
-    """Verify that a slack tendon does not wake connected sleeping bodies."""
+    """Verify slack tendon with armature preserves sleeping M and wakes cleanly."""
     mjm, mjd, m, d = test_data.fixture(
       xml="""
       <mujoco>
@@ -367,15 +379,15 @@ class SleepTest(parameterized.TestCase):
         <worldbody>
           <body name="b1" pos="0 0 0.5">
             <joint name="j1" type="slide" axis="0 0 1"/>
-            <geom type="sphere" size=".1"/>
+            <geom type="sphere" size=".1" mass="1"/>
           </body>
           <body name="b2" pos="1 0 0.5">
             <joint name="j2" type="slide" axis="0 0 1"/>
-            <geom type="sphere" size=".1"/>
+            <geom type="sphere" size=".1" mass="1"/>
           </body>
         </worldbody>
         <tendon>
-          <fixed name="ten" limited="true" range="0 1.5">
+          <fixed name="ten" limited="true" range="0 1.5" armature="2.0">
             <joint joint="j1" coef="1.0"/>
             <joint joint="j2" coef="-1.0"/>
           </fixed>
@@ -385,6 +397,8 @@ class SleepTest(parameterized.TestCase):
       nworld=nworld,
     )
 
+    m_expected = d.M.numpy().copy()
+
     # Put b2 (tree 1) to sleep manually
     tree_asleep = d.tree_asleep.numpy()
     for w in range(nworld):
@@ -392,18 +406,29 @@ class SleepTest(parameterized.TestCase):
     d.tree_asleep = wp.array(tree_asleep, dtype=int)
     sleep.update_sleep(m, d)
 
-    # Force b1 (tree 0) to move slowly, tendon is well within range 0-1.5, so it is slack
+    # Force b1 (tree 0) to move slowly; tendon is within range 0-1.5, so it is slack
     qvel = d.qvel.numpy()
     for w in range(nworld):
       qvel[w, 0] = 0.1  # moving b1 slightly
     d.qvel = wp.array(qvel, dtype=float)
 
-    # Run step
-    mjwarp.step(m, d)
+    # Repeated steps while b2 is asleep must not accumulate tendon_armature into M
+    for _ in range(4):
+      mjwarp.step(m, d)
+      for w in range(nworld):
+        self.assertEqual(d.tree_awake.numpy()[w, 1], 0, f"b2 in world {w} should remain asleep since tendon is slack")
+      np.testing.assert_allclose(d.M.numpy(), m_expected, rtol=1e-6, atol=1e-6)
 
-    # b2 (tree 1) must remain asleep because the tendon is slack!
+    # Pull b1 fast enough to hit the tendon limit and wake b2; M must still match expected
+    qvel = d.qvel.numpy()
     for w in range(nworld):
-      self.assertEqual(d.tree_awake.numpy()[w, 1], 0, f"b2 in world {w} should remain asleep since tendon is slack")
+      qvel[w, 0] = -10.0
+    d.qvel = wp.array(qvel, dtype=float)
+    mjwarp.step(m, d)
+    mjwarp.step(m, d)
+    for w in range(nworld):
+      self.assertEqual(d.tree_awake.numpy()[w, 1], 1, f"b2 in world {w} should wake when tendon limit is reached")
+    np.testing.assert_allclose(d.M.numpy(), m_expected, rtol=1e-6, atol=1e-6)
 
   @parameterized.parameters(1, 2)
   def test_equality_sleep_stability(self, nworld):
@@ -919,6 +944,669 @@ class SleepTest(parameterized.TestCase):
 
     # World 0: box1 (awake) and box2 (asleep) do NOT collide. So box2 MUST remain asleep!
     self.assertEqual(d.tree_awake.numpy()[0, 1], 0, "World 0 box2 should remain asleep (no collision with box1)")
+
+  @parameterized.parameters(1, 2)
+  def test_split_step_sparse_block_wake(self, nworld):
+    """Verify split-step (step1/step2) factors a sparse-block tree woken during step1."""
+    n = 65
+    chain = (
+      "".join(
+        f'<body name="c{i}" pos="0 0 .05"><joint name="jc{i}" type="hinge" axis="0 1 0"/><geom type="capsule" size=".02 .025"/>'
+        for i in range(n)
+      )
+      + "</body>" * n
+    )
+    _, _, m, d = test_data.fixture(
+      xml=f"""
+      <mujoco>
+        <option>
+          <flag sleep="enable" island="enable"/>
+        </option>
+        <worldbody>
+          <body name="driver" pos="0 0 1">
+            <joint name="jd" type="hinge" axis="0 1 0"/>
+            <geom type="sphere" size=".05"/>
+          </body>
+          <body pos="1 0 2">
+            {chain}
+          </body>
+        </worldbody>
+        <equality>
+          <joint joint1="jd" joint2="jc0"/>
+        </equality>
+      </mujoco>
+      """,
+      nworld=nworld,
+    )
+    self.assertGreater(d.qLD.shape[1], m.qLD_block_total)
+
+    qvel = d.qvel.numpy()
+    qvel[:, 0] = 2.0
+    if nworld == 2:
+      qvel[1, 0] = 3.5
+    d.qvel = wp.array(qvel, dtype=float)
+
+    # Reference without sleeping
+    _, _, m_ref, d_ref = test_data.fixture(
+      xml=f"""
+      <mujoco>
+        <worldbody>
+          <body name="driver" pos="0 0 1">
+            <joint name="jd" type="hinge" axis="0 1 0"/>
+            <geom type="sphere" size=".05"/>
+          </body>
+          <body pos="1 0 2">
+            {chain}
+          </body>
+        </worldbody>
+        <equality>
+          <joint joint1="jd" joint2="jc0"/>
+        </equality>
+      </mujoco>
+      """,
+      nworld=nworld,
+    )
+    d_ref.qvel = wp.array(qvel, dtype=float)
+
+    # Put the 65-DOF chain (tree 1) to sleep; step1 wakes the sparse-block tree via wake_equality.
+    tree_asleep = d.tree_asleep.numpy()
+    tree_asleep[:, 1] = 1
+    d.tree_asleep = wp.array(tree_asleep, dtype=int)
+    sleep.update_sleep(m, d)
+    d.qLD.fill_(wp.inf)
+    d.qacc_smooth.fill_(wp.inf)
+    d.qacc.fill_(wp.inf)
+
+    mjwarp.step1(m, d)
+    mjwarp.step2(m, d)
+
+    mjwarp.step1(m_ref, d_ref)
+    mjwarp.step2(m_ref, d_ref)
+
+    for w in range(nworld):
+      self.assertEqual(d.tree_awake.numpy()[w, 1], 1)
+    np.testing.assert_allclose(d.qacc_smooth.numpy(), d_ref.qacc_smooth.numpy(), rtol=1e-4, atol=1e-5)
+    np.testing.assert_allclose(d.qacc.numpy(), d_ref.qacc.numpy(), rtol=1e-3, atol=1e-4)
+    if nworld == 2:
+      self.assertFalse(np.allclose(d.qacc.numpy()[0], d.qacc.numpy()[1]))
+
+  @parameterized.product(
+    nworld=(1, 2),
+    integrator=(types.IntegratorType.EULER, types.IntegratorType.IMPLICITFAST, types.IntegratorType.IMPLICIT),
+  )
+  def test_sleep_deterministic_atomics_sparse(self, nworld, integrator):
+    """Verify sparse sleeping trees under DeterminismType.ATOMICS zero qacc and wake cleanly."""
+    n = 65
+    chain = (
+      "\n".join(
+        f'          <body name="c{i}" pos="0 0 .05">\n'
+        f'            <joint name="jc{i}" type="hinge" axis="0 1 0" damping=".2"/>\n'
+        f'            <geom type="capsule" size=".02 .025"/>'
+        for i in range(n)
+      )
+      + "\n          "
+      + "</body>" * n
+    )
+    mjm, _, m, d = test_data.fixture(
+      xml=f"""
+      <mujoco>
+        <option gravity="0 0 0">
+          <flag sleep="enable"/>
+        </option>
+        <worldbody>
+          <body name="driver" pos="0 0 1">
+            <joint name="jd" type="hinge" axis="0 1 0" damping=".5"/>
+            <geom size=".05"/>
+          </body>
+          <body pos="1 0 2">
+{chain}
+          </body>
+        </worldbody>
+        <equality>
+          <joint joint1="jd" joint2="jc0" active="false"/>
+        </equality>
+      </mujoco>
+      """,
+      overrides={
+        "opt.integrator": integrator,
+        "opt.deterministic": types.DeterminismType.ATOMICS,
+      },
+      nworld=nworld,
+    )
+    self.assertGreater(d.qLD.shape[1], m.qLD_block_total)
+
+    # Set distinct driver velocities per world while keeping the 65-DOF chain asleep
+    qvel = np.zeros((nworld, mjm.nv), dtype=np.float32)
+    qvel[0, 0] = 2.0
+    if nworld == 2:
+      qvel[1, 0] = 3.5
+    d.qvel.assign(qvel)
+
+    tree_asleep = d.tree_asleep.numpy()
+    tree_asleep[:, 1] = 1
+    d.tree_asleep.assign(tree_asleep)
+    sleep.update_sleep(m, d)
+
+    # Corrupt factor/output buffers to ensure ATOMICS sparse solves skip and zero sleeping DOFs
+    d.qLD.fill_(wp.inf)
+    d.qLDiagInv.fill_(wp.inf)
+    d.qacc_smooth.fill_(wp.inf)
+    d.qacc.fill_(wp.inf)
+
+    mjwarp.step(m, d)
+
+    qacc_smooth = d.qacc_smooth.numpy()
+    qacc = d.qacc.numpy()
+    self.assertTrue(np.isfinite(qacc_smooth).all())
+    self.assertTrue(np.isfinite(qacc).all())
+    np.testing.assert_array_equal(qacc_smooth[:, 1:], 0.0)
+    np.testing.assert_array_equal(qacc[:, 1:], 0.0)
+    self.assertTrue(np.isfinite(d.qvel.numpy()).all())
+    self.assertTrue(np.isfinite(d.qpos.numpy()).all())
+
+    # Verify direct smooth.solve_m also zeroes sleeping sparse-block DOFs under ATOMICS
+    x = wp.full((nworld, mjm.nv), wp.inf, dtype=float)
+    y = wp.ones((nworld, mjm.nv), dtype=float)
+    smooth.solve_m(m, d, x, y)
+    x_np = x.numpy()
+    self.assertTrue(np.isfinite(x_np).all())
+    np.testing.assert_array_equal(x_np[:, 1:], 0.0)
+
+    # Enable joint equality to wake the 65-DOF chain and verify parity against MuJoCo C
+    _, _, m_ref, d_ref = test_data.fixture(
+      xml=f"""
+      <mujoco>
+        <option gravity="0 0 0">
+          <flag sleep="disable"/>
+        </option>
+        <worldbody>
+          <body name="driver" pos="0 0 1">
+            <joint name="jd" type="hinge" axis="0 1 0" damping=".5"/>
+            <geom size=".05"/>
+          </body>
+          <body pos="1 0 2">
+{chain}
+          </body>
+        </worldbody>
+        <equality>
+          <joint joint1="jd" joint2="jc0" active="true"/>
+        </equality>
+      </mujoco>
+      """,
+      overrides={
+        "opt.integrator": integrator,
+        "opt.deterministic": types.DeterminismType.ATOMICS,
+      },
+      nworld=nworld,
+    )
+    wp.copy(d_ref.qpos, d.qpos)
+    wp.copy(d_ref.qvel, d.qvel)
+    wp.copy(d_ref.qacc_warmstart, d.qacc_warmstart)
+    mjwarp.step(m_ref, d_ref)
+
+    mjds = []
+    for w in range(nworld):
+      mjd_w = mujoco.MjData(mjm)
+      mjd_w.qpos[:] = d.qpos.numpy()[w]
+      mjd_w.qvel[:] = d.qvel.numpy()[w]
+      mjd_w.qacc_warmstart[:] = d.qacc_warmstart.numpy()[w]
+      mjd_w.eq_active[:] = 1
+      mujoco.mj_step(mjm, mjd_w)
+      mjds.append(mjd_w)
+
+    d.eq_active.fill_(True)
+    d.qacc_smooth.fill_(wp.inf)
+    d.qacc.fill_(wp.inf)
+    mjwarp.step(m, d)
+
+    np.testing.assert_array_equal(d.qacc_smooth.numpy(), d_ref.qacc_smooth.numpy())
+    np.testing.assert_array_equal(d.qacc.numpy(), d_ref.qacc.numpy())
+    np.testing.assert_array_equal(d.qvel.numpy(), d_ref.qvel.numpy())
+    for w in range(nworld):
+      self.assertEqual(d.tree_awake.numpy()[w, 1], 1)
+      np.testing.assert_allclose(d.qacc_smooth.numpy()[w], mjds[w].qacc_smooth, rtol=1e-4, atol=1e-5)
+    if nworld == 2:
+      self.assertFalse(np.allclose(d.qacc.numpy()[0], d.qacc.numpy()[1]))
+
+  @parameterized.product(
+    nworld=(1, 2),
+    integrator=(types.IntegratorType.EULER, types.IntegratorType.IMPLICITFAST, types.IntegratorType.IMPLICIT),
+  )
+  def test_sleep_unconstrained_and_implicit_zero_m(self, nworld, integrator):
+    """Verify njmax == 0 models and zero-initialized d.M on sleeping trees step cleanly."""
+    mjm, _, m, _ = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option gravity="0 0 0">
+          <flag sleep="enable" contact="disable"/>
+        </option>
+        <worldbody>
+          <body name="asleep" pos="0 0 1">
+            <joint type="hinge" damping=".5"/>
+            <geom size=".1" mass="100"/>
+          </body>
+          <body name="awake" pos="1 0 1">
+            <joint type="hinge" damping=".5"/>
+            <geom size=".1" mass="1"/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """,
+      overrides={"opt.integrator": integrator},
+      njmax=0,
+      nworld=nworld,
+    )
+
+    # Fresh make_data + reset_data leaves d.M == 0 before any awake crb pass runs
+    d = mjwarp.make_data(mjm, nworld=nworld, njmax=0)
+    mjwarp.reset_data(m, d)
+    self.assertEqual(d.njmax, 0)
+    np.testing.assert_array_equal(d.M.numpy(), 0.0)
+
+    # Put tree 0 to sleep before d.M is ever populated on tree 0
+    tree_asleep = d.tree_asleep.numpy()
+    tree_asleep[:, 0] = 0
+    d.tree_asleep.assign(tree_asleep)
+    sleep.update_sleep(m, d)
+
+    qvel = np.zeros((nworld, mjm.nv), dtype=np.float32)
+    qvel[0, 1] = 1.5
+    if nworld == 2:
+      qvel[1, 1] = 2.5
+    d.qvel.assign(qvel)
+
+    d.qacc.fill_(wp.inf)
+    d.qfrc_constraint.fill_(wp.inf)
+    d.efc.Ma.fill_(wp.inf)
+    d.solver_niter.fill_(-1)
+
+    mjwarp.step(m, d)
+
+    for w in range(nworld):
+      mjd_w = mujoco.MjData(mjm)
+      mjd_w.qvel[1] = qvel[w, 1]
+      mujoco.mj_step(mjm, mjd_w)
+      self.assertEqual(d.tree_awake.numpy()[w, 0], 0)
+      self.assertEqual(d.solver_niter.numpy()[w], 0)
+      np.testing.assert_array_equal(d.qfrc_constraint.numpy()[w], 0.0)
+      np.testing.assert_allclose(d.efc.Ma.numpy()[w], d.qfrc_smooth.numpy()[w], rtol=1e-6, atol=1e-6)
+      np.testing.assert_allclose(d.qacc.numpy()[w], mjd_w.qacc, rtol=1e-5, atol=1e-6)
+      np.testing.assert_allclose(d.qvel.numpy()[w], mjd_w.qvel, rtol=1e-5, atol=1e-6)
+      np.testing.assert_allclose(d.qpos.numpy()[w], mjd_w.qpos, rtol=1e-5, atol=1e-6)
+
+    if nworld == 2:
+      self.assertFalse(np.allclose(d.qvel.numpy()[0], d.qvel.numpy()[1]))
+
+    # Wake tree 0 via qfrc_applied and verify crb populates d.M and matches MuJoCo C
+    qfrc = np.zeros((nworld, mjm.nv), dtype=np.float32)
+    qfrc[0, 0] = 3.0
+    if nworld == 2:
+      qfrc[1, 0] = 5.0
+    d.qfrc_applied.assign(qfrc)
+
+    qpos_before = d.qpos.numpy().copy()
+    qvel_before = d.qvel.numpy().copy()
+    mjwarp.step(m, d)
+
+    for w in range(nworld):
+      mjd_w = mujoco.MjData(mjm)
+      mjd_w.qpos[:] = qpos_before[w]
+      mjd_w.qvel[:] = qvel_before[w]
+      mjd_w.qfrc_applied[:] = qfrc[w]
+      mujoco.mj_step(mjm, mjd_w)
+      self.assertEqual(d.tree_awake.numpy()[w, 0], 1)
+      np.testing.assert_allclose(d.qacc.numpy()[w], mjd_w.qacc, rtol=1e-5, atol=1e-6)
+      np.testing.assert_allclose(d.qvel.numpy()[w], mjd_w.qvel, rtol=1e-5, atol=1e-6)
+
+  @parameterized.product(
+    nworld=(1, 2),
+    cone=(types.ConeType.PYRAMIDAL, types.ConeType.ELLIPTIC),
+  )
+  def test_sleep_active_inertia_scale(self, nworld, cone):
+    """Verify a heavy sleeping body does not distort solver inertia_scale on awake bodies."""
+    _, _, m_heavy, d_heavy = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option noslip_iterations="2">
+          <flag sleep="enable" warmstart="disable"/>
+        </option>
+        <worldbody>
+          <geom type="plane" size="5 5 .1"/>
+          <body name="heavy" pos="2 0 .1">
+            <freejoint/>
+            <geom size=".1" mass="1000"/>
+          </body>
+          <body name="light" pos="0 0 .095">
+            <freejoint/>
+            <geom size=".1" mass="1"/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """,
+      overrides={"opt.cone": cone},
+      nworld=nworld,
+    )
+    _, _, m_light, d_light = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option noslip_iterations="2">
+          <flag sleep="enable" warmstart="disable"/>
+        </option>
+        <worldbody>
+          <geom type="plane" size="5 5 .1"/>
+          <body name="light" pos="0 0 .095">
+            <freejoint/>
+            <geom size=".1" mass="1"/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """,
+      overrides={"opt.cone": cone},
+      nworld=nworld,
+    )
+
+    # Put the 1000-kg body (tree 0) to sleep while giving the 1-kg body tangential sliding velocity
+    tree_asleep = d_heavy.tree_asleep.numpy()
+    tree_asleep[:, 0] = 0
+    d_heavy.tree_asleep.assign(tree_asleep)
+    sleep.update_sleep(m_heavy, d_heavy)
+
+    qvel_heavy = d_heavy.qvel.numpy()
+    qvel_light = d_light.qvel.numpy()
+    qvel_heavy[0, 6] = 1.0
+    qvel_light[0, 0] = 1.0
+    if nworld == 2:
+      qvel_heavy[1, 6] = 2.0
+      qvel_light[1, 0] = 2.0
+    d_heavy.qvel.assign(qvel_heavy)
+    d_light.qvel.assign(qvel_light)
+
+    d_heavy.solver_niter.fill_(-1)
+    d_light.solver_niter.fill_(-1)
+    mjwarp.step(m_heavy, d_heavy)
+    mjwarp.step(m_light, d_light)
+
+    np.testing.assert_array_equal(d_heavy.solver_niter.numpy(), d_light.solver_niter.numpy())
+    np.testing.assert_allclose(d_heavy.qacc.numpy()[:, 6:], d_light.qacc.numpy(), rtol=1e-5, atol=1e-6)
+    if nworld == 2:
+      self.assertFalse(np.allclose(d_heavy.qacc.numpy()[0, 6:], d_heavy.qacc.numpy()[1, 6:]))
+
+  @parameterized.product(
+    nworld=(1, 2),
+    cone=(types.ConeType.PYRAMIDAL, types.ConeType.ELLIPTIC),
+  )
+  def test_sleep_with_disable_island(self, nworld, cone):
+    """Verify EnableBit.SLEEP + DisableBit.ISLAND for constrained and unconstrained scenes."""
+    mjm, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option sleep_tolerance="0.05">
+          <flag sleep="enable" island="disable"/>
+        </option>
+        <worldbody>
+          <geom type="plane" size="5 5 .1"/>
+          <body pos="0 0 .1">
+            <freejoint/>
+            <geom size=".1"/>
+          </body>
+          <body pos="0 0 .25">
+            <freejoint/>
+            <geom size=".1"/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """,
+      overrides={"opt.cone": cone},
+      nworld=nworld,
+    )
+
+    # Put lower sphere (tree 0) to sleep and launch upper sphere (tree 1) downward
+    tree_asleep = d.tree_asleep.numpy()
+    tree_asleep[:, 0] = 0
+    d.tree_asleep.assign(tree_asleep)
+    sleep.update_sleep(m, d)
+
+    qvel = d.qvel.numpy()
+    qvel[0, 8] = -3.0
+    if nworld == 2:
+      qvel[1, 8] = -4.0
+    d.qvel.assign(qvel)
+
+    with wp.ScopedCapture() as capture:
+      mjwarp.step(m, d)
+
+    # Step past MJ_MINAWAKE: constrained trees must stay awake when island discovery is disabled
+    for _ in range(15):
+      wp.capture_launch(capture.graph)
+
+    np.testing.assert_array_equal(d.tree_awake.numpy(), 1)
+    if nworld == 2:
+      self.assertFalse(np.allclose(d.qpos.numpy()[0], d.qpos.numpy()[1]))
+
+    # Unconstrained scene (nefc == 0) with DisableBit.ISLAND must still transition to sleep
+    _, _, m_unc, d_unc = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option gravity="0 0 0" sleep_tolerance="0.01">
+          <flag sleep="enable" island="disable" contact="disable"/>
+        </option>
+        <worldbody>
+          <body>
+            <joint type="slide" damping="400"/>
+            <geom size=".1" mass="1"/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """,
+      overrides={"opt.cone": cone},
+      nworld=nworld,
+    )
+    qvel_unc = d_unc.qvel.numpy()
+    qvel_unc[0, 0] = 1.0
+    if nworld == 2:
+      qvel_unc[1, 0] = 2.0
+    d_unc.qvel.assign(qvel_unc)
+
+    with wp.ScopedCapture() as capture_unc:
+      mjwarp.step(m_unc, d_unc)
+
+    for _ in range(20):
+      wp.capture_launch(capture_unc.graph)
+
+    np.testing.assert_array_equal(d_unc.tree_awake.numpy(), 0)
+    np.testing.assert_array_equal(d_unc.qvel.numpy(), 0.0)
+
+  @parameterized.product(
+    nworld=(1, 2),
+    mode=("qfrc_applied", "xfrc_applied", "qvel", "ctrl"),
+  )
+  def test_split_step_user_perturbation_wake(self, nworld, mode):
+    """Verify step1/step2 wakes sleeping trees on user force, velocity, and ctrl inputs."""
+    mjm, mjd_base, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option gravity="0 0 0">
+          <flag sleep="enable"/>
+        </option>
+        <worldbody>
+          <body name="target" pos="0 0 .2">
+            <freejoint/>
+            <geom size=".1" mass="1"/>
+          </body>
+          <body name="pusher" pos="-.201 0 .2">
+            <joint name="jp" type="slide" axis="1 0 0"/>
+            <geom size=".1" mass="1"/>
+          </body>
+        </worldbody>
+        <actuator>
+          <motor joint="jp"/>
+        </actuator>
+      </mujoco>
+      """,
+      nworld=nworld,
+    )
+
+    # Settle target (tree 0) to sleep naturally in MuJoCo C so mjd and d share identical sleep state
+    for _ in range(mujoco.mjMINAWAKE + 1):
+      mujoco.mj_step(mjm, mjd_base)
+    self.assertEqual(mjd_base.tree_awake[0], 0)
+    self.assertEqual(mjd_base.tree_awake[1], 1)
+
+    d = mjwarp.put_data(mjm, mjd_base, nworld=nworld)
+    mjds = [copy.copy(mjd_base) for _ in range(nworld)]
+
+    # Run step1 first, then inject user perturbation before step2 (and subsequent step1/step2 pairs)
+    mjwarp.step1(m, d)
+    for w in range(nworld):
+      mujoco.mj_step1(mjm, mjds[w])
+
+    scales = [1.0, 1.5] if nworld == 2 else [1.0]
+    if mode == "qfrc_applied":
+      qfrc = d.qfrc_applied.numpy()
+      for w, s in enumerate(scales):
+        qfrc[w, 0] = 5.0 * s
+        mjds[w].qfrc_applied[0] = 5.0 * s
+      d.qfrc_applied.assign(qfrc)
+    elif mode == "xfrc_applied":
+      xfrc = d.xfrc_applied.numpy()
+      for w, s in enumerate(scales):
+        xfrc[w, 1, 0] = 5.0 * s
+        mjds[w].xfrc_applied[1, 0] = 5.0 * s
+      d.xfrc_applied.assign(xfrc)
+    elif mode == "qvel":
+      qvel = d.qvel.numpy()
+      for w, s in enumerate(scales):
+        qvel[w, 0] = 1.0 * s
+        mjds[w].qvel[0] = 1.0 * s
+      d.qvel.assign(qvel)
+    else:
+      ctrl = d.ctrl.numpy()
+      for w, s in enumerate(scales):
+        ctrl[w, 0] = 20.0 * s
+        mjds[w].ctrl[0] = 20.0 * s
+      d.ctrl.assign(ctrl)
+
+    mjwarp.step2(m, d)
+    for w in range(nworld):
+      mujoco.mj_step2(mjm, mjds[w])
+
+    for _ in range(5):
+      mjwarp.step1(m, d)
+      mjwarp.step2(m, d)
+      for w in range(nworld):
+        mujoco.mj_step1(mjm, mjds[w])
+        mujoco.mj_step2(mjm, mjds[w])
+
+    for w in range(nworld):
+      self.assertEqual(d.tree_awake.numpy()[w, 0], 1)
+      np.testing.assert_array_equal(d.tree_awake.numpy()[w], mjds[w].tree_awake)
+      np.testing.assert_allclose(d.qpos.numpy()[w], mjds[w].qpos, rtol=1e-4, atol=1e-5)
+      np.testing.assert_allclose(d.qvel.numpy()[w], mjds[w].qvel, rtol=1e-4, atol=1e-5)
+    if nworld == 2:
+      self.assertFalse(np.allclose(d.qpos.numpy()[0], d.qpos.numpy()[1]))
+
+  @parameterized.product(
+    broadphase=(types.BroadphaseType.NXN, types.BroadphaseType.SAP_TILE, types.BroadphaseType.SAP_SEGMENTED),
+    graph_conditional=(True, False),
+  )
+  def test_sleep_pass2_preserves_broadphase_overflow_and_ncollision(self, broadphase, graph_conditional):
+    """Verify Pass-2 collision accumulates d.ncollision and preserves broadphase overflow."""
+    mjm, _, m, d_full = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option>
+          <flag sleep="enable"/>
+        </option>
+        <worldbody>
+          <geom type="plane" size="5 5 .1"/>
+          <body name="asleep_box" pos="0 0 .09">
+            <freejoint/>
+            <geom type="box" size=".1 .1 .1"/>
+          </body>
+          <body name="striker" pos="0 0 .23">
+            <freejoint/>
+            <geom size=".05"/>
+          </body>
+          <body name="extra_a" pos="2 0 .08">
+            <freejoint/>
+            <geom size=".1"/>
+          </body>
+          <body name="extra_b" pos="2 0 .22">
+            <freejoint/>
+            <geom size=".1"/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """,
+      overrides={
+        "opt.broadphase": broadphase,
+        "opt.graph_conditional": graph_conditional,
+      },
+      nworld=1,
+    )
+
+    # Put asleep_box (tree 0) to sleep and move striker downward so Pass 1 wakes tree 0
+    tree_asleep = d_full.tree_asleep.numpy()
+    tree_asleep[0, 0] = 0
+    d_full.tree_asleep.assign(tree_asleep)
+    sleep.update_sleep(m, d_full)
+
+    qvel = d_full.qvel.numpy()
+    qvel[0, 8] = -5.0
+    d_full.qvel.assign(qvel)
+
+    # Accumulated d.ncollision must include both Pass-1 (>= 4) and Pass-2 (1) candidates
+    d_full.ncollision.fill_(-1)
+    forward.fwd_position(m, d_full)
+    total_candidates = int(d_full.ncollision.numpy()[0])
+    self.assertGreaterEqual(total_candidates, 4)
+
+    # Steady-state step when no tree wakes (woke == 0) preserves sleeping trees and contacts
+    _, _, m_steady, d_steady = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option>
+          <flag sleep="enable"/>
+        </option>
+        <worldbody>
+          <geom type="plane" size="5 5 .1"/>
+          <body name="sleeping" pos="-2 0 .1">
+            <freejoint/>
+            <geom size=".1"/>
+          </body>
+          <body name="awake" pos="2 0 .08">
+            <freejoint/>
+            <geom size=".1"/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """,
+      overrides={
+        "opt.broadphase": broadphase,
+        "opt.graph_conditional": graph_conditional,
+      },
+      nworld=1,
+    )
+    steady_asleep = d_steady.tree_asleep.numpy()
+    steady_asleep[0, 0] = 0
+    d_steady.tree_asleep.assign(steady_asleep)
+    sleep.update_sleep(m_steady, d_steady)
+    with wp.ScopedCapture() as capture_steady:
+      mjwarp.step(m_steady, d_steady)
+    wp.capture_launch(capture_steady.graph)
+    self.assertEqual(d_steady.tree_awake.numpy()[0, 0], 0)
+    self.assertEqual(d_steady.nacon.numpy()[0], 1)
+
+    # With naconmax=1, Pass 1 overflows broadphase and Pass 2 must preserve the overflow bit
+    d_tight = mjwarp.make_data(mjm, nworld=1, naconmax=1)
+    wp.copy(d_tight.qpos, d_full.qpos)
+    d_tight.qvel.assign(qvel)
+    d_tight.tree_asleep.assign(tree_asleep)
+    sleep.update_sleep(m, d_tight)
+    m.opt.warn_overflow = 0
+    d_tight.overflow.zero_()
+    mjwarp.step(m, d_tight)
+    self.assertNotEqual(int(d_tight.overflow.numpy()[0]) & int(types.OverflowType.BROADPHASE), 0)
 
 
 # An actuated 2-hinge arm (tree 0, dofs 0-1) plus two free bodies

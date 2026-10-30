@@ -881,6 +881,15 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
   m.nxn_pairid = np.hstack([nxn_pairid_contact.reshape((-1, 1)), nxn_pairid_collision.reshape((-1, 1))])
   m.nxn_pairid_filtered = m.nxn_pairid[nxn_include]
 
+  if (mjm.opt.enableflags & mujoco.mjtEnableBit.mjENBL_SLEEP) and m.nxn_geom_pair_filtered.shape[0] > 0:
+    b1 = mjm.geom_bodyid[m.nxn_geom_pair_filtered[:, 0]]
+    b2 = mjm.geom_bodyid[m.nxn_geom_pair_filtered[:, 1]]
+    t1 = mjm.body_treeid[b1]
+    t2 = mjm.body_treeid[b2]
+    order = np.lexsort((np.maximum(t1, t2), np.minimum(t1, t2)))
+    m.nxn_geom_pair_filtered = m.nxn_geom_pair_filtered[order]
+    m.nxn_pairid_filtered = m.nxn_pairid_filtered[order]
+
   # count contact pair types
   def geom_trid_index(i, j):
     i, j = (j, i) if j < i else (i, j)
@@ -1418,9 +1427,10 @@ def _get_padded_sizes(nv: int, njmax: int, is_sparse: bool, tile_size: int, augm
 
 
 def _nvmax_pad(nvmax: int) -> int:
-  """Reserve an augmented column and round nvmax up to the dense tile size."""
+  """Reserve an augmented column for blocked Cholesky (n > 32) and round up to dense tile size."""
   t = types.TILE_SIZE_JTDAJ_DENSE
-  return ((max(nvmax, 1) + t) // t) * t
+  n = max(nvmax, 1)
+  return ((n + t - 1) // t) * t if n <= 32 else ((n + t) // t) * t
 
 
 def _default_nconmax(mjm: mujoco.MjModel, mjd: Optional[mujoco.MjData] = None) -> int:
@@ -1785,9 +1795,6 @@ _COMPACT_DATA_FIELDS: tuple[str, ...] = (
   "cdof_tri_row",
   "cdof_tri_col",
   "cM",
-  "cqLD",
-  "crhs",
-  "cx",
   "cJ",
   "cMa",
   "cqfrc_smooth",
@@ -1823,22 +1830,18 @@ def _allocate_compact_arrays(
   njp = njmax_pad if compact else 0
 
   if compact:
-    # all (i, j) DOF pairs of the nvmax_pad-wide compacted Hessian (the global dof_tri,
-    # triu over full nv, would index out of bounds).
-    idx = np.arange(nvmax_pad, dtype=np.int32)
-    d.cdof_tri_row = wp.array(np.repeat(idx, nvmax_pad), dtype=int)
-    d.cdof_tri_col = wp.array(np.tile(idx, nvmax_pad), dtype=int)
+    # upper-triangular (i <= j) DOF pairs of the nvmax_pad-wide compacted Hessian
+    tri_row, tri_col = np.triu_indices(nvmax_pad)
+    d.cdof_tri_row = wp.array(tri_row.astype(np.int32), dtype=int)
+    d.cdof_tri_col = wp.array(tri_col.astype(np.int32), dtype=int)
   else:
     d.cdof_tri_row = wp.empty(0, dtype=int)
     d.cdof_tri_col = wp.empty(0, dtype=int)
 
-  alloc_cJ = compact and not is_sparse(mjm)
+  alloc_dense_compact = compact and not is_sparse(mjm)
 
-  d.cM = wp.empty((nw, nvp, nvp), dtype=float)
-  d.cqLD = wp.empty((nw, nvp, nvp), dtype=float)
-  d.crhs = wp.empty((nw, nvp, 1), dtype=float)
-  d.cx = wp.empty((nw, nvp, 1), dtype=float)
-  d.cJ = wp.empty((nw, njp, nvp), dtype=float) if alloc_cJ else wp.empty((0, 0, 0), dtype=float)
+  d.cM = wp.empty((nw, nvp, nvp), dtype=float) if alloc_dense_compact else wp.empty((0, 0, 0), dtype=float)
+  d.cJ = wp.empty((nw, njp, nvp), dtype=float) if alloc_dense_compact else wp.empty((0, 0, 0), dtype=float)
   d.cMa = wp.empty((nw, nvp), dtype=float)
   d.cqfrc_smooth = wp.empty((nw, nvp), dtype=float)
   d.cqacc_smooth = wp.empty((nw, nvp), dtype=float)
@@ -1847,21 +1850,49 @@ def _allocate_compact_arrays(
   d.cqfrc_constraint = wp.empty((nw, nvp), dtype=float)
 
 
-def _initial_body_awake(mjm: mujoco.MjModel, nworld: int, init_asleep: bool) -> np.ndarray:
-  """Returns the initial body awake array."""
-  body_awake_np = np.zeros((nworld, mjm.nbody), dtype=np.int32)
+def _sleep_arrays(mjm: mujoco.MjModel, tree_asleep: np.ndarray, nworld: int) -> dict[str, wp.array]:
+  """Computes initial sleeping Data arrays from 1D tree_asleep (matching mj_updateSleep)."""
+  tree_asleep_1d = np.asarray(tree_asleep, dtype=np.int32)
+  tree_awake_1d = (tree_asleep_1d < 0).astype(np.int32)
+  ntree_awake = int(tree_awake_1d.sum())
+
+  body_awake_1d = np.empty(mjm.nbody, dtype=np.int32)
   for b in range(mjm.nbody):
     tree = mjm.body_treeid[b]
     if tree < 0:
-      root = mjm.body_rootid[b]
-      mocap = mjm.body_mocapid[root]
-      if mocap >= 0:
-        body_awake_np[:, b] = int(types.SleepState.AWAKE)
+      if mjm.body_mocapid[mjm.body_rootid[b]] >= 0:
+        body_awake_1d[b] = int(types.SleepState.AWAKE)
       else:
-        body_awake_np[:, b] = int(types.SleepState.STATIC)
+        body_awake_1d[b] = int(types.SleepState.STATIC)
     else:
-      body_awake_np[:, b] = int(types.SleepState.ASLEEP) if init_asleep else int(types.SleepState.AWAKE)
-  return body_awake_np
+      body_awake_1d[b] = int(types.SleepState.AWAKE) if tree_awake_1d[tree] else int(types.SleepState.ASLEEP)
+
+  awake_bodies = np.flatnonzero(body_awake_1d != int(types.SleepState.ASLEEP)).astype(np.int32)
+  nbody_awake = int(awake_bodies.size)
+  body_awake_ind_1d = np.zeros(mjm.nbody, dtype=np.int32)
+  body_awake_ind_1d[:nbody_awake] = awake_bodies
+
+  dof_awake_ind_1d = np.zeros(mjm.nv, dtype=np.int32)
+  if mjm.nv > 0:
+    dof_body = mjm.dof_bodyid
+    awake_dofs = np.flatnonzero(
+      (mjm.body_treeid[dof_body] >= 0) & (body_awake_1d[dof_body] == int(types.SleepState.AWAKE))
+    ).astype(np.int32)
+  else:
+    awake_dofs = np.empty(0, dtype=np.int32)
+  nv_awake = int(awake_dofs.size)
+  dof_awake_ind_1d[:nv_awake] = awake_dofs
+
+  return {
+    "tree_asleep": wp.array(np.tile(tree_asleep_1d, (nworld, 1)), dtype=int),
+    "tree_awake": wp.array(np.tile(tree_awake_1d, (nworld, 1)), dtype=int),
+    "ntree_awake": wp.full((nworld,), ntree_awake, dtype=int),
+    "body_awake": wp.array(np.tile(body_awake_1d, (nworld, 1)), dtype=int),
+    "body_awake_ind": wp.array(np.tile(body_awake_ind_1d, (nworld, 1)), dtype=int),
+    "nbody_awake": wp.full((nworld,), nbody_awake, dtype=int),
+    "dof_awake_ind": wp.array(np.tile(dof_awake_ind_1d, (nworld, 1)), dtype=int),
+    "nv_awake": wp.full((nworld,), nv_awake, dtype=int),
+  }
 
 
 def make_data(
@@ -1900,9 +1931,7 @@ def make_data(
   if njmax is None:
     njmax = _default_njmax(mjm)
 
-  sleep_enabled = bool(mjm.opt.enableflags & mujoco.mjtEnableBit.mjENBL_SLEEP) and not bool(
-    mjm.opt.disableflags & mujoco.mjtDisableBit.mjDSBL_ISLAND
-  )
+  sleep_enabled = bool(mjm.opt.enableflags & mujoco.mjtEnableBit.mjENBL_SLEEP)
   compact_alloc = sleep_enabled or (nvmax is not None)
 
   if nvmax is None:
@@ -1959,7 +1988,7 @@ def make_data(
   sizes["njmax"] = njmax
   sizes["nvmax"] = nvmax
   sizes["nvmax_pad"] = _nvmax_pad(nvmax)
-  sizes["nvmax_pad_sq"] = sizes["nvmax_pad"] * sizes["nvmax_pad"]
+  sizes["ncdof_tri"] = sizes["nvmax_pad"] * (sizes["nvmax_pad"] + 1) // 2
   sizes["nflexintcell"] = _get_nflexintcell(mjm)
   sizes["nflexface"] = _get_nflexface(mjm)
   efm_d = _get_efm_data(mjm)
@@ -2063,9 +2092,7 @@ def make_data(
     "efc_islandid": None,
     # compact arrays (populated by _allocate_compact_arrays; skip eager allocation)
     **{name: None for name in _COMPACT_DATA_FIELDS},
-    "tree_asleep": wp.array(np.full((nworld, mjm.ntree), -(1 + types.MJ_MINAWAKE), dtype=np.int32), dtype=int),
-    "tree_awake": wp.array(np.ones((nworld, mjm.ntree), dtype=np.int32), dtype=int),
-    "body_awake": wp.array(_initial_body_awake(mjm, nworld, False), dtype=int),
+    **_sleep_arrays(mjm, np.full(mjm.ntree, -(1 + types.MJ_MINAWAKE), dtype=np.int32), nworld),
   }
   for f in dataclasses.fields(types.Data):
     if f.name in d_kwargs:
@@ -2125,9 +2152,7 @@ def put_data(
   if njmax is None:
     njmax = _default_njmax(mjm, mjd)
 
-  sleep_enabled = bool(mjm.opt.enableflags & mujoco.mjtEnableBit.mjENBL_SLEEP) and not bool(
-    mjm.opt.disableflags & mujoco.mjtDisableBit.mjDSBL_ISLAND
-  )
+  sleep_enabled = bool(mjm.opt.enableflags & mujoco.mjtEnableBit.mjENBL_SLEEP)
   compact_alloc = sleep_enabled or (nvmax is not None)
 
   if nvmax is None:
@@ -2194,7 +2219,7 @@ def put_data(
   sizes["njmax"] = njmax
   sizes["nvmax"] = nvmax
   sizes["nvmax_pad"] = _nvmax_pad(nvmax)
-  sizes["nvmax_pad_sq"] = sizes["nvmax_pad"] * sizes["nvmax_pad"]
+  sizes["ncdof_tri"] = sizes["nvmax_pad"] * (sizes["nvmax_pad"] + 1) // 2
   sizes["nflexface"] = _get_nflexface(mjm)
   efm_d = _get_efm_data(mjm)
   sizes["nefmK"] = int(efm_d.nefmK) if efm_d else 0
@@ -2211,7 +2236,6 @@ def put_data(
 
   # Capture sleep state before mj_kinematics, which resets tree_asleep as a side effect.
   tree_asleep_init = mjd.tree_asleep.copy()
-  body_awake_init = mjd.body_awake.copy()
 
   # Ensure kinematic state is populated. mujoco.MjData() does not call mj_kinematics, so a freshly
   # created mjd has zero geom positions. Static geoms are never updated by the physics loop
@@ -2352,9 +2376,7 @@ def put_data(
     "efc_islandid": None,
     # compact arrays (populated by _allocate_compact_arrays; skip eager allocation)
     **{name: None for name in _COMPACT_DATA_FIELDS},
-    "tree_asleep": wp.array(np.tile(tree_asleep_init, (nworld, 1)), dtype=int),
-    "tree_awake": wp.array(np.tile((tree_asleep_init < 0).astype(np.int32), (nworld, 1)), dtype=int),
-    "body_awake": wp.array(np.tile(body_awake_init.astype(np.int32), (nworld, 1)), dtype=int),
+    **_sleep_arrays(mjm, tree_asleep_init, nworld),
   }
   for f in dataclasses.fields(types.Data):
     if f.name in d_kwargs:

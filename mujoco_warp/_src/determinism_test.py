@@ -38,6 +38,7 @@ from mujoco_warp._src import collision_driver
 from mujoco_warp._src import constraint
 from mujoco_warp._src import render_util
 from mujoco_warp._src import set_const
+from mujoco_warp._src import sleep
 from mujoco_warp._src import util_pkg
 from mujoco_warp._src import warp_util
 from mujoco_warp._src.io import override_model
@@ -925,7 +926,7 @@ class DeterminismTest(parameterized.TestCase):
             <freejoint/>
             <geom type="box" size=".05 .05 .05"/>
           </body>
-          <body pos=".5 0 .3">
+          <body pos="0 0 .12">
             <freejoint/>
             <geom size=".05"/>
           </body>
@@ -934,6 +935,11 @@ class DeterminismTest(parameterized.TestCase):
       """,
       qvel_noise=0.1,
     )
+    qvel = d.qvel.numpy()
+    qvel[:, :6] = 0.0
+    d.qvel.assign(qvel)
+    d.tree_asleep.assign(np.array([[0, sleep.K_AWAKE_VAL]], dtype=np.int32))
+    sleep.update_sleep(m, d)
     m.opt.deterministic = mask
     events = []
 
@@ -995,7 +1001,7 @@ class DeterminismTest(parameterized.TestCase):
             <freejoint/>
             <geom type="box" size=".05 .05 .05"/>
           </body>
-          <body pos=".5 0 .3">
+          <body pos="0 0 .12">
             <freejoint/>
             <geom size=".05"/>
           </body>
@@ -1005,6 +1011,11 @@ class DeterminismTest(parameterized.TestCase):
       overrides=overrides,
       qvel_noise=0.1,
     )
+    qvel = d.qvel.numpy()
+    qvel[:, :6] = 0.0
+    d.qvel.assign(qvel)
+    d.tree_asleep.assign(np.array([[0, sleep.K_AWAKE_VAL]], dtype=np.int32))
+    sleep.update_sleep(m, d)
     m.opt.deterministic = DeterminismType.ALL
     with (
       mock.patch.object(collision_driver, "_sort_contacts") as contacts,
@@ -1158,6 +1169,7 @@ class DeterminismTest(parameterized.TestCase):
     )
     m.opt.deterministic = DeterminismType.ALL
     d.body_awake_ind.fill_(-1)
+    mjw.reset_data(m, d)
     mjw.step(m, d)
     np.testing.assert_array_equal(d.body_awake_ind.numpy(), [[0, 1]])
 

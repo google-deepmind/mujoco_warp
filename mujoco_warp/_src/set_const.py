@@ -14,6 +14,7 @@
 # ==============================================================================
 
 
+import dataclasses
 import warnings
 
 import mujoco
@@ -862,6 +863,8 @@ def set_const(
     _set_fixed(m)
 
   if groups & (types.SetConstGroup.KIN0 | types.SetConstGroup.INERT0):
+    opt = dataclasses.replace(m.opt, enableflags=m.opt.enableflags & ~types.EnableBit.SLEEP)
+    m = dataclasses.replace(m, opt=opt)
     qpos_saved = wp.clone(d.qpos)
     mocap_pos_saved = wp.clone(d.mocap_pos) if m.nmocap else None
     mocap_quat_saved = wp.clone(d.mocap_quat) if m.nmocap else None

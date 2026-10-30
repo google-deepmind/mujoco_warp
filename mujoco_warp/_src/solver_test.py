@@ -46,7 +46,13 @@ def _assert_eq(a, b, name, tol=_TOLERANCE * 20):
 
 def _set_inertia_scale(m, d, ctx):
   """Set the inverse trace of M, as init_context does, for tests which skip it."""
-  wp.launch(solver._inertia_scale, dim=d.nworld, inputs=[m.nv, m.M_rownnz, m.M_rowadr, d.M], outputs=[ctx.inertia_scale])
+  enable_sleep = bool(m.opt.enableflags & types.EnableBit.SLEEP)
+  wp.launch(
+    solver._inertia_scale(enable_sleep),
+    dim=d.nworld,
+    inputs=[m.nv, m.M_rownnz, m.M_rowadr, d.M, d.ncdof, d.cdof_dof],
+    outputs=[ctx.inertia_scale],
+  )
 
 
 def _noslip_model(mjm, noslip_iterations):
@@ -2397,17 +2403,17 @@ class CompactSolverTest(absltest.TestCase):
   """Tests for the compacted smooth and constrained solves (solver.py compact path)."""
 
   def test_smooth_solve_equivalence_all_active(self):
-    """With every tree active and nvmax=nv, compacted qacc_smooth matches baseline."""
+    """With every tree active under SLEEP, qacc_smooth matches baseline."""
     _, _, m, d = _put_compact(_COMPACT_ARM_XML, sparse=True)
     self.assertTrue(m.is_sparse)
     mjw.forward(m, d)
     baseline = d.qacc_smooth.numpy().copy()
 
+    m.opt.enableflags |= types.EnableBit.SLEEP
     d.tree_awake = wp.array(np.ones((d.nworld, m.ntree), dtype=int), dtype=int)
-    island.update_active_dofs(m, d)
-    self.assertEqual(d.ncdof.numpy()[0], m.nv)
+    d.qacc_smooth.fill_(wp.inf)
 
-    solver.smooth_solve_compact(m, d)
+    mjw.fwd_acceleration(m, d, factorize=True)
 
     np.testing.assert_allclose(d.qacc_smooth.numpy(), baseline, rtol=1e-4, atol=1e-5)
 
@@ -2418,11 +2424,11 @@ class CompactSolverTest(absltest.TestCase):
     baseline = d.qacc_smooth.numpy().copy()
 
     # only the actuated arm tree (dofs 0-1) is active
+    m.opt.enableflags |= types.EnableBit.SLEEP
     d.tree_awake = wp.array([[1, 0, 0]], dtype=int)
-    island.update_active_dofs(m, d)
-    self.assertEqual(d.ncdof.numpy()[0], 2)
+    d.qacc_smooth.fill_(wp.inf)
 
-    solver.smooth_solve_compact(m, d)
+    mjw.fwd_acceleration(m, d, factorize=True)
 
     out = d.qacc_smooth.numpy()
     np.testing.assert_allclose(out[0, :2], baseline[0, :2], rtol=1e-4, atol=1e-5)

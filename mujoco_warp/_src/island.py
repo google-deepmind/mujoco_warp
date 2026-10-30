@@ -362,61 +362,32 @@ def _island_dsu(
 
 
 @wp.kernel
-def _compress_roots(
-  # Data in:
-  tree_island_in: wp.array2d[int],
-  # Data out:
-  # Out:
-  island_parent_out: wp.array2d[int],
-):
-  """Point every active tree straight at its component's minimum-tree root."""
-  worldid, treeid = wp.tid()
-  if tree_island_in[worldid, treeid] >= 0:
-    island_parent_out[worldid, treeid] = _dsu_find(island_parent_out, worldid, treeid)
-
-
-@wp.kernel
-def _label_roots(
+def _finalize_dsu(
   # Model:
   ntree: int,
-  # Data in:
   # In:
   island_parent_in: wp.array2d[int],
   # Data out:
   nisland_out: wp.array[int],
   tree_island_out: wp.array2d[int],
 ):
-  """Number the roots in ascending tree order, which is MuJoCo's island order.
+  """Number islands in ascending tree order and propagate labels in one pass.
 
-  Ranking roots is the one inherently sequential step: island i is the i-th smallest
-  root, so it depends on every preceding tree. It reads two ints per tree and does no
-  pointer chasing, leaving the compress and propagate passes free to run per tree.
+  Because _dsu_union hooks higher roots to lower roots, parent(treeid) <= treeid. Therefore
+  by the time the loop visits treeid, its parent has already been visited and assigned its
+  final island label in tree_island_out[worldid, parent].
   """
   worldid = wp.tid()
   nisland = int(0)
   for treeid in range(ntree):
-    if tree_island_out[worldid, treeid] >= 0 and island_parent_in[worldid, treeid] == treeid:
-      tree_island_out[worldid, treeid] = nisland
-      nisland += 1
+    if tree_island_out[worldid, treeid] >= 0:
+      parent = island_parent_in[worldid, treeid]
+      if parent == treeid:
+        tree_island_out[worldid, treeid] = nisland
+        nisland += 1
+      else:
+        tree_island_out[worldid, treeid] = tree_island_out[worldid, parent]
   nisland_out[worldid] = nisland
-
-
-@wp.kernel
-def _propagate_labels(
-  # Data in:
-  # In:
-  island_parent_in: wp.array2d[int],
-  # Data out:
-  tree_island_out: wp.array2d[int],
-):
-  """Copy each root's label down to the trees that point at it.
-
-  A root reads and writes its own slot with the same value, so the only concurrent
-  writes to any slot store identical data.
-  """
-  worldid, treeid = wp.tid()
-  if tree_island_out[worldid, treeid] >= 0:
-    tree_island_out[worldid, treeid] = tree_island_out[worldid, island_parent_in[worldid, treeid]]
 
 
 # Smallest EFC chunk worth its own block, and the resident-block count worth reaching for.
@@ -488,19 +459,10 @@ def direct_dsu(m: types.Model, d: types.Data, island_parent: wp.array2d[int]):
     block_dim=types.BlockDim.island_dsu,
   )
   wp.launch(
-    _compress_roots,
-    dim=(d.nworld, m.ntree),
-    inputs=[d.tree_island, island_parent],
-  )
-  wp.launch(
-    _label_roots,
+    _finalize_dsu,
     dim=d.nworld,
-    inputs=[m.ntree, island_parent, d.nisland, d.tree_island],
-  )
-  wp.launch(
-    _propagate_labels,
-    dim=(d.nworld, m.ntree),
-    inputs=[island_parent, d.tree_island],
+    inputs=[m.ntree, island_parent],
+    outputs=[d.nisland, d.tree_island],
   )
 
 
@@ -627,42 +589,6 @@ def _island_map_dofs(
 
 
 @wp.kernel
-def _island_count_constraints(
-  # Data in:
-  nefc_in: wp.array[int],
-  efc_type_in: wp.array2d[int],
-  tree_island_in: wp.array2d[int],
-  njmax_in: int,
-  # In:
-  efc_tree_in: wp.array2d[int],
-  # Data out:
-  efc_island_out: wp.array2d[int],
-  island_nefc_out: wp.array2d[int],
-  island_ne_out: wp.array2d[int],
-  island_nf_out: wp.array2d[int],
-):
-  worldid, efcid = wp.tid()
-  if efcid >= wp.min(njmax_in, nefc_in[worldid]):
-    return
-
-  efc_tree = efc_tree_in[worldid, efcid]
-  if efc_tree < 0:
-    efc_island_out[worldid, efcid] = -1
-    return
-  island_id = tree_island_in[worldid, efc_tree]
-  efc_island_out[worldid, efcid] = island_id
-
-  if island_id >= 0:
-    wp.atomic_add(island_nefc_out, worldid, island_id, 1)  # kernel_analyzer: ignore[atomic]
-
-    efc_type = efc_type_in[worldid, efcid]
-    if efc_type == ConstraintType.EQUALITY:
-      wp.atomic_add(island_ne_out, worldid, island_id, 1)  # kernel_analyzer: ignore[atomic]
-    elif efc_type == ConstraintType.FRICTION_DOF or efc_type == ConstraintType.FRICTION_TENDON:
-      wp.atomic_add(island_nf_out, worldid, island_id, 1)  # kernel_analyzer: ignore[atomic]
-
-
-@wp.kernel
 def _island_map_constraints(
   # Data in:
   nefc_in: wp.array[int],
@@ -724,7 +650,7 @@ def _island_map_constraints(
 
 
 @wp.kernel
-def _compute_efc_tree(
+def _island_count_constraints(
   # Model:
   nv: int,
   body_treeid: wp.array[int],
@@ -762,11 +688,15 @@ def _compute_efc_tree(
   efc_J_rowadr_in: wp.array2d[int],
   efc_J_colind_in: wp.array3d[int],
   efc_J_in: wp.array3d[float],
+  tree_island_in: wp.array2d[int],
   njmax_in: int,
-  # Out:
-  efc_tree_out: wp.array2d[int],
+  # Data out:
+  efc_island_out: wp.array2d[int],
+  island_nefc_out: wp.array2d[int],
+  island_ne_out: wp.array2d[int],
+  island_nf_out: wp.array2d[int],
 ):
-  """Compute the first non-negative tree for each constraint."""
+  """Compute the first non-negative tree for each constraint and count constraints per island."""
   worldid, efcid = wp.tid()
 
   if efcid >= wp.min(njmax_in, nefc_in[worldid]):
@@ -885,13 +815,28 @@ def _compute_efc_tree(
         tree = t
         break
 
-  efc_tree_out[worldid, efcid] = tree
+  if tree < 0:
+    efc_island_out[worldid, efcid] = -1
+    return
+  island_id = tree_island_in[worldid, tree]
+  efc_island_out[worldid, efcid] = island_id
+
+  if island_id >= 0:
+    wp.atomic_add(island_nefc_out, worldid, island_id, 1)  # kernel_analyzer: ignore[atomic]
+
+    if efc_type == ConstraintType.EQUALITY:
+      wp.atomic_add(island_ne_out, worldid, island_id, 1)  # kernel_analyzer: ignore[atomic]
+    elif efc_type == ConstraintType.FRICTION_DOF or efc_type == ConstraintType.FRICTION_TENDON:
+      wp.atomic_add(island_nf_out, worldid, island_id, 1)  # kernel_analyzer: ignore[atomic]
 
 
 @wp.kernel
 def _init_island_arrays(
+  # Model:
+  nv: int,
   # Data out:
   nidof_out: wp.array[int],
+  island_dofadr_out: wp.array2d[int],
   island_idofadr_out: wp.array2d[int],
   island_nv_out: wp.array2d[int],
   island_nefc_out: wp.array2d[int],
@@ -900,6 +845,7 @@ def _init_island_arrays(
   island_iefcadr_out: wp.array2d[int],
 ):
   worldid, islandid = wp.tid()
+  island_dofadr_out[worldid, islandid] = nv
   island_nv_out[worldid, islandid] = 0
   island_nefc_out[worldid, islandid] = 0
   island_ne_out[worldid, islandid] = 0
@@ -934,14 +880,12 @@ def _init_efc_arrays(
   map_iefc2efc_out: wp.array2d[int],
   # Out:
   iefc_islandid_out: wp.array2d[int],
-  efc_tree_out: wp.array2d[int],
 ):
   worldid, efcid = wp.tid()
   efc_island_out[worldid, efcid] = -1
   map_efc2iefc_out[worldid, efcid] = 0
   map_iefc2efc_out[worldid, efcid] = 0
   iefc_islandid_out[worldid, efcid] = -1
-  efc_tree_out[worldid, efcid] = -1
 
 
 @event_scope
@@ -968,8 +912,17 @@ def compute_island_mapping(m: types.Model, d: types.Data):
   wp.launch(
     _init_island_arrays,
     dim=(d.nworld, m.ntree),
-    inputs=[],
-    outputs=[d.nidof, d.island_idofadr, d.island_nv, d.island_nefc, d.island_ne, d.island_nf, d.island_iefcadr],
+    inputs=[m.nv],
+    outputs=[
+      d.nidof,
+      d.island_dofadr,
+      d.island_idofadr,
+      d.island_nv,
+      d.island_nefc,
+      d.island_ne,
+      d.island_nf,
+      d.island_iefcadr,
+    ],
   )
   wp.launch(
     _init_dof_arrays,
@@ -977,16 +930,24 @@ def compute_island_mapping(m: types.Model, d: types.Data):
     inputs=[],
     outputs=[d.dof_island, d.map_dof2idof, d.map_idof2dof, d.dof_islandid],
   )
-  efc_tree = wp.empty((d.nworld, d.njmax), dtype=int)
   wp.launch(
     _init_efc_arrays,
     dim=(d.nworld, d.njmax),
     inputs=[],
-    outputs=[d.efc.island, d.map_efc2iefc, d.map_iefc2efc, d.efc_islandid, efc_tree],
+    outputs=[d.efc.island, d.map_efc2iefc, d.map_iefc2efc, d.efc_islandid],
   )
 
+  # Count DOFs per island
   wp.launch(
-    _compute_efc_tree,
+    _island_count_dofs,
+    dim=(d.nworld, m.nv),
+    inputs=[m.dof_treeid, d.tree_island],
+    outputs=[d.dof_island, d.island_nv],
+  )
+
+  # Count Constraints per island
+  wp.launch(
+    _island_count_constraints,
     dim=(d.nworld, d.njmax),
     inputs=[
       m.nv,
@@ -1024,24 +985,9 @@ def compute_island_mapping(m: types.Model, d: types.Data):
       d.efc.J_rowadr,
       d.efc.J_colind,
       d.efc.J,
+      d.tree_island,
       d.njmax,
     ],
-    outputs=[efc_tree],
-  )
-
-  # 1. Count DOFs per island
-  wp.launch(
-    _island_count_dofs,
-    dim=(d.nworld, m.nv),
-    inputs=[m.dof_treeid, d.tree_island],
-    outputs=[d.dof_island, d.island_nv],
-  )
-
-  # 2. Count Constraints per island
-  wp.launch(
-    _island_count_constraints,
-    dim=(d.nworld, d.njmax),
-    inputs=[d.nefc, d.efc.type, d.tree_island, d.njmax, efc_tree],
     outputs=[d.efc.island, d.island_nefc, d.island_ne, d.island_nf],
   )
 
@@ -1054,7 +1000,6 @@ def compute_island_mapping(m: types.Model, d: types.Data):
   )
 
   # 4. Map DOFs
-  d.island_dofadr.fill_(m.nv)
   wp.launch(
     _island_map_dofs,
     dim=(d.nworld, m.nv),
