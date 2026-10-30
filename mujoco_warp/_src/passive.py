@@ -434,9 +434,9 @@ def _fluid_force(
   body_fluid_ellipsoid: wp.array[bool],
   # Data in:
   xipos_in: wp.array2d[wp.vec3],
-  ximat_in: wp.array2d[wp.mat33],
+  xiquat_in: wp.array2d[wp.quat],
   geom_xpos_in: wp.array2d[wp.vec3],
-  geom_xmat_in: wp.array2d[wp.mat33],
+  geom_xquat_in: wp.array2d[wp.quat],
   subtree_com_in: wp.array2d[wp.vec3],
   cvel_in: wp.array2d[wp.spatial_vector],
   # Out:
@@ -462,7 +462,7 @@ def _fluid_force(
 
   # Body kinematics
   xipos = xipos_in[worldid, bodyid]
-  rot = ximat_in[worldid, bodyid]
+  rot = math.quat_to_mat(xiquat_in[worldid, bodyid])
   rotT = wp.transpose(rot)
   cvel = cvel_in[worldid, bodyid]
   ang_global = wp.spatial_top(cvel)
@@ -485,7 +485,7 @@ def _fluid_force(
 
       size = geom_size[worldid % geom_size.shape[0], geomid]
       semiaxes = geom_semiaxes(size, geom_type[geomid])
-      geom_rot = geom_xmat_in[worldid, geomid]
+      geom_rot = math.quat_to_mat(geom_xquat_in[worldid, geomid])
       geom_rotT = wp.transpose(geom_rot)
       geom_pos = geom_xpos_in[worldid, geomid]
 
@@ -665,9 +665,9 @@ def _fluid(m: Model, d: Data):
       m.geom_fluid,
       m.body_fluid_ellipsoid,
       d.xipos,
-      d.ximat,
+      d.xiquat,
       d.geom_xpos,
-      d.geom_xmat,
+      d.geom_xquat,
       d.subtree_com,
       d.cvel,
     ],
@@ -3676,7 +3676,7 @@ def _eff_contact_build(
   M_rownnz: wp.array[int],
   M_rowadr: wp.array[int],
   # Data in:
-  xmat_in: wp.array2d[wp.mat33],
+  xquat_in: wp.array2d[wp.quat],
   flexvert_xpos_in: wp.array2d[wp.vec3],
   M_in: wp.array2d[float],
   contact_dist_in: wp.array[float],
@@ -3756,7 +3756,7 @@ def _eff_contact_build(
       b = body_weldid[flex_vertbodyid[gv]]
       if body_dofnum[b] == 3:
         da = body_dofadr[b]
-        n_loc = wp.transpose(xmat_in[worldid, b]) @ normal
+        n_loc = wp.transpose(math.quat_to_mat(xquat_in[worldid, b])) @ normal
         for ax in range(3):
           nnz = _add_con_dof(cid, da + ax, -n_loc[ax], nnz, efm_con_dof_out, efm_con_val_out)
     elif elem0 >= 0:
@@ -3771,7 +3771,7 @@ def _eff_contact_build(
         b = body_weldid[flex_vertbodyid[gv]]
         if body_dofnum[b] == 3:
           da = body_dofadr[b]
-          n_loc = wp.transpose(xmat_in[worldid, b]) @ normal
+          n_loc = wp.transpose(math.quat_to_mat(xquat_in[worldid, b])) @ normal
           for ax in range(3):
             nnz = _add_con_dof(cid, da + ax, -w0[j] * n_loc[ax], nnz, efm_con_dof_out, efm_con_val_out)
 
@@ -3782,7 +3782,7 @@ def _eff_contact_build(
       b = body_weldid[flex_vertbodyid[gv]]
       if body_dofnum[b] == 3:
         da = body_dofadr[b]
-        n_loc = wp.transpose(xmat_in[worldid, b]) @ normal
+        n_loc = wp.transpose(math.quat_to_mat(xquat_in[worldid, b])) @ normal
         for ax in range(3):
           nnz = _add_con_dof(cid, da + ax, n_loc[ax], nnz, efm_con_dof_out, efm_con_val_out)
     elif elem1 >= 0:
@@ -3797,7 +3797,7 @@ def _eff_contact_build(
         b = body_weldid[flex_vertbodyid[gv]]
         if body_dofnum[b] == 3:
           da = body_dofadr[b]
-          n_loc = wp.transpose(xmat_in[worldid, b]) @ normal
+          n_loc = wp.transpose(math.quat_to_mat(xquat_in[worldid, b])) @ normal
           for ax in range(3):
             nnz = _add_con_dof(cid, da + ax, w1[j] * n_loc[ax], nnz, efm_con_dof_out, efm_con_val_out)
 
@@ -3849,7 +3849,7 @@ def build_efm_contact(
         m.flex_elem,
         m.M_rownnz,
         m.M_rowadr,
-        d.xmat,
+        d.xquat,
         d.flexvert_xpos,
         d.M,
         d.contact.dist,

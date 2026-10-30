@@ -849,15 +849,11 @@ class IOTest(parameterized.TestCase):
       "act_dot",
       "xpos",
       "xquat",
-      "xmat",
       "xipos",
-      "ximat",
       "xanchor",
       "xaxis",
       "geom_xpos",
-      "geom_xmat",
       "site_xpos",
-      "site_xmat",
       "cam_xpos",
       "cam_xmat",
       "light_xpos",
@@ -907,6 +903,10 @@ class IOTest(parameterized.TestCase):
         getattr(mjd, field).reshape(-1),
         field,
       )
+    _assert_eq(mjd.xmat.reshape((-1, 3, 3)), test_data.quat_to_mat(d.xquat.numpy()[world_id]), "xmat")
+    _assert_eq(mjd.ximat.reshape((-1, 3, 3)), test_data.quat_to_mat(d.xiquat.numpy()[world_id]), "ximat")
+    _assert_eq(mjd.geom_xmat.reshape((-1, 3, 3)), test_data.quat_to_mat(d.geom_xquat.numpy()[world_id]), "geom_xmat")
+    _assert_eq(mjd.site_xmat.reshape((-1, 3, 3)), test_data.quat_to_mat(d.site_xquat.numpy()[world_id]), "site_xmat")
 
     # actuator_moment
     actuator_moment_dense = np.zeros((mjm.nu, mjm.nv))

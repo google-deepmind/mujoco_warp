@@ -317,7 +317,7 @@ def _equality_connect(is_sparse: bool, newton: bool, is_discrete: bool = False):
     qvel_in: wp.array2d[float],
     eq_active_in: wp.array2d[bool],
     xpos_in: wp.array2d[wp.vec3],
-    xmat_in: wp.array2d[wp.mat33],
+    xquat_in: wp.array2d[wp.quat],
     site_xpos_in: wp.array2d[wp.vec3],
     subtree_com_in: wp.array2d[wp.vec3],
     cdof_in: wp.array2d[wp.spatial_vector],
@@ -369,8 +369,8 @@ def _equality_connect(is_sparse: bool, newton: bool, is_discrete: bool = False):
     else:
       body1 = obj1id
       body2 = obj2id
-      pos1 = xpos_in[worldid, body1] + xmat_in[worldid, body1] @ anchor1
-      pos2 = xpos_in[worldid, body2] + xmat_in[worldid, body2] @ anchor2
+      pos1 = xpos_in[worldid, body1] + math.quat_to_mat(xquat_in[worldid, body1]) @ anchor1
+      pos2 = xpos_in[worldid, body2] + math.quat_to_mat(xquat_in[worldid, body2]) @ anchor2
 
     # error is difference in global positions
     pos = pos1 - pos2
@@ -1140,7 +1140,6 @@ def _equality_weld(is_sparse: bool, newton: bool, is_discrete: bool = False):
     eq_active_in: wp.array2d[bool],
     xpos_in: wp.array2d[wp.vec3],
     xquat_in: wp.array2d[wp.quat],
-    xmat_in: wp.array2d[wp.mat33],
     site_xpos_in: wp.array2d[wp.vec3],
     subtree_com_in: wp.array2d[wp.vec3],
     cdof_in: wp.array2d[wp.spatial_vector],
@@ -1200,8 +1199,8 @@ def _equality_weld(is_sparse: bool, newton: bool, is_discrete: bool = False):
     else:
       body1 = obj1id
       body2 = obj2id
-      pos1 = xpos_in[worldid, body1] + xmat_in[worldid, body1] @ anchor2
-      pos2 = xpos_in[worldid, body2] + xmat_in[worldid, body2] @ anchor1
+      pos1 = xpos_in[worldid, body1] + math.quat_to_mat(xquat_in[worldid, body1]) @ anchor2
+      pos2 = xpos_in[worldid, body2] + math.quat_to_mat(xquat_in[worldid, body2]) @ anchor1
 
       quat = math.mul_quat(xquat_in[worldid, body1], relpose)
       quat1 = math.quat_inv(xquat_in[worldid, body2])
@@ -1600,7 +1599,7 @@ def _equality_flexstrain(is_sparse: bool, newton: bool, is_discrete: bool = Fals
     qvel_in: wp.array2d[float],
     eq_active_in: wp.array2d[bool],
     xpos_in: wp.array2d[wp.vec3],
-    xmat_in: wp.array2d[wp.mat33],
+    xquat_in: wp.array2d[wp.quat],
     subtree_com_in: wp.array2d[wp.vec3],
     cdof_in: wp.array2d[wp.spatial_vector],
     njmax_in: int,
@@ -4764,7 +4763,7 @@ def _add_surface_vel(is_pyramidal: bool):
     geom_surfacevel: wp.array2d[vec6],
     # Data in:
     geom_xpos_in: wp.array2d[wp.vec3],
-    geom_xmat_in: wp.array2d[wp.mat33],
+    geom_xquat_in: wp.array2d[wp.quat],
     contact_efc_address_in: wp.array2d[int],
     nacon_in: wp.array[int],
     # In:
@@ -4813,7 +4812,7 @@ def _add_surface_vel(is_pyramidal: bool):
     if has_sv0:
       vw0, ww0 = _geom_surface_velocity(
         geom_xpos_in[geom_x_id, g0],
-        geom_xmat_in[geom_x_id, g0],
+        math.quat_to_mat(geom_xquat_in[geom_x_id, g0]),
         sv0,
         pos,
       )
@@ -4823,7 +4822,7 @@ def _add_surface_vel(is_pyramidal: bool):
     if has_sv1:
       vw1, ww1 = _geom_surface_velocity(
         geom_xpos_in[geom_x_id, g1],
-        geom_xmat_in[geom_x_id, g1],
+        math.quat_to_mat(geom_xquat_in[geom_x_id, g1]),
         sv1,
         pos,
       )
@@ -4908,7 +4907,7 @@ def make_constraint(m: types.Model, d: types.Data):
           d.qvel,
           d.eq_active,
           d.xpos,
-          d.xmat,
+          d.xquat,
           d.site_xpos,
           d.subtree_com,
           d.cdof,
@@ -4972,7 +4971,6 @@ def make_constraint(m: types.Model, d: types.Data):
           d.eq_active,
           d.xpos,
           d.xquat,
-          d.xmat,
           d.site_xpos,
           d.subtree_com,
           d.cdof,
@@ -5180,7 +5178,7 @@ def make_constraint(m: types.Model, d: types.Data):
               d.qvel,
               d.eq_active,
               d.xpos,
-              d.xmat,
+              d.xquat,
               d.subtree_com,
               d.cdof,
               d.njmax,
@@ -5711,7 +5709,7 @@ def make_constraint(m: types.Model, d: types.Data):
           inputs=[
             m.geom_surfacevel,
             d.geom_xpos,
-            d.geom_xmat,
+            d.geom_xquat,
             d.contact.efc_address,
             d.nacon,
             d.contact.pos,

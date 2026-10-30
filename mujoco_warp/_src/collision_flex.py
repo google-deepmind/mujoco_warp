@@ -25,6 +25,7 @@ from mujoco_warp._src.collision_core import sap_range
 from mujoco_warp._src.collision_gjk import ccd
 from mujoco_warp._src.math import make_frame
 from mujoco_warp._src.math import orthogonals
+from mujoco_warp._src.math import quat_to_mat
 from mujoco_warp._src.types import MJ_MAX_EPAFACES
 from mujoco_warp._src.types import MJ_MAX_EPAHORIZON
 from mujoco_warp._src.types import MJ_MAXCONPAIR
@@ -882,7 +883,7 @@ def _flex_plane_narrowphase(warn_overflow: int):
     flex_vertflexid: wp.array[int],
     # Data in:
     geom_xpos_in: wp.array2d[wp.vec3],
-    geom_xmat_in: wp.array2d[wp.mat33],
+    geom_xquat_in: wp.array2d[wp.quat],
     flexvert_xpos_in: wp.array2d[wp.vec3],
     flex_aabb_min_in: wp.array2d[wp.vec3],
     flex_aabb_max_in: wp.array2d[wp.vec3],
@@ -927,7 +928,7 @@ def _flex_plane_narrowphase(warn_overflow: int):
 
       margin = geom_margin[worldid % geom_margin.shape[0], geomid] + flex_margin_val
       geom_pos = geom_xpos_in[worldid, geomid]
-      geom_rot = geom_xmat_in[worldid, geomid]
+      geom_rot = quat_to_mat(geom_xquat_in[worldid, geomid])
       plane_normal = wp.vec3(geom_rot[0, 2], geom_rot[1, 2], geom_rot[2, 2])
 
       # Coarse AABB vs plane test
@@ -1617,7 +1618,7 @@ def _flex_narrowphase_elem_detect(warn_overflow: int):
     flex_elemflexid: wp.array[int],
     # Data in:
     geom_xpos_in: wp.array2d[wp.vec3],
-    geom_xmat_in: wp.array2d[wp.mat33],
+    geom_xquat_in: wp.array2d[wp.quat],
     flexvert_xpos_in: wp.array2d[wp.vec3],
     naccdmax_in: int,
     flex_aabb_min_in: wp.array2d[wp.vec3],
@@ -1810,7 +1811,7 @@ def _flex_narrowphase_elem_detect(warn_overflow: int):
       margin = geom_margin_val + elem_margin
 
       geom_pos = geom_xpos_in[worldid, geomid]
-      geom_rot = geom_xmat_in[worldid, geomid]
+      geom_rot = quat_to_mat(geom_xquat_in[worldid, geomid])
       geom_size_val = geom_size[worldid % geom_size.shape[0], geomid]
 
       # Stage 1: Coarse flex object AABB vs Geom world AABB check
@@ -3259,7 +3260,7 @@ def _detect_plane_flex_candidates(
       m.flex_radius,
       m.flex_vertflexid,
       d.geom_xpos,
-      d.geom_xmat,
+      d.geom_xquat,
       d.flexvert_xpos,
       d.flex_aabb_min,
       d.flex_aabb_max,
@@ -3327,7 +3328,7 @@ def _detect_elem_geom_candidates(
       m.mesh_polymap,
       m.flex_elemflexid,
       d.geom_xpos,
-      d.geom_xmat,
+      d.geom_xquat,
       d.flexvert_xpos,
       d.naccdmax,
       d.flex_aabb_min,

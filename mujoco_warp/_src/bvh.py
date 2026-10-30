@@ -184,7 +184,7 @@ def _compute_bvh_bounds(
   geom_size: wp.array2d[wp.vec3],
   # Data in:
   geom_xpos_in: wp.array2d[wp.vec3],
-  geom_xmat_in: wp.array2d[wp.mat33],
+  geom_xquat_in: wp.array2d[wp.quat],
   # In:
   bvh_ngeom: int,
   enabled_geom_ids: wp.array[int],
@@ -199,7 +199,7 @@ def _compute_bvh_bounds(
   geom_id = enabled_geom_ids[geom_local_id]
 
   pos = geom_xpos_in[worldid, geom_id]
-  rot = geom_xmat_in[worldid, geom_id]
+  rot = mjmath.quat_to_mat(geom_xquat_in[worldid, geom_id])
   size = geom_size[worldid % geom_size.shape[0], geom_id]
   type = geom_type[geom_id]
 
@@ -321,7 +321,10 @@ def build_scene_bvh(mjm: mujoco.MjModel, mjd: mujoco.MjData, rc: RenderContext, 
   geom_dataid = wp.array(np.tile(mjm.geom_dataid, (nworld, 1)), dtype=int)
   geom_size = wp.array(np.tile(mjm.geom_size[np.newaxis, :, :], (nworld, 1, 1)), dtype=wp.vec3)
   geom_xpos = wp.array(np.tile(mjd.geom_xpos[np.newaxis, :, :], (nworld, 1, 1)), dtype=wp.vec3)
-  geom_xmat = wp.array(np.tile(mjd.geom_xmat.reshape(mjm.ngeom, 3, 3)[np.newaxis, :, :, :], (nworld, 1, 1, 1)), dtype=wp.mat33)
+  geom_quat = np.zeros((mjm.ngeom, 4))
+  for quat, mat in zip(geom_quat, mjd.geom_xmat):
+    mujoco.mju_mat2Quat(quat, mat)
+  geom_xquat = wp.array(np.tile(geom_quat[np.newaxis, :, :], (nworld, 1, 1)), dtype=wp.quat)
 
   flex_vertadr = wp.array(mjm.flex_vertadr, dtype=int)
   flex_vertnum = wp.array(mjm.flex_vertnum, dtype=int)
@@ -336,7 +339,7 @@ def build_scene_bvh(mjm: mujoco.MjModel, mjd: mujoco.MjData, rc: RenderContext, 
       geom_dataid,
       geom_size,
       geom_xpos,
-      geom_xmat,
+      geom_xquat,
       total_bvh_size,
       rc.enabled_geom_ids,
       rc.mesh_bounds_size,
@@ -392,7 +395,7 @@ def refit_scene_bvh(m: Model, d: Data, rc: RenderContext):
       m.geom_dataid,
       m.geom_size,
       d.geom_xpos,
-      d.geom_xmat,
+      d.geom_xquat,
       total_bvh_size,
       rc.enabled_geom_ids,
       rc.mesh_bounds_size,

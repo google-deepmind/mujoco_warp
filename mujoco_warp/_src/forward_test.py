@@ -663,14 +663,13 @@ class ForwardTest(parameterized.TestCase):
     step1_field = [
       "xpos",
       "xquat",
-      "xmat",
       "xipos",
-      "ximat",
+      "xiquat",
       "xanchor",
       "xaxis",
       "geom_xpos",
-      "geom_xmat",
-      "site_xmat",
+      "geom_xquat",
+      "site_xquat",
       "subtree_com",
       "cinert",
       "cdof",
@@ -715,18 +714,21 @@ class ForwardTest(parameterized.TestCase):
     if m.nflexedge:
       step1_field += ["flexedge_length", "flexedge_velocity"]
 
+    # quaternion fields are compared as the rotation matrices mjData stores
+    mat_of_quat = {"xiquat": "ximat", "geom_xquat": "geom_xmat", "site_xquat": "site_xmat"}
+
     def _getattr(arr):
       if (len(arr) >= 4) & (arr[:4] == "efc_"):
         return getattr(d.efc, arr[4:]), True
       return getattr(d, arr), False
 
     for arr in step1_field:
-      if arr in ("geom_xpos", "geom_xmat"):
-        # leave geom_xpos and geom_xmat untouched because they have static data
+      if arr in ("geom_xpos", "geom_xquat"):
+        # leave geom_xpos and geom_xquat untouched because they have static data
         continue
       attr, _ = _getattr(arr)
-      if arr in ("xquat", "xmat", "ximat"):
-        # xquat, xmat, ximat need to retain identity for world body
+      if arr in ("xquat", "xiquat"):
+        # xquat, xiquat need to retain identity for world body
         attr = attr[:, 1:]
       if attr.dtype == float:
         attr.fill_(wp.nan)
@@ -772,8 +774,11 @@ class ForwardTest(parameterized.TestCase):
       d_arr, is_efc = _getattr(arr)
 
       d_arr = d_arr.numpy()[0]
-      mjd_arr = getattr(mjd, arr)
-      if arr in ["xmat", "ximat", "geom_xmat", "site_xmat", "cam_xmat"]:
+      mjd_arr = getattr(mjd, mat_of_quat.get(arr, arr))
+      if arr in mat_of_quat:
+        mjd_arr = mjd_arr.reshape(-1)
+        d_arr = test_data.quat_to_mat(d_arr).reshape(-1)
+      elif arr in ["cam_xmat"]:
         mjd_arr = mjd_arr.reshape(-1)
         d_arr = d_arr.reshape(-1)
       elif arr == "M":

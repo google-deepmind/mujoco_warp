@@ -26,6 +26,7 @@ from mujoco_warp._src.collision_core import Geom
 from mujoco_warp._src.collision_gjk import ccd
 from mujoco_warp._src.collision_gjk import multicontact
 from mujoco_warp._src.collision_gjk import support
+from mujoco_warp._src.math import quat_to_mat
 from mujoco_warp._src.types import MJ_MAX_EPAFACES
 from mujoco_warp._src.types import MJ_MAX_EPAHORIZON
 from mujoco_warp._src.types import OverflowType
@@ -92,7 +93,7 @@ def _geom_dist(
     mesh_polymap: wp.array[int],
     # Data in:
     geom_xpos_in: wp.array2d[wp.vec3],
-    geom_xmat_in: wp.array2d[wp.mat33],
+    geom_xquat_in: wp.array2d[wp.quat],
     # In:
     gid1: int,
     gid2: int,
@@ -135,7 +136,7 @@ def _geom_dist(
     else:
       geom1.pos = pos1
     if wp.static(mat1 == None):
-      geom1.rot = geom_xmat_in[worldid, gid1]
+      geom1.rot = quat_to_mat(geom_xquat_in[worldid, gid1])
     else:
       geom1.rot = mat1
     geom1.size = geom_size[worldid % geom_size.shape[0], gid1]
@@ -166,7 +167,7 @@ def _geom_dist(
     else:
       geom2.pos = pos2
     if wp.static(mat2 == None):
-      geom2.rot = geom_xmat_in[worldid, gid2]
+      geom2.rot = quat_to_mat(geom_xquat_in[worldid, gid2])
     else:
       geom2.rot = mat2
     geom2.size = geom_size[worldid % geom_size.shape[0], gid2]
@@ -283,7 +284,7 @@ def _geom_dist(
       m.mesh_polymapnum,
       m.mesh_polymap,
       d.geom_xpos,
-      d.geom_xmat,
+      d.geom_xquat,
       gid1,
       gid2,
       m.opt.ccd_iterations,

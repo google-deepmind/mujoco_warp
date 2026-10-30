@@ -777,6 +777,11 @@ class CollisionTest(parameterized.TestCase):
     self.assertTrue(np.isfinite(dist).all())
     self.assertTrue(np.isfinite(pos).all())
     self.assertTrue(np.isfinite(normal).all())
+    # the hull starts at the deepest vertex; between vertices tied in depth, float32 rounding may
+    # pick another start than MuJoCo, which rotates the otherwise identical cyclic order
+    shift = next((s for s in range(ncon) if np.allclose(np.roll(pos, -s, axis=0), mjd.contact.pos[:ncon], atol=1e-4)), 0)
+    np.testing.assert_allclose(dist[0], mjd.contact.dist[0], atol=1e-4)
+    dist, pos, normal = (np.roll(a, -shift, axis=0) for a in (dist, pos, normal))
     np.testing.assert_allclose(dist, mjd.contact.dist[:ncon], atol=1e-4)
     np.testing.assert_allclose(pos, mjd.contact.pos[:ncon], atol=1e-4)
     np.testing.assert_allclose(normal, mjd.contact.frame[:ncon, :3], atol=1e-4)
@@ -2893,7 +2898,7 @@ class BoxBoxTest(parameterized.TestCase):
     m = mjw.put_model(mjm)
     d = mjw.put_data(mjm, mjd, nworld=npose, nconmax=16)
     d.geom_xpos.assign(geom_xpos.astype(np.float32))
-    d.geom_xmat.assign(geom_xmat.astype(np.float32))
+    d.geom_xquat.assign(test_data.mat_to_quat(geom_xmat).astype(np.float32))
     # put_data copies the contacts of the last MuJoCo pose to every world
     d.contact.dist.fill_(wp.inf)
     d.contact.pos.fill_(wp.inf)
