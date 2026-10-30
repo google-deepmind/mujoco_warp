@@ -1091,6 +1091,31 @@ class SolverTest(parameterized.TestCase):
 
     self.assertTrue(d.overflow.numpy()[0] & types.OverflowType.LS_ITERATIONS)
 
+  @parameterized.product(
+    cone=(ConeType.PYRAMIDAL, ConeType.ELLIPTIC),
+    xml_jacobian=(
+      ("constraints.xml", mujoco.mjtJacobian.mjJAC_DENSE),
+      ("constraints.xml", mujoco.mjtJacobian.mjJAC_SPARSE),
+      # dense Jacobians are limited to 60 DOFs
+      ("humanoid/n_humanoid.xml", mujoco.mjtJacobian.mjJAC_SPARSE),
+    ),
+  )
+  def test_solve_cholesky(self, cone, xml_jacobian):
+    """Newton from a cold start: the one-tile (nv 50) and the blocked (nv 81) padded Cholesky."""
+    xml, jacobian = xml_jacobian
+    for keyframe in range(3):
+      mjm, mjd, m, d = test_data.fixture(
+        xml,
+        keyframe=keyframe,
+        overrides={"opt.jacobian": jacobian, "opt.cone": cone, "opt.solver": SolverType.NEWTON, "opt.iterations": 50},
+      )
+      self.assertGreater(m.nv_pad, m.nv)
+      mujoco.mj_forward(mjm, mjd)
+      d.qacc_warmstart.zero_()
+      mjw.solve(m, d)
+      _assert_eq(d.qacc.numpy()[0], mjd.qacc, "qacc")
+      _assert_eq(d.efc.force.numpy()[0, : mjd.nefc], mjd.efc_force, "efc_force")
+
   @parameterized.parameters(
     (ConeType.PYRAMIDAL, SolverType.CG, 10, 5, mujoco.mjtJacobian.mjJAC_DENSE),
     (ConeType.ELLIPTIC, SolverType.CG, 10, 5, mujoco.mjtJacobian.mjJAC_DENSE),
@@ -1180,7 +1205,7 @@ class SolverTest(parameterized.TestCase):
     ctx.done.fill_(False)
     wp.launch(
       solver._update_gradient_init_h_sparse(False),
-      dim=(d.nworld, m.nv_pad, solver._INIT_H_LANES),
+      dim=(d.nworld, m.nv_pad, solver._INIT_H_SECTOR),
       inputs=[m.nv, m.M_elemid, d.M, d.cdof_dof, ctx.done],
       outputs=[ctx.h],
     )

@@ -37,8 +37,6 @@ from mujoco_warp._src.warp_util import event_scope
 
 wp.set_module_options({"enable_backward": False, "default_grid_stride": False})
 
-_BLOCK_CHOLESKY_DIM = 32
-
 
 def create_inverse_context(m: types.Model, d: types.Data) -> InverseContext:
   """Create an InverseContext with allocated workspace arrays.
@@ -83,7 +81,7 @@ def _create_solver_context(
   njmax = d.njmax
 
   alloc_h = m.opt.solver == types.SolverType.NEWTON
-  alloc_hfactor = alloc_h and nv > _BLOCK_CHOLESKY_DIM
+  alloc_hfactor = alloc_h and nv > types.H_ONE_TILE_MAX
   alloc_mgrad = m.opt.solver == types.SolverType.CG
   alloc_incremental = _use_incremental(m)
   alloc_solve_ld_scratch = (
@@ -2393,9 +2391,8 @@ def _update_gradient_grad_tiled(
     ctx_grad_dot_out[worldid] = grad_dot_sum[0]
 
 
-# sparse Newton Hessian init: lanes per (world, row), row-start alignment (floats per 32 B sector)
-_INIT_H_LANES = 8
-_INIT_H_ALIGN = 8
+# sparse Newton Hessian init: floats per 32 B sector, one lane each per (world, row)
+_INIT_H_SECTOR = 8
 
 
 @cache_kernel
@@ -2420,38 +2417,55 @@ def _update_gradient_init_h_sparse(compact: bool):
     if ctx_done_in[worldid]:
       return
 
+    # write whole 32 B sectors of the world's n x n block: a partially written sector costs a DRAM
+    # read once h is not in L2 (Cholesky reads the upper triangle only, nothing the zeros below it)
+    n = ctx_h_out.shape[1]
+    sector = wp.static(_INIT_H_SECTOR)
+    row_end = (i + 1) * n
+
     # cdof_dof is increasing with a -1 tail, so a padded row only meets padded columns
     if wp.static(COMPACT):
       dof_i = cdof_dof_in[worldid, i]
-      padded_row = dof_i < 0
+      # the last row's sectors end with the block: min keeps this read in bounds
+      dof_next = cdof_dof_in[worldid, wp.min(i + 1, n - 1)]
+      padded_i = dof_i < 0
+      padded_next = dof_next < 0
     else:
       dof_i = i
-      padded_row = i >= nv
+      dof_next = i + 1
+      padded_i = i >= nv
+      padded_next = i + 1 >= nv
 
-    # Cholesky reads the upper triangle only, but a row starting at the diagonal leaves a partial
-    # first sector, which costs a DRAM read once h is not in L2. Start at the sector boundary (rows
-    # are sector aligned since nv_pad is a multiple of 16); nothing reads the zeros left of it.
-    n = ctx_h_out.shape[1]
-    start = (i // wp.static(_INIT_H_ALIGN)) * wp.static(_INIT_H_ALIGN)
-    for j in range(start + lane, n, wp.static(_INIT_H_LANES)):
+    # the sectors starting in row i, from the one holding its diagonal (the block starts on a
+    # sector, n being a multiple of 4)
+    first_sector = wp.max((i * n + sector - 1) // sector, (i * n + i) // sector)
+    last_sector = (row_end - 1) // sector
+    for s in range(first_sector, last_sector + 1):
+      e = s * sector + lane
+      # a sector spans rows i and i + 1 at most: where row i ends mid-sector, it writes the next
+      # row's head too
+      next_row = e >= row_end
+      r = wp.where(next_row, i + 1, i)
+      c = e - r * n
       h = float(0.0)
-      if j >= i:
+      if c >= r:
+        dof_r = wp.where(next_row, dof_next, dof_i)
+        padded_row = wp.where(next_row, padded_next, padded_i)
+        if wp.static(COMPACT):
+          dof_c = cdof_dof_in[worldid, c]
+          padded = dof_c < 0
+        else:
+          dof_c = c
+          padded = c >= nv
         if padded_row:
           # identity on padded dofs keeps the factorization well conditioned
-          h = wp.where(i == j, 1.0, 0.0)
-        else:
-          if wp.static(COMPACT):
-            dof_j = cdof_dof_in[worldid, j]
-            padded = dof_j < 0
-          else:
-            dof_j = j
-            padded = j >= nv
-          if not padded:
-            # sparse M is stored in the lower triangle and dof_j >= dof_i
-            elemid = M_elemid[dof_j, dof_i]
-            if elemid >= 0:
-              h = M_in[worldid, elemid]
-      ctx_h_out[worldid, i, j] = h
+          h = wp.where(r == c, 1.0, 0.0)
+        elif not padded:
+          # sparse M is stored in the lower triangle and dof_c >= dof_r
+          elemid = M_elemid[dof_c, dof_r]
+          if elemid >= 0:
+            h = M_in[worldid, elemid]
+      ctx_h_out[worldid, r, c] = h
 
   return kernel
 
@@ -2700,6 +2714,7 @@ def _update_gradient_JTDAJ_dense_tiled(nv_pad: int, tile_size: int, njmax: int, 
   @wp.kernel(module="unique", enable_backward=False, grid_stride=False, module_options={"enable_mathdx_gemm": False})
   def kernel(
     # Model:
+    nv: int,
     M_colind: wp.array[int],  # column index of each CSR entry
     M_hinit_i: wp.array[int],  # row index of each CSR entry
     # Data in:
@@ -2735,6 +2750,11 @@ def _update_gradient_JTDAJ_dense_tiled(nv_pad: int, tile_size: int, njmax: int, 
       ec = wp.where(enable, e, 0)
       pos = M_colind[ec] * nv_pad + M_hinit_i[ec]
       wp.tile_scatter_masked(m_tile, pos, M_in[worldid, ec], enable)
+    # identity on padded dofs keeps the factorization well conditioned
+    for it in range((nv_pad - nv + lanes - 1) // lanes):
+      dofid = nv + it * lanes + rank
+      enable = dofid < nv_pad
+      wp.tile_scatter_masked(m_tile, wp.where(enable, dofid * (nv_pad + 1), 0), 1.0, enable)
     sum_val = wp.tile_reshape(m_tile, (nv_pad, nv_pad))
 
     # Each tile processes one output tile by looping over all constraints
@@ -2936,6 +2956,7 @@ def _update_gradient_cholesky(tile_size: int, skip_noflip: bool = False):
     sums = wp.tile_reduce(wp.add, wp.tile_map(solve_search_sums, input_tile, output_tile))[0]
     ctx_search_dot_out[worldid] = sums[0]
     ctx_newton_decrement_out[worldid] = sums[1]
+    # search has nv entries: the bounds-checked store drops the padding
     wp.tile_store(ctx_search_out[worldid], wp.tile_map(wp.mul, output_tile, -1.0))
 
   return kernel
@@ -3059,17 +3080,6 @@ def _update_gradient_cholesky_blocked_skip_unchanged(
   return kernel
 
 
-@wp.kernel(grid_stride=True)
-def _padding_h(nv: int, ctx_done_in: wp.array[bool], ctx_h_out: wp.array3d[float]):
-  worldid, elementid = wp.tid()
-
-  if ctx_done_in[worldid]:
-    return
-
-  dofid = nv + elementid
-  ctx_h_out[worldid, dofid, dofid] = 1.0
-
-
 def _cholesky_factorize_solve(
   m: types.Model, d: types.Data, ctx: SolverContext, skip_unchanged: bool = False, skip_noflip: bool = False
 ):
@@ -3078,9 +3088,9 @@ def _cholesky_factorize_solve(
   If skip_unchanged is True (blocked path only), worlds where no constraints
   changed reuse the cached factorization in hfactor instead of refactorizing.
   """
-  if m.nv <= _BLOCK_CHOLESKY_DIM:
+  if m.nv <= types.H_ONE_TILE_MAX:
     wp.launch_tiled(
-      _update_gradient_cholesky(m.nv, skip_noflip),
+      _update_gradient_cholesky(m.nv_pad, skip_noflip),
       dim=d.nworld,
       inputs=[ctx.grad, ctx.h, ctx.state_changed_count if skip_noflip else d.nefc, ctx.done],
       outputs=[ctx.search, ctx.search_dot, ctx.newton_decrement],
@@ -3444,7 +3454,7 @@ def _update_gradient(m: types.Model, d: types.Data, ctx: SolverContext, compact:
       m_mat = dj.qH if is_discrete else dj.M
       wp.launch(
         _update_gradient_init_h_sparse(sc),
-        dim=(d.nworld, m.nv_pad, _INIT_H_LANES),
+        dim=(d.nworld, m.nv_pad, _INIT_H_SECTOR),
         inputs=[mj.nv, mj.M_elemid, m_mat, dj.cdof_dof, ctx.done],
         outputs=[ctx.h],
       )
@@ -3510,6 +3520,7 @@ def _update_gradient(m: types.Model, d: types.Data, ctx: SolverContext, compact:
           _update_gradient_JTDAJ_dense_tiled(m.nv_pad, types.TILE_SIZE_JTDAJ_DENSE, d.njmax, m.M_colind.shape[0]),
           dim=d.nworld,
           inputs=[
+            m.nv,
             m.M_colind,
             m.M_hinit_i,
             d.nefc,
@@ -3522,9 +3533,6 @@ def _update_gradient(m: types.Model, d: types.Data, ctx: SolverContext, compact:
           outputs=[ctx.h],
           block_dim=m.block_dim.update_gradient_JTDAJ_dense,
         )
-      if m.nv > _BLOCK_CHOLESKY_DIM:
-        # the dense tile zeros padded dofs; the blocked Cholesky needs an identity there
-        wp.launch(_padding_h, dim=(d.nworld, m.nv_pad - m.nv), inputs=[m.nv, ctx.done], outputs=[ctx.h])
 
     det_atomics = bool(m.opt.deterministic & types.DeterminismType.ATOMICS)
     if is_discrete:
