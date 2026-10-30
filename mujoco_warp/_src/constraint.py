@@ -18,6 +18,7 @@ from typing import Tuple
 import warp as wp
 
 from mujoco_warp._src import math
+from mujoco_warp._src import sort
 from mujoco_warp._src import support
 from mujoco_warp._src import types
 from mujoco_warp._src.types import ConstraintType
@@ -2574,6 +2575,10 @@ def _efc_contact_init(cone_type: types.ConeType, is_sparse: bool, newton: bool, 
     if conid >= nacon_in[0]:
       return
 
+    # Reused contact slots may contain addresses from a different contact dimension.
+    for dim in range(contact_efc_address_out.shape[1]):
+      contact_efc_address_out[conid, dim] = -1
+
     if not (type_in[conid] & ContactType.CONSTRAINT):
       return
 
@@ -2717,6 +2722,10 @@ def _efc_contact_init_flex(cone_type: types.ConeType, is_sparse: bool, newton: b
 
     if conid >= nacon_in[0]:
       return
+
+    # Reused contact slots may contain addresses from a different contact dimension.
+    for dim in range(contact_efc_address_out.shape[1]):
+      contact_efc_address_out[conid, dim] = -1
 
     if not (type_in[conid] & ContactType.CONSTRAINT):
       return
@@ -4855,10 +4864,9 @@ def _add_surface_vel(is_pyramidal: bool):
   return kernel
 
 
-def _sort_constraints(m: types.Model, d: types.Data):
+def _sort_constraints(m: types.Model, d: types.Data, nnz: wp.array | None = None):
   """Order constraint rows canonically for determinism."""
-  # TODO(team): Implementation of constraint row sorting.
-  pass
+  sort.constraints(m, d, nnz)
 
 
 @event_scope
@@ -5823,7 +5831,7 @@ def make_constraint(m: types.Model, d: types.Data):
     )
 
   if m.opt.deterministic & types.DeterminismType.CONSTRAINT:
-    _sort_constraints(m, d)
+    _sort_constraints(m, d, efc_nnz)
 
 
 @cache_kernel

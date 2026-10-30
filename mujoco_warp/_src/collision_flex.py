@@ -2357,6 +2357,8 @@ def _write_filtered_contacts(warn_overflow: int):
       return
 
     contact_dist_out[id_] = cand_dist[i]
+    for dim in range(contact_efc_address_out.shape[1]):
+      contact_efc_address_out[id_, dim] = -1
     contact_pos_out[id_] = cand_pos[i]
     contact_frame_out[id_] = make_frame(cand_nrm[i])
     if geomid >= 0 and geom_type[geomid] == int(GeomType.PLANE):
