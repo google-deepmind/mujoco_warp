@@ -1254,6 +1254,10 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
   flex_shellflexid = np.zeros(mjm.nflexshelldata, dtype=np.int32)
   flex_vertflexid = np.zeros(mjm.nflexvert, dtype=np.int32)
   flex_shelladr = np.zeros(mjm.nflex, dtype=np.int32)
+  flex_efcnum = np.zeros(mjm.nflex, dtype=np.int32)
+  flex_efcnnz = np.zeros(mjm.nflex, dtype=np.int32)
+  flexedge_efcadr = np.full(mjm.nflexedge, -1, dtype=np.int32)
+  flexedge_efcnnzadr = np.zeros(mjm.nflexedge, dtype=np.int32)
 
   if mjm.nflex > 0:
     shell_offset = 0
@@ -1265,6 +1269,17 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
       edge_start = mjm.flex_edgeadr[fi]
       edge_num = mjm.flex_edgenum[fi]
       flex_edgeflexid[edge_start : edge_start + edge_num] = fi
+
+      # edge equality rows of a flex are allocated as one block: rigid edges and interpolated
+      # flexes have no rows
+      if mjm.flex_interp[fi] == 0:
+        edges = np.arange(edge_start, edge_start + edge_num)
+        edges = edges[~mjm.flexedge_rigid[edges].astype(bool)]
+        edge_nnz = mjm.flexedge_J_rownnz[edges]
+        flexedge_efcadr[edges] = np.arange(edges.size)
+        flexedge_efcnnzadr[edges] = np.cumsum(edge_nnz) - edge_nnz
+        flex_efcnum[fi] = edges.size
+        flex_efcnnz[fi] = edge_nnz.sum()
 
       flex_shelladr[fi] = shell_offset
       shell_num = mjm.flex_shellnum[fi]
@@ -1280,6 +1295,10 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
   m.flex_shellflexid = flex_shellflexid
   m.flex_vertflexid = flex_vertflexid
   m.flex_shelladr = flex_shelladr
+  m.flex_efcnum = flex_efcnum
+  m.flex_efcnnz = flex_efcnnz
+  m.flexedge_efcadr = flexedge_efcadr
+  m.flexedge_efcnnzadr = flexedge_efcnnzadr
 
   flex_bend_interp_map = []
   flex_face_map = []
