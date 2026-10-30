@@ -1489,8 +1489,10 @@ class FlexPassiveForcesTest(parameterized.TestCase):
       mjd1 = mujoco.MjData(mjm)
       qpos = d.qpos.numpy()
       qvel = d.qvel.numpy()
-      qpos[1] += 0.02
-      qvel[1] += 0.05
+      # perturb world 1 non-rigidly: adding the same offset to every slider is a rigid translation,
+      # which leaves the passive forces unchanged
+      qpos[1] += 0.02 * np.linspace(0, 1, mjm.nq)
+      qvel[1] += 0.05 * np.linspace(0, 1, mjm.nv)
       d.qpos.assign(qpos)
       d.qvel.assign(qvel)
       mjd1.qpos[:] = qpos[1]
