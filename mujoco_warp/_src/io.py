@@ -498,12 +498,7 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
   m.opt = opt
   m.callback = types.Callback()
 
-  m.nv_pad = _get_padded_sizes(
-    mjm.nv,
-    0,
-    types.TILE_SIZE_JTDAJ_SPARSE if is_sparse(mjm) else types.TILE_SIZE_JTDAJ_DENSE,
-    augment_cholesky=mjm.opt.solver == mujoco.mjtSolver.mjSOL_NEWTON,
-  )[1]
+  m.nv_pad = _get_padded_sizes(mjm, 0)[1]
   m.nacttrnbody = (mjm.actuator_trntype == mujoco.mjtTrn.mjTRN_BODY).sum()
   m.nsensortaxel = mjm.mesh_vertnum[mjm.sensor_objid[mjm.sensor_type == mujoco.mjtSensor.mjSENS_TACTILE]].sum()
   # rangefinder ray counts (1 per site sensor, width * height per camera sensor)
@@ -1406,23 +1401,28 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
   return m
 
 
-def _get_padded_sizes(nv: int, njmax: int, tile_size: int, augment_cholesky: bool = False):
+def _get_padded_sizes(mjm: mujoco.MjModel, njmax: int):
   def round_up(x, multiple):
     return ((x + multiple - 1) // multiple) * multiple
 
+  tile_size = types.TILE_SIZE_JTDAJ_SPARSE if is_sparse(mjm) else types.TILE_SIZE_JTDAJ_DENSE
   njmax_padded = round_up(njmax, tile_size)
-  if nv > types.BLOCK_CHOLESKY_DIM:
-    # the blocked Cholesky's whole tiles and its augmented row
-    nv_padded = round_up(nv + int(augment_cholesky), tile_size)
+  nv = mjm.nv
+  if nv > types.H_ONE_TILE_MAX:
+    # the blocked Cholesky's tiles, and its augmented row for Newton
+    nv_padded = round_up(nv + int(mjm.opt.solver == mujoco.mjtSolver.mjSOL_NEWTON), tile_size)
   else:
-    # the one-tile Cholesky factors nv_pad: rows of whole 16-byte vectors
+    # the one-tile Cholesky factors the padded tile: rows of whole 16-byte vectors
     nv_padded = round_up(nv, 4)
 
   return njmax_padded, nv_padded
 
 
 def _nvmax_pad(nvmax: int) -> int:
-  """Reserve an augmented column and round nvmax up to the dense tile size."""
+  """Reserve an augmented column and round nvmax up to the dense tile size.
+
+  The compact smooth solve factors M with the blocked Cholesky, whatever the size.
+  """
   t = types.TILE_SIZE_JTDAJ_DENSE
   return ((max(nvmax, 1) + t) // t) * t
 
@@ -1950,13 +1950,7 @@ def make_data(
     condim_arrays.append(mjm.flex_condim)
   sizes["nmaxcondim"] = np.concatenate(condim_arrays).max()
   sizes["nmaxpyramid"] = np.maximum(1, 2 * (sizes["nmaxcondim"] - 1))
-  tile_size = types.TILE_SIZE_JTDAJ_SPARSE if is_sparse(mjm) else types.TILE_SIZE_JTDAJ_DENSE
-  sizes["njmax_pad"], sizes["nv_pad"] = _get_padded_sizes(
-    mjm.nv,
-    njmax,
-    tile_size,
-    augment_cholesky=mjm.opt.solver == mujoco.mjtSolver.mjSOL_NEWTON,
-  )
+  sizes["njmax_pad"], sizes["nv_pad"] = _get_padded_sizes(mjm, njmax)
   sizes["nworld"] = nworld
   sizes["naconmax"] = naconmax
   sizes["njmax"] = njmax
@@ -2184,13 +2178,7 @@ def put_data(
     condim_arrays.append(mjm.flex_condim)
   sizes["nmaxcondim"] = np.concatenate(condim_arrays).max()
   sizes["nmaxpyramid"] = np.maximum(1, 2 * (sizes["nmaxcondim"] - 1))
-  tile_size = types.TILE_SIZE_JTDAJ_SPARSE if is_sparse(mjm) else types.TILE_SIZE_JTDAJ_DENSE
-  sizes["njmax_pad"], sizes["nv_pad"] = _get_padded_sizes(
-    mjm.nv,
-    njmax,
-    tile_size,
-    augment_cholesky=mjm.opt.solver == mujoco.mjtSolver.mjSOL_NEWTON,
-  )
+  sizes["njmax_pad"], sizes["nv_pad"] = _get_padded_sizes(mjm, njmax)
   sizes["nworld"] = nworld
   sizes["naconmax"] = naconmax
   sizes["njmax"] = njmax

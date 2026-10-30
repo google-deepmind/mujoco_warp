@@ -16,7 +16,6 @@
 """Tests for solver functions."""
 
 import copy
-from unittest import mock
 
 import mujoco
 import numpy as np
@@ -1094,20 +1093,22 @@ class SolverTest(parameterized.TestCase):
 
   @parameterized.product(
     cone=(ConeType.PYRAMIDAL, ConeType.ELLIPTIC),
-    jacobian=(mujoco.mjtJacobian.mjJAC_DENSE, mujoco.mjtJacobian.mjJAC_SPARSE),
-    blocked=(False, True),
+    xml_jacobian=(
+      ("constraints.xml", mujoco.mjtJacobian.mjJAC_DENSE),
+      ("constraints.xml", mujoco.mjtJacobian.mjJAC_SPARSE),
+      # dense Jacobians are limited to 60 DOFs
+      ("humanoid/n_humanoid.xml", mujoco.mjtJacobian.mjJAC_SPARSE),
+    ),
   )
-  def test_solve_cholesky(self, cone, jacobian, blocked):
-    """Newton from a cold start: one-tile and blocked Cholesky of a padded 50-DOF Hessian."""
-    # the threshold also sets the padding: the blocked Cholesky's tiles, else nv_pad > nv factored
-    self.enterContext(mock.patch.object(types, "BLOCK_CHOLESKY_DIM", 32 if blocked else types.BLOCK_CHOLESKY_DIM))
+  def test_solve_cholesky(self, cone, xml_jacobian):
+    """Newton from a cold start: the one-tile (nv 50) and the blocked (nv 81) padded Cholesky."""
+    xml, jacobian = xml_jacobian
     for keyframe in range(3):
       mjm, mjd, m, d = test_data.fixture(
-        "constraints.xml",
+        xml,
         keyframe=keyframe,
         overrides={"opt.jacobian": jacobian, "opt.cone": cone, "opt.solver": SolverType.NEWTON, "opt.iterations": 50},
       )
-      self.assertEqual(m.nv > types.BLOCK_CHOLESKY_DIM, blocked)
       self.assertGreater(m.nv_pad, m.nv)
       mujoco.mj_forward(mjm, mjd)
       d.qacc_warmstart.zero_()
@@ -1204,7 +1205,7 @@ class SolverTest(parameterized.TestCase):
     ctx.done.fill_(False)
     wp.launch(
       solver._update_gradient_init_h_sparse(False),
-      dim=(d.nworld, m.nv_pad, solver._INIT_H_LANES),
+      dim=(d.nworld, m.nv_pad, solver._INIT_H_SECTOR),
       inputs=[m.nv, m.M_elemid, d.M, d.cdof_dof, ctx.done],
       outputs=[ctx.h],
     )
