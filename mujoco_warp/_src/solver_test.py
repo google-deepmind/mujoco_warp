@@ -16,7 +16,7 @@
 """Tests for solver functions."""
 
 import copy
-from unittest import mock
+import dataclasses
 
 import mujoco
 import numpy as np
@@ -2064,86 +2064,110 @@ class SolverTest(parameterized.TestCase):
 
     self.assertTrue(total_any_changes, "no state changes detected across any keyframe")
 
-  def test_sparse_hessian_dof_friction(self):
+  @parameterized.product(nworld=(1, 2), rows_from=("put_data", "make_constraint"))
+  def test_sparse_hessian_dof_friction(self, nworld, rows_from):
     """Sparse Newton H, full and incremental, includes quadratic DOF and tendon friction rows."""
-    xml = """
-    <mujoco>
-      <option cone="pyramidal" solver="Newton" jacobian="sparse"/>
-      <worldbody>
-        <body>
-          <joint name="j0" type="hinge" axis="0 1 0" frictionloss="0.5"/>
-          <geom type="capsule" size=".05" fromto="0 0 0 .3 0 0"/>
-          <body pos=".3 0 0">
-            <joint type="hinge" axis="0 1 0" frictionloss="2" range="-1 1"/>
+    mjm, mjd, m, _ = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option solver="Newton" jacobian="sparse"/>
+        <worldbody>
+          <body>
+            <joint name="j0" axis="0 1 0" frictionloss="0.5"/>
             <geom type="capsule" size=".05" fromto="0 0 0 .3 0 0"/>
             <body pos=".3 0 0">
-              <joint type="hinge" axis="1 0 0" frictionloss="0.01"/>
-              <joint name="j3" type="slide" axis="1 0 0"/>
+              <joint axis="0 1 0" frictionloss="2" range="-1 1"/>
               <geom type="capsule" size=".05" fromto="0 0 0 .3 0 0"/>
+              <body pos=".3 0 0">
+                <joint axis="1 0 0" frictionloss="0.01"/>
+                <joint name="j3" type="slide" axis="1 0 0"/>
+                <geom type="capsule" size=".05" fromto="0 0 0 .3 0 0"/>
+              </body>
             </body>
           </body>
-        </body>
-      </worldbody>
-      <tendon>
-        <fixed frictionloss="20">
-          <joint joint="j0" coef="1"/>
-          <joint joint="j3" coef="-0.5"/>
-        </fixed>
-      </tendon>
-    </mujoco>
-    """
-    mjm, mjd, m, _ = test_data.fixture(xml=xml)
+        </worldbody>
+        <tendon>
+          <fixed frictionloss="20">
+            <joint joint="j0" coef="1"/>
+            <joint joint="j3" coef="-0.5"/>
+          </fixed>
+        </tendon>
+      </mujoco>
+      """,
+      nworld=nworld,
+    )
     self.assertTrue(m.is_sparse)
     mjd.qpos[1] = 0.99  # activate the second joint's limit
     mujoco.mj_forward(mjm, mjd)
+    d = mjw.put_data(mjm, mjd, nworld=nworld)
 
-    for rows_from in ("put_data", "make_constraint"):
-      with self.subTest(rows_from=rows_from):
-        d = mjw.put_data(mjm, mjd)
-        if rows_from == "make_constraint":
-          mjw.make_constraint(m, d)
-        ctx = solver._create_solver_context(m, d)
-        solver.init_context(m, d, ctx, grad=True)
+    mjds = [mjd]
+    if nworld == 2:
+      # perturb world 1 so the two worlds have distinct Hessians
+      mjd1 = copy.copy(mjd)
+      mjd1.qpos[0] = 0.4
+      mujoco.mj_forward(mjm, mjd1)
+      qpos = d.qpos.numpy()
+      qpos[1] = mjd1.qpos
+      d.qpos.assign(qpos)
+      mjw.kinematics(m, d)
+      mjw.com_pos(m, d)
+      mjw.crb(m, d)
+      mjds.append(mjd1)
 
-        nefc = d.nefc.numpy()[0]
-        efc_type = d.efc.type.numpy()[0, :nefc]
-        friction_dof, friction_tendon = types.ConstraintType.FRICTION_DOF, types.ConstraintType.FRICTION_TENDON
-        self.assertEqual(set(efc_type), {friction_dof, friction_tendon, types.ConstraintType.LIMIT_JOINT})
+    if rows_from == "make_constraint":
+      mjw.make_constraint(m, d)
+    ctx = solver._create_solver_context(m, d)
+    solver.init_context(m, d, ctx, grad=True)
 
-        mass = np.zeros((m.nv, m.nv))
-        mujoco.mj_fullM(mjm, mjd, mass)
-        rownnz = d.efc.J_rownnz.numpy()[0]
-        rowadr = d.efc.J_rowadr.numpy()[0]
-        colind = d.efc.J_colind.numpy()[0, 0]
-        J = d.efc.J.numpy()[0, 0]
-        D = d.efc.D.numpy()[0]
+    nefc = d.nefc.numpy()
+    efc_type = d.efc.type.numpy()
+    friction_dof, friction_tendon = types.ConstraintType.FRICTION_DOF, types.ConstraintType.FRICTION_TENDON
+    for w in range(nworld):
+      self.assertEqual(set(efc_type[w, : nefc[w]]), {friction_dof, friction_tendon, types.ConstraintType.LIMIT_JOINT})
 
-        def _check_h(state):
-          h = mass.copy()
-          for efcid in np.flatnonzero(state == types.ConstraintState.QUADRATIC.value):
-            row = np.zeros(m.nv)
-            adr = rowadr[efcid]
-            row[colind[adr : adr + rownnz[efcid]]] = J[adr : adr + rownnz[efcid]]
-            h += D[efcid] * np.outer(row, row)
-          np.testing.assert_allclose(np.triu(ctx.h.numpy()[0, : m.nv, : m.nv]), np.triu(h), rtol=1e-5, atol=1e-6)
+    rownnz = d.efc.J_rownnz.numpy()
+    rowadr = d.efc.J_rowadr.numpy()
+    colind = d.efc.J_colind.numpy()[:, 0]
+    J = d.efc.J.numpy()[:, 0]
+    D = d.efc.D.numpy()
 
-        # full rebuild with every row quadratic
-        state = np.full(d.njmax, types.ConstraintState.QUADRATIC.value, dtype=int)
-        d.efc.state.assign(state[None])
-        ctx.done.fill_(False)
-        solver._update_gradient(m, d, ctx)
-        _check_h(state[:nefc])
+    def _check_h(state):
+      h_actual = ctx.h.numpy()
+      for w in range(nworld):
+        h = np.zeros((m.nv, m.nv))
+        mujoco.mj_fullM(mjm, mjds[w], h)
+        for efcid in np.flatnonzero(state[w, : nefc[w]] == types.ConstraintState.QUADRATIC.value):
+          row = np.zeros(m.nv)
+          adr = rowadr[w, efcid]
+          row[colind[w, adr : adr + rownnz[w, efcid]]] = J[w, adr : adr + rownnz[w, efcid]]
+          h += D[w, efcid] * np.outer(row, row)
+        np.testing.assert_allclose(np.triu(h_actual[w, : m.nv, : m.nv]), np.triu(h), rtol=1e-5, atol=1e-6)
+      if nworld == 2:
+        self.assertFalse(np.allclose(np.triu(h_actual[0, : m.nv, : m.nv]), np.triu(h_actual[1, : m.nv, : m.nv])))
 
-        # incremental update: release the first DOF friction row and the tendon friction row
-        changed = [np.flatnonzero(efc_type == friction_dof)[0], np.flatnonzero(efc_type == friction_tendon)[0]]
-        state[changed] = types.ConstraintState.LINEARPOS.value
-        d.efc.state.assign(state[None])
-        ids = np.zeros(ctx.quad_changed_ids.shape, dtype=int)
-        ids[0, : len(changed)] = changed
-        ctx.quad_changed_ids.assign(ids)
-        ctx.quad_changed_count.assign(np.array([len(changed)]))
-        solver._update_gradient_incremental(m, d, ctx)
-        _check_h(state[:nefc])
+    # full rebuild with every row quadratic
+    state = np.full((nworld, d.njmax), types.ConstraintState.QUADRATIC.value, dtype=int)
+    d.efc.state.assign(state)
+    ctx.done.fill_(False)
+    ctx.h.fill_(wp.inf)
+    solver._update_gradient(m, d, ctx)
+    _check_h(state)
+
+    # incremental update: release the first DOF friction row and the tendon friction row
+    ids = np.zeros(ctx.quad_changed_ids.shape, dtype=int)
+    counts = np.zeros(nworld, dtype=int)
+    for w in range(nworld):
+      types_w = efc_type[w, : nefc[w]]
+      changed = [np.flatnonzero(types_w == friction_dof)[0], np.flatnonzero(types_w == friction_tendon)[0]]
+      state[w, changed] = types.ConstraintState.LINEARPOS.value
+      ids[w, : len(changed)] = changed
+      counts[w] = len(changed)
+    d.efc.state.assign(state)
+    ctx.quad_changed_ids.assign(ids)
+    ctx.quad_changed_count.assign(counts)
+    solver._update_gradient_incremental(m, d, ctx)
+    _check_h(state)
 
   def test_qfrc_constraint_early_convergence(self):
     """Sparse qfrc_constraint must survive for a world that converges before the batch.
@@ -2475,7 +2499,7 @@ def _put_compact(xml: str, nvmax: int | None = None, sparse: bool = False):
   return mjm, mjd, m, d
 
 
-class CompactSolverTest(absltest.TestCase):
+class CompactSolverTest(parameterized.TestCase):
   """Tests for the compacted smooth and constrained solves (solver.py compact path)."""
 
   def test_smooth_solve_equivalence_all_active(self):
@@ -2529,54 +2553,85 @@ class CompactSolverTest(absltest.TestCase):
 
         np.testing.assert_allclose(d.qacc.numpy(), baseline_qacc, rtol=1e-3, atol=1e-4)
 
-  def test_compact_hessian_dof_friction(self):
+  @parameterized.parameters(ConeType.PYRAMIDAL, ConeType.ELLIPTIC)
+  def test_compact_hessian_dof_friction(self, cone):
     """With a tree asleep, the compact Hessian places DOF friction rows at compact DOFs."""
-    sphere = '<body pos="0 0 .08"><joint type="free" frictionloss=".5"/><geom type="sphere" size=".1"/></body>'
-    # iterations="0" keeps the Hessian of the initial constraint states
-    xml = """
-    <mujoco>
-      <option jacobian="sparse" solver="Newton" iterations="0" cone="{cone}"/>
-      <worldbody>
-        <geom type="plane" size="5 5 .1"/>
-        {asleep}
-        {sphere}
-      </worldbody>
-    </mujoco>
-    """
-    hinge = '<body><joint type="hinge" frictionloss="5"/><geom type="capsule" fromto="0 0 .5 .3 0 .5" size=".05"/></body>'
-    for cone in ("pyramidal", "elliptic"):
-      with self.subTest(cone=cone):
+    # iterations="0" keeps qacc at the warmstart, which the compact solve also starts from
+    # reference: the awake sphere alone, whose DOFs are the compact DOFs of the full model
+    _, _, m_ref, d_ref = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option jacobian="sparse" solver="Newton" iterations="0"/>
+        <worldbody>
+          <geom type="plane" size="5 5 .1"/>
+          <body pos="0 0 .08">
+            <joint type="free" frictionloss=".5"/>
+            <geom size=".1"/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """,
+      overrides={"opt.cone": cone},
+    )
+    mjw.forward(m_ref, d_ref)
+    ctx_ref = solver._create_solver_context(m_ref, d_ref)
+    ctx_ref.h.fill_(wp.inf)
+    solver.init_context(m_ref, d_ref, ctx_ref, grad=True)
+    href = ctx_ref.h.numpy()[0]
 
-        def _hessian(asleep):
-          _, _, m, d = _put_compact(xml.format(cone=cone, asleep=asleep, sphere=sphere))
-          self.assertTrue(m.is_sparse)
-          ctxs = []
-          solve = solver._solve
+    _, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option jacobian="sparse" solver="Newton" iterations="0"/>
+        <worldbody>
+          <geom type="plane" size="5 5 .1"/>
+          <body>
+            <joint frictionloss="5"/>
+            <geom type="capsule" fromto="0 0 .5 .3 0 .5" size=".05"/>
+          </body>
+          <body pos="0 0 .08">
+            <joint type="free" frictionloss=".5"/>
+            <geom size=".1"/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """,
+      overrides={"opt.cone": cone},
+    )
+    mjw.forward(m, d)
+    d.tree_awake.assign(np.array([[0, 1]], dtype=int))
+    island.update_active_dofs(m, d)
+    solver._compact_gather(m, d)
 
-          def _spy(m, d, ctx, compact=False):
-            ctxs.append(ctx)
-            return solve(m, d, ctx, compact=compact)
+    # the compact (m, d) that solve_compact passes to the solver
+    nvp = d.nvmax_pad
+    m2 = dataclasses.replace(m, nv=nvp, nv_pad=nvp, is_sparse=False, dof_tri_row=d.cdof_tri_row, dof_tri_col=d.cdof_tri_col)
+    efc2 = dataclasses.replace(d.efc, J=d.cJ, Ma=d.cMa)
+    d2 = dataclasses.replace(
+      d,
+      M=d.cM,
+      qfrc_smooth=d.cqfrc_smooth,
+      qacc_smooth=d.cqacc_smooth,
+      qacc_warmstart=d.cqacc_warmstart,
+      qacc=d.cqacc,
+      qfrc_constraint=d.cqfrc_constraint,
+      efc=efc2,
+    )
+    wp.copy(d2.qacc, d2.qacc_warmstart)  # as _solve does
+    ctx = solver._create_solver_context(m2, d2)
+    ctx.compact_m_full = m
+    ctx.compact_d_full = d
+    ctx.h.fill_(wp.inf)
+    solver.init_context(m2, d2, ctx, grad=True, compact=True)
+    h = ctx.h.numpy()[0]
 
-          with mock.patch.object(solver, "_solve", _spy):
-            mjw.forward(m, d)
-            if asleep:
-              awake = np.ones((d.nworld, m.ntree), dtype=int)
-              awake[:, 0] = 0
-              d.tree_awake = wp.array(awake, dtype=int)
-              island.update_active_dofs(m, d)
-              solver.solve_compact(m, d)
-          return d, ctxs[-1].h.numpy()[0]
-
-        # reference: the awake sphere alone, whose DOFs are the compact DOFs of the full model
-        dref, href = _hessian("")
-        d, h = _hessian(hinge)
-        nv = dref.qacc.shape[1]
-        self.assertEqual(d.ncdof.numpy()[0], nv)
-        nefc = dref.nefc.numpy()[0]
-        quadratic = dref.efc.state.numpy()[0, :nefc] == types.ConstraintState.QUADRATIC
-        dof_friction = dref.efc.type.numpy()[0, :nefc] == types.ConstraintType.FRICTION_DOF
-        self.assertTrue((quadratic & dof_friction).any())
-        np.testing.assert_allclose(np.triu(h[:nv, :nv]), np.triu(href[:nv, :nv]), rtol=1e-4, atol=1e-5)
+    nv = m_ref.nv
+    self.assertEqual(d.ncdof.numpy()[0], nv)
+    nefc = d_ref.nefc.numpy()[0]
+    quadratic = d_ref.efc.state.numpy()[0, :nefc] == types.ConstraintState.QUADRATIC
+    dof_friction = d_ref.efc.type.numpy()[0, :nefc] == types.ConstraintType.FRICTION_DOF
+    self.assertTrue((quadratic & dof_friction).any())
+    np.testing.assert_allclose(np.triu(h[:nv, :nv]), np.triu(href[:nv, :nv]), rtol=1e-4, atol=1e-5)
 
   def test_solve_compact_populates_islands(self):
     """When using the compact solver via mjw.solve, island mapping fields are updated."""

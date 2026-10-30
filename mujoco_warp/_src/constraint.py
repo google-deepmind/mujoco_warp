@@ -1897,12 +1897,11 @@ def _friction_dof(is_sparse: bool, is_discrete: bool = False):
       dof_frictionadr_out[worldid, dofid] = -1
       return
 
-    dof_frictionadr_out[worldid, dofid] = efcid
-
     if wp.static(is_sparse):
       efc_J_rownnz_out[worldid, efcid] = 1
       rowadr = wp.atomic_add(efc_nnz_out, worldid, 1)  # kernel_analyzer: ignore[atomic]
       if rowadr + 1 > njmax_nnz_in:
+        dof_frictionadr_out[worldid, dofid] = -1
         return
       efc_J_rowadr_out[worldid, efcid] = rowadr
       efc_J_colind_out[worldid, 0, rowadr] = dofid
@@ -1911,6 +1910,8 @@ def _friction_dof(is_sparse: bool, is_discrete: bool = False):
       for i in range(nv):
         efc_J_out[worldid, efcid, i] = 0.0
       efc_J_out[worldid, efcid, dofid] = 1.0
+
+    dof_frictionadr_out[worldid, dofid] = efcid
 
     Jqvel = qvel_in[worldid, dofid]
 
