@@ -341,6 +341,17 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
     if size < 1:
       raise ValueError(f"batch_sizes[{name!r}] must be positive, got {size}.")
 
+  # Fields that set_const computes per world (FIXED group) inherit the batch size of their sources, so a
+  # batched source never leaves every world writing the same derived row.
+  batch_sizes = dict(batch_sizes)
+  for derived, sources in (
+    ("geom_size", ("geom_dataid",)),
+    ("geom_aabb", ("geom_size", "geom_dataid")),
+    ("geom_rbound", ("geom_size", "geom_dataid")),
+    ("body_subtreemass", ("body_mass",)),
+  ):
+    batch_sizes[derived] = max(batch_sizes.get(derived, 1), *(batch_sizes.get(src, 1) for src in sources))
+
   # model: check supported features in array types
   for field, field_type, mj_type in (
     (mjm.actuator_trntype, types.TrnType, mujoco.mjtTrn),
