@@ -573,8 +573,8 @@ class UtilMiscTest(parameterized.TestCase):
     _assert_eq(wpnt0, np.array([MJ_MAXVAL, MJ_MAXVAL]), "wpnt0")
     _assert_eq(wpnt1, np.array([MJ_MAXVAL, MJ_MAXVAL]), "wpnt1")
 
-    # no wrap
-    wlen, wpnt0, wpnt1 = _wrap_circle(np.array([1, 0, 0, 1]), np.array([0.0, 0.0]), 0.1)
+    # no wrap: sidesite in the homotopy class of the straight segment
+    wlen, wpnt0, wpnt1 = _wrap_circle(np.array([1, 0, 0, 1]), np.array([0.1, 0.1]) / np.sqrt(2.0), 0.1)
     _assert_eq(wlen, -1.0, "wlen")
     _assert_eq(wpnt0, np.array([MJ_MAXVAL, MJ_MAXVAL]), "wpnt0")
     _assert_eq(wpnt1, np.array([MJ_MAXVAL, MJ_MAXVAL]), "wpnt1")
@@ -587,17 +587,42 @@ class UtilMiscTest(parameterized.TestCase):
     _assert_eq(wpnt0, np.array([np.sqrt(2.0) / 2.0, np.sqrt(2.0) / 2.0]), "wpnt0")
     _assert_eq(wpnt1, np.array([np.sqrt(2.0) / 2.0, np.sqrt(2.0) / 2.0]), "wpnt1")
 
-    # wrap
-    wlen, wpnt0, wpnt1 = _wrap_circle(np.array([np.sqrt(2.0), 0, 0, np.sqrt(2.0)]), np.array([0.0, 0.0]), 1.0 + 5e-4)
+    # wrap w/ sidesite on the short arc
+    radius = 1.0 + 5e-4
+    wlen, wpnt0, wpnt1 = _wrap_circle(
+      np.array([np.sqrt(2.0), 0, 0, np.sqrt(2.0)]), radius * np.array([1.0, 1.0]) / np.sqrt(2.0), radius
+    )
     _assert_eq(wlen, 1e-3, "wlen")
     _assert_eq(wpnt0, np.array([np.sqrt(2.0) / 2.0, np.sqrt(2.0) / 2.0]), "wpnt0")
     _assert_eq(wpnt1, np.array([np.sqrt(2.0) / 2.0, np.sqrt(2.0) / 2.0]), "wpnt1")
 
-    # wrap
-    wlen, wpnt0, wpnt1 = _wrap_circle(np.array([1.0, 0, 0, 1.0]), np.array([0.0, 0.0]), 1.0)
+    # wrap w/ sidesite on the short arc
+    wlen, wpnt0, wpnt1 = _wrap_circle(np.array([1.0, 0, 0, 1.0]), np.array([1.0, 1.0]) / np.sqrt(2.0), 1.0)
     _assert_eq(wlen, 0.5 * np.pi, "wlen")
     _assert_eq(wpnt0, np.array([1.0, 0.0]), "wpnt0")
     _assert_eq(wpnt1, np.array([0.0, 1.0]), "wpnt1")
+
+    # wrap w/ sidesite on the long arc
+    wlen, wpnt0, wpnt1 = _wrap_circle(np.array([1.0, 0, 0, 1.0]), np.array([-1.0, -1.0]) / np.sqrt(2.0), 1.0)
+    _assert_eq(wlen, 1.5 * np.pi, "wlen")
+    _assert_eq(wpnt0, np.array([1.0, 0.0]), "wpnt0")
+    _assert_eq(wpnt1, np.array([0.0, 1.0]), "wpnt1")
+
+    # sidesite more than 90 degrees from the clear segment: no wrap
+    side = np.array([-0.79, 0.61]) / np.hypot(0.79, 0.61)
+    wlen, _, _ = _wrap_circle(np.array([-4.17, -0.44, -1.13, -1.53]), side, 1.0)
+    _assert_eq(wlen, -1.0, "wlen")
+
+    # sidesite on the far side of a clear segment: wrap longer than pi
+    wlen, wpnt0, wpnt1 = _wrap_circle(np.array([2.0, -0.1, 2.0, 0.1]), np.array([-1.0, 0.0]), 1.0)
+    angle = np.arctan2(0.1, 2.0) + np.arccos(1.0 / np.hypot(2.0, 0.1))
+    _assert_eq(wlen, 2.0 * np.pi - 2.0 * angle, "wlen")
+    _assert_eq(wpnt0, np.array([np.cos(angle), -np.sin(angle)]), "wpnt0")
+    _assert_eq(wpnt1, np.array([np.cos(angle), np.sin(angle)]), "wpnt1")
+
+    # sidesite on the far side: wrap close to 2 * pi
+    wlen, _, _ = _wrap_circle(np.array([1.0, -1e-7, 1.0, 1e-7]), np.array([-1.0, 0.0]), 1.0)
+    _assert_eq(wlen, 2.0 * np.pi, "wlen")
 
     # wrap w/ sidesite
     wlen, wpnt0, wpnt1 = _wrap_circle(np.array([0, -100, 0, 100]), np.array([0.2, 0.0]), 0.1)
