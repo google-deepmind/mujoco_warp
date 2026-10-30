@@ -42,6 +42,7 @@ from mujoco_warp._src.types import GainType
 from mujoco_warp._src.types import IntegratorType
 from mujoco_warp._src.types import JointType
 from mujoco_warp._src.types import Model
+from mujoco_warp._src.types import ObjType
 from mujoco_warp._src.types import OverflowType
 from mujoco_warp._src.types import SolverType
 from mujoco_warp._src.types import TrnType
@@ -61,17 +62,16 @@ def check_discrete(m: Model):
       raise ValueError("stable Neo-Hookean elasticity requires integrator='discrete'")
     if m.has_flex_passive:
       raise ValueError("passive flex contact requires an integrator with the effective metric: set integrator='discrete'")
-    # 1D rod bending is integrated explicitly by all integrators except discrete
-    if (
-      m.opt.integrator in (IntegratorType.IMPLICIT, IntegratorType.IMPLICITFAST)
-      and (m.nefmK > 0 or m.has_non_simple_flex)
-      and m.has_flex_stiff_dim23
-    ):
+    if m.opt.integrator in (IntegratorType.IMPLICIT, IntegratorType.IMPLICITFAST) and (m.nefmK > 0 or m.has_non_simple_flex):
       raise ValueError(
         "flex elasticity is no longer integrated implicitly under integrator='implicit' and 'implicitfast': "
-        "set integrator='discrete'"
+        "set integrator='discrete', or 'Euler' with a small timestep"
       )
     return
+  if m.has_flex_edge_stiff_damp:
+    raise ValueError(
+      "discrete integrator: flex edge stiffness and damping are not supported; use <elasticity> or <edge equality> instead"
+    )
   if m.has_unsupported_flex_interp:
     raise NotImplementedError("Discrete integrator: quadratic (abs(flex_interp) >= 2) interpolated flexes are not supported")
   if m.opt.solver == SolverType.NEWTON and m.has_non_simple_flex:
@@ -330,16 +330,12 @@ def _next_time_builder(warn_overflow: int):
   def _next_time(
     # Model:
     opt_timestep: wp.array[float],
-    is_sparse: bool,
     # Data in:
     nefc_in: wp.array[int],
     time_in: wp.array[float],
-    efc_J_rownnz_in: wp.array2d[int],
-    efc_J_rowadr_in: wp.array2d[int],
     nworld_in: int,
     naconmax_in: int,
     njmax_in: int,
-    njmax_nnz_in: int,
     nacon_in: wp.array[int],
     ncollision_in: wp.array[int],
     # Data out:
@@ -358,17 +354,6 @@ def _next_time_builder(warn_overflow: int):
           njmax_in,
         )
       overflow_out[worldid] = overflow_out[worldid] | OverflowType.NEFC
-    elif nefc > 0 and is_sparse:
-      efcid = wp.min(nefc, njmax_in) - 1
-      efc_nnz = efc_J_rowadr_in[worldid, efcid] + efc_J_rownnz_in[worldid, efcid]
-      if efc_nnz > njmax_nnz_in:
-        if wp.static(bool(warn_overflow & OverflowType.NJMAX_NNZ)):
-          wp.printf(
-            "njmax_nnz overflow - please increase njmax_nnz beyond %u\n"
-            "To disable the print warning: m.opt.warn_overflow &= ~mjw.OverflowType.NJMAX_NNZ (or = 0 for all)\n",
-            njmax_nnz_in,
-          )
-        overflow_out[worldid] = overflow_out[worldid] | OverflowType.NJMAX_NNZ
 
     ncollision = ncollision_in[0]
     if ncollision > naconmax_in:
@@ -454,15 +439,11 @@ def _advance(m: Model, d: Data, qacc: wp.array, qvel: Optional[wp.array] = None)
     dim=d.nworld,
     inputs=[
       m.opt.timestep,
-      m.is_sparse,
       d.nefc,
       d.time,
-      d.efc.J_rownnz,
-      d.efc.J_rowadr,
       d.nworld,
       d.naconmax,
       d.njmax,
-      d.njmax_nnz,
       d.nacon,
       d.ncollision,
     ],
@@ -481,16 +462,34 @@ def _advance(m: Model, d: Data, qacc: wp.array, qvel: Optional[wp.array] = None)
 @wp.kernel
 def _compute_damping_deriv(
   # Model:
+  jnt_actuatorid: wp.array[int],
+  dof_jntid: wp.array[int],
   dof_damping: wp.array2d[float],
   dof_dampingpoly: wp.array2d[wp.vec2],
+  actuator_trntype: wp.array[int],
+  actuator_trnid: wp.array[wp.vec2i],
+  actuator_damping: wp.array2d[float],
+  actuator_dampingpoly: wp.array2d[wp.vec2],
+  actuator_gear: wp.array2d[wp.spatial_vector],
   # Data in:
   qvel_in: wp.array2d[float],
   # Out:
   deriv_out: wp.array2d[float],
 ):
   worldid, tid = wp.tid()
-  damping = dof_damping[worldid % dof_damping.shape[0], tid]
-  dpoly = dof_dampingpoly[worldid % dof_dampingpoly.shape[0], tid]
+  damping, dpoly = util_misc.dof_damping_total(
+    jnt_actuatorid,
+    dof_jntid,
+    dof_damping,
+    dof_dampingpoly,
+    actuator_trntype,
+    actuator_trnid,
+    actuator_damping,
+    actuator_dampingpoly,
+    actuator_gear,
+    worldid,
+    tid,
+  )
   v = qvel_in[worldid, tid]
   deriv_out[worldid, tid] = util_misc._poly_force_deriv(damping, dpoly, v, 1)
 
@@ -525,7 +524,18 @@ def euler(m: Model, d: Data):
     wp.launch(
       _compute_damping_deriv,
       dim=(d.nworld, m.nv),
-      inputs=[m.dof_damping, m.dof_dampingpoly, d.qvel],
+      inputs=[
+        m.jnt_actuatorid,
+        m.dof_jntid,
+        m.dof_damping,
+        m.dof_dampingpoly,
+        m.actuator_trntype,
+        m.actuator_trnid,
+        m.actuator_damping,
+        m.actuator_dampingpoly,
+        m.actuator_gear,
+        d.qvel,
+      ],
       outputs=[damp_deriv],
     )
 
@@ -850,12 +860,19 @@ def _implicit_free_body(
   body_geomadr: wp.array[int],
   body_mass: wp.array2d[float],
   body_inertia: wp.array2d[wp.vec3],
+  jnt_actuatorid: wp.array[int],
+  dof_jntid: wp.array[int],
   dof_treeid: wp.array[int],
   dof_damping: wp.array2d[float],
   dof_dampingpoly: wp.array2d[wp.vec2],
   geom_type: wp.array[int],
   geom_size: wp.array2d[wp.vec3],
   geom_fluid: wp.array2d[float],
+  actuator_trntype: wp.array[int],
+  actuator_trnid: wp.array[wp.vec2i],
+  actuator_damping: wp.array2d[float],
+  actuator_dampingpoly: wp.array2d[wp.vec2],
+  actuator_gear: wp.array2d[wp.spatial_vector],
   M_rownnz: wp.array[int],
   M_rowadr: wp.array[int],
   M_colind: wp.array[int],
@@ -907,10 +924,22 @@ def _implicit_free_body(
 
   # 2. Add joint damping (with damper disable check and polynomial damping)
   if not (opt_disableflags & DisableBit.DAMPER):
+    jntid = dof_jntid[dof_adr]
+    act_damp, act_dpoly = util_misc.actuator_target_damping(
+      actuator_trntype,
+      actuator_trnid,
+      actuator_damping,
+      actuator_dampingpoly,
+      actuator_gear,
+      worldid,
+      ObjType.JOINT,
+      jntid,
+      jnt_actuatorid[jntid],
+    )
     for r in range(6):
       dof = dof_adr + r
-      damp = dof_damping[worldid % dof_damping.shape[0], dof]
-      dpoly = dof_dampingpoly[worldid % dof_dampingpoly.shape[0], dof]
+      damp = dof_damping[worldid % dof_damping.shape[0], dof] + act_damp
+      dpoly = dof_dampingpoly[worldid % dof_dampingpoly.shape[0], dof] + act_dpoly
       v = qvel_in[worldid, dof]
       A[r, r] += timestep * util_misc._poly_force_deriv(damp, dpoly, v, 1)
 
@@ -1107,12 +1136,19 @@ def implicit_free_body(m: Model, d: Data, vec_in: wp.array2d[float], vec_out: wp
       m.body_geomadr,
       m.body_mass,
       m.body_inertia,
+      m.jnt_actuatorid,
+      m.dof_jntid,
       m.dof_treeid,
       m.dof_damping,
       m.dof_dampingpoly,
       m.geom_type,
       m.geom_size,
       m.geom_fluid,
+      m.actuator_trntype,
+      m.actuator_trnid,
+      m.actuator_damping,
+      m.actuator_dampingpoly,
+      m.actuator_gear,
       m.M_rownnz,
       m.M_rowadr,
       m.M_colind,
@@ -2201,7 +2237,10 @@ def fwd_acceleration(m: Model, d: Data, factorize: bool = False):
   )
   xfrc_accumulate(m, d, d.qfrc_smooth)
 
-  if m.opt.integrator == IntegratorType.DISCRETE:
+  if smooth.skip_qacc_smooth(m, d):
+    if enable_sleep and m.opt.integrator != IntegratorType.DISCRETE:
+      island.update_active_dofs(m, d)
+  elif m.opt.integrator == IntegratorType.DISCRETE:
     derivative.eff_solve(m, d, d.qacc_smooth)
   elif enable_sleep:
     # update the active-DOF set (needs contacts from fwd_position) and solve
@@ -2287,7 +2326,7 @@ def step(m: Model, d: Data):
 def step1(m: Model, d: Data):
   """Advance simulation in two phases: before input is set by user."""
   check_discrete(m)
-  fwd_position(m, d)
+  fwd_position(m, d, factorize=not smooth.skip_qacc_smooth(m, d))
   d.sensordata.zero_()
   sensor.sensor_pos(m, d)
 

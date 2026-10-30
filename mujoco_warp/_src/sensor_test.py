@@ -827,6 +827,7 @@ class SensorTest(parameterized.TestCase):
 
   @parameterized.parameters(
     ("box", "box", "box", "box"),
+    ("capsule", "capsule", "capsule", "capsule"),
     ("sphere", "capsule", "ellipsoid", "cylinder"),
     ("capsule", "box", "cylinder", "sphere"),
     ("capsule", "cylinder", "box", "ellipsoid"),
@@ -1024,6 +1025,38 @@ class SensorTest(parameterized.TestCase):
 
     if nworld == 2:
       self.assertFalse(np.allclose(sensordata[0], sensordata[1]))
+
+  def test_sensor_collision_gjk_tuned_direction(self):
+    """A distance sensor reads MuJoCo's depth where GJK tunes its support direction."""
+    _, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <asset>
+          <mesh name="board" vertex="-.007 -.0946 -.153  .007 -.0946 -.153  -.007 .0946 -.153  .007 .0946 -.153
+                                     -.007 -.0946  .153  .007 -.0946  .153  -.007 .0946  .153  .007 .0946  .153"/>
+          <mesh name="object" vertex="-.0007394 .002954 -.05126  .00003213 .002986 -.04854  -.0004383 .003374 .04446
+                                      -.00002483 .003162 .04452  -.0005316 .003203 .04785  .001198 .001637 .04815"/>
+        </asset>
+        <worldbody>
+          <geom name="board" type="mesh" mesh="board"/>
+          <body pos=".0096252 -.0027355 -.021315" quat=".51669 .01087 -.015833 .85596">
+            <freejoint/>
+            <geom name="object" type="mesh" mesh="object"/>
+          </body>
+        </worldbody>
+        <sensor>
+          <distance geom1="board" geom2="object" cutoff="1"/>
+        </sensor>
+      </mujoco>
+      """
+    )
+
+    d.sensordata.fill_(wp.inf)
+    mjw.collision(m, d)
+    mjw.sensor_pos(m, d)
+
+    # MuJoCo: -0.141 mm; _assert_eq's 5e-4 tolerance would pass the separated reading
+    np.testing.assert_allclose(d.sensordata.numpy()[0], mjd.sensordata, atol=1e-7)
 
   @parameterized.parameters(0, 1)
   def test_insidesite(self, keyframe):

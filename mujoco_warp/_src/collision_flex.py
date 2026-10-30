@@ -496,7 +496,7 @@ def _collide_geom_capsule_detect(
     g_half_len = size_val[1]
     g_axis = wp.vec3(rot[0, 2], rot[1, 2], rot[2, 2])
     dists, poss, nrms = collision_primitive_core.capsule_capsule(
-      pos, g_axis, g_radius, g_half_len, cap_pos, cap_axis, cap_radius, cap_half_len, margin
+      pos, g_axis, g_radius, g_half_len, cap_pos, cap_axis, cap_radius, cap_half_len
     )
   elif gtype == int(GeomType.BOX):
     dists, poss, box_nrms = collision_primitive_core.capsule_box(
@@ -1443,7 +1443,7 @@ def _flex_narrowphase(warn_overflow: int):
       cap2_half_len = 0.5 * wp.length(p2_1 - p2_0)
 
       contact_dist, contact_pos, contact_normal = collision_primitive_core.capsule_capsule(
-        cap1_pos, cap1_axis, radius1, cap1_half_len, cap2_pos, cap2_axis, radius2, cap2_half_len, mix_margin
+        cap1_pos, cap1_axis, radius1, cap1_half_len, cap2_pos, cap2_axis, radius2, cap2_half_len
       )
 
       for c in range(2):
@@ -2261,6 +2261,7 @@ def _write_filtered_contacts(warn_overflow: int):
     contact_flex_out: wp.array[wp.vec2i],
     contact_elem_out: wp.array[wp.vec2i],
     contact_vert_out: wp.array[wp.vec2i],
+    contact_efc_address_out: wp.array2d[int],
     contact_worldid_out: wp.array[int],
     contact_type_out: wp.array[int],
     contact_geomcollisionid_out: wp.array[int],
@@ -2371,6 +2372,8 @@ def _write_filtered_contacts(warn_overflow: int):
     contact_flex_out[id_] = cand_flex[i]
     contact_elem_out[id_] = cand_elem[i]
     contact_vert_out[id_] = cand_vert[i]
+    for j in range(contact_efc_address_out.shape[1]):
+      contact_efc_address_out[id_, j] = -1
     contact_worldid_out[id_] = cand_worldid[i]
     f0 = cand_flex[i][0]
     f1 = cand_flex[i][1]
@@ -3221,6 +3224,7 @@ def _filter_and_write_contacts(
       d.contact.flex,
       d.contact.elem,
       d.contact.vert,
+      d.contact.efc_address,
       d.contact.worldid,
       d.contact.type,
       d.contact.geomcollisionid,

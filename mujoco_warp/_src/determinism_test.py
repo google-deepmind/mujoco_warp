@@ -570,19 +570,19 @@ class DeterminismTest(parameterized.TestCase):
   @parameterized.named_parameters(*_FLEX_CASES)
   def test_flex(self, overrides, covers):
     """1D, 2D, 3D and interpolated flexes with elasticity, energy and render normals."""
+    edge = '<edge stiffness="10" damping=".1"/>' if not overrides else ""
     mjm, _, m, d = test_data.fixture(
-      xml="""
+      xml=f"""
       <mujoco>
         <option>
           <flag contact="disable" energy="enable"/>
         </option>
         <worldbody>
           <flexcomp name="rope" type="grid" count="5 1 1" spacing=".1 .1 .1" dim="1" pos="0 1 1">
-            <edge stiffness="10" damping=".1"/>
+            {edge}
             <elasticity young="1e4" damping="1e-2"/>
           </flexcomp>
           <flexcomp name="cloth" type="grid" count="4 4 1" spacing=".1 .1 .1" pos="0 0 1">
-            <edge damping=".1"/>
             <elasticity young="3e3" poisson=".3" thickness="1e-2" damping="1e-3" elastic2d="both"/>
           </flexcomp>
           <flexcomp name="solid" type="grid" count="3 3 3" spacing=".1 .1 .1" dim="3" pos="1 0 1">
@@ -650,6 +650,7 @@ class DeterminismTest(parameterized.TestCase):
             <joint axis="0 1 0"/>
             <geom size=".1"/>
             <flexcomp name="interp" type="grid" count="3 3 3" spacing=".1 .1 .1" dim="3" dof="trilinear">
+              <pin id="0"/>
               <contact selfcollide="none"/>
               <elasticity young="1e4" poisson=".3" damping="1e-3"/>
             </flexcomp>
