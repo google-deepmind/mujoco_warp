@@ -158,6 +158,53 @@ class ForwardTest(parameterized.TestCase):
 
     _assert_eq(d.ctrl.numpy()[0], mjd.ctrl, "ctrl")
 
+  @parameterized.parameters(
+    IntegratorType.EULER,
+    IntegratorType.RK4,
+    IntegratorType.IMPLICITFAST,
+    IntegratorType.DISCRETE,
+  )
+  def test_actuator_group_disable(self, integrator):
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option timestep="0.002"/>
+        <worldbody>
+          <body>
+            <joint name="arm" type="hinge" axis="0 0 1" damping="0.2"/>
+            <geom size="0.1" mass="1"/>
+          </body>
+        </worldbody>
+        <actuator>
+          <motor joint="arm" gear="3"/>
+          <general joint="arm" dyntype="filter" dynprm="0.08" gainprm="4" group="1"/>
+          <position joint="arm" kp="20" kv="2" group="2"/>
+          <intvelocity joint="arm" kp="15" kv="1" actrange="-2 2" group="31"/>
+          <motor joint="arm" gear="2" group="-1"/>
+          <dcmotor joint="arm" motorconst="3" resistance="2" group="3"/>
+        </actuator>
+        <keyframe>
+          <key qpos="0.08" qvel="-0.12" act="0.1 -0.15" ctrl="0.6 -0.5 0.4 0.3 -0.2 0.7"/>
+        </keyframe>
+      </mujoco>
+      """,
+      keyframe=0,
+      overrides={"opt.integrator": integrator},
+    )
+
+    for mask in [0, (1 << 0) | (1 << 2), (1 << 1) | (1 << 3) | (1 << 30), ~0]:
+      mjm.opt.disableactuator = mask
+      m.opt.disableactuator = mask
+
+      mujoco.mj_step(mjm, mjd)
+      d.actuator_force.fill_(wp.inf)
+      mjw.step(m, d)
+
+      _assert_eq(d.actuator_force.numpy()[0], mjd.actuator_force, "actuator_force")
+      _assert_eq(d.act.numpy()[0], mjd.act, "act")
+      _assert_eq(d.qvel.numpy()[0], mjd.qvel, "qvel")
+      _assert_eq(d.qpos.numpy()[0], mjd.qpos, "qpos")
+
   def test_fwd_acceleration(self):
     _, mjd, m, d = test_data.fixture("humanoid/humanoid.xml", qvel_noise=0.01, ctrl_noise=0.1)
 

@@ -206,122 +206,134 @@ def _wrap_period(
   return 0.0
 
 
-@wp.kernel
-def _next_activation(
-  # Model:
-  opt_timestep: wp.array[float],
-  jnt_type: wp.array[int],
-  actuator_trntype: wp.array[int],
-  actuator_dyntype: wp.array[int],
-  actuator_gaintype: wp.array[int],
-  actuator_biastype: wp.array[int],
-  actuator_actadr: wp.array[int],
-  actuator_actnum: wp.array[int],
-  actuator_trnid: wp.array[wp.vec2i],
-  actuator_dynprm: wp.array2d[vec10],
-  actuator_gainprm: wp.array2d[vec10],
-  actuator_biasprm: wp.array2d[vec10],
-  actuator_actlimited: wp.array[bool],
-  actuator_actrange: wp.array2d[wp.vec2],
-  actuator_gear: wp.array2d[wp.spatial_vector],
-  # Data in:
-  act_in: wp.array2d[float],
-  act_dot_in: wp.array2d[float],
-  actuator_length_in: wp.array2d[float],
-  actuator_velocity_in: wp.array2d[float],
-  # In:
-  act_dot_scale: float,
-  limit: bool,
-  # Data out:
-  act_out: wp.array2d[float],
-):
-  worldid, uid = wp.tid()
-  opt_timestep_id = worldid % opt_timestep.shape[0]
-  actuator_dynprm_id = worldid % actuator_dynprm.shape[0]
-  actuator_actrange_id = worldid % actuator_actrange.shape[0]
-  actuator_gainprm_id = worldid % actuator_gainprm.shape[0]
-  actuator_biasprm_id = worldid % actuator_biasprm.shape[0]
+@cache_kernel
+def _next_activation(disable_actuator: bool = False):
+  @wp.kernel(module="unique", module_options={"enable_backward": False})
+  def kernel(
+    # Model:
+    opt_timestep: wp.array[float],
+    opt_disableactuator: int,
+    jnt_type: wp.array[int],
+    actuator_trntype: wp.array[int],
+    actuator_dyntype: wp.array[int],
+    actuator_gaintype: wp.array[int],
+    actuator_biastype: wp.array[int],
+    actuator_actadr: wp.array[int],
+    actuator_actnum: wp.array[int],
+    actuator_trnid: wp.array[wp.vec2i],
+    actuator_dynprm: wp.array2d[vec10],
+    actuator_gainprm: wp.array2d[vec10],
+    actuator_biasprm: wp.array2d[vec10],
+    actuator_actlimited: wp.array[bool],
+    actuator_actrange: wp.array2d[wp.vec2],
+    actuator_group: wp.array[int],
+    actuator_gear: wp.array2d[wp.spatial_vector],
+    # Data in:
+    act_in: wp.array2d[float],
+    act_dot_in: wp.array2d[float],
+    actuator_length_in: wp.array2d[float],
+    actuator_velocity_in: wp.array2d[float],
+    # In:
+    act_dot_scale: float,
+    limit: bool,
+    # Data out:
+    act_out: wp.array2d[float],
+  ):
+    worldid, uid = wp.tid()
+    opt_timestep_id = worldid % opt_timestep.shape[0]
+    actuator_dynprm_id = worldid % actuator_dynprm.shape[0]
+    actuator_actrange_id = worldid % actuator_actrange.shape[0]
+    actuator_gainprm_id = worldid % actuator_gainprm.shape[0]
+    actuator_biasprm_id = worldid % actuator_biasprm.shape[0]
 
-  actadr = actuator_actadr[uid]
-  actnum = actuator_actnum[uid]
-  dyntype = actuator_dyntype[uid]
+    actadr = actuator_actadr[uid]
+    actnum = actuator_actnum[uid]
+    dyntype = actuator_dyntype[uid]
 
-  if dyntype == DynType.DCMOTOR:
-    dynprm = actuator_dynprm[actuator_dynprm_id, uid]
-    gainprm = actuator_gainprm[actuator_gainprm_id, uid]
-    biasprm = actuator_biasprm[actuator_biasprm_id, uid]
-    slots = util_misc.dcmotor_slots(dynprm, gainprm)
+    # disabled actuators do not advance their activation
+    act_dot_mask = 1.0
+    if wp.static(disable_actuator):
+      if util_misc.actuator_disabled(opt_disableactuator, actuator_group[uid]):
+        act_dot_mask = 0.0
 
-    for j in range(actadr, actadr + actnum):
-      offset = j - actadr
-      act = act_in[worldid, j]
-      act_dot = act_dot_in[worldid, j]
+    if dyntype == DynType.DCMOTOR:
+      dynprm = actuator_dynprm[actuator_dynprm_id, uid]
+      gainprm = actuator_gainprm[actuator_gainprm_id, uid]
+      biasprm = actuator_biasprm[actuator_biasprm_id, uid]
+      slots = util_misc.dcmotor_slots(dynprm, gainprm)
 
-      if offset == slots[4]:  # current
-        R = gainprm[0]
-        te = wp.max(MJ_MINVAL, dynprm[0])
-        act = act + act_dot * te * (1.0 - wp.exp(-opt_timestep[opt_timestep_id] / te))
-      elif offset == slots[3]:  # bristle
-        F_C = biasprm[3]
-        F_S = biasprm[4]
-        v_S = biasprm[5]
-        sigma0 = dynprm[5]
-        velocity = actuator_velocity_in[worldid, uid]
-        g = util_misc.lugre_stribeck(velocity, F_C, F_S, v_S)
+      for j in range(actadr, actadr + actnum):
+        offset = j - actadr
+        act = act_in[worldid, j]
+        act_dot = act_dot_mask * act_dot_in[worldid, j]
 
-        a = -sigma0 * wp.abs(velocity) / wp.max(MJ_MINVAL, g)
-        h = opt_timestep[opt_timestep_id]
-        exp_ah = wp.exp(a * h)
-        int_h = h
-        if wp.abs(a) > MJ_MINVAL:
-          int_h = (exp_ah - 1.0) / a
-        act = exp_ah * act + int_h * velocity
-      elif offset == slots[1]:  # integral
-        act = act + act_dot * opt_timestep[opt_timestep_id]
-        Imax = dynprm[8]
-        if Imax > 0.0:
-          act = wp.clamp(act, -Imax, Imax)
-      else:  # temperature and slew
-        act = act + act_dot * opt_timestep[opt_timestep_id]
+        if offset == slots[4]:  # current
+          R = gainprm[0]
+          te = wp.max(MJ_MINVAL, dynprm[0])
+          act = act + act_dot * te * (1.0 - wp.exp(-opt_timestep[opt_timestep_id] / te))
+        elif offset == slots[3]:  # bristle
+          F_C = biasprm[3]
+          F_S = biasprm[4]
+          v_S = biasprm[5]
+          sigma0 = dynprm[5]
+          velocity = actuator_velocity_in[worldid, uid]
+          g = util_misc.lugre_stribeck(velocity, F_C, F_S, v_S)
 
-      act_out[worldid, j] = act
-  else:
-    for j in range(actadr, actadr + actnum):
-      act = next_act(
-        opt_timestep[opt_timestep_id],
-        dyntype,
-        actuator_dynprm[actuator_dynprm_id, uid],
-        actuator_actrange[actuator_actrange_id, uid],
-        act_in[worldid, j],
-        act_dot_in[worldid, j],
-        act_dot_scale,
-        limit and actuator_actlimited[uid],
-      )
-      if limit and dyntype == DynType.INTEGRATOR:
-        gaintype = actuator_gaintype[uid]
-        biastype = actuator_biastype[uid]
-        gainprm = actuator_gainprm[actuator_gainprm_id, uid]
-        biasprm = actuator_biasprm[actuator_biasprm_id, uid]
-        trntype = actuator_trntype[uid]
-        trnid = actuator_trnid[uid]
-        gear = actuator_gear[worldid % actuator_gear.shape[0], uid]
-        period = _wrap_period(
-          jnt_type,
-          trntype,
+          a = -sigma0 * wp.abs(velocity) / wp.max(MJ_MINVAL, g)
+          h = opt_timestep[opt_timestep_id]
+          exp_ah = wp.exp(a * h)
+          int_h = h
+          if wp.abs(a) > MJ_MINVAL:
+            int_h = (exp_ah - 1.0) / a
+          act = exp_ah * act + int_h * velocity
+        elif offset == slots[1]:  # integral
+          act = act + act_dot * opt_timestep[opt_timestep_id]
+          Imax = dynprm[8]
+          if Imax > 0.0:
+            act = wp.clamp(act, -Imax, Imax)
+        else:  # temperature and slew
+          act = act + act_dot * opt_timestep[opt_timestep_id]
+
+        act_out[worldid, j] = act
+    else:
+      for j in range(actadr, actadr + actnum):
+        act = next_act(
+          opt_timestep[opt_timestep_id],
           dyntype,
-          gaintype,
-          biastype,
-          trnid,
-          gainprm,
-          biasprm,
-          gear,
+          actuator_dynprm[actuator_dynprm_id, uid],
+          actuator_actrange[actuator_actrange_id, uid],
+          act_in[worldid, j],
+          act_dot_mask * act_dot_in[worldid, j],
+          act_dot_scale,
+          limit and actuator_actlimited[uid],
         )
-        if period > 0.0:
-          length = actuator_length_in[worldid, uid]
-          err = act - length
-          act -= period * wp.round(err / period)
+        if limit and dyntype == DynType.INTEGRATOR:
+          gaintype = actuator_gaintype[uid]
+          biastype = actuator_biastype[uid]
+          gainprm = actuator_gainprm[actuator_gainprm_id, uid]
+          biasprm = actuator_biasprm[actuator_biasprm_id, uid]
+          trntype = actuator_trntype[uid]
+          trnid = actuator_trnid[uid]
+          gear = actuator_gear[worldid % actuator_gear.shape[0], uid]
+          period = _wrap_period(
+            jnt_type,
+            trntype,
+            dyntype,
+            gaintype,
+            biastype,
+            trnid,
+            gainprm,
+            biasprm,
+            gear,
+          )
+          if period > 0.0:
+            length = actuator_length_in[worldid, uid]
+            err = act - length
+            act -= period * wp.round(err / period)
 
-      act_out[worldid, j] = act
+        act_out[worldid, j] = act
+
+  return kernel
 
 
 @cache_kernel
@@ -386,10 +398,11 @@ def _advance(m: Model, d: Data, qacc: wp.array, qvel: Optional[wp.array] = None)
 
   # advance activations
   wp.launch(
-    _next_activation,
+    _next_activation(bool(m.opt.disableactuator)),
     dim=(d.nworld, m.nactuator),
     inputs=[
       m.opt.timestep,
+      m.opt.disableactuator,
       m.jnt_type,
       m.actuator_trntype,
       m.actuator_dyntype,
@@ -403,6 +416,7 @@ def _advance(m: Model, d: Data, qacc: wp.array, qvel: Optional[wp.array] = None)
       m.actuator_biasprm,
       m.actuator_actlimited,
       m.actuator_actrange,
+      m.actuator_group,
       m.actuator_gear,
       d.act,
       d.act_dot,
@@ -583,10 +597,11 @@ def _rk_perturb_state(
   # activation
   if m.na and act_t0 is not None:
     wp.launch(
-      _next_activation,
+      _next_activation(False),
       dim=(d.nworld, m.nactuator),
       inputs=[
         m.opt.timestep,
+        m.opt.disableactuator,
         m.jnt_type,
         m.actuator_trntype,
         m.actuator_dyntype,
@@ -600,6 +615,7 @@ def _rk_perturb_state(
         m.actuator_biasprm,
         m.actuator_actlimited,
         m.actuator_actrange,
+        m.actuator_group,
         m.actuator_gear,
         act_t0,
         d.act_dot,
@@ -1613,337 +1629,349 @@ def fwd_velocity(m: Model, d: Data):
     derivative.eff_shift(m, d)
 
 
-@wp.kernel
-def _actuator_force(
-  # Model:
-  na: int,
-  opt_timestep: wp.array[float],
-  jnt_type: wp.array[int],
-  actuator_trntype: wp.array[int],
-  actuator_dyntype: wp.array[int],
-  actuator_gaintype: wp.array[int],
-  actuator_biastype: wp.array[int],
-  actuator_ctrladr: wp.array[int],
-  actuator_ctrlnum: wp.array[int],
-  actuator_ctrlspec: wp.array[int],
-  actuator_actadr: wp.array[int],
-  actuator_actnum: wp.array[int],
-  actuator_trnid: wp.array[wp.vec2i],
-  actuator_dynprm: wp.array2d[vec10],
-  actuator_gainprm: wp.array2d[vec10],
-  actuator_biasprm: wp.array2d[vec10],
-  actuator_actlimited: wp.array[bool],
-  actuator_actrange: wp.array2d[wp.vec2],
-  actuator_actearly: wp.array[bool],
-  actuator_forcelimited: wp.array[bool],
-  actuator_forcerange: wp.array2d[wp.vec2],
-  actuator_ctrllimited: wp.array[bool],
-  actuator_ctrlrange: wp.array2d[wp.vec2],
-  actuator_gear: wp.array2d[wp.spatial_vector],
-  actuator_acc0: wp.array2d[float],
-  actuator_lengthrange: wp.array2d[wp.vec2],
-  # Data in:
-  act_in: wp.array2d[float],
-  ctrl_in: wp.array2d[float],
-  actuator_length_in: wp.array2d[float],
-  actuator_velocity_in: wp.array2d[float],
-  # In:
-  dsbl_clampctrl: int,
-  # Data out:
-  act_dot_out: wp.array2d[float],
-  actuator_force_out: wp.array2d[float],
-):
-  worldid, uid = wp.tid()
+@cache_kernel
+def _actuator_force(disable_actuator: bool = False):
+  @wp.kernel(module="unique", module_options={"enable_backward": False})
+  def kernel(
+    # Model:
+    na: int,
+    opt_timestep: wp.array[float],
+    opt_disableactuator: int,
+    jnt_type: wp.array[int],
+    actuator_trntype: wp.array[int],
+    actuator_dyntype: wp.array[int],
+    actuator_gaintype: wp.array[int],
+    actuator_biastype: wp.array[int],
+    actuator_ctrladr: wp.array[int],
+    actuator_ctrlnum: wp.array[int],
+    actuator_ctrlspec: wp.array[int],
+    actuator_actadr: wp.array[int],
+    actuator_actnum: wp.array[int],
+    actuator_trnid: wp.array[wp.vec2i],
+    actuator_dynprm: wp.array2d[vec10],
+    actuator_gainprm: wp.array2d[vec10],
+    actuator_biasprm: wp.array2d[vec10],
+    actuator_actlimited: wp.array[bool],
+    actuator_actrange: wp.array2d[wp.vec2],
+    actuator_actearly: wp.array[bool],
+    actuator_group: wp.array[int],
+    actuator_forcelimited: wp.array[bool],
+    actuator_forcerange: wp.array2d[wp.vec2],
+    actuator_ctrllimited: wp.array[bool],
+    actuator_ctrlrange: wp.array2d[wp.vec2],
+    actuator_gear: wp.array2d[wp.spatial_vector],
+    actuator_acc0: wp.array2d[float],
+    actuator_lengthrange: wp.array2d[wp.vec2],
+    # Data in:
+    act_in: wp.array2d[float],
+    ctrl_in: wp.array2d[float],
+    actuator_length_in: wp.array2d[float],
+    actuator_velocity_in: wp.array2d[float],
+    # In:
+    dsbl_clampctrl: int,
+    # Data out:
+    act_dot_out: wp.array2d[float],
+    actuator_force_out: wp.array2d[float],
+  ):
+    worldid, uid = wp.tid()
 
-  actuator_ctrlrange_id = worldid % actuator_ctrlrange.shape[0]
+    actuator_ctrlrange_id = worldid % actuator_ctrlrange.shape[0]
 
-  uadr = actuator_ctrladr[uid]
-  ctrlnum = actuator_ctrlnum[uid]
-  ctrl = 0.0
-  if ctrlnum > 0:
-    ctrl = ctrl_in[worldid, uadr]
-    if actuator_ctrllimited[uadr] and not dsbl_clampctrl:
-      ctrlrange = actuator_ctrlrange[actuator_ctrlrange_id, uadr]
-      ctrl = wp.clamp(ctrl, ctrlrange[0], ctrlrange[1])
-  ctrl_act = ctrl
-  u_first = ctrl
+    uadr = actuator_ctrladr[uid]
+    ctrlnum = actuator_ctrlnum[uid]
+    ctrl = 0.0
+    if ctrlnum > 0:
+      ctrl = ctrl_in[worldid, uadr]
+      if actuator_ctrllimited[uadr] and not dsbl_clampctrl:
+        ctrlrange = actuator_ctrlrange[actuator_ctrlrange_id, uadr]
+        ctrl = wp.clamp(ctrl, ctrlrange[0], ctrlrange[1])
+    ctrl_act = ctrl
+    u_first = ctrl
 
-  dyntype = actuator_dyntype[uid]
-  act_first = actuator_actadr[uid]
-  if na and act_first >= 0:
-    act_last = act_first + actuator_actnum[uid] - 1
-    dynprm = actuator_dynprm[worldid % actuator_dynprm.shape[0], uid]
-
-    if dyntype == DynType.INTEGRATOR:
-      act_dot = ctrl
-    elif dyntype == DynType.FILTER or dyntype == DynType.FILTEREXACT:
-      act = act_in[worldid, act_last]
-      act_dot = (ctrl - act) / wp.max(dynprm[0], MJ_MINVAL)
-    elif dyntype == DynType.MUSCLE:
+    dyntype = actuator_dyntype[uid]
+    act_first = actuator_actadr[uid]
+    if na and act_first >= 0:
+      act_last = act_first + actuator_actnum[uid] - 1
       dynprm = actuator_dynprm[worldid % actuator_dynprm.shape[0], uid]
-      act = act_in[worldid, act_last]
-      act_dot = util_misc.muscle_dynamics(ctrl, act, dynprm)
-    elif dyntype == DynType.DCMOTOR:
-      gainprm = actuator_gainprm[worldid % actuator_gainprm.shape[0], uid]
-      slots = util_misc.dcmotor_slots(dynprm, gainprm)
-      adr = act_first
 
-      act_dot = 0.0
-
-      # slew rate
-      if slots[0] >= 0:
-        u_prev = act_in[worldid, adr]
-        slew_s = dynprm[7]
-        slew = slew_s * opt_timestep[worldid % opt_timestep.shape[0]]
-        u_eff = wp.clamp(u_first, u_prev - slew, u_prev + slew)
-        act_dot = (u_eff - u_prev) / opt_timestep[worldid % opt_timestep.shape[0]]
-        act_dot_out[worldid, adr] = act_dot
-        u_first = u_eff
-        adr += 1
-
-      # integral
-      x_I = 0.0
-      if slots[1] >= 0:
-        x_I = act_in[worldid, adr]
-        Imax = dynprm[8]
-        act_dot = u_first - actuator_length_in[worldid, uid]
-
-        if Imax > 0.0:
-          if x_I >= Imax:
-            act_dot = wp.min(act_dot, 0.0)
-          elif x_I <= -Imax:
-            act_dot = wp.max(act_dot, 0.0)
-
-        act_dot_out[worldid, adr] = act_dot
-        adr += 1
-
-      # voltage
-      V = 0.0
-      if ctrlnum > 0:
-        V = util_misc.dcmotor_voltage(
-          ctrl_in,
-          worldid,
-          uadr,
-          actuator_ctrlspec[uid],
-          u_first,
-          actuator_length_in[worldid, uid],
-          actuator_velocity_in[worldid, uid],
-          x_I,
-          gainprm,
-        )
-
-      # temperature
-      R = gainprm[0]
-      K = gainprm[1]
-      te = wp.max(MJ_MINVAL, dynprm[0])
-
-      if slots[2] >= 0:
-        RT = dynprm[2]
-        C = dynprm[3]
-        Ta = dynprm[4]
-        alpha = gainprm[2]
-        T0 = gainprm[3]
-        T = act_in[worldid, adr]
-        R_eff = R * (1.0 + alpha * (T + Ta - T0))
-
-        current = (V - K * actuator_velocity_in[worldid, uid]) / R_eff
-        if slots[4] >= 0:
-          current = act_in[worldid, act_last]
-
-        act_dot = (R_eff * current * current - T / RT) / C
-        act_dot_out[worldid, adr] = act_dot
-        adr += 1
-        R = R_eff
-
-      # bristle
-      if slots[3] >= 0:
-        sigma0 = dynprm[5]
-        biasprm = actuator_biasprm[worldid % actuator_biasprm.shape[0], uid]
-        F_C = biasprm[3]
-        F_S = biasprm[4]
-        v_S = biasprm[5]
-        z = act_in[worldid, adr]
-        g = util_misc.lugre_stribeck(actuator_velocity_in[worldid, uid], F_C, F_S, v_S)
-        a = -sigma0 * wp.abs(actuator_velocity_in[worldid, uid]) / wp.max(MJ_MINVAL, g)
-        act_dot = a * z + actuator_velocity_in[worldid, uid]
-        act_dot_out[worldid, adr] = act_dot
-        adr += 1
-
-      # current
-      if slots[4] >= 0:
-        dimax = dynprm[1]
-        act_dot = (V / R - K / R * actuator_velocity_in[worldid, uid] - act_in[worldid, act_last]) / te
-        if dimax > 0.0:
-          act_dot = wp.clamp(act_dot, -dimax, dimax)
-        act_dot_out[worldid, act_last] = act_dot
-
-    elif dyntype == DynType.USER:
-      act_dot = 0.0  # set by act_dyn_callback
-    else:  # DynType.NONE
-      act_dot = 0.0
-
-    act_dot_out[worldid, act_last] = act_dot
-
-    if actuator_actearly[uid]:
-      if dyntype == DynType.INTEGRATOR or dyntype == DynType.NONE or dyntype == DynType.DCMOTOR:
+      if dyntype == DynType.INTEGRATOR:
+        act_dot = ctrl
+      elif dyntype == DynType.FILTER or dyntype == DynType.FILTEREXACT:
         act = act_in[worldid, act_last]
-
-      if dyntype == DynType.DCMOTOR:
+        act_dot = (ctrl - act) / wp.max(dynprm[0], MJ_MINVAL)
+      elif dyntype == DynType.MUSCLE:
+        dynprm = actuator_dynprm[worldid % actuator_dynprm.shape[0], uid]
+        act = act_in[worldid, act_last]
+        act_dot = util_misc.muscle_dynamics(ctrl, act, dynprm)
+      elif dyntype == DynType.DCMOTOR:
         gainprm = actuator_gainprm[worldid % actuator_gainprm.shape[0], uid]
         slots = util_misc.dcmotor_slots(dynprm, gainprm)
-        offset = actuator_actnum[uid] - 1
+        adr = act_first
 
-        if offset == slots[4]:  # current
-          te = wp.max(MJ_MINVAL, dynprm[0])
-          ctrl_act = act + act_dot * te * (1.0 - wp.exp(-opt_timestep[worldid % opt_timestep.shape[0]] / te))
-        elif offset == slots[3]:  # bristle
+        act_dot = 0.0
+
+        # slew rate
+        if slots[0] >= 0:
+          u_prev = act_in[worldid, adr]
+          slew_s = dynprm[7]
+          slew = slew_s * opt_timestep[worldid % opt_timestep.shape[0]]
+          u_eff = wp.clamp(u_first, u_prev - slew, u_prev + slew)
+          act_dot = (u_eff - u_prev) / opt_timestep[worldid % opt_timestep.shape[0]]
+          act_dot_out[worldid, adr] = act_dot
+          u_first = u_eff
+          adr += 1
+
+        # integral
+        x_I = 0.0
+        if slots[1] >= 0:
+          x_I = act_in[worldid, adr]
+          Imax = dynprm[8]
+          act_dot = u_first - actuator_length_in[worldid, uid]
+
+          if Imax > 0.0:
+            if x_I >= Imax:
+              act_dot = wp.min(act_dot, 0.0)
+            elif x_I <= -Imax:
+              act_dot = wp.max(act_dot, 0.0)
+
+          act_dot_out[worldid, adr] = act_dot
+          adr += 1
+
+        # voltage
+        V = 0.0
+        if ctrlnum > 0:
+          V = util_misc.dcmotor_voltage(
+            ctrl_in,
+            worldid,
+            uadr,
+            actuator_ctrlspec[uid],
+            u_first,
+            actuator_length_in[worldid, uid],
+            actuator_velocity_in[worldid, uid],
+            x_I,
+            gainprm,
+          )
+
+        # temperature
+        R = gainprm[0]
+        K = gainprm[1]
+        te = wp.max(MJ_MINVAL, dynprm[0])
+
+        if slots[2] >= 0:
+          RT = dynprm[2]
+          C = dynprm[3]
+          Ta = dynprm[4]
+          alpha = gainprm[2]
+          T0 = gainprm[3]
+          T = act_in[worldid, adr]
+          R_eff = R * (1.0 + alpha * (T + Ta - T0))
+
+          current = (V - K * actuator_velocity_in[worldid, uid]) / R_eff
+          if slots[4] >= 0:
+            current = act_in[worldid, act_last]
+
+          act_dot = (R_eff * current * current - T / RT) / C
+          act_dot_out[worldid, adr] = act_dot
+          adr += 1
+          R = R_eff
+
+        # bristle
+        if slots[3] >= 0:
           sigma0 = dynprm[5]
           biasprm = actuator_biasprm[worldid % actuator_biasprm.shape[0], uid]
           F_C = biasprm[3]
           F_S = biasprm[4]
           v_S = biasprm[5]
-          velocity = actuator_velocity_in[worldid, uid]
-          g = util_misc.lugre_stribeck(velocity, F_C, F_S, v_S)
-          a = -sigma0 * wp.abs(velocity) / wp.max(MJ_MINVAL, g)
-          h = opt_timestep[worldid % opt_timestep.shape[0]]
-          exp_ah = wp.exp(a * h)
-          int_h = h
-          if wp.abs(a) > MJ_MINVAL:
-            int_h = (exp_ah - 1.0) / a
-          ctrl_act = exp_ah * act + int_h * velocity
-        elif offset == slots[1]:  # integral
-          ctrl_act = act + act_dot * opt_timestep[worldid % opt_timestep.shape[0]]
-          Imax = dynprm[8]
-          if Imax > 0.0:
-            ctrl_act = wp.clamp(ctrl_act, -Imax, Imax)
-        else:  # temperature or slew or default
-          ctrl_act = act + act_dot * opt_timestep[worldid % opt_timestep.shape[0]]
+          z = act_in[worldid, adr]
+          g = util_misc.lugre_stribeck(actuator_velocity_in[worldid, uid], F_C, F_S, v_S)
+          a = -sigma0 * wp.abs(actuator_velocity_in[worldid, uid]) / wp.max(MJ_MINVAL, g)
+          act_dot = a * z + actuator_velocity_in[worldid, uid]
+          act_dot_out[worldid, adr] = act_dot
+          adr += 1
 
-        if actuator_actlimited[uid]:
-          actrange = actuator_actrange[worldid % actuator_actrange.shape[0], uid]
-          ctrl_act = wp.clamp(ctrl_act, actrange[0], actrange[1])
-      else:
-        ctrl_act = next_act(
-          opt_timestep[worldid % opt_timestep.shape[0]],
-          dyntype,
-          dynprm,
-          actuator_actrange[worldid % actuator_actrange.shape[0], uid],
-          act,
-          act_dot,
-          1.0,
-          actuator_actlimited[uid],
-        )
-    else:
-      ctrl_act = act_in[worldid, act_last]
+        # current
+        if slots[4] >= 0:
+          dimax = dynprm[1]
+          act_dot = (V / R - K / R * actuator_velocity_in[worldid, uid] - act_in[worldid, act_last]) / te
+          if dimax > 0.0:
+            act_dot = wp.clamp(act_dot, -dimax, dimax)
+          act_dot_out[worldid, act_last] = act_dot
 
-  length = actuator_length_in[worldid, uid]
-  velocity = actuator_velocity_in[worldid, uid]
+      elif dyntype == DynType.USER:
+        act_dot = 0.0  # set by act_dyn_callback
+      else:  # DynType.NONE
+        act_dot = 0.0
 
-  # gain
-  gaintype = actuator_gaintype[uid]
-  gainprm = actuator_gainprm[worldid % actuator_gainprm.shape[0], uid]
-  dynprm = actuator_dynprm[worldid % actuator_dynprm.shape[0], uid]
+      act_dot_out[worldid, act_last] = act_dot
 
-  gain = 0.0
-  if gaintype == GainType.FIXED:
-    gain = gainprm[0]
-  elif gaintype == GainType.AFFINE:
-    gain = gainprm[0] + gainprm[1] * length + gainprm[2] * velocity
-  elif gaintype == GainType.MUSCLE:
-    acc0 = actuator_acc0[worldid % actuator_acc0.shape[0], uid]
-    lengthrange = actuator_lengthrange[worldid % actuator_lengthrange.shape[0], uid]
-    gain = util_misc.muscle_gain(length, velocity, lengthrange, acc0, gainprm)
-  elif gaintype == GainType.DCMOTOR:
-    K = gainprm[1]
-    te = dynprm[0]
-    R = util_misc.dcmotor_resistance(act_in, worldid, act_first, dynprm, gainprm)
+      if actuator_actearly[uid]:
+        if dyntype == DynType.INTEGRATOR or dyntype == DynType.NONE or dyntype == DynType.DCMOTOR:
+          act = act_in[worldid, act_last]
 
-    gain = K if te > 0.0 else K / R
-
-    if te <= 0.0:
-      if ctrlnum == 0:
-        ctrl_act = 0.0
-      elif (actuator_ctrlspec[uid] & 7) != 0:
-        x_I = 0.0
-        if na and act_first >= 0:
+        if dyntype == DynType.DCMOTOR:
+          gainprm = actuator_gainprm[worldid % actuator_gainprm.shape[0], uid]
           slots = util_misc.dcmotor_slots(dynprm, gainprm)
-          if slots[1] >= 0:
-            x_I = act_in[worldid, act_first + slots[1]]
-        ctrl_act = util_misc.dcmotor_voltage(
-          ctrl_in,
-          worldid,
-          uadr,
-          actuator_ctrlspec[uid],
-          u_first,
-          length,
-          velocity,
-          x_I,
-          gainprm,
-        )
+          offset = actuator_actnum[uid] - 1
+
+          if offset == slots[4]:  # current
+            te = wp.max(MJ_MINVAL, dynprm[0])
+            ctrl_act = act + act_dot * te * (1.0 - wp.exp(-opt_timestep[worldid % opt_timestep.shape[0]] / te))
+          elif offset == slots[3]:  # bristle
+            sigma0 = dynprm[5]
+            biasprm = actuator_biasprm[worldid % actuator_biasprm.shape[0], uid]
+            F_C = biasprm[3]
+            F_S = biasprm[4]
+            v_S = biasprm[5]
+            velocity = actuator_velocity_in[worldid, uid]
+            g = util_misc.lugre_stribeck(velocity, F_C, F_S, v_S)
+            a = -sigma0 * wp.abs(velocity) / wp.max(MJ_MINVAL, g)
+            h = opt_timestep[worldid % opt_timestep.shape[0]]
+            exp_ah = wp.exp(a * h)
+            int_h = h
+            if wp.abs(a) > MJ_MINVAL:
+              int_h = (exp_ah - 1.0) / a
+            ctrl_act = exp_ah * act + int_h * velocity
+          elif offset == slots[1]:  # integral
+            ctrl_act = act + act_dot * opt_timestep[worldid % opt_timestep.shape[0]]
+            Imax = dynprm[8]
+            if Imax > 0.0:
+              ctrl_act = wp.clamp(ctrl_act, -Imax, Imax)
+          else:  # temperature or slew or default
+            ctrl_act = act + act_dot * opt_timestep[worldid % opt_timestep.shape[0]]
+
+          if actuator_actlimited[uid]:
+            actrange = actuator_actrange[worldid % actuator_actrange.shape[0], uid]
+            ctrl_act = wp.clamp(ctrl_act, actrange[0], actrange[1])
+        else:
+          ctrl_act = next_act(
+            opt_timestep[worldid % opt_timestep.shape[0]],
+            dyntype,
+            dynprm,
+            actuator_actrange[worldid % actuator_actrange.shape[0], uid],
+            act,
+            act_dot,
+            1.0,
+            actuator_actlimited[uid],
+          )
       else:
-        ctrl_act = u_first
-  # GainType.USER: gain stays 0, modified by act_gain_callback
+        ctrl_act = act_in[worldid, act_last]
 
-  # bias
-  biastype = actuator_biastype[uid]
-  biasprm = actuator_biasprm[worldid % actuator_biasprm.shape[0], uid]
+    # disabled actuators produce no force, but act_dot is still computed
+    if wp.static(disable_actuator):
+      if util_misc.actuator_disabled(opt_disableactuator, actuator_group[uid]):
+        actuator_force_out[worldid, uid] = 0.0
+        return
 
-  bias = 0.0  # BiasType.NONE or BiasType.USER (modified by act_bias_callback)
-  if biastype == BiasType.AFFINE:
-    bias = biasprm[0] + biasprm[1] * length + biasprm[2] * velocity
-  elif biastype == BiasType.MUSCLE:
-    acc0 = actuator_acc0[worldid % actuator_acc0.shape[0], uid]
-    lengthrange = actuator_lengthrange[worldid % actuator_lengthrange.shape[0], uid]
-    bias = util_misc.muscle_bias(length, lengthrange, acc0, biasprm)
-  elif biastype == BiasType.DCMOTOR:
-    if dynprm[0] <= 0.0:
+    length = actuator_length_in[worldid, uid]
+    velocity = actuator_velocity_in[worldid, uid]
+
+    # gain
+    gaintype = actuator_gaintype[uid]
+    gainprm = actuator_gainprm[worldid % actuator_gainprm.shape[0], uid]
+    dynprm = actuator_dynprm[worldid % actuator_dynprm.shape[0], uid]
+
+    gain = 0.0
+    if gaintype == GainType.FIXED:
+      gain = gainprm[0]
+    elif gaintype == GainType.AFFINE:
+      gain = gainprm[0] + gainprm[1] * length + gainprm[2] * velocity
+    elif gaintype == GainType.MUSCLE:
+      acc0 = actuator_acc0[worldid % actuator_acc0.shape[0], uid]
+      lengthrange = actuator_lengthrange[worldid % actuator_lengthrange.shape[0], uid]
+      gain = util_misc.muscle_gain(length, velocity, lengthrange, acc0, gainprm)
+    elif gaintype == GainType.DCMOTOR:
       K = gainprm[1]
-      bias -= gain * K * velocity
+      te = dynprm[0]
+      R = util_misc.dcmotor_resistance(act_in, worldid, act_first, dynprm, gainprm)
 
-  trntype = actuator_trntype[uid]
-  trnid = actuator_trnid[uid]
-  gear = actuator_gear[worldid % actuator_gear.shape[0], uid]
-  period = _wrap_period(
-    jnt_type,
-    trntype,
-    dyntype,
-    gaintype,
-    biastype,
-    trnid,
-    gainprm,
-    biasprm,
-    gear,
-  )
-  if period > 0.0:
-    err = ctrl_act - length
-    ctrl_act -= period * wp.round(err / period)
+      gain = K if te > 0.0 else K / R
 
-  force = gain * ctrl_act + bias
+      if te <= 0.0:
+        if ctrlnum == 0:
+          ctrl_act = 0.0
+        elif (actuator_ctrlspec[uid] & 7) != 0:
+          x_I = 0.0
+          if na and act_first >= 0:
+            slots = util_misc.dcmotor_slots(dynprm, gainprm)
+            if slots[1] >= 0:
+              x_I = act_in[worldid, act_first + slots[1]]
+          ctrl_act = util_misc.dcmotor_voltage(
+            ctrl_in,
+            worldid,
+            uadr,
+            actuator_ctrlspec[uid],
+            u_first,
+            length,
+            velocity,
+            x_I,
+            gainprm,
+          )
+        else:
+          ctrl_act = u_first
+    # GainType.USER: gain stays 0, modified by act_gain_callback
 
-  if actuator_forcelimited[uid]:
-    forcerange = actuator_forcerange[worldid % actuator_forcerange.shape[0], uid]
-    force = wp.clamp(force, forcerange[0], forcerange[1])
+    # bias
+    biastype = actuator_biastype[uid]
+    biasprm = actuator_biasprm[worldid % actuator_biasprm.shape[0], uid]
 
-  # add DC motor mechanical forces (not subject to current limits)
-  if biastype == BiasType.DCMOTOR:
-    # cogging torque
-    A = biasprm[0]
-    if A != 0.0:
-      Np = biasprm[1]
-      phi = biasprm[2]
-      force += A * wp.sin(Np * length + phi)
+    bias = 0.0  # BiasType.NONE or BiasType.USER (modified by act_bias_callback)
+    if biastype == BiasType.AFFINE:
+      bias = biasprm[0] + biasprm[1] * length + biasprm[2] * velocity
+    elif biastype == BiasType.MUSCLE:
+      acc0 = actuator_acc0[worldid % actuator_acc0.shape[0], uid]
+      lengthrange = actuator_lengthrange[worldid % actuator_lengthrange.shape[0], uid]
+      bias = util_misc.muscle_bias(length, lengthrange, acc0, biasprm)
+    elif biastype == BiasType.DCMOTOR:
+      if dynprm[0] <= 0.0:
+        K = gainprm[1]
+        bias -= gain * K * velocity
 
-    # LuGre friction
-    sigma0 = dynprm[5]
-    if sigma0 > 0.0:
-      sigma1 = dynprm[6]
-      slots = util_misc.dcmotor_slots(dynprm, gainprm)
-      adr = act_first + slots[3]  # slots[3] is bristle
-      z = act_in[worldid, adr]
-      z_dot = act_dot_out[worldid, adr]
-      force -= sigma0 * z + sigma1 * z_dot
+    trntype = actuator_trntype[uid]
+    trnid = actuator_trnid[uid]
+    gear = actuator_gear[worldid % actuator_gear.shape[0], uid]
+    period = _wrap_period(
+      jnt_type,
+      trntype,
+      dyntype,
+      gaintype,
+      biastype,
+      trnid,
+      gainprm,
+      biasprm,
+      gear,
+    )
+    if period > 0.0:
+      err = ctrl_act - length
+      ctrl_act -= period * wp.round(err / period)
 
-  actuator_force_out[worldid, uid] = force
+    force = gain * ctrl_act + bias
+
+    if actuator_forcelimited[uid]:
+      forcerange = actuator_forcerange[worldid % actuator_forcerange.shape[0], uid]
+      force = wp.clamp(force, forcerange[0], forcerange[1])
+
+    # add DC motor mechanical forces (not subject to current limits)
+    if biastype == BiasType.DCMOTOR:
+      # cogging torque
+      A = biasprm[0]
+      if A != 0.0:
+        Np = biasprm[1]
+        phi = biasprm[2]
+        force += A * wp.sin(Np * length + phi)
+
+      # LuGre friction
+      sigma0 = dynprm[5]
+      if sigma0 > 0.0:
+        sigma1 = dynprm[6]
+        slots = util_misc.dcmotor_slots(dynprm, gainprm)
+        adr = act_first + slots[3]  # slots[3] is bristle
+        z = act_in[worldid, adr]
+        z_dot = act_dot_out[worldid, adr]
+        force -= sigma0 * z + sigma1 * z_dot
+
+    actuator_force_out[worldid, uid] = force
+
+  return kernel
 
 
 @cache_kernel
@@ -2079,11 +2107,12 @@ def fwd_actuation(m: Model, d: Data):
       ctrl = d.ctrl
 
     wp.launch(
-      _actuator_force,
+      _actuator_force(bool(m.opt.disableactuator)),
       dim=(d.nworld, m.nactuator),
       inputs=[
         m.na,
         m.opt.timestep,
+        m.opt.disableactuator,
         m.jnt_type,
         m.actuator_trntype,
         m.actuator_dyntype,
@@ -2101,6 +2130,7 @@ def fwd_actuation(m: Model, d: Data):
         m.actuator_actlimited,
         m.actuator_actrange,
         m.actuator_actearly,
+        m.actuator_group,
         m.actuator_forcelimited,
         m.actuator_forcerange,
         m.actuator_ctrllimited,

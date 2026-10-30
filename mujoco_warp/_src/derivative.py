@@ -51,148 +51,160 @@ from mujoco_warp._src.warp_util import event_scope
 wp.set_module_options({"enable_backward": False, "default_grid_stride": False})
 
 
-@wp.kernel
-def _qderiv_actuator_passive_vel(
-  # Model:
-  opt_timestep: wp.array[float],
-  actuator_dyntype: wp.array[int],
-  actuator_gaintype: wp.array[int],
-  actuator_biastype: wp.array[int],
-  actuator_ctrlspec: wp.array[int],
-  actuator_actadr: wp.array[int],
-  actuator_actnum: wp.array[int],
-  actuator_dynprm: wp.array2d[vec10],
-  actuator_gainprm: wp.array2d[vec10],
-  actuator_biasprm: wp.array2d[vec10],
-  actuator_actlimited: wp.array[bool],
-  actuator_actrange: wp.array2d[wp.vec2],
-  actuator_actearly: wp.array[bool],
-  actuator_forcelimited: wp.array[bool],
-  actuator_forcerange: wp.array2d[wp.vec2],
-  actuator_acc0: wp.array2d[float],
-  actuator_lengthrange: wp.array2d[wp.vec2],
-  # Data in:
-  act_in: wp.array2d[float],
-  ctrl_in: wp.array2d[float],
-  act_dot_in: wp.array2d[float],
-  actuator_length_in: wp.array2d[float],
-  actuator_velocity_in: wp.array2d[float],
-  actuator_force_in: wp.array2d[float],
-  # Out:
-  vel_out: wp.array2d[float],
-):
-  worldid, actid = wp.tid()
+@cache_kernel
+def _qderiv_actuator_passive_vel(disable_actuator: bool = False):
+  @wp.kernel(module="unique", module_options={"enable_backward": False})
+  def kernel(
+    # Model:
+    opt_timestep: wp.array[float],
+    opt_disableactuator: int,
+    actuator_dyntype: wp.array[int],
+    actuator_gaintype: wp.array[int],
+    actuator_biastype: wp.array[int],
+    actuator_ctrlspec: wp.array[int],
+    actuator_actadr: wp.array[int],
+    actuator_actnum: wp.array[int],
+    actuator_dynprm: wp.array2d[vec10],
+    actuator_gainprm: wp.array2d[vec10],
+    actuator_biasprm: wp.array2d[vec10],
+    actuator_actlimited: wp.array[bool],
+    actuator_actrange: wp.array2d[wp.vec2],
+    actuator_actearly: wp.array[bool],
+    actuator_group: wp.array[int],
+    actuator_forcelimited: wp.array[bool],
+    actuator_forcerange: wp.array2d[wp.vec2],
+    actuator_acc0: wp.array2d[float],
+    actuator_lengthrange: wp.array2d[wp.vec2],
+    # Data in:
+    act_in: wp.array2d[float],
+    ctrl_in: wp.array2d[float],
+    act_dot_in: wp.array2d[float],
+    actuator_length_in: wp.array2d[float],
+    actuator_velocity_in: wp.array2d[float],
+    actuator_force_in: wp.array2d[float],
+    # Out:
+    vel_out: wp.array2d[float],
+  ):
+    worldid, actid = wp.tid()
 
-  actuator_gainprm_id = worldid % actuator_gainprm.shape[0]
-  actuator_biasprm_id = worldid % actuator_biasprm.shape[0]
-  actuator_dynprm_id = worldid % actuator_dynprm.shape[0]
-  opt_timestep_id = worldid % opt_timestep.shape[0]
+    # disabled actuators contribute no derivative
+    if wp.static(disable_actuator):
+      if util_misc.actuator_disabled(opt_disableactuator, actuator_group[actid]):
+        vel_out[worldid, actid] = 0.0
+        return
 
-  bias = float(0.0)
-  R_dcmotor = float(0.0)
-  K_dcmotor = float(0.0)
-  te_dcmotor = float(0.0)
+    actuator_gainprm_id = worldid % actuator_gainprm.shape[0]
+    actuator_biasprm_id = worldid % actuator_biasprm.shape[0]
+    actuator_dynprm_id = worldid % actuator_dynprm.shape[0]
+    opt_timestep_id = worldid % opt_timestep.shape[0]
 
-  if actuator_gaintype[actid] == GainType.AFFINE:
-    gain = actuator_gainprm[actuator_gainprm_id, actid][2]
-  elif actuator_gaintype[actid] == GainType.MUSCLE:
-    gain = util_misc.muscle_gain_vel_deriv(
-      actuator_length_in[worldid, actid],
-      actuator_velocity_in[worldid, actid],
-      actuator_lengthrange[worldid % actuator_lengthrange.shape[0], actid],
-      actuator_acc0[worldid % actuator_acc0.shape[0], actid],
-      actuator_gainprm[actuator_gainprm_id, actid],
-    )
-  elif actuator_gaintype[actid] == GainType.DCMOTOR:
-    gain = 0.0
-    dynprm = actuator_dynprm[actuator_dynprm_id, actid]
-    gainprm = actuator_gainprm[actuator_gainprm_id, actid]
-    te = dynprm[0]
-    K = gainprm[1]
+    bias = float(0.0)
+    R_dcmotor = float(0.0)
+    K_dcmotor = float(0.0)
+    te_dcmotor = float(0.0)
 
-    # controller velocity derivative dV/dω using nameplate resistance
-    dVdw = 0.0
-    if (actuator_ctrlspec[actid] & 7) != 0:
-      R0 = wp.max(MJ_MINVAL, gainprm[0])
-      dVdw = -gainprm[6] * R0 / K + K
-
-    # winding resistance at current temperature
-    R = util_misc.dcmotor_resistance(act_in, worldid, actuator_actadr[actid], dynprm, gainprm)
-
-    if te > 0.0:
-      # stateful current with actearly: d(K*next_act)/dω
-      # includes both back-EMF (-K) and controller (dVdw) through act_dot
-      s = 1.0 - wp.exp(-opt_timestep[opt_timestep_id] / te)
-      bias += K * (dVdw - K) * s / R
-    elif dVdw != 0.0:
-      # stateless: controller terms only (back-EMF handled in bias block)
-      bias += K * dVdw / R
-
-    # LuGre: force includes -sigma1*z_dot, z_dot = a*z + v
-    # d(sigma1*z_dot)/dv = sigma1*(da/dv*z + 1), ignoring higher-order da/dv*z
-    sigma1 = dynprm[6]
-    if sigma1 > 0.0:
-      bias -= sigma1
-
-    R_dcmotor = R
-    K_dcmotor = K
-    te_dcmotor = te
-  else:
-    gain = 0.0
-
-  if actuator_biastype[actid] == BiasType.AFFINE:
-    bias += actuator_biasprm[actuator_biasprm_id, actid][2]
-  elif actuator_biastype[actid] == BiasType.DCMOTOR:
-    if R_dcmotor > 0.0:
-      if te_dcmotor <= 0.0:
-        bias += -K_dcmotor * K_dcmotor / R_dcmotor
-    else:
+    if actuator_gaintype[actid] == GainType.AFFINE:
+      gain = actuator_gainprm[actuator_gainprm_id, actid][2]
+    elif actuator_gaintype[actid] == GainType.MUSCLE:
+      gain = util_misc.muscle_gain_vel_deriv(
+        actuator_length_in[worldid, actid],
+        actuator_velocity_in[worldid, actid],
+        actuator_lengthrange[worldid % actuator_lengthrange.shape[0], actid],
+        actuator_acc0[worldid % actuator_acc0.shape[0], actid],
+        actuator_gainprm[actuator_gainprm_id, actid],
+      )
+    elif actuator_gaintype[actid] == GainType.DCMOTOR:
+      gain = 0.0
       dynprm = actuator_dynprm[actuator_dynprm_id, actid]
+      gainprm = actuator_gainprm[actuator_gainprm_id, actid]
       te = dynprm[0]
-      if te <= 0.0:
-        gainprm = actuator_gainprm[actuator_gainprm_id, actid]
-        K = gainprm[1]
-        R = util_misc.dcmotor_resistance(act_in, worldid, actuator_actadr[actid], dynprm, gainprm)
-        bias += -K * K / R
+      K = gainprm[1]
 
-  if bias == 0.0 and gain == 0.0:
-    vel_out[worldid, actid] = 0.0
-    return
+      # controller velocity derivative dV/dω using nameplate resistance
+      dVdw = 0.0
+      if (actuator_ctrlspec[actid] & 7) != 0:
+        R0 = wp.max(MJ_MINVAL, gainprm[0])
+        dVdw = -gainprm[6] * R0 / K + K
 
-  # skip if force is clamped by forcerange
-  if actuator_forcelimited[actid]:
-    force = actuator_force_in[worldid, actid]
-    forcerange = actuator_forcerange[worldid % actuator_forcerange.shape[0], actid]
-    if force <= forcerange[0] or force >= forcerange[1]:
+      # winding resistance at current temperature
+      R = util_misc.dcmotor_resistance(act_in, worldid, actuator_actadr[actid], dynprm, gainprm)
+
+      if te > 0.0:
+        # stateful current with actearly: d(K*next_act)/dω
+        # includes both back-EMF (-K) and controller (dVdw) through act_dot
+        s = 1.0 - wp.exp(-opt_timestep[opt_timestep_id] / te)
+        bias += K * (dVdw - K) * s / R
+      elif dVdw != 0.0:
+        # stateless: controller terms only (back-EMF handled in bias block)
+        bias += K * dVdw / R
+
+      # LuGre: force includes -sigma1*z_dot, z_dot = a*z + v
+      # d(sigma1*z_dot)/dv = sigma1*(da/dv*z + 1), ignoring higher-order da/dv*z
+      sigma1 = dynprm[6]
+      if sigma1 > 0.0:
+        bias -= sigma1
+
+      R_dcmotor = R
+      K_dcmotor = K
+      te_dcmotor = te
+    else:
+      gain = 0.0
+
+    if actuator_biastype[actid] == BiasType.AFFINE:
+      bias += actuator_biasprm[actuator_biasprm_id, actid][2]
+    elif actuator_biastype[actid] == BiasType.DCMOTOR:
+      if R_dcmotor > 0.0:
+        if te_dcmotor <= 0.0:
+          bias += -K_dcmotor * K_dcmotor / R_dcmotor
+      else:
+        dynprm = actuator_dynprm[actuator_dynprm_id, actid]
+        te = dynprm[0]
+        if te <= 0.0:
+          gainprm = actuator_gainprm[actuator_gainprm_id, actid]
+          K = gainprm[1]
+          R = util_misc.dcmotor_resistance(act_in, worldid, actuator_actadr[actid], dynprm, gainprm)
+          bias += -K * K / R
+
+    if bias == 0.0 and gain == 0.0:
       vel_out[worldid, actid] = 0.0
       return
 
-  vel = float(bias)
-  if actuator_dyntype[actid] != DynType.NONE:
-    if gain != 0.0:
-      act_adr = actuator_actadr[actid] + actuator_actnum[actid] - 1
+    # skip if force is clamped by forcerange
+    if actuator_forcelimited[actid]:
+      force = actuator_force_in[worldid, actid]
+      forcerange = actuator_forcerange[worldid % actuator_forcerange.shape[0], actid]
+      if force <= forcerange[0] or force >= forcerange[1]:
+        vel_out[worldid, actid] = 0.0
+        return
 
-      # use next activation if actearly is set (matching forward pass)
-      if actuator_actearly[actid]:
-        act = next_act(
-          opt_timestep[opt_timestep_id],
-          actuator_dyntype[actid],
-          actuator_dynprm[actuator_dynprm_id, actid],
-          actuator_actrange[worldid % actuator_actrange.shape[0], actid],
-          act_in[worldid, act_adr],
-          act_dot_in[worldid, act_adr],
-          1.0,
-          actuator_actlimited[actid],
-        )
-      else:
-        act = act_in[worldid, act_adr]
+    vel = float(bias)
+    if actuator_dyntype[actid] != DynType.NONE:
+      if gain != 0.0:
+        act_adr = actuator_actadr[actid] + actuator_actnum[actid] - 1
 
-      vel += gain * act
-  else:
-    if gain != 0.0:
-      vel += gain * ctrl_in[worldid, actid]
+        # use next activation if actearly is set (matching forward pass)
+        if actuator_actearly[actid]:
+          act = next_act(
+            opt_timestep[opt_timestep_id],
+            actuator_dyntype[actid],
+            actuator_dynprm[actuator_dynprm_id, actid],
+            actuator_actrange[worldid % actuator_actrange.shape[0], actid],
+            act_in[worldid, act_adr],
+            act_dot_in[worldid, act_adr],
+            1.0,
+            actuator_actlimited[actid],
+          )
+        else:
+          act = act_in[worldid, act_adr]
 
-  vel_out[worldid, actid] = vel
+        vel += gain * act
+    else:
+      if gain != 0.0:
+        vel += gain * ctrl_in[worldid, actid]
+
+    vel_out[worldid, actid] = vel
+
+  return kernel
 
 
 @wp.func
@@ -1286,10 +1298,11 @@ def deriv_smooth_vel(m: Model, d: Data, out: wp.array2d[float]):
     if m.nactuator > 0 and not (m.opt.disableflags & DisableBit.ACTUATION):
       vel = wp.empty((d.nworld, m.nactuator), dtype=float)
       wp.launch(
-        _qderiv_actuator_passive_vel,
+        _qderiv_actuator_passive_vel(bool(m.opt.disableactuator)),
         dim=(d.nworld, m.nactuator),
         inputs=[
           m.opt.timestep,
+          m.opt.disableactuator,
           m.actuator_dyntype,
           m.actuator_gaintype,
           m.actuator_biastype,
@@ -1302,6 +1315,7 @@ def deriv_smooth_vel(m: Model, d: Data, out: wp.array2d[float]):
           m.actuator_actlimited,
           m.actuator_actrange,
           m.actuator_actearly,
+          m.actuator_group,
           m.actuator_forcelimited,
           m.actuator_forcerange,
           m.actuator_acc0,
@@ -1669,7 +1683,7 @@ def _eff_tendon_shift(max_ten_J_rownnz: int, deterministic: bool = False):
 
 
 @cache_kernel
-def _eff_actuator_actuation(nv: int, deterministic: bool = False):
+def _eff_actuator_actuation(nv: int, deterministic: bool = False, disable_actuator: bool = False):
   module_options = {"enable_backward": False}
   if deterministic:
     module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
@@ -1680,6 +1694,7 @@ def _eff_actuator_actuation(nv: int, deterministic: bool = False):
     # Model:
     opt_timestep: wp.array[float],
     opt_disableflags: int,
+    opt_disableactuator: int,
     actuator_dyntype: wp.array[int],
     actuator_gaintype: wp.array[int],
     actuator_biastype: wp.array[int],
@@ -1693,6 +1708,7 @@ def _eff_actuator_actuation(nv: int, deterministic: bool = False):
     actuator_actlimited: wp.array[bool],
     actuator_actrange: wp.array2d[wp.vec2],
     actuator_actearly: wp.array[bool],
+    actuator_group: wp.array[int],
     actuator_forcelimited: wp.array[bool],
     actuator_forcerange: wp.array2d[wp.vec2],
     actuator_ctrllimited: wp.array[bool],
@@ -1719,6 +1735,11 @@ def _eff_actuator_actuation(nv: int, deterministic: bool = False):
 
     if opt_disableflags & DisableBit.ACTUATION:
       return
+
+    if wp.static(disable_actuator):
+      if util_misc.actuator_disabled(opt_disableactuator, actuator_group[actid]):
+        efm_as_out[worldid, actid] = 0.0
+        return
 
     if actuator_forcelimited[actid]:
       force = actuator_force_in[worldid, actid]
@@ -3691,11 +3712,12 @@ def eff_actuation(m: Model, d: Data):
   d.efm_ca.zero_()
   det_atomics = bool(m.opt.deterministic & DeterminismType.ATOMICS)
   wp.launch(
-    _eff_actuator_actuation(m.nv if det_atomics else 0, det_atomics),
+    _eff_actuator_actuation(m.nv if det_atomics else 0, det_atomics, bool(m.opt.disableactuator)),
     dim=(d.nworld, m.nactuator),
     inputs=[
       m.opt.timestep,
       m.opt.disableflags,
+      m.opt.disableactuator,
       m.actuator_dyntype,
       m.actuator_gaintype,
       m.actuator_biastype,
@@ -3709,6 +3731,7 @@ def eff_actuation(m: Model, d: Data):
       m.actuator_actlimited,
       m.actuator_actrange,
       m.actuator_actearly,
+      m.actuator_group,
       m.actuator_forcelimited,
       m.actuator_forcerange,
       m.actuator_ctrllimited,

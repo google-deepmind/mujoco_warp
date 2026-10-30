@@ -689,6 +689,14 @@ def _sigmoid(x: float) -> float:
 
 
 @wp.func
+def actuator_disabled(disableactuator: int, group: int) -> bool:
+  """Returns True if the actuator group is disabled, matching mj_actuatorDisabled."""
+  if group < 0 or group > 30:
+    return False
+  return (disableactuator & (1 << group)) != 0
+
+
+@wp.func
 def muscle_dynamics_timescale(dctrl: float, tau_act: float, tau_deact: float, smooth_width: float) -> float:
   """Muscle time constant with optional smoothing."""
   # hard switching
