@@ -230,8 +230,8 @@ def ccd_hfield_kernel_builder(
     epa_vert_in: wp.array2d[wp.vec3],
     epa_vert_index_in: wp.array2d[int],
     epa_face_in: wp.array2d[int],
-    epa_pr_in: wp.array2d[wp.vec3],
-    epa_norm2_in: wp.array2d[float],
+    epa_normal_in: wp.array2d[wp.vec3],
+    epa_dist_in: wp.array2d[float],
     epa_horizon_in: wp.array2d[int],
     nccd_in: wp.array[int],
     # Data out:
@@ -404,8 +404,8 @@ def ccd_hfield_kernel_builder(
     epa_vert = epa_vert_in[ccdid]
     epa_vert_index = epa_vert_index_in[ccdid]
     epa_face = epa_face_in[ccdid]
-    epa_pr = epa_pr_in[ccdid]
-    epa_norm2 = epa_norm2_in[ccdid]
+    epa_normal = epa_normal_in[ccdid]
+    epa_dist = epa_dist_in[ccdid]
     epa_horizon = epa_horizon_in[ccdid]
 
     collision_pairid = collision_pairid_in[collisionid]
@@ -483,8 +483,8 @@ def ccd_hfield_kernel_builder(
             epa_vert,
             epa_vert_index,
             epa_face,
-            epa_pr,
-            epa_norm2,
+            epa_normal,
+            epa_dist,
             epa_horizon,
             wp.static(bool(warn_overflow & OverflowType.EPA_HORIZON)),
             worldid,
@@ -790,8 +790,8 @@ def ccd_kernel_builder(
     epa_vert_in: wp.array2d[wp.vec3],
     epa_vert_index_in: wp.array2d[int],
     epa_face_in: wp.array2d[int],
-    epa_pr_in: wp.array2d[wp.vec3],
-    epa_norm2_in: wp.array2d[float],
+    epa_normal_in: wp.array2d[wp.vec3],
+    epa_dist_in: wp.array2d[float],
     epa_horizon_in: wp.array2d[int],
     multiccd_polygon_in: wp.array2d[wp.vec3],
     multiccd_clipped_in: wp.array2d[wp.vec3],
@@ -880,8 +880,8 @@ def ccd_kernel_builder(
         epa_vert_in[ccdid],
         epa_vert_index_in[ccdid],
         epa_face_in[ccdid],
-        epa_pr_in[ccdid],
-        epa_norm2_in[ccdid],
+        epa_normal_in[ccdid],
+        epa_dist_in[ccdid],
         epa_horizon_in[ccdid],
         wp.static(bool(warn_overflow & OverflowType.EPA_HORIZON)),
         worldid,
@@ -1092,8 +1092,8 @@ def ccd_kernel_builder(
     epa_vert_in: wp.array2d[wp.vec3],
     epa_vert_index_in: wp.array2d[int],
     epa_face_in: wp.array2d[int],
-    epa_pr_in: wp.array2d[wp.vec3],
-    epa_norm2_in: wp.array2d[float],
+    epa_normal_in: wp.array2d[wp.vec3],
+    epa_dist_in: wp.array2d[float],
     epa_horizon_in: wp.array2d[int],
     multiccd_polygon_in: wp.array2d[wp.vec3],
     multiccd_clipped_in: wp.array2d[wp.vec3],
@@ -1193,8 +1193,8 @@ def ccd_kernel_builder(
         epa_vert_in,
         epa_vert_index_in,
         epa_face_in,
-        epa_pr_in,
-        epa_norm2_in,
+        epa_normal_in,
+        epa_dist_in,
         epa_horizon_in,
         multiccd_polygon_in,
         multiccd_clipped_in,
@@ -1316,10 +1316,10 @@ def convex_narrowphase(m: Model, d: Data, ctx: CollisionContext, collision_table
   epa_vert_index = wp.empty(shape=(d.naccdmax, 10 + 2 * epa_iterations), dtype=int)
   # epa_face: faces of polytope represented by three indices
   epa_face = wp.empty(shape=(d.naccdmax, 6 + MJ_MAX_EPAFACES * epa_iterations), dtype=int)
-  # epa_pr: projection of origin on polytope faces
-  epa_pr = wp.empty(shape=(d.naccdmax, 6 + MJ_MAX_EPAFACES * epa_iterations), dtype=wp.vec3)
-  # epa_norm2: epa_pr * epa_pr
-  epa_norm2 = wp.empty(shape=(d.naccdmax, 6 + MJ_MAX_EPAFACES * epa_iterations), dtype=float)
+  # epa_normal: outward unit normal of polytope faces
+  epa_normal = wp.empty(shape=(d.naccdmax, 6 + MJ_MAX_EPAFACES * epa_iterations), dtype=wp.vec3)
+  # epa_dist: signed distance from the origin to polytope faces (positive inside)
+  epa_dist = wp.empty(shape=(d.naccdmax, 6 + MJ_MAX_EPAFACES * epa_iterations), dtype=float)
   # epa_horizon: index pair (i j) of edges on horizon
   epa_horizon = wp.empty(shape=(d.naccdmax, MJ_MAX_EPAHORIZON), dtype=int)
 
@@ -1405,8 +1405,8 @@ def convex_narrowphase(m: Model, d: Data, ctx: CollisionContext, collision_table
           epa_vert,
           epa_vert_index,
           epa_face,
-          epa_pr,
-          epa_norm2,
+          epa_normal,
+          epa_dist,
           epa_horizon,
           nccd,
         ],
@@ -1506,8 +1506,8 @@ def convex_narrowphase(m: Model, d: Data, ctx: CollisionContext, collision_table
           epa_vert,
           epa_vert_index,
           epa_face,
-          epa_pr,
-          epa_norm2,
+          epa_normal,
+          epa_dist,
           epa_horizon,
           multiccd_polygon,
           multiccd_clipped,
