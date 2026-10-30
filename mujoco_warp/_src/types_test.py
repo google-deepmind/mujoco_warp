@@ -57,6 +57,8 @@ class TypesTest(parameterized.TestCase):
       mj_fields.insert(mj_fields.index("nbuffer") + 1, "opt")
       mj_fields.insert(mj_fields.index("nbuffer") + 2, "vis")
       mj_fields.insert(mj_fields.index("nbuffer") + 3, "stat")
+      if not util_pkg.check_version("mujoco>=3.17.1.dev1006378379"):
+        mj_fields.insert(mj_fields.index("flex_vertbodyid") + 1, "flex_vertcell")
     elif mjw_class is Data:
       # TODO(team): remove this reordering after MjData._all_fields order is fixed
       # there's a bug in _all_fields where solver_niter is in the wrong place
