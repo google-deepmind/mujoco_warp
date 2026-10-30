@@ -783,8 +783,16 @@ def gjk(
     sp2 = support(geom2, geomtype2, dir)
     result.separated = wp.dot(x_k, sp1.point - sp2.point) > 0.0
 
-  # if 3-simplex and not separated, then the origin is contained in the simplex
-  result.dist = wp.where(n == 4 and not result.separated, 0.0, xnorm)
+  # The separation test above re-queries the support mapping along the closest-point direction,
+  # so a not-separated verdict means the origin is inside the Minkowski difference (the geoms
+  # penetrate), even when GJK stopped early on a triangle under float32 rounding. For discrete
+  # (polyhedral) geoms that test is exact up to rounding, so trust it and report dist 0 to run EPA.
+  # Gated on cutoff < FLOAT_MAX: a finite cutoff means the early-separation return above already
+  # dropped the clearly separated pairs, so reaching here not separated reliably means penetration.
+  # Unbounded queries (collision-distance sensors use cutoff >= FLOAT_MAX) skip that filter and
+  # keep the computed distance, since the raw test can misclassify a far-apart pair at large vertex
+  # scale. A full tetrahedron (n == 4) encloses the origin, so it is ungated.
+  result.dist = wp.where(((is_discrete and cutoff < FLOAT_MAX) or n == 4) and not result.separated, 0.0, xnorm)
 
   result.dim = n
   result.simplex1 = simplex1
