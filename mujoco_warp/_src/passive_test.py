@@ -937,6 +937,50 @@ class PassiveTest(parameterized.TestCase):
     mjw.reset_data(m, d)
     _assert_eq(d.plastic.numpy()[0], mjd.plastic, "reset_flex_plastic")
 
+  @parameterized.parameters("Euler", "RK4")
+  # TODO(team): remove check_version once minimum mujoco version >= 3.17.1
+  @absltest.skipIf(not util_pkg.check_version("mujoco>=3.17.1"), "Cannot test unreleased XML `yield` attribute with older MuJoCo versions.")
+  def test_flex_interp_plastic(self, integrator):
+    """Verify plastic 2D and 3D non-cubic interpolated flexes match MuJoCo across integrators."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml=f"""
+      <mujoco>
+        <option gravity="0 0 0" timestep="0.005" integrator="{integrator}"/>
+        <worldbody>
+          <flexcomp name="box" type="grid" dim="3" dof="trilinear"
+                    count="2 2 2" cellcount="1 1 1" spacing="2 1 0.5" mass="1">
+            <contact contype="0" conaffinity="0" selfcollide="none"/>
+            <elasticity young="500" poisson="0.25" damping="0.05" yield="0.04"/>
+            <pin id="0 1 2 3"/>
+          </flexcomp>
+          <flexcomp name="shell" type="grid" dim="3" pos="3 0 0" dof="trilinear"
+                    count="2 2 2" cellcount="1 1 1" spacing="2 1 0.5" mass="1">
+            <contact contype="0" conaffinity="0" selfcollide="none"/>
+            <elasticity young="500" poisson="0.3" thickness="0.02" elastic2d="both" damping="0.05" yield="0.04"/>
+            <pin id="0 1 2 3"/>
+          </flexcomp>
+        </worldbody>
+      </mujoco>
+      """,
+    )
+
+    self.assertEqual(m.nplastic, 24)  # 6 (3D cell) + 18 (6 boundary faces * 3)
+    rng = np.random.default_rng(42)
+    mjd.qpos[:] = rng.uniform(-0.25, 0.25, size=mjm.nq)
+    mjd.qvel[:] = rng.uniform(-0.3, 0.3, size=mjm.nv)
+    mujoco.mj_forward(mjm, mjd)
+    d = mjw.put_data(mjm, mjd)
+
+    for step_idx in range(10):
+      mujoco.mj_step(mjm, mjd)
+      mjw.step(m, d)
+
+      _assert_eq(d.plastic.numpy()[0], mjd.plastic, f"interp_plastic_step_{step_idx}")
+      _assert_eq(d.qfrc_spring.numpy()[0], mjd.qfrc_spring, f"interp_qfrc_spring_step_{step_idx}")
+      _assert_eq(d.qfrc_passive.numpy()[0], mjd.qfrc_passive, f"interp_qfrc_passive_step_{step_idx}")
+      _assert_eq(d.qpos.numpy()[0], mjd.qpos, f"interp_qpos_step_{step_idx}")
+      _assert_eq(d.qvel.numpy()[0], mjd.qvel, f"interp_qvel_step_{step_idx}")
+
 
 if __name__ == "__main__":
   wp.init()
