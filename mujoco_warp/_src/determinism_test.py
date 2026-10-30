@@ -259,7 +259,6 @@ _TREE_CASES = (
       "solver._update_constraint_efc",
       "solver._update_constraint_init_qfrc_constraint_sparse",
       "solver._update_gradient_grad",
-      "solver._update_gradient_h_incremental_sparse",
     ),
   ),
   dict(
