@@ -687,6 +687,165 @@ def _collide_geom_triangle_detect(
 
 
 @wp.func
+def _collide_hfield_triangle(
+  # Model:
+  hfield_size: wp.array[wp.vec4],
+  hfield_nrow: wp.array[int],
+  hfield_ncol: wp.array[int],
+  hfield_adr: wp.array[int],
+  hfield_data: wp.array[float],
+  # In:
+  max_candidates: int,
+  hf_pos: wp.vec3,
+  hf_rot: wp.mat33,
+  did: int,
+  triangle: Geom,
+  radius: float,
+  margin: float,
+  geomid: int,
+  flexid: int,
+  elemid: int,
+  worldid: int,
+  epa_vert: wp.array[wp.vec3],
+  epa_vert_index: wp.array[int],
+  epa_face: wp.array[int],
+  epa_pr: wp.array[wp.vec3],
+  epa_norm2: wp.array[float],
+  epa_horizon: wp.array[int],
+  tolerance: float,
+  ccd_iterations: int,
+  warn_overflow: int,
+  # Data out:
+  overflow_out: wp.array[int],
+  # Out:
+  cand_dist_out: wp.array[float],
+  cand_pos_out: wp.array[wp.vec3],
+  cand_nrm_out: wp.array[wp.vec3],
+  cand_geom_out: wp.array[wp.vec2i],
+  cand_flex_out: wp.array[wp.vec2i],
+  cand_elem_out: wp.array[wp.vec2i],
+  cand_vert_out: wp.array[wp.vec2i],
+  cand_worldid_out: wp.array[int],
+  ncand_out: wp.array[int],
+):
+  """Collide a rounded flex triangle with the prisms in its heightfield subgrid."""
+  # TRIANGLE stores its vertices in the rows of rot, rather than a rotation matrix.
+  hf_rot_t = wp.transpose(hf_rot)
+  a = hf_rot_t @ (triangle.rot[0] - hf_pos)
+  b = hf_rot_t @ (triangle.rot[1] - hf_pos)
+  c = hf_rot_t @ (triangle.rot[2] - hf_pos)
+  triangle.rot = wp.matrix_from_rows(a, b, c)
+  triangle.margin = 2.0 * radius
+  center = (a + b + c) * wp.static(1.0 / 3.0)
+
+  expansion = wp.vec3(radius + margin)
+  lower = wp.min(a, wp.min(b, c)) - expansion
+  upper = wp.max(a, wp.max(b, c)) + expansion
+  size = hfield_size[did]
+  if _flex_element_aabb_filter(lower, upper, wp.vec3(-size[0], -size[1], -size[3]), wp.vec3(size[0], size[1], size[2])):
+    return
+
+  nrow = hfield_nrow[did]
+  ncol = hfield_ncol[did]
+  adr = hfield_adr[did]
+  dx = 2.0 * size[0] / float(ncol - 1)
+  dy = 2.0 * size[1] / float(nrow - 1)
+  cmin = wp.max(0, int(wp.floor((lower[0] + size[0]) / dx)))
+  cmax = wp.min(ncol - 1, int(wp.ceil((upper[0] + size[0]) / dx)))
+  rmin = wp.max(0, int(wp.floor((lower[1] + size[1]) / dy)))
+  rmax = wp.min(nrow - 1, int(wp.ceil((upper[1] + size[1]) / dy)))
+
+  terrain = Geom()
+  terrain.rot = wp.identity(n=3, dtype=float)
+  terrain.index = -1
+  prism = mat63()
+  prism[0, 2] = -size[3]
+  prism[1, 2] = -size[3]
+  prism[2, 2] = -size[3]
+  dr = wp.vec2i(1, 0)
+  count = int(0)
+
+  # The strip uses the same diagonal and winding as mjc_HFieldElem.
+  for r in range(rmin, rmax):
+    for col in range(cmin, cmax + 1):
+      for k in range(2):
+        row = r + dr[k]
+        x = dx * float(col) - size[0]
+        y = dy * float(row) - size[1]
+        z = hfield_data[adr + row * ncol + col] * size[2]
+        prism[0] = prism[1]
+        prism[1] = prism[2]
+        prism[3] = prism[4]
+        prism[4] = prism[5]
+        prism[2] = wp.vec3(x, y, -size[3])
+        prism[5] = wp.vec3(x, y, z)
+        if col == cmin:
+          continue
+        if wp.max(prism[3, 2], wp.max(prism[4, 2], prism[5, 2])) < lower[2]:
+          continue
+
+        terrain.polyvert = prism
+        prism_center = (prism[0] + prism[1] + prism[2] + prism[3] + prism[4] + prism[5]) * wp.static(1.0 / 6.0)
+        dist, ncontact, w1, w2, _ = ccd(
+          tolerance,
+          margin,
+          ccd_iterations,
+          ccd_iterations,
+          terrain,
+          triangle,
+          int(GeomType.HFIELD),
+          int(GeomType.TRIANGLE),
+          prism_center,
+          center,
+          epa_vert,
+          epa_vert_index,
+          epa_face,
+          epa_pr,
+          epa_norm2,
+          epa_horizon,
+          bool(warn_overflow & OverflowType.EPA_HORIZON),
+          worldid,
+          overflow_out,
+        )
+        if ncontact == 0 or dist >= margin:
+          continue
+        if count >= MJ_MAXCONPAIR:
+          if bool(warn_overflow & OverflowType.HFIELD):
+            wp.printf("Heightfield-flex collision overflow: more than %u contacts per element\n", MJ_MAXCONPAIR)
+          wp.atomic_or(overflow_out, worldid, wp.static(OverflowType.HFIELD))
+          return
+        count += 1
+
+        diff = wp.where(dist < 0.0, w1 - w2, w2 - w1)
+        normal = wp.normalize(diff)
+        if wp.length_sq(diff) < 1e-12:
+          normal = wp.normalize(center - prism_center)
+        _write_candidate(
+          max_candidates,
+          dist,
+          hf_rot @ (0.5 * (w1 + w2)) + hf_pos,
+          hf_rot @ normal,
+          geomid,
+          -1,
+          flexid,
+          elemid,
+          -1,
+          worldid,
+          bool(warn_overflow & OverflowType.NARROWPHASE),
+          overflow_out,
+          cand_dist_out,
+          cand_pos_out,
+          cand_nrm_out,
+          cand_geom_out,
+          cand_flex_out,
+          cand_elem_out,
+          cand_vert_out,
+          cand_worldid_out,
+          ncand_out,
+        )
+
+
+@wp.func
 def _collide_mesh_convex(
   # Model:
   mesh_vertadr: wp.array[int],
@@ -1614,6 +1773,11 @@ def _flex_narrowphase_elem_detect(warn_overflow: int):
     mesh_polymapadr: wp.array[int],
     mesh_polymapnum: wp.array[int],
     mesh_polymap: wp.array[int],
+    hfield_size: wp.array[wp.vec4],
+    hfield_nrow: wp.array[int],
+    hfield_ncol: wp.array[int],
+    hfield_adr: wp.array[int],
+    hfield_data: wp.array[float],
     flex_elemflexid: wp.array[int],
     # Data in:
     geom_xpos_in: wp.array2d[wp.vec3],
@@ -1793,6 +1957,7 @@ def _flex_narrowphase_elem_detect(warn_overflow: int):
         and gtype != int(GeomType.CYLINDER)
         and gtype != int(GeomType.ELLIPSOID)
         and gtype != int(GeomType.MESH)
+        and gtype != int(GeomType.HFIELD)
       ):
         continue
 
@@ -1840,7 +2005,7 @@ def _flex_narrowphase_elem_detect(warn_overflow: int):
       if _flex_element_aabb_filter(geom_box_min, geom_box_max, elem_min, elem_max):
         continue
 
-      if gtype == int(GeomType.MESH):
+      if gtype == int(GeomType.MESH) or gtype == int(GeomType.HFIELD):
         ccdid = wp.atomic_add(nccd, 0, 1)  # kernel_analyzer: ignore[atomic]
         if ccdid >= naccdmax_in:
           if wp.static(bool(warn_overflow & OverflowType.CCD)):
@@ -1854,6 +2019,46 @@ def _flex_narrowphase_elem_detect(warn_overflow: int):
 
         did = geom_dataid[worldid % geom_dataid.shape[0], geomid]
         tolerance = opt_ccd_tolerance[worldid % opt_ccd_tolerance.shape[0]]
+
+        if gtype == int(GeomType.HFIELD):
+          _collide_hfield_triangle(
+            hfield_size,
+            hfield_nrow,
+            hfield_ncol,
+            hfield_adr,
+            hfield_data,
+            max_candidates,
+            geom_pos,
+            geom_rot,
+            did,
+            geom2,
+            elem_radius,
+            margin,
+            geomid,
+            flexid,
+            local_elemid,
+            worldid,
+            epa_vert[ccdid],
+            epa_vert_index[ccdid],
+            epa_face[ccdid],
+            epa_pr[ccdid],
+            epa_norm2[ccdid],
+            epa_horizon[ccdid],
+            tolerance,
+            ccd_iterations,
+            warn_overflow,
+            overflow_out,
+            cand_dist_out,
+            cand_pos_out,
+            cand_nrm_out,
+            cand_geom_out,
+            cand_flex_out,
+            cand_elem_out,
+            cand_vert_out,
+            cand_worldid_out,
+            ncand_out,
+          )
+          continue
 
         geom2_r = elem_radius if f_dim == 2 else 0.0
         geom2_rbound = r_elem if f_dim == 2 else (r_elem + elem_radius)
@@ -2879,10 +3084,18 @@ class FlexWorkspace:
 
 def _allocate_flex_workspace(m: Model, d: Data) -> FlexWorkspace:
   epa_iterations = m.opt.ccd_iterations
-  has_epa = m.nmesh > 0 or m.has_ellipsoid_geom or m.has_flex_selfcollide or m.nflex > 1 or m.has_1d_flex or m.has_3d_flex
+  has_epa = (
+    m.nhfield > 0
+    or m.nmesh > 0
+    or m.has_ellipsoid_geom
+    or m.has_flex_selfcollide
+    or m.nflex > 1
+    or m.has_1d_flex
+    or m.has_3d_flex
+  )
   capacity = d.naccdmax if has_epa else 1
 
-  needs_nccd = m.nmesh > 0 or m.has_ellipsoid_geom or m.has_1d_flex or m.has_3d_flex
+  needs_nccd = m.nhfield > 0 or m.nmesh > 0 or m.has_ellipsoid_geom or m.has_1d_flex or m.has_3d_flex
   nccd = wp.zeros(1, dtype=int) if needs_nccd else None
 
   has_fps = m.has_flex_selfcollide or m.nflex > 1
@@ -3325,6 +3538,11 @@ def _detect_elem_geom_candidates(
       m.mesh_polymapadr,
       m.mesh_polymapnum,
       m.mesh_polymap,
+      m.hfield_size,
+      m.hfield_nrow,
+      m.hfield_ncol,
+      m.hfield_adr,
+      m.hfield_data,
       m.flex_elemflexid,
       d.geom_xpos,
       d.geom_xmat,

@@ -3126,7 +3126,7 @@ class FlexCollisionTest(parameterized.TestCase):
 
   @parameterized.named_parameters(
     (
-      "hfield",
+      "hfield_3d",
       """
       <mujoco>
         <asset>
@@ -3134,7 +3134,7 @@ class FlexCollisionTest(parameterized.TestCase):
         </asset>
         <worldbody>
           <geom type="hfield" hfield="terrain"/>
-          <flexcomp type="grid" count="2 2 1" spacing=".2 .2 .1" pos="0 0 0.1" name="cloth" dim="2"/>
+          <flexcomp type="grid" count="2 2 2" spacing=".2 .2 .1" pos="0 0 0.1" name="softbody" dim="3"/>
         </worldbody>
       </mujoco>
       """,
