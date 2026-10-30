@@ -140,16 +140,18 @@ def plane_convex(plane_normal: wp.vec3, plane_pos: wp.vec3, convex: Geom, margin
 
     prev = int(-1)
     imax = int(0)
-    max_support = wp.dot(local_dir, convex.vert[convex.vertadr + convex.graph[vert_globalid + 0]])
+    # Rounded support ties at near-duplicate vertices can stop the climb before the deepest vertex.
+    local_dir64 = wp.vec3d(local_dir)
+    max_support64 = wp.dot(local_dir64, wp.vec3d(convex.vert[convex.vertadr + convex.graph[vert_globalid + 0]]))
     while imax != prev:
       prev = imax
       i = convex.graph[vert_edgeadr + imax]
       while convex.graph[edge_localid + i] >= 0:
         subidx = convex.graph[edge_localid + i]
         idx = convex.graph[vert_globalid + subidx]
-        support = wp.dot(local_dir, convex.vert[convex.vertadr + idx])
-        if support > max_support:
-          max_support = support
+        support64 = wp.dot(local_dir64, wp.vec3d(convex.vert[convex.vertadr + idx]))
+        if support64 > max_support64:
+          max_support64 = support64
           imax = int(subidx)
         i += int(1)
     vertindex = convex.graph[vert_globalid + imax]
