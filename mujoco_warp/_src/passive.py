@@ -3436,7 +3436,9 @@ def _flex_passive_interp(deterministic: bool = False):
     if shell_mode:
       cell_quat = face_quat_in[worldid, flex_faceadr[f] + ci]
     else:
-      cell_quat = support.compute_interp_cell_quat(flex_node0, flexnode_xpos_in, order_abs, ci, cj, ck, cy, cz, ny_g, nz_g, nstart, worldid)
+      cell_quat = support.compute_interp_cell_quat(
+        flex_node0, flexnode_xpos_in, order_abs, ci, cj, ck, cy, cz, ny_g, nz_g, nstart, worldid
+      )
 
     # mju_negQuat: conjugate (R⁻¹) — negate xyz, keep w
     cell_quat_inv = wp.quat(-cell_quat[0], -cell_quat[1], -cell_quat[2], cell_quat[3])
@@ -3444,7 +3446,11 @@ def _flex_passive_interp(deterministic: bool = False):
     # Pre-compute displacements and velocities in corotational frame
     # (matches C: rotate all positions/velocities once, then K*u)
     op1 = order_abs + 1
-    node_0 = flex_face[flex_faceadr[f] + ci, 0] if shell_mode else nstart + (ci * order_abs) * ny_g * nz_g + (cj * order_abs) * nz_g + (ck * order_abs)
+    node_0 = (
+      flex_face[flex_faceadr[f] + ci, 0]
+      if shell_mode
+      else nstart + (ci * order_abs) * ny_g * nz_g + (cj * order_abs) * nz_g + (ck * order_abs)
+    )
     refpos_0 = flex_node0[node_0]
     padr_base = flex_plasticadr[f]
     cx = cellnum[0]

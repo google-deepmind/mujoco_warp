@@ -82,9 +82,7 @@ def mat33_to_quat_polar(F: wp.mat33) -> wp.quat:
     if n1 > MJ_MINVAL:
       c1 = c1 / n1
       c2 = wp.cross(c0, c1)
-      cell_quat = wp.normalize(
-        wp.quat_from_matrix(wp.mat33(c0[0], c1[0], c2[0], c0[1], c1[1], c2[1], c0[2], c1[2], c2[2]))
-      )
+      cell_quat = wp.normalize(wp.quat_from_matrix(wp.mat33(c0[0], c1[0], c2[0], c0[1], c1[1], c2[1], c0[2], c1[2], c2[2])))
   for _iter in range(50):
     rot = wp.quat_to_matrix(cell_quat)
     rot_t = wp.transpose(rot)
@@ -722,9 +720,9 @@ def get_state(m: Model, d: Data, state: wp.array2d[float], sig: int, active: Opt
     nbody: int,
     neq: int,
     nmocap: int,
+    nplastic: int,
     nuserdata: int,
     nhistory: int,
-    nplastic: int,
     # Data in:
     time_in: wp.array[float],
     qpos_in: wp.array2d[float],
@@ -836,9 +834,9 @@ def get_state(m: Model, d: Data, state: wp.array2d[float], sig: int, active: Opt
       m.nbody,
       m.neq,
       m.nmocap,
+      m.nplastic,
       m.nuserdata,
       m.nhistory,
-      m.nplastic,
       d.time,
       d.qpos,
       d.qvel,
@@ -886,9 +884,9 @@ def set_state(m: Model, d: Data, state: wp.array2d[float], sig: int, active: Opt
     nflex: int,
     neq: int,
     nmocap: int,
+    nplastic: int,
     nuserdata: int,
     nhistory: int,
-    nplastic: int,
     flex_plasticadr: wp.array[int],
     # In:
     sig_in: int,
@@ -1011,9 +1009,9 @@ def set_state(m: Model, d: Data, state: wp.array2d[float], sig: int, active: Opt
       m.nflex,
       m.neq,
       m.nmocap,
+      m.nplastic,
       m.nuserdata,
       m.nhistory,
-      m.nplastic,
       m.flex_plasticadr,
       int(sig),
       active or wp.ones(d.nworld, dtype=bool),

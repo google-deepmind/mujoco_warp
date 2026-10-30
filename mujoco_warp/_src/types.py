@@ -927,7 +927,7 @@ class State(enum.IntEnum):
   QVEL = mujoco.mjtState.mjSTATE_QVEL
   ACT = mujoco.mjtState.mjSTATE_ACT
   HISTORY = mujoco.mjtState.mjSTATE_HISTORY
-  PLASTIC = mujoco.mjtState.mjSTATE_PLASTIC
+  PLASTIC = getattr(mujoco.mjtState, "mjSTATE_PLASTIC", 1 << 10)
   WARMSTART = mujoco.mjtState.mjSTATE_WARMSTART
   CTRL = mujoco.mjtState.mjSTATE_CTRL
   QFRC_APPLIED = mujoco.mjtState.mjSTATE_QFRC_APPLIED

@@ -465,8 +465,8 @@ def _next_plastic_tendon(
   plastic_in: wp.array2d[float],
   ten_J_in: wp.array2d[float],
   ten_length_in: wp.array2d[float],
-  body_awake_in: wp.array2d[int],
   tree_awake_in: wp.array2d[int],
+  body_awake_in: wp.array2d[int],
   # Data out:
   plastic_out: wp.array2d[float],
 ):
@@ -1186,8 +1186,8 @@ def _advance(m: Model, d: Data, qacc: wp.array, qvel: Optional[wp.array] = None)
         d.plastic,
         d.ten_J,
         d.ten_length,
-        d.body_awake,
         d.tree_awake,
+        d.body_awake,
       ],
       outputs=[d.plastic],
     )
@@ -1495,8 +1495,9 @@ def _rk_correct_velocity(
   # Out:
   qvel_stage_out: wp.array2d[float],
 ):
-  # Runge-Kutta-Munthe-Kaas (RKMK) correction: maps the stage angular velocities of ball and free joints to the
-  # rates of their rotation vectors rot = timestep * scale * (previous corrected stage velocity), in place
+  # Runge-Kutta-Munthe-Kaas (RKMK) correction: maps the stage angular velocities of ball and
+  # free joints to the rates of their rotation vectors rot = timestep * scale * (previous
+  # corrected stage velocity), in place
   worldid, jntid = wp.tid()
   timestep = opt_timestep[worldid % opt_timestep.shape[0]]
   jnttype = jnt_type[jntid]
@@ -1612,8 +1613,8 @@ def rungekutta4(m: Model, d: Data):
     cdof_t0 = None
     subtree_com_t0 = None
 
-  # stage velocities with the RKMK correction (rates of the rotation vectors of ball and free joints); the first
-  # stage has a zero rotation vector, so it needs no correction
+  # stage velocities with the RKMK correction (rates of the rotation vectors of ball and
+  # free joints); the first stage has a zero rotation vector, so it needs no correction
   qvel_stage = wp.clone(d.qvel)
 
   _rk_accumulate(m, d, B[0], qvel_stage, qvel_rk, qacc_rk, act_dot_rk)

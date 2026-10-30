@@ -804,6 +804,11 @@ class PassiveTest(parameterized.TestCase):
     _assert_eq(d.efc.aref.numpy()[0, :nefc], mjd.efc_aref[:nefc], "efc_aref")
 
   @parameterized.parameters("Euler", "RK4", "implicitfast", "discrete")
+  # TODO(team): remove check_version once minimum mujoco version >= 3.17.1
+  @absltest.skipIf(
+    not util_pkg.check_version("mujoco>=3.17.1"),
+    "Cannot test unreleased XML `springyield` attribute with older MuJoCo versions.",
+  )
   def test_spring_plastic(self, integrator):
     """Verify plastic springs for joints and tendons match MuJoCo across integrators."""
     mjm, mjd, m, d = test_data.fixture(
@@ -868,23 +873,26 @@ class PassiveTest(parameterized.TestCase):
       _assert_eq(d.energy.numpy()[0, 0], mjd.energy[0], f"energy_pos_step_{step_idx}")
 
     # Verify State.PLASTIC get_state / set_state and reset_data
-    size = mujoco.mj_stateSize(mjm, mujoco.mjtState.mjSTATE_PLASTIC)
-    mj_state = np.zeros(size)
-    mujoco.mj_getState(mjm, mjd, mj_state, mujoco.mjtState.mjSTATE_PLASTIC)
-    mjw_state = wp.zeros((d.nworld, size), dtype=float)
-    mjw.get_state(m, d, mjw_state, mjw.State.PLASTIC)
-    _assert_eq(mjw_state.numpy()[0], mj_state, "get_state_plastic")
+    if hasattr(mujoco.mjtState, "mjSTATE_PLASTIC"):
+      size = mujoco.mj_stateSize(mjm, mujoco.mjtState.mjSTATE_PLASTIC)
+      mj_state = np.zeros(size)
+      mujoco.mj_getState(mjm, mjd, mj_state, mujoco.mjtState.mjSTATE_PLASTIC)
+      mjw_state = wp.zeros((d.nworld, size), dtype=float)
+      mjw.get_state(m, d, mjw_state, mjw.State.PLASTIC)
+      _assert_eq(mjw_state.numpy()[0], mj_state, "get_state_plastic")
 
-    mujoco.mj_resetData(mjm, mjd)
-    mjw.reset_data(m, d)
-    _assert_eq(d.plastic.numpy()[0], mjd.plastic, "reset_plastic")
+      mujoco.mj_resetData(mjm, mjd)
+      mjw.reset_data(m, d)
+      _assert_eq(d.plastic.numpy()[0], mjd.plastic, "reset_plastic")
 
-    mujoco.mj_setState(mjm, mjd, mj_state, mujoco.mjtState.mjSTATE_PLASTIC)
-    mjw.set_state(m, d, mjw_state, mjw.State.PLASTIC)
-    _assert_eq(d.plastic.numpy()[0], mjd.plastic, "set_state_plastic")
+      mujoco.mj_setState(mjm, mjd, mj_state, mujoco.mjtState.mjSTATE_PLASTIC)
+      mjw.set_state(m, d, mjw_state, mjw.State.PLASTIC)
+      _assert_eq(d.plastic.numpy()[0], mjd.plastic, "set_state_plastic")
 
   @parameterized.parameters("Euler", "RK4", "discrete")
-  @absltest.skipIf(not util_pkg.check_version("mujoco>=3.17.1"), "Cannot test unreleased XML `yield` attribute with older MuJoCo versions.")
+  @absltest.skipIf(
+    not util_pkg.check_version("mujoco>=3.17.1"), "Cannot test unreleased XML `yield` attribute with older MuJoCo versions."
+  )
   def test_flex_plastic(self, integrator):
     """Verify plastic 2D and 3D non-interpolated flexes match MuJoCo across integrators."""
     mjm, mjd, m, d = test_data.fixture(
@@ -939,7 +947,9 @@ class PassiveTest(parameterized.TestCase):
 
   @parameterized.parameters("Euler", "RK4")
   # TODO(team): remove check_version once minimum mujoco version >= 3.17.1
-  @absltest.skipIf(not util_pkg.check_version("mujoco>=3.17.1"), "Cannot test unreleased XML `yield` attribute with older MuJoCo versions.")
+  @absltest.skipIf(
+    not util_pkg.check_version("mujoco>=3.17.1"), "Cannot test unreleased XML `yield` attribute with older MuJoCo versions."
+  )
   def test_flex_interp_plastic(self, integrator):
     """Verify plastic 2D and 3D non-cubic interpolated flexes match MuJoCo across integrators."""
     mjm, mjd, m, d = test_data.fixture(

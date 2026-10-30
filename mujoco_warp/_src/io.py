@@ -1958,7 +1958,14 @@ def make_data(
 
   nv_compact = nvmax < mjm.nv
 
-  sizes = dict({"*": 1}, **{f.name: getattr(mjm, f.name, None) for f in dataclasses.fields(types.Model) if f.type is int})
+  sizes = dict(
+    {"*": 1},
+    **{
+      f.name: (getattr(mjm, f.name, 0) if f.name == "nplastic" else getattr(mjm, f.name, None))
+      for f in dataclasses.fields(types.Model)
+      if f.type is int
+    },
+  )
   condim_arrays = [np.array([0]), mjm.geom_condim, mjm.pair_dim]
   if mjm.nflex > 0:
     condim_arrays.append(mjm.flex_condim)
@@ -2199,7 +2206,14 @@ def put_data(
 
   nv_compact = nvmax < mjm.nv
 
-  sizes = dict({"*": 1}, **{f.name: getattr(mjm, f.name, None) for f in dataclasses.fields(types.Model) if f.type is int})
+  sizes = dict(
+    {"*": 1},
+    **{
+      f.name: (getattr(mjm, f.name, 0) if f.name == "nplastic" else getattr(mjm, f.name, None))
+      for f in dataclasses.fields(types.Model)
+      if f.type is int
+    },
+  )
   condim_arrays = [np.array([0]), mjm.geom_condim, mjm.pair_dim]
   if mjm.nflex > 0:
     condim_arrays.append(mjm.flex_condim)
@@ -2407,6 +2421,12 @@ def put_data(
     "tree_asleep": wp.array(np.tile(tree_asleep_init, (nworld, 1)), dtype=int),
     "tree_awake": wp.array(np.tile((tree_asleep_init < 0).astype(np.int32), (nworld, 1)), dtype=int),
     "body_awake": wp.array(np.tile(body_awake_init.astype(np.int32), (nworld, 1)), dtype=int),
+    # plastic
+    "plastic": (
+      wp.array(np.tile(mjd.plastic, (nworld, 1)), shape=(nworld, getattr(mjm, "nplastic", 0)), dtype=float)
+      if getattr(mjm, "nplastic", 0) > 0 and hasattr(mjd, "plastic")
+      else wp.zeros((nworld, 0), dtype=float)
+    ),
   }
   for f in dataclasses.fields(types.Data):
     if f.name in d_kwargs:
@@ -3264,10 +3284,10 @@ def reset_data_keyframe(m: types.Model, d: types.Data, key: int | wp.array):
     qpos_out: wp.array2d[float],
     qvel_out: wp.array2d[float],
     act_out: wp.array2d[float],
+    plastic_out: wp.array2d[float],
     ctrl_out: wp.array2d[float],
     mocap_pos_out: wp.array2d[wp.vec3],
     mocap_quat_out: wp.array2d[wp.quat],
-    plastic_out: wp.array2d[float],
   ):
     worldid = wp.tid()
 
@@ -3316,10 +3336,10 @@ def reset_data_keyframe(m: types.Model, d: types.Data, key: int | wp.array):
       d.qpos,
       d.qvel,
       d.act,
+      d.plastic,
       d.ctrl,
       d.mocap_pos,
       d.mocap_quat,
-      d.plastic,
     ],
   )
 

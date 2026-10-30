@@ -238,8 +238,8 @@ class ForwardTest(parameterized.TestCase):
   @absltest.skipIf(not util_pkg.check_version("mujoco>=3.17.1"), "Requires MuJoCo >= 3.17.1")
   def test_rungekutta4_rotation(self):
     """RK4 applies the Runge-Kutta-Munthe-Kaas correction to ball and free joint orientations."""
-    # fast rotation (timestep * |omega| ~ 0.5) so that the correction changes the orientation by ~2e-3 per step,
-    # well above the float32 error of the comparison
+    # fast rotation (timestep * |omega| ~ 0.5) so that the correction changes orientation
+    # by ~2e-3 per step, well above the float32 error of the comparison
     mjm, mjd, m, d = test_data.fixture(
       xml="""
       <mujoco>
