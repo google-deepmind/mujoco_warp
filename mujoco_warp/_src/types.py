@@ -1586,6 +1586,8 @@ class Model:
     has_flex_edge_stiff_damp: whether any non-rigid flex has edge stiffness or damping
     has_tendon_stiffness: whether any tendon has positive stiffness
     has_tendon_damping: whether any tendon has positive damping
+    has_tendon_armature: whether any tendon has armature (including tendon actuator armature)
+    has_gravcomp: whether any body has gravity compensation
     has_efm_actuator: whether any actuator contributes effective metric coupling
     efm0_active: whether zero-mass flex Cholesky preconditioner is active
     flex_interp_assemblable: whether interpolated flex stiffness can be assembled into efm_K
@@ -2125,6 +2127,8 @@ class Model:
   has_flex_edge_stiff_damp: bool
   has_tendon_stiffness: bool
   has_tendon_damping: bool
+  has_tendon_armature: bool
+  has_gravcomp: bool
   has_efm_actuator: bool
   efm0_active: bool
   flex_interp_assemblable: bool

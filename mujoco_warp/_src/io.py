@@ -597,6 +597,10 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
       or np.any(mjm.actuator_dampingpoly[tendon_actuator] != 0)
     )
   )
+  m.has_tendon_armature = bool(
+    mjm.ntendon > 0 and (np.any(m.tendon_armature != 0) or np.any(mjm.actuator_armature[tendon_actuator] != 0))
+  )
+  m.has_gravcomp = bool(np.any(m.body_gravcomp != 0))
   m.has_efm_actuator = bool(
     mjm.nu > 0
     and np.any(
