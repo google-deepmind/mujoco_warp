@@ -927,7 +927,6 @@ class State(enum.IntEnum):
   QVEL = mujoco.mjtState.mjSTATE_QVEL
   ACT = mujoco.mjtState.mjSTATE_ACT
   HISTORY = mujoco.mjtState.mjSTATE_HISTORY
-  PLASTIC = getattr(mujoco.mjtState, "mjSTATE_PLASTIC", 1 << 10)
   WARMSTART = mujoco.mjtState.mjSTATE_WARMSTART
   CTRL = mujoco.mjtState.mjSTATE_CTRL
   QFRC_APPLIED = mujoco.mjtState.mjSTATE_QFRC_APPLIED
@@ -935,13 +934,14 @@ class State(enum.IntEnum):
   EQ_ACTIVE = mujoco.mjtState.mjSTATE_EQ_ACTIVE
   MOCAP_POS = mujoco.mjtState.mjSTATE_MOCAP_POS
   MOCAP_QUAT = mujoco.mjtState.mjSTATE_MOCAP_QUAT
+  USERDATA = mujoco.mjtState.mjSTATE_USERDATA
+  # unsupported: PLUGIN
+  PLASTIC = getattr(mujoco.mjtState, "mjSTATE_PLASTIC", 1 << 14)
   NSTATE = mujoco.mjtState.mjNSTATE
   PHYSICS = mujoco.mjtState.mjSTATE_PHYSICS  # includes HISTORY and PLASTIC
   FULLPHYSICS = mujoco.mjtState.mjSTATE_FULLPHYSICS
   USER = mujoco.mjtState.mjSTATE_USER
   INTEGRATION = mujoco.mjtState.mjSTATE_INTEGRATION
-  USERDATA = mujoco.mjtState.mjSTATE_USERDATA
-  # unsupported: PLUGIN
 
 
 class SetConstGroup(enum.IntFlag):

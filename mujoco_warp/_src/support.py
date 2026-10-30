@@ -165,17 +165,6 @@ def compute_interp_cell_quat(
 
           idx += 1
 
-  node_0 = nstart + (ci * order) * ny_g * nz_g + (cj * order) * nz_g + (ck * order)
-  node_last = nstart + ((ci + 1) * order) * ny_g * nz_g + ((cj + 1) * order) * nz_g + ((ck + 1) * order)
-  dref = flex_node0[node_last] - flex_node0[node_0]
-  for c in range(3):
-    dc = dref[c]
-    if dc > MJ_MINVAL:
-      inv_dc = 1.0 / dc
-      F[0, c] *= inv_dc
-      F[1, c] *= inv_dc
-      F[2, c] *= inv_dc
-
   return mat33_to_quat_polar(F)
 
 
@@ -773,10 +762,6 @@ def get_state(m: Model, d: Data, state: wp.array2d[float], sig: int, active: Opt
           for j in range(nhistory):
             state_out[worldid, adr + j] = history_in[worldid, j]
           adr += nhistory
-        elif element == State.PLASTIC:
-          for j in range(nplastic):
-            state_out[worldid, adr + j] = plastic_in[worldid, j]
-          adr += nplastic
         elif element == State.WARMSTART:
           for j in range(nv):
             state_out[worldid, adr + j] = qacc_warmstart_in[worldid, j]
@@ -822,6 +807,10 @@ def get_state(m: Model, d: Data, state: wp.array2d[float], sig: int, active: Opt
           for j in range(nuserdata):
             state_out[worldid, adr + j] = userdata_in[worldid, j]
           adr += nuserdata
+        elif element == State.PLASTIC:
+          for j in range(nplastic):
+            state_out[worldid, adr + j] = plastic_in[worldid, j]
+          adr += nplastic
 
   wp.launch(
     _get_state,
@@ -938,13 +927,6 @@ def set_state(m: Model, d: Data, state: wp.array2d[float], sig: int, active: Opt
           for j in range(nhistory):
             history_out[worldid, j] = state_in[worldid, adr + j]
           adr += nhistory
-        elif element == State.PLASTIC:
-          for j in range(nplastic):
-            plastic_out[worldid, j] = state_in[worldid, adr + j]
-          adr += nplastic
-          for f in range(nflex):
-            if flex_plasticadr[f] >= 0:
-              flex_hessian_valid_out[worldid, f] = False
         elif element == State.WARMSTART:
           for j in range(nv):
             qacc_warmstart_out[worldid, j] = state_in[worldid, adr + j]
@@ -996,6 +978,13 @@ def set_state(m: Model, d: Data, state: wp.array2d[float], sig: int, active: Opt
           for j in range(nuserdata):
             userdata_out[worldid, j] = state_in[worldid, adr + j]
           adr += nuserdata
+        elif element == State.PLASTIC:
+          for j in range(nplastic):
+            plastic_out[worldid, j] = state_in[worldid, adr + j]
+          adr += nplastic
+          for f in range(nflex):
+            if flex_plasticadr[f] >= 0:
+              flex_hessian_valid_out[worldid, f] = False
 
   wp.launch(
     _set_state,
@@ -1281,16 +1270,6 @@ def compute_interp_face_quat(
 
       t1 += node_pos * grad0
       t2 += node_pos * grad1
-
-  axis0 = (normal_axis + 1) % 3
-  axis1 = (normal_axis + 2) % 3
-  dref = flex_node0[nstart + gidx1] - flex_node0[nstart + gidx0]
-  d0 = dref[axis0]
-  d1 = dref[axis1]
-  if d0 > MJ_MINVAL:
-    t1 = t1 / d0
-  if d1 > MJ_MINVAL:
-    t2 = t2 / d1
 
   normal = wp.cross(t1, t2)
 
