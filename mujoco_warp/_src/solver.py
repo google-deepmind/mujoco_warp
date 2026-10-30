@@ -2391,9 +2391,8 @@ def _update_gradient_grad_tiled(
     ctx_grad_dot_out[worldid] = grad_dot_sum[0]
 
 
-# sparse Newton Hessian init: lanes per (world, row), row-start alignment (floats per 32 B sector)
+# sparse Newton Hessian init: lanes per (world, row), one per float of a 32 B sector
 _INIT_H_LANES = 8
-_INIT_H_ALIGN = 8
 
 
 @cache_kernel
@@ -2418,38 +2417,53 @@ def _update_gradient_init_h_sparse(compact: bool):
     if ctx_done_in[worldid]:
       return
 
-    # cdof_dof is increasing with a -1 tail, so a padded row only meets padded columns
+    # Cholesky reads the upper triangle only, but a partially written sector costs a DRAM read once
+    # h is not in L2. Write whole sectors of the world's n x n block (which starts on one, n being a
+    # multiple of 4): row i writes those starting in it, from the one holding its diagonal, and
+    # through the next row's head where it ends mid-sector; nothing reads the zeros below the
+    # diagonal.
+    n = ctx_h_out.shape[1]
+    sector = wp.static(_INIT_H_LANES)
+    row_end = (i + 1) * n
+
+    # a sector spans rows i and i + 1 at most (n >= 4); cdof_dof is increasing with a -1 tail, so a
+    # padded row only meets padded columns
     if wp.static(COMPACT):
       dof_i = cdof_dof_in[worldid, i]
-      padded_row = dof_i < 0
+      dof_next = cdof_dof_in[worldid, wp.min(i + 1, n - 1)]
+      padded_i = dof_i < 0
+      padded_next = dof_next < 0
     else:
       dof_i = i
-      padded_row = i >= nv
+      dof_next = i + 1
+      padded_i = i >= nv
+      padded_next = i + 1 >= nv
 
-    # Cholesky reads the upper triangle only, but a row starting at the diagonal leaves a partial
-    # first sector, which costs a DRAM read once h is not in L2. Start at the sector boundary (rows
-    # are sector aligned when nv_pad is a multiple of 8); nothing reads the zeros left of it.
-    n = ctx_h_out.shape[1]
-    start = (i // wp.static(_INIT_H_ALIGN)) * wp.static(_INIT_H_ALIGN)
-    for j in range(start + lane, n, wp.static(_INIT_H_LANES)):
+    first = wp.max((i * n + sector - 1) // sector, (i * n + i) // sector)
+    for s in range(first, (row_end - 1) // sector + 1):
+      e = s * sector + lane
+      next_row = e >= row_end
+      r = wp.where(next_row, i + 1, i)
+      c = e - r * n
       h = float(0.0)
-      if j >= i:
+      if c >= r:
+        dof_r = wp.where(next_row, dof_next, dof_i)
+        padded_row = wp.where(next_row, padded_next, padded_i)
+        if wp.static(COMPACT):
+          dof_c = cdof_dof_in[worldid, c]
+          padded = dof_c < 0
+        else:
+          dof_c = c
+          padded = c >= nv
         if padded_row:
           # identity on padded dofs keeps the factorization well conditioned
-          h = wp.where(i == j, 1.0, 0.0)
-        else:
-          if wp.static(COMPACT):
-            dof_j = cdof_dof_in[worldid, j]
-            padded = dof_j < 0
-          else:
-            dof_j = j
-            padded = j >= nv
-          if not padded:
-            # sparse M is stored in the lower triangle and dof_j >= dof_i
-            elemid = M_elemid[dof_j, dof_i]
-            if elemid >= 0:
-              h = M_in[worldid, elemid]
-      ctx_h_out[worldid, i, j] = h
+          h = wp.where(r == c, 1.0, 0.0)
+        elif not padded:
+          # sparse M is stored in the lower triangle and dof_c >= dof_r
+          elemid = M_elemid[dof_c, dof_r]
+          if elemid >= 0:
+            h = M_in[worldid, elemid]
+      ctx_h_out[worldid, r, c] = h
 
   return kernel
 
