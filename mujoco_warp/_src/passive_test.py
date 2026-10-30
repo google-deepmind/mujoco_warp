@@ -902,20 +902,27 @@ class PassiveTest(parameterized.TestCase):
                     point="2 0 0  3 0 0  2.5 0.5 0  2.5 -0.5 0"
                     element="0 1 2  0 3 1">
             <contact contype="0" conaffinity="0" selfcollide="none"/>
-            <elasticity young="500" poisson="0.3" thickness="0.02" elastic2d="both" damping="0.05" yield="0.01"/>
+            <elasticity young="500" poisson="0.3" thickness="0.02" elastic2d="both" damping="0.05" yield="0.002"/>
+            <pin id="0 1 2"/>
+          </flexcomp>
+          <flexcomp name="shell_bend" type="direct" dim="2" mass="1"
+                    point="4 0 0  5 0 0  4.5 0.5 0  4.5 -0.5 0"
+                    element="0 1 2  0 3 1">
+            <contact contype="0" conaffinity="0" selfcollide="none"/>
+            <elasticity young="500" poisson="0.3" thickness="0.02" elastic2d="bend" damping="0.05" yield="0.002"/>
             <pin id="0 1 2"/>
           </flexcomp>
         </worldbody>
         <keyframe>
-          <key qpos="0.1 -0.15 0.25  0.05 -0.2 0.35"
-               qvel="0.2 -0.3 0.4  -0.1 0.25 0.5"/>
+          <key qpos="0.1 -0.15 0.25  0.05 -0.2 0.35  0.0 0.0 0.25"
+               qvel="0.2 -0.3 0.4  -0.1 0.25 0.5  0.0 0.0 0.3"/>
         </keyframe>
       </mujoco>
       """,
       keyframe=0,
     )
 
-    self.assertEqual(m.nplastic, 12)  # 6 (tet) + 6 (shell stretch)
+    self.assertEqual(m.nplastic, 22)  # 6 (tet) + 11 (shell stretch+bend) + 5 (shell_bend)
     for step_idx in range(10):
       mujoco.mj_step(mjm, mjd)
       mjw.step(m, d)
