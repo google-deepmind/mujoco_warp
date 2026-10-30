@@ -43,12 +43,52 @@ from mujoco_warp._src.types import GainType
 from mujoco_warp._src.types import IntegratorType
 from mujoco_warp._src.types import JointType
 from mujoco_warp._src.types import Model
+from mujoco_warp._src.types import OverflowType
 from mujoco_warp._src.types import vec6
 from mujoco_warp._src.types import vec10
 from mujoco_warp._src.warp_util import cache_kernel
 from mujoco_warp._src.warp_util import event_scope
 
 wp.set_module_options({"enable_backward": False, "default_grid_stride": False})
+
+
+@wp.func
+def _eff_block_solve_vertex(
+  # Model:
+  efm_dofid: wp.array[int],
+  # Data in:
+  efm_L_in: wp.array2d[float],
+  # In:
+  rhs_in: wp.array2d[float],
+  worldid: int,
+  k: int,
+  # Out:
+  res_out: wp.array2d[float],
+):
+  """3x3 block solve of covered vertex k."""
+  i = efm_dofid[k]
+  base = 9 * k
+  L00 = efm_L_in[worldid, base + 0]
+  L10 = efm_L_in[worldid, base + 3]
+  L11 = efm_L_in[worldid, base + 4]
+  L20 = efm_L_in[worldid, base + 6]
+  L21 = efm_L_in[worldid, base + 7]
+  L22 = efm_L_in[worldid, base + 8]
+
+  b0 = rhs_in[worldid, i]
+  b1 = rhs_in[worldid, i + 1]
+  b2 = rhs_in[worldid, i + 2]
+
+  r0 = b0 / L00
+  r1 = (b1 - L10 * r0) / L11
+  r2 = (b2 - (L20 * r0 + L21 * r1)) / L22
+  x2 = r2 / L22
+  x1 = (r1 - L21 * x2) / L11
+  x0 = (r0 - L10 * x1 - L20 * x2) / L00
+
+  res_out[worldid, i] = x0
+  res_out[worldid, i + 1] = x1
+  res_out[worldid, i + 2] = x2
 
 
 @wp.kernel
@@ -2395,6 +2435,10 @@ def _eff_flex_bend_stiff(deterministic: bool = False):
     verts = wp.vec4i(edge[0], edge[1], flap[0], flap[1])
     bend_offset = bendingadr + 17 * local_edgeid
 
+    # keep only convex stencils so the metric stays SPD
+    if not passive.flex_bend_convex(flex_bending, bend_offset):
+      return
+
     dofs = wp.vec4i(-1, -1, -1, -1)
     bodies = wp.vec4i(-1, -1, -1, -1)
     for k in range(4):
@@ -2742,7 +2786,7 @@ def _eff_factor_blocks(
 
 
 @wp.kernel
-def _eff_block_solve(
+def eff_block_solve(
   # Model:
   efm_dofid: wp.array[int],
   # Data in:
@@ -2753,29 +2797,7 @@ def _eff_block_solve(
   res_out: wp.array2d[float],
 ):
   worldid, k = wp.tid()
-  i = efm_dofid[k]
-  base = 9 * k
-  L00 = efm_L_in[worldid, base + 0]
-  L10 = efm_L_in[worldid, base + 3]
-  L11 = efm_L_in[worldid, base + 4]
-  L20 = efm_L_in[worldid, base + 6]
-  L21 = efm_L_in[worldid, base + 7]
-  L22 = efm_L_in[worldid, base + 8]
-
-  b0 = rhs_in[worldid, i]
-  b1 = rhs_in[worldid, i + 1]
-  b2 = rhs_in[worldid, i + 2]
-
-  r0 = b0 / L00
-  r1 = (b1 - L10 * r0) / L11
-  r2 = (b2 - (L20 * r0 + L21 * r1)) / L22
-  x2 = r2 / L22
-  x1 = (r1 - L21 * x2) / L11
-  x0 = (r0 - L10 * x1 - L20 * x2) / L00
-
-  res_out[worldid, i] = x0
-  res_out[worldid, i + 1] = x1
-  res_out[worldid, i + 2] = x2
+  _eff_block_solve_vertex(efm_dofid, efm_L_in, rhs_in, worldid, k, res_out)
 
 
 @wp.kernel
@@ -2839,7 +2861,7 @@ def _eff_prec_efm0_solve(
 
 
 @wp.kernel
-def _zero_sleeping_dofs(
+def zero_sleeping_dofs(
   # Model:
   dof_treeid: wp.array[int],
   # Data in:
@@ -3201,16 +3223,38 @@ def _pcg_beta_and_p_update_tiled(
   for dofid in range(tid, nv, BLOCK_DIM):
     local_rznew += efm_r_in[worldid, dofid] * efm_z_in[worldid, dofid]
 
+  rz = efm_rz_in[worldid]
   rz_tile = wp.tile(local_rznew, preserve_type=True)
   rz_sum = wp.tile_reduce(wp.add, rz_tile)
   rznew = rz_sum[0]
-  rz = efm_rz_in[worldid]
   beta = math.safe_div(rznew, rz)
   if tid == 0:
     efm_rz_out[worldid] = rznew
 
   for dofid in range(tid, nv, BLOCK_DIM):
     efm_p_out[worldid, dofid] = efm_z_in[worldid, dofid] + beta * efm_p_out[worldid, dofid]
+
+
+@cache_kernel
+def _pcg_check_convergence_warning(warn_overflow: int):
+  @wp.kernel(module="unique", enable_backward=False)
+  def kernel(
+    # In:
+    efm_done_in: wp.array[bool],
+    # Data out:
+    overflow_out: wp.array[int],
+  ):
+    worldid = wp.tid()
+    if not efm_done_in[worldid]:
+      if wp.static(bool(warn_overflow & OverflowType.ITERATIONS)):
+        wp.printf(
+          "eff_solve PCG did not converge (world %d)\n"
+          "To disable the print warning: m.opt.warn_overflow &= ~mjw.OverflowType.ITERATIONS (or = 0 for all)\n",
+          worldid,
+        )
+      overflow_out[worldid] = overflow_out[worldid] | wp.static(OverflowType.ITERATIONS)
+
+  return kernel
 
 
 @cache_kernel
@@ -3595,7 +3639,7 @@ def eff_shift(m: Model, d: Data):
       outputs=[d.efm_c],
     )
 
-  if m.has_flex_passive and not ((m.opt.disableflags & DisableBit.SPRING) and (m.opt.disableflags & DisableBit.DAMPER)):
+  if passive.flex_passive_contact(m):
     efm_con_dof, efm_con_val, efm_con_scale, _, efm_con_nnz = build_efm_contact(m, d)
     wp.launch(
       _eff_contact_shift(det_atomics),
@@ -3793,7 +3837,7 @@ def eff_mul_m_scratch(m: Model, d: Data) -> tuple[Optional[tuple], Optional[tupl
   eff_mul_m allocates them on each call if they are not passed, which is not allowed inside
   wp.capture_while: build them before the loop instead.
   """
-  efm_con = build_efm_contact(m, d) if m.has_flex_passive else None
+  efm_con = build_efm_contact(m, d) if passive.flex_passive_contact(m) else None
   flex_scratch = passive.flex_stretch_scratch(m, d) if m.nflex and m.nflexvert else None
   return efm_con, flex_scratch
 
@@ -3868,7 +3912,7 @@ def eff_mul_m(
       ],
       outputs=[res],
     )
-    if m.has_flex_passive:
+    if passive.flex_passive_contact(m):
       if efm_con is None:
         efm_con_dof, efm_con_val, efm_con_scale, _, efm_con_nnz = build_efm_contact(m, d)
       else:
@@ -3954,7 +3998,7 @@ def eff_mul_m(
       )
     if m.opt.enableflags & EnableBit.SLEEP:
       wp.launch(
-        _zero_sleeping_dofs,
+        zero_sleeping_dofs,
         dim=(d.nworld, m.nv),
         inputs=[m.dof_treeid, d.tree_awake],
         outputs=[res],
@@ -4214,7 +4258,12 @@ def _eff_factor_folded_blocks(
 
 
 @event_scope
-def eff_prec_fold(m: Model, d: Data, out: Optional[wp.array] = None) -> wp.array:
+def eff_prec_fold(
+  m: Model,
+  d: Data,
+  out: Optional[wp.array] = None,
+  efm_con: Optional[tuple] = None,
+) -> wp.array:
   """Folds rank-1 metric terms and active/inactive efc rows into 3x3 preconditioner blocks."""
   epL = out if out is not None else wp.empty_like(d.efm_L)
   if m.nefmdof == 0:
@@ -4291,8 +4340,9 @@ def eff_prec_fold(m: Model, d: Data, out: Optional[wp.array] = None) -> wp.array
       outputs=[epB],
     )
 
-  if m.has_flex_passive:
-    efm_con_dof, efm_con_val, efm_con_scale, _, efm_con_nnz = build_efm_contact(m, d)
+  if passive.flex_passive_contact(m):
+    con_tuple = efm_con if efm_con is not None else build_efm_contact(m, d)
+    efm_con_dof, efm_con_val, efm_con_scale, _, efm_con_nnz = con_tuple
     wp.launch(
       _eff_fold_contact_rank1(det_atomics),
       dim=d.naconmax,
@@ -4353,7 +4403,7 @@ def eff_prec(
     )
     if m.opt.enableflags & EnableBit.SLEEP:
       wp.launch(
-        _zero_sleeping_dofs,
+        zero_sleeping_dofs,
         dim=(d.nworld, m.nv),
         inputs=[m.dof_treeid, d.tree_awake],
         outputs=[res],
@@ -4363,19 +4413,20 @@ def eff_prec(
   L_arr = epL if epL is not None else d.efm_L
   if 3 * m.nefmdof == m.nv:
     wp.launch(
-      _eff_block_solve,
+      eff_block_solve,
       dim=(d.nworld, m.nefmdof),
       inputs=[m.efm_dofid, L_arr, vec],
       outputs=[res],
     )
     if m.opt.enableflags & EnableBit.SLEEP:
       wp.launch(
-        _zero_sleeping_dofs,
+        zero_sleeping_dofs,
         dim=(d.nworld, m.nv),
         inputs=[m.dof_treeid, d.tree_awake],
         outputs=[res],
       )
     return
+
   dofblk = m.efm_dofblk
   wp.launch(
     _eff_copy_backbone_rhs,
@@ -4385,14 +4436,14 @@ def eff_prec(
   )
   smooth.solve_LD(m, d, d.qHLD, d.qHDiagInv, res, res, x_scratch=x_scratch)
   wp.launch(
-    _eff_block_solve,
+    eff_block_solve,
     dim=(d.nworld, m.nefmdof),
     inputs=[m.efm_dofid, L_arr, vec],
     outputs=[res],
   )
   if m.opt.enableflags & EnableBit.SLEEP:
     wp.launch(
-      _zero_sleeping_dofs,
+      zero_sleeping_dofs,
       dim=(d.nworld, m.nv),
       inputs=[m.dof_treeid, d.tree_awake],
       outputs=[res],
@@ -4436,13 +4487,13 @@ def eff_solve(m: Model, d: Data, qacc: wp.array2d[float], qfrc: Optional[wp.arra
   )
   has_efm_actuator = m.has_efm_actuator and not (m.opt.disableflags & DisableBit.ACTUATION)
   has_flex_any = has_spring_or_damper and (
-    m.nefmK > 0 or m.has_non_simple_flex or m.efm0_active or m.has_flex_passive or not m.flex_interp_assemblable
+    m.nefmK > 0 or m.has_non_simple_flex or m.efm0_active or passive.flex_passive_contact(m) or not m.flex_interp_assemblable
   )
   if not has_flex_any and not has_efm_tendon and not has_efm_actuator:
     smooth.solve_LD(m, d, d.qHLD, d.qHDiagInv, qacc, rhs)
     if m.opt.enableflags & EnableBit.SLEEP:
       wp.launch(
-        _zero_sleeping_dofs,
+        zero_sleeping_dofs,
         dim=(d.nworld, m.nv),
         inputs=[m.dof_treeid, d.tree_awake],
         outputs=[qacc],
@@ -4528,8 +4579,15 @@ def eff_solve(m: Model, d: Data, qacc: wp.array2d[float], qfrc: Optional[wp.arra
     )
 
   if max_it > 0:
-    if m.opt.graph_conditional and wp.get_device().is_cuda:
+    if m.opt.graph_conditional:
       wp.capture_while(efm_nsolving, while_body=_pcg_iteration)
     else:
       for _ in range(max_it):
         _pcg_iteration()
+
+  wp.launch(
+    _pcg_check_convergence_warning(int(m.opt.warn_overflow)),
+    dim=d.nworld,
+    inputs=[efm_done],
+    outputs=[d.overflow],
+  )

@@ -2763,6 +2763,8 @@ class IOTest(parameterized.TestCase):
     self.assertEqual(m.nflexrodhinge, 2)
     np.testing.assert_array_equal(m.flex_rodhinge_map.numpy(), [[rod, adr + 1], [rod, adr + 1 + types.ROD_HINGE_SIZE]])
     self.assertFalse(m.has_flex_edge_stiff_damp)
+    self.assertTrue(m.has_flex_stiff)
+    np.testing.assert_array_equal(m.flex_stiff_possible.numpy(), [True, False, True])
 
   # TODO(team): remove version check once mujoco >= 3.16.1 is required.
   @absltest.skipIf(not util_pkg.check_version("mujoco>=3.16.1"), "Requires MuJoCo >= 3.16.1")

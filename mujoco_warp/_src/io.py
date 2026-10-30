@@ -524,9 +524,8 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
       raise NotImplementedError("Flex-SDF collision is not implemented.")
     if (mjm.geom_type == mujoco.mjtGeom.mjGEOM_HFIELD).any():
       raise NotImplementedError("Flex-HField collision is not implemented.")
-    if hasattr(mjm, "flex_internal") and (mjm.flex_internal != 0).any():
-      raise NotImplementedError("Flex internal collisions are not implemented.")
-    if (mjm.flex_rigid != 0).any():
+    is_discrete = mjm.opt.integrator == mujoco.mjtIntegrator.mjINT_DISCRETE
+    if np.any((mjm.flex_rigid != 0) & ~(is_discrete & (mjm.flex_dim == 2))):
       raise NotImplementedError("Rigid flexes are not implemented.")
     # TODO(team): skip element pairs driven by a common grid node, as in mjc_ElemSharedNode
     if np.any((mjm.flex_interp != 0) & (mjm.flex_selfcollide != 0) & ((mjm.flex_contype & mjm.flex_conaffinity) != 0)):
@@ -537,6 +536,7 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
   m.nmaxpyramid = np.maximum(1, 2 * (m.nmaxcondim - 1))
   m.has_sdf_geom = (mjm.geom_type == mujoco.mjtGeom.mjGEOM_SDF).any()
   m.has_ellipsoid_geom = (mjm.geom_type == mujoco.mjtGeom.mjGEOM_ELLIPSOID).any()
+  m.has_cylinder_geom = bool((mjm.geom_type == mujoco.mjtGeom.mjGEOM_CYLINDER).any())
   m.has_plane_geom = bool(mjm.ngeom > 0 and (mjm.geom_type == mujoco.mjtGeom.mjGEOM_PLANE).any())
   m.has_flex_selfcollide = bool(
     mjm.nflex > 0 and np.any((mjm.flex_selfcollide != 0) & ((mjm.flex_contype & mjm.flex_conaffinity) != 0))
@@ -545,8 +545,7 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
     mjm.nflex > 0 and np.any((mjm.flex_passive != 0) & (mjm.flex_rigid == 0) & (mjm.flex_interp == 0) & (mjm.flex_dim >= 2))
   )
   m.has_flex_snh = bool(
-    types.FLEX_STIFFNESS_3D == 24
-    and any(
+    any(
       mjm.flex_interp[f] == 0
       and mjm.flex_dim[f] == 3
       and mjm.flex_stiffnessadr[f] >= 0
@@ -580,6 +579,10 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
   m.has_flex_edge_stiff_damp = bool(
     any(not mjm.flex_rigid[f] and (mjm.flex_edgestiffness[f] > 0 or mjm.flex_edgedamping[f] > 0) for f in range(mjm.nflex))
   )
+  flex_stiff_possible = np.array([_eff_flex_stiff_possible(mjm, f) for f in range(mjm.nflex)], dtype=bool)
+  m.flex_stiff_possible = flex_stiff_possible
+  m.has_flex_stiff = bool(flex_stiff_possible.any())
+  m.has_reducible_flex = bool(mjm.nflex > 0 and (np.any(mjm.flex_rigid != 0) or np.any(mjm.flex_interp != 0)))
   if (
     mjm.opt.integrator == mujoco.mjtIntegrator.mjINT_DISCRETE
     and mjm.opt.solver == mujoco.mjtSolver.mjSOL_NEWTON
@@ -2360,10 +2363,12 @@ def put_data(
     if f.name in d_kwargs:
       continue
     val = getattr(mjd, f.name, None)
-    if f.name == "efm_K_val" and val is not None and val.size != sizes["nefmK"]:
-      val = efm_d.efm_K_val if efm_d else None
-    elif f.name == "efm_L" and val is not None:
-      val = (efm_d.efm_L if (val.size < sizes["nefmL"] and efm_d) else val)[: sizes["nefmL"]]
+    if f.name in ("efm_K_val", "efm_L"):
+      target_size = sizes[f"nefm{f.name[4]}"]
+      if val is not None and val.size != target_size:
+        val = (efm_d.efm_K_val if f.name == "efm_K_val" else efm_d.efm_L) if efm_d else None
+      if val is not None and val.size > target_size:
+        val = val[:target_size]
     elif f.name == "efm_ts":
       val = np.zeros(mjm.ntendon, dtype=np.float32)
       if mjd.nefmT > 0 and mjd.efm_ts is not None and mjd.efm_tid is not None:
