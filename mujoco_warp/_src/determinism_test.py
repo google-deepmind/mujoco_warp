@@ -650,6 +650,7 @@ class DeterminismTest(parameterized.TestCase):
             <joint axis="0 1 0"/>
             <geom size=".1"/>
             <flexcomp name="interp" type="grid" count="3 3 3" spacing=".1 .1 .1" dim="3" dof="trilinear">
+              <pin id="0"/>
               <contact selfcollide="none"/>
               <elasticity young="1e4" poisson=".3" damping="1e-3"/>
             </flexcomp>

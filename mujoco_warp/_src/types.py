@@ -1023,6 +1023,9 @@ class Option:
       zeros out the contacts at each step)
     run_rne_postconstraint: if True, evaluates rne_postconstraint after the solver step even if
       sensors are disabled or no sensors are present
+    run_qacc_smooth: if False, the Newton solver starts every world from qacc_warmstart and the
+      step skips computing qacc_smooth (left stale) and factorizing M (experimental); ignored with
+      CG, disabled warmstart, noslip, or zero njmax or iterations
     contact_sensor_maxmatch: max number of contacts considered by contact sensor matching criteria
                              contacts matched after this value is exceded will be ignored
     warn_overflow: overflow warning bitmask (OverflowType)
@@ -1058,6 +1061,7 @@ class Option:
   graph_conditional: bool
   run_collision_detection: bool
   run_rne_postconstraint: bool
+  run_qacc_smooth: bool
   contact_sensor_maxmatch: int
   warn_overflow: int
   deterministic: int

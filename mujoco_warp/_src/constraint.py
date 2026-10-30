@@ -3813,6 +3813,7 @@ def _efc_contact_jac_dense(tile_size: int, cone_type: types.ConeType, njmax: int
       if conid != prev_conid:
         prev_conid = conid
         condim = condim_in[conid]
+        first_efcid = contact_efc_address_in[conid, 0]
 
         geom = geom_in[conid]
         body1 = geom_bodyid[geom[0]]
@@ -3846,7 +3847,7 @@ def _efc_contact_jac_dense(tile_size: int, cone_type: types.ConeType, njmax: int
             Ji_2r_tile = wp.tile_map(wp.dot, jacr_dif_tile, frame_2)
 
       if wp.static(IS_ELLIPTIC):
-        dimid = efcid - contact_efc_address_in[conid, 0]
+        dimid = efcid - first_efcid
         if dimid < 3:
           frame_idx = dimid
         else:
@@ -3861,7 +3862,7 @@ def _efc_contact_jac_dense(tile_size: int, cone_type: types.ConeType, njmax: int
       else:
         J_tile = Ji_0p_tile
         if condim > 1:
-          dimid = efcid - contact_efc_address_in[conid, 0]
+          dimid = efcid - first_efcid
           dimid2 = dimid / 2 + 1
           frii = friction_in[conid, dimid2 - 1]
           frii_sign = frii * (1.0 - 2.0 * float(dimid & 1))
@@ -3881,8 +3882,12 @@ def _efc_contact_jac_dense(tile_size: int, cone_type: types.ConeType, njmax: int
 
       Jqvel_tile = wp.tile_map(wp.mul, J_tile, qvel_tile)
       Jqvel_sum = wp.tile_reduce(wp.add, Jqvel_tile)
-      if tid == 0:
-        wp.atomic_add(efc_Jqvel_out[worldid], efcid, wp.tile_extract(Jqvel_sum, 0))
+      # Tile atomics bypass Warp's deterministic accumulation.
+      if wp.static(deterministic):
+        if tid == 0:
+          wp.atomic_add(efc_Jqvel_out[worldid], efcid, wp.tile_extract(Jqvel_sum, 0))
+      else:
+        wp.tile_atomic_add(efc_Jqvel_out[worldid], Jqvel_sum, offset=efcid)
 
   return kernel
 
@@ -3961,6 +3966,7 @@ def _efc_contact_jac_dense_flex(tile_size: int, cone_type: types.ConeType, njmax
       if conid != prev_conid:
         prev_conid = conid
         condim = condim_in[conid]
+        first_efcid = contact_efc_address_in[conid, 0]
 
         geom = geom_in[conid]
         flex = flex_in[conid]
@@ -4167,7 +4173,7 @@ def _efc_contact_jac_dense_flex(tile_size: int, cone_type: types.ConeType, njmax
             Ji_2r_tile = wp.tile_map(wp.dot, jacr_dif_tile, frame_2)
 
       if wp.static(IS_ELLIPTIC):
-        dimid = efcid - contact_efc_address_in[conid, 0]
+        dimid = efcid - first_efcid
         if dimid < 3:
           frame_idx = dimid
         else:
@@ -4182,7 +4188,7 @@ def _efc_contact_jac_dense_flex(tile_size: int, cone_type: types.ConeType, njmax
       else:
         J_tile = Ji_0p_tile
         if condim > 1:
-          dimid = efcid - contact_efc_address_in[conid, 0]
+          dimid = efcid - first_efcid
           dimid2 = dimid / 2 + 1
           frii = friction_in[conid, dimid2 - 1]
           frii_sign = frii * (1.0 - 2.0 * float(dimid & 1))
@@ -4202,8 +4208,12 @@ def _efc_contact_jac_dense_flex(tile_size: int, cone_type: types.ConeType, njmax
 
       Jqvel_tile = wp.tile_map(wp.mul, J_tile, qvel_tile)
       Jqvel_sum = wp.tile_reduce(wp.add, Jqvel_tile)
-      if tid == 0:
-        wp.atomic_add(efc_Jqvel_out[worldid], efcid, wp.tile_extract(Jqvel_sum, 0))
+      # Tile atomics bypass Warp's deterministic accumulation.
+      if wp.static(deterministic):
+        if tid == 0:
+          wp.atomic_add(efc_Jqvel_out[worldid], efcid, wp.tile_extract(Jqvel_sum, 0))
+      else:
+        wp.tile_atomic_add(efc_Jqvel_out[worldid], Jqvel_sum, offset=efcid)
 
   return kernel
 

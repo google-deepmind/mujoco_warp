@@ -1676,9 +1676,10 @@ def _linesearch(m: types.Model, d: types.Data, ctx: SolverContext):
 
 
 @cache_kernel
-def _solve_init_dof(warmstart: bool, sparse: bool):
+def _solve_init_dof(warmstart: bool, sparse: bool, run_qacc_smooth: bool):
   WARMSTART = warmstart
   SPARSE = sparse
+  RUN_QACC_SMOOTH = run_qacc_smooth
 
   @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
   def kernel(
@@ -1692,7 +1693,10 @@ def _solve_init_dof(warmstart: bool, sparse: bool):
   ):
     worldid, dofid = wp.tid()
 
-    if wp.static(WARMSTART):
+    if wp.static(not RUN_QACC_SMOOTH):
+      # without constraint rows, Newton reaches qacc_smooth in one step from the warmstart
+      qacc_out[worldid, dofid] = qacc_warmstart_in[worldid, dofid]
+    elif wp.static(WARMSTART):
       if nefc_in[worldid] > 0:
         qacc_out[worldid, dofid] = qacc_warmstart_in[worldid, dofid]
       else:
@@ -2716,11 +2720,12 @@ def _update_gradient_JTDAJ_dense_tiled(nv_pad: int, tile_size: int, njmax: int, 
 
     nefc = nefc_in[worldid]
 
+    # CSR entries have unique destinations, so initializing M needs no atomics.
     # Densify M's upper triangle from CSR into the shared H tile (Cholesky reads fill_mode="upper").
     # Entry (i, col<=i) of M goes to the upper position (col, i); the lower triangle stays zero.
     m_tile = wp.tile_zeros(shape=(wp.static(nv_pad * nv_pad),), dtype=float, storage="shared")
     # Uniform trip count from the RUNTIME lane count: every lane iterates iters times (so the
-    # collective tile_scatter_add is always called by all lanes -- a divergent range(rank, nC, bd)
+    # collective scatter is always called by all lanes -- a divergent range(rank, nC, bd)
     # deadlocks). wp.block_dim() is 1 on the CPU backend, so lane 0 then covers every entry.
     lanes = wp.block_dim()
     iters = (nC + lanes - 1) // lanes
@@ -2729,7 +2734,7 @@ def _update_gradient_JTDAJ_dense_tiled(nv_pad: int, tile_size: int, njmax: int, 
       enable = e < nC
       ec = wp.where(enable, e, 0)
       pos = M_colind[ec] * nv_pad + M_hinit_i[ec]
-      wp.tile_scatter_add(m_tile, pos, wp.where(enable, M_in[worldid, ec], 0.0), enable)
+      wp.tile_scatter_masked(m_tile, pos, M_in[worldid, ec], enable)
     sum_val = wp.tile_reshape(m_tile, (nv_pad, nv_pad))
 
     # Each tile processes one output tile by looping over all constraints
@@ -4109,7 +4114,7 @@ def _solve(m: types.Model, d: types.Data, ctx: SolverContext, compact: bool = Fa
 
   warmstart = not (m.opt.disableflags & types.DisableBit.WARMSTART)
   wp.launch(
-    _solve_init_dof(warmstart, m.is_sparse),
+    _solve_init_dof(warmstart, m.is_sparse, not smooth.skip_qacc_smooth(m, d)),
     dim=(d.nworld, m.nv),
     inputs=[d.nefc, d.qacc_warmstart, d.qacc_smooth],
     outputs=[d.qacc, d.qfrc_constraint],

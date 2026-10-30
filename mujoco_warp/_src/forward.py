@@ -2237,7 +2237,10 @@ def fwd_acceleration(m: Model, d: Data, factorize: bool = False):
   )
   xfrc_accumulate(m, d, d.qfrc_smooth)
 
-  if m.opt.integrator == IntegratorType.DISCRETE:
+  if smooth.skip_qacc_smooth(m, d):
+    if enable_sleep and m.opt.integrator != IntegratorType.DISCRETE:
+      island.update_active_dofs(m, d)
+  elif m.opt.integrator == IntegratorType.DISCRETE:
     derivative.eff_solve(m, d, d.qacc_smooth)
   elif enable_sleep:
     # update the active-DOF set (needs contacts from fwd_position) and solve
@@ -2323,7 +2326,7 @@ def step(m: Model, d: Data):
 def step1(m: Model, d: Data):
   """Advance simulation in two phases: before input is set by user."""
   check_discrete(m)
-  fwd_position(m, d)
+  fwd_position(m, d, factorize=not smooth.skip_qacc_smooth(m, d))
   d.sensordata.zero_()
   sensor.sensor_pos(m, d)
 
