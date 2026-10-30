@@ -822,40 +822,23 @@ def _equality_tendon(is_sparse: bool, newton: bool, is_discrete: bool = False):
 
     obj1id = eq_obj1id[eqid]
     obj2id = eq_obj2id[eqid]
-
-    data = eq_data[worldid % eq_data.shape[0], eqid]
-    solref = eq_solref[worldid % eq_solref.shape[0], eqid]
-    solimp = eq_solimp[worldid % eq_solimp.shape[0], eqid]
-    tendon_length0_id = worldid % tendon_length0.shape[0]
-    tendon_invweight0_id = worldid % tendon_invweight0.shape[0]
-    pos1 = ten_length_in[worldid, obj1id] - tendon_length0[tendon_length0_id, obj1id]
-
-    if obj2id > -1:
-      invweight = tendon_invweight0[tendon_invweight0_id, obj1id] + tendon_invweight0[tendon_invweight0_id, obj2id]
-
-      pos2 = ten_length_in[worldid, obj2id] - tendon_length0[tendon_length0_id, obj2id]
-
-      dif = pos2
-      dif2 = dif * dif
-      dif3 = dif2 * dif
-      dif4 = dif3 * dif
-
-      pos = pos1 - (data[0] + data[1] * dif + data[2] * dif2 + data[3] * dif3 + data[4] * dif4)
-      deriv = data[1] + 2.0 * data[2] * dif + 3.0 * data[3] * dif2 + 4.0 * data[4] * dif3
-    else:
-      invweight = tendon_invweight0[tendon_invweight0_id, obj1id]
-      pos = pos1 - data[0]
-      deriv = 0.0
-
     rownnz1 = ten_J_rownnz[obj1id]
-    rowadr1 = ten_J_rowadr[obj1id]
-    rownnz2 = 0
-    rowadr2 = 0
-
-    if deriv != 0.0:
+    rownnz2 = int(0)
+    if obj2id > -1:
       rownnz2 = ten_J_rownnz[obj2id]
+
+    # skip constraints with an empty Jacobian, as MuJoCo does in mj_addConstraint; tendon2's
+    # dofs count even when deriv is 0, since MuJoCo's sparse merge keeps them
+    if rownnz1 == 0 and rownnz2 == 0:
+      return
+
+    rowadr1 = ten_J_rowadr[obj1id]
+    rowadr2 = int(0)
+    if rownnz2 > 0:
       rowadr2 = ten_J_rowadr[obj2id]
 
+    # tendon2's columns are reserved even if deriv is 0, so the row is allocated before the
+    # equality parameters are loaded; efc_J_rownnz is set from the nonzeros actually written
     rownnz = int(0)
     rowadr = int(0)
     if wp.static(is_sparse):
@@ -892,6 +875,30 @@ def _equality_tendon(is_sparse: bool, newton: bool, is_discrete: bool = False):
 
     if wp.static(is_sparse):
       efc_J_rowadr_out[worldid, efcid] = rowadr
+
+    data = eq_data[worldid % eq_data.shape[0], eqid]
+    solref = eq_solref[worldid % eq_solref.shape[0], eqid]
+    solimp = eq_solimp[worldid % eq_solimp.shape[0], eqid]
+    tendon_length0_id = worldid % tendon_length0.shape[0]
+    tendon_invweight0_id = worldid % tendon_invweight0.shape[0]
+    pos1 = ten_length_in[worldid, obj1id] - tendon_length0[tendon_length0_id, obj1id]
+
+    if obj2id > -1:
+      invweight = tendon_invweight0[tendon_invweight0_id, obj1id] + tendon_invweight0[tendon_invweight0_id, obj2id]
+
+      pos2 = ten_length_in[worldid, obj2id] - tendon_length0[tendon_length0_id, obj2id]
+
+      dif = pos2
+      dif2 = dif * dif
+      dif3 = dif2 * dif
+      dif4 = dif3 * dif
+
+      pos = pos1 - (data[0] + data[1] * dif + data[2] * dif2 + data[3] * dif3 + data[4] * dif4)
+      deriv = data[1] + 2.0 * data[2] * dif + 3.0 * data[3] * dif2 + 4.0 * data[4] * dif3
+    else:
+      invweight = tendon_invweight0[tendon_invweight0_id, obj1id]
+      pos = pos1 - data[0]
+      deriv = 0.0
 
     ptr1 = int(0)
     ptr2 = int(0)
@@ -2051,7 +2058,11 @@ def _friction_tendon(is_sparse: bool, newton: bool, is_discrete: bool = False):
     if frictionloss <= 0.0:
       return
 
+    # skip tendons with an empty Jacobian, as MuJoCo does in mj_addConstraint
     rownnz_tenJ = ten_J_rownnz[tenid]
+    if rownnz_tenJ == 0:
+      return
+
     rowadr_efc = int(0)
     if wp.static(is_sparse):
       rowadr_efc = _reserve_efc_nnz(nefc_out, njmax_in, njmax_nnz_in, worldid, 1, rownnz_tenJ, efc_nnz_out)
@@ -2450,7 +2461,11 @@ def _limit_tendon(is_sparse: bool, newton: bool, is_discrete: bool = False):
     active = pos < 0
 
     if active:
+      # skip tendons with an empty Jacobian, as MuJoCo does in mj_addConstraint
       rownnz_tenJ = ten_J_rownnz[tenid]
+      if rownnz_tenJ == 0:
+        return
+
       rowadr_efc = int(0)
       if wp.static(is_sparse):
         rowadr_efc = _reserve_efc_nnz(nefc_out, njmax_in, njmax_nnz_in, worldid, 1, rownnz_tenJ, efc_nnz_out)
