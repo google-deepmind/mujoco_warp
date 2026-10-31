@@ -26,11 +26,12 @@ from mujoco_warp._src.collision_core import geom_collision_pair
 from mujoco_warp._src.collision_core import geom_collision_pair_from_types
 from mujoco_warp._src.collision_core import write_contact
 from mujoco_warp._src.collision_gjk import _gjk_simplex_to_epa
-from mujoco_warp._src.collision_gjk import ccd
 from mujoco_warp._src.collision_gjk import epa_phase
 from mujoco_warp._src.collision_gjk import gjk_phase
 from mujoco_warp._src.collision_gjk import multicontact
 from mujoco_warp._src.collision_gjk import support
+from mujoco_warp._src.collision_hfield import hfield_cell_contact
+from mujoco_warp._src.collision_hfield import hfield_triangle
 from mujoco_warp._src.collision_primitive import Geom
 from mujoco_warp._src.collision_primitive import contact_params
 from mujoco_warp._src.collision_primitive import geom_collision_pair
@@ -47,16 +48,12 @@ from mujoco_warp._src.types import GeomType
 from mujoco_warp._src.types import Model
 from mujoco_warp._src.types import OverflowType
 from mujoco_warp._src.types import mat43
-from mujoco_warp._src.types import mat63
 from mujoco_warp._src.types import vec5
 from mujoco_warp._src.warp_util import cache_kernel
 from mujoco_warp._src.warp_util import event_scope
 
 # TODO(team): improve compile time to enable backward pass
 wp.set_module_options({"enable_backward": False, "default_grid_stride": False})
-
-vec_maxconpair = wp.types.vector(length=MJ_MAXCONPAIR, dtype=float)
-mat_maxconpair = wp.types.matrix(shape=(MJ_MAXCONPAIR, 3), dtype=float)
 
 
 @wp.func
@@ -162,21 +159,13 @@ def _hfield_filter(
 
 
 @cache_kernel
-def ccd_hfield_kernel_builder(
-  geomtype1: int,
-  geomtype2: int,
-  gjk_iterations: int,
-  epa_iterations: int,
-  geomgeomid: int,
-  warn_overflow: int,
-):
-  """Kernel builder for heightfield CCD collisions (no multiccd args)."""
+def hfield_kernel_builder(geomtype1: int, geomtype2: int, warn_overflow: int):
+  """Kernel builder for height field collisions."""
 
-  # runs convex collision on a set of geom pairs to recover contact info
+  # collides each geom with the triangles of the height field below it
   @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
-  def ccd_hfield_kernel(
+  def hfield_kernel(
     # Model:
-    opt_ccd_tolerance: wp.array[float],
     geom_type: wp.array[int],
     geom_condim: wp.array[int],
     geom_dataid: wp.array2d[int],
@@ -221,19 +210,11 @@ def ccd_hfield_kernel_builder(
     geom_xpos_in: wp.array2d[wp.vec3],
     geom_xmat_in: wp.array2d[wp.mat33],
     naconmax_in: int,
-    naccdmax_in: int,
     ncollision_in: wp.array[int],
     # In:
     collision_pair_in: wp.array[wp.vec2i],
     collision_pairid_in: wp.array[wp.vec2i],
     collision_worldid_in: wp.array[int],
-    epa_vert_in: wp.array2d[wp.vec3],
-    epa_vert_index_in: wp.array2d[int],
-    epa_face_in: wp.array2d[int],
-    epa_pr_in: wp.array2d[wp.vec3],
-    epa_norm2_in: wp.array2d[float],
-    epa_horizon_in: wp.array2d[int],
-    nccd_in: wp.array[int],
     # Data out:
     contact_dist_out: wp.array[float],
     contact_pos_out: wp.array[wp.vec3],
@@ -287,17 +268,6 @@ def ccd_hfield_kernel_builder(
       g2,
     )
     if no_hf_collision:
-      return
-
-    ccdid = wp.atomic_add(nccd_in, wp.static(geomgeomid), 1)  # kernel_analyzer: ignore[atomic]
-    if ccdid >= naccdmax_in:
-      if wp.static(bool(warn_overflow & OverflowType.CCD)):
-        wp.printf(
-          "CCD overflow - please increase naccdmax beyond %u\n"
-          "To disable the print warning: m.opt.warn_overflow &= ~mjw.OverflowType.CCD (or = 0 for all)\n",
-          naccdmax_in,
-        )
-      wp.atomic_or(overflow_out, worldid, wp.static(OverflowType.CCD))
       return
 
     _, margin, gap, condim, friction, solref, solreffriction, solimp, adhesion = contact_params(
@@ -356,10 +326,6 @@ def ccd_hfield_kernel_builder(
     geom2.pos = hf_matT @ (geom2.pos - hf_pos)
     geom2.rot = hf_matT @ geom2.rot
 
-    # geom1 has identity pose
-    geom1.pos = wp.vec3(0.0, 0.0, 0.0)
-    geom1.rot = wp.identity(n=3, dtype=float)
-
     # see MuJoCo mjc_ConvexHField
     geom1_dataid = geom_dataid[worldid % geom_dataid.shape[0], g1]
 
@@ -367,6 +333,7 @@ def ccd_hfield_kernel_builder(
     nrow = hfield_nrow[geom1_dataid]
     ncol = hfield_ncol[geom1_dataid]
     size = hfield_size[geom1_dataid]
+    adr = hfield_adr[geom1_dataid]
 
     # subgrid
     x_scale = 0.5 * float(ncol - 1) / size[0]
@@ -378,375 +345,75 @@ def ccd_hfield_kernel_builder(
 
     dx = (2.0 * size[0]) / float(ncol - 1)
     dy = (2.0 * size[1]) / float(nrow - 1)
-    dr = wp.vec2i(1, 0)
 
-    prism = mat63()
-
-    # set zbottom value using base size
-    prism[0, 2] = -size[3]
-    prism[1, 2] = -size[3]
-    prism[2, 2] = -size[3]
-
-    adr = hfield_adr[geom1_dataid]
-
-    hfield_contact_dist = vec_maxconpair()
-    hfield_contact_pos = mat_maxconpair()
-    hfield_contact_normal = mat_maxconpair()
-    min_dist = float(MJ_MAXVAL)
-    min_normal = wp.vec3(MJ_MAXVAL, MJ_MAXVAL, MJ_MAXVAL)
-    min_pos = wp.vec3(MJ_MAXVAL, MJ_MAXVAL, MJ_MAXVAL)
-    min_id = int(-1)
-
-    # geom1 margin added to z-axis of hfield prism top points below
-    geom2.margin = margin
-
-    # EPA memory
-    epa_vert = epa_vert_in[ccdid]
-    epa_vert_index = epa_vert_index_in[ccdid]
-    epa_face = epa_face_in[ccdid]
-    epa_pr = epa_pr_in[ccdid]
-    epa_norm2 = epa_norm2_in[ccdid]
-    epa_horizon = epa_horizon_in[ccdid]
+    # height field z in geom2's frame
+    up = wp.transpose(geom2.rot) @ wp.vec3(0.0, 0.0, 1.0)
 
     collision_pairid = collision_pairid_in[collisionid]
 
-    # process all prisms in subgrid
-    count = int(0)
-    noverflow = int(0)
+    # as MuJoCo C, write the contact of every triangle in contact, up to MJ_MAXCONPAIR
+    ncon = int(0)
     for r in range(rmin, rmax):
-      if noverflow > 0:
-        break
-
-      # pre-initialize first 2 vertices
-      for init_i in range(2):
-        x = dx * float(cmin) - size[0]
-        y = dy * float(r + dr[init_i]) - size[1]
-        z = hfield_data[adr + (r + dr[init_i]) * ncol + cmin] * size[2] + margin
-
-        prism[0] = prism[1]
-        prism[1] = prism[2]
-        prism[3] = prism[4]
-        prism[4] = prism[5]
-
-        prism[2, 0] = x
-        prism[5, 0] = x
-        prism[2, 1] = y
-        prism[5, 1] = y
-        prism[5, 2] = z
-
       for c in range(cmin + 1, cmax + 1):
-        if noverflow > 0:
-          break
-
-        # add both triangles from this cell
         for i in range(2):
-          if count >= MJ_MAXCONPAIR:
-            noverflow = 1
-            break
+          ta, tb, tc = hfield_triangle(hfield_data, adr, ncol, size, dx, dy, r, c, i)
 
-          # add vert
-          x = dx * float(c) - size[0]
-          y = dy * float(r + dr[i]) - size[1]
-          z = hfield_data[adr + (r + dr[i]) * ncol + c] * size[2] + margin
-
-          prism[0] = prism[1]
-          prism[1] = prism[2]
-          prism[3] = prism[4]
-          prism[4] = prism[5]
-
-          prism[2, 0] = x
-          prism[5, 0] = x
-          prism[2, 1] = y
-          prism[5, 1] = y
-          prism[5, 2] = z
-
-          # prism height test
-          if prism[3, 2] < zmin and prism[4, 2] < zmin and prism[5, 2] < zmin:
+          # triangle height test
+          if wp.max(wp.max(ta[2], tb[2]), tc[2]) + margin < zmin:
             continue
 
-          geom1.polyvert = prism
+          found, dist, pos, normal = hfield_cell_contact(geom2, geomtype2, up, ta, tb, tc, hfield_data, adr, nrow, ncol, size)
+          if not found or dist >= margin + gap:
+            continue
 
-          # prism center
-          x1 = geom1.pos + geom1.rot @ (prism[0] + prism[1] + prism[2] + prism[3] + prism[4] + prism[5]) * wp.static(1.0 / 6.0)
+          if ncon == MJ_MAXCONPAIR:
+            if wp.static(bool(warn_overflow & OverflowType.HFIELD)):
+              wp.printf(
+                "height field collision overflow, number of collisions >= %u - please adjust resolution: \n"
+                "decrease the number of hfield rows/cols or modify size of colliding geom\n"
+                "To disable the print warning: m.opt.warn_overflow &= ~mjw.OverflowType.HFIELD (or = 0 for all)\n",
+                MJ_MAXCONPAIR,
+              )
+            wp.atomic_or(overflow_out, worldid, OverflowType.HFIELD)
+            return
 
-          dist, ncontact, w1, w2, idx = ccd(
-            opt_ccd_tolerance[worldid % opt_ccd_tolerance.shape[0]],
-            0.0,
-            gjk_iterations,
-            epa_iterations,
-            geom1,
-            geom2,
-            geomtype1,
-            geomtype2,
-            x1,
-            geom2.pos,
-            epa_vert,
-            epa_vert_index,
-            epa_face,
-            epa_pr,
-            epa_norm2,
-            epa_horizon,
-            wp.static(bool(warn_overflow & OverflowType.EPA_HORIZON)),
+          write_contact(
+            naconmax_in,
+            ncon,
+            dist,
+            hf_mat @ pos + hf_pos,
+            make_frame(hf_mat @ normal),
+            margin,
+            gap,
+            condim,
+            friction,
+            solref,
+            solreffriction,
+            solimp,
+            adhesion,
+            geoms,
+            collision_pairid,
             worldid,
-            overflow_out,
+            contact_dist_out,
+            contact_pos_out,
+            contact_frame_out,
+            contact_includemargin_out,
+            contact_friction_out,
+            contact_solref_out,
+            contact_solreffriction_out,
+            contact_solimp_out,
+            contact_dim_out,
+            contact_geom_out,
+            contact_efc_address_out,
+            contact_worldid_out,
+            contact_type_out,
+            contact_geomcollisionid_out,
+            contact_adhesion_out,
+            nacon_out,
           )
+          ncon += 1
 
-          # skip prisms not in contact: ccd reports ncontact == 1 for separated geoms
-          if ncontact == 0 or dist >= margin + gap:
-            continue
-
-          # cache contact information
-          hfield_contact_dist[count] = dist
-
-          # transform contact to global frame
-          pos_local = 0.5 * (w1 + w2)
-          pos = hf_mat @ pos_local + hf_pos
-          hfield_contact_pos[count, 0] = pos[0]
-          hfield_contact_pos[count, 1] = pos[1]
-          hfield_contact_pos[count, 2] = pos[2]
-
-          frame_local = make_frame(w1 - w2)
-          normal_local = wp.vec3(frame_local[0, 0], frame_local[0, 1], frame_local[0, 2])
-          normal = hf_mat @ normal_local
-          hfield_contact_normal[count, 0] = normal[0]
-          hfield_contact_normal[count, 1] = normal[1]
-          hfield_contact_normal[count, 2] = normal[2]
-
-          # contact with minimum distance
-          if dist < min_dist:
-            min_dist = dist
-            min_normal = normal
-            min_pos = pos
-            min_id = count
-
-          count += 1
-
-    # warn once per pair rather than once per prism that did not fit
-    if noverflow > 0:
-      if wp.static(bool(warn_overflow & OverflowType.HFIELD)):
-        wp.printf(
-          "height field collision overflow, number of collisions >= %u - please adjust resolution: \n"
-          "decrease the number of hfield rows/cols or modify size of colliding geom\n"
-          "To disable the print warning: m.opt.warn_overflow &= ~mjw.OverflowType.HFIELD (or = 0 for all)\n",
-          MJ_MAXCONPAIR,
-        )
-      wp.atomic_or(overflow_out, worldid, OverflowType.HFIELD)
-
-    # skip write when no prisms collide
-    if count == 0:
-      return
-
-    # contact 0: minimum distance
-    write_contact(
-      naconmax_in,
-      0,
-      min_dist,
-      min_pos,
-      make_frame(min_normal),
-      margin,
-      gap,
-      condim,
-      friction,
-      solref,
-      solreffriction,
-      solimp,
-      adhesion,
-      geoms,
-      collision_pairid,
-      worldid,
-      contact_dist_out,
-      contact_pos_out,
-      contact_frame_out,
-      contact_includemargin_out,
-      contact_friction_out,
-      contact_solref_out,
-      contact_solreffriction_out,
-      contact_solimp_out,
-      contact_dim_out,
-      contact_geom_out,
-      contact_efc_address_out,
-      contact_worldid_out,
-      contact_type_out,
-      contact_geomcollisionid_out,
-      contact_adhesion_out,
-      nacon_out,
-    )
-
-    # TODO(team): routine for select subset of contacts
-    if wp.static(True):
-      MIN_DIST_TO_NEXT_CONTACT = 1.0e-3
-
-      # contact 1: furthest from minimum distance contact
-      id1 = int(-1)
-      dist1 = float(-MJ_MAXVAL)
-      for i in range(count):
-        if i == min_id:
-          continue
-
-        hf_pos = wp.vec3(hfield_contact_pos[i, 0], hfield_contact_pos[i, 1], hfield_contact_pos[i, 2])
-        dist = wp.norm_l2(hf_pos - min_pos)
-
-        if dist > dist1:
-          id1 = i
-          dist1 = dist
-
-      if id1 == -1 or (0.0 < dist1 and dist1 < MIN_DIST_TO_NEXT_CONTACT):
-        return
-
-      pos1 = wp.vec3(hfield_contact_pos[id1, 0], hfield_contact_pos[id1, 1], hfield_contact_pos[id1, 2])
-      normal1 = wp.vec3(hfield_contact_normal[id1, 0], hfield_contact_normal[id1, 1], hfield_contact_normal[id1, 2])
-
-      write_contact(
-        naconmax_in,
-        1,
-        hfield_contact_dist[id1],
-        pos1,
-        make_frame(normal1),
-        margin,
-        gap,
-        condim,
-        friction,
-        solref,
-        solreffriction,
-        solimp,
-        adhesion,
-        geoms,
-        collision_pairid,
-        worldid,
-        contact_dist_out,
-        contact_pos_out,
-        contact_frame_out,
-        contact_includemargin_out,
-        contact_friction_out,
-        contact_solref_out,
-        contact_solreffriction_out,
-        contact_solimp_out,
-        contact_dim_out,
-        contact_geom_out,
-        contact_efc_address_out,
-        contact_worldid_out,
-        contact_type_out,
-        contact_geomcollisionid_out,
-        contact_adhesion_out,
-        nacon_out,
-      )
-
-      # contact 2: point furthest from min_pos - pos1 line
-      dist_min1 = wp.cross(min_normal, min_pos - pos1)
-
-      id2 = int(-1)
-      dist_12 = float(-MJ_MAXVAL)
-      for i in range(count):
-        if i == min_id or i == id1:
-          continue
-
-        hf_pos = wp.vec3(hfield_contact_pos[i, 0], hfield_contact_pos[i, 1], hfield_contact_pos[i, 2])
-        dist = wp.abs(wp.dot(hf_pos - min_pos, dist_min1))
-
-        if dist > dist_12:
-          id2 = i
-          dist_12 = dist
-
-      if id2 == -1 or (0.0 < dist_12 and dist_12 < MIN_DIST_TO_NEXT_CONTACT):
-        return
-
-      pos2 = wp.vec3(hfield_contact_pos[id2, 0], hfield_contact_pos[id2, 1], hfield_contact_pos[id2, 2])
-      normal2 = wp.vec3(hfield_contact_normal[id2, 0], hfield_contact_normal[id2, 1], hfield_contact_normal[id2, 2])
-
-      write_contact(
-        naconmax_in,
-        2,
-        hfield_contact_dist[id2],
-        pos2,
-        make_frame(normal2),
-        margin,
-        gap,
-        condim,
-        friction,
-        solref,
-        solreffriction,
-        solimp,
-        adhesion,
-        geoms,
-        collision_pairid,
-        worldid,
-        contact_dist_out,
-        contact_pos_out,
-        contact_frame_out,
-        contact_includemargin_out,
-        contact_friction_out,
-        contact_solref_out,
-        contact_solreffriction_out,
-        contact_solimp_out,
-        contact_dim_out,
-        contact_geom_out,
-        contact_efc_address_out,
-        contact_worldid_out,
-        contact_type_out,
-        contact_geomcollisionid_out,
-        contact_adhesion_out,
-        nacon_out,
-      )
-
-      # contact 3: point furthest from other triangle edge
-      vec_min2 = wp.cross(min_normal, min_pos - pos2)
-      vec_12 = wp.cross(min_normal, pos1 - pos2)
-
-      id3 = int(-1)
-      dist3 = float(-MJ_MAXVAL)
-      for i in range(count):
-        if i == min_id or i == id1 or i == id2:
-          continue
-
-        hf_pos = wp.vec3(hfield_contact_pos[i, 0], hfield_contact_pos[i, 1], hfield_contact_pos[i, 2])
-        dist = wp.abs(wp.dot(hf_pos - min_pos, vec_min2)) + wp.abs(wp.dot(pos1 - hf_pos, vec_12))
-
-        if dist > dist3:
-          id3 = i
-          dist3 = dist
-
-      if id3 == -1 or (0.0 < dist3 and dist3 < MIN_DIST_TO_NEXT_CONTACT):
-        return
-
-      pos3 = wp.vec3(hfield_contact_pos[id3, 0], hfield_contact_pos[id3, 1], hfield_contact_pos[id3, 2])
-      normal3 = wp.vec3(hfield_contact_normal[id3, 0], hfield_contact_normal[id3, 1], hfield_contact_normal[id3, 2])
-
-      write_contact(
-        naconmax_in,
-        3,
-        hfield_contact_dist[id3],
-        pos3,
-        make_frame(normal3),
-        margin,
-        gap,
-        condim,
-        friction,
-        solref,
-        solreffriction,
-        solimp,
-        adhesion,
-        geoms,
-        collision_pairid,
-        worldid,
-        contact_dist_out,
-        contact_pos_out,
-        contact_frame_out,
-        contact_includemargin_out,
-        contact_friction_out,
-        contact_solref_out,
-        contact_solreffriction_out,
-        contact_solimp_out,
-        contact_dim_out,
-        contact_geom_out,
-        contact_efc_address_out,
-        contact_worldid_out,
-        contact_type_out,
-        contact_geomcollisionid_out,
-        contact_adhesion_out,
-        nacon_out,
-      )
-
-  return ccd_hfield_kernel
+  return hfield_kernel
 
 
 _CCD_OVERSUBSCRIBE_WAVES = 2
@@ -1343,17 +1010,16 @@ def convex_narrowphase(m: Model, d: Data, ctx: CollisionContext, collision_table
     d.nacon,
   ]
 
-  # Launch heightfield collision kernels (no multiccd args, 72 args total)
+  # Launch heightfield collision kernels
   for geom_pair in collision_table:
     g1 = geom_pair[0].value
     g2 = geom_pair[1].value
-    count, geomgeomid = _pair_count(g1, g2)
+    count, _ = _pair_count(g1, g2)
     if (g1 == GeomType.HFIELD or g2 == GeomType.HFIELD) and count:
       wp.launch(
-        ccd_hfield_kernel_builder(g1, g2, m.opt.ccd_iterations, epa_iterations, geomgeomid, int(m.opt.warn_overflow)),
+        hfield_kernel_builder(g1, g2, int(m.opt.warn_overflow)),
         dim=d.naconmax,
         inputs=[
-          m.opt.ccd_tolerance,
           m.geom_type,
           m.geom_condim,
           m.geom_dataid,
@@ -1397,18 +1063,10 @@ def convex_narrowphase(m: Model, d: Data, ctx: CollisionContext, collision_table
           d.geom_xpos,
           d.geom_xmat,
           d.naconmax,
-          d.naccdmax,
           d.ncollision,
           ctx.collision_pair,
           ctx.collision_pairid,
           ctx.collision_worldid,
-          epa_vert,
-          epa_vert_index,
-          epa_face,
-          epa_pr,
-          epa_norm2,
-          epa_horizon,
-          nccd,
         ],
         outputs=contact_outputs + [d.overflow],
       )

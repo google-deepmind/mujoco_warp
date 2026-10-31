@@ -986,6 +986,110 @@ class CollisionTest(parameterized.TestCase):
 
     self.assertEqual(mjd.ncon > 0, d.nacon.numpy()[0] > 0, "If MJ collides, MJW should too")
 
+  @parameterized.parameters(
+    ('type="sphere" size=".05"', 0.048),
+    ('type="box" size=".05 .05 .05"', 0.048),
+    ('type="capsule" size=".03 .05" euler="90 0 0"', 0.028),
+    ('type="ellipsoid" size=".06 .04 .03"', 0.028),
+    ('type="cylinder" size=".05 .03"', 0.031),
+  )
+  def test_hfield_margin(self, geom, z):
+    """Tests the distance of a geom near a flat height field with margins against MuJoCo."""
+    _, mjd, m, d = test_data.fixture(
+      xml=f"""
+      <mujoco>
+        <asset>
+          <hfield name="flat" nrow="8" ncol="8" size=".5 .5 .1 .1"/>
+        </asset>
+        <worldbody>
+          <geom type="hfield" hfield="flat" margin=".005"/>
+          <body pos=".013 .021 {z}">
+            <freejoint/>
+            <geom {geom} margin=".005"/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """
+    )
+    d.contact.dist.fill_(wp.inf)
+    mjw.collision(m, d)
+
+    nacon = d.nacon.numpy()[0]
+    self.assertGreater(mjd.ncon, 0)
+    self.assertGreater(nacon, 0)
+    np.testing.assert_allclose(d.contact.dist.numpy()[:nacon].min(), mjd.contact.dist.min(), atol=1e-5)
+
+  @parameterized.parameters(
+    ('type="box" size=".1 .1 .05"', 0.13),
+    ('type="mesh" mesh="box"', 0.13),
+    ('type="sphere" size=".08"', 0.16),
+    ('type="capsule" size=".05 .1" euler="90 0 0"', 0.13),
+    ('type="ellipsoid" size=".1 .08 .05"', 0.13),
+    ('type="cylinder" size=".1 .05"', 0.13),
+  )
+  def test_hfield_deep(self, geom, depth):
+    """Tests that a geom deep in a flat height field gets its depth below the surface, up."""
+    _, _, m, d = test_data.fixture(
+      xml=f"""
+      <mujoco>
+        <asset>
+          <hfield name="flat" nrow="16" ncol="16" size="1 1 .05 .1"/>
+          <mesh name="box" vertex="{" ".join(f"{x} {y} {z}" for x in (-0.1, 0.1) for y in (-0.1, 0.1) for z in (-0.05, 0.05))}"/>
+        </asset>
+        <worldbody>
+          <geom type="hfield" hfield="flat"/>
+          <body pos=".013 .021 -.08">
+            <freejoint/>
+            <geom {geom}/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """
+    )
+    d.contact.dist.fill_(wp.inf)
+    d.contact.frame.fill_(wp.inf)
+    mjw.collision(m, d)
+
+    nacon = d.nacon.numpy()[0]
+    self.assertGreater(nacon, 0)
+    deepest = np.argmin(d.contact.dist.numpy()[:nacon])
+    np.testing.assert_allclose(d.contact.dist.numpy()[deepest], -depth, atol=1e-4)
+    np.testing.assert_allclose(d.contact.frame.numpy()[deepest, 0], [0, 0, 1], atol=1e-3)
+
+  @parameterized.parameters(
+    'type="box" size=".085 .03 .005"',
+    'type="mesh" mesh="plate"',
+    'type="ellipsoid" size=".085 .03 .005"',
+    'type="capsule" size=".005 .08" euler="0 90 0"',
+  )
+  def test_hfield_step_side(self, geom):
+    """Tests a geom against the side of a height field step: no depth to the top of the step."""
+    _, _, m, d = test_data.fixture(
+      xml=f"""
+      <mujoco>
+        <asset>
+          <hfield name="step" nrow="13" ncol="13" size=".15 .15 .163 .1"
+                  elevation="{" ".join(["1"] * 52 + ["0"] * 117)}"/>
+          <mesh name="plate" vertex="{" ".join(f"{x} {y} {z}" for x in (-0.085, 0.085) for y in (-0.03, 0.03) for z in (-0.005, 0.005))}"/>
+        </asset>
+        <worldbody>
+          <geom type="hfield" hfield="step"/>
+          <body pos="-.01252218357228116 .00528042099085879 .085727085183132615"
+                quat=".81019302509732682 .021597807194852645 -.015807462496793441 -.58555180892678416">
+            <freejoint/>
+            <geom {geom}/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """
+    )
+    d.contact.dist.fill_(wp.inf)
+    mjw.collision(m, d)
+
+    nacon = d.nacon.numpy()[0]
+    self.assertGreater(nacon, 0)
+    self.assertGreater(d.contact.dist.numpy()[:nacon].min(), -0.03)
+
   def test_contact_exclude(self):
     """Tests contact exclude."""
     _, _, m, _ = test_data.fixture(
@@ -1634,11 +1738,11 @@ class CollisionTest(parameterized.TestCase):
     </mujoco>
     """
 
-    _, _, m, d = test_data.fixture(xml=_XML, keyframe=0)
+    _, mjd, m, d = test_data.fixture(xml=_XML, keyframe=0)
 
     mjw.collision(m, d)
 
-    np.testing.assert_equal(d.nacon.numpy()[0], 4)
+    np.testing.assert_equal(d.nacon.numpy()[0], mjd.ncon)
     self.assertTrue(d.overflow.numpy()[0] & types.OverflowType.HFIELD)
 
   @parameterized.parameters(1, 2)
@@ -1646,7 +1750,7 @@ class CollisionTest(parameterized.TestCase):
     """Tests that non-colliding prisms in the subgrid do not starve active contacts."""
     # The box is rotated 45 deg, so its subgrid is a large square while the box itself only
     # occupies the diagonal: 1458 prisms, of which more than MJ_MAXCONPAIR are in contact.
-    _, _, m, d = test_data.fixture(
+    _, mjd, m, d = test_data.fixture(
       xml="""
       <mujoco>
         <asset>
@@ -1677,7 +1781,7 @@ class CollisionTest(parameterized.TestCase):
     mjw.collision(m, d)
 
     nacon = d.nacon.numpy()[0]
-    np.testing.assert_equal(nacon, 4)
+    np.testing.assert_equal(nacon, mjd.ncon)
     np.testing.assert_equal(d.contact.worldid.numpy()[:nacon], 0)
     self.assertTrue(d.overflow.numpy()[0] & types.OverflowType.HFIELD)
 
@@ -1688,7 +1792,7 @@ class CollisionTest(parameterized.TestCase):
   def test_hfield_sparse_subgrid_no_overflow(self, nworld):
     """Tests that non-colliding prisms in the subgrid do not report an overflow."""
     # As above at a coarser resolution: 72 prisms, far fewer than MJ_MAXCONPAIR in contact.
-    _, _, m, d = test_data.fixture(
+    _, mjd, m, d = test_data.fixture(
       xml="""
       <mujoco>
         <asset>
@@ -1719,7 +1823,7 @@ class CollisionTest(parameterized.TestCase):
     mjw.collision(m, d)
 
     nacon = d.nacon.numpy()[0]
-    np.testing.assert_equal(nacon, 4)
+    np.testing.assert_equal(nacon, mjd.ncon)
     np.testing.assert_equal(d.contact.worldid.numpy()[:nacon], 0)
     self.assertFalse(d.overflow.numpy()[0] & types.OverflowType.HFIELD)
 
