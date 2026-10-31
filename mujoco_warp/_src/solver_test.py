@@ -2103,9 +2103,10 @@ class SolverTest(parameterized.TestCase):
 
     mjds = [mjd]
     if nworld == 2:
-      # perturb world 1 so the two worlds have distinct Hessians
+      # perturb world 1 so the two worlds have distinct Hessians, using the slide joint because
+      # moving the root hinge only rotates the whole chain and leaves the Hessian unchanged
       mjd1 = copy.copy(mjd)
-      mjd1.qpos[0] = 0.4
+      mjd1.qpos[3] = 0.1
       mujoco.mj_forward(mjm, mjd1)
       qpos = d.qpos.numpy()
       qpos[1] = mjd1.qpos
