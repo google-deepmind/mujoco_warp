@@ -260,7 +260,10 @@ def _next_activation(
       act = act_in[worldid, j]
       act_dot = act_dot_in[worldid, j]
 
-      if offset == slots[4]:  # current
+      if not limit:
+        # rk4 stage: explicit euler with the stage-scaled timestep, as in mj_RungeKutta
+        act = act + act_dot * act_dot_scale * opt_timestep[opt_timestep_id]
+      elif offset == slots[4]:  # current
         R = gainprm[0]
         te = wp.max(MJ_MINVAL, dynprm[0])
         act = act + act_dot * te * (1.0 - wp.exp(-opt_timestep[opt_timestep_id] / te))
@@ -1093,7 +1096,7 @@ def _next_plastic_flex_interp(
       plastic_out[worldid, padr + 5] = sp5
 
 
-def _advance(m: Model, d: Data, qacc: wp.array, qvel: Optional[wp.array] = None):
+def _advance(m: Model, d: Data, qacc: wp.array, qvel: Optional[wp.array] = None, act_dot: Optional[wp.array] = None):
   """Advance state and time given activation derivatives and acceleration."""
   # TODO(team): can we assume static timesteps?
 
@@ -1118,7 +1121,7 @@ def _advance(m: Model, d: Data, qacc: wp.array, qvel: Optional[wp.array] = None)
       m.actuator_actrange,
       m.actuator_gear,
       d.act,
-      d.act_dot,
+      d.act_dot if act_dot is None else act_dot,
       d.actuator_length,
       d.actuator_velocity,
       1.0,
@@ -1424,6 +1427,20 @@ def euler(m: Model, d: Data):
     _advance(m, d, d.qacc)
 
 
+@wp.kernel
+def _rk_stage_time(
+  # Model:
+  opt_timestep: wp.array[float],
+  # In:
+  time_t0: wp.array[float],
+  scale: float,
+  # Data out:
+  time_out: wp.array[float],
+):
+  worldid = wp.tid()
+  time_out[worldid] = time_t0[worldid] + scale * opt_timestep[worldid % opt_timestep.shape[0]]
+
+
 def _rk_perturb_state(
   m: Model,
   d: Data,
@@ -1432,7 +1449,12 @@ def _rk_perturb_state(
   qvel_t0: wp.array2d[float],
   qvel_pos: wp.array2d[float],
   act_t0: Optional[wp.array] = None,
+  time_t0: Optional[wp.array] = None,
 ):
+  # time
+  if time_t0 is not None:
+    wp.launch(_rk_stage_time, dim=d.nworld, inputs=[m.opt.timestep, time_t0, scale], outputs=[d.time])
+
   # position, integrated with the (corrected) previous stage velocity
   wp.launch(
     _next_position,
@@ -1587,6 +1609,7 @@ def rungekutta4(m: Model, d: Data):
 
   qpos_t0 = wp.clone(d.qpos)
   qvel_t0 = wp.clone(d.qvel)
+  time_t0 = wp.clone(d.time)
   qvel_rk = wp.zeros((d.nworld, m.nv), dtype=float)
   qacc_rk = wp.zeros((d.nworld, m.nv), dtype=float)
 
@@ -1621,8 +1644,9 @@ def rungekutta4(m: Model, d: Data):
 
   for i in range(3):
     a, b = float(A[i]), B[i + 1]
-    _rk_perturb_state(m, d, a, qpos_t0, qvel_t0, qvel_stage, act_t0)
-    forward(m, d)
+    _rk_perturb_state(m, d, a, qpos_t0, qvel_t0, qvel_stage, act_t0, time_t0)
+    # sensors keep their values from the start of the step, as in mj_RungeKutta
+    forward(m, d, skip_sensor=True)
     wp.launch(
       _rk_correct_velocity,
       dim=(d.nworld, m.njnt),
@@ -1633,10 +1657,11 @@ def rungekutta4(m: Model, d: Data):
 
   wp.copy(d.qpos, qpos_t0)
   wp.copy(d.qvel, qvel_t0)
+  wp.copy(d.time, time_t0)
 
+  # d.act_dot keeps the last stage's value (matching d.qacc), as in mj_RungeKutta
   if m.na:
     wp.copy(d.act, act_t0)
-    wp.copy(d.act_dot, act_dot_rk)
 
   if ten_length_t0 is not None:
     wp.copy(d.ten_length, ten_length_t0)
@@ -1647,7 +1672,7 @@ def rungekutta4(m: Model, d: Data):
     wp.copy(d.cdof, cdof_t0)
     wp.copy(d.subtree_com, subtree_com_t0)
 
-  _advance(m, d, qacc_rk, qvel_rk)
+  _advance(m, d, qacc_rk, qvel_rk, act_dot_rk)
 
 
 @wp.kernel
@@ -3200,22 +3225,22 @@ def fwd_acceleration(m: Model, d: Data, factorize: bool = False):
     smooth.solve_m(m, d, d.qacc_smooth, d.qfrc_smooth)
 
 
-def _energy_pos(m: Model, d: Data):
+def _energy_pos(m: Model, d: Data, skip_sensor: bool = False):
   if m.opt.enableflags & EnableBit.ENERGY:
-    if m.sensor_e_potential == 0:  # not computed by sensor
+    if m.sensor_e_potential == 0 or (m.opt.disableflags & DisableBit.SENSOR) or skip_sensor:  # not computed by sensor
       sensor.energy_pos(m, d)
   else:
     d.energy.zero_()
 
 
-def _energy_vel(m: Model, d: Data):
+def _energy_vel(m: Model, d: Data, skip_sensor: bool = False):
   if m.opt.enableflags & EnableBit.ENERGY:
-    if m.sensor_e_kinetic == 0:  # not computed by sensor
+    if m.sensor_e_kinetic == 0 or (m.opt.disableflags & DisableBit.SENSOR) or skip_sensor:  # not computed by sensor
       sensor.energy_vel(m, d)
 
 
 @event_scope
-def forward(m: Model, d: Data):
+def forward(m: Model, d: Data, skip_sensor: bool = False):
   """Forward dynamics."""
   check_discrete(m)
   sleep_enabled = bool(m.opt.enableflags & EnableBit.SLEEP) and not bool(m.opt.disableflags & DisableBit.ISLAND)
@@ -3224,13 +3249,15 @@ def forward(m: Model, d: Data):
     sleep.update_sleep(m, d)
 
   fwd_position(m, d, factorize=False)
-  d.sensordata.zero_()
-  sensor.sensor_pos(m, d)
-  _energy_pos(m, d)
+  if not skip_sensor:
+    d.sensordata.zero_()
+    sensor.sensor_pos(m, d)
+  _energy_pos(m, d, skip_sensor)
 
   fwd_velocity(m, d)
-  sensor.sensor_vel(m, d)
-  _energy_vel(m, d)
+  if not skip_sensor:
+    sensor.sensor_vel(m, d)
+  _energy_vel(m, d, skip_sensor)
 
   if not (m.opt.disableflags & DisableBit.ACTUATION):
     if m.callback.control:
@@ -3241,9 +3268,11 @@ def forward(m: Model, d: Data):
   solver.solve(m, d)
   if m.opt.integrator == IntegratorType.DISCRETE:
     _launch_discrete_free_gyro(m, d, d.qacc, d.qacc, False)
-  if m.opt.run_rne_postconstraint or (not (m.opt.disableflags & DisableBit.SENSOR) and m.sensor_rne_postconstraint):
+  sensor_rne = not skip_sensor and not (m.opt.disableflags & DisableBit.SENSOR) and m.sensor_rne_postconstraint
+  if m.opt.run_rne_postconstraint or sensor_rne:
     smooth.rne_postconstraint(m, d)
-  sensor.sensor_acc(m, d, skip_rne_postconstraint=True)
+  if not skip_sensor:
+    sensor.sensor_acc(m, d, skip_rne_postconstraint=True)
 
 
 @event_scope
