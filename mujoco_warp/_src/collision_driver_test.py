@@ -27,6 +27,7 @@ from mujoco_warp import GeomType
 from mujoco_warp import test_data
 from mujoco_warp._src import collision_convex
 from mujoco_warp._src import types
+from mujoco_warp._src import util_pkg
 from mujoco_warp._src.collision_core import Geom
 from mujoco_warp._src.collision_driver import MJ_COLLISION_TABLE
 from mujoco_warp._src.collision_primitive import plane_convex
@@ -59,7 +60,7 @@ def volume_gradient_step_test(volume: VolumeData, result_out: wp.array[wp.vec4])
   params.rel_mat = wp.identity(3, dtype=float)
   mesh = MeshData()
   dist, point = gradient_step(
-    types.GeomType.SDF, wp.vec3(1e-6, 1e-4, 1e-4), params, -1, -1, 1, True, volume, volume, mesh, mesh
+    types.GeomType.SDF, wp.vec3(1e-6, 1e-4, 1e-4), params, -1, -1, 1, True, 2.0, volume, volume, mesh, mesh
   )
   result_out[0] = wp.vec4(point[0], point[1], point[2], dist)
 
@@ -830,6 +831,109 @@ class CollisionTest(parameterized.TestCase):
     np.testing.assert_allclose(dists0, dists1, atol=1e-5)
     np.testing.assert_array_less(dists1, 0.0)
 
+  @parameterized.named_parameters(
+    ("one_world", 1, 0.0),
+    ("separated_1um", 2, 1e-6),
+    ("separated_10um", 2, 1e-5),
+    ("separated_1mm", 2, 1e-3),
+  )
+  def test_mesh_mesh_gjk_tuned_direction(self, nworld, gap):
+    """Matches MuJoCo where GJK tunes its support direction near the origin.
+
+    The Minkowski difference's vertices lie 0.2 m from the origin, so in float32 GJK's iterate is
+    tilted 0.3 deg off the face normal its support point is searched along. Read along the iterate,
+    the duality gap of that support point, 0.13 m to the side, turned negative: GJK stopped 2 um
+    short of the origin and no contact was written. World 1 is moved out along MuJoCo's contact
+    normal to `gap` from the board, where neither reports a contact.
+    """
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <asset>
+          <mesh name="board" vertex="-.007 -.0946 -.153  .007 -.0946 -.153  -.007 .0946 -.153  .007 .0946 -.153
+                                     -.007 -.0946  .153  .007 -.0946  .153  -.007 .0946  .153  .007 .0946  .153"/>
+          <mesh name="object" vertex="-.0007394 .002954 -.05126  .00003213 .002986 -.04854  -.0004383 .003374 .04446
+                                      -.00002483 .003162 .04452  -.0005316 .003203 .04785  .001198 .001637 .04815"/>
+        </asset>
+        <worldbody>
+          <geom type="mesh" mesh="board"/>
+          <body pos=".0096252 -.0027355 -.021315" quat=".51669 .01087 -.015833 .85596">
+            <freejoint/>
+            <geom type="mesh" mesh="object"/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=nworld,
+    )
+
+    qpos = np.tile(mjd.qpos, (nworld, 1))
+    if nworld == 2:
+      qpos[1, :3] += (gap - mjd.contact.dist.min()) * mjd.contact.frame[0, :3]
+      d.qpos.assign(qpos)
+      mjw.kinematics(m, d)
+
+    # Discard the contacts put_data copied from MuJoCo: the assertions must read Warp's own.
+    d.nacon.fill_(-1)
+    d.contact.dist.fill_(wp.inf)
+    d.contact.pos.fill_(wp.inf)
+    d.contact.frame.fill_(wp.inf)
+    d.contact.worldid.fill_(-1)
+    mjw.collision(m, d)
+
+    nacon = d.nacon.numpy()[0]
+    worldid = d.contact.worldid.numpy()[:nacon]
+    dist = d.contact.dist.numpy()[:nacon]
+    pos = d.contact.pos.numpy()[:nacon]
+    frame = d.contact.frame.numpy()[:nacon].reshape(-1, 9)
+    for i in range(nworld):
+      mjd.qpos[:] = qpos[i]
+      mujoco.mj_forward(mjm, mjd)
+      self.assertEqual(mjd.ncon, 3 if i == 0 else 0)
+      self.assertEqual((worldid == i).sum(), mjd.ncon)
+      # float32: depths and positions to 0.1 um; the normal, from points 0.14 mm apart, to 1e-4
+      np.testing.assert_allclose(dist[worldid == i], mjd.contact.dist, atol=1e-7)
+      np.testing.assert_allclose(pos[worldid == i], mjd.contact.pos, atol=1e-7)
+      np.testing.assert_allclose(frame[worldid == i], mjd.contact.frame, atol=1e-4)
+
+  def test_box_mesh_gjk_tuned_direction(self):
+    """Matches MuJoCo for a mesh resting on a table-sized box, where GJK tunes its direction.
+
+    The box's top face spans 1.2 m, so in float32 GJK's iterate, 19 um from the origin, is tilted
+    1.6 mrad off the face normal; read along the iterate, the duality gap turned negative and GJK
+    stopped short of the 46 um deep contact.
+    """
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <asset>
+          <mesh name="chip" vertex="-.03 -.02 -.006  .03 -.02 -.006  -.03 .02 -.006  .03 .02 -.006
+                                    -.03 -.02  .006  .03 -.02  .006  -.03 .02  .006  .03 .02  .006"/>
+        </asset>
+        <worldbody>
+          <geom type="box" size=".61 .37 .1"/>
+          <body pos=".43669 .13521 .11072" quat="-.71431 -.088377 .081303 .68945">
+            <freejoint/>
+            <geom type="mesh" mesh="chip"/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """
+    )
+
+    d.nacon.fill_(-1)
+    d.contact.dist.fill_(wp.inf)
+    d.contact.pos.fill_(wp.inf)
+    d.contact.frame.fill_(wp.inf)
+    mjw.collision(m, d)
+
+    nacon = d.nacon.numpy()[0]
+    self.assertEqual(mjd.ncon, 1)
+    self.assertEqual(nacon, mjd.ncon)
+    np.testing.assert_allclose(d.contact.dist.numpy()[:nacon], mjd.contact.dist, atol=1e-7)
+    np.testing.assert_allclose(d.contact.pos.numpy()[:nacon], mjd.contact.pos, atol=1e-7)
+    np.testing.assert_allclose(d.contact.frame.numpy()[:nacon].reshape(-1, 9), mjd.contact.frame, atol=1e-4)
+
   _HFIELD_FIXTURES = {
     "hfield_box": """
         <mujoco>
@@ -974,7 +1078,7 @@ class CollisionTest(parameterized.TestCase):
     z=[0.195, 0.205],  # penetrating, within margin
   )
   def test_box_box_margin(self, margin_type, multiccd, z):
-    """Box-box contacts with margin match MuJoCo's primitive box-box collider."""
+    """Box-box contacts with margin use CCD multicontact (4-point quad subset of mjc_BoxBox)."""
     geom_margin = 'margin="0.01"' if margin_type == "geom" else ""
     pair = '<pair geom1="box1" geom2="box2" margin="0.01"/>' if margin_type == "pair" else ""
     _, mjd, m, d = test_data.fixture(
@@ -999,7 +1103,6 @@ class CollisionTest(parameterized.TestCase):
       </mujoco>
       """
     )
-    self.assertTrue(m.has_boxbox_margin)
 
     d.contact.dist.fill_(wp.inf)
     d.contact.pos.fill_(wp.inf)
@@ -1007,21 +1110,227 @@ class CollisionTest(parameterized.TestCase):
     d.contact.includemargin.fill_(wp.inf)
     mjw.collision(m, d)
 
-    nacon = d.nacon.numpy()[0]
-    self.assertGreater(mjd.ncon, 0)
-    self.assertEqual(nacon, mjd.ncon)
+    nacon = int(d.nacon.numpy()[0])
+    self.assertEqual(nacon, 4)
+    self.assertGreaterEqual(mjd.ncon, nacon)
 
     dist = d.contact.dist.numpy()[:nacon]
     pos = d.contact.pos.numpy()[:nacon]
     frame = d.contact.frame.numpy()[:nacon].reshape((nacon, 9))
     includemargin = d.contact.includemargin.numpy()[:nacon]
-    for i in range(mjd.ncon):
-      # contact ordering may differ, match each MuJoCo contact to a MJWarp contact
-      match = np.isclose(dist, mjd.contact.dist[i], atol=1e-6) & np.all(np.isclose(pos, mjd.contact.pos[i], atol=1e-6), axis=1)
-      self.assertTrue(match.any(), f"MuJoCo contact {i} not found in MJWarp contacts")
-      j = int(np.nonzero(match)[0][0])
+    mj_dist = mjd.contact.dist[: mjd.ncon]
+    mj_pos = mjd.contact.pos[: mjd.ncon]
+    for j in range(nacon):
+      # CCD multicontact prunes the clipped polygon to 4 contacts
+      # (a subset of mjc_BoxBox's contacts)
+      match = np.isclose(mj_dist, dist[j], atol=1e-6) & np.all(np.isclose(mj_pos, pos[j], atol=1e-6), axis=1)
+      self.assertTrue(match.any(), f"MJWarp contact {j} not found in MuJoCo contacts")
+      i = int(np.nonzero(match)[0][0])
       np.testing.assert_allclose(frame[j][:3], mjd.contact.frame[i][:3], atol=1e-6)
       np.testing.assert_allclose(includemargin[j], mjd.contact.includemargin[i], atol=1e-6)
+
+  @parameterized.parameters(
+    (2.05, 4),  # shallow (within margin)
+    (1.95, 4),  # deep (overlapping)
+  )
+  def test_mesh_mesh_multiccd_margin(self, z, expected_ncon):
+    """Mesh-mesh contacts with margin and MULTICCD produce expected multicontacts."""
+    _, _, m, d = test_data.fixture(
+      xml=f"""
+      <mujoco>
+        <option>
+          <flag multiccd="enable"/>
+        </option>
+        <asset>
+          <mesh name="box" vertex="-1 -1 -1  1 -1 -1  1 1 -1  -1 1 -1  -1 -1 1  1 -1 1  1 1 1  -1 1 1"/>
+        </asset>
+        <worldbody>
+          <body>
+            <freejoint/>
+            <geom name="m1" type="mesh" mesh="box" margin="0.05"/>
+          </body>
+          <body pos="0 0 {z}">
+            <freejoint/>
+            <geom name="m2" type="mesh" mesh="box" margin="0.05"/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """
+    )
+
+    d.contact.dist.fill_(wp.inf)
+    d.contact.pos.fill_(wp.inf)
+    d.contact.frame.fill_(wp.inf)
+    d.contact.includemargin.fill_(wp.inf)
+    mjw.collision(m, d)
+
+    nacon = int(d.nacon.numpy()[0])
+    self.assertEqual(nacon, expected_ncon)
+    dist = d.contact.dist.numpy()[:nacon]
+    includemargin = d.contact.includemargin.numpy()[:nacon]
+    np.testing.assert_allclose(dist, z - 2.0, atol=1e-5)
+    np.testing.assert_allclose(includemargin, 0.1, atol=1e-5)
+
+  @parameterized.parameters(
+    (
+      """
+      <mujoco>
+        <statistic meansize="0.15"/>
+        <option>
+          <flag gravity="disable" multiccd="enable"/>
+        </option>
+        <worldbody>
+          <body pos="0 0 .265">
+            <freejoint/>
+            <geom type="box" size=".05 .05 .05" margin="0.1" gap="0.1"/>
+          </body>
+          <body mocap="true">
+            <geom name="geom2" type="cylinder" size=".2 .2"/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """,
+    ),
+    (
+      """
+      <mujoco>
+        <statistic meansize="0.15"/>
+        <option>
+          <flag gravity="disable" multiccd="enable"/>
+        </option>
+        <worldbody>
+          <body pos="0 0 .265">
+            <freejoint/>
+            <geom name="box" type="box" size=".05 .05 .05" margin="0.005"/>
+          </body>
+          <body mocap="true">
+            <geom name="cyl" type="cylinder" size=".2 .2"/>
+          </body>
+        </worldbody>
+        <contact>
+          <pair geom1="box" geom2="cyl" margin="0.1" gap="0.1"/>
+        </contact>
+      </mujoco>
+      """,
+    ),
+  )
+  def test_cylinder_box_margin_multiccd(self, xml):
+    """Cylinder-box face-face contacts with margin and MULTICCD (geom margin and pair override)."""
+    _, _, m, d = test_data.fixture(xml=xml)
+    d.contact.dist.fill_(wp.inf)
+    d.contact.pos.fill_(wp.inf)
+    mjw.collision(m, d)
+    nacon = int(d.nacon.numpy()[0])
+    self.assertEqual(nacon, 4)
+    np.testing.assert_allclose(d.contact.dist.numpy()[:nacon], 0.015, atol=1e-5)
+    np.testing.assert_allclose(d.contact.pos.numpy()[:nacon, 2], 0.2075, atol=1e-5)
+
+  @parameterized.parameters((0.17, 0.02, 0.11), (0.08, -0.07, 0.065))
+  def test_cylinder_box_side_edge_margin_multiccd(self, z, expected_dist, expected_z):
+    """Cylinder-box side-edge contacts with margin and MULTICCD."""
+    _, _, m, d = test_data.fixture(
+      xml=f"""
+      <mujoco>
+        <option>
+          <flag multiccd="enable"/>
+        </option>
+        <worldbody>
+          <geom name="floor" type="box" size="1 1 0.1" margin="0.05"/>
+          <body pos="0 0 {z}">
+            <freejoint/>
+            <geom name="cyl" type="cylinder" zaxis="1 0 0" size="0.05 0.2" margin="0.05"/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """
+    )
+    d.contact.dist.fill_(wp.inf)
+    d.contact.pos.fill_(wp.inf)
+    mjw.collision(m, d)
+    nacon = int(d.nacon.numpy()[0])
+    self.assertEqual(nacon, 2)
+    np.testing.assert_allclose(d.contact.dist.numpy()[:nacon], expected_dist, atol=1e-5)
+    np.testing.assert_allclose(d.contact.pos.numpy()[:nacon, 2], expected_z, atol=1e-5)
+
+  @parameterized.parameters((0.17, 0.02, 0.11), (0.08, -0.07, 0.065))
+  def test_capsule_mesh_margin_multiccd(self, z, expected_dist, expected_z):
+    """Capsule-mesh contacts with margin and MULTICCD (shallow and deep penetration)."""
+    _, _, m, d = test_data.fixture(
+      xml=f"""
+      <mujoco>
+        <option>
+          <flag multiccd="enable"/>
+        </option>
+        <asset>
+          <mesh name="boxmesh"
+                vertex="-1 -1 -0.1   1 -1 -0.1   1  1 -0.1  -1  1 -0.1
+                        -1 -1  0.1   1 -1  0.1   1  1  0.1  -1  1  0.1"/>
+        </asset>
+        <worldbody>
+          <geom name="floor" type="mesh" mesh="boxmesh" margin="0.05"/>
+          <body pos="0 0 {z}">
+            <freejoint/>
+            <geom name="cap" type="capsule" zaxis="1 0 0" size="0.05 0.2" margin="0.05"/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """
+    )
+    d.contact.dist.fill_(wp.inf)
+    d.contact.pos.fill_(wp.inf)
+    mjw.collision(m, d)
+    nacon = int(d.nacon.numpy()[0])
+    self.assertEqual(nacon, 2)
+    np.testing.assert_allclose(d.contact.dist.numpy()[:nacon], expected_dist, atol=1e-5)
+    np.testing.assert_allclose(d.contact.pos.numpy()[:nacon, 2], expected_z, atol=1e-5)
+
+  def test_tilted_box_mesh_margin_multiccd(self):
+    """Tilted box-mesh contacts with margin and MULTICCD."""
+    _, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option>
+          <flag multiccd="enable"/>
+        </option>
+        <asset>
+          <mesh name="floor"
+                vertex="-1 -1 -0.1   1 -1 -0.1   1  1 -0.1  -1  1 -0.1
+                        -1 -1  0.0   1 -1  0.0   1  1  0.0  -1  1  0.0"/>
+        </asset>
+        <worldbody>
+          <geom name="floor" type="mesh" mesh="floor" margin="0.05"/>
+          <body pos="0 0 0.13" euler="5 0 0">
+            <freejoint/>
+            <geom name="box" type="box" size="0.1 0.1 0.1" margin="0.05"/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """
+    )
+    d.contact.dist.fill_(wp.inf)
+    d.contact.pos.fill_(wp.inf)
+    mjw.collision(m, d)
+    nacon = int(d.nacon.numpy()[0])
+    self.assertEqual(nacon, 4)
+
+    cos5 = np.cos(np.deg2rad(5.0))
+    sin5 = np.sin(np.deg2rad(5.0))
+    y_lower = -0.1 * cos5 + 0.1 * sin5
+    z_lower = 0.13 - 0.1 * sin5 - 0.1 * cos5
+    y_upper = 0.1 * cos5 + 0.1 * sin5
+    z_upper = 0.13 + 0.1 * sin5 - 0.1 * cos5
+
+    pos = d.contact.pos.numpy()[:nacon]
+    dist = d.contact.dist.numpy()[:nacon]
+    np.testing.assert_allclose(np.abs(pos[:, 0]), 0.1, atol=1e-5)
+    lower = pos[:, 1] < 0
+    self.assertEqual(int(np.sum(lower)), 2)
+    np.testing.assert_allclose(pos[lower, 1], y_lower, atol=1e-5)
+    np.testing.assert_allclose(pos[lower, 2], 0.5 * z_lower, atol=1e-5)
+    np.testing.assert_allclose(dist[lower], z_lower, atol=1e-5)
+    np.testing.assert_allclose(pos[~lower, 1], y_upper, atol=1e-5)
+    np.testing.assert_allclose(pos[~lower, 2], 0.5 * z_upper, atol=1e-5)
+    np.testing.assert_allclose(dist[~lower], z_upper, atol=1e-5)
 
   @parameterized.product(
     broadphase=list(BroadphaseType),
@@ -1855,25 +2164,27 @@ class CollisionTest(parameterized.TestCase):
       </mujoco>
       """
     )
-    # 1. Inside touching contact: pos="0 0 0.15" -> dist=-0.05
-    mjw.collision(m, d)
+    with wp.ScopedCapture() as capture:
+      mjw.kinematics(m, d)
+      mjw.collision(m, d)
+
+    # Inside touching contact: pos="0 0 0.15" -> dist=-0.05
+    wp.capture_launch(capture.graph)
     self.assertEqual(d.nacon.numpy()[0], 1)
     self.assertEqual(d.contact.dim.numpy()[0], 3)
 
-    # 2. In-gap band: pos="0 0 0.22" (dist=0.02, within margin+gap=0.05)
+    # In-gap band: pos="0 0 0.22" (dist=0.02, within margin+gap=0.05)
     qpos = d.qpos.numpy()
     qpos[0, :3] = np.array([0.0, 0.0, 0.22])
-    d.qpos = wp.from_numpy(qpos, dtype=wp.float32)
-    mjw.kinematics(m, d)
-    mjw.collision(m, d)
+    d.qpos.assign(qpos)
+    wp.capture_launch(capture.graph)
     self.assertEqual(d.nacon.numpy()[0], 1)
     self.assertEqual(d.contact.dim.numpy()[0], 1)
 
-    # 3. Outside gap band: pos="0 0 0.30" (dist=0.10, > gap=0.05) -> constraint released
+    # Outside gap band: pos="0 0 0.30" (dist=0.10, > gap=0.05) -> constraint released
     qpos[0, :3] = np.array([0.0, 0.0, 0.30])
-    d.qpos = wp.from_numpy(qpos, dtype=wp.float32)
-    mjw.kinematics(m, d)
-    mjw.collision(m, d)
+    d.qpos.assign(qpos)
+    wp.capture_launch(capture.graph)
     self.assertEqual(d.nacon.numpy()[0], 0)
 
   @parameterized.parameters(
@@ -2162,6 +2473,73 @@ class CollisionTest(parameterized.TestCase):
 
     if nworld == 2:
       self.assertFalse(np.allclose(dist[worldid == 0], dist[worldid == 1]))
+
+  @absltest.skipIf(not util_pkg.check_version("mujoco>=3.17.1"), "Requires MuJoCo >= 3.17.1")
+  @parameterized.parameters(1, 2)
+  def test_contact_surfacevel(self, nworld):
+    """Populates contact.surfacevel from geom_surfacevel and zeroes contacts without surfacevel."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <geom name="belt" type="plane" size="2 2 0.01" condim="4" surfacevel="0.4 -0.2 0.1 0 0 1.5"/>
+          <geom name="wall" size="0.1" pos="1 0 0.2"/>
+          <body pos="0.1 -0.15 0.095">
+            <freejoint/>
+            <geom size="0.1" condim="4"/>
+          </body>
+          <body pos="1 0 0.35">
+            <freejoint/>
+            <geom size="0.1"/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=nworld,
+    )
+    self.assertEqual(mjd.ncon, 2)
+
+    mjds = [mjd]
+    if nworld == 2:
+      mjd1 = mujoco.MjData(mjm)
+      qpos = d.qpos.numpy()
+      qpos[1, 0] = -0.25
+      qpos[1, 1] = 0.3
+      d.qpos.assign(qpos)
+      mjd1.qpos[:] = qpos[1]
+      mujoco.mj_forward(mjm, mjd1)
+      self.assertEqual(mjd1.ncon, 2)
+      mjds.append(mjd1)
+      mjw.fwd_kinematics(m, d)
+
+    d.nacon.fill_(-1)
+    d.contact.surfacevel.fill_(wp.inf)
+    mjw.collision(m, d)
+
+    nacon = int(d.nacon.numpy()[0])
+    self.assertEqual(nacon, 2 * nworld)
+    worldid = d.contact.worldid.numpy()[:nacon]
+    geom = d.contact.geom.numpy()[:nacon]
+    surfacevel = d.contact.surfacevel.numpy()[:nacon]
+
+    belt_sv = []
+    for w in range(nworld):
+      w_mask = worldid == w
+      w_geom = geom[w_mask]
+      w_sv = surfacevel[w_mask]
+      self.assertLen(w_sv, 2)
+      for c in range(2):
+        mj_con = mjds[w].contact[c]
+        match = np.nonzero((w_geom[:, 0] == mj_con.geom[0]) & (w_geom[:, 1] == mj_con.geom[1]))[0]
+        self.assertLen(match, 1)
+        np.testing.assert_allclose(w_sv[match[0]], mj_con.surfacevel, rtol=1e-5, atol=1e-5)
+        if mj_con.geom[0] == 0:
+          belt_sv.append(w_sv[match[0]])
+        else:
+          np.testing.assert_array_equal(w_sv[match[0]], np.zeros(3))
+
+    if nworld == 2:
+      self.assertFalse(np.allclose(belt_sv[0], belt_sv[1]))
 
 
 # box-box primitive collider parity with MuJoCo's mjc_BoxBox
