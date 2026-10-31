@@ -21,8 +21,10 @@ from absl.testing import parameterized
 from mujoco_warp import Data
 from mujoco_warp import GeomType
 from mujoco_warp import Model
+from mujoco_warp import kinematics
 from mujoco_warp import test_data
 from mujoco_warp._src.collision_core import Geom
+from mujoco_warp._src.collision_gjk import _polygon_quad
 from mujoco_warp._src.collision_gjk import ccd
 from mujoco_warp._src.collision_gjk import multicontact
 from mujoco_warp._src.collision_gjk import support
@@ -55,8 +57,8 @@ def _geom_dist(
   epa_vert = wp.empty(10 + 2 * m.opt.ccd_iterations, dtype=wp.vec3)
   epa_vert_index = wp.empty(10 + 2 * m.opt.ccd_iterations, dtype=int)
   epa_face = wp.empty(6 + MJ_MAX_EPAFACES * m.opt.ccd_iterations, dtype=int)
-  epa_pr = wp.empty(6 + MJ_MAX_EPAFACES * m.opt.ccd_iterations, dtype=wp.vec3)
-  epa_norm2 = wp.empty(6 + MJ_MAX_EPAFACES * m.opt.ccd_iterations, dtype=float)
+  epa_normal = wp.empty(6 + MJ_MAX_EPAFACES * m.opt.ccd_iterations, dtype=wp.vec3)
+  epa_dist = wp.empty(6 + MJ_MAX_EPAFACES * m.opt.ccd_iterations, dtype=float)
   epa_horizon = wp.empty(MJ_MAX_EPAHORIZON if horizon_size is None else horizon_size, dtype=int)
   if overflow_out is None:
     overflow_out = wp.zeros(1, dtype=int)
@@ -101,8 +103,8 @@ def _geom_dist(
     vert: wp.array[wp.vec3],
     vert_index: wp.array[int],
     face: wp.array[int],
-    face_pr: wp.array[wp.vec3],
-    face_norm2: wp.array[float],
+    face_normal: wp.array[wp.vec3],
+    face_dist: wp.array[float],
     horizon: wp.array[int],
     polygon: wp.array[wp.vec3],
     clipped: wp.array[wp.vec3],
@@ -189,13 +191,7 @@ def _geom_dist(
       geom2.mesh_polymapnum = mesh_polymapnum
       geom2.mesh_polymap = mesh_polymap
 
-    (
-      dist,
-      ncon,
-      x1,
-      x2,
-      idx,
-    ) = ccd(
+    contact = ccd(
       tolerance[0],
       1.0e30,
       iterations,
@@ -209,16 +205,21 @@ def _geom_dist(
       vert,
       vert_index,
       face,
-      face_pr,
-      face_norm2,
+      face_normal,
+      face_dist,
       horizon,
       wp.static(warn_overflow),
       worldid,
       overflow_out,
     )
 
+    dist = contact.dist
+    ncon = int(1)
+    x1 = contact.x1
+    x2 = contact.x2
+    idx = contact.face
     if multiccd and idx >= 0:
-      ncon, witness1, witness2, dists = multicontact(
+      ncon, witness1, witness2, dists, _normal = multicontact(
         polygon,
         clipped,
         pnormal,
@@ -235,6 +236,7 @@ def _geom_dist(
         face[idx],
         x1,
         x2,
+        contact.normal,
         geom1,
         geom2,
         geomtype1,
@@ -291,8 +293,8 @@ def _geom_dist(
       epa_vert,
       epa_vert_index,
       epa_face,
-      epa_pr,
-      epa_norm2,
+      epa_normal,
+      epa_dist,
       epa_horizon,
       multiccd_polygon,
       multiccd_clipped,
@@ -516,6 +518,179 @@ class GJKTest(parameterized.TestCase):
     dist, ncon, _, _ = _geom_dist(m, d, 0, 1, True)
     self.assertEqual(4, ncon)
     self.assertAlmostEqual(-0.00025054812, dist)
+
+  @parameterized.named_parameters(
+    # origin on a polytope3 face that is the Minkowski boundary
+    ("shallow", "-6.45435927e-10 -3.42421447e-09 0.499727875", -1.86500572e-06),
+    ("centered", "0 0 0.499717653", -1.20872023e-05),
+    # aligned but separated
+    ("separated", "0 0 0.49973074", 1e-06),
+  )
+  def test_box_box_aligned_faces(self, pos: str, dist_mujoco: float):
+    """Test box-box distance for face-aligned boxes near the symmetric pose."""
+    _, _, m, d = test_data.fixture(
+      xml=f"""
+    <mujoco>
+      <worldbody>
+        <geom type="box" size="0.2 0.2 0.2" pos="0 0 0.19972974"/>
+        <geom type="box" size="0.1 0.1 0.1" pos="{pos}"/>
+      </worldbody>
+    </mujoco>
+    """
+    )
+    dist, _, _, _ = _geom_dist(m, d, 0, 1)
+    self.assertAlmostEqual(dist_mujoco, dist, delta=1e-7)
+
+  @parameterized.named_parameters(
+    # origin on a polytope3 face that is the Minkowski boundary
+    ("shallow", "-6.45435927e-10 -3.42421447e-09 0.221727878", -1.86179266e-06),
+    # origin on a polytope4 face that lies on the symmetry plane
+    ("deep", "-1.28526196e-07 -9.86971926e-08 0.221469492", -0.000260247928),
+    # aligned but separated
+    ("separated", "0 0 0.22173074", 1e-06),
+  )
+  def test_mesh_mesh_aligned_faces(self, pos: str, dist_mujoco: float):
+    """Test mesh-mesh distance for a face-aligned plate on a slab near the symmetric pose."""
+    _, _, m, d = test_data.fixture(
+      xml=f"""
+    <mujoco>
+      <asset>
+        <mesh name="slab" vertex="-0.3 -0.3 -0.02  -0.3 -0.3 0.02  -0.3 0.3 -0.02  -0.3 0.3 0.02
+                                  0.3 -0.3 -0.02  0.3 -0.3 0.02  0.3 0.3 -0.02  0.3 0.3 0.02"/>
+        <mesh name="plate" vertex="-0.105 -0.148 -0.002  -0.105 -0.148 0.002  -0.105 0.148 -0.002  -0.105 0.148 0.002
+                                   0.105 -0.148 -0.002  0.105 -0.148 0.002  0.105 0.148 -0.002  0.105 0.148 0.002"/>
+      </asset>
+      <worldbody>
+        <geom type="mesh" mesh="slab" pos="0 0 0.19972974"/>
+        <geom type="mesh" mesh="plate" pos="{pos}"/>
+      </worldbody>
+    </mujoco>
+    """
+    )
+    dist, _, _, _ = _geom_dist(m, d, 0, 1)
+    self.assertAlmostEqual(dist_mujoco, dist, delta=1e-7)
+
+  @parameterized.named_parameters(
+    # origin on a polytope3 face that is the Minkowski boundary
+    (
+      "shallow",
+      ("0 0 0.19972974", "1 0 0 0"),
+      ("-6.45435927e-10 -3.42421447e-09 0.203727886", "1 0 0 0"),
+      -1.85410925e-06,
+    ),
+    # a settling stack of plates: origin on a polytope3 face inside the Minkowski difference
+    (
+      "settling",
+      ("-7.09409598e-09 -7.94307109e-09 0.0417047702", "1 -6.70107241e-08 -5.41484781e-07 4.45444931e-10"),
+      ("6.73466957e-07 4.36415291e-07 0.0452997684", "1 -0.000122971556 0.000191919724 4.92365402e-08"),
+      -0.000481798305,
+    ),
+  )
+  def test_mesh_mesh_aligned_plates(self, pose1: tuple[str, str], pose2: tuple[str, str], dist_mujoco: float):
+    """Test mesh-mesh distance for two thin plates stacked face-to-face near the symmetric pose."""
+    _, _, m, d = test_data.fixture(
+      xml=f"""
+    <mujoco>
+      <asset>
+        <mesh name="plate" vertex="-0.105 -0.148 -0.002  -0.105 -0.148 0.002  -0.105 0.148 -0.002  -0.105 0.148 0.002
+                                   0.105 -0.148 -0.002  0.105 -0.148 0.002  0.105 0.148 -0.002  0.105 0.148 0.002"/>
+      </asset>
+      <worldbody>
+        <geom type="mesh" mesh="plate" pos="{pose1[0]}" quat="{pose1[1]}"/>
+        <geom type="mesh" mesh="plate" pos="{pose2[0]}" quat="{pose2[1]}"/>
+      </worldbody>
+    </mujoco>
+    """
+    )
+    dist, _, _, _ = _geom_dist(m, d, 0, 1)
+    self.assertAlmostEqual(dist_mujoco, dist, delta=1e-7)
+
+  @parameterized.named_parameters(
+    (
+      "step1591",
+      "3.88222654e-09 -1.31132314e-08 0.0417055264 1 -3.58717251e-08 4.17190726e-08 9.0391687e-08",
+      -0.000294492627,
+    ),
+    # origin within ~60 nm of a polytope4 face that lies on the symmetry plane
+    (
+      "step1592",
+      "3.54127727e-09 -1.33709159e-08 0.0417055823 1 -3.71346545e-08 3.55686609e-08 9.07106212e-08",
+      -0.000294435809,
+    ),
+  )
+  def test_mesh_mesh_settling_plate(self, qpos: str, dist_mujoco: float):
+    """Test mesh-mesh distance for the bottom plate of a settling stack on a slab."""
+    _, _, m, d = test_data.fixture(
+      xml=f"""
+    <mujoco>
+      <asset>
+        <mesh name="slab" vertex="-0.3 -0.3 -0.02  -0.3 -0.3 0.02  -0.3 0.3 -0.02  -0.3 0.3 0.02
+                                  0.3 -0.3 -0.02  0.3 -0.3 0.02  0.3 0.3 -0.02  0.3 0.3 0.02"/>
+        <mesh name="plate" vertex="-0.105 -0.148 -0.002  -0.105 -0.148 0.002  -0.105 0.148 -0.002  -0.105 0.148 0.002
+                                   0.105 -0.148 -0.002  0.105 -0.148 0.002  0.105 0.148 -0.002  0.105 0.148 0.002"/>
+      </asset>
+      <worldbody>
+        <body pos="0 0 0.02">
+          <geom type="mesh" mesh="slab"/>
+        </body>
+        <body>
+          <freejoint/>
+          <geom type="mesh" mesh="plate"/>
+        </body>
+      </worldbody>
+      <keyframe>
+        <key qpos="{qpos}"/>
+      </keyframe>
+    </mujoco>
+    """,
+      keyframe=0,
+    )
+    # the drop depends on the last bits of geom_xmat, so compute poses as a MuJoCo Warp step does
+    kinematics(m, d)
+    dist, _, _, _ = _geom_dist(m, d, 0, 1)
+    self.assertAlmostEqual(dist_mujoco, dist, delta=1e-7)
+
+  @parameterized.named_parameters(
+    # GJK ends on a segment through the origin that passes through an edge of the supports' triangle
+    (
+      "segment_on_edge",
+      "-3.9997736e-13 -3.11562321e-12 0.0451529063 1 2.1904524e-10 3.41666868e-11 1.38465998e-17",
+      "-2.85402019e-13 -3.63993948e-12 0.0487857275 1 -1.11090651e-11 -4.36697692e-11 2.02276117e-17",
+      -0.000367179,
+    ),
+    # the starting hexahedron is nearly flat, within nanometers of its center
+    (
+      "flat_hexahedron",
+      "-6.13740178e-13 4.22930246e-13 0.0416328236 1 -1.1288534e-10 -1.64971467e-10 -2.11745933e-18",
+      "-1.19552025e-12 6.30510509e-13 0.0451529063 1 8.28539598e-11 2.07634014e-11 -7.54522391e-18",
+      -0.00047992,
+    ),
+  )
+  def test_box_box_settling_plates(self, qpos1: str, qpos2: str, dist_mujoco: float):
+    """Test box-box distance for two plates of a settling stack under the Newton solver."""
+    _, _, m, d = test_data.fixture(
+      xml=f"""
+    <mujoco>
+      <worldbody>
+        <body>
+          <freejoint/>
+          <geom type="box" size="0.105 0.148 0.002"/>
+        </body>
+        <body>
+          <freejoint/>
+          <geom type="box" size="0.105 0.148 0.002"/>
+        </body>
+      </worldbody>
+      <keyframe>
+        <key qpos="{qpos1} {qpos2}"/>
+      </keyframe>
+    </mujoco>
+    """,
+      keyframe=0,
+    )
+    kinematics(m, d)
+    dist, _, _, _ = _geom_dist(m, d, 0, 1)
+    self.assertAlmostEqual(dist_mujoco, dist, delta=1e-7)
 
   def test_box_edge(self):
     """Test box edge."""
@@ -890,9 +1065,9 @@ class GJKTest(parameterized.TestCase):
     dist, _, _, _ = _geom_dist(m, d, 0, 1, multiccd=False, pos1=pos1, mat1=rot1, pos2=pos2, mat2=rot2)
     self.assertAlmostEqual(dist, -0.00011578822, 6)  # dist = -0.00011579410621457821 - MJC 64 bit precision
 
-    # same configuration with an undersized horizon buffer sets the overflow bit
+    # an undersized horizon buffer sets the overflow bit and keeps the contact
     overflow = wp.zeros(1, dtype=int)
-    _geom_dist(
+    dist, ncon, _, _ = _geom_dist(
       m,
       d,
       0,
@@ -907,6 +1082,8 @@ class GJKTest(parameterized.TestCase):
       overflow_out=overflow,
     )
     self.assertTrue(overflow.numpy()[0] & OverflowType.EPA_HORIZON)
+    self.assertEqual(ncon, 1)
+    self.assertLess(dist, 0.0)
 
   def test_box_box_rotation(self):
     """Test box-box with slight rotation which should give 4 contacts."""
@@ -1095,6 +1272,33 @@ class GJKTest(parameterized.TestCase):
     self.assertEqual(ncon, 2)
     np.testing.assert_allclose(x1, np.array([1.907368, -0.052973, 0.700000]), atol=1e-4)
     np.testing.assert_allclose(x2, np.array([1.300000, -0.052973, 0.700000]), atol=1e-4)
+
+  def test_polygon_quad_chamfered_rectangle(self):
+    """Test that multicontact takes one vertex near each corner of a chamfered rectangle."""
+
+    @wp.kernel(module="unique", enable_backward=False)
+    def _test_kernel(polygon_in: wp.array[wp.vec3], npolygon_in: int, quad_out: wp.array[int]):
+      quad, nquad = _polygon_quad(polygon_in, npolygon_in, wp.vec3(0.0, 0.0, 1.0))
+      for i in range(nquad):
+        quad_out[i] = quad[i]
+
+    # the overlap of two nearly coincident plates has two vertices near each corner
+    polygon = wp.array(
+      [
+        [0.105, 0.147, 0.0],
+        [0.104, 0.148, 0.0],
+        [-0.104, 0.148, 0.0],
+        [-0.105, 0.147, 0.0],
+        [-0.105, -0.147, 0.0],
+        [-0.104, -0.148, 0.0],
+        [0.104, -0.148, 0.0],
+        [0.105, -0.147, 0.0],
+      ],
+      dtype=wp.vec3,
+    )
+    quad = wp.full(4, -1, dtype=int)
+    wp.launch(_test_kernel, dim=1, inputs=[polygon, 8], outputs=[quad])
+    self.assertEqual(sorted(quad.numpy() // 2), [0, 1, 2, 3])
 
   def test_tilted_box_box_multiccd(self):
     """Test witness points for tilted box-box face contact."""
@@ -1288,8 +1492,8 @@ class GJKTest(parameterized.TestCase):
       epa_vert: wp.array[wp.vec3],
       epa_vert_index: wp.array[int],
       epa_face: wp.array[int],
-      epa_pr: wp.array[wp.vec3],
-      epa_norm2: wp.array[float],
+      epa_normal: wp.array[wp.vec3],
+      epa_dist: wp.array[float],
       epa_horizon: wp.array[int],
       overflow: wp.array[int],
       out_dist: wp.array[float],
@@ -1308,7 +1512,7 @@ class GJKTest(parameterized.TestCase):
 
       centroid = (polyvert_in[0] + polyvert_in[1] + polyvert_in[2] + polyvert_in[3]) * 0.25
 
-      dist, ncontact, w1, w2, idx = ccd(
+      contact = ccd(
         1e-6,
         10.0,
         100,
@@ -1322,14 +1526,14 @@ class GJKTest(parameterized.TestCase):
         epa_vert,
         epa_vert_index,
         epa_face,
-        epa_pr,
-        epa_norm2,
+        epa_normal,
+        epa_dist,
         epa_horizon,
         False,
         0,
         overflow,
       )
-      out_dist[0] = dist
+      out_dist[0] = contact.dist
 
     ccd_iterations = 100
     out_dist = wp.empty(1, dtype=float)
@@ -1337,8 +1541,8 @@ class GJKTest(parameterized.TestCase):
     epa_vert = wp.empty(4 + 2 * ccd_iterations, dtype=wp.vec3)
     epa_vert_index = wp.empty(4 + 2 * ccd_iterations, dtype=int)
     epa_face = wp.empty(6 + MJ_MAX_EPAFACES * ccd_iterations, dtype=int)
-    epa_pr = wp.empty(6 + MJ_MAX_EPAFACES * ccd_iterations, dtype=wp.vec3)
-    epa_norm2 = wp.empty(6 + MJ_MAX_EPAFACES * ccd_iterations, dtype=float)
+    epa_normal = wp.empty(6 + MJ_MAX_EPAFACES * ccd_iterations, dtype=wp.vec3)
+    epa_dist = wp.empty(6 + MJ_MAX_EPAFACES * ccd_iterations, dtype=float)
     epa_horizon = wp.empty(MJ_MAX_EPAHORIZON, dtype=int)
 
     wp.launch(
@@ -1351,8 +1555,8 @@ class GJKTest(parameterized.TestCase):
         epa_vert,
         epa_vert_index,
         epa_face,
-        epa_pr,
-        epa_norm2,
+        epa_normal,
+        epa_dist,
         epa_horizon,
         overflow,
       ],

@@ -721,8 +721,8 @@ def _collide_mesh_convex(
   epa_vert: wp.array[wp.vec3],
   epa_vert_index: wp.array[int],
   epa_face: wp.array[int],
-  epa_pr: wp.array[wp.vec3],
-  epa_norm2: wp.array[float],
+  epa_normal: wp.array[wp.vec3],
+  epa_dist: wp.array[float],
   epa_horizon: wp.array[int],
   tolerance: float,
   ccd_iterations: int,
@@ -759,7 +759,7 @@ def _collide_mesh_convex(
 
   r_geom = wp.length(geom_size_val)
   if wp.length(geom2_pos - geom_center) <= r_geom + geom2_bounding_radius + margin + geom2_radius + 0.04:
-    dist, ncontact, w1, w2, idx = ccd(
+    contact = ccd(
       tolerance,
       margin + geom2_radius,
       ccd_iterations,
@@ -773,20 +773,20 @@ def _collide_mesh_convex(
       epa_vert,
       epa_vert_index,
       epa_face,
-      epa_pr,
-      epa_norm2,
+      epa_normal,
+      epa_dist,
       epa_horizon,
       warn_overflow,
       worldid,
       overflow_out,
     )
 
-    if ncontact > 0 and dist < margin + geom2_radius:
-      diff = (w1 - w2) if dist < 0.0 else (w2 - w1)
-      gjk_normal = wp.normalize(diff)
-      if wp.length_sq(diff) < 1e-12:
-        gjk_normal = wp.normalize(geom2_pos - geom_center)
-
+    dist = contact.dist
+    w1 = contact.x1
+    w2 = contact.x2
+    idx = contact.face
+    if dist < margin + geom2_radius:
+      gjk_normal = contact.normal
       best_normal = gjk_normal
       if did >= 0:
         w1_local = wp.transpose(geom_rot) @ (w1 - mesh_geom_pos)
@@ -1369,8 +1369,8 @@ def _flex_narrowphase(warn_overflow: int):
     epa_vert_out: wp.array2d[wp.vec3],
     epa_vert_index_out: wp.array2d[int],
     epa_face_out: wp.array2d[int],
-    epa_pr_out: wp.array2d[wp.vec3],
-    epa_norm2_out: wp.array2d[float],
+    epa_normal_out: wp.array2d[wp.vec3],
+    epa_dist_out: wp.array2d[float],
     epa_horizon_out: wp.array2d[int],
     cand_dist_out: wp.array[float],
     cand_pos_out: wp.array[wp.vec3],
@@ -1522,7 +1522,7 @@ def _flex_narrowphase(warn_overflow: int):
 
       tol = opt_ccd_tolerance[0 % opt_ccd_tolerance.shape[0]]
 
-      dist, ncontact, w1, w2, _ = ccd(
+      contact = ccd(
         tol,
         radius1 + radius2 + mix_margin,
         gjk_iterations,
@@ -1536,23 +1536,22 @@ def _flex_narrowphase(warn_overflow: int):
         epa_vert_out[pairid],
         epa_vert_index_out[pairid],
         epa_face_out[pairid],
-        epa_pr_out[pairid],
-        epa_norm2_out[pairid],
+        epa_normal_out[pairid],
+        epa_dist_out[pairid],
         epa_horizon_out[pairid],
         wp.static(bool(warn_overflow & OverflowType.EPA_HORIZON)),
         worldid,
         overflow_out,
       )
 
-      if ncontact > 0 and dist < 0.0:
-        phys_dist = dist + mix_margin
-        pos = 0.5 * (w1 + w2)
-        nrm = wp.normalize(w1 - w2)
+      if contact.dist < 0.0:
+        phys_dist = contact.dist + mix_margin
+        pos = 0.5 * (contact.x1 + contact.x2)
         _write_candidate(
           max_candidates,
           phys_dist,
           pos,
-          nrm,
+          contact.normal,
           -2,
           flexid1,
           flexid2,
@@ -1626,8 +1625,8 @@ def _flex_narrowphase_elem_detect(warn_overflow: int):
     epa_vert: wp.array2d[wp.vec3],
     epa_vert_index: wp.array2d[int],
     epa_face: wp.array2d[int],
-    epa_pr: wp.array2d[wp.vec3],
-    epa_norm2: wp.array2d[float],
+    epa_normal: wp.array2d[wp.vec3],
+    epa_dist: wp.array2d[float],
     epa_horizon: wp.array2d[int],
     nccd: wp.array[int],
     ccd_iterations: int,
@@ -1889,8 +1888,8 @@ def _flex_narrowphase_elem_detect(warn_overflow: int):
           epa_vert[ccdid],
           epa_vert_index[ccdid],
           epa_face[ccdid],
-          epa_pr[ccdid],
-          epa_norm2[ccdid],
+          epa_normal[ccdid],
+          epa_dist[ccdid],
           epa_horizon[ccdid],
           tolerance,
           ccd_iterations,
@@ -1996,7 +1995,7 @@ def _flex_narrowphase_elem_detect(warn_overflow: int):
         r_geom = wp.length(geom_size_val)
         if wp.length(centroid - geom_pos) <= r_geom + r_elem + margin + elem_radius + 0.04:
           ccd_cutoff = (margin + elem_radius) if f_dim == 2 else margin
-          dist, ncontact, w1, w2, idx = ccd(
+          contact = ccd(
             tolerance,
             ccd_cutoff,
             ccd_iterations,
@@ -2010,22 +2009,19 @@ def _flex_narrowphase_elem_detect(warn_overflow: int):
             epa_vert[ccdid],
             epa_vert_index[ccdid],
             epa_face[ccdid],
-            epa_pr[ccdid],
-            epa_norm2[ccdid],
+            epa_normal[ccdid],
+            epa_dist[ccdid],
             epa_horizon[ccdid],
             wp.static(bool(warn_overflow & OverflowType.EPA_HORIZON)),
             worldid,
             overflow_out,
           )
 
+          dist = contact.dist
           cand_dist = (dist - elem_radius) if f_dim == 2 else dist
-          if ncontact > 0 and cand_dist < margin:
-            diff = (w1 - w2) if dist < 0.0 else (w2 - w1)
-            normal = wp.normalize(diff)
-            if wp.length_sq(diff) < 1e-12:
-              normal = wp.normalize(centroid - geom_pos)
-
-            contact_pos = 0.5 * (w1 + w2)
+          if cand_dist < margin:
+            normal = contact.normal
+            contact_pos = 0.5 * (contact.x1 + contact.x2)
             if f_dim == 2:
               contact_pos -= 0.5 * elem_radius * normal
 
@@ -2855,8 +2851,8 @@ class FlexWorkspace:
   epa_vert: wp.array
   epa_vert_index: wp.array
   epa_face: wp.array
-  epa_pr: wp.array
-  epa_norm2: wp.array
+  epa_normal: wp.array
+  epa_dist: wp.array
   epa_horizon: wp.array
 
   # Optional FPS & CCD buffers
@@ -2949,8 +2945,8 @@ def _allocate_flex_workspace(m: Model, d: Data) -> FlexWorkspace:
     epa_vert=wp.empty(shape=(capacity, 10 + 2 * epa_iterations), dtype=wp.vec3),
     epa_vert_index=wp.empty(shape=(capacity, 10 + 2 * epa_iterations), dtype=int),
     epa_face=wp.empty(shape=(capacity, 6 + MJ_MAX_EPAFACES * epa_iterations), dtype=int),
-    epa_pr=wp.empty(shape=(capacity, 6 + MJ_MAX_EPAFACES * epa_iterations), dtype=wp.vec3),
-    epa_norm2=wp.empty(shape=(capacity, 6 + MJ_MAX_EPAFACES * epa_iterations), dtype=float),
+    epa_normal=wp.empty(shape=(capacity, 6 + MJ_MAX_EPAFACES * epa_iterations), dtype=wp.vec3),
+    epa_dist=wp.empty(shape=(capacity, 6 + MJ_MAX_EPAFACES * epa_iterations), dtype=float),
     epa_horizon=wp.empty(shape=(capacity, MJ_MAX_EPAHORIZON), dtype=int),
     nccd=nccd,
   )
@@ -3335,8 +3331,8 @@ def _detect_elem_geom_candidates(
       ws.epa_vert,
       ws.epa_vert_index,
       ws.epa_face,
-      ws.epa_pr,
-      ws.epa_norm2,
+      ws.epa_normal,
+      ws.epa_dist,
       ws.epa_horizon,
       ws.nccd,
       epa_iterations,
@@ -3482,8 +3478,8 @@ def _run_flex_narrowphase(
       ws.epa_vert,
       ws.epa_vert_index,
       ws.epa_face,
-      ws.epa_pr,
-      ws.epa_norm2,
+      ws.epa_normal,
+      ws.epa_dist,
       ws.epa_horizon,
       ws.dist,
       ws.pos,

@@ -230,8 +230,8 @@ def ccd_hfield_kernel_builder(
     epa_vert_in: wp.array2d[wp.vec3],
     epa_vert_index_in: wp.array2d[int],
     epa_face_in: wp.array2d[int],
-    epa_pr_in: wp.array2d[wp.vec3],
-    epa_norm2_in: wp.array2d[float],
+    epa_normal_in: wp.array2d[wp.vec3],
+    epa_dist_in: wp.array2d[float],
     epa_horizon_in: wp.array2d[int],
     nccd_in: wp.array[int],
     # Data out:
@@ -404,8 +404,8 @@ def ccd_hfield_kernel_builder(
     epa_vert = epa_vert_in[ccdid]
     epa_vert_index = epa_vert_index_in[ccdid]
     epa_face = epa_face_in[ccdid]
-    epa_pr = epa_pr_in[ccdid]
-    epa_norm2 = epa_norm2_in[ccdid]
+    epa_normal = epa_normal_in[ccdid]
+    epa_dist = epa_dist_in[ccdid]
     epa_horizon = epa_horizon_in[ccdid]
 
     collision_pairid = collision_pairid_in[collisionid]
@@ -469,7 +469,7 @@ def ccd_hfield_kernel_builder(
           # prism center
           x1 = geom1.pos + geom1.rot @ (prism[0] + prism[1] + prism[2] + prism[3] + prism[4] + prism[5]) * wp.static(1.0 / 6.0)
 
-          dist, ncontact, w1, w2, idx = ccd(
+          contact = ccd(
             opt_ccd_tolerance[worldid % opt_ccd_tolerance.shape[0]],
             0.0,
             gjk_iterations,
@@ -483,31 +483,30 @@ def ccd_hfield_kernel_builder(
             epa_vert,
             epa_vert_index,
             epa_face,
-            epa_pr,
-            epa_norm2,
+            epa_normal,
+            epa_dist,
             epa_horizon,
             wp.static(bool(warn_overflow & OverflowType.EPA_HORIZON)),
             worldid,
             overflow_out,
           )
 
-          # skip prisms not in contact: ccd reports ncontact == 1 for separated geoms
-          if ncontact == 0 or dist >= margin + gap:
+          # skip prisms not in contact
+          dist = contact.dist
+          if dist >= margin + gap:
             continue
 
           # cache contact information
           hfield_contact_dist[count] = dist
 
           # transform contact to global frame
-          pos_local = 0.5 * (w1 + w2)
+          pos_local = 0.5 * (contact.x1 + contact.x2)
           pos = hf_mat @ pos_local + hf_pos
           hfield_contact_pos[count, 0] = pos[0]
           hfield_contact_pos[count, 1] = pos[1]
           hfield_contact_pos[count, 2] = pos[2]
 
-          frame_local = make_frame(w1 - w2)
-          normal_local = wp.vec3(frame_local[0, 0], frame_local[0, 1], frame_local[0, 2])
-          normal = hf_mat @ normal_local
+          normal = hf_mat @ contact.normal
           hfield_contact_normal[count, 0] = normal[0]
           hfield_contact_normal[count, 1] = normal[1]
           hfield_contact_normal[count, 2] = normal[2]
@@ -790,8 +789,8 @@ def ccd_kernel_builder(
     epa_vert_in: wp.array2d[wp.vec3],
     epa_vert_index_in: wp.array2d[int],
     epa_face_in: wp.array2d[int],
-    epa_pr_in: wp.array2d[wp.vec3],
-    epa_norm2_in: wp.array2d[float],
+    epa_normal_in: wp.array2d[wp.vec3],
+    epa_dist_in: wp.array2d[float],
     epa_horizon_in: wp.array2d[int],
     multiccd_polygon_in: wp.array2d[wp.vec3],
     multiccd_clipped_in: wp.array2d[wp.vec3],
@@ -843,7 +842,7 @@ def ccd_kernel_builder(
     origin = geom1.pos
     geom1.pos = wp.vec3(0.0)
     geom2.pos = geom2.pos - origin
-    needs_epa, dist, ncollision, w1, w2, gjk_result, geom1, geom2 = gjk_phase(
+    needs_epa, contact, gjk_result, geom1, geom2 = gjk_phase(
       tolerance,
       cutoff,
       gjk_iterations,
@@ -856,7 +855,6 @@ def ccd_kernel_builder(
     )
 
     ccdid = int(-1)
-    multiccd_idx = int(-1)
 
     if needs_epa:
       ccdid = wp.atomic_add(nccd_in, geomgeomid, 1)  # kernel_analyzer: ignore[atomic]
@@ -869,7 +867,7 @@ def ccd_kernel_builder(
           )
         wp.atomic_or(overflow_out, worldid, OverflowType.CCD)
         return
-      dist, ncollision, w1, w2, multiccd_idx = epa_phase(
+      contact = epa_phase(
         tolerance,
         epa_iterations,
         gjk_result,
@@ -880,15 +878,15 @@ def ccd_kernel_builder(
         epa_vert_in[ccdid],
         epa_vert_index_in[ccdid],
         epa_face_in[ccdid],
-        epa_pr_in[ccdid],
-        epa_norm2_in[ccdid],
+        epa_normal_in[ccdid],
+        epa_dist_in[ccdid],
         epa_horizon_in[ccdid],
         wp.static(bool(warn_overflow & OverflowType.EPA_HORIZON)),
         worldid,
         overflow_out,
       )
 
-    if dist >= gap and not is_collision_sensor:
+    if contact.dist >= gap and not is_collision_sensor:
       return
 
     # CCD operates on margin-inflated shapes (support() inflates each geom by
@@ -896,13 +894,16 @@ def ccd_kernel_builder(
     # geometry.  Correct back to the true surface-to-surface distance so that
     # the constraint pipeline (pos = dist - includemargin) works consistently
     # with the primitive narrowphase, which reports un-inflated distances.
-    dist += margin
+    dist = contact.dist + margin
 
+    ncollision = int(1)
     witness1 = mat43()
     witness2 = mat43()
     dists = wp.vec4()
-    witness1[0] = w1
-    witness2[0] = w2
+    witness1[0] = contact.x1
+    witness2[0] = contact.x2
+    normal = contact.normal
+    multiccd_idx = contact.face
 
     has_face1 = wp.static(geomtype1 == GeomType.BOX or geomtype1 == GeomType.MESH or geomtype1 == GeomType.CYLINDER)
     has_face2 = wp.static(geomtype2 == GeomType.BOX or geomtype2 == GeomType.MESH or geomtype2 == GeomType.CYLINDER)
@@ -937,7 +938,7 @@ def ccd_kernel_builder(
 
       dists = wp.vec4()
       if multiccd_idx > -1:
-        ncollision, witness1, witness2, dists = multicontact(
+        ncollision, witness1, witness2, dists, normal = multicontact(
           multiccd_polygon_in[ccdid],
           multiccd_clipped_in[ccdid],
           multiccd_pnormal_in[ccdid],
@@ -952,8 +953,9 @@ def ccd_kernel_builder(
           epa_vert_in[ccdid],
           epa_vert_index_in[ccdid],
           epa_face_in[ccdid, multiccd_idx],
-          w1,
-          w2,
+          contact.x1,
+          contact.x2,
+          contact.normal,
           geom1,
           geom2,
           geomtype1,
@@ -964,8 +966,9 @@ def ccd_kernel_builder(
         # single EPA witness pair
         if ncollision < 1:
           ncollision = 1
-          witness1[0] = w1
-          witness2[0] = w2
+          witness1[0] = contact.x1
+          witness2[0] = contact.x2
+          normal = contact.normal
 
     condim, friction, solref, solreffriction, solimp, adhesion = contact_material_params(
       geom_condim,
@@ -986,15 +989,7 @@ def ccd_kernel_builder(
       worldid,
     )
 
-    # When shapes overlap (dist <= margin, i.e. inflated dist <= 0), witness1 has crossed
-    # past witness2, so witness1 - witness2 points from geom[0] to geom[1].
-    # When shapes are separated in the gap band (dist > margin, i.e. inflated dist > 0),
-    # witness1 is on geom[0] and witness2 is on geom[1], so witness2 - witness1 points
-    # from geom[0] to geom[1].
-    if dist <= margin:
-      frame = make_frame(witness1[0] - witness2[0])
-    else:
-      frame = make_frame(witness2[0] - witness1[0])
+    frame = make_frame(normal)
 
     for i in range(ncollision):
       write_contact(
@@ -1092,8 +1087,8 @@ def ccd_kernel_builder(
     epa_vert_in: wp.array2d[wp.vec3],
     epa_vert_index_in: wp.array2d[int],
     epa_face_in: wp.array2d[int],
-    epa_pr_in: wp.array2d[wp.vec3],
-    epa_norm2_in: wp.array2d[float],
+    epa_normal_in: wp.array2d[wp.vec3],
+    epa_dist_in: wp.array2d[float],
     epa_horizon_in: wp.array2d[int],
     multiccd_polygon_in: wp.array2d[wp.vec3],
     multiccd_clipped_in: wp.array2d[wp.vec3],
@@ -1193,8 +1188,8 @@ def ccd_kernel_builder(
         epa_vert_in,
         epa_vert_index_in,
         epa_face_in,
-        epa_pr_in,
-        epa_norm2_in,
+        epa_normal_in,
+        epa_dist_in,
         epa_horizon_in,
         multiccd_polygon_in,
         multiccd_clipped_in,
@@ -1316,10 +1311,10 @@ def convex_narrowphase(m: Model, d: Data, ctx: CollisionContext, collision_table
   epa_vert_index = wp.empty(shape=(d.naccdmax, 10 + 2 * epa_iterations), dtype=int)
   # epa_face: faces of polytope represented by three indices
   epa_face = wp.empty(shape=(d.naccdmax, 6 + MJ_MAX_EPAFACES * epa_iterations), dtype=int)
-  # epa_pr: projection of origin on polytope faces
-  epa_pr = wp.empty(shape=(d.naccdmax, 6 + MJ_MAX_EPAFACES * epa_iterations), dtype=wp.vec3)
-  # epa_norm2: epa_pr * epa_pr
-  epa_norm2 = wp.empty(shape=(d.naccdmax, 6 + MJ_MAX_EPAFACES * epa_iterations), dtype=float)
+  # epa_normal: outward unit normal of polytope faces
+  epa_normal = wp.empty(shape=(d.naccdmax, 6 + MJ_MAX_EPAFACES * epa_iterations), dtype=wp.vec3)
+  # epa_dist: signed distance from the origin to polytope faces (positive inside)
+  epa_dist = wp.empty(shape=(d.naccdmax, 6 + MJ_MAX_EPAFACES * epa_iterations), dtype=float)
   # epa_horizon: index pair (i j) of edges on horizon
   epa_horizon = wp.empty(shape=(d.naccdmax, MJ_MAX_EPAHORIZON), dtype=int)
 
@@ -1405,8 +1400,8 @@ def convex_narrowphase(m: Model, d: Data, ctx: CollisionContext, collision_table
           epa_vert,
           epa_vert_index,
           epa_face,
-          epa_pr,
-          epa_norm2,
+          epa_normal,
+          epa_dist,
           epa_horizon,
           nccd,
         ],
@@ -1506,8 +1501,8 @@ def convex_narrowphase(m: Model, d: Data, ctx: CollisionContext, collision_table
           epa_vert,
           epa_vert_index,
           epa_face,
-          epa_pr,
-          epa_norm2,
+          epa_normal,
+          epa_dist,
           epa_horizon,
           multiccd_polygon,
           multiccd_clipped,

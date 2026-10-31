@@ -1782,6 +1782,167 @@ class CollisionTest(parameterized.TestCase):
     _assert_eq(d.contact.includemargin.numpy()[0], mjd.contact.includemargin[0], "includemargin")
     _assert_eq(d.contact.dim.numpy()[0], mjd.contact.dim[0], "dim")
 
+  @parameterized.named_parameters(
+    # the points EPA adds lie on the planes of faces it already has, so rounding alone decides
+    # which faces they see
+    (
+      "settling",
+      "-2.2348577e-07 6.56473844e-08 0.0453241728 1 -3.84717641e-05 -2.61477526e-05 -2.60637769e-08",
+      "-3.1359869e-07 3.70566198e-07 0.0491158552 1 -4.04455423e-05 -1.14625118e-05 -1.53755355e-08",
+    ),
+    # GJK ends on a segment through the origin along the plates' normal
+    ("aligned", "0 0 0 1 0 0 0", "0 0 0.0034358762 1 0 0 0"),
+    # the overlap polygon has several quadrilaterals of maximum area
+    (
+      "corners",
+      "-9.54490389e-08 -1.99749746e-08 0.0417061523 1 -2.58696158e-08 -2.99900393e-07 3.40919755e-08",
+      "1.37795581e-07 -6.99507439e-08 0.0453387462 1 -1.30752824e-06 1.24143435e-06 -1.10396066e-07",
+    ),
+  )
+  def test_mesh_mesh_plates(self, qpos1: str, qpos2: str):
+    """Tests mesh-mesh contacts for two plates of a stack."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml=f"""
+    <mujoco>
+      <asset>
+        <mesh name="plate" vertex="-0.105 -0.148 -0.002  -0.105 -0.148 0.002  -0.105 0.148 -0.002  -0.105 0.148 0.002
+                                   0.105 -0.148 -0.002  0.105 -0.148 0.002  0.105 0.148 -0.002  0.105 0.148 0.002"/>
+      </asset>
+      <worldbody>
+        <body>
+          <freejoint/>
+          <geom type="mesh" mesh="plate"/>
+        </body>
+        <body>
+          <freejoint/>
+          <geom type="mesh" mesh="plate"/>
+        </body>
+      </worldbody>
+      <keyframe>
+        <key qpos="{qpos1} {qpos2}"/>
+      </keyframe>
+    </mujoco>
+    """,
+      keyframe=0,
+    )
+    mjw.kinematics(m, d)
+    d.contact.dist.fill_(wp.inf)
+    d.contact.frame.fill_(wp.inf)
+    d.contact.pos.fill_(wp.inf)
+    mjw.collision(m, d)
+
+    nacon = int(d.nacon.numpy()[0])
+    self.assertEqual(nacon, mjd.ncon)
+    np.testing.assert_allclose(np.sort(d.contact.dist.numpy()[:nacon]), np.sort(mjd.contact.dist), atol=1e-7)
+    np.testing.assert_allclose(d.contact.frame.numpy()[:nacon, 0], mjd.contact.frame[:, :3], atol=1e-4)
+    pos = d.contact.pos.numpy()[:nacon]
+    for p in mjd.contact.pos:
+      self.assertLess(np.min(np.linalg.norm(pos - p, axis=1)), 1e-5)
+
+  def test_mesh_mesh_vertex_near_edge_normal(self):
+    """Tests the normal of a cube vertex 1e-7 m from a cube edge, which GJK finds apart."""
+    _, mjd, m, d = test_data.fixture(
+      xml="""
+    <mujoco>
+      <asset>
+        <mesh name="cube" vertex="-0.05 -0.05 -0.05  -0.05 -0.05 0.05  -0.05 0.05 -0.05  -0.05 0.05 0.05
+                                  0.05 -0.05 -0.05  0.05 -0.05 0.05  0.05 0.05 -0.05  0.05 0.05 0.05"/>
+      </asset>
+      <worldbody>
+        <geom name="a" type="mesh" mesh="cube"/>
+        <body pos="0.00675470007 -0.124891281 -0.0860344515" quat="-0.0391251755 -0.22609981 -0.969588031 0.0851301787">
+          <freejoint/>
+          <geom name="b" type="mesh" mesh="cube"/>
+        </body>
+      </worldbody>
+      <sensor>
+        <normal geom1="a" geom2="b" cutoff="1"/>
+      </sensor>
+    </mujoco>
+    """
+    )
+    mjw.kinematics(m, d)
+    d.contact.frame.fill_(wp.inf)
+    mjw.collision(m, d)
+
+    self.assertEqual(int(d.nacon.numpy()[0]), 1)
+    # the closest direction lies between the two faces at the edge, not along either of them
+    self.assertGreater(np.dot(d.contact.frame.numpy()[0, 0], mjd.sensordata[:3]), np.cos(np.radians(5.0)))
+
+  @parameterized.named_parameters(
+    (
+      "shallow",
+      "0.0135 -0.0363 -0.0456",
+      "0.39514384718005507 -0.90680138655274423 -0.11464013517212894 -0.091816255584084294",
+      "0.15170847423874842 0.11555426474005315 -0.13427166136294666",
+      "0.36047171086151258 -0.57628151267414607 0.19834607690880296 -0.70612930656747241",
+    ),
+    (
+      "subulp",
+      "0.0021 -0.032 -0.028",
+      "-0.88546297679248098 0.045710345726475643 -0.37948493053536697 0.26430487797226176",
+      "0.20320374575830932 -0.11913469077178673 0.016596249462062448",
+      "-0.35778050763992603 -0.15456967608129676 -0.89445324311925378 0.21921386694844172",
+    ),
+  )
+  def test_capsule_ellipsoid_touching_normal(self, ell_pos: str, ell_quat: str, cap_pos: str, cap_quat: str):
+    """Tests the contact normal of a capsule touching an ellipsoid, 1e-7 and 1e-8 m deep (#1739)."""
+    _, mjd, m, d = test_data.fixture(
+      xml=f"""
+    <mujoco>
+      <worldbody>
+        <body pos="{ell_pos}" quat="{ell_quat}">
+          <geom type="ellipsoid" size="0.095 0.14 0.14"/>
+        </body>
+        <body pos="{cap_pos}" quat="{cap_quat}">
+          <freejoint/>
+          <geom type="capsule" size="0.042 0.14"/>
+        </body>
+      </worldbody>
+    </mujoco>
+    """
+    )
+    mjw.kinematics(m, d)
+    d.nacon.fill_(-1)
+    d.contact.frame.fill_(wp.inf)
+    mjw.collision(m, d)
+
+    nacon = int(d.nacon.numpy()[0])
+    self.assertEqual(nacon, mjd.ncon)
+    np.testing.assert_allclose(d.contact.frame.numpy()[:nacon, 0], mjd.contact.frame[:, :3], atol=1e-4)
+
+  def test_mesh_mesh_vertex_on_edge_normal(self):
+    """Tests a cube vertex 1e-7 m from a cube edge, where GJK's triangle has no area."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+    <mujoco>
+      <asset>
+        <mesh name="cube" vertex="-0.05 -0.05 -0.05  -0.05 -0.05 0.05  -0.05 0.05 -0.05  -0.05 0.05 0.05
+                                  0.05 -0.05 -0.05  0.05 -0.05 0.05  0.05 0.05 -0.05  0.05 0.05 0.05"/>
+      </asset>
+      <worldbody>
+        <geom name="a" type="mesh" mesh="cube"/>
+        <body pos="-0.00202061407 0.0408849016 -0.1344662" quat="-0.601333795 0.14219407 -0.436070213 -0.654233355">
+          <freejoint/>
+          <geom name="b" type="mesh" mesh="cube"/>
+        </body>
+      </worldbody>
+      <sensor>
+        <normal geom1="a" geom2="b" cutoff="1"/>
+      </sensor>
+    </mujoco>
+    """
+    )
+    mjw.kinematics(m, d)
+    d.contact.frame.fill_(wp.inf)
+    mjw.collision(m, d)
+
+    self.assertEqual(int(d.nacon.numpy()[0]), 1)
+    normal = d.contact.frame.numpy()[0, 0]
+    self.assertAlmostEqual(np.linalg.norm(normal), 1.0, places=5)
+    # float32 resolves the direction of a 1e-7 m gap to a few degrees
+    self.assertGreater(np.dot(normal, mjd.sensordata[:3]), 0.99)
+
   def test_box_box_face_penetration_depth(self):
     """Tests box-box face-to-face penetration depth calculation."""
     _, mjd, m, d = test_data.fixture(
