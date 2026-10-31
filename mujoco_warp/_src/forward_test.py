@@ -235,6 +235,41 @@ class ForwardTest(parameterized.TestCase):
 
     _assert_eq(rk_step().numpy()[0], rk_step().numpy()[0], "qpos")
 
+  @absltest.skipIf(not util_pkg.check_version("mujoco>=3.17.1"), "Requires MuJoCo >= 3.17.1")
+  def test_rungekutta4_rotation(self):
+    """RK4 applies the Runge-Kutta-Munthe-Kaas correction to ball and free joint orientations."""
+    # fast rotation (timestep * |omega| ~ 0.5) so that the correction changes orientation
+    # by ~2e-3 per step, well above the float32 error of the comparison
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option integrator="RK4" timestep="0.01">
+          <flag contact="disable"/>
+        </option>
+        <worldbody>
+          <body>
+            <freejoint/>
+            <inertial pos="0 0 0" mass="1" diaginertia=".1 .2 .3"/>
+          </body>
+          <body pos="1 0 0">
+            <joint type="ball"/>
+            <inertial pos=".02 .01 .1" mass="1" diaginertia=".01 .01 .02"/>
+          </body>
+        </worldbody>
+        <keyframe>
+          <key qpos="0 0 0 1 0 0 0 1 0 0 0" qvel="0 0 0 20 -35 25 5 -10 40"/>
+        </keyframe>
+      </mujoco>
+      """,
+      keyframe=0,
+    )
+
+    mjw.rungekutta4(m, d)
+    mujoco.mj_RungeKutta(mjm, mjd, 4)
+
+    np.testing.assert_allclose(d.qpos.numpy()[0], mjd.qpos, atol=2e-5, rtol=0, err_msg="mismatch: qpos")
+    _assert_eq(d.qvel.numpy()[0], mjd.qvel, "qvel")
+
   @parameterized.product(
     jacobian=(mujoco.mjtJacobian.mjJAC_SPARSE, mujoco.mjtJacobian.mjJAC_DENSE),
     actuation=(0, DisableBit.ACTUATION),
