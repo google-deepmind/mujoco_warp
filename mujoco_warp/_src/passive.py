@@ -4403,7 +4403,7 @@ def passive(m: Model, d: Data):
 
   gravity_enabled = not (m.opt.disableflags & DisableBit.GRAVITY)
   d.qfrc_gravcomp.zero_()
-  if gravity_enabled:
+  if gravity_enabled and m.has_gravcomp:
     wp.launch(
       _gravity_force(det_atomics),
       dim=(d.nworld, m.nbody - 1, m.nv),
