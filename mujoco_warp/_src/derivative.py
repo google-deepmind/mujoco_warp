@@ -26,9 +26,8 @@ from mujoco_warp._src import util_misc
 from mujoco_warp._src.passive import build_efm_contact
 from mujoco_warp._src.passive import ellipsoid_max_moment
 from mujoco_warp._src.passive import geom_semiaxes
-from mujoco_warp._src.passive import rod_hinge
-from mujoco_warp._src.passive import rod_hinge_jacobian
-from mujoco_warp._src.passive import rod_hinge_weights
+from mujoco_warp._src.passive import rod_stencil
+from mujoco_warp._src.passive import rod_stencil_jacobian
 from mujoco_warp._src.support import next_act
 from mujoco_warp._src.types import EFM_CON_MAX_DOF
 from mujoco_warp._src.types import FLEX_INTERP_MAX_NODES
@@ -1454,10 +1453,12 @@ def _eff_diag_stiff(
   jnt_type: wp.array[int],
   jnt_qposadr: wp.array[int],
   jnt_dofadr: wp.array[int],
+  jnt_plasticadr: wp.array[int],
   jnt_stiffness: wp.array2d[float],
   jnt_stiffnesspoly: wp.array2d[wp.vec2],
   # Data in:
   qpos_in: wp.array2d[float],
+  plastic_in: wp.array2d[float],
   # Data out:
   efm_diag_out: wp.array2d[float],
 ):
@@ -1476,12 +1477,33 @@ def _eff_diag_stiff(
 
   qposid = jnt_qposadr[jntid]
   qpos_spring_id = worldid % qpos_spring.shape[0]
+  padr = jnt_plasticadr[jntid]
 
   if jnttype == JointType.FREE:
+    if padr >= 0:
+      ref_pos = wp.vec3(plastic_in[worldid, padr + 0], plastic_in[worldid, padr + 1], plastic_in[worldid, padr + 2])
+      ref = wp.quat(
+        plastic_in[worldid, padr + 3],
+        plastic_in[worldid, padr + 4],
+        plastic_in[worldid, padr + 5],
+        plastic_in[worldid, padr + 6],
+      )
+    else:
+      ref_pos = wp.vec3(
+        qpos_spring[qpos_spring_id, qposid + 0],
+        qpos_spring[qpos_spring_id, qposid + 1],
+        qpos_spring[qpos_spring_id, qposid + 2],
+      )
+      ref = wp.quat(
+        qpos_spring[qpos_spring_id, qposid + 3],
+        qpos_spring[qpos_spring_id, qposid + 4],
+        qpos_spring[qpos_spring_id, qposid + 5],
+        qpos_spring[qpos_spring_id, qposid + 6],
+      )
     dif = wp.vec3(
-      qpos_in[worldid, qposid + 0] - qpos_spring[qpos_spring_id, qposid + 0],
-      qpos_in[worldid, qposid + 1] - qpos_spring[qpos_spring_id, qposid + 1],
-      qpos_in[worldid, qposid + 2] - qpos_spring[qpos_spring_id, qposid + 2],
+      qpos_in[worldid, qposid + 0] - ref_pos[0],
+      qpos_in[worldid, qposid + 1] - ref_pos[1],
+      qpos_in[worldid, qposid + 2] - ref_pos[2],
     )
     r = wp.length(dif)
     k = wp.max(0.0, util_misc._poly_force_deriv(stiffness, spoly, r, 0))
@@ -1495,12 +1517,6 @@ def _eff_diag_stiff(
         qpos_in[worldid, qposid + 5],
         qpos_in[worldid, qposid + 6],
       )
-    )
-    ref = wp.quat(
-      qpos_spring[qpos_spring_id, qposid + 3],
-      qpos_spring[qpos_spring_id, qposid + 4],
-      qpos_spring[qpos_spring_id, qposid + 5],
-      qpos_spring[qpos_spring_id, qposid + 6],
     )
     dif_rot = math.quat_sub(rot, ref)
     r_rot = wp.length(dif_rot)
@@ -1517,12 +1533,20 @@ def _eff_diag_stiff(
         qpos_in[worldid, qposid + 3],
       )
     )
-    ref = wp.quat(
-      qpos_spring[qpos_spring_id, qposid + 0],
-      qpos_spring[qpos_spring_id, qposid + 1],
-      qpos_spring[qpos_spring_id, qposid + 2],
-      qpos_spring[qpos_spring_id, qposid + 3],
-    )
+    if padr >= 0:
+      ref = wp.quat(
+        plastic_in[worldid, padr + 0],
+        plastic_in[worldid, padr + 1],
+        plastic_in[worldid, padr + 2],
+        plastic_in[worldid, padr + 3],
+      )
+    else:
+      ref = wp.quat(
+        qpos_spring[qpos_spring_id, qposid + 0],
+        qpos_spring[qpos_spring_id, qposid + 1],
+        qpos_spring[qpos_spring_id, qposid + 2],
+        qpos_spring[qpos_spring_id, qposid + 3],
+      )
     dif_rot = math.quat_sub(rot, ref)
     r_rot = wp.length(dif_rot)
     k_rot = wp.max(0.0, util_misc._poly_force_deriv(stiffness, spoly, r_rot, 0))
@@ -1530,7 +1554,8 @@ def _eff_diag_stiff(
       efm_diag_out[worldid, dofid + i] = h * k_rot
 
   else:
-    x = qpos_in[worldid, qposid] - qpos_spring[qpos_spring_id, qposid]
+    ref_scalar = plastic_in[worldid, padr] if padr >= 0 else qpos_spring[qpos_spring_id, qposid]
+    x = qpos_in[worldid, qposid] - ref_scalar
     k = wp.max(0.0, util_misc._poly_force_deriv(stiffness, spoly, x, 0))
     efm_diag_out[worldid, dofid] = h * k
 
@@ -1594,6 +1619,7 @@ def _eff_tendon_shift(max_ten_J_rownnz: int, deterministic: bool = False):
     opt_timestep: wp.array[float],
     opt_disableflags: int,
     tendon_actuatorid: wp.array[int],
+    tendon_plasticadr: wp.array[int],
     ten_J_rownnz: wp.array[int],
     ten_J_rowadr: wp.array[int],
     ten_J_colind: wp.array[int],
@@ -1608,6 +1634,7 @@ def _eff_tendon_shift(max_ten_J_rownnz: int, deterministic: bool = False):
     actuator_dampingpoly: wp.array2d[wp.vec2],
     actuator_gear: wp.array2d[wp.spatial_vector],
     # Data in:
+    plastic_in: wp.array2d[float],
     ten_J_in: wp.array2d[float],
     ten_length_in: wp.array2d[float],
     ten_velocity_in: wp.array2d[float],
@@ -1621,9 +1648,14 @@ def _eff_tendon_shift(max_ten_J_rownnz: int, deterministic: bool = False):
     k = float(0.0)
     if not (opt_disableflags & DisableBit.SPRING):
       length = ten_length_in[worldid, tenid]
-      range_spring = tendon_lengthspring[worldid % tendon_lengthspring.shape[0], tenid]
-      lower = range_spring[0]
-      upper = range_spring[1]
+      padr = tendon_plasticadr[tenid]
+      if padr >= 0:
+        lower = plastic_in[worldid, padr + 0]
+        upper = plastic_in[worldid, padr + 1]
+      else:
+        range_spring = tendon_lengthspring[worldid % tendon_lengthspring.shape[0], tenid]
+        lower = range_spring[0]
+        upper = range_spring[1]
       x = float(0.0)
       if length > upper:
         x = length - upper
@@ -2477,22 +2509,15 @@ def _eff_flex_rod_stiff(deterministic: bool = False):
     if s1 == 0.0 and sd == 0.0:
       return
 
-    vbase = flex_vertadr[f]
-    verts = wp.vec3i(vbase + int(flex_bending[adr]), vbase + int(flex_bending[adr + 1]), vbase + int(flex_bending[adr + 2]))
-    ok, kb, A0, A1 = rod_hinge(
-      flexvert_xpos_in[worldid, verts[0]], flexvert_xpos_in[worldid, verts[1]], flexvert_xpos_in[worldid, verts[2]]
-    )
+    ok, verts, J0, J1, J2, J3, _, Wk, Wd = rod_stencil(flex_bending, flexvert_xpos_in, worldid, flex_vertadr[f], adr)
     if not ok:
       return
+    W = s1 * Wk + sd * Wd
+    nvert = 3 if verts[3] < 0 else 4
 
-    # W = s1 * Wk + s2 * damping * Wd, with Wk = 2k I
-    k = flex_bending[adr + 3]
-    _, Wd = rod_hinge_weights(kb, k)
-    W = (2.0 * s1 * k) * wp.identity(n=3, dtype=float) + sd * Wd
-
-    dofs = wp.vec3i(-1, -1, -1)
-    bodies = wp.vec3i(-1, -1, -1)
-    for i in range(3):
+    dofs = wp.vec4i(-1)
+    bodies = wp.vec4i(-1)
+    for i in range(nvert):
       bodyid = flex_vertbodyid[verts[i]]
       if bodyid >= 0:
         bi = body_weldid[bodyid]
@@ -2500,15 +2525,15 @@ def _eff_flex_rod_stiff(deterministic: bool = False):
         if body_dofnum[bi] == 3:
           dofs[i] = body_dofadr[bi]
 
-    for i in range(3):
+    for i in range(4):
       dof_i = dofs[i]
       if dof_i >= 0 and efm_K_rownnz[dof_i] > 0:
-        JiT_W = wp.transpose(rod_hinge_jacobian(A0, A1, i)) * W
+        JiT_W = wp.transpose(rod_stencil_jacobian(J0, J1, J2, J3, i)) * W
         R_bi_T = wp.transpose(xmat_in[worldid, bodies[i]])
-        for j in range(3):
+        for j in range(4):
           dof_j = dofs[j]
           if dof_j >= 0:
-            blkd = R_bi_T * (JiT_W * rod_hinge_jacobian(A0, A1, j)) * xmat_in[worldid, bodies[j]]
+            blkd = R_bi_T * (JiT_W * rod_stencil_jacobian(J0, J1, J2, J3, j)) * xmat_in[worldid, bodies[j]]
             for r in range(3):
               row = dof_i + r
               idx = _find_csr_col(efm_K_rowadr[row], efm_K_rownnz[row], dof_j, efm_K_colind)
@@ -2538,6 +2563,7 @@ def _eff_flex_interp_stiff(deterministic: bool = False):
     flex_nodeadr: wp.array[int],
     flex_stiffnessadr: wp.array[int],
     flex_nodebodyid: wp.array[int],
+    flex_node0: wp.array[wp.vec3],
     flex_stiffness: wp.array[float],
     flex_damping: wp.array[float],
     flex_centered: wp.array[bool],
@@ -2596,7 +2622,9 @@ def _eff_flex_interp_stiff(deterministic: bool = False):
     if shell_mode:
       cell_quat = face_quat_in[worldid, flex_faceadr[f] + ci]
     else:
-      cell_quat = support.compute_interp_cell_quat(flexnode_xpos_in, order_abs, ci, cj, ck, cy, cz, ny_g, nz_g, nstart, worldid)
+      cell_quat = support.compute_interp_cell_quat(
+        flex_node0, flexnode_xpos_in, order_abs, ci, cj, ck, cy, cz, ny_g, nz_g, nstart, worldid
+      )
     R = wp.quat_to_matrix(cell_quat)
     RT = wp.transpose(R)
 
@@ -2875,6 +2903,7 @@ def _eff_flex_interp_mul(check_skip: bool, is_shift: bool, nv: int, deterministi
     flex_nodeadr: wp.array[int],
     flex_stiffnessadr: wp.array[int],
     flex_nodebodyid: wp.array[int],
+    flex_node0: wp.array[wp.vec3],
     flex_stiffness: wp.array[float],
     flex_damping: wp.array[float],
     flex_faceadr: wp.array[int],
@@ -2944,7 +2973,9 @@ def _eff_flex_interp_mul(check_skip: bool, is_shift: bool, nv: int, deterministi
     if shell_mode:
       cell_quat = face_quat_in[worldid, flex_faceadr[f] + ci]
     else:
-      cell_quat = support.compute_interp_cell_quat(flexnode_xpos_in, order_abs, ci, cj, ck, cy, cz, ny_g, nz_g, nstart, worldid)
+      cell_quat = support.compute_interp_cell_quat(
+        flex_node0, flexnode_xpos_in, order_abs, ci, cj, ck, cy, cz, ny_g, nz_g, nstart, worldid
+      )
     cell_quat_inv = wp.quat(-cell_quat[0], -cell_quat[1], -cell_quat[2], cell_quat[3])
 
     op1 = order_abs + 1
@@ -3450,6 +3481,7 @@ def eff_build(m: Model, d: Data):
           m.flex_nodeadr,
           m.flex_stiffnessadr,
           m.flex_nodebodyid,
+          m.flex_node0,
           m.flex_stiffness,
           m.flex_damping,
           m.flex_centered,
@@ -3502,9 +3534,11 @@ def eff_shift(m: Model, d: Data):
       m.jnt_type,
       m.jnt_qposadr,
       m.jnt_dofadr,
+      m.jnt_plasticadr,
       m.jnt_stiffness,
       m.jnt_stiffnesspoly,
       d.qpos,
+      d.plastic,
     ],
     outputs=[d.efm_diag],
   )
@@ -3537,6 +3571,7 @@ def eff_shift(m: Model, d: Data):
       m.opt.timestep,
       m.opt.disableflags,
       m.tendon_actuatorid,
+      m.tendon_plasticadr,
       m.ten_J_rownnz,
       m.ten_J_rowadr,
       m.ten_J_colind,
@@ -3550,6 +3585,7 @@ def eff_shift(m: Model, d: Data):
       m.actuator_damping,
       m.actuator_dampingpoly,
       m.actuator_gear,
+      d.plastic,
       d.ten_J,
       d.ten_length,
       d.ten_velocity,
@@ -3579,6 +3615,7 @@ def eff_shift(m: Model, d: Data):
         m.flex_nodeadr,
         m.flex_stiffnessadr,
         m.flex_nodebodyid,
+        m.flex_node0,
         m.flex_stiffness,
         m.flex_damping,
         m.flex_faceadr,
@@ -3937,6 +3974,7 @@ def eff_mul_m(
           m.flex_nodeadr,
           m.flex_stiffnessadr,
           m.flex_nodebodyid,
+          m.flex_node0,
           m.flex_stiffness,
           m.flex_damping,
           m.flex_faceadr,
