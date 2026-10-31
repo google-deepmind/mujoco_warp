@@ -96,6 +96,96 @@ class PassiveTest(parameterized.TestCase):
     if nworld == 2 and not damper:
       self.assertFalse(np.allclose(d.qfrc_damper.numpy()[0], d.qfrc_damper.numpy()[1]))
 
+  @parameterized.parameters(1, 2)
+  def test_actuator_damping(self, nworld):
+    """Tests actuator damping contribution to joint and tendon damping."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option gravity="0 0 0"/>
+        <worldbody>
+          <body>
+            <joint name="j0" axis="0 1 0"/>
+            <geom type="capsule" size=".05" fromto="0 0 0 .3 0 0"/>
+            <body pos=".3 0 0">
+              <joint name="j1" axis="0 1 0"/>
+              <geom type="capsule" size=".05" fromto="0 0 0 .3 0 0"/>
+              <body pos=".3 0 0">
+                <joint name="j2" type="slide" axis="1 0 0"/>
+                <geom size=".05"/>
+              </body>
+            </body>
+          </body>
+        </worldbody>
+        <tendon>
+          <fixed name="t0">
+            <joint joint="j1" coef="1"/>
+            <joint joint="j2" coef="-.5"/>
+          </fixed>
+        </tendon>
+        <actuator>
+          <general joint="j0" gear="2" damping=".3 .1 .05"/>
+          <general joint="j0" gear="-3" damping=".1 0 0"/>
+          <general jointinparent="j1" gear="1.5" damping=".2 0 .1"/>
+          <general tendon="t0" gear="2" damping=".4 .2 0"/>
+        </actuator>
+        <keyframe>
+          <key qpos=".1 .2 .05" qvel=".3 -.4 .5"/>
+        </keyframe>
+      </mujoco>
+      """,
+      keyframe=0,
+      nworld=nworld,
+      batch_sizes={
+        "actuator_damping": nworld,
+        "actuator_dampingpoly": nworld,
+        "actuator_gear": nworld,
+      },
+    )
+
+    # actuator damping is not folded into joint and tendon damping
+    _assert_eq(m.dof_damping.numpy()[0], mjm.dof_damping, "dof_damping")
+    _assert_eq(m.dof_dampingpoly.numpy()[0], mjm.dof_dampingpoly, "dof_dampingpoly")
+    _assert_eq(m.tendon_damping.numpy()[0], mjm.tendon_damping, "tendon_damping")
+    _assert_eq(
+      m.tendon_dampingpoly.numpy()[0],
+      mjm.tendon_dampingpoly,
+      "tendon_dampingpoly",
+    )
+
+    damping = np.tile(mjm.actuator_damping, (nworld, 1))
+    poly = np.tile(mjm.actuator_dampingpoly, (nworld, 1, 1))
+    gear = np.tile(mjm.actuator_gear, (nworld, 1, 1))
+    if nworld == 2:
+      damping[1] *= 2.0
+      poly[1] *= 0.5
+      gear[1] *= 1.5
+    m.actuator_damping.assign(damping)
+    m.actuator_dampingpoly.assign(poly)
+    m.actuator_gear.assign(gear)
+    d.qfrc_damper.fill_(wp.inf)
+    d.qfrc_passive.fill_(wp.inf)
+
+    mjw.passive(m, d)
+
+    for world in range(nworld):
+      mjm.actuator_damping[:] = damping[world]
+      mjm.actuator_dampingpoly[:] = poly[world]
+      mjm.actuator_gear[:] = gear[world]
+      mujoco.mj_passive(mjm, mjd)
+      _assert_eq(
+        d.qfrc_damper.numpy()[world],
+        mjd.qfrc_damper,
+        f"qfrc_damper_world_{world}",
+      )
+      _assert_eq(
+        d.qfrc_passive.numpy()[world],
+        mjd.qfrc_passive,
+        f"qfrc_passive_world_{world}",
+      )
+    if nworld == 2:
+      self.assertFalse(np.allclose(d.qfrc_damper.numpy()[0], d.qfrc_damper.numpy()[1]))
+
   @parameterized.product(spring=(0, DisableBit.SPRING), damper=(0, DisableBit.DAMPER), gravity=(0, DisableBit.GRAVITY))
   def test_passive(self, spring, damper, gravity):
     """Tests passive."""
@@ -165,7 +255,8 @@ class PassiveTest(parameterized.TestCase):
         <option density="1.3" viscosity="0.07" wind="0.1 0.2 -0.05" integrator="{integrator}"/>
         <worldbody>
           <body>
-            <geom type="sphere" size="0.1 0.3 0.005" fluidshape="ellipsoid"/>
+            <geom size="0.1 0.3 0.005" fluidshape="ellipsoid"/>
+            <geom size="0.05" pos="0.15 -0.1 0.05" fluidshape="ellipsoid"/>
             <freejoint/>
           </body>
         </worldbody>
@@ -177,9 +268,13 @@ class PassiveTest(parameterized.TestCase):
       keyframe=0,
     )
 
-    max_err = 0.0
-    for _ in range(25):
+    with wp.ScopedCapture() as capture:
       mjw.step(m, d)
+
+    max_err = 0.0
+    for _ in range(20):
+      d.qfrc_fluid.fill_(wp.inf)
+      wp.capture_launch(capture.graph)
       mujoco.mj_step(mjm, mjd)
 
       warp_force = d.qfrc_fluid.numpy()[0]
@@ -453,8 +548,11 @@ class PassiveTest(parameterized.TestCase):
     e0 = d.energy.numpy()[0]
     total_energy = e0[0] + e0[1]
 
-    for _ in range(10):
+    with wp.ScopedCapture() as capture:
       mjw.step(m, d)
+
+    for _ in range(10):
+      wp.capture_launch(capture.graph)
       e = d.energy.numpy()[0]
       self.assertAlmostEqual(e[0] + e[1], total_energy, delta=0.005)
 
@@ -507,9 +605,12 @@ class PassiveTest(parameterized.TestCase):
     mjd.qvel[0] = 10.0
     wp.copy(d.qvel, wp.array([qvel], dtype=float))
 
+    with wp.ScopedCapture() as capture:
+      mjw.forward(m, d)
+
     mujoco.mj_forward(mjm, mjd)
     d.qfrc_fluid.fill_(wp.inf)
-    mjw.forward(m, d)
+    wp.capture_launch(capture.graph)
 
     warp_force = d.qfrc_fluid.numpy()[0]
     np.testing.assert_allclose(warp_force, mjd.qfrc_fluid, atol=1e-6, rtol=1e-5)
@@ -522,7 +623,7 @@ class PassiveTest(parameterized.TestCase):
       qvel[0] = v
       wp.copy(d.qvel, wp.array([qvel], dtype=float))
       d.qfrc_fluid.fill_(wp.inf)
-      mjw.forward(m, d)
+      wp.capture_launch(capture.graph)
       lift_coeff = d.qfrc_fluid.numpy()[0, 2] / (v * v)
       np.testing.assert_allclose(lift_coeff, ref_lift_coeff, atol=1e-12 * ref_lift_coeff, rtol=1e-5)
 
@@ -601,9 +702,11 @@ class PassiveTest(parameterized.TestCase):
       """
     )
     d.qfrc_adhesion.fill_(wp.inf)
+    with wp.ScopedCapture() as capture:
+      mjw.step(m, d)
     for _ in range(20):
       mujoco.mj_step(mjm, mjd)
-      mjw.step(m, d)
+      wp.capture_launch(capture.graph)
 
     np.testing.assert_allclose(d.qpos.numpy()[0], mjd.qpos, atol=1e-3)
     np.testing.assert_allclose(
@@ -699,6 +802,194 @@ class PassiveTest(parameterized.TestCase):
     nefc = mjd.nefc
     self.assertGreater(nefc, 0)
     _assert_eq(d.efc.aref.numpy()[0, :nefc], mjd.efc_aref[:nefc], "efc_aref")
+
+  @parameterized.parameters("Euler", "RK4", "implicitfast", "discrete")
+  # TODO(team): remove check_version once minimum mujoco version >= 3.17.1
+  @absltest.skipIf(
+    not util_pkg.check_version("mujoco>=3.17.1"),
+    "Cannot test unreleased XML `springyield` attribute with older MuJoCo versions.",
+  )
+  def test_spring_plastic(self, integrator):
+    """Verify plastic springs for joints and tendons match MuJoCo across integrators."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml=f"""
+      <mujoco>
+        <option gravity="0 0 0" timestep="0.005" integrator="{integrator}">
+          <flag energy="enable"/>
+        </option>
+        <worldbody>
+          <site name="s0"/>
+          <body name="b_slide">
+            <joint name="j_slide" type="slide" axis="1 0 0" stiffness="20" springref="0.1" springyield="0.05" damping="0.5"/>
+            <geom size="0.1" mass="1" contype="0" conaffinity="0"/>
+            <site name="s1"/>
+          </body>
+          <body name="b_hinge" pos="0 1 0">
+            <joint name="j_hinge" stiffness="15" springref="-0.1" springyield="0.08" damping="0.3"/>
+            <geom size="0.1" mass="1" contype="0" conaffinity="0"/>
+          </body>
+          <body name="b_ball" pos="0 2 0">
+            <joint name="j_ball" type="ball" stiffness="12" springyield="0.06" damping="0.2"/>
+            <geom size="0.1" mass="1" contype="0" conaffinity="0"/>
+          </body>
+        </worldbody>
+        <tendon>
+          <fixed name="t_fixed" stiffness="25" springlength="0 0.05" springyield="0.04" damping="0.2">
+            <joint joint="j_slide" coef="1.0"/>
+            <joint joint="j_hinge" coef="-0.5"/>
+          </fixed>
+          <spatial name="t_spatial" stiffness="30" springlength="0.05 0.1" springyield="0.03" damping="0.2">
+            <site site="s0"/>
+            <site site="s1"/>
+          </spatial>
+        </tendon>
+        <keyframe>
+          <key qpos="0.25 -0.3 0.98 0.15 0.12 -0.05"
+               qvel="0.4 -0.5 0.3 -0.2 0.1"
+               plastic="0.12 -0.12 1 0 0 0 0 0.06 0.05 0.11"/>
+        </keyframe>
+      </mujoco>
+      """,
+      keyframe=0,
+    )
+
+    self.assertGreater(m.nplastic, 0)
+    _assert_eq(d.plastic.numpy()[0], mjd.plastic, "initial_plastic")
+
+    for step_idx in range(15):
+      mujoco.mj_step(mjm, mjd)
+      mjw.step(m, d)
+      mujoco.mj_rnePostConstraint(mjm, mjd)
+      mjw.rne_postconstraint(m, d)
+      mujoco.mj_energyPos(mjm, mjd)
+      mjw.energy_pos(m, d)
+
+      _assert_eq(d.plastic.numpy()[0], mjd.plastic, f"plastic_step_{step_idx}")
+      _assert_eq(d.qfrc_spring.numpy()[0], mjd.qfrc_spring, f"qfrc_spring_step_{step_idx}")
+      _assert_eq(d.qfrc_passive.numpy()[0], mjd.qfrc_passive, f"qfrc_passive_step_{step_idx}")
+      _assert_eq(d.qpos.numpy()[0], mjd.qpos, f"qpos_step_{step_idx}")
+      _assert_eq(d.qvel.numpy()[0], mjd.qvel, f"qvel_step_{step_idx}")
+      _assert_eq(d.cfrc_ext.numpy()[0], mjd.cfrc_ext, f"cfrc_ext_step_{step_idx}")
+      _assert_eq(d.energy.numpy()[0, 0], mjd.energy[0], f"energy_pos_step_{step_idx}")
+
+    # Verify State.PLASTIC get_state / set_state and reset_data
+    if hasattr(mujoco.mjtState, "mjSTATE_PLASTIC"):
+      size = mujoco.mj_stateSize(mjm, mujoco.mjtState.mjSTATE_PLASTIC)
+      mj_state = np.zeros(size)
+      mujoco.mj_getState(mjm, mjd, mj_state, mujoco.mjtState.mjSTATE_PLASTIC)
+      mjw_state = wp.zeros((d.nworld, size), dtype=float)
+      mjw.get_state(m, d, mjw_state, mjw.State.PLASTIC)
+      _assert_eq(mjw_state.numpy()[0], mj_state, "get_state_plastic")
+
+      mujoco.mj_resetData(mjm, mjd)
+      mjw.reset_data(m, d)
+      _assert_eq(d.plastic.numpy()[0], mjd.plastic, "reset_plastic")
+
+      mujoco.mj_setState(mjm, mjd, mj_state, mujoco.mjtState.mjSTATE_PLASTIC)
+      mjw.set_state(m, d, mjw_state, mjw.State.PLASTIC)
+      _assert_eq(d.plastic.numpy()[0], mjd.plastic, "set_state_plastic")
+
+  @parameterized.parameters("Euler", "RK4", "discrete")
+  @absltest.skipIf(
+    not util_pkg.check_version("mujoco>=3.17.1"), "Cannot test unreleased XML `yield` attribute with older MuJoCo versions."
+  )
+  def test_flex_plastic(self, integrator):
+    """Verify plastic 2D and 3D non-interpolated flexes match MuJoCo across integrators."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml=f"""
+      <mujoco>
+        <option gravity="0 0 0" timestep="0.005" integrator="{integrator}"/>
+        <worldbody>
+          <flexcomp name="tet" type="direct" dim="3" mass="1"
+                    point="0 0 0  1 0 0  0 1 0  0 0 1" element="0 1 2 3">
+            <contact contype="0" conaffinity="0" selfcollide="none"/>
+            <elasticity young="500" poisson="0.25" damping="0.05" yield="0.04"/>
+            <pin id="0 1 2"/>
+          </flexcomp>
+          <flexcomp name="shell" type="direct" dim="2" mass="1"
+                    point="2 0 0  3 0 0  2.5 0.5 0  2.5 -0.5 0"
+                    element="0 1 2  0 3 1">
+            <contact contype="0" conaffinity="0" selfcollide="none"/>
+            <elasticity young="500" poisson="0.3" thickness="0.02" elastic2d="both" damping="0.05" yield="0.002"/>
+            <pin id="0 1 2"/>
+          </flexcomp>
+          <flexcomp name="shell_bend" type="direct" dim="2" mass="1"
+                    point="4 0 0  5 0 0  4.5 0.5 0  4.5 -0.5 0"
+                    element="0 1 2  0 3 1">
+            <contact contype="0" conaffinity="0" selfcollide="none"/>
+            <elasticity young="500" poisson="0.3" thickness="0.02" elastic2d="bend" damping="0.05" yield="0.002"/>
+            <pin id="0 1 2"/>
+          </flexcomp>
+        </worldbody>
+        <keyframe>
+          <key qpos="0.1 -0.15 0.25  0.05 -0.2 0.35  0.0 0.0 0.25"
+               qvel="0.2 -0.3 0.4  -0.1 0.25 0.5  0.0 0.0 0.3"/>
+        </keyframe>
+      </mujoco>
+      """,
+      keyframe=0,
+    )
+
+    self.assertEqual(m.nplastic, 22)  # 6 (tet) + 11 (shell stretch+bend) + 5 (shell_bend)
+    for step_idx in range(10):
+      mujoco.mj_step(mjm, mjd)
+      mjw.step(m, d)
+
+      _assert_eq(d.plastic.numpy()[0], mjd.plastic, f"plastic_step_{step_idx}")
+      _assert_eq(d.qfrc_spring.numpy()[0], mjd.qfrc_spring, f"qfrc_spring_step_{step_idx}")
+      _assert_eq(d.qfrc_passive.numpy()[0], mjd.qfrc_passive, f"qfrc_passive_step_{step_idx}")
+      _assert_eq(d.qpos.numpy()[0], mjd.qpos, f"qpos_step_{step_idx}")
+      _assert_eq(d.qvel.numpy()[0], mjd.qvel, f"qvel_step_{step_idx}")
+
+    mujoco.mj_resetData(mjm, mjd)
+    mjw.reset_data(m, d)
+    _assert_eq(d.plastic.numpy()[0], mjd.plastic, "reset_flex_plastic")
+
+  @parameterized.parameters("Euler", "RK4")
+  # TODO(team): remove check_version once minimum mujoco version >= 3.17.1
+  @absltest.skipIf(
+    not util_pkg.check_version("mujoco>=3.17.1"), "Cannot test unreleased XML `yield` attribute with older MuJoCo versions."
+  )
+  def test_flex_interp_plastic(self, integrator):
+    """Verify plastic 2D and 3D non-cubic interpolated flexes match MuJoCo across integrators."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml=f"""
+      <mujoco>
+        <option gravity="0 0 0" timestep="0.005" integrator="{integrator}"/>
+        <worldbody>
+          <flexcomp name="box" type="grid" dim="3" dof="trilinear"
+                    count="2 2 2" cellcount="1 1 1" spacing="2 1 0.5" mass="1">
+            <contact contype="0" conaffinity="0" selfcollide="none"/>
+            <elasticity young="500" poisson="0.25" damping="0.05" yield="0.04"/>
+            <pin id="0 1 2 3"/>
+          </flexcomp>
+          <flexcomp name="shell" type="grid" dim="3" pos="3 0 0" dof="trilinear"
+                    count="2 2 2" cellcount="1 1 1" spacing="2 1 0.5" mass="1">
+            <contact contype="0" conaffinity="0" selfcollide="none"/>
+            <elasticity young="500" poisson="0.3" thickness="0.02" elastic2d="both" damping="0.05" yield="0.04"/>
+            <pin id="0 1 2 3"/>
+          </flexcomp>
+        </worldbody>
+      </mujoco>
+      """,
+    )
+
+    self.assertEqual(m.nplastic, 24)  # 6 (3D cell) + 18 (6 boundary faces * 3)
+    rng = np.random.default_rng(42)
+    mjd.qpos[:] = rng.uniform(-0.25, 0.25, size=mjm.nq)
+    mjd.qvel[:] = rng.uniform(-0.3, 0.3, size=mjm.nv)
+    mujoco.mj_forward(mjm, mjd)
+    d = mjw.put_data(mjm, mjd)
+
+    for step_idx in range(10):
+      mujoco.mj_step(mjm, mjd)
+      mjw.step(m, d)
+
+      _assert_eq(d.plastic.numpy()[0], mjd.plastic, f"interp_plastic_step_{step_idx}")
+      _assert_eq(d.qfrc_spring.numpy()[0], mjd.qfrc_spring, f"interp_qfrc_spring_step_{step_idx}")
+      _assert_eq(d.qfrc_passive.numpy()[0], mjd.qfrc_passive, f"interp_qfrc_passive_step_{step_idx}")
+      _assert_eq(d.qpos.numpy()[0], mjd.qpos, f"interp_qpos_step_{step_idx}")
+      _assert_eq(d.qvel.numpy()[0], mjd.qvel, f"interp_qvel_step_{step_idx}")
 
 
 if __name__ == "__main__":

@@ -212,6 +212,7 @@ def _main(argv: Sequence[str]):
         f"  broadphase: {m.opt.broadphase.name} broadphase_filter: {m.opt.broadphase_filter.name}\n"
         f"  graph_conditional: {m.opt.graph_conditional}\n"
         f"  run_collision_detection: {m.opt.run_collision_detection}\n"
+        f"  run_qacc_smooth: {m.opt.run_qacc_smooth}\n"
         f"  contact_sensor_maxmatch: {m.opt.contact_sensor_maxmatch}"
       )
       # Colliders

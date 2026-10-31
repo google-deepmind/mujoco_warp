@@ -392,7 +392,7 @@ def _write_candidate(
   if dist >= MJ_MAXVAL:
     return
 
-  candid = wp.atomic_add(ncand_out, 0, 1)
+  candid = wp.atomic_add(ncand_out, 0, 1)  # kernel_analyzer: ignore[atomic]
   if candid >= max_candidates:
     if warn_overflow:
       wp.printf(
@@ -496,7 +496,7 @@ def _collide_geom_capsule_detect(
     g_half_len = size_val[1]
     g_axis = wp.vec3(rot[0, 2], rot[1, 2], rot[2, 2])
     dists, poss, nrms = collision_primitive_core.capsule_capsule(
-      pos, g_axis, g_radius, g_half_len, cap_pos, cap_axis, cap_radius, cap_half_len, margin
+      pos, g_axis, g_radius, g_half_len, cap_pos, cap_axis, cap_radius, cap_half_len
     )
   elif gtype == int(GeomType.BOX):
     dists, poss, box_nrms = collision_primitive_core.capsule_box(
@@ -1318,7 +1318,7 @@ def _flex_sap_sweep(is_self: bool, warn_overflow: int, enable_sat: bool = True):
           if _triangle_sat_separated(p0, p1, p2, q0, q1, q2, cutoff_sq):
             continue
 
-      idx = wp.atomic_add(ncollision_out, 0, 1)
+      idx = wp.atomic_add(ncollision_out, 0, 1)  # kernel_analyzer: ignore[atomic]
       if idx >= max_pairs:
         if wp.static(bool(warn_overflow & OverflowType.BROADPHASE)):
           wp.printf(
@@ -1443,7 +1443,7 @@ def _flex_narrowphase(warn_overflow: int):
       cap2_half_len = 0.5 * wp.length(p2_1 - p2_0)
 
       contact_dist, contact_pos, contact_normal = collision_primitive_core.capsule_capsule(
-        cap1_pos, cap1_axis, radius1, cap1_half_len, cap2_pos, cap2_axis, radius2, cap2_half_len, mix_margin
+        cap1_pos, cap1_axis, radius1, cap1_half_len, cap2_pos, cap2_axis, radius2, cap2_half_len
       )
 
       for c in range(2):
@@ -1841,7 +1841,7 @@ def _flex_narrowphase_elem_detect(warn_overflow: int):
         continue
 
       if gtype == int(GeomType.MESH):
-        ccdid = wp.atomic_add(nccd, 0, 1)
+        ccdid = wp.atomic_add(nccd, 0, 1)  # kernel_analyzer: ignore[atomic]
         if ccdid >= naccdmax_in:
           if wp.static(bool(warn_overflow & OverflowType.CCD)):
             wp.printf(
@@ -1973,7 +1973,7 @@ def _flex_narrowphase_elem_detect(warn_overflow: int):
         )
 
       else:
-        ccdid = wp.atomic_add(nccd, 0, 1)
+        ccdid = wp.atomic_add(nccd, 0, 1)  # kernel_analyzer: ignore[atomic]
         if ccdid >= naccdmax_in:
           if wp.static(bool(warn_overflow & OverflowType.CCD)):
             wp.printf(
@@ -2261,6 +2261,7 @@ def _write_filtered_contacts(warn_overflow: int):
     contact_flex_out: wp.array[wp.vec2i],
     contact_elem_out: wp.array[wp.vec2i],
     contact_vert_out: wp.array[wp.vec2i],
+    contact_efc_address_out: wp.array2d[int],
     contact_worldid_out: wp.array[int],
     contact_type_out: wp.array[int],
     contact_geomcollisionid_out: wp.array[int],
@@ -2344,7 +2345,7 @@ def _write_filtered_contacts(warn_overflow: int):
     if cand_dist[i] >= margin:
       return
 
-    id_ = wp.atomic_add(nacon_out, 0, 1)
+    id_ = wp.atomic_add(nacon_out, 0, 1)  # kernel_analyzer: ignore[atomic]
     if id_ >= naconmax_in:
       if wp.static(bool(warn_overflow & OverflowType.NARROWPHASE)):
         wp.printf(
@@ -2371,6 +2372,8 @@ def _write_filtered_contacts(warn_overflow: int):
     contact_flex_out[id_] = cand_flex[i]
     contact_elem_out[id_] = cand_elem[i]
     contact_vert_out[id_] = cand_vert[i]
+    for j in range(contact_efc_address_out.shape[1]):
+      contact_efc_address_out[id_, j] = -1
     contact_worldid_out[id_] = cand_worldid[i]
     f0 = cand_flex[i][0]
     f1 = cand_flex[i][1]
@@ -2626,7 +2629,7 @@ def _parallel_fps_resolve_seed(
     selected_cidx_out[g] = -1
     return
 
-  wp.atomic_add(fps_groups_active_out, 0, 1)
+  wp.atomic_add(fps_groups_active_out, 0, 1)  # kernel_analyzer: ignore[atomic]
 
   min_d = float(1e10)
   sel_cidx = int(-1)
@@ -2747,7 +2750,7 @@ def _parallel_fps_resolve_max(
     fps_min_dist_out[sel_cidx] = -1e10
   else:
     selected_cidx_out[g] = -1
-    wp.atomic_sub(fps_groups_active_out, 0, 1)
+    wp.atomic_sub(fps_groups_active_out, 0, 1)  # kernel_analyzer: ignore[atomic]
 
 
 @wp.kernel
@@ -3221,6 +3224,7 @@ def _filter_and_write_contacts(
       d.contact.flex,
       d.contact.elem,
       d.contact.vert,
+      d.contact.efc_address,
       d.contact.worldid,
       d.contact.type,
       d.contact.geomcollisionid,
