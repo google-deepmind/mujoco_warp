@@ -39,6 +39,159 @@ def _assert_eq(a, b, name):
   np.testing.assert_allclose(a, b, err_msg=err_msg, atol=tol, rtol=tol)
 
 
+# branching trees, a static subtree and a massless body, placed at an offset from the origin
+_TREE_XML = """
+<mujoco>
+  <worldbody>
+    <body pos="{offset} {offset} 1">
+      <freejoint/>
+      <geom size=".1"/>
+      <body pos=".2 0 0">
+        <joint axis="1 0 0"/>
+        <geom size=".05"/>
+        <body pos="0 0 -.3">
+          <joint axis="0 1 0"/>
+          <geom size=".05"/>
+          <body pos="0 0 -.3">
+            <joint type="ball"/>
+            <geom size=".05"/>
+          </body>
+        </body>
+      </body>
+      <body pos="-.2 0 0">
+        <body pos="0 0 .1">
+          <joint axis="0 0 1"/>
+          <geom size=".05"/>
+          <body pos=".3 0 0">
+            <joint type="slide" axis="1 0 0"/>
+            <geom size=".05"/>
+          </body>
+        </body>
+        <body pos="0 0 -.1">
+          <joint axis="0 1 0"/>
+          <geom size=".05"/>
+        </body>
+      </body>
+    </body>
+    <body pos="{offset} 0 0">
+      <geom size=".1"/>
+      <body pos="0 0 .5">
+        <joint axis="0 1 0"/>
+        <geom size=".05"/>
+        <body pos="0 0 .4">
+          <joint axis="1 0 0"/>
+          <geom size=".05"/>
+        </body>
+      </body>
+    </body>
+  </worldbody>
+</mujoco>
+"""
+
+_TREE_MODELS = ("pendula", "tree", "tree_far")
+
+
+def _tree_cases(*params):
+  """Named cases for each model in _TREE_MODELS, crossed with (name, value) params."""
+  if not params:
+    return [(f"_{model}", model) for model in _TREE_MODELS]
+  return [(f"_{model}_{name}", value, model) for model in _TREE_MODELS for name, value in params]
+
+
+def _tree_fixture(model, **kwargs):
+  if model == "pendula":
+    return test_data.fixture("pendula.xml", **kwargs)
+  offset = 100.0 if model == "tree_far" else 0.0
+  return test_data.fixture(xml=_TREE_XML.format(offset=offset), qpos_noise=0.3, qvel_noise=1.0, **kwargs)
+
+
+def _sidesite_wrap_xml(geomtype: str) -> str:
+  """Returns a model with sidesite wrapping tendons, with and without sidesites."""
+  # wrap geom in a rotated frame with radius 0.5, and unrotated geoms with radius 0.5 and 1
+  pos = np.array([0.1, -0.2, 0.3])
+  quat = np.array([0.8, 0.2, -0.3, 0.4]) / np.linalg.norm([0.8, 0.2, -0.3, 0.4])
+  mat = np.zeros(9)
+  mujoco.mju_quat2Mat(mat, quat)
+  mat = mat.reshape(3, 3)
+
+  # local endpoints and sidesite, geom name, tendon name
+  cases = []
+
+  # wraps constructed from their arcs (start angle a, wrap angle th, direction), including arcs
+  # longer than pi, with the sidesite at the arc midpoint and the segment cutting the circle
+  r = 0.5
+  for a in (0.1, 1.3, 2.9, 4.4, 5.8):
+    for th in (0.4, 1.5, 2.8, 3.5, 4.5, 5.5):
+      for direction in (1, -1):
+        for len0, len1 in ((0.1, 0.15), (0.6, 0.8), (2.0, 1.7), (0.6, 1.7)):
+          b = a + direction * th
+          p0 = r * np.array([np.cos(a), np.sin(a)]) + len0 * direction * np.array([np.sin(a), -np.cos(a)])
+          p1 = r * np.array([np.cos(b), np.sin(b)]) - len1 * direction * np.array([np.sin(b), -np.cos(b)])
+
+          # keep segments that cut the circle with a margin
+          dif = p1 - p0
+          s = np.clip(-np.dot(dif, p0) / np.dot(dif, dif), 0, 1)
+          if np.linalg.norm(p0 + s * dif) > 0.9 * r:
+            continue
+
+          m = a + direction * th / 2
+          cases.append(([*p0, 0], [*p1, 0], [2 * r * np.cos(m), 2 * r * np.sin(m), 0], "rotated", ""))
+
+  # sidesite more than 90 degrees from the segment: no wrap
+  cases.append(([-4.17, -0.44, 0], [-1.13, -1.53, 0], [-0.79 * 1.5, 0.61 * 1.5, 0], "r1", "nowrap"))
+
+  # segment through the center wraps on the side of the sidesite
+  cases.append(([0, 2, 0], [0, -1, 0], [1.5, 0, 0], "r05", ""))
+  cases.append(([0, 2, 0], [0, -1, 0], [-1.5, 0, 0], "r05", ""))
+
+  # wraps close to 2 * pi
+  cases.append(([1.001, -1e-2, 0], [1.001, 1e-2, 0], [-2, 0, 0], "r1", ""))
+  cases.append(([1, -1e-7, 0], [1, 1e-7, 0], [-2, 0, 0], "r1", "fullwrap"))
+
+  sites, tendons = [], []
+  for i, (p0, p1, side, geom, name) in enumerate(cases):
+    p0, p1, side = np.array(p0, dtype=float), np.array(p1, dtype=float), np.array(side, dtype=float)
+
+    # cylinder: endpoints at different heights
+    if geomtype == "cylinder":
+      p0[2], p1[2] = 0.3, -0.2
+
+    if geom == "rotated":
+      p0, p1, side = (mat @ p for p in (p0, p1, side))
+      p0, p1, side = p0 + pos, p1 + pos, side + pos
+
+    for site, p in (("a", p0), ("b", p1), ("side", side)):
+      sites.append(f'<site name="{site}{i}" pos="{p[0]:.17g} {p[1]:.17g} {p[2]:.17g}"/>')
+    # no sidesite: skip endpoints on the circle, whose wrap is below float32 resolution
+    sidesites = [f'sidesite="side{i}"'] + ([] if name == "fullwrap" else [""])
+    for sidesite in sidesites:
+      tendon_name = f'name="{name}"' if name and sidesite else ""
+      path = f'<site site="a{i}"/><geom geom="{geom}" {sidesite}/><site site="b{i}"/>'
+      tendons.append(f"<spatial {tendon_name}>{path}</spatial>")
+
+  pos_str = " ".join(f"{x:.17g}" for x in pos)
+  quat_str = " ".join(f"{x:.17g}" for x in quat)
+  sites_str = "\n".join(sites)
+  tendons_str = "\n".join(tendons)
+  return f"""
+    <mujoco>
+      <worldbody>
+        <geom name="rotated" type="{geomtype}" size="0.5 1" pos="{pos_str}" quat="{quat_str}"/>
+        <geom name="r05" type="{geomtype}" size="0.5 1"/>
+        <geom name="r1" type="{geomtype}" size="1 1"/>
+        {sites_str}
+        <body>
+          <joint type="slide"/>
+          <geom size="0.1" contype="0" conaffinity="0"/>
+        </body>
+      </worldbody>
+      <tendon>
+        {tendons_str}
+      </tendon>
+    </mujoco>
+  """
+
+
 class SmoothTest(parameterized.TestCase):
   def test_mocap_kinematics(self):
     """Tests that mocap bodies and child bodies are correctly updated after mocap_pos changes.
@@ -157,9 +310,10 @@ class SmoothTest(parameterized.TestCase):
       _assert_eq(d.mocap_pos.numpy()[i], mjd.mocap_pos, "mocap_pos")
       _assert_eq(d.mocap_quat.numpy()[i], mjd.mocap_quat, "mocap_quat")
 
-  def test_com_pos(self):
+  @parameterized.named_parameters(_tree_cases())
+  def test_com_pos(self, model):
     """Tests com_pos."""
-    _, mjd, m, d = test_data.fixture("pendula.xml")
+    _, mjd, m, d = _tree_fixture(model)
 
     for arr in (d.subtree_com, d.cinert, d.cdof):
       arr.fill_(wp.inf)
@@ -232,10 +386,12 @@ class SmoothTest(parameterized.TestCase):
     _assert_eq(d.light_xpos.numpy()[0], mjd.light_xpos, "light_xpos")
     _assert_eq(d.light_xdir.numpy()[0], mjd.light_xdir, "light_xdir")
 
-  @parameterized.parameters(mujoco.mjtJacobian.mjJAC_SPARSE, mujoco.mjtJacobian.mjJAC_DENSE)
-  def test_crb(self, jacobian):
+  @parameterized.named_parameters(
+    _tree_cases(("sparse", mujoco.mjtJacobian.mjJAC_SPARSE), ("dense", mujoco.mjtJacobian.mjJAC_DENSE))
+  )
+  def test_crb(self, jacobian, model):
     """Tests crb."""
-    mjm, mjd, m, d = test_data.fixture("pendula.xml", overrides={"opt.jacobian": jacobian})
+    mjm, mjd, m, d = _tree_fixture(model, overrides={"opt.jacobian": jacobian})
 
     d.crb.fill_(wp.inf)
 
@@ -282,20 +438,20 @@ class SmoothTest(parameterized.TestCase):
     mjw.solve_m(m, d, d.qacc_smooth, d.qfrc_smooth)
     _assert_eq(d.qacc_smooth.numpy()[0], qacc_smooth[0], "qacc_smooth")
 
-  @parameterized.parameters(0, DisableBit.GRAVITY)
-  def test_rne(self, gravity):
+  @parameterized.named_parameters(_tree_cases(("gravity", 0), ("nogravity", DisableBit.GRAVITY)))
+  def test_rne(self, gravity, model):
     """Tests rne."""
-    _, mjd, m, d = test_data.fixture("pendula.xml", overrides={"opt.disableflags": DisableBit.CONTACT | gravity})
+    _, mjd, m, d = _tree_fixture(model, overrides={"opt.disableflags": DisableBit.CONTACT | gravity})
 
     d.qfrc_bias.fill_(wp.inf)
 
     mjw.rne(m, d)
     _assert_eq(d.qfrc_bias.numpy()[0], mjd.qfrc_bias, "qfrc_bias")
 
-  @parameterized.parameters(0, DisableBit.GRAVITY)
-  def test_rne_postconstraint(self, gravity):
+  @parameterized.named_parameters(_tree_cases(("gravity", 0), ("nogravity", DisableBit.GRAVITY)))
+  def test_rne_postconstraint(self, gravity, model):
     """Tests rne_postconstraint."""
-    mjm, mjd, m, d = test_data.fixture("pendula.xml", overrides={"opt.disableflags": DisableBit.CONTACT | gravity})
+    mjm, mjd, m, d = _tree_fixture(model, overrides={"opt.disableflags": DisableBit.CONTACT | gravity})
 
     mjd.xfrc_applied = np.random.uniform(low=-0.01, high=0.01, size=mjd.xfrc_applied.shape)
     d.xfrc_applied = wp.array(np.expand_dims(mjd.xfrc_applied, axis=0), dtype=wp.spatial_vector)
@@ -1079,9 +1235,10 @@ class SmoothTest(parameterized.TestCase):
     )
     _assert_eq(wp_actuator_moment, actuator_moment, "actuator_moment")
 
-  def test_subtree_vel(self):
+  @parameterized.named_parameters(_tree_cases())
+  def test_subtree_vel(self, model):
     """Tests subtree_vel."""
-    mjm, mjd, m, d = test_data.fixture("pendula.xml")
+    mjm, mjd, m, d = _tree_fixture(model)
 
     for arr in (d.subtree_linvel, d.subtree_angmom):
       arr.fill_(wp.inf)
@@ -1281,6 +1438,37 @@ class SmoothTest(parameterized.TestCase):
       self.assertFalse(np.allclose(d.ten_length.numpy()[0], d.ten_length.numpy()[1]))
       self.assertFalse(np.allclose(d.ten_J.numpy()[0], d.ten_J.numpy()[1]))
       self.assertFalse(np.allclose(d.wrap_xpos.numpy()[0], d.wrap_xpos.numpy()[1]))
+
+  # TODO(team): remove version check once mujoco >= 3.17.1 is required.
+  @absltest.skipIf(not util_pkg.check_version("mujoco>=3.17.1"), "Requires MuJoCo >= 3.17.1")
+  @parameterized.parameters("sphere", "cylinder")
+  def test_tendon_wrap_sidesite(self, geomtype):
+    """Tests that the sidesite selects the wrap homotopy class as in MuJoCo."""
+    mjm, mjd, m, d = test_data.fixture(xml=_sidesite_wrap_xml(geomtype))
+
+    for arr in (d.ten_length, d.ten_J, d.wrap_xpos):
+      arr.fill_(wp.inf)
+    for arr in (d.wrap_obj, d.ten_wrapnum, d.ten_wrapadr):
+      arr.fill_(-1)
+
+    mjw.tendon(m, d)
+
+    _assert_eq(d.ten_length.numpy()[0], mjd.ten_length, "ten_length")
+    _assert_eq(d.ten_J.numpy()[0], mjd.ten_J, "ten_J")
+    _assert_eq(d.wrap_xpos.numpy()[0], mjd.wrap_xpos, "wrap_xpos")
+    _assert_eq(d.wrap_obj.numpy()[0], mjd.wrap_obj, "wrap_obj")
+    _assert_eq(d.ten_wrapnum.numpy()[0], mjd.ten_wrapnum, "ten_wrapnum")
+    _assert_eq(d.ten_wrapadr.numpy()[0], mjd.ten_wrapadr, "ten_wrapadr")
+
+    # most tendons wrap, including wraps longer than pi
+    self.assertGreater(np.sum(mjd.ten_wrapnum == 4), mjm.ntendon // 2)
+
+    # sidesite more than 90 degrees from the segment: no wrap
+    self.assertEqual(mjd.ten_wrapnum[mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_TENDON, "nowrap")], 2)
+
+    # sidesite on the far side: wrap close to 2 * pi
+    tendon = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_TENDON, "fullwrap")
+    self.assertGreater(d.ten_length.numpy()[0, tendon], 2 * np.pi - 1e-3)
 
   @parameterized.parameters(mujoco.mjtJacobian.mjJAC_SPARSE, mujoco.mjtJacobian.mjJAC_DENSE)
   def test_factor_solve_i(self, jacobian):

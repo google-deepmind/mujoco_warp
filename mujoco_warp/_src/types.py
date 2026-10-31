@@ -31,7 +31,48 @@ MJ_MAXCONPAIR = mujoco.mjMAXCONPAIR
 MJ_MINMU = mujoco.mjMINMU  # minimum friction
 MJ_MINAWAKE = mujoco.mjMINAWAKE  # minimum number of timesteps before sleeping
 FLEX_STIFFNESS_3D = 24 if util_pkg.check_version("mujoco>=3.14.1.dev989511280") else 21
-ROD_HINGE_SIZE = 4  # 1D rod hinge data in flex_bending: [v_prev, v, v_next, k]
+
+
+# TODO(team): Remove dynamic version probe once minimum MuJoCo version
+# supports curved rod references and set ROD_HINGE_SIZE = 10 directly.
+def _rod_hinge_size() -> int:
+  """Size of a 1D rod bending record in flex_bending of the installed MuJoCo.
+
+  Records have 10 values since MuJoCo supports curved rod references: a single hinge
+  [v0, v1, v2, -1, k, 0, kb0, 0, 0, 0] or a hinge pair [v0, v1, v2, v3, w0, w1, om0 (4)], see
+  passive.rod_stencil; before, they were [v0, v1, v2, k]. The size is read from a compiled rod,
+  because the first MuJoCo build with the larger record is not known when this code is written.
+
+  Returns:
+    The record size, 4 or 10.
+
+  Raises:
+    NotImplementedError: If the installed MuJoCo uses another record size.
+  """
+  xml = """
+  <mujoco>
+    <worldbody>
+      <flexcomp name="rod" type="grid" count="3 1 1" spacing="1 1 1" radius="0.1" dim="1">
+        <elasticity young="1"/>
+      </flexcomp>
+    </worldbody>
+  </mujoco>
+  """
+  try:
+    nflexbending = mujoco.MjModel.from_xml_string(xml).nflexbending
+  except ValueError:  # MuJoCo without 1D flex elasticity
+    return 4
+  if not isinstance(nflexbending, int):
+    return 4
+  # one hinge: nflexbending = 1 + record size, or 0 if 1D young is ignored
+  size = nflexbending - 1 if nflexbending else 4
+  if size not in (4, 10):
+    raise NotImplementedError(f"unsupported 1D rod record size {size} in flex_bending")
+  return size
+
+
+ROD_HINGE_SIZE = _rod_hinge_size()
+
 # maximum size (by number of edges) of an horizon in EPA algorithm
 MJ_MAX_EPAHORIZON = 24
 # maximum average number of trianglarfaces EPA can insert at each iteration
@@ -751,6 +792,32 @@ class RayDataField(enum.IntEnum):
   DEPTH = mujoco.mjtRayDataField.mjRAYDATA_DEPTH
 
 
+class ConDataField(enum.IntEnum):
+  """Contact data fields for contact sensors.
+
+  Attributes:
+    FOUND: number of matching contacts found
+    FORCE: contact force in contact frame
+    TORQUE: contact torque in contact frame
+    DIST: penetration distance
+    POS: contact position
+    NORMAL: contact frame normal
+    TANGENT: contact frame first tangent
+    LINVEL: relative linear velocity in contact frame
+    ANGVEL: relative angular velocity in contact frame
+  """
+
+  FOUND = mujoco.mjtConDataField.mjCONDATA_FOUND
+  FORCE = mujoco.mjtConDataField.mjCONDATA_FORCE
+  TORQUE = mujoco.mjtConDataField.mjCONDATA_TORQUE
+  DIST = mujoco.mjtConDataField.mjCONDATA_DIST
+  POS = mujoco.mjtConDataField.mjCONDATA_POS
+  NORMAL = mujoco.mjtConDataField.mjCONDATA_NORMAL
+  TANGENT = mujoco.mjtConDataField.mjCONDATA_TANGENT
+  LINVEL = mujoco.mjtConDataField.mjCONDATA_LINVEL
+  ANGVEL = mujoco.mjtConDataField.mjCONDATA_ANGVEL
+
+
 class ObjType(enum.IntEnum):
   """Type of object.
 
@@ -798,6 +865,19 @@ class EqType(enum.IntEnum):
   # unsupported: DISTANCE
 
 
+class TendonType(enum.IntEnum):
+  """Type of tendon.
+
+  Attributes:
+    FIXED: linear combination of joint coordinates
+    SPATIAL: path through sites, around geoms
+  """
+
+  # TODO(team): use mujoco.mjtTendon when mujoco>=3.17.1 is required
+  FIXED = 0
+  SPATIAL = 1
+
+
 class WrapType(enum.IntEnum):
   """Type of tendon wrapping object.
 
@@ -827,6 +907,7 @@ class State(enum.IntEnum):
     QVEL: velocity
     ACT: actuator activation
     HISTORY: delay/interval history buffers
+    PLASTIC: spring plastic references
     WARMSTART: acceleration used for warmstart
     CTRL: control
     QFRC_APPLIED: applied generalized force
@@ -835,7 +916,7 @@ class State(enum.IntEnum):
     MOCAP_POS: positions of mocap bodies
     MOCAP_QUAT: orientations of mocap bodies
     NSTATE: number of state elements
-    PHYSICS: TIME | QPOS | QVEL | ACT | HISTORY
+    PHYSICS: TIME | QPOS | QVEL | ACT | HISTORY | PLASTIC
     FULLPHYSICS: TIME | PHYSICS | PLUGIN
     USER: CTRL | QFRC_APPLIED | XFRC_APPLIED | EQ_ACTIVE | MOCAP_POS | MOCAP_QUAT | USERDATA
     INTEGRATION: FULLPHYSICS | USER | WARMSTART
@@ -853,13 +934,14 @@ class State(enum.IntEnum):
   EQ_ACTIVE = mujoco.mjtState.mjSTATE_EQ_ACTIVE
   MOCAP_POS = mujoco.mjtState.mjSTATE_MOCAP_POS
   MOCAP_QUAT = mujoco.mjtState.mjSTATE_MOCAP_QUAT
+  USERDATA = mujoco.mjtState.mjSTATE_USERDATA
+  # unsupported: PLUGIN
+  PLASTIC = getattr(mujoco.mjtState, "mjSTATE_PLASTIC", 1 << 14)
   NSTATE = mujoco.mjtState.mjNSTATE
-  PHYSICS = mujoco.mjtState.mjSTATE_PHYSICS  # includes HISTORY
+  PHYSICS = mujoco.mjtState.mjSTATE_PHYSICS  # includes HISTORY and PLASTIC
   FULLPHYSICS = mujoco.mjtState.mjSTATE_FULLPHYSICS
   USER = mujoco.mjtState.mjSTATE_USER
   INTEGRATION = mujoco.mjtState.mjSTATE_INTEGRATION
-  USERDATA = mujoco.mjtState.mjSTATE_USERDATA
-  # unsupported: PLUGIN
 
 
 class SetConstGroup(enum.IntFlag):
@@ -1214,6 +1296,7 @@ class Model:
     nkey: number of keyframes
     nmocap: number of mocap bodies
     nplugin: number of plugin instances
+    nplastic: number of plastic reference elements
     nJmom: number of non-zeros in actuator_moment
     npolygonmax: maximum number of verts per polygon
     nmeshdegmax: maximum number of polygons per vert
@@ -1254,6 +1337,7 @@ class Model:
     jnt_dofadr: start addr in 'qvel' for joint's data        (njnt,)
     jnt_bodyid: id of joint's body                           (njnt,)
     jnt_actuatorid: actuator contributing damping/armature   (njnt,)
+    jnt_plasticadr: start addr in plastic state (-1: none)   (njnt,)
     jnt_limited: does joint have limits                      (njnt,)
     jnt_actfrclimited: does joint have actuator force limits (njnt,)
     jnt_actgravcomp: is gravcomp force applied via actuators (njnt,)
@@ -1263,6 +1347,7 @@ class Model:
     jnt_axis: local joint axis                               (*, njnt, 3)
     jnt_stiffness: stiffness coefficient                     (*, njnt)
     jnt_stiffnesspoly: high-order stiffness coefficients     (*, njnt, 2)
+    jnt_springyield: plastic yield threshold (0: elastic)    (*, njnt)
     jnt_range: joint limits                                  (*, njnt, 2)
     jnt_actfrcrange: range of total actuator force           (*, njnt, 2)
     jnt_margin: min distance for limit detection             (*, njnt)
@@ -1370,6 +1455,7 @@ class Model:
     flex_stiffnessadr: stiffness matrix address              (nflex,)
     flex_elemedgeadr: first element edge id address          (nflex,)
     flex_bendingadr: first bending data address              (nflex,)
+    flex_plasticadr: start addr in plastic state (-1: none)  (nflex,)
     flex_shellnum: number of shells                          (nflex,)
     flex_shelldataadr: first shell data address              (nflex,)
     flex_nodebodyid: node body ids                           (nflexnode,)
@@ -1397,9 +1483,10 @@ class Model:
     efm0_L_colind: column indices in zero-mass flex factor   (nefm0L,)
     efm0_L: zero-mass flex Cholesky factor                   (nefm0L,)
     flex_damping: Rayleigh's damping coefficient             (nflex,)
+    flex_yield: plastic yield strain threshold (0: elastic)  (nflex,)
     flex_edgestiffness: edge stiffness                       (nflex,)
     flex_edgedamping: edge damping                           (nflex,)
-    flex_edgeequality: edge equality type (0:none,1:edge,2:vert,3:strain) (nflex,)
+    flex_edgeequality: edge equality type (0:none,1:edge,3:strain) (nflex,)
     flex_rigid: flex is rigid (all vertices on same body)    (nflex,)
     flexedge_rigid: edge is rigid (e.g. vertices welded to same body) (nflexedge,)
     flex_centered: flex vertices are centered at body origin (nflex,)
@@ -1459,9 +1546,11 @@ class Model:
     eq_solref: constraint solver reference                   (*, neq, mjNREF)
     eq_solimp: constraint solver impedance                   (*, neq, mjNIMP)
     eq_data: numeric data for constraint                     (*, neq, mjNEQDATA)
+    tendon_type: type of tendon (TendonType)                 (ntendon,)
     tendon_adr: address of first object in tendon's path     (ntendon,)
     tendon_num: number of objects in tendon's path           (ntendon,)
     tendon_actuatorid: actuator adding damping/armature      (ntendon,)
+    tendon_plasticadr: start addr in plastic state (-1: none) (ntendon,)
     ten_J_rownnz: number of non-zeros in each tendon row     (ntendon,)
     ten_J_rowadr: row start address for sparse ten_J         (ntendon,)
     ten_J_colind: column indices in sparse ten_J             (nJten,)
@@ -1481,6 +1570,7 @@ class Model:
     tendon_armature: inertia associated with tendon velocity (*, ntendon)
     tendon_frictionloss: loss due to friction                (*, ntendon)
     tendon_lengthspring: spring resting length range         (*, ntendon, 2)
+    tendon_springyield: plastic yield threshold (0: elastic) (*, ntendon)
     tendon_length0: tendon length in qpos0                   (*, ntendon)
     tendon_invweight0: inv. weight in qpos0                  (*, ntendon)
     wrap_type: wrap object type (WrapType)                   (nwrap,)
@@ -1539,6 +1629,7 @@ class Model:
     key_mpos: keyframe mocap pos                             (nkey, nmocap, 3)
     key_mquat: keyframe mocap quat                           (nkey, nmocap, 4)
     key_ctrl: keyframe ctrl                                  (nkey, nu)
+    key_plastic: keyframe plastic                            (nkey, nplastic)
     M_rownnz: number of non-zeros in each row of M           (nv,)
     M_rowadr: index of each row in M                         (nv,)
     M_colind: column indices of non-zeros in M               (nC,)
@@ -1666,6 +1757,7 @@ class Model:
     sensor_tendonactfrc_adr: address for tendonactfrc sensor
     sensor_subtree_vel: evaluate subtree_vel
     sensor_contact_pos_adr: addresses for position contact sensors (nsensor_contact_pos,)
+    sensor_contact_vel_adr: addresses for velocity contact sensors (nsensor_contact_vel,)
     sensor_contact_acc_adr: addresses for acceleration contact sensors (nsensor_contact_acc,)
     sensor_rne_postconstraint: evaluate rne_postconstraint
     sensor_rangefinder_bodyid: bodyid for rangefinder        (nrangefinder,)
@@ -1704,7 +1796,7 @@ class Model:
     nflexface: number of interpolated flex shell faces
     flex_face_map: mapping of face index to flex and local element face indices
     flex_face: global node indices of each face                             (nflexface, 9)
-    nflexrodhinge: number of 1D rod bending hinges
+    nflexrodhinge: number of 1D rod bending hinges (single hinges or hinge pairs)
     flex_rodhinge_map: flex id and flex_bending address of each rod hinge   (nflexrodhinge, 2)
   """
 
@@ -1758,6 +1850,7 @@ class Model:
   nkey: int
   nmocap: int
   nplugin: int
+  nplastic: int
   nJmom: int
   npolygonmax: int
   nmeshdegmax: int
@@ -1798,6 +1891,7 @@ class Model:
   jnt_dofadr: array("njnt", int)
   jnt_bodyid: array("njnt", int)
   jnt_actuatorid: array("njnt", int)
+  jnt_plasticadr: array("njnt", int)
   jnt_limited: array("njnt", int)
   jnt_actfrclimited: array("njnt", bool)
   jnt_actgravcomp: array("njnt", int)
@@ -1807,6 +1901,7 @@ class Model:
   jnt_axis: array("*", "njnt", wp.vec3)
   jnt_stiffness: array("*", "njnt", float)
   jnt_stiffnesspoly: array("*", "njnt", wp.vec2)
+  jnt_springyield: array("*", "njnt", float)
   jnt_range: array("*", "njnt", wp.vec2)
   jnt_actfrcrange: array("*", "njnt", wp.vec2)
   jnt_margin: array("*", "njnt", float)
@@ -1914,6 +2009,7 @@ class Model:
   flex_stiffnessadr: array("nflex", int)
   flex_elemedgeadr: array("nflex", int)
   flex_bendingadr: array("nflex", int)
+  flex_plasticadr: array("nflex", int)
   flex_shellnum: array("nflex", int)
   flex_shelldataadr: array("nflex", int)
   flex_nodebodyid: array("nflexnode", int)
@@ -1941,6 +2037,7 @@ class Model:
   efm0_L_colind: array("nefm0L", int)
   efm0_L: array("nefm0L", float)
   flex_damping: array("nflex", float)
+  flex_yield: array("nflex", float)
   flex_edgestiffness: array("nflex", float)
   flex_edgedamping: array("nflex", float)
   flex_edgeequality: array("nflex", int)
@@ -2003,9 +2100,11 @@ class Model:
   eq_solref: array("*", "neq", wp.vec2)
   eq_solimp: array("*", "neq", vec5)
   eq_data: array("*", "neq", vec12)
+  tendon_type: array("ntendon", int)
   tendon_adr: array("ntendon", int)
   tendon_num: array("ntendon", int)
   tendon_actuatorid: array("ntendon", int)
+  tendon_plasticadr: array("ntendon", int)
   ten_J_rownnz: array("ntendon", int)
   ten_J_rowadr: array("ntendon", int)
   ten_J_colind: array("nJten", int)
@@ -2025,6 +2124,7 @@ class Model:
   tendon_armature: array("*", "ntendon", float)
   tendon_frictionloss: array("*", "ntendon", float)
   tendon_lengthspring: array("*", "ntendon", wp.vec2)
+  tendon_springyield: array("*", "ntendon", float)
   tendon_length0: array("*", "ntendon", float)
   tendon_invweight0: array("*", "ntendon", float)
   wrap_type: array("nwrap", int)
@@ -2083,6 +2183,7 @@ class Model:
   key_mpos: array("nkey", "nmocap", wp.vec3)
   key_mquat: array("nkey", "nmocap", wp.quat)
   key_ctrl: array("nkey", "nu", float)
+  key_plastic: array("nkey", "nplastic", float)
   M_rownnz: array("nv", int)
   M_rowadr: array("nv", int)
   M_colind: array("nC", int)
@@ -2199,6 +2300,7 @@ class Model:
   sensor_tendonactfrc_adr: array("nsensor_tendonactfrc", int)
   sensor_subtree_vel: bool
   sensor_contact_pos_adr: array("nsensor_contact_pos", int)
+  sensor_contact_vel_adr: array("nsensor_contact_vel", int)
   sensor_contact_acc_adr: array("nsensor_contact_acc", int)
   sensor_rne_postconstraint: bool
   sensor_rangefinder_bodyid: array("nrangefinder", int)
@@ -2281,6 +2383,8 @@ class Contact:
     geomcollisionid: i-th contact generated for geom                 (naconmax,)
                      helps uniquely identity contact when multiple
                      contacts are generated for geom pair
+    adhesion: adhesive force of contact                              (naconmax,)
+    surfacevel: surface velocity in contact frame: tangent1, 2, spin (naconmax, 3)
   """
 
   dist: array("naconmax", float)
@@ -2301,6 +2405,7 @@ class Contact:
   type: array("naconmax", int)
   geomcollisionid: array("naconmax", int)
   adhesion: array("naconmax", float)
+  surfacevel: array("naconmax", wp.vec3)
 
 
 @dataclasses.dataclass
@@ -2378,6 +2483,7 @@ class Data:
     qvel: velocity                                              (nworld, nv)
     act: actuator activation                                    (nworld, na)
     history: history buffer for delays                          (nworld, nhistory)
+    plastic: plastic spring references                          (nworld, nplastic)
     qacc_warmstart: acceleration used for warmstart             (nworld, nv)
     ctrl: control                                               (nworld, nu)
     qfrc_applied: applied generalized force                     (nworld, nv)
@@ -2473,6 +2579,7 @@ class Data:
     efm_as: actuator metric scale h^2*gp + h*gv                 (nworld, nactuator)
     contact: contact data
     efc: constraint data
+    dof_frictionadr: friction efc address (-1: none) if nf > 0  (nworld, nv)
     tree_island: island ID per tree (-1 if unconstrained)       (nworld, ntree)
     dof_island: island ID per DOF (-1 if unconstrained)         (nworld, nv)
     island_dofadr: island start address in dof vector           (nworld, ntree)
@@ -2540,6 +2647,7 @@ class Data:
   qvel: array("nworld", "nv", float)
   act: array("nworld", "na", float)
   history: array("nworld", "nhistory", float)
+  plastic: array("nworld", "nplastic", float)
   qacc_warmstart: array("nworld", "nv", float)
   ctrl: array("nworld", "nu", float)
   qfrc_applied: array("nworld", "nv", float)
@@ -2632,6 +2740,7 @@ class Data:
   efm_as: array("nworld", "nactuator", float)
   contact: Contact
   efc: Constraint
+  dof_frictionadr: array("nworld", "nv", int)
   tree_island: array("nworld", "ntree", int)
   dof_island: array("nworld", "nv", int)
   island_dofadr: array("nworld", "ntree", int)

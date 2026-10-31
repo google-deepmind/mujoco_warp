@@ -36,6 +36,7 @@ from mujoco_warp._src.types import JointType
 from mujoco_warp._src.types import Model
 from mujoco_warp._src.types import ObjType
 from mujoco_warp._src.types import SolverType
+from mujoco_warp._src.types import TendonType
 from mujoco_warp._src.types import TileSet
 from mujoco_warp._src.types import TrnType
 from mujoco_warp._src.types import WrapType
@@ -496,6 +497,7 @@ def _flex_face_kinematics(
   # Model:
   flex_interp: wp.array[int],
   flex_cellnum: wp.array[wp.vec3i],
+  flex_node0: wp.array[wp.vec3],
   flex_face_map: wp.array[wp.vec2i],
   flex_face: wp.array2d[int],
   # Data in:
@@ -518,9 +520,14 @@ def _flex_face_kinematics(
   cz = cellnum[2]
   t1 = wp.vec3(0.0)
   t2 = wp.vec3(0.0)
+  gidx0 = int(-1)
+  gidx1 = int(-1)
   for local_idx in range(9):
     gidx = flex_face[face_id, local_idx]
     if gidx != -1:
+      if local_idx == 0:
+        gidx0 = gidx
+      gidx1 = gidx
       node_pos = flexnode_xpos_in[worldid, gidx]
 
       face_xpos_out[worldid, face_id, local_idx] = node_pos
@@ -541,9 +548,8 @@ def _flex_face_kinematics(
     else:
       face_xpos_out[worldid, face_id, local_idx] = wp.vec3(0.0)
 
-  normal = wp.cross(t1, t2)
-
   normal_axis, _, _, _, _, _ = support.get_face_metadata(cx, cy, cz, face_elem_idx, order_abs)
+  normal = wp.cross(t1, t2)
 
   F = wp.mat33(0.0)
   if normal_axis == 0:
@@ -659,6 +665,7 @@ def flex(m: Model, d: Data):
     inputs=[
       m.flex_interp,
       m.flex_cellnum,
+      m.flex_node0,
       m.flex_face_map,
       m.flex_face,
       d.flexnode_xpos,
@@ -671,61 +678,63 @@ def flex(m: Model, d: Data):
 
 
 @wp.kernel
-def _subtree_com_init(
+def _subtree_com(
   # Model:
   body_mass: wp.array2d[float],
+  body_subtreemass: wp.array2d[float],
+  body_subtreenum: wp.array[int],
   # Data in:
   xipos_in: wp.array2d[wp.vec3],
   # Data out:
   subtree_com_out: wp.array2d[wp.vec3],
 ):
+  """Mass-weighted com of the subtree, the contiguous body range [b, b + body_subtreenum[b])."""
   worldid, bodyid = wp.tid()
-  subtree_com_out[worldid, bodyid] = xipos_in[worldid, bodyid] * body_mass[worldid % body_mass.shape[0], bodyid]
+  if bodyid == 0:  # summed from the tree roots in _subtree_com_world
+    return
+  mass_id = worldid % body_mass.shape[0]
 
+  com = wp.vec3(0.0)
+  for j in range(bodyid, bodyid + body_subtreenum[bodyid]):
+    com += xipos_in[worldid, j] * body_mass[mass_id, j]
 
-@cache_kernel
-def _subtree_com_acc(deterministic: bool = False):
-  module_options = {"enable_backward": False}
-  if deterministic:
-    module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
-
-  @wp.kernel(module="unique", module_options=module_options)
-  def kernel(
-    # Model:
-    body_parentid: wp.array[int],
-    # Data in:
-    subtree_com_in: wp.array2d[wp.vec3],
-    # In:
-    body_tree_: wp.array[int],
-    # Data out:
-    subtree_com_out: wp.array2d[wp.vec3],
-  ):
-    worldid, nodeid = wp.tid()
-    bodyid = body_tree_[nodeid]
-    pid = body_parentid[bodyid]
-    if bodyid != 0:
-      wp.atomic_add(subtree_com_out, worldid, pid, subtree_com_in[worldid, bodyid])
-
-  return kernel
+  mass = body_subtreemass[worldid % body_subtreemass.shape[0], bodyid]
+  # massless subtree: use the body inertial frame, as in mj_comPos
+  if mass < MJ_MINVAL:
+    com = xipos_in[worldid, bodyid]
+  else:
+    com /= mass
+  subtree_com_out[worldid, bodyid] = com
 
 
 @wp.kernel
-def _subtree_div(
+def _subtree_com_world(
   # Model:
+  nbody: int,
+  body_mass: wp.array2d[float],
   body_subtreemass: wp.array2d[float],
+  body_subtreenum: wp.array[int],
   # Data in:
   xipos_in: wp.array2d[wp.vec3],
   subtree_com_in: wp.array2d[wp.vec3],
   # Data out:
   subtree_com_out: wp.array2d[wp.vec3],
 ):
-  worldid, bodyid = wp.tid()
-  mass = body_subtreemass[worldid % body_subtreemass.shape[0], bodyid]
-  # massless subtree: use the body inertial frame, as in mj_comPos
+  worldid = wp.tid()
+  subtreemass_id = worldid % body_subtreemass.shape[0]
+
+  com = xipos_in[worldid, 0] * body_mass[worldid % body_mass.shape[0], 0]
+  rootid = int(1)
+  while rootid < nbody:
+    com += subtree_com_in[worldid, rootid] * body_subtreemass[subtreemass_id, rootid]
+    rootid += body_subtreenum[rootid]
+
+  mass = body_subtreemass[subtreemass_id, 0]
   if mass < MJ_MINVAL:
-    subtree_com_out[worldid, bodyid] = xipos_in[worldid, bodyid]
+    com = xipos_in[worldid, 0]
   else:
-    subtree_com_out[worldid, bodyid] = subtree_com_in[worldid, bodyid] / mass
+    com /= mass
+  subtree_com_out[worldid, 0] = com
 
 
 @wp.kernel
@@ -825,26 +834,22 @@ def _cdof(
 def com_pos(m: Model, d: Data):
   """Computes subtree center of mass positions.
 
-  Transforms inertia and motion to global frame centered at subtree CoM. Accumulates the
-  mass-weighted positions up the kinematic tree, divides by total mass, and computes composite
-  inertias and motion degrees of freedom in the subtree CoM frame.
+  Transforms inertia and motion to global frame centered at subtree CoM. Sums the mass-weighted
+  positions over each subtree, divides by total mass, and computes composite inertias and motion
+  degrees of freedom in the subtree CoM frame.
   """
-  wp.launch(_subtree_com_init, dim=(d.nworld, m.nbody), inputs=[m.body_mass, d.xipos], outputs=[d.subtree_com])
-
-  det_atomics = bool(m.opt.deterministic & DeterminismType.ATOMICS)
-  subtree_com_in = wp.empty_like(d.subtree_com) if det_atomics else d.subtree_com
-  for i in reversed(range(len(m.body_tree))):
-    body_tree = m.body_tree[i]
-    if det_atomics:
-      wp.copy(subtree_com_in, d.subtree_com)
-    wp.launch(
-      _subtree_com_acc(det_atomics),
-      dim=(d.nworld, body_tree.size),
-      inputs=[m.body_parentid, subtree_com_in, body_tree],
-      outputs=[d.subtree_com],
-    )
-
-  wp.launch(_subtree_div, dim=(d.nworld, m.nbody), inputs=[m.body_subtreemass, d.xipos, d.subtree_com], outputs=[d.subtree_com])
+  wp.launch(
+    _subtree_com,
+    dim=(d.nworld, m.nbody),
+    inputs=[m.body_mass, m.body_subtreemass, m.body_subtreenum, d.xipos],
+    outputs=[d.subtree_com],
+  )
+  wp.launch(
+    _subtree_com_world,
+    dim=d.nworld,
+    inputs=[m.nbody, m.body_mass, m.body_subtreemass, m.body_subtreenum, d.xipos, d.subtree_com],
+    outputs=[d.subtree_com],
+  )
   wp.launch(
     _cinert,
     dim=(d.nworld, m.nbody),
@@ -1030,31 +1035,22 @@ def camlight(m: Model, d: Data):
   )
 
 
-@cache_kernel
-def _crb_accumulate(deterministic: bool = False):
-  module_options = {"enable_backward": False}
-  if deterministic:
-    module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
-
-  @wp.kernel(module="unique", module_options=module_options)
-  def kernel(
-    # Model:
-    body_parentid: wp.array[int],
-    # Data in:
-    crb_in: wp.array2d[vec10],
-    # In:
-    body_tree_: wp.array[int],
-    # Data out:
-    crb_out: wp.array2d[vec10],
-  ):
-    worldid, nodeid = wp.tid()
-    bodyid = body_tree_[nodeid]
-    pid = body_parentid[bodyid]
-    if pid == 0:
-      return
-    wp.atomic_add(crb_out, worldid, pid, crb_in[worldid, bodyid])
-
-  return kernel
+@wp.kernel
+def _crb_subtree(
+  # Model:
+  body_subtreenum: wp.array[int],
+  # Data in:
+  cinert_in: wp.array2d[vec10],
+  # Data out:
+  crb_out: wp.array2d[vec10],
+):
+  """Sums cinert over the subtree, the contiguous body range [b, b + body_subtreenum[b])."""
+  worldid, bodyid = wp.tid()
+  crb = cinert_in[worldid, bodyid]
+  if bodyid != 0:  # crb does not accumulate into the world body
+    for j in range(bodyid + 1, bodyid + body_subtreenum[bodyid]):
+      crb += cinert_in[worldid, j]
+  crb_out[worldid, bodyid] = crb
 
 
 @wp.kernel
@@ -1105,23 +1101,10 @@ def _M(
 def crb(m: Model, d: Data):
   """Computes composite rigid body inertias for each body and the joint-space inertia matrix.
 
-  Accumulates composite rigid body inertias up the kinematic tree and computes the
-  joint-space inertia matrix in either sparse or dense format, depending on model options.
+  Sums each body's com-based inertia over its subtree and computes the joint-space inertia matrix
+  in either sparse or dense format, depending on model options.
   """
-  wp.copy(d.crb, d.cinert)
-
-  det_atomics = bool(m.opt.deterministic & DeterminismType.ATOMICS)
-  crb_in = wp.empty_like(d.crb) if det_atomics else d.crb
-  for i in reversed(range(len(m.body_tree))):
-    body_tree = m.body_tree[i]
-    if det_atomics:
-      wp.copy(crb_in, d.crb)
-    wp.launch(
-      _crb_accumulate(det_atomics),
-      dim=(d.nworld, body_tree.size),
-      inputs=[m.body_parentid, crb_in, body_tree],
-      outputs=[d.crb],
-    )
+  wp.launch(_crb_subtree, dim=(d.nworld, m.nbody), inputs=[m.body_subtreenum, d.cinert], outputs=[d.crb])
 
   d.M.zero_()
   wp.launch(
@@ -1551,12 +1534,12 @@ def _cfrc(
   cfrc_ext_in: wp.array2d[wp.spatial_vector],
   # In:
   flg_cfrc_ext: bool,
-  # Data out:
-  cfrc_int_out: wp.array2d[wp.spatial_vector],
+  # Out:
+  cfrc_body_out: wp.array2d[wp.spatial_vector],
 ):
   worldid, bodyid = wp.tid()
   if bodyid == 0:
-    cfrc_int_out[worldid, 0] = wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+    cfrc_body_out[worldid, 0] = wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
     return
   cacc = cacc_in[worldid, bodyid]
   cinert = cinert_in[worldid, bodyid]
@@ -1566,51 +1549,54 @@ def _cfrc(
   if flg_cfrc_ext:
     frc -= cfrc_ext_in[worldid, bodyid]
 
+  cfrc_body_out[worldid, bodyid] = frc
+
+
+@wp.kernel
+def _cfrc_subtree(
+  # Model:
+  body_subtreenum: wp.array[int],
+  # In:
+  cfrc_body_in: wp.array2d[wp.spatial_vector],
+  # Data out:
+  cfrc_int_out: wp.array2d[wp.spatial_vector],
+):
+  """Sums cfrc_body over the subtree, the contiguous body range [b, b + body_subtreenum[b])."""
+  worldid, bodyid = wp.tid()
+  if bodyid == 0:  # summed from the tree roots in _cfrc_world
+    return
+
+  frc = cfrc_body_in[worldid, bodyid]
+  for j in range(bodyid + 1, bodyid + body_subtreenum[bodyid]):
+    frc += cfrc_body_in[worldid, j]
   cfrc_int_out[worldid, bodyid] = frc
 
 
+@wp.kernel
+def _cfrc_world(
+  # Model:
+  nbody: int,
+  body_subtreenum: wp.array[int],
+  # Data in:
+  cfrc_int_in: wp.array2d[wp.spatial_vector],
+  # Data out:
+  cfrc_int_out: wp.array2d[wp.spatial_vector],
+):
+  worldid = wp.tid()
+  frc = wp.spatial_vector()
+  rootid = int(1)
+  while rootid < nbody:
+    frc += cfrc_int_in[worldid, rootid]
+    rootid += body_subtreenum[rootid]
+  cfrc_int_out[worldid, 0] = frc
+
+
 def _rne_cfrc(m: Model, d: Data, flg_cfrc_ext: bool = False):
-  wp.launch(_cfrc, dim=[d.nworld, m.nbody], inputs=[d.cinert, d.cvel, d.cacc, d.cfrc_ext, flg_cfrc_ext], outputs=[d.cfrc_int])
-
-
-@cache_kernel
-def _cfrc_backward(deterministic: bool = False):
-  module_options = {"enable_backward": False}
-  if deterministic:
-    module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
-
-  @wp.kernel(module="unique", module_options=module_options)
-  def kernel(
-    # Model:
-    body_parentid: wp.array[int],
-    # Data in:
-    cfrc_int_in: wp.array2d[wp.spatial_vector],
-    # In:
-    body_tree_: wp.array[int],
-    # Data out:
-    cfrc_int_out: wp.array2d[wp.spatial_vector],
-  ):
-    worldid, nodeid = wp.tid()
-    bodyid = body_tree_[nodeid]
-    pid = body_parentid[bodyid]
-    if bodyid != 0:
-      wp.atomic_add(cfrc_int_out[worldid], pid, cfrc_int_in[worldid, bodyid])
-
-  return kernel
-
-
-def _rne_cfrc_backward(m: Model, d: Data):
-  det_atomics = bool(m.opt.deterministic & DeterminismType.ATOMICS)
-  cfrc_int_in = wp.empty_like(d.cfrc_int) if det_atomics else d.cfrc_int
-  for body_tree in reversed(m.body_tree):
-    if det_atomics:
-      wp.copy(cfrc_int_in, d.cfrc_int)
-    wp.launch(
-      _cfrc_backward(det_atomics),
-      dim=[d.nworld, body_tree.size],
-      inputs=[m.body_parentid, cfrc_int_in, body_tree],
-      outputs=[d.cfrc_int],
-    )
+  """Computes cfrc_int: each body's force plus the forces of its subtree."""
+  cfrc_body = wp.empty((d.nworld, m.nbody), dtype=wp.spatial_vector)
+  wp.launch(_cfrc, dim=[d.nworld, m.nbody], inputs=[d.cinert, d.cvel, d.cacc, d.cfrc_ext, flg_cfrc_ext], outputs=[cfrc_body])
+  wp.launch(_cfrc_subtree, dim=(d.nworld, m.nbody), inputs=[m.body_subtreenum, cfrc_body], outputs=[d.cfrc_int])
+  wp.launch(_cfrc_world, dim=d.nworld, inputs=[m.nbody, m.body_subtreenum, d.cfrc_int], outputs=[d.cfrc_int])
 
 
 @wp.kernel
@@ -1643,7 +1629,6 @@ def rne(m: Model, d: Data, flg_acc: bool = False):
   _rne_cacc_world(m, d)
   _rne_cacc_forward(m, d, flg_acc=flg_acc)
   _rne_cfrc(m, d)
-  _rne_cfrc_backward(m, d)
   wp.launch(_qfrc_bias, dim=[d.nworld, m.nv], inputs=[m.dof_bodyid, d.cdof, d.cfrc_int], outputs=[d.qfrc_bias])
 
 
@@ -1997,7 +1982,6 @@ def _cfrc_ext_tendon_actuator(deterministic: bool = False):
     force = actuator_force_in[worldid, actid]
     if force == 0.0:
       return
-
     tenid = actuator_trnid[actid][0]
     gear = actuator_gear[worldid % actuator_gear.shape[0], actid][0]
     wp.atomic_add(ten_frc_out[worldid], tenid, force * gear)
@@ -2018,9 +2002,11 @@ def _cfrc_ext_spatial_tendon(nwrap: int, deterministic: bool = False):
     body_rootid: wp.array[int],
     geom_bodyid: wp.array[int],
     site_bodyid: wp.array[int],
+    tendon_type: wp.array[int],
     tendon_adr: wp.array[int],
     tendon_num: wp.array[int],
     tendon_actuatorid: wp.array[int],
+    tendon_plasticadr: wp.array[int],
     ten_J_rownnz: wp.array[int],
     ten_J_rowadr: wp.array[int],
     ten_J_colind: wp.array[int],
@@ -2040,6 +2026,7 @@ def _cfrc_ext_spatial_tendon(nwrap: int, deterministic: bool = False):
     actuator_armature: wp.array2d[float],
     actuator_gear: wp.array2d[wp.spatial_vector],
     # Data in:
+    plastic_in: wp.array2d[float],
     qacc_in: wp.array2d[float],
     subtree_com_in: wp.array2d[wp.vec3],
     ten_wrapadr_in: wp.array2d[int],
@@ -2060,8 +2047,7 @@ def _cfrc_ext_spatial_tendon(nwrap: int, deterministic: bool = False):
     worldid, tenid = wp.tid()
 
     # fixed tendon: acts through the joints
-    adr = tendon_adr[tenid]
-    if wrap_type[adr] == WrapType.JOINT:
+    if tendon_type[tenid] == TendonType.FIXED:
       return
 
     frc = ten_frc_in[worldid, tenid]
@@ -2072,9 +2058,14 @@ def _cfrc_ext_spatial_tendon(nwrap: int, deterministic: bool = False):
       spoly = tendon_stiffnesspoly[worldid % tendon_stiffnesspoly.shape[0], tenid]
       if stiffness != 0.0 or spoly[0] != 0.0 or spoly[1] != 0.0:
         length = ten_length_in[worldid, tenid]
-        lengthspring = tendon_lengthspring[worldid % tendon_lengthspring.shape[0], tenid]
-        lower = lengthspring[0]
-        upper = lengthspring[1]
+        padr = tendon_plasticadr[tenid]
+        if padr >= 0:
+          lower = plastic_in[worldid, padr + 0]
+          upper = plastic_in[worldid, padr + 1]
+        else:
+          lengthspring = tendon_lengthspring[worldid % tendon_lengthspring.shape[0], tenid]
+          lower = lengthspring[0]
+          upper = lengthspring[1]
         x = wp.where(length > upper, length - upper, wp.where(length < lower, length - lower, 0.0))
         frc += -x * util_misc._poly_force(stiffness, spoly, x, 0)
 
@@ -2111,6 +2102,7 @@ def _cfrc_ext_spatial_tendon(nwrap: int, deterministic: bool = False):
     if frc == 0.0:
       return
 
+    adr = tendon_adr[tenid]
     num = tendon_num[tenid]
     p = ten_wrapadr_in[worldid, tenid]
     pend = p + ten_wrapnum_in[worldid, tenid]
@@ -2299,6 +2291,7 @@ def rne_postconstraint(m: Model, d: Data):
           m.jnt_dofadr,
           m.dof_jntid,
           m.site_bodyid,
+          m.tendon_type,
           m.tendon_adr,
           m.tendon_num,
           m.tendon_actuatorid,
@@ -2352,9 +2345,11 @@ def rne_postconstraint(m: Model, d: Data):
         m.body_rootid,
         m.geom_bodyid,
         m.site_bodyid,
+        m.tendon_type,
         m.tendon_adr,
         m.tendon_num,
         m.tendon_actuatorid,
+        m.tendon_plasticadr,
         m.ten_J_rownnz,
         m.ten_J_rowadr,
         m.ten_J_colind,
@@ -2373,6 +2368,7 @@ def rne_postconstraint(m: Model, d: Data):
         m.actuator_dampingpoly,
         m.actuator_armature,
         m.actuator_gear,
+        d.plastic,
         d.qacc,
         d.subtree_com,
         d.ten_wrapadr,
@@ -2396,9 +2392,6 @@ def rne_postconstraint(m: Model, d: Data):
 
   # cfrc_body = cinert * cacc + cvel x (cinert * cvel)
   _rne_cfrc(m, d, flg_cfrc_ext=True)
-
-  # backward pass over bodies: accumulate cfrc_int from children
-  _rne_cfrc_backward(m, d)
 
 
 @wp.func
@@ -2483,6 +2476,7 @@ def _tendon_dot(
   jnt_dofadr: wp.array[int],
   dof_jntid: wp.array[int],
   site_bodyid: wp.array[int],
+  tendon_type: wp.array[int],
   tendon_adr: wp.array[int],
   tendon_num: wp.array[int],
   tendon_actuatorid: wp.array[int],
@@ -2515,11 +2509,11 @@ def _tendon_dot(
     return
 
   # fixed tendon has zero Jdot
-  adr = tendon_adr[tenid]
-  if wrap_type[adr] == WrapType.JOINT:
+  if tendon_type[tenid] == TendonType.FIXED:
     return
 
   # process spatial tendon
+  adr = tendon_adr[tenid]
   divisor = float(1.0)
   num = tendon_num[tenid]
   j = int(0)
@@ -2757,6 +2751,7 @@ def tendon_bias(m: Model, d: Data, qfrc: wp.array2d[float]):
       m.jnt_dofadr,
       m.dof_jntid,
       m.site_bodyid,
+      m.tendon_type,
       m.tendon_adr,
       m.tendon_num,
       m.tendon_actuatorid,
@@ -4305,12 +4300,10 @@ def _subtree_vel_forward(
   ximat_in: wp.array2d[wp.mat33],
   subtree_com_in: wp.array2d[wp.vec3],
   cvel_in: wp.array2d[wp.spatial_vector],
-  # Data out:
-  subtree_linvel_out: wp.array2d[wp.vec3],
-  subtree_angmom_out: wp.array2d[wp.vec3],
   # Out:
-  subtree_bodyvel_out: wp.array2d[wp.spatial_vector],
+  body_mom_out: wp.array2d[wp.spatial_vector],
 ):
+  """Per-body angular momentum about the body com (top) and linear momentum (bottom)."""
   worldid, bodyid = wp.tid()
   body_mass_id = worldid % body_mass.shape[0]
   body_inertia_id = worldid % body_inertia.shape[0]
@@ -4322,216 +4315,117 @@ def _subtree_vel_forward(
   ximat = ximat_in[worldid, bodyid]
   subtree_com_root = subtree_com_in[worldid, body_rootid[bodyid]]
 
-  # update linear velocity
   lin -= wp.cross(xipos - subtree_com_root, ang)
 
-  subtree_linvel_out[worldid, bodyid] = body_mass[body_mass_id, bodyid] * lin
   dv = wp.transpose(ximat) @ ang
   dv[0] *= body_inertia[body_inertia_id, bodyid][0]
   dv[1] *= body_inertia[body_inertia_id, bodyid][1]
   dv[2] *= body_inertia[body_inertia_id, bodyid][2]
-  subtree_angmom_out[worldid, bodyid] = ximat @ dv
-  subtree_bodyvel_out[worldid, bodyid] = wp.spatial_vector(ang, lin)
-
-
-@cache_kernel
-def _linear_momentum(deterministic: bool = False):
-  module_options = {"enable_backward": False}
-  if deterministic:
-    module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
-
-  @wp.kernel(module="unique", module_options=module_options)
-  def kernel(
-    # Model:
-    body_parentid: wp.array[int],
-    body_subtreemass: wp.array2d[float],
-    # Data in:
-    subtree_linvel_in: wp.array2d[wp.vec3],
-    # In:
-    body_tree_: wp.array[int],
-    # Data out:
-    subtree_linvel_out: wp.array2d[wp.vec3],
-  ):
-    worldid, nodeid = wp.tid()
-    bodyid = body_tree_[nodeid]
-    linvel = subtree_linvel_in[worldid, bodyid]
-    if bodyid:
-      pid = body_parentid[bodyid]
-      wp.atomic_add(subtree_linvel_out[worldid], pid, linvel)
-    if wp.static(not deterministic):
-      subtree_linvel_out[worldid, bodyid] = linvel / wp.max(
-        MJ_MINVAL, body_subtreemass[worldid % body_subtreemass.shape[0], bodyid]
-      )
-
-  return kernel
+  body_mom_out[worldid, bodyid] = wp.spatial_vector(ximat @ dv, body_mass[body_mass_id, bodyid] * lin)
 
 
 @wp.kernel
-def _linear_momentum_div(
+def _subtree_momentum(
   # Model:
   body_subtreemass: wp.array2d[float],
+  body_subtreenum: wp.array[int],
   # Data in:
-  subtree_linvel_in: wp.array2d[wp.vec3],
+  xipos_in: wp.array2d[wp.vec3],
+  subtree_com_in: wp.array2d[wp.vec3],
+  # In:
+  body_mom_in: wp.array2d[wp.spatial_vector],
   # Data out:
   subtree_linvel_out: wp.array2d[wp.vec3],
+  subtree_angmom_out: wp.array2d[wp.vec3],
 ):
+  """Subtree momentum about the subtree com.
+
+  Sums over the contiguous body range [b, b + body_subtreenum[b]). The com velocity term drops out
+  of sum_j m_j (x_j - c) x (v_j - v_c) since sum_j m_j (x_j - c) = 0.
+  """
   worldid, bodyid = wp.tid()
-  subtree_linvel_out[worldid, bodyid] = subtree_linvel_in[worldid, bodyid] / wp.max(
-    MJ_MINVAL, body_subtreemass[worldid % body_subtreemass.shape[0], bodyid]
-  )
+  if bodyid == 0:  # shifted from the tree roots in _subtree_momentum_world
+    return
+  com = subtree_com_in[worldid, bodyid]
+
+  linmom = wp.vec3(0.0)
+  angmom = wp.vec3(0.0)
+  for j in range(bodyid, bodyid + body_subtreenum[bodyid]):
+    mom = body_mom_in[worldid, j]
+    p = wp.spatial_bottom(mom)
+    linmom += p
+    angmom += wp.spatial_top(mom) + wp.cross(xipos_in[worldid, j] - com, p)
+
+  subtreemass = body_subtreemass[worldid % body_subtreemass.shape[0], bodyid]
+  subtree_linvel_out[worldid, bodyid] = linmom / wp.max(MJ_MINVAL, subtreemass)
+  subtree_angmom_out[worldid, bodyid] = angmom
 
 
 @wp.kernel
-def _angular_momentum_body(
+def _subtree_momentum_world(
   # Model:
-  body_mass: wp.array2d[float],
+  nbody: int,
+  body_subtreemass: wp.array2d[float],
+  body_subtreenum: wp.array[int],
   # Data in:
-  xipos_in: wp.array2d[wp.vec3],
   subtree_com_in: wp.array2d[wp.vec3],
   subtree_linvel_in: wp.array2d[wp.vec3],
   subtree_angmom_in: wp.array2d[wp.vec3],
   # In:
-  subtree_bodyvel_in: wp.array2d[wp.spatial_vector],
+  body_mom_in: wp.array2d[wp.spatial_vector],
   # Data out:
+  subtree_linvel_out: wp.array2d[wp.vec3],
   subtree_angmom_out: wp.array2d[wp.vec3],
 ):
-  worldid, bodyid = wp.tid()
-  if bodyid == 0:
-    return
-  dx = xipos_in[worldid, bodyid] - subtree_com_in[worldid, bodyid]
-  dv = wp.spatial_bottom(subtree_bodyvel_in[worldid, bodyid]) - subtree_linvel_in[worldid, bodyid]
-  dp = dv * body_mass[worldid % body_mass.shape[0], bodyid]
-  subtree_angmom_out[worldid, bodyid] = subtree_angmom_in[worldid, bodyid] + wp.cross(dx, dp)
+  """World body: the tree roots' momenta shifted to the world subtree com."""
+  worldid = wp.tid()
+  subtreemass_id = worldid % body_subtreemass.shape[0]
 
+  linmom = wp.spatial_bottom(body_mom_in[worldid, 0])
+  rootid = int(1)
+  while rootid < nbody:
+    # undo the root's division by its subtree mass
+    linmom += subtree_linvel_in[worldid, rootid] * wp.max(MJ_MINVAL, body_subtreemass[subtreemass_id, rootid])
+    rootid += body_subtreenum[rootid]
+  linvel = linmom / wp.max(MJ_MINVAL, body_subtreemass[subtreemass_id, 0])
 
-@cache_kernel
-def _angular_momentum(deterministic: bool = False):
-  module_options = {"enable_backward": False}
-  if deterministic:
-    module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
+  com = subtree_com_in[worldid, 0]
+  angmom = wp.spatial_top(body_mom_in[worldid, 0])
+  rootid = int(1)
+  while rootid < nbody:
+    dv = (subtree_linvel_in[worldid, rootid] - linvel) * body_subtreemass[subtreemass_id, rootid]
+    angmom += subtree_angmom_in[worldid, rootid] + wp.cross(subtree_com_in[worldid, rootid] - com, dv)
+    rootid += body_subtreenum[rootid]
 
-  @wp.kernel(module="unique", module_options=module_options)
-  def kernel(
-    # Model:
-    body_parentid: wp.array[int],
-    body_mass: wp.array2d[float],
-    body_subtreemass: wp.array2d[float],
-    # Data in:
-    xipos_in: wp.array2d[wp.vec3],
-    subtree_com_in: wp.array2d[wp.vec3],
-    subtree_linvel_in: wp.array2d[wp.vec3],
-    subtree_angmom_in: wp.array2d[wp.vec3],
-    # In:
-    subtree_bodyvel_in: wp.array2d[wp.spatial_vector],
-    body_tree_: wp.array[int],
-    # Data out:
-    subtree_angmom_out: wp.array2d[wp.vec3],
-  ):
-    worldid, nodeid = wp.tid()
-    bodyid = body_tree_[nodeid]
-
-    if bodyid == 0:
-      return
-
-    pid = body_parentid[bodyid]
-
-    com = subtree_com_in[worldid, bodyid]
-    com_parent = subtree_com_in[worldid, pid]
-    linvel = subtree_linvel_in[worldid, bodyid]
-    linvel_parent = subtree_linvel_in[worldid, pid]  # Data field
-    subtreemass = body_subtreemass[worldid % body_subtreemass.shape[0], bodyid]
-
-    if wp.static(deterministic):
-      angmom = subtree_angmom_in[worldid, bodyid]
-    else:
-      xipos = xipos_in[worldid, bodyid]
-      vel = subtree_bodyvel_in[worldid, bodyid]
-      mass = body_mass[worldid % body_mass.shape[0], bodyid]
-
-      # momentum wrt body i
-      dx = xipos - com
-      dv = wp.spatial_bottom(vel) - linvel
-      dp = dv * mass
-      dL = wp.cross(dx, dp)
-
-      # add to subtree i
-      angmom = subtree_angmom_in[worldid, bodyid] + dL
-      subtree_angmom_out[worldid, bodyid] = angmom
-
-    # momentum wrt parent
-    dx = com - com_parent
-    dv = linvel - linvel_parent
-    dv *= subtreemass
-    dL_parent = wp.cross(dx, dv)
-
-    # add to parent
-    wp.atomic_add(subtree_angmom_out[worldid], pid, angmom + dL_parent)
-
-  return kernel
+  subtree_linvel_out[worldid, 0] = linvel
+  subtree_angmom_out[worldid, 0] = angmom
 
 
 def subtree_vel(m: Model, d: Data):
   """Computes subtree linear velocity and angular momentum.
 
-  Computes the linear momentum and angular momentum for each subtree, accumulating
-  contributions up the kinematic tree.
+  Sums each body's linear and angular momentum over its subtree, taking the angular momentum
+  about the subtree center of mass.
   """
-  subtree_bodyvel = wp.empty((d.nworld, m.nbody), dtype=wp.spatial_vector)
-
-  # bodywise quantities
+  body_mom = wp.empty((d.nworld, m.nbody), dtype=wp.spatial_vector)
   wp.launch(
     _subtree_vel_forward,
     dim=(d.nworld, m.nbody),
     inputs=[m.body_rootid, m.body_mass, m.body_inertia, d.xipos, d.ximat, d.subtree_com, d.cvel],
-    outputs=[d.subtree_linvel, d.subtree_angmom, subtree_bodyvel],
+    outputs=[body_mom],
   )
-
-  det_atomics = bool(m.opt.deterministic & DeterminismType.ATOMICS)
-  subtree_vec_in = wp.empty_like(d.subtree_linvel) if det_atomics else None
-
-  # sum body linear momentum recursively up the kinematic tree
-  for body_tree in reversed(m.body_tree):
-    if det_atomics:
-      wp.copy(subtree_vec_in, d.subtree_linvel)
-    wp.launch(
-      _linear_momentum(det_atomics),
-      dim=[d.nworld, body_tree.size],
-      inputs=[m.body_parentid, m.body_subtreemass, subtree_vec_in if det_atomics else d.subtree_linvel, body_tree],
-      outputs=[d.subtree_linvel],
-    )
-  if det_atomics:
-    wp.launch(
-      _linear_momentum_div,
-      dim=(d.nworld, m.nbody),
-      inputs=[m.body_subtreemass, d.subtree_linvel],
-      outputs=[d.subtree_linvel],
-    )
-    wp.launch(
-      _angular_momentum_body,
-      dim=(d.nworld, m.nbody),
-      inputs=[m.body_mass, d.xipos, d.subtree_com, d.subtree_linvel, d.subtree_angmom, subtree_bodyvel],
-      outputs=[d.subtree_angmom],
-    )
-
-  for body_tree in reversed(m.body_tree):
-    if det_atomics:
-      wp.copy(subtree_vec_in, d.subtree_angmom)
-    wp.launch(
-      _angular_momentum(det_atomics),
-      dim=[d.nworld, body_tree.size],
-      inputs=[
-        m.body_parentid,
-        m.body_mass,
-        m.body_subtreemass,
-        d.xipos,
-        d.subtree_com,
-        d.subtree_linvel,
-        subtree_vec_in if det_atomics else d.subtree_angmom,
-        subtree_bodyvel,
-        body_tree,
-      ],
-      outputs=[d.subtree_angmom],
-    )
+  wp.launch(
+    _subtree_momentum,
+    dim=(d.nworld, m.nbody),
+    inputs=[m.body_subtreemass, m.body_subtreenum, d.xipos, d.subtree_com, body_mom],
+    outputs=[d.subtree_linvel, d.subtree_angmom],
+  )
+  wp.launch(
+    _subtree_momentum_world,
+    dim=d.nworld,
+    inputs=[m.nbody, m.body_subtreemass, m.body_subtreenum, d.subtree_com, d.subtree_linvel, d.subtree_angmom, body_mom],
+    outputs=[d.subtree_linvel, d.subtree_angmom],
+  )
 
 
 @cache_kernel
@@ -4945,6 +4839,7 @@ def _spatial_geom_tendon(max_ten_J_rownnz: int, deterministic: bool = False):
 @wp.func
 def _spatial_tendon_wrap_path(
   # Model:
+  tendon_type: wp.array[int],
   tendon_adr: wp.array[int],
   tendon_num: wp.array[int],
   wrap_type: wp.array[int],
@@ -4966,15 +4861,15 @@ def _spatial_tendon_wrap_path(
   wrapcount = int(wrapadr)
   wrapgeomid = int(wrapgeomadr)
 
+  # process fixed tendon
+  if tendon_type[i] == TendonType.FIXED:
+    return 0
+
+  # process spatial tendon
   adr = tendon_adr[i]
   wrapnum = int(0)
   tendonnum = tendon_num[i]
 
-  # process fixed tendon
-  if wrap_type[adr] == WrapType.JOINT:
-    return 0
-
-  # process spatial tendon
   j = int(0)
   while j < tendonnum - 1:
     # get 1st and 2nd object
@@ -5135,6 +5030,7 @@ def _spatial_tendon_wrap_path(
 @wp.kernel
 def _spatial_tendon_wrapnum(
   # Model:
+  tendon_type: wp.array[int],
   tendon_adr: wp.array[int],
   tendon_num: wp.array[int],
   wrap_type: wp.array[int],
@@ -5152,6 +5048,7 @@ def _spatial_tendon_wrapnum(
   worldid, tenid = wp.tid()
   wrapgeomadr = wp.lower_bound(wrap_geom_adr, tendon_adr[tenid])
   ten_wrapnum_out[worldid, tenid] = _spatial_tendon_wrap_path(
+    tendon_type,
     tendon_adr,
     tendon_num,
     wrap_type,
@@ -5187,6 +5084,7 @@ def _spatial_tendon_wrapadr(
 @wp.kernel
 def _spatial_tendon_wrap(
   # Model:
+  tendon_type: wp.array[int],
   tendon_adr: wp.array[int],
   tendon_num: wp.array[int],
   wrap_type: wp.array[int],
@@ -5204,6 +5102,7 @@ def _spatial_tendon_wrap(
   worldid, tenid = wp.tid()
   wrapgeomadr = wp.lower_bound(wrap_geom_adr, tendon_adr[tenid])
   _spatial_tendon_wrap_path(
+    tendon_type,
     tendon_adr,
     tendon_num,
     wrap_type,
@@ -5322,7 +5221,16 @@ def tendon(m: Model, d: Data):
     wp.launch(
       _spatial_tendon_wrapnum,
       dim=(d.nworld, m.ntendon),
-      inputs=[m.tendon_adr, m.tendon_num, m.wrap_type, m.wrap_objid, m.wrap_geom_adr, d.site_xpos, wrap_geom_xpos],
+      inputs=[
+        m.tendon_type,
+        m.tendon_adr,
+        m.tendon_num,
+        m.wrap_type,
+        m.wrap_objid,
+        m.wrap_geom_adr,
+        d.site_xpos,
+        wrap_geom_xpos,
+      ],
       outputs=[d.ten_wrapnum, d.wrap_obj, d.wrap_xpos],
     )
     wp.launch(_spatial_tendon_wrapadr, dim=d.nworld, inputs=[m.ntendon, d.ten_wrapnum], outputs=[d.ten_wrapadr])
@@ -5330,6 +5238,7 @@ def tendon(m: Model, d: Data):
       _spatial_tendon_wrap,
       dim=(d.nworld, m.ntendon),
       inputs=[
+        m.tendon_type,
         m.tendon_adr,
         m.tendon_num,
         m.wrap_type,

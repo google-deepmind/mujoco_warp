@@ -27,6 +27,7 @@ from mujoco_warp import GeomType
 from mujoco_warp import test_data
 from mujoco_warp._src import collision_convex
 from mujoco_warp._src import types
+from mujoco_warp._src import util_pkg
 from mujoco_warp._src.collision_core import Geom
 from mujoco_warp._src.collision_driver import MJ_COLLISION_TABLE
 from mujoco_warp._src.collision_primitive import plane_convex
@@ -2472,6 +2473,73 @@ class CollisionTest(parameterized.TestCase):
 
     if nworld == 2:
       self.assertFalse(np.allclose(dist[worldid == 0], dist[worldid == 1]))
+
+  @absltest.skipIf(not util_pkg.check_version("mujoco>=3.17.1"), "Requires MuJoCo >= 3.17.1")
+  @parameterized.parameters(1, 2)
+  def test_contact_surfacevel(self, nworld):
+    """Populates contact.surfacevel from geom_surfacevel and zeroes contacts without surfacevel."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <geom name="belt" type="plane" size="2 2 0.01" condim="4" surfacevel="0.4 -0.2 0.1 0 0 1.5"/>
+          <geom name="wall" size="0.1" pos="1 0 0.2"/>
+          <body pos="0.1 -0.15 0.095">
+            <freejoint/>
+            <geom size="0.1" condim="4"/>
+          </body>
+          <body pos="1 0 0.35">
+            <freejoint/>
+            <geom size="0.1"/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=nworld,
+    )
+    self.assertEqual(mjd.ncon, 2)
+
+    mjds = [mjd]
+    if nworld == 2:
+      mjd1 = mujoco.MjData(mjm)
+      qpos = d.qpos.numpy()
+      qpos[1, 0] = -0.25
+      qpos[1, 1] = 0.3
+      d.qpos.assign(qpos)
+      mjd1.qpos[:] = qpos[1]
+      mujoco.mj_forward(mjm, mjd1)
+      self.assertEqual(mjd1.ncon, 2)
+      mjds.append(mjd1)
+      mjw.fwd_kinematics(m, d)
+
+    d.nacon.fill_(-1)
+    d.contact.surfacevel.fill_(wp.inf)
+    mjw.collision(m, d)
+
+    nacon = int(d.nacon.numpy()[0])
+    self.assertEqual(nacon, 2 * nworld)
+    worldid = d.contact.worldid.numpy()[:nacon]
+    geom = d.contact.geom.numpy()[:nacon]
+    surfacevel = d.contact.surfacevel.numpy()[:nacon]
+
+    belt_sv = []
+    for w in range(nworld):
+      w_mask = worldid == w
+      w_geom = geom[w_mask]
+      w_sv = surfacevel[w_mask]
+      self.assertLen(w_sv, 2)
+      for c in range(2):
+        mj_con = mjds[w].contact[c]
+        match = np.nonzero((w_geom[:, 0] == mj_con.geom[0]) & (w_geom[:, 1] == mj_con.geom[1]))[0]
+        self.assertLen(match, 1)
+        np.testing.assert_allclose(w_sv[match[0]], mj_con.surfacevel, rtol=1e-5, atol=1e-5)
+        if mj_con.geom[0] == 0:
+          belt_sv.append(w_sv[match[0]])
+        else:
+          np.testing.assert_array_equal(w_sv[match[0]], np.zeros(3))
+
+    if nworld == 2:
+      self.assertFalse(np.allclose(belt_sv[0], belt_sv[1]))
 
 
 # box-box primitive collider parity with MuJoCo's mjc_BoxBox

@@ -104,6 +104,7 @@ from mujoco_warp._src.types import BiasType as BiasType
 from mujoco_warp._src.types import BroadphaseFilter as BroadphaseFilter
 from mujoco_warp._src.types import BroadphaseType as BroadphaseType
 from mujoco_warp._src.types import Callback as Callback
+from mujoco_warp._src.types import ConDataField as ConDataField
 from mujoco_warp._src.types import ConeType as ConeType
 from mujoco_warp._src.types import Constraint as Constraint
 from mujoco_warp._src.types import Contact as Contact
