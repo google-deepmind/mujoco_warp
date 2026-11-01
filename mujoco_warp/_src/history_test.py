@@ -1695,6 +1695,71 @@ class ResetHistoryTest(parameterized.TestCase):
       np.testing.assert_allclose(updated_history[w, act_v : act_v + act_n], [10.0, 20.0, 30.0], atol=1e-6)
       np.testing.assert_allclose(updated_history[w, sens_v : sens_v + sens_n * sens_dim], [1.0, 2.0, 3.0], atol=1e-6)
 
+  @parameterized.parameters(1, 2)
+  def test_init_history_none_times_preserves_wrapped_cursor(self, nworld):
+    """Test init_ctrl_history and init_sensor_history with times=None after the circular buffer wraps."""
+    mjm, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option timestep="0.01"/>
+        <worldbody>
+          <body>
+            <joint name="slide" type="slide"/>
+            <geom size="0.1" mass="1"/>
+          </body>
+        </worldbody>
+        <actuator>
+          <motor joint="slide" delay="0.02" nsample="3"/>
+        </actuator>
+        <sensor>
+          <jointpos joint="slide" delay="0.02" nsample="3"/>
+        </sensor>
+      </mujoco>
+      """,
+      nworld=nworld,
+    )
+
+    # advance the circular cursors away from nsample - 1
+    for _ in range(2):
+      step(m, d)
+    orig_history = d.history.numpy().copy()
+
+    ctrl_vals = np.array([[10.0, 20.0, 30.0]]) + 100.0 * np.arange(nworld)[:, None]
+    sensor_vals = np.array([[1.0, 2.0, 3.0]]) + 100.0 * np.arange(nworld)[:, None]
+    init_ctrl_history(m, d, ctrlid=0, times=None, values=wp.array2d(ctrl_vals, dtype=float))
+    init_sensor_history(m, d, sensorid=0, times=None, values=wp.array2d(sensor_vals, dtype=float))
+    history = d.history.numpy()
+
+    act_adr = m.actuator_historyadr.numpy()[0, 0]
+    sens_adr = m.sensor_historyadr.numpy()[0, 0]
+    nsample = 3
+
+    for w in range(nworld):
+      for adr, vals in ((act_adr, ctrl_vals), (sens_adr, sensor_vals)):
+        cursor = int(orig_history[w, adr + 1])
+        self.assertNotEqual(cursor, nsample - 1)
+        times = slice(adr + 2, adr + 2 + nsample)
+
+        # cursor and timestamps preserved
+        self.assertEqual(history[w, adr + 1], cursor)
+        np.testing.assert_allclose(history[w, times], orig_history[w, times], atol=_TOLERANCE)
+
+        # values written in logical order relative to the cursor
+        for i in range(nsample):
+          phys = (cursor + 1 + i) % nsample
+          np.testing.assert_allclose(history[w, adr + 2 + nsample + phys], vals[w, i], atol=_TOLERANCE)
+
+      # TODO(team): remove guard once mju_historyInit preserves the cursor in stable MuJoCo
+      if util_pkg.check_version("mujoco>=3.17.1"):
+        mjd_w = mujoco.MjData(mjm)
+        mjd_w.history[:] = orig_history[w]
+        mujoco.mj_initCtrlHistory(mjm, mjd_w, 0, None, ctrl_vals[w])
+        mujoco.mj_initSensorHistory(mjm, mjd_w, 0, None, sensor_vals[w], mjd_w.history[sens_adr])
+        np.testing.assert_allclose(history[w], mjd_w.history, atol=_TOLERANCE)
+
+    if nworld == 2:
+      self.assertFalse(np.allclose(history[0], history[1]))
+
   def test_init_sensor_history_phase_none_preserves_user_slot(self):
     """Test init_sensor_history with phase=None preserves interval user slot (time_prev)."""
     _, _, m, d = test_data.fixture(
