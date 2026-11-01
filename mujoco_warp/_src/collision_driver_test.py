@@ -34,6 +34,9 @@ from mujoco_warp._src.collision_primitive import plane_convex
 from mujoco_warp._src.collision_sdf import MeshData
 from mujoco_warp._src.collision_sdf import OptimizationParams
 from mujoco_warp._src.collision_sdf import VolumeData
+from mujoco_warp._src.collision_sdf import ellipsoid
+from mujoco_warp._src.collision_sdf import grad_box
+from mujoco_warp._src.collision_sdf import grad_ellipsoid
 from mujoco_warp._src.collision_sdf import gradient_step
 from mujoco_warp._src.collision_sdf import sample_volume_grad
 from mujoco_warp._src.math import upper_trid_index
@@ -63,6 +66,20 @@ def volume_gradient_step_test(volume: VolumeData, result_out: wp.array[wp.vec4])
     types.GeomType.SDF, wp.vec3(1e-6, 1e-4, 1e-4), params, -1, -1, 1, True, volume, volume, mesh, mesh
   )
   result_out[0] = wp.vec4(point[0], point[1], point[2], dist)
+
+
+@wp.kernel
+def primitive_sdf_singularities_test(
+  box_pts: wp.array[wp.vec3],
+  box_grads_out: wp.array[wp.vec3],
+  ellipsoid_dist_out: wp.array[float],
+  ellipsoid_grad_out: wp.array[wp.vec3],
+):
+  size = wp.vec3(1.0, 2.0, 3.0)
+  ellipsoid_dist_out[0] = ellipsoid(wp.vec3(0.0), size)
+  ellipsoid_grad_out[0] = grad_ellipsoid(wp.vec3(0.0), size)
+  for i in range(box_pts.shape[0]):
+    box_grads_out[i] = grad_box(box_pts[i], size)
 
 
 def _assert_eq(a, b, name):
@@ -1892,6 +1909,52 @@ class CollisionTest(parameterized.TestCase):
     result = wp.zeros(1, dtype=wp.vec4)
     wp.launch(volume_gradient_step_test, dim=1, inputs=[volume], outputs=[result])
     np.testing.assert_allclose(result.numpy()[0], [1e-6, 1e-4, 1e-4, -0.000499], rtol=1e-5, atol=1e-9)
+
+  def test_sdf_primitive_singularities(self):
+    """Ellipsoid origin and box surface/edge/corner SDF helpers match CPU MuJoCo."""
+    pts = np.array(
+      [
+        [1.0, 0.0, 0.0],
+        [-1.0, 0.0, 0.0],
+        [0.0, 2.0, 0.0],
+        [0.0, -2.0, 0.0],
+        [0.0, 0.0, 3.0],
+        [0.0, 0.0, -3.0],
+        [1.0, 2.0, 0.0],
+        [-1.0, 2.0, -3.0],
+        [2.0, 0.0, 0.0],
+      ],
+      dtype=np.float32,
+    )
+    inv_sqrt2 = 1.0 / np.sqrt(2.0)
+    inv_sqrt3 = 1.0 / np.sqrt(3.0)
+    expected_box_grads = np.array(
+      [
+        [1.0, 0.0, 0.0],
+        [-1.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0],
+        [0.0, -1.0, 0.0],
+        [0.0, 0.0, 1.0],
+        [0.0, 0.0, -1.0],
+        [inv_sqrt2, inv_sqrt2, 0.0],
+        [-inv_sqrt3, inv_sqrt3, -inv_sqrt3],
+        [1.0, 0.0, 0.0],
+      ],
+      dtype=np.float32,
+    )
+    box_pts = wp.array(pts, dtype=wp.vec3)
+    box_grads_out = wp.zeros(len(pts), dtype=wp.vec3)
+    ellipsoid_dist_out = wp.zeros(1, dtype=float)
+    ellipsoid_grad_out = wp.zeros(1, dtype=wp.vec3)
+    wp.launch(
+      primitive_sdf_singularities_test,
+      dim=1,
+      inputs=[box_pts],
+      outputs=[box_grads_out, ellipsoid_dist_out, ellipsoid_grad_out],
+    )
+    np.testing.assert_allclose(ellipsoid_dist_out.numpy()[0], -1.0, rtol=1e-6, atol=1e-6)
+    np.testing.assert_allclose(ellipsoid_grad_out.numpy()[0], [0.0, 0.0, 0.0], rtol=1e-6, atol=1e-6)
+    np.testing.assert_allclose(box_grads_out.numpy(), expected_box_grads, rtol=1e-6, atol=1e-6)
 
   @parameterized.parameters(1, 2)
   def test_sdf_disjoint_bounds_with_candidate_gap(self, nworld):
