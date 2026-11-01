@@ -3539,6 +3539,85 @@ class DerivativeTest(parameterized.TestCase):
     if nworld == 2:
       self.assertFalse(np.allclose(d.qacc.numpy()[0], d.qacc.numpy()[1]))
 
+  # TODO(team): remove version check after mujoco>=3.17.1 is required
+  @absltest.skipIf(not util_pkg.check_version("mujoco>=3.17.1"), "Requires MuJoCo >= 3.17.1")
+  @parameterized.parameters(
+    mujoco.mjtIntegrator.mjINT_IMPLICITFAST,
+    mujoco.mjtIntegrator.mjINT_DISCRETE,
+  )
+  def test_tendon_actfrcrange_saturation(self, integrator):
+    """Tests skipping implicit actuator derivatives under tendon_actfrcrange saturation."""
+    ctrls = (0.1, -1.4, 1.0)
+    nworld = len(ctrls)
+    mjm, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option timestep="0.01"/>
+        <worldbody>
+          <body>
+            <joint name="slide" type="slide"/>
+            <geom size="0.05" mass="1"/>
+            <site name="s1"/>
+          </body>
+          <site name="s0" pos="0 0 0.3"/>
+        </worldbody>
+        <tendon>
+          <spatial name="ten" actuatorfrclimited="true" actuatorfrcrange="-19 0">
+            <site site="s0"/>
+            <site site="s1"/>
+          </spatial>
+        </tendon>
+        <actuator>
+          <general tendon="ten" biastype="affine" gainprm="3" biasprm="0 -3 -3"/>
+          <general tendon="ten" biastype="affine" gainprm="5" biasprm="0 -5 -5"/>
+          <general tendon="ten" biastype="affine" gainprm="7" biasprm="0 -7 -7"/>
+          <general tendon="ten" biastype="affine" gainprm="11" biasprm="0 -11 -11"/>
+          <general tendon="ten" biastype="affine" gainprm="13" biasprm="0 -13 -13"/>
+          <general tendon="ten" biastype="affine" gainprm="17" biasprm="0 -17 -17"/>
+        </actuator>
+      </mujoco>
+      """,
+      overrides={"opt.integrator": integrator},
+      nworld=nworld,
+    )
+
+    d.ctrl.assign(np.repeat(np.array(ctrls, dtype=np.float32)[:, None], mjm.nu, axis=1))
+
+    if integrator == mujoco.mjtIntegrator.mjINT_IMPLICITFAST:
+      out_smooth_vel = wp.zeros((nworld, m.nC), dtype=float)
+      forward.fwd_position(m, d, factorize=False)
+      forward.fwd_velocity(m, d)
+      forward.fwd_actuation(m, d)
+      mjw.deriv_smooth_vel(m, d, out_smooth_vel)
+      actuator_force = d.actuator_force.numpy()
+      smooth_vel = out_smooth_vel.numpy()
+      for w, ctrl in enumerate(ctrls):
+        mjd = mujoco.MjData(mjm)
+        mjd.ctrl[:] = ctrl
+        mujoco.mj_step(mjm, mjd)
+        _assert_eq(actuator_force[w], mjd.actuator_force, f"actuator_force_w{w}")
+        mj_out = mjd.M - mjm.opt.timestep * mjd.qDeriv
+        _assert_eq(smooth_vel[w], mj_out, f"M - dt * qDeriv_w{w}")
+    else:
+      for arr in (d.qacc_smooth, d.qacc, d.efm_as):
+        arr.fill_(wp.inf)
+      mjw.forward(m, d)
+      actuator_force = d.actuator_force.numpy()
+      qacc_smooth = d.qacc_smooth.numpy()
+      qacc = d.qacc.numpy()
+      efm_as = d.efm_as.numpy()
+      for w, ctrl in enumerate(ctrls):
+        mjd = mujoco.MjData(mjm)
+        mjd.ctrl[:] = ctrl
+        mujoco.mj_forward(mjm, mjd)
+        _assert_eq(actuator_force[w], mjd.actuator_force, f"actuator_force_w{w}")
+        _assert_eq(qacc_smooth[w], mjd.qacc_smooth, f"qacc_smooth_w{w}")
+        _assert_eq(qacc[w], mjd.qacc, f"qacc_w{w}")
+        if ctrl == 0.1:
+          self.assertTrue(np.all(efm_as[w] > 0.0))
+        else:
+          np.testing.assert_allclose(efm_as[w], 0.0, atol=0.0)
+
 
 if __name__ == "__main__":
   wp.init()
