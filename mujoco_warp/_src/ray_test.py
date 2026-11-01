@@ -382,6 +382,20 @@ class RayTest(parameterized.TestCase):
     _assert_eq(bvh_geomid_np, geomid_np, "geom_id")
     _assert_eq(bvh_dist_np, dist_np, "bvh dist")
 
+    # degenerate hfield dimensions (nrow < 2 or ncol < 2) fall back to base box
+    for bad_nrow, bad_ncol in ((1, 2), (2, 1), (0, 2)):
+      mjm.hfield_nrow[0] = bad_nrow
+      mjm.hfield_ncol[0] = bad_ncol
+      m.hfield_nrow = wp.array([bad_nrow], dtype=int)
+      m.hfield_ncol = wp.array([bad_ncol], dtype=int)
+      dist, geomid, normal = mjw.ray(m, d, pnt, vec)
+      mj_geomid = np.zeros(1, dtype=np.int32)
+      mj_normal = np.zeros(3, dtype=np.float64)
+      mj_dist = mujoco.mj_ray(mjm, mjd, pnt.numpy()[0, 0], vec.numpy()[0, 0], None, 1, -1, mj_geomid, mj_normal)
+      _assert_eq(dist.numpy()[0, 0], mj_dist, f"degenerate dist ({bad_nrow}, {bad_ncol})")
+      _assert_eq(geomid.numpy()[0, 0], mj_geomid[0], f"degenerate geomid ({bad_nrow}, {bad_ncol})")
+      _assert_eq(normal.numpy()[0, 0], mj_normal, f"degenerate normal ({bad_nrow}, {bad_ncol})")
+
   def test_ray_geomgroup(self):
     """Tests ray geomgroup filter."""
     mjm, mjd, m, d = test_data.fixture("ray.xml")
