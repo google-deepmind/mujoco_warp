@@ -270,6 +270,52 @@ class ForwardTest(parameterized.TestCase):
     np.testing.assert_allclose(d.qpos.numpy()[0], mjd.qpos, atol=2e-5, rtol=0, err_msg="mismatch: qpos")
     _assert_eq(d.qvel.numpy()[0], mjd.qvel, "qvel")
 
+  def test_rungekutta4_qacc_effective(self):
+    """After RK4, qacc is the effective acceleration and qacc_warmstart the last stage's."""
+    _, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option integrator="RK4" timestep="0.1" gravity="0 0 0">
+          <flag contact="disable"/>
+        </option>
+        <worldbody>
+          <body>
+            <joint type="slide" axis="1 0 0" stiffness="4" damping="0.5"/>
+            <inertial pos="0 0 0" mass="1" diaginertia="1 1 1"/>
+          </body>
+        </worldbody>
+        <keyframe>
+          <key qpos="1"/>
+        </keyframe>
+      </mujoco>
+      """,
+      keyframe=0,
+    )
+
+    mjw.forward(m, d)
+    h = 0.1
+    x0, v0 = d.qpos.numpy()[0, 0], d.qvel.numpy()[0, 0]
+
+    # reference RK4 on the linear spring-damper: a(x, v) = -4 x - 0.5 v
+    def acc(x, v):
+      return -4.0 * x - 0.5 * v
+
+    a0 = acc(x0, v0)
+    v1 = v0 + h / 2 * a0
+    a1 = acc(x0 + h / 2 * v0, v1)
+    v2 = v0 + h / 2 * a1
+    a2 = acc(x0 + h / 2 * v1, v2)
+    a3 = acc(x0 + h * v2, v0 + h * a2)
+    qacc_rk = (a0 + 2 * a1 + 2 * a2 + a3) / 6
+
+    mjw.rungekutta4(m, d)
+    qacc_eff = (d.qvel.numpy()[0, 0] - v0) / h
+
+    np.testing.assert_allclose(qacc_eff, qacc_rk, atol=1e-4)
+    np.testing.assert_allclose(d.qacc.numpy()[0, 0], qacc_rk, atol=1e-4)
+    np.testing.assert_allclose(d.qacc_warmstart.numpy()[0, 0], a3, atol=1e-4)
+    self.assertGreater(abs(qacc_rk - a3), 0.01)
+
   @parameterized.product(
     jacobian=(mujoco.mjtJacobian.mjJAC_SPARSE, mujoco.mjtJacobian.mjJAC_DENSE),
     actuation=(0, DisableBit.ACTUATION),
