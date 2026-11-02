@@ -1640,6 +1640,58 @@ class ResetHistoryTest(parameterized.TestCase):
     for w in range(nworld):
       np.testing.assert_allclose(d.sensordata.numpy()[w], mjd.sensordata, atol=1e-6)
 
+  @parameterized.product(nworld=(1, 2), nsample=(5, 7, 10, 16))
+  def test_subtimestep_interval_sensor_reset(self, nworld, nsample):
+    """Test sub-timestep and equal-timestep sensor intervals initialize strictly monotonic timestamps."""
+    mjm, _, m, d = test_data.fixture(
+      xml=f"""
+      <mujoco>
+        <option timestep="0.01" gravity="0 0 0"/>
+        <worldbody>
+          <body>
+            <joint name="slide" type="slide"/>
+            <geom size="0.1" mass="1"/>
+          </body>
+        </worldbody>
+        <sensor>
+          <jointpos joint="slide" delay="0.02" interval="0.002 0" nsample="{nsample}"/>
+          <jointpos joint="slide" delay="0.02" interval="0.002 -0.001" nsample="{nsample}"/>
+          <jointpos joint="slide" delay="0.02" interval="0.01 0" nsample="{nsample}"/>
+          <jointpos joint="slide" delay="0.02" interval="0.01 -0.005" nsample="{nsample}"/>
+          <jointpos joint="slide" delay="0.02" interval="0.015 0" nsample="{nsample}"/>
+        </sensor>
+      </mujoco>
+      """,
+      nworld=nworld,
+    )
+
+    qpos_vals = np.array([[5.0]]) + 3.0 * np.arange(nworld)[:, None]
+    d.qpos = wp.array2d(qpos_vals, dtype=float)
+    d.history.fill_(wp.inf)
+    reset_history(m, d)
+    hist = d.history.numpy()
+
+    for sid in range(mjm.nsensor):
+      adr = int(m.sensor_historyadr.numpy()[0, sid])
+      for w in range(nworld):
+        times = hist[w, adr + 2 : adr + 2 + nsample]
+        self.assertTrue(np.all(np.diff(times) > 0.0))
+
+    # TODO(team): remove guard once sub-timestep reset fix lands in stable MuJoCo
+    if util_pkg.check_version("mujoco>=3.17.1.dev1011687792"):
+      mjd = mujoco.MjData(mjm)
+      for w in range(nworld):
+        np.testing.assert_allclose(hist[w], mjd.history, atol=_TOLERANCE)
+
+    # Verify t=0 sample is recorded and read back after delay=0.02 (3 steps)
+    for _ in range(3):
+      step(m, d)
+    sens = d.sensordata.numpy()
+    for w in range(nworld):
+      np.testing.assert_allclose(sens[w, 0], qpos_vals[w, 0], atol=1e-6)
+    if nworld == 2:
+      self.assertFalse(np.allclose(sens[0], sens[1]))
+
   @parameterized.parameters(1, 2)
   def test_init_history_none_times_preserves_buffer(self, nworld):
     """Test init_ctrl_history and init_sensor_history with times=None preserve timestamps."""
