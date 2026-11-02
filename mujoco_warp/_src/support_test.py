@@ -693,6 +693,10 @@ class SupportTest(parameterized.TestCase):
     ([1.0, 0.0, 0.0], np.pi / 2.0, [2.0, 0.5, 1.0]),  # stretch along X and Y
     ([0.0, 1.0, 0.0], -np.pi / 4.0, [1.5, 1.5, 1.5]),  # uniform scaling
     ([1.0, 2.0, 3.0], np.pi / 6.0, [0.1, 10.0, 2.0]),  # extreme stretch
+    ([1.0, 0.0, 0.0], np.pi, [1.0, 1.0, 1.0]),  # unstretched half-turn along X
+    ([1.0, 0.0, 0.0], np.pi, [2.5, 1.0, 1.0]),  # stretched half-turn along X
+    ([1.0, 1.0, 1.0], np.pi, [1.0, 1.0, 1.0]),  # unstretched half-turn off-axis
+    ([1.0, 1.0, 1.0], np.pi, [2.5, 1.0, 1.0]),  # stretched half-turn off-axis
   )
   def test_mat33_to_quat_polar(self, axis, angle, stretch):
     # Rodrigues' rotation formula
@@ -700,7 +704,11 @@ class SupportTest(parameterized.TestCase):
     x, y, z = axis
     K = np.array([[0.0, -z, y], [z, 0.0, -x], [-y, x, 0.0]])
     R = np.eye(3) + np.sin(angle) * K + (1.0 - np.cos(angle)) * np.dot(K, K)
-    U = np.diag(stretch)
+    if np.isclose(angle, np.pi):
+      # Align stretch along the rotation axis so that identity is a stationary point.
+      U = np.eye(3) + (stretch[0] - 1.0) * np.outer(axis, axis)
+    else:
+      U = np.diag(stretch)
     F = np.dot(R, U)
 
     q_exp = np.array(
@@ -732,7 +740,7 @@ class SupportTest(parameterized.TestCase):
     q_est = q_out_wp.numpy()[0]
 
     # Align signs (antipodal symmetry)
-    if q_est[3] * q_exp[3] < 0.0:
+    if np.dot(q_est, q_exp) < 0.0:
       q_est = -q_est
 
     _assert_eq(q_est, q_exp, "quat")
