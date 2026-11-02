@@ -2405,7 +2405,11 @@ def _update_gradient_init_h_sparse(compact: bool):
     nv: int,
     M_elemid: wp.array2d[int],
     # Data in:
+    nf_in: wp.array[int],
     M_in: wp.array2d[float],
+    efc_D_in: wp.array2d[float],
+    efc_state_in: wp.array2d[int],
+    dof_frictionadr_in: wp.array2d[int],
     cdof_dof_in: wp.array2d[int],
     # In:
     ctx_done_in: wp.array[bool],
@@ -2465,6 +2469,13 @@ def _update_gradient_init_h_sparse(compact: bool):
           elemid = M_elemid[dof_c, dof_r]
           if elemid >= 0:
             h = M_in[worldid, elemid]
+          # a DOF friction row (J = e_dof) has no JTDAJ block: it adds D to the diagonal while
+          # quadratic
+          if r == c and nf_in[worldid] > 0:
+            efcid = dof_frictionadr_in[worldid, dof_r]
+            if efcid >= 0:
+              if efc_state_in[worldid, efcid] == types.ConstraintState.QUADRATIC.value:
+                h += efc_D_in[worldid, efcid]
       ctx_h_out[worldid, r, c] = h
 
   return kernel
@@ -3455,7 +3466,17 @@ def _update_gradient(m: types.Model, d: types.Data, ctx: SolverContext, compact:
       wp.launch(
         _update_gradient_init_h_sparse(sc),
         dim=(d.nworld, m.nv_pad, _INIT_H_SECTOR),
-        inputs=[mj.nv, mj.M_elemid, m_mat, dj.cdof_dof, ctx.done],
+        inputs=[
+          mj.nv,
+          mj.M_elemid,
+          d.nf,
+          m_mat,
+          d.efc.D,
+          d.efc.state,
+          d.dof_frictionadr,
+          dj.cdof_dof,
+          ctx.done,
+        ],
         outputs=[ctx.h],
       )
 
