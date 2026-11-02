@@ -2270,6 +2270,38 @@ class DCMotorTest(parameterized.TestCase):
     act_dot_actual = d.act_dot.numpy()[0, adr]
     np.testing.assert_allclose(act_dot_actual, 0.0, atol=1e-5)
 
+  def test_dcmotor_skips_actlimited(self):
+    """Test that DC motor ignores actuator_actlimited in forward dynamics matching C."""
+    xml = """
+    <mujoco>
+      <worldbody>
+        <body>
+          <joint name="joint"/>
+          <geom size="1"/>
+        </body>
+      </worldbody>
+      <actuator>
+        <dcmotor joint="joint" motorconst="1.0" resistance="1.0"
+                 inductance="0.01" input="voltage"/>
+      </actuator>
+    </mujoco>
+    """
+    mjm, mjd, m, d = test_data.fixture(xml=xml)
+    mjm.actuator_actlimited[0] = 1
+    mjm.actuator_actrange[0] = [-0.1, 0.1]
+    m.actuator_actlimited.assign(np.array([True]))
+    m.actuator_actrange.assign(np.array([[-0.1, 0.1]]))
+
+    d.ctrl.assign(np.array([[10.0]]))
+    mjd.ctrl[0] = 10.0
+    for _ in range(5):
+      mujoco.mj_step(mjm, mjd)
+      mjw.step(m, d)
+
+    self.assertGreater(d.act.numpy()[0, 0], 0.1)
+    np.testing.assert_allclose(d.act.numpy()[0, 0], mjd.act[0], atol=1e-5)
+    np.testing.assert_allclose(d.actuator_force.numpy()[0, 0], mjd.actuator_force[0], atol=1e-5)
+
   def test_dcmotor_lugre_steady_state(self):
     v_S = 10.0
     F_C = 0.5
