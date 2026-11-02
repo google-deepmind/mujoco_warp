@@ -77,8 +77,7 @@ def _create_solver_context(
     d: Data.
     inplace_cholesky: If True, alias hfactor to h for non-incremental Newton
       solves where blocked Cholesky overwrites h in-place each iteration.
-    dense_hessian: False if the Newton Hessian is assembled by the sparse kernels even though m
-      is dense (the compact solve of a sparse model).
+    dense_hessian: False for the compact solve of a sparse model (sparse Hessian kernels).
 
   Returns:
     SolverContext with allocated arrays.
@@ -2285,7 +2284,6 @@ def _update_constraint(
     ctx.done,
   ]
 
-  # dense elliptic Newton reads each cone row's virtual Hessian row (see _cone_virtual_row)
   cone_rows = isinstance(ctx, SolverContext) and ctx.cone_coef is not None
   wp.launch(
     _update_constraint_efc(track_changes, cone_rows, bool(m.opt.deterministic & types.DeterminismType.ATOMICS)),
@@ -2767,14 +2765,11 @@ def _cone_virtual_row(
   tt: float,
   friction: types.vec5,
 ):
-  """Coefficients over a contact's rows and weight of the virtual Hessian row of its row `slot`.
+  """Coefficients over its contact's rows and weight of the virtual Hessian row of row `slot`.
 
-  The cone curvature of a contact with normal row a = mu J_0 and tangent rows z_d = f_d J_d is
-  dm [(a - mu p)(a - mu p)' + s Z'(I - uu')Z], p = Z'u, s = mu^2 - mu n / t. With an orthonormal
-  basis h_k of the tangent space (Householder, h_1 parallel to u), I - uu' is the sum of h_k h_k'
-  over k > 1 plus (1 - |u|^2) h_1 h_1', so each of the contact's rows maps to one weighted
-  combination of its rows: slot 0 to a - mu p, slots 1..m-1 to Z'h_{slot+1}, slot m to Z'h_1.
-  `u` holds the unnormalized tangent Jaref_d f_d and `tt` its squared norm.
+  The cone curvature dm [(a - mu p)(a - mu p)' + s Z'(I - uu')Z] (a = mu J_0, Z rows f_d J_d,
+  p = Z'u) splits over a Householder basis h_k of the tangent space with h_1 along u: slot 0 is
+  a - mu p, slots 1..m-1 are Z'h_{slot+1}, slot m is Z'h_1 with weight (1 - |u|^2) dm s.
   """
   coef = types.vec6()
   mu2 = mu * mu
@@ -2826,7 +2821,7 @@ def _cone_virtual_row(
 
 @wp.func
 def _row_weight(D: float, state: int, cone_weight: float, active: float) -> float:
-  # rows past nefc carry stale states and unwritten cone weights
+  # rows past nefc have stale states
   if active == 0.0:
     return 0.0
   if state == types.ConstraintState.QUADRATIC.value:
@@ -2871,8 +2866,7 @@ def _rewrite_cone_rows(
     if enable:
       base = ctx_cone_base_in[worldid, efcid]
       coef = ctx_cone_coef_in[worldid, efcid]
-      # coefficients past the contact dimension are zero; bound the row index in case a
-      # truncated contact (njmax overflow) kept a stale cone state
+      # zero past condim; bound rows of contacts truncated by njmax
       for dim in range(6):
         row = base + dim
         if (coef[dim] != 0.0) and (row >= 0) and (row < nefc_world):
@@ -2901,11 +2895,7 @@ def _elliptic_chunk_weights(tile_size: int):
     ncol: int,
     J_kj: Any,
   ):
-    """Hessian weights of a chunk of rows; replaces its cone-state rows by their virtual rows.
-
-    Cone-state rows enter as their weighted virtual rows (see _cone_virtual_row), which the
-    constraint update resolved; the other rows keep their Jacobian row.
-    """
+    """Hessian weights of a row chunk; replaces its cone-state rows with their virtual rows."""
     state = wp.tile_load(efc_state_in[worldid], shape=TILE_SIZE_K, offset=k, bounds_check=False, storage="shared")
     D_k = wp.tile_load(efc_D_in[worldid], shape=TILE_SIZE_K, offset=k, bounds_check=False)
     cone_weight = wp.tile_load(ctx_cone_weight_in[worldid], shape=TILE_SIZE_K, offset=k, bounds_check=False)
@@ -4731,7 +4721,6 @@ def solve_compact(m: types.Model, d: types.Data):
     efc=efc2,
   )
 
-  # m2 is dense even for a sparse model, whose compact Hessian uses the sparse kernels
   sctx = _create_solver_context(m2, d2, inplace_cholesky=True, dense_hessian=not m.is_sparse)
   # compact kernels read the full-coordinate sparse structures (M, J) through
   # the compaction maps instead of dense products on gathered blocks
