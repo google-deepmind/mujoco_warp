@@ -95,7 +95,7 @@ MJ_FLEX_COLLISION_TABLE = {
   (GeomType.SPHERE, GeomType.FLEX): CollisionType.PRIMITIVE,
   (GeomType.CAPSULE, GeomType.FLEX): CollisionType.PRIMITIVE,
   (GeomType.BOX, GeomType.FLEX): CollisionType.PRIMITIVE,
-  (GeomType.CYLINDER, GeomType.FLEX): CollisionType.PRIMITIVE,
+  (GeomType.CYLINDER, GeomType.FLEX): CollisionType.CONVEX,
   (GeomType.MESH, GeomType.FLEX): CollisionType.CONVEX,
   (GeomType.ELLIPSOID, GeomType.FLEX): CollisionType.CONVEX,
 }
