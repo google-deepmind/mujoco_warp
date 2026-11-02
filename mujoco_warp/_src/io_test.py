@@ -1989,7 +1989,6 @@ class IOTest(parameterized.TestCase):
         <extension>
           <plugin plugin="mujoco.pid"/>
           <plugin plugin="mujoco.sensor.touch_grid"/>
-          <plugin plugin="mujoco.elasticity.cable"/>
         </extension>
         <worldbody>
           <geom type="plane" size="10 10 .001"/>
@@ -1998,15 +1997,6 @@ class IOTest(parameterized.TestCase):
             <geom type="sphere" size=".1"/>
             <site name="site"/>
           </body>
-          <composite type="cable" curve="s" count="41 1 1" size="1" offset="-.3 0 .6" initial="none">
-            <plugin plugin="mujoco.elasticity.cable">
-              <config key="twist" value="1e7"/>
-              <config key="bend" value="4e6"/>
-              <config key="vmax" value="0.05"/>
-            </plugin>
-            <joint kind="main" damping=".015"/>
-            <geom type="capsule" size=".005" rgba=".8 .2 .1 .1" condim="1"/>
-          </composite>
         </worldbody>
         <actuator>
           <plugin plugin="mujoco.pid" joint="joint"/>
@@ -3074,6 +3064,30 @@ class IOTest(parameterized.TestCase):
 
     with warnings.catch_warnings():
       warnings.simplefilter("error")
+      mjwarp.put_model(mjm)
+
+  def test_rod_max_edges_exceeded(self):
+    """1D rod chain with more than ROD_MAX_EDGES edges raises NotImplementedError in put_model."""
+    if types.ROD_HINGE_SIZE != 10:
+      self.skipTest("Requires 1D flex rod torsion support in MuJoCo")
+    mjm = mujoco.MjModel.from_xml_string(
+      f"""
+      <mujoco>
+        <worldbody>
+          <flexcomp name="rod" type="grid" count="{types.ROD_MAX_EDGES + 2} 1 1"
+                    spacing="0.02 0.02 0.02" radius="0.005" dim="1" mass="1">
+            <pin id="0 1"/>
+            <contact selfcollide="none" contype="0" conaffinity="0"/>
+            <elasticity young="1e6"/>
+          </flexcomp>
+        </worldbody>
+      </mujoco>
+      """
+    )
+    with self.assertRaisesRegex(
+      NotImplementedError,
+      f"1D rod chain with {types.ROD_MAX_EDGES + 1} edges exceeds ROD_MAX_EDGES \\({types.ROD_MAX_EDGES}\\)",
+    ):
       mjwarp.put_model(mjm)
 
 
