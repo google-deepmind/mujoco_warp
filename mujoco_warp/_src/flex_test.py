@@ -5242,7 +5242,7 @@ class FlexEdgeTest(parameterized.TestCase):
 
   @parameterized.parameters(1, 2)
   def test_flex_2d_edge_passive_and_energy(self, nworld):
-    """Test dim=2 flex edge stiffness generates passive forces but no potential energy."""
+    """Test dim=2 flex edge stiffness generates passive forces and potential energy."""
     mjm, mjd, m, d = test_data.fixture(
       xml="""
       <mujoco>
@@ -5289,19 +5289,71 @@ class FlexEdgeTest(parameterized.TestCase):
     mjw.energy_pos(m, d)
     mjw.passive(m, d)
 
+    qfrc_spring = d.qfrc_spring.numpy()
+    flexedge_length0 = m.flexedge_length0.numpy()
+    flexedge_length = d.flexedge_length.numpy()
+    flexedge_rigid = m.flexedge_rigid.numpy()
+    energy = d.energy.numpy()
     for w in range(nworld):
-      self.assertGreater(float(np.linalg.norm(d.qfrc_spring.numpy()[w])), 0.0)
+      self.assertGreater(float(np.linalg.norm(qfrc_spring[w])), 0.0)
       np.testing.assert_allclose(
-        d.qfrc_spring.numpy()[w],
+        qfrc_spring[w],
         mjds[w].qfrc_spring,
         atol=_TOLERANCE,
         err_msg=f"qfrc_spring mismatch (world {w})",
       )
-      self.assertEqual(d.energy.numpy()[w, 0], 0.0)
-      self.assertEqual(mjds[w].energy[0], 0.0)
+      displacement = flexedge_length0 - flexedge_length[w]
+      expected_energy = 0.5 * 100.0 * np.sum(np.where(flexedge_rigid, 0.0, displacement**2))
+      self.assertGreater(energy[w, 0], 0.0)
+      np.testing.assert_allclose(energy[w, 0], expected_energy, rtol=1e-5, err_msg=f"energy mismatch (world {w})")
+      # TODO(team): remove version check once mujoco >= 3.17.1 is required.
+      if util_pkg.check_version("mujoco>=3.17.1.dev1011686686"):
+        np.testing.assert_allclose(
+          energy[w, 0], mjds[w].energy[0], atol=_TOLERANCE, err_msg=f"energy mismatch with C (world {w})"
+        )
 
     if nworld == 2:
-      self.assertFalse(np.allclose(d.qfrc_spring.numpy()[0], d.qfrc_spring.numpy()[1]))
+      self.assertFalse(np.allclose(qfrc_spring[0], qfrc_spring[1]))
+
+  @parameterized.parameters(1, 2)
+  def test_flex_interpolated_edge_spring_skipped(self, nworld):
+    """Test interpolated flex edges are skipped in edge spring energy computation."""
+    xml = """
+      <mujoco>
+        <option gravity="0 0 0">
+          <flag energy="enable"/>
+        </option>
+        <worldbody>
+          <flexcomp name="softbody" type="grid" count="4 2 4" spacing=".025 .05 .025" pos="0 0 0"
+                    dim="3" cellcount="2 1 2" radius=".001"
+                    mass="5" dof="trilinear">
+            <contact condim="3" selfcollide="none"/>
+          </flexcomp>
+        </worldbody>
+      </mujoco>
+    """
+    mjm = mujoco.MjModel.from_xml_string(xml)
+    # Simulate runtime modification of flex_edgestiffness.
+    mjm.flex_edgestiffness[0] = 100.0
+    mjd = mujoco.MjData(mjm)
+    mjd.qpos[0] = 0.05
+    mujoco.mj_forward(mjm, mjd)
+
+    m = mjw.put_model(mjm)
+    d = mjw.put_data(mjm, mjd, nworld=nworld)
+    if nworld == 2:
+      qpos = d.qpos.numpy()
+      qpos[1, 0] = 0.1
+      d.qpos.assign(qpos)
+
+    d.energy.fill_(wp.inf)
+    mjw.fwd_position(m, d)
+    mjw.energy_pos(m, d)
+
+    energy = d.energy.numpy()
+    for w in range(nworld):
+      self.assertEqual(energy[w, 0], 0.0)
+    self.assertEqual(mjd.energy[0], 0.0)
 
   @parameterized.parameters(1, 2)
   def test_flex_edge_rigid(self, nworld):
