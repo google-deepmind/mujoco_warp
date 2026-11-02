@@ -23,6 +23,7 @@ from mujoco_warp._src.collision_core import Geom
 from mujoco_warp._src.collision_core import sap_binary_search
 from mujoco_warp._src.collision_core import sap_range
 from mujoco_warp._src.collision_gjk import ccd
+from mujoco_warp._src.collision_gjk import support
 from mujoco_warp._src.math import make_frame
 from mujoco_warp._src.math import orthogonals
 from mujoco_warp._src.types import MJ_MAX_EPAFACES
@@ -650,40 +651,6 @@ def _collide_geom_triangle_detect(
         cand_worldid_out,
         ncand_out,
       )
-    return
-
-  if gtype == int(GeomType.CYLINDER):
-    cyl_radius = size_val[0]
-    cyl_half_height = size_val[1]
-    cyl_axis = wp.vec3(rot[0, 2], rot[1, 2], rot[2, 2])
-    cyl_dists, cyl_poss, cyl_nrms = collision_primitive_core.cylinder_triangle(
-      pos, cyl_axis, cyl_radius, cyl_half_height, t1, t2, t3, tri_radius
-    )
-    for i in range(2):
-      if cyl_dists[i] < margin:
-        _write_candidate(
-          max_candidates,
-          cyl_dists[i],
-          cyl_poss[i],
-          cyl_nrms[i],
-          geomid,
-          -1,
-          flexid,
-          elemid,
-          vertex_id,
-          worldid,
-          warn_overflow,
-          overflow_out,
-          cand_dist_out,
-          cand_pos_out,
-          cand_nrm_out,
-          cand_geom_out,
-          cand_flex_out,
-          cand_elem_out,
-          cand_vert_out,
-          cand_worldid_out,
-          ncand_out,
-        )
 
 
 @wp.func
@@ -694,9 +661,10 @@ def _collide_mesh_convex(
   mesh_graphadr: wp.array[int],
   mesh_vert: wp.array[wp.vec3],
   mesh_graph: wp.array[int],
-  mesh_pos: wp.array[wp.vec3],
+  mesh_polyadr: wp.array[int],
   mesh_polynormal: wp.array[wp.vec3],
   mesh_polyvertadr: wp.array[int],
+  mesh_polyvertnum: wp.array[int],
   mesh_polyvert: wp.array[int],
   mesh_polymapadr: wp.array[int],
   mesh_polymapnum: wp.array[int],
@@ -706,12 +674,11 @@ def _collide_mesh_convex(
   mesh_geom_pos: wp.vec3,
   geom_rot: wp.mat33,
   geom_size_val: wp.vec3,
+  r_geom: float,
   did: int,
   geom2: Geom,
   geom2_type: int,
   geom2_pos: wp.vec3,
-  geom2_bounding_radius: float,
-  geom2_radius: float,
   margin: float,
   geomid: int,
   flexid: int,
@@ -753,115 +720,103 @@ def _collide_mesh_convex(
   geom1.vert = mesh_vert
   geom1.graph = mesh_graph
 
-  geom_center = mesh_geom_pos
-  if did >= 0:
-    geom_center = mesh_geom_pos + geom_rot @ mesh_pos[did]
+  dist, ncontact, w1, w2, _ = ccd(
+    tolerance,
+    margin,
+    ccd_iterations,
+    ccd_iterations,
+    geom1,
+    geom2,
+    int(GeomType.MESH),
+    geom2_type,
+    mesh_geom_pos,
+    geom2_pos,
+    epa_vert,
+    epa_vert_index,
+    epa_face,
+    epa_pr,
+    epa_norm2,
+    epa_horizon,
+    warn_overflow,
+    worldid,
+    overflow_out,
+  )
 
-  r_geom = wp.length(geom_size_val)
-  if wp.length(geom2_pos - geom_center) <= r_geom + geom2_bounding_radius + margin + geom2_radius + 0.04:
-    dist, ncontact, w1, w2, idx = ccd(
-      tolerance,
-      margin + geom2_radius,
-      ccd_iterations,
-      ccd_iterations,
-      geom1,
-      geom2,
-      int(GeomType.MESH),
-      geom2_type,
-      mesh_geom_pos,
-      geom2_pos,
-      epa_vert,
-      epa_vert_index,
-      epa_face,
-      epa_pr,
-      epa_norm2,
-      epa_horizon,
-      warn_overflow,
+  if ncontact > 0 and dist < margin:
+    diff = (w1 - w2) if dist < 0.0 else (w2 - w1)
+    gjk_normal = wp.normalize(diff)
+    if wp.length_sq(diff) <= 1.0e-24:
+      fallback = geom2_pos - mesh_geom_pos
+      gjk_normal = wp.normalize(fallback) if wp.length_sq(fallback) > 1.0e-12 else wp.vec3(1.0, 0.0, 0.0)
+
+    # If the mesh witness point lies strictly in the interior of a mesh face (a flex vertex or edge
+    # against the face), use the exact face normal instead of the single-precision GJK/EPA normal,
+    # which loses precision as the distance goes to zero.
+    normal = gjk_normal
+    if did >= 0:
+      sv0 = support(geom1, int(GeomType.MESH), gjk_normal).vertex_index
+      if sv0 >= 0:
+        vertadr = geom1.vertadr
+        polyadr = mesh_polyadr[did]
+        geom_rot_T = wp.transpose(geom_rot)
+        w1_local = geom_rot_T @ (w1 - mesh_geom_pos)
+        gjk_normal_local = geom_rot_T @ gjk_normal
+        plane_tol = 1.0e-3 * r_geom
+
+        polymapadr = mesh_polymapadr[vertadr + sv0]
+        polymapnum = mesh_polymapnum[vertadr + sv0]
+        for k in range(polymapnum):
+          poly = polyadr + mesh_polymap[polymapadr + k]
+          npv = mesh_polyvertnum[poly]
+          if npv < 3:
+            continue
+          poly_normal = mesh_polynormal[poly]
+          if wp.dot(poly_normal, gjk_normal_local) <= 0.0:
+            continue
+          pvadr = mesh_polyvertadr[poly]
+          v0 = mesh_vert[vertadr + mesh_polyvert[pvadr]]
+          if wp.abs(wp.dot(w1_local - v0, poly_normal)) > plane_tol:
+            continue
+
+          v_curr = v0
+          inside = bool(True)
+          for j in range(npv):
+            v_next = v0 if j + 1 == npv else mesh_vert[vertadr + mesh_polyvert[pvadr + j + 1]]
+            edge = v_next - v_curr
+            edge_len_sq = wp.length_sq(edge)
+            if edge_len_sq > 1.0e-24 and wp.dot(wp.cross(poly_normal, edge), w1_local - v_curr) <= 1.0e-5 * edge_len_sq:
+              inside = False
+              break
+            v_curr = v_next
+          if inside:
+            normal = wp.normalize(geom_rot @ poly_normal)
+            break
+
+    contact_pos = 0.5 * (w1 + w2)
+
+    _write_candidate(
+      max_candidates,
+      dist,
+      contact_pos,
+      normal,
+      geomid,
+      -1,
+      flexid,
+      elemid,
+      vertid,
       worldid,
+      warn_overflow,
       overflow_out,
+      cand_dist_out,
+      cand_pos_out,
+      cand_nrm_out,
+      cand_geom_out,
+      cand_flex_out,
+      cand_elem_out,
+      cand_vert_out,
+      cand_worldid_out,
+      ncand_out,
     )
-
-    if ncontact > 0 and dist < margin + geom2_radius:
-      diff = (w1 - w2) if dist < 0.0 else (w2 - w1)
-      gjk_normal = wp.normalize(diff)
-      if wp.length_sq(diff) < 1e-12:
-        gjk_normal = wp.normalize(geom2_pos - geom_center)
-
-      best_normal = gjk_normal
-      if did >= 0:
-        w1_local = wp.transpose(geom_rot) @ (w1 - mesh_geom_pos)
-        v_offset = mesh_vertadr[did]
-
-        sv0 = int(0)
-        if idx >= 0:
-          f_verts = wp.vec3i(epa_face[idx] & 0x3FF, (epa_face[idx] >> 10) & 0x3FF, (epa_face[idx] >> 20) & 0x3FF)
-          sv0 = epa_vert_index[2 * f_verts[0]]
-        else:
-          min_v_dist = float(1e10)
-          for vi in range(mesh_vertnum[did]):
-            d_v = wp.length_sq(w1_local - mesh_vert[v_offset + vi])
-            if d_v < min_v_dist:
-              min_v_dist = d_v
-              sv0 = vi
-
-        min_plane_dist = float(1e10)
-        best_normal_local = wp.transpose(geom_rot) @ gjk_normal
-        best_poly_idx = int(-1)
-
-        v_global_idx = v_offset + sv0
-        polymap_start = mesh_polymapadr[v_global_idx]
-        npolygons = mesh_polymapnum[v_global_idx]
-
-        for k in range(npolygons):
-          poly_idx = mesh_polymap[polymap_start + k]
-          normal_local = mesh_polynormal[poly_idx]
-          v0_local_idx = mesh_polyvert[mesh_polyvertadr[poly_idx]]
-          v0_mesh_local = mesh_vert[v_offset + v0_local_idx]
-
-          dist_to_plane = wp.abs(wp.dot(w1_local - v0_mesh_local, normal_local))
-          if dist_to_plane < min_plane_dist:
-            min_plane_dist = dist_to_plane
-            best_normal_local = normal_local
-            best_poly_idx = poly_idx
-
-        if best_poly_idx >= 0:
-          vert_start = mesh_polyvertadr[best_poly_idx]
-          v0_idx = mesh_polyvert[vert_start]
-          v1_idx = mesh_polyvert[vert_start + 1]
-          v2_idx = mesh_polyvert[vert_start + 2]
-          v0_mesh_local = mesh_vert[v_offset + v0_idx]
-          v1_mesh_local = mesh_vert[v_offset + v1_idx]
-          v2_mesh_local = mesh_vert[v_offset + v2_idx]
-
-          if min_plane_dist <= 0.005 and _inside_triangle(w1_local, v0_mesh_local, v1_mesh_local, v2_mesh_local, 0.05):
-            best_normal = wp.normalize(geom_rot @ best_normal_local)
-
-      normal = wp.where(wp.dot(best_normal, gjk_normal) >= 0.0, best_normal, -best_normal)
-      contact_pos = 0.5 * (w1 + w2)
-
-      _write_candidate(
-        max_candidates,
-        dist - geom2_radius,
-        contact_pos,
-        normal,
-        geomid,
-        -1,
-        flexid,
-        elemid,
-        vertid,
-        worldid,
-        warn_overflow,
-        overflow_out,
-        cand_dist_out,
-        cand_pos_out,
-        cand_nrm_out,
-        cand_geom_out,
-        cand_flex_out,
-        cand_elem_out,
-        cand_vert_out,
-        cand_worldid_out,
-        ncand_out,
-      )
 
 
 @cache_kernel
@@ -972,32 +927,6 @@ def _flex_plane_narrowphase(warn_overflow: int):
         )
 
   return kernel
-
-
-@wp.func
-def _inside_triangle(
-  # In:
-  P: wp.vec3,
-  A: wp.vec3,
-  B: wp.vec3,
-  C: wp.vec3,
-  tol: float,
-) -> bool:
-  v0 = B - A
-  v1 = C - A
-  v2 = P - A
-  d00 = wp.dot(v0, v0)
-  d01 = wp.dot(v0, v1)
-  d11 = wp.dot(v1, v1)
-  d20 = wp.dot(v2, v0)
-  d21 = wp.dot(v2, v1)
-  denom = d00 * d11 - d01 * d01
-  if wp.abs(denom) < 1e-12:
-    return False
-  v = (d11 * d20 - d01 * d21) / denom
-  w = (d00 * d21 - d01 * d20) / denom
-  u = 1.0 - v - w
-  return u >= -tol and v >= -tol and w >= -tol and u <= 1.0 + tol and v <= 1.0 + tol and w <= 1.0 + tol
 
 
 @wp.func
@@ -1589,6 +1518,7 @@ def _flex_narrowphase_elem_detect(warn_overflow: int):
     geom_dataid: wp.array2d[int],
     geom_size: wp.array2d[wp.vec3],
     geom_aabb: wp.array3d[wp.vec3],
+    geom_rbound: wp.array2d[float],
     geom_margin: wp.array2d[float],
     flex_contype: wp.array[int],
     flex_conaffinity: wp.array[int],
@@ -1607,9 +1537,10 @@ def _flex_narrowphase_elem_detect(warn_overflow: int):
     mesh_graphadr: wp.array[int],
     mesh_vert: wp.array[wp.vec3],
     mesh_graph: wp.array[int],
-    mesh_pos: wp.array[wp.vec3],
+    mesh_polyadr: wp.array[int],
     mesh_polynormal: wp.array[wp.vec3],
     mesh_polyvertadr: wp.array[int],
+    mesh_polyvertnum: wp.array[int],
     mesh_polyvert: wp.array[int],
     mesh_polymapadr: wp.array[int],
     mesh_polymapnum: wp.array[int],
@@ -1714,6 +1645,7 @@ def _flex_narrowphase_elem_detect(warn_overflow: int):
 
       geom2.rot = wp.mat33(t1[0], t1[1], t1[2], t2[0], t2[1], t2[2], t3[0], t3[1], t3[2])
       geom2_type = int(GeomType.TRIANGLE)
+      geom2.margin = 2.0 * elem_radius
       centroid = (t1 + t2 + t3) * wp.static(1.0 / 3.0)
       d1 = wp.length(t1 - centroid)
       d2 = wp.length(t2 - centroid)
@@ -1783,6 +1715,12 @@ def _flex_narrowphase_elem_detect(warn_overflow: int):
     f_conaffinity = flex_conaffinity[flexid]
     flex_aabb_min_val = flex_aabb_min_in[worldid, flexid]
     flex_aabb_max_val = flex_aabb_max_in[worldid, flexid]
+    margin_id = worldid % geom_margin.shape[0]
+    size_id = worldid % geom_size.shape[0]
+    aabb_id = worldid % geom_aabb.shape[0]
+    rbound_id = worldid % geom_rbound.shape[0]
+    dataid_id = worldid % geom_dataid.shape[0]
+    tolerance = opt_ccd_tolerance[worldid % opt_ccd_tolerance.shape[0]]
 
     for geomid in range(ngeom):
       gtype = geom_type[geomid]
@@ -1806,15 +1744,14 @@ def _flex_narrowphase_elem_detect(warn_overflow: int):
       if b >= 0 and (b == b0 or b == b1 or b == b2 or b == b3):
         continue
 
-      geom_margin_val = geom_margin[worldid % geom_margin.shape[0], geomid]
+      geom_margin_val = geom_margin[margin_id, geomid]
       margin = geom_margin_val + elem_margin
 
       geom_pos = geom_xpos_in[worldid, geomid]
       geom_rot = geom_xmat_in[worldid, geomid]
-      geom_size_val = geom_size[worldid % geom_size.shape[0], geomid]
+      geom_size_val = geom_size[size_id, geomid]
 
       # Stage 1: Coarse flex object AABB vs Geom world AABB check
-      aabb_id = worldid % geom_aabb.shape[0]
       geom_center_local = geom_aabb[aabb_id, geomid, 0]
       geom_half_size_local = geom_aabb[aabb_id, geomid, 1]
       geom_center_global = geom_rot @ geom_center_local + geom_pos
@@ -1841,6 +1778,10 @@ def _flex_narrowphase_elem_detect(warn_overflow: int):
         continue
 
       if gtype == int(GeomType.MESH):
+        r_geom = geom_rbound[rbound_id, geomid]
+        if wp.length(centroid - geom_pos) > r_geom + r_elem + margin + elem_radius + 0.04:
+          continue
+
         ccdid = wp.atomic_add(nccd, 0, 1)  # kernel_analyzer: ignore[atomic]
         if ccdid >= naccdmax_in:
           if wp.static(bool(warn_overflow & OverflowType.CCD)):
@@ -1852,20 +1793,17 @@ def _flex_narrowphase_elem_detect(warn_overflow: int):
           wp.atomic_or(overflow_out, worldid, wp.static(OverflowType.CCD))
           continue
 
-        did = geom_dataid[worldid % geom_dataid.shape[0], geomid]
-        tolerance = opt_ccd_tolerance[worldid % opt_ccd_tolerance.shape[0]]
-
-        geom2_r = elem_radius if f_dim == 2 else 0.0
-        geom2_rbound = r_elem if f_dim == 2 else (r_elem + elem_radius)
+        did = geom_dataid[dataid_id, geomid]
         _collide_mesh_convex(
           mesh_vertadr,
           mesh_vertnum,
           mesh_graphadr,
           mesh_vert,
           mesh_graph,
-          mesh_pos,
+          mesh_polyadr,
           mesh_polynormal,
           mesh_polyvertadr,
+          mesh_polyvertnum,
           mesh_polyvert,
           mesh_polymapadr,
           mesh_polymapnum,
@@ -1874,12 +1812,11 @@ def _flex_narrowphase_elem_detect(warn_overflow: int):
           geom_pos,
           geom_rot,
           geom_size_val,
+          r_geom,
           did,
           geom2,
           geom2_type,
           centroid,
-          geom2_rbound,
-          geom2_r,
           margin,
           geomid,
           flexid,
@@ -1937,12 +1874,7 @@ def _flex_narrowphase_elem_detect(warn_overflow: int):
           ncand_out,
         )
 
-      elif f_dim == 2 and (
-        gtype == int(GeomType.SPHERE)
-        or gtype == int(GeomType.CAPSULE)
-        or gtype == int(GeomType.BOX)
-        or gtype == int(GeomType.CYLINDER)
-      ):
+      elif f_dim == 2 and (gtype == int(GeomType.SPHERE) or gtype == int(GeomType.CAPSULE) or gtype == int(GeomType.BOX)):
         _collide_geom_triangle_detect(
           max_candidates,
           gtype,
@@ -1973,6 +1905,10 @@ def _flex_narrowphase_elem_detect(warn_overflow: int):
         )
 
       else:
+        r_geom = geom_rbound[rbound_id, geomid]
+        if wp.length(centroid - geom_pos) > r_geom + r_elem + margin + elem_radius + 0.04:
+          continue
+
         ccdid = wp.atomic_add(nccd, 0, 1)  # kernel_analyzer: ignore[atomic]
         if ccdid >= naccdmax_in:
           if wp.static(bool(warn_overflow & OverflowType.CCD)):
@@ -1984,8 +1920,6 @@ def _flex_narrowphase_elem_detect(warn_overflow: int):
           wp.atomic_or(overflow_out, worldid, wp.static(OverflowType.CCD))
           continue
 
-        tolerance = opt_ccd_tolerance[worldid % opt_ccd_tolerance.shape[0]]
-
         geom1 = Geom()
         geom1.pos = geom_pos
         geom1.rot = geom_rot
@@ -1993,65 +1927,69 @@ def _flex_narrowphase_elem_detect(warn_overflow: int):
         geom1.margin = 0.0
         geom1.index = -1
 
-        r_geom = wp.length(geom_size_val)
-        if wp.length(centroid - geom_pos) <= r_geom + r_elem + margin + elem_radius + 0.04:
-          ccd_cutoff = (margin + elem_radius) if f_dim == 2 else margin
-          dist, ncontact, w1, w2, idx = ccd(
-            tolerance,
-            ccd_cutoff,
-            ccd_iterations,
-            ccd_iterations,
-            geom1,
-            geom2,
-            gtype,
-            geom2_type,
-            geom_pos,
-            centroid,
-            epa_vert[ccdid],
-            epa_vert_index[ccdid],
-            epa_face[ccdid],
-            epa_pr[ccdid],
-            epa_norm2[ccdid],
-            epa_horizon[ccdid],
-            wp.static(bool(warn_overflow & OverflowType.EPA_HORIZON)),
+        dist, ncontact, w1, w2, _ = ccd(
+          tolerance,
+          margin,
+          ccd_iterations,
+          ccd_iterations,
+          geom1,
+          geom2,
+          gtype,
+          geom2_type,
+          geom_pos,
+          centroid,
+          epa_vert[ccdid],
+          epa_vert_index[ccdid],
+          epa_face[ccdid],
+          epa_pr[ccdid],
+          epa_norm2[ccdid],
+          epa_horizon[ccdid],
+          wp.static(bool(warn_overflow & OverflowType.EPA_HORIZON)),
+          worldid,
+          overflow_out,
+        )
+
+        if ncontact > 0 and dist < margin:
+          diff = (w1 - w2) if dist < 0.0 else (w2 - w1)
+          normal = wp.normalize(diff)
+          if wp.length_sq(diff) <= 1.0e-24:
+            fallback = centroid - geom_pos
+            normal = wp.normalize(fallback) if wp.length_sq(fallback) > 1.0e-12 else wp.vec3(1.0, 0.0, 0.0)
+
+          contact_pos = 0.5 * (w1 + w2)
+          # TODO(team): mjc_fixNormal also refines ellipsoid normals for 2D flexes
+          if f_dim == 2 and gtype == int(GeomType.CYLINDER):
+            pos1 = wp.transpose(geom_rot) @ (contact_pos - geom_pos)
+            if wp.abs(pos1[2]) <= 0.95 * geom_size_val[1]:
+              rad_xy = wp.sqrt(pos1[0] * pos1[0] + pos1[1] * pos1[1])
+              dst1 = wp.abs(geom_size_val[1] - wp.abs(pos1[2]))
+              dst2 = wp.abs(geom_size_val[0] - rad_xy)
+              if dst1 >= 0.25 * dst2 and rad_xy > 1.0e-12:
+                normal = geom_rot @ (wp.vec3(pos1[0], pos1[1], 0.0) / rad_xy)
+
+          _write_candidate(
+            max_candidates,
+            dist,
+            contact_pos,
+            normal,
+            geomid,
+            -1,
+            flexid,
+            local_elemid,
+            -1,
             worldid,
+            wp.static(bool(warn_overflow & OverflowType.NARROWPHASE)),
             overflow_out,
+            cand_dist_out,
+            cand_pos_out,
+            cand_nrm_out,
+            cand_geom_out,
+            cand_flex_out,
+            cand_elem_out,
+            cand_vert_out,
+            cand_worldid_out,
+            ncand_out,
           )
-
-          cand_dist = (dist - elem_radius) if f_dim == 2 else dist
-          if ncontact > 0 and cand_dist < margin:
-            diff = (w1 - w2) if dist < 0.0 else (w2 - w1)
-            normal = wp.normalize(diff)
-            if wp.length_sq(diff) < 1e-12:
-              normal = wp.normalize(centroid - geom_pos)
-
-            contact_pos = 0.5 * (w1 + w2)
-            if f_dim == 2:
-              contact_pos -= 0.5 * elem_radius * normal
-
-            _write_candidate(
-              max_candidates,
-              cand_dist,
-              contact_pos,
-              normal,
-              geomid,
-              -1,
-              flexid,
-              local_elemid,
-              -1,
-              worldid,
-              wp.static(bool(warn_overflow & OverflowType.NARROWPHASE)),
-              overflow_out,
-              cand_dist_out,
-              cand_pos_out,
-              cand_nrm_out,
-              cand_geom_out,
-              cand_flex_out,
-              cand_elem_out,
-              cand_vert_out,
-              cand_worldid_out,
-              ncand_out,
-            )
 
   return kernel
 
@@ -2879,10 +2817,9 @@ class FlexWorkspace:
 
 def _allocate_flex_workspace(m: Model, d: Data) -> FlexWorkspace:
   epa_iterations = m.opt.ccd_iterations
-  has_epa = m.nmesh > 0 or m.has_ellipsoid_geom or m.has_flex_selfcollide or m.nflex > 1 or m.has_1d_flex or m.has_3d_flex
+  needs_nccd = m.nmesh > 0 or m.has_ellipsoid_geom or (m.has_cylinder_geom and m.has_2d_flex) or m.has_1d_flex or m.has_3d_flex
+  has_epa = needs_nccd or m.has_flex_selfcollide or m.nflex > 1
   capacity = d.naccdmax if has_epa else 1
-
-  needs_nccd = m.nmesh > 0 or m.has_ellipsoid_geom or m.has_1d_flex or m.has_3d_flex
   nccd = wp.zeros(1, dtype=int) if needs_nccd else None
 
   has_fps = m.has_flex_selfcollide or m.nflex > 1
@@ -3300,6 +3237,7 @@ def _detect_elem_geom_candidates(
       m.geom_dataid,
       m.geom_size,
       m.geom_aabb,
+      m.geom_rbound,
       m.geom_margin,
       m.flex_contype,
       m.flex_conaffinity,
@@ -3318,9 +3256,10 @@ def _detect_elem_geom_candidates(
       m.mesh_graphadr,
       m.mesh_vert,
       m.mesh_graph,
-      m.mesh_pos,
+      m.mesh_polyadr,
       m.mesh_polynormal,
       m.mesh_polyvertadr,
+      m.mesh_polyvertnum,
       m.mesh_polyvert,
       m.mesh_polymapadr,
       m.mesh_polymapnum,
