@@ -2115,6 +2115,75 @@ class SolverTest(parameterized.TestCase):
     self.assertGreater(qfrc[0], 0.0, "early-converged world was zeroed")
     self.assertGreater(qfrc[1], 0.0)
 
+  @parameterized.parameters(("dense", 1), ("sparse", 2))
+  def test_discrete_cg_coupled_tendon(self, jacobian, nworld):
+    """Discrete CG does not false-certify at 0 iterations on stiff coupled modes."""
+    mjm, _, m, d = test_data.fixture(
+      xml=f"""
+      <mujoco>
+        <option integrator="discrete" solver="CG" jacobian="{jacobian}"
+                timestep="0.015625" gravity="0 0 0" tolerance="1e-5" iterations="50"/>
+        <worldbody>
+          <body>
+            <joint name="j1" type="slide"/>
+            <geom size="0.1" mass="1" contype="0" conaffinity="0"/>
+          </body>
+          <body>
+            <joint name="j2" type="slide"/>
+            <geom size="0.1" mass="1" contype="0" conaffinity="0"/>
+          </body>
+        </worldbody>
+        <tendon>
+          <fixed stiffness="1048576">
+            <joint joint="j1" coef="1"/>
+            <joint joint="j2" coef="-1"/>
+          </fixed>
+        </tendon>
+        <equality>
+          <joint joint1="j1" solimp="0.01 0.01 0.01" solref="0 -1e-6"/>
+          <joint joint1="j2" solimp="0.01 0.01 0.01" solref="0 -1e-6"/>
+        </equality>
+      </mujoco>
+      """,
+      nworld=nworld,
+    )
+
+    mjm_ref = copy.deepcopy(mjm)
+    mjm_ref.opt.solver = mujoco.mjtSolver.mjSOL_NEWTON
+    mjm_ref.opt.tolerance = 0.0
+
+    qfrc_list = [[0.0, 10.0 * (w + 1)] for w in range(nworld)]
+    mjd_refs = []
+    for w in range(nworld):
+      ref_d = mujoco.MjData(mjm_ref)
+      ref_d.qfrc_applied[:] = qfrc_list[w]
+      mujoco.mj_forward(mjm_ref, ref_d)
+      mjd_refs.append(ref_d)
+
+    d.qfrc_applied.assign(wp.array(qfrc_list, dtype=float))
+    d.qacc_warmstart.zero_()
+    d.qacc.fill_(wp.inf)
+    d.solver_niter.fill_(-1)
+    mjw.forward(m, d)
+
+    niter = d.solver_niter.numpy()
+    qacc = d.qacc.numpy()
+    for w in range(nworld):
+      self.assertGreater(niter[w], 0)
+      _assert_eq(qacc[w], mjd_refs[w].qacc, "qacc", tol=1e-4)
+
+    if nworld > 1:
+      self.assertFalse(np.allclose(qacc[0], qacc[1]))
+
+    # exact warmstart still certifies in 0 iterations
+    d.qacc_warmstart.assign(wp.array([ref.qacc for ref in mjd_refs], dtype=float))
+    d.qacc.fill_(wp.inf)
+    d.solver_niter.fill_(-1)
+    mjw.forward(m, d)
+    niter_warm = d.solver_niter.numpy()
+    for w in range(nworld):
+      self.assertEqual(niter_warm[w], 0)
+
 
 _FRICTION_CHAIN_XML = """
 <mujoco>
