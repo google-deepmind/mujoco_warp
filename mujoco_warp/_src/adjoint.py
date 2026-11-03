@@ -292,7 +292,6 @@ def _residual_contact(
     d_out.contact.geom,
     d_out.contact.efc_address,
     d_out.contact.worldid,
-    d_out.efc.state,
     d_out.nacon,
   ]
   wp.launch(

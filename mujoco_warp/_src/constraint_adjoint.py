@@ -312,7 +312,6 @@ def _contact_gather(
   contact_geom_in: wp.array[wp.vec2i],
   contact_efc_address_in: wp.array2d[int],
   contact_worldid_in: wp.array[int],
-  efc_state_in: wp.array2d[int],
   nacon_in: wp.array[int],
   # In:
   lam_in: wp.array2d[float],
@@ -332,8 +331,7 @@ def _contact_gather(
   e0 = contact_efc_address_in[cid, 0]
   if e0 < 0:
     return
-  if efc_state_in[w, e0] == ConstraintState.SATISFIED:
-    return
+  # Pyramidal edges have independent states; the cone leaf selects active rows.
   geom = contact_geom_in[cid]
   if geom[0] < 0 or geom[1] < 0:  # flex (negative geom ids): unsupported
     return
@@ -417,8 +415,9 @@ def _contact_phi(cone_type: int):
     if e0 < 0:
       return
     st = efc_state_in[w, e0]
-    if st == ConstraintState.SATISFIED:
-      return
+    if wp.static(IS_ELLIPTIC):
+      if st == ConstraintState.SATISFIED:
+        return
     dt = opt_timestep[w % opt_timestep.shape[0]]
     imp_isq = opt_impratio_invsqrt[w % opt_impratio_invsqrt.shape[0]]
     condim = contact_dim_in[cid]
@@ -515,7 +514,6 @@ def _contact_scatter(geom_friction_grad: bool):
     contact_geom_in: wp.array[wp.vec2i],
     contact_efc_address_in: wp.array2d[int],
     contact_worldid_in: wp.array[int],
-    efc_state_in: wp.array2d[int],
     nacon_in: wp.array[int],
     # In:
     lam_in: wp.array2d[float],
@@ -536,8 +534,6 @@ def _contact_scatter(geom_friction_grad: bool):
     w = contact_worldid_in[cid]
     e0 = contact_efc_address_in[cid, 0]
     if e0 < 0:
-      return
-    if efc_state_in[w, e0] == ConstraintState.SATISFIED:
       return
     geom = contact_geom_in[cid]
     if geom[0] < 0 or geom[1] < 0:
