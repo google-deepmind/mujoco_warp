@@ -31,6 +31,78 @@ from mujoco_warp._src.warp_util import event_scope
 wp.set_module_options({"enable_backward": True})
 
 
+@wp.func
+def _capsule_box_coordinates(
+  # In:
+  capsule_pos: wp.vec3,
+  capsule_axis: wp.vec3,
+  capsule_half_length: float,
+  box_pos: wp.vec3,
+  box_rot: wp.mat33,
+  box_size: wp.vec3,
+  feature: wp.vec3i,
+) -> wp.vec2:
+  """Recomputes capsule and box-edge coordinates with the closest feature fixed."""
+  cltype, clcorner, cledge = feature[0], feature[1], feature[2]
+  if cltype < 0:
+    return wp.vec2(wp.where(cltype == -3, -1.0, 1.0), 0.0)
+
+  s1 = cltype // 3
+  s2 = cltype % 3
+
+  boxmatT = wp.transpose(box_rot)
+  pos = boxmatT @ (capsule_pos - box_pos)
+  halfaxis = (boxmatT @ capsule_axis) * capsule_half_length
+  bx = wp.where(cledge == 0, 0.0, wp.where((clcorner & 1) != 0, box_size[0], -box_size[0]))
+  by = wp.where(cledge == 1, 0.0, wp.where((clcorner & 2) != 0, box_size[1], -box_size[1]))
+  bz = wp.where(cledge == 2, 0.0, wp.where((clcorner & 4) != 0, box_size[2], -box_size[2]))
+  dif = wp.vec3(bx, by, bz) - pos
+  sj, dj, hj = box_size[cledge], dif[cledge], halfaxis[cledge]
+  u = -sj * dj
+  v = wp.dot(halfaxis, dif)
+  ma = sj * sj
+  mb = -sj * hj
+  mc = capsule_half_length * capsule_half_length
+  primary = wp.where(s2 == 0, -1.0, 1.0)
+  boxcoord = wp.where(s1 == 0, -1.0, 1.0)
+  if s2 == 1:
+    if s1 == 1:
+      idet = math.safe_div(1.0, ma * mc - mb * mb)
+      return wp.vec2((ma * v - mb * u) * idet, (mc * u - mb * v) * idet)
+    primary = math.safe_div(v - mb * boxcoord, mc)
+  if s1 == 1:
+    boxcoord = math.safe_div(u - mb * primary, ma)
+  return wp.vec2(primary, boxcoord)
+
+
+@wp.func
+def _capsule_box_from_witness(
+  # In:
+  capsule_pos: wp.vec3,
+  capsule_axis: wp.vec3,
+  capsule_radius: float,
+  capsule_half_length: float,
+  box_pos: wp.vec3,
+  box_rot: wp.mat33,
+  box_size: wp.vec3,
+  slot: int,
+  feature: wp.vec3i,
+) -> tuple[float, wp.vec3, wp.vec3]:
+  """Replays one capsule-box contact with the closest feature fixed."""
+  coords = _capsule_box_coordinates(capsule_pos, capsule_axis, capsule_half_length, box_pos, box_rot, box_size, feature)
+  segment = coords[0]
+  if slot == 1:
+    boxmatT = wp.transpose(box_rot)
+    pos = boxmatT @ (capsule_pos - box_pos)
+    axis = boxmatT @ capsule_axis
+    segment += collision_primitive_core._capsule_box_secondary(
+      pos, axis, axis * capsule_half_length, box_size, coords[0], coords[1], feature
+    )
+  return collision_primitive_core._capsule_box_contact(
+    capsule_pos, capsule_axis, capsule_radius, capsule_half_length, box_pos, box_rot, box_size, segment
+  )
+
+
 # Store the primal capsule-box witness needed by the differentiable replay.
 @wp.kernel(enable_backward=False)
 def _capsule_box_freeze(
@@ -192,9 +264,7 @@ def _narrowphase_recompute(
     frame_out[cid] = math.make_frame(box_n)
   elif type0 == GeomType.CAPSULE and type1 == GeomType.BOX:
     axis0 = wp.vec3(m0[0, 2], m0[1, 2], m0[2, 2])
-    cb_dist, cb_pos, cb_n = collision_primitive_core.capsule_box_from_witness(
-      p0, axis0, s0[0], s0[1], p1, m1, s1, slot, capsule_box_tseg[cid], capsule_box_feat[cid]
-    )
+    cb_dist, cb_pos, cb_n = _capsule_box_from_witness(p0, axis0, s0[0], s0[1], p1, m1, s1, slot, capsule_box_feat[cid])
     dist_out[cid] = cb_dist
     cpos_out[cid] = cb_pos
     frame_out[cid] = math.make_frame(cb_n)

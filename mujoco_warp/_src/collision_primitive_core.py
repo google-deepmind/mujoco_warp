@@ -1082,6 +1082,10 @@ def capsule_box_witness(
 ) -> Tuple[wp.vec2, wp.vec3i]:
   """Returns the capsule segment coordinate, second-contact offset, and closest feature.
 
+  The feature stores MuJoCo's cltype, clface or clcorner, and cledge. Negative cltype
+  selects a capsule endpoint against a box face; otherwise cltype encodes the closest
+  points' clamping states on the box edge and capsule segment.
+
   Args:
     capsule_pos: Center position of the capsule.
     capsule_axis: Axis direction of the capsule.
@@ -1092,14 +1096,13 @@ def capsule_box_witness(
 
   Returns:
     - Primary segment coordinate and second-contact offset (-4 if absent).
-    - Encoded closest-feature type, corner, and edge.
+    - Encoded closest-feature type, corner (or face axis), and edge.
   """
   # Based on the mjc implementation
   boxmatT = wp.transpose(box_rot)
   pos = boxmatT @ (capsule_pos - box_pos)
   axis = boxmatT @ capsule_axis
   halfaxis = axis * capsule_half_length  # halfaxis is the capsule direction
-  axisdir = wp.int32(halfaxis[0] > 0.0) + 2 * wp.int32(halfaxis[1] > 0.0) + 4 * wp.int32(halfaxis[2] > 0.0)
 
   # keep track of closest point
   bestdist = wp.float32(1.0e32)
@@ -1241,6 +1244,28 @@ def capsule_box_witness(
   if cltype == -4:  # invalid type
     return wp.vec2(0.0, secondpos), wp.vec3i(-4, 0, 0)
 
+  feature = wp.vec3i(cltype, wp.where(cltype < 0, clface, clcorner), wp.max(cledge, 0))
+  secondpos = _capsule_box_secondary(pos, axis, halfaxis, box_size, bestsegmentpos, bestboxpos, feature)
+  return wp.vec2(bestsegmentpos, secondpos), feature
+
+
+@wp.func
+def _capsule_box_secondary(
+  # In:
+  pos: wp.vec3,
+  axis: wp.vec3,
+  halfaxis: wp.vec3,
+  box_size: wp.vec3,
+  bestsegmentpos: float,
+  bestboxpos: float,
+  feature: wp.vec3i,
+) -> float:
+  """Computes the second-contact offset for the selected capsule-box feature."""
+  cltype, clcorner, cledge = feature[0], feature[1], feature[2]
+  clface = clcorner  # For face contacts, feature[1] stores the face axis.
+  axisdir = wp.int32(halfaxis[0] > 0.0) + 2 * wp.int32(halfaxis[1] > 0.0) + 4 * wp.int32(halfaxis[2] > 0.0)
+  secondpos = wp.float32(-4.0)
+
   if cltype >= 0 and cltype // 3 != 1:  # closest to a corner of the box
     c1 = axisdir ^ clcorner
     # Calculate relative orientation between capsule and corner
@@ -1254,21 +1279,15 @@ def capsule_box_witness(
         mul = -1
         c1 = 7 - c1
 
-      # "de" and "dp" distance from first closest point on the capsule to both ends of it
-      # mul is a direction along the capsule's axis
-
+      # c1 has one set bit; it identifies the axis relative to this corner.
       if c1 == 1:
         ax = 0
-        ax1 = 1
-        ax2 = 2
       elif c1 == 2:
         ax = 1
-        ax1 = 2
-        ax2 = 0
-      elif c1 == 4:
+      else:
         ax = 2
-        ax1 = 0
-        ax2 = 1
+      ax1 = (ax + 1) % 3
+      ax2 = (ax + 2) % 3
 
       if axis[ax] * axis[ax] > 0.5:  # second point along the edge of the box
         m = 2.0 * safe_div(box_size[ax], wp.abs(halfaxis[ax]))
@@ -1282,7 +1301,7 @@ def capsule_box_witness(
         secondpos = -min(1.0 + wp.float32(mul) * bestsegmentpos, m)
       secondpos *= wp.float32(mul)
 
-  elif cltype >= 0 and cltype // 3 == 1:  # we are on box's edge
+  elif cltype >= 0:  # we are on box's edge
     # Calculate relative orientation between capsule and edge
     # Two possible configurations:
     # - T configuration: c1 = 2^n (no additional contacts)
@@ -1291,16 +1310,9 @@ def capsule_box_witness(
     c1 &= 7 - (1 << cledge)  # mask out edge axis to determine configuration
 
     if c1 == 1 or c1 == 2 or c1 == 4:  # create second contact point
-      if cledge == 0:
-        ax1 = 1
-        ax2 = 2
-      if cledge == 1:
-        ax1 = 2
-        ax2 = 0
-      if cledge == 2:
-        ax1 = 0
-        ax2 = 1
       ax = cledge
+      ax1 = (ax + 1) % 3
+      ax2 = (ax + 2) % 3
 
       # find which face the capsule has a lower angle, and switch the axis
       if wp.abs(axis[ax1]) > wp.abs(axis[ax2]):
@@ -1356,50 +1368,7 @@ def capsule_box_witness(
 
       secondpos *= wp.float32(mul)
 
-  return wp.vec2(bestsegmentpos, secondpos), wp.vec3i(cltype, wp.max(clcorner, 0), wp.max(cledge, 0))
-
-
-@wp.func
-def _capsule_box_primary(
-  # In:
-  capsule_pos: wp.vec3,
-  capsule_axis: wp.vec3,
-  capsule_half_length: float,
-  box_pos: wp.vec3,
-  box_rot: wp.mat33,
-  box_size: wp.vec3,
-  feature: wp.vec3i,
-) -> float:
-  """Recomputes the primary segment coordinate with the closest feature fixed."""
-  cltype, clcorner, cledge = feature[0], feature[1], feature[2]
-  if cltype < 0:
-    return wp.where(cltype == -3, -1.0, 1.0)
-
-  s1 = cltype // 3
-  s2 = cltype - 3 * s1
-  if s2 == 0:
-    return -1.0
-  if s2 == 2:
-    return 1.0
-
-  boxmatT = wp.transpose(box_rot)
-  pos = boxmatT @ (capsule_pos - box_pos)
-  halfaxis = (boxmatT @ capsule_axis) * capsule_half_length
-  bx = wp.where(cledge == 0, 0.0, wp.where((clcorner & 1) != 0, box_size[0], -box_size[0]))
-  by = wp.where(cledge == 1, 0.0, wp.where((clcorner & 2) != 0, box_size[1], -box_size[1]))
-  bz = wp.where(cledge == 2, 0.0, wp.where((clcorner & 4) != 0, box_size[2], -box_size[2]))
-  dif = wp.vec3(bx, by, bz) - pos
-  sj = wp.where(cledge == 0, box_size[0], wp.where(cledge == 1, box_size[1], box_size[2]))
-  dj = wp.where(cledge == 0, dif[0], wp.where(cledge == 1, dif[1], dif[2]))
-  hj = wp.where(cledge == 0, halfaxis[0], wp.where(cledge == 1, halfaxis[1], halfaxis[2]))
-  u = -sj * dj
-  v = wp.dot(halfaxis, dif)
-  ma = sj * sj
-  mb = -sj * hj
-  mc = capsule_half_length * capsule_half_length
-  if s1 == 1:
-    return safe_div(ma * v - mb * u, ma * mc - mb * mb)
-  return safe_div(v + wp.where(s1 == 2, -mb, mb), mc)
+  return secondpos
 
 
 @wp.func
@@ -1414,39 +1383,12 @@ def _capsule_box_contact(
   box_size: wp.vec3,
   segment: float,
 ) -> Tuple[float, wp.vec3, wp.vec3]:
+  """Evaluates sphere-box contact at one coordinate along the capsule segment."""
   boxmatT = wp.transpose(box_rot)
   pos = boxmatT @ (capsule_pos - box_pos)
   halfaxis = (boxmatT @ capsule_axis) * capsule_half_length
   center = box_rot @ (pos + halfaxis * segment) + box_pos
   return sphere_box(center, capsule_radius, box_pos, box_rot, box_size)
-
-
-@wp.func
-def capsule_box_from_witness(
-  # In:
-  capsule_pos: wp.vec3,
-  capsule_axis: wp.vec3,
-  capsule_radius: float,
-  capsule_half_length: float,
-  box_pos: wp.vec3,
-  box_rot: wp.mat33,
-  box_size: wp.vec3,
-  slot: int,
-  segment: wp.vec2,
-  feature: wp.vec3i,
-) -> Tuple[float, wp.vec3, wp.vec3]:
-  """Replays one capsule-box contact with the discrete witness fixed."""
-  primary = _capsule_box_primary(capsule_pos, capsule_axis, capsule_half_length, box_pos, box_rot, box_size, feature)
-  return _capsule_box_contact(
-    capsule_pos,
-    capsule_axis,
-    capsule_radius,
-    capsule_half_length,
-    box_pos,
-    box_rot,
-    box_size,
-    primary + wp.where(slot == 0, 0.0, segment[1]),
-  )
 
 
 @wp.func
