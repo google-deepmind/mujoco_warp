@@ -467,6 +467,9 @@ def forward_backward_ift(m: Model, d: Data, d_out: Data, adj_qacc: wp.array, bc:
   """Differentiates forward dynamics at the converged acceleration."""
   solver_ctx = solve_backward(m, d_out, adj_qacc, bc)
   lam = solver_ctx.search
+  if d.qfrc_applied.requires_grad:
+    # The residual contains -qfrc_applied, so its VJP is +lam.
+    wp.launch(adjoint_util._accum_cols, dim=(d.nworld, m.nv), inputs=[lam], outputs=[d.qfrc_applied.grad])
   if d_out.njmax and m.nv:
     contact_constraint_backward(m, d, d_out, lam, bc.res_qpos, bc.res_qvel, bc)
     noncontact_constraint_backward(m, d, d_out, lam, bc.res_qpos, bc.res_qvel, solver_ctx.Jaref, bc)
@@ -483,8 +486,9 @@ def forward_backward_ift(m: Model, d: Data, d_out: Data, adj_qacc: wp.array, bc:
 def step_backward_arrays(d: Data, d_out: Data):
   """Allocates and returns arrays used by the analytic step backward."""
   inputs = [d.qpos, d.qvel, d.ctrl]
-  if d.xfrc_applied.requires_grad:
-    inputs.append(d.xfrc_applied)
+  for array in (d.qfrc_applied, d.xfrc_applied):
+    if array.requires_grad:
+      inputs.append(array)
   for array in inputs:
     array.requires_grad = True
   return [array for array in (*inputs, *_prepare_data(d_out)) if array.size]
