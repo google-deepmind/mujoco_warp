@@ -27,6 +27,7 @@ import warp as wp
 
 from mujoco_warp._src import adjoint_util
 from mujoco_warp._src import collision_adjoint
+from mujoco_warp._src import collision_convex_adjoint
 from mujoco_warp._src import constraint_adjoint
 from mujoco_warp._src import forward
 from mujoco_warp._src import forward_adjoint
@@ -41,6 +42,7 @@ from mujoco_warp._src.types import ConeType
 from mujoco_warp._src.types import Data
 from mujoco_warp._src.types import DisableBit
 from mujoco_warp._src.types import EnableBit
+from mujoco_warp._src.types import GeomType
 from mujoco_warp._src.types import IntegratorType
 from mujoco_warp._src.types import Model
 from mujoco_warp._src.types import SolverType
@@ -119,6 +121,11 @@ def create_backward_context(m: Model, d: Data) -> BackwardContext:
     res_body_iquat=wp.zeros_like(m.body_iquat),
   )
   bc = BackwardContext(solver_ctx=solver._create_solver_context(m, d), scratch=adjoint_util._clone_nograd(d), **arrays)
+  if any(
+    m.geom_pair_type_count[math.upper_trid_index(len(GeomType), GeomType.HFIELD.value, geom_type.value)]
+    for geom_type in collision_convex_adjoint._CONVEX_TYPES
+  ):
+    bc.collision_convex_ctx = collision_convex_adjoint.create_collision_convex_backward_context(m, d)
   for name in ("contact_V", "contact_A", "contact_Z", "contact_phi", "efc_Z", "efc_phi", "smooth_r"):
     getattr(bc, name).requires_grad = True
   smooth_adjoint.prepare_backward(bc.scratch)

@@ -17,6 +17,7 @@
 import warp as wp
 
 from mujoco_warp._src import adjoint_util
+from mujoco_warp._src import collision_convex_adjoint
 from mujoco_warp._src import collision_primitive_core
 from mujoco_warp._src import math
 from mujoco_warp._src import smooth_kinematics_adjoint
@@ -502,7 +503,7 @@ def contact_qpos_vjp(
 ):
   """Accumulates the contact residual's dqpos into res_qpos from the exposed input-adjoints.
 
-  Primitive narrowphase replay yields adj(geom poses); analytic Jacobian VJPs
+  Primitive and heightfield narrowphase replays yield adj(geom poses); analytic Jacobian VJPs
   chain these into one per-dof tangent buffer that _dof_to_qpos lifts.
   Box-box requires the primitive collider (nativeccd disabled).
 
@@ -582,6 +583,10 @@ def contact_qpos_vjp(
     [d_out.contact.pos, d_out.contact.dist, d_out.contact.frame],
     [res_contact_pos, contact_adj_dist, res_contact_frame],
   )
+  if bc.collision_convex_ctx is not None:
+    collision_convex_adjoint.hfield_contact_pose_vjp(
+      m, d_out, bc.collision_convex_ctx, res_contact_pos, res_contact_frame, contact_adj_dist, res_geom_xpos, res_geom_xmat
+    )
   wp.launch(
     _geom_pose_dof_vjp,
     dim=(nworld, nv),

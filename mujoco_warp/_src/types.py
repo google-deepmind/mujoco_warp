@@ -3057,6 +3057,30 @@ class RenderContext:
 
 
 @dataclasses.dataclass
+class CollisionConvexBackwardContext:
+  """Reusable convex collision feature-recovery and replay workspace."""
+
+  # Frozen per-contact features.
+  case: wp.array[int]
+  prism: wp.array[wp.mat33]
+  top: wp.array[wp.mat33]
+  feature: wp.array[wp.vec4i]
+  direction: wp.array[wp.mat33]
+  reference: wp.array[wp.vec3]
+  # GJK/EPA probe scratch.
+  epa_vert: wp.array2d[wp.vec3]
+  epa_vert_index: wp.array2d[int]
+  epa_face: wp.array2d[int]
+  epa_pr: wp.array2d[wp.vec3]
+  epa_norm2: wp.array2d[float]
+  epa_horizon: wp.array2d[int]
+  probe_count: wp.array[int]
+  overflow: wp.array[int]
+  gjk_iterations: int
+  epa_iterations: int
+
+
+@dataclasses.dataclass
 class BackwardContext:
   """Reusable solver, replay data, and array workspace for a step backward."""
 
@@ -3123,3 +3147,4 @@ class BackwardContext:
   res_body_inertia: wp.array
   res_body_ipos: wp.array
   res_body_iquat: wp.array
+  collision_convex_ctx: Optional[CollisionConvexBackwardContext] = None
