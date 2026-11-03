@@ -35,6 +35,7 @@ from mujoco_warp._src.types import JointType
 from mujoco_warp._src.types import Model
 from mujoco_warp._src.types import TrnType
 from mujoco_warp._src.types import vec10
+from mujoco_warp._src.warp_util import cache_kernel
 from mujoco_warp._src.warp_util import event_scope
 
 # Adjoint reductions use unordered atomics; deterministic backward execution is deferred.
@@ -508,6 +509,190 @@ def smooth_force_backward(
   _cinert_vjp(m, d, d.cinert.grad, bc)
   if res_subtree_extra is not None:
     wp.launch(_acc_vec3, dim=(nworld, m.nbody), inputs=[res_subtree_extra], outputs=[d.subtree_com.grad])
+  return _kinematic_qpos_vjp(m, d, d.cdof.grad, bc)
+
+
+@wp.func
+def _rne_force_objective(ci: vec10, cv: wp.spatial_vector, ca: wp.spatial_vector, seed: wp.spatial_vector):
+  return wp.dot(smooth.rne_body_force(ci, cv, ca), seed)
+
+
+@wp.func
+def _rne_channels_objective(
+  # In:
+  ci: vec10,
+  cv: wp.spatial_vector,
+  ca: wp.spatial_vector,
+  mass_ca: wp.spatial_vector,
+  seed: wp.spatial_vector,
+  mass_seed: wp.spatial_vector,
+):
+  return wp.dot(smooth.rne_body_force(ci, cv, ca), seed) + wp.dot(math.inert_vec(ci, mass_ca), mass_seed)
+
+
+@cache_kernel
+def _rne_channels(nbody: int, with_mass: bool):
+  tile_size = max(32, 1 << (nbody - 1).bit_length())
+
+  @wp.kernel(module="unique", enable_backward=False)
+  def kernel(
+    # Model:
+    nv: int,
+    opt_gravity: wp.array[wp.vec3],
+    body_parentid: wp.array[int],
+    body_dofnum: wp.array[int],
+    body_dofadr: wp.array[int],
+    dof_bodyid: wp.array[int],
+    body_subtreenum: wp.array[int],
+    # Data in:
+    qvel_in: wp.array2d[float],
+    qacc_in: wp.array2d[float],
+    cdof_in: wp.array2d[wp.spatial_vector],
+    cinert_in: wp.array2d[vec10],
+    cvel_in: wp.array2d[wp.spatial_vector],
+    cdof_dot_in: wp.array2d[wp.spatial_vector],
+    # In:
+    gravity_enabled: bool,
+    lam: wp.array2d[float],
+    mass_y: wp.array2d[float],
+    mass_w: wp.array2d[float],
+    # Out:
+    adj_qvel_out: wp.array2d[float],
+    adj_qacc_out: wp.array2d[float],
+    adj_cdof_out: wp.array2d[wp.spatial_vector],
+    adj_cdof_dot_out: wp.array2d[wp.spatial_vector],
+    adj_cvel_out: wp.array2d[wp.spatial_vector],
+    adj_cinert_out: wp.array2d[vec10],
+  ):
+    w, lane = wp.tid()
+    local_ca = wp.spatial_vector()
+    local_seed = wp.spatial_vector()
+    local_mass_ca = wp.spatial_vector()
+    local_mass_seed = wp.spatial_vector()
+    if lane > 0 and lane < wp.static(nbody):
+      start = body_dofadr[lane]
+      for i in range(start, start + body_dofnum[lane]):
+        S = cdof_in[w, i]
+        local_ca += cdof_dot_in[w, i] * qvel_in[w, i] + S * qacc_in[w, i]
+        local_seed += lam[w, i] * S
+        if wp.static(with_mass):
+          local_mass_ca += mass_w[w, i] * S
+          # Final input writeback subtracts the residual cotangent.
+          local_mass_seed -= mass_y[w, i] * S
+    ca_local = wp.tile_reshape(wp.tile(local_ca, preserve_type=True), shape=(wp.static(tile_size),))
+    seed_local = wp.tile_reshape(wp.tile(local_seed, preserve_type=True), shape=(wp.static(tile_size),))
+    if wp.static(with_mass):
+      mass_ca_local = wp.tile_reshape(wp.tile(local_mass_ca, preserve_type=True), shape=(wp.static(tile_size),))
+      mass_seed_local = wp.tile_reshape(wp.tile(local_mass_seed, preserve_type=True), shape=(wp.static(tile_size),))
+
+    force = wp.spatial_vector()
+    mass_force = wp.spatial_vector()
+    ca_bar = wp.spatial_vector()
+    mass_ca_bar = wp.spatial_vector()
+    if lane > 0 and lane < wp.static(nbody):
+      ca = wp.spatial_vector()
+      seed = wp.spatial_vector()
+      mass_ca = wp.spatial_vector()
+      mass_seed = wp.spatial_vector()
+      b = lane
+      while b > 0:
+        ca += ca_local[b]
+        seed += seed_local[b]
+        if wp.static(with_mass):
+          mass_ca += mass_ca_local[b]
+          mass_seed += mass_seed_local[b]
+        b = body_parentid[b]
+      if gravity_enabled:
+        gravity = opt_gravity[w % opt_gravity.shape[0]]
+        ca -= wp.spatial_vector(0.0, 0.0, 0.0, gravity[0], gravity[1], gravity[2])
+      ci = cinert_in[w, lane]
+      cv = cvel_in[w, lane]
+      # Seed derivatives also recover the primal forces for the DOF transpose.
+      if wp.static(with_mass):
+        ci_bar, cv_bar, ca_bar, mass_ca_bar, force, mass_force = wp.grad(_rne_channels_objective)(
+          ci, cv, ca, mass_ca, seed, mass_seed
+        )
+      else:
+        ci_bar, cv_bar, ca_bar, force = wp.grad(_rne_force_objective)(ci, cv, ca, seed)
+      adj_cinert_out[w, lane] = ci_bar
+      adj_cvel_out[w, lane] = cv_bar
+    elif lane == 0:
+      adj_cinert_out[w, 0] = vec10()
+      adj_cvel_out[w, 0] = wp.spatial_vector()
+    force_tile = wp.tile_reshape(wp.tile(force, preserve_type=True), shape=(wp.static(tile_size),))
+    ca_bar_tile = wp.tile_reshape(wp.tile(ca_bar, preserve_type=True), shape=(wp.static(tile_size),))
+    if wp.static(with_mass):
+      mass_force_tile = wp.tile_reshape(wp.tile(mass_force, preserve_type=True), shape=(wp.static(tile_size),))
+      mass_ca_bar_tile = wp.tile_reshape(wp.tile(mass_ca_bar, preserve_type=True), shape=(wp.static(tile_size),))
+
+    for i in range(lane, nv, wp.block_dim()):
+      body = dof_bodyid[i]
+      acc_force = wp.spatial_vector()
+      acc_ca_bar = wp.spatial_vector()
+      acc_mass_force = wp.spatial_vector()
+      acc_mass_ca_bar = wp.spatial_vector()
+      for b in range(body, body + body_subtreenum[body]):
+        acc_force += force_tile[b]
+        acc_ca_bar += ca_bar_tile[b]
+        if wp.static(with_mass):
+          acc_mass_force += mass_force_tile[b]
+          acc_mass_ca_bar += mass_ca_bar_tile[b]
+      adj_qvel_out[w, i] = wp.dot(acc_ca_bar, cdof_dot_in[w, i])
+      adj_qacc_out[w, i] = wp.dot(acc_ca_bar, cdof_in[w, i])
+      adj_cdof_dot_out[w, i] = qvel_in[w, i] * acc_ca_bar
+      S_bar = lam[w, i] * acc_force + qacc_in[w, i] * acc_ca_bar
+      if wp.static(with_mass):
+        S_bar += -mass_y[w, i] * acc_mass_force + mass_w[w, i] * acc_mass_ca_bar
+      adj_cdof_out[w, i] = S_bar
+
+  return kernel
+
+
+@event_scope
+def smooth_force_channels_backward(
+  m: Model,
+  d: Data,
+  lam: wp.array2d,
+  mass_y: wp.array2d | None,
+  mass_w: wp.array2d | None,
+  bc: BackwardContext,
+):
+  """Combines force and optional direct-mass cotangents before their kinematic reverse.
+
+  The mass channel contributes with a negative sign because the caller subtracts this residual
+  VJP. All intermediates are recomputed from the frozen input kinematics; no forward tape grows.
+  """
+  block_dim = max(32, 1 << (m.nbody - 1).bit_length())
+  wp.launch_tiled(
+    _rne_channels(m.nbody, mass_y is not None),
+    dim=d.nworld,
+    block_dim=block_dim,
+    inputs=[
+      m.nv,
+      m.opt.gravity,
+      m.body_parentid,
+      m.body_dofnum,
+      m.body_dofadr,
+      m.dof_bodyid,
+      m.body_subtreenum,
+      d.qvel,
+      d.qacc,
+      d.cdof,
+      d.cinert,
+      d.cvel,
+      d.cdof_dot,
+      not bool(m.opt.disableflags & DisableBit.GRAVITY),
+      lam,
+      mass_y,
+      mass_w,
+    ],
+    outputs=[bc.smooth_adj_qvel, bc.smooth_adj_qacc, d.cdof.grad, d.cdof_dot.grad, d.cvel.grad, d.cinert.grad],
+  )
+  comvel_backward(m, d, d.cvel.grad, d.cdof_dot.grad, bc=bc)
+  d.xipos.grad.zero_()
+  d.ximat.grad.zero_()
+  d.subtree_com.grad.zero_()
+  _cinert_vjp(m, d, d.cinert.grad, bc)
   return _kinematic_qpos_vjp(m, d, d.cdof.grad, bc)
 
 

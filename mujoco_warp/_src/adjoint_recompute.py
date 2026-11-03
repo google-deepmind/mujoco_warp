@@ -21,6 +21,7 @@ the forward kernel can be differentiated directly.
 import warp as wp
 
 from mujoco_warp._src import math
+from mujoco_warp._src import smooth
 from mujoco_warp._src import support
 from mujoco_warp._src import util_misc
 from mujoco_warp._src.types import DisableBit
@@ -172,7 +173,7 @@ def _rne_cfrc_recompute(
   if b != 0:
     ci = cinert_in[w, b]
     cv = cvel_in[w, b]
-    frc = math.inert_vec(ci, cacc_in[w, b]) + math.motion_cross_force(cv, math.inert_vec(ci, cv))
+    frc = smooth.rne_body_force(ci, cv, cacc_in[w, b])
   cfrc_local_out[w, b] = frc
 
 

@@ -465,8 +465,8 @@ def _site_jac_vjp(
 
 @event_scope
 def advance_backward(m: Model, d: Data, d_out: Data, bc: BackwardContext):
-  """Maps output-state cotangents through the integrator."""
-  nworld, nq, nv = d.nworld, d.qpos.shape[1], m.nv
+  """Maps integrator cotangents, deferring mass-position dependence to smooth_qpos_backward."""
+  nworld, nv = d.nworld, m.nv
   adj_qpos, adj_qvel, adj_qacc = bc.adj_qpos, bc.adj_qvel, bc.adj_qacc
 
   deriv_flags = DisableBit.ACTUATION | DisableBit.SPRING | DisableBit.DAMPER
@@ -569,9 +569,8 @@ def advance_backward(m: Model, d: Data, d_out: Data, bc: BackwardContext):
     support.mul_m(m, d_out, bc.adj_qacc_root, bc.y_remap)
 
     if implicit:
+      # The mass-position VJP is computed with the force VJP in smooth_qpos_backward.
       wp.launch(adjoint_util._sub_cols, dim=(nworld, nv), inputs=[d_out.qacc, qacc_advance], outputs=[bc.w_dir])
-      qpos_direct = smooth_adjoint.mass_matrix_qpos_vjp(m, d, bc.y_remap, bc.w_dir, bc=bc)
-      wp.launch(adjoint_util._accum_cols, dim=(nworld, nq), inputs=[qpos_direct], outputs=[adj_qpos])
 
     if not (m.opt.disableflags & DisableBit.DAMPER):
       # Q = M + dt*D, where D = -d(force_damper)/dv. Its VJP affects velocity and,
@@ -699,11 +698,24 @@ def smooth_qvel_backward(m: Model, d: Data, d_out: Data, lam: wp.array, adj_qvel
 
 @event_scope
 def smooth_qpos_backward(m: Model, d: Data, d_out: Data, lam: wp.array, res_qpos: wp.array, bc: BackwardContext):
-  """Accumulates the smooth residual VJP in position space."""
+  """Accumulates smooth position VJPs, including the integrator's mass contribution."""
   smooth_adjoint.assert_smooth_supported(m)
-  linearization = smooth_adjoint.linearize(m, d, d_out, bc)
+  flags = DisableBit.ACTUATION | DisableBit.SPRING | DisableBit.DAMPER
+  implicit = m.opt.integrator == IntegratorType.IMPLICITFAST and bool(flags & ~m.opt.disableflags)
+  # Bound cooperative RNE scratch to eight 128-element spatial-vector tiles.
+  if d.qpos.device.is_cuda and m.nbody <= 128:
+    linearization = dataclasses.replace(d_out, qpos=d.qpos, qvel=d.qvel, ctrl=d.ctrl, act=d.act)
+    residual = smooth_adjoint.smooth_force_channels_backward(
+      m, linearization, lam, bc.y_remap if implicit else None, bc.w_dir if implicit else None, bc
+    )
+  else:
+    if implicit:
+      direct = smooth_adjoint.mass_matrix_qpos_vjp(m, d, bc.y_remap, bc.w_dir, bc=bc)
+      wp.launch(adjoint_util._sub_cols, dim=res_qpos.shape, inputs=[res_qpos, direct], outputs=[res_qpos])
+    linearization = smooth_adjoint.linearize(m, d, d_out, bc)
+    residual = smooth_adjoint.smooth_force_backward(m, linearization, lam, bc=bc)
+  wp.launch(adjoint_util._accum_cols, dim=residual.shape, inputs=[residual], outputs=[res_qpos])
   for vjp in (
-    smooth_adjoint.smooth_force_backward,
     smooth_adjoint.spring_qpos_vjp,
     smooth_adjoint.actuator_qpos_vjp,
     smooth_adjoint.gravcomp_qpos_vjp,
