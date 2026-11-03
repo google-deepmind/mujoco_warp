@@ -1671,6 +1671,85 @@ class SolverTest(parameterized.TestCase):
     if nworld == 2:
       self.assertFalse(np.allclose(d.qacc.numpy()[0], d.qacc.numpy()[1]))
 
+  @parameterized.parameters(
+    (mujoco.mjtJacobian.mjJAC_DENSE, 0, False),
+    (mujoco.mjtJacobian.mjJAC_SPARSE, 0, False),
+    (mujoco.mjtJacobian.mjJAC_SPARSE, 70, False),
+    (mujoco.mjtJacobian.mjJAC_DENSE, 0, True),
+    (mujoco.mjtJacobian.mjJAC_SPARSE, 70, True),
+  )
+  def test_noslip_inertia_blocks(self, jacobian, nlong, sleep):
+    """Tests noslip solver with scalar, tile and sparse inertia factor blocks against MuJoCo."""
+    # hinge chains with 6 (scalar Cholesky) and 7 (tile Cholesky) dofs, and a slide joint with
+    # nlong - 1 hinged children (sparse LDL, a tree that is not as ill-conditioned as a long chain);
+    # with sleeping enabled the smooth dynamics do not update the inertia factor
+    link = '<body pos="0 0 .05"><joint axis="0 1 0" frictionloss=".5"/><geom type="capsule" size=".02 .025"/>'
+    trees = "".join(f'<body pos="{i} 0 1">{link * n + "</body>" * n}</body>' for i, n in enumerate((6, 7)))
+    if nlong:
+      leaves = (link + "</body>") * (nlong - 1)
+      trees += f'<body pos="2 0 1"><joint type="slide" axis="1 0 0" frictionloss=".5"/><geom size=".05"/>{leaves}</body>'
+    nv = 13 + nlong
+    qpos = " ".join(["0.2"] * nv)
+    qvel = " ".join(map(str, np.linspace(1.0, -1.0, nv)))
+    flag = "enable" if sleep else "disable"
+    mjm, mjd, m, d = test_data.fixture(
+      xml=f"""
+      <mujoco>
+        <option noslip_iterations="3" noslip_tolerance="0">
+          <flag contact="disable" sleep="{flag}"/>
+        </option>
+        <worldbody>{trees}</worldbody>
+        <keyframe>
+          <key qpos="{qpos}" qvel="{qvel}"/>
+        </keyframe>
+      </mujoco>
+      """,
+      keyframe=0,
+      overrides={"opt.jacobian": jacobian},
+      nworld=2,
+    )
+    self.assertTrue(any(tile.elemid.size == 0 for tile in m.M_tiles))
+    self.assertTrue(any(tile.elemid.size > 0 for tile in m.M_tiles))
+    self.assertEqual(d.qLD.shape[1] > m.qLD_block_total, nlong > 0)
+
+    # world 1 has another configuration, the inertia factor from put_data is out of date for it
+    mjd1 = copy.copy(mjd)
+    mjd1.qpos[:] += np.linspace(-0.3, 0.3, nv)
+    mjd1.qvel[:] += np.linspace(-0.5, 0.5, nv)
+    mujoco.mj_forward(mjm, mjd1)
+    d.qpos.assign(np.stack([mjd.qpos, mjd1.qpos]))
+    d.qvel.assign(np.stack([mjd.qvel, mjd1.qvel]))
+    mjds = [mjd, mjd1]
+
+    # main solver forces without noslip, used to check that noslip has an effect
+    mjm_slip = _noslip_model(mjm, noslip_iterations=0)
+    mjd_slip = mujoco.MjData(mjm_slip)
+    mujoco.mj_resetDataKeyframe(mjm_slip, mjd_slip, 0)
+    mujoco.mj_forward(mjm_slip, mjd_slip)
+    self.assertGreater(np.abs(mjd.qacc - mjd_slip.qacc).max(), 1e-6)
+
+    d.qacc.fill_(wp.inf)
+    d.qfrc_constraint.fill_(wp.inf)
+    d.efc.force.fill_(wp.inf)
+    mjw.forward(m, d)
+
+    for worldid, mjd_world in enumerate(mjds):
+      _assert_eq(d.qacc.numpy()[worldid], mjd_world.qacc, f"qacc{worldid}", tol=_NOSLIP_TOLERANCE)
+      _assert_eq(
+        d.qfrc_constraint.numpy()[worldid],
+        mjd_world.qfrc_constraint,
+        f"qfrc_constraint{worldid}",
+        tol=_NOSLIP_TOLERANCE,
+      )
+      _assert_eq(
+        np.sort(d.efc.force.numpy()[worldid, : mjd_world.nefc]),
+        np.sort(mjd_world.efc_force),
+        f"efc_force{worldid}",
+        tol=_NOSLIP_TOLERANCE,
+      )
+
+    self.assertFalse(np.allclose(d.qacc.numpy()[0], d.qacc.numpy()[1]))
+
   @parameterized.product(
     condim=(3, 4, 6),
     jacobian=(

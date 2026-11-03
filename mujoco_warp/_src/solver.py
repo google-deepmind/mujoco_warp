@@ -4593,8 +4593,182 @@ def _compact_scatter(m: types.Model, d: types.Data):
   support.mul_m(m, d, d.efc.Ma, d.qacc)
 
 
+# rows of Y per thread, or thread group, of _noslip_jt and _noslip_minv_tile, and per tile solve
+_NOSLIP_ROW_GROUP = 64
+_NOSLIP_TILE_ROWS = 16
+
+
 @cache_kernel
-def _noslip_factor_m(sleep: bool):
+def _noslip_jt(is_sparse: bool, sleep: bool):
+  IS_SPARSE = is_sparse
+  SLEEP = sleep
+
+  @wp.kernel(module="unique", enable_backward=False)
+  def kernel(
+    # Data in:
+    nefc_in: wp.array[int],
+    efc_J_in: wp.array3d[float],
+    dof_cdof_in: wp.array2d[int],
+    njmax_in: int,
+    # Out:
+    noslip_Y_out: wp.array3d[float],
+  ):
+    """Y[efcid] = J[efcid]', the right-hand sides of Y = M^-1 J', zero for sparse J."""
+    worldid, groupid, dofid = wp.tid()
+    nefc = wp.min(nefc_in[worldid], njmax_in)
+    efcadr = groupid * _NOSLIP_ROW_GROUP
+
+    # inactive (sleeping) dofs are frozen
+    active = True
+    if wp.static(SLEEP):
+      active = dof_cdof_in[worldid, dofid] >= 0
+
+    for efcid in range(efcadr, wp.min(nefc, efcadr + _NOSLIP_ROW_GROUP)):
+      J = float(0.0)
+      if wp.static(not IS_SPARSE):
+        if active:
+          J = efc_J_in[worldid, efcid, dofid]
+      noslip_Y_out[worldid, efcid, dofid] = J
+
+  return kernel
+
+
+@cache_kernel
+def _noslip_jt_sparse(sleep: bool):
+  SLEEP = sleep
+
+  @wp.kernel(module="unique", enable_backward=False)
+  def kernel(
+    # Data in:
+    nefc_in: wp.array[int],
+    efc_J_rownnz_in: wp.array2d[int],
+    efc_J_rowadr_in: wp.array2d[int],
+    efc_J_colind_in: wp.array3d[int],
+    efc_J_in: wp.array3d[float],
+    dof_cdof_in: wp.array2d[int],
+    # Out:
+    noslip_Y_out: wp.array3d[float],
+  ):
+    """Scatters sparse J[efcid] into the zeroed Y[efcid]."""
+    worldid, efcid = wp.tid()
+
+    if efcid >= nefc_in[worldid]:
+      return
+
+    # inactive (sleeping) dofs are frozen
+    rowadr = efc_J_rowadr_in[worldid, efcid]
+    for k in range(efc_J_rownnz_in[worldid, efcid]):
+      sparseid = rowadr + k
+      colind = efc_J_colind_in[worldid, 0, sparseid]
+      if wp.static(SLEEP):
+        if dof_cdof_in[worldid, colind] < 0:
+          continue
+      noslip_Y_out[worldid, efcid, colind] = efc_J_in[worldid, 0, sparseid]
+
+  return kernel
+
+
+@cache_kernel
+def _noslip_minv_block(block_size: int, sleep: bool):
+  SLEEP = sleep
+
+  @wp.kernel(module="unique", enable_backward=False)
+  def kernel(
+    # Model:
+    qLD_block_adr: wp.array[int],
+    # Data in:
+    nefc_in: wp.array[int],
+    qLD_in: wp.array2d[float],
+    qLDiagInv_in: wp.array2d[float],
+    dof_cdof_in: wp.array2d[int],
+    # In:
+    block_dof: wp.array[int],
+    # Out:
+    noslip_Y_out: wp.array3d[float],
+  ):
+    """Y[efcid] = M^-1 Y[efcid] on a compact or scalar Cholesky block of the inertia factor."""
+    worldid, efcid, blk = wp.tid()
+    start = block_dof[blk]
+    size = wp.static(block_size)
+
+    if efcid >= wp.min(nefc_in[worldid], noslip_Y_out.shape[1]):
+      return
+
+    # inactive (sleeping) trees keep Y = 0
+    if wp.static(SLEEP):
+      if dof_cdof_in[worldid, start] < 0:
+        return
+
+    factor_adr = qLD_block_adr[start]
+    if factor_adr == types.Q_LD_BLOCK_COMPACT:
+      for i in range(size):
+        noslip_Y_out[worldid, efcid, start + i] *= qLDiagInv_in[worldid, start + i]
+      return
+
+    # M = U'U with U upper: U' z = y, then U x = z
+    for i in range(size):
+      value = noslip_Y_out[worldid, efcid, start + i]
+      for k in range(i):
+        value -= qLD_in[worldid, factor_adr + k * size + i] * noslip_Y_out[worldid, efcid, start + k]
+      noslip_Y_out[worldid, efcid, start + i] = value / qLD_in[worldid, factor_adr + i * size + i]
+    for reverse_i in range(size):
+      i = size - 1 - reverse_i
+      value = noslip_Y_out[worldid, efcid, start + i]
+      for k in range(i + 1, size):
+        value -= qLD_in[worldid, factor_adr + i * size + k] * noslip_Y_out[worldid, efcid, start + k]
+      noslip_Y_out[worldid, efcid, start + i] = value / qLD_in[worldid, factor_adr + i * size + i]
+
+  return kernel
+
+
+@cache_kernel
+def _noslip_minv_tile(tile: types.TileSet, sleep: bool):
+  # one tile Cholesky block and row group per (world, block, row group) thread group
+  block_size = tile.size
+  block_area = block_size * block_size
+  nrow = _NOSLIP_TILE_ROWS
+  SLEEP = sleep
+
+  @wp.kernel(module="unique", enable_backward=False)
+  def kernel(
+    # Model:
+    qLD_block_adr: wp.array[int],
+    # Data in:
+    nefc_in: wp.array[int],
+    qLD_in: wp.array2d[float],
+    dof_cdof_in: wp.array2d[int],
+    # In:
+    block_dof: wp.array[int],
+    # Out:
+    noslip_Y_out: wp.array3d[float],
+  ):
+    """Y = M^-1 Y on a tile Cholesky block of the inertia factor."""
+    worldid, blk, groupid = wp.tid()
+    start = block_dof[blk]
+    nefc = wp.min(nefc_in[worldid], noslip_Y_out.shape[1])
+    efcadr = groupid * _NOSLIP_ROW_GROUP
+
+    if efcadr >= nefc:
+      return
+
+    # inactive (sleeping) trees keep Y = 0
+    if wp.static(SLEEP):
+      if dof_cdof_in[worldid, start] < 0:
+        return
+
+    L = wp.tile_reshape(
+      wp.tile_load(qLD_in[worldid], shape=(block_area,), offset=(qLD_block_adr[start],)), (block_size, block_size)
+    )
+    for efcid in range(efcadr, wp.min(nefc, efcadr + _NOSLIP_ROW_GROUP), nrow):
+      rhs = wp.tile_load(noslip_Y_out[worldid], shape=(nrow, block_size), offset=(efcid, start))
+      sol = wp.tile_cholesky_solve(L, wp.tile_transpose(rhs), fill_mode="upper")
+      wp.tile_store(noslip_Y_out[worldid], wp.tile_transpose(sol), offset=(efcid, start))
+
+  return kernel
+
+
+@cache_kernel
+def _noslip_minv_sparse(sleep: bool):
   SLEEP = sleep
 
   @wp.kernel(module="unique", enable_backward=False)
@@ -4604,126 +4778,48 @@ def _noslip_factor_m(sleep: bool):
     M_rownnz: wp.array[int],
     M_rowadr: wp.array[int],
     M_colind: wp.array[int],
+    qLD_block_total: int,
+    qLD_block_adr: wp.array[int],
     # Data in:
     nefc_in: wp.array[int],
-    M_in: wp.array2d[float],
+    qLD_in: wp.array2d[float],
+    qLDiagInv_in: wp.array2d[float],
     dof_cdof_in: wp.array2d[int],
-    # Out:
-    noslip_L_out: wp.array3d[float],
-  ):
-    """Dense lower Cholesky factor of the inertia matrix, M = L L'."""
-    worldid = wp.tid()
-
-    if nefc_in[worldid] == 0:
-      return
-
-    # densify lower triangle, M_colind is lower triangular and trees are decoupled in M
-    for i in range(nv):
-      for j in range(i + 1):
-        noslip_L_out[worldid, i, j] = 0.0
-
-      # inactive (sleeping) dofs: identity
-      if wp.static(SLEEP):
-        if dof_cdof_in[worldid, i] < 0:
-          noslip_L_out[worldid, i, i] = 1.0
-          continue
-
-      rowadr = M_rowadr[i]
-      for k in range(M_rownnz[i]):
-        sparseid = rowadr + k
-        noslip_L_out[worldid, i, M_colind[sparseid]] = M_in[worldid, sparseid]
-
-    # in-place Cholesky, bounded by the first dof of the kinematic tree (M_colind[M_rowadr[j]])
-    for j in range(nv):
-      jstart = M_colind[M_rowadr[j]]
-      diag = noslip_L_out[worldid, j, j]
-      for k in range(jstart, j):
-        diag -= noslip_L_out[worldid, j, k] * noslip_L_out[worldid, j, k]
-      diag = wp.sqrt(wp.max(diag, types.MJ_MINVAL))
-      noslip_L_out[worldid, j, j] = diag
-      diaginv = 1.0 / diag
-
-      # rows i > j in the same tree
-      i = j + 1
-      while i < nv:
-        if M_colind[M_rowadr[i]] > j:
-          break
-        val = noslip_L_out[worldid, i, j]
-        for k in range(jstart, j):
-          val -= noslip_L_out[worldid, i, k] * noslip_L_out[worldid, j, k]
-        noslip_L_out[worldid, i, j] = val * diaginv
-        i += 1
-
-  return kernel
-
-
-@cache_kernel
-def _noslip_minv_jt(is_sparse: bool, sleep: bool):
-  IS_SPARSE = is_sparse
-  SLEEP = sleep
-
-  @wp.kernel(module="unique", enable_backward=False)
-  def kernel(
-    # Model:
-    nv: int,
-    M_rowadr: wp.array[int],
-    M_colind: wp.array[int],
-    # Data in:
-    nefc_in: wp.array[int],
-    efc_J_rownnz_in: wp.array2d[int],
-    efc_J_rowadr_in: wp.array2d[int],
-    efc_J_colind_in: wp.array3d[int],
-    efc_J_in: wp.array3d[float],
-    dof_cdof_in: wp.array2d[int],
-    # In:
-    noslip_L_in: wp.array3d[float],
     # Out:
     noslip_Y_out: wp.array3d[float],
   ):
-    """Y[efcid] = M^-1 J[efcid]'."""
+    """Y[efcid] = M^-1 Y[efcid] on the sparse L'DL blocks of the inertia factor."""
     worldid, efcid = wp.tid()
 
-    if efcid >= nefc_in[worldid]:
+    if efcid >= wp.min(nefc_in[worldid], noslip_Y_out.shape[1]):
       return
 
-    # load row of J, inactive (sleeping) dofs are frozen
-    if wp.static(IS_SPARSE):
-      for k in range(nv):
-        noslip_Y_out[worldid, efcid, k] = 0.0
-      rowadr = efc_J_rowadr_in[worldid, efcid]
-      for k in range(efc_J_rownnz_in[worldid, efcid]):
+    # L' z = y from the leaves up, zero entries (including inactive dofs) have no update
+    for reverse_i in range(nv):
+      i = nv - 1 - reverse_i
+      if qLD_block_adr[i] != types.Q_LD_BLOCK_SPARSE:
+        continue
+      y = noslip_Y_out[worldid, efcid, i]
+      if y == 0.0:
+        continue
+      rowadr = M_rowadr[i]
+      for k in range(M_rownnz[i] - 1):
         sparseid = rowadr + k
-        colind = efc_J_colind_in[worldid, 0, sparseid]
-        if wp.static(SLEEP):
-          if dof_cdof_in[worldid, colind] < 0:
-            continue
-        noslip_Y_out[worldid, efcid, colind] = efc_J_in[worldid, 0, sparseid]
-    else:
-      for k in range(nv):
-        if wp.static(SLEEP):
-          if dof_cdof_in[worldid, k] < 0:
-            noslip_Y_out[worldid, efcid, k] = 0.0
-            continue
-        noslip_Y_out[worldid, efcid, k] = efc_J_in[worldid, efcid, k]
+        noslip_Y_out[worldid, efcid, M_colind[sparseid]] -= qLD_in[worldid, qLD_block_total + sparseid] * y
 
-    # forward substitution: L z = J', bounded by the first dof of the kinematic tree
+    # x = D^-1 z - L x from the root down, inactive (sleeping) dofs keep Y = 0
     for i in range(nv):
-      val = noslip_Y_out[worldid, efcid, i]
-      for k in range(M_colind[M_rowadr[i]], i):
-        val -= noslip_L_in[worldid, i, k] * noslip_Y_out[worldid, efcid, k]
-      noslip_Y_out[worldid, efcid, i] = val / noslip_L_in[worldid, i, i]
-
-    # backward substitution: L' y = z, rows k > i in the same tree
-    for ii in range(nv):
-      i = nv - 1 - ii
-      val = noslip_Y_out[worldid, efcid, i]
-      k = i + 1
-      while k < nv:
-        if M_colind[M_rowadr[k]] > i:
-          break
-        val -= noslip_L_in[worldid, k, i] * noslip_Y_out[worldid, efcid, k]
-        k += 1
-      noslip_Y_out[worldid, efcid, i] = val / noslip_L_in[worldid, i, i]
+      if qLD_block_adr[i] != types.Q_LD_BLOCK_SPARSE:
+        continue
+      if wp.static(SLEEP):
+        if dof_cdof_in[worldid, i] < 0:
+          continue
+      value = noslip_Y_out[worldid, efcid, i] * qLDiagInv_in[worldid, i]
+      rowadr = M_rowadr[i]
+      for k in range(M_rownnz[i] - 1):
+        sparseid = rowadr + k
+        value -= qLD_in[worldid, qLD_block_total + sparseid] * noslip_Y_out[worldid, efcid, M_colind[sparseid]]
+      noslip_Y_out[worldid, efcid, i] = value
 
   return kernel
 
@@ -5592,7 +5688,6 @@ def noslip(m: types.Model, d: types.Data):
   if d.njmax == 0 or m.nv == 0:
     return
 
-  noslip_L = wp.empty((d.nworld, m.nv, m.nv), dtype=float)
   noslip_Y = wp.empty((d.nworld, d.njmax, m.nv), dtype=float)
   noslip_A = wp.empty((d.nworld, d.njmax), dtype=types.vec5)
   inertia_scale = wp.empty((d.nworld,), dtype=float)
@@ -5600,29 +5695,59 @@ def noslip(m: types.Model, d: types.Data):
   sleep = bool(m.opt.enableflags & types.EnableBit.SLEEP)
 
   wp.launch(_inertia_scale, dim=d.nworld, inputs=[m.nv, m.M_rownnz, m.M_rowadr, d.M], outputs=[inertia_scale])
+
+  # Y = M^-1 J' with the inertia factorization of the smooth dynamics; with sleeping enabled,
+  # forward solves the smooth dynamics on the compacted active dofs and does not update qLD
+  if sleep:
+    smooth.factor_m(m, d)
+  ngroup = ceil(d.njmax / _NOSLIP_ROW_GROUP)
   wp.launch(
-    _noslip_factor_m(sleep),
-    dim=d.nworld,
-    inputs=[m.nv, m.M_rownnz, m.M_rowadr, m.M_colind, d.nefc, d.M, d.dof_cdof],
-    outputs=[noslip_L],
-  )
-  wp.launch(
-    _noslip_minv_jt(m.is_sparse, sleep),
-    dim=(d.nworld, d.njmax),
-    inputs=[
-      m.nv,
-      m.M_rowadr,
-      m.M_colind,
-      d.nefc,
-      d.efc.J_rownnz,
-      d.efc.J_rowadr,
-      d.efc.J_colind,
-      d.efc.J,
-      d.dof_cdof,
-      noslip_L,
-    ],
+    _noslip_jt(m.is_sparse, sleep),
+    dim=(d.nworld, ngroup, m.nv),
+    inputs=[d.nefc, d.efc.J, d.dof_cdof, d.njmax],
     outputs=[noslip_Y],
   )
+  if m.is_sparse:
+    wp.launch(
+      _noslip_jt_sparse(sleep),
+      dim=(d.nworld, d.njmax),
+      inputs=[d.nefc, d.efc.J_rownnz, d.efc.J_rowadr, d.efc.J_colind, d.efc.J, d.dof_cdof],
+      outputs=[noslip_Y],
+    )
+  for tile in m.M_tiles:
+    if tile.elemid.size == 0:
+      wp.launch(
+        _noslip_minv_block(tile.size, sleep),
+        dim=(d.nworld, d.njmax, tile.adr.size),
+        inputs=[m.qLD_block_adr, d.nefc, d.qLD, d.qLDiagInv, d.dof_cdof, tile.adr],
+        outputs=[noslip_Y],
+      )
+    else:
+      wp.launch_tiled(
+        _noslip_minv_tile(tile, sleep),
+        dim=(d.nworld, tile.adr.size, ngroup),
+        inputs=[m.qLD_block_adr, d.nefc, d.qLD, d.dof_cdof, tile.adr],
+        outputs=[noslip_Y],
+        block_dim=m.block_dim.cholesky_solve,
+      )
+  if d.qLD.shape[1] > m.qLD_block_total:
+    wp.launch(
+      _noslip_minv_sparse(sleep),
+      dim=(d.nworld, d.njmax),
+      inputs=[
+        m.nv,
+        m.M_rownnz,
+        m.M_rowadr,
+        m.M_colind,
+        m.qLD_block_total,
+        m.qLD_block_adr,
+        d.nefc,
+        d.qLD,
+        d.qLDiagInv,
+        d.dof_cdof,
+      ],
+      outputs=[noslip_Y],
+    )
   wp.launch(
     _noslip_delassus(m.is_sparse),
     dim=(d.nworld, d.njmax),
