@@ -150,7 +150,7 @@ def constraint_params_backward(m: Model, bc: BackwardContext):
 
 
 @wp.func
-def accumulate_geom_friction(
+def geom_friction_vjp(
   # Model:
   geom_priority: wp.array[int],
   geom_friction: wp.array2d[wp.vec3],
@@ -158,9 +158,7 @@ def accumulate_geom_friction(
   geom: wp.vec2i,
   worldid: int,
   res_contact_friction: vec5,
-  # Out:
-  geom_friction_grad: wp.array2d[wp.vec3],
-):
+) -> tuple[wp.vec3, wp.vec3]:
   geom1 = geom[0]
   geom2 = geom[1]
   res_geom_friction = wp.vec3(
@@ -180,8 +178,7 @@ def accumulate_geom_friction(
       grad1[i] = res_geom_friction[i]
     else:
       grad2[i] = res_geom_friction[i]
-  wp.atomic_add(geom_friction_grad, model_worldid, geom1, -grad1)
-  wp.atomic_add(geom_friction_grad, model_worldid, geom2, -grad2)
+  return -grad1, -grad2
 
 
 # Local smooth parameters.

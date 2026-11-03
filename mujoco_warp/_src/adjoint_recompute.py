@@ -27,6 +27,7 @@ from mujoco_warp._src.types import DisableBit
 from mujoco_warp._src.types import JointType
 from mujoco_warp._src.types import vec10
 
+# Adjoint reductions use unordered atomics; deterministic backward execution is deferred.
 wp.set_module_options({"enable_backward": True})
 
 
@@ -153,7 +154,7 @@ def _gravity_force_recompute(
       dofid,
       worldid,
     )
-    wp.atomic_add(qfrc_gravcomp_out[worldid], dofid, wp.dot(jac, force))
+    wp.atomic_add(qfrc_gravcomp_out[worldid], dofid, wp.dot(jac, force))  # kernel_analyzer: ignore[atomic]
 
 
 # smooth._cfrc

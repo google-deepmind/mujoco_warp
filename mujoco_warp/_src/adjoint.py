@@ -139,7 +139,7 @@ def _assert_step_supported(m: Model):
     raise NotImplementedError("adjoint.step_backward does not support adhesion")
   if m.flg_surfacevel:
     raise NotImplementedError("adjoint.step_backward does not support surface velocity")
-  if m.opt.enableflags & EnableBit.SLEEP and not m.opt.disableflags & DisableBit.ISLAND:
+  if m.opt.enableflags & EnableBit.SLEEP and not (m.opt.disableflags & DisableBit.ISLAND):
     raise NotImplementedError("adjoint.step_backward does not support sleep")
   if m.eq_connect_adr.size or m.eq_wld_adr.size or m.ntendon or m.nflex:
     raise NotImplementedError("adjoint.step_backward does not support connect/weld equality, tendon, or flex constraint rows")
@@ -452,7 +452,10 @@ def fwd_kinematics_backward(m: Model, d: Data, bc: BackwardContext | None = None
 
 
 def enable_grad() -> None:
-  """Enables the analytic backward hooks for step and forward kinematics."""
+  """Enables the analytic backward hooks for step and forward kinematics.
+
+  Backward reductions are nondeterministic, regardless of forward determinism options.
+  """
   forward.ENABLE_GRAD = True
   wp.sqrt = adjoint_util.safe_sqrt
   wp.func_grad(math.quat_integrate)(adjoint_util._adj_quat_integrate)

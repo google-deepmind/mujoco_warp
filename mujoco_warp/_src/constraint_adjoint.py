@@ -27,6 +27,7 @@ from mujoco_warp._src.types import vec5
 from mujoco_warp._src.warp_util import cache_kernel
 
 # adjoint module: backward stays on so AD leaves differentiate through cross-module @wp.funcs
+# Adjoint reductions use unordered atomics; deterministic backward execution is deferred.
 wp.set_module_options({"enable_backward": True})
 
 _MAXCONDIM = 6  # max valid MuJoCo condim; elliptic friction rows = dimid 1..condim-1
@@ -222,16 +223,16 @@ def _constraint_scatter(is_sparse: bool):
         sid = rowadr + kk
         i = efc_J_colind_in[w, 0, sid]
         jj = efc_J_in[w, 0, sid]
-        wp.atomic_add(res_qvel_out[w], i, jj * Vb)
+        wp.atomic_add(res_qvel_out[w], i, jj * Vb)  # kernel_analyzer: ignore[atomic]
         if route_p:
-          wp.atomic_add(res_dof_out[w], i, jj * Pb)
+          wp.atomic_add(res_dof_out[w], i, jj * Pb)  # kernel_analyzer: ignore[atomic]
     else:
       for i in range(nv):
         jj = efc_J_in[w, row, i]
         if jj != 0.0:
-          wp.atomic_add(res_qvel_out[w], i, jj * Vb)
+          wp.atomic_add(res_qvel_out[w], i, jj * Vb)  # kernel_analyzer: ignore[atomic]
           if route_p:
-            wp.atomic_add(res_dof_out[w], i, jj * Pb)
+            wp.atomic_add(res_dof_out[w], i, jj * Pb)  # kernel_analyzer: ignore[atomic]
 
   return kernel
 
@@ -542,14 +543,16 @@ def _contact_scatter(geom_friction_grad: bool):
     if geom[0] < 0 or geom[1] < 0:
       return
     if wp.static(geom_friction_grad):
-      model_adjoint.accumulate_geom_friction(
+      grad1, grad2 = model_adjoint.geom_friction_vjp(
         geom_priority,
         geom_friction,
         geom,
         w,
         res_contact_friction_in[cid],
-        geom_friction_grad_out,
       )
+      model_worldid = w % geom_friction.shape[0]
+      wp.atomic_add(geom_friction_grad_out, model_worldid, geom[0], grad1)  # kernel_analyzer: ignore[atomic]
+      wp.atomic_add(geom_friction_grad_out, model_worldid, geom[1], grad2)  # kernel_analyzer: ignore[atomic]
     b0 = body_weldid[geom_bodyid[geom[0]]]
     b1 = body_weldid[geom_bodyid[geom[1]]]
     p = contact_pos_in[cid]
@@ -581,13 +584,15 @@ def _contact_scatter(geom_friction_grad: bool):
       off = p - subtree_com_in[w, body_rootid[bb]]
       jacp = lin + wp.cross(a, off)
       h = wp.spatial_vector(side * a, side * jacp)
-      wp.atomic_add(res_qvel_out[w], i, wp.dot(h, Vb))  # dphi/dqvel_i = h_i*Vbar
+      # dphi/dqvel_i = h_i*Vbar
+      wp.atomic_add(res_qvel_out[w], i, wp.dot(h, Vb))  # kernel_analyzer: ignore[atomic]
       G = side * (qvel_in[w, i] * Vb + qacc_in[w, i] * Ab + lam_in[w, i] * Zb)  # cotangent on raw jac column
       Ga = wp.spatial_top(G)
       Gl = wp.spatial_bottom(G)
-      wp.atomic_add(res_cdof_out[w], i, wp.spatial_vector(Ga + wp.cross(off, Gl), Gl))
+      wp.atomic_add(res_cdof_out[w], i, wp.spatial_vector(Ga + wp.cross(off, Gl), Gl))  # kernel_analyzer: ignore[atomic]
       cpos_acc += wp.cross(Gl, a)  # d(off=p-com)/dp
-      wp.atomic_add(res_subtree_com_out[w], body_rootid[bb], wp.cross(a, Gl))  # doff/dcom = -doff/dp
+      # doff/dcom = -doff/dp
+      wp.atomic_add(res_subtree_com_out[w], body_rootid[bb], wp.cross(a, Gl))  # kernel_analyzer: ignore[atomic]
     res_contact_pos_out[cid] += cpos_acc
 
   return kernel

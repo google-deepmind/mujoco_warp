@@ -38,6 +38,7 @@ from mujoco_warp._src.types import vec6
 from mujoco_warp._src.types import vec10
 from mujoco_warp._src.warp_util import event_scope
 
+# Adjoint reductions use unordered atomics; deterministic backward execution is deferred.
 wp.set_module_options({"enable_backward": True})
 
 
@@ -113,7 +114,9 @@ def _smooth_qvel_vjp(
   dt = opt_timestep[worldid % opt_timestep.shape[0]]
   i = qD_fullm_i[elemid]
   j = qD_fullm_j[elemid]
-  wp.atomic_add(adj_qvel_out[worldid], j, (M_D[worldid, elemid] - qLU_in[worldid, elemid]) / dt * lam[worldid, i])
+  wp.atomic_add(
+    adj_qvel_out[worldid], j, (M_D[worldid, elemid] - qLU_in[worldid, elemid]) / dt * lam[worldid, i]
+  )  # kernel_analyzer: ignore[atomic]
 
 
 @wp.kernel(enable_backward=False)

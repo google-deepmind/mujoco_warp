@@ -37,6 +37,7 @@ from mujoco_warp._src.types import TrnType
 from mujoco_warp._src.types import vec10
 from mujoco_warp._src.warp_util import event_scope
 
+# Adjoint reductions use unordered atomics; deterministic backward execution is deferred.
 wp.set_module_options({"enable_backward": True})
 
 
@@ -208,7 +209,9 @@ def _actuator_qpos_vjp(
   scale = -moment_lam * dfdl
   for i in range(rownnz):
     sparseid = rowadr + i
-    wp.atomic_add(res_dof_out[w], moment_colind_in[w, sparseid], scale * actuator_moment_in[w, sparseid])
+    wp.atomic_add(
+      res_dof_out[w], moment_colind_in[w, sparseid], scale * actuator_moment_in[w, sparseid]
+    )  # kernel_analyzer: ignore[atomic]
 
 
 @event_scope
@@ -387,7 +390,7 @@ def _subtree_acc_sv(
   w, nodeid = wp.tid()
   b = body_tree_level[nodeid]
   if b != 0:
-    wp.atomic_add(val_io_out, w, body_parentid[b], val_io_out[w, b])
+    wp.atomic_add(val_io_out, w, body_parentid[b], val_io_out[w, b])  # kernel_analyzer: ignore[atomic]
 
 
 # io_out += src (merges a contact subtree-COM seed into the bias's)
@@ -417,7 +420,7 @@ def _comvel_W_acc(
   w, nodeid = wp.tid()
   b = body_tree_level[nodeid]
   if b != 0:
-    wp.atomic_add(W_io_out, w, body_parentid[b], W_io_out[w, b] + H_in[w, b])
+    wp.atomic_add(W_io_out, w, body_parentid[b], W_io_out[w, b] + H_in[w, b])  # kernel_analyzer: ignore[atomic]
 
 
 def linearize(m: Model, d: Data, d_out: Data, bc: BackwardContext) -> Data:
@@ -598,7 +601,12 @@ def rne_backward(
 
   wp.copy(bc.smooth_tree, d.cacc.grad)
   for level in reversed(m.body_tree):
-    wp.launch(_subtree_acc_sv, dim=(nworld, level.size), inputs=[m.body_parentid, level], outputs=[bc.smooth_tree])
+    wp.launch(
+      _subtree_acc_sv,
+      dim=(nworld, level.size),
+      inputs=[m.body_parentid, level],
+      outputs=[bc.smooth_tree],
+    )
   wp.launch(
     _rne_dof_vjp,
     dim=(nworld, nv),
@@ -810,7 +818,12 @@ def comvel_backward(
   )
   wp.copy(bc.smooth_W, adj_cvel)
   for level in reversed(m.body_tree):
-    wp.launch(_comvel_W_acc, dim=(nworld, level.size), inputs=[m.body_parentid, level, bc.smooth_H], outputs=[bc.smooth_W])
+    wp.launch(
+      _comvel_W_acc,
+      dim=(nworld, level.size),
+      inputs=[m.body_parentid, level, bc.smooth_H],
+      outputs=[bc.smooth_W],
+    )
   wp.launch(
     _comvel_vjp_samebody,
     dim=(nworld, nbody),
