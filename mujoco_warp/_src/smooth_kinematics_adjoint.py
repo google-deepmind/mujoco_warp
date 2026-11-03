@@ -26,7 +26,7 @@ from mujoco_warp._src.types import Model
 wp.set_module_options({"enable_backward": False})
 
 
-@wp.kernel
+@wp.kernel(module="unique", enable_backward=False)
 def _cdof_qpos_vjp(
   # Model:
   nv: int,
@@ -37,15 +37,16 @@ def _cdof_qpos_vjp(
   # Data in:
   cdof_in: wp.array2d[wp.spatial_vector],
   # In:
+  lanes: int,
   adj_cdof: wp.array2d[wp.spatial_vector],
   # Out:
   adj_dof_out: wp.array2d[float],
 ):
-  w, k = wp.tid()
+  w, k, lane = wp.tid()
   cdof_k = cdof_in[w, k]
   jk = dof_jntid[k]
   acc = float(0.0)
-  for i in range(nv):
+  for i in range(lane, nv, lanes):
     ji = dof_jntid[i]
     jti = jnt_type[ji]
     ofs = jnt_dofadr[ji]
@@ -64,7 +65,7 @@ def _cdof_qpos_vjp(
       ancestor = jti == JointType.BALL or (jti == JointType.FREE and k - ofs >= 3)
     if ancestor:
       acc += wp.dot(adj_cdof[w, i], math.motion_cross(cdof_k, cdof_in[w, i]))
-  adj_dof_out[w, k] += acc
+  wp.atomic_add(adj_dof_out, w, k, acc)  # kernel_analyzer: ignore[atomic]
 
 
 @wp.kernel
@@ -91,7 +92,7 @@ def _build_ceff(
   ceff_out[w, b] = ceff
 
 
-@wp.kernel
+@wp.kernel(module="unique", enable_backward=False)
 def _subtree_com_qpos_vjp(
   # Model:
   nbody: int,
@@ -106,14 +107,15 @@ def _subtree_com_qpos_vjp(
   subtree_com_in: wp.array2d[wp.vec3],
   cdof_in: wp.array2d[wp.spatial_vector],
   # In:
+  lanes: int,
   adj_subtree_com: wp.array2d[wp.vec3],
   # Out:
   adj_dof_out: wp.array2d[float],
 ):
-  w, k = wp.tid()
+  w, k, lane = wp.tid()
   wm = w % body_mass.shape[0]
   acc = float(0.0)
-  for body in range(1, nbody):
+  for body in range(1 + lane, nbody, lanes):
     if body_isdofancestor[body, k] == 0:
       continue
     root = body_rootid[body]
@@ -135,7 +137,7 @@ def _subtree_com_qpos_vjp(
     else:
       mass = body_mass[wm, body] / subtree_mass
     acc += mass * wp.dot(jacp, adj_subtree_com[w, root])
-  adj_dof_out[w, k] += acc
+  wp.atomic_add(adj_dof_out, w, k, acc)  # kernel_analyzer: ignore[atomic]
 
 
 @wp.kernel
@@ -184,11 +186,14 @@ def kinematics_qpos_backward(
   adj_qpos: wp.array2d[float],
 ):
   """Accumulates the cdof and subtree-COM adjoints into qpos."""
+  # Split each DOF's scan across lanes while keeping the partial sums in registers.
+  lanes = 8 if d.qpos.device.is_cuda else 1
   wp.launch(
     _cdof_qpos_vjp,
-    dim=(d.nworld, m.nv),
-    inputs=[m.nv, m.jnt_type, m.jnt_dofadr, m.dof_jntid, m.dof_parentid, d.cdof, adj_cdof],
+    dim=(d.nworld, m.nv, lanes),
+    inputs=[m.nv, m.jnt_type, m.jnt_dofadr, m.dof_jntid, m.dof_parentid, d.cdof, lanes, adj_cdof],
     outputs=[adj_dof],
+    block_dim=128,
   )
   wp.launch(
     _build_ceff,
@@ -198,7 +203,7 @@ def kinematics_qpos_backward(
   )
   wp.launch(
     _subtree_com_qpos_vjp,
-    dim=(d.nworld, m.nv),
+    dim=(d.nworld, m.nv, lanes),
     inputs=[
       m.nbody,
       m.body_parentid,
@@ -210,9 +215,11 @@ def kinematics_qpos_backward(
       d.xipos,
       d.subtree_com,
       d.cdof,
+      lanes,
       ceff,
     ],
     outputs=[adj_dof],
+    block_dim=128,
   )
   wp.launch(
     _dof_to_qpos,

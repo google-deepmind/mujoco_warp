@@ -881,7 +881,7 @@ def comvel_backward(
 
 
 # chain adj_{xipos_in, ximat_in} to a per-dof tangent gradient via support.jac_dof
-@wp.kernel(enable_backward=False)
+@wp.kernel(module="unique", enable_backward=False)
 def _cinert_pose_dof_vjp(
   # Model:
   nbody: int,
@@ -895,14 +895,15 @@ def _cinert_pose_dof_vjp(
   subtree_com_in: wp.array2d[wp.vec3],
   cdof_in: wp.array2d[wp.spatial_vector],
   # In:
+  lanes: int,
   adj_xipos: wp.array2d[wp.vec3],
   adj_ximat: wp.array2d[wp.mat33],
   # Out:
   res_dof_out: wp.array2d[float],  # (+=): per-dof tangent gradient
 ):
-  w, k = wp.tid()
+  w, k, lane = wp.tid()
   acc = float(0.0)
-  for b in range(1, nbody):
+  for b in range(1 + lane, nbody, lanes):
     if body_isdofancestor[b, k] == 0:  # dof k does not move body b -> jac = 0
       continue
     jacp, jacr = support.jac_dof(
@@ -919,7 +920,7 @@ def _cinert_pose_dof_vjp(
     )
     tau = adjoint_util._adj_rotation(ximat_in[w, b], adj_ximat[w, b])
     acc += wp.dot(jacp, adj_xipos[w, b]) + wp.dot(jacr, tau)
-  res_dof_out[w, k] += acc
+  wp.atomic_add(res_dof_out, w, k, acc)  # kernel_analyzer: ignore[atomic]
 
 
 def _cinert_vjp(m: Model, d: Data, adj_cinert: wp.array2d, bc: BackwardContext):
@@ -942,9 +943,10 @@ def _kinematic_qpos_vjp(m: Model, d: Data, adj_cdof: wp.array2d, bc: BackwardCon
   smooth_res_dof, smooth_res_qpos = bc.smooth_res_dof, bc.smooth_res_qpos
   smooth_res_dof.zero_()
   smooth_res_qpos.zero_()
+  lanes = 8 if d.qpos.device.is_cuda else 1
   wp.launch(
     _cinert_pose_dof_vjp,
-    dim=(nworld, nv),
+    dim=(nworld, nv, lanes),
     inputs=[
       m.nbody,
       m.body_parentid,
@@ -955,10 +957,12 @@ def _kinematic_qpos_vjp(m: Model, d: Data, adj_cdof: wp.array2d, bc: BackwardCon
       d.ximat,
       d.subtree_com,
       d.cdof,
+      lanes,
       d.xipos.grad,
       d.ximat.grad,
     ],
     outputs=[smooth_res_dof],
+    block_dim=128,
   )
   smooth_kinematics_adjoint.kinematics_qpos_backward(
     m,
