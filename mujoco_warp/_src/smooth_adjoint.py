@@ -395,41 +395,40 @@ def gravcomp_mass_vjp(m: Model, d: Data, lam: wp.array2d, res_body_mass: wp.arra
   )
 
 
-# ----------------------------------------------------------------------------
-# Per-depth tree-reduction reverses over m.body_tree: fast equivalents of the O(nbody^2)
-# ancestry-walk kernels below. All enable_backward=False (manual VJP), all out-of-place across
-# depths: a body reads only an already-finalized parent/child depth, so writes never race.
-# ----------------------------------------------------------------------------
-# root->leaves ancestor accumulation; launch once per m.body_tree depth in forward order
+# Transposes of the linear RNE tree reductions. Each output reads the original seeds,
+# so an entire ancestor/subtree sum needs one launch and no inter-depth synchronization.
 @wp.kernel(enable_backward=False)
-def _anc_acc_sv(
+def _ancestor_sum(
   # Model:
   body_parentid: wp.array[int],
   # In:
-  body_tree_level: wp.array[int],
+  val_in: wp.array2d[wp.spatial_vector],
   # Out:
-  val_io_out: wp.array2d[wp.spatial_vector],  # init = local; root->leaves: val[b] += val[parent(b)]
+  sum_out: wp.array2d[wp.spatial_vector],
 ):
-  w, nodeid = wp.tid()
-  b = body_tree_level[nodeid]
-  if b != 0:
-    val_io_out[w, b] = val_io_out[w, b] + val_io_out[w, body_parentid[b]]
+  w, b = wp.tid()
+  acc = val_in[w, b]
+  parent = b
+  while parent != 0:
+    parent = body_parentid[parent]
+    acc += val_in[w, parent]
+  sum_out[w, b] = acc
 
 
-# leaves->root subtree sum; launch per depth reversed; mirrors smooth._subtree_com_acc
 @wp.kernel(enable_backward=False)
-def _subtree_acc_sv(
+def _subtree_sum(
   # Model:
-  body_parentid: wp.array[int],
+  body_subtreenum: wp.array[int],
   # In:
-  body_tree_level: wp.array[int],
+  val_in: wp.array2d[wp.spatial_vector],
   # Out:
-  val_io_out: wp.array2d[wp.spatial_vector],  # init = local; leaves->root: val[parent] += val[b]
+  sum_out: wp.array2d[wp.spatial_vector],
 ):
-  w, nodeid = wp.tid()
-  b = body_tree_level[nodeid]
-  if b != 0:
-    wp.atomic_add(val_io_out, w, body_parentid[b], val_io_out[w, b])  # kernel_analyzer: ignore[atomic]
+  w, b = wp.tid()
+  acc = val_in[w, b]
+  for child in range(b + 1, b + body_subtreenum[b]):
+    acc += val_in[w, child]
+  sum_out[w, b] = acc
 
 
 # io_out += src (merges a contact subtree-COM seed into the bias's)
@@ -445,21 +444,22 @@ def _acc_spatial(src: wp.array2d[wp.spatial_vector], io_out: wp.array2d[wp.spati
   io_out[w, i] = io_out[w, i] + src[w, i]
 
 
-# CV3 augmented-seed subtree sum; launch per depth reversed (children finalized first)
+# The body's own H is added by the same-body reverse; only descendants contribute here.
 @wp.kernel(enable_backward=False)
-def _comvel_W_acc(
+def _comvel_W_sum(
   # Model:
-  body_parentid: wp.array[int],
+  body_subtreenum: wp.array[int],
   # In:
-  body_tree_level: wp.array[int],
+  adj_cvel: wp.array2d[wp.spatial_vector],
   H_in: wp.array2d[wp.spatial_vector],
   # Out:
-  W_io_out: wp.array2d[wp.spatial_vector],  # init = adj_cvel (A); leaves->root: W[parent] += W[b] + H[b]
+  W_out: wp.array2d[wp.spatial_vector],
 ):
-  w, nodeid = wp.tid()
-  b = body_tree_level[nodeid]
-  if b != 0:
-    wp.atomic_add(W_io_out, w, body_parentid[b], W_io_out[w, b] + H_in[w, b])  # kernel_analyzer: ignore[atomic]
+  w, b = wp.tid()
+  acc = adj_cvel[w, b]
+  for child in range(b + 1, b + body_subtreenum[b]):
+    acc += adj_cvel[w, child] + H_in[w, child]
+  W_out[w, b] = acc
 
 
 def linearize(m: Model, d: Data, d_out: Data, bc: BackwardContext) -> Data:
@@ -624,9 +624,12 @@ def rne_backward(
     outputs=[bc.smooth_force],
   )
 
-  wp.copy(bc.smooth_tree, bc.smooth_force)
-  for level in m.body_tree:
-    wp.launch(_anc_acc_sv, dim=(nworld, level.size), inputs=[m.body_parentid, level], outputs=[bc.smooth_tree])
+  wp.launch(
+    _ancestor_sum,
+    dim=(nworld, nbody),
+    inputs=[m.body_parentid, bc.smooth_force],
+    outputs=[bc.smooth_tree],
+  )
 
   wp.launch(
     adjoint_recompute._rne_cfrc_recompute,
@@ -638,14 +641,12 @@ def rne_backward(
     adjoint=True,
   )
 
-  wp.copy(bc.smooth_tree, d.cacc.grad)
-  for level in reversed(m.body_tree):
-    wp.launch(
-      _subtree_acc_sv,
-      dim=(nworld, level.size),
-      inputs=[m.body_parentid, level],
-      outputs=[bc.smooth_tree],
-    )
+  wp.launch(
+    _subtree_sum,
+    dim=(nworld, nbody),
+    inputs=[m.body_subtreenum, d.cacc.grad],
+    outputs=[bc.smooth_tree],
+  )
   wp.launch(
     _rne_dof_vjp,
     dim=(nworld, nv),
@@ -855,14 +856,12 @@ def comvel_backward(
     inputs=[m.body_parentid, m.body_jntnum, m.body_jntadr, m.jnt_type, m.jnt_dofadr, d.qvel, d.cdof, d.cvel, adj_cdof_dot],
     outputs=[bc.smooth_h, bc.smooth_k, bc.smooth_H],
   )
-  wp.copy(bc.smooth_W, adj_cvel)
-  for level in reversed(m.body_tree):
-    wp.launch(
-      _comvel_W_acc,
-      dim=(nworld, level.size),
-      inputs=[m.body_parentid, level, bc.smooth_H],
-      outputs=[bc.smooth_W],
-    )
+  wp.launch(
+    _comvel_W_sum,
+    dim=(nworld, nbody),
+    inputs=[m.body_subtreenum, adj_cvel, bc.smooth_H],
+    outputs=[bc.smooth_W],
+  )
   wp.launch(
     _comvel_vjp_samebody,
     dim=(nworld, nbody),
