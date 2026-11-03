@@ -58,11 +58,14 @@ class SleepTest(parameterized.TestCase):
     qpos = d.qpos.numpy()
     for w in range(nworld):
       qpos[w, 2] = 0.1  # sit on floor
-    d.qpos = wp.array(qpos, dtype=float)
+    d.qpos.assign(qpos)
+
+    with wp.ScopedCapture() as capture:
+      mjwarp.step(m, d)
 
     # Run a few steps to let it come to rest and count down
     for _ in range(15):
-      mjwarp.step(m, d)
+      wp.capture_launch(capture.graph)
 
     # After 15 steps under sleep tolerance, it should have gone to sleep
     tree_asleep = d.tree_asleep.numpy()
@@ -113,22 +116,25 @@ class SleepTest(parameterized.TestCase):
     qvel = d.qvel.numpy()
     for w in range(nworld):
       qvel[w, 6] = 20.0  # high bullet velocity along x to ensure collision within few steps
-    d.qvel = wp.array(qvel, dtype=float)
+    d.qvel.assign(qvel)
 
     # Put target (tree 0) to sleep manually
     tree_asleep = d.tree_asleep.numpy()
     for w in range(nworld):
       tree_asleep[w, 0] = 0  # self-cycle for target
-    d.tree_asleep = wp.array(tree_asleep, dtype=int)
+    d.tree_asleep.assign(tree_asleep)
 
     # Update sleep arrays to reflect the target is asleep
     sleep.update_sleep(m, d)
     for w in range(nworld):
       self.assertEqual(d.tree_awake.numpy()[w, 0], 0, f"Target tree in world {w} should start asleep")
 
+    with wp.ScopedCapture() as capture:
+      mjwarp.step(m, d)
+
     # Run physics until contact occurs
     for _ in range(5):
-      mjwarp.step(m, d)
+      wp.capture_launch(capture.graph)
 
     # Target should be wake up because of contact!
     for w in range(nworld):
@@ -254,7 +260,7 @@ class SleepTest(parameterized.TestCase):
       </worldbody>
     </mujoco>
     """
-    # 1. Run with sleep enabled
+    # Run with sleep enabled
     _, _, m_sleep, d_sleep = test_data.fixture(
       xml=xml,
       nworld=nworld,
@@ -264,9 +270,9 @@ class SleepTest(parameterized.TestCase):
     qpos_sleep = d_sleep.qpos.numpy()
     for w in range(nworld):
       qpos_sleep[w, 2] = 0.1  # b1 sitting
-    d_sleep.qpos = wp.array(qpos_sleep, dtype=float)
+    d_sleep.qpos.assign(qpos_sleep)
 
-    # 2. Run with sleep disabled
+    # Run with sleep disabled
     _, _, m_nosleep, d_nosleep = test_data.fixture(
       xml=xml,
       nworld=nworld,
@@ -275,12 +281,17 @@ class SleepTest(parameterized.TestCase):
     qpos_nosleep = d_nosleep.qpos.numpy()
     for w in range(nworld):
       qpos_nosleep[w, 2] = 0.1  # b1 sitting
-    d_nosleep.qpos = wp.array(qpos_nosleep, dtype=float)
+    d_nosleep.qpos.assign(qpos_nosleep)
+
+    with wp.ScopedCapture() as capture_sleep:
+      mjwarp.step(m_sleep, d_sleep)
+    with wp.ScopedCapture() as capture_nosleep:
+      mjwarp.step(m_nosleep, d_nosleep)
 
     # Step both simulators in parallel
     for step_idx in range(25):
-      mjwarp.step(m_sleep, d_sleep)
-      mjwarp.step(m_nosleep, d_nosleep)
+      wp.capture_launch(capture_sleep.graph)
+      wp.capture_launch(capture_nosleep.graph)
 
       # b2 (tree 1) must remain awake in both simulations and have identical states
       qpos_s = d_sleep.qpos.numpy()
@@ -324,11 +335,14 @@ class SleepTest(parameterized.TestCase):
     qvel = d.qvel.numpy()
     for w in range(nworld):
       qvel[w, 0] = 5.0
-    d.qvel = wp.array(qvel, dtype=float)
+    d.qvel.assign(qvel)
+
+    with wp.ScopedCapture() as capture:
+      mjwarp.step(m, d)
 
     # Run steps to let it settle
     for _ in range(25):
-      mjwarp.step(m, d)
+      wp.capture_launch(capture.graph)
 
     # It must be asleep
     for w in range(nworld):
@@ -784,9 +798,12 @@ class SleepTest(parameterized.TestCase):
     # Policy should be AUTO_NEVER (1)
     self.assertEqual(m.tree_sleep_policy.numpy()[0], int(types.SleepPolicy.AUTO_NEVER))
 
+    with wp.ScopedCapture() as capture:
+      mjwarp.step(m, d)
+
     # tree should never sleep
     for _ in range(15):
-      mjwarp.step(m, d)
+      wp.capture_launch(capture.graph)
 
     for w in range(nworld):
       self.assertEqual(d.tree_awake.numpy()[w, 0], 1, f"Tree in world {w} with AUTO_NEVER policy should remain awake")

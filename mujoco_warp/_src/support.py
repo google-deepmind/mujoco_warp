@@ -17,7 +17,9 @@ from typing import Optional, Tuple
 
 import warp as wp
 
+from mujoco_warp._src.collision_primitive_core import tri_weights
 from mujoco_warp._src.math import motion_cross
+from mujoco_warp._src.types import MJ_MAXVAL
 from mujoco_warp._src.types import MJ_MINVAL
 from mujoco_warp._src.types import ConeType
 from mujoco_warp._src.types import Data
@@ -66,7 +68,21 @@ def next_act(
 
 @wp.func
 def mat33_to_quat_polar(F: wp.mat33) -> wp.quat:
+  # for large rotations (non-positive trace), warm start from the Gram-Schmidt rotation of the first
+  # two columns so that the iteration does not stall at the identity saddle point (e.g. 180 degree
+  # rotations)
   cell_quat = wp.quat(0.0, 0.0, 0.0, 1.0)
+  c0 = wp.vec3(F[0, 0], F[1, 0], F[2, 0])
+  c1 = wp.vec3(F[0, 1], F[1, 1], F[2, 1])
+  n0 = wp.length(c0)
+  if F[0, 0] + F[1, 1] + F[2, 2] <= 0.0 and n0 > MJ_MINVAL:
+    c0 = c0 / n0
+    c1 = c1 - wp.dot(c0, c1) * c0
+    n1 = wp.length(c1)
+    if n1 > MJ_MINVAL:
+      c1 = c1 / n1
+      c2 = wp.cross(c0, c1)
+      cell_quat = wp.normalize(wp.quat_from_matrix(wp.mat33(c0[0], c1[0], c2[0], c0[1], c1[1], c2[1], c0[2], c1[2], c2[2])))
   for _iter in range(50):
     rot = wp.quat_to_matrix(cell_quat)
     rot_t = wp.transpose(rot)
@@ -100,6 +116,8 @@ def mat33_to_quat_polar(F: wp.mat33) -> wp.quat:
 
 @wp.func
 def compute_interp_cell_quat(
+  # Model:
+  flex_node0: wp.array[wp.vec3],
   # Data in:
   flexnode_xpos_in: wp.array2d[wp.vec3],
   # In:
@@ -129,12 +147,12 @@ def compute_interp_cell_quat(
 
           node_pos = flexnode_xpos_in[worldid, nstart + gidx]
 
-          dphi_x = float(-1) if li == 0 else float(1)
-          dphi_y = float(-1) if lj == 0 else float(1)
-          dphi_z = float(-1) if lk == 0 else float(1)
-          phi_x = float(0.5)
-          phi_y = float(0.5)
-          phi_z = float(0.5)
+          dphi_x = float(li - 1) if order == 2 else (-1.0 + 2.0 * float(li))
+          dphi_y = float(lj - 1) if order == 2 else (-1.0 + 2.0 * float(lj))
+          dphi_z = float(lk - 1) if order == 2 else (-1.0 + 2.0 * float(lk))
+          phi_x = wp.where(li == 1, 1.0, 0.0) if order == 2 else 0.5
+          phi_y = wp.where(lj == 1, 1.0, 0.0) if order == 2 else 0.5
+          phi_z = wp.where(lk == 1, 1.0, 0.0) if order == 2 else 0.5
 
           grad_x = dphi_x * phi_y * phi_z
           grad_y = phi_x * dphi_y * phi_z
@@ -259,10 +277,9 @@ def mul_m(
 @wp.kernel
 def _apply_ft(
   # Model:
-  nbody: int,
-  body_parentid: wp.array[int],
   body_rootid: wp.array[int],
   dof_bodyid: wp.array[int],
+  body_subtreenum: wp.array[int],
   # Data in:
   xipos_in: wp.array2d[wp.vec3],
   subtree_com_in: wp.array2d[wp.vec3],
@@ -279,19 +296,15 @@ def _apply_ft(
   jac = wp.spatial_vector(cdof[3], cdof[4], cdof[5], cdof[0], cdof[1], cdof[2])
 
   dofbodyid = dof_bodyid[dofid]
+  subtree_com = subtree_com_in[worldid, body_rootid[dofbodyid]]
   accumul = float(0.0)
 
-  for bodyid in range(dofbodyid, nbody):
+  # Bodies in a subtree are contiguous in MuJoCo's depth-first order.
+  for bodyid in range(dofbodyid, dofbodyid + body_subtreenum[dofbodyid]):
     ft_body = ft_in[worldid, bodyid]
     if ft_body == wp.spatial_vector():
       continue
-    # any body that is in the subtree of dofbodyid is part of the jacobian
-    parentid = bodyid
-    while parentid != 0 and parentid != dofbodyid:
-      parentid = body_parentid[parentid]
-    if parentid == 0:
-      continue  # body is not part of the subtree
-    offset = xipos_in[worldid, bodyid] - subtree_com_in[worldid, body_rootid[bodyid]]
+    offset = xipos_in[worldid, bodyid] - subtree_com
     cross_term = wp.cross(rotational_cdof, offset)
     accumul += wp.dot(jac, ft_body) + wp.dot(cross_term, wp.spatial_top(ft_body))
 
@@ -305,7 +318,7 @@ def apply_ft(m: Model, d: Data, ft: wp.array2d[wp.spatial_vector], qfrc: wp.arra
   wp.launch(
     kernel=_apply_ft,
     dim=(d.nworld, m.nv),
-    inputs=[m.nbody, m.body_parentid, m.body_rootid, m.dof_bodyid, d.xipos, d.subtree_com, d.cdof, ft, flg_add],
+    inputs=[m.body_rootid, m.dof_bodyid, m.body_subtreenum, d.xipos, d.subtree_com, d.cdof, ft, flg_add],
     outputs=[qfrc],
   )
 
@@ -696,6 +709,7 @@ def get_state(m: Model, d: Data, state: wp.array2d[float], sig: int, active: Opt
     nbody: int,
     neq: int,
     nmocap: int,
+    nplastic: int,
     nuserdata: int,
     nhistory: int,
     # Data in:
@@ -704,6 +718,7 @@ def get_state(m: Model, d: Data, state: wp.array2d[float], sig: int, active: Opt
     qvel_in: wp.array2d[float],
     act_in: wp.array2d[float],
     history_in: wp.array2d[float],
+    plastic_in: wp.array2d[float],
     qacc_warmstart_in: wp.array2d[float],
     ctrl_in: wp.array2d[float],
     qfrc_applied_in: wp.array2d[float],
@@ -792,6 +807,10 @@ def get_state(m: Model, d: Data, state: wp.array2d[float], sig: int, active: Opt
           for j in range(nuserdata):
             state_out[worldid, adr + j] = userdata_in[worldid, j]
           adr += nuserdata
+        elif element == State.PLASTIC:
+          for j in range(nplastic):
+            state_out[worldid, adr + j] = plastic_in[worldid, j]
+          adr += nplastic
 
   wp.launch(
     _get_state,
@@ -804,6 +823,7 @@ def get_state(m: Model, d: Data, state: wp.array2d[float], sig: int, active: Opt
       m.nbody,
       m.neq,
       m.nmocap,
+      m.nplastic,
       m.nuserdata,
       m.nhistory,
       d.time,
@@ -811,6 +831,7 @@ def get_state(m: Model, d: Data, state: wp.array2d[float], sig: int, active: Opt
       d.qvel,
       d.act,
       d.history,
+      d.plastic,
       d.qacc_warmstart,
       d.ctrl,
       d.qfrc_applied,
@@ -849,10 +870,13 @@ def set_state(m: Model, d: Data, state: wp.array2d[float], sig: int, active: Opt
     nu: int,
     na: int,
     nbody: int,
+    nflex: int,
     neq: int,
     nmocap: int,
+    nplastic: int,
     nuserdata: int,
     nhistory: int,
+    flex_plasticadr: wp.array[int],
     # In:
     sig_in: int,
     active_in: wp.array[bool],
@@ -863,6 +887,7 @@ def set_state(m: Model, d: Data, state: wp.array2d[float], sig: int, active: Opt
     qvel_out: wp.array2d[float],
     act_out: wp.array2d[float],
     history_out: wp.array2d[float],
+    plastic_out: wp.array2d[float],
     qacc_warmstart_out: wp.array2d[float],
     ctrl_out: wp.array2d[float],
     qfrc_applied_out: wp.array2d[float],
@@ -871,6 +896,7 @@ def set_state(m: Model, d: Data, state: wp.array2d[float], sig: int, active: Opt
     mocap_pos_out: wp.array2d[wp.vec3],
     mocap_quat_out: wp.array2d[wp.quat],
     userdata_out: wp.array2d[float],
+    flex_hessian_valid_out: wp.array2d[bool],
   ):
     worldid = wp.tid()
 
@@ -952,6 +978,13 @@ def set_state(m: Model, d: Data, state: wp.array2d[float], sig: int, active: Opt
           for j in range(nuserdata):
             userdata_out[worldid, j] = state_in[worldid, adr + j]
           adr += nuserdata
+        elif element == State.PLASTIC:
+          for j in range(nplastic):
+            plastic_out[worldid, j] = state_in[worldid, adr + j]
+          adr += nplastic
+          for f in range(nflex):
+            if flex_plasticadr[f] >= 0:
+              flex_hessian_valid_out[worldid, f] = False
 
   wp.launch(
     _set_state,
@@ -962,10 +995,13 @@ def set_state(m: Model, d: Data, state: wp.array2d[float], sig: int, active: Opt
       m.nu,
       m.na,
       m.nbody,
+      m.nflex,
       m.neq,
       m.nmocap,
+      m.nplastic,
       m.nuserdata,
       m.nhistory,
+      m.flex_plasticadr,
       int(sig),
       active or wp.ones(d.nworld, dtype=bool),
       state,
@@ -976,6 +1012,7 @@ def set_state(m: Model, d: Data, state: wp.array2d[float], sig: int, active: Opt
       d.qvel,
       d.act,
       d.history,
+      d.plastic,
       d.qacc_warmstart,
       d.ctrl,
       d.qfrc_applied,
@@ -984,6 +1021,7 @@ def set_state(m: Model, d: Data, state: wp.array2d[float], sig: int, active: Opt
       d.mocap_pos,
       d.mocap_quat,
       d.userdata,
+      d.flex_hessian_valid,
     ],
   )
 
@@ -1174,6 +1212,8 @@ def gather_face_node_index(
 
 @wp.func
 def compute_interp_face_quat(
+  # Model:
+  flex_node0: wp.array[wp.vec3],
   # Data in:
   flexnode_xpos_in: wp.array2d[wp.vec3],
   # In:
@@ -1197,6 +1237,8 @@ def compute_interp_face_quat(
   t2 = wp.vec3(0.0)
 
   npc = (order_abs + 1) * (order_abs + 1)
+  gidx0 = int(0)
+  gidx1 = int(0)
 
   for local_idx in range(9):
     if local_idx < npc:
@@ -1210,15 +1252,18 @@ def compute_interp_face_quat(
         local_idx,
         order_abs,
       )
+      if local_idx == 0:
+        gidx0 = gidx
+      gidx1 = gidx
       node_pos = flexnode_xpos_in[worldid, nstart + gidx]
 
       l0 = local_idx // (order_abs + 1)
       l1 = local_idx % (order_abs + 1)
 
-      dphi0 = -1.0 + 2.0 * float(l0)
-      dphi1 = -1.0 + 2.0 * float(l1)
-      phi0 = 0.5
-      phi1 = 0.5
+      dphi0 = float(l0 - 1) if order_abs == 2 else (-1.0 + 2.0 * float(l0))
+      dphi1 = float(l1 - 1) if order_abs == 2 else (-1.0 + 2.0 * float(l1))
+      phi0 = wp.where(l0 == 1, 1.0, 0.0) if order_abs == 2 else 0.5
+      phi1 = wp.where(l1 == 1, 1.0, 0.0) if order_abs == 2 else 0.5
 
       grad0 = dphi0 * phi1
       grad1 = phi0 * dphi1
@@ -1285,3 +1330,341 @@ def dphi2D(s0: float, l0: int, s1: float, l1: int, order: int, direction: int) -
     return flex_dphi(s0, l0, order) * flex_phi(s1, l1, order)
   else:
     return flex_phi(s0, l0, order) * flex_dphi(s1, l1, order)
+
+
+@wp.func
+def _tet_weights(p: wp.vec3, x0: wp.vec3, x1: wp.vec3, x2: wp.vec3, x3: wp.vec3) -> wp.vec4:
+  """Barycentric weights of the closest point on tetrahedron x0 x1 x2 x3 to p."""
+  # solve p - x0 = sum_i w_i (x_i - x0) with Cramer's rule, done if p is inside
+  e1 = x1 - x0
+  e2 = x2 - x0
+  e3 = x3 - x0
+  ep = p - x0
+  c = wp.cross(e2, e3)
+  det = wp.dot(e1, c)
+  if wp.abs(det) > MJ_MINVAL:
+    w1 = wp.dot(ep, c) / det
+    w2 = wp.dot(e1, wp.cross(ep, e3)) / det
+    w3 = wp.dot(e1, wp.cross(e2, ep)) / det
+    w0 = 1.0 - w1 - w2 - w3
+    if w0 >= 0.0 and w1 >= 0.0 and w2 >= 0.0 and w3 >= 0.0:
+      return wp.vec4(w0, w1, w2, w3)
+
+  # p is outside: closest point on the faces, face i is opposite vertex i
+  w = wp.vec4(0.25)
+  mindist = float(MJ_MAXVAL)
+
+  wf = tri_weights(p, x1, x2, x3)
+  dist = wp.length(wf[0] * x1 + wf[1] * x2 + wf[2] * x3 - p)
+  if dist < mindist:
+    mindist = dist
+    w = wp.vec4(0.0, wf[0], wf[1], wf[2])
+
+  wf = tri_weights(p, x0, x2, x3)
+  dist = wp.length(wf[0] * x0 + wf[1] * x2 + wf[2] * x3 - p)
+  if dist < mindist:
+    mindist = dist
+    w = wp.vec4(wf[0], 0.0, wf[1], wf[2])
+
+  wf = tri_weights(p, x0, x1, x3)
+  dist = wp.length(wf[0] * x0 + wf[1] * x1 + wf[2] * x3 - p)
+  if dist < mindist:
+    mindist = dist
+    w = wp.vec4(wf[0], wf[1], 0.0, wf[2])
+
+  wf = tri_weights(p, x0, x1, x2)
+  dist = wp.length(wf[0] * x0 + wf[1] * x1 + wf[2] * x2 - p)
+  if dist < mindist:
+    w = wp.vec4(wf[0], wf[1], wf[2], 0.0)
+
+  return w
+
+
+@wp.func
+def flex_elem_weights(
+  # Model:
+  flex_dim: wp.array[int],
+  flex_vertadr: wp.array[int],
+  flex_elemdataadr: wp.array[int],
+  flex_elem: wp.array[int],
+  # Data in:
+  flexvert_xpos_in: wp.array2d[wp.vec3],
+  # In:
+  flexid: int,
+  elemid: int,
+  pos: wp.vec3,
+  worldid: int,
+) -> wp.vec4:
+  """Barycentric weights of the point on a flex element closest to pos (see mj_elemVertWeight).
+
+  Args:
+    flex_dim: Flex dimensions.
+    flex_vertadr: First vertex address of each flex.
+    flex_elemdataadr: First element vertex id address of each flex.
+    flex_elem: Element vertex ids.
+    flexvert_xpos_in: Cartesian flex vertex positions.
+    flexid: Flex id.
+    elemid: Element id, local to the flex.
+    pos: Contact position.
+    worldid: World id.
+
+  Returns:
+    Weights of the dim + 1 element vertices, in element order, zero-padded to 4.
+  """
+  dim = flex_dim[flexid]
+  vertadr = flex_vertadr[flexid]
+  edata = flex_elemdataadr[flexid] + elemid * (dim + 1)
+
+  x0 = flexvert_xpos_in[worldid, vertadr + flex_elem[edata]]
+  x1 = flexvert_xpos_in[worldid, vertadr + flex_elem[edata + 1]]
+
+  w = wp.vec4(0.0)
+  if dim == 1:
+    ab = x1 - x0
+    len2 = wp.dot(ab, ab)
+    t = float(0.0)
+    if len2 > MJ_MINVAL:
+      t = wp.clamp(wp.dot(pos - x0, ab) / len2, 0.0, 1.0)
+    w = wp.vec4(1.0 - t, t, 0.0, 0.0)
+  elif dim == 2:
+    x2 = flexvert_xpos_in[worldid, vertadr + flex_elem[edata + 2]]
+    wt = tri_weights(pos, x0, x1, x2)
+    w = wp.vec4(wt[0], wt[1], wt[2], 0.0)
+  else:
+    x2 = flexvert_xpos_in[worldid, vertadr + flex_elem[edata + 2]]
+    x3 = flexvert_xpos_in[worldid, vertadr + flex_elem[edata + 3]]
+    w = _tet_weights(pos, x0, x1, x2, x3)
+
+  # degenerate element: uniform weights
+  for i in range(4):
+    if i <= dim and (not wp.isfinite(w[i]) or wp.abs(w[i]) > MJ_MAXVAL):
+      inv = 1.0 / float(dim + 1)
+      w = wp.vec4(inv, inv, wp.where(dim >= 2, inv, 0.0), wp.where(dim == 3, inv, 0.0))
+
+  return w
+
+
+@wp.func
+def contact_bodies_and_weights(
+  # Model:
+  geom_bodyid: wp.array[int],
+  flex_dim: wp.array[int],
+  flex_cellnum: wp.array[wp.vec3i],
+  flex_nodeadr: wp.array[int],
+  flex_vertadr: wp.array[int],
+  flex_elemdataadr: wp.array[int],
+  flex_shelldataadr: wp.array[int],
+  flex_nodebodyid: wp.array[int],
+  flex_vertbodyid: wp.array[int],
+  flex_elem: wp.array[int],
+  flex_shell: wp.array[int],
+  flex_vert0: wp.array[wp.vec3],
+  # Data in:
+  flexvert_xpos_in: wp.array2d[wp.vec3],
+  # In:
+  conid: int,
+  side: int,
+  geom: wp.vec2i,
+  flex: wp.vec2i,
+  elem: wp.vec2i,
+  vert: wp.vec2i,
+  con_pos: wp.vec3,
+  worldid: int,
+) -> Tuple[wp.vec4i, wp.vec4]:
+  geom_id = geom[side]
+  flex_id = flex[side]
+  elem_id = elem[side]
+  vert_id = vert[side]
+
+  # Rigid Geom Side
+  if geom_id >= 0:
+    return wp.vec4i(geom_bodyid[geom_id], -1, -1, -1), wp.vec4(1.0, 0.0, 0.0, 0.0)
+
+  # Plane-Vertex or Vertex-only flex contact
+  flex_vert_start = flex_vertadr[flex_id]
+  if vert_id >= 0:
+    body = flex_vertbodyid[flex_vert_start + vert_id]
+    if body >= 0:
+      return wp.vec4i(body, -1, -1, -1), wp.vec4(1.0, 0.0, 0.0, 0.0)
+
+    # Interpolated flex vertex contact: interpolate to the 8 corner nodes
+    v_adr = flex_vert_start + vert_id
+    coord = flex_vert0[v_adr]
+    cn = flex_cellnum[flex_id]
+    cx = cn[0]
+    cy = cn[1]
+    cz = cn[2]
+
+    ci = wp.min(int(coord[0] * float(cx)), cx - 1)
+    ci = wp.max(ci, 0)
+    cj = wp.min(int(coord[1] * float(cy)), cy - 1)
+    cj = wp.max(cj, 0)
+    ck = wp.min(int(coord[2] * float(cz)), cz - 1)
+    ck = wp.max(ck, 0)
+
+    local_x = wp.clamp(coord[0] * float(cx) - float(ci), 0.0, 1.0)
+    local_y = wp.clamp(coord[1] * float(cy) - float(cj), 0.0, 1.0)
+    local_z = wp.clamp(coord[2] * float(cz) - float(ck), 0.0, 1.0)
+    local = wp.vec3(local_x, local_y, local_z)
+
+    ny_g = cy + 1
+    nz_g = cz + 1
+    nstart = flex_nodeadr[flex_id]
+
+    body_ids = wp.vec4i(-1, -1, -1, -1)
+    weights = wp.vec4(0.0, 0.0, 0.0, 0.0)
+    n_collected = int(0)
+
+    for li in range(2):
+      for lj in range(2):
+        for lk in range(2):
+          w = eval_basis_trilinear(local, li * 4 + lj * 2 + lk)
+          if w > 1.0e-5 and n_collected < 4:
+            gi = ci + li
+            gj = cj + lj
+            gk = ck + lk
+            node_idx = gi * ny_g * nz_g + gj * nz_g + gk
+            b = flex_nodebodyid[nstart + node_idx]
+
+            # Put into body_ids and weights
+            if n_collected == 0:
+              body_ids = wp.vec4i(b, -1, -1, -1)
+              weights = wp.vec4(w, 0.0, 0.0, 0.0)
+            elif n_collected == 1:
+              body_ids = wp.vec4i(body_ids[0], b, -1, -1)
+              weights = wp.vec4(weights[0], w, 0.0, 0.0)
+            elif n_collected == 2:
+              body_ids = wp.vec4i(body_ids[0], body_ids[1], b, -1)
+              weights = wp.vec4(weights[0], weights[1], w, 0.0)
+            else:
+              body_ids = wp.vec4i(body_ids[0], body_ids[1], body_ids[2], b)
+              weights = wp.vec4(weights[0], weights[1], weights[2], w)
+
+            n_collected += 1
+
+    # Normalize weights so they sum to 1.0
+    w_sum = weights[0] + weights[1] + weights[2] + weights[3]
+    if w_sum > 1.0e-5:
+      w_sum_inv = 1.0 / w_sum
+      weights = wp.vec4(weights[0] * w_sum_inv, weights[1] * w_sum_inv, weights[2] * w_sum_inv, weights[3] * w_sum_inv)
+
+    return body_ids, weights
+
+  dim = flex_dim[flex_id]
+
+  # barycentric weights of the closest point on the element
+  elem_weight = flex_elem_weights(
+    flex_dim, flex_vertadr, flex_elemdataadr, flex_elem, flexvert_xpos_in, flex_id, elem_id, con_pos, worldid
+  )
+
+  if dim == 1:
+    elem_data_start = flex_elemdataadr[flex_id] + elem_id * 2
+    v0 = flex_elem[elem_data_start + 0]
+    v1 = flex_elem[elem_data_start + 1]
+
+    b0 = flex_vertbodyid[flex_vert_start + v0]
+    b1 = flex_vertbodyid[flex_vert_start + v1]
+
+    return wp.vec4i(b0, b1, -1, -1), wp.vec4(elem_weight[0], elem_weight[1], 0.0, 0.0)
+
+  elif dim == 2:
+    elem_data_start = flex_elemdataadr[flex_id] + elem_id * 3
+    v0 = flex_elem[elem_data_start + 0]
+    v1 = flex_elem[elem_data_start + 1]
+    v2 = flex_elem[elem_data_start + 2]
+
+    b0 = flex_vertbodyid[flex_vert_start + v0]
+    b1 = flex_vertbodyid[flex_vert_start + v1]
+    b2 = flex_vertbodyid[flex_vert_start + v2]
+
+    return wp.vec4i(b0, b1, b2, -1), wp.vec4(elem_weight[0], elem_weight[1], elem_weight[2], 0.0)
+
+  elif dim == 3:
+    elem_data_start = flex_elemdataadr[flex_id] + elem_id * 4
+    v0 = flex_elem[elem_data_start + 0]
+    v1 = flex_elem[elem_data_start + 1]
+    v2 = flex_elem[elem_data_start + 2]
+    v3 = flex_elem[elem_data_start + 3]
+
+    w0 = elem_weight[0]
+    w1 = elem_weight[1]
+    w2 = elem_weight[2]
+    w3 = elem_weight[3]
+
+    b0 = flex_vertbodyid[flex_vert_start + v0]
+    if b0 >= 0:
+      b1 = flex_vertbodyid[flex_vert_start + v1]
+      b2 = flex_vertbodyid[flex_vert_start + v2]
+      b3 = flex_vertbodyid[flex_vert_start + v3]
+      return wp.vec4i(b0, b1, b2, b3), wp.vec4(w0, w1, w2, w3)
+    else:
+      # Interpolated 3D flex element contact: evaluate the trilinear basis at the reference
+      # coordinates of the contact point, blended with the element weights (see mj_vertBodyWeight)
+      coord = (
+        w0 * flex_vert0[flex_vert_start + v0]
+        + w1 * flex_vert0[flex_vert_start + v1]
+        + w2 * flex_vert0[flex_vert_start + v2]
+        + w3 * flex_vert0[flex_vert_start + v3]
+      )
+      cn = flex_cellnum[flex_id]
+      cx = cn[0]
+      cy = cn[1]
+      cz = cn[2]
+
+      ci = wp.min(int(coord[0] * float(cx)), cx - 1)
+      ci = wp.max(ci, 0)
+      cj = wp.min(int(coord[1] * float(cy)), cy - 1)
+      cj = wp.max(cj, 0)
+      ck = wp.min(int(coord[2] * float(cz)), cz - 1)
+      ck = wp.max(ck, 0)
+
+      ny_g = cy + 1
+      nz_g = cz + 1
+      nstart = flex_nodeadr[flex_id]
+
+      local_x = wp.clamp(coord[0] * float(cx) - float(ci), 0.0, 1.0)
+      local_y = wp.clamp(coord[1] * float(cy) - float(cj), 0.0, 1.0)
+      local_z = wp.clamp(coord[2] * float(cz) - float(ck), 0.0, 1.0)
+      local = wp.vec3(local_x, local_y, local_z)
+
+      # trilinear weights of the 8 voxel corners
+      W0 = eval_basis_trilinear(local, 0)
+      W1 = eval_basis_trilinear(local, 1)
+      W2 = eval_basis_trilinear(local, 2)
+      W3 = eval_basis_trilinear(local, 3)
+      W4 = eval_basis_trilinear(local, 4)
+      W5 = eval_basis_trilinear(local, 5)
+      W6 = eval_basis_trilinear(local, 6)
+      W7 = eval_basis_trilinear(local, 7)
+
+      # 8 node body IDs corresponding to the 8 voxel corners
+      b0_node = flex_nodebodyid[nstart + (ci + 0) * ny_g * nz_g + (cj + 0) * nz_g + (ck + 0)]
+      b1_node = flex_nodebodyid[nstart + (ci + 0) * ny_g * nz_g + (cj + 0) * nz_g + (ck + 1)]
+      b2_node = flex_nodebodyid[nstart + (ci + 0) * ny_g * nz_g + (cj + 1) * nz_g + (ck + 0)]
+      b3_node = flex_nodebodyid[nstart + (ci + 0) * ny_g * nz_g + (cj + 1) * nz_g + (ck + 1)]
+      b4_node = flex_nodebodyid[nstart + (ci + 1) * ny_g * nz_g + (cj + 0) * nz_g + (ck + 0)]
+      b5_node = flex_nodebodyid[nstart + (ci + 1) * ny_g * nz_g + (cj + 0) * nz_g + (ck + 1)]
+      b6_node = flex_nodebodyid[nstart + (ci + 1) * ny_g * nz_g + (cj + 1) * nz_g + (ck + 0)]
+      b7_node = flex_nodebodyid[nstart + (ci + 1) * ny_g * nz_g + (cj + 1) * nz_g + (ck + 1)]
+
+      W_mat = wp.mat33(W0, W1, W2, W3, W4, W5, W6, W7, -1.0)
+      b_mat = wp.mat33(
+        float(b0_node),
+        float(b1_node),
+        float(b2_node),
+        float(b3_node),
+        float(b4_node),
+        float(b5_node),
+        float(b6_node),
+        float(b7_node),
+        -1.0,
+      )
+      return select_top4_weights(W_mat, b_mat)
+
+  else:
+    return wp.vec4i(-1, -1, -1, -1), wp.vec4(0.0, 0.0, 0.0, 0.0)
+
+
+# TODO(flex): Add interpolated flex self-collision support. Currently, interpolated
+# flex contacts only handle flex-vs-geom contacts (e.g., flex on ground plane).
+# Self-collision requires distributing both sides of the contact across cell nodes.

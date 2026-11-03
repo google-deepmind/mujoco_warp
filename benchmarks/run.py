@@ -106,6 +106,23 @@ def _assemble_benchmark(bm: dict):
   shutil.copytree(bm["_dir"], benchmark_dir, dirs_exist_ok=True)
 
 
+def _bm_flags(bm: dict, benchmark_root: Path, exclude: tuple = ()) -> list:
+  """Build --flag=value CLI args from a benchmark dict, shared by testspeed and viewer."""
+  skip = ("name", "assets", "mjcf", "_dir", *exclude)
+  cmd = []
+  for field, value in bm.items():
+    if field in skip:
+      continue
+    if field == "replay":
+      cmd.append(f"--replay={(benchmark_root / value)}")
+    elif isinstance(value, (list, tuple)):
+      for item in value:
+        cmd.append(f"--{field}={item}")
+    else:
+      cmd.append(f"--{field}={value}")
+  return cmd
+
+
 def _run_benchmark(bm: dict, input_dir: Path) -> dict:
   """Run a single benchmark via uv, returning parsed JSON."""
   benchmark_root = Path(_ARGS.assets_root) / bm["name"]
@@ -119,15 +136,7 @@ def _run_benchmark(bm: dict, input_dir: Path) -> dict:
     "--measure_solver=true",
     "--measure_alloc=true",
   ]
-  for field, value in bm.items():
-    if field == "replay":
-      cmd.append(f"--replay={(benchmark_root / value)}")
-    elif field not in ("name", "assets", "mjcf", "_dir"):
-      if isinstance(value, (list, tuple)):
-        for item in value:
-          cmd.append(f"--{field}={item}")
-      else:
-        cmd.append(f"--{field}={value}")
+  cmd += _bm_flags(bm, benchmark_root)
 
   result = uv_run(*cmd, cwd=input_dir)
 
@@ -150,11 +159,9 @@ def _view_benchmark(bm: dict, input_dir: Path):
     (benchmark_root / bm["mjcf"]).as_posix(),
     "--nworld=1",
   ]
-  for field in ("nconmax", "nccdmax", "njmax"):
-    if field in bm:
-      cmd.append(f"--{field}={bm[field]}")
-  if "replay" in bm:
-    cmd.append(f"--replay={(benchmark_root / bm['replay'])}")
+  # nworld is forced to 1 above for interactive viewing; function selects an
+  # alternate benchmark entry point (e.g. render) that mjwarp-viewer doesn't support.
+  cmd += _bm_flags(bm, benchmark_root, exclude=("nworld", "function"))
 
   log.info("Command: uv run %s", " ".join(cmd))
   subprocess.run(("uv", "run") + tuple(cmd), cwd=input_dir, check=True)

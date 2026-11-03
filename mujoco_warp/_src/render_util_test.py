@@ -14,6 +14,8 @@
 # ==============================================================================
 """Tests for render utility functions."""
 
+import os
+
 import mujoco
 import numpy as np
 import warp as wp
@@ -24,6 +26,7 @@ import mujoco_warp as mjw
 from mujoco_warp import test_data
 from mujoco_warp._src import render_util
 from mujoco_warp._src import types
+from mujoco_warp._src import util_pkg
 
 
 def _assert_eq(a, b, name):
@@ -337,6 +340,49 @@ class RenderUtilTest(parameterized.TestCase):
     rc = mjw.create_render_context(mjm, render_rgb=True, render_depth=True, use_textures=True)
     self.assertTrue(rc.use_textures, "use_textures")
     self.assertEqual(rc.textures.shape, (mjm.ntex,), "textures")
+
+  @absltest.skipIf(
+    not util_pkg.check_version("mujoco>=3.16.1"),
+    "Requires MuJoCo >= 3.16.1",
+  )
+  def test_texture_by_reference(self):
+    """A by-reference texture uploads the same pixels as its eager compile."""
+    path = os.path.join(os.path.dirname(test_data.__file__), "mug", "mug.xml")
+    mjm = mujoco.MjModel.from_xml_path(path)
+    spec = mujoco.MjSpec.from_file(path)
+    spec.compiler.passthrough = mujoco.mjtPassthrough.mjPASSTHROUGH_TEXTURES
+    mjm_ref = spec.compile()
+    self.assertEqual(mjm_ref.tex_adr[0], -1, "tex_adr")
+    self.assertEqual(mjm_ref.ntexdata, 0, "ntexdata")
+
+    np.testing.assert_array_equal(render_util.texture_pixels(mjm_ref, 0), render_util.texture_pixels(mjm, 0))
+    tex, tex_ref = render_util.create_warp_texture(mjm, 0), render_util.create_warp_texture(mjm_ref, 0)
+    self.assertEqual((tex_ref.width, tex_ref.height), (tex.width, tex.height), "texture size")
+    data, data_ref = (np.zeros((tex.height, tex.width, 4), dtype=np.float32) for _ in range(2))
+    tex.copy_to(data)
+    tex_ref.copy_to(data_ref)
+    self.assertGreater(np.count_nonzero(data), 0, "texture data")
+    np.testing.assert_array_equal(data_ref, data)
+
+    rc = mjw.create_render_context(mjm_ref, render_rgb=True, use_textures=True)
+    self.assertEqual(rc.textures.shape, (mjm.ntex,), "textures")
+
+    # a file that cannot be loaded raises with the error text
+    mjm_missing = mujoco.MjModel.from_xml_string("""
+    <mujoco>
+      <compiler passthrough="textures"/>
+      <asset>
+        <texture name="tex" type="2d" file="/nonexistent/missing.png"/>
+        <material name="mat" texture="tex"/>
+      </asset>
+      <worldbody>
+        <camera pos="0 -3 2" xyaxes="1 0 0 0 0.6 0.8"/>
+        <geom type="sphere" size="0.5" material="mat"/>
+      </worldbody>
+    </mujoco>
+    """)
+    with self.assertRaisesRegex(ValueError, "missing.png"):
+      mjw.create_render_context(mjm_missing, cam_res=(16, 16), use_textures=True)
 
   def test_render_context_lighting_flags(self):
     mjm, _, _, _ = test_data.fixture(

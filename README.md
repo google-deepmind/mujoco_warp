@@ -118,7 +118,7 @@ If you prefer [PyTorch](https://pytorch.org/) for research, consider one of thes
 MuJoCo Warp supports the same features as MuJoCo with the following exceptions:
 
 - **Integrator**: `IMPLICITFAST` midpoint integrator feature is not supported
-- **Solver**: `PGS` and `noslip` not yet supported
+- **Solver**: `PGS` not yet supported (`noslip` not supported with `discrete` integrator)
 - **Actuator / Sensors**: `PLUGIN` types not yet supported
 - **Flex**: experimental — not all features are implemented or optimized yet
 

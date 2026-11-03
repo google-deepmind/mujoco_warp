@@ -14,6 +14,8 @@
 # ==============================================================================
 """Tests for render functions."""
 
+import os
+
 import mujoco
 import numpy as np
 import warp as wp
@@ -22,6 +24,7 @@ from absl.testing import parameterized
 
 import mujoco_warp as mjw
 from mujoco_warp import test_data
+from mujoco_warp._src import util_pkg
 
 try:
   mujoco.Renderer(mujoco.MjModel.from_xml_string("<mujoco/>"))
@@ -139,6 +142,29 @@ class RenderTest(parameterized.TestCase):
     rgb = rc.rgb_data.numpy()
 
     self.assertNotEqual(np.unique(rgb).shape[0], 1)
+
+  @absltest.skipIf(
+    not util_pkg.check_version("mujoco>=3.16.1"),
+    "Requires MuJoCo >= 3.16.1",
+  )
+  def test_render_texture_by_reference(self):
+    """A scene with a by-reference file texture renders the same image as its eager compile."""
+    path = os.path.join(os.path.dirname(test_data.__file__), "mug", "mug.xml")
+    spec = mujoco.MjSpec.from_file(path)
+    spec.compiler.passthrough = mujoco.mjtPassthrough.mjPASSTHROUGH_TEXTURES
+    mjm_ref = spec.compile()
+    self.assertEqual(mjm_ref.tex_adr[0], -1, "tex_adr")
+    mjm, mjd, m, d = test_data.fixture("mug/mug.xml")
+    m_ref, d_ref = mjw.put_model(mjm_ref), mjw.put_data(mjm_ref, mjd)
+
+    rgb = []
+    for mjm_i, m_i, d_i in ((mjm, m, d), (mjm_ref, m_ref, d_ref)):
+      rc = mjw.create_render_context(mjm_i, cam_res=(64, 64), render_rgb=True, use_textures=True)
+      mjw.render(m_i, d_i, rc)
+      rgb.append(rc.rgb_data.numpy().copy())
+
+    self.assertNotEqual(np.unique(rgb[0]).shape[0], 1)
+    np.testing.assert_array_equal(rgb[0], rgb[1])
 
   @absltest.skipIf(not wp.get_device().is_cuda, "Skipping test that requires CUDA.")
   def test_render_graph_capture(self):
@@ -343,6 +369,55 @@ class RenderTest(parameterized.TestCase):
     rgb = _unpack_rgb(rc.rgb_data.numpy()[0])[geom_mask]
     self.assertTrue(np.all(rgb[:, 0] > rgb[:, 1]), "mesh should read as red from its texture")
     self.assertTrue(np.all(rgb[:, 0] > rgb[:, 2]), "mesh should read as red from its texture")
+
+  @parameterized.product(corner=(0, 1, 2), preceding_uv=(False, True))
+  def test_render_mesh_missing_face_texcoord(self, corner, preceding_uv):
+    """Incomplete face UVs use mesh projection without reading adjacent UV data."""
+    prefix = (
+      '<mesh name="prefix" vertex="1 1 1  1 -1 -1  -1 1 -1  -1 -1 1" texcoord="0.75 0.75  0.75 0.75  0.75 0.75  0.75 0.75"/>'
+      if preceding_uv
+      else ""
+    )
+    mjm, _, m, d = test_data.fixture(
+      xml=f"""
+      <mujoco>
+        <asset>
+          <texture name="checker" type="2d" builtin="checker" rgb1="1 0 0" rgb2="0 1 0" width="16" height="16"/>
+          <material name="mat" texture="checker"/>
+          {prefix}
+          <mesh name="mesh" vertex="1 1 1  1 -1 -1  -1 1 -1  -1 -1 1" texcoord="0.125 0.125  0.125 0.125  0.125 0.125  0.75 0.75"/>
+        </asset>
+        <worldbody>
+          <camera pos="0 -4 0" xyaxes="1 0 0 0 0 1"/>
+          <geom type="mesh" mesh="mesh" material="mat"/>
+        </worldbody>
+      </mujoco>
+      """
+    )
+    mesh_id = mjm.mesh("mesh").id
+    face_adr = mjm.mesh_faceadr[mesh_id]
+    texcoord_adr = 4 if preceding_uv else 0
+
+    def render(texcoordadr, facetexcoord):
+      mjm.mesh_texcoordadr[mesh_id] = texcoordadr
+      mjm.mesh_facetexcoord[face_adr:] = facetexcoord
+      rc = mjw.create_render_context(mjm, cam_res=(32, 32), render_rgb=True, render_seg=True)
+      mjw.render(m, d, rc)
+      mask = rc.seg_data.numpy()[0, :, 1] == int(mjw.ObjType.GEOM)
+      self.assertTrue(np.any(mask), "Expected the mesh to be hit")
+      return _unpack_rgb(rc.rgb_data.numpy()[0])[mask]
+
+    projected = render(-1, 0)
+    self.assertTrue(np.any(projected[:, 0] > projected[:, 1]))
+    self.assertTrue(np.any(projected[:, 1] > projected[:, 0]))
+
+    missing_coords = np.zeros((4, 3), dtype=np.int32)
+    missing_coords[:, corner] = -1
+    np.testing.assert_array_equal(render(texcoord_adr, missing_coords), projected)
+
+    valid = render(texcoord_adr, 0)
+    self.assertFalse(np.array_equal(valid, projected))
+    self.assertNotEqual(np.any(valid[:, 0] > valid[:, 1]), np.any(valid[:, 1] > valid[:, 0]))
 
   def test_disable_ambient_lighting(self):
     xml = """
@@ -976,7 +1051,7 @@ class RenderTest(parameterized.TestCase):
       value, count = np.unique(red, return_counts=True)
       flat = value[count > 40]
       blended.append(int(np.count_nonzero((red > flat.min() + 2) & (red < flat.max() - 2))))
-      self.assertEqual(flat.tolist(), [25, 255])
+      self.assertEqual(flat.tolist(), [0, 255])
 
     self.assertEqual(blended[0], 0)
     self.assertGreater(blended[1], 50)
@@ -1071,6 +1146,504 @@ class RenderTest(parameterized.TestCase):
     for world in range(4):
       red = _unpack_rgb(rc.rgb_data.numpy()[world])[..., 0]
       self.assertGreater(len(np.unique(red)), 2)
+
+  @absltest.skipIf(not _HAS_RENDERER, "MuJoCo rendering requires OpenGL")
+  @parameterized.named_parameters(
+    ("box", "box", "0.4 0.4 0.4"),
+    ("sphere", "sphere", "0.4"),
+    ("cylinder", "cylinder", "0.3 0.4"),
+    ("capsule", "capsule", "0.25 0.3"),
+    ("ellipsoid", "ellipsoid", "0.4 0.3 0.2"),
+  )
+  def test_render_primitive_canonical_textures_match_mujoco(self, geom_type: str, geom_size: str):
+    """Primitive shapes textured with checker pattern must match native MuJoCo."""
+    cam_w, cam_h = 48, 48
+    mjm, mjd, m, d = test_data.fixture(
+      xml=f"""
+    <mujoco>
+      <asset>
+        <texture name="checker" type="2d" builtin="checker" rgb1="1 0 0" rgb2="0 0 1" width="64" height="64"/>
+        <material name="mat" texture="checker" texrepeat="2 2" texuniform="false"/>
+      </asset>
+      <worldbody>
+        <camera pos="0 -2.5 0" xyaxes="1 0 0 0 0 1" fovy="45"/>
+        <geom type="{geom_type}" size="{geom_size}" material="mat"/>
+      </worldbody>
+    </mujoco>
+    """,
+      nworld=1,
+      overrides={"vis.quality.offsamples": 0},
+    )
+
+    rc = mjw.create_render_context(
+      mjm,
+      nworld=1,
+      cam_res=(cam_w, cam_h),
+      render_rgb=True,
+      use_textures=True,
+      enable_specular=False,
+    )
+    mjw.render(m, d, rc)
+    warp_rgb = _unpack_rgb(rc.rgb_data.numpy()[0]).reshape(cam_h, cam_w, 3)
+
+    with mujoco.Renderer(mjm, height=cam_h, width=cam_w) as renderer:
+      renderer.update_scene(mjd, camera=0)
+      mj_rgb = renderer.render()
+
+    # Verify both red and blue from the checkerboard appear on the shape
+    self.assertGreater(np.count_nonzero(warp_rgb[..., 0] > 100), 20, "Should contain red checker tiles")
+    self.assertGreater(np.count_nonzero(warp_rgb[..., 2] > 100), 20, "Should contain blue checker tiles")
+
+    # Segment foreground object
+    geom_mask = (mj_rgb.sum(axis=-1) > 0) & (warp_rgb.sum(axis=-1) > 0)
+    self.assertGreater(np.count_nonzero(geom_mask), 50)
+
+    # Dominant channel correlation between MuJoCo and Warp (red vs blue tiles)
+    mj_dom = mj_rgb[geom_mask, 0] > mj_rgb[geom_mask, 2]
+    warp_dom = warp_rgb[geom_mask, 0] > warp_rgb[geom_mask, 2]
+    agreement = float(np.mean(mj_dom == warp_dom))
+    self.assertGreater(agreement, 0.85, f"Checker pattern agreement {agreement:.3f} below threshold for {geom_type}")
+
+  @absltest.skipIf(not _HAS_RENDERER, "MuJoCo rendering requires OpenGL")
+  @parameterized.named_parameters(
+    ("finite", "2 2 0.1"),
+    ("infinite", "0 0 0.1"),
+    ("mixed", "2 0 0.1"),
+  )
+  def test_plane_checkerboard_parity(self, size: str):
+    """Finite, infinite, and mixed planes textured with checkerboard match MuJoCo."""
+    cam_w, cam_h = 32, 32
+    mjm, mjd, m, d = test_data.fixture(
+      xml=f"""
+    <mujoco>
+      <asset>
+        <texture name="checker" type="2d" builtin="checker" rgb1="1 0 0" rgb2="0 0 1" width="64" height="64"/>
+        <material name="mat" texture="checker" texrepeat="2 2" texuniform="false"/>
+      </asset>
+      <worldbody>
+        <camera name="cam" pos="0 0 5" xyaxes="1 0 0 0 1 0" fovy="45"/>
+        <geom name="plane" type="plane" size="{size}" pos="0 0 0" material="mat"/>
+      </worldbody>
+    </mujoco>
+    """,
+      nworld=1,
+      overrides={"vis.quality.offsamples": 0},
+    )
+    rc = mjw.create_render_context(
+      mjm,
+      nworld=1,
+      cam_res=(cam_w, cam_h),
+      render_rgb=True,
+      use_textures=True,
+      enable_specular=False,
+    )
+    mjw.render(m, d, rc)
+    warp_rgb = _unpack_rgb(rc.rgb_data.numpy()[0]).reshape(cam_h, cam_w, 3)
+
+    with mujoco.Renderer(mjm, height=cam_h, width=cam_w) as renderer:
+      renderer.update_scene(mjd, camera=0)
+      mj_rgb = renderer.render()
+
+    geom_mask = (mj_rgb.sum(axis=-1) > 0) & (warp_rgb.sum(axis=-1) > 0)
+    mj_dom = mj_rgb[geom_mask, 0] > mj_rgb[geom_mask, 2]
+    warp_dom = warp_rgb[geom_mask, 0] > warp_rgb[geom_mask, 2]
+    agreement = float(np.mean(mj_dom == warp_dom))
+    self.assertGreater(agreement, 0.90, f"Plane ({size}) checkerboard agreement {agreement:.3f} below 0.90")
+
+  def test_mat_texuniform_spatial_scaling(self):
+    """texuniform=True causes texture repeats to scale with object physical size."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+    <mujoco>
+      <asset>
+        <texture name="checker" type="2d" builtin="checker" rgb1="1 0 0" rgb2="0 1 0" width="32" height="32"/>
+        <material name="mat_u" texture="checker" texrepeat="2 2" texuniform="true"/>
+        <material name="mat_nu" texture="checker" texrepeat="2 2" texuniform="false"/>
+      </asset>
+      <worldbody>
+        <camera pos="0 -5 0" xyaxes="1 0 0 0 0 1" fovy="45"/>
+        <geom name="box_small" type="box" size="0.5 0.5 0.5" pos="-1 0 0" material="mat_u"/>
+        <geom name="box_large" type="box" size="1.0 1.0 1.0" pos="1 0 0" material="mat_u"/>
+      </worldbody>
+    </mujoco>
+    """,
+      nworld=1,
+    )
+    self.assertTrue(m.mat_texuniform.numpy()[0, 0], "mat_u should have texuniform=True")
+    self.assertFalse(m.mat_texuniform.numpy()[0, 1], "mat_nu should have texuniform=False")
+
+    rc = mjw.create_render_context(
+      mjm,
+      nworld=1,
+      cam_res=(64, 64),
+      render_rgb=True,
+      use_textures=True,
+      enable_specular=False,
+    )
+    mjw.render(m, d, rc)
+    rgb = _unpack_rgb(rc.rgb_data.numpy()[0]).reshape(64, 64, 3)
+    # Assert both boxes are hit and have textured channels
+    self.assertGreater(np.count_nonzero(rgb[..., 0] > 100), 50)
+    self.assertGreater(np.count_nonzero(rgb[..., 1] > 100), 50)
+
+  def test_ellipsoid_anisotropic_texuniform(self):
+    """Ellipsoid with anisotropic radii scales S by size[0] and T by size[1]."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+    <mujoco>
+      <asset>
+        <texture name="checker" type="2d" builtin="checker" rgb1="1 0 0" rgb2="0 0 1" width="32" height="32"/>
+        <material name="mat_u" texture="checker" texuniform="true"/>
+      </asset>
+      <worldbody>
+        <camera pos="0 -6 0" xyaxes="1 0 0 0 0 1" fovy="45"/>
+        <geom type="ellipsoid" size="1 3 1" material="mat_u"/>
+      </worldbody>
+    </mujoco>
+    """,
+      nworld=1,
+    )
+    rc = mjw.create_render_context(
+      mjm,
+      nworld=1,
+      cam_res=(64, 64),
+      render_rgb=True,
+      use_textures=True,
+      enable_specular=False,
+    )
+    mjw.render(m, d, rc)
+    rgb = _unpack_rgb(rc.rgb_data.numpy()[0]).reshape(64, 64, 3)
+    self.assertFalse(np.any(np.isnan(rc.rgb_data.numpy())))
+    # Both red and blue checker tiles should appear
+    self.assertGreater(np.count_nonzero(rgb[..., 0] > 100), 50)
+    self.assertGreater(np.count_nonzero(rgb[..., 2] > 100), 50)
+
+  @parameterized.named_parameters(
+    ("mesh", "mesh"),
+    ("sdf", "sdf"),
+  )
+  def test_mesh_and_sdf_rendering(self, geom_type: str):
+    """Mesh and SDF geoms render using the underlying mesh geometry."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml=f"""
+    <mujoco>
+      <asset>
+        <texture name="checker" type="2d" builtin="checker" rgb1="1 0 0" rgb2="0 0 1" width="32" height="32"/>
+        <material name="mat" texture="checker"/>
+        <mesh name="tetra" vertex="1 1 1  1 -1 -1  -1 1 -1  -1 -1 1"/>
+      </asset>
+      <worldbody>
+        <camera pos="0 -4 0" xyaxes="1 0 0 0 0 1" fovy="45"/>
+        <geom type="{geom_type}" mesh="tetra" material="mat"/>
+      </worldbody>
+    </mujoco>
+    """,
+      nworld=1,
+    )
+    self.assertEqual(list(mjm.geom_size[0]), [1.0, 1.0, 1.0])
+
+    rc = mjw.create_render_context(
+      mjm,
+      nworld=1,
+      cam_res=(32, 32),
+      render_rgb=True,
+      render_seg=True,
+      use_textures=True,
+      enable_specular=False,
+    )
+    mjw.render(m, d, rc)
+    rgb = _unpack_rgb(rc.rgb_data.numpy()[0]).reshape(32, 32, 3)
+    seg = rc.seg_data.numpy()[0].reshape(32, 32, 2)
+
+    self.assertFalse(np.any(np.isnan(rc.rgb_data.numpy())))
+    self.assertGreater(np.count_nonzero(seg[..., 0] == 0), 10)
+    self.assertGreater(np.count_nonzero(rgb > 40), 10)
+
+  def test_skybox_only_texture_materialization(self):
+    """When use_textures=False and render_skybox=True, only the skybox texture is uploaded."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+    <mujoco>
+      <asset>
+        <texture name="sky" type="skybox" builtin="gradient" rgb1="0 0 1" rgb2="1 1 1" width="64" height="64"/>
+        <texture name="surface" type="2d" builtin="checker" rgb1="1 0 0" rgb2="0 1 0" width="32" height="32"/>
+        <material name="mat" texture="surface"/>
+      </asset>
+      <worldbody>
+        <camera pos="0 -5 0" xyaxes="1 0 0 0 0 1"/>
+        <geom type="box" size="0.5 0.5 0.5" rgba="0.5 0.5 0.5 1" material="mat"/>
+      </worldbody>
+    </mujoco>
+    """,
+      nworld=1,
+    )
+    rc = mjw.create_render_context(
+      mjm,
+      nworld=1,
+      cam_res=(32, 32),
+      render_rgb=True,
+      use_textures=False,
+      render_skybox=True,
+    )
+    mjw.render(m, d, rc)
+    rgb = _unpack_rgb(rc.rgb_data.numpy()[0]).reshape(32, 32, 3)
+    self.assertFalse(np.any(np.isnan(rc.rgb_data.numpy())))
+
+  @absltest.skipIf(not _HAS_RENDERER, "MuJoCo rendering requires OpenGL")
+  def test_capsule_dome_and_mantle_uv_parity(self):
+    """Capsule dome and mantle texture coordinates match MuJoCo OpenGL."""
+    cam_w, cam_h = 64, 64
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+    <mujoco>
+      <asset>
+        <texture name="checker" type="2d" builtin="checker" rgb1="1 0 0" rgb2="0 0 1" width="128" height="128"/>
+        <material name="mat" texture="checker" texrepeat="2 2" texuniform="false"/>
+      </asset>
+      <worldbody>
+        <camera pos="0 -3.0 0" xyaxes="1 0 0 0 0 1" fovy="45"/>
+        <geom type="capsule" size="0.3 0.4" material="mat"/>
+      </worldbody>
+    </mujoco>
+    """,
+      nworld=1,
+      overrides={"vis.quality.offsamples": 0},
+    )
+    rc = mjw.create_render_context(
+      mjm,
+      nworld=1,
+      cam_res=(cam_w, cam_h),
+      render_rgb=True,
+      use_textures=True,
+      enable_specular=False,
+    )
+    mjw.render(m, d, rc)
+    warp_rgb = _unpack_rgb(rc.rgb_data.numpy()[0]).reshape(cam_h, cam_w, 3)
+
+    with mujoco.Renderer(mjm, height=cam_h, width=cam_w) as renderer:
+      renderer.update_scene(mjd, camera=0)
+      mj_rgb = renderer.render()
+
+    geom_mask = (mj_rgb.sum(axis=-1) > 0) & (warp_rgb.sum(axis=-1) > 0)
+    self.assertGreater(np.count_nonzero(geom_mask), 100)
+
+    mj_dom = mj_rgb[geom_mask, 0] > mj_rgb[geom_mask, 2]
+    warp_dom = warp_rgb[geom_mask, 0] > warp_rgb[geom_mask, 2]
+    agreement = float(np.mean(mj_dom == warp_dom))
+    self.assertGreater(agreement, 0.95, f"Capsule texture agreement {agreement:.3f} below 0.95")
+
+  @parameterized.named_parameters(
+    ("top", "0 0 4", "1 0 0 0 1 0"),
+    ("bottom", "0 0 -4", "1 0 0 0 -1 0"),
+  )
+  def test_cylinder_cap_orientation(self, cam_pos: str, xyaxes: str):
+    """Cylinder top and bottom caps have consistent texture orientation."""
+    cam_w, cam_h = 64, 64
+    mjm, mjd, m, d = test_data.fixture(
+      xml=f"""
+    <mujoco>
+      <asset>
+        <texture name="checker" type="2d" builtin="checker" rgb1="1 0 0" rgb2="0 0 1" width="64" height="64"/>
+        <material name="mat" texture="checker" texrepeat="2 4"/>
+      </asset>
+      <worldbody>
+        <camera pos="{cam_pos}" xyaxes="{xyaxes}" fovy="45"/>
+        <geom type="cylinder" size="1 0.5" material="mat"/>
+      </worldbody>
+    </mujoco>
+    """,
+      nworld=1,
+      overrides={"vis.quality.offsamples": 0},
+    )
+    rc = mjw.create_render_context(
+      mjm,
+      nworld=1,
+      cam_res=(cam_w, cam_h),
+      render_rgb=True,
+      use_textures=True,
+      enable_specular=False,
+    )
+    mjw.render(m, d, rc)
+    warp_rgb = _unpack_rgb(rc.rgb_data.numpy()[0]).reshape(cam_h, cam_w, 3)
+    self.assertFalse(np.any(np.isnan(rc.rgb_data.numpy())))
+    self.assertGreater(np.count_nonzero(warp_rgb > 20), 100)
+
+    if _HAS_RENDERER:
+      with mujoco.Renderer(mjm, height=cam_h, width=cam_w) as renderer:
+        renderer.update_scene(mjd, camera=0)
+        mj_rgb = renderer.render()
+
+      geom_mask = (mj_rgb.sum(axis=-1) > 0) & (warp_rgb.sum(axis=-1) > 0)
+      mj_dom = mj_rgb[geom_mask, 0] > mj_rgb[geom_mask, 2]
+      warp_dom = warp_rgb[geom_mask, 0] > warp_rgb[geom_mask, 2]
+      agreement = float(np.mean(mj_dom == warp_dom))
+      self.assertGreater(agreement, 0.95, f"Cylinder cap agreement {agreement:.3f} below 0.95")
+
+  def test_heightfield_texture_parity(self):
+    """Heightfield surfaces sample texture coordinates across horizontal extent."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+    <mujoco>
+      <asset>
+        <texture name="checker" type="2d" builtin="checker" rgb1="1 0 0" rgb2="0 1 0" width="32" height="32"/>
+        <material name="mat" texture="checker"/>
+        <hfield name="hf" nrow="3" ncol="3" size="2 2 0.5 0.1"
+                elevation="0 1 0  1 2 1  0 1 0"/>
+      </asset>
+      <worldbody>
+        <camera pos="0 -6 4" xyaxes="1 0 0 0 0.7071 0.7071" fovy="45"/>
+        <geom type="hfield" hfield="hf" material="mat"/>
+      </worldbody>
+    </mujoco>
+    """,
+      nworld=1,
+    )
+    rc = mjw.create_render_context(
+      mjm,
+      nworld=1,
+      cam_res=(64, 64),
+      render_rgb=True,
+      use_textures=True,
+      enable_specular=False,
+    )
+    mjw.render(m, d, rc)
+    rgb = _unpack_rgb(rc.rgb_data.numpy()[0]).reshape(64, 64, 3)
+    self.assertFalse(np.any(np.isnan(rc.rgb_data.numpy())))
+    self.assertGreater(np.count_nonzero(rgb[..., 0] > 100), 20)
+    self.assertGreater(np.count_nonzero(rgb[..., 1] > 100), 20)
+
+  @parameterized.named_parameters(
+    ("geom_rgba_overrides", 'rgba="1 0 0 1"', 0),
+    ("material_rgba_fallback", "", 2),
+  )
+  def test_geom_rgba_precedence_over_material(self, geom_rgba_attr: str, exp_channel: int):
+    """Custom geom rgba overrides material rgba and rgba[3] == 0 objects do not occlude."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml=f"""
+    <mujoco>
+      <visual>
+        <headlight active="0"/>
+      </visual>
+      <asset>
+        <material name="blue_mat" rgba="0 0 1 1"/>
+        <material name="transparent_mat" rgba="0 1 0 0"/>
+      </asset>
+      <worldbody>
+        <light pos="0 -4 0" dir="0 1 0" directional="true"/>
+        <camera pos="0 -4 0" xyaxes="1 0 0 0 0 1" fovy="45"/>
+        <geom name="occluder_geom" type="box" pos="0 -3 0" size="0.5 0.1 0.5" rgba="0 1 0 0"/>
+        <geom name="occluder_mat" type="box" pos="0 -2.5 0" size="0.5 0.1 0.5" material="transparent_mat"/>
+        <geom name="occluder_override" type="box" pos="0 -2 0" size="0.5 0.1 0.5" material="blue_mat" rgba="0 1 0 0"/>
+        <geom name="target" type="box" size="0.5 0.5 0.5" {geom_rgba_attr} material="blue_mat"/>
+        <flexcomp name="occluder_flex" count="2 2 1" spacing="1 1 1" pos="0 -1.5 0" euler="90 0 0" rgba="0 1 0 0">
+          <edge damping="0.1"/>
+        </flexcomp>
+      </worldbody>
+    </mujoco>
+    """,
+      nworld=1,
+    )
+    rc = mjw.create_render_context(
+      mjm,
+      nworld=1,
+      cam_res=(32, 32),
+      render_rgb=True,
+      render_depth=True,
+      render_seg=True,
+      use_textures=False,
+      use_shadows=True,
+      use_ambient_lighting=False,
+      enable_specular=False,
+      shadow_light_fraction=0.0,
+    )
+    rc.rgb_data.fill_(wp.uint32(0))
+    rc.depth_data.fill_(wp.inf)
+    rc.seg_data.fill_(wp.vec2i(-1, -1))
+    mjw.render(m, d, rc)
+
+    rgb = _unpack_rgb(rc.rgb_data.numpy()[0]).reshape(32, 32, 3)
+    self.assertGreater(np.count_nonzero(rgb[..., exp_channel] > 100), 50)
+    other_channel = 2 if exp_channel == 0 else 0
+    box_pixels = rgb[..., exp_channel] > 100
+    self.assertTrue(np.all(rgb[box_pixels, other_channel] == 0))
+    self.assertTrue(np.all(rgb[box_pixels, 1] == 0))
+
+    target_id = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_GEOM, "target")
+    center_idx = 16 * 32 + 16
+    np.testing.assert_array_equal(rc.seg_data.numpy()[0, center_idx], [target_id, int(mjw.ObjType.GEOM)])
+    _assert_eq(rc.depth_data.numpy()[0, center_idx], 3.5, "depth")
+
+  @parameterized.named_parameters(
+    ("inside", 0.5, True),
+    ("clipped", 5.0, False),
+  )
+  def test_zfar_clipping(self, dist: float, is_visible: bool):
+    """Geometry past the far clipping plane (zfar) is clipped."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml=f"""
+    <mujoco>
+      <visual>
+        <map zfar="1.0"/>
+      </visual>
+      <worldbody>
+        <camera pos="0 0 0" xyaxes="1 0 0 0 0 1" fovy="45"/>
+        <geom type="box" size="0.1 0.1 0.1" pos="0 {dist} 0" rgba="1 0 0 1"/>
+      </worldbody>
+    </mujoco>
+    """,
+      nworld=1,
+    )
+    rc = mjw.create_render_context(
+      mjm,
+      nworld=1,
+      cam_res=(32, 32),
+      render_rgb=True,
+      render_depth=True,
+    )
+    mjw.render(m, d, rc)
+    rgb = _unpack_rgb(rc.rgb_data.numpy()[0]).reshape(32, 32, 3)
+    red_count = np.count_nonzero(rgb[..., 0] > 100)
+    if is_visible:
+      self.assertGreater(red_count, 0, f"Box at dist {dist} should be visible")
+    else:
+      self.assertEqual(red_count, 0, f"Box at dist {dist} should be clipped")
+
+  @parameterized.named_parameters(
+    ("inside", 0.0, True),
+    ("clipped", -5.0, False),
+  )
+  def test_zfar_clipping_flex(self, dist: float, is_visible: bool):
+    """Flex geometry past the far clipping plane (zfar) is clipped."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml=f"""
+    <mujoco>
+      <statistic extent="2.0"/>
+      <visual>
+        <map zfar="1.0"/>
+      </visual>
+      <worldbody>
+        <camera pos="0 0 1" xyaxes="1 0 0 0 1 0" fovy="45"/>
+        <flexcomp name="cloth" type="grid" count="3 3 1" spacing="0.1 0.1 0.1" dim="2" mass="1" pos="0 0 {dist}" rgba="0 1 0 1">
+          <edge damping="0.1"/>
+        </flexcomp>
+      </worldbody>
+    </mujoco>
+    """,
+      nworld=1,
+    )
+    rc = mjw.create_render_context(
+      mjm,
+      nworld=1,
+      cam_res=(32, 32),
+      render_rgb=True,
+    )
+    mjw.render(m, d, rc)
+    rgb = _unpack_rgb(rc.rgb_data.numpy()[0]).reshape(32, 32, 3)
+    green_count = np.count_nonzero(rgb[..., 1] > 100)
+    if is_visible:
+      self.assertGreater(green_count, 0, f"Flex at dist {dist} should be visible")
+    else:
+      self.assertEqual(green_count, 0, f"Flex at dist {dist} should be clipped")
 
 
 if __name__ == "__main__":

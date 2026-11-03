@@ -82,6 +82,78 @@ class SupportTest(parameterized.TestCase):
       mujoco.mj_applyFT(mjm, mjd, xfrc[i, :3], xfrc[i, 3:], mjd.xipos[i], i, qfrc_expected)
     np.testing.assert_almost_equal(qfrc.numpy()[0], qfrc_expected, 6)
 
+  @parameterized.product(nworld=(1, 2), flg_add=(False, True), zero_force=(False, True))
+  def test_apply_ft_subtrees(self, nworld, flg_add, zero_force):
+    """Tests force projection across branches, welded bodies, and independent trees."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <default>
+          <geom size="0.1" contype="0" conaffinity="0"/>
+        </default>
+        <worldbody>
+          <body name="root">
+            <freejoint/>
+            <geom/>
+            <body pos="0.3 0 0">
+              <joint type="ball"/>
+              <geom/>
+              <body pos="0.2 0 0">
+                <geom/>
+              </body>
+            </body>
+            <body name="sibling" pos="0 0.3 0">
+              <joint axis="1 0 0"/>
+              <geom/>
+              <body pos="0 0.2 0">
+                <joint type="slide"/>
+                <geom/>
+              </body>
+            </body>
+          </body>
+          <body name="other" pos="1 0 0">
+            <freejoint/>
+            <geom/>
+            <body pos="0 0 0.3">
+              <joint/>
+              <geom/>
+            </body>
+          </body>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=nworld,
+    )
+    qpos = np.tile(mjd.qpos, (nworld, 1))
+    if nworld == 2:
+      mujoco.mj_integratePos(mjm, qpos[1], np.linspace(-0.3, 0.4, mjm.nv), 0.2)
+    d.qpos.assign(qpos)
+    mjwarp.fwd_position(m, d)
+    force = np.linspace(-0.7, 0.9, nworld * mjm.nbody * 6).reshape(nworld, mjm.nbody, 6).astype(np.float32)
+    # A zero-force body must neither end its own subtree nor hide a subtree boundary.
+    for name in ("root", "sibling", "other"):
+      force[:, mjm.body(name).id] = 0.0
+    if zero_force:
+      force[:] = 0.0
+    d.xfrc_applied.assign(force)
+    initial = np.linspace(-0.2, 0.3, nworld * mjm.nv).reshape(nworld, mjm.nv).astype(np.float32)
+    qfrc = wp.array(initial, dtype=float) if flg_add else wp.full((nworld, mjm.nv), wp.inf, dtype=float)
+    if flg_add:
+      mjwarp.xfrc_accumulate(m, d, qfrc)
+    else:
+      support.apply_ft(m, d, d.xfrc_applied, qfrc, False)
+
+    result = qfrc.numpy()
+    for world in range(nworld):
+      mjd.qpos[:] = qpos[world]
+      mujoco.mj_forward(mjm, mjd)
+      expected = initial[world].astype(float) if flg_add else np.zeros(mjm.nv)
+      for body in range(1, mjm.nbody):
+        mujoco.mj_applyFT(mjm, mjd, force[world, body, :3], force[world, body, 3:], mjd.xipos[body], body, expected)
+      _assert_eq(result[world], expected, f"apply_ft_world_{world}")
+    if nworld == 2 and (flg_add or not zero_force):
+      self.assertFalse(np.allclose(result[0], result[1]))
+
   @parameterized.parameters(
     (ConeType.PYRAMIDAL, 1, False),
     (ConeType.PYRAMIDAL, 3, False),
@@ -664,6 +736,146 @@ class SupportTest(parameterized.TestCase):
       q_est = -q_est
 
     _assert_eq(q_est, q_exp, "quat")
+
+  @parameterized.product(
+    case=(
+      # flex, contact position, closest point on the element
+      ("seg", (0.3, 0.2, 0.0), (0.3, 0.0, 0.0)),
+      ("seg", (1.5, 0.0, 0.0), (1.0, 0.0, 0.0)),
+      ("tri", (0.25, 0.25, 0.1), (0.25, 0.25, 0.0)),
+      ("tri", (-0.5, -0.5, 0.0), (0.0, 0.0, 0.0)),
+      ("tri", (0.5, -0.2, 0.1), (0.5, 0.0, 0.0)),
+      ("tet", (0.1, 0.2, 0.3), (0.1, 0.2, 0.3)),
+      ("tet", (0.2, 0.3, -0.05), (0.2, 0.3, 0.0)),
+      ("tet", (0.5, 0.5, 0.5), (1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0)),
+    ),
+    nworld=(1, 2),
+  )
+  def test_contact_bodies_and_weights_flex_elem(self, case, nworld):
+    """Flex element contact weights are the barycentric coordinates of the closest point."""
+    flex, pos, closest = case
+    mjm, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option>
+          <flag contact="disable" gravity="disable"/>
+        </option>
+        <worldbody>
+          <flexcomp name="seg" type="direct" dim="1" radius=".01"
+                    point="0 0 0  1 0 0" element="0 1"/>
+          <flexcomp name="tri" type="direct" dim="2" radius=".01"
+                    point="0 0 0  1 0 0  0 1 0" element="0 1 2"/>
+          <flexcomp name="tet" type="direct" dim="3" radius=".01"
+                    point="0 0 0  1 0 0  0 1 0  0 0 1" element="0 1 2 3"/>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=nworld,
+    )
+    flexid = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_FLEX, flex)
+
+    # translate the flexes and the contact in world 1
+    offset = np.array([0.5, -0.25, 1.0])
+    flexvert_xpos = d.flexvert_xpos.numpy()
+    con_pos = np.tile(np.array(pos), (nworld, 1))
+    if nworld == 2:
+      flexvert_xpos[1] += offset
+      con_pos[1] += offset
+      d.flexvert_xpos.assign(flexvert_xpos)
+
+    body_out = wp.full(nworld, wp.vec4i(-1), dtype=wp.vec4i)
+    weight_out = wp.full(nworld, wp.vec4(wp.inf), dtype=wp.vec4)
+
+    @wp.kernel
+    def contact_weights_kernel(
+      # Model:
+      geom_bodyid: wp.array[int],
+      flex_dim: wp.array[int],
+      flex_cellnum: wp.array[wp.vec3i],
+      flex_nodeadr: wp.array[int],
+      flex_vertadr: wp.array[int],
+      flex_elemdataadr: wp.array[int],
+      flex_shelldataadr: wp.array[int],
+      flex_nodebodyid: wp.array[int],
+      flex_vertbodyid: wp.array[int],
+      flex_elem: wp.array[int],
+      flex_shell: wp.array[int],
+      flex_vert0: wp.array[wp.vec3],
+      # Data in:
+      flexvert_xpos_in: wp.array2d[wp.vec3],
+      # In:
+      flexid: int,
+      con_pos: wp.array[wp.vec3],
+      # Out:
+      body_out: wp.array[wp.vec4i],
+      weight_out: wp.array[wp.vec4],
+    ):
+      worldid = wp.tid()
+
+      # contact between nothing (side 0) and element 0 of the flex (side 1)
+      body, weight = support.contact_bodies_and_weights(
+        geom_bodyid,
+        flex_dim,
+        flex_cellnum,
+        flex_nodeadr,
+        flex_vertadr,
+        flex_elemdataadr,
+        flex_shelldataadr,
+        flex_nodebodyid,
+        flex_vertbodyid,
+        flex_elem,
+        flex_shell,
+        flex_vert0,
+        flexvert_xpos_in,
+        0,
+        1,
+        wp.vec2i(-1, -1),
+        wp.vec2i(-1, flexid),
+        wp.vec2i(-1, 0),
+        wp.vec2i(-1, -1),
+        con_pos[worldid],
+        worldid,
+      )
+      body_out[worldid] = body
+      weight_out[worldid] = weight
+
+    wp.launch(
+      contact_weights_kernel,
+      dim=nworld,
+      inputs=[
+        m.geom_bodyid,
+        m.flex_dim,
+        m.flex_cellnum,
+        m.flex_nodeadr,
+        m.flex_vertadr,
+        m.flex_elemdataadr,
+        m.flex_shelldataadr,
+        m.flex_nodebodyid,
+        m.flex_vertbodyid,
+        m.flex_elem,
+        m.flex_shell,
+        m.flex_vert0,
+        d.flexvert_xpos,
+        flexid,
+        wp.array(con_pos, dtype=wp.vec3),
+      ],
+      outputs=[body_out, weight_out],
+    )
+
+    # weights are a partition of unity which interpolates the closest point
+    dim = mjm.flex_dim[flexid]
+    vertadr = mjm.flex_vertadr[flexid]
+    body = body_out.numpy()
+    weight = weight_out.numpy()
+    for w in range(nworld):
+      point = np.zeros(3)
+      for k in range(dim + 1):
+        vertid = np.flatnonzero(mjm.flex_vertbodyid[vertadr : vertadr + mjm.flex_vertnum[flexid]] == body[w, k])
+        self.assertLen(vertid, 1)
+        point += weight[w, k] * flexvert_xpos[w, vertadr + vertid[0]]
+      self.assertTrue(np.all(weight[w, : dim + 1] >= -1e-6), f"negative weight in world {w}")
+      _assert_eq(np.sum(weight[w]), 1.0, f"weight sum world {w}")
+      _assert_eq(point, np.array(closest) + (offset if w == 1 else 0.0), f"closest point world {w}")
 
 
 if __name__ == "__main__":

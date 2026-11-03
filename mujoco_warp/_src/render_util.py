@@ -42,7 +42,7 @@ def _convert_texture_data(
   r = tex_data_in[offset + 0] if nc > 0 else wp.uint8(0)
   g = tex_data_in[offset + 1] if nc > 1 else wp.uint8(0)
   b = tex_data_in[offset + 2] if nc > 2 else wp.uint8(0)
-  a = wp.uint8(255)
+  a = tex_data_in[offset + 3] if nc > 3 else wp.uint8(255)
 
   tex_data_out[y, x, 0] = float(r) * wp.static(1.0 / 255.0)
   tex_data_out[y, x, 1] = float(g) * wp.static(1.0 / 255.0)
@@ -50,18 +50,28 @@ def _convert_texture_data(
   tex_data_out[y, x, 3] = float(a) * wp.static(1.0 / 255.0)
 
 
-def create_warp_texture(mjm: mujoco.MjModel, tex_id: int) -> wp.array:
-  """Create a Warp texture from a MuJoCo model texture data."""
+def texture_pixels(mjm: mujoco.MjModel, tex_id: int) -> np.ndarray:
+  """Host pixels of a MuJoCo model texture as a (height, width, nchannel) uint8 array.
+
+  A by-reference texture (tex_adr == -1) is decoded from its file; a load failure raises.
+  """
   tex_adr = mjm.tex_adr[tex_id]
-  tex_width = mjm.tex_width[tex_id]
-  tex_height = mjm.tex_height[tex_id]
-  nchannel = mjm.tex_nchannel[tex_id]
+  if tex_adr == -1:
+    return mujoco.mj_loadTexture(mjm, tex_id)[0]
+  shape = (mjm.tex_height[tex_id], mjm.tex_width[tex_id], mjm.tex_nchannel[tex_id])
+  return mjm.tex_data[tex_adr : tex_adr + int(np.prod(shape))].reshape(shape)
+
+
+def create_warp_texture(mjm: mujoco.MjModel, tex_id: int) -> wp.Texture2D:
+  """Create a Warp texture from a MuJoCo model texture data."""
+  pixels = texture_pixels(mjm, tex_id)
+  tex_height, tex_width, nchannel = pixels.shape
   tex_data = wp.zeros((tex_height, tex_width, 4), dtype=float)
 
   wp.launch(
     _convert_texture_data,
     dim=(tex_width, tex_height),
-    inputs=[tex_width, tex_adr, nchannel, wp.array(mjm.tex_data, dtype=wp.uint8)],
+    inputs=[tex_width, 0, nchannel, wp.array(pixels.ravel(), dtype=wp.uint8)],
     outputs=[tex_data],
   )
   return wp.Texture2D(tex_data, filter_mode=wp.TextureFilterMode.LINEAR)
@@ -320,7 +330,7 @@ def create_render_context(
   use_ambient_lighting: bool = True,
   enabled_geom_groups: list[int] = [0, 1, 2],
   cam_active: list[bool] | list[str] | list[int] | None = None,
-  background_color: tuple[float, float, float, float] = (0.1, 0.1, 0.2, 1.0),
+  background_color: tuple[float, float, float, float] = (0.0, 0.0, 0.0, 1.0),
   flex_render_smooth: bool = True,
   use_precomputed_rays: bool = True,
   render_skybox: bool = False,
@@ -337,6 +347,7 @@ def create_render_context(
   splat_rgba: np.ndarray | None = None,
   splat_adr: np.ndarray | None = None,
   splat_group_id: np.ndarray | None = None,
+  deterministic: bool = False,
 ) -> RenderContext:
   """Creates a render context on device.
 
@@ -394,6 +405,8 @@ def create_render_context(
                if None then all splats are in one group.
     splat_group_id: Splat id for each world (nworld,). If None then all worlds
                     use the first splat group.
+    deterministic: Whether to use deterministic execution for flex BVH vertex
+                   normal accumulation.
 
   Returns:
     The render context containing rendering fields and output arrays on device.
@@ -504,27 +517,33 @@ def create_render_context(
     else:
       flex_geom_flexid.append(f)
       flex_geom_edgeid.append(-1)
-      fmesh, group_root = bvh.build_flex_bvh(mjm, mjd, nworld, f)
+      fmesh, group_root = bvh.build_flex_bvh(mjm, mjd, nworld, f, deterministic=bool(deterministic))
       flex_registry[f] = fmesh
       flex_bvh_id[f] = fmesh.id
       flex_group_root[:, f] = group_root.numpy()
 
-  textures_registry = []
-  # Only materialize GPU textures when the caller actually needs them.
-  if use_textures:
-    for i in range(mjm.ntex):
-      textures_registry.append(create_warp_texture(mjm, i))
-  textures = wp.array(textures_registry, dtype=wp.Texture2D)
-
   # Locate skybox texture
   skybox_tex_ids = np.nonzero(mjm.tex_type == mujoco.mjtTexture.mjTEXTURE_SKYBOX)[0] if mjm.ntex else np.array([], dtype=int)
-  if render_skybox and skybox_tex_ids.size > 0:
+  has_skybox = render_skybox and skybox_tex_ids.size > 0
+  if has_skybox:
     skybox_tex_id_np = np.array([skybox_tex_ids[0]], dtype=int)
-    skybox_face_width_np = np.array([mjm.tex_width[skybox_tex_ids[0]]], dtype=int)
   else:
     render_skybox = False
     skybox_tex_id_np = np.array([-1], dtype=int)
-    skybox_face_width_np = np.array([1], dtype=int)
+
+  textures_registry = []
+  # Only materialize GPU textures when the caller actually needs them.
+  if use_textures or has_skybox:
+    empty_tex = None if use_textures else wp.Texture2D(width=1, height=1, num_channels=4, dtype=wp.float32)
+    skybox_id = skybox_tex_ids[0] if has_skybox else -1
+    for i in range(mjm.ntex):
+      if use_textures or i == skybox_id:
+        textures_registry.append(create_warp_texture(mjm, i))
+      else:
+        textures_registry.append(empty_tex)
+  textures = wp.array(textures_registry, dtype=wp.Texture2D)
+  # face width from the uploaded texture: tex_width is 0 for a by-reference skybox
+  skybox_face_width_np = np.array([textures_registry[skybox_id].width if has_skybox else 1], dtype=int)
 
   # Filter active cameras
   if cam_active is not None:
@@ -629,6 +648,7 @@ def create_render_context(
     total += cam_res_np[idx][0] * cam_res_np[idx][1]
 
   znear = float(mjm.vis.map.znear * mjm.stat.extent)
+  zfar = float(mjm.vis.map.zfar * mjm.stat.extent)
 
   if samples_per_pixel < 1:
     raise ValueError("samples_per_pixel must be at least 1.")
@@ -755,6 +775,7 @@ def create_render_context(
     seg_adr=wp.array(seg_adr, dtype=int),
     render_seg=wp.array(render_seg, dtype=bool),
     znear=znear,
+    zfar=zfar,
     total_rays=int(total),
     enable_backface_culling=enable_backface_culling,
     shadow_light_fraction=shadow_light_fraction,

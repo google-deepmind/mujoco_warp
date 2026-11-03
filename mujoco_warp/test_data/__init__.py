@@ -41,6 +41,7 @@ def fixture(
   njmax: Optional[int] = None,
   nvmax: Optional[int] = -1,
   njmax_nnz: Optional[int] = None,
+  batch_sizes: Optional[dict[str, int]] = None,
 ) -> Tuple[mujoco.MjModel, mujoco.MjData, mjw.Model, mjw.Data]:
   """Loads MuJoCo MjModel / MjData and corresponding mjw.Model / mjw.Data.
 
@@ -57,6 +58,7 @@ def fixture(
     overrides: a dict (or sequence of "foo=bar" strings) of model fields to override.
     nworld: number of worlds to create in mjw.Data.
     nvmax: maximum active DOFs per world.
+    batch_sizes: optional per-field leading batch sizes for Model fields.
 
   Returns:
     Tuple containing:
@@ -103,7 +105,7 @@ def fixture(
 
   mujoco.mj_forward(mjm, mjd)
   mjd.qacc_warmstart = mjd.qacc
-  m = mjw.put_model(mjm)
+  m = mjw.put_model(mjm, batch_sizes=batch_sizes)
   override_model(m, overrides)
 
   d = mjw.put_data(

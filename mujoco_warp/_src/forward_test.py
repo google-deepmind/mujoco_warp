@@ -29,7 +29,9 @@ from mujoco_warp import DynType
 from mujoco_warp import EnableBit
 from mujoco_warp import GainType
 from mujoco_warp import IntegratorType
+from mujoco_warp import SolverType
 from mujoco_warp import test_data
+from mujoco_warp._src import util_pkg
 
 # tolerance for difference between MuJoCo and mjwarp smooth calculations - mostly
 # due to float precision
@@ -89,6 +91,47 @@ class ForwardTest(parameterized.TestCase):
       _assert_eq(d.act.numpy()[0], mjd.act, "act")
 
     # TODO(team): test actearly
+
+  @parameterized.parameters(IntegratorType.EULER, IntegratorType.RK4)
+  def test_rotational_setpoint_wrapping(self, integrator):
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+    <mujoco>
+      <worldbody>
+        <body>
+          <joint name="ball" type="ball"/>
+          <geom type="sphere" size=".1"/>
+          <site name="s1"/>
+        </body>
+        <site name="s0"/>
+      </worldbody>
+      <actuator>
+        <position joint="ball" kp="100" gear="1.5 0 0"/>
+        <general site="s1" refsite="s0" gaintype="fixed" biastype="affine" gainprm="50" biasprm="0 -50 0" gear="0 0 0 1.2 0 0"/>
+        <general joint="ball" dyntype="integrator" gaintype="fixed" biastype="affine" gainprm="40" biasprm="0 -40 0" gear="2 0 0"/>
+      </actuator>
+      <keyframe>
+        <key qpos="1 0 0 0" ctrl="10 -15 8" act="12"/>
+      </keyframe>
+    </mujoco>
+    """,
+      overrides={"opt.integrator": integrator},
+      keyframe=0,
+    )
+
+    for arr in (d.actuator_force, d.qfrc_actuator):
+      arr.fill_(wp.inf)
+
+    mjw.fwd_actuation(m, d)
+
+    _assert_eq(d.actuator_force.numpy()[0], mjd.actuator_force, "actuator_force")
+    _assert_eq(d.qfrc_actuator.numpy()[0], mjd.qfrc_actuator, "qfrc_actuator")
+
+    # next activations and step
+    mujoco.mj_step(mjm, mjd)
+    mjw.step(m, d)
+
+    _assert_eq(d.act.numpy()[0], mjd.act, "act")
 
   @parameterized.parameters(0, DisableBit.CLAMPCTRL)
   def test_clampctrl(self, disableflags):
@@ -191,6 +234,41 @@ class ForwardTest(parameterized.TestCase):
       return d.qpos
 
     _assert_eq(rk_step().numpy()[0], rk_step().numpy()[0], "qpos")
+
+  @absltest.skipIf(not util_pkg.check_version("mujoco>=3.17.1"), "Requires MuJoCo >= 3.17.1")
+  def test_rungekutta4_rotation(self):
+    """RK4 applies the Runge-Kutta-Munthe-Kaas correction to ball and free joint orientations."""
+    # fast rotation (timestep * |omega| ~ 0.5) so that the correction changes orientation
+    # by ~2e-3 per step, well above the float32 error of the comparison
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option integrator="RK4" timestep="0.01">
+          <flag contact="disable"/>
+        </option>
+        <worldbody>
+          <body>
+            <freejoint/>
+            <inertial pos="0 0 0" mass="1" diaginertia=".1 .2 .3"/>
+          </body>
+          <body pos="1 0 0">
+            <joint type="ball"/>
+            <inertial pos=".02 .01 .1" mass="1" diaginertia=".01 .01 .02"/>
+          </body>
+        </worldbody>
+        <keyframe>
+          <key qpos="0 0 0 1 0 0 0 1 0 0 0" qvel="0 0 0 20 -35 25 5 -10 40"/>
+        </keyframe>
+      </mujoco>
+      """,
+      keyframe=0,
+    )
+
+    mjw.rungekutta4(m, d)
+    mujoco.mj_RungeKutta(mjm, mjd, 4)
+
+    np.testing.assert_allclose(d.qpos.numpy()[0], mjd.qpos, atol=2e-5, rtol=0, err_msg="mismatch: qpos")
+    _assert_eq(d.qvel.numpy()[0], mjd.qvel, "qvel")
 
   @parameterized.product(
     jacobian=(mujoco.mjtJacobian.mjJAC_SPARSE, mujoco.mjtJacobian.mjJAC_DENSE),
@@ -316,6 +394,243 @@ class ForwardTest(parameterized.TestCase):
 
     np.testing.assert_allclose(d.qvel.numpy()[0], mjd.qvel, atol=1e-3, rtol=1e-3, err_msg="qvel")
 
+  def test_implicit_coriolis_two_hinge(self):
+    """Verify implicit integrator with non-planar multi-body Coriolis coupling tracks MuJoCo."""
+    mjm, mjd, m_warp, d_warp = test_data.fixture(
+      xml="""
+      <mujoco model="two_hinges">
+        <option timestep="0.001" integrator="implicit" gravity="0 0 0"/>
+        <worldbody>
+          <body name="body1" pos="0 0 0">
+            <joint name="joint1" type="hinge" pos="0 0 0" axis="0 1 0"/>
+            <geom type="cylinder" size="0.05 0.2" pos="0 0 0.2" mass="1"/>
+            <body name="body2" pos="0 0 0.4">
+              <joint name="joint2" type="hinge" pos="0 0 0" axis="1 0 0"/>
+              <geom type="cylinder" size="0.05 0.2" pos="0 0 0.2" mass="1"/>
+            </body>
+          </body>
+        </worldbody>
+        <keyframe>
+          <key qpos="0.5 0.5" qvel="30 -30"/>
+        </keyframe>
+      </mujoco>
+      """,
+      keyframe=0,
+    )
+
+    with wp.ScopedCapture() as capture:
+      mjw.step(m_warp, d_warp)
+
+    for i in range(20):
+      wp.capture_launch(capture.graph)
+      mujoco.mj_step(mjm, mjd)
+
+      np.testing.assert_allclose(
+        d_warp.qvel.numpy()[0],
+        mjd.qvel,
+        atol=1e-3,
+        rtol=1e-3,
+        err_msg=f"step {i} qvel mismatch between implicit integrator and MuJoCo",
+      )
+
+  @parameterized.parameters(IntegratorType.IMPLICIT, IntegratorType.IMPLICITFAST)
+  def test_standalone_free_body_implicit_fluid(self, integrator):
+    """Verify IMPLICIT and IMPLICITFAST match MuJoCo for standalone free body in fluid."""
+    mjm, mjd, m_warp, d_warp = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option timestep="0.005" density="1.2" viscosity="0.002" wind="1 2 3"/>
+        <worldbody>
+          <body pos="0.1 -0.2 0.5" euler="20 -30 40">
+            <joint type="free"/>
+            <geom type="ellipsoid" size=".1 .2 .3" mass="2" pos=".04 -.02 .03"
+                  fluidshape="ellipsoid"/>
+          </body>
+        </worldbody>
+        <keyframe>
+          <key qpos="0.1 -0.2 0.5 1 0 0 0" qvel="1 -0.5 0.8 5 -3 2"/>
+        </keyframe>
+      </mujoco>
+      """,
+      keyframe=0,
+      overrides={"opt.integrator": integrator},
+    )
+
+    with wp.ScopedCapture() as capture:
+      mjw.step(m_warp, d_warp)
+
+    for i in range(10):
+      wp.capture_launch(capture.graph)
+      mujoco.mj_step(mjm, mjd)
+
+      np.testing.assert_allclose(
+        d_warp.qvel.numpy()[0],
+        mjd.qvel,
+        atol=1e-3,
+        rtol=1e-3,
+        err_msg=f"step {i} qvel mismatch between {integrator} and MuJoCo",
+      )
+
+  @parameterized.parameters(IntegratorType.IMPLICIT, IntegratorType.IMPLICITFAST)
+  def test_free_root_massless_fluid_child(self, integrator):
+    """Verify free root with massless welded child carrying fluid geom matches MuJoCo."""
+    mjm, mjd, m_warp, d_warp = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option timestep="0.005" density="1.2" viscosity="0.002" wind="1 2 3"/>
+        <worldbody>
+          <body name="root" pos="0.1 -0.2 0.5" euler="20 -30 40">
+            <joint type="free"/>
+            <geom type="sphere" size=".1" mass="2"/>
+            <body name="child" pos="0 0 0.2">
+              <geom type="ellipsoid" size=".1 .2 .3" mass="0" fluidshape="ellipsoid"/>
+            </body>
+          </body>
+        </worldbody>
+        <keyframe>
+          <key qpos="0.1 -0.2 0.5 1 0 0 0" qvel="1 -0.5 0.8 5 -3 2"/>
+        </keyframe>
+      </mujoco>
+      """,
+      keyframe=0,
+      overrides={"opt.integrator": integrator},
+    )
+
+    # Free root with massless welded child is admitted as free body in MuJoCo C
+    self.assertTrue(bool(m_warp.body_is_free.numpy().any()))
+
+    inputs = {
+      "qpos",
+      "qvel",
+      "time",
+      "ctrl",
+      "qfrc_applied",
+      "xfrc_applied",
+      "mocap_pos",
+      "mocap_quat",
+      "userdata",
+      "eq_active",
+    }
+    for name, arr in vars(d_warp).items():
+      if name in inputs:
+        continue
+      if isinstance(arr, wp.array):
+        if arr.dtype == float:
+          arr.fill_(wp.inf)
+        elif arr.dtype in (int, wp.int32, wp.uint32):
+          arr.fill_(-1)
+
+    with wp.ScopedCapture() as capture:
+      mjw.step(m_warp, d_warp)
+
+    for i in range(10):
+      wp.capture_launch(capture.graph)
+      mujoco.mj_step(mjm, mjd)
+
+      np.testing.assert_allclose(
+        d_warp.qvel.numpy()[0],
+        mjd.qvel,
+        atol=1e-3,
+        rtol=1e-3,
+        err_msg=f"step {i} qvel mismatch for free root + massless child ({integrator})",
+      )
+
+  @parameterized.parameters(1, 2)
+  def test_free_root_inertial_fluid_child(self, nworld):
+    """Verify free root with inertial child carrying fluid geom matches MuJoCo."""
+    mjm, mjd, m_warp, d_warp = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option timestep="0.005" density="1.2" viscosity="0.002" wind="1 2 3"/>
+        <worldbody>
+          <body name="root" pos="0.1 -0.2 0.5" euler="20 -30 40">
+            <joint type="free"/>
+            <geom type="sphere" size=".1" mass="1"/>
+            <body name="child" pos="0 0 0.2">
+              <geom type="ellipsoid" size=".1 .2 .3" mass="0.5" fluidshape="ellipsoid"/>
+            </body>
+          </body>
+        </worldbody>
+        <keyframe>
+          <key qpos="0.1 -0.2 0.5 1 0 0 0" qvel="1 -0.5 0.8 5 -3 2"/>
+        </keyframe>
+      </mujoco>
+      """,
+      keyframe=0,
+      overrides={"opt.integrator": IntegratorType.IMPLICIT},
+      nworld=nworld,
+    )
+
+    self.assertTrue(bool(m_warp.body_is_free.numpy().any()))
+
+    mj_datas = [mjd]
+    if nworld == 2:
+      mjd2 = mujoco.MjData(mjm)
+      mujoco.mj_resetDataKeyframe(mjm, mjd2, 0)
+      qvel_np = d_warp.qvel.numpy()
+      qvel_np[1, 0] += 2.0
+      d_warp.qvel.assign(qvel_np)
+      mjd2.qvel[0] += 2.0
+      mj_datas.append(mjd2)
+
+    with wp.ScopedCapture() as capture:
+      mjw.step(m_warp, d_warp)
+
+    for i in range(10):
+      wp.capture_launch(capture.graph)
+      for w in range(nworld):
+        mujoco.mj_step(mjm, mj_datas[w])
+        np.testing.assert_allclose(
+          d_warp.qvel.numpy()[w],
+          mj_datas[w].qvel,
+          atol=1e-3,
+          rtol=1e-3,
+          err_msg=f"step {i} qvel mismatch for world {w}",
+        )
+
+    if nworld == 2:
+      self.assertFalse(np.allclose(d_warp.qvel.numpy()[0], d_warp.qvel.numpy()[1]))
+
+  def test_free_rigid_subtree_gyro_stable(self):
+    """Verify free root with inertial child remains stable under implicitfast."""
+    _, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option integrator="implicitfast" timestep="0.001" gravity="0 0 0">
+          <flag energy="enable"/>
+        </option>
+        <worldbody>
+          <body>
+            <freejoint/>
+            <body>
+              <inertial pos="0 0 0" mass="0.12"
+                        diaginertia="0.00017231 0.00000658 0.00017243"/>
+            </body>
+          </body>
+        </worldbody>
+        <keyframe>
+          <key qvel="0 0 0 100 30 100"/>
+        </keyframe>
+      </mujoco>
+      """,
+      keyframe=0,
+    )
+
+    self.assertTrue(bool(m.body_is_free.numpy().any()))
+
+    d.energy.fill_(wp.inf)
+    mjw.forward(m, d)
+    initial_energy = float(d.energy.numpy()[0, 1])
+
+    with wp.ScopedCapture() as capture:
+      mjw.step(m, d)
+
+    for i in range(20):
+      d.energy.fill_(wp.inf)
+      wp.capture_launch(capture.graph)
+      energy = float(d.energy.numpy()[0, 1])
+      self.assertLess(energy, 1.01 * initial_energy, f"step {i}")
+
   @parameterized.parameters(mujoco.mjtJacobian.mjJAC_SPARSE, mujoco.mjtJacobian.mjJAC_DENSE)
   def test_implicit_tendon_damping(self, jacobian):
     mjm, mjd, m, d = test_data.fixture(
@@ -334,7 +649,6 @@ class ForwardTest(parameterized.TestCase):
     _assert_eq(d.qpos.numpy()[0], mjd.qpos, "qpos")
     _assert_eq(d.qvel.numpy()[0], mjd.qvel, "qvel")
 
-  @absltest.skipIf(not wp.get_device().is_cuda, "Skipping test that requires GPU.")
   @parameterized.product(
     xml=("humanoid/humanoid.xml", "pendula.xml", "constraints.xml", "collision.xml"), graph_conditional=(True, False)
   )
@@ -721,6 +1035,135 @@ class ForwardTest(parameterized.TestCase):
     t_next = timestamp + mjm.opt.timestep
     np.testing.assert_allclose(d.act.numpy()[0, 0], np.cos(2 * np.pi * frequency * t_next), atol=1e-3)
     np.testing.assert_allclose(d.act.numpy()[0, 1], np.sin(2 * np.pi * frequency * t_next), atol=1e-3)
+
+  @parameterized.product(
+    overrides=[
+      {},
+      {"opt.integrator": IntegratorType.IMPLICITFAST},
+      {"opt.integrator": IntegratorType.DISCRETE},
+      {"opt.jacobian": mujoco.mjtJacobian.mjJAC_SPARSE},
+      {"opt.enableflags": EnableBit.SLEEP},
+      {"opt.solver": SolverType.CG},
+      {"opt.disableflags": DisableBit.WARMSTART},
+      {"opt.noslip_iterations": 5},
+    ],
+    graph_conditional=(True, False),
+  )
+  def test_run_qacc_smooth(self, overrides, graph_conditional):
+    """Tests run_qacc_smooth option in forward and captured steps."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <geom type="plane" size="5 5 .1" margin=".02"/>
+          <body pos="0 0 .1">
+            <freejoint/>
+            <geom type="box" size=".1 .1 .1"/>
+            <body pos=".2 0 0">
+              <joint name="hinge" type="hinge" axis="0 1 0" damping=".5"/>
+              <geom type="capsule" fromto="0 0 0 .2 0 0" size=".03"/>
+            </body>
+          </body>
+          <body pos="1 0 .1">
+            <freejoint/>
+            <geom type="sphere" size=".1"/>
+          </body>
+        </worldbody>
+        <actuator>
+          <position joint="hinge" kp="20" kv="2"/>
+        </actuator>
+      </mujoco>
+      """,
+      qvel_noise=0.5,
+      ctrl_noise=0.5,
+      overrides=overrides | {"opt.graph_conditional": graph_conditional},
+      nworld=2,
+    )
+    # no effect with CG, disabled warmstart or noslip
+    skip = (
+      (m.opt.solver == SolverType.NEWTON)
+      and (not (m.opt.disableflags & DisableBit.WARMSTART))
+      and (m.opt.noslip_iterations == 0)
+    )
+
+    # world 1 in the air: no constraint rows
+    qpos = np.tile(mjd.qpos, (2, 1))
+    qpos[1, [2, 10]] += 1.0
+    qacc = []
+    for qpos_world in qpos:
+      mjd.qpos[:] = qpos_world
+      mujoco.mj_forward(mjm, mjd)
+      qacc.append(mjd.qacc.copy())
+    d.qpos.assign(qpos.astype(np.float32))
+    d.qacc_warmstart.zero_()
+    d_ref = mjw.put_data(mjm, mjd, nworld=2, nvmax=mjm.nv)
+    wp.copy(d_ref.qpos, d.qpos)
+    d_ref.qacc_warmstart.zero_()
+
+    # 1. forward: qacc matches run_qacc_smooth=True and MuJoCo, qacc_smooth is not computed
+    mjw.forward(m, d_ref)
+    m.opt.run_qacc_smooth = False
+    d.qacc.fill_(wp.inf)
+    d.qacc_smooth.fill_(wp.inf)
+    mjw.forward(m, d)
+
+    self.assertGreater(d.nefc.numpy()[0], 0)
+    self.assertEqual(d.nefc.numpy()[1], 0)
+    _assert_eq(d.qacc.numpy(), d_ref.qacc.numpy(), "qacc")
+    if m.opt.solver == SolverType.NEWTON:  # CG stops at its tolerance from a zero warmstart
+      for worldid in range(2):
+        _assert_eq(d.qacc.numpy()[worldid], qacc[worldid], f"qacc world {worldid}")
+    if skip:
+      self.assertTrue(np.isinf(d.qacc_smooth.numpy()).all(), "qacc_smooth should not be computed")
+    else:
+      _assert_eq(d.qacc_smooth.numpy(), d_ref.qacc_smooth.numpy(), "qacc_smooth")
+
+    # 2. captured steps match run_qacc_smooth=True
+    with wp.ScopedCapture() as capture:
+      mjw.step(m, d)
+    m.opt.run_qacc_smooth = True
+    with wp.ScopedCapture() as capture_ref:
+      mjw.step(m, d_ref)
+
+    for _ in range(10):
+      wp.capture_launch(capture.graph)
+      wp.capture_launch(capture_ref.graph)
+
+    _assert_eq(d.qpos.numpy(), d_ref.qpos.numpy(), "qpos")
+    _assert_eq(d.qvel.numpy(), d_ref.qvel.numpy(), "qvel")
+
+  @parameterized.parameters(IntegratorType.EULER, IntegratorType.IMPLICITFAST)
+  def test_run_qacc_smooth_inverse(self, integrator):
+    """Tests that inverse dynamics factorizes M with run_qacc_smooth=False."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <geom type="plane" size="5 5 .1" margin=".02"/>
+          <body pos="0 0 .1">
+            <freejoint/>
+            <geom type="box" size=".1 .1 .1"/>
+            <body pos=".2 0 0">
+              <joint name="hinge" type="hinge" axis="0 1 0" damping=".5"/>
+              <geom type="capsule" fromto="0 0 0 .2 0 0" size=".03"/>
+            </body>
+          </body>
+        </worldbody>
+        <actuator>
+          <position joint="hinge" kp="20" kv="2"/>
+        </actuator>
+      </mujoco>
+      """,
+      qvel_noise=0.5,
+      overrides={"opt.integrator": integrator, "opt.enableflags": EnableBit.INVDISCRETE, "opt.run_qacc_smooth": False},
+    )
+    mujoco.mj_inverse(mjm, mjd)
+
+    d.qLD.fill_(wp.inf)
+    d.qfrc_inverse.fill_(wp.inf)
+    mjw.inverse(m, d)
+
+    _assert_eq(d.qfrc_inverse.numpy()[0], mjd.qfrc_inverse, "qfrc_inverse")
 
 
 class DCMotorTest(parameterized.TestCase):
@@ -1176,6 +1619,9 @@ class DCMotorTest(parameterized.TestCase):
     """
     mjm, mjd, m, d = test_data.fixture(xml=xml)
 
+    with wp.ScopedCapture() as capture:
+      mjw.step(m, d)
+
     # Apply a time-varying velocity command
     for _ in range(10):
       t = d.time.numpy()[0]
@@ -1186,7 +1632,7 @@ class DCMotorTest(parameterized.TestCase):
       ctrl_np[0, 1] = ctrl_val
       wp.copy(d.ctrl, wp.array(ctrl_np, device=d.ctrl.device))
 
-      mjw.step(m, d)
+      wp.capture_launch(capture.graph)
 
     # Both actuators should integrate identical states
     np.testing.assert_allclose(d.act.numpy()[0, 0], d.act.numpy()[0, 1], atol=1e-5)
@@ -1286,8 +1732,11 @@ class DCMotorTest(parameterized.TestCase):
     ctrl_np[0, 0] = V
     wp.copy(d.ctrl, wp.array(ctrl_np, device=d.ctrl.device))
 
+    with wp.ScopedCapture() as capture:
+      mjw.step(m, d)
+
     # Step 1
-    mjw.step(m, d)
+    wp.capture_launch(capture.graph)
 
     R = 2.0
     P = V * V / R
@@ -1299,7 +1748,7 @@ class DCMotorTest(parameterized.TestCase):
     np.testing.assert_allclose(act_actual, dT1, atol=1e-4)
 
     # Step 2
-    mjw.step(m, d)
+    wp.capture_launch(capture.graph)
     RT = 10.0
     dT2 = dT1 + h * (P - dT1 / RT) / C
 
@@ -1310,7 +1759,7 @@ class DCMotorTest(parameterized.TestCase):
     ctrl_np[0, 0] = 0.0
     wp.copy(d.ctrl, wp.array(ctrl_np, device=d.ctrl.device))
 
-    mjw.step(m, d)
+    wp.capture_launch(capture.graph)
     dT3 = dT2 + h * (0.0 - dT2 / RT) / C
 
     act_actual = d.act.numpy()[0, adr]
@@ -2011,9 +2460,11 @@ class DCMotorTest(parameterized.TestCase):
     mjm_warp.opt.integrator = mujoco.mjtIntegrator.mjINT_IMPLICIT
     m = mjw.put_model(mjm_warp)
     d = mjw.put_data(mjm_warp, mujoco.MjData(mjm_warp))
-    d.qvel = wp.array(qvel0.reshape(1, -1), dtype=float)
-    for _ in range(5):
+    d.qvel.assign(qvel0.reshape(1, -1))
+    with wp.ScopedCapture() as capture:
       mjw.step(m, d)
+    for _ in range(5):
+      wp.capture_launch(capture.graph)
     energy_implicit_warp = d.energy.numpy()[0].sum()
 
     # Initial energy
@@ -2047,11 +2498,1190 @@ class DCMotorTest(parameterized.TestCase):
     """
     mjm, mjd, m, d = test_data.fixture(xml=xml, overrides={"opt.cone": cone})
 
-    for _ in range(10):
-      mujoco.mj_step(mjm, mjd)
+    with wp.ScopedCapture() as capture:
       mjw.step(m, d)
 
+    for _ in range(10):
+      mujoco.mj_step(mjm, mjd)
+      wp.capture_launch(capture.graph)
+
     np.testing.assert_allclose(d.qvel.numpy()[0], mjd.qvel, atol=1e-3, rtol=1e-3)
+
+  def test_run_rne_postconstraint(self):
+    """Tests run_rne_postconstraint option in forward and step2."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <body name="body0" pos="0 0 1">
+            <freejoint/>
+            <geom type="sphere" size=".1" mass="1"/>
+            <site name="site0"/>
+          </body>
+        </worldbody>
+        <sensor>
+          <accelerometer site="site0"/>
+        </sensor>
+      </mujoco>
+      """,
+      overrides={"opt.disableflags": DisableBit.SENSOR, "opt.run_rne_postconstraint": True},
+    )
+    self.assertTrue(m.opt.run_rne_postconstraint)
+    mujoco.mj_forward(mjm, mjd)
+    mujoco.mj_rnePostConstraint(mjm, mjd)
+
+    # 1. run_rne_postconstraint=True: RNE runs in forward and step2, sensors skipped
+    d.cacc.fill_(wp.inf)
+    d.cfrc_int.fill_(wp.inf)
+    d.cfrc_ext.fill_(wp.inf)
+    mjw.forward(m, d)
+
+    _assert_eq(d.cacc.numpy()[0], mjd.cacc, "cacc")
+    _assert_eq(d.cfrc_int.numpy()[0], mjd.cfrc_int, "cfrc_int")
+    _assert_eq(d.cfrc_ext.numpy()[0], mjd.cfrc_ext, "cfrc_ext")
+    self.assertFalse(d.sensordata.numpy().any(), "Sensors should not be computed when disabled")
+
+    # Verify step2 also runs RNE
+    d.cacc.fill_(wp.inf)
+    mjw.step2(m, d)
+    _assert_eq(d.cacc.numpy()[0], mjd.cacc, "step2 cacc")
+
+    # 2. run_rne_postconstraint=False: RNE skipped when sensors disabled
+    m.opt.run_rne_postconstraint = False
+    d.cfrc_ext.fill_(wp.inf)
+    mjw.forward(m, d)
+    self.assertTrue(
+      np.isinf(d.cfrc_ext.numpy()[0]).all(), "cfrc_ext should remain inf when RNE is not requested and sensors disabled"
+    )
+
+
+class DiscreteIntegratorTest(parameterized.TestCase):
+  @parameterized.parameters(1, 2)
+  def test_discrete_dissipation_analytic(self, nworld):
+    """On an undamped oscillator, discrete dissipates at the analytic rate.
+
+    Ported from MuJoCo C engine_forward_test.cc DiscreteDissipationAnalytic.
+    Step map eigenvalues satisfy |lambda|^2 = 1 / (1 + (h*omega)^2).
+    """
+    _, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option timestep="0.01" gravity="0 0 0" integrator="discrete">
+          <flag energy="enable"/>
+        </option>
+        <worldbody>
+          <body>
+            <joint name="slide" type="slide" axis="1 0 0" stiffness="1000"/>
+            <geom type="sphere" size=".1" mass="1"/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=nworld,
+    )
+
+    qpos = np.full((nworld, 1), 1.0, dtype=np.float32)
+    if nworld == 2:
+      qpos[1, 0] = 1.5
+    d.qpos.assign(qpos)
+
+    nstep = 20
+    h = 0.01
+    k = 1000.0
+    homega2 = h * h * k
+
+    d.qacc.fill_(wp.inf)
+    mjw.forward(m, d)
+    energy_0 = d.energy.numpy()[:, 0] + d.energy.numpy()[:, 1]
+
+    with wp.ScopedCapture() as capture:
+      mjw.step(m, d)
+
+    for _ in range(nstep):
+      wp.capture_launch(capture.graph)
+
+    d.qacc.fill_(wp.inf)
+    mjw.forward(m, d)
+    energy_n = d.energy.numpy()[:, 0] + d.energy.numpy()[:, 1]
+    measured = energy_n / energy_0
+    predicted = (1.0 + homega2) ** (-nstep)
+
+    for w in range(nworld):
+      self.assertLess(measured[w], 0.2)
+      self.assertGreater(measured[w] / predicted, 0.8)
+      self.assertLess(measured[w] / predicted, 1.25)
+
+    if nworld == 2:
+      self.assertFalse(np.allclose(energy_n[0], energy_n[1]))
+
+  @parameterized.parameters(1, 2)
+  def test_discrete_stability_envelope(self, nworld):
+    """Beyond the explicit stability bound (h*omega = 3 > 2), discrete remains stable.
+
+    Ported from MuJoCo C engine_forward_test.cc IntegratorStabilityEnvelope.
+    """
+    _, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option timestep="0.01" gravity="0 0 0" integrator="discrete"/>
+        <worldbody>
+          <body>
+            <joint name="slide" type="slide" axis="1 0 0" stiffness="9e4"/>
+            <geom type="sphere" size=".1" mass="1"/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=nworld,
+    )
+
+    qpos = np.full((nworld, 1), 0.5, dtype=np.float32)
+    if nworld == 2:
+      qpos[1, 0] = 0.8
+    d.qpos.assign(qpos)
+
+    with wp.ScopedCapture() as capture:
+      mjw.step(m, d)
+
+    # 20 steps at h*omega = 3 (explicit Euler explodes, discrete decays)
+    for _ in range(20):
+      wp.capture_launch(capture.graph)
+
+    qpos_final = d.qpos.numpy()
+    qvel_final = d.qvel.numpy()
+    for w in range(nworld):
+      self.assertFalse(np.isnan(qpos_final[w, 0]))
+      self.assertFalse(np.isnan(qvel_final[w, 0]))
+      self.assertLess(abs(float(qpos_final[w, 0])), 0.5)
+
+  @parameterized.parameters(1, 2)
+  def test_discrete_pendulum_step1_step2_equivalence(self, nworld):
+    """Test step vs step1 + step2 equivalence for discrete integrator."""
+    _, _, m1, d1 = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option timestep="0.005" integrator="discrete"/>
+        <worldbody>
+          <body>
+            <joint name="hinge" type="hinge" axis="0 1 0" damping="2" stiffness="50"/>
+            <geom type="capsule" size=".02" fromto="0 0 0 .5 0 0" mass="1"/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=nworld,
+    )
+    _, _, m2, d2 = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option timestep="0.005" integrator="discrete"/>
+        <worldbody>
+          <body>
+            <joint name="hinge" type="hinge" axis="0 1 0" damping="2" stiffness="50"/>
+            <geom type="capsule" size=".02" fromto="0 0 0 .5 0 0" mass="1"/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=nworld,
+    )
+
+    qvel = np.full((nworld, 1), 2.0, dtype=np.float32)
+    if nworld == 2:
+      qvel[1, 0] = -1.5
+    d1.qvel.assign(qvel)
+    d2.qvel.assign(qvel)
+
+    with wp.ScopedCapture() as capture1:
+      mjw.step(m1, d1)
+    with wp.ScopedCapture() as capture2:
+      mjw.step1(m2, d2)
+      mjw.step2(m2, d2)
+
+    for _ in range(20):
+      wp.capture_launch(capture1.graph)
+      wp.capture_launch(capture2.graph)
+
+    np.testing.assert_allclose(d1.qpos.numpy(), d2.qpos.numpy(), atol=1e-5)
+    np.testing.assert_allclose(d1.qvel.numpy(), d2.qvel.numpy(), atol=1e-5)
+    if nworld == 2:
+      self.assertFalse(np.allclose(d1.qpos.numpy()[0], d1.qpos.numpy()[1]))
+
+  @parameterized.product(
+    nworld=(1, 2),
+    solver=(SolverType.CG, SolverType.NEWTON),
+  )
+  def test_discrete_tendon_spring(self, nworld, solver):
+    """Test discrete integrator with tendon stiffness, damping, and contact under CG and Newton."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option timestep="0.005" integrator="discrete"/>
+        <worldbody>
+          <geom type="plane" size="2 2 0.1"/>
+          <body pos="0 0 0.095">
+            <joint name="slide1" type="slide" axis="1 0 0"/>
+            <geom type="sphere" size="0.1" mass="1"/>
+            <site name="s1" pos="0 0 0"/>
+          </body>
+          <body pos="0.5 0 0.095">
+            <joint name="slide2" type="slide" axis="1 0 0"/>
+            <geom type="sphere" size="0.1" mass="1"/>
+            <site name="s2" pos="0 0 0"/>
+          </body>
+        </worldbody>
+        <tendon>
+          <spatial name="tendon" stiffness="100" damping="5" springlength="0.5">
+            <site site="s1"/>
+            <site site="s2"/>
+          </spatial>
+        </tendon>
+      </mujoco>
+      """,
+      nworld=nworld,
+      overrides={"opt.solver": solver},
+    )
+
+    qpos = np.zeros((nworld, 2), dtype=np.float32)
+    qpos[:, 1] = 0.2
+    mjds = [mjd]
+    if nworld == 2:
+      qpos[1, 1] = 0.3
+      mjd1 = mujoco.MjData(mjm)
+      mjd1.qpos[:] = qpos[1]
+      mjds.append(mjd1)
+    mjd.qpos[:] = qpos[0]
+    d.qpos.assign(qpos)
+    d.qacc.fill_(wp.inf)
+
+    with wp.ScopedCapture() as capture:
+      mjw.step(m, d)
+
+    for _ in range(10):
+      for w in range(nworld):
+        mujoco.mj_step(mjm, mjds[w])
+      wp.capture_launch(capture.graph)
+
+    final_qpos = d.qpos.numpy()
+    final_qvel = d.qvel.numpy()
+    for w in range(nworld):
+      np.testing.assert_allclose(final_qpos[w], mjds[w].qpos, atol=1e-4, rtol=1e-4)
+      np.testing.assert_allclose(final_qvel[w], mjds[w].qvel, atol=1e-3, rtol=1e-3)
+    if nworld == 2:
+      self.assertFalse(np.allclose(final_qpos[0], final_qpos[1]))
+
+  @parameterized.product(
+    nworld=(1, 2),
+    elastic2d=("both", "bend"),
+  )
+  def test_discrete_flex_simulation(self, nworld, elastic2d):
+    """Verifies that discrete simulation with a 2D flex sheet matches C MuJoCo across worlds."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml=f"""
+      <mujoco>
+        <option solver="CG" integrator="discrete"/>
+        <worldbody>
+          <flexcomp name="cloth" type="grid" count="4 4 1" spacing="0.05 0.05 0.05"
+                    radius=".005" dim="2" mass="0.5" pos="0 0 1" dof="full">
+            <contact selfcollide="none" contype="0" conaffinity="0"/>
+            <elasticity young="1e3" poisson="0.2" damping="0.1" elastic2d="{elastic2d}" thickness="0.01"/>
+          </flexcomp>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=nworld,
+    )
+    self.assertGreater(m.nefmK, 0)
+
+    mjds = [mjd]
+    if nworld == 2:
+      mjd1 = mujoco.MjData(mjm)
+      qpos = d.qpos.numpy()
+      qpos[1] += 0.05
+      d.qpos.assign(qpos)
+      mjd1.qpos[:] = qpos[1]
+      mjds.append(mjd1)
+
+    with wp.ScopedCapture() as capture:
+      mjw.step(m, d)
+
+    for _ in range(20):
+      for w in range(nworld):
+        mujoco.mj_step(mjm, mjds[w])
+      d.qacc.fill_(wp.inf)
+      wp.capture_launch(capture.graph)
+
+    qpos = d.qpos.numpy()
+    qvel = d.qvel.numpy()
+    for w in range(nworld):
+      np.testing.assert_allclose(qpos[w], mjds[w].qpos, atol=1e-3, rtol=1e-3)
+      np.testing.assert_allclose(qvel[w], mjds[w].qvel, atol=1e-2, rtol=1e-2)
+
+    if nworld == 2:
+      self.assertFalse(np.allclose(qpos[0], qpos[1]))
+
+  def test_discrete_flex_graph_capture(self):
+    """Verifies that discrete integrator with flex is compatible with graph capture."""
+    _, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option solver="CG" integrator="discrete"/>
+        <worldbody>
+          <flexcomp name="cloth" type="grid" count="4 4 1" spacing="0.05 0.05 0.05"
+                    radius=".005" dim="2" mass="0.5" pos="0 0 1" dof="full">
+            <contact selfcollide="none" contype="0" conaffinity="0"/>
+            <elasticity young="1e3" poisson="0.2" damping="0.1" elastic2d="both" thickness="0.01"/>
+          </flexcomp>
+        </worldbody>
+      </mujoco>
+      """,
+    )
+
+    # Warmup
+    mjw.step(m, d)
+
+    with wp.ScopedCapture() as capture:
+      mjw.step(m, d)
+
+    wp.capture_launch(capture.graph)
+    qpos = d.qpos.numpy()[0]
+    self.assertFalse(np.isnan(qpos).any())
+
+  @parameterized.parameters("CG", "Newton")
+  def test_discrete_flex_passive_contact_graph_capture(self, solver):
+    """Discrete integrator with passive flex contacts is compatible with graph capture."""
+    _, _, m, d = test_data.fixture(
+      xml=f"""
+      <mujoco>
+        <option solver="{solver}" integrator="discrete"/>
+        <worldbody>
+          <geom type="plane" size="1 1 0.1"/>
+          <flexcomp name="cloth" type="grid" count="3 3 1" spacing="0.05 0.05 0.05" pos="0 0 0.01"
+                    radius="0.02" dim="2" mass="0.5">
+            <contact passive="true" selfcollide="none"/>
+            <elasticity young="1e3" damping="0.1"/>
+          </flexcomp>
+        </worldbody>
+      </mujoco>
+      """,
+    )
+    self.assertTrue(m.has_flex_passive)
+
+    # Warmup
+    mjw.step(m, d)
+
+    with wp.ScopedCapture() as capture:
+      mjw.step(m, d)
+
+    wp.capture_launch(capture.graph)
+    self.assertTrue(np.isfinite(d.qpos.numpy()).all())
+
+  @parameterized.parameters(1, 2)
+  def test_discrete_contact_coupling_joint_damping(self, nworld):
+    """Under discrete, contact solve and joint damper share metric solve, avoiding split error."""
+    mjm, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option timestep="0.01" integrator="discrete" solver="CG" tolerance="1e-14"/>
+        <worldbody>
+          <geom type="plane" size="1 1 .1" condim="1"/>
+          <body pos="0 0 0.099">
+            <joint name="press" type="slide" axis="0 0 1" stiffness="400" springref="-0.05" damping="300"/>
+            <geom type="sphere" size="0.1" mass="1" condim="1"/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=nworld,
+    )
+
+    def ref_endpoint_cpu(integrator, h):
+      mjm.opt.integrator = int(integrator)
+      mjm.opt.timestep = h
+      nstep = int(round(0.1 / h))
+      qpos_out = np.zeros((nworld, 1), dtype=np.float32)
+      qvel_out = np.zeros((nworld, 1), dtype=np.float32)
+      for w in range(nworld):
+        mjd_w = mujoco.MjData(mjm)
+        mjd_w.qvel[0] = -0.2 if w == 0 else -0.15
+        for _ in range(nstep):
+          mujoco.mj_step(mjm, mjd_w)
+        qpos_out[w, 0] = mjd_w.qpos[0]
+        qvel_out[w, 0] = mjd_w.qvel[0]
+      return qpos_out, qvel_out
+
+    def endpoint(integrator, h):
+      m.opt.integrator = integrator
+      m.opt.timestep.fill_(h)
+      d.qpos.zero_()
+      qvel = np.full((nworld, 1), -0.2, dtype=np.float32)
+      if nworld == 2:
+        qvel[1, 0] = -0.15
+      d.qvel.assign(qvel)
+      d.qacc.fill_(wp.inf)
+      nstep = int(round(0.1 / h))
+      with wp.ScopedCapture() as capture:
+        mjw.step(m, d)
+      for _ in range(nstep):
+        wp.capture_launch(capture.graph)
+      return d.qpos.numpy().copy(), d.qvel.numpy().copy()
+
+    ref_qpos, ref_qvel = ref_endpoint_cpu(IntegratorType.IMPLICITFAST, 1e-4)
+    ref2_qpos, ref2_qvel = ref_endpoint_cpu(IntegratorType.DISCRETE, 1e-4)
+    for w in range(nworld):
+      dref = abs(float(ref2_qpos[w, 0] - ref_qpos[w, 0])) + abs(float(ref2_qvel[w, 0] - ref_qvel[w, 0]))
+      self.assertLess(dref, 1e-3)
+
+    disc_qpos, disc_qvel = endpoint(IntegratorType.DISCRETE, 0.01)
+    fast_qpos, fast_qvel = endpoint(IntegratorType.IMPLICITFAST, 0.01)
+    for w in range(nworld):
+      dref = abs(float(ref2_qpos[w, 0] - ref_qpos[w, 0])) + abs(float(ref2_qvel[w, 0] - ref_qvel[w, 0]))
+      err_disc = abs(float(disc_qpos[w, 0] - ref_qpos[w, 0])) + abs(float(disc_qvel[w, 0] - ref_qvel[w, 0]))
+      err_fast = abs(float(fast_qpos[w, 0] - ref_qpos[w, 0])) + abs(float(fast_qvel[w, 0] - ref_qvel[w, 0]))
+      self.assertGreater(err_fast, 5.0 * max(err_disc, dref))
+
+    if nworld == 2:
+      self.assertFalse(np.allclose(disc_qpos[0], disc_qpos[1]))
+
+  @parameterized.parameters(1, 2)
+  def test_discrete_stiff_leg_press(self, nworld):
+    """Discrete integrator settles quietly when stiff leg springs are far beyond explicit limit."""
+    _, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option timestep="0.02" integrator="discrete"/>
+        <worldbody>
+          <geom name="floor" type="plane" size="2 2 .1"/>
+          <body name="upper" pos="0 0 0.5532">
+            <joint name="slide" type="slide" axis="0 0 1" stiffness="10000" springref="-0.05" damping="50"/>
+            <joint name="hip" type="hinge" axis="0 -1 0" stiffness="4000" damping="12"/>
+            <geom name="upper" type="capsule" size="0.04" fromto="0 0 0 0.3064 0 -0.2571"/>
+            <body name="lower" pos="0.3064 0 -0.2571">
+              <joint name="knee" type="hinge" axis="0 -1 0" stiffness="4000" damping="12"/>
+              <geom name="lower" type="capsule" size="0.04" fromto="0 0 0 -0.3064 0 -0.2571"/>
+            </body>
+          </body>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=nworld,
+    )
+    d.qpos.zero_()
+    qvel = np.tile(np.array([-2.0, 0.0, 0.0], dtype=np.float32), (nworld, 1))
+    if nworld == 2:
+      qvel[1] = np.array([-1.5, 0.5, -0.2], dtype=np.float32)
+    d.qvel.assign(qvel)
+    d.qacc.fill_(wp.inf)
+
+    with wp.ScopedCapture() as capture:
+      mjw.step(m, d)
+
+    for _ in range(20):
+      wp.capture_launch(capture.graph)
+
+    final_qpos = d.qpos.numpy()
+    final_qvel = d.qvel.numpy()
+    for w in range(nworld):
+      self.assertFalse(np.isnan(final_qpos[w]).any())
+      self.assertFalse(np.isnan(final_qvel[w]).any())
+      self.assertLess(np.linalg.norm(final_qvel[w]), 1.0)
+
+    if nworld == 2:
+      self.assertFalse(np.allclose(final_qpos[0], final_qpos[1]))
+
+  @parameterized.parameters(1, 2)
+  def test_discrete_gyro_matches_implicitfast(self, nworld):
+    """Standalone free body tumbling gyroscopically matches implicitfast under discrete."""
+    _, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option timestep="0.005" solver="CG" tolerance="1e-14" gravity="0 0 0"/>
+        <worldbody>
+          <body pos="0 0 1">
+            <freejoint/>
+            <geom type="box" size=".3 .1 .02" mass="1"/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=nworld,
+    )
+
+    def step_with(integrator):
+      m.opt.integrator = integrator
+      d.qpos.zero_()
+      qvel = np.tile(np.array([0.0, 0.0, 0.0, 1.0, 6.0, 0.5], dtype=np.float32), (nworld, 1))
+      if nworld == 2:
+        qvel[1] = np.array([0.0, 0.0, 0.0, 1.5, -4.0, 1.0], dtype=np.float32)
+      d.qvel = wp.array(qvel, dtype=float, device=d.qvel.device)
+      d.qacc.fill_(wp.inf)
+      mjw.step(m, d)
+      return d.qvel.numpy().copy()
+
+    v_fast = step_with(IntegratorType.IMPLICITFAST)
+    v_discrete = step_with(IntegratorType.DISCRETE)
+
+    np.testing.assert_allclose(v_discrete, v_fast, atol=2e-5)
+    if nworld == 2:
+      self.assertFalse(np.allclose(v_discrete[0], v_discrete[1]))
+
+  @parameterized.parameters(1, 2)
+  def test_discrete_gyro_with_unrelated_contacts(self, nworld):
+    """Tumbling free body is unaffected by unrelated contacts elsewhere in the scene."""
+    _, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option timestep="0.005" solver="CG" tolerance="1e-14" gravity="0 0 0"/>
+        <worldbody>
+          <geom type="plane" size="2 2 .1"/>
+          <body pos="1 0 .049">
+            <freejoint/>
+            <geom type="sphere" size=".05" mass="1" condim="1"/>
+          </body>
+          <body pos="0 0 1">
+            <freejoint/>
+            <geom type="box" size=".3 .1 .02" mass="1"/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=nworld,
+    )
+
+    def step_with(integrator):
+      m.opt.integrator = integrator
+      d.qpos.zero_()
+      qpos = d.qpos.numpy()
+      qpos[:, 2] = 0.049
+      qpos[:, 9] = 1.0
+      if nworld == 2:
+        qpos[1, 9] = 1.2
+      d.qpos = wp.array(qpos, dtype=float, device=d.qpos.device)
+      qvel = np.tile(np.array([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 6.0, 0.5], dtype=np.float32), (nworld, 1))
+      if nworld == 2:
+        qvel[1, 6:] = np.array([0.0, 0.0, 0.0, 1.5, -4.0, 1.0], dtype=np.float32)
+      d.qvel = wp.array(qvel, dtype=float, device=d.qvel.device)
+      d.qacc.fill_(wp.inf)
+      mjw.step(m, d)
+      return d.qvel.numpy().copy()
+
+    v_fast = step_with(IntegratorType.IMPLICITFAST)
+    v_discrete = step_with(IntegratorType.DISCRETE)
+
+    # Free body (dofs 6..11) matches implicitfast tightly
+    np.testing.assert_allclose(v_discrete[:, 6:], v_fast[:, 6:], atol=2e-5)
+    if nworld == 2:
+      self.assertFalse(np.allclose(v_discrete[0], v_discrete[1]))
+
+  @parameterized.parameters(1, 2)
+  def test_discrete_actuator_kv_matches_implicitfast(self, nworld):
+    """Velocity-gain actuator with no stiffness: discrete matches implicitfast."""
+    _, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option timestep="0.01" solver="CG" tolerance="1e-14"/>
+        <worldbody>
+          <body pos="0 0 1">
+            <joint name="hinge" type="hinge" axis="0 1 0" damping="1"/>
+            <geom type="capsule" size=".02" fromto="0 0 0 .5 0 0" mass="1"/>
+          </body>
+        </worldbody>
+        <actuator><velocity joint="hinge" kv="20"/></actuator>
+      </mujoco>
+      """,
+      nworld=nworld,
+    )
+
+    def step_with(integrator):
+      m.opt.integrator = integrator
+      d.qpos.zero_()
+      qvel = np.full((nworld, 1), 2.0, dtype=np.float32)
+      ctrl = np.full((nworld, 1), 0.7, dtype=np.float32)
+      if nworld == 2:
+        qvel[1, 0] = 3.5
+        ctrl[1, 0] = -0.4
+      d.qvel = wp.array(qvel, dtype=float, device=d.qvel.device)
+      d.ctrl = wp.array(ctrl, dtype=float, device=d.ctrl.device)
+      d.qacc.fill_(wp.inf)
+      mjw.step(m, d)
+      return d.qvel.numpy().copy()
+
+    v_fast = step_with(IntegratorType.IMPLICITFAST)
+    v_discrete = step_with(IntegratorType.DISCRETE)
+    np.testing.assert_allclose(v_discrete, v_fast, atol=2e-5)
+    if nworld == 2:
+      self.assertFalse(np.allclose(v_discrete[0], v_discrete[1]))
+
+  @parameterized.parameters(1, 2)
+  def test_discrete_wrong_sign_gain_clamped(self, nworld):
+    """Destabilizing wrong-sign position gain is clamped out of the metric."""
+    _, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option timestep="0.01" solver="CG" tolerance="1e-14"/>
+        <worldbody>
+          <body pos="0 0 1">
+            <joint name="hinge" type="hinge" axis="0 1 0" damping="2"/>
+            <geom type="capsule" size=".02" fromto="0 0 0 .5 0 0" mass="1"/>
+          </body>
+        </worldbody>
+        <actuator><general joint="hinge" gaintype="fixed" gainprm="1" biastype="affine" biasprm="0 50 0"/></actuator>
+      </mujoco>
+      """,
+      nworld=nworld,
+    )
+
+    def step_with(integrator):
+      m.opt.integrator = integrator
+      qpos = np.full((nworld, 1), 0.3, dtype=np.float32)
+      qvel = np.full((nworld, 1), -1.0, dtype=np.float32)
+      if nworld == 2:
+        qpos[1, 0] = 0.5
+        qvel[1, 0] = 1.2
+      d.qpos = wp.array(qpos, dtype=float, device=d.qpos.device)
+      d.qvel = wp.array(qvel, dtype=float, device=d.qvel.device)
+      d.qacc.fill_(wp.inf)
+      mjw.step(m, d)
+      return d.qvel.numpy().copy()
+
+    v_fast = step_with(IntegratorType.IMPLICITFAST)
+    v_discrete = step_with(IntegratorType.DISCRETE)
+    np.testing.assert_allclose(v_discrete, v_fast, atol=2e-5)
+    if nworld == 2:
+      self.assertFalse(np.allclose(v_discrete[0], v_discrete[1]))
+
+  @parameterized.parameters(1, 2)
+  def test_discrete_matches_implicit_damping_only(self, nworld):
+    """With damping only, Euler, implicitfast, and discrete compute the same velocity update."""
+    _, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option timestep="0.01" solver="CG" tolerance="1e-14"/>
+        <worldbody>
+          <body pos="0 0 1">
+            <joint name="hinge" type="hinge" axis="0 1 0" damping="3"/>
+            <geom type="capsule" size=".02" fromto="0 0 0 .5 0 0" mass="1"/>
+            <body pos=".5 0 0">
+              <joint name="ball" type="ball" damping="1.5"/>
+              <geom type="capsule" size=".02" fromto="0 0 0 .3 0 0" mass=".5"/>
+            </body>
+          </body>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=nworld,
+    )
+
+    def step_with(integrator):
+      m.opt.integrator = integrator
+      d.qpos.zero_()
+      qvel = np.tile(np.array([2.0, 0.5, -0.3, 0.7], dtype=np.float32), (nworld, 1))
+      if nworld == 2:
+        qvel[1] = np.array([1.2, -0.4, 0.6, -1.0], dtype=np.float32)
+      d.qvel = wp.array(qvel, dtype=float, device=d.qvel.device)
+      d.qacc.fill_(wp.inf)
+      mjw.step(m, d)
+      return d.qvel.numpy().copy()
+
+    v_euler = step_with(IntegratorType.EULER)
+    v_fast = step_with(IntegratorType.IMPLICITFAST)
+    v_discrete = step_with(IntegratorType.DISCRETE)
+
+    np.testing.assert_allclose(v_discrete, v_euler, atol=1e-5)
+    np.testing.assert_allclose(v_discrete, v_fast, atol=1e-5)
+    if nworld == 2:
+      self.assertFalse(np.allclose(v_discrete[0], v_discrete[1]))
+
+  @parameterized.parameters(1, 2)
+  def test_discrete_stiff_spring_stable(self, nworld):
+    """Discrete integrator is stable with stiff spring and dissipates toward reference."""
+    _, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option timestep="0.01" integrator="discrete" solver="CG" gravity="0 0 0"/>
+        <worldbody>
+          <body pos="0 0 1">
+            <joint name="hinge" type="hinge" axis="0 1 0" stiffness="1e5"/>
+            <geom type="capsule" size=".02" fromto="0 0 0 .5 0 0" mass="1"/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=nworld,
+    )
+    qpos = np.full((nworld, 1), 0.5, dtype=np.float32)
+    if nworld == 2:
+      qpos[1, 0] = 0.8
+    d.qpos.assign(qpos)
+    d.qvel.zero_()
+    d.qacc.fill_(wp.inf)
+
+    with wp.ScopedCapture() as capture:
+      mjw.step(m, d)
+
+    for step in range(20):
+      wp.capture_launch(capture.graph)
+      if step == 1 and nworld == 2:
+        qpos_step1 = d.qpos.numpy()
+        self.assertFalse(np.allclose(qpos_step1[0], qpos_step1[1]))
+
+    final_qpos = d.qpos.numpy()
+    final_qvel = d.qvel.numpy()
+    for w in range(nworld):
+      self.assertLess(abs(float(final_qpos[w, 0])), 0.05)
+      self.assertLess(abs(float(final_qvel[w, 0])), 10.0)
+      self.assertFalse(np.isnan(final_qpos[w, 0]))
+
+  @parameterized.parameters(1, 2)
+  def test_discrete_qacc_is_step_map(self, nworld):
+    """Under discrete integrator, stepping advances velocity by exactly h * qacc."""
+    _, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option timestep="0.005" integrator="discrete" solver="CG"/>
+        <worldbody>
+          <geom type="plane" size="1 1 .1"/>
+          <body pos="0 0 .049">
+            <freejoint/>
+            <geom type="sphere" size=".05" mass="1"/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=nworld,
+    )
+    if nworld == 2:
+      qpos = d.qpos.numpy()
+      qpos[1, 2] += 0.05
+      d.qpos.assign(qpos)
+
+    with wp.ScopedCapture() as capture:
+      mjw.step(m, d)
+
+    h = float(m.opt.timestep.numpy()[0])
+    for _ in range(10):
+      qvel_before = d.qvel.numpy().copy()
+      d.qacc.fill_(wp.inf)
+      wp.capture_launch(capture.graph)
+      qvel_after = d.qvel.numpy()
+      qacc = d.qacc.numpy()
+      np.testing.assert_allclose(qvel_after, qvel_before + h * qacc, atol=1e-5)
+    if nworld == 2:
+      self.assertFalse(np.allclose(d.qpos.numpy()[0], d.qpos.numpy()[1]))
+
+  @parameterized.parameters(1, 2)
+  def test_discrete_fluid_metric(self, nworld):
+    """Discrete integrator with fluid drag verifies efm_fluid and solver consistency."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option timestep="0.01" integrator="discrete" solver="CG" tolerance="1e-14" iterations="1000"
+                density="1.2" viscosity="0.02"/>
+        <worldbody>
+          <geom type="plane" size="1 1 .1"/>
+          <body pos="0 0 0.049">
+            <joint name="slidex" type="slide" axis="1 0 0"/>
+            <joint name="slidez" type="slide" axis="0 0 1" stiffness="500" damping="2" springref="-0.1"/>
+            <geom type="sphere" size="0.05" mass="1"/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=nworld,
+    )
+    qvel = np.zeros((nworld, m.nv), dtype=np.float32)
+    qvel[:, 0] = 0.5
+    mjds = [mjd]
+    if nworld == 2:
+      qvel[1, 0] = 0.8
+      mjd1 = mujoco.MjData(mjm)
+      mjd1.qvel[:] = qvel[1]
+      mjds.append(mjd1)
+    d.qvel = wp.array(qvel, dtype=float, device=d.qvel.device)
+    mjd.qvel[:] = qvel[0]
+
+    # Pre-fill tested arrays
+    d.efm_fluid.fill_(wp.inf)
+    d.qacc.fill_(wp.inf)
+    # Run forward in MuJoCo Warp
+    mjw.forward(m, d)
+
+    self.assertGreater(int(d.nacon.numpy()[0]), 0)
+    efm_fluid = d.efm_fluid.numpy()
+    self.assertGreater(np.linalg.norm(efm_fluid[0]), 0.0)
+
+    # Run forward in MuJoCo C and verify per-world parity
+    for w in range(nworld):
+      mujoco.mj_forward(mjm, mjds[w])
+      if mjds[w].efm_fluid is not None:
+        np.testing.assert_allclose(efm_fluid[w], mjds[w].efm_fluid, atol=1e-5, rtol=1e-4)
+      np.testing.assert_allclose(d.qacc.numpy()[w], mjds[w].qacc, atol=0.05, rtol=0.005)
+
+    if nworld == 2:
+      self.assertFalse(np.allclose(efm_fluid[0], efm_fluid[1]))
+
+  @parameterized.parameters(1, 2)
+  def test_discrete_free_gyro_weak_constraint(self, nworld):
+    """Verifies discrete free-body gyro solve skips bodies touched by weak constraints."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option integrator="discrete" timestep="0.01">
+          <flag gravity="disable"/>
+        </option>
+        <worldbody>
+          <body name="b0" pos="0 0 0.5">
+            <freejoint/>
+            <geom type="box" size="0.1 0.2 0.3" mass="1.0"/>
+          </body>
+        </worldbody>
+        <equality>
+          <weld body1="b0" solref="1000 1" solimp="1e-8 1e-8 0.0001"/>
+        </equality>
+        <keyframe>
+          <key qpos="1e-8 0 0.5 1 0 0 0" qvel="0 0 0 1e-3 1e-3 1e-3"/>
+        </keyframe>
+      </mujoco>
+      """,
+      keyframe=0,
+      nworld=nworld,
+    )
+    if nworld == 2:
+      qvel_np = d.qvel.numpy()
+      qvel_np[1, 3:] = [2e-3, -1e-3, 1.5e-3]
+      d.qvel = wp.array(qvel_np, dtype=float)
+
+    d.qacc.fill_(wp.inf)
+    mujoco.mj_forward(mjm, mjd)
+    mjw.forward(m, d)
+
+    self.assertGreater(mjd.nefc, 0)
+    self.assertGreater(np.max(np.abs(mjd.qfrc_constraint)), 0.0)
+    self.assertLess(np.max(np.abs(mjd.qfrc_constraint)), 1e-4)
+    _assert_eq(d.qacc.numpy()[0], mjd.qacc, "qacc")
+    if nworld == 2:
+      self.assertFalse(np.allclose(d.qacc.numpy()[0], d.qacc.numpy()[1]))
+
+  @absltest.skipIf(
+    not util_pkg.check_version("mujoco>=3.14.1.dev990351372"),
+    "Requires MuJoCo >= 3.14.1.dev990351372",
+  )
+  def test_snh_requires_discrete_integrator(self):
+    """Verifies that 3D SNH flex requires integrator='discrete' in put_model and forward/step."""
+    spec = mujoco.MjSpec.from_string(
+      """
+      <mujoco>
+        <option integrator="discrete" timestep="0.005" gravity="0 0 0"/>
+        <worldbody>
+          <flexcomp name="tet" type="direct" dim="3" mass="1"
+                    point="0 0 0  1 0 0  0 1 0  0 0 1" element="0 1 2 3">
+            <contact contype="0" conaffinity="0" selfcollide="none"/>
+            <elasticity young="1000" poisson="0.3" damping="0.1"/>
+          </flexcomp>
+        </worldbody>
+      </mujoco>
+      """
+    )
+    spec.flexes[0].elastic3d = 1
+    mjm = spec.compile()
+    mjd = mujoco.MjData(mjm)
+    m = mjw.put_model(mjm)
+    d = mjw.put_data(mjm, mjd)
+
+    # Succeeds under DISCRETE
+    mjw.forward(m, d)
+    mjw.step(m, d)
+
+    non_discrete = (
+      IntegratorType.EULER,
+      IntegratorType.RK4,
+      IntegratorType.IMPLICIT,
+      IntegratorType.IMPLICITFAST,
+    )
+    for integrator in non_discrete:
+      mjm.opt.integrator = int(integrator)
+      with self.assertRaisesRegex(ValueError, "stable Neo-Hookean elasticity requires integrator='discrete'"):
+        mjw.put_model(mjm)
+
+      m.opt.integrator = int(integrator)
+      with self.assertRaisesRegex(ValueError, "stable Neo-Hookean elasticity requires integrator='discrete'"):
+        mjw.forward(m, d)
+      with self.assertRaisesRegex(ValueError, "stable Neo-Hookean elasticity requires integrator='discrete'"):
+        mjw.step(m, d)
+      with self.assertRaisesRegex(ValueError, "stable Neo-Hookean elasticity requires integrator='discrete'"):
+        mjw.step1(m, d)
+
+    # 3D StVK (elastic3d=0) succeeds under explicit integrators (EULER and RK4)
+    for integrator in (IntegratorType.EULER, IntegratorType.RK4):
+      _, _, m_stvk, d_stvk = test_data.fixture(
+        xml="""
+        <mujoco>
+          <option timestep="0.005" gravity="0 0 0"/>
+          <worldbody>
+            <flexcomp name="tet" type="direct" dim="3" mass="1"
+                      point="0 0 0  1 0 0  0 1 0  0 0 1" element="0 1 2 3">
+              <contact contype="0" conaffinity="0" selfcollide="none"/>
+              <elasticity young="1000" poisson="0.3" damping="0.1"/>
+            </flexcomp>
+          </worldbody>
+        </mujoco>
+        """,
+        overrides={"opt.integrator": integrator},
+      )
+      mjw.forward(m_stvk, d_stvk)
+
+  @absltest.skipIf(
+    not util_pkg.check_version("mujoco>=3.14.1.dev990351372"),
+    "Requires MuJoCo >= 3.14.1.dev990351372",
+  )
+  @parameterized.parameters(1, 2)
+  def test_discrete_snh_graph_capture(self, nworld):
+    """Verifies that discrete integrator with 3D SNH flex is compatible with graph capture."""
+    spec = mujoco.MjSpec.from_string(
+      """
+      <mujoco>
+        <option solver="CG" integrator="discrete" timestep="0.005"/>
+        <worldbody>
+          <flexcomp name="tet" type="direct" dim="3" mass="1"
+                    point="0 0 0  1 0 0  0 1 0  0 0 1" element="0 1 2 3">
+            <contact contype="0" conaffinity="0" selfcollide="none"/>
+            <elasticity young="1000" poisson="0.3" damping="0.1"/>
+            <pin id="0 1 2"/>
+          </flexcomp>
+        </worldbody>
+      </mujoco>
+      """
+    )
+    spec.flexes[0].elastic3d = 1
+    mjm = spec.compile()
+    mjd = mujoco.MjData(mjm)
+    m = mjw.put_model(mjm)
+    d = mjw.put_data(mjm, mjd, nworld=nworld)
+    if nworld == 2:
+      qpos = d.qpos.numpy()
+      qpos[1, 2] = -0.05
+      d.qpos.assign(qpos)
+
+    # Warmup
+    mjw.step(m, d)
+
+    with wp.ScopedCapture() as capture:
+      mjw.step(m, d)
+
+    wp.capture_launch(capture.graph)
+    qpos = d.qpos.numpy()
+    qvel = d.qvel.numpy()
+    self.assertTrue(np.all(np.isfinite(qpos)))
+    self.assertTrue(np.all(np.isfinite(qvel)))
+    if nworld == 2:
+      self.assertFalse(np.allclose(qpos[0], qpos[1]))
+
+
+class ActuatorDampingTest(parameterized.TestCase):
+  """Ports of MuJoCo C ActuatorDampingTest (engine_forward_test.cc)."""
+
+  @parameterized.named_parameters(
+    ("joint_damping", '<motor joint="jnt" gear="2" damping="3"/>', 'damping="12"', ""),
+    ("tendon_damping", '<motor tendon="ten" gear="2" damping="3"/>', "", 'damping="12"'),
+    ("armature", '<motor joint="jnt" gear="3" armature="0.5"/>', 'armature="4.5"', ""),
+    (
+      "multiple_damping",
+      '<motor joint="jnt" gear="3" damping="2"/><motor joint="jnt" gear="4" damping="1"/>',
+      'damping="34"',
+      "",
+    ),
+  )
+  def test_equivalent_model(self, actuator_spec, joint_spec, tendon_spec):
+    """Tests actuator damping and armature match the equivalent joint or tendon model."""
+    results = []
+    for joint, tendon, actuator in (("", "", actuator_spec), (joint_spec, tendon_spec, "")):
+      _, mjd, m, d = test_data.fixture(
+        xml=f"""
+        <mujoco>
+          <worldbody>
+            <body>
+              <joint name="jnt" type="slide" axis="0 0 1" {joint}/>
+              <geom size="1"/>
+            </body>
+          </worldbody>
+          <tendon>
+            <fixed name="ten" {tendon}>
+              <joint joint="jnt" coef="1"/>
+            </fixed>
+          </tendon>
+          <actuator>
+            {actuator}
+          </actuator>
+          <keyframe>
+            <key qvel="1"/>
+          </keyframe>
+        </mujoco>
+        """,
+        keyframe=0,
+      )
+      d.qfrc_passive.fill_(wp.inf)
+      d.qacc.fill_(wp.inf)
+      mjw.forward(m, d)
+      qfrc_passive = d.qfrc_passive.numpy()[0]
+      qacc = d.qacc.numpy()[0]
+      _assert_eq(qfrc_passive, mjd.qfrc_passive, "qfrc_passive")
+      _assert_eq(qacc, mjd.qacc, "qacc")
+      results.append((qfrc_passive, qacc))
+    _assert_eq(results[0][0], results[1][0], "qfrc_passive")
+    _assert_eq(results[0][1], results[1][1], "qacc")
+
+  @parameterized.product(
+    case=(
+      ('<motor joint="jnt" gear="2" damping="5"/>', 'damping="20"'),
+      ('<motor joint="jnt" gear="3" armature="2"/>', 'armature="18"'),
+    ),
+    integrator=(
+      IntegratorType.EULER,
+      IntegratorType.RK4,
+      IntegratorType.IMPLICIT,
+      IntegratorType.IMPLICITFAST,
+      IntegratorType.DISCRETE,
+    ),
+  )
+  def test_simulation_equivalence(self, case, integrator):
+    """Tests actuator damping and armature match the equivalent joint model over time."""
+    actuator_spec, joint_spec = case
+    results = []
+    for joint, actuator in (("", actuator_spec), (joint_spec, "")):
+      mjm, mjd, m, d = test_data.fixture(
+        xml=f"""
+        <mujoco>
+          <option gravity="0 0 -10"/>
+          <worldbody>
+            <body>
+              <joint name="jnt" type="slide" axis="0 0 1" {joint}/>
+              <geom size="1"/>
+            </body>
+          </worldbody>
+          <actuator>
+            {actuator}
+          </actuator>
+          <keyframe>
+            <key qvel="1"/>
+          </keyframe>
+        </mujoco>
+        """,
+        keyframe=0,
+        overrides={"opt.integrator": integrator},
+      )
+      for _ in range(20):
+        mujoco.mj_step(mjm, mjd)
+        mjw.step(m, d)
+      results.append((d.qpos.numpy()[0], d.qvel.numpy()[0]))
+      _assert_eq(results[-1][0], mjd.qpos, "qpos")
+      _assert_eq(results[-1][1], mjd.qvel, "qvel")
+    _assert_eq(results[0][0], results[1][0], "qpos")
+    _assert_eq(results[0][1], results[1][1], "qvel")
+
+  def test_damping_vs_kv_gear_scaling(self):
+    """Tests actuator damping and kv produce the same gear-scaled damping force."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option gravity="0 0 0" integrator="implicitfast"/>
+        <worldbody>
+          <body name="kv_body">
+            <joint name="jnt_kv" type="slide" axis="1 0 0"/>
+            <geom size="1"/>
+          </body>
+          <body name="damp_body" pos="5 0 0">
+            <joint name="jnt_damp" type="slide" axis="1 0 0"/>
+            <geom size="1"/>
+          </body>
+        </worldbody>
+        <actuator>
+          <position joint="jnt_kv" kp="0" kv="5" gear="3"/>
+          <position joint="jnt_damp" kp="0" damping="5" gear="3"/>
+        </actuator>
+        <keyframe>
+          <key qvel="1 1"/>
+        </keyframe>
+      </mujoco>
+      """,
+      keyframe=0,
+    )
+
+    d.qfrc_actuator.fill_(wp.inf)
+    d.qfrc_passive.fill_(wp.inf)
+    mjw.forward(m, d)
+
+    # kv force arrives via qfrc_actuator, damping via qfrc_passive: -5 * 3^2 * 1 = -45
+    qfrc_actuator = d.qfrc_actuator.numpy()[0]
+    qfrc_passive = d.qfrc_passive.numpy()[0]
+    _assert_eq(qfrc_actuator, mjd.qfrc_actuator, "qfrc_actuator")
+    _assert_eq(qfrc_passive, mjd.qfrc_passive, "qfrc_passive")
+    _assert_eq(qfrc_actuator[0], qfrc_passive[1], "kv vs damping")
+    _assert_eq(qfrc_passive[1], -45.0, "qfrc_passive")
+
+    # simulate and check trajectory equivalence
+    for _ in range(20):
+      mujoco.mj_step(mjm, mjd)
+      mjw.step(m, d)
+    qpos, qvel = d.qpos.numpy()[0], d.qvel.numpy()[0]
+    _assert_eq(qpos, mjd.qpos, "qpos")
+    _assert_eq(qvel, mjd.qvel, "qvel")
+    _assert_eq(qpos[0], qpos[1], "qpos kv vs damping")
+    _assert_eq(qvel[0], qvel[1], "qvel kv vs damping")
+
+  @parameterized.product(integrator=(IntegratorType.EULER, IntegratorType.IMPLICIT, IntegratorType.IMPLICITFAST), nworld=(1, 2))
+  def test_free_ball_joint(self, integrator, nworld):
+    """Tests actuator damping and armature on free and ball joints."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option gravity="0 0 0"/>
+        <worldbody>
+          <body>
+            <freejoint name="free"/>
+            <geom type="box" size=".1 .2 .3"/>
+          </body>
+          <body pos="1 0 0">
+            <joint name="ball" type="ball"/>
+            <geom type="capsule" size=".05" fromto="0 0 0 .3 0 0"/>
+          </body>
+        </worldbody>
+        <actuator>
+          <motor joint="free" gear="2 0 0 0 0 0" damping=".5 .1 .05" armature=".3"/>
+          <motor joint="ball" gear="1.5 0 0" damping=".4 0 .1" armature=".2"/>
+        </actuator>
+        <keyframe>
+          <key qvel="1 -.5 .3 2 -1 .5 .4 -.3 .2"/>
+        </keyframe>
+      </mujoco>
+      """,
+      keyframe=0,
+      nworld=nworld,
+      overrides={"opt.integrator": integrator},
+      batch_sizes={"actuator_damping": nworld, "actuator_armature": nworld},
+    )
+    damping = np.tile(mjm.actuator_damping, (nworld, 1))
+    armature = np.tile(mjm.actuator_armature, (nworld, 1))
+    if nworld == 2:
+      damping[1] *= 2.0
+      armature[1] *= 3.0
+    m.actuator_damping.assign(damping)
+    m.actuator_armature.assign(armature)
+
+    for _ in range(10):
+      mjw.step(m, d)
+    qpos, qvel = d.qpos.numpy(), d.qvel.numpy()
+
+    for world in range(nworld):
+      mjm.actuator_damping[:] = damping[world]
+      mjm.actuator_armature[:] = armature[world]
+      mujoco.mj_setConst(mjm, mjd)  # dof_M0 of simple bodies includes actuator armature
+      mujoco.mj_resetDataKeyframe(mjm, mjd, 0)
+      for _ in range(10):
+        mujoco.mj_step(mjm, mjd)
+      _assert_eq(qpos[world], mjd.qpos, f"qpos_world_{world}")
+      _assert_eq(qvel[world], mjd.qvel, f"qvel_world_{world}")
+    if nworld == 2:
+      self.assertFalse(np.allclose(qvel[0], qvel[1]))
 
 
 if __name__ == "__main__":

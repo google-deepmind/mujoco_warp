@@ -200,6 +200,51 @@ def quat_integrate(q: wp.quat, v: wp.vec3, dt: float) -> wp.quat:
 
 
 @wp.func
+def deriv_expmap(expmap: wp.vec3, vel: wp.vec3) -> wp.vec3:
+  """Time-derivative of expmap in quat = quat0 * exp(expmap).
+
+  Given the rotational velocity vel in the rotated frame, computes
+  vel + 1/2 expmap x vel + c expmap x (expmap x vel), with the Bortz
+  coefficient c = (1 - (x/2) cot(x/2)) / x^2, x = |expmap|.
+
+  expmap is first replaced with the equivalent rotation vector of angle in
+  (-pi, pi], since c is singular at multiples of 2*pi. Below x = 1.75, where
+  the closed form loses accuracy to cancellation, c is a minimax polynomial in
+  x^2; with the closed form above, the error is below 6 ulp on [-pi, pi].
+
+  Port of mju_derivExpmap (MuJoCo engine_util_spatial.c), using the
+  single-precision (mjUSESINGLE) coefficients of its bortzCoef.
+  """
+  r = expmap
+  xx = wp.dot(r, r)
+
+  # reduce the angle to (-pi, pi]
+  if xx > wp.static(wp.pi * wp.pi):
+    x = wp.sqrt(xx)
+    r = r * ((x - wp.static(2.0 * wp.pi) * wp.floor(x / wp.static(2.0 * wp.pi) + 0.5)) / x)
+    xx = wp.dot(r, r)
+
+  # Bortz coefficient: minimax polynomial (Horner form), or closed form
+  c = float(0.0)
+  if xx < 3.0625:
+    c = 1.26339661e-09
+    c = -1.64186869e-08 + xx * c
+    c = 8.78585737e-08 + xx * c
+    c = -2.48791736e-07 + xx * c
+    c = 4.23758962e-07 + xx * c
+    c = 4.57548566e-07 + xx * c
+    c = 3.32480922e-05 + xx * c
+    c = 0.00138884981 + xx * c
+    c = 0.0833333358 + xx * c
+  else:
+    x = wp.sqrt(xx)
+    c = (1.0 - 0.5 * x / wp.tan(0.5 * x)) / xx
+
+  rxv = wp.cross(r, vel)
+  return vel + 0.5 * rxv + c * wp.cross(r, rxv)
+
+
+@wp.func
 def orthogonals(a: wp.vec3):
   y = wp.vec3(0.0, 1.0, 0.0)
   z = wp.vec3(0.0, 0.0, 1.0)
@@ -269,7 +314,10 @@ def normalize_with_norm(x: Any):
 def closest_segment_point(a: wp.vec3, b: wp.vec3, pt: wp.vec3) -> wp.vec3:
   """Returns the closest point on the a-b line segment to a point pt."""
   ab = b - a
-  t = wp.dot(pt - a, ab) / (wp.dot(ab, ab) + 1e-6)
+  length_sq = wp.dot(ab, ab)
+  if length_sq == 0.0:
+    return a
+  t = wp.dot(pt - a, ab) / length_sq
   return a + wp.clamp(t, 0.0, 1.0) * ab
 
 
@@ -331,3 +379,100 @@ def upper_trid_index(n: int, i: int, j: int) -> int:
   if j < i:
     i, j = j, i
   return (i * (2 * n - i - 1)) // 2 + j
+
+
+@wp.func
+def free_bias_vel_blocks(
+  # In:
+  mass: float,
+  R: wp.mat33,
+  Iw: wp.mat33,
+  s: wp.vec3,
+  qvel_rot: wp.vec3,
+) -> tuple[wp.mat33, wp.mat33]:
+  """3x3 sub-blocks of (d qfrc_bias / d qvel) for a free rigid subtree."""
+  w = R @ qvel_rot
+
+  ws = wp.cross(w, s)
+  Iww = Iw @ w
+
+  w_dot_s = wp.dot(w, s)
+  K = wp.outer(s, w) - wp.identity(n=3, dtype=float) * w_dot_s + wp.skew(ws)
+
+  lin = K @ R
+
+  s_x_K = wp.skew(s) @ K
+  w_x_Iw = wp.skew(w) @ Iw
+  neg_skew_Iww = wp.mat33(
+    0.0,
+    Iww[2],
+    -Iww[1],
+    -Iww[2],
+    0.0,
+    Iww[0],
+    Iww[1],
+    -Iww[0],
+    0.0,
+  )
+
+  C = -mass * s_x_K + w_x_Iw + neg_skew_Iww
+  rot = wp.transpose(R) @ C @ R
+
+  return lin, rot
+
+
+@wp.func
+def lu_factor_6x6(
+  # In:
+  A_in: types.mat66,
+) -> tuple[types.mat66, types.vec6i, bool]:
+  """LU factorization with partial pivoting for a 6x6 matrix."""
+  A = A_in
+  pivot = types.vec6i(0)
+  for k in range(6):
+    maxval = wp.abs(A[k, k])
+    maxrow = k
+    for i in range(k + 1, 6):
+      val = wp.abs(A[i, k])
+      if val > maxval:
+        maxval = val
+        maxrow = i
+    if maxval < types.MJ_MINVAL:
+      return A, pivot, False
+    pivot[k] = maxrow
+    if maxrow != k:
+      for j in range(6):
+        tmp = A[k, j]
+        A[k, j] = A[maxrow, j]
+        A[maxrow, j] = tmp
+    diaginv = 1.0 / A[k, k]
+    for i in range(k + 1, 6):
+      A[i, k] *= diaginv
+      Aik = A[i, k]
+      for j in range(k + 1, 6):
+        A[i, j] -= Aik * A[k, j]
+  return A, pivot, True
+
+
+@wp.func
+def lu_solve_6x6(
+  # In:
+  A_in: types.mat66,
+  pivot_in: types.vec6i,
+  b_in: types.vec6,
+) -> types.vec6:
+  """Solves A * x = b for a 6x6 system using pre-computed LU factorization and pivots."""
+  x = b_in
+  for i in range(6):
+    p = pivot_in[i]
+    if p != i:
+      tmp = x[i]
+      x[i] = x[p]
+      x[p] = tmp
+    for j in range(i):
+      x[i] -= A_in[i, j] * x[j]
+  for i in range(5, -1, -1):
+    for j in range(i + 1, 6):
+      x[i] -= A_in[i, j] * x[j]
+    x[i] /= A_in[i, i]
+  return x
