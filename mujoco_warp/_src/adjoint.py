@@ -38,6 +38,7 @@ from mujoco_warp._src import smooth
 from mujoco_warp._src import smooth_adjoint
 from mujoco_warp._src import smooth_kinematics_adjoint
 from mujoco_warp._src import solver
+from mujoco_warp._src.types import TILE_SIZE_JTDAJ_DENSE
 from mujoco_warp._src.types import BackwardContext
 from mujoco_warp._src.types import ConeType
 from mujoco_warp._src.types import Data
@@ -47,6 +48,7 @@ from mujoco_warp._src.types import GeomType
 from mujoco_warp._src.types import IntegratorType
 from mujoco_warp._src.types import Model
 from mujoco_warp._src.types import SolverType
+from mujoco_warp._src.warp_util import cache_kernel
 from mujoco_warp._src.warp_util import event_scope
 from mujoco_warp._src.warp_util import is_array_spec
 
@@ -156,7 +158,21 @@ def _assert_step_supported(m: Model):
 @wp.kernel(enable_backward=False)
 def _load_rhs(nv: int, adj_qacc: wp.array2d[float], grad_out: wp.array2d[float]):
   worldid, i = wp.tid()
-  grad_out[worldid, i] = -adj_qacc[worldid, i] if i < nv else 0.0
+  grad_out[worldid, i] = adj_qacc[worldid, i] if i < nv else 0.0
+
+
+@cache_kernel
+def _solve_adjoint_cholesky(nv: int):
+  @wp.kernel(module="unique", enable_backward=False)
+  def kernel(h_in: wp.array3d[float], rhs_in: wp.array2d[float], solution_out: wp.array2d[float]):
+    w = wp.tid()
+    h = wp.tile_load(h_in[w], shape=(nv, nv))
+    wp.tile_cholesky_inplace(h, fill_mode="upper")
+    rhs = wp.tile_load(rhs_in[w], shape=nv)
+    solution = wp.tile_cholesky_solve(h, rhs, fill_mode="upper")
+    wp.tile_store(solution_out[w], solution)
+
+  return kernel
 
 
 @event_scope
@@ -169,7 +185,31 @@ def solve_backward(m: Model, d_out: Data, adj_qacc: wp.array, bc: BackwardContex
     return solver_ctx
   solver.init_context(m, d_out, solver_ctx, grad=True)
   wp.launch(_load_rhs, dim=(d_out.nworld, m.nv_pad), inputs=[m.nv, adj_qacc], outputs=[solver_ctx.grad])
-  solver._cholesky_factorize_solve(m, d_out, solver_ctx)
+  if m.nv <= solver._BLOCK_CHOLESKY_DIM:
+    wp.launch_tiled(
+      _solve_adjoint_cholesky(m.nv),
+      dim=d_out.nworld,
+      inputs=[solver_ctx.h, solver_ctx.grad],
+      outputs=[solver_ctx.search],
+      block_dim=m.block_dim.update_gradient_cholesky,
+    )
+  else:
+    wp.launch(
+      solver._padding_h,
+      dim=(d_out.nworld, m.nv_pad - m.nv),
+      inputs=[m.nv, solver_ctx.done],
+      outputs=[solver_ctx.h],
+    )
+    rhs = solver_ctx.grad.reshape((d_out.nworld, m.nv_pad, 1))
+    # This helper loads the entire RHS before storing its solution, so reuse the padded buffer.
+    wp.launch_tiled(
+      solver._cholesky_factorize_solve_blocked(TILE_SIZE_JTDAJ_DENSE, m.nv_pad),
+      dim=d_out.nworld,
+      inputs=[solver_ctx.h, rhs],
+      outputs=[solver_ctx.hfactor, rhs],
+      block_dim=m.block_dim.update_gradient_cholesky_blocked,
+    )
+    wp.launch(_load_rhs, dim=(d_out.nworld, m.nv), inputs=[m.nv, solver_ctx.grad], outputs=[solver_ctx.search])
   return solver_ctx
 
 
