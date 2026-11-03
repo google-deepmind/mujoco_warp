@@ -272,27 +272,29 @@ def plane_capsule(
     - Matrix of contact positions (one per row).
     - Contact frame for both contacts.
   """
-  n = plane_normal
+  n = wp.normalize(plane_normal)
   axis = capsule_axis
 
-  # align contact frames with capsule axis
-  b, b_norm = normalize_with_norm(axis - n * wp.dot(n, axis))
-
-  if b_norm < 0.5:
+  # Match mju_makeFrame: choose the hint before projecting it onto the plane.
+  b = axis
+  if wp.length(b) < 0.5:
     if -0.5 < n[1] and n[1] < 0.5:
       b = wp.vec3(0.0, 1.0, 0.0)
     else:
       b = wp.vec3(0.0, 0.0, 1.0)
+  b, b_norm = normalize_with_norm(b - n * wp.dot(n, b))
+  if b_norm < MJ_MINVAL:
+    b = wp.vec3(1.0, 0.0, 0.0)
 
   c = wp.cross(n, b)
   frame = wp.mat33(n[0], n[1], n[2], b[0], b[1], b[2], c[0], c[1], c[2])
   segment = axis * capsule_half_length
 
   # First contact (positive end of capsule)
-  dist1, pos1 = plane_sphere(n, plane_pos, capsule_pos + segment, capsule_radius)
+  dist1, pos1 = plane_sphere(plane_normal, plane_pos, capsule_pos + segment, capsule_radius)
 
   # Second contact (negative end of capsule)
-  dist2, pos2 = plane_sphere(n, plane_pos, capsule_pos - segment, capsule_radius)
+  dist2, pos2 = plane_sphere(plane_normal, plane_pos, capsule_pos - segment, capsule_radius)
 
   dist = wp.vec2(dist1, dist2)
   pos = mat23(pos1[0], pos1[1], pos1[2], pos2[0], pos2[1], pos2[2])
