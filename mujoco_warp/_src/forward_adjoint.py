@@ -675,7 +675,7 @@ def advance_backward(m: Model, d: Data, d_out: Data, bc: BackwardContext):
 
 @event_scope
 def smooth_qvel_backward(m: Model, d: Data, d_out: Data, lam: wp.array, adj_qvel: wp.array, bc: BackwardContext):
-  """Accumulates non-bias smooth force VJPs in velocity and control space."""
+  """Accumulates non-bias force VJPs for velocity, controls, and applied forces."""
   nworld = d.nworld
   linearization = dataclasses.replace(d_out, qvel=d.qvel, ctrl=d.ctrl)
   derivative.deriv_smooth_vel(m, linearization, bc.qDeriv)
@@ -750,6 +750,9 @@ def smooth_qvel_backward(m: Model, d: Data, d_out: Data, lam: wp.array, adj_qvel
         ],
         outputs=[d.ctrl.grad],
       )
+  if d.qfrc_applied.requires_grad:
+    # fwd_acceleration adds qfrc_applied directly to qfrc_smooth.
+    wp.launch(adjoint_util._accum_cols, dim=(nworld, m.nv), inputs=[lam], outputs=[d.qfrc_applied.grad])
   if d.xfrc_applied.requires_grad:
     wp.launch(
       _xfrc_applied_vjp,
@@ -779,14 +782,14 @@ def smooth_qpos_backward(m: Model, d: Data, d_out: Data, lam: wp.array, res_qpos
   if d.qpos.device.is_cuda and m.nbody <= 128:
     linearization = dataclasses.replace(d_out, qpos=d.qpos, qvel=d.qvel, ctrl=d.ctrl, act=d.act)
     residual = smooth_adjoint.smooth_force_channels_backward(
-      m, linearization, lam, bc.y_remap if implicit else None, bc.w_dir if implicit else None, bc
+      m, linearization, lam, bc.y_remap if implicit else None, bc.w_dir if implicit else None, bc, xfrc_applied=d.xfrc_applied
     )
   else:
     if implicit:
       direct = smooth_adjoint.mass_matrix_qpos_vjp(m, d, bc.y_remap, bc.w_dir, bc=bc)
       wp.launch(adjoint_util._sub_cols, dim=res_qpos.shape, inputs=[res_qpos, direct], outputs=[res_qpos])
     linearization = smooth_adjoint.linearize(m, d, d_out, bc)
-    residual = smooth_adjoint.smooth_force_backward(m, linearization, lam, bc=bc)
+    residual = smooth_adjoint.smooth_force_backward(m, linearization, lam, bc=bc, xfrc_applied=d.xfrc_applied)
   wp.launch(adjoint_util._accum_cols, dim=residual.shape, inputs=[residual], outputs=[res_qpos])
   for vjp in (
     smooth_adjoint.spring_qpos_vjp,

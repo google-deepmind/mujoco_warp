@@ -467,9 +467,6 @@ def forward_backward_ift(m: Model, d: Data, d_out: Data, adj_qacc: wp.array, bc:
   """Differentiates forward dynamics at the converged acceleration."""
   solver_ctx = solve_backward(m, d_out, adj_qacc, bc)
   lam = solver_ctx.search
-  if d.qfrc_applied.requires_grad:
-    # The residual contains -qfrc_applied, so its VJP is +lam.
-    wp.launch(adjoint_util._accum_cols, dim=(d.nworld, m.nv), inputs=[lam], outputs=[d.qfrc_applied.grad])
   if d_out.njmax and m.nv:
     contact_constraint_backward(m, d, d_out, lam, bc.res_qpos, bc.res_qvel, bc)
     noncontact_constraint_backward(m, d, d_out, lam, bc.res_qpos, bc.res_qvel, solver_ctx.Jaref, bc)

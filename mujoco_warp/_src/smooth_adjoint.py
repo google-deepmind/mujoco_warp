@@ -488,6 +488,60 @@ def linearize(m: Model, d: Data, d_out: Data, bc: BackwardContext) -> Data:
 # ----------------------------------------------------------------------------
 # The shared reduced reverse.
 # ----------------------------------------------------------------------------
+@wp.kernel(enable_backward=False)
+def _xfrc_kinematics_vjp(
+  # Model:
+  body_rootid: wp.array[int],
+  dof_bodyid: wp.array[int],
+  body_subtreenum: wp.array[int],
+  # Data in:
+  xfrc_applied_in: wp.array2d[wp.spatial_vector],
+  xipos_in: wp.array2d[wp.vec3],
+  subtree_com_in: wp.array2d[wp.vec3],
+  cdof_in: wp.array2d[wp.spatial_vector],
+  # In:
+  lam: wp.array2d[float],
+  # Out:
+  adj_xipos_out: wp.array2d[wp.vec3],
+  adj_subtree_com_out: wp.array2d[wp.vec3],
+  adj_cdof_out: wp.array2d[wp.spatial_vector],
+):
+  worldid, dofid = wp.tid()
+  rotational_cdof = wp.spatial_top(cdof_in[worldid, dofid])
+  dofbodyid = dof_bodyid[dofid]
+  rootid = body_rootid[dofbodyid]
+  subtree_com = subtree_com_in[worldid, rootid]
+  # The residual subtracts the generalized force produced by support._apply_ft.
+  seed = -lam[worldid, dofid]
+  adj_rot = wp.vec3()
+  adj_lin = wp.vec3()
+  adj_com = wp.vec3()
+  for bodyid in range(dofbodyid, dofbodyid + body_subtreenum[dofbodyid]):
+    wrench = xfrc_applied_in[worldid, bodyid]
+    if wrench == wp.spatial_vector():
+      continue
+    force = wp.spatial_top(wrench)
+    torque = wp.spatial_bottom(wrench)
+    offset = xipos_in[worldid, bodyid] - subtree_com
+    adj_rot += seed * (torque + wp.cross(offset, force))
+    adj_lin += seed * force
+    adj_offset = seed * wp.cross(force, rotational_cdof)
+    wp.atomic_add(adj_xipos_out, worldid, bodyid, adj_offset)  # kernel_analyzer: ignore[atomic]
+    adj_com -= adj_offset
+  wp.atomic_add(adj_subtree_com_out, worldid, rootid, adj_com)  # kernel_analyzer: ignore[atomic]
+  adj_cdof_out[worldid, dofid] += wp.spatial_vector(adj_rot, adj_lin)
+
+
+def xfrc_kinematics_backward(m: Model, d: Data, lam: wp.array2d, xfrc_applied: wp.array2d):
+  """Accumulates the kinematic VJP of -lam.T @ J(q).T @ xfrc_applied."""
+  wp.launch(
+    _xfrc_kinematics_vjp,
+    dim=(d.nworld, m.nv),
+    inputs=[m.body_rootid, m.dof_bodyid, m.body_subtreenum, xfrc_applied, d.xipos, d.subtree_com, d.cdof, lam],
+    outputs=[d.xipos.grad, d.subtree_com.grad, d.cdof.grad],
+  )
+
+
 @event_scope
 def smooth_force_backward(
   m: Model,
@@ -497,6 +551,7 @@ def smooth_force_backward(
   res_cdof_extra: wp.array2d = None,
   res_subtree_extra: wp.array2d = None,
   bc: BackwardContext | None = None,
+  xfrc_applied: wp.array2d | None = None,
 ):
   """Returns the position VJP and leaves RNE/com_vel velocity cotangents in ``bc``."""
   if bc is None:
@@ -515,6 +570,8 @@ def smooth_force_backward(
   _cinert_vjp(m, d, d.cinert.grad, bc)
   if res_subtree_extra is not None:
     wp.launch(_acc_vec3, dim=(nworld, m.nbody), inputs=[res_subtree_extra], outputs=[d.subtree_com.grad])
+  if xfrc_applied is not None:
+    xfrc_kinematics_backward(m, d, lam, xfrc_applied)
   return _kinematic_qpos_vjp(m, d, d.cdof.grad, bc)
 
 
@@ -662,6 +719,7 @@ def smooth_force_channels_backward(
   mass_y: wp.array2d | None,
   mass_w: wp.array2d | None,
   bc: BackwardContext,
+  xfrc_applied: wp.array2d | None = None,
 ):
   """Combines force and optional direct-mass cotangents before their kinematic reverse.
 
@@ -699,6 +757,8 @@ def smooth_force_channels_backward(
   d.ximat.grad.zero_()
   d.subtree_com.grad.zero_()
   _cinert_vjp(m, d, d.cinert.grad, bc)
+  if xfrc_applied is not None:
+    xfrc_kinematics_backward(m, d, lam, xfrc_applied)
   return _kinematic_qpos_vjp(m, d, d.cdof.grad, bc)
 
 
