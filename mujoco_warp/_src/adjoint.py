@@ -509,8 +509,10 @@ def fwd_kinematics_arrays(d: Data):
 
 @event_scope
 def fwd_kinematics_backward(m: Model, d: Data, bc: BackwardContext | None = None):
-  """Maps site-position cotangents to generalized position coordinates."""
-  if not m.nsite or d.qpos.grad is None or d.site_xpos.grad is None:
+  """Maps site and body-pose cotangents to generalized position coordinates."""
+  if d.qpos.grad is None or not any(
+    array is not None and array.size and array.grad is not None for array in (d.site_xpos, d.xpos, d.xquat)
+  ):
     return
   bc = bc or _ACTIVE_BACKWARD_CONTEXT.get() or create_backward_context(m, d)
   forward_adjoint.fwd_kinematics_backward(m, d, bc)

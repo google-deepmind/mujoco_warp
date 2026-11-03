@@ -463,6 +463,81 @@ def _site_jac_vjp(
   adj_dof_out[worldid, dofid] += value
 
 
+@wp.kernel(enable_backward=False)
+def _body_xpos_vjp(
+  # Model:
+  nbody: int,
+  body_parentid: wp.array[int],
+  body_rootid: wp.array[int],
+  dof_bodyid: wp.array[int],
+  body_isdofancestor: wp.array2d[int],
+  # Data in:
+  xpos_in: wp.array2d[wp.vec3],
+  subtree_com_in: wp.array2d[wp.vec3],
+  cdof_in: wp.array2d[wp.spatial_vector],
+  # In:
+  adj_xpos: wp.array2d[wp.vec3],
+  # Out:
+  adj_dof_out: wp.array2d[float],
+):
+  w, k = wp.tid()
+  value = float(0.0)
+  for body in range(1, nbody):
+    jacp, _ = support.jac_dof(
+      body_parentid,
+      body_rootid,
+      dof_bodyid,
+      body_isdofancestor,
+      subtree_com_in,
+      cdof_in,
+      xpos_in[w, body],
+      body,
+      k,
+      w,
+    )
+    value += wp.dot(jacp, adj_xpos[w, body])
+  adj_dof_out[w, k] += value
+
+
+@wp.kernel(enable_backward=False)
+def _body_xquat_vjp(
+  # Model:
+  nbody: int,
+  body_parentid: wp.array[int],
+  body_rootid: wp.array[int],
+  dof_bodyid: wp.array[int],
+  body_isdofancestor: wp.array2d[int],
+  # Data in:
+  xpos_in: wp.array2d[wp.vec3],
+  xquat_in: wp.array2d[wp.quat],
+  subtree_com_in: wp.array2d[wp.vec3],
+  cdof_in: wp.array2d[wp.spatial_vector],
+  # In:
+  adj_xquat: wp.array2d[wp.quat],
+  # Out:
+  adj_dof_out: wp.array2d[float],
+):
+  w, k = wp.tid()
+  value = float(0.0)
+  for body in range(1, nbody):
+    _, jacr = support.jac_dof(
+      body_parentid,
+      body_rootid,
+      dof_bodyid,
+      body_isdofancestor,
+      subtree_com_in,
+      cdof_in,
+      xpos_in[w, body],
+      body,
+      k,
+      w,
+    )
+    # World-frame angular velocity multiplies the wxyz orientation on the left.
+    dq = 0.5 * math.mul_quat(wp.quat(0.0, jacr[0], jacr[1], jacr[2]), xquat_in[w, body])
+    value += wp.dot(dq, adj_xquat[w, body])
+  adj_dof_out[w, k] += value
+
+
 @event_scope
 def advance_backward(m: Model, d: Data, d_out: Data, bc: BackwardContext):
   """Maps integrator cotangents, deferring mass-position dependence to smooth_qpos_backward."""
@@ -726,7 +801,7 @@ def smooth_qpos_backward(m: Model, d: Data, d_out: Data, lam: wp.array, res_qpos
 
 @event_scope
 def fwd_kinematics_backward(m: Model, d: Data, bc: BackwardContext):
-  """Maps site-position cotangents to generalized position coordinates."""
+  """Maps site and body-pose cotangents to generalized position coordinates."""
   wp.copy(bc.scratch.qpos, d.qpos)
   if m.nmocap:
     wp.copy(bc.scratch.mocap_pos, d.mocap_pos)
@@ -734,23 +809,39 @@ def fwd_kinematics_backward(m: Model, d: Data, bc: BackwardContext):
   smooth.kinematics(m, bc.scratch)
   smooth.com_pos(m, bc.scratch)
   bc.adj_dof.zero_()
-  wp.launch(
-    _site_jac_vjp,
-    dim=(d.nworld, m.nv),
-    inputs=[
-      m.nsite,
-      m.body_parentid,
-      m.body_rootid,
-      m.dof_bodyid,
-      m.site_bodyid,
-      m.body_isdofancestor,
-      bc.scratch.site_xpos,
-      bc.scratch.subtree_com,
-      bc.scratch.cdof,
-      d.site_xpos.grad,
-    ],
-    outputs=[bc.adj_dof],
-  )
+  if d.site_xpos.grad is not None:
+    wp.launch(
+      _site_jac_vjp,
+      dim=(d.nworld, m.nv),
+      inputs=[
+        m.nsite,
+        m.body_parentid,
+        m.body_rootid,
+        m.dof_bodyid,
+        m.site_bodyid,
+        m.body_isdofancestor,
+        bc.scratch.site_xpos,
+        bc.scratch.subtree_com,
+        bc.scratch.cdof,
+        d.site_xpos.grad,
+      ],
+      outputs=[bc.adj_dof],
+    )
+  body_inputs = [m.nbody, m.body_parentid, m.body_rootid, m.dof_bodyid, m.body_isdofancestor]
+  if d.xpos.grad is not None:
+    wp.launch(
+      _body_xpos_vjp,
+      dim=(d.nworld, m.nv),
+      inputs=[*body_inputs, bc.scratch.xpos, bc.scratch.subtree_com, bc.scratch.cdof, d.xpos.grad],
+      outputs=[bc.adj_dof],
+    )
+  if d.xquat.grad is not None:
+    wp.launch(
+      _body_xquat_vjp,
+      dim=(d.nworld, m.nv),
+      inputs=[*body_inputs, bc.scratch.xpos, bc.scratch.xquat, bc.scratch.subtree_com, bc.scratch.cdof, d.xquat.grad],
+      outputs=[bc.adj_dof],
+    )
   wp.launch(
     smooth_kinematics_adjoint._dof_to_qpos,
     dim=(d.nworld, m.njnt),
