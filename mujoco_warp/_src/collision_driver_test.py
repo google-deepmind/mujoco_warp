@@ -650,6 +650,28 @@ class CollisionTest(parameterized.TestCase):
     mjw.collision(m, d)
     self.assertEqual(d.nacon.numpy()[0], mjd.ncon)
 
+  def test_native_ccd_switch_does_not_duplicate_contacts(self):
+    """Cached primitive pairs must respect each model's choice of box-box collider."""
+    for disabled in (False, True, False):
+      _, mjd, m, d = test_data.fixture(
+        xml="""
+          <mujoco>
+            <worldbody>
+              <body pos="0 -0.2 1.2" euler="44 46 0">
+                <freejoint/>
+                <geom type="box" size="0.6 0.4 0.7"/>
+              </body>
+              <body><geom type="box" size="0.5 0.5 0.5"/></body>
+            </worldbody>
+          </mujoco>
+        """,
+        overrides={"opt.disableflags": int(DisableBit.NATIVECCD) if disabled else 0},
+      )
+      d.nacon.fill_(-1)
+      mjw.collision(m, d)
+      self.assertGreater(mjd.ncon, 0)
+      self.assertEqual(d.nacon.numpy()[0], mjd.ncon)
+
   @parameterized.parameters(_SDF_SDF.keys())
   def test_sdf_collision(self, fixture):
     """Tests collisions with different geometries."""

@@ -25,6 +25,7 @@ from mujoco_warp._src.types import MJ_MINVAL
 from mujoco_warp._src.types import mat53
 from mujoco_warp._src.types import mat113
 from mujoco_warp._src.types import vec5
+from mujoco_warp._src.types import vec8i
 from mujoco_warp._src.types import vec11
 
 wp.set_module_options({"enable_backward": False})
@@ -595,19 +596,20 @@ def _box_box_clip(
   # In:
   nin: int,
   poly: mat83f,
+  candidates: vec8i,
   coord: int,
   sign: float,
   limit: float,
-) -> Tuple[int, mat83f]:
+) -> Tuple[int, mat83f, vec8i]:
   """Clips a polygon against the half-plane sign * v[coord] <= limit.
 
-  Vertices are (x, y, z) with z interpolated as an attribute. When every vertex
-  is already
-  inside, the polygon is returned untouched.
+  Vertices are (x, y, z) with z interpolated as an attribute. When every vertex is
+  already inside, the polygon is returned untouched.
 
   Args:
     nin: Number of input vertices.
     poly: Input polygon vertices (one per row).
+    candidates: Boundary masks for each vertex: incident edges 0-3, reference edges 4-7.
     coord: Clipping coordinate (0 or 1).
     sign: Half-plane orientation (+1 or -1).
     limit: Half-plane offset.
@@ -615,6 +617,7 @@ def _box_box_clip(
   Returns:
     - Number of output vertices.
     - Output polygon vertices (one per row).
+    - Boundary masks of the output vertices.
   """
   d = vec8f()
   all_inside = bool(True)
@@ -623,9 +626,11 @@ def _box_box_clip(
     if not (d[k] <= 0.0):
       all_inside = False
   if all_inside:
-    return nin, poly
+    return nin, poly, candidates
 
   out = mat83f()
+  out_candidates = vec8i(-1)
+  boundary = 1 << (4 + 2 * coord + wp.where(sign > 0.0, 0, 1))
   nout = int(0)
   for k in range(nin):
     k1 = wp.where(k + 1 == nin, 0, k + 1)
@@ -635,10 +640,12 @@ def _box_box_clip(
     # emit p if inside
     if dp <= 0.0 and nout < _BOXBOX_MAXVERT:
       out[nout] = poly[k]
+      out_candidates[nout] = candidates[k]
       nout += 1
 
     # emit intersection if the edge strictly crosses the plane
     if ((dp < 0.0 and dq > 0.0) or (dp > 0.0 and dq < 0.0)) and nout < _BOXBOX_MAXVERT:
+      out_candidates[nout] = (candidates[k] & candidates[k1]) | boundary
       p = poly[k]
       q = poly[k1]
       t = dp / (dp - dq)
@@ -649,7 +656,7 @@ def _box_box_clip(
       )
       nout += 1
 
-  return nout, out
+  return nout, out, out_candidates
 
 
 @wp.func
@@ -666,9 +673,7 @@ def box_box(
   """Core contact geometry calculation for box-box collision.
 
   Port of MuJoCo's mjc_BoxBox: separating-axis test with face-axis preference,
-  followed by
-  incident-face clipping (face axis) or a closest-point edge-edge contact (edge
-  axis).
+  followed by incident-face clipping (face axis) or a closest-point edge-edge contact.
 
   Args:
     box1_pos: Center position of the first box.
@@ -684,12 +689,39 @@ def box_box(
     - Number of contacts.
     - Vector of contact distances (MJ_MAXVAL for unpopulated contacts).
     - Matrix of contact positions (one per row).
-    - Contact normal vector, pointing from box1 to box2 (shared by all
-    contacts).
+    - Contact normal vector, pointing from box1 to box2 (shared by all contacts).
+  """
+  count, dist, pos, normal, candidates, feature = box_box_witness(
+    box1_pos, box1_rot, box1_size, box2_pos, box2_rot, box2_size, margin
+  )
+  return count, dist, pos, normal
+
+
+@wp.func
+def box_box_witness(
+  # In:
+  box1_pos: wp.vec3,
+  box1_rot: wp.mat33,
+  box1_size: wp.vec3,
+  box2_pos: wp.vec3,
+  box2_rot: wp.mat33,
+  box2_size: wp.vec3,
+  margin: float,
+) -> Tuple[int, vec8f, mat83f, wp.vec3, vec8i, wp.vec3i]:
+  """Returns box contacts and discrete features in forward contact order.
+
+  The first four outputs match box_box. The last two record each contact's clipping
+  boundaries and the selected faces or edges. For a face, feature stores the axis code
+  (0-5), reference sign, and signed incident face (2 * axis + positive_sign). Candidate
+  bits 0-3 identify incident edges; bits 4-7 identify reference boundaries (+x,-x,+y,-y).
+  For an edge pair, feature stores 6 + 3 * edge1 + edge2 and two corner sign masks;
+  candidate stores the separating-axis orientation (+1 or -1).
   """
   contact_dist = vec8f(MJ_MAXVAL)
   contact_pos = mat83f()
   contact_normal = wp.vec3(0.0)
+  candidates = vec8i(-1)
+  feature = wp.vec3i(-1, 0, 0)
 
   # rot: box2 axes in box1 frame (columns); pos21: box2 center in box1 frame;
   # pos12: box1 center in box2 frame
@@ -715,7 +747,7 @@ def box_box(
     radius2 = rotabs[i, 0] * box2_size[0] + rotabs[i, 1] * box2_size[1] + rotabs[i, 2] * box2_size[2]
     sep = wp.abs(pos21[i]) - box1_size[i] - radius2
     if sep > septol:
-      return 0, contact_dist, contact_pos, contact_normal
+      return 0, contact_dist, contact_pos, contact_normal, candidates, feature
     if sep > sep_best:
       sep_best = sep
       code = i
@@ -725,7 +757,7 @@ def box_box(
     radius1 = rotabs[0, j] * box1_size[0] + rotabs[1, j] * box1_size[1] + rotabs[2, j] * box1_size[2]
     sep = wp.abs(pos12[j]) - box2_size[j] - radius1
     if sep > septol:
-      return 0, contact_dist, contact_pos, contact_normal
+      return 0, contact_dist, contact_pos, contact_normal, candidates, feature
     if sep > sep_best:
       sep_best = sep
       code = 3 + j
@@ -767,7 +799,7 @@ def box_box(
 
       sep = wp.abs(ax1 * pos21[i1] + ax2 * pos21[i2]) - radius1 - radius2
       if sep > septol:
-        return 0, contact_dist, contact_pos, contact_normal
+        return 0, contact_dist, contact_pos, contact_normal, candidates, feature
 
       # an edge axis must beat the best face axis by a bias-scaled amount: on exact ties
       # the face manifold (multiple points) is strictly better for the solver
@@ -781,6 +813,8 @@ def box_box(
       contact_dist,
       contact_pos,
       contact_normal,
+      candidates,
+      feature,
     )  # cannot happen: some face axis always sets code
 
   # winning edge pair (edge_i, edge_j) and its unit separating axis in box1 frame, set below
@@ -824,6 +858,7 @@ def box_box(
     j2 = (edge_j + 2) % 3
 
     # orient the separating axis from box1 toward box2
+    orientation = wp.where(wp.dot(axis, pos21) < 0.0, -1, 1)
     if wp.dot(axis, pos21) < 0.0:
       axis = -axis
 
@@ -896,11 +931,18 @@ def box_box(
           best_d2 = gap2
           w1 = p1
           w2 = p2
+          corner1, corner2 = int(0), int(0)
+          for k in range(3):
+            if c1[k] > 0.0:
+              corner1 |= 1 << k
+            if cc[k] > 0.0:
+              corner2 |= 1 << k
+          feature = wp.vec3i(code, corner1, corner2)
 
     # signed distance along the axis
     dist = wp.dot(w2 - w1, axis)
     if dist > septol:
-      return 0, contact_dist, contact_pos, contact_normal
+      return 0, contact_dist, contact_pos, contact_normal, candidates, feature
 
     # contact at the midpoint of the witness pair: for penetrating edges this is inside both
     # boxes; in the margin band it is midway between the two surfaces
@@ -909,7 +951,8 @@ def box_box(
     contact_dist[0] = dist
     contact_pos[0] = box1_rot @ mid + box1_pos
     contact_normal = box1_rot @ axis
-    return 1, contact_dist, contact_pos, contact_normal
+    candidates[0] = orientation
+    return 1, contact_dist, contact_pos, contact_normal, candidates, feature
 
   # ------------------------------ stage 2b: face contact
 
@@ -936,6 +979,8 @@ def box_box(
       binc = k
   tinc = wp.where(sgn * rinc[a, binc] > 0.0, -1.0, 1.0)  # sign making the incident normal oppose
 
+  feature = wp.vec3i(code, int(sgn), 2 * binc + wp.where(tinc > 0.0, 1, 0))
+
   # corners of the incident face in reference frame, cyclic winding; the in-plane
   # coordinates are (x, y) = the two non-a reference axes, z is the signed distance
   # above the reference face plane (negative = inside the reference box)
@@ -960,17 +1005,19 @@ def box_box(
 
   # corner signs (su, sv): (1, 1), (-1, 1), (-1, -1), (1, -1)
   poly = mat83f()
+  poly_candidates = vec8i(-1)
   for k in range(4):
     su = wp.where(k == 0 or k == 3, 1.0, -1.0)
     sv = wp.where(k < 2, 1.0, -1.0)
     poly[k] = cx + su * du + sv * dv
+    poly_candidates[k] = (1 << k) | (1 << ((k + 3) % 4))
 
   # clip against the four side planes of the reference face
   nvert = int(4)
-  nvert, poly = _box_box_clip(nvert, poly, 0, 1.0, sizeref[ax])
-  nvert, poly = _box_box_clip(nvert, poly, 0, -1.0, sizeref[ax])
-  nvert, poly = _box_box_clip(nvert, poly, 1, 1.0, sizeref[ay])
-  nvert, poly = _box_box_clip(nvert, poly, 1, -1.0, sizeref[ay])
+  nvert, poly, poly_candidates = _box_box_clip(nvert, poly, poly_candidates, 0, 1.0, sizeref[ax])
+  nvert, poly, poly_candidates = _box_box_clip(nvert, poly, poly_candidates, 0, -1.0, sizeref[ax])
+  nvert, poly, poly_candidates = _box_box_clip(nvert, poly, poly_candidates, 1, 1.0, sizeref[ay])
+  nvert, poly, poly_candidates = _box_box_clip(nvert, poly, poly_candidates, 1, -1.0, sizeref[ay])
 
   # accept vertices within the margin band, dropping near-duplicates produced by clipping
   # at polygon corners; duplicate radius is relative to the reference face scale; accepted
@@ -989,10 +1036,11 @@ def box_box(
         break
     if not dupe:
       contact_pos[naccept] = poly[k]
+      candidates[naccept] = poly_candidates[k]
       naccept += 1
 
   if naccept == 0:
-    return 0, contact_dist, contact_pos, contact_normal
+    return 0, contact_dist, contact_pos, contact_normal, candidates, feature
 
   # world normal points from geom1 to geom2: along +sgn * a of the reference frame when box1
   # is the reference, opposite when box2 is
@@ -1012,7 +1060,7 @@ def box_box(
     contact_dist[k] = v[2]
     contact_pos[k] = matref @ posc + posref
 
-  return naccept, contact_dist, contact_pos, contact_normal
+  return naccept, contact_dist, contact_pos, contact_normal, candidates, feature
 
 
 @wp.func

@@ -21,8 +21,10 @@ from mujoco_warp._src import collision_primitive_core
 from mujoco_warp._src import math
 from mujoco_warp._src import smooth_kinematics_adjoint
 from mujoco_warp._src import support
+from mujoco_warp._src.types import MJ_MINVAL
 from mujoco_warp._src.types import BackwardContext
 from mujoco_warp._src.types import Data
+from mujoco_warp._src.types import DisableBit
 from mujoco_warp._src.types import GeomType
 from mujoco_warp._src.types import Model
 from mujoco_warp._src.warp_util import event_scope
@@ -103,48 +105,171 @@ def _capsule_box_from_witness(
   )
 
 
-# Store the primal capsule-box witness needed by the differentiable replay.
+@wp.func
+def _box_box_from_witness(
+  # In:
+  box1_pos: wp.vec3,
+  box1_rot: wp.mat33,
+  box1_size: wp.vec3,
+  box2_pos: wp.vec3,
+  box2_rot: wp.mat33,
+  box2_size: wp.vec3,
+  feature: wp.vec3i,
+  candidate: int,
+) -> tuple[float, wp.vec3, wp.vec3]:
+  """Replays one box contact with its separating axis and clipping boundaries fixed."""
+  code = feature[0]
+  rot = wp.transpose(box1_rot) @ box2_rot
+  pos21 = wp.transpose(box1_rot) @ (box2_pos - box1_pos)
+  if code >= 6:
+    i, j = (code - 6) // 3, (code - 6) % 3
+    d1 = wp.vec3(float(i == 0), float(i == 1), float(i == 2))
+    d2 = wp.vec3(rot[0, j], rot[1, j], rot[2, j])
+    axis = float(candidate) * wp.normalize(wp.cross(d1, d2))
+    c1 = wp.vec3(
+      wp.where(i == 0, 0.0, wp.where((feature[1] & 1) != 0, box1_size[0], -box1_size[0])),
+      wp.where(i == 1, 0.0, wp.where((feature[1] & 2) != 0, box1_size[1], -box1_size[1])),
+      wp.where(i == 2, 0.0, wp.where((feature[1] & 4) != 0, box1_size[2], -box1_size[2])),
+    )
+    corner2 = wp.vec3(
+      wp.where(j == 0, 0.0, wp.where((feature[2] & 1) != 0, box2_size[0], -box2_size[0])),
+      wp.where(j == 1, 0.0, wp.where((feature[2] & 2) != 0, box2_size[1], -box2_size[1])),
+      wp.where(j == 2, 0.0, wp.where((feature[2] & 4) != 0, box2_size[2], -box2_size[2])),
+    )
+    c2 = rot @ corner2 + pos21
+    e = c2 - c1
+    b = d2[i]
+    denom = 1.0 - b * b
+    d1e, d2e = e[i], wp.dot(d2, e)
+    s = float(0.0)
+    if denom >= MJ_MINVAL:
+      s = (d1e - b * d2e) / denom
+    s = wp.clamp(s, -box1_size[i], box1_size[i])
+    t = wp.clamp(b * s - d2e, -box2_size[j], box2_size[j])
+    s = wp.clamp(d1e + b * t, -box1_size[i], box1_size[i])
+    w1, w2 = c1 + s * d1, c2 + t * d2
+    return wp.dot(w2 - w1, axis), box1_rot @ (0.5 * (w1 + w2)) + box1_pos, box1_rot @ axis
+
+  ref1 = code < 3
+  a = wp.where(ref1, code, code - 3)
+  ax, ay = (a + 1) % 3, (a + 2) % 3
+  sizeref = wp.where(ref1, box1_size, box2_size)
+  sizeinc = wp.where(ref1, box2_size, box1_size)
+  posref = wp.where(ref1, box1_pos, box2_pos)
+  matref = wp.where(ref1, box1_rot, box2_rot)
+  posoi = wp.where(ref1, pos21, wp.transpose(box2_rot) @ (box1_pos - box2_pos))
+  rinc = wp.where(ref1, rot, wp.transpose(rot))
+  sgn = float(feature[1])
+  binc = feature[2] // 2
+  tinc = float(2 * (feature[2] % 2) - 1)
+  bu, bv = (binc + 1) % 3, (binc + 2) % 3
+  cx = wp.vec3(
+    posoi[ax] + tinc * sizeinc[binc] * rinc[ax, binc],
+    posoi[ay] + tinc * sizeinc[binc] * rinc[ay, binc],
+    sgn * (posoi[a] + tinc * sizeinc[binc] * rinc[a, binc]) - sizeref[a],
+  )
+  du = wp.vec3(sizeinc[bu] * rinc[ax, bu], sizeinc[bu] * rinc[ay, bu], sizeinc[bu] * rinc[a, bu] * sgn)
+  dv = wp.vec3(sizeinc[bv] * rinc[ax, bv], sizeinc[bv] * rinc[ay, bv], sizeinc[bv] * rinc[a, bv] * sgn)
+
+  if (candidate & 15) == 0:  # Intersection of two reference boundaries.
+    x = wp.where((candidate & 16) != 0, sizeref[ax], -sizeref[ax])
+    y = wp.where((candidate & 64) != 0, sizeref[ay], -sizeref[ay])
+    det = du[0] * dv[1] - du[1] * dv[0]
+    u = ((x - cx[0]) * dv[1] - (y - cx[1]) * dv[0]) / det
+    v = (du[0] * (y - cx[1]) - du[1] * (x - cx[0])) / det
+    point = wp.vec3(x, y, cx[2] + u * du[2] + v * dv[2])
+  else:
+    corner = int(0)
+    for k in range(4):
+      if (candidate & (1 << k)) != 0:
+        corner = k
+    if (candidate & 240) == 0:  # Original incident corner.
+      for k in range(4):
+        if candidate == ((1 << k) | (1 << ((k + 3) % 4))):
+          corner = k
+    su = wp.where(corner == 0 or corner == 3, 1.0, -1.0)
+    sv = wp.where(corner < 2, 1.0, -1.0)
+    p = cx + su * du + sv * dv
+    point = p
+    if (candidate & 240) != 0:  # Incident edge intersecting a reference boundary.
+      next_corner = (corner + 1) % 4
+      qu = wp.where(next_corner == 0 or next_corner == 3, 1.0, -1.0)
+      qv = wp.where(next_corner < 2, 1.0, -1.0)
+      q = cx + qu * du + qv * dv
+      coord = wp.where((candidate & 48) != 0, 0, 1)
+      sign = wp.where((candidate & (16 | 64)) != 0, 1.0, -1.0)
+      limit = wp.where(coord == 0, sizeref[ax], sizeref[ay])
+      dp, dq = sign * p[coord] - limit, sign * q[coord] - limit
+      t = dp / (dp - dq)
+      point = wp.vec3(p[0] + t * (q[0] - p[0]), p[1] + t * (q[1] - p[1]), p[2] + t * (q[2] - p[2]))
+
+  height = sgn * (sizeref[a] + 0.5 * point[2])
+  posc = wp.vec3(
+    wp.where(a == 0, height, wp.where(ax == 0, point[0], point[1])),
+    wp.where(a == 1, height, wp.where(ax == 1, point[0], point[1])),
+    wp.where(a == 2, height, wp.where(ax == 2, point[0], point[1])),
+  )
+  normal = wp.where(ref1, sgn, -sgn) * wp.vec3(matref[0, a], matref[1, a], matref[2, a])
+  return point[2], matref @ posc + posref, normal
+
+
+# Recover discrete features from the primal contacts before differentiating their geometry.
 @wp.kernel(enable_backward=False)
-def _capsule_box_freeze(
+def _narrowphase_witness(
   # Model:
   geom_type: wp.array[int],
   geom_size: wp.array2d[wp.vec3],
   # Data in:
   geom_xpos_in: wp.array2d[wp.vec3],
   geom_xmat_in: wp.array2d[wp.mat33],
+  contact_dist_in: wp.array[float],
+  contact_pos_in: wp.array[wp.vec3],
+  contact_includemargin_in: wp.array[float],
   contact_geom_in: wp.array[wp.vec2i],
   contact_worldid_in: wp.array[int],
   nacon_in: wp.array[int],
   # Out:
-  tseg_out: wp.array[wp.vec2],
-  feat_out: wp.array[wp.vec3i],
+  contact_feature_out: wp.array[wp.vec4i],
 ):
+  """Writes the feature buffer consumed by each contact's replay branch."""
   cid = wp.tid()
   if cid >= nacon_in[0]:
     return
   geoms = contact_geom_in[cid]
-  if geoms[0] < 0 or geoms[1] < 0:
+  g0, g1 = geoms[0], geoms[1]
+  if g0 < 0 or g1 < 0:
     return
-  g0 = geoms[0]
-  g1 = geoms[1]
-  if geom_type[g0] != GeomType.CAPSULE or geom_type[g1] != GeomType.BOX:
-    return
+  type0, type1 = geom_type[g0], geom_type[g1]
   w = contact_worldid_in[cid]
+
+  if type1 != GeomType.BOX or (type0 != GeomType.CAPSULE and type0 != GeomType.BOX):
+    return
   gw = w % geom_size.shape[0]
-  m0 = geom_xmat_in[w, g0]
-  axis0 = wp.vec3(m0[0, 2], m0[1, 2], m0[2, 2])
-  ts, ft = collision_primitive_core.capsule_box_witness(
-    geom_xpos_in[w, g0], axis0, geom_size[gw, g0][1], geom_xpos_in[w, g1], geom_xmat_in[w, g1], geom_size[gw, g1]
-  )
-  tseg_out[cid] = ts
-  feat_out[cid] = ft
+  p0, p1 = geom_xpos_in[w, g0], geom_xpos_in[w, g1]
+  m0, m1 = geom_xmat_in[w, g0], geom_xmat_in[w, g1]
+  s0, s1 = geom_size[gw, g0], geom_size[gw, g1]
+  if type0 == GeomType.CAPSULE:
+    axis = wp.vec3(m0[0, 2], m0[1, 2], m0[2, 2])
+    _, feature = collision_primitive_core.capsule_box_witness(p0, axis, s0[1], p1, m1, s1)
+    contact_feature_out[cid] = wp.vec4i(feature[0], feature[1], feature[2], 0)
+  else:
+    margin = wp.max(contact_includemargin_in[cid], contact_dist_in[cid])
+    bb_count, bb_dist, bb_pos, bb_normal, candidates, feature = collision_primitive_core.box_box_witness(
+      p0, m0, s0, p1, m1, s1, margin
+    )
+    # The forward margin includes gap contacts; filtering them can shift the contact slots.
+    contact_pos = contact_pos_in[cid]
+    slot = int(0)
+    best = float(wp.inf)
+    for i in range(bb_count):
+      error = wp.length_sq(bb_pos[i] - contact_pos)
+      if error < best:
+        best = error
+        slot = i
+    contact_feature_out[cid] = wp.vec4i(feature[0], feature[1], feature[2], candidates[slot])
 
 
-# Frozen-witness narrowphase replay using collision_primitive_core's differentiable leaves.
-# Eleven primitive pairs are dispatched:
-# plane-{sphere,capsule,ellipsoid,cylinder,box}, sphere-{sphere,box,capsule,cylinder},
-# capsule-capsule, and capsule-box. Box-box and plane-convex/mesh are not AD-safe. Capsule-box
-# freezes the minimizing feature; capsule-capsule replays the recorded closest-point slot.
+# Replay all twelve primitive pairs with the primal contact slots and features fixed.
 @wp.kernel(enable_backward=True)
 def _narrowphase_recompute(
   # Model:
@@ -158,8 +283,7 @@ def _narrowphase_recompute(
   contact_geomcollisionid_in: wp.array[int],
   nacon_in: wp.array[int],
   # In:
-  capsule_box_tseg: wp.array[wp.vec2],  # frozen capsule-box segment params (_capsule_box_freeze)
-  capsule_box_feat: wp.array[wp.vec3i],  # frozen capsule-box discrete feature state
+  contact_feature: wp.array[wp.vec4i],  # capsule/box feature and box clipping candidate
   # Out:
   cpos_out: wp.array[wp.vec3],
   dist_out: wp.array[float],
@@ -264,10 +388,21 @@ def _narrowphase_recompute(
     frame_out[cid] = math.make_frame(box_n)
   elif type0 == GeomType.CAPSULE and type1 == GeomType.BOX:
     axis0 = wp.vec3(m0[0, 2], m0[1, 2], m0[2, 2])
-    cb_dist, cb_pos, cb_n = _capsule_box_from_witness(p0, axis0, s0[0], s0[1], p1, m1, s1, slot, capsule_box_feat[cid])
+    feature = contact_feature[cid]
+    cb_dist, cb_pos, cb_n = _capsule_box_from_witness(
+      p0, axis0, s0[0], s0[1], p1, m1, s1, slot, wp.vec3i(feature[0], feature[1], feature[2])
+    )
     dist_out[cid] = cb_dist
     cpos_out[cid] = cb_pos
     frame_out[cid] = math.make_frame(cb_n)
+  elif type0 == GeomType.BOX and type1 == GeomType.BOX:
+    feature = contact_feature[cid]
+    bb_dist, bb_pos, bb_n = _box_box_from_witness(
+      p0, m0, s0, p1, m1, s1, wp.vec3i(feature[0], feature[1], feature[2]), feature[3]
+    )
+    dist_out[cid] = bb_dist
+    cpos_out[cid] = bb_pos
+    frame_out[cid] = math.make_frame(bb_n)
 
 
 # gather dr/defc_pos (efc-row indexed) to the per-contact normal-row distance adjoint
@@ -350,8 +485,9 @@ def contact_qpos_vjp(
 ):
   """Accumulates the contact residual's dqpos into res_qpos from the exposed input-adjoints.
 
-  A frozen-witness narrowphase replay yields adj(geom poses); analytic Jacobian VJPs then chain
-  everything into one per-dof tangent buffer that _dof_to_qpos lifts.
+  Primitive narrowphase replay yields adj(geom poses); analytic Jacobian VJPs
+  chain these into one per-dof tangent buffer that _dof_to_qpos lifts.
+  Box-box requires the primitive collider (nativeccd disabled).
 
   Args:
     m: The model.
@@ -365,6 +501,9 @@ def contact_qpos_vjp(
     res_qpos: Accumulated output; the caller's writeback applies the IFT minus.
     bc: Reusable backward workspace.
   """
+  box_pair = math.upper_trid_index(len(GeomType), GeomType.BOX.value, GeomType.BOX.value)
+  if m.geom_pair_type_count[box_pair] and not (m.opt.disableflags & DisableBit.NATIVECCD):
+    raise NotImplementedError("box-box contact gradients require nativeccd disabled; convex box-box replay is not supported")
   if bc is None:
     from mujoco_warp._src import adjoint
 
@@ -372,12 +511,11 @@ def contact_qpos_vjp(
   nworld = d_out.qpos.shape[0]
   nv = m.nv
   nconmax = d_out.contact.pos.shape[0]
-  contact_segment, contact_feature = bc.contact_segment, bc.contact_feature
+  contact_feature = bc.contact_feature
   contact_adj_dist = bc.contact_adj_dist
   res_geom_xpos, res_geom_xmat = bc.res_geom_xpos, bc.res_geom_xmat
   contact_res_dof, contact_ceff = bc.contact_res_dof, bc.contact_ceff
-  contact_segment.zero_()
-  contact_feature.zero_()
+  # _narrowphase_witness overwrites every feature consumed by _narrowphase_recompute.
   contact_adj_dist.zero_()
   res_geom_xpos.zero_()
   res_geom_xmat.zero_()
@@ -385,10 +523,21 @@ def contact_qpos_vjp(
   contact_ceff.zero_()
 
   wp.launch(
-    _capsule_box_freeze,
+    _narrowphase_witness,
     dim=nconmax,
-    inputs=[m.geom_type, m.geom_size, d_out.geom_xpos, d_out.geom_xmat, d_out.contact.geom, d_out.contact.worldid, d_out.nacon],
-    outputs=[contact_segment, contact_feature],
+    inputs=[
+      m.geom_type,
+      m.geom_size,
+      d_out.geom_xpos,
+      d_out.geom_xmat,
+      d_out.contact.dist,
+      d_out.contact.pos,
+      d_out.contact.includemargin,
+      d_out.contact.geom,
+      d_out.contact.worldid,
+      d_out.nacon,
+    ],
+    outputs=[contact_feature],
   )
   pairs = [
     (m.geom_type, None),
@@ -399,7 +548,6 @@ def contact_qpos_vjp(
     (d_out.contact.worldid, None),
     (d_out.contact.geomcollisionid, None),
     (d_out.nacon, None),
-    (contact_segment, None),
     (contact_feature, None),
   ]
   wp.launch(
