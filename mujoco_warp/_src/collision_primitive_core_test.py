@@ -20,6 +20,9 @@ from absl.testing import parameterized
 
 from mujoco_warp._src import collision_primitive_core
 from mujoco_warp._src.collision_primitive_core import sphere_triangle
+from mujoco_warp._src.types import mat23
+from mujoco_warp._src.types import mat83
+from mujoco_warp._src.types import vec8
 
 
 @wp.kernel
@@ -570,8 +573,8 @@ def cylinder_triangle_kernel(
   tri_radius: float,
   # Out:
   dist_out: wp.array[wp.vec2],
-  pos_out: wp.array[collision_primitive_core.mat23f],
-  normal_out: wp.array[collision_primitive_core.mat23f],
+  pos_out: wp.array[mat23],
+  normal_out: wp.array[mat23],
 ):
   dist, pos, normal = collision_primitive_core.cylinder_triangle(
     cylinder_pos, cylinder_axis, cylinder_radius, cylinder_half_height, t1, t2, t3, tri_radius
@@ -597,8 +600,8 @@ class CylinderTriangleTest(parameterized.TestCase):
   ):
     """Helper to run the cylinder_triangle kernel and return results."""
     dist = wp.zeros(1, dtype=wp.vec2)
-    pos = wp.zeros(1, dtype=collision_primitive_core.mat23f)
-    normal = wp.zeros(1, dtype=collision_primitive_core.mat23f)
+    pos = wp.zeros(1, dtype=mat23)
+    normal = wp.zeros(1, dtype=mat23)
 
     wp.launch(
       cylinder_triangle_kernel,
@@ -706,8 +709,8 @@ def box_box_kernel(
   margin: float,
   # Out:
   ncon_out: wp.array[int],
-  dist_out: wp.array[collision_primitive_core.vec8f],
-  pos_out: wp.array[collision_primitive_core.mat83f],
+  dist_out: wp.array[vec8],
+  pos_out: wp.array[mat83],
   normal_out: wp.array[wp.vec3],
 ):
   ncon, dist, pos, normal = collision_primitive_core.box_box(
@@ -743,8 +746,8 @@ class BoxBoxTest(parameterized.TestCase):
   ):
     """Helper to run the box_box kernel and return the populated contacts."""
     ncon = wp.zeros(1, dtype=int)
-    dist = wp.zeros(1, dtype=collision_primitive_core.vec8f)
-    pos = wp.zeros(1, dtype=collision_primitive_core.mat83f)
+    dist = wp.zeros(1, dtype=vec8)
+    pos = wp.zeros(1, dtype=mat83)
     normal = wp.zeros(1, dtype=wp.vec3)
 
     wp.launch(
@@ -871,8 +874,8 @@ def capsule_capsule_kernel(
   cap2_half_length: float,
   # Out:
   dist_out: wp.array[wp.vec2],
-  pos_out: wp.array[collision_primitive_core.mat23f],
-  normal_out: wp.array[collision_primitive_core.mat23f],
+  pos_out: wp.array[mat23],
+  normal_out: wp.array[mat23],
 ):
   dist, pos, normal = collision_primitive_core.capsule_capsule(
     cap1_pos, cap1_axis, cap1_radius, cap1_half_length, cap2_pos, cap2_axis, cap2_radius, cap2_half_length
@@ -899,8 +902,8 @@ class CapsuleCapsuleTest(parameterized.TestCase):
     cap1, cap2 = (long_cap, short_cap) if long_first else (short_cap, long_cap)
 
     dist = wp.zeros(1, dtype=wp.vec2)
-    pos = wp.zeros(1, dtype=collision_primitive_core.mat23f)
-    normal = wp.zeros(1, dtype=collision_primitive_core.mat23f)
+    pos = wp.zeros(1, dtype=mat23)
+    normal = wp.zeros(1, dtype=mat23)
     wp.launch(capsule_capsule_kernel, dim=1, inputs=[*cap1, *cap2], outputs=[dist, pos, normal])
 
     # surface distance: 0.2 - (0.05 + 0.08) = 0.07; contacts at both ends of the shorter capsule
