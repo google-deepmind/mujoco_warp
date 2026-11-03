@@ -4111,6 +4111,8 @@ def solve(m: types.Model, d: types.Data):
 
   if d.njmax == 0 or m.nv == 0:
     wp.copy(d.qacc, d.qacc_smooth)
+    wp.copy(d.efc.Ma, d.qfrc_smooth)
+    d.qfrc_constraint.zero_()
     d.solver_niter.fill_(0)
   else:
     ctx = _create_solver_context(m, d)

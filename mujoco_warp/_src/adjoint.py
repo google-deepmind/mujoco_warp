@@ -34,6 +34,7 @@ from mujoco_warp._src import forward_adjoint
 from mujoco_warp._src import io
 from mujoco_warp._src import math
 from mujoco_warp._src import model_adjoint
+from mujoco_warp._src import smooth
 from mujoco_warp._src import smooth_adjoint
 from mujoco_warp._src import smooth_kinematics_adjoint
 from mujoco_warp._src import solver
@@ -162,6 +163,10 @@ def _load_rhs(nv: int, adj_qacc: wp.array2d[float], grad_out: wp.array2d[float])
 def solve_backward(m: Model, d_out: Data, adj_qacc: wp.array, bc: BackwardContext):
   """Solves ``H * lam = adj_qacc`` at the converged acceleration."""
   solver_ctx = bc.solver_ctx
+  if d_out.njmax == 0 or m.nv == 0:
+    if m.nv:
+      smooth.solve_m(m, d_out, solver_ctx.search, adj_qacc)
+    return solver_ctx
   solver.init_context(m, d_out, solver_ctx, grad=True)
   wp.launch(_load_rhs, dim=(d_out.nworld, m.nv_pad), inputs=[m.nv, adj_qacc], outputs=[solver_ctx.grad])
   solver._cholesky_factorize_solve(m, d_out, solver_ctx)
@@ -421,8 +426,9 @@ def forward_backward_ift(m: Model, d: Data, d_out: Data, adj_qacc: wp.array, bc:
   """Differentiates forward dynamics at the converged acceleration."""
   solver_ctx = solve_backward(m, d_out, adj_qacc, bc)
   lam = solver_ctx.search
-  contact_constraint_backward(m, d, d_out, lam, bc.res_qpos, bc.res_qvel, bc)
-  noncontact_constraint_backward(m, d, d_out, lam, bc.res_qpos, bc.res_qvel, solver_ctx.Jaref, bc)
+  if d_out.njmax and m.nv:
+    contact_constraint_backward(m, d, d_out, lam, bc.res_qpos, bc.res_qvel, bc)
+    noncontact_constraint_backward(m, d, d_out, lam, bc.res_qpos, bc.res_qvel, solver_ctx.Jaref, bc)
   forward_adjoint.smooth_qvel_backward(m, d, d_out, lam, bc.adj_qvel, bc)
   forward_adjoint.smooth_qpos_backward(m, d, d_out, lam, bc.res_qpos, bc)
   # The position reverse also computes the RNE velocity cotangents. Consume them
@@ -440,7 +446,7 @@ def step_backward_arrays(d: Data, d_out: Data):
     inputs.append(d.xfrc_applied)
   for array in inputs:
     array.requires_grad = True
-  return [*inputs, *_prepare_data(d_out)]
+  return [array for array in (*inputs, *_prepare_data(d_out)) if array.size]
 
 
 @event_scope
@@ -456,7 +462,9 @@ def step_backward(m: Model, d: Data, d_out: Data, bc: BackwardContext | None = N
 
 def fwd_kinematics_arrays(d: Data):
   """Returns differentiated fwd_kinematics inputs and outputs."""
-  return [array for array in (d.qpos, d.site_xpos, d.xpos, d.xquat) if array is not None and array.grad is not None]
+  return [
+    array for array in (d.qpos, d.site_xpos, d.xpos, d.xquat) if array is not None and array.size and array.grad is not None
+  ]
 
 
 @event_scope
