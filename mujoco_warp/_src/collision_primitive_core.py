@@ -502,11 +502,10 @@ def plane_cylinder(
 
   # If vector is nondegenerate, normalize and scale by radius
   # Otherwise use cylinder's x-axis scaled by radius
-  vec = wp.where(
-    len_sqr >= 1e-12,
-    vec * safe_div(cylinder_radius, wp.sqrt(len_sqr)),
-    wp.vec3(1.0, 0.0, 0.0) * cylinder_radius,  # Default x-axis when degenerate
-  )
+  if len_sqr >= 1e-12:
+    vec = vec * safe_div(cylinder_radius, wp.sqrt(len_sqr))
+  else:
+    vec = wp.vec3(1.0, 0.0, 0.0) * cylinder_radius
 
   # Project scaled vector on normal
   prjvec = wp.dot(vec, n)
