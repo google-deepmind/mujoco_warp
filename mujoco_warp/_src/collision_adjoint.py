@@ -224,11 +224,13 @@ def _narrowphase_witness(
   geom_xmat_in: wp.array2d[wp.mat33],
   contact_dist_in: wp.array[float],
   contact_pos_in: wp.array[wp.vec3],
+  contact_frame_in: wp.array[wp.mat33],
   contact_includemargin_in: wp.array[float],
   contact_geom_in: wp.array[wp.vec2i],
   contact_worldid_in: wp.array[int],
   nacon_in: wp.array[int],
   # Out:
+  contact_point_out: wp.array[wp.vec3],
   contact_feature_out: wp.array[wp.vec4i],
 ):
   """Writes the feature buffer consumed by each contact's replay branch."""
@@ -241,6 +243,13 @@ def _narrowphase_witness(
     return
   type0, type1 = geom_type[g0], geom_type[g1]
   w = contact_worldid_in[cid]
+
+  if type0 == GeomType.PLANE and type1 == GeomType.MESH:
+    # Undo the contact midpoint offset to recover the selected vertex in mesh coordinates.
+    normal = contact_frame_in[cid][0]
+    vertex = contact_pos_in[cid] + 0.5 * contact_dist_in[cid] * normal
+    contact_point_out[cid] = wp.transpose(geom_xmat_in[w, g1]) @ (vertex - geom_xpos_in[w, g1])
+    return
 
   if type1 != GeomType.BOX or (type0 != GeomType.CAPSULE and type0 != GeomType.BOX):
     return
@@ -269,7 +278,7 @@ def _narrowphase_witness(
     contact_feature_out[cid] = wp.vec4i(feature[0], feature[1], feature[2], candidates[slot])
 
 
-# Replay all twelve primitive pairs with the primal contact slots and features fixed.
+# Replay all thirteen primitive pairs with the primal contact slots and features fixed.
 @wp.kernel(enable_backward=True)
 def _narrowphase_recompute(
   # Model:
@@ -283,6 +292,7 @@ def _narrowphase_recompute(
   contact_geomcollisionid_in: wp.array[int],
   nacon_in: wp.array[int],
   # In:
+  contact_point: wp.array[wp.vec3],  # selected mesh vertex in local coordinates
   contact_feature: wp.array[wp.vec4i],  # capsule/box feature and box clipping candidate
   # Out:
   cpos_out: wp.array[wp.vec3],
@@ -403,6 +413,13 @@ def _narrowphase_recompute(
     dist_out[cid] = bb_dist
     cpos_out[cid] = bb_pos
     frame_out[cid] = math.make_frame(bb_n)
+  elif type0 == GeomType.PLANE and type1 == GeomType.MESH:
+    n0 = wp.vec3(m0[0, 2], m0[1, 2], m0[2, 2])
+    vertex = p1 + m1 @ contact_point[cid]
+    dist, pos = collision_primitive_core.plane_sphere(n0, p0, vertex, 0.0)
+    dist_out[cid] = dist
+    cpos_out[cid] = pos
+    frame_out[cid] = math.make_frame(n0)
 
 
 # gather dr/defc_pos (efc-row indexed) to the per-contact normal-row distance adjoint
@@ -511,7 +528,7 @@ def contact_qpos_vjp(
   nworld = d_out.qpos.shape[0]
   nv = m.nv
   nconmax = d_out.contact.pos.shape[0]
-  contact_feature = bc.contact_feature
+  contact_point, contact_feature = bc.contact_point, bc.contact_feature
   contact_adj_dist = bc.contact_adj_dist
   res_geom_xpos, res_geom_xmat = bc.res_geom_xpos, bc.res_geom_xmat
   contact_res_dof, contact_ceff = bc.contact_res_dof, bc.contact_ceff
@@ -532,12 +549,13 @@ def contact_qpos_vjp(
       d_out.geom_xmat,
       d_out.contact.dist,
       d_out.contact.pos,
+      d_out.contact.frame,
       d_out.contact.includemargin,
       d_out.contact.geom,
       d_out.contact.worldid,
       d_out.nacon,
     ],
-    outputs=[contact_feature],
+    outputs=[contact_point, contact_feature],
   )
   pairs = [
     (m.geom_type, None),
@@ -548,6 +566,7 @@ def contact_qpos_vjp(
     (d_out.contact.worldid, None),
     (d_out.contact.geomcollisionid, None),
     (d_out.nacon, None),
+    (contact_point, None),
     (contact_feature, None),
   ]
   wp.launch(

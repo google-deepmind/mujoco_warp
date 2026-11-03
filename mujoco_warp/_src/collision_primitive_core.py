@@ -50,7 +50,18 @@ class mat83f(wp.types.matrix(shape=(8, 3), dtype=wp.float32)):
 # core
 @wp.func
 def plane_sphere(plane_normal: wp.vec3, plane_pos: wp.vec3, sphere_pos: wp.vec3, sphere_radius: float) -> Tuple[float, wp.vec3]:
-  # TODO(team): docstring
+  """Core contact geometry calculation for plane-sphere collision.
+
+  Args:
+    plane_normal: Unit normal vector of the plane.
+    plane_pos: Position of the plane.
+    sphere_pos: Center position of the sphere.
+    sphere_radius: Radius of the sphere.
+
+  Returns:
+    - Signed contact distance (negative for penetration).
+    - Contact position.
+  """
   dist = wp.dot(sphere_pos - plane_pos, plane_normal) - sphere_radius
   pos = sphere_pos - plane_normal * (sphere_radius + 0.5 * dist)
   return dist, pos
