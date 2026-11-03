@@ -491,7 +491,7 @@ def smooth_force_backward(
   res_subtree_extra: wp.array2d = None,
   bc: BackwardContext | None = None,
 ):
-  """Returns d(lam.T @ qfrc_bias)/dqpos at the converged state."""
+  """Returns the position VJP and leaves RNE/com_vel velocity cotangents in ``bc``."""
   if bc is None:
     from mujoco_warp._src import adjoint
 
@@ -663,10 +663,10 @@ def rne_backward(
 
 
 # --------------------------------------------------------------------------------------------
-# com_vel reverse: bound-free manual VJP of smooth.com_vel (the Coriolis path); maps the seeds
+# com_vel reverse: bound-free manual VJP of smooth.com_vel (the RNE qvel path); maps the seeds
 # adj_cvel / adj_cdof_dot to adj_qvel / adj_cdof in stages CV1-CV4 (dynamic bounds, no
-# _CV_MAX_* truncation). Wiring constraint: step_backward already uses deriv_rne_vel for the
-# smooth adj_qvel; wire exactly one of the two RNE-qvel paths or the Coriolis term double-counts.
+# _CV_MAX_* truncation). step_backward adds the RNE and com_vel velocity cotangents to the
+# residual VJP, reusing this reverse instead of constructing the RNE velocity Jacobian.
 # --------------------------------------------------------------------------------------------
 
 

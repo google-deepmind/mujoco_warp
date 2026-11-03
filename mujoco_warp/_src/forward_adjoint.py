@@ -602,12 +602,13 @@ def advance_backward(m: Model, d: Data, d_out: Data, bc: BackwardContext):
 
 @event_scope
 def smooth_qvel_backward(m: Model, d: Data, d_out: Data, lam: wp.array, adj_qvel: wp.array, bc: BackwardContext):
-  """Accumulates the smooth residual VJP in velocity and control space."""
+  """Accumulates non-bias smooth force VJPs in velocity and control space."""
   nworld = d.nworld
   linearization = dataclasses.replace(d_out, qvel=d.qvel, ctrl=d.ctrl)
   derivative.deriv_smooth_vel(m, linearization, bc.qDeriv)
   wp.launch(forward._map_m2d, dim=(nworld, m.nD), inputs=[m.mapM2D, bc.qDeriv], outputs=[bc.qLU])
-  derivative.deriv_rne_vel(m, linearization, bc.qLU)
+  # RNE qvel VJP is handled elsewhere via smooth_qpos_backward, avoiding the full Jacobian.
+  # derivative.deriv_rne_vel(m, linearization, bc.qLU)
   wp.launch(forward._map_m2d, dim=(nworld, m.nD), inputs=[m.mapM2D, d_out.M], outputs=[bc.M_D])
   wp.launch(
     _smooth_qvel_vjp,
