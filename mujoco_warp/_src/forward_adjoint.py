@@ -303,7 +303,7 @@ def _xfrc_applied_vjp(
     force += lam[worldid, dofid] * jacp
     torque += lam[worldid, dofid] * jacr
   # xfrc_applied stores force followed by torque, unlike motion-space spatial vectors.
-  adj_xfrc_applied_out[worldid, bodyid] = wp.spatial_vector(force, torque)
+  adj_xfrc_applied_out[worldid, bodyid] += wp.spatial_vector(force, torque)
 
 
 @wp.kernel(enable_backward=True)

@@ -387,8 +387,9 @@ def smooth_params_backward(m: Model, d: Data, d_out: Data, lam: wp.array, bc: Ba
     pairs = [
       (m.dof_armature, m.dof_armature.grad if m.dof_armature.requires_grad else None),
       (m.dof_damping, m.dof_damping.grad if m.dof_damping.requires_grad else None),
-      (d.qvel, None),
-      (d_out.qacc, None),
+      # State VJPs were already consumed; explicit sinks avoid Warp's .grad fallback.
+      (d.qvel, bc.smooth_adj_qvel),
+      (d_out.qacc, bc.smooth_adj_qacc),
     ]
     wp.launch(adjoint_util._neg_cols, dim=(d.nworld, m.nv), inputs=[lam], outputs=[bc.smooth_r.grad])
     adjoint_util._launch_vjp(
@@ -403,10 +404,16 @@ def smooth_params_backward(m: Model, d: Data, d_out: Data, lam: wp.array, bc: Ba
     model_adjoint.inertia_param_vjp(m, smooth_adjoint.linearize(m, d, d_out, bc), lam, bc=bc)
 
 
+@wp.kernel(enable_backward=False)
+def _accum_input_adjoint(direct: wp.array2d[float], residual: wp.array2d[float], adj_out: wp.array2d[float]):
+  w, i = wp.tid()
+  adj_out[w, i] += direct[w, i] - residual[w, i]
+
+
 def _write_input_adjoints(d: Data, bc: BackwardContext):
   """Combines direct state adjoints with implicit residual VJPs."""
-  wp.launch(adjoint_util._sub_cols, dim=d.qpos.shape, inputs=[bc.adj_qpos, bc.res_qpos], outputs=[d.qpos.grad])
-  wp.launch(adjoint_util._sub_cols, dim=d.qvel.shape, inputs=[bc.adj_qvel, bc.res_qvel], outputs=[d.qvel.grad])
+  wp.launch(_accum_input_adjoint, dim=d.qpos.shape, inputs=[bc.adj_qpos, bc.res_qpos], outputs=[d.qpos.grad])
+  wp.launch(_accum_input_adjoint, dim=d.qvel.shape, inputs=[bc.adj_qvel, bc.res_qvel], outputs=[d.qvel.grad])
 
 
 @event_scope
