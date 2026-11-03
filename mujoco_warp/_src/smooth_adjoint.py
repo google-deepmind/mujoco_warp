@@ -72,6 +72,12 @@ def assert_smooth_supported(m: Model):
     return
 
   bad = []
+  if (
+    m.nu != m.nactuator
+    or np.any(m.actuator_ctrlnum.numpy() != 1)
+    or not np.array_equal(m.actuator_ctrladr.numpy(), np.arange(m.nactuator))
+  ):
+    bad.append("non-identity actuator/control mapping (requires one control per actuator in actuator order)")
   if m.ntendon:
     bad.append("tendons (spring/bias/armature/transmission)")
   if m.nplastic:

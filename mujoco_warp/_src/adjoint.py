@@ -153,6 +153,7 @@ def _assert_step_supported(m: Model):
     raise NotImplementedError("adjoint.step_backward does not support sleep")
   if m.eq_connect_adr.size or m.eq_wld_adr.size or m.ntendon or m.nflex:
     raise NotImplementedError("adjoint.step_backward does not support connect/weld equality, tendon, or flex constraint rows")
+  smooth_adjoint.assert_smooth_supported(m)
 
 
 @wp.kernel(enable_backward=False)

@@ -154,6 +154,11 @@ def _smooth_ctrl_vjp(
   adj_ctrl_out: wp.array2d[float],
 ):
   worldid, actuatorid = wp.tid()
+  if actuator_ctrllimited[actuatorid] and not dsbl_clampctrl:
+    bounds = actuator_ctrlrange[worldid % actuator_ctrlrange.shape[0], actuatorid]
+    ctrl = ctrl_in[worldid, actuatorid]
+    if ctrl <= bounds[0] or ctrl >= bounds[1]:
+      return
   if actuator_forcelimited[actuatorid]:
     bounds = actuator_forcerange[worldid % actuator_forcerange.shape[0], actuatorid]
     force = actuator_force_in[worldid, actuatorid]
@@ -166,7 +171,7 @@ def _smooth_ctrl_vjp(
   if actuator_gaintype[actuatorid] == GainType.AFFINE:
     gain += gainprm[1] * actuator_length_in[worldid, actuatorid] + gainprm[2] * actuator_velocity_in[worldid, actuatorid]
     if implicit and gainprm[2] != 0.0:
-      # The implicit matrix uses raw control, before control and joint-force limits.
+      # The implicit matrix uses clamped control; saturated controls returned above.
       moment_qacc, moment_y = float(0.0), float(0.0)
       for i in range(rownnz):
         elemid = rowadr + i
@@ -175,11 +180,6 @@ def _smooth_ctrl_vjp(
         moment_qacc += moment * qacc_advance[worldid, dofid]
         moment_y += moment * y_remap[worldid, dofid]
       adj_ctrl_out[worldid, actuatorid] += opt_timestep[worldid % opt_timestep.shape[0]] * gainprm[2] * moment_qacc * moment_y
-  if actuator_ctrllimited[actuatorid] and not dsbl_clampctrl:
-    bounds = actuator_ctrlrange[worldid % actuator_ctrlrange.shape[0], actuatorid]
-    ctrl = ctrl_in[worldid, actuatorid]
-    if ctrl <= bounds[0] or ctrl >= bounds[1]:
-      return
   value, _ = smooth_adjoint._actuator_moment_dots(
     jnt_actfrclimited,
     jnt_actfrcrange,
@@ -223,7 +223,7 @@ def _actuator_limit_qvel_vjp(
   # Out:
   adj_qvel_out: wp.array2d[float],
 ):
-  """Corrects actuator velocity derivatives for control and joint-force limits."""
+  """Corrects actuator velocity derivatives for joint-force limits."""
   w, actid = wp.tid()
   if actuator_forcelimited[actid]:
     bounds = actuator_forcerange[w % actuator_forcerange.shape[0], actid]
@@ -231,21 +231,20 @@ def _actuator_limit_qvel_vjp(
     if force <= bounds[0] or force >= bounds[1]:
       return  # deriv_smooth_vel already excludes this actuator.
   dfdv = float(0.0)
-  delta_dfdv = float(0.0)
   if actuator_gaintype[actid] == GainType.AFFINE:
     gain = actuator_gainprm[w % actuator_gainprm.shape[0], actid][2]
     ctrl = ctrl_in[w, actid]
-    dfdv += gain * ctrl
     if actuator_ctrllimited[actid] and not dsbl_clampctrl:
       bounds = actuator_ctrlrange[w % actuator_ctrlrange.shape[0], actid]
-      delta_dfdv = gain * (wp.clamp(ctrl, bounds[0], bounds[1]) - ctrl)
+      ctrl = wp.clamp(ctrl, bounds[0], bounds[1])
+    dfdv += gain * ctrl
   if actuator_biastype[actid] == BiasType.AFFINE:
     dfdv += actuator_biasprm[w % actuator_biasprm.shape[0], actid][2]
-  if dfdv == 0.0 and delta_dfdv == 0.0:
+  if dfdv == 0.0:
     return
   rowadr = moment_rowadr_in[w, actid]
   rownnz = moment_rownnz_in[w, actid]
-  moment_lam, clamped_moment_lam = smooth_adjoint._actuator_moment_dots(
+  _, clamped_moment_lam = smooth_adjoint._actuator_moment_dots(
     jnt_actfrclimited,
     jnt_actfrcrange,
     dof_jntid,
@@ -257,7 +256,7 @@ def _actuator_limit_qvel_vjp(
     rowadr,
     rownnz,
   )
-  correction = -dfdv * clamped_moment_lam + delta_dfdv * moment_lam
+  correction = -dfdv * clamped_moment_lam
   if correction == 0.0:
     return
   for i in range(rownnz):
@@ -691,8 +690,7 @@ def smooth_qvel_backward(m: Model, d: Data, d_out: Data, lam: wp.array, adj_qvel
     outputs=[adj_qvel],
   )
   if not (m.opt.disableflags & DisableBit.ACTUATION):
-    # deriv_smooth_vel uses raw control and ignores joint-force limits. Correct the force
-    # VJP here; the integrator still uses the original matrix.
+    # deriv_smooth_vel includes control clamping but ignores joint-force limits.
     wp.launch(
       _actuator_limit_qvel_vjp,
       dim=(nworld, m.nu),

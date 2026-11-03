@@ -54,9 +54,12 @@ wp.set_module_options({"enable_backward": False, "default_grid_stride": False})
 def _qderiv_actuator_passive_vel(
   # Model:
   opt_timestep: wp.array[float],
+  opt_disableflags: int,
   actuator_dyntype: wp.array[int],
   actuator_gaintype: wp.array[int],
   actuator_biastype: wp.array[int],
+  actuator_ctrladr: wp.array[int],
+  actuator_ctrlnum: wp.array[int],
   actuator_ctrlspec: wp.array[int],
   actuator_actadr: wp.array[int],
   actuator_actnum: wp.array[int],
@@ -68,6 +71,8 @@ def _qderiv_actuator_passive_vel(
   actuator_actearly: wp.array[bool],
   actuator_forcelimited: wp.array[bool],
   actuator_forcerange: wp.array2d[wp.vec2],
+  actuator_ctrllimited: wp.array[bool],
+  actuator_ctrlrange: wp.array2d[wp.vec2],
   actuator_acc0: wp.array2d[float],
   actuator_lengthrange: wp.array2d[wp.vec2],
   # Data in:
@@ -188,8 +193,13 @@ def _qderiv_actuator_passive_vel(
 
       vel += gain * act
   else:
-    if gain != 0.0:
-      vel += gain * ctrl_in[worldid, actid]
+    if gain != 0.0 and actuator_ctrlnum[actid] > 0:
+      ctrladr = actuator_ctrladr[actid]
+      ctrl = ctrl_in[worldid, ctrladr]
+      if not (opt_disableflags & DisableBit.CLAMPCTRL) and actuator_ctrllimited[ctrladr]:
+        bounds = actuator_ctrlrange[worldid % actuator_ctrlrange.shape[0], ctrladr]
+        ctrl = wp.clamp(ctrl, bounds[0], bounds[1])
+      vel += gain * ctrl
 
   vel_out[worldid, actid] = vel
 
@@ -1289,9 +1299,12 @@ def deriv_smooth_vel(m: Model, d: Data, out: wp.array2d[float]):
         dim=(d.nworld, m.nactuator),
         inputs=[
           m.opt.timestep,
+          m.opt.disableflags,
           m.actuator_dyntype,
           m.actuator_gaintype,
           m.actuator_biastype,
+          m.actuator_ctrladr,
+          m.actuator_ctrlnum,
           m.actuator_ctrlspec,
           m.actuator_actadr,
           m.actuator_actnum,
@@ -1303,6 +1316,8 @@ def deriv_smooth_vel(m: Model, d: Data, out: wp.array2d[float]):
           m.actuator_actearly,
           m.actuator_forcelimited,
           m.actuator_forcerange,
+          m.actuator_ctrllimited,
+          m.actuator_ctrlrange,
           m.actuator_acc0,
           m.actuator_lengthrange,
           d.act,
