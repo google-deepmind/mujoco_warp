@@ -21,6 +21,7 @@ import warp as wp
 from mujoco_warp._src import adjoint_util
 from mujoco_warp._src import derivative
 from mujoco_warp._src import forward
+from mujoco_warp._src import math
 from mujoco_warp._src import smooth
 from mujoco_warp._src import smooth_adjoint
 from mujoco_warp._src import smooth_kinematics_adjoint
@@ -32,6 +33,8 @@ from mujoco_warp._src.types import DisableBit
 from mujoco_warp._src.types import IntegratorType
 from mujoco_warp._src.types import JointType
 from mujoco_warp._src.types import Model
+from mujoco_warp._src.types import mat66
+from mujoco_warp._src.types import vec6
 from mujoco_warp._src.types import vec10
 from mujoco_warp._src.warp_util import event_scope
 
@@ -211,6 +214,89 @@ def _dampingpoly_Qv_leaf(
 
 
 @wp.kernel(enable_backward=False)
+def _implicit_free_body_backward(
+  # Model:
+  opt_timestep: wp.array[float],
+  opt_disableflags: int,
+  body_dofadr: wp.array[int],
+  M_rownnz: wp.array[int],
+  M_rowadr: wp.array[int],
+  M_colind: wp.array[int],
+  body_freeadr: wp.array[int],
+  # Data in:
+  qvel_in: wp.array2d[float],
+  xpos_in: wp.array2d[wp.vec3],
+  xmat_in: wp.array2d[wp.mat33],
+  subtree_com_in: wp.array2d[wp.vec3],
+  crb_in: wp.array2d[vec10],
+  M_in: wp.array2d[float],
+  # In:
+  damp_deriv: wp.array2d[float],
+  qacc_advance: wp.array2d[float],
+  adj_qacc: wp.array2d[float],
+  # Out:
+  y_out: wp.array2d[float],
+  adj_qvel_out: wp.array2d[float],
+  adj_dof_out: wp.array2d[float],
+):
+  """Transpose the free-body solve and contract its gyroscopic state derivatives."""
+  worldid, freeid = wp.tid()
+  bodyid = body_freeadr[freeid]
+  dofadr = body_dofadr[bodyid]
+  dt = opt_timestep[worldid % opt_timestep.shape[0]]
+  R = xmat_in[worldid, bodyid]
+  crb = crb_in[worldid, bodyid]
+  mass = crb[9]
+  Iw = wp.mat33(crb[0], crb[3], crb[4], crb[3], crb[1], crb[5], crb[4], crb[5], crb[2])
+  s = subtree_com_in[worldid, bodyid] - xpos_in[worldid, bodyid]
+  velocity = wp.vec3(qvel_in[worldid, dofadr + 3], qvel_in[worldid, dofadr + 4], qvel_in[worldid, dofadr + 5])
+  lin, rot = math.free_bias_vel_blocks(mass, R, Iw, s, velocity)
+
+  # Match forward._implicit_free_body. Fluid forces and sleep are rejected before backward.
+  A = mat66(0.0)
+  for r in range(6):
+    row = dofadr + r
+    start = M_rowadr[row]
+    for k in range(M_rownnz[row]):
+      c = M_colind[start + k] - dofadr
+      value = M_in[worldid, start + k]
+      A[r, c] = value
+      A[c, r] = value
+  if not (opt_disableflags & DisableBit.DAMPER):
+    for r in range(6):
+      A[r, r] += dt * damp_deriv[worldid, dofadr + r]
+  for r in range(3):
+    for c in range(3):
+      A[r, 3 + c] += -dt * mass * lin[r, c]
+      A[3 + r, 3 + c] += dt * rot[r, c]
+
+  factor, pivot, ok = math.lu_factor_6x6(wp.transpose(A))
+  if not ok:
+    return
+  seed = vec6(0.0)
+  for r in range(6):
+    seed[r] = adj_qacc[worldid, dofadr + r]
+  y = math.lu_solve_6x6(factor, pivot, seed)
+  for r in range(6):
+    y_out[worldid, dofadr + r] = y[r]
+
+  y_lin = wp.vec3(y[0], y[1], y[2])
+  y_rot = wp.vec3(y[3], y[4], y[5])
+  acceleration = wp.vec3(
+    qacc_advance[worldid, dofadr + 3], qacc_advance[worldid, dofadr + 4], qacc_advance[worldid, dofadr + 5]
+  )
+  # Bias is quadratic in velocity, so d(B(v)*a)/dv = B(a).
+  lin_acc, rot_acc = math.free_bias_vel_blocks(mass, R, Iw, s, acceleration)
+  adj_velocity = dt * (mass * (wp.transpose(lin_acc) @ y_lin) - wp.transpose(rot_acc) @ y_rot)
+  # R, Iw and s rotate together for a rigid subtree. Only the linear block changes
+  # in world coordinates; the angular block is invariant in the body's frame.
+  adj_rotation = wp.transpose(R) @ wp.cross(y_lin, -dt * mass * (lin @ acceleration))
+  for r in range(3):
+    adj_qvel_out[worldid, dofadr + 3 + r] += adj_velocity[r]
+    adj_dof_out[worldid, dofadr + 3 + r] += adj_rotation[r]
+
+
+@wp.kernel(enable_backward=False)
 def _site_jac_vjp(
   # Model:
   nsite: int,
@@ -255,14 +341,10 @@ def advance_backward(m: Model, d: Data, d_out: Data, bc: BackwardContext):
 
   deriv_flags = DisableBit.ACTUATION | DisableBit.SPRING | DisableBit.DAMPER
   implicit = m.opt.integrator == IntegratorType.IMPLICITFAST and bool(deriv_flags & ~m.opt.disableflags)
-  eulerdamp = m.opt.integrator == IntegratorType.EULER and not m.opt.disableflags & (DisableBit.EULERDAMP | DisableBit.DAMPER)
+  eulerdamp = m.opt.integrator == IntegratorType.EULER and not (m.opt.disableflags & (DisableBit.EULERDAMP | DisableBit.DAMPER))
   qacc_advance = d_out.qacc
 
-  if implicit:
-    derivative.deriv_smooth_vel(m, dataclasses.replace(d_out, qvel=d.qvel), bc.qDeriv)
-    qLD, qLDiagInv, qacc_advance = bc.qLD, bc.qLDiagInv, bc.qacc_advance
-    smooth.factor_solve_i(m, d_out, bc.qDeriv, qLD, qLDiagInv, qacc_advance, d_out.efc.Ma)
-  elif eulerdamp:
+  if implicit or eulerdamp:
     wp.launch(
       forward._compute_damping_deriv,
       dim=(nworld, nv),
@@ -280,6 +362,20 @@ def advance_backward(m: Model, d: Data, d_out: Data, bc: BackwardContext):
       ],
       outputs=[bc.damp_deriv],
     )
+
+  if implicit:
+    linearization = dataclasses.replace(d_out, qvel=d.qvel)
+    derivative.deriv_smooth_vel(m, linearization, bc.qDeriv)
+    wp.launch(
+      forward._implicit_free_body_reset_m,
+      dim=(nworld, m.body_freeadr.size),
+      inputs=[m.body_dofadr, m.M_rownnz, m.M_rowadr, m.body_freeadr, d_out.M],
+      outputs=[bc.qDeriv],
+    )
+    qLD, qLDiagInv, qacc_advance = bc.qLD, bc.qLDiagInv, bc.qacc_advance
+    smooth.factor_solve_i(m, d_out, bc.qDeriv, qLD, qLDiagInv, qacc_advance, d_out.efc.Ma)
+    forward.implicit_free_body(m, linearization, d_out.efc.Ma, qacc_advance, solve=True)
+  elif eulerdamp:
     wp.copy(bc.qDeriv, d_out.M)
     wp.launch(
       forward._euler_damp_qfrc,
@@ -310,6 +406,36 @@ def advance_backward(m: Model, d: Data, d_out: Data, bc: BackwardContext):
 
   if implicit or eulerdamp:
     smooth.solve_LD(m, d_out, qLD, qLDiagInv, bc.y_remap, adj_qacc)
+    if implicit:
+      wp.launch(
+        _implicit_free_body_backward,
+        dim=(nworld, m.body_freeadr.size),
+        inputs=[
+          m.opt.timestep,
+          m.opt.disableflags,
+          m.body_dofadr,
+          m.M_rownnz,
+          m.M_rowadr,
+          m.M_colind,
+          m.body_freeadr,
+          d.qvel,
+          d_out.xpos,
+          d_out.xmat,
+          d_out.subtree_com,
+          d_out.crb,
+          d_out.M,
+          bc.damp_deriv,
+          qacc_advance,
+          adj_qacc,
+        ],
+        outputs=[bc.y_remap, adj_qvel, bc.adj_dof],
+      )
+      wp.launch(
+        smooth_kinematics_adjoint._dof_to_qpos,
+        dim=(nworld, m.njnt),
+        inputs=[m.jnt_type, m.jnt_qposadr, m.jnt_dofadr, d.qpos, bc.adj_dof],
+        outputs=[adj_qpos],
+      )
     support.mul_m(m, d_out, bc.adj_qacc_root, bc.y_remap)
 
     if implicit:
@@ -317,7 +443,7 @@ def advance_backward(m: Model, d: Data, d_out: Data, bc: BackwardContext):
       qpos_direct = smooth_adjoint.mass_matrix_qpos_vjp(m, d, bc.y_remap, bc.w_dir, bc=bc)
       wp.launch(adjoint_util._accum_cols, dim=(nworld, nq), inputs=[qpos_direct], outputs=[adj_qpos])
 
-    if not m.opt.disableflags & DisableBit.DAMPER:
+    if not (m.opt.disableflags & DisableBit.DAMPER):
       # Q = M + dt*D, where D = -d(force_damper)/dv. Its VJP affects velocity and,
       # when optimized, damping itself. Use a negative seed because qacc = Q^-1 Ma.
       wp.launch(adjoint_util._neg_cols, dim=(nworld, nv), inputs=[bc.y_remap], outputs=[bc.smooth_r.grad])
