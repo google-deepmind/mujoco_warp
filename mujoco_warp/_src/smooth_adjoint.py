@@ -72,6 +72,8 @@ def assert_smooth_supported(m: Model):
   bad = []
   if m.ntendon:
     bad.append("tendons (spring/bias/armature/transmission)")
+  if m.nplastic:
+    bad.append("plastic joint state")
   opt = m.opt
   if np.any(opt.density.numpy() != 0.0) or np.any(opt.viscosity.numpy() != 0.0) or np.any(opt.wind.numpy() != 0.0):
     bad.append("fluid forces (opt.density/viscosity/wind)")

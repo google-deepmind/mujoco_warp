@@ -3339,6 +3339,7 @@ _STEP_STATE_FIELDS = (
   "qpos",
   "qvel",
   "act",
+  "plastic",
   "ctrl",
   "qfrc_applied",
   "xfrc_applied",
