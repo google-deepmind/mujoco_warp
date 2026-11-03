@@ -452,7 +452,14 @@ def fwd_kinematics_backward(m: Model, d: Data, bc: BackwardContext | None = None
 
 
 def enable_grad() -> None:
-  """Enables the analytic backward hooks for step and forward kinematics.
+  """Installs numerical derivative rules and analytic backward hooks.
+
+  Replaces ``wp.sqrt`` with ``adjoint_util.safe_sqrt``, whose float32 and float64 adjoints
+  contribute zero at zero, and registers custom quaternion gradients. Also enables forward
+  recording and the step and forward-kinematics backward hooks.
+
+  Call before building kernels that need these rules. The numerical rules apply process-wide,
+  independently of tapes and backward-hook registration.
 
   Backward reductions are nondeterministic, regardless of forward determinism options.
   """
