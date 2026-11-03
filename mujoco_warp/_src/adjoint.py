@@ -416,8 +416,8 @@ def forward_backward_ift(m: Model, d: Data, d_out: Data, adj_qacc: wp.array, bc:
   lam = solver_ctx.search
   contact_constraint_backward(m, d, d_out, lam, bc.res_qpos, bc.res_qvel, bc)
   noncontact_constraint_backward(m, d, d_out, lam, bc.res_qpos, bc.res_qvel, solver_ctx.Jaref, bc)
-  smooth_qvel_backward(m, d, d_out, lam, bc.adj_qvel, bc)
-  smooth_qpos_backward(m, d, d_out, lam, bc.res_qpos, bc)
+  forward_adjoint.smooth_qvel_backward(m, d, d_out, lam, bc.adj_qvel, bc)
+  forward_adjoint.smooth_qpos_backward(m, d, d_out, lam, bc.res_qpos, bc)
   smooth_params_backward(m, d, d_out, lam, bc)
   _write_input_adjoints(d, bc)
 
@@ -439,7 +439,7 @@ def step_backward(m: Model, d: Data, d_out: Data, bc: BackwardContext | None = N
   step_backward_arrays(d, d_out)
   bc = bc or _ACTIVE_BACKWARD_CONTEXT.get() or create_backward_context(m, d)
   _reset_backward_context(bc)
-  _, _, adj_qacc = advance_backward(m, d, d_out, bc)
+  _, _, adj_qacc = forward_adjoint.advance_backward(m, d, d_out, bc)
   forward_backward_ift(m, d, d_out, adj_qacc, bc)
 
 
@@ -475,14 +475,3 @@ def enable_grad() -> None:
   wp.func_grad(math.quat_to_vel)(adjoint_util._adj_quat_to_vel)
   forward.register_step_backward(step_backward, step_backward_arrays)
   forward.register_fwd_kinematics_backward(fwd_kinematics_backward, fwd_kinematics_arrays)
-
-
-# Compatibility exports.
-_create_backward_context = create_backward_context
-advance_backward = forward_adjoint.advance_backward
-smooth_qvel_backward = forward_adjoint.smooth_qvel_backward
-smooth_qpos_backward = forward_adjoint.smooth_qpos_backward
-
-# Legacy test constants; the production contact path is topology-based for every ``nv``.
-_MAX_NV = 16
-_FORCE_SPARSE_CONTACT = True

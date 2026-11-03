@@ -971,7 +971,3 @@ def _kinematic_qpos_vjp(m: Model, d: Data, adj_cdof: wp.array2d, bc: BackwardCon
     smooth_res_qpos,
   )
   return smooth_res_qpos
-
-
-# Compatibility exports.
-rne_qpos_vjp = smooth_force_backward
