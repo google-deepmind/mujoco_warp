@@ -30,6 +30,7 @@ from mujoco_warp._src import util_misc
 from mujoco_warp._src.types import BackwardContext
 from mujoco_warp._src.types import Data
 from mujoco_warp._src.types import DisableBit
+from mujoco_warp._src.types import GainType
 from mujoco_warp._src.types import IntegratorType
 from mujoco_warp._src.types import JointType
 from mujoco_warp._src.types import Model
@@ -122,22 +123,43 @@ def _smooth_qvel_vjp(
 @wp.kernel(enable_backward=False)
 def _smooth_ctrl_vjp(
   # Model:
+  opt_timestep: wp.array[float],
+  actuator_gaintype: wp.array[int],
   actuator_gainprm: wp.array2d[vec10],
   # Data in:
+  actuator_length_in: wp.array2d[float],
   moment_rownnz_in: wp.array2d[int],
   moment_rowadr_in: wp.array2d[int],
   moment_colind_in: wp.array2d[int],
   actuator_moment_in: wp.array2d[float],
+  actuator_velocity_in: wp.array2d[float],
   # In:
   lam: wp.array2d[float],
+  qacc_advance: wp.array2d[float],
+  y_remap: wp.array2d[float],
+  implicit: bool,
   # Out:
   adj_ctrl_out: wp.array2d[float],
 ):
   worldid, actuatorid = wp.tid()
   rowadr = moment_rowadr_in[worldid, actuatorid]
   rownnz = moment_rownnz_in[worldid, actuatorid]
+  gainprm = actuator_gainprm[worldid % actuator_gainprm.shape[0], actuatorid]
+  gain = gainprm[0]
+  if actuator_gaintype[actuatorid] == GainType.AFFINE:
+    gain += gainprm[1] * actuator_length_in[worldid, actuatorid] + gainprm[2] * actuator_velocity_in[worldid, actuatorid]
+    if implicit and gainprm[2] != 0.0:
+      # The implicit matrix uses raw control, before control and joint-force limits.
+      moment_qacc, moment_y = float(0.0), float(0.0)
+      for i in range(rownnz):
+        elemid = rowadr + i
+        dofid = moment_colind_in[worldid, elemid]
+        moment = actuator_moment_in[worldid, elemid]
+        moment_qacc += moment * qacc_advance[worldid, dofid]
+        moment_y += moment * y_remap[worldid, dofid]
+      adj_ctrl_out[worldid, actuatorid] += opt_timestep[worldid % opt_timestep.shape[0]] * gainprm[2] * moment_qacc * moment_y
   value = smooth_adjoint._actuator_moment_dot(moment_colind_in, actuator_moment_in, lam, worldid, rowadr, rownnz)
-  adj_ctrl_out[worldid, actuatorid] = actuator_gainprm[worldid % actuator_gainprm.shape[0], actuatorid][0] * value
+  adj_ctrl_out[worldid, actuatorid] += gain * value
 
 
 @wp.kernel(enable_backward=False)
@@ -367,7 +389,7 @@ def advance_backward(m: Model, d: Data, d_out: Data, bc: BackwardContext):
     )
 
   if implicit:
-    linearization = dataclasses.replace(d_out, qvel=d.qvel)
+    linearization = dataclasses.replace(d_out, qvel=d.qvel, ctrl=d.ctrl)
     derivative.deriv_smooth_vel(m, linearization, bc.qDeriv)
     wp.launch(
       forward._implicit_free_body_reset_m,
@@ -477,7 +499,7 @@ def advance_backward(m: Model, d: Data, d_out: Data, bc: BackwardContext):
 def smooth_qvel_backward(m: Model, d: Data, d_out: Data, lam: wp.array, adj_qvel: wp.array, bc: BackwardContext):
   """Accumulates the smooth residual VJP in velocity and control space."""
   nworld = d.nworld
-  linearization = dataclasses.replace(d_out, qvel=d.qvel)
+  linearization = dataclasses.replace(d_out, qvel=d.qvel, ctrl=d.ctrl)
   derivative.deriv_smooth_vel(m, linearization, bc.qDeriv)
   wp.launch(forward._map_m2d, dim=(nworld, m.nD), inputs=[m.mapM2D, bc.qDeriv], outputs=[bc.qLU])
   derivative.deriv_rne_vel(m, linearization, bc.qLU)
@@ -493,12 +515,19 @@ def smooth_qvel_backward(m: Model, d: Data, d_out: Data, lam: wp.array, adj_qvel
       _smooth_ctrl_vjp,
       dim=(nworld, m.nu),
       inputs=[
+        m.opt.timestep,
+        m.actuator_gaintype,
         m.actuator_gainprm,
+        d_out.actuator_length,
         d_out.moment_rownnz,
         d_out.moment_rowadr,
         d_out.moment_colind,
         d_out.actuator_moment,
+        d_out.actuator_velocity,
         lam,
+        bc.qacc_advance,
+        bc.y_remap,
+        m.opt.integrator == IntegratorType.IMPLICITFAST,
       ],
       outputs=[d.ctrl.grad],
     )
