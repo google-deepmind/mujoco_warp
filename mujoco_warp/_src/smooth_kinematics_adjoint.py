@@ -18,6 +18,7 @@ import warp as wp
 
 from mujoco_warp._src import math
 from mujoco_warp._src import support
+from mujoco_warp._src.types import MJ_MINVAL
 from mujoco_warp._src.types import Data
 from mujoco_warp._src.types import JointType
 from mujoco_warp._src.types import Model
@@ -128,7 +129,11 @@ def _subtree_com_qpos_vjp(
       k,
       w,
     )
-    mass = body_mass[wm, body] / body_subtreemass[w % body_subtreemass.shape[0], root]
+    subtree_mass = body_subtreemass[w % body_subtreemass.shape[0], root]
+    if subtree_mass < MJ_MINVAL:
+      mass = 1.0 if body == root else 0.0
+    else:
+      mass = body_mass[wm, body] / subtree_mass
     acc += mass * wp.dot(jacp, adj_subtree_com[w, root])
   adj_dof_out[w, k] += acc
 

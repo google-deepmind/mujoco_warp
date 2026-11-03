@@ -72,7 +72,7 @@ def _capsule_box_freeze(
 # Eleven primitive pairs are dispatched:
 # plane-{sphere,capsule,ellipsoid,cylinder,box}, sphere-{sphere,box,capsule,cylinder},
 # capsule-capsule, and capsule-box. Box-box and plane-convex/mesh are not AD-safe. Capsule-box
-# freezes the minimizing feature; capsule-capsule supports the non-parallel slot-0 regime.
+# freezes the minimizing feature; capsule-capsule replays the recorded closest-point slot.
 @wp.kernel(enable_backward=True)
 def _narrowphase_recompute(
   # Model:
@@ -158,20 +158,17 @@ def _narrowphase_recompute(
     cpos_out[cid] = pos
     frame_out[cid] = math.make_frame(n)
   elif type0 == GeomType.CAPSULE and type1 == GeomType.CAPSULE:
-    # unique local names per multi-contact branch: Warp codegen scopes locals to the whole
-    # function, so reusing one name with a different vec/mat type across branches is a
-    # type-conflict error.
-    axis0 = wp.vec3(m0[0, 2], m0[1, 2], m0[2, 2])
-    axis1 = wp.vec3(m1[0, 2], m1[1, 2], m1[2, 2])
-    # margin only gates write_contact's slot assignment in the forward; pass a large value so the
-    # (frozen) active slot is always populated. non-parallel (crossed) axes -> slot 0; the
-    # parallel slot-1 assignment is margin-dependent (see the coverage comment above).
-    cc_dist, cc_pos, cc_nrm = collision_primitive_core.capsule_capsule(p0, axis0, s0[0], s0[1], p1, axis1, s1[0], s1[1], 1.0e6)
-    for i in range(2):  # static unroll; runtime-compare select (no runtime indexing of the adjoint)
-      if i == slot:
-        dist_out[cid] = cc_dist[i]
-        cpos_out[cid] = wp.vec3(cc_pos[i, 0], cc_pos[i, 1], cc_pos[i, 2])
-        frame_out[cid] = math.make_frame(wp.vec3(cc_nrm[i, 0], cc_nrm[i, 1], cc_nrm[i, 2]))  # per-slot normal
+    axis0 = wp.vec3(m0[0, 2], m0[1, 2], m0[2, 2]) * s0[1]
+    axis1 = wp.vec3(m1[0, 2], m1[1, 2], m1[2, 2]) * s1[1]
+    a, b = p0 - axis0, p0 + axis0
+    c, e = p1 - axis1, p1 + axis1
+    _, weights0, weights1 = collision_primitive_core._segment_weights(a, b, c, e)
+    weights = weights0 if slot == 0 else weights1
+    # Replay one slot directly to avoid differentiating the forward's output component writes.
+    dist, pos, n = collision_primitive_core.sphere_sphere(a + weights[0] * (b - a), s0[0], c + weights[1] * (e - c), s1[0])
+    dist_out[cid] = dist
+    cpos_out[cid] = pos
+    frame_out[cid] = math.make_frame(n)
   elif type0 == GeomType.PLANE and type1 == GeomType.CYLINDER:
     n0 = wp.vec3(m0[0, 2], m0[1, 2], m0[2, 2])
     axis = wp.vec3(m1[0, 2], m1[1, 2], m1[2, 2])

@@ -177,8 +177,15 @@ def _xfrc_applied_vjp(
 def _dampingpoly_Qv_leaf(
   # Model:
   opt_timestep: wp.array[float],
+  jnt_actuatorid: wp.array[int],
+  dof_jntid: wp.array[int],
   dof_damping: wp.array2d[float],
   dof_dampingpoly: wp.array2d[wp.vec2],
+  actuator_trntype: wp.array[int],
+  actuator_trnid: wp.array[wp.vec2i],
+  actuator_damping: wp.array2d[float],
+  actuator_dampingpoly: wp.array2d[wp.vec2],
+  actuator_gear: wp.array2d[wp.spatial_vector],
   # Data in:
   qvel_in: wp.array2d[float],
   qacc_in: wp.array2d[float],
@@ -187,8 +194,19 @@ def _dampingpoly_Qv_leaf(
 ):
   worldid, dofid = wp.tid()
   dt = opt_timestep[worldid % opt_timestep.shape[0]]
-  damping = dof_damping[worldid % dof_damping.shape[0], dofid]
-  poly = dof_dampingpoly[worldid % dof_dampingpoly.shape[0], dofid]
+  damping, poly = util_misc.dof_damping_total(
+    jnt_actuatorid,
+    dof_jntid,
+    dof_damping,
+    dof_dampingpoly,
+    actuator_trntype,
+    actuator_trnid,
+    actuator_damping,
+    actuator_dampingpoly,
+    actuator_gear,
+    worldid,
+    dofid,
+  )
   out[worldid, dofid] = dt * util_misc._poly_force_deriv(damping, poly, qvel_in[worldid, dofid], 1) * qacc_in[worldid, dofid]
 
 
@@ -248,7 +266,18 @@ def advance_backward(m: Model, d: Data, d_out: Data, bc: BackwardContext):
     wp.launch(
       forward._compute_damping_deriv,
       dim=(nworld, nv),
-      inputs=[m.dof_damping, m.dof_dampingpoly, d.qvel],
+      inputs=[
+        m.jnt_actuatorid,
+        m.dof_jntid,
+        m.dof_damping,
+        m.dof_dampingpoly,
+        m.actuator_trntype,
+        m.actuator_trnid,
+        m.actuator_damping,
+        m.actuator_dampingpoly,
+        m.actuator_gear,
+        d.qvel,
+      ],
       outputs=[bc.damp_deriv],
     )
     wp.copy(bc.qDeriv, d_out.M)
@@ -294,8 +323,15 @@ def advance_backward(m: Model, d: Data, d_out: Data, bc: BackwardContext):
       wp.launch(adjoint_util._neg_cols, dim=(nworld, nv), inputs=[bc.y_remap], outputs=[bc.smooth_r.grad])
       pairs = [
         (m.opt.timestep, None),
+        (m.jnt_actuatorid, None),
+        (m.dof_jntid, None),
         (m.dof_damping, m.dof_damping.grad if m.dof_damping.requires_grad else None),
         (m.dof_dampingpoly, None),
+        (m.actuator_trntype, None),
+        (m.actuator_trnid, None),
+        (m.actuator_damping, None),
+        (m.actuator_dampingpoly, None),
+        (m.actuator_gear, None),
         (d.qvel, bc.adj_qvel_damp),
         (qacc_advance, None),
       ]
@@ -315,7 +351,7 @@ def smooth_qvel_backward(m: Model, d: Data, d_out: Data, lam: wp.array, adj_qvel
   linearization = dataclasses.replace(d_out, qvel=d.qvel)
   derivative.deriv_smooth_vel(m, linearization, bc.qDeriv)
   wp.launch(forward._map_m2d, dim=(nworld, m.nD), inputs=[m.mapM2D, bc.qDeriv], outputs=[bc.qLU])
-  derivative.deriv_rne_vel(m, linearization, bc.qLU, flg_subtract=False)
+  derivative.deriv_rne_vel(m, linearization, bc.qLU)
   wp.launch(forward._map_m2d, dim=(nworld, m.nD), inputs=[m.mapM2D, d_out.M], outputs=[bc.M_D])
   wp.launch(
     _smooth_qvel_vjp,

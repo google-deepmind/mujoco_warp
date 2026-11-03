@@ -153,16 +153,16 @@ def _constraint_row_phi(
   if ty == ConstraintType.FRICTION_DOF:
     sr = dof_solref[w % dof_solref.shape[0], cid]
     si = dof_solimp[w % dof_solimp.shape[0], cid]
-    kbi = constraint._contact_kbimp(opt_disableflags, dt, sr, si, P)
+    kbi = constraint._contact_kbimp(opt_disableflags, dt, sr, si, P, False)
   elif ty == ConstraintType.EQUALITY:
     sr = eq_solref[w % eq_solref.shape[0], cid]
     si = eq_solimp[w % eq_solimp.shape[0], cid]
-    kbi = constraint._contact_kbimp(opt_disableflags, dt, sr, si, P)
+    kbi = constraint._contact_kbimp(opt_disableflags, dt, sr, si, P, False)
   else:  # LIMIT_JOINT (slide/hinge scalar J; ball 3-dof -axis J)
     sr = jnt_solref[w % jnt_solref.shape[0], cid]
     si = jnt_solimp[w % jnt_solimp.shape[0], cid]
-    kbi = constraint._contact_kbimp(opt_disableflags, dt, sr, si, P)
-  k = kbi[0]
+    kbi = constraint._contact_kbimp(opt_disableflags, dt, sr, si, P, False)
+  k = 0.0 if ty == ConstraintType.FRICTION_DOF else kbi[0]
   b = kbi[1]
   imp = kbi[2]
   g = k * imp * P + b * V
@@ -426,9 +426,9 @@ def _contact_phi(cone_type: int):
     solref = contact_solref_in[cid]
     solimp = contact_solimp_in[cid]
     pos0 = efc_pos_ref_in[w, e0] - efc_margin_in[w, e0]  # frozen penetration (D-recovery reference)
-    imp0 = constraint._contact_kbimp(opt_disableflags, dt, solref, solimp, pos0)[2]
+    imp0 = constraint._contact_kbimp(opt_disableflags, dt, solref, solimp, pos0, False)[2]
     pos = efc_pos_in[w, e0] - efc_margin_in[w, e0]  # differentiable penetration (-> res_efc_pos)
-    kbimp = constraint._contact_kbimp(opt_disableflags, dt, solref, solimp, pos)
+    kbimp = constraint._contact_kbimp(opt_disableflags, dt, solref, solimp, pos, False)
     k = kbimp[0]
     b = kbimp[1]
     imp = kbimp[2]
@@ -443,7 +443,7 @@ def _contact_phi(cone_type: int):
       solreffriction = contact_solreffriction_in[cid]
       if solreffriction[0] != 0.0 or solreffriction[1] != 0.0:
         ref_t = solreffriction
-      b_t = constraint._contact_kbimp(opt_disableflags, dt, ref_t, solimp, pos)[1]
+      b_t = constraint._contact_kbimp(opt_disableflags, dt, ref_t, solimp, pos, False)[1]
       mu = fric[0] * imp_isq
 
       if (condim > 1) and (st == ConstraintState.CONE):  # middle zone: cone-coupled forces, shared N/T

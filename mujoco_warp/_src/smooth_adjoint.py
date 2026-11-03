@@ -488,7 +488,6 @@ def mass_matrix_qpos_vjp(m: Model, d: Data, y: wp.array2d, w: wp.array2d, bc: Ba
   scratch.cacc.zero_()
   smooth._rne_cacc_forward(m, scratch, flg_acc=True)
   smooth._rne_cfrc(m, scratch)
-  smooth._rne_cfrc_backward(m, scratch)
   return smooth_force_backward(m, scratch, y, bc=bc)
 
 
