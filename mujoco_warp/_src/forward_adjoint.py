@@ -28,6 +28,7 @@ from mujoco_warp._src import smooth_kinematics_adjoint
 from mujoco_warp._src import support
 from mujoco_warp._src import util_misc
 from mujoco_warp._src.types import BackwardContext
+from mujoco_warp._src.types import BiasType
 from mujoco_warp._src.types import Data
 from mujoco_warp._src.types import DisableBit
 from mujoco_warp._src.types import GainType
@@ -124,24 +125,40 @@ def _smooth_qvel_vjp(
 def _smooth_ctrl_vjp(
   # Model:
   opt_timestep: wp.array[float],
+  jnt_actfrclimited: wp.array[bool],
+  jnt_actfrcrange: wp.array2d[wp.vec2],
+  dof_jntid: wp.array[int],
   actuator_gaintype: wp.array[int],
   actuator_gainprm: wp.array2d[vec10],
+  actuator_forcelimited: wp.array[bool],
+  actuator_forcerange: wp.array2d[wp.vec2],
+  actuator_ctrllimited: wp.array[bool],
+  actuator_ctrlrange: wp.array2d[wp.vec2],
   # Data in:
+  ctrl_in: wp.array2d[float],
   actuator_length_in: wp.array2d[float],
   moment_rownnz_in: wp.array2d[int],
   moment_rowadr_in: wp.array2d[int],
   moment_colind_in: wp.array2d[int],
   actuator_moment_in: wp.array2d[float],
   actuator_velocity_in: wp.array2d[float],
+  actuator_force_in: wp.array2d[float],
+  qfrc_actuator_in: wp.array2d[float],
   # In:
   lam: wp.array2d[float],
   qacc_advance: wp.array2d[float],
   y_remap: wp.array2d[float],
   implicit: bool,
+  dsbl_clampctrl: int,
   # Out:
   adj_ctrl_out: wp.array2d[float],
 ):
   worldid, actuatorid = wp.tid()
+  if actuator_forcelimited[actuatorid]:
+    bounds = actuator_forcerange[worldid % actuator_forcerange.shape[0], actuatorid]
+    force = actuator_force_in[worldid, actuatorid]
+    if force <= bounds[0] or force >= bounds[1]:
+      return
   rowadr = moment_rowadr_in[worldid, actuatorid]
   rownnz = moment_rownnz_in[worldid, actuatorid]
   gainprm = actuator_gainprm[worldid % actuator_gainprm.shape[0], actuatorid]
@@ -158,8 +175,96 @@ def _smooth_ctrl_vjp(
         moment_qacc += moment * qacc_advance[worldid, dofid]
         moment_y += moment * y_remap[worldid, dofid]
       adj_ctrl_out[worldid, actuatorid] += opt_timestep[worldid % opt_timestep.shape[0]] * gainprm[2] * moment_qacc * moment_y
-  value = smooth_adjoint._actuator_moment_dot(moment_colind_in, actuator_moment_in, lam, worldid, rowadr, rownnz)
+  if actuator_ctrllimited[actuatorid] and not dsbl_clampctrl:
+    bounds = actuator_ctrlrange[worldid % actuator_ctrlrange.shape[0], actuatorid]
+    ctrl = ctrl_in[worldid, actuatorid]
+    if ctrl <= bounds[0] or ctrl >= bounds[1]:
+      return
+  value, _ = smooth_adjoint._actuator_moment_dots(
+    jnt_actfrclimited,
+    jnt_actfrcrange,
+    dof_jntid,
+    moment_colind_in,
+    actuator_moment_in,
+    qfrc_actuator_in,
+    lam,
+    worldid,
+    rowadr,
+    rownnz,
+  )
   adj_ctrl_out[worldid, actuatorid] += gain * value
+
+
+@wp.kernel(enable_backward=False)
+def _actuator_limit_qvel_vjp(
+  # Model:
+  jnt_actfrclimited: wp.array[bool],
+  jnt_actfrcrange: wp.array2d[wp.vec2],
+  dof_jntid: wp.array[int],
+  actuator_gaintype: wp.array[int],
+  actuator_biastype: wp.array[int],
+  actuator_gainprm: wp.array2d[vec10],
+  actuator_biasprm: wp.array2d[vec10],
+  actuator_forcelimited: wp.array[bool],
+  actuator_forcerange: wp.array2d[wp.vec2],
+  actuator_ctrllimited: wp.array[bool],
+  actuator_ctrlrange: wp.array2d[wp.vec2],
+  # Data in:
+  ctrl_in: wp.array2d[float],
+  moment_rownnz_in: wp.array2d[int],
+  moment_rowadr_in: wp.array2d[int],
+  moment_colind_in: wp.array2d[int],
+  actuator_moment_in: wp.array2d[float],
+  actuator_force_in: wp.array2d[float],
+  qfrc_actuator_in: wp.array2d[float],
+  # In:
+  lam: wp.array2d[float],
+  dsbl_clampctrl: int,
+  # Out:
+  adj_qvel_out: wp.array2d[float],
+):
+  """Corrects actuator velocity derivatives for control and joint-force limits."""
+  w, actid = wp.tid()
+  if actuator_forcelimited[actid]:
+    bounds = actuator_forcerange[w % actuator_forcerange.shape[0], actid]
+    force = actuator_force_in[w, actid]
+    if force <= bounds[0] or force >= bounds[1]:
+      return  # deriv_smooth_vel already excludes this actuator.
+  dfdv = float(0.0)
+  delta_dfdv = float(0.0)
+  if actuator_gaintype[actid] == GainType.AFFINE:
+    gain = actuator_gainprm[w % actuator_gainprm.shape[0], actid][2]
+    ctrl = ctrl_in[w, actid]
+    dfdv += gain * ctrl
+    if actuator_ctrllimited[actid] and not dsbl_clampctrl:
+      bounds = actuator_ctrlrange[w % actuator_ctrlrange.shape[0], actid]
+      delta_dfdv = gain * (wp.clamp(ctrl, bounds[0], bounds[1]) - ctrl)
+  if actuator_biastype[actid] == BiasType.AFFINE:
+    dfdv += actuator_biasprm[w % actuator_biasprm.shape[0], actid][2]
+  if dfdv == 0.0 and delta_dfdv == 0.0:
+    return
+  rowadr = moment_rowadr_in[w, actid]
+  rownnz = moment_rownnz_in[w, actid]
+  moment_lam, clamped_moment_lam = smooth_adjoint._actuator_moment_dots(
+    jnt_actfrclimited,
+    jnt_actfrcrange,
+    dof_jntid,
+    moment_colind_in,
+    actuator_moment_in,
+    qfrc_actuator_in,
+    lam,
+    w,
+    rowadr,
+    rownnz,
+  )
+  correction = -dfdv * clamped_moment_lam + delta_dfdv * moment_lam
+  if correction == 0.0:
+    return
+  for i in range(rownnz):
+    elemid = rowadr + i
+    wp.atomic_add(
+      adj_qvel_out[w], moment_colind_in[w, elemid], correction * actuator_moment_in[w, elemid]
+    )  # kernel_analyzer: ignore[atomic]
 
 
 @wp.kernel(enable_backward=False)
@@ -510,27 +615,68 @@ def smooth_qvel_backward(m: Model, d: Data, d_out: Data, lam: wp.array, adj_qvel
     inputs=[m.opt.timestep, m.qD_fullm_i, m.qD_fullm_j, bc.qLU, bc.M_D, lam],
     outputs=[adj_qvel],
   )
-  if m.nu and d.ctrl.requires_grad:
+  if not (m.opt.disableflags & DisableBit.ACTUATION):
+    # deriv_smooth_vel uses raw control and ignores joint-force limits. Correct the force
+    # VJP here; the integrator still uses the original matrix.
     wp.launch(
-      _smooth_ctrl_vjp,
+      _actuator_limit_qvel_vjp,
       dim=(nworld, m.nu),
       inputs=[
-        m.opt.timestep,
+        m.jnt_actfrclimited,
+        m.jnt_actfrcrange,
+        m.dof_jntid,
         m.actuator_gaintype,
+        m.actuator_biastype,
         m.actuator_gainprm,
-        d_out.actuator_length,
+        m.actuator_biasprm,
+        m.actuator_forcelimited,
+        m.actuator_forcerange,
+        m.actuator_ctrllimited,
+        m.actuator_ctrlrange,
+        d.ctrl,
         d_out.moment_rownnz,
         d_out.moment_rowadr,
         d_out.moment_colind,
         d_out.actuator_moment,
-        d_out.actuator_velocity,
+        d_out.actuator_force,
+        d_out.qfrc_actuator,
         lam,
-        bc.qacc_advance,
-        bc.y_remap,
-        m.opt.integrator == IntegratorType.IMPLICITFAST,
+        int(m.opt.disableflags) & DisableBit.CLAMPCTRL,
       ],
-      outputs=[d.ctrl.grad],
+      outputs=[adj_qvel],
     )
+    if d.ctrl.requires_grad:
+      wp.launch(
+        _smooth_ctrl_vjp,
+        dim=(nworld, m.nu),
+        inputs=[
+          m.opt.timestep,
+          m.jnt_actfrclimited,
+          m.jnt_actfrcrange,
+          m.dof_jntid,
+          m.actuator_gaintype,
+          m.actuator_gainprm,
+          m.actuator_forcelimited,
+          m.actuator_forcerange,
+          m.actuator_ctrllimited,
+          m.actuator_ctrlrange,
+          d.ctrl,
+          d_out.actuator_length,
+          d_out.moment_rownnz,
+          d_out.moment_rowadr,
+          d_out.moment_colind,
+          d_out.actuator_moment,
+          d_out.actuator_velocity,
+          d_out.actuator_force,
+          d_out.qfrc_actuator,
+          lam,
+          bc.qacc_advance,
+          bc.y_remap,
+          m.opt.integrator == IntegratorType.IMPLICITFAST,
+          int(m.opt.disableflags) & DisableBit.CLAMPCTRL,
+        ],
+        outputs=[d.ctrl.grad],
+      )
   if d.xfrc_applied.requires_grad:
     wp.launch(
       _xfrc_applied_vjp,

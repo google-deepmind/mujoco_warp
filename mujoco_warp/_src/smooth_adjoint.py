@@ -143,26 +143,47 @@ def spring_qpos_vjp(m: Model, d: Data, lam: wp.array2d, bc: BackwardContext | No
 
 
 @wp.func
-def _actuator_moment_dot(
+def _actuator_moment_dots(
+  # Model:
+  jnt_actfrclimited: wp.array[bool],
+  jnt_actfrcrange: wp.array2d[wp.vec2],
+  dof_jntid: wp.array[int],
   # Data in:
   moment_colind_in: wp.array2d[int],
   actuator_moment_in: wp.array2d[float],
+  qfrc_actuator_in: wp.array2d[float],
   # In:
   lam: wp.array2d[float],
   worldid: int,
   rowadr: int,
   rownnz: int,
-) -> float:
-  value = float(0.0)
+) -> tuple[float, float]:
+  """Contracts a moment row separately with unclamped and clamped joint-force cotangents."""
+  unclamped, clamped = float(0.0), float(0.0)
+  model_worldid = worldid % jnt_actfrcrange.shape[0]
   for i in range(rownnz):
     elemid = rowadr + i
-    value += actuator_moment_in[worldid, elemid] * lam[worldid, moment_colind_in[worldid, elemid]]
-  return value
+    dofid = moment_colind_in[worldid, elemid]
+    jntid = dof_jntid[dofid]
+    is_clamped = bool(False)
+    if jnt_actfrclimited[jntid]:
+      bounds = jnt_actfrcrange[model_worldid, jntid]
+      force = qfrc_actuator_in[worldid, dofid]
+      is_clamped = force <= bounds[0] or force >= bounds[1]
+    value = actuator_moment_in[worldid, elemid] * lam[worldid, dofid]
+    if is_clamped:
+      clamped += value
+    else:
+      unclamped += value
+  return unclamped, clamped
 
 
 @wp.kernel(enable_backward=False)
 def _actuator_qpos_vjp(
   # Model:
+  jnt_actfrclimited: wp.array[bool],
+  jnt_actfrcrange: wp.array2d[wp.vec2],
+  dof_jntid: wp.array[int],
   actuator_gaintype: wp.array[int],
   actuator_biastype: wp.array[int],
   actuator_gainprm: wp.array2d[vec10],
@@ -178,6 +199,7 @@ def _actuator_qpos_vjp(
   moment_colind_in: wp.array2d[int],
   actuator_moment_in: wp.array2d[float],
   actuator_force_in: wp.array2d[float],
+  qfrc_actuator_in: wp.array2d[float],
   # In:
   lam: wp.array2d[float],
   dsbl_clampctrl: int,
@@ -203,14 +225,27 @@ def _actuator_qpos_vjp(
     if force <= forcerange[0] or force >= forcerange[1]:
       return
 
-  rownnz = moment_rownnz_in[w, actid]
   rowadr = moment_rowadr_in[w, actid]
-  moment_lam = _actuator_moment_dot(moment_colind_in, actuator_moment_in, lam, w, rowadr, rownnz)
+  rownnz = moment_rownnz_in[w, actid]
+  moment_lam, _ = _actuator_moment_dots(
+    jnt_actfrclimited,
+    jnt_actfrcrange,
+    dof_jntid,
+    moment_colind_in,
+    actuator_moment_in,
+    qfrc_actuator_in,
+    lam,
+    w,
+    rowadr,
+    rownnz,
+  )
   scale = -moment_lam * dfdl
+  if scale == 0.0:
+    return
   for i in range(rownnz):
-    sparseid = rowadr + i
+    elemid = rowadr + i
     wp.atomic_add(
-      res_dof_out[w], moment_colind_in[w, sparseid], scale * actuator_moment_in[w, sparseid]
+      res_dof_out[w], moment_colind_in[w, elemid], scale * actuator_moment_in[w, elemid]
     )  # kernel_analyzer: ignore[atomic]
 
 
@@ -232,6 +267,9 @@ def actuator_qpos_vjp(m: Model, d: Data, lam: wp.array2d, bc: BackwardContext | 
     _actuator_qpos_vjp,
     dim=(d.nworld, m.nu),
     inputs=[
+      m.jnt_actfrclimited,
+      m.jnt_actfrcrange,
+      m.dof_jntid,
       m.actuator_gaintype,
       m.actuator_biastype,
       m.actuator_gainprm,
@@ -246,6 +284,7 @@ def actuator_qpos_vjp(m: Model, d: Data, lam: wp.array2d, bc: BackwardContext | 
       d.moment_colind,
       d.actuator_moment,
       d.actuator_force,
+      d.qfrc_actuator,
       lam,
       int(m.opt.disableflags) & DisableBit.CLAMPCTRL,
     ],
