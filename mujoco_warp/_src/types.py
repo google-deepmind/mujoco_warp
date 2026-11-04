@@ -2807,8 +2807,10 @@ class InverseContext:
   done: wp.array[bool]
   quad_changed_ids: wp.array2d[int]
   quad_changed_count: wp.array[int]
+  quad_changed_delta: wp.array2d[float]
   state_changed_count: wp.array[int]
   ls_exhausted: wp.array[bool]
+  hessian_weight: wp.array2d[float]
   # the full-coordinate Data, set by solve_compact (None natively)
   compact_m_full: Optional["Model"] = None
   compact_d_full: Optional["Data"] = None
@@ -2845,6 +2847,8 @@ class SolverContext:
   hfactor: wp.array3d[float]
   quad_changed_ids: wp.array2d[int]
   quad_changed_count: wp.array[int]
+  quad_changed_delta: wp.array2d[float]
+  hessian_weight: wp.array2d[float]
   inertia_scale: wp.array[float]
   # the full-coordinate Data, set by solve_compact (None natively)
   compact_m_full: Optional["Model"] = None
