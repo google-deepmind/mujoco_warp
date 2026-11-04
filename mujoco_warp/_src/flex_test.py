@@ -28,6 +28,7 @@ from mujoco_warp import test_data
 from mujoco_warp._src import bvh
 from mujoco_warp._src import collision_core
 from mujoco_warp._src import collision_flex
+from mujoco_warp._src import derivative
 from mujoco_warp._src import io
 from mujoco_warp._src import types
 from mujoco_warp._src import util_pkg
@@ -4283,6 +4284,8 @@ class FlexContactParityTest(parameterized.TestCase):
         m.flex_elemlayer,
         m.flex_radius,
         m.flex_elemflexid,
+        m.flex_rod_is_box,
+        m.flex_rod_box_size,
         d.flexvert_xpos,
         d.nworld,
         nelem,
@@ -5805,21 +5808,25 @@ class FlexRodBendingTest(parameterized.TestCase):
     efm_K_val = d.efm_K_val.numpy()
     efm_c = d.efm_c.numpy()
     qacc_smooth = d.qacc_smooth.numpy()
+    lhs_wp = wp.empty((nworld, mjm.nv), dtype=float)
+    derivative.eff_mul_m(m, d, lhs_wp, d.qacc_smooth)
+    lhs = lhs_wp.numpy()
     for w in range(nworld):
       kscale = np.abs(mjds[w].efm_K_val).max()
       np.testing.assert_allclose(efm_K_val[w], mjds[w].efm_K_val, atol=1e-5 * kscale, rtol=1e-4, err_msg=f"efm_K_val {w}")
       cscale = max(1.0, np.abs(mjds[w].efm_c).max())
       np.testing.assert_allclose(efm_c[w], mjds[w].efm_c, atol=1e-5 * cscale, rtol=1e-4, err_msg=f"efm_c {w}")
-      # qacc_smooth solves MuJoCo C's effective metric system M + K; the float32 PCG converges to a
-      # relative residual of about 1e-6, so its solution is checked through the residual
-      M = np.zeros((mjm.nv, mjm.nv))
-      mujoco.mju_sym2dense(M, mjds[w].M, mjm.M_rownnz, mjm.M_rowadr, mjm.M_colind)
-      K = _sparse2dense(mjds[w].efm_K_rownnz, mjds[w].efm_K_rowadr, mjds[w].efm_K_colind, mjds[w].efm_K_val, M.shape)
-      # per-dof diagonal: twist hinge stiffness and damping
-      K += np.diag(d.efm_diag.numpy()[w])
       rhs = mjds[w].qfrc_smooth + mjds[w].efm_c
-      residual = np.linalg.norm((M + K) @ qacc_smooth[w] - rhs) / np.linalg.norm(rhs)
+      residual = np.linalg.norm(lhs[w] - rhs) / np.linalg.norm(rhs)
       self.assertLess(residual, 1e-4, f"qacc_smooth residual {w}")
+      qscale = max(1.0, np.abs(mjds[w].qacc_smooth).max())
+      np.testing.assert_allclose(
+        qacc_smooth[w],
+        mjds[w].qacc_smooth,
+        atol=1e-4 * qscale,
+        rtol=1e-3,
+        err_msg=f"qacc_smooth {w}",
+      )
 
     if nworld == 2:
       self.assertFalse(np.allclose(efm_K_val[0], efm_K_val[1]))
@@ -5894,7 +5901,7 @@ class FlexRodBendingTest(parameterized.TestCase):
           </body>
           <body name="frame" pos="0 0 1">
             <flexcomp name="arm_flex" type="grid" count="11 1 1" spacing="0.1 0.1 0.1" pos="0.3 0 0" dim="1" mass="0.3"
-                      radius="0.03">
+                      radius="0.0325">
               <elasticity young="3e7" damping="0.007" section="box" sectionsize="0.0375 0.0325"/>
               <edge equality="true" solref="0.005 1"/>
               <contact selfcollide="none" contype="0" conaffinity="0"/>
@@ -5938,7 +5945,7 @@ class FlexRodBendingTest(parameterized.TestCase):
     qvel = d.qvel.numpy()
     for w in range(nworld):
       np.testing.assert_allclose(qpos[w], mjds[w].qpos, atol=1e-4, err_msg=f"qpos {w}")
-      np.testing.assert_allclose(qvel[w], mjds[w].qvel, atol=1e-2, err_msg=f"qvel {w}")
+      np.testing.assert_allclose(qvel[w], mjds[w].qvel, atol=2e-4, err_msg=f"qvel {w}")
 
     if nworld == 2:
       self.assertFalse(np.allclose(qpos[0], qpos[1]))
@@ -6000,8 +6007,13 @@ class FlexRodBendingTest(parameterized.TestCase):
     self.assertGreater(np.abs(mjd.qfrc_spring[5]), 1e-2)
     np.testing.assert_allclose(d.qfrc_spring.numpy()[0], mjd.qfrc_spring, atol=3e-5, rtol=1e-4)
 
-  @parameterized.product(section=["", 'section="box" sectionsize="0.005 0.02"'], zigzag=[False, True], nworld=[1, 2])
-  def test_rod_twist_parity(self, section, zigzag, nworld):
+  @parameterized.product(
+    section=["", 'section="box" sectionsize="0.01 0.02"'],
+    pin=["0 1", "0"],
+    zigzag=[False, True],
+    nworld=[1, 2],
+  )
+  def test_rod_twist_parity(self, section, pin, zigzag, nworld):
     """Twist hinge and anisotropic box-section rod forces match MuJoCo C on a rotated rod."""
     if not _CURVED_RODS:
       self.skipTest("Requires 1D flex rod torsion support in MuJoCo")
@@ -6017,7 +6029,7 @@ class FlexRodBendingTest(parameterized.TestCase):
             <geom size="0.01"/>
             <body name="mount">
               <flexcomp name="rod" type="grid" count="7 1 1" spacing="0.1 0.1 0.1" radius="0.01" dim="1" mass="1">
-                <pin id="0 1"/>
+                <pin id="{pin}"/>
                 <contact selfcollide="none" contype="0" conaffinity="0"/>
                 <elasticity young="1e7" poisson="0.25" damping="0.01" {section}/>
               </flexcomp>
@@ -6028,7 +6040,8 @@ class FlexRodBendingTest(parameterized.TestCase):
       """,
       nworld=nworld,
     )
-    twist_jnt = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_JOINT, "rod_twist")
+    twist_name = "rod_twist_1" if pin == "0 1" else "rod_twist_0"
+    twist_jnt = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_JOINT, twist_name)
     self.assertGreaterEqual(twist_jnt, 0)
     twist_dof = mjm.jnt_dofadr[twist_jnt]
     twist_qpos = mjm.jnt_qposadr[twist_jnt]
@@ -6039,9 +6052,10 @@ class FlexRodBendingTest(parameterized.TestCase):
     for w in range(nworld):
       qpos[w] = 0.02 * np.sin(1.7 * np.arange(mjm.nq) + 0.3 + w)
       if zigzag:
-        # large alternating bending, where the exact Hessian of the anisotropic twist solve is indefinite
-        qpos[w, 4:19:3] = 0.05 * (-1.0) ** np.arange(5)
-      qpos[w, twist_qpos] = 0.4 - 0.3 * w
+        nfree = 7 - (2 if pin == "0 1" else 1)
+        qpos[w, 4 : 3 + 3 * nfree : 3] = 0.05 * (-1.0) ** np.arange(nfree)
+      if twist_jnt >= 0:
+        qpos[w, twist_qpos] = 0.4 - 0.3 * w
       qvel[w] = 0.5 * np.cos(1.3 * np.arange(mjm.nv) + w)
     d.qpos.assign(qpos)
     d.qvel.assign(qvel)
@@ -6052,13 +6066,16 @@ class FlexRodBendingTest(parameterized.TestCase):
 
     qfrc_spring = d.qfrc_spring.numpy()
     qfrc_damper = d.qfrc_damper.numpy()
+    plastic = d.plastic.numpy()
     for w in range(nworld):
       mjd = mujoco.MjData(mjm)
       mjd.qpos[:] = qpos[w]
       mjd.qvel[:] = qvel[w]
+      mjd.plastic[:] = plastic[w]
       mujoco.mj_fwdPosition(mjm, mjd)
       mujoco.mj_fwdVelocity(mjm, mjd)
-      self.assertGreater(np.abs(mjd.qfrc_spring[twist_dof]), 1e-3)
+      if twist_jnt >= 0:
+        self.assertGreater(np.abs(mjd.qfrc_spring[twist_dof]), 1e-3)
       sscale = max(1.0, np.abs(mjd.qfrc_spring).max())
       dscale = max(1.0, np.abs(mjd.qfrc_damper).max())
       np.testing.assert_allclose(qfrc_spring[w], mjd.qfrc_spring, atol=1e-5 * sscale, rtol=1e-4, err_msg=f"spring {w}")
@@ -6069,7 +6086,7 @@ class FlexRodBendingTest(parameterized.TestCase):
 
   @parameterized.parameters(1, 2)
   def test_rod_twist_state_parity(self, nworld):
-    """The twist reference carried in the plastic state, and the motor-twisted rod, match MuJoCo C."""
+    """Twist reference carried in the plastic state and motor-twisted rod match MuJoCo C."""
     if not _CURVED_RODS:
       self.skipTest("Requires 1D flex rod torsion support in MuJoCo")
     mjm, _, m, d = test_data.fixture(
@@ -6077,7 +6094,7 @@ class FlexRodBendingTest(parameterized.TestCase):
       <mujoco>
         <option gravity="0 0 0" integrator="discrete"/>
         <worldbody>
-          <flexcomp name="rod" type="grid" count="11 1 1" spacing="0.05 0.05 0.05" radius="0.01" dim="1" mass="0.1">
+          <flexcomp name="rod" type="grid" count="11 1 1" spacing="0.05 0.05 0.05" radius="0.004" dim="1" mass="0.1">
             <pin id="0 1"/>
             <edge equality="true"/>
             <contact selfcollide="none" contype="0" conaffinity="0"/>
@@ -6095,10 +6112,11 @@ class FlexRodBendingTest(parameterized.TestCase):
     f = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_FLEX, "rod")
     padr = mjm.flex_plasticadr[f]
     self.assertGreaterEqual(padr, 0)
-    self.assertEqual(mjm.nplastic, 7)
+    self.assertEqual(mjm.nplastic, 69)
 
     qpos0 = d.qpos.numpy().copy()
     qvel0 = d.qvel.numpy().copy()
+    plastic0 = d.plastic.numpy().copy()
     ctrl = d.ctrl.numpy()
     for w in range(nworld):
       ctrl[w] = 0.01 * (1.0 - 1.5 * w)
@@ -6112,6 +6130,7 @@ class FlexRodBendingTest(parameterized.TestCase):
       mjd = mujoco.MjData(mjm)
       mjd.qpos[:] = qpos0[w]
       mjd.qvel[:] = qvel0[w]
+      mjd.plastic[:] = plastic0[w]
       mjd.ctrl[:] = ctrl[w]
       for _ in range(20):
         mujoco.mj_step(mjm, mjd)
@@ -6121,6 +6140,903 @@ class FlexRodBendingTest(parameterized.TestCase):
     if nworld == 2:
       self.assertFalse(np.allclose(qpos[0], qpos[1]))
       self.assertFalse(np.allclose(plastic[0], plastic[1]))
+
+  @parameterized.product(
+    solver=["CG", "Newton"],
+    pin=["0 1", "0"],
+    nworld=[1, 2],
+  )
+  def test_rod_circular_per_edge_twist_and_wrapping(self, solver, pin, nworld):
+    """Circular DER rods with per-edge twist DOFs, >pi hinge twist, and CG/Newton match C."""
+    if not _CURVED_RODS:
+      self.skipTest("Requires 1D flex rod torsion support in MuJoCo")
+    mjm, _, m, d = test_data.fixture(
+      xml=f"""
+      <mujoco>
+        <option integrator="discrete" solver="{solver}"/>
+        <worldbody>
+          <flexcomp name="cable" type="grid" count="6 1 1" spacing="0.06 0.06 0.06" pos="0 0 0.5"
+                    radius="0.008" dim="1" mass="0.06">
+            <pin id="{pin}"/>
+            <edge equality="true" solref="0.005 1"/>
+            <contact selfcollide="none" contype="0" conaffinity="0"/>
+            <elasticity young="2e6" poisson="0.3" damping="0.015"/>
+          </flexcomp>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=nworld,
+    )
+    f = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_FLEX, "cable")
+    self.assertEqual(mjm.nplastic, 34)
+    self.assertGreaterEqual(mjm.flex_plasticadr[f], 0)
+
+    first_twist = "cable_twist_1" if pin == "0 1" else "cable_twist_0"
+    jnt_first = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_JOINT, first_twist)
+    jnt_last = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_JOINT, "cable_twist")
+    self.assertGreaterEqual(jnt_first, 0)
+    self.assertGreaterEqual(jnt_last, 0)
+
+    qpos = d.qpos.numpy().copy()
+    qvel = d.qvel.numpy().copy()
+    plastic0 = d.plastic.numpy().copy()
+    for w in range(nworld):
+      qpos[w] += 0.005 * np.sin(np.arange(mjm.nq) + w)
+      # Twist > pi across the last hinge: joint difference stays unwrapped and matches C
+      qpos[w, mjm.jnt_qposadr[jnt_last]] += 1.25 * np.pi + 0.2 * (1.0 - 0.5 * w)
+      qvel[w] = 0.2 * np.cos(1.1 * np.arange(mjm.nv) + w)
+      qvel[w, mjm.jnt_dofadr[jnt_last]] = 1.5 - w
+    d.qpos.assign(qpos)
+    d.qvel.assign(qvel)
+
+    mjds = []
+    for w in range(nworld):
+      mjd_w = mujoco.MjData(mjm)
+      mjd_w.qpos[:] = qpos[w]
+      mjd_w.qvel[:] = qvel[w]
+      mjd_w.plastic[:] = plastic0[w]
+      mjds.append(mjd_w)
+
+    for _ in range(10):
+      for w in range(nworld):
+        mujoco.mj_step(mjm, mjds[w])
+      mjw.step(m, d)
+
+    qpos_out = d.qpos.numpy()
+    qvel_out = d.qvel.numpy()
+    plastic_out = d.plastic.numpy()
+    for w in range(nworld):
+      np.testing.assert_allclose(qpos_out[w], mjds[w].qpos, atol=2e-4, rtol=1e-3, err_msg=f"qpos {w}")
+      np.testing.assert_allclose(qvel_out[w], mjds[w].qvel, atol=5e-4, rtol=2e-3, err_msg=f"qvel {w}")
+      np.testing.assert_allclose(plastic_out[w], mjds[w].plastic, atol=2e-4, rtol=1e-3, err_msg=f"plastic {w}")
+    if nworld == 2:
+      self.assertFalse(np.allclose(qpos_out[0], qpos_out[1]))
+      self.assertFalse(np.allclose(plastic_out[0], plastic_out[1]))
+
+  def _assert_efc_world_eq(self, mjm, m, d, mjd, w, name, tol=_TOLERANCE):
+    """Assert per-world EFC equality against single-world MuJoCo MjData `mjd`."""
+    nefc = int(mjd.nefc)
+    self.assertEqual(int(d.nefc.numpy()[w]), nefc, f"{name}: nefc mismatch (world {w})")
+    if nefc == 0:
+      return
+
+    nv = mjm.nv
+    if mujoco.mj_isSparse(mjm):
+      mj_J = np.zeros((nefc, nv))
+      mujoco.mju_sparse2dense(mj_J, mjd.efc_J, mjd.efc_J_rownnz, mjd.efc_J_rowadr, mjd.efc_J_colind)
+    else:
+      mj_J = mjd.efc_J.reshape((nefc, nv))
+
+    if m.is_sparse:
+      d_J = np.zeros((nefc, nv))
+      mujoco.mju_sparse2dense(
+        d_J,
+        d.efc.J.numpy()[w, 0],
+        d.efc.J_rownnz.numpy()[w, :nefc],
+        d.efc.J_rowadr.numpy()[w, :nefc],
+        d.efc.J_colind.numpy()[w, 0],
+      )
+    else:
+      d_J = d.efc.J.numpy()[w, :nefc, :nv]
+
+    contact_min_type = int(mujoco.mjtConstraint.mjCNSTR_CONTACT_FRICTIONLESS)
+
+    def _row_keys(efc_type, efc_id, J, con_pos_fn):
+      counts = {}
+      keys = []
+      for r in range(nefc):
+        tp = int(efc_type[r])
+        cid = int(efc_id[r])
+        if tp >= contact_min_type:
+          idx = counts.get((tp, cid), 0)
+          counts[(tp, cid)] = idx + 1
+          cp = con_pos_fn(cid)
+          keys.append(
+            (
+              tp,
+              round(float(cp[0]), 4),
+              round(float(cp[1]), 4),
+              round(float(cp[2]), 4),
+              idx,
+            )
+          )
+        else:
+          nz = np.flatnonzero(np.abs(J[r]) > 1e-6)
+          c0 = int(nz[0]) if len(nz) else -1
+          c1 = int(nz[-1]) if len(nz) else -1
+          idx = counts.get((tp, cid, c0, c1), 0)
+          counts[(tp, cid, c0, c1)] = idx + 1
+          keys.append((tp, float(cid), float(c0), float(c1), idx))
+      return sorted(range(nefc), key=keys.__getitem__)
+
+    d_efc_type = d.efc.type.numpy()[w, :nefc]
+    d_efc_id = d.efc.id.numpy()[w, :nefc]
+    d_con_pos = d.contact.pos.numpy()
+    mjd_order = _row_keys(
+      mjd.efc_type[:nefc],
+      mjd.efc_id[:nefc],
+      mj_J,
+      lambda cid: mjd.contact[cid].pos,
+    )
+    d_order = _row_keys(d_efc_type, d_efc_id, d_J, lambda cid: d_con_pos[cid])
+
+    np.testing.assert_allclose(
+      d_efc_type[d_order],
+      mjd.efc_type[mjd_order],
+      err_msg=f"{name}_type (world {w})",
+    )
+    np.testing.assert_allclose(
+      d.efc.pos.numpy()[w, d_order],
+      mjd.efc_pos[mjd_order],
+      atol=tol,
+      rtol=tol,
+      err_msg=f"{name}_pos (world {w})",
+    )
+    np.testing.assert_allclose(
+      d.efc.margin.numpy()[w, d_order],
+      mjd.efc_margin[mjd_order],
+      atol=tol,
+      rtol=tol,
+      err_msg=f"{name}_margin (world {w})",
+    )
+    np.testing.assert_allclose(
+      d_J[d_order],
+      mj_J[mjd_order],
+      atol=tol,
+      rtol=tol,
+      err_msg=f"{name}_J (world {w})",
+    )
+    np.testing.assert_allclose(
+      d.efc.D.numpy()[w, d_order],
+      mjd.efc_D[mjd_order],
+      atol=tol,
+      rtol=tol,
+      err_msg=f"{name}_D (world {w})",
+    )
+    np.testing.assert_allclose(
+      d.efc.vel.numpy()[w, d_order],
+      mjd.efc_vel[mjd_order],
+      atol=tol,
+      rtol=tol,
+      err_msg=f"{name}_vel (world {w})",
+    )
+    np.testing.assert_allclose(
+      d.efc.aref.numpy()[w, d_order],
+      mjd.efc_aref[mjd_order],
+      atol=2 * tol,
+      rtol=2 * tol,
+      err_msg=f"{name}_aref (world {w})",
+    )
+
+  @parameterized.product(
+    jacobian=["sparse", "dense"],
+    solver=["CG", "Newton"],
+    nworld=[1, 2],
+  )
+  def test_rod_box_collision_and_lever_arm_parity(self, jacobian, solver, nworld):
+    """Box-section DER rod collision across primitive/flex pairs and lever arms match C."""
+    if not _CURVED_RODS:
+      self.skipTest("Requires 1D flex rod box collision support in MuJoCo")
+    mjm, _, m, d = test_data.fixture(
+      xml=f"""
+      <mujoco>
+        <option integrator="discrete" solver="{solver}" jacobian="{jacobian}"/>
+        <worldbody>
+          <geom name="floor" type="plane" size="2 2 0.1"/>
+          <geom name="sph" size="0.025" pos="0.075 0.032 0.06"/>
+          <geom name="cap" type="capsule" size="0.015 0.04" pos="0.175 -0.028 0.06" euler="25 10 0"/>
+          <geom name="blk" type="box" size="0.02 0.02 0.02" pos="0.275 0.031 0.06" euler="10 20 15"/>
+
+          <flexcomp name="strip" type="grid" count="6 1 1" spacing="0.07 0.07 0.07" pos="0 0 0.016"
+                    radius="0.005" dim="1" mass="0.12">
+            <pin id="0"/>
+            <edge equality="true" solref="0.005 1"/>
+            <contact selfcollide="none"/>
+            <elasticity young="2e6" damping="0.02" section="box" sectionsize="0.018 0.008"/>
+          </flexcomp>
+
+          <flexcomp name="strip2" type="grid" count="4 1 1" spacing="0.06 0.06 0.06" pos="0.14 -0.08 0.03"
+                    euler="0 0 90" radius="0.005" dim="1" mass="0.08">
+            <pin id="0"/>
+            <edge equality="true" solref="0.005 1"/>
+            <contact selfcollide="none"/>
+            <elasticity young="2e6" damping="0.02" section="box" sectionsize="0.015 0.008"/>
+          </flexcomp>
+
+          <flexcomp name="cable" type="grid" count="4 1 1" spacing="0.06 0.06 0.06" pos="0.22 -0.08 0.026"
+                    euler="0 0 90" radius="0.012" dim="1" mass="0.06">
+            <pin id="0"/>
+            <edge equality="true" solref="0.005 1"/>
+            <contact selfcollide="none"/>
+            <elasticity young="1e6" damping="0.01"/>
+          </flexcomp>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=nworld,
+    )
+    qpos = d.qpos.numpy().copy()
+    qvel = d.qvel.numpy().copy()
+    jnt_tw = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_JOINT, "strip_twist_1")
+    self.assertGreaterEqual(jnt_tw, 0)
+    for w in range(nworld):
+      qpos[w, mjm.jnt_qposadr[jnt_tw]] = 0.25 - 0.15 * w
+      qvel[w] = 0.05 * np.sin(np.arange(mjm.nv) + w)
+    d.qpos.assign(qpos)
+    d.qvel.assign(qvel)
+
+    plastic0 = d.plastic.numpy().copy()
+    mjds = []
+    for w in range(nworld):
+      mjd_w = mujoco.MjData(mjm)
+      mjd_w.qpos[:] = qpos[w]
+      mjd_w.qvel[:] = qvel[w]
+      mjd_w.plastic[:] = plastic0[w]
+      mujoco.mj_forward(mjm, mjd_w)
+      mjds.append(mjd_w)
+
+    d.nefc.fill_(-1)
+    d.qfrc_constraint.fill_(wp.inf)
+    mjw.forward(m, d)
+    qfrc_con = d.qfrc_constraint.numpy()
+    for w in range(nworld):
+      self.assertGreater(mjds[w].ncon, 4)
+      self._assert_efc_world_eq(mjm, m, d, mjds[w], w, f"box_rod_efc_{w}", tol=2e-3)
+      cscale = max(1.0, np.abs(mjds[w].qfrc_constraint).max())
+      np.testing.assert_allclose(
+        qfrc_con[w],
+        mjds[w].qfrc_constraint,
+        atol=2e-3 * cscale,
+        rtol=2e-2,
+        err_msg=f"qfrc_con {w}",
+      )
+    if nworld == 2:
+      self.assertFalse(np.allclose(qfrc_con[0], qfrc_con[1]))
+
+    for _ in range(5):
+      for w in range(nworld):
+        mujoco.mj_step(mjm, mjds[w])
+      mjw.step(m, d)
+
+    qpos_out = d.qpos.numpy()
+    plastic_out = d.plastic.numpy()
+    for w in range(nworld):
+      np.testing.assert_allclose(qpos_out[w], mjds[w].qpos, atol=2e-3, err_msg=f"qpos {w}")
+      np.testing.assert_allclose(plastic_out[w], mjds[w].plastic, atol=5e-3, err_msg=f"plastic {w}")
+    if nworld == 2:
+      self.assertFalse(np.allclose(qpos_out[0], qpos_out[1]))
+
+  @parameterized.product(
+    jacobian=["sparse", "dense"],
+    nworld=[1, 2],
+  )
+  def test_rod_capsule_rolling_contact_parity(self, jacobian, nworld):
+    """Circular DER rod rolling contact lever-arm Jacobian (axial twist torque) matches MuJoCo C."""
+    if not _CURVED_RODS:
+      self.skipTest("Requires 1D flex rod torsion support in MuJoCo")
+    mjm, _, m, d = test_data.fixture(
+      xml=f"""
+      <mujoco>
+        <option integrator="discrete" jacobian="{jacobian}"/>
+        <worldbody>
+          <geom name="floor" type="plane" size="2 2 0.1" friction="0.8 0.01 0.005"/>
+          <geom name="roller" type="capsule" size="0.02 0.06" pos="0.08 0 0.032" euler="90 0 0"
+                friction="0.8 0.01 0.005"/>
+          <flexcomp name="cable" type="direct" radius="0.015" dim="1" mass="0.1"
+                    point="0 0 0.045  0.05 0 0.012  0.11 0 0.012  0.17 0 0.012"
+                    element="0 1  1 2  2 3">
+            <pin id="0"/>
+            <edge equality="true" solref="0.005 1"/>
+            <contact selfcollide="none" friction="0.8 0.01 0.005" condim="6"/>
+            <elasticity young="1e6" damping="0.02"/>
+          </flexcomp>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=nworld,
+    )
+    jnt_tw = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_JOINT, "cable_twist_1")
+    self.assertGreaterEqual(jnt_tw, 0)
+    dof_tw = mjm.jnt_dofadr[jnt_tw]
+
+    qvel = d.qvel.numpy().copy()
+    plastic0 = d.plastic.numpy().copy()
+    for w in range(nworld):
+      qvel[w, dof_tw] = 3.0 - 1.5 * w
+    d.qvel.assign(qvel)
+
+    mjds = []
+    for w in range(nworld):
+      mjd_w = mujoco.MjData(mjm)
+      mjd_w.qvel[:] = qvel[w]
+      mjd_w.plastic[:] = plastic0[w]
+      mujoco.mj_forward(mjm, mjd_w)
+      mjds.append(mjd_w)
+
+    d.nefc.fill_(-1)
+    d.qfrc_constraint.fill_(wp.inf)
+    mjw.forward(m, d)
+    qfrc_con = d.qfrc_constraint.numpy()
+    for w in range(nworld):
+      self.assertGreater(np.abs(mjds[w].qfrc_constraint[dof_tw]), 1e-4)
+      self._assert_efc_world_eq(mjm, m, d, mjds[w], w, f"cap_rod_efc_{w}", tol=1e-3)
+      cscale = max(1.0, np.abs(mjds[w].qfrc_constraint).max())
+      np.testing.assert_allclose(
+        qfrc_con[w],
+        mjds[w].qfrc_constraint,
+        atol=1e-3 * cscale,
+        rtol=1e-2,
+        err_msg=f"qfrc_con {w}",
+      )
+    if nworld == 2:
+      self.assertFalse(np.allclose(qfrc_con[0], qfrc_con[1]))
+
+  def test_rod_twist_beyond_pi_unwrap_parity(self):
+    """Uniform twist >pi per hinge and multi-turn servo windup match C."""
+    if not _CURVED_RODS:
+      self.skipTest("Requires 1D flex rod torsion support in MuJoCo")
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option gravity="0 0 0" integrator="discrete" solver="CG" timestep="0.002"
+                tolerance="1e-10" iterations="100">
+          <flag energy="enable"/>
+        </option>
+        <worldbody>
+          <flexcomp name="rod" type="grid" count="6 1 1" spacing="0.06 0.06 0.06" radius="0.008"
+                    dim="1" mass="0.06">
+            <pin id="0 1"/>
+            <edge equality="true" solref="0.005 1"/>
+            <contact selfcollide="none" contype="0" conaffinity="0"/>
+            <elasticity young="1e6" poisson="0.3" damping="0.01"/>
+          </flexcomp>
+        </worldbody>
+        <actuator>
+          <position joint="rod_twist" kp="2.0" kv="0.05"/>
+        </actuator>
+      </mujoco>
+      """,
+    )
+    self.assertEqual(mjm.nplastic, 34)  # 6*5 + 4
+    tw_names = ["rod_twist_1", "rod_twist_2", "rod_twist_3", "rod_twist"]
+    tw_jnts = [mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_JOINT, nm) for nm in tw_names]
+    tw_qpos = [mjm.jnt_qposadr[jnt] for jnt in tw_jnts]
+    tw_dofs = [mjm.jnt_dofadr[jnt] for jnt in tw_jnts]
+    tail_dof = tw_dofs[-1]
+
+    # 1. Static uniform twist up to 3.5*pi per hinge: monotone energy and negative restoring torque
+    prev_energy = 0.0
+    for alpha in (0.5 * np.pi, 1.2 * np.pi, 2.3 * np.pi, 3.5 * np.pi):
+      qpos = mjm.qpos0.copy()
+      for idx, qadr in enumerate(tw_qpos):
+        qpos[qadr] = (idx + 1) * alpha
+      d.qpos.assign(qpos[None].astype(np.float32))
+      d.plastic.zero_()
+      mjd.qpos[:] = qpos
+      mjd.plastic[:] = 0.0
+      mujoco.mj_forward(mjm, mjd)
+      mjw.forward(m, d)
+      qfrc_sp_wp = d.qfrc_spring.numpy()[0]
+      e_wp = -0.5 * float(np.dot(qpos[tw_qpos], qfrc_sp_wp[tw_dofs]))
+      e_c = -0.5 * float(np.dot(qpos[tw_qpos], mjd.qfrc_spring[tw_dofs]))
+      tau_wp = float(qfrc_sp_wp[tail_dof])
+      self.assertGreater(e_wp, prev_energy)
+      self.assertLess(tau_wp, 0.0)
+      np.testing.assert_allclose(e_wp, e_c, rtol=1e-4, atol=1e-5)
+      np.testing.assert_allclose(qfrc_sp_wp, mjd.qfrc_spring, rtol=1e-4, atol=1e-5)
+      prev_energy = e_wp
+
+    # 2. Multi-step servo trajectory winding tail toward 3 full turns (6*pi)
+    mjw.reset_data(m, d)
+    mujoco.mj_resetData(mjm, mjd)
+    # Give slight out-of-line bend so reference frames transport and unwrap psi
+    qpos0 = d.qpos.numpy().copy()
+    qpos0[0, 1] = 0.01
+    d.qpos.assign(qpos0)
+    mjd.qpos[:] = qpos0[0]
+    d.ctrl.fill_(6.0 * np.pi)
+    mjd.ctrl[0] = 6.0 * np.pi
+    for _ in range(30):
+      mujoco.mj_step(mjm, mjd)
+      mjw.step(m, d)
+    np.testing.assert_allclose(d.qpos.numpy()[0], mjd.qpos, atol=1e-3, rtol=2e-3)
+    np.testing.assert_allclose(d.plastic.numpy()[0], mjd.plastic, atol=1e-3, rtol=2e-3)
+
+  def test_rod_tail_clamp_and_no_state_plastic_roundtrip(self):
+    """Tail clamp omits <name>_twist; rotated-root no-state and plastic round-trip match C."""
+    if not _CURVED_RODS:
+      self.skipTest("Requires 1D flex rod torsion support in MuJoCo")
+
+    # 1. Tail-clamped rod on a rolling tail body: <name>_twist omitted, reaction torque on tail body
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option gravity="0 0 0" integrator="discrete" solver="CG">
+          <flag energy="enable"/>
+        </option>
+        <worldbody>
+          <body name="tail_mount">
+            <joint name="tail_roll" type="hinge" axis="1 0 0"/>
+            <geom size="0.01" mass="0.05"/>
+            <flexcomp name="ribbon" type="grid" count="5 1 1" spacing="0.08 0.08 0.08"
+                      radius="0.006" dim="1" mass="0.08">
+              <pin id="3 4"/>
+              <contact selfcollide="none" contype="0" conaffinity="0"/>
+              <elasticity young="2e6" damping="0.02" section="box" sectionsize="0.018 0.006"/>
+            </flexcomp>
+          </body>
+        </worldbody>
+      </mujoco>
+      """,
+    )
+    # Tail edge is pinned -> ribbon_twist is omitted while ribbon_twist_0..ribbon_twist_2 exist
+    self.assertEqual(mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_JOINT, "ribbon_twist"), -1)
+    self.assertGreaterEqual(mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_JOINT, "ribbon_twist_2"), 0)
+    self.assertTrue(bool(m.flex_rod_tail_clamped.numpy()[0]))
+
+    roll_jnt = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_JOINT, "tail_roll")
+    roll_qadr = mjm.jnt_qposadr[roll_jnt]
+    roll_dof = mjm.jnt_dofadr[roll_jnt]
+    # Step once at rest to initialize plastic frames, then roll the tail mount
+    mujoco.mj_step(mjm, mjd)
+    mjw.step(m, d)
+    qpos = d.qpos.numpy().copy()
+    qvel = d.qvel.numpy().copy()
+    qpos[0, roll_qadr] = 0.35
+    qvel[0, roll_dof] = 1.2
+    d.qpos.assign(qpos)
+    d.qvel.assign(qvel)
+    mjd.qpos[:] = qpos[0]
+    mjd.qvel[:] = qvel[0]
+
+    mujoco.mj_forward(mjm, mjd)
+    mjw.forward(m, d)
+    self.assertLess(mjd.qfrc_spring[roll_dof], -1e-2)
+    self.assertLess(mjd.qfrc_damper[roll_dof], -1e-3)
+    np.testing.assert_allclose(d.qfrc_spring.numpy()[0], mjd.qfrc_spring, rtol=1e-4, atol=1e-4)
+    np.testing.assert_allclose(d.qfrc_damper.numpy()[0], mjd.qfrc_damper, rtol=1e-4, atol=1e-4)
+
+    # 2. Rotated-root no-state start has zero force/energy, and saved plastic state round-trips
+    mjm2, mjd2, m2, d2 = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option gravity="0 0 0" integrator="discrete" solver="CG">
+          <flag energy="enable"/>
+        </option>
+        <worldbody>
+          <body name="root">
+            <joint name="root_roll" type="hinge" axis="1 0 0"/>
+            <geom size="0.01" mass="0.05"/>
+            <flexcomp name="rod" type="grid" count="5 1 1" spacing="0.08 0.08 0.08"
+                      radius="0.005" dim="1" mass="0.08">
+              <pin id="0 1"/>
+              <contact selfcollide="none" contype="0" conaffinity="0"/>
+              <elasticity young="1e6" damping="0.01" section="box" sectionsize="0.015 0.005"/>
+            </flexcomp>
+          </body>
+        </worldbody>
+      </mujoco>
+      """,
+    )
+    qpos2 = mjm2.qpos0.copy()
+    qpos2[0] = 1.3  # Roll root by 1.3 rad with zero plastic state
+    d2.qpos.assign(qpos2[None].astype(np.float32))
+    d2.plastic.zero_()
+    mjd2.qpos[:] = qpos2
+    mjd2.plastic[:] = 0.0
+    mujoco.mj_forward(mjm2, mjd2)
+    mjw.forward(m2, d2)
+    mjw.energy_pos(m2, d2)
+    np.testing.assert_allclose(d2.qfrc_spring.numpy()[0], 0.0, atol=1e-5)
+    np.testing.assert_allclose(d2.energy.numpy()[0, 0], 0.0, atol=1e-6)
+
+    # Perturb velocities, step 5 steps, save (qpos, qvel, plastic), step 5 more, restore & re-step
+    qvel2 = 0.3 * np.cos(np.arange(mjm2.nv, dtype=np.float32))[None]
+    d2.qvel.assign(qvel2)
+    mjd2.qvel[:] = qvel2[0]
+    for _ in range(5):
+      mujoco.mj_step(mjm2, mjd2)
+      mjw.step(m2, d2)
+    saved_qpos = d2.qpos.numpy().copy()
+    saved_qvel = d2.qvel.numpy().copy()
+    saved_plastic = d2.plastic.numpy().copy()
+    for _ in range(5):
+      mujoco.mj_step(mjm2, mjd2)
+      mjw.step(m2, d2)
+    final_qpos = d2.qpos.numpy().copy()
+    final_plastic = d2.plastic.numpy().copy()
+    np.testing.assert_allclose(final_qpos[0], mjd2.qpos, atol=2e-4)
+    np.testing.assert_allclose(final_plastic[0], mjd2.plastic, atol=2e-4)
+
+    mjw.reset_data(m2, d2)
+    d2.qpos.assign(saved_qpos)
+    d2.qvel.assign(saved_qvel)
+    d2.plastic.assign(saved_plastic)
+    for _ in range(5):
+      mjw.step(m2, d2)
+    np.testing.assert_allclose(d2.qpos.numpy(), final_qpos, atol=1e-6)
+    np.testing.assert_allclose(d2.plastic.numpy(), final_plastic, atol=1e-6)
+
+  @parameterized.product(
+    cone=[mujoco.mjtCone.mjCONE_PYRAMIDAL, mujoco.mjtCone.mjCONE_ELLIPTIC],
+    jacobian=["sparse", "dense"],
+  )
+  def test_rod_shuffled_direct_and_circle_longitudinal_contact_parity(self, cone, jacobian):
+    """Shuffled direct circular rod contact Jacobian (incl. longitudinal term) matches C."""
+    if not _CURVED_RODS:
+      self.skipTest("Requires 1D flex rod torsion support in MuJoCo")
+    mjm, mjd, m, d = test_data.fixture(
+      xml=f"""
+      <mujoco>
+        <option integrator="discrete" solver="CG" jacobian="{jacobian}"/>
+        <worldbody>
+          <geom name="floor" type="plane" size="2 2 0.1" friction="0.9 0.01 0.005"/>
+          <flexcomp name="cable" type="direct" radius="0.015" dim="1" mass="0.12"
+                    point="0 0 0.012  0.08 0 0.014  0.16 0 0.012  0.24 0 0.014"
+                    element="2 3  0 1  1 2">
+            <edge equality="true" solref="0.005 1"/>
+            <contact selfcollide="none" friction="0.9 0.01 0.005" condim="6"/>
+            <elasticity young="1e6" damping="0.02"/>
+          </flexcomp>
+        </worldbody>
+      </mujoco>
+      """,
+      overrides={"opt.cone": cone},
+    )
+    # Give vertical pitch velocity + twist velocity so longitudinal (t x tdot) x r_perp is active
+    qvel = np.linspace(-0.4, 0.6, mjm.nv, dtype=np.float32)
+    d.qvel.assign(qvel[None])
+    mjd.qvel[:] = qvel
+
+    mujoco.mj_forward(mjm, mjd)
+    mjw.forward(m, d)
+    self.assertGreater(mjd.ncon, 0)
+    self._assert_efc_world_eq(mjm, m, d, mjd, 0, "shuffled_circle_efc", tol=1e-3)
+    cscale = max(1.0, float(np.abs(mjd.qfrc_constraint).max()))
+    np.testing.assert_allclose(d.qfrc_constraint.numpy()[0], mjd.qfrc_constraint, atol=2e-3 * cscale, rtol=2e-2)
+
+    # Nonzero plastic: store the frames of this configuration, then bend the rod in the plane by
+    # moving vertex 2 sideways, so that the reference-roll term g_psi of the contact rows is active
+    mujoco.mj_step(mjm, mjd)
+    self.assertGreater(np.abs(mjd.plastic).max(), 0.5)
+    b2 = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_BODY, "cable_2")
+    mjd.qpos[mjm.body_dofadr[b2] + 1] += 0.02
+    d.qpos.assign(mjd.qpos[None].astype(np.float32))
+    d.qvel.assign(mjd.qvel[None].astype(np.float32))
+    d.plastic.assign(mjd.plastic[None].astype(np.float32))
+    mujoco.mj_forward(mjm, mjd)
+    mjw.forward(m, d)
+    self.assertGreater(mjd.ncon, 0)
+    self._assert_efc_world_eq(mjm, m, d, mjd, 0, "shuffled_circle_plastic_efc", tol=1e-3)
+    cscale = max(1.0, float(np.abs(mjd.qfrc_constraint).max()))
+    np.testing.assert_allclose(d.qfrc_constraint.numpy()[0], mjd.qfrc_constraint, atol=2e-3 * cscale, rtol=2e-2)
+
+  @parameterized.parameters("sparse", "dense")
+  def test_rod_tilted_tip_contact_axial_arm(self, jacobian):
+    """The normal row of a tilted circular rod tip on a plane couples only the tip vertex."""
+    if not _CURVED_RODS:
+      self.skipTest("Requires 1D flex rod torsion support in MuJoCo")
+    mjm, mjd, m, d = test_data.fixture(
+      xml=f"""
+      <mujoco>
+        <option gravity="0 0 0" integrator="discrete" solver="CG" cone="elliptic" jacobian="{jacobian}"/>
+        <worldbody>
+          <geom name="floor" type="plane" size="1 1 0.1"/>
+          <flexcomp name="tip" type="direct" radius="0.015" dim="1" mass="0.1"
+                    point="0 0 0.012  0.05 0 0.062  0.1 0 0.112" element="0 1  1 2">
+            <contact selfcollide="none" condim="3"/>
+            <elasticity young="1e6" damping="0.01"/>
+          </flexcomp>
+        </worldbody>
+      </mujoco>
+      """,
+    )
+    mujoco.mj_forward(mjm, mjd)
+    mjw.forward(m, d)
+    self.assertGreater(mjd.ncon, 0)
+    self._assert_efc_world_eq(mjm, m, d, mjd, 0, "tilted_tip_efc", tol=1e-4)
+
+    # Contact distance depends only on the tip vertex: its normal row is the plane normal on the tip
+    # vertex and zero on the other vertices and on the twist joints
+    nefc = int(d.nefc.numpy()[0])
+    if m.is_sparse:
+      J = np.zeros((nefc, mjm.nv))
+      mujoco.mju_sparse2dense(
+        J,
+        d.efc.J.numpy()[0, 0],
+        d.efc.J_rownnz.numpy()[0, :nefc],
+        d.efc.J_rowadr.numpy()[0, :nefc],
+        d.efc.J_colind.numpy()[0, 0],
+      )
+    else:
+      J = d.efc.J.numpy()[0, :nefc, : mjm.nv]
+    tip = [i for i in range(mjd.ncon) if 0 in mjd.contact.vert[i]]
+    self.assertLen(tip, 1)
+    con = mjd.contact[tip[0]]
+    side = 1 if con.flex[1] >= 0 else 0
+    expected = np.zeros(mjm.nv)
+    b0 = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_BODY, "tip_0")
+    expected[mjm.body_dofadr[b0] : mjm.body_dofadr[b0] + 3] = (1.0 if side else -1.0) * con.frame[:3]
+    np.testing.assert_allclose(J[con.efc_address], expected, atol=1e-5)
+
+  def test_rod_per_world_body_pose_parity(self):
+    """Rod reference frames and curvatures follow per-world body poses, as C recomputes them."""
+    if not _CURVED_RODS:
+      self.skipTest("Requires 1D flex rod torsion support in MuJoCo")
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option gravity="0 0 0" integrator="discrete" solver="CG"/>
+        <worldbody>
+          <body name="base" pos="0 0 0.5">
+            <flexcomp name="free" type="direct" dim="1" radius="0.005" mass="0.1"
+                      point="0 0 0  0.1 0 0  0.19 0.03 0  0.26 0.09 0  0.3 0.17 0"
+                      element="0 1  1 2  2 3  3 4">
+              <contact selfcollide="none" contype="0" conaffinity="0"/>
+              <elasticity young="1e6" damping="0" section="box" sectionsize="0.02 0.006"/>
+            </flexcomp>
+            <flexcomp name="clamped" type="direct" dim="1" radius="0.005" mass="0.1"
+                      point="0 0.4 0  0.1 0.4 0  0.19 0.43 0  0.26 0.49 0  0.3 0.57 0"
+                      element="0 1  1 2  2 3  3 4">
+              <pin id="0 1 3 4"/>
+              <contact selfcollide="none" contype="0" conaffinity="0"/>
+              <elasticity young="1e6" damping="0" section="box" sectionsize="0.02 0.006"/>
+            </flexcomp>
+          </body>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=2,
+      batch_sizes={"body_pos": 2, "body_quat": 2},
+    )
+    # World 1: roll and yaw the base, and move the free vertex of the clamped rod (new rest shape)
+    base = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_BODY, "base")
+    mid = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_BODY, "clamped_2")
+    body_pos = np.tile(mjm.body_pos, (2, 1, 1))
+    body_quat = np.tile(mjm.body_quat, (2, 1, 1))
+    quat = np.zeros(4)
+    mujoco.mju_euler2Quat(quat, np.array([0.9, 0.0, 0.6]), "xyz")
+    body_quat[1, base] = quat
+    body_pos[1, base] += np.array([0.1, -0.2, 0.05])
+    body_pos[1, mid] += np.array([0.0, 0.02, 0.01])
+    m.body_pos.assign(body_pos.astype(np.float32))
+    m.body_quat.assign(body_quat.astype(np.float32))
+
+    # Same perturbation of the free vertices and twist joints in both worlds
+    qpos = np.tile(mjm.qpos0, (2, 1)) + 0.01 * np.sin(np.arange(mjm.nq))[None]
+    d.qpos.assign(qpos.astype(np.float32))
+    d.qvel.zero_()
+    d.plastic.zero_()
+    mjw.forward(m, d)
+
+    body_pos0 = mjm.body_pos.copy()
+    body_quat0 = mjm.body_quat.copy()
+    for w in range(2):
+      mjm.body_pos[:] = body_pos[w]
+      mjm.body_quat[:] = body_quat[w]
+      mujoco.mj_resetData(mjm, mjd)
+      mjd.qpos[:] = qpos[w]
+      mujoco.mj_forward(mjm, mjd)
+      sscale = max(1.0, float(np.abs(mjd.qfrc_spring).max()))
+      np.testing.assert_allclose(d.qfrc_spring.numpy()[w], mjd.qfrc_spring, atol=1e-4 * sscale, rtol=1e-3)
+      np.testing.assert_allclose(
+        d.efm_K_val.numpy()[w], mjd.efm_K_val, atol=1e-4 * max(1.0, np.abs(mjd.efm_K_val).max()), rtol=1e-3
+      )
+    mjm.body_pos[:] = body_pos0
+    mjm.body_quat[:] = body_quat0
+
+    # At qpos0 the rods are at rest in every world, whatever the body poses
+    d.qpos.assign(np.tile(mjm.qpos0, (2, 1)).astype(np.float32))
+    d.plastic.zero_()
+    mjw.forward(m, d)
+    np.testing.assert_allclose(d.qfrc_spring.numpy(), 0.0, atol=1e-3)
+
+  def test_rod_degenerate_whole_rod_fallback_parity(self):
+    """A single collapsed edge falls back to stateless isotropic bending across the whole rod."""
+    if not _CURVED_RODS:
+      self.skipTest("Requires 1D flex rod torsion support in MuJoCo")
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option gravity="0 0 0" integrator="discrete" solver="CG"/>
+        <worldbody>
+          <flexcomp name="strip" type="grid" count="6 1 1" spacing="0.1 0.1 0.1"
+                    radius="0.005" dim="1" mass="0.1">
+            <pin id="0 1"/>
+            <contact selfcollide="none" contype="0" conaffinity="0"/>
+            <elasticity young="1e6" damping="0.02" section="box" sectionsize="0.02 0.005"/>
+          </flexcomp>
+        </worldbody>
+      </mujoco>
+      """,
+    )
+    qpos = mjm.qpos0.copy()
+    qvel = 0.2 * np.sin(np.arange(mjm.nv, dtype=np.float64))
+    # Bend vertex 2 in +y/+z so hinges 0 and 1 are non-degenerate, and collapse
+    # vertex 5 onto vertex 4 (last edge length == 0) so chain transport fails.
+    b2 = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_BODY, "strip_2")
+    b5 = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_BODY, "strip_5")
+    qpos[mjm.body_dofadr[b2] + 1] = 0.03
+    qpos[mjm.body_dofadr[b2] + 2] = -0.02
+    qpos[mjm.body_dofadr[b5] + 0] = -0.1  # strip_5 at x=0.5 + (-0.1) = 0.4 == strip_4
+    jnt_tw1 = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_JOINT, "strip_twist_1")
+    qpos[mjm.jnt_qposadr[jnt_tw1]] = 0.7
+
+    d.qpos.assign(qpos[None].astype(np.float32))
+    d.qvel.assign(qvel[None].astype(np.float32))
+    mjd.qpos[:] = qpos
+    mjd.qvel[:] = qvel
+
+    mujoco.mj_forward(mjm, mjd)
+    mjw.forward(m, d)
+
+    # Non-degenerate hinges produce isotropic bending forces; twist DOFs get zero spring force
+    self.assertGreater(np.abs(mjd.qfrc_spring).max(), 1e-2)
+    self.assertEqual(mjd.qfrc_spring[mjm.jnt_dofadr[jnt_tw1]], 0.0)
+    sscale = max(1.0, float(np.abs(mjd.qfrc_spring).max()))
+    dscale = max(1.0, float(np.abs(mjd.qfrc_damper).max()))
+    np.testing.assert_allclose(d.qfrc_spring.numpy()[0], mjd.qfrc_spring, atol=1e-4 * sscale, rtol=1e-4)
+    np.testing.assert_allclose(d.qfrc_damper.numpy()[0], mjd.qfrc_damper, atol=1e-4 * dscale, rtol=1e-4)
+    np.testing.assert_allclose(
+      d.efm_K_val.numpy()[0], mjd.efm_K_val, atol=1e-4 * max(1.0, np.abs(mjd.efm_K_val).max()), rtol=1e-4
+    )
+
+  @parameterized.parameters("discrete", "Euler")
+  def test_rod_sleep_and_island_parity(self, integrator):
+    """Twist trees share their rod's island, sleep at rest, and wake together when disturbed."""
+    if not _CURVED_RODS:
+      self.skipTest("Requires 1D flex rod torsion support in MuJoCo")
+    if integrator == "Euler":
+      edge_tag = '<edge equality="true" solref="0.005 1"/>'
+      flag_tag = '<flag island="enable"/>'
+    else:
+      edge_tag = ""
+      flag_tag = '<flag sleep="enable" island="enable"/>'
+    mjm, mjd, m, d = test_data.fixture(
+      xml=f"""
+      <mujoco>
+        <option gravity="0 0 0" integrator="{integrator}" solver="Newton" timestep="0.002" sleep_tolerance="1e-2">
+          {flag_tag}
+        </option>
+        <worldbody>
+          <flexcomp name="rod_a" type="grid" count="4 1 1" spacing="0.08 0.08 0.08" pos="0 0 0.5"
+                    radius="0.008" dim="1" mass="0.08">
+            <pin id="0 1"/>
+            {edge_tag}
+            <contact selfcollide="none" contype="0" conaffinity="0"/>
+            <elasticity young="5e5" damping="0.05"/>
+          </flexcomp>
+          <flexcomp name="rod_b" type="grid" count="4 1 1" spacing="0.08 0.08 0.08" pos="0 0.4 0.5"
+                    radius="0.008" dim="1" mass="0.08">
+            <pin id="0 1"/>
+            {edge_tag}
+            <contact selfcollide="none" contype="0" conaffinity="0"/>
+            <elasticity young="5e5" damping="0.05"/>
+          </flexcomp>
+        </worldbody>
+      </mujoco>
+      """,
+    )
+    if integrator == "Euler":
+      mjm.opt.enableflags |= mujoco.mjtEnableBit.mjENBL_SLEEP
+      m.opt.enableflags |= types.EnableBit.SLEEP
+      mujoco.mj_resetData(mjm, mjd)
+      mjw.reset_data(m, d)
+
+    # Collect trees of rod_a (free vertex trees + twist trees) and rod_b
+    def _rod_trees(model, prefix):
+      trees = set()
+      for v in (2, 3):
+        bid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, f"{prefix}_{v}")
+        trees.add(int(model.body_treeid[bid]))
+      for suffix in ("_twist_1", "_twist"):
+        jid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, f"{prefix}{suffix}")
+        trees.add(int(model.dof_treeid[model.jnt_dofadr[jid]]))
+      return sorted(trees)
+
+    trees_a = _rod_trees(mjm, "rod_a")
+    trees_b = _rod_trees(mjm, "rod_b")
+    self.assertLen(trees_a, 4)
+    self.assertLen(trees_b, 4)
+
+    if integrator == "discrete":
+      # Metric-coupled rods with nefc == 0 union vertex + twist trees per awake rod in island()
+      mujoco.mj_forward(mjm, mjd)
+      self.assertEqual(mjd.nefc, 0)
+      mjw.island(m, d)
+      self.assertEqual(int(d.nisland.numpy()[0]), int(mjd.nisland))
+      np.testing.assert_array_equal(d.tree_island.numpy()[0], mjd.tree_island[: mjm.ntree])
+
+      awake = np.ones((1, mjm.ntree), dtype=np.int32)
+      awake[0, trees_b] = 0
+      d.tree_awake.assign(awake)
+      mjw.island(m, d)
+      self.assertEqual(int(d.nisland.numpy()[0]), 1)
+      ti_wp = d.tree_island.numpy()[0]
+      self.assertTrue(np.all(ti_wp[trees_a] == 0))
+      self.assertTrue(np.all(ti_wp[trees_b] == -1))
+
+      with self.assertRaisesRegex(ValueError, "sleep with flex not yet supported"):
+        mjw.forward(m, d)
+      return
+
+    # Euler + edge equality: each rod forms a 4-tree island, sleeps at rest, and wakes together
+    mujoco.mj_forward(mjm, mjd)
+    mjw.forward(m, d)
+    self.assertEqual(int(d.nisland.numpy()[0]), int(mjd.nisland))
+    np.testing.assert_array_equal(d.tree_island.numpy()[0], mjd.tree_island[: mjm.ntree])
+
+    for _ in range(60):
+      mujoco.mj_step(mjm, mjd)
+      mjw.step(m, d)
+
+    awake_wp = d.tree_awake.numpy()[0]
+    self.assertTrue(np.all(awake_wp[trees_a] == 0))
+    self.assertTrue(np.all(awake_wp[trees_b] == 0))
+    self.assertEqual(int(d.ntree_awake.numpy()[0]), int(mjd.ntree_awake))
+    self.assertEqual(int(d.nisland.numpy()[0]), int(mjd.nisland))
+
+    # Apply torque ONLY to rod_a_twist: all 4 trees of rod_a must wake while rod_b stays asleep
+    jnt_a_tw = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_JOINT, "rod_a_twist")
+    dof_a_tw = mjm.jnt_dofadr[jnt_a_tw]
+    qfrc_app = np.zeros((1, mjm.nv), dtype=np.float32)
+    qfrc_app[0, dof_a_tw] = 0.05
+    d.qfrc_applied.assign(qfrc_app)
+    mjd.qfrc_applied[dof_a_tw] = 0.05
+
+    mujoco.mj_step(mjm, mjd)
+    mjw.step(m, d)
+    awake_wp = d.tree_awake.numpy()[0]
+    self.assertTrue(np.all(awake_wp[trees_a] == 1))
+    self.assertTrue(np.all(awake_wp[trees_b] == 0))
+    self.assertEqual(int(d.ntree_awake.numpy()[0]), int(mjd.ntree_awake))
+    self.assertEqual(int(d.nisland.numpy()[0]), int(mjd.nisland))
+    np.testing.assert_allclose(d.qpos.numpy()[0], mjd.qpos, atol=1e-4)
+
+    # Without <edge equality>, non-metric flexes keep both vertex and twist trees awake
+    mjm2, mjd2, m2, d2 = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option gravity="0 0 0" integrator="Euler" solver="Newton" timestep="0.002" sleep_tolerance="1e-2">
+          <flag sleep="enable" island="enable"/>
+        </option>
+        <worldbody>
+          <flexcomp name="rod_c" type="grid" count="4 1 1" spacing="0.08 0.08 0.08" pos="0 0 0.5"
+                    radius="0.008" dim="1" mass="0.08">
+            <pin id="0 1"/>
+            <contact selfcollide="none" contype="0" conaffinity="0"/>
+            <elasticity young="5e5" damping="0.05"/>
+          </flexcomp>
+        </worldbody>
+      </mujoco>
+      """,
+    )
+    trees_c = _rod_trees(mjm2, "rod_c")
+    for _ in range(25):
+      mujoco.mj_step(mjm2, mjd2)
+      mjw.step(m2, d2)
+    self.assertTrue(np.all(d2.tree_awake.numpy()[0, trees_c] == 1))
+    self.assertEqual(int(d2.ntree_awake.numpy()[0]), int(mjd2.ntree_awake))
 
   @parameterized.parameters('stiffness="10"', 'damping="1"')
   def test_edge_stiffness_damping_disallowed_in_discrete(self, edge_attr):

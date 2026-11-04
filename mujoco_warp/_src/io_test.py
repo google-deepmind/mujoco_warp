@@ -3067,30 +3067,6 @@ class IOTest(parameterized.TestCase):
       warnings.simplefilter("error")
       mjwarp.put_model(mjm)
 
-  def test_rod_max_edges_exceeded(self):
-    """1D rod chain with more than ROD_MAX_EDGES edges raises NotImplementedError in put_model."""
-    if types.ROD_HINGE_SIZE != 10:
-      self.skipTest("Requires 1D flex rod torsion support in MuJoCo")
-    mjm = mujoco.MjModel.from_xml_string(
-      f"""
-      <mujoco>
-        <worldbody>
-          <flexcomp name="rod" type="grid" count="{types.ROD_MAX_EDGES + 2} 1 1"
-                    spacing="0.02 0.02 0.02" radius="0.005" dim="1" mass="1">
-            <pin id="0 1"/>
-            <contact selfcollide="none" contype="0" conaffinity="0"/>
-            <elasticity young="1e6"/>
-          </flexcomp>
-        </worldbody>
-      </mujoco>
-      """
-    )
-    with self.assertRaisesRegex(
-      NotImplementedError,
-      f"1D rod chain with {types.ROD_MAX_EDGES + 1} edges exceeds ROD_MAX_EDGES \\({types.ROD_MAX_EDGES}\\)",
-    ):
-      mjwarp.put_model(mjm)
-
 
 if __name__ == "__main__":
   wp.init()
