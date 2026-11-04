@@ -116,6 +116,7 @@ class BlockDim:
     ray: ray block dimension (ray)
     contact_sort: contact sort block dimension (sensor)
     energy_vel_kinetic: energy velocity kinetic block dimension (sensor)
+    branch: kinematic tree branch walk block dimension (smooth)
     cholesky_factorize: block-dense Cholesky factorize block dimension (smooth)
     cholesky_factorize_solve: block-dense Cholesky factorize+solve block dimension (smooth)
     cholesky_solve: Cholesky solve block dimension (smooth)
@@ -147,6 +148,8 @@ class BlockDim:
   # sensor
   contact_sort: int = 64
   energy_vel_kinetic: int = 32
+  # smooth -- one thread walks a whole branch and nbranch is small, so small blocks reach more SMs
+  branch: int = 32
   # smooth -- block tile-Cholesky widths
   cholesky_factorize: int = 32
   cholesky_factorize_solve: int = 32
