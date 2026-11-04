@@ -217,6 +217,7 @@ def solve_backward(m: Model, d_out: Data, adj_qacc: wp.array, bc: BackwardContex
 @event_scope
 def _residual_constraint_sparse(
   m: Model,
+  d: Data,
   d_out: Data,
   ctx_Jaref: wp.array,
   lam: wp.array,
@@ -281,15 +282,29 @@ def _residual_constraint_sparse(
     dim=(nworld, njmax),
     inputs=[
       nv,
+      m.qpos0,
+      m.jnt_type,
+      m.jnt_qposadr,
+      m.jnt_dofadr,
+      m.eq_obj2id,
+      m.eq_data,
       d_out.nefc,
+      d.qpos,
+      d.qvel,
+      d_out.qacc,
       d_out.efc.type,
+      d_out.efc.id,
       d_out.efc.J_rownnz,
       d_out.efc.J_rowadr,
       d_out.efc.J_colind,
       d_out.efc.J,
+      d_out.efc.D,
       d_out.efc.state,
       res_efc_pos,
       res_efc_vel,
+      lam,
+      efc_Z,
+      efc_Z.grad,
     ],
     outputs=[res_qvel, res_dof],
   )
@@ -309,7 +324,7 @@ def noncontact_constraint_backward(
   bc: BackwardContext,
 ):
   """Accumulates non-contact residuals in input position and velocity space."""
-  _residual_constraint_sparse(m, d_out, ctx_Jaref, lam, res_qvel, bc.res_dof, bc)
+  _residual_constraint_sparse(m, d, d_out, ctx_Jaref, lam, res_qvel, bc.res_dof, bc)
   wp.launch(
     smooth_kinematics_adjoint._dof_to_qpos,
     dim=(d.nworld, m.njnt),

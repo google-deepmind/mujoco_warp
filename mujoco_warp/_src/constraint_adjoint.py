@@ -25,7 +25,9 @@ from mujoco_warp._src.types import MJ_MINVAL
 from mujoco_warp._src.types import ConeType
 from mujoco_warp._src.types import ConstraintState
 from mujoco_warp._src.types import ConstraintType
+from mujoco_warp._src.types import JointType
 from mujoco_warp._src.types import vec5
+from mujoco_warp._src.types import vec12
 from mujoco_warp._src.warp_util import cache_kernel
 
 # adjoint module: backward stays on so AD leaves differentiate through cross-module @wp.funcs
@@ -187,6 +189,19 @@ def _constraint_row_phi(
   phi_out[w, row] = -Z * f
 
 
+@wp.func
+def _joint_jacobian_objective(x: float, data: vec12, seed: float):
+  _, slope = constraint._joint_polynomial(data, x)
+  return -seed * slope
+
+
+@wp.func
+def _ball_jacobian_objective(delta: wp.vec3, quat: wp.quat, seed: wp.vec3):
+  rotated = math.quat_integrate(quat, delta, 1.0)
+  axis, _ = constraint._ball_axis_angle(rotated)
+  return -wp.dot(axis, seed)
+
+
 # scatter (manual): re-walk the row's J support; res_qvel_out += J*Vbar for all active rows,
 # res_dof_out += J*Pbar only for position-bearing rows (a friction row's P is identically zero)
 @cache_kernel
@@ -195,17 +210,31 @@ def _constraint_scatter(is_sparse: bool):
   def kernel(
     # Model:
     nv: int,
+    qpos0: wp.array2d[float],
+    jnt_type: wp.array[int],
+    jnt_qposadr: wp.array[int],
+    jnt_dofadr: wp.array[int],
+    eq_obj2id: wp.array[int],
+    eq_data: wp.array2d[vec12],
     # Data in:
     nefc_in: wp.array[int],
+    qpos_in: wp.array2d[float],
+    qvel_in: wp.array2d[float],
+    qacc_in: wp.array2d[float],
     efc_type_in: wp.array2d[int],
+    efc_id_in: wp.array2d[int],
     efc_J_rownnz_in: wp.array2d[int],
     efc_J_rowadr_in: wp.array2d[int],
     efc_J_colind_in: wp.array3d[int],
     efc_J_in: wp.array3d[float],
+    efc_D_in: wp.array2d[float],
     efc_state_in: wp.array2d[int],
     # In:
     adjP_in: wp.array2d[float],  # Pbar (dphi/defc.pos)
     adjV_in: wp.array2d[float],  # Vbar (dphi/defc.vel)
+    lam_in: wp.array2d[float],
+    Z_in: wp.array2d[float],
+    adjZ_in: wp.array2d[float],
     # Out:
     res_qvel_out: wp.array2d[float],
     res_dof_out: wp.array2d[float],
@@ -222,23 +251,54 @@ def _constraint_scatter(is_sparse: bool):
     Pb = adjP_in[w, row]
     # position-bearing rows; FRICTION_DOF excluded (its P == 0, no qpos route)
     route_p = ty == ConstraintType.LIMIT_JOINT or ty == ConstraintType.EQUALITY
+    count = nv
+    start = int(0)
     if wp.static(is_sparse):
-      rownnz = efc_J_rownnz_in[w, row]
-      rowadr = efc_J_rowadr_in[w, row]
-      for kk in range(rownnz):
-        sid = rowadr + kk
+      count = efc_J_rownnz_in[w, row]
+      start = efc_J_rowadr_in[w, row]
+    for k in range(count):
+      i = k
+      if wp.static(is_sparse):
+        sid = start + k
         i = efc_J_colind_in[w, 0, sid]
         jj = efc_J_in[w, 0, sid]
+      else:
+        jj = efc_J_in[w, row, i]
+      if jj != 0.0:
         wp.atomic_add(res_qvel_out[w], i, jj * Vb)  # kernel_analyzer: ignore[atomic]
         if route_p:
           wp.atomic_add(res_dof_out[w], i, jj * Pb)  # kernel_analyzer: ignore[atomic]
+
+    if not route_p:
+      return
+    cid = efc_id_in[w, row]
+    jointid = cid
+    if ty == ConstraintType.EQUALITY:
+      jointid = eq_obj2id[cid]
+      if jointid < 0:
+        return
     else:
-      for i in range(nv):
-        jj = efc_J_in[w, row, i]
-        if jj != 0.0:
-          wp.atomic_add(res_qvel_out[w], i, jj * Vb)  # kernel_analyzer: ignore[atomic]
-          if route_p:
-            wp.atomic_add(res_dof_out[w], i, jj * Pb)  # kernel_analyzer: ignore[atomic]
+      if jnt_type[jointid] != JointType.BALL:
+        return
+
+    qadr, dadr = jnt_qposadr[jointid], jnt_dofadr[jointid]
+    force_seed = adjZ_in[w, row]
+    acceleration_seed = efc_D_in[w, row] * Z_in[w, row]
+    # Each Jacobian column receives Zbar*lambda + Vbar*v + Abar*a.
+    if ty == ConstraintType.EQUALITY:
+      seed = force_seed * lam_in[w, dadr] + Vb * qvel_in[w, dadr] + acceleration_seed * qacc_in[w, dadr]
+      x = qpos_in[w, qadr] - qpos0[w % qpos0.shape[0], qadr]
+      derivatives = wp.grad(_joint_jacobian_objective)(x, eq_data[w % eq_data.shape[0], cid], seed)
+      wp.atomic_add(res_dof_out, w, dadr, derivatives[0])  # kernel_analyzer: ignore[atomic]
+    else:
+      axis_seed = wp.vec3()
+      for i in range(3):
+        dof = dadr + i
+        axis_seed[i] = force_seed * lam_in[w, dof] + Vb * qvel_in[w, dof] + acceleration_seed * qacc_in[w, dof]
+      quat = wp.quat(qpos_in[w, qadr], qpos_in[w, qadr + 1], qpos_in[w, qadr + 2], qpos_in[w, qadr + 3])
+      rotation_grad = wp.grad(_ball_jacobian_objective)(wp.vec3(), quat, axis_seed)[0]
+      for i in range(3):
+        wp.atomic_add(res_dof_out, w, dadr + i, rotation_grad[i])  # kernel_analyzer: ignore[atomic]
 
   return kernel
 
