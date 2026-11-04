@@ -1357,7 +1357,7 @@ def deriv_smooth_vel(m: Model, d: Data, out: wp.array2d[float]):
     # TODO(team): directly utilize M for these settings
     wp.copy(out, d.M)
 
-  if not (m.opt.disableflags & DisableBit.DAMPER):
+  if m.ntendon and not (m.opt.disableflags & DisableBit.DAMPER):
     wp.launch(
       _qderiv_tendon_damping,
       dim=(d.nworld, Mi.size),
