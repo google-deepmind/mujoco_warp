@@ -1418,7 +1418,7 @@ def euler(m: Model, d: Data):
       inputs=[m.opt.timestep, m.M_rownnz, m.M_rowadr, damp_deriv],
       outputs=[M],
     )
-    smooth.factor_solve_i(m, d, M, qLD, qLDiagInv, qacc, d.efc.Ma)
+    smooth.factor_solve_i(m, d, M, qLD, qLDiagInv, qacc, d.efc.Ma, store_factor=False)
     _advance(m, d, qacc)
   else:
     _advance(m, d, d.qacc)
@@ -2409,7 +2409,7 @@ def implicit(m: Model, d: Data):
       outputs=[qDeriv],
     )
     qacc = wp.empty((d.nworld, m.nv), dtype=float)
-    smooth.factor_solve_i(m, d, qDeriv, qLD, qLDiagInv, qacc, d.efc.Ma)
+    smooth.factor_solve_i(m, d, qDeriv, qLD, qLDiagInv, qacc, d.efc.Ma, store_factor=False)
     implicit_free_body(m, d, d.efc.Ma, qacc, solve=True)
     _advance(m, d, qacc)
   else:
@@ -3195,7 +3195,9 @@ def fwd_acceleration(m: Model, d: Data, factorize: bool = False):
     island.update_active_dofs(m, d)
     solver.smooth_solve_compact(m, d)
   elif factorize:
-    smooth.factor_solve_i(m, d, d.M, d.qLD, d.qLDiagInv, d.qacc_smooth, d.qfrc_smooth)
+    # only the CG solver reads the factor (solve_m for Mgrad)
+    store_factor = m.opt.solver == SolverType.CG
+    smooth.factor_solve_i(m, d, d.M, d.qLD, d.qLDiagInv, d.qacc_smooth, d.qfrc_smooth, store_factor=store_factor)
   else:
     smooth.solve_m(m, d, d.qacc_smooth, d.qfrc_smooth)
 
