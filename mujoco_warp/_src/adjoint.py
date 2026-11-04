@@ -436,18 +436,18 @@ def smooth_params_backward(m: Model, d: Data, d_out: Data, lam: wp.array, bc: Ba
       # State VJPs were already consumed; explicit sinks avoid Warp's .grad fallback.
       (d.qvel, bc.smooth_adj_qvel),
       (d_out.qacc, bc.smooth_adj_qacc),
+      (lam, None),
+      (bc.y_remap, None),
+      (bc.w_dir, None),
     ]
-    wp.launch(adjoint_util._neg_cols, dim=(d.nworld, m.nv), inputs=[lam], outputs=[bc.smooth_r.grad])
+    bc.smooth_r.grad.fill_(-1.0)
     adjoint_util._launch_vjp(
-      model_adjoint._residual_smooth_local,
+      model_adjoint._smooth_param_contraction,
       (d.nworld, m.nv),
       pairs,
       [bc.smooth_r],
       [bc.smooth_r.grad],
     )
-
-  if any(param.requires_grad for param in (m.body_mass, m.body_inertia, m.body_ipos, m.body_iquat)):
-    model_adjoint.inertia_param_vjp(m, smooth_adjoint.linearize(m, d, d_out, bc), lam, bc=bc)
 
 
 @wp.kernel(enable_backward=False)

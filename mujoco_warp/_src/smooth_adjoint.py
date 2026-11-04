@@ -326,7 +326,10 @@ def _gravcomp_seed(
 
 @event_scope
 def gravcomp_qpos_vjp(m: Model, d: Data, lam: wp.array2d, bc: BackwardContext | None = None):
-  """Returns d(lam.T @ -qfrc_gravcomp)/dqpos."""
+  """Returns d(lam.T @ -qfrc_gravcomp)/dqpos.
+
+  The same reverse leaves its body-mass derivative in ``bc.res_body_mass``.
+  """
   if bc is None:
     from mujoco_warp._src import adjoint
 
@@ -367,39 +370,6 @@ def gravcomp_qpos_vjp(m: Model, d: Data, lam: wp.array2d, bc: BackwardContext | 
     adjoint=True,
   )
   return _kinematic_qpos_vjp(m, d, d.cdof.grad, bc)
-
-
-@event_scope
-def gravcomp_mass_vjp(m: Model, d: Data, lam: wp.array2d, res_body_mass: wp.array2d):
-  """Accumulates d(lam.T @ -qfrc_gravcomp)/d(body_mass)."""
-  d.qfrc_gravcomp.grad.zero_()
-  gravity_enabled = int(not (int(m.opt.disableflags) & DisableBit.GRAVITY))
-  wp.launch(
-    _gravcomp_seed,
-    dim=(d.nworld, m.nv),
-    inputs=[m.jnt_actgravcomp, m.dof_jntid, lam, gravity_enabled],
-    outputs=[d.qfrc_gravcomp.grad],
-  )
-  wp.launch(
-    adjoint_recompute._gravity_force_recompute,
-    dim=(d.nworld, m.nbody - 1, m.nv),
-    inputs=[
-      m.opt.gravity,
-      m.body_parentid,
-      m.body_rootid,
-      m.body_mass,
-      m.body_gravcomp,
-      m.dof_bodyid,
-      m.body_isdofancestor,
-      d.xipos,
-      d.subtree_com,
-      d.cdof,
-    ],
-    outputs=[d.qfrc_gravcomp],
-    adj_inputs=[None, None, None, res_body_mass, None, None, None, None, None, None],
-    adj_outputs=[d.qfrc_gravcomp.grad],
-    adjoint=True,
-  )
 
 
 # Transposes of the linear RNE tree reductions. Each output reads the original seeds,

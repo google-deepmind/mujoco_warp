@@ -22,6 +22,7 @@ from mujoco_warp._src import adjoint_util
 from mujoco_warp._src import derivative
 from mujoco_warp._src import forward
 from mujoco_warp._src import math
+from mujoco_warp._src import model_adjoint
 from mujoco_warp._src import smooth
 from mujoco_warp._src import smooth_adjoint
 from mujoco_warp._src import smooth_kinematics_adjoint
@@ -148,7 +149,7 @@ def _smooth_ctrl_vjp(
   lam: wp.array2d[float],
   qacc_advance: wp.array2d[float],
   y_remap: wp.array2d[float],
-  implicit: bool,
+  implicitfast: bool,
   dsbl_clampctrl: int,
   # Out:
   adj_ctrl_out: wp.array2d[float],
@@ -170,8 +171,8 @@ def _smooth_ctrl_vjp(
   gain = gainprm[0]
   if actuator_gaintype[actuatorid] == GainType.AFFINE:
     gain += gainprm[1] * actuator_length_in[worldid, actuatorid] + gainprm[2] * actuator_velocity_in[worldid, actuatorid]
-    if implicit and gainprm[2] != 0.0:
-      # The implicit matrix uses clamped control; saturated controls returned above.
+    if implicitfast and gainprm[2] != 0.0:
+      # The implicitfast matrix uses clamped control; saturated controls returned above.
       moment_qacc, moment_y = float(0.0), float(0.0)
       for i in range(rownnz):
         elemid = rowadr + i
@@ -543,12 +544,13 @@ def advance_backward(m: Model, d: Data, d_out: Data, bc: BackwardContext):
   nworld, nv = d.nworld, m.nv
   adj_qpos, adj_qvel, adj_qacc = bc.adj_qpos, bc.adj_qvel, bc.adj_qacc
 
-  deriv_flags = DisableBit.ACTUATION | DisableBit.SPRING | DisableBit.DAMPER
-  implicit = m.opt.integrator == IntegratorType.IMPLICITFAST and bool(deriv_flags & ~m.opt.disableflags)
+  # Match forward.implicit's IMPLICITFAST branch and forward.euler.
+  flags = DisableBit.ACTUATION | DisableBit.SPRING | DisableBit.DAMPER
+  implicitfast = m.opt.integrator == IntegratorType.IMPLICITFAST and (m.opt.disableflags & flags) != flags
   eulerdamp = m.opt.integrator == IntegratorType.EULER and not (m.opt.disableflags & (DisableBit.EULERDAMP | DisableBit.DAMPER))
   qacc_advance = d_out.qacc
 
-  if implicit or eulerdamp:
+  if implicitfast or eulerdamp:
     wp.launch(
       forward._compute_damping_deriv,
       dim=(nworld, nv),
@@ -567,7 +569,7 @@ def advance_backward(m: Model, d: Data, d_out: Data, bc: BackwardContext):
       outputs=[bc.damp_deriv],
     )
 
-  if implicit:
+  if implicitfast:
     linearization = dataclasses.replace(d_out, qvel=d.qvel, ctrl=d.ctrl)
     derivative.deriv_smooth_vel(m, linearization, bc.qDeriv)
     wp.launch(
@@ -608,9 +610,9 @@ def advance_backward(m: Model, d: Data, d_out: Data, bc: BackwardContext):
     [d_out.qpos.grad, d_out.qvel.grad],
   )
 
-  if implicit or eulerdamp:
+  if implicitfast or eulerdamp:
     smooth.solve_LD(m, d_out, qLD, qLDiagInv, bc.y_remap, adj_qacc)
-    if implicit:
+    if implicitfast:
       wp.launch(
         _implicit_free_body_backward,
         dim=(nworld, m.body_freeadr.size),
@@ -642,9 +644,9 @@ def advance_backward(m: Model, d: Data, d_out: Data, bc: BackwardContext):
       )
     support.mul_m(m, d_out, bc.adj_qacc_root, bc.y_remap)
 
-    if implicit:
-      # The mass-position VJP is computed with the force VJP in smooth_qpos_backward.
-      wp.launch(adjoint_util._sub_cols, dim=(nworld, nv), inputs=[d_out.qacc, qacc_advance], outputs=[bc.w_dir])
+    # For a_int = Q^-1 M a, the direct mass VJP is y.T @ dM @ (a - a_int).
+    # Position and parameter reverses consume this for both implicitfast and Euler damping.
+    wp.launch(adjoint_util._sub_cols, dim=(nworld, nv), inputs=[d_out.qacc, qacc_advance], outputs=[bc.w_dir])
 
     if not (m.opt.disableflags & DisableBit.DAMPER):
       # Q = M + dt*D, where D = -d(force_damper)/dv. Its VJP affects velocity and,
@@ -774,23 +776,28 @@ def smooth_qvel_backward(m: Model, d: Data, d_out: Data, lam: wp.array, adj_qvel
 
 @event_scope
 def smooth_qpos_backward(m: Model, d: Data, d_out: Data, lam: wp.array, res_qpos: wp.array, bc: BackwardContext):
-  """Accumulates smooth position VJPs, including the integrator's mass contribution."""
+  """Shares the smooth position reverse with inertial parameters, including direct mass terms."""
   smooth_adjoint.assert_smooth_supported(m)
   flags = DisableBit.ACTUATION | DisableBit.SPRING | DisableBit.DAMPER
-  implicit = m.opt.integrator == IntegratorType.IMPLICITFAST and bool(flags & ~m.opt.disableflags)
+  with_mass = (m.opt.integrator == IntegratorType.IMPLICITFAST and (m.opt.disableflags & flags) != flags) or (
+    m.opt.integrator == IntegratorType.EULER and not (m.opt.disableflags & (DisableBit.EULERDAMP | DisableBit.DAMPER))
+  )
   # Bound cooperative RNE scratch to eight 128-element spatial-vector tiles.
   if d.qpos.device.is_cuda and m.nbody <= 128:
     linearization = dataclasses.replace(d_out, qpos=d.qpos, qvel=d.qvel, ctrl=d.ctrl, act=d.act)
     residual = smooth_adjoint.smooth_force_channels_backward(
-      m, linearization, lam, bc.y_remap if implicit else None, bc.w_dir if implicit else None, bc, xfrc_applied=d.xfrc_applied
+      m, linearization, lam, bc.y_remap if with_mass else None, bc.w_dir if with_mass else None, bc, xfrc_applied=d.xfrc_applied
     )
   else:
-    if implicit:
+    if with_mass:
       direct = smooth_adjoint.mass_matrix_qpos_vjp(m, d, bc.y_remap, bc.w_dir, bc=bc)
       wp.launch(adjoint_util._sub_cols, dim=res_qpos.shape, inputs=[res_qpos, direct], outputs=[res_qpos])
+      model_adjoint.inertia_param_vjp(m, bc.scratch, bc, scale=1.0)
     linearization = smooth_adjoint.linearize(m, d, d_out, bc)
     residual = smooth_adjoint.smooth_force_backward(m, linearization, lam, bc=bc, xfrc_applied=d.xfrc_applied)
   wp.launch(adjoint_util._accum_cols, dim=residual.shape, inputs=[residual], outputs=[res_qpos])
+  # Consume the inertia cotangents before gravcomp reuses the workspace.
+  model_adjoint.inertia_param_vjp(m, linearization, bc)
   for vjp in (
     smooth_adjoint.spring_qpos_vjp,
     smooth_adjoint.actuator_qpos_vjp,
@@ -798,6 +805,14 @@ def smooth_qpos_backward(m: Model, d: Data, d_out: Data, lam: wp.array, res_qpos
   ):
     residual = vjp(m, linearization, lam, bc=bc)
     wp.launch(adjoint_util._accum_cols, dim=residual.shape, inputs=[residual], outputs=[res_qpos])
+  # gravcomp_qpos_vjp also computed the mass residual; apply the IFT minus sign.
+  if m.body_mass.requires_grad:
+    wp.launch(
+      adjoint_util._sub_cols,
+      dim=m.body_mass.shape,
+      inputs=[m.body_mass.grad, bc.res_body_mass],
+      outputs=[m.body_mass.grad],
+    )
 
 
 @event_scope
