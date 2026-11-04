@@ -945,6 +945,70 @@ class PassiveTest(parameterized.TestCase):
     mjw.reset_data(m, d)
     _assert_eq(d.plastic.numpy()[0], mjd.plastic, "reset_flex_plastic")
 
+  @parameterized.parameters("Euler", "discrete")
+  # TODO(team): remove check_version once minimum mujoco version >= 3.17.1
+  @absltest.skipIf(not util_pkg.check_version("mujoco>=3.17.1"), "Cannot test unreleased XML `yield` attribute with older MuJoCo versions.")
+  def test_flex_plastic_stretch_bend_yield(self, integrator):
+    """Verify separate stretching and bending yield strains of 2D flexes match MuJoCo."""
+    yields = ("1 0.002", "0.002 1", "0 0.002", "0.002 0", "1 1")
+    shells = ""
+    for i, yield_ in enumerate(yields):
+      x = 2 * i
+      shells += f"""
+          <flexcomp name="shell{i}" type="direct" dim="2" mass="1"
+                    point="{x} 0 0  {x + 1} 0 0  {x + 0.5} 0.5 0  {x + 0.5} -0.5 0"
+                    element="0 1 2  0 3 1">
+            <contact contype="0" conaffinity="0" selfcollide="none"/>
+            <elasticity young="500" poisson="0.3" thickness="0.02" elastic2d="both" damping="0.05" yield="{yield_}"/>
+            <pin id="0 1 2"/>
+          </flexcomp>"""
+    qpos = "  ".join(["0 -0.15 0.25"] * len(yields))
+    qvel = "  ".join(["0 -0.3 0.4"] * len(yields))
+    mjm, mjd, _, _ = test_data.fixture(
+      xml=f"""
+      <mujoco>
+        <option gravity="0 0 0" timestep="0.005" integrator="{integrator}"/>
+        <worldbody>{shells}
+        </worldbody>
+        <keyframe>
+          <key qpos="{qpos}" qvel="{qvel}"/>
+        </keyframe>
+      </mujoco>
+      """,
+      keyframe=0,
+    )
+
+    # only modes with a positive yield strain have plastic state; zero yield strains of the plastic modes
+    # of the last shell at runtime are full plastic flow
+    np.testing.assert_array_equal(mjm.flex_plasticmode, [3, 3, 1, 2, 3])
+    self.assertEqual(mjm.nplastic, 44)  # 11 + 11 + 5 + 6 + 11
+    mjm.flex_yield[4] = 0.0
+    m = mjw.put_model(mjm)
+    d = mjw.put_data(mjm, mjd)
+
+    for step_idx in range(10):
+      mujoco.mj_step(mjm, mjd)
+      mjw.step(m, d)
+
+      _assert_eq(d.plastic.numpy()[0], mjd.plastic, f"plastic_step_{step_idx}")
+      _assert_eq(d.qfrc_spring.numpy()[0], mjd.qfrc_spring, f"qfrc_spring_step_{step_idx}")
+      _assert_eq(d.qpos.numpy()[0], mjd.qpos, f"qpos_step_{step_idx}")
+      _assert_eq(d.qvel.numpy()[0], mjd.qvel, f"qvel_step_{step_idx}")
+
+    # each shell yields only in the modes with a small threshold
+    plastic = d.plastic.numpy()[0]
+    stretch_yields = []
+    bend_yields = []
+    for f in range(mjm.nflex):
+      adr = mjm.flex_plasticadr[f]
+      mode = mjm.flex_plasticmode[f]
+      nstretch = 6 if mode & 2 else 0
+      nbend = 5 if mode & 1 else 0
+      stretch_yields.append(bool(np.any(plastic[adr : adr + nstretch] != 0)))
+      bend_yields.append(bool(np.any(plastic[adr + nstretch : adr + nstretch + nbend] != 0)))
+    self.assertEqual(stretch_yields, [False, True, False, True, True])
+    self.assertEqual(bend_yields, [True, False, True, False, True])
+
   @parameterized.parameters("Euler", "RK4")
   # TODO(team): remove check_version once minimum mujoco version >= 3.17.1
   @absltest.skipIf(
