@@ -753,6 +753,7 @@ def advance_backward(m: Model, d: Data, d_out: Data, bc: BackwardContext):
         ],
         outputs=[bc.y_remap, adj_qvel, bc.adj_dof],
       )
+      model_adjoint.implicitfast_inertia_vjp(m, linearization, qacc_advance, bc.y_remap)
       wp.launch(
         smooth_kinematics_adjoint._dof_to_qpos,
         dim=(nworld, m.njnt),

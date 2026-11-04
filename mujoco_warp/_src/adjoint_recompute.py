@@ -199,17 +199,4 @@ def _cinert_recompute(
   inert = body_inertia[w % body_inertia.shape[0], b]
   mass = body_mass[w % body_mass.shape[0], b]
   dif = xipos_in[w, b] - subtree_com_in[w, body_rootid[b]]
-  # A single constructor avoids Warp's incorrect reverse through component writes.
-  row0 = wp.cw_mul(mat[0], inert)
-  row1 = wp.cw_mul(mat[1], inert)
-  row2 = wp.cw_mul(mat[2], inert)
-  d0 = dif[0]
-  d1 = dif[1]
-  d2 = dif[2]
-  r0 = wp.dot(row0, mat[0]) + mass * (d1 * d1 + d2 * d2)
-  r1 = wp.dot(row1, mat[1]) + mass * (d0 * d0 + d2 * d2)
-  r2 = wp.dot(row2, mat[2]) + mass * (d0 * d0 + d1 * d1)
-  r3 = wp.dot(row0, mat[1]) - mass * d0 * d1
-  r4 = wp.dot(row0, mat[2]) - mass * d0 * d2
-  r5 = wp.dot(row1, mat[2]) - mass * d1 * d2
-  cinert_out[w, b] = vec10(r0, r1, r2, r3, r4, r5, mass * d0, mass * d1, mass * d2, mass)
+  cinert_out[w, b] = math.inert_com(mass, inert, mat, dif)
