@@ -739,9 +739,7 @@ class DerivativeTest(parameterized.TestCase):
           mj_qDeriv = np.zeros((mjm.nv, mjm.nv))
           mujoco.mju_sparse2dense(mj_qDeriv, mjd.qDeriv, mjm.D_rownnz, mjm.D_rowadr, mjm.D_colind)
           mjw_out = np.zeros((mjm.nv, mjm.nv))
-          mujoco.mju_sym2dense(
-            mjw_out, smooth_vel[w].astype(np.float64), mjm.M_rownnz, mjm.M_rowadr, mjm.M_colind
-          )
+          mujoco.mju_sym2dense(mjw_out, smooth_vel[w].astype(np.float64), mjm.M_rownnz, mjm.M_rowadr, mjm.M_colind)
           _assert_eq(mjw_out, mj_M - mjm.opt.timestep * mj_qDeriv, f"M - dt * qDeriv_w{w}")
 
         _assert_eq(qpos_next[w], mjd.qpos, f"qpos_next_w{w}")
@@ -792,7 +790,7 @@ class DerivativeTest(parameterized.TestCase):
     nworld=(1, 2),
   )
   def test_dcmotor_jnt_actfrcrange_saturation(self, integrator, nworld):
-    """Tests that joint actuatorfrcrange clamping zeroes DC motor derivatives (including LuGre and cogging)."""
+    """Tests joint actuatorfrcrange saturation, including LuGre and cogging derivatives."""
     mjm, mjd, m, d = test_data.fixture(
       xml="""
       <mujoco>
@@ -1508,7 +1506,7 @@ class DerivativeTest(parameterized.TestCase):
     nworld=(1, 2),
   )
   def test_dcmotor_saturation_derivative(self, integrator, nworld):
-    """Tests DC motor derivatives under force, tendon, Vmax and dimax saturation, with cogging and LuGre."""
+    """Tests DC motor force, tendon, Vmax and dimax saturation with cogging and LuGre."""
     mjm, mjd, m, d = test_data.fixture(
       xml="""
       <mujoco>

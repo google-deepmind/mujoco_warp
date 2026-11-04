@@ -20,6 +20,7 @@ import warp as wp
 from mujoco_warp._src import math
 from mujoco_warp._src.collision_primitive_core import tri_weights
 from mujoco_warp._src.math import motion_cross
+from mujoco_warp._src.types import FLEX_INTERP_PHYSICAL_JACOBIAN
 from mujoco_warp._src.types import MJ_MAXVAL
 from mujoco_warp._src.types import MJ_MINVAL
 from mujoco_warp._src.types import ConeType
@@ -186,6 +187,18 @@ def compute_interp_cell_quat(
 
           idx += 1
 
+  if wp.static(FLEX_INTERP_PHYSICAL_JACOBIAN):
+    node_0 = nstart + (ci * order) * ny_g * nz_g + (cj * order) * nz_g + (ck * order)
+    node_last = nstart + ((ci + 1) * order) * ny_g * nz_g + ((cj + 1) * order) * nz_g + ((ck + 1) * order)
+    dref = flex_node0[node_last] - flex_node0[node_0]
+    for c in range(3):
+      dc = dref[c]
+      if dc > MJ_MINVAL:
+        inv_dc = 1.0 / dc
+        F[0, c] *= inv_dc
+        F[1, c] *= inv_dc
+        F[2, c] *= inv_dc
+
   return mat33_to_quat_polar(F)
 
 
@@ -211,7 +224,9 @@ def rod_parallel_transport(
 
 @wp.func
 def rod_has_twist(
+  # Model:
   flex_rod_has_twist: wp.array[bool],
+  # In:
   f: int,
 ) -> bool:
   """Returns True if flex f is a 1D open DER chain with per-edge twist DOFs or box section."""
@@ -220,8 +235,10 @@ def rod_has_twist(
 
 @wp.func
 def rod_box_size(
+  # Model:
   flex_rod_is_box: wp.array[bool],
   flex_rod_box_size: wp.array[wp.vec2],
+  # In:
   f: int,
 ) -> Tuple[bool, wp.vec2]:
   """Returns (True, (a_half, b_half)) if flex f is a 1D DER rod with a box cross-section."""
@@ -230,8 +247,10 @@ def rod_box_size(
 
 @wp.func
 def rod_clamped_ends(
+  # Model:
   flex_rod_root_clamped: wp.array[bool],
   flex_rod_tail_clamped: wp.array[bool],
+  # In:
   f: int,
 ) -> Tuple[bool, bool]:
   """Returns (root_clamped, tail_clamped) for 1D DER rod flex f."""
@@ -240,9 +259,11 @@ def rod_clamped_ends(
 
 @wp.func
 def rod_chain_twist_jnt(
+  # Model:
   flex_rod_edgeadr: wp.array[int],
   flex_rod_edgenum: wp.array[int],
   flex_rodedge_jnt: wp.array[int],
+  # In:
   f: int,
   c: int,
 ) -> int:
@@ -255,10 +276,12 @@ def rod_chain_twist_jnt(
 
 @wp.func
 def rod_chain_twist_dof(
+  # Model:
   jnt_dofadr: wp.array[int],
   flex_rod_edgeadr: wp.array[int],
   flex_rod_edgenum: wp.array[int],
   flex_rodedge_jnt: wp.array[int],
+  # In:
   f: int,
   c: int,
 ) -> int:
@@ -269,12 +292,14 @@ def rod_chain_twist_dof(
 
 @wp.func
 def rod_edge_twist_jnt(
+  # Model:
   flex_elemadr: wp.array[int],
   flex_elemnum: wp.array[int],
   flex_rod_edgeadr: wp.array[int],
   flex_rod_edgenum: wp.array[int],
   flex_rodedge_jnt: wp.array[int],
   flex_elem_rodedge: wp.array[wp.vec2i],
+  # In:
   f: int,
   elem: int,
 ) -> Tuple[int, float]:
@@ -291,9 +316,11 @@ def rod_edge_twist_jnt(
 
 @wp.func
 def rod_vert_elem(
+  # Model:
   flex_vertadr: wp.array[int],
   flex_vertnum: wp.array[int],
   flex_vert_rodelem: wp.array[int],
+  # In:
   f: int,
   v: int,
 ) -> int:
@@ -305,7 +332,9 @@ def rod_vert_elem(
 
 @wp.func
 def rod_edge_state(
+  # Data in:
   plastic_in: wp.array2d[float],
+  # In:
   worldid: int,
   padr: int,
   c: int,
@@ -778,7 +807,7 @@ def rod_contact_side_params(
 @wp.func
 def rod_contact_dof_delta(
   # In:
-  cdof: wp.spatial_vector,
+  dof_motion: wp.spatial_vector,
   xk_offset: wp.vec3,
   con_minus_xk: wp.vec3,
   t: wp.vec3,
@@ -794,8 +823,8 @@ def rod_contact_dof_delta(
   The surface point at lever arm dvec = r_perp + a t moves with the cross-section, adding the
   longitudinal velocity (t x tdot) x dvec = (t (dvec . jv) - a jv) * (sgn_esgn / le).
   """
-  cdof_ang = wp.spatial_top(cdof)
-  cdof_lin = wp.spatial_bottom(cdof)
+  cdof_ang = wp.spatial_top(dof_motion)
+  cdof_lin = wp.spatial_bottom(dof_motion)
   jv = cdof_lin + wp.cross(cdof_ang, xk_offset)
   dpsi = sgn_esgn * wp.dot(g_psi, jv)
   coeff_t = -sgn_esgn * wp.dot(dvec, jv) * inv_le
@@ -1928,6 +1957,17 @@ def compute_interp_face_quat(
 
       t1 += node_pos * grad0
       t2 += node_pos * grad1
+
+  if wp.static(FLEX_INTERP_PHYSICAL_JACOBIAN):
+    axis0 = (normal_axis + 1) % 3
+    axis1 = (normal_axis + 2) % 3
+    dref = flex_node0[nstart + gidx1] - flex_node0[nstart + gidx0]
+    d0 = dref[axis0]
+    d1 = dref[axis1]
+    if d0 > MJ_MINVAL:
+      t1 = t1 / d0
+    if d1 > MJ_MINVAL:
+      t2 = t2 / d1
 
   normal = wp.cross(t1, t2)
 

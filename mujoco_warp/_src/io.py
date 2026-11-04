@@ -599,8 +599,22 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
       m.tendon_plasticadr = np.full(mjm.ntendon, -1, dtype=np.int32)
     if not hasattr(mjm, "flex_plasticadr"):
       m.flex_plasticadr = np.full(mjm.nflex, -1, dtype=np.int32)
-    if not hasattr(mjm, "flex_plasticmode"):
-      m.flex_plasticmode = np.zeros(mjm.nflex, dtype=np.int32)
+
+  # Older development wheels have scalar yields and encode plastic modes in the stiffness layout.
+  if not hasattr(mjm, "flex_plasticmode"):
+    m.flex_plasticmode = np.zeros(mjm.nflex, dtype=np.int32)
+    for f in range(mjm.nflex):
+      if m.flex_plasticadr[f] < 0 or mjm.flex_dim[f] == 1:
+        continue
+      sadr = mjm.flex_stiffnessadr[f]
+      if mjm.flex_interp[f] != 0 or (sadr >= 0 and mjm.flex_stiffness[sadr] != 0):
+        m.flex_plasticmode[f] |= 2
+      if mjm.flex_dim[f] == 2 and mjm.flex_interp[f] == 0 and sadr >= 0 and mjm.flex_bendingadr[f] >= 0:
+        if mjm.flex_stiffness[sadr + 6] > 0:
+          m.flex_plasticmode[f] |= 1
+  if m.flex_yield is not None and m.flex_yield.ndim == 1:
+    bend_yield = np.where((mjm.flex_dim == 2) & (mjm.flex_interp == 0), m.flex_yield, 0.0)
+    m.flex_yield = np.stack((m.flex_yield, bend_yield), axis=-1)
 
   m.opt = opt
   m.callback = types.Callback()

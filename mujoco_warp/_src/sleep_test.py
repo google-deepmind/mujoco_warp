@@ -194,7 +194,7 @@ class SleepTest(parameterized.TestCase):
 
   @parameterized.parameters(1, 2)
   def test_tendon_frictionloss_waking(self, nworld):
-    """Verify that moving an awake body wakes up a connected sleeping body through tendon frictionloss."""
+    """Tests tendon frictionloss waking a sleeping body connected to a moving body."""
     mjm, mjd, m, d = test_data.fixture(
       xml="""
       <mujoco>
@@ -236,9 +236,7 @@ class SleepTest(parameterized.TestCase):
     mjwarp.step(m, d)
 
     for w in range(nworld):
-      self.assertEqual(
-        d.tree_awake.numpy()[w, 1], 1, f"b2 in world {w} should have woken up due to tendon frictionloss"
-      )
+      self.assertEqual(d.tree_awake.numpy()[w, 1], 1, f"b2 in world {w} should have woken up due to tendon frictionloss")
 
   @parameterized.parameters(1, 2)
   def test_equality_waking(self, nworld):

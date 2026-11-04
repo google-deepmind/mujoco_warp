@@ -446,6 +446,40 @@ _MESH_RANDOMIZE_XML = """
 
 
 class IOTest(parameterized.TestCase):
+  @parameterized.product(elastic2d=("stretch", "bend", "both"), reset_yield=(False, True))
+  @absltest.skipIf(not util_pkg.check_version("mujoco>=3.17.1"), "Requires flex plasticity")
+  def test_put_model_flex_plastic_layout(self, elastic2d, reset_yield):
+    """Tests flex plastic state across scalar and vector yield layouts, including runtime zero."""
+    mjm, mjd, _, _ = test_data.fixture(
+      xml=f"""
+      <mujoco>
+        <option gravity="0 0 0" timestep="0.005"/>
+        <worldbody>
+          <flexcomp name="shell" type="direct" dim="2" mass="1"
+                    point="0 0 0  1 0 0  0.5 0.5 0  0.5 -0.5 0" element="0 1 2  0 3 1">
+            <contact contype="0" conaffinity="0" selfcollide="none"/>
+            <elasticity young="500" poisson="0.3" thickness="0.02" elastic2d="{elastic2d}"
+                        damping="0.05" yield="0.01"/>
+            <pin id="0 1 2"/>
+          </flexcomp>
+        </worldbody>
+      </mujoco>
+      """,
+      qpos_noise=0.05,
+      qvel_noise=0.1,
+    )
+    if reset_yield:
+      mjm.flex_yield[:] = 0.0
+    m = mjwarp.put_model(mjm)
+    d = mjwarp.put_data(mjm, mjd)
+    np.testing.assert_array_equal(m.flex_plasticmode.numpy(), [{"bend": 1, "stretch": 2, "both": 3}[elastic2d]])
+    np.testing.assert_allclose(m.flex_yield.numpy(), [[0.0, 0.0] if reset_yield else [0.01, 0.01]])
+    for _ in range(3):
+      mujoco.mj_step(mjm, mjd)
+      mjwarp.step(m, d)
+      _assert_eq(d.plastic.numpy()[0], mjd.plastic, "plastic")
+      _assert_eq(d.qpos.numpy()[0], mjd.qpos, "qpos")
+
   @parameterized.named_parameters(
     dict(
       testcase_name="control_timestamps",

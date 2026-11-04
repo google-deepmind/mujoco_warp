@@ -1642,7 +1642,7 @@ class ResetHistoryTest(parameterized.TestCase):
 
   @parameterized.product(nworld=(1, 2), nsample=(5, 7, 10, 16))
   def test_subtimestep_interval_sensor_reset(self, nworld, nsample):
-    """Test sub-timestep and equal-timestep sensor intervals initialize strictly monotonic timestamps."""
+    """Tests monotonic sensor timestamps for sub-timestep and equal-timestep intervals."""
     mjm, _, m, d = test_data.fixture(
       xml=f"""
       <mujoco>
@@ -1749,7 +1749,7 @@ class ResetHistoryTest(parameterized.TestCase):
 
   @parameterized.parameters(1, 2)
   def test_init_history_none_times_preserves_wrapped_cursor(self, nworld):
-    """Test init_ctrl_history and init_sensor_history with times=None after the circular buffer wraps."""
+    """Tests history initialization with times=None after the circular buffer wraps."""
     mjm, _, m, d = test_data.fixture(
       xml="""
       <mujoco>
