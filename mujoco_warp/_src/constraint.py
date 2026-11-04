@@ -633,6 +633,15 @@ def _equality_connect(is_sparse: bool, newton: bool, is_discrete: bool = False):
   return kernel
 
 
+@wp.func
+def _joint_polynomial(data: vec12, x: float) -> tuple[float, float]:
+  """Returns a joint equality's polynomial value and slope."""
+  # Horner's method for polynomials
+  value = data[0] + x * (data[1] + x * (data[2] + x * (data[3] + x * data[4])))
+  slope = data[1] + x * (2.0 * data[2] + x * (3.0 * data[3] + x * 4.0 * data[4]))
+  return value, slope
+
+
 @cache_kernel
 def _equality_joint(is_sparse: bool, newton: bool, is_discrete: bool = False):
   @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
@@ -728,9 +737,7 @@ def _equality_joint(is_sparse: bool, newton: bool, is_discrete: bool = False):
       dofadr2 = jnt_dofadr[jntid_2]
       dif = qpos_in[worldid, qposadr2] - qpos0[qpos0_id, qposadr2]
 
-      # Horner's method for polynomials
-      rhs = data[0] + dif * (data[1] + dif * (data[2] + dif * (data[3] + dif * data[4])))
-      deriv_2 = data[1] + dif * (2.0 * data[2] + dif * (3.0 * data[3] + dif * 4.0 * data[4]))
+      rhs, deriv_2 = _joint_polynomial(data, dif)
 
       pos = qpos_in[worldid, qposadr1] - qpos0[qpos0_id, qposadr1] - rhs
       Jqvel = qvel_in[worldid, dofadr1] - qvel_in[worldid, dofadr2] * deriv_2
@@ -2330,6 +2337,12 @@ def _limit_slide_hinge(is_sparse: bool, newton: bool, is_discrete: bool = False)
   return kernel
 
 
+@wp.func
+def _ball_axis_angle(quat: wp.quat) -> tuple[wp.vec3, float]:
+  """Returns the axis and angle used by a ball-joint limit."""
+  return math.normalize_with_norm(math.quat_to_vel(wp.normalize(quat)))
+
+
 @cache_kernel
 def _limit_ball(is_sparse: bool, newton: bool, is_discrete: bool = False):
   @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
@@ -2378,11 +2391,9 @@ def _limit_ball(is_sparse: bool, newton: bool, is_discrete: bool = False):
 
     qpos = qpos_in[worldid]
     jnt_quat = wp.quat(qpos[qposadr + 0], qpos[qposadr + 1], qpos[qposadr + 2], qpos[qposadr + 3])
-    jnt_quat = wp.normalize(jnt_quat)
-    axis_angle = math.quat_to_vel(jnt_quat)
     jnt_range_id = worldid % jnt_range.shape[0]
     jntrange = jnt_range[jnt_range_id, jntid]
-    axis, angle = math.normalize_with_norm(axis_angle)
+    axis, angle = _ball_axis_angle(jnt_quat)
     jnt_margin_id = worldid % jnt_margin.shape[0]
     jntmargin = jnt_margin[jnt_margin_id, jntid]
 
