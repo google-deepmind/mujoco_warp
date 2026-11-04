@@ -329,7 +329,7 @@ def _gravcomp_seed(
 def gravcomp_qpos_vjp(m: Model, d: Data, lam: wp.array2d, bc: BackwardContext | None = None):
   """Returns d(lam.T @ -qfrc_gravcomp)/dqpos.
 
-  The same reverse leaves its body-mass derivative in ``bc.res_body_mass``.
+  Leaves body-mass and inertial-frame cotangents for parameter accumulation.
   """
   if bc is None:
     from mujoco_warp._src import adjoint
@@ -341,6 +341,7 @@ def gravcomp_qpos_vjp(m: Model, d: Data, lam: wp.array2d, bc: BackwardContext | 
   d.cdof.grad.zero_()
   d.qfrc_gravcomp.grad.zero_()
   bc.res_body_mass.zero_()
+  bc.res_body_inertia.zero_()
   bc.smooth_res_qpos.zero_()
 
   gravity_enabled = int(not (int(m.opt.disableflags) & DisableBit.GRAVITY))

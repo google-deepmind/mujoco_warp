@@ -806,14 +806,8 @@ def smooth_qpos_backward(m: Model, d: Data, d_out: Data, lam: wp.array, res_qpos
   ):
     residual = vjp(m, linearization, lam, bc=bc)
     wp.launch(adjoint_util._accum_cols, dim=residual.shape, inputs=[residual], outputs=[res_qpos])
-  # gravcomp_qpos_vjp also computed the mass residual; apply the IFT minus sign.
-  if m.body_mass.requires_grad:
-    wp.launch(
-      adjoint_util._sub_cols,
-      dim=m.body_mass.shape,
-      inputs=[m.body_mass.grad, bc.res_body_mass],
-      outputs=[m.body_mass.grad],
-    )
+  # Gravcomp leaves mass and COM cotangents in the same workspace.
+  model_adjoint.inertia_param_vjp(m, linearization, bc)
 
 
 @event_scope
