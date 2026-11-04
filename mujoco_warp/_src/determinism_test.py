@@ -236,19 +236,13 @@ _TREE_CASES = (
       "sensor._energy_pos_passive_joint",
       "sensor._energy_pos_passive_tendon",
       "sensor._tendon_actuator_force",
-      "set_const._accumulate_subtreemass",
-      "smooth._angular_momentum",
-      "smooth._cfrc_backward",
       "smooth._cfrc_ext_equality",
       "smooth._cfrc_ext_spatial_tendon",
       "smooth._cfrc_ext_tendon_actuator",
       "smooth._cfrc_ext_tendon_constraint",
-      "smooth._crb_accumulate",
       "smooth._joint_tendon",
-      "smooth._linear_momentum",
       "smooth._spatial_geom_tendon",
       "smooth._spatial_site_tendon",
-      "smooth._subtree_com_acc",
       "smooth._tendon_armature",
       "smooth._tendon_bias_coef",
       "smooth._tendon_bias_qfrc",
@@ -661,6 +655,7 @@ class DeterminismTest(parameterized.TestCase):
             <joint axis="0 1 0"/>
             <geom size=".1"/>
             <flexcomp name="interp" type="grid" count="3 3 3" spacing=".1 .1 .1" dim="3" dof="trilinear">
+              <pin id="0"/>
               <contact selfcollide="none"/>
               <elasticity young="1e4" poisson=".3" damping="1e-3"/>
             </flexcomp>
