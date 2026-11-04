@@ -431,6 +431,7 @@ def smooth_params_backward(m: Model, d: Data, d_out: Data, lam: wp.array, bc: Ba
   """Accumulates smooth Model parameter gradients."""
   if m.dof_armature.requires_grad or m.dof_damping.requires_grad:
     pairs = [
+      (m.opt.disableflags, None),
       (m.dof_armature, m.dof_armature.grad if m.dof_armature.requires_grad else None),
       (m.dof_damping, m.dof_damping.grad if m.dof_damping.requires_grad else None),
       # State VJPs were already consumed; explicit sinks avoid Warp's .grad fallback.

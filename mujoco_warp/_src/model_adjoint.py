@@ -19,6 +19,7 @@ import warp as wp
 from mujoco_warp._src import adjoint_recompute
 from mujoco_warp._src.types import BackwardContext
 from mujoco_warp._src.types import Data
+from mujoco_warp._src.types import DisableBit
 from mujoco_warp._src.types import Model
 from mujoco_warp._src.types import vec5
 from mujoco_warp._src.warp_util import cache_kernel
@@ -188,6 +189,7 @@ def geom_friction_vjp(
 @wp.kernel(enable_backward=True)
 def _smooth_param_contraction(
   # Model:
+  opt_disableflags: int,
   dof_armature: wp.array2d[float],
   dof_damping: wp.array2d[float],
   # Data in:
@@ -203,11 +205,12 @@ def _smooth_param_contraction(
   worldid, dofid = wp.tid()
   seed = lam[worldid, dofid]
   # y and w are zero without an implicit integration solve.
-  contraction_out[worldid, dofid] = (
-    dof_armature[worldid % dof_armature.shape[0], dofid]
-    * (seed * qacc_in[worldid, dofid] - y[worldid, dofid] * w[worldid, dofid])
-    + dof_damping[worldid % dof_damping.shape[0], dofid] * seed * qvel_in[worldid, dofid]
+  value = dof_armature[worldid % dof_armature.shape[0], dofid] * (
+    seed * qacc_in[worldid, dofid] - y[worldid, dofid] * w[worldid, dofid]
   )
+  if not (opt_disableflags & DisableBit.DAMPER):
+    value += dof_damping[worldid % dof_damping.shape[0], dofid] * seed * qvel_in[worldid, dofid]
+  contraction_out[worldid, dofid] = value
 
 
 @event_scope
