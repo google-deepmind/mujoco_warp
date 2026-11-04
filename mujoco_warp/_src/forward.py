@@ -2635,6 +2635,18 @@ def fwd_velocity(m: Model, d: Data):
     derivative.eff_shift(m, d)
 
 
+@wp.func
+def _scalar_act_dot(dyntype: int, dynprm: vec10, control: float, activation: float) -> float:
+  """Returns the rate for scalar actuator dynamics."""
+  if dyntype == DynType.INTEGRATOR:
+    return control
+  if dyntype == DynType.FILTER or dyntype == DynType.FILTEREXACT:
+    return (control - activation) / wp.max(dynprm[0], MJ_MINVAL)
+  if dyntype == DynType.MUSCLE:
+    return util_misc.muscle_dynamics(control, activation, dynprm)
+  return 0.0
+
+
 @wp.kernel
 def _actuator_force(
   # Model:
@@ -2696,15 +2708,11 @@ def _actuator_force(
     act_last = act_first + actuator_actnum[uid] - 1
     dynprm = actuator_dynprm[worldid % actuator_dynprm.shape[0], uid]
 
-    if dyntype == DynType.INTEGRATOR:
-      act_dot = ctrl
-    elif dyntype == DynType.FILTER or dyntype == DynType.FILTEREXACT:
+    if (
+      dyntype == DynType.INTEGRATOR or dyntype == DynType.FILTER or dyntype == DynType.FILTEREXACT or dyntype == DynType.MUSCLE
+    ):
       act = act_in[worldid, act_last]
-      act_dot = (ctrl - act) / wp.max(dynprm[0], MJ_MINVAL)
-    elif dyntype == DynType.MUSCLE:
-      dynprm = actuator_dynprm[worldid % actuator_dynprm.shape[0], uid]
-      act = act_in[worldid, act_last]
-      act_dot = util_misc.muscle_dynamics(ctrl, act, dynprm)
+      act_dot = _scalar_act_dot(dyntype, dynprm, ctrl, act)
     elif dyntype == DynType.DCMOTOR:
       gainprm = actuator_gainprm[worldid % actuator_gainprm.shape[0], uid]
       slots = util_misc.dcmotor_slots(dynprm, gainprm)
