@@ -158,7 +158,8 @@ def _smooth_ctrl_vjp(
   if actuator_ctrllimited[actuatorid] and not dsbl_clampctrl:
     bounds = actuator_ctrlrange[worldid % actuator_ctrlrange.shape[0], actuatorid]
     ctrl = ctrl_in[worldid, actuatorid]
-    if ctrl <= bounds[0] or ctrl >= bounds[1]:
+    # Keep the inward derivative at bounds so projected controls can move off them.
+    if ctrl < bounds[0] or ctrl > bounds[1]:
       return
   if actuator_forcelimited[actuatorid]:
     bounds = actuator_forcerange[worldid % actuator_forcerange.shape[0], actuatorid]
