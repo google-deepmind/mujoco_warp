@@ -127,8 +127,9 @@ def spring_qpos_vjp(m: Model, d: Data, lam: wp.array2d, bc: BackwardContext | No
   smooth_res_qpos = bc.smooth_res_qpos
   qfrc_spring = d.qfrc_spring
   smooth_res_qpos.zero_()
-  qfrc_spring.grad.zero_()
-  wp.launch(adjoint_util._neg_cols, dim=(d.nworld, m.nv), inputs=[lam], outputs=[qfrc_spring.grad])
+  spring_params = (m.qpos_spring, m.jnt_stiffness, m.jnt_stiffnesspoly)
+  # Model gradients accumulate directly with the force sign; only qpos returns a residual VJP.
+  wp.copy(qfrc_spring.grad, lam)
   wp.launch(
     adjoint_recompute._spring_qfrc_recompute,
     dim=(d.nworld, m.njnt),
@@ -141,12 +142,24 @@ def spring_qpos_vjp(m: Model, d: Data, lam: wp.array2d, bc: BackwardContext | No
       m.jnt_stiffness,
       m.jnt_stiffnesspoly,
       d.qpos,
+      any(param.requires_grad for param in spring_params),
     ],
     outputs=[qfrc_spring],
-    adj_inputs=[None, None, None, None, None, None, None, smooth_res_qpos],
+    adj_inputs=[
+      None,
+      m.qpos_spring.grad,
+      None,
+      None,
+      None,
+      m.jnt_stiffness.grad,
+      m.jnt_stiffnesspoly.grad,
+      smooth_res_qpos,
+      None,
+    ],
     adj_outputs=[qfrc_spring.grad],
     adjoint=True,
   )
+  wp.launch(adjoint_util._neg_cols, dim=smooth_res_qpos.shape, inputs=[smooth_res_qpos], outputs=[smooth_res_qpos])
   return smooth_res_qpos
 
 

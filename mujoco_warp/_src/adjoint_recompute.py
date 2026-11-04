@@ -65,6 +65,8 @@ def _spring_qfrc_recompute(
   jnt_stiffnesspoly: wp.array2d[wp.vec2],
   # Data in:
   qpos_in: wp.array2d[float],
+  # In:
+  spring_params_grad: bool,
   # Data out:
   qfrc_spring_out: wp.array2d[float],
 ):
@@ -73,7 +75,8 @@ def _spring_qfrc_recompute(
   dofid = jnt_dofadr[jntid]
   stiffness = jnt_stiffness[w % jnt_stiffness.shape[0], jntid]
   stiffnesspoly = jnt_stiffnesspoly[w % jnt_stiffnesspoly.shape[0], jntid]
-  has_stiffness = (stiffness != 0.0 or stiffnesspoly[0] != 0.0 or stiffnesspoly[1] != 0.0) and (
+  # A zero coefficient still has a parameter derivative when fitting springs.
+  has_stiffness = (spring_params_grad or stiffness != 0.0 or stiffnesspoly[0] != 0.0 or stiffnesspoly[1] != 0.0) and (
     opt_disableflags & DisableBit.SPRING
   ) == 0
   if not has_stiffness:
