@@ -52,6 +52,8 @@ def _constraint_gather(is_sparse: bool):
     nv: int,
     jnt_dofadr: wp.array[int],
     dof_invweight0: wp.array2d[float],
+    eq_obj1id: wp.array[int],
+    eq_obj2id: wp.array[int],
     # Data in:
     nefc_in: wp.array[int],
     efc_type_in: wp.array2d[int],
@@ -93,7 +95,13 @@ def _constraint_gather(is_sparse: bool):
       invw_out[w, row] = dof_invweight0[w % dof_invweight0.shape[0], cid]
     elif ty == ConstraintType.LIMIT_JOINT:
       invw_out[w, row] = dof_invweight0[w % dof_invweight0.shape[0], jnt_dofadr[cid]]
-    # EQUALITY / other -> invw=0 (leaf uses the frozen-D fallback; solimp grad gated, not exact)
+    else:  # The support gate admits only joint equalities; match constraint._equality_joint.
+      model_worldid = w % dof_invweight0.shape[0]
+      invweight = dof_invweight0[model_worldid, jnt_dofadr[eq_obj1id[cid]]]
+      joint2 = eq_obj2id[cid]
+      if joint2 >= 0:
+        invweight += dof_invweight0[model_worldid, jnt_dofadr[joint2]]
+      invw_out[w, row] = invweight
 
   return kernel
 
@@ -124,7 +132,7 @@ def _constraint_row_phi(
   efc_state_in: wp.array2d[int],
   # In:
   Z_in: wp.array2d[float],  # = J*lam (gather) -> Zbar (= -f; the dJ/dq topology seed, unused for G1)
-  invw_in: wp.array2d[float],  # frozen true topology invweight (0 -> frozen-D fallback)
+  invw_in: wp.array2d[float],  # topology inverse weight
   ctx_Jaref_in: wp.array2d[float],  # frozen J*qacc - aref (jaref value anchor)
   # Out:
   phi_out: wp.array2d[float],
@@ -170,11 +178,7 @@ def _constraint_row_phi(
   Jaref0 = ctx_Jaref_in[w, row]
   jaref = Jaref0 + efc_aref_in[w, row] + g  # value == Jaref0 at base (efc.aref = -g_base, same _contact_kbimp)
   D_ref = efc_D_in[w, row]
-  invw = invw_in[w, row]
-  if invw > 0.0:
-    D = constraint._efc_D(invw, imp)  # true-invweight D_live (base == D_ref by construction)
-  else:
-    D = D_ref  # frozen-D fallback (equality / other; matches the legacy dense kernel)
+  D = constraint._efc_D(invw_in[w, row], imp)
   F_state = -D * jaref
   F_state0 = -D_ref * Jaref0  # frozen base (== F_state at base)
   f = efc_force_in[w, row] + (F_state - F_state0)  # value anchor: f base == efc.force_ref byte-exact

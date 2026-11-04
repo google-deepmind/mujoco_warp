@@ -236,6 +236,8 @@ def _residual_constraint_sparse(
       nv,
       m.jnt_dofadr,
       m.dof_invweight0,
+      m.eq_obj1id,
+      m.eq_obj2id,
       d_out.nefc,
       d_out.efc.type,
       d_out.efc.id,
