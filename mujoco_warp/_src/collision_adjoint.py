@@ -378,9 +378,8 @@ def _narrowphase_recompute(
     frame_out[cid] = math.make_frame(n)
   elif type0 == GeomType.PLANE and type1 == GeomType.CYLINDER:
     n0 = wp.vec3(m0[0, 2], m0[1, 2], m0[2, 2])
-    axis = wp.vec3(m1[0, 2], m1[1, 2], m1[2, 2])
     cyl_dist, cyl_pos, cyl_n = collision_primitive_core.plane_cylinder(
-      n0, p0, p1, axis, s1[0], s1[1]
+      n0, p0, p1, m1, s1[0], s1[1]
     )  # 4 contacts, shared normal
     for i in range(4):  # static unroll; runtime-compare select (no runtime indexing of the adjoint)
       if i == slot:
