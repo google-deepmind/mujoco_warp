@@ -2070,8 +2070,8 @@ class SolverTest(parameterized.TestCase):
 
     self.assertTrue(total_any_changes, "no state changes detected across any keyframe")
 
-  @parameterized.product(nworld=(1, 2), rows_from=("put_data", "make_constraint"))
-  def test_sparse_hessian_dof_friction(self, nworld, rows_from):
+  @parameterized.product(nworld=(1, 2), rows_from=("put_data", "make_constraint"), f64=(False, True))
+  def test_sparse_hessian_dof_friction(self, nworld, rows_from, f64):
     """Sparse Newton H, full and incremental, includes quadratic DOF and tendon friction rows."""
     mjm, mjd, m, _ = test_data.fixture(
       xml="""
@@ -2101,6 +2101,7 @@ class SolverTest(parameterized.TestCase):
       </mujoco>
       """,
       nworld=nworld,
+      overrides={"opt.newton_hessian_float64": f64},
     )
     self.assertTrue(m.is_sparse)
     mjd.qpos[1] = 0.99  # activate the second joint's limit
