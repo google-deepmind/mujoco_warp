@@ -2545,7 +2545,7 @@ class DerivativeTest(parameterized.TestCase):
     mujoco.mj_forward(mjm, mjd)
     mjw.forward(m, d)
 
-    _assert_eq(d.efm_L.numpy()[0], mjd.efm_L, "efm_L")
+    _assert_eq(d.efm_L.numpy()[0], mjd.efm_L[: m.nefmL], "efm_L")
     _assert_eq(d.efm_c.numpy()[0], mjd.efm_c, "efm_c")
     _assert_eq(d.qacc_smooth.numpy()[0], mjd.qacc_smooth, "qacc_smooth")
     if nworld == 2:
