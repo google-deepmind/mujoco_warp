@@ -94,6 +94,8 @@ def assert_smooth_supported(m: Model):
     trntype = m.actuator_trntype.numpy()
     gaintype = m.actuator_gaintype.numpy()
     biastype = m.actuator_biastype.numpy()
+    dyntype = m.actuator_dyntype.numpy()
+    stateful = m.actuator_actadr.numpy() >= 0
     jnt_type = m.jnt_type.numpy()
     if np.any(trntype != TrnType.JOINT):
       bad.append("non-JOINT actuator transmission (tendon/site/body/slider-crank/jointinparent)")
@@ -105,8 +107,13 @@ def assert_smooth_supported(m: Model):
     jnt_ids = m.actuator_trnid.numpy()[:, 0][trntype == TrnType.JOINT]
     if jnt_ids.size and np.any((jnt_type[jnt_ids] == JointType.FREE) | (jnt_type[jnt_ids] == JointType.BALL)):
       bad.append("actuator on a FREE/BALL joint (quaternion-dependent transmission length)")
-    if np.any((m.actuator_dyntype.numpy() != DynType.NONE) & (gaintype == GainType.AFFINE)):
+    if np.any(stateful & (gaintype == GainType.AFFINE)):
       bad.append("stateful (na>0) AFFINE-gain actuator (ctrl_act=act not implemented)")
+    scalar_dynamics = np.isin(dyntype, (DynType.INTEGRATOR, DynType.FILTER, DynType.FILTEREXACT, DynType.MUSCLE))
+    if np.any(stateful & (~scalar_dynamics | (m.actuator_actnum.numpy() != 1))):
+      bad.append("non-scalar or user/DC-motor activation dynamics")
+    if m.nhistory and np.any(m.actuator_history.numpy()[..., 0] > 0):
+      bad.append("actuator control history/delay")
   if bad:
     raise NotImplementedError(
       "smooth_adjoint analytic reverse does not support: "

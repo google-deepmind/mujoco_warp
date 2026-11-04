@@ -130,6 +130,7 @@ def _smooth_ctrl_vjp(
   jnt_actfrcrange: wp.array2d[wp.vec2],
   dof_jntid: wp.array[int],
   actuator_gaintype: wp.array[int],
+  actuator_actadr: wp.array[int],
   actuator_gainprm: wp.array2d[vec10],
   actuator_forcelimited: wp.array[bool],
   actuator_forcerange: wp.array2d[wp.vec2],
@@ -155,6 +156,8 @@ def _smooth_ctrl_vjp(
   adj_ctrl_out: wp.array2d[float],
 ):
   worldid, actuatorid = wp.tid()
+  if actuator_actadr[actuatorid] >= 0:
+    return  # Activation dynamics route force cotangents through _activation_vjp.
   if actuator_ctrllimited[actuatorid] and not dsbl_clampctrl:
     bounds = actuator_ctrlrange[worldid % actuator_ctrlrange.shape[0], actuatorid]
     ctrl = ctrl_in[worldid, actuatorid]
@@ -195,6 +198,119 @@ def _smooth_ctrl_vjp(
     rownnz,
   )
   adj_ctrl_out[worldid, actuatorid] += gain * value
+
+
+@wp.func
+def _activation_objective(
+  # In:
+  control: float,
+  activation: float,
+  timestep: float,
+  dyntype: int,
+  dynprm: vec10,
+  actrange: wp.vec2,
+  actlimited: bool,
+  actearly: bool,
+  ctrlrange: wp.vec2,
+  ctrllimited: bool,
+  flags: int,
+  force_seed: float,
+  state_seed: float,
+  rate_seed: float,
+):
+  if ctrllimited and not (flags & DisableBit.CLAMPCTRL):
+    # Match the stateless path's inward derivative at either control bound.
+    if control < ctrlrange[0]:
+      control = ctrlrange[0]
+    elif control > ctrlrange[1]:
+      control = ctrlrange[1]
+  rate = float(0.0)
+  if not (flags & DisableBit.ACTUATION):
+    rate = forward._scalar_act_dot(dyntype, dynprm, control, activation)
+  next_activation = support.next_act(timestep, dyntype, dynprm, actrange, activation, rate, 1.0, actlimited)
+  force_activation = next_activation if actearly else activation
+  return force_seed * force_activation + state_seed * next_activation + rate_seed * rate
+
+
+@wp.kernel(enable_backward=False)
+def _activation_vjp(
+  # Model:
+  opt_timestep: wp.array[float],
+  opt_disableflags: int,
+  jnt_actfrclimited: wp.array[bool],
+  jnt_actfrcrange: wp.array2d[wp.vec2],
+  dof_jntid: wp.array[int],
+  actuator_dyntype: wp.array[int],
+  actuator_actadr: wp.array[int],
+  actuator_dynprm: wp.array2d[vec10],
+  actuator_gainprm: wp.array2d[vec10],
+  actuator_actlimited: wp.array[bool],
+  actuator_actrange: wp.array2d[wp.vec2],
+  actuator_actearly: wp.array[bool],
+  actuator_forcelimited: wp.array[bool],
+  actuator_forcerange: wp.array2d[wp.vec2],
+  actuator_ctrllimited: wp.array[bool],
+  actuator_ctrlrange: wp.array2d[wp.vec2],
+  # Data in:
+  act_in: wp.array2d[float],
+  ctrl_in: wp.array2d[float],
+  moment_rownnz_in: wp.array2d[int],
+  moment_rowadr_in: wp.array2d[int],
+  moment_colind_in: wp.array2d[int],
+  actuator_moment_in: wp.array2d[float],
+  actuator_force_in: wp.array2d[float],
+  qfrc_actuator_in: wp.array2d[float],
+  # In:
+  lam: wp.array2d[float],
+  adj_act: wp.array2d[float],
+  adj_act_dot: wp.array2d[float],
+  # Out:
+  adj_act_out: wp.array2d[float],
+  adj_ctrl_out: wp.array2d[float],
+):
+  w, uid = wp.tid()
+  adr = actuator_actadr[uid]
+  if adr < 0:
+    return
+  force_seed = float(0.0)
+  force_active = not (opt_disableflags & DisableBit.ACTUATION)
+  if actuator_forcelimited[uid]:
+    bounds = actuator_forcerange[w % actuator_forcerange.shape[0], uid]
+    force = actuator_force_in[w, uid]
+    force_active = force_active and force > bounds[0] and force < bounds[1]
+  if force_active:
+    moment_seed, _ = smooth_adjoint._actuator_moment_dots(
+      jnt_actfrclimited,
+      jnt_actfrcrange,
+      dof_jntid,
+      moment_colind_in,
+      actuator_moment_in,
+      qfrc_actuator_in,
+      lam,
+      w,
+      moment_rowadr_in[w, uid],
+      moment_rownnz_in[w, uid],
+    )
+    force_seed = actuator_gainprm[w % actuator_gainprm.shape[0], uid][0] * moment_seed
+  # Force limits suppress force derivatives, but never the activation update itself.
+  gradients = wp.grad(_activation_objective)(
+    ctrl_in[w, uid],
+    act_in[w, adr],
+    opt_timestep[w % opt_timestep.shape[0]],
+    actuator_dyntype[uid],
+    actuator_dynprm[w % actuator_dynprm.shape[0], uid],
+    actuator_actrange[w % actuator_actrange.shape[0], uid],
+    actuator_actlimited[uid],
+    actuator_actearly[uid],
+    actuator_ctrlrange[w % actuator_ctrlrange.shape[0], uid],
+    actuator_ctrllimited[uid],
+    opt_disableflags,
+    force_seed,
+    adj_act[w, adr],
+    adj_act_dot[w, adr],
+  )
+  adj_ctrl_out[w, uid] += gradients[0]
+  adj_act_out[w, adr] += gradients[1]
 
 
 @wp.kernel(enable_backward=False)
@@ -731,6 +847,7 @@ def smooth_qvel_backward(m: Model, d: Data, d_out: Data, lam: wp.array, adj_qvel
           m.jnt_actfrcrange,
           m.dof_jntid,
           m.actuator_gaintype,
+          m.actuator_actadr,
           m.actuator_gainprm,
           m.actuator_forcelimited,
           m.actuator_forcerange,
@@ -753,6 +870,41 @@ def smooth_qvel_backward(m: Model, d: Data, d_out: Data, lam: wp.array, adj_qvel
         ],
         outputs=[d.ctrl.grad],
       )
+  if m.na:
+    wp.launch(
+      _activation_vjp,
+      dim=(nworld, m.nactuator),
+      inputs=[
+        m.opt.timestep,
+        m.opt.disableflags,
+        m.jnt_actfrclimited,
+        m.jnt_actfrcrange,
+        m.dof_jntid,
+        m.actuator_dyntype,
+        m.actuator_actadr,
+        m.actuator_dynprm,
+        m.actuator_gainprm,
+        m.actuator_actlimited,
+        m.actuator_actrange,
+        m.actuator_actearly,
+        m.actuator_forcelimited,
+        m.actuator_forcerange,
+        m.actuator_ctrllimited,
+        m.actuator_ctrlrange,
+        d.act,
+        d.ctrl,
+        d_out.moment_rownnz,
+        d_out.moment_rowadr,
+        d_out.moment_colind,
+        d_out.actuator_moment,
+        d_out.actuator_force,
+        d_out.qfrc_actuator,
+        lam,
+        d_out.act.grad,
+        d_out.act_dot.grad,
+      ],
+      outputs=[d.act.grad, d.ctrl.grad],
+    )
   if d.qfrc_applied.requires_grad:
     # fwd_acceleration adds qfrc_applied directly to qfrc_smooth.
     wp.launch(adjoint_util._accum_cols, dim=(nworld, m.nv), inputs=[lam], outputs=[d.qfrc_applied.grad])

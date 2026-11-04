@@ -77,6 +77,8 @@ def _prepare_data(d: Data):
     d.qpos,
     d.qvel,
     d.qacc,
+    d.act,
+    d.act_dot,
     d.efc.pos,
     d.efc.vel,
     d.contact.pos,
@@ -501,7 +503,7 @@ def forward_backward_ift(m: Model, d: Data, d_out: Data, adj_qacc: wp.array, bc:
 
 def step_backward_arrays(d: Data, d_out: Data):
   """Allocates and returns arrays used by the analytic step backward."""
-  inputs = [d.qpos, d.qvel, d.ctrl]
+  inputs = [d.qpos, d.qvel, d.act, d.ctrl]
   for array in (d.qfrc_applied, d.xfrc_applied):
     if array.requires_grad:
       inputs.append(array)
