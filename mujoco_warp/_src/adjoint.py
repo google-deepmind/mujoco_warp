@@ -353,7 +353,8 @@ def _residual_contact(
   )
 
   geom_friction_grad = m.geom_friction.requires_grad
-  res_contact_friction = d_out.contact.friction.grad if geom_friction_grad else None
+  pair_friction_grad = m.pair_friction.requires_grad
+  res_contact_friction = d_out.contact.friction.grad if geom_friction_grad or pair_friction_grad else None
 
   pairs = [
     (m.opt.timestep, None),
@@ -382,12 +383,15 @@ def _residual_contact(
   kernel = constraint_adjoint._contact_phi(int(m.opt.cone))
   adjoint_util._launch_vjp(kernel, nconmax, pairs, [contact_phi], [contact_phi.grad])
   wp.launch(
-    constraint_adjoint._contact_scatter(geom_friction_grad),
+    constraint_adjoint._contact_scatter(geom_friction_grad, pair_friction_grad),
     dim=nconmax,
     inputs=[
+      m.ngeom,
       *walk,
       m.geom_priority,
       m.geom_friction,
+      m.pair_friction,
+      m.nxn_pairid,
       *state,
       lam,
       contact_V.grad,
@@ -395,7 +399,7 @@ def _residual_contact(
       contact_Z.grad,
       res_contact_friction,
     ],
-    outputs=[res_qvel, res_cdof, res_subtree_com, res_contact_pos, m.geom_friction.grad],
+    outputs=[res_qvel, res_cdof, res_subtree_com, res_contact_pos, m.geom_friction.grad, m.pair_friction.grad],
   )
 
 

@@ -17,8 +17,10 @@
 import warp as wp
 
 from mujoco_warp._src import constraint
+from mujoco_warp._src import math
 from mujoco_warp._src import model_adjoint
 from mujoco_warp._src import solver
+from mujoco_warp._src.types import MJ_MINMU
 from mujoco_warp._src.types import MJ_MINVAL
 from mujoco_warp._src.types import ConeType
 from mujoco_warp._src.types import ConstraintState
@@ -506,10 +508,11 @@ def _contact_phi(cone_type: int):
 # Topology scatter: route leaf adjoints over the gather's symmetric-difference walk. qacc is the
 # implicit root, but its Abar term still feeds cdof/com through cdof(qpos).
 @cache_kernel
-def _contact_scatter(geom_friction_grad: bool):
+def _contact_scatter(geom_friction_grad: bool, pair_friction_grad: bool):
   @wp.kernel(module="unique", enable_backward=False)
   def kernel(
     # Model:
+    ngeom: int,
     body_rootid: wp.array[int],
     body_weldid: wp.array[int],
     body_dofnum: wp.array[int],
@@ -518,6 +521,8 @@ def _contact_scatter(geom_friction_grad: bool):
     geom_bodyid: wp.array[int],
     geom_priority: wp.array[int],
     geom_friction: wp.array2d[wp.vec3],
+    pair_friction: wp.array2d[vec5],
+    nxn_pairid: wp.array[wp.vec2i],
     # Data in:
     qvel_in: wp.array2d[float],
     qacc_in: wp.array2d[float],
@@ -540,6 +545,7 @@ def _contact_scatter(geom_friction_grad: bool):
     res_subtree_com_out: wp.array2d[wp.vec3],
     res_contact_pos_out: wp.array[wp.vec3],
     geom_friction_grad_out: wp.array2d[wp.vec3],
+    pair_friction_grad_out: wp.array2d[vec5],
   ):
     cid = wp.tid()
     if cid >= nacon_in[0]:
@@ -551,17 +557,23 @@ def _contact_scatter(geom_friction_grad: bool):
     geom = contact_geom_in[cid]
     if geom[0] < 0 or geom[1] < 0:
       return
-    if wp.static(geom_friction_grad):
-      grad1, grad2 = model_adjoint.geom_friction_vjp(
-        geom_priority,
-        geom_friction,
-        geom,
-        w,
-        res_contact_friction_in[cid],
-      )
-      model_worldid = w % geom_friction.shape[0]
-      wp.atomic_add(geom_friction_grad_out, model_worldid, geom[0], grad1)  # kernel_analyzer: ignore[atomic]
-      wp.atomic_add(geom_friction_grad_out, model_worldid, geom[1], grad2)  # kernel_analyzer: ignore[atomic]
+    if wp.static(geom_friction_grad or pair_friction_grad):
+      # Recover the same explicit-pair selection used by the broadphase.
+      pairid = nxn_pairid[math.upper_tri_index(ngeom, wp.min(geom[0], geom[1]), wp.max(geom[0], geom[1]))][0]
+      if pairid >= 0:
+        if wp.static(pair_friction_grad):
+          pair_worldid = w % pair_friction.shape[0]
+          friction = pair_friction[pair_worldid, pairid]
+          grad = vec5(0.0)
+          for i in range(5):
+            if friction[i] > MJ_MINMU:
+              grad[i] = -res_contact_friction_in[cid][i]
+          wp.atomic_add(pair_friction_grad_out, pair_worldid, pairid, grad)  # kernel_analyzer: ignore[atomic]
+      elif wp.static(geom_friction_grad):
+        grad1, grad2 = model_adjoint.geom_friction_vjp(geom_priority, geom_friction, geom, w, res_contact_friction_in[cid])
+        model_worldid = w % geom_friction.shape[0]
+        wp.atomic_add(geom_friction_grad_out, model_worldid, geom[0], grad1)  # kernel_analyzer: ignore[atomic]
+        wp.atomic_add(geom_friction_grad_out, model_worldid, geom[1], grad2)  # kernel_analyzer: ignore[atomic]
     b0 = body_weldid[geom_bodyid[geom[0]]]
     b1 = body_weldid[geom_bodyid[geom[1]]]
     p = contact_pos_in[cid]

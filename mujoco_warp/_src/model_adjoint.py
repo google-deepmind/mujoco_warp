@@ -17,6 +17,7 @@
 import warp as wp
 
 from mujoco_warp._src import adjoint_recompute
+from mujoco_warp._src.types import MJ_MINMU
 from mujoco_warp._src.types import BackwardContext
 from mujoco_warp._src.types import Data
 from mujoco_warp._src.types import DisableBit
@@ -177,9 +178,11 @@ def geom_friction_vjp(
   grad2 = wp.vec3(0.0)
   for i in range(3):
     if priority1 > priority2 or (priority1 == priority2 and friction1[i] >= friction2[i]):
-      grad1[i] = res_geom_friction[i]
+      if friction1[i] > MJ_MINMU:
+        grad1[i] = res_geom_friction[i]
     else:
-      grad2[i] = res_geom_friction[i]
+      if friction2[i] > MJ_MINMU:
+        grad2[i] = res_geom_friction[i]
   return -grad1, -grad2
 
 
