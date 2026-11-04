@@ -2043,13 +2043,13 @@ class DerivativeTest(parameterized.TestCase):
             for y in range(3):
               H_ref[3 * vi + x, 3 * vj + y] = grad_n[i] @ H9_proj[3 * x : 3 * x + 3, 3 * y : 3 * y + 3] @ grad_n[j]
 
-      np.testing.assert_allclose(K_dense, H_ref, atol=5e-3, rtol=1e-4)
+      np.testing.assert_allclose(K_dense, H_ref, atol=1e-3, rtol=1e-4)
       np.testing.assert_allclose(K_dense, K_dense.T, atol=1e-4)
       k_evals = np.linalg.eigvalsh(0.5 * (K_dense + K_dense.T))
       norm_K = float(np.max(np.abs(k_evals)))
       self.assertGreaterEqual(float(np.min(k_evals)), -1e-6 * max(norm_K, 1.0))
-      np.testing.assert_allclose(d.efm_c.numpy()[w], -h * (H_ref @ qvel[w]), atol=5e-3, rtol=1e-4)
-      np.testing.assert_allclose(d.qfrc_damper.numpy()[w], -damping * (H_ref @ qvel[w]), atol=5e-2, rtol=1e-4)
+      np.testing.assert_allclose(d.efm_c.numpy()[w], -h * (H_ref @ qvel[w]), atol=1e-3, rtol=1e-4)
+      np.testing.assert_allclose(d.qfrc_damper.numpy()[w], -damping * (H_ref @ qvel[w]), atol=1e-3, rtol=1e-4)
       self.assertTrue(np.all(np.isfinite(d.efm_L.numpy()[w])))
       self.assertTrue(np.all(np.isfinite(d.qacc_smooth.numpy()[w])))
 
@@ -3210,7 +3210,7 @@ class DerivativeTest(parameterized.TestCase):
     for w in range(nworld):
       z_final = 1.0 + float(qpos_final[w, 2])
       self.assertGreater(z_final, 0.9)
-      np.testing.assert_allclose(qpos_final[w], 0.0, atol=5e-2)
+      np.testing.assert_allclose(qpos_final[w], 0.0, atol=1e-3)
 
   @absltest.skipIf(
     not util_pkg.check_version("mujoco>=3.14.1.dev990351372"),
@@ -3515,18 +3515,18 @@ class DerivativeTest(parameterized.TestCase):
                 K_dense[c, r] = K_dense[r, c]
 
           H_ref = build_ref_hessian(qpos_batch[w].astype(np.float64), project_psd=True)
-          np.testing.assert_allclose(K_dense, H_ref, atol=5e-2, rtol=2e-4)
+          np.testing.assert_allclose(K_dense, H_ref, atol=1e-3, rtol=2e-4)
           k_evals = np.linalg.eigvalsh(0.5 * (K_dense + K_dense.T))
           norm_K = float(np.max(np.abs(k_evals)))
           self.assertGreaterEqual(float(np.min(k_evals)), -1e-6 * max(norm_K, 1.0))
-          np.testing.assert_allclose(d.efm_c.numpy()[w], -h * (H_ref @ qvel[w]), atol=5e-2, rtol=2e-4)
-          np.testing.assert_allclose(d.qfrc_damper.numpy()[w], -damping * (H_ref @ qvel[w]), atol=5e-2, rtol=2e-4)
+          np.testing.assert_allclose(d.efm_c.numpy()[w], -h * (H_ref @ qvel[w]), atol=1e-3, rtol=2e-4)
+          np.testing.assert_allclose(d.qfrc_damper.numpy()[w], -damping * (H_ref @ qvel[w]), atol=1e-3, rtol=2e-4)
           self.assertLessEqual(float(np.dot(qvel[w], d.qfrc_damper.numpy()[w])), 1e-6)
 
           # When all singular values >= 1 (rank == 0), unprojected Hessian is SPD
           if rank == 0:
             H_unproj = build_ref_hessian(qpos_batch[w].astype(np.float64), project_psd=False)
-            np.testing.assert_allclose(K_dense, H_unproj, atol=5e-2, rtol=2e-4)
+            np.testing.assert_allclose(K_dense, H_unproj, atol=1e-3, rtol=2e-4)
 
         if nworld == 2 and rank < 3:
           self.assertFalse(np.allclose(d.efm_K_val.numpy()[0], d.efm_K_val.numpy()[1]))
@@ -4014,6 +4014,172 @@ class DerivativeTest(parameterized.TestCase):
           self.assertTrue(np.all(efm_as[w] > 0.0))
         else:
           np.testing.assert_allclose(efm_as[w], 0.0, atol=0.0)
+
+  @parameterized.parameters(1, 2)
+  def test_eff_twist_solve_long_rod_and_ktheta(self, nworld):
+    """Tests exact O(nedge) _eff_twist_solve on >64 edges and twist-twist Hessian vs FD."""
+    if types.ROD_HINGE_SIZE != 10:
+      self.skipTest("Requires 1D flex rod torsion support in MuJoCo")
+
+    # 1. 70-edge circular rod (> old ROD_MAX_EDGES=64): eff_prec inverts eff_mul_m on twist chain
+    mjm, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option integrator="discrete" solver="CG" timestep="0.005" gravity="0 0 0"/>
+        <worldbody>
+          <flexcomp name="long_rod" type="grid" count="71 1 1" spacing="0.02 0.02 0.02"
+                    radius="0.006" dim="1" mass="0.35">
+            <pin id="0 1"/>
+            <contact selfcollide="none" contype="0" conaffinity="0"/>
+            <elasticity young="5e6" poisson="0.3" damping="0.02"/>
+          </flexcomp>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=nworld,
+    )
+    self.assertEqual(m.nflexrodedge, 70)
+    mjw.forward(m, d)
+
+    twist_dofs = [mjm.jnt_dofadr[j] for j in m.flex_rodedge_jnt.numpy() if j >= 0]
+    self.assertLen(twist_dofs, 69)
+
+    rng = np.random.default_rng(7)
+    x_np = np.zeros((nworld, mjm.nv), dtype=np.float32)
+    x_np[:, twist_dofs] = rng.uniform(-1.0, 1.0, size=(nworld, len(twist_dofs))).astype(np.float32)
+    x_wp = wp.array(x_np, dtype=float)
+    rhs_wp = wp.zeros_like(x_wp)
+    sol_wp = wp.zeros_like(x_wp)
+
+    derivative.eff_mul_m(m, d, rhs_wp, x_wp)
+    derivative.eff_prec(m, d, sol_wp, rhs_wp)
+    sol_np = sol_wp.numpy()
+    for w in range(nworld):
+      np.testing.assert_allclose(sol_np[w, twist_dofs], x_np[w, twist_dofs], rtol=1e-4, atol=1e-5)
+
+    # 2. Curved box ribbon at rest: twist-twist block of eff_mul_m matches FD of -qfrc_spring
+    h = 0.005
+    mjm_box, _, m_box, d_box = test_data.fixture(
+      xml=f"""
+      <mujoco>
+        <option integrator="discrete" solver="CG" timestep="{h}" gravity="0 0 0"/>
+        <worldbody>
+          <flexcomp name="arc" type="direct" dim="1" radius="0.005" mass="0.1"
+                    point="0 0 0  0.08 0 0  0.15 0.04 0  0.20 0.11 0  0.22 0.19 0"
+                    element="0 1  1 2  2 3  3 4">
+            <pin id="0 1"/>
+            <contact selfcollide="none" contype="0" conaffinity="0"/>
+            <elasticity young="2e6" damping="0.0" section="box" sectionsize="0.02 0.006"/>
+          </flexcomp>
+        </worldbody>
+      </mujoco>
+      """,
+    )
+    mjw.forward(m_box, d_box)
+    plastic_rest = d_box.plastic.numpy().copy()
+    tw_dofs = [mjm_box.jnt_dofadr[j] for j in m_box.flex_rodedge_jnt.numpy() if j >= 0]
+    self.assertLen(tw_dofs, 3)
+
+    eps = 1e-4
+    for col in tw_dofs:
+      e_vec = np.zeros((1, mjm_box.nv), dtype=np.float32)
+      e_vec[0, col] = 1.0
+      mv_wp = wp.zeros((1, mjm_box.nv), dtype=float)
+      derivative.eff_mul_m(m_box, d_box, mv_wp, wp.array(e_vec, dtype=float))
+      # Subtract inertia M[col, col] and divide by h^2 to isolate twist stiffness row
+      M_diag = mjm_box.dof_armature[col] + mjm_box.body_inertia[mjm_box.dof_bodyid[col], 0]
+      # Read exact M diagonal from d_box.M
+      m_adr = m_box.M_rowadr.numpy()[col] + m_box.M_rownnz.numpy()[col] - 1
+      M_diag = d_box.M.numpy()[0, m_adr]
+      K_col = mv_wp.numpy()[0, tw_dofs].copy()
+      K_col[tw_dofs.index(col)] -= M_diag
+      K_col /= h * h
+
+      q_plus = mjm_box.qpos0.copy()
+      q_minus = mjm_box.qpos0.copy()
+      jnt = mjm_box.dof_jntid[col]
+      q_plus[mjm_box.jnt_qposadr[jnt]] += eps
+      q_minus[mjm_box.jnt_qposadr[jnt]] -= eps
+
+      d_box.qpos.assign(q_plus[None].astype(np.float32))
+      d_box.plastic.assign(plastic_rest)
+      mjw.fwd_position(m_box, d_box)
+      mjw.fwd_velocity(m_box, d_box)
+      f_plus = d_box.qfrc_spring.numpy()[0, tw_dofs].copy()
+
+      d_box.qpos.assign(q_minus[None].astype(np.float32))
+      d_box.plastic.assign(plastic_rest)
+      mjw.fwd_position(m_box, d_box)
+      mjw.fwd_velocity(m_box, d_box)
+      f_minus = d_box.qfrc_spring.numpy()[0, tw_dofs].copy()
+
+      fd_col = -(f_plus - f_minus) / (2.0 * eps)
+      np.testing.assert_allclose(K_col, fd_col, rtol=2e-3, atol=1e-3)
+
+  @parameterized.product(
+    cone=[mujoco.mjtCone.mjCONE_PYRAMIDAL, mujoco.mjtCone.mjCONE_ELLIPTIC],
+    jacobian=[mujoco.mjtJacobian.mjJAC_SPARSE, mujoco.mjtJacobian.mjJAC_DENSE],
+  )
+  def test_eff_prec_fold_tw_diag_parity(self, cone, jacobian):
+    """tw_diag folds contact/efc rows without double-counting tendon or actuator diagonals."""
+    if types.ROD_HINGE_SIZE != 10:
+      self.skipTest("Requires 1D flex rod torsion support in MuJoCo")
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option integrator="discrete" solver="CG" timestep="0.002"/>
+        <worldbody>
+          <geom name="floor" type="plane" size="1 1 0.1"/>
+          <flexcomp name="strip" type="grid" count="5 1 1" spacing="0.08 0.08 0.08" pos="0 0 0.012"
+                    radius="0.006" dim="1" mass="0.1">
+            <pin id="0 1"/>
+            <edge equality="true" solref="0.005 1"/>
+            <contact selfcollide="none"/>
+            <elasticity young="2e6" damping="0.02" section="box" sectionsize="0.02 0.006"/>
+          </flexcomp>
+          <flexcomp name="air_rod" type="grid" count="4 1 1" spacing="0.08 0.08 0.08" pos="0 0.3 0.5"
+                    radius="0.008" dim="1" mass="0.08">
+            <pin id="0 1"/>
+            <contact selfcollide="none" contype="0" conaffinity="0"/>
+            <elasticity young="1e6" damping="0.01"/>
+          </flexcomp>
+        </worldbody>
+        <tendon>
+          <fixed name="tw_ten" stiffness="30" damping="1.5">
+            <joint joint="air_rod_twist" coef="1"/>
+          </fixed>
+        </tendon>
+        <actuator>
+          <position joint="air_rod_twist" kp="25" kv="1.2"/>
+        </actuator>
+      </mujoco>
+      """,
+      overrides={"opt.cone": cone, "opt.jacobian": jacobian},
+    )
+    jnt_strip_tw = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_JOINT, "strip_twist")
+    jnt_air_tw = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_JOINT, "air_rod_twist")
+    dof_strip_tw = mjm.jnt_dofadr[jnt_strip_tw]
+    dof_air_tw = mjm.jnt_dofadr[jnt_air_tw]
+
+    qpos = d.qpos.numpy().copy()
+    qpos[0, mjm.jnt_qposadr[jnt_strip_tw]] = 0.45
+    qpos[0, mjm.jnt_qposadr[jnt_air_tw]] = 0.2
+    d.qpos.assign(qpos)
+    mjd.qpos[:] = qpos[0]
+
+    mujoco.mj_forward(mjm, mjd)
+    mjw.forward(m, d)
+
+    tw_diag = wp.zeros((1, mjm.nv), dtype=float)
+    derivative.eff_prec_fold(m, d, tw_diag=tw_diag)
+    tw_np = tw_diag.numpy()[0]
+
+    # Contacting tilted box ribbon edge gets positive efc diagonal in tw_diag
+    self.assertGreater(tw_np[dof_strip_tw], 0.0)
+    # Contact-free air_rod_twist has tendon + actuator in qH, so tw_diag must remain 0
+    self.assertEqual(tw_np[dof_air_tw], 0.0)
+    scale = max(1.0, float(np.abs(mjd.qacc).max()))
+    np.testing.assert_allclose(d.qacc.numpy()[0], mjd.qacc, atol=2e-3 * scale, rtol=2e-2)
 
 
 if __name__ == "__main__":
