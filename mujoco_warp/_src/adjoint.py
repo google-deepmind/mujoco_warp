@@ -104,6 +104,7 @@ def _reset_backward_context(bc: BackwardContext):
 def create_backward_context(m: Model, d: Data) -> BackwardContext:
   """Preallocates the reusable backward workspace for ``(m, d)``."""
   smooth_adjoint.assert_smooth_supported(m)
+  collision_adjoint.assert_collision_supported(m)
   _prepare_data(d)
   sizes = {field.name: getattr(m, field.name) for field in dataclasses.fields(Model) if field.type is int}
   sizes.update(nworld=d.nworld, njmax=d.efc.type.shape[1], naconmax=d.contact.pos.shape[0], qld_total=d.qLD.shape[1])
@@ -156,6 +157,7 @@ def _assert_step_supported(m: Model):
   if m.eq_connect_adr.size or m.eq_wld_adr.size or m.ntendon or m.nflex:
     raise NotImplementedError("adjoint.step_backward does not support connect/weld equality, tendon, or flex constraint rows")
   smooth_adjoint.assert_smooth_supported(m)
+  collision_adjoint.assert_collision_supported(m)
 
 
 @wp.kernel(enable_backward=False)

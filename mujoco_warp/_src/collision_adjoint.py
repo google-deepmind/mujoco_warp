@@ -34,6 +34,42 @@ from mujoco_warp._src.warp_util import event_scope
 wp.set_module_options({"enable_backward": True})
 
 
+_SUPPORTED_PAIRS = {
+  (GeomType.PLANE, GeomType.SPHERE),
+  (GeomType.PLANE, GeomType.CAPSULE),
+  (GeomType.PLANE, GeomType.ELLIPSOID),
+  (GeomType.PLANE, GeomType.CYLINDER),
+  (GeomType.PLANE, GeomType.BOX),
+  (GeomType.PLANE, GeomType.MESH),
+  (GeomType.SPHERE, GeomType.SPHERE),
+  (GeomType.SPHERE, GeomType.CAPSULE),
+  (GeomType.SPHERE, GeomType.CYLINDER),
+  (GeomType.SPHERE, GeomType.BOX),
+  (GeomType.CAPSULE, GeomType.CAPSULE),
+  (GeomType.CAPSULE, GeomType.BOX),
+  (GeomType.BOX, GeomType.BOX),
+  *((GeomType.HFIELD, geom) for geom in collision_convex_adjoint._CONVEX_TYPES),
+}
+_UNSUPPORTED_PAIRS = {
+  math.upper_trid_index(len(GeomType), first.value, second.value): f"{first.name.lower()}-{second.name.lower()}"
+  for first in GeomType
+  for second in GeomType
+  if first <= second <= GeomType.SDF and (first, second) not in _SUPPORTED_PAIRS
+}
+
+
+def assert_collision_supported(m: Model):
+  """Rejects possible contact pairs without a complete pose VJP."""
+  if m.opt.disableflags & DisableBit.CONTACT:
+    return
+  unsupported = [name for index, name in _UNSUPPORTED_PAIRS.items() if m.geom_pair_type_count[index]]
+  if unsupported:
+    raise NotImplementedError("contact pose gradients are not implemented for: " + ", ".join(unsupported))
+  box_pair = math.upper_trid_index(len(GeomType), GeomType.BOX.value, GeomType.BOX.value)
+  if m.geom_pair_type_count[box_pair] and not (m.opt.disableflags & DisableBit.NATIVECCD):
+    raise NotImplementedError("box-box contact gradients require nativeccd disabled; convex box-box replay is not supported")
+
+
 @wp.func
 def _capsule_box_coordinates(
   # In:
@@ -279,7 +315,7 @@ def _narrowphase_witness(
     contact_feature_out[cid] = wp.vec4i(feature[0], feature[1], feature[2], candidates[slot])
 
 
-# Replay all thirteen primitive pairs with the primal contact slots and features fixed.
+# Replay primitive pairs with the primal contact slots and features fixed.
 @wp.kernel(enable_backward=True)
 def _narrowphase_recompute(
   # Model:
@@ -518,9 +554,7 @@ def contact_qpos_vjp(
     res_qpos: Accumulated output; the caller's writeback applies the IFT minus.
     bc: Reusable backward workspace.
   """
-  box_pair = math.upper_trid_index(len(GeomType), GeomType.BOX.value, GeomType.BOX.value)
-  if m.geom_pair_type_count[box_pair] and not (m.opt.disableflags & DisableBit.NATIVECCD):
-    raise NotImplementedError("box-box contact gradients require nativeccd disabled; convex box-box replay is not supported")
+  assert_collision_supported(m)
   if bc is None:
     from mujoco_warp._src import adjoint
 
