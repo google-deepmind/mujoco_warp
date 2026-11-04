@@ -23,6 +23,7 @@ from mujoco_warp._src.types import MJ_MAXVAL
 from mujoco_warp._src.types import MJ_MINVAL
 from mujoco_warp._src.types import ConeType
 from mujoco_warp._src.types import Data
+from mujoco_warp._src.types import DeterminismType
 from mujoco_warp._src.types import DynType
 from mujoco_warp._src.types import JointType
 from mujoco_warp._src.types import Model
@@ -275,7 +276,7 @@ def mul_m(
 
 
 @wp.kernel
-def _apply_ft(
+def _apply_ft_gather(
   # Model:
   body_rootid: wp.array[int],
   dof_bodyid: wp.array[int],
@@ -314,11 +315,77 @@ def _apply_ft(
     qfrc_out[worldid, dofid] = accumul
 
 
-def apply_ft(m: Model, d: Data, ft: wp.array2d[wp.spatial_vector], qfrc: wp.array2d[float], flg_add: bool):
+@cache_kernel
+def _apply_ft_scatter(nv: int, deterministic: bool = False):
+  module_options = {"enable_backward": False}
+  if deterministic:
+    module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
+    module_options["deterministic_max_records"] = nv
+
+  @wp.kernel(module="unique", module_options=module_options)
+  def kernel(
+    # Model:
+    body_rootid: wp.array[int],
+    body_weldid: wp.array[int],
+    body_dofnum: wp.array[int],
+    body_dofadr: wp.array[int],
+    dof_parentid: wp.array[int],
+    # Data in:
+    xipos_in: wp.array2d[wp.vec3],
+    subtree_com_in: wp.array2d[wp.vec3],
+    cdof_in: wp.array2d[wp.spatial_vector],
+    # In:
+    ft_in: wp.array2d[wp.spatial_vector],
+    # Out:
+    qfrc_out: wp.array2d[float],
+  ):
+    worldid, bodyid = wp.tid()
+
+    # as mj_xfrcAccumulate: J' ft over the ancestor dofs of bodies with a wrench
+    ft = ft_in[worldid, bodyid]
+    if ft == wp.spatial_vector():
+      return
+    weldid = body_weldid[bodyid]
+    dofnum = body_dofnum[weldid]
+    if dofnum == 0:
+      return
+
+    force = wp.spatial_top(ft)
+    offset = xipos_in[worldid, bodyid] - subtree_com_in[worldid, body_rootid[bodyid]]
+    torque = wp.spatial_bottom(ft) + wp.cross(offset, force)
+
+    dofid = body_dofadr[weldid] + dofnum - 1
+    while dofid >= 0:
+      cdof = cdof_in[worldid, dofid]
+      qfrc = wp.dot(wp.spatial_bottom(cdof), force) + wp.dot(wp.spatial_top(cdof), torque)
+      wp.atomic_add(qfrc_out[worldid], dofid, qfrc)
+      dofid = dof_parentid[dofid]
+
+  return kernel
+
+
+def apply_ft(
+  m: Model, d: Data, ft: wp.array2d[wp.spatial_vector], qfrc: wp.array2d[float], flg_add: bool, sparse: bool = False
+):
+  """Maps body wrenches ft to dof space; sparse: most wrenches are zero."""
+  if not sparse:
+    # dense wrenches: a thread per dof gathers its subtree
+    wp.launch(
+      _apply_ft_gather,
+      dim=(d.nworld, m.nv),
+      inputs=[m.body_rootid, m.dof_bodyid, m.body_subtreenum, d.xipos, d.subtree_com, d.cdof, ft, flg_add],
+      outputs=[qfrc],
+    )
+    return
+
+  # sparse wrenches: a thread per body scatters to its ancestor dofs, zero wrenches cost one load
+  if not flg_add:
+    qfrc.zero_()
+  det_atomics = bool(m.opt.deterministic & DeterminismType.ATOMICS)
   wp.launch(
-    kernel=_apply_ft,
-    dim=(d.nworld, m.nv),
-    inputs=[m.body_rootid, m.dof_bodyid, m.body_subtreenum, d.xipos, d.subtree_com, d.cdof, ft, flg_add],
+    _apply_ft_scatter(m.nv if det_atomics else 0, det_atomics),
+    dim=(d.nworld, m.nbody),
+    inputs=[m.body_rootid, m.body_weldid, m.body_dofnum, m.body_dofadr, m.dof_parentid, d.xipos, d.subtree_com, d.cdof, ft],
     outputs=[qfrc],
   )
 
@@ -332,7 +399,7 @@ def xfrc_accumulate(m: Model, d: Data, qfrc: wp.array2d[float]):
     d: The data object containing the current state and output arrays (device).
     qfrc: Total applied force mapped to dof space.
   """
-  apply_ft(m, d, d.xfrc_applied, qfrc, True)
+  apply_ft(m, d, d.xfrc_applied, qfrc, True, sparse=True)
 
 
 @wp.func
