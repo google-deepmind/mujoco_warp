@@ -64,18 +64,18 @@ def prepare_backward(d: Data):
 
 
 # Cache by identity without retaining models or their device buffers.
-_SUPPORTED_CACHE: weakref.WeakValueDictionary[tuple[int, bool, bool], Model] = weakref.WeakValueDictionary()
+_SUPPORTED_CACHE: dict[int, tuple[weakref.ReferenceType[Model], frozenset[str]]] = {}
 
 
-def assert_smooth_supported(m: Model):
-  """Raises for enabled features without an analytic smooth VJP."""
-  # Gradient opt-in can change after model validation; never cache unsupported parameter requests.
-  model_adjoint.parameter_arrays(m)
-  key = (id(m), m.body_ipos.requires_grad, m.body_iquat.requires_grad)
-  if _SUPPORTED_CACHE.get(key) is m:
-    return
+def _model_support(m: Model) -> frozenset[str]:
+  """Validates smooth features and caches the model's fixed parameter limitations."""
+  key = id(m)
+  cached = _SUPPORTED_CACHE.get(key)
+  if cached is not None and cached[0]() is m:
+    return cached[1]
 
   bad = []
+  unsupported_parameters = set()
   if (
     m.nu != m.nactuator
     or np.any(m.actuator_ctrlnum.numpy() != 1)
@@ -93,18 +93,16 @@ def assert_smooth_supported(m: Model):
     bad.append("passive adhesion (m.flg_adhesion: qpos-dependent qfrc_adhesion has no VJP leaf)")
   if np.any(m.body_gravcomp.numpy() != 0.0) and np.any(m.jnt_actgravcomp.numpy() != 0):
     bad.append("gravcomp routed to an actuator (jnt_actgravcomp; force-limit clamp); passive-bucket gravcomp is supported")
-  if m.body_freeadr.size and (m.body_ipos.requires_grad or m.body_iquat.requires_grad):
+  if m.body_freeadr.size:
     dofadr = m.body_dofadr.numpy()[m.body_freeadr.numpy()]
     rowadr, rownnz, colind = m.M_rowadr.numpy(), m.M_rownnz.numpy(), m.M_colind.numpy()
     for adr in dofadr:
       for row in range(adr + 3, adr + 6):
         columns = colind[rowadr[row] : rowadr[row] + rownnz[row]]
-        if m.body_ipos.requires_grad and not np.isin(np.arange(adr, adr + 3), columns).all():
-          bad.append("body_ipos gradients with a compiled free-body mass layout missing translation/rotation couplings")
-          break
-        if m.body_iquat.requires_grad and not np.isin(np.arange(adr + 3, row + 1), columns).all():
-          bad.append("body_iquat gradients with a compiled free-body mass layout missing angular couplings")
-          break
+        if not np.isin(np.arange(adr, adr + 3), columns).all():
+          unsupported_parameters.add("body_ipos")
+        if not np.isin(np.arange(adr + 3, row + 1), columns).all():
+          unsupported_parameters.add("body_iquat")
   if m.nu:
     trntype = m.actuator_trntype.numpy()
     gaintype = m.actuator_gaintype.numpy()
@@ -136,7 +134,21 @@ def assert_smooth_supported(m: Model):
       + ". Implement the leaf/topology VJP (the FD oracle lives in adjoint_test_util). "
       "There is no silent FD fallback."
     )
-  _SUPPORTED_CACHE[key] = m
+  limitations = frozenset(unsupported_parameters)
+  _SUPPORTED_CACHE[key] = (weakref.ref(m, lambda _: _SUPPORTED_CACHE.pop(key, None)), limitations)
+  return limitations
+
+
+def assert_smooth_supported(m: Model):
+  """Raises for enabled features or requested parameters without an analytic smooth VJP."""
+  # Requests can change after validation; the cached model capabilities do not.
+  model_adjoint.parameter_arrays(m)
+  unsupported = sorted(name for name in _model_support(m) if getattr(m, name).requires_grad)
+  if unsupported:
+    raise NotImplementedError(
+      "smooth_adjoint analytic reverse does not support: "
+      + "; ".join(f"{name} gradients with a compiled free-body mass layout missing couplings" for name in unsupported)
+    )
 
 
 @event_scope
