@@ -63,12 +63,12 @@ def prepare_backward(d: Data):
 
 
 # Cache by identity without retaining models or their device buffers.
-_SUPPORTED_CACHE: weakref.WeakValueDictionary[int, Model] = weakref.WeakValueDictionary()
+_SUPPORTED_CACHE: weakref.WeakValueDictionary[tuple[int, bool, bool], Model] = weakref.WeakValueDictionary()
 
 
 def assert_smooth_supported(m: Model):
   """Raises for enabled features without an analytic smooth VJP."""
-  key = id(m)
+  key = (id(m), m.body_ipos.requires_grad, m.body_iquat.requires_grad)
   if _SUPPORTED_CACHE.get(key) is m:
     return
 
@@ -90,6 +90,18 @@ def assert_smooth_supported(m: Model):
     bad.append("passive adhesion (m.flg_adhesion: qpos-dependent qfrc_adhesion has no VJP leaf)")
   if np.any(m.body_gravcomp.numpy() != 0.0) and np.any(m.jnt_actgravcomp.numpy() != 0):
     bad.append("gravcomp routed to an actuator (jnt_actgravcomp; force-limit clamp); passive-bucket gravcomp is supported")
+  if m.body_freeadr.size and (m.body_ipos.requires_grad or m.body_iquat.requires_grad):
+    dofadr = m.body_dofadr.numpy()[m.body_freeadr.numpy()]
+    rowadr, rownnz, colind = m.M_rowadr.numpy(), m.M_rownnz.numpy(), m.M_colind.numpy()
+    for adr in dofadr:
+      for row in range(adr + 3, adr + 6):
+        columns = colind[rowadr[row] : rowadr[row] + rownnz[row]]
+        if m.body_ipos.requires_grad and not np.isin(np.arange(adr, adr + 3), columns).all():
+          bad.append("body_ipos gradients with a compiled free-body mass layout missing translation/rotation couplings")
+          break
+        if m.body_iquat.requires_grad and not np.isin(np.arange(adr + 3, row + 1), columns).all():
+          bad.append("body_iquat gradients with a compiled free-body mass layout missing angular couplings")
+          break
   if m.nu:
     trntype = m.actuator_trntype.numpy()
     gaintype = m.actuator_gaintype.numpy()
