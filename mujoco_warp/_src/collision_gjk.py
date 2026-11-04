@@ -2665,7 +2665,10 @@ def gjk_phase(
     full_margin2 = geom2.size[0] + 0.5 * orig_margin2
     geom2.margin = 0.0
     geom2.size = wp.vec3(0.0, geom2.size[1], geom2.size[2])
-  elif has_non_hfield_margin:
+  elif has_non_hfield_margin or geomtype2 == GeomType.TRIANGLE or geomtype2 == GeomType.FLEX:
+    # flex elements (always geom2) carry their radius in margin: run GJK on the bare element and
+    # only run EPA on the inflated element when the bare element overlaps, at a depth of at least
+    # the radius. MuJoCo C runs GJK/EPA on the inflated element, with the same result.
     full_margin2 = 0.5 * orig_margin2
     geom2.margin = 0.0
 

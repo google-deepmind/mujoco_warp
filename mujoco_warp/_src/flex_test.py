@@ -4535,6 +4535,158 @@ class FlexContactParityTest(parameterized.TestCase):
       self.assertFalse(np.allclose([c["dist"] for c in w_contacts_all[0]], [c["dist"] for c in w_contacts_all[1]]))
       self.assertFalse(np.allclose(d.qfrc_constraint.numpy()[0], d.qfrc_constraint.numpy()[1]))
 
+  @parameterized.parameters(1, 2)
+  def test_contact_cylinder_ellipsoid_cloth_parity(self, nworld):
+    """Test contact parity for cylinders and ellipsoids colliding with 2D flex triangles via CCD."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <geom type="cylinder" size="0.03 0.04" pos="-0.25 0.01 0.051" euler="18 -12 0"/>
+          <geom type="cylinder" size="0.03 0.05" pos="0.0 0.0 0.026" euler="85 8 15"/>
+          <geom type="cylinder" size="0.025 0.03" pos="0.25 -0.005 0.051" euler="12 15 0"/>
+          <geom type="cylinder" size="0.06 0.03" pos="0.50 0.0 0.05" euler="6 -4 0"/>
+          <geom type="ellipsoid" size="0.05 0.04 0.03" pos="0.76 0.0 0.035" euler="10 -8 5"/>
+          <flexcomp name="cloth" type="direct" dim="2" radius="0.01" mass="1.5"
+                    point="-0.30 -0.05 0  -0.20 -0.05 0  -0.25 0.06 0
+                           -0.04 -0.01 0   0.04 -0.01 0   0.00 0.02 0
+                            0.20 -0.05 0   0.30 -0.05 0   0.25 0.06 0
+                            0.537007 0.012818 0.023710  0.56 -0.03 -0.02  0.52 0.05 -0.02
+                            0.72 -0.03 0   0.80 -0.03 0   0.76 0.05 0"
+                    element="0 1 2  3 4 5  6 7 8  9 10 11  12 13 14">
+            <contact selfcollide="none" margin="0.01"/>
+          </flexcomp>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=nworld,
+    )
+
+    ws = collision_flex._allocate_flex_workspace(m, d)
+    self.assertEqual(ws.epa_vert.shape[0], d.naccdmax)
+
+    qpos = d.qpos.numpy().copy()
+    qvel = d.qvel.numpy().copy()
+    qvel[0] = np.linspace(0.01, 0.04, mjm.nv)
+    if nworld == 2:
+      qpos[1, 2::3] += 2e-4
+      qvel[1] = -np.linspace(0.015, 0.045, mjm.nv)
+    d.qpos.assign(qpos)
+    d.qvel.assign(qvel)
+
+    d.nacon.fill_(-1)
+    d.overflow.fill_(0)
+    for arr in (d.flexvert_xpos, d.contact.dist, d.contact.pos, d.contact.frame, d.qfrc_constraint, d.qacc):
+      arr.fill_(wp.inf)
+    for arr in (d.contact.geom, d.contact.flex, d.contact.elem, d.contact.vert, d.contact.worldid):
+      arr.fill_(-1)
+
+    mjw.forward(m, d)
+
+    np.testing.assert_equal(d.overflow.numpy(), 0)
+    self.assertEqual(d.nacon.numpy()[0], nworld * 5)
+
+    w_contacts_all = []
+    for w in range(nworld):
+      mjd.qpos[:] = qpos[w]
+      mjd.qvel[:] = qvel[w]
+      mujoco.mj_forward(mjm, mjd)
+      self.assertEqual(mjd.ncon, 5)
+
+      w_contacts = self._get_sorted_contacts(d, d.nacon.numpy()[0], world_idx=w, is_warp=True)
+      m_contacts = self._get_sorted_contacts(mjd, mjd.ncon, is_warp=False)
+      # normals on curved surfaces agree to about the square root of the CCD tolerance, which
+      # changes the constraint forces and accelerations by up to about 0.5% of their largest entries
+      self._assert_contact_parity(w_contacts, m_contacts, atol=1e-4, frame_atol=4e-3)
+      np.testing.assert_allclose(d.qfrc_constraint.numpy()[w], mjd.qfrc_constraint, atol=3e-2, rtol=1e-2)
+      np.testing.assert_allclose(d.qacc.numpy()[w], mjd.qacc, atol=2.5e-1, rtol=1e-2)
+      w_contacts_all.append(w_contacts)
+
+    if nworld == 2:
+      self.assertFalse(np.allclose([c["dist"] for c in w_contacts_all[0]], [c["dist"] for c in w_contacts_all[1]]))
+      self.assertFalse(np.allclose(d.qfrc_constraint.numpy()[0], d.qfrc_constraint.numpy()[1]))
+
+  @parameterized.parameters(1, 2)
+  def test_contact_mesh_cloth_and_tet_parity(self, nworld):
+    """Test contact parity for off-center meshes colliding with 2D and 3D flexes."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <asset>
+          <mesh name="box" vertex="0.20 -0.04 -0.04  0.28 -0.04 -0.04  0.28 0.04 -0.04  0.20 0.04 -0.04
+                                   0.20 -0.04  0.04  0.28 -0.04  0.04  0.28 0.04  0.04  0.20 0.04  0.04"/>
+          <mesh name="house" vertex="0.20 -0.04 -0.04  0.28 -0.04 -0.04  0.28 0.04 -0.04  0.20 0.04 -0.04
+                                     0.20 -0.04  0.04  0.28 -0.04  0.04  0.28 0.04  0.04  0.20 0.04  0.04
+                                     0.22  0.00  0.05  0.26  0.00  0.05"/>
+        </asset>
+        <worldbody>
+          <body pos="-0.30 0 0.072" euler="25 -20 10">
+            <geom type="mesh" mesh="box" pos="-0.24 0 0"/>
+          </body>
+          <body pos="0.0 0 0.046" euler="4 -3 0">
+            <geom type="mesh" mesh="house" pos="-0.24 0 0"/>
+          </body>
+          <body pos="0.30 0 0.068" euler="5 4 0">
+            <geom type="mesh" mesh="house" pos="-0.24 0 0"/>
+          </body>
+          <flexcomp name="cloth" type="direct" dim="2" radius="0.02" mass="0.9"
+                    point="-0.36 -0.06 0  -0.31 -0.06 0  -0.34 -0.03 0
+                           -0.001853 -0.017748 -0.015570  0.032293 -0.047200 -0.096138  -0.027625 -0.046981 -0.099271
+                            0.008133  0.026108 -0.011979  0.042279  0.066486 -0.087664  -0.017639  0.066705 -0.090797"
+                    element="0 1 2  3 4 5  6 7 8">
+            <contact selfcollide="none" margin="0.01"/>
+          </flexcomp>
+          <flexcomp name="tet" type="direct" dim="3" radius="0.01" mass="0.5"
+                    point="0.30 0.018 0.026  0.34 0.00 -0.05  0.30 0.04 -0.05  0.26 0.00 -0.05"
+                    element="0 1 2 3">
+            <contact selfcollide="none" margin="0.015"/>
+            <elasticity young="1e3"/>
+          </flexcomp>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=nworld,
+    )
+
+    qpos = d.qpos.numpy().copy()
+    qvel = d.qvel.numpy().copy()
+    qvel[0] = np.linspace(0.01, 0.04, mjm.nv)
+    if nworld == 2:
+      qpos[1, 2::3] += 2e-4
+      qvel[1] = -np.linspace(0.015, 0.045, mjm.nv)
+    d.qpos.assign(qpos)
+    d.qvel.assign(qvel)
+
+    d.nacon.fill_(-1)
+    d.overflow.fill_(0)
+    for arr in (d.flexvert_xpos, d.contact.dist, d.contact.pos, d.contact.frame, d.qfrc_constraint, d.qacc):
+      arr.fill_(wp.inf)
+    for arr in (d.contact.geom, d.contact.flex, d.contact.elem, d.contact.vert, d.contact.worldid):
+      arr.fill_(-1)
+
+    mjw.forward(m, d)
+
+    np.testing.assert_equal(d.overflow.numpy(), 0)
+    self.assertEqual(d.nacon.numpy()[0], nworld * 4)
+
+    w_contacts_all = []
+    for w in range(nworld):
+      mjd.qpos[:] = qpos[w]
+      mjd.qvel[:] = qvel[w]
+      mujoco.mj_forward(mjm, mjd)
+      self.assertEqual(mjd.ncon, 4)
+
+      w_contacts = self._get_sorted_contacts(d, d.nacon.numpy()[0], world_idx=w, is_warp=True)
+      m_contacts = self._get_sorted_contacts(mjd, mjd.ncon, is_warp=False)
+      self._assert_contact_parity(w_contacts, m_contacts, atol=5e-5, frame_atol=1e-5)
+      np.testing.assert_allclose(d.qfrc_constraint.numpy()[w], mjd.qfrc_constraint, atol=1e-3, rtol=1e-3)
+      np.testing.assert_allclose(d.qacc.numpy()[w], mjd.qacc, atol=1e-2, rtol=1e-3)
+      w_contacts_all.append(w_contacts)
+
+    if nworld == 2:
+      self.assertFalse(np.allclose([c["dist"] for c in w_contacts_all[0]], [c["dist"] for c in w_contacts_all[1]]))
+      self.assertFalse(np.allclose(d.qfrc_constraint.numpy()[0], d.qfrc_constraint.numpy()[1]))
+
 
 class FlexContactConstraintTest(parameterized.TestCase):
   """Tests for flex contact constraint generation (efc matrices) parity."""
