@@ -15,6 +15,7 @@
 """VJPs for smooth forces, RNE dynamics, and mass-matrix position dependence."""
 
 import dataclasses
+import weakref
 
 import numpy as np
 import warp as wp
@@ -61,14 +62,14 @@ def prepare_backward(d: Data):
   return arrays
 
 
-# Results hold a strong Model reference so a recycled id cannot select stale metadata.
-_SUPPORTED_CACHE = {}
+# Cache by identity without retaining models or their device buffers.
+_SUPPORTED_CACHE: weakref.WeakValueDictionary[int, Model] = weakref.WeakValueDictionary()
 
 
 def assert_smooth_supported(m: Model):
   """Raises for enabled features without an analytic smooth VJP."""
   key = id(m)
-  if key in _SUPPORTED_CACHE:
+  if _SUPPORTED_CACHE.get(key) is m:
     return
 
   bad = []
@@ -113,7 +114,7 @@ def assert_smooth_supported(m: Model):
       + ". Implement the leaf/topology VJP (the FD oracle lives in adjoint_test_util). "
       "There is no silent FD fallback."
     )
-  _SUPPORTED_CACHE[key] = (m, True)
+  _SUPPORTED_CACHE[key] = m
 
 
 @event_scope
