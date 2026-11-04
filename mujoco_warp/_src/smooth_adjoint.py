@@ -23,6 +23,7 @@ import warp as wp
 from mujoco_warp._src import adjoint_recompute
 from mujoco_warp._src import adjoint_util
 from mujoco_warp._src import math
+from mujoco_warp._src import model_adjoint
 from mujoco_warp._src import smooth
 from mujoco_warp._src import smooth_kinematics_adjoint
 from mujoco_warp._src import support
@@ -68,6 +69,8 @@ _SUPPORTED_CACHE: weakref.WeakValueDictionary[tuple[int, bool, bool], Model] = w
 
 def assert_smooth_supported(m: Model):
   """Raises for enabled features without an analytic smooth VJP."""
+  # Gradient opt-in can change after model validation; never cache unsupported parameter requests.
+  model_adjoint.parameter_arrays(m)
   key = (id(m), m.body_ipos.requires_grad, m.body_iquat.requires_grad)
   if _SUPPORTED_CACHE.get(key) is m:
     return

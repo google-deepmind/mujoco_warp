@@ -32,6 +32,44 @@ from mujoco_warp._src.warp_util import event_scope
 wp.set_module_options({"enable_backward": True})
 
 
+_SUPPORTED_PARAMETERS = frozenset(
+  (
+    "body_mass",
+    "body_inertia",
+    "body_ipos",
+    "body_iquat",
+    "dof_armature",
+    "dof_damping",
+    "jnt_stiffness",
+    "jnt_stiffnesspoly",
+    "qpos_spring",
+    "jnt_solref",
+    "jnt_solimp",
+    "dof_solref",
+    "dof_solimp",
+    "dof_frictionloss",
+    "eq_solref",
+    "eq_solimp",
+    "geom_friction",
+    "pair_friction",
+  )
+)
+
+
+def parameter_arrays(m: Model) -> list[wp.array]:
+  """Returns opted-in model parameters, rejecting fields without a complete step derivative."""
+  parameters = {
+    prefix + name: value
+    for prefix, obj in (("", m), ("opt.", m.opt))
+    for name, value in vars(obj).items()
+    if isinstance(value, wp.array) and value.size and value.requires_grad
+  }
+  unsupported = parameters.keys() - _SUPPORTED_PARAMETERS
+  if unsupported:
+    raise NotImplementedError("native step parameter gradients are not implemented for: " + ", ".join(sorted(unsupported)))
+  return list(parameters.values())
+
+
 @cache_kernel
 def _accum_constraint_params(
   jnt_solref_grad: bool,

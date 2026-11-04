@@ -501,7 +501,7 @@ def forward_backward_ift(m: Model, d: Data, d_out: Data, adj_qacc: wp.array, bc:
   _write_input_adjoints(d, bc)
 
 
-def step_backward_arrays(d: Data, d_out: Data):
+def step_backward_arrays(d: Data, d_out: Data, m: Model | None = None):
   """Allocates and returns arrays used by the analytic step backward."""
   inputs = [d.qpos, d.qvel, d.act, d.ctrl]
   for array in (d.qfrc_applied, d.xfrc_applied):
@@ -509,7 +509,10 @@ def step_backward_arrays(d: Data, d_out: Data):
       inputs.append(array)
   for array in inputs:
     array.requires_grad = True
-  return [array for array in (*inputs, *_prepare_data(d_out)) if array.size]
+  arrays = [array for array in (*inputs, *_prepare_data(d_out)) if array.size]
+  if m is not None:
+    arrays.extend(model_adjoint.parameter_arrays(m))
+  return arrays
 
 
 @event_scope
