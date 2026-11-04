@@ -333,10 +333,6 @@ def _residual_contact(
   res_cdof, res_subtree_com = d_out.cdof.grad, d_out.subtree_com.grad
   res_efc_pos = d_out.efc.pos.grad
   res_contact_pos, res_contact_frame = d_out.contact.pos.grad, d_out.contact.frame.grad
-  efc_pos_ref = bc.efc_pos_ref
-  wp.copy(efc_pos_ref, d_out.efc.pos)
-  efc_pos_ref.requires_grad = False
-
   walk = [m.body_rootid, m.body_weldid, m.body_dofnum, m.body_dofadr, m.dof_parentid, m.geom_bodyid]
   state = [
     d.qvel,
@@ -363,23 +359,24 @@ def _residual_contact(
     (m.opt.timestep, None),
     (m.opt.disableflags, None),
     (m.opt.impratio_invsqrt, None),
+    (m.body_invweight0, None),
+    (m.geom_bodyid, None),
     (d_out.contact.frame, res_contact_frame),
     (d_out.contact.friction, res_contact_friction),
     (d_out.contact.solref, None),
     (d_out.contact.solreffriction, None),
     (d_out.contact.solimp, None),
     (d_out.contact.dim, None),
+    (d_out.contact.geom, None),
     (d_out.contact.efc_address, None),
     (d_out.contact.worldid, None),
     (d_out.efc.pos, res_efc_pos),
     (d_out.efc.margin, None),
-    (d_out.efc.D, None),
     (d_out.efc.state, None),
     (d_out.nacon, None),
     (contact_V, contact_V.grad),
     (contact_A, contact_A.grad),
     (contact_Z, contact_Z.grad),
-    (efc_pos_ref, None),
   ]
   contact_phi.grad.fill_(1.0)
   kernel = constraint_adjoint._contact_phi(int(m.opt.cone))

@@ -3107,7 +3107,6 @@ class BackwardContext:
   Ma: array("nworld", "nv", float)
   dampingpoly_Qv: array("nworld", "nv", float)
   adj_qvel_damp: array("nworld", "nv", float)
-  efc_pos_ref: array("nworld", "njmax", float)
   contact_V: array("naconmax", wp.spatial_vector)
   contact_A: array("naconmax", wp.spatial_vector)
   contact_Z: array("naconmax", wp.spatial_vector)

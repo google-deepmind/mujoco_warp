@@ -246,12 +246,6 @@ def _constraint_scatter(is_sparse: bool):
 
 
 @wp.func
-def _contact_D(D0: float, imp0: float, imp: float) -> float:
-  invweight = imp0 / (wp.max(D0, MJ_MINVAL) * wp.max(1.0 - imp0, MJ_MINVAL))
-  return constraint._efc_D(invweight, imp)
-
-
-@wp.func
 def _frame_axis(frame: wp.mat33, i: int) -> wp.vec3:
   if i == 1:
     return wp.vec3(frame[1, 0], frame[1, 1], frame[1, 2])
@@ -388,6 +382,8 @@ def _contact_phi(cone_type: int):
     opt_timestep: wp.array[float],
     opt_disableflags: int,
     opt_impratio_invsqrt: wp.array[float],
+    body_invweight0: wp.array2d[wp.vec2],
+    geom_bodyid: wp.array[int],
     # Data in:
     contact_frame_in: wp.array[wp.mat33],
     contact_friction_in: wp.array[vec5],
@@ -395,18 +391,17 @@ def _contact_phi(cone_type: int):
     contact_solreffriction_in: wp.array[wp.vec2],
     contact_solimp_in: wp.array[vec5],
     contact_dim_in: wp.array[int],
+    contact_geom_in: wp.array[wp.vec2i],
     contact_efc_address_in: wp.array2d[int],
     contact_worldid_in: wp.array[int],
     efc_pos_in: wp.array2d[float],
     efc_margin_in: wp.array2d[float],
-    efc_D_in: wp.array2d[float],
     efc_state_in: wp.array2d[int],
     nacon_in: wp.array[int],
     # In:
     V_in: wp.array[wp.spatial_vector],
     A_in: wp.array[wp.spatial_vector],  # qacc frozen, but A feeds the qacc->cdof scatter path
     Z_in: wp.array[wp.spatial_vector],  # = Jlam; Zbar = -F carries the direct -J^Tf projection
-    efc_pos_ref_in: wp.array2d[float],  # frozen efc_pos (no adjoint): the D-recovery reference (pos0/imp0)
     # Out:
     phi_out: wp.array[float],
   ):
@@ -417,6 +412,9 @@ def _contact_phi(cone_type: int):
     w = contact_worldid_in[cid]
     e0 = contact_efc_address_in[cid, 0]
     if e0 < 0:
+      return
+    geom = contact_geom_in[cid]
+    if geom[0] < 0 or geom[1] < 0:
       return
     st = efc_state_in[w, e0]
     if wp.static(IS_ELLIPTIC):
@@ -429,14 +427,17 @@ def _contact_phi(cone_type: int):
     fric = contact_friction_in[cid]
     solref = contact_solref_in[cid]
     solimp = contact_solimp_in[cid]
-    pos0 = efc_pos_ref_in[w, e0] - efc_margin_in[w, e0]  # frozen penetration (D-recovery reference)
-    imp0 = constraint._contact_kbimp(opt_disableflags, dt, solref, solimp, pos0, False)[2]
     pos = efc_pos_in[w, e0] - efc_margin_in[w, e0]  # differentiable penetration (-> res_efc_pos)
     kbimp = constraint._contact_kbimp(opt_disableflags, dt, solref, solimp, pos, False)
     k = kbimp[0]
     b = kbimp[1]
     imp = kbimp[2]
-    D0 = _contact_D(efc_D_in[w, e0], imp0, imp)
+    # Match the rigid-contact weights in constraint._efc_contact_update.
+    model_worldid = w % body_invweight0.shape[0]
+    invweight = (
+      body_invweight0[model_worldid, geom_bodyid[geom[0]]][0] + body_invweight0[model_worldid, geom_bodyid[geom[1]]][0]
+    )
+    D0 = constraint._efc_D(invweight, imp)
     V = V_in[cid]
     A = A_in[cid]
     Z = Z_in[cid]
@@ -473,20 +474,28 @@ def _contact_phi(cone_type: int):
         phi += -f0 * _proj_row_spatial(Z, fm, 0)
         for j in range(1, _MAXCONDIM):
           if j < condim:
-            Dj = _contact_D(efc_D_in[w, contact_efc_address_in[cid, j]], imp0, imp)
+            scale = imp_isq * imp_isq
+            if j > 1:
+              friction = _friction(fric, j - 1)
+              scale *= fric[0] * fric[0] / (friction * friction)
+            Dj = D0 / scale
             fj = -Dj * _row_jaref(_proj_row_spatial(A, fm, j), _proj_row_spatial(V, fm, j), 0.0, b_t, 0.0, 0.0)
             phi += -fj * _proj_row_spatial(Z, fm, j)
     else:  # pyramidal: ndim = 2*(condim-1) edges (1 if condim==1); each edge an independent force
       ndim = int(1)
       if condim > 1:
         ndim = 2 * (condim - 1)
+        friction = fric[0]
+        invweight = invweight + friction * friction * invweight
+        invweight = invweight * 2.0 * friction * friction * imp_isq * imp_isq
+      D = constraint._efc_D(invweight, imp)
       for e in range(_MAX_PYRAMID_EDGES):
         if e < ndim:
           ea = contact_efc_address_in[cid, e]
           if ea >= 0 and efc_state_in[w, ea] != ConstraintState.SATISFIED:
             Jqve = _proj_edge_spatial(V, fm, fric, e, condim)
             Jqae = _proj_edge_spatial(A, fm, fric, e, condim)
-            fe = -_contact_D(efc_D_in[w, ea], imp0, imp) * _row_jaref(Jqae, Jqve, k, b, imp, pos)
+            fe = -D * _row_jaref(Jqae, Jqve, k, b, imp, pos)
             phi += -fe * _proj_edge_spatial(Z, fm, fric, e, condim)
 
     phi_out[cid] = phi
