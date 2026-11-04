@@ -80,7 +80,8 @@ MJ_MAX_EPAFACES = 5
 
 TILE_SIZE_JTDAJ_SPARSE = 16
 TILE_SIZE_JTDAJ_DENSE = 16
-# max Newton Hessian size where the one-tile Cholesky beats the blocked one
+# max Newton Hessian size factored as one tile; past it the blocked path's factor reuse wins on
+# Blackwell (Ada keeps one tile ahead to 64)
 H_ONE_TILE_MAX = 48
 
 # max M block size where dense tile-Cholesky beats sparse LDL (wins to ~64, degrades past ~80)
