@@ -797,18 +797,25 @@ class SupportTest(parameterized.TestCase):
     @wp.kernel
     def contact_weights_kernel(
       # Model:
+      jnt_bodyid: wp.array[int],
       geom_bodyid: wp.array[int],
       flex_dim: wp.array[int],
       flex_cellnum: wp.array[wp.vec3i],
       flex_nodeadr: wp.array[int],
       flex_vertadr: wp.array[int],
+      flex_elemadr: wp.array[int],
+      flex_elemnum: wp.array[int],
       flex_elemdataadr: wp.array[int],
-      flex_shelldataadr: wp.array[int],
       flex_nodebodyid: wp.array[int],
       flex_vertbodyid: wp.array[int],
       flex_elem: wp.array[int],
-      flex_shell: wp.array[int],
       flex_vert0: wp.array[wp.vec3],
+      flex_rod_has_twist: wp.array[bool],
+      flex_rod_edgeadr: wp.array[int],
+      flex_rod_edgenum: wp.array[int],
+      flex_rodedge_jnt: wp.array[int],
+      flex_elem_rodedge: wp.array[wp.vec2i],
+      flex_vert_rodelem: wp.array[int],
       # Data in:
       flexvert_xpos_in: wp.array2d[wp.vec3],
       # In:
@@ -822,18 +829,25 @@ class SupportTest(parameterized.TestCase):
 
       # contact between nothing (side 0) and element 0 of the flex (side 1)
       body, weight = support.contact_bodies_and_weights(
+        jnt_bodyid,
         geom_bodyid,
         flex_dim,
         flex_cellnum,
         flex_nodeadr,
         flex_vertadr,
+        flex_elemadr,
+        flex_elemnum,
         flex_elemdataadr,
-        flex_shelldataadr,
         flex_nodebodyid,
         flex_vertbodyid,
         flex_elem,
-        flex_shell,
         flex_vert0,
+        flex_rod_has_twist,
+        flex_rod_edgeadr,
+        flex_rod_edgenum,
+        flex_rodedge_jnt,
+        flex_elem_rodedge,
+        flex_vert_rodelem,
         flexvert_xpos_in,
         0,
         1,
@@ -851,18 +865,25 @@ class SupportTest(parameterized.TestCase):
       contact_weights_kernel,
       dim=nworld,
       inputs=[
+        m.jnt_bodyid,
         m.geom_bodyid,
         m.flex_dim,
         m.flex_cellnum,
         m.flex_nodeadr,
         m.flex_vertadr,
+        m.flex_elemadr,
+        m.flex_elemnum,
         m.flex_elemdataadr,
-        m.flex_shelldataadr,
         m.flex_nodebodyid,
         m.flex_vertbodyid,
         m.flex_elem,
-        m.flex_shell,
         m.flex_vert0,
+        m.flex_rod_has_twist,
+        m.flex_rod_edgeadr,
+        m.flex_rod_edgenum,
+        m.flex_rodedge_jnt,
+        m.flex_elem_rodedge,
+        m.flex_vert_rodelem,
         d.flexvert_xpos,
         flexid,
         wp.array(con_pos, dtype=wp.vec3),
@@ -884,6 +905,300 @@ class SupportTest(parameterized.TestCase):
       self.assertTrue(np.all(weight[w, : dim + 1] >= -1e-6), f"negative weight in world {w}")
       _assert_eq(np.sum(weight[w]), 1.0, f"weight sum world {w}")
       _assert_eq(point, np.array(closest) + (offset if w == 1 else 0.0), f"closest point world {w}")
+
+  def test_rod_support_lookups(self):
+    """Tests precomputed 1D DER rod lookups: twist joints and incident elements."""
+    if io.types.ROD_HINGE_SIZE != 10:
+      self.skipTest("Requires 1D flex rod torsion support in MuJoCo")
+    mjm, _, m, _ = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <!-- Shuffled element order and reversed middle element (2 -> 1) -->
+          <flexcomp name="direct_rod" type="direct" dim="1" radius="0.01" mass="0.1"
+                    point="0 0 0  0.1 0 0  0.2 0 0  0.3 0 0  0.4 0 0"
+                    element="2 3  2 1  3 4  0 1">
+            <contact selfcollide="none" contype="0" conaffinity="0"/>
+            <elasticity young="1e6" damping="0.01"/>
+          </flexcomp>
+          <!-- Both root and tail clamped box rod -->
+          <flexcomp name="clamped_box" type="grid" count="5 1 1" spacing="0.1 0.1 0.1" pos="0 0.3 0"
+                    radius="0.005" dim="1" mass="0.1">
+            <pin id="0 1 3 4"/>
+            <contact selfcollide="none" contype="0" conaffinity="0"/>
+            <elasticity young="1e6" damping="0.01" section="box" sectionsize="0.02 0.008"/>
+          </flexcomp>
+        </worldbody>
+      </mujoco>
+      """,
+    )
+
+    @wp.kernel
+    def query_rod_kernel(
+      flex_vertadr: wp.array[int],
+      flex_vertnum: wp.array[int],
+      flex_elemadr: wp.array[int],
+      flex_elemnum: wp.array[int],
+      flex_rod_has_twist: wp.array[bool],
+      flex_rod_is_box: wp.array[bool],
+      flex_rod_root_clamped: wp.array[bool],
+      flex_rod_tail_clamped: wp.array[bool],
+      flex_rod_box_size: wp.array[wp.vec2],
+      flex_rod_edgeadr: wp.array[int],
+      flex_rod_edgenum: wp.array[int],
+      flex_rodedge_jnt: wp.array[int],
+      flex_elem_rodedge: wp.array[wp.vec2i],
+      flex_vert_rodelem: wp.array[int],
+      flags_out: wp.array[int],
+      box_out: wp.array[wp.vec2],
+      elem_jnt_out: wp.array[int],
+      elem_sgn_out: wp.array[float],
+      vert_elem_out: wp.array[int],
+      chain_jnt_out: wp.array[int],
+    ):
+      f = wp.tid()
+      has_tw = support.rod_has_twist(flex_rod_has_twist, f)
+      is_box, bsize = support.rod_box_size(flex_rod_is_box, flex_rod_box_size, f)
+      rc, tc = support.rod_clamped_ends(flex_rod_root_clamped, flex_rod_tail_clamped, f)
+      flags_out[3 * f + 0] = 1 if has_tw else 0
+      flags_out[3 * f + 1] = 1 if is_box else 0
+      flags_out[3 * f + 2] = (1 if rc else 0) + (2 if tc else 0)
+      box_out[f] = bsize
+      if f == 0:
+        for e in range(4):
+          jnt_e, sgn_e = support.rod_edge_twist_jnt(
+            flex_elemadr,
+            flex_elemnum,
+            flex_rod_edgeadr,
+            flex_rod_edgenum,
+            flex_rodedge_jnt,
+            flex_elem_rodedge,
+            0,
+            e,
+          )
+          elem_jnt_out[e] = jnt_e
+          elem_sgn_out[e] = sgn_e
+        for v in range(5):
+          vert_elem_out[v] = support.rod_vert_elem(flex_vertadr, flex_vertnum, flex_vert_rodelem, 0, v)
+      else:
+        for c in range(4):
+          chain_jnt_out[c] = support.rod_chain_twist_jnt(flex_rod_edgeadr, flex_rod_edgenum, flex_rodedge_jnt, 1, c)
+
+    flags_out = wp.zeros(6, dtype=int)
+    box_out = wp.zeros(2, dtype=wp.vec2)
+    elem_jnt_out = wp.zeros(4, dtype=int)
+    elem_sgn_out = wp.zeros(4, dtype=float)
+    vert_elem_out = wp.zeros(5, dtype=int)
+    chain_jnt_out = wp.zeros(4, dtype=int)
+
+    wp.launch(
+      query_rod_kernel,
+      dim=2,
+      inputs=[
+        m.flex_vertadr,
+        m.flex_vertnum,
+        m.flex_elemadr,
+        m.flex_elemnum,
+        m.flex_rod_has_twist,
+        m.flex_rod_is_box,
+        m.flex_rod_root_clamped,
+        m.flex_rod_tail_clamped,
+        m.flex_rod_box_size,
+        m.flex_rod_edgeadr,
+        m.flex_rod_edgenum,
+        m.flex_rodedge_jnt,
+        m.flex_elem_rodedge,
+        m.flex_vert_rodelem,
+      ],
+      outputs=[flags_out, box_out, elem_jnt_out, elem_sgn_out, vert_elem_out, chain_jnt_out],
+    )
+
+    flags = flags_out.numpy()
+    # f=0: has_twist=1, is_box=0, rc/tc=0
+    np.testing.assert_array_equal(flags[:3], [1, 0, 0])
+    # f=1: has_twist=1, is_box=1, rc=1 + tc=2 -> 3
+    np.testing.assert_array_equal(flags[3:], [1, 1, 3])
+    _assert_eq(box_out.numpy()[1], np.array([0.02, 0.008]), "box_size")
+
+    # Shuffled direct_rod elements: elem 0=(2,3)->chain 2, elem 1=(2,1)->chain 1 (sgn -1),
+    # elem 2=(3,4)->chain 3, elem 3=(0,1)->chain 0
+    expected_jnts = [
+      mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_JOINT, "direct_rod_twist_2"),
+      mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_JOINT, "direct_rod_twist_1"),
+      mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_JOINT, "direct_rod_twist"),
+      mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_JOINT, "direct_rod_twist_0"),
+    ]
+    np.testing.assert_array_equal(elem_jnt_out.numpy(), expected_jnts)
+    _assert_eq(elem_sgn_out.numpy(), np.array([1.0, -1.0, 1.0, 1.0]), "elem_sgn")
+
+    # Each vertex's chosen element must actually contain that vertex:
+    # chain edges: c0->elem 3, c1->elem 1, c2->elem 0, c3->elem 2, v4->elem 2
+    vert_elems = vert_elem_out.numpy()
+    np.testing.assert_array_equal(vert_elems, [3, 1, 0, 2, 2])
+    edata = mjm.flex_elem[:8].reshape(4, 2)
+    for v in range(5):
+      self.assertIn(v, edata[vert_elems[v]])
+
+    # Clamped ends on f=1: chain edges 0 and 3 have jnt == -1; middle edges have twist_1, twist_2
+    c_jnts = chain_jnt_out.numpy()
+    self.assertEqual(c_jnts[0], -1)
+    self.assertEqual(c_jnts[3], -1)
+    self.assertEqual(c_jnts[1], mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_JOINT, "clamped_box_twist_1"))
+    self.assertEqual(c_jnts[2], mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_JOINT, "clamped_box_twist_2"))
+
+  def test_rod_box_elem_pose_and_no_state_roll(self):
+    """Tests rod_box_elem orthonormal frame, twist rotation, and rotated-root no-state start."""
+    if io.types.ROD_HINGE_SIZE != 10:
+      self.skipTest("Requires 1D flex rod torsion support in MuJoCo")
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <body name="root">
+            <joint name="roll" type="hinge" axis="1 0 0"/>
+            <geom size="0.01"/>
+            <flexcomp name="strip" type="direct" dim="1" radius="0.005" mass="0.1"
+                      point="0 0 0  0.1 0 0  0.2 0 0  0.3 0 0"
+                      element="0 1  2 1  2 3">
+              <pin id="0 1"/>
+              <contact selfcollide="none" contype="0" conaffinity="0"/>
+              <elasticity young="1e6" damping="0.01" section="box" sectionsize="0.02 0.006"/>
+            </flexcomp>
+          </body>
+        </worldbody>
+      </mujoco>
+      """,
+    )
+    # Roll root body by 0.9 rad without initializing plastic state, and twist edge 2 by 0.4 rad
+    qpos = d.qpos.numpy().copy()
+    qpos[0, mjm.jnt_qposadr[mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_JOINT, "roll")]] = 0.9
+    jnt_tw2 = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_JOINT, "strip_twist")
+    qpos[0, mjm.jnt_qposadr[jnt_tw2]] = 0.4
+    d.qpos.assign(qpos)
+    d.plastic.zero_()
+    mjwarp.kinematics(m, d)
+    mjwarp.flex(m, d)
+
+    @wp.kernel
+    def box_elem_kernel(
+      qpos0: wp.array2d[float],
+      jnt_qposadr: wp.array[int],
+      flex_vertadr: wp.array[int],
+      flex_elemadr: wp.array[int],
+      flex_elemnum: wp.array[int],
+      flex_elemdataadr: wp.array[int],
+      flex_plasticadr: wp.array[int],
+      flex_vertbodyid: wp.array[int],
+      flex_elem: wp.array[int],
+      flex_rod_is_box: wp.array[bool],
+      flex_rod_root_clamped: wp.array[bool],
+      flex_rod_tail_clamped: wp.array[bool],
+      flex_rod_box_size: wp.array[wp.vec2],
+      flex_rod_edgeadr: wp.array[int],
+      flex_rod_edgenum: wp.array[int],
+      flex_rodedge_vert: wp.array[wp.vec2i],
+      flex_rodedge_jnt: wp.array[int],
+      flex_elem_rodedge: wp.array[wp.vec2i],
+      qpos_in: wp.array2d[float],
+      plastic_in: wp.array2d[float],
+      xmat_in: wp.array2d[wp.mat33],
+      flexvert_xpos_in: wp.array2d[wp.vec3],
+      flex_rod_frame0_loc_in: wp.array3d[wp.vec3],
+      flex_rod_frame0_ref_in: wp.array3d[wp.vec3],
+      flex_rod_tail_loc_in: wp.array3d[wp.vec3],
+      ok_out: wp.array[int],
+      pos_out: wp.array[wp.vec3],
+      mat_out: wp.array[wp.mat33],
+      size_out: wp.array[wp.vec3],
+    ):
+      e = wp.tid()
+      ok, pos, mat, size = support.rod_box_elem(
+        qpos0,
+        jnt_qposadr,
+        flex_vertadr,
+        flex_elemadr,
+        flex_elemnum,
+        flex_elemdataadr,
+        flex_plasticadr,
+        flex_vertbodyid,
+        flex_elem,
+        flex_rod_is_box,
+        flex_rod_root_clamped,
+        flex_rod_tail_clamped,
+        flex_rod_box_size,
+        flex_rod_edgeadr,
+        flex_rod_edgenum,
+        flex_rodedge_vert,
+        flex_rodedge_jnt,
+        flex_elem_rodedge,
+        qpos_in,
+        plastic_in,
+        xmat_in,
+        flexvert_xpos_in,
+        flex_rod_frame0_loc_in,
+        flex_rod_frame0_ref_in,
+        flex_rod_tail_loc_in,
+        0,
+        0,
+        e,
+      )
+      ok_out[e] = 1 if ok else 0
+      pos_out[e] = pos
+      mat_out[e] = mat
+      size_out[e] = size
+
+    ok_out = wp.zeros(3, dtype=int)
+    pos_out = wp.zeros(3, dtype=wp.vec3)
+    mat_out = wp.zeros(3, dtype=wp.mat33)
+    size_out = wp.zeros(3, dtype=wp.vec3)
+    wp.launch(
+      box_elem_kernel,
+      dim=3,
+      inputs=[
+        m.qpos0,
+        m.jnt_qposadr,
+        m.flex_vertadr,
+        m.flex_elemadr,
+        m.flex_elemnum,
+        m.flex_elemdataadr,
+        m.flex_plasticadr,
+        m.flex_vertbodyid,
+        m.flex_elem,
+        m.flex_rod_is_box,
+        m.flex_rod_root_clamped,
+        m.flex_rod_tail_clamped,
+        m.flex_rod_box_size,
+        m.flex_rod_edgeadr,
+        m.flex_rod_edgenum,
+        m.flex_rodedge_vert,
+        m.flex_rodedge_jnt,
+        m.flex_elem_rodedge,
+        d.qpos,
+        d.plastic,
+        d.xmat,
+        d.flexvert_xpos,
+        d.flex_rod_frame0_loc,
+        d.flex_rod_frame0_ref,
+        d.flex_rod_tail_loc,
+      ],
+      outputs=[ok_out, pos_out, mat_out, size_out],
+    )
+
+    np.testing.assert_array_equal(ok_out.numpy(), [1, 1, 1])
+    mats = mat_out.numpy()
+    sizes = size_out.numpy()
+    for e in range(3):
+      _assert_eq(mats[e].T @ mats[e], np.eye(3), f"orthogonality_{e}")
+      _assert_eq(np.linalg.det(mats[e]), 1.0, f"right_handed_{e}")
+      _assert_eq(sizes[e], np.array([0.02, 0.006, 0.05]), f"size_{e}")
+    # Element 0 and reversed element 1 have theta=0 and follow the rolled root frame via spatial PT
+    _assert_eq(mats[0, :, 0], mats[1, :, 0], "m1_elem0_elem1")
+    _assert_eq(mats[0, :, 2], np.array([1.0, 0.0, 0.0]), "tangent_elem0")
+    _assert_eq(mats[1, :, 2], np.array([-1.0, 0.0, 0.0]), "reversed_tangent_elem1")
+    # Element 2 is rotated by theta=0.4 relative to element 0's reference director (m1, m2)
+    m1_0, m2_0 = mats[0, :, 0], mats[0, :, 1]
+    expected_m1_2 = np.cos(0.4) * m1_0 + np.sin(0.4) * m2_0
+    _assert_eq(mats[2, :, 0], expected_m1_2, "twisted_m1_elem2")
 
 
 if __name__ == "__main__":
