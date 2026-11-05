@@ -204,6 +204,34 @@ def _ccd_probe(
 
 
 @wp.func
+def _ellipsoid_normal(point: wp.vec3, size: wp.vec3, margin: float) -> wp.vec3:
+  """Recover the normal of an ellipsoid inflated by half the contact margin."""
+  if margin == 0.0:
+    return wp.cw_div(wp.cw_div(point, size), size)
+  size_sq = wp.cw_mul(size, size)
+  # The closest ellipsoid point has coordinates size^2 * point / (size^2 + shift).
+  # For an inflated support point, shift = margin/2 * length(size * unit_normal).
+  bounds = 0.5 * margin * size
+  lower = wp.min(bounds[0], wp.min(bounds[1], bounds[2]))
+  upper = wp.max(bounds[0], wp.max(bounds[1], bounds[2]))
+  shift = 0.5 * (lower + upper)
+  for _ in range(12):
+    denom = size_sq + wp.vec3(shift)
+    scaled = wp.cw_div(wp.cw_mul(size, point), denom)
+    error = wp.dot(scaled, scaled) - 1.0
+    if wp.abs(error) < 1.0e-6:
+      break
+    if error > 0.0:
+      lower = shift
+    else:
+      upper = shift
+    slope = -2.0 * wp.dot(scaled, wp.cw_div(scaled, denom))
+    candidate = shift - error / slope
+    shift = candidate if lower < candidate and candidate < upper else 0.5 * (lower + upper)
+  return wp.cw_div(point, size_sq + wp.vec3(shift))
+
+
+@wp.func
 def _recover_direction(
   # Model:
   mesh_vert: wp.array[wp.vec3],
@@ -235,21 +263,25 @@ def _recover_direction(
     return True, mat @ (local / radius)
 
   if geomtype == GeomType.ELLIPSOID or geomtype == GeomType.CYLINDER:
-    if margin != 0.0:
-      return False, direction
     local = wp.transpose(mat) @ (point - pos)
     if geomtype == GeomType.ELLIPSOID:
-      scaled = wp.cw_div(wp.cw_div(local, size), size)
+      scaled = _ellipsoid_normal(local, size, margin)
     else:
       xy = wp.sqrt(local[0] * local[0] + local[1] * local[1])
-      # A cylinder support point determines the radial direction and axial sign, but
-      # not their ratio. Use the converged EPA normal to recover that ratio; an
-      # arbitrary ratio preserves the point but changes its rotation derivative.
-      local_ref = wp.transpose(mat) @ reference
-      radial = wp.sqrt(local_ref[0] * local_ref[0] + local_ref[1] * local_ref[1])
-      scaled = wp.vec3(local[0] * radial, local[1] * radial, wp.sign(local[2]) * xy * wp.abs(local_ref[2]))
-      if xy < MINVAL:
-        scaled = wp.vec3(0.0, 0.0, wp.sign(local[2]))
+      if margin != 0.0:
+        radial = float(0.0)
+        if xy > MINVAL:
+          radial = (xy - size[0]) / xy
+        cap = wp.where(vertex == 0, size[1], -size[1])
+        scaled = wp.vec3(local[0] * radial, local[1] * radial, local[2] - cap) / (0.5 * margin)
+      else:
+        # Without inflation, the point determines radial direction and cap, but not
+        # their ratio. Use the converged EPA normal to recover that ratio.
+        local_ref = wp.transpose(mat) @ reference
+        radial = wp.sqrt(local_ref[0] * local_ref[0] + local_ref[1] * local_ref[1])
+        scaled = wp.vec3(local[0] * radial, local[1] * radial, wp.sign(local[2]) * xy * wp.abs(local_ref[2]))
+        if xy < MINVAL:
+          scaled = wp.vec3(0.0, 0.0, wp.sign(local[2]))
     length = wp.norm_l2(scaled)
     if length < 1.0e-12:
       return False, direction
@@ -310,7 +342,10 @@ def _support_frozen(
     if dxy > MINVAL:
       scl = size[0] / dxy
       res_c = wp.vec3(local_c[0] * scl, local_c[1] * scl, 0.0)
-    res_c = wp.vec3(res_c[0], res_c[1], wp.sign(local_c[2]) * size[1])
+    cap = wp.where(local_c[2] >= 0.0, size[1], -size[1])
+    if vertex >= 0:
+      cap = wp.where(vertex == 0, size[1], -size[1])
+    res_c = wp.vec3(res_c[0], res_c[1], cap)
     return mat @ res_c + pos + 0.5 * margin * direction
   if geomtype == GeomType.BOX:
     vbox = wp.cw_mul(
