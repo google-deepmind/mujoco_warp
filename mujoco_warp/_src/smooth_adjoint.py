@@ -49,6 +49,8 @@ _SUPPORTED_CACHE: dict[int, tuple[weakref.ReferenceType[Model], frozenset[str]]]
 
 def _model_support(m: Model) -> frozenset[str]:
   """Validates smooth features and caches the model's fixed parameter limitations."""
+  if m.has_fluid:
+    raise NotImplementedError("smooth_adjoint does not support fluid-capable models")
   key = id(m)
   cached = _SUPPORTED_CACHE.get(key)
   if cached is not None and cached[0]() is m:
@@ -66,9 +68,6 @@ def _model_support(m: Model) -> frozenset[str]:
     bad.append("tendons (spring/bias/armature/transmission)")
   if m.nplastic:
     bad.append("plastic joint state")
-  opt = m.opt
-  if np.any(opt.density.numpy() != 0.0) or np.any(opt.viscosity.numpy() != 0.0) or np.any(opt.wind.numpy() != 0.0):
-    bad.append("fluid forces (opt.density/viscosity/wind)")
   if m.flg_adhesion:
     bad.append("passive adhesion (m.flg_adhesion: qpos-dependent qfrc_adhesion has no VJP leaf)")
   if np.any(m.body_gravcomp.numpy() != 0.0) and np.any(m.jnt_actgravcomp.numpy() != 0):
@@ -120,8 +119,8 @@ def _model_support(m: Model) -> frozenset[str]:
 
 
 def assert_smooth_supported(m: Model):
-  """Raises for enabled features or requested parameters without an analytic smooth VJP."""
-  # Requests can change after validation; the cached model capabilities do not.
+  """Rejects unsupported model capabilities and requested parameter gradients."""
+  # Gradient requests can change; cached parameter-layout limitations do not.
   unsupported = sorted(name for name in _model_support(m) if getattr(m, name).requires_grad)
   if unsupported:
     raise NotImplementedError(
