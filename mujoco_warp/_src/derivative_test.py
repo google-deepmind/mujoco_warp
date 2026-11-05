@@ -1985,7 +1985,7 @@ class DerivativeTest(parameterized.TestCase):
 
     d.qpos.assign(qpos)
     d.qvel.assign(qvel)
-    for arr in (d.efm_K_val, d.efm_L, d.efm_c, d.qfrc_damper, d.qacc_smooth, d.qacc):
+    for arr in (d.efm_K_val, d.qHLD, d.efm_c, d.qfrc_damper, d.qacc_smooth, d.qacc):
       arr.fill_(wp.inf)
 
     mjw.forward(m, d)
@@ -2048,7 +2048,7 @@ class DerivativeTest(parameterized.TestCase):
       self.assertGreaterEqual(float(np.min(k_evals)), -1e-6 * max(norm_K, 1.0))
       np.testing.assert_allclose(d.efm_c.numpy()[w], -h * (H_ref @ qvel[w]), atol=1e-3, rtol=1e-4)
       np.testing.assert_allclose(d.qfrc_damper.numpy()[w], -damping * (H_ref @ qvel[w]), atol=1e-3, rtol=1e-4)
-      self.assertTrue(np.all(np.isfinite(d.efm_L.numpy()[w])))
+      self.assertTrue(np.all(np.isfinite(d.qHLD.numpy()[w])))
       self.assertTrue(np.all(np.isfinite(d.qacc_smooth.numpy()[w])))
 
     if nworld == 2:
@@ -2297,8 +2297,8 @@ class DerivativeTest(parameterized.TestCase):
     mujoco.mjtJacobian.mjJAC_DENSE,
     mujoco.mjtJacobian.mjJAC_SPARSE,
   )
-  def test_flex_preconditioner_block_allocation(self, jacobian):
-    """Verifies flex 3x3 preconditioner block folding for tendon, actuator, efc, and contact."""
+  def test_flex_qH_diagonal_preconditioner(self, jacobian):
+    """Verifies flex qH diagonal preconditioner includes efm_K diagonal in qHDiagInv."""
     mjm, mjd, m, d = test_data.fixture(
       xml="""
       <mujoco>
@@ -2330,17 +2330,16 @@ class DerivativeTest(parameterized.TestCase):
       overrides={"opt.jacobian": jacobian},
     )
 
-    self.assertEqual(m.nefmdof, 9)
-    self.assertEqual(m.nefmL, 9 * m.nefmdof)
     d.ctrl.fill_(0.1)
-    d.efm_L.fill_(wp.inf)
+    mjd.ctrl[:] = 0.1
+    mujoco.mj_forward(mjm, mjd)
     mjw.forward(m, d)
-    epL = derivative.eff_prec_fold(m, d)
     res = wp.zeros_like(d.qacc)
-    derivative.eff_prec(m, d, res, d.qfrc_smooth, epL=epL)
+    derivative.eff_prec(m, d, res, d.qfrc_smooth)
 
-    self.assertTrue(np.all(np.isfinite(d.efm_L.numpy())))
-    self.assertTrue(np.all(np.isfinite(epL.numpy())))
+    # TODO(team): remove version check once mujoco >= 4.0.0 is required.
+    if util_pkg.check_version("mujoco>=4.0.0.dev1014669023"):
+      _assert_eq(d.qHDiagInv.numpy()[0], mjd.qHDiagInv, "qHDiagInv")
     self.assertTrue(np.all(np.isfinite(res.numpy())))
     self.assertGreater(np.linalg.norm(res.numpy()), 0.0)
 
@@ -2562,14 +2561,16 @@ class DerivativeTest(parameterized.TestCase):
       qvel_np[1] = qvel_np[0] * 1.5 + 1.0
       d.qvel = wp.array(qvel_np, dtype=float)
 
-    d.efm_L.fill_(wp.inf)
+    d.qHDiagInv.fill_(wp.inf)
     d.efm_c.fill_(wp.inf)
     d.qacc_smooth.fill_(wp.inf)
 
     mujoco.mj_forward(mjm, mjd)
     mjw.forward(m, d)
 
-    _assert_eq(d.efm_L.numpy()[0], mjd.efm_L[: m.nefmL], "efm_L")
+    # TODO(team): remove version check once mujoco >= 4.0.0 is required.
+    if util_pkg.check_version("mujoco>=4.0.0.dev1014669023"):
+      _assert_eq(d.qHDiagInv.numpy()[0], mjd.qHDiagInv, "qHDiagInv")
     _assert_eq(d.efm_c.numpy()[0], mjd.efm_c, "efm_c")
     _assert_eq(d.qacc_smooth.numpy()[0], mjd.qacc_smooth, "qacc_smooth")
     if nworld == 2:

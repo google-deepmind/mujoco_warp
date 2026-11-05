@@ -116,12 +116,11 @@ def _create_solver_context(
     alloc_mgrad and d.qLD.shape[1] > m.qLD_block_total and bool(m.opt.deterministic & types.DeterminismType.ATOMICS)
   )
   htype = _htype(m)
+  has_passive = not ((m.opt.disableflags & types.DisableBit.SPRING) and (m.opt.disableflags & types.DisableBit.DAMPER))
   alloc_tw_diag = (
     m.opt.integrator == types.IntegratorType.DISCRETE
     and alloc_mgrad
-    and m.nefmdof > 0
-    and m.nflexrodedge > 0
-    and not ((m.opt.disableflags & types.DisableBit.SPRING) and (m.opt.disableflags & types.DisableBit.DAMPER))
+    and (m.nefmdof > 0 or (m.nflexrodedge > 0 and has_passive))
   )
 
   h = wp.empty((nworld, nv_pad, nv_pad), dtype=htype) if alloc_h else wp.empty((nworld, 0, 0), dtype=htype)
@@ -4289,8 +4288,8 @@ def _solver_iteration(
 
 def init_context(m: types.Model, d: types.Data, ctx: SolverContext | InverseContext, grad: bool = True, compact: bool = False):
   if m.opt.integrator == types.IntegratorType.DISCRETE:
-    if (m.nefmdof > 0 or ctx.tw_diag is not None) and m.opt.solver == types.SolverType.CG:
-      derivative.eff_prec_fold(m, d, out=d.efm_L, tw_diag=ctx.tw_diag)
+    if ctx.tw_diag is not None and m.opt.solver == types.SolverType.CG:
+      derivative.eff_prec_fold(m, d, tw_diag=ctx.tw_diag)
     if grad:
       qfrc_smooth_eff = wp.zeros((d.nworld, m.nv_pad), dtype=float, device=d.qacc.device)
       wp.launch(
