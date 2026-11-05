@@ -2738,7 +2738,9 @@ def _add_flexcon_metric_dense(max_dof: int, htype: type = float, deterministic: 
 
 
 @cache_kernel
-def _add_rod_twist_metric_dense_typed(htype: type = float):
+def _add_rod_twist_metric_dense_typed(htype: type = float, diagonal: bool = False):
+  DIAGONAL = diagonal  # with the diagonal: the float64 path assembles the whole metric in h, not in qH
+
   @wp.kernel(module="unique", enable_backward=False)
   def kernel(
     # Model:
@@ -2780,11 +2782,17 @@ def _add_rod_twist_metric_dense_typed(htype: type = float):
       jnt1 = flex_rodedge_jnt[eadr + hi + 1]
       dof0 = jnt_dofadr[jnt0] if jnt0 >= 0 else -1
       dof1 = jnt_dofadr[jnt1] if jnt1 >= 0 else -1
+      scale = htype(scale_f) * htype(2.0 * kt)
+      if wp.static(DIAGONAL):  # as derivative._eff_add_rod_twist_qH_diag adds to qH
+        if dof0 >= 0:
+          h_out[worldid, dof0, dof0] += scale
+        if dof1 >= 0:
+          h_out[worldid, dof1, dof1] += scale
       if dof0 < 0 or dof1 < 0 or dof0 == dof1:
         continue
       r = wp.min(dof0, dof1)
       c = wp.max(dof0, dof1)
-      h_out[worldid, r, c] -= htype(scale_f) * htype(2.0 * kt)
+      h_out[worldid, r, c] -= scale
 
   return kernel
 
@@ -3804,7 +3812,7 @@ def _update_gradient(m: types.Model, d: types.Data, ctx: SolverContext, compact:
         (m.opt.disableflags & types.DisableBit.SPRING) and (m.opt.disableflags & types.DisableBit.DAMPER)
       ):
         wp.launch(
-          _add_rod_twist_metric_dense_typed(htype),
+          _add_rod_twist_metric_dense_typed(htype, metric_in_h),
           dim=(d.nworld, m.nflex),
           inputs=[
             m.opt.timestep,

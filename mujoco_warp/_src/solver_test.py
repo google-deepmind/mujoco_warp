@@ -2428,7 +2428,7 @@ class SolverTest(parameterized.TestCase):
   def _light_cable(self, cone, f64, sleep=False):
     """The light cable: 64 box links of 17 mg on a plane, stiff contacts at impratio 100."""
     return test_data.fixture(
-      xml=_LIGHT_CABLE_XML,
+      xml=_light_cable_xml(),
       overrides={
         "opt.cone": cone,
         "opt.newton_hessian_float64": f64,
@@ -2621,6 +2621,39 @@ class SolverTest(parameterized.TestCase):
     self.assertTrue(np.isfinite(qpos[1]).all())
     np.testing.assert_allclose(qpos[1], qpos[0], atol=1e-4)
 
+  def test_newton_hessian_float64_discrete_rod_twist(self):
+    """Discrete integrator with a twisting rod on the ground: the float64 Hessian matches MuJoCo.
+
+    The rod's twist coupling adds its off-diagonal to H and its diagonal to qH, so the float64 path,
+    which assembles H from M and the metric parts, adds the diagonal itself.
+    """
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option integrator="discrete" solver="Newton" jacobian="dense" timestep="0.002"/>
+        <worldbody>
+          <geom type="plane" size="1 1 0.1"/>
+          <flexcomp name="rod" type="grid" count="8 1 1" spacing="0.05 0.05 0.05" radius="0.01" dim="1"
+                    mass="0.1" pos="0 0 0.012" euler="0 0 35">
+            <pin id="0"/>
+            <contact selfcollide="none"/>
+            <elasticity young="1e7" poisson="0.25" damping="0.01"/>
+          </flexcomp>
+        </worldbody>
+      </mujoco>
+      """,
+      overrides={"opt.newton_hessian_float64": True},
+      qvel_noise=0.5,
+    )
+    self.assertTrue(m.flex_rod_has_twist.numpy().any())
+    nefc = 0
+    for _ in range(40):
+      mjw.step(m, d)
+      mujoco.mj_step(mjm, mjd)
+      nefc = max(nefc, d.nefc.numpy()[0])
+    self.assertGreater(nefc, 0)
+    np.testing.assert_allclose(d.qpos.numpy()[0], mjd.qpos, atol=1e-5)
+
   @parameterized.parameters((1e-3, 1, 1e-3), (1e-3, 100, 1e-6), (1e-4, 100, 1e-8))
   def test_newton_hessian_float64_discrete_fluid(self, timestep, impratio, mass):
     """Discrete integrator with ellipsoid fluid forces on light bodies matches MuJoCo."""
@@ -2741,19 +2774,27 @@ class SolverTest(parameterized.TestCase):
     self.assertGreater(np.abs(d.qpos.numpy()[1] - d.qpos.numpy()[0]).max(), 1e-3)
 
 
-_LIGHT_CABLE_XML = """
-<mujoco>
-  <option timestep="1e-4" impratio="100" solver="Newton" iterations="30" ls_iterations="50"/>
-  <worldbody>
-    <geom type="plane" size="1 1 .1"/>
-    <composite type="cable" curve="s" count="65 1 1" size="0.16" offset="0 0 0.00084" initial="free">
-      <joint kind="main" damping="1e-6" armature="1e-11"/>
-      <geom type="box" size="0.00125 0.004 0.00085" mass="1.69e-05" condim="4" friction="0.5 0.00025 1e-05"
-            solref="-9e6 -6000" solimp="0.9924 0.9924 0.001 0.5 2"/>
-    </composite>
-  </worldbody>
-</mujoco>
-"""
+def _light_cable_xml(nlink=64):
+  """A cable of light box links over a plane: a free first link, then ball joints, neighbors not colliding."""
+  geom = (
+    '<geom type="box" size="0.00125 0.004 0.00085" pos="0.00125 0 0" mass="1.69e-05" condim="4"'
+    ' friction="0.5 0.00025 1e-05" solref="-9e6 -6000" solimp="0.9924 0.9924 0.001 0.5 2"/>'
+  )
+  links = f'<body name="link0" pos="0 0 0.00084"><freejoint/>{geom}'
+  for i in range(1, nlink):
+    links += f'<body name="link{i}" pos="0.0025 0 0"><joint type="ball" damping="1e-6" armature="1e-11"/>{geom}'
+  links += "</body>" * nlink
+  exclude = "".join(f'<exclude body1="link{i}" body2="link{i + 1}"/>' for i in range(nlink - 1))
+  return f"""
+  <mujoco>
+    <option timestep="1e-4" impratio="100" solver="Newton" iterations="30" ls_iterations="50"/>
+    <worldbody>
+      <geom type="plane" size="1 1 .1"/>
+      {links}
+    </worldbody>
+    <contact>{exclude}</contact>
+  </mujoco>
+  """
 
 
 def _box_stack_xml(nbody, condim, jacobian="auto"):
@@ -2786,8 +2827,8 @@ def _recording_contexts():
   """Record every solver context built, the compact solve's own included."""
   contexts, create = [], solver._create_solver_context
 
-  def record(m, d):
-    contexts.append(create(m, d))
+  def record(m, d, **kwargs):
+    contexts.append(create(m, d, **kwargs))
     return contexts[-1]
 
   with mock.patch.object(solver, "_create_solver_context", side_effect=record):
