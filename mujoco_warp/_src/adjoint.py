@@ -560,6 +560,16 @@ def _step_model_arrays(m: Model) -> list[wp.array]:
   return list(parameters.values())
 
 
+def step_supported(m: Model, d: Data, d_out: Data | None = None) -> tuple[str, ...]:
+  """Returns unsupported-step reasons using the diff API's callback signature."""
+  try:
+    _assert_step_supported(m)
+    _step_model_arrays(m)
+  except NotImplementedError as error:
+    return (str(error),)
+  return ()
+
+
 def step_backward_arrays(d: Data, d_out: Data, m: Model | None = None):
   """Allocates and returns arrays used by the analytic step backward."""
   arrays = [*_data_arrays(d, _STEP_IN_FIELDS), *_data_arrays(d_out, _STEP_OUT_FIELDS)]
@@ -623,5 +633,5 @@ def enable_grad() -> None:
   wp.sqrt = adjoint_util.safe_sqrt
   wp.func_grad(math.quat_integrate)(adjoint_util._adj_quat_integrate)
   wp.func_grad(math.quat_to_vel)(adjoint_util._adj_quat_to_vel)
-  forward.register_step_backward(step_backward, step_backward_arrays)
+  forward.register_step_backward(step_backward, step_backward_arrays, step_supported)
   forward.register_fwd_kinematics_backward(fwd_kinematics_backward, fwd_kinematics_arrays)

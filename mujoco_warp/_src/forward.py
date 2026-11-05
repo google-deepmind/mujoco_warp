@@ -3336,11 +3336,11 @@ def discrete(m: Model, d: Data):
   _advance(m, d, d.qacc)
 
 
-def register_step_backward(hook, prepare_arrays):
+def register_step_backward(hook, prepare_arrays, supported=None):
   """Registers the analytic step backward callback."""
   global _step_backward_hook, _step_backward_registration
   _step_backward_hook = hook
-  _step_backward_registration = (hook, prepare_arrays)
+  _step_backward_registration = (hook, prepare_arrays, supported)
 
 
 # Persistent inputs copied out of place; forward(m, d_out) normally recomputes the rest.
@@ -3426,6 +3426,14 @@ def step(m: Model, d: Data, d_out: Optional[Data] = None):
   if record:
     rt.tape = None
   try:
+    if record:
+      hook, prepare_arrays, supported = _step_backward_registration
+      if supported is not None and not wp.get_device().is_capturing:
+        reasons = supported(m, d, d_out)
+        if reasons:
+          raise NotImplementedError("step() differentiation is not supported: " + ", ".join(reasons))
+      # TODO: Replace this preparation and tape registration with the diff API (#1727).
+      arrays = prepare_arrays(d, d_out, m=m)
     if not inplace:
       _copy_state(m, d, d_out)
     forward(m, d_out)
@@ -3444,9 +3452,6 @@ def step(m: Model, d: Data, d_out: Optional[Data] = None):
       rt.tape = tape
 
   if record:
-    hook, prepare_arrays = _step_backward_registration
-    # TODO: Replace this preparation and tape registration with the diff API (#1727).
-    arrays = prepare_arrays(d, d_out, m=m)
     # Like a recorded kernel, retain array identities if callers replace a held input later.
     d, d_out = dataclasses.replace(d), dataclasses.replace(d_out)
     tape.record_func(lambda: hook(m, d, d_out), arrays=arrays)
