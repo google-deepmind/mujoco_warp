@@ -368,6 +368,7 @@ def _hfield_freeze(
     epa_iterations,
     geom1,
     geom2,
+    GeomType.HFIELD.value,
     geomtype2,
     center,
     geom2.pos,
@@ -386,14 +387,19 @@ def _hfield_freeze(
   prism_top = collision_gjk_adjoint._mat33_rows(winning_prism[3], winning_prism[4], winning_prism[5])
 
   if geomtype2 == GeomType.SPHERE or geomtype2 == GeomType.CAPSULE:
-    if tag == collision_gjk_adjoint._TAG_GJK_SIDE:
-      top_out[cid] = prism_top
-      reference_out[cid] = result.x2
-      case_out[cid] = _CASE_GJK_SIDE
-      return
     if tag == collision_gjk_adjoint._TAG_GJK_FEATURE:
       dim = result.dim
       if dim < 1 or dim > 3:
+        return
+      # Forward's heightfield inflation corrects witnesses spanning prism features.
+      is_side = bool(False)
+      for i in range(dim):
+        if result.simplex_index1[i] != result.simplex_index1[0]:
+          is_side = True
+      if is_side:
+        top_out[cid] = prism_top
+        reference_out[cid] = result.x2
+        case_out[cid] = _CASE_GJK_SIDE
         return
       signs = int(0)
       point_a = wp.vec3(0.0, 0.0, 0.0)
@@ -476,6 +482,61 @@ def _hfield_freeze(
   reference_out[cid] = epa_pr[face_index]
   top_out[cid] = prism_top
   case_out[cid] = wp.where(mixed, int(_CASE_EPA_HFIELD), int(_CASE_EPA))
+
+
+@wp.func
+def _hfield_project_top(top: wp.mat33, point: wp.vec3) -> wp.vec3:
+  """Match the prism-top correction in collision_gjk._epa_witness and _inflate."""
+  n = wp.vec3(0.0, 0.0, 1.0)
+  a, b, c = top[0], top[1], top[2]
+  coords = _tri_affine_coord(a, b, c, point)
+  if coords[0] > 0.0 and coords[1] > 0.0 and coords[2] > 0.0:
+    return coords[0] * a + coords[1] * b + coords[2] * c
+  p = wp.where(coords[0] > 0.0, a, wp.where(coords[1] > 0.0, b, c))
+  return point - wp.dot(point - p, n) * n
+
+
+@wp.func
+def _hfield_replay_side(
+  top: wp.mat33, direction: wp.vec3, pos: wp.vec3, axis: wp.vec3, radius: float, half_length: float, margin: float
+) -> tuple[int, float, wp.vec3, wp.vec3]:
+  sign = wp.sign(wp.dot(axis, direction))
+  x2 = pos + sign * half_length * axis - (radius + 0.5 * margin) * wp.vec3(0.0, 0.0, 1.0)
+  x1 = _hfield_project_top(top, x2)
+  dvec = x1 - x2
+  return 1, -wp.sqrt(wp.dot(dvec, dvec)), x1, x2
+
+
+@wp.func
+def _hfield_correct_witness(
+  # Model:
+  mesh_vert: wp.array[wp.vec3],
+  # In:
+  geomtype: int,
+  vertex: int,
+  top: wp.mat33,
+  pos: wp.vec3,
+  mat: wp.mat33,
+  size: wp.vec3,
+  margin: float,
+  vertadr: int,
+  point: wp.vec3,
+) -> tuple[int, float, wp.vec3, wp.vec3]:
+  """Replay the heightfield-specific EPA witness correction."""
+  x2 = wp.vec3()
+  if geomtype == GeomType.SPHERE or geomtype == GeomType.CAPSULE:
+    axis = wp.vec3(mat[0, 2], mat[1, 2], mat[2, 2])
+    half_length = wp.where(geomtype == GeomType.CAPSULE, size[1], 0.0)
+    sign = wp.sign(wp.dot(axis, point))
+    x2 = pos + sign * half_length * axis - (0.5 * margin + size[0]) * wp.vec3(0.0, 0.0, 1.0)
+  else:
+    length = wp.norm_l2(point)
+    if length < 1.0e-12:
+      return 0, 0.0, wp.vec3(), wp.vec3()
+    x2 = collision_gjk_adjoint._support_frozen(mesh_vert, geomtype, vertex, point / length, pos, mat, size, margin, vertadr)
+  x1 = _hfield_project_top(top, x2)
+  dvec = x1 - x2
+  return 1, -wp.sqrt(wp.dot(dvec, dvec)), x1, x2
 
 
 @wp.kernel(enable_backward=True)
@@ -564,9 +625,7 @@ def _hfield_replay(
   elif tag == _CASE_GJK_SIDE:
     axis_s = wp.vec3(local_mat[0, 2], local_mat[1, 2], local_mat[2, 2])
     half_s = wp.where(geomtype2 == GeomType.CAPSULE, geom2_size[1], 0.0)
-    ok, dist, x1, x2 = collision_gjk_adjoint._replay_gjk_side(
-      top_in[cid], reference_in[cid], local_pos, axis_s, geom2_size[0], half_s, margin
-    )
+    ok, dist, x1, x2 = _hfield_replay_side(top_in[cid], reference_in[cid], local_pos, axis_s, geom2_size[0], half_s, margin)
   elif tag == _CASE_EPA or tag == _CASE_EPA_HFIELD:
     dataid = geom_dataid[worldid % geom_dataid.shape[0], g2]
     vertadr = int(0)
@@ -574,19 +633,21 @@ def _hfield_replay(
       vertadr = mesh_vertadr[dataid]
     ok, dist, x1, x2 = collision_gjk_adjoint._replay_epa(
       mesh_vert,
-      tag == _CASE_EPA_HFIELD,
       geomtype2,
       feature_in[cid],
       prism_in[cid],
       direction_in[cid],
       reference_in[cid],
-      top_in[cid],
       local_pos,
       local_mat,
       geom2_size,
       margin,
       vertadr,
     )
+    if ok != 0 and tag == _CASE_EPA_HFIELD:
+      ok, dist, x1, x2 = _hfield_correct_witness(
+        mesh_vert, geomtype2, feature_in[cid][3], top_in[cid], local_pos, local_mat, geom2_size, margin, vertadr, x2
+      )
 
   if ok == 0:
     return

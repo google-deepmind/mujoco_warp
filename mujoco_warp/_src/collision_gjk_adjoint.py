@@ -19,20 +19,11 @@ from typing import Tuple
 import warp as wp
 
 from mujoco_warp._src import collision_gjk
-from mujoco_warp._src.collision_gjk import FLOAT_MAX
 from mujoco_warp._src.collision_gjk import MINVAL
-from mujoco_warp._src.collision_gjk import Polytope
-from mujoco_warp._src.collision_gjk import _discrete_geoms
-from mujoco_warp._src.collision_gjk import _epa
-from mujoco_warp._src.collision_gjk import _inflate
 from mujoco_warp._src.collision_gjk import _linear_combine
-from mujoco_warp._src.collision_gjk import _polytope2
-from mujoco_warp._src.collision_gjk import _polytope3
-from mujoco_warp._src.collision_gjk import _polytope4
 from mujoco_warp._src.collision_gjk import _project_origin_plane
 from mujoco_warp._src.collision_gjk import _subdistance
 from mujoco_warp._src.collision_gjk import _tri_affine_coord
-from mujoco_warp._src.collision_gjk import gjk
 from mujoco_warp._src.types import GeomType
 from mujoco_warp._src.types import mat43
 
@@ -42,7 +33,6 @@ wp.set_module_options({"enable_backward": True})
 # Internal probe results.
 _TAG_NONE = wp.constant(0)
 _TAG_GJK_FEATURE = wp.constant(1)
-_TAG_GJK_SIDE = wp.constant(2)
 _TAG_EPA = wp.constant(3)
 
 
@@ -64,7 +54,8 @@ def _ccd_probe(
   epa_iterations: int,
   geom1: collision_gjk.Geom,
   geom2: collision_gjk.Geom,
-  geomtype: int,
+  geomtype1: int,
+  geomtype2: int,
   x_1: wp.vec3,
   x_2: wp.vec3,
   vert: wp.array[wp.vec3],
@@ -77,130 +68,33 @@ def _ccd_probe(
   # Data out:
   overflow_out: wp.array[int],
 ):
-  original_margin = geom2.margin
-  original_size = geom2.size
-  full_margin = float(0.0)
-  radius = float(0.0)
-  is_discrete = _discrete_geoms(GeomType.HFIELD.value, geomtype) and (geom1.margin == 0.0 and geom2.margin == 0.0)
-
-  if geomtype == GeomType.SPHERE or geomtype == GeomType.CAPSULE:
-    radius = geom2.size[0]
-    full_margin = radius + 0.5 * geom2.margin
-    geom2.margin = 0.0
-    geom2.size = wp.vec3(0.0, geom2.size[1], geom2.size[2])
-
-  if radius > 0.0:
-    result = gjk(tolerance, gjk_iterations, geom1, geom2, x_1, x_2, GeomType.HFIELD.value, geomtype, full_margin, is_discrete)
-    geom1.index = result.index1
-    geom2.index = result.index2
-
-    if result.dist > tolerance:
-      if result.dist == FLOAT_MAX:
-        return result.dist, 1, result.x1, result.x2, _TAG_NONE, result, -1
-      is_side = bool(False)
-      vertex = result.simplex_index1[0]
-      for i in range(result.dim):
-        if result.simplex_index1[i] != vertex:
-          is_side = True
-      dist, x1, x2 = _inflate(result, geom1, geom2, GeomType.HFIELD.value, geomtype, 0.0, full_margin)
-      tag = wp.where(is_side, _TAG_GJK_SIDE, _TAG_GJK_FEATURE)
-      return dist, 1, x1, x2, tag, result, -1
-
-    geom2.margin = original_margin
-    geom2.size = original_size
-
-  result = gjk(tolerance, gjk_iterations, geom1, geom2, x_1, x_2, GeomType.HFIELD.value, geomtype, 0.0, is_discrete)
-  geom1.index = result.index1
-  geom2.index = result.index2
-
-  if result.dist > tolerance or result.dim < 2 or result.separated:
-    return result.dist, 1, result.x1, result.x2, _TAG_NONE, result, -1
-
-  # Preserve the EPA face index needed by the replay.
-  pt = Polytope()
-  pt.nface = 0
-  pt.nvert = 0
-  pt.nhorizon = 0
-  pt.vert = vert
-  pt.vert_index = vert_index
-  pt.face = face
-  pt.face_pr = face_pr
-  pt.face_norm2 = face_norm2
-  pt.horizon = horizon
-
-  if result.dim == 2:
-    pt, new_result = _polytope2(
-      pt,
-      result.simplex,
-      result.simplex1,
-      result.simplex2,
-      result.simplex_index1,
-      result.simplex_index2,
-      geom1,
-      geom2,
-      GeomType.HFIELD.value,
-      geomtype,
-    )
-    if pt.status == -1:
-      result.simplex = new_result.simplex
-      result.simplex1 = new_result.simplex1
-      result.simplex2 = new_result.simplex2
-      result.simplex_index1 = new_result.simplex_index1
-      result.simplex_index2 = new_result.simplex_index2
-      result.dim = 3
-  elif result.dim == 4:
-    pt, new_result = _polytope4(
-      pt,
-      result.simplex,
-      result.simplex1,
-      result.simplex2,
-      result.simplex_index1,
-      result.simplex_index2,
-    )
-    if pt.status == -1:
-      result.simplex = new_result.simplex
-      result.simplex1 = new_result.simplex1
-      result.simplex2 = new_result.simplex2
-      result.simplex_index1 = new_result.simplex_index1
-      result.simplex_index2 = new_result.simplex_index2
-      result.dim = 3
-
-  if result.dim == 3:
-    pt = _polytope3(
-      pt,
-      result.dist,
-      result.simplex,
-      result.simplex1,
-      result.simplex2,
-      result.simplex_index1,
-      result.simplex_index2,
-      geom1,
-      geom2,
-      GeomType.HFIELD.value,
-      geomtype,
-    )
-
-  # Boundary witnesses have no differentiable EPA face.
-  if pt.status:
-    return result.dist, 1, result.x1, result.x2, _TAG_NONE, result, -1
-
-  is_discrete2 = _discrete_geoms(GeomType.HFIELD.value, geomtype) and (geom1.margin == 0.0 and geom2.margin == 0.0)
-  dist, x1, x2, idx = _epa(
+  """Recover the forward simplex or EPA face without recording the iterative search."""
+  needs_epa, dist, ncontact, x1, x2, result, geom1, geom2 = collision_gjk.gjk_phase(
+    tolerance, 0.0, gjk_iterations, geom1, geom2, geomtype1, geomtype2, x_1, x_2
+  )
+  if not needs_epa:
+    tag = wp.where(result.dim > 0, _TAG_GJK_FEATURE, _TAG_NONE)
+    return dist, ncontact, x1, x2, tag, result, -1
+  dist, ncontact, x1, x2, idx = collision_gjk.epa_phase(
     tolerance,
     epa_iterations,
-    pt,
+    result,
     geom1,
     geom2,
-    GeomType.HFIELD.value,
-    geomtype,
-    is_discrete2,
+    geomtype1,
+    geomtype2,
+    vert,
+    vert_index,
+    face,
+    face_pr,
+    face_norm2,
+    horizon,
     False,
     worldid,
     overflow_out,
   )
-  if idx == -1:
-    return FLOAT_MAX, 0, wp.vec3(), wp.vec3(), _TAG_NONE, result, -1
-  return dist, 1, x1, x2, _TAG_EPA, result, idx
+  tag = wp.where(idx >= 0, _TAG_EPA, _TAG_NONE)
+  return dist, ncontact, x1, x2, tag, result, idx
 
 
 @wp.func
@@ -362,22 +256,6 @@ def _support_frozen(
 
 
 @wp.func
-def _tri_project_top(top: wp.mat33, point: wp.vec3) -> wp.vec3:
-  """Projects a point onto the top triangle using the forward branch rules."""
-  n = wp.vec3(0.0, 0.0, 1.0)
-  a = top[0]
-  b = top[1]
-  c = top[2]
-  coords = _tri_affine_coord(a, b, c, point)
-  if coords[0] > 0.0 and coords[1] > 0.0 and coords[2] > 0.0:
-    return coords[0] * a + coords[1] * b + coords[2] * c
-  p = c
-  p = wp.where(coords[1] > 0.0, b, p)
-  p = wp.where(coords[0] > 0.0, a, p)
-  return point - wp.dot(point - p, n) * n
-
-
-@wp.func
 def _replay_frozen(
   # In:
   witness: wp.mat33,
@@ -410,7 +288,7 @@ def _replay_gjk_feature(
   # In:
   dim: int,
   signs: int,
-  prism: wp.mat33,
+  points1: wp.mat33,
   pos: wp.vec3,
   axis: wp.vec3,
   radius: float,
@@ -421,10 +299,10 @@ def _replay_gjk_feature(
   geom_a = pos + _endpoint_sign(signs, 0) * half_length * axis
   geom_b = pos + _endpoint_sign(signs, 1) * half_length * axis
   geom_c = pos + _endpoint_sign(signs, 2) * half_length * axis
-  simplex = _mat43_rows(prism[0] - geom_a, prism[1] - geom_b, prism[2] - geom_c)
+  simplex = _mat43_rows(points1[0] - geom_a, points1[1] - geom_b, points1[2] - geom_c)
   weights = _subdistance(dim, simplex)
   delta = _linear_combine(dim, weights, simplex)
-  point1 = _linear_combine(dim, weights, _mat43_rows(prism[0], prism[1], prism[2]))
+  point1 = _linear_combine(dim, weights, _mat43_rows(points1[0], points1[1], points1[2]))
   point2 = point1 - delta
   distance = wp.sqrt(wp.dot(delta, delta))
   if distance < 1.0e-12:
@@ -440,49 +318,29 @@ def _replay_gjk_feature(
 
 
 @wp.func
-def _replay_gjk_side(
-  # In:
-  top: wp.mat33,
-  direction: wp.vec3,
-  pos: wp.vec3,
-  axis: wp.vec3,
-  radius: float,
-  half_length: float,
-  margin: float,
-) -> Tuple[int, float, wp.vec3, wp.vec3]:
-  n = wp.vec3(0.0, 0.0, 1.0)
-  sign = wp.sign(wp.dot(axis, direction))
-  x2 = pos + sign * half_length * axis - (radius + 0.5 * margin) * n
-  x1 = _tri_project_top(top, x2)
-  dvec = x1 - x2
-  return 1, -wp.sqrt(wp.dot(dvec, dvec)), x1, x2
-
-
-@wp.func
 def _replay_epa(
   # Model:
   mesh_vert: wp.array[wp.vec3],
   # In:
-  hfield_correction: bool,
   geomtype: int,
   features: wp.vec4i,
-  prism: wp.mat33,
+  points1: wp.mat33,
   directions: wp.mat33,
   reference: wp.vec3,
-  top: wp.mat33,
   pos: wp.vec3,
   mat: wp.mat33,
   size: wp.vec3,
   margin: float,
   vertadr: int,
 ) -> Tuple[int, float, wp.vec3, wp.vec3]:
+  """Replay one EPA face in the first shape's frame, with its vertices fixed."""
   zero = wp.vec3(0.0, 0.0, 0.0)
   geom_a = _support_frozen(mesh_vert, geomtype, features[0], directions[0], pos, mat, size, margin, vertadr)
   geom_b = _support_frozen(mesh_vert, geomtype, features[1], directions[1], pos, mat, size, margin, vertadr)
   geom_c = _support_frozen(mesh_vert, geomtype, features[2], directions[2], pos, mat, size, margin, vertadr)
-  delta_a = prism[0] - geom_a
-  delta_b = prism[1] - geom_b
-  delta_c = prism[2] - geom_c
+  delta_a = points1[0] - geom_a
+  delta_b = points1[1] - geom_b
+  delta_c = points1[2] - geom_c
   projection, degenerate = _project_origin_plane(delta_c, delta_b, delta_a)
   if degenerate:
     return 0, 0.0, zero, zero
@@ -490,24 +348,6 @@ def _replay_epa(
     projection = -projection
   dist = -wp.sqrt(wp.dot(projection, projection))
   weights = _tri_affine_coord(delta_a, delta_b, delta_c, projection)
-  x1 = weights[0] * prism[0] + weights[1] * prism[1] + weights[2] * prism[2]
+  x1 = weights[0] * points1[0] + weights[1] * points1[1] + weights[2] * points1[2]
   x2 = weights[0] * geom_a + weights[1] * geom_b + weights[2] * geom_c
-
-  if hfield_correction:
-    n = wp.vec3(0.0, 0.0, 1.0)
-    x2c = wp.vec3(0.0, 0.0, 0.0)
-    if geomtype == GeomType.SPHERE or geomtype == GeomType.CAPSULE:
-      axis = wp.vec3(mat[0, 2], mat[1, 2], mat[2, 2])
-      half_length = wp.where(geomtype == GeomType.CAPSULE, size[1], 0.0)
-      sign = wp.sign(wp.dot(axis, x2))
-      x2c = pos + sign * half_length * axis - (0.5 * margin + size[0]) * n
-    else:
-      x2n = wp.norm_l2(x2)
-      if x2n < 1.0e-12:
-        return 0, 0.0, zero, zero
-      x2c = _support_frozen(mesh_vert, geomtype, features[3], x2 / x2n, pos, mat, size, margin, vertadr)
-    x1 = _tri_project_top(top, x2c)
-    dvec = x1 - x2c
-    return 1, -wp.sqrt(wp.dot(dvec, dvec)), x1, x2c
-
   return 1, dist, x1, x2
