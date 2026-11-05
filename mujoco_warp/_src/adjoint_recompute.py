@@ -158,7 +158,8 @@ def _gravity_force_recompute(
       dofid,
       worldid,
     )
-    wp.atomic_add(qfrc_gravcomp_out[worldid], dofid, wp.dot(jac, force))  # kernel_analyzer: ignore[atomic]
+    # Avoid a row view so the reverse uses the explicitly supplied adjoint buffer.
+    wp.atomic_add(qfrc_gravcomp_out, worldid, dofid, wp.dot(jac, force))  # kernel_analyzer: ignore[atomic]
 
 
 # smooth._cfrc

@@ -43,25 +43,6 @@ from mujoco_warp._src.warp_util import event_scope
 wp.set_module_options({"enable_backward": True})
 
 
-def prepare_backward(d: Data):
-  """Allocates gradients for smooth intermediates reused by the analytic reverse."""
-  arrays = (
-    d.xipos,
-    d.ximat,
-    d.subtree_com,
-    d.cinert,
-    d.cvel,
-    d.cacc,
-    d.cdof,
-    d.cdof_dot,
-    d.qfrc_spring,
-    d.qfrc_gravcomp,
-  )
-  for array in arrays:
-    array.requires_grad = True
-  return arrays
-
-
 # Cache by identity without retaining models or their device buffers.
 _SUPPORTED_CACHE: dict[int, tuple[weakref.ReferenceType[Model], frozenset[str]]] = {}
 
@@ -161,7 +142,7 @@ def spring_qpos_vjp(m: Model, d: Data, lam: wp.array2d, bc: BackwardContext | No
   smooth_res_qpos.zero_()
   spring_params = (m.qpos_spring, m.jnt_stiffness, m.jnt_stiffnesspoly)
   # Model gradients accumulate directly with the force sign; only qpos returns a residual VJP.
-  wp.copy(qfrc_spring.grad, lam)
+  wp.copy(bc.adj_qfrc_spring, lam)
   wp.launch(
     adjoint_recompute._spring_qfrc_recompute,
     dim=(d.nworld, m.njnt),
@@ -188,7 +169,7 @@ def spring_qpos_vjp(m: Model, d: Data, lam: wp.array2d, bc: BackwardContext | No
       smooth_res_qpos,
       None,
     ],
-    adj_outputs=[qfrc_spring.grad],
+    adj_outputs=[bc.adj_qfrc_spring],
     adjoint=True,
   )
   wp.launch(adjoint_util._neg_cols, dim=smooth_res_qpos.shape, inputs=[smooth_res_qpos], outputs=[smooth_res_qpos])
@@ -380,11 +361,11 @@ def gravcomp_qpos_vjp(m: Model, d: Data, lam: wp.array2d, bc: BackwardContext | 
     from mujoco_warp._src import adjoint
 
     bc = adjoint.create_backward_context(m, d)
-  d.xipos.grad.zero_()
-  d.ximat.grad.zero_()
-  d.subtree_com.grad.zero_()
-  d.cdof.grad.zero_()
-  d.qfrc_gravcomp.grad.zero_()
+  bc.adj_xipos.zero_()
+  bc.adj_ximat.zero_()
+  bc.adj_subtree_com.zero_()
+  bc.adj_cdof.zero_()
+  bc.adj_qfrc_gravcomp.zero_()
   bc.res_body_mass.zero_()
   bc.res_body_inertia.zero_()
   bc.smooth_res_qpos.zero_()
@@ -395,7 +376,7 @@ def gravcomp_qpos_vjp(m: Model, d: Data, lam: wp.array2d, bc: BackwardContext | 
     _gravcomp_seed,
     dim=(d.nworld, m.nv),
     inputs=[m.jnt_actgravcomp, m.dof_jntid, lam, gravity_enabled],
-    outputs=[d.qfrc_gravcomp.grad],
+    outputs=[bc.adj_qfrc_gravcomp],
   )
   wp.launch(
     adjoint_recompute._gravity_force_recompute,
@@ -413,11 +394,11 @@ def gravcomp_qpos_vjp(m: Model, d: Data, lam: wp.array2d, bc: BackwardContext | 
       d.cdof,
     ],
     outputs=[d.qfrc_gravcomp],
-    adj_inputs=[None, None, None, bc.res_body_mass, None, None, None, d.xipos.grad, d.subtree_com.grad, d.cdof.grad],
-    adj_outputs=[d.qfrc_gravcomp.grad],
+    adj_inputs=[None, None, None, bc.res_body_mass, None, None, None, bc.adj_xipos, bc.adj_subtree_com, bc.adj_cdof],
+    adj_outputs=[bc.adj_qfrc_gravcomp],
     adjoint=True,
   )
-  return _kinematic_qpos_vjp(m, d, d.cdof.grad, bc)
+  return _kinematic_qpos_vjp(m, d, bc.adj_cdof, bc)
 
 
 # Transposes of the linear RNE tree reductions. Each output reads the original seeds,
@@ -550,13 +531,13 @@ def _xfrc_kinematics_vjp(
   adj_cdof_out[worldid, dofid] += wp.spatial_vector(adj_rot, adj_lin)
 
 
-def xfrc_kinematics_backward(m: Model, d: Data, lam: wp.array2d, xfrc_applied: wp.array2d):
+def xfrc_kinematics_backward(m: Model, d: Data, lam: wp.array2d, xfrc_applied: wp.array2d, bc: BackwardContext):
   """Accumulates the kinematic VJP of -lam.T @ J(q).T @ xfrc_applied."""
   wp.launch(
     _xfrc_kinematics_vjp,
     dim=(d.nworld, m.nv),
     inputs=[m.body_rootid, m.dof_bodyid, m.body_subtreenum, xfrc_applied, d.xipos, d.subtree_com, d.cdof, lam],
-    outputs=[d.xipos.grad, d.subtree_com.grad, d.cdof.grad],
+    outputs=[bc.adj_xipos, bc.adj_subtree_com, bc.adj_cdof],
   )
 
 
@@ -578,19 +559,19 @@ def smooth_force_backward(
     bc = adjoint.create_backward_context(m, d)
   nworld, nv = d.nworld, m.nv
   rne_backward(m, d, lam, flg_acc, bc=bc)
-  comvel_backward(m, d, d.cvel.grad, d.cdof_dot.grad, bc=bc)
+  comvel_backward(m, d, bc.adj_cvel, bc.adj_cdof_dot, bc=bc)
   if res_cdof_extra is not None:
-    wp.launch(_acc_spatial, dim=(nworld, nv), inputs=[res_cdof_extra], outputs=[d.cdof.grad])
+    wp.launch(_acc_spatial, dim=(nworld, nv), inputs=[res_cdof_extra], outputs=[bc.adj_cdof])
 
-  d.xipos.grad.zero_()
-  d.ximat.grad.zero_()
-  d.subtree_com.grad.zero_()
-  _cinert_vjp(m, d, d.cinert.grad, bc)
+  bc.adj_xipos.zero_()
+  bc.adj_ximat.zero_()
+  bc.adj_subtree_com.zero_()
+  _cinert_vjp(m, d, bc.adj_cinert, bc)
   if res_subtree_extra is not None:
-    wp.launch(_acc_vec3, dim=(nworld, m.nbody), inputs=[res_subtree_extra], outputs=[d.subtree_com.grad])
+    wp.launch(_acc_vec3, dim=(nworld, m.nbody), inputs=[res_subtree_extra], outputs=[bc.adj_subtree_com])
   if xfrc_applied is not None:
-    xfrc_kinematics_backward(m, d, lam, xfrc_applied)
-  return _kinematic_qpos_vjp(m, d, d.cdof.grad, bc)
+    xfrc_kinematics_backward(m, d, lam, xfrc_applied, bc)
+  return _kinematic_qpos_vjp(m, d, bc.adj_cdof, bc)
 
 
 @wp.func
@@ -768,16 +749,16 @@ def smooth_force_channels_backward(
       mass_y,
       mass_w,
     ],
-    outputs=[bc.smooth_adj_qvel, bc.smooth_adj_qacc, d.cdof.grad, d.cdof_dot.grad, d.cvel.grad, d.cinert.grad],
+    outputs=[bc.smooth_adj_qvel, bc.smooth_adj_qacc, bc.adj_cdof, bc.adj_cdof_dot, bc.adj_cvel, bc.adj_cinert],
   )
-  comvel_backward(m, d, d.cvel.grad, d.cdof_dot.grad, bc=bc)
-  d.xipos.grad.zero_()
-  d.ximat.grad.zero_()
-  d.subtree_com.grad.zero_()
-  _cinert_vjp(m, d, d.cinert.grad, bc)
+  comvel_backward(m, d, bc.adj_cvel, bc.adj_cdof_dot, bc=bc)
+  bc.adj_xipos.zero_()
+  bc.adj_ximat.zero_()
+  bc.adj_subtree_com.zero_()
+  _cinert_vjp(m, d, bc.adj_cinert, bc)
   if xfrc_applied is not None:
-    xfrc_kinematics_backward(m, d, lam, xfrc_applied)
-  return _kinematic_qpos_vjp(m, d, d.cdof.grad, bc)
+    xfrc_kinematics_backward(m, d, lam, xfrc_applied, bc)
+  return _kinematic_qpos_vjp(m, d, bc.adj_cdof, bc)
 
 
 @event_scope
@@ -883,9 +864,9 @@ def rne_backward(
 
     bc = adjoint.create_backward_context(m, d)
   nworld, nv, nbody = d.nworld, m.nv, m.nbody
-  d.cinert.grad.zero_()
-  d.cvel.grad.zero_()
-  d.cacc.grad.zero_()
+  bc.adj_cinert.zero_()
+  bc.adj_cvel.zero_()
+  bc.adj_cacc.zero_()
   wp.launch(
     _rne_qfrcbias_force_vjp,
     dim=(nworld, nbody),
@@ -905,7 +886,7 @@ def rne_backward(
     dim=(nworld, nbody),
     inputs=[d.cinert, d.cvel, d.cacc],
     outputs=[bc.smooth_cfrc],
-    adj_inputs=[d.cinert.grad, d.cvel.grad, d.cacc.grad],
+    adj_inputs=[bc.adj_cinert, bc.adj_cvel, bc.adj_cacc],
     adj_outputs=[bc.smooth_tree],
     adjoint=True,
   )
@@ -913,22 +894,22 @@ def rne_backward(
   wp.launch(
     _subtree_sum,
     dim=(nworld, nbody),
-    inputs=[m.body_subtreenum, d.cacc.grad],
+    inputs=[m.body_subtreenum, bc.adj_cacc],
     outputs=[bc.smooth_tree],
   )
   wp.launch(
     _rne_dof_vjp,
     dim=(nworld, nv),
     inputs=[m.dof_bodyid, d.qvel, d.qacc, d.cdof, d.cdof_dot, d.cfrc_int, lam, bc.smooth_tree, flg_acc],
-    outputs=[bc.smooth_adj_qvel, bc.smooth_adj_qacc, d.cdof_dot.grad, d.cdof.grad],
+    outputs=[bc.smooth_adj_qvel, bc.smooth_adj_qacc, bc.adj_cdof_dot, bc.adj_cdof],
   )
   return {
     "qvel": bc.smooth_adj_qvel,
     "qacc": bc.smooth_adj_qacc,
-    "cdof": d.cdof.grad,
-    "cdof_dot": d.cdof_dot.grad,
-    "cinert": d.cinert.grad,
-    "cvel": d.cvel.grad,
+    "cdof": bc.adj_cdof,
+    "cdof_dot": bc.adj_cdof_dot,
+    "cinert": bc.adj_cinert,
+    "cvel": bc.adj_cvel,
   }
 
 
@@ -1108,14 +1089,14 @@ def comvel_backward(
   adj_cdof_dot: wp.array2d,
   bc: BackwardContext | None = None,
 ):
-  """Accumulates the com-velocity reverse into d.cdof.grad."""
+  """Accumulates the com-velocity reverse in the backward workspace."""
   standalone = bc is None
   if bc is None:
     from mujoco_warp._src import adjoint
 
     bc = adjoint.create_backward_context(m, d)
   nworld, nbody = d.nworld, m.nbody
-  adj_cdof = bc.smooth_cv_adj_cdof if standalone else d.cdof.grad
+  adj_cdof = bc.smooth_cv_adj_cdof if standalone else bc.adj_cdof
   if standalone:
     adj_cdof.zero_()
   bc.smooth_cv_adj_qvel.zero_()
@@ -1200,7 +1181,7 @@ def _cinert_vjp(m: Model, d: Data, adj_cinert: wp.array2d, bc: BackwardContext):
     dim=(d.nworld, m.nbody),
     inputs=[m.body_rootid, m.body_mass, m.body_inertia, d.xipos, d.ximat, d.subtree_com],
     outputs=[d.cinert],
-    adj_inputs=[None, bc.res_body_mass, bc.res_body_inertia, d.xipos.grad, d.ximat.grad, d.subtree_com.grad],
+    adj_inputs=[None, bc.res_body_mass, bc.res_body_inertia, bc.adj_xipos, bc.adj_ximat, bc.adj_subtree_com],
     adj_outputs=[adj_cinert],
     adjoint=True,
   )
@@ -1226,8 +1207,8 @@ def _kinematic_qpos_vjp(m: Model, d: Data, adj_cdof: wp.array2d, bc: BackwardCon
       d.subtree_com,
       d.cdof,
       lanes,
-      d.xipos.grad,
-      d.ximat.grad,
+      bc.adj_xipos,
+      bc.adj_ximat,
     ],
     outputs=[smooth_res_dof],
     block_dim=128,
@@ -1237,7 +1218,7 @@ def _kinematic_qpos_vjp(m: Model, d: Data, adj_cdof: wp.array2d, bc: BackwardCon
     d,
     d.qpos,
     adj_cdof,
-    d.subtree_com.grad,
+    bc.adj_subtree_com,
     smooth_res_dof,
     bc.smooth_ceff,
     smooth_res_qpos,

@@ -72,26 +72,6 @@ def backward_context(bc: BackwardContext):
     _ACTIVE_BACKWARD_CONTEXT.reset(token)
 
 
-def _prepare_data(d: Data):
-  """Allocates gradients for Data fields consumed by a backward context."""
-  arrays = [
-    d.qpos,
-    d.qvel,
-    d.qacc,
-    d.act,
-    d.act_dot,
-    d.efc.pos,
-    d.efc.vel,
-    d.contact.pos,
-    d.contact.frame,
-    d.contact.friction,
-  ]
-  arrays = [array for array in arrays if array is not None]
-  for array in arrays:
-    array.requires_grad = True
-  return [*arrays, *smooth_adjoint.prepare_backward(d)]
-
-
 def _reset_backward_context(bc: BackwardContext):
   """Zeros a backward context and its array gradients."""
   for field in dataclasses.fields(bc):
@@ -107,7 +87,6 @@ def create_backward_context(m: Model, d: Data) -> BackwardContext:
   _step_model_arrays(m)
   smooth_adjoint.assert_smooth_supported(m)
   collision_adjoint.assert_collision_supported(m)
-  _prepare_data(d)
   sizes = {field.name: getattr(m, field.name) for field in dataclasses.fields(Model) if field.type is int}
   sizes.update(nworld=d.nworld, njmax=d.efc.type.shape[1], naconmax=d.contact.pos.shape[0], qld_total=d.qLD.shape[1])
   arrays = {
@@ -136,7 +115,6 @@ def create_backward_context(m: Model, d: Data) -> BackwardContext:
     bc.collision_convex_ctx = collision_convex_adjoint.create_collision_convex_backward_context(m, d)
   for name in ("contact_V", "contact_A", "contact_Z", "contact_phi", "efc_Z", "efc_phi", "smooth_r"):
     getattr(bc, name).requires_grad = True
-  smooth_adjoint.prepare_backward(bc.scratch)
   return bc
 
 
@@ -271,7 +249,7 @@ def _residual_constraint_sparse(
   )
 
   efc_phi = bc.efc_phi
-  res_efc_pos, res_efc_vel = d_out.efc.pos.grad, d_out.efc.vel.grad
+  res_efc_pos, res_efc_vel = bc.adj_efc_pos, bc.adj_efc_vel
   constraint_params = model_adjoint._constraint_param_pairs(m, bc)
   pairs = [
     (m.opt.timestep, None),
@@ -363,9 +341,9 @@ def _residual_contact(
   nconmax = d_out.contact.pos.shape[0]
   contact_V, contact_A, contact_Z = bc.contact_V, bc.contact_A, bc.contact_Z
   contact_phi = bc.contact_phi
-  res_cdof, res_subtree_com = d_out.cdof.grad, d_out.subtree_com.grad
-  res_efc_pos = d_out.efc.pos.grad
-  res_contact_pos, res_contact_frame = d_out.contact.pos.grad, d_out.contact.frame.grad
+  res_cdof, res_subtree_com = bc.adj_cdof, bc.adj_subtree_com
+  res_efc_pos = bc.adj_efc_pos
+  res_contact_pos, res_contact_frame = bc.adj_contact_pos, bc.adj_contact_frame
   walk = [m.body_rootid, m.body_weldid, m.body_dofnum, m.body_dofadr, m.dof_parentid, m.geom_bodyid]
   state = [
     d.qvel,
@@ -387,7 +365,7 @@ def _residual_contact(
 
   geom_friction_grad = m.geom_friction.requires_grad
   pair_friction_grad = m.pair_friction.requires_grad
-  res_contact_friction = d_out.contact.friction.grad if geom_friction_grad or pair_friction_grad else None
+  res_contact_friction = bc.adj_contact_friction
 
   pairs = [
     (m.opt.timestep, None),
@@ -452,11 +430,11 @@ def contact_constraint_backward(
     m,
     d_out,
     d.qpos,
-    d_out.contact.pos.grad,
-    d_out.contact.frame.grad,
-    d_out.efc.pos.grad,
-    d_out.subtree_com.grad,
-    d_out.cdof.grad,
+    bc.adj_contact_pos,
+    bc.adj_contact_frame,
+    bc.adj_efc_pos,
+    bc.adj_subtree_com,
+    bc.adj_cdof,
     res_qpos,
     bc,
   )
@@ -555,7 +533,7 @@ _STEP_MODEL_FIELDS = (
   "geom_friction",
   "pair_friction",
 )
-_COPIED_INPUTS = ("ctrl", "qfrc_applied", "xfrc_applied")
+_COPIED_FIELDS = ("ctrl", "qfrc_applied", "xfrc_applied")
 _KINEMATICS_IN_FIELDS = ("qpos",)
 _KINEMATICS_OUT_FIELDS = ("site_xpos", "xpos", "xquat")
 
@@ -584,7 +562,7 @@ def _step_model_arrays(m: Model) -> list[wp.array]:
 
 def step_backward_arrays(d: Data, d_out: Data, m: Model | None = None):
   """Allocates and returns arrays used by the analytic step backward."""
-  arrays = [*_data_arrays(d, _STEP_IN_FIELDS), *_data_arrays(d_out, _STEP_OUT_FIELDS), *_prepare_data(d_out)]
+  arrays = [*_data_arrays(d, _STEP_IN_FIELDS), *_data_arrays(d_out, _STEP_OUT_FIELDS)]
   if m is not None:
     arrays.extend(_step_model_arrays(m))
   return list(dict.fromkeys(array for array in arrays if array.size))
@@ -606,7 +584,7 @@ def step_backward(m: Model, d: Data, d_out: Data, bc: BackwardContext | None = N
   _reset_backward_context(bc)
   _, _, adj_qacc = forward_adjoint.advance_backward(m, d, d_out, bc)
   forward_backward_ift(m, d, d_out, adj_qacc, bc)
-  for name in _COPIED_INPUTS:
+  for name in _COPIED_FIELDS:
     src, dst = getattr(d, name), getattr(d_out, name)
     # Shared gradient storage already contains downstream uses of the held input.
     if src.grad is not None and dst.grad is not None and src.grad.ptr != dst.grad.ptr:

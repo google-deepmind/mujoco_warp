@@ -399,7 +399,7 @@ def inertia_param_vjp(m: Model, d: Data, bc: BackwardContext, scale: float = -1.
       inputs=[m.body_ipos, m.body_iquat, d.xpos, d.xquat],
       outputs=[d.xipos, d.ximat],
       adj_inputs=[bc.res_body_ipos, bc.res_body_iquat, None, None],
-      adj_outputs=[d.xipos.grad, d.ximat.grad],
+      adj_outputs=[bc.adj_xipos, bc.adj_ximat],
       adjoint=True,
     )
   model_worlds = max(
