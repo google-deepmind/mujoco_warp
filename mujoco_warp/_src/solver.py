@@ -2094,6 +2094,8 @@ def _update_constraint_init_qfrc_constraint_dense(stable_fast: bool):
 
 @wp.kernel
 def _update_gradient_h_incremental(
+  # Model:
+  nv: int,
   # Data in:
   efc_J_in: wp.array3d[float],
   efc_D_in: wp.array2d[float],
@@ -2101,42 +2103,45 @@ def _update_gradient_h_incremental(
   # In:
   quad_changed_ids_in: wp.array2d[int],
   quad_changed_count_in: wp.array[int],
+  threads_per_world: int,
   # Out:
   ctx_h_out: wp.array3d[float],
 ):
   """Incrementally update upper triangle of H for changed constraints.
 
-  Each thread handles one unique (i, j) element and writes it to the upper triangle.
-  For each changed constraint, adds or subtracts D * J[i] * J[j].
+  Each world's threads stride over its unique (i, j) elements, so a world without
+  changes costs a few warps instead of one thread per element. For each changed
+  constraint, adds or subtracts D * J[i] * J[j].
   """
-  worldid, elementid = wp.tid()
+  worldid, threadid = wp.tid()
 
   n_changes = quad_changed_count_in[worldid]
   if n_changes == 0:
     return
 
-  # Upper-triangle enumeration: elementid -> (row, col) where row <= col.
-  col = (int(wp.sqrt(float(1 + 8 * elementid))) - 1) // 2
-  row = elementid - (col * (col + 1)) // 2
+  for elementid in range(threadid, nv * (nv + 1) // 2, threads_per_world):
+    # Upper-triangle enumeration: elementid -> (row, col) where row <= col.
+    col = (int(wp.sqrt(float(1 + 8 * elementid))) - 1) // 2
+    row = elementid - (col * (col + 1)) // 2
 
-  delta = float(0.0)
-  for change_idx in range(n_changes):
-    efcid = quad_changed_ids_in[worldid, change_idx]
-    Jrow = efc_J_in[worldid, efcid, row]
-    if Jrow == 0.0:
-      continue
-    Jcol = efc_J_in[worldid, efcid, col]
-    if Jcol == 0.0:
-      continue
+    delta = float(0.0)
+    for change_idx in range(n_changes):
+      efcid = quad_changed_ids_in[worldid, change_idx]
+      Jrow = efc_J_in[worldid, efcid, row]
+      if Jrow == 0.0:
+        continue
+      Jcol = efc_J_in[worldid, efcid, col]
+      if Jcol == 0.0:
+        continue
 
-    D = efc_D_in[worldid, efcid]
-    if efc_state_in[worldid, efcid] == types.ConstraintState.QUADRATIC.value:
-      delta += D * Jrow * Jcol
-    else:
-      delta -= D * Jrow * Jcol
+      D = efc_D_in[worldid, efcid]
+      if efc_state_in[worldid, efcid] == types.ConstraintState.QUADRATIC.value:
+        delta += D * Jrow * Jcol
+      else:
+        delta -= D * Jrow * Jcol
 
-  if delta != 0.0:
-    ctx_h_out[worldid, row, col] += delta
+    if delta != 0.0:
+      ctx_h_out[worldid, row, col] += delta
 
 
 @cache_kernel
@@ -3410,11 +3415,11 @@ def _JTDACJ_sparse(
   return kernel
 
 
-def _jtdaj_groups_per_world(nworld: int, njmax: int, kernel: wp.Kernel) -> int:
-  # njmax is capacity and often mostly empty, so cap slots at a few resident waves.
+def _jtdaj_groups_per_world(nworld: int, max_groups: int, kernel: wp.Kernel, min_groups: int = 1) -> int:
+  # Per-world work is sized for capacity and often idle, so cap groups at a few resident waves.
   block_size, min_grid_size = wp.get_suggested_block_size(kernel)
   device_warps = max(1, block_size * min_grid_size // _JTDAJ_THREADS_PER_GROUP)
-  return max(1, min(njmax, _JTDAJ_OVERSUBSCRIBE_WAVES * device_warps // nworld))
+  return max(min_groups, min(max_groups, _JTDAJ_OVERSUBSCRIBE_WAVES * device_warps // nworld))
 
 
 def _update_gradient(m: types.Model, d: types.Data, ctx: SolverContext, compact: bool = False):
@@ -3709,16 +3714,21 @@ def _update_gradient_incremental(m: types.Model, d: types.Data, ctx: SolverConte
       outputs=[ctx.h],
     )
   else:
-    tri_dim = m.nv * (m.nv + 1) // 2
+    # two groups per world keep busy iterations at large nworld as fast as one thread per element
+    ntri = m.nv * (m.nv + 1) // 2
+    groups = _jtdaj_groups_per_world(d.nworld, ceil(ntri / _JTDAJ_THREADS_PER_GROUP), _update_gradient_h_incremental, 2)
+    threads_per_world = min(groups * _JTDAJ_THREADS_PER_GROUP, ntri)
     wp.launch(
       _update_gradient_h_incremental,
-      dim=(d.nworld, tri_dim),
+      dim=(d.nworld, threads_per_world),
       inputs=[
+        m.nv,
         d.efc.J,
         d.efc.D,
         d.efc.state,
         ctx.quad_changed_ids,
         ctx.quad_changed_count,
+        threads_per_world,
       ],
       outputs=[ctx.h],
     )
