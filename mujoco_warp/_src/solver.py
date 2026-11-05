@@ -90,12 +90,15 @@ def create_inverse_context(m: types.Model, d: types.Data) -> InverseContext:
 def _create_solver_context(
   m: types.Model,
   d: types.Data,
+  inplace_cholesky: bool = False,
 ) -> SolverContext:
   """Create a SolverContext with allocated workspace arrays.
 
   Args:
     m: Model.
     d: Data.
+    inplace_cholesky: If True, alias hfactor to h for non-incremental Newton
+      solves where blocked Cholesky overwrites h in-place each iteration.
 
   Returns:
     SolverContext with allocated arrays.
@@ -113,6 +116,26 @@ def _create_solver_context(
     alloc_mgrad and d.qLD.shape[1] > m.qLD_block_total and bool(m.opt.deterministic & types.DeterminismType.ATOMICS)
   )
   htype = _htype(m)
+  alloc_tw_diag = (
+    m.opt.integrator == types.IntegratorType.DISCRETE
+    and alloc_mgrad
+    and m.nefmdof > 0
+    and m.nflexrodedge > 0
+    and not ((m.opt.disableflags & types.DisableBit.SPRING) and (m.opt.disableflags & types.DisableBit.DAMPER))
+  )
+
+  h = wp.empty((nworld, nv_pad, nv_pad), dtype=htype) if alloc_h else wp.empty((nworld, 0, 0), dtype=htype)
+  if alloc_hfactor:
+    # Non-incremental Newton rebuilds the upper triangle of h every iteration,
+    # and blocked Cholesky loads each upper-triangular tile before storing U.
+    if inplace_cholesky and not alloc_incremental:
+      if nv_pad <= nv and not (0 < d.nvmax < nv_pad):
+        raise ValueError(f"inplace_cholesky requires an augmented padding column (nv={nv}, nv_pad={nv_pad})")
+      hfactor = h
+    else:
+      hfactor = wp.empty((nworld, nv_pad, nv_pad), dtype=htype)
+  else:
+    hfactor = wp.empty((nworld, 0, 0), dtype=htype)
 
   return SolverContext(
     Jaref=wp.empty((nworld, njmax), dtype=float),
@@ -134,12 +157,13 @@ def _create_solver_context(
     prev_grad=wp.empty((nworld, nv), dtype=float) if alloc_mgrad else wp.empty((nworld, 0), dtype=float),
     prev_Mgrad=wp.empty((nworld, nv), dtype=float) if alloc_mgrad else wp.empty((nworld, 0), dtype=float),
     beta=wp.empty((nworld,), dtype=float) if alloc_mgrad else wp.empty((0,), dtype=float),
-    h=wp.empty((nworld, nv_pad, nv_pad), dtype=htype) if alloc_h else wp.empty((nworld, 0, 0), dtype=htype),
-    hfactor=wp.empty((nworld, nv_pad, nv_pad), dtype=htype) if alloc_hfactor else wp.empty((nworld, 0, 0), dtype=htype),
+    h=h,
+    hfactor=hfactor,
     quad_changed_ids=wp.empty((nworld, njmax), dtype=int) if alloc_incremental else wp.empty((nworld, 0), dtype=int),
     quad_changed_count=wp.empty((nworld,), dtype=int) if alloc_incremental else wp.empty((0,), dtype=int),
     state_changed_count=wp.empty((nworld,), dtype=int) if alloc_incremental else wp.empty((0,), dtype=int),
     solve_ld_scratch=wp.empty((nworld, nv_pad), dtype=float) if alloc_solve_ld_scratch else None,
+    tw_diag=wp.empty((nworld, nv), dtype=float) if alloc_tw_diag else None,
     inertia_scale=wp.empty((nworld,), dtype=float),
   )
 
@@ -1813,9 +1837,11 @@ def _solve_init_search_cg_tiled(
   # Model:
   nv: int,
   opt_tolerance: wp.array[float],
+  opt_integrator: int,
   # In:
   ctx_inertia_scale_in: wp.array[float],
   ctx_grad_in: wp.array2d[float],
+  ctx_grad_dot_in: wp.array[float],
   ctx_Mgrad_in: wp.array2d[float],
   # Out:
   ctx_search_out: wp.array2d[float],
@@ -1852,7 +1878,10 @@ def _solve_init_search_cg_tiled(
     if not ctx_done_out[worldid]:
       tolerance = opt_tolerance[worldid % opt_tolerance.shape[0]]
       scale = ctx_inertia_scale_in[worldid]
-      if wp.max(0.0, 0.5 * scale * grad_mgrad_sum[0]) < tolerance:
+      flg_gap = wp.max(0.0, 0.5 * scale * grad_mgrad_sum[0]) < tolerance
+      if flg_gap and (
+        opt_integrator != int(types.IntegratorType.DISCRETE.value) or scale * wp.sqrt(ctx_grad_dot_in[worldid]) < tolerance
+      ):
         ctx_done_out[worldid] = True
         wp.atomic_sub(nsolving_out, 0, 1)  # kernel_analyzer: ignore[atomic]
 
@@ -2668,11 +2697,11 @@ def _add_efmK_metric_dense(nv: int, htype: type = float, deterministic: bool = F
 
 
 @cache_kernel
-def _add_flexcon_metric_dense(htype: type = float, deterministic: bool = False):
+def _add_flexcon_metric_dense(max_dof: int, htype: type = float, deterministic: bool = False):
   module_options = {"enable_backward": False}
   if deterministic:
     module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
-    module_options["deterministic_max_records"] = types.EFM_CON_MAX_DOF * (types.EFM_CON_MAX_DOF + 1) // 2
+    module_options["deterministic_max_records"] = max_dof * (max_dof + 1) // 2
 
   @wp.kernel(module="unique", module_options=module_options)
   def kernel(
@@ -2704,6 +2733,58 @@ def _add_flexcon_metric_dense(htype: type = float, deterministic: bool = False):
           c2 = efm_con_dof_in[cid, j]
           if c2 >= c1:
             wp.atomic_add(h_out, worldid, c1, c2, s_v1 * htype(efm_con_val_in[cid, j]))
+
+  return kernel
+
+
+@cache_kernel
+def _add_rod_twist_metric_dense_typed(htype: type = float):
+  @wp.kernel(module="unique", enable_backward=False)
+  def kernel(
+    # Model:
+    opt_timestep: wp.array[float],
+    opt_disableflags: int,
+    jnt_dofadr: wp.array[int],
+    flex_bendingadr: wp.array[int],
+    flex_bending: wp.array[float],
+    flex_damping: wp.array[float],
+    flex_rigid: wp.array[bool],
+    flex_rod_has_twist: wp.array[bool],
+    flex_rod_edgeadr: wp.array[int],
+    flex_rod_edgenum: wp.array[int],
+    flex_rodedge_jnt: wp.array[int],
+    # In:
+    ctx_done_in: wp.array[bool],
+    # Out:
+    h_out: wp.array3d[htype],
+  ):
+    worldid, flexid = wp.tid()
+    if ctx_done_in[worldid]:
+      return
+    if flex_rigid[flexid] or not support.rod_has_twist(flex_rod_has_twist, flexid):
+      return
+    h_dt = opt_timestep[worldid % opt_timestep.shape[0]]
+    s1 = 0.0 if (opt_disableflags & types.DisableBit.SPRING) else h_dt * h_dt
+    s2 = 0.0 if (opt_disableflags & types.DisableBit.DAMPER) else h_dt
+    scale_f = s1 + s2 * flex_damping[flexid]
+    b_adr = flex_bendingadr[flexid]
+    nhinge = int(flex_bending[b_adr])
+    if scale_f <= 0.0 or nhinge <= 0:
+      return
+    eadr = flex_rod_edgeadr[flexid]
+    for hi in range(nhinge):
+      kt = flex_bending[b_adr + 1 + types.ROD_HINGE_SIZE * hi + 8]
+      if kt <= 0.0:
+        continue
+      jnt0 = flex_rodedge_jnt[eadr + hi]
+      jnt1 = flex_rodedge_jnt[eadr + hi + 1]
+      dof0 = jnt_dofadr[jnt0] if jnt0 >= 0 else -1
+      dof1 = jnt_dofadr[jnt1] if jnt1 >= 0 else -1
+      if dof0 < 0 or dof1 < 0 or dof0 == dof1:
+        continue
+      r = wp.min(dof0, dof1)
+      c = wp.max(dof0, dof1)
+      h_out[worldid, r, c] -= htype(scale_f) * htype(2.0 * kt)
 
   return kernel
 
@@ -3220,6 +3301,8 @@ def _cholesky_factorize_solve(
     )
   else:
     if skip_unchanged:
+      if ctx.hfactor.ptr == ctx.h.ptr:
+        raise ValueError("skip_unchanged requires separate h and hfactor buffers")
       wp.launch_tiled(
         _update_gradient_cholesky_blocked_skip_unchanged(types.TILE_SIZE_JTDAJ_DENSE, m.nv_pad, m.nv, skip_noflip, htype),
         dim=d.nworld,
@@ -3567,8 +3650,15 @@ def _update_gradient(m: types.Model, d: types.Data, ctx: SolverContext, compact:
   is_discrete = m.opt.integrator == types.IntegratorType.DISCRETE
   if m.opt.solver == types.SolverType.CG:
     if is_discrete:
-      if m.nefmK > 0 or m.efm0_active or (m.opt.enableflags & types.EnableBit.SLEEP):
-        derivative.eff_prec(m, d, ctx.Mgrad, ctx.grad, x_scratch=ctx.solve_ld_scratch)
+      if m.nefmK > 0 or m.nflexrodhinge > 0 or m.efm0_active or (m.opt.enableflags & types.EnableBit.SLEEP):
+        derivative.eff_prec(
+          m,
+          d,
+          ctx.Mgrad,
+          ctx.grad,
+          x_scratch=ctx.solve_ld_scratch,
+          tw_diag=ctx.tw_diag,
+        )
       else:
         smooth.solve_LD(m, d, d.qHLD, d.qHDiagInv, ctx.Mgrad, ctx.grad, x_scratch=ctx.solve_ld_scratch)
     else:
@@ -3710,11 +3800,33 @@ def _update_gradient(m: types.Model, d: types.Data, ctx: SolverContext, compact:
           inputs=[m.efm_K_rownnz, m.efm_K_rowadr, m.efm_K_colind, d.efm_K_val, ctx.done],
           outputs=[ctx.h],
         )
+      if m.nflexrodedge > 0 and not (
+        (m.opt.disableflags & types.DisableBit.SPRING) and (m.opt.disableflags & types.DisableBit.DAMPER)
+      ):
+        wp.launch(
+          _add_rod_twist_metric_dense_typed(htype),
+          dim=(d.nworld, m.nflex),
+          inputs=[
+            m.opt.timestep,
+            m.opt.disableflags,
+            m.jnt_dofadr,
+            m.flex_bendingadr,
+            m.flex_bending,
+            m.flex_damping,
+            m.flex_rigid,
+            m.flex_rod_has_twist,
+            m.flex_rod_edgeadr,
+            m.flex_rod_edgenum,
+            m.flex_rodedge_jnt,
+            ctx.done,
+          ],
+          outputs=[ctx.h],
+        )
       if m.has_flex_passive:
         efm_con = ctx.efm_con if ctx.efm_con is not None else derivative.build_efm_contact(m, d)
         efm_con_dof, efm_con_val, efm_con_scale, _, efm_con_nnz = efm_con
         wp.launch(
-          _add_flexcon_metric_dense(htype, det_atomics),
+          _add_flexcon_metric_dense(m.efm_con_max_dof if det_atomics else 0, htype, det_atomics),
           dim=d.naconmax,
           inputs=[
             d.contact.worldid,
@@ -4169,8 +4281,8 @@ def _solver_iteration(
 
 def init_context(m: types.Model, d: types.Data, ctx: SolverContext | InverseContext, grad: bool = True, compact: bool = False):
   if m.opt.integrator == types.IntegratorType.DISCRETE:
-    if m.nefmdof > 0 and m.opt.solver == types.SolverType.CG:
-      derivative.eff_prec_fold(m, d, out=d.efm_L)
+    if (m.nefmdof > 0 or ctx.tw_diag is not None) and m.opt.solver == types.SolverType.CG:
+      derivative.eff_prec_fold(m, d, out=d.efm_L, tw_diag=ctx.tw_diag)
     if grad:
       qfrc_smooth_eff = wp.zeros((d.nworld, m.nv_pad), dtype=float, device=d.qacc.device)
       wp.launch(
@@ -4252,7 +4364,7 @@ def solve(m: types.Model, d: types.Data):
     wp.copy(d.qacc, d.qacc_smooth)
     d.solver_niter.fill_(0)
   else:
-    ctx = _create_solver_context(m, d)
+    ctx = _create_solver_context(m, d, inplace_cholesky=True)
     _solve(m, d, ctx)
     if m.opt.noslip_iterations > 0:
       noslip(m, d)
@@ -4307,7 +4419,7 @@ def _solve(m: types.Model, d: types.Data, ctx: SolverContext, compact: bool = Fa
     wp.launch_tiled(
       _solve_init_search_cg_tiled,
       dim=d.nworld,
-      inputs=[m.nv, m.opt.tolerance, ctx.inertia_scale, ctx.grad, ctx.Mgrad],
+      inputs=[m.nv, m.opt.tolerance, m.opt.integrator, ctx.inertia_scale, ctx.grad, ctx.grad_dot, ctx.Mgrad],
       outputs=[ctx.search, ctx.search_dot, ctx.prev_grad, ctx.prev_Mgrad, ctx.done, nsolving],
       block_dim=m.block_dim.solve_init_search_cg,
     )
@@ -4663,7 +4775,7 @@ def solve_compact(m: types.Model, d: types.Data):
     efc=efc2,
   )
 
-  sctx = _create_solver_context(m2, d2)
+  sctx = _create_solver_context(m2, d2, inplace_cholesky=True)
   # compact kernels read the full-coordinate sparse structures (M, J) through
   # the compaction maps instead of dense products on gathered blocks
   sctx.compact_m_full = m
