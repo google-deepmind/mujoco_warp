@@ -22,6 +22,7 @@ reverse mode solves H * lam = adj_qacc and accumulates adj_theta = -(dr/dtheta)^
 import contextlib
 import contextvars
 import dataclasses
+from typing import Any
 
 import warp as wp
 
@@ -515,18 +516,39 @@ def forward_backward_ift(m: Model, d: Data, d_out: Data, adj_qacc: wp.array, bc:
   _write_input_adjoints(d, bc)
 
 
+_STEP_INPUT_FIELDS = (
+  "qpos",
+  "qvel",
+  "act",
+  "ctrl",
+)
+_COPIED_INPUTS = ("ctrl", "qfrc_applied", "xfrc_applied")
+
+
 def step_backward_arrays(d: Data, d_out: Data, m: Model | None = None):
   """Allocates and returns arrays used by the analytic step backward."""
-  inputs = [d.qpos, d.qvel, d.act, d.ctrl]
-  for array in (d.qfrc_applied, d.xfrc_applied):
-    if array.requires_grad:
-      inputs.append(array)
+  inputs = [getattr(d, name) for name in _STEP_INPUT_FIELDS]
+  for name in ("qfrc_applied", "xfrc_applied"):
+    if getattr(d, name).requires_grad or getattr(d_out, name).requires_grad:
+      inputs.append(getattr(d, name))
   for array in inputs:
     array.requires_grad = True
   arrays = [array for array in (*inputs, *_prepare_data(d_out)) if array.size]
+  for name in _COPIED_INPUTS:
+    if getattr(d, name).requires_grad:
+      output = getattr(d_out, name)
+      output.requires_grad = True
+      if output.size:
+        arrays.append(output)
   if m is not None:
     arrays.extend(model_adjoint.parameter_arrays(m))
   return arrays
+
+
+@wp.kernel(enable_backward=False)
+def _accum_copied_input(adj_in: wp.array2d[Any], adj_out: wp.array2d[Any]):
+  w, i = wp.tid()
+  adj_out[w, i] += adj_in[w, i]
 
 
 @event_scope
@@ -538,6 +560,11 @@ def step_backward(m: Model, d: Data, d_out: Data, bc: BackwardContext | None = N
   _reset_backward_context(bc)
   _, _, adj_qacc = forward_adjoint.advance_backward(m, d, d_out, bc)
   forward_backward_ift(m, d, d_out, adj_qacc, bc)
+  for name in _COPIED_INPUTS:
+    src, dst = getattr(d, name), getattr(d_out, name)
+    # Shared gradient storage already contains downstream uses of the held input.
+    if src.grad is not None and dst.grad is not None and src.grad.ptr != dst.grad.ptr:
+      wp.launch(_accum_copied_input, dim=src.shape, inputs=[dst.grad], outputs=[src.grad])
 
 
 def fwd_kinematics_arrays(d: Data):
