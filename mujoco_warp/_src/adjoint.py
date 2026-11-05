@@ -158,6 +158,16 @@ def _assert_step_supported(m: Model):
     raise NotImplementedError("adjoint.step_backward does not support sleep")
   if m.eq_connect_adr.size or m.eq_wld_adr.size or m.ntendon or m.nflex:
     raise NotImplementedError("adjoint.step_backward does not support connect/weld equality, tendon, or flex constraint rows")
+  callbacks = []
+  if not (m.opt.disableflags & DisableBit.ACTUATION):
+    callbacks.append("control")
+    if m.nactuator:
+      callbacks.extend(("act_dyn", "act_gain", "act_bias"))
+  if (m.opt.disableflags & (DisableBit.SPRING | DisableBit.DAMPER)) != (DisableBit.SPRING | DisableBit.DAMPER):
+    callbacks.append("passive")
+  for name in callbacks:
+    if getattr(m.callback, name):
+      raise NotImplementedError(f"adjoint.step_backward does not support the {name} callback")
   smooth_adjoint.assert_smooth_supported(m)
   collision_adjoint.assert_collision_supported(m)
 
