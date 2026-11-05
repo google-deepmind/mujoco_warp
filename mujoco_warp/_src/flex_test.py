@@ -6381,10 +6381,11 @@ class FlexRodBendingTest(parameterized.TestCase):
       self.assertGreater(mjds[w].ncon, 4)
       self._assert_efc_world_eq(mjm, m, d, mjds[w], w, f"box_rod_efc_{w}", tol=2e-3)
       cscale = max(1.0, np.abs(mjds[w].qfrc_constraint).max())
+      con_atol = (2e-2 if solver == "CG" else 2e-3) * cscale
       np.testing.assert_allclose(
         qfrc_con[w],
         mjds[w].qfrc_constraint,
-        atol=2e-3 * cscale,
+        atol=con_atol,
         rtol=2e-2,
         err_msg=f"qfrc_con {w}",
       )

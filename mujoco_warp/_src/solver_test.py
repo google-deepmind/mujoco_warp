@@ -2711,21 +2711,21 @@ class CompactSolverTest(absltest.TestCase):
     )
 
   def test_discrete_cg_init_context_prec_fold(self):
-    """Verifies solver.init_context folds constraint/contact metric into d.efm_L for CG solver."""
+    """Verifies solver.init_context folds constraint/contact metric into ctx.tw_diag for 1D rods."""
     _, _, m, d = test_data.fixture(
       xml="""
       <mujoco>
         <option integrator="discrete" solver="CG" timestep="0.005"/>
         <worldbody>
           <geom type="plane" size="1 1 0.1"/>
-          <flexcomp name="string" type="grid" dim="2" count="2 2 1" spacing="0.05 0.05 1"
+          <flexcomp name="rod" type="grid" dim="1" count="3 1 1" spacing="0.05 0.05 1"
                     pos="0 0 0.002" radius="0.005" mass="0.05">
             <contact passive="true" selfcollide="none"/>
-            <elasticity young="1e4" poisson="0.2" thickness="1e-3" elastic2d="stretch"/>
+            <elasticity young="1e4" damping="1e-2"/>
           </flexcomp>
         </worldbody>
         <equality>
-          <connect body1="string_0" anchor="0 0 0"/>
+          <connect body1="rod_0" anchor="0 0 0"/>
         </equality>
       </mujoco>
       """,
@@ -2734,14 +2734,41 @@ class CompactSolverTest(absltest.TestCase):
 
     mjw.forward(m, d)
 
-    # Re-run eff_build to get original 3x3 blocks in d.efm_L
-    solver.derivative.eff_build(m, d)
-    efm_L_unfolded = d.efm_L.numpy().copy()
-
     ctx = solver._create_solver_context(m, d)
+    self.assertIsNotNone(ctx.tw_diag)
+    ctx.tw_diag.zero_()
     solver.init_context(m, d, ctx, grad=True)
-    efm_L_folded = d.efm_L.numpy()
-    self.assertFalse(np.allclose(efm_L_unfolded, efm_L_folded))
+    self.assertGreater(np.linalg.norm(ctx.tw_diag.numpy()), 0.0)
+
+    # Also verify covered 3D flex triples fold passive-contact + efc diagonals
+    # into 1 / total_diag and match C MuJoCo qacc under solver="CG".
+    mjm3, mjd3, m3, d3 = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option integrator="discrete" solver="CG" timestep="0.005" tolerance="1e-10" iterations="200"/>
+        <worldbody>
+          <geom type="plane" size="1 1 0.1"/>
+          <flexcomp name="cube" type="grid" dim="3" count="2 2 2" spacing="0.05 0.05 0.05"
+                    pos="0 0 0.022" radius="0.006" mass="0.2">
+            <contact passive="true" selfcollide="none"/>
+            <elasticity young="2e4" poisson="0.3" damping="1e-2"/>
+          </flexcomp>
+        </worldbody>
+        <equality>
+          <connect body1="cube_0" anchor="0 0 0.022"/>
+        </equality>
+      </mujoco>
+      """,
+      qvel_noise=0.2,
+    )
+    mujoco.mj_forward(mjm3, mjd3)
+    mjw.forward(m3, d3)
+    ctx3 = solver._create_solver_context(m3, d3)
+    self.assertIsNotNone(ctx3.tw_diag)
+    solver.init_context(m3, d3, ctx3, grad=True)
+    # Contact/equality DOFs have larger total diagonal -> strictly smaller 1/diag than qHDiagInv
+    self.assertTrue(np.any(ctx3.tw_diag.numpy()[0] < d3.qHDiagInv.numpy()[0] - 1e-6))
+    np.testing.assert_allclose(d3.qacc.numpy()[0], mjd3.qacc, atol=1e-3, rtol=1e-2)
 
 
 if __name__ == "__main__":

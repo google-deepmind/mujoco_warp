@@ -346,10 +346,8 @@ _FLEX_PASSIVE_CASES = (
     overrides={"opt.solver": "CG"},
     covers=(
       "derivative._eff_contact_shift",
-      "derivative._eff_fold_actuator",
       "derivative._eff_fold_contact_rank1",
       "derivative._eff_fold_efc_sparse",
-      "derivative._eff_fold_tendon",
       "derivative._eff_mul_add_contact",
       "passive._eff_contact_force",
     ),
@@ -703,6 +701,9 @@ class DeterminismTest(parameterized.TestCase):
           <flexcomp name="cloth" type="grid" count="3 3 1" spacing=".1 .1 .1" pos="0 0 .19" mass=".09">
             <contact passive="true"/>
             <elasticity young="1e3" poisson=".3" thickness="1e-3" elastic2d="both"/>
+          </flexcomp>
+          <flexcomp name="rod" type="grid" count="3 1 1" spacing=".1 .1 .1" dim="1" pos="0 .5 1" mass=".03">
+            <elasticity young="1e3" damping="1e-2"/>
           </flexcomp>
           <body pos="1 0 1">
             <joint name="hinge0" axis="0 1 0" damping=".1"/>
