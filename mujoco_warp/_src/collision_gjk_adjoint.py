@@ -50,6 +50,7 @@ def _mat43_rows(a: wp.vec3, b: wp.vec3, c: wp.vec3) -> mat43:
 def _ccd_probe(
   # In:
   tolerance: float,
+  cutoff: float,
   gjk_iterations: int,
   epa_iterations: int,
   geom1: collision_gjk.Geom,
@@ -70,7 +71,7 @@ def _ccd_probe(
 ):
   """Recover the forward simplex or EPA face without recording the iterative search."""
   needs_epa, dist, ncontact, x1, x2, result, geom1, geom2 = collision_gjk.gjk_phase(
-    tolerance, 0.0, gjk_iterations, geom1, geom2, geomtype1, geomtype2, x_1, x_2
+    tolerance, cutoff, gjk_iterations, geom1, geom2, geomtype1, geomtype2, x_1, x_2
   )
   if not needs_epa:
     tag = wp.where(result.dim > 0, _TAG_GJK_FEATURE, _TAG_NONE)
@@ -313,7 +314,7 @@ def _replay_gjk_feature(
   # The inflated witnesses coincide at contact onset. Their subtraction loses
   # the normal in float32 and introduces a spurious 1 / abs(dist) in its VJP.
   # The uninflated separation has length approximately radius and the same direction.
-  normal = wp.where(dist <= 0.0, -delta, delta)
+  normal = -delta
   return 1, dist, point1, point2, normal
 
 

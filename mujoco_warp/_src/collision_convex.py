@@ -21,7 +21,6 @@ from mujoco_warp._src.collision_core import CollisionContext
 from mujoco_warp._src.collision_core import Geom
 from mujoco_warp._src.collision_core import contact_margin_gap
 from mujoco_warp._src.collision_core import contact_material_params
-from mujoco_warp._src.collision_core import contact_params
 from mujoco_warp._src.collision_core import geom_collision_pair
 from mujoco_warp._src.collision_core import geom_collision_pair_from_types
 from mujoco_warp._src.collision_core import write_contact
@@ -32,7 +31,6 @@ from mujoco_warp._src.collision_gjk import gjk_phase
 from mujoco_warp._src.collision_gjk import multicontact
 from mujoco_warp._src.collision_gjk import support
 from mujoco_warp._src.collision_primitive import Geom
-from mujoco_warp._src.collision_primitive import contact_params
 from mujoco_warp._src.collision_primitive import geom_collision_pair
 from mujoco_warp._src.collision_primitive import write_contact
 from mujoco_warp._src.math import make_frame
@@ -66,7 +64,6 @@ def _hfield_filter(
   geom_dataid: wp.array2d[int],
   geom_size: wp.array2d[wp.vec3],
   geom_rbound: wp.array2d[float],
-  geom_margin: wp.array2d[float],
   mesh_vertadr: wp.array[int],
   mesh_vertnum: wp.array[int],
   mesh_graphadr: wp.array[int],
@@ -80,6 +77,7 @@ def _hfield_filter(
   worldid: int,
   g1: int,
   g2: int,
+  margin: float,
 ) -> Tuple[bool, float, float, float, float, float, float]:
   """Filter for height field collisions.
 
@@ -92,7 +90,6 @@ def _hfield_filter(
 
   # geom info
   rbound_id = worldid % geom_rbound.shape[0]
-  margin_id = worldid % geom_margin.shape[0]
   size_id = worldid % geom_size.shape[0]
 
   pos1 = geom_xpos_in[worldid, g1]
@@ -101,9 +98,6 @@ def _hfield_filter(
   pos2 = geom_xpos_in[worldid, g2]
   pos = mat1T @ (pos2 - pos1)
   r2 = geom_rbound[rbound_id, g2]
-
-  # TODO(team): margin?
-  margin = geom_margin[margin_id, g1] + geom_margin[margin_id, g2]
 
   # box-sphere test: horizontal plane
   for i in range(2):
@@ -147,14 +141,21 @@ def _hfield_filter(
   zmax = support(geom2, geomtype2, wp.vec3(0.0, 0.0, 1.0)).point[2]
   zmin = support(geom2, geomtype2, wp.vec3(0.0, 0.0, -1.0)).point[2]
 
+  xmin -= margin
+  xmax += margin
+  ymin -= margin
+  ymax += margin
+  zmin -= margin
+  zmax += margin
+
   # box-box test
   if (
-    (xmin - margin > size1[0])
-    or (xmax + margin < -size1[0])
-    or (ymin - margin > size1[1])
-    or (ymax + margin < -size1[1])
-    or (zmin - margin > size1[2])
-    or (zmax + margin < -size1[3])
+    (xmin > size1[0])
+    or (xmax < -size1[0])
+    or (ymin > size1[1])
+    or (ymax < -size1[1])
+    or (zmin > size1[2])
+    or (zmax < -size1[3])
   ):
     return True, MJ_MAXVAL, MJ_MAXVAL, MJ_MAXVAL, MJ_MAXVAL, MJ_MAXVAL, MJ_MAXVAL
   else:
@@ -266,6 +267,8 @@ def ccd_hfield_kernel_builder(
       return
 
     worldid = collision_worldid_in[collisionid]
+    collision_pairid = collision_pairid_in[collisionid]
+    margin, gap = contact_margin_gap(geom_margin, geom_gap, pair_margin, pair_gap, geoms, collision_pairid[0], worldid)
 
     # height field filter
     no_hf_collision, xmin, xmax, ymin, ymax, zmin, zmax = _hfield_filter(
@@ -273,7 +276,6 @@ def ccd_hfield_kernel_builder(
       geom_dataid,
       geom_size,
       geom_rbound,
-      geom_margin,
       mesh_vertadr,
       mesh_vertnum,
       mesh_graphadr,
@@ -285,6 +287,7 @@ def ccd_hfield_kernel_builder(
       worldid,
       g1,
       g2,
+      margin + gap,
     )
     if no_hf_collision:
       return
@@ -300,27 +303,22 @@ def ccd_hfield_kernel_builder(
       wp.atomic_or(overflow_out, worldid, wp.static(OverflowType.CCD))
       return
 
-    _, margin, gap, condim, friction, solref, solreffriction, solimp, adhesion = contact_params(
+    condim, friction, solref, solreffriction, solimp, adhesion = contact_material_params(
       geom_condim,
       geom_priority,
       geom_solmix,
       geom_solref,
       geom_solimp,
       geom_friction,
-      geom_margin,
-      geom_gap,
       geom_adhesion,
       pair_dim,
       pair_solref,
       pair_solreffriction,
       pair_solimp,
-      pair_margin,
-      pair_gap,
       pair_adhesion,
       pair_friction,
-      collision_pair_in,
-      collision_pairid_in,
-      collisionid,
+      geoms,
+      collision_pairid[0],
       worldid,
     )
 
@@ -397,8 +395,9 @@ def ccd_hfield_kernel_builder(
     min_pos = wp.vec3(MJ_MAXVAL, MJ_MAXVAL, MJ_MAXVAL)
     min_id = int(-1)
 
-    # geom1 margin added to z-axis of hfield prism top points below
-    geom2.margin = margin
+    # Put the full margin on geom2 to keep the prism support discrete. Shift the contact
+    # midpoint below to match symmetric inflation by half the margin on each geom.
+    geom2.margin = 2.0 * margin
 
     # EPA memory
     epa_vert = epa_vert_in[ccdid]
@@ -407,8 +406,6 @@ def ccd_hfield_kernel_builder(
     epa_pr = epa_pr_in[ccdid]
     epa_norm2 = epa_norm2_in[ccdid]
     epa_horizon = epa_horizon_in[ccdid]
-
-    collision_pairid = collision_pairid_in[collisionid]
 
     # process all prisms in subgrid
     count = int(0)
@@ -421,7 +418,7 @@ def ccd_hfield_kernel_builder(
       for init_i in range(2):
         x = dx * float(cmin) - size[0]
         y = dy * float(r + dr[init_i]) - size[1]
-        z = hfield_data[adr + (r + dr[init_i]) * ncol + cmin] * size[2] + margin
+        z = hfield_data[adr + (r + dr[init_i]) * ncol + cmin] * size[2]
 
         prism[0] = prism[1]
         prism[1] = prism[2]
@@ -447,7 +444,7 @@ def ccd_hfield_kernel_builder(
           # add vert
           x = dx * float(c) - size[0]
           y = dy * float(r + dr[i]) - size[1]
-          z = hfield_data[adr + (r + dr[i]) * ncol + c] * size[2] + margin
+          z = hfield_data[adr + (r + dr[i]) * ncol + c] * size[2]
 
           prism[0] = prism[1]
           prism[1] = prism[2]
@@ -471,7 +468,7 @@ def ccd_hfield_kernel_builder(
 
           dist, ncontact, w1, w2, idx = ccd(
             opt_ccd_tolerance[worldid % opt_ccd_tolerance.shape[0]],
-            0.0,
+            gap,
             gjk_iterations,
             epa_iterations,
             geom1,
@@ -491,6 +488,9 @@ def ccd_hfield_kernel_builder(
             overflow_out,
           )
 
+          # Return surface distance, as in mjc_penetration.
+          dist += margin
+
           # skip prisms not in contact: ccd reports ncontact == 1 for separated geoms
           if ncontact == 0 or dist >= margin + gap:
             continue
@@ -498,15 +498,16 @@ def ccd_hfield_kernel_builder(
           # cache contact information
           hfield_contact_dist[count] = dist
 
-          # transform contact to global frame
-          pos_local = 0.5 * (w1 + w2)
+          frame_local = make_frame(w1 - w2 if dist <= margin else w2 - w1)
+          normal_local = wp.vec3(frame_local[0, 0], frame_local[0, 1], frame_local[0, 2])
+
+          # Undo the contact-position shift from inflating only geom2.
+          pos_local = 0.5 * (w1 + w2 + margin * normal_local)
           pos = hf_mat @ pos_local + hf_pos
           hfield_contact_pos[count, 0] = pos[0]
           hfield_contact_pos[count, 1] = pos[1]
           hfield_contact_pos[count, 2] = pos[2]
 
-          frame_local = make_frame(w1 - w2)
-          normal_local = wp.vec3(frame_local[0, 0], frame_local[0, 1], frame_local[0, 2])
           normal = hf_mat @ normal_local
           hfield_contact_normal[count, 0] = normal[0]
           hfield_contact_normal[count, 1] = normal[1]

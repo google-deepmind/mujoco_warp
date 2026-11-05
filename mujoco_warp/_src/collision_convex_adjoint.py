@@ -97,7 +97,6 @@ def _hfield_freeze(
   geom_dataid: wp.array2d[int],
   geom_size: wp.array2d[wp.vec3],
   geom_rbound: wp.array2d[float],
-  geom_margin: wp.array2d[float],
   mesh_vertadr: wp.array[int],
   mesh_vertnum: wp.array[int],
   mesh_graphadr: wp.array[int],
@@ -166,7 +165,7 @@ def _hfield_freeze(
   contact_pos = contact_pos_in[cid]
   contact_frame = contact_frame_in[cid]
   normal = wp.vec3(contact_frame[0, 0], contact_frame[0, 1], contact_frame[0, 2])
-  half_dist = 0.5 * wp.abs(contact_dist)
+  half_dist = -0.5 * contact_dist
   witness1 = contact_pos + half_dist * normal
   witness2 = contact_pos - half_dist * normal
   geom1_pos = geom_xpos_in[worldid, g1]
@@ -190,14 +189,17 @@ def _hfield_freeze(
   if not supported:
     return
   margin = contact_includemargin_in[cid]
+  tolerance = opt_ccd_tolerance[worldid % opt_ccd_tolerance.shape[0]]
+  # Recover this retained contact, including an inactive contact in the gap band.
+  search_margin = wp.max(margin, contact_dist) + tolerance
+  cutoff = wp.where(contact_dist < margin, 0.0, MJ_MAXVAL)
 
-  # Reproduce the forward height field subgrid bounds.
+  # Bound the prism search for this retained contact.
   no_hf_collision, xmin, xmax, ymin, ymax, zmin, zmax = _hfield_filter(
     geom_type,
     geom_dataid,
     geom_size,
     geom_rbound,
-    geom_margin,
     mesh_vertadr,
     mesh_vertnum,
     mesh_graphadr,
@@ -209,6 +211,7 @@ def _hfield_freeze(
     worldid,
     g1,
     g2,
+    search_margin,
   )
   if no_hf_collision:
     return
@@ -270,9 +273,8 @@ def _hfield_freeze(
   hfield_prism[2, 2] = -size[3]
 
   adr = hfield_adr[hfield_id]
-  geom2.margin = margin
+  geom2.margin = 2.0 * margin
 
-  tolerance = opt_ccd_tolerance[worldid % opt_ccd_tolerance.shape[0]]
   geom2_axis = wp.vec3(geom2.rot[0, 2], geom2.rot[1, 2], geom2.rot[2, 2])
 
   epa_vert = epa_vert_in[rowid]
@@ -287,11 +289,12 @@ def _hfield_freeze(
 
   # Match the retained contact directly. Forward filters by margin + gap before reducing
   # the manifold, so reconstructing its slot from an unfiltered candidate list is incorrect.
+  # Separated contacts need an unrestricted cutoff: their rounded distance can reject the prism.
   for r in range(rmin, rmax):
     for init_i in range(2):
       x = dx * float(cmin) - size[0]
       y = dy * float(r + dr[init_i]) - size[1]
-      z = hfield_data[adr + (r + dr[init_i]) * ncol + cmin] * size[2] + margin
+      z = hfield_data[adr + (r + dr[init_i]) * ncol + cmin] * size[2]
       hfield_prism[0] = hfield_prism[1]
       hfield_prism[1] = hfield_prism[2]
       hfield_prism[3] = hfield_prism[4]
@@ -306,7 +309,7 @@ def _hfield_freeze(
       for i in range(2):
         x = dx * float(c) - size[0]
         y = dy * float(r + dr[i]) - size[1]
-        z = hfield_data[adr + (r + dr[i]) * ncol + c] * size[2] + margin
+        z = hfield_data[adr + (r + dr[i]) * ncol + c] * size[2]
         hfield_prism[0] = hfield_prism[1]
         hfield_prism[1] = hfield_prism[2]
         hfield_prism[3] = hfield_prism[4]
@@ -327,7 +330,7 @@ def _hfield_freeze(
 
         dist, ncontact, w1, w2, _multiccd_idx = collision_gjk.ccd(
           tolerance,
-          0.0,
+          cutoff,
           gjk_iterations,
           epa_iterations,
           geom1,
@@ -348,7 +351,9 @@ def _hfield_freeze(
         )
         if ncontact == 0 or wp.abs(dist) >= _JUNK_DIST:
           continue
-        pos_local = 0.5 * (w1 + w2)
+        normal_local = wp.normalize(w1 - w2 if dist <= 0.0 else w2 - w1)
+        pos_local = 0.5 * (w1 + w2 + margin * normal_local)
+        dist += margin
         pos = geom1_mat @ pos_local + geom1_pos
         error = wp.length_sq(pos - contact_pos) + (dist - contact_dist) * (dist - contact_dist)
         if error < best_error:
@@ -364,6 +369,7 @@ def _hfield_freeze(
   ) * wp.static(1.0 / 6.0)
   _probe_dist, ncontact, _probe_point1, _probe_point2, tag, result, face_index = collision_gjk_adjoint._ccd_probe(
     tolerance,
+    cutoff,
     gjk_iterations,
     epa_iterations,
     geom1,
@@ -444,7 +450,7 @@ def _hfield_freeze(
     point2 = epa_vert[2 * vertex + 1]
     feature = epa_vert_index[2 * vertex + 1]
     ok, support_direction = collision_gjk_adjoint._recover_direction(
-      mesh_vert, geomtype2, point2, feature, geom2.pos, geom2.rot, geom2_size, margin, geom2.vertadr, -epa_pr[face_index]
+      mesh_vert, geomtype2, point2, feature, geom2.pos, geom2.rot, geom2_size, geom2.margin, geom2.vertadr, -epa_pr[face_index]
     )
     if not ok:
       return
@@ -589,13 +595,14 @@ def _hfield_replay(
     )
     dist_out[cid] = dist0
     cpos_out[cid] = 0.5 * (x1w + x2w)
-    frame_out[cid] = make_frame(x1w - x2w)
+    frame_out[cid] = make_frame(x1w - x2w if dist0 <= 0.0 else x2w - x1w)
     return
 
   hfield_mat_t = wp.transpose(geom1_mat)
   local_pos = hfield_mat_t @ (geom2_pos - geom1_pos)
   local_mat = hfield_mat_t @ geom2_mat
   margin = contact_includemargin_in[cid]
+  shape_margin = 2.0 * margin
   geom2_size = geom_size[worldid % geom_size.shape[0], g2]
   geomtype2 = geom_type[g2]
 
@@ -615,17 +622,19 @@ def _hfield_replay(
       axis_f,
       geom2_size[0],
       half_f,
-      margin,
+      shape_margin,
     )
     if ok != 0:
-      cpos_out[cid] = geom1_mat @ (0.5 * (x1 + x2)) + geom1_pos
-      dist_out[cid] = dist
+      cpos_out[cid] = geom1_mat @ (0.5 * (x1 + x2 + margin * wp.normalize(normal_f))) + geom1_pos
+      dist_out[cid] = dist + margin
       frame_out[cid] = make_frame(geom1_mat @ normal_f)
     return
   elif tag == _CASE_GJK_SIDE:
     axis_s = wp.vec3(local_mat[0, 2], local_mat[1, 2], local_mat[2, 2])
     half_s = wp.where(geomtype2 == GeomType.CAPSULE, geom2_size[1], 0.0)
-    ok, dist, x1, x2 = _hfield_replay_side(top_in[cid], reference_in[cid], local_pos, axis_s, geom2_size[0], half_s, margin)
+    ok, dist, x1, x2 = _hfield_replay_side(
+      top_in[cid], reference_in[cid], local_pos, axis_s, geom2_size[0], half_s, shape_margin
+    )
   elif tag == _CASE_EPA or tag == _CASE_EPA_HFIELD:
     dataid = geom_dataid[worldid % geom_dataid.shape[0], g2]
     vertadr = int(0)
@@ -641,20 +650,21 @@ def _hfield_replay(
       local_pos,
       local_mat,
       geom2_size,
-      margin,
+      shape_margin,
       vertadr,
     )
     if ok != 0 and tag == _CASE_EPA_HFIELD:
       ok, dist, x1, x2 = _hfield_correct_witness(
-        mesh_vert, geomtype2, feature_in[cid][3], top_in[cid], local_pos, local_mat, geom2_size, margin, vertadr, x2
+        mesh_vert, geomtype2, feature_in[cid][3], top_in[cid], local_pos, local_mat, geom2_size, shape_margin, vertadr, x2
       )
 
   if ok == 0:
     return
 
-  cpos_out[cid] = geom1_mat @ (0.5 * (x1 + x2)) + geom1_pos
-  dist_out[cid] = dist
-  frame_out[cid] = make_frame(geom1_mat @ (x1 - x2))
+  normal = x1 - x2 if dist <= 0.0 else x2 - x1
+  cpos_out[cid] = geom1_mat @ (0.5 * (x1 + x2 + margin * wp.normalize(normal))) + geom1_pos
+  dist_out[cid] = dist + margin
+  frame_out[cid] = make_frame(geom1_mat @ normal)
 
 
 _CONVEX_TYPES = (
@@ -697,7 +707,6 @@ def hfield_contact_pose_vjp(
       m.geom_dataid,
       m.geom_size,
       m.geom_rbound,
-      m.geom_margin,
       m.mesh_vertadr,
       m.mesh_vertnum,
       m.mesh_graphadr,
