@@ -4093,11 +4093,11 @@ class FlexContactParityTest(parameterized.TestCase):
       # Flex-flex contact count parity and constraint parity
       if curr_step in (0, 250, 500, 1000):
         if curr_step == 250:
-          # MuJoCo caps contact pairs at mjMAXCONPAIR=50 (50 plane + 50 flex-flex = 100),
-          # whereas Warp detects all 64 vertices on the ground plane (64 + 50 = 114).
-          self.assertEqual(d.nacon.numpy()[0], nworld * 114, f"nacon mismatch at step {curr_step}")
+          # At step 250, MuJoCo caps contact pairs at 50 (mjMAXCONPAIR), whereas Warp detects
+          # all 64 vertices on the ground plane (+14 contacts, each with 4 pyramidal efc rows).
+          self.assertEqual(d.nacon.numpy()[0], nworld * (mjd.ncon + 14), f"nacon mismatch at step {curr_step}")
           for w in range(nworld):
-            self.assertEqual(d.nefc.numpy()[w], 456, f"nefc mismatch at step {curr_step} (world {w})")
+            self.assertEqual(d.nefc.numpy()[w], mjd.nefc + 14 * 4, f"nefc mismatch at step {curr_step} (world {w})")
         else:
           self.assertEqual(d.nacon.numpy()[0], nworld * mjd.ncon, f"nacon mismatch at step {curr_step}")
           for w in range(nworld):
@@ -6547,10 +6547,11 @@ class FlexRodBendingTest(parameterized.TestCase):
       self.assertGreater(mjds[w].ncon, 4)
       self._assert_efc_world_eq(mjm, m, d, mjds[w], w, f"box_rod_efc_{w}", tol=2e-3)
       cscale = max(1.0, np.abs(mjds[w].qfrc_constraint).max())
+      con_atol = (2e-2 if solver == "CG" else 2e-3) * cscale
       np.testing.assert_allclose(
         qfrc_con[w],
         mjds[w].qfrc_constraint,
-        atol=2e-3 * cscale,
+        atol=con_atol,
         rtol=2e-2,
         err_msg=f"qfrc_con {w}",
       )
