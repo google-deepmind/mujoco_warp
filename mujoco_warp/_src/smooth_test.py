@@ -25,6 +25,7 @@ import mujoco_warp as mjw
 from mujoco_warp import ConeType
 from mujoco_warp import DisableBit
 from mujoco_warp import test_data
+from mujoco_warp._src import smooth
 from mujoco_warp._src import types
 from mujoco_warp._src import util_pkg
 
@@ -1847,6 +1848,11 @@ class SmoothTest(parameterized.TestCase):
     if nworld == 2:
       self.assertFalse(np.allclose(M[0], M[1]))
       self.assertFalse(np.allclose(qfrc_bias[0], qfrc_bias[1]))
+
+  def test_branch_kernels_do_not_recompile_shared_module(self):
+    """Their block_dim differs from the rest of smooth.py, so each must have its own module."""
+    for kernel in (smooth._kinematics_branch, smooth._comvel_branch, smooth._cacc_branch):
+      self.assertNotEqual(kernel.module.name, smooth._cinert.module.name)
 
 
 if __name__ == "__main__":
