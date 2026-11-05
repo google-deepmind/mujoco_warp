@@ -1972,10 +1972,7 @@ def _update_constraint_efc(track_changes: bool, hessian: bool, band_jump: bool =
     efc_state_out[worldid, efcid] = new_state
 
     if wp.static(HESSIAN):
-      # D while quadratic. A sliding friction row has no curvature, so Newton overshoots across its
-      # narrow quadratic band and the row oscillates between its sliding directions; after such a
-      # jump, if friction could stop the row (|x| <= f * invweight), it gets the curvature f / |x|
-      # of the Huber cost's quadratic majorizer for one iteration
+      # D while quadratic; f / |x| for one iteration after a band jump that friction can stop
       weight = wp.where(new_state == types.ConstraintState.QUADRATIC.value, efc_D, 0.0)
       if wp.static(BAND_JUMP):
         if is_friction:
@@ -1983,8 +1980,8 @@ def _update_constraint_efc(track_changes: bool, hessian: bool, band_jump: bool =
           lpos = types.ConstraintState.LINEARPOS.value
           sliding_old = old_state == lneg or old_state == lpos
           sliding_new = new_state == lneg or new_state == lpos
-          x = wp.abs(Jaref)
           if sliding_old and sliding_new and old_state != new_state:
+            x = wp.abs(Jaref)
             objid = efc_id_in[worldid, efcid]
             if efc_type_in[worldid, efcid] == types.ConstraintType.FRICTION_DOF:
               invweight = dof_invweight0[worldid % dof_invweight0.shape[0], objid]
@@ -2223,7 +2220,7 @@ def _update_gradient_h_incremental_sparse(compact: bool, max_records: int = 0, d
     n_changes = quad_changed_count_in[worldid]
     for change_idx in range(slot, n_changes, slots_per_world):
       efcid = quad_changed_ids_in[worldid, change_idx]
-      sign = quad_changed_delta_in[worldid, change_idx]
+      delta = quad_changed_delta_in[worldid, change_idx]
 
       rownnz = efc_J_rownnz_in[worldid, efcid]
       rowadr = efc_J_rowadr_in[worldid, efcid]
@@ -2234,7 +2231,7 @@ def _update_gradient_h_incremental_sparse(compact: bool, max_records: int = 0, d
         jj = entry - ii * (ii + 1) // 2
         Ji = efc_J_in[worldid, 0, rowadr + ii]
         Jj = efc_J_in[worldid, 0, rowadr + jj]
-        h = sign * Ji * Jj
+        h = delta * Ji * Jj
         if h != 0.0:
           colindi = efc_J_colind_in[worldid, 0, rowadr + ii]
           colindj = efc_J_colind_in[worldid, 0, rowadr + jj]

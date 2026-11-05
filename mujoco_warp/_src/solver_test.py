@@ -2077,13 +2077,12 @@ class SolverTest(parameterized.TestCase):
     self.assertTrue(total_any_changes, "no state changes detected across any keyframe")
     self.assertEqual(total_band_jumps, bool(frictionloss))
 
-  @parameterized.parameters(True, False)
-  def test_friction_band_jump_weight(self, sparse):
+  @parameterized.parameters(1, 2)
+  def test_friction_band_jump_weight(self, nworld):
     """A friction row that jumps across its band gets curvature f / |x| if friction can stop it."""
     _, _, m, d = test_data.fixture(
-      xml=f"""
+      xml="""
       <mujoco>
-        <option solver="Newton" jacobian="{"sparse" if sparse else "dense"}"/>
         <worldbody>
           <body>
             <joint name="j0" axis="0 1 0" frictionloss="0.5"/>
@@ -2101,37 +2100,53 @@ class SolverTest(parameterized.TestCase):
           </fixed>
         </tendon>
       </mujoco>
-      """
+      """,
+      nworld=nworld,
+      batch_sizes={"dof_invweight0": nworld, "tendon_invweight0": nworld},
     )
     ctx = solver._create_solver_context(m, d)
     solver.init_context(m, d, ctx, grad=False)
 
     efc_type, efc_id = d.efc.type.numpy()[0], d.efc.id.numpy()[0]
-    rows = np.flatnonzero((efc_type == types.ConstraintType.FRICTION_DOF) | (efc_type == types.ConstraintType.FRICTION_TENDON))
-    self.assertEqual(len(rows), 2)
-    is_dof = efc_type[rows] == types.ConstraintType.FRICTION_DOF
-    invweight = np.where(is_dof, m.dof_invweight0.numpy()[0, efc_id[rows] * is_dof], m.tendon_invweight0.numpy()[0, 0])
-    D = d.efc.D.numpy()[0, rows]
-    f = d.efc.frictionloss.numpy()[0, rows]
-    band, stop = f / D, f * invweight
-    self.assertTrue(np.all(2.0 * band < stop))
+    dof_row = np.flatnonzero(efc_type == types.ConstraintType.FRICTION_DOF)[0]
+    tendon_row = np.flatnonzero(efc_type == types.ConstraintType.FRICTION_TENDON)[0]
+    rows = [dof_row, tendon_row]
+    D = d.efc.D.numpy()[:, rows]
+    f = d.efc.frictionloss.numpy()[:, rows]
+    band = f / D
+
+    dof_invweight0 = m.dof_invweight0.numpy()
+    tendon_invweight0 = m.tendon_invweight0.numpy()
+    if nworld == 2:
+      # friction cannot stop a jump of two band widths in world 1
+      dof_invweight0[1, efc_id[dof_row]] = 1.0 / D[1, 0]
+      tendon_invweight0[1, efc_id[tendon_row]] = 1.0 / D[1, 1]
+      m.dof_invweight0.assign(dof_invweight0)
+      m.tendon_invweight0.assign(tendon_invweight0)
+    stop = f * np.stack([dof_invweight0[:, efc_id[dof_row]], tendon_invweight0[:, efc_id[tendon_row]]], axis=1)
+    can_stop = 2.0 * band <= stop
+    self.assertTrue(np.all(can_stop[0]))
 
     lneg, lpos = types.ConstraintState.LINEARNEG.value, types.ConstraintState.LINEARPOS.value
     cases = (
-      (lneg, 2.0 * band, f / (2.0 * band)),  # jump that friction can stop
-      (lneg, 2.0 * stop, 0.0),  # jump that friction cannot stop
+      (lneg, 2.0 * band, np.where(can_stop, f / (2.0 * band), 0.0)),  # jump across the band
+      (lneg, 2.0 * np.maximum(stop, band), 0.0),  # jump that friction cannot stop
       (lpos, 2.0 * band, 0.0),  # no jump
       (lneg, 0.5 * band, D),  # quadratic
     )
     for old_state, jaref, weight in cases:
       state = d.efc.state.numpy()
-      state[0, rows] = old_state
+      state[:, rows] = old_state
       d.efc.state.assign(state)
       Jaref = ctx.Jaref.numpy()
-      Jaref[0, rows] = jaref
+      Jaref[:, rows] = jaref
       ctx.Jaref.assign(Jaref)
+      ctx.hessian_weight.fill_(wp.inf)
       solver._update_constraint(m, d, ctx, band_jump=True)
-      _assert_eq(ctx.hessian_weight.numpy()[0, rows], weight, "hessian_weight")
+      _assert_eq(ctx.hessian_weight.numpy()[:, rows], np.broadcast_to(weight, D.shape), "hessian_weight")
+
+    if nworld == 2:
+      self.assertFalse(np.all(can_stop[1]))
 
   @parameterized.product(nworld=(1, 2), rows_from=("put_data", "make_constraint"))
   def test_sparse_hessian_dof_friction(self, nworld, rows_from):
@@ -2216,7 +2231,7 @@ class SolverTest(parameterized.TestCase):
       if nworld == 2:
         self.assertFalse(np.allclose(np.triu(h_actual[0, : m.nv, : m.nv]), np.triu(h_actual[1, : m.nv, : m.nv])))
 
-    # full rebuild with every row quadratic; the builders read the per-row weight
+    # full rebuild with every row quadratic
     state = np.full((nworld, d.njmax), types.ConstraintState.QUADRATIC.value, dtype=int)
     d.efc.state.assign(state)
     ctx.hessian_weight.assign(D)
