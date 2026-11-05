@@ -499,9 +499,6 @@ _STEP_IN_FIELDS = (
   "qpos",
   "qvel",
   "act",
-  "ctrl",
-  "qfrc_applied",
-  "xfrc_applied",
 )
 _STEP_OUT_FIELDS = (
   "qpos",
@@ -509,6 +506,9 @@ _STEP_OUT_FIELDS = (
   "qacc",
   "act",
   "act_dot",
+)
+# Supported differentiable mjSTATE_USER inputs, selected separately from state gradients.
+_STEP_USER_FIELDS = (
   "ctrl",
   "qfrc_applied",
   "xfrc_applied",
@@ -533,7 +533,6 @@ _STEP_MODEL_FIELDS = (
   "geom_friction",
   "pair_friction",
 )
-_COPIED_FIELDS = ("ctrl", "qfrc_applied", "xfrc_applied")
 _KINEMATICS_IN_FIELDS = ("qpos",)
 _KINEMATICS_OUT_FIELDS = ("site_xpos", "xpos", "xquat")
 
@@ -570,9 +569,20 @@ def step_supported(m: Model, d: Data, d_out: Data | None = None) -> tuple[str, .
   return ()
 
 
-def step_backward_arrays(d: Data, d_out: Data, m: Model | None = None):
-  """Allocates and returns arrays used by the analytic step backward."""
+def step_backward_arrays(d: Data, d_out: Data, m: Model | None = None, *, user_fields: tuple[str, ...] = ("ctrl",)):
+  """Prepares state gradients and selected user-input gradients for the legacy tape adapter.
+
+  Explicitly enabled user-input gradients are also tracked. The diff API will own this selection.
+  """
+  requested = set(user_fields)
+  unsupported = requested - set(_STEP_USER_FIELDS)
+  if unsupported:
+    raise NotImplementedError("native step user-input gradients are not implemented for: " + ", ".join(sorted(unsupported)))
   arrays = [*_data_arrays(d, _STEP_IN_FIELDS), *_data_arrays(d_out, _STEP_OUT_FIELDS)]
+  for name in _STEP_USER_FIELDS:
+    if name in requested or getattr(d, name).requires_grad or getattr(d_out, name).requires_grad:
+      arrays.extend(_data_arrays(d, (name,)))
+      arrays.extend(_data_arrays(d_out, (name,)))
   if m is not None:
     arrays.extend(_step_model_arrays(m))
   return list(dict.fromkeys(array for array in arrays if array.size))
@@ -589,12 +599,12 @@ def step_backward(m: Model, d: Data, d_out: Data, bc: BackwardContext | None = N
   """Maps ``d_out`` state gradients to ``d`` with an analytic backward."""
   _assert_step_supported(m)
   # TODO: Remove this compatibility preparation when the diff API registers the rule (#1727).
-  step_backward_arrays(d, d_out, m)
+  step_backward_arrays(d, d_out, m, user_fields=())
   bc = bc or _ACTIVE_BACKWARD_CONTEXT.get() or create_backward_context(m, d)
   _reset_backward_context(bc)
   _, _, adj_qacc = forward_adjoint.advance_backward(m, d, d_out, bc)
   forward_backward_ift(m, d, d_out, adj_qacc, bc)
-  for name in _COPIED_FIELDS:
+  for name in _STEP_USER_FIELDS:
     src, dst = getattr(d, name), getattr(d_out, name)
     # Shared gradient storage already contains downstream uses of the held input.
     if src.grad is not None and dst.grad is not None and src.grad.ptr != dst.grad.ptr:

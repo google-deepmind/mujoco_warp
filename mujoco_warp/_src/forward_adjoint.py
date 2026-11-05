@@ -309,8 +309,10 @@ def _activation_vjp(
     adj_act[w, adr],
     adj_act_dot[w, adr],
   )
-  adj_ctrl_out[w, uid] += gradients[0]
-  adj_act_out[w, adr] += gradients[1]
+  if adj_ctrl_out:
+    adj_ctrl_out[w, uid] += gradients[0]
+  if adj_act_out:
+    adj_act_out[w, adr] += gradients[1]
 
 
 @wp.kernel(enable_backward=False)
