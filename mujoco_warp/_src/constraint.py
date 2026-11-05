@@ -3754,7 +3754,7 @@ def _efc_contact_jac_sparse_flex(cone_type: types.ConeType):
 
 
 @cache_kernel
-def _efc_contact_jac_dense(tile_size: int, cone_type: types.ConeType, njmax: int, deterministic: bool = False):
+def _efc_contact_jac_dense(tile_size: int, cone_type: types.ConeType, nmaxcondim: int, njmax: int, deterministic: bool = False):
   TILE_SIZE = tile_size
   IS_ELLIPTIC = cone_type == types.ConeType.ELLIPTIC
   module_options = {"enable_backward": False}
@@ -3847,20 +3847,20 @@ def _efc_contact_jac_dense(tile_size: int, cone_type: types.ConeType, njmax: int
 
       if wp.static(IS_ELLIPTIC):
         dimid = efcid - first_efcid
-        if dimid < 3:
+        if wp.static(nmaxcondim <= 3) or dimid < 3:
           frame_idx = dimid
         else:
           frame_idx = dimid - 3
 
         frame_row = frame_in[conid, frame_idx]
 
-        if dimid < 3:
+        if wp.static(nmaxcondim <= 3) or dimid < 3:
           J_tile = wp.tile_map(wp.dot, jacp_dif_tile, frame_row)
         else:
           J_tile = wp.tile_map(wp.dot, jacr_dif_tile, frame_row)
       else:
         J_tile = Ji_0p_tile
-        if condim > 1:
+        if wp.static(nmaxcondim > 1) and condim > 1:
           dimid = efcid - first_efcid
           dimid2 = dimid / 2 + 1
           frii = friction_in[conid, dimid2 - 1]
@@ -3870,11 +3870,11 @@ def _efc_contact_jac_dense(tile_size: int, cone_type: types.ConeType, njmax: int
             J_tile = wp.tile_map(wp.add, J_tile, wp.tile_map(wp.mul, Ji_1p_tile, frii_sign))
           elif dimid2 == 2:
             J_tile = wp.tile_map(wp.add, J_tile, wp.tile_map(wp.mul, Ji_2p_tile, frii_sign))
-          elif dimid2 == 3:
+          elif wp.static(nmaxcondim > 3) and dimid2 == 3:
             J_tile = wp.tile_map(wp.add, J_tile, wp.tile_map(wp.mul, Ji_0r_tile, frii_sign))
-          elif dimid2 == 4:
+          elif wp.static(nmaxcondim > 4) and dimid2 == 4:
             J_tile = wp.tile_map(wp.add, J_tile, wp.tile_map(wp.mul, Ji_1r_tile, frii_sign))
-          else:
+          elif wp.static(nmaxcondim > 4):
             J_tile = wp.tile_map(wp.add, J_tile, wp.tile_map(wp.mul, Ji_2r_tile, frii_sign))
 
       wp.tile_store(efc_J_out[worldid, efcid], J_tile, offset=dof_start, bounds_check=True)
@@ -3892,7 +3892,9 @@ def _efc_contact_jac_dense(tile_size: int, cone_type: types.ConeType, njmax: int
 
 
 @cache_kernel
-def _efc_contact_jac_dense_flex(tile_size: int, cone_type: types.ConeType, njmax: int, deterministic: bool = False):
+def _efc_contact_jac_dense_flex(
+  tile_size: int, cone_type: types.ConeType, nmaxcondim: int, njmax: int, deterministic: bool = False
+):
   TILE_SIZE = tile_size
   IS_ELLIPTIC = cone_type == types.ConeType.ELLIPTIC
   module_options = {"enable_backward": False}
@@ -4173,20 +4175,20 @@ def _efc_contact_jac_dense_flex(tile_size: int, cone_type: types.ConeType, njmax
 
       if wp.static(IS_ELLIPTIC):
         dimid = efcid - first_efcid
-        if dimid < 3:
+        if wp.static(nmaxcondim <= 3) or dimid < 3:
           frame_idx = dimid
         else:
           frame_idx = dimid - 3
 
         frame_row = frame_in[conid, frame_idx]
 
-        if dimid < 3:
+        if wp.static(nmaxcondim <= 3) or dimid < 3:
           J_tile = wp.tile_map(wp.dot, jacp_dif_tile, frame_row)
         else:
           J_tile = wp.tile_map(wp.dot, jacr_dif_tile, frame_row)
       else:
         J_tile = Ji_0p_tile
-        if condim > 1:
+        if wp.static(nmaxcondim > 1) and condim > 1:
           dimid = efcid - first_efcid
           dimid2 = dimid / 2 + 1
           frii = friction_in[conid, dimid2 - 1]
@@ -4196,11 +4198,11 @@ def _efc_contact_jac_dense_flex(tile_size: int, cone_type: types.ConeType, njmax
             J_tile = wp.tile_map(wp.add, J_tile, wp.tile_map(wp.mul, Ji_1p_tile, frii_sign))
           elif dimid2 == 2:
             J_tile = wp.tile_map(wp.add, J_tile, wp.tile_map(wp.mul, Ji_2p_tile, frii_sign))
-          elif dimid2 == 3:
+          elif wp.static(nmaxcondim > 3) and dimid2 == 3:
             J_tile = wp.tile_map(wp.add, J_tile, wp.tile_map(wp.mul, Ji_0r_tile, frii_sign))
-          elif dimid2 == 4:
+          elif wp.static(nmaxcondim > 4) and dimid2 == 4:
             J_tile = wp.tile_map(wp.add, J_tile, wp.tile_map(wp.mul, Ji_1r_tile, frii_sign))
-          else:
+          elif wp.static(nmaxcondim > 4):
             J_tile = wp.tile_map(wp.add, J_tile, wp.tile_map(wp.mul, Ji_2r_tile, frii_sign))
 
       wp.tile_store(efc_J_out[worldid, efcid], J_tile, offset=dof_start, bounds_check=True)
@@ -5658,7 +5660,7 @@ def make_constraint(m: types.Model, d: types.Data):
 
         if has_flex:
           wp.launch_tiled(
-            _efc_contact_jac_dense_flex(tile_size, m.opt.cone, d.njmax if det_atomics else 0, det_atomics),
+            _efc_contact_jac_dense_flex(tile_size, m.opt.cone, int(m.nmaxcondim), d.njmax if det_atomics else 0, det_atomics),
             dim=(d.nworld, n_dof_blocks),
             inputs=[
               m.body_rootid,
@@ -5704,7 +5706,7 @@ def make_constraint(m: types.Model, d: types.Data):
           )
         else:
           wp.launch_tiled(
-            _efc_contact_jac_dense(tile_size, m.opt.cone, d.njmax if det_atomics else 0, det_atomics),
+            _efc_contact_jac_dense(tile_size, m.opt.cone, int(m.nmaxcondim), d.njmax if det_atomics else 0, det_atomics),
             dim=(d.nworld, n_dof_blocks),
             inputs=[
               m.body_rootid,
