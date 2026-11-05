@@ -3446,6 +3446,8 @@ def step(m: Model, d: Data, d_out: Optional[Data] = None):
   if record:
     hook, prepare_arrays = _step_backward_registration
     arrays = prepare_arrays(d, d_out, m=m)
+    # Like a recorded kernel, retain array identities if callers replace a held input later.
+    d, d_out = dataclasses.replace(d), dataclasses.replace(d_out)
     tape.record_func(lambda: hook(m, d, d_out), arrays=arrays)
 
 
