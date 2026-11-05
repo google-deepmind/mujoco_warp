@@ -341,7 +341,7 @@ def _apply_ft_scatter(nv: int, deterministic: bool = False):
   ):
     worldid, bodyid = wp.tid()
 
-    # as mj_xfrcAccumulate: J' ft over the ancestor dofs of bodies with a wrench
+    # J' ft over the ancestor dofs of bodies with a wrench
     ft = ft_in[worldid, bodyid]
     if ft == wp.spatial_vector():
       return
