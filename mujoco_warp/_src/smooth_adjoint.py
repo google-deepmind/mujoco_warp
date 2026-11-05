@@ -391,7 +391,8 @@ def gravcomp_qpos_vjp(m: Model, d: Data, lam: wp.array2d, bc: BackwardContext | 
   bc.res_body_inertia.zero_()
   bc.smooth_res_qpos.zero_()
 
-  gravity_enabled = int(not (int(m.opt.disableflags) & DisableBit.GRAVITY))
+  passive_disabled = (m.opt.disableflags & (DisableBit.SPRING | DisableBit.DAMPER)) == (DisableBit.SPRING | DisableBit.DAMPER)
+  gravity_enabled = int(not (m.opt.disableflags & DisableBit.GRAVITY) and not passive_disabled)
   wp.launch(
     _gravcomp_seed,
     dim=(d.nworld, m.nv),
