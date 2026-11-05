@@ -558,15 +558,19 @@ class IOTest(parameterized.TestCase):
     adr = d.efc.jtdaj_adr.numpy()[0, :nblock].copy()
     nrow = d.efc.jtdaj_nrow.numpy()[0, :nblock].copy()
 
-    # the blocks partition the active rows exactly (contiguous, no gaps, covering [0, nefc))
-    self.assertGreater(nblock, 0)
-    self.assertEqual(adr[0], 0)
-    np.testing.assert_array_equal(adr[1:], np.cumsum(nrow)[:-1])
-    self.assertEqual(int(nrow.sum()), mjd.nefc)
-
-    # each block is one constraint instance: a maximal run of rows sharing (efc_type, efc_id)
+    # the blocks partition exactly the rows that are not DOF friction (those get no block)
     etype = mjd.efc_type[: mjd.nefc]
     eid = mjd.efc_id[: mjd.nefc]
+    is_dof_friction = etype == mujoco.mjtConstraint.mjCNSTR_FRICTION_DOF
+    self.assertTrue(is_dof_friction.any())
+    self.assertGreater(nblock, 0)
+    covered = np.zeros(mjd.nefc, dtype=bool)
+    for a, n in zip(adr.tolist(), nrow.tolist()):
+      self.assertFalse(covered[a : a + n].any())
+      covered[a : a + n] = True
+    np.testing.assert_array_equal(covered, ~is_dof_friction)
+
+    # each block is one constraint instance: a maximal run of rows sharing (efc_type, efc_id)
     for a, n in zip(adr.tolist(), nrow.tolist()):
       self.assertTrue((etype[a : a + n] == etype[a]).all())
       self.assertTrue((eid[a : a + n] == eid[a]).all())
@@ -1537,26 +1541,23 @@ class IOTest(parameterized.TestCase):
     self.assertEqual(m.opt.noslip_iterations, 3)
     np.testing.assert_allclose(m.opt.noslip_tolerance.numpy(), [1e-3])
 
-  @parameterized.parameters(7, 8)
-  def test_contact_sensor_vel_unsupported(self, bit):
-    """Contact sensor with linvel (bit 7) or angvel (bit 8) raises NotImplementedError."""
-    mjm = mujoco.MjModel.from_xml_string("""
-      <mujoco>
-        <worldbody>
-          <geom type="plane" size="1 1 1"/>
-          <body>
-            <freejoint/>
-            <geom size="0.1"/>
-          </body>
-        </worldbody>
-        <sensor>
-          <contact data="found"/>
-        </sensor>
-      </mujoco>
-    """)
-    mjm.sensor_intprm[0, 0] |= 1 << bit
+  @parameterized.parameters("linvel", "angvel")
+  def test_contact_sensor_vel_flex_unsupported(self, data):
+    """Contact sensor linvel or angvel with flex raises NotImplementedError."""
     with self.assertRaises(NotImplementedError):
-      put_model(mjm)
+      test_data.fixture(
+        xml=f"""
+        <mujoco>
+          <worldbody>
+            <geom type="plane" size="1 1 1"/>
+            <flexcomp name="rope" type="grid" count="3 1 1" spacing=".1 .1 .1" pos="0 0 .5" dim="1" radius=".01"/>
+          </worldbody>
+          <sensor>
+            <contact data="{data}"/>
+          </sensor>
+        </mujoco>
+        """
+      )
 
   @parameterized.parameters(*_IO_TEST_MODELS)
   def test_reset_data(self, xml):
