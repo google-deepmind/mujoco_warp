@@ -2730,7 +2730,7 @@ def epa_phase(
   # Data out:
   overflow_out: wp.array[int],
 ) -> Tuple[float, int, wp.vec3, wp.vec3, int]:
-  """Run EPA given GJK result. Returns (dist, ncontact, x1, x2, multiccd_idx)."""
+  """Run EPA given GJK result. Returns (dist, ncontact, x1, x2, face_idx)."""
   pt = Polytope()
   pt.nface = 0
   pt.nvert = 0
@@ -2806,9 +2806,6 @@ def epa_phase(
   if idx == -1:
     return FLOAT_MAX, 0, wp.vec3(), wp.vec3(), -1
 
-  if not _supports_multiccd(geom1, geom2, geomtype1, geomtype2):
-    idx = -1
-
   return dist, 1, x1, x2, idx
 
 
@@ -2845,7 +2842,7 @@ def ccd(
     if dist < 0.0 and result.dim > 0 and _supports_multiccd(geom1, geom2, geomtype1, geomtype2):
       idx = _gjk_simplex_to_epa(result, vert, vert_index, face)
     return dist, ncontact, x1, x2, idx
-  return epa_phase(
+  dist, ncontact, x1, x2, idx = epa_phase(
     tolerance,
     epa_iterations,
     result,
@@ -2863,3 +2860,6 @@ def ccd(
     worldid,
     overflow_out,
   )
+  if not _supports_multiccd(geom1, geom2, geomtype1, geomtype2):
+    idx = -1
+  return dist, ncontact, x1, x2, idx
