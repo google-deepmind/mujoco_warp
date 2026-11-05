@@ -4906,7 +4906,7 @@ def eff_prec_fold(
   d: Data,
   tw_diag: Optional[wp.array] = None,
 ):
-  """Folds active/inactive efc and passive-contact diagonals into tw_diag for covered flex triples and 1D rod twist."""
+  """Folds efc and passive-contact diagonals into tw_diag for flex triples and rod twist."""
   if tw_diag is None:
     return
   tw_diag.zero_()
@@ -4978,7 +4978,7 @@ def eff_prec(
   x_scratch: Optional[wp.array] = None,
   tw_diag: Optional[wp.array] = None,
 ):
-  """Preconditions residual vector using backbone qHLD (plus folded diagonal, efm0_L, or 1D rod twist solve)."""
+  """Preconditions residual using backbone qHLD, folded diagonal, efm0_L, or 1D rod twist."""
   has_rod_twist = m.nflexrodedge > 0 and not (
     (m.opt.disableflags & DisableBit.SPRING) and (m.opt.disableflags & DisableBit.DAMPER)
   )

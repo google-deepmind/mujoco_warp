@@ -92,9 +92,7 @@ def _create_solver_context(
   alloc_solve_ld_scratch = (
     alloc_mgrad and d.qLD.shape[1] > m.qLD_block_total and bool(m.opt.deterministic & types.DeterminismType.ATOMICS)
   )
-  has_passive = not (
-    (m.opt.disableflags & types.DisableBit.SPRING) and (m.opt.disableflags & types.DisableBit.DAMPER)
-  )
+  has_passive = not ((m.opt.disableflags & types.DisableBit.SPRING) and (m.opt.disableflags & types.DisableBit.DAMPER))
   alloc_tw_diag = (
     m.opt.integrator == types.IntegratorType.DISCRETE
     and alloc_mgrad

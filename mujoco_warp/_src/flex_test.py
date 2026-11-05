@@ -4093,8 +4093,8 @@ class FlexContactParityTest(parameterized.TestCase):
       # Flex-flex contact count parity and constraint parity
       if curr_step in (0, 250, 500, 1000):
         if curr_step == 250:
-          # At step 250, MuJoCo caps contact pairs at 50 (mjMAXCONPAIR), whereas Warp
-          # detects all 64 vertices on the ground plane (+14 contacts, each with 4 pyramidal efc rows).
+          # At step 250, MuJoCo caps contact pairs at 50 (mjMAXCONPAIR), whereas Warp detects
+          # all 64 vertices on the ground plane (+14 contacts, each with 4 pyramidal efc rows).
           self.assertEqual(d.nacon.numpy()[0], nworld * (mjd.ncon + 14), f"nacon mismatch at step {curr_step}")
           for w in range(nworld):
             self.assertEqual(d.nefc.numpy()[w], mjd.nefc + 14 * 4, f"nefc mismatch at step {curr_step} (world {w})")

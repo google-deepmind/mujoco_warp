@@ -2337,7 +2337,9 @@ class DerivativeTest(parameterized.TestCase):
     res = wp.zeros_like(d.qacc)
     derivative.eff_prec(m, d, res, d.qfrc_smooth)
 
-    _assert_eq(d.qHDiagInv.numpy()[0], mjd.qHDiagInv, "qHDiagInv")
+    # TODO(team): remove version check once mujoco >= 4.0.0 is required.
+    if util_pkg.check_version("mujoco>=4.0.0.dev1014669023"):
+      _assert_eq(d.qHDiagInv.numpy()[0], mjd.qHDiagInv, "qHDiagInv")
     self.assertTrue(np.all(np.isfinite(res.numpy())))
     self.assertGreater(np.linalg.norm(res.numpy()), 0.0)
 
@@ -2566,7 +2568,9 @@ class DerivativeTest(parameterized.TestCase):
     mujoco.mj_forward(mjm, mjd)
     mjw.forward(m, d)
 
-    _assert_eq(d.qHDiagInv.numpy()[0], mjd.qHDiagInv, "qHDiagInv")
+    # TODO(team): remove version check once mujoco >= 4.0.0 is required.
+    if util_pkg.check_version("mujoco>=4.0.0.dev1014669023"):
+      _assert_eq(d.qHDiagInv.numpy()[0], mjd.qHDiagInv, "qHDiagInv")
     _assert_eq(d.efm_c.numpy()[0], mjd.efm_c, "efm_c")
     _assert_eq(d.qacc_smooth.numpy()[0], mjd.qacc_smooth, "qacc_smooth")
     if nworld == 2:

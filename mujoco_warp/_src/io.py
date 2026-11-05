@@ -798,9 +798,7 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
   m.efm0_active = bool(mjm.nefm0dof > 0 and not has_stretch_or_interp and not m.has_flex_passive and not m.has_non_simple_flex)
   m.nefmdof = int(efm_d.nefmdof) if (efm_d and not m.efm0_active) else 0
   m.efm_dofid = (
-    efm_d.efm_dofid
-    if (efm_d and not m.efm0_active and efm_d.efm_dofid is not None)
-    else np.zeros(0, dtype=np.int32)
+    efm_d.efm_dofid if (efm_d and not m.efm0_active and efm_d.efm_dofid is not None) else np.zeros(0, dtype=np.int32)
   )
 
   flex_interp_assemblable = True

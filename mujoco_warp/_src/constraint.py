@@ -2829,9 +2829,7 @@ def _efc_contact_init_flex(cone_type: types.ConeType, is_sparse: bool, newton: b
         for side in range(2):
           if geom[side] >= 0:
             b = body_weldid[geom_bodyid[geom[side]]]
-            local_nb, local_bodies, local_weights = support.add_interp_weight(
-              local_nb, local_bodies, local_weights, b, 1.0
-            )
+            local_nb, local_bodies, local_weights = support.add_interp_weight(local_nb, local_bodies, local_weights, b, 1.0)
           elif flex[side] >= 0:
             f = flex[side]
             if flex_interp[f] != 0:
@@ -3432,9 +3430,7 @@ def _efc_contact_jac_sparse_flex(cone_type: types.ConeType):
 
         if geom[side] >= 0:
           b = body_weldid[geom_bodyid[geom[side]]]
-          local_nb, local_bodies, local_weights = support.add_interp_weight(
-            local_nb, local_bodies, local_weights, b, sign
-          )
+          local_nb, local_bodies, local_weights = support.add_interp_weight(local_nb, local_bodies, local_weights, b, sign)
         elif flex[side] >= 0:
           f = flex[side]
           if flex_interp[f] != 0:

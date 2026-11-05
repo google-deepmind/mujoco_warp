@@ -1782,7 +1782,7 @@ def add_interp_point_weights(
   local_bodies: vec_interp_body,
   local_weights: vec_interp_weight,
 ) -> tuple[int, vec_interp_body, vec_interp_weight]:
-  """Accumulates trilinear cell node body weights at reference coord (with Coons TFI in shell mode)."""
+  """Accumulates trilinear cell node body weights at coord (with Coons TFI in shell mode)."""
   if scale == 0.0:
     return local_nb, local_bodies, local_weights
   cx = cn[0]
@@ -1828,9 +1828,7 @@ def add_interp_point_weights(
             bid = flex_nodebodyid[nidx]
             if use_weld:
               bid = body_weldid[bid]
-            local_nb, local_bodies, local_weights = add_interp_weight(
-              local_nb, local_bodies, local_weights, bid, w_tfi
-            )
+            local_nb, local_bodies, local_weights = add_interp_weight(local_nb, local_bodies, local_weights, bid, w_tfi)
   return local_nb, local_bodies, local_weights
 
 
@@ -1861,7 +1859,7 @@ def add_flex_interp_weights(
   local_bodies: vec_interp_body,
   local_weights: vec_interp_weight,
 ) -> tuple[int, vec_interp_body, vec_interp_weight]:
-  """Accumulates interpolated flex contact side bodies and weights at the blended reference coord."""
+  """Accumulates interpolated flex contact side bodies and weights at blended reference coord."""
   coord = wp.vec3(0.0)
   if vert_id >= 0:
     coord = flex_vert0[flex_vertadr[f] + vert_id]
