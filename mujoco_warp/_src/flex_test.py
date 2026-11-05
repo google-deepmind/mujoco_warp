@@ -4375,6 +4375,11 @@ class FlexContactParityTest(parameterized.TestCase):
 
     self.assertEqual(d.nacon.numpy()[0], nworld * 5)
 
+    # TODO(team): remove version check once mujoco >= 3.17.1 is required. Before, MuJoCo uses
+    # GJK/EPA, whose contact frames differ by up to 2.8e-3 on Blackwell.
+    analytic = util_pkg.check_version("mujoco>=3.17.1.dev1008099776")
+    atol, frame_atol = (1e-5, None) if analytic else (2e-3, 5e-3)
+
     w_contacts_all = []
     for w in range(nworld):
       mjd.qpos[:] = qpos[w]
@@ -4385,10 +4390,143 @@ class FlexContactParityTest(parameterized.TestCase):
 
       w_contacts = self._get_sorted_contacts(d, d.nacon.numpy()[0], world_idx=w, is_warp=True)
       m_contacts = self._get_sorted_contacts(mjd, mjd.ncon, is_warp=False)
-      # CCD contact frame differences reach 2.8e-3 on Blackwell.
-      self._assert_contact_parity(w_contacts, m_contacts, atol=2e-3, frame_atol=5e-3)
+      self._assert_contact_parity(w_contacts, m_contacts, atol=atol, frame_atol=frame_atol)
       for c in w_contacts:
         self.assertLess(mjm.flex_elemlayer[c["elem"][1]], mjm.flex_activelayers[0])
+      w_contacts_all.append(w_contacts)
+
+    if nworld == 2:
+      self.assertFalse(np.allclose([c["dist"] for c in w_contacts_all[0]], [c["dist"] for c in w_contacts_all[1]]))
+
+  @parameterized.parameters(1, 2)
+  def test_contact_3d_flex_sphere_capsule(self, nworld):
+    """Test analytic sphere and capsule contacts with tetrahedra, including radius and margin."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <body>
+            <freejoint/>
+            <geom size="0.01" pos="0.03 0.03 0.015"/>
+          </body>
+          <body>
+            <freejoint/>
+            <geom size="0.004" pos="-0.004 -0.004 -0.004"/>
+          </body>
+          <body>
+            <freejoint/>
+            <geom type="capsule" size="0.005" fromto="0.35 -0.01 0.012 0.35 0.012 -0.01"/>
+          </body>
+          <flexcomp name="tet1" type="direct" dim="3" radius="0.001" mass="1"
+                    point="0 0 0  0.1 0 0  0 0.1 0  0 0 0.1" element="0 1 2 3">
+            <contact selfcollide="none" margin="0.003"/>
+          </flexcomp>
+          <flexcomp name="tet2" type="direct" dim="3" radius="0.001" mass="1" pos="0.3 0 0"
+                    point="0 0 0  0.1 0 0  0 0.1 0  0 0 0.1" element="0 1 2 3">
+            <contact selfcollide="none" margin="0.003"/>
+          </flexcomp>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=nworld,
+    )
+
+    qpos = d.qpos.numpy().copy()
+    if nworld == 2:
+      qpos[1, 2] -= 0.002
+      d.qpos.assign(qpos)
+
+    d.nacon.fill_(-1)
+    for arr in (d.contact.dist, d.contact.pos, d.contact.frame):
+      arr.fill_(wp.inf)
+    for arr in (d.contact.geom, d.contact.flex, d.contact.elem, d.contact.vert):
+      arr.fill_(-1)
+
+    mjw.kinematics(m, d)
+    mjw.flex(m, d)
+    mjw.collision(m, d)
+
+    # sphere inside (face), sphere outside within margin (vertex), capsule across an edge
+    self.assertEqual(d.nacon.numpy()[0], nworld * 3)
+
+    # TODO(team): remove version check once mujoco >= 3.17.1 is required. Before, MuJoCo uses
+    # GJK/EPA, whose contact frames differ by up to 2.8e-3 on Blackwell.
+    analytic = util_pkg.check_version("mujoco>=3.17.1.dev1008099776")
+    atol, frame_atol = (1e-5, None) if analytic else (2e-3, 5e-3)
+
+    w_contacts_all = []
+    for w in range(nworld):
+      mjd.qpos[:] = qpos[w]
+      mujoco.mj_kinematics(mjm, mjd)
+      mujoco.mj_flex(mjm, mjd)
+      mujoco.mj_collision(mjm, mjd)
+      self.assertEqual(mjd.ncon, 3)
+
+      w_contacts = self._get_sorted_contacts(d, d.nacon.numpy()[0], world_idx=w, is_warp=True)
+      m_contacts = self._get_sorted_contacts(mjd, mjd.ncon, is_warp=False)
+      self._assert_contact_parity(w_contacts, m_contacts, atol=atol, frame_atol=frame_atol)
+      w_contacts_all.append(w_contacts)
+
+    if nworld == 2:
+      self.assertFalse(np.allclose([c["dist"] for c in w_contacts_all[0]], [c["dist"] for c in w_contacts_all[1]]))
+
+  @parameterized.parameters(1, 2)
+  def test_contact_3d_flex_flat_tetrahedron(self, nworld):
+    """Test that sphere and capsule contacts with a nearly flat tetrahedron fall back to CCD."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <body>
+            <freejoint/>
+            <geom size="0.01" pos="0.03 0.03 0.012"/>
+          </body>
+          <body>
+            <freejoint/>
+            <geom type="capsule" size="0.005" fromto="0.33 0.02 0.008 0.33 0.05 0.011"/>
+          </body>
+          <flexcomp name="flat1" type="direct" dim="3" radius="0.005" mass="1"
+                    point="0 0 0  0.1 0 0  0 0.1 0  0.03 0.03 1e-8" element="0 1 2 3">
+            <contact selfcollide="none"/>
+          </flexcomp>
+          <flexcomp name="flat2" type="direct" dim="3" radius="0.005" mass="1" pos="0.3 0 0"
+                    point="0 0 0  0.1 0 0  0 0.1 0  0.03 0.03 1e-8" element="0 1 2 3">
+            <contact selfcollide="none"/>
+          </flexcomp>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=nworld,
+    )
+
+    qpos = d.qpos.numpy().copy()
+    if nworld == 2:
+      qpos[1, 2] -= 0.001
+      d.qpos.assign(qpos)
+
+    d.nacon.fill_(-1)
+    for arr in (d.contact.dist, d.contact.pos, d.contact.frame):
+      arr.fill_(wp.inf)
+    for arr in (d.contact.geom, d.contact.flex, d.contact.elem, d.contact.vert):
+      arr.fill_(-1)
+
+    mjw.kinematics(m, d)
+    mjw.flex(m, d)
+    mjw.collision(m, d)
+
+    self.assertEqual(d.nacon.numpy()[0], nworld * 2)
+
+    w_contacts_all = []
+    for w in range(nworld):
+      mjd.qpos[:] = qpos[w]
+      mujoco.mj_kinematics(mjm, mjd)
+      mujoco.mj_flex(mjm, mjd)
+      mujoco.mj_collision(mjm, mjd)
+      self.assertEqual(mjd.ncon, 2)
+
+      w_contacts = self._get_sorted_contacts(d, d.nacon.numpy()[0], world_idx=w, is_warp=True)
+      m_contacts = self._get_sorted_contacts(mjd, mjd.ncon, is_warp=False)
+      self._assert_contact_parity(w_contacts, m_contacts, atol=1e-4)
       w_contacts_all.append(w_contacts)
 
     if nworld == 2:
