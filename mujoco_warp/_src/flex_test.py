@@ -5873,7 +5873,9 @@ class FlexRodBendingTest(parameterized.TestCase):
     mjds = [mjd]
     if nworld == 2:
       mjd1 = mujoco.MjData(mjm)
-      mjd1.plastic[:] = mjd.plastic
+      # TODO(team): remove version check once mujoco >= 3.17.1 is required.
+      if util_pkg.check_version("mujoco>=3.17.1"):
+        mjd1.plastic[:] = mjd.plastic
       qpos = d.qpos.numpy()
       qvel = d.qvel.numpy()
       qpos[1] += 0.01 * np.cos(np.arange(mjm.nq))
@@ -5925,7 +5927,9 @@ class FlexRodBendingTest(parameterized.TestCase):
     mjds = [mjd]
     if nworld == 2:
       mjd1 = mujoco.MjData(mjm)
-      mjd1.plastic[:] = mjd.plastic
+      # TODO(team): remove version check once mujoco >= 3.17.1 is required.
+      if util_pkg.check_version("mujoco>=3.17.1"):
+        mjd1.plastic[:] = mjd.plastic
       qpos = d.qpos.numpy()
       qvel = d.qvel.numpy()
       qpos[1] += 0.01 * np.cos(np.arange(mjm.nq))
@@ -6066,7 +6070,9 @@ class FlexRodBendingTest(parameterized.TestCase):
     mjds = [mjd]
     if nworld == 2:
       mjd1 = mujoco.MjData(mjm)
-      mjd1.plastic[:] = mjd.plastic
+      # TODO(team): remove version check once mujoco >= 3.17.1 is required.
+      if util_pkg.check_version("mujoco>=3.17.1"):
+        mjd1.plastic[:] = mjd.plastic
       qvel = d.qvel.numpy()
       qvel[1] *= -1.0
       d.qvel.assign(qvel)

@@ -3380,9 +3380,9 @@ def _energy_pos_passive_flex(deterministic: bool = False):
   @wp.kernel(module="unique", module_options=module_options)
   def kernel(
     # Model:
+    flex_interp: wp.array[int],
     flexedge_length0: wp.array[float],
     flex_edgestiffness: wp.array[float],
-    flex_interp: wp.array[int],
     flexedge_rigid: wp.array[bool],
     flex_edgeflexid: wp.array[int],
     # Data in:
@@ -3465,9 +3465,9 @@ def energy_pos(m: Model, d: Data):
       _energy_pos_passive_flex(bool(m.opt.deterministic & DeterminismType.ATOMICS)),
       dim=(d.nworld, m.nflexedge),
       inputs=[
+        m.flex_interp,
         m.flexedge_length0,
         m.flex_edgestiffness,
-        m.flex_interp,
         m.flexedge_rigid,
         m.flex_edgeflexid,
         d.flexedge_length,

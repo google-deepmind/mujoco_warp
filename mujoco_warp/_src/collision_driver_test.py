@@ -70,7 +70,9 @@ def volume_gradient_step_test(volume: VolumeData, result_out: wp.array[wp.vec4])
 
 @wp.kernel
 def primitive_sdf_singularities_test(
+  # In:
   box_pts: wp.array[wp.vec3],
+  # Out:
   box_grads_out: wp.array[wp.vec3],
   ellipsoid_dist_out: wp.array[float],
   ellipsoid_grad_out: wp.array[wp.vec3],

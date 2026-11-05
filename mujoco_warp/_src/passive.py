@@ -4750,8 +4750,8 @@ def _flex_contact_stiffness(
 
 @wp.func
 def _add_con_dof(
-  max_dof: int,
   # In:
+  max_dof: int,
   cid: int,
   dof: int,
   val: float,

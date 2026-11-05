@@ -3362,6 +3362,7 @@ def _tile_rod_jacp(jv: wp.vec3, cdof_ang: wp.vec3, M_p: wp.mat33, arm_s: wp.vec3
 
 @wp.func
 def _tile_rod_jacr(
+  # In:
   jv: wp.vec3,
   cdof_ang: wp.vec3,
   t_s: wp.vec3,

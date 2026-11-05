@@ -947,7 +947,9 @@ class PassiveTest(parameterized.TestCase):
 
   @parameterized.parameters("Euler", "discrete")
   # TODO(team): remove check_version once minimum mujoco version >= 3.17.1
-  @absltest.skipIf(not util_pkg.check_version("mujoco>=3.17.1"), "Cannot test unreleased XML `yield` attribute with older MuJoCo versions.")
+  @absltest.skipIf(
+    not util_pkg.check_version("mujoco>=3.17.1"), "Cannot test unreleased XML `yield` attribute with older MuJoCo versions."
+  )
   def test_flex_plastic_stretch_bend_yield(self, integrator):
     """Verify separate stretching and bending yield strains of 2D flexes match MuJoCo."""
     yields = ("1 0.002", "0.002 1", "0 0.002", "0.002 0", "1 1")
@@ -978,7 +980,7 @@ class PassiveTest(parameterized.TestCase):
       keyframe=0,
     )
 
-    # only modes with a positive yield strain have plastic state; zero yield strains of the plastic modes
+    # only modes with positive yield strain have plastic state; zero yield strains of plastic modes
     # of the last shell at runtime are full plastic flow
     np.testing.assert_array_equal(mjm.flex_plasticmode, [3, 3, 1, 2, 3])
     self.assertEqual(mjm.nplastic, 44)  # 11 + 11 + 5 + 6 + 11

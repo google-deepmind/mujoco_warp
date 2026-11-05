@@ -31,6 +31,8 @@ MJ_MAXCONPAIR = mujoco.mjMAXCONPAIR
 MJ_MINMU = mujoco.mjMINMU  # minimum friction
 MJ_MINAWAKE = mujoco.mjMINAWAKE  # minimum number of timesteps before sleeping
 FLEX_STIFFNESS_3D = 24 if util_pkg.check_version("mujoco>=3.14.1.dev989511280") else 21
+# TODO(team): remove version check once mujoco >= 4.0.0 is required.
+FLEX_INTERP_PHYS_JAC = util_pkg.check_version("mujoco>=3.17.1.dev1010658301")
 
 
 # TODO(team): Remove dynamic version probe once minimum MuJoCo version
