@@ -3445,6 +3445,7 @@ def step(m: Model, d: Data, d_out: Optional[Data] = None):
 
   if record:
     hook, prepare_arrays = _step_backward_registration
+    # TODO: Replace this preparation and tape registration with the diff API (#1727).
     arrays = prepare_arrays(d, d_out, m=m)
     # Like a recorded kernel, retain array identities if callers replace a held input later.
     d, d_out = dataclasses.replace(d), dataclasses.replace(d_out)

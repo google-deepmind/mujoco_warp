@@ -104,6 +104,7 @@ def _reset_backward_context(bc: BackwardContext):
 
 def create_backward_context(m: Model, d: Data) -> BackwardContext:
   """Preallocates the reusable backward workspace for ``(m, d)``."""
+  _step_model_arrays(m)
   smooth_adjoint.assert_smooth_supported(m)
   collision_adjoint.assert_collision_supported(m)
   _prepare_data(d)
@@ -516,33 +517,77 @@ def forward_backward_ift(m: Model, d: Data, d_out: Data, adj_qacc: wp.array, bc:
   _write_input_adjoints(d, bc)
 
 
-_STEP_INPUT_FIELDS = (
+_STEP_IN_FIELDS = (
   "qpos",
   "qvel",
   "act",
   "ctrl",
+  "qfrc_applied",
+  "xfrc_applied",
+)
+_STEP_OUT_FIELDS = (
+  "qpos",
+  "qvel",
+  "qacc",
+  "act",
+  "act_dot",
+  "ctrl",
+  "qfrc_applied",
+  "xfrc_applied",
+)
+_STEP_MODEL_FIELDS = (
+  "body_mass",
+  "body_inertia",
+  "body_ipos",
+  "body_iquat",
+  "dof_armature",
+  "dof_damping",
+  "jnt_stiffness",
+  "jnt_stiffnesspoly",
+  "qpos_spring",
+  "jnt_solref",
+  "jnt_solimp",
+  "dof_solref",
+  "dof_solimp",
+  "dof_frictionloss",
+  "eq_solref",
+  "eq_solimp",
+  "geom_friction",
+  "pair_friction",
 )
 _COPIED_INPUTS = ("ctrl", "qfrc_applied", "xfrc_applied")
+_KINEMATICS_IN_FIELDS = ("qpos",)
+_KINEMATICS_OUT_FIELDS = ("site_xpos", "xpos", "xquat")
+
+
+def _data_arrays(d: Data, fields: tuple[str, ...]) -> list[wp.array]:
+  """Enables gradients on the declared nonempty Data fields."""
+  arrays = [getattr(d, name) for name in fields if getattr(d, name).size]
+  for array in arrays:
+    array.requires_grad = True
+  return arrays
+
+
+def _step_model_arrays(m: Model) -> list[wp.array]:
+  """Returns opted-in model parameters, rejecting incomplete step derivatives."""
+  parameters = {
+    prefix + name: value
+    for prefix, obj in (("", m), ("opt.", m.opt))
+    for name, value in vars(obj).items()
+    if isinstance(value, wp.array) and value.size and value.requires_grad
+  }
+  unsupported = parameters.keys() - set(_STEP_MODEL_FIELDS)
+  if unsupported:
+    raise NotImplementedError("native step parameter gradients are not implemented for: " + ", ".join(sorted(unsupported)))
+  return list(parameters.values())
 
 
 def step_backward_arrays(d: Data, d_out: Data, m: Model | None = None):
   """Allocates and returns arrays used by the analytic step backward."""
-  inputs = [getattr(d, name) for name in _STEP_INPUT_FIELDS]
-  for name in ("qfrc_applied", "xfrc_applied"):
-    if getattr(d, name).requires_grad or getattr(d_out, name).requires_grad:
-      inputs.append(getattr(d, name))
-  for array in inputs:
-    array.requires_grad = True
-  arrays = [array for array in (*inputs, *_prepare_data(d_out)) if array.size]
-  for name in _COPIED_INPUTS:
-    if getattr(d, name).requires_grad:
-      output = getattr(d_out, name)
-      output.requires_grad = True
-      if output.size:
-        arrays.append(output)
+  arrays = [*_data_arrays(d, _STEP_IN_FIELDS), *_data_arrays(d_out, _STEP_OUT_FIELDS), *_prepare_data(d_out)]
   if m is not None:
-    arrays.extend(model_adjoint.parameter_arrays(m))
-  return arrays
+    arrays.extend(_step_model_arrays(m))
+  return list(dict.fromkeys(array for array in arrays if array.size))
 
 
 @wp.kernel(enable_backward=False)
@@ -555,7 +600,8 @@ def _accum_copied_input(adj_in: wp.array2d[Any], adj_out: wp.array2d[Any]):
 def step_backward(m: Model, d: Data, d_out: Data, bc: BackwardContext | None = None):
   """Maps ``d_out`` state gradients to ``d`` with an analytic backward."""
   _assert_step_supported(m)
-  step_backward_arrays(d, d_out)
+  # TODO: Remove this compatibility preparation when the diff API registers the rule (#1727).
+  step_backward_arrays(d, d_out, m)
   bc = bc or _ACTIVE_BACKWARD_CONTEXT.get() or create_backward_context(m, d)
   _reset_backward_context(bc)
   _, _, adj_qacc = forward_adjoint.advance_backward(m, d, d_out, bc)
@@ -569,9 +615,7 @@ def step_backward(m: Model, d: Data, d_out: Data, bc: BackwardContext | None = N
 
 def fwd_kinematics_arrays(d: Data):
   """Returns differentiated fwd_kinematics inputs and outputs."""
-  return [
-    array for array in (d.qpos, d.site_xpos, d.xpos, d.xquat) if array is not None and array.size and array.grad is not None
-  ]
+  return _data_arrays(d, _KINEMATICS_IN_FIELDS + _KINEMATICS_OUT_FIELDS)
 
 
 @event_scope

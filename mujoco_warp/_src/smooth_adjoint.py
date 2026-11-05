@@ -23,7 +23,6 @@ import warp as wp
 from mujoco_warp._src import adjoint_recompute
 from mujoco_warp._src import adjoint_util
 from mujoco_warp._src import math
-from mujoco_warp._src import model_adjoint
 from mujoco_warp._src import smooth
 from mujoco_warp._src import smooth_kinematics_adjoint
 from mujoco_warp._src import support
@@ -142,7 +141,6 @@ def _model_support(m: Model) -> frozenset[str]:
 def assert_smooth_supported(m: Model):
   """Raises for enabled features or requested parameters without an analytic smooth VJP."""
   # Requests can change after validation; the cached model capabilities do not.
-  model_adjoint.parameter_arrays(m)
   unsupported = sorted(name for name in _model_support(m) if getattr(m, name).requires_grad)
   if unsupported:
     raise NotImplementedError(
