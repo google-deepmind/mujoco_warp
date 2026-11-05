@@ -101,7 +101,7 @@ class Rollout:
       self.demo.step_index.fill_(step)
       if self.forward_graph is None:
         self.demo._physics_step()
-        forward._copy_state(self.demo.datas[1], self.demo.datas[0])
+        forward._copy_state(self.demo.m, self.demo.datas[1], self.demo.datas[0])
       else:
         wp.capture_launch(self.forward_graph)
       self.save(step + 1, self.demo.datas[0])
@@ -177,7 +177,7 @@ class Rollout:
     demo.step_index.zero_()
     with wp.ScopedCapture() as capture:
       demo._physics_step()
-      forward._copy_state(demo.datas[1], demo.datas[0])
+      forward._copy_state(demo.m, demo.datas[1], demo.datas[0])
     self.forward_graph = capture.graph
 
     demo.reset()
