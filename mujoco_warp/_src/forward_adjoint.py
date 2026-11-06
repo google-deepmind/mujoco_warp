@@ -14,8 +14,6 @@
 # ==============================================================================
 """VJPs for time integration, smooth dynamics, and forward kinematics."""
 
-import dataclasses
-
 import warp as wp
 
 from mujoco_warp._src import adjoint_util
@@ -658,16 +656,17 @@ def _body_xquat_vjp(
 
 
 @event_scope
-def advance_backward(m: Model, d: Data, d_out: Data, bc: BackwardContext):
+def advance_backward(m: Model, d_out: Data, d_bwd: Data, bc: BackwardContext):
   """Maps integrator cotangents, deferring mass-position dependence to smooth_qpos_backward."""
-  nworld, nv = d.nworld, m.nv
+  Ma = d_out.efc.Ma
+  nworld, nv = d_bwd.nworld, m.nv
   adj_qpos, adj_qvel, adj_qacc = bc.adj_qpos, bc.adj_qvel, bc.adj_qacc
 
   # Match forward.implicit's IMPLICITFAST branch and forward.euler.
   flags = DisableBit.ACTUATION | DisableBit.SPRING | DisableBit.DAMPER
   implicitfast = m.opt.integrator == IntegratorType.IMPLICITFAST and (m.opt.disableflags & flags) != flags
   eulerdamp = m.opt.integrator == IntegratorType.EULER and not (m.opt.disableflags & (DisableBit.EULERDAMP | DisableBit.DAMPER))
-  qacc_advance = d_out.qacc
+  qacc_advance = d_bwd.qacc
 
   if implicitfast or eulerdamp:
     wp.launch(
@@ -683,54 +682,54 @@ def advance_backward(m: Model, d: Data, d_out: Data, bc: BackwardContext):
         m.actuator_damping,
         m.actuator_dampingpoly,
         m.actuator_gear,
-        d.qvel,
+        d_bwd.qvel,
       ],
       outputs=[bc.damp_deriv],
     )
 
   if implicitfast:
-    linearization = dataclasses.replace(d_out, qvel=d.qvel, ctrl=d.ctrl)
-    derivative.deriv_smooth_vel(m, linearization, bc.qDeriv)
+    derivative.deriv_smooth_vel(m, d_bwd, bc.qDeriv)
     wp.launch(
       forward._implicit_free_body_reset_m,
       dim=(nworld, m.body_freeadr.size),
-      inputs=[m.body_dofadr, m.M_rownnz, m.M_rowadr, m.body_freeadr, d_out.M],
+      inputs=[m.body_dofadr, m.M_rownnz, m.M_rowadr, m.body_freeadr, d_bwd.M],
       outputs=[bc.qDeriv],
     )
     qLD, qLDiagInv, qacc_advance = bc.qLD, bc.qLDiagInv, bc.qacc_advance
-    smooth.factor_solve_i(m, d_out, bc.qDeriv, qLD, qLDiagInv, qacc_advance, d_out.efc.Ma)
-    forward.implicit_free_body(m, linearization, d_out.efc.Ma, qacc_advance, solve=True)
+    smooth.factor_solve_i(m, d_bwd, bc.qDeriv, qLD, qLDiagInv, qacc_advance, Ma)
+    forward.implicit_free_body(m, d_bwd, Ma, qacc_advance, solve=True)
   elif eulerdamp:
-    wp.copy(bc.qDeriv, d_out.M)
+    wp.copy(bc.qDeriv, d_bwd.M)
     wp.launch(
       forward._euler_damp_qfrc,
       dim=(nworld, nv),
       inputs=[m.opt.timestep, m.M_rownnz, m.M_rowadr, bc.damp_deriv],
       outputs=[bc.qDeriv],
     )
-    support.mul_m(m, d_out, bc.Ma, d_out.qacc)
+    support.mul_m(m, d_bwd, bc.Ma, d_bwd.qacc)
     qLD, qLDiagInv, qacc_advance = bc.qLD, bc.qLDiagInv, bc.qacc_advance
-    smooth.factor_solve_i(m, d_out, bc.qDeriv, qLD, qLDiagInv, qacc_advance, bc.Ma)
+    smooth.factor_solve_i(m, d_bwd, bc.qDeriv, qLD, qLDiagInv, qacc_advance, bc.Ma)
 
   pairs = [
     (m.opt.timestep, None),
     (m.jnt_type, None),
     (m.jnt_qposadr, None),
     (m.jnt_dofadr, None),
-    (d.qpos, adj_qpos),
-    (d.qvel, adj_qvel),
+    (d_bwd.qpos, adj_qpos),
+    (d_bwd.qvel, adj_qvel),
     (qacc_advance, adj_qacc),
   ]
   adjoint_util._launch_vjp(
     _advance_state,
     (nworld, m.njnt),
     pairs,
-    [d_out.qpos, d_out.qvel],
+    # next_position writes through its output array during the reverse replay.
+    [bc.scratch.qpos, bc.scratch.qvel],
     [d_out.qpos.grad, d_out.qvel.grad],
   )
 
   if implicitfast or eulerdamp:
-    smooth.solve_LD(m, d_out, qLD, qLDiagInv, bc.y_remap, adj_qacc)
+    smooth.solve_LD(m, d_bwd, qLD, qLDiagInv, bc.y_remap, adj_qacc)
     if implicitfast:
       wp.launch(
         _implicit_free_body_backward,
@@ -743,30 +742,30 @@ def advance_backward(m: Model, d: Data, d_out: Data, bc: BackwardContext):
           m.M_rowadr,
           m.M_colind,
           m.body_freeadr,
-          d.qvel,
-          d_out.xpos,
-          d_out.xmat,
-          d_out.subtree_com,
-          d_out.crb,
-          d_out.M,
+          d_bwd.qvel,
+          d_bwd.xpos,
+          d_bwd.xmat,
+          d_bwd.subtree_com,
+          d_bwd.crb,
+          d_bwd.M,
           bc.damp_deriv,
           qacc_advance,
           adj_qacc,
         ],
         outputs=[bc.y_remap, adj_qvel, bc.adj_dof],
       )
-      model_adjoint.implicitfast_inertia_vjp(m, linearization, qacc_advance, bc.y_remap)
+      model_adjoint.implicitfast_inertia_vjp(m, d_bwd, qacc_advance, bc.y_remap)
       wp.launch(
         smooth_kinematics_adjoint._dof_to_qpos,
         dim=(nworld, m.njnt),
-        inputs=[m.jnt_type, m.jnt_qposadr, m.jnt_dofadr, d.qpos, bc.adj_dof],
+        inputs=[m.jnt_type, m.jnt_qposadr, m.jnt_dofadr, d_bwd.qpos, bc.adj_dof],
         outputs=[adj_qpos],
       )
-    support.mul_m(m, d_out, bc.adj_qacc_root, bc.y_remap)
+    support.mul_m(m, d_bwd, bc.adj_qacc_root, bc.y_remap)
 
     # For a_int = Q^-1 M a, the direct mass VJP is y.T @ dM @ (a - a_int).
     # Position and parameter reverses consume this for both implicitfast and Euler damping.
-    wp.launch(adjoint_util._sub_cols, dim=(nworld, nv), inputs=[d_out.qacc, qacc_advance], outputs=[bc.w_dir])
+    wp.launch(adjoint_util._sub_cols, dim=(nworld, nv), inputs=[d_bwd.qacc, qacc_advance], outputs=[bc.w_dir])
 
     if not (m.opt.disableflags & DisableBit.DAMPER):
       # Q = M + dt*D, where D = -d(force_damper)/dv. Its VJP affects velocity and,
@@ -783,7 +782,7 @@ def advance_backward(m: Model, d: Data, d_out: Data, bc: BackwardContext):
         (m.actuator_damping, None),
         (m.actuator_dampingpoly, None),
         (m.actuator_gear, None),
-        (d.qvel, bc.adj_qvel_damp),
+        (d_bwd.qvel, bc.adj_qvel_damp),
         (qacc_advance, None),
       ]
       adjoint_util._launch_vjp(_dampingpoly_Qv_leaf, (nworld, nv), pairs, [bc.dampingpoly_Qv], [bc.smooth_r.grad])
@@ -796,15 +795,14 @@ def advance_backward(m: Model, d: Data, d_out: Data, bc: BackwardContext):
 
 
 @event_scope
-def smooth_qvel_backward(m: Model, d: Data, d_out: Data, lam: wp.array, adj_qvel: wp.array, bc: BackwardContext):
+def smooth_qvel_backward(m: Model, d: Data, d_bwd: Data, lam: wp.array, adj_qvel: wp.array, bc: BackwardContext):
   """Accumulates non-bias force VJPs for velocity, controls, and applied forces."""
   nworld = d.nworld
-  linearization = dataclasses.replace(d_out, qvel=d.qvel, ctrl=d.ctrl)
-  derivative.deriv_smooth_vel(m, linearization, bc.qDeriv)
+  derivative.deriv_smooth_vel(m, d_bwd, bc.qDeriv)
   wp.launch(forward._map_m2d, dim=(nworld, m.nD), inputs=[m.mapM2D, bc.qDeriv], outputs=[bc.qLU])
   # RNE qvel VJP is handled elsewhere via smooth_qpos_backward, avoiding the full Jacobian.
-  # derivative.deriv_rne_vel(m, linearization, bc.qLU)
-  wp.launch(forward._map_m2d, dim=(nworld, m.nD), inputs=[m.mapM2D, d_out.M], outputs=[bc.M_D])
+  # derivative.deriv_rne_vel(m, d_bwd, bc.qLU)
+  wp.launch(forward._map_m2d, dim=(nworld, m.nD), inputs=[m.mapM2D, d_bwd.M], outputs=[bc.M_D])
   wp.launch(
     _smooth_qvel_vjp,
     dim=(nworld, m.nD),
@@ -829,12 +827,12 @@ def smooth_qvel_backward(m: Model, d: Data, d_out: Data, lam: wp.array, adj_qvel
         m.actuator_ctrllimited,
         m.actuator_ctrlrange,
         d.ctrl,
-        d_out.moment_rownnz,
-        d_out.moment_rowadr,
-        d_out.moment_colind,
-        d_out.actuator_moment,
-        d_out.actuator_force,
-        d_out.qfrc_actuator,
+        d_bwd.moment_rownnz,
+        d_bwd.moment_rowadr,
+        d_bwd.moment_colind,
+        d_bwd.actuator_moment,
+        d_bwd.actuator_force,
+        d_bwd.qfrc_actuator,
         lam,
         int(m.opt.disableflags) & DisableBit.CLAMPCTRL,
       ],
@@ -857,14 +855,14 @@ def smooth_qvel_backward(m: Model, d: Data, d_out: Data, lam: wp.array, adj_qvel
           m.actuator_ctrllimited,
           m.actuator_ctrlrange,
           d.ctrl,
-          d_out.actuator_length,
-          d_out.moment_rownnz,
-          d_out.moment_rowadr,
-          d_out.moment_colind,
-          d_out.actuator_moment,
-          d_out.actuator_velocity,
-          d_out.actuator_force,
-          d_out.qfrc_actuator,
+          d_bwd.actuator_length,
+          d_bwd.moment_rownnz,
+          d_bwd.moment_rowadr,
+          d_bwd.moment_colind,
+          d_bwd.actuator_moment,
+          d_bwd.actuator_velocity,
+          d_bwd.actuator_force,
+          d_bwd.qfrc_actuator,
           lam,
           bc.qacc_advance,
           bc.y_remap,
@@ -896,15 +894,15 @@ def smooth_qvel_backward(m: Model, d: Data, d_out: Data, lam: wp.array, adj_qvel
         m.actuator_ctrlrange,
         d.act,
         d.ctrl,
-        d_out.moment_rownnz,
-        d_out.moment_rowadr,
-        d_out.moment_colind,
-        d_out.actuator_moment,
-        d_out.actuator_force,
-        d_out.qfrc_actuator,
+        d_bwd.moment_rownnz,
+        d_bwd.moment_rowadr,
+        d_bwd.moment_colind,
+        d_bwd.actuator_moment,
+        d_bwd.actuator_force,
+        d_bwd.qfrc_actuator,
         lam,
-        d_out.act.grad,
-        d_out.act_dot.grad,
+        d_bwd.act.grad,
+        d_bwd.act_dot.grad,
       ],
       outputs=[d.act.grad, d.ctrl.grad],
     )
@@ -921,9 +919,9 @@ def smooth_qvel_backward(m: Model, d: Data, d_out: Data, lam: wp.array, adj_qvel
         m.body_rootid,
         m.dof_bodyid,
         m.body_isdofancestor,
-        d_out.xipos,
-        d_out.subtree_com,
-        d_out.cdof,
+        d_bwd.xipos,
+        d_bwd.subtree_com,
+        d_bwd.cdof,
         lam,
       ],
       outputs=[d.xfrc_applied.grad],
@@ -931,7 +929,7 @@ def smooth_qvel_backward(m: Model, d: Data, d_out: Data, lam: wp.array, adj_qvel
 
 
 @event_scope
-def smooth_qpos_backward(m: Model, d: Data, d_out: Data, lam: wp.array, res_qpos: wp.array, bc: BackwardContext):
+def smooth_qpos_backward(m: Model, d: Data, d_bwd: Data, lam: wp.array, res_qpos: wp.array, bc: BackwardContext):
   """Shares the smooth position reverse with inertial parameters, including direct mass terms."""
   smooth_adjoint.assert_smooth_supported(m)
   flags = DisableBit.ACTUATION | DisableBit.SPRING | DisableBit.DAMPER
@@ -940,45 +938,40 @@ def smooth_qpos_backward(m: Model, d: Data, d_out: Data, lam: wp.array, res_qpos
   )
   # Bound cooperative RNE scratch to eight 128-element spatial-vector tiles.
   if d.qpos.device.is_cuda and m.nbody <= 128:
-    linearization = dataclasses.replace(d_out, qpos=d.qpos, qvel=d.qvel, ctrl=d.ctrl, act=d.act)
     residual = smooth_adjoint.smooth_force_channels_backward(
-      m, linearization, lam, bc.y_remap if with_mass else None, bc.w_dir if with_mass else None, bc, xfrc_applied=d.xfrc_applied
+      m, d_bwd, lam, bc.y_remap if with_mass else None, bc.w_dir if with_mass else None, bc, xfrc_applied=d.xfrc_applied
     )
   else:
     if with_mass:
       direct = smooth_adjoint.mass_matrix_qpos_vjp(m, d, bc.y_remap, bc.w_dir, bc=bc)
       wp.launch(adjoint_util._sub_cols, dim=res_qpos.shape, inputs=[res_qpos, direct], outputs=[res_qpos])
       model_adjoint.inertia_param_vjp(m, bc.scratch, bc, scale=1.0)
-    linearization = smooth_adjoint.linearize(m, d, d_out, bc)
-    residual = smooth_adjoint.smooth_force_backward(m, linearization, lam, bc=bc, xfrc_applied=d.xfrc_applied)
+    smooth.rne(m, d_bwd, flg_acc=True)
+    residual = smooth_adjoint.smooth_force_backward(m, d_bwd, lam, bc=bc, xfrc_applied=d.xfrc_applied)
   wp.launch(adjoint_util._accum_cols, dim=residual.shape, inputs=[residual], outputs=[res_qpos])
   # Consume the inertia cotangents before gravcomp reuses the workspace.
-  model_adjoint.inertia_param_vjp(m, linearization, bc)
+  model_adjoint.inertia_param_vjp(m, d_bwd, bc)
   for vjp in (
     smooth_adjoint.spring_qpos_vjp,
     smooth_adjoint.actuator_qpos_vjp,
     smooth_adjoint.gravcomp_qpos_vjp,
   ):
-    residual = vjp(m, linearization, lam, bc=bc)
+    residual = vjp(m, d_bwd, lam, bc=bc)
     wp.launch(adjoint_util._accum_cols, dim=residual.shape, inputs=[residual], outputs=[res_qpos])
   # Gravcomp leaves mass and COM cotangents in the same workspace.
-  model_adjoint.inertia_param_vjp(m, linearization, bc)
+  model_adjoint.inertia_param_vjp(m, d_bwd, bc)
 
 
 @event_scope
-def fwd_kinematics_backward(m: Model, d: Data, bc: BackwardContext):
+def fwd_kinematics_backward(m: Model, d: Data, d_bwd: Data, bc: BackwardContext):
   """Maps site and body-pose cotangents to generalized position coordinates."""
-  wp.copy(bc.scratch.qpos, d.qpos)
-  if m.nmocap:
-    wp.copy(bc.scratch.mocap_pos, d.mocap_pos)
-    wp.copy(bc.scratch.mocap_quat, d.mocap_quat)
-  smooth.kinematics(m, bc.scratch)
-  smooth.com_pos(m, bc.scratch)
+  smooth.kinematics(m, d_bwd)
+  smooth.com_pos(m, d_bwd)
   bc.adj_dof.zero_()
   if d.site_xpos.grad is not None:
     wp.launch(
       _site_jac_vjp,
-      dim=(d.nworld, m.nv),
+      dim=(d_bwd.nworld, m.nv),
       inputs=[
         m.nsite,
         m.body_parentid,
@@ -986,9 +979,9 @@ def fwd_kinematics_backward(m: Model, d: Data, bc: BackwardContext):
         m.dof_bodyid,
         m.site_bodyid,
         m.body_isdofancestor,
-        bc.scratch.site_xpos,
-        bc.scratch.subtree_com,
-        bc.scratch.cdof,
+        d_bwd.site_xpos,
+        d_bwd.subtree_com,
+        d_bwd.cdof,
         d.site_xpos.grad,
       ],
       outputs=[bc.adj_dof],
@@ -997,20 +990,14 @@ def fwd_kinematics_backward(m: Model, d: Data, bc: BackwardContext):
   if d.xpos.grad is not None:
     wp.launch(
       _body_xpos_vjp,
-      dim=(d.nworld, m.nv),
-      inputs=[*body_inputs, bc.scratch.xpos, bc.scratch.subtree_com, bc.scratch.cdof, d.xpos.grad],
+      dim=(d_bwd.nworld, m.nv),
+      inputs=[*body_inputs, d_bwd.xpos, d_bwd.subtree_com, d_bwd.cdof, d.xpos.grad],
       outputs=[bc.adj_dof],
     )
   if d.xquat.grad is not None:
     wp.launch(
       _body_xquat_vjp,
-      dim=(d.nworld, m.nv),
-      inputs=[*body_inputs, bc.scratch.xpos, bc.scratch.xquat, bc.scratch.subtree_com, bc.scratch.cdof, d.xquat.grad],
+      dim=(d_bwd.nworld, m.nv),
+      inputs=[*body_inputs, d_bwd.xpos, d_bwd.xquat, d_bwd.subtree_com, d_bwd.cdof, d.xquat.grad],
       outputs=[bc.adj_dof],
     )
-  wp.launch(
-    smooth_kinematics_adjoint._dof_to_qpos,
-    dim=(d.nworld, m.njnt),
-    inputs=[m.jnt_type, m.jnt_qposadr, m.jnt_dofadr, d.qpos, bc.adj_dof],
-    outputs=[d.qpos.grad],
-  )

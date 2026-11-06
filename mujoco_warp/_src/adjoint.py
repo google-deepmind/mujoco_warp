@@ -177,19 +177,20 @@ def _solve_adjoint_cholesky(nv: int):
 
 
 @event_scope
-def solve_backward(m: Model, d_out: Data, adj_qacc: wp.array, bc: BackwardContext):
+def solve_backward(m: Model, d_bwd: Data, adj_qacc: wp.array, bc: BackwardContext):
   """Solves ``H * lam = adj_qacc`` at the converged acceleration."""
   solver_ctx = bc.solver_ctx
-  if d_out.njmax == 0 or m.nv == 0:
+  if d_bwd.njmax == 0 or m.nv == 0:
     if m.nv:
-      smooth.solve_m(m, d_out, solver_ctx.search, adj_qacc)
+      smooth.solve_m(m, d_bwd, solver_ctx.search, adj_qacc)
     return solver_ctx
-  solver.init_context(m, d_out, solver_ctx, grad=True)
-  wp.launch(_load_rhs, dim=(d_out.nworld, m.nv_pad), inputs=[m.nv, adj_qacc], outputs=[solver_ctx.grad])
+  solver.init_context(m, d_bwd, solver_ctx, grad=True)
+  # Only the Hessian is needed; replace the initializer's gradient with the adjoint RHS.
+  wp.launch(_load_rhs, dim=(d_bwd.nworld, m.nv_pad), inputs=[m.nv, adj_qacc], outputs=[solver_ctx.grad])
   if m.nv <= solver._BLOCK_CHOLESKY_DIM:
     wp.launch_tiled(
       _solve_adjoint_cholesky(m.nv),
-      dim=d_out.nworld,
+      dim=d_bwd.nworld,
       inputs=[solver_ctx.h, solver_ctx.grad],
       outputs=[solver_ctx.search],
       block_dim=m.block_dim.update_gradient_cholesky,
@@ -197,20 +198,20 @@ def solve_backward(m: Model, d_out: Data, adj_qacc: wp.array, bc: BackwardContex
   else:
     wp.launch(
       solver._padding_h,
-      dim=(d_out.nworld, m.nv_pad - m.nv),
+      dim=(d_bwd.nworld, m.nv_pad - m.nv),
       inputs=[m.nv, solver_ctx.done],
       outputs=[solver_ctx.h],
     )
-    rhs = solver_ctx.grad.reshape((d_out.nworld, m.nv_pad, 1))
+    rhs = solver_ctx.grad.reshape((d_bwd.nworld, m.nv_pad, 1))
     # This helper loads the entire RHS before storing its solution, so reuse the padded buffer.
     wp.launch_tiled(
       solver._cholesky_factorize_solve_blocked(TILE_SIZE_JTDAJ_DENSE, m.nv_pad),
-      dim=d_out.nworld,
+      dim=d_bwd.nworld,
       inputs=[solver_ctx.h, rhs],
       outputs=[solver_ctx.hfactor, rhs],
       block_dim=m.block_dim.update_gradient_cholesky_blocked,
     )
-    wp.launch(_load_rhs, dim=(d_out.nworld, m.nv), inputs=[m.nv, solver_ctx.grad], outputs=[solver_ctx.search])
+    wp.launch(_load_rhs, dim=(d_bwd.nworld, m.nv), inputs=[m.nv, solver_ctx.grad], outputs=[solver_ctx.search])
   return solver_ctx
 
 
@@ -218,7 +219,7 @@ def solve_backward(m: Model, d_out: Data, adj_qacc: wp.array, bc: BackwardContex
 def _residual_constraint_sparse(
   m: Model,
   d: Data,
-  d_out: Data,
+  d_bwd: Data,
   ctx_Jaref: wp.array,
   lam: wp.array,
   res_qvel: wp.array,
@@ -226,8 +227,8 @@ def _residual_constraint_sparse(
   bc: BackwardContext,
 ):
   """Contracts all active non-contact rows and accumulates their residual VJP."""
-  nworld, nv = d_out.nworld, m.nv
-  njmax = d_out.efc.type.shape[1]
+  nworld, nv = d_bwd.nworld, m.nv
+  njmax = d_bwd.efc.type.shape[1]
   efc_Z, efc_invw = bc.efc_Z, bc.efc_invw
   gather = constraint_adjoint._constraint_gather(m.is_sparse)
   wp.launch(
@@ -239,14 +240,14 @@ def _residual_constraint_sparse(
       m.dof_invweight0,
       m.eq_obj1id,
       m.eq_obj2id,
-      d_out.nefc,
-      d_out.efc.type,
-      d_out.efc.id,
-      d_out.efc.J_rownnz,
-      d_out.efc.J_rowadr,
-      d_out.efc.J_colind,
-      d_out.efc.J,
-      d_out.efc.state,
+      d_bwd.nefc,
+      d_bwd.efc.type,
+      d_bwd.efc.id,
+      d_bwd.efc.J_rownnz,
+      d_bwd.efc.J_rowadr,
+      d_bwd.efc.J_colind,
+      d_bwd.efc.J,
+      d_bwd.efc.state,
       lam,
     ],
     outputs=[efc_Z, efc_invw],
@@ -259,16 +260,16 @@ def _residual_constraint_sparse(
     (m.opt.timestep, None),
     (m.opt.disableflags, None),
     *((param, residual if param.requires_grad else None) for param, residual in constraint_params),
-    (d_out.nefc, None),
-    (d_out.efc.type, None),
-    (d_out.efc.id, None),
-    (d_out.efc.pos, res_efc_pos),
-    (d_out.efc.margin, None),
-    (d_out.efc.D, None),
-    (d_out.efc.vel, res_efc_vel),
-    (d_out.efc.aref, None),
-    (d_out.efc.force, None),
-    (d_out.efc.state, None),
+    (d_bwd.nefc, None),
+    (d_bwd.efc.type, None),
+    (d_bwd.efc.id, None),
+    (d_bwd.efc.pos, res_efc_pos),
+    (d_bwd.efc.margin, None),
+    (d_bwd.efc.D, None),
+    (d_bwd.efc.vel, res_efc_vel),
+    (d_bwd.efc.aref, None),
+    (d_bwd.efc.force, None),
+    (d_bwd.efc.state, None),
     (efc_Z, efc_Z.grad),
     (efc_invw, None),
     (ctx_Jaref, None),
@@ -288,18 +289,18 @@ def _residual_constraint_sparse(
       m.jnt_dofadr,
       m.eq_obj2id,
       m.eq_data,
-      d_out.nefc,
+      d_bwd.nefc,
       d.qpos,
       d.qvel,
-      d_out.qacc,
-      d_out.efc.type,
-      d_out.efc.id,
-      d_out.efc.J_rownnz,
-      d_out.efc.J_rowadr,
-      d_out.efc.J_colind,
-      d_out.efc.J,
-      d_out.efc.D,
-      d_out.efc.state,
+      d_bwd.qacc,
+      d_bwd.efc.type,
+      d_bwd.efc.id,
+      d_bwd.efc.J_rownnz,
+      d_bwd.efc.J_rowadr,
+      d_bwd.efc.J_colind,
+      d_bwd.efc.J,
+      d_bwd.efc.D,
+      d_bwd.efc.state,
       res_efc_pos,
       res_efc_vel,
       lam,
@@ -316,7 +317,7 @@ def _residual_constraint_sparse(
 def noncontact_constraint_backward(
   m: Model,
   d: Data,
-  d_out: Data,
+  d_bwd: Data,
   lam: wp.array,
   res_qpos: wp.array,
   res_qvel: wp.array,
@@ -324,7 +325,7 @@ def noncontact_constraint_backward(
   bc: BackwardContext,
 ):
   """Accumulates non-contact residuals in input position and velocity space."""
-  _residual_constraint_sparse(m, d, d_out, ctx_Jaref, lam, res_qvel, bc.res_dof, bc)
+  _residual_constraint_sparse(m, d, d_bwd, ctx_Jaref, lam, res_qvel, bc.res_dof, bc)
   wp.launch(
     smooth_kinematics_adjoint._dof_to_qpos,
     dim=(d.nworld, m.njnt),
@@ -336,13 +337,13 @@ def noncontact_constraint_backward(
 def _residual_contact(
   m: Model,
   d: Data,
-  d_out: Data,
+  d_bwd: Data,
   lam: wp.array,
   res_qvel: wp.array,
   bc: BackwardContext,
 ):
   """Contracts contact rows before differentiating the loop-free cone leaf."""
-  nconmax = d_out.contact.pos.shape[0]
+  nconmax = d_bwd.contact.pos.shape[0]
   contact_V, contact_A, contact_Z = bc.contact_V, bc.contact_A, bc.contact_Z
   contact_phi = bc.contact_phi
   res_cdof, res_subtree_com = bc.adj_cdof, bc.adj_subtree_com
@@ -351,14 +352,14 @@ def _residual_contact(
   walk = [m.body_rootid, m.body_weldid, m.body_dofnum, m.body_dofadr, m.dof_parentid, m.geom_bodyid]
   state = [
     d.qvel,
-    d_out.qacc,
-    d_out.subtree_com,
-    d_out.cdof,
-    d_out.contact.pos,
-    d_out.contact.geom,
-    d_out.contact.efc_address,
-    d_out.contact.worldid,
-    d_out.nacon,
+    d_bwd.qacc,
+    d_bwd.subtree_com,
+    d_bwd.cdof,
+    d_bwd.contact.pos,
+    d_bwd.contact.geom,
+    d_bwd.contact.efc_address,
+    d_bwd.contact.worldid,
+    d_bwd.nacon,
   ]
   wp.launch(
     constraint_adjoint._contact_gather,
@@ -377,19 +378,19 @@ def _residual_contact(
     (m.opt.impratio_invsqrt, None),
     (m.body_invweight0, None),
     (m.geom_bodyid, None),
-    (d_out.contact.frame, res_contact_frame),
-    (d_out.contact.friction, res_contact_friction),
-    (d_out.contact.solref, None),
-    (d_out.contact.solreffriction, None),
-    (d_out.contact.solimp, None),
-    (d_out.contact.dim, None),
-    (d_out.contact.geom, None),
-    (d_out.contact.efc_address, None),
-    (d_out.contact.worldid, None),
-    (d_out.efc.pos, res_efc_pos),
-    (d_out.efc.margin, None),
-    (d_out.efc.state, None),
-    (d_out.nacon, None),
+    (d_bwd.contact.frame, res_contact_frame),
+    (d_bwd.contact.friction, res_contact_friction),
+    (d_bwd.contact.solref, None),
+    (d_bwd.contact.solreffriction, None),
+    (d_bwd.contact.solimp, None),
+    (d_bwd.contact.dim, None),
+    (d_bwd.contact.geom, None),
+    (d_bwd.contact.efc_address, None),
+    (d_bwd.contact.worldid, None),
+    (d_bwd.efc.pos, res_efc_pos),
+    (d_bwd.efc.margin, None),
+    (d_bwd.efc.state, None),
+    (d_bwd.nacon, None),
     (contact_V, contact_V.grad),
     (contact_A, contact_A.grad),
     (contact_Z, contact_Z.grad),
@@ -422,17 +423,17 @@ def _residual_contact(
 def contact_constraint_backward(
   m: Model,
   d: Data,
-  d_out: Data,
+  d_bwd: Data,
   lam: wp.array,
   res_qpos: wp.array,
   res_qvel: wp.array,
   bc: BackwardContext,
 ):
   """Accumulates the contact residual VJP in input position and velocity space."""
-  _residual_contact(m, d, d_out, lam, res_qvel, bc)
+  _residual_contact(m, d, d_bwd, lam, res_qvel, bc)
   collision_adjoint.contact_qpos_vjp(
     m,
-    d_out,
+    d_bwd,
     d.qpos,
     bc.adj_contact_pos,
     bc.adj_contact_frame,
@@ -445,7 +446,7 @@ def contact_constraint_backward(
 
 
 @event_scope
-def smooth_params_backward(m: Model, d: Data, d_out: Data, lam: wp.array, bc: BackwardContext):
+def smooth_params_backward(m: Model, d: Data, d_bwd: Data, lam: wp.array, bc: BackwardContext):
   """Accumulates smooth Model parameter gradients."""
   if m.dof_armature.requires_grad or m.dof_damping.requires_grad:
     pairs = [
@@ -454,7 +455,7 @@ def smooth_params_backward(m: Model, d: Data, d_out: Data, lam: wp.array, bc: Ba
       (m.dof_damping, m.dof_damping.grad if m.dof_damping.requires_grad else None),
       # State VJPs were already consumed; explicit sinks avoid Warp's .grad fallback.
       (d.qvel, bc.smooth_adj_qvel),
-      (d_out.qacc, bc.smooth_adj_qacc),
+      (d_bwd.qacc, bc.smooth_adj_qacc),
       (lam, None),
       (bc.y_remap, None),
       (bc.w_dir, None),
@@ -482,21 +483,20 @@ def _write_input_adjoints(d: Data, bc: BackwardContext):
 
 
 @event_scope
-def forward_backward_ift(m: Model, d: Data, d_out: Data, adj_qacc: wp.array, bc: BackwardContext):
+def forward_backward_ift(m: Model, d: Data, d_bwd: Data, adj_qacc: wp.array, bc: BackwardContext):
   """Differentiates forward dynamics at the converged acceleration."""
-  solver_ctx = solve_backward(m, d_out, adj_qacc, bc)
+  solver_ctx = solve_backward(m, d_bwd, adj_qacc, bc)
   lam = solver_ctx.search
-  if d_out.njmax and m.nv:
-    contact_constraint_backward(m, d, d_out, lam, bc.res_qpos, bc.res_qvel, bc)
-    noncontact_constraint_backward(m, d, d_out, lam, bc.res_qpos, bc.res_qvel, solver_ctx.Jaref, bc)
-  forward_adjoint.smooth_qvel_backward(m, d, d_out, lam, bc.adj_qvel, bc)
-  forward_adjoint.smooth_qpos_backward(m, d, d_out, lam, bc.res_qpos, bc)
+  if d_bwd.njmax and m.nv:
+    contact_constraint_backward(m, d, d_bwd, lam, bc.res_qpos, bc.res_qvel, bc)
+    noncontact_constraint_backward(m, d, d_bwd, lam, bc.res_qpos, bc.res_qvel, solver_ctx.Jaref, bc)
+  forward_adjoint.smooth_qvel_backward(m, d, d_bwd, lam, bc.adj_qvel, bc)
+  forward_adjoint.smooth_qpos_backward(m, d, d_bwd, lam, bc.res_qpos, bc)
   # The position reverse also computes the RNE velocity cotangents. Consume them
   # with the residual sign before parameter VJPs reuse the workspace.
   for cotangent in (bc.smooth_adj_qvel, bc.smooth_cv_adj_qvel):
     wp.launch(adjoint_util._accum_cols, dim=(d.nworld, m.nv), inputs=[cotangent], outputs=[bc.res_qvel])
-  smooth_params_backward(m, d, d_out, lam, bc)
-  _write_input_adjoints(d, bc)
+  smooth_params_backward(m, d, d_bwd, lam, bc)
 
 
 _STEP_IN_FIELDS = (
@@ -598,6 +598,91 @@ def _accum_copied_input(adj_in: wp.array2d[Any], adj_out: wp.array2d[Any]):
   adj_out[w, i] += adj_in[w, i]
 
 
+def step_backward_scratch(d: Data, d_out: Data, bc: BackwardContext) -> Data:
+  """Builds backward scratch with explicitly borrowed forward inputs."""
+  # Borrow only read-only state and forward caches; all other fields remain backward scratch.
+  return dataclasses.replace(
+    bc.scratch,
+    nworld=d_out.nworld,
+    naconmax=d_out.naconmax,
+    njmax=d_out.njmax,
+    ne=d_out.ne,
+    nf=d_out.nf,
+    nefc=d_out.nefc,
+    nacon=d_out.nacon,
+    qpos=d.qpos,
+    qvel=d.qvel,
+    ctrl=d.ctrl,
+    act=d_out.act,
+    act_dot=d_out.act_dot,
+    qacc=d_out.qacc,
+    xpos=d_out.xpos,
+    xquat=d_out.xquat,
+    xmat=d_out.xmat,
+    xipos=d_out.xipos,
+    ximat=d_out.ximat,
+    geom_xpos=d_out.geom_xpos,
+    geom_xmat=d_out.geom_xmat,
+    subtree_com=d_out.subtree_com,
+    cdof=d_out.cdof,
+    cinert=d_out.cinert,
+    crb=d_out.crb,
+    M=d_out.M,
+    qLD=d_out.qLD,
+    qLDiagInv=d_out.qLDiagInv,
+    tree_awake=d_out.tree_awake,
+    cvel=d_out.cvel,
+    cdof_dot=d_out.cdof_dot,
+    cfrc_ext=d_out.cfrc_ext,
+    actuator_length=d_out.actuator_length,
+    actuator_velocity=d_out.actuator_velocity,
+    actuator_force=d_out.actuator_force,
+    moment_rownnz=d_out.moment_rownnz,
+    moment_rowadr=d_out.moment_rowadr,
+    moment_colind=d_out.moment_colind,
+    actuator_moment=d_out.actuator_moment,
+    qfrc_actuator=d_out.qfrc_actuator,
+    qfrc_smooth=d_out.qfrc_smooth,
+    dof_frictionadr=d_out.dof_frictionadr,
+    dof_cdof=d_out.dof_cdof,
+    cdof_dof=d_out.cdof_dof,
+    contact=dataclasses.replace(
+      bc.scratch.contact,
+      dist=d_out.contact.dist,
+      pos=d_out.contact.pos,
+      frame=d_out.contact.frame,
+      includemargin=d_out.contact.includemargin,
+      friction=d_out.contact.friction,
+      solref=d_out.contact.solref,
+      solreffriction=d_out.contact.solreffriction,
+      solimp=d_out.contact.solimp,
+      dim=d_out.contact.dim,
+      geom=d_out.contact.geom,
+      efc_address=d_out.contact.efc_address,
+      worldid=d_out.contact.worldid,
+      geomcollisionid=d_out.contact.geomcollisionid,
+    ),
+    efc=dataclasses.replace(
+      bc.scratch.efc,
+      type=d_out.efc.type,
+      id=d_out.efc.id,
+      J_rownnz=d_out.efc.J_rownnz,
+      J_rowadr=d_out.efc.J_rowadr,
+      J_colind=d_out.efc.J_colind,
+      J=d_out.efc.J,
+      pos=d_out.efc.pos,
+      margin=d_out.efc.margin,
+      D=d_out.efc.D,
+      vel=d_out.efc.vel,
+      aref=d_out.efc.aref,
+      frictionloss=d_out.efc.frictionloss,
+      jtdaj_adr=d_out.efc.jtdaj_adr,
+      jtdaj_nrow=d_out.efc.jtdaj_nrow,
+      jtdaj_nblock=d_out.efc.jtdaj_nblock,
+    ),
+  )
+
+
 @event_scope
 def step_backward(m: Model, d: Data, d_out: Data, bc: BackwardContext | None = None):
   """Maps ``d_out`` state gradients to ``d`` with an analytic backward."""
@@ -605,9 +690,11 @@ def step_backward(m: Model, d: Data, d_out: Data, bc: BackwardContext | None = N
   # TODO: Remove this compatibility preparation when the diff API registers the rule (#1727).
   step_backward_arrays(d, d_out, m, user_fields=())
   bc = bc or _ACTIVE_BACKWARD_CONTEXT.get() or create_backward_context(m, d)
+  d_bwd = step_backward_scratch(d, d_out, bc)
   _reset_backward_context(bc)
-  _, _, adj_qacc = forward_adjoint.advance_backward(m, d, d_out, bc)
-  forward_backward_ift(m, d, d_out, adj_qacc, bc)
+  _, _, adj_qacc = forward_adjoint.advance_backward(m, d_out, d_bwd, bc)
+  forward_backward_ift(m, d, d_bwd, adj_qacc, bc)
+  _write_input_adjoints(d, bc)
   for name in _STEP_USER_FIELDS:
     src, dst = getattr(d, name), getattr(d_out, name)
     # Shared gradient storage already contains downstream uses of the held input.
@@ -620,6 +707,11 @@ def fwd_kinematics_arrays(d: Data):
   return _data_arrays(d, _KINEMATICS_IN_FIELDS + _KINEMATICS_OUT_FIELDS)
 
 
+def fwd_kinematics_backward_scratch(d: Data, bc: BackwardContext) -> Data:
+  """Borrows FK inputs while retaining private storage for recomputed poses."""
+  return dataclasses.replace(bc.scratch, nworld=d.nworld, qpos=d.qpos, mocap_pos=d.mocap_pos, mocap_quat=d.mocap_quat)
+
+
 @event_scope
 def fwd_kinematics_backward(m: Model, d: Data, bc: BackwardContext | None = None):
   """Maps site and body-pose cotangents to generalized position coordinates."""
@@ -628,7 +720,14 @@ def fwd_kinematics_backward(m: Model, d: Data, bc: BackwardContext | None = None
   ):
     return
   bc = bc or _ACTIVE_BACKWARD_CONTEXT.get() or create_backward_context(m, d)
-  forward_adjoint.fwd_kinematics_backward(m, d, bc)
+  d_bwd = fwd_kinematics_backward_scratch(d, bc)
+  forward_adjoint.fwd_kinematics_backward(m, d, d_bwd, bc)
+  wp.launch(
+    smooth_kinematics_adjoint._dof_to_qpos,
+    dim=(d.nworld, m.njnt),
+    inputs=[m.jnt_type, m.jnt_qposadr, m.jnt_dofadr, d.qpos, bc.adj_dof],
+    outputs=[d.qpos.grad],
+  )
 
 
 def enable_grad() -> None:
