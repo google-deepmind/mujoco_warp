@@ -382,6 +382,77 @@ class ConstraintTest(parameterized.TestCase):
     mujoco.mjtJacobian.mjJAC_DENSE,
     mujoco.mjtJacobian.mjJAC_SPARSE,
   )
+  def test_limit_bilateral_margin(self, jacobian):
+    """Test limits with both sides of the range within the margin."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option>
+          <flag contact="disable"/>
+        </option>
+        <worldbody>
+          <site name="anchor" pos="0 0 1"/>
+          <body>
+            <joint axis="0 1 0"/>
+            <joint name="hinge" axis="1 0 0" range="0 0.1" margin="0.2"/>
+            <geom size=".1"/>
+          </body>
+          <body pos="1 0 0">
+            <joint name="slide" type="slide" axis="0 0 1" range="0 0.1" margin="0.2"/>
+            <geom size=".1"/>
+            <site name="end"/>
+          </body>
+        </worldbody>
+        <tendon>
+          <spatial name="tendon" range="1.4 1.42" margin="0.1">
+            <site site="anchor"/>
+            <site site="end"/>
+          </spatial>
+        </tendon>
+        <sensor>
+          <jointlimitpos joint="hinge"/>
+          <jointlimitvel joint="hinge"/>
+          <jointlimitfrc joint="hinge"/>
+          <tendonlimitpos tendon="tendon"/>
+          <tendonlimitvel tendon="tendon"/>
+          <tendonlimitfrc tendon="tendon"/>
+        </sensor>
+        <keyframe>
+          <key qvel="0.1 0.3 -0.2"/>
+        </keyframe>
+      </mujoco>
+      """,
+      keyframe=0,
+      overrides={"opt.jacobian": jacobian},
+    )
+
+    for arr in (d.nefc, d.nl, d.efc.type):
+      arr.fill_(-1)
+    for arr in (d.efc.J, d.efc.D, d.efc.vel, d.efc.aref, d.efc.pos, d.efc.margin):
+      arr.fill_(wp.inf)
+
+    mjw.make_constraint(m, d)
+
+    # two rows for each limit
+    _assert_eq(d.nefc.numpy()[0], 6, "nefc")
+    _assert_eq(d.nl.numpy()[0], mjd.nl, "nl")
+    _assert_efc_eq(mjm, m, d, mjd, mjd.nefc, "efc", m.nv)
+
+    d = mjw.put_data(mjm, mjd)
+    for arr in (d.qfrc_constraint, d.sensordata, d.cfrc_ext):
+      arr.fill_(wp.inf)
+    mjw.forward(m, d)
+    mjw.rne_postconstraint(m, d)
+    mujoco.mj_rnePostConstraint(mjm, mjd)
+
+    _assert_eq(d.qfrc_constraint.numpy()[0], mjd.qfrc_constraint, "qfrc_constraint")
+    _assert_eq(d.sensordata.numpy()[0], mjd.sensordata, "sensordata")
+    _assert_eq(d.cfrc_ext.numpy()[0], mjd.cfrc_ext, "cfrc_ext")
+
+  @parameterized.parameters(
+    mujoco.mjtJacobian.mjJAC_DENSE,
+    mujoco.mjtJacobian.mjJAC_SPARSE,
+  )
   def test_equality_tendon(self, jacobian):
     """Test equality tendon constraints."""
     mjm, mjd, m, d = test_data.fixture(

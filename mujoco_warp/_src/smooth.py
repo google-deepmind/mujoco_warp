@@ -21,6 +21,7 @@ import warp as wp
 from mujoco_warp._src import math
 from mujoco_warp._src import support
 from mujoco_warp._src import util_misc
+from mujoco_warp._src.island import is_repeated_fixed_support_efc
 from mujoco_warp._src.types import MJ_MAXVAL
 from mujoco_warp._src.types import MJ_MINVAL
 from mujoco_warp._src.types import Q_LD_BLOCK_COMPACT
@@ -2190,6 +2191,7 @@ def _cfrc_ext_tendon_constraint(deterministic: bool = False):
     eq_obj2id: wp.array[int],
     eq_data: wp.array2d[vec12],
     tendon_range: wp.array2d[wp.vec2],
+    tendon_margin: wp.array2d[float],
     tendon_length0: wp.array2d[float],
     # Data in:
     nefc_in: wp.array[int],
@@ -2232,10 +2234,11 @@ def _cfrc_ext_tendon_constraint(deterministic: bool = False):
     if efc_type == ConstraintType.LIMIT_TENDON:
       tenid = efc_id_in[worldid, efcid]
       tenrange = tendon_range[worldid % tendon_range.shape[0], tenid]
+      tenmargin = tendon_margin[worldid % tendon_margin.shape[0], tenid]
       length = ten_length_in[worldid, tenid]
-      dist_min = length - tenrange[0]
-      dist_max = tenrange[1] - length
-      scl = wp.where(dist_min < dist_max, 1.0, -1.0)
+      # the lower limit row, if active, precedes the upper limit row
+      lower = length - tenrange[0] < tenmargin and not is_repeated_fixed_support_efc(efc_type_in, efc_id_in, worldid, efcid)
+      scl = wp.where(lower, 1.0, -1.0)
       wp.atomic_add(ten_frc_out[worldid], tenid, scl * efc_force)
 
   return kernel
@@ -2536,6 +2539,7 @@ def rne_postconstraint(m: Model, d: Data):
         m.eq_obj2id,
         m.eq_data,
         m.tendon_range,
+        m.tendon_margin,
         m.tendon_length0,
         d.nefc,
         d.ten_length,

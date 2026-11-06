@@ -24,6 +24,7 @@ from mujoco_warp._src import smooth
 from mujoco_warp._src import support
 from mujoco_warp._src.collision_sdf import get_sdf_params
 from mujoco_warp._src.collision_sdf import sdf
+from mujoco_warp._src.island import is_repeated_fixed_support_efc
 from mujoco_warp._src.types import MJ_MAXCONPAIR
 from mujoco_warp._src.types import MJ_MAXVAL
 from mujoco_warp._src.types import MJ_MINVAL
@@ -429,6 +430,9 @@ def _limit_pos(
   if efc_id_in[worldid, efcid] == sensor_objid[sensorid]:
     efc_type = efc_type_in[worldid, efcid]
     if efc_type == ConstraintType.LIMIT_JOINT or efc_type == ConstraintType.LIMIT_TENDON:
+      # report the first row, the lower limit when both sides are active
+      if is_repeated_fixed_support_efc(efc_type_in, efc_id_in, worldid, efcid):
+        return
       val = efc_pos_in[worldid, efcid] - efc_margin_in[worldid, efcid]
       _write_scalar(sensor_type, sensor_datatype, sensor_adr, sensor_cutoff, sensorid, val, sensordata_out[worldid])
 
@@ -1216,6 +1220,9 @@ def _limit_vel(
   if efc_id_in[worldid, efcid] == sensor_objid[sensorid]:
     efc_type = efc_type_in[worldid, efcid]
     if efc_type == ConstraintType.LIMIT_JOINT or efc_type == ConstraintType.LIMIT_TENDON:
+      # report the first row, the lower limit when both sides are active
+      if is_repeated_fixed_support_efc(efc_type_in, efc_id_in, worldid, efcid):
+        return
       _write_scalar(
         sensor_type, sensor_datatype, sensor_adr, sensor_cutoff, sensorid, efc_vel_in[worldid, efcid], sensordata_out[worldid]
       )
@@ -1911,6 +1918,9 @@ def _limit_frc(
   if efc_id_in[worldid, efcid] == sensor_objid[sensorid]:
     efc_type = efc_type_in[worldid, efcid]
     if efc_type == ConstraintType.LIMIT_JOINT or efc_type == ConstraintType.LIMIT_TENDON:
+      # report the first row, the lower limit when both sides are active
+      if is_repeated_fixed_support_efc(efc_type_in, efc_id_in, worldid, efcid):
+        return
       _write_scalar(
         sensor_type, sensor_datatype, sensor_adr, sensor_cutoff, sensorid, efc_force_in[worldid, efcid], sensordata_out[worldid]
       )
