@@ -233,17 +233,19 @@ class ConstraintTest(parameterized.TestCase):
       ("constraints.xml", "flex/floppy.xml", "flex/moving_base_strain.xml"),
       (mujoco.mjtCone.mjCONE_PYRAMIDAL, mujoco.mjtCone.mjCONE_ELLIPTIC),
       (mujoco.mjtJacobian.mjJAC_DENSE, mujoco.mjtJacobian.mjJAC_SPARSE),
+      (32, 64),
     )
   )
-  def test_constraints(self, xml, cone, jacobian):
+  def test_constraints(self, xml, cone, jacobian, block_dim):
     """Test constraints."""
     if xml == "flex/floppy.xml" and jacobian == mujoco.mjtJacobian.mjJAC_DENSE:
       self.skipTest("flex/floppy.xml with dense jacobian not supported")
     for key in range(3):
       mjm, mjd, m, d = test_data.fixture(xml, keyframe=key, overrides={"opt.cone": cone, "opt.jacobian": jacobian})
+      m.block_dim.contact_jac_tiled = block_dim
       for arr in (d.ne, d.nefc, d.nf, d.nl, d.efc.type):
         arr.fill_(-1)
-      for arr in (d.efc.J, d.efc.D, d.efc.vel, d.efc.aref, d.efc.pos, d.efc.margin):
+      for arr in (d.efc.J, d.efc.Jqvel, d.efc.D, d.efc.vel, d.efc.aref, d.efc.pos, d.efc.margin):
         arr.fill_(wp.inf)
 
       # compute flexnode_xpos from body kinematics before generating constraints
