@@ -1167,8 +1167,12 @@ def _build_megakernel(m: Model, rc: RenderContext):
       ray_origin_world += cam_mat_world @ ray_offset_local_cam
     ray_dir_world = cam_mat_world @ ray_dir_local_cam
 
+    # Start primary rays on the near plane.
+    inv_cos = 1.0 / wp.max(-ray_dir_local_cam[2], 1e-6)
+    ray_origin_world += (wp.static(rc_static["znear"]) * inv_cos) * ray_dir_world
+
     if wp.static(rc_static["zfar"] > 0.0):
-      max_cam_dist = wp.static(rc_static["zfar"]) / wp.max(-ray_dir_local_cam[2], 1e-6)
+      max_cam_dist = wp.static(rc_static["zfar"] - rc_static["znear"]) * inv_cos
     else:
       max_cam_dist = float(MJ_MAXVAL)
 
@@ -1203,9 +1207,8 @@ def _build_megakernel(m: Model, rc: RenderContext):
       max_cam_dist,
       wp.static(rc_static["enable_backface_culling"]),
     )
-
     if wp.static(rc_static["zfar"] > 0.0):
-      if geom_id != -1 and (dist * -ray_dir_local_cam[2]) > wp.static(rc_static["zfar"]):
+      if geom_id != -1 and (dist * -ray_dir_local_cam[2]) > wp.static(rc_static["zfar"] - rc_static["znear"]):
         geom_id = -1
 
     if wp.static(rc_static["enable_vertex_normals"]) and geom_id >= 0 and mesh_id >= 0 and f >= 0:
@@ -1256,7 +1259,7 @@ def _build_megakernel(m: Model, rc: RenderContext):
         depth = 0.0
         if wp.static(has_splats):
           if splat_depth > 0.0:
-            depth = splat_depth * -ray_dir_local_cam[2]
+            depth = splat_depth * -ray_dir_local_cam[2] + wp.static(rc_static["znear"])
         depth_out[worldid, depth_adr[camid] + rayid_local] = depth
       if wp.static(rc_static["render_skybox"]) and render_rgb[camid]:
         skybox_id = skybox_tex_id[worldid % skybox_tex_id.shape[0]]
@@ -1285,7 +1288,7 @@ def _build_megakernel(m: Model, rc: RenderContext):
       return
 
     if ray_base == 0 and render_depth[camid]:
-      # Planar depth: project Euclidean distance onto the camera's optical axis.
+      # Planar depth: project distance from the near plane onto the optical axis.
       # In camera-local coordinates, the optical axis is -Z. The Z-component of the
       # normalized ray direction is negative, so -ray_dir_local_cam[2] gives cos(θ)
       # between the ray and the optical axis.
@@ -1293,7 +1296,7 @@ def _build_megakernel(m: Model, rc: RenderContext):
       if wp.static(has_splats):
         if splat_depth > 0.0:
           depth = splat_depth
-      depth_out[worldid, depth_adr[camid] + rayid_local] = depth * -ray_dir_local_cam[2]
+      depth_out[worldid, depth_adr[camid] + rayid_local] = depth * -ray_dir_local_cam[2] + wp.static(rc_static["znear"])
 
     if not render_rgb[camid]:
       return

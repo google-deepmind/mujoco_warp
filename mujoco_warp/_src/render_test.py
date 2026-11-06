@@ -1573,6 +1573,89 @@ class RenderTest(parameterized.TestCase):
     np.testing.assert_array_equal(rc.seg_data.numpy()[0, center_idx], [target_id, int(mjw.ObjType.GEOM)])
     _assert_eq(rc.depth_data.numpy()[0, center_idx], 3.5, "depth")
 
+  @parameterized.product(
+    use_precomputed_rays=(False, True),
+    orthographic=(False, True),
+    znear=(0.1, 0.5),
+  )
+  def test_znear_clipping(self, use_precomputed_rays: bool, orthographic: bool, znear: float):
+    """Near clipping reveals the next surface and preserves camera-axis depth."""
+    mjm, _, m, d = test_data.fixture(
+      xml=f"""
+      <mujoco>
+        <statistic extent="1"/>
+        <visual>
+          <map znear="{znear}" zfar="3"/>
+          <headlight ambient="1 1 1" diffuse="0 0 0" specular="0 0 0"/>
+        </visual>
+        <worldbody>
+          <camera name="camera" projection="{"orthographic" if orthographic else "perspective"}"
+                  fovy="{1 if orthographic else 90}"/>
+          <geom name="blocker" type="box" pos="0 0 -0.2" size="10 10 0.01" rgba="1 0 0 1"/>
+          <geom name="target" type="box" pos="0 0 -2" size="10 10 0.1" rgba="0 1 0 1"/>
+        </worldbody>
+      </mujoco>
+      """,
+    )
+    rc = mjw.create_render_context(
+      mjm,
+      cam_res=(32, 24),
+      render_rgb=True,
+      render_depth=True,
+      render_seg=True,
+      use_shadows=False,
+      use_precomputed_rays=use_precomputed_rays,
+    )
+    rc.depth_data.fill_(wp.inf)
+    rc.seg_data.fill_(-1)
+    mjw.render(m, d, rc)
+    clipped = znear > 0.21
+    expected_name = "target" if clipped else "blocker"
+    expected_depth = 1.9 if clipped else 0.19
+    expected_color = [0, 255, 0] if clipped else [255, 0, 0]
+    expected_id = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_GEOM, expected_name)
+    np.testing.assert_allclose(rc.depth_data.numpy(), expected_depth, atol=1e-5)
+    np.testing.assert_array_equal(rc.seg_data.numpy()[..., 0], expected_id)
+    rgb = _unpack_rgb(rc.rgb_data.numpy())
+    np.testing.assert_allclose(rgb, np.broadcast_to(expected_color, rgb.shape), atol=1)
+
+  @parameterized.product(znear=(0.1, 0.5), background_only=(False, True))
+  def test_znear_clipping_splat(self, znear: float, background_only: bool):
+    """Clipping splats preserves depth with geometry or background behind them."""
+    # Background-only views keep a box behind the camera so the scene BVH is nonempty.
+    mjm, _, m, d = test_data.fixture(
+      xml=f"""
+      <mujoco>
+        <statistic extent="1"/>
+        <visual>
+          <map znear="{znear}" zfar="3"/>
+          <headlight ambient="1 1 1" diffuse="0 0 0" specular="0 0 0"/>
+        </visual>
+        <worldbody>
+          <camera name="camera"/>
+          <geom type="box" pos="0 0 {1 if background_only else -2}" size="10 10 0.1" rgba="0 1 0 1"/>
+        </worldbody>
+      </mujoco>
+      """,
+    )
+    rc = mjw.create_render_context(
+      mjm,
+      cam_res=(3, 3),
+      render_rgb=True,
+      render_depth=True,
+      use_shadows=False,
+      **_sample_splats([0.0, 0.0, -0.2], [0.02, 0.02, 0.02], [1.0, 0.0, 0.0, 1.0]),
+    )
+    rc.depth_data.fill_(wp.inf)
+    mjw.render(m, d, rc)
+    expected_depth = 0.2
+    expected_color = [255, 0, 0]
+    if znear > 0.2:
+      expected_depth = 0.0 if background_only else 1.9
+      expected_color = [0, 0, 0] if background_only else [0, 255, 0]
+    np.testing.assert_allclose(rc.depth_data.numpy()[0, 4], expected_depth, atol=1e-5)
+    np.testing.assert_allclose(_unpack_rgb(rc.rgb_data.numpy())[0, 4], expected_color, atol=1)
+
   @parameterized.named_parameters(
     ("inside", 0.5, True),
     ("clipped", 5.0, False),
