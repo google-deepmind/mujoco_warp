@@ -2956,6 +2956,75 @@ class CompactSolverTest(parameterized.TestCase):
     self.assertTrue(np.any(ctx3.tw_diag.numpy()[0] < d3.qHDiagInv.numpy()[0] - 1e-6))
     np.testing.assert_allclose(d3.qacc.numpy()[0], mjd3.qacc, atol=1e-3, rtol=1e-2)
 
+  @parameterized.parameters(
+    (1, "pyramidal"),
+    (2, "pyramidal"),
+    (2, "elliptic"),
+  )
+  def test_newton_sparse_tiles_blocked_cholesky(self, nworld, cone):
+    """Verifies Newton blocked Cholesky with sparse-tile and diagonal-tile awareness (nv > 96)."""
+    # 18 free spheres (nv = 108, ntiles = 7): first 3 spheres in ground contact + equality
+    # constraint, remaining 15 spheres in free fall (purely diagonal tiles).
+    # Parameterized over pyramidal (incremental skip_unchanged path) and elliptic (non-incremental
+    # inplace_cholesky path).
+    bodies_xml = []
+    for i in range(18):
+      z = 0.015 if i < 3 else 0.5
+      bodies_xml.append(
+        f'<body name="b{i}" pos="{i * 0.08} 0 {z}"><freejoint/><geom type="sphere" size="0.02" mass="0.1"/></body>'
+      )
+    xml = f"""
+    <mujoco>
+      <option integrator="Euler" solver="Newton" cone="{cone}" timestep="0.005" iterations="20" tolerance="1e-10">
+        <flag warmstart="disable"/>
+      </option>
+      <worldbody>
+        <geom type="plane" size="5 5 0.1"/>
+        {"".join(bodies_xml)}
+      </worldbody>
+      <equality>
+        <connect body1="b0" body2="b2" anchor="0 0 0"/>
+      </equality>
+    </mujoco>
+    """
+    mjm, mjd, m, d = test_data.fixture(xml=xml, nworld=nworld, qvel_noise=0.5, nconmax=16, njmax=64)
+    self.assertGreater(m.nv, solver._SPARSE_BLOCK_CHOLESKY_DIM)
+
+    qpos_np = d.qpos.numpy().copy()
+    qvel_np = d.qvel.numpy().copy()
+    if nworld > 1:
+      # Perturb world 1 so sphere 8 (in tile 3) is also in ground contact, producing distinct
+      # per-world tile masks.
+      qpos_np[1, 8 * 7 + 2] = 0.012
+      qvel_np[1, 8 * 6 : 9 * 6] = np.array([-0.2, 0.15, -0.3, 0.4, -0.25, 0.1], dtype=np.float32)
+      d.qpos.assign(qpos_np)
+      d.qvel.assign(qvel_np)
+
+    d.qacc.fill_(wp.inf)
+    d.qfrc_constraint.fill_(wp.inf)
+    mjw.forward(m, d)
+
+    ctx = solver._create_solver_context(m, d, inplace_cholesky=True)
+    self.assertIsNotNone(ctx.h_tile_nz)
+    self.assertIsNotNone(ctx.h_row_mask)
+    self.assertIsNotNone(ctx.h_col_mask)
+    self.assertIsNotNone(ctx.h_tile_is_diag)
+    self.assertIsNotNone(ctx.h_rhs_work)
+    if cone == "elliptic":
+      self.assertEqual(ctx.hfactor.ptr, ctx.h.ptr)
+    else:
+      self.assertNotEqual(ctx.hfactor.ptr, ctx.h.ptr)
+    solver.init_context(m, d, ctx, grad=True)
+    if nworld > 1:
+      self.assertFalse(np.array_equal(ctx.h_tile_is_diag.numpy()[0], ctx.h_tile_is_diag.numpy()[1]))
+
+    for w in range(nworld):
+      mjd.qpos[:] = qpos_np[w]
+      mjd.qvel[:] = qvel_np[w]
+      mujoco.mj_forward(mjm, mjd)
+      np.testing.assert_allclose(d.qacc.numpy()[w], mjd.qacc, atol=1e-3, rtol=1e-3)
+      np.testing.assert_allclose(d.qfrc_constraint.numpy()[w], mjd.qfrc_constraint, atol=1e-3, rtol=1e-3)
+
 
 if __name__ == "__main__":
   wp.init()
