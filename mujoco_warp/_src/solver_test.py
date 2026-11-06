@@ -2898,21 +2898,21 @@ class CompactSolverTest(parameterized.TestCase):
     )
 
   def test_discrete_cg_init_context_prec_fold(self):
-    """Verifies solver.init_context folds constraint/contact metric into d.efm_L for CG solver."""
+    """Verifies solver.init_context folds constraint/contact metric into ctx.tw_diag for 1D rods."""
     _, _, m, d = test_data.fixture(
       xml="""
       <mujoco>
         <option integrator="discrete" solver="CG" timestep="0.005"/>
         <worldbody>
           <geom type="plane" size="1 1 0.1"/>
-          <flexcomp name="string" type="grid" dim="2" count="2 2 1" spacing="0.05 0.05 1"
+          <flexcomp name="rod" type="grid" dim="1" count="3 1 1" spacing="0.05 0.05 1"
                     pos="0 0 0.002" radius="0.005" mass="0.05">
             <contact passive="true" selfcollide="none"/>
-            <elasticity young="1e4" poisson="0.2" thickness="1e-3" elastic2d="stretch"/>
+            <elasticity young="1e4" damping="1e-2"/>
           </flexcomp>
         </worldbody>
         <equality>
-          <connect body1="string_0" anchor="0 0 0"/>
+          <connect body1="rod_0" anchor="0 0 0"/>
         </equality>
       </mujoco>
       """,
@@ -2921,14 +2921,110 @@ class CompactSolverTest(parameterized.TestCase):
 
     mjw.forward(m, d)
 
-    # Re-run eff_build to get original 3x3 blocks in d.efm_L
-    solver.derivative.eff_build(m, d)
-    efm_L_unfolded = d.efm_L.numpy().copy()
-
     ctx = solver._create_solver_context(m, d)
+    self.assertIsNotNone(ctx.tw_diag)
+    ctx.tw_diag.zero_()
     solver.init_context(m, d, ctx, grad=True)
-    efm_L_folded = d.efm_L.numpy()
-    self.assertFalse(np.allclose(efm_L_unfolded, efm_L_folded))
+    self.assertGreater(np.linalg.norm(ctx.tw_diag.numpy()), 0.0)
+
+    # Also verify covered 3D flex triples fold passive-contact + efc diagonals
+    # into 1 / total_diag and match C MuJoCo qacc under solver="CG".
+    mjm3, mjd3, m3, d3 = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option integrator="discrete" solver="CG" timestep="0.005" tolerance="1e-10" iterations="200"/>
+        <worldbody>
+          <geom type="plane" size="1 1 0.1"/>
+          <flexcomp name="cube" type="grid" dim="3" count="2 2 2" spacing="0.05 0.05 0.05"
+                    pos="0 0 0.022" radius="0.006" mass="0.2">
+            <contact passive="true" selfcollide="none"/>
+            <elasticity young="2e4" poisson="0.3" damping="1e-2"/>
+          </flexcomp>
+        </worldbody>
+        <equality>
+          <connect body1="cube_0" anchor="0 0 0.022"/>
+        </equality>
+      </mujoco>
+      """,
+      qvel_noise=0.2,
+    )
+    mujoco.mj_forward(mjm3, mjd3)
+    mjw.forward(m3, d3)
+    ctx3 = solver._create_solver_context(m3, d3)
+    self.assertIsNotNone(ctx3.tw_diag)
+    solver.init_context(m3, d3, ctx3, grad=True)
+    # Contact/equality DOFs have larger total diagonal -> strictly smaller 1/diag than qHDiagInv
+    self.assertTrue(np.any(ctx3.tw_diag.numpy()[0] < d3.qHDiagInv.numpy()[0] - 1e-6))
+    np.testing.assert_allclose(d3.qacc.numpy()[0], mjd3.qacc, atol=1e-3, rtol=1e-2)
+
+  @parameterized.parameters(
+    (1, "pyramidal"),
+    (2, "pyramidal"),
+    (2, "elliptic"),
+  )
+  def test_newton_sparse_tiles_blocked_cholesky(self, nworld, cone):
+    """Verifies Newton blocked Cholesky with sparse-tile and diagonal-tile awareness (nv > 96)."""
+    # 18 free spheres (nv = 108, ntiles = 7): first 3 spheres in ground contact + equality
+    # constraint, remaining 15 spheres in free fall (purely diagonal tiles).
+    # Parameterized over pyramidal (incremental skip_unchanged path) and elliptic (non-incremental
+    # inplace_cholesky path).
+    bodies_xml = []
+    for i in range(18):
+      z = 0.015 if i < 3 else 0.5
+      bodies_xml.append(
+        f'<body name="b{i}" pos="{i * 0.08} 0 {z}"><freejoint/><geom type="sphere" size="0.02" mass="0.1"/></body>'
+      )
+    xml = f"""
+    <mujoco>
+      <option integrator="Euler" solver="Newton" cone="{cone}" timestep="0.005" iterations="20" tolerance="1e-10">
+        <flag warmstart="disable"/>
+      </option>
+      <worldbody>
+        <geom type="plane" size="5 5 0.1"/>
+        {"".join(bodies_xml)}
+      </worldbody>
+      <equality>
+        <connect body1="b0" body2="b2" anchor="0 0 0"/>
+      </equality>
+    </mujoco>
+    """
+    mjm, mjd, m, d = test_data.fixture(xml=xml, nworld=nworld, qvel_noise=0.5, nconmax=16, njmax=64)
+    self.assertGreater(m.nv, solver._SPARSE_BLOCK_CHOLESKY_DIM)
+
+    qpos_np = d.qpos.numpy().copy()
+    qvel_np = d.qvel.numpy().copy()
+    if nworld > 1:
+      # Perturb world 1 so sphere 8 (in tile 3) is also in ground contact, producing distinct
+      # per-world tile masks.
+      qpos_np[1, 8 * 7 + 2] = 0.012
+      qvel_np[1, 8 * 6 : 9 * 6] = np.array([-0.2, 0.15, -0.3, 0.4, -0.25, 0.1], dtype=np.float32)
+      d.qpos.assign(qpos_np)
+      d.qvel.assign(qvel_np)
+
+    d.qacc.fill_(wp.inf)
+    d.qfrc_constraint.fill_(wp.inf)
+    mjw.forward(m, d)
+
+    ctx = solver._create_solver_context(m, d, inplace_cholesky=True)
+    self.assertIsNotNone(ctx.h_tile_nz)
+    self.assertIsNotNone(ctx.h_row_mask)
+    self.assertIsNotNone(ctx.h_col_mask)
+    self.assertIsNotNone(ctx.h_tile_is_diag)
+    self.assertIsNotNone(ctx.h_rhs_work)
+    if cone == "elliptic":
+      self.assertEqual(ctx.hfactor.ptr, ctx.h.ptr)
+    else:
+      self.assertNotEqual(ctx.hfactor.ptr, ctx.h.ptr)
+    solver.init_context(m, d, ctx, grad=True)
+    if nworld > 1:
+      self.assertFalse(np.array_equal(ctx.h_tile_is_diag.numpy()[0], ctx.h_tile_is_diag.numpy()[1]))
+
+    for w in range(nworld):
+      mjd.qpos[:] = qpos_np[w]
+      mjd.qvel[:] = qvel_np[w]
+      mujoco.mj_forward(mjm, mjd)
+      np.testing.assert_allclose(d.qacc.numpy()[w], mjd.qacc, atol=1e-3, rtol=1e-3)
+      np.testing.assert_allclose(d.qfrc_constraint.numpy()[w], mjd.qfrc_constraint, atol=1e-3, rtol=1e-3)
 
 
 if __name__ == "__main__":
