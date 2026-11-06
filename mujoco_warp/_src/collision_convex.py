@@ -901,6 +901,7 @@ def ccd_kernel_builder(
     witness1 = mat43()
     witness2 = mat43()
     dists = wp.vec4()
+    has_clipped = bool(False)
     witness1[0] = w1
     witness2[0] = w2
 
@@ -960,8 +961,8 @@ def ccd_kernel_builder(
           geomtype2,
         )
 
-        # multicontact clipping may produce 0 contacts; fall back to the
-        # single EPA witness pair
+        has_clipped = ncollision > 0
+        # Without clipped contacts, retain the single GJK/EPA witness and distance.
         if ncollision < 1:
           ncollision = 1
           witness1[0] = w1
@@ -1000,7 +1001,7 @@ def ccd_kernel_builder(
       write_contact(
         naconmax_in,
         i,
-        dists[i] + margin if ncollision > 1 else dist,
+        dists[i] + margin if has_clipped else dist,
         0.5 * (witness1[i] + witness2[i]) + origin,
         frame,
         margin,
