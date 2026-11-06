@@ -485,6 +485,24 @@ class GJKTest(parameterized.TestCase):
     self.assertEqual(1, ncon)
     self.assertAlmostEqual(-0.0031312597856874586, dist)
 
+  def test_mesh_mesh_initial_guess(self):
+    """Test penetration between two meshes whose first support point has the initial guess norm."""
+    _, _, m, d = test_data.fixture(
+      xml="""
+    <mujoco>
+      <asset>
+        <mesh name="octahedron" vertex=".125 0 0  -.125 0 0  0 .25 0  0 -.25 0  0 0 .375  0 0 -.375"/>
+      </asset>
+      <worldbody>
+        <geom type="mesh" mesh="octahedron"/>
+        <geom type="mesh" mesh="octahedron" pos=".125 0 0"/>
+      </worldbody>
+    </mujoco>
+    """
+    )
+    dist, _, _, _ = _geom_dist(m, d, 0, 1)
+    self.assertAlmostEqual(-0.10714285714285714, dist, places=6)
+
   def test_cylinder_cylinder_contact(self):
     """Test penetration between two cylinder."""
     _, _, m, d = test_data.fixture(
