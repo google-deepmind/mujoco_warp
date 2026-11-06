@@ -34,6 +34,7 @@ from mujoco_warp._src.warp_util import event_scope
 wp.set_module_options({"enable_backward": True})
 
 
+# Match MJ_COLLISION_TABLE ordering; commented pairs are unsupported.
 _SUPPORTED_PAIRS = {
   (GeomType.PLANE, GeomType.SPHERE),
   (GeomType.PLANE, GeomType.CAPSULE),
@@ -41,14 +42,33 @@ _SUPPORTED_PAIRS = {
   (GeomType.PLANE, GeomType.CYLINDER),
   (GeomType.PLANE, GeomType.BOX),
   (GeomType.PLANE, GeomType.MESH),
+  (GeomType.HFIELD, GeomType.SPHERE),
+  (GeomType.HFIELD, GeomType.CAPSULE),
+  # (GeomType.HFIELD, GeomType.ELLIPSOID),
+  (GeomType.HFIELD, GeomType.CYLINDER),
+  (GeomType.HFIELD, GeomType.BOX),
+  # (GeomType.HFIELD, GeomType.MESH),
   (GeomType.SPHERE, GeomType.SPHERE),
   (GeomType.SPHERE, GeomType.CAPSULE),
+  # (GeomType.SPHERE, GeomType.ELLIPSOID),
   (GeomType.SPHERE, GeomType.CYLINDER),
   (GeomType.SPHERE, GeomType.BOX),
+  # (GeomType.SPHERE, GeomType.MESH),
   (GeomType.CAPSULE, GeomType.CAPSULE),
+  # (GeomType.CAPSULE, GeomType.ELLIPSOID),
+  # (GeomType.CAPSULE, GeomType.CYLINDER),
   (GeomType.CAPSULE, GeomType.BOX),
+  # (GeomType.CAPSULE, GeomType.MESH),
+  # (GeomType.ELLIPSOID, GeomType.ELLIPSOID),
+  # (GeomType.ELLIPSOID, GeomType.CYLINDER),
+  # (GeomType.ELLIPSOID, GeomType.BOX),
+  # (GeomType.ELLIPSOID, GeomType.MESH),
+  # (GeomType.CYLINDER, GeomType.CYLINDER),
+  # (GeomType.CYLINDER, GeomType.BOX),
+  # (GeomType.CYLINDER, GeomType.MESH),
   (GeomType.BOX, GeomType.BOX),
-  *((GeomType.HFIELD, geom) for geom in collision_convex_adjoint._CONVEX_TYPES),
+  # (GeomType.BOX, GeomType.MESH),
+  # (GeomType.MESH, GeomType.MESH),
 }
 _UNSUPPORTED_PAIRS = {
   math.upper_trid_index(len(GeomType), first.value, second.value): f"{first.name.lower()}-{second.name.lower()}"
