@@ -70,6 +70,8 @@ class TypesTest(parameterized.TestCase):
         if "flex_plasticadr" not in mj_fields:
           mj_fields.insert(mj_fields.index("flex_bendingadr") + 1, "flex_plasticadr")
           mj_fields.insert(mj_fields.index("flex_damping") + 1, "flex_yield")
+        if "flex_plasticmode" not in mj_fields:
+          mj_fields.insert(mj_fields.index("flex_plasticadr") + 1, "flex_plasticmode")
         if "tendon_type" not in mj_fields:
           mj_fields.insert(mj_fields.index("tendon_adr"), "tendon_type")
     elif mjw_class is Data:

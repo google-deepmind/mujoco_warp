@@ -528,6 +528,50 @@ class DerivativeTest(parameterized.TestCase):
     _assert_eq(mjw_out[0, 0], 0.0, "actearly=true: M - dt*gain_vel*next_act = 1 - 1*1 = 0")
     _assert_eq(mjw_out[1, 1], 1.0, "actearly=false: M - dt*gain_vel*current_act = 1 - 1*0 = 1")
 
+  def test_deriv_smooth_vel_delay_history(self):
+    """deriv_smooth_vel matches C with actuator delay/history (nhistory > 0)."""
+    xml = """
+    <mujoco>
+      <option timestep="0.005" integrator="implicitfast"/>
+      <worldbody>
+        <body>
+          <joint name="slide" type="slide" axis="1 0 0"/>
+          <geom type="sphere" size="0.1" mass="1"/>
+        </body>
+      </worldbody>
+      <actuator>
+        <dcmotor joint="slide" delay="0.01" nsample="3" interp="linear"
+                 input="pos vel" controller="20 0 5"
+                 motorconst="1" resistance="1"/>
+      </actuator>
+    </mujoco>
+    """
+    mjm, mjd, m, d = test_data.fixture(xml=xml)
+    d.ctrl.assign(np.array([[0.5]]))
+    mjd.ctrl[0] = 0.5
+    for _ in range(5):
+      mujoco.mj_step(mjm, mjd)
+      mjw.step(m, d)
+
+    out_smooth_vel = wp.zeros((1, m.nC), dtype=float)
+    mjw.deriv_smooth_vel(m, d, out_smooth_vel)
+
+    mjw_out = np.zeros((m.nv, m.nv))
+    qi = m.M_fullm_i.numpy()
+    qj = m.M_fullm_j.numpy()
+    for elem, (i, j) in enumerate(zip(qi, qj)):
+      mjw_out[i, j] = out_smooth_vel.numpy()[0, elem]
+    mjw_out = np.tril(mjw_out) + np.tril(mjw_out, -1).T
+
+    mj_qDeriv = np.zeros((mjm.nv, mjm.nv))
+    mujoco.mju_sparse2dense(mj_qDeriv, mjd.qDeriv, mjm.D_rownnz, mjm.D_rowadr, mjm.D_colind)
+    mj_M = np.zeros((m.nv, m.nv))
+    mujoco.mju_sym2dense(mj_M, mjd.M, mjm.M_rownnz, mjm.M_rowadr, mjm.M_colind)
+    mj_out = mj_M - mjm.opt.timestep * mj_qDeriv
+
+    self.assertFalse(np.any(np.isnan(mjw_out)))
+    _assert_eq(mjw_out, mj_out, "M - dt * qDeriv with nhistory > 0")
+
   def test_forcerange_clamped_derivative(self):
     """Implicit integration is more accurate than Euler with active forcerange clamping."""
     xml = """
@@ -602,6 +646,241 @@ class DerivativeTest(parameterized.TestCase):
       error_euler,
       "implicitfast should be more accurate than Euler at large timestep when forcerange derivatives are correctly handled",
     )
+
+  # TODO(team): remove version check after mujoco>=3.17.1 is required
+  @absltest.skipIf(not util_pkg.check_version("mujoco>=3.17.1.dev1012047207"), "Requires MuJoCo >= 3.17.1.dev1012047207")
+  @parameterized.parameters(
+    mujoco.mjtIntegrator.mjINT_IMPLICITFAST,
+    mujoco.mjtIntegrator.mjINT_IMPLICIT,
+    mujoco.mjtIntegrator.mjINT_DISCRETE,
+  )
+  def test_jnt_actfrcrange_saturation(self, integrator):
+    """Tests skipping implicit actuator derivatives under joint actuatorfrcrange saturation."""
+    # world 0: unsaturated; world 1: upper-clamped; world 2: lower-clamped via actuatorgravcomp
+    ctrls = np.array(
+      [
+        [0.1, 0.01, 0.01],
+        [-0.2, 0.052, 0.08],
+        [0.3, -0.015, -0.02],
+      ],
+      dtype=np.float32,
+    )
+    qvels = np.array(
+      [
+        [0.2, -0.1],
+        [-0.3, 0.15],
+        [0.1, -0.05],
+      ],
+      dtype=np.float32,
+    )
+    nworld = len(ctrls)
+    mjm, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option timestep="0.01"/>
+        <worldbody>
+          <body>
+            <joint name="j0" axis="0 1 0" damping="1.5"/>
+            <geom pos="0.5 0 0" size="0.05" mass="1"/>
+            <body pos="0.5 0 0" gravcomp="1">
+              <joint name="j1" axis="0 1 0" damping="2" actuatorgravcomp="true"
+                actuatorfrclimited="true" actuatorfrcrange="-12 12"/>
+              <geom pos="1 0 0" size="0.05" mass="1"/>
+            </body>
+          </body>
+        </worldbody>
+        <actuator>
+          <position joint="j0" kp="20" kv="3"/>
+          <position joint="j1" kp="500" kv="50" forcerange="-20 20"/>
+          <general jointinparent="j1" biastype="affine" gainprm="100" biasprm="0 -100 -10"/>
+        </actuator>
+      </mujoco>
+      """,
+      overrides={"opt.integrator": integrator},
+      nworld=nworld,
+    )
+
+    d.qvel.assign(qvels)
+    d.ctrl.assign(ctrls)
+
+    if integrator in (
+      mujoco.mjtIntegrator.mjINT_IMPLICITFAST,
+      mujoco.mjtIntegrator.mjINT_IMPLICIT,
+    ):
+      out_smooth_vel = wp.empty((nworld, m.nC), dtype=float)
+      out_smooth_vel.fill_(wp.inf)
+      d.qpos.assign(np.zeros((nworld, mjm.nq), dtype=np.float32))
+      forward.fwd_position(m, d, factorize=False)
+      forward.fwd_velocity(m, d)
+      forward.fwd_actuation(m, d)
+      mjw.deriv_smooth_vel(m, d, out_smooth_vel)
+      d.qacc_smooth.fill_(wp.inf)
+      d.qacc.fill_(wp.inf)
+      mjw.step(m, d)
+
+      actuator_force = d.actuator_force.numpy()
+      qfrc_actuator = d.qfrc_actuator.numpy()
+      smooth_vel = out_smooth_vel.numpy()
+      qpos_next = d.qpos.numpy()
+      qvel_next = d.qvel.numpy()
+
+      for w in range(nworld):
+        mjd = mujoco.MjData(mjm)
+        mjd.qvel[:] = qvels[w]
+        mjd.ctrl[:] = ctrls[w]
+        mujoco.mj_forward(mjm, mjd)
+        _assert_eq(actuator_force[w], mjd.actuator_force, f"actuator_force_w{w}")
+        _assert_eq(qfrc_actuator[w], mjd.qfrc_actuator, f"qfrc_actuator_w{w}")
+
+        mujoco.mj_step(mjm, mjd)
+        if integrator == mujoco.mjtIntegrator.mjINT_IMPLICITFAST:
+          mj_M = np.zeros((mjm.nv, mjm.nv))
+          mujoco.mju_sym2dense(mj_M, mjd.M, mjm.M_rownnz, mjm.M_rowadr, mjm.M_colind)
+          mj_qDeriv = np.zeros((mjm.nv, mjm.nv))
+          mujoco.mju_sparse2dense(mj_qDeriv, mjd.qDeriv, mjm.D_rownnz, mjm.D_rowadr, mjm.D_colind)
+          mjw_out = np.zeros((mjm.nv, mjm.nv))
+          mujoco.mju_sym2dense(mjw_out, smooth_vel[w].astype(np.float64), mjm.M_rownnz, mjm.M_rowadr, mjm.M_colind)
+          _assert_eq(mjw_out, mj_M - mjm.opt.timestep * mj_qDeriv, f"M - dt * qDeriv_w{w}")
+
+        _assert_eq(qpos_next[w], mjd.qpos, f"qpos_next_w{w}")
+        _assert_eq(qvel_next[w], mjd.qvel, f"qvel_next_w{w}")
+
+      # worlds 1 and 2 saturate jnt_actfrcrange while individual actuator 1 stays inside (-20, 20)
+      self.assertTrue(np.all(np.abs(actuator_force[:, 1]) < 19.0))
+      self.assertLess(np.abs(qfrc_actuator[0, 1]), 12.0)
+      _assert_eq(qfrc_actuator[1, 1], 12.0, "upper_clamped_j1")
+      _assert_eq(qfrc_actuator[2, 1], -12.0, "lower_clamped_j1")
+      self.assertGreater(smooth_vel[0, -1] - smooth_vel[1, -1], 0.5)
+      _assert_eq(smooth_vel[1, -1], smooth_vel[2, -1], "clamped_diag_j1")
+    else:
+      for arr in (d.qacc_smooth, d.qacc, d.efm_as):
+        arr.fill_(wp.inf)
+      mjw.forward(m, d)
+      actuator_force = d.actuator_force.numpy()
+      qfrc_actuator = d.qfrc_actuator.numpy()
+      qacc_smooth = d.qacc_smooth.numpy()
+      qacc = d.qacc.numpy()
+      efm_as = d.efm_as.numpy()
+      for w in range(nworld):
+        mjd = mujoco.MjData(mjm)
+        mjd.qvel[:] = qvels[w]
+        mjd.ctrl[:] = ctrls[w]
+        mujoco.mj_forward(mjm, mjd)
+        _assert_eq(actuator_force[w], mjd.actuator_force, f"actuator_force_w{w}")
+        _assert_eq(qfrc_actuator[w], mjd.qfrc_actuator, f"qfrc_actuator_w{w}")
+        _assert_eq(qacc_smooth[w], mjd.qacc_smooth, f"qacc_smooth_w{w}")
+        _assert_eq(qacc[w], mjd.qacc, f"qacc_w{w}")
+        self.assertGreater(efm_as[w, 0], 0.0)
+        if w == 0:
+          self.assertTrue(np.all(efm_as[w, 1:] > 0.0))
+        else:
+          np.testing.assert_allclose(efm_as[w, 1:], 0.0, atol=0.0)
+
+  # TODO(team): remove version check after mujoco>=3.17.1 is required
+  @absltest.skipIf(
+    not util_pkg.check_version("mujoco>=3.17.1.dev1012047207"),
+    "Requires MuJoCo >= 3.17.1.dev1012047207",
+  )
+  @parameterized.product(
+    integrator=(
+      mujoco.mjtIntegrator.mjINT_IMPLICITFAST,
+      mujoco.mjtIntegrator.mjINT_IMPLICIT,
+      mujoco.mjtIntegrator.mjINT_DISCRETE,
+    ),
+    nworld=(1, 2),
+  )
+  def test_dcmotor_jnt_actfrcrange_saturation(self, integrator, nworld):
+    """Tests that joint actuatorfrcrange clamping zeroes DC motor derivatives."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option timestep="0.002"/>
+        <worldbody>
+          <body>
+            <joint name="j" type="slide" actuatorfrclimited="true" actuatorfrcrange="-2 2"/>
+            <geom size="0.1" mass="1"/>
+          </body>
+        </worldbody>
+        <actuator>
+          <dcmotor joint="j" motorconst="1" resistance="1" input="pos vel" controller="20 0 4"
+                   cogging="0.5 3 0" lugre="100 2 5 6 0.1"/>
+          <position joint="j" kp="4" kv="1"/>
+        </actuator>
+        <keyframe>
+          <key qpos="0.9" ctrl="1.1 0 1.0" act="0.005"/>
+        </keyframe>
+      </mujoco>
+      """,
+      keyframe=0,
+      overrides={"opt.integrator": integrator},
+      nworld=nworld,
+    )
+
+    # world 0: clamped (ctrl pushes qfrc_actuator to +2.0)
+    # world 1: unsaturated (ctrl keeps qfrc_actuator inside [-2, 2])
+    mjds = [mjd]
+    if nworld == 2:
+      mjd1 = mujoco.MjData(mjm)
+      mujoco.mj_resetDataKeyframe(mjm, mjd1, 0)
+      mjd1.ctrl[:] = [0.95, 0, 0.95]
+      mjd1.qpos[:] = [0.9]
+      mjd1.qvel[:] = [0.05]
+      mjd1.act[0] = 0.005
+      mujoco.mj_forward(mjm, mjd1)
+      mjds.append(mjd1)
+      ctrl_np = d.ctrl.numpy()
+      qvel_np = d.qvel.numpy()
+      act_np = d.act.numpy()
+      ctrl_np[1] = mjd1.ctrl
+      qvel_np[1] = mjd1.qvel
+      act_np[1] = mjd1.act
+      d.ctrl.assign(ctrl_np)
+      d.qvel.assign(qvel_np)
+      d.act.assign(act_np)
+
+    for arr in (d.actuator_force, d.qfrc_actuator, d.qacc, d.efm_as):
+      arr.fill_(wp.inf)
+    mjw.forward(m, d)
+
+    actuator_force = d.actuator_force.numpy()
+    qfrc_actuator = d.qfrc_actuator.numpy()
+    qacc = d.qacc.numpy()
+    for w in range(nworld):
+      _assert_eq(actuator_force[w], mjds[w].actuator_force, f"actuator_force (world {w})")
+      _assert_eq(qfrc_actuator[w], mjds[w].qfrc_actuator, f"qfrc_actuator (world {w})")
+      _assert_eq(qacc[w], mjds[w].qacc, f"qacc (world {w})")
+
+    # In world 0, joint is clamped to 2.0; in world 1, unclamped (< 2.0)
+    _assert_eq(qfrc_actuator[0, 0], 2.0, "clamped_world0")
+    if nworld == 2:
+      self.assertLess(np.abs(qfrc_actuator[1, 0]), 2.0)
+
+    if integrator == mujoco.mjtIntegrator.mjINT_DISCRETE:
+      efm_as = d.efm_as.numpy()
+      for w in range(nworld):
+        expected = np.zeros(mjm.nactuator)
+        for t in range(mjds[w].nefmA):
+          expected[mjds[w].efm_aid[t]] = mjds[w].efm_as[t]
+        _assert_eq(efm_as[w], expected, f"efm_as (world {w})")
+      # Clamped world has no active actuators in efm_as
+      np.testing.assert_allclose(efm_as[0], 0.0, atol=0.0)
+      if nworld == 2:
+        self.assertTrue(np.all(efm_as[1] > 0.0))
+        self.assertFalse(np.allclose(efm_as[0], efm_as[1]))
+      return
+
+    out = wp.empty((nworld, m.nC), dtype=float)
+    out.fill_(wp.inf)
+    derivative.deriv_smooth_vel(m, d, out)
+    out_np = out.numpy()
+
+    for w in range(nworld):
+      mujoco.mj_step(mjm, mjds[w])
+      expected = mjds[w].M - mjm.opt.timestep * mjds[w].qDeriv
+      _assert_eq(out_np[w], expected, f"M - dt * qDeriv (world {w})")
+
+    if nworld == 2:
+      self.assertFalse(np.allclose(out_np[0], out_np[1]))
 
   _RNE_MODELS = {
     "hinge_chain": """
@@ -1220,6 +1499,122 @@ class DerivativeTest(parameterized.TestCase):
     if nworld == 2:
       self.assertFalse(np.allclose(out_np[0], out_np[1]))
 
+  # TODO(team): remove version check after mujoco>=3.17.1 is required
+  @absltest.skipIf(not util_pkg.check_version("mujoco>=3.17.1"), "Requires MuJoCo >= 3.17.1")
+  @parameterized.product(
+    integrator=(mujoco.mjtIntegrator.mjINT_IMPLICITFAST, mujoco.mjtIntegrator.mjINT_DISCRETE),
+    nworld=(1, 2),
+  )
+  def test_dcmotor_saturation_derivative(self, integrator, nworld):
+    """Tests DC motor derivatives under force, tendon, Vmax and dimax saturation."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <body>
+            <joint name="clamp" type="slide"/>
+            <geom size="0.1" mass="1"/>
+          </body>
+          <body>
+            <joint name="sl_vmax" type="slide"/>
+            <geom size="0.1" mass="1"/>
+          </body>
+          <body>
+            <joint name="sf_vmax" type="slide"/>
+            <geom size="0.1" mass="1"/>
+          </body>
+          <body>
+            <joint name="sf_dimax" type="slide"/>
+            <geom size="0.1" mass="1"/>
+          </body>
+          <body>
+            <joint name="ten_clamp" type="slide"/>
+            <geom size="0.1" mass="1"/>
+          </body>
+        </worldbody>
+        <tendon>
+          <fixed name="ten" actuatorfrclimited="true" actuatorfrcrange="-2 2">
+            <joint joint="ten_clamp" coef="1"/>
+          </fixed>
+        </tendon>
+        <actuator>
+          <dcmotor joint="clamp" motorconst="1" resistance="1" input="pos vel" controller="20 0 4"
+                   saturation="2" cogging="0.5 3 0" lugre="100 2 5 6 0.1"/>
+          <dcmotor joint="sl_vmax" motorconst="2" resistance="1" input="pos vel"
+                   controller="20 0 6 0 0 3"/>
+          <dcmotor joint="sf_vmax" motorconst="2" resistance="1" inductance="0 0.005"
+                   input="pos vel" controller="20 0 6 0 0 3"/>
+          <dcmotor joint="sf_dimax" motorconst="2" resistance="1" inductance="0 0.005"
+                   saturation="0 0 5" input="pos vel" controller="20 0 6"/>
+          <dcmotor tendon="ten" motorconst="1" resistance="1" input="pos vel" controller="20 0 4"
+                   cogging="0.5 3 0" lugre="100 2 5 6 0.1"/>
+          <position tendon="ten" kp="4" kv="1"/>
+        </actuator>
+        <keyframe>
+          <key qpos="0.9 0 0 0 0.9" ctrl="1.1 0 2 0 2 0 2 0 1.1 0 1.0" act="0.015 0 0 0.015"/>
+        </keyframe>
+      </mujoco>
+      """,
+      keyframe=0,
+      overrides={"opt.integrator": integrator},
+      nworld=nworld,
+    )
+
+    # world 0: electrical force, tendon actfrcrange, Vmax and dimax saturated;
+    # world 1: unsaturated (with LuGre pushing raw tendon force sum > 2.0)
+    mjds = [mjd]
+    if nworld == 2:
+      mjd1 = mujoco.MjData(mjm)
+      mujoco.mj_resetDataKeyframe(mjm, mjd1, 0)
+      mjd1.ctrl[:] = [0.95, 0, 0.05, 0, 2, 0, 0.001, 0, 0.95, 0, 0.95]
+      mjd1.qvel[:] = [0.05, 0.1, -0.2, 0, 0.05]
+      mjd1.act[3] = -0.025
+      mujoco.mj_forward(mjm, mjd1)
+      mjds.append(mjd1)
+      ctrl_np = d.ctrl.numpy()
+      qvel_np = d.qvel.numpy()
+      act_np = d.act.numpy()
+      ctrl_np[1] = mjd1.ctrl
+      qvel_np[1] = mjd1.qvel
+      act_np[1] = mjd1.act
+      d.ctrl.assign(ctrl_np)
+      d.qvel.assign(qvel_np)
+      d.act.assign(act_np)
+
+    for arr in (d.actuator_force, d.qacc, d.efm_as):
+      arr.fill_(wp.inf)
+    mjw.forward(m, d)
+
+    actuator_force = d.actuator_force.numpy()
+    qacc = d.qacc.numpy()
+    for w in range(nworld):
+      _assert_eq(actuator_force[w], mjds[w].actuator_force, f"actuator_force (world {w})")
+      _assert_eq(qacc[w], mjds[w].qacc, f"qacc (world {w})")
+
+    if integrator == mujoco.mjtIntegrator.mjINT_DISCRETE:
+      efm_as = d.efm_as.numpy()
+      for w in range(nworld):
+        expected = np.zeros(mjm.nactuator)
+        for t in range(mjds[w].nefmA):
+          expected[mjds[w].efm_aid[t]] = mjds[w].efm_as[t]
+        _assert_eq(efm_as[w], expected, f"efm_as (world {w})")
+      if nworld == 2:
+        self.assertFalse(np.allclose(efm_as[0], efm_as[1]))
+      return
+
+    out = wp.empty((nworld, m.nC), dtype=float)
+    out.fill_(wp.inf)
+    derivative.deriv_smooth_vel(m, d, out)
+    out_np = out.numpy()
+
+    for w in range(nworld):
+      mujoco.mj_step(mjm, mjds[w])
+      expected = mjds[w].M - mjm.opt.timestep * mjds[w].qDeriv
+      _assert_eq(out_np[w], expected, f"M - dt * qDeriv (world {w})")
+
+    if nworld == 2:
+      self.assertFalse(np.allclose(out_np[0], out_np[1]))
+
   _FLUID_SCENARIOS = {
     "basic": """
       <mujoco>
@@ -1590,7 +1985,7 @@ class DerivativeTest(parameterized.TestCase):
 
     d.qpos.assign(qpos)
     d.qvel.assign(qvel)
-    for arr in (d.efm_K_val, d.efm_L, d.efm_c, d.qfrc_damper, d.qacc_smooth, d.qacc):
+    for arr in (d.efm_K_val, d.qHLD, d.efm_c, d.qfrc_damper, d.qacc_smooth, d.qacc):
       arr.fill_(wp.inf)
 
     mjw.forward(m, d)
@@ -1646,14 +2041,14 @@ class DerivativeTest(parameterized.TestCase):
             for y in range(3):
               H_ref[3 * vi + x, 3 * vj + y] = grad_n[i] @ H9_proj[3 * x : 3 * x + 3, 3 * y : 3 * y + 3] @ grad_n[j]
 
-      np.testing.assert_allclose(K_dense, H_ref, atol=5e-3, rtol=1e-4)
+      np.testing.assert_allclose(K_dense, H_ref, atol=1e-3, rtol=1e-4)
       np.testing.assert_allclose(K_dense, K_dense.T, atol=1e-4)
       k_evals = np.linalg.eigvalsh(0.5 * (K_dense + K_dense.T))
       norm_K = float(np.max(np.abs(k_evals)))
       self.assertGreaterEqual(float(np.min(k_evals)), -1e-6 * max(norm_K, 1.0))
-      np.testing.assert_allclose(d.efm_c.numpy()[w], -h * (H_ref @ qvel[w]), atol=5e-3, rtol=1e-4)
-      np.testing.assert_allclose(d.qfrc_damper.numpy()[w], -damping * (H_ref @ qvel[w]), atol=5e-2, rtol=1e-4)
-      self.assertTrue(np.all(np.isfinite(d.efm_L.numpy()[w])))
+      np.testing.assert_allclose(d.efm_c.numpy()[w], -h * (H_ref @ qvel[w]), atol=1e-3, rtol=1e-4)
+      np.testing.assert_allclose(d.qfrc_damper.numpy()[w], -damping * (H_ref @ qvel[w]), atol=1e-3, rtol=1e-4)
+      self.assertTrue(np.all(np.isfinite(d.qHLD.numpy()[w])))
       self.assertTrue(np.all(np.isfinite(d.qacc_smooth.numpy()[w])))
 
     if nworld == 2:
@@ -1902,8 +2297,8 @@ class DerivativeTest(parameterized.TestCase):
     mujoco.mjtJacobian.mjJAC_DENSE,
     mujoco.mjtJacobian.mjJAC_SPARSE,
   )
-  def test_flex_preconditioner_block_allocation(self, jacobian):
-    """Verifies flex 3x3 preconditioner block folding for tendon, actuator, efc, and contact."""
+  def test_flex_qH_diagonal_preconditioner(self, jacobian):
+    """Verifies flex qH diagonal preconditioner includes efm_K diagonal in qHDiagInv."""
     mjm, mjd, m, d = test_data.fixture(
       xml="""
       <mujoco>
@@ -1922,7 +2317,7 @@ class DerivativeTest(parameterized.TestCase):
           </body>
         </worldbody>
         <tendon>
-          <spatial name="ten" stiffness="50" damping="2">
+          <spatial name="ten" stiffness="50" damping="2" springlength="0.2">
             <site site="anchor"/>
             <site site="s_body"/>
           </spatial>
@@ -1935,17 +2330,17 @@ class DerivativeTest(parameterized.TestCase):
       overrides={"opt.jacobian": jacobian},
     )
 
-    self.assertEqual(m.nefmdof, 9)
-    self.assertEqual(m.nefmL, 9 * m.nefmdof)
     d.ctrl.fill_(0.1)
-    d.efm_L.fill_(wp.inf)
+    mjd.ctrl[:] = 0.1
+    d.qHDiagInv.fill_(wp.inf)
+    mujoco.mj_forward(mjm, mjd)
     mjw.forward(m, d)
-    epL = derivative.eff_prec_fold(m, d)
     res = wp.zeros_like(d.qacc)
-    derivative.eff_prec(m, d, res, d.qfrc_smooth, epL=epL)
+    derivative.eff_prec(m, d, res, d.qfrc_smooth)
 
-    self.assertTrue(np.all(np.isfinite(d.efm_L.numpy())))
-    self.assertTrue(np.all(np.isfinite(epL.numpy())))
+    # TODO(team): remove version check once mujoco >= 4.0.0 is required.
+    if util_pkg.check_version("mujoco>=4.0.0.dev1014669023"):
+      _assert_eq(d.qHDiagInv.numpy()[0], mjd.qHDiagInv, "qHDiagInv")
     self.assertTrue(np.all(np.isfinite(res.numpy())))
     self.assertGreater(np.linalg.norm(res.numpy()), 0.0)
 
@@ -2167,14 +2562,16 @@ class DerivativeTest(parameterized.TestCase):
       qvel_np[1] = qvel_np[0] * 1.5 + 1.0
       d.qvel = wp.array(qvel_np, dtype=float)
 
-    d.efm_L.fill_(wp.inf)
+    d.qHDiagInv.fill_(wp.inf)
     d.efm_c.fill_(wp.inf)
     d.qacc_smooth.fill_(wp.inf)
 
     mujoco.mj_forward(mjm, mjd)
     mjw.forward(m, d)
 
-    _assert_eq(d.efm_L.numpy()[0], mjd.efm_L, "efm_L")
+    # TODO(team): remove version check once mujoco >= 4.0.0 is required.
+    if util_pkg.check_version("mujoco>=4.0.0.dev1014669023"):
+      _assert_eq(d.qHDiagInv.numpy()[0], mjd.qHDiagInv, "qHDiagInv")
     _assert_eq(d.efm_c.numpy()[0], mjd.efm_c, "efm_c")
     _assert_eq(d.qacc_smooth.numpy()[0], mjd.qacc_smooth, "qacc_smooth")
     if nworld == 2:
@@ -2839,7 +3236,7 @@ class DerivativeTest(parameterized.TestCase):
     for w in range(nworld):
       z_final = 1.0 + float(qpos_final[w, 2])
       self.assertGreater(z_final, 0.9)
-      np.testing.assert_allclose(qpos_final[w], 0.0, atol=5e-2)
+      np.testing.assert_allclose(qpos_final[w], 0.0, atol=1e-3)
 
   @absltest.skipIf(
     not util_pkg.check_version("mujoco>=3.14.1.dev990351372"),
@@ -3144,18 +3541,18 @@ class DerivativeTest(parameterized.TestCase):
                 K_dense[c, r] = K_dense[r, c]
 
           H_ref = build_ref_hessian(qpos_batch[w].astype(np.float64), project_psd=True)
-          np.testing.assert_allclose(K_dense, H_ref, atol=5e-2, rtol=2e-4)
+          np.testing.assert_allclose(K_dense, H_ref, atol=1e-3, rtol=2e-4)
           k_evals = np.linalg.eigvalsh(0.5 * (K_dense + K_dense.T))
           norm_K = float(np.max(np.abs(k_evals)))
           self.assertGreaterEqual(float(np.min(k_evals)), -1e-6 * max(norm_K, 1.0))
-          np.testing.assert_allclose(d.efm_c.numpy()[w], -h * (H_ref @ qvel[w]), atol=5e-2, rtol=2e-4)
-          np.testing.assert_allclose(d.qfrc_damper.numpy()[w], -damping * (H_ref @ qvel[w]), atol=5e-2, rtol=2e-4)
+          np.testing.assert_allclose(d.efm_c.numpy()[w], -h * (H_ref @ qvel[w]), atol=1e-3, rtol=2e-4)
+          np.testing.assert_allclose(d.qfrc_damper.numpy()[w], -damping * (H_ref @ qvel[w]), atol=1e-3, rtol=2e-4)
           self.assertLessEqual(float(np.dot(qvel[w], d.qfrc_damper.numpy()[w])), 1e-6)
 
           # When all singular values >= 1 (rank == 0), unprojected Hessian is SPD
           if rank == 0:
             H_unproj = build_ref_hessian(qpos_batch[w].astype(np.float64), project_psd=False)
-            np.testing.assert_allclose(K_dense, H_unproj, atol=5e-2, rtol=2e-4)
+            np.testing.assert_allclose(K_dense, H_unproj, atol=1e-3, rtol=2e-4)
 
         if nworld == 2 and rank < 3:
           self.assertFalse(np.allclose(d.efm_K_val.numpy()[0], d.efm_K_val.numpy()[1]))
@@ -3564,6 +3961,251 @@ class DerivativeTest(parameterized.TestCase):
 
     if nworld == 2:
       self.assertFalse(np.allclose(d.qacc.numpy()[0], d.qacc.numpy()[1]))
+
+  # TODO(team): remove version check after mujoco>=3.17.1 is required
+  @absltest.skipIf(not util_pkg.check_version("mujoco>=3.17.1"), "Requires MuJoCo >= 3.17.1")
+  @parameterized.parameters(
+    mujoco.mjtIntegrator.mjINT_IMPLICITFAST,
+    mujoco.mjtIntegrator.mjINT_DISCRETE,
+  )
+  def test_tendon_actfrcrange_saturation(self, integrator):
+    """Tests skipping implicit actuator derivatives under tendon_actfrcrange saturation."""
+    ctrls = (0.1, -1.4, 1.0)
+    nworld = len(ctrls)
+    mjm, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option timestep="0.01"/>
+        <worldbody>
+          <body>
+            <joint name="slide" type="slide"/>
+            <geom size="0.05" mass="1"/>
+            <site name="s1"/>
+          </body>
+          <site name="s0" pos="0 0 0.3"/>
+        </worldbody>
+        <tendon>
+          <spatial name="ten" actuatorfrclimited="true" actuatorfrcrange="-19 0">
+            <site site="s0"/>
+            <site site="s1"/>
+          </spatial>
+        </tendon>
+        <actuator>
+          <general tendon="ten" biastype="affine" gainprm="3" biasprm="0 -3 -3"/>
+          <general tendon="ten" biastype="affine" gainprm="5" biasprm="0 -5 -5"/>
+          <general tendon="ten" biastype="affine" gainprm="7" biasprm="0 -7 -7"/>
+          <general tendon="ten" biastype="affine" gainprm="11" biasprm="0 -11 -11"/>
+          <general tendon="ten" biastype="affine" gainprm="13" biasprm="0 -13 -13"/>
+          <general tendon="ten" biastype="affine" gainprm="17" biasprm="0 -17 -17"/>
+        </actuator>
+      </mujoco>
+      """,
+      overrides={"opt.integrator": integrator},
+      nworld=nworld,
+    )
+
+    d.ctrl.assign(np.repeat(np.array(ctrls, dtype=np.float32)[:, None], mjm.nu, axis=1))
+
+    if integrator == mujoco.mjtIntegrator.mjINT_IMPLICITFAST:
+      out_smooth_vel = wp.zeros((nworld, m.nC), dtype=float)
+      forward.fwd_position(m, d, factorize=False)
+      forward.fwd_velocity(m, d)
+      forward.fwd_actuation(m, d)
+      mjw.deriv_smooth_vel(m, d, out_smooth_vel)
+      actuator_force = d.actuator_force.numpy()
+      smooth_vel = out_smooth_vel.numpy()
+      for w, ctrl in enumerate(ctrls):
+        mjd = mujoco.MjData(mjm)
+        mjd.ctrl[:] = ctrl
+        mujoco.mj_step(mjm, mjd)
+        _assert_eq(actuator_force[w], mjd.actuator_force, f"actuator_force_w{w}")
+        mj_out = mjd.M - mjm.opt.timestep * mjd.qDeriv
+        _assert_eq(smooth_vel[w], mj_out, f"M - dt * qDeriv_w{w}")
+    else:
+      for arr in (d.qacc_smooth, d.qacc, d.efm_as):
+        arr.fill_(wp.inf)
+      mjw.forward(m, d)
+      actuator_force = d.actuator_force.numpy()
+      qacc_smooth = d.qacc_smooth.numpy()
+      qacc = d.qacc.numpy()
+      efm_as = d.efm_as.numpy()
+      for w, ctrl in enumerate(ctrls):
+        mjd = mujoco.MjData(mjm)
+        mjd.ctrl[:] = ctrl
+        mujoco.mj_forward(mjm, mjd)
+        _assert_eq(actuator_force[w], mjd.actuator_force, f"actuator_force_w{w}")
+        _assert_eq(qacc_smooth[w], mjd.qacc_smooth, f"qacc_smooth_w{w}")
+        _assert_eq(qacc[w], mjd.qacc, f"qacc_w{w}")
+        if ctrl == 0.1:
+          self.assertTrue(np.all(efm_as[w] > 0.0))
+        else:
+          np.testing.assert_allclose(efm_as[w], 0.0, atol=0.0)
+
+  @parameterized.parameters(1, 2)
+  def test_eff_twist_solve_long_rod_and_ktheta(self, nworld):
+    """Tests exact O(nedge) _eff_twist_solve on >64 edges and twist-twist Hessian vs FD."""
+    if types.ROD_HINGE_SIZE != 10:
+      self.skipTest("Requires 1D flex rod torsion support in MuJoCo")
+
+    # 1. 70-edge circular rod (> old ROD_MAX_EDGES=64): eff_prec inverts eff_mul_m on twist chain
+    mjm, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option integrator="discrete" solver="CG" timestep="0.005" gravity="0 0 0"/>
+        <worldbody>
+          <flexcomp name="long_rod" type="grid" count="71 1 1" spacing="0.02 0.02 0.02"
+                    radius="0.006" dim="1" mass="0.35">
+            <pin id="0 1"/>
+            <contact selfcollide="none" contype="0" conaffinity="0"/>
+            <elasticity young="5e6" poisson="0.3" damping="0.02"/>
+          </flexcomp>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=nworld,
+    )
+    self.assertEqual(m.nflexrodedge, 70)
+    mjw.forward(m, d)
+
+    twist_dofs = [mjm.jnt_dofadr[j] for j in m.flex_rodedge_jnt.numpy() if j >= 0]
+    self.assertLen(twist_dofs, 69)
+
+    rng = np.random.default_rng(7)
+    x_np = np.zeros((nworld, mjm.nv), dtype=np.float32)
+    x_np[:, twist_dofs] = rng.uniform(-1.0, 1.0, size=(nworld, len(twist_dofs))).astype(np.float32)
+    x_wp = wp.array(x_np, dtype=float)
+    rhs_wp = wp.zeros_like(x_wp)
+    sol_wp = wp.zeros_like(x_wp)
+
+    derivative.eff_mul_m(m, d, rhs_wp, x_wp)
+    derivative.eff_prec(m, d, sol_wp, rhs_wp)
+    sol_np = sol_wp.numpy()
+    for w in range(nworld):
+      np.testing.assert_allclose(sol_np[w, twist_dofs], x_np[w, twist_dofs], rtol=1e-4, atol=1e-5)
+
+    # 2. Curved box ribbon at rest: twist-twist block of eff_mul_m matches FD of -qfrc_spring
+    h = 0.005
+    mjm_box, _, m_box, d_box = test_data.fixture(
+      xml=f"""
+      <mujoco>
+        <option integrator="discrete" solver="CG" timestep="{h}" gravity="0 0 0"/>
+        <worldbody>
+          <flexcomp name="arc" type="direct" dim="1" radius="0.005" mass="0.1"
+                    point="0 0 0  0.08 0 0  0.15 0.04 0  0.20 0.11 0  0.22 0.19 0"
+                    element="0 1  1 2  2 3  3 4">
+            <pin id="0 1"/>
+            <contact selfcollide="none" contype="0" conaffinity="0"/>
+            <elasticity young="2e6" damping="0.0" section="box" sectionsize="0.02 0.006"/>
+          </flexcomp>
+        </worldbody>
+      </mujoco>
+      """,
+    )
+    mjw.forward(m_box, d_box)
+    plastic_rest = d_box.plastic.numpy().copy()
+    tw_dofs = [mjm_box.jnt_dofadr[j] for j in m_box.flex_rodedge_jnt.numpy() if j >= 0]
+    self.assertLen(tw_dofs, 3)
+
+    eps = 1e-4
+    for col in tw_dofs:
+      e_vec = np.zeros((1, mjm_box.nv), dtype=np.float32)
+      e_vec[0, col] = 1.0
+      mv_wp = wp.zeros((1, mjm_box.nv), dtype=float)
+      derivative.eff_mul_m(m_box, d_box, mv_wp, wp.array(e_vec, dtype=float))
+      # Subtract inertia M[col, col] and divide by h^2 to isolate twist stiffness row
+      M_diag = mjm_box.dof_armature[col] + mjm_box.body_inertia[mjm_box.dof_bodyid[col], 0]
+      # Read exact M diagonal from d_box.M
+      m_adr = m_box.M_rowadr.numpy()[col] + m_box.M_rownnz.numpy()[col] - 1
+      M_diag = d_box.M.numpy()[0, m_adr]
+      K_col = mv_wp.numpy()[0, tw_dofs].copy()
+      K_col[tw_dofs.index(col)] -= M_diag
+      K_col /= h * h
+
+      q_plus = mjm_box.qpos0.copy()
+      q_minus = mjm_box.qpos0.copy()
+      jnt = mjm_box.dof_jntid[col]
+      q_plus[mjm_box.jnt_qposadr[jnt]] += eps
+      q_minus[mjm_box.jnt_qposadr[jnt]] -= eps
+
+      d_box.qpos.assign(q_plus[None].astype(np.float32))
+      d_box.plastic.assign(plastic_rest)
+      mjw.fwd_position(m_box, d_box)
+      mjw.fwd_velocity(m_box, d_box)
+      f_plus = d_box.qfrc_spring.numpy()[0, tw_dofs].copy()
+
+      d_box.qpos.assign(q_minus[None].astype(np.float32))
+      d_box.plastic.assign(plastic_rest)
+      mjw.fwd_position(m_box, d_box)
+      mjw.fwd_velocity(m_box, d_box)
+      f_minus = d_box.qfrc_spring.numpy()[0, tw_dofs].copy()
+
+      fd_col = -(f_plus - f_minus) / (2.0 * eps)
+      np.testing.assert_allclose(K_col, fd_col, rtol=2e-3, atol=1e-3)
+
+  @parameterized.product(
+    cone=[mujoco.mjtCone.mjCONE_PYRAMIDAL, mujoco.mjtCone.mjCONE_ELLIPTIC],
+    jacobian=[mujoco.mjtJacobian.mjJAC_SPARSE, mujoco.mjtJacobian.mjJAC_DENSE],
+  )
+  def test_eff_prec_fold_tw_diag_parity(self, cone, jacobian):
+    """tw_diag folds contact/efc rows without double-counting tendon or actuator diagonals."""
+    if types.ROD_HINGE_SIZE != 10:
+      self.skipTest("Requires 1D flex rod torsion support in MuJoCo")
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option integrator="discrete" solver="CG" timestep="0.002"/>
+        <worldbody>
+          <geom name="floor" type="plane" size="1 1 0.1"/>
+          <flexcomp name="strip" type="grid" count="5 1 1" spacing="0.08 0.08 0.08" pos="0 0 0.012"
+                    radius="0.006" dim="1" mass="0.1">
+            <pin id="0 1"/>
+            <edge equality="true" solref="0.005 1"/>
+            <contact selfcollide="none"/>
+            <elasticity young="2e6" damping="0.02" section="box" sectionsize="0.02 0.006"/>
+          </flexcomp>
+          <flexcomp name="air_rod" type="grid" count="4 1 1" spacing="0.08 0.08 0.08" pos="0 0.3 0.5"
+                    radius="0.008" dim="1" mass="0.08">
+            <pin id="0 1"/>
+            <contact selfcollide="none" contype="0" conaffinity="0"/>
+            <elasticity young="1e6" damping="0.01"/>
+          </flexcomp>
+        </worldbody>
+        <tendon>
+          <fixed name="tw_ten" stiffness="30" damping="1.5">
+            <joint joint="air_rod_twist" coef="1"/>
+          </fixed>
+        </tendon>
+        <actuator>
+          <position joint="air_rod_twist" kp="25" kv="1.2"/>
+        </actuator>
+      </mujoco>
+      """,
+      overrides={"opt.cone": cone, "opt.jacobian": jacobian},
+    )
+    jnt_strip_tw = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_JOINT, "strip_twist")
+    jnt_air_tw = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_JOINT, "air_rod_twist")
+    dof_strip_tw = mjm.jnt_dofadr[jnt_strip_tw]
+    dof_air_tw = mjm.jnt_dofadr[jnt_air_tw]
+
+    qpos = d.qpos.numpy().copy()
+    qpos[0, mjm.jnt_qposadr[jnt_strip_tw]] = 0.45
+    qpos[0, mjm.jnt_qposadr[jnt_air_tw]] = 0.2
+    d.qpos.assign(qpos)
+    mjd.qpos[:] = qpos[0]
+
+    mujoco.mj_forward(mjm, mjd)
+    mjw.forward(m, d)
+
+    tw_diag = wp.zeros((1, mjm.nv), dtype=float)
+    derivative.eff_prec_fold(m, d, tw_diag=tw_diag)
+    tw_np = tw_diag.numpy()[0]
+
+    # Contacting tilted box ribbon edge gets positive efc diagonal in tw_diag
+    self.assertGreater(tw_np[dof_strip_tw], 0.0)
+    # Contact-free air_rod_twist has tendon + actuator in qH, so tw_diag must remain 0
+    self.assertEqual(tw_np[dof_air_tw], 0.0)
+    scale = max(1.0, float(np.abs(mjd.qacc).max()))
+    np.testing.assert_allclose(d.qacc.numpy()[0], mjd.qacc, atol=2e-3 * scale, rtol=2e-2)
 
 
 if __name__ == "__main__":
