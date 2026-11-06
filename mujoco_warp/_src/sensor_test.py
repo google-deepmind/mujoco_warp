@@ -479,6 +479,47 @@ class SensorTest(parameterized.TestCase):
 
       _assert_eq(d.sensordata.numpy()[0], mjd.sensordata, "sensordata")
 
+  def test_acc_sensors_dofless_body(self):
+    """Test acceleration sensors on static and mocap bodies are zero."""
+    _, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <site name="world" pos=".1 0 0"/>
+          <body name="mocap" mocap="true" pos="0 0 1">
+            <site name="mocap"/>
+          </body>
+          <body name="static" pos="0 1 1">
+            <geom size=".1"/>
+            <site name="static"/>
+          </body>
+          <body pos="1 0 1">
+            <joint axis="0 1 0"/>
+            <geom size=".1" pos=".2 0 0"/>
+            <site name="hinge" pos=".2 0 0"/>
+          </body>
+        </worldbody>
+        <sensor>
+          <accelerometer site="world"/>
+          <accelerometer site="mocap"/>
+          <accelerometer site="static"/>
+          <accelerometer site="hinge"/>
+          <framelinacc objtype="site" objname="world"/>
+          <framelinacc objtype="body" objname="mocap"/>
+          <frameangacc objtype="xbody" objname="static"/>
+          <framelinacc objtype="site" objname="hinge"/>
+        </sensor>
+      </mujoco>
+      """
+    )
+
+    d.sensordata.fill_(wp.inf)
+
+    mjw.sensor_acc(m, d)
+
+    _assert_eq(d.sensordata.numpy()[0], mjd.sensordata, "sensordata")
+    np.testing.assert_array_equal(d.sensordata.numpy()[0, :9], 0.0)
+
   def test_tendon_sensor(self):
     """Test tendon sensors."""
     _, mjd, m, d = test_data.fixture("tendon/fixed.xml", keyframe=0)
