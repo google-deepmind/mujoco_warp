@@ -134,6 +134,8 @@ def _assert_step_supported(m: Model):
     raise NotImplementedError("adjoint.step_backward does not support adhesion")
   if m.flg_surfacevel:
     raise NotImplementedError("adjoint.step_backward does not support surface velocity")
+  if not m.opt.run_collision_detection:
+    raise NotImplementedError("adjoint.step_backward does not support caller-supplied contacts (run_collision_detection=False)")
   if m.opt.enableflags & EnableBit.SLEEP and not (m.opt.disableflags & DisableBit.ISLAND):
     raise NotImplementedError("adjoint.step_backward does not support sleep")
   if m.eq_connect_adr.size or m.eq_wld_adr.size or m.ntendon or m.nflex:
