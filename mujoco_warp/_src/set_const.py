@@ -90,7 +90,6 @@ def _compute_eq_data0(
   # Data in:
   xpos_in: wp.array2d[wp.vec3],
   xquat_in: wp.array2d[wp.quat],
-  xmat_in: wp.array2d[wp.mat33],
   # Out:
   eq_data_out: wp.array2d[types.vec12],
 ):
@@ -113,10 +112,10 @@ def _compute_eq_data0(
   if eqtype == int(types.EqType.CONNECT.value):
     # data[0:3] = anchor in body1 local frame; map to global frame
     anchor1 = wp.vec3(data[0], data[1], data[2])
-    pos = xpos_in[worldid, obj1id] + xmat_in[worldid, obj1id] @ anchor1
+    pos = xpos_in[worldid, obj1id] + mjmath.quat_to_mat(xquat_in[worldid, obj1id]) @ anchor1
 
     # data[3:6] = anchor position in body2 local frame
-    anchor2 = wp.transpose(xmat_in[worldid, obj2id]) @ (pos - xpos_in[worldid, obj2id])
+    anchor2 = wp.transpose(mjmath.quat_to_mat(xquat_in[worldid, obj2id])) @ (pos - xpos_in[worldid, obj2id])
     data[3] = anchor2[0]
     data[4] = anchor2[1]
     data[5] = anchor2[2]
@@ -124,10 +123,10 @@ def _compute_eq_data0(
   elif eqtype == int(types.EqType.WELD.value) and data[11] != 0.0:
     # data[0:3] = anchor in body2 local frame; map to global frame
     anchor2 = wp.vec3(data[0], data[1], data[2])
-    pos = xpos_in[worldid, obj2id] + xmat_in[worldid, obj2id] @ anchor2
+    pos = xpos_in[worldid, obj2id] + mjmath.quat_to_mat(xquat_in[worldid, obj2id]) @ anchor2
 
     # data[3:6] = anchor position in body1 local frame
-    anchor1 = wp.transpose(xmat_in[worldid, obj1id]) @ (pos - xpos_in[worldid, obj1id])
+    anchor1 = wp.transpose(mjmath.quat_to_mat(xquat_in[worldid, obj1id])) @ (pos - xpos_in[worldid, obj1id])
     data[3] = anchor1[0]
     data[4] = anchor1[1]
     data[5] = anchor1[2]
@@ -608,7 +607,7 @@ def _set_kinematics0(m: types.Model, d: types.Data):
   wp.launch(
     _compute_eq_data0,
     dim=(m.eq_data.shape[0], m.neq),
-    inputs=[m.eq_type, m.eq_obj1id, m.eq_obj2id, m.eq_objtype, d.xpos, d.xquat, d.xmat],
+    inputs=[m.eq_type, m.eq_obj1id, m.eq_obj2id, m.eq_objtype, d.xpos, d.xquat],
     outputs=[m.eq_data],
   )
 

@@ -371,7 +371,7 @@ def rod_edge_director(
   flex_rodedge_vert: wp.array[wp.vec2i],
   # Data in:
   plastic_in: wp.array2d[float],
-  xmat_in: wp.array2d[wp.mat33],
+  xquat_in: wp.array2d[wp.quat],
   flexvert_xpos_in: wp.array2d[wp.vec3],
   flex_rod_frame0_loc_in: wp.array3d[wp.vec3],
   flex_rod_frame0_ref_in: wp.array3d[wp.vec3],
@@ -410,7 +410,7 @@ def rod_edge_director(
       if wp.dot(t0_loc, t0_loc) < 0.25:
         return False, wp.vec3(0.0), wp.vec3(0.0), wp.vec3(0.0)
       b0 = flex_vertbodyid[va + verts_k[0]]
-      R_b0 = xmat_in[worldid, b0]
+      R_b0 = math.quat_to_mat(xquat_in[worldid, b0])
       t0 = R_b0 @ t0_loc
       u0 = R_b0 @ flex_rod_frame0_loc_in[worldid, f, 1]
       ok_pt, u_out, v_out = rod_parallel_transport(t0, t_out, u0)
@@ -423,7 +423,7 @@ def rod_edge_director(
       if wp.dot(tT_loc, tT_loc) < 0.25:
         return False, wp.vec3(0.0), wp.vec3(0.0), wp.vec3(0.0)
       bT = flex_vertbodyid[va + verts_k[1]]
-      R_bT = xmat_in[worldid, bT]
+      R_bT = math.quat_to_mat(xquat_in[worldid, bT])
       tT = R_bT @ tT_loc
       uT = R_bT @ flex_rod_tail_loc_in[worldid, f, 1]
       ok_pt, u_out, v_out = rod_parallel_transport(tT, t_out, uT)
@@ -481,7 +481,7 @@ def rod_chain_edge_director(
   flex_rodedge_vert: wp.array[wp.vec2i],
   # Data in:
   plastic_in: wp.array2d[float],
-  xmat_in: wp.array2d[wp.mat33],
+  xquat_in: wp.array2d[wp.quat],
   flexvert_xpos_in: wp.array2d[wp.vec3],
   flex_rod_frame0_loc_in: wp.array3d[wp.vec3],
   flex_rod_frame0_ref_in: wp.array3d[wp.vec3],
@@ -516,7 +516,7 @@ def rod_chain_edge_director(
       if wp.dot(tc_loc, tc_loc) < 0.25:
         return False, False, z3, z3, z3, z3, 0.0
       bc = flex_vertbodyid[va + verts_e[0]]
-      R_bc = xmat_in[worldid, bc]
+      R_bc = math.quat_to_mat(xquat_in[worldid, bc])
       tc = R_bc @ tc_loc
       uc = R_bc @ flex_rod_frame0_loc_in[worldid, f, 1]
     else:
@@ -524,7 +524,7 @@ def rod_chain_edge_director(
       if wp.dot(tc_loc, tc_loc) < 0.25:
         return False, False, z3, z3, z3, z3, 0.0
       bc = flex_vertbodyid[va + verts_e[1]]
-      R_bc = xmat_in[worldid, bc]
+      R_bc = math.quat_to_mat(xquat_in[worldid, bc])
       tc = R_bc @ tc_loc
       uc = R_bc @ flex_rod_tail_loc_in[worldid, f, 1]
     ok_pt, ue, ve = rod_parallel_transport(tc, te, uc)
@@ -577,7 +577,7 @@ def rod_box_elem(
   # Data in:
   qpos_in: wp.array2d[float],
   plastic_in: wp.array2d[float],
-  xmat_in: wp.array2d[wp.mat33],
+  xquat_in: wp.array2d[wp.quat],
   flexvert_xpos_in: wp.array2d[wp.vec3],
   flex_rod_frame0_loc_in: wp.array3d[wp.vec3],
   flex_rod_frame0_ref_in: wp.array3d[wp.vec3],
@@ -609,7 +609,7 @@ def rod_box_elem(
     flex_rod_edgenum,
     flex_rodedge_vert,
     plastic_in,
-    xmat_in,
+    xquat_in,
     flexvert_xpos_in,
     flex_rod_frame0_loc_in,
     flex_rod_frame0_ref_in,

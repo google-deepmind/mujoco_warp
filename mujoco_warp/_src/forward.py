@@ -405,7 +405,7 @@ def _next_rod_twist(
   flex_rodedge_jnt: wp.array[int],
   # Data in:
   plastic_in: wp.array2d[float],
-  xmat_in: wp.array2d[wp.mat33],
+  xquat_in: wp.array2d[wp.quat],
   flexvert_xpos_in: wp.array2d[wp.vec3],
   body_awake_in: wp.array2d[int],
   flex_rod_ref_ok_in: wp.array2d[bool],
@@ -452,7 +452,7 @@ def _next_rod_twist(
     flex_rod_edgenum,
     flex_rodedge_vert,
     plastic_in,
-    xmat_in,
+    xquat_in,
     flexvert_xpos_in,
     flex_rod_frame0_loc_in,
     flex_rod_frame0_ref_in,
@@ -476,7 +476,7 @@ def _next_rod_twist(
       flex_rod_edgenum,
       flex_rodedge_vert,
       plastic_in,
-      xmat_in,
+      xquat_in,
       flexvert_xpos_in,
       flex_rod_frame0_loc_in,
       flex_rod_frame0_ref_in,
@@ -511,7 +511,7 @@ def _next_rod_twist(
       flex_rod_edgenum,
       flex_rodedge_vert,
       plastic_in,
-      xmat_in,
+      xquat_in,
       flexvert_xpos_in,
       flex_rod_frame0_loc_in,
       flex_rod_frame0_ref_in,
@@ -1325,7 +1325,7 @@ def _advance(m: Model, d: Data, qacc: wp.array, qvel: Optional[wp.array] = None)
         m.flex_rodedge_vert,
         m.flex_rodedge_jnt,
         d.plastic,
-        d.xmat,
+        d.xquat,
         d.flexvert_xpos,
         d.body_awake,
         d.flex_rod_ref_ok,
@@ -1810,7 +1810,6 @@ def rungekutta4(m: Model, d: Data):
     subtree_com_t0 = wp.clone(d.subtree_com)
     xpos_t0 = wp.clone(d.xpos)
     xquat_t0 = wp.clone(d.xquat)
-    xmat_t0 = wp.clone(d.xmat)
   else:
     flexvert_xpos_t0 = None
     flexnode_xpos_t0 = None
@@ -1818,7 +1817,6 @@ def rungekutta4(m: Model, d: Data):
     subtree_com_t0 = None
     xpos_t0 = None
     xquat_t0 = None
-    xmat_t0 = None
 
   # stage velocities with the RKMK correction (rates of the rotation vectors of ball and
   # free joints); the first stage has a zero rotation vector, so it needs no correction
@@ -1865,7 +1863,6 @@ def rungekutta4(m: Model, d: Data):
     wp.copy(d.subtree_com, subtree_com_t0)
     wp.copy(d.xpos, xpos_t0)
     wp.copy(d.xquat, xquat_t0)
-    wp.copy(d.xmat, xmat_t0)
 
   _advance(m, d, qacc_rk, qvel_rk)
 
@@ -2052,11 +2049,11 @@ def _implicit_free_body(
   # Data in:
   qvel_in: wp.array2d[float],
   xpos_in: wp.array2d[wp.vec3],
-  xmat_in: wp.array2d[wp.mat33],
+  xquat_in: wp.array2d[wp.quat],
   xipos_in: wp.array2d[wp.vec3],
-  ximat_in: wp.array2d[wp.mat33],
+  xiquat_in: wp.array2d[wp.quat],
   geom_xpos_in: wp.array2d[wp.vec3],
-  geom_xmat_in: wp.array2d[wp.mat33],
+  geom_xquat_in: wp.array2d[wp.quat],
   subtree_com_in: wp.array2d[wp.vec3],
   cdof_in: wp.array2d[wp.spatial_vector],
   crb_in: wp.array2d[vec10],
@@ -2117,7 +2114,7 @@ def _implicit_free_body(
   # 3. Add gyroscopic bias velocity derivative
   crb = crb_in[worldid, bodyid]
   subtree_mass = crb[9]
-  R = xmat_in[worldid, bodyid]
+  R = math.quat_to_mat(xquat_in[worldid, bodyid])
   Iw = wp.mat33(
     crb[0],
     crb[3],
@@ -2172,7 +2169,7 @@ def _implicit_free_body(
 
           size = geom_size[worldid % geom_size.shape[0], geomid]
           semiaxes = passive.geom_semiaxes(size, geom_type[geomid])
-          geom_rot = geom_xmat_in[worldid, geomid]
+          geom_rot = math.quat_to_mat(geom_xquat_in[worldid, geomid])
           geom_rotT = wp.transpose(geom_rot)
           geom_pos = geom_xpos_in[worldid, geomid]
 
@@ -2221,7 +2218,7 @@ def _implicit_free_body(
 
       elif body_mass[worldid % body_mass.shape[0], b] >= MJ_MINVAL:
         b_ipos = xipos_in[worldid, b]
-        b_imat = ximat_in[worldid, b]
+        b_imat = math.quat_to_mat(xiquat_in[worldid, b])
 
         cvel = cvel_in[worldid, b]
         v_subtree_ang = wp.vec3(cvel[0], cvel[1], cvel[2])
@@ -2327,11 +2324,11 @@ def implicit_free_body(m: Model, d: Data, vec_in: wp.array2d[float], vec_out: wp
       m.body_freeadr,
       d.qvel,
       d.xpos,
-      d.xmat,
+      d.xquat,
       d.xipos,
-      d.ximat,
+      d.xiquat,
       d.geom_xpos,
-      d.geom_xmat,
+      d.geom_xquat,
       d.subtree_com,
       d.cdof,
       d.crb,
@@ -2369,7 +2366,7 @@ def _discrete_free_gyro_kernel(has_fluid: bool, has_flex_passive: bool, is_inver
     qvel_in: wp.array2d[float],
     qacc_in: wp.array2d[float],
     xpos_in: wp.array2d[wp.vec3],
-    xmat_in: wp.array2d[wp.mat33],
+    xquat_in: wp.array2d[wp.quat],
     subtree_com_in: wp.array2d[wp.vec3],
     moment_rownnz_in: wp.array2d[int],
     moment_rowadr_in: wp.array2d[int],
@@ -2493,7 +2490,7 @@ def _discrete_free_gyro_kernel(has_fluid: bool, has_flex_passive: bool, is_inver
             A[c, r] += val
 
     s = subtree_com_in[worldid, bodyid] - xpos_in[worldid, bodyid]
-    lin, rot = math.free_bias_vel_blocks(subtree_mass, xmat_in[worldid, bodyid], Iw, s, qvel_rot)
+    lin, rot = math.free_bias_vel_blocks(subtree_mass, math.quat_to_mat(xquat_in[worldid, bodyid]), Iw, s, qvel_rot)
     h_mass = -timestep * subtree_mass
     for r in range(3):
       for c in range(3):
@@ -2552,7 +2549,7 @@ def _launch_discrete_free_gyro(m: Model, d: Data, out: wp.array2d[float], qacc: 
       d.qvel,
       qacc,
       d.xpos,
-      d.xmat,
+      d.xquat,
       d.subtree_com,
       d.moment_rownnz,
       d.moment_rowadr,

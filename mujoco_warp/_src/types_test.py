@@ -83,6 +83,11 @@ class TypesTest(parameterized.TestCase):
         mj_fields[idx:idx] = ["flex_hessian_valid", "flexvert_hessian", "flexedge_hessian"]
       if not util_pkg.check_version("mujoco>=3.17.1") and "plastic" not in mj_fields:
         mj_fields.insert(mj_fields.index("history") + 1, "plastic")
+      # quaternion fields take the place of the rotation matrices they replace
+      # TODO(team): remove once mujoco >= 4.0.0 (MjData has these quaternions) is required
+      if "xiquat" not in mj_fields:
+        quat_of_mat = {"ximat": "xiquat", "geom_xmat": "geom_xquat", "site_xmat": "site_xquat"}
+        mj_fields = [quat_of_mat.get(f, f) for f in mj_fields]
     mj_set, mjw_set = set(mj_fields), set(mjw_fields)
 
     # first, put any union fields

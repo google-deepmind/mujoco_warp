@@ -471,9 +471,9 @@ def _fluid_force(
   body_fluid_ellipsoid: wp.array[bool],
   # Data in:
   xipos_in: wp.array2d[wp.vec3],
-  ximat_in: wp.array2d[wp.mat33],
+  xiquat_in: wp.array2d[wp.quat],
   geom_xpos_in: wp.array2d[wp.vec3],
-  geom_xmat_in: wp.array2d[wp.mat33],
+  geom_xquat_in: wp.array2d[wp.quat],
   subtree_com_in: wp.array2d[wp.vec3],
   cvel_in: wp.array2d[wp.spatial_vector],
   # Out:
@@ -499,7 +499,7 @@ def _fluid_force(
 
   # Body kinematics
   xipos = xipos_in[worldid, bodyid]
-  rot = ximat_in[worldid, bodyid]
+  rot = math.quat_to_mat(xiquat_in[worldid, bodyid])
   rotT = wp.transpose(rot)
   cvel = cvel_in[worldid, bodyid]
   ang_global = wp.spatial_top(cvel)
@@ -522,7 +522,7 @@ def _fluid_force(
 
       size = geom_size[worldid % geom_size.shape[0], geomid]
       semiaxes = geom_semiaxes(size, geom_type[geomid])
-      geom_rot = geom_xmat_in[worldid, geomid]
+      geom_rot = math.quat_to_mat(geom_xquat_in[worldid, geomid])
       geom_rotT = wp.transpose(geom_rot)
       geom_pos = geom_xpos_in[worldid, geomid]
 
@@ -707,9 +707,9 @@ def _fluid(m: Model, d: Data):
       m.geom_fluid,
       m.body_fluid_ellipsoid,
       d.xipos,
-      d.ximat,
+      d.xiquat,
       d.geom_xpos,
-      d.geom_xmat,
+      d.geom_xquat,
       d.subtree_com,
       d.cvel,
     ],
@@ -1979,7 +1979,7 @@ def _eval_rod_chains(
   # Data in:
   qpos_in: wp.array2d[float],
   plastic_in: wp.array2d[float],
-  xmat_in: wp.array2d[wp.mat33],
+  xquat_in: wp.array2d[wp.quat],
   flexvert_xpos_in: wp.array2d[wp.vec3],
   flex_rod_chain_valid_in: wp.array2d[bool],
   flex_rod_ref_ok_in: wp.array2d[bool],
@@ -2037,7 +2037,7 @@ def _eval_rod_chains(
     flex_rod_edgenum,
     flex_rodedge_vert,
     plastic_in,
-    xmat_in,
+    xquat_in,
     flexvert_xpos_in,
     flex_rod_frame0_loc_in,
     flex_rod_frame0_ref_in,
@@ -2063,7 +2063,7 @@ def _eval_rod_chains(
       flex_rod_edgenum,
       flex_rodedge_vert,
       plastic_in,
-      xmat_in,
+      xquat_in,
       flexvert_xpos_in,
       flex_rod_frame0_loc_in,
       flex_rod_frame0_ref_in,
@@ -2107,7 +2107,7 @@ def _eval_rod_chains(
     flex_rod_edgenum,
     flex_rodedge_vert,
     plastic_in,
-    xmat_in,
+    xquat_in,
     flexvert_xpos_in,
     flex_rod_frame0_loc_in,
     flex_rod_frame0_ref_in,
@@ -2138,7 +2138,7 @@ def _eval_rod_chains(
       flex_rod_edgenum,
       flex_rodedge_vert,
       plastic_in,
-      xmat_in,
+      xquat_in,
       flexvert_xpos_in,
       flex_rod_frame0_loc_in,
       flex_rod_frame0_ref_in,
@@ -2300,7 +2300,7 @@ def eval_rod_chains(m: Model, d: Data):
       m.flex_rodedge_jnt,
       d.qpos,
       d.plastic,
-      d.xmat,
+      d.xquat,
       d.flexvert_xpos,
       d.flex_rod_chain_valid,
       d.flex_rod_ref_ok,
@@ -4802,7 +4802,7 @@ def _eff_contact_build(
   flex_vert_rodelem: wp.array[int],
   # Data in:
   plastic_in: wp.array2d[float],
-  xmat_in: wp.array2d[wp.mat33],
+  xquat_in: wp.array2d[wp.quat],
   subtree_com_in: wp.array2d[wp.vec3],
   cdof_in: wp.array2d[wp.spatial_vector],
   flexvert_xpos_in: wp.array2d[wp.vec3],
@@ -4893,7 +4893,7 @@ def _eff_contact_build(
       b = body_weldid[flex_vertbodyid[gv]]
       if body_dofnum[b] == 3:
         da = body_dofadr[b]
-        n_loc = wp.transpose(xmat_in[worldid, b]) @ normal
+        n_loc = wp.transpose(math.quat_to_mat(xquat_in[worldid, b])) @ normal
         for ax in range(3):
           nnz = _add_con_dof(
             efm_con_max_dof,
@@ -4924,7 +4924,7 @@ def _eff_contact_build(
         b = body_weldid[flex_vertbodyid[gv]]
         if body_dofnum[b] == 3:
           da = body_dofadr[b]
-          n_loc = wp.transpose(xmat_in[worldid, b]) @ normal
+          n_loc = wp.transpose(math.quat_to_mat(xquat_in[worldid, b])) @ normal
           for ax in range(3):
             nnz = _add_con_dof(
               efm_con_max_dof,
@@ -5086,7 +5086,7 @@ def build_efm_contact(
         m.flex_elem_rodedge,
         m.flex_vert_rodelem,
         d.plastic,
-        d.xmat,
+        d.xquat,
         d.subtree_com,
         d.cdof,
         d.flexvert_xpos,
