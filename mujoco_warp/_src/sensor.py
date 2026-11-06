@@ -395,6 +395,14 @@ def _ball_quat(jnt_qposadr: wp.array[int], qpos_in: wp.array2d[float], worldid: 
   return wp.normalize(quat)
 
 
+@wp.func
+def _limit_sensor_efc_type(sensortype: int) -> int:
+  """Returns the constraint type read by a joint or tendon limit sensor."""
+  if sensortype == SensorType.JOINTLIMITPOS or sensortype == SensorType.JOINTLIMITVEL or sensortype == SensorType.JOINTLIMITFRC:
+    return ConstraintType.LIMIT_JOINT
+  return ConstraintType.LIMIT_TENDON
+
+
 @wp.kernel
 def _limit_pos(
   # Model:
@@ -428,7 +436,7 @@ def _limit_pos(
   sensorid = sensor_limitpos_adr[limitposid]
   if efc_id_in[worldid, efcid] == sensor_objid[sensorid]:
     efc_type = efc_type_in[worldid, efcid]
-    if efc_type == ConstraintType.LIMIT_JOINT or efc_type == ConstraintType.LIMIT_TENDON:
+    if efc_type == _limit_sensor_efc_type(sensor_type[sensorid]):
       val = efc_pos_in[worldid, efcid] - efc_margin_in[worldid, efcid]
       _write_scalar(sensor_type, sensor_datatype, sensor_adr, sensor_cutoff, sensorid, val, sensordata_out[worldid])
 
@@ -1258,7 +1266,7 @@ def _limit_vel(
   sensorid = sensor_limitvel_adr[limitvelid]
   if efc_id_in[worldid, efcid] == sensor_objid[sensorid]:
     efc_type = efc_type_in[worldid, efcid]
-    if efc_type == ConstraintType.LIMIT_JOINT or efc_type == ConstraintType.LIMIT_TENDON:
+    if efc_type == _limit_sensor_efc_type(sensor_type[sensorid]):
       _write_scalar(
         sensor_type, sensor_datatype, sensor_adr, sensor_cutoff, sensorid, efc_vel_in[worldid, efcid], sensordata_out[worldid]
       )
@@ -1953,7 +1961,7 @@ def _limit_frc(
   sensorid = sensor_limitfrc_adr[limitfrcid]
   if efc_id_in[worldid, efcid] == sensor_objid[sensorid]:
     efc_type = efc_type_in[worldid, efcid]
-    if efc_type == ConstraintType.LIMIT_JOINT or efc_type == ConstraintType.LIMIT_TENDON:
+    if efc_type == _limit_sensor_efc_type(sensor_type[sensorid]):
       _write_scalar(
         sensor_type, sensor_datatype, sensor_adr, sensor_cutoff, sensorid, efc_force_in[worldid, efcid], sensordata_out[worldid]
       )
