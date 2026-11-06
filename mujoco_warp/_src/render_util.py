@@ -18,7 +18,6 @@ import numpy as np
 import warp as wp
 
 from mujoco_warp._src import bvh
-from mujoco_warp._src import render_optix
 from mujoco_warp._src import types
 from mujoco_warp._src import warp_util
 from mujoco_warp._src.types import ProjectionType
@@ -409,7 +408,8 @@ def create_render_context(
                     use the first splat group.
     deterministic: Whether to use deterministic execution for flex BVH vertex
                    normal accumulation.
-    backend: Ray-casting backend, "bvh" (Warp BVH) or "optix" (requires mujoco-warp[optix]).
+    backend: Ray-casting backend, "bvh" (Warp BVH) or "optix" (requires warp_optix from
+             https://github.com/NVIDIA/warp-optix main).
 
   Returns:
     The render context containing rendering fields and output arrays on device.
@@ -808,6 +808,7 @@ def create_render_context(
     # render imports this module. OptiX pipelines compile here rather than on the
     # first render, which may happen during CUDA graph capture.
     from mujoco_warp._src import render  # noqa: PLC0415
+    from mujoco_warp._src import render_optix  # noqa: PLC0415
 
     rc.optix = render_optix.create_scene(mjm, mjd, rc, nworld)
     rc._megakernel = render._build_megakernel(mjm.nlight, rc)

@@ -15,7 +15,7 @@
 import dataclasses
 import enum
 import operator
-from typing import Any, Callable, Optional
+from typing import Callable, Optional
 
 import mujoco
 import numpy as np
@@ -2929,6 +2929,38 @@ class SolverContext:
 
 
 @dataclasses.dataclass
+class OptixScene:
+  """OptiX acceleration structures of all worlds and the compiled render pipeline.
+
+  Attributes:
+    accels: per-geometry acceleration structures (warp_optix.Accel), kept alive for the IAS
+    mesh_traversable: triangle acceleration structure id per mesh
+    hfield_traversable: triangle acceleration structure id per heightfield
+    primitive_traversable: id of the unit-cube custom-primitive acceleration structure that
+                           instances of analytic geoms scale to their bounds (0 if unused)
+    instances: OptiX instance records (nworld, nenabled geom)
+    ias: instance acceleration structure over all worlds (warp_optix.Accel)
+    extent: half-size of the region each world's bounded geometry and rays occupy
+    planes: enabled plane geom ids, which cast_ray intersects without the IAS
+    grid: worlds per axis of the cubic world grid
+    write_instances: kernel writing `instances` from the current geom poses
+    pipeline: render pipeline (warp_optix.Pipeline), compiled with the render context
+  """
+
+  accels: list
+  mesh_traversable: wp.array
+  hfield_traversable: wp.array
+  primitive_traversable: int
+  instances: wp.array2d
+  ias: object
+  extent: float
+  planes: tuple
+  grid: int
+  write_instances: wp.Kernel
+  pipeline: object = None
+
+
+@dataclasses.dataclass
 class RenderContext:
   """Context for rendering.
 
@@ -3126,5 +3158,5 @@ class RenderContext:
   splat_group_root: array("nworld", int)
   splat_count: int
   geom_ray_types: tuple = ()
-  optix: Optional[Any] = None
+  optix: Optional[OptixScene] = None
   _megakernel: Optional[wp.Kernel] = None
