@@ -363,11 +363,7 @@ _CONTACT_CASES = (
     ),
   ),
   dict(testcase_name="dense", overrides={"opt.jacobian": "DENSE"}, covers=("constraint._efc_contact_jac_dense",)),
-  dict(
-    testcase_name="elliptic_dense",
-    overrides={"opt.jacobian": "DENSE", "opt.cone": "ELLIPTIC"},
-    covers=("solver._update_gradient_JTCJ_dense",),
-  ),
+  dict(testcase_name="elliptic_dense", overrides={"opt.jacobian": "DENSE", "opt.cone": "ELLIPTIC"}, covers=()),
   dict(testcase_name="elliptic_sparse", overrides={"opt.jacobian": "SPARSE", "opt.cone": "ELLIPTIC"}, covers=()),
   dict(testcase_name="discrete", overrides={"opt.integrator": "DISCRETE"}, covers=()),
 )

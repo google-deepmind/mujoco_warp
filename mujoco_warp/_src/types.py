@@ -2921,6 +2921,10 @@ class SolverContext:
   flex_scratch: Optional[tuple] = None
   solve_ld_scratch: Optional[wp.array] = None
   tw_diag: Optional[wp.array] = None
+  # dense elliptic Newton: virtual Hessian rows of cone-state rows (solver._cone_virtual_row)
+  cone_coef: Optional[wp.array] = None
+  cone_weight: Optional[wp.array] = None
+  cone_base: Optional[wp.array] = None
   h_tile_nz: Optional[wp.array3d[int]] = None
   h_row_mask: Optional[wp.array3d[wp.uint64]] = None
   h_col_mask: Optional[wp.array3d[wp.uint64]] = None
