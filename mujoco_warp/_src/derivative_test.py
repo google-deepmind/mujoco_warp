@@ -2317,7 +2317,7 @@ class DerivativeTest(parameterized.TestCase):
           </body>
         </worldbody>
         <tendon>
-          <spatial name="ten" stiffness="50" damping="2">
+          <spatial name="ten" stiffness="50" damping="2" springlength="0.2">
             <site site="anchor"/>
             <site site="s_body"/>
           </spatial>
@@ -2332,6 +2332,7 @@ class DerivativeTest(parameterized.TestCase):
 
     d.ctrl.fill_(0.1)
     mjd.ctrl[:] = 0.1
+    d.qHDiagInv.fill_(wp.inf)
     mujoco.mj_forward(mjm, mjd)
     mjw.forward(m, d)
     res = wp.zeros_like(d.qacc)
