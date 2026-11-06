@@ -13,6 +13,7 @@
 # limitations under the License.
 # ==============================================================================
 
+import mujoco
 import numpy as np
 import warp as wp
 from absl.testing import absltest
@@ -240,6 +241,8 @@ def _geom_dist(
         geomtype1,
         geomtype2,
       )
+      has_clipped = ncon > 0
+      ncon = wp.max(ncon, 1)
       dist_out[0] = dist
       ncon_out[0] = ncon
       pos_out[0] = witness1[0]
@@ -247,7 +250,7 @@ def _geom_dist(
       for i in range(ncon):
         w1_out[i] = witness1[i]
         w2_out[i] = witness2[i]
-        dists_out[i] = dists[i] if ncon > 1 else dist
+        dists_out[i] = dists[i] if has_clipped else dist
     else:
       dist_out[0] = dist
       ncon_out[0] = ncon
@@ -257,12 +260,12 @@ def _geom_dist(
       w2_out[0] = x2
       dists_out[0] = dist
 
-  dist_out = wp.array(shape=(1,), dtype=float)
-  ncon_out = wp.array(shape=(1,), dtype=int)
-  pos_out = wp.array(shape=(2,), dtype=wp.vec3)
-  w1_out = wp.array(shape=(4,), dtype=wp.vec3)
-  w2_out = wp.array(shape=(4,), dtype=wp.vec3)
-  dists_out = wp.array(shape=(4,), dtype=float)
+  dist_out = wp.full(1, wp.inf, dtype=float)
+  ncon_out = wp.full(1, -1, dtype=int)
+  pos_out = wp.full(2, wp.vec3(wp.inf), dtype=wp.vec3)
+  w1_out = wp.full(4, wp.vec3(wp.inf), dtype=wp.vec3)
+  w2_out = wp.full(4, wp.vec3(wp.inf), dtype=wp.vec3)
+  dists_out = wp.full(4, wp.inf, dtype=float)
   wp.launch(
     _ccd_kernel,
     dim=1,
@@ -324,6 +327,141 @@ def _geom_dist(
 
 class GJKTest(parameterized.TestCase):
   """Tests for GJK/EPA."""
+
+  @parameterized.parameters(4.49, 20.0)
+  def test_single_mesh_witness_distance(self, tilt):
+    """The direct CCD helper preserves clipped and fallback single-witness distances."""
+    axis = 5.676
+    angle = np.deg2rad(tilt)
+    z = 0.010885 + 0.01 * (np.cos(angle) + np.sin(angle) * (abs(np.cos(axis)) + abs(np.sin(axis))))
+    _, mjd, m, d = test_data.fixture(
+      xml=f"""
+      <mujoco>
+        <asset>
+          <mesh name="cube" vertex="-.01 -.01 -.01  -.01 -.01 .01  -.01 .01 -.01  -.01 .01 .01
+                                    .01 -.01 -.01   .01 -.01 .01   .01 .01 -.01   .01 .01 .01"/>
+        </asset>
+        <default><geom type="mesh" mesh="cube" margin=".0005"/></default>
+        <worldbody>
+          <geom/>
+          <body pos=".00213 .00364 {z}" axisangle="{np.cos(axis)} {np.sin(axis)} 0 {tilt}">
+            <freejoint/>
+            <geom/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """
+    )
+    dist, ncon, w1, w2, dists = _geom_dist(m, d, 0, 1, multiccd=True, margin=0.001, return_all=True)
+    self.assertEqual(mjd.ncon, 1)
+    self.assertEqual(ncon, 1)
+    # As in the driver regression, 1e-5 would hide the single-clipped-point error.
+    np.testing.assert_allclose(dists + 0.001, mjd.contact.dist, atol=1e-7, rtol=0)
+    np.testing.assert_allclose(0.5 * (w1 + w2), mjd.contact.pos, atol=1e-5, rtol=1e-5)
+    if tilt == 4.49:
+      self.assertGreater(abs(dists[0] - dist), 2e-6)
+    else:
+      self.assertEqual(dists[0], dist)
+
+  @parameterized.named_parameters(
+    ("single", 4.49, 0.000885, (4, 5, 6), (0, 1, 2), 1),
+    ("multiple", 2.5, 0.0001, (4, 5, 6), (0, 1, 2), 3),
+    ("unaligned_faces", 20.0, 0.000885, (4, 5, 6), (0, 1, 2), 0),
+    ("unaligned_edge_face", 20.0, 0.000885, (4, 4, 4), (0, 1, 2), 0),
+    ("unaligned_face_edge", 20.0, 0.000885, (4, 5, 6), (0, 0, 0), 0),
+    ("empty_clipping", 4.49, 0.0011, (4, 5, 6), (0, 1, 2), 0),
+  )
+  def test_multicontact_clipped_count(self, tilt, gap, indices1, indices2, expected_count):
+    """Exercise selected faces/edges directly, including an empty clipped polygon."""
+    angle = np.deg2rad(tilt)
+    axis = 3 * np.pi / 4 + 0.05
+    quat = [np.cos(angle / 2), np.sin(angle / 2) * np.cos(axis), np.sin(angle / 2) * np.sin(axis), 0]
+    rot = np.empty(9)
+    mujoco.mju_quat2Mat(rot, quat)
+    rot = rot.reshape(3, 3)
+    corners = np.array([[0.01 if i & (1 << j) else -0.01 for j in range(3)] for i in range(8)])
+    rotated = corners @ rot.T
+    geom1, geom2 = Geom(), Geom()
+    geom1.rot = wp.mat33(np.eye(3))
+    geom2.rot = wp.mat33(rot)
+    geom2.pos = wp.vec3(0.001, -0.002, 0.01 - rotated[:, 2].min() + gap)
+    geom1.size = geom2.size = wp.vec3(0.01)
+    geom1.margin = geom2.margin = 0.001
+    vertices = np.empty((6, 3))
+    vertices[::2] = corners[list(indices1)]
+    vertices[1::2] = rotated[list(indices2)] + np.array(geom2.pos)
+    indices = np.array(list(zip(indices1, indices2))).ravel()
+    # The fallback witnesses are inputs to feature recovery. Even when the
+    # selected faces clip to nothing, they must be returned unchanged.
+    x1, x2 = wp.vec3(0, 0, 0.0105), wp.vec3(0, 0, 0.0104)
+
+    @wp.kernel(module="unique", enable_backward=False)
+    def recover(
+      geom1: Geom,
+      geom2: Geom,
+      vertices: wp.array[wp.vec3],
+      indices: wp.array[int],
+      scratch: wp.array2d[wp.vec3],
+      scratch_indices: wp.array2d[int],
+      plane_dist: wp.array[float],
+      count_out: wp.array[int],
+      witness1_out: wp.array[wp.vec3],
+      witness2_out: wp.array[wp.vec3],
+      dists_out: wp.array[float],
+    ):
+      count, witness1, witness2, dists = multicontact(
+        scratch[0],
+        scratch[1],
+        scratch[2],
+        plane_dist,
+        scratch_indices[0],
+        scratch_indices[1],
+        scratch[3],
+        scratch[4],
+        scratch[5],
+        scratch[6],
+        scratch[7],
+        vertices,
+        indices,
+        (1 << 10) + (2 << 20),
+        x1,
+        x2,
+        geom1,
+        geom2,
+        GeomType.BOX,
+        GeomType.BOX,
+      )
+      count_out[0] = count
+      for i in range(4):
+        witness1_out[i] = witness1[i]
+        witness2_out[i] = witness2[i]
+        dists_out[i] = dists[i]
+
+    count = wp.full(1, -1, dtype=int)
+    witness1 = wp.full(4, wp.vec3(wp.inf), dtype=wp.vec3)
+    witness2 = wp.full(4, wp.vec3(wp.inf), dtype=wp.vec3)
+    dists = wp.full(4, wp.inf, dtype=float)
+    wp.launch(
+      recover,
+      dim=1,
+      inputs=[
+        geom1,
+        geom2,
+        wp.array(vertices, dtype=wp.vec3),
+        wp.array(indices, dtype=int),
+        wp.empty((8, 20), dtype=wp.vec3),
+        wp.empty((2, 20), dtype=int),
+        wp.empty(20, dtype=float),
+      ],
+      outputs=[count, witness1, witness2, dists],
+    )
+    self.assertEqual(count.numpy()[0], expected_count)
+    if expected_count == 0:
+      np.testing.assert_array_equal(witness1.numpy()[0], np.array(x1))
+      np.testing.assert_array_equal(witness2.numpy()[0], np.array(x2))
+    else:
+      self.assertTrue(np.isfinite(dists.numpy()[:expected_count]).all())
+      self.assertFalse(np.array_equal(witness1.numpy()[0], np.array(x1)))
 
   def test_spheres_distance(self):
     """Test distance between two spheres."""
