@@ -1664,6 +1664,9 @@ class Model:
       factorization is a per-block decision -- see M_tiles and m_block_layout
     qLD_block_total: packed length of the dense region per world (also the offset of the LDL region)
     qLD_block_adr: packed factor offset; Q_LD_BLOCK_* sentinel otherwise (nv,)
+    Minv_block_total: packed length of the inverse inertia blocks, one per tree, per world
+    Minv_block_adr: offset of the dof's tree block in the packed inverse inertia (nv,)
+    Minv_block_dofmax: number of dofs of the largest tree
     flg_adhesion: flag indicating if model has passive adhesion
     has_fluid: True if wind, density, or viscosity are non-zero at put_model time
     flg_surfacevel: whether model has non-zero surfacevel
@@ -2237,6 +2240,9 @@ class Model:
   is_sparse: bool
   qLD_block_total: int
   qLD_block_adr: array("nv", int)
+  Minv_block_total: int
+  Minv_block_adr: array("nv", int)
+  Minv_block_dofmax: int
   flg_adhesion: bool
   has_fluid: bool
   flg_surfacevel: bool

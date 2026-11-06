@@ -15,7 +15,9 @@
 
 """Tests for set_const functions."""
 
+import contextlib
 import copy
+from unittest import mock
 
 import mujoco
 import numpy as np
@@ -848,6 +850,77 @@ class SetConstTest(parameterized.TestCase):
       _assert_eq(m.tendon_lengthspring.numpy()[w, 0], mjm.tendon_lengthspring[0], f"lengthspring_world_{w}")
     _assert_eq(mjm.actuator_biasprm[0, 2], 1, "mj_setConst biasprm[2]")
     _assert_eq(mjm.tendon_lengthspring[0], [-1, -1], "mj_setConst lengthspring")
+
+  @parameterized.product(nworld=(1, 2), sparse_blocks=(False, True))
+  def test_set_const_invweight0_blocks(self, nworld, sparse_blocks):
+    """Test inverse weights for compact, scalar, tile, and sparse inertia blocks vs mj_setConst."""
+    # the 7-dof tree exceeds the patched dense block size and joins the sparse LDL region
+    blocks = mock.patch.multiple("mujoco_warp._src.types", M_BLOCK_DENSE_MAX=6)
+    with blocks if sparse_blocks else contextlib.nullcontext():
+      mjm, _, m, d = test_data.fixture(
+        xml="""
+      <mujoco>
+        <worldbody>
+          <body>
+            <joint axis="0 0 1"/>
+            <geom pos=".2 0 0" size=".1" mass="1"/>
+          </body>
+          <body pos="1 0 0">
+            <joint name="pair1" axis="1 0 0"/>
+            <joint name="pair2" axis="0 1 0"/>
+            <geom pos=".1 .1 .1" type="box" size=".1 .2 .1" mass=".7"/>
+          </body>
+          <body pos="2 0 0">
+            <freejoint/>
+            <geom type="box" size=".1 .2 .3" mass="2"/>
+            <body pos=".2 0 0">
+              <joint name="hinge" axis="0 1 0"/>
+              <geom pos=".1 0 0" size=".05" mass=".5"/>
+            </body>
+          </body>
+          <body pos="3 0 0">
+            <geom size=".1"/>
+          </body>
+        </worldbody>
+        <tendon>
+          <fixed name="tendon">
+            <joint joint="hinge" coef="1"/>
+            <joint joint="pair2" coef="-.5"/>
+          </fixed>
+        </tendon>
+        <actuator>
+          <motor joint="hinge" gear="2"/>
+          <position joint="pair1" kp="10"/>
+          <motor tendon="tendon"/>
+        </actuator>
+      </mujoco>
+      """,
+        nworld=nworld,
+        batch_sizes={
+          "body_mass": nworld,
+          "dof_invweight0": nworld,
+          "body_invweight0": nworld,
+          "tendon_invweight0": nworld,
+          "actuator_acc0": nworld,
+        },
+      )
+    self.assertEqual(d.qLD.shape[1] > m.qLD_block_total, sparse_blocks)
+
+    body_mass = m.body_mass.numpy()
+    body_mass[nworld - 1] *= 1.0 + np.arange(mjm.nbody) / mjm.nbody
+    m.body_mass.assign(body_mass)
+    fields = ("dof_invweight0", "body_invweight0", "tendon_invweight0", "actuator_acc0")
+    for field in fields:
+      getattr(m, field).fill_(wp.inf)
+    mjwarp.set_const(m, d)
+
+    for w in range(nworld):
+      mjm.body_mass[:] = body_mass[w]
+      mujoco.mj_setConst(mjm, mujoco.MjData(mjm))
+      for field in fields:
+        _assert_eq(getattr(m, field).numpy()[w], getattr(mjm, field), f"{field}_world_{w}")
+    if nworld == 2:
+      self.assertFalse(np.allclose(m.dof_invweight0.numpy()[0], m.dof_invweight0.numpy()[1]))
 
   def test_set_length_range_joint_limited(self):
     """Test set_length_range for joint-limited actuator matches joint range."""
