@@ -642,9 +642,13 @@ class ConstraintTest(parameterized.TestCase):
 
   # TODO(thowell): Add support for quadratic flex interpolation.
   # TODO(team): remove version check once mujoco >= 3.17.1 is required.
+  @parameterized.parameters(
+    ("2 1 2", "none"),
+    ("2 2 2", "bend"),
+  )
   @absltest.skipIf(not util_pkg.check_version("mujoco>=3.17.1.dev1005593014"), "Requires MuJoCo >= 3.17.1.dev1005593014")
-  def test_flex_interpolated(self):
-    """Test collision and constraint generation for interpolated flex shells."""
+  def test_flex_interpolated(self, cellcount, elastic2d):
+    """Test collision and constraint generation for interpolated volume and shell flexes."""
     xml = f"""
       <mujoco>
         <option solver="CG" tolerance="1e-6" timestep=".001"/>
@@ -654,9 +658,9 @@ class ConstraintTest(parameterized.TestCase):
             <geom type="box" size=".05 .05 .05" mass="1"/>
           </body>
           <flexcomp name="softbody" type="grid" count="4 2 4" spacing=".025 .05 .025" pos="0 0 0"
-                    dim="3" cellcount="2 1 2" radius=".001"
+                    dim="3" cellcount="{cellcount}" radius=".001"
                     mass="5" dof="trilinear">
-            <elasticity young="1e4" poisson="0.3" damping="1e-3"/>
+            <elasticity young="1e4" poisson="0.3" damping="1e-3" elastic2d="{elastic2d}" thickness="0.01"/>
             <contact condim="3" selfcollide="none"/>
           </flexcomp>
         </worldbody>
@@ -675,7 +679,7 @@ class ConstraintTest(parameterized.TestCase):
 
     self.assertGreater(mjd.nefc, 0, "Expected active contacts in MuJoCo")
     self.assertEqual(d.nefc.numpy()[0], mjd.nefc, "nefc mismatch")
-    _assert_efc_eq(mjm, m, d, mjd, mjd.nefc, f"efc_flex_interpolated_trilinear", m.nv)
+    _assert_efc_eq(mjm, m, d, mjd, mjd.nefc, f"efc_flex_interpolated_trilinear_{elastic2d}", m.nv)
 
   def test_weld_coriolis(self):
     """Test weld Coriolis term Jdotv_r with default torquescale and high velocity."""
