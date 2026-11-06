@@ -2239,56 +2239,69 @@ def _limit_slide_hinge(is_sparse: bool, newton: bool, is_discrete: bool = False)
     jnt_margin_id = worldid % jnt_margin.shape[0]
     jntmargin = jnt_margin[jnt_margin_id, jntid]
     dist_min, dist_max = qpos - jntrange[0], jntrange[1] - qpos
-    pos = wp.min(dist_min, dist_max) - jntmargin
-    active = pos < 0
 
-    if active:
-      rowadr = int(0)
-      if wp.static(is_sparse):
-        rowadr = _reserve_efc_nnz(nefc_out, njmax_in, njmax_nnz_in, worldid, 1, 1, efc_nnz_out)
-        if rowadr < 0:
-          return
+    # one row per side within the margin, lower side first: both sides when the range is narrower
+    # than twice the margin
+    lower = dist_min < jntmargin
+    nrow = int(lower) + int(dist_max < jntmargin)
+    if nrow == 0:
+      return
 
-      wp.atomic_add(nl_out, worldid, 1)  # kernel_analyzer: ignore[atomic]
-      efcid = wp.atomic_add(nefc_out, worldid, 1)  # kernel_analyzer: ignore[atomic]
-
-      if efcid >= njmax_in:
+    rowadr = int(0)
+    if wp.static(is_sparse):
+      rowadr = _reserve_efc_nnz(nefc_out, njmax_in, njmax_nnz_in, worldid, nrow, 1, efc_nnz_out)
+      if rowadr < 0:
         return
 
-      if wp.static(is_sparse and newton):
-        jgid = wp.atomic_add(efc_jtdaj_nblock_out, worldid, 1)  # kernel_analyzer: ignore[atomic]
-        efc_jtdaj_adr_out[worldid, jgid] = efcid
-        efc_jtdaj_nrow_out[worldid, jgid] = 1
+    wp.atomic_add(nl_out, worldid, nrow)  # kernel_analyzer: ignore[atomic]
+    efcadr = wp.atomic_add(nefc_out, worldid, nrow)  # kernel_analyzer: ignore[atomic]
 
-      dofadr = jnt_dofadr[jntid]
+    if efcadr >= njmax_in:
+      return
 
-      J = float(dist_min < dist_max) * 2.0 - 1.0
+    # rows past njmax are dropped
+    nrow = wp.min(nrow, njmax_in - efcadr)
+
+    if wp.static(is_sparse and newton):
+      jgid = wp.atomic_add(efc_jtdaj_nblock_out, worldid, 1)  # kernel_analyzer: ignore[atomic]
+      efc_jtdaj_adr_out[worldid, jgid] = efcadr
+      efc_jtdaj_nrow_out[worldid, jgid] = nrow
+
+    # shared by both rows, so read once
+    dofadr = jnt_dofadr[jntid]
+    qvel = qvel_in[worldid, dofadr]
+    timestep = opt_timestep[worldid % opt_timestep.shape[0]]
+    invweight0 = dof_invweight0[worldid % dof_invweight0.shape[0], dofadr]
+    solref = jnt_solref[worldid % jnt_solref.shape[0], jntid]
+    solimp = jnt_solimp[worldid % jnt_solimp.shape[0], jntid]
+
+    for k in range(nrow):
+      efcid = efcadr + k
+      J = wp.where(lower and k == 0, 1.0, -1.0)
+      pos = wp.where(lower and k == 0, dist_min, dist_max) - jntmargin
 
       if wp.static(is_sparse):
         efc_J_rownnz_out[worldid, efcid] = 1
-        efc_J_rowadr_out[worldid, efcid] = rowadr
-        efc_J_colind_out[worldid, 0, rowadr] = dofadr
-        efc_J_out[worldid, 0, rowadr] = J
+        efc_J_rowadr_out[worldid, efcid] = rowadr + k
+        efc_J_colind_out[worldid, 0, rowadr + k] = dofadr
+        efc_J_out[worldid, 0, rowadr + k] = J
       else:
         for i in range(nv):
           efc_J_out[worldid, efcid, i] = 0.0
         efc_J_out[worldid, efcid, dofadr] = J
 
-      Jqvel = J * qvel_in[worldid, dofadr]
+      Jqvel = J * qvel
 
-      dof_invweight0_id = worldid % dof_invweight0.shape[0]
-      jnt_solref_id = worldid % jnt_solref.shape[0]
-      jnt_solimp_id = worldid % jnt_solimp.shape[0]
       _efc_row(
         opt_disableflags,
         worldid,
-        opt_timestep[worldid % opt_timestep.shape[0]],
+        timestep,
         efcid,
         pos,
         pos,
-        dof_invweight0[dof_invweight0_id, dofadr],
-        jnt_solref[jnt_solref_id, jntid],
-        jnt_solimp[jnt_solimp_id, jntid],
+        invweight0,
+        solref,
+        solimp,
         jntmargin,
         Jqvel,
         0.0,
@@ -2503,33 +2516,50 @@ def _limit_tendon(is_sparse: bool, newton: bool, is_discrete: bool = False):
     dist_min, dist_max = length - tenrange[0], tenrange[1] - length
     tendon_margin_id = worldid % tendon_margin.shape[0]
     tenmargin = tendon_margin[tendon_margin_id, tenid]
-    pos = wp.min(dist_min, dist_max) - tenmargin
-    active = pos < 0
 
-    if active:
-      rownnz_tenJ = ten_J_rownnz[tenid]
-      rowadr_efc = int(0)
-      if wp.static(is_sparse):
-        rowadr_efc = _reserve_efc_nnz(nefc_out, njmax_in, njmax_nnz_in, worldid, 1, rownnz_tenJ, efc_nnz_out)
-        if rowadr_efc < 0:
-          return
+    # one row per side within the margin, lower side first: both sides when the range is narrower
+    # than twice the margin
+    lower = dist_min < tenmargin
+    nrow = int(lower) + int(dist_max < tenmargin)
+    if nrow == 0:
+      return
 
-      wp.atomic_add(nl_out, worldid, 1)  # kernel_analyzer: ignore[atomic]
-      efcid = wp.atomic_add(nefc_out, worldid, 1)  # kernel_analyzer: ignore[atomic]
-
-      if efcid >= njmax_in:
+    rownnz_tenJ = ten_J_rownnz[tenid]
+    blkadr_efc = int(0)
+    if wp.static(is_sparse):
+      blkadr_efc = _reserve_efc_nnz(nefc_out, njmax_in, njmax_nnz_in, worldid, nrow, rownnz_tenJ, efc_nnz_out)
+      if blkadr_efc < 0:
         return
 
-      if wp.static(is_sparse and newton):
-        jgid = wp.atomic_add(efc_jtdaj_nblock_out, worldid, 1)  # kernel_analyzer: ignore[atomic]
-        efc_jtdaj_adr_out[worldid, jgid] = efcid
-        efc_jtdaj_nrow_out[worldid, jgid] = 1
+    wp.atomic_add(nl_out, worldid, nrow)  # kernel_analyzer: ignore[atomic]
+    efcadr = wp.atomic_add(nefc_out, worldid, nrow)  # kernel_analyzer: ignore[atomic]
 
+    if efcadr >= njmax_in:
+      return
+
+    # rows past njmax are dropped
+    nrow = wp.min(nrow, njmax_in - efcadr)
+
+    if wp.static(is_sparse and newton):
+      jgid = wp.atomic_add(efc_jtdaj_nblock_out, worldid, 1)  # kernel_analyzer: ignore[atomic]
+      efc_jtdaj_adr_out[worldid, jgid] = efcadr
+      efc_jtdaj_nrow_out[worldid, jgid] = nrow
+
+    # shared by both rows, so read once
+    rowadr_tenJ = ten_J_rowadr[tenid]
+    timestep = opt_timestep[worldid % opt_timestep.shape[0]]
+    invweight0 = tendon_invweight0[worldid % tendon_invweight0.shape[0], tenid]
+    solref_lim = tendon_solref_lim[worldid % tendon_solref_lim.shape[0], tenid]
+    solimp_lim = tendon_solimp_lim[worldid % tendon_solimp_lim.shape[0], tenid]
+
+    for k in range(nrow):
+      efcid = efcadr + k
       Jqvel = float(0.0)
-      scl = float(dist_min < dist_max) * 2.0 - 1.0
+      scl = wp.where(lower and k == 0, 1.0, -1.0)
+      pos = wp.where(lower and k == 0, dist_min, dist_max) - tenmargin
 
-      rowadr_tenJ = ten_J_rowadr[tenid]
       if wp.static(is_sparse):
+        rowadr_efc = blkadr_efc + k * rownnz_tenJ
         efc_J_rownnz_out[worldid, efcid] = rownnz_tenJ
         efc_J_rowadr_out[worldid, efcid] = rowadr_efc
 
@@ -2555,19 +2585,16 @@ def _limit_tendon(is_sparse: bool, newton: bool, is_discrete: bool = False):
           else:
             efc_J_out[worldid, efcid, i] = 0.0
 
-      tendon_invweight0_id = worldid % tendon_invweight0.shape[0]
-      tendon_solref_lim_id = worldid % tendon_solref_lim.shape[0]
-      tendon_solimp_lim_id = worldid % tendon_solimp_lim.shape[0]
       _efc_row(
         opt_disableflags,
         worldid,
-        opt_timestep[worldid % opt_timestep.shape[0]],
+        timestep,
         efcid,
         pos,
         pos,
-        tendon_invweight0[tendon_invweight0_id, tenid],
-        tendon_solref_lim[tendon_solref_lim_id, tenid],
-        tendon_solimp_lim[tendon_solimp_lim_id, tenid],
+        invweight0,
+        solref_lim,
+        solimp_lim,
         tenmargin,
         Jqvel,
         0.0,
