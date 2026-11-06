@@ -47,6 +47,8 @@ explicit = true
 [tool.uv.sources]
 warp-lang = {index = "nvidia"}
 mujoco = {index = "mujoco"}
+# warp-optix publishes no Linux wheels yet, so build it from the repository.
+warp-optix = {git = "https://github.com/NVIDIA/warp-optix"}
 
 [project.optional-dependencies]
 dev = [
@@ -67,6 +69,10 @@ cpu = [
 ]
 cuda = [
     "jax[cuda12]"
+]
+# OptiX ray-casting backend for the batch renderer: create_render_context(..., backend="optix").
+optix = [
+    "warp-optix>=0.2.0; python_version == '3.12'",
 ]
 
 [project.scripts]

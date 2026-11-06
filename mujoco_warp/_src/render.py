@@ -19,7 +19,6 @@ from typing import Tuple
 import warp as wp
 
 from mujoco_warp._src import math
-from mujoco_warp._src import render_optix
 from mujoco_warp._src.bvh import SPLAT_MIN_RESPONSE
 from mujoco_warp._src.ray import RAY_TOL_ABS
 from mujoco_warp._src.ray import RAY_TOL_REL
@@ -649,12 +648,12 @@ def _make_cast_ray(geom_ray_types: Tuple[int], first_hit: bool = False) -> wp.Fu
           continue
         gtype = geom_type[gi]
         d, n = ray_primitive(
-          gtype,
           geom_xpos_in[worldid, gi],
           geom_xmat_in[worldid, gi],
           geom_size[worldid % geom_size.shape[0], gi],
           ray_origin_world,
           ray_dir_world,
+          gtype,
         )
       else:
         gi = local_id - bvh_ngeom
@@ -664,16 +663,29 @@ def _make_cast_ray(geom_ray_types: Tuple[int], first_hit: bool = False) -> wp.Fu
 
       if wp.static(int(GeomType.HFIELD) in geom_ray_types):
         if gtype == GeomType.HFIELD:
-          d, n, u, v, f, geom_hfield_id = ray_mesh_with_bvh(
-            hfield_bvh_id,
-            geom_dataid[worldid % geom_dataid.shape[0], gi],
-            geom_xpos_in[worldid, gi],
-            geom_xmat_in[worldid, gi],
-            ray_origin_world,
-            ray_dir_world,
-            query_dist,
-            cull_backfaces,
-          )
+          # Shadows are two-sided, like meshes.
+          if wp.static(first_hit):
+            hit = ray_mesh_with_bvh_anyhit(
+              hfield_bvh_id,
+              geom_dataid[worldid % geom_dataid.shape[0], gi],
+              geom_xpos_in[worldid, gi],
+              geom_xmat_in[worldid, gi],
+              ray_origin_world,
+              ray_dir_world,
+              dist,
+            )
+            d = 0.0 if hit else -1.0
+          else:
+            d, n, u, v, f, geom_hfield_id = ray_mesh_with_bvh(
+              hfield_bvh_id,
+              geom_dataid[worldid % geom_dataid.shape[0], gi],
+              geom_xpos_in[worldid, gi],
+              geom_xmat_in[worldid, gi],
+              ray_origin_world,
+              ray_dir_world,
+              query_dist,
+              cull_backfaces,
+            )
       if wp.static(int(GeomType.MESH) in geom_ray_types or int(GeomType.SDF) in geom_ray_types):
         if gtype == GeomType.MESH or gtype == GeomType.SDF:
           if wp.static(first_hit):
@@ -938,6 +950,8 @@ def _build_megakernel(nlight: int, rc: RenderContext):
     cast_ray = _make_cast_ray(geom_ray_types, first_hit=False)
     cast_ray_first_hit = _make_cast_ray(geom_ray_types, first_hit=True)
   else:
+    from mujoco_warp._src import render_optix  # noqa: PLC0415
+
     cast_ray = render_optix.make_cast_ray(geom_ray_types, rc.optix, first_hit=False)
     cast_ray_first_hit = render_optix.make_cast_ray(geom_ray_types, rc.optix, first_hit=True)
   compute_lighting = _make_compute_lighting(cast_ray_first_hit)
@@ -1541,6 +1555,8 @@ def render(m: Model, d: Data, rc: RenderContext):
     if rc.optix is None:
       wp.launch(_render_megakernel, dim=dim, inputs=inputs, outputs=outputs, block_dim=m.block_dim.render)
     else:
+      from mujoco_warp._src import render_optix  # noqa: PLC0415
+
       render_optix.launch(rc, dim, inputs + outputs)
 
   if nsamples > 1:

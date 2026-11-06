@@ -475,39 +475,54 @@ def ray_box(pos: wp.vec3, mat: wp.mat33, size: wp.vec3, pnt: wp.vec3, vec: wp.ve
   return x, all, normal
 
 
-def make_ray_primitive(geom_ray_types: Tuple[int]) -> wp.Function:
-  """Build a ray-primitive intersection specialized to the geom types present in the scene.
+_PRIMITIVE_TYPES = (
+  int(GeomType.PLANE),
+  int(GeomType.SPHERE),
+  int(GeomType.CAPSULE),
+  int(GeomType.ELLIPSOID),
+  int(GeomType.CYLINDER),
+  int(GeomType.BOX),
+)
 
-  Branches for absent types are removed at compile time via wp.static.
+
+def make_ray_primitive(geom_ray_types: Tuple[int, ...] = _PRIMITIVE_TYPES) -> wp.Function:
+  """Build a ray-primitive intersection specialized to the given geom types.
+
+  Branches for absent types are removed at compile time via wp.static. The returned func
+  returns the distance along the ray to the intersection and the normal there, or -1 and a
+  zero vector if there is none (including for non-primitive geom types).
   """
 
   @wp.func
   def ray_primitive(
-    gtype: int, pos: wp.vec3, mat: wp.mat33, size: wp.vec3, pnt: wp.vec3, vec: wp.vec3
+    pos: wp.vec3, mat: wp.mat33, size: wp.vec3, pnt: wp.vec3, vec: wp.vec3, geomtype: int
   ) -> Tuple[float, wp.vec3]:
     d = float(-1.0)
     n = wp.vec3(0.0, 0.0, 0.0)
     if wp.static(int(GeomType.PLANE) in geom_ray_types):
-      if gtype == GeomType.PLANE:
+      if geomtype == GeomType.PLANE:
         d, n = ray_plane(pos, mat, size, pnt, vec)
     if wp.static(int(GeomType.SPHERE) in geom_ray_types):
-      if gtype == GeomType.SPHERE:
+      if geomtype == GeomType.SPHERE:
         d, n = ray_sphere(pos, size[0] * size[0], pnt, vec)
-    if wp.static(int(GeomType.ELLIPSOID) in geom_ray_types):
-      if gtype == GeomType.ELLIPSOID:
-        d, n = ray_ellipsoid(pos, mat, size, pnt, vec)
     if wp.static(int(GeomType.CAPSULE) in geom_ray_types):
-      if gtype == GeomType.CAPSULE:
+      if geomtype == GeomType.CAPSULE:
         d, n = ray_capsule(pos, mat, size, pnt, vec)
+    if wp.static(int(GeomType.ELLIPSOID) in geom_ray_types):
+      if geomtype == GeomType.ELLIPSOID:
+        d, n = ray_ellipsoid(pos, mat, size, pnt, vec)
     if wp.static(int(GeomType.CYLINDER) in geom_ray_types):
-      if gtype == GeomType.CYLINDER:
+      if geomtype == GeomType.CYLINDER:
         d, n = ray_cylinder(pos, mat, size, pnt, vec)
     if wp.static(int(GeomType.BOX) in geom_ray_types):
-      if gtype == GeomType.BOX:
+      if geomtype == GeomType.BOX:
         d, _, n = ray_box(pos, mat, size, pnt, vec)
     return d, n
 
   return ray_primitive
+
+
+ray_geom = make_ray_primitive()
 
 
 @wp.func
@@ -853,30 +868,6 @@ def ray_flex_with_bvh_anyhit(
   Requires wp.Mesh be constructed and their ids to be passed. Flex are already in world space.
   """
   return wp.mesh_query_ray_anyhit(flex_bvh_id[flexid], pnt, vec, max_t, group_root)
-
-
-@wp.func
-def ray_geom(pos: wp.vec3, mat: wp.mat33, size: wp.vec3, pnt: wp.vec3, vec: wp.vec3, geomtype: int) -> Tuple[float, wp.vec3]:
-  """Returns distance along ray to intersection with geom and normal at intersection point.
-
-  If no intersection is found, returns -1 and zero vector.
-  """
-  # TODO(team): static loop unrolling to remove unnecessary branching
-  if geomtype == GeomType.PLANE:
-    return ray_plane(pos, mat, size, pnt, vec)
-  elif geomtype == GeomType.SPHERE:
-    return ray_sphere(pos, size[0] * size[0], pnt, vec)
-  elif geomtype == GeomType.CAPSULE:
-    return ray_capsule(pos, mat, size, pnt, vec)
-  elif geomtype == GeomType.ELLIPSOID:
-    return ray_ellipsoid(pos, mat, size, pnt, vec)
-  elif geomtype == GeomType.CYLINDER:
-    return ray_cylinder(pos, mat, size, pnt, vec)
-  elif geomtype == GeomType.BOX:
-    dist, _, normal = ray_box(pos, mat, size, pnt, vec)
-    return dist, normal
-  else:
-    return -1.0, wp.vec3()
 
 
 @wp.func
