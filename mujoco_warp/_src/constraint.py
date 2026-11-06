@@ -3079,15 +3079,12 @@ def _efc_contact_jac_sparse(cone_type: types.ConeType, nmaxdim: int, max_records
   @wp.kernel(module="unique", module_options=module_options, grid_stride=False)
   def kernel(
     # Model:
-    body_parentid: wp.array[int],
     body_rootid: wp.array[int],
     body_weldid: wp.array[int],
     body_dofnum: wp.array[int],
     body_dofadr: wp.array[int],
-    dof_bodyid: wp.array[int],
     dof_parentid: wp.array[int],
     geom_bodyid: wp.array[int],
-    body_isdofancestor: wp.array2d[int],
     # Data in:
     qvel_in: wp.array2d[float],
     subtree_com_in: wp.array2d[wp.vec3],
@@ -3132,6 +3129,8 @@ def _efc_contact_jac_sparse(cone_type: types.ConeType, nmaxdim: int, max_records
       body2 = body_weldid[geom_bodyid[geom[1]]]
 
       con_pos = pos_in[conid]
+      offset1 = con_pos - subtree_com_in[worldid, body_rootid[body1]]
+      offset2 = con_pos - subtree_com_in[worldid, body_rootid[body2]]
       if not wp.static(IS_ELLIPTIC):
         frame_0 = frame_in[conid, 0]
 
@@ -3143,33 +3142,17 @@ def _efc_contact_jac_sparse(cone_type: types.ConeType, nmaxdim: int, max_records
       Jqvel = vecdim()
       for nnz in range(lane, rownnz, _CONTACT_JAC_LANES):
         dofid = wp.max(da1, da2)
-        jac1p, jac1r = support.jac_dof(
-          body_parentid,
-          body_rootid,
-          dof_bodyid,
-          body_isdofancestor,
-          subtree_com_in,
-          cdof_in,
-          con_pos,
-          body1,
-          dofid,
-          worldid,
-        )
-        jac2p, jac2r = support.jac_dof(
-          body_parentid,
-          body_rootid,
-          dof_bodyid,
-          body_isdofancestor,
-          subtree_com_in,
-          cdof_in,
-          con_pos,
-          body2,
-          dofid,
-          worldid,
-        )
-
-        jacp_dif = jac2p - jac1p
-        jacr_dif = jac2r - jac1r
+        # Common ancestors are excluded by the merged DOF traversal.
+        offset = wp.where(da1 == dofid, offset1, offset2)
+        cdof = cdof_in[worldid, dofid]
+        jacp = wp.spatial_bottom(cdof) + wp.cross(wp.spatial_top(cdof), offset)
+        jacr = wp.spatial_top(cdof)
+        if da1 == dofid:
+          jacp_dif = wp.vec3(0.0) - jacp
+          jacr_dif = wp.vec3(0.0) - jacr
+        else:
+          jacp_dif = jacp - wp.vec3(0.0)
+          jacr_dif = jacr - wp.vec3(0.0)
         qvel = qvel_in[worldid, dofid]
 
         for dimid in range(nmaxdim):
@@ -5854,15 +5837,12 @@ def make_constraint(m: types.Model, d: types.Data):
             _efc_contact_jac_sparse(m.opt.cone, nmaxdim, max_records, det_atomics),
             dim=ncontact_stride * _CONTACT_JAC_LANES,
             inputs=[
-              m.body_parentid,
               m.body_rootid,
               m.body_weldid,
               m.body_dofnum,
               m.body_dofadr,
-              m.dof_bodyid,
               m.dof_parentid,
               m.geom_bodyid,
-              m.body_isdofancestor,
               d.qvel,
               d.subtree_com,
               d.cdof,
