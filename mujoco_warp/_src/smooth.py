@@ -4239,7 +4239,7 @@ def solve_m(m: Model, d: Data, x: wp.array2d[float], y: wp.array2d[float], x_scr
 
 
 @cache_kernel
-def _tile_cholesky_factorize_solve_block(tile: TileSet):
+def _tile_cholesky_factorize_solve_block(tile: TileSet, store_factor: bool):
   # Fused factor+solve: densify the block, factor it, and back-substitute in one launch (avoids
   # re-loading the factor). Grid/densify structure matches _tile_cholesky_factorize_block.
   block_size = tile.size
@@ -4268,7 +4268,8 @@ def _tile_cholesky_factorize_solve_block(tile: TileSet):
 
     L = wp.tile_reshape(block, (block_size, block_size))
     wp.tile_cholesky_inplace(L, fill_mode="upper")
-    wp.tile_store(L_out[worldid], wp.tile_reshape(L, (block_area,)), offset=(qLD_block_adr[start],))
+    if wp.static(store_factor):
+      wp.tile_store(L_out[worldid], wp.tile_reshape(L, (block_area,)), offset=(qLD_block_adr[start],))
 
     rhs = wp.tile_load(y[worldid], shape=(block_size,), offset=(start,))
     sol = wp.tile_cholesky_solve(L, rhs, fill_mode="upper")
@@ -4343,6 +4344,7 @@ def _factor_solve_blocks(
   D: wp.array2d[float],
   x: wp.array2d[float],
   y: wp.array2d[float],
+  store_factor: bool,
 ):
   for tile in m.M_tiles:
     if tile.elemid.size == 0:
@@ -4355,7 +4357,7 @@ def _factor_solve_blocks(
       )
     else:
       wp.launch_tiled(
-        _tile_cholesky_factorize_solve_block(tile),
+        _tile_cholesky_factorize_solve_block(tile, store_factor),
         dim=(d.nworld, tile.adr.size),
         inputs=[m.qLD_block_adr, M, tile.elemid, tile.adr, y],
         outputs=[x, L],
@@ -4363,7 +4365,7 @@ def _factor_solve_blocks(
       )
 
 
-def factor_solve_i(m, d, M, L, D, x, y):
+def factor_solve_i(m, d, M, L, D, x, y, store_factor: bool = True):
   """Factorizes and solves the inertia-like linear system.
 
   Compact blocks use reciprocal diagonals, full small blocks use scalar Cholesky, dense blocks use
@@ -4377,9 +4379,10 @@ def factor_solve_i(m, d, M, L, D, x, y):
     D: Output reciprocal diagonal for compact and sparse blocks.
     x: Output array for the solution.
     y: Input right-hand side array.
+    store_factor: Write the factor of dense blocks to L; scalar and sparse blocks always use L.
   """
   if m.M_tiles:
-    _factor_solve_blocks(m, d, M, L, D, x, y)
+    _factor_solve_blocks(m, d, M, L, D, x, y, store_factor)
   if L.shape[1] > m.qLD_block_total:
     L_ldl = L[:, m.qLD_block_total :]
     _factor_i_sparse(m, d, M, L_ldl, D)
