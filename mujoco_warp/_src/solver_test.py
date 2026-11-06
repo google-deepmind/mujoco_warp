@@ -2777,7 +2777,7 @@ class SolverTest(parameterized.TestCase):
 
 
 def _light_cable_xml(nlink=64):
-  """A cable of light box links over a plane: a free first link, then ball joints, neighbors not colliding."""
+  """Light box links over a plane: a free first link, then ball joints, neighbors not colliding."""
   geom = (
     '<geom type="box" size="0.00125 0.004 0.00085" pos="0.00125 0 0" mass="1.69e-05" condim="4"'
     ' friction="0.5 0.00025 1e-05" solref="-9e6 -6000" solimp="0.9924 0.9924 0.001 0.5 2"/>'
