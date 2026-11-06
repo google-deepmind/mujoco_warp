@@ -2463,6 +2463,8 @@ class SolverTest(parameterized.TestCase):
       self.assertEqual(compact.called, sleep)
       dtype = wp.float64 if f64 else wp.float32
       self.assertEqual({(c.h.dtype, c.hfactor.dtype) for c in contexts}, {(dtype, dtype)})
+      if f64:  # nv = 195: the float64 Hessian keeps the dense blocked Cholesky
+        self.assertTrue(all(c.h_tile_nz is None for c in contexts))
       qpos = d.qpos.numpy()[0]
       if f64:
         np.testing.assert_allclose(qpos, mjd.qpos, atol=1e-5)
