@@ -524,6 +524,52 @@ class IOTest(parameterized.TestCase):
 
     self.assertEqual(io._default_njmax_nnz(mjm, nconmax=0, njmax=2), 2)
 
+  @parameterized.parameters(
+    ("", False, False),
+    ('gravcomp="1"', True, False),
+    ('gravcomp="0"', False, False),
+  )
+  def test_has_gravcomp_flag(self, body_attr, has_gravcomp, has_tendon_armature):
+    mjm = mujoco.MjModel.from_xml_string(f"""
+      <mujoco>
+        <worldbody>
+          <body {body_attr}>
+            <joint type="slide"/>
+            <geom size=".1"/>
+          </body>
+        </worldbody>
+      </mujoco>
+    """)
+    m = mjwarp.put_model(mjm)
+    self.assertEqual(m.has_gravcomp, has_gravcomp)
+    self.assertEqual(m.has_tendon_armature, has_tendon_armature)
+
+  @parameterized.parameters(
+    ("", "", False),
+    ('armature=".1"', "", True),
+    ("", '<general tendon="t" armature=".1"/>', True),
+    ("", '<general tendon="t"/>', False),
+  )
+  def test_has_tendon_armature_flag(self, tendon_attr, actuator, expected):
+    mjm = mujoco.MjModel.from_xml_string(f"""
+      <mujoco>
+        <worldbody>
+          <body>
+            <joint name="j" type="slide"/>
+            <geom size=".1"/>
+          </body>
+        </worldbody>
+        <tendon>
+          <fixed name="t" {tendon_attr}>
+            <joint joint="j" coef="1"/>
+          </fixed>
+        </tendon>
+        <actuator>{actuator}</actuator>
+      </mujoco>
+    """)
+    m = mjwarp.put_model(mjm)
+    self.assertEqual(m.has_tendon_armature, expected)
+
   def test_make_put_data(self):
     """Tests that make_data and put_data are producing the same shapes for all arrays."""
     mjm, _, _, d = test_data.fixture("pendula.xml", nvmax=None)

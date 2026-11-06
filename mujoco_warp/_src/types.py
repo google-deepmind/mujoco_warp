@@ -1675,6 +1675,8 @@ class Model:
     has_flex_edge_stiff_damp: whether any non-rigid flex has edge stiffness or damping
     has_tendon_stiffness: whether any tendon has positive stiffness
     has_tendon_damping: whether any tendon has positive damping
+    has_tendon_armature: whether any tendon has armature (including tendon actuator armature)
+    has_gravcomp: whether any body has gravity compensation
     has_efm_actuator: whether any actuator contributes effective metric coupling
     has_actuator_wrap: whether any wrap-eligible rotational actuator is present
     has_actuator_dcmotor: whether any DC motor actuator is present
@@ -2248,6 +2250,8 @@ class Model:
   has_flex_edge_stiff_damp: bool
   has_tendon_stiffness: bool
   has_tendon_damping: bool
+  has_tendon_armature: bool
+  has_gravcomp: bool
   has_efm_actuator: bool
   has_actuator_wrap: bool
   has_actuator_dcmotor: bool
