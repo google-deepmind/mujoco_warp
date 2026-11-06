@@ -122,6 +122,8 @@ def _assert_step_supported(m: Model):
   """Rejects configurations without a complete analytic backward."""
   if m.opt.solver != SolverType.NEWTON:
     raise NotImplementedError("adjoint.step_backward supports only the Newton solver")
+  if m.opt.iterations <= 0:
+    raise NotImplementedError("adjoint.step_backward requires solver iterations > 0")
   if m.opt.noslip_iterations > 0:
     raise NotImplementedError("adjoint.step_backward does not support the noslip solver")
   if m.opt.integrator not in (IntegratorType.EULER, IntegratorType.IMPLICITFAST):
