@@ -15,6 +15,8 @@
 
 """Tests for smooth dynamics functions."""
 
+from unittest import mock
+
 import mujoco
 import numpy as np
 import warp as wp
@@ -1625,6 +1627,64 @@ class SmoothTest(parameterized.TestCase):
     result.zero_()
     mjw.solve_m(m, d, result, rhs)
     _assert_eq(result.numpy()[0], expected, "heterogeneous factor + solve")
+
+  def test_inv_m(self):
+    """Tests inv_m for compact, scalar, and sparse blocks with per-world masses."""
+    # the 7-dof tree exceeds the patched dense block size and joins the sparse LDL region
+    nworld = 2
+    with mock.patch.multiple("mujoco_warp._src.types", M_BLOCK_DENSE_MAX=6):
+      mjm, mjd, m, d = test_data.fixture(
+        xml="""
+      <mujoco>
+        <worldbody>
+          <body>
+            <joint axis="0 0 1"/>
+            <geom pos=".2 0 0" size=".1" mass="1"/>
+          </body>
+          <body pos="1 0 0">
+            <joint axis="1 0 0"/>
+            <joint axis="0 1 0"/>
+            <geom pos=".1 .1 .1" type="box" size=".1 .2 .1" mass=".7"/>
+          </body>
+          <body pos="2 0 0">
+            <freejoint/>
+            <geom type="box" size=".1 .2 .3" mass="2"/>
+            <body pos=".2 0 0">
+              <joint axis="0 1 0"/>
+              <geom pos=".1 0 0" size=".05" mass=".5"/>
+            </body>
+          </body>
+        </worldbody>
+      </mujoco>
+      """,
+        qpos_noise=0.3,
+        nworld=nworld,
+        batch_sizes={"body_mass": nworld},
+      )
+    block_adr = m.qLD_block_adr.numpy()[mjm.tree_dofadr]
+    self.assertEqual(sorted(block_adr), sorted([types.Q_LD_BLOCK_COMPACT, types.Q_LD_BLOCK_SPARSE, 0]))
+
+    body_mass = m.body_mass.numpy()
+    body_mass[1] *= 1.0 + np.arange(mjm.nbody) / mjm.nbody
+    m.body_mass.assign(body_mass)
+    mjw.kinematics(m, d)
+    mjw.com_pos(m, d)
+    mjw.crb(m, d)
+    mjw.factor_m(m, d)
+    Minv = wp.full((nworld, m.Minv_block_total), wp.inf, dtype=float)
+    mjw._src.smooth.inv_m(m, d, Minv)
+
+    Minv, Minv_block_adr = Minv.numpy(), m.Minv_block_adr.numpy()
+    for w in range(nworld):
+      mjm.body_mass[:] = body_mass[w]
+      mujoco.mj_forward(mjm, mjd)
+      M = np.zeros((mjm.nv, mjm.nv))
+      mujoco.mj_fullM(mjm, mjd, M)
+      expected = np.linalg.inv(M)
+      for start, size in zip(mjm.tree_dofadr, mjm.tree_dofnum):
+        dofs = slice(start, start + size)
+        adr = Minv_block_adr[start]
+        _assert_eq(Minv[w, adr : adr + size * size], expected[dofs, dofs].reshape(-1), f"block {start} world {w}")
 
   def test_factor_solve_mixed_blocks(self):
     """Per-block factor/solve: sparse LDL, scalar, and tile blocks all share one qLD."""

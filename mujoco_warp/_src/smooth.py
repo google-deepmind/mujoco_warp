@@ -4238,6 +4238,56 @@ def solve_m(m: Model, d: Data, x: wp.array2d[float], y: wp.array2d[float], x_scr
   solve_LD(m, d, d.qLD, d.qLDiagInv, x, y, x_scratch=x_scratch)
 
 
+@wp.kernel
+def _store_inv_m_column(
+  # Model:
+  dof_treeid: wp.array[int],
+  tree_dofadr: wp.array[int],
+  tree_dofnum: wp.array[int],
+  Minv_block_adr: wp.array[int],
+  # In:
+  colid: int,
+  col_in: wp.array2d[float],
+  # Out:
+  Minv_out: wp.array2d[float],
+  unit_out: wp.array2d[float],
+):
+  """Stores column colid of each tree's inverse block and sets the next column's unit vector."""
+  worldid, dofid = wp.tid()
+  treeid = dof_treeid[dofid]
+  start = tree_dofadr[treeid]
+  size = tree_dofnum[treeid]
+  if (colid >= 0) and (colid < size):
+    Minv_out[worldid, Minv_block_adr[dofid] + (dofid - start) * size + colid] = col_in[worldid, dofid]
+  unit_out[worldid, dofid] = wp.where((dofid - start) == (colid + 1), 1.0, 0.0)
+
+
+@event_scope
+def inv_m(m: Model, d: Data, Minv: wp.array2d[float]):
+  """Computes the inverse of the factorized inertia matrix.
+
+  inv(M) is block diagonal per kinematic tree, so a single solve gives the same column of every
+  tree's block. Each block is dense, row-major, and starts at Minv_block_adr.
+
+  Args:
+    m: The model containing inertia and factorization information.
+    d: The data object containing factorization results.
+    Minv: Output inverse blocks, (nworld, Minv_block_total).
+  """
+  unit = wp.empty((d.nworld, m.nv), dtype=float)
+  col = wp.empty((d.nworld, m.nv), dtype=float)
+  # colid -1 only sets the unit vector of the first column
+  for colid in range(-1, m.Minv_block_dofmax):
+    if colid >= 0:
+      solve_m(m, d, col, unit)
+    wp.launch(
+      _store_inv_m_column,
+      dim=(d.nworld, m.nv),
+      inputs=[m.dof_treeid, m.tree_dofadr, m.tree_dofnum, m.Minv_block_adr, colid, col],
+      outputs=[Minv, unit],
+    )
+
+
 @cache_kernel
 def _tile_cholesky_factorize_solve_block(tile: TileSet):
   # Fused factor+solve: densify the block, factor it, and back-substitute in one launch (avoids

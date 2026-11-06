@@ -1266,6 +1266,12 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
   m.qLD_block_total = _lay["total"]  # packed dense region length / offset of the LDL region
   m.qLD_block_adr = _lay["dof_adr"]
 
+  # inv(M) is block diagonal per tree: one dense block per tree
+  tree_area = mjm.tree_dofnum * mjm.tree_dofnum
+  m.Minv_block_total = int(tree_area.sum())
+  m.Minv_block_adr = (np.cumsum(tree_area) - tree_area)[mjm.dof_treeid]
+  m.Minv_block_dofmax = int(mjm.tree_dofnum.max(initial=0))
+
   scalar_tiles = [
     types.TileSet(
       adr=wp.array(_lay["scalar_tiles"][size], dtype=int),
