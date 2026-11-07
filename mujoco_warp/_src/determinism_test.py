@@ -230,7 +230,6 @@ _TREE_CASES = (
     covers=(
       "forward._qfrc_actuator",
       "forward._tendon_actuator_force",
-      "passive._gravity_force",
       "passive._spring_damper_tendon_passive",
       "sensor._energy_pos_gravity",
       "sensor._energy_pos_passive_joint",

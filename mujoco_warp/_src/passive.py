@@ -405,35 +405,33 @@ def _spring_damper_flexedge_passive(nv: int, deterministic: bool = False):
   return kernel
 
 
-@cache_kernel
-def _gravity_force(deterministic: bool = False):
-  module_options = {"enable_backward": False}
-  if deterministic:
-    module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
+@wp.kernel
+def _gravity_force(
+  # Model:
+  opt_gravity: wp.array[wp.vec3],
+  body_parentid: wp.array[int],
+  body_rootid: wp.array[int],
+  body_mass: wp.array2d[float],
+  body_gravcomp: wp.array2d[float],
+  dof_bodyid: wp.array[int],
+  body_subtreenum: wp.array[int],
+  body_isdofancestor: wp.array2d[int],
+  # Data in:
+  xipos_in: wp.array2d[wp.vec3],
+  subtree_com_in: wp.array2d[wp.vec3],
+  cdof_in: wp.array2d[wp.spatial_vector],
+  # Data out:
+  qfrc_gravcomp_out: wp.array2d[float],
+):
+  worldid, dofid = wp.tid()
+  gravity = opt_gravity[worldid % opt_gravity.shape[0]]
 
-  @wp.kernel(module="unique", module_options=module_options)
-  def kernel(
-    # Model:
-    opt_gravity: wp.array[wp.vec3],
-    body_parentid: wp.array[int],
-    body_rootid: wp.array[int],
-    body_mass: wp.array2d[float],
-    body_gravcomp: wp.array2d[float],
-    dof_bodyid: wp.array[int],
-    body_isdofancestor: wp.array2d[int],
-    # Data in:
-    xipos_in: wp.array2d[wp.vec3],
-    subtree_com_in: wp.array2d[wp.vec3],
-    cdof_in: wp.array2d[wp.spatial_vector],
-    # Data out:
-    qfrc_gravcomp_out: wp.array2d[float],
-  ):
-    worldid, bodyid, dofid = wp.tid()
-    bodyid += 1  # skip world body
+  # only bodies in the subtree of the dof's body, the contiguous range [b, b + body_subtreenum[b])
+  dofbodyid = dof_bodyid[dofid]
+  qfrc = float(0.0)
+  for bodyid in range(dofbodyid, dofbodyid + body_subtreenum[dofbodyid]):
     gravcomp = body_gravcomp[worldid % body_gravcomp.shape[0], bodyid]
-    gravity = opt_gravity[worldid % opt_gravity.shape[0]]
-
-    if gravcomp:
+    if gravcomp != 0.0:
       force = -gravity * body_mass[worldid % body_mass.shape[0], bodyid] * gravcomp
       pos = xipos_in[worldid, bodyid]
       jac, _ = support.jac_dof(
@@ -448,10 +446,9 @@ def _gravity_force(deterministic: bool = False):
         dofid,
         worldid,
       )
+      qfrc += wp.dot(jac, force)
 
-      wp.atomic_add(qfrc_gravcomp_out[worldid], dofid, wp.dot(jac, force))
-
-  return kernel
+  qfrc_gravcomp_out[worldid, dofid] = qfrc
 
 
 @wp.kernel
@@ -5394,11 +5391,10 @@ def passive(m: Model, d: Data):
     )
 
   gravity_enabled = not (m.opt.disableflags & DisableBit.GRAVITY)
-  d.qfrc_gravcomp.zero_()
   if gravity_enabled:
     wp.launch(
-      _gravity_force(det_atomics),
-      dim=(d.nworld, m.nbody - 1, m.nv),
+      _gravity_force,
+      dim=(d.nworld, m.nv),
       inputs=[
         m.opt.gravity,
         m.body_parentid,
@@ -5406,6 +5402,7 @@ def passive(m: Model, d: Data):
         m.body_mass,
         m.body_gravcomp,
         m.dof_bodyid,
+        m.body_subtreenum,
         m.body_isdofancestor,
         d.xipos,
         d.subtree_com,
@@ -5413,6 +5410,8 @@ def passive(m: Model, d: Data):
       ],
       outputs=[d.qfrc_gravcomp],
     )
+  else:
+    d.qfrc_gravcomp.zero_()
 
   # Launch passive interp kernel for interpolated flex (trilinear/quadratic)
   if m.nflex and m.nflexintcell > 0:
