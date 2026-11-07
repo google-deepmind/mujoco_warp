@@ -3581,6 +3581,7 @@ class FlexContactParityTest(parameterized.TestCase):
           contacts.append(
             {
               "dist": d.contact.dist.numpy()[i],
+              "includemargin": d.contact.includemargin.numpy()[i],
               "pos": d.contact.pos.numpy()[i],
               "frame": d.contact.frame.numpy()[i],
               "geom": d.contact.geom.numpy()[i],
@@ -3595,6 +3596,7 @@ class FlexContactParityTest(parameterized.TestCase):
         contacts.append(
           {
             "dist": c.dist,
+            "includemargin": c.includemargin,
             "pos": c.pos,
             "frame": c.frame.reshape(3, 3),
             "geom": c.geom,
@@ -3632,6 +3634,12 @@ class FlexContactParityTest(parameterized.TestCase):
         mc["dist"],
         atol=atol,
         err_msg=f"Contact {i} dist mismatch",
+      )
+      np.testing.assert_allclose(
+        wc["includemargin"],
+        mc["includemargin"],
+        atol=atol,
+        err_msg=f"Contact {i} includemargin mismatch",
       )
       np.testing.assert_allclose(wc["pos"], mc["pos"], atol=atol, err_msg=f"Contact {i} pos mismatch")
       np.testing.assert_allclose(
@@ -3674,6 +3682,58 @@ class FlexContactParityTest(parameterized.TestCase):
 
     self.assertEqual(d.nacon.numpy()[0], nworld * 1)
     self.assertEqual(mjd.ncon, 1)
+
+    for w in range(nworld):
+      w_contacts = self._get_sorted_contacts(d, d.nacon.numpy()[0], world_idx=w, is_warp=True)
+      m_contacts = self._get_sorted_contacts(mjd, mjd.ncon, is_warp=False)
+      self._assert_contact_parity(w_contacts, m_contacts)
+
+  @parameterized.product(
+    geom=(
+      '<geom type="plane" size="1 1 0.1" margin="0.02" gap="0.05"/>',
+      '<geom type="sphere" size="0.02" pos="-0.066 -0.033 0.085" margin="0.02" gap="0.01"/>',
+    ),
+    nworld=(1, 2),
+  )
+  def test_contact_margin_gap(self, geom, nworld):
+    """Flex contacts are detected within margin + gap and active only within the margin."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml=f"""
+      <mujoco>
+        <worldbody>
+          {geom}
+          <flexcomp name="cloth" type="grid" count="3 3 1" spacing="0.1 0.1 0.1" pos="0 0 0.05" dim="2" mass="1"
+                    radius="0.005">
+            <contact condim="3" margin="0.01" gap="0.01"/>
+          </flexcomp>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=nworld,
+    )
+
+    # move vertex 0 down and vertex 8 up so the scene has contacts on both sides of the margin
+    mjd.qpos[2] = -0.06
+    mjd.qpos[26] = 0.03
+    d.qpos.assign(np.tile(mjd.qpos, (nworld, 1)).astype(np.float32))
+
+    d.nacon.fill_(-1)
+    d.contact.includemargin.fill_(wp.inf)
+    mjw.kinematics(m, d)
+    mjw.flex(m, d)
+    mjw.collision(m, d)
+
+    mujoco.mj_kinematics(mjm, mjd)
+    mujoco.mj_flex(mjm, mjd)
+    mujoco.mj_collision(mjm, mjd)
+
+    mj_dist = mjd.contact.dist[: mjd.ncon]
+    mj_includemargin = mjd.contact.includemargin[: mjd.ncon]
+    np.testing.assert_allclose(mj_includemargin, 0.03)
+    # active contacts within the margin and inactive ones in the gap zone beyond it
+    self.assertTrue(np.any(mj_dist < mj_includemargin))
+    self.assertTrue(np.any(mj_dist >= mj_includemargin))
+    self.assertEqual(d.nacon.numpy()[0], nworld * mjd.ncon)
 
     for w in range(nworld):
       w_contacts = self._get_sorted_contacts(d, d.nacon.numpy()[0], world_idx=w, is_warp=True)
@@ -4756,9 +4816,9 @@ class FlexContactConstraintTest(parameterized.TestCase):
       njmax_nnz=40 if overflow else None,
     )
 
-    # tilt the cloth onto the plane: the lower vertices are active, the upper ones in the gap zone
+    # tilt the cloth onto the plane: low vertices are within the margin, high ones in the gap zone
     qpos = mjd.qpos.reshape(-1, 3).copy()
-    qpos[:, 2] = np.linspace(-0.995, -0.975, len(qpos))
+    qpos[:, 2] = np.linspace(-0.995, -0.965, len(qpos))
     d.qpos.assign(qpos.reshape(1, -1))
 
     d.contact.efc_address.fill_(0)
