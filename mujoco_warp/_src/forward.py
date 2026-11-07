@@ -2509,6 +2509,8 @@ def fwd_kinematics(m: Model, d: Data):
     hook, prepare_arrays = _fwd_kinematics_backward_registration
     arrays = prepare_arrays(d)
     if len(arrays) > 1:  # qpos + at least one differentiated output
+      # Keep the arrays from this forward call for its backward pass.
+      d = dataclasses.replace(d)
       tape.record_func(lambda: hook(m, d), arrays=arrays)
 
 
