@@ -578,6 +578,8 @@ def step_backward_arrays(d: Data, d_out: Data, m: Model | None = None, *, user_f
 
   Explicitly enabled user-input gradients are also tracked. The diff API will own this selection.
   """
+  for name in ("nworld", "naconmax", "njmax"):
+    assert getattr(d, name) == getattr(d_out, name), f"step() differentiation expected matching {name}"
   requested = set(user_fields)
   unsupported = requested - set(_STEP_USER_FIELDS)
   if unsupported:
