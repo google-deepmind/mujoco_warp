@@ -120,7 +120,7 @@ MuJoCo Warp supports the same features as MuJoCo with the following exceptions:
 - **Integrator**: `IMPLICITFAST` midpoint integrator feature is not supported
 - **Solver**: `PGS` not yet supported (`noslip` not supported with `discrete` integrator)
 - **Actuator / Sensors**: `PLUGIN` types not yet supported
-- **Flex**: experimental — not all features are implemented or optimized yet
+- **Flex**: experimental — not all features are implemented or optimized yet. Heightfield collisions require full-DOF 2D flexes and static heightfield geoms.
 
 [Differentiability via Warp](https://nvidia.github.io/warp/user_guide/differentiability.html) is not yet available. See [#500](https://github.com/google-deepmind/mujoco_warp/issues/500) for progress.
 
