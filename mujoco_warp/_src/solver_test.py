@@ -1585,14 +1585,17 @@ class SolverTest(parameterized.TestCase):
       mujoco.mjtJacobian.mjJAC_SPARSE,
     ),
     nworld=(1, 2),
+    load=(False, True),
   )
-  def test_noslip(self, cone, condim, jacobian, nworld):
+  def test_noslip(self, cone, condim, jacobian, nworld, load):
     """Tests noslip solver against MuJoCo."""
+    # load: tilted gravity and a spinning sphere put force on every frictional row (condim 4, 6)
+    gravity, spin = ("3 2 -9.81", ".5") if load else ("3 0 -9.81", "0")
     mjm, mjd, m, d = test_data.fixture(
       xml=f"""
       <mujoco>
         <option noslip_iterations="3" noslip_tolerance="0" impratio="3"
-                gravity="3 0 -9.81"/>
+                gravity="{gravity}"/>
         <worldbody>
           <geom type="plane" size="5 5 .1" condim="{condim}" friction="1 .05 .01"/>
           <body pos="0 0 .099">
@@ -1609,7 +1612,7 @@ class SolverTest(parameterized.TestCase):
           </body>
         </worldbody>
         <keyframe>
-          <key qvel="0 0 0 0 0 0 2 0"/>
+          <key qvel="0 0 0 0 0 {spin} 2 0"/>
         </keyframe>
       </mujoco>
       """,
@@ -1617,7 +1620,9 @@ class SolverTest(parameterized.TestCase):
       overrides={"opt.jacobian": jacobian, "opt.cone": cone},
       nworld=nworld,
     )
-    mjds = _perturb_worlds(mjm, mjd, d, nworld, [0.3, -0.2, 0.0, 0.0, 0.0, 0.5, -1.0, 0.5])
+    # with load, world 1 spins faster instead of sliding (sliding matches MuJoCo only to 1.5e-4)
+    dqvel = [0.0, 0.0, 0.0, 0.0, 0.0, 0.2, -1.0, 0.5] if load else [0.3, -0.2, 0.0, 0.0, 0.0, 0.5, -1.0, 0.5]
+    mjds = _perturb_worlds(mjm, mjd, d, nworld, dqvel)
 
     # main solver forces without noslip, used to check that noslip has an effect
     mjm_slip = _noslip_model(mjm, noslip_iterations=0)
