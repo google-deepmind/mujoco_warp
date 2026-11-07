@@ -1098,6 +1098,64 @@ class ForwardTest(parameterized.TestCase):
         rtol=tol,
       )
 
+  @parameterized.product(
+    integrator=(IntegratorType.EULER, IntegratorType.IMPLICIT, IntegratorType.IMPLICITFAST, IntegratorType.RK4),
+    damping=(0.0, 0.2),
+    nworld=(1, 2),
+  )
+  def test_step_no_constraint_rows(self, integrator, damping, nworld):
+    """Zero constraint capacity must not leave the integrator's inertia product stale."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml=f"""
+    <mujoco>
+      <option timestep="0.002"/>
+      <default><geom contype="0" conaffinity="0"/></default>
+      <worldbody>
+        <body>
+          <joint type="hinge" axis="0 1 0" damping="{damping}"/>
+          <geom type="capsule" fromto="0 0 0 0.5 0 0" size="0.02" mass="1"/>
+        </body>
+        <body pos="2 0 2">
+          <freejoint/>
+          <geom type="ellipsoid" size="0.1 0.2 0.3" mass="1"/>
+        </body>
+      </worldbody>
+      <keyframe><key qvel="0.2 0.1 -0.2 0.3 0.4 -0.5 0.6"/></keyframe>
+    </mujoco>
+    """,
+      keyframe=0,
+      overrides={"opt.integrator": integrator},
+      nworld=nworld,
+      nconmax=0,
+      njmax=0,
+    )
+    references = []
+    for world in range(nworld):
+      reference = mujoco.MjData(mjm)
+      reference.qpos[:] = mjd.qpos
+      reference.qvel[:] = mjd.qvel
+      if world:
+        reference.qpos[0] += 0.3
+        reference.qvel[:] += 0.1
+      references.append(reference)
+    d.qpos.assign(np.stack([reference.qpos for reference in references]))
+    d.qvel.assign(np.stack([reference.qvel for reference in references]))
+    d.efc.Ma.fill_(wp.inf)
+    d.qacc.fill_(wp.inf)
+    d.solver_niter.fill_(-1)
+
+    for _ in range(10):
+      for reference in references:
+        mujoco.mj_step(mjm, reference)
+      mjw.step(m, d)
+
+    np.testing.assert_allclose(d.qpos.numpy(), np.stack([ref.qpos for ref in references]), atol=1e-5, rtol=1e-5)
+    np.testing.assert_allclose(d.qvel.numpy(), np.stack([ref.qvel for ref in references]), atol=1e-5, rtol=1e-5)
+    np.testing.assert_array_equal(d.solver_niter.numpy(), 0)
+    self.assertEqual(d.njmax, 0)
+    if nworld == 2:
+      self.assertFalse(np.allclose(d.qvel.numpy()[0], d.qvel.numpy()[1]))
+
   def test_step_no_dofs(self):
     """Tests step with no degrees of freedom."""
     _, _, m, d = test_data.fixture(
