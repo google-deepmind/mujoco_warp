@@ -1001,9 +1001,11 @@ def _flex_plane_narrowphase(warn_overflow: int):
     geom_contype: wp.array[int],
     geom_conaffinity: wp.array[int],
     geom_margin: wp.array2d[float],
+    geom_gap: wp.array2d[float],
     flex_contype: wp.array[int],
     flex_conaffinity: wp.array[int],
     flex_margin: wp.array[float],
+    flex_gap: wp.array[float],
     flex_vertadr: wp.array[int],
     flex_elemadr: wp.array[int],
     flex_elemnum: wp.array[int],
@@ -1054,7 +1056,7 @@ def _flex_plane_narrowphase(warn_overflow: int):
 
     flexid = flex_vertflexid[vertid]
     radius = flex_radius[flexid]
-    flex_margin_val = flex_margin[flexid]
+    flex_margin_val = flex_margin[flexid] + flex_gap[flexid]
     local_vertid = vertid - flex_vertadr[flexid]
 
     elemnum = flex_elemnum[flexid]
@@ -1085,7 +1087,10 @@ def _flex_plane_narrowphase(warn_overflow: int):
       if not ((g_contype & f_conaffinity) or (f_contype & g_conaffinity)):
         continue
 
-      margin = geom_margin[worldid % geom_margin.shape[0], geomid] + flex_margin_val
+      # detect within margin + gap; contacts beyond the margin are inactive, see mj_collision
+      margin = (
+        geom_margin[worldid % geom_margin.shape[0], geomid] + geom_gap[worldid % geom_gap.shape[0], geomid] + flex_margin_val
+      )
       geom_pos = geom_xpos_in[worldid, geomid]
       geom_rot = geom_xmat_in[worldid, geomid]
       plane_normal = wp.vec3(geom_rot[0, 2], geom_rot[1, 2], geom_rot[2, 2])
@@ -1983,9 +1988,11 @@ def _flex_narrowphase_elem_detect(warn_overflow: int):
     geom_size: wp.array2d[wp.vec3],
     geom_aabb: wp.array3d[wp.vec3],
     geom_margin: wp.array2d[float],
+    geom_gap: wp.array2d[float],
     flex_contype: wp.array[int],
     flex_conaffinity: wp.array[int],
     flex_margin: wp.array[float],
+    flex_gap: wp.array[float],
     flex_activelayers: wp.array[int],
     flex_dim: wp.array[int],
     flex_vertadr: wp.array[int],
@@ -2067,7 +2074,7 @@ def _flex_narrowphase_elem_detect(warn_overflow: int):
     local_elemid = elemid - flex_elemadr[flexid]
     vert_adr = flex_vertadr[flexid]
     elem_radius = flex_radius[flexid]
-    elem_margin = flex_margin[flexid]
+    elem_margin = flex_margin[flexid] + flex_gap[flexid]
 
     geom2 = Geom()
     geom2.pos = wp.vec3(0.0, 0.0, 0.0)
@@ -2258,7 +2265,8 @@ def _flex_narrowphase_elem_detect(warn_overflow: int):
       if b >= 0 and (b == b0 or b == b1 or b == b2 or b == b3):
         continue
 
-      geom_margin_val = geom_margin[worldid % geom_margin.shape[0], geomid]
+      # detect within margin + gap; contacts beyond the margin are inactive, see mj_collision
+      geom_margin_val = geom_margin[worldid % geom_margin.shape[0], geomid] + geom_gap[worldid % geom_gap.shape[0], geomid]
       margin = geom_margin_val + elem_margin
 
       geom_pos = geom_xpos_in[worldid, geomid]
@@ -2728,7 +2736,6 @@ def _write_filtered_contacts(warn_overflow: int):
     # Model:
     opt_integrator: int,
     body_weldid: wp.array[int],
-    geom_type: wp.array[int],
     geom_condim: wp.array[int],
     geom_bodyid: wp.array[int],
     geom_priority: wp.array[int],
@@ -2857,7 +2864,8 @@ def _write_filtered_contacts(warn_overflow: int):
       else:
         condim = mixed_condim
 
-    if cand_dist[i] >= margin:
+    # keep contacts within margin + gap; those beyond includemargin = margin are inactive
+    if cand_dist[i] >= margin + gap:
       return
 
     id_ = wp.atomic_add(nacon_out, 0, 1)  # kernel_analyzer: ignore[atomic]
@@ -2874,10 +2882,7 @@ def _write_filtered_contacts(warn_overflow: int):
     contact_dist_out[id_] = cand_dist[i]
     contact_pos_out[id_] = cand_pos[i]
     contact_frame_out[id_] = make_frame(cand_nrm[i])
-    if geomid >= 0 and geom_type[geomid] == int(GeomType.PLANE):
-      contact_includemargin_out[id_] = margin - gap
-    else:
-      contact_includemargin_out[id_] = margin
+    contact_includemargin_out[id_] = margin
     contact_friction_out[id_] = friction
     contact_solref_out[id_] = solref
     contact_solreffriction_out[id_] = solref
@@ -3694,7 +3699,6 @@ def _filter_and_write_contacts(
     inputs=[
       m.opt.integrator,
       m.body_weldid,
-      m.geom_type,
       m.geom_condim,
       m.geom_bodyid,
       m.geom_priority,
@@ -3771,9 +3775,11 @@ def _detect_plane_flex_candidates(
       m.geom_contype,
       m.geom_conaffinity,
       m.geom_margin,
+      m.geom_gap,
       m.flex_contype,
       m.flex_conaffinity,
       m.flex_margin,
+      m.flex_gap,
       m.flex_vertadr,
       m.flex_elemadr,
       m.flex_elemnum,
@@ -3844,9 +3850,11 @@ def _detect_elem_geom_candidates(
       m.geom_size,
       m.geom_aabb,
       m.geom_margin,
+      m.geom_gap,
       m.flex_contype,
       m.flex_conaffinity,
       m.flex_margin,
+      m.flex_gap,
       m.flex_activelayers,
       m.flex_dim,
       m.flex_vertadr,
