@@ -1087,7 +1087,6 @@ def _flex_plane_narrowphase(warn_overflow: int):
       if not ((g_contype & f_conaffinity) or (f_contype & g_conaffinity)):
         continue
 
-      # detect within margin + gap; contacts beyond the margin are inactive, see mj_collision
       margin = (
         geom_margin[worldid % geom_margin.shape[0], geomid] + geom_gap[worldid % geom_gap.shape[0], geomid] + flex_margin_val
       )
@@ -2265,7 +2264,6 @@ def _flex_narrowphase_elem_detect(warn_overflow: int):
       if b >= 0 and (b == b0 or b == b1 or b == b2 or b == b3):
         continue
 
-      # detect within margin + gap; contacts beyond the margin are inactive, see mj_collision
       geom_margin_val = geom_margin[worldid % geom_margin.shape[0], geomid] + geom_gap[worldid % geom_gap.shape[0], geomid]
       margin = geom_margin_val + elem_margin
 
@@ -2864,7 +2862,7 @@ def _write_filtered_contacts(warn_overflow: int):
       else:
         condim = mixed_condim
 
-    # keep contacts within margin + gap; those beyond includemargin = margin are inactive
+    # contacts beyond the margin are inactive, see mj_collision
     if cand_dist[i] >= margin + gap:
       return
 

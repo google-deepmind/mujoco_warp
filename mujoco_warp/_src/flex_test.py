@@ -3712,7 +3712,7 @@ class FlexContactParityTest(parameterized.TestCase):
       nworld=nworld,
     )
 
-    # move vertex 0 down and vertex 8 up so the scene has contacts on both sides of the margin
+    # put contacts on both sides of the margin
     mjd.qpos[2] = -0.06
     mjd.qpos[26] = 0.03
     d.qpos.assign(np.tile(mjd.qpos, (nworld, 1)).astype(np.float32))
@@ -3730,7 +3730,6 @@ class FlexContactParityTest(parameterized.TestCase):
     mj_dist = mjd.contact.dist[: mjd.ncon]
     mj_includemargin = mjd.contact.includemargin[: mjd.ncon]
     np.testing.assert_allclose(mj_includemargin, 0.03)
-    # active contacts within the margin and inactive ones in the gap zone beyond it
     self.assertTrue(np.any(mj_dist < mj_includemargin))
     self.assertTrue(np.any(mj_dist >= mj_includemargin))
     self.assertEqual(d.nacon.numpy()[0], nworld * mjd.ncon)
@@ -4816,7 +4815,7 @@ class FlexContactConstraintTest(parameterized.TestCase):
       njmax_nnz=40 if overflow else None,
     )
 
-    # tilt the cloth onto the plane: low vertices are within the margin, high ones in the gap zone
+    # tilt the cloth onto the plane: the lower vertices are active, the upper ones in the gap zone
     qpos = mjd.qpos.reshape(-1, 3).copy()
     qpos[:, 2] = np.linspace(-0.995, -0.965, len(qpos))
     d.qpos.assign(qpos.reshape(1, -1))
