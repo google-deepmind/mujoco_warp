@@ -35,6 +35,7 @@ from mujoco_warp._src.collision_primitive import Geom
 from mujoco_warp._src.collision_primitive import contact_params
 from mujoco_warp._src.collision_primitive import geom_collision_pair
 from mujoco_warp._src.collision_primitive import write_contact
+from mujoco_warp._src.collision_primitive_core import plane_box
 from mujoco_warp._src.math import make_frame
 from mujoco_warp._src.math import upper_trid_index
 from mujoco_warp._src.types import MJ_MAX_EPAFACES
@@ -409,6 +410,69 @@ def ccd_hfield_kernel_builder(
     epa_horizon = epa_horizon_in[ccdid]
 
     collision_pairid = collision_pairid_in[collisionid]
+
+    # A box fully over a constant-height patch sees one plane, not the
+    # internal sides of the triangular prisms. Include the contact envelope
+    # in the patch test and retain prism collisions at outer/base boundaries.
+    if wp.static(geomtype2 == GeomType.BOX):
+      envelope = wp.max(0.0, margin + wp.abs(gap))
+      flat_patch = (
+        xmin - envelope > -size[0]
+        and xmax + envelope < size[0]
+        and ymin - envelope > -size[1]
+        and ymax + envelope < size[1]
+        and zmin - envelope > -size[3]
+      )
+      fcmin = wp.max(0, int(wp.floor((xmin - envelope + size[0]) * x_scale)))
+      fcmax = wp.min(ncol - 1, int(wp.ceil((xmax + envelope + size[0]) * x_scale)))
+      frmin = wp.max(0, int(wp.floor((ymin - envelope + size[1]) * y_scale)))
+      frmax = wp.min(nrow - 1, int(wp.ceil((ymax + envelope + size[1]) * y_scale)))
+      height = hfield_data[adr + frmin * ncol + fcmin]
+      if flat_patch:
+        for row in range(frmin, frmax + 1):
+          for col in range(fcmin, fcmax + 1):
+            if hfield_data[adr + row * ncol + col] != height:
+              flat_patch = False
+      if flat_patch:
+        flat_dist, flat_pos, flat_normal = plane_box(
+          wp.vec3(0.0, 0.0, 1.0), wp.vec3(0.0, 0.0, height * size[2]), geom2.pos, geom2.rot, geom2.size
+        )
+        for corner in range(8):
+          write_contact(
+            naconmax_in,
+            corner,
+            flat_dist[corner],
+            hf_mat @ flat_pos[corner] + hf_pos,
+            make_frame(hf_mat @ flat_normal),
+            margin,
+            gap,
+            condim,
+            friction,
+            solref,
+            solreffriction,
+            solimp,
+            adhesion,
+            geoms,
+            collision_pairid,
+            worldid,
+            contact_dist_out,
+            contact_pos_out,
+            contact_frame_out,
+            contact_includemargin_out,
+            contact_friction_out,
+            contact_solref_out,
+            contact_solreffriction_out,
+            contact_solimp_out,
+            contact_dim_out,
+            contact_geom_out,
+            contact_efc_address_out,
+            contact_worldid_out,
+            contact_type_out,
+            contact_geomcollisionid_out,
+            contact_adhesion_out,
+            nacon_out,
+          )
+        return
 
     # process all prisms in subgrid
     count = int(0)
