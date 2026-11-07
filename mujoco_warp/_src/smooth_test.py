@@ -25,6 +25,7 @@ import mujoco_warp as mjw
 from mujoco_warp import ConeType
 from mujoco_warp import DisableBit
 from mujoco_warp import test_data
+from mujoco_warp._src import smooth
 from mujoco_warp._src import types
 from mujoco_warp._src import util_pkg
 
@@ -309,6 +310,61 @@ class SmoothTest(parameterized.TestCase):
       _assert_eq(d.site_xmat.numpy()[i], mjd.site_xmat.reshape((-1, 3, 3)), "site_xmat")
       _assert_eq(d.mocap_pos.numpy()[i], mjd.mocap_pos, "mocap_pos")
       _assert_eq(d.mocap_quat.numpy()[i], mjd.mocap_quat, "mocap_quat")
+
+  @parameterized.product(phase=(1, 2), nworld=(1, 2))
+  def test_kinematics_phases(self, phase, nworld):
+    """The two C-style phases compute their own outputs from the expected inputs."""
+    mjm, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco><worldbody>
+        <body pos=".2 -.3 .4" euler="10 20 -15">
+          <joint pos=".03 .02 .01" axis=".2 .7 .5"/>
+          <inertial pos=".1 .03 -.02" euler="20 -10 30" mass="1" diaginertia=".02 .03 .04"/>
+          <geom type="box" size=".05 .1 .15" pos=".1 -.1 .2" euler="5 10 15"/>
+          <site pos=".2 .1 -.1" euler="-10 20 5"/>
+        </body>
+      </worldbody></mujoco>
+      """,
+      nworld=nworld,
+    )
+    qpos = np.array([[0.35], [-0.45]], dtype=np.float32)[:nworld]
+    d.qpos.assign(qpos)
+    body_fields = ("xpos", "xquat", "xmat", "xanchor", "xaxis")
+    frame_fields = ("xipos", "ximat", "geom_xpos", "geom_xmat", "site_xpos", "site_xmat")
+    for name in body_fields + frame_fields:
+      array = getattr(d, name)
+      # The world body's constant frames are initialized by make_data.
+      if name in ("xpos", "xquat", "xmat", "xipos", "ximat"):
+        array = array[:, 1:]
+      array.fill_(wp.inf)
+
+    smooth.kinematics1(m, d)
+    if phase == 1:
+      for name in frame_fields:
+        value = getattr(d, name).numpy()
+        if name in ("xipos", "ximat"):
+          value = value[:, 1:]
+        self.assertTrue(np.isinf(value).all(), name)
+      fields = body_fields
+    else:
+      before = {name: getattr(d, name).numpy().copy() for name in body_fields}
+      d.qpos.fill_(wp.nan)  # Phase 2 must use the computed body poses, not qpos.
+      smooth.kinematics2(m, d)
+      for name, value in before.items():
+        np.testing.assert_array_equal(getattr(d, name).numpy(), value, err_msg=name)
+      fields = frame_fields
+
+    for world in range(nworld):
+      ref = mujoco.MjData(mjm)
+      ref.qpos[:] = qpos[world]
+      mujoco.mj_kinematics(mjm, ref)
+      for name in fields:
+        actual = getattr(d, name).numpy()[world]
+        expected = getattr(ref, name).reshape(actual.shape)
+        np.testing.assert_allclose(actual, expected, rtol=1e-5, atol=1e-5, err_msg=name)
+    if nworld == 2:
+      values = d.xquat.numpy() if phase == 1 else d.site_xpos.numpy()
+      self.assertFalse(np.allclose(values[0], values[1]))
 
   @parameterized.named_parameters(_tree_cases())
   def test_com_pos(self, model):
