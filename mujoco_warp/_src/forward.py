@@ -3407,7 +3407,9 @@ def _copy_state(m: Model, d: Data, d_out: Data):
 def step(m: Model, d: Data, d_out: Optional[Data] = None):
   """Advance simulation: in place (d_out=None) or out-of-place d -> d_out, leaving d untouched.
 
-  Under a wp.Tape with a backward hook, records one analytic adjoint (d_out.grad -> d.grad).
+  Under a wp.Tape, requires distinct input/output Data and records one analytic adjoint
+  (d_out.grad -> d.grad). Preserve input state and output intermediates until backward,
+  or restore them before backward.
   """
   inplace = d_out is None
   if inplace:
@@ -3417,13 +3419,15 @@ def step(m: Model, d: Data, d_out: Optional[Data] = None):
   tape = rt.tape if rt is not None else None
   # pause recording across the forward: the analytic record_func below is the sole step adjoint;
   # taping the state copy would double-count its wp.copy adjoints against it
-  record = (not inplace) and (tape is not None)
+  record = tape is not None
   if record and not ENABLE_GRAD:
     raise RuntimeError(
       "step() was recorded under a wp.Tape but gradients are disabled; "
       "call mujoco_warp.enable_grad() first, or step outside the tape"
     )
   if record:
+    if d_out is d:
+      raise NotImplementedError("step() differentiation requires distinct input and output Data; in-place is unsupported")
     rt.tape = None
   try:
     if record:
