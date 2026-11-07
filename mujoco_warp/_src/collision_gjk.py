@@ -2525,6 +2525,22 @@ def multicontact(
       plane_normal, plane_dist, face1, nface1, face2, nface2, n1[j], wit_dir, margin, polygon, clipped
     )
   # face-face collision
+  elif geomtype1 == GeomType.BOX and geomtype2 == GeomType.BOX:
+    # Use the face closest to the separating direction as the reference. Always
+    # projecting along geom2's normal tilts the contact frame when a box rests
+    # on a larger box, and makes the result depend on the geom ordering.
+    if wp.dot(n1[i], dir_neg) >= wp.dot(n2[j], dir):
+      normal = n1[i]
+      nclipped, clipped_w1, clipped_w2, d = _polygon_clip(
+        plane_normal, plane_dist, face1, nface1, face2, nface2, n1[i], -normal, margin, polygon, clipped
+      )
+    else:
+      normal = -n2[j]
+      nclipped, clipped2, clipped1, d = _polygon_clip(
+        plane_normal, plane_dist, face2, nface2, face1, nface1, n2[j], normal, margin, polygon, clipped
+      )
+      clipped_w1 = clipped1
+      clipped_w2 = clipped2
   else:
     wit_dir = n2[j]
     normal = -n2[j]
