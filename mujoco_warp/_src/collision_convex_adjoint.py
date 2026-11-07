@@ -61,8 +61,15 @@ _CASE_SIGN_SHIFT = wp.constant(5)
 _CASE_NEG_BIT = wp.constant(1 << 11)
 
 
-def create_collision_convex_backward_context(m: Model, d: Data, nprobe: int | None = None) -> CollisionConvexBackwardContext:
+def create_collision_convex_backward_context(
+  m: Model, d: Data, nprobe: int | None = None
+) -> CollisionConvexBackwardContext | None:
   """Creates reusable convex collision feature-recovery and replay scratch."""
+  if not any(
+    m.geom_pair_type_count[upper_trid_index(len(GeomType), GeomType.HFIELD.value, geom_type.value)]
+    for geom_type in _CONVEX_TYPES
+  ):
+    return None
   naconmax = d.contact.pos.shape[0]
   gjk_iterations = int(m.opt.ccd_iterations)
   epa_iterations = int(m.opt.ccd_iterations)

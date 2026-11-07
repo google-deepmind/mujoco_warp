@@ -931,7 +931,6 @@ def smooth_qvel_backward(m: Model, d: Data, d_bwd: Data, lam: wp.array, adj_qvel
 @event_scope
 def smooth_qpos_backward(m: Model, d: Data, d_bwd: Data, lam: wp.array, res_qpos: wp.array, bc: BackwardContext):
   """Shares the smooth position reverse with inertial parameters, including direct mass terms."""
-  smooth_adjoint.assert_smooth_supported(m)
   flags = DisableBit.ACTUATION | DisableBit.SPRING | DisableBit.DAMPER
   with_mass = (m.opt.integrator == IntegratorType.IMPLICITFAST and (m.opt.disableflags & flags) != flags) or (
     m.opt.integrator == IntegratorType.EULER and not (m.opt.disableflags & (DisableBit.EULERDAMP | DisableBit.DAMPER))

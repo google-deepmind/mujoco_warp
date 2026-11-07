@@ -80,7 +80,7 @@ _UNSUPPORTED_PAIRS = {
 
 def assert_collision_supported(m: Model):
   """Rejects possible contact pairs without a complete pose VJP."""
-  if m.opt.disableflags & DisableBit.CONTACT:
+  if m.opt.disableflags & (DisableBit.CONSTRAINT | DisableBit.CONTACT):
     return
   unsupported = [name for index, name in _UNSUPPORTED_PAIRS.items() if m.geom_pair_type_count[index]]
   if unsupported:
@@ -574,7 +574,6 @@ def contact_qpos_vjp(
     res_qpos: Accumulated output; the caller's writeback applies the IFT minus.
     bc: Reusable backward workspace.
   """
-  assert_collision_supported(m)
   if bc is None:
     from mujoco_warp._src import adjoint
 

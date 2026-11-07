@@ -22,8 +22,10 @@ reverse mode solves H * lam = adj_qacc and accumulates adj_theta = -(dr/dtheta)^
 import contextlib
 import contextvars
 import dataclasses
+import weakref
 from typing import Any
 
+import numpy as np
 import warp as wp
 
 from mujoco_warp._src import adjoint_util
@@ -36,19 +38,22 @@ from mujoco_warp._src import io
 from mujoco_warp._src import math
 from mujoco_warp._src import model_adjoint
 from mujoco_warp._src import smooth
-from mujoco_warp._src import smooth_adjoint
 from mujoco_warp._src import smooth_kinematics_adjoint
 from mujoco_warp._src import solver
 from mujoco_warp._src.types import TILE_SIZE_JTDAJ_DENSE
 from mujoco_warp._src.types import BackwardContext
+from mujoco_warp._src.types import BiasType
 from mujoco_warp._src.types import ConeType
 from mujoco_warp._src.types import Data
 from mujoco_warp._src.types import DisableBit
+from mujoco_warp._src.types import DynType
 from mujoco_warp._src.types import EnableBit
-from mujoco_warp._src.types import GeomType
+from mujoco_warp._src.types import GainType
 from mujoco_warp._src.types import IntegratorType
+from mujoco_warp._src.types import JointType
 from mujoco_warp._src.types import Model
 from mujoco_warp._src.types import SolverType
+from mujoco_warp._src.types import TrnType
 from mujoco_warp._src.warp_util import cache_kernel
 from mujoco_warp._src.warp_util import event_scope
 from mujoco_warp._src.warp_util import is_array_spec
@@ -82,11 +87,98 @@ def _reset_backward_context(bc: BackwardContext):
         value.grad.zero_()
 
 
+# Cache by identity without retaining models or their device buffers.
+_SUPPORTED_CACHE: dict[int, tuple[weakref.ReferenceType[Model], frozenset[str]]] = {}
+
+
+def _model_support(m: Model) -> tuple[tuple[str, ...], frozenset[str]]:
+  """Inspects fixed smooth features and caches supported models' parameter limitations."""
+  key = id(m)
+  cached = _SUPPORTED_CACHE.get(key)
+  if cached is not None and cached[0]() is m:
+    return (), cached[1]
+
+  reasons = []
+  unsupported_parameters = set()
+  if (
+    m.nu != m.nactuator
+    or np.any(m.actuator_ctrlnum.numpy() != 1)
+    or not np.array_equal(m.actuator_ctrladr.numpy(), np.arange(m.nactuator))
+  ):
+    reasons.append("non-identity actuator/control mapping (requires one control per actuator in actuator order)")
+  if m.ntendon:
+    reasons.append("tendons (spring/bias/armature/transmission)")
+  if m.nplastic:
+    reasons.append("plastic joint state")
+  if m.has_fluid:
+    reasons.append("fluid-capable models")
+  if m.flg_adhesion:
+    reasons.append("passive adhesion (m.flg_adhesion: qpos-dependent qfrc_adhesion has no VJP leaf)")
+  if np.any(m.body_gravcomp.numpy() != 0.0) and np.any(m.jnt_actgravcomp.numpy() != 0):
+    reasons.append("gravcomp routed to an actuator (jnt_actgravcomp; force-limit clamp); passive-bucket gravcomp is supported")
+  if m.body_freeadr.size:
+    dofadr = m.body_dofadr.numpy()[m.body_freeadr.numpy()]
+    rowadr, rownnz, colind = m.M_rowadr.numpy(), m.M_rownnz.numpy(), m.M_colind.numpy()
+    for adr in dofadr:
+      for row in range(adr + 3, adr + 6):
+        columns = colind[rowadr[row] : rowadr[row] + rownnz[row]]
+        if not np.isin(np.arange(adr, adr + 3), columns).all():
+          unsupported_parameters.add("body_ipos")
+        if not np.isin(np.arange(adr + 3, row + 1), columns).all():
+          unsupported_parameters.add("body_iquat")
+  if m.nu:
+    trntype = m.actuator_trntype.numpy()
+    gaintype = m.actuator_gaintype.numpy()
+    biastype = m.actuator_biastype.numpy()
+    dyntype = m.actuator_dyntype.numpy()
+    stateful = m.actuator_actadr.numpy() >= 0
+    jnt_type = m.jnt_type.numpy()
+    if np.any(trntype != TrnType.JOINT):
+      reasons.append("non-JOINT actuator transmission (tendon/site/body/slider-crank/jointinparent)")
+    if (
+      not ((gaintype == GainType.FIXED) | (gaintype == GainType.AFFINE)).all()
+      or not ((biastype == BiasType.NONE) | (biastype == BiasType.AFFINE)).all()
+    ):
+      reasons.append("non-affine actuator gain/bias (muscle/DC-motor/user)")
+    jnt_ids = m.actuator_trnid.numpy()[:, 0][trntype == TrnType.JOINT]
+    if jnt_ids.size and np.any((jnt_type[jnt_ids] == JointType.FREE) | (jnt_type[jnt_ids] == JointType.BALL)):
+      reasons.append("actuator on a FREE/BALL joint (quaternion-dependent transmission length)")
+    if np.any(stateful & (gaintype == GainType.AFFINE)):
+      reasons.append("stateful (na>0) AFFINE-gain actuator (ctrl_act=act not implemented)")
+    scalar_dynamics = np.isin(dyntype, (DynType.INTEGRATOR, DynType.FILTER, DynType.FILTEREXACT, DynType.MUSCLE))
+    if np.any(stateful & (~scalar_dynamics | (m.actuator_actnum.numpy() != 1))):
+      reasons.append("non-scalar or user/DC-motor activation dynamics")
+    if m.nhistory and np.any(m.actuator_history.numpy()[..., 0] > 0):
+      reasons.append("actuator control history/delay")
+  limitations = frozenset(unsupported_parameters)
+  if not reasons:
+    _SUPPORTED_CACHE[key] = (weakref.ref(m, lambda _: _SUPPORTED_CACHE.pop(key, None)), limitations)
+  return tuple(reasons), limitations
+
+
+def _assert_model_supported(m: Model):
+  """Rejects unsupported model capabilities and requested parameter gradients."""
+  reasons, limitations = _model_support(m)
+  if reasons:
+    raise NotImplementedError(
+      "smooth_adjoint analytic reverse does not support: "
+      + "; ".join(reasons)
+      + ". Implement the leaf/topology VJP (the FD oracle lives in adjoint_test_util). "
+      "There is no silent FD fallback."
+    )
+  # Gradient requests can change; cached parameter-layout limitations do not.
+  unsupported = sorted(name for name in limitations if getattr(m, name).requires_grad)
+  if unsupported:
+    raise NotImplementedError(
+      "smooth_adjoint analytic reverse does not support: "
+      + "; ".join(f"{name} gradients with a compiled free-body mass layout missing couplings" for name in unsupported)
+    )
+
+
 def create_backward_context(m: Model, d: Data) -> BackwardContext:
   """Preallocates the reusable backward workspace for ``(m, d)``."""
-  _step_model_arrays(m)
-  smooth_adjoint.assert_smooth_supported(m)
-  collision_adjoint.assert_collision_supported(m)
+  # Cache fixed model metadata before CUDA capture.
+  _model_support(m)
   sizes = {field.name: getattr(m, field.name) for field in dataclasses.fields(Model) if field.type is int}
   sizes.update(nworld=d.nworld, njmax=d.efc.type.shape[1], naconmax=d.contact.pos.shape[0], qld_total=d.qLD.shape[1])
   arrays = {
@@ -107,12 +199,12 @@ def create_backward_context(m: Model, d: Data) -> BackwardContext:
     res_body_ipos=wp.zeros_like(m.body_ipos),
     res_body_iquat=wp.zeros_like(m.body_iquat),
   )
-  bc = BackwardContext(solver_ctx=solver._create_solver_context(m, d), scratch=adjoint_util._clone_nograd(d), **arrays)
-  if any(
-    m.geom_pair_type_count[math.upper_trid_index(len(GeomType), GeomType.HFIELD.value, geom_type.value)]
-    for geom_type in collision_convex_adjoint._CONVEX_TYPES
-  ):
-    bc.collision_convex_ctx = collision_convex_adjoint.create_collision_convex_backward_context(m, d)
+  bc = BackwardContext(
+    solver_ctx=solver._create_solver_context(m, d),
+    scratch=adjoint_util._clone_nograd(d),
+    collision_convex_ctx=collision_convex_adjoint.create_collision_convex_backward_context(m, d),
+    **arrays,
+  )
   for name in ("contact_V", "contact_A", "contact_Z", "contact_phi", "efc_Z", "efc_phi", "smooth_r"):
     getattr(bc, name).requires_grad = True
   return bc
@@ -152,8 +244,6 @@ def _assert_step_supported(m: Model):
   for name in callbacks:
     if getattr(m.callback, name):
       raise NotImplementedError(f"adjoint.step_backward does not support the {name} callback")
-  smooth_adjoint.assert_smooth_supported(m)
-  collision_adjoint.assert_collision_supported(m)
 
 
 @wp.kernel(enable_backward=False)
@@ -567,7 +657,9 @@ def step_supported(m: Model, d: Data, d_out: Data | None = None) -> tuple[str, .
   """Returns unsupported-step reasons using the diff API's callback signature."""
   try:
     _assert_step_supported(m)
-    _step_model_arrays(m)
+    _assert_model_supported(m)
+    if d.naconmax:
+      collision_adjoint.assert_collision_supported(m)
   except NotImplementedError as error:
     return (str(error),)
   return ()
@@ -584,13 +676,13 @@ def step_backward_arrays(d: Data, d_out: Data, m: Model | None = None, *, user_f
   unsupported = requested - set(_STEP_USER_FIELDS)
   if unsupported:
     raise NotImplementedError("native step user-input gradients are not implemented for: " + ", ".join(sorted(unsupported)))
+  parameters = _step_model_arrays(m) if m is not None else []
   arrays = [*_data_arrays(d, _STEP_IN_FIELDS), *_data_arrays(d_out, _STEP_OUT_FIELDS)]
   for name in _STEP_USER_FIELDS:
     if name in requested or getattr(d, name).requires_grad or getattr(d_out, name).requires_grad:
       arrays.extend(_data_arrays(d, (name,)))
       arrays.extend(_data_arrays(d_out, (name,)))
-  if m is not None:
-    arrays.extend(_step_model_arrays(m))
+  arrays.extend(parameters)
   return list(dict.fromkeys(array for array in arrays if array.size))
 
 
@@ -688,7 +780,9 @@ def step_backward_scratch(d: Data, d_out: Data, bc: BackwardContext) -> Data:
 @event_scope
 def step_backward(m: Model, d: Data, d_out: Data, bc: BackwardContext | None = None):
   """Maps ``d_out`` state gradients to ``d`` with an analytic backward."""
-  _assert_step_supported(m)
+  reasons = step_supported(m, d, d_out)
+  if reasons:
+    raise NotImplementedError(", ".join(reasons))
   # TODO: Remove this compatibility preparation when the diff API registers the rule (#1727).
   step_backward_arrays(d, d_out, m, user_fields=())
   bc = bc or _ACTIVE_BACKWARD_CONTEXT.get() or create_backward_context(m, d)

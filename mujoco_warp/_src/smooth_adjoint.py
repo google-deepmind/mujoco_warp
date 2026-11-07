@@ -15,9 +15,7 @@
 """VJPs for smooth forces, RNE dynamics, and mass-matrix position dependence."""
 
 import dataclasses
-import weakref
 
-import numpy as np
 import warp as wp
 
 from mujoco_warp._src import adjoint_recompute
@@ -30,103 +28,15 @@ from mujoco_warp._src.types import BackwardContext
 from mujoco_warp._src.types import BiasType
 from mujoco_warp._src.types import Data
 from mujoco_warp._src.types import DisableBit
-from mujoco_warp._src.types import DynType
 from mujoco_warp._src.types import GainType
 from mujoco_warp._src.types import JointType
 from mujoco_warp._src.types import Model
-from mujoco_warp._src.types import TrnType
 from mujoco_warp._src.types import vec10
 from mujoco_warp._src.warp_util import cache_kernel
 from mujoco_warp._src.warp_util import event_scope
 
 # Adjoint reductions use unordered atomics; deterministic backward execution is deferred.
 wp.set_module_options({"enable_backward": True})
-
-
-# Cache by identity without retaining models or their device buffers.
-_SUPPORTED_CACHE: dict[int, tuple[weakref.ReferenceType[Model], frozenset[str]]] = {}
-
-
-def _model_support(m: Model) -> frozenset[str]:
-  """Validates smooth features and caches the model's fixed parameter limitations."""
-  if m.has_fluid:
-    raise NotImplementedError("smooth_adjoint does not support fluid-capable models")
-  key = id(m)
-  cached = _SUPPORTED_CACHE.get(key)
-  if cached is not None and cached[0]() is m:
-    return cached[1]
-
-  bad = []
-  unsupported_parameters = set()
-  if (
-    m.nu != m.nactuator
-    or np.any(m.actuator_ctrlnum.numpy() != 1)
-    or not np.array_equal(m.actuator_ctrladr.numpy(), np.arange(m.nactuator))
-  ):
-    bad.append("non-identity actuator/control mapping (requires one control per actuator in actuator order)")
-  if m.ntendon:
-    bad.append("tendons (spring/bias/armature/transmission)")
-  if m.nplastic:
-    bad.append("plastic joint state")
-  if m.flg_adhesion:
-    bad.append("passive adhesion (m.flg_adhesion: qpos-dependent qfrc_adhesion has no VJP leaf)")
-  if np.any(m.body_gravcomp.numpy() != 0.0) and np.any(m.jnt_actgravcomp.numpy() != 0):
-    bad.append("gravcomp routed to an actuator (jnt_actgravcomp; force-limit clamp); passive-bucket gravcomp is supported")
-  if m.body_freeadr.size:
-    dofadr = m.body_dofadr.numpy()[m.body_freeadr.numpy()]
-    rowadr, rownnz, colind = m.M_rowadr.numpy(), m.M_rownnz.numpy(), m.M_colind.numpy()
-    for adr in dofadr:
-      for row in range(adr + 3, adr + 6):
-        columns = colind[rowadr[row] : rowadr[row] + rownnz[row]]
-        if not np.isin(np.arange(adr, adr + 3), columns).all():
-          unsupported_parameters.add("body_ipos")
-        if not np.isin(np.arange(adr + 3, row + 1), columns).all():
-          unsupported_parameters.add("body_iquat")
-  if m.nu:
-    trntype = m.actuator_trntype.numpy()
-    gaintype = m.actuator_gaintype.numpy()
-    biastype = m.actuator_biastype.numpy()
-    dyntype = m.actuator_dyntype.numpy()
-    stateful = m.actuator_actadr.numpy() >= 0
-    jnt_type = m.jnt_type.numpy()
-    if np.any(trntype != TrnType.JOINT):
-      bad.append("non-JOINT actuator transmission (tendon/site/body/slider-crank/jointinparent)")
-    if (
-      not ((gaintype == GainType.FIXED) | (gaintype == GainType.AFFINE)).all()
-      or not ((biastype == BiasType.NONE) | (biastype == BiasType.AFFINE)).all()
-    ):
-      bad.append("non-affine actuator gain/bias (muscle/DC-motor/user)")
-    jnt_ids = m.actuator_trnid.numpy()[:, 0][trntype == TrnType.JOINT]
-    if jnt_ids.size and np.any((jnt_type[jnt_ids] == JointType.FREE) | (jnt_type[jnt_ids] == JointType.BALL)):
-      bad.append("actuator on a FREE/BALL joint (quaternion-dependent transmission length)")
-    if np.any(stateful & (gaintype == GainType.AFFINE)):
-      bad.append("stateful (na>0) AFFINE-gain actuator (ctrl_act=act not implemented)")
-    scalar_dynamics = np.isin(dyntype, (DynType.INTEGRATOR, DynType.FILTER, DynType.FILTEREXACT, DynType.MUSCLE))
-    if np.any(stateful & (~scalar_dynamics | (m.actuator_actnum.numpy() != 1))):
-      bad.append("non-scalar or user/DC-motor activation dynamics")
-    if m.nhistory and np.any(m.actuator_history.numpy()[..., 0] > 0):
-      bad.append("actuator control history/delay")
-  if bad:
-    raise NotImplementedError(
-      "smooth_adjoint analytic reverse does not support: "
-      + "; ".join(bad)
-      + ". Implement the leaf/topology VJP (the FD oracle lives in adjoint_test_util). "
-      "There is no silent FD fallback."
-    )
-  limitations = frozenset(unsupported_parameters)
-  _SUPPORTED_CACHE[key] = (weakref.ref(m, lambda _: _SUPPORTED_CACHE.pop(key, None)), limitations)
-  return limitations
-
-
-def assert_smooth_supported(m: Model):
-  """Rejects unsupported model capabilities and requested parameter gradients."""
-  # Gradient requests can change; cached parameter-layout limitations do not.
-  unsupported = sorted(name for name in _model_support(m) if getattr(m, name).requires_grad)
-  if unsupported:
-    raise NotImplementedError(
-      "smooth_adjoint analytic reverse does not support: "
-      + "; ".join(f"{name} gradients with a compiled free-body mass layout missing couplings" for name in unsupported)
-    )
 
 
 @event_scope
