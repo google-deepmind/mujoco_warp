@@ -44,7 +44,8 @@ class ConstraintSortTest(parameterized.TestCase):
             <freejoint/>
             <geom type="box" size=".1 .1 .1"/>
             <body pos="0 0 .3">
-              <joint name="hinge" type="hinge" range="-.1 .1" frictionloss=".05"/>
+              <joint name="hinge" type="hinge" axis="1 0 0" range="-.1 .1" frictionloss=".05"/>
+              <joint name="hinge2" type="hinge" axis="0 1 0" range="-.1 .1" frictionloss=".07"/>
               <geom type="capsule" size=".03 .1"/>
             </body>
           </body>
@@ -71,11 +72,13 @@ class ConstraintSortTest(parameterized.TestCase):
     worlds = d.contact.worldid.numpy().copy()
     original = {f.name: getattr(d.efc, f.name).numpy().copy() for f in dataclasses.fields(d.efc)}
     addresses = d.contact.efc_address.numpy().copy()
+    friction_addresses = d.dof_frictionadr.numpy().copy()
     row_fields = ("type", "id", "pos", "margin", "D", "vel", "aref", "frictionloss", "Jqvel")
     expected = None
     for seed in range(4):
       arrays = {k: v.copy() for k, v in original.items()}
       address = addresses.copy()
+      friction_address = friction_addresses.copy()
       for world in range(nworld):
         count = int(counts[world])
         groups = {}
@@ -86,6 +89,8 @@ class ConstraintSortTest(parameterized.TestCase):
         rng = np.random.default_rng(seed)
         permutation = np.concatenate([blocks[i] for i in rng.permutation(len(blocks))])
         inverse = np.argsort(permutation)
+        valid_friction = friction_address[world] >= 0
+        friction_address[world, valid_friction] = inverse[friction_address[world, valid_friction]]
         for name in row_fields:
           arrays[name][world, :count] = original[name][world, permutation]
         if sparse:
@@ -105,15 +110,18 @@ class ConstraintSortTest(parameterized.TestCase):
         if array.size:
           getattr(d.efc, name).assign(array)
       d.contact.efc_address.assign(address)
+      d.dof_frictionadr.assign(friction_address)
       _sort_constraints(m, d)
       result = {
         name: getattr(d.efc, name).numpy().copy()
         for name in (*row_fields, "J", "J_rowadr", "J_rownnz", "J_colind", "jtdaj_adr", "jtdaj_nrow")
       }
+      result["friction_address"] = d.dof_frictionadr.numpy().copy()
       result["contact_address"] = d.contact.efc_address.numpy().copy()
       if expected is None:
         expected = result
       np.testing.assert_array_equal(result["contact_address"][:ncon], expected["contact_address"][:ncon])
+      np.testing.assert_array_equal(result["friction_address"], expected["friction_address"])
       for world in range(nworld):
         count = int(counts[world])
         for name in row_fields:

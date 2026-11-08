@@ -5158,6 +5158,19 @@ def _constraint_sort_contact_address(
 
 
 @wp.kernel
+def _constraint_sort_friction_address(
+  # In:
+  inverse_in: wp.array2d[int],
+  # Data out:
+  dof_frictionadr_out: wp.array2d[int],
+):
+  world, dof = wp.tid()
+  old = dof_frictionadr_out[world, dof]
+  if old >= 0 and old < inverse_in.shape[1]:
+    dof_frictionadr_out[world, dof] = inverse_in[world, old]
+
+
+@wp.kernel
 def _constraint_sort_block_keys(
   # In:
   nblock_in: wp.array[int],
@@ -5293,6 +5306,12 @@ def _sort_constraints(m: types.Model, d: types.Data):
       )
   else:
     _permute_constraint_rows(d.efc.J, d.nefc, order, capacity)
+  wp.launch(
+    _constraint_sort_friction_address,
+    dim=d.dof_frictionadr.shape,
+    inputs=[inverse],
+    outputs=[d.dof_frictionadr],
+  )
   wp.launch(
     _constraint_sort_contact_address,
     dim=d.contact.efc_address.shape,
