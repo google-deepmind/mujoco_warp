@@ -13,6 +13,7 @@
 # limitations under the License.
 # ==============================================================================
 
+import dataclasses
 from typing import Optional
 
 import warp as wp
@@ -1151,10 +1152,84 @@ def _narrowphase(m: Model, d: Data, ctx: CollisionContext):
     sdf_narrowphase(m, d, ctx)
 
 
+@wp.kernel
+def _contact_sort_init(order_out: wp.array[int]):
+  i = wp.tid()
+  order_out[i] = i
+
+
+@wp.kernel
+def _contact_sort_key(
+  nacon_in: wp.array[int],
+  order_in: wp.array[int],
+  words_in: wp.array2d[wp.uint32],
+  column: int,
+  keys_out: wp.array[wp.uint64],
+):
+  i = wp.tid()
+  source = order_in[i]
+  # Inactive capacity must sort after all active contacts, including overflow.
+  key = wp.uint64(0xFFFFFFFFFFFFFFFF)
+  if source < nacon_in[0]:
+    key = wp.uint64(words_in[source, column])
+  keys_out[i] = key
+
+
+@wp.kernel
+def _contact_sort_gather(
+  nacon_in: wp.array[int],
+  order_in: wp.array[int],
+  words_in: wp.array2d[wp.uint32],
+  words_out: wp.array2d[wp.uint32],
+):
+  i, j = wp.tid()
+  source = i
+  if i < nacon_in[0]:
+    source = order_in[i]
+  words_out[i, j] = words_in[source, j]
+
+
+def _contact_words(value: wp.array, capacity: int) -> wp.array:
+  """View contact records as words without transferring them off the device."""
+  return wp.array(
+    ptr=value.ptr, dtype=wp.uint32, shape=(capacity, value.strides[0] // 4),
+    device=value.device, copy=False,
+  )
+
+
 def _sort_contacts(m: Model, d: Data):
-  """Deterministic contact sort."""
-  # TODO(team): Implementation contact sorting.
-  pass
+  """Canonicalize full active contact records with stable device radix passes.
+
+  Integer/float bit patterns provide a total ordering, rather than a quantized
+  position key whose collisions would retain nondeterministic insertion order.
+  The last stable pass gives world IDs the highest priority. Identical keys
+  describe identical physical contact data, so their relative order is immaterial.
+  """
+  capacity = d.naconmax
+  keys = wp.empty(2 * capacity, dtype=wp.uint64)
+  order = wp.empty(2 * capacity, dtype=int)
+  wp.launch(_contact_sort_init, dim=capacity, outputs=[order])
+  # efc_address is produced later by make_constraint. Rigid collision does not
+  # write flex topology or surface velocity when those features are absent.
+  fields = [f.name for f in dataclasses.fields(d.contact) if f.name != "efc_address"]
+  if not m.nflex:
+    fields = [name for name in fields if name not in ("flex", "elem", "vert")]
+  if not m.flg_surfacevel:
+    fields.remove("surfacevel")
+  fields.remove("worldid")
+  fields.append("worldid")
+  for name in fields:
+    words = _contact_words(getattr(d.contact, name), capacity)
+    for column in range(words.shape[1]):
+      wp.launch(_contact_sort_key, dim=capacity, inputs=[d.nacon, order, words, column], outputs=[keys])
+      wp.utils.radix_sort_pairs(keys, order, capacity)
+  # Copy every field using the same permutation; keep inactive capacity unchanged.
+  for field in dataclasses.fields(d.contact):
+    value = getattr(d.contact, field.name)
+    words = _contact_words(value, capacity)
+    scratch = wp.empty_like(words)
+    wp.launch(_contact_sort_gather, dim=words.shape, inputs=[d.nacon, order, words], outputs=[scratch])
+    wp.copy(words, scratch)
 
 
 @event_scope
