@@ -1226,6 +1226,8 @@ def _sort_contacts(m: Model, d: Data):
   # Copy every field using the same permutation; keep inactive capacity unchanged.
   for field in dataclasses.fields(d.contact):
     value = getattr(d.contact, field.name)
+    if not value.size:
+      continue  # Disabled contact fields have no backing storage to permute.
     words = _contact_words(value, capacity)
     scratch = wp.empty_like(words)
     wp.launch(_contact_sort_gather, dim=words.shape, inputs=[d.nacon, order, words], outputs=[scratch])
