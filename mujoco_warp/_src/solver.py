@@ -949,6 +949,12 @@ def _linesearch_iterative_kernel(
   FUSE_JV = fuse_jv
   INCREMENTAL = incremental
   IS_SPARSE = is_sparse
+  # pyramidal rows are independent, so the Jaref update also sets efc force and state;
+  # the incremental path tracks state flips in _update_constraint_efc
+  UPDATE_EFC = not IS_ELLIPTIC and not INCREMENTAL
+
+  @wp.func_native(snippet="return __fdiv_rn(x, y);")
+  def _div_rn(x: float, y: float) -> float: ...
 
   # Native snippet for CUDA __syncthreads()
   @wp.func_native(snippet="WP_TILE_SYNC();")
@@ -1003,6 +1009,8 @@ def _linesearch_iterative_kernel(
     ctx_done_in: wp.array[bool],
     # Data out:
     qacc_out: wp.array2d[float],
+    efc_force_out: wp.array2d[float],
+    efc_state_out: wp.array2d[int],
     efc_Ma_out: wp.array2d[float],
     overflow_out: wp.array[int],
     # Out:
@@ -1483,6 +1491,28 @@ def _linesearch_iterative_kernel(
     for efcid in range(tid, nefc, wp.block_dim()):
       ctx_Jaref_out[worldid, efcid] += alpha * ctx_jv_in[worldid, efcid]
 
+      if wp.static(UPDATE_EFC):
+        jaref = ctx_Jaref_out[worldid, efcid]
+        efc_D = efc_D_in[worldid, efcid]
+        force = -efc_D * jaref
+        state = int(types.ConstraintState.QUADRATIC.value)
+        if efcid >= ne + nf:
+          if jaref >= 0.0:
+            force = 0.0
+            state = int(types.ConstraintState.SATISFIED.value)
+        elif efcid >= ne:
+          # IEEE division as in _eval_constraint, which is outside this fast-math module
+          frictionloss = efc_frictionloss_in[worldid, efcid]
+          rf = _div_rn(frictionloss, wp.where(efc_D != 0.0, efc_D, types.MJ_MINVAL))
+          if jaref <= -rf:
+            force = frictionloss
+            state = int(types.ConstraintState.LINEARNEG.value)
+          elif jaref >= rf:
+            force = -frictionloss
+            state = int(types.ConstraintState.LINEARPOS.value)
+        efc_force_out[worldid, efcid] = force
+        efc_state_out[worldid, efcid] = state
+
     if tid == 0:
       ctx_improvement_out[worldid] = improvement
       ctx_alpha_out[worldid] = alpha
@@ -1553,6 +1583,8 @@ def _linesearch_iterative(m: types.Model, d: types.Data, ctx: SolverContext, fus
     ],
     outputs=[
       d.qacc,
+      d.efc.force,
+      d.efc.state,
       d.efc.Ma,
       d.overflow,
       ctx.Jaref,
@@ -2261,8 +2293,12 @@ def _update_constraint(
   ctx: SolverContext | InverseContext,
   track_changes: bool = False,
   stable_fast: bool = False,
+  update_efc: bool = True,
 ):
-  """Update constraint arrays after each solve iteration."""
+  """Update constraint arrays after each solve iteration.
+
+  update_efc=False skips the efc force/state update, already done by the linesearch.
+  """
   efc_inputs = [
     m.opt.impratio_invsqrt,
     d.ne,
@@ -2281,12 +2317,13 @@ def _update_constraint(
     ctx.done,
   ]
 
-  wp.launch(
-    _update_constraint_efc(track_changes, bool(m.opt.deterministic & types.DeterminismType.ATOMICS)),
-    dim=(d.nworld, d.njmax),
-    inputs=efc_inputs,
-    outputs=[d.efc.force, d.efc.state, ctx.quad_changed_ids, ctx.quad_changed_count, ctx.state_changed_count],
-  )
+  if update_efc:
+    wp.launch(
+      _update_constraint_efc(track_changes, bool(m.opt.deterministic & types.DeterminismType.ATOMICS)),
+      dim=(d.nworld, d.njmax),
+      inputs=efc_inputs,
+      outputs=[d.efc.force, d.efc.state, ctx.quad_changed_ids, ctx.quad_changed_count, ctx.state_changed_count],
+    )
 
   # qfrc_constraint = efc_J.T @ efc_force. Fast-path worlds with no state flips
   # skip the rebuild; the public value is recovered after the solve.
@@ -4476,7 +4513,9 @@ def _solver_iteration(
   # flips this iteration were exactly quadratic over the step, so grad/search
   # only changed by a scalar along the same ray. Skip their qfrc/grad/
   # solve/search updates and track the scalar in ctx.grad_scale.
-  _update_constraint(m, d, ctx, track_changes=incremental, stable_fast=incremental)
+  # the pyramidal linesearch updates efc force and state along with Jaref
+  update_efc = incremental or m.opt.cone == types.ConeType.ELLIPTIC
+  _update_constraint(m, d, ctx, track_changes=incremental, stable_fast=incremental, update_efc=update_efc)
 
   if incremental:
     _update_gradient_incremental(m, d, ctx, stable_fast=incremental)
