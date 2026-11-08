@@ -91,7 +91,7 @@ def _reset_backward_context(bc: BackwardContext):
 _SUPPORTED_CACHE: dict[int, tuple[weakref.ReferenceType[Model], frozenset[str]]] = {}
 
 
-def _model_support(m: Model) -> tuple[tuple[str, ...], frozenset[str]]:
+def _model_supported(m: Model) -> tuple[tuple[str, ...], frozenset[str]]:
   """Inspects fixed smooth features and caches supported models' parameter limitations."""
   key = id(m)
   cached = _SUPPORTED_CACHE.get(key)
@@ -158,7 +158,7 @@ def _model_support(m: Model) -> tuple[tuple[str, ...], frozenset[str]]:
 
 def _assert_model_supported(m: Model):
   """Rejects unsupported model capabilities and requested parameter gradients."""
-  reasons, limitations = _model_support(m)
+  reasons, limitations = _model_supported(m)
   if reasons:
     raise NotImplementedError(
       "smooth_adjoint analytic reverse does not support: "
@@ -178,7 +178,12 @@ def _assert_model_supported(m: Model):
 def create_backward_context(m: Model, d: Data) -> BackwardContext:
   """Preallocates the reusable backward workspace for ``(m, d)``."""
   # Cache fixed model metadata before CUDA capture.
-  _model_support(m)
+  _model_supported(m)
+  return _create_backward_context(m, d)
+
+
+def _create_backward_context(m: Model, d: Data) -> BackwardContext:
+  """Allocates backward scratch without inspecting model support."""
   sizes = {field.name: getattr(m, field.name) for field in dataclasses.fields(Model) if field.type is int}
   sizes.update(nworld=d.nworld, njmax=d.efc.type.shape[1], naconmax=d.contact.pos.shape[0], qld_total=d.qLD.shape[1])
   arrays = {
@@ -874,9 +879,15 @@ def step_backward(m: Model, d: Data, d_out: Data, bc: BackwardContext | None = N
   reasons = step_supported(m, d, d_out)
   if reasons:
     raise NotImplementedError(", ".join(reasons))
+  _step_backward(m, d, d_out, bc)
+
+
+@event_scope
+def _step_backward(m: Model, d: Data, d_out: Data, bc: BackwardContext | None = None):
+  """Computes the step adjoint after support validation."""
   # TODO: Remove this compatibility preparation when the diff API registers the rule (#1727).
   step_backward_arrays(d, d_out, m, user_fields=())
-  bc = bc or _ACTIVE_BACKWARD_CONTEXT.get() or create_backward_context(m, d)
+  bc = bc or _ACTIVE_BACKWARD_CONTEXT.get() or _create_backward_context(m, d)
   _reset_backward_context(bc)
   d_bwd = step_backward_scratch(m, d, d_out, bc)
   kinematics_grad = bool(_data_arrays(d_out, _KINEMATICS_OUT_FIELDS, force_grad=False))
@@ -907,7 +918,7 @@ def fwd_kinematics_backward(m: Model, d: Data, bc: BackwardContext | None = None
   kinematics_grad = bool(_data_arrays(d, _KINEMATICS_OUT_FIELDS, force_grad=False))
   if not kinematics_grad:
     return
-  bc = bc or _ACTIVE_BACKWARD_CONTEXT.get() or create_backward_context(m, d)
+  bc = bc or _ACTIVE_BACKWARD_CONTEXT.get() or _create_backward_context(m, d)
   d_bwd = fwd_kinematics_backward_scratch(d, bc)
   smooth.kinematics1(m, d_bwd)
   forward_adjoint.kinematics_backward(m, d, d_bwd, bc)
@@ -934,5 +945,5 @@ def enable_grad() -> None:
   wp.sqrt = adjoint_util.safe_sqrt
   wp.func_grad(math.quat_integrate)(adjoint_util._adj_quat_integrate)
   wp.func_grad(math.quat_to_vel)(adjoint_util._adj_quat_to_vel)
-  forward.register_step_backward(step_backward, step_backward_arrays, step_supported)
+  forward.register_step_backward(_step_backward, step_backward_arrays, step_supported)
   forward.register_fwd_kinematics_backward(fwd_kinematics_backward, fwd_kinematics_arrays)

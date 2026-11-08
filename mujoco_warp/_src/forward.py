@@ -66,6 +66,11 @@ _step_backward_hook = None
 _step_backward_registration = None
 
 
+def model_backward(m: Model) -> Model:
+  """Retains Model and Option bindings for backward without copying device arrays."""
+  return dataclasses.replace(m, opt=dataclasses.replace(m.opt))
+
+
 @wp.func
 def next_position(
   # Data in:
@@ -2510,8 +2515,9 @@ def fwd_kinematics(m: Model, d: Data):
     arrays = prepare_arrays(d)
     if len(arrays) > 1:  # qpos + at least one differentiated output
       # Keep the arrays from this forward call for its backward pass.
+      m_bwd = model_backward(m)
       d = dataclasses.replace(d)
-      tape.record_func(lambda: hook(m, d), arrays=arrays)
+      tape.record_func(lambda: hook(m_bwd, d), arrays=arrays)
 
 
 @event_scope
@@ -3434,7 +3440,8 @@ def step(m: Model, d: Data, d_out: Optional[Data] = None):
   try:
     if record:
       hook, prepare_arrays, supported = _step_backward_registration
-      if supported is not None and not wp.get_device().is_capturing:
+      # Use the original Model's cached validation, including during CUDA capture.
+      if supported is not None:
         reasons = supported(m, d, d_out)
         if reasons:
           raise NotImplementedError("step() differentiation is not supported: " + ", ".join(reasons))
@@ -3459,8 +3466,9 @@ def step(m: Model, d: Data, d_out: Optional[Data] = None):
 
   if record:
     # Like a recorded kernel, retain array identities if callers replace a held input later.
+    m_bwd = model_backward(m)
     d, d_out = dataclasses.replace(d), dataclasses.replace(d_out)
-    tape.record_func(lambda: hook(m, d, d_out), arrays=arrays)
+    tape.record_func(lambda: hook(m_bwd, d, d_out), arrays=arrays)
 
 
 @event_scope
