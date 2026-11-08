@@ -426,7 +426,7 @@ def _gravity_force(
   worldid, dofid = wp.tid()
   gravity = opt_gravity[worldid % opt_gravity.shape[0]]
 
-  # only bodies in the subtree of the dof's body, the contiguous range [b, b + body_subtreenum[b])
+  # the dof's subtree is the contiguous body range [b, b + body_subtreenum[b])
   dofbodyid = dof_bodyid[dofid]
   qfrc = float(0.0)
   for bodyid in range(dofbodyid, dofbodyid + body_subtreenum[dofbodyid]):
