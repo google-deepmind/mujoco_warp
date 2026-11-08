@@ -2745,8 +2745,6 @@ def _flex_interp_rownnz(
   vert: wp.vec2i,
   con_pos: wp.vec3,
 ) -> int:
-  """Number of dofs in an interpolated flex contact row, de-duplicating the contributing bodies."""
-  # a separate function so the large interp vectors only exist for interpolated contacts
   local_bodies = support.vec_interp_body(-1)
   local_weights = support.vec_interp_weight(0.0)
   local_nb = int(0)
@@ -3442,8 +3440,7 @@ def _flex_interp_jac(
   efc_J_colind_out: wp.array3d[int],
   efc_J_out: wp.array3d[float],
 ) -> float:
-  """Writes the sparse Jacobian row of an interpolated flex contact and returns J * qvel."""
-  # a separate function so the large interp vectors only exist for interpolated contacts
+  """Writes the sparse J row of an interpolated flex contact and returns J * qvel."""
   frame_0 = frame_in[conid, 0]
   dimid2 = int(0)
   frii = float(0.0)
@@ -4877,8 +4874,6 @@ def _flex_interp_invweight(
   vertid: int,
   con_pos: wp.vec3,
 ) -> float:
-  """Inverse weight of an interpolated flex contact side, de-duplicating the cell's nodes."""
-  # a separate function so the large interp vectors only exist for interpolated contacts
   local_bodies = support.vec_interp_body(-1)
   local_weights = support.vec_interp_weight(0.0)
   local_nb = int(0)
