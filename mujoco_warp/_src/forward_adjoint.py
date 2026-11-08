@@ -565,7 +565,7 @@ def _body_wrench(
 
 @cache_kernel
 def _kinematics_vjp(nbody: int, shared: bool):
-  """Projects joint subtree wrenches.
+  """Projects joint and mocap subtree wrenches.
 
   The shared path reuses body cotangents across GPU threads for performance. The non-shared
   path avoids cooperative-thread overhead on CPU and handles GPU trees larger than 512 bodies.
@@ -583,18 +583,23 @@ def _kinematics_vjp(nbody: int, shared: bool):
     site_bodyid: wp.array[int],
     site_pos: wp.array2d[wp.vec3],
     body_subtreenum: wp.array[int],
+    mocap_bodyid: wp.array[int],
     # Data in:
     qpos_in: wp.array2d[float],
+    mocap_quat_in: wp.array2d[wp.quat],
     xpos_in: wp.array2d[wp.vec3],
     xquat_in: wp.array2d[wp.quat],
     xanchor_in: wp.array2d[wp.vec3],
     xaxis_in: wp.array2d[wp.vec3],
     # In:
+    ninput: int,
     adj_site_xpos: wp.array2d[wp.vec3],
     adj_xpos: wp.array2d[wp.vec3],
     adj_xquat: wp.array2d[wp.quat],
     # Out:
     adj_qpos_out: wp.array2d[float],
+    adj_mocap_pos_out: wp.array2d[wp.vec3],
+    adj_mocap_quat_out: wp.array2d[wp.quat],
   ):
     worldid, lane = wp.tid()
     site_worldid = worldid % site_pos.shape[0]
@@ -610,13 +615,17 @@ def _kinematics_vjp(nbody: int, shared: bool):
               seed = adj_site_xpos[worldid, siteid]
               offset = math.rot_vec_quat(site_pos[site_worldid, siteid], rotation)
               wrench += wp.spatial_vector(wp.cross(offset, seed), seed)
-      # Publish body-local cotangents once for all joint projections.
+      # Publish body-local cotangents once for all joint and mocap projections.
       positions = wp.tile_reshape(wp.tile(position, preserve_type=True), shape=(wp.static(tile_size),))
       wrenches = wp.tile_reshape(wp.tile(wrench, preserve_type=True), shape=(wp.static(tile_size),))
 
-    for jointid in range(lane, njnt, wp.block_dim()):
-      bodyid = jnt_bodyid[jointid]
-      origin = xanchor_in[worldid, jointid]
+    for inputid in range(lane, ninput, wp.block_dim()):
+      if inputid < njnt:
+        bodyid = jnt_bodyid[inputid]
+        origin = xanchor_in[worldid, inputid]
+      else:
+        bodyid = mocap_bodyid[inputid - njnt]
+        origin = xpos_in[worldid, bodyid]
       subtree_end = bodyid + body_subtreenum[bodyid]
       force, torque = wp.vec3(), wp.vec3()
       for child in range(bodyid, subtree_end):
@@ -630,7 +639,7 @@ def _kinematics_vjp(nbody: int, shared: bool):
         force += child_force
         torque += wp.spatial_top(wrench) + wp.cross(position - origin, child_force)
       if wp.static(not shared):
-        # Read sites once per joint, rather than once per descendant body.
+        # Read sites once per input, rather than once per descendant body.
         if adj_site_xpos:
           for siteid in range(nsite):
             child = site_bodyid[siteid]
@@ -639,28 +648,35 @@ def _kinematics_vjp(nbody: int, shared: bool):
               offset = math.rot_vec_quat(site_pos[site_worldid, siteid], xquat_in[worldid, child])
               force += seed
               torque += wp.cross(xpos_in[worldid, child] - origin + offset, seed)
-      qposadr = jnt_qposadr[jointid]
-      jnt_type_ = jnt_type[jointid]
-      if jnt_type_ == JointType.FREE or jnt_type_ == JointType.BALL:
-        if jnt_type_ == JointType.FREE:
-          for i in range(3):
-            adj_qpos_out[worldid, qposadr + i] = force[i]
-          qposadr += 3
-        torque_local = math.rot_vec_quat(torque, math.quat_inv(xquat_in[worldid, bodyid]))
-        # Lift the joint-local angular cotangent into quaternion coordinates.
-        qpos_quat = wp.quat(
-          qpos_in[worldid, qposadr],
-          qpos_in[worldid, qposadr + 1],
-          qpos_in[worldid, qposadr + 2],
-          qpos_in[worldid, qposadr + 3],
-        )
-        quat_grad = 2.0 * math.quat_mul_axis(qpos_quat, torque_local)
-        for i in range(4):
-          adj_qpos_out[worldid, qposadr + i] = quat_grad[i]
-      elif jnt_type_ == JointType.SLIDE:
-        adj_qpos_out[worldid, qposadr] = wp.dot(xaxis_in[worldid, jointid], force)
+      if inputid < njnt:
+        qposadr = jnt_qposadr[inputid]
+        jnt_type_ = jnt_type[inputid]
+        if jnt_type_ == JointType.FREE or jnt_type_ == JointType.BALL:
+          if jnt_type_ == JointType.FREE:
+            for i in range(3):
+              adj_qpos_out[worldid, qposadr + i] = force[i]
+            qposadr += 3
+          torque_local = math.rot_vec_quat(torque, math.quat_inv(xquat_in[worldid, bodyid]))
+          # Lift the joint-local angular cotangent into quaternion coordinates.
+          qpos_quat = wp.quat(
+            qpos_in[worldid, qposadr],
+            qpos_in[worldid, qposadr + 1],
+            qpos_in[worldid, qposadr + 2],
+            qpos_in[worldid, qposadr + 3],
+          )
+          quat_grad = 2.0 * math.quat_mul_axis(qpos_quat, torque_local)
+          for i in range(4):
+            adj_qpos_out[worldid, qposadr + i] = quat_grad[i]
+        elif jnt_type_ == JointType.SLIDE:
+          adj_qpos_out[worldid, qposadr] = wp.dot(xaxis_in[worldid, inputid], force)
+        else:
+          adj_qpos_out[worldid, qposadr] = wp.dot(xaxis_in[worldid, inputid], torque)
       else:
-        adj_qpos_out[worldid, qposadr] = wp.dot(xaxis_in[worldid, jointid], torque)
+        mocapid = inputid - njnt
+        adj_mocap_pos_out[worldid, mocapid] = force
+        adj_mocap_quat_out[worldid, mocapid] = smooth_kinematics_adjoint._mocap_quat_vjp(
+          mocap_quat_in[worldid, mocapid], torque
+        )
 
   return kernel
 
@@ -941,6 +957,7 @@ def smooth_qvel_backward(m: Model, d: Data, d_bwd: Data, lam: wp.array, adj_qvel
 @event_scope
 def smooth_qpos_backward(m: Model, d: Data, d_bwd: Data, lam: wp.array, res_qpos: wp.array, bc: BackwardContext):
   """Shares the smooth position reverse with inertial parameters, including direct mass terms."""
+  mocap_grad = d.mocap_pos.grad is not None or d.mocap_quat.grad is not None
   flags = DisableBit.ACTUATION | DisableBit.SPRING | DisableBit.DAMPER
   with_mass = (m.opt.integrator == IntegratorType.IMPLICITFAST and (m.opt.disableflags & flags) != flags) or (
     m.opt.integrator == IntegratorType.EULER and not (m.opt.disableflags & (DisableBit.EULERDAMP | DisableBit.DAMPER))
@@ -953,11 +970,15 @@ def smooth_qpos_backward(m: Model, d: Data, d_bwd: Data, lam: wp.array, res_qpos
   else:
     if with_mass:
       direct = smooth_adjoint.mass_matrix_qpos_vjp(m, d, bc.y_remap, bc.w_dir, bc=bc)
+      if mocap_grad:
+        smooth_kinematics_adjoint.kinematics_mocap_backward(m, bc.scratch, bc, scale=1.0)
       wp.launch(adjoint_util._sub_cols, dim=res_qpos.shape, inputs=[res_qpos, direct], outputs=[res_qpos])
       model_adjoint.inertia_param_vjp(m, bc.scratch, bc, scale=1.0)
     smooth.rne(m, d_bwd, flg_acc=True)
     residual = smooth_adjoint.smooth_force_backward(m, d_bwd, lam, bc=bc, xfrc_applied=d.xfrc_applied)
   wp.launch(adjoint_util._accum_cols, dim=residual.shape, inputs=[residual], outputs=[res_qpos])
+  if mocap_grad:
+    smooth_kinematics_adjoint.kinematics_mocap_backward(m, d_bwd, bc)
   # Consume the inertia cotangents before gravcomp reuses the workspace.
   model_adjoint.inertia_param_vjp(m, d_bwd, bc)
   for vjp in (
@@ -968,12 +989,16 @@ def smooth_qpos_backward(m: Model, d: Data, d_bwd: Data, lam: wp.array, res_qpos
     residual = vjp(m, d_bwd, lam, bc=bc)
     wp.launch(adjoint_util._accum_cols, dim=residual.shape, inputs=[residual], outputs=[res_qpos])
   # Gravcomp leaves mass and COM cotangents in the same workspace.
+  if mocap_grad:
+    smooth_kinematics_adjoint.kinematics_mocap_backward(m, d_bwd, bc)
   model_adjoint.inertia_param_vjp(m, d_bwd, bc)
 
 
 @event_scope
 def kinematics_backward(m: Model, d_out: Data, d_bwd: Data, bc: BackwardContext):
-  """Maps kinematic output gradients to qpos inputs."""
+  """Maps kinematic output gradients to qpos and mocap inputs."""
+  mocap_grad = d_bwd.mocap_pos.grad is not None or d_bwd.mocap_quat.grad is not None
+  ninput = m.njnt + (m.nmocap if mocap_grad else 0)
   # Bound shared storage; the same wrench contraction also handles CPU and large trees.
   shared = d_bwd.qpos.device.is_cuda and m.nbody <= 512
   block_dim = max(32, 1 << (m.nbody - 1).bit_length()) if shared else 128
@@ -990,14 +1015,17 @@ def kinematics_backward(m: Model, d_out: Data, d_bwd: Data, bc: BackwardContext)
       m.site_bodyid,
       m.site_pos,
       m.body_subtreenum,
+      m.mocap_bodyid,
       d_bwd.qpos,
+      d_bwd.mocap_quat,
       d_bwd.xpos,
       d_bwd.xquat,
       d_bwd.xanchor,
       d_bwd.xaxis,
+      ninput,
       d_out.site_xpos.grad,
       d_out.xpos.grad,
       d_out.xquat.grad,
     ],
-    outputs=[bc.adj_qpos],
+    outputs=[bc.adj_qpos, bc.adj_mocap_pos, bc.adj_mocap_quat],
   )

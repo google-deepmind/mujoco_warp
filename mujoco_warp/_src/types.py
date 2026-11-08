@@ -3094,6 +3094,8 @@ class BackwardContext:
   adj_qpos: array("nworld", "nq", float)
   adj_qvel: array("nworld", "nv", float)
   adj_qacc: array("nworld", "nv", float)
+  adj_mocap_pos: array("nworld", "nmocap", wp.vec3)
+  adj_mocap_quat: array("nworld", "nmocap", wp.quat)
   res_qpos: array("nworld", "nq", float)
   res_qvel: array("nworld", "nv", float)
   adj_efc_pos: array("nworld", "njmax", float)

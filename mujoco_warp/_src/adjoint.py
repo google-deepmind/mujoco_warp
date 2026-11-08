@@ -533,6 +533,8 @@ def contact_constraint_backward(
     res_qpos,
     bc,
   )
+  if d.mocap_pos.grad is not None or d.mocap_quat.grad is not None:
+    smooth_kinematics_adjoint.kinematics_mocap_backward(m, d_bwd, bc, contact=True)
 
 
 @event_scope
@@ -606,6 +608,8 @@ _STEP_USER_FIELDS = (
   "ctrl",
   "qfrc_applied",
   "xfrc_applied",
+  "mocap_pos",
+  "mocap_quat",
 )
 _STEP_MODEL_FIELDS = (
   "body_mass",
@@ -627,7 +631,7 @@ _STEP_MODEL_FIELDS = (
   "geom_friction",
   "pair_friction",
 )
-_KINEMATICS_IN_FIELDS = ("qpos",)
+_KINEMATICS_IN_FIELDS = ("qpos", "mocap_pos", "mocap_quat")
 _KINEMATICS_OUT_FIELDS = ("site_xpos", "xpos", "xquat")
 
 
@@ -692,17 +696,35 @@ def step_backward_arrays(d: Data, d_out: Data, m: Model | None = None, *, user_f
 
 
 @wp.kernel(enable_backward=False)
-def _accum_copied_input(adj_in: wp.array2d[Any], adj_out: wp.array2d[Any]):
+def _accum_user_adjoint(adj_in: wp.array2d[Any], adj_out: wp.array2d[Any]):
   w, i = wp.tid()
   adj_out[w, i] += adj_in[w, i]
+
+
+def _write_user_adjoints(d: Data, d_out: Data, bc: BackwardContext):
+  """Accumulates user-input scratch contributions and gradients through copied inputs."""
+  direct = {"mocap_pos": bc.adj_mocap_pos, "mocap_quat": bc.adj_mocap_quat}
+  for name in _STEP_USER_FIELDS:
+    src, dst = getattr(d, name), getattr(d_out, name)
+    if src.grad is None:
+      continue
+    if name in direct:
+      wp.launch(_accum_user_adjoint, dim=(d.nworld, src.shape[1]), inputs=[direct[name]], outputs=[src.grad])
+    # Shared gradient storage already contains downstream uses of the held input.
+    if dst.grad is not None and src.grad.ptr != dst.grad.ptr:
+      wp.launch(_accum_user_adjoint, dim=src.shape, inputs=[dst.grad], outputs=[src.grad])
 
 
 @wp.kernel(enable_backward=False)
 def _accum_kinematics_adjoints(
   # In:
   adj_qpos: wp.array2d[float],
+  adj_mocap_pos: wp.array2d[wp.vec3],
+  adj_mocap_quat: wp.array2d[wp.quat],
   # Out:
   adj_qpos_out: wp.array2d[float],
+  adj_mocap_pos_out: wp.array2d[wp.vec3],
+  adj_mocap_quat_out: wp.array2d[wp.quat],
   adj_site_xpos_out: wp.array2d[wp.vec3],
   adj_xpos_out: wp.array2d[wp.vec3],
   adj_xquat_out: wp.array2d[wp.quat],
@@ -710,6 +732,10 @@ def _accum_kinematics_adjoints(
   w, i = wp.tid()
   if adj_qpos_out and i < adj_qpos_out.shape[1]:
     adj_qpos_out[w, i] += adj_qpos[w, i]
+  if adj_mocap_pos_out and i < adj_mocap_pos_out.shape[1]:
+    adj_mocap_pos_out[w, i] += adj_mocap_pos[w, i]
+  if adj_mocap_quat_out and i < adj_mocap_quat_out.shape[1]:
+    adj_mocap_quat_out[w, i] += adj_mocap_quat[w, i]
   if adj_site_xpos_out and i < adj_site_xpos_out.shape[1]:
     adj_site_xpos_out[w, i] = wp.vec3()
   if adj_xpos_out and i < adj_xpos_out.shape[1]:
@@ -722,6 +748,8 @@ def _write_kinematics_adjoints(d: Data, bc: BackwardContext):
   """Accumulates FK input gradients and consumes its overwritten output seeds."""
   grads = [
     d.qpos.grad,
+    d.mocap_pos.grad,
+    d.mocap_quat.grad,
     d.site_xpos.grad,
     d.xpos.grad,
     d.xquat.grad,
@@ -729,7 +757,7 @@ def _write_kinematics_adjoints(d: Data, bc: BackwardContext):
   wp.launch(
     _accum_kinematics_adjoints,
     dim=(d.nworld, max((grad.shape[1] for grad in grads if grad is not None), default=0)),
-    inputs=[bc.adj_qpos],
+    inputs=[bc.adj_qpos, bc.adj_mocap_pos, bc.adj_mocap_quat],
     outputs=grads,
   )
 
@@ -740,8 +768,8 @@ def _clear_kinematics_adjoints(d: Data):
   wp.launch(
     _accum_kinematics_adjoints,
     dim=(d.nworld, max((grad.shape[1] for grad in grads if grad is not None), default=0)),
-    inputs=[None],
-    outputs=[None, *grads],
+    inputs=[None, None, None],
+    outputs=[None, None, None, *grads],
   )
 
 
@@ -857,18 +885,15 @@ def step_backward(m: Model, d: Data, d_out: Data, bc: BackwardContext | None = N
   _, _, adj_qacc = forward_adjoint.advance_backward(m, d_out, d_bwd, bc)
   forward_backward_ift(m, d, d_bwd, adj_qacc, bc)
   _write_input_adjoints(d, bc)
-  for name in _STEP_USER_FIELDS:
-    src, dst = getattr(d, name), getattr(d_out, name)
-    # Shared gradient storage already contains downstream uses of the held input.
-    if src.grad is not None and dst.grad is not None and src.grad.ptr != dst.grad.ptr:
-      wp.launch(_accum_copied_input, dim=src.shape, inputs=[dst.grad], outputs=[src.grad])
+  _write_user_adjoints(d, d_out, bc)
   if kinematics_grad:
     _clear_kinematics_adjoints(d_out)
 
 
 def fwd_kinematics_arrays(d: Data):
-  """Returns differentiated fwd_kinematics inputs and outputs."""
-  return _data_arrays(d, _KINEMATICS_IN_FIELDS + _KINEMATICS_OUT_FIELDS)
+  """Returns kinematic gradient arrays, keeping fixed mocap inputs opt-in."""
+  inputs = tuple(name for name in _KINEMATICS_IN_FIELDS if name == "qpos" or getattr(d, name).requires_grad)
+  return _data_arrays(d, inputs + _KINEMATICS_OUT_FIELDS)
 
 
 def fwd_kinematics_backward_scratch(d: Data, bc: BackwardContext) -> Data:
@@ -878,9 +903,9 @@ def fwd_kinematics_backward_scratch(d: Data, bc: BackwardContext) -> Data:
 
 @event_scope
 def fwd_kinematics_backward(m: Model, d: Data, bc: BackwardContext | None = None):
-  """Maps Cartesian body/site cotangents to generalized position coordinates."""
+  """Maps Cartesian body/site cotangents to qpos and mocap inputs."""
   kinematics_grad = bool(_data_arrays(d, _KINEMATICS_OUT_FIELDS, force_grad=False))
-  if d.qpos.grad is None or not kinematics_grad:
+  if not kinematics_grad:
     return
   bc = bc or _ACTIVE_BACKWARD_CONTEXT.get() or create_backward_context(m, d)
   d_bwd = fwd_kinematics_backward_scratch(d, bc)
@@ -899,6 +924,7 @@ def enable_grad() -> None:
   Call before building kernels that need these rules. The numerical rules apply process-wide,
   independently of tapes and backward-hook registration.
 
+  Mocap input gradients are opt-in via requires_grad.
   Kinematic output gradients support site_xpos, xpos, and xquat. Step computes these
   before integration; call fwd_kinematics on the output to refresh them using the updated qpos.
 

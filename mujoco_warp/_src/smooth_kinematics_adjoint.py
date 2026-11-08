@@ -16,14 +16,120 @@
 
 import warp as wp
 
+from mujoco_warp._src import adjoint_util
 from mujoco_warp._src import math
 from mujoco_warp._src import support
 from mujoco_warp._src.types import MJ_MINVAL
+from mujoco_warp._src.types import BackwardContext
 from mujoco_warp._src.types import Data
 from mujoco_warp._src.types import JointType
 from mujoco_warp._src.types import Model
 
 wp.set_module_options({"enable_backward": False})
+
+
+@wp.func
+def _mocap_quat_vjp(quat: wp.quat, torque: wp.vec3) -> wp.quat:
+  """Lifts a world angular cotangent through normalization of the wxyz mocap quaternion."""
+  norm2 = wp.dot(quat, quat)
+  if norm2 > 0.0:
+    return (2.0 / norm2) * math.mul_quat(wp.quat(0.0, torque[0], torque[1], torque[2]), quat)
+  return wp.quat(0.0, 0.0, 0.0, 0.0)
+
+
+@wp.kernel
+def _kinematics_mocap_vjp(
+  # Model:
+  nv: int,
+  ngeom: int,
+  body_rootid: wp.array[int],
+  dof_bodyid: wp.array[int],
+  geom_bodyid: wp.array[int],
+  body_subtreenum: wp.array[int],
+  mocap_bodyid: wp.array[int],
+  # Data in:
+  mocap_pos_in: wp.array2d[wp.vec3],
+  mocap_quat_in: wp.array2d[wp.quat],
+  xipos_in: wp.array2d[wp.vec3],
+  ximat_in: wp.array2d[wp.mat33],
+  geom_xpos_in: wp.array2d[wp.vec3],
+  geom_xmat_in: wp.array2d[wp.mat33],
+  subtree_com_in: wp.array2d[wp.vec3],
+  cdof_in: wp.array2d[wp.spatial_vector],
+  # In:
+  adj_xipos: wp.array2d[wp.vec3],
+  adj_ximat: wp.array2d[wp.mat33],
+  adj_geom_xpos: wp.array2d[wp.vec3],
+  adj_geom_xmat: wp.array2d[wp.mat33],
+  adj_subtree_com: wp.array2d[wp.vec3],
+  adj_cdof: wp.array2d[wp.spatial_vector],
+  scale: float,
+  # Out:
+  adj_mocap_pos_out: wp.array2d[wp.vec3],
+  adj_mocap_quat_out: wp.array2d[wp.quat],
+):
+  w, mocapid = wp.tid()
+  root = mocap_bodyid[mocapid]
+  origin = mocap_pos_in[w, mocapid]
+  force, torque = wp.vec3(), wp.vec3()
+  for body in range(root, root + body_subtreenum[root]):
+    if adj_xipos:
+      seed = adj_xipos[w, body]
+      force += seed
+      torque += wp.cross(xipos_in[w, body] - origin, seed)
+      torque += adjoint_util._adj_rotation(ximat_in[w, body], adj_ximat[w, body])
+    if adj_subtree_com:
+      seed = adj_subtree_com[w, body]
+      force += seed
+      torque += wp.cross(subtree_com_in[w, body] - origin, seed)
+  if adj_geom_xpos:
+    for geom in range(ngeom):
+      if body_rootid[geom_bodyid[geom]] == root:
+        seed = adj_geom_xpos[w, geom]
+        force += seed
+        torque += wp.cross(geom_xpos_in[w, geom] - origin, seed)
+        torque += adjoint_util._adj_rotation(geom_xmat_in[w, geom], adj_geom_xmat[w, geom])
+  if adj_cdof:
+    for dof in range(nv):
+      if body_rootid[dof_bodyid[dof]] == root:
+        value, dof_seed = cdof_in[w, dof], adj_cdof[w, dof]
+        torque += wp.cross(wp.spatial_top(value), wp.spatial_top(dof_seed))
+        torque += wp.cross(wp.spatial_bottom(value), wp.spatial_bottom(dof_seed))
+  adj_mocap_pos_out[w, mocapid] += scale * force
+  adj_mocap_quat_out[w, mocapid] += scale * _mocap_quat_vjp(mocap_quat_in[w, mocapid], torque)
+
+
+def kinematics_mocap_backward(m: Model, d_bwd: Data, bc: BackwardContext, *, contact: bool = False, scale: float = -1.0):
+  """Accumulates kinematic cotangents from contact and smooth dynamics into mocap inputs."""
+  wp.launch(
+    _kinematics_mocap_vjp,
+    dim=(d_bwd.nworld, m.nmocap),
+    inputs=[
+      m.nv,
+      m.ngeom,
+      m.body_rootid,
+      m.dof_bodyid,
+      m.geom_bodyid,
+      m.body_subtreenum,
+      m.mocap_bodyid,
+      d_bwd.mocap_pos,
+      d_bwd.mocap_quat,
+      d_bwd.xipos,
+      d_bwd.ximat,
+      d_bwd.geom_xpos,
+      d_bwd.geom_xmat,
+      d_bwd.subtree_com,
+      d_bwd.cdof,
+      bc.adj_xipos if not contact else None,
+      bc.adj_ximat if not contact else None,
+      bc.res_geom_xpos if contact else None,
+      bc.res_geom_xmat if contact else None,
+      bc.adj_subtree_com,
+      bc.adj_cdof,
+      scale,
+    ],
+    outputs=[bc.adj_mocap_pos, bc.adj_mocap_quat],
+  )
 
 
 @wp.kernel(module="unique", enable_backward=False)
