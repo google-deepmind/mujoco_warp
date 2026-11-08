@@ -664,7 +664,8 @@ def _kinematics_vjp(nbody: int, shared: bool):
             qpos_in[worldid, qposadr + 2],
             qpos_in[worldid, qposadr + 3],
           )
-          quat_grad = 2.0 * math.quat_mul_axis(qpos_quat, torque_local)
+          norm2 = wp.dot(qpos_quat, qpos_quat)
+          quat_grad = (2.0 / norm2) * math.quat_mul_axis(qpos_quat, torque_local) if norm2 > 0.0 else wp.quat()
           for i in range(4):
             adj_qpos_out[worldid, qposadr + i] = quat_grad[i]
         elif jnt_type_ == JointType.SLIDE:

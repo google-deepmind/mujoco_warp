@@ -272,7 +272,8 @@ def _dof_to_qpos(
       dadr += 3
     q = wp.quat(qpos_in[w, qadr + 0], qpos_in[w, qadr + 1], qpos_in[w, qadr + 2], qpos_in[w, qadr + 3])
     grad = wp.vec3(adj_dof[w, dadr + 0], adj_dof[w, dadr + 1], adj_dof[w, dadr + 2])
-    adj_q = 2.0 * math.quat_mul_axis(q, grad)
+    norm2 = wp.dot(q, q)
+    adj_q = (2.0 / norm2) * math.quat_mul_axis(q, grad) if norm2 > 0.0 else wp.quat()
     adj_qpos_out[w, qadr + 0] += adj_q[0]
     adj_qpos_out[w, qadr + 1] += adj_q[1]
     adj_qpos_out[w, qadr + 2] += adj_q[2]
