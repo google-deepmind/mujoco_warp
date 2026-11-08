@@ -427,10 +427,12 @@ class SolverTest(parameterized.TestCase):
     nsolving = wp.ones(1, dtype=int)
     done = wp.zeros(1, dtype=bool)
     overflow = wp.zeros(1, dtype=int)
-    beta = wp.zeros(1, dtype=float)
+    search = wp.zeros((1, 1), dtype=float)
+    prev_Mgrad = wp.zeros((1, 1), dtype=float)
+    grad_Mgrad = wp.zeros(1, dtype=float)
 
     wp.launch(
-      solver._solve_beta_finalize_tiled(types.OverflowType.NONE),
+      solver._solve_search_update_cg_tiled(types.OverflowType.NONE),
       dim=(1, 32),
       inputs=[
         1,
@@ -439,14 +441,15 @@ class SolverTest(parameterized.TestCase):
         wp.array([1.0], dtype=float),
         wp.zeros((1, 1), dtype=float),
         wp.zeros((1, 1), dtype=float),
-        wp.zeros((1, 1), dtype=float),
-        wp.zeros((1, 1), dtype=float),
+        search,
+        prev_Mgrad,
+        grad_Mgrad,
         wp.array([1.0], dtype=float),
         wp.array([1.0], dtype=float),
         wp.array([1.0], dtype=float),
         done,
       ],
-      outputs=[solver_niter, overflow, beta, nsolving, done],
+      outputs=[solver_niter, overflow, search, wp.zeros(1, dtype=float), prev_Mgrad, grad_Mgrad, nsolving, done],
     )
 
     self.assertTrue(done.numpy()[0])
@@ -460,10 +463,12 @@ class SolverTest(parameterized.TestCase):
     nsolving = wp.ones(1, dtype=int)
     done = wp.zeros(1, dtype=bool)
     overflow = wp.zeros(1, dtype=int)
-    beta = wp.zeros(1, dtype=float)
+    search = wp.zeros((1, 1), dtype=float)
+    prev_Mgrad = wp.zeros((1, 1), dtype=float)
+    grad_Mgrad = wp.zeros(1, dtype=float)
 
     wp.launch(
-      solver._solve_beta_finalize_tiled(types.OverflowType.NONE),
+      solver._solve_search_update_cg_tiled(types.OverflowType.NONE),
       dim=(1, 32),
       inputs=[
         1,
@@ -472,14 +477,15 @@ class SolverTest(parameterized.TestCase):
         wp.array([1.0], dtype=float),
         wp.zeros((1, 1), dtype=float),
         wp.zeros((1, 1), dtype=float),
-        wp.zeros((1, 1), dtype=float),
-        wp.zeros((1, 1), dtype=float),
+        search,
+        prev_Mgrad,
+        grad_Mgrad,
         wp.array([1.0], dtype=float),
         wp.array([1.0], dtype=float),
         wp.array([0.0], dtype=float),
         done,
       ],
-      outputs=[solver_niter, overflow, beta, nsolving, done],
+      outputs=[solver_niter, overflow, search, wp.zeros(1, dtype=float), prev_Mgrad, grad_Mgrad, nsolving, done],
     )
 
     self.assertTrue(done.numpy()[0])
@@ -1253,7 +1259,7 @@ class SolverTest(parameterized.TestCase):
     shared_module = solver._solve_init_efc.module
     self.assertNotEqual(solver._solve_init_search_cg_tiled.module, shared_module)
     self.assertNotEqual(solver._update_gradient_grad_tiled.module, shared_module)
-    self.assertNotEqual(solver._solve_search_update_cg_tiled.module, shared_module)
+    self.assertNotEqual(solver._solve_search_update_cg_tiled(0).module, shared_module)
 
   def test_elliptic_dense_hessian(self):
     """Structured dense cone contraction matches the reference Hessian."""
