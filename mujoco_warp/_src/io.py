@@ -1438,6 +1438,20 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
   m.flexedge_efcadr = flexedge_efcadr
   m.flexedge_efcnnzadr = flexedge_efcnnzadr
 
+  # flex bvh nodes are the dynamic bvh nodes, stored after the static (body) nodes
+  flex_bvhflexid = np.zeros(mjm.nbvhdynamic, dtype=np.int32)
+  flex_bvh_tree = {}
+  for fi in range(mjm.nflex):
+    bvhadr, bvhnum = mjm.flex_bvhadr[fi], mjm.flex_bvhnum[fi]
+    if bvhadr < 0:
+      continue
+    flex_bvhflexid[bvhadr - mjm.nbvhstatic : bvhadr - mjm.nbvhstatic + bvhnum] = fi
+    for i in range(bvhadr, bvhadr + bvhnum):
+      if mjm.bvh_nodeid[i] < 0:
+        flex_bvh_tree.setdefault(mjm.bvh_depth[i], []).append(i)
+  m.flex_bvhflexid = flex_bvhflexid
+  m.flex_bvh_tree = tuple(wp.array(flex_bvh_tree[i], dtype=int) for i in sorted(flex_bvh_tree))
+
   flex_bend_interp_map = []
   flex_face_map = []
   flex_faceadr = np.zeros(mjm.nflex, dtype=np.int32)
