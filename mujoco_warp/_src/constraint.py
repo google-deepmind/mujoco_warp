@@ -5089,10 +5089,216 @@ def _add_surface_vel(is_pyramidal: bool):
   return kernel
 
 
+@wp.kernel
+def _constraint_sort_keys(
+  # Data in:
+  nefc_in: wp.array[int],
+  # In:
+  type_in: wp.array2d[int],
+  id_in: wp.array2d[int],
+  # Out:
+  keys_out: wp.array[wp.uint64],
+  order_out: wp.array[int],
+):
+  world, row = wp.tid()
+  capacity = type_in.shape[1]
+  flat = world * capacity + row
+  key = wp.uint64(0x7FFFFFFFF)
+  if row < nefc_in[world]:
+    key = (wp.uint64(type_in[world, row]) << wp.uint64(32)) | wp.uint64(id_in[world, row])
+  keys_out[flat] = (wp.uint64(world) << wp.uint64(35)) | key
+  order_out[flat] = row
+
+
+@wp.kernel
+def _constraint_sort_inverse(
+  # In:
+  order_in: wp.array[int],
+  # Out:
+  inverse_out: wp.array2d[int],
+):
+  world, row = wp.tid()
+  inverse_out[world, order_in[world * inverse_out.shape[1] + row]] = row
+
+
+@wp.kernel
+def _constraint_sort_rows(
+  # Data in:
+  nefc_in: wp.array[int],
+  # In:
+  order_in: wp.array[int],
+  capacity: int,
+  words_in: wp.array3d[wp.uint32],
+  # Out:
+  words_out: wp.array3d[wp.uint32],
+):
+  world, row, col = wp.tid()
+  source = row
+  if row < wp.min(nefc_in[world], capacity):
+    source = order_in[world * capacity + row]
+  words_out[world, row, col] = words_in[world, source, col]
+
+
+@wp.kernel
+def _constraint_sort_contact_address(
+  # Data in:
+  nacon_in: wp.array[int],
+  # In:
+  worldid_in: wp.array[int],
+  inverse_in: wp.array2d[int],
+  # Out:
+  address_out: wp.array2d[int],
+):
+  contact, axis = wp.tid()
+  if contact >= nacon_in[0]:
+    return
+  old = address_out[contact, axis]
+  if old >= 0 and old < inverse_in.shape[1]:
+    address_out[contact, axis] = inverse_in[worldid_in[contact], old]
+
+
+@wp.kernel
+def _constraint_sort_block_keys(
+  # In:
+  nblock_in: wp.array[int],
+  adr_in: wp.array2d[int],
+  inverse_in: wp.array2d[int],
+  # Out:
+  keys_out: wp.array[wp.uint64],
+  order_out: wp.array[int],
+):
+  world, block = wp.tid()
+  capacity = adr_in.shape[1]
+  flat = world * capacity + block
+  key = wp.uint64(0xFFFFFFFF)
+  if block < nblock_in[world]:
+    key = wp.uint64(inverse_in[world, adr_in[world, block]])
+  keys_out[flat] = (wp.uint64(world) << wp.uint64(32)) | key
+  order_out[flat] = block
+
+
+@wp.kernel
+def _constraint_sort_block_address(
+  # In:
+  nblock_in: wp.array[int],
+  inverse_in: wp.array2d[int],
+  # Out:
+  address_out: wp.array2d[int],
+):
+  world, block = wp.tid()
+  if block < nblock_in[world]:
+    address_out[world, block] = inverse_in[world, address_out[world, block]]
+
+
+@wp.kernel
+def _constraint_sort_sparse_address(
+  # Data in:
+  nefc_in: wp.array[int],
+  # In:
+  rownnz_in: wp.array2d[int],
+  # Out:
+  rowadr_out: wp.array2d[int],
+):
+  world = wp.tid()
+  offset = int(0)
+  for row in range(wp.min(nefc_in[world], rownnz_in.shape[1])):
+    rowadr_out[world, row] = offset
+    offset += rownnz_in[world, row]
+
+
+@wp.kernel
+def _constraint_sort_sparse_jacobian(
+  # Data in:
+  nefc_in: wp.array[int],
+  # In:
+  order_in: wp.array[int],
+  rownnz_in: wp.array2d[int],
+  old_rowadr_in: wp.array2d[int],
+  new_rowadr_in: wp.array2d[int],
+  old_colind_in: wp.array3d[int],
+  old_J_in: wp.array3d[float],
+  # Out:
+  colind_out: wp.array3d[int],
+  J_out: wp.array3d[float],
+):
+  world, row, col = wp.tid()
+  capacity = rownnz_in.shape[1]
+  if row >= nefc_in[world] or col >= rownnz_in[world, row]:
+    return
+  source = order_in[world * capacity + row]
+  old = old_rowadr_in[world, source] + col
+  new = new_rowadr_in[world, row] + col
+  colind_out[world, 0, new] = old_colind_in[world, 0, old]
+  J_out[world, 0, new] = old_J_in[world, 0, old]
+
+
+def _permute_constraint_rows(value, count, order, capacity):
+  """Permute logical rows while preserving padding and exact scalar bit patterns."""
+  words = wp.array(
+    ptr=value.ptr,
+    dtype=wp.uint32,
+    shape=(value.shape[0], value.shape[1], value.strides[1] // 4),
+    device=value.device,
+    copy=False,
+  )
+  scratch = wp.empty_like(words)
+  wp.launch(_constraint_sort_rows, dim=words.shape, inputs=[count, order, capacity, words], outputs=[scratch])
+  wp.copy(words, scratch)
+
+
 def _sort_constraints(m: types.Model, d: types.Data):
-  """Order constraint rows canonically for determinism."""
-  # TODO(team): Implementation of constraint row sorting.
-  pass
+  """Canonicalize rows by world, type and object, preserving within-object axes.
+
+  The row allocator reserves each object's axes contiguously, so a stable sort
+  preserves their physical meaning. Sparse storage and Newton block addresses
+  are canonicalized as well; every contact address follows the inverse mapping.
+  """
+  capacity = d.njmax
+  size = d.nworld * capacity
+  keys = wp.empty(2 * size, dtype=wp.uint64)
+  order = wp.empty(2 * size, dtype=int)
+  inverse = wp.empty((d.nworld, capacity), dtype=int)
+  wp.launch(_constraint_sort_keys, dim=(d.nworld, capacity), inputs=[d.nefc, d.efc.type, d.efc.id], outputs=[keys, order])
+  wp.utils.radix_sort_pairs(keys, order, size)
+  wp.launch(_constraint_sort_inverse, dim=inverse.shape, inputs=[order], outputs=[inverse])
+  for name in ("type", "id", "pos", "margin", "D", "vel", "aref", "frictionloss", "Jqvel"):
+    _permute_constraint_rows(getattr(d.efc, name), d.nefc, order, capacity)
+  if m.is_sparse:
+    old_rowadr = wp.clone(d.efc.J_rowadr)
+    old_colind = wp.clone(d.efc.J_colind)
+    old_J = wp.clone(d.efc.J)
+    _permute_constraint_rows(d.efc.J_rownnz, d.nefc, order, capacity)
+    wp.launch(_constraint_sort_sparse_address, dim=d.nworld, inputs=[d.nefc, d.efc.J_rownnz], outputs=[d.efc.J_rowadr])
+    wp.launch(
+      _constraint_sort_sparse_jacobian,
+      dim=(d.nworld, capacity, m.nv),
+      inputs=[d.nefc, order, d.efc.J_rownnz, old_rowadr, d.efc.J_rowadr, old_colind, old_J],
+      outputs=[d.efc.J_colind, d.efc.J],
+    )
+    if m.opt.solver == types.SolverType.NEWTON:
+      wp.launch(
+        _constraint_sort_block_keys,
+        dim=(d.nworld, capacity),
+        inputs=[d.efc.jtdaj_nblock, d.efc.jtdaj_adr, inverse],
+        outputs=[keys, order],
+      )
+      wp.utils.radix_sort_pairs(keys, order, size)
+      for name in ("jtdaj_adr", "jtdaj_nrow"):
+        _permute_constraint_rows(getattr(d.efc, name), d.efc.jtdaj_nblock, order, capacity)
+      wp.launch(
+        _constraint_sort_block_address,
+        dim=(d.nworld, capacity),
+        inputs=[d.efc.jtdaj_nblock, inverse],
+        outputs=[d.efc.jtdaj_adr],
+      )
+  else:
+    _permute_constraint_rows(d.efc.J, d.nefc, order, capacity)
+  wp.launch(
+    _constraint_sort_contact_address,
+    dim=d.contact.efc_address.shape,
+    inputs=[d.nacon, d.contact.worldid, inverse],
+    outputs=[d.contact.efc_address],
+  )
 
 
 @event_scope
