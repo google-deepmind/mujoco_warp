@@ -25,6 +25,7 @@ import mujoco_warp as mjw
 from mujoco_warp import ConeType
 from mujoco_warp import DisableBit
 from mujoco_warp import test_data
+from mujoco_warp._src import solver
 from mujoco_warp._src import types
 from mujoco_warp._src import util_pkg
 
@@ -437,6 +438,25 @@ class SmoothTest(parameterized.TestCase):
 
     mjw.solve_m(m, d, d.qacc_smooth, d.qfrc_smooth)
     _assert_eq(d.qacc_smooth.numpy()[0], qacc_smooth[0], "qacc_smooth")
+
+  def test_world_sums_many_trees(self):
+    """Tests the shared memory per-world sums over more tree roots and dofs than one chunk."""
+    xml = "".join(
+      f'<body pos="{i % 23 * 0.1} {i // 23 * 0.1} 0"><joint type="slide"/><geom size=".0{1 + i % 9}"/></body>'
+      for i in range(520)
+    )
+    mjm, mjd, m, d = test_data.fixture(xml=f"<mujoco><worldbody>{xml}</worldbody></mujoco>", qpos_noise=0.3, qvel_noise=1.0)
+    mujoco.mj_rnePostConstraint(mjm, mjd)
+
+    mjw.com_pos(m, d)
+    mjw.crb(m, d)
+    mjw.rne_postconstraint(m, d)
+    inertia_scale = wp.empty(d.nworld, dtype=float)
+    solver._launch_inertia_scale(m, d.M, inertia_scale)
+
+    _assert_eq(d.subtree_com.numpy()[0, 0], mjd.subtree_com[0], "subtree_com")
+    _assert_eq(d.cfrc_int.numpy()[0, 0], mjd.cfrc_int[0], "cfrc_int")
+    _assert_eq(inertia_scale.numpy()[0], 1.0 / mjd.M[mjm.M_rowadr + mjm.M_rownnz - 1].sum(), "inertia_scale")
 
   @parameterized.named_parameters(_tree_cases(("gravity", 0), ("nogravity", DisableBit.GRAVITY)))
   def test_rne(self, gravity, model):

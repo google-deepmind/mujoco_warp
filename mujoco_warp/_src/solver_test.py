@@ -47,7 +47,7 @@ def _assert_eq(a, b, name, tol=_TOLERANCE * 20):
 
 def _set_inertia_scale(m, d, ctx):
   """Set the inverse trace of M, as init_context does, for tests which skip it."""
-  wp.launch(solver._inertia_scale, dim=d.nworld, inputs=[m.nv, m.M_rownnz, m.M_rowadr, d.M], outputs=[ctx.inertia_scale])
+  solver._launch_inertia_scale(m, d.M, ctx.inertia_scale)
 
 
 def _noslip_model(mjm, noslip_iterations):
