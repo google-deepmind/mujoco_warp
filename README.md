@@ -28,6 +28,13 @@ MJWarp is also available via PyPI:
 pip install mujoco-warp
 ```
 
+# Determinism
+
+Deterministic GPU simulation is still under development; see [#562](https://github.com/google-deepmind/mujoco_warp/issues/562).
+`m.opt.deterministic` selects features using `mujoco_warp.DeterminismType`. Currently, `ATOMICS` enables deterministic variants of supported reduction kernels, but the `CONTACTS` and `CONSTRAINT` sorting hooks are not implemented. Setting `ALL` (or `True`) therefore does **not** guarantee bitwise-identical simulation trajectories, even with identical initial conditions and controls.
+
+This model option is distinct from Warp's global `wp.config.deterministic` setting. MuJoCo Warp does not currently support enabling that setting for the entire simulation pipeline; in particular, convex collision kernels are incompatible with it (see [#1635](https://github.com/google-deepmind/mujoco_warp/issues/1635)). Do not use the global setting as a substitute for the missing contact and constraint sorting implementations.
+
 # Examples
 
 MuJoCo Warp simulates many kinds of physical systems, from rigid bodies with contacts to soft bodies, cloth, signed distance fields, and more. Here are a few examples of what it can do:
