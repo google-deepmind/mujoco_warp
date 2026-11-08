@@ -631,15 +631,16 @@ _KINEMATICS_IN_FIELDS = ("qpos",)
 _KINEMATICS_OUT_FIELDS = ("site_xpos", "xpos", "xquat")
 
 
-def _data_arrays(d: Data, fields: tuple[str, ...]) -> list[wp.array]:
-  """Enables gradients on the declared nonempty Data fields."""
+def _data_arrays(d: Data, fields: tuple[str, ...], *, force_grad: bool = True) -> list[wp.array]:
+  """Returns nonempty Data arrays that require gradients, optionally enabling them first."""
   arrays = [getattr(d, name) for name in fields if getattr(d, name).size]
-  for array in arrays:
-    array.requires_grad = True
-  return arrays
+  if force_grad:
+    for array in arrays:
+      array.requires_grad = True
+  return [array for array in arrays if array.requires_grad]
 
 
-def _step_model_arrays(m: Model) -> list[wp.array]:
+def _model_arrays(m: Model) -> list[wp.array]:
   """Returns opted-in model parameters, rejecting incomplete step derivatives."""
   parameters = {
     prefix + name: value
@@ -676,8 +677,12 @@ def step_backward_arrays(d: Data, d_out: Data, m: Model | None = None, *, user_f
   unsupported = requested - set(_STEP_USER_FIELDS)
   if unsupported:
     raise NotImplementedError("native step user-input gradients are not implemented for: " + ", ".join(sorted(unsupported)))
-  parameters = _step_model_arrays(m) if m is not None else []
-  arrays = [*_data_arrays(d, _STEP_IN_FIELDS), *_data_arrays(d_out, _STEP_OUT_FIELDS)]
+  parameters = _model_arrays(m) if m is not None else []
+  arrays = [
+    *_data_arrays(d, _STEP_IN_FIELDS),
+    *_data_arrays(d_out, _STEP_OUT_FIELDS),
+    *_data_arrays(d_out, _KINEMATICS_OUT_FIELDS, force_grad=False),
+  ]
   for name in _STEP_USER_FIELDS:
     if name in requested or getattr(d, name).requires_grad or getattr(d_out, name).requires_grad:
       arrays.extend(_data_arrays(d, (name,)))
@@ -692,10 +697,60 @@ def _accum_copied_input(adj_in: wp.array2d[Any], adj_out: wp.array2d[Any]):
   adj_out[w, i] += adj_in[w, i]
 
 
-def step_backward_scratch(d: Data, d_out: Data, bc: BackwardContext) -> Data:
-  """Builds backward scratch with explicitly borrowed forward inputs."""
+@wp.kernel(enable_backward=False)
+def _accum_kinematics_adjoints(
+  # In:
+  adj_qpos: wp.array2d[float],
+  # Out:
+  adj_qpos_out: wp.array2d[float],
+  adj_site_xpos_out: wp.array2d[wp.vec3],
+  adj_xpos_out: wp.array2d[wp.vec3],
+  adj_xquat_out: wp.array2d[wp.quat],
+):
+  w, i = wp.tid()
+  if adj_qpos_out and i < adj_qpos_out.shape[1]:
+    adj_qpos_out[w, i] += adj_qpos[w, i]
+  if adj_site_xpos_out and i < adj_site_xpos_out.shape[1]:
+    adj_site_xpos_out[w, i] = wp.vec3()
+  if adj_xpos_out and i < adj_xpos_out.shape[1]:
+    adj_xpos_out[w, i] = wp.vec3()
+  if adj_xquat_out and i < adj_xquat_out.shape[1]:
+    adj_xquat_out[w, i] = wp.quat(0.0, 0.0, 0.0, 0.0)
+
+
+def _write_kinematics_adjoints(d: Data, bc: BackwardContext):
+  """Accumulates FK input gradients and consumes its overwritten output seeds."""
+  grads = [
+    d.qpos.grad,
+    d.site_xpos.grad,
+    d.xpos.grad,
+    d.xquat.grad,
+  ]
+  wp.launch(
+    _accum_kinematics_adjoints,
+    dim=(d.nworld, max((grad.shape[1] for grad in grads if grad is not None), default=0)),
+    inputs=[bc.adj_qpos],
+    outputs=grads,
+  )
+
+
+def _clear_kinematics_adjoints(d: Data):
+  """Clears kinematic output gradients after step backward."""
+  grads = [getattr(d, name).grad for name in _KINEMATICS_OUT_FIELDS]
+  wp.launch(
+    _accum_kinematics_adjoints,
+    dim=(d.nworld, max((grad.shape[1] for grad in grads if grad is not None), default=0)),
+    inputs=[None],
+    outputs=[None, *grads],
+  )
+
+
+def step_backward_scratch(m: Model, d: Data, d_out: Data, bc: BackwardContext) -> Data:
+  """Prepares backward scratch from forward inputs and retained intermediates."""
+  kinematics_grad = bool(_data_arrays(d_out, _KINEMATICS_OUT_FIELDS, force_grad=False))
+  d_kin = bc.scratch if kinematics_grad else d_out
   # Borrow only read-only state and forward caches; all other fields remain backward scratch.
-  return dataclasses.replace(
+  d_bwd = dataclasses.replace(
     bc.scratch,
     nworld=d_out.nworld,
     naconmax=d_out.naconmax,
@@ -707,19 +762,21 @@ def step_backward_scratch(d: Data, d_out: Data, bc: BackwardContext) -> Data:
     qpos=d.qpos,
     qvel=d.qvel,
     ctrl=d.ctrl,
+    mocap_pos=d.mocap_pos,
+    mocap_quat=d.mocap_quat,
     act=d_out.act,
     act_dot=d_out.act_dot,
     qacc=d_out.qacc,
-    xpos=d_out.xpos,
-    xquat=d_out.xquat,
-    xmat=d_out.xmat,
-    xipos=d_out.xipos,
-    ximat=d_out.ximat,
-    geom_xpos=d_out.geom_xpos,
-    geom_xmat=d_out.geom_xmat,
-    subtree_com=d_out.subtree_com,
-    cdof=d_out.cdof,
-    cinert=d_out.cinert,
+    xpos=d_kin.xpos,
+    xquat=d_kin.xquat,
+    xmat=d_kin.xmat,
+    xipos=d_kin.xipos,
+    ximat=d_kin.ximat,
+    geom_xpos=d_kin.geom_xpos,
+    geom_xmat=d_kin.geom_xmat,
+    subtree_com=d_kin.subtree_com,
+    cdof=d_kin.cdof,
+    cinert=d_kin.cinert,
     crb=d_out.crb,
     M=d_out.M,
     qLD=d_out.qLD,
@@ -775,6 +832,12 @@ def step_backward_scratch(d: Data, d_out: Data, bc: BackwardContext) -> Data:
       jtdaj_nblock=d_out.efc.jtdaj_nblock,
     ),
   )
+  if kinematics_grad:
+    # A later fwd_kinematics call may recompute d_out using d_out.qpos.
+    # Step backward needs kinematics and COM values computed from d.qpos.
+    smooth.kinematics(m, d_bwd)
+    smooth.com_pos(m, d_bwd)
+  return d_bwd
 
 
 @event_scope
@@ -786,8 +849,11 @@ def step_backward(m: Model, d: Data, d_out: Data, bc: BackwardContext | None = N
   # TODO: Remove this compatibility preparation when the diff API registers the rule (#1727).
   step_backward_arrays(d, d_out, m, user_fields=())
   bc = bc or _ACTIVE_BACKWARD_CONTEXT.get() or create_backward_context(m, d)
-  d_bwd = step_backward_scratch(d, d_out, bc)
   _reset_backward_context(bc)
+  d_bwd = step_backward_scratch(m, d, d_out, bc)
+  kinematics_grad = bool(_data_arrays(d_out, _KINEMATICS_OUT_FIELDS, force_grad=False))
+  if kinematics_grad:
+    forward_adjoint.kinematics_backward(m, d_out, d_bwd, bc)
   _, _, adj_qacc = forward_adjoint.advance_backward(m, d_out, d_bwd, bc)
   forward_backward_ift(m, d, d_bwd, adj_qacc, bc)
   _write_input_adjoints(d, bc)
@@ -796,6 +862,8 @@ def step_backward(m: Model, d: Data, d_out: Data, bc: BackwardContext | None = N
     # Shared gradient storage already contains downstream uses of the held input.
     if src.grad is not None and dst.grad is not None and src.grad.ptr != dst.grad.ptr:
       wp.launch(_accum_copied_input, dim=src.shape, inputs=[dst.grad], outputs=[src.grad])
+  if kinematics_grad:
+    _clear_kinematics_adjoints(d_out)
 
 
 def fwd_kinematics_arrays(d: Data):
@@ -810,20 +878,15 @@ def fwd_kinematics_backward_scratch(d: Data, bc: BackwardContext) -> Data:
 
 @event_scope
 def fwd_kinematics_backward(m: Model, d: Data, bc: BackwardContext | None = None):
-  """Maps site and body-pose cotangents to generalized position coordinates."""
-  if d.qpos.grad is None or not any(
-    array is not None and array.size and array.grad is not None for array in (d.site_xpos, d.xpos, d.xquat)
-  ):
+  """Maps Cartesian body/site cotangents to generalized position coordinates."""
+  kinematics_grad = bool(_data_arrays(d, _KINEMATICS_OUT_FIELDS, force_grad=False))
+  if d.qpos.grad is None or not kinematics_grad:
     return
   bc = bc or _ACTIVE_BACKWARD_CONTEXT.get() or create_backward_context(m, d)
   d_bwd = fwd_kinematics_backward_scratch(d, bc)
-  forward_adjoint.fwd_kinematics_backward(m, d, d_bwd, bc)
-  wp.launch(
-    smooth_kinematics_adjoint._dof_to_qpos,
-    dim=(d.nworld, m.njnt),
-    inputs=[m.jnt_type, m.jnt_qposadr, m.jnt_dofadr, d.qpos, bc.adj_dof],
-    outputs=[d.qpos.grad],
-  )
+  smooth.kinematics1(m, d_bwd)
+  forward_adjoint.kinematics_backward(m, d, d_bwd, bc)
+  _write_kinematics_adjoints(d, bc)
 
 
 def enable_grad() -> None:
@@ -835,6 +898,9 @@ def enable_grad() -> None:
 
   Call before building kernels that need these rules. The numerical rules apply process-wide,
   independently of tapes and backward-hook registration.
+
+  Kinematic output gradients support site_xpos, xpos, and xquat. Step computes these
+  before integration; call fwd_kinematics on the output to refresh them using the updated qpos.
 
   Backward reductions are nondeterministic, regardless of forward determinism options.
   """

@@ -37,6 +37,7 @@ from mujoco_warp._src.types import Model
 from mujoco_warp._src.types import mat66
 from mujoco_warp._src.types import vec6
 from mujoco_warp._src.types import vec10
+from mujoco_warp._src.warp_util import cache_kernel
 from mujoco_warp._src.warp_util import event_scope
 
 # Adjoint reductions use unordered atomics; deterministic backward execution is deferred.
@@ -543,116 +544,125 @@ def _implicit_free_body_backward(
     adj_dof_out[worldid, dofadr + 3 + r] += adj_rotation[r]
 
 
-@wp.kernel(enable_backward=False)
-def _site_jac_vjp(
-  # Model:
-  nsite: int,
-  body_parentid: wp.array[int],
-  body_rootid: wp.array[int],
-  dof_bodyid: wp.array[int],
-  site_bodyid: wp.array[int],
-  body_isdofancestor: wp.array2d[int],
-  # Data in:
-  site_xpos_in: wp.array2d[wp.vec3],
-  subtree_com_in: wp.array2d[wp.vec3],
-  cdof_in: wp.array2d[wp.spatial_vector],
+@wp.func
+def _body_wrench(
   # In:
-  adj_site: wp.array2d[wp.vec3],
-  # Out:
-  adj_dof_out: wp.array2d[float],
-):
-  worldid, dofid = wp.tid()
-  value = float(0.0)
-  for siteid in range(nsite):
-    jacp, _ = support.jac_dof(
-      body_parentid,
-      body_rootid,
-      dof_bodyid,
-      body_isdofancestor,
-      subtree_com_in,
-      cdof_in,
-      site_xpos_in[worldid, siteid],
-      site_bodyid[siteid],
-      dofid,
-      worldid,
-    )
-    value += wp.dot(jacp, adj_site[worldid, siteid])
-  adj_dof_out[worldid, dofid] += value
-
-
-@wp.kernel(enable_backward=False)
-def _body_xpos_vjp(
-  # Model:
-  nbody: int,
-  body_parentid: wp.array[int],
-  body_rootid: wp.array[int],
-  dof_bodyid: wp.array[int],
-  body_isdofancestor: wp.array2d[int],
-  # Data in:
-  xpos_in: wp.array2d[wp.vec3],
-  subtree_com_in: wp.array2d[wp.vec3],
-  cdof_in: wp.array2d[wp.spatial_vector],
-  # In:
+  rotation: wp.quat,
   adj_xpos: wp.array2d[wp.vec3],
-  # Out:
-  adj_dof_out: wp.array2d[float],
-):
-  w, k = wp.tid()
-  value = float(0.0)
-  for body in range(1, nbody):
-    jacp, _ = support.jac_dof(
-      body_parentid,
-      body_rootid,
-      dof_bodyid,
-      body_isdofancestor,
-      subtree_com_in,
-      cdof_in,
-      xpos_in[w, body],
-      body,
-      k,
-      w,
-    )
-    value += wp.dot(jacp, adj_xpos[w, body])
-  adj_dof_out[w, k] += value
-
-
-@wp.kernel(enable_backward=False)
-def _body_xquat_vjp(
-  # Model:
-  nbody: int,
-  body_parentid: wp.array[int],
-  body_rootid: wp.array[int],
-  dof_bodyid: wp.array[int],
-  body_isdofancestor: wp.array2d[int],
-  # Data in:
-  xpos_in: wp.array2d[wp.vec3],
-  xquat_in: wp.array2d[wp.quat],
-  subtree_com_in: wp.array2d[wp.vec3],
-  cdof_in: wp.array2d[wp.spatial_vector],
-  # In:
   adj_xquat: wp.array2d[wp.quat],
-  # Out:
-  adj_dof_out: wp.array2d[float],
-):
-  w, k = wp.tid()
-  value = float(0.0)
-  for body in range(1, nbody):
-    _, jacr = support.jac_dof(
-      body_parentid,
-      body_rootid,
-      dof_bodyid,
-      body_isdofancestor,
-      subtree_com_in,
-      cdof_in,
-      xpos_in[w, body],
-      body,
-      k,
-      w,
-    )
-    # World-frame angular velocity multiplies the wxyz orientation on the left.
-    dq = 0.5 * math.mul_quat(wp.quat(0.0, jacr[0], jacr[1], jacr[2]), xquat_in[w, body])
-    value += wp.dot(dq, adj_xquat[w, body])
-  adj_dof_out[w, k] += value
+  worldid: int,
+  bodyid: int,
+) -> wp.spatial_vector:
+  """Converts Cartesian position/orientation cotangents to a wrench about the body origin."""
+  force, torque = wp.vec3(), wp.vec3()
+  if adj_xpos:
+    force = adj_xpos[worldid, bodyid]
+  if adj_xquat:
+    quat_seed = math.mul_quat(adj_xquat[worldid, bodyid], math.quat_inv(rotation))
+    torque = 0.5 * wp.vec3(quat_seed[1], quat_seed[2], quat_seed[3])
+  return wp.spatial_vector(torque, force)
+
+
+@cache_kernel
+def _kinematics_vjp(nbody: int, shared: bool):
+  """Projects joint subtree wrenches.
+
+  The shared path reuses body cotangents across GPU threads for performance. The non-shared
+  path avoids cooperative-thread overhead on CPU and handles GPU trees larger than 512 bodies.
+  """
+  tile_size = max(32, 1 << (nbody - 1).bit_length())
+
+  @wp.kernel(module="unique", enable_backward=False)
+  def kernel(
+    # Model:
+    njnt: int,
+    nsite: int,
+    jnt_type: wp.array[int],
+    jnt_qposadr: wp.array[int],
+    jnt_bodyid: wp.array[int],
+    site_bodyid: wp.array[int],
+    site_pos: wp.array2d[wp.vec3],
+    body_subtreenum: wp.array[int],
+    # Data in:
+    qpos_in: wp.array2d[float],
+    xpos_in: wp.array2d[wp.vec3],
+    xquat_in: wp.array2d[wp.quat],
+    xanchor_in: wp.array2d[wp.vec3],
+    xaxis_in: wp.array2d[wp.vec3],
+    # In:
+    adj_site_xpos: wp.array2d[wp.vec3],
+    adj_xpos: wp.array2d[wp.vec3],
+    adj_xquat: wp.array2d[wp.quat],
+    # Out:
+    adj_qpos_out: wp.array2d[float],
+  ):
+    worldid, lane = wp.tid()
+    site_worldid = worldid % site_pos.shape[0]
+    if wp.static(shared):
+      position, wrench = wp.vec3(), wp.spatial_vector()
+      if lane < wp.static(nbody):
+        position = xpos_in[worldid, lane]
+        rotation = xquat_in[worldid, lane]
+        wrench = _body_wrench(rotation, adj_xpos, adj_xquat, worldid, lane)
+        if adj_site_xpos:
+          for siteid in range(nsite):
+            if site_bodyid[siteid] == lane:
+              seed = adj_site_xpos[worldid, siteid]
+              offset = math.rot_vec_quat(site_pos[site_worldid, siteid], rotation)
+              wrench += wp.spatial_vector(wp.cross(offset, seed), seed)
+      # Publish body-local cotangents once for all joint projections.
+      positions = wp.tile_reshape(wp.tile(position, preserve_type=True), shape=(wp.static(tile_size),))
+      wrenches = wp.tile_reshape(wp.tile(wrench, preserve_type=True), shape=(wp.static(tile_size),))
+
+    for jointid in range(lane, njnt, wp.block_dim()):
+      bodyid = jnt_bodyid[jointid]
+      origin = xanchor_in[worldid, jointid]
+      subtree_end = bodyid + body_subtreenum[bodyid]
+      force, torque = wp.vec3(), wp.vec3()
+      for child in range(bodyid, subtree_end):
+        if wp.static(shared):
+          position = positions[child]
+          wrench = wrenches[child]
+        else:
+          position = xpos_in[worldid, child]
+          wrench = _body_wrench(xquat_in[worldid, child], adj_xpos, adj_xquat, worldid, child)
+        child_force = wp.spatial_bottom(wrench)
+        force += child_force
+        torque += wp.spatial_top(wrench) + wp.cross(position - origin, child_force)
+      if wp.static(not shared):
+        # Read sites once per joint, rather than once per descendant body.
+        if adj_site_xpos:
+          for siteid in range(nsite):
+            child = site_bodyid[siteid]
+            if child >= bodyid and child < subtree_end:
+              seed = adj_site_xpos[worldid, siteid]
+              offset = math.rot_vec_quat(site_pos[site_worldid, siteid], xquat_in[worldid, child])
+              force += seed
+              torque += wp.cross(xpos_in[worldid, child] - origin + offset, seed)
+      qposadr = jnt_qposadr[jointid]
+      jnt_type_ = jnt_type[jointid]
+      if jnt_type_ == JointType.FREE or jnt_type_ == JointType.BALL:
+        if jnt_type_ == JointType.FREE:
+          for i in range(3):
+            adj_qpos_out[worldid, qposadr + i] = force[i]
+          qposadr += 3
+        torque_local = math.rot_vec_quat(torque, math.quat_inv(xquat_in[worldid, bodyid]))
+        # Lift the joint-local angular cotangent into quaternion coordinates.
+        qpos_quat = wp.quat(
+          qpos_in[worldid, qposadr],
+          qpos_in[worldid, qposadr + 1],
+          qpos_in[worldid, qposadr + 2],
+          qpos_in[worldid, qposadr + 3],
+        )
+        quat_grad = 2.0 * math.quat_mul_axis(qpos_quat, torque_local)
+        for i in range(4):
+          adj_qpos_out[worldid, qposadr + i] = quat_grad[i]
+      elif jnt_type_ == JointType.SLIDE:
+        adj_qpos_out[worldid, qposadr] = wp.dot(xaxis_in[worldid, jointid], force)
+      else:
+        adj_qpos_out[worldid, qposadr] = wp.dot(xaxis_in[worldid, jointid], torque)
+
+  return kernel
 
 
 @event_scope
@@ -962,41 +972,32 @@ def smooth_qpos_backward(m: Model, d: Data, d_bwd: Data, lam: wp.array, res_qpos
 
 
 @event_scope
-def fwd_kinematics_backward(m: Model, d: Data, d_bwd: Data, bc: BackwardContext):
-  """Maps site and body-pose cotangents to generalized position coordinates."""
-  smooth.kinematics(m, d_bwd)
-  smooth.com_pos(m, d_bwd)
-  bc.adj_dof.zero_()
-  if d.site_xpos.grad is not None:
-    wp.launch(
-      _site_jac_vjp,
-      dim=(d_bwd.nworld, m.nv),
-      inputs=[
-        m.nsite,
-        m.body_parentid,
-        m.body_rootid,
-        m.dof_bodyid,
-        m.site_bodyid,
-        m.body_isdofancestor,
-        d_bwd.site_xpos,
-        d_bwd.subtree_com,
-        d_bwd.cdof,
-        d.site_xpos.grad,
-      ],
-      outputs=[bc.adj_dof],
-    )
-  body_inputs = [m.nbody, m.body_parentid, m.body_rootid, m.dof_bodyid, m.body_isdofancestor]
-  if d.xpos.grad is not None:
-    wp.launch(
-      _body_xpos_vjp,
-      dim=(d_bwd.nworld, m.nv),
-      inputs=[*body_inputs, d_bwd.xpos, d_bwd.subtree_com, d_bwd.cdof, d.xpos.grad],
-      outputs=[bc.adj_dof],
-    )
-  if d.xquat.grad is not None:
-    wp.launch(
-      _body_xquat_vjp,
-      dim=(d_bwd.nworld, m.nv),
-      inputs=[*body_inputs, d_bwd.xpos, d_bwd.xquat, d_bwd.subtree_com, d_bwd.cdof, d.xquat.grad],
-      outputs=[bc.adj_dof],
-    )
+def kinematics_backward(m: Model, d_out: Data, d_bwd: Data, bc: BackwardContext):
+  """Maps kinematic output gradients to qpos inputs."""
+  # Bound shared storage; the same wrench contraction also handles CPU and large trees.
+  shared = d_bwd.qpos.device.is_cuda and m.nbody <= 512
+  block_dim = max(32, 1 << (m.nbody - 1).bit_length()) if shared else 128
+  wp.launch_tiled(
+    _kinematics_vjp(m.nbody, shared),
+    dim=d_bwd.nworld,
+    block_dim=block_dim,
+    inputs=[
+      m.njnt,
+      m.nsite,
+      m.jnt_type,
+      m.jnt_qposadr,
+      m.jnt_bodyid,
+      m.site_bodyid,
+      m.site_pos,
+      m.body_subtreenum,
+      d_bwd.qpos,
+      d_bwd.xpos,
+      d_bwd.xquat,
+      d_bwd.xanchor,
+      d_bwd.xaxis,
+      d_out.site_xpos.grad,
+      d_out.xpos.grad,
+      d_out.xquat.grad,
+    ],
+    outputs=[bc.adj_qpos],
+  )
