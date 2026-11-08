@@ -1160,12 +1160,15 @@ def _contact_sort_init(order_out: wp.array[int]):
 
 @wp.kernel
 def _contact_sort_key(
+  # Data in:
   nacon_in: wp.array[int],
+  # In:
   order_in: wp.array[int],
   words_in: wp.array2d[wp.uint32],
   geom_in: wp.array[wp.vec2i],
   topology: bool,
   column: int,
+  # Out:
   keys_out: wp.array[wp.uint64],
 ):
   i = wp.tid()
@@ -1187,9 +1190,12 @@ def _contact_sort_key(
 
 @wp.kernel
 def _contact_sort_gather(
+  # Data in:
   nacon_in: wp.array[int],
+  # In:
   order_in: wp.array[int],
   words_in: wp.array2d[wp.uint32],
+  # Out:
   words_out: wp.array2d[wp.uint32],
 ):
   i, j = wp.tid()
