@@ -1163,6 +1163,8 @@ def _contact_sort_key(
   nacon_in: wp.array[int],
   order_in: wp.array[int],
   words_in: wp.array2d[wp.uint32],
+  geom_in: wp.array[wp.vec2i],
+  topology: bool,
   column: int,
   keys_out: wp.array[wp.uint64],
 ):
@@ -1171,7 +1173,15 @@ def _contact_sort_key(
   # Inactive capacity must sort after all active contacts, including overflow.
   key = wp.uint64(0xFFFFFFFFFFFFFFFF)
   if source < nacon_in[0]:
-    key = wp.uint64(words_in[source, column])
+    low = words_in[source, column]
+    if topology and geom_in[source][column] >= 0:
+      low = wp.uint32(0)
+    key = wp.uint64(low)
+    if column + 1 < words_in.shape[1]:
+      high = words_in[source, column + 1]
+      if topology and geom_in[source][column + 1] >= 0:
+        high = wp.uint32(0)
+      key |= wp.uint64(high) << wp.uint64(32)
   keys_out[i] = key
 
 
@@ -1192,8 +1202,11 @@ def _contact_sort_gather(
 def _contact_words(value: wp.array, capacity: int) -> wp.array:
   """View contact records as words without transferring them off the device."""
   return wp.array(
-    ptr=value.ptr, dtype=wp.uint32, shape=(capacity, value.strides[0] // 4),
-    device=value.device, copy=False,
+    ptr=value.ptr,
+    dtype=wp.uint32,
+    shape=(capacity, value.strides[0] // 4),
+    device=value.device,
+    copy=False,
   )
 
 
@@ -1220,8 +1233,13 @@ def _sort_contacts(m: Model, d: Data):
   fields.append("worldid")
   for name in fields:
     words = _contact_words(getattr(d.contact, name), capacity)
-    for column in range(words.shape[1]):
-      wp.launch(_contact_sort_key, dim=capacity, inputs=[d.nacon, order, words, column], outputs=[keys])
+    for column in range(0, words.shape[1], 2):
+      wp.launch(
+        _contact_sort_key,
+        dim=capacity,
+        inputs=[d.nacon, order, words, d.contact.geom, name in ("flex", "elem", "vert"), column],
+        outputs=[keys],
+      )
       wp.utils.radix_sort_pairs(keys, order, capacity)
   # Copy every field using the same permutation; keep inactive capacity unchanged.
   for field in dataclasses.fields(d.contact):

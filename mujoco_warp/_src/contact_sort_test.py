@@ -46,14 +46,18 @@ class ContactSortTest(parameterized.TestCase):
     )
     qpos = np.tile(mjd.qpos, (nworld, 1))
     if nworld == 2:
-      qpos[1, 0] += .5
-      qpos[1, 2] -= .01
+      qpos[1, 0] += 0.5
+      qpos[1, 2] -= 0.01
     d.qpos.assign(qpos)
     mjw.forward(m, d)
     count = int(d.nacon.numpy()[0])
     self.assertGreater(count, 1)
     self.assertLess(count, d.naconmax)
-    original = {f.name: getattr(d.contact, f.name).numpy().copy() for f in dataclasses.fields(d.contact) if getattr(d.contact, f.name).size}
+    original = {
+      f.name: getattr(d.contact, f.name).numpy().copy()
+      for f in dataclasses.fields(d.contact)
+      if getattr(d.contact, f.name).size
+    }
     if nworld == 2:
       pos = original["pos"][:count]
       world = original["worldid"][:count]
