@@ -1654,6 +1654,137 @@ class SleepTest(parameterized.TestCase):
     mjwarp.step(m, d_tight)
     self.assertNotEqual(int(d_tight.overflow.numpy()[0]) & int(types.OverflowType.BROADPHASE), 0)
 
+  @parameterized.parameters(1, 2)
+  def test_wake_tendon_discrete_metric(self, nworld):
+    """Verify damped/stiff tendon wakes coupled tree under discrete integrator."""
+    _, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option integrator="discrete">
+          <flag sleep="enable"/>
+        </option>
+        <worldbody>
+          <body name="b1" pos="0 0 0.5">
+            <joint name="j1" type="slide"/>
+            <geom size=".1"/>
+          </body>
+          <body name="b2" pos="1 0 0.5">
+            <joint name="j2" type="slide"/>
+            <geom size=".1"/>
+          </body>
+        </worldbody>
+        <tendon>
+          <fixed name="ten" damping="2.0">
+            <joint joint="j1" coef="1"/>
+            <joint joint="j2" coef="-1"/>
+          </fixed>
+        </tendon>
+      </mujoco>
+      """,
+      nworld=nworld,
+    )
+    tree_asleep = d.tree_asleep.numpy()
+    tree_asleep[0, 0] = sleep.K_AWAKE_VAL
+    tree_asleep[0, 1] = 1
+    if nworld == 2:
+      tree_asleep[1, 0] = 0
+      tree_asleep[1, 1] = 1
+    d.tree_asleep.assign(tree_asleep)
+    sleep.update_sleep(m, d)
+
+    sleep.wake_tendon(m, d)
+    d.tree_awake.fill_(-1)
+    sleep.update_sleep(m, d)
+
+    tree_awake = d.tree_awake.numpy()
+    self.assertEqual(int(tree_awake[0, 1]), 1)
+    if nworld == 2:
+      self.assertEqual(int(tree_awake[1, 1]), 0)
+
+    # Under PGS, passive tendon stiffness/damping does not wake sleeping trees
+    m.opt.solver = int(mujoco.mjtSolver.mjSOL_PGS)
+    tree_asleep[0, 0] = sleep.K_AWAKE_VAL
+    tree_asleep[0, 1] = 1
+    d.tree_asleep.assign(tree_asleep)
+    sleep.update_sleep(m, d)
+    sleep.wake_tendon(m, d)
+    d.tree_awake.fill_(-1)
+    sleep.update_sleep(m, d)
+    self.assertEqual(int(d.tree_awake.numpy()[0, 1]), 0)
+
+  @parameterized.parameters(1, 2)
+  def test_wake_tendon_frictionloss_and_disable_flags(self, nworld):
+    """Verify tendon frictionloss wakes coupled sleeping trees unless disabled."""
+    _, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option>
+          <flag sleep="enable"/>
+        </option>
+        <worldbody>
+          <body name="b1" pos="0 0 0.5">
+            <joint name="j1" type="slide"/>
+            <geom size=".1"/>
+          </body>
+          <body name="b2" pos="1 0 0.5">
+            <joint name="j2" type="slide"/>
+            <geom size=".1"/>
+          </body>
+        </worldbody>
+        <tendon>
+          <fixed name="ten" frictionloss="0.5" range="-0.1 0.1">
+            <joint joint="j1" coef="1"/>
+            <joint joint="j2" coef="-1"/>
+          </fixed>
+        </tendon>
+      </mujoco>
+      """,
+      nworld=nworld,
+    )
+    tree_asleep = np.full((nworld, m.ntree), -1, dtype=np.int32)
+    tree_asleep[0] = [sleep.K_AWAKE_VAL, 1]
+    if nworld == 2:
+      tree_asleep[1] = [0, 1]
+    d.tree_asleep.assign(tree_asleep)
+    sleep.update_sleep(m, d)
+
+    # Length 0.0 is inside [-0.1, 0.1], so only tendon_frictionloss wakes tree 1
+    d.ten_length.fill_(0.0)
+    sleep.wake_tendon(m, d)
+    d.tree_awake.fill_(-1)
+    sleep.update_sleep(m, d)
+    tree_awake = d.tree_awake.numpy()
+    self.assertEqual(int(tree_awake[0, 1]), 1)
+    if nworld == 2:
+      self.assertEqual(int(tree_awake[1, 1]), 0)
+      self.assertFalse(np.array_equal(tree_awake[0], tree_awake[1]))
+
+    # Disabling FRICTIONLOSS prevents friction-only waking
+    m.opt.disableflags |= int(types.DisableBit.FRICTIONLOSS)
+    d.tree_asleep.assign(tree_asleep)
+    sleep.update_sleep(m, d)
+    sleep.wake_tendon(m, d)
+    d.tree_awake.fill_(-1)
+    sleep.update_sleep(m, d)
+    self.assertEqual(int(d.tree_awake.numpy()[0, 1]), 0)
+
+    # Active tendon limit wakes tree 1 unless CONSTRAINT or LIMIT is disabled
+    d.ten_length.fill_(0.2)
+    d.tree_asleep.assign(tree_asleep)
+    sleep.update_sleep(m, d)
+    sleep.wake_tendon(m, d)
+    d.tree_awake.fill_(-1)
+    sleep.update_sleep(m, d)
+    self.assertEqual(int(d.tree_awake.numpy()[0, 1]), 1)
+
+    m.opt.disableflags |= int(types.DisableBit.CONSTRAINT)
+    d.tree_asleep.assign(tree_asleep)
+    sleep.update_sleep(m, d)
+    sleep.wake_tendon(m, d)
+    d.tree_awake.fill_(-1)
+    sleep.update_sleep(m, d)
+    self.assertEqual(int(d.tree_awake.numpy()[0, 1]), 0)
+
 
 # An actuated 2-hinge arm (tree 0, dofs 0-1) plus two free bodies
 # (tree 1, dofs 2-7 and tree 2, dofs 8-13).

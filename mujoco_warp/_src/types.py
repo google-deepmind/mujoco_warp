@@ -90,8 +90,10 @@ class BlockDim:
     solve_search_update_cg: solve search update CG block dimension (solver)
     solve_init_search_cg: solve init search CG block dimension (solver)
     contact_jac_tiled: contact Jacobian tiled block dimension (solver)
+    warmstart_cost: discrete warmstart cost comparison block dimension (solver)
     contact_jac_sparse: sparse contact Jacobian block dimension (constraint)
     eff_pcg: effective-metric PCG block dimension (derivative)
+    discrete_free_gyro: discrete free-body gyroscopic solve block dimension (forward)
     render: render block dimension (render)
   """
 
@@ -126,10 +128,12 @@ class BlockDim:
   solve_search_update_cg: int = 256
   solve_init_search_cg: int = 256
   contact_jac_tiled: int = 32
+  warmstart_cost: int = 256
   # constraint
   contact_jac_sparse: int = 128
   # derivative
   eff_pcg: int = 128
+  discrete_free_gyro: int = 128
   # render
   render: int = 64
 
@@ -1640,6 +1644,8 @@ class Model:
     has_flex_snh: whether any flex uses 3D SNH elasticity
     has_non_simple_flex: whether any flex has non-simple vertex bodies
     has_flex_edge_stiff_damp: whether any non-rigid flex has edge stiffness or damping
+    has_flex_stiff: whether any flex contributes elastic stiffness
+    has_reducible_flex: whether any flex is rigid or interpolated
     has_tendon_stiffness: whether any tendon has positive stiffness
     has_tendon_damping: whether any tendon has positive damping
     has_efm_actuator: whether any actuator contributes effective metric coupling
@@ -1649,6 +1655,7 @@ class Model:
     flex_interp_assemblable: whether interpolated flex stiffness can be assembled into efm_K
     has_unsupported_flex_interp: whether model has unsupported flex interpolation orders
     has_ellipsoid_geom: whether the model contains ellipsoid geoms
+    has_cylinder_geom: whether the model contains cylinder geoms
     has_plane_geom: whether the model contains plane geoms
     has_1d_flex: whether the model contains 1D flexes
     has_2d_flex: whether the model contains 2D flexes
@@ -1749,6 +1756,7 @@ class Model:
     flex_shelladr: maps each flex to its start shell index                  (nflex,)
     flex_faceadr: maps each flex to its start face index                    (nflex,)
     flex_simple: whether all vertices of flex are on simple bodies          (nflex,)
+    flex_stiff_possible: whether flex contributes elastic stiffness         (nflex,)
     flex_efcnum: number of edge equality rows (non-rigid edges)             (nflex,)
     flex_efcnnz: number of Jacobian nonzeros in edge equality rows          (nflex,)
     flexedge_efcadr: row of the edge among its flex's edge equality rows,   (nflexedge,)
@@ -2216,6 +2224,8 @@ class Model:
   has_flex_snh: bool
   has_non_simple_flex: bool
   has_flex_edge_stiff_damp: bool
+  has_flex_stiff: bool
+  has_reducible_flex: bool
   has_tendon_stiffness: bool
   has_tendon_damping: bool
   has_efm_actuator: bool
@@ -2225,6 +2235,7 @@ class Model:
   flex_interp_assemblable: bool
   has_unsupported_flex_interp: bool
   has_ellipsoid_geom: bool
+  has_cylinder_geom: bool
   has_plane_geom: bool
   has_1d_flex: bool
   has_2d_flex: bool
@@ -2320,6 +2331,7 @@ class Model:
   flex_shelladr: array("nflex", int)
   flex_faceadr: array("nflex", int)
   flex_simple: array("nflex", bool)
+  flex_stiff_possible: array("nflex", bool)
   flex_efcnum: array("nflex", int)
   flex_efcnnz: array("nflex", int)
   flexedge_efcadr: array("nflexedge", int)
@@ -2877,6 +2889,8 @@ class SolverContext:
   # the full-coordinate Data, set by solve_compact (None natively)
   compact_m_full: Optional["Model"] = None
   compact_d_full: Optional["Data"] = None
+  nsolving: Optional[wp.array] = None
+  qfrc_smooth_eff: Optional[wp.array] = None
   # discrete integrator effective-metric scratch built before the solver loop, which may run
   # inside wp.capture_while where memory cannot be allocated (None otherwise)
   efm_con: Optional[tuple] = None

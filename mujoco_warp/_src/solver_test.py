@@ -437,6 +437,7 @@ class SolverTest(parameterized.TestCase):
         wp.zeros((1, 1), dtype=float),
         wp.zeros((1, 1), dtype=float),
         wp.zeros((1, 1), dtype=float),
+        wp.zeros((1, 1), dtype=float),
         wp.array([1.0], dtype=float),
         wp.array([1.0], dtype=float),
         wp.array([1.0], dtype=float),
@@ -470,6 +471,7 @@ class SolverTest(parameterized.TestCase):
         wp.zeros((1, 1), dtype=float),
         wp.zeros((1, 1), dtype=float),
         wp.zeros((1, 1), dtype=float),
+        wp.zeros((1, 1), dtype=float),
         wp.array([1.0], dtype=float),
         wp.array([1.0], dtype=float),
         wp.array([0.0], dtype=float),
@@ -482,6 +484,50 @@ class SolverTest(parameterized.TestCase):
     self.assertEqual(solver_niter.numpy()[0], 1)
     self.assertEqual(nsolving.numpy()[0], 0)
     self.assertEqual(overflow.numpy()[0], 0)
+
+  def test_solve_cg_finalize_hager_zhang_beta(self):
+    """CG beta finalize computes Hager-Zhang beta with HZ+ truncation and conjugacy restart."""
+    solver_niter = wp.zeros(3, dtype=int)
+    nsolving = wp.array([3], dtype=int)
+    done = wp.zeros(3, dtype=bool)
+    overflow = wp.zeros(3, dtype=int)
+    beta = wp.full(3, wp.inf, dtype=float)
+
+    grad = wp.array([[2.0, 2.0], [2.0, 2.0], [2.0, 2.0]], dtype=float)
+    prev_grad = wp.array([[1.0, 2.0], [1.0, 2.0], [1.0, 2.0]], dtype=float)
+    Mgrad = wp.array([[4.0, 4.0], [4.0, 4.0], [4.0, 4.0]], dtype=float)
+    prev_Mgrad = wp.array([[2.0, 4.0], [2.0, 4.0], [2.0, 4.0]], dtype=float)
+    search = wp.array([[2.0, -1.5], [2.0, 1.0], [-1.0, -3.0]], dtype=float)
+
+    wp.launch_tiled(
+      solver._solve_beta_finalize_tiled(types.OverflowType.NONE),
+      dim=3,
+      inputs=[
+        2,
+        wp.array([1.0e-6], dtype=float),
+        100,
+        wp.ones(3, dtype=float),
+        grad,
+        Mgrad,
+        prev_grad,
+        prev_Mgrad,
+        search,
+        wp.ones(3, dtype=float),
+        wp.ones(3, dtype=float),
+        wp.ones(3, dtype=float),
+        done,
+      ],
+      outputs=[solver_niter, overflow, beta, nsolving, done],
+      block_dim=32,
+    )
+
+    beta_np = beta.numpy()
+    # World 0: exact Hager-Zhang beta = (4 - 2 * (2 / 2) * 1) / 2 = 1.0 (distinct from PRP = 0.4)
+    self.assertAlmostEqual(beta_np[0], 1.0, places=5)
+    # World 1: negative beta_hz = (4 - 2 * (2 / 2) * 6) / 2 = -4.0 clamped to 0 in float32 (HZ+)
+    self.assertEqual(beta_np[1], 0.0)
+    # World 2: d' * y = -1 < MJ_MINVAL restarts to steepest descent (raw beta_hz = 28 > 0)
+    self.assertEqual(beta_np[2], 0.0)
 
   # Transition cases use powers of two so the exact delta is below the absolute-cost ulp.
   @parameterized.named_parameters(
@@ -572,7 +618,7 @@ class SolverTest(parameterized.TestCase):
       # solve with 0 iterations just initializes constraints and then exits
       d.efc.force.fill_(wp.inf)
       d.qfrc_constraint.fill_(wp.inf)
-      ctx = solver._create_solver_context(m, d)
+      ctx = solver.create_solver_context(m, d)
       solver._solve(m, d, ctx)
 
       # Get the ordering indices based on efc_force, efc_state for MJWarp
@@ -621,7 +667,7 @@ class SolverTest(parameterized.TestCase):
       mjw.step(m, d)
 
       # Create a SolverContext to access internal solver arrays
-      ctx = solver._create_solver_context(m, d)
+      ctx = solver.create_solver_context(m, d)
       solver._solve(m, d, ctx)
 
       # Calculate target values
@@ -686,7 +732,7 @@ class SolverTest(parameterized.TestCase):
     )
 
     # Create SolverContext and initialize
-    ctx = solver._create_solver_context(m, d)
+    ctx = solver.create_solver_context(m, d)
     solver.init_context(m, d, ctx, grad=True)
 
     # Calculate Mgrad with Mujoco C
@@ -709,7 +755,7 @@ class SolverTest(parameterized.TestCase):
       },
     )
 
-    ctx = solver._create_solver_context(m, d)
+    ctx = solver.create_solver_context(m, d)
     _set_inertia_scale(m, d, ctx)
 
     d.ne = wp.array([0], dtype=int)
@@ -778,7 +824,7 @@ class SolverTest(parameterized.TestCase):
         "opt.ls_iterations": 50,
       },
     )
-    ctx = solver._create_solver_context(m, d)
+    ctx = solver.create_solver_context(m, d)
 
     # Exercise derivative convergence with a loose scaled tolerance.
     ctx.inertia_scale.fill_(1.0 / (1.0e9 * m.nv))
@@ -832,7 +878,7 @@ class SolverTest(parameterized.TestCase):
       </mujoco>
       """
     )
-    ctx = solver._create_solver_context(m, d)
+    ctx = solver.create_solver_context(m, d)
     _set_inertia_scale(m, d, ctx)
 
     efc_J = [
@@ -921,7 +967,7 @@ class SolverTest(parameterized.TestCase):
       """,
       njmax=5,
     )
-    ctx = solver._create_solver_context(m, d)
+    ctx = solver.create_solver_context(m, d)
     _set_inertia_scale(m, d, ctx)
     d.ne.zero_()
     d.nf.fill_(5)
@@ -1000,7 +1046,7 @@ class SolverTest(parameterized.TestCase):
       nworld=nworld,
       njmax=2,
     )
-    ctx = solver._create_solver_context(m, d)
+    ctx = solver.create_solver_context(m, d)
     _set_inertia_scale(m, d, ctx)
 
     # cost 0.5 * (alpha - target)^2 from an equality row plus 0.5 * (alpha - 1)^2 from an
@@ -1082,7 +1128,7 @@ class SolverTest(parameterized.TestCase):
       nworld=nworld,
       njmax=1,
     )
-    ctx = solver._create_solver_context(m, d)
+    ctx = solver.create_solver_context(m, d)
     _set_inertia_scale(m, d, ctx)
     d.ne.zero_()
     d.nf.fill_(case["nf"])
@@ -1127,7 +1173,7 @@ class SolverTest(parameterized.TestCase):
         "opt.ls_iterations": 0,
       },
     )
-    ctx = solver._create_solver_context(m, d)
+    ctx = solver.create_solver_context(m, d)
 
     ctx.inertia_scale.fill_(1.0 / (1.0e9 * m.nv))
     d.ne = wp.array([1], dtype=int)
@@ -1293,7 +1339,7 @@ class SolverTest(parameterized.TestCase):
     self.assertEqual(set(mjd.contact.dim[: mjd.ncon]), set(condims))
 
     d = mjw.put_data(mjm, mjd)
-    ctx = solver._create_solver_context(m, d)
+    ctx = solver.create_solver_context(m, d)
     solver.init_context(m, d, ctx, grad=True)
     fused_h = ctx.h.numpy().copy()
 
@@ -1399,7 +1445,7 @@ class SolverTest(parameterized.TestCase):
     self.assertEqual(set(mjd.contact.dim[: mjd.ncon]), set(condims))
 
     d = mjw.put_data(mjm, mjd)
-    ctx = solver._create_solver_context(m, d)
+    ctx = solver.create_solver_context(m, d)
     solver.init_context(m, d, ctx, grad=True)
     ctx.h.zero_()
     ctx.done.fill_(False)
@@ -1461,7 +1507,7 @@ class SolverTest(parameterized.TestCase):
     mujoco.mj_forward(mjm, mjd)
 
     d = mjw.put_data(mjm, mjd)
-    ctx = solver._create_solver_context(m, d)
+    ctx = solver.create_solver_context(m, d)
     solver.init_context(m, d, ctx, grad=True)
     jaref = ctx.Jaref.numpy().copy()
 
@@ -2152,7 +2198,7 @@ class SolverTest(parameterized.TestCase):
         d.qacc.zero_()
         d.qfrc_constraint.zero_()
         d.efc.force.zero_()
-        ctx = solver._create_solver_context(m, d)
+        ctx = solver.create_solver_context(m, d)
         solver.init_context(m, d, ctx, grad=True)
         any_changes = False
         ctx.search_unchanged.fill_(False)
@@ -2212,7 +2258,7 @@ class SolverTest(parameterized.TestCase):
     )
     self.assertFalse(m.is_sparse)
 
-    ctx = solver._create_solver_context(m, d)
+    ctx = solver.create_solver_context(m, d)
     solver.init_context(m, d, ctx, grad=True)
 
     state = np.full((nworld, d.njmax), types.ConstraintState.QUADRATIC.value, dtype=int)
@@ -2313,7 +2359,7 @@ class SolverTest(parameterized.TestCase):
 
     if rows_from == "make_constraint":
       mjw.make_constraint(m, d)
-    ctx = solver._create_solver_context(m, d)
+    ctx = solver.create_solver_context(m, d)
     solver.init_context(m, d, ctx, grad=True)
 
     nefc = d.nefc.numpy()
@@ -2417,6 +2463,216 @@ class SolverTest(parameterized.TestCase):
     self.assertGreater(qfrc[0], 0.0, "early-converged world was zeroed")
     self.assertGreater(qfrc[1], 0.0)
 
+  @parameterized.product(
+    cone=(ConeType.PYRAMIDAL, ConeType.ELLIPTIC),
+    nworld=(1, 2),
+  )
+  def test_discrete_warmstart_best(self, cone, nworld):
+    """Tests discrete integrator warmstart selection against qacc_smooth with iterations=0."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option integrator="discrete" solver="CG"/>
+        <worldbody>
+          <geom name="floor" type="plane" size="2 2 0.1"/>
+          <body name="box" pos="0 0 0.045">
+            <freejoint/>
+            <geom type="box" size="0.05 0.05 0.05" mass="1"/>
+          </body>
+          <body name="pend" pos="0.3 0 0.5">
+            <joint name="hinge" axis="0 1 0" damping="0.5" frictionloss="0.5"/>
+            <geom type="capsule" fromto="0 0 0 0.2 0 0" size="0.03" mass="0.5"/>
+          </body>
+        </worldbody>
+        <equality>
+          <joint joint1="hinge" polycoef="0.1 0 0 0 0"/>
+        </equality>
+      </mujoco>
+      """,
+      overrides={"opt.cone": cone},
+      qvel_noise=0.5,
+      nworld=nworld,
+    )
+    mjds = [mjd]
+    if nworld == 2:
+      qvel_np = d.qvel.numpy()
+      qvel_np[1] *= 0.6
+      d.qvel.assign(qvel_np)
+      mjd1 = copy.deepcopy(mjd)
+      mjd1.qvel[:] = qvel_np[1]
+      mjds.append(mjd1)
+
+    qacc_opts = np.zeros((nworld, mjm.nv), dtype=np.float32)
+    for w, mjd_w in enumerate(mjds):
+      mujoco.mj_forward(mjm, mjd_w)
+      qacc_opts[w] = mjd_w.qacc
+
+    # With iterations=0, _solve performs only _warmstart_best selection.
+    mjm.opt.iterations = 0
+    m.opt.iterations = 0
+
+    # Optimal warmstart has lower cost than qacc_smooth -> retained.
+    for w, mjd_w in enumerate(mjds):
+      mjd_w.qacc_warmstart[:] = qacc_opts[w]
+      mujoco.mj_forward(mjm, mjd_w)
+    d.qacc_warmstart.assign(qacc_opts)
+    d.qacc.fill_(wp.inf)
+    d.qfrc_constraint.fill_(wp.inf)
+    mjw.forward(m, d)
+
+    qacc_np = d.qacc.numpy()
+    qfrc_con_np = d.qfrc_constraint.numpy()
+    for w, mjd_w in enumerate(mjds):
+      _assert_eq(qacc_np[w], qacc_opts[w], f"qacc_opt_warmstart_w{w}", tol=1e-4)
+      _assert_eq(qacc_np[w], mjd_w.qacc, f"qacc_cpu_opt_w{w}", tol=1e-4)
+      _assert_eq(qfrc_con_np[w], mjd_w.qfrc_constraint, f"qfrc_constraint_opt_w{w}", tol=1e-3)
+    if nworld == 2:
+      self.assertFalse(np.allclose(qacc_np[0], qacc_np[1]))
+
+    # High-cost warmstart is rejected in favor of qacc_smooth.
+    bad_warmstarts = np.zeros((nworld, mjm.nv), dtype=np.float32)
+    for w, mjd_w in enumerate(mjds):
+      bad_warmstarts[w] = mjd_w.qacc_smooth + 100.0
+      mjd_w.qacc_warmstart[:] = bad_warmstarts[w]
+      mujoco.mj_forward(mjm, mjd_w)
+    d.qacc_warmstart.assign(bad_warmstarts)
+    d.qacc.fill_(wp.inf)
+    d.qfrc_constraint.fill_(wp.inf)
+    mjw.forward(m, d)
+
+    qacc_np = d.qacc.numpy()
+    qacc_smooth_np = d.qacc_smooth.numpy()
+    qfrc_con_np = d.qfrc_constraint.numpy()
+    for w, mjd_w in enumerate(mjds):
+      _assert_eq(qacc_np[w], qacc_smooth_np[w], f"qacc_rejected_warmstart_w{w}", tol=1e-5)
+      _assert_eq(qacc_np[w], mjd_w.qacc, f"qacc_cpu_rejected_w{w}", tol=1e-4)
+      _assert_eq(qfrc_con_np[w], mjd_w.qfrc_constraint, f"qfrc_constraint_rejected_w{w}", tol=1e-3)
+    if nworld == 2:
+      self.assertFalse(np.allclose(qacc_np[0], qacc_np[1]))
+
+  @parameterized.product(
+    jacobian=(mujoco.mjtJacobian.mjJAC_DENSE, mujoco.mjtJacobian.mjJAC_SPARSE),
+    nworld=(1, 2),
+  )
+  def test_discrete_cg_parity_and_empty_efc(self, jacobian, nworld):
+    """Tests discrete CG parity and empty-EFC world skip."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option integrator="discrete" solver="CG" iterations="50" ls_iterations="20">
+          <flag warmstart="disable"/>
+        </option>
+        <worldbody>
+          <geom name="floor" type="plane" size="2 2 0.1"/>
+          <body name="b1" pos="0 0 0.045">
+            <freejoint/>
+            <geom size="0.05" mass="1"/>
+          </body>
+          <body name="b2" pos="0.2 0 0.3">
+            <joint name="j1" axis="0 1 0" frictionloss="0.8"/>
+            <geom type="capsule" fromto="0 0 0 0.15 0 0" size="0.025" mass="0.5"/>
+            <body name="b3" pos="0.15 0 0">
+              <joint name="j2" axis="0 1 0" frictionloss="0.4"/>
+              <geom type="capsule" fromto="0 0 0 0.15 0 0" size="0.02" mass="0.3"/>
+            </body>
+          </body>
+        </worldbody>
+        <equality>
+          <joint name="eq_j1" joint1="j1" polycoef="0.05 0 0 0 0"/>
+        </equality>
+      </mujoco>
+      """,
+      overrides={"opt.jacobian": jacobian},
+      qvel_noise=0.5,
+      nworld=nworld,
+    )
+    mjds = [mjd]
+    if nworld == 2:
+      qvel_np = d.qvel.numpy()
+      qvel_np[1] *= 0.6
+      d.qvel.assign(qvel_np)
+      mjd1 = copy.deepcopy(mjd)
+      mjd1.qvel[:] = qvel_np[1]
+      mujoco.mj_forward(mjm, mjd1)
+      mjds.append(mjd1)
+
+    d.qacc.fill_(wp.inf)
+    d.qfrc_constraint.fill_(wp.inf)
+    d.efc.force.fill_(wp.inf)
+    d.solver_niter.fill_(-1)
+    mjw.forward(m, d)
+
+    nefc_np = d.nefc.numpy()
+    niter_np = d.solver_niter.numpy()
+    qacc_np = d.qacc.numpy()
+    qfrc_con_np = d.qfrc_constraint.numpy()
+    efc_force_np = d.efc.force.numpy()
+
+    for w, mjd_w in enumerate(mjds):
+      self.assertGreater(mjd_w.nefc, 0)
+      self.assertGreater(mjd_w.solver_niter[0], 1)
+      self.assertEqual(nefc_np[w], mjd_w.nefc)
+      self.assertGreater(niter_np[w], 1)
+      _assert_eq(qacc_np[w], mjd_w.qacc, f"qacc_w{w}", tol=1e-3)
+      _assert_eq(qfrc_con_np[w], mjd_w.qfrc_constraint, f"qfrc_constraint_w{w}", tol=1e-2)
+      _assert_eq(efc_force_np[w, : mjd_w.nefc], mjd_w.efc_force, f"efc_force_w{w}", tol=1e-2)
+    if nworld == 2:
+      self.assertFalse(np.allclose(qacc_np[0], qacc_np[1]))
+
+    # With equality and frictionloss disabled (contact-only EFC), preconditioners match
+    # identically so solver_niter also matches MuJoCo C exactly.
+    mjm.opt.tolerance = 1e-4
+    m.opt.tolerance.fill_(1e-4)
+    mjm.dof_frictionloss[:] = 0.0
+    for mjd_w in mjds:
+      mjd_w.eq_active[:] = 0
+      mujoco.mj_forward(mjm, mjd_w)
+    m.dof_frictionloss.zero_()
+    d.eq_active.zero_()
+    d.qacc.fill_(wp.inf)
+    d.qfrc_constraint.fill_(wp.inf)
+    d.efc.force.fill_(wp.inf)
+    d.solver_niter.fill_(-1)
+    mjw.forward(m, d)
+
+    niter_np = d.solver_niter.numpy()
+    qacc_np = d.qacc.numpy()
+    for w, mjd_w in enumerate(mjds):
+      self.assertGreater(mjd_w.solver_niter[0], 1)
+      self.assertEqual(niter_np[w], mjd_w.solver_niter[0])
+      _assert_eq(qacc_np[w], mjd_w.qacc, f"qacc_contact_only_w{w}", tol=1e-3)
+    if nworld == 2:
+      self.assertFalse(np.allclose(qacc_np[0], qacc_np[1]))
+
+    if nworld == 2:
+      # Disable frictionloss and lift world 1 out of contact with equality disabled so nefc[1] == 0.
+      m.dof_frictionloss.zero_()
+      qpos_np = d.qpos.numpy()
+      qpos_np[1, 2] = 2.0
+      d.qpos.assign(qpos_np)
+      eq_active_np = d.eq_active.numpy()
+      eq_active_np[1, :] = False
+      d.eq_active.assign(eq_active_np)
+
+      for solver_type in (SolverType.CG, SolverType.NEWTON):
+        m.opt.solver = solver_type
+        d.qacc.fill_(wp.inf)
+        d.qfrc_constraint.fill_(wp.inf)
+        d.solver_niter.fill_(-1)
+        mjw.forward(m, d)
+
+        nefc_np = d.nefc.numpy()
+        niter_np = d.solver_niter.numpy()
+        qacc_np = d.qacc.numpy()
+        qacc_smooth_np = d.qacc_smooth.numpy()
+        qfrc_con_np = d.qfrc_constraint.numpy()
+
+        self.assertGreater(nefc_np[0], 0)
+        self.assertEqual(nefc_np[1], 0)
+        self.assertEqual(niter_np[1], 0)
+        _assert_eq(qacc_np[1], qacc_smooth_np[1], f"empty_efc_qacc_s{solver_type}", tol=1e-6)
+        _assert_eq(qfrc_con_np[1], np.zeros(mjm.nv), f"empty_efc_qfrc_con_s{solver_type}", tol=1e-6)
+
   @parameterized.parameters(("dense", 1), ("sparse", 2))
   def test_discrete_cg_coupled_tendon(self, jacobian, nworld):
     """Discrete CG does not false-certify at 0 iterations on stiff coupled modes."""
@@ -2507,8 +2763,8 @@ class SolverTest(parameterized.TestCase):
     h_shape = (d.nworld, m.nv_pad, m.nv_pad)
 
     # Non-incremental Newton with nv > H_ONE_TILE_MAX aliases hfactor to h only when requested.
-    ctx_inplace = solver._create_solver_context(m, d, inplace_cholesky=True)
-    ctx_default = solver._create_solver_context(m, d)
+    ctx_inplace = solver.create_solver_context(m, d, inplace_cholesky=True)
+    ctx_default = solver.create_solver_context(m, d)
     self.assertEqual(ctx_inplace.hfactor.shape, h_shape)
     self.assertIs(ctx_inplace.hfactor, ctx_inplace.h)
     self.assertEqual(ctx_default.hfactor.shape, h_shape)
@@ -2516,24 +2772,24 @@ class SolverTest(parameterized.TestCase):
 
     # Incremental pyramidal Newton, CG, and small-nv solves never alias hfactor to h.
     m_pyr = dataclasses.replace(m, opt=dataclasses.replace(m.opt, cone=ConeType.PYRAMIDAL))
-    ctx_pyr = solver._create_solver_context(m_pyr, d, inplace_cholesky=True)
+    ctx_pyr = solver.create_solver_context(m_pyr, d, inplace_cholesky=True)
     self.assertEqual(ctx_pyr.hfactor.shape, h_shape)
     self.assertIsNot(ctx_pyr.hfactor, ctx_pyr.h)
 
     m_cg = dataclasses.replace(m, opt=dataclasses.replace(m.opt, solver=SolverType.CG))
-    ctx_cg = solver._create_solver_context(m_cg, d, inplace_cholesky=True)
+    ctx_cg = solver.create_solver_context(m_cg, d, inplace_cholesky=True)
     self.assertEqual(ctx_cg.h.shape, (d.nworld, 0, 0))
     self.assertEqual(ctx_cg.hfactor.shape, (d.nworld, 0, 0))
 
     m_small = dataclasses.replace(m, nv=types.H_ONE_TILE_MAX)
-    self.assertEqual(solver._create_solver_context(m_small, d, inplace_cholesky=True).hfactor.shape, (d.nworld, 0, 0))
+    self.assertEqual(solver.create_solver_context(m_small, d, inplace_cholesky=True).hfactor.shape, (d.nworld, 0, 0))
 
     # Runtime guards reject missing augmented RHS padding and skip_unchanged with aliased buffers.
     m_nopad = dataclasses.replace(m, nv_pad=m.nv)
     for nvmax in (0, m.nv):
       with self.assertRaisesRegex(ValueError, "inplace_cholesky requires an augmented padding column"):
-        solver._create_solver_context(m_nopad, dataclasses.replace(d, nvmax=nvmax), inplace_cholesky=True)
-    ctx_compact = solver._create_solver_context(m_nopad, dataclasses.replace(d, nvmax=m.nv - 1), inplace_cholesky=True)
+        solver.create_solver_context(m_nopad, dataclasses.replace(d, nvmax=nvmax), inplace_cholesky=True)
+    ctx_compact = solver.create_solver_context(m_nopad, dataclasses.replace(d, nvmax=m.nv - 1), inplace_cholesky=True)
     self.assertIs(ctx_compact.hfactor, ctx_compact.h)
 
     with self.assertRaisesRegex(ValueError, "skip_unchanged requires separate h and hfactor buffers"):
@@ -2596,7 +2852,7 @@ class SolverTest(parameterized.TestCase):
 
     # Verify NaN-poisoned in-place Cholesky matches a separate hfactor buffer bitwise.
     if not compact and nworld == 1:
-      ctx_sep = solver._create_solver_context(m, d, inplace_cholesky=False)
+      ctx_sep = solver.create_solver_context(m, d, inplace_cholesky=False)
       solver._solve(m, d, ctx_sep)
       qacc_sep = d.qacc.numpy().copy()
       qfrc_sep = d.qfrc_constraint.numpy().copy()
@@ -2605,7 +2861,7 @@ class SolverTest(parameterized.TestCase):
       d.qacc.fill_(wp.inf)
       d.qfrc_constraint.fill_(wp.inf)
       d.efc.force.fill_(wp.inf)
-      ctx_inplace = solver._create_solver_context(m, d, inplace_cholesky=True)
+      ctx_inplace = solver.create_solver_context(m, d, inplace_cholesky=True)
       ctx_inplace.h.fill_(wp.nan)
       solver._solve(m, d, ctx_inplace)
       nefc0 = d.nefc.numpy()[0]
@@ -2966,7 +3222,7 @@ class CompactSolverTest(parameterized.TestCase):
       overrides={"opt.cone": cone},
     )
     mjw.forward(m_ref, d_ref)
-    ctx_ref = solver._create_solver_context(m_ref, d_ref)
+    ctx_ref = solver.create_solver_context(m_ref, d_ref)
     ctx_ref.h.fill_(wp.inf)
     solver.init_context(m_ref, d_ref, ctx_ref, grad=True)
     href = ctx_ref.h.numpy()[0]
@@ -3010,7 +3266,7 @@ class CompactSolverTest(parameterized.TestCase):
       efc=efc2,
     )
     wp.copy(d2.qacc, d2.qacc_warmstart)  # as _solve does
-    ctx = solver._create_solver_context(m2, d2)
+    ctx = solver.create_solver_context(m2, d2)
     ctx.compact_m_full = m
     ctx.compact_d_full = d
     ctx.h.fill_(wp.inf)
@@ -3115,7 +3371,7 @@ class CompactSolverTest(parameterized.TestCase):
 
     mjw.forward(m, d)
 
-    ctx = solver._create_solver_context(m, d)
+    ctx = solver.create_solver_context(m, d)
     self.assertIsNotNone(ctx.tw_diag)
     ctx.tw_diag.zero_()
     solver.init_context(m, d, ctx, grad=True)
@@ -3144,7 +3400,7 @@ class CompactSolverTest(parameterized.TestCase):
     )
     mujoco.mj_forward(mjm3, mjd3)
     mjw.forward(m3, d3)
-    ctx3 = solver._create_solver_context(m3, d3)
+    ctx3 = solver.create_solver_context(m3, d3)
     self.assertIsNotNone(ctx3.tw_diag)
     solver.init_context(m3, d3, ctx3, grad=True)
     # Contact/equality DOFs have larger total diagonal -> strictly smaller 1/diag than qHDiagInv
@@ -3199,7 +3455,7 @@ class CompactSolverTest(parameterized.TestCase):
     d.qfrc_constraint.fill_(wp.inf)
     mjw.forward(m, d)
 
-    ctx = solver._create_solver_context(m, d, inplace_cholesky=True)
+    ctx = solver.create_solver_context(m, d, inplace_cholesky=True)
     self.assertIsNotNone(ctx.h_tile_nz)
     self.assertIsNotNone(ctx.h_row_mask)
     self.assertIsNotNone(ctx.h_col_mask)
