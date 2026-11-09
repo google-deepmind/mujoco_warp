@@ -25,6 +25,7 @@ from mujoco_warp._src import math
 from mujoco_warp._src import smooth
 from mujoco_warp._src import support
 from mujoco_warp._src import types
+from mujoco_warp._src.block_cholesky import clz64
 from mujoco_warp._src.block_cholesky import create_blocked_cholesky_augmented_factorize_solve_newton_func
 from mujoco_warp._src.block_cholesky import create_blocked_cholesky_factorize_solve_func
 from mujoco_warp._src.block_cholesky import create_blocked_cholesky_solve_newton_func
@@ -116,7 +117,10 @@ def _create_solver_context(
       hfactor = wp.empty((nworld, nv_pad, nv_pad), dtype=float)
     ntiles = nv_pad // types.TILE_SIZE_JTDAJ_DENSE
     nwords = (ntiles + 63) // 64
-    h_tile_nz = wp.empty((nworld, ntiles, ntiles), dtype=int) if alloc_sparse_tiles else None
+    # H tiles follow from M and the sparse J, except for the discrete integrator's metric terms;
+    # compacted solves run on a dense model and also detect them from H
+    structural = alloc_sparse_tiles and m.is_sparse and m.opt.integrator != types.IntegratorType.DISCRETE
+    h_tile_nz = wp.empty((nworld, ntiles, ntiles), dtype=int) if alloc_sparse_tiles and not structural else None
     h_row_mask = wp.empty((nworld, ntiles, nwords), dtype=wp.uint64) if alloc_sparse_tiles else None
     h_col_mask = wp.empty((nworld, ntiles, nwords), dtype=wp.uint64) if alloc_sparse_tiles else None
     h_tile_is_diag = wp.empty((nworld, ntiles), dtype=int) if alloc_sparse_tiles else None
@@ -3116,8 +3120,144 @@ def _detect_h_tile_sparsity(tile_size: int, skip_unchanged: bool = False, skip_n
 
 
 @cache_kernel
-def _symbolic_h_tile_cholesky(ntiles: int, skip_unchanged: bool = False, skip_noflip: bool = False):
+def _init_h_tile_masks(nwords: int, skip_unchanged: bool = False, skip_noflip: bool = False):
+  NWORDS = nwords
+  SKIP_UNCHANGED = skip_unchanged
+  SKIP_NOFLIP = skip_noflip
+
+  @wp.kernel(module="unique", enable_backward=False)
+  def kernel(
+    # Model:
+    M_tile_colmask: wp.array2d[wp.uint64],
+    M_tile_offdiag: wp.array[int],
+    # In:
+    ctx_done_in: wp.array[bool],
+    quad_changed_count_in: wp.array[int],
+    state_changed_count_in: wp.array[int],
+    # Out:
+    row_mask_out: wp.array3d[wp.uint64],
+    col_mask_out: wp.array3d[wp.uint64],
+    tile_offdiag_out: wp.array2d[int],
+  ):
+    """Resets the tile masks to the tile pattern of M."""
+    worldid, tk = wp.tid()
+
+    if ctx_done_in[worldid]:
+      return
+
+    if wp.static(SKIP_NOFLIP):
+      if state_changed_count_in[worldid] == 0:
+        return
+
+    if wp.static(SKIP_UNCHANGED):
+      if quad_changed_count_in[worldid] == 0:
+        return
+
+    for w in range(wp.static(NWORDS)):
+      row_mask_out[worldid, tk, w] = wp.uint64(0)
+      col_mask_out[worldid, tk, w] = M_tile_colmask[tk, w]
+    tile_offdiag_out[worldid, tk] = M_tile_offdiag[tk]
+
+  return kernel
+
+
+@wp.func
+def _block_col_nonzero(efc_J_in: wp.array3d[float], worldid: int, rowadr: int, rownnz: int, nrow: int, pos: int) -> bool:
+  for r in range(nrow):
+    if efc_J_in[worldid, 0, rowadr + r * rownnz + pos] != 0.0:
+      return True
+  return False
+
+
+@cache_kernel
+def _mark_h_tile_pattern_efc(skip_unchanged: bool = False, skip_noflip: bool = False):
+  SKIP_UNCHANGED = skip_unchanged
+  SKIP_NOFLIP = skip_noflip
+
+  @wp.kernel(module="unique", enable_backward=False)
+  def kernel(
+    # Data in:
+    nefc_in: wp.array[int],
+    contact_dim_in: wp.array[int],
+    contact_efc_address_in: wp.array2d[int],
+    efc_id_in: wp.array2d[int],
+    efc_J_rownnz_in: wp.array2d[int],
+    efc_J_rowadr_in: wp.array2d[int],
+    efc_J_colind_in: wp.array3d[int],
+    efc_J_in: wp.array3d[float],
+    efc_state_in: wp.array2d[int],
+    # In:
+    ctx_done_in: wp.array[bool],
+    quad_changed_count_in: wp.array[int],
+    state_changed_count_in: wp.array[int],
+    # Out:
+    col_mask_out: wp.array3d[wp.uint64],
+    tile_offdiag_out: wp.array2d[int],
+  ):
+    """Adds the J^T D J tiles of the rows that contribute to H."""
+    worldid, efcid = wp.tid()
+
+    if efcid >= nefc_in[worldid] or ctx_done_in[worldid]:
+      return
+
+    if wp.static(SKIP_NOFLIP):
+      if state_changed_count_in[worldid] == 0:
+        return
+
+    if wp.static(SKIP_UNCHANGED):
+      if quad_changed_count_in[worldid] == 0:
+        return
+
+    state = efc_state_in[worldid, efcid]
+    if state != types.ConstraintState.QUADRATIC.value and state != types.ConstraintState.CONE.value:
+      return
+
+    # A cone block couples the columns of all its rows, which follow the head row with the same
+    # support, so the head row marks the columns nonzero in any of them.
+    nrow = int(1)
+    if state == types.ConstraintState.CONE.value:
+      conid = efc_id_in[worldid, efcid]
+      if efcid != contact_efc_address_in[conid, 0]:
+        return
+      nrow = contact_dim_in[conid]
+
+    rownnz = efc_J_rownnz_in[worldid, efcid]
+    rowadr = efc_J_rowadr_in[worldid, efcid]
+    prev_ta = int(-1)
+    for a in range(rownnz):
+      # sparse J keeps structural zeros, e.g. flex vertices with zero barycentric weight
+      if not _block_col_nonzero(efc_J_in, worldid, rowadr, rownnz, nrow, a):
+        continue
+      ta = efc_J_colind_in[worldid, 0, rowadr + a] // types.TILE_SIZE_JTDAJ_DENSE
+      if ta == prev_ta:
+        continue
+      prev_ta = ta
+      w_a = ta // 64
+      bit_a = wp.uint64(1) << wp.uint64(ta - w_a * 64)
+      nsame = int(0)
+      for b in range(rownnz):
+        if not _block_col_nonzero(efc_J_in, worldid, rowadr, rownnz, nrow, b):
+          continue
+        tb = efc_J_colind_in[worldid, 0, rowadr + b] // types.TILE_SIZE_JTDAJ_DENSE
+        if tb == ta:
+          nsame += 1
+        elif tb > ta:
+          wp.atomic_or(col_mask_out, worldid, tb, w_a, bit_a)
+      if nsame > 1:
+        tile_offdiag_out[worldid, ta] = 1
+
+  return kernel
+
+
+@cache_kernel
+def _symbolic_h_tile_cholesky(ntiles: int, skip_unchanged: bool = False, skip_noflip: bool = False, masks_ready: bool = False):
+  """Tile fill-in of the reverse block Cholesky.
+
+  With masks_ready, the column masks hold the tile pattern of H and tile_is_diag whether each
+  diagonal tile has off-diagonal entries; otherwise both come from tile_nz.
+  """
   NTILES = ntiles
+  MASKS_READY = masks_ready
   NWORDS = (ntiles + 63) // 64
   SKIP_UNCHANGED = skip_unchanged
   SKIP_NOFLIP = skip_noflip
@@ -3147,34 +3287,49 @@ def _symbolic_h_tile_cholesky(ntiles: int, skip_unchanged: bool = False, skip_no
       if quad_changed_count_in[worldid] == 0:
         return
 
-    for tk in range(NTILES):
-      for w in range(wp.static(NWORDS)):
-        row_mask_out[worldid, tk, w] = wp.uint64(0)
-        col_mask_out[worldid, tk, w] = wp.uint64(0)
-      for ti in range(tk):
-        if tile_nz_in[worldid, ti, tk] > 0:
-          w_i = ti // 64
-          bit_i = wp.uint64(1) << wp.uint64(ti - w_i * 64)
-          col_mask_out[worldid, tk, w_i] = col_mask_out[worldid, tk, w_i] | bit_i
+    if wp.static(not MASKS_READY):
+      for tk in range(NTILES):
+        for w in range(wp.static(NWORDS)):
+          row_mask_out[worldid, tk, w] = wp.uint64(0)
+          col_mask_out[worldid, tk, w] = wp.uint64(0)
+        for ti in range(tk):
+          if tile_nz_in[worldid, ti, tk] > 0:
+            w_i = ti // 64
+            bit_i = wp.uint64(1) << wp.uint64(ti - w_i * 64)
+            col_mask_out[worldid, tk, w_i] = col_mask_out[worldid, tk, w_i] | bit_i
+        tile_is_diag_out[worldid, tk] = tile_nz_in[worldid, tk, tk]
 
+    # Fill-in only needs to reach the elimination-tree parent (the next tile eliminated);
+    # the parent passes it on to the remaining coupled tiles.
     for tk in range(NTILES - 1, -1, -1):
+      parent = int(-1)
+      for w_rev in range(wp.static(NWORDS)):
+        w = wp.static(NWORDS) - 1 - w_rev
+        cmask = col_mask_out[worldid, tk, w]
+        if parent < 0 and cmask != wp.uint64(0):
+          parent = w * 64 + 63 - clz64(cmask)
+      if parent >= 0:
+        p_w = parent // 64
+        below_parent = (wp.uint64(1) << wp.uint64(parent - p_w * 64)) - wp.uint64(1)
+        for w in range(wp.static(NWORDS)):
+          cmask = col_mask_out[worldid, tk, w]
+          if w == p_w:
+            cmask = cmask & below_parent
+          if w <= p_w and cmask != wp.uint64(0):
+            col_mask_out[worldid, parent, w] = col_mask_out[worldid, parent, w] | cmask
+
+    for tk in range(NTILES):
       tk_w = tk // 64
       tk_bit = wp.uint64(1) << wp.uint64(tk - tk_w * 64)
-      for w_i in range(wp.static(NWORDS)):
-        cmask_tk_wi = col_mask_out[worldid, tk, w_i]
-        m = cmask_tk_wi
+      for w in range(wp.static(NWORDS)):
+        m = col_mask_out[worldid, tk, w]
         while m != wp.uint64(0):
-          bit_pos = ctz64(m)
-          ti = w_i * 64 + bit_pos
+          ti = w * 64 + ctz64(m)
           m = m & (m - wp.uint64(1))
-          lower_mask = (wp.uint64(1) << wp.uint64(bit_pos)) - wp.uint64(1)
-          col_mask_out[worldid, ti, w_i] = col_mask_out[worldid, ti, w_i] | (cmask_tk_wi & lower_mask)
-          for w_r in range(w_i):
-            col_mask_out[worldid, ti, w_r] = col_mask_out[worldid, ti, w_r] | col_mask_out[worldid, tk, w_r]
           row_mask_out[worldid, ti, tk_w] = row_mask_out[worldid, ti, tk_w] | tk_bit
 
     for tk in range(NTILES):
-      is_diag = tile_nz_in[worldid, tk, tk] == 0
+      is_diag = tile_is_diag_out[worldid, tk] == 0
       for w in range(wp.static(NWORDS)):
         if row_mask_out[worldid, tk, w] != wp.uint64(0) or col_mask_out[worldid, tk, w] != wp.uint64(0):
           is_diag = False
@@ -3541,15 +3696,43 @@ def _cholesky_factorize_solve(
     npairs = ntiles * (ntiles + 1) // 2
     quad_changed = ctx.quad_changed_count if skip_unchanged else d.nefc
     state_changed = ctx.state_changed_count if skip_noflip else quad_changed
-    wp.launch_tiled(
-      _detect_h_tile_sparsity(tile_size, skip_unchanged, skip_noflip),
-      dim=(d.nworld, npairs),
-      inputs=[ctx.done, ctx.h, quad_changed, state_changed],
-      outputs=[ctx.h_tile_nz],
-      block_dim=32,
-    )
+    structural = ctx.h_tile_nz is None
+    if structural:
+      wp.launch(
+        _init_h_tile_masks(ctx.h_col_mask.shape[2], skip_unchanged, skip_noflip),
+        dim=(d.nworld, ntiles),
+        inputs=[m.M_tile_colmask, m.M_tile_offdiag, ctx.done, quad_changed, state_changed],
+        outputs=[ctx.h_row_mask, ctx.h_col_mask, ctx.h_tile_is_diag],
+      )
+      wp.launch(
+        _mark_h_tile_pattern_efc(skip_unchanged, skip_noflip),
+        dim=(d.nworld, d.njmax),
+        inputs=[
+          d.nefc,
+          d.contact.dim,
+          d.contact.efc_address,
+          d.efc.id,
+          d.efc.J_rownnz,
+          d.efc.J_rowadr,
+          d.efc.J_colind,
+          d.efc.J,
+          d.efc.state,
+          ctx.done,
+          quad_changed,
+          state_changed,
+        ],
+        outputs=[ctx.h_col_mask, ctx.h_tile_is_diag],
+      )
+    else:
+      wp.launch_tiled(
+        _detect_h_tile_sparsity(tile_size, skip_unchanged, skip_noflip),
+        dim=(d.nworld, npairs),
+        inputs=[ctx.done, ctx.h, quad_changed, state_changed],
+        outputs=[ctx.h_tile_nz],
+        block_dim=32,
+      )
     wp.launch(
-      _symbolic_h_tile_cholesky(ntiles, skip_unchanged, skip_noflip),
+      _symbolic_h_tile_cholesky(ntiles, skip_unchanged, skip_noflip, structural),
       dim=d.nworld,
       inputs=[ctx.done, ctx.h_tile_nz, quad_changed, state_changed],
       outputs=[ctx.h_row_mask, ctx.h_col_mask, ctx.h_tile_is_diag],

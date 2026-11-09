@@ -2963,15 +2963,21 @@ class CompactSolverTest(parameterized.TestCase):
   )
   def test_newton_sparse_tiles_blocked_cholesky(self, nworld, cone):
     """Verifies Newton blocked Cholesky with sparse-tile and diagonal-tile awareness (nv > 96)."""
-    # 18 free spheres (nv = 108, ntiles = 7): first 3 spheres in ground contact + equality
-    # constraint, remaining 15 spheres in free fall (purely diagonal tiles).
+    # 20 free spheres (nv = 120, ntiles = 8): first 3 spheres in ground contact + equality
+    # constraint, the others in free fall.
     # Parameterized over pyramidal (incremental skip_unchanged path) and elliptic (non-incremental
     # inplace_cholesky path).
+    # Spheres 13 (tiles 4 and 5) and 19 (tile 7) have an offset center of mass, so M couples their
+    # DOFs. Spheres 5 and 6 (tiles 1 and 2) are within contact margin but apart, so their contact
+    # rows stay inactive.
     bodies_xml = []
-    for i in range(18):
+    for i in range(20):
       z = 0.015 if i < 3 else 0.5
+      geom_pos = "0.005 0 0" if i in (13, 19) else "0 0 0"
+      margin = 0.05 if i in (5, 6) else 0.0
       bodies_xml.append(
-        f'<body name="b{i}" pos="{i * 0.08} 0 {z}"><freejoint/><geom type="sphere" size="0.02" mass="0.1"/></body>'
+        f'<body name="b{i}" pos="{i * 0.08} 0 {z}"><freejoint/>'
+        f'<geom type="sphere" size="0.02" mass="0.1" pos="{geom_pos}" margin="{margin}"/><site name="s{i}"/></body>'
       )
     xml = f"""
     <mujoco>
@@ -2982,8 +2988,15 @@ class CompactSolverTest(parameterized.TestCase):
         <geom type="plane" size="5 5 0.1"/>
         {"".join(bodies_xml)}
       </worldbody>
+      <tendon>
+        <spatial name="t9"><site site="s16"/><site site="s9"/></spatial>
+        <spatial name="t14"><site site="s16"/><site site="s14"/></spatial>
+      </tendon>
       <equality>
         <connect body1="b0" body2="b2" anchor="0 0 0"/>
+        <!-- tile 6 couples tiles 3 and 5, which fills in tile (3, 5) -->
+        <tendon tendon1="t9"/>
+        <tendon tendon1="t14"/>
       </equality>
     </mujoco>
     """
@@ -2993,10 +3006,10 @@ class CompactSolverTest(parameterized.TestCase):
     qpos_np = d.qpos.numpy().copy()
     qvel_np = d.qvel.numpy().copy()
     if nworld > 1:
-      # Perturb world 1 so sphere 8 (in tile 3) is also in ground contact, producing distinct
+      # Perturb world 1 so sphere 7 (in tile 2) is also in ground contact, producing distinct
       # per-world tile masks.
-      qpos_np[1, 8 * 7 + 2] = 0.012
-      qvel_np[1, 8 * 6 : 9 * 6] = np.array([-0.2, 0.15, -0.3, 0.4, -0.25, 0.1], dtype=np.float32)
+      qpos_np[1, 7 * 7 + 2] = 0.012
+      qvel_np[1, 7 * 6 : 8 * 6] = np.array([-0.2, 0.15, -0.3, 0.4, -0.25, 0.1], dtype=np.float32)
       d.qpos.assign(qpos_np)
       d.qvel.assign(qvel_np)
 
@@ -3005,7 +3018,7 @@ class CompactSolverTest(parameterized.TestCase):
     mjw.forward(m, d)
 
     ctx = solver._create_solver_context(m, d, inplace_cholesky=True)
-    self.assertIsNotNone(ctx.h_tile_nz)
+    self.assertIsNone(ctx.h_tile_nz)
     self.assertIsNotNone(ctx.h_row_mask)
     self.assertIsNotNone(ctx.h_col_mask)
     self.assertIsNotNone(ctx.h_tile_is_diag)
@@ -3017,6 +3030,14 @@ class CompactSolverTest(parameterized.TestCase):
     solver.init_context(m, d, ctx, grad=True)
     if nworld > 1:
       self.assertFalse(np.array_equal(ctx.h_tile_is_diag.numpy()[0], ctx.h_tile_is_diag.numpy()[1]))
+
+    # the structural tile pattern matches the one detected from the values of H
+    ctx_value = solver._create_solver_context(m, d)
+    ntiles = ctx.h_col_mask.shape[1]
+    ctx_value.h_tile_nz = wp.empty((nworld, ntiles, ntiles), dtype=int)
+    solver.init_context(m, d, ctx_value, grad=True)
+    for mask in ("h_row_mask", "h_col_mask", "h_tile_is_diag"):
+      np.testing.assert_array_equal(getattr(ctx, mask).numpy(), getattr(ctx_value, mask).numpy())
 
     for w in range(nworld):
       mjd.qpos[:] = qpos_np[w]
