@@ -366,16 +366,8 @@ def _eval_frictionloss_shifted_one(
 @wp.func
 def _eval_frictionloss_shifted(jaref: float, jv: float, f: float, rf: float, d: float, alpha: float) -> wp.vec3:
   """Eval frictionloss shifted by alpha=0."""
-  dx = alpha * jv
-  x = jaref + dx
-  cost = _eval_frictionloss_cost_diff(jaref, dx, f, rf, d)
-  if (-rf < x) and (x < rf):
-    jvD = jv * d
-    return wp.vec3(cost, jvD * x, jv * jvD)
-  elif x <= -rf:
-    return wp.vec3(cost, -f * jv, 0.0)
-  else:
-    return wp.vec3(cost, f * jv, 0.0)
+  jvD = jv * d
+  return _eval_frictionloss_shifted_one(jaref, alpha * jv, f, rf, d, jvD, jv * jvD, f * jv)
 
 
 @wp.func
@@ -1486,12 +1478,7 @@ def _linesearch_iterative_kernel(
           swap_hi = swap_hi_hi_next or swap_hi_mid or swap_hi_lo_next
 
         # check for convergence
-        ls_done = (
-          converged
-          or (not swap_lo and not swap_hi)
-          or (lo[0] < 0.0 and lo[1] < 0.0 and lo[1] > -gtol)
-          or (hi[0] < 0.0 and hi[1] > 0.0 and hi[1] < gtol)
-        )
+        ls_done = converged or (not swap_lo and not swap_hi)
 
         # update alpha if improved
         improved = lo[0] < 0.0 or hi[0] < 0.0
