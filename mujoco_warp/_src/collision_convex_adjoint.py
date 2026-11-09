@@ -34,6 +34,7 @@ from mujoco_warp._src.math import make_frame
 from mujoco_warp._src.math import upper_trid_index
 from mujoco_warp._src.types import MJ_MAX_EPAFACES
 from mujoco_warp._src.types import MJ_MAX_EPAHORIZON
+from mujoco_warp._src.types import MJ_MAXCONPAIR
 from mujoco_warp._src.types import MJ_MAXVAL
 from mujoco_warp._src.types import CollisionConvexBackwardContext
 from mujoco_warp._src.types import Data
@@ -74,7 +75,8 @@ def create_collision_convex_backward_context(
   gjk_iterations = int(m.opt.ccd_iterations)
   epa_iterations = int(m.opt.ccd_iterations)
   if nprobe is None:
-    nprobe = min(naconmax, max(4 * d.naccdmax, 1))
+    maxconpair = 4 if m.opt.hfield_reduce_contacts else MJ_MAXCONPAIR
+    nprobe = min(naconmax, max(maxconpair * d.naccdmax, 1))
   return CollisionConvexBackwardContext(
     case=wp.zeros(naconmax, dtype=int),
     prism=wp.zeros(naconmax, dtype=wp.mat33),
