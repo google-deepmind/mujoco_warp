@@ -1339,6 +1339,13 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
   offdiag = row != col
   M_tile_nz[col[offdiag] // types.TILE_SIZE_JTDAJ_DENSE, row[offdiag] // types.TILE_SIZE_JTDAJ_DENSE] = 1
   m.M_tile_nz = M_tile_nz
+  # reverse elimination fill-in of M's tile pattern, over tiles holding real dofs
+  nreal = -(-mjm.nv // types.TILE_SIZE_JTDAJ_DENSE)
+  fill = (M_tile_nz | M_tile_nz.T)[:nreal, :nreal].astype(bool)
+  for k in range(nreal - 1, -1, -1):
+    nbr = np.flatnonzero(fill[k, :k])
+    fill[np.ix_(nbr, nbr)] = True
+  m.M_tile_full = bool(np.triu(fill, 1).sum() == nreal * (nreal - 1) // 2)
 
   # Precompute per-block gather indices for the dense-block densify (tile_load_indexed). For each
   # dense block and flat slot (row, col), store the CSR address of M[max(i,j), min(i,j)], or nC

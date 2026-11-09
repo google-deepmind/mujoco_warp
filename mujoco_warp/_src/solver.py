@@ -91,7 +91,7 @@ def _create_solver_context(
 
   alloc_h = m.opt.solver == types.SolverType.NEWTON
   alloc_hfactor = alloc_h and nv > _BLOCK_CHOLESKY_DIM
-  alloc_sparse_tiles = alloc_h and nv > _SPARSE_BLOCK_CHOLESKY_DIM
+  alloc_sparse_tiles = alloc_h and nv > _SPARSE_BLOCK_CHOLESKY_DIM and not m.M_tile_full
   alloc_mgrad = m.opt.solver == types.SolverType.CG
   alloc_incremental = _use_incremental(m)
   alloc_solve_ld_scratch = (
@@ -3120,6 +3120,82 @@ def _detect_h_tile_sparsity(tile_size: int, skip_unchanged: bool = False, skip_n
 
 
 @cache_kernel
+def _h_tile_nz_from_efc(
+  tile_size: int, ntiles: int, cone_type: types.ConeType, skip_unchanged: bool = False, skip_noflip: bool = False
+):
+  TILE_SIZE = tile_size
+  NWORDS = (ntiles + 63) // 64
+  ELLIPTIC = cone_type == types.ConeType.ELLIPTIC
+  SKIP_UNCHANGED = skip_unchanged
+  SKIP_NOFLIP = skip_noflip
+
+  @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
+  def kernel(
+    # Data in:
+    nefc_in: wp.array[int],
+    efc_J_rownnz_in: wp.array2d[int],
+    efc_J_rowadr_in: wp.array2d[int],
+    efc_J_colind_in: wp.array3d[int],
+    efc_J_in: wp.array3d[float],
+    efc_state_in: wp.array2d[int],
+    # In:
+    ctx_done_in: wp.array[bool],
+    quad_changed_count_in: wp.array[int],
+    state_changed_count_in: wp.array[int],
+    # Out:
+    tile_nz_out: wp.array3d[int],
+  ):
+    # Flags the H tiles coupled by active constraint rows, from the Jacobian sparsity instead of
+    # scanning H. Rows of a contact share their nonzeros, so elliptic cross terms are covered; only
+    # pyramidal rows, whose H terms are independent, can also skip entries that are exactly zero.
+    worldid, efcid = wp.tid()
+
+    if efcid >= nefc_in[worldid] or ctx_done_in[worldid]:
+      return
+
+    if wp.static(SKIP_NOFLIP):
+      if state_changed_count_in[worldid] == 0:
+        return
+
+    if wp.static(SKIP_UNCHANGED):
+      if quad_changed_count_in[worldid] == 0:
+        return
+
+    if efc_state_in[worldid, efcid] == types.ConstraintState.SATISFIED.value:
+      return
+
+    touched = wp.vector(dtype=wp.uint64, length=NWORDS)
+    repeated = wp.vector(dtype=wp.uint64, length=NWORDS)
+    rowadr = efc_J_rowadr_in[worldid, efcid]
+    rownnz = efc_J_rownnz_in[worldid, efcid]
+    for k in range(rownnz):
+      if not wp.static(ELLIPTIC):
+        if efc_J_in[worldid, 0, rowadr + k] == 0.0:
+          continue
+      t = efc_J_colind_in[worldid, 0, rowadr + k] // wp.static(TILE_SIZE)
+      w = t // 64
+      bit = wp.uint64(1) << wp.uint64(t - w * 64)
+      repeated[w] = repeated[w] | (touched[w] & bit)
+      touched[w] = touched[w] | bit
+
+    for wa in range(wp.static(NWORDS)):
+      ma = touched[wa]
+      while ma != wp.uint64(0):
+        ta = wa * 64 + ctz64(ma)
+        ma = ma & (ma - wp.uint64(1))
+        if ((repeated[wa] >> wp.uint64(ta - wa * 64)) & wp.uint64(1)) != wp.uint64(0):
+          tile_nz_out[worldid, ta, ta] = 1
+        for wb in range(wa, wp.static(NWORDS)):
+          mb = wp.where(wb == wa, ma, touched[wb])
+          while mb != wp.uint64(0):
+            tb = wb * 64 + ctz64(mb)
+            mb = mb & (mb - wp.uint64(1))
+            tile_nz_out[worldid, ta, tb] = 1
+
+  return kernel
+
+
+@cache_kernel
 def _h_tile_col_masks(ntiles: int, skip_unchanged: bool = False, skip_noflip: bool = False):
   NWORDS = (ntiles + 63) // 64
   SKIP_UNCHANGED = skip_unchanged
@@ -3546,7 +3622,7 @@ def _cholesky_factorize_solve(
       outputs=[ctx.search, ctx.search_dot, ctx.newton_decrement],
       block_dim=m.block_dim.update_gradient_cholesky,
     )
-  elif m.nv <= _SPARSE_BLOCK_CHOLESKY_DIM:
+  elif m.nv <= _SPARSE_BLOCK_CHOLESKY_DIM or m.M_tile_full:
     if skip_unchanged:
       if ctx.hfactor.ptr == ctx.h.ptr:
         raise ValueError("skip_unchanged requires separate h and hfactor buffers")
@@ -3585,12 +3661,31 @@ def _cholesky_factorize_solve(
     ntiles = m.nv_pad // tile_size
     quad_changed = ctx.quad_changed_count if skip_unchanged else d.nefc
     state_changed = ctx.state_changed_count if skip_noflip else quad_changed
-    wp.launch(
-      _detect_h_tile_sparsity(tile_size, skip_unchanged, skip_noflip),
-      dim=(d.nworld, m.nv_pad, m.nv_pad // 4),
-      inputs=[m.M_tile_nz, ctx.done, ctx.h, quad_changed, state_changed],
-      outputs=[ctx.h_tile_nz],
-    )
+    # H is M + J^T D J unless the discrete integrator adds metric terms or H is in compact dofs
+    if m.is_sparse and not _sparse_compact(ctx) and m.opt.integrator != types.IntegratorType.DISCRETE:
+      wp.launch(
+        _h_tile_nz_from_efc(tile_size, ntiles, m.opt.cone, skip_unchanged, skip_noflip),
+        dim=(d.nworld, d.njmax),
+        inputs=[
+          d.nefc,
+          d.efc.J_rownnz,
+          d.efc.J_rowadr,
+          d.efc.J_colind,
+          d.efc.J,
+          d.efc.state,
+          ctx.done,
+          quad_changed,
+          state_changed,
+        ],
+        outputs=[ctx.h_tile_nz],
+      )
+    else:
+      wp.launch(
+        _detect_h_tile_sparsity(tile_size, skip_unchanged, skip_noflip),
+        dim=(d.nworld, m.nv_pad, m.nv_pad // 4),
+        inputs=[m.M_tile_nz, ctx.done, ctx.h, quad_changed, state_changed],
+        outputs=[ctx.h_tile_nz],
+      )
     wp.launch(
       _h_tile_col_masks(ntiles, skip_unchanged, skip_noflip),
       dim=(d.nworld, ntiles),
@@ -5305,7 +5400,8 @@ def _noslip_dot(
   res = float(0.0)
   if is_sparse:
     rowadr = efc_J_rowadr_in[worldid, efcid]
-    for k in range(efc_J_rownnz_in[worldid, efcid]):
+    rownnz = efc_J_rownnz_in[worldid, efcid]
+    for k in range(rownnz):
       sparseid = rowadr + k
       res += efc_J_in[worldid, 0, sparseid] * vec_in[efc_J_colind_in[worldid, 0, sparseid]]
   else:
