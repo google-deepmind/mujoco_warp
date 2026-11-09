@@ -1651,6 +1651,7 @@ class Model:
     callback: custom physics callbacks
     nbranch: number of branches (leaf-to-root paths)
     nv_pad: number of degrees of freedom + padding
+    nhtile: number of 16x16 tile rows of the Newton H
     nacttrnbody: number of actuators with body transmission
     nsensorcollision: number of unique collisions for
                       geom distance sensors
@@ -1770,6 +1771,7 @@ class Model:
     M_fullm_j: sparse mass matrix addressing
     M_elemid: (row, col) -> CSR madr addresses; -1 if not a chain ancestor
     M_hinit_i: row index of each CSR M entry; for densifying M into the dense Newton H (nC,)
+    M_tile_nz: 1 if M has an off-diagonal entry in upper tile (tk, ti) of the Newton H
     qD_fullm_i: D-structure row indices for RNE derivatives
     qD_fullm_j: D-structure column indices for RNE derivatives
     M_mulm_rowadr: sparse matmul row pointers
@@ -2226,6 +2228,7 @@ class Model:
   callback: Callback
   nbranch: int
   nv_pad: int
+  nhtile: int
   nacttrnbody: int
   nsensorcollision: int
   nsensortaxel: int
@@ -2337,6 +2340,7 @@ class Model:
   M_fullm_j: array("nM_fullm", int)
   M_elemid: array("nv", "nv", int)  # (row, col) -> CSR madr address; -1 if col is not a chain ancestor of row
   M_hinit_i: array("nC", int)  # row index of each CSR M entry (for densifying M into the dense Newton H)
+  M_tile_nz: array("nhtile", "nhtile", int)
   qD_fullm_i: array("nqD_fullm", int)  # D-structure (full square) row indices for RNE derivatives
   qD_fullm_j: array("nqD_fullm", int)  # D-structure (full square) column indices for RNE derivatives
   # Gather-based sparse mul_m indices (thread per DOF, no atomics)

@@ -3074,6 +3074,8 @@ def _detect_h_tile_sparsity(tile_size: int, skip_unchanged: bool = False, skip_n
 
   @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
   def kernel(
+    # Model:
+    M_tile_nz: wp.array2d[int],
     # In:
     ctx_done_in: wp.array[bool],
     ctx_h_in: wp.array3d[float],
@@ -3088,7 +3090,8 @@ def _detect_h_tile_sparsity(tile_size: int, skip_unchanged: bool = False, skip_n
     tk = row // wp.static(TILE_SIZE)
     ti = chunk // wp.static(TILE_SIZE // 4)
 
-    if ti < tk:
+    # tiles where M is nonzero are always nonzero in H, _h_tile_col_masks adds them
+    if ti < tk or M_tile_nz[tk, ti] != 0:
       return
 
     if ctx_done_in[worldid]:
@@ -3124,6 +3127,8 @@ def _h_tile_col_masks(ntiles: int, skip_unchanged: bool = False, skip_noflip: bo
 
   @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
   def kernel(
+    # Model:
+    M_tile_nz: wp.array2d[int],
     # In:
     ctx_done_in: wp.array[bool],
     quad_changed_count_in: wp.array[int],
@@ -3155,10 +3160,13 @@ def _h_tile_col_masks(ntiles: int, skip_unchanged: bool = False, skip_noflip: bo
         if tile_nz_out[worldid, ti, tk] != 0:
           tile_nz_out[worldid, ti, tk] = 0
           mask = mask | (wp.uint64(1) << wp.uint64(ti - w * 64))
+        elif M_tile_nz[ti, tk] != 0:
+          mask = mask | (wp.uint64(1) << wp.uint64(ti - w * 64))
       col_mask_out[worldid, tk, w] = mask
       row_mask_out[worldid, tk, w] = wp.uint64(0)
 
-    tile_is_diag_out[worldid, tk] = wp.where(tile_nz_out[worldid, tk, tk] == 0, 1, 0)
+    is_diag = tile_nz_out[worldid, tk, tk] == 0 and M_tile_nz[tk, tk] == 0
+    tile_is_diag_out[worldid, tk] = wp.where(is_diag, 1, 0)
     tile_nz_out[worldid, tk, tk] = 0
 
   return kernel
@@ -3580,13 +3588,13 @@ def _cholesky_factorize_solve(
     wp.launch(
       _detect_h_tile_sparsity(tile_size, skip_unchanged, skip_noflip),
       dim=(d.nworld, m.nv_pad, m.nv_pad // 4),
-      inputs=[ctx.done, ctx.h, quad_changed, state_changed],
+      inputs=[m.M_tile_nz, ctx.done, ctx.h, quad_changed, state_changed],
       outputs=[ctx.h_tile_nz],
     )
     wp.launch(
       _h_tile_col_masks(ntiles, skip_unchanged, skip_noflip),
       dim=(d.nworld, ntiles),
-      inputs=[ctx.done, quad_changed, state_changed],
+      inputs=[m.M_tile_nz, ctx.done, quad_changed, state_changed],
       outputs=[ctx.h_tile_nz, ctx.h_row_mask, ctx.h_col_mask, ctx.h_tile_is_diag],
     )
     wp.launch(

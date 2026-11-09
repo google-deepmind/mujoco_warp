@@ -620,6 +620,7 @@ class SupportTest(parameterized.TestCase):
     done = wp.zeros(nworld, dtype=bool)
     nefc = wp.ones(nworld, dtype=int)
     tile_nz = wp.zeros((nworld, ntiles, ntiles), dtype=int)
+    m_tile_nz = wp.zeros((ntiles, ntiles), dtype=int)
     row_mask = wp.zeros((nworld, ntiles, nmask_words), dtype=wp.uint64)
     col_mask = wp.zeros((nworld, ntiles, nmask_words), dtype=wp.uint64)
     tile_is_diag = wp.zeros((nworld, ntiles), dtype=int)
@@ -630,13 +631,13 @@ class SupportTest(parameterized.TestCase):
     wp.launch(
       mjwarp._src.solver._detect_h_tile_sparsity(tile_size, False, False),
       dim=(nworld, nv_pad, nv_pad // 4),
-      inputs=[done, h, nefc, nefc],
+      inputs=[m_tile_nz, done, h, nefc, nefc],
       outputs=[tile_nz],
     )
     wp.launch(
       mjwarp._src.solver._h_tile_col_masks(ntiles, False, False),
       dim=(nworld, ntiles),
-      inputs=[done, nefc, nefc],
+      inputs=[m_tile_nz, done, nefc, nefc],
       outputs=[tile_nz, row_mask, col_mask, tile_is_diag],
     )
     wp.launch(

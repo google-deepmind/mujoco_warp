@@ -1333,6 +1333,12 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
       M_hinit_i[madr] = i
   m.M_elemid = M_elemid
   m.M_hinit_i = M_hinit_i
+  m.nhtile = -(-m.nv_pad // types.TILE_SIZE_JTDAJ_DENSE)
+  M_tile_nz = np.zeros((m.nhtile, m.nhtile), dtype=np.int32)
+  row, col = M_hinit_i, mjm.M_colind
+  offdiag = row != col
+  M_tile_nz[col[offdiag] // types.TILE_SIZE_JTDAJ_DENSE, row[offdiag] // types.TILE_SIZE_JTDAJ_DENSE] = 1
+  m.M_tile_nz = M_tile_nz
 
   # Precompute per-block gather indices for the dense-block densify (tile_load_indexed). For each
   # dense block and flat slot (row, col), store the CSR address of M[max(i,j), min(i,j)], or nC
