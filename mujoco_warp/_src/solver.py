@@ -3170,7 +3170,8 @@ def _block_col_nonzero(efc_J_in: wp.array3d[float], worldid: int, rowadr: int, r
 
 
 @cache_kernel
-def _mark_h_tile_pattern_efc(skip_unchanged: bool = False, skip_noflip: bool = False):
+def _mark_h_tile_pattern_efc(nwords: int, skip_unchanged: bool = False, skip_noflip: bool = False):
+  NWORDS = nwords
   SKIP_UNCHANGED = skip_unchanged
   SKIP_NOFLIP = skip_noflip
 
@@ -3223,9 +3224,31 @@ def _mark_h_tile_pattern_efc(skip_unchanged: bool = False, skip_noflip: bool = F
 
     rownnz = efc_J_rownnz_in[worldid, efcid]
     rowadr = efc_J_rowadr_in[worldid, efcid]
+
+    # one word: collect the tiles of the row, then mark each tile's coupling to the tiles above it
+    if wp.static(NWORDS == 1):
+      tiles = wp.uint64(0)
+      multi = wp.uint64(0)
+      for a in range(rownnz):
+        # sparse J keeps structural zeros, e.g. flex vertices with zero barycentric weight
+        if _block_col_nonzero(efc_J_in, worldid, rowadr, rownnz, nrow, a):
+          bit = wp.uint64(1) << wp.uint64(efc_J_colind_in[worldid, 0, rowadr + a] // types.TILE_SIZE_JTDAJ_DENSE)
+          multi = multi | (tiles & bit)
+          tiles = tiles | bit
+      m = tiles
+      while m != wp.uint64(0):
+        t = ctz64(m)
+        m = m & (m - wp.uint64(1))
+        bit = wp.uint64(1) << wp.uint64(t)
+        above = tiles & (bit - wp.uint64(1))
+        if above != wp.uint64(0):
+          wp.atomic_or(col_mask_out, worldid, t, 0, above)
+        if multi & bit:
+          tile_offdiag_out[worldid, t] = 1
+      return
+
     prev_ta = int(-1)
     for a in range(rownnz):
-      # sparse J keeps structural zeros, e.g. flex vertices with zero barycentric weight
       if not _block_col_nonzero(efc_J_in, worldid, rowadr, rownnz, nrow, a):
         continue
       ta = efc_J_colind_in[worldid, 0, rowadr + a] // types.TILE_SIZE_JTDAJ_DENSE
@@ -3705,7 +3728,7 @@ def _cholesky_factorize_solve(
         outputs=[ctx.h_row_mask, ctx.h_col_mask, ctx.h_tile_is_diag],
       )
       wp.launch(
-        _mark_h_tile_pattern_efc(skip_unchanged, skip_noflip),
+        _mark_h_tile_pattern_efc(ctx.h_col_mask.shape[2], skip_unchanged, skip_noflip),
         dim=(d.nworld, d.njmax),
         inputs=[
           d.nefc,
