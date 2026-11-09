@@ -3148,11 +3148,11 @@ def _efc_contact_jac_sparse(cone_type: types.ConeType, nmaxdim: int, max_records
         jacp = wp.spatial_bottom(cdof) + wp.cross(wp.spatial_top(cdof), offset)
         jacr = wp.spatial_top(cdof)
         if da1 == dofid:
-          jacp_dif = wp.vec3(0.0) - jacp
-          jacr_dif = wp.vec3(0.0) - jacr
+          jacp_dif = -jacp
+          jacr_dif = -jacr
         else:
-          jacp_dif = jacp - wp.vec3(0.0)
-          jacr_dif = jacr - wp.vec3(0.0)
+          jacp_dif = jacp
+          jacr_dif = jacr
         qvel = qvel_in[worldid, dofid]
 
         for dimid in range(nmaxdim):
