@@ -3031,16 +3031,17 @@ class CompactSolverTest(parameterized.TestCase):
     np.testing.assert_allclose(d3.qacc.numpy()[0], mjd3.qacc, atol=1e-3, rtol=1e-2)
 
   @parameterized.parameters(
-    (1, "pyramidal"),
-    (2, "pyramidal"),
-    (2, "elliptic"),
+    (1, "pyramidal", "Euler"),
+    (2, "pyramidal", "Euler"),
+    (2, "elliptic", "Euler"),
+    (2, "pyramidal", "discrete"),
   )
-  def test_newton_sparse_tiles_blocked_cholesky(self, nworld, cone):
+  def test_newton_sparse_tiles_blocked_cholesky(self, nworld, cone, integrator):
     """Verifies Newton blocked Cholesky with sparse-tile and diagonal-tile awareness (nv > 96)."""
     # 18 free spheres (nv = 108, ntiles = 7): first 3 spheres in ground contact + equality
     # constraint, remaining 15 spheres in free fall (purely diagonal tiles).
-    # Parameterized over pyramidal (incremental skip_unchanged path) and elliptic (non-incremental
-    # inplace_cholesky path).
+    # Parameterized over pyramidal (incremental skip_unchanged path), elliptic (non-incremental
+    # inplace_cholesky path) and the discrete integrator (tile pattern scanned from H).
     bodies_xml = []
     for i in range(18):
       z = 0.015 if i < 3 else 0.5
@@ -3049,7 +3050,7 @@ class CompactSolverTest(parameterized.TestCase):
       )
     xml = f"""
     <mujoco>
-      <option integrator="Euler" solver="Newton" cone="{cone}" timestep="0.005" iterations="20" tolerance="1e-10">
+      <option integrator="{integrator}" solver="Newton" cone="{cone}" timestep="0.005" iterations="20" tolerance="1e-10">
         <flag warmstart="disable"/>
       </option>
       <worldbody>
@@ -3098,6 +3099,32 @@ class CompactSolverTest(parameterized.TestCase):
       mujoco.mj_forward(mjm, mjd)
       np.testing.assert_allclose(d.qacc.numpy()[w], mjd.qacc, atol=1e-3, rtol=1e-3)
       np.testing.assert_allclose(d.qfrc_constraint.numpy()[w], mjd.qfrc_constraint, atol=1e-3, rtol=1e-3)
+
+  def test_newton_full_tile_pattern_blocked_cholesky(self):
+    """A single chain couples every tile through M, so no tile can be skipped."""
+    nlink = 100
+    chain = (
+      "".join(
+        f'<body pos="0 0 -0.1"><joint type="hinge" axis="0 1 0" range="-0.05 0.05" armature="1"/>'
+        f'<geom type="capsule" size="0.01" fromto="0 0 0 0 0 -0.1" mass="0.1"/>'
+        for _ in range(nlink)
+      )
+      + "</body>" * nlink
+    )
+    xml = f"""
+    <mujoco>
+      <worldbody>{chain}</worldbody>
+    </mujoco>
+    """
+    mjm, mjd, m, d = test_data.fixture(xml=xml, qpos_noise=0.1, nconmax=16, njmax=256)
+    self.assertGreater(m.nv, solver._SPARSE_BLOCK_CHOLESKY_DIM)
+    self.assertTrue(m.M_tile_full)
+    self.assertIsNone(solver._create_solver_context(m, d).h_tile_nz)
+
+    mjw.forward(m, d)
+    mujoco.mj_forward(mjm, mjd)
+    self.assertGreater(mjd.nefc, 0)
+    np.testing.assert_allclose(d.qacc.numpy()[0], mjd.qacc, atol=1e-2, rtol=1e-3)
 
 
 if __name__ == "__main__":
