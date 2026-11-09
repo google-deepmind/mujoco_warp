@@ -19,6 +19,7 @@ import mujoco
 import numpy as np
 import warp as wp
 from absl.testing import absltest
+from absl.testing import parameterized
 
 import mujoco_warp as mjwarp
 from mujoco_warp import test_data
@@ -145,7 +146,7 @@ class IslandDiscoveryTopologyTest(absltest.TestCase):
     np.testing.assert_array_equal(d.tree_island.numpy(), np.full((d.nworld, mjm.ntree), -1, dtype=np.int32))
 
 
-class IslandDiscoveryConstraintsTest(absltest.TestCase):
+class IslandDiscoveryConstraintsTest(parameterized.TestCase):
   """Tests island discovery across all MuJoCo constraint types."""
 
   def test_site_connect_and_weld(self):
@@ -366,6 +367,423 @@ class IslandDiscoveryConstraintsTest(absltest.TestCase):
           nefc = d.nefc.numpy()[0]
           self.assertGreater(nefc, 0)
           np.testing.assert_array_equal(d.efc.island.numpy()[0, :nefc], np.zeros(nefc, dtype=np.int32))
+
+  @parameterized.parameters(
+    """
+    <tendon>
+      <spatial damping="2">
+        <site site="s0"/>
+        <site site="s1"/>
+      </spatial>
+    </tendon>
+    """,
+    """
+    <actuator>
+      <position site="s0" refsite="s1" kp="1" kv="1"/>
+    </actuator>
+    """,
+  )
+  def test_discrete_metric_couplings(self, coupling_xml):
+    """Under discrete integrator, metric tendons and actuators couple trees into one island."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml=f"""
+      <mujoco>
+        <option integrator="discrete"/>
+        <worldbody>
+          <geom type="plane" size="2 2 0.1"/>
+          <body name="b0" pos="-0.5 0 0.08">
+            <freejoint/>
+            <geom size="0.1"/>
+            <site name="s0"/>
+          </body>
+          <body name="b1" pos="0.5 0 0.08">
+            <freejoint/>
+            <geom size="0.1"/>
+            <site name="s1"/>
+          </body>
+        </worldbody>
+        {coupling_xml}
+      </mujoco>
+      """,
+      nworld=2,
+    )
+    qpos = d.qpos.numpy()
+    qpos[1, 2] = 1.0
+    qpos[1, 9] = 1.0
+    d.qpos.assign(qpos)
+    mjwarp.fwd_position(m, d)
+
+    d.nisland.fill_(-1)
+    d.tree_island.fill_(-1)
+    d.efc.island.fill_(-1)
+    island.island(m, d)
+    island.compute_island_mapping(m, d)
+
+    self.assertEqual(mjd.nisland, 1)
+    np.testing.assert_array_equal(d.nisland.numpy(), np.array([1, 0], dtype=np.int32))
+    tree_island = d.tree_island.numpy()
+    np.testing.assert_array_equal(tree_island[0], mjd.tree_island[: mjm.ntree])
+    np.testing.assert_array_equal(tree_island[1], np.full(mjm.ntree, -1, dtype=np.int32))
+    np.testing.assert_array_equal(d.efc.island.numpy()[0, : mjd.nefc], mjd.efc_island[: mjd.nefc])
+
+    # Under PGS, metric couplings are inactive (matching mj_effCouplings in C)
+    mjm.opt.solver = mujoco.mjtSolver.mjSOL_PGS
+    m.opt.solver = int(mujoco.mjtSolver.mjSOL_PGS)
+    mujoco.mj_forward(mjm, mjd)
+    d.nisland.fill_(-1)
+    d.tree_island.fill_(-1)
+    d.efc.island.fill_(-1)
+    island.island(m, d)
+    island.compute_island_mapping(m, d)
+    self.assertEqual(mjd.nisland, 2)
+    np.testing.assert_array_equal(d.nisland.numpy(), np.array([2, 0], dtype=np.int32))
+    np.testing.assert_array_equal(d.tree_island.numpy()[0], mjd.tree_island[: mjm.ntree])
+
+  @parameterized.product(
+    mode=("tendon", "slidercrank"),
+    nworld=(1, 2),
+  )
+  def test_discrete_metric_couplings_tree0_asleep_and_tendon_actuator(self, mode, nworld):
+    """Awake trees coupled by a tendon or slider-crank actuator merge when tree 0 is asleep."""
+    if mode == "tendon":
+      mjm, mjd, m, d = test_data.fixture(
+        xml="""
+        <mujoco>
+          <option integrator="discrete">
+            <flag sleep="enable"/>
+          </option>
+          <worldbody>
+            <geom type="plane" size="2 2 0.1"/>
+            <body name="b0" pos="0 0 1">
+              <freejoint/>
+              <geom size="0.1"/>
+            </body>
+            <body name="b1" pos="-0.5 0 0.08">
+              <freejoint/>
+              <geom size="0.1"/>
+              <site name="s1"/>
+            </body>
+            <body name="b2" pos="0.5 0 0.08">
+              <freejoint/>
+              <geom size="0.1"/>
+              <site name="s2"/>
+            </body>
+          </worldbody>
+          <tendon>
+            <spatial name="t12">
+              <site site="s1"/>
+              <site site="s2"/>
+            </spatial>
+          </tendon>
+          <actuator>
+            <position tendon="t12" kp="1" kv="2"/>
+          </actuator>
+        </mujoco>
+        """,
+        nworld=nworld,
+      )
+    else:
+      mjm, mjd, m, d = test_data.fixture(
+        xml="""
+        <mujoco>
+          <option integrator="discrete">
+            <flag sleep="enable"/>
+          </option>
+          <worldbody>
+            <geom type="plane" size="2 2 0.1"/>
+            <body name="b0" pos="0 0 1">
+              <freejoint/>
+              <geom size="0.1"/>
+            </body>
+            <body name="b1" pos="-0.5 0 0.08">
+              <freejoint/>
+              <geom size="0.1"/>
+              <site name="s1"/>
+            </body>
+            <body name="b2" pos="0.5 0 0.08">
+              <freejoint/>
+              <geom size="0.1"/>
+              <site name="s2"/>
+            </body>
+          </worldbody>
+          <actuator>
+            <position cranksite="s1" slidersite="s2" cranklength="0.2" kp="1" kv="2"/>
+          </actuator>
+        </mujoco>
+        """,
+        nworld=nworld,
+      )
+
+    mjwarp.fwd_position(m, d)
+    tree_awake = np.zeros((nworld, 3), dtype=np.int32)
+    tree_awake[0] = [0, 1, 1]
+    if nworld == 2:
+      tree_awake[1] = [0, 1, 0]
+    d.tree_awake.assign(tree_awake)
+
+    d.nisland.fill_(-1)
+    d.tree_island.fill_(-1)
+    d.efc.island.fill_(-1)
+    island.island(m, d)
+    island.compute_island_mapping(m, d)
+
+    self.assertEqual(mjd.nisland, 1)
+    np.testing.assert_array_equal(d.nisland.numpy()[0], mjd.nisland)
+    np.testing.assert_array_equal(d.tree_island.numpy()[0], mjd.tree_island[: mjm.ntree])
+    np.testing.assert_array_equal(d.efc.island.numpy()[0, : mjd.nefc], mjd.efc_island[: mjd.nefc])
+    if nworld == 2:
+      self.assertEqual(int(d.nisland.numpy()[1]), 1)
+      np.testing.assert_array_equal(d.tree_island.numpy()[1], np.array([-1, 0, -1], dtype=np.int32))
+      self.assertFalse(np.array_equal(d.tree_island.numpy()[0], d.tree_island.numpy()[1]))
+
+  @parameterized.product(
+    case=(
+      "stiffness_only",
+      "stiffnesspoly_only",
+      "dampingpoly_only",
+      "all_disabled",
+      "actuator_damping",
+    ),
+    nworld=(1, 2),
+  )
+  def test_eff_tendon_possible_branches(self, case, nworld):
+    """Tests eff_tendon_possible stiffness, polynomial/actuator damping, and disable flags."""
+    if case == "stiffness_only":
+      mjm, mjd, m, d = test_data.fixture(
+        xml="""
+        <mujoco>
+          <option integrator="discrete"/>
+          <worldbody>
+            <geom type="plane" size="2 2 0.1"/>
+            <body name="b0" pos="-0.5 0 0.08">
+              <freejoint/>
+              <geom size="0.1"/>
+              <site name="s0"/>
+            </body>
+            <body name="b1" pos="0.5 0 0.08">
+              <freejoint/>
+              <geom size="0.1"/>
+              <site name="s1"/>
+            </body>
+          </worldbody>
+          <tendon>
+            <spatial stiffness="5">
+              <site site="s0"/>
+              <site site="s1"/>
+            </spatial>
+          </tendon>
+        </mujoco>
+        """,
+        nworld=nworld,
+      )
+      expected_nisland = 1
+    elif case == "stiffnesspoly_only":
+      mjm, mjd, m, d = test_data.fixture(
+        xml="""
+        <mujoco>
+          <option integrator="discrete"/>
+          <worldbody>
+            <geom type="plane" size="2 2 0.1"/>
+            <body name="b0" pos="-0.5 0 0.08">
+              <freejoint/>
+              <geom size="0.1"/>
+              <site name="s0"/>
+            </body>
+            <body name="b1" pos="0.5 0 0.08">
+              <freejoint/>
+              <geom size="0.1"/>
+              <site name="s1"/>
+            </body>
+          </worldbody>
+          <tendon>
+            <spatial stiffness="0 2 0">
+              <site site="s0"/>
+              <site site="s1"/>
+            </spatial>
+          </tendon>
+        </mujoco>
+        """,
+        nworld=nworld,
+      )
+      expected_nisland = 1
+    elif case == "dampingpoly_only":
+      mjm, mjd, m, d = test_data.fixture(
+        xml="""
+        <mujoco>
+          <option integrator="discrete"/>
+          <worldbody>
+            <geom type="plane" size="2 2 0.1"/>
+            <body name="b0" pos="-0.5 0 0.08">
+              <freejoint/>
+              <geom size="0.1"/>
+              <site name="s0"/>
+            </body>
+            <body name="b1" pos="0.5 0 0.08">
+              <freejoint/>
+              <geom size="0.1"/>
+              <site name="s1"/>
+            </body>
+          </worldbody>
+          <tendon>
+            <spatial damping="0 2 0">
+              <site site="s0"/>
+              <site site="s1"/>
+            </spatial>
+          </tendon>
+        </mujoco>
+        """,
+        nworld=nworld,
+      )
+      expected_nisland = 1
+    elif case == "all_disabled":
+      mjm, mjd, m, d = test_data.fixture(
+        xml="""
+        <mujoco>
+          <option integrator="discrete">
+            <flag spring="disable" damper="disable"/>
+          </option>
+          <worldbody>
+            <geom type="plane" size="2 2 0.1"/>
+            <body name="b0" pos="-0.5 0 0.08">
+              <freejoint/>
+              <geom size="0.1"/>
+              <site name="s0"/>
+            </body>
+            <body name="b1" pos="0.5 0 0.08">
+              <freejoint/>
+              <geom size="0.1"/>
+              <site name="s1"/>
+            </body>
+          </worldbody>
+          <tendon>
+            <spatial stiffness="5" damping="2">
+              <site site="s0"/>
+              <site site="s1"/>
+            </spatial>
+          </tendon>
+        </mujoco>
+        """,
+        nworld=nworld,
+      )
+      expected_nisland = 2
+    else:
+      mjm, mjd, m, d = test_data.fixture(
+        xml="""
+        <mujoco>
+          <option integrator="discrete"/>
+          <worldbody>
+            <geom type="plane" size="2 2 0.1"/>
+            <body name="b0" pos="-0.5 0 0.08">
+              <freejoint/>
+              <geom size="0.1"/>
+              <site name="s0"/>
+            </body>
+            <body name="b1" pos="0.5 0 0.08">
+              <freejoint/>
+              <geom size="0.1"/>
+              <site name="s1"/>
+            </body>
+          </worldbody>
+          <tendon>
+            <spatial name="t">
+              <site site="s0"/>
+              <site site="s1"/>
+            </spatial>
+          </tendon>
+          <actuator>
+            <motor tendon="t" damping="2"/>
+          </actuator>
+        </mujoco>
+        """,
+        nworld=nworld,
+      )
+      expected_nisland = 1
+
+    mjds = [mjd]
+    if nworld == 2:
+      mjd1 = mujoco.MjData(mjm)
+      qpos = d.qpos.numpy()
+      qpos[1, 2] = 1.0
+      qpos[1, 9] = 1.0
+      d.qpos.assign(qpos)
+      mjd1.qpos[:] = qpos[1]
+      mujoco.mj_forward(mjm, mjd1)
+      mjds.append(mjd1)
+
+    mjwarp.fwd_position(m, d)
+
+    d.nisland.fill_(-1)
+    d.tree_island.fill_(-1)
+    d.efc.island.fill_(-1)
+    island.island(m, d)
+    island.compute_island_mapping(m, d)
+
+    self.assertEqual(mjd.nisland, expected_nisland)
+    for w in range(nworld):
+      self.assertEqual(int(d.nisland.numpy()[w]), mjds[w].nisland)
+      np.testing.assert_array_equal(d.tree_island.numpy()[w], mjds[w].tree_island[: mjm.ntree])
+      np.testing.assert_array_equal(d.efc.island.numpy()[w, : mjds[w].nefc], mjds[w].efc_island[: mjds[w].nefc])
+    if nworld == 2:
+      self.assertFalse(np.array_equal(d.nisland.numpy()[0], d.nisland.numpy()[1]))
+
+  @parameterized.parameters(1, 2)
+  def test_discrete_flex_and_passive_contact_islands(self, nworld):
+    """Tests multi-tree flex and passive flex contact island unioning under discrete integrator."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option integrator="discrete">
+          <flag sleep="enable"/>
+        </option>
+        <worldbody>
+          <geom name="floor" type="plane" size="2 2 0.1"/>
+          <body name="box" pos="0 0 0.08">
+            <freejoint/>
+            <geom size="0.1" contype="3" conaffinity="3"/>
+          </body>
+          <flexcomp name="cloth" count="2 2 1" spacing="0.06 0.06 0.06" pos="-0.03 -0.03 0.17"
+                    radius="0.02" mass="0.2">
+            <contact selfcollide="none" passive="true" contype="2" conaffinity="2"/>
+            <elasticity young="500" poisson="0.3" thickness="0.01" elastic2d="stretch" damping="0.01"/>
+          </flexcomp>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=nworld,
+    )
+    mjds = [mjd]
+    if nworld == 2:
+      mjd1 = mujoco.MjData(mjm)
+      qpos = d.qpos.numpy()
+      # Lift the box off the floor and away from the cloth in world 1 so nefc == 0
+      # while sleep + discrete + stiff flex still unions the 4 cloth vertex trees into 1 island
+      qpos[1, 2] = 2.0
+      d.qpos.assign(qpos)
+      mjd1.qpos[:] = qpos[1]
+      mjds.append(mjd1)
+
+    mjwarp.fwd_position(m, d)
+    d.nisland.fill_(-1)
+    d.tree_island.fill_(-1)
+    d.efc.island.fill_(-1)
+    island.island(m, d)
+    island.compute_island_mapping(m, d)
+
+    nisland = d.nisland.numpy()
+    tree_island = d.tree_island.numpy()
+    # World 0: floor EFC + box-cloth passive contact merge all 5 trees into 1 island
+    self.assertEqual(int(nisland[0]), 1)
+    np.testing.assert_array_equal(tree_island[0], np.zeros(mjm.ntree, dtype=np.int32))
+    if nworld == 2:
+      # World 1: nefc == 0, box (-1) is unconstrained while 4 cloth trees merge into island 0
+      self.assertEqual(int(nisland[1]), 1)
+      np.testing.assert_array_equal(tree_island[1], np.array([-1, 0, 0, 0, 0], dtype=np.int32))
+      self.assertFalse(np.array_equal(tree_island[0], tree_island[1]))
+
+    for w in range(nworld):
+      mujoco.mj_forward(mjm, mjds[w])
+      self.assertEqual(int(nisland[w]), mjds[w].nisland)
+      np.testing.assert_array_equal(tree_island[w], mjds[w].tree_island[: mjm.ntree])
 
 
 class IslandDiscoveryExecutionTest(absltest.TestCase):

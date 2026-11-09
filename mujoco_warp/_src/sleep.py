@@ -17,6 +17,7 @@ from typing import Optional
 
 import warp as wp
 
+from mujoco_warp._src import support
 from mujoco_warp._src import types
 from mujoco_warp._src.types import ContactType
 from mujoco_warp._src.types import DeterminismType
@@ -26,6 +27,7 @@ from mujoco_warp._src.types import IntegratorType
 from mujoco_warp._src.types import ObjType
 from mujoco_warp._src.types import SleepPolicy
 from mujoco_warp._src.types import SleepState
+from mujoco_warp._src.types import SolverType
 from mujoco_warp._src.types import WrapType
 from mujoco_warp._src.warp_util import cache_kernel
 from mujoco_warp._src.warp_util import event_scope
@@ -650,6 +652,8 @@ def _wake_tendon_kernel(
   # Model:
   ntree: int,
   ntendon: int,
+  opt_integrator: int,
+  opt_solver: int,
   opt_disableflags: int,
   body_treeid: wp.array[int],
   jnt_bodyid: wp.array[int],
@@ -657,9 +661,14 @@ def _wake_tendon_kernel(
   site_bodyid: wp.array[int],
   tendon_adr: wp.array[int],
   tendon_num: wp.array[int],
+  tendon_actuatorid: wp.array[int],
   tendon_limited: wp.array[int],
   tendon_range: wp.array2d[wp.vec2],
   tendon_margin: wp.array2d[float],
+  tendon_stiffness: wp.array2d[float],
+  tendon_stiffnesspoly: wp.array2d[wp.vec2],
+  tendon_damping: wp.array2d[float],
+  tendon_dampingpoly: wp.array2d[wp.vec2],
   tendon_frictionloss: wp.array2d[float],
   wrap_type: wp.array[int],
   wrap_objid: wp.array[int],
@@ -699,17 +708,33 @@ def _wake_tendon_kernel(
         if val < wakeval:
           wakeval = val
 
-  # Pass 2: If at least one tree is awake and a limit or frictionloss constraint is active,
-  # wake all sleeping trees
+  # Pass 2: Wake sleeping trees if limit, frictionloss, or discrete metric is active
   if any_awake == 1:
-    has_limit = not (opt_disableflags & DisableBit.LIMIT) and _tendon_limit_active(
-      tendon_limited, tendon_range, tendon_margin, ten_length_in, worldid, tenid
+    has_limit = (
+      not (opt_disableflags & DisableBit.CONSTRAINT)
+      and not (opt_disableflags & DisableBit.LIMIT)
+      and _tendon_limit_active(tendon_limited, tendon_range, tendon_margin, ten_length_in, worldid, tenid)
     )
     has_friction = (
-      not (opt_disableflags & DisableBit.FRICTIONLOSS)
+      not (opt_disableflags & DisableBit.CONSTRAINT)
+      and not (opt_disableflags & DisableBit.FRICTIONLOSS)
       and tendon_frictionloss[worldid % tendon_frictionloss.shape[0], tenid] > 0.0
     )
-    if has_limit or has_friction:
+    is_metric = (
+      opt_integrator == IntegratorType.DISCRETE
+      and (opt_solver == SolverType.CG or opt_solver == SolverType.NEWTON)
+      and support.eff_tendon_possible(
+        opt_disableflags,
+        tendon_actuatorid,
+        tendon_stiffness,
+        tendon_stiffnesspoly,
+        tendon_damping,
+        tendon_dampingpoly,
+        worldid,
+        tenid,
+      )
+    )
+    if has_limit or has_friction or is_metric:
       for i in range(num):
         idx = adr + i
         t_type = wrap_type[idx]
@@ -1124,8 +1149,9 @@ def wake_collision(m: types.Model, d: types.Data, woke: Optional[wp.array] = Non
 
 @event_scope
 def wake_tendon(m: types.Model, d: types.Data, woke: Optional[wp.array] = None):
-  """Wakes sleeping trees with constrained tendons."""
-  if m.ntendon == 0 or (m.opt.disableflags & DisableBit.CONSTRAINT):
+  """Wakes sleeping trees with constrained or metric tendons."""
+  is_metric = m.opt.integrator == IntegratorType.DISCRETE and m.opt.solver in (SolverType.CG, SolverType.NEWTON)
+  if m.ntendon == 0 or ((m.opt.disableflags & DisableBit.CONSTRAINT) and not is_metric):
     return
 
   if woke is None:
@@ -1136,6 +1162,8 @@ def wake_tendon(m: types.Model, d: types.Data, woke: Optional[wp.array] = None):
     inputs=[
       m.ntree,
       m.ntendon,
+      m.opt.integrator,
+      m.opt.solver,
       m.opt.disableflags,
       m.body_treeid,
       m.jnt_bodyid,
@@ -1143,9 +1171,14 @@ def wake_tendon(m: types.Model, d: types.Data, woke: Optional[wp.array] = None):
       m.site_bodyid,
       m.tendon_adr,
       m.tendon_num,
+      m.tendon_actuatorid,
       m.tendon_limited,
       m.tendon_range,
       m.tendon_margin,
+      m.tendon_stiffness,
+      m.tendon_stiffnesspoly,
+      m.tendon_damping,
+      m.tendon_dampingpoly,
       m.tendon_frictionloss,
       m.wrap_type,
       m.wrap_objid,
