@@ -14,6 +14,8 @@
 # ==============================================================================
 """Tests the collision driver."""
 
+import copy
+
 import mujoco
 import numpy as np
 import warp as wp
@@ -1147,6 +1149,107 @@ class CollisionTest(parameterized.TestCase):
       i = int(np.nonzero(match)[0][0])
       np.testing.assert_allclose(frame[j][:3], mjd.contact.frame[i][:3], atol=1e-6)
       np.testing.assert_allclose(includemargin[j], mjd.contact.includemargin[i], atol=1e-6)
+
+  @parameterized.product(nworld=(1, 2), broadphase=("NXN", "SAP_SEGMENTED"), o_margin=(0.03, 0.0))
+  def test_contact_override(self, nworld, broadphase, o_margin):
+    """EnableBit.OVERRIDE replaces the contact margin, solref, solimp and friction per world."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml=f"""
+      <mujoco>
+        <option o_margin="{o_margin}" o_solref=".03 .8" o_solimp=".7 .9 .002 .4 3" o_friction=".6 .5 .004 .0002 .0001">
+          <flag override="enable"/>
+        </option>
+        <worldbody>
+          <geom name="floor" type="plane" size="1 1 .1" friction="2 .01 .001" solref=".01 1" priority="1"/>
+          <body pos="0 0 .115">
+            <freejoint/>
+            <geom name="ball" type="sphere" size=".1" margin=".05" gap=".02" solimp=".5 .6 .01 .3 1"/>
+          </body>
+          <body pos=".5 0 .105">
+            <freejoint/>
+            <geom name="box" type="box" size=".1 .1 .1" margin=".02" friction=".3"/>
+          </body>
+          <body pos=".55 .02 .33">
+            <freejoint/>
+            <geom name="ball2" type="sphere" size=".12" solref=".05 2"/>
+          </body>
+          <body pos="-.5 0 .06">
+            <freejoint/>
+            <geom name="capsule" type="capsule" size=".05 .1" euler="90 0 0" condim="4"/>
+          </body>
+        </worldbody>
+        <contact>
+          <pair geom1="box" geom2="ball2" margin=".04" gap=".01" solref=".04 1.5" solreffriction=".02 .5"
+                friction="1.5 1.4 .01 .002 .001" condim="6"/>
+        </contact>
+      </mujoco>
+      """,
+      nworld=nworld,
+      overrides={"opt.broadphase": broadphase},
+    )
+
+    # world 1 overrides with different values, evaluated on CPU with a second model
+    mjms, mjds = [mjm], [mjd]
+    if nworld == 2:
+      mjm1 = copy.copy(mjm)
+      mjm1.opt.o_margin = 2.0 * o_margin
+      mjm1.opt.o_solref[:] = [0.02, 1.2]
+      mjm1.opt.o_solimp[:] = [0.8, 0.95, 0.001, 0.5, 2.0]
+      mjm1.opt.o_friction[:] = [0.9, 0.8, 0.003, 0.0003, 0.0002]
+      mjd1 = mujoco.MjData(mjm1)
+      mujoco.mj_forward(mjm1, mjd1)
+      mjms.append(mjm1)
+      mjds.append(mjd1)
+      m.opt.o_margin = wp.array([mjm.opt.o_margin, mjm1.opt.o_margin], dtype=float)
+      m.opt.o_solref = wp.array(np.stack([mjm.opt.o_solref, mjm1.opt.o_solref]), dtype=wp.vec2)
+      m.opt.o_solimp = wp.array(np.stack([mjm.opt.o_solimp, mjm1.opt.o_solimp]), dtype=types.vec5)
+      m.opt.o_friction = wp.array(np.stack([mjm.opt.o_friction, mjm1.opt.o_friction]), dtype=types.vec5)
+
+    for field in ("dist", "pos", "includemargin", "friction", "solref", "solreffriction", "solimp"):
+      getattr(d.contact, field).fill_(wp.inf)
+    d.contact.dim.fill_(-1)
+    d.qacc.fill_(wp.inf)
+    mjw.forward(m, d)
+
+    nacon = int(d.nacon.numpy()[0])
+    worldid = d.contact.worldid.numpy()[:nacon]
+    geom = np.sort(d.contact.geom.numpy()[:nacon], axis=1)
+    dist = d.contact.dist.numpy()[:nacon]
+    pos = d.contact.pos.numpy()[:nacon]
+    includemargin = d.contact.includemargin.numpy()[:nacon]
+    solref = d.contact.solref.numpy()[:nacon]
+    solreffriction = d.contact.solreffriction.numpy()[:nacon]
+    solimp = d.contact.solimp.numpy()[:nacon]
+    friction = d.contact.friction.numpy()[:nacon]
+    dim = d.contact.dim.numpy()[:nacon]
+
+    for w, (mjm_w, mjd_w) in enumerate(zip(mjms, mjds)):
+      ncon = mjd_w.ncon
+      mj_geom = np.sort(np.stack([mjd_w.contact.geom1[:ncon], mjd_w.contact.geom2[:ncon]], axis=1), axis=1)
+      idx = np.flatnonzero(worldid == w)
+      self.assertEqual(len(idx), ncon)
+      self.assertEqual(d.nefc.numpy()[w], mjd_w.nefc)
+      for j in idx:
+        match = (
+          np.all(mj_geom == geom[j], axis=1)
+          & np.isclose(mjd_w.contact.dist[:ncon], dist[j], atol=1e-5)
+          & np.all(np.isclose(mjd_w.contact.pos[:ncon], pos[j], atol=1e-5), axis=1)
+        )
+        self.assertTrue(match.any(), f"MJWarp contact {j} not found in MuJoCo contacts of world {w}")
+        i = int(np.nonzero(match)[0][0])
+        self.assertEqual(dim[j], mjd_w.contact.dim[i])
+        _assert_eq(includemargin[j], mjd_w.contact.includemargin[i], "includemargin")
+        _assert_eq(solref[j], mjd_w.contact.solref[i], "solref")
+        _assert_eq(solreffriction[j], mjd_w.contact.solreffriction[i], "solreffriction")
+        _assert_eq(solimp[j], mjd_w.contact.solimp[i], "solimp")
+        _assert_eq(friction[j], mjd_w.contact.friction[i], "friction")
+      _assert_eq(d.qacc.numpy()[w], mjd_w.qacc, "qacc")
+
+    if nworld == 2:
+      # every contact of a world carries that world's override
+      self.assertFalse(np.allclose(solref[worldid == 0][0], solref[worldid == 1][0]))
+      if o_margin > 0.0:
+        self.assertFalse(np.allclose(d.qacc.numpy()[0], d.qacc.numpy()[1]))
 
   @parameterized.parameters(
     (2.05, 4),  # shallow (within margin)

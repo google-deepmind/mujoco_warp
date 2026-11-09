@@ -289,10 +289,12 @@ def _broadphase_filter(
   ngeom_gap: int,
   npair_margin: int,
   npair_gap: int,
+  override: bool = False,
 ):
   @wp.func
   def func(
     # Model:
+    opt_o_margin: wp.array[float],
     geom_aabb: wp.array3d[wp.vec3],
     geom_rbound: wp.array2d[float],
     geom_margin: wp.array2d[float],
@@ -333,6 +335,13 @@ def _broadphase_filter(
       gap1, gap2 = geom_gap[gap_id, geom1], geom_gap[gap_id, geom2]  # kernel_analyzer: ignore
       effective_margin1 = margin1 + gap1
       effective_margin2 = margin2 + gap2
+    if wp.static(override):
+      # MuJoCo expands each bounding volume by half of o_margin (without the gap) and keeps the
+      # geom margins when o_margin is zero
+      o_margin = opt_o_margin[worldid % opt_o_margin.shape[0]]
+      if o_margin > 0.0:
+        effective_margin1 = 0.5 * o_margin
+        effective_margin2 = 0.5 * o_margin
     xpos1, xpos2 = geom_xpos_in[worldid, geom1], geom_xpos_in[worldid, geom2]
     xmat1, xmat2 = geom_xmat_in[worldid, geom1], geom_xmat_in[worldid, geom2]
 
@@ -444,11 +453,12 @@ def _sap_pair_margin(npair_margin: int, npair_gap: int):
 
 
 @cache_kernel
-def _sap_project(opt_broadphase: int, ngeom_dataid: int, ngeom_pair_margin: int):
+def _sap_project(opt_broadphase: int, ngeom_dataid: int, ngeom_pair_margin: int, override: bool = False):
   @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
   def sap_project(
     # Model:
     ngeom: int,
+    opt_o_margin: wp.array[float],
     geom_type: wp.array[int],
     geom_dataid: wp.array2d[int],
     geom_rbound: wp.array2d[float],
@@ -493,6 +503,11 @@ def _sap_project(opt_broadphase: int, ngeom_dataid: int, ngeom_pair_margin: int)
     # explicit contact pairs use the pair margin and gap, which can exceed the geom margins
     pair_margin_id = worldid % ngeom_pair_margin if wp.static(ngeom_pair_margin > 1) else 0
     radius = rbound + wp.max(margin, geom_pair_margin_in[pair_margin_id, geomid])
+    if wp.static(override):
+      # see _broadphase_filter
+      o_margin = opt_o_margin[worldid % opt_o_margin.shape[0]]
+      if o_margin > 0.0:
+        radius = rbound + 0.5 * o_margin
     center = wp.dot(direction_in, xpos)
 
     if not wp.isnan(center):
@@ -517,11 +532,13 @@ def _sap_broadphase(
   ngeom_dataid: int,
   enable_sleep: bool = False,
   incremental: bool = False,
+  override: bool = False,
 ):
   @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
   def kernel(
     # Model:
     ngeom: int,
+    opt_o_margin: wp.array[float],
     geom_type: wp.array[int],
     geom_bodyid: wp.array[int],
     geom_dataid: wp.array2d[int],
@@ -622,8 +639,10 @@ def _sap_broadphase(
             ngeom_gap,
             npair_margin,
             npair_gap,
+            override,
           )
         )(
+          opt_o_margin,
           geom_aabb,
           geom_rbound,
           geom_margin,
@@ -715,6 +734,7 @@ def sap_broadphase(
   incremental = awake_prev is not None
   awake_prev_in = awake_prev if awake_prev is not None else d.body_awake
   enable_sleep = bool(m.opt.enableflags & EnableBit.SLEEP)
+  override = bool(m.opt.enableflags & EnableBit.OVERRIDE)
 
   # TODO(team): direction
 
@@ -742,10 +762,11 @@ def sap_broadphase(
   )
 
   wp.launch(
-    kernel=_sap_project(m.opt.broadphase, m.geom_dataid.shape[0], ngeom_pair_margin),
+    kernel=_sap_project(m.opt.broadphase, m.geom_dataid.shape[0], ngeom_pair_margin, override),
     dim=(d.nworld, m.ngeom),
     inputs=[
       m.ngeom,
+      m.opt.o_margin,
       m.geom_type,
       m.geom_dataid,
       m.geom_rbound,
@@ -802,10 +823,12 @@ def sap_broadphase(
       m.geom_dataid.shape[0],
       enable_sleep,
       incremental,
+      override,
     ),
     dim=nsweep,
     inputs=[
       m.ngeom,
+      m.opt.o_margin,
       m.geom_type,
       m.geom_bodyid,
       m.geom_dataid,
@@ -847,10 +870,12 @@ def _nxn_broadphase(
   ngeom_dataid: int,
   enable_sleep: bool = False,
   incremental: bool = False,
+  override: bool = False,
 ):
   @wp.kernel(module="unique", enable_backward=False, grid_stride=True)
   def kernel(
     # Model:
+    opt_o_margin: wp.array[float],
     geom_type: wp.array[int],
     geom_bodyid: wp.array[int],
     geom_dataid: wp.array2d[int],
@@ -925,8 +950,10 @@ def _nxn_broadphase(
           ngeom_gap,
           npair_margin,
           npair_gap,
+          override,
         )
       )(
+        opt_o_margin,
         geom_aabb,
         geom_rbound,
         geom_margin,
@@ -1071,6 +1098,7 @@ def nxn_broadphase(
   restricts the emitted pairs.
   """
   enable_sleep = bool(m.opt.enableflags & EnableBit.SLEEP)
+  override = bool(m.opt.enableflags & EnableBit.OVERRIDE)
   incremental = awake_prev is not None
   awake_prev_in = awake_prev if awake_prev is not None else d.body_awake
 
@@ -1094,6 +1122,7 @@ def nxn_broadphase(
       m.geom_dataid.shape[0],
       enable_sleep,
       incremental,
+      override,
     )
     block_size, min_grid_size = wp.get_suggested_block_size(kernel, d.geom_xpos.device)
     wp.launch(
@@ -1102,6 +1131,7 @@ def nxn_broadphase(
       block_dim=m.block_dim.nxn_broadphase,
       max_blocks=8 * block_size * min_grid_size // m.block_dim.nxn_broadphase,
       inputs=[
+        m.opt.o_margin,
         m.geom_type,
         m.geom_bodyid,
         m.geom_dataid,

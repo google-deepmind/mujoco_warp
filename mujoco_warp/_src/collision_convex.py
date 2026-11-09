@@ -177,6 +177,11 @@ def ccd_hfield_kernel_builder(
   def ccd_hfield_kernel(
     # Model:
     opt_ccd_tolerance: wp.array[float],
+    opt_o_margin: wp.array[float],
+    opt_o_solref: wp.array[wp.vec2],
+    opt_o_solimp: wp.array[vec5],
+    opt_o_friction: wp.array[vec5],
+    opt_enableflags: int,
     geom_type: wp.array[int],
     geom_condim: wp.array[int],
     geom_dataid: wp.array2d[int],
@@ -301,6 +306,11 @@ def ccd_hfield_kernel_builder(
       return
 
     _, margin, gap, condim, friction, solref, solreffriction, solimp, adhesion = contact_params(
+      opt_o_margin,
+      opt_o_solref,
+      opt_o_solimp,
+      opt_o_friction,
+      opt_enableflags,
       geom_condim,
       geom_priority,
       geom_solmix,
@@ -770,6 +780,10 @@ def ccd_kernel_builder(
   def eval_ccd_write_contact(
     # Model:
     opt_ccd_tolerance: wp.array[float],
+    opt_o_solref: wp.array[wp.vec2],
+    opt_o_solimp: wp.array[vec5],
+    opt_o_friction: wp.array[vec5],
+    opt_enableflags: int,
     geom_condim: wp.array[int],
     geom_priority: wp.array[int],
     geom_solmix: wp.array2d[float],
@@ -968,6 +982,10 @@ def ccd_kernel_builder(
           witness2[0] = w2
 
     condim, friction, solref, solreffriction, solimp, adhesion = contact_material_params(
+      opt_o_solref,
+      opt_o_solimp,
+      opt_o_friction,
+      opt_enableflags,
       geom_condim,
       geom_priority,
       geom_solmix,
@@ -1044,6 +1062,11 @@ def ccd_kernel_builder(
   def ccd_kernel(
     # Model:
     opt_ccd_tolerance: wp.array[float],
+    opt_o_margin: wp.array[float],
+    opt_o_solref: wp.array[wp.vec2],
+    opt_o_solimp: wp.array[vec5],
+    opt_o_friction: wp.array[vec5],
+    opt_enableflags: int,
     geom_type: wp.array[int],
     geom_condim: wp.array[int],
     geom_dataid: wp.array2d[int],
@@ -1139,6 +1162,8 @@ def ccd_kernel_builder(
       worldid = collision_worldid_in[collisionid]
       pairid = collision_pairid_in[collisionid]
       margin, gap = contact_margin_gap(
+        opt_o_margin,
+        opt_enableflags,
         geom_margin,
         geom_gap,
         pair_margin,
@@ -1175,6 +1200,10 @@ def ccd_kernel_builder(
 
       eval_ccd_write_contact(
         opt_ccd_tolerance,
+        opt_o_solref,
+        opt_o_solimp,
+        opt_o_friction,
+        opt_enableflags,
         geom_condim,
         geom_priority,
         geom_solmix,
@@ -1343,7 +1372,7 @@ def convex_narrowphase(m: Model, d: Data, ctx: CollisionContext, collision_table
     d.nacon,
   ]
 
-  # Launch heightfield collision kernels (no multiccd args, 72 args total)
+  # Launch heightfield collision kernels (no multiccd args)
   for geom_pair in collision_table:
     g1 = geom_pair[0].value
     g2 = geom_pair[1].value
@@ -1354,6 +1383,11 @@ def convex_narrowphase(m: Model, d: Data, ctx: CollisionContext, collision_table
         dim=d.naconmax,
         inputs=[
           m.opt.ccd_tolerance,
+          m.opt.o_margin,
+          m.opt.o_solref,
+          m.opt.o_solimp,
+          m.opt.o_friction,
+          m.opt.enableflags,
           m.geom_type,
           m.geom_condim,
           m.geom_dataid,
@@ -1460,6 +1494,11 @@ def convex_narrowphase(m: Model, d: Data, ctx: CollisionContext, collision_table
         block_dim=m.block_dim.convex_ccd,
         inputs=[
           m.opt.ccd_tolerance,
+          m.opt.o_margin,
+          m.opt.o_solref,
+          m.opt.o_solimp,
+          m.opt.o_friction,
+          m.opt.enableflags,
           m.geom_type,
           m.geom_condim,
           m.geom_dataid,

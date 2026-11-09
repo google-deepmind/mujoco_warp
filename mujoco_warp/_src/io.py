@@ -472,6 +472,9 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
     if unsupported:
       raise NotImplementedError(f"{mj_type(unsupported).name} is unsupported.")
 
+  if (mjm.opt.enableflags & mujoco.mjtEnableBit.mjENBL_OVERRIDE) and mjm.nflex > 0:
+    raise NotImplementedError("Contact parameter override is not supported for models with flexes.")
+
   if (mjm.opt.enableflags & mujoco.mjtEnableBit.mjENBL_SLEEP) and (mjm.eq_type == mujoco.mjtEq.mjEQ_FLEX).any():
     raise NotImplementedError("Flex equality constraints are not supported with sleeping enabled.")
 

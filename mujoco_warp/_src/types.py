@@ -372,15 +372,17 @@ class EnableBit(enum.IntFlag):
   """Enable optional feature bitflags.
 
   Attributes:
+    OVERRIDE: override contact parameters with opt.o_margin, o_solref, o_solimp and o_friction
     ENERGY: energy computation
     INVDISCRETE: discrete-time inverse dynamics
     SLEEP: sleeping
   """
 
+  OVERRIDE = mujoco.mjtEnableBit.mjENBL_OVERRIDE
   ENERGY = mujoco.mjtEnableBit.mjENBL_ENERGY
   INVDISCRETE = mujoco.mjtEnableBit.mjENBL_INVDISCRETE
   SLEEP = mujoco.mjtEnableBit.mjENBL_SLEEP
-  # unsupported: OVERRIDE, FWDINV, ISLAND, DIAGEXACT
+  # unsupported: FWDINV, ISLAND, DIAGEXACT
 
 
 class SleepPolicy(enum.IntEnum):
@@ -1082,6 +1084,10 @@ class Option:
     magnetic: global magnetic flux
     density: density of medium
     viscosity: viscosity of medium
+    o_margin: contact margin when EnableBit.OVERRIDE is set
+    o_solref: contact solref and solreffriction when EnableBit.OVERRIDE is set
+    o_solimp: contact solimp when EnableBit.OVERRIDE is set
+    o_friction: contact friction when EnableBit.OVERRIDE is set
     integrator: integration mode (IntegratorType)
     cone: type of friction cone (ConeType)
     solver: solver algorithm (SolverType)
@@ -1124,6 +1130,10 @@ class Option:
   magnetic: array("*", wp.vec3)
   density: array("*", float)
   viscosity: array("*", float)
+  o_margin: array("*", float)
+  o_solref: array("*", wp.vec2)
+  o_solimp: array("*", vec5)
+  o_friction: array("*", vec5)
   integrator: int
   cone: int
   solver: int

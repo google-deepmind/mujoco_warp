@@ -761,6 +761,11 @@ def gradient_descent(
 def _sdf_narrowphase(
   # Model:
   nmeshface: int,
+  opt_o_margin: wp.array[float],
+  opt_o_solref: wp.array[wp.vec2],
+  opt_o_solimp: wp.array[vec5],
+  opt_o_friction: wp.array[vec5],
+  opt_enableflags: int,
   oct_child: wp.array[vec8i],
   oct_aabb: wp.array2d[wp.vec3],
   oct_coeff: wp.array[vec8],
@@ -847,6 +852,11 @@ def _sdf_narrowphase(
     return
   worldid = collision_worldid_in[contact_tid]
   _, margin, gap, condim, friction, solref, solreffriction, solimp, adhesion = contact_params(
+    opt_o_margin,
+    opt_o_solref,
+    opt_o_solimp,
+    opt_o_friction,
+    opt_enableflags,
     geom_condim,
     geom_priority,
     geom_solmix,
@@ -1048,6 +1058,11 @@ def sdf_narrowphase(m: Model, d: Data, ctx: CollisionContext):
     dim=(m.opt.sdf_initpoints, d.naconmax),
     inputs=[
       m.nmeshface,
+      m.opt.o_margin,
+      m.opt.o_solref,
+      m.opt.o_solimp,
+      m.opt.o_friction,
+      m.opt.enableflags,
       m.oct_child,
       m.oct_aabb,
       m.oct_coeff,

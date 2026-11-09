@@ -24,6 +24,7 @@ from mujoco_warp._src.math import safe_div
 from mujoco_warp._src.types import MJ_MINMU
 from mujoco_warp._src.types import MJ_MINVAL
 from mujoco_warp._src.types import ContactType
+from mujoco_warp._src.types import EnableBit
 from mujoco_warp._src.types import GeomType
 from mujoco_warp._src.types import mat63
 from mujoco_warp._src.types import vec5
@@ -294,6 +295,8 @@ def write_contact(
 @wp.func
 def contact_margin_gap(
   # Model:
+  opt_o_margin: wp.array[float],
+  opt_enableflags: int,
   geom_margin: wp.array2d[float],
   geom_gap: wp.array2d[float],
   pair_margin: wp.array2d[float],
@@ -314,12 +317,19 @@ def contact_margin_gap(
     margin = geom_margin[margin_id, g1] + geom_margin[margin_id, g2]
     gap = geom_gap[gap_id, g1] + geom_gap[gap_id, g2]
 
+  if opt_enableflags & EnableBit.OVERRIDE:
+    margin = opt_o_margin[worldid % opt_o_margin.shape[0]]
+
   return margin, gap
 
 
 @wp.func
 def contact_material_params(
   # Model:
+  opt_o_solref: wp.array[wp.vec2],
+  opt_o_solimp: wp.array[vec5],
+  opt_o_friction: wp.array[vec5],
+  opt_enableflags: int,
   geom_condim: wp.array[int],
   geom_priority: wp.array[int],
   geom_solmix: wp.array2d[float],
@@ -401,6 +411,13 @@ def contact_material_params(
     solreffriction = wp.vec2(0.0, 0.0)
     solimp = mix * geom_solimp[solimp_id, g1] + (1.0 - mix) * geom_solimp[solimp_id, g2]
 
+  if opt_enableflags & EnableBit.OVERRIDE:
+    # mj_setContact assigns o_solref to both solref and solreffriction
+    solref = opt_o_solref[worldid % opt_o_solref.shape[0]]
+    solreffriction = solref
+    solimp = opt_o_solimp[worldid % opt_o_solimp.shape[0]]
+    friction = opt_o_friction[worldid % opt_o_friction.shape[0]]
+
   friction = vec5(
     wp.max(MJ_MINMU, friction[0]),
     wp.max(MJ_MINMU, friction[1]),
@@ -416,6 +433,11 @@ def contact_material_params(
 @wp.func
 def contact_params(
   # Model:
+  opt_o_margin: wp.array[float],
+  opt_o_solref: wp.array[wp.vec2],
+  opt_o_solimp: wp.array[vec5],
+  opt_o_friction: wp.array[vec5],
+  opt_enableflags: int,
   geom_condim: wp.array[int],
   geom_priority: wp.array[int],
   geom_solmix: wp.array2d[float],
@@ -447,8 +469,14 @@ def contact_params(
   geoms = collision_pair_in[cid]
   pairid = collision_pairid_in[cid][0]
 
-  margin, gap = contact_margin_gap(geom_margin, geom_gap, pair_margin, pair_gap, geoms, pairid, worldid)
+  margin, gap = contact_margin_gap(
+    opt_o_margin, opt_enableflags, geom_margin, geom_gap, pair_margin, pair_gap, geoms, pairid, worldid
+  )
   condim, friction, solref, solreffriction, solimp, adhesion = contact_material_params(
+    opt_o_solref,
+    opt_o_solimp,
+    opt_o_friction,
+    opt_enableflags,
     geom_condim,
     geom_priority,
     geom_solmix,

@@ -2771,6 +2771,47 @@ class IOTest(parameterized.TestCase):
     with self.assertRaises(NotImplementedError):
       mjwarp.put_model(mjm)
 
+  def test_override(self):
+    """Verify loading a model with contact parameter override enabled."""
+    _, _, m, _ = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option o_margin=".03" o_solref=".03 .8" o_solimp=".7 .9 .002 .4 3" o_friction=".6 .5 .004 .0002 .0001">
+          <flag override="enable"/>
+        </option>
+        <worldbody>
+          <geom type="plane" size="1 1 .1"/>
+          <body>
+            <freejoint/>
+            <geom type="sphere" size=".1"/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """
+    )
+
+    self.assertTrue(m.opt.enableflags & types.EnableBit.OVERRIDE)
+    np.testing.assert_allclose(m.opt.o_margin.numpy(), [0.03])
+    np.testing.assert_allclose(m.opt.o_solref.numpy(), [[0.03, 0.8]])
+    np.testing.assert_allclose(m.opt.o_solimp.numpy(), [[0.7, 0.9, 0.002, 0.4, 3.0]])
+    np.testing.assert_allclose(m.opt.o_friction.numpy(), [[0.6, 0.5, 0.004, 0.0002, 0.0001]])
+
+  def test_override_flex_error(self):
+    """Verify loading a flex model with contact parameter override raises NotImplementedError."""
+    with self.assertRaises(NotImplementedError):
+      test_data.fixture(
+        xml="""
+        <mujoco>
+          <option>
+            <flag override="enable"/>
+          </option>
+          <worldbody>
+            <flexcomp name="rope" type="grid" count="3 1 1" spacing=".1 .1 .1" dim="1" radius=".01" mass="1"/>
+          </worldbody>
+        </mujoco>
+        """
+      )
+
   # TODO(team): remove version check once mujoco >= 3.16.1 is required.
   @absltest.skipIf(not util_pkg.check_version("mujoco>=3.16.1"), "Requires MuJoCo >= 3.16.1")
   def test_flex_rod_hinge_map(self):
