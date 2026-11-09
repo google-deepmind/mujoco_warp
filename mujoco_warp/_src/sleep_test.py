@@ -33,6 +33,37 @@ wp.set_module_options({"enable_backward": False})
 
 
 class SleepTest(parameterized.TestCase):
+  def test_compact_solve_initial_state(self):
+    """The sparse compact solve reads only workspace put_data initializes (fresh memory is NaN)."""
+    mjm = mujoco.MjModel.from_xml_string("""
+      <mujoco>
+        <option jacobian="sparse"><flag sleep="enable"/></option>
+        <worldbody>
+          <geom type="plane" size="5 5 .1"/>
+          <body pos="0 0 .1"><freejoint/><geom type="box" size=".1 .1 .1"/></body>
+          <body pos="1 0 .1"><freejoint/><geom type="box" size=".1 .1 .1"/></body>
+        </worldbody>
+      </mujoco>
+    """)
+    mjd = mujoco.MjData(mjm)
+    mujoco.mj_forward(mjm, mjd)
+    m = mjwarp.put_model(mjm)
+    empty = wp.empty
+
+    def nan_empty(*args, **kwargs):
+      arr = empty(*args, **kwargs)
+      if arr.size and arr.dtype == wp.float32:
+        arr.fill_(float("nan"))
+      return arr
+
+    wp.empty = nan_empty
+    try:
+      d = mjwarp.put_data(mjm, mjd, nconmax=16, njmax=64)
+    finally:
+      wp.empty = empty
+    mjwarp.step(m, d)
+    self.assertTrue(np.isfinite(d.qacc.numpy()).all())
+
   @parameterized.parameters(1, 2)
   def test_sleep_initiation(self, nworld):
     """Verify that a stationary body on a flat plane goes to sleep."""
