@@ -3206,7 +3206,7 @@ def _eff_flex_rod_stiff(deterministic: bool = False):
 
     j_psi = mat43()
     wt = float(0.0)
-    if wp.static(ROD_HINGE_SIZE == 10) and verts[3] < 0 and ok_chain:
+    if verts[3] < 0 and ok_chain:
       wt_cand = (s1 + sd) * 2.0 * flex_bending[adr + 8]
       if wt_cand > 0.0:
         x0 = flexvert_xpos_in[worldid, verts[0]]

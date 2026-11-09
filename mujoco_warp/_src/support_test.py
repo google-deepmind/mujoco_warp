@@ -1124,8 +1124,6 @@ class SupportTest(parameterized.TestCase):
 
   def test_rod_support_lookups(self):
     """Tests precomputed 1D DER rod lookups: twist joints and incident elements."""
-    if io.types.ROD_HINGE_SIZE != 10:
-      self.skipTest("Requires 1D flex rod torsion support in MuJoCo")
     mjm, _, m, _ = test_data.fixture(
       xml="""
       <mujoco>
@@ -1264,8 +1262,6 @@ class SupportTest(parameterized.TestCase):
 
   def test_rod_box_elem_pose_and_no_state_roll(self):
     """Tests rod_box_elem orthonormal frame, twist rotation, and rotated-root no-state start."""
-    if io.types.ROD_HINGE_SIZE != 10:
-      self.skipTest("Requires 1D flex rod torsion support in MuJoCo")
     mjm, mjd, m, d = test_data.fixture(
       xml="""
       <mujoco>

@@ -38,7 +38,6 @@ from mujoco_warp._src import collision_driver
 from mujoco_warp._src import constraint
 from mujoco_warp._src import render_util
 from mujoco_warp._src import set_const
-from mujoco_warp._src import util_pkg
 from mujoco_warp._src import warp_util
 from mujoco_warp._src.io import override_model
 from mujoco_warp._src.types import DeterminismType
@@ -591,11 +590,6 @@ class DeterminismTest(parameterized.TestCase):
       nworld=2,
       qvel_noise=0.1,
     )
-    # TODO(team): remove version check once mujoco >= 3.16.1 is required.
-    if not util_pkg.check_version("mujoco>=3.16.1"):
-      covers = tuple(
-        c for c in covers if c not in ("derivative._eff_flex_rod_stiff", "passive._flex_rod_bending", "passive._flex_rod_mul")
-      )
     with _record_launches() as launches:
       rc = render_util.create_render_context(mjm, nworld=2, cam_res=(8, 8), deterministic=True)
     if not overrides:

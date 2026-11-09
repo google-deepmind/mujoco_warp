@@ -26,7 +26,6 @@ from mujoco_warp import ConeType
 from mujoco_warp import DisableBit
 from mujoco_warp import test_data
 from mujoco_warp._src import types
-from mujoco_warp._src import util_pkg
 
 # tolerance for difference between MuJoCo and MJWarp smooth calculations - mostly
 # due to float precision
@@ -511,8 +510,7 @@ class SmoothTest(parameterized.TestCase):
     d.cfrc_ext.zero_()
     mjw.rne_postconstraint(m, d)
 
-    if util_pkg.check_version("mujoco>=3.13.1"):
-      _assert_eq(d.cfrc_ext.numpy()[0], mjd.cfrc_ext, "cfrc_ext (equality)")
+    _assert_eq(d.cfrc_ext.numpy()[0], mjd.cfrc_ext, "cfrc_ext (equality)")
 
     mjm, mjd, m, d = test_data.fixture("constraints.xml", keyframe=1, overrides={"opt.disableflags": DisableBit.EQUALITY})
 
@@ -1439,8 +1437,6 @@ class SmoothTest(parameterized.TestCase):
       self.assertFalse(np.allclose(d.ten_J.numpy()[0], d.ten_J.numpy()[1]))
       self.assertFalse(np.allclose(d.wrap_xpos.numpy()[0], d.wrap_xpos.numpy()[1]))
 
-  # TODO(team): remove version check once mujoco >= 3.17.1 is required.
-  @absltest.skipIf(not util_pkg.check_version("mujoco>=3.17.1"), "Requires MuJoCo >= 3.17.1")
   @parameterized.parameters("sphere", "cylinder")
   def test_tendon_wrap_sidesite(self, geomtype):
     """Tests that the sidesite selects the wrap homotopy class as in MuJoCo."""

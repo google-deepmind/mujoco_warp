@@ -2010,7 +2010,7 @@ def _eval_rod_chains(
   z3 = wp.vec3(0.0)
   flex_rod_chain_ok_out[worldid, f] = False
   flex_rod_end_torque_out[worldid, f] = wp.spatial_vector(z3, z3)
-  if wp.static(ROD_HINGE_SIZE != 10) or not flex_rod_is_chain[f] or not flex_rod_ref_ok_in[worldid, f]:
+  if not flex_rod_is_chain[f] or not flex_rod_ref_ok_in[worldid, f]:
     return
 
   bendingadr = flex_bendingadr[f]
@@ -2349,15 +2349,9 @@ def rod_stencil(
   x1 = flexvert_xpos_in[worldid, v1]
   x2 = flexvert_xpos_in[worldid, v2]
 
-  # straight hinges only: [v0, v1, v2, k]
-  if wp.static(ROD_HINGE_SIZE == 4):
-    v3 = -1
-    k = flex_bending[adr + 3]
-    kb0 = 0.0
-  else:
-    v3 = int(flex_bending[adr + 3])
-    k = flex_bending[adr + 4]
-    kb0 = flex_bending[adr + 6]
+  v3 = int(flex_bending[adr + 3])
+  k = flex_bending[adr + 4]
+  kb0 = flex_bending[adr + 6]
 
   if v3 < 0:
     ok, kb, A0, A1 = _rod_hinge(x0, x1, x2)
@@ -2693,7 +2687,7 @@ def _flex_hessian_elem(deterministic: bool = False):
     ebase = flex_edgeadr[f]
     ee_base = flex_elemedgeadr[f] + local_elemid * nedge
     stiffness_adr = flex_stiffnessadr[f] + local_elemid * (FLEX_STIFFNESS_3D if dim == 3 else 21)
-    snh = wp.static(FLEX_STIFFNESS_3D == 24) and dim == 3 and flex_stiffness[stiffness_adr + 21] != 0.0
+    snh = dim == 3 and flex_stiffness[stiffness_adr + 21] != 0.0
     padr = flex_plasticadr[f] + local_elemid * nedge if (flex_plasticmode[f] & 2) != 0 else -1
 
     elem_verts = wp.vec4i(-1, -1, -1, -1)
@@ -2937,7 +2931,7 @@ def _flex_stretch_mul_scale(
   if flex_stiffness[stiffness_adr] == 0.0:
     return 0.0
   if snh_only:
-    if not wp.static(FLEX_STIFFNESS_3D == 24) or flex_dim[f] != 3 or flex_stiffness[stiffness_adr + 21] == 0.0:
+    if flex_dim[f] != 3 or flex_stiffness[stiffness_adr + 21] == 0.0:
       return 0.0
   timestep = opt_timestep[worldid % opt_timestep.shape[0]]
   if use_timestep:
@@ -3486,7 +3480,7 @@ def _flex_rod_mul(check_skip: bool, nv: int, deterministic: bool = False):
 
     j_psi = mat43()
     dot_psi = float(0.0)
-    if wp.static(ROD_HINGE_SIZE == 10) and verts[3] < 0 and ok_chain:
+    if verts[3] < 0 and ok_chain:
       wt = (s1 + sd) * 2.0 * flex_bending[adr + 8]
       if wt > 0.0:
         x0 = flexvert_xpos_in[worldid, verts[0]]
@@ -3641,7 +3635,7 @@ def _flex_elasticity(deterministic: bool = False):
     nedge = 3 if dim == 2 else 6
 
     stiffness_adr = stiffness_adr_base + local_elemid * (FLEX_STIFFNESS_3D if dim == 3 else 21)
-    snh = wp.static(FLEX_STIFFNESS_3D == 24) and dim == 3 and flex_stiffness[stiffness_adr + 21] != 0.0
+    snh = dim == 3 and flex_stiffness[stiffness_adr + 21] != 0.0
     if snh and dsbl_spring:
       return
 
@@ -3878,7 +3872,7 @@ def _flex_rod_bending(nv: int, deterministic: bool = False):
         udot += rod_stencil_jacobian(J0, J1, J2, J3, i) * vel_i
       wd = Wd * udot
 
-      if wp.static(ROD_HINGE_SIZE == 10) and verts[3] < 0 and ok_chain:
+      if verts[3] < 0 and ok_chain:
         kt = flex_bending[adr + 8]
         jnt0 = flex_rodedge_jnt[eadr + h_idx]
         jnt1 = flex_rodedge_jnt[eadr + h_idx + 1]
