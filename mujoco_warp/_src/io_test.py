@@ -577,6 +577,53 @@ class IOTest(parameterized.TestCase):
       if a > 0:  # maximal: the preceding row belongs to a different instance
         self.assertTrue(etype[a - 1] != etype[a] or eid[a - 1] != eid[a])
 
+  def test_put_data_dense_mujoco_jacobian_sparse_blocks(self):
+    """MuJoCo's dense efc_J loads as sparse rows that share their JTDAJ block's support.
+
+    With jacobian="auto", MuJoCo is dense below 60 DOFs while MJWarp is sparse above 32, and the
+    sparse JTDAJ reads every row of a block at its first row's support.
+    """
+    # the spinning box has DOF friction rows, which are no block
+    boxes = "".join(
+      f'<body name="b{i}" pos="{p}"><joint type="free" frictionloss="{0.1 * (i == 5)}"/>'
+      '<geom type="box" size=".05 .05 .05"/></body>'
+      for i, p in enumerate(["0 0 .049", "0 0 .148", "0 0 .247", "0 0 .346", "1 0 1", "1.2 0 1"])
+    )
+    xml = f"""
+    <mujoco>
+      <worldbody><geom type="plane" size="5 5 .1"/>{boxes}</worldbody>
+      <equality><weld body1="b4" body2="b5"/></equality>
+      <keyframe><key qvel="{" ".join(["0"] * 33 + ["1", "2", "3"])}"/></keyframe>
+    </mujoco>
+    """
+    mjm, mjd, m, d = test_data.fixture(xml=xml, keyframe=0, overrides={"opt.solver": mujoco.mjtSolver.mjSOL_NEWTON})
+    self.assertFalse(mujoco.mj_isSparse(mjm))
+    self.assertTrue(m.is_sparse)
+
+    nblock = int(d.efc.jtdaj_nblock.numpy()[0])
+    adr = d.efc.jtdaj_adr.numpy()[0, :nblock]
+    nrow = d.efc.jtdaj_nrow.numpy()[0, :nblock]
+    rownnz, rowadr = d.efc.J_rownnz.numpy()[0], d.efc.J_rowadr.numpy()[0]
+    colind, J = d.efc.J_colind.numpy()[0, 0], d.efc.J.numpy()[0, 0]
+    dense = mjd.efc_J.reshape((mjd.nefc, mjm.nv))
+    for a, n in zip(adr, nrow):
+      support = colind[rowadr[a] : rowadr[a] + rownnz[a]]
+      for r in range(a, a + n):
+        np.testing.assert_array_equal(colind[rowadr[r] : rowadr[r] + rownnz[r]], support)
+        row = np.zeros(mjm.nv)
+        row[support] = J[rowadr[r] : rowadr[r] + rownnz[r]]
+        np.testing.assert_allclose(row, dense[r], atol=1e-6)
+    self.assertIn(mujoco.mjtConstraint.mjCNSTR_FRICTION_DOF, mjd.efc_type[: mjd.nefc])
+    for r in range(mjd.nefc):
+      row = np.zeros(mjm.nv)
+      row[colind[rowadr[r] : rowadr[r] + rownnz[r]]] = J[rowadr[r] : rowadr[r] + rownnz[r]]
+      np.testing.assert_allclose(row, dense[r], atol=1e-6)
+
+    # solving the loaded state from a cold start reaches MuJoCo's solution
+    d.qacc_warmstart.zero_()
+    mjwarp.solve(m, d)
+    np.testing.assert_allclose(d.qacc.numpy()[0], mjd.qacc, rtol=1e-4, atol=1e-4)
+
   @parameterized.parameters(types.Model, types.Data, types.RenderContext)
   def test_is_batched_metadata(self, dataclass_type):
     """Verify that all fields specified with 'nworld' or '*' are marked with _is_batched=True."""
