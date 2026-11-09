@@ -1046,6 +1046,80 @@ class SolverTest(parameterized.TestCase):
 
     np.testing.assert_allclose(d.qacc.numpy()[:, 0], targets, rtol=1e-6)
 
+  @parameterized.product(
+    case=(
+      # Inactive at alpha=0 (Jaref > 0), active at lo_alpha_in = 2^-20 with |lo_in[1]| < 1e-6.
+      dict(
+        nf=0, qfrc_smooth=2.0**-20, efc_j=(-1.0, -1.0), jaref=(2.0**-22, 2.0**-21), expected=(2.5 * 2.0**-22, 1.5 * 2.0**-21)
+      ),
+      # Quadratic frictionloss (|x| < rf): unshifted cost(0) ulp >= 4.0 hides improvement.
+      dict(nf=1, efc_j=(-(2.0**-13), -(2.0**-13)), frictionloss=16384.0, jaref=(8192.0, 12288.0), expected=(1.0, 1.5)),
+      # Linear frictionloss (|x| >= rf): unshifted x = start + dx rounds to start.
+      dict(nf=1, efc_j=(-(2.0**-13), 2.0**-12), frictionloss=8192.0, jaref=(16384.0, -16384.0), expected=(1.0, 2.0)),
+      # Linear-to-quadratic crossing (+/-rf): unshifted cost(x) - cost(start) rounds to 0.
+      dict(
+        nf=1,
+        efc_d=11.0,
+        m=(15.0 * 2.0**-27, 3.75 * 2.0**-27),
+        efc_j=(-3.0 * 2.0**-27, 1.5 * 2.0**-27),
+        frictionloss=5.0,
+        jaref=(float(np.float32(5.0) / np.float32(11.0)), -float(np.float32(5.0) / np.float32(11.0))),
+        expected=(1.0, 2.0),
+      ),
+    ),
+    nworld=(1, 2),
+  )
+  def test_linesearch_small_gtol_and_shifted_frictionloss(self, case, nworld):
+    """Linesearch brackets slopes below 1e-6 and preserves sub-ulp frictionloss deltas."""
+    _, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option solver="CG" jacobian="dense"/>
+        <worldbody>
+          <body>
+            <joint type="slide"/>
+            <geom size="0.1" mass="1"/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=nworld,
+      njmax=1,
+    )
+    ctx = solver._create_solver_context(m, d)
+    _set_inertia_scale(m, d, ctx)
+    d.ne.zero_()
+    d.nf.fill_(case["nf"])
+    d.nefc.fill_(1)
+    d.nacon.zero_()
+    mass = np.zeros(d.M.shape, dtype=np.float32)
+    mass[:, 0] = case.get("m", (1.0, 1.0))[:nworld]
+    d.M.assign(mass)
+    d.qacc.zero_()
+    d.efc.Ma.zero_()
+    d.qfrc_smooth.fill_(case.get("qfrc_smooth", 0.0))
+    efc_j = np.zeros(d.efc.J.shape, dtype=np.float32)
+    efc_j[:, 0, 0] = case["efc_j"][:nworld]
+    d.efc.J.assign(efc_j)
+    d.efc.D.fill_(case.get("efc_d", 1.0))
+    d.efc.frictionloss.fill_(case.get("frictionloss", 0.0))
+    jaref = np.zeros(ctx.Jaref.shape, dtype=np.float32)
+    jaref[:, 0] = case["jaref"][:nworld]
+    ctx.Jaref.assign(jaref)
+    ctx.search.fill_(1.0)
+    ctx.search_dot.fill_(1.0)
+    ctx.done.fill_(False)
+    ctx.search_unchanged.fill_(False)
+    d.overflow.zero_()
+    ctx.alpha.fill_(wp.inf)
+
+    solver._linesearch(m, d, ctx)
+
+    expected = np.array(case["expected"][:nworld], dtype=np.float32)
+    np.testing.assert_allclose(ctx.alpha.numpy(), expected, rtol=1e-6)
+    if nworld == 2:
+      self.assertFalse(np.allclose(ctx.alpha.numpy()[0], ctx.alpha.numpy()[1]))
+
   def test_linesearch_iterations_overflow(self):
     """Linesearch records overflow when iteration limit reached without convergence."""
     _, _, m, d = test_data.fixture(

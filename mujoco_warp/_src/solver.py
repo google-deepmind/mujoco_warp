@@ -306,55 +306,98 @@ def _eval_pt_3alphas(quad: wp.vec3, lo_alpha: float, hi_alpha: float, mid_alpha:
 
 
 @wp.func
-def _shift_cost(pt: wp.vec3, cost0: float) -> wp.vec3:
-  return wp.vec3(pt[0] - cost0, pt[1], pt[2])
+def _eval_frictionloss_alpha_zero(jaref: float, jv: float, f: float, rf: float, d: float) -> wp.vec3:
+  """Eval frictionloss at alpha=0 and return (cost, grad, hessian)."""
+  if (-rf < jaref) and (jaref < rf):
+    jvD = jv * d
+    return wp.vec3(0.5 * d * jaref * jaref, jvD * jaref, jv * jvD)
+  elif jaref <= -rf:
+    return wp.vec3(f * (-0.5 * rf - jaref), -f * jv, 0.0)
+  else:
+    return wp.vec3(f * (-0.5 * rf + jaref), f * jv, 0.0)
 
 
 @wp.func
-def _eval_frictionloss_pt(x: float, f: float, rf: float, jv: float, d: float) -> wp.vec3:
-  """Eval frictionloss and return (cost, grad, hessian). x = Jaref + alpha * jv."""
+def _eval_frictionloss_cost_diff(start: float, dx: float, f: float, rf: float, d: float) -> float:
+  """Eval shifted frictionloss cost(start + dx) - cost(start) without float32 cancellation."""
+  x = start + dx
+  if (-rf < start) and (start < rf) and (-rf < x) and (x < rf):
+    return 0.5 * d * dx * (x + start)
+  if start <= -rf and x <= -rf:
+    return -f * dx
+  if start >= rf and x >= rf:
+    return f * dx
+  # Cross-zone transitions use the exact quadratic-to-linear boundary gap at +/-rf.
+  if (-rf < start) and (start < rf):
+    gap = wp.where(x >= rf, rf - start, rf + start)
+    return wp.where(x >= rf, f * dx, -f * dx) - 0.5 * d * gap * gap
+  if (-rf < x) and (x < rf):
+    abs_x = wp.abs(x)
+    if x * start >= 0.0:
+      gap = rf - abs_x
+      return wp.where(start >= rf, f * dx, -f * dx) + 0.5 * d * gap * gap
+    return -(f * (wp.abs(start) - rf) + 0.5 * d * (rf - abs_x) * (rf + abs_x))
+  return wp.where(x >= rf, f, -f) * (x + start)
+
+
+@wp.func
+def _eval_frictionloss_shifted_one(
+  # In:
+  start: float,
+  dx: float,
+  f: float,
+  rf: float,
+  d: float,
+  jvD: float,
+  hessian: float,
+  f_jv: float,
+) -> wp.vec3:
+  """Eval shifted frictionloss with precomputed shared values."""
+  x = start + dx
+  cost = _eval_frictionloss_cost_diff(start, dx, f, rf, d)
+  if (-rf < x) and (x < rf):
+    return wp.vec3(cost, jvD * x, hessian)
+  elif x <= -rf:
+    return wp.vec3(cost, -f_jv, 0.0)
+  else:
+    return wp.vec3(cost, f_jv, 0.0)
+
+
+@wp.func
+def _eval_frictionloss_shifted(jaref: float, jv: float, f: float, rf: float, d: float, alpha: float) -> wp.vec3:
+  """Eval frictionloss shifted by alpha=0."""
+  dx = alpha * jv
+  x = jaref + dx
+  cost = _eval_frictionloss_cost_diff(jaref, dx, f, rf, d)
   if (-rf < x) and (x < rf):
     jvD = jv * d
-    return wp.vec3(0.5 * d * x * x, jvD * x, jv * jvD)
+    return wp.vec3(cost, jvD * x, jv * jvD)
   elif x <= -rf:
-    return wp.vec3(f * (-0.5 * rf - x), -f * jv, 0.0)
+    return wp.vec3(cost, -f * jv, 0.0)
   else:
-    return wp.vec3(f * (-0.5 * rf + x), f * jv, 0.0)
+    return wp.vec3(cost, f * jv, 0.0)
 
 
 @wp.func
-def _eval_frictionloss_cost(x: float, f: float, rf: float, d: float) -> float:
-  if (-rf < x) and (x < rf):
-    return 0.5 * d * x * x
-  elif x <= -rf:
-    return f * (-0.5 * rf - x)
-  return f * (-0.5 * rf + x)
-
-
-@wp.func
-def _eval_frictionloss_pt_one(x: float, f: float, rf: float, half_d: float, jvD: float, hessian: float, f_jv: float) -> wp.vec3:
-  """Eval frictionloss with precomputed shared values."""
-  if (-rf < x) and (x < rf):
-    return wp.vec3(half_d * x * x, jvD * x, hessian)
-  elif x <= -rf:
-    return wp.vec3(f * (-0.5 * rf - x), -f_jv, 0.0)
-  else:
-    return wp.vec3(f * (-0.5 * rf + x), f_jv, 0.0)
-
-
-@wp.func
-def _eval_frictionloss_pt_3alphas(
-  x_lo: float, x_hi: float, x_mid: float, f: float, rf: float, jv: float, d: float
+def _eval_frictionloss_shifted_3alphas(
+  # In:
+  jaref: float,
+  jv: float,
+  f: float,
+  rf: float,
+  d: float,
+  lo_alpha: float,
+  hi_alpha: float,
+  mid_alpha: float,
 ) -> tuple[wp.vec3, wp.vec3, wp.vec3]:
-  """Eval frictionloss for 3 x values with shared precomputation."""
+  """Eval shifted frictionloss for 3 alphas with shared precomputation."""
   jvD = jv * d
-  half_d = 0.5 * d
   hessian = jv * jvD
   f_jv = f * jv
   return (
-    _eval_frictionloss_pt_one(x_lo, f, rf, half_d, jvD, hessian, f_jv),
-    _eval_frictionloss_pt_one(x_hi, f, rf, half_d, jvD, hessian, f_jv),
-    _eval_frictionloss_pt_one(x_mid, f, rf, half_d, jvD, hessian, f_jv),
+    _eval_frictionloss_shifted_one(jaref, lo_alpha * jv, f, rf, d, jvD, hessian, f_jv),
+    _eval_frictionloss_shifted_one(jaref, hi_alpha * jv, f, rf, d, jvD, hessian, f_jv),
+    _eval_frictionloss_shifted_one(jaref, mid_alpha * jv, f, rf, d, jvD, hessian, f_jv),
   )
 
 
@@ -602,9 +645,8 @@ def _compute_efc_eval_pt_pyramidal(
   # Friction constraint - needs quad for frictionloss computation
   if efcid >= ne:
     f = efc_frictionloss[efcid]
-    x = ctx_Jaref + alpha * ctx_jv
     rf = math.safe_div(f, efc_D)
-    return _shift_cost(_eval_frictionloss_pt(x, f, rf, ctx_jv, efc_D), _eval_frictionloss_cost(ctx_Jaref, f, rf, efc_D))
+    return _eval_frictionloss_shifted(ctx_Jaref, ctx_jv, f, rf, efc_D, alpha)
 
   # Equality constraint
   return _eval_pt_direct_shifted(ctx_Jaref, ctx_jv, efc_D, alpha, 0.0)
@@ -658,9 +700,8 @@ def _compute_efc_eval_pt_elliptic(
   if efcid >= ne:
     efc_D = efc_D_in[efcid]
     f = efc_frictionloss[efcid]
-    x = ctx_Jaref + alpha * ctx_jv
     rf = math.safe_div(f, efc_D)
-    return _shift_cost(_eval_frictionloss_pt(x, f, rf, ctx_jv, efc_D), _eval_frictionloss_cost(ctx_Jaref, f, rf, efc_D))
+    return _eval_frictionloss_shifted(ctx_Jaref, ctx_jv, f, rf, efc_D, alpha)
 
   # Equality constraint — direct eval (no quad read)
   efc_D = efc_D_in[efcid]
@@ -689,7 +730,7 @@ def _compute_efc_eval_pt_alpha_zero_pyramidal(
   if efcid >= ne:
     f = efc_frictionloss[efcid]
     rf = math.safe_div(f, efc_D)
-    return _eval_frictionloss_pt(ctx_Jaref, f, rf, ctx_jv, efc_D)
+    return _eval_frictionloss_alpha_zero(ctx_Jaref, ctx_jv, f, rf, efc_D)
 
   # Equality constraint
   return _eval_pt_direct_alpha_zero(ctx_Jaref, ctx_jv, efc_D)
@@ -733,7 +774,7 @@ def _compute_efc_eval_pt_alpha_zero_elliptic(
     efc_D = efc_D_in[efcid]
     f = efc_frictionloss[efcid]
     rf = math.safe_div(f, efc_D)
-    return _eval_frictionloss_pt(ctx_Jaref, f, rf, ctx_jv, efc_D)
+    return _eval_frictionloss_alpha_zero(ctx_Jaref, ctx_jv, f, rf, efc_D)
 
   # Equality constraint — direct eval (no quad read)
   return _eval_pt_direct_alpha_zero(ctx_Jaref, ctx_jv, efc_D_in[efcid])
@@ -777,14 +818,9 @@ def _compute_efc_eval_pt_3alphas_pyramidal(
 
   # Friction constraint - needs quad for frictionloss computation
   if efcid >= ne:
-    x_lo = ctx_Jaref + lo_alpha * ctx_jv
-    x_hi = ctx_Jaref + hi_alpha * ctx_jv
-    x_mid = ctx_Jaref + mid_alpha * ctx_jv
     f = efc_frictionloss[efcid]
     rf = math.safe_div(f, efc_D)
-    cost0 = _eval_frictionloss_cost(ctx_Jaref, f, rf, efc_D)
-    lo, hi, mid = _eval_frictionloss_pt_3alphas(x_lo, x_hi, x_mid, f, rf, ctx_jv, efc_D)
-    return (_shift_cost(lo, cost0), _shift_cost(hi, cost0), _shift_cost(mid, cost0))
+    return _eval_frictionloss_shifted_3alphas(ctx_Jaref, ctx_jv, f, rf, efc_D, lo_alpha, hi_alpha, mid_alpha)
 
   # Equality constraint: always active
   return _eval_pt_direct_shifted_3alphas(ctx_Jaref, ctx_jv, efc_D, lo_alpha, hi_alpha, mid_alpha, 0.0)
@@ -850,15 +886,10 @@ def _compute_efc_eval_pt_3alphas_elliptic(
 
   # Friction constraint - load D and frictionloss only here
   if efcid >= ne:
-    x_lo = ctx_Jaref + lo_alpha * ctx_jv
-    x_hi = ctx_Jaref + hi_alpha * ctx_jv
-    x_mid = ctx_Jaref + mid_alpha * ctx_jv
     efc_D = efc_D_in[efcid]
     f = efc_frictionloss[efcid]
     rf = math.safe_div(f, efc_D)
-    cost0 = _eval_frictionloss_cost(ctx_Jaref, f, rf, efc_D)
-    lo, hi, mid = _eval_frictionloss_pt_3alphas(x_lo, x_hi, x_mid, f, rf, ctx_jv, efc_D)
-    return (_shift_cost(lo, cost0), _shift_cost(hi, cost0), _shift_cost(mid, cost0))
+    return _eval_frictionloss_shifted_3alphas(ctx_Jaref, ctx_jv, f, rf, efc_D, lo_alpha, hi_alpha, mid_alpha)
 
   # Equality constraint — direct eval (no quad read)
   efc_D = efc_D_in[efcid]
@@ -1129,7 +1160,7 @@ def _linesearch_iterative_kernel(
     tolerance = opt_tolerance[worldid % opt_tolerance.shape[0]]
     ls_tolerance = opt_ls_tolerance[worldid % opt_ls_tolerance.shape[0]]
     snorm = wp.sqrt(ctx_search_dot_in[worldid])
-    gtol = wp.max(tolerance * ls_tolerance * snorm / ctx_inertia_scale_in[worldid], 1e-6)
+    gtol = tolerance * ls_tolerance * snorm / ctx_inertia_scale_in[worldid]
 
     # quad_gauss = [0, search.T @ Ma - search.T @ qfrc_smooth, 0.5 * search.T @ mv] + equality
     local_gauss = wp.vec2(0.0)
