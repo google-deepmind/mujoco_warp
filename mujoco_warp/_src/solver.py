@@ -3083,7 +3083,7 @@ def _detect_h_tile_sparsity(tile_size: int, skip_unchanged: bool = False, skip_n
     tile_nz_out: wp.array3d[int],
   ):
     # One thread per 4-column row chunk so warps read contiguous memory. Only sets flags:
-    # _symbolic_h_tile_cholesky clears the ones it consumes.
+    # _h_tile_col_masks clears the ones it consumes.
     worldid, row, chunk = wp.tid()
     tk = row // wp.static(TILE_SIZE)
     ti = chunk // wp.static(TILE_SIZE // 4)
@@ -3117,8 +3117,7 @@ def _detect_h_tile_sparsity(tile_size: int, skip_unchanged: bool = False, skip_n
 
 
 @cache_kernel
-def _symbolic_h_tile_cholesky(ntiles: int, skip_unchanged: bool = False, skip_noflip: bool = False):
-  NTILES = ntiles
+def _h_tile_col_masks(ntiles: int, skip_unchanged: bool = False, skip_noflip: bool = False):
   NWORDS = (ntiles + 63) // 64
   SKIP_UNCHANGED = skip_unchanged
   SKIP_NOFLIP = skip_noflip
@@ -3135,7 +3134,9 @@ def _symbolic_h_tile_cholesky(ntiles: int, skip_unchanged: bool = False, skip_no
     col_mask_out: wp.array3d[wp.uint64],
     tile_is_diag_out: wp.array2d[int],
   ):
-    worldid = wp.tid()
+    # Packs tile column tk of the sparsity flags into bitmasks before the serial symbolic
+    # factorization, and clears the flags for the next scan.
+    worldid, tk = wp.tid()
 
     if ctx_done_in[worldid]:
       return
@@ -3148,16 +3149,51 @@ def _symbolic_h_tile_cholesky(ntiles: int, skip_unchanged: bool = False, skip_no
       if quad_changed_count_in[worldid] == 0:
         return
 
-    for tk in range(NTILES):
-      for w in range(wp.static(NWORDS)):
-        row_mask_out[worldid, tk, w] = wp.uint64(0)
-        col_mask_out[worldid, tk, w] = wp.uint64(0)
-      for ti in range(tk):
-        if tile_nz_out[worldid, ti, tk] > 0:
+    for w in range(wp.static(NWORDS)):
+      mask = wp.uint64(0)
+      for ti in range(w * 64, wp.min(tk, w * 64 + 64)):
+        if tile_nz_out[worldid, ti, tk] != 0:
           tile_nz_out[worldid, ti, tk] = 0
-          w_i = ti // 64
-          bit_i = wp.uint64(1) << wp.uint64(ti - w_i * 64)
-          col_mask_out[worldid, tk, w_i] = col_mask_out[worldid, tk, w_i] | bit_i
+          mask = mask | (wp.uint64(1) << wp.uint64(ti - w * 64))
+      col_mask_out[worldid, tk, w] = mask
+      row_mask_out[worldid, tk, w] = wp.uint64(0)
+
+    tile_is_diag_out[worldid, tk] = wp.where(tile_nz_out[worldid, tk, tk] == 0, 1, 0)
+    tile_nz_out[worldid, tk, tk] = 0
+
+  return kernel
+
+
+@cache_kernel
+def _symbolic_h_tile_cholesky(ntiles: int, skip_unchanged: bool = False, skip_noflip: bool = False):
+  NTILES = ntiles
+  NWORDS = (ntiles + 63) // 64
+  SKIP_UNCHANGED = skip_unchanged
+  SKIP_NOFLIP = skip_noflip
+
+  @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
+  def kernel(
+    # In:
+    ctx_done_in: wp.array[bool],
+    quad_changed_count_in: wp.array[int],
+    state_changed_count_in: wp.array[int],
+    # Out:
+    row_mask_out: wp.array3d[wp.uint64],
+    col_mask_out: wp.array3d[wp.uint64],
+    tile_is_diag_out: wp.array2d[int],
+  ):
+    worldid = wp.tid()
+
+    if ctx_done_in[worldid]:
+      return
+
+    if wp.static(SKIP_NOFLIP):
+      if state_changed_count_in[worldid] == 0:
+        return
+
+    if wp.static(SKIP_UNCHANGED):
+      if quad_changed_count_in[worldid] == 0:
+        return
 
     for tk in range(NTILES - 1, -1, -1):
       tk_w = tk // 64
@@ -3176,12 +3212,10 @@ def _symbolic_h_tile_cholesky(ntiles: int, skip_unchanged: bool = False, skip_no
           row_mask_out[worldid, ti, tk_w] = row_mask_out[worldid, ti, tk_w] | tk_bit
 
     for tk in range(NTILES):
-      is_diag = tile_nz_out[worldid, tk, tk] == 0
-      tile_nz_out[worldid, tk, tk] = 0
-      for w in range(wp.static(NWORDS)):
-        if row_mask_out[worldid, tk, w] != wp.uint64(0) or col_mask_out[worldid, tk, w] != wp.uint64(0):
-          is_diag = False
-      tile_is_diag_out[worldid, tk] = wp.where(is_diag, 1, 0)
+      if tile_is_diag_out[worldid, tk] != 0:
+        for w in range(wp.static(NWORDS)):
+          if row_mask_out[worldid, tk, w] != wp.uint64(0) or col_mask_out[worldid, tk, w] != wp.uint64(0):
+            tile_is_diag_out[worldid, tk] = 0
 
   return kernel
 
@@ -3550,10 +3584,16 @@ def _cholesky_factorize_solve(
       outputs=[ctx.h_tile_nz],
     )
     wp.launch(
+      _h_tile_col_masks(ntiles, skip_unchanged, skip_noflip),
+      dim=(d.nworld, ntiles),
+      inputs=[ctx.done, quad_changed, state_changed],
+      outputs=[ctx.h_tile_nz, ctx.h_row_mask, ctx.h_col_mask, ctx.h_tile_is_diag],
+    )
+    wp.launch(
       _symbolic_h_tile_cholesky(ntiles, skip_unchanged, skip_noflip),
       dim=d.nworld,
       inputs=[ctx.done, quad_changed, state_changed],
-      outputs=[ctx.h_tile_nz, ctx.h_row_mask, ctx.h_col_mask, ctx.h_tile_is_diag],
+      outputs=[ctx.h_row_mask, ctx.h_col_mask, ctx.h_tile_is_diag],
     )
     wp.launch(
       _prepare_h_rhs_work(tile_size, m.nv, skip_unchanged, skip_noflip),

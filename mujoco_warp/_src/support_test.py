@@ -634,10 +634,16 @@ class SupportTest(parameterized.TestCase):
       outputs=[tile_nz],
     )
     wp.launch(
+      mjwarp._src.solver._h_tile_col_masks(ntiles, False, False),
+      dim=(nworld, ntiles),
+      inputs=[done, nefc, nefc],
+      outputs=[tile_nz, row_mask, col_mask, tile_is_diag],
+    )
+    wp.launch(
       mjwarp._src.solver._symbolic_h_tile_cholesky(ntiles, False, False),
       dim=nworld,
       inputs=[done, nefc, nefc],
-      outputs=[tile_nz, row_mask, col_mask, tile_is_diag],
+      outputs=[row_mask, col_mask, tile_is_diag],
     )
     wp.launch(
       mjwarp._src.solver._prepare_h_rhs_work(tile_size, nv, False, False),
