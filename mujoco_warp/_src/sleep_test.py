@@ -15,6 +15,8 @@
 
 """Tests for sleep and wake features."""
 
+from unittest import mock
+
 import mujoco
 import numpy as np
 import warp as wp
@@ -35,7 +37,8 @@ wp.set_module_options({"enable_backward": False})
 class SleepTest(parameterized.TestCase):
   def test_compact_solve_initial_state(self):
     """The sparse compact solve reads only workspace put_data initializes (fresh memory is NaN)."""
-    mjm = mujoco.MjModel.from_xml_string("""
+    mjm, mjd, m, _ = test_data.fixture(
+      xml="""
       <mujoco>
         <option jacobian="sparse"><flag sleep="enable"/></option>
         <worldbody>
@@ -44,10 +47,8 @@ class SleepTest(parameterized.TestCase):
           <body pos="1 0 .1"><freejoint/><geom type="box" size=".1 .1 .1"/></body>
         </worldbody>
       </mujoco>
-    """)
-    mjd = mujoco.MjData(mjm)
-    mujoco.mj_forward(mjm, mjd)
-    m = mjwarp.put_model(mjm)
+      """
+    )
     empty = wp.empty
 
     def nan_empty(*args, **kwargs):
@@ -56,11 +57,8 @@ class SleepTest(parameterized.TestCase):
         arr.fill_(float("nan"))
       return arr
 
-    wp.empty = nan_empty
-    try:
+    with mock.patch.object(wp, "empty", nan_empty):
       d = mjwarp.put_data(mjm, mjd, nconmax=16, njmax=64)
-    finally:
-      wp.empty = empty
     mjwarp.step(m, d)
     self.assertTrue(np.isfinite(d.qacc.numpy()).all())
 

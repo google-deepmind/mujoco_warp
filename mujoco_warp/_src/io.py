@@ -155,7 +155,9 @@ def _dense_J_supports(mjd: mujoco.MjData):
     yield start, nrow, np.flatnonzero(np.any(dense_J[start : start + nrow] != 0.0, axis=0))
 
 
-def _dense_J_to_sparse(mjd: mujoco.MjData, rownnz: np.ndarray, rowadr: np.ndarray, colind: np.ndarray, J: np.ndarray):
+def _dense_J_to_sparse(
+  mjd: mujoco.MjData, supports: list, rownnz: np.ndarray, rowadr: np.ndarray, colind: np.ndarray, J: np.ndarray
+):
   """Sparse rows of MuJoCo's dense efc_J; the rows of each JTDAJ block share one support.
 
   The sparse JTDAJ reads every row of a block at the support of its first row, so zeros within
@@ -163,7 +165,7 @@ def _dense_J_to_sparse(mjd: mujoco.MjData, rownnz: np.ndarray, rowadr: np.ndarra
   """
   dense_J = mjd.efc_J.reshape((mjd.nefc, -1))
   adr = 0
-  for start, nrow, cols in _dense_J_supports(mjd):
+  for start, nrow, cols in supports:
     for row in range(start, start + nrow):
       rownnz[row] = cols.size
       rowadr[row] = adr
@@ -2650,18 +2652,16 @@ def put_data(
   qld_total = lay["total"] + (mjm.nC if lay["has_sparse"] else 0)
   sizes["qld_total"] = qld_total
 
-  if is_sparse(mjm) and not mujoco.mj_isSparse(mjm) and mjd.nefc:
-    # blocks keep their rows' union support (_dense_J_to_sparse)
-    nnz = sum(nrow * cols.size for _, nrow, cols in _dense_J_supports(mjd))
-    if njmax_nnz is None:
-      njmax_nnz = max(_default_njmax_nnz(mjm, nconmax, njmax), nnz)
-    elif njmax_nnz < nnz:
-      raise ValueError(f"njmax_nnz {njmax_nnz} is below the {nnz} Jacobian entries of the loaded constraints")
+  # MuJoCo's dense efc_J loads as sparse rows that keep their block's union support
+  supports = list(_dense_J_supports(mjd)) if is_sparse(mjm) and not mujoco.mj_isSparse(mjm) and mjd.nefc else []
+  supports_nnz = sum(nrow * cols.size for _, nrow, cols in supports)
   if njmax_nnz is None:
     if is_sparse(mjm):
-      njmax_nnz = _default_njmax_nnz(mjm, nconmax, njmax)
+      njmax_nnz = max(_default_njmax_nnz(mjm, nconmax, njmax), supports_nnz)
     else:
       njmax_nnz = njmax * mjm.nv
+  elif njmax_nnz < supports_nnz:
+    raise ValueError(f"njmax_nnz {njmax_nnz} is below the {supports_nnz} Jacobian entries of the loaded constraints")
 
   # Capture sleep state before mj_kinematics, which resets tree_asleep as a side effect.
   tree_asleep_init = mjd.tree_asleep.copy()
@@ -2774,7 +2774,7 @@ def put_data(
         J_colind[:nnz] = mjd.efc_J_colind[:nnz]
         J[:nnz] = mjd.efc_J[:nnz]
       else:
-        _dense_J_to_sparse(mjd, J_rownnz, J_rowadr, J_colind, J)
+        _dense_J_to_sparse(mjd, supports, J_rownnz, J_rowadr, J_colind, J)
 
     efc.J_rownnz = wp.array(np.tile(J_rownnz, (nworld, 1)), dtype=int)
     efc.J_rowadr = wp.array(np.tile(J_rowadr, (nworld, 1)), dtype=int)
