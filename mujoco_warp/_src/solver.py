@@ -116,7 +116,7 @@ def _create_solver_context(
       hfactor = wp.empty((nworld, nv_pad, nv_pad), dtype=float)
     ntiles = nv_pad // types.TILE_SIZE_JTDAJ_DENSE
     nwords = (ntiles + 63) // 64
-    h_tile_nz = wp.empty((nworld, ntiles, ntiles), dtype=int) if alloc_sparse_tiles else None
+    h_tile_nz = wp.zeros((nworld, ntiles, ntiles), dtype=int) if alloc_sparse_tiles else None
     h_row_mask = wp.empty((nworld, ntiles, nwords), dtype=wp.uint64) if alloc_sparse_tiles else None
     h_col_mask = wp.empty((nworld, ntiles, nwords), dtype=wp.uint64) if alloc_sparse_tiles else None
     h_tile_is_diag = wp.empty((nworld, ntiles), dtype=int) if alloc_sparse_tiles else None
@@ -3082,7 +3082,14 @@ def _detect_h_tile_sparsity(tile_size: int, skip_unchanged: bool = False, skip_n
     # Out:
     tile_nz_out: wp.array3d[int],
   ):
-    worldid, pair_id, lane = wp.tid()
+    # One thread per 4-column row chunk so warps read contiguous memory. Only sets flags:
+    # _symbolic_h_tile_cholesky clears the ones it consumes.
+    worldid, row, chunk = wp.tid()
+    tk = row // wp.static(TILE_SIZE)
+    ti = chunk // wp.static(TILE_SIZE // 4)
+
+    if ti < tk:
+      return
 
     if ctx_done_in[worldid]:
       return
@@ -3095,34 +3102,16 @@ def _detect_h_tile_sparsity(tile_size: int, skip_unchanged: bool = False, skip_n
       if quad_changed_count_in[worldid] == 0:
         return
 
-    ti = int((wp.sqrt(float(8 * pair_id + 1)) - 1.0) * 0.5)
-    while ti * (ti + 1) // 2 > pair_id:
-      ti -= 1
-    while (ti + 1) * (ti + 2) // 2 <= pair_id:
-      ti += 1
-    tk = pair_id - ti * (ti + 1) // 2
-
     # Note: with incremental H updates, subtracting removed constraints can leave
     # tiny float32 cancellation residues that keep a tile marked nonzero; this only
     # reduces sparsity and does not affect numerical correctness.
-    STRIDE = wp.block_dim()
+    col = 4 * chunk
     nz = int(0)
-    base_r = tk * wp.static(TILE_SIZE)
-    base_c = ti * wp.static(TILE_SIZE)
-    for c_off in range(lane, wp.static(TILE_SIZE), STRIDE):
-      col = base_c + c_off
-      r_end = c_off if tk == ti else wp.static(TILE_SIZE)
-      for r in range(r_end):
-        if ctx_h_in[worldid, base_r + r, col] != 0.0:
-          nz = 1
-          break
-      if nz != 0:
-        break
+    for k in range(4):
+      nz = nz | (int(ctx_h_in[worldid, row, col + k] != 0.0) & int(col + k > row))
 
-    nz_tile = wp.tile(nz, preserve_type=True)
-    nz_sum = wp.tile_reduce(wp.add, nz_tile)[0]
-    if lane == 0:
-      tile_nz_out[worldid, tk, ti] = wp.where(nz_sum > 0, 1, 0)
+    if nz != 0:
+      tile_nz_out[worldid, tk, ti] = 1
 
   return kernel
 
@@ -3138,10 +3127,10 @@ def _symbolic_h_tile_cholesky(ntiles: int, skip_unchanged: bool = False, skip_no
   def kernel(
     # In:
     ctx_done_in: wp.array[bool],
-    tile_nz_in: wp.array3d[int],
     quad_changed_count_in: wp.array[int],
     state_changed_count_in: wp.array[int],
     # Out:
+    tile_nz_out: wp.array3d[int],
     row_mask_out: wp.array3d[wp.uint64],
     col_mask_out: wp.array3d[wp.uint64],
     tile_is_diag_out: wp.array2d[int],
@@ -3164,7 +3153,8 @@ def _symbolic_h_tile_cholesky(ntiles: int, skip_unchanged: bool = False, skip_no
         row_mask_out[worldid, tk, w] = wp.uint64(0)
         col_mask_out[worldid, tk, w] = wp.uint64(0)
       for ti in range(tk):
-        if tile_nz_in[worldid, ti, tk] > 0:
+        if tile_nz_out[worldid, ti, tk] > 0:
+          tile_nz_out[worldid, ti, tk] = 0
           w_i = ti // 64
           bit_i = wp.uint64(1) << wp.uint64(ti - w_i * 64)
           col_mask_out[worldid, tk, w_i] = col_mask_out[worldid, tk, w_i] | bit_i
@@ -3186,7 +3176,8 @@ def _symbolic_h_tile_cholesky(ntiles: int, skip_unchanged: bool = False, skip_no
           row_mask_out[worldid, ti, tk_w] = row_mask_out[worldid, ti, tk_w] | tk_bit
 
     for tk in range(NTILES):
-      is_diag = tile_nz_in[worldid, tk, tk] == 0
+      is_diag = tile_nz_out[worldid, tk, tk] == 0
+      tile_nz_out[worldid, tk, tk] = 0
       for w in range(wp.static(NWORDS)):
         if row_mask_out[worldid, tk, w] != wp.uint64(0) or col_mask_out[worldid, tk, w] != wp.uint64(0):
           is_diag = False
@@ -3550,21 +3541,19 @@ def _cholesky_factorize_solve(
   else:
     tile_size = types.TILE_SIZE_JTDAJ_DENSE
     ntiles = m.nv_pad // tile_size
-    npairs = ntiles * (ntiles + 1) // 2
     quad_changed = ctx.quad_changed_count if skip_unchanged else d.nefc
     state_changed = ctx.state_changed_count if skip_noflip else quad_changed
-    wp.launch_tiled(
+    wp.launch(
       _detect_h_tile_sparsity(tile_size, skip_unchanged, skip_noflip),
-      dim=(d.nworld, npairs),
+      dim=(d.nworld, m.nv_pad, m.nv_pad // 4),
       inputs=[ctx.done, ctx.h, quad_changed, state_changed],
       outputs=[ctx.h_tile_nz],
-      block_dim=32,
     )
     wp.launch(
       _symbolic_h_tile_cholesky(ntiles, skip_unchanged, skip_noflip),
       dim=d.nworld,
-      inputs=[ctx.done, ctx.h_tile_nz, quad_changed, state_changed],
-      outputs=[ctx.h_row_mask, ctx.h_col_mask, ctx.h_tile_is_diag],
+      inputs=[ctx.done, quad_changed, state_changed],
+      outputs=[ctx.h_tile_nz, ctx.h_row_mask, ctx.h_col_mask, ctx.h_tile_is_diag],
     )
     wp.launch(
       _prepare_h_rhs_work(tile_size, m.nv, skip_unchanged, skip_noflip),

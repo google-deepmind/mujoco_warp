@@ -575,7 +575,6 @@ class SupportTest(parameterized.TestCase):
     nv = ntiles * tile_size - 6
     nv_pad = ntiles * tile_size
     nmask_words = (ntiles + 63) // 64
-    npairs = ntiles * (ntiles + 1) // 2
 
     if ntiles == 7:
       # Single 64-bit word (nwords = 1):
@@ -628,18 +627,17 @@ class SupportTest(parameterized.TestCase):
     hfactor = wp.zeros((nworld, nv_pad, nv_pad), dtype=float)
 
     # Run sparsity detection, reverse symbolic factorization, and diagonal RHS prep kernels
-    wp.launch_tiled(
+    wp.launch(
       mjwarp._src.solver._detect_h_tile_sparsity(tile_size, False, False),
-      dim=(nworld, npairs),
+      dim=(nworld, nv_pad, nv_pad // 4),
       inputs=[done, h, nefc, nefc],
       outputs=[tile_nz],
-      block_dim=32,
     )
     wp.launch(
       mjwarp._src.solver._symbolic_h_tile_cholesky(ntiles, False, False),
       dim=nworld,
-      inputs=[done, tile_nz, nefc, nefc],
-      outputs=[row_mask, col_mask, tile_is_diag],
+      inputs=[done, nefc, nefc],
+      outputs=[tile_nz, row_mask, col_mask, tile_is_diag],
     )
     wp.launch(
       mjwarp._src.solver._prepare_h_rhs_work(tile_size, nv, False, False),
