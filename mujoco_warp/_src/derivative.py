@@ -509,31 +509,64 @@ def _qderiv_actuator_passive_actuation_sparse(nM: int, deterministic: bool = Fal
   ):
     worldid, actid = wp.tid()
 
-    vel = vel_in[worldid, actid]
-    if vel == 0.0:
-      return
+    if wp.static(deterministic):
+      # The thread of the first actuator accumulates all the actuators of its world in ascending
+      # order: each element has one writer and a fixed summation order, without atomics.
+      if actid > 0:
+        return
 
-    rownnz = moment_rownnz_in[worldid, actid]
-    rowadr = moment_rowadr_in[worldid, actid]
-
-    for i in range(rownnz):
-      rowadri = rowadr + i
-      moment_i = actuator_moment_in[worldid, rowadri]
-      if moment_i == 0.0:
-        continue
-      dofi = moment_colind_in[worldid, rowadri]
-
-      for j in range(i + 1):
-        rowadrj = rowadr + j
-        moment_j = actuator_moment_in[worldid, rowadrj]
-        if moment_j == 0.0:
+      for k in range(vel_in.shape[1]):
+        vel = vel_in[worldid, k]
+        if vel == 0.0:
           continue
-        dofj = moment_colind_in[worldid, rowadrj]
 
-        elemid = M_elemid[dofi, dofj]
-        if elemid >= 0:
-          contrib = moment_i * moment_j * vel
-          wp.atomic_add(qDeriv_out[worldid], elemid, contrib)
+        rowadr = moment_rowadr_in[worldid, k]
+
+        for i in range(moment_rownnz_in[worldid, k]):
+          rowadri = rowadr + i
+          moment_i = actuator_moment_in[worldid, rowadri]
+          if moment_i == 0.0:
+            continue
+          dofi = moment_colind_in[worldid, rowadri]
+
+          for j in range(i + 1):
+            rowadrj = rowadr + j
+            moment_j = actuator_moment_in[worldid, rowadrj]
+            if moment_j == 0.0:
+              continue
+            dofj = moment_colind_in[worldid, rowadrj]
+
+            elemid = M_elemid[dofi, dofj]
+            if elemid >= 0:
+              contrib = moment_i * moment_j * vel
+              # not `+=`, which Warp compiles to an atomic
+              qDeriv_out[worldid, elemid] = qDeriv_out[worldid, elemid] + contrib
+    else:
+      vel = vel_in[worldid, actid]
+      if vel == 0.0:
+        return
+
+      rownnz = moment_rownnz_in[worldid, actid]
+      rowadr = moment_rowadr_in[worldid, actid]
+
+      for i in range(rownnz):
+        rowadri = rowadr + i
+        moment_i = actuator_moment_in[worldid, rowadri]
+        if moment_i == 0.0:
+          continue
+        dofi = moment_colind_in[worldid, rowadri]
+
+        for j in range(i + 1):
+          rowadrj = rowadr + j
+          moment_j = actuator_moment_in[worldid, rowadrj]
+          if moment_j == 0.0:
+            continue
+          dofj = moment_colind_in[worldid, rowadrj]
+
+          elemid = M_elemid[dofi, dofj]
+          if elemid >= 0:
+            contrib = moment_i * moment_j * vel
+            wp.atomic_add(qDeriv_out[worldid], elemid, contrib)
 
   return kernel
 

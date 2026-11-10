@@ -22,6 +22,7 @@ from absl.testing import absltest
 from absl.testing import parameterized
 
 import mujoco_warp as mjw
+from mujoco_warp import DeterminismType
 from mujoco_warp import test_data
 from mujoco_warp._src import derivative
 from mujoco_warp._src import forward
@@ -126,6 +127,93 @@ class DerivativeTest(parameterized.TestCase):
     mj_out = mj_M - mjm.opt.timestep * mj_qDeriv
 
     _assert_eq(mjw_out, mj_out, "M - dt * qDeriv")
+
+  @parameterized.parameters(1, 2)
+  def test_smooth_vel_actuation_deterministic(self, nworld):
+    """Deterministic actuation derivatives accumulate in a fixed order instead of with atomics."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option integrator="implicitfast">
+          <flag contact="disable"/>
+        </option>
+        <worldbody>
+          <body>
+            <joint name="hinge" axis="0 1 0"/>
+            <geom type="capsule" size=".02" fromto="0 0 0 .2 0 0"/>
+            <body pos=".2 0 0">
+              <joint name="ball" type="ball"/>
+              <geom type="capsule" size=".02" fromto="0 0 0 .2 0 0"/>
+              <body pos=".2 0 0">
+                <joint name="slide" type="slide" axis="1 0 0"/>
+                <geom size=".03"/>
+                <site name="tip" pos=".05 0 0"/>
+              </body>
+            </body>
+          </body>
+        </worldbody>
+        <tendon>
+          <fixed name="fixed">
+            <joint joint="hinge" coef="1"/>
+            <joint joint="slide" coef="-.5"/>
+          </fixed>
+        </tendon>
+        <actuator>
+          <velocity joint="hinge" kv="2"/>
+          <general joint="hinge" gaintype="affine" gainprm="0 0 1.5"/>
+          <velocity joint="ball" gear="1 2 3" kv=".5"/>
+          <velocity joint="slide" kv="3"/>
+          <general tendon="fixed" gear="3" gaintype="affine" gainprm="0 0 2" biastype="affine" biasprm="0 0 -1"/>
+          <general site="tip" gear="1 2 3 .1 .2 .3" gaintype="affine" gainprm="0 0 .7" biastype="affine" biasprm="0 0 -.4"/>
+        </actuator>
+      </mujoco>
+      """,
+      qpos_noise=0.5,
+      qvel_noise=0.1,
+      ctrl_noise=0.5,
+      nworld=nworld,
+      overrides={"opt.deterministic": DeterminismType.ATOMICS},
+    )
+    ctrl = np.tile(mjd.ctrl.astype(np.float32), (nworld, 1))
+    if nworld == 2:
+      ctrl[1] = 0.3 - 2.0 * ctrl[1]
+    d.ctrl.assign(ctrl)
+
+    def smooth_vel():
+      # without factorizing M, to compare M - dt * qDeriv directly
+      forward.fwd_position(m, d, factorize=False)
+      forward.fwd_velocity(m, d)
+      forward.fwd_actuation(m, d)
+      out = wp.full((nworld, m.nC), wp.inf, dtype=float)
+      mjw.deriv_smooth_vel(m, d, out)
+      res = np.zeros((nworld, mjm.nv, mjm.nv))
+      for world in range(nworld):
+        mujoco.mju_sym2dense(res[world], out.numpy()[world].astype(np.float64), mjm.M_rownnz, mjm.M_rowadr, mjm.M_colind)
+      return res
+
+    out = smooth_vel()
+
+    # each dof is driven by several actuators
+    actuator_moment = np.zeros((mjm.nu, mjm.nv))
+    mujoco.mju_sparse2dense(actuator_moment, mjd.actuator_moment, mjd.moment_rownnz, mjd.moment_rowadr, mjd.moment_colind)
+    self.assertGreater(np.count_nonzero(actuator_moment, axis=0).min(), 1)
+
+    qpos, qvel = mjd.qpos.copy(), mjd.qvel.copy()
+    for world in range(nworld):
+      mjd.qpos[:], mjd.qvel[:], mjd.ctrl[:] = qpos, qvel, ctrl[world]
+      mujoco.mj_step(mjm, mjd)
+      mj_qDeriv = np.zeros((mjm.nv, mjm.nv))
+      mujoco.mju_sparse2dense(mj_qDeriv, mjd.qDeriv, mjm.D_rownnz, mjm.D_rowadr, mjm.D_colind)
+      self.assertGreater(np.count_nonzero(np.tril(mj_qDeriv, -1)), mjm.nv)
+      mj_M = np.zeros((mjm.nv, mjm.nv))
+      mujoco.mju_sym2dense(mj_M, mjd.M, mjm.M_rownnz, mjm.M_rowadr, mjm.M_colind)
+      _assert_eq(out[world], mj_M - mjm.opt.timestep * mj_qDeriv, "M - dt * qDeriv")
+    if nworld == 2:
+      self.assertFalse(np.allclose(out[0], out[1]))
+
+    # same as the kernel with atomics, up to summation order
+    m.opt.deterministic = DeterminismType.NONE
+    np.testing.assert_allclose(smooth_vel(), out, rtol=1e-5, atol=1e-5)
 
   _TENDON_SERIAL_CHAIN_XML = """
     <mujoco>
