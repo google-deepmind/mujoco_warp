@@ -23,6 +23,7 @@ from absl.testing import parameterized
 
 import mujoco_warp as mjwarp
 from mujoco_warp import ConeType
+from mujoco_warp import DeterminismType
 from mujoco_warp import State
 from mujoco_warp import test_data
 from mujoco_warp._src import io
@@ -84,8 +85,10 @@ class SupportTest(parameterized.TestCase):
       mujoco.mj_applyFT(mjm, mjd, xfrc[i, :3], xfrc[i, 3:], mjd.xipos[i], i, qfrc_expected)
     np.testing.assert_almost_equal(qfrc.numpy()[0], qfrc_expected, 6)
 
-  @parameterized.product(nworld=(1, 2), flg_add=(False, True), zero_force=(False, True), sparse=(False, True))
-  def test_apply_ft_subtrees(self, nworld, flg_add, zero_force, sparse):
+  @parameterized.product(
+    nworld=(1, 2), flg_add=(False, True), zero_force=(False, True), sparse=(False, True), deterministic=(False, True)
+  )
+  def test_apply_ft_subtrees(self, nworld, flg_add, zero_force, sparse, deterministic):
     """Tests force projection across branches, welded bodies, and independent trees."""
     mjm, mjd, m, d = test_data.fixture(
       xml="""
@@ -140,6 +143,8 @@ class SupportTest(parameterized.TestCase):
     d.xfrc_applied.assign(force)
     initial = np.linspace(-0.2, 0.3, nworld * mjm.nv).reshape(nworld, mjm.nv).astype(np.float32)
     qfrc = wp.array(initial, dtype=float) if flg_add else wp.full((nworld, mjm.nv), wp.inf, dtype=float)
+    if deterministic:
+      m.opt.deterministic = DeterminismType.ATOMICS
     support.apply_ft(m, d, d.xfrc_applied, qfrc, flg_add, sparse=sparse)
 
     result = qfrc.numpy()

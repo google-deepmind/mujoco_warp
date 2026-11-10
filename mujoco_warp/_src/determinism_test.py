@@ -254,7 +254,6 @@ _TREE_CASES = (
       "solver._update_constraint_init_qfrc_constraint_sparse",
       "solver._update_gradient_grad",
       "solver._update_gradient_h_incremental_sparse",
-      "support._apply_ft_scatter",
     ),
   ),
   dict(
@@ -428,6 +427,7 @@ class DeterminismTest(parameterized.TestCase):
     for name, mode, _ in launches:
       self.assertEqual(mode == _RUN_TO_RUN, name in _DET_FACTORIES, name)
     self.assertNotIn("smooth._solve_LD_sparse_fused", {name for name, _, _ in launches})
+    self.assertNotIn("support._apply_ft_scatter", {name for name, _, _ in launches})
     launched = {name for name, mode, nonzero in launches if mode == _RUN_TO_RUN and nonzero}
     self.assertEqual(set(covers) - launched, set(), "factories not exercised")
 

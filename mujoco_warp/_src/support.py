@@ -1003,11 +1003,9 @@ def _apply_ft_gather(
 
 
 @cache_kernel
-def _apply_ft_scatter(nv: int, deterministic: bool = False):
+def _apply_ft_scatter():
+  # deterministic steps gather instead (see apply_ft): this kernel has no deterministic variant
   module_options = {"enable_backward": False}
-  if deterministic:
-    module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
-    module_options["deterministic_max_records"] = nv
 
   @wp.kernel(module="unique", module_options=module_options)
   def kernel(
@@ -1045,7 +1043,7 @@ def _apply_ft_scatter(nv: int, deterministic: bool = False):
     while dofid >= 0:
       cdof = cdof_in[worldid, dofid]
       qfrc = wp.dot(wp.spatial_bottom(cdof), force) + wp.dot(wp.spatial_top(cdof), torque)
-      wp.atomic_add(qfrc_out[worldid], dofid, qfrc)
+      wp.atomic_add(qfrc_out[worldid], dofid, qfrc)  # kernel_analyzer: ignore[atomic]
       dofid = dof_parentid[dofid]
 
   return kernel
@@ -1055,8 +1053,10 @@ def apply_ft(
   m: Model, d: Data, ft: wp.array2d[wp.spatial_vector], qfrc: wp.array2d[float], flg_add: bool, sparse: bool = False
 ):
   """Maps body wrenches ft to dof space; sparse: most wrenches are zero."""
-  if not sparse:
-    # dense wrenches: a thread per dof gathers its subtree
+  det_atomics = bool(m.opt.deterministic & DeterminismType.ATOMICS)
+  if not sparse or det_atomics:
+    # dense wrenches: a thread per dof gathers its subtree. Deterministic steps gather too: each
+    # dof has one writer and a fixed summation order, without the scatter buffers of the atomics.
     wp.launch(
       _apply_ft_gather,
       dim=(d.nworld, m.nv),
@@ -1068,9 +1068,8 @@ def apply_ft(
   # sparse wrenches: a thread per body scatters to its ancestor dofs, zero wrenches cost one load
   if not flg_add:
     qfrc.zero_()
-  det_atomics = bool(m.opt.deterministic & DeterminismType.ATOMICS)
   wp.launch(
-    _apply_ft_scatter(m.nv if det_atomics else 0, det_atomics),
+    _apply_ft_scatter(),
     dim=(d.nworld, m.nbody),
     inputs=[m.body_rootid, m.body_weldid, m.body_dofnum, m.body_dofadr, m.dof_parentid, d.xipos, d.subtree_com, d.cdof, ft],
     outputs=[qfrc],
