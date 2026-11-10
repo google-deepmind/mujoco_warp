@@ -342,18 +342,18 @@ def _sparse_groups_fixture(nworld):
   Head rows and dofs are not in order, one support is wider than a block, some groups have rows
   that do not follow each other in the sparse arrays, dof 39 is in every group of world 0 and dof
   0 in none, and row 0 is a dof friction row outside the groups. The second world has no group
-  and the third reports more groups than the capacity.
+  and the third reports more groups than the capacity, which is more than a word of bits.
   """
-  nv, njmax, ngroup_max = 40, 48, 8
+  nv, njmax, ngroup_max = 40, 80, 36
   rng = np.random.default_rng(nworld)
   # (rows, width of the support, rows follow each other) per group
   world_groups = (
     [(1, 3, True), (4, 35, True), (2, 5, False), (6, 8, True), (3, 4, False)],
     [],
-    [(int(rng.integers(1, 5)), int(rng.integers(1, 9)), bool(rng.integers(2))) for _ in range(ngroup_max)],
+    [(int(rng.integers(1, 3)), int(rng.integers(1, 7)), bool(rng.integers(2))) for _ in range(ngroup_max)],
   )[:nworld]
 
-  nnz = 420
+  nnz = 900
   res = dict(
     nv=nv,
     jtdaj_adr=np.full((nworld, ngroup_max), -1, dtype=np.int32),
@@ -367,6 +367,8 @@ def _sparse_groups_fixture(nworld):
     frictionadr=np.full((nworld, nv), -1, dtype=np.int32),
     adr=np.zeros((nworld, nv + 1), dtype=np.int32),
     entry=np.full((nworld, nnz, 4), -5, dtype=np.int32),
+    group=np.full((nworld, ngroup_max, 4), -5, dtype=np.int32),
+    slot_adr=np.full((nworld, ngroup_max + 1), -5, dtype=np.int32),
   )
   for worldid, groups in enumerate(world_groups):
     res["nblock"][worldid] = len(groups) + (3 if len(groups) == ngroup_max else 0)
@@ -391,18 +393,26 @@ def _sparse_groups_fixture(nworld):
         res["colind"][worldid, 0, res["rowadr"][worldid, row + member] :][: len(support)] = support
       # a single row always follows itself
       sign = 1 if contiguous or nrow == 1 else -1
+      res["group"][worldid, groupid] = [adr, len(support), row, sign * nrow]
       entries[groupid] = [(dofid, [adr + i, len(support), row, sign * nrow]) for i, dofid in enumerate(support)]
       adr += nrow * (len(support) + 2)
       row += nrow
     assert adr <= nnz and row <= njmax
     res["nefc"][worldid] = row
+    slot = 0
     for groupid in range(len(groups)):
       for dofid, entry in entries[groupid]:
         lists[dofid].append(entry)
+      # a slot per element of the upper triangle of the block of the group
+      res["slot_adr"][worldid, groupid] = slot
+      slot += len(entries[groupid]) * (len(entries[groupid]) + 1) // 2
+    # the end of the last group, and the number of slots after the group capacity
+    res["slot_adr"][worldid, len(groups)] = slot
+    res["slot_adr"][worldid, ngroup_max] = slot
     res["adr"][worldid, 1:] = np.cumsum([len(dof_list) for dof_list in lists])
     total = res["adr"][worldid, nv]
     if total:
-      res["entry"][worldid, :total] = np.concatenate([dof_list for dof_list in lists if dof_list])
+      res["entry"][worldid, :total] = [entry for dof_list in lists for entry in dof_list]
   return res
 
 
@@ -2303,17 +2313,19 @@ class SolverTest(parameterized.TestCase):
       np.testing.assert_array_equal(ids[worldid, len(world_rows) :], -1)
     np.testing.assert_array_equal(flag.numpy(), 0)
 
-  @parameterized.product(nworld=(1, 2, 3), lanes=(1, 4, 16, 32))
-  def test_qfrc_index(self, nworld, lanes):
+  @parameterized.product(nworld=(1, 2, 3), lanes=(1, 4, 16, 32), slots=(False, True))
+  def test_qfrc_index(self, nworld, lanes, slots):
     """Each dof lists the groups that contain it in group order, and nothing else is written."""
     if wp.get_device().is_cpu and lanes > 1:
       self.skipTest("a block is one thread on the CPU")
 
     fixture = _sparse_groups_fixture(nworld)
-    nv, nnz = fixture["nv"], fixture["colind"].shape[2]
+    nv, nnz, ngroup_max = fixture["nv"], fixture["colind"].shape[2], fixture["jtdaj_adr"].shape[1]
     cursor = wp.full((nworld, nv), 7, dtype=int)
     chunk_count = wp.full((nworld, lanes), 7, dtype=int)
-    group = wp.full((nworld, fixture["jtdaj_adr"].shape[1]), wp.vec4i(-5), dtype=wp.vec4i)
+    group = wp.full((nworld, ngroup_max), wp.vec4i(-5), dtype=wp.vec4i)
+    # a single element when the slots are not used
+    slot_adr = wp.full((nworld, ngroup_max + 1 if slots else 1), -5, dtype=int)
     adr = wp.full((nworld, nv + 1), -5, dtype=int)
     entry = wp.full((nworld, nnz), wp.vec4i(-5), dtype=wp.vec4i)
     wp.launch(
@@ -2322,12 +2334,14 @@ class SolverTest(parameterized.TestCase):
       inputs=[
         wp.array(fixture[name], dtype=int) for name in ("jtdaj_adr", "jtdaj_nrow", "nblock", "rownnz", "rowadr", "colind")
       ],
-      outputs=[cursor, chunk_count, group, adr, entry],
+      outputs=[cursor, chunk_count, group, slot_adr, adr, entry],
       block_dim=lanes,
     )
 
     np.testing.assert_array_equal(adr.numpy(), fixture["adr"])
     np.testing.assert_array_equal(entry.numpy(), fixture["entry"])
+    np.testing.assert_array_equal(group.numpy(), fixture["group"])
+    np.testing.assert_array_equal(slot_adr.numpy(), fixture["slot_adr"] if slots else -5)
 
   @parameterized.product(nworld=(1, 2, 3), compact=(False, True))
   def test_qfrc_constraint_sparse_groups(self, nworld, compact):
@@ -2371,6 +2385,7 @@ class SolverTest(parameterized.TestCase):
 
     # the lists, then one thread per dof
     lanes = 1 if wp.get_device().is_cpu else solver._QFRC_INDEX_LANES
+    group = wp.empty(fixture["jtdaj_adr"].shape, dtype=wp.vec4i)
     adr = wp.empty((nworld, nv + 1), dtype=int)
     entry = wp.empty((nworld, nnz), dtype=wp.vec4i)
     wp.launch(
@@ -2380,7 +2395,8 @@ class SolverTest(parameterized.TestCase):
       outputs=[
         wp.empty((nworld, nv), dtype=int),
         wp.empty((nworld, lanes), dtype=int),
-        wp.empty(fixture["jtdaj_adr"].shape, dtype=wp.vec4i),
+        group,
+        wp.empty((nworld, 1), dtype=int),
         adr,
         entry,
       ],
@@ -2411,7 +2427,7 @@ class SolverTest(parameterized.TestCase):
     ctx = solver._create_solver_context(m, d)
     solver.init_context(m, d, ctx, grad=True)
 
-    adr, entry = ctx.qfrc_adr.numpy(), ctx.qfrc_entry.numpy()
+    adr, entry, group = ctx.qfrc_adr.numpy(), ctx.qfrc_entry.numpy(), ctx.jtdaj_group.numpy()
     nblock, jtdaj_adr, jtdaj_nrow = d.efc.jtdaj_nblock.numpy(), d.efc.jtdaj_adr.numpy(), d.efc.jtdaj_nrow.numpy()
     rownnz, rowadr, colind = d.efc.J_rownnz.numpy(), d.efc.J_rowadr.numpy(), d.efc.J_colind.numpy()
     self.assertGreater(nblock.min(), 1)
@@ -2421,9 +2437,11 @@ class SolverTest(parameterized.TestCase):
       for groupid in range(nblock[worldid]):
         head_row = jtdaj_adr[worldid, groupid]
         head_adr, support = rowadr[worldid, head_row], rownnz[worldid, head_row]
+        # the rows of a group follow each other in the sparse arrays
+        self.assertEqual(group[worldid, groupid].tolist(), [head_adr, support, head_row, jtdaj_nrow[worldid, groupid]])
         for i in range(support):
-          # the rows of a group follow each other in the sparse arrays
-          lists[colind[worldid, 0, head_adr + i]].append([head_adr + i, support, head_row, jtdaj_nrow[worldid, groupid]])
+          lists[colind[worldid, 0, head_adr + i]].append(group[worldid, groupid].tolist())
+          lists[colind[worldid, 0, head_adr + i]][-1][0] += i
       self.assertEqual(adr[worldid, 0], 0)
       for dofid in range(m.nv):
         self.assertEqual(entry[worldid, adr[worldid, dofid] : adr[worldid, dofid + 1]].tolist(), lists[dofid])
@@ -2483,6 +2501,187 @@ class SolverTest(parameterized.TestCase):
         np.testing.assert_allclose(h_inc, h_full, rtol=1e-4, atol=1e-5 * np.abs(h_full).max())
 
     self.assertTrue(any_changes, "no state changes detected across any keyframe")
+
+  @parameterized.product(nworld=(1, 3), compact=(False, True))
+  def test_jtdaj_slot_dofs(self, nworld, compact):
+    """Each slot of the Hessian block of a group gets its element of H."""
+    fixture = _sparse_groups_fixture(nworld)
+    nv, ngroup_max = fixture["nv"], fixture["jtdaj_adr"].shape[1]
+    # the compacted solve drops dof 7, which is in most groups, and moves the others
+    cdof = np.arange(nv, dtype=np.int32)
+    if compact:
+      cdof = np.concatenate((np.arange(1, 8), [-1], np.arange(8, nv - 1), [0])).astype(np.int32)
+
+    nslot = int(fixture["slot_adr"][:, ngroup_max].max()) + 3
+    expected = np.full((nworld, nslot), -7, dtype=np.int32)
+    for worldid in range(nworld):
+      for groupid in range(min(fixture["nblock"][worldid], ngroup_max)):
+        head_adr, support = fixture["group"][worldid, groupid, :2]
+        slot = fixture["slot_adr"][worldid, groupid]
+        for col in range(support):
+          for row in range(col + 1):
+            dof_row = cdof[fixture["colind"][worldid, 0, head_adr + row]]
+            dof_col = cdof[fixture["colind"][worldid, 0, head_adr + col]]
+            code = -1 if min(dof_row, dof_col) < 0 else (min(dof_row, dof_col) << 16) + max(dof_row, dof_col)
+            expected[worldid, slot + col * (col + 1) // 2 + row] = code
+    self.assertEqual(bool((expected == -1).any()), compact)
+
+    slot_dof = wp.full((nworld, nslot), -7, dtype=int)
+    wp.launch(
+      solver._jtdaj_slot_dofs(compact),
+      dim=(nworld, 3, solver._JTDAJ_THREADS_PER_GROUP),
+      inputs=[
+        wp.array(fixture["nblock"], dtype=int),
+        wp.array(fixture["colind"], dtype=int),
+        wp.array(np.tile(cdof, (nworld, 1)), dtype=int),
+        wp.array(fixture["group"], dtype=wp.vec4i),
+        wp.array(fixture["slot_adr"], dtype=int),
+        3,
+      ],
+      outputs=[slot_dof],
+    )
+    np.testing.assert_array_equal(slot_dof.numpy(), expected)
+
+    # one slot short of the world with most slots: that world is left alone
+    total = fixture["slot_adr"][:, ngroup_max]
+    short = int(total.max()) - 1
+    slot_dof = wp.full((nworld, short), -7, dtype=int)
+    wp.launch(
+      solver._jtdaj_slot_dofs(compact),
+      dim=(nworld, 3, solver._JTDAJ_THREADS_PER_GROUP),
+      inputs=[
+        wp.array(fixture["nblock"], dtype=int),
+        wp.array(fixture["colind"], dtype=int),
+        wp.array(np.tile(cdof, (nworld, 1)), dtype=int),
+        wp.array(fixture["group"], dtype=wp.vec4i),
+        wp.array(fixture["slot_adr"], dtype=int),
+        3,
+      ],
+      outputs=[slot_dof],
+    )
+    expected = expected[:, :short].copy()
+    expected[total > short] = -7
+    np.testing.assert_array_equal(slot_dof.numpy(), expected)
+
+  @parameterized.parameters(1, 2)
+  def test_sparse_hessian_add_order(self, nworld):
+    """The slots of an element of H are added in group order, and done worlds are left alone."""
+    lanes = 1 if wp.get_device().is_cpu else 2 * solver._JTDAJ_THREADS_PER_GROUP
+    rng = np.random.default_rng(nworld)
+    nv = 12
+    elements = [(row, col) for col in range(nv) for row in range(col + 1)]
+    # slots of each group: some need several passes of the lanes, one has none
+    sizes = [3, 70, 2, 0, 40, 1, 78, 33, 5, 64, 0, 65]
+    slot_adr = np.concatenate(([0], np.cumsum(sizes))).astype(np.int32)
+    nslot = int(slot_adr[-1])
+    # slots after the last group hold a value that is not added
+    slot_dof = np.zeros((nworld, nslot + 3), dtype=np.int32)
+    slot = np.full((nworld, nslot + 3), 7.0, dtype=np.float32)
+    expected = np.full((nworld, nv, nv), 0.5, dtype=np.float32)
+    for worldid in range(nworld):
+      for groupid, size in enumerate(sizes):
+        # an element of H has a single slot in each group
+        for i, element in enumerate(rng.permutation(len(elements))[:size]):
+          row, col = elements[element]
+          # magnitudes far apart: float32 addition in another order gives another result
+          value = np.float32(rng.uniform(-1.0, 1.0) * 10.0 ** rng.integers(-3, 8))
+          kind = rng.uniform()
+          if kind < 0.1:
+            value = np.float32(0.0)
+          # a dof that the compacted solve drops
+          code = -1 if kind > 0.9 else (row << 16) + col
+          slot_dof[worldid, slot_adr[groupid] + i] = code
+          slot[worldid, slot_adr[groupid] + i] = value
+          if code >= 0:
+            expected[worldid, row, col] += value
+    # the last world reports more groups than the capacity
+    nblock = np.full(nworld, len(sizes), dtype=np.int32)
+    nblock[-1] += 4
+    done = np.zeros(nworld, dtype=bool)
+
+    for case in ("fits", "done", "short"):
+      h = wp.full((nworld, nv, nv), 0.5, dtype=float)
+      skip = wp.full(nworld, case == "short", dtype=bool)
+      done[0] = case == "done"
+      wp.launch(
+        solver._JTDACJ_sparse_add,
+        dim=(nworld, lanes),
+        inputs=[
+          wp.array(nblock, dtype=int),
+          wp.array(np.tile(slot_adr, (nworld, 1)), dtype=int),
+          wp.array(slot_dof, dtype=int),
+          # one slot short of the groups: nothing is added
+          wp.array(np.ascontiguousarray(slot[:, : nslot - 1]) if case == "short" else slot, dtype=float),
+          wp.array(done, dtype=bool),
+        ],
+        outputs=[skip, h],
+        block_dim=lanes,
+      )
+      result = expected.copy()
+      if case == "short":
+        result[:] = 0.5
+      if case == "done":
+        result[0] = 0.5
+      np.testing.assert_array_equal(h.numpy(), result)
+      # the worlds added here or done, which the kernel that adds group by group skips
+      np.testing.assert_array_equal(skip.numpy(), case != "short")
+
+  @parameterized.product(cone=(ConeType.PYRAMIDAL, ConeType.ELLIPTIC), nworld=(1, 2))
+  def test_sparse_hessian_two_kernels(self, cone, nworld):
+    """The sparse Hessian from the slots of each group matches the one added group by group."""
+    h = {}
+    for deterministic in (types.DeterminismType.NONE, types.DeterminismType.ATOMICS):
+      for keyframe in range(3):
+        _, _, m, d = test_data.fixture(
+          "constraints.xml",
+          keyframe=keyframe,
+          nworld=nworld,
+          overrides={
+            "opt.jacobian": mujoco.mjtJacobian.mjJAC_SPARSE,
+            "opt.cone": cone,
+            "opt.deterministic": deterministic,
+          },
+        )
+        mjw.fwd_position(m, d)
+        mjw.fwd_velocity(m, d)
+        mjw.fwd_actuation(m, d)
+        mjw.fwd_acceleration(m, d)
+        ctx = solver._create_solver_context(m, d)
+        solver.init_context(m, d, ctx, grad=False)
+        if deterministic:
+          # with the slots, whatever the device and the number of worlds
+          solver._qfrc_constraint_index(m, d, ctx, slots=True)
+
+        def hessian(slots):
+          if deterministic:
+            ctx.jtdaj_slot = None if slots is None else wp.full((nworld, slots), wp.inf, dtype=float)
+            ctx.jtdaj_skip = wp.zeros(nworld, dtype=bool)
+          ctx.h.fill_(wp.inf)
+          solver._update_gradient(m, d, ctx)
+          return np.triu(ctx.h.numpy()[:, : m.nv, : m.nv]).copy()
+
+        if not deterministic:
+          h[keyframe] = hessian(None)
+          continue
+
+        nslot = ctx.jtdaj_slot_adr.numpy()[:, -1]
+        self.assertGreater(nslot.min(), 10)
+        # group by group
+        h_groups = hessian(None)
+        scale = np.abs(h[keyframe]).max()
+        np.testing.assert_allclose(h_groups, h[keyframe], rtol=1e-4, atol=1e-5 * scale)
+        # from the slots
+        h_slots = hessian(int(nslot.max()))
+        np.testing.assert_allclose(h_slots, h[keyframe], rtol=1e-4, atol=1e-5 * scale)
+        np.testing.assert_allclose(h_slots, h_groups, rtol=1e-5, atol=1e-6 * scale)
+        self.assertTrue(ctx.jtdaj_skip.numpy().all())
+        self.assertTrue(np.isfinite(ctx.jtdaj_slot.numpy()[0, : nslot[0]]).all())
+        # one slot short of the last world: it is added group by group, the others from the slots
+        h_short = hessian(int(nslot[-1]) - 1)
+        self.assertFalse(ctx.jtdaj_skip.numpy()[-1])
+        self.assertTrue(np.isinf(ctx.jtdaj_slot.numpy()[-1]).all())
+        np.testing.assert_array_equal(h_short[-1], h_groups[-1])
+        np.testing.assert_array_equal(h_short[:-1], h_slots[:-1])
 
   @parameterized.product(nworld=(1, 3), compact=(False, True))
   def test_incremental_hessian_sparse_flags(self, nworld, compact):

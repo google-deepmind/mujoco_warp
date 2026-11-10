@@ -15,7 +15,7 @@
 
 import dataclasses
 from math import ceil
-from typing import Any
+from typing import Any, Optional
 
 import warp as wp
 
@@ -2115,6 +2115,36 @@ def _zero_qfrc_constraint_sparse(
 
 # lanes of the block that lists the JTDAJ groups of each dof
 _QFRC_INDEX_LANES = 32
+# the slot addresses of the sparse Hessian blocks saturate here
+_JTDAJ_SLOT_MAX = 1 << 30
+# slots for the sparse Hessian blocks of a world, per nonzero of the constraint Jacobian
+_JTDAJ_SLOT_FACTOR = 4
+
+
+@wp.func
+def _jtdaj_slot_adr(
+  # In:
+  worldid: int,
+  lane: int,
+  ngroup: int,
+  group_in: wp.array2d[wp.vec4i],
+  # Out:
+  slot_adr_out: wp.array2d[int],
+):
+  """Address of a slot per element of the upper triangle of the Hessian block of each group."""
+  # a single element when the slots are not used
+  if lane > 0 or slot_adr_out.shape[1] == 1:
+    return
+
+  slot = int(0)
+  for groupid in range(ngroup):
+    slot_adr_out[worldid, groupid] = slot
+    # saturates instead of overflowing
+    support = wp.min(group_in[worldid, groupid][1], 30000)
+    slot = wp.min(slot + support * (support + 1) // 2, wp.static(_JTDAJ_SLOT_MAX))
+  # the end of the last group, and the number of slots in one more group than the capacity
+  slot_adr_out[worldid, ngroup] = slot
+  slot_adr_out[worldid, slot_adr_out.shape[1] - 1] = slot
 
 
 @wp.kernel(module="unique", enable_backward=False)
@@ -2130,15 +2160,17 @@ def _qfrc_index(
   cursor_out: wp.array2d[int],
   chunk_count_out: wp.array2d[int],
   group_out: wp.array2d[wp.vec4i],
+  slot_adr_out: wp.array2d[int],
   adr_out: wp.array2d[int],
   entry_out: wp.array2d[wp.vec4i],
 ):
   """Lists the JTDAJ groups that contain each dof, in group order.
 
   An entry holds what the sum over the rows of the group needs: the address of the dof in the
-  head row of the group, the sparse support of the group (the stride from a row to the next), the
-  head row, and the number of rows, negative if the rows do not follow each other in the sparse
-  arrays.
+  head row of the group, the width of the sparse support of the group (the stride from a row to
+  the next), the head row, and the number of rows, negative if the rows do not follow each other
+  in the sparse arrays. Each group also gets the address of a slot per element of the upper
+  triangle of its Hessian block, with the total number of slots after the last group.
   """
   worldid, lane = wp.tid()
 
@@ -2202,6 +2234,8 @@ def _qfrc_index(
       cursor = cursor_out[worldid, dofid]
       cursor_out[worldid, dofid] = cursor + 1
       entry_out[worldid, cursor] = wp.vec4i(group[0] + i, group[1], group[2], group[3])
+
+  _jtdaj_slot_adr(worldid, lane, ngroup, group_out, slot_adr_out)
 
 
 @cache_kernel
@@ -2374,10 +2408,12 @@ def _update_constraint_init_qfrc_constraint_sparse(compact: bool, nv: int, group
   return kernel
 
 
-def _qfrc_constraint_index(m: types.Model, d: types.Data, ctx: SolverContext):
+def _qfrc_constraint_index(m: types.Model, d: types.Data, ctx: SolverContext, slots: Optional[bool] = None):
   """Lists, for each dof, the JTDAJ groups whose rows contain it.
 
   The deterministic sparse solve reads this list to add `efc_J.T @ efc_force` one dof at a time.
+  With `slots` (by default, while one wide block per world is resident) it also reserves a slot
+  per element of the Hessian block of each group, for the Hessian in two kernels.
   """
   sc = _sparse_compact(ctx)
   mj = ctx.compact_m_full if sc else m
@@ -2391,17 +2427,39 @@ def _qfrc_constraint_index(m: types.Model, d: types.Data, ctx: SolverContext):
   lanes = 1 if wp.get_device().is_cpu else _QFRC_INDEX_LANES
   cursor = wp.empty((d.nworld, mj.nv), dtype=int)
   chunk_count = wp.empty((d.nworld, lanes), dtype=int)
-  group = wp.empty((d.nworld, ngroup), dtype=wp.vec4i)
+  ctx.jtdaj_group = wp.empty((d.nworld, ngroup), dtype=wp.vec4i)
   # one more dof than the model, whose address is the end of the last list
   ctx.qfrc_adr = wp.empty((d.nworld, mj.nv + 1), dtype=int)
   ctx.qfrc_entry = wp.empty((d.nworld, dj.efc.J_colind.shape[2]), dtype=wp.vec4i)
+  # an element of H packs its row and its column in an int
+  slots = (_jtdaj_wide(m, d, sc) if slots is None else slots) and 0 < ctx.h.shape[1] <= 32768
+  if slots:
+    # the Hessian in two kernels: every group at once into its slots, then the slots in group
+    # order. One more group than the capacity, whose address is the number of slots.
+    nslot = _JTDAJ_SLOT_FACTOR * dj.efc.J_colind.shape[2]
+    ctx.jtdaj_slot_adr = wp.empty((d.nworld, ngroup + 1), dtype=int)
+    ctx.jtdaj_slot_dof = wp.empty((d.nworld, nslot), dtype=int)
+    ctx.jtdaj_slot = wp.empty((d.nworld, nslot), dtype=float)
+    ctx.jtdaj_skip = wp.empty(d.nworld, dtype=bool)
+  else:
+    ctx.jtdaj_slot_adr = wp.empty((d.nworld, 1), dtype=int)
   wp.launch(
     _qfrc_index,
     dim=(d.nworld, lanes),
     inputs=[dj.efc.jtdaj_adr, dj.efc.jtdaj_nrow, dj.efc.jtdaj_nblock, dj.efc.J_rownnz, dj.efc.J_rowadr, dj.efc.J_colind],
-    outputs=[cursor, chunk_count, group, ctx.qfrc_adr, ctx.qfrc_entry],
+    outputs=[cursor, chunk_count, ctx.jtdaj_group, ctx.jtdaj_slot_adr, ctx.qfrc_adr, ctx.qfrc_entry],
     block_dim=lanes,
   )
+  if slots:
+    # element of H of each slot
+    kernel = _jtdaj_slot_dofs(sc)
+    slots_per_world = _jtdaj_groups_per_world(d.nworld, ngroup, kernel)
+    wp.launch(
+      kernel,
+      dim=(d.nworld, slots_per_world, _JTDAJ_THREADS_PER_GROUP),
+      inputs=[dj.efc.jtdaj_nblock, dj.efc.J_colind, dj.dof_cdof, ctx.jtdaj_group, ctx.jtdaj_slot_adr, slots_per_world],
+      outputs=[ctx.jtdaj_slot_dof],
+    )
 
 
 @wp.kernel
@@ -4083,6 +4141,7 @@ def _JTDACJ_sparse(
   max_condim: int,
   block_dim: int = types.BlockDim.update_gradient_JTDAJ_sparse,
   max_records: int = 0,
+  slots: bool = False,
   deterministic: bool = False,
 ):
   COMPACT = compact
@@ -4236,6 +4295,115 @@ def _JTDACJ_sparse(
       return hessian_entry4(efc_J_in, terms, rowadr, worldid, pos1, pos2)
     return hessian_entry6(efc_J_in, terms, rowadr, worldid, pos1, pos2)
 
+  if slots:
+
+    @wp.kernel(module="unique", module_options=module_options, grid_stride=True)
+    def kernel(
+      # Model:
+      opt_impratio_invsqrt: wp.array[float],
+      # Data in:
+      contact_friction_in: wp.array[types.vec5],
+      contact_dim_in: wp.array[int],
+      efc_id_in: wp.array2d[int],
+      efc_jtdaj_adr_in: wp.array2d[int],
+      efc_jtdaj_nrow_in: wp.array2d[int],
+      efc_jtdaj_nblock_in: wp.array[int],
+      efc_J_rownnz_in: wp.array2d[int],
+      efc_J_rowadr_in: wp.array2d[int],
+      efc_J_colind_in: wp.array3d[int],
+      efc_J_in: wp.array3d[float],
+      efc_D_in: wp.array2d[float],
+      efc_state_in: wp.array2d[int],
+      dof_cdof_in: wp.array2d[int],
+      # In:
+      ctx_Jaref_in: wp.array2d[float],
+      ctx_done_in: wp.array[bool],
+      groups_per_world: int,
+      slot_adr_in: wp.array2d[int],
+      # Out:
+      slot_out: wp.array2d[float],
+    ):
+      """Hessian block of every group at once, as the default kernel, each element into a slot.
+
+      No element of H is written here: a second kernel adds the slots of a world in group order.
+      """
+      worldid, slot, lane = wp.tid()
+      if wp.static(ELLIPTIC):
+        lanes = wp.block_dim()
+      else:
+        lanes = wp.static(_JTDAJ_THREADS_PER_GROUP)
+      if ctx_done_in[worldid]:
+        return
+      # the kernel that adds group by group takes the worlds whose groups do not fit in the slots
+      if slot_adr_in[worldid, slot_adr_in.shape[1] - 1] > slot_out.shape[1]:
+        return
+      count = efc_jtdaj_nblock_in[worldid]
+      for groupid in range(slot, count, groups_per_world):
+        head_row = efc_jtdaj_adr_in[worldid, groupid]
+        block_rows = efc_jtdaj_nrow_in[worldid, groupid]
+        head_adr = efc_J_rowadr_in[worldid, head_row]
+        support = efc_J_rownnz_in[worldid, head_row]
+        n_entries = support * (support + 1) // 2
+
+        is_cone = False
+        if wp.static(ELLIPTIC):
+          is_cone = efc_state_in[worldid, head_row] == types.ConstraintState.CONE
+          condim = int(0)
+          # Clipped cone rows retain the safe head address and a zero scale.
+          cone_rowadr = types.vec6i(head_adr, head_adr, head_adr, head_adr, head_adr, head_adr)
+          if is_cone:
+            conid = efc_id_in[worldid, head_row]
+            if wp.static(MAX_CONDIM == 3):
+              condim = int(3)
+            else:
+              condim = contact_dim_in[conid]
+            for dim in range(1, wp.static(MAX_CONDIM)):
+              if dim < block_rows:
+                cone_rowadr[dim] = head_adr + dim * support
+            local_terms = types.vec16()
+            if lane == 0:
+              local_terms = curvature_terms(
+                opt_impratio_invsqrt,
+                efc_D_in,
+                contact_friction_in[conid],
+                ctx_Jaref_in,
+                worldid,
+                head_row,
+                condim,
+                block_rows,
+              )
+            cone_terms = wp.tile_zeros(shape=(16,), dtype=float, storage="shared")
+            for term_id in range(1, 16):
+              wp.tile_scatter_masked(cone_terms, term_id, local_terms[term_id], lane == 0)
+
+        slot_adr = slot_adr_in[worldid, groupid]
+        for entry in range(lane, n_entries, lanes):
+          block_col = int((wp.sqrt(float(8 * entry + 1)) - 1.0) * 0.5)
+          block_row = entry - block_col * (block_col + 1) // 2
+          hval = float(0.0)
+          if wp.static(ELLIPTIC):
+            if is_cone:
+              hval = hessian_entry(
+                efc_J_in,
+                cone_terms,
+                cone_rowadr,
+                worldid,
+                block_row,
+                block_col,
+                condim,
+              )
+          if not is_cone:
+            for member in range(block_rows):
+              member_row = head_row + member
+              if efc_state_in[worldid, member_row] == types.ConstraintState.QUADRATIC.value:
+                member_adr = efc_J_rowadr_in[worldid, member_row]
+                j_row = efc_J_in[worldid, 0, member_adr + block_row]
+                j_col = efc_J_in[worldid, 0, member_adr + block_col]
+                hval += j_row * efc_D_in[worldid, member_row] * j_col
+          slot_out[worldid, slot_adr + entry] = hval
+
+    return kernel
+
   @wp.kernel(module="unique", module_options=module_options, grid_stride=True)
   def kernel(
     # Model:
@@ -4355,6 +4523,110 @@ def _JTDACJ_sparse(
   return kernel
 
 
+@cache_kernel
+def _jtdaj_slot_dofs(compact: bool):
+  COMPACT = compact
+
+  @wp.kernel(module="unique", enable_backward=False)
+  def kernel(
+    # Data in:
+    efc_jtdaj_nblock_in: wp.array[int],
+    efc_J_colind_in: wp.array3d[int],
+    dof_cdof_in: wp.array2d[int],
+    # In:
+    group_in: wp.array2d[wp.vec4i],
+    slot_adr_in: wp.array2d[int],
+    slots_per_world: int,
+    # Out:
+    slot_dof_out: wp.array2d[int],
+  ):
+    """Element of H of each slot of the sparse Hessian blocks: (row << 16) + column, or -1."""
+    worldid, slot, lane = wp.tid()
+
+    # worlds whose groups do not fit in the slots do not use them
+    if slot_adr_in[worldid, slot_adr_in.shape[1] - 1] > slot_dof_out.shape[1]:
+      return
+
+    for groupid in range(slot, wp.min(efc_jtdaj_nblock_in[worldid], group_in.shape[1]), slots_per_world):
+      # address and width of the support of the group
+      group = group_in[worldid, groupid]
+      slot_adr = slot_adr_in[worldid, groupid]
+      for entry in range(lane, group[1] * (group[1] + 1) // 2, wp.static(_JTDAJ_THREADS_PER_GROUP)):
+        block_col = int((wp.sqrt(float(8 * entry + 1)) - 1.0) * 0.5)
+        block_row = entry - block_col * (block_col + 1) // 2
+        dof_row = efc_J_colind_in[worldid, 0, group[0] + block_row]
+        dof_col = efc_J_colind_in[worldid, 0, group[0] + block_col]
+        if wp.static(COMPACT):
+          dof_row = dof_cdof_in[worldid, dof_row]
+          dof_col = dof_cdof_in[worldid, dof_col]
+        if dof_row < 0 or dof_col < 0:
+          # a dof that the compacted solve drops
+          slot_dof_out[worldid, slot_adr + entry] = -1
+        else:
+          slot_dof_out[worldid, slot_adr + entry] = (wp.min(dof_row, dof_col) << 16) + wp.max(dof_row, dof_col)
+
+  return kernel
+
+
+@wp.kernel(module="unique", enable_backward=False)
+def _JTDACJ_sparse_add(
+  # Data in:
+  efc_jtdaj_nblock_in: wp.array[int],
+  # In:
+  slot_adr_in: wp.array2d[int],
+  slot_dof_in: wp.array2d[int],
+  slot_in: wp.array2d[float],
+  ctx_done_in: wp.array[bool],
+  # Out:
+  skip_out: wp.array[bool],
+  h_out: wp.array3d[float],
+):
+  """Adds the Hessian blocks that _JTDACJ_sparse left in the slots of each group, in group order.
+
+  One block per world takes one group at a time behind a block barrier, with the elements of the
+  group split over the lanes: an element of H has a single thread in each group. Only the slot,
+  its element of H and that element are read here, so a group is short.
+  """
+  worldid, lane = wp.tid()
+
+  done = ctx_done_in[worldid]
+  fits = slot_adr_in[worldid, slot_adr_in.shape[1] - 1] <= slot_in.shape[1]
+  if lane == 0:
+    # the kernel that adds group by group skips the worlds done here
+    skip_out[worldid] = done or fits
+  if done or not fits:
+    return
+
+  lanes = wp.block_dim()
+  # a cooperative tile operation ends with a block barrier
+  barrier = wp.tile_zeros(shape=(1,), dtype=int, storage="shared")
+  for groupid in range(wp.min(efc_jtdaj_nblock_in[worldid], slot_adr_in.shape[1] - 1)):
+    wp.tile_scatter_masked(barrier, 0, 0, False)
+    for slot in range(slot_adr_in[worldid, groupid] + lane, slot_adr_in[worldid, groupid + 1], lanes):
+      hval = slot_in[worldid, slot]
+      if hval != 0.0:
+        dofs = slot_dof_in[worldid, slot]
+        if dofs >= 0:
+          dof_row = dofs >> 16
+          dof_col = dofs & 65535
+          h_out[worldid, dof_row, dof_col] = h_out[worldid, dof_row, dof_col] + hval
+
+
+def _jtdaj_max_condim(m: types.Model) -> int:
+  if m.opt.cone == types.ConeType.ELLIPTIC and m.nmaxcondim > 3:
+    return int(m.nmaxcondim)
+  return 3
+
+
+def _jtdaj_wide(m: types.Model, d: types.Data, compact: bool) -> bool:
+  """Whether one block per world of twice the default lanes keeps every block resident."""
+  if wp.get_device().is_cpu:
+    return False
+  kernel = _JTDACJ_sparse(compact, m.opt.cone, _jtdaj_max_condim(m), _JTDAJ_THREADS_PER_GROUP)
+  block_size, min_grid_size = wp.get_suggested_block_size(kernel)
+  return 2 * d.nworld * _JTDAJ_THREADS_PER_GROUP <= block_size * min_grid_size
+
+
 def _jtdaj_groups_per_world(nworld: int, njmax: int, kernel: wp.Kernel) -> int:
   # njmax is capacity and often mostly empty, so cap slots at a few resident waves.
   block_size, min_grid_size = wp.get_suggested_block_size(kernel)
@@ -4428,26 +4700,64 @@ def _update_gradient(m: types.Model, d: types.Data, ctx: SolverContext, compact:
         outputs=[ctx.h],
       )
 
-      max_condim = 3
-      if m.opt.cone == types.ConeType.ELLIPTIC and m.nmaxcondim > 3:
-        max_condim = int(m.nmaxcondim)
+      max_condim = _jtdaj_max_condim(m)
       elliptic = m.opt.cone == types.ConeType.ELLIPTIC
       threads_per_group = 1 if elliptic and wp.get_device().is_cpu else _JTDAJ_THREADS_PER_GROUP
       block_dim = threads_per_group if elliptic or det_atomics else mj.block_dim.update_gradient_JTDAJ_sparse
       jtdaj_kernel = _JTDACJ_sparse(sc, m.opt.cone, max_condim, block_dim)
       groups_per_world = _jtdaj_groups_per_world(d.nworld, d.njmax, jtdaj_kernel)
+      done = ctx.done
       if det_atomics:
+        if ctx.jtdaj_slot is not None:
+          # Two kernels. The first one computes the block of every group at once, like the default
+          # kernel, and leaves each element in its own slot.
+          wp.launch(
+            _JTDACJ_sparse(sc, m.opt.cone, max_condim, block_dim, 0, True, True),
+            dim=(d.nworld, groups_per_world, threads_per_group),
+            inputs=[
+              m.opt.impratio_invsqrt,
+              d.contact.friction,
+              d.contact.dim,
+              d.efc.id,
+              dj.efc.jtdaj_adr,
+              dj.efc.jtdaj_nrow,
+              dj.efc.jtdaj_nblock,
+              dj.efc.J_rownnz,
+              dj.efc.J_rowadr,
+              dj.efc.J_colind,
+              dj.efc.J,
+              d.efc.D,
+              d.efc.state,
+              dj.dof_cdof,
+              ctx.Jaref,
+              ctx.done,
+              groups_per_world,
+              ctx.jtdaj_slot_adr,
+            ],
+            outputs=[ctx.jtdaj_slot],
+            block_dim=block_dim,
+          )
+          # The second one adds the slots of a world in group order: one block per world, which is
+          # one thread on the CPU. Worlds whose groups do not fit in the slots are left to the
+          # kernel below.
+          lanes = 1 if wp.get_device().is_cpu else 2 * _JTDAJ_THREADS_PER_GROUP
+          wp.launch(
+            _JTDACJ_sparse_add,
+            dim=(d.nworld, lanes),
+            inputs=[dj.efc.jtdaj_nblock, ctx.jtdaj_slot_adr, ctx.jtdaj_slot_dof, ctx.jtdaj_slot, ctx.done],
+            outputs=[ctx.jtdaj_skip, ctx.h],
+            block_dim=lanes,
+          )
+          done = ctx.jtdaj_skip
         # one block per world, which adds the groups in order
         groups_per_world = 1
         # the kernel takes the number of lanes from the block, which is one thread on the CPU
         threads_per_group = 1
         if not wp.get_device().is_cpu:
           # wider blocks shorten the chain of groups of a world, while all blocks are resident
-          block_size, min_grid_size = wp.get_suggested_block_size(jtdaj_kernel)
-          wide = 2 * d.nworld * _JTDAJ_THREADS_PER_GROUP <= block_size * min_grid_size
-          threads_per_group = (2 if wide else 1) * _JTDAJ_THREADS_PER_GROUP
+          threads_per_group = (2 if _jtdaj_wide(m, d, sc) else 1) * _JTDAJ_THREADS_PER_GROUP
         block_dim = threads_per_group
-        jtdaj_kernel = _JTDACJ_sparse(sc, m.opt.cone, max_condim, block_dim, 0, True)
+        jtdaj_kernel = _JTDACJ_sparse(sc, m.opt.cone, max_condim, block_dim, 0, False, True)
       jtdaj_inputs = [
         m.opt.impratio_invsqrt,
         d.contact.friction,
@@ -4464,7 +4774,7 @@ def _update_gradient(m: types.Model, d: types.Data, ctx: SolverContext, compact:
         d.efc.state,
         dj.dof_cdof,
         ctx.Jaref,
-        ctx.done,
+        done,
         groups_per_world,
       ]
       wp.launch(
