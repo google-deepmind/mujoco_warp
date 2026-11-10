@@ -1335,7 +1335,6 @@ def crb(m: Model, d: Data):
   """
   wp.launch(_crb_subtree, dim=(d.nworld, m.nbody), inputs=[m.body_subtreenum, d.cinert], outputs=[d.crb])
 
-  d.M.zero_()
   wp.launch(
     _M,
     dim=(d.nworld, m.nv),
