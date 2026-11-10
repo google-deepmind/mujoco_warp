@@ -3232,15 +3232,32 @@ def _qfrc_actuator(nv: int, deterministic: bool = False):
   ):
     worldid, actid = wp.tid()
 
-    rownnz = moment_rownnz_in[worldid, actid]
-    rowadr = moment_rowadr_in[worldid, actid]
-    act_force = actuator_force_in[worldid, actid]
+    if wp.static(deterministic):
+      # The thread of the first actuator accumulates all the actuators of its world in ascending
+      # order: each element has one writer and a fixed summation order, without atomics.
+      if actid > 0:
+        return
 
-    for i in range(rownnz):
-      sparseid = rowadr + i
-      colind = moment_colind_in[worldid, sparseid]
-      qfrc = actuator_moment_in[worldid, sparseid] * act_force
-      wp.atomic_add(qfrc_actuator_out[worldid], colind, qfrc)
+      for i in range(moment_rownnz_in.shape[1]):
+        rowadr = moment_rowadr_in[worldid, i]
+        act_force = actuator_force_in[worldid, i]
+
+        for j in range(moment_rownnz_in[worldid, i]):
+          sparseid = rowadr + j
+          colind = moment_colind_in[worldid, sparseid]
+          qfrc = actuator_moment_in[worldid, sparseid] * act_force
+          # not `+=`, which Warp compiles to an atomic
+          qfrc_actuator_out[worldid, colind] = qfrc_actuator_out[worldid, colind] + qfrc
+    else:
+      rownnz = moment_rownnz_in[worldid, actid]
+      rowadr = moment_rowadr_in[worldid, actid]
+      act_force = actuator_force_in[worldid, actid]
+
+      for i in range(rownnz):
+        sparseid = rowadr + i
+        colind = moment_colind_in[worldid, sparseid]
+        qfrc = actuator_moment_in[worldid, sparseid] * act_force
+        wp.atomic_add(qfrc_actuator_out[worldid], colind, qfrc)
 
   return kernel
 

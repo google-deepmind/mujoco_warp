@@ -24,6 +24,7 @@ from absl.testing import parameterized
 import mujoco_warp as mjw
 from mujoco_warp import BiasType
 from mujoco_warp import ConeType
+from mujoco_warp import DeterminismType
 from mujoco_warp import DisableBit
 from mujoco_warp import DynType
 from mujoco_warp import EnableBit
@@ -91,6 +92,81 @@ class ForwardTest(parameterized.TestCase):
       _assert_eq(d.act.numpy()[0], mjd.act, "act")
 
     # TODO(team): test actearly
+
+  @parameterized.parameters(1, 2)
+  def test_qfrc_actuator_deterministic(self, nworld):
+    """Deterministic actuator forces accumulate in a fixed order instead of with atomics."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option>
+          <flag contact="disable"/>
+        </option>
+        <worldbody>
+          <body>
+            <joint name="hinge" axis="0 1 0"/>
+            <geom type="capsule" size=".02" fromto="0 0 0 .2 0 0"/>
+            <body pos=".2 0 0">
+              <joint name="ball" type="ball"/>
+              <geom type="capsule" size=".02" fromto="0 0 0 .2 0 0"/>
+              <body pos=".2 0 0">
+                <joint name="slide" type="slide" axis="1 0 0"/>
+                <geom size=".03"/>
+                <site name="tip" pos=".05 0 0"/>
+              </body>
+            </body>
+          </body>
+        </worldbody>
+        <tendon>
+          <fixed name="fixed">
+            <joint joint="hinge" coef="1"/>
+            <joint joint="slide" coef="-.5"/>
+          </fixed>
+        </tendon>
+        <actuator>
+          <motor joint="hinge" gear="2"/>
+          <position joint="hinge" kp="10"/>
+          <motor joint="ball" gear="1 2 3"/>
+          <motor joint="slide"/>
+          <motor tendon="fixed" gear="3"/>
+          <general site="tip" gear="1 2 3 .1 .2 .3"/>
+        </actuator>
+      </mujoco>
+      """,
+      qpos_noise=0.5,
+      qvel_noise=0.1,
+      ctrl_noise=0.5,
+      nworld=nworld,
+      overrides={"opt.deterministic": DeterminismType.ATOMICS},
+    )
+    ctrl = np.tile(mjd.ctrl.astype(np.float32), (nworld, 1))
+    if nworld == 2:
+      ctrl[1] = 0.3 - 2.0 * ctrl[1]
+    d.ctrl.assign(ctrl)
+    for arr in (d.qfrc_actuator, d.actuator_force):
+      arr.fill_(wp.inf)
+
+    mjw.fwd_actuation(m, d)
+
+    # each dof is driven by several actuators
+    actuator_moment = np.zeros((mjm.nu, mjm.nv))
+    mujoco.mju_sparse2dense(actuator_moment, mjd.actuator_moment, mjd.moment_rownnz, mjd.moment_rowadr, mjd.moment_colind)
+    self.assertGreater(np.count_nonzero(actuator_moment, axis=0).min(), 1)
+
+    qfrc_actuator = d.qfrc_actuator.numpy()
+    for world in range(nworld):
+      mjd.ctrl[:] = ctrl[world]
+      mujoco.mj_fwdActuation(mjm, mjd)
+      np.testing.assert_allclose(d.actuator_force.numpy()[world], mjd.actuator_force, rtol=1e-5, atol=1e-5)
+      np.testing.assert_allclose(qfrc_actuator[world], mjd.qfrc_actuator, rtol=1e-5, atol=1e-5)
+    if nworld == 2:
+      self.assertFalse(np.allclose(qfrc_actuator[0], qfrc_actuator[1]))
+
+    # same as the kernel with atomics, up to summation order
+    m.opt.deterministic = DeterminismType.NONE
+    d.qfrc_actuator.fill_(wp.inf)
+    mjw.fwd_actuation(m, d)
+    np.testing.assert_allclose(d.qfrc_actuator.numpy(), qfrc_actuator, rtol=1e-5, atol=1e-5)
 
   @parameterized.parameters(IntegratorType.EULER, IntegratorType.RK4)
   def test_rotational_setpoint_wrapping(self, integrator):
