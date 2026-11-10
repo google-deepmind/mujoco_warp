@@ -51,7 +51,7 @@ from mujoco_warp._src.warp_util import event_scope
 wp.set_module_options({"enable_backward": False})
 
 
-@wp.kernel
+@wp.kernel(module="unique", enable_backward=False)
 def _kinematics_branch(
   # Model:
   qpos0: wp.array2d[float],
@@ -464,6 +464,7 @@ def kinematics(m: Model, d: Data):
   wp.launch(
     _kinematics_branch,
     dim=(d.nworld, m.nbranch),
+    block_dim=m.block_dim.branch,
     inputs=[
       m.qpos0,
       m.body_parentid,
@@ -1693,7 +1694,7 @@ def _rne_cacc_world(m: Model, d: Data):
     wp.launch(_cacc_world, dim=[d.nworld], inputs=[m.opt.gravity], outputs=[d.cacc])
 
 
-@wp.kernel
+@wp.kernel(module="unique", enable_backward=False)
 def _cacc_branch(
   # Model:
   body_parentid: wp.array[int],
@@ -1734,6 +1735,7 @@ def _rne_cacc_forward(m: Model, d: Data, flg_acc: bool = False):
   wp.launch(
     _cacc_branch,
     dim=(d.nworld, m.nbranch),
+    block_dim=m.block_dim.branch,
     inputs=[
       m.body_parentid,
       m.body_dofnum,
@@ -3044,7 +3046,7 @@ def _comvel_root(cvel_out: wp.array2d[wp.spatial_vector]):
   cvel_out[worldid, 0][elementid] = 0.0
 
 
-@wp.kernel
+@wp.kernel(module="unique", enable_backward=False)
 def _comvel_branch(
   # Model:
   body_parentid: wp.array[int],
@@ -3132,6 +3134,7 @@ def com_vel(m: Model, d: Data):
   wp.launch(
     _comvel_branch,
     dim=(d.nworld, m.nbranch),
+    block_dim=m.block_dim.branch,
     inputs=[
       m.body_parentid,
       m.body_jntnum,
