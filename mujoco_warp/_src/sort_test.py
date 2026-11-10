@@ -16,6 +16,8 @@
 """Canonical contact and constraint ordering tests (without replaying stage outputs)."""
 
 import dataclasses
+from types import SimpleNamespace
+from unittest import mock
 
 import mujoco
 import numpy as np
@@ -1083,6 +1085,335 @@ class SortTest(parameterized.TestCase):
     for world in range(nworld):
       self.assertTrue(np.all(np.isfinite(pos[world, :expected_nefc])))
       self.assertTrue(np.all(np.isfinite(J[world, 0, : int(rownnz[world, :expected_nefc].sum())])))
+
+  @parameterized.product(nworld=(1, 3), capacity=(5, 64, 200), large=(False, True))
+  def test_permutation_blocks(self, nworld, capacity, large):
+    """Counted blocks and merge passes are one stable sort for every block width and capacity."""
+    rng = np.random.default_rng(capacity)
+    # Few distinct values, so that many rows compare equal and only their index orders them.
+    primary = rng.integers(0, 3, (nworld, capacity, 4)).astype(np.int32)
+    counts = np.array([capacity - 1, capacity // 2, 0])[:nworld]
+    keys = sort._ConstraintKeys()
+    keys.primary = wp.array(primary, dtype=wp.vec4i)
+    keys.J = wp.zeros((nworld, capacity, 1), dtype=wp.uint32)
+    keys.J_rownnz = wp.empty((nworld, 0), dtype=int)
+    zeros = wp.zeros((nworld, capacity), dtype=wp.uint32)
+    keys.pos, keys.margin, keys.D, keys.vel, keys.aref, keys.frictionloss = (zeros,) * 6
+    keys.nv = 1
+    inverse = wp.empty((nworld, capacity), dtype=int)
+    with mock.patch.object(sort, "_RANK_LARGE", 0 if large else sort._RANK_LARGE):
+      # Wide blocks and no merge pass for a small capacity, narrow blocks and merges otherwise.
+      width = sort._rank_width(nworld, capacity)
+      self.assertEqual(width, 16 if large and capacity > 16 else min(capacity, 64) if capacity != 5 else 8)
+      order = sort.permutation(wp.array(counts, dtype=int), capacity, keys, sort._constraint_less, inverse)
+    expected = np.tile(np.arange(capacity), (nworld, 1))
+    for world, n in enumerate(counts):
+      rows = primary[world, :n]
+      expected[world, :n] = np.lexsort((np.arange(n), rows[:, 3], rows[:, 2], rows[:, 1], rows[:, 0]))
+    np.testing.assert_array_equal(order.numpy(), expected)
+    np.testing.assert_array_equal(np.take_along_axis(inverse.numpy(), expected, axis=1), expected * 0 + np.arange(capacity))
+
+  @parameterized.product(nworld=(1, 3), buckets=(True, False))
+  def test_contact_paths(self, nworld, buckets):
+    """Per-world buckets and merge passes over the buffer give the same stable canonical order."""
+    _, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <body>
+            <freejoint/>
+            <geom size=".1"/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=nworld,
+      nconmax=100,
+    )
+    self.assertEqual(d.naconmax <= sort._BUCKET_NCONMAX * nworld, True)
+    count = d.naconmax - 7
+    rng = np.random.default_rng(nworld)
+    contact = {name: array for name, array in vars(d.contact).items() if array.size}
+    reference = {}
+    for name, array in contact.items():
+      value = array.numpy()
+      reference[name] = rng.integers(0, 3, value.shape).astype(value.dtype)
+    # IDs outside the batch are ordered like any other world ID.
+    reference["worldid"] = rng.integers(-2, nworld + 2, d.naconmax).astype(np.int32)
+    # Contacts with equal keys keep the order of the buffer: copy the keys of some contacts.
+    pairs = rng.permutation(count)[: 2 * (count // 3)].reshape(-1, 2)
+    for name, value in reference.items():
+      value[pairs[:, 1]] = value[pairs[:, 0]]
+    # Not a key: it identifies the contact that each sorted slot came from.
+    reference["efc_address"] = np.arange(reference["efc_address"].size, dtype=np.int32).reshape(reference["efc_address"].shape)
+    for name, value in reference.items():
+      contact[name].assign(value)
+    d.nacon.fill_(count)
+    with mock.patch.object(sort, "_BUCKET_NCONMAX", sort._BUCKET_NCONMAX if buckets else 0):
+      collision_driver._sort_contacts(m, d)
+
+    # Least significant key first: the index, then the keys of _contact_less from last to first.
+    columns = [np.arange(count)]
+    for name in (
+      "geomcollisionid",
+      "surfacevel",
+      "adhesion",
+      "solimp",
+      "solreffriction",
+      "solref",
+      "friction",
+      "includemargin",
+      "type",
+      "dim",
+      "dist",
+      "frame",
+      "pos",
+      "geom",
+      "worldid",
+    ):
+      value = reference[name][:count].reshape(count, -1)
+      columns.extend(value[:, i] for i in reversed(range(value.shape[1])))
+    order = np.lexsort(columns)
+    self.assertFalse(np.array_equal(order, np.arange(count)))
+    for name, value in reference.items():
+      expected = value.copy()
+      expected[:count] = value[:count][order]
+      np.testing.assert_array_equal(contact[name].numpy(), expected, err_msg=name)
+    self.assertEqual(d.nacon.numpy()[0], count)
+
+  def test_contact_bucket_ties(self):
+    """Equal contacts keep the order of the buffer, not the order in which a bucket was filled."""
+    _, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <body>
+            <freejoint/>
+            <geom size=".1"/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=2,
+      nconmax=4,
+    )
+    count = 6
+    d.nacon.fill_(count)
+    for array in _arrays(d.contact):
+      array.zero_()
+    # Three equal contacts per world. The grouped copy holds them in reverse buffer order.
+    source = np.array([2, 1, 0, 5, 4, 3, 0, 0], dtype=np.int32)
+    worldid = np.array([0, 0, 0, 1, 1, 1, 0, 0], dtype=np.int32)
+    address = np.arange(d.contact.efc_address.size, dtype=np.int32).reshape(d.contact.efc_address.shape)
+    copy = SimpleNamespace(**{name: wp.clone(getattr(d.contact, name)) for name in sort._CONTACT_FIELDS})
+    copy.worldid.assign(worldid)
+    copy.efc_address.assign(address[source])
+    wp.launch(
+      sort._contact_place,
+      dim=d.naconmax,
+      inputs=[
+        d.nacon,
+        sort._contact_keys(copy),
+        wp.array([0, 0, 3, 6], dtype=int),
+        wp.array([0, 3, 3, 0], dtype=int),
+        wp.array(source, dtype=int),
+        sort._contact_rows(copy),
+      ],
+      outputs=[sort._contact_rows(d.contact)],
+    )
+    np.testing.assert_array_equal(d.contact.efc_address.numpy()[:count], address[:count])
+    np.testing.assert_array_equal(d.contact.worldid.numpy()[:count], worldid[:count])
+    np.testing.assert_array_equal(d.contact.efc_address.numpy()[count:], 0)
+
+  @parameterized.parameters(True, False)
+  def test_sparse_move(self, scan):
+    """Packed nonzeros follow the sorted rows across threads, empty rows and rows that stay."""
+    nworld, njmax, capacity = 2, 7, 28
+    counts = np.array([7, 4], dtype=np.int32)
+    order = np.array([[3, 0, 6, 1, 2, 5, 4], [0, 1, 3, 2, 4, 5, 6]], dtype=np.int32)
+    rownnz = np.array([[0, 5, 3, 2, 0, 6, 1], [4, 0, 3, 2, 9, 9, 9]], dtype=np.int32)
+    # Rows are stored in an arbitrary order. The first rows of the second world are in place and
+    # its last row moves, so that nonzeros past the end of a world would move as well.
+    rowadr = np.array([[9, 12, 0, 3, 9, 5, 11], [0, 4, 8, 4, 0, 0, 0]], dtype=np.int32)
+    rng = np.random.default_rng(0)
+    colind = rng.integers(0, 100, (nworld, capacity)).astype(np.int32)
+    J = rng.random((nworld, capacity)).astype(np.float32)
+    expected_colind, expected_J = colind.copy(), J.copy()
+    local = np.zeros((nworld, njmax), dtype=np.int32)
+    sorted_nnz = np.zeros((nworld + 1, njmax), dtype=np.int32)
+    for world in range(nworld):
+      offset = 0
+      for row in range(counts[world]):
+        old = order[world, row]
+        nnz = rownnz[world, old]
+        local[world, row] = offset
+        sorted_nnz[world, row] = nnz
+        expected_colind[world, offset : offset + nnz] = colind[world, rowadr[world, old] : rowadr[world, old] + nnz]
+        expected_J[world, offset : offset + nnz] = J[world, rowadr[world, old] : rowadr[world, old] + nnz]
+        offset += nnz
+    self.assertTrue(np.any(rowadr[1, order[1, :2]] == local[1, :2]))
+    if scan:
+      # One exclusive scan over all worlds, which ends in a row of zeros.
+      flat = sorted_nnz.reshape(-1)
+      offsets = wp.array((np.cumsum(flat) - flat).reshape(sorted_nnz.shape), dtype=int)
+      total = wp.empty(0, dtype=int)
+    else:
+      offsets = wp.empty((nworld, njmax), dtype=int)
+      total = wp.empty(nworld, dtype=int)
+      wp.launch(
+        sort._sparse_offsets,
+        dim=nworld,
+        inputs=[wp.array(rownnz, dtype=int), wp.array(counts, dtype=int), wp.array(order, dtype=int)],
+        outputs=[offsets, total],
+      )
+      np.testing.assert_array_equal(total.numpy(), sorted_nnz[:nworld].sum(axis=1))
+      for world in range(nworld):
+        np.testing.assert_array_equal(offsets.numpy()[world, : counts[world]], local[world, : counts[world]])
+    colind_wp, J_wp = wp.array(colind, dtype=int), wp.array(J, dtype=float)
+    # Elements that do not move are not copied: poison their slots in the copy.
+    colind_sorted, J_sorted = wp.full(colind.shape, -1, dtype=int), wp.full(J.shape, wp.nan, dtype=float)
+    inputs = [wp.array(rowadr, dtype=int), wp.array(counts, dtype=int), wp.array(order, dtype=int), offsets, total]
+    chunks = (nworld, (capacity + sort._CHUNK - 1) // sort._CHUNK)
+    wp.launch(sort._sparse_move, dim=chunks, inputs=inputs + [colind_wp, J_wp, False], outputs=[colind_sorted, J_sorted])
+    self.assertTrue(np.any(colind_sorted.numpy() == -1))
+    wp.launch(sort._sparse_move, dim=chunks, inputs=inputs + [colind_sorted, J_sorted, True], outputs=[colind_wp, J_wp])
+    np.testing.assert_array_equal(colind_wp.numpy(), expected_colind)
+    np.testing.assert_array_equal(J_wp.numpy(), expected_J)
+
+  def test_dense_rows(self):
+    """Wide rows move a few columns per thread, up to a width that is not a multiple of them."""
+    counts = np.array([5, 3], dtype=np.int32)
+    order = np.array([[1, 0, 2, 4, 3], [2, 1, 0, 3, 4]], dtype=np.int32)
+    width = 2 * sort._CHUNK - 1
+    value = np.arange(2 * 5 * width, dtype=np.uint32).reshape(2, 5, width)
+    expected = value.copy()
+    for world, n in enumerate(counts):
+      expected[world, :n] = value[world, order[world, :n]]
+    value_wp = wp.array(value, dtype=wp.uint32)
+    # Rows that stay in place are not copied: poison the copy.
+    copy = wp.full(value.shape, 0xFFFFFFFF, dtype=wp.uint32)
+    count, order_wp = wp.array(counts, dtype=int), wp.array(order, dtype=int)
+    wp.launch(sort._gather, dim=(2, 5, 2), inputs=[count, order_wp, value_wp], outputs=[copy])
+    np.testing.assert_array_equal(copy.numpy()[0, 2], 0xFFFFFFFF)
+    np.testing.assert_array_equal(copy.numpy()[0, 0], value[0, 1])
+    wp.launch(sort._restore, dim=(2, 5, 2), inputs=[count, order_wp, copy], outputs=[value_wp])
+    np.testing.assert_array_equal(value_wp.numpy(), expected)
+
+  @parameterized.product(nworld=(1, 2), jacobian=("dense", "sparse"), ordered=(True, False))
+  def test_contact_rank_paths(self, nworld, jacobian, ordered):
+    """Rows take the same contact order from a walk of the rows of a world and from merge passes."""
+    results = []
+    for row_rank_njmax in (sort._ROW_RANK_NJMAX, 0):
+      _, _, m, d = test_data.fixture(
+        xml="""
+        <mujoco>
+          <worldbody>
+            <geom type="plane" size="5 5 .1"/>
+            <body pos="0 0 .09">
+              <freejoint/>
+              <geom type="box" size=".1 .12 .1"/>
+            </body>
+            <body pos="1 0 .08">
+              <freejoint/>
+              <geom size=".1"/>
+            </body>
+            <body pos="2 0 1">
+              <joint range=".1 1" frictionloss=".1"/>
+              <geom size=".1"/>
+            </body>
+          </worldbody>
+        </mujoco>
+        """,
+        nworld=nworld,
+        nconmax=16,
+        njmax=64,
+        overrides={"opt.jacobian": jacobian},
+      )
+      self.assertLessEqual(d.njmax, sort._ROW_RANK_NJMAX)
+      mjw.forward(m, d)
+      count = int(d.nacon.numpy()[0])
+      self.assertGreater(count, 2 * nworld)
+      collision_driver._sort_contacts(m, d)
+      if not ordered:
+        # The canonical order in reverse, so that every contact row has to move.
+        for array in _arrays(d.contact):
+          if array.size:
+            values = array.numpy().copy()
+            values[:count] = values[:count][::-1]
+            array.assign(values)
+      constraint.make_constraint(m, d)
+      before = d.efc.J.numpy().copy()
+      with mock.patch.object(sort, "_ROW_RANK_NJMAX", row_rank_njmax):
+        sort.constraints(m, d)
+      if not ordered:
+        self.assertFalse(np.array_equal(d.efc.J.numpy(), before))
+      results.append({name: array.numpy().copy() for name, array in vars(d.efc).items() if array.size})
+      results[-1]["efc_address"] = d.contact.efc_address.numpy().copy()
+      results[-1]["dof_frictionadr"] = d.dof_frictionadr.numpy().copy()
+      # Contact rows follow the canonical order of their contacts, whatever their index.
+      nefc = d.nefc.numpy()
+      for world in range(nworld):
+        rows = results[-1]["type"][world, : nefc[world]] >= int(types.ConstraintType.CONTACT_FRICTIONLESS)
+        ids = results[-1]["id"][world, : nefc[world]][rows]
+        self.assertGreater(ids.size, 4)
+        np.testing.assert_array_equal(ids, np.sort(ids)[:: 1 if ordered else -1])
+    for name, value in results[0].items():
+      np.testing.assert_array_equal(value, results[1][name], err_msg=name)
+
+  @parameterized.product(nworld=(1, 2), cone=("pyramidal", "elliptic"))
+  def test_sparse_offsets_paths(self, nworld, cone):
+    """A scan over all worlds and a walk of each world pack the same sorted sparse rows."""
+    results = []
+    for scan_max in (sort._SCAN_MAX, 0):
+      _, _, m, d = test_data.fixture(
+        xml="""
+        <mujoco>
+          <worldbody>
+            <geom type="plane" size="5 5 .1"/>
+            <body pos="0 0 .09">
+              <freejoint/>
+              <geom type="box" size=".1 .12 .1"/>
+            </body>
+            <body pos="1 0 .08">
+              <freejoint/>
+              <geom size=".1"/>
+            </body>
+            <body pos="2 0 1">
+              <joint range=".1 1" frictionloss=".1"/>
+              <geom size=".1"/>
+            </body>
+          </worldbody>
+        </mujoco>
+        """,
+        nworld=nworld,
+        nconmax=16,
+        njmax=64,
+        overrides={"opt.jacobian": "sparse", "opt.cone": cone},
+      )
+      mjw.forward(m, d)
+      count = int(d.nacon.numpy()[0])
+      self.assertGreater(count, 2 * nworld)
+      # Unsorted contacts, so that rows and their nonzeros have to move.
+      for array in _arrays(d.contact):
+        if array.size:
+          values = array.numpy().copy()
+          values[:count] = values[:count][::-1]
+          array.assign(values)
+      constraint.make_constraint(m, d)
+      before = d.efc.J.numpy().copy()
+      with mock.patch.object(sort, "_SCAN_MAX", scan_max):
+        sort.constraints(m, d)
+      self.assertFalse(np.array_equal(d.efc.J.numpy(), before))
+      _assert_jtdaj_blocks(self, d)
+      results.append({name: array.numpy().copy() for name, array in vars(d.efc).items() if array.size})
+      results[-1]["efc_address"] = d.contact.efc_address.numpy().copy()
+      results[-1]["dense"] = np.array([_dense_jacobian(m, d, world) for world in range(nworld)], dtype=object)
+    for name, value in results[0].items():
+      if name == "dense":
+        for a, b in zip(value, results[1][name]):
+          np.testing.assert_array_equal(a, b)
+      else:
+        np.testing.assert_array_equal(value, results[1][name], err_msg=name)
 
 
 def _arrays(value):
