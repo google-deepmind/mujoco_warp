@@ -2368,21 +2368,117 @@ class SolverTest(parameterized.TestCase):
         ctx.quad_changed_count.zero_()
         solver._update_constraint(m, d, ctx, track_changes=True)
 
-        # the changed rows are listed in row order
         count = ctx.quad_changed_count.numpy()
-        ids = ctx.quad_changed_ids.numpy()
-        for worldid in range(d.nworld):
-          changed = ids[worldid, : count[worldid]]
-          self.assertTrue(np.all(changed >= 0) and np.all(np.diff(changed) > 0), f"changed rows: {changed}")
+        if m.is_sparse:
+          # one bit per changed row, which the sparse incremental kernel reads and clears
+          flag = ctx.quad_changed_flag.numpy()
+          for worldid in range(d.nworld):
+            self.assertEqual(sum(bin(word).count("1") for word in flag[worldid]), count[worldid])
+        else:
+          # the changed rows are listed in row order
+          ids = ctx.quad_changed_ids.numpy()
+          for worldid in range(d.nworld):
+            changed = ids[worldid, : count[worldid]]
+            self.assertTrue(np.all(changed >= 0) and np.all(np.diff(changed) > 0), f"changed rows: {changed}")
         any_changes = any_changes or bool(count.any())
 
         solver._update_gradient_incremental(m, d, ctx)
+        np.testing.assert_array_equal(ctx.quad_changed_flag.numpy(), 0)
         h_inc = np.triu(ctx.h.numpy()[:, : m.nv, : m.nv])
         solver._update_gradient(m, d, ctx)
         h_full = np.triu(ctx.h.numpy()[:, : m.nv, : m.nv])
         np.testing.assert_allclose(h_inc, h_full, rtol=1e-4, atol=1e-5 * np.abs(h_full).max())
 
     self.assertTrue(any_changes, "no state changes detected across any keyframe")
+
+  @parameterized.product(nworld=(1, 3), compact=(False, True))
+  def test_incremental_hessian_sparse_flags(self, nworld, compact):
+    """The deterministic sparse kernel adds the rows whose bit is set, in row order."""
+    nv, njmax = 9, 100
+    bits = solver._QUAD_CHANGED_BITS
+    rng = np.random.default_rng(5)
+    # first and last bit of a word, several words, a world without changed rows
+    rows = ([0, 7, bits - 1, bits, 2 * bits - 1, 2 * bits, 3 * bits, njmax - 1], [], [5, 2 * bits + 2])[:nworld]
+
+    # every row has its own sparse support, so wide that its entries need more than one pass of
+    # the lanes on the CPU and that the rows overlap
+    rownnz = rng.integers(3, nv + 1, (nworld, njmax)).astype(np.int32)
+    rowadr = np.zeros((nworld, njmax), dtype=np.int32)
+    rowadr[:, 1:] = np.cumsum(rownnz, axis=1)[:, :-1]
+    nnz = int(rownnz.sum(axis=1).max())
+    colind = np.zeros((nworld, 1, nnz), dtype=np.int32)
+    for worldid in range(nworld):
+      for efcid in range(njmax):
+        adr = rowadr[worldid, efcid]
+        colind[worldid, 0, adr : adr + rownnz[worldid, efcid]] = rng.permutation(nv)[: rownnz[worldid, efcid]]
+    J = rng.uniform(-1.0, 1.0, (nworld, 1, nnz)).astype(np.float32)
+    D = rng.uniform(1.0, 2.0, (nworld, njmax)).astype(np.float32)
+    quadratic = types.ConstraintState.QUADRATIC.value
+    state = np.where(rng.uniform(size=(nworld, njmax)) < 0.5, quadratic, types.ConstraintState.SATISFIED.value)
+    # the compacted solve drops dof 2 and moves the others
+    cdof = np.arange(nv, dtype=np.int32)
+    if compact:
+      cdof = np.array([3, 0, -1, 1, 2, 4, 5, 7, 6], dtype=np.int32)
+    h0 = rng.uniform(-1.0, 1.0, (nworld, nv, nv)).astype(np.float32)
+
+    expected = h0.astype(np.float64)
+    flag = np.zeros((nworld, njmax // bits + 1), dtype=np.int32)
+    ids = np.full((nworld, njmax), -1, dtype=np.int32)
+    for worldid, world_rows in enumerate(rows):
+      ids[worldid, : len(world_rows)] = world_rows
+      for efcid in world_rows:
+        flag[worldid, efcid // bits] |= 1 << (efcid % bits)
+        sign = D[worldid, efcid] if state[worldid, efcid] == quadratic else -D[worldid, efcid]
+        adr = rowadr[worldid, efcid]
+        for i in range(rownnz[worldid, efcid]):
+          for j in range(i + 1):
+            dofi, dofj = cdof[colind[worldid, 0, adr + i]], cdof[colind[worldid, 0, adr + j]]
+            if dofi >= 0 and dofj >= 0:
+              expected[worldid, min(dofi, dofj), max(dofi, dofj)] += sign * J[worldid, 0, adr + i] * J[worldid, 0, adr + j]
+    self.assertGreater(np.abs(expected - h0).max(), 1.0)
+
+    count = wp.array([len(world_rows) for world_rows in rows], dtype=int)
+    inputs = [
+      wp.array(rownnz, dtype=int),
+      wp.array(rowadr, dtype=int),
+      wp.array(colind, dtype=int),
+      wp.array(J, dtype=float),
+      wp.array(D, dtype=float),
+      wp.array(state, dtype=int),
+      wp.array(np.tile(cdof, (nworld, 1)), dtype=int),
+    ]
+
+    # the default kernel, from the list of rows
+    h_default = wp.array(h0, dtype=float)
+    wp.launch(
+      solver._update_gradient_h_incremental_sparse(compact),
+      dim=(nworld, 2, solver._JTDAJ_THREADS_PER_GROUP),
+      inputs=inputs + [wp.array(ids, dtype=int), count, 2],
+      outputs=[h_default],
+    )
+    np.testing.assert_allclose(h_default.numpy(), expected, rtol=1e-5, atol=1e-5)
+
+    lanes = 1 if wp.get_device().is_cpu else 2 * solver._JTDAJ_THREADS_PER_GROUP
+    flag = wp.array(flag, dtype=int)
+    h = wp.array(h0, dtype=float)
+    kernel = solver._update_gradient_h_incremental_sparse(compact, 0, lanes, True)
+    wp.launch(kernel, dim=(nworld, lanes), inputs=inputs + [count], outputs=[flag, h], block_dim=lanes)
+    np.testing.assert_allclose(h.numpy(), expected, rtol=1e-5, atol=1e-5)
+    np.testing.assert_array_equal(flag.numpy(), 0)
+
+    # the sum of each element runs in row order: the result is the sequential float32 sum
+    sequential = h0.copy()
+    for worldid, world_rows in enumerate(rows):
+      for efcid in world_rows:
+        sign = D[worldid, efcid] if state[worldid, efcid] == quadratic else -D[worldid, efcid]
+        adr = rowadr[worldid, efcid]
+        for i in range(rownnz[worldid, efcid]):
+          for j in range(i + 1):
+            dofi, dofj = cdof[colind[worldid, 0, adr + i]], cdof[colind[worldid, 0, adr + j]]
+            value = np.float32(np.float32(sign * J[worldid, 0, adr + i]) * J[worldid, 0, adr + j])
+            if dofi >= 0 and dofj >= 0 and value != 0.0:
+              sequential[worldid, min(dofi, dofj), max(dofi, dofj)] += value
+    np.testing.assert_array_equal(h.numpy(), sequential)
 
   @parameterized.product(nworld=(1, 2), rows_from=("put_data", "make_constraint"))
   def test_sparse_hessian_dof_friction(self, nworld, rows_from):

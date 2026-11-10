@@ -2498,6 +2498,84 @@ def _update_gradient_h_incremental_sparse(compact: bool, max_records: int = 0, l
     module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
     module_options["deterministic_max_records"] = max_records
 
+  if deterministic:
+
+    @wp.kernel(module="unique", module_options=module_options, grid_stride=False)
+    def kernel(
+      # Data in:
+      efc_J_rownnz_in: wp.array2d[int],
+      efc_J_rowadr_in: wp.array2d[int],
+      efc_J_colind_in: wp.array3d[int],
+      efc_J_in: wp.array3d[float],
+      efc_D_in: wp.array2d[float],
+      efc_state_in: wp.array2d[int],
+      dof_cdof_in: wp.array2d[int],
+      # In:
+      quad_changed_count_in: wp.array[int],
+      # Out:
+      quad_changed_flag_out: wp.array2d[int],
+      ctx_h_out: wp.array3d[float],
+    ):
+      """Incrementally update upper triangle of H for changed constraints (sparse J), no atomics.
+
+      One block per world takes the changed rows in row order, straight from the bit of each row,
+      and clears the bits. The lanes split the row's upper-triangular entries.
+      """
+      worldid, lane = wp.tid()
+
+      if quad_changed_count_in[worldid] == 0:
+        return
+
+      # a cooperative tile operation ends with a block barrier: the block is done with a row
+      # before it starts the next one, so each element of H adds its rows in row order
+      barrier = wp.tile_zeros(shape=(1,), dtype=int, storage="shared")
+      for wordid in range(quad_changed_flag_out.shape[1]):
+        word = quad_changed_flag_out[worldid, wordid]
+        while word != 0:
+          # lowest set bit: the number of bits below it is its position
+          low = word & (-word)
+          efcid = wp.static(_QUAD_CHANGED_BITS) * wordid + _popcount(low - 1)
+          word -= low
+
+          wp.tile_scatter_masked(barrier, 0, 0, False)
+          D = efc_D_in[worldid, efcid]
+          sign = float(0.0)
+          if efc_state_in[worldid, efcid] == types.ConstraintState.QUADRATIC.value:
+            sign = D
+          else:
+            sign = -D
+
+          rownnz = efc_J_rownnz_in[worldid, efcid]
+          rowadr = efc_J_rowadr_in[worldid, efcid]
+          n_entries = rownnz * (rownnz + 1) // 2
+
+          for entry in range(lane, n_entries, wp.static(LANES)):
+            ii = int((wp.sqrt(float(8 * entry + 1)) - 1.0) * 0.5)
+            jj = entry - ii * (ii + 1) // 2
+            Ji = efc_J_in[worldid, 0, rowadr + ii]
+            Jj = efc_J_in[worldid, 0, rowadr + jj]
+            h = sign * Ji * Jj
+            if h != 0.0:
+              colindi = efc_J_colind_in[worldid, 0, rowadr + ii]
+              colindj = efc_J_colind_in[worldid, 0, rowadr + jj]
+              if wp.static(COMPACT):
+                colindi = dof_cdof_in[worldid, colindi]
+                colindj = dof_cdof_in[worldid, colindj]
+                if colindi < 0 or colindj < 0:
+                  continue
+              # an element of H has a single thread in each row
+              dof_lo = wp.min(colindi, colindj)
+              dof_hi = wp.max(colindi, colindj)
+              ctx_h_out[worldid, dof_lo, dof_hi] = ctx_h_out[worldid, dof_lo, dof_hi] + h
+
+      # every lane has read the words
+      wp.tile_scatter_masked(barrier, 0, 0, False)
+      if lane == 0:
+        for wordid in range(quad_changed_flag_out.shape[1]):
+          quad_changed_flag_out[worldid, wordid] = 0
+
+    return kernel
+
   @wp.kernel(module="unique", module_options=module_options, grid_stride=False)
   def kernel(
     # Data in:
@@ -2524,13 +2602,7 @@ def _update_gradient_h_incremental_sparse(compact: bool, max_records: int = 0, l
     worldid, slot, lane = wp.tid()
 
     n_changes = quad_changed_count_in[worldid]
-    if wp.static(deterministic):
-      barrier = wp.tile_zeros(shape=(1,), dtype=int, storage="shared")
     for change_idx in range(slot, n_changes, slots_per_world):
-      if wp.static(deterministic):
-        # a cooperative tile operation ends with a block barrier: the block is done with a row
-        # before it starts the next one, so each element of H adds its rows in list order
-        wp.tile_scatter_masked(barrier, 0, 0, False)
       efcid = quad_changed_ids_in[worldid, change_idx]
       D = efc_D_in[worldid, efcid]
       sign = float(0.0)
@@ -2557,13 +2629,7 @@ def _update_gradient_h_incremental_sparse(compact: bool, max_records: int = 0, l
             colindj = dof_cdof_in[worldid, colindj]
             if colindi < 0 or colindj < 0:
               continue
-          if wp.static(deterministic):
-            # an element of H has a single thread in each row
-            dof_lo = wp.min(colindi, colindj)
-            dof_hi = wp.max(colindi, colindj)
-            ctx_h_out[worldid, dof_lo, dof_hi] = ctx_h_out[worldid, dof_lo, dof_hi] + h
-          else:
-            wp.atomic_add(ctx_h_out[worldid, wp.min(colindi, colindj)], wp.max(colindi, colindj), h)
+          wp.atomic_add(ctx_h_out[worldid, wp.min(colindi, colindj)], wp.max(colindi, colindj), h)
 
   return kernel
 
@@ -2608,7 +2674,9 @@ def _update_constraint(
       ctx.state_changed_count,
     ],
   )
-  if track_changes and det_atomics:
+  sc = _sparse_compact(ctx)
+  if track_changes and det_atomics and not (m.is_sparse or sc):
+    # the dense incremental Hessian reads the list of rows; the sparse one reads the bits
     wp.launch(
       _quad_changed_ids,
       dim=d.nworld,
@@ -2619,7 +2687,6 @@ def _update_constraint(
   # qfrc_constraint = efc_J.T @ efc_force. Fast-path worlds with no state flips
   # skip the rebuild; the public value is recovered after the solve.
   changed = ctx.state_changed_count if stable_fast else d.nefc
-  sc = _sparse_compact(ctx)
   if m.is_sparse or sc:
     dj = ctx.compact_d_full if sc else d
     wp.launch(
@@ -4585,33 +4652,28 @@ def _update_gradient_incremental(m: types.Model, d: types.Data, ctx: SolverConte
   if m.is_sparse or sc:
     mj = ctx.compact_m_full if sc else m
     dj = ctx.compact_d_full if sc else d
-    inc_kernel = _update_gradient_h_incremental_sparse(sc)
-    slots = _jtdaj_groups_per_world(d.nworld, ctx.quad_changed_ids.shape[1], inc_kernel)
-    lanes = _JTDAJ_THREADS_PER_GROUP
+    efc_J_inputs = [dj.efc.J_rownnz, dj.efc.J_rowadr, dj.efc.J_colind, dj.efc.J, d.efc.D, d.efc.state, dj.dof_cdof]
     if det_atomics:
-      # one block per world, which adds the changed rows in order
-      slots = 1
-      # few worlds have changed rows, and theirs go one after the other: wider blocks shorten them
-      lanes = 2 * _JTDAJ_THREADS_PER_GROUP
-      inc_kernel = _update_gradient_h_incremental_sparse(sc, 0, lanes, True)
-    wp.launch(
-      inc_kernel,
-      dim=(d.nworld, slots, lanes),
-      inputs=[
-        dj.efc.J_rownnz,
-        dj.efc.J_rowadr,
-        dj.efc.J_colind,
-        dj.efc.J,
-        d.efc.D,
-        d.efc.state,
-        dj.dof_cdof,
-        ctx.quad_changed_ids,
-        ctx.quad_changed_count,
-        slots,
-      ],
-      outputs=[ctx.h],
-      block_dim=lanes if det_atomics else None,
-    )
+      # one block per world, which adds the changed rows in row order and clears their bits. Few
+      # worlds have changed rows, and theirs go one after the other: wider blocks shorten them.
+      # A block is one thread on the CPU.
+      lanes = 1 if wp.get_device().is_cpu else 2 * _JTDAJ_THREADS_PER_GROUP
+      wp.launch(
+        _update_gradient_h_incremental_sparse(sc, 0, lanes, True),
+        dim=(d.nworld, lanes),
+        inputs=efc_J_inputs + [ctx.quad_changed_count],
+        outputs=[ctx.quad_changed_flag, ctx.h],
+        block_dim=lanes,
+      )
+    else:
+      inc_kernel = _update_gradient_h_incremental_sparse(sc)
+      slots = _jtdaj_groups_per_world(d.nworld, ctx.quad_changed_ids.shape[1], inc_kernel)
+      wp.launch(
+        inc_kernel,
+        dim=(d.nworld, slots, _JTDAJ_THREADS_PER_GROUP),
+        inputs=efc_J_inputs + [ctx.quad_changed_ids, ctx.quad_changed_count, slots],
+        outputs=[ctx.h],
+      )
   else:
     tri_dim = m.nv * (m.nv + 1) // 2
     wp.launch(
