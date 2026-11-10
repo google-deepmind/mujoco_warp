@@ -2113,121 +2113,84 @@ def _zero_qfrc_constraint_sparse(
   qfrc_constraint_out[worldid, dofid] = 0.0
 
 
-# dofs per chunk of the two-level prefix sum that gives the list address of each dof
-_QFRC_INDEX_CHUNK = 32
+# lanes of the block that lists the JTDAJ groups of each dof
+_QFRC_INDEX_LANES = 16
 
 
-@wp.kernel
-def _qfrc_index_count(
+@wp.kernel(module="unique", enable_backward=False)
+def _qfrc_index(
   # Data in:
   efc_jtdaj_adr_in: wp.array2d[int],
   efc_jtdaj_nblock_in: wp.array[int],
   efc_J_rownnz_in: wp.array2d[int],
   efc_J_rowadr_in: wp.array2d[int],
   efc_J_colind_in: wp.array3d[int],
-  # Out:
-  count_out: wp.array2d[int],
-):
-  """Counts the JTDAJ groups that contain each dof."""
-  worldid, groupid = wp.tid()
-
-  if groupid >= efc_jtdaj_nblock_in[worldid]:
-    return
-
-  head_row = efc_jtdaj_adr_in[worldid, groupid]
-  head_adr = efc_J_rowadr_in[worldid, head_row]
-  for i in range(efc_J_rownnz_in[worldid, head_row]):
-    wp.atomic_add(count_out[worldid], efc_J_colind_in[worldid, 0, head_adr + i], 1)  # kernel_analyzer: ignore[atomic]
-
-
-@wp.kernel
-def _qfrc_index_chunk_count(
-  # In:
-  count_in: wp.array2d[int],
-  # Out:
-  chunk_count_out: wp.array2d[int],
-):
-  """Adds the group counts of each chunk of dofs."""
-  worldid, chunkid = wp.tid()
-
-  count = int(0)
-  dof0 = chunkid * wp.static(_QFRC_INDEX_CHUNK)
-  for dofid in range(dof0, wp.min(dof0 + wp.static(_QFRC_INDEX_CHUNK), count_in.shape[1])):
-    count += count_in[worldid, dofid]
-  chunk_count_out[worldid, chunkid] = count
-
-
-@wp.kernel
-def _qfrc_index_adr(
-  # In:
-  count_in: wp.array2d[int],
-  chunk_count_in: wp.array2d[int],
-  # Out:
-  adr_out: wp.array2d[int],
-):
-  """Turns the group count of each dof into the address of its list: a prefix sum in two levels."""
-  worldid, dofid = wp.tid()
-
-  adr = int(0)
-  chunkid = dofid // wp.static(_QFRC_INDEX_CHUNK)
-  for i in range(chunkid):
-    adr += chunk_count_in[worldid, i]
-  for i in range(chunkid * wp.static(_QFRC_INDEX_CHUNK), dofid):
-    adr += count_in[worldid, i]
-  adr_out[worldid, dofid] = adr
-
-
-@wp.kernel
-def _qfrc_index_fill(
-  # Model:
-  nv: int,
-  # Data in:
-  efc_jtdaj_adr_in: wp.array2d[int],
-  efc_jtdaj_nblock_in: wp.array[int],
-  efc_J_rownnz_in: wp.array2d[int],
-  efc_J_rowadr_in: wp.array2d[int],
-  efc_J_colind_in: wp.array3d[int],
-  # In:
-  adr_in: wp.array2d[int],
   # Out:
   cursor_out: wp.array2d[int],
+  chunk_count_out: wp.array2d[int],
+  adr_out: wp.array2d[int],
   entry_out: wp.array2d[int],
 ):
-  """Lists (group, position in the group's sparse support) for each dof, in arrival order."""
-  worldid, groupid = wp.tid()
+  """Lists (group, position in the group's sparse support) for each dof, in group order.
 
-  if groupid >= efc_jtdaj_nblock_in[worldid]:
-    return
+  One block per world takes one group at a time behind a block barrier, with the support of the
+  group split over the lanes: a dof has a single thread in each group, so the counts and the
+  list cursors need no atomics and each list is filled in group order.
+  """
+  worldid, lane = wp.tid()
 
-  head_row = efc_jtdaj_adr_in[worldid, groupid]
-  head_adr = efc_J_rowadr_in[worldid, head_row]
-  for i in range(efc_J_rownnz_in[worldid, head_row]):
-    dofid = efc_J_colind_in[worldid, 0, head_adr + i]
-    pos = wp.atomic_add(cursor_out[worldid], dofid, 1)  # kernel_analyzer: ignore[atomic]
-    entry_out[worldid, adr_in[worldid, dofid] + pos] = groupid * nv + i
+  lanes = wp.block_dim()
+  nv = cursor_out.shape[1]
+  ngroup = wp.min(efc_jtdaj_nblock_in[worldid], efc_jtdaj_adr_in.shape[1])
+  # a cooperative tile operation ends with a block barrier
+  barrier = wp.tile_zeros(shape=(1,), dtype=int, storage="shared")
 
+  for dofid in range(lane, nv, lanes):
+    cursor_out[worldid, dofid] = 0
 
-@wp.kernel
-def _qfrc_index_sort(
-  # In:
-  adr_in: wp.array2d[int],
-  # Out:
-  entry_out: wp.array2d[int],
-):
-  """Sorts the list of each dof by group: the arrival order depends on the thread schedule."""
-  worldid, dofid = wp.tid()
+  # groups that contain each dof
+  for groupid in range(ngroup):
+    wp.tile_scatter_masked(barrier, 0, 0, False)
+    head_row = efc_jtdaj_adr_in[worldid, groupid]
+    head_adr = efc_J_rowadr_in[worldid, head_row]
+    for i in range(lane, efc_J_rownnz_in[worldid, head_row], lanes):
+      dofid = efc_J_colind_in[worldid, 0, head_adr + i]
+      cursor_out[worldid, dofid] = cursor_out[worldid, dofid] + 1
+  wp.tile_scatter_masked(barrier, 0, 0, False)
 
-  adr0 = adr_in[worldid, dofid]
-  for i in range(adr0 + 1, adr_in[worldid, dofid + 1]):
-    entry = entry_out[worldid, i]
-    j = i - 1
-    while j >= adr0:
-      prev = entry_out[worldid, j]
-      if prev <= entry:
-        break
-      entry_out[worldid, j + 1] = prev
-      j -= 1
-    entry_out[worldid, j + 1] = entry
+  # address of each list, a prefix sum in two levels: each lane adds a chunk of dofs, then the
+  # chunks before its own
+  chunk = (nv + lanes - 1) // lanes
+  dof0 = wp.min(lane * chunk, nv)
+  dof1 = wp.min(dof0 + chunk, nv)
+  count = int(0)
+  for dofid in range(dof0, dof1):
+    count += cursor_out[worldid, dofid]
+  chunk_count_out[worldid, lane] = count
+  wp.tile_scatter_masked(barrier, 0, 0, False)
+
+  adr = int(0)
+  for i in range(lane):
+    adr += chunk_count_out[worldid, i]
+  for dofid in range(dof0, dof1):
+    count = cursor_out[worldid, dofid]
+    adr_out[worldid, dofid] = adr
+    # from here on the cursor of the list
+    cursor_out[worldid, dofid] = adr
+    adr += count
+  if dof0 < nv and dof1 == nv:
+    # one more dof than the model, whose address is the end of the last list
+    adr_out[worldid, nv] = adr
+
+  for groupid in range(ngroup):
+    wp.tile_scatter_masked(barrier, 0, 0, False)
+    head_row = efc_jtdaj_adr_in[worldid, groupid]
+    head_adr = efc_J_rowadr_in[worldid, head_row]
+    for i in range(lane, efc_J_rownnz_in[worldid, head_row], lanes):
+      dofid = efc_J_colind_in[worldid, 0, head_adr + i]
+      cursor = cursor_out[worldid, dofid]
+      cursor_out[worldid, dofid] = cursor + 1
+      entry_out[worldid, cursor] = groupid * nv + i
 
 
 @cache_kernel
@@ -2407,19 +2370,20 @@ def _qfrc_constraint_index(m: types.Model, d: types.Data, ctx: SolverContext):
   if m.opt.solver != types.SolverType.NEWTON or ngroup == 0 or ngroup * mj.nv >= 2**31:
     return
 
+  # the kernel takes the number of lanes from the block, which is one thread on the CPU
+  lanes = 1 if wp.get_device().is_cpu else _QFRC_INDEX_LANES
+  cursor = wp.empty((d.nworld, mj.nv), dtype=int)
+  chunk_count = wp.empty((d.nworld, lanes), dtype=int)
   # one more dof than the model, whose address is the end of the last list
-  count = wp.zeros((d.nworld, mj.nv + 1), dtype=int)
-  cursor = wp.zeros((d.nworld, mj.nv), dtype=int)
-  chunk_count = wp.empty((d.nworld, mj.nv // _QFRC_INDEX_CHUNK + 1), dtype=int)
   ctx.qfrc_adr = wp.empty((d.nworld, mj.nv + 1), dtype=int)
   ctx.qfrc_entry = wp.empty((d.nworld, dj.efc.J_colind.shape[2]), dtype=int)
-  dim = (d.nworld, ngroup)
-  efc_J_inputs = [dj.efc.jtdaj_adr, dj.efc.jtdaj_nblock, dj.efc.J_rownnz, dj.efc.J_rowadr, dj.efc.J_colind]
-  wp.launch(_qfrc_index_count, dim=dim, inputs=efc_J_inputs, outputs=[count])
-  wp.launch(_qfrc_index_chunk_count, dim=chunk_count.shape, inputs=[count], outputs=[chunk_count])
-  wp.launch(_qfrc_index_adr, dim=ctx.qfrc_adr.shape, inputs=[count, chunk_count], outputs=[ctx.qfrc_adr])
-  wp.launch(_qfrc_index_fill, dim=dim, inputs=[mj.nv] + efc_J_inputs + [ctx.qfrc_adr], outputs=[cursor, ctx.qfrc_entry])
-  wp.launch(_qfrc_index_sort, dim=(d.nworld, mj.nv), inputs=[ctx.qfrc_adr], outputs=[ctx.qfrc_entry])
+  wp.launch(
+    _qfrc_index,
+    dim=(d.nworld, lanes),
+    inputs=[dj.efc.jtdaj_adr, dj.efc.jtdaj_nblock, dj.efc.J_rownnz, dj.efc.J_rowadr, dj.efc.J_colind],
+    outputs=[cursor, chunk_count, ctx.qfrc_adr, ctx.qfrc_entry],
+    block_dim=lanes,
+  )
 
 
 @wp.kernel

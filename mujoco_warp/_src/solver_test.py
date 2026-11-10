@@ -2233,28 +2233,108 @@ class SolverTest(parameterized.TestCase):
       np.testing.assert_array_equal(ids[worldid, len(world_rows) :], -1)
     np.testing.assert_array_equal(flag.numpy(), 0)
 
-  @parameterized.parameters(1, 2)
-  def test_qfrc_index_sort(self, nworld):
-    """The list of each dof is sorted, and nothing else is written."""
-    # lists with no entry, one entry and several entries; the second world has them reversed
-    lists = ([], [7], [9, 4, 2], [1, 3, 8, 20], [15, 5, 30, 10, 25, 0], [6, 2])
-    nv = len(lists)
-    adr = np.concatenate(([0], np.cumsum([len(dof_list) for dof_list in lists])))
-    entry = np.full((nworld, adr[nv] + 2), -5, dtype=np.int32)
-    for worldid in range(nworld):
-      for dofid, dof_list in enumerate(lists):
-        entry[worldid, adr[dofid] : adr[dofid + 1]] = dof_list[::-1] if worldid else dof_list
+  @parameterized.product(nworld=(1, 2, 3), lanes=(1, 4, 16, 32))
+  def test_qfrc_index(self, nworld, lanes):
+    """Each dof lists its (group, position) pairs in group order, and nothing else is written."""
+    if wp.get_device().is_cpu and lanes > 1:
+      self.skipTest("a block is one thread on the CPU")
 
-    entry = wp.array(entry, dtype=int)
+    nv, njmax, ngroup_max = 40, 12, 6
+    rng = np.random.default_rng(nworld)
+    # per world: the head row and the sparse support of each group. Head rows and dofs are not in
+    # order, one support is wider than the block, dof 39 is in every group of world 0 and dof 0 in
+    # none; the second world has no group and the third reports more groups than the capacity.
+    worlds = []
+    for worldid, ngroup in enumerate((4, 0, ngroup_max)[:nworld]):
+      head_rows = rng.permutation(njmax)[:ngroup]
+      supports = []
+      for groupid in range(ngroup):
+        width = 35 if groupid == 1 else int(rng.integers(1, 9))
+        support = rng.permutation(np.arange(1, nv - 1))[:width]
+        if worldid == 0:
+          support = np.append(support, nv - 1)
+        supports.append(rng.permutation(support))
+      worlds.append((head_rows, supports))
+
+    nnz = 4 + max(sum(len(support) for support in supports) for _, supports in worlds)
+    jtdaj_adr = np.full((nworld, ngroup_max), -1, dtype=np.int32)
+    nblock = np.zeros(nworld, dtype=np.int32)
+    rownnz = np.zeros((nworld, njmax), dtype=np.int32)
+    rowadr = np.zeros((nworld, njmax), dtype=np.int32)
+    colind = np.full((nworld, 1, nnz), -1, dtype=np.int32)
+    expected_adr = np.zeros((nworld, nv + 1), dtype=np.int32)
+    expected_entry = np.full((nworld, nnz), -5, dtype=np.int32)
+    for worldid, (head_rows, supports) in enumerate(worlds):
+      nblock[worldid] = len(head_rows) + (3 if len(head_rows) == ngroup_max else 0)
+      lists = [[] for _ in range(nv)]
+      adr = 2  # the first support does not start at the beginning of the sparse arrays
+      for groupid, (head_row, support) in enumerate(zip(head_rows, supports)):
+        jtdaj_adr[worldid, groupid] = head_row
+        rownnz[worldid, head_row] = len(support)
+        rowadr[worldid, head_row] = adr
+        colind[worldid, 0, adr : adr + len(support)] = support
+        adr += len(support)
+        for i, dofid in enumerate(support):
+          lists[dofid].append(groupid * nv + i)
+      expected_adr[worldid, 1:] = np.cumsum([len(dof_list) for dof_list in lists])
+      expected_entry[worldid, : expected_adr[worldid, nv]] = np.concatenate(lists + [[]])
+
+    if nworld > 0:
+      self.assertEqual(len(worlds[0][1][1]), 36)
+      self.assertEqual(expected_adr[0, nv] - expected_adr[0, nv - 1], 4)
+      self.assertEqual(expected_adr[0, 1], 0)
+
+    cursor = wp.full((nworld, nv), 7, dtype=int)
+    chunk_count = wp.full((nworld, lanes), 7, dtype=int)
+    adr_out = wp.full((nworld, nv + 1), -5, dtype=int)
+    entry_out = wp.full((nworld, nnz), -5, dtype=int)
     wp.launch(
-      solver._qfrc_index_sort, dim=(nworld, nv), inputs=[wp.array(np.tile(adr, (nworld, 1)), dtype=int)], outputs=[entry]
+      solver._qfrc_index,
+      dim=(nworld, lanes),
+      inputs=[
+        wp.array(jtdaj_adr, dtype=int),
+        wp.array(nblock, dtype=int),
+        wp.array(rownnz, dtype=int),
+        wp.array(rowadr, dtype=int),
+        wp.array(colind, dtype=int),
+      ],
+      outputs=[cursor, chunk_count, adr_out, entry_out],
+      block_dim=lanes,
     )
 
-    entry = entry.numpy()
+    np.testing.assert_array_equal(adr_out.numpy(), expected_adr)
+    np.testing.assert_array_equal(entry_out.numpy(), expected_entry)
+
+  @parameterized.parameters(1, 2)
+  def test_qfrc_index_solve(self, nworld):
+    """The lists of the solve hold every nonzero of the group head rows, in group order."""
+    _, _, m, d = test_data.fixture(
+      "constraints.xml",
+      keyframe=1,
+      nworld=nworld,
+      overrides={"opt.jacobian": mujoco.mjtJacobian.mjJAC_SPARSE, "opt.deterministic": types.DeterminismType.ATOMICS},
+    )
+    mjw.fwd_position(m, d)
+    mjw.fwd_velocity(m, d)
+    mjw.fwd_actuation(m, d)
+    mjw.fwd_acceleration(m, d)
+    ctx = solver._create_solver_context(m, d)
+    solver.init_context(m, d, ctx, grad=True)
+
+    adr, entry = ctx.qfrc_adr.numpy(), ctx.qfrc_entry.numpy()
+    nblock, jtdaj_adr = d.efc.jtdaj_nblock.numpy(), d.efc.jtdaj_adr.numpy()
+    rownnz, rowadr, colind = d.efc.J_rownnz.numpy(), d.efc.J_rowadr.numpy(), d.efc.J_colind.numpy()
+    self.assertGreater(nblock.min(), 1)
     for worldid in range(nworld):
-      for dofid, dof_list in enumerate(lists):
-        self.assertEqual(entry[worldid, adr[dofid] : adr[dofid + 1]].tolist(), sorted(dof_list))
-      np.testing.assert_array_equal(entry[worldid, adr[nv] :], -5)
+      lists = [[] for _ in range(m.nv)]
+      for groupid in range(nblock[worldid]):
+        head_row = jtdaj_adr[worldid, groupid]
+        for i in range(rownnz[worldid, head_row]):
+          lists[colind[worldid, 0, rowadr[worldid, head_row] + i]].append(groupid * m.nv + i)
+      self.assertEqual(adr[worldid, 0], 0)
+      for dofid in range(m.nv):
+        self.assertEqual(entry[worldid, adr[worldid, dofid] : adr[worldid, dofid + 1]].tolist(), lists[dofid])
+      self.assertGreater(max(len(dof_list) for dof_list in lists), 1)
 
   @parameterized.parameters(mujoco.mjtJacobian.mjJAC_DENSE, mujoco.mjtJacobian.mjJAC_SPARSE)
   def test_incremental_hessian_deterministic(self, jacobian):
