@@ -335,7 +335,7 @@ _FLEX_SHELL_CASES = (dict(testcase_name="euler", overrides={}, covers=("passive.
 
 _FLEX_CONTACT_CASES = (
   dict(testcase_name="sparse", overrides={"opt.jacobian": "SPARSE"}, covers=()),
-  dict(testcase_name="dense", overrides={"opt.jacobian": "DENSE"}, covers=("constraint._efc_contact_jac_dense_flex",)),
+  dict(testcase_name="dense", overrides={"opt.jacobian": "DENSE"}, covers=()),
 )
 
 _FLEX_PASSIVE_CASES = (
@@ -366,7 +366,7 @@ _CONTACT_CASES = (
       "smooth._transmission_body_moment",
     ),
   ),
-  dict(testcase_name="dense", overrides={"opt.jacobian": "DENSE"}, covers=("constraint._efc_contact_jac_dense",)),
+  dict(testcase_name="dense", overrides={"opt.jacobian": "DENSE"}, covers=()),
   dict(
     testcase_name="elliptic_dense",
     overrides={"opt.jacobian": "DENSE", "opt.cone": "ELLIPTIC"},
