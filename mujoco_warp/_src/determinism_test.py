@@ -254,6 +254,7 @@ _TREE_CASES = (
       "solver._update_constraint_init_qfrc_constraint_sparse",
       "solver._update_gradient_grad",
       "solver._update_gradient_h_incremental_sparse",
+      "support._apply_ft_scatter",
     ),
   ),
   dict(
@@ -335,7 +336,7 @@ _FLEX_SHELL_CASES = (dict(testcase_name="euler", overrides={}, covers=("passive.
 
 _FLEX_CONTACT_CASES = (
   dict(testcase_name="sparse", overrides={"opt.jacobian": "SPARSE"}, covers=()),
-  dict(testcase_name="dense", overrides={"opt.jacobian": "DENSE"}, covers=("constraint._efc_contact_jac_dense_flex",)),
+  dict(testcase_name="dense", overrides={"opt.jacobian": "DENSE"}, covers=()),
 )
 
 _FLEX_PASSIVE_CASES = (
@@ -366,7 +367,7 @@ _CONTACT_CASES = (
       "smooth._transmission_body_moment",
     ),
   ),
-  dict(testcase_name="dense", overrides={"opt.jacobian": "DENSE"}, covers=("constraint._efc_contact_jac_dense",)),
+  dict(testcase_name="dense", overrides={"opt.jacobian": "DENSE"}, covers=()),
   dict(
     testcase_name="elliptic_dense",
     overrides={"opt.jacobian": "DENSE", "opt.cone": "ELLIPTIC"},
@@ -548,6 +549,12 @@ class DeterminismTest(parameterized.TestCase):
         qvel_noise=0.1,
         ctrl_noise=0.5,
       )
+
+    # wrenches on bodies with shared ancestor dofs: the applied-force scatter has colliding atomics
+    xfrc = np.zeros((d.nworld, mjm.nbody, 6), dtype=np.float32)
+    for name in ("arm2", "arm3", "leg2"):
+      xfrc[:, mjm.body(name).id] = np.linspace(-0.3, 0.4, 6)
+    d.xfrc_applied.assign(xfrc)
 
     def extra(m, d):
       set_const.set_const(m, d)
