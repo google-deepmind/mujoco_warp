@@ -236,19 +236,13 @@ _TREE_CASES = (
       "sensor._energy_pos_passive_joint",
       "sensor._energy_pos_passive_tendon",
       "sensor._tendon_actuator_force",
-      "set_const._accumulate_subtreemass",
-      "smooth._angular_momentum",
-      "smooth._cfrc_backward",
       "smooth._cfrc_ext_equality",
       "smooth._cfrc_ext_spatial_tendon",
       "smooth._cfrc_ext_tendon_actuator",
       "smooth._cfrc_ext_tendon_constraint",
-      "smooth._crb_accumulate",
       "smooth._joint_tendon",
-      "smooth._linear_momentum",
       "smooth._spatial_geom_tendon",
       "smooth._spatial_site_tendon",
-      "smooth._subtree_com_acc",
       "smooth._tendon_armature",
       "smooth._tendon_bias_coef",
       "smooth._tendon_bias_qfrc",
@@ -289,7 +283,11 @@ _TREE_CASES = (
       "solver._add_tendon_metric_dense",
     ),
   ),
-  dict(testcase_name="discrete_cg", overrides={"opt.integrator": "DISCRETE", "opt.solver": "CG"}, covers=()),
+  dict(
+    testcase_name="discrete_cg",
+    overrides={"opt.integrator": "DISCRETE", "opt.solver": "CG", "opt.tolerance": "1e-10"},
+    covers=(),
+  ),
   dict(
     testcase_name="dense_blocks",
     overrides={"opt.jacobian": "DENSE"},
@@ -346,10 +344,8 @@ _FLEX_PASSIVE_CASES = (
     overrides={"opt.solver": "CG"},
     covers=(
       "derivative._eff_contact_shift",
-      "derivative._eff_fold_actuator",
       "derivative._eff_fold_contact_rank1",
       "derivative._eff_fold_efc_sparse",
-      "derivative._eff_fold_tendon",
       "derivative._eff_mul_add_contact",
       "passive._eff_contact_force",
     ),
@@ -570,19 +566,19 @@ class DeterminismTest(parameterized.TestCase):
   @parameterized.named_parameters(*_FLEX_CASES)
   def test_flex(self, overrides, covers):
     """1D, 2D, 3D and interpolated flexes with elasticity, energy and render normals."""
+    edge = '<edge stiffness="10" damping=".1"/>' if not overrides else ""
     mjm, _, m, d = test_data.fixture(
-      xml="""
+      xml=f"""
       <mujoco>
         <option>
           <flag contact="disable" energy="enable"/>
         </option>
         <worldbody>
           <flexcomp name="rope" type="grid" count="5 1 1" spacing=".1 .1 .1" dim="1" pos="0 1 1">
-            <edge stiffness="10" damping=".1"/>
+            {edge}
             <elasticity young="1e4" damping="1e-2"/>
           </flexcomp>
           <flexcomp name="cloth" type="grid" count="4 4 1" spacing=".1 .1 .1" pos="0 0 1">
-            <edge damping=".1"/>
             <elasticity young="3e3" poisson=".3" thickness="1e-2" damping="1e-3" elastic2d="both"/>
           </flexcomp>
           <flexcomp name="solid" type="grid" count="3 3 3" spacing=".1 .1 .1" dim="3" pos="1 0 1">
@@ -650,6 +646,7 @@ class DeterminismTest(parameterized.TestCase):
             <joint axis="0 1 0"/>
             <geom size=".1"/>
             <flexcomp name="interp" type="grid" count="3 3 3" spacing=".1 .1 .1" dim="3" dof="trilinear">
+              <pin id="0"/>
               <contact selfcollide="none"/>
               <elasticity young="1e4" poisson=".3" damping="1e-3"/>
             </flexcomp>
@@ -703,6 +700,9 @@ class DeterminismTest(parameterized.TestCase):
           <flexcomp name="cloth" type="grid" count="3 3 1" spacing=".1 .1 .1" pos="0 0 .19" mass=".09">
             <contact passive="true"/>
             <elasticity young="1e3" poisson=".3" thickness="1e-3" elastic2d="both"/>
+          </flexcomp>
+          <flexcomp name="rod" type="grid" count="3 1 1" spacing=".1 .1 .1" dim="1" pos="0 .5 1" mass=".03">
+            <elasticity young="1e3" damping="1e-2"/>
           </flexcomp>
           <body pos="1 0 1">
             <joint name="hinge0" axis="0 1 0" damping=".1"/>
