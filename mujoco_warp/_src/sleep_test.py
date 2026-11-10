@@ -854,6 +854,95 @@ class SleepTest(parameterized.TestCase):
     for w in range(nworld):
       self.assertEqual(d.tree_awake.numpy()[w, 0], 1, f"Tree in world {w} with AUTO_NEVER policy should remain awake")
 
+  @parameterized.product(nworld=(1, 2), flg_staticawake=(0, 1))
+  def test_update_sleep_deterministic(self, nworld, flg_staticawake):
+    """Deterministic lists of awake bodies and dofs are in ascending order, without a counter."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option>
+          <flag sleep="enable"/>
+        </option>
+        <worldbody>
+          <body>
+            <geom size=".1"/>
+            <body>
+              <joint type="hinge"/>
+              <geom size=".1"/>
+              <body>
+                <joint type="slide"/>
+                <geom size=".1"/>
+              </body>
+            </body>
+          </body>
+          <body>
+            <freejoint/>
+            <geom size=".1"/>
+          </body>
+          <body mocap="true">
+            <geom size=".1"/>
+          </body>
+          <body>
+            <joint type="ball"/>
+            <geom size=".1"/>
+            <body>
+              <geom size=".1"/>
+              <body>
+                <joint type="hinge"/>
+                <geom size=".1"/>
+              </body>
+            </body>
+          </body>
+          <body>
+            <freejoint/>
+            <geom size=".1"/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=nworld,
+      overrides={"opt.deterministic": types.DeterminismType.ATOMICS},
+    )
+    self.assertEqual(mjm.ntree, 4)
+
+    # trees 1 and 3 are asleep in the first world, tree 0 in the second one
+    tree_asleep = np.full((nworld, mjm.ntree), -1)
+    tree_asleep[0, 1] = 1
+    tree_asleep[0, 3] = 3
+    if nworld == 2:
+      tree_asleep[1, 0] = 0
+    d.tree_asleep = wp.array(tree_asleep, dtype=int)
+
+    def update_sleep():
+      for arr in (d.body_awake, d.body_awake_ind, d.dof_awake_ind):
+        arr.fill_(-1)
+      sleep.update_sleep(m, d, flg_staticawake)
+      nbody, nv = d.nbody_awake.numpy(), d.nv_awake.numpy()
+      body_ind, dof_ind = d.body_awake_ind.numpy(), d.dof_awake_ind.numpy()
+      bodies = [body_ind[i, : nbody[i]].tolist() for i in range(nworld)]
+      dofs = [dof_ind[i, : nv[i]].tolist() for i in range(nworld)]
+      return d.body_awake.numpy().copy(), bodies, dofs
+
+    body_awake, bodies, dofs = update_sleep()
+
+    for i in range(nworld):
+      # static bodies are never asleep
+      awake = (mjm.body_treeid < 0) | (tree_asleep[i, mjm.body_treeid] < 0)
+      self.assertEqual(bodies[i], np.flatnonzero(awake).tolist())
+      self.assertEqual(dofs[i], np.flatnonzero(tree_asleep[i, mjm.dof_treeid] < 0).tolist())
+      self.assertLess(len(dofs[i]), mjm.nv)
+      self.assertLess(len(bodies[i]), mjm.nbody)
+    if nworld == 2:
+      self.assertNotEqual(dofs[0], dofs[1])
+
+    # same as the kernels with a counter, up to the order of the lists
+    m.opt.deterministic = types.DeterminismType.NONE
+    body_awake_default, bodies_default, dofs_default = update_sleep()
+    np.testing.assert_array_equal(body_awake, body_awake_default)
+    for i in range(nworld):
+      self.assertEqual(bodies[i], sorted(bodies_default[i]))
+      self.assertEqual(dofs[i], sorted(dofs_default[i]))
+
   def test_sleep_multi_world_decoupled(self):
     """Verify that sleeping states and cycles are decoupled and independent.
 

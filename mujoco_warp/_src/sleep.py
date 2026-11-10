@@ -155,9 +155,28 @@ def _update_sleep_bodies(deterministic: bool = False):
 
     body_awake_out[worldid, bodyid] = state
 
-    if state != SleepState.ASLEEP:
-      idx = wp.atomic_add(nbody_awake_out, worldid, 1)
-      body_awake_ind_out[worldid, idx] = bodyid
+    if wp.static(deterministic):
+      # The thread of the first body lists the bodies of its world that are not asleep in
+      # ascending order, without an atomic counter.
+      if bodyid > 0:
+        return
+
+      nbody_awake = int(0)
+      for i in range(body_treeid.shape[0]):
+        treei = body_treeid[i]
+        # static bodies are never asleep
+        listed = treei < 0
+        if not listed:
+          listed = tree_awake_in[worldid, treei] == 1
+        if listed:
+          body_awake_ind_out[worldid, nbody_awake] = i
+          nbody_awake += 1
+
+      nbody_awake_out[worldid] = nbody_awake
+    else:
+      if state != SleepState.ASLEEP:
+        idx = wp.atomic_add(nbody_awake_out, worldid, 1)
+        body_awake_ind_out[worldid, idx] = bodyid
 
   return kernel
 
@@ -167,6 +186,37 @@ def _update_sleep_dofs(deterministic: bool = False):
   module_options = {"enable_backward": False}
   if deterministic:
     module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
+
+    @wp.kernel(module="unique", module_options=module_options)
+    def kernel(
+      # Model:
+      tree_dofadr: wp.array[int],
+      tree_dofnum: wp.array[int],
+      # Data in:
+      tree_awake_in: wp.array2d[int],
+      # Data out:
+      nv_awake_out: wp.array[int],
+      dof_awake_ind_out: wp.array2d[int],
+    ):
+      worldid, treeid = wp.tid()
+
+      # One thread per tree lists its dofs after the dofs of the awake trees before it: the list
+      # is in ascending order, without an atomic counter.
+      nv_awake = int(0)
+      for i in range(treeid):
+        if tree_awake_in[worldid, i] == 1:
+          nv_awake += tree_dofnum[i]
+
+      if tree_awake_in[worldid, treeid] == 1:
+        dofadr = tree_dofadr[treeid]
+        for i in range(tree_dofnum[treeid]):
+          dof_awake_ind_out[worldid, nv_awake + i] = dofadr + i
+        nv_awake += tree_dofnum[treeid]
+
+      if treeid == tree_dofadr.shape[0] - 1:
+        nv_awake_out[worldid] = nv_awake
+
+    return kernel
 
   @wp.kernel(module="unique", module_options=module_options)
   def kernel(
@@ -223,16 +273,24 @@ def update_sleep(m: types.Model, d: types.Data, flg_staticawake: int = 0):
     ],
   )
 
-  wp.launch(
-    _update_sleep_dofs(bool(m.opt.deterministic & DeterminismType.ATOMICS)),
-    dim=(d.nworld, m.nv),
-    inputs=[
-      m.body_treeid,
-      m.dof_bodyid,
-      d.body_awake,
-    ],
-    outputs=[d.nv_awake, d.dof_awake_ind],
-  )
+  if m.opt.deterministic & DeterminismType.ATOMICS:
+    wp.launch(
+      _update_sleep_dofs(True),
+      dim=(d.nworld, m.ntree),
+      inputs=[m.tree_dofadr, m.tree_dofnum, d.tree_awake],
+      outputs=[d.nv_awake, d.dof_awake_ind],
+    )
+  else:
+    wp.launch(
+      _update_sleep_dofs(),
+      dim=(d.nworld, m.nv),
+      inputs=[
+        m.body_treeid,
+        m.dof_bodyid,
+        d.body_awake,
+      ],
+      outputs=[d.nv_awake, d.dof_awake_ind],
+    )
 
 
 @event_scope
