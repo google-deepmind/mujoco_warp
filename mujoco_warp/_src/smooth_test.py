@@ -15,6 +15,8 @@
 
 """Tests for smooth dynamics functions."""
 
+import copy
+
 import mujoco
 import numpy as np
 import warp as wp
@@ -1926,6 +1928,35 @@ class SmoothTest(parameterized.TestCase):
     mjw._src.smooth.rne(m, d)
     mjw._src.smooth.tendon_bias(m, d, d.qfrc_bias)
     _assert_eq(d.qfrc_bias.numpy()[0], mjd.qfrc_bias, "qfrc_bias")
+
+  @parameterized.parameters(1, 2)
+  def test_tendon_armature_deterministic(self, nworld):
+    """Deterministic tendon armature is added to M in tendon order without atomics."""
+    mjm, mjds, m, d = _tendon_fixture(nworld)
+
+    d.M.fill_(wp.inf)
+    mjw.forward(m, d)
+    M = d.M.numpy().copy()
+
+    # the inertia without the armature of the tendons and of their actuators
+    mjm_crb = copy.copy(mjm)
+    mjm_crb.tendon_armature[:] = 0.0
+    mjm_crb.actuator_armature[:] = 0.0
+
+    for w in range(nworld):
+      mjd_crb = mujoco.MjData(mjm_crb)
+      mjd_crb.qpos[:] = mjds[w].qpos
+      mujoco.mj_forward(mjm_crb, mjd_crb)
+      self.assertGreater(np.abs(mjds[w].M - mjd_crb.M).max(), 0.1)
+      _assert_eq(M[w], mjds[w].M, "M")
+    if nworld == 2:
+      self.assertFalse(np.allclose(M[0], M[1]))
+
+    # same inertia as the kernel with atomics
+    m.opt.deterministic = DeterminismType.NONE
+    d.M.fill_(wp.inf)
+    mjw.forward(m, d)
+    _assert_eq(d.M.numpy(), M, "M")
 
   @parameterized.parameters(1, 2)
   def test_tendon_bias_deterministic(self, nworld):

@@ -1365,6 +1365,77 @@ def _tendon_armature(nv: int, deterministic: bool = False):
     module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
     module_options["deterministic_max_records"] = nv
 
+    # One thread per dof adds the tendons that move with it to its row of M, in the ascending
+    # order of the transpose of the sparsity of ten_J: each element has one writer and a fixed
+    # summation order, without atomics.
+    @wp.kernel(module="unique", module_options=module_options)
+    def kernel(
+      # Model:
+      dof_parentid: wp.array[int],
+      tendon_actuatorid: wp.array[int],
+      ten_J_rowadr: wp.array[int],
+      ten_J_colind: wp.array[int],
+      tendon_armature: wp.array2d[float],
+      actuator_trntype: wp.array[int],
+      actuator_trnid: wp.array[wp.vec2i],
+      actuator_armature: wp.array2d[float],
+      actuator_gear: wp.array2d[wp.spatial_vector],
+      M_rownnz: wp.array[int],
+      M_rowadr: wp.array[int],
+      ten_JT_rowadr: wp.array[int],
+      ten_JT_colind: wp.array[int],
+      ten_JT_map: wp.array[int],
+      # Data in:
+      ten_J_in: wp.array2d[float],
+      # Data out:
+      M_out: wp.array2d[float],
+    ):
+      worldid, dofidi = wp.tid()
+
+      for i in range(ten_JT_rowadr[dofidi], ten_JT_rowadr[dofidi + 1]):
+        tenid = ten_JT_colind[i]
+
+        armature = util_misc.tendon_armature_total(
+          tendon_actuatorid, tendon_armature, actuator_trntype, actuator_trnid, actuator_armature, actuator_gear, worldid, tenid
+        )
+        if armature == 0.0:
+          continue
+
+        sparseid = ten_JT_map[i]
+        ten_Ji = ten_J_in[worldid, sparseid]
+        if ten_Ji == 0.0:
+          continue
+
+        # Walk the row's entries from the diagonal backward over ancestors.
+        madr_ij = M_rowadr[dofidi] + M_rownnz[dofidi] - 1
+
+        # sparse backward pass over ancestors
+        rowadr = ten_J_rowadr[tenid]
+        ptr = sparseid - rowadr
+        dofid = dofidi
+        while dofid >= 0:
+          if dofid == dofidi:
+            ten_Jj = ten_Ji
+          else:
+            # scan pointer backward to find matching colind entry
+            while ptr >= 0:
+              sparseid = rowadr + ptr
+              if ten_J_colind[sparseid] <= dofid:
+                break
+              ptr -= 1
+            if ptr >= 0 and ten_J_colind[sparseid] == dofid:
+              ten_Jj = ten_J_in[worldid, sparseid]
+            else:
+              ten_Jj = float(0.0)
+
+          # not `+=`, which Warp compiles to an atomic
+          M_out[worldid, madr_ij] = M_out[worldid, madr_ij] + armature * ten_Jj * ten_Ji
+          madr_ij -= 1
+
+          dofid = dof_parentid[dofid]
+
+    return kernel
+
   @wp.kernel(module="unique", module_options=module_options)
   def kernel(
     # Model:
@@ -1440,27 +1511,50 @@ def _tendon_armature(nv: int, deterministic: bool = False):
 @event_scope
 def tendon_armature(m: Model, d: Data):
   """Add tendon armature to M."""
-  det_atomics = bool(m.opt.deterministic & DeterminismType.ATOMICS)
-  wp.launch(
-    _tendon_armature(m.nv if det_atomics else 0, det_atomics),
-    dim=(d.nworld, m.ntendon, m.max_ten_J_rownnz),
-    inputs=[
-      m.dof_parentid,
-      m.tendon_actuatorid,
-      m.ten_J_rownnz,
-      m.ten_J_rowadr,
-      m.ten_J_colind,
-      m.tendon_armature,
-      m.actuator_trntype,
-      m.actuator_trnid,
-      m.actuator_armature,
-      m.actuator_gear,
-      m.M_rownnz,
-      m.M_rowadr,
-      d.ten_J,
-    ],
-    outputs=[d.M],
-  )
+  if m.opt.deterministic & DeterminismType.ATOMICS:
+    wp.launch(
+      _tendon_armature(m.nv, True),
+      dim=(d.nworld, m.nv),
+      inputs=[
+        m.dof_parentid,
+        m.tendon_actuatorid,
+        m.ten_J_rowadr,
+        m.ten_J_colind,
+        m.tendon_armature,
+        m.actuator_trntype,
+        m.actuator_trnid,
+        m.actuator_armature,
+        m.actuator_gear,
+        m.M_rownnz,
+        m.M_rowadr,
+        m.ten_JT_rowadr,
+        m.ten_JT_colind,
+        m.ten_JT_map,
+        d.ten_J,
+      ],
+      outputs=[d.M],
+    )
+  else:
+    wp.launch(
+      _tendon_armature(0, False),
+      dim=(d.nworld, m.ntendon, m.max_ten_J_rownnz),
+      inputs=[
+        m.dof_parentid,
+        m.tendon_actuatorid,
+        m.ten_J_rownnz,
+        m.ten_J_rowadr,
+        m.ten_J_colind,
+        m.tendon_armature,
+        m.actuator_trntype,
+        m.actuator_trnid,
+        m.actuator_armature,
+        m.actuator_gear,
+        m.M_rownnz,
+        m.M_rowadr,
+        d.ten_J,
+      ],
+      outputs=[d.M],
+    )
 
 
 @cache_kernel
