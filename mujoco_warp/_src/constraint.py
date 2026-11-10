@@ -3140,7 +3140,8 @@ def _efc_contact_jac_sparse(cone_type: types.ConeType, nmaxdim: int, max_records
       da1, da2 = _dof_chain_advance(dof_parentid, da1, da2, lane)
 
       # per-lane partial sums, so a lane issues one atomic per row rather than one per nonzero
-      Jqvel = vecdim()
+      if wp.static(not deterministic):
+        Jqvel = vecdim()
       for nnz in range(lane, rownnz, _CONTACT_JAC_LANES):
         dofid = wp.max(da1, da2)
         jac1p, jac1r = support.jac_dof(
@@ -3170,7 +3171,8 @@ def _efc_contact_jac_sparse(cone_type: types.ConeType, nmaxdim: int, max_records
 
         jacp_dif = jac2p - jac1p
         jacr_dif = jac2r - jac1r
-        qvel = qvel_in[worldid, dofid]
+        if wp.static(not deterministic):
+          qvel = qvel_in[worldid, dofid]
 
         for dimid in range(nmaxdim):
           efcid = contact_efc_address_in[conid, dimid]
@@ -3211,18 +3213,52 @@ def _efc_contact_jac_sparse(cone_type: types.ConeType, nmaxdim: int, max_records
           sparseid = efc_J_rowadr_in[worldid, efcid] + nnz
           efc_J_colind_out[worldid, 0, sparseid] = dofid
           efc_J_out[worldid, 0, sparseid] = J
-          Jqvel[dimid] += J * qvel
+          if wp.static(not deterministic):
+            Jqvel[dimid] += J * qvel
 
         if nnz + _CONTACT_JAC_LANES < rownnz:
           da1, da2 = _dof_chain_advance(dof_parentid, da1, da2, _CONTACT_JAC_LANES)
 
-      for dimid in range(nmaxdim):
-        efcid = contact_efc_address_in[conid, dimid]
-        if efcid >= 0:
-          # rows are zeroed by _efc_contact_init
-          wp.atomic_add(efc_Jqvel_out, worldid, efcid, Jqvel[dimid])
+      # the deterministic variant has no atomics: _efc_contact_jqvel_sparse sums each row afterwards
+      if wp.static(not deterministic):
+        for dimid in range(nmaxdim):
+          efcid = contact_efc_address_in[conid, dimid]
+          if efcid >= 0:
+            # rows are zeroed by _efc_contact_init
+            wp.atomic_add(efc_Jqvel_out, worldid, efcid, Jqvel[dimid])
 
   return kernel
+
+
+@wp.kernel
+def _efc_contact_jqvel_sparse(
+  # Data in:
+  ne_in: wp.array[int],
+  nf_in: wp.array[int],
+  nl_in: wp.array[int],
+  nefc_in: wp.array[int],
+  qvel_in: wp.array2d[float],
+  efc_J_rownnz_in: wp.array2d[int],
+  efc_J_rowadr_in: wp.array2d[int],
+  efc_J_colind_in: wp.array3d[int],
+  efc_J_in: wp.array3d[float],
+  # Data out:
+  efc_Jqvel_out: wp.array2d[float],
+):
+  """Computes J * qvel for the contact rows, summing each row in a fixed order."""
+  worldid, efcid = wp.tid()
+
+  # contact rows follow the equality, friction and limit rows
+  if efcid < ne_in[worldid] + nf_in[worldid] + nl_in[worldid] or efcid >= nefc_in[worldid]:
+    return
+
+  Jqvel = float(0.0)
+  rowadr = efc_J_rowadr_in[worldid, efcid]
+  for i in range(efc_J_rownnz_in[worldid, efcid]):
+    sparseid = rowadr + i
+    Jqvel += efc_J_in[worldid, 0, sparseid] * qvel_in[worldid, efc_J_colind_in[worldid, 0, sparseid]]
+
+  efc_Jqvel_out[worldid, efcid] = Jqvel
 
 
 @wp.func
@@ -5885,6 +5921,15 @@ def make_constraint(m: types.Model, d: types.Data):
               d.efc.Jqvel,
             ],
           )
+
+          # the deterministic kernel leaves efc.Jqvel to an ordered sum over each row
+          if det_atomics:
+            wp.launch(
+              _efc_contact_jqvel_sparse,
+              dim=(d.nworld, d.njmax),
+              inputs=[d.ne, d.nf, d.nl, d.nefc, d.qvel, d.efc.J_rownnz, d.efc.J_rowadr, d.efc.J_colind, d.efc.J],
+              outputs=[d.efc.Jqvel],
+            )
       else:
         d.efc.Jqvel.zero_()
         tile_size = m.block_dim.contact_jac_tiled

@@ -25,6 +25,7 @@ from absl.testing import parameterized
 
 import mujoco_warp as mjw
 from mujoco_warp import ConeType
+from mujoco_warp import DeterminismType
 from mujoco_warp import test_data
 from mujoco_warp._src import util_pkg
 
@@ -1009,6 +1010,94 @@ class ConstraintTest(parameterized.TestCase):
     _assert_eq(d.efc.aref.numpy()[0, :nefc], mjd.efc_aref[:nefc], "efc_aref")
     if nworld == 2:
       self.assertFalse(np.allclose(d.efc.aref.numpy()[0, :nefc], d.efc.aref.numpy()[1, :nefc]))
+
+  @parameterized.product(cone=(ConeType.PYRAMIDAL, ConeType.ELLIPTIC), nworld=(1, 2))
+  def test_contact_jqvel_sparse_deterministic(self, cone, nworld):
+    """Deterministic sparse contact rows sum J * qvel in a fixed order instead of with atomics."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <geom type="plane" size="2 2 .1"/>
+          <body pos="0 0 .04">
+            <freejoint/>
+            <geom type="box" size=".05 .05 .05" condim="4"/>
+            <body pos=".1 0 0">
+              <joint axis="0 1 0" range="10 60" frictionloss=".1"/>
+              <geom type="capsule" size=".05" fromto="0 0 0 .1 0 0" condim="6"/>
+            </body>
+          </body>
+          <body name="ball" pos=".5 0 .09">
+            <freejoint/>
+            <geom size=".1"/>
+          </body>
+        </worldbody>
+        <equality>
+          <connect body1="ball" anchor="0 0 0"/>
+        </equality>
+      </mujoco>
+      """,
+      overrides={
+        "opt.cone": cone,
+        "opt.jacobian": mujoco.mjtJacobian.mjJAC_SPARSE,
+        "opt.deterministic": DeterminismType.ATOMICS,
+      },
+      qvel_noise=0.1,
+      nworld=nworld,
+    )
+    # contact rows of several dimensions follow equality, friction and limit rows
+    nefc = mjd.nefc
+    contact_adr = mjd.ne + mjd.nf + mjd.nl
+    self.assertGreater(min(mjd.ne, mjd.nf, mjd.nl), 0)
+    self.assertGreater(len(np.unique(mjd.contact.dim)), 2)
+
+    mjds = [mjd]
+    if nworld == 2:
+      # same contacts as world 0, with other velocities
+      mjd1 = mujoco.MjData(mjm)
+      mjd1.qpos[:] = mjd.qpos
+      qvel = d.qvel.numpy()
+      qvel[1] *= -2.0
+      d.qvel.assign(qvel)
+      mjd1.qvel[:] = qvel[1]
+      mujoco.mj_forward(mjm, mjd1)
+      mjds.append(mjd1)
+
+    for arr in (d.efc.Jqvel, d.efc.vel):
+      arr.fill_(wp.inf)
+
+    mjw.make_constraint(m, d)
+
+    qvel = d.qvel.numpy()
+    efc_Jqvel = d.efc.Jqvel.numpy()
+    efc_vel = d.efc.vel.numpy()
+    for w in range(nworld):
+      self.assertEqual(mjds[w].nefc, nefc)
+      self.assertEqual(d.nefc.numpy()[w], nefc)
+
+      efc_J = np.zeros((nefc, mjm.nv))
+      mujoco.mju_sparse2dense(
+        efc_J,
+        d.efc.J.numpy()[w, 0],
+        d.efc.J_rownnz.numpy()[w, :nefc],
+        d.efc.J_rowadr.numpy()[w, :nefc],
+        d.efc.J_colind.numpy()[w, 0],
+      )
+
+      np.testing.assert_allclose(efc_Jqvel[w, contact_adr:nefc], (efc_J @ qvel[w])[contact_adr:nefc], rtol=1e-5, atol=1e-5)
+
+      # constraint rows are not in MuJoCo order
+      np.testing.assert_allclose(np.sort(efc_vel[w, :nefc]), np.sort(mjds[w].efc_vel), rtol=1e-5, atol=1e-5)
+
+    if nworld == 2:
+      self.assertFalse(np.allclose(np.sort(efc_vel[0, :nefc]), np.sort(efc_vel[1, :nefc])))
+
+    # same as the kernels with atomics, up to summation order
+    m.opt.deterministic = DeterminismType.NONE
+    d.efc.vel.fill_(wp.inf)
+    mjw.make_constraint(m, d)
+    for w in range(nworld):
+      np.testing.assert_allclose(np.sort(d.efc.vel.numpy()[w, :nefc]), np.sort(efc_vel[w, :nefc]), rtol=1e-5, atol=1e-5)
 
 
 if __name__ == "__main__":
