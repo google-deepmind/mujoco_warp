@@ -1217,6 +1217,78 @@ class SolverTest(parameterized.TestCase):
         _assert_eq(d.qfrc_constraint.numpy()[0], mjd.qfrc_constraint, "qfrc_constraint")
         _assert_eq(d.efc.force.numpy()[0, : mjd.nefc], mjd.efc_force, "efc_force")
 
+  @parameterized.parameters(
+    (ConeType.PYRAMIDAL, SolverType.NEWTON, mujoco.mjtJacobian.mjJAC_DENSE, mujoco.mjtIntegrator.mjINT_EULER),
+    (ConeType.ELLIPTIC, SolverType.NEWTON, mujoco.mjtJacobian.mjJAC_DENSE, mujoco.mjtIntegrator.mjINT_EULER),
+    (ConeType.PYRAMIDAL, SolverType.NEWTON, mujoco.mjtJacobian.mjJAC_SPARSE, mujoco.mjtIntegrator.mjINT_EULER),
+    (ConeType.ELLIPTIC, SolverType.NEWTON, mujoco.mjtJacobian.mjJAC_SPARSE, mujoco.mjtIntegrator.mjINT_EULER),
+    (ConeType.PYRAMIDAL, SolverType.NEWTON, mujoco.mjtJacobian.mjJAC_DENSE, mujoco.mjtIntegrator.mjINT_DISCRETE),
+    (ConeType.PYRAMIDAL, SolverType.NEWTON, mujoco.mjtJacobian.mjJAC_SPARSE, mujoco.mjtIntegrator.mjINT_DISCRETE),
+    (ConeType.PYRAMIDAL, SolverType.CG, mujoco.mjtJacobian.mjJAC_SPARSE, mujoco.mjtIntegrator.mjINT_EULER),
+  )
+  def test_solve_deterministic(self, cone, solver_, jacobian, integrator):
+    """Tests that the solve without atomics matches the default solve and MuJoCo."""
+    for keyframe in range(3):
+      for nworld in (1, 2):
+        res = {}
+        for deterministic in (types.DeterminismType.NONE, types.DeterminismType.ATOMICS):
+          mjm, mjd, m, d = test_data.fixture(
+            "constraints.xml",
+            keyframe=keyframe,
+            nworld=nworld,
+            overrides={
+              "opt.jacobian": jacobian,
+              "opt.cone": cone,
+              "opt.solver": solver_,
+              "opt.integrator": integrator,
+              "opt.deterministic": deterministic,
+            },
+          )
+
+          d.qacc.fill_(wp.inf)
+          d.qfrc_constraint.fill_(wp.inf)
+
+          mjw.forward(m, d)
+          res[deterministic] = (d.qacc.numpy(), d.qfrc_constraint.numpy())
+
+        for i, name in enumerate(("qacc", "qfrc_constraint")):
+          default, det = res[types.DeterminismType.NONE][i], res[types.DeterminismType.ATOMICS][i]
+          # the sums run in a different order: allow rounding at the scale of the largest element
+          np.testing.assert_allclose(det, default, rtol=1e-3, atol=1e-4 * np.abs(default).max(), err_msg=name)
+          if solver_ == SolverType.NEWTON:
+            for worldid in range(nworld):
+              _assert_eq(det[worldid], getattr(mjd, name), name)
+
+  @parameterized.parameters(1, 2)
+  def test_update_gradient_grad_deterministic(self, nworld):
+    """Tests the gradient norm without atomics when qfrc_smooth is padded."""
+    # the discrete integrator passes a qfrc_smooth with nv_pad columns
+    nv, nv_pad = 3, 4
+    rng = np.random.default_rng(0)
+    Ma = rng.uniform(1.0, 2.0, (nworld, nv)).astype(np.float32)
+    qfrc_smooth = rng.uniform(1.0, 2.0, (nworld, nv_pad)).astype(np.float32)
+    qfrc_constraint = rng.uniform(1.0, 2.0, (nworld, nv)).astype(np.float32)
+    expected = Ma - qfrc_smooth[:, :nv] - qfrc_constraint
+
+    for deterministic in (False, True):
+      grad = wp.full((nworld, nv), wp.inf, dtype=float)
+      # the default kernel accumulates, the deterministic one assigns
+      grad_dot = wp.full(nworld, 0.0 if not deterministic else wp.inf, dtype=float)
+      wp.launch(
+        solver._update_gradient_grad(False, nv if deterministic else 0, deterministic),
+        dim=(nworld, nv),
+        inputs=[
+          wp.array(qfrc_smooth),
+          wp.array(qfrc_constraint),
+          wp.array(Ma),
+          wp.zeros(nworld, dtype=int),
+          wp.zeros(nworld, dtype=bool),
+        ],
+        outputs=[grad, grad_dot],
+      )
+      np.testing.assert_allclose(grad.numpy(), expected, rtol=1e-6)
+      np.testing.assert_allclose(grad_dot.numpy(), np.sum(expected * expected, axis=1), rtol=1e-5)
+
   @parameterized.named_parameters(
     ("max3", (3,)),
     ("max4_mixed", (3, 4)),
@@ -2137,6 +2209,54 @@ class SolverTest(parameterized.TestCase):
       _assert_eq(qacc_inc, qacc_full, f"qacc keyframe={keyframe}")
 
     self.assertTrue(total_any_changes, "no state changes detected across any keyframe")
+
+  @parameterized.parameters(mujoco.mjtJacobian.mjJAC_DENSE, mujoco.mjtJacobian.mjJAC_SPARSE)
+  def test_incremental_hessian_deterministic(self, jacobian):
+    """Tests the incremental Hessian without atomics against a full rebuild."""
+    any_changes = False
+    for keyframe in range(3):
+      _, _, m, d = test_data.fixture(
+        "humanoid/humanoid.xml",
+        keyframe=keyframe,
+        nworld=2,
+        overrides={
+          "opt.jacobian": jacobian,
+          "opt.cone": ConeType.PYRAMIDAL,
+          "opt.solver": SolverType.NEWTON,
+          "opt.iterations": 5,
+          "opt.ls_iterations": 10,
+          "opt.deterministic": types.DeterminismType.ATOMICS,
+        },
+      )
+
+      # start away from the solution so that rows change state
+      d.qacc.zero_()
+      d.qfrc_constraint.zero_()
+      d.efc.force.zero_()
+      ctx = solver._create_solver_context(m, d)
+      solver.init_context(m, d, ctx, grad=True)
+      ctx.search_unchanged.fill_(False)
+      for _ in range(m.opt.iterations):
+        solver._linesearch(m, d, ctx)
+        ctx.quad_changed_ids.fill_(-1)
+        ctx.quad_changed_count.zero_()
+        solver._update_constraint(m, d, ctx, track_changes=True)
+
+        # the changed rows are listed in row order
+        count = ctx.quad_changed_count.numpy()
+        ids = ctx.quad_changed_ids.numpy()
+        for worldid in range(d.nworld):
+          changed = ids[worldid, : count[worldid]]
+          self.assertTrue(np.all(changed >= 0) and np.all(np.diff(changed) > 0), f"changed rows: {changed}")
+        any_changes = any_changes or bool(count.any())
+
+        solver._update_gradient_incremental(m, d, ctx)
+        h_inc = np.triu(ctx.h.numpy()[:, : m.nv, : m.nv])
+        solver._update_gradient(m, d, ctx)
+        h_full = np.triu(ctx.h.numpy()[:, : m.nv, : m.nv])
+        np.testing.assert_allclose(h_inc, h_full, rtol=1e-4, atol=1e-5 * np.abs(h_full).max())
+
+    self.assertTrue(any_changes, "no state changes detected across any keyframe")
 
   @parameterized.product(nworld=(1, 2), rows_from=("put_data", "make_constraint"))
   def test_sparse_hessian_dof_friction(self, nworld, rows_from):
