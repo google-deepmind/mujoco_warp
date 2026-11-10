@@ -839,6 +839,17 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
 
   m.max_ten_J_rownnz = int(mjm.ten_J_rownnz.max()) if mjm.ntendon else 0
 
+  # transpose of the sparsity of ten_J: the tendons that move with each dof, in ascending order,
+  # so that deterministic kernels can add the tendons of a dof in one thread
+  ten_J_adr = np.concatenate([mjm.ten_J_rowadr[i] + np.arange(mjm.ten_J_rownnz[i]) for i in range(mjm.ntendon)] + [[]])
+  ten_J_adr = ten_J_adr.astype(int)
+  ten_J_tenid = np.repeat(np.arange(mjm.ntendon), mjm.ten_J_rownnz)
+  ten_J_dofid = mjm.ten_J_colind.reshape(-1)[ten_J_adr]
+  ten_JT_order = np.lexsort((ten_J_tenid, ten_J_dofid))
+  m.ten_JT_rowadr = np.concatenate(([0], np.cumsum(np.bincount(ten_J_dofid, minlength=mjm.nv))))
+  m.ten_JT_colind = ten_J_tenid[ten_JT_order]
+  m.ten_JT_map = ten_J_adr[ten_JT_order]
+
   # body ids grouped by tree level (depth-based traversal)
   bodies, body_depth = {}, np.zeros(mjm.nbody, dtype=int) - 1
   for i in range(mjm.nbody):

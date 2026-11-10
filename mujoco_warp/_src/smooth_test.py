@@ -40,6 +40,107 @@ def _assert_eq(a, b, name):
   np.testing.assert_allclose(a, b, err_msg=err_msg, atol=tol, rtol=tol)
 
 
+# fixed and spatial tendons that share dofs, with pulleys and with geoms that wrap in some poses
+_TENDON_XML = """
+<mujoco>
+  <option>
+    <flag contact="disable"/>
+  </option>
+  <worldbody>
+    <site name="world" pos="-.3 0 1.1"/>
+    <geom name="post" type="cylinder" size=".04 .1" pos="-.12 0 1.02" zaxis="0 1 0"/>
+    <body pos="0 0 1">
+      <joint name="shoulder" axis="0 1 0"/>
+      <joint name="twist" axis="1 0 0"/>
+      <geom type="capsule" size=".02" fromto="0 0 0 .3 0 0"/>
+      <geom name="elbow" type="cylinder" size=".05 .04" pos=".3 0 0" zaxis="0 1 0"/>
+      <site name="upper" pos=".12 0 .06"/>
+      <site name="side" pos=".3 0 .1"/>
+      <body pos=".3 0 0">
+        <joint name="elbow" axis="0 1 0"/>
+        <geom type="capsule" size=".02" fromto="0 0 0 .3 0 0"/>
+        <geom name="wrist" size=".04" pos=".3 0 0"/>
+        <site name="lower" pos=".15 0 .05"/>
+        <body pos=".3 0 0">
+          <joint name="wrist" type="ball"/>
+          <geom type="capsule" size=".02" fromto="0 0 0 .15 0 0"/>
+          <site name="hand" pos=".12 0 .05"/>
+        </body>
+        <body pos=".15 .1 0">
+          <joint name="slider" type="slide" axis="0 1 0"/>
+          <geom size=".03"/>
+          <site name="slider" pos="0 .05 .02"/>
+        </body>
+      </body>
+    </body>
+  </worldbody>
+  <tendon>
+    <fixed name="fixed" armature="1" stiffness="3" damping=".2">
+      <joint joint="shoulder" coef="1"/>
+      <joint joint="elbow" coef="-.5"/>
+      <joint joint="slider" coef="2"/>
+    </fixed>
+    <spatial name="sites" armature="2" stiffness="10" damping=".3" springlength=".2">
+      <site site="world"/>
+      <site site="upper"/>
+      <site site="lower"/>
+      <site site="hand"/>
+    </spatial>
+    <spatial name="pulley" armature="1.5" stiffness="5">
+      <site site="world"/>
+      <site site="lower"/>
+      <pulley divisor="2"/>
+      <site site="lower"/>
+      <site site="slider"/>
+      <pulley divisor="2"/>
+      <site site="lower"/>
+      <site site="hand"/>
+    </spatial>
+    <spatial name="wrap" stiffness="4" damping=".4" springlength=".5">
+      <site site="world"/>
+      <geom geom="post"/>
+      <site site="upper"/>
+      <geom geom="elbow" sidesite="side"/>
+      <site site="lower"/>
+      <geom geom="wrist"/>
+      <site site="hand"/>
+      <site site="slider"/>
+    </spatial>
+  </tendon>
+  <actuator>
+    <motor tendon="sites" armature=".5"/>
+    <motor tendon="wrap" gear="2"/>
+    <motor tendon="fixed" gear="-1" armature=".3"/>
+    <motor tendon="fixed" gear="2" armature=".2" damping=".3"/>
+  </actuator>
+</mujoco>
+"""
+
+# both worlds wrap two of the three geoms: (elbow, wrist) and (post, elbow)
+_TENDON_QPOS = np.array([[-0.4, -0.3, 0.9, 0.9, 0.1, 0.3, 0.2, -0.03], [0.6, 0.0, 1.5, 0.8, 0.0, 0.6, 0.0, 0.0]])
+_TENDON_QVEL = np.array([[1.0, -0.6, 1.6, 0.4, -1.2, 0.8, 1.4], [-1.8, 0.8, 0.6, -1.0, 0.4, 1.2, -0.2]])
+
+
+def _tendon_fixture(nworld):
+  """Returns the tendon model with deterministic atomics, and the MuJoCo data of each world."""
+  mjm, _, m, d = test_data.fixture(xml=_TENDON_XML, nworld=nworld, overrides={"opt.deterministic": DeterminismType.ATOMICS})
+
+  qpos = _TENDON_QPOS[:nworld].copy()
+  qpos[:, 3:7] /= np.linalg.norm(qpos[:, 3:7], axis=1, keepdims=True)
+  d.qpos.assign(qpos)
+  d.qvel.assign(_TENDON_QVEL[:nworld])
+
+  mjds = []
+  for w in range(nworld):
+    mjd = mujoco.MjData(mjm)
+    mjd.qpos[:] = qpos[w]
+    mjd.qvel[:] = _TENDON_QVEL[w]
+    mujoco.mj_forward(mjm, mjd)
+    mjds.append(mjd)
+
+  return mjm, mjds, m, d
+
+
 # branching trees, a static subtree and a massless body, placed at an offset from the origin
 _TREE_XML = """
 <mujoco>
@@ -1825,6 +1926,30 @@ class SmoothTest(parameterized.TestCase):
     mjw._src.smooth.rne(m, d)
     mjw._src.smooth.tendon_bias(m, d, d.qfrc_bias)
     _assert_eq(d.qfrc_bias.numpy()[0], mjd.qfrc_bias, "qfrc_bias")
+
+  @parameterized.parameters(1, 2)
+  def test_tendon_bias_deterministic(self, nworld):
+    """Deterministic tendon armature bias forces are added in tendon order without atomics."""
+    mjm, mjds, m, d = _tendon_fixture(nworld)
+
+    d.qfrc_bias.fill_(wp.inf)
+    mjw.forward(m, d)
+    qfrc_bias = d.qfrc_bias.numpy().copy()
+
+    for w in range(nworld):
+      # the tendons that have armature add to the bias force
+      qfrc_rne = np.zeros(mjm.nv)
+      mujoco.mj_rne(mjm, mjds[w], 0, qfrc_rne)
+      self.assertGreater(np.abs(mjds[w].qfrc_bias - qfrc_rne).max(), 1e-2)
+      _assert_eq(qfrc_bias[w], mjds[w].qfrc_bias, "qfrc_bias")
+    if nworld == 2:
+      self.assertFalse(np.allclose(qfrc_bias[0], qfrc_bias[1]))
+
+    # same forces as the kernels with atomics
+    m.opt.deterministic = DeterminismType.NONE
+    d.qfrc_bias.fill_(wp.inf)
+    mjw.forward(m, d)
+    _assert_eq(d.qfrc_bias.numpy(), qfrc_bias, "qfrc_bias")
 
   @parameterized.product(jacobian=(mujoco.mjtJacobian.mjJAC_SPARSE, mujoco.mjtJacobian.mjJAC_DENSE), nworld=(1, 2))
   def test_actuator_armature(self, jacobian, nworld):

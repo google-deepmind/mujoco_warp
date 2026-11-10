@@ -1724,6 +1724,12 @@ class Model:
     tendon_geom_adr: geom tendon address
     tendon_limited_adr: addresses for limited tendons
     max_ten_J_rownnz: maximum number of non-zeros in a tendon row
+    ten_JT_rowadr: row start address for the transpose of
+                   sparse ten_J                              (nv + 1,)
+    ten_JT_colind: tendon ids in the transpose of sparse
+                   ten_J, in ascending order for each dof    (nJten,)
+    ten_JT_map: address in sparse ten_J of each element of
+                its transpose                                (nJten,)
     ten_wrapadr_site: wrap object starting address for sites
     ten_wrapnum_site: number of site wrap objects per tendon
     wrap_jnt_adr: addresses for joint tendon wrap object
@@ -2293,6 +2299,9 @@ class Model:
   tendon_geom_adr: array("ntendon_geom", int)
   tendon_limited_adr: array("ntendon_limited", int)
   max_ten_J_rownnz: int
+  ten_JT_rowadr: array("nv_plus_1", int)
+  ten_JT_colind: array("nJten", int)
+  ten_JT_map: array("nJten", int)
   ten_wrapadr_site: array("nten_wrapadr_site", int)
   ten_wrapnum_site: array("ntendon", int)
   wrap_jnt_adr: array("nwrap_jnt", int)

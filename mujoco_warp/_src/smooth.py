@@ -2502,6 +2502,7 @@ def rne_postconstraint(m: Model, d: Data):
       outputs=[ten_frc],
     )
 
+    det_atomics = bool(m.opt.deterministic & DeterminismType.ATOMICS)
     ten_bias_coef = wp.zeros((d.nworld, m.ntendon), dtype=float)
     if m.nJten > 0:
       ten_Jdot = wp.zeros((d.nworld, m.nJten), dtype=float)
@@ -2542,8 +2543,9 @@ def rne_postconstraint(m: Model, d: Data):
       )
 
       wp.launch(
-        _tendon_bias_coef(bool(m.opt.deterministic & DeterminismType.ATOMICS)),
-        dim=(d.nworld, m.ntendon, m.max_ten_J_rownnz),
+        _tendon_bias_coef(det_atomics),
+        # the deterministic kernel has one thread per tendon
+        dim=(d.nworld, m.ntendon, 1 if det_atomics else m.max_ten_J_rownnz),
         inputs=[
           m.tendon_actuatorid,
           m.ten_J_rownnz,
@@ -2563,7 +2565,6 @@ def rne_postconstraint(m: Model, d: Data):
     dsbl_spring = bool(m.opt.disableflags & DisableBit.SPRING)
     dsbl_damper = bool(m.opt.disableflags & DisableBit.DAMPER)
 
-    det_atomics = bool(m.opt.deterministic & DeterminismType.ATOMICS)
     wp.launch(
       _cfrc_ext_spatial_tendon(m.nwrap if det_atomics else 0, det_atomics),
       dim=(d.nworld, m.ntendon),
@@ -2890,13 +2891,25 @@ def _tendon_bias_coef(deterministic: bool = False):
     if dofid_sparse >= rownnz:
       return
     rowadr = ten_J_rowadr[tenid]
-    sparseid = rowadr + dofid_sparse
-    ten_Jdot = ten_Jdot_in[worldid, sparseid]
-    if ten_Jdot == 0.0:
-      return
+    if wp.static(deterministic):
+      # The first thread of a tendon adds the row in order: each coefficient has one writer and a
+      # fixed summation order, without atomics. The kernel is launched with one thread per tendon.
+      if dofid_sparse > 0:
+        return
 
-    dofid = ten_J_colind[sparseid]
-    wp.atomic_add(ten_bias_coef_out[worldid], tenid, ten_Jdot * qvel_in[worldid, dofid])
+      ten_bias_coef = float(0.0)
+      for i in range(rownnz):
+        sparseid = rowadr + i
+        ten_bias_coef += ten_Jdot_in[worldid, sparseid] * qvel_in[worldid, ten_J_colind[sparseid]]
+      ten_bias_coef_out[worldid, tenid] = ten_bias_coef
+    else:
+      sparseid = rowadr + dofid_sparse
+      ten_Jdot = ten_Jdot_in[worldid, sparseid]
+      if ten_Jdot == 0.0:
+        return
+
+      dofid = ten_J_colind[sparseid]
+      wp.atomic_add(ten_bias_coef_out[worldid], tenid, ten_Jdot * qvel_in[worldid, dofid])
 
   return kernel
 
@@ -2906,6 +2919,47 @@ def _tendon_bias_qfrc(deterministic: bool = False):
   module_options = {"enable_backward": False}
   if deterministic:
     module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
+
+    # One thread per dof adds the tendons that move with it, which the transpose of the sparsity
+    # of ten_J lists in ascending order: each force has one writer and a fixed summation order,
+    # without atomics.
+    @wp.kernel(module="unique", module_options=module_options)
+    def kernel(
+      # Model:
+      tendon_actuatorid: wp.array[int],
+      tendon_armature: wp.array2d[float],
+      actuator_trntype: wp.array[int],
+      actuator_trnid: wp.array[wp.vec2i],
+      actuator_armature: wp.array2d[float],
+      actuator_gear: wp.array2d[wp.spatial_vector],
+      ten_JT_rowadr: wp.array[int],
+      ten_JT_colind: wp.array[int],
+      ten_JT_map: wp.array[int],
+      # Data in:
+      ten_J_in: wp.array2d[float],
+      # In:
+      ten_bias_coef_in: wp.array2d[float],
+      # Out:
+      qfrc_out: wp.array2d[float],
+    ):
+      worldid, dofid = wp.tid()
+
+      qfrc = float(0.0)
+      for i in range(ten_JT_rowadr[dofid], ten_JT_rowadr[dofid + 1]):
+        tenid = ten_JT_colind[i]
+        ten_bias_coef = ten_bias_coef_in[worldid, tenid]
+        if ten_bias_coef == 0.0:
+          continue
+
+        armature = util_misc.tendon_armature_total(
+          tendon_actuatorid, tendon_armature, actuator_trntype, actuator_trnid, actuator_armature, actuator_gear, worldid, tenid
+        )
+        qfrc += ten_J_in[worldid, ten_JT_map[i]] * armature * ten_bias_coef
+
+      if qfrc != 0.0:
+        qfrc_out[worldid, dofid] = qfrc_out[worldid, dofid] + qfrc
+
+    return kernel
 
   @wp.kernel(module="unique", module_options=module_options)
   def kernel(
@@ -2998,11 +3052,14 @@ def tendon_bias(m: Model, d: Data, qfrc: wp.array2d[float]):
     outputs=[ten_Jdot],
   )
 
+  det_atomics = bool(m.opt.deterministic & DeterminismType.ATOMICS)
+
   # tendon bias force coefficients
   ten_bias_coef = wp.zeros((d.nworld, m.ntendon), dtype=float)
   wp.launch(
-    _tendon_bias_coef(bool(m.opt.deterministic & DeterminismType.ATOMICS)),
-    dim=(d.nworld, m.ntendon, m.max_ten_J_rownnz),
+    _tendon_bias_coef(det_atomics),
+    # the deterministic kernel has one thread per tendon
+    dim=(d.nworld, m.ntendon, 1 if det_atomics else m.max_ten_J_rownnz),
     inputs=[
       m.tendon_actuatorid,
       m.ten_J_rownnz,
@@ -3019,24 +3076,44 @@ def tendon_bias(m: Model, d: Data, qfrc: wp.array2d[float]):
     outputs=[ten_bias_coef],
   )
 
-  wp.launch(
-    _tendon_bias_qfrc(bool(m.opt.deterministic & DeterminismType.ATOMICS)),
-    dim=(d.nworld, m.ntendon, m.max_ten_J_rownnz),
-    inputs=[
-      m.tendon_actuatorid,
-      m.ten_J_rownnz,
-      m.ten_J_rowadr,
-      m.ten_J_colind,
-      m.tendon_armature,
-      m.actuator_trntype,
-      m.actuator_trnid,
-      m.actuator_armature,
-      m.actuator_gear,
-      d.ten_J,
-      ten_bias_coef,
-    ],
-    outputs=[qfrc],
-  )
+  if det_atomics:
+    wp.launch(
+      _tendon_bias_qfrc(True),
+      dim=(d.nworld, m.nv),
+      inputs=[
+        m.tendon_actuatorid,
+        m.tendon_armature,
+        m.actuator_trntype,
+        m.actuator_trnid,
+        m.actuator_armature,
+        m.actuator_gear,
+        m.ten_JT_rowadr,
+        m.ten_JT_colind,
+        m.ten_JT_map,
+        d.ten_J,
+        ten_bias_coef,
+      ],
+      outputs=[qfrc],
+    )
+  else:
+    wp.launch(
+      _tendon_bias_qfrc(False),
+      dim=(d.nworld, m.ntendon, m.max_ten_J_rownnz),
+      inputs=[
+        m.tendon_actuatorid,
+        m.ten_J_rownnz,
+        m.ten_J_rowadr,
+        m.ten_J_colind,
+        m.tendon_armature,
+        m.actuator_trntype,
+        m.actuator_trnid,
+        m.actuator_armature,
+        m.actuator_gear,
+        d.ten_J,
+        ten_bias_coef,
+      ],
+      outputs=[qfrc],
+    )
 
 
 @wp.kernel
