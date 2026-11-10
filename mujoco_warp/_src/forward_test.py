@@ -24,6 +24,7 @@ from absl.testing import parameterized
 import mujoco_warp as mjw
 from mujoco_warp import BiasType
 from mujoco_warp import ConeType
+from mujoco_warp import DeterminismType
 from mujoco_warp import DisableBit
 from mujoco_warp import DynType
 from mujoco_warp import EnableBit
@@ -851,6 +852,80 @@ class ForwardTest(parameterized.TestCase):
       mjw.forward(m, d)
 
       _assert_eq(d.actuator_force.numpy()[0], mjd.actuator_force, "actuator_force")
+
+  @parameterized.parameters(1, 2)
+  def test_tendon_actuator_force_deterministic(self, nworld):
+    """Deterministic tendon actuator forces are added in actuator order without atomics."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option>
+          <flag contact="disable"/>
+        </option>
+        <worldbody>
+          <body>
+            <joint name="slide0" type="slide" axis="1 0 0"/>
+            <geom size=".1"/>
+            <site name="site0"/>
+            <body pos="1 0 0">
+              <joint name="slide1" type="slide" axis="1 0 0"/>
+              <geom size=".1"/>
+              <site name="site1"/>
+              <body pos="1 0 0">
+                <joint name="hinge" axis="0 1 0"/>
+                <geom size=".1"/>
+              </body>
+            </body>
+          </body>
+        </worldbody>
+        <tendon>
+          <fixed name="unlimited">
+            <joint joint="hinge" coef="1"/>
+          </fixed>
+          <fixed name="fixed" actuatorfrcrange="-.3 .4">
+            <joint joint="slide0" coef="1"/>
+            <joint joint="slide1" coef="-.5"/>
+          </fixed>
+          <spatial name="spatial" actuatorfrcrange="-.1 .2">
+            <site site="site0"/>
+            <site site="site1"/>
+          </spatial>
+        </tendon>
+        <actuator>
+          <motor tendon="fixed" gear="1"/>
+          <motor tendon="spatial" gear="2"/>
+          <motor joint="hinge"/>
+          <motor tendon="fixed" gear="-3"/>
+          <motor tendon="unlimited"/>
+          <motor tendon="spatial" gear=".5" forcerange="-.05 .05"/>
+          <motor tendon="fixed" gear=".7"/>
+          <motor tendon="spatial" gear="-.2"/>
+        </actuator>
+      </mujoco>
+      """,
+      nworld=nworld,
+      overrides={"opt.deterministic": DeterminismType.ATOMICS},
+    )
+
+    ctrl = np.array([[0.9, 0.8, 0.3, -0.5, 0.2, 0.6, 0.7, -0.4], [-0.6, 0.1, -0.2, -0.3, 0.5, -0.9, 0.2, 0.8]])[:nworld]
+    d.ctrl.assign(ctrl)
+
+    d.actuator_force.fill_(wp.inf)
+    mjw.forward(m, d)
+    actuator_force = d.actuator_force.numpy().copy()
+
+    for w in range(nworld):
+      mjd.ctrl[:] = ctrl[w]
+      mujoco.mj_forward(mjm, mjd)
+      # both limited tendons scale the forces of their actuators
+      self.assertFalse(np.allclose(mjd.actuator_force, mjm.actuator_gear[:, 0] * ctrl[w]))
+      _assert_eq(actuator_force[w], mjd.actuator_force, "actuator_force")
+
+    # same forces as the kernel with atomics
+    m.opt.deterministic = DeterminismType.NONE
+    d.actuator_force.fill_(wp.inf)
+    mjw.forward(m, d)
+    _assert_eq(d.actuator_force.numpy(), actuator_force, "actuator_force")
 
   @parameterized.product(xml=("humanoid/humanoid.xml",), energy=(0, EnableBit.ENERGY))
   def test_step1(self, xml, energy):

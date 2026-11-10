@@ -3138,10 +3138,20 @@ def _tendon_actuator_force(deterministic: bool = False):
   ):
     worldid, actid = wp.tid()
 
-    if actuator_trntype[actid] == TrnType.TENDON:
-      tenid = actuator_trnid[actid][0]
-      # TODO(team): only compute for tendons with force limits?
-      wp.atomic_add(ten_actfrc_out[worldid], tenid, actuator_force_in[worldid, actid])
+    if wp.static(deterministic):
+      # Launched with one thread per tendon, so actid is a tendon: it adds the forces of its
+      # actuators in ascending order, and each element has one writer without atomics.
+      ten_actfrc = float(0.0)
+      for i in range(actuator_trntype.shape[0]):
+        if actuator_trntype[i] == TrnType.TENDON:
+          if actuator_trnid[i][0] == actid:
+            ten_actfrc += actuator_force_in[worldid, i]
+      ten_actfrc_out[worldid, actid] = ten_actfrc
+    else:
+      if actuator_trntype[actid] == TrnType.TENDON:
+        tenid = actuator_trnid[actid][0]
+        # TODO(team): only compute for tendons with force limits?
+        wp.atomic_add(ten_actfrc_out[worldid], tenid, actuator_force_in[worldid, actid])
 
   return kernel
 
@@ -3345,7 +3355,8 @@ def fwd_actuation(m: Model, d: Data):
       ten_actfrc = wp.zeros((d.nworld, m.ntendon), dtype=float)
       wp.launch(
         _tendon_actuator_force(det_atomics),
-        dim=(d.nworld, m.nactuator),
+        # the deterministic kernel has one thread per tendon
+        dim=(d.nworld, m.ntendon if det_atomics else m.nactuator),
         inputs=[m.actuator_trntype, m.actuator_trnid, d.actuator_force],
         outputs=[ten_actfrc],
       )
