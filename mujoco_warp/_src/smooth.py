@@ -3154,6 +3154,9 @@ def _transmission(deterministic: bool = False):
   if deterministic:
     module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
 
+  # moment_nnz is the number of non-zeros that precede a row. The deterministic variant has no
+  # atomics: it reads the count of each actuator, for rows in actuator order, rather than taking it
+  # from a counter per world, which hands out addresses in thread scheduling order.
   @wp.kernel(module="unique", module_options=module_options)
   def kernel(
     # Model:
@@ -3208,7 +3211,10 @@ def _transmission(deterministic: bool = False):
       vadr = jnt_dofadr[jntid]
       if jnt_typ == JointType.FREE:
         moment_rownnz_out[worldid, actid] = 6
-        rowadr = wp.atomic_add(moment_nnz, worldid, 6)
+        if wp.static(deterministic):
+          rowadr = moment_nnz[actid]
+        else:
+          rowadr = wp.atomic_add(moment_nnz, worldid, 6)
         moment_rowadr_out[worldid, actid] = rowadr
         moment_colind_out[worldid, rowadr + 0] = vadr + 0
         moment_colind_out[worldid, rowadr + 1] = vadr + 1
@@ -3246,7 +3252,10 @@ def _transmission(deterministic: bool = False):
 
         nnz = 3
         moment_rownnz_out[worldid, actid] = nnz
-        rowadr = wp.atomic_add(moment_nnz, worldid, nnz)
+        if wp.static(deterministic):
+          rowadr = moment_nnz[actid]
+        else:
+          rowadr = wp.atomic_add(moment_nnz, worldid, nnz)
         moment_rowadr_out[worldid, actid] = rowadr
 
         for i in range(3):
@@ -3258,7 +3267,10 @@ def _transmission(deterministic: bool = False):
 
         nnz = 1
         moment_rownnz_out[worldid, actid] = nnz
-        rowadr = wp.atomic_add(moment_nnz, worldid, nnz)
+        if wp.static(deterministic):
+          rowadr = moment_nnz[actid]
+        else:
+          rowadr = wp.atomic_add(moment_nnz, worldid, nnz)
         moment_rowadr_out[worldid, actid] = rowadr
         moment_colind_out[worldid, rowadr] = vadr
         actuator_moment_out[worldid, rowadr] = gear[0]
@@ -3323,7 +3335,10 @@ def _transmission(deterministic: bool = False):
           da2 = dof_parentid[da2]
 
       moment_rownnz_out[worldid, actid] = ndof
-      rowadr = wp.atomic_add(moment_nnz, worldid, ndof)
+      if wp.static(deterministic):
+        rowadr = moment_nnz[actid]
+      else:
+        rowadr = wp.atomic_add(moment_nnz, worldid, ndof)
       moment_rowadr_out[worldid, actid] = rowadr
 
       # traverse dofs
@@ -3383,7 +3398,10 @@ def _transmission(deterministic: bool = False):
       rownnz_ten = ten_J_rownnz[tenid]
       rowadr_ten = ten_J_rowadr[tenid]
 
-      rowadr_mom = wp.atomic_add(moment_nnz, worldid, rownnz_ten)
+      if wp.static(deterministic):
+        rowadr_mom = moment_nnz[actid]
+      else:
+        rowadr_mom = wp.atomic_add(moment_nnz, worldid, rownnz_ten)
       moment_rownnz_out[worldid, actid] = rownnz_ten
       moment_rowadr_out[worldid, actid] = rowadr_mom
 
@@ -3397,7 +3415,10 @@ def _transmission(deterministic: bool = False):
       actuator_length_out[worldid, actid] = 0.0
 
       # initialize moment
-      rowadr = wp.atomic_add(moment_nnz, worldid, nv)
+      if wp.static(deterministic):
+        rowadr = moment_nnz[actid]
+      else:
+        rowadr = wp.atomic_add(moment_nnz, worldid, nv)
       moment_rownnz_out[worldid, actid] = nv
       moment_rowadr_out[worldid, actid] = rowadr
       for i in range(nv):
@@ -3436,7 +3457,10 @@ def _transmission(deterministic: bool = False):
           da = dof_parentid[da]
 
         moment_rownnz_out[worldid, actid] = ndof
-        rowadr = wp.atomic_add(moment_nnz, worldid, ndof)
+        if wp.static(deterministic):
+          rowadr = moment_nnz[actid]
+        else:
+          rowadr = wp.atomic_add(moment_nnz, worldid, ndof)
         moment_rowadr_out[worldid, actid] = rowadr
         actuator_length_out[worldid, actid] = 0.0
 
@@ -3541,7 +3565,10 @@ def _transmission(deterministic: bool = False):
             da2 = dof_parentid[da2]
 
         moment_rownnz_out[worldid, actid] = ndof
-        rowadr = wp.atomic_add(moment_nnz, worldid, ndof)
+        if wp.static(deterministic):
+          rowadr = moment_nnz[actid]
+        else:
+          rowadr = wp.atomic_add(moment_nnz, worldid, ndof)
         moment_rowadr_out[worldid, actid] = rowadr
 
         # traverse dofs
@@ -3775,10 +3802,16 @@ def transmission(m: Model, d: Data):
   and tendon transmissions.
   """
   # TODO(team): investigate pre-computing moment_rownnz, moment_rowadr, moment_colind
-  moment_nnz = wp.zeros((d.nworld,), dtype=int)
+  det_atomics = bool(m.opt.deterministic & DeterminismType.ATOMICS)
+  if det_atomics:
+    # non-zeros before the row of each actuator
+    moment_nnz = m.actuator_moment_rowadr
+  else:
+    # non-zeros allocated so far in each world
+    moment_nnz = wp.zeros((d.nworld,), dtype=int)
 
   wp.launch(
-    _transmission(bool(m.opt.deterministic & DeterminismType.ATOMICS)),
+    _transmission(det_atomics),
     dim=(d.nworld, m.nactuator),
     inputs=[
       m.nv,

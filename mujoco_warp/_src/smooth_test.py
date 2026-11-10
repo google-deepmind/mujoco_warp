@@ -23,6 +23,7 @@ from absl.testing import parameterized
 
 import mujoco_warp as mjw
 from mujoco_warp import ConeType
+from mujoco_warp import DeterminismType
 from mujoco_warp import DisableBit
 from mujoco_warp import test_data
 from mujoco_warp._src import types
@@ -1204,6 +1205,146 @@ class SmoothTest(parameterized.TestCase):
 
     if nworld == 2:
       self.assertFalse(np.allclose(d.actuator_length.numpy()[0], d.actuator_length.numpy()[1]))
+
+  @parameterized.parameters(1, 2)
+  def test_transmission_deterministic(self, nworld):
+    """Deterministic transmission lays out the moment rows in actuator order without atomics."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option>
+          <flag contact="disable"/>
+        </option>
+        <worldbody>
+          <body name="torso" pos="0 0 1">
+            <freejoint name="root"/>
+            <geom type="box" size=".1 .08 .06"/>
+            <site name="torso" pos="0 0 .06"/>
+            <body pos=".1 0 0">
+              <joint name="hinge" axis="0 1 0"/>
+              <geom type="capsule" size=".02" fromto="0 0 0 .2 0 0"/>
+              <site name="arm1" pos=".1 0 .03"/>
+              <body pos=".2 0 0">
+                <joint name="ball" type="ball"/>
+                <geom type="capsule" size=".02" fromto="0 0 0 .2 0 0"/>
+                <body pos=".2 0 0">
+                  <joint name="slide" type="slide" axis="1 0 0"/>
+                  <geom size=".03"/>
+                  <site name="arm3" pos=".05 0 0"/>
+                </body>
+              </body>
+            </body>
+            <body pos="0 0 -.06">
+              <joint name="leg1" axis="1 0 0"/>
+              <geom type="capsule" size=".02" fromto="0 0 0 0 0 -.2"/>
+              <site name="slider" pos="0 0 -.15" zaxis="0 1 0"/>
+              <body name="leg2" pos="0 0 -.2">
+                <joint axis="1 0 0"/>
+                <geom type="capsule" size=".02" fromto="0 0 0 0 0 -.2"/>
+                <site name="leg2" pos="0 0 -.2"/>
+                <site name="crank" pos="0 .02 -.1"/>
+              </body>
+            </body>
+          </body>
+        </worldbody>
+        <tendon>
+          <fixed name="fixed">
+            <joint joint="hinge" coef="1"/>
+            <joint joint="leg1" coef=".7"/>
+          </fixed>
+          <spatial name="spatial">
+            <site site="torso"/>
+            <site site="arm1"/>
+            <site site="arm3"/>
+          </spatial>
+        </tendon>
+        <actuator>
+          <motor joint="root" gear="1 0 0 0 0 1"/>
+          <general jointinparent="root" gear="0 1 0 1 0 0"/>
+          <motor joint="hinge"/>
+          <motor joint="ball" gear="1 1 1"/>
+          <general jointinparent="ball" gear="1 2 3"/>
+          <motor joint="slide"/>
+          <motor tendon="fixed"/>
+          <motor tendon="spatial"/>
+          <general site="arm3" refsite="leg2" gear="1 0 0 0 0 1"/>
+          <general site="arm3" refsite="arm1" gear="0 1 0 1 0 0"/>
+          <general site="leg2" gear="0 0 1 0 0 0"/>
+          <general cranksite="crank" slidersite="slider" cranklength=".1"/>
+          <adhesion body="leg2" ctrlrange="0 1"/>
+        </actuator>
+      </mujoco>
+      """,
+      qpos_noise=0.5,
+      nworld=nworld,
+      overrides={"opt.deterministic": DeterminismType.ATOMICS},
+    )
+
+    mjds = [mjd]
+    if nworld == 2:
+      mjd1 = mujoco.MjData(mjm)
+      qpos = d.qpos.numpy()
+      qpos[1, 7:] *= -0.5
+      d.qpos.assign(qpos)
+      mjd1.qpos[:] = qpos[1]
+      mujoco.mj_forward(mjm, mjd1)
+      mjds.append(mjd1)
+      mjw.kinematics(m, d)
+      mjw.com_pos(m, d)
+      mjw.tendon(m, d)
+
+    for arr in (d.actuator_length, d.actuator_moment):
+      arr.fill_(wp.inf)
+    for arr in (d.moment_rownnz, d.moment_rowadr, d.moment_colind):
+      arr.fill_(-1)
+
+    mjw.transmission(m, d)
+
+    # rows of different widths are contiguous, in actuator order
+    moment_rownnz = d.moment_rownnz.numpy()
+    moment_rowadr = d.moment_rowadr.numpy()
+    self.assertGreater(len(np.unique(moment_rownnz[0])), 5)
+    self.assertLessEqual(moment_rownnz[0].sum(), mjm.nJmom)
+    np.testing.assert_array_equal(moment_rowadr, np.cumsum(moment_rownnz, axis=1) - moment_rownnz)
+    np.testing.assert_array_equal(moment_rowadr, np.tile(m.actuator_moment_rowadr.numpy(), (nworld, 1)))
+
+    actuator_moment = np.zeros((nworld, mjm.nu, mjm.nv))
+    for w in range(nworld):
+      mj_actuator_moment = np.zeros((mjm.nu, mjm.nv))
+      mujoco.mju_sparse2dense(
+        mj_actuator_moment,
+        mjds[w].actuator_moment,
+        mjds[w].moment_rownnz,
+        mjds[w].moment_rowadr,
+        mjds[w].moment_colind,
+      )
+      mujoco.mju_sparse2dense(
+        actuator_moment[w],
+        d.actuator_moment.numpy()[w],
+        moment_rownnz[w],
+        moment_rowadr[w],
+        d.moment_colind.numpy()[w],
+      )
+      np.testing.assert_allclose(d.actuator_length.numpy()[w], mjds[w].actuator_length, rtol=1e-5, atol=1e-5)
+      np.testing.assert_allclose(actuator_moment[w], mj_actuator_moment, rtol=1e-5, atol=1e-5)
+
+    if nworld == 2:
+      self.assertFalse(np.allclose(actuator_moment[0], actuator_moment[1]))
+
+    # same moments as the kernel with atomics, whose rows are in thread scheduling order
+    m.opt.deterministic = DeterminismType.NONE
+    mjw.transmission(m, d)
+    for w in range(nworld):
+      actuator_moment_atomics = np.zeros((mjm.nu, mjm.nv))
+      mujoco.mju_sparse2dense(
+        actuator_moment_atomics,
+        d.actuator_moment.numpy()[w],
+        d.moment_rownnz.numpy()[w],
+        d.moment_rowadr.numpy()[w],
+        d.moment_colind.numpy()[w],
+      )
+      np.testing.assert_array_equal(d.moment_rownnz.numpy()[w], moment_rownnz[w])
+      np.testing.assert_allclose(actuator_moment_atomics, actuator_moment[w], rtol=1e-5, atol=1e-5)
 
   @parameterized.product(
     keyframe=list(range(4)), cone=list(ConeType), jacobian=[mujoco.mjtJacobian.mjJAC_DENSE, mujoco.mjtJacobian.mjJAC_SPARSE]

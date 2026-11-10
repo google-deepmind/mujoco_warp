@@ -1169,6 +1169,42 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
 
   m.actuator_trntype_body_adr = np.nonzero(mjm.actuator_trntype == mujoco.mjtTrn.mjTRN_BODY)[0]
 
+  # actuator_moment rows in actuator order: the row widths of smooth._transmission only depend on
+  # the transmission, so deterministic steps do not need a counter to place the rows
+  def site_dofs(siteid):
+    weldid = mjm.body_weldid[mjm.site_bodyid[siteid]]
+    dofid = mjm.body_dofadr[weldid] + mjm.body_dofnum[weldid] - 1 if weldid > 0 else -1
+    dofs = set()
+    while dofid >= 0:
+      dofs.add(dofid)
+      dofid = mjm.dof_parentid[dofid]
+    return dofs
+
+  moment_rownnz = np.zeros(mjm.nactuator, dtype=int)
+  for i in range(mjm.nactuator):
+    trntype, trnid = int(mjm.actuator_trntype[i]), mjm.actuator_trnid[i]
+    if trntype == mujoco.mjtTrn.mjTRN_JOINT or trntype == mujoco.mjtTrn.mjTRN_JOINTINPARENT:
+      jnt_type = int(mjm.jnt_type[trnid[0]])
+      if jnt_type == mujoco.mjtJoint.mjJNT_FREE:
+        moment_rownnz[i] = 6
+      elif jnt_type == mujoco.mjtJoint.mjJNT_BALL:
+        moment_rownnz[i] = 3
+      else:
+        moment_rownnz[i] = 1
+    elif trntype == mujoco.mjtTrn.mjTRN_SLIDERCRANK:
+      moment_rownnz[i] = len(site_dofs(trnid[0]) | site_dofs(trnid[1]))
+    elif trntype == mujoco.mjtTrn.mjTRN_TENDON:
+      moment_rownnz[i] = mjm.ten_J_rownnz[trnid[0]]
+    elif trntype == mujoco.mjtTrn.mjTRN_BODY:
+      moment_rownnz[i] = mjm.nv
+    elif trntype == mujoco.mjtTrn.mjTRN_SITE:
+      if trnid[1] == -1:
+        moment_rownnz[i] = len(site_dofs(trnid[0]))
+      else:
+        # dofs that move both sites do not change their relative pose
+        moment_rownnz[i] = len(site_dofs(trnid[0]) ^ site_dofs(trnid[1]))
+  m.actuator_moment_rowadr = np.cumsum(moment_rownnz) - moment_rownnz
+
   # sensor addresses
   is_contact = mjm.sensor_type == mujoco.mjtSensor.mjSENS_CONTACT
   m.sensor_pos_adr = np.nonzero(

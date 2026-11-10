@@ -1733,6 +1733,8 @@ class Model:
     wrap_pulley_scale: pulley scaling                        (nwrap,)
     actuator_trntype_body_adr: addresses for actuators
                                with body transmission
+    actuator_moment_rowadr: row start address in actuator_moment
+                            for deterministic transmission (nactuator,)
     sensor_pos_adr: addresses for position sensors
     sensor_limitpos_adr: address for limit position sensors
     sensor_vel_adr: addresses for velocity sensors
@@ -2301,6 +2303,7 @@ class Model:
   wrap_geom_adr: array("nwrap_geom", int)
   wrap_pulley_scale: array("nwrap", float)
   actuator_trntype_body_adr: array("nacttrnbody", int)
+  actuator_moment_rowadr: array("nactuator", int)
   sensor_pos_adr: array("nsensor_pos", int)
   sensor_limitpos_adr: array("nsensor_limitpos", int)
   sensor_vel_adr: array("nsensor_vel", int)
