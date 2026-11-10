@@ -3213,11 +3213,55 @@ def _tendon_actuator_force_clamp(
 
 
 @cache_kernel
-def _qfrc_actuator(nv: int, deterministic: bool = False):
+def _qfrc_actuator(nv: int, gather: bool = False, deterministic: bool = False):
   module_options = {"enable_backward": False}
   if deterministic:
     module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
     module_options["deterministic_max_records"] = nv
+
+    if gather:
+      # Some dofs are driven by several actuators: one thread per dof adds them in ascending
+      # order, so that each element has one writer and a fixed summation order, without atomics.
+      @wp.kernel(module="unique", module_options=module_options)
+      def kernel(
+        # Model:
+        actuator_momentT_rowadr: wp.array[int],
+        actuator_momentT_elem: wp.array[wp.vec3i],
+        # Data in:
+        moment_rownnz_in: wp.array2d[int],
+        moment_rowadr_in: wp.array2d[int],
+        moment_colind_in: wp.array2d[int],
+        actuator_moment_in: wp.array2d[float],
+        actuator_force_in: wp.array2d[float],
+        # Data out:
+        qfrc_actuator_out: wp.array2d[float],
+      ):
+        worldid, dofid = wp.tid()
+
+        qfrc = float(0.0)
+        for i in range(actuator_momentT_rowadr[dofid], actuator_momentT_rowadr[dofid + 1]):
+          elem = actuator_momentT_elem[i]
+          actid = elem[0]
+          rownnz = moment_rownnz_in[worldid, actid]
+          rowadr = moment_rowadr_in[worldid, actid]
+
+          # smooth._transmission writes each dof at its offset in the row of the model. A row with
+          # another number of dofs comes from MuJoCo, which leaves out zero moments: search it.
+          sparseid = int(rowadr + elem[1])
+          if rownnz != elem[2]:
+            sparseid = int(-1)
+            for j in range(rownnz):
+              if moment_colind_in[worldid, rowadr + j] == dofid:
+                sparseid = rowadr + j
+                break
+            if sparseid == -1:
+              continue
+
+          qfrc += actuator_moment_in[worldid, sparseid] * actuator_force_in[worldid, actid]
+
+        qfrc_actuator_out[worldid, dofid] = qfrc
+
+      return kernel
 
   @wp.kernel(module="unique", module_options=module_options)
   def kernel(
@@ -3232,31 +3276,19 @@ def _qfrc_actuator(nv: int, deterministic: bool = False):
   ):
     worldid, actid = wp.tid()
 
-    if wp.static(deterministic):
-      # The thread of the first actuator accumulates all the actuators of its world in ascending
-      # order: each element has one writer and a fixed summation order, without atomics.
-      if actid > 0:
-        return
+    rownnz = moment_rownnz_in[worldid, actid]
+    rowadr = moment_rowadr_in[worldid, actid]
+    act_force = actuator_force_in[worldid, actid]
 
-      for i in range(moment_rownnz_in.shape[1]):
-        rowadr = moment_rowadr_in[worldid, i]
-        act_force = actuator_force_in[worldid, i]
-
-        for j in range(moment_rownnz_in[worldid, i]):
-          sparseid = rowadr + j
-          colind = moment_colind_in[worldid, sparseid]
-          qfrc = actuator_moment_in[worldid, sparseid] * act_force
-          # not `+=`, which Warp compiles to an atomic
-          qfrc_actuator_out[worldid, colind] = qfrc_actuator_out[worldid, colind] + qfrc
-    else:
-      rownnz = moment_rownnz_in[worldid, actid]
-      rowadr = moment_rowadr_in[worldid, actid]
-      act_force = actuator_force_in[worldid, actid]
-
-      for i in range(rownnz):
-        sparseid = rowadr + i
-        colind = moment_colind_in[worldid, sparseid]
-        qfrc = actuator_moment_in[worldid, sparseid] * act_force
+    for i in range(rownnz):
+      sparseid = rowadr + i
+      colind = moment_colind_in[worldid, sparseid]
+      qfrc = actuator_moment_in[worldid, sparseid] * act_force
+      if wp.static(deterministic):
+        # No other actuator drives this dof: the element has one writer, without atomics.
+        # not `+=`, which Warp compiles to an atomic
+        qfrc_actuator_out[worldid, colind] = qfrc_actuator_out[worldid, colind] + qfrc
+      else:
         wp.atomic_add(qfrc_actuator_out[worldid], colind, qfrc)
 
   return kernel
@@ -3393,18 +3425,35 @@ def fwd_actuation(m: Model, d: Data):
 
     # TODO(team): optimize performance
     d.qfrc_actuator.zero_()
-    wp.launch(
-      _qfrc_actuator(m.nv if det_atomics else 0, det_atomics),
-      dim=(d.nworld, m.nactuator),
-      inputs=[
-        d.moment_rownnz,
-        d.moment_rowadr,
-        d.moment_colind,
-        d.actuator_moment,
-        d.actuator_force,
-      ],
-      outputs=[d.qfrc_actuator],
-    )
+    if det_atomics and m.max_actuator_momentT_rownnz > 1:
+      wp.launch(
+        _qfrc_actuator(m.nv, True, True),
+        # the deterministic kernel has one thread per dof
+        dim=(d.nworld, m.nv),
+        inputs=[
+          m.actuator_momentT_rowadr,
+          m.actuator_momentT_elem,
+          d.moment_rownnz,
+          d.moment_rowadr,
+          d.moment_colind,
+          d.actuator_moment,
+          d.actuator_force,
+        ],
+        outputs=[d.qfrc_actuator],
+      )
+    else:
+      wp.launch(
+        _qfrc_actuator(m.nv if det_atomics else 0, False, det_atomics),
+        dim=(d.nworld, m.nactuator),
+        inputs=[
+          d.moment_rownnz,
+          d.moment_rowadr,
+          d.moment_colind,
+          d.actuator_moment,
+          d.actuator_force,
+        ],
+        outputs=[d.qfrc_actuator],
+      )
     gravity_enabled = not (m.opt.disableflags & DisableBit.GRAVITY)
     wp.launch(
       _qfrc_actuator_gravcomp_limits,

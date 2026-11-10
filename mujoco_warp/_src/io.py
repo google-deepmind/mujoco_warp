@@ -1169,8 +1169,8 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
 
   m.actuator_trntype_body_adr = np.nonzero(mjm.actuator_trntype == mujoco.mjtTrn.mjTRN_BODY)[0]
 
-  # actuator_moment rows in actuator order: the row widths of smooth._transmission only depend on
-  # the transmission, so deterministic steps do not need a counter to place the rows
+  # actuator_moment rows in actuator order: the dofs of each row of smooth._transmission only
+  # depend on the transmission, so deterministic steps do not need a counter to place the rows
   def site_dofs(siteid):
     weldid = mjm.body_weldid[mjm.site_bodyid[siteid]]
     dofid = mjm.body_dofadr[weldid] + mjm.body_dofnum[weldid] - 1 if weldid > 0 else -1
@@ -1180,30 +1180,43 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
       dofid = mjm.dof_parentid[dofid]
     return dofs
 
-  moment_rownnz = np.zeros(mjm.nactuator, dtype=int)
+  moment_colind = []
   for i in range(mjm.nactuator):
     trntype, trnid = int(mjm.actuator_trntype[i]), mjm.actuator_trnid[i]
+    colind = []
     if trntype == mujoco.mjtTrn.mjTRN_JOINT or trntype == mujoco.mjtTrn.mjTRN_JOINTINPARENT:
       jnt_type = int(mjm.jnt_type[trnid[0]])
       if jnt_type == mujoco.mjtJoint.mjJNT_FREE:
-        moment_rownnz[i] = 6
+        colind = range(mjm.jnt_dofadr[trnid[0]], mjm.jnt_dofadr[trnid[0]] + 6)
       elif jnt_type == mujoco.mjtJoint.mjJNT_BALL:
-        moment_rownnz[i] = 3
+        colind = range(mjm.jnt_dofadr[trnid[0]], mjm.jnt_dofadr[trnid[0]] + 3)
       else:
-        moment_rownnz[i] = 1
+        colind = [mjm.jnt_dofadr[trnid[0]]]
     elif trntype == mujoco.mjtTrn.mjTRN_SLIDERCRANK:
-      moment_rownnz[i] = len(site_dofs(trnid[0]) | site_dofs(trnid[1]))
+      colind = sorted(site_dofs(trnid[0]) | site_dofs(trnid[1]))
     elif trntype == mujoco.mjtTrn.mjTRN_TENDON:
-      moment_rownnz[i] = mjm.ten_J_rownnz[trnid[0]]
+      rowadr = mjm.ten_J_rowadr[trnid[0]]
+      colind = mjm.ten_J_colind.reshape(-1)[rowadr : rowadr + mjm.ten_J_rownnz[trnid[0]]]
     elif trntype == mujoco.mjtTrn.mjTRN_BODY:
-      moment_rownnz[i] = mjm.nv
+      colind = range(mjm.nv)
     elif trntype == mujoco.mjtTrn.mjTRN_SITE:
       if trnid[1] == -1:
-        moment_rownnz[i] = len(site_dofs(trnid[0]))
+        colind = sorted(site_dofs(trnid[0]))
       else:
         # dofs that move both sites do not change their relative pose
-        moment_rownnz[i] = len(site_dofs(trnid[0]) ^ site_dofs(trnid[1]))
+        colind = sorted(site_dofs(trnid[0]) ^ site_dofs(trnid[1]))
+    moment_colind.append([int(dofid) for dofid in colind])
+  moment_rownnz = np.array([len(colind) for colind in moment_colind], dtype=int)
   m.actuator_moment_rowadr = np.cumsum(moment_rownnz) - moment_rownnz
+
+  # transpose of the sparsity of actuator_moment: the actuators that drive each dof, in ascending
+  # order, with the place of the dof in the row of each of them, so that deterministic kernels can
+  # add the actuators of a dof in one thread
+  moment_T = sorted((dofid, i, j) for i, colind in enumerate(moment_colind) for j, dofid in enumerate(colind))
+  moment_T_dofid = np.array([dofid for dofid, _, _ in moment_T], dtype=int)
+  m.actuator_momentT_rowadr = np.concatenate(([0], np.cumsum(np.bincount(moment_T_dofid, minlength=mjm.nv))))
+  m.actuator_momentT_elem = np.array([(i, j, moment_rownnz[i]) for _, i, j in moment_T], dtype=np.int32).reshape(-1, 3)
+  m.max_actuator_momentT_rownnz = int(np.bincount(moment_T_dofid, minlength=1).max())
 
   # sensor addresses
   is_contact = mjm.sensor_type == mujoco.mjtSensor.mjSENS_CONTACT
@@ -1715,6 +1728,7 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
       "nqD_fullm": len(m.qD_fullm_i),
       "nv_plus_1": len(m.M_mulm_rowadr),
       "nM_mulm": len(m.M_mulm_col),
+      "nJmomT": len(m.actuator_momentT_elem),
     }
   )
   for f in dataclasses.fields(types.Model):

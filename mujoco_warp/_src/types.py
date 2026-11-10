@@ -1735,6 +1735,16 @@ class Model:
                                with body transmission
     actuator_moment_rowadr: row start address in actuator_moment
                             for deterministic transmission (nactuator,)
+    actuator_momentT_rowadr: row start address for the transpose
+                             of sparse actuator_moment       (nv + 1,)
+    actuator_momentT_elem: elements of the transpose of sparse
+                           actuator_moment, in ascending
+                           actuator order for each dof, as
+                           (actuator id, offset in the
+                           actuator_moment row of the actuator,
+                           number of non-zeros in that row)
+    max_actuator_momentT_rownnz: maximum number of actuators that
+                                 drive a dof
     sensor_pos_adr: addresses for position sensors
     sensor_limitpos_adr: address for limit position sensors
     sensor_vel_adr: addresses for velocity sensors
@@ -2304,6 +2314,9 @@ class Model:
   wrap_pulley_scale: array("nwrap", float)
   actuator_trntype_body_adr: array("nacttrnbody", int)
   actuator_moment_rowadr: array("nactuator", int)
+  actuator_momentT_rowadr: array("nv_plus_1", int)
+  actuator_momentT_elem: array("nJmomT", wp.vec3i)
+  max_actuator_momentT_rownnz: int
   sensor_pos_adr: array("nsensor_pos", int)
   sensor_limitpos_adr: array("nsensor_limitpos", int)
   sensor_vel_adr: array("nsensor_vel", int)

@@ -153,7 +153,7 @@ class ForwardTest(parameterized.TestCase):
     mujoco.mju_sparse2dense(actuator_moment, mjd.actuator_moment, mjd.moment_rownnz, mjd.moment_rowadr, mjd.moment_colind)
     self.assertGreater(np.count_nonzero(actuator_moment, axis=0).min(), 1)
 
-    qfrc_actuator = d.qfrc_actuator.numpy()
+    qfrc_actuator = d.qfrc_actuator.numpy().copy()
     for world in range(nworld):
       mjd.ctrl[:] = ctrl[world]
       mujoco.mj_fwdActuation(mjm, mjd)
@@ -167,6 +167,317 @@ class ForwardTest(parameterized.TestCase):
     d.qfrc_actuator.fill_(wp.inf)
     mjw.fwd_actuation(m, d)
     np.testing.assert_allclose(d.qfrc_actuator.numpy(), qfrc_actuator, rtol=1e-5, atol=1e-5)
+
+  @parameterized.parameters(1, 2)
+  def test_qfrc_actuator_deterministic_exclusive(self, nworld):
+    """Deterministic actuator forces need no fixed order if each dof is driven by one actuator."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option>
+          <flag contact="disable"/>
+        </option>
+        <worldbody>
+          <body pos="0 0 1">
+            <freejoint name="root"/>
+            <geom type="box" size=".1 .08 .06"/>
+          </body>
+          <body>
+            <joint name="ball" type="ball"/>
+            <geom type="capsule" size=".02" fromto="0 0 0 .2 0 0"/>
+            <body pos=".2 0 0">
+              <joint name="hinge1" axis="0 1 0"/>
+              <joint name="slide1" type="slide" axis="1 0 0"/>
+              <geom size=".03"/>
+            </body>
+          </body>
+          <body pos="0 1 0">
+            <joint name="hinge2" axis="0 1 0"/>
+            <geom type="capsule" size=".02" fromto="0 0 0 .2 0 0"/>
+            <body pos=".2 0 0">
+              <joint name="slide2" type="slide" axis="1 0 0"/>
+              <geom size=".03"/>
+              <site name="tip" pos=".05 0 0"/>
+            </body>
+          </body>
+          <body pos="0 2 0">
+            <joint name="unactuated" axis="0 1 0"/>
+            <geom size=".03"/>
+          </body>
+        </worldbody>
+        <tendon>
+          <fixed name="fixed">
+            <joint joint="hinge1" coef="1"/>
+            <joint joint="slide1" coef="-.5"/>
+          </fixed>
+        </tendon>
+        <actuator>
+          <motor joint="root" gear="1 2 3 4 5 6"/>
+          <motor joint="ball" gear="1 2 3"/>
+          <motor tendon="fixed" gear="3"/>
+          <general site="tip" gear="1 2 3 .1 .2 .3"/>
+        </actuator>
+      </mujoco>
+      """,
+      qpos_noise=0.5,
+      qvel_noise=0.1,
+      ctrl_noise=0.5,
+      nworld=nworld,
+      overrides={"opt.deterministic": DeterminismType.ATOMICS},
+    )
+    ctrl = np.tile(mjd.ctrl.astype(np.float32), (nworld, 1))
+    if nworld == 2:
+      ctrl[1] = 0.3 - 2.0 * ctrl[1]
+    d.ctrl.assign(ctrl)
+    for arr in (d.qfrc_actuator, d.actuator_force):
+      arr.fill_(wp.inf)
+
+    mjw.fwd_actuation(m, d)
+
+    # each dof is driven by one actuator, apart from the last one
+    self.assertEqual(m.max_actuator_momentT_rownnz, 1)
+    actuator_moment = np.zeros((mjm.nu, mjm.nv))
+    mujoco.mju_sparse2dense(actuator_moment, mjd.actuator_moment, mjd.moment_rownnz, mjd.moment_rowadr, mjd.moment_colind)
+    np.testing.assert_array_equal(np.count_nonzero(actuator_moment, axis=0), [1] * (mjm.nv - 1) + [0])
+
+    qfrc_actuator = d.qfrc_actuator.numpy().copy()
+    for world in range(nworld):
+      mjd.ctrl[:] = ctrl[world]
+      mujoco.mj_fwdActuation(mjm, mjd)
+      self.assertGreater(np.abs(mjd.qfrc_actuator[:-1]).min(), 1e-3)
+      np.testing.assert_allclose(qfrc_actuator[world], mjd.qfrc_actuator, rtol=1e-5, atol=1e-5)
+    if nworld == 2:
+      self.assertFalse(np.allclose(qfrc_actuator[0], qfrc_actuator[1]))
+
+    # same as the kernel with atomics
+    m.opt.deterministic = DeterminismType.NONE
+    d.qfrc_actuator.fill_(wp.inf)
+    mjw.fwd_actuation(m, d)
+    np.testing.assert_allclose(d.qfrc_actuator.numpy(), qfrc_actuator, rtol=1e-5, atol=1e-5)
+
+  @parameterized.parameters(1, 2)
+  def test_qfrc_actuator_deterministic_transmission(self, nworld):
+    """Deterministic actuator forces of all the transmissions, on dofs with several actuators."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <geom type="plane" size="2 2 .1"/>
+          <body name="torso" pos="0 0 .5">
+            <freejoint name="root"/>
+            <geom type="box" size=".1 .08 .06"/>
+            <site name="torso" pos="0 0 .06"/>
+            <body pos=".1 0 0">
+              <joint name="hinge" axis="0 1 0"/>
+              <geom type="capsule" size=".02" fromto="0 0 0 .2 0 0"/>
+              <site name="arm1" pos=".1 0 .03"/>
+              <body pos=".2 0 0">
+                <joint name="ball" type="ball"/>
+                <geom type="capsule" size=".02" fromto="0 0 0 .2 0 0"/>
+                <body pos=".2 0 0">
+                  <joint name="slide" type="slide" axis="1 0 0"/>
+                  <geom size=".03"/>
+                  <site name="arm3" pos=".05 0 0"/>
+                </body>
+              </body>
+            </body>
+            <body pos="0 0 -.06">
+              <joint name="leg1" axis="1 0 0"/>
+              <geom type="capsule" size=".02" fromto="0 0 0 0 0 -.2"/>
+              <site name="slider" pos="0 0 -.15" zaxis="0 1 0"/>
+              <body name="leg2" pos="0 0 -.2">
+                <joint name="leg2" axis="1 0 0"/>
+                <geom type="capsule" size=".02" fromto="0 0 0 0 0 -.2"/>
+                <site name="leg2" pos="0 0 -.2"/>
+                <site name="crank" pos="0 .02 -.1"/>
+              </body>
+            </body>
+          </body>
+        </worldbody>
+        <tendon>
+          <fixed name="fixed">
+            <joint joint="hinge" coef="1"/>
+            <joint joint="leg1" coef=".7"/>
+          </fixed>
+          <spatial name="spatial">
+            <site site="torso"/>
+            <site site="arm1"/>
+            <site site="arm3"/>
+          </spatial>
+        </tendon>
+        <actuator>
+          <motor joint="root" gear="1 2 3 4 5 6"/>
+          <general jointinparent="root" gear="6 5 4 3 2 1"/>
+          <motor joint="hinge" gear="2"/>
+          <position joint="hinge" kp="10"/>
+          <motor joint="ball" gear="1 2 3"/>
+          <general jointinparent="ball" gear="3 2 1"/>
+          <motor joint="slide"/>
+          <motor tendon="fixed" gear="3"/>
+          <motor tendon="spatial"/>
+          <general site="arm3" refsite="leg2" gear="1 2 3 .1 .2 .3"/>
+          <general site="arm3" refsite="arm1" gear="3 2 1 .3 .2 .1"/>
+          <general site="leg2" gear="1 2 3 .1 .2 .3"/>
+          <general cranksite="crank" slidersite="slider" cranklength=".1"/>
+          <adhesion body="leg2" ctrlrange="0 1" gain="2"/>
+        </actuator>
+        <keyframe>
+          <key qpos="0 0 .47 1 0 0 0 .3 .9 .1 -.3 .3 .05 .2 -.4" ctrl=".5 -.4 .3 .2 -.6 .7 -.5 .4 .6 -.3 .8 -.7 .9 .5"/>
+        </keyframe>
+      </mujoco>
+      """,
+      keyframe=0,
+      nworld=nworld,
+      overrides={"opt.deterministic": DeterminismType.ATOMICS},
+    )
+    qpos = np.tile(mjd.qpos.astype(np.float32), (nworld, 1))
+    ctrl = np.tile(mjd.ctrl.astype(np.float32), (nworld, 1))
+    if nworld == 2:
+      qpos[1, 2] = 0.3
+      qpos[1, 7:] *= -0.5
+      ctrl[1] = 0.3 - 0.6 * ctrl[1]
+      ctrl[1, -1] = 0.8
+    d.qpos.assign(qpos)
+    d.ctrl.assign(ctrl)
+
+    # moment rows of smooth._transmission, at their address in the model
+    mjw.fwd_position(m, d)
+    mjw.fwd_velocity(m, d)
+    np.testing.assert_array_equal(d.moment_rowadr.numpy(), np.tile(m.actuator_moment_rowadr.numpy(), (nworld, 1)))
+    for arr in (d.qfrc_actuator, d.actuator_force):
+      arr.fill_(wp.inf)
+
+    mjw.fwd_actuation(m, d)
+
+    self.assertGreater(m.max_actuator_momentT_rownnz, 1)
+    qfrc_actuator = d.qfrc_actuator.numpy().copy()
+    for world in range(nworld):
+      mjd.qpos[:], mjd.ctrl[:] = qpos[world], ctrl[world]
+      mujoco.mj_forward(mjm, mjd)
+
+      # each dof is driven by several actuators, and the body transmission has a contact
+      actuator_moment = np.zeros((mjm.nu, mjm.nv))
+      mujoco.mju_sparse2dense(actuator_moment, mjd.actuator_moment, mjd.moment_rownnz, mjd.moment_rowadr, mjd.moment_colind)
+      self.assertGreater(np.count_nonzero(actuator_moment, axis=0).min(), 1)
+      self.assertGreater(np.abs(actuator_moment[-1]).max(), 0.1)
+      self.assertGreater(np.abs(mjd.qfrc_actuator).min(), 1e-3)
+
+      np.testing.assert_allclose(d.actuator_force.numpy()[world], mjd.actuator_force, rtol=1e-5, atol=1e-5)
+      np.testing.assert_allclose(qfrc_actuator[world], mjd.qfrc_actuator, rtol=1e-5, atol=1e-5)
+    if nworld == 2:
+      self.assertFalse(np.allclose(qfrc_actuator[0], qfrc_actuator[1]))
+
+    # same as the kernel with atomics, up to summation order
+    m.opt.deterministic = DeterminismType.NONE
+    d.qfrc_actuator.fill_(wp.inf)
+    mjw.fwd_actuation(m, d)
+    np.testing.assert_allclose(d.qfrc_actuator.numpy(), qfrc_actuator, rtol=1e-5, atol=1e-5)
+
+  @parameterized.parameters(1, 2)
+  def test_qfrc_actuator_deterministic_layout(self, nworld):
+    """Deterministic actuator forces do not depend on where each moment is stored."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option>
+          <flag contact="disable"/>
+        </option>
+        <worldbody>
+          <body>
+            <joint name="x1" type="slide" axis="1 0 0"/>
+            <geom size=".05"/>
+            <body pos="0 0 .2">
+              <joint name="z1" type="slide" axis="0 0 1"/>
+              <geom size=".05"/>
+              <body pos="0 0 .2">
+                <joint name="x2" type="slide" axis="1 0 0"/>
+                <geom size=".05"/>
+                <body name="tip" pos="0 0 .2">
+                  <joint name="z2" type="slide" axis="0 0 1"/>
+                  <geom size=".05"/>
+                  <site name="tip"/>
+                </body>
+              </body>
+            </body>
+          </body>
+        </worldbody>
+        <tendon>
+          <fixed name="fixed">
+            <joint joint="x1" coef="1"/>
+            <joint joint="z1" coef="-.5"/>
+          </fixed>
+        </tendon>
+        <actuator>
+          <motor joint="x1"/>
+          <motor joint="x2" gear="3"/>
+          <general site="tip" gear="0 0 5 0 0 0"/>
+          <adhesion body="tip" ctrlrange="0 1" gain="6"/>
+          <motor joint="z1" gear="2"/>
+          <motor joint="z2" gear="4"/>
+          <general site="tip" gear="7 0 0 0 0 0"/>
+          <motor tendon="fixed" gear="8"/>
+        </actuator>
+      </mujoco>
+      """,
+      nworld=nworld,
+      overrides={"opt.deterministic": DeterminismType.ATOMICS},
+    )
+    ctrl = np.tile(np.array([0.5, 0.3, -0.6, 0.7, -0.4, 0.2, 0.9, -0.8], dtype=np.float32), (nworld, 1))
+    if nworld == 2:
+      ctrl[1] = 0.3 - 2.0 * ctrl[1]
+      ctrl[1, 3] = 0.4
+    d.ctrl.assign(ctrl)
+
+    def qfrc_actuator():
+      for arr in (d.qfrc_actuator, d.actuator_force):
+        arr.fill_(wp.inf)
+      mjw.fwd_actuation(m, d)
+      return d.qfrc_actuator.numpy().copy()
+
+    def check(out):
+      for world in range(nworld):
+        mjd.ctrl[:] = ctrl[world]
+        mujoco.mj_fwdActuation(mjm, mjd)
+        self.assertGreater(np.abs(mjd.actuator_force).min(), 0.05)
+        self.assertGreater(np.abs(mjd.qfrc_actuator).min(), 0.1)
+        np.testing.assert_allclose(out[world], mjd.qfrc_actuator, rtol=1e-5, atol=1e-5)
+      if nworld == 2:
+        self.assertFalse(np.allclose(out[0], out[1]))
+
+    # rows of MuJoCo: they leave out the dofs with a zero moment, so the moments of the site
+    # transmissions are not at their offset in the model and the body transmission has no moments
+    rownnz, rowadr = d.moment_rownnz.numpy(), d.moment_rowadr.numpy()
+    colind, moment = d.moment_colind.numpy(), d.actuator_moment.numpy()
+    model_rownnz = np.diff(m.actuator_moment_rowadr.numpy(), append=m.actuator_momentT_elem.shape[0])
+    np.testing.assert_array_equal(model_rownnz, [1, 1, 4, 4, 1, 1, 4, 2])
+    np.testing.assert_array_equal(rownnz[0], [1, 1, 2, 0, 1, 1, 2, 2])
+    np.testing.assert_array_equal(colind[0, rowadr[0, 2] : rowadr[0, 2] + 2], [1, 3])
+    np.testing.assert_array_equal(colind[0, rowadr[0, 6] : rowadr[0, 6] + 2], [0, 2])
+    self.assertGreater(m.max_actuator_momentT_rownnz, 1)
+    out = qfrc_actuator()
+    check(out)
+
+    # rows in the opposite order, as the kernel with atomics may place them, and the rows that
+    # leave out dofs with their dofs in the opposite order
+    for world in range(0, nworld, 2):
+      adr = 0
+      for actid in reversed(range(mjm.nu)):
+        src = slice(mjd.moment_rowadr[actid], mjd.moment_rowadr[actid] + mjd.moment_rownnz[actid])
+        dst = slice(adr, adr + mjd.moment_rownnz[actid])
+        step = 1 if mjd.moment_rownnz[actid] == model_rownnz[actid] else -1
+        rowadr[world, actid] = adr
+        colind[world, dst] = mjd.moment_colind[src][::step]
+        moment[world, dst] = mjd.actuator_moment[src][::step]
+        adr += mjd.moment_rownnz[actid]
+    self.assertFalse(np.array_equal(rowadr[0], mjd.moment_rowadr))
+    d.moment_rowadr.assign(rowadr)
+    d.moment_colind.assign(colind)
+    d.actuator_moment.assign(moment)
+    check(qfrc_actuator())
+
+    # same as the kernel with atomics, up to summation order
+    m.opt.deterministic = DeterminismType.NONE
+    np.testing.assert_allclose(qfrc_actuator(), out, rtol=1e-5, atol=1e-5)
 
   @parameterized.parameters(IntegratorType.EULER, IntegratorType.RK4)
   def test_rotational_setpoint_wrapping(self, integrator):

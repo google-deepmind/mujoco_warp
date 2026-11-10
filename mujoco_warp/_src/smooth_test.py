@@ -1309,6 +1309,18 @@ class SmoothTest(parameterized.TestCase):
     np.testing.assert_array_equal(moment_rowadr, np.cumsum(moment_rownnz, axis=1) - moment_rownnz)
     np.testing.assert_array_equal(moment_rowadr, np.tile(m.actuator_moment_rowadr.numpy(), (nworld, 1)))
 
+    # the model has the transpose of this layout: the actuators of each dof, in ascending order
+    momentT_rowadr = m.actuator_momentT_rowadr.numpy()
+    for w in range(nworld):
+      colind = d.moment_colind.numpy()[w]
+      momentT = sorted((colind[moment_rowadr[w, i] + j], i, j) for i in range(mjm.nu) for j in range(moment_rownnz[w, i]))
+      self.assertLen(set(momentT), moment_rownnz[w].sum())
+      np.testing.assert_array_equal(np.diff(momentT_rowadr), np.bincount([dofid for dofid, _, _ in momentT], minlength=mjm.nv))
+      np.testing.assert_array_equal(m.actuator_momentT_elem.numpy(), [(i, j, moment_rownnz[w, i]) for _, i, j in momentT])
+    self.assertEqual(momentT_rowadr[0], 0)
+    self.assertEqual(m.max_actuator_momentT_rownnz, np.diff(momentT_rowadr).max())
+    self.assertGreater(m.max_actuator_momentT_rownnz, 4)
+
     actuator_moment = np.zeros((nworld, mjm.nu, mjm.nv))
     for w in range(nworld):
       mj_actuator_moment = np.zeros((mjm.nu, mjm.nv))
