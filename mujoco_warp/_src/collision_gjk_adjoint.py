@@ -22,7 +22,6 @@ from mujoco_warp._src import collision_gjk
 from mujoco_warp._src.collision_gjk import MINVAL
 from mujoco_warp._src.collision_gjk import _linear_combine
 from mujoco_warp._src.collision_gjk import _project_origin_plane
-from mujoco_warp._src.collision_gjk import _subdistance
 from mujoco_warp._src.collision_gjk import _tri_affine_coord
 from mujoco_warp._src.types import GeomType
 from mujoco_warp._src.types import mat43
@@ -70,10 +69,27 @@ def _ccd_probe(
   overflow_out: wp.array[int],
 ):
   """Recover the forward simplex or EPA face without recording the iterative search."""
+  index1, index2 = geom1.index, geom2.index
   needs_epa, dist, ncontact, x1, x2, result, geom1, geom2 = collision_gjk.gjk_phase(
     tolerance, cutoff, gjk_iterations, geom1, geom2, geomtype1, geomtype2, x_1, x_2
   )
   if not needs_epa:
+    # The forward helper only retains separated simplexes for sphere/capsule inflation.
+    if result.dim == 0 and 0.0 < dist and dist < collision_gjk.FLOAT_MAX:
+      geom1.index = index1
+      geom2.index = index2
+      result = collision_gjk.gjk(
+        tolerance,
+        gjk_iterations,
+        geom1,
+        geom2,
+        x_1,
+        x_2,
+        geomtype1,
+        geomtype2,
+        cutoff,
+        collision_gjk._discrete_geoms(geomtype1, geomtype2) and geom1.margin == 0.0 and geom2.margin == 0.0,
+      )
     tag = wp.where(result.dim > 0, _TAG_GJK_FEATURE, _TAG_NONE)
     return dist, ncontact, x1, x2, tag, result, -1
   dist, ncontact, x1, x2, idx = collision_gjk.epa_phase(
@@ -153,9 +169,9 @@ def _recover_direction(
     radius = size[0] + 0.5 * margin
     if radius < 1.0e-12:
       return False, direction
-    local = wp.transpose(mat) @ (point - pos)
-    local -= wp.vec3(0.0, 0.0, wp.sign(local[2]) * size[1])
-    return True, mat @ (local / radius)
+    axis = wp.vec3(mat[0, 2], mat[1, 2], mat[2, 2])
+    sign = wp.sign(wp.dot(point - pos, axis))
+    return True, (point - pos - sign * size[1] * axis) / radius
 
   if geomtype == GeomType.ELLIPSOID or geomtype == GeomType.CYLINDER:
     local = wp.transpose(mat) @ (point - pos)
@@ -221,6 +237,9 @@ def _support_frozen(
   if geomtype == GeomType.CAPSULE:
     axis = wp.vec3(mat[0, 2], mat[1, 2], mat[2, 2])
     sign = wp.sign(wp.dot(axis, direction))
+    if vertex >= 0:
+      # Lateral support can select the center instead of either capsule endpoint.
+      sign = wp.where(vertex == 0, 1.0, wp.where(vertex == 1, -1.0, 0.0))
     return pos + (size[0] + 0.5 * margin) * direction + sign * size[1] * axis
   if geomtype == GeomType.ELLIPSOID:
     local_e = wp.transpose(mat) @ direction
@@ -285,6 +304,28 @@ def _endpoint_sign(
 
 
 @wp.func
+def _feature_weights(dim: int, simplex: mat43) -> wp.vec4:
+  """Compute closest-point weights on the retained simplex without selecting a new feature."""
+  if dim == 1:
+    return wp.vec4(1.0, 0.0, 0.0, 0.0)
+  edge = simplex[1] - simplex[0]
+  if dim == 2:
+    denom = wp.dot(edge, edge)
+    if denom == 0.0:
+      return wp.vec4(1.0, 0.0, 0.0, 0.0)
+    weight = -wp.dot(simplex[0], edge) / denom
+    return wp.vec4(1.0 - weight, weight, 0.0, 0.0)
+  normal = wp.cross(edge, simplex[2] - simplex[0])
+  a = wp.dot(normal, wp.cross(simplex[1], simplex[2]))
+  b = wp.dot(normal, wp.cross(simplex[2], simplex[0]))
+  c = wp.dot(normal, wp.cross(simplex[0], simplex[1]))
+  denom = a + b + c
+  if denom == 0.0:
+    return wp.vec4(1.0, 0.0, 0.0, 0.0)
+  return wp.vec4(a / denom, b / denom, c / denom, 0.0)
+
+
+@wp.func
 def _replay_gjk_feature(
   # In:
   dim: int,
@@ -301,7 +342,7 @@ def _replay_gjk_feature(
   geom_b = pos + _endpoint_sign(signs, 1) * half_length * axis
   geom_c = pos + _endpoint_sign(signs, 2) * half_length * axis
   simplex = _mat43_rows(points1[0] - geom_a, points1[1] - geom_b, points1[2] - geom_c)
-  weights = _subdistance(dim, simplex)
+  weights = _feature_weights(dim, simplex)
   delta = _linear_combine(dim, weights, simplex)
   point1 = _linear_combine(dim, weights, _mat43_rows(points1[0], points1[1], points1[2]))
   point2 = point1 - delta
@@ -316,6 +357,37 @@ def _replay_gjk_feature(
   # The uninflated separation has length approximately radius and the same direction.
   normal = -delta
   return 1, dist, point1, point2, normal
+
+
+@wp.func
+def _replay_gjk(
+  # Model:
+  mesh_vert: wp.array[wp.vec3],
+  # In:
+  dim: int,
+  geomtype: int,
+  features: wp.vec4i,
+  points1: wp.mat33,
+  directions: wp.mat33,
+  pos: wp.vec3,
+  mat: wp.mat33,
+  size: wp.vec3,
+  margin: float,
+  vertadr: int,
+) -> Tuple[int, float, wp.vec3, wp.vec3, wp.vec3]:
+  """Replay a separated GJK simplex with its support features fixed."""
+  geom_a = _support_frozen(mesh_vert, geomtype, features[0], directions[0], pos, mat, size, margin, vertadr)
+  geom_b = _support_frozen(mesh_vert, geomtype, features[1], directions[1], pos, mat, size, margin, vertadr)
+  geom_c = _support_frozen(mesh_vert, geomtype, features[2], directions[2], pos, mat, size, margin, vertadr)
+  simplex = _mat43_rows(points1[0] - geom_a, points1[1] - geom_b, points1[2] - geom_c)
+  weights = _feature_weights(dim, simplex)
+  delta = _linear_combine(dim, weights, simplex)
+  distance = wp.length(delta)
+  if distance < 1.0e-12:
+    return 0, 0.0, wp.vec3(), wp.vec3(), wp.vec3()
+  x1 = _linear_combine(dim, weights, _mat43_rows(points1[0], points1[1], points1[2]))
+  x2 = _linear_combine(dim, weights, _mat43_rows(geom_a, geom_b, geom_c))
+  return 1, distance, x1, x2, -delta
 
 
 @wp.func
