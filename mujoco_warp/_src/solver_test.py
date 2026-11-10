@@ -1552,6 +1552,187 @@ class SolverTest(parameterized.TestCase):
       atol=1e-6,
     )
 
+  @parameterized.named_parameters(
+    ("nworld1", ("cone",), False),
+    ("nworld2", ("free", "mixed"), False),
+    ("nworld2_contacts", ("mixed", "cone"), False),
+    ("nworld1_overflow", ("cone",), True),
+  )
+  def test_elliptic_dense_hessian_deterministic(self, worlds, overflow):
+    """The cone Hessian without atomics matches the default kernel, the reference and MuJoCo."""
+    # boxes on a plane, and a hinge with a range between them
+    condims = (3, 4, 1, 3, 6)
+    boxes = [
+      f'<body name="box{i}" pos="{0.25 * i:.2f} 0 0.02"><freejoint/>'
+      f'<geom type="box" size="0.04 0.05 0.03" mass="0.5" condim="{condim}"/></body>'
+      for i, condim in enumerate(condims)
+    ]
+    xml = f"""
+    <mujoco>
+      <option cone="elliptic" solver="Newton" jacobian="dense" impratio="4"/>
+      <worldbody>
+        <geom type="plane" size="5 5 .1" friction="1 0.3 0.2" condim="1"/>
+        {"".join(boxes[:2])}
+        <body pos="0 1 1">
+          <joint name="hinge" type="hinge" axis="0 1 0" range="-30 30"/>
+          <geom type="capsule" size="0.02" fromto="0 0 0 0.2 0 0" mass="0.3"/>
+        </body>
+        {"".join(boxes[2:])}
+      </worldbody>
+    </mujoco>
+    """
+    mjm, _, m, _ = test_data.fixture(xml=xml)
+    self.assertFalse(m.is_sparse)
+    nworld = len(worlds)
+    cone_state = types.ConstraintState.CONE.value
+
+    # cone: the boxes with friction slide and spin, the other ones are lifted: every contact is in
+    #       the cone. With overflow, the last contact lacks two of its 52 rows.
+    # mixed: a limit row comes before the contacts, one box has no friction and one is at rest
+    # free: no contact
+    mjds = []
+    for kind in worlds:
+      mjd = mujoco.MjData(mjm)
+      lifted = {"cone": (2, 3), "mixed": (), "free": range(len(condims))}[kind]
+      for i in range(len(condims)):
+        jntid = mjm.body_jntadr[mjm.body(f"box{i}").id]
+        qposadr, dofadr = mjm.jnt_qposadr[jntid], mjm.jnt_dofadr[jntid]
+        if i in lifted:
+          mjd.qpos[qposadr + 2] += 1.0
+        elif i != 3:
+          mjd.qvel[dofadr + (kind == "mixed")] = 1.5
+          mjd.qvel[dofadr + 3 : dofadr + 6] = (0.5, -0.4, 2.0)
+      if kind == "mixed":
+        mjd.qpos[mjm.joint("hinge").qposadr] = 0.7
+      mujoco.mj_forward(mjm, mjd)
+      mjds.append(mjd)
+
+    def make_data():
+      d = mjw.make_data(mjm, nworld=nworld, nconmax=24, njmax=50 if overflow else 96)
+      qpos, qvel = d.qpos.numpy(), d.qvel.numpy()
+      for worldid, mjd in enumerate(mjds):
+        qpos[worldid], qvel[worldid] = mjd.qpos, mjd.qvel
+      d.qpos.assign(qpos)
+      d.qvel.assign(qvel)
+      return d
+
+    # the solve matches the default solve and MuJoCo
+    qacc = {}
+    for deterministic in (types.DeterminismType.NONE, types.DeterminismType.ATOMICS):
+      m.opt.deterministic = deterministic
+      d = make_data()
+      d.qacc.fill_(wp.inf)
+      mjw.forward(m, d)
+      qacc[deterministic] = d.qacc.numpy().copy()
+    default, det = qacc[types.DeterminismType.NONE], qacc[types.DeterminismType.ATOMICS]
+    np.testing.assert_allclose(det, default, rtol=1e-3, atol=1e-4 * np.abs(default).max(), err_msg="qacc")
+    if not overflow:
+      for worldid, mjd in enumerate(mjds):
+        _assert_eq(det[worldid], mjd.qacc, "qacc")
+
+    # the scene has what the kernel has to tell apart
+    nefc = d.nefc.numpy()
+    efc_type = d.efc.type.numpy()
+    contact_dim = d.contact.dim.numpy()
+    contact_efc_address = d.contact.efc_address.numpy()
+    contact_adr = contact_efc_address[:, 0]
+    contact_worldid = d.contact.worldid.numpy()
+    contact_dist = d.contact.dist.numpy().copy()
+    nacon = d.nacon.numpy()[0]
+    ctx = solver._create_solver_context(m, d)
+    solver.init_context(m, d, ctx, grad=False)
+    efc_state = d.efc.state.numpy().copy()
+    # contacts that have their first row and lack the last one
+    partial = [conid for conid in range(nacon) if contact_efc_address[conid, contact_dim[conid] - 1] < 0 <= contact_adr[conid]]
+    self.assertLen(partial, int(overflow))
+    for worldid, kind in enumerate(worlds):
+      conids = [conid for conid in range(nacon) if contact_worldid[conid] == worldid]
+      cone = [conid for conid in conids if efc_state[worldid, contact_adr[conid]] == cone_state]
+      if kind == "free":
+        self.assertEqual(nefc[worldid], 0)
+        continue
+      self.assertEqual({contact_dim[conid] for conid in cone}, {3, 4, 6})
+      self.assertGreater(len(cone), 3)
+      if kind == "cone":
+        self.assertEqual(len(cone) + len(partial), len(conids))
+        self.assertEqual(efc_state[worldid, 0], cone_state)
+      else:
+        self.assertEqual(efc_type[worldid, 0], types.ConstraintType.LIMIT_JOINT)
+        self.assertIn(1, {contact_dim[conid] for conid in conids})
+        self.assertIn(3, {contact_dim[conid] for conid in conids if conid not in cone})
+
+    def hessian(deterministic, state, dist=contact_dist, done=False, nlane=0):
+      """Returns the upper triangle of the Hessian of _update_gradient, the last world may be done.
+
+      With nlane, the kernel without atomics adds the cone part with this number of lanes.
+      """
+      m.opt.deterministic = deterministic
+      d.efc.state.assign(np.where(state == cone_state, 0, state) if nlane else state)
+      d.contact.dist.assign(dist)
+      ctx.done.assign([False] * (nworld - 1) + [done])
+      ctx.h.fill_(7.0)
+      solver._update_gradient(m, d, ctx)
+      if nlane:
+        d.efc.state.assign(state)
+        wp.launch(
+          solver._update_gradient_JTCJ_dense(0, True),
+          dim=(nworld, nlane),
+          inputs=[
+            m.opt.impratio_invsqrt,
+            m.dof_tri_row,
+            m.dof_tri_col,
+            d.nefc,
+            d.contact.dist,
+            d.contact.includemargin,
+            d.contact.friction,
+            d.contact.dim,
+            d.contact.efc_address,
+            d.efc.id,
+            d.efc.J,
+            d.efc.D,
+            d.efc.state,
+            ctx.Jaref,
+            ctx.done,
+            nlane,
+          ],
+          outputs=[ctx.h],
+        )
+      return np.triu(ctx.h.numpy()[:, : m.nv, : m.nv])
+
+    # Constraint rows keep the state of an earlier step when a contact runs out of rows: such a
+    # contact is added with the rows it has. Rows that are not the first row of a contact with
+    # friction are ignored, and so are contacts beyond their margin.
+    stale_state, stale_dist = efc_state.copy(), contact_dist.copy()
+    beyond = set()
+    for conid in range(nacon):
+      worldid, efcid = contact_worldid[conid], contact_adr[conid]
+      if conid in partial or contact_dim[conid] == 1:
+        stale_state[worldid, efcid] = cone_state
+      elif efc_state[worldid, efcid] != cone_state:
+        stale_state[worldid, efcid + 1] = cone_state
+      elif worldid not in beyond:
+        beyond.add(worldid)
+        stale_dist[conid] = d.contact.includemargin.numpy()[conid] + 1.0
+
+    # the kernel is launched with one lane on the CPU and one lane per element in small batches
+    ntri = m.dof_tri_row.size
+    for state, dist, done in ((efc_state, contact_dist, False), (stale_state, stale_dist, nworld > 1)):
+      h_default = hessian(types.DeterminismType.NONE, state, dist, done)
+      reference = _elliptic_dense_hessian_reference(m, d, ctx)
+      h_no_cone = hessian(types.DeterminismType.NONE, np.where(state == cone_state, 0, state), dist, done)
+      scale = np.abs(h_default).max()
+      if state is efc_state:
+        self.assertGreater(np.abs(reference).max(), 0.1 * scale)
+      for nlane in (0, 1, 3, 32, ntri, ntri + 5):
+        deterministic = types.DeterminismType.NONE if nlane else types.DeterminismType.ATOMICS
+        h_det = hessian(deterministic, state, dist, done, nlane)
+        # the sums run in a different order: allow rounding at the scale of the largest element
+        np.testing.assert_allclose(h_det, h_default, rtol=1e-5, atol=1e-5 * scale, err_msg=f"nlane {nlane}")
+        if state is efc_state or overflow:
+          np.testing.assert_allclose(h_det - h_no_cone, reference, rtol=1e-4, atol=1e-5 * scale)
+        if done:
+          np.testing.assert_array_equal(h_det[-1], np.triu(np.full((m.nv, m.nv), 7.0)))
+
   @parameterized.parameters("dense", "sparse")
   def test_elliptic_hessian_scale_invariance(self, jacobian):
     """Cone curvature is degree-0 homogeneous: scaling Jaref leaves Hessian unchanged."""

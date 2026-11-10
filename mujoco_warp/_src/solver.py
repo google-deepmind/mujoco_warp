@@ -3469,6 +3469,123 @@ def _update_gradient_JTCJ_dense(nblocks_perblock: int, deterministic: bool = Fal
     module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
     module_options["deterministic_max_records"] = nblocks_perblock
 
+    # The deterministic variant has no float atomics, so it keeps no records. The lanes of a world
+    # visit its contacts in constraint row order and each lane adds them to its own elements of
+    # the Hessian: an element has one writer and a fixed summation order.
+    @wp.kernel(module="unique", module_options=module_options)
+    def kernel(
+      # Model:
+      opt_impratio_invsqrt: wp.array[float],
+      dof_tri_row: wp.array[int],
+      dof_tri_col: wp.array[int],
+      # Data in:
+      nefc_in: wp.array[int],
+      contact_dist_in: wp.array[float],
+      contact_includemargin_in: wp.array[float],
+      contact_friction_in: wp.array[types.vec5],
+      contact_dim_in: wp.array[int],
+      contact_efc_address_in: wp.array2d[int],
+      efc_id_in: wp.array2d[int],
+      efc_J_in: wp.array3d[float],
+      efc_D_in: wp.array2d[float],
+      efc_state_in: wp.array2d[int],
+      # In:
+      ctx_Jaref_in: wp.array2d[float],
+      ctx_done_in: wp.array[bool],
+      nlane: int,
+      # Out:
+      ctx_h_out: wp.array3d[float],
+    ):
+      worldid, lane = wp.tid()
+
+      if ctx_done_in[worldid]:
+        return
+
+      nefc = wp.min(nefc_in[worldid], efc_id_in.shape[1])
+      efcid = int(0)
+      while efcid < nefc:
+        efcid0 = efcid
+        efcid += 1
+
+        # only the rows of an elliptic contact are in the cone state
+        if efc_state_in[worldid, efcid0] != types.ConstraintState.CONE:
+          continue
+
+        # a contact is added at its first row
+        conid = efc_id_in[worldid, efcid0]
+        if contact_efc_address_in[conid, 0] != efcid0:
+          continue
+
+        # the other rows of the contact are the next ones
+        condim = contact_dim_in[conid]
+        efcid = efcid0 + condim
+
+        if condim == 1:
+          continue
+
+        # check contact status
+        if contact_dist_in[conid] - contact_includemargin_in[conid] >= 0.0:
+          continue
+
+        fri = contact_friction_in[conid]
+        mu = fri[0] * opt_impratio_invsqrt[worldid % opt_impratio_invsqrt.shape[0]]
+
+        mu2 = mu * mu
+        dm = math.safe_div(efc_D_in[worldid, efcid0], mu2 * (1.0 + mu2))
+
+        if dm == 0.0:
+          continue
+
+        # terms that the elements share
+        n = ctx_Jaref_in[worldid, efcid0] * mu
+        tt = float(0.0)
+        for dim in range(1, condim):
+          efcidi = contact_efc_address_in[conid, dim]
+          if efcidi >= 0:
+            u = ctx_Jaref_in[worldid, efcidi] * fri[dim - 1]
+            tt += u * u
+
+        t = wp.max(wp.sqrt(tt), types.MJ_MINVAL)
+        inv_t = math.safe_div(1.0, t)
+        mu_n_over_t = mu * n * inv_t
+
+        for elementid in range(lane, dof_tri_row.shape[0], nlane):
+          dof1id = dof_tri_row[elementid]
+          dof2id = dof_tri_col[elementid]
+
+          z01 = mu * efc_J_in[worldid, efcid0, dof1id]
+          z02 = mu * efc_J_in[worldid, efcid0, dof2id]
+          projection1 = float(0.0)
+          projection2 = float(0.0)
+          tangent_dot = float(0.0)
+          for dim in range(1, condim):
+            efcidi = contact_efc_address_in[conid, dim]
+            if efcidi >= 0:
+              scale = fri[dim - 1]
+              u = ctx_Jaref_in[worldid, efcidi] * scale
+              z1 = scale * efc_J_in[worldid, efcidi, dof1id]
+              z2 = scale * efc_J_in[worldid, efcidi, dof2id]
+              projection1 += u * z1
+              projection2 += u * z2
+              tangent_dot += z1 * z2
+
+          h = _elliptic_hessian_entry_from_projections(
+            dm,
+            mu,
+            mu_n_over_t,
+            mu2 - mu_n_over_t,
+            z01,
+            z02,
+            projection1 * inv_t,
+            projection2 * inv_t,
+            tangent_dot,
+          )
+
+          # not `+=`, which Warp compiles to an atomic
+          ctx_h_out[worldid, dof1id, dof2id] = ctx_h_out[worldid, dof1id, dof2id] + h
+
+    return kernel
+
   @wp.kernel(module="unique", module_options=module_options)
   def kernel(
     # Model:
@@ -4951,7 +5068,39 @@ def _update_gradient(m: types.Model, d: types.Data, ctx: SolverContext, compact:
           outputs=[ctx.h],
         )
 
-    if m.opt.cone == types.ConeType.ELLIPTIC and not (m.is_sparse or sc):
+    if m.opt.cone == types.ConeType.ELLIPTIC and not (m.is_sparse or sc) and det_atomics:
+      # The lanes of a world share its elements: twice as many threads as the default kernel
+      # launches, in whole warps so that the threads of a warp visit the same contacts.
+      nlane = 1
+      if wp.get_device().is_cuda:
+        nlane = min(max(wp.get_device().sm_count * 12 * 256 // d.nworld, 1), m.dof_tri_row.size)
+        if nlane > 32:
+          nlane -= nlane % 32
+
+      wp.launch(
+        _update_gradient_JTCJ_dense(0, True),
+        dim=(d.nworld, nlane),
+        inputs=[
+          m.opt.impratio_invsqrt,
+          m.dof_tri_row,
+          m.dof_tri_col,
+          d.nefc,
+          d.contact.dist,
+          d.contact.includemargin,
+          d.contact.friction,
+          d.contact.dim,
+          d.contact.efc_address,
+          d.efc.id,
+          d.efc.J,
+          d.efc.D,
+          d.efc.state,
+          ctx.Jaref,
+          ctx.done,
+          nlane,
+        ],
+        outputs=[ctx.h],
+      )
+    elif m.opt.cone == types.ConeType.ELLIPTIC and not (m.is_sparse or sc):
       # Optimization: launching update_gradient_JTCJ with limited number of blocks on a GPU.
       # Profiling suggests that only a fraction of blocks out of the original
       # d.njmax blocks do the actual work. It aims to minimize #CTAs with no
@@ -4975,7 +5124,7 @@ def _update_gradient(m: types.Model, d: types.Data, ctx: SolverContext, compact:
         nblocks_perblock = d.naconmax
 
       wp.launch(
-        _update_gradient_JTCJ_dense(nblocks_perblock if det_atomics else 0, det_atomics),
+        _update_gradient_JTCJ_dense(0),
         dim=(dim_block, m.dof_tri_row.size),
         inputs=[
           m.opt.impratio_invsqrt,
