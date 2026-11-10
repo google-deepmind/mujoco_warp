@@ -23,6 +23,7 @@ from absl.testing import parameterized
 
 import mujoco_warp as mjw
 from mujoco_warp import ConeType
+from mujoco_warp import DeterminismType
 from mujoco_warp import DisableBit
 from mujoco_warp import test_data
 from mujoco_warp._src import util_pkg
@@ -472,6 +473,103 @@ class PassiveTest(parameterized.TestCase):
     d.qfrc_damper.zero_()
     mjw.passive(m, d)
     _assert_eq(d.qfrc_damper.numpy()[0], mjd.qfrc_damper, "qfrc_damper")
+
+  @parameterized.parameters(1, 2)
+  def test_spring_damper_tendon_deterministic(self, nworld):
+    """Deterministic tendon spring and damper forces are added in tendon order without atomics."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option>
+          <flag contact="disable"/>
+        </option>
+        <worldbody>
+          <site name="world" pos="-.3 0 1.2"/>
+          <body pos="0 0 1">
+            <joint name="hinge0" axis="0 1 0"/>
+            <geom type="capsule" size=".02" fromto="0 0 0 .3 0 0"/>
+            <site name="site0" pos=".15 0 .05"/>
+            <body pos=".3 0 0">
+              <joint name="hinge1" axis="0 1 0"/>
+              <joint name="slide1" type="slide" axis="1 0 0"/>
+              <geom type="capsule" size=".02" fromto="0 0 0 .3 0 0"/>
+              <site name="site1" pos=".15 0 .05"/>
+              <body pos=".3 0 0">
+                <joint name="ball2" type="ball"/>
+                <geom type="capsule" size=".02" fromto="0 0 0 .2 0 0"/>
+                <site name="site2" pos=".1 .03 .05"/>
+              </body>
+            </body>
+          </body>
+        </worldbody>
+        <tendon>
+          <fixed name="fixed" stiffness="30 5 2" damping=".5 .2 .1">
+            <joint joint="hinge0" coef="1"/>
+            <joint joint="hinge1" coef="-.5"/>
+            <joint joint="slide1" coef="2"/>
+          </fixed>
+          <spatial name="spring" stiffness="40" springlength=".1 .3">
+            <site site="world"/>
+            <site site="site0"/>
+            <site site="site1"/>
+            <site site="site2"/>
+          </spatial>
+          <spatial name="damper" damping="2">
+            <site site="site0"/>
+            <site site="site2"/>
+          </spatial>
+          <spatial name="both" stiffness="20" damping="1" springlength=".2">
+            <site site="world"/>
+            <site site="site1"/>
+            <pulley divisor="2"/>
+            <site site="site1"/>
+            <site site="site2"/>
+          </spatial>
+          <spatial name="none">
+            <site site="world"/>
+            <site site="site2"/>
+          </spatial>
+        </tendon>
+        <actuator>
+          <motor tendon="none"/>
+          <motor tendon="damper" damping=".4"/>
+          <motor tendon="fixed" gear="2" damping=".3 .1 0"/>
+          <motor tendon="fixed" gear="-1" damping=".2"/>
+        </actuator>
+      </mujoco>
+      """,
+      nworld=nworld,
+      overrides={"opt.deterministic": DeterminismType.ATOMICS},
+    )
+
+    qpos = np.array([[0.3, -0.5, 0.05, 1.0, 0.0, 0.0, 0.0], [-0.4, 0.7, -0.03, 0.9, 0.1, 0.3, 0.2]])[:nworld]
+    qpos[:, 3:] /= np.linalg.norm(qpos[:, 3:], axis=1, keepdims=True)
+    qvel = np.array([[0.5, -0.3, 0.2, 0.4, -0.6, 0.8], [-0.9, 0.4, -0.1, -0.5, 0.2, 0.6]])[:nworld]
+    d.qpos.assign(qpos)
+    d.qvel.assign(qvel)
+
+    for arr in (d.qfrc_spring, d.qfrc_damper):
+      arr.fill_(wp.inf)
+    mjw.forward(m, d)
+    qfrc_spring = d.qfrc_spring.numpy().copy()
+    qfrc_damper = d.qfrc_damper.numpy().copy()
+
+    for w in range(nworld):
+      mjd.qpos[:] = qpos[w]
+      mjd.qvel[:] = qvel[w]
+      mujoco.mj_forward(mjm, mjd)
+      self.assertGreater(np.abs(mjd.qfrc_spring).max(), 0.1)
+      self.assertGreater(np.abs(mjd.qfrc_damper).max(), 0.1)
+      _assert_eq(qfrc_spring[w], mjd.qfrc_spring, "qfrc_spring")
+      _assert_eq(qfrc_damper[w], mjd.qfrc_damper, "qfrc_damper")
+
+    # same forces as the kernel with atomics
+    m.opt.deterministic = DeterminismType.NONE
+    for arr in (d.qfrc_spring, d.qfrc_damper):
+      arr.fill_(wp.inf)
+    mjw.forward(m, d)
+    _assert_eq(d.qfrc_spring.numpy(), qfrc_spring, "qfrc_spring")
+    _assert_eq(d.qfrc_damper.numpy(), qfrc_damper, "qfrc_damper")
 
   def test_polynomial_stiffness_fixed_tendon(self):
     """Tests polynomial stiffness for fixed tendons."""

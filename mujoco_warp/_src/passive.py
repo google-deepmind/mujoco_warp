@@ -236,6 +236,106 @@ def _spring_damper_tendon_passive(deterministic: bool = False):
   if deterministic:
     module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
 
+    # One thread per dof adds the tendons that move with it, which the transpose of the sparsity
+    # of ten_J lists in ascending order: each force has one writer and a fixed summation order,
+    # without atomics.
+    @wp.kernel(module="unique", module_options=module_options)
+    def kernel(
+      # Model:
+      tendon_actuatorid: wp.array[int],
+      tendon_plasticadr: wp.array[int],
+      tendon_stiffness: wp.array2d[float],
+      tendon_stiffnesspoly: wp.array2d[wp.vec2],
+      tendon_damping: wp.array2d[float],
+      tendon_dampingpoly: wp.array2d[wp.vec2],
+      tendon_lengthspring: wp.array2d[wp.vec2],
+      actuator_trntype: wp.array[int],
+      actuator_trnid: wp.array[wp.vec2i],
+      actuator_damping: wp.array2d[float],
+      actuator_dampingpoly: wp.array2d[wp.vec2],
+      actuator_gear: wp.array2d[wp.spatial_vector],
+      ten_JT_rowadr: wp.array[int],
+      ten_JT_colind: wp.array[int],
+      ten_JT_map: wp.array[int],
+      # Data in:
+      plastic_in: wp.array2d[float],
+      ten_J_in: wp.array2d[float],
+      ten_length_in: wp.array2d[float],
+      ten_velocity_in: wp.array2d[float],
+      # In:
+      dsbl_spring: bool,
+      dsbl_damper: bool,
+      # Data out:
+      qfrc_spring_out: wp.array2d[float],
+      qfrc_damper_out: wp.array2d[float],
+    ):
+      worldid, dofid = wp.tid()
+
+      qfrc_spring = float(0.0)
+      qfrc_damper = float(0.0)
+      for i in range(ten_JT_rowadr[dofid], ten_JT_rowadr[dofid + 1]):
+        tenid = ten_JT_colind[i]
+
+        stiffness = tendon_stiffness[worldid % tendon_stiffness.shape[0], tenid]
+        spoly = tendon_stiffnesspoly[worldid % tendon_stiffnesspoly.shape[0], tenid]
+        damping, dpoly = util_misc.tendon_damping_total(
+          tendon_actuatorid,
+          tendon_damping,
+          tendon_dampingpoly,
+          actuator_trntype,
+          actuator_trnid,
+          actuator_damping,
+          actuator_dampingpoly,
+          actuator_gear,
+          worldid,
+          tenid,
+        )
+
+        has_stiffness = (stiffness != 0.0 or spoly[0] != 0.0 or spoly[1] != 0.0) and not dsbl_spring
+        has_damping = (damping != 0.0 or dpoly[0] != 0.0 or dpoly[1] != 0.0) and not dsbl_damper
+
+        if not has_stiffness and not has_damping:
+          continue
+
+        J = ten_J_in[worldid, ten_JT_map[i]]
+
+        if has_stiffness:
+          # compute spring force along tendon
+          length = ten_length_in[worldid, tenid]
+          padr = tendon_plasticadr[tenid]
+          if padr >= 0:
+            lower = plastic_in[worldid, padr + 0]
+            upper = plastic_in[worldid, padr + 1]
+          else:
+            lengthspring = tendon_lengthspring[worldid % tendon_lengthspring.shape[0], tenid]
+            lower = lengthspring[0]
+            upper = lengthspring[1]
+
+          x = wp.where(
+            length > upper,
+            length - upper,
+            wp.where(length < lower, length - lower, 0.0),
+          )
+          frc_spring = -x * util_misc._poly_force(stiffness, spoly, x, 0)
+
+          # transform to joint torque
+          qfrc_spring += J * frc_spring
+
+        if has_damping:
+          # compute damper force along tendon
+          v = ten_velocity_in[worldid, tenid]
+          frc_damper = -v * util_misc._poly_force(damping, dpoly, v, 1)
+
+          # transform to joint torque
+          qfrc_damper += J * frc_damper
+
+      if qfrc_spring != 0.0:
+        qfrc_spring_out[worldid, dofid] = qfrc_spring_out[worldid, dofid] + qfrc_spring
+      if qfrc_damper != 0.0:
+        qfrc_damper_out[worldid, dofid] = qfrc_damper_out[worldid, dofid] + qfrc_damper
+
+    return kernel
+
   @wp.kernel(module="unique", module_options=module_options)
   def kernel(
     # Model:
@@ -5191,9 +5291,41 @@ def passive(m: Model, d: Data):
   )
 
   det_atomics = bool(m.opt.deterministic & DeterminismType.ATOMICS)
-  if m.ntendon:
+  if m.ntendon and det_atomics:
     wp.launch(
-      _spring_damper_tendon_passive(det_atomics),
+      _spring_damper_tendon_passive(True),
+      dim=(d.nworld, m.nv),
+      inputs=[
+        m.tendon_actuatorid,
+        m.tendon_plasticadr,
+        m.tendon_stiffness,
+        m.tendon_stiffnesspoly,
+        m.tendon_damping,
+        m.tendon_dampingpoly,
+        m.tendon_lengthspring,
+        m.actuator_trntype,
+        m.actuator_trnid,
+        m.actuator_damping,
+        m.actuator_dampingpoly,
+        m.actuator_gear,
+        m.ten_JT_rowadr,
+        m.ten_JT_colind,
+        m.ten_JT_map,
+        d.plastic,
+        d.ten_J,
+        d.ten_length,
+        d.ten_velocity,
+        dsbl_spring,
+        dsbl_damper,
+      ],
+      outputs=[
+        d.qfrc_spring,
+        d.qfrc_damper,
+      ],
+    )
+  elif m.ntendon:
+    wp.launch(
+      _spring_damper_tendon_passive(False),
       dim=(d.nworld, m.ntendon, m.max_ten_J_rownnz),
       inputs=[
         m.tendon_actuatorid,
