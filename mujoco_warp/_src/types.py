@@ -2920,12 +2920,17 @@ class SolverContext:
   efm_con: Optional[tuple] = None
   flex_scratch: Optional[tuple] = None
   solve_ld_scratch: Optional[wp.array] = None
+  # deterministic incremental Newton: rows whose quadratic state changed, as one bit per row
+  quad_changed_flag: Optional[wp.array2d[int]] = None
   tw_diag: Optional[wp.array] = None
   h_tile_nz: Optional[wp.array3d[int]] = None
   h_row_mask: Optional[wp.array3d[wp.uint64]] = None
   h_col_mask: Optional[wp.array3d[wp.uint64]] = None
   h_tile_is_diag: Optional[wp.array2d[int]] = None
   h_rhs_work: Optional[wp.array3d[float]] = None
+  # deterministic sparse solve: the JTDAJ groups that contain each dof
+  qfrc_adr: Optional[wp.array2d[int]] = None
+  qfrc_entry: Optional[wp.array2d[int]] = None
 
 
 @dataclasses.dataclass

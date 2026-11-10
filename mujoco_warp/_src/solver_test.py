@@ -2210,6 +2210,52 @@ class SolverTest(parameterized.TestCase):
 
     self.assertTrue(total_any_changes, "no state changes detected across any keyframe")
 
+  @parameterized.parameters(1, 3)
+  def test_quad_changed_ids(self, nworld):
+    """Rows whose bit is set are listed in row order, and the bits are cleared."""
+    njmax = 100
+    bits = solver._QUAD_CHANGED_BITS
+    # first and last bit of a word, several words, a world without changed rows
+    rows = ([0, 7, bits - 1, bits, 2 * bits - 1, 2 * bits, 3 * bits, njmax - 1], [], [5, 2 * bits + 2])[:nworld]
+    flag = np.zeros((nworld, njmax // bits + 1), dtype=np.int32)
+    for worldid, world_rows in enumerate(rows):
+      for row in world_rows:
+        flag[worldid, row // bits] |= 1 << (row % bits)
+
+    count = wp.array([len(world_rows) for world_rows in rows], dtype=int)
+    flag = wp.array(flag, dtype=int)
+    ids = wp.full((nworld, njmax), -1, dtype=int)
+    wp.launch(solver._quad_changed_ids, dim=nworld, inputs=[count], outputs=[flag, ids])
+
+    ids = ids.numpy()
+    for worldid, world_rows in enumerate(rows):
+      self.assertEqual(ids[worldid, : len(world_rows)].tolist(), world_rows)
+      np.testing.assert_array_equal(ids[worldid, len(world_rows) :], -1)
+    np.testing.assert_array_equal(flag.numpy(), 0)
+
+  @parameterized.parameters(1, 2)
+  def test_qfrc_index_sort(self, nworld):
+    """The list of each dof is sorted, and nothing else is written."""
+    # lists with no entry, one entry and several entries; the second world has them reversed
+    lists = ([], [7], [9, 4, 2], [1, 3, 8, 20], [15, 5, 30, 10, 25, 0], [6, 2])
+    nv = len(lists)
+    adr = np.concatenate(([0], np.cumsum([len(dof_list) for dof_list in lists])))
+    entry = np.full((nworld, adr[nv] + 2), -5, dtype=np.int32)
+    for worldid in range(nworld):
+      for dofid, dof_list in enumerate(lists):
+        entry[worldid, adr[dofid] : adr[dofid + 1]] = dof_list[::-1] if worldid else dof_list
+
+    entry = wp.array(entry, dtype=int)
+    wp.launch(
+      solver._qfrc_index_sort, dim=(nworld, nv), inputs=[wp.array(np.tile(adr, (nworld, 1)), dtype=int)], outputs=[entry]
+    )
+
+    entry = entry.numpy()
+    for worldid in range(nworld):
+      for dofid, dof_list in enumerate(lists):
+        self.assertEqual(entry[worldid, adr[dofid] : adr[dofid + 1]].tolist(), sorted(dof_list))
+      np.testing.assert_array_equal(entry[worldid, adr[nv] :], -5)
+
   @parameterized.parameters(mujoco.mjtJacobian.mjJAC_DENSE, mujoco.mjtJacobian.mjJAC_SPARSE)
   def test_incremental_hessian_deterministic(self, jacobian):
     """Tests the incremental Hessian without atomics against a full rebuild."""

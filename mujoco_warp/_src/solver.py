@@ -94,6 +94,7 @@ def _create_solver_context(
   alloc_sparse_tiles = alloc_h and nv > _SPARSE_BLOCK_CHOLESKY_DIM
   alloc_mgrad = m.opt.solver == types.SolverType.CG
   alloc_incremental = _use_incremental(m)
+  alloc_quad_changed_flag = alloc_incremental and bool(m.opt.deterministic & types.DeterminismType.ATOMICS)
   alloc_solve_ld_scratch = (
     alloc_mgrad and d.qLD.shape[1] > m.qLD_block_total and bool(m.opt.deterministic & types.DeterminismType.ATOMICS)
   )
@@ -154,6 +155,7 @@ def _create_solver_context(
     quad_changed_ids=wp.empty((nworld, njmax), dtype=int) if alloc_incremental else wp.empty((nworld, 0), dtype=int),
     quad_changed_count=wp.empty((nworld,), dtype=int) if alloc_incremental else wp.empty((0,), dtype=int),
     state_changed_count=wp.empty((nworld,), dtype=int) if alloc_incremental else wp.empty((0,), dtype=int),
+    quad_changed_flag=wp.zeros((nworld, njmax // _QUAD_CHANGED_BITS + 1), dtype=int) if alloc_quad_changed_flag else None,
     solve_ld_scratch=wp.empty((nworld, nv_pad), dtype=float) if alloc_solve_ld_scratch else None,
     tw_diag=wp.empty((nworld, nv), dtype=float) if alloc_tw_diag else None,
     h_tile_nz=h_tile_nz,
@@ -1960,9 +1962,6 @@ def _update_constraint_efc(track_changes: bool, deterministic: bool = False):
     # Read old state before overwriting
     if wp.static(TRACK_CHANGES):
       old_state = efc_state_out[worldid, efcid]
-      if wp.static(deterministic):
-        # a row that returns early is not flagged
-        quad_changed_ids_out[worldid, efcid] = 0
 
     efc_D = efc_D_in[worldid, efcid]
     Jaref = ctx_Jaref_in[worldid, efcid]
@@ -2031,8 +2030,14 @@ def _update_constraint_efc(track_changes: bool, deterministic: bool = False):
       old_quad = old_state == types.ConstraintState.QUADRATIC.value
       new_quad = new_state == types.ConstraintState.QUADRATIC.value
       if wp.static(deterministic):
-        # flag the row; _quad_changed_ids lists the flagged rows in row order
-        quad_changed_ids_out[worldid, efcid] = int(old_quad != new_quad)
+        # set the bit of the row; _quad_changed_ids lists the rows in row order
+        if old_quad != new_quad:
+          wp.atomic_add(
+            quad_changed_ids_out[worldid],
+            efcid // wp.static(_QUAD_CHANGED_BITS),
+            1 << (efcid % wp.static(_QUAD_CHANGED_BITS)),
+          )
+          wp.atomic_add(quad_changed_count_out, worldid, 1)
       elif old_quad != new_quad:
         idx = wp.atomic_add(quad_changed_count_out, worldid, 1)
         quad_changed_ids_out[worldid, idx] = efcid
@@ -2044,30 +2049,48 @@ def _update_constraint_efc(track_changes: bool, deterministic: bool = False):
   return kernel
 
 
+# rows per word of SolverContext.quad_changed_flag: the sign bit is not used
+_QUAD_CHANGED_BITS = 31
+
+
+@wp.func
+def _popcount(x: int) -> int:
+  """Number of set bits of a non-negative integer."""
+  x = x - ((x >> 1) & 0x55555555)
+  x = (x & 0x33333333) + ((x >> 2) & 0x33333333)
+  x = (x + (x >> 4)) & 0x0F0F0F0F
+  x = x + (x >> 8)
+  x = x + (x >> 16)
+  return x & 0x3F
+
+
 @wp.kernel
 def _quad_changed_ids(
-  # Data in:
-  nefc_in: wp.array[int],
   # In:
-  ctx_done_in: wp.array[bool],
+  quad_changed_count_in: wp.array[int],
   # Out:
+  quad_changed_flag_out: wp.array2d[int],
   quad_changed_ids_out: wp.array2d[int],
-  quad_changed_count_out: wp.array[int],
 ):
-  """Replaces the per-row change flags with the list of changed rows, in row order."""
+  """Lists the rows whose bit is set in row order and clears the bits."""
   worldid = wp.tid()
 
-  if ctx_done_in[worldid]:
+  if quad_changed_count_in[worldid] == 0:
     return
 
-  # the list never gets ahead of the flags: count <= efcid
   count = int(0)
-  for efcid in range(wp.min(nefc_in[worldid], quad_changed_ids_out.shape[1])):
-    if quad_changed_ids_out[worldid, efcid] != 0:
-      quad_changed_ids_out[worldid, count] = efcid
-      count += 1
+  for wordid in range(quad_changed_flag_out.shape[1]):
+    word = quad_changed_flag_out[worldid, wordid]
+    if word == 0:
+      continue
 
-  quad_changed_count_out[worldid] = count
+    quad_changed_flag_out[worldid, wordid] = 0
+    while word != 0:
+      # lowest set bit: the number of bits below it is its position
+      low = word & (-word)
+      quad_changed_ids_out[worldid, count] = wp.static(_QUAD_CHANGED_BITS) * wordid + _popcount(low - 1)
+      count += 1
+      word -= low
 
 
 @wp.kernel
@@ -2090,13 +2113,240 @@ def _zero_qfrc_constraint_sparse(
   qfrc_constraint_out[worldid, dofid] = 0.0
 
 
+# dofs per chunk of the two-level prefix sum that gives the list address of each dof
+_QFRC_INDEX_CHUNK = 32
+
+
+@wp.kernel
+def _qfrc_index_count(
+  # Data in:
+  efc_jtdaj_adr_in: wp.array2d[int],
+  efc_jtdaj_nblock_in: wp.array[int],
+  efc_J_rownnz_in: wp.array2d[int],
+  efc_J_rowadr_in: wp.array2d[int],
+  efc_J_colind_in: wp.array3d[int],
+  # Out:
+  count_out: wp.array2d[int],
+):
+  """Counts the JTDAJ groups that contain each dof."""
+  worldid, groupid = wp.tid()
+
+  if groupid >= efc_jtdaj_nblock_in[worldid]:
+    return
+
+  head_row = efc_jtdaj_adr_in[worldid, groupid]
+  head_adr = efc_J_rowadr_in[worldid, head_row]
+  for i in range(efc_J_rownnz_in[worldid, head_row]):
+    wp.atomic_add(count_out[worldid], efc_J_colind_in[worldid, 0, head_adr + i], 1)  # kernel_analyzer: ignore[atomic]
+
+
+@wp.kernel
+def _qfrc_index_chunk_count(
+  # In:
+  count_in: wp.array2d[int],
+  # Out:
+  chunk_count_out: wp.array2d[int],
+):
+  """Adds the group counts of each chunk of dofs."""
+  worldid, chunkid = wp.tid()
+
+  count = int(0)
+  dof0 = chunkid * wp.static(_QFRC_INDEX_CHUNK)
+  for dofid in range(dof0, wp.min(dof0 + wp.static(_QFRC_INDEX_CHUNK), count_in.shape[1])):
+    count += count_in[worldid, dofid]
+  chunk_count_out[worldid, chunkid] = count
+
+
+@wp.kernel
+def _qfrc_index_adr(
+  # In:
+  count_in: wp.array2d[int],
+  chunk_count_in: wp.array2d[int],
+  # Out:
+  adr_out: wp.array2d[int],
+):
+  """Turns the group count of each dof into the address of its list: a prefix sum in two levels."""
+  worldid, dofid = wp.tid()
+
+  adr = int(0)
+  chunkid = dofid // wp.static(_QFRC_INDEX_CHUNK)
+  for i in range(chunkid):
+    adr += chunk_count_in[worldid, i]
+  for i in range(chunkid * wp.static(_QFRC_INDEX_CHUNK), dofid):
+    adr += count_in[worldid, i]
+  adr_out[worldid, dofid] = adr
+
+
+@wp.kernel
+def _qfrc_index_fill(
+  # Model:
+  nv: int,
+  # Data in:
+  efc_jtdaj_adr_in: wp.array2d[int],
+  efc_jtdaj_nblock_in: wp.array[int],
+  efc_J_rownnz_in: wp.array2d[int],
+  efc_J_rowadr_in: wp.array2d[int],
+  efc_J_colind_in: wp.array3d[int],
+  # In:
+  adr_in: wp.array2d[int],
+  # Out:
+  cursor_out: wp.array2d[int],
+  entry_out: wp.array2d[int],
+):
+  """Lists (group, position in the group's sparse support) for each dof, in arrival order."""
+  worldid, groupid = wp.tid()
+
+  if groupid >= efc_jtdaj_nblock_in[worldid]:
+    return
+
+  head_row = efc_jtdaj_adr_in[worldid, groupid]
+  head_adr = efc_J_rowadr_in[worldid, head_row]
+  for i in range(efc_J_rownnz_in[worldid, head_row]):
+    dofid = efc_J_colind_in[worldid, 0, head_adr + i]
+    pos = wp.atomic_add(cursor_out[worldid], dofid, 1)  # kernel_analyzer: ignore[atomic]
+    entry_out[worldid, adr_in[worldid, dofid] + pos] = groupid * nv + i
+
+
+@wp.kernel
+def _qfrc_index_sort(
+  # In:
+  adr_in: wp.array2d[int],
+  # Out:
+  entry_out: wp.array2d[int],
+):
+  """Sorts the list of each dof by group: the arrival order depends on the thread schedule."""
+  worldid, dofid = wp.tid()
+
+  adr0 = adr_in[worldid, dofid]
+  for i in range(adr0 + 1, adr_in[worldid, dofid + 1]):
+    entry = entry_out[worldid, i]
+    j = i - 1
+    while j >= adr0:
+      prev = entry_out[worldid, j]
+      if prev <= entry:
+        break
+      entry_out[worldid, j + 1] = prev
+      j -= 1
+    entry_out[worldid, j + 1] = entry
+
+
 @cache_kernel
-def _update_constraint_init_qfrc_constraint_sparse(compact: bool, nv: int, deterministic: bool = False):
+def _update_constraint_init_qfrc_constraint_sparse(compact: bool, nv: int, groups: bool = False, deterministic: bool = False):
   COMPACT = compact
   module_options = {"enable_backward": False}
   if deterministic:
     module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
     module_options["deterministic_max_records"] = nv
+
+  if deterministic and groups:
+
+    @wp.kernel(module="unique", module_options=module_options)
+    def kernel(
+      # Data in:
+      nf_in: wp.array[int],
+      efc_jtdaj_adr_in: wp.array2d[int],
+      efc_jtdaj_nrow_in: wp.array2d[int],
+      efc_J_rowadr_in: wp.array2d[int],
+      efc_J_in: wp.array3d[float],
+      efc_force_in: wp.array2d[float],
+      dof_cdof_in: wp.array2d[int],
+      dof_frictionadr_in: wp.array2d[int],
+      # In:
+      qfrc_adr_in: wp.array2d[int],
+      qfrc_entry_in: wp.array2d[int],
+      state_changed_count_in: wp.array[int],
+      ctx_done_in: wp.array[bool],
+      # Data out:
+      qfrc_constraint_out: wp.array2d[float],
+    ):
+      worldid, dofid = wp.tid()
+
+      if ctx_done_in[worldid]:
+        return
+
+      if state_changed_count_in[worldid] == 0:
+        return
+
+      resid = dofid
+      if wp.static(COMPACT):
+        resid = dof_cdof_in[worldid, dofid]
+        if resid < 0:
+          return
+
+      # One thread per dof adds the rows that contain it, group by group: a fixed summation order
+      # without atomics.
+      qfrc = float(0.0)
+
+      # a dof friction row is not in a group
+      if nf_in[worldid] > 0:
+        rowid = dof_frictionadr_in[worldid, dofid]
+        if rowid >= 0:
+          qfrc = efc_J_in[worldid, 0, efc_J_rowadr_in[worldid, rowid]] * efc_force_in[worldid, rowid]
+
+      for i in range(qfrc_adr_in[worldid, dofid], qfrc_adr_in[worldid, dofid + 1]):
+        entry = qfrc_entry_in[worldid, i]
+        groupid = entry // wp.static(nv)
+        pos = entry - groupid * wp.static(nv)
+        head_row = efc_jtdaj_adr_in[worldid, groupid]
+        for member in range(efc_jtdaj_nrow_in[worldid, groupid]):
+          rowid = head_row + member
+          force = efc_force_in[worldid, rowid]
+          if force != 0.0:
+            qfrc += efc_J_in[worldid, 0, efc_J_rowadr_in[worldid, rowid] + pos] * force
+
+      qfrc_constraint_out[worldid, resid] = qfrc
+
+    return kernel
+
+  if deterministic:
+
+    @wp.kernel(module="unique", module_options=module_options, grid_stride=True)
+    def kernel(
+      # Data in:
+      nefc_in: wp.array[int],
+      efc_J_rownnz_in: wp.array2d[int],
+      efc_J_rowadr_in: wp.array2d[int],
+      efc_J_colind_in: wp.array3d[int],
+      efc_J_in: wp.array3d[float],
+      efc_force_in: wp.array2d[float],
+      dof_cdof_in: wp.array2d[int],
+      # In:
+      state_changed_count_in: wp.array[int],
+      ctx_done_in: wp.array[bool],
+      # Data out:
+      qfrc_constraint_out: wp.array2d[float],
+    ):
+      worldid, lane = wp.tid()
+
+      if ctx_done_in[worldid]:
+        return
+
+      if state_changed_count_in[worldid] == 0:
+        return
+
+      # One block per world adds the rows in order. A cooperative tile operation ends with a block
+      # barrier: the block is done with a row before it starts the next one, and a dof has a
+      # single thread in each row.
+      barrier = wp.tile_zeros(shape=(1,), dtype=int, storage="shared")
+      for rowid in range(wp.min(nefc_in[worldid], efc_force_in.shape[1])):
+        rowforce = efc_force_in[worldid, rowid]
+        if rowforce == 0.0:
+          continue
+
+        wp.tile_scatter_masked(barrier, 0, 0, False)
+        rownnzi = efc_J_rownnz_in[worldid, rowid]
+        rowadri = efc_J_rowadr_in[worldid, rowid]
+        for i in range(lane, rownnzi, wp.static(_JTDAJ_THREADS_PER_GROUP)):
+          sparseid = rowadri + i
+          colind = efc_J_colind_in[worldid, 0, sparseid]
+          if wp.static(COMPACT):
+            colind = dof_cdof_in[worldid, colind]
+            if colind < 0:
+              continue
+          qfrc = qfrc_constraint_out[worldid, colind]
+          qfrc_constraint_out[worldid, colind] = qfrc + efc_J_in[worldid, 0, sparseid] * rowforce
+
+    return kernel
 
   @wp.kernel(module="unique", module_options=module_options, grid_stride=True)
   def kernel(
@@ -2122,49 +2372,54 @@ def _update_constraint_init_qfrc_constraint_sparse(compact: bool, nv: int, deter
     if state_changed_count_in[worldid] == 0:
       return
 
-    if wp.static(deterministic):
-      # one block per world, which adds the rows in order: efcid is the thread of the block
-      barrier = wp.tile_zeros(shape=(1,), dtype=int, storage="shared")
-      for rowid in range(wp.min(nefc_in[worldid], efc_force_in.shape[1])):
-        rowforce = efc_force_in[worldid, rowid]
-        if rowforce == 0.0:
+    if efcid >= nefc_in[worldid]:
+      return
+
+    force = efc_force_in[worldid, efcid]
+    if force == 0.0:
+      return
+
+    rownnz = efc_J_rownnz_in[worldid, efcid]
+    rowadr = efc_J_rowadr_in[worldid, efcid]
+    for i in range(rownnz):
+      sparseid = rowadr + i
+      colind = efc_J_colind_in[worldid, 0, sparseid]
+      if wp.static(COMPACT):
+        colind = dof_cdof_in[worldid, colind]
+        if colind < 0:
           continue
-
-        # a cooperative tile operation ends with a block barrier: the block is done with a row
-        # before it starts the next one, and a dof has a single thread in each row
-        wp.tile_scatter_masked(barrier, 0, 0, False)
-        rownnzi = efc_J_rownnz_in[worldid, rowid]
-        rowadri = efc_J_rowadr_in[worldid, rowid]
-        for i in range(efcid, rownnzi, wp.static(_JTDAJ_THREADS_PER_GROUP)):
-          sparseid = rowadri + i
-          colind = efc_J_colind_in[worldid, 0, sparseid]
-          if wp.static(COMPACT):
-            colind = dof_cdof_in[worldid, colind]
-            if colind < 0:
-              continue
-          qfrc = qfrc_constraint_out[worldid, colind]
-          qfrc_constraint_out[worldid, colind] = qfrc + efc_J_in[worldid, 0, sparseid] * rowforce
-    else:
-      if efcid >= nefc_in[worldid]:
-        return
-
-      force = efc_force_in[worldid, efcid]
-      if force == 0.0:
-        return
-
-      rownnz = efc_J_rownnz_in[worldid, efcid]
-      rowadr = efc_J_rowadr_in[worldid, efcid]
-      for i in range(rownnz):
-        sparseid = rowadr + i
-        colind = efc_J_colind_in[worldid, 0, sparseid]
-        if wp.static(COMPACT):
-          colind = dof_cdof_in[worldid, colind]
-          if colind < 0:
-            continue
-        efc_J = efc_J_in[worldid, 0, sparseid]
-        wp.atomic_add(qfrc_constraint_out[worldid], colind, efc_J * force)
+      efc_J = efc_J_in[worldid, 0, sparseid]
+      wp.atomic_add(qfrc_constraint_out[worldid], colind, efc_J * force)
 
   return kernel
+
+
+def _qfrc_constraint_index(m: types.Model, d: types.Data, ctx: SolverContext):
+  """Lists, for each dof, the JTDAJ groups whose rows contain it.
+
+  The deterministic sparse solve reads this list to add `efc_J.T @ efc_force` one dof at a time.
+  """
+  sc = _sparse_compact(ctx)
+  mj = ctx.compact_m_full if sc else m
+  dj = ctx.compact_d_full if sc else d
+  ngroup = dj.efc.jtdaj_adr.shape[1]
+  # the groups only exist for sparse Newton, and a list entry packs (group, position) in an int
+  if m.opt.solver != types.SolverType.NEWTON or ngroup == 0 or ngroup * mj.nv >= 2**31:
+    return
+
+  # one more dof than the model, whose address is the end of the last list
+  count = wp.zeros((d.nworld, mj.nv + 1), dtype=int)
+  cursor = wp.zeros((d.nworld, mj.nv), dtype=int)
+  chunk_count = wp.empty((d.nworld, mj.nv // _QFRC_INDEX_CHUNK + 1), dtype=int)
+  ctx.qfrc_adr = wp.empty((d.nworld, mj.nv + 1), dtype=int)
+  ctx.qfrc_entry = wp.empty((d.nworld, dj.efc.J_colind.shape[2]), dtype=int)
+  dim = (d.nworld, ngroup)
+  efc_J_inputs = [dj.efc.jtdaj_adr, dj.efc.jtdaj_nblock, dj.efc.J_rownnz, dj.efc.J_rowadr, dj.efc.J_colind]
+  wp.launch(_qfrc_index_count, dim=dim, inputs=efc_J_inputs, outputs=[count])
+  wp.launch(_qfrc_index_chunk_count, dim=chunk_count.shape, inputs=[count], outputs=[chunk_count])
+  wp.launch(_qfrc_index_adr, dim=ctx.qfrc_adr.shape, inputs=[count, chunk_count], outputs=[ctx.qfrc_adr])
+  wp.launch(_qfrc_index_fill, dim=dim, inputs=[mj.nv] + efc_J_inputs + [ctx.qfrc_adr], outputs=[cursor, ctx.qfrc_entry])
+  wp.launch(_qfrc_index_sort, dim=(d.nworld, mj.nv), inputs=[ctx.qfrc_adr], outputs=[ctx.qfrc_entry])
 
 
 @wp.kernel
@@ -2270,8 +2525,10 @@ def _update_gradient_h_incremental(
 
 
 @cache_kernel
-def _update_gradient_h_incremental_sparse(compact: bool, max_records: int = 0, deterministic: bool = False):
+def _update_gradient_h_incremental_sparse(compact: bool, max_records: int = 0, lanes: int = 0, deterministic: bool = False):
   COMPACT = compact
+  # threads that share a row
+  LANES = lanes if lanes > 0 else _JTDAJ_THREADS_PER_GROUP
   module_options = {"enable_backward": False}
   if deterministic:
     module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
@@ -2322,7 +2579,7 @@ def _update_gradient_h_incremental_sparse(compact: bool, max_records: int = 0, d
       rowadr = efc_J_rowadr_in[worldid, efcid]
       n_entries = rownnz * (rownnz + 1) // 2
 
-      for entry in range(lane, n_entries, wp.static(_JTDAJ_THREADS_PER_GROUP)):
+      for entry in range(lane, n_entries, wp.static(LANES)):
         ii = int((wp.sqrt(float(8 * entry + 1)) - 1.0) * 0.5)
         jj = entry - ii * (ii + 1) // 2
         Ji = efc_J_in[worldid, 0, rowadr + ii]
@@ -2378,14 +2635,21 @@ def _update_constraint(
     _update_constraint_efc(track_changes, det_atomics),
     dim=(d.nworld, d.njmax),
     inputs=efc_inputs,
-    outputs=[d.efc.force, d.efc.state, ctx.quad_changed_ids, ctx.quad_changed_count, ctx.state_changed_count],
+    outputs=[
+      d.efc.force,
+      d.efc.state,
+      # the deterministic kernel sets one bit per row instead of writing the list
+      ctx.quad_changed_flag if track_changes and det_atomics else ctx.quad_changed_ids,
+      ctx.quad_changed_count,
+      ctx.state_changed_count,
+    ],
   )
   if track_changes and det_atomics:
     wp.launch(
       _quad_changed_ids,
       dim=d.nworld,
-      inputs=[d.nefc, ctx.done],
-      outputs=[ctx.quad_changed_ids, ctx.quad_changed_count],
+      inputs=[ctx.quad_changed_count],
+      outputs=[ctx.quad_changed_flag, ctx.quad_changed_ids],
     )
 
   # qfrc_constraint = efc_J.T @ efc_force. Fast-path worlds with no state flips
@@ -2400,13 +2664,46 @@ def _update_constraint(
       inputs=[changed, ctx.done],
       outputs=[d.qfrc_constraint],
     )
-    wp.launch(
-      _update_constraint_init_qfrc_constraint_sparse(sc, m.nv if det_atomics else 0, det_atomics),
-      dim=(d.nworld, _JTDAJ_THREADS_PER_GROUP if det_atomics else d.njmax),
-      inputs=[d.nefc, dj.efc.J_rownnz, dj.efc.J_rowadr, dj.efc.J_colind, dj.efc.J, d.efc.force, dj.dof_cdof, changed, ctx.done],
-      outputs=[d.qfrc_constraint],
-      block_dim=_JTDAJ_THREADS_PER_GROUP if det_atomics else None,
-    )
+    efc_J_inputs = [dj.efc.J_rownnz, dj.efc.J_rowadr, dj.efc.J_colind, dj.efc.J, d.efc.force, dj.dof_cdof, changed, ctx.done]
+    qfrc_adr = getattr(ctx, "qfrc_adr", None)
+    if det_atomics and qfrc_adr is not None:
+      # one thread per dof, which adds the rows of its groups in order
+      nv = qfrc_adr.shape[1] - 1
+      wp.launch(
+        _update_constraint_init_qfrc_constraint_sparse(sc, nv, True, True),
+        dim=(d.nworld, nv),
+        inputs=[
+          d.nf,
+          dj.efc.jtdaj_adr,
+          dj.efc.jtdaj_nrow,
+          dj.efc.J_rowadr,
+          dj.efc.J,
+          d.efc.force,
+          dj.dof_cdof,
+          d.dof_frictionadr,
+          qfrc_adr,
+          ctx.qfrc_entry,
+          changed,
+          ctx.done,
+        ],
+        outputs=[d.qfrc_constraint],
+      )
+    elif det_atomics:
+      # one block per world, which adds the rows in order
+      wp.launch(
+        _update_constraint_init_qfrc_constraint_sparse(sc, m.nv, False, True),
+        dim=(d.nworld, _JTDAJ_THREADS_PER_GROUP),
+        inputs=[d.nefc] + efc_J_inputs,
+        outputs=[d.qfrc_constraint],
+        block_dim=_JTDAJ_THREADS_PER_GROUP,
+      )
+    else:
+      wp.launch(
+        _update_constraint_init_qfrc_constraint_sparse(sc, 0),
+        dim=(d.nworld, d.njmax),
+        inputs=[d.nefc] + efc_J_inputs,
+        outputs=[d.qfrc_constraint],
+      )
   else:
     wp.launch(
       _update_constraint_init_qfrc_constraint_dense(stable_fast),
@@ -3918,7 +4215,7 @@ def _JTDACJ_sparse(
     h_out: wp.array3d[float],
   ):
     worldid, slot, lane = wp.tid()
-    if wp.static(ELLIPTIC):
+    if wp.static(ELLIPTIC or deterministic):
       lanes = wp.block_dim()
     else:
       lanes = wp.static(_JTDAJ_THREADS_PER_GROUP)
@@ -4095,9 +4392,15 @@ def _update_gradient(m: types.Model, d: types.Data, ctx: SolverContext, compact:
       if det_atomics:
         # one block per world, which adds the groups in order
         groups_per_world = 1
-        entries_per_lane = ceil((mj.nv * (mj.nv + 1) // 2) / threads_per_group)
-        max_records = ceil(d.njmax / groups_per_world) * entries_per_lane
-        jtdaj_kernel = _JTDACJ_sparse(sc, m.opt.cone, max_condim, block_dim, max_records, True)
+        # the kernel takes the number of lanes from the block, which is one thread on the CPU
+        threads_per_group = 1
+        if not wp.get_device().is_cpu:
+          # wider blocks shorten the chain of groups of a world, while all blocks are resident
+          block_size, min_grid_size = wp.get_suggested_block_size(jtdaj_kernel)
+          wide = 2 * d.nworld * _JTDAJ_THREADS_PER_GROUP <= block_size * min_grid_size
+          threads_per_group = (2 if wide else 1) * _JTDAJ_THREADS_PER_GROUP
+        block_dim = threads_per_group
+        jtdaj_kernel = _JTDACJ_sparse(sc, m.opt.cone, max_condim, block_dim, 0, True)
       jtdaj_inputs = [
         m.opt.impratio_invsqrt,
         d.contact.friction,
@@ -4320,15 +4623,16 @@ def _update_gradient_incremental(m: types.Model, d: types.Data, ctx: SolverConte
     dj = ctx.compact_d_full if sc else d
     inc_kernel = _update_gradient_h_incremental_sparse(sc)
     slots = _jtdaj_groups_per_world(d.nworld, ctx.quad_changed_ids.shape[1], inc_kernel)
+    lanes = _JTDAJ_THREADS_PER_GROUP
     if det_atomics:
       # one block per world, which adds the changed rows in order
       slots = 1
-      entries_per_lane = ceil((mj.nv * (mj.nv + 1) // 2) / _JTDAJ_THREADS_PER_GROUP)
-      max_records = ceil(ctx.quad_changed_ids.shape[1] / slots) * entries_per_lane
-      inc_kernel = _update_gradient_h_incremental_sparse(sc, max_records, True)
+      # few worlds have changed rows, and theirs go one after the other: wider blocks shorten them
+      lanes = 2 * _JTDAJ_THREADS_PER_GROUP
+      inc_kernel = _update_gradient_h_incremental_sparse(sc, 0, lanes, True)
     wp.launch(
       inc_kernel,
-      dim=(d.nworld, slots, _JTDAJ_THREADS_PER_GROUP),
+      dim=(d.nworld, slots, lanes),
       inputs=[
         dj.efc.J_rownnz,
         dj.efc.J_rowadr,
@@ -4342,7 +4646,7 @@ def _update_gradient_incremental(m: types.Model, d: types.Data, ctx: SolverConte
         slots,
       ],
       outputs=[ctx.h],
-      block_dim=_JTDAJ_THREADS_PER_GROUP if det_atomics else None,
+      block_dim=lanes if det_atomics else None,
     )
   else:
     tri_dim = m.nv * (m.nv + 1) // 2
@@ -4726,6 +5030,13 @@ def init_context(m: types.Model, d: types.Data, ctx: SolverContext | InverseCont
 
   # Ma = M @ qacc
   _mul_m_compact_aware(m, d, ctx, d.efc.Ma, d.qacc, ctx.done)
+
+  if isinstance(ctx, SolverContext) and (m.opt.deterministic & types.DeterminismType.ATOMICS):
+    # a context made before the option was set
+    if ctx.quad_changed_flag is None and ctx.quad_changed_ids.shape[1] > 0:
+      ctx.quad_changed_flag = wp.zeros((d.nworld, ctx.quad_changed_ids.shape[1] // _QUAD_CHANGED_BITS + 1), dtype=int)
+    if m.is_sparse or sc:
+      _qfrc_constraint_index(m, d, ctx)
 
   _update_constraint(m, d, ctx)
 
