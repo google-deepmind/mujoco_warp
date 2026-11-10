@@ -118,7 +118,7 @@ _TENDON_XML = """
 </mujoco>
 """
 
-# both worlds wrap two of the three geoms: (elbow, wrist) and (post, elbow)
+# the first world wraps the three geoms, the second one does not wrap the wrist
 _TENDON_QPOS = np.array([[-0.4, -0.3, 0.9, 0.9, 0.1, 0.3, 0.2, -0.03], [0.6, 0.0, 1.5, 0.8, 0.0, 0.6, 0.0, 0.0]])
 _TENDON_QVEL = np.array([[1.0, -0.6, 1.6, 0.4, -1.2, 0.8, 1.4], [-1.8, 0.8, 0.6, -1.0, 0.4, 1.2, -0.2]])
 
@@ -1481,6 +1481,41 @@ class SmoothTest(parameterized.TestCase):
     mjw.tendon(m, d)
     _assert_eq(d.ten_length.numpy(), ten_length, "ten_length")
     _assert_eq(d.ten_J.numpy(), ten_J, "ten_J")
+
+  @parameterized.parameters(1, 2)
+  def test_spatial_tendon_deterministic(self, nworld):
+    """Deterministic spatial tendon lengths and moments are added in wrap order without atomics."""
+    mjm, mjds, m, d = _tendon_fixture(nworld)
+
+    def tendon():
+      for arr in (d.ten_length, d.ten_J, d.wrap_xpos):
+        arr.fill_(wp.inf)
+      d.wrap_obj.fill_(-3)
+      mjw.kinematics(m, d)
+      mjw.com_pos(m, d)
+      mjw.tendon(m, d)
+      return d.ten_length.numpy().copy(), d.ten_J.numpy().copy()
+
+    ten_length, ten_J = tendon()
+
+    for w in range(nworld):
+      mjd = mjds[w]
+      nwrap = mjd.ten_wrapnum.sum()
+      # the tendon wraps the three geoms in the first world and two of them in the second one
+      self.assertLen(set(mjd.wrap_obj[:nwrap].reshape(-1)) - {-1, -2}, 3 - w)
+      _assert_eq(ten_length[w], mjd.ten_length, "ten_length")
+      _assert_eq(ten_J[w], mjd.ten_J.reshape(-1), "ten_J")
+      _assert_eq(d.ten_wrapnum.numpy()[w], mjd.ten_wrapnum, "ten_wrapnum")
+      _assert_eq(d.wrap_xpos.numpy()[w].reshape(-1)[: 3 * nwrap], mjd.wrap_xpos.reshape(-1)[: 3 * nwrap], "wrap_xpos")
+      _assert_eq(d.wrap_obj.numpy()[w].reshape(-1)[:nwrap], mjd.wrap_obj.reshape(-1)[:nwrap], "wrap_obj")
+    if nworld == 2:
+      self.assertFalse(np.allclose(ten_J[0], ten_J[1]))
+
+    # same lengths and moments as the kernels with atomics
+    m.opt.deterministic = DeterminismType.NONE
+    ten_length_atomics, ten_J_atomics = tendon()
+    _assert_eq(ten_length_atomics, ten_length, "ten_length")
+    _assert_eq(ten_J_atomics, ten_J, "ten_J")
 
   @parameterized.parameters(1, 2)
   def test_tendon_wrap_inside(self, nworld):
