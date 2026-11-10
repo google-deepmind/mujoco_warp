@@ -2433,6 +2433,7 @@ def _qfrc_constraint_index(m: types.Model, d: types.Data, ctx: SolverContext, sl
   ctx.qfrc_entry = wp.empty((d.nworld, dj.efc.J_colind.shape[2]), dtype=wp.vec4i)
   # an element of H packs its row and its column in an int
   slots = (_jtdaj_wide(m, d, sc) if slots is None else slots) and 0 < ctx.h.shape[1] <= 32768
+  slots = slots and dj.efc.J_colind.shape[2] > 0
   if slots:
     # the Hessian in two kernels: every group at once into its slots, then the slots in group
     # order. One more group than the capacity, whose address is the number of slots.
@@ -2628,21 +2629,24 @@ def _update_gradient_h_incremental_sparse(compact: bool, max_records: int = 0, l
           for entry in range(lane, n_entries, wp.static(LANES)):
             ii = int((wp.sqrt(float(8 * entry + 1)) - 1.0) * 0.5)
             jj = entry - ii * (ii + 1) // 2
+            # the element of H does not depend on J: it is read along with it, which shortens the
+            # loads that depend on each other in the chain of rows of a world
+            colindi = efc_J_colind_in[worldid, 0, rowadr + ii]
+            colindj = efc_J_colind_in[worldid, 0, rowadr + jj]
+            if wp.static(COMPACT):
+              colindi = dof_cdof_in[worldid, colindi]
+              colindj = dof_cdof_in[worldid, colindj]
+              if colindi < 0 or colindj < 0:
+                continue
+            # an element of H has a single thread in each row
+            dof_lo = wp.min(colindi, colindj)
+            dof_hi = wp.max(colindi, colindj)
+            h_prev = ctx_h_out[worldid, dof_lo, dof_hi]
             Ji = efc_J_in[worldid, 0, rowadr + ii]
             Jj = efc_J_in[worldid, 0, rowadr + jj]
             h = sign * Ji * Jj
             if h != 0.0:
-              colindi = efc_J_colind_in[worldid, 0, rowadr + ii]
-              colindj = efc_J_colind_in[worldid, 0, rowadr + jj]
-              if wp.static(COMPACT):
-                colindi = dof_cdof_in[worldid, colindi]
-                colindj = dof_cdof_in[worldid, colindj]
-                if colindi < 0 or colindj < 0:
-                  continue
-              # an element of H has a single thread in each row
-              dof_lo = wp.min(colindi, colindj)
-              dof_hi = wp.max(colindi, colindj)
-              ctx_h_out[worldid, dof_lo, dof_hi] = ctx_h_out[worldid, dof_lo, dof_hi] + h
+              ctx_h_out[worldid, dof_lo, dof_hi] = h_prev + h
 
       # every lane has read the words
       wp.tile_scatter_masked(barrier, 0, 0, False)
@@ -4600,16 +4604,37 @@ def _JTDACJ_sparse_add(
   lanes = wp.block_dim()
   # a cooperative tile operation ends with a block barrier
   barrier = wp.tile_zeros(shape=(1,), dtype=int, storage="shared")
+  # The chain of groups of a world is as long as its loads that depend on each other. The slot
+  # that a lane takes first in a group does not depend on H: it is read one group ahead, while
+  # the block adds the group before, which leaves the element of H behind the barrier.
+  last = wp.min(slot_in.shape[1], slot_dof_in.shape[1]) - 1
+  ahead = wp.min(slot_adr_in[worldid, 0] + lane, last)
+  hval_ahead = slot_in[worldid, ahead]
+  dofs_ahead = slot_dof_in[worldid, ahead]
   for groupid in range(wp.min(efc_jtdaj_nblock_in[worldid], slot_adr_in.shape[1] - 1)):
     wp.tile_scatter_masked(barrier, 0, 0, False)
-    for slot in range(slot_adr_in[worldid, groupid] + lane, slot_adr_in[worldid, groupid + 1], lanes):
-      hval = slot_in[worldid, slot]
-      if hval != 0.0:
-        dofs = slot_dof_in[worldid, slot]
-        if dofs >= 0:
-          dof_row = dofs >> 16
-          dof_col = dofs & 65535
-          h_out[worldid, dof_row, dof_col] = h_out[worldid, dof_row, dof_col] + hval
+    slot = slot_adr_in[worldid, groupid] + lane
+    slot_end = slot_adr_in[worldid, groupid + 1]
+    hval = hval_ahead
+    dofs = dofs_ahead
+    first = slot < slot_end and hval != 0.0 and dofs >= 0
+    h = float(0.0)
+    if first:
+      h = h_out[worldid, dofs >> 16, dofs & 65535]
+    # used if the next group has a slot for this lane
+    ahead = wp.min(slot_end + lane, last)
+    hval_ahead = slot_in[worldid, ahead]
+    dofs_ahead = slot_dof_in[worldid, ahead]
+    if first:
+      h_out[worldid, dofs >> 16, dofs & 65535] = h + hval
+    # a group with more slots than lanes
+    for more in range(slot + lanes, slot_end, lanes):
+      hval = slot_in[worldid, more]
+      dofs = slot_dof_in[worldid, more]
+      if hval != 0.0 and dofs >= 0:
+        dof_row = dofs >> 16
+        dof_col = dofs & 65535
+        h_out[worldid, dof_row, dof_col] = h_out[worldid, dof_row, dof_col] + hval
 
 
 def _jtdaj_max_condim(m: types.Model) -> int:
