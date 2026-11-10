@@ -23,6 +23,7 @@ from absl.testing import parameterized
 
 import mujoco_warp as mjw
 from mujoco_warp import ConeType
+from mujoco_warp import DeterminismType
 from mujoco_warp import DisableBit
 from mujoco_warp import test_data
 from mujoco_warp._src import types
@@ -1299,6 +1300,84 @@ class SmoothTest(parameterized.TestCase):
         d.moment_colind.numpy()[0],
       )
       _assert_eq(wp_actuator_moment, mj_actuator_moment, "actuator_moment")
+
+  @parameterized.parameters(1, 2)
+  def test_joint_tendon_deterministic(self, nworld):
+    """Deterministic fixed tendon lengths are added in joint order without atomics."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <body>
+            <joint name="slide0" type="slide" axis="1 0 0"/>
+            <geom size=".1"/>
+            <body pos="1 0 0">
+              <joint name="hinge1" axis="0 1 0"/>
+              <geom size=".1"/>
+              <body pos="1 0 0">
+                <joint name="slide2" type="slide" axis="0 0 1"/>
+                <joint name="hinge2" axis="1 0 0"/>
+                <geom size=".1"/>
+              </body>
+            </body>
+          </body>
+          <body pos="0 1 0">
+            <joint name="hinge3" axis="0 0 1"/>
+            <geom size=".1"/>
+          </body>
+        </worldbody>
+        <tendon>
+          <fixed>
+            <joint joint="hinge1" coef=".5"/>
+          </fixed>
+          <fixed>
+            <joint joint="slide0" coef="1"/>
+            <joint joint="hinge1" coef="-2"/>
+            <joint joint="slide2" coef=".7"/>
+            <joint joint="hinge3" coef="-.3"/>
+          </fixed>
+          <fixed>
+            <joint joint="hinge3" coef="3"/>
+            <joint joint="hinge2" coef="1.5"/>
+            <joint joint="slide0" coef="-.4"/>
+          </fixed>
+        </tendon>
+        <keyframe>
+          <key qpos=".3 -.4 .5 .6 -.7"/>
+        </keyframe>
+      </mujoco>
+      """,
+      keyframe=0,
+      nworld=nworld,
+      overrides={"opt.deterministic": DeterminismType.ATOMICS},
+    )
+
+    qpos = d.qpos.numpy()
+    if nworld == 2:
+      qpos[1] = [-0.2, 0.9, 0.1, -0.5, 0.8]
+      d.qpos.assign(qpos)
+
+    for arr in (d.ten_length, d.ten_J):
+      arr.fill_(wp.inf)
+    mjw.tendon(m, d)
+    ten_length = d.ten_length.numpy().copy()
+    ten_J = d.ten_J.numpy().copy()
+
+    for w in range(nworld):
+      mjd.qpos[:] = qpos[w]
+      mujoco.mj_forward(mjm, mjd)
+      _assert_eq(ten_length[w], mjd.ten_length, "ten_length")
+      _assert_eq(ten_J[w], mjd.ten_J.reshape(-1), "ten_J")
+    if nworld == 2:
+      self.assertFalse(np.allclose(ten_length[0], ten_length[1]))
+
+    # same lengths as the kernel with atomics
+    m.opt.deterministic = DeterminismType.NONE
+    for arr in (d.ten_length, d.ten_J):
+      arr.fill_(wp.inf)
+    mjw.tendon(m, d)
+    _assert_eq(d.ten_length.numpy(), ten_length, "ten_length")
+    _assert_eq(d.ten_J.numpy(), ten_J, "ten_J")
 
   @parameterized.parameters(1, 2)
   def test_tendon_wrap_inside(self, nworld):

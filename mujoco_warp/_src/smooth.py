@@ -4684,7 +4684,19 @@ def _joint_tendon(deterministic: bool = False):
 
     # add to length
     L = prm * qpos_in[worldid, jnt_qposadr[wrapobjid]]
-    wp.atomic_add(ten_length_out[worldid], tenid, L)
+    if wp.static(deterministic):
+      # The joints of a tendon are contiguous: the thread of the first one adds them in order, so
+      # each length has one writer and a fixed summation order, without atomics.
+      if wrapid == 0 or tendon_jnt_adr[wp.max(wrapid - 1, 0)] != tenid:
+        length = L
+        for i in range(wrapid + 1, tendon_jnt_adr.shape[0]):
+          if tendon_jnt_adr[i] != tenid:
+            break
+          wrapjntidi = wrap_jnt_adr[i]
+          length += wrap_prm[wrapjntidi] * qpos_in[worldid, jnt_qposadr[wrap_objid[wrapjntidi]]]
+        ten_length_out[worldid, tenid] = length
+    else:
+      wp.atomic_add(ten_length_out[worldid], tenid, L)
 
     # add to moment
     dofadr = jnt_dofadr[wrapobjid]
