@@ -26,6 +26,27 @@ wp.set_module_options({"default_grid_stride": False})
 
 
 @wp.struct
+class _ContactKeys:
+  worldid: wp.array[int]
+  geom: wp.array[wp.vec2i]
+  flex: wp.array[wp.vec2i]
+  elem: wp.array[wp.vec2i]
+  vert: wp.array[wp.vec2i]
+  pos: wp.array2d[wp.uint32]
+  frame: wp.array3d[wp.uint32]
+  dist: wp.array[wp.uint32]
+  dim: wp.array[int]
+  type: wp.array[int]
+  includemargin: wp.array[wp.uint32]
+  friction: wp.array2d[wp.uint32]
+  solref: wp.array2d[wp.uint32]
+  solreffriction: wp.array2d[wp.uint32]
+  solimp: wp.array2d[wp.uint32]
+  adhesion: wp.array[wp.uint32]
+  geomcollisionid: wp.array[int]
+
+
+@wp.struct
 class _ConstraintKeys:
   primary: wp.array2d[wp.vec4i]
   J: wp.array3d[wp.uint32]
@@ -48,13 +69,55 @@ def _float_key(bits: wp.uint32) -> wp.uint32:
 
 
 @wp.func
-def _contact_less(keys: wp.array3d[wp.uint32], worldid: int, a: int, b: int) -> bool:
-  for j in range(keys.shape[2]):
-    ka = keys[worldid, a, j]
-    kb = keys[worldid, b, j]
-    if ka != kb:
-      return ka < kb
-  return False
+def _contact_less(keys: _ContactKeys, worldid: int, a: int, b: int) -> bool:
+  if keys.worldid[a] != keys.worldid[b]:
+    return keys.worldid[a] < keys.worldid[b]
+  ga = keys.geom[a]
+  gb = keys.geom[b]
+  for i in range(2):
+    if ga[i] != gb[i]:
+      return ga[i] < gb[i]
+  # Rigid writers do not initialize flex feature fields; ignore those slots when geom >= 0.
+  if (ga[0] < 0 or ga[1] < 0) and keys.flex.shape[0] > 0:
+    for i in range(2):
+      if ga[i] < 0 and keys.flex[a][i] != keys.flex[b][i]:
+        return keys.flex[a][i] < keys.flex[b][i]
+    for i in range(2):
+      if ga[i] < 0 and keys.elem[a][i] != keys.elem[b][i]:
+        return keys.elem[a][i] < keys.elem[b][i]
+    for i in range(2):
+      if ga[i] < 0 and keys.vert[a][i] != keys.vert[b][i]:
+        return keys.vert[a][i] < keys.vert[b][i]
+  for i in range(3):
+    if keys.pos[a, i] != keys.pos[b, i]:
+      return _float_key(keys.pos[a, i]) < _float_key(keys.pos[b, i])
+  for i in range(3):
+    for j in range(3):
+      if keys.frame[a, i, j] != keys.frame[b, i, j]:
+        return _float_key(keys.frame[a, i, j]) < _float_key(keys.frame[b, i, j])
+  if keys.dist[a] != keys.dist[b]:
+    return _float_key(keys.dist[a]) < _float_key(keys.dist[b])
+  if keys.dim[a] != keys.dim[b]:
+    return keys.dim[a] < keys.dim[b]
+  if keys.type[a] != keys.type[b]:
+    return keys.type[a] < keys.type[b]
+  if keys.includemargin[a] != keys.includemargin[b]:
+    return _float_key(keys.includemargin[a]) < _float_key(keys.includemargin[b])
+  for i in range(5):
+    if keys.friction[a, i] != keys.friction[b, i]:
+      return _float_key(keys.friction[a, i]) < _float_key(keys.friction[b, i])
+  for i in range(2):
+    if keys.solref[a, i] != keys.solref[b, i]:
+      return _float_key(keys.solref[a, i]) < _float_key(keys.solref[b, i])
+  for i in range(2):
+    if keys.solreffriction[a, i] != keys.solreffriction[b, i]:
+      return _float_key(keys.solreffriction[a, i]) < _float_key(keys.solreffriction[b, i])
+  for i in range(5):
+    if keys.solimp[a, i] != keys.solimp[b, i]:
+      return _float_key(keys.solimp[a, i]) < _float_key(keys.solimp[b, i])
+  if keys.adhesion[a] != keys.adhesion[b]:
+    return _float_key(keys.adhesion[a]) < _float_key(keys.adhesion[b])
+  return keys.geomcollisionid[a] < keys.geomcollisionid[b]
 
 
 @wp.func
@@ -77,43 +140,27 @@ def _constraint_less(keys: _ConstraintKeys, worldid: int, a: int, b: int) -> boo
       cb = keys.J_colind[worldid, 0, ab + i]
       if ca != cb:
         return ca < cb
-      va = _float_key(keys.J[worldid, 0, aa + i])
-      vb = _float_key(keys.J[worldid, 0, ab + i])
-      if va != vb:
-        return va < vb
+      if keys.J[worldid, 0, aa + i] != keys.J[worldid, 0, ab + i]:
+        return _float_key(keys.J[worldid, 0, aa + i]) < _float_key(keys.J[worldid, 0, ab + i])
     if na != nb:
       return na < nb
   else:
     for i in range(keys.nv):
-      va = _float_key(keys.J[worldid, a, i])
-      vb = _float_key(keys.J[worldid, b, i])
-      if va != vb:
-        return va < vb
+      if keys.J[worldid, a, i] != keys.J[worldid, b, i]:
+        return _float_key(keys.J[worldid, a, i]) < _float_key(keys.J[worldid, b, i])
 
-  va = _float_key(keys.pos[worldid, a])
-  vb = _float_key(keys.pos[worldid, b])
-  if va != vb:
-    return va < vb
-  va = _float_key(keys.margin[worldid, a])
-  vb = _float_key(keys.margin[worldid, b])
-  if va != vb:
-    return va < vb
-  va = _float_key(keys.D[worldid, a])
-  vb = _float_key(keys.D[worldid, b])
-  if va != vb:
-    return va < vb
-  va = _float_key(keys.vel[worldid, a])
-  vb = _float_key(keys.vel[worldid, b])
-  if va != vb:
-    return va < vb
-  va = _float_key(keys.aref[worldid, a])
-  vb = _float_key(keys.aref[worldid, b])
-  if va != vb:
-    return va < vb
-  va = _float_key(keys.frictionloss[worldid, a])
-  vb = _float_key(keys.frictionloss[worldid, b])
-  if va != vb:
-    return va < vb
+  if keys.pos[worldid, a] != keys.pos[worldid, b]:
+    return _float_key(keys.pos[worldid, a]) < _float_key(keys.pos[worldid, b])
+  if keys.margin[worldid, a] != keys.margin[worldid, b]:
+    return _float_key(keys.margin[worldid, a]) < _float_key(keys.margin[worldid, b])
+  if keys.D[worldid, a] != keys.D[worldid, b]:
+    return _float_key(keys.D[worldid, a]) < _float_key(keys.D[worldid, b])
+  if keys.vel[worldid, a] != keys.vel[worldid, b]:
+    return _float_key(keys.vel[worldid, a]) < _float_key(keys.vel[worldid, b])
+  if keys.aref[worldid, a] != keys.aref[worldid, b]:
+    return _float_key(keys.aref[worldid, a]) < _float_key(keys.aref[worldid, b])
+  if keys.frictionloss[worldid, a] != keys.frictionloss[worldid, b]:
+    return _float_key(keys.frictionloss[worldid, a]) < _float_key(keys.frictionloss[worldid, b])
   return False
 
 
@@ -151,21 +198,18 @@ def _merge(compare: Callable):
     left = i < middle
     lo = wp.where(left, middle, start)
     hi = wp.where(left, end, middle)
-    other_start = lo
     source = order_in[worldid, i]
     while lo < hi:
       mid = (lo + hi) // 2
       other = order_in[worldid, mid]
-      before = compare(keys_in, worldid, other, source)
+      lhs = wp.where(left, other, source)
+      rhs = wp.where(left, source, other)
       # Stable merge of *identical* keys, not a key based on emission order.
-      if not left:
-        before = not compare(keys_in, worldid, source, other)
-      if before:
+      if compare(keys_in, worldid, lhs, rhs) == left:
         lo = mid + 1
       else:
         hi = mid
-    dest = start + (i - wp.where(left, start, middle)) + lo - other_start
-    order_out[worldid, dest] = source
+    order_out[worldid, i - middle + lo] = source
 
   return kernel
 
@@ -175,43 +219,13 @@ def _gather(
   # In:
   count_in: wp.array[int],
   order_in: wp.array2d[int],
-  value_in: wp.array3d[Any],
+  value_in: wp.array3d[wp.uint32],
   # Out:
-  value_out: wp.array3d[Any],
+  value_out: wp.array3d[wp.uint32],
 ):
   worldid, row, col = wp.tid()
   if row < count_in[worldid] and row < order_in.shape[1]:
     value_out[worldid, row, col] = value_in[worldid, order_in[worldid, row], col]
-
-
-@cache_kernel
-def _contact_key_field(is_float: bool, feature: bool):
-  @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
-  def kernel(
-    # Data in:
-    nacon_in: wp.array[int],
-    # In:
-    geom_in: wp.array[wp.vec2i],
-    value_in: wp.array3d[wp.uint32],
-    offset: int,
-    # Out:
-    keys_out: wp.array3d[wp.uint32],
-  ):
-    i, j = wp.tid()
-    if i >= wp.min(nacon_in[0], keys_out.shape[1]):
-      return
-    bits = value_in[0, i, j]
-    if wp.static(feature):
-      # Rigid writers do not initialize flex feature fields; ignore those slots.
-      if geom_in[i][j] >= 0:
-        bits = wp.uint32(0xFFFFFFFF)
-    if wp.static(is_float):
-      key = _float_key(bits)
-    else:
-      key = bits ^ wp.uint32(0x80000000)
-    keys_out[0, i, offset + j] = key
-
-  return kernel
 
 
 @wp.kernel
@@ -241,17 +255,18 @@ def _constraint_counts(
 def _constraint_primary(
   # Model:
   eq_type: wp.array[int],
+  # Data in:
+  efc_type_in: wp.array2d[int],
+  efc_id_in: wp.array2d[int],
   # In:
   count_in: wp.array[int],
-  type_in: wp.array2d[int],
-  id_in: wp.array2d[int],
   # Out:
   keys_out: wp.array2d[wp.vec4i],
 ):
   worldid, row = wp.tid()
   if row < count_in[worldid]:
-    row_type = type_in[worldid, row]
-    id = id_in[worldid, row]
+    row_type = efc_type_in[worldid, row]
+    id = efc_id_in[worldid, row]
     subtype = int(0)
     component = int(0)
     if row_type == int(types.ConstraintType.EQUALITY):
@@ -262,7 +277,7 @@ def _constraint_primary(
         nrow = 3 if subtype == int(types.EqType.CONNECT) else 6
         while component + 1 < nrow and row > component:
           previous = row - component - 1
-          if type_in[worldid, previous] != row_type or id_in[worldid, previous] != id:
+          if efc_type_in[worldid, previous] != row_type or efc_id_in[worldid, previous] != id:
             break
           component += 1
     # Force reconstruction requires all connects before welds, regardless of XML equality IDs.
@@ -271,17 +286,18 @@ def _constraint_primary(
 
 @wp.kernel
 def _contact_constraint_primary(
+  # Model:
+  opt_cone: int,
   # Data in:
+  contact_dim_in: wp.array[int],
+  contact_efc_address_in: wp.array2d[int],
+  contact_worldid_in: wp.array[int],
+  efc_type_in: wp.array2d[int],
+  efc_id_in: wp.array2d[int],
   nacon_in: wp.array[int],
   # In:
   count_in: wp.array[int],
-  worldid_in: wp.array[int],
-  efc_address_in: wp.array2d[int],
   order_in: wp.array2d[int],
-  type_in: wp.array2d[int],
-  id_in: wp.array2d[int],
-  dim_in: wp.array[int],
-  is_pyramidal: bool,
   # Out:
   keys_out: wp.array2d[wp.vec4i],
 ):
@@ -289,15 +305,17 @@ def _contact_constraint_primary(
   if rank >= wp.min(nacon_in[0], order_in.shape[1]):
     return
   conid = order_in[0, rank]
-  dim = dim_in[conid]
-  nrow = wp.max(1, 2 * (dim - 1)) if is_pyramidal else dim
+  nrow = contact_dim_in[conid]
+  if opt_cone == int(types.ConeType.PYRAMIDAL):
+    nrow = wp.max(1, 2 * (nrow - 1))
   if component >= nrow:
     return
-  worldid = worldid_in[conid]
-  row = efc_address_in[conid, component]
+  worldid = contact_worldid_in[conid]
+  row = contact_efc_address_in[conid, component]
   if row >= 0 and row < count_in[worldid]:
-    if type_in[worldid, row] >= int(types.ConstraintType.CONTACT_FRICTIONLESS) and id_in[worldid, row] == conid:
-      keys_out[worldid, row] = wp.vec4i(type_in[worldid, row], 0, rank, component)
+    row_type = efc_type_in[worldid, row]
+    if row_type >= int(types.ConstraintType.CONTACT_FRICTIONLESS) and efc_id_in[worldid, row] == conid:
+      keys_out[worldid, row] = wp.vec4i(row_type, 0, rank, component)
 
 
 @wp.kernel
@@ -309,29 +327,30 @@ def _inverse(order_in: wp.array2d[int], inverse_out: wp.array2d[int]):
 @wp.kernel
 def _remap_contacts(
   # Data in:
+  contact_efc_address_in: wp.array2d[int],
+  contact_worldid_in: wp.array[int],
   nacon_in: wp.array[int],
   # In:
   count_in: wp.array[int],
-  worldid_in: wp.array[int],
   inverse_in: wp.array2d[int],
-  address_in: wp.array2d[int],
-  # Out:
-  address_out: wp.array2d[int],
+  # Data out:
+  contact_efc_address_out: wp.array2d[int],
 ):
   conid, component = wp.tid()
-  if conid < wp.min(nacon_in[0], address_in.shape[0]):
-    row = address_in[conid, component]
-    worldid = worldid_in[conid]
+  if conid < wp.min(nacon_in[0], contact_efc_address_in.shape[0]):
+    row = contact_efc_address_in[conid, component]
+    worldid = contact_worldid_in[conid]
     if row >= 0 and row < count_in[worldid]:
-      address_out[conid, component] = inverse_in[worldid, row]
+      contact_efc_address_out[conid, component] = inverse_in[worldid, row]
 
 
 @wp.kernel
 def _sparse_offsets(
+  # Data in:
+  efc_J_rownnz_in: wp.array2d[int],
   # In:
   count_in: wp.array[int],
   order_in: wp.array2d[int],
-  rownnz_in: wp.array2d[int],
   # Out:
   offsets_out: wp.array2d[int],
 ):
@@ -340,64 +359,65 @@ def _sparse_offsets(
   # Scan assembled rows within each world, not the (possibly interleaved) contact buffer.
   for row in range(count_in[worldid]):
     offsets_out[worldid, row] = offset
-    offset += rownnz_in[worldid, order_in[worldid, row]]
+    offset += efc_J_rownnz_in[worldid, order_in[worldid, row]]
 
 
 @wp.kernel
 def _pack_sparse(
+  # Data in:
+  efc_J_rownnz_in: wp.array2d[int],
+  efc_J_rowadr_in: wp.array2d[int],
+  efc_J_colind_in: wp.array3d[int],
+  efc_J_in: wp.array3d[float],
   # In:
   count_in: wp.array[int],
   order_in: wp.array2d[int],
   offsets_in: wp.array2d[int],
-  rownnz_in: wp.array2d[int],
-  rowadr_in: wp.array2d[int],
-  colind_in: wp.array3d[int],
-  J_in: wp.array3d[float],
-  # Out:
-  rownnz_out: wp.array2d[int],
-  rowadr_out: wp.array2d[int],
-  colind_out: wp.array3d[int],
-  J_out: wp.array3d[float],
+  # Data out:
+  efc_J_rownnz_out: wp.array2d[int],
+  efc_J_rowadr_out: wp.array2d[int],
+  efc_J_colind_out: wp.array3d[int],
+  efc_J_out: wp.array3d[float],
 ):
   worldid, row = wp.tid()
   if row >= count_in[worldid]:
     return
   old = order_in[worldid, row]
-  nnz = rownnz_in[worldid, old]
-  start = rowadr_in[worldid, old]
+  nnz = efc_J_rownnz_in[worldid, old]
+  start = efc_J_rowadr_in[worldid, old]
   adr = offsets_in[worldid, row]
-  rownnz_out[worldid, row] = nnz
-  rowadr_out[worldid, row] = adr
+  efc_J_rownnz_out[worldid, row] = nnz
+  efc_J_rowadr_out[worldid, row] = adr
   for i in range(nnz):
-    colind_out[worldid, 0, adr + i] = colind_in[worldid, 0, start + i]
-    J_out[worldid, 0, adr + i] = J_in[worldid, 0, start + i]
+    efc_J_colind_out[worldid, 0, adr + i] = efc_J_colind_in[worldid, 0, start + i]
+    efc_J_out[worldid, 0, adr + i] = efc_J_in[worldid, 0, start + i]
 
 
 @wp.kernel
 def _remap_blocks(
+  # Data in:
+  efc_jtdaj_adr_in: wp.array2d[int],
+  efc_jtdaj_nblock_in: wp.array[int],
   # In:
   count_in: wp.array[int],
-  nblock_in: wp.array[int],
   inverse_in: wp.array2d[int],
-  adr_in: wp.array2d[int],
-  nrow_in: wp.array2d[int],
+  # Data out:
+  efc_jtdaj_adr_out: wp.array2d[int],
   # Out:
-  adr_out: wp.array2d[int],
   nblock_out: wp.array[int],
 ):
   worldid, block = wp.tid()
   if block == 0:
-    nblock_out[worldid] = wp.where(count_in[worldid] > 0, nblock_in[worldid], 0)
-  if count_in[worldid] == 0 or block >= nblock_in[worldid]:
+    nblock_out[worldid] = wp.where(count_in[worldid] > 0, efc_jtdaj_nblock_in[worldid], 0)
+  if count_in[worldid] == 0 or block >= efc_jtdaj_nblock_in[worldid]:
     return
-  start = adr_in[worldid, block]
-  first = inverse_in[worldid, start]
-  for i in range(1, nrow_in[worldid, block]):
-    first = wp.min(first, inverse_in[worldid, start + i])
-  adr_out[worldid, block] = first
+  # The rows of a block share a primary key up to their component, so its head row stays first.
+  efc_jtdaj_adr_out[worldid, block] = inverse_in[worldid, efc_jtdaj_adr_in[worldid, block]]
 
 
-def permutation(count: wp.array, capacity: int, keys: wp.array | _ConstraintKeys.cls, compare: Callable) -> wp.array:
+def permutation(
+  count: wp.array, capacity: int, keys: wp.array | _ContactKeys.cls | _ConstraintKeys.cls, compare: Callable
+) -> wp.array:
   """Stable parallel mergesort, bounded by capacity and compatible with CUDA capture."""
   order = wp.empty((count.size, capacity), dtype=int)
   scratch = wp.empty_like(order)
@@ -410,14 +430,9 @@ def permutation(count: wp.array, capacity: int, keys: wp.array | _ConstraintKeys
   return order
 
 
-def row_view(value: wp.array, nworld: int, capacity: int, dtype=None) -> wp.array:
+def row_view(value: wp.array, nworld: int, capacity: int) -> wp.array:
   """View a contiguous array as scalar rows without moving its storage."""
-  scalar = (
-    value.dtype._wp_scalar_type_
-    if wp.types.type_is_vector(value.dtype) or wp.types.type_is_matrix(value.dtype)
-    else value.dtype
-  )
-  view = value.view(dtype or scalar)
+  view = value.view(wp.uint32)
   width = view.size // max(nworld * capacity, 1)
   # Keep the backing allocation alive when a captured gather retains the view.
   return view.reshape((nworld, capacity, width))
@@ -425,10 +440,9 @@ def row_view(value: wp.array, nworld: int, capacity: int, dtype=None) -> wp.arra
 
 def gather(count: wp.array, order: wp.array, value: wp.array, capacity: int):
   """Permute active rows in place, preserving array references and unused padding."""
-  source = wp.clone(value)
-  source_view = row_view(source, count.size, capacity)
-  dest_view = row_view(value, count.size, capacity)
-  wp.launch(_gather, dim=dest_view.shape, inputs=[count, order, source_view], outputs=[dest_view])
+  source = row_view(wp.clone(value), count.size, capacity)
+  dest = row_view(value, count.size, capacity)
+  wp.launch(_gather, dim=dest.shape, inputs=[count, order, source], outputs=[dest])
 
 
 def contact_permutation(d: types.Data) -> wp.array:
@@ -437,40 +451,24 @@ def contact_permutation(d: types.Data) -> wp.array:
   Equal keys describe interchangeable contacts. This only orders the retained contacts on overflow;
   it cannot recover contacts dropped by collision detection.
   """
-  fields = []
-  offset = 0
-  for value, is_float, feature in (
-    (d.contact.worldid, False, False),
-    (d.contact.geom, False, False),
-    (d.contact.flex, False, True),
-    (d.contact.elem, False, True),
-    (d.contact.vert, False, True),
-    (d.contact.pos, True, False),
-    (d.contact.frame, True, False),
-    (d.contact.dist, True, False),
-    (d.contact.dim, False, False),
-    (d.contact.type, False, False),
-    (d.contact.includemargin, True, False),
-    (d.contact.friction, True, False),
-    (d.contact.solref, True, False),
-    (d.contact.solreffriction, True, False),
-    (d.contact.solimp, True, False),
-    (d.contact.adhesion, True, False),
-    (d.contact.geomcollisionid, False, False),
-  ):
-    if not value.size:
-      continue
-    view = row_view(value, 1, d.naconmax, wp.uint32)
-    fields.append((view, offset, is_float, feature))
-    offset += view.shape[2]
-  keys = wp.empty((1, d.naconmax, offset), dtype=wp.uint32)
-  for view, offset, is_float, feature in fields:
-    wp.launch(
-      _contact_key_field(is_float, feature),
-      dim=(d.naconmax, view.shape[2]),
-      inputs=[d.nacon, d.contact.geom, view, offset],
-      outputs=[keys],
-    )
+  keys = _ContactKeys()
+  keys.worldid = d.contact.worldid
+  keys.geom = d.contact.geom
+  keys.flex = d.contact.flex
+  keys.elem = d.contact.elem
+  keys.vert = d.contact.vert
+  keys.pos = d.contact.pos.view(wp.uint32)
+  keys.frame = d.contact.frame.view(wp.uint32)
+  keys.dist = d.contact.dist.view(wp.uint32)
+  keys.dim = d.contact.dim
+  keys.type = d.contact.type
+  keys.includemargin = d.contact.includemargin.view(wp.uint32)
+  keys.friction = d.contact.friction.view(wp.uint32)
+  keys.solref = d.contact.solref.view(wp.uint32)
+  keys.solreffriction = d.contact.solreffriction.view(wp.uint32)
+  keys.solimp = d.contact.solimp.view(wp.uint32)
+  keys.adhesion = d.contact.adhesion.view(wp.uint32)
+  keys.geomcollisionid = d.contact.geomcollisionid
   return permutation(d.nacon, d.naconmax, keys, _contact_less)
 
 
@@ -497,28 +495,24 @@ def constraints(m: types.Model, d: types.Data, nnz: wp.array | None = None):
   keys.frictionloss = d.efc.frictionloss.view(wp.uint32)
   keys.nv = m.nv
   wp.launch(
-    _constraint_primary, dim=keys.primary.shape, inputs=[m.eq_type, count, d.efc.type, d.efc.id], outputs=[keys.primary]
+    _constraint_primary, dim=keys.primary.shape, inputs=[m.eq_type, d.efc.type, d.efc.id, count], outputs=[keys.primary]
   )
   # CONTACTS may be set with collision disabled or standalone make_constraint calls, so it does
   # not establish that contacts are already in canonical order.
-  if d.naconmax:
-    contact_order = contact_permutation(d)
-  else:
-    contact_order = wp.empty((1, d.naconmax), dtype=int)
-    wp.launch(_identity, dim=contact_order.shape, outputs=[contact_order])
+  contact_order = contact_permutation(d)
   wp.launch(
     _contact_constraint_primary,
     dim=d.contact.efc_address.shape,
     inputs=[
-      d.nacon,
-      count,
-      d.contact.worldid,
+      m.opt.cone,
+      d.contact.dim,
       d.contact.efc_address,
-      contact_order,
+      d.contact.worldid,
       d.efc.type,
       d.efc.id,
-      d.contact.dim,
-      m.opt.cone == types.ConeType.PYRAMIDAL,
+      d.nacon,
+      count,
+      contact_order,
     ],
     outputs=[keys.primary],
   )
@@ -528,23 +522,23 @@ def constraints(m: types.Model, d: types.Data, nnz: wp.array | None = None):
   wp.launch(
     _remap_contacts,
     dim=d.contact.efc_address.shape,
-    inputs=[d.nacon, count, d.contact.worldid, inverse, d.contact.efc_address],
+    inputs=[d.contact.efc_address, d.contact.worldid, d.nacon, count, inverse],
     outputs=[d.contact.efc_address],
   )
   if m.is_sparse:
     offsets = wp.empty_like(order)
-    wp.launch(_sparse_offsets, dim=d.nworld, inputs=[count, order, d.efc.J_rownnz], outputs=[offsets])
+    wp.launch(_sparse_offsets, dim=d.nworld, inputs=[d.efc.J_rownnz, count, order], outputs=[offsets])
     wp.launch(
       _pack_sparse,
       dim=order.shape,
       inputs=[
-        count,
-        order,
-        offsets,
         wp.clone(d.efc.J_rownnz),
         wp.clone(d.efc.J_rowadr),
         wp.clone(d.efc.J_colind),
         wp.clone(d.efc.J),
+        count,
+        order,
+        offsets,
       ],
       outputs=[d.efc.J_rownnz, d.efc.J_rowadr, d.efc.J_colind, d.efc.J],
     )
@@ -553,7 +547,7 @@ def constraints(m: types.Model, d: types.Data, nnz: wp.array | None = None):
       wp.launch(
         _remap_blocks,
         dim=order.shape,
-        inputs=[count, d.efc.jtdaj_nblock, inverse, d.efc.jtdaj_adr, d.efc.jtdaj_nrow],
+        inputs=[d.efc.jtdaj_adr, d.efc.jtdaj_nblock, count, inverse],
         outputs=[d.efc.jtdaj_adr, nblock],
       )
       blocks = permutation(nblock, d.njmax, d.efc.jtdaj_adr, _block_less)

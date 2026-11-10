@@ -38,6 +38,7 @@ from mujoco_warp._src import collision_driver
 from mujoco_warp._src import constraint
 from mujoco_warp._src import render_util
 from mujoco_warp._src import set_const
+from mujoco_warp._src import sort
 from mujoco_warp._src import util_pkg
 from mujoco_warp._src import warp_util
 from mujoco_warp._src.io import override_model
@@ -943,7 +944,7 @@ class DeterminismTest(parameterized.TestCase):
     spies = (
       (collision_driver, "_sort_contacts", "contacts"),
       (collision_driver, "collision", "collision"),
-      (constraint, "_sort_constraints", "constraint"),
+      (sort, "constraints", "constraint"),
       (constraint, "make_constraint", "make_constraint"),
     )
     with contextlib.ExitStack() as stack:
@@ -1007,7 +1008,7 @@ class DeterminismTest(parameterized.TestCase):
     m.opt.deterministic = DeterminismType.ALL
     with (
       mock.patch.object(collision_driver, "_sort_contacts") as contacts,
-      mock.patch.object(constraint, "_sort_constraints") as constraints,
+      mock.patch.object(sort, "constraints") as constraints,
     ):
       mjw.forward(m, d)
     self.assertEqual((contacts.call_count, constraints.call_count), ncalls)
