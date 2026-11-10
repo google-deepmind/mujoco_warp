@@ -424,6 +424,7 @@ class SortTest(parameterized.TestCase):
       ncon = int(d.nacon.numpy()[0])
       nefc = d.nefc.numpy()
       result = {"qacc": d.qacc.numpy(), "qfrc_constraint": d.qfrc_constraint.numpy()}
+      result["dof_frictionadr"] = _assert_friction_addresses(self, d)
       for name, array in vars(d.contact).items():
         if array.size:
           result["contact", name] = array.numpy()[:ncon]
@@ -469,7 +470,7 @@ class SortTest(parameterized.TestCase):
     if nworld > 1:
       self.assertFalse(np.array_equal(reference["qacc"][0], reference["qacc"][1]))
 
-  @parameterized.product(nworld=(1, 2), key=("geometry", "flex", "material"))
+  @parameterized.product(nworld=(1, 2), key=("geometry", "flex", "material", "surfacevel"))
   def test_contact_permutation(self, nworld, key):
     """All fields follow a canonical permutation, including equal pair/point IDs."""
     _, _, m, d = test_data.fixture(
@@ -509,11 +510,16 @@ class SortTest(parameterized.TestCase):
       reference["flex"][:count, 0] = 0
       reference["elem"][:count, 0] = np.tile(np.arange(8), nworld)
       reference["pos"][:count] = 0
-    elif key == "material":
+    elif key != "geometry":
       # Same feature, point and frame, but different materials supplied by a contact filter.
       for name in ("pos", "frame", "dist", "dim", "type", "includemargin"):
         reference[name][:count] = 0
-      reference["friction"][:count, 0] = np.tile(np.arange(8), nworld)
+      if key == "material":
+        reference["friction"][:count, 0] = np.tile(np.arange(8), nworld)
+      else:
+        for name in ("friction", "solref", "solreffriction", "solimp", "adhesion"):
+          reference[name][:count] = 0
+        reference["surfacevel"][:count, 0] = np.tile(np.arange(8), nworld)
     # The captured sort has to read the contact order and the active count of every replay.
     with wp.ScopedCapture() as capture:
       collision_driver._sort_contacts(m, d)
@@ -691,6 +697,136 @@ class SortTest(parameterized.TestCase):
       if reference is not None:
         np.testing.assert_array_equal(current, reference)
       reference = current
+
+  @parameterized.parameters(1, 2)
+  def test_flex_strain_blocks(self, nworld):
+    """The strain modes of a cell stay one block, in assembly order, with its head row first."""
+    mjm, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option>
+          <flag contact="disable"/>
+        </option>
+        <worldbody>
+          <flexcomp name="cube" type="grid" count="3 3 3" spacing=".1 .1 .1" pos="0 0 .5" dim="3" radius=".005"
+                    dof="trilinear" cellcount="2 2 1">
+            <edge equality="strain"/>
+            <contact selfcollide="none"/>
+          </flexcomp>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=nworld,
+      qvel_noise=0.05,
+      overrides={"opt.jacobian": "sparse"},
+    )
+    if nworld == 2:
+      qpos = d.qpos.numpy().copy()
+      qpos[1] += 0.01 * np.arange(1, m.nq + 1) / m.nq
+      d.qpos.assign(qpos)
+    mjw.forward(m, d)
+    baseline = d.qacc.numpy().copy()
+    unsorted = [_dense_jacobian(m, d, world) for world in range(nworld)]
+    ids = d.efc.id.numpy().copy()
+    rowtype = d.efc.type.numpy().copy()
+    m.opt.deterministic = mjw.DeterminismType.CONSTRAINT
+    d.efc.jtdaj_adr.fill_(-1)
+    d.efc.jtdaj_nrow.fill_(-1)
+    d.qacc.fill_(wp.inf)
+    mjw.forward(m, d)
+    np.testing.assert_allclose(d.qacc.numpy(), baseline, rtol=5e-5, atol=5e-5)
+    blocks = _assert_jtdaj_blocks(self, d)
+    sorted_ids = d.efc.id.numpy()
+    for world, n in enumerate(d.nefc.numpy()):
+      self.assertGreater(n, 1)
+      starts, widths = blocks[world]
+      self.assertLen(starts, mjm.neq)
+      self.assertGreater(widths.min(), 1)
+      # Each cell is one equality: its block holds every row of that equality.
+      for start, width in zip(starts, widths):
+        np.testing.assert_array_equal(sorted_ids[world, start : start + width], sorted_ids[world, start])
+      self.assertLen(np.unique(sorted_ids[world, starts]), len(starts))
+      # Rows keep the mode order of their cell, and cells are ordered by equality ID.
+      order = np.lexsort((ids[world, :n], rowtype[world, :n]))
+      np.testing.assert_array_equal(sorted_ids[world, :n], ids[world, :n][order])
+      np.testing.assert_array_equal(_dense_jacobian(m, d, world), unsorted[world][order])
+    if nworld == 2:
+      self.assertFalse(np.array_equal(baseline[0], baseline[1]))
+
+  @parameterized.product(nworld=(1, 2), jacobian=("dense", "sparse"))
+  def test_friction_addresses(self, nworld, jacobian):
+    """DOF friction addresses follow the rows that sparse Newton adds to the Hessian diagonal."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <body>
+            <joint name="j0" axis="0 1 0" frictionloss=".3"/>
+            <geom size=".1" pos="0 0 -.3"/>
+            <body pos="0 0 -.6">
+              <joint name="j1" axis="0 1 0" range=".1 1"/>
+              <geom size=".1" pos="0 0 -.3"/>
+              <body pos="0 0 -.6">
+                <joint name="j2" axis="1 0 0" frictionloss=".2"/>
+                <geom size=".1" pos="0 0 -.3"/>
+                <body pos="0 0 -.6">
+                  <joint name="j3" axis="0 1 0" frictionloss=".1"/>
+                  <geom size=".1" pos="0 0 -.3"/>
+                </body>
+              </body>
+            </body>
+          </body>
+        </worldbody>
+        <equality>
+          <joint joint1="j0" joint2="j3"/>
+        </equality>
+      </mujoco>
+      """,
+      nworld=nworld,
+      njmax=16,
+      qvel_noise=0.5,
+      overrides={"opt.jacobian": jacobian},
+    )
+    qvel = d.qvel.numpy().copy()
+    if nworld == 2:
+      qvel[1] *= -1.5
+      d.qvel.assign(qvel)
+    expected = []
+    for world in range(nworld):
+      mjd.qvel[:] = qvel[world]
+      mujoco.mj_forward(mjm, mjd)
+      expected.append(mjd.qacc.copy())
+    mjw.forward(m, d)
+    np.testing.assert_allclose(d.qacc.numpy(), expected, rtol=1e-5, atol=1e-5)
+    nefc = d.nefc.numpy()
+    np.testing.assert_array_equal(d.nf.numpy(), 3)
+    # One thread assembles the friction rows in DOF order, so they are already canonical. Reverse
+    # the single-row constraints of each world, as racing device threads can, before sorting.
+    for name, array in vars(d.efc).items():
+      if name in ("jtdaj_adr", "jtdaj_nrow", "jtdaj_nblock", "Ma") or (m.is_sparse and name in ("J", "J_colind")):
+        continue
+      if array.size:
+        values = array.numpy().copy()
+        for world, n in enumerate(nefc):
+          values[world, :n] = values[world, :n][::-1]
+        array.assign(values)
+    last = nefc[:, None] - 1
+    address = d.dof_frictionadr.numpy()
+    d.dof_frictionadr.assign(np.where(address >= 0, last - address, -1))
+    if m.is_sparse:
+      d.efc.jtdaj_adr.assign(
+        np.where(np.arange(d.njmax) < d.efc.jtdaj_nblock.numpy()[:, None], last - d.efc.jtdaj_adr.numpy(), 0)
+      )
+    sort.constraints(m, d)
+    address = _assert_friction_addresses(self, d)
+    np.testing.assert_array_equal(np.sum(address >= 0, axis=1), 3)
+    if m.is_sparse:
+      _assert_jtdaj_blocks(self, d)
+    d.qacc.fill_(wp.inf)
+    mjw.solve(m, d)
+    np.testing.assert_allclose(d.qacc.numpy(), expected, rtol=1e-5, atol=1e-5)
+    if nworld == 2:
+      self.assertFalse(np.array_equal(expected[0], expected[1]))
 
   @parameterized.parameters("rows", "nonzeros")
   def test_constraint_overflow(self, overflow):
@@ -1014,6 +1150,19 @@ def _assert_jtdaj_blocks(test, d):
     np.testing.assert_array_equal(rows, np.flatnonzero(rowtype[world, :n] != types.ConstraintType.FRICTION_DOF))
     blocks.append((starts, widths))
   return blocks
+
+
+def _assert_friction_addresses(test, d):
+  """Every DOF friction row is the address of its DOF."""
+  address = d.dof_frictionadr.numpy().copy()
+  rowtype = d.efc.type.numpy()
+  ids = d.efc.id.numpy()
+  for world, n in enumerate(d.nefc.numpy()):
+    rows = np.flatnonzero(rowtype[world, :n] == types.ConstraintType.FRICTION_DOF)
+    dofs = np.flatnonzero(address[world] >= 0)
+    np.testing.assert_array_equal(np.sort(address[world, dofs]), rows)
+    np.testing.assert_array_equal(ids[world, address[world, dofs]], dofs)
+  return address
 
 
 def _dense_jacobian(m, d, world):

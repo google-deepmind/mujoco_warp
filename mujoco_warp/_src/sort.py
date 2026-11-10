@@ -43,6 +43,7 @@ class _ContactKeys:
   solreffriction: wp.array2d[wp.uint32]
   solimp: wp.array2d[wp.uint32]
   adhesion: wp.array[wp.uint32]
+  surfacevel: wp.array2d[wp.uint32]
   geomcollisionid: wp.array[int]
 
 
@@ -117,6 +118,9 @@ def _contact_less(keys: _ContactKeys, worldid: int, a: int, b: int) -> bool:
       return _float_key(keys.solimp[a, i]) < _float_key(keys.solimp[b, i])
   if keys.adhesion[a] != keys.adhesion[b]:
     return _float_key(keys.adhesion[a]) < _float_key(keys.adhesion[b])
+  for i in range(3):
+    if keys.surfacevel[a, i] != keys.surfacevel[b, i]:
+      return _float_key(keys.surfacevel[a, i]) < _float_key(keys.surfacevel[b, i])
   return keys.geomcollisionid[a] < keys.geomcollisionid[b]
 
 
@@ -129,7 +133,7 @@ def _constraint_less(keys: _ConstraintKeys, worldid: int, a: int, b: int) -> boo
       return ka[i] < kb[i]
 
   # Equal type/id is not sufficient for flex edges. Compare actual Jacobian rows, not their atomic
-  # allocation addresses. Connect/weld and contact components were already distinguished above.
+  # allocation addresses. Equality group and contact components were already distinguished above.
   if keys.J_rownnz.shape[1] > 0:
     na = keys.J_rownnz[worldid, a]
     nb = keys.J_rownnz[worldid, b]
@@ -271,11 +275,10 @@ def _constraint_primary(
     component = int(0)
     if row_type == int(types.ConstraintType.EQUALITY):
       subtype = eq_type[id]
-      if subtype == int(types.EqType.CONNECT) or subtype == int(types.EqType.WELD):
-        # Assembly emits each group contiguously in XYZ force, then XYZ torque order.
-        # Use the offset within that group, not its nondeterministic allocation address.
-        nrow = 3 if subtype == int(types.EqType.CONNECT) else 6
-        while component + 1 < nrow and row > component:
+      if subtype == int(types.EqType.CONNECT) or subtype == int(types.EqType.WELD) or subtype == int(types.EqType.FLEXSTRAIN):
+        # Assembly emits each group contiguously: XYZ force then XYZ torque, or the strain modes of
+        # a cell. Use the offset within that group, not its nondeterministic allocation address.
+        while row > component:
           previous = row - component - 1
           if efc_type_in[worldid, previous] != row_type or efc_id_in[worldid, previous] != id:
             break
@@ -342,6 +345,26 @@ def _remap_contacts(
     worldid = contact_worldid_in[conid]
     if row >= 0 and row < count_in[worldid]:
       contact_efc_address_out[conid, component] = inverse_in[worldid, row]
+
+
+@wp.kernel
+def _remap_friction(
+  # Data in:
+  nf_in: wp.array[int],
+  dof_frictionadr_in: wp.array2d[int],
+  # In:
+  count_in: wp.array[int],
+  inverse_in: wp.array2d[int],
+  # Data out:
+  dof_frictionadr_out: wp.array2d[int],
+):
+  worldid, dofid = wp.tid()
+  # Assembly only writes these addresses, and the solver only reads them, with friction rows.
+  if nf_in[worldid] == 0:
+    return
+  row = dof_frictionadr_in[worldid, dofid]
+  if row >= 0 and row < count_in[worldid]:
+    dof_frictionadr_out[worldid, dofid] = inverse_in[worldid, row]
 
 
 @wp.kernel
@@ -468,12 +491,13 @@ def contact_permutation(d: types.Data) -> wp.array:
   keys.solreffriction = d.contact.solreffriction.view(wp.uint32)
   keys.solimp = d.contact.solimp.view(wp.uint32)
   keys.adhesion = d.contact.adhesion.view(wp.uint32)
+  keys.surfacevel = d.contact.surfacevel.view(wp.uint32)
   keys.geomcollisionid = d.contact.geomcollisionid
   return permutation(d.nacon, d.naconmax, keys, _contact_less)
 
 
 def constraints(m: types.Model, d: types.Data, nnz: wp.array | None = None):
-  """Sort assembled rows and repair their contact, sparse-J, and JTDAJ references."""
+  """Sort assembled rows and repair their contact, friction, sparse-J, and JTDAJ references."""
   count = wp.empty_like(d.nefc)
   wp.launch(
     _constraint_counts,
@@ -524,6 +548,12 @@ def constraints(m: types.Model, d: types.Data, nnz: wp.array | None = None):
     dim=d.contact.efc_address.shape,
     inputs=[d.contact.efc_address, d.contact.worldid, d.nacon, count, inverse],
     outputs=[d.contact.efc_address],
+  )
+  wp.launch(
+    _remap_friction,
+    dim=d.dof_frictionadr.shape,
+    inputs=[d.nf, d.dof_frictionadr, count, inverse],
+    outputs=[d.dof_frictionadr],
   )
   if m.is_sparse:
     offsets = wp.empty_like(order)

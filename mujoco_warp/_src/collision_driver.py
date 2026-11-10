@@ -1175,6 +1175,7 @@ def _sort_contacts(m: Model, d: Data):
     d.contact.type,
     d.contact.geomcollisionid,
     d.contact.adhesion,
+    d.contact.surfacevel,
   ):
     if value.size:
       sort.gather(d.nacon, order, value, d.naconmax)
