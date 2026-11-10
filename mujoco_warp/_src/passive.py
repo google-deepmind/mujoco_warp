@@ -3589,6 +3589,7 @@ def _flex_elasticity(deterministic: bool = False):
     # Model:
     opt_timestep: wp.array[float],
     flex_dim: wp.array[int],
+    flex_interp: wp.array[int],
     flex_vertadr: wp.array[int],
     flex_edgeadr: wp.array[int],
     flex_elemadr: wp.array[int],
@@ -3621,6 +3622,11 @@ def _flex_elasticity(deterministic: bool = False):
     timestep = opt_timestep[worldid % opt_timestep.shape[0]]
 
     f = flex_elemflexid[elemid]
+
+    # interpolated flexes store stiffness per cell, not per element
+    if flex_interp[f] != 0:
+      return
+
     local_elemid = elemid - flex_elemadr[f]
 
     stiffness_adr_base = flex_stiffnessadr[f]
@@ -5303,6 +5309,7 @@ def passive(m: Model, d: Data):
       inputs=[
         m.opt.timestep,
         m.flex_dim,
+        m.flex_interp,
         m.flex_vertadr,
         m.flex_edgeadr,
         m.flex_elemadr,
