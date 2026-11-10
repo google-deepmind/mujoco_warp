@@ -1783,6 +1783,16 @@ class Model:
     M_mulm_madr: sparse matmul matrix addresses
     flex_elemflexid: maps each element index directly to its flexid         (nflexelem,)
     flex_edgeflexid: maps each edge index directly to its flexid            (nflexedge,)
+    flexedge_JT_rowadr: row start address for the transpose of sparse flexedge_J (nv + 1,)
+    flexedge_JT_colind: edge ids in the transpose of sparse flexedge_J,
+                        in ascending order for each dof                      (nJfe,)
+    flexedge_JT_map: address in sparse flexedge_J of each element of its transpose (nJfe,)
+    flex_bodyelemadr: start address in flex_bodyelemvert of each body        (nbody + 1,)
+    flex_bodyelemvert: element vertices attached to each body that moves with a dof,
+                       as 4 * elemid + vertex, in ascending order
+    flex_bodyedgeadr: start address in flex_bodyedgevert of each body        (nbody + 1,)
+    flex_bodyedgevert: vertices of the bending stencil of an edge attached to each body
+                       that moves with a dof, as 4 * edgeid + vertex, in ascending order
     flex_shellflexid: maps each shell index directly to its flexid          (nflexshelldata,)
     flex_vertflexid: maps each vertex index directly to its flexid          (nflexvert,)
     flex_shelladr: maps each flex to its start shell index                  (nflex,)
@@ -2354,6 +2364,13 @@ class Model:
   M_mulm_madr: array("nM_mulm", int)  # matrix address to read
   flex_elemflexid: array("nflexelem", int)
   flex_edgeflexid: array("nflexedge", int)
+  flexedge_JT_rowadr: array("nv_plus_1", int)
+  flexedge_JT_colind: array("nJfe", int)
+  flexedge_JT_map: array("nJfe", int)
+  flex_bodyelemadr: array("nbody_plus_1", int)
+  flex_bodyelemvert: array("nflex_bodyelemvert", int)
+  flex_bodyedgeadr: array("nbody_plus_1", int)
+  flex_bodyedgevert: array("nflex_bodyedgevert", int)
   flex_shellflexid: array("nflexshelldata", int)
   flex_vertflexid: array("nflexvert", int)
   flex_shelladr: array("nflex", int)

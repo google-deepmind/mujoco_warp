@@ -571,6 +571,68 @@ class PassiveTest(parameterized.TestCase):
     _assert_eq(d.qfrc_spring.numpy(), qfrc_spring, "qfrc_spring")
     _assert_eq(d.qfrc_damper.numpy(), qfrc_damper, "qfrc_damper")
 
+  @parameterized.parameters(1, 2)
+  def test_flex_passive_deterministic(self, nworld):
+    """Deterministic flex passive forces are added in a fixed order without atomics."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option>
+          <flag contact="disable"/>
+        </option>
+        <worldbody>
+          <flexcomp name="rope" type="grid" count="5 1 1" spacing=".1 .1 .1" dim="1" pos="0 1 1">
+            <edge stiffness="10" damping=".1"/>
+            <elasticity young="1e4" damping="1e-2"/>
+            <pin id="0"/>
+          </flexcomp>
+          <flexcomp name="cloth" type="grid" count="4 4 1" spacing=".1 .1 .1" pos="0 0 1">
+            <elasticity young="3e3" poisson=".3" thickness="1e-2" damping="1e-3" elastic2d="both"/>
+            <pin id="0 3"/>
+          </flexcomp>
+          <flexcomp name="solid" type="grid" count="3 3 3" spacing=".1 .1 .1" dim="3" pos="1 0 1">
+            <elasticity young="1e4" poisson=".3" damping="1e-3"/>
+          </flexcomp>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=nworld,
+      overrides={"opt.deterministic": DeterminismType.ATOMICS},
+    )
+
+    # every body takes the forces of several elements and edges
+    self.assertGreater(np.diff(m.flex_bodyelemadr.numpy()).max(), 4)
+    self.assertGreater(np.diff(m.flex_bodyedgeadr.numpy()).max(), 4)
+
+    rng = np.random.default_rng(0)
+    qpos = 0.01 * rng.uniform(-1.0, 1.0, (nworld, mjm.nq))
+    qvel = 0.1 * rng.uniform(-1.0, 1.0, (nworld, mjm.nv))
+    d.qpos.assign(qpos)
+    d.qvel.assign(qvel)
+
+    for arr in (d.qfrc_spring, d.qfrc_damper):
+      arr.fill_(wp.inf)
+    mjw.forward(m, d)
+    qfrc_spring = d.qfrc_spring.numpy().copy()
+    qfrc_damper = d.qfrc_damper.numpy().copy()
+
+    for w in range(nworld):
+      mjd.qpos[:] = qpos[w]
+      mjd.qvel[:] = qvel[w]
+      mujoco.mj_forward(mjm, mjd)
+      self.assertGreater(np.abs(mjd.qfrc_spring).max(), 1.0)
+      self.assertGreater(np.abs(mjd.qfrc_damper).max(), 0.1)
+      np.testing.assert_allclose(qfrc_spring[w], mjd.qfrc_spring, rtol=1e-4, atol=2e-3, err_msg="qfrc_spring")
+      np.testing.assert_allclose(qfrc_damper[w], mjd.qfrc_damper, rtol=1e-4, atol=1e-5, err_msg="qfrc_damper")
+
+    # same forces as the kernels with atomics
+    m.opt.deterministic = DeterminismType.NONE
+    for arr in (d.qfrc_spring, d.qfrc_damper):
+      arr.fill_(wp.inf)
+    mjw.forward(m, d)
+    np.testing.assert_allclose(d.qfrc_spring.numpy(), qfrc_spring, rtol=1e-4, atol=2e-3, err_msg="qfrc_spring")
+    np.testing.assert_allclose(d.qfrc_damper.numpy(), qfrc_damper, rtol=1e-4, atol=1e-5, err_msg="qfrc_damper")
+
   def test_polynomial_stiffness_fixed_tendon(self):
     """Tests polynomial stiffness for fixed tendons."""
     xml = """

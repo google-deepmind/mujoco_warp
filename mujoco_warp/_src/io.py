@@ -1441,6 +1441,48 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
 
   m.flex_elemflexid = flex_elemflexid
   m.flex_edgeflexid = flex_edgeflexid
+
+  # transpose of the sparsity of flexedge_J: the edges that move with each dof, in ascending
+  # order, so that deterministic kernels can add the edges of a dof in one thread
+  flexedge_J_adr = [mjm.flexedge_J_rowadr[i] + np.arange(mjm.flexedge_J_rownnz[i]) for i in range(mjm.nflexedge)]
+  flexedge_J_adr = np.concatenate(flexedge_J_adr + [[]]).astype(int)
+  flexedge_J_edgeid = np.repeat(np.arange(mjm.nflexedge), mjm.flexedge_J_rownnz)
+  flexedge_J_dofid = m.flexedge_J_colind[flexedge_J_adr]
+  flexedge_JT_order = np.lexsort((flexedge_J_edgeid, flexedge_J_dofid))
+  m.flexedge_JT_rowadr = np.concatenate(([0], np.cumsum(np.bincount(flexedge_J_dofid, minlength=mjm.nv))))
+  # the rows of flexedge_J may not use all of its nJfe elements
+  m.flexedge_JT_colind = np.zeros(mjm.nJfe, dtype=int)
+  m.flexedge_JT_colind[: flexedge_JT_order.size] = flexedge_J_edgeid[flexedge_JT_order]
+  m.flexedge_JT_map = np.zeros(mjm.nJfe, dtype=int)
+  m.flexedge_JT_map[: flexedge_JT_order.size] = flexedge_J_adr[flexedge_JT_order]
+
+  # element vertices, and vertices of the bending stencil of each edge, attached to each body, in
+  # ascending order, so that deterministic kernels can add the flex forces of a body in one
+  # thread. Bodies that do not move with any dof are left out: their force is not used.
+  body_moves = np.any(body_isdofancestor != 0, axis=1)
+
+  def body_vert(bodyid, vert):
+    keep = (bodyid >= 0) & body_moves[np.maximum(bodyid, 0)]
+    bodyid, vert = bodyid[keep], vert[keep]
+    order = np.lexsort((vert, bodyid))
+    return np.concatenate(([0], np.cumsum(np.bincount(bodyid, minlength=mjm.nbody)))), vert[order]
+
+  elem_bodyid, elem_vert, edge_bodyid, edge_vert = [np.zeros(0, dtype=int)], [np.zeros(0, dtype=int)], [], []
+  for fi in range(mjm.nflex):
+    nvert = mjm.flex_dim[fi] + 1
+    elemid = mjm.flex_elemadr[fi] + np.arange(mjm.flex_elemnum[fi])
+    elem = mjm.flex_elem[mjm.flex_elemdataadr[fi] : mjm.flex_elemdataadr[fi] + nvert * elemid.size].reshape(-1, nvert)
+    elem_bodyid.append(mjm.flex_vertbodyid[mjm.flex_vertadr[fi] + elem].reshape(-1))
+    elem_vert.append((4 * elemid[:, None] + np.arange(nvert)).reshape(-1))
+  if mjm.nflexedge:
+    stencil = np.concatenate((mjm.flex_edge.reshape(-1, 2), mjm.flex_edgeflap.reshape(-1, 2)), axis=1)
+    stencil_bodyid = mjm.flex_vertbodyid[mjm.flex_vertadr[flex_edgeflexid][:, None] + np.maximum(stencil, 0)]
+    edge_bodyid.append(np.where(stencil >= 0, stencil_bodyid, -1).reshape(-1))
+    edge_vert.append(np.arange(4 * mjm.nflexedge))
+  m.flex_bodyelemadr, m.flex_bodyelemvert = body_vert(np.concatenate(elem_bodyid), np.concatenate(elem_vert))
+  m.flex_bodyedgeadr, m.flex_bodyedgevert = body_vert(
+    np.concatenate(edge_bodyid + [np.zeros(0, dtype=int)]), np.concatenate(edge_vert + [np.zeros(0, dtype=int)])
+  )
   m.flex_shellflexid = flex_shellflexid
   m.flex_vertflexid = flex_vertflexid
   m.flex_shelladr = flex_shelladr
@@ -1689,6 +1731,9 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
       "nM_fullm": len(m.M_fullm_i),
       "nqD_fullm": len(m.qD_fullm_i),
       "nv_plus_1": len(m.M_mulm_rowadr),
+      "nbody_plus_1": mjm.nbody + 1,
+      "nflex_bodyelemvert": len(m.flex_bodyelemvert),
+      "nflex_bodyedgevert": len(m.flex_bodyedgevert),
       "nM_mulm": len(m.M_mulm_col),
     }
   )
