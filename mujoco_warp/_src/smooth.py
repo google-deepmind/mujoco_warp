@@ -2053,6 +2053,77 @@ def _cfrc_ext_contact(deterministic: bool = False):
   if deterministic:
     module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
 
+    # The deterministic variant has no float atomics: it stores the force of each contact, and
+    # _cfrc_ext_contact_body adds the contacts of each body afterwards in a fixed order.
+    @wp.kernel(module="unique", module_options=module_options)
+    def kernel(
+      # Model:
+      opt_cone: int,
+      geom_bodyid: wp.array[int],
+      # Data in:
+      contact_frame_in: wp.array[wp.mat33],
+      contact_friction_in: wp.array[vec5],
+      contact_dim_in: wp.array[int],
+      contact_geom_in: wp.array[wp.vec2i],
+      contact_efc_address_in: wp.array2d[int],
+      contact_worldid_in: wp.array[int],
+      contact_adhesion_in: wp.array[float],
+      efc_force_in: wp.array2d[float],
+      njmax_in: int,
+      nacon_in: wp.array[int],
+      # Out:
+      contact_body_out: wp.array[wp.vec3i],
+      contact_force_out: wp.array[wp.spatial_vector],
+      body_efcadr_out: wp.array2d[int],
+    ):
+      contactid = wp.tid()
+
+      if contactid >= nacon_in[0]:
+        return
+
+      # bodies and number of constraint rows of the contact
+      geom = contact_geom_in[contactid]
+      id1 = geom_bodyid[geom[0]]
+      id2 = geom_bodyid[geom[1]]
+      condim = contact_dim_in[contactid]
+      nrow = wp.where(opt_cone == ConeType.PYRAMIDAL and condim > 1, 2 * (condim - 1), condim)
+      contact_body_out[contactid] = wp.vec3i(id1, id2, nrow)
+
+      if id1 == 0 and id2 == 0:
+        return
+
+      # contacts without constraint rows have no force
+      efcadr = contact_efc_address_in[contactid, 0]
+      if efcadr < 0:
+        return
+
+      worldid = contact_worldid_in[contactid]
+
+      # First constraint row of the contacts of each body, counted from the last row: an integer
+      # maximum does not depend on the order of the threads. The world body gets no force.
+      if id1:
+        wp.atomic_max(body_efcadr_out[worldid], id1, njmax_in - efcadr)
+      if id2:
+        wp.atomic_max(body_efcadr_out[worldid], id2, njmax_in - efcadr)
+
+      # contact force in world frame
+      contact_force_out[contactid] = support.contact_force_fn(
+        opt_cone,
+        contact_frame_in,
+        contact_friction_in,
+        contact_dim_in,
+        contact_efc_address_in,
+        contact_adhesion_in,
+        efc_force_in,
+        njmax_in,
+        nacon_in,
+        worldid,
+        contactid,
+        to_world_frame=True,
+      )
+
+    return kernel
+
   @wp.kernel(module="unique", module_options=module_options)
   def kernel(
     # Model:
@@ -2117,6 +2188,65 @@ def _cfrc_ext_contact(deterministic: bool = False):
       wp.atomic_add(cfrc_ext_out[worldid], id2, support.transform_force(force, com2 - pos))
 
   return kernel
+
+
+@wp.kernel
+def _cfrc_ext_contact_body(
+  # Model:
+  body_rootid: wp.array[int],
+  # Data in:
+  nefc_in: wp.array[int],
+  subtree_com_in: wp.array2d[wp.vec3],
+  contact_pos_in: wp.array[wp.vec3],
+  efc_type_in: wp.array2d[int],
+  efc_id_in: wp.array2d[int],
+  njmax_in: int,
+  # In:
+  contact_body_in: wp.array[wp.vec3i],
+  contact_force_in: wp.array[wp.spatial_vector],
+  body_efcadr_in: wp.array2d[int],
+  # Data out:
+  cfrc_ext_out: wp.array2d[wp.spatial_vector],
+):
+  worldid, bodyid = wp.tid()
+
+  # bodies without contacts
+  if body_efcadr_in[worldid, bodyid] == 0:
+    return
+
+  # One thread per body visits the contacts of its world in constraint row order, from the first
+  # contact of the body: a body has one writer and a fixed summation order, without atomics.
+  com = subtree_com_in[worldid, body_rootid[bodyid]]
+  nefc = wp.min(nefc_in[worldid], njmax_in)
+  cfrc = wp.spatial_vector()
+  efcid = int(njmax_in - body_efcadr_in[worldid, bodyid])
+  while efcid < nefc:
+    efc_type = efc_type_in[worldid, efcid]
+    if (
+      efc_type != ConstraintType.CONTACT_FRICTIONLESS
+      and efc_type != ConstraintType.CONTACT_PYRAMIDAL
+      and efc_type != ConstraintType.CONTACT_ELLIPTIC
+    ):
+      efcid += 1
+      continue
+
+    # the rows of a contact are consecutive: this is the first one, skip the others
+    conid = efc_id_in[worldid, efcid]
+    conbody = contact_body_in[conid]
+    efcid += wp.max(conbody[2], 1)
+
+    if conbody[0] != bodyid and conbody[1] != bodyid:
+      continue
+
+    # contact force on the body
+    force = support.transform_force(contact_force_in[conid], com - contact_pos_in[conid])
+    if conbody[0] == bodyid:
+      cfrc -= force
+    if conbody[1] == bodyid:
+      cfrc += force
+
+  # not `+=`, which Warp compiles to an atomic
+  cfrc_ext_out[worldid, bodyid] = cfrc_ext_out[worldid, bodyid] + cfrc
 
 
 @cache_kernel
@@ -2444,28 +2574,71 @@ def rne_postconstraint(m: Model, d: Data):
     )
 
   # cfrc_ext += contacts
-  wp.launch(
-    _cfrc_ext_contact(bool(m.opt.deterministic & DeterminismType.ATOMICS)),
-    dim=(d.naconmax,),
-    inputs=[
-      m.opt.cone,
-      m.body_rootid,
-      m.geom_bodyid,
-      d.subtree_com,
-      d.contact.pos,
-      d.contact.frame,
-      d.contact.friction,
-      d.contact.dim,
-      d.contact.geom,
-      d.contact.efc_address,
-      d.contact.worldid,
-      d.contact.adhesion,
-      d.efc.force,
-      d.njmax,
-      d.nacon,
-    ],
-    outputs=[d.cfrc_ext],
-  )
+  if m.opt.deterministic & DeterminismType.ATOMICS:
+    # bodies, number of constraint rows and force of each contact
+    contact_body = wp.empty(d.naconmax, dtype=wp.vec3i)
+    contact_force = wp.empty(d.naconmax, dtype=wp.spatial_vector)
+    # first constraint row of the contacts of each body
+    body_efcadr = wp.zeros((d.nworld, m.nbody), dtype=int)
+    wp.launch(
+      _cfrc_ext_contact(True),
+      dim=(d.naconmax,),
+      inputs=[
+        m.opt.cone,
+        m.geom_bodyid,
+        d.contact.frame,
+        d.contact.friction,
+        d.contact.dim,
+        d.contact.geom,
+        d.contact.efc_address,
+        d.contact.worldid,
+        d.contact.adhesion,
+        d.efc.force,
+        d.njmax,
+        d.nacon,
+      ],
+      outputs=[contact_body, contact_force, body_efcadr],
+    )
+    wp.launch(
+      _cfrc_ext_contact_body,
+      dim=(d.nworld, m.nbody),
+      inputs=[
+        m.body_rootid,
+        d.nefc,
+        d.subtree_com,
+        d.contact.pos,
+        d.efc.type,
+        d.efc.id,
+        d.njmax,
+        contact_body,
+        contact_force,
+        body_efcadr,
+      ],
+      outputs=[d.cfrc_ext],
+    )
+  else:
+    wp.launch(
+      _cfrc_ext_contact(),
+      dim=(d.naconmax,),
+      inputs=[
+        m.opt.cone,
+        m.body_rootid,
+        m.geom_bodyid,
+        d.subtree_com,
+        d.contact.pos,
+        d.contact.frame,
+        d.contact.friction,
+        d.contact.dim,
+        d.contact.geom,
+        d.contact.efc_address,
+        d.contact.worldid,
+        d.contact.adhesion,
+        d.efc.force,
+        d.njmax,
+        d.nacon,
+      ],
+      outputs=[d.cfrc_ext],
+    )
 
   # cfrc_ext += spatial tendons
   if m.ntendon > 0:

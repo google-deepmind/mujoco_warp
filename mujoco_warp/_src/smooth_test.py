@@ -23,6 +23,7 @@ from absl.testing import parameterized
 
 import mujoco_warp as mjw
 from mujoco_warp import ConeType
+from mujoco_warp import DeterminismType
 from mujoco_warp import DisableBit
 from mujoco_warp import test_data
 from mujoco_warp._src import types
@@ -523,6 +524,259 @@ class SmoothTest(parameterized.TestCase):
     mjw.rne_postconstraint(m, d)
 
     _assert_eq(d.cfrc_ext.numpy()[0], mjd.cfrc_ext, "cfrc_ext (contact)")
+
+  @parameterized.product(nworld=(1, 2), cone=(ConeType.PYRAMIDAL, ConeType.ELLIPTIC))
+  def test_cfrc_ext_contact_deterministic(self, nworld, cone):
+    """Deterministic contact forces accumulate in constraint row order instead of with atomics."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <geom type="plane" size="2 2 .1" condim="1"/>
+          <body pos="0 0 .049">
+            <freejoint/>
+            <geom type="box" size=".1 .1 .05"/>
+          </body>
+          <body pos=".01 0 .147">
+            <freejoint/>
+            <geom type="box" size=".05 .05 .05" condim="4"/>
+          </body>
+          <body pos=".3 0 .049">
+            <freejoint/>
+            <geom size=".05" condim="6"/>
+            <geom size=".05" pos="0 .1 0" condim="6"/>
+          </body>
+          <body pos="0 .3 .029">
+            <freejoint/>
+            <geom type="capsule" size=".03 .05" euler="0 90 0" condim="1"/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """,
+      qvel_noise=0.01,
+      nworld=nworld,
+      nconmax=12,
+      overrides={"opt.cone": cone, "opt.deterministic": DeterminismType.ATOMICS},
+    )
+    if nworld == 2:
+      qpos = d.qpos.numpy()
+      qpos[1, 2::7] -= 0.0005
+      qpos[1, 7] += 0.02
+      d.qpos.assign(qpos)
+
+    # contacts, constraint rows and constraint forces of each world
+    mjw.forward(m, d)
+
+    def cfrc_ext():
+      for arr in (d.cacc, d.cfrc_int, d.cfrc_ext):
+        arr.fill_(wp.inf)
+      mjw.rne_postconstraint(m, d)
+      return d.cfrc_ext.numpy().copy()
+
+    out = cfrc_ext()
+
+    # each body has several contacts, as first and as second body, and the contact arrays are full
+    nacon = d.nacon.numpy()[0]
+    self.assertEqual(nacon, d.naconmax)
+    self.assertFalse(np.any(d.contact.efc_address.numpy()[:nacon, 0] < 0))
+    body = mjm.geom_bodyid[d.contact.geom.numpy()[:nacon]]
+    for world in range(nworld):
+      pairs = body[d.contact.worldid.numpy()[:nacon] == world]
+      self.assertGreater(np.bincount(pairs[:, 1], minlength=mjm.nbody)[1:].min(), 1)
+      self.assertGreater(np.count_nonzero(pairs[:, 0]), 1)
+
+    for world in range(nworld):
+      mjw.get_data_into(mjd, mjm, d, world_id=world)
+      mujoco.mj_rnePostConstraint(mjm, mjd)
+      self.assertGreater(np.abs(mjd.cfrc_ext[1:]).max(axis=1).min(), 0.1)
+      _assert_eq(out[world], mjd.cfrc_ext, "cfrc_ext")
+    if nworld == 2:
+      self.assertFalse(np.allclose(out[0], out[1], rtol=1e-3, atol=1e-3))
+
+    # same as the kernel with atomics, up to summation order
+    m.opt.deterministic = DeterminismType.NONE
+    np.testing.assert_allclose(cfrc_ext(), out, rtol=1e-5, atol=1e-5)
+
+  @parameterized.product(nworld=(1, 2), cone=(ConeType.PYRAMIDAL, ConeType.ELLIPTIC))
+  def test_cfrc_ext_contact_deterministic_rows(self, nworld, cone):
+    """Deterministic contact forces with other constraint rows and with contacts without rows."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <geom name="floor" type="plane" size="2 2 .1"/>
+          <geom name="post" type="box" size=".05 .05 .05" pos="1 1 .04"/>
+          <body name="box" pos="0 0 .049">
+            <freejoint/>
+            <geom type="box" size=".1 .1 .05"/>
+          </body>
+          <body name="arm" pos="-.25 0 .2">
+            <joint name="hinge" axis="0 1 0" range="-10 10" frictionloss=".1"/>
+            <geom type="capsule" size=".02" fromto="0 0 0 .2 0 -.09" condim="1"/>
+          </body>
+          <body name="near" pos=".5 0 .06">
+            <freejoint/>
+            <geom size=".05" gap=".02"/>
+          </body>
+          <body name="far" pos="0 .5 1">
+            <freejoint/>
+            <geom size=".05"/>
+          </body>
+          <body name="ball" pos=".3 .3 .049">
+            <joint name="slide" type="slide" axis="0 0 1"/>
+            <geom size=".05" condim="6"/>
+          </body>
+          <body name="leg" pos="-.5 .5 .3">
+            <joint axis="0 1 0"/>
+            <geom type="capsule" size=".02" fromto="0 0 0 0 0 -.2"/>
+            <body name="foot" pos=".1 0 -.2">
+              <joint axis="0 1 0"/>
+              <geom size=".101"/>
+            </body>
+          </body>
+        </worldbody>
+        <contact>
+          <pair geom1="floor" geom2="post"/>
+        </contact>
+        <equality>
+          <joint joint1="slide" polycoef="0 0 0 0 0"/>
+        </equality>
+        <keyframe>
+          <key qpos="0 0 .049 1 0 0 0 .3 .5 0 .06 1 0 0 0 0 .5 1 1 0 0 0 0 0 0"/>
+        </keyframe>
+      </mujoco>
+      """,
+      keyframe=0,
+      nworld=nworld,
+      nconmax=16,
+      njmax=64,
+      overrides={"opt.cone": cone, "opt.deterministic": DeterminismType.ATOMICS},
+    )
+    bodyid = {name: mjm.body(name).id for name in ("box", "arm", "near", "far", "ball", "leg", "foot")}
+    if nworld == 2:
+      qpos = d.qpos.numpy()
+      qpos[1, 2] -= 0.0005
+      qpos[1, 7] += 0.02
+      d.qpos.assign(qpos)
+
+    # applied forces, on bodies with and without contacts
+    xfrc_applied = np.zeros((nworld, mjm.nbody, 6), dtype=np.float32)
+    xfrc_applied[:, bodyid["box"]] = [0.5, -0.3, 0.2, 0.1, -0.2, 0.3]
+    xfrc_applied[:, bodyid["far"]] = [-0.4, 0.6, 0.3, 0.2, 0.1, -0.5]
+    xfrc_applied[:, bodyid["foot"]] = [0.2, 0.1, -0.3, -0.1, 0.4, 0.2]
+    d.xfrc_applied.assign(xfrc_applied)
+
+    # contacts, constraint rows and constraint forces of each world
+    mjw.forward(m, d)
+
+    def cfrc_ext():
+      for arr in (d.cacc, d.cfrc_int, d.cfrc_ext):
+        arr.fill_(wp.inf)
+      mjw.rne_postconstraint(m, d)
+      return d.cfrc_ext.numpy().copy()
+
+    out = cfrc_ext()
+
+    nacon = d.nacon.numpy()[0]
+    efcadr = d.contact.efc_address.numpy()[:nacon, 0]
+    body = mjm.geom_bodyid[d.contact.geom.numpy()[:nacon]]
+    for world in range(nworld):
+      inworld = d.contact.worldid.numpy()[:nacon] == world
+      # equality, friction and limit rows come before the contact rows
+      self.assertEqual((d.ne.numpy()[world], d.nf.numpy()[world], d.nl.numpy()[world]), (1, 1, 1))
+      self.assertEqual(efcadr[inworld & (efcadr >= 0)].min(), 3)
+      # a contact without constraint rows, and contacts of the world body with itself
+      np.testing.assert_array_equal(efcadr[inworld & (body[:, 1] == bodyid["near"])], [-1])
+      self.assertEqual(np.count_nonzero(inworld & (efcadr >= 0) & (body[:, 0] == 0) & (body[:, 1] == 0)), 4)
+      # a body without contacts, and a body with contacts as first and as second body
+      self.assertEqual(np.count_nonzero(inworld & np.any(body == bodyid["far"], axis=1)), 0)
+      self.assertEqual(np.count_nonzero(inworld & (body[:, 0] == 0) & (body[:, 1] == bodyid["box"])), 4)
+      self.assertEqual(np.count_nonzero(inworld & (body[:, 0] == bodyid["arm"]) & (body[:, 1] == bodyid["box"])), 1)
+      # the first contact of some bodies is not the first contact of the world
+      first = {
+        name: efcadr[inworld & (efcadr >= 0) & np.any(body == bodyid[name], axis=1)].min()
+        for name in ("box", "arm", "ball", "foot")
+      }
+      self.assertGreater(len(set(first.values())), 2)
+
+    for world in range(nworld):
+      mjw.get_data_into(mjd, mjm, d, world_id=world)
+      mujoco.mj_rnePostConstraint(mjm, mjd)
+      for name in ("box", "arm", "far", "ball", "foot"):
+        self.assertGreater(np.abs(mjd.cfrc_ext[bodyid[name]]).max(), 0.1)
+      for name in ("near", "leg"):
+        self.assertEqual(np.abs(mjd.cfrc_ext[bodyid[name]]).max(), 0.0)
+      # the foot is not the root of its tree
+      self.assertNotEqual(mjm.body_rootid[bodyid["foot"]], bodyid["foot"])
+      _assert_eq(out[world], mjd.cfrc_ext, "cfrc_ext")
+    if nworld == 2:
+      self.assertFalse(np.allclose(out[0], out[1], rtol=1e-3, atol=1e-3))
+
+    # bitwise reproducible
+    np.testing.assert_array_equal(cfrc_ext(), out)
+
+    # same as the kernel with atomics, up to summation order
+    m.opt.deterministic = DeterminismType.NONE
+    np.testing.assert_allclose(cfrc_ext(), out, rtol=1e-5, atol=1e-5)
+
+  @parameterized.parameters(1, 2)
+  def test_cfrc_ext_contact_deterministic_overflow(self, nworld):
+    """Deterministic contact forces when the constraint rows of some contacts do not fit."""
+    _, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <geom type="plane" size="2 2 .1"/>
+          <body pos="0 0 .2">
+            <freejoint/>
+            <geom type="box" size=".1 .1 .05"/>
+          </body>
+          <body pos=".5 0 .2">
+            <freejoint/>
+            <geom type="box" size=".1 .1 .05"/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=nworld,
+      nconmax=16,
+      njmax=14,
+      overrides={"opt.deterministic": DeterminismType.ATOMICS, "opt.warn_overflow": 0},
+    )
+
+    # the boxes touch the floor: 8 contacts, of 4 constraint rows each
+    qpos = d.qpos.numpy()
+    qpos[:, 2::7] = 0.049
+    if nworld == 2:
+      qpos[1, 2] -= 0.0005
+    d.qpos.assign(qpos)
+
+    mjw.forward(m, d)
+
+    def cfrc_ext():
+      for arr in (d.cacc, d.cfrc_int, d.cfrc_ext):
+        arr.fill_(wp.inf)
+      mjw.rne_postconstraint(m, d)
+      return d.cfrc_ext.numpy().copy()
+
+    out = cfrc_ext()
+
+    # each world has contacts with all, with some and with none of their constraint rows
+    nacon = d.nacon.numpy()[0]
+    efcadr = d.contact.efc_address.numpy()[:nacon]
+    for world in range(nworld):
+      self.assertGreater(d.nefc.numpy()[world], d.njmax)
+      nfit = np.count_nonzero(efcadr[d.contact.worldid.numpy()[:nacon] == world] >= 0, axis=1)
+      self.assertEqual(sorted(set(nfit)), [0, 2, 4])
+    self.assertTrue(np.all(np.isfinite(out)))
+    self.assertGreater(np.abs(out[:, 1:]).max(), 0.1)
+
+    # bitwise reproducible
+    np.testing.assert_array_equal(cfrc_ext(), out)
+
+    # same as the kernel with atomics, up to summation order
+    m.opt.deterministic = DeterminismType.NONE
+    np.testing.assert_allclose(cfrc_ext(), out, rtol=1e-5, atol=1e-5)
 
   @parameterized.parameters(
     (
