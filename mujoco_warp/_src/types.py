@@ -2930,7 +2930,7 @@ class SolverContext:
   h_rhs_work: Optional[wp.array3d[float]] = None
   # deterministic sparse solve: the JTDAJ groups that contain each dof
   qfrc_adr: Optional[wp.array2d[int]] = None
-  qfrc_entry: Optional[wp.array2d[int]] = None
+  qfrc_entry: Optional[wp.array2d[wp.vec4i]] = None
 
 
 @dataclasses.dataclass

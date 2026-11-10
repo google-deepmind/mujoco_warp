@@ -336,6 +336,76 @@ def _eval_elliptic_delta(
   )
 
 
+def _sparse_groups_fixture(nworld):
+  """Hand-made JTDAJ groups over sparse rows, with the list of groups that each dof should get.
+
+  Head rows and dofs are not in order, one support is wider than a block, some groups have rows
+  that do not follow each other in the sparse arrays, dof 39 is in every group of world 0 and dof
+  0 in none, and row 0 is a dof friction row outside the groups. The second world has no group
+  and the third reports more groups than the capacity.
+  """
+  nv, njmax, ngroup_max = 40, 48, 8
+  rng = np.random.default_rng(nworld)
+  # (rows, width of the support, rows follow each other) per group
+  world_groups = (
+    [(1, 3, True), (4, 35, True), (2, 5, False), (6, 8, True), (3, 4, False)],
+    [],
+    [(int(rng.integers(1, 5)), int(rng.integers(1, 9)), bool(rng.integers(2))) for _ in range(ngroup_max)],
+  )[:nworld]
+
+  nnz = 420
+  res = dict(
+    nv=nv,
+    jtdaj_adr=np.full((nworld, ngroup_max), -1, dtype=np.int32),
+    jtdaj_nrow=np.full((nworld, ngroup_max), -1, dtype=np.int32),
+    nblock=np.zeros(nworld, dtype=np.int32),
+    rownnz=np.zeros((nworld, njmax), dtype=np.int32),
+    rowadr=np.zeros((nworld, njmax), dtype=np.int32),
+    colind=np.zeros((nworld, 1, nnz), dtype=np.int32),
+    nf=np.ones(nworld, dtype=np.int32),
+    nefc=np.zeros(nworld, dtype=np.int32),
+    frictionadr=np.full((nworld, nv), -1, dtype=np.int32),
+    adr=np.zeros((nworld, nv + 1), dtype=np.int32),
+    entry=np.full((nworld, nnz, 4), -5, dtype=np.int32),
+  )
+  for worldid, groups in enumerate(world_groups):
+    res["nblock"][worldid] = len(groups) + (3 if len(groups) == ngroup_max else 0)
+    # row 0: friction of dof 5
+    res["frictionadr"][worldid, 5] = 0
+    res["rownnz"][worldid, 0] = 1
+    res["colind"][worldid, 0, 0] = 5
+    row, adr = 1, 1
+    lists = [[] for _ in range(nv)]
+    entries = {}
+    # rows are handed out in another order than the groups
+    for groupid in rng.permutation(len(groups)):
+      nrow, width, contiguous = groups[groupid]
+      support = rng.permutation(np.arange(1, nv - 1))[:width]
+      if worldid == 0:
+        support = rng.permutation(np.append(support, nv - 1))
+      res["jtdaj_adr"][worldid, groupid] = row
+      res["jtdaj_nrow"][worldid, groupid] = nrow
+      for member in range(nrow):
+        res["rownnz"][worldid, row + member] = len(support)
+        res["rowadr"][worldid, row + member] = adr + member * (len(support) + (0 if contiguous else 2))
+        res["colind"][worldid, 0, res["rowadr"][worldid, row + member] :][: len(support)] = support
+      # a single row always follows itself
+      sign = 1 if contiguous or nrow == 1 else -1
+      entries[groupid] = [(dofid, [adr + i, len(support), row, sign * nrow]) for i, dofid in enumerate(support)]
+      adr += nrow * (len(support) + 2)
+      row += nrow
+    assert adr <= nnz and row <= njmax
+    res["nefc"][worldid] = row
+    for groupid in range(len(groups)):
+      for dofid, entry in entries[groupid]:
+        lists[dofid].append(entry)
+    res["adr"][worldid, 1:] = np.cumsum([len(dof_list) for dof_list in lists])
+    total = res["adr"][worldid, nv]
+    if total:
+      res["entry"][worldid, :total] = np.concatenate([dof_list for dof_list in lists if dof_list])
+  return res
+
+
 class SolverTest(parameterized.TestCase):
   def test_newton_decrement_termination(self):
     """Newton stops when only its local model predicts convergence."""
@@ -2235,75 +2305,95 @@ class SolverTest(parameterized.TestCase):
 
   @parameterized.product(nworld=(1, 2, 3), lanes=(1, 4, 16, 32))
   def test_qfrc_index(self, nworld, lanes):
-    """Each dof lists its (group, position) pairs in group order, and nothing else is written."""
+    """Each dof lists the groups that contain it in group order, and nothing else is written."""
     if wp.get_device().is_cpu and lanes > 1:
       self.skipTest("a block is one thread on the CPU")
 
-    nv, njmax, ngroup_max = 40, 12, 6
-    rng = np.random.default_rng(nworld)
-    # per world: the head row and the sparse support of each group. Head rows and dofs are not in
-    # order, one support is wider than the block, dof 39 is in every group of world 0 and dof 0 in
-    # none; the second world has no group and the third reports more groups than the capacity.
-    worlds = []
-    for worldid, ngroup in enumerate((4, 0, ngroup_max)[:nworld]):
-      head_rows = rng.permutation(njmax)[:ngroup]
-      supports = []
-      for groupid in range(ngroup):
-        width = 35 if groupid == 1 else int(rng.integers(1, 9))
-        support = rng.permutation(np.arange(1, nv - 1))[:width]
-        if worldid == 0:
-          support = np.append(support, nv - 1)
-        supports.append(rng.permutation(support))
-      worlds.append((head_rows, supports))
-
-    nnz = 4 + max(sum(len(support) for support in supports) for _, supports in worlds)
-    jtdaj_adr = np.full((nworld, ngroup_max), -1, dtype=np.int32)
-    nblock = np.zeros(nworld, dtype=np.int32)
-    rownnz = np.zeros((nworld, njmax), dtype=np.int32)
-    rowadr = np.zeros((nworld, njmax), dtype=np.int32)
-    colind = np.full((nworld, 1, nnz), -1, dtype=np.int32)
-    expected_adr = np.zeros((nworld, nv + 1), dtype=np.int32)
-    expected_entry = np.full((nworld, nnz), -5, dtype=np.int32)
-    for worldid, (head_rows, supports) in enumerate(worlds):
-      nblock[worldid] = len(head_rows) + (3 if len(head_rows) == ngroup_max else 0)
-      lists = [[] for _ in range(nv)]
-      adr = 2  # the first support does not start at the beginning of the sparse arrays
-      for groupid, (head_row, support) in enumerate(zip(head_rows, supports)):
-        jtdaj_adr[worldid, groupid] = head_row
-        rownnz[worldid, head_row] = len(support)
-        rowadr[worldid, head_row] = adr
-        colind[worldid, 0, adr : adr + len(support)] = support
-        adr += len(support)
-        for i, dofid in enumerate(support):
-          lists[dofid].append(groupid * nv + i)
-      expected_adr[worldid, 1:] = np.cumsum([len(dof_list) for dof_list in lists])
-      expected_entry[worldid, : expected_adr[worldid, nv]] = np.concatenate(lists + [[]])
-
-    if nworld > 0:
-      self.assertEqual(len(worlds[0][1][1]), 36)
-      self.assertEqual(expected_adr[0, nv] - expected_adr[0, nv - 1], 4)
-      self.assertEqual(expected_adr[0, 1], 0)
-
+    fixture = _sparse_groups_fixture(nworld)
+    nv, nnz = fixture["nv"], fixture["colind"].shape[2]
     cursor = wp.full((nworld, nv), 7, dtype=int)
     chunk_count = wp.full((nworld, lanes), 7, dtype=int)
-    adr_out = wp.full((nworld, nv + 1), -5, dtype=int)
-    entry_out = wp.full((nworld, nnz), -5, dtype=int)
+    group = wp.full((nworld, fixture["jtdaj_adr"].shape[1]), wp.vec4i(-5), dtype=wp.vec4i)
+    adr = wp.full((nworld, nv + 1), -5, dtype=int)
+    entry = wp.full((nworld, nnz), wp.vec4i(-5), dtype=wp.vec4i)
     wp.launch(
       solver._qfrc_index,
       dim=(nworld, lanes),
       inputs=[
-        wp.array(jtdaj_adr, dtype=int),
-        wp.array(nblock, dtype=int),
-        wp.array(rownnz, dtype=int),
-        wp.array(rowadr, dtype=int),
-        wp.array(colind, dtype=int),
+        wp.array(fixture[name], dtype=int) for name in ("jtdaj_adr", "jtdaj_nrow", "nblock", "rownnz", "rowadr", "colind")
       ],
-      outputs=[cursor, chunk_count, adr_out, entry_out],
+      outputs=[cursor, chunk_count, group, adr, entry],
       block_dim=lanes,
     )
 
-    np.testing.assert_array_equal(adr_out.numpy(), expected_adr)
-    np.testing.assert_array_equal(entry_out.numpy(), expected_entry)
+    np.testing.assert_array_equal(adr.numpy(), fixture["adr"])
+    np.testing.assert_array_equal(entry.numpy(), fixture["entry"])
+
+  @parameterized.product(nworld=(1, 2, 3), compact=(False, True))
+  def test_qfrc_constraint_sparse_groups(self, nworld, compact):
+    """The sum over the lists of each dof matches efc_J.T @ efc_force and the default kernel."""
+    fixture = _sparse_groups_fixture(nworld)
+    nv, njmax, nnz = fixture["nv"], fixture["rownnz"].shape[1], fixture["colind"].shape[2]
+    rng = np.random.default_rng(3)
+    J = rng.uniform(-1.0, 1.0, (nworld, 1, nnz)).astype(np.float32)
+    force = rng.uniform(-1.0, 1.0, (nworld, njmax)).astype(np.float32)
+    force[rng.uniform(size=force.shape) < 0.2] = 0.0
+    # the compacted solve drops dof 7, which is in most groups, and moves the others
+    cdof = np.arange(nv, dtype=np.int32)
+    if compact:
+      cdof = np.concatenate((np.arange(1, 8), [-1], np.arange(8, nv - 1), [0])).astype(np.int32)
+    nv_out = nv - int(compact)
+
+    expected = np.zeros((nworld, nv_out))
+    nefc, rownnz, rowadr, colind = fixture["nefc"], fixture["rownnz"], fixture["rowadr"], fixture["colind"]
+    for worldid in range(nworld):
+      for efcid in range(nefc[worldid]):
+        for i in range(rownnz[worldid, efcid]):
+          dofid = cdof[colind[worldid, 0, rowadr[worldid, efcid] + i]]
+          if dofid >= 0:
+            expected[worldid, dofid] += J[worldid, 0, rowadr[worldid, efcid] + i] * force[worldid, efcid]
+    self.assertGreater(np.abs(expected[0]).max(), 0.5)
+
+    done = wp.zeros(nworld, dtype=bool)
+    arrays = {name: wp.array(fixture[name], dtype=int) for name in fixture if isinstance(fixture[name], np.ndarray)}
+    J, force = wp.array(J, dtype=float), wp.array(force, dtype=float)
+    cdof = wp.array(np.tile(cdof, (nworld, 1)), dtype=int)
+
+    # the default kernel
+    qfrc_default = wp.zeros((nworld, nv_out), dtype=float)
+    wp.launch(
+      solver._update_constraint_init_qfrc_constraint_sparse(compact, 0),
+      dim=(nworld, njmax),
+      inputs=[arrays[name] for name in ("nefc", "rownnz", "rowadr", "colind")] + [J, force, cdof, arrays["nefc"], done],
+      outputs=[qfrc_default],
+    )
+    np.testing.assert_allclose(qfrc_default.numpy(), expected, rtol=1e-5, atol=1e-5)
+
+    # the lists, then one thread per dof
+    lanes = 1 if wp.get_device().is_cpu else solver._QFRC_INDEX_LANES
+    adr = wp.empty((nworld, nv + 1), dtype=int)
+    entry = wp.empty((nworld, nnz), dtype=wp.vec4i)
+    wp.launch(
+      solver._qfrc_index,
+      dim=(nworld, lanes),
+      inputs=[arrays[name] for name in ("jtdaj_adr", "jtdaj_nrow", "nblock", "rownnz", "rowadr", "colind")],
+      outputs=[
+        wp.empty((nworld, nv), dtype=int),
+        wp.empty((nworld, lanes), dtype=int),
+        wp.empty(fixture["jtdaj_adr"].shape, dtype=wp.vec4i),
+        adr,
+        entry,
+      ],
+      block_dim=lanes,
+    )
+    qfrc = wp.full((nworld, nv_out), wp.inf, dtype=float)
+    wp.launch(
+      solver._update_constraint_init_qfrc_constraint_sparse(compact, nv, True, True),
+      dim=(nworld, nv),
+      inputs=[arrays["nf"], arrays["rowadr"], J, force, cdof, arrays["frictionadr"], adr, entry, arrays["nefc"], done],
+      outputs=[qfrc],
+    )
+    np.testing.assert_allclose(qfrc.numpy(), expected, rtol=1e-5, atol=1e-5)
 
   @parameterized.parameters(1, 2)
   def test_qfrc_index_solve(self, nworld):
@@ -2322,15 +2412,18 @@ class SolverTest(parameterized.TestCase):
     solver.init_context(m, d, ctx, grad=True)
 
     adr, entry = ctx.qfrc_adr.numpy(), ctx.qfrc_entry.numpy()
-    nblock, jtdaj_adr = d.efc.jtdaj_nblock.numpy(), d.efc.jtdaj_adr.numpy()
+    nblock, jtdaj_adr, jtdaj_nrow = d.efc.jtdaj_nblock.numpy(), d.efc.jtdaj_adr.numpy(), d.efc.jtdaj_nrow.numpy()
     rownnz, rowadr, colind = d.efc.J_rownnz.numpy(), d.efc.J_rowadr.numpy(), d.efc.J_colind.numpy()
     self.assertGreater(nblock.min(), 1)
+    self.assertGreater(jtdaj_nrow.max(), 1)
     for worldid in range(nworld):
       lists = [[] for _ in range(m.nv)]
       for groupid in range(nblock[worldid]):
         head_row = jtdaj_adr[worldid, groupid]
-        for i in range(rownnz[worldid, head_row]):
-          lists[colind[worldid, 0, rowadr[worldid, head_row] + i]].append(groupid * m.nv + i)
+        head_adr, support = rowadr[worldid, head_row], rownnz[worldid, head_row]
+        for i in range(support):
+          # the rows of a group follow each other in the sparse arrays
+          lists[colind[worldid, 0, head_adr + i]].append([head_adr + i, support, head_row, jtdaj_nrow[worldid, groupid]])
       self.assertEqual(adr[worldid, 0], 0)
       for dofid in range(m.nv):
         self.assertEqual(entry[worldid, adr[worldid, dofid] : adr[worldid, dofid + 1]].tolist(), lists[dofid])
