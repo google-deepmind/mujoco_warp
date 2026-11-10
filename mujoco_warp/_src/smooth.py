@@ -1512,6 +1512,10 @@ def _tendon_armature(nv: int, deterministic: bool = False):
 def tendon_armature(m: Model, d: Data):
   """Add tendon armature to M."""
   if m.opt.deterministic & DeterminismType.ATOMICS:
+    # one thread per dof, which has nothing to add without tendons
+    if m.ntendon == 0:
+      return
+
     wp.launch(
       _tendon_armature(m.nv, True),
       dim=(d.nworld, m.nv),
@@ -3171,24 +3175,26 @@ def tendon_bias(m: Model, d: Data, qfrc: wp.array2d[float]):
   )
 
   if det_atomics:
-    wp.launch(
-      _tendon_bias_qfrc(True),
-      dim=(d.nworld, m.nv),
-      inputs=[
-        m.tendon_actuatorid,
-        m.tendon_armature,
-        m.actuator_trntype,
-        m.actuator_trnid,
-        m.actuator_armature,
-        m.actuator_gear,
-        m.ten_JT_rowadr,
-        m.ten_JT_colind,
-        m.ten_JT_map,
-        d.ten_J,
-        ten_bias_coef,
-      ],
-      outputs=[qfrc],
-    )
+    # one thread per dof, which has nothing to add without tendons
+    if m.ntendon > 0:
+      wp.launch(
+        _tendon_bias_qfrc(True),
+        dim=(d.nworld, m.nv),
+        inputs=[
+          m.tendon_actuatorid,
+          m.tendon_armature,
+          m.actuator_trntype,
+          m.actuator_trnid,
+          m.actuator_armature,
+          m.actuator_gear,
+          m.ten_JT_rowadr,
+          m.ten_JT_colind,
+          m.ten_JT_map,
+          d.ten_J,
+          ten_bias_coef,
+        ],
+        outputs=[qfrc],
+      )
   else:
     wp.launch(
       _tendon_bias_qfrc(False),
