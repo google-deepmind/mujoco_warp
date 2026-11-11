@@ -1480,6 +1480,7 @@ class SolverTest(parameterized.TestCase):
 
     def _get_h(scale):
       ctx.Jaref = wp.array(jaref * scale, dtype=float, device=ctx.Jaref.device)
+      solver._update_constraint(m, d, ctx)  # the dense cone rows are built from Jaref here
       solver._update_gradient(m, d, ctx)
       return ctx.h.numpy()[:, : m.nv, : m.nv].copy()
 
