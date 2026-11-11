@@ -1643,7 +1643,6 @@ def _equality_flexstrain(is_sparse: bool, newton: bool, is_discrete: bool = Fals
     # Data in:
     qvel_in: wp.array2d[float],
     eq_active_in: wp.array2d[bool],
-    xpos_in: wp.array2d[wp.vec3],
     subtree_com_in: wp.array2d[wp.vec3],
     cdof_in: wp.array2d[wp.spatial_vector],
     njmax_in: int,
@@ -5389,7 +5388,6 @@ def make_constraint(m: types.Model, d: types.Data):
               m.flexstrain_J_colind,
               d.qvel,
               d.eq_active,
-              d.xpos,
               d.subtree_com,
               d.cdof,
               d.njmax,
