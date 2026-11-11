@@ -5836,7 +5836,7 @@ def make_constraint(m: types.Model, d: types.Data):
           wp.launch(
             _efc_contact_jac_sparse(m.opt.cone, nmaxdim, max_records, det_atomics),
             dim=ncontact_stride * _CONTACT_JAC_LANES,
-            block_dim=128,
+            block_dim=m.block_dim.contact_jac_sparse,
             inputs=[
               m.body_rootid,
               m.body_weldid,

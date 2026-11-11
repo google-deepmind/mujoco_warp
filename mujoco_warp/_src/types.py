@@ -103,7 +103,7 @@ FLEX_INTERP_MAX_NODES = 27
 # TODO(team): add check that all wp.launch_tiled 'block_dim' settings are configurable
 @dataclasses.dataclass
 class BlockDim:
-  """Block dimension 'block_dim' settings for wp.launch_tiled.
+  """Block dimension settings for kernel launches.
 
   TODO(team): experimental and may be removed
 
@@ -130,6 +130,7 @@ class BlockDim:
     solve_search_update_cg: solve search update CG block dimension (solver)
     solve_init_search_cg: solve init search CG block dimension (solver)
     contact_jac_tiled: contact Jacobian tiled block dimension (solver)
+    contact_jac_sparse: sparse contact Jacobian block dimension (constraint)
     eff_pcg: effective-metric PCG block dimension (derivative)
     render: render block dimension (render)
   """
@@ -163,6 +164,8 @@ class BlockDim:
   solve_search_update_cg: int = 256
   solve_init_search_cg: int = 256
   contact_jac_tiled: int = 32
+  # constraint
+  contact_jac_sparse: int = 128
   # derivative
   eff_pcg: int = 128
   # render
