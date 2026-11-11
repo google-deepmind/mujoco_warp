@@ -2264,11 +2264,15 @@ def _initial_body_awake(mjm: mujoco.MjModel, nworld: int, init_asleep: bool) -> 
   return body_awake_np
 
 
-# TODO(team): remove, with the rotation matrix fallbacks, once mujoco >= 4.0.0 is required
+# TODO(team): remove, with the fallback in mjdata_xquat, once mujoco >= 4.0.0 is required
 _MJDATA_HAS_XQUAT = util_pkg.check_version("mujoco>=3.17.1.dev1011645925")
 
-# Data quaternion fields that older mjData only has as rotation matrices.
-_QUAT_FROM_MAT = {"xiquat": "ximat", "geom_xquat": "geom_xmat", "site_xquat": "site_xmat"}
+# Data frame quaternions: mjModel fields with each frame's body and its orientation in that body.
+_XQUAT_LOCAL = {
+  "xiquat": (None, "body_iquat"),
+  "geom_xquat": ("geom_bodyid", "geom_quat"),
+  "site_xquat": ("site_bodyid", "site_quat"),
+}
 
 
 def _quat_to_mat(quat: np.ndarray) -> np.ndarray:
@@ -2291,20 +2295,16 @@ def _quat_to_mat(quat: np.ndarray) -> np.ndarray:
   return mat.reshape(quat.shape[:-1] + (3, 3))
 
 
-def _mat_to_quat(mat: np.ndarray) -> np.ndarray:
-  """Quaternions (n, 4) of rotation matrices (n, 9)."""
-  mat = np.asarray(mat, dtype=np.float64).reshape(-1, 9)
-  quat = np.zeros((mat.shape[0], 4))
-  for q, m in zip(quat, mat):
-    mujoco.mju_mat2Quat(q, m)
-  return quat
-
-
-def _mjdata_xquat(mjd: mujoco.MjData, name: str) -> np.ndarray:
-  """Quaternion field of mjData, converted from its rotation matrix where mjData lacks it."""
+def mjdata_xquat(mjm: mujoco.MjModel, mjd: mujoco.MjData, name: str) -> np.ndarray:
+  """Frame quaternion field of mjData, composed as MuJoCo does where mjData lacks the field."""
   if _MJDATA_HAS_XQUAT:
     return getattr(mjd, name)
-  return _mat_to_quat(getattr(mjd, _QUAT_FROM_MAT[name]))
+  bodyid, local = _XQUAT_LOCAL[name]
+  xquat = mjd.xquat if bodyid is None else mjd.xquat[getattr(mjm, bodyid)]
+  quat = np.zeros_like(xquat)
+  for q, xq, lq in zip(quat, xquat, getattr(mjm, local)):
+    mujoco.mju_mulQuat(q, xq, lq)
+  return quat
 
 
 def make_data(
@@ -2475,10 +2475,12 @@ def make_data(
     "njmax_nnz": njmax_nnz,
     # world body
     "xquat": wp.array(np.tile(mjd.xquat, (nworld, 1)), shape=(nworld, mjm.nbody), dtype=wp.quat),
-    "xiquat": wp.array(np.tile(_mjdata_xquat(mjd, "xiquat"), (nworld, 1)), shape=(nworld, mjm.nbody), dtype=wp.quat),
+    "xiquat": wp.array(np.tile(mjdata_xquat(mjm, mjd, "xiquat"), (nworld, 1)), shape=(nworld, mjm.nbody), dtype=wp.quat),
     # static geoms
     "geom_xpos": wp.array(np.tile(mjd.geom_xpos, (nworld, 1)), shape=(nworld, mjm.ngeom), dtype=wp.vec3),
-    "geom_xquat": wp.array(np.tile(_mjdata_xquat(mjd, "geom_xquat"), (nworld, 1)), shape=(nworld, mjm.ngeom), dtype=wp.quat),
+    "geom_xquat": wp.array(
+      np.tile(mjdata_xquat(mjm, mjd, "geom_xquat"), (nworld, 1)), shape=(nworld, mjm.ngeom), dtype=wp.quat
+    ),
     # mocap
     "mocap_pos": wp.array(np.tile(mjm.body_pos[mocap_body[mocap_id]], (nworld, 1)), shape=(nworld, mjm.nmocap), dtype=wp.vec3),
     "mocap_quat": wp.array(
@@ -2856,8 +2858,8 @@ def put_data(
     if f.name in d_kwargs:
       continue
     val = getattr(mjd, f.name, None)
-    if f.name in _QUAT_FROM_MAT:
-      val = _mjdata_xquat(mjd, f.name)
+    if f.name in _XQUAT_LOCAL:
+      val = mjdata_xquat(mjm, mjd, f.name)
     elif f.name == "efm_K_val" and val is not None and val.size != sizes["nefmK"]:
       val = efm_d.efm_K_val if efm_d else None
     elif f.name == "efm_ts":

@@ -811,6 +811,32 @@ class IOTest(parameterized.TestCase):
     if nworld == 2:
       self.assertNotEqual(exported_counts[0], exported_counts[1])
 
+  # TODO(team): remove with the fallback in io.mjdata_xquat
+  @absltest.skipIf(not util_pkg.check_version("mujoco>=3.17.1.dev1011645925"), "MjData has no frame quaternions")
+  def test_mjdata_xquat_fallback(self):
+    """Frame quaternions composed for older MuJoCo match MjData, including their sign."""
+    mjm = mujoco.MjModel.from_xml_string("""
+      <mujoco>
+        <worldbody>
+          <geom size=".1" quat=".1 .2 -.9 .3"/>
+          <site quat="-1 2 3 4"/>
+          <body quat="1 -2 3 -4">
+            <joint type="ball"/>
+            <geom size=".1" quat="-.3 .9 .2 .1"/>
+            <site quat="4 3 -2 1"/>
+            <inertial pos="0 0 0" mass="1" diaginertia="1 2 3" quat="-4 3 2 1"/>
+          </body>
+        </worldbody>
+      </mujoco>
+    """)
+    mjd = mujoco.MjData(mjm)
+    mujoco.mj_kinematics(mjm, mjd)
+
+    for name in ("xiquat", "geom_xquat", "site_xquat"):
+      with mock.patch.object(io, "_MJDATA_HAS_XQUAT", False):
+        quat = io.mjdata_xquat(mjm, mjd, name)
+      _assert_eq(quat, getattr(mjd, name), name)
+
   @parameterized.named_parameters(
     dict(testcase_name="nworld=1", nworld=1, world_id=0),
     dict(testcase_name="nworld=2_world_id=1", nworld=2, world_id=1),
