@@ -3441,12 +3441,14 @@ def _flex_interp_jac(
   efc_J_out: wp.array3d[float],
 ) -> float:
   """Writes the sparse J row of an interpolated flex contact and returns J * qvel."""
-  frame_0 = frame_in[conid, 0]
+  frame_0 = wp.vec3(0.0)
   dimid2 = int(0)
   frii = float(0.0)
-  if not is_elliptic and condim > 1:
-    dimid2 = dimid / 2 + 1
-    frii = friction_in[conid, dimid2 - 1]
+  if not is_elliptic:
+    frame_0 = frame_in[conid, 0]
+    if condim > 1:
+      dimid2 = dimid / 2 + 1
+      frii = friction_in[conid, dimid2 - 1]
 
   local_bodies = support.vec_interp_body(-1)
   local_weights = support.vec_interp_weight(0.0)
@@ -3668,12 +3670,6 @@ def _efc_contact_jac_sparse_flex(cone_type: types.ConeType):
         if flex_interp[flex[1]] != 0:
           is_interp = True
 
-    if not wp.static(IS_ELLIPTIC):
-      frame_0 = frame_in[conid, 0]
-      if condim > 1:
-        dimid2 = dimid / 2 + 1
-        frii = friction_in[conid, dimid2 - 1]
-
     rowadr = efc_J_rowadr_in[worldid, efcid]
     rownnz = efc_J_rownnz_in[worldid, efcid]
 
@@ -3729,7 +3725,13 @@ def _efc_contact_jac_sparse_flex(cone_type: types.ConeType):
       )
 
     else:
-      # Non-interpolated flex path: use HEAD's 4-body lockstep tree-walk
+      if not wp.static(IS_ELLIPTIC):
+        frame_0 = frame_in[conid, 0]
+        if condim > 1:
+          dimid2 = dimid / 2 + 1
+          frii = friction_in[conid, dimid2 - 1]
+
+      # Non-interpolated flex path: use the 4-body lockstep tree-walk
       body_ids1, weights1 = support.contact_bodies_and_weights(
         jnt_bodyid,
         geom_bodyid,
