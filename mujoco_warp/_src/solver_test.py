@@ -1107,13 +1107,14 @@ class SolverTest(parameterized.TestCase):
     """Newton from a cold start: one-tile (nv 27 padded, 48) and blocked (nv 81) Cholesky."""
     xml, jacobian = xml_jacobian
     for keyframe in range(3):
-      mjm, mjd, m, d = test_data.fixture(
+      _, mjd, m, d = test_data.fixture(
         xml,
         keyframe=keyframe,
         overrides={"opt.jacobian": jacobian, "opt.cone": cone, "opt.solver": SolverType.NEWTON, "opt.iterations": 50},
       )
-      mujoco.mj_forward(mjm, mjd)
       d.qacc_warmstart.zero_()
+      d.qacc.fill_(wp.inf)
+      d.efc.force.fill_(wp.inf)
       mjw.solve(m, d)
       _assert_eq(d.qacc.numpy()[0], mjd.qacc, "qacc")
       _assert_eq(d.efc.force.numpy()[0, : mjd.nefc], mjd.efc_force, "efc_force")

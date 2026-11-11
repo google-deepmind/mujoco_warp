@@ -499,9 +499,21 @@ class IOTest(parameterized.TestCase):
   @parameterized.parameters((23, 24), (47, 48), (48, 48), (49, 64), (63, 64), (64, 80), (79, 80), (80, 96))
   def test_augmented_cholesky_padding(self, nv, expected):
     """16-byte rows up to H_ONE_TILE_MAX, the blocked Cholesky's augmented tiles past it."""
-    bodies = '<body><joint type="slide"/><geom size=".1"/></body>' * nv
-    mjm = mujoco.MjModel.from_xml_string(f"<mujoco><worldbody>{bodies}</worldbody></mujoco>")
-    self.assertEqual(io._get_padded_sizes(mjm, 0)[1], expected)
+    _, _, m, _ = test_data.fixture(
+      xml=f"""
+      <mujoco>
+        <worldbody>
+          <replicate count="{nv}">
+            <body>
+              <joint/>
+              <geom size="0.1"/>
+            </body>
+          </replicate>
+        </worldbody>
+      </mujoco>
+      """
+    )
+    self.assertEqual(m.nv_pad, expected)
 
   @parameterized.parameters((15, 16), (16, 32), (31, 32), (32, 48))
   def test_augmented_cholesky_nvmax_padding(self, nvmax, expected):
