@@ -24,7 +24,6 @@ from absl.testing import parameterized
 
 import mujoco_warp as mjw
 from mujoco_warp import test_data
-from mujoco_warp._src import util_pkg
 
 try:
   mujoco.Renderer(mujoco.MjModel.from_xml_string("<mujoco/>"))
@@ -143,10 +142,6 @@ class RenderTest(parameterized.TestCase):
 
     self.assertNotEqual(np.unique(rgb).shape[0], 1)
 
-  @absltest.skipIf(
-    not util_pkg.check_version("mujoco>=3.16.1"),
-    "Requires MuJoCo >= 3.16.1",
-  )
   def test_render_texture_by_reference(self):
     """A scene with a by-reference file texture renders the same image as its eager compile."""
     path = os.path.join(os.path.dirname(test_data.__file__), "mug", "mug.xml")

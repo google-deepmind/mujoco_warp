@@ -21,7 +21,6 @@ import warp as wp
 from mujoco_warp._src import math
 from mujoco_warp._src import support
 from mujoco_warp._src import util_misc
-from mujoco_warp._src.types import FLEX_INTERP_PHYS_JAC
 from mujoco_warp._src.types import MJ_MAXVAL
 from mujoco_warp._src.types import MJ_MINVAL
 from mujoco_warp._src.types import Q_LD_BLOCK_COMPACT
@@ -49,6 +48,12 @@ from mujoco_warp._src.warp_util import cache_kernel
 from mujoco_warp._src.warp_util import event_scope
 
 wp.set_module_options({"enable_backward": False})
+
+
+# Long per-world sums (e.g. over the tree roots of flex vertex bodies) are loaded into shared memory
+# in chunks and added in the original order; short ones keep one thread per world.
+WORLD_SUM_CHUNK = 512
+WORLD_SUM_BLOCK = 128
 
 
 @wp.kernel
@@ -571,17 +576,16 @@ def _flex_face_kinematics(
       face_xpos_out[worldid, face_id, local_idx] = wp.vec3(0.0)
 
   normal_axis, _, _, _, _, _ = support.get_face_metadata(cx, cy, cz, face_elem_idx, order_abs)
-  if wp.static(FLEX_INTERP_PHYS_JAC):
-    axis0 = (normal_axis + 1) % 3
-    axis1 = (normal_axis + 2) % 3
-    if gidx0 != -1 and gidx1 != -1:
-      dref = flex_node0[gidx1] - flex_node0[gidx0]
-      d0 = dref[axis0]
-      d1 = dref[axis1]
-      if d0 > MJ_MINVAL:
-        t1 = t1 / d0
-      if d1 > MJ_MINVAL:
-        t2 = t2 / d1
+  axis0 = (normal_axis + 1) % 3
+  axis1 = (normal_axis + 2) % 3
+  if gidx0 != -1 and gidx1 != -1:
+    dref = flex_node0[gidx1] - flex_node0[gidx0]
+    d0 = dref[axis0]
+    d1 = dref[axis1]
+    if d0 > MJ_MINVAL:
+      t1 = t1 / d0
+    if d1 > MJ_MINVAL:
+      t2 = t2 / d1
 
   normal = wp.cross(t1, t2)
 
@@ -707,7 +711,7 @@ def _flex_rod_ref(
 
   nedge = flex_rod_edgenum[f]
   nhinge = nedge - 1
-  if wp.static(ROD_HINGE_SIZE != 10) or nhinge <= 0:
+  if nhinge <= 0:
     return
 
   hadr = flex_rod_hingeadr[f]
@@ -966,6 +970,44 @@ def _subtree_com_world(
   subtree_com_out[worldid, 0] = com
 
 
+@wp.kernel(module="unique", enable_backward=False)
+def _subtree_com_world_tiled(
+  # Model:
+  body_mass: wp.array2d[float],
+  body_subtreemass: wp.array2d[float],
+  # Data in:
+  xipos_in: wp.array2d[wp.vec3],
+  subtree_com_in: wp.array2d[wp.vec3],
+  # In:
+  rootid_in: wp.array[int],
+  # Data out:
+  subtree_com_out: wp.array2d[wp.vec3],
+):
+  worldid, lane = wp.tid()
+  subtreemass_id = worldid % body_subtreemass.shape[0]
+
+  mass = body_subtreemass[subtreemass_id, 0]
+  if mass < MJ_MINVAL:
+    if lane == 0:
+      subtree_com_out[worldid, 0] = xipos_in[worldid, 0]
+    return
+
+  com = wp.vec3()
+  if lane == 0:
+    com = xipos_in[worldid, 0] * body_mass[worldid % body_mass.shape[0], 0]
+  nroot = rootid_in.shape[0]
+  for start in range(0, nroot, WORLD_SUM_CHUNK):
+    rootid = wp.tile_load(rootid_in, shape=(WORLD_SUM_CHUNK,), offset=(start,), storage="shared")
+    root_com = wp.tile_load_indexed(subtree_com_in[worldid], rootid, shape=(WORLD_SUM_CHUNK,), storage="shared")
+    root_mass = wp.tile_load_indexed(body_subtreemass[subtreemass_id], rootid, shape=(WORLD_SUM_CHUNK,), storage="shared")
+    if lane == 0:
+      for i in range(wp.min(WORLD_SUM_CHUNK, nroot - start)):
+        com += root_com[i] * root_mass[i]
+
+  if lane == 0:
+    subtree_com_out[worldid, 0] = com / mass
+
+
 @wp.kernel
 def _cinert(
   # Model:
@@ -1073,12 +1115,21 @@ def com_pos(m: Model, d: Data):
     inputs=[m.body_mass, m.body_subtreemass, m.body_subtreenum, d.xipos],
     outputs=[d.subtree_com],
   )
-  wp.launch(
-    _subtree_com_world,
-    dim=d.nworld,
-    inputs=[m.nbody, m.body_mass, m.body_subtreemass, m.body_subtreenum, d.xipos, d.subtree_com],
-    outputs=[d.subtree_com],
-  )
+  if m.nbody > 1 and m.body_tree[1].shape[0] > WORLD_SUM_BLOCK:
+    wp.launch_tiled(
+      _subtree_com_world_tiled,
+      dim=d.nworld,
+      inputs=[m.body_mass, m.body_subtreemass, d.xipos, d.subtree_com, m.body_tree[1]],
+      outputs=[d.subtree_com],
+      block_dim=WORLD_SUM_BLOCK,
+    )
+  else:
+    wp.launch(
+      _subtree_com_world,
+      dim=d.nworld,
+      inputs=[m.nbody, m.body_mass, m.body_subtreemass, m.body_subtreenum, d.xipos, d.subtree_com],
+      outputs=[d.subtree_com],
+    )
   wp.launch(
     _cinert,
     dim=(d.nworld, m.nbody),
@@ -1816,12 +1867,39 @@ def _cfrc_world(
   cfrc_int_out[worldid, 0] = frc
 
 
+@wp.kernel(module="unique", enable_backward=False)
+def _cfrc_world_tiled(
+  # Data in:
+  cfrc_int_in: wp.array2d[wp.spatial_vector],
+  # In:
+  rootid_in: wp.array[int],
+  # Data out:
+  cfrc_int_out: wp.array2d[wp.spatial_vector],
+):
+  worldid, lane = wp.tid()
+  frc = wp.spatial_vector()
+  nroot = rootid_in.shape[0]
+  for start in range(0, nroot, WORLD_SUM_CHUNK):
+    rootid = wp.tile_load(rootid_in, shape=(WORLD_SUM_CHUNK,), offset=(start,), storage="shared")
+    root_frc = wp.tile_load_indexed(cfrc_int_in[worldid], rootid, shape=(WORLD_SUM_CHUNK,), storage="shared")
+    if lane == 0:
+      for i in range(wp.min(WORLD_SUM_CHUNK, nroot - start)):
+        frc += root_frc[i]
+  if lane == 0:
+    cfrc_int_out[worldid, 0] = frc
+
+
 def _rne_cfrc(m: Model, d: Data, flg_cfrc_ext: bool = False):
   """Computes cfrc_int: each body's force plus the forces of its subtree."""
   cfrc_body = wp.empty((d.nworld, m.nbody), dtype=wp.spatial_vector)
   wp.launch(_cfrc, dim=[d.nworld, m.nbody], inputs=[d.cinert, d.cvel, d.cacc, d.cfrc_ext, flg_cfrc_ext], outputs=[cfrc_body])
   wp.launch(_cfrc_subtree, dim=(d.nworld, m.nbody), inputs=[m.body_subtreenum, cfrc_body], outputs=[d.cfrc_int])
-  wp.launch(_cfrc_world, dim=d.nworld, inputs=[m.nbody, m.body_subtreenum, d.cfrc_int], outputs=[d.cfrc_int])
+  if m.nbody > 1 and m.body_tree[1].shape[0] > WORLD_SUM_BLOCK:
+    wp.launch_tiled(
+      _cfrc_world_tiled, dim=d.nworld, inputs=[d.cfrc_int, m.body_tree[1]], outputs=[d.cfrc_int], block_dim=WORLD_SUM_BLOCK
+    )
+  else:
+    wp.launch(_cfrc_world, dim=d.nworld, inputs=[m.nbody, m.body_subtreenum, d.cfrc_int], outputs=[d.cfrc_int])
 
 
 @wp.kernel
