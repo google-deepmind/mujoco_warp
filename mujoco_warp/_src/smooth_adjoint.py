@@ -1083,14 +1083,18 @@ def _cinert_pose_dof_vjp(
 
 def _cinert_vjp(m: Model, d: Data, adj_cinert: wp.array2d, bc: BackwardContext):
   # Explicit sinks prevent Warp from falling back to the model parameters' own .grad arrays.
-  bc.res_body_mass.zero_()
-  bc.res_body_inertia.zero_()
+  mass_grad = bc.res_body_mass if m.body_mass.requires_grad else None
+  inertia_grad = bc.res_body_inertia if m.body_inertia.requires_grad else None
+  if mass_grad is not None:
+    mass_grad.zero_()
+  if inertia_grad is not None:
+    inertia_grad.zero_()
   wp.launch(
     adjoint_recompute._cinert_recompute,
     dim=(d.nworld, m.nbody),
     inputs=[m.body_rootid, m.body_mass, m.body_inertia, d.xipos, d.xiquat, d.subtree_com],
     outputs=[d.cinert],
-    adj_inputs=[None, bc.res_body_mass, bc.res_body_inertia, bc.adj_xipos, bc.adj_xiquat, bc.adj_subtree_com],
+    adj_inputs=[None, mass_grad, inertia_grad, bc.adj_xipos, bc.adj_xiquat, bc.adj_subtree_com],
     adj_outputs=[adj_cinert],
     adjoint=True,
   )
