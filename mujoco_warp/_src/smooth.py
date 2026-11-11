@@ -2197,7 +2197,6 @@ def _cfrc_ext_contact_body(
   nefc_in: wp.array[int],
   subtree_com_in: wp.array2d[wp.vec3],
   contact_pos_in: wp.array[wp.vec3],
-  efc_type_in: wp.array2d[int],
   efc_id_in: wp.array2d[int],
   njmax_in: int,
   # In:
@@ -2215,20 +2214,12 @@ def _cfrc_ext_contact_body(
 
   # One thread per body visits the contacts of its world in constraint row order, from the first
   # contact of the body: a body has one writer and a fixed summation order, without atomics.
+  # The contact rows are the last rows of a world, so the type of the rows is not read.
   com = subtree_com_in[worldid, body_rootid[bodyid]]
   nefc = wp.min(nefc_in[worldid], njmax_in)
   cfrc = wp.spatial_vector()
   efcid = int(njmax_in - body_efcadr_in[worldid, bodyid])
   while efcid < nefc:
-    efc_type = efc_type_in[worldid, efcid]
-    if (
-      efc_type != ConstraintType.CONTACT_FRICTIONLESS
-      and efc_type != ConstraintType.CONTACT_PYRAMIDAL
-      and efc_type != ConstraintType.CONTACT_ELLIPTIC
-    ):
-      efcid += 1
-      continue
-
     # the rows of a contact are consecutive: this is the first one, skip the others
     conid = efc_id_in[worldid, efcid]
     conbody = contact_body_in[conid]
@@ -2606,7 +2597,6 @@ def rne_postconstraint(m: Model, d: Data):
         d.nefc,
         d.subtree_com,
         d.contact.pos,
-        d.efc.type,
         d.efc.id,
         d.njmax,
         contact_body,

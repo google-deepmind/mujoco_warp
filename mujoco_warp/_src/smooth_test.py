@@ -686,6 +686,10 @@ class SmoothTest(parameterized.TestCase):
       # equality, friction and limit rows come before the contact rows
       self.assertEqual((d.ne.numpy()[world], d.nf.numpy()[world], d.nl.numpy()[world]), (1, 1, 1))
       self.assertEqual(efcadr[inworld & (efcadr >= 0)].min(), 3)
+      # and every row after them is a contact row: the deterministic kernel does not read the types
+      efc_type = d.efc.type.numpy()[world, 3 : d.nefc.numpy()[world]]
+      self.assertGreater(efc_type.size, 8)
+      self.assertTrue(np.all(efc_type >= types.ConstraintType.CONTACT_FRICTIONLESS))
       # a contact without constraint rows, and contacts of the world body with itself
       np.testing.assert_array_equal(efcadr[inworld & (body[:, 1] == bodyid["near"])], [-1])
       self.assertEqual(np.count_nonzero(inworld & (efcadr >= 0) & (body[:, 0] == 0) & (body[:, 1] == 0)), 4)
