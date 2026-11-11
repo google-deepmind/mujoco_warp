@@ -22,7 +22,6 @@ import numpy as np
 import warp as wp
 
 from mujoco_warp._src import math as mjmath
-from mujoco_warp._src.io import mjdata_xquat
 from mujoco_warp._src.types import MJ_MAXVAL
 from mujoco_warp._src.types import Data
 from mujoco_warp._src.types import DeterminismType
@@ -322,7 +321,7 @@ def build_scene_bvh(mjm: mujoco.MjModel, mjd: mujoco.MjData, rc: RenderContext, 
   geom_dataid = wp.array(np.tile(mjm.geom_dataid, (nworld, 1)), dtype=int)
   geom_size = wp.array(np.tile(mjm.geom_size[np.newaxis, :, :], (nworld, 1, 1)), dtype=wp.vec3)
   geom_xpos = wp.array(np.tile(mjd.geom_xpos[np.newaxis, :, :], (nworld, 1, 1)), dtype=wp.vec3)
-  geom_xquat = wp.array(np.tile(mjdata_xquat(mjm, mjd, "geom_xquat")[np.newaxis, :, :], (nworld, 1, 1)), dtype=wp.quat)
+  geom_xquat = wp.array(np.tile(mjd.geom_xquat[np.newaxis, :, :], (nworld, 1, 1)), dtype=wp.quat)
 
   flex_vertadr = wp.array(mjm.flex_vertadr, dtype=int)
   flex_vertnum = wp.array(mjm.flex_vertnum, dtype=int)

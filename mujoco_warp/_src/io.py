@@ -2241,17 +2241,6 @@ def _initial_body_awake(mjm: mujoco.MjModel, nworld: int, init_asleep: bool) -> 
   return body_awake_np
 
 
-# TODO(team): remove, with the fallback in mjdata_xquat, once mujoco >= 4.0.0 is required
-_MJDATA_HAS_XQUAT = util_pkg.check_version("mujoco>=3.17.1.dev1011645925")
-
-# Data frame quaternions: mjModel fields with each frame's body and its orientation in that body.
-_XQUAT_LOCAL = {
-  "xiquat": (None, "body_iquat"),
-  "geom_xquat": ("geom_bodyid", "geom_quat"),
-  "site_xquat": ("site_bodyid", "site_quat"),
-}
-
-
 def _quat_to_mat(quat: np.ndarray) -> np.ndarray:
   """Rotation matrices (..., 3, 3) of quaternions (..., 4), computed like math.quat_to_mat."""
   q0, q1, q2, q3 = np.moveaxis(quat, -1, 0)
@@ -2270,18 +2259,6 @@ def _quat_to_mat(quat: np.ndarray) -> np.ndarray:
     axis=-1,
   )
   return mat.reshape(quat.shape[:-1] + (3, 3))
-
-
-def mjdata_xquat(mjm: mujoco.MjModel, mjd: mujoco.MjData, name: str) -> np.ndarray:
-  """Frame quaternion field of mjData, composed as MuJoCo does where mjData lacks the field."""
-  if _MJDATA_HAS_XQUAT:
-    return getattr(mjd, name)
-  bodyid, local = _XQUAT_LOCAL[name]
-  xquat = mjd.xquat if bodyid is None else mjd.xquat[getattr(mjm, bodyid)]
-  quat = np.zeros_like(xquat)
-  for q, xq, lq in zip(quat, xquat, getattr(mjm, local)):
-    mujoco.mju_mulQuat(q, xq, lq)
-  return quat
 
 
 def make_data(
@@ -2441,12 +2418,10 @@ def make_data(
     "njmax_nnz": njmax_nnz,
     # world body
     "xquat": wp.array(np.tile(mjd.xquat, (nworld, 1)), shape=(nworld, mjm.nbody), dtype=wp.quat),
-    "xiquat": wp.array(np.tile(mjdata_xquat(mjm, mjd, "xiquat"), (nworld, 1)), shape=(nworld, mjm.nbody), dtype=wp.quat),
+    "xiquat": wp.array(np.tile(mjd.xiquat, (nworld, 1)), shape=(nworld, mjm.nbody), dtype=wp.quat),
     # static geoms
     "geom_xpos": wp.array(np.tile(mjd.geom_xpos, (nworld, 1)), shape=(nworld, mjm.ngeom), dtype=wp.vec3),
-    "geom_xquat": wp.array(
-      np.tile(mjdata_xquat(mjm, mjd, "geom_xquat"), (nworld, 1)), shape=(nworld, mjm.ngeom), dtype=wp.quat
-    ),
+    "geom_xquat": wp.array(np.tile(mjd.geom_xquat, (nworld, 1)), shape=(nworld, mjm.ngeom), dtype=wp.quat),
     # mocap
     "mocap_pos": wp.array(np.tile(mjm.body_pos[mocap_body[mocap_id]], (nworld, 1)), shape=(nworld, mjm.nmocap), dtype=wp.vec3),
     "mocap_quat": wp.array(
@@ -2785,9 +2760,7 @@ def put_data(
     if f.name in d_kwargs:
       continue
     val = getattr(mjd, f.name, None)
-    if f.name in _XQUAT_LOCAL:
-      val = mjdata_xquat(mjm, mjd, f.name)
-    elif f.name == "efm_K_val" and val is not None and val.size != sizes["nefmK"]:
+    if f.name == "efm_K_val" and val is not None and val.size != sizes["nefmK"]:
       val = efm_d.efm_K_val if efm_d else None
     elif f.name == "efm_ts":
       val = np.zeros(mjm.ntendon, dtype=np.float32)
@@ -2934,23 +2907,22 @@ def get_data_into(
   result.act_dot[:] = d.act_dot.numpy()[world_id]
   result.xpos[:] = d.xpos.numpy()[world_id]
   xquat = d.xquat.numpy()[world_id]
-  xiquat = d.xiquat.numpy()[world_id]
-  geom_xquat = d.geom_xquat.numpy()[world_id]
-  site_xquat = d.site_xquat.numpy()[world_id]
   result.xquat[:] = xquat
   result.xmat[:] = _quat_to_mat(xquat).reshape((-1, 9))
   result.xipos[:] = d.xipos.numpy()[world_id]
+  xiquat = d.xiquat.numpy()[world_id]
+  result.xiquat[:] = xiquat
   result.ximat[:] = _quat_to_mat(xiquat).reshape((-1, 9))
   result.xanchor[:] = d.xanchor.numpy()[world_id]
   result.xaxis[:] = d.xaxis.numpy()[world_id]
   result.geom_xpos[:] = d.geom_xpos.numpy()[world_id]
+  geom_xquat = d.geom_xquat.numpy()[world_id]
+  result.geom_xquat[:] = geom_xquat
   result.geom_xmat[:] = _quat_to_mat(geom_xquat).reshape((-1, 9))
   result.site_xpos[:] = d.site_xpos.numpy()[world_id]
+  site_xquat = d.site_xquat.numpy()[world_id]
+  result.site_xquat[:] = site_xquat
   result.site_xmat[:] = _quat_to_mat(site_xquat).reshape((-1, 9))
-  if _MJDATA_HAS_XQUAT:
-    result.xiquat[:] = xiquat
-    result.geom_xquat[:] = geom_xquat
-    result.site_xquat[:] = site_xquat
   result.cam_xpos[:] = d.cam_xpos.numpy()[world_id]
   result.cam_xmat[:] = d.cam_xmat.numpy()[world_id].reshape((-1, 9))
   result.light_xpos[:] = d.light_xpos.numpy()[world_id]
