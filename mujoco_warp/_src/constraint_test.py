@@ -26,7 +26,6 @@ from absl.testing import parameterized
 import mujoco_warp as mjw
 from mujoco_warp import ConeType
 from mujoco_warp import test_data
-from mujoco_warp._src import util_pkg
 
 # tolerance for difference between MuJoCo and MJWarp constraint calculations,
 # mostly due to float precision
@@ -592,8 +591,6 @@ class ConstraintTest(parameterized.TestCase):
     cone=(ConeType.PYRAMIDAL, ConeType.ELLIPTIC),
     jacobian=(mujoco.mjtJacobian.mjJAC_DENSE, mujoco.mjtJacobian.mjJAC_SPARSE),
   )
-  # TODO(team): remove version check once mujoco >= 3.17.1 is required.
-  @absltest.skipIf(not util_pkg.check_version("mujoco>=3.17.1.dev1005593014"), "Requires MuJoCo >= 3.17.1.dev1005593014")
   def test_flex_barycentric_jacobian(self, xml, cone, jacobian):
     """Test barycentric contact Jacobian calculation for flex."""
     mjm, mjd, m, d = test_data.fixture(xml=xml, overrides={"opt.cone": cone, "opt.jacobian": jacobian})
@@ -606,8 +603,6 @@ class ConstraintTest(parameterized.TestCase):
 
     _assert_efc_eq(mjm, m, d, mjd, mjd.nefc, f"efc_flex_dim{m.flex_dim.numpy()[0]}", m.nv)
 
-  # TODO(team): remove version check once mujoco >= 3.17.1 is required.
-  @absltest.skipIf(not util_pkg.check_version("mujoco>=3.17.1.dev1005593014"), "Requires MuJoCo >= 3.17.1.dev1005593014")
   def test_flex_3d_simplex_collision(self):
     """Test 3D simplex flex collision and constraint generation."""
     mjm, mjd, m, d = test_data.fixture(
@@ -641,12 +636,10 @@ class ConstraintTest(parameterized.TestCase):
     _assert_efc_eq(mjm, m, d, mjd, mjd.nefc, "efc_flex_3d_simplex", m.nv, tol=1e-3)
 
   # TODO(thowell): Add support for quadratic flex interpolation.
-  # TODO(team): remove version check once mujoco >= 3.17.1 is required.
   @parameterized.parameters(
     ("2 1 2", "none"),
     ("2 2 2", "bend"),
   )
-  @absltest.skipIf(not util_pkg.check_version("mujoco>=3.17.1.dev1005593014"), "Requires MuJoCo >= 3.17.1.dev1005593014")
   def test_flex_interpolated(self, cellcount, elastic2d):
     """Test collision and constraint generation for interpolated volume and shell flexes."""
     xml = f"""
@@ -793,7 +786,6 @@ class ConstraintTest(parameterized.TestCase):
     self.assertGreater(mjd.nefc, 0)
     _assert_efc_eq(mjm, m, d, mjd, mjd.nefc, "surfacevel", m.nv)
 
-  @absltest.skipIf(not util_pkg.check_version("mujoco>=3.17.1"), "Requires MuJoCo >= 3.17.1")
   @parameterized.product(
     cone=(ConeType.PYRAMIDAL, ConeType.ELLIPTIC),
     nworld=(1, 2),
