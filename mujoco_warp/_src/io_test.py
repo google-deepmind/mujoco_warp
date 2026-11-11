@@ -496,10 +496,24 @@ class IOTest(parameterized.TestCase):
     np.testing.assert_array_equal(data.qpos, [0.25])
     np.testing.assert_array_equal(data.qvel, [0.5])
 
-  @parameterized.parameters((47, 48), (48, 64), (63, 64), (64, 80))
+  @parameterized.parameters((23, 24), (47, 48), (48, 48), (49, 64), (63, 64), (64, 80), (79, 80), (80, 96))
   def test_augmented_cholesky_padding(self, nv, expected):
-    _, nv_pad = io._get_padded_sizes(nv, 0, False, types.TILE_SIZE_JTDAJ_DENSE, augment_cholesky=True)
-    self.assertEqual(nv_pad, expected)
+    """16-byte rows up to H_ONE_TILE_MAX, the blocked Cholesky's augmented tiles past it."""
+    _, _, m, _ = test_data.fixture(
+      xml=f"""
+      <mujoco>
+        <worldbody>
+          <replicate count="{nv}">
+            <body>
+              <joint/>
+              <geom size="0.1"/>
+            </body>
+          </replicate>
+        </worldbody>
+      </mujoco>
+      """
+    )
+    self.assertEqual(m.nv_pad, expected)
 
   @parameterized.parameters((15, 16), (16, 32), (31, 32), (32, 48))
   def test_augmented_cholesky_nvmax_padding(self, nvmax, expected):
@@ -1990,7 +2004,6 @@ class IOTest(parameterized.TestCase):
         <extension>
           <plugin plugin="mujoco.pid"/>
           <plugin plugin="mujoco.sensor.touch_grid"/>
-          <plugin plugin="mujoco.elasticity.cable"/>
         </extension>
         <worldbody>
           <geom type="plane" size="10 10 .001"/>
@@ -1999,15 +2012,6 @@ class IOTest(parameterized.TestCase):
             <geom type="sphere" size=".1"/>
             <site name="site"/>
           </body>
-          <composite type="cable" curve="s" count="41 1 1" size="1" offset="-.3 0 .6" initial="none">
-            <plugin plugin="mujoco.elasticity.cable">
-              <config key="twist" value="1e7"/>
-              <config key="bend" value="4e6"/>
-              <config key="vmax" value="0.05"/>
-            </plugin>
-            <joint kind="main" damping=".015"/>
-            <geom type="capsule" size=".005" rgba=".8 .2 .1 .1" condim="1"/>
-          </composite>
         </worldbody>
         <actuator>
           <plugin plugin="mujoco.pid" joint="joint"/>
