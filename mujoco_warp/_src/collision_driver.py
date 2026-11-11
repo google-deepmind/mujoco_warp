@@ -100,18 +100,10 @@ MJ_FLEX_COLLISION_TABLE = {
 
 @wp.func
 def _plane_filter(
-  size1: float, size2: float, margin1: float, margin2: float, xpos1: wp.vec3, xpos2: wp.vec3, xmat1: wp.mat33, xmat2: wp.mat33
+  rbound_other: float, margin1: float, margin2: float, xpos_plane: wp.vec3, xpos_other: wp.vec3, xmat_plane: wp.mat33
 ) -> bool:
-  if size1 == 0.0:
-    # geom1 is a plane
-    dist = wp.dot(xpos2 - xpos1, wp.vec3(xmat1[0, 2], xmat1[1, 2], xmat1[2, 2]))
-    return dist <= size2 + margin1 + margin2
-  elif size2 == 0.0:
-    # geom2 is a plane
-    dist = wp.dot(xpos1 - xpos2, wp.vec3(xmat2[0, 2], xmat2[1, 2], xmat2[2, 2]))
-    return dist <= size1 + margin1 + margin2
-
-  return True
+  dist = wp.dot(xpos_other - xpos_plane, xmat_plane[:, 2])
+  return dist <= rbound_other + margin1 + margin2
 
 
 @wp.func
@@ -336,22 +328,29 @@ def _broadphase_filter(
       effective_margin2 = margin2 + gap2
     xpos1, xpos2 = geom_xpos_in[worldid, geom1], geom_xpos_in[worldid, geom2]
 
-    # orientations are expanded only for pairs that survive the sphere filter
-    if rbound1 == 0.0 or rbound2 == 0.0:
+    # orientations are loaded and expanded only where a filter needs them
+    if rbound1 == 0.0:
+      # geom1 is a plane
       if wp.static(opt_broadphase_filter & BroadphaseFilter.PLANE):
-        xmat1, xmat2 = quat_to_mat(geom_xquat_in[worldid, geom1]), quat_to_mat(geom_xquat_in[worldid, geom2])
-        return _plane_filter(rbound1, rbound2, effective_margin1, effective_margin2, xpos1, xpos2, xmat1, xmat2)
+        xmat1 = quat_to_mat(geom_xquat_in[worldid, geom1])
+        return _plane_filter(rbound2, effective_margin1, effective_margin2, xpos1, xpos2, xmat1)
+    elif rbound2 == 0.0:
+      # geom2 is a plane
+      if wp.static(opt_broadphase_filter & BroadphaseFilter.PLANE):
+        xmat2 = quat_to_mat(geom_xquat_in[worldid, geom2])
+        return _plane_filter(rbound1, effective_margin1, effective_margin2, xpos2, xpos1, xmat2)
     else:
       if wp.static(opt_broadphase_filter & BroadphaseFilter.SPHERE):
         if not _sphere_filter(rbound1, rbound2, effective_margin1, effective_margin2, xpos1, xpos2):
           return False
-      xmat1, xmat2 = quat_to_mat(geom_xquat_in[worldid, geom1]), quat_to_mat(geom_xquat_in[worldid, geom2])
-      if wp.static(opt_broadphase_filter & BroadphaseFilter.AABB):
-        if not _aabb_filter(center1, center2, size1, size2, effective_margin1, effective_margin2, xpos1, xpos2, xmat1, xmat2):
-          return False
-      if wp.static(opt_broadphase_filter & BroadphaseFilter.OBB):
-        if not _obb_filter(center1, center2, size1, size2, effective_margin1, effective_margin2, xpos1, xpos2, xmat1, xmat2):
-          return False
+      if wp.static(opt_broadphase_filter & (BroadphaseFilter.AABB | BroadphaseFilter.OBB)):
+        xmat1, xmat2 = quat_to_mat(geom_xquat_in[worldid, geom1]), quat_to_mat(geom_xquat_in[worldid, geom2])
+        if wp.static(opt_broadphase_filter & BroadphaseFilter.AABB):
+          if not _aabb_filter(center1, center2, size1, size2, effective_margin1, effective_margin2, xpos1, xpos2, xmat1, xmat2):
+            return False
+        if wp.static(opt_broadphase_filter & BroadphaseFilter.OBB):
+          if not _obb_filter(center1, center2, size1, size2, effective_margin1, effective_margin2, xpos1, xpos2, xmat1, xmat2):
+            return False
 
     return True
 
