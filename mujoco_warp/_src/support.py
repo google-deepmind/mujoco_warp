@@ -1002,6 +1002,117 @@ def _apply_ft_gather(
     qfrc_out[worldid, dofid] = accumul
 
 
+# bodies per word of the wrench mask of apply_ft: the sign bit is not used
+_FT_MASK_BITS = 31
+
+
+@wp.func
+def _popcount(x: int) -> int:
+  """Number of set bits of a non-negative integer."""
+  x = x - ((x >> 1) & 0x55555555)
+  x = (x & 0x33333333) + ((x >> 2) & 0x33333333)
+  x = (x + (x >> 4)) & 0x0F0F0F0F
+  x = x + (x >> 8)
+  x = x + (x >> 16)
+  return x & 0x3F
+
+
+@wp.func
+def _ft_mask_bits(wordid: int, bodyid: int, bodyend: int) -> int:
+  """Bits of the bodies [bodyid, bodyend) in a word of the wrench mask that holds some of them."""
+  lo = wp.max(bodyid - wordid * wp.static(_FT_MASK_BITS), 0)
+  hi = wp.min(bodyend - wordid * wp.static(_FT_MASK_BITS), wp.static(_FT_MASK_BITS))
+  return (0x7FFFFFFF >> (31 - (hi - lo))) << lo
+
+
+@wp.kernel
+def _apply_ft_mask(
+  # In:
+  ft_in: wp.array2d[wp.spatial_vector],
+  # Out:
+  ft_mask_out: wp.array2d[int],
+):
+  """Sets the bit of each body with a wrench, in words that start at zero.
+
+  The first word tells whether the world has any wrench, the others hold one bit per body.
+  """
+  worldid, bodyid = wp.tid()
+
+  if ft_in[worldid, bodyid] == wp.spatial_vector():
+    return
+
+  # an integer or does not depend on the order of the threads
+  wp.atomic_or(ft_mask_out[worldid], 0, 1)
+  wp.atomic_or(ft_mask_out[worldid], 1 + bodyid // wp.static(_FT_MASK_BITS), 1 << (bodyid % wp.static(_FT_MASK_BITS)))
+
+
+@wp.kernel
+def _apply_ft_gather_mask(
+  # Model:
+  body_rootid: wp.array[int],
+  dof_bodyid: wp.array[int],
+  body_subtreenum: wp.array[int],
+  # Data in:
+  xipos_in: wp.array2d[wp.vec3],
+  subtree_com_in: wp.array2d[wp.vec3],
+  cdof_in: wp.array2d[wp.spatial_vector],
+  # In:
+  ft_in: wp.array2d[wp.spatial_vector],
+  ft_mask_in: wp.array2d[int],
+  flg_add: bool,
+  # Out:
+  qfrc_out: wp.array2d[float],
+):
+  """Same as _apply_ft_gather for sparse wrenches: only the bodies whose bit is set are read."""
+  worldid, dofid = wp.tid()
+
+  # most worlds have no wrench: their dofs read one word and nothing else
+  if ft_mask_in[worldid, 0] == 0:
+    if not flg_add:
+      qfrc_out[worldid, dofid] = 0.0
+    return
+
+  # Bodies in a subtree are contiguous in MuJoCo's depth-first order.
+  dofbodyid = dof_bodyid[dofid]
+  bodyend = dofbodyid + body_subtreenum[dofbodyid]
+  word0 = dofbodyid // wp.static(_FT_MASK_BITS)
+  word1 = (bodyend - 1) // wp.static(_FT_MASK_BITS)
+
+  # dofs without a wrench in their subtree
+  nonzero = int(0)
+  for wordid in range(word0, word1 + 1):
+    nonzero = nonzero | (ft_mask_in[worldid, 1 + wordid] & _ft_mask_bits(wordid, dofbodyid, bodyend))
+  if nonzero == 0:
+    if not flg_add:
+      qfrc_out[worldid, dofid] = 0.0
+    return
+
+  cdof = cdof_in[worldid, dofid]
+  rotational_cdof = wp.vec3(cdof[0], cdof[1], cdof[2])
+  jac = wp.spatial_vector(cdof[3], cdof[4], cdof[5], cdof[0], cdof[1], cdof[2])
+  subtree_com = subtree_com_in[worldid, body_rootid[dofbodyid]]
+  accumul = float(0.0)
+
+  for wordid in range(word0, word1 + 1):
+    word = ft_mask_in[worldid, 1 + wordid] & _ft_mask_bits(wordid, dofbodyid, bodyend)
+    while word != 0:
+      # lowest set bit: the number of bits below it is its position
+      low = word & (-word)
+      bodyid = wordid * wp.static(_FT_MASK_BITS) + _popcount(low - 1)
+      word -= low
+
+      ft_body = ft_in[worldid, bodyid]
+      offset = xipos_in[worldid, bodyid] - subtree_com
+      cross_term = wp.cross(rotational_cdof, offset)
+      accumul += wp.dot(jac, ft_body) + wp.dot(cross_term, wp.spatial_top(ft_body))
+
+  # not `+=`, which Warp compiles to an atomic
+  if flg_add:
+    qfrc_out[worldid, dofid] = qfrc_out[worldid, dofid] + accumul
+  else:
+    qfrc_out[worldid, dofid] = accumul
+
+
 @cache_kernel
 def _apply_ft_scatter():
   # deterministic steps gather instead (see apply_ft): this kernel has no deterministic variant
@@ -1053,14 +1164,27 @@ def apply_ft(
   m: Model, d: Data, ft: wp.array2d[wp.spatial_vector], qfrc: wp.array2d[float], flg_add: bool, sparse: bool = False
 ):
   """Maps body wrenches ft to dof space; sparse: most wrenches are zero."""
-  det_atomics = bool(m.opt.deterministic & DeterminismType.ATOMICS)
-  if not sparse or det_atomics:
-    # dense wrenches: a thread per dof gathers its subtree. Deterministic steps gather too: each
-    # dof has one writer and a fixed summation order, without the scatter buffers of the atomics.
+  if not sparse:
+    # dense wrenches: a thread per dof gathers its subtree
     wp.launch(
       _apply_ft_gather,
       dim=(d.nworld, m.nv),
       inputs=[m.body_rootid, m.dof_bodyid, m.body_subtreenum, d.xipos, d.subtree_com, d.cdof, ft, flg_add],
+      outputs=[qfrc],
+    )
+    return
+
+  if m.opt.deterministic & DeterminismType.ATOMICS:
+    # Deterministic steps gather too: each dof has one writer and a fixed summation order, without
+    # the scatter buffers of the atomics. A thread per dof that reads every wrench of its subtree
+    # costs twice the scatter, so a thread per body sets the bit of the bodies with a wrench first:
+    # the dofs of a world without wrenches read one word, the others the bits of their subtree.
+    ft_mask = wp.zeros((d.nworld, 2 + (m.nbody - 1) // _FT_MASK_BITS), dtype=int)
+    wp.launch(_apply_ft_mask, dim=(d.nworld, m.nbody), inputs=[ft], outputs=[ft_mask])
+    wp.launch(
+      _apply_ft_gather_mask,
+      dim=(d.nworld, m.nv),
+      inputs=[m.body_rootid, m.dof_bodyid, m.body_subtreenum, d.xipos, d.subtree_com, d.cdof, ft, ft_mask, flg_add],
       outputs=[qfrc],
     )
     return

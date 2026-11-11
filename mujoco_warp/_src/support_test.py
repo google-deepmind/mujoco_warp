@@ -158,6 +158,90 @@ class SupportTest(parameterized.TestCase):
     if nworld == 2 and (flg_add or not zero_force):
       self.assertFalse(np.allclose(result[0], result[1]))
 
+  @parameterized.product(nworld=(1, 2), flg_add=(False, True))
+  def test_apply_ft_mask(self, nworld, flg_add):
+    """The deterministic path reads sparse wrenches through one bit per body, over several words."""
+
+    def chain(n, axis):
+      return "".join(f'<body pos="0.1 0 0.02"><joint axis="{axis}"/><geom/>' for _ in range(n)) + "</body>" * n
+
+    # bodies 1 to 36: a root with a chain of 20 bodies and a chain of 15
+    # bodies 37 to 70: a root with a chain of 33
+    mjm, mjd, m, d = test_data.fixture(
+      xml=f"""
+      <mujoco>
+        <default>
+          <geom size="0.05" contype="0" conaffinity="0"/>
+        </default>
+        <worldbody>
+          <body>
+            <freejoint/>
+            <geom/>
+            {chain(20, "0 1 0")}
+            {chain(15, "1 0 0")}
+          </body>
+          <body pos="0 1 0">
+            <freejoint/>
+            <geom/>
+            {chain(33, "0 0 1")}
+          </body>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=nworld,
+    )
+    bits = support._FT_MASK_BITS
+    self.assertEqual(mjm.nbody, 71)
+    self.assertGreater(mjm.nbody // bits, 1)
+    qpos = np.tile(mjd.qpos, (nworld, 1))
+    if nworld == 2:
+      mujoco.mj_integratePos(mjm, qpos[1], np.linspace(-0.3, 0.4, mjm.nv), 0.2)
+    d.qpos.assign(qpos)
+    mjwarp.fwd_position(m, d)
+
+    # Wrenches on the first and last body of the words and of the subtrees: the second chain is
+    # bodies 22 to 36, in two words, between a body with a wrench (21) and another one (37).
+    # In the second world the only wrench of the second chain is on its last body, in another word.
+    bodies = [[5, 21, bits - 1, bits, 36, 37, 45, 2 * bits - 1, 2 * bits, mjm.nbody - 1], [10, 36]][:nworld]
+    self.assertGreater(36 // bits, 22 // bits)
+    rng = np.random.default_rng(3)
+    force = np.zeros((nworld, mjm.nbody, 6), dtype=np.float32)
+    for worldid, world_bodies in enumerate(bodies):
+      force[worldid, world_bodies] = rng.uniform(-1.0, 1.0, (len(world_bodies), 6))
+    d.xfrc_applied.assign(force)
+
+    # the first word tells whether the world has a wrench, the others hold one bit per body
+    mask = wp.zeros((nworld, 2 + (mjm.nbody - 1) // bits), dtype=int)
+    wp.launch(support._apply_ft_mask, dim=(nworld, mjm.nbody), inputs=[d.xfrc_applied], outputs=[mask])
+    expected_mask = np.zeros(mask.shape, dtype=np.int32)
+    for worldid, world_bodies in enumerate(bodies):
+      expected_mask[worldid, 0] = 1
+      for body in world_bodies:
+        expected_mask[worldid, 1 + body // bits] |= 1 << (body % bits)
+    np.testing.assert_array_equal(mask.numpy(), expected_mask)
+
+    initial = np.linspace(-0.2, 0.3, nworld * mjm.nv).reshape(nworld, mjm.nv).astype(np.float32)
+
+    def apply(deterministic, sparse):
+      qfrc = wp.array(initial, dtype=float) if flg_add else wp.full((nworld, mjm.nv), wp.inf, dtype=float)
+      m.opt.deterministic = DeterminismType.ATOMICS if deterministic else DeterminismType.NONE
+      support.apply_ft(m, d, d.xfrc_applied, qfrc, flg_add, sparse=sparse)
+      return qfrc.numpy().copy()
+
+    result = apply(True, True)
+    for world in range(nworld):
+      mjd.qpos[:] = qpos[world]
+      mujoco.mj_forward(mjm, mjd)
+      expected = initial[world].astype(float) if flg_add else np.zeros(mjm.nv)
+      for body in range(1, mjm.nbody):
+        mujoco.mj_applyFT(mjm, mjd, force[world, body, :3], force[world, body, 3:], mjd.xipos[body], body, expected)
+      self.assertGreater(np.abs(expected).max(), 0.5)
+      _assert_eq(result[world], expected, f"apply_ft_mask_world_{world}")
+
+    # the gather over every body of the subtree adds the same wrenches in the same order
+    np.testing.assert_array_equal(result, apply(False, False))
+    np.testing.assert_allclose(result, apply(False, True), rtol=1e-4, atol=1e-5)
+
   @parameterized.parameters(
     (ConeType.PYRAMIDAL, 1, False),
     (ConeType.PYRAMIDAL, 3, False),
