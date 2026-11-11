@@ -167,6 +167,7 @@ def ccd_hfield_kernel_builder(
   geomtype2: int,
   gjk_iterations: int,
   epa_iterations: int,
+  hfield_reduce_contacts: bool,
   geomgeomid: int,
   warn_overflow: int,
 ):
@@ -531,6 +532,47 @@ def ccd_hfield_kernel_builder(
           MJ_MAXCONPAIR,
         )
       wp.atomic_or(overflow_out, worldid, OverflowType.HFIELD)
+
+    if wp.static(not hfield_reduce_contacts):
+      for k in range(count):
+        dist = hfield_contact_dist[k]
+        pos = hfield_contact_pos[k]
+        normal = hfield_contact_normal[k]
+        write_contact(
+          naconmax_in,
+          k,
+          dist,
+          pos,
+          make_frame(normal),
+          margin,
+          gap,
+          condim,
+          friction,
+          solref,
+          solreffriction,
+          solimp,
+          adhesion,
+          geoms,
+          collision_pairid,
+          worldid,
+          contact_dist_out,
+          contact_pos_out,
+          contact_frame_out,
+          contact_includemargin_out,
+          contact_friction_out,
+          contact_solref_out,
+          contact_solreffriction_out,
+          contact_solimp_out,
+          contact_dim_out,
+          contact_geom_out,
+          contact_efc_address_out,
+          contact_worldid_out,
+          contact_type_out,
+          contact_geomcollisionid_out,
+          contact_adhesion_out,
+          nacon_out,
+        )
+      return
 
     # skip write when no prisms collide
     if count == 0:
@@ -1350,7 +1392,9 @@ def convex_narrowphase(m: Model, d: Data, ctx: CollisionContext, collision_table
     count, geomgeomid = _pair_count(g1, g2)
     if (g1 == GeomType.HFIELD or g2 == GeomType.HFIELD) and count:
       wp.launch(
-        ccd_hfield_kernel_builder(g1, g2, m.opt.ccd_iterations, epa_iterations, geomgeomid, int(m.opt.warn_overflow)),
+        ccd_hfield_kernel_builder(
+          g1, g2, m.opt.ccd_iterations, epa_iterations, m.opt.hfield_reduce_contacts, geomgeomid, int(m.opt.warn_overflow)
+        ),
         dim=d.naconmax,
         inputs=[
           m.opt.ccd_tolerance,
