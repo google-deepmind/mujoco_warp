@@ -26,7 +26,6 @@ from absl.testing import parameterized
 import mujoco_warp as mjw
 from mujoco_warp import ConeType
 from mujoco_warp import test_data
-from mujoco_warp._src import util_pkg
 
 # tolerance for difference between MuJoCo and MJWarp constraint calculations,
 # mostly due to float precision
@@ -592,8 +591,6 @@ class ConstraintTest(parameterized.TestCase):
     cone=(ConeType.PYRAMIDAL, ConeType.ELLIPTIC),
     jacobian=(mujoco.mjtJacobian.mjJAC_DENSE, mujoco.mjtJacobian.mjJAC_SPARSE),
   )
-  # TODO(team): remove version check once mujoco >= 3.17.1 is required.
-  @absltest.skipIf(not util_pkg.check_version("mujoco>=3.17.1.dev1005593014"), "Requires MuJoCo >= 3.17.1.dev1005593014")
   def test_flex_barycentric_jacobian(self, xml, cone, jacobian):
     """Test barycentric contact Jacobian calculation for flex."""
     mjm, mjd, m, d = test_data.fixture(xml=xml, overrides={"opt.cone": cone, "opt.jacobian": jacobian})
@@ -606,8 +603,6 @@ class ConstraintTest(parameterized.TestCase):
 
     _assert_efc_eq(mjm, m, d, mjd, mjd.nefc, f"efc_flex_dim{m.flex_dim.numpy()[0]}", m.nv)
 
-  # TODO(team): remove version check once mujoco >= 3.17.1 is required.
-  @absltest.skipIf(not util_pkg.check_version("mujoco>=3.17.1.dev1005593014"), "Requires MuJoCo >= 3.17.1.dev1005593014")
   def test_flex_3d_simplex_collision(self):
     """Test 3D simplex flex collision and constraint generation."""
     mjm, mjd, m, d = test_data.fixture(
@@ -641,10 +636,12 @@ class ConstraintTest(parameterized.TestCase):
     _assert_efc_eq(mjm, m, d, mjd, mjd.nefc, "efc_flex_3d_simplex", m.nv, tol=1e-3)
 
   # TODO(thowell): Add support for quadratic flex interpolation.
-  # TODO(team): remove version check once mujoco >= 3.17.1 is required.
-  @absltest.skipIf(not util_pkg.check_version("mujoco>=3.17.1.dev1005593014"), "Requires MuJoCo >= 3.17.1.dev1005593014")
-  def test_flex_interpolated(self):
-    """Test collision and constraint generation for interpolated flex shells."""
+  @parameterized.parameters(
+    ("2 1 2", "none"),
+    ("2 2 2", "bend"),
+  )
+  def test_flex_interpolated(self, cellcount, elastic2d):
+    """Test collision and constraint generation for interpolated volume and shell flexes."""
     xml = f"""
       <mujoco>
         <option solver="CG" tolerance="1e-6" timestep=".001"/>
@@ -654,9 +651,9 @@ class ConstraintTest(parameterized.TestCase):
             <geom type="box" size=".05 .05 .05" mass="1"/>
           </body>
           <flexcomp name="softbody" type="grid" count="4 2 4" spacing=".025 .05 .025" pos="0 0 0"
-                    dim="3" cellcount="2 1 2" radius=".001"
+                    dim="3" cellcount="{cellcount}" radius=".001"
                     mass="5" dof="trilinear">
-            <elasticity young="1e4" poisson="0.3" damping="1e-3"/>
+            <elasticity young="1e4" poisson="0.3" damping="1e-3" elastic2d="{elastic2d}" thickness="0.01"/>
             <contact condim="3" selfcollide="none"/>
           </flexcomp>
         </worldbody>
@@ -675,7 +672,7 @@ class ConstraintTest(parameterized.TestCase):
 
     self.assertGreater(mjd.nefc, 0, "Expected active contacts in MuJoCo")
     self.assertEqual(d.nefc.numpy()[0], mjd.nefc, "nefc mismatch")
-    _assert_efc_eq(mjm, m, d, mjd, mjd.nefc, f"efc_flex_interpolated_trilinear", m.nv)
+    _assert_efc_eq(mjm, m, d, mjd, mjd.nefc, f"efc_flex_interpolated_trilinear_{elastic2d}", m.nv)
 
   def test_weld_coriolis(self):
     """Test weld Coriolis term Jdotv_r with default torquescale and high velocity."""
@@ -789,7 +786,6 @@ class ConstraintTest(parameterized.TestCase):
     self.assertGreater(mjd.nefc, 0)
     _assert_efc_eq(mjm, m, d, mjd, mjd.nefc, "surfacevel", m.nv)
 
-  @absltest.skipIf(not util_pkg.check_version("mujoco>=3.17.1"), "Requires MuJoCo >= 3.17.1")
   @parameterized.product(
     cone=(ConeType.PYRAMIDAL, ConeType.ELLIPTIC),
     nworld=(1, 2),

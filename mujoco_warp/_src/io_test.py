@@ -32,7 +32,6 @@ from mujoco_warp import IntegratorType
 from mujoco_warp import test_data
 from mujoco_warp._src import io
 from mujoco_warp._src import types
-from mujoco_warp._src import util_pkg
 from mujoco_warp._src import warp_util
 from mujoco_warp._src.io import put_model
 
@@ -496,10 +495,24 @@ class IOTest(parameterized.TestCase):
     np.testing.assert_array_equal(data.qpos, [0.25])
     np.testing.assert_array_equal(data.qvel, [0.5])
 
-  @parameterized.parameters((47, 48), (48, 64), (63, 64), (64, 80))
+  @parameterized.parameters((23, 24), (47, 48), (48, 48), (49, 64), (63, 64), (64, 80), (79, 80), (80, 96))
   def test_augmented_cholesky_padding(self, nv, expected):
-    _, nv_pad = io._get_padded_sizes(nv, 0, False, types.TILE_SIZE_JTDAJ_DENSE, augment_cholesky=True)
-    self.assertEqual(nv_pad, expected)
+    """16-byte rows up to H_ONE_TILE_MAX, the blocked Cholesky's augmented tiles past it."""
+    _, _, m, _ = test_data.fixture(
+      xml=f"""
+      <mujoco>
+        <worldbody>
+          <replicate count="{nv}">
+            <body>
+              <joint/>
+              <geom size="0.1"/>
+            </body>
+          </replicate>
+        </worldbody>
+      </mujoco>
+      """
+    )
+    self.assertEqual(m.nv_pad, expected)
 
   @parameterized.parameters((15, 16), (16, 32), (31, 32), (32, 48))
   def test_augmented_cholesky_nvmax_padding(self, nvmax, expected):
@@ -945,8 +958,7 @@ class IOTest(parameterized.TestCase):
       "geom",
       # TODO(team): efc_address
     ]
-    if util_pkg.check_version("mujoco>=3.17.1"):
-      contact_fields.append("surfacevel")
+    contact_fields.append("surfacevel")
     for field in contact_fields:
       _assert_eq(
         getattr(d.contact, field).numpy()[world_id * ncon : world_id * ncon + ncon].reshape(-1),
@@ -1990,7 +2002,6 @@ class IOTest(parameterized.TestCase):
         <extension>
           <plugin plugin="mujoco.pid"/>
           <plugin plugin="mujoco.sensor.touch_grid"/>
-          <plugin plugin="mujoco.elasticity.cable"/>
         </extension>
         <worldbody>
           <geom type="plane" size="10 10 .001"/>
@@ -1999,15 +2010,6 @@ class IOTest(parameterized.TestCase):
             <geom type="sphere" size=".1"/>
             <site name="site"/>
           </body>
-          <composite type="cable" curve="s" count="41 1 1" size="1" offset="-.3 0 .6" initial="none">
-            <plugin plugin="mujoco.elasticity.cable">
-              <config key="twist" value="1e7"/>
-              <config key="bend" value="4e6"/>
-              <config key="vmax" value="0.05"/>
-            </plugin>
-            <joint kind="main" damping=".015"/>
-            <geom type="capsule" size=".005" rgba=".8 .2 .1 .1" condim="1"/>
-          </composite>
         </worldbody>
         <actuator>
           <plugin plugin="mujoco.pid" joint="joint"/>
@@ -2147,17 +2149,11 @@ class IOTest(parameterized.TestCase):
       """
     )
 
-    # older mujoco: tendon_type is implied by the first wrap object
-    with mock.patch.object(util_pkg, "check_version", return_value=False):
-      m_old = put_model(mjm)
-
     expected = [types.TendonType.SPATIAL, types.TendonType.FIXED]
     np.testing.assert_array_equal(m.tendon_type.numpy(), expected)
-    np.testing.assert_array_equal(m_old.tendon_type.numpy(), expected)
-    if util_pkg.check_version("mujoco>=3.17.1"):
-      np.testing.assert_array_equal(mjm.tendon_type, expected)
-      self.assertEqual(types.TendonType.FIXED, mujoco.mjtTendon.mjTENDON_FIXED)
-      self.assertEqual(types.TendonType.SPATIAL, mujoco.mjtTendon.mjTENDON_SPATIAL)
+    np.testing.assert_array_equal(mjm.tendon_type, expected)
+    self.assertEqual(types.TendonType.FIXED, mujoco.mjtTendon.mjTENDON_FIXED)
+    self.assertEqual(types.TendonType.SPATIAL, mujoco.mjtTendon.mjTENDON_SPATIAL)
 
   def test_model_batched_fields(self):
     """Test Model batched fields."""
@@ -2781,8 +2777,6 @@ class IOTest(parameterized.TestCase):
     with self.assertRaises(NotImplementedError):
       mjwarp.put_model(mjm)
 
-  # TODO(team): remove version check once mujoco >= 3.16.1 is required.
-  @absltest.skipIf(not util_pkg.check_version("mujoco>=3.16.1"), "Requires MuJoCo >= 3.16.1")
   def test_flex_rod_hinge_map(self):
     """Verify put_model maps each 1D rod bending hinge to its flex and flex_bending address."""
     mjm, _, m, _ = test_data.fixture(
@@ -2807,8 +2801,6 @@ class IOTest(parameterized.TestCase):
     np.testing.assert_array_equal(m.flex_rodhinge_map.numpy(), [[rod, adr + 1], [rod, adr + 1 + types.ROD_HINGE_SIZE]])
     self.assertFalse(m.has_flex_edge_stiff_damp)
 
-  # TODO(team): remove version check once mujoco >= 3.16.1 is required.
-  @absltest.skipIf(not util_pkg.check_version("mujoco>=3.16.1"), "Requires MuJoCo >= 3.16.1")
   @parameterized.parameters(
     # quadratic flexes are rejected before the self-collision check
     ("trilinear", "Self-collision of interpolated flexes"),
@@ -2956,8 +2948,7 @@ class IOTest(parameterized.TestCase):
       "dim",
       "geom",
     ]
-    if util_pkg.check_version("mujoco>=3.17.1"):
-      contact_fields.append("surfacevel")
+    contact_fields.append("surfacevel")
     for field in contact_fields:
       val_device = getattr(d.contact, field).numpy()
       val_host = getattr(mjd.contact, field)
@@ -2966,7 +2957,6 @@ class IOTest(parameterized.TestCase):
         host_slice = val_host[:ncon].reshape(-1)
         _assert_eq(device_slice, host_slice, f"{field} mismatch in world {w}")
 
-  @absltest.skipIf(not util_pkg.check_version("mujoco>=3.17.1"), "Requires MuJoCo >= 3.17.1")
   @parameterized.parameters(1, 2)
   def test_contact_surfacevel_roundtrip(self, nworld):
     """Tests put_data, get_data_into, and reset_data for non-zero contact.surfacevel."""
@@ -2991,11 +2981,6 @@ class IOTest(parameterized.TestCase):
     surfacevel = d.contact.surfacevel.numpy()
     for w in range(nworld):
       np.testing.assert_allclose(surfacevel[w], expected, rtol=1e-5, atol=1e-5)
-
-    with mock.patch.object(util_pkg, "check_version", return_value=False):
-      d_legacy = mjwarp.put_data(mjm, mjd, nworld=nworld)
-    for w in range(nworld):
-      np.testing.assert_allclose(d_legacy.contact.surfacevel.numpy()[w], expected, rtol=1e-5, atol=1e-5)
 
     if nworld == 2:
       surfacevel[1] = [-0.5, 0.3, -0.7]

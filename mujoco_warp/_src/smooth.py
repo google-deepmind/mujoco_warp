@@ -14,7 +14,7 @@
 # ==============================================================================
 
 
-from typing import Optional
+from typing import Optional, Tuple
 
 import warp as wp
 
@@ -25,6 +25,7 @@ from mujoco_warp._src.types import MJ_MAXVAL
 from mujoco_warp._src.types import MJ_MINVAL
 from mujoco_warp._src.types import Q_LD_BLOCK_COMPACT
 from mujoco_warp._src.types import Q_LD_BLOCK_SPARSE
+from mujoco_warp._src.types import ROD_HINGE_SIZE
 from mujoco_warp._src.types import CamLightType
 from mujoco_warp._src.types import ConeType
 from mujoco_warp._src.types import ConstraintType
@@ -47,6 +48,12 @@ from mujoco_warp._src.warp_util import cache_kernel
 from mujoco_warp._src.warp_util import event_scope
 
 wp.set_module_options({"enable_backward": False})
+
+
+# Long per-world sums (e.g. over the tree roots of flex vertex bodies) are loaded into shared memory
+# in chunks and added in the original order; short ones keep one thread per world.
+WORLD_SUM_CHUNK = 512
+WORLD_SUM_BLOCK = 128
 
 
 @wp.kernel
@@ -300,15 +307,35 @@ def _flex_vertices(
 
     # Accumulate weighted node positions
     result = wp.vec3(0.0, 0.0, 0.0)
-    for li in range(2):
-      for lj in range(2):
-        for lk in range(2):
+    two = int(2)
+    three = int(3)
+    for li in range(two):
+      for lj in range(two):
+        for lk in range(two):
           w = support.eval_basis_trilinear(local, li * 4 + lj * 2 + lk)
-          gi = ci + li
-          gj = cj + lj
-          gk = ck + lk
-          node_idx = gi * ny_g * nz_g + gj * nz_g + gk
-          result += w * flexnode_xpos_in[worldid, nstart + node_idx]
+          if w != 0.0:
+            gi = ci + li
+            gj = cj + lj
+            gk = ck + lk
+            is_int = order < 0 and gi > 0 and gi < cx and gj > 0 and gj < cy and gk > 0 and gk < cz
+            idx_x = wp.vec3i(0, cx, gi)
+            idx_y = wp.vec3i(0, cy, gj)
+            idx_z = wp.vec3i(0, cz, gk)
+            s = float(gi) / float(cx)
+            t = float(gj) / float(cy)
+            u = float(gk) / float(cz)
+            wx = wp.vec3(1.0 - s, s, -1.0)
+            wy = wp.vec3(1.0 - t, t, -1.0)
+            wz = wp.vec3(1.0 - u, u, -1.0)
+            a_start = int(0) if is_int else int(2)
+            for a in range(a_start, three):
+              for b in range(a_start, three):
+                for c in range(a_start, three):
+                  if is_int and a == 2 and b == 2 and c == 2:
+                    continue
+                  w_tfi = w * wx[a] * wy[b] * wz[c] if is_int else w
+                  node_idx = (idx_x[a] * ny_g + idx_y[b]) * nz_g + idx_z[c]
+                  result += w_tfi * flexnode_xpos_in[worldid, nstart + node_idx]
 
     flexvert_xpos_out[worldid, vertid] = result
   else:
@@ -549,6 +576,17 @@ def _flex_face_kinematics(
       face_xpos_out[worldid, face_id, local_idx] = wp.vec3(0.0)
 
   normal_axis, _, _, _, _, _ = support.get_face_metadata(cx, cy, cz, face_elem_idx, order_abs)
+  axis0 = (normal_axis + 1) % 3
+  axis1 = (normal_axis + 2) % 3
+  if gidx0 != -1 and gidx1 != -1:
+    dref = flex_node0[gidx1] - flex_node0[gidx0]
+    d0 = dref[axis0]
+    d1 = dref[axis1]
+    if d0 > MJ_MINVAL:
+      t1 = t1 / d0
+    if d1 > MJ_MINVAL:
+      t2 = t2 / d1
+
   normal = wp.cross(t1, t2)
 
   F = wp.mat33(0.0)
@@ -590,6 +628,172 @@ def _flex_face_kinematics(
     )
 
   face_quat_out[worldid, face_id] = support.mat33_to_quat_polar(F)
+
+
+@wp.func
+def _rod_body_pose0(
+  # Model:
+  body_parentid: wp.array[int],
+  body_pos: wp.array2d[wp.vec3],
+  body_quat: wp.array2d[wp.quat],
+  # In:
+  worldid: int,
+  bodyid: int,
+) -> Tuple[wp.vec3, wp.quat]:
+  """Nominal pose of a body with all joints at zero (rodBodyPose0)."""
+  pos_id = worldid % body_pos.shape[0]
+  quat_id = worldid % body_quat.shape[0]
+  pos = wp.vec3(0.0)
+  quat = wp.quat(1.0, 0.0, 0.0, 0.0)
+  cur = bodyid
+  while cur > 0:
+    q = body_quat[quat_id, cur]
+    pos = math.rot_vec_quat(pos, q) + body_pos[pos_id, cur]
+    quat = math.mul_quat(q, quat)
+    cur = body_parentid[cur]
+  return pos, quat
+
+
+@wp.func
+def _rod_vert_pos0(
+  # Model:
+  body_parentid: wp.array[int],
+  body_pos: wp.array2d[wp.vec3],
+  body_quat: wp.array2d[wp.quat],
+  flex_vertbodyid: wp.array[int],
+  flex_vert: wp.array[wp.vec3],
+  # In:
+  worldid: int,
+  vertid: int,
+) -> wp.vec3:
+  """Nominal world position of a flex vertex with all joints at zero (rodVertPos0)."""
+  pos, quat = _rod_body_pose0(body_parentid, body_pos, body_quat, worldid, flex_vertbodyid[vertid])
+  return pos + math.rot_vec_quat(flex_vert[vertid], quat)
+
+
+@wp.kernel
+def _flex_rod_ref(
+  # Model:
+  body_parentid: wp.array[int],
+  body_pos: wp.array2d[wp.vec3],
+  body_quat: wp.array2d[wp.quat],
+  flex_vertadr: wp.array[int],
+  flex_bendingadr: wp.array[int],
+  flex_vertbodyid: wp.array[int],
+  flex_vert: wp.array[wp.vec3],
+  flex_bending: wp.array[float],
+  flex_rod_tail_clamped: wp.array[bool],
+  flex_rod_hingeadr: wp.array[int],
+  flex_rod_edgeadr: wp.array[int],
+  flex_rod_edgenum: wp.array[int],
+  flex_rodedge_vert: wp.array[wp.vec2i],
+  # Data out:
+  flex_rod_chain_valid_out: wp.array2d[bool],
+  flex_rod_ref_ok_out: wp.array2d[bool],
+  flex_rod_frame0_loc_out: wp.array3d[wp.vec3],
+  flex_rod_frame0_ref_out: wp.array3d[wp.vec3],
+  flex_rod_tail_loc_out: wp.array3d[wp.vec3],
+  flex_rodhinge_om0_out: wp.array2d[wp.vec2],
+):
+  """Reference frames and curvatures of open 1D DER rods at the nominal body poses of this world.
+
+  Mirrors rodChain, rodRootDirector and rodTailDirector, which recompute them from body_pos and
+  body_quat; also invalidates the cached rod chain evaluation (passive.eval_rod_chains).
+  """
+  worldid, f = wp.tid()
+  z3 = wp.vec3(0.0)
+  flex_rod_chain_valid_out[worldid, f] = False
+  flex_rod_ref_ok_out[worldid, f] = False
+  for i in range(2):
+    flex_rod_frame0_loc_out[worldid, f, i] = z3
+    flex_rod_frame0_ref_out[worldid, f, i] = z3
+    flex_rod_tail_loc_out[worldid, f, i] = z3
+
+  nedge = flex_rod_edgenum[f]
+  nhinge = nedge - 1
+  if nhinge <= 0:
+    return
+
+  hadr = flex_rod_hingeadr[f]
+  if hadr >= 0:
+    for h in range(nhinge):
+      flex_rodhinge_om0_out[worldid, hadr + h] = wp.vec2(0.0)
+
+  va = flex_vertadr[f]
+  eadr = flex_rod_edgeadr[f]
+  bendingadr = flex_bendingadr[f]
+
+  # first edge: qpos0 frame in the frame of its first body (rodRootDirector)
+  verts0 = flex_rodedge_vert[eadr]
+  _p0, q0 = _rod_body_pose0(body_parentid, body_pos, body_quat, worldid, flex_vertbodyid[va + verts0[0]])
+  R0 = math.quat_to_mat(q0)
+  xa = _rod_vert_pos0(body_parentid, body_pos, body_quat, flex_vertbodyid, flex_vert, worldid, va + verts0[0])
+  xv = _rod_vert_pos0(body_parentid, body_pos, body_quat, flex_vertbodyid, flex_vert, worldid, va + verts0[1])
+  t0_loc = wp.transpose(R0) @ (xv - xa)
+  n_t0 = wp.length(t0_loc)
+  if n_t0 < MJ_MINVAL:
+    return
+  t0_loc = t0_loc / n_t0
+  frame_u, frame_v = math.orthogonals(t0_loc)
+  psi0 = float(0.0)
+  if flex_bending[bendingadr + 1 + 9] < 0.0:
+    psi0 = 0.5 * wp.pi
+  c0 = wp.cos(psi0)
+  s0 = wp.sin(psi0)
+  u0_loc = c0 * frame_u + s0 * frame_v
+  v0_loc = -s0 * frame_u + c0 * frame_v
+  t_ref = R0 @ t0_loc
+  u_ref = R0 @ u0_loc
+  v_prev = R0 @ v0_loc
+  flex_rod_frame0_loc_out[worldid, f, 0] = t0_loc
+  flex_rod_frame0_loc_out[worldid, f, 1] = u0_loc
+  flex_rod_frame0_ref_out[worldid, f, 0] = t_ref
+  flex_rod_frame0_ref_out[worldid, f, 1] = u_ref
+
+  # reference Bishop frame along the qpos0 chain, for curved references or a clamped tail (rodChain)
+  tail_clamped = flex_rod_tail_clamped[f]
+  need_ref_chain = tail_clamped
+  for h in range(nhinge):
+    if flex_bending[bendingadr + 1 + ROD_HINGE_SIZE * h + 6] > 0.0:
+      need_ref_chain = True
+  if need_ref_chain:
+    for h in range(nhinge):
+      xb = _rod_vert_pos0(
+        body_parentid, body_pos, body_quat, flex_vertbodyid, flex_vert, worldid, va + flex_rodedge_vert[eadr + h + 1][1]
+      )
+      if hadr >= 0 and flex_bending[bendingadr + 1 + ROD_HINGE_SIZE * h + 6] > 0.0:
+        e0 = xv - xa
+        e1 = xb - xv
+        l0 = wp.length(e0)
+        l1 = wp.length(e1)
+        denom = l0 * l1 + wp.dot(e0, e1)
+        if l0 >= MJ_MINVAL and l1 >= MJ_MINVAL and denom >= MJ_MINVAL:
+          kb = (2.0 / denom) * wp.cross(e0, e1)
+          flex_rodhinge_om0_out[worldid, hadr + h] = wp.vec2(wp.dot(kb, u_ref), wp.dot(kb, v_prev))
+      t_next = xb - xv
+      n_next = wp.length(t_next)
+      if n_next < MJ_MINVAL:
+        return
+      t_next = t_next / n_next
+      ok_pt, u_next, v_next = support.rod_parallel_transport(t_ref, t_next, u_ref)
+      if not ok_pt:
+        return
+      t_ref = t_next
+      u_ref = u_next
+      v_prev = v_next
+      xa = xv
+      xv = xb
+
+    # clamped last edge: qpos0 frame in the frame of its body (rodTailDirector)
+    if tail_clamped:
+      _pT, qT = _rod_body_pose0(
+        body_parentid, body_pos, body_quat, worldid, flex_vertbodyid[va + flex_rodedge_vert[eadr + nhinge][1]]
+      )
+      RT = math.quat_to_mat(qT)
+      flex_rod_tail_loc_out[worldid, f, 0] = wp.transpose(RT) @ t_ref
+      flex_rod_tail_loc_out[worldid, f, 1] = wp.transpose(RT) @ u_ref
+
+  flex_rod_ref_ok_out[worldid, f] = True
 
 
 @event_scope
@@ -676,6 +880,35 @@ def flex(m: Model, d: Data):
     ],
   )
 
+  if m.nflexrodedge > 0:
+    wp.launch(
+      _flex_rod_ref,
+      dim=(d.nworld, m.nflex),
+      inputs=[
+        m.body_parentid,
+        m.body_pos,
+        m.body_quat,
+        m.flex_vertadr,
+        m.flex_bendingadr,
+        m.flex_vertbodyid,
+        m.flex_vert,
+        m.flex_bending,
+        m.flex_rod_tail_clamped,
+        m.flex_rod_hingeadr,
+        m.flex_rod_edgeadr,
+        m.flex_rod_edgenum,
+        m.flex_rodedge_vert,
+      ],
+      outputs=[
+        d.flex_rod_chain_valid,
+        d.flex_rod_ref_ok,
+        d.flex_rod_frame0_loc,
+        d.flex_rod_frame0_ref,
+        d.flex_rod_tail_loc,
+        d.flex_rodhinge_om0,
+      ],
+    )
+
 
 @wp.kernel
 def _subtree_com(
@@ -735,6 +968,44 @@ def _subtree_com_world(
   else:
     com /= mass
   subtree_com_out[worldid, 0] = com
+
+
+@wp.kernel(module="unique", enable_backward=False)
+def _subtree_com_world_tiled(
+  # Model:
+  body_mass: wp.array2d[float],
+  body_subtreemass: wp.array2d[float],
+  # Data in:
+  xipos_in: wp.array2d[wp.vec3],
+  subtree_com_in: wp.array2d[wp.vec3],
+  # In:
+  rootid_in: wp.array[int],
+  # Data out:
+  subtree_com_out: wp.array2d[wp.vec3],
+):
+  worldid, lane = wp.tid()
+  subtreemass_id = worldid % body_subtreemass.shape[0]
+
+  mass = body_subtreemass[subtreemass_id, 0]
+  if mass < MJ_MINVAL:
+    if lane == 0:
+      subtree_com_out[worldid, 0] = xipos_in[worldid, 0]
+    return
+
+  com = wp.vec3()
+  if lane == 0:
+    com = xipos_in[worldid, 0] * body_mass[worldid % body_mass.shape[0], 0]
+  nroot = rootid_in.shape[0]
+  for start in range(0, nroot, WORLD_SUM_CHUNK):
+    rootid = wp.tile_load(rootid_in, shape=(WORLD_SUM_CHUNK,), offset=(start,), storage="shared")
+    root_com = wp.tile_load_indexed(subtree_com_in[worldid], rootid, shape=(WORLD_SUM_CHUNK,), storage="shared")
+    root_mass = wp.tile_load_indexed(body_subtreemass[subtreemass_id], rootid, shape=(WORLD_SUM_CHUNK,), storage="shared")
+    if lane == 0:
+      for i in range(wp.min(WORLD_SUM_CHUNK, nroot - start)):
+        com += root_com[i] * root_mass[i]
+
+  if lane == 0:
+    subtree_com_out[worldid, 0] = com / mass
 
 
 @wp.kernel
@@ -844,12 +1115,21 @@ def com_pos(m: Model, d: Data):
     inputs=[m.body_mass, m.body_subtreemass, m.body_subtreenum, d.xipos],
     outputs=[d.subtree_com],
   )
-  wp.launch(
-    _subtree_com_world,
-    dim=d.nworld,
-    inputs=[m.nbody, m.body_mass, m.body_subtreemass, m.body_subtreenum, d.xipos, d.subtree_com],
-    outputs=[d.subtree_com],
-  )
+  if m.nbody > 1 and m.body_tree[1].shape[0] > WORLD_SUM_BLOCK:
+    wp.launch_tiled(
+      _subtree_com_world_tiled,
+      dim=d.nworld,
+      inputs=[m.body_mass, m.body_subtreemass, d.xipos, d.subtree_com, m.body_tree[1]],
+      outputs=[d.subtree_com],
+      block_dim=WORLD_SUM_BLOCK,
+    )
+  else:
+    wp.launch(
+      _subtree_com_world,
+      dim=d.nworld,
+      inputs=[m.nbody, m.body_mass, m.body_subtreemass, m.body_subtreenum, d.xipos, d.subtree_com],
+      outputs=[d.subtree_com],
+    )
   wp.launch(
     _cinert,
     dim=(d.nworld, m.nbody),
@@ -1106,7 +1386,6 @@ def crb(m: Model, d: Data):
   """
   wp.launch(_crb_subtree, dim=(d.nworld, m.nbody), inputs=[m.body_subtreenum, d.cinert], outputs=[d.crb])
 
-  d.M.zero_()
   wp.launch(
     _M,
     dim=(d.nworld, m.nv),
@@ -1588,12 +1867,39 @@ def _cfrc_world(
   cfrc_int_out[worldid, 0] = frc
 
 
+@wp.kernel(module="unique", enable_backward=False)
+def _cfrc_world_tiled(
+  # Data in:
+  cfrc_int_in: wp.array2d[wp.spatial_vector],
+  # In:
+  rootid_in: wp.array[int],
+  # Data out:
+  cfrc_int_out: wp.array2d[wp.spatial_vector],
+):
+  worldid, lane = wp.tid()
+  frc = wp.spatial_vector()
+  nroot = rootid_in.shape[0]
+  for start in range(0, nroot, WORLD_SUM_CHUNK):
+    rootid = wp.tile_load(rootid_in, shape=(WORLD_SUM_CHUNK,), offset=(start,), storage="shared")
+    root_frc = wp.tile_load_indexed(cfrc_int_in[worldid], rootid, shape=(WORLD_SUM_CHUNK,), storage="shared")
+    if lane == 0:
+      for i in range(wp.min(WORLD_SUM_CHUNK, nroot - start)):
+        frc += root_frc[i]
+  if lane == 0:
+    cfrc_int_out[worldid, 0] = frc
+
+
 def _rne_cfrc(m: Model, d: Data, flg_cfrc_ext: bool = False):
   """Computes cfrc_int: each body's force plus the forces of its subtree."""
   cfrc_body = wp.empty((d.nworld, m.nbody), dtype=wp.spatial_vector)
   wp.launch(_cfrc, dim=[d.nworld, m.nbody], inputs=[d.cinert, d.cvel, d.cacc, d.cfrc_ext, flg_cfrc_ext], outputs=[cfrc_body])
   wp.launch(_cfrc_subtree, dim=(d.nworld, m.nbody), inputs=[m.body_subtreenum, cfrc_body], outputs=[d.cfrc_int])
-  wp.launch(_cfrc_world, dim=d.nworld, inputs=[m.nbody, m.body_subtreenum, d.cfrc_int], outputs=[d.cfrc_int])
+  if m.nbody > 1 and m.body_tree[1].shape[0] > WORLD_SUM_BLOCK:
+    wp.launch_tiled(
+      _cfrc_world_tiled, dim=d.nworld, inputs=[d.cfrc_int, m.body_tree[1]], outputs=[d.cfrc_int], block_dim=WORLD_SUM_BLOCK
+    )
+  else:
+    wp.launch(_cfrc_world, dim=d.nworld, inputs=[m.nbody, m.body_subtreenum, d.cfrc_int], outputs=[d.cfrc_int])
 
 
 @wp.kernel

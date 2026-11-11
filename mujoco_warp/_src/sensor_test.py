@@ -24,7 +24,6 @@ from absl.testing import parameterized
 import mujoco_warp as mjw
 from mujoco_warp import DisableBit
 from mujoco_warp import test_data
-from mujoco_warp._src import util_pkg
 from mujoco_warp._src.types import OverflowType
 
 # tolerance for difference between MuJoCo and MJWarp calculations - mostly
@@ -724,10 +723,7 @@ class SensorTest(parameterized.TestCase):
     _, _, m, d = test_data.fixture(xml=_MJCF, keyframe=0)
 
     d.sensordata.zero_()
-    if util_pkg.check_version("mujoco>=3.15.1.dev996394345"):
-      mjw.sensor_pos(m, d)
-    else:
-      mjw.sensor_acc(m, d)
+    mjw.sensor_pos(m, d)
 
     _assert_eq(d.sensordata.numpy()[0], np.array([4, 4, 4, 2, 1, 0, 1]), "found")
 
@@ -762,10 +758,7 @@ class SensorTest(parameterized.TestCase):
     _, _, m, d = test_data.fixture(xml=_MJCF, keyframe=0)
 
     d.sensordata.fill_(wp.inf)
-    if util_pkg.check_version("mujoco>=3.15.1.dev996394345"):
-      mjw.sensor_pos(m, d)
-    else:
-      mjw.sensor_acc(m, d)
+    mjw.sensor_pos(m, d)
 
     _assert_eq(d.nacon.numpy()[0], 2, "nacon")
     _assert_eq(d.sensordata.numpy()[0], 0, "found")
@@ -795,10 +788,7 @@ class SensorTest(parameterized.TestCase):
     )
 
     d.sensordata.zero_()
-    if util_pkg.check_version("mujoco>=3.15.1.dev996394345"):
-      mjw.sensor_pos(m, d)
-    else:
-      mjw.sensor_acc(m, d)
+    mjw.sensor_pos(m, d)
 
     _assert_eq(d.sensordata.numpy()[0], mjd.sensordata, "sensordata")
 
@@ -872,17 +862,12 @@ class SensorTest(parameterized.TestCase):
 
     sensordata = d.sensordata.numpy()
     for w in range(nworld):
-      if w > 0 or util_pkg.check_version("mujoco>=3.15.1.dev996371290"):
-        _assert_eq(sensordata[w], mjds[w].sensordata, f"sensordata_world_{w}")
+      _assert_eq(sensordata[w], mjds[w].sensordata, f"sensordata_world_{w}")
     _assert_eq(sensordata[0], np.zeros(mjm.nsensordata), "sensordata_world_0_zeros")
 
     if nworld == 2:
       self.assertFalse(np.allclose(sensordata[0], sensordata[1]))
 
-  @absltest.skipIf(
-    not util_pkg.check_version("mujoco>=3.15.1.dev996394345"),
-    "Requires MuJoCo >= 3.15.1.dev996394345",
-  )
   @parameterized.parameters(1, 2)
   def test_contact_sensor_stage(self, nworld):
     """Test contact sensor stage selection between POS and ACC stages."""
@@ -1401,10 +1386,7 @@ class SensorTest(parameterized.TestCase):
     # set on mjModel.
     mjm.sensor_cutoff[0] = cutoff_val
     m.sensor_cutoff.fill_(cutoff_val)
-    if util_pkg.check_version("mujoco>=3.15.1.dev996371290"):
-      mujoco.mj_sensorVel(mjm, mjd)
-    else:
-      mujoco.mj_sensorAcc(mjm, mjd)
+    mujoco.mj_sensorVel(mjm, mjd)
 
     d.sensordata.fill_(wp.inf)
     mjw.sensor_vel(m, d)
@@ -1596,8 +1578,7 @@ class SensorTest(parameterized.TestCase):
     for w in range(nworld):
       self.assertTrue(sensordata[w, 0 * ntaxel : 1 * ntaxel].any(), f"Depth channel empty for world {w}")
       self.assertTrue(sensordata[w, 1 * ntaxel : 2 * ntaxel].any(), f"Slip U channel empty for world {w}")
-      if util_pkg.check_version("mujoco>=3.12.1.dev972096410"):
-        _assert_eq(sensordata[w], mjd.sensordata, f"tactile_discriminating_world_{w}")
+      _assert_eq(sensordata[w], mjd.sensordata, f"tactile_discriminating_world_{w}")
 
   @parameterized.parameters(1, 2)
   def test_tactile_sensor_duplicate_pressure_retention(self, nworld):
@@ -1670,10 +1651,7 @@ class SensorTest(parameterized.TestCase):
     for w in range(nworld):
       self.assertFalse(bool(overflow_vals[w] & OverflowType.TACTILE), f"Overflow set for world {w}")
 
-    if util_pkg.check_version("mujoco>=3.15.1.dev996371290"):
-      mujoco.mj_sensorVel(mjm, mjd)
-    else:
-      mujoco.mj_sensorAcc(mjm, mjd)
+    mujoco.mj_sensorVel(mjm, mjd)
     sensordata = d.sensordata.numpy()
     for w in range(nworld):
       # Vertex 4 corresponds to geom_a, vertex 5 corresponds to geom_b
