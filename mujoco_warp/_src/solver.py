@@ -2115,6 +2115,9 @@ def _zero_qfrc_constraint_sparse(
 
 # lanes of the block that lists the JTDAJ groups of each dof
 _QFRC_INDEX_LANES = 32
+# an entry of the lists packs the stride of its group below this bit and its number of rows above
+_QFRC_ENTRY_SHIFT = 16
+_QFRC_ENTRY_STRIDE = 1 << _QFRC_ENTRY_SHIFT
 # the slot addresses of the sparse Hessian blocks saturate here
 _JTDAJ_SLOT_MAX = 1 << 30
 # slots for the sparse Hessian blocks of a world, per nonzero of the constraint Jacobian
@@ -2162,15 +2165,17 @@ def _qfrc_index(
   group_out: wp.array2d[wp.vec4i],
   slot_adr_out: wp.array2d[int],
   adr_out: wp.array2d[int],
-  entry_out: wp.array2d[wp.vec4i],
+  entry_out: wp.array2d[wp.vec3i],
 ):
   """Lists the JTDAJ groups that contain each dof, in group order.
 
   An entry holds what the sum over the rows of the group needs: the address of the dof in the
-  head row of the group, the width of the sparse support of the group (the stride from a row to
-  the next), the head row, and the number of rows, negative if the rows do not follow each other
-  in the sparse arrays. Each group also gets the address of a slot per element of the upper
-  triangle of its Hessian block, with the total number of slots after the last group.
+  head row of the group, the head row, and in one int the width of the sparse support of the
+  group (the stride from a row to the next, in the low 16 bits) and the number of rows, negative
+  if the rows do not follow each other in the sparse arrays. The gather moves every entry at
+  every iteration, so an entry is as small as it can be without a load that depends on another.
+  Each group also gets the address of a slot per element of the upper triangle of its Hessian
+  block, with the total number of slots after the last group.
   """
   worldid, lane = wp.tid()
 
@@ -2233,7 +2238,7 @@ def _qfrc_index(
       dofid = efc_J_colind_in[worldid, 0, group[0] + i]
       cursor = cursor_out[worldid, dofid]
       cursor_out[worldid, dofid] = cursor + 1
-      entry_out[worldid, cursor] = wp.vec4i(group[0] + i, group[1], group[2], group[3])
+      entry_out[worldid, cursor] = wp.vec3i(group[0] + i, group[2], group[1] + wp.static(_QFRC_ENTRY_STRIDE) * group[3])
 
   _jtdaj_slot_adr(worldid, lane, ngroup, group_out, slot_adr_out)
 
@@ -2259,7 +2264,7 @@ def _update_constraint_init_qfrc_constraint_sparse(compact: bool, nv: int, group
       dof_frictionadr_in: wp.array2d[int],
       # In:
       qfrc_adr_in: wp.array2d[int],
-      qfrc_entry_in: wp.array2d[wp.vec4i],
+      qfrc_entry_in: wp.array2d[wp.vec3i],
       state_changed_count_in: wp.array[int],
       ctx_done_in: wp.array[bool],
       # Data out:
@@ -2290,23 +2295,25 @@ def _update_constraint_init_qfrc_constraint_sparse(compact: bool, nv: int, group
           qfrc = efc_J_in[worldid, 0, efc_J_rowadr_in[worldid, rowid]] * efc_force_in[worldid, rowid]
 
       for i in range(qfrc_adr_in[worldid, dofid], qfrc_adr_in[worldid, dofid + 1]):
-        # address of the dof in the head row, stride to the next row, head row, number of rows
+        # address of the dof in the head row, head row, stride to the next row and number of rows
         entry = qfrc_entry_in[worldid, i]
         adr = entry[0]
-        head_row = entry[2]
-        if entry[3] < 0:
+        head_row = entry[1]
+        stride = entry[2] & wp.static(_QFRC_ENTRY_STRIDE - 1)
+        nrow = entry[2] >> wp.static(_QFRC_ENTRY_SHIFT)
+        if nrow < 0:
           # the rows of the group do not follow each other in the sparse arrays
           pos = adr - efc_J_rowadr_in[worldid, head_row]
-          for member in range(-entry[3]):
+          for member in range(-nrow):
             rowid = head_row + member
             force = efc_force_in[worldid, rowid]
             if force != 0.0:
               qfrc += efc_J_in[worldid, 0, efc_J_rowadr_in[worldid, rowid] + pos] * force
         else:
-          for member in range(entry[3]):
+          for member in range(nrow):
             force = efc_force_in[worldid, head_row + member]
             if force != 0.0:
-              qfrc += efc_J_in[worldid, 0, adr + member * entry[1]] * force
+              qfrc += efc_J_in[worldid, 0, adr + member * stride] * force
 
       qfrc_constraint_out[worldid, resid] = qfrc
 
@@ -2419,8 +2426,10 @@ def _qfrc_constraint_index(m: types.Model, d: types.Data, ctx: SolverContext, sl
   mj = ctx.compact_m_full if sc else m
   dj = ctx.compact_d_full if sc else d
   ngroup = dj.efc.jtdaj_adr.shape[1]
+  # an entry of the lists packs a stride of at most nv and a signed number of rows of at most njmax
+  packs = mj.nv < _QFRC_ENTRY_STRIDE and dj.efc.J_rownnz.shape[1] < _QFRC_ENTRY_STRIDE // 2
   # the groups only exist for sparse Newton
-  if m.opt.solver != types.SolverType.NEWTON or ngroup == 0:
+  if m.opt.solver != types.SolverType.NEWTON or ngroup == 0 or not packs:
     return
 
   # the kernel takes the number of lanes from the block, which is one thread on the CPU
@@ -2430,7 +2439,7 @@ def _qfrc_constraint_index(m: types.Model, d: types.Data, ctx: SolverContext, sl
   ctx.jtdaj_group = wp.empty((d.nworld, ngroup), dtype=wp.vec4i)
   # one more dof than the model, whose address is the end of the last list
   ctx.qfrc_adr = wp.empty((d.nworld, mj.nv + 1), dtype=int)
-  ctx.qfrc_entry = wp.empty((d.nworld, dj.efc.J_colind.shape[2]), dtype=wp.vec4i)
+  ctx.qfrc_entry = wp.empty((d.nworld, dj.efc.J_colind.shape[2]), dtype=wp.vec3i)
   # an element of H packs its row and its column in an int
   slots = (_jtdaj_wide(m, d, sc) if slots is None else slots) and 0 < ctx.h.shape[1] <= 32768
   slots = slots and dj.efc.J_colind.shape[2] > 0

@@ -366,7 +366,7 @@ def _sparse_groups_fixture(nworld):
     nefc=np.zeros(nworld, dtype=np.int32),
     frictionadr=np.full((nworld, nv), -1, dtype=np.int32),
     adr=np.zeros((nworld, nv + 1), dtype=np.int32),
-    entry=np.full((nworld, nnz, 4), -5, dtype=np.int32),
+    entry=np.full((nworld, nnz, 3), -5, dtype=np.int32),
     group=np.full((nworld, ngroup_max, 4), -5, dtype=np.int32),
     slot_adr=np.full((nworld, ngroup_max + 1), -5, dtype=np.int32),
   )
@@ -394,7 +394,9 @@ def _sparse_groups_fixture(nworld):
       # a single row always follows itself
       sign = 1 if contiguous or nrow == 1 else -1
       res["group"][worldid, groupid] = [adr, len(support), row, sign * nrow]
-      entries[groupid] = [(dofid, [adr + i, len(support), row, sign * nrow]) for i, dofid in enumerate(support)]
+      # the stride in the low 16 bits and the signed number of rows above them
+      code = len(support) + 65536 * sign * nrow
+      entries[groupid] = [(dofid, [adr + i, row, code]) for i, dofid in enumerate(support)]
       adr += nrow * (len(support) + 2)
       row += nrow
     assert adr <= nnz and row <= njmax
@@ -2327,7 +2329,7 @@ class SolverTest(parameterized.TestCase):
     # a single element when the slots are not used
     slot_adr = wp.full((nworld, ngroup_max + 1 if slots else 1), -5, dtype=int)
     adr = wp.full((nworld, nv + 1), -5, dtype=int)
-    entry = wp.full((nworld, nnz), wp.vec4i(-5), dtype=wp.vec4i)
+    entry = wp.full((nworld, nnz), wp.vec3i(-5), dtype=wp.vec3i)
     wp.launch(
       solver._qfrc_index,
       dim=(nworld, lanes),
@@ -2387,7 +2389,7 @@ class SolverTest(parameterized.TestCase):
     lanes = 1 if wp.get_device().is_cpu else solver._QFRC_INDEX_LANES
     group = wp.empty(fixture["jtdaj_adr"].shape, dtype=wp.vec4i)
     adr = wp.empty((nworld, nv + 1), dtype=int)
-    entry = wp.empty((nworld, nnz), dtype=wp.vec4i)
+    entry = wp.empty((nworld, nnz), dtype=wp.vec3i)
     wp.launch(
       solver._qfrc_index,
       dim=(nworld, lanes),
@@ -2440,12 +2442,79 @@ class SolverTest(parameterized.TestCase):
         # the rows of a group follow each other in the sparse arrays
         self.assertEqual(group[worldid, groupid].tolist(), [head_adr, support, head_row, jtdaj_nrow[worldid, groupid]])
         for i in range(support):
-          lists[colind[worldid, 0, head_adr + i]].append(group[worldid, groupid].tolist())
-          lists[colind[worldid, 0, head_adr + i]][-1][0] += i
+          # the stride in the low 16 bits and the number of rows above them
+          code = support + 65536 * jtdaj_nrow[worldid, groupid]
+          lists[colind[worldid, 0, head_adr + i]].append([head_adr + i, head_row, code])
       self.assertEqual(adr[worldid, 0], 0)
       for dofid in range(m.nv):
         self.assertEqual(entry[worldid, adr[worldid, dofid] : adr[worldid, dofid + 1]].tolist(), lists[dofid])
       self.assertGreater(max(len(dof_list) for dof_list in lists), 1)
+
+  def test_qfrc_constraint_sparse_packing(self):
+    """A list entry holds a stride of 16 bits and a signed number of rows of 16 bits."""
+    stride_max = solver._QFRC_ENTRY_STRIDE - 1
+    nrow_max = solver._QFRC_ENTRY_STRIDE // 2 - 1
+    njmax = nrow_max + 2
+    rng = np.random.default_rng(0)
+    force = rng.uniform(-1.0, 1.0, (1, njmax)).astype(np.float32)
+    J = rng.uniform(-1.0, 1.0, (1, 1, 2 * stride_max + 16)).astype(np.float32)
+    # the rows from the third one on do not follow each other in the sparse arrays
+    rowadr = np.zeros((1, njmax), dtype=np.int32)
+    rowadr[0, 2:] = 40000 + 2 * np.arange(njmax - 2)
+    # two rows with the widest stride, the most rows one after the other, and the most rows that
+    # do not follow each other: address of the dof in the head row, head row, stride and rows
+    entry = [[5, 0, stride_max + 65536 * 2], [7, 2, 1 + 65536 * nrow_max], [40001, 2, 3 - 65536 * nrow_max]]
+    rows = force[0, 2 : 2 + nrow_max].astype(np.float64)
+    expected = [
+      J[0, 0, 5] * force[0, 0] + J[0, 0, 5 + stride_max] * force[0, 1],
+      np.dot(J[0, 0, 7 : 7 + nrow_max], rows),
+      np.dot(J[0, 0, rowadr[0, 2 : 2 + nrow_max] + 1], rows),
+    ]
+
+    qfrc = wp.full((1, 3), wp.inf, dtype=float)
+    wp.launch(
+      solver._update_constraint_init_qfrc_constraint_sparse(False, 3, True, True),
+      dim=(1, 3),
+      inputs=[
+        wp.zeros(1, dtype=int),
+        wp.array(rowadr, dtype=int),
+        wp.array(J, dtype=float),
+        wp.array(force, dtype=float),
+        wp.array(np.arange(3, dtype=np.int32)[None], dtype=int),
+        wp.full((1, 3), -1, dtype=int),
+        wp.array(np.arange(4, dtype=np.int32)[None], dtype=int),
+        wp.array(np.array([entry], dtype=np.int32), dtype=wp.vec3i),
+        wp.ones(1, dtype=int),
+        wp.zeros(1, dtype=bool),
+      ],
+      outputs=[qfrc],
+    )
+    np.testing.assert_allclose(qfrc.numpy()[0], expected, rtol=1e-3, atol=1e-2)
+
+  def test_qfrc_index_packing_limit(self):
+    """Without room for the rows of a group in a list entry, the solve adds the rows in order."""
+    qfrc = {}
+    for njmax in (None, solver._QFRC_ENTRY_STRIDE // 2):
+      _, _, m, d = test_data.fixture(
+        "constraints.xml",
+        keyframe=1,
+        njmax=njmax,
+        overrides={"opt.jacobian": mujoco.mjtJacobian.mjJAC_SPARSE, "opt.deterministic": types.DeterminismType.ATOMICS},
+      )
+      mjw.fwd_position(m, d)
+      mjw.fwd_velocity(m, d)
+      mjw.fwd_actuation(m, d)
+      mjw.fwd_acceleration(m, d)
+      ctx = solver._create_solver_context(m, d)
+      solver.init_context(m, d, ctx, grad=True)
+      # no lists: one block per world adds the rows
+      self.assertEqual(ctx.qfrc_adr is None, njmax is not None)
+      self.assertEqual(ctx.jtdaj_slot is None, njmax is not None or wp.get_device().is_cpu)
+      qfrc[njmax] = d.qfrc_constraint.numpy().copy()
+
+    scale = np.abs(qfrc[None]).max()
+    self.assertGreater(scale, 1.0e-3)
+    np.testing.assert_allclose(qfrc[solver._QFRC_ENTRY_STRIDE // 2], qfrc[None], rtol=1e-4, atol=1e-5 * scale)
 
   @parameterized.parameters(mujoco.mjtJacobian.mjJAC_DENSE, mujoco.mjtJacobian.mjJAC_SPARSE)
   def test_incremental_hessian_deterministic(self, jacobian):
