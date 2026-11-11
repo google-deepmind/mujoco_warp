@@ -448,13 +448,8 @@ def _flex_edges(
 
 
 @event_scope
-def kinematics(m: Model, d: Data):
-  """Computes forward kinematics for all bodies, sites, geoms, and flexible elements.
-
-  This function updates the global positions and orientations of all bodies, as well as the
-  derived positions and orientations of geoms, sites, and flexible elements, based on the
-  current joint positions and any attached mocap bodies.
-  """
+def kinematics1(m: Model, d: Data):
+  """Computes body poses and joint anchors and axes."""
   wp.launch(
     _kinematics_branch,
     dim=(d.nworld, m.nbranch),
@@ -479,6 +474,10 @@ def kinematics(m: Model, d: Data):
     outputs=[d.xpos, d.xquat, d.xanchor, d.xaxis],
   )
 
+
+@event_scope
+def kinematics2(m: Model, d: Data):
+  """Computes global body inertial frames, geoms, and sites from body poses."""
   wp.launch(
     _compute_body_inertial_frames,
     dim=(d.nworld, m.nbody),
@@ -499,6 +498,13 @@ def kinematics(m: Model, d: Data):
     inputs=[m.site_bodyid, m.site_pos, m.site_quat, d.xpos, d.xquat],
     outputs=[d.site_xpos, d.site_xquat],
   )
+
+
+@event_scope
+def kinematics(m: Model, d: Data):
+  """Computes forward kinematics for bodies, inertial frames, geoms, and sites."""
+  kinematics1(m, d)
+  kinematics2(m, d)
 
 
 @wp.kernel
