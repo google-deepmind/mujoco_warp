@@ -3115,22 +3115,23 @@ def _eff_flex_bend_stiff(deterministic: bool = False):
       dof_i = dofs[i]
       if dof_i >= 0 and efm_K_rownnz[dof_i] > 0:
         bi = bodies[i]
-        R_bi_T = wp.transpose(math.quat_to_mat(xquat_in[worldid, bi]))
         qi = xquat_in[worldid, bi]
+        R_bi_T = wp.transpose(math.quat_to_mat(qi))
         for j in range(4):
           dof_j = dofs[j]
           if dof_j >= 0:
             q = scale * flex_bending[bend_offset + 4 * i + j]
             if q != 0.0:
               bj = bodies[j]
-              if bi == bj or qi == xquat_in[worldid, bj]:
+              qj = xquat_in[worldid, bj]
+              if bi == bj or qi == qj:
                 for r in range(3):
                   row = dof_i + r
                   idx = _find_csr_col(efm_K_rowadr[row], efm_K_rownnz[row], dof_j, efm_K_colind)
                   if idx >= 0:
                     wp.atomic_add(efm_K_val_out, worldid, idx + r, q)
               else:
-                blkd = q * (R_bi_T * math.quat_to_mat(xquat_in[worldid, bj]))
+                blkd = q * (R_bi_T * math.quat_to_mat(qj))
                 for r in range(3):
                   row = dof_i + r
                   idx = _find_csr_col(efm_K_rowadr[row], efm_K_rownnz[row], dof_j, efm_K_colind)
