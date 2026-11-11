@@ -1166,6 +1166,33 @@ class SolverTest(parameterized.TestCase):
 
     self.assertTrue(d.overflow.numpy()[0] & types.OverflowType.LS_ITERATIONS)
 
+  @parameterized.product(
+    cone=(ConeType.PYRAMIDAL, ConeType.ELLIPTIC),
+    xml_jacobian=(
+      ("humanoid/humanoid.xml", mujoco.mjtJacobian.mjJAC_DENSE),
+      ("humanoid/humanoid.xml", mujoco.mjtJacobian.mjJAC_SPARSE),
+      ("constraints.xml", mujoco.mjtJacobian.mjJAC_DENSE),
+      ("constraints.xml", mujoco.mjtJacobian.mjJAC_SPARSE),
+      # dense Jacobians are limited to 60 DOFs
+      ("humanoid/n_humanoid.xml", mujoco.mjtJacobian.mjJAC_SPARSE),
+    ),
+  )
+  def test_solve_cholesky(self, cone, xml_jacobian):
+    """Newton from a cold start: one-tile (nv 27 padded, 48) and blocked (nv 81) Cholesky."""
+    xml, jacobian = xml_jacobian
+    for keyframe in range(3):
+      _, mjd, m, d = test_data.fixture(
+        xml,
+        keyframe=keyframe,
+        overrides={"opt.jacobian": jacobian, "opt.cone": cone, "opt.solver": SolverType.NEWTON, "opt.iterations": 50},
+      )
+      d.qacc_warmstart.zero_()
+      d.qacc.fill_(wp.inf)
+      d.efc.force.fill_(wp.inf)
+      mjw.solve(m, d)
+      _assert_eq(d.qacc.numpy()[0], mjd.qacc, "qacc")
+      _assert_eq(d.efc.force.numpy()[0, : mjd.nefc], mjd.efc_force, "efc_force")
+
   @parameterized.parameters(
     (ConeType.PYRAMIDAL, SolverType.CG, 10, 5, mujoco.mjtJacobian.mjJAC_DENSE),
     (ConeType.ELLIPTIC, SolverType.CG, 10, 5, mujoco.mjtJacobian.mjJAC_DENSE),
@@ -1255,7 +1282,7 @@ class SolverTest(parameterized.TestCase):
     ctx.done.fill_(False)
     wp.launch(
       solver._update_gradient_init_h_sparse(False),
-      dim=(d.nworld, m.nv_pad, solver._INIT_H_LANES),
+      dim=(d.nworld, m.nv_pad, solver._INIT_H_SECTOR),
       inputs=[m.nv, m.M_elemid, d.nf, d.M, d.efc.D, d.efc.state, d.dof_frictionadr, d.cdof_dof, ctx.done],
       outputs=[ctx.h],
     )
@@ -2372,7 +2399,7 @@ class SolverTest(parameterized.TestCase):
       <mujoco>
         <option cone="elliptic"/>
         <worldbody>
-          <replicate count="7" offset="0.2 0 0">
+          <replicate count="9" offset="0.2 0 0">
             <body>
               <freejoint/>
               <geom size="0.05"/>
@@ -2382,10 +2409,10 @@ class SolverTest(parameterized.TestCase):
       </mujoco>
       """,
     )
-    self.assertGreater(m.nv, solver._BLOCK_CHOLESKY_DIM)
+    self.assertGreater(m.nv, types.H_ONE_TILE_MAX)
     h_shape = (d.nworld, m.nv_pad, m.nv_pad)
 
-    # Non-incremental Newton with nv > _BLOCK_CHOLESKY_DIM aliases hfactor to h only when requested.
+    # Non-incremental Newton with nv > H_ONE_TILE_MAX aliases hfactor to h only when requested.
     ctx_inplace = solver._create_solver_context(m, d, inplace_cholesky=True)
     ctx_default = solver._create_solver_context(m, d)
     self.assertEqual(ctx_inplace.hfactor.shape, h_shape)
@@ -2404,7 +2431,7 @@ class SolverTest(parameterized.TestCase):
     self.assertEqual(ctx_cg.h.shape, (d.nworld, 0, 0))
     self.assertEqual(ctx_cg.hfactor.shape, (d.nworld, 0, 0))
 
-    m_small = dataclasses.replace(m, nv=solver._BLOCK_CHOLESKY_DIM)
+    m_small = dataclasses.replace(m, nv=types.H_ONE_TILE_MAX)
     self.assertEqual(solver._create_solver_context(m_small, d, inplace_cholesky=True).hfactor.shape, (d.nworld, 0, 0))
 
     # Runtime guards reject missing augmented RHS padding and skip_unchanged with aliased buffers.
@@ -2433,7 +2460,7 @@ class SolverTest(parameterized.TestCase):
         </option>
         <worldbody>
           <geom type="plane" size="5 5 0.1"/>
-          <replicate count="7" offset="0.25 0 0">
+          <replicate count="9" offset="0.25 0 0">
             <body pos="-0.75 0 0.03" euler="8 -6 12">
               <freejoint/>
               <geom type="box" size="0.05 0.04 0.04" condim="6"/>
@@ -2449,7 +2476,7 @@ class SolverTest(parameterized.TestCase):
         "opt.deterministic": types.DeterminismType.ALL,
       },
       nworld=nworld,
-      nvmax=42 if compact else -1,
+      nvmax=54 if compact else -1,
     )
     mjds = _perturb_worlds(mjm, mjd, d, nworld, 0.5)
 
