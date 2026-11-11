@@ -2264,7 +2264,10 @@ def _initial_body_awake(mjm: mujoco.MjModel, nworld: int, init_asleep: bool) -> 
   return body_awake_np
 
 
-# Data quaternion fields whose mjData counterpart is a rotation matrix.
+# TODO(team): remove, with the rotation matrix fallbacks, once mujoco >= 4.0.0 is required
+_MJDATA_HAS_XQUAT = util_pkg.check_version("mujoco>=3.17.1.dev1011645925")
+
+# Data quaternion fields that older mjData only has as rotation matrices.
 _QUAT_FROM_MAT = {"xiquat": "ximat", "geom_xquat": "geom_xmat", "site_xquat": "site_xmat"}
 
 
@@ -2295,6 +2298,13 @@ def _mat_to_quat(mat: np.ndarray) -> np.ndarray:
   for q, m in zip(quat, mat):
     mujoco.mju_mat2Quat(q, m)
   return quat
+
+
+def _mjdata_xquat(mjd: mujoco.MjData, name: str) -> np.ndarray:
+  """Quaternion field of mjData, converted from its rotation matrix where mjData lacks it."""
+  if _MJDATA_HAS_XQUAT:
+    return getattr(mjd, name)
+  return _mat_to_quat(getattr(mjd, _QUAT_FROM_MAT[name]))
 
 
 def make_data(
@@ -2465,10 +2475,10 @@ def make_data(
     "njmax_nnz": njmax_nnz,
     # world body
     "xquat": wp.array(np.tile(mjd.xquat, (nworld, 1)), shape=(nworld, mjm.nbody), dtype=wp.quat),
-    "xiquat": wp.array(np.tile(_mat_to_quat(mjd.ximat), (nworld, 1)), shape=(nworld, mjm.nbody), dtype=wp.quat),
+    "xiquat": wp.array(np.tile(_mjdata_xquat(mjd, "xiquat"), (nworld, 1)), shape=(nworld, mjm.nbody), dtype=wp.quat),
     # static geoms
     "geom_xpos": wp.array(np.tile(mjd.geom_xpos, (nworld, 1)), shape=(nworld, mjm.ngeom), dtype=wp.vec3),
-    "geom_xquat": wp.array(np.tile(_mat_to_quat(mjd.geom_xmat), (nworld, 1)), shape=(nworld, mjm.ngeom), dtype=wp.quat),
+    "geom_xquat": wp.array(np.tile(_mjdata_xquat(mjd, "geom_xquat"), (nworld, 1)), shape=(nworld, mjm.ngeom), dtype=wp.quat),
     # mocap
     "mocap_pos": wp.array(np.tile(mjm.body_pos[mocap_body[mocap_id]], (nworld, 1)), shape=(nworld, mjm.nmocap), dtype=wp.vec3),
     "mocap_quat": wp.array(
@@ -2847,7 +2857,7 @@ def put_data(
       continue
     val = getattr(mjd, f.name, None)
     if f.name in _QUAT_FROM_MAT:
-      val = _mat_to_quat(getattr(mjd, _QUAT_FROM_MAT[f.name]))
+      val = _mjdata_xquat(mjd, f.name)
     elif f.name == "efm_K_val" and val is not None and val.size != sizes["nefmK"]:
       val = efm_d.efm_K_val if efm_d else None
     elif f.name == "efm_ts":
@@ -2994,20 +3004,24 @@ def get_data_into(
   result.qacc[:] = d.qacc.numpy()[world_id]
   result.act_dot[:] = d.act_dot.numpy()[world_id]
   result.xpos[:] = d.xpos.numpy()[world_id]
-  result.xquat[:] = d.xquat.numpy()[world_id]
-  result.xmat[:] = _quat_to_mat(d.xquat.numpy()[world_id]).reshape((-1, 9))
+  xquat = d.xquat.numpy()[world_id]
+  xiquat = d.xiquat.numpy()[world_id]
+  geom_xquat = d.geom_xquat.numpy()[world_id]
+  site_xquat = d.site_xquat.numpy()[world_id]
+  result.xquat[:] = xquat
+  result.xmat[:] = _quat_to_mat(xquat).reshape((-1, 9))
   result.xipos[:] = d.xipos.numpy()[world_id]
-  result.ximat[:] = _quat_to_mat(d.xiquat.numpy()[world_id]).reshape((-1, 9))
+  result.ximat[:] = _quat_to_mat(xiquat).reshape((-1, 9))
   result.xanchor[:] = d.xanchor.numpy()[world_id]
   result.xaxis[:] = d.xaxis.numpy()[world_id]
   result.geom_xpos[:] = d.geom_xpos.numpy()[world_id]
-  result.geom_xmat[:] = _quat_to_mat(d.geom_xquat.numpy()[world_id]).reshape((-1, 9))
+  result.geom_xmat[:] = _quat_to_mat(geom_xquat).reshape((-1, 9))
   result.site_xpos[:] = d.site_xpos.numpy()[world_id]
-  result.site_xmat[:] = _quat_to_mat(d.site_xquat.numpy()[world_id]).reshape((-1, 9))
-  if hasattr(result, "xiquat"):  # mujoco >= 4.0.0
-    result.xiquat[:] = d.xiquat.numpy()[world_id]
-    result.geom_xquat[:] = d.geom_xquat.numpy()[world_id]
-    result.site_xquat[:] = d.site_xquat.numpy()[world_id]
+  result.site_xmat[:] = _quat_to_mat(site_xquat).reshape((-1, 9))
+  if _MJDATA_HAS_XQUAT:
+    result.xiquat[:] = xiquat
+    result.geom_xquat[:] = geom_xquat
+    result.site_xquat[:] = site_xquat
   result.cam_xpos[:] = d.cam_xpos.numpy()[world_id]
   result.cam_xmat[:] = d.cam_xmat.numpy()[world_id].reshape((-1, 9))
   result.light_xpos[:] = d.light_xpos.numpy()[world_id]
