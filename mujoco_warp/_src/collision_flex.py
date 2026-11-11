@@ -1316,8 +1316,6 @@ def _flex_bvh_leaf(
   # Model:
   nbvhstatic: int,
   bvh_nodeid: wp.array[int],
-  flex_margin: wp.array[float],
-  flex_gap: wp.array[float],
   flex_dim: wp.array[int],
   flex_vertadr: wp.array[int],
   flex_elemdataadr: wp.array[int],
@@ -1362,8 +1360,7 @@ def _flex_bvh_leaf(
   is_box, box_2d = support.rod_box_size(flex_rod_is_box, flex_rod_box_size, flexid)
   if is_box:
     radius = wp.max(radius, wp.length(box_2d))
-  rbound = radius + flex_margin[flexid] + flex_gap[flexid]
-  inflate = wp.vec3(rbound, rbound, rbound)
+  inflate = wp.vec3(radius, radius, radius)
   bvh_lower_out[worldid, nodeid] = aabb_min - inflate
   bvh_upper_out[worldid, nodeid] = aabb_max + inflate
 
@@ -1444,6 +1441,8 @@ def _flex_bvh_query(is_self: bool, warn_overflow: int, enable_sat: bool, split_d
     if wp.static(is_self):
       if flex_selfcollide[flexid1] == 0 or (flex_contype[flexid1] & flex_conaffinity[flexid1]) == 0:
         return
+    elif flexid1 >= nflex - 1:
+      return
 
     elem1 = flex_elemadr[flexid1] + e1
     lower1 = bvh_lower_in[worldid, nodeid1]
@@ -1466,6 +1465,9 @@ def _flex_bvh_query(is_self: bool, warn_overflow: int, enable_sat: bool, split_d
       if bvhadr < 0:
         continue
 
+      q_lower1 = lower1
+      q_upper1 = upper1
+      pair_margin = float(0.0)
       if not wp.static(is_self):
         if _flex_element_aabb_filter(
           flex_aabb_min_in[worldid, flexid1],
@@ -1481,6 +1483,11 @@ def _flex_bvh_query(is_self: bool, warn_overflow: int, enable_sat: bool, split_d
         conaffinity2 = flex_conaffinity[flexid2]
         if not ((contype1 & conaffinity2) or (contype2 & conaffinity1)):
           continue
+
+        pair_margin = flex_margin[flexid1] + flex_margin[flexid2] + flex_gap[flexid1] + flex_gap[flexid2]
+        margin_vec = wp.vec3(pair_margin, pair_margin, pair_margin)
+        q_lower1 = lower1 - margin_vec
+        q_upper1 = upper1 + margin_vec
 
       # trees are stored in preorder, the subtree of a left child ends where its sibling starts:
       # self-collision skips subtrees of leaves before this one, so each pair is visited once
@@ -1506,13 +1513,29 @@ def _flex_bvh_query(is_self: bool, warn_overflow: int, enable_sat: bool, split_d
         continue
 
       startid = bvhadr + node - nbvhstatic
-      if _flex_element_aabb_filter(lower1, upper1, bvh_lower_in[worldid, startid], bvh_upper_in[worldid, startid]):
+      if _flex_element_aabb_filter(q_lower1, q_upper1, bvh_lower_in[worldid, startid], bvh_upper_in[worldid, startid]):
         continue
       stack[0] = node
       nstack = int(1)
 
       dim2 = flex_dim[flexid2]
       vert_adr2 = flex_vertadr[flexid2]
+      elem_adr2 = flex_elemadr[flexid2]
+      elem_data_adr2 = flex_elemdataadr[flexid2]
+      cutoff_sq = float(0.0)
+      p0 = wp.vec3(0.0)
+      p1 = wp.vec3(0.0)
+      p2 = wp.vec3(0.0)
+      if wp.static(enable_sat):
+        if dim1 == 2 and dim2 == 2:
+          r1 = flex_radius[flexid1]
+          cutoff = float(2.0) * r1
+          if not wp.static(is_self):
+            cutoff = r1 + flex_radius[flexid2] + pair_margin
+          cutoff_sq = cutoff * cutoff
+          p0 = flexvert_xpos_in[worldid, vert_adr1 + v1_indices[0]]
+          p1 = flexvert_xpos_in[worldid, vert_adr1 + v1_indices[1]]
+          p2 = flexvert_xpos_in[worldid, vert_adr1 + v1_indices[2]]
 
       # nodes on the stack overlap the query element
       while nstack > 0:
@@ -1527,7 +1550,9 @@ def _flex_bvh_query(is_self: bool, warn_overflow: int, enable_sat: bool, split_d
               if i == 0 and child[1] <= leaf1:
                 continue
             childid = bvhadr + child[i] - nbvhstatic
-            if not _flex_element_aabb_filter(lower1, upper1, bvh_lower_in[worldid, childid], bvh_upper_in[worldid, childid]):
+            if not _flex_element_aabb_filter(
+              q_lower1, q_upper1, bvh_lower_in[worldid, childid], bvh_upper_in[worldid, childid]
+            ):
               stack[nstack] = child[i]
               nstack += 1
           continue
@@ -1536,27 +1561,19 @@ def _flex_bvh_query(is_self: bool, warn_overflow: int, enable_sat: bool, split_d
           if bvhid2 - bvhadr <= leaf1:
             continue
 
-        # order the pair by element id (flex-flex pairs already are)
-        elem_a = elem1
-        elem_b = flex_elemadr[flexid2] + e2
-        va = v1_indices
-        vb = _get_element_vertices(flex_elem, dim2, flex_elemdataadr[flexid2] + e2 * (dim2 + 1))
+        elem2 = elem_adr2 + e2
+        v2_indices = _get_element_vertices(flex_elem, dim2, elem_data_adr2 + e2 * (dim2 + 1))
         if wp.static(is_self):
-          if elem_b < elem_a:
-            elem_a = elem_b
-            elem_b = elem1
-            va = vb
-            vb = v1_indices
-          if _exclude_self_collision(flex_vertbodyid, va, dim1 + 1, vb, dim1 + 1, vert_adr1):
+          if _exclude_self_collision(flex_vertbodyid, v1_indices, dim1 + 1, v2_indices, dim1 + 1, vert_adr1):
             continue
         else:
           shared_body = bool(False)
           for ii in range(dim1 + 1):
-            idx1 = va[ii]
+            idx1 = v1_indices[ii]
             if idx1 >= 0:
               b1 = flex_vertbodyid[vert_adr1 + idx1]
               for jj in range(dim2 + 1):
-                idx2 = vb[jj]
+                idx2 = v2_indices[jj]
                 if idx2 >= 0 and b1 >= 0:
                   b2 = flex_vertbodyid[vert_adr2 + idx2]
                   if b1 == b2:
@@ -1569,19 +1586,9 @@ def _flex_bvh_query(is_self: bool, warn_overflow: int, enable_sat: bool, split_d
             continue
 
         if dim1 == 2 and dim2 == 2 and wp.static(enable_sat):
-          r1 = flex_radius[flexid1]
-          cutoff = float(2.0) * r1
-          if not wp.static(is_self):
-            cutoff = (
-              r1 + flex_radius[flexid2] + flex_margin[flexid1] + flex_margin[flexid2] + flex_gap[flexid1] + flex_gap[flexid2]
-            )
-          cutoff_sq = cutoff * cutoff
-          p0 = flexvert_xpos_in[worldid, vert_adr1 + va[0]]
-          p1 = flexvert_xpos_in[worldid, vert_adr1 + va[1]]
-          p2 = flexvert_xpos_in[worldid, vert_adr1 + va[2]]
-          q0 = flexvert_xpos_in[worldid, vert_adr2 + vb[0]]
-          q1 = flexvert_xpos_in[worldid, vert_adr2 + vb[1]]
-          q2 = flexvert_xpos_in[worldid, vert_adr2 + vb[2]]
+          q0 = flexvert_xpos_in[worldid, vert_adr2 + v2_indices[0]]
+          q1 = flexvert_xpos_in[worldid, vert_adr2 + v2_indices[1]]
+          q2 = flexvert_xpos_in[worldid, vert_adr2 + v2_indices[2]]
           if _triangle_sat_separated(p0, p1, p2, q0, q1, q2, cutoff_sq):
             continue
 
@@ -1596,6 +1603,8 @@ def _flex_bvh_query(is_self: bool, warn_overflow: int, enable_sat: bool, split_d
           wp.atomic_or(overflow_out, worldid, wp.static(OverflowType.BROADPHASE))
           return
 
+        elem_a = wp.min(elem1, elem2) if wp.static(is_self) else elem1
+        elem_b = wp.max(elem1, elem2) if wp.static(is_self) else elem2
         collision_pair_out[idx] = wp.vec2i(elem_a, elem_b)
         collision_worldid_out[idx] = worldid
 
@@ -3944,8 +3953,6 @@ def _flex_bvh_update(m: Model, d: Data) -> tuple[wp.array, wp.array]:
     inputs=[
       m.nbvhstatic,
       m.bvh_nodeid,
-      m.flex_margin,
-      m.flex_gap,
       m.flex_dim,
       m.flex_vertadr,
       m.flex_elemdataadr,

@@ -2447,8 +2447,36 @@ class FlexCollisionTest(parameterized.TestCase):
     v_global_idx = int(m.flex_vertadr.numpy()[0]) + 3
     xpos = d.flexvert_xpos.numpy()
     for w in range(nworld):
-      xpos[w, v_global_idx] = xpos[w, v0_global_idx] + np.array([0.0, 0.0, 0.01])
+      xpos[w, v_global_idx] = xpos[w, v0_global_idx] + np.array([0.0, 0.0, 0.01 * (w + 1)])
     d.flexvert_xpos.assign(xpos)
+
+    ws = collision_flex._allocate_flex_workspace(m, d)
+    ctx = collision_core.create_collision_context(d.naconmax)
+    reference_pairs = None
+    reference_bounds = None
+    for margin, gap in ((0.0, 0.0), (0.1, 0.0), (0.0, -0.03)):
+      m.flex_margin.fill_(margin)
+      m.flex_gap.fill_(gap)
+      collision_flex.flex_broadphase_aabb(m, d)
+      bounds = collision_flex._flex_bvh_update(m, d)
+      d.ncollision.zero_()
+      ctx.collision_pair.fill_(-1)
+      ctx.collision_worldid.fill_(-1)
+      collision_flex._flex_bvh_collision(m, d, ctx, ws, is_self=True, bvh_bounds=bounds, enable_sat=True)
+      npair = int(d.ncollision.numpy()[0])
+      self.assertGreater(npair, 0)
+      self.assertLessEqual(npair, d.naconmax)
+      pairs = ctx.collision_pair.numpy()[:npair]
+      worldids = ctx.collision_worldid.numpy()[:npair]
+      pair_set = {(int(w), int(p[0]), int(p[1])) for w, p in zip(worldids, pairs)}
+      self.assertLen(pair_set, npair)
+      if reference_pairs is None:
+        reference_pairs = pair_set
+        reference_bounds = [arr.numpy() for arr in bounds]
+      else:
+        self.assertEqual(pair_set, reference_pairs)
+        for actual, expected in zip(bounds, reference_bounds):
+          np.testing.assert_array_equal(actual.numpy(), expected)
 
     mjw.collision(m, d)
 
@@ -4243,7 +4271,8 @@ class FlexContactParityTest(parameterized.TestCase):
       m_contacts = self._get_sorted_contacts(mjd, mjd.ncon, is_warp=False)
       self._assert_contact_parity(w_contacts, m_contacts, atol=1e-4)
 
-  def test_3d_flex_interior_layer_culling_in_bvh(self):
+  @parameterized.parameters(1, 2)
+  def test_3d_flex_interior_layer_culling_in_bvh(self, nworld):
     """Test that inactive interior elements never produce flex-flex broadphase pairs."""
     _, _, m, d = test_data.fixture(
       xml="""
@@ -4251,17 +4280,22 @@ class FlexContactParityTest(parameterized.TestCase):
         <worldbody>
           <flexcomp name="cube1" type="grid" dim="3" count="4 4 4" spacing="0.05 0.05 0.05"
                     radius="0.01" mass="1.0">
-            <contact condim="3" selfcollide="none" margin="0.02" activelayers="1"/>
+            <contact selfcollide="none" margin="0.02" activelayers="1"/>
           </flexcomp>
           <flexcomp name="cube2" type="grid" dim="3" count="4 4 4" spacing="0.05 0.05 0.05"
                     radius="0.01" mass="1.0" pos="0.025 0.025 0.025">
-            <contact condim="3" selfcollide="none" margin="0.02" activelayers="1"/>
+            <contact selfcollide="none" margin="0.02" activelayers="1"/>
           </flexcomp>
         </worldbody>
       </mujoco>
       """,
-      nworld=1,
+      nworld=nworld,
+      nconmax=20000,
     )
+    if nworld == 2:
+      qpos = d.qpos.numpy()
+      qpos[1, :3] += 0.01
+      d.qpos.assign(qpos)
     mjw.kinematics(m, d)
     mjw.flex(m, d)
     collision_flex.flex_broadphase_aabb(m, d)
@@ -4269,13 +4303,21 @@ class FlexContactParityTest(parameterized.TestCase):
     ws = collision_flex._allocate_flex_workspace(m, d)
     bvh_bounds = collision_flex._flex_bvh_update(m, d)
     ctx = collision_core.create_collision_context(d.naconmax)
+    ctx.collision_pair.fill_(-1)
+    ctx.collision_worldid.fill_(-1)
     collision_flex._flex_bvh_collision(m, d, ctx, ws, is_self=False, bvh_bounds=bvh_bounds, enable_sat=True)
 
-    npair = min(d.ncollision.numpy()[0], d.naconmax)
+    npair = int(d.ncollision.numpy()[0])
+    self.assertLessEqual(npair, d.naconmax)
     self.assertGreater(npair, 0)
     pairs = ctx.collision_pair.numpy()[:npair]
+    worldids = ctx.collision_worldid.numpy()[:npair]
     layers = m.flex_elemlayer.numpy()
     np.testing.assert_array_less(layers[pairs.reshape(-1)], 1)
+
+    self.assertLen({(int(w), int(p[0]), int(p[1])) for w, p in zip(worldids, pairs)}, npair)
+    for w in range(nworld):
+      self.assertTrue(np.any(worldids == w))
 
   def test_flex_num_groups_zero_on_empty_pass(self):
     """Test that flex_num_groups is reset to 0 when no candidate contacts exist."""
