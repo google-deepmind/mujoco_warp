@@ -2933,7 +2933,6 @@ class OptixScene:
   """OptiX acceleration structures of all worlds and the compiled render pipeline.
 
   Attributes:
-    accels: per-geometry acceleration structures (warp_optix.Accel), kept alive for the IAS
     mesh_traversable: triangle acceleration structure id per mesh
     hfield_traversable: triangle acceleration structure id per heightfield
     primitive_traversable: id of the unit-cube custom-primitive acceleration structure that
@@ -2947,7 +2946,6 @@ class OptixScene:
     pipeline: render pipeline (warp_optix.Pipeline), compiled with the render context
   """
 
-  accels: list
   mesh_traversable: wp.array
   hfield_traversable: wp.array
   primitive_traversable: int

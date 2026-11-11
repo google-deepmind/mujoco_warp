@@ -475,17 +475,7 @@ def ray_box(pos: wp.vec3, mat: wp.mat33, size: wp.vec3, pnt: wp.vec3, vec: wp.ve
   return x, all, normal
 
 
-_PRIMITIVE_TYPES = (
-  int(GeomType.PLANE),
-  int(GeomType.SPHERE),
-  int(GeomType.CAPSULE),
-  int(GeomType.ELLIPSOID),
-  int(GeomType.CYLINDER),
-  int(GeomType.BOX),
-)
-
-
-def make_ray_primitive(geom_ray_types: Tuple[int, ...] = _PRIMITIVE_TYPES) -> wp.Function:
+def make_ray_primitive(geom_ray_types: Tuple[int, ...] = tuple(GeomType)) -> wp.Function:
   """Build a ray-primitive intersection specialized to the given geom types.
 
   Branches for absent types are removed at compile time via wp.static. The returned func
