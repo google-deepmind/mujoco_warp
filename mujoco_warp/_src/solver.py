@@ -3308,14 +3308,14 @@ def _mark_h_tile_pattern_efc(nwords: int, skip_unchanged: bool = False, skip_nof
 
 
 @cache_kernel
-def _symbolic_h_tile_cholesky(ntiles: int, skip_unchanged: bool = False, skip_noflip: bool = False, masks_ready: bool = False):
+def _symbolic_h_tile_cholesky(ntiles: int, skip_unchanged: bool = False, skip_noflip: bool = False, structural: bool = False):
   """Tile fill-in of the reverse block Cholesky.
 
-  With masks_ready, the column masks hold the tile pattern of H and tile_is_diag whether each
+  With structural, the column masks hold the tile pattern of H and tile_is_diag whether each
   diagonal tile has off-diagonal entries; otherwise both come from tile_nz.
   """
   NTILES = ntiles
-  MASKS_READY = masks_ready
+  STRUCTURAL = structural
   NWORDS = (ntiles + 63) // 64
   SKIP_UNCHANGED = skip_unchanged
   SKIP_NOFLIP = skip_noflip
@@ -3345,7 +3345,7 @@ def _symbolic_h_tile_cholesky(ntiles: int, skip_unchanged: bool = False, skip_no
       if quad_changed_count_in[worldid] == 0:
         return
 
-    if wp.static(not MASKS_READY):
+    if wp.static(not STRUCTURAL):
       for tk in range(NTILES):
         for w in range(wp.static(NWORDS)):
           row_mask_out[worldid, tk, w] = wp.uint64(0)
@@ -3740,9 +3740,9 @@ def _cholesky_factorize_solve(
   else:
     tile_size = types.TILE_SIZE_JTDAJ_DENSE
     ntiles = m.nv_pad // tile_size
-    npairs = ntiles * (ntiles + 1) // 2
     quad_changed = ctx.quad_changed_count if skip_unchanged else d.nefc
     state_changed = ctx.state_changed_count if skip_noflip else quad_changed
+    # _create_solver_context allocates tile_nz only when the pattern is detected from H
     structural = ctx.h_tile_nz is None
     if structural:
       wp.launch(
@@ -3771,6 +3771,7 @@ def _cholesky_factorize_solve(
         outputs=[ctx.h_col_mask, ctx.h_tile_is_diag],
       )
     else:
+      npairs = ntiles * (ntiles + 1) // 2
       wp.launch_tiled(
         _detect_h_tile_sparsity(tile_size, skip_unchanged, skip_noflip),
         dim=(d.nworld, npairs),

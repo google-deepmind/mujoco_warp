@@ -3226,6 +3226,35 @@ class CompactSolverTest(parameterized.TestCase):
       for mask in ("h_row_mask", "h_col_mask", "h_tile_is_diag"):
         np.testing.assert_array_equal(getattr(ctx, mask).numpy(), getattr(ctx_value, mask).numpy())
 
+      # the multi-word marking for more than 64 tiles matches the one-word marking
+      marks = []
+      for nwords in (1, 2):
+        col_mask = wp.zeros((nworld, ntiles, nwords), dtype=wp.uint64)
+        offdiag = wp.zeros((nworld, ntiles), dtype=int)
+        wp.launch(
+          solver._mark_h_tile_pattern_efc(nwords),
+          dim=(nworld, d.njmax),
+          inputs=[
+            d.nefc,
+            d.contact.dim,
+            d.contact.efc_address,
+            d.efc.id,
+            d.efc.J_rownnz,
+            d.efc.J_rowadr,
+            d.efc.J_colind,
+            d.efc.J,
+            d.efc.state,
+            ctx.done,
+            d.nefc,
+            d.nefc,
+          ],
+          outputs=[col_mask, offdiag],
+        )
+        marks.append((col_mask.numpy(), offdiag.numpy()))
+      np.testing.assert_array_equal(marks[0][0][..., 0], marks[1][0][..., 0])
+      np.testing.assert_array_equal(marks[1][0][..., 1], 0)
+      np.testing.assert_array_equal(marks[0][1], marks[1][1])
+
     for w in range(nworld):
       mjd.qpos[:] = qpos_np[w]
       mjd.qvel[:] = qvel_np[w]
