@@ -1899,7 +1899,6 @@ def _cfrc_ext_equality(deterministic: bool = False):
     # Model:
     body_rootid: wp.array[int],
     site_bodyid: wp.array[int],
-    site_pos: wp.array2d[wp.vec3],
     eq_obj1id: wp.array[int],
     eq_obj2id: wp.array[int],
     eq_objtype: wp.array[int],
@@ -1907,6 +1906,7 @@ def _cfrc_ext_equality(deterministic: bool = False):
     # Data in:
     xpos_in: wp.array2d[wp.vec3],
     xquat_in: wp.array2d[wp.quat],
+    site_xpos_in: wp.array2d[wp.vec3],
     site_xquat_in: wp.array2d[wp.quat],
     subtree_com_in: wp.array2d[wp.vec3],
     efc_id_in: wp.array2d[int],
@@ -1978,11 +1978,11 @@ def _cfrc_ext_equality(deterministic: bool = False):
           offset = wp.vec3(eq_data_[0], eq_data_[1], eq_data_[2])
         else:
           offset = wp.vec3(eq_data_[3], eq_data_[4], eq_data_[5])
-      else:
-        offset = site_pos[worldid % site_pos.shape[0], obj1]
 
-      # transform point on body1: local -> global
-      pos = math.quat_to_mat(xquat_in[worldid, bodyid1]) @ offset + xpos_in[worldid, bodyid1]
+        # transform point on body1: local -> global
+        pos = math.quat_to_mat(xquat_in[worldid, bodyid1]) @ offset + xpos_in[worldid, bodyid1]
+      else:
+        pos = site_xpos_in[worldid, obj1]
 
       # subtree CoM-based torque_force vector
       newpos = subtree_com_in[worldid, body_rootid[bodyid1]]
@@ -2000,11 +2000,11 @@ def _cfrc_ext_equality(deterministic: bool = False):
           offset = wp.vec3(eq_data_[3], eq_data_[4], eq_data_[5])
         else:
           offset = wp.vec3(eq_data_[0], eq_data_[1], eq_data_[2])
-      else:
-        offset = site_pos[worldid % site_pos.shape[0], obj2]
 
-      # transform point on body2: local -> global
-      pos = math.quat_to_mat(xquat_in[worldid, bodyid2]) @ offset + xpos_in[worldid, bodyid2]
+        # transform point on body2: local -> global
+        pos = math.quat_to_mat(xquat_in[worldid, bodyid2]) @ offset + xpos_in[worldid, bodyid2]
+      else:
+        pos = site_xpos_in[worldid, obj2]
 
       # subtree CoM-based torque_force vector
       newpos = subtree_com_in[worldid, body_rootid[bodyid2]]
@@ -2402,13 +2402,13 @@ def rne_postconstraint(m: Model, d: Data):
       inputs=[
         m.body_rootid,
         m.site_bodyid,
-        m.site_pos,
         m.eq_obj1id,
         m.eq_obj2id,
         m.eq_objtype,
         m.eq_data,
         d.xpos,
         d.xquat,
+        d.site_xpos,
         d.site_xquat,
         d.subtree_com,
         d.efc.id,
