@@ -2957,16 +2957,17 @@ class CompactSolverTest(parameterized.TestCase):
     np.testing.assert_allclose(d3.qacc.numpy()[0], mjd3.qacc, atol=1e-3, rtol=1e-2)
 
   @parameterized.parameters(
-    (1, "pyramidal"),
-    (2, "pyramidal"),
-    (2, "elliptic"),
+    (1, "pyramidal", "Euler"),
+    (2, "pyramidal", "Euler"),
+    (2, "elliptic", "Euler"),
+    (2, "pyramidal", "discrete"),
   )
-  def test_newton_sparse_tiles_blocked_cholesky(self, nworld, cone):
+  def test_newton_sparse_tiles_blocked_cholesky(self, nworld, cone, integrator):
     """Verifies Newton blocked Cholesky with sparse-tile and diagonal-tile awareness (nv > 96)."""
     # 20 free spheres (nv = 120, ntiles = 8): first 3 spheres in ground contact + equality
     # constraint, the others in free fall.
-    # Parameterized over pyramidal (incremental skip_unchanged path) and elliptic (non-incremental
-    # inplace_cholesky path).
+    # Parameterized over pyramidal (incremental skip_unchanged path), elliptic (non-incremental
+    # inplace_cholesky path) and the discrete integrator (tile pattern scanned from H).
     # Spheres 13 (tiles 4 and 5) and 19 (tile 7) have an offset center of mass, so M couples their
     # DOFs. Spheres 5 and 6 (tiles 1 and 2) are within contact margin but apart, so their contact
     # rows stay inactive.
@@ -2981,7 +2982,7 @@ class CompactSolverTest(parameterized.TestCase):
       )
     xml = f"""
     <mujoco>
-      <option integrator="Euler" solver="Newton" cone="{cone}" timestep="0.005" iterations="20" tolerance="1e-10">
+      <option integrator="{integrator}" solver="Newton" cone="{cone}" timestep="0.005" iterations="20" tolerance="1e-10">
         <flag warmstart="disable"/>
       </option>
       <worldbody>
@@ -3018,7 +3019,8 @@ class CompactSolverTest(parameterized.TestCase):
     mjw.forward(m, d)
 
     ctx = solver._create_solver_context(m, d, inplace_cholesky=True)
-    self.assertIsNone(ctx.h_tile_nz)
+    structural = integrator != "discrete"
+    self.assertEqual(ctx.h_tile_nz is None, structural)
     self.assertIsNotNone(ctx.h_row_mask)
     self.assertIsNotNone(ctx.h_col_mask)
     self.assertIsNotNone(ctx.h_tile_is_diag)
@@ -3031,13 +3033,14 @@ class CompactSolverTest(parameterized.TestCase):
     if nworld > 1:
       self.assertFalse(np.array_equal(ctx.h_tile_is_diag.numpy()[0], ctx.h_tile_is_diag.numpy()[1]))
 
-    # the structural tile pattern matches the one detected from the values of H
-    ctx_value = solver._create_solver_context(m, d)
-    ntiles = ctx.h_col_mask.shape[1]
-    ctx_value.h_tile_nz = wp.empty((nworld, ntiles, ntiles), dtype=int)
-    solver.init_context(m, d, ctx_value, grad=True)
-    for mask in ("h_row_mask", "h_col_mask", "h_tile_is_diag"):
-      np.testing.assert_array_equal(getattr(ctx, mask).numpy(), getattr(ctx_value, mask).numpy())
+    if structural:
+      # the structural tile pattern matches the one detected from the values of H
+      ctx_value = solver._create_solver_context(m, d)
+      ntiles = ctx.h_col_mask.shape[1]
+      ctx_value.h_tile_nz = wp.empty((nworld, ntiles, ntiles), dtype=int)
+      solver.init_context(m, d, ctx_value, grad=True)
+      for mask in ("h_row_mask", "h_col_mask", "h_tile_is_diag"):
+        np.testing.assert_array_equal(getattr(ctx, mask).numpy(), getattr(ctx_value, mask).numpy())
 
     for w in range(nworld):
       mjd.qpos[:] = qpos_np[w]
