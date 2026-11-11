@@ -2615,7 +2615,7 @@ class SolverTest(parameterized.TestCase):
         state_prev = d.efc.state.numpy().copy()
         solver._update_constraint(m, d, ctx, track_changes=True)
 
-        # one bit per changed row
+        # one bit per changed row, and a count that only tells whether the world has any
         count = ctx.quad_changed_count.numpy()
         flag = ctx.quad_changed_flag.numpy()
         state = d.efc.state.numpy()
@@ -2624,7 +2624,7 @@ class SolverTest(parameterized.TestCase):
           changed[d.nefc.numpy()[worldid] :] = False
           rows = [bits * wordid + i for wordid, word in enumerate(flag[worldid]) for i in range(bits) if (word >> i) & 1]
           self.assertEqual(rows, np.flatnonzero(changed).tolist())
-          self.assertEqual(count[worldid], len(rows))
+          self.assertEqual(count[worldid], 1 if rows else 0)
         any_changes = any_changes or bool(count.any())
 
         solver._update_gradient_incremental(m, d, ctx)

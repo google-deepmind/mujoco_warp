@@ -2037,7 +2037,8 @@ def _update_constraint_efc(track_changes: bool, deterministic: bool = False):
             efcid // wp.static(_QUAD_CHANGED_BITS),
             1 << (efcid % wp.static(_QUAD_CHANGED_BITS)),
           )
-          wp.atomic_add(quad_changed_count_out, worldid, 1)
+          # the kernels that read the bits only test the count against zero: a store, not an atomic
+          quad_changed_count_out[worldid] = 1
       elif old_quad != new_quad:
         idx = wp.atomic_add(quad_changed_count_out, worldid, 1)
         quad_changed_ids_out[worldid, idx] = efcid
