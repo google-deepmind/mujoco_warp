@@ -2447,8 +2447,36 @@ class FlexCollisionTest(parameterized.TestCase):
     v_global_idx = int(m.flex_vertadr.numpy()[0]) + 3
     xpos = d.flexvert_xpos.numpy()
     for w in range(nworld):
-      xpos[w, v_global_idx] = xpos[w, v0_global_idx] + np.array([0.0, 0.0, 0.01])
+      xpos[w, v_global_idx] = xpos[w, v0_global_idx] + np.array([0.0, 0.0, 0.01 * (w + 1)])
     d.flexvert_xpos.assign(xpos)
+
+    ws = collision_flex._allocate_flex_workspace(m, d)
+    ctx = collision_core.create_collision_context(d.naconmax)
+    reference_pairs = None
+    reference_bounds = None
+    for margin, gap in ((0.0, 0.0), (0.1, 0.0), (0.0, -0.03)):
+      m.flex_margin.fill_(margin)
+      m.flex_gap.fill_(gap)
+      collision_flex.flex_broadphase_aabb(m, d)
+      bounds = collision_flex._flex_bvh_update(m, d)
+      d.ncollision.zero_()
+      ctx.collision_pair.fill_(-1)
+      ctx.collision_worldid.fill_(-1)
+      collision_flex._flex_bvh_collision(m, d, ctx, ws, is_self=True, bvh_bounds=bounds, enable_sat=True)
+      npair = int(d.ncollision.numpy()[0])
+      self.assertGreater(npair, 0)
+      self.assertLessEqual(npair, d.naconmax)
+      pairs = ctx.collision_pair.numpy()[:npair]
+      worldids = ctx.collision_worldid.numpy()[:npair]
+      pair_set = {(int(w), int(p[0]), int(p[1])) for w, p in zip(worldids, pairs)}
+      self.assertLen(pair_set, npair)
+      if reference_pairs is None:
+        reference_pairs = pair_set
+        reference_bounds = [arr.numpy() for arr in bounds]
+      else:
+        self.assertEqual(pair_set, reference_pairs)
+        for actual, expected in zip(bounds, reference_bounds):
+          np.testing.assert_array_equal(actual.numpy(), expected)
 
     mjw.collision(m, d)
 
@@ -3042,9 +3070,9 @@ class FlexCollisionTest(parameterized.TestCase):
     mjw.kinematics(m, d)
 
     ws = collision_flex._allocate_flex_workspace(m, d)
-    sap_data = collision_flex._run_flex_sap_sort(m, d)
+    bvh_bounds = collision_flex._flex_bvh_update(m, d)
     ctx = collision_core.create_collision_context(d.naconmax)
-    collision_flex._flex_sap_collision(m, d, ctx, ws, is_self=False, sap_data=sap_data)
+    collision_flex._flex_bvh_collision(m, d, ctx, ws, is_self=False, bvh_bounds=bvh_bounds, enable_sat=True)
 
     ncand = int(ws.ncand.numpy()[0])
     cand_active = ws.cand_active.numpy()[:ncand]
@@ -4243,71 +4271,53 @@ class FlexContactParityTest(parameterized.TestCase):
       m_contacts = self._get_sorted_contacts(mjd, mjd.ncon, is_warp=False)
       self._assert_contact_parity(w_contacts, m_contacts, atol=1e-4)
 
-  def test_3d_flex_interior_layer_culling_in_sap(self):
-    """Test that inactive interior elements are projected to MJ_MAXVAL in SAP."""
+  @parameterized.parameters(1, 2)
+  def test_3d_flex_interior_layer_culling_in_bvh(self, nworld):
+    """Test that inactive interior elements never produce flex-flex broadphase pairs."""
     _, _, m, d = test_data.fixture(
       xml="""
       <mujoco>
         <worldbody>
-          <flexcomp name="cube" type="grid" dim="3" count="4 4 4" spacing="0.05 0.05 0.05"
+          <flexcomp name="cube1" type="grid" dim="3" count="4 4 4" spacing="0.05 0.05 0.05"
                     radius="0.01" mass="1.0">
-            <contact condim="3" selfcollide="none" margin="0.02" activelayers="1"/>
+            <contact selfcollide="none" margin="0.02" activelayers="1"/>
+          </flexcomp>
+          <flexcomp name="cube2" type="grid" dim="3" count="4 4 4" spacing="0.05 0.05 0.05"
+                    radius="0.01" mass="1.0" pos="0.025 0.025 0.025">
+            <contact selfcollide="none" margin="0.02" activelayers="1"/>
           </flexcomp>
         </worldbody>
       </mujoco>
       """,
-      nworld=1,
+      nworld=nworld,
+      nconmax=20000,
     )
+    if nworld == 2:
+      qpos = d.qpos.numpy()
+      qpos[1, :3] += 0.01
+      d.qpos.assign(qpos)
     mjw.kinematics(m, d)
     mjw.flex(m, d)
+    collision_flex.flex_broadphase_aabb(m, d)
 
-    nelem = m.nflexelem
-    sap_lower = wp.empty((d.nworld, nelem), dtype=float)
-    sap_upper = wp.empty((d.nworld, nelem), dtype=float)
-    sap_sort_index = wp.empty((d.nworld, nelem, 2), dtype=int)
-    elem_aabb_lower = wp.empty((d.nworld, nelem), dtype=wp.vec3)
-    elem_aabb_upper = wp.empty((d.nworld, nelem), dtype=wp.vec3)
-    sap_seg_index = wp.empty(d.nworld + 1, dtype=int)
+    ws = collision_flex._allocate_flex_workspace(m, d)
+    bvh_bounds = collision_flex._flex_bvh_update(m, d)
+    ctx = collision_core.create_collision_context(d.naconmax)
+    ctx.collision_pair.fill_(-1)
+    ctx.collision_worldid.fill_(-1)
+    collision_flex._flex_bvh_collision(m, d, ctx, ws, is_self=False, bvh_bounds=bvh_bounds, enable_sat=True)
 
-    wp.launch(
-      collision_flex._flex_sap_project,
-      dim=(d.nworld, nelem),
-      inputs=[
-        m.flex_margin,
-        m.flex_gap,
-        m.flex_activelayers,
-        m.flex_dim,
-        m.flex_vertadr,
-        m.flex_elemadr,
-        m.flex_elemdataadr,
-        m.flex_elem,
-        m.flex_elemlayer,
-        m.flex_radius,
-        m.flex_elemflexid,
-        m.flex_rod_is_box,
-        m.flex_rod_box_size,
-        d.flexvert_xpos,
-        d.nworld,
-        nelem,
-        wp.vec3(1.0, 0.0, 0.0),
-      ],
-      outputs=[
-        sap_lower.reshape((-1, nelem)),
-        sap_upper,
-        sap_sort_index.reshape((-1, nelem)),
-        elem_aabb_lower,
-        elem_aabb_upper,
-        sap_seg_index,
-      ],
-    )
-
+    npair = int(d.ncollision.numpy()[0])
+    self.assertLessEqual(npair, d.naconmax)
+    self.assertGreater(npair, 0)
+    pairs = ctx.collision_pair.numpy()[:npair]
+    worldids = ctx.collision_worldid.numpy()[:npair]
     layers = m.flex_elemlayer.numpy()
-    proj_lower = sap_lower.numpy()[0]
-    for e in range(nelem):
-      if layers[e] >= 1:
-        self.assertEqual(proj_lower[e], types.MJ_MAXVAL, f"Element {e} (layer {layers[e]}) should be culled in SAP")
-      else:
-        self.assertLess(proj_lower[e], types.MJ_MAXVAL, f"Element {e} (layer {layers[e]}) should be active in SAP")
+    np.testing.assert_array_less(layers[pairs.reshape(-1)], 1)
+
+    self.assertLen({(int(w), int(p[0]), int(p[1])) for w, p in zip(worldids, pairs)}, npair)
+    for w in range(nworld):
+      self.assertTrue(np.any(worldids == w))
 
   def test_flex_num_groups_zero_on_empty_pass(self):
     """Test that flex_num_groups is reset to 0 when no candidate contacts exist."""
