@@ -3910,15 +3910,12 @@ def _efc_contact_jac_sparse_flex(cone_type: types.ConeType):
 
 
 @cache_kernel
-def _efc_contact_jac_dense(tile_size: int, cone_type: types.ConeType, njmax: int, deterministic: bool = False):
-  TILE_SIZE = tile_size
+def _efc_contact_jac_dense(nv_pad: int, cone_type: types.ConeType):
+  # one tile spans the DOFs (dense Jacobians have at most 60); without DOFs it still writes Jqvel
+  TILE_SIZE = max(nv_pad, 1)
   IS_ELLIPTIC = cone_type == types.ConeType.ELLIPTIC
-  module_options = {"enable_backward": False}
-  if deterministic:
-    module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
-    module_options["deterministic_max_records"] = njmax
 
-  @wp.kernel(module="unique", module_options=module_options, grid_stride=False)
+  @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
   def kernel(
     # Model:
     body_rootid: wp.array[int],
@@ -3936,7 +3933,6 @@ def _efc_contact_jac_dense(tile_size: int, cone_type: types.ConeType, njmax: int
     efc_id_in: wp.array2d[int],
     njmax_in: int,
     # In:
-    nv_padded: int,
     condim_in: wp.array[int],
     geom_in: wp.array[wp.vec2i],
     pos_in: wp.array[wp.vec3],
@@ -3946,14 +3942,10 @@ def _efc_contact_jac_dense(tile_size: int, cone_type: types.ConeType, njmax: int
     efc_J_out: wp.array3d[float],
     efc_Jqvel_out: wp.array2d[float],
   ):
-    worldid, dof_block_id, tid = wp.tid()
+    worldid = wp.tid()
 
-    dof_start = dof_block_id * wp.static(TILE_SIZE)
-    if dof_start >= nv_padded:
-      return
-
-    cdof_tile = wp.tile_load(cdof_in[worldid], shape=TILE_SIZE, offset=dof_start, bounds_check=True)
-    qvel_tile = wp.tile_load(qvel_in[worldid], shape=TILE_SIZE, offset=dof_start, bounds_check=True)
+    cdof_tile = wp.tile_load(cdof_in[worldid], shape=TILE_SIZE, bounds_check=True)
+    qvel_tile = wp.tile_load(qvel_in[worldid], shape=TILE_SIZE, bounds_check=True)
 
     efcid_start = ne_in[worldid] + nf_in[worldid] + nl_in[worldid]
     efcid_end = wp.min(nefc_in[worldid], njmax_in)
@@ -3976,12 +3968,12 @@ def _efc_contact_jac_dense(tile_size: int, cone_type: types.ConeType, njmax: int
 
         con_pos = pos_in[conid]
         offset1 = con_pos - subtree_com_in[worldid, body_rootid[body1]]
-        affects1_tile = wp.tile_load(body_isdofancestor[body1], shape=TILE_SIZE, offset=dof_start, bounds_check=True)
+        affects1_tile = wp.tile_load(body_isdofancestor[body1], shape=TILE_SIZE, bounds_check=True)
         jacp1_tile = wp.tile_map(support._compute_jacp, cdof_tile, offset1, affects1_tile)
         jacr1_tile = wp.tile_map(support._compute_jacr, cdof_tile, affects1_tile)
 
         offset2 = con_pos - subtree_com_in[worldid, body_rootid[body2]]
-        affects2_tile = wp.tile_load(body_isdofancestor[body2], shape=TILE_SIZE, offset=dof_start, bounds_check=True)
+        affects2_tile = wp.tile_load(body_isdofancestor[body2], shape=TILE_SIZE, bounds_check=True)
         jacp2_tile = wp.tile_map(support._compute_jacp, cdof_tile, offset2, affects2_tile)
         jacr2_tile = wp.tile_map(support._compute_jacr, cdof_tile, affects2_tile)
 
@@ -4033,30 +4025,22 @@ def _efc_contact_jac_dense(tile_size: int, cone_type: types.ConeType, njmax: int
           else:
             J_tile = wp.tile_map(wp.add, J_tile, wp.tile_map(wp.mul, Ji_2r_tile, frii_sign))
 
-      wp.tile_store(efc_J_out[worldid, efcid], J_tile, offset=dof_start, bounds_check=True)
+      wp.tile_store(efc_J_out[worldid, efcid], J_tile, bounds_check=True)
 
       Jqvel_tile = wp.tile_map(wp.mul, J_tile, qvel_tile)
       Jqvel_sum = wp.tile_reduce(wp.add, Jqvel_tile)
-      # Tile atomics bypass Warp's deterministic accumulation.
-      if wp.static(deterministic):
-        if tid == 0:
-          wp.atomic_add(efc_Jqvel_out[worldid], efcid, wp.tile_extract(Jqvel_sum, 0))
-      else:
-        wp.tile_atomic_add(efc_Jqvel_out[worldid], Jqvel_sum, offset=efcid)
+      wp.tile_store(efc_Jqvel_out[worldid], Jqvel_sum, offset=efcid)
 
   return kernel
 
 
 @cache_kernel
-def _efc_contact_jac_dense_flex(tile_size: int, cone_type: types.ConeType, njmax: int, deterministic: bool = False):
-  TILE_SIZE = tile_size
+def _efc_contact_jac_dense_flex(nv_pad: int, cone_type: types.ConeType):
+  # one tile spans the DOFs (dense Jacobians have at most 60); without DOFs it still writes Jqvel
+  TILE_SIZE = max(nv_pad, 1)
   IS_ELLIPTIC = cone_type == types.ConeType.ELLIPTIC
-  module_options = {"enable_backward": False}
-  if deterministic:
-    module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
-    module_options["deterministic_max_records"] = njmax
 
-  @wp.kernel(module="unique", module_options=module_options, grid_stride=False)
+  @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
   def kernel(
     # Model:
     body_rootid: wp.array[int],
@@ -4098,7 +4082,6 @@ def _efc_contact_jac_dense_flex(tile_size: int, cone_type: types.ConeType, njmax
     efc_id_in: wp.array2d[int],
     njmax_in: int,
     # In:
-    nv_padded: int,
     dist_in: wp.array[float],
     condim_in: wp.array[int],
     geom_in: wp.array[wp.vec2i],
@@ -4112,14 +4095,10 @@ def _efc_contact_jac_dense_flex(tile_size: int, cone_type: types.ConeType, njmax
     efc_J_out: wp.array3d[float],
     efc_Jqvel_out: wp.array2d[float],
   ):
-    worldid, dof_block_id, tid = wp.tid()
+    worldid = wp.tid()
 
-    dof_start = dof_block_id * wp.static(TILE_SIZE)
-    if dof_start >= nv_padded:
-      return
-
-    cdof_tile = wp.tile_load(cdof_in[worldid], shape=TILE_SIZE, offset=dof_start, bounds_check=True)
-    qvel_tile = wp.tile_load(qvel_in[worldid], shape=TILE_SIZE, offset=dof_start, bounds_check=True)
+    cdof_tile = wp.tile_load(cdof_in[worldid], shape=TILE_SIZE, bounds_check=True)
+    qvel_tile = wp.tile_load(qvel_in[worldid], shape=TILE_SIZE, bounds_check=True)
     tid_tile = wp.tile_arange(TILE_SIZE, dtype=int)
 
     efcid_start = ne_in[worldid] + nf_in[worldid] + nl_in[worldid]
@@ -4221,7 +4200,7 @@ def _efc_contact_jac_dense_flex(tile_size: int, cone_type: types.ConeType, njmax
           support._compute_jacp,
           cdof_tile,
           con_pos - subtree_com_in[worldid, body_rootid[b1_0]],
-          wp.tile_load(body_isdofancestor[b1_0], shape=TILE_SIZE, offset=dof_start, bounds_check=True),
+          wp.tile_load(body_isdofancestor[b1_0], shape=TILE_SIZE, bounds_check=True),
         )
         jacp1_tile = wp.tile_map(wp.mul, jacp1_tile, weights1[0])
         if b1_1 >= 0 and weights1[1] != 0.0:
@@ -4229,7 +4208,7 @@ def _efc_contact_jac_dense_flex(tile_size: int, cone_type: types.ConeType, njmax
             support._compute_jacp,
             cdof_tile,
             con_pos - subtree_com_in[worldid, body_rootid[b1_1]],
-            wp.tile_load(body_isdofancestor[b1_1], shape=TILE_SIZE, offset=dof_start, bounds_check=True),
+            wp.tile_load(body_isdofancestor[b1_1], shape=TILE_SIZE, bounds_check=True),
           )
           jacp1_tile = wp.tile_map(wp.add, jacp1_tile, wp.tile_map(wp.mul, t_jacp, weights1[1]))
         if b1_2 >= 0 and weights1[2] != 0.0:
@@ -4237,7 +4216,7 @@ def _efc_contact_jac_dense_flex(tile_size: int, cone_type: types.ConeType, njmax
             support._compute_jacp,
             cdof_tile,
             con_pos - subtree_com_in[worldid, body_rootid[b1_2]],
-            wp.tile_load(body_isdofancestor[b1_2], shape=TILE_SIZE, offset=dof_start, bounds_check=True),
+            wp.tile_load(body_isdofancestor[b1_2], shape=TILE_SIZE, bounds_check=True),
           )
           jacp1_tile = wp.tile_map(wp.add, jacp1_tile, wp.tile_map(wp.mul, t_jacp, weights1[2]))
         if b1_3 >= 0 and weights1[3] != 0.0:
@@ -4245,7 +4224,7 @@ def _efc_contact_jac_dense_flex(tile_size: int, cone_type: types.ConeType, njmax
             support._compute_jacp,
             cdof_tile,
             con_pos - subtree_com_in[worldid, body_rootid[b1_3]],
-            wp.tile_load(body_isdofancestor[b1_3], shape=TILE_SIZE, offset=dof_start, bounds_check=True),
+            wp.tile_load(body_isdofancestor[b1_3], shape=TILE_SIZE, bounds_check=True),
           )
           jacp1_tile = wp.tile_map(wp.add, jacp1_tile, wp.tile_map(wp.mul, t_jacp, weights1[3]))
 
@@ -4254,7 +4233,7 @@ def _efc_contact_jac_dense_flex(tile_size: int, cone_type: types.ConeType, njmax
           support._compute_jacp,
           cdof_tile,
           con_pos - subtree_com_in[worldid, body_rootid[b2_0]],
-          wp.tile_load(body_isdofancestor[b2_0], shape=TILE_SIZE, offset=dof_start, bounds_check=True),
+          wp.tile_load(body_isdofancestor[b2_0], shape=TILE_SIZE, bounds_check=True),
         )
         jacp2_tile = wp.tile_map(wp.mul, jacp2_tile, weights2[0])
         if b2_1 >= 0 and weights2[1] != 0.0:
@@ -4262,7 +4241,7 @@ def _efc_contact_jac_dense_flex(tile_size: int, cone_type: types.ConeType, njmax
             support._compute_jacp,
             cdof_tile,
             con_pos - subtree_com_in[worldid, body_rootid[b2_1]],
-            wp.tile_load(body_isdofancestor[b2_1], shape=TILE_SIZE, offset=dof_start, bounds_check=True),
+            wp.tile_load(body_isdofancestor[b2_1], shape=TILE_SIZE, bounds_check=True),
           )
           jacp2_tile = wp.tile_map(wp.add, jacp2_tile, wp.tile_map(wp.mul, t_jacp, weights2[1]))
         if b2_2 >= 0 and weights2[2] != 0.0:
@@ -4270,7 +4249,7 @@ def _efc_contact_jac_dense_flex(tile_size: int, cone_type: types.ConeType, njmax
             support._compute_jacp,
             cdof_tile,
             con_pos - subtree_com_in[worldid, body_rootid[b2_2]],
-            wp.tile_load(body_isdofancestor[b2_2], shape=TILE_SIZE, offset=dof_start, bounds_check=True),
+            wp.tile_load(body_isdofancestor[b2_2], shape=TILE_SIZE, bounds_check=True),
           )
           jacp2_tile = wp.tile_map(wp.add, jacp2_tile, wp.tile_map(wp.mul, t_jacp, weights2[2]))
         if b2_3 >= 0 and weights2[3] != 0.0:
@@ -4278,7 +4257,7 @@ def _efc_contact_jac_dense_flex(tile_size: int, cone_type: types.ConeType, njmax
             support._compute_jacp,
             cdof_tile,
             con_pos - subtree_com_in[worldid, body_rootid[b2_3]],
-            wp.tile_load(body_isdofancestor[b2_3], shape=TILE_SIZE, offset=dof_start, bounds_check=True),
+            wp.tile_load(body_isdofancestor[b2_3], shape=TILE_SIZE, bounds_check=True),
           )
           jacp2_tile = wp.tile_map(wp.add, jacp2_tile, wp.tile_map(wp.mul, t_jacp, weights2[3]))
 
@@ -4288,28 +4267,28 @@ def _efc_contact_jac_dense_flex(tile_size: int, cone_type: types.ConeType, njmax
         jacr1_tile = wp.tile_map(
           support._compute_jacr,
           cdof_tile,
-          wp.tile_load(body_isdofancestor[b1_0], shape=TILE_SIZE, offset=dof_start, bounds_check=True),
+          wp.tile_load(body_isdofancestor[b1_0], shape=TILE_SIZE, bounds_check=True),
         )
         jacr1_tile = wp.tile_map(wp.mul, jacr1_tile, weights1[0])
         if b1_1 >= 0 and weights1[1] != 0.0:
           t_jacr = wp.tile_map(
             support._compute_jacr,
             cdof_tile,
-            wp.tile_load(body_isdofancestor[b1_1], shape=TILE_SIZE, offset=dof_start, bounds_check=True),
+            wp.tile_load(body_isdofancestor[b1_1], shape=TILE_SIZE, bounds_check=True),
           )
           jacr1_tile = wp.tile_map(wp.add, jacr1_tile, wp.tile_map(wp.mul, t_jacr, weights1[1]))
         if b1_2 >= 0 and weights1[2] != 0.0:
           t_jacr = wp.tile_map(
             support._compute_jacr,
             cdof_tile,
-            wp.tile_load(body_isdofancestor[b1_2], shape=TILE_SIZE, offset=dof_start, bounds_check=True),
+            wp.tile_load(body_isdofancestor[b1_2], shape=TILE_SIZE, bounds_check=True),
           )
           jacr1_tile = wp.tile_map(wp.add, jacr1_tile, wp.tile_map(wp.mul, t_jacr, weights1[2]))
         if b1_3 >= 0 and weights1[3] != 0.0:
           t_jacr = wp.tile_map(
             support._compute_jacr,
             cdof_tile,
-            wp.tile_load(body_isdofancestor[b1_3], shape=TILE_SIZE, offset=dof_start, bounds_check=True),
+            wp.tile_load(body_isdofancestor[b1_3], shape=TILE_SIZE, bounds_check=True),
           )
           jacr1_tile = wp.tile_map(wp.add, jacr1_tile, wp.tile_map(wp.mul, t_jacr, weights1[3]))
 
@@ -4317,28 +4296,28 @@ def _efc_contact_jac_dense_flex(tile_size: int, cone_type: types.ConeType, njmax
         jacr2_tile = wp.tile_map(
           support._compute_jacr,
           cdof_tile,
-          wp.tile_load(body_isdofancestor[b2_0], shape=TILE_SIZE, offset=dof_start, bounds_check=True),
+          wp.tile_load(body_isdofancestor[b2_0], shape=TILE_SIZE, bounds_check=True),
         )
         jacr2_tile = wp.tile_map(wp.mul, jacr2_tile, weights2[0])
         if b2_1 >= 0 and weights2[1] != 0.0:
           t_jacr = wp.tile_map(
             support._compute_jacr,
             cdof_tile,
-            wp.tile_load(body_isdofancestor[b2_1], shape=TILE_SIZE, offset=dof_start, bounds_check=True),
+            wp.tile_load(body_isdofancestor[b2_1], shape=TILE_SIZE, bounds_check=True),
           )
           jacr2_tile = wp.tile_map(wp.add, jacr2_tile, wp.tile_map(wp.mul, t_jacr, weights2[1]))
         if b2_2 >= 0 and weights2[2] != 0.0:
           t_jacr = wp.tile_map(
             support._compute_jacr,
             cdof_tile,
-            wp.tile_load(body_isdofancestor[b2_2], shape=TILE_SIZE, offset=dof_start, bounds_check=True),
+            wp.tile_load(body_isdofancestor[b2_2], shape=TILE_SIZE, bounds_check=True),
           )
           jacr2_tile = wp.tile_map(wp.add, jacr2_tile, wp.tile_map(wp.mul, t_jacr, weights2[2]))
         if b2_3 >= 0 and weights2[3] != 0.0:
           t_jacr = wp.tile_map(
             support._compute_jacr,
             cdof_tile,
-            wp.tile_load(body_isdofancestor[b2_3], shape=TILE_SIZE, offset=dof_start, bounds_check=True),
+            wp.tile_load(body_isdofancestor[b2_3], shape=TILE_SIZE, bounds_check=True),
           )
           jacr2_tile = wp.tile_map(wp.add, jacr2_tile, wp.tile_map(wp.mul, t_jacr, weights2[3]))
 
@@ -4391,17 +4370,16 @@ def _efc_contact_jac_dense_flex(tile_size: int, cone_type: types.ConeType, njmax
             con_pos,
             con_normal,
           )
-          if dof_tw >= dof_start and dof_tw < dof_start + wp.static(TILE_SIZE):
-            local_tw = dof_tw - dof_start
+          if dof_tw >= 0:
             jacp_dif_tile = wp.tile_map(
               wp.add,
               jacp_dif_tile,
-              wp.tile_map(_tile_rod_twist_jac, tid_tile, local_tw, dp_tw),
+              wp.tile_map(_tile_rod_twist_jac, tid_tile, dof_tw, dp_tw),
             )
             jacr_dif_tile = wp.tile_map(
               wp.add,
               jacr_dif_tile,
-              wp.tile_map(_tile_rod_twist_jac, tid_tile, local_tw, dr_tw),
+              wp.tile_map(_tile_rod_twist_jac, tid_tile, dof_tw, dr_tw),
             )
           if active_rod:
             rsgn = 1.0 if side_rod == 1 else -1.0
@@ -4414,7 +4392,6 @@ def _efc_contact_jac_dense_flex(tile_size: int, cone_type: types.ConeType, njmax
                 aff_tile = wp.tile_load(
                   body_isdofancestor[rbk],
                   shape=TILE_SIZE,
-                  offset=dof_start,
                   bounds_check=True,
                 )
                 jv_tile = wp.tile_map(
@@ -4496,16 +4473,11 @@ def _efc_contact_jac_dense_flex(tile_size: int, cone_type: types.ConeType, njmax
           else:
             J_tile = wp.tile_map(wp.add, J_tile, wp.tile_map(wp.mul, Ji_2r_tile, frii_sign))
 
-      wp.tile_store(efc_J_out[worldid, efcid], J_tile, offset=dof_start, bounds_check=True)
+      wp.tile_store(efc_J_out[worldid, efcid], J_tile, bounds_check=True)
 
       Jqvel_tile = wp.tile_map(wp.mul, J_tile, qvel_tile)
       Jqvel_sum = wp.tile_reduce(wp.add, Jqvel_tile)
-      # Tile atomics bypass Warp's deterministic accumulation.
-      if wp.static(deterministic):
-        if tid == 0:
-          wp.atomic_add(efc_Jqvel_out[worldid], efcid, wp.tile_extract(Jqvel_sum, 0))
-      else:
-        wp.tile_atomic_add(efc_Jqvel_out[worldid], Jqvel_sum, offset=efcid)
+      wp.tile_store(efc_Jqvel_out[worldid], Jqvel_sum, offset=efcid)
 
   return kernel
 
@@ -5884,19 +5856,10 @@ def make_constraint(m: types.Model, d: types.Data):
             ],
           )
       else:
-        d.efc.Jqvel.zero_()
-        tile_size = m.block_dim.contact_jac_tiled
-        n_dof_blocks = (m.nv_pad + tile_size - 1) // tile_size
-
         if has_flex:
           wp.launch_tiled(
-            _efc_contact_jac_dense_flex(
-              tile_size,
-              m.opt.cone,
-              d.njmax if det_atomics else 0,
-              det_atomics,
-            ),
-            dim=(d.nworld, n_dof_blocks),
+            _efc_contact_jac_dense_flex(m.nv_pad, m.opt.cone),
+            dim=d.nworld,
             inputs=[
               m.body_rootid,
               m.jnt_dofadr,
@@ -5935,7 +5898,6 @@ def make_constraint(m: types.Model, d: types.Data):
               d.contact.efc_address,
               d.efc.id,
               d.njmax,
-              m.nv_pad,
               d.contact.dist,
               d.contact.dim,
               d.contact.geom,
@@ -5950,12 +5912,12 @@ def make_constraint(m: types.Model, d: types.Data):
               d.efc.J,
               d.efc.Jqvel,
             ],
-            block_dim=tile_size,
+            block_dim=m.block_dim.contact_jac_tiled,
           )
         else:
           wp.launch_tiled(
-            _efc_contact_jac_dense(tile_size, m.opt.cone, d.njmax if det_atomics else 0, det_atomics),
-            dim=(d.nworld, n_dof_blocks),
+            _efc_contact_jac_dense(m.nv_pad, m.opt.cone),
+            dim=d.nworld,
             inputs=[
               m.body_rootid,
               m.geom_bodyid,
@@ -5970,7 +5932,6 @@ def make_constraint(m: types.Model, d: types.Data):
               d.contact.efc_address,
               d.efc.id,
               d.njmax,
-              m.nv_pad,
               d.contact.dim,
               d.contact.geom,
               d.contact.pos,
@@ -5981,7 +5942,7 @@ def make_constraint(m: types.Model, d: types.Data):
               d.efc.J,
               d.efc.Jqvel,
             ],
-            block_dim=tile_size,
+            block_dim=m.block_dim.contact_jac_tiled,
           )
 
       if m.flg_surfacevel:

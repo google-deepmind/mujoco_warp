@@ -1659,7 +1659,7 @@ def deriv_smooth_vel(m: Model, d: Data, out: wp.array2d[float]):
     # TODO(team): directly utilize M for these settings
     wp.copy(out, d.M)
 
-  if not (m.opt.disableflags & DisableBit.DAMPER):
+  if m.ntendon and not (m.opt.disableflags & DisableBit.DAMPER):
     # flex_edgedamping is omitted: tree-only M sparsity drops inter-tree flexcomp blocks
     wp.launch(
       _qderiv_tendon_damping,

@@ -84,8 +84,8 @@ class SupportTest(parameterized.TestCase):
       mujoco.mj_applyFT(mjm, mjd, xfrc[i, :3], xfrc[i, 3:], mjd.xipos[i], i, qfrc_expected)
     np.testing.assert_almost_equal(qfrc.numpy()[0], qfrc_expected, 6)
 
-  @parameterized.product(nworld=(1, 2), flg_add=(False, True), zero_force=(False, True))
-  def test_apply_ft_subtrees(self, nworld, flg_add, zero_force):
+  @parameterized.product(nworld=(1, 2), flg_add=(False, True), zero_force=(False, True), sparse=(False, True))
+  def test_apply_ft_subtrees(self, nworld, flg_add, zero_force, sparse):
     """Tests force projection across branches, welded bodies, and independent trees."""
     mjm, mjd, m, d = test_data.fixture(
       xml="""
@@ -140,10 +140,7 @@ class SupportTest(parameterized.TestCase):
     d.xfrc_applied.assign(force)
     initial = np.linspace(-0.2, 0.3, nworld * mjm.nv).reshape(nworld, mjm.nv).astype(np.float32)
     qfrc = wp.array(initial, dtype=float) if flg_add else wp.full((nworld, mjm.nv), wp.inf, dtype=float)
-    if flg_add:
-      mjwarp.xfrc_accumulate(m, d, qfrc)
-    else:
-      support.apply_ft(m, d, d.xfrc_applied, qfrc, False)
+    support.apply_ft(m, d, d.xfrc_applied, qfrc, flg_add, sparse=sparse)
 
     result = qfrc.numpy()
     for world in range(nworld):
