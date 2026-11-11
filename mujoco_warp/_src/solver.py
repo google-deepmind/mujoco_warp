@@ -184,6 +184,11 @@ def _add_qfrc_smooth_eff(
   qfrc_smooth_eff_out[worldid, dofid] = qfrc_smooth_in[worldid, dofid] + efm_c_in[worldid, dofid] + efm_ca_in[worldid, dofid]
 
 
+@wp.func
+def _diag_adr(rowadr: int, rownnz: int) -> int:
+  return rowadr + rownnz - 1
+
+
 @wp.kernel
 def _inertia_scale(
   # Model:
@@ -201,6 +206,42 @@ def _inertia_scale(
   for i in range(nv):
     trace += M_in[worldid, M_rowadr[i] + M_rownnz[i] - 1]
   inertia_scale_out[worldid] = 1.0 / wp.max(types.MJ_MINVAL, trace)
+
+
+@wp.kernel(module="unique", enable_backward=False)
+def _inertia_scale_tiled(
+  # Model:
+  nv: int,
+  M_rownnz: wp.array[int],
+  M_rowadr: wp.array[int],
+  # Data in:
+  M_in: wp.array2d[float],
+  # Out:
+  inertia_scale_out: wp.array[float],
+):
+  worldid, lane = wp.tid()
+  trace = float(0.0)
+  for start in range(0, nv, smooth.WORLD_SUM_CHUNK):
+    rowadr = wp.tile_load(M_rowadr, shape=(smooth.WORLD_SUM_CHUNK,), offset=(start,))
+    rownnz = wp.tile_load(M_rownnz, shape=(smooth.WORLD_SUM_CHUNK,), offset=(start,))
+    diag = wp.tile_load_indexed(
+      M_in[worldid], wp.tile_map(_diag_adr, rowadr, rownnz), shape=(smooth.WORLD_SUM_CHUNK,), storage="shared"
+    )
+    if lane == 0:
+      for i in range(wp.min(smooth.WORLD_SUM_CHUNK, nv - start)):
+        trace += diag[i]
+  if lane == 0:
+    inertia_scale_out[worldid] = 1.0 / wp.max(types.MJ_MINVAL, trace)
+
+
+def launch_inertia_scale(m: types.Model, M: wp.array2d[float], inertia_scale: wp.array[float]):
+  inputs = [m.nv, m.M_rownnz, m.M_rowadr, M]
+  if m.nv > smooth.WORLD_SUM_BLOCK:
+    wp.launch_tiled(
+      _inertia_scale_tiled, dim=M.shape[0], inputs=inputs, outputs=[inertia_scale], block_dim=smooth.WORLD_SUM_BLOCK
+    )
+  else:
+    wp.launch(_inertia_scale, dim=M.shape[0], inputs=inputs, outputs=[inertia_scale])
 
 
 @wp.func
@@ -4582,7 +4623,7 @@ def init_context(m: types.Model, d: types.Data, ctx: SolverContext | InverseCont
   if isinstance(ctx, SolverContext):
     mf = m if ctx.compact_m_full is None else ctx.compact_m_full
     df = d if ctx.compact_d_full is None else ctx.compact_d_full
-    wp.launch(_inertia_scale, dim=d.nworld, inputs=[mf.nv, mf.M_rownnz, mf.M_rowadr, df.M], outputs=[ctx.inertia_scale])
+    launch_inertia_scale(mf, df.M, ctx.inertia_scale)
 
   # initialize some efc arrays
   wp.launch(
@@ -6135,7 +6176,7 @@ def noslip(m: types.Model, d: types.Data):
 
   sleep = bool(m.opt.enableflags & types.EnableBit.SLEEP)
 
-  wp.launch(_inertia_scale, dim=d.nworld, inputs=[m.nv, m.M_rownnz, m.M_rowadr, d.M], outputs=[inertia_scale])
+  launch_inertia_scale(m, d.M, inertia_scale)
   wp.launch(
     _noslip_factor_m(sleep),
     dim=d.nworld,
