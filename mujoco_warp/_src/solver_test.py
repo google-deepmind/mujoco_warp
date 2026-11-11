@@ -2293,8 +2293,8 @@ class SolverTest(parameterized.TestCase):
     self.assertTrue(total_any_changes, "no state changes detected across any keyframe")
 
   @parameterized.parameters(1, 3)
-  def test_quad_changed_ids(self, nworld):
-    """Rows whose bit is set are listed in row order, and the bits are cleared."""
+  def test_zero_change_flags(self, nworld):
+    """The counters are zeroed and the bit of every row is cleared."""
     njmax = 100
     bits = solver._QUAD_CHANGED_BITS
     # first and last bit of a word, several words, a world without changed rows
@@ -2303,17 +2303,79 @@ class SolverTest(parameterized.TestCase):
     for worldid, world_rows in enumerate(rows):
       for row in world_rows:
         flag[worldid, row // bits] |= 1 << (row % bits)
+    # the bits are cleared whatever the count
+    if nworld > 1:
+      flag[1, 1] = 4
 
     count = wp.array([len(world_rows) for world_rows in rows], dtype=int)
+    state_count = wp.full(nworld, 3, dtype=int)
     flag = wp.array(flag, dtype=int)
-    ids = wp.full((nworld, njmax), -1, dtype=int)
-    wp.launch(solver._quad_changed_ids, dim=nworld, inputs=[count], outputs=[flag, ids])
+    wp.launch(solver._zero_change_flags, dim=nworld, outputs=[count, state_count, flag])
 
-    ids = ids.numpy()
-    for worldid, world_rows in enumerate(rows):
-      self.assertEqual(ids[worldid, : len(world_rows)].tolist(), world_rows)
-      np.testing.assert_array_equal(ids[worldid, len(world_rows) :], -1)
+    np.testing.assert_array_equal(count.numpy(), 0)
+    np.testing.assert_array_equal(state_count.numpy(), 0)
     np.testing.assert_array_equal(flag.numpy(), 0)
+
+  @parameterized.parameters(1, 3)
+  def test_incremental_hessian_dense_flags(self, nworld):
+    """The deterministic dense kernel adds the rows whose bit is set, in row order."""
+    nv, njmax = 9, 100
+    bits = solver._QUAD_CHANGED_BITS
+    rng = np.random.default_rng(7)
+    # first and last bit of a word, several words, a world without changed rows
+    rows = ([0, 7, bits - 1, bits, 2 * bits - 1, 2 * bits, 3 * bits, njmax - 1], [], [5, 2 * bits + 2])[:nworld]
+
+    # rows with zeros, so that some elements skip some of the rows
+    J = rng.uniform(-1.0, 1.0, (nworld, njmax, nv)).astype(np.float32)
+    J[rng.uniform(size=J.shape) < 0.3] = 0.0
+    D = rng.uniform(1.0, 2.0, (nworld, njmax)).astype(np.float32)
+    quadratic = types.ConstraintState.QUADRATIC.value
+    state = np.where(rng.uniform(size=(nworld, njmax)) < 0.5, quadratic, types.ConstraintState.SATISFIED.value)
+    h0 = rng.uniform(-1.0, 1.0, (nworld, nv, nv)).astype(np.float32)
+
+    expected = h0.astype(np.float64)
+    flag = np.zeros((nworld, njmax // bits + 1), dtype=np.int32)
+    ids = np.full((nworld, njmax), -1, dtype=np.int32)
+    for worldid, world_rows in enumerate(rows):
+      ids[worldid, : len(world_rows)] = world_rows
+      for efcid in world_rows:
+        flag[worldid, efcid // bits] |= 1 << (efcid % bits)
+        sign = 1.0 if state[worldid, efcid] == quadratic else -1.0
+        Jrow = J[worldid, efcid].astype(np.float64)
+        expected[worldid] += np.triu(sign * D[worldid, efcid] * np.outer(Jrow, Jrow))
+    self.assertGreater(np.abs(expected - h0).max(), 1.0)
+
+    count = wp.array([len(world_rows) for world_rows in rows], dtype=int)
+    inputs = [wp.array(J, dtype=float), wp.array(D, dtype=float), wp.array(state, dtype=int)]
+    tri_dim = nv * (nv + 1) // 2
+
+    # the default kernel, from the list of rows
+    h_default = wp.array(h0, dtype=float)
+    wp.launch(
+      solver._update_gradient_h_incremental,
+      dim=(nworld, tri_dim),
+      inputs=inputs + [wp.array(ids, dtype=int), count],
+      outputs=[h_default],
+    )
+    np.testing.assert_allclose(h_default.numpy(), expected, rtol=1e-5, atol=1e-5)
+
+    flag_in = wp.array(flag, dtype=int)
+    h = wp.array(h0, dtype=float)
+    # the last thread has fewer elements than the others
+    chunk = solver._H_INCREMENTAL_CHUNK
+    self.assertNotEqual(tri_dim % chunk, 0)
+    wp.launch(
+      solver._update_gradient_h_incremental_flag,
+      dim=(nworld, (tri_dim + chunk - 1) // chunk),
+      inputs=inputs + [flag_in, count, tri_dim],
+      outputs=[h],
+    )
+    np.testing.assert_allclose(h.numpy(), expected, rtol=1e-5, atol=1e-5)
+    # same sums as the default kernel, up to how the compiler contracts the products
+    np.testing.assert_allclose(h.numpy(), h_default.numpy(), rtol=1e-5, atol=1e-6)
+    # the lower triangle is not written, and the bits are left for _zero_change_flags
+    np.testing.assert_array_equal(np.tril(h.numpy(), -1), np.tril(h0, -1))
+    np.testing.assert_array_equal(flag_in.numpy(), flag)
 
   @parameterized.product(nworld=(1, 2, 3), lanes=(1, 4, 16, 32), slots=(False, True))
   def test_qfrc_index(self, nworld, lanes, slots):
@@ -2520,6 +2582,7 @@ class SolverTest(parameterized.TestCase):
   def test_incremental_hessian_deterministic(self, jacobian):
     """Tests the incremental Hessian without atomics against a full rebuild."""
     any_changes = False
+    bits, quadratic = solver._QUAD_CHANGED_BITS, types.ConstraintState.QUADRATIC.value
     for keyframe in range(3):
       _, _, m, d = test_data.fixture(
         "humanoid/humanoid.xml",
@@ -2544,26 +2607,31 @@ class SolverTest(parameterized.TestCase):
       ctx.search_unchanged.fill_(False)
       for _ in range(m.opt.iterations):
         solver._linesearch(m, d, ctx)
-        ctx.quad_changed_ids.fill_(-1)
-        ctx.quad_changed_count.zero_()
+        # the sparse incremental kernel clears the bits of the rows it adds, the dense one leaves
+        # them to the launch that zeroes the counters
+        solver._zero_change_tracking(m, d, ctx)
+        np.testing.assert_array_equal(ctx.quad_changed_flag.numpy(), 0)
+        np.testing.assert_array_equal(ctx.quad_changed_count.numpy(), 0)
+        state_prev = d.efc.state.numpy().copy()
         solver._update_constraint(m, d, ctx, track_changes=True)
 
+        # one bit per changed row
         count = ctx.quad_changed_count.numpy()
-        if m.is_sparse:
-          # one bit per changed row, which the sparse incremental kernel reads and clears
-          flag = ctx.quad_changed_flag.numpy()
-          for worldid in range(d.nworld):
-            self.assertEqual(sum(bin(word).count("1") for word in flag[worldid]), count[worldid])
-        else:
-          # the changed rows are listed in row order
-          ids = ctx.quad_changed_ids.numpy()
-          for worldid in range(d.nworld):
-            changed = ids[worldid, : count[worldid]]
-            self.assertTrue(np.all(changed >= 0) and np.all(np.diff(changed) > 0), f"changed rows: {changed}")
+        flag = ctx.quad_changed_flag.numpy()
+        state = d.efc.state.numpy()
+        for worldid in range(d.nworld):
+          changed = (state[worldid] == quadratic) != (state_prev[worldid] == quadratic)
+          changed[d.nefc.numpy()[worldid] :] = False
+          rows = [bits * wordid + i for wordid, word in enumerate(flag[worldid]) for i in range(bits) if (word >> i) & 1]
+          self.assertEqual(rows, np.flatnonzero(changed).tolist())
+          self.assertEqual(count[worldid], len(rows))
         any_changes = any_changes or bool(count.any())
 
         solver._update_gradient_incremental(m, d, ctx)
-        np.testing.assert_array_equal(ctx.quad_changed_flag.numpy(), 0)
+        if m.is_sparse:
+          np.testing.assert_array_equal(ctx.quad_changed_flag.numpy(), 0)
+        else:
+          np.testing.assert_array_equal(ctx.quad_changed_flag.numpy(), flag)
         h_inc = np.triu(ctx.h.numpy()[:, : m.nv, : m.nv])
         solver._update_gradient(m, d, ctx)
         h_full = np.triu(ctx.h.numpy()[:, : m.nv, : m.nv])
@@ -2751,6 +2819,57 @@ class SolverTest(parameterized.TestCase):
         self.assertTrue(np.isinf(ctx.jtdaj_slot.numpy()[-1]).all())
         np.testing.assert_array_equal(h_short[-1], h_groups[-1])
         np.testing.assert_array_equal(h_short[:-1], h_slots[:-1])
+
+  def test_incremental_hessian_dense_last_element(self):
+    """The deterministic dense kernel adds the last elements, which do not fill a chunk."""
+    _, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <geom type="plane" size="2 2 .1"/>
+          <body pos="0 0 .049" euler="3 2 20">
+            <freejoint/>
+            <geom type="box" size=".1 .15 .05"/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """,
+      qvel_noise=0.5,
+      nworld=2,
+      overrides={
+        "opt.jacobian": mujoco.mjtJacobian.mjJAC_DENSE,
+        "opt.cone": ConeType.PYRAMIDAL,
+        "opt.solver": SolverType.NEWTON,
+        "opt.iterations": 5,
+        "opt.ls_iterations": 10,
+        "opt.deterministic": types.DeterminismType.ATOMICS,
+      },
+    )
+    self.assertFalse(m.is_sparse)
+    tri_dim = m.nv * (m.nv + 1) // 2
+    self.assertNotEqual(tri_dim % solver._H_INCREMENTAL_CHUNK, 0)
+
+    # start away from the solution so that rows change state
+    d.qacc.zero_()
+    d.qfrc_constraint.zero_()
+    d.efc.force.zero_()
+    ctx = solver._create_solver_context(m, d)
+    solver.init_context(m, d, ctx, grad=True)
+    ctx.search_unchanged.fill_(False)
+    last_changed = False
+    for _ in range(m.opt.iterations):
+      solver._linesearch(m, d, ctx)
+      solver._zero_change_tracking(m, d, ctx)
+      solver._update_constraint(m, d, ctx, track_changes=True)
+      h_prev = ctx.h.numpy()[:, m.nv - 1, m.nv - 1].copy()
+      solver._update_gradient_incremental(m, d, ctx)
+      h_inc = np.triu(ctx.h.numpy()[:, : m.nv, : m.nv])
+      last_changed = last_changed or bool(np.any(h_inc[:, -1, -1] != h_prev))
+      solver._update_gradient(m, d, ctx)
+      h_full = np.triu(ctx.h.numpy()[:, : m.nv, : m.nv])
+      np.testing.assert_allclose(h_inc, h_full, rtol=1e-4, atol=1e-5 * np.abs(h_full).max())
+
+    self.assertTrue(last_changed, "the last element of H never changed")
 
   @parameterized.product(nworld=(1, 3), compact=(False, True))
   def test_incremental_hessian_sparse_flags(self, nworld, compact):

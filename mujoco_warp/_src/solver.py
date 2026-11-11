@@ -2030,7 +2030,7 @@ def _update_constraint_efc(track_changes: bool, deterministic: bool = False):
       old_quad = old_state == types.ConstraintState.QUADRATIC.value
       new_quad = new_state == types.ConstraintState.QUADRATIC.value
       if wp.static(deterministic):
-        # set the bit of the row; _quad_changed_ids lists the rows in row order
+        # set the bit of the row: the incremental Hessian reads the bits in row order
         if old_quad != new_quad:
           wp.atomic_add(
             quad_changed_ids_out[worldid],
@@ -2062,35 +2062,6 @@ def _popcount(x: int) -> int:
   x = x + (x >> 8)
   x = x + (x >> 16)
   return x & 0x3F
-
-
-@wp.kernel
-def _quad_changed_ids(
-  # In:
-  quad_changed_count_in: wp.array[int],
-  # Out:
-  quad_changed_flag_out: wp.array2d[int],
-  quad_changed_ids_out: wp.array2d[int],
-):
-  """Lists the rows whose bit is set in row order and clears the bits."""
-  worldid = wp.tid()
-
-  if quad_changed_count_in[worldid] == 0:
-    return
-
-  count = int(0)
-  for wordid in range(quad_changed_flag_out.shape[1]):
-    word = quad_changed_flag_out[worldid, wordid]
-    if word == 0:
-      continue
-
-    quad_changed_flag_out[worldid, wordid] = 0
-    while word != 0:
-      # lowest set bit: the number of bits below it is its position
-      low = word & (-word)
-      quad_changed_ids_out[worldid, count] = wp.static(_QUAD_CHANGED_BITS) * wordid + _popcount(low - 1)
-      count += 1
-      word -= low
 
 
 @wp.kernel
@@ -2574,6 +2545,76 @@ def _update_gradient_h_incremental(
     ctx_h_out[worldid, row, col] += delta
 
 
+# Elements of H per thread of the deterministic dense incremental Hessian. The kernel costs its
+# number of threads plus the elements that a thread of a world with changed rows adds one after
+# the other: 2 measured best for the humanoid at 8192 worlds (us per step of 5.6 calls, 1: 46,
+# 2: 36, 4: 40, 8: 60, 16: 107; the default kernel: 45).
+_H_INCREMENTAL_CHUNK = 2
+
+
+@wp.kernel
+def _update_gradient_h_incremental_flag(
+  # Data in:
+  efc_J_in: wp.array3d[float],
+  efc_D_in: wp.array2d[float],
+  efc_state_in: wp.array2d[int],
+  # In:
+  quad_changed_flag_in: wp.array2d[int],
+  quad_changed_count_in: wp.array[int],
+  tri_dim: int,
+  # Out:
+  ctx_h_out: wp.array3d[float],
+):
+  """Incrementally update upper triangle of H for changed constraints, from the bit of each row.
+
+  Same sums as _update_gradient_h_incremental, but each element takes the changed rows in row
+  order straight from the bit words: no list of rows is built. _zero_change_flags clears the bits.
+  A thread handles a chunk of consecutive elements.
+  """
+  worldid, chunkid = wp.tid()
+
+  if quad_changed_count_in[worldid] == 0:
+    return
+
+  # Upper-triangle enumeration: elementid -> (row, col) where row <= col.
+  elementid = chunkid * wp.static(_H_INCREMENTAL_CHUNK)
+  col = int((int(wp.sqrt(float(1 + 8 * elementid))) - 1) // 2)
+  row = int(elementid - (col * (col + 1)) // 2)
+
+  for _i in range(wp.min(tri_dim - elementid, wp.static(_H_INCREMENTAL_CHUNK))):
+    delta = float(0.0)
+    for wordid in range(quad_changed_flag_in.shape[1]):
+      word = quad_changed_flag_in[worldid, wordid]
+      while word != 0:
+        # lowest set bit: the number of bits below it is its position
+        low = word & (-word)
+        efcid = wp.static(_QUAD_CHANGED_BITS) * wordid + _popcount(low - 1)
+        word -= low
+
+        Jrow = efc_J_in[worldid, efcid, row]
+        if Jrow == 0.0:
+          continue
+        Jcol = efc_J_in[worldid, efcid, col]
+        if Jcol == 0.0:
+          continue
+
+        D = efc_D_in[worldid, efcid]
+        if efc_state_in[worldid, efcid] == types.ConstraintState.QUADRATIC.value:
+          delta += D * Jrow * Jcol
+        else:
+          delta -= D * Jrow * Jcol
+
+    # not `+=`, which Warp compiles to an atomic
+    if delta != 0.0:
+      ctx_h_out[worldid, row, col] = ctx_h_out[worldid, row, col] + delta
+
+    # next element: down the column, then the next column
+    row += 1
+    if row > col:
+      col += 1
+      row = 0
+
+
 @cache_kernel
 def _update_gradient_h_incremental_sparse(compact: bool, max_records: int = 0, lanes: int = 0, deterministic: bool = False):
   COMPACT = compact
@@ -2764,14 +2805,6 @@ def _update_constraint(
     ],
   )
   sc = _sparse_compact(ctx)
-  if track_changes and det_atomics and not (m.is_sparse or sc):
-    # the dense incremental Hessian reads the list of rows; the sparse one reads the bits
-    wp.launch(
-      _quad_changed_ids,
-      dim=d.nworld,
-      inputs=[ctx.quad_changed_count],
-      outputs=[ctx.quad_changed_flag, ctx.quad_changed_ids],
-    )
 
   # qfrc_constraint = efc_J.T @ efc_force. Fast-path worlds with no state flips
   # skip the rebuild; the public value is recovered after the solve.
@@ -5036,18 +5069,27 @@ def _update_gradient_incremental(m: types.Model, d: types.Data, ctx: SolverConte
       )
   else:
     tri_dim = m.nv * (m.nv + 1) // 2
-    wp.launch(
-      _update_gradient_h_incremental,
-      dim=(d.nworld, tri_dim),
-      inputs=[
-        d.efc.J,
-        d.efc.D,
-        d.efc.state,
-        ctx.quad_changed_ids,
-        ctx.quad_changed_count,
-      ],
-      outputs=[ctx.h],
-    )
+    if det_atomics:
+      # the deterministic kernel reads the bit of each changed row instead of the list of rows
+      wp.launch(
+        _update_gradient_h_incremental_flag,
+        dim=(d.nworld, (tri_dim + _H_INCREMENTAL_CHUNK - 1) // _H_INCREMENTAL_CHUNK),
+        inputs=[d.efc.J, d.efc.D, d.efc.state, ctx.quad_changed_flag, ctx.quad_changed_count, tri_dim],
+        outputs=[ctx.h],
+      )
+    else:
+      wp.launch(
+        _update_gradient_h_incremental,
+        dim=(d.nworld, tri_dim),
+        inputs=[
+          d.efc.J,
+          d.efc.D,
+          d.efc.state,
+          ctx.quad_changed_ids,
+          ctx.quad_changed_count,
+        ],
+        outputs=[ctx.h],
+      )
 
   _cholesky_factorize_solve(m, d, ctx, skip_unchanged=True, skip_noflip=stable_fast)
   if m.opt.integrator == types.IntegratorType.DISCRETE and (m.opt.enableflags & types.EnableBit.SLEEP):
@@ -5265,6 +5307,42 @@ def _zero_change_counters(
   state_changed_count_out[worldid] = 0
 
 
+@wp.kernel(grid_stride=True)
+def _zero_change_flags(
+  # Out:
+  quad_changed_count_out: wp.array[int],
+  state_changed_count_out: wp.array[int],
+  quad_changed_flag_out: wp.array2d[int],
+):
+  """Zeroes the change counters and clears the bit of every row."""
+  worldid = wp.tid()
+
+  # every word, whatever the count: a few stores cost less than reading it
+  for wordid in range(quad_changed_flag_out.shape[1]):
+    quad_changed_flag_out[worldid, wordid] = 0
+
+  quad_changed_count_out[worldid] = 0
+  state_changed_count_out[worldid] = 0
+
+
+def _zero_change_tracking(m: types.Model, d: types.Data, ctx: SolverContext):
+  """Resets what _update_constraint tracks: must complete before _update_constraint_efc."""
+  if (m.opt.deterministic & types.DeterminismType.ATOMICS) and not (m.is_sparse or _sparse_compact(ctx)):
+    # the dense incremental Hessian leaves the bits of the changed rows set (the sparse one
+    # clears them): they are cleared here, in the launch that zeroes the counters anyway
+    wp.launch(
+      _zero_change_flags,
+      dim=d.nworld,
+      outputs=[ctx.quad_changed_count, ctx.state_changed_count, ctx.quad_changed_flag],
+    )
+  else:
+    wp.launch(
+      _zero_change_counters,
+      dim=d.nworld,
+      outputs=[ctx.quad_changed_count, ctx.state_changed_count],
+    )
+
+
 @event_scope
 def _solver_iteration(
   m: types.Model,
@@ -5283,11 +5361,7 @@ def _solver_iteration(
 
   if incremental:
     # Must complete before _update_constraint_efc which atomically increments.
-    wp.launch(
-      _zero_change_counters,
-      dim=d.nworld,
-      outputs=[ctx.quad_changed_count, ctx.state_changed_count],
-    )
+    _zero_change_tracking(m, d, ctx)
 
   # The tracking also enables the stable-state fast path: worlds with no state
   # flips this iteration were exactly quadratic over the step, so grad/search
