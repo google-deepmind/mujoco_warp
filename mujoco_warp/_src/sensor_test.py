@@ -479,7 +479,7 @@ class SensorTest(parameterized.TestCase):
       _assert_eq(d.sensordata.numpy()[0], mjd.sensordata, "sensordata")
 
   def test_acc_sensors_dofless_body(self):
-    """Test acceleration sensors on static and mocap bodies are zero."""
+    """Test acceleration sensors on static and mocap bodies match MuJoCo."""
     _, mjd, m, d = test_data.fixture(
       xml="""
       <mujoco>
@@ -517,7 +517,6 @@ class SensorTest(parameterized.TestCase):
     mjw.sensor_acc(m, d)
 
     _assert_eq(d.sensordata.numpy()[0], mjd.sensordata, "sensordata")
-    np.testing.assert_array_equal(d.sensordata.numpy()[0, :9], 0.0)
 
   def test_tendon_sensor(self):
     """Test tendon sensors."""
