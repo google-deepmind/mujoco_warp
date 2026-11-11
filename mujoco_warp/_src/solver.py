@@ -4485,8 +4485,8 @@ def _solve_beta_finalize_tiled(warn_overflow: int):
       else:
         inv_dy = 1.0 / d_dot_y
         beta_hz = (sums[2] - 2.0 * sums[1] * inv_dy * sums[3]) * inv_dy
-        # diverge from MuJoCo C (eta_k < 0): clamp beta >= 0 in float32 (HZ+) so inexact
-        # linesearch residuals d' * grad and active-set flips restart instead of opposing descent
+        # diverge from MuJoCo C (eta_k < 0): clamp beta >= 0 (HZ+) to avoid amplifying 1-ulp
+        # parallel-reduction gradient differences (e.g. tree.xml) and an extra d' * d norm reduction
         ctx_beta_out[worldid] = wp.max(0.0, beta_hz)
 
       solver_niter_out[worldid] += 1
@@ -5047,6 +5047,7 @@ def _solve(m: types.Model, d: types.Data, ctx: SolverContext, compact: bool = Fa
       inputs=[m.dof_treeid, d.tree_awake],
       outputs=[d.qacc],
     )
+  # TODO(team): extend _warmstart_best to non-discrete integrators and compact solve
   if warmstart and run_qacc_smooth and m.opt.integrator == types.IntegratorType.DISCRETE and not compact:
     _warmstart_best(m, d, ctx)
 
