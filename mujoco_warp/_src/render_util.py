@@ -805,8 +805,7 @@ def create_render_context(
   )
 
   if backend == "optix":
-    # render imports this module. OptiX pipelines compile here rather than on the
-    # first render, which may happen during CUDA graph capture.
+    # render imports this module. Compile OptiX pipelines when the context is created.
     from mujoco_warp._src import render  # noqa: PLC0415
     from mujoco_warp._src import render_optix  # noqa: PLC0415
 

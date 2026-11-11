@@ -25,10 +25,13 @@ import mujoco_warp as mjw
 from mujoco_warp import test_data
 
 
-@absltest.skipIf(importlib.util.find_spec("warp_optix") is None, "requires warp_optix")
+@absltest.skipIf(
+  importlib.util.find_spec("warp_optix") is None or not wp.get_device().is_cuda,
+  "requires warp_optix and a CUDA device",
+)
 class RenderOptixTest(parameterized.TestCase):
-  @parameterized.parameters(1, 2)
-  def test_matches_bvh(self, nworld):
+  @parameterized.product(nworld=(1, 2), use_fast_math=(False, True))
+  def test_matches_bvh(self, nworld, use_fast_math):
     """OptiX and BVH renders, with camera and shadow rays, agree up to float rounding."""
     mjm, _, m, d = test_data.fixture(
       xml="""
@@ -67,9 +70,6 @@ class RenderOptixTest(parameterized.TestCase):
       geom_size = np.repeat(m.geom_size.numpy(), 2, axis=0)
       geom_size[1, sphere] *= 1.5
       m.geom_size = wp.array(geom_size, dtype=wp.vec3)
-      geom_aabb = np.repeat(m.geom_aabb.numpy(), 2, axis=0)
-      geom_aabb[1, sphere, 1] *= 1.5
-      m.geom_aabb = wp.array(geom_aabb, dtype=wp.vec3)
 
     outs = {}
     for backend in ("bvh", "optix"):
@@ -81,6 +81,7 @@ class RenderOptixTest(parameterized.TestCase):
         render_depth=True,
         render_seg=True,
         use_shadows=True,
+        use_fast_math=use_fast_math,
         backend=backend,
       )
       mjw.refit_bvh(m, d, rc)
@@ -100,6 +101,93 @@ class RenderOptixTest(parameterized.TestCase):
     np.testing.assert_array_less(np.abs(rgb.view(np.uint8).astype(int) - rgb_optix.view(np.uint8)), 2)
     if nworld == 2:
       self.assertFalse(np.allclose(depth[0], depth[1]))
+
+  @parameterized.product(nworld=(1, 2), groups=((), (0,), (1,), (0, 1)), active=(False, True))
+  def test_empty_and_plane_scenes(self, nworld, groups, active):
+    """Empty selections and plane-only scenes agree with BVH, including after refits."""
+    mjm, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <camera pos="0 0 3"/>
+          <geom type="plane" group="0" size="2 2 0.1" rgba="1 0 0 1"/>
+          <geom type="plane" group="0" size="2 2 0.1" rgba="0 1 0 1"/>
+          <geom type="sphere" group="1" pos="0 0 0.3" size="0.2"/>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=nworld,
+    )
+    if nworld == 2:
+      geom_xpos = d.geom_xpos.numpy()
+      geom_xpos[1, :, 2] += 0.1
+      d.geom_xpos.assign(geom_xpos)
+    outs = {}
+    for backend in ("bvh", "optix") if groups else ("optix",):
+      rc = mjw.create_render_context(
+        mjm,
+        nworld=nworld,
+        cam_res=(8, 8),
+        cam_active=[active],
+        enabled_geom_groups=list(groups),
+        render_rgb=True,
+        render_depth=True,
+        render_seg=True,
+        backend=backend,
+      )
+      for _ in range(2):
+        mjw.refit_bvh(m, d, rc)
+        rc.rgb_data.fill_(wp.uint32(0xFFFFFFFF))
+        rc.depth_data.fill_(wp.inf)
+        rc.seg_data.fill_(wp.vec2i(-2, -2))
+        mjw.render(m, d, rc)
+      outs[backend] = (rc.rgb_data.numpy(), rc.depth_data.numpy(), rc.seg_data.numpy())
+      if backend == "optix" and 0 in groups:
+        # Null traversables keep the unbounded plane out of the IAS even with primitives present.
+        np.testing.assert_array_equal(rc.optix.instances.numpy()["traversable"][:, :2], 0)
+    if groups:
+      for expected, actual in zip(outs["bvh"], outs["optix"]):
+        np.testing.assert_allclose(expected, actual, rtol=1e-5, atol=1e-5)
+    else:
+      np.testing.assert_array_equal(outs["optix"][0], rc.background_color)
+      np.testing.assert_array_equal(outs["optix"][1], 0.0)
+      np.testing.assert_array_equal(outs["optix"][2], -1)
+    if active and groups:
+      self.assertTrue(np.isfinite(outs["optix"][1]).all())
+      if nworld == 2:
+        self.assertFalse(np.allclose(outs["optix"][1][0], outs["optix"][1][1]))
+
+  @parameterized.parameters(1, 2)
+  def test_camera_outside_world_cell(self, nworld):
+    """Rays enter their own cell without hitting neighboring worlds on the way in."""
+    mjm, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <camera pos="6 0 0" xyaxes="0 1 0 0 0 1"/>
+          <geom type="sphere" size="0.2"/>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=nworld,
+    )
+    if nworld == 2:
+      geom_xpos = d.geom_xpos.numpy()
+      geom_xpos[1, 0, 0] = 0.1
+      d.geom_xpos.assign(geom_xpos)
+    outputs = {}
+    for backend in ("bvh", "optix"):
+      rc = mjw.create_render_context(mjm, nworld=nworld, cam_res=(32, 32), render_depth=True, render_seg=True, backend=backend)
+      mjw.refit_bvh(m, d, rc)
+      rc.depth_data.fill_(wp.inf)
+      rc.seg_data.fill_(wp.vec2i(-2, -2))
+      mjw.render(m, d, rc)
+      outputs[backend] = rc.depth_data.numpy(), rc.seg_data.numpy()
+    for expected, actual in zip(outputs["bvh"], outputs["optix"]):
+      np.testing.assert_allclose(expected, actual, rtol=1e-5, atol=1e-5)
+    self.assertTrue(np.any(outputs["optix"][1][..., 0] == 0))
+    if nworld == 2:
+      self.assertFalse(np.allclose(outputs["optix"][0][0], outputs["optix"][0][1]))
 
 
 if __name__ == "__main__":
