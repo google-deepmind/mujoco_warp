@@ -1177,7 +1177,6 @@ def _equality_weld(is_sparse: bool, newton: bool, is_discrete: bool = False):
     dof_jntid: wp.array[int],
     dof_parentid: wp.array[int],
     site_bodyid: wp.array[int],
-    site_quat: wp.array2d[wp.quat],
     eq_obj1id: wp.array[int],
     eq_obj2id: wp.array[int],
     eq_objtype: wp.array[int],
@@ -1192,6 +1191,7 @@ def _equality_weld(is_sparse: bool, newton: bool, is_discrete: bool = False):
     xpos_in: wp.array2d[wp.vec3],
     xquat_in: wp.array2d[wp.quat],
     site_xpos_in: wp.array2d[wp.vec3],
+    site_xquat_in: wp.array2d[wp.quat],
     subtree_com_in: wp.array2d[wp.vec3],
     cdof_in: wp.array2d[wp.spatial_vector],
     cvel_in: wp.array2d[wp.spatial_vector],
@@ -1243,22 +1243,20 @@ def _equality_weld(is_sparse: bool, newton: bool, is_discrete: bool = False):
       pos1 = site_xpos_in[worldid, obj1id]
       pos2 = site_xpos_in[worldid, obj2id]
 
-      site_quat_id = worldid % site_quat.shape[0]
-      quat = math.mul_quat(xquat_in[worldid, body1], site_quat[site_quat_id, obj1id])
-      quat1 = math.quat_inv(math.mul_quat(xquat_in[worldid, body2], site_quat[site_quat_id, obj2id]))
+      quat = site_xquat_in[worldid, obj1id]
+      qfull1 = site_xquat_in[worldid, obj2id]
+      quat1 = math.quat_inv(qfull1)
 
     else:
       body1 = obj1id
       body2 = obj2id
-      pos1 = xpos_in[worldid, body1] + math.quat_to_mat(xquat_in[worldid, body1]) @ anchor2
-      pos2 = xpos_in[worldid, body2] + math.quat_to_mat(xquat_in[worldid, body2]) @ anchor1
+      xquat1 = xquat_in[worldid, body1]
+      xquat2 = xquat_in[worldid, body2]
+      pos1 = xpos_in[worldid, body1] + math.quat_to_mat(xquat1) @ anchor2
+      pos2 = xpos_in[worldid, body2] + math.quat_to_mat(xquat2) @ anchor1
 
-      quat = math.mul_quat(xquat_in[worldid, body1], relpose)
-      quat1 = math.quat_inv(xquat_in[worldid, body2])
-
-      # quat1 = quat_inv(xquat_in[worldid, body2])
-      q2 = xquat_in[worldid, body2]
-      quat1 = wp.quat(q2[0], -q2[1], -q2[2], -q2[3])
+      quat = math.mul_quat(xquat1, relpose)
+      quat1 = math.quat_inv(xquat2)
 
     # compute rotational Jdotv helper quaternions
     omega1 = wp.spatial_top(cvel_in[worldid, body1])
@@ -1271,22 +1269,18 @@ def _equality_weld(is_sparse: bool, newton: bool, is_discrete: bool = False):
 
     if is_site:
       qdot0r = math.mul_quat(omega1_q, quat) * 0.5
-      qfull1 = math.mul_quat(xquat_in[worldid, body2], site_quat[site_quat_id, obj2id])
       qdot1 = math.mul_quat(omega2_q, qfull1) * 0.5
 
       negqdot1 = math.quat_inv(qdot1)
       negq1 = wp.quat(qfull1[0], -qfull1[1], -qfull1[2], -qfull1[3])
 
     else:
-      # qdot0 = mul_quat(xquat_in[worldid, body1], omega1_q) * 0.5
-      u7 = xquat_in[worldid, body1]
-      qdot0 = math.mul_quat(omega1_q, xquat_in[worldid, body1]) * 0.5
+      qdot0 = math.mul_quat(omega1_q, xquat1) * 0.5
       qdot0r = math.mul_quat(qdot0, relpose)
-      q1_non_site = xquat_in[worldid, body2]
-      qdot1 = math.mul_quat(omega2_q, q1_non_site) * 0.5
+      qdot1 = math.mul_quat(omega2_q, xquat2) * 0.5
 
       negqdot1 = math.quat_inv(qdot1)
-      negq1 = wp.quat(q1_non_site[0], -q1_non_site[1], -q1_non_site[2], -q1_non_site[3])
+      negq1 = wp.quat(xquat2[0], -xquat2[1], -xquat2[2], -xquat2[3])
 
     rownnz = int(0)
     rowadr = int(0)
@@ -1650,7 +1644,6 @@ def _equality_flexstrain(is_sparse: bool, newton: bool, is_discrete: bool = Fals
     qvel_in: wp.array2d[float],
     eq_active_in: wp.array2d[bool],
     xpos_in: wp.array2d[wp.vec3],
-    xquat_in: wp.array2d[wp.quat],
     subtree_com_in: wp.array2d[wp.vec3],
     cdof_in: wp.array2d[wp.spatial_vector],
     njmax_in: int,
@@ -5163,7 +5156,6 @@ def make_constraint(m: types.Model, d: types.Data):
           m.dof_jntid,
           m.dof_parentid,
           m.site_bodyid,
-          m.site_quat,
           m.eq_obj1id,
           m.eq_obj2id,
           m.eq_objtype,
@@ -5177,6 +5169,7 @@ def make_constraint(m: types.Model, d: types.Data):
           d.xpos,
           d.xquat,
           d.site_xpos,
+          d.site_xquat,
           d.subtree_com,
           d.cdof,
           d.cvel,
@@ -5397,7 +5390,6 @@ def make_constraint(m: types.Model, d: types.Data):
               d.qvel,
               d.eq_active,
               d.xpos,
-              d.xquat,
               d.subtree_com,
               d.cdof,
               d.njmax,

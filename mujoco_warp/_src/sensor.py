@@ -512,31 +512,26 @@ def _get_body_id(
 @wp.func
 def _get_quat(
   # Model:
-  body_iquat: wp.array2d[wp.quat],
-  geom_bodyid: wp.array[int],
-  geom_quat: wp.array2d[wp.quat],
-  site_bodyid: wp.array[int],
-  site_quat: wp.array2d[wp.quat],
   cam_bodyid: wp.array[int],
   cam_quat: wp.array2d[wp.quat],
   # Data in:
   xquat_in: wp.array2d[wp.quat],
+  xiquat_in: wp.array2d[wp.quat],
+  geom_xquat_in: wp.array2d[wp.quat],
+  site_xquat_in: wp.array2d[wp.quat],
   # In:
   worldid: int,
   objtype: int,
   objid: int,
 ) -> wp.quat:
   if objtype == ObjType.BODY:
-    body_iquat_id = worldid % body_iquat.shape[0]
-    return math.mul_quat(xquat_in[worldid, objid], body_iquat[body_iquat_id, objid])
+    return xiquat_in[worldid, objid]
   elif objtype == ObjType.XBODY:
     return xquat_in[worldid, objid]
   elif objtype == ObjType.GEOM:
-    geom_quat_id = worldid % geom_quat.shape[0]
-    return math.mul_quat(xquat_in[worldid, geom_bodyid[objid]], geom_quat[geom_quat_id, objid])
+    return geom_xquat_in[worldid, objid]
   elif objtype == ObjType.SITE:
-    site_quat_id = worldid % site_quat.shape[0]
-    return math.mul_quat(xquat_in[worldid, site_bodyid[objid]], site_quat[site_quat_id, objid])
+    return site_xquat_in[worldid, objid]
   elif objtype == ObjType.CAMERA:
     cam_quat_id = worldid % cam_quat.shape[0]
     return math.mul_quat(xquat_in[worldid, cam_bodyid[objid]], cam_quat[cam_quat_id, objid])
@@ -602,15 +597,13 @@ def _frame_axis(
 @wp.func
 def _frame_quat(
   # Model:
-  body_iquat: wp.array2d[wp.quat],
-  geom_bodyid: wp.array[int],
-  geom_quat: wp.array2d[wp.quat],
-  site_bodyid: wp.array[int],
-  site_quat: wp.array2d[wp.quat],
   cam_bodyid: wp.array[int],
   cam_quat: wp.array2d[wp.quat],
   # Data in:
   xquat_in: wp.array2d[wp.quat],
+  xiquat_in: wp.array2d[wp.quat],
+  geom_xquat_in: wp.array2d[wp.quat],
+  site_xquat_in: wp.array2d[wp.quat],
   # In:
   worldid: int,
   objid: int,
@@ -618,36 +611,12 @@ def _frame_quat(
   refid: int,
   reftype: int,
 ) -> wp.quat:
-  quat = _get_quat(
-    body_iquat,
-    geom_bodyid,
-    geom_quat,
-    site_bodyid,
-    site_quat,
-    cam_bodyid,
-    cam_quat,
-    xquat_in,
-    worldid,
-    objtype,
-    objid,
-  )
+  quat = _get_quat(cam_bodyid, cam_quat, xquat_in, xiquat_in, geom_xquat_in, site_xquat_in, worldid, objtype, objid)
 
   if refid == -1:
     return quat
 
-  refquat = _get_quat(
-    body_iquat,
-    geom_bodyid,
-    geom_quat,
-    site_bodyid,
-    site_quat,
-    cam_bodyid,
-    cam_quat,
-    xquat_in,
-    worldid,
-    reftype,
-    refid,
-  )
+  refquat = _get_quat(cam_bodyid, cam_quat, xquat_in, xiquat_in, geom_xquat_in, site_xquat_in, worldid, reftype, refid)
 
   return math.mul_quat(math.quat_inv(refquat), quat)
 
@@ -669,17 +638,12 @@ def _sensor_pos(
   opt_magnetic: wp.array[wp.vec3],
   body_geomnum: wp.array[int],
   body_geomadr: wp.array[int],
-  body_iquat: wp.array2d[wp.quat],
   body_mass: wp.array2d[float],
   body_subtreemass: wp.array2d[float],
   jnt_qposadr: wp.array[int],
   geom_type: wp.array[int],
-  geom_bodyid: wp.array[int],
-  geom_quat: wp.array2d[wp.quat],
   site_type: wp.array[int],
-  site_bodyid: wp.array[int],
   site_size: wp.array[wp.vec3],
-  site_quat: wp.array2d[wp.quat],
   cam_bodyid: wp.array[int],
   cam_quat: wp.array2d[wp.quat],
   cam_fovy: wp.array2d[float],
@@ -787,14 +751,12 @@ def _sensor_pos(
     refid = sensor_refid[sensorid]
     reftype = sensor_reftype[sensorid]
     quat = _frame_quat(
-      body_iquat,
-      geom_bodyid,
-      geom_quat,
-      site_bodyid,
-      site_quat,
       cam_bodyid,
       cam_quat,
       xquat_in,
+      xiquat_in,
+      geom_xquat_in,
+      site_xquat_in,
       worldid,
       objid,
       objtype,
@@ -1081,17 +1043,12 @@ def sensor_pos(m: Model, d: Data):
       m.opt.magnetic,
       m.body_geomnum,
       m.body_geomadr,
-      m.body_iquat,
       m.body_mass,
       m.body_subtreemass,
       m.jnt_qposadr,
       m.geom_type,
-      m.geom_bodyid,
-      m.geom_quat,
       m.site_type,
-      m.site_bodyid,
       m.site_size,
-      m.site_quat,
       m.cam_bodyid,
       m.cam_quat,
       m.cam_fovy,

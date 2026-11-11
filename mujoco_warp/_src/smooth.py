@@ -1902,7 +1902,6 @@ def _cfrc_ext_equality(deterministic: bool = False):
     body_rootid: wp.array[int],
     site_bodyid: wp.array[int],
     site_pos: wp.array2d[wp.vec3],
-    site_quat: wp.array2d[wp.quat],
     eq_obj1id: wp.array[int],
     eq_obj2id: wp.array[int],
     eq_objtype: wp.array[int],
@@ -1910,6 +1909,7 @@ def _cfrc_ext_equality(deterministic: bool = False):
     # Data in:
     xpos_in: wp.array2d[wp.vec3],
     xquat_in: wp.array2d[wp.quat],
+    site_xquat_in: wp.array2d[wp.quat],
     subtree_com_in: wp.array2d[wp.vec3],
     efc_id_in: wp.array2d[int],
     efc_force_in: wp.array2d[float],
@@ -1967,9 +1967,8 @@ def _cfrc_ext_equality(deterministic: bool = False):
         q0 = math.mul_quat(xquat_in[worldid, bodyid1], relpose)
         q1 = xquat_in[worldid, bodyid2]
       else:
-        site_quat_id = worldid % site_quat.shape[0]
-        q0 = math.mul_quat(xquat_in[worldid, bodyid1], site_quat[site_quat_id, obj1])
-        q1 = math.mul_quat(xquat_in[worldid, bodyid2], site_quat[site_quat_id, obj2])
+        q0 = site_xquat_in[worldid, obj1]
+        q1 = site_xquat_in[worldid, obj2]
 
       quat = math.mul_quat(math.quat_mul_axis(q1, force_torque), math.quat_inv(q0))
       cfrc_torque = (0.5 * eq_data_[10]) * wp.vec3(quat[1], quat[2], quat[3])
@@ -2406,13 +2405,13 @@ def rne_postconstraint(m: Model, d: Data):
         m.body_rootid,
         m.site_bodyid,
         m.site_pos,
-        m.site_quat,
         m.eq_obj1id,
         m.eq_obj2id,
         m.eq_objtype,
         m.eq_data,
         d.xpos,
         d.xquat,
+        d.site_xquat,
         d.subtree_com,
         d.efc.id,
         d.efc.force,
@@ -3148,7 +3147,6 @@ def _transmission(deterministic: bool = False):
     dof_bodyid: wp.array[int],
     dof_parentid: wp.array[int],
     site_bodyid: wp.array[int],
-    site_quat: wp.array2d[wp.quat],
     ten_J_rownnz: wp.array[int],
     ten_J_rowadr: wp.array[int],
     ten_J_colind: wp.array[int],
@@ -3159,7 +3157,6 @@ def _transmission(deterministic: bool = False):
     body_isdofancestor: wp.array2d[int],
     # Data in:
     qpos_in: wp.array2d[float],
-    xquat_in: wp.array2d[wp.quat],
     site_xpos_in: wp.array2d[wp.vec3],
     site_xquat_in: wp.array2d[wp.quat],
     subtree_com_in: wp.array2d[wp.vec3],
@@ -3391,7 +3388,6 @@ def _transmission(deterministic: bool = False):
       refid = trnid[1]
 
       gear = actuator_gear[actuator_gear_id, actid]
-      site_quat_id = worldid % site_quat.shape[0]
       gear_translation = wp.spatial_top(gear)
       gear_rotational = wp.spatial_bottom(gear)
 
@@ -3474,7 +3470,8 @@ def _transmission(deterministic: bool = False):
 
         site_xpos = site_xpos_in[worldid, siteid]
         ref_xpos = site_xpos_in[worldid, refid]
-        ref_xmat = math.quat_to_mat(site_xquat_in[worldid, refid])
+        ref_xquat = site_xquat_in[worldid, refid]
+        ref_xmat = math.quat_to_mat(ref_xquat)
 
         length = float(0.0)
 
@@ -3486,12 +3483,8 @@ def _transmission(deterministic: bool = False):
           wrench_translation = ref_xmat @ gear_translation
 
         if rotational_transmission:
-          # get site and refsite quats from parent bodies (avoid converting matrix to quat)
-          quat = math.mul_quat(xquat_in[worldid, bodyid], site_quat[site_quat_id, siteid])
-          refquat = math.mul_quat(xquat_in[worldid, bodyrefid], site_quat[site_quat_id, refid])
-
           # convert difference to expmap (axis-angle)
-          vec = math.quat_sub(quat, refquat)
+          vec = math.quat_sub(site_xquat_in[worldid, siteid], ref_xquat)
           length += wp.dot(vec, gear_rotational)
 
           wrench_rotation = ref_xmat @ gear_rotational
@@ -3772,7 +3765,6 @@ def transmission(m: Model, d: Data):
       m.dof_bodyid,
       m.dof_parentid,
       m.site_bodyid,
-      m.site_quat,
       m.ten_J_rownnz,
       m.ten_J_rowadr,
       m.ten_J_colind,
@@ -3782,7 +3774,6 @@ def transmission(m: Model, d: Data):
       m.actuator_gear,
       m.body_isdofancestor,
       d.qpos,
-      d.xquat,
       d.site_xpos,
       d.site_xquat,
       d.subtree_com,
