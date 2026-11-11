@@ -2165,6 +2165,89 @@ class SolverTest(parameterized.TestCase):
 
     self.assertTrue(total_any_changes, "no state changes detected across any keyframe")
 
+  @parameterized.parameters(1, 2)
+  def test_dense_hessian_incremental_strided(self, nworld):
+    """Strided dense incremental H update matches exact rank-1 updates."""
+    self.assertEqual(solver._jtdaj_groups_per_world(10**7, 12, solver._update_gradient_h_incremental, 2), 2)
+
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <body>
+            <joint name="j0" frictionloss="1"/>
+            <geom size="0.1"/>
+            <body pos="0.2 0 0">
+              <joint frictionloss="2"/>
+              <geom size="0.1"/>
+              <body pos="0.2 0 0">
+                <joint name="j2"/>
+                <joint name="j3" type="slide"/>
+                <geom size="0.1"/>
+              </body>
+            </body>
+          </body>
+        </worldbody>
+        <tendon>
+          <fixed frictionloss="5">
+            <joint joint="j0" coef="1"/>
+            <joint joint="j2" coef="-0.5"/>
+            <joint joint="j3" coef="0.25"/>
+          </fixed>
+        </tendon>
+      </mujoco>
+      """,
+      nworld=nworld,
+    )
+    self.assertFalse(m.is_sparse)
+
+    ctx = solver._create_solver_context(m, d)
+    solver.init_context(m, d, ctx, grad=True)
+
+    state = np.full((nworld, d.njmax), types.ConstraintState.QUADRATIC.value, dtype=int)
+    state[:, 0] = types.ConstraintState.LINEARPOS.value
+    d.efc.state.assign(state)
+    ctx.done.fill_(False)
+    ctx.h.fill_(wp.inf)
+    solver._update_gradient(m, d, ctx)
+
+    # the last world adds row 0 and removes row 2, world 0 stays idle when nworld == 2
+    ids = np.zeros(ctx.quad_changed_ids.shape, dtype=int)
+    counts = np.zeros(nworld, dtype=int)
+    active_world = nworld - 1
+    state[active_world, 0] = types.ConstraintState.QUADRATIC.value
+    state[active_world, 2] = types.ConstraintState.LINEARPOS.value
+    ids[active_world, :2] = [0, 2]
+    counts[active_world] = 2
+    d.efc.state.assign(state)
+    ctx.quad_changed_ids.assign(ids)
+    ctx.quad_changed_count.assign(counts)
+
+    # fewer threads than upper-triangle elements, so each thread strides over several
+    threads_per_world = 3
+    self.assertLess(threads_per_world, m.nv * (m.nv + 1) // 2)
+    wp.launch(
+      solver._update_gradient_h_incremental,
+      dim=(nworld, threads_per_world),
+      inputs=[m.nv, d.efc.J, d.efc.D, d.efc.state, ctx.quad_changed_ids, ctx.quad_changed_count, threads_per_world],
+      outputs=[ctx.h],
+    )
+
+    h_actual = ctx.h.numpy()
+    J = d.efc.J.numpy()
+    D = d.efc.D.numpy()
+    nefc = d.nefc.numpy()
+    m_dense = np.zeros((m.nv, m.nv))
+    mujoco.mj_fullM(mjm, mjd, m_dense)
+    for w in range(nworld):
+      h_ref = m_dense.copy()
+      for efcid in np.flatnonzero(state[w, : nefc[w]] == types.ConstraintState.QUADRATIC.value):
+        row = J[w, efcid, : m.nv]
+        h_ref += D[w, efcid] * np.outer(row, row)
+      np.testing.assert_allclose(np.triu(h_actual[w, : m.nv, : m.nv]), np.triu(h_ref), rtol=1e-5, atol=1e-6)
+    if nworld == 2:
+      self.assertFalse(np.allclose(np.triu(h_actual[0, : m.nv, : m.nv]), np.triu(h_actual[1, : m.nv, : m.nv])))
+
   @parameterized.product(nworld=(1, 2), rows_from=("put_data", "make_constraint"))
   def test_sparse_hessian_dof_friction(self, nworld, rows_from):
     """Sparse Newton H, full and incremental, includes quadratic DOF and tendon friction rows."""
