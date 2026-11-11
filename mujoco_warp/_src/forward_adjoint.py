@@ -583,8 +583,7 @@ def _body_wrench(
 def _kinematics_vjp(nbody: int, shared: bool):
   """Projects joint and mocap subtree wrenches.
 
-  The shared path reuses body cotangents across GPU threads for performance. The non-shared
-  path avoids cooperative-thread overhead on CPU and handles GPU trees larger than 512 bodies.
+  Small CUDA trees share body cotangents within a block. CPU and larger trees read them directly.
   """
   tile_size = max(32, 1 << (nbody - 1).bit_length())
 
@@ -1019,9 +1018,9 @@ def kinematics_backward(m: Model, d_out: Data, d_bwd: Data, bc: BackwardContext)
   """Maps kinematic output gradients to qpos and mocap inputs."""
   mocap_grad = d_bwd.mocap_pos.grad is not None or d_bwd.mocap_quat.grad is not None
   ninput = m.njnt + (m.nmocap if mocap_grad else 0)
-  # Bound shared storage; the same wrench contraction also handles CPU and large trees.
-  shared = d_bwd.qpos.device.is_cuda and m.nbody <= 512
-  block_dim = max(32, 1 << (m.nbody - 1).bit_length()) if shared else 128
+  # One thread per body, with shared storage bounded by smooth's world-sum chunk.
+  shared = d_bwd.qpos.device.is_cuda and m.nbody <= smooth.WORLD_SUM_CHUNK
+  block_dim = max(32, 1 << (m.nbody - 1).bit_length()) if shared else smooth.WORLD_SUM_BLOCK
   wp.launch_tiled(
     _kinematics_vjp(m.nbody, shared),
     dim=d_bwd.nworld,

@@ -353,7 +353,7 @@ def implicitfast_inertia_vjp(m: Model, d: Data, acceleration: wp.array, y: wp.ar
 
 
 @wp.kernel(enable_backward=True)
-def _smooth_param_contraction(
+def _smooth_param_contract(
   # Model:
   opt_disableflags: int,
   dof_armature: wp.array2d[float],
@@ -366,17 +366,17 @@ def _smooth_param_contraction(
   y: wp.array2d[float],
   w: wp.array2d[float],
   # Out:
-  contraction_out: wp.array2d[float],
+  phi_out: wp.array2d[float],
 ):
   worldid, dofid = wp.tid()
   seed = lam[worldid, dofid]
   # y and w are zero without an implicit integration solve.
-  value = dof_armature[worldid % dof_armature.shape[0], dofid] * (
+  phi = dof_armature[worldid % dof_armature.shape[0], dofid] * (
     seed * qacc_in[worldid, dofid] - y[worldid, dofid] * w[worldid, dofid]
   )
   if not (opt_disableflags & DisableBit.DAMPER):
-    value += dof_damping[worldid % dof_damping.shape[0], dofid] * seed * qvel_in[worldid, dofid]
-  contraction_out[worldid, dofid] = value
+    phi += dof_damping[worldid % dof_damping.shape[0], dofid] * seed * qvel_in[worldid, dofid]
+  phi_out[worldid, dofid] = phi
 
 
 @event_scope

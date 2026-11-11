@@ -213,7 +213,7 @@ def _create_backward_context(m: Model, d: Data) -> BackwardContext:
     collision_convex_ctx=collision_convex_adjoint.create_collision_convex_backward_context(m, d),
     **arrays,
   )
-  for name in ("contact_V", "contact_A", "contact_Z", "contact_phi", "efc_Z", "efc_phi", "smooth_r"):
+  for name in ("efc_Z", "efc_phi", "smooth_r"):
     getattr(bc, name).requires_grad = True
   return bc
 
@@ -435,80 +435,58 @@ def _residual_contact(
   res_qvel: wp.array,
   bc: BackwardContext,
 ):
-  """Contracts contact rows before differentiating the loop-free cone leaf."""
-  nconmax = d_bwd.contact.pos.shape[0]
-  contact_V, contact_A, contact_Z = bc.contact_V, bc.contact_A, bc.contact_Z
-  contact_phi = bc.contact_phi
-  res_cdof, res_subtree_com = bc.adj_cdof, bc.adj_subtree_com
-  res_efc_pos = bc.adj_efc_pos
-  res_contact_pos, res_contact_frame = bc.adj_contact_pos, bc.adj_contact_frame
-  walk = [m.body_rootid, m.body_weldid, m.body_dofnum, m.body_dofadr, m.dof_parentid, m.geom_bodyid]
-  state = [
-    d.qvel,
-    d_bwd.qacc,
-    d_bwd.subtree_com,
-    d_bwd.cdof,
-    d_bwd.contact.pos,
-    d_bwd.contact.geom,
-    d_bwd.contact.efc_address,
-    d_bwd.contact.worldid,
-    d_bwd.nacon,
-  ]
+  """Accumulates contact residual VJPs without staging per-contact spatial adjoints."""
   wp.launch(
-    constraint_adjoint._contact_gather,
-    dim=nconmax,
-    inputs=walk + state + [lam],
-    outputs=[contact_V, contact_A, contact_Z],
-  )
-
-  geom_friction_grad = m.geom_friction.requires_grad
-  pair_friction_grad = m.pair_friction.requires_grad
-  res_contact_friction = bc.adj_contact_friction
-
-  pairs = [
-    (m.opt.timestep, None),
-    (m.opt.disableflags, None),
-    (m.opt.impratio_invsqrt, None),
-    (m.body_invweight0, None),
-    (m.geom_bodyid, None),
-    (d_bwd.contact.frame, res_contact_frame),
-    (d_bwd.contact.friction, res_contact_friction),
-    (d_bwd.contact.solref, None),
-    (d_bwd.contact.solreffriction, None),
-    (d_bwd.contact.solimp, None),
-    (d_bwd.contact.dim, None),
-    (d_bwd.contact.geom, None),
-    (d_bwd.contact.efc_address, None),
-    (d_bwd.contact.worldid, None),
-    (d_bwd.efc.pos, res_efc_pos),
-    (d_bwd.efc.margin, None),
-    (d_bwd.efc.state, None),
-    (d_bwd.nacon, None),
-    (contact_V, contact_V.grad),
-    (contact_A, contact_A.grad),
-    (contact_Z, contact_Z.grad),
-  ]
-  contact_phi.grad.fill_(1.0)
-  kernel = constraint_adjoint._contact_phi(int(m.opt.cone))
-  adjoint_util._launch_vjp(kernel, nconmax, pairs, [contact_phi], [contact_phi.grad])
-  wp.launch(
-    constraint_adjoint._contact_scatter(geom_friction_grad, pair_friction_grad),
-    dim=nconmax,
+    constraint_adjoint._contact_residual(int(m.opt.cone), m.geom_friction.requires_grad, m.pair_friction.requires_grad),
+    dim=d_bwd.naconmax,
+    # A warp per block spreads sparse contact batches across more SMs.
+    block_dim=32,
     inputs=[
       m.ngeom,
-      *walk,
+      m.opt.timestep,
+      m.opt.disableflags,
+      m.opt.impratio_invsqrt,
+      m.body_rootid,
+      m.body_weldid,
+      m.body_dofnum,
+      m.body_dofadr,
+      m.body_invweight0,
+      m.dof_parentid,
+      m.geom_bodyid,
       m.geom_priority,
       m.geom_friction,
       m.pair_friction,
       m.nxn_pairid,
-      *state,
+      d.qvel,
+      d_bwd.qacc,
+      d_bwd.subtree_com,
+      d_bwd.cdof,
+      d_bwd.contact.pos,
+      d_bwd.contact.frame,
+      d_bwd.contact.friction,
+      d_bwd.contact.solref,
+      d_bwd.contact.solreffriction,
+      d_bwd.contact.solimp,
+      d_bwd.contact.dim,
+      d_bwd.contact.geom,
+      d_bwd.contact.efc_address,
+      d_bwd.contact.worldid,
+      d_bwd.efc.pos,
+      d_bwd.efc.margin,
+      d_bwd.efc.state,
+      d_bwd.nacon,
       lam,
-      contact_V.grad,
-      contact_A.grad,
-      contact_Z.grad,
-      res_contact_friction,
     ],
-    outputs=[res_qvel, res_cdof, res_subtree_com, res_contact_pos, m.geom_friction.grad, m.pair_friction.grad],
+    outputs=[
+      res_qvel,
+      bc.adj_cdof,
+      bc.adj_subtree_com,
+      bc.adj_contact_pos,
+      bc.adj_contact_frame,
+      bc.adj_efc_pos,
+      m.geom_friction.grad,
+      m.pair_friction.grad,
+    ],
   )
 
 
@@ -557,7 +535,7 @@ def smooth_params_backward(m: Model, d: Data, d_bwd: Data, lam: wp.array, bc: Ba
     ]
     bc.smooth_r.grad.fill_(-1.0)
     adjoint_util._launch_vjp(
-      model_adjoint._smooth_param_contraction,
+      model_adjoint._smooth_param_contract,
       (d.nworld, m.nv),
       pairs,
       [bc.smooth_r],
