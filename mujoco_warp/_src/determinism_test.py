@@ -230,25 +230,18 @@ _TREE_CASES = (
     covers=(
       "forward._qfrc_actuator",
       "forward._tendon_actuator_force",
-      "passive._gravity_force",
       "passive._spring_damper_tendon_passive",
       "sensor._energy_pos_gravity",
       "sensor._energy_pos_passive_joint",
       "sensor._energy_pos_passive_tendon",
       "sensor._tendon_actuator_force",
-      "set_const._accumulate_subtreemass",
-      "smooth._angular_momentum",
-      "smooth._cfrc_backward",
       "smooth._cfrc_ext_equality",
       "smooth._cfrc_ext_spatial_tendon",
       "smooth._cfrc_ext_tendon_actuator",
       "smooth._cfrc_ext_tendon_constraint",
-      "smooth._crb_accumulate",
       "smooth._joint_tendon",
-      "smooth._linear_momentum",
       "smooth._spatial_geom_tendon",
       "smooth._spatial_site_tendon",
-      "smooth._subtree_com_acc",
       "smooth._tendon_armature",
       "smooth._tendon_bias_coef",
       "smooth._tendon_bias_qfrc",
@@ -260,6 +253,7 @@ _TREE_CASES = (
       "solver._update_constraint_init_qfrc_constraint_sparse",
       "solver._update_gradient_grad",
       "solver._update_gradient_h_incremental_sparse",
+      "support._apply_ft_scatter",
     ),
   ),
   dict(
@@ -289,7 +283,11 @@ _TREE_CASES = (
       "solver._add_tendon_metric_dense",
     ),
   ),
-  dict(testcase_name="discrete_cg", overrides={"opt.integrator": "DISCRETE", "opt.solver": "CG"}, covers=()),
+  dict(
+    testcase_name="discrete_cg",
+    overrides={"opt.integrator": "DISCRETE", "opt.solver": "CG", "opt.tolerance": "1e-10"},
+    covers=(),
+  ),
   dict(
     testcase_name="dense_blocks",
     overrides={"opt.jacobian": "DENSE"},
@@ -337,7 +335,7 @@ _FLEX_SHELL_CASES = (dict(testcase_name="euler", overrides={}, covers=("passive.
 
 _FLEX_CONTACT_CASES = (
   dict(testcase_name="sparse", overrides={"opt.jacobian": "SPARSE"}, covers=()),
-  dict(testcase_name="dense", overrides={"opt.jacobian": "DENSE"}, covers=("constraint._efc_contact_jac_dense_flex",)),
+  dict(testcase_name="dense", overrides={"opt.jacobian": "DENSE"}, covers=()),
 )
 
 _FLEX_PASSIVE_CASES = (
@@ -346,10 +344,8 @@ _FLEX_PASSIVE_CASES = (
     overrides={"opt.solver": "CG"},
     covers=(
       "derivative._eff_contact_shift",
-      "derivative._eff_fold_actuator",
       "derivative._eff_fold_contact_rank1",
       "derivative._eff_fold_efc_sparse",
-      "derivative._eff_fold_tendon",
       "derivative._eff_mul_add_contact",
       "passive._eff_contact_force",
     ),
@@ -370,7 +366,7 @@ _CONTACT_CASES = (
       "smooth._transmission_body_moment",
     ),
   ),
-  dict(testcase_name="dense", overrides={"opt.jacobian": "DENSE"}, covers=("constraint._efc_contact_jac_dense",)),
+  dict(testcase_name="dense", overrides={"opt.jacobian": "DENSE"}, covers=()),
   dict(
     testcase_name="elliptic_dense",
     overrides={"opt.jacobian": "DENSE", "opt.cone": "ELLIPTIC"},
@@ -553,6 +549,12 @@ class DeterminismTest(parameterized.TestCase):
         ctrl_noise=0.5,
       )
 
+    # wrenches on bodies with shared ancestor dofs: the applied-force scatter has colliding atomics
+    xfrc = np.zeros((d.nworld, mjm.nbody, 6), dtype=np.float32)
+    for name in ("arm2", "arm3", "leg2"):
+      xfrc[:, mjm.body(name).id] = np.linspace(-0.3, 0.4, 6)
+    d.xfrc_applied.assign(xfrc)
+
     def extra(m, d):
       set_const.set_const(m, d)
       mjw.inverse(m, d)
@@ -704,6 +706,9 @@ class DeterminismTest(parameterized.TestCase):
           <flexcomp name="cloth" type="grid" count="3 3 1" spacing=".1 .1 .1" pos="0 0 .19" mass=".09">
             <contact passive="true"/>
             <elasticity young="1e3" poisson=".3" thickness="1e-3" elastic2d="both"/>
+          </flexcomp>
+          <flexcomp name="rod" type="grid" count="3 1 1" spacing=".1 .1 .1" dim="1" pos="0 .5 1" mass=".03">
+            <elasticity young="1e3" damping="1e-2"/>
           </flexcomp>
           <body pos="1 0 1">
             <joint name="hinge0" axis="0 1 0" damping=".1"/>

@@ -27,12 +27,16 @@ from mujoco_warp import GeomType
 from mujoco_warp import test_data
 from mujoco_warp._src import collision_convex
 from mujoco_warp._src import types
+from mujoco_warp._src import util_pkg
 from mujoco_warp._src.collision_core import Geom
 from mujoco_warp._src.collision_driver import MJ_COLLISION_TABLE
 from mujoco_warp._src.collision_primitive import plane_convex
 from mujoco_warp._src.collision_sdf import MeshData
 from mujoco_warp._src.collision_sdf import OptimizationParams
 from mujoco_warp._src.collision_sdf import VolumeData
+from mujoco_warp._src.collision_sdf import ellipsoid
+from mujoco_warp._src.collision_sdf import grad_box
+from mujoco_warp._src.collision_sdf import grad_ellipsoid
 from mujoco_warp._src.collision_sdf import gradient_step
 from mujoco_warp._src.collision_sdf import sample_volume_grad
 from mujoco_warp._src.math import upper_trid_index
@@ -62,6 +66,22 @@ def volume_gradient_step_test(volume: VolumeData, result_out: wp.array[wp.vec4])
     types.GeomType.SDF, wp.vec3(1e-6, 1e-4, 1e-4), params, -1, -1, 1, True, 2.0, volume, volume, mesh, mesh
   )
   result_out[0] = wp.vec4(point[0], point[1], point[2], dist)
+
+
+@wp.kernel
+def primitive_sdf_singularities_test(
+  # In:
+  box_pts: wp.array[wp.vec3],
+  # Out:
+  box_grads_out: wp.array[wp.vec3],
+  ellipsoid_dist_out: wp.array[float],
+  ellipsoid_grad_out: wp.array[wp.vec3],
+):
+  size = wp.vec3(1.0, 2.0, 3.0)
+  ellipsoid_dist_out[0] = ellipsoid(wp.vec3(0.0), size)
+  ellipsoid_grad_out[0] = grad_ellipsoid(wp.vec3(0.0), size)
+  for i in range(box_pts.shape[0]):
+    box_grads_out[i] = grad_box(box_pts[i], size)
 
 
 def _assert_eq(a, b, name):
@@ -1995,6 +2015,52 @@ class CollisionTest(parameterized.TestCase):
     wp.launch(volume_gradient_step_test, dim=1, inputs=[volume], outputs=[result])
     np.testing.assert_allclose(result.numpy()[0], [1e-6, 1e-4, 1e-4, -0.000499], rtol=1e-5, atol=1e-9)
 
+  def test_sdf_primitive_singularities(self):
+    """Ellipsoid origin and box surface/edge/corner SDF helpers match CPU MuJoCo."""
+    pts = np.array(
+      [
+        [1.0, 0.0, 0.0],
+        [-1.0, 0.0, 0.0],
+        [0.0, 2.0, 0.0],
+        [0.0, -2.0, 0.0],
+        [0.0, 0.0, 3.0],
+        [0.0, 0.0, -3.0],
+        [1.0, 2.0, 0.0],
+        [-1.0, 2.0, -3.0],
+        [2.0, 0.0, 0.0],
+      ],
+      dtype=np.float32,
+    )
+    inv_sqrt2 = 1.0 / np.sqrt(2.0)
+    inv_sqrt3 = 1.0 / np.sqrt(3.0)
+    expected_box_grads = np.array(
+      [
+        [1.0, 0.0, 0.0],
+        [-1.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0],
+        [0.0, -1.0, 0.0],
+        [0.0, 0.0, 1.0],
+        [0.0, 0.0, -1.0],
+        [inv_sqrt2, inv_sqrt2, 0.0],
+        [-inv_sqrt3, inv_sqrt3, -inv_sqrt3],
+        [1.0, 0.0, 0.0],
+      ],
+      dtype=np.float32,
+    )
+    box_pts = wp.array(pts, dtype=wp.vec3)
+    box_grads_out = wp.zeros(len(pts), dtype=wp.vec3)
+    ellipsoid_dist_out = wp.zeros(1, dtype=float)
+    ellipsoid_grad_out = wp.zeros(1, dtype=wp.vec3)
+    wp.launch(
+      primitive_sdf_singularities_test,
+      dim=1,
+      inputs=[box_pts],
+      outputs=[box_grads_out, ellipsoid_dist_out, ellipsoid_grad_out],
+    )
+    np.testing.assert_allclose(ellipsoid_dist_out.numpy()[0], -1.0, rtol=1e-6, atol=1e-6)
+    np.testing.assert_allclose(ellipsoid_grad_out.numpy()[0], [0.0, 0.0, 0.0], rtol=1e-6, atol=1e-6)
+    np.testing.assert_allclose(box_grads_out.numpy(), expected_box_grads, rtol=1e-6, atol=1e-6)
+
   @parameterized.parameters(1, 2)
   def test_sdf_disjoint_bounds_with_candidate_gap(self, nworld):
     """A candidate gap must not seed SDF minimization inside an empty AABB intersection."""
@@ -2472,6 +2538,73 @@ class CollisionTest(parameterized.TestCase):
 
     if nworld == 2:
       self.assertFalse(np.allclose(dist[worldid == 0], dist[worldid == 1]))
+
+  @absltest.skipIf(not util_pkg.check_version("mujoco>=3.17.1"), "Requires MuJoCo >= 3.17.1")
+  @parameterized.parameters(1, 2)
+  def test_contact_surfacevel(self, nworld):
+    """Populates contact.surfacevel from geom_surfacevel and zeroes contacts without surfacevel."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <geom name="belt" type="plane" size="2 2 0.01" condim="4" surfacevel="0.4 -0.2 0.1 0 0 1.5"/>
+          <geom name="wall" size="0.1" pos="1 0 0.2"/>
+          <body pos="0.1 -0.15 0.095">
+            <freejoint/>
+            <geom size="0.1" condim="4"/>
+          </body>
+          <body pos="1 0 0.35">
+            <freejoint/>
+            <geom size="0.1"/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=nworld,
+    )
+    self.assertEqual(mjd.ncon, 2)
+
+    mjds = [mjd]
+    if nworld == 2:
+      mjd1 = mujoco.MjData(mjm)
+      qpos = d.qpos.numpy()
+      qpos[1, 0] = -0.25
+      qpos[1, 1] = 0.3
+      d.qpos.assign(qpos)
+      mjd1.qpos[:] = qpos[1]
+      mujoco.mj_forward(mjm, mjd1)
+      self.assertEqual(mjd1.ncon, 2)
+      mjds.append(mjd1)
+      mjw.fwd_kinematics(m, d)
+
+    d.nacon.fill_(-1)
+    d.contact.surfacevel.fill_(wp.inf)
+    mjw.collision(m, d)
+
+    nacon = int(d.nacon.numpy()[0])
+    self.assertEqual(nacon, 2 * nworld)
+    worldid = d.contact.worldid.numpy()[:nacon]
+    geom = d.contact.geom.numpy()[:nacon]
+    surfacevel = d.contact.surfacevel.numpy()[:nacon]
+
+    belt_sv = []
+    for w in range(nworld):
+      w_mask = worldid == w
+      w_geom = geom[w_mask]
+      w_sv = surfacevel[w_mask]
+      self.assertLen(w_sv, 2)
+      for c in range(2):
+        mj_con = mjds[w].contact[c]
+        match = np.nonzero((w_geom[:, 0] == mj_con.geom[0]) & (w_geom[:, 1] == mj_con.geom[1]))[0]
+        self.assertLen(match, 1)
+        np.testing.assert_allclose(w_sv[match[0]], mj_con.surfacevel, rtol=1e-5, atol=1e-5)
+        if mj_con.geom[0] == 0:
+          belt_sv.append(w_sv[match[0]])
+        else:
+          np.testing.assert_array_equal(w_sv[match[0]], np.zeros(3))
+
+    if nworld == 2:
+      self.assertFalse(np.allclose(belt_sv[0], belt_sv[1]))
 
 
 # box-box primitive collider parity with MuJoCo's mjc_BoxBox
