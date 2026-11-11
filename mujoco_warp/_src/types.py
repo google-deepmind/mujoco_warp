@@ -995,6 +995,10 @@ class mat66f(wp.types.matrix(shape=(6, 6), dtype=float)):
   pass
 
 
+class mat83f(wp.types.matrix(shape=(8, 3), dtype=float)):
+  pass
+
+
 class mat113f(wp.types.matrix(shape=(11, 3), dtype=float)):
   pass
 
@@ -1013,6 +1017,7 @@ mat53 = mat53f
 mat63 = mat63f
 mat55 = mat55f
 mat66 = mat66f
+mat83 = mat83f
 mat113 = mat113f
 
 
