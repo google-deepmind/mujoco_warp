@@ -34,7 +34,6 @@ from mujoco_warp._src.support import mat33_to_quat_polar
 from mujoco_warp._src.support import next_act
 from mujoco_warp._src.support import xfrc_accumulate
 from mujoco_warp._src.types import MJ_MINVAL
-from mujoco_warp._src.types import ROD_HINGE_SIZE
 from mujoco_warp._src.types import BiasType
 from mujoco_warp._src.types import Data
 from mujoco_warp._src.types import DeterminismType
@@ -417,7 +416,7 @@ def _next_rod_twist(
 ):
   """Carries per-edge (t_e, u_e) reference directors and unwrapped dpsi_h of 1D DER rods."""
   worldid, flexid = wp.tid()
-  if wp.static(ROD_HINGE_SIZE != 10) or not flex_rod_is_chain[flexid] or not flex_rod_ref_ok_in[worldid, flexid]:
+  if not flex_rod_is_chain[flexid] or not flex_rod_ref_ok_in[worldid, flexid]:
     return
   padr = flex_plasticadr[flexid]
   eadr = flex_rod_edgeadr[flexid]

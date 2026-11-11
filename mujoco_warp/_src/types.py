@@ -21,8 +21,6 @@ import mujoco
 import numpy as np
 import warp as wp
 
-from mujoco_warp._src import util_pkg
-
 MJ_MINVAL = mujoco.mjMINVAL
 MJ_MAXVAL = mujoco.mjMAXVAL
 MJ_MINIMP = mujoco.mjMINIMP  # minimum constraint impedance
@@ -30,50 +28,8 @@ MJ_MAXIMP = mujoco.mjMAXIMP  # maximum constraint impedance
 MJ_MAXCONPAIR = mujoco.mjMAXCONPAIR
 MJ_MINMU = mujoco.mjMINMU  # minimum friction
 MJ_MINAWAKE = mujoco.mjMINAWAKE  # minimum number of timesteps before sleeping
-FLEX_STIFFNESS_3D = 24 if util_pkg.check_version("mujoco>=3.14.1.dev989511280") else 21
-# TODO(team): remove version check once mujoco >= 4.0.0 is required.
-FLEX_INTERP_PHYS_JAC = util_pkg.check_version("mujoco>=3.17.1.dev1010658301")
-
-
-# TODO(team): Remove dynamic version probe once minimum MuJoCo version
-# supports curved rod references and set ROD_HINGE_SIZE = 10 directly.
-def _rod_hinge_size() -> int:
-  """Size of a 1D rod bending record in flex_bending of the installed MuJoCo.
-
-  Records have 10 values since MuJoCo supports curved rod references: a single hinge
-  [v0, v1, v2, -1, k, 0, kb0, 0, 0, 0] or a hinge pair [v0, v1, v2, v3, w0, w1, om0 (4)], see
-  passive.rod_stencil; before, they were [v0, v1, v2, k]. The size is read from a compiled rod,
-  because the first MuJoCo build with the larger record is not known when this code is written.
-
-  Returns:
-    The record size, 4 or 10.
-
-  Raises:
-    NotImplementedError: If the installed MuJoCo uses another record size.
-  """
-  xml = """
-  <mujoco>
-    <worldbody>
-      <flexcomp name="rod" type="grid" count="3 1 1" spacing="1 1 1" radius="0.1" dim="1">
-        <elasticity young="1"/>
-      </flexcomp>
-    </worldbody>
-  </mujoco>
-  """
-  try:
-    nflexbending = mujoco.MjModel.from_xml_string(xml).nflexbending
-  except ValueError:  # MuJoCo without 1D flex elasticity
-    return 4
-  if not isinstance(nflexbending, int):
-    return 4
-  # one hinge: nflexbending = 1 + record size, or 0 if 1D young is ignored
-  size = nflexbending - 1 if nflexbending else 4
-  if size not in (4, 10):
-    raise NotImplementedError(f"unsupported 1D rod record size {size} in flex_bending")
-  return size
-
-
-ROD_HINGE_SIZE = _rod_hinge_size()
+FLEX_STIFFNESS_3D = 24  # flex_stiffness values per 3D element
+ROD_HINGE_SIZE = 10  # flex_bending values per 1D rod hinge record
 
 # maximum size (by number of edges) of an horizon in EPA algorithm
 MJ_MAX_EPAHORIZON = 24
@@ -82,6 +38,9 @@ MJ_MAX_EPAFACES = 5
 
 TILE_SIZE_JTDAJ_SPARSE = 16
 TILE_SIZE_JTDAJ_DENSE = 16
+# max Newton Hessian size factored as one tile; past it the blocked path's factor reuse wins on
+# Blackwell (Ada keeps one tile ahead to 64)
+H_ONE_TILE_MAX = 48
 
 # max M block size where dense tile-Cholesky beats sparse LDL (wins to ~64, degrades past ~80)
 M_BLOCK_DENSE_MAX = 64
@@ -111,6 +70,7 @@ class BlockDim:
     segmented_sort: segmented sort block dimension (collision_driver)
     nxn_broadphase: NXN broadphase block dimension (collision_driver)
     convex_ccd: convex CCD kernel block dimension (collision_convex)
+    flex_fps: flex contact FPS block dimension (collision_flex)
     island_dsu: island discovery DSU block dimension (island)
     ray: ray block dimension (ray)
     contact_sort: contact sort block dimension (sensor)
@@ -139,6 +99,8 @@ class BlockDim:
   nxn_broadphase: int = 128
   # collision_convex
   convex_ccd: int = 64
+  # collision_flex
+  flex_fps: int = 256
   # island
   island_dsu: int = 32
   # ray
@@ -153,7 +115,7 @@ class BlockDim:
   small_cholesky: int = 64
   solve_LD_sparse_fused: int = 128
   # solver
-  update_gradient_cholesky: int = 64
+  update_gradient_cholesky: int = 32
   update_gradient_cholesky_blocked: int = 32
   update_gradient_JTDAJ_sparse: int = 128
   update_gradient_JTDAJ_dense: int = 128
@@ -872,9 +834,8 @@ class TendonType(enum.IntEnum):
     SPATIAL: path through sites, around geoms
   """
 
-  # TODO(team): use mujoco.mjtTendon when mujoco>=3.17.1 is required
-  FIXED = 0
-  SPATIAL = 1
+  FIXED = mujoco.mjtTendon.mjTENDON_FIXED
+  SPATIAL = mujoco.mjtTendon.mjTENDON_SPATIAL
 
 
 class WrapType(enum.IntEnum):
@@ -935,7 +896,7 @@ class State(enum.IntEnum):
   MOCAP_QUAT = mujoco.mjtState.mjSTATE_MOCAP_QUAT
   USERDATA = mujoco.mjtState.mjSTATE_USERDATA
   # unsupported: PLUGIN
-  PLASTIC = getattr(mujoco.mjtState, "mjSTATE_PLASTIC", 1 << 14)
+  PLASTIC = mujoco.mjtState.mjSTATE_PLASTIC
   NSTATE = mujoco.mjtState.mjNSTATE
   PHYSICS = mujoco.mjtState.mjSTATE_PHYSICS  # includes HISTORY and PLASTIC
   FULLPHYSICS = mujoco.mjtState.mjSTATE_FULLPHYSICS
@@ -1435,7 +1396,7 @@ class Model:
     flex_solimp: constraint solver impedance: contact        (nflex, mjNIMP)
     flex_friction: friction for (slide, spin, roll)          (nflex, 3)
     flex_margin: detect contact if dist<margin               (nflex,)
-    flex_gap: include in solver if dist<margin-gap           (nflex,)
+    flex_gap: additional contact detection buffer            (nflex,)
     flex_selfcollide: self-collision mode                    (nflex,)
     flex_activelayers: active element layers                 (nflex,)
     flex_passive: passive contact mode                       (nflex,)

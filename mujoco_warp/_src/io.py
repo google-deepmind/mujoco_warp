@@ -26,7 +26,6 @@ from mujoco_warp._src import history
 from mujoco_warp._src import sleep
 from mujoco_warp._src import support
 from mujoco_warp._src import types
-from mujoco_warp._src import util_pkg
 from mujoco_warp._src import warp_util
 
 wp.set_module_options({"default_grid_stride": False})
@@ -250,8 +249,6 @@ def _eff_flex_stiff_possible(mjm: mujoco.MjModel, f: int) -> bool:
 
 def _is_open_rod_chain(mjm: mujoco.MjModel, fi: int) -> tuple[bool, int]:
   """Returns (is_open_chain, nhinge) for single-hinge open 1D rod flex `fi`."""
-  if types.ROD_HINGE_SIZE != 10:
-    return False, 0
   bendingadr = int(mjm.flex_bendingadr[fi])
   if mjm.flex_dim[fi] != 1 or mjm.flex_interp[fi] != 0 or bendingadr < 0:
     return False, 0
@@ -307,7 +304,7 @@ def _mjm_rod_vert_elems(mjm: mujoco.MjModel, fi: int) -> list[int]:
 
   chain = []
   bendingadr = int(mjm.flex_bendingadr[fi])
-  if bendingadr >= 0 and types.ROD_HINGE_SIZE == 10:
+  if bendingadr >= 0:
     nhinge = int(mjm.flex_bending[bendingadr])
     if nhinge > 0 and mjm.flex_bending[bendingadr + 1 + 3] < 0:
       chain = [int(mjm.flex_bending[bendingadr + 1 + 10 * h]) for h in range(nhinge)]
@@ -587,31 +584,11 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
 
   # create model
   m = types.Model(**{f.name: getattr(mjm, f.name, None) for f in dataclasses.fields(types.Model)})
-  # TODO(team): remove version check once mujoco >= 3.16.1 is required.
-  if not util_pkg.check_version("mujoco>=3.16.1"):
-    m.eq_data = np.pad(mjm.eq_data, ((0, 0), (0, 1)))
-  if not util_pkg.check_version("mujoco>=3.17.1"):
-    if not hasattr(mjm, "nplastic"):
-      m.nplastic = 0
-    if not hasattr(mjm, "jnt_plasticadr"):
-      m.jnt_plasticadr = np.full(mjm.njnt, -1, dtype=np.int32)
-    if not hasattr(mjm, "tendon_plasticadr"):
-      m.tendon_plasticadr = np.full(mjm.ntendon, -1, dtype=np.int32)
-    if not hasattr(mjm, "flex_plasticadr"):
-      m.flex_plasticadr = np.full(mjm.nflex, -1, dtype=np.int32)
-    if not hasattr(mjm, "flex_plasticmode"):
-      m.flex_plasticmode = np.zeros(mjm.nflex, dtype=np.int32)
 
   m.opt = opt
   m.callback = types.Callback()
 
-  m.nv_pad = _get_padded_sizes(
-    mjm.nv,
-    0,
-    is_sparse(mjm),
-    types.TILE_SIZE_JTDAJ_SPARSE if is_sparse(mjm) else types.TILE_SIZE_JTDAJ_DENSE,
-    augment_cholesky=mjm.opt.solver == mujoco.mjtSolver.mjSOL_NEWTON and mjm.nv > 32,
-  )[1]
+  m.nv_pad = _get_padded_sizes(mjm, 0)[1]
   m.nacttrnbody = (mjm.actuator_trntype == mujoco.mjtTrn.mjTRN_BODY).sum()
   m.nsensortaxel = mjm.mesh_vertnum[mjm.sensor_objid[mjm.sensor_type == mujoco.mjtSensor.mjSENS_TACTILE]].sum()
   # rangefinder ray counts (1 per site sensor, width * height per camera sensor)
@@ -631,8 +608,6 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
       raise NotImplementedError("Flex-SDF collision is not implemented.")
     if (mjm.geom_type == mujoco.mjtGeom.mjGEOM_HFIELD).any():
       raise NotImplementedError("Flex-HField collision is not implemented.")
-    if hasattr(mjm, "flex_internal") and (mjm.flex_internal != 0).any():
-      raise NotImplementedError("Flex internal collisions are not implemented.")
     if (mjm.flex_rigid != 0).any():
       raise NotImplementedError("Rigid flexes are not implemented.")
     # TODO(team): skip element pairs driven by a common grid node, as in mjc_ElemSharedNode
@@ -651,16 +626,13 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
   m.has_flex_passive = bool(
     mjm.nflex > 0 and np.any((mjm.flex_passive != 0) & (mjm.flex_rigid == 0) & (mjm.flex_interp == 0) & (mjm.flex_dim >= 2))
   )
-  m.has_flex_snh = bool(
-    types.FLEX_STIFFNESS_3D == 24
-    and any(
-      mjm.flex_interp[f] == 0
-      and mjm.flex_dim[f] == 3
-      and mjm.flex_stiffnessadr[f] >= 0
-      and mjm.flex_elemnum[f] > 0
-      and mjm.flex_stiffness[mjm.flex_stiffnessadr[f] + 21] != 0
-      for f in range(mjm.nflex)
-    )
+  m.has_flex_snh = any(
+    mjm.flex_interp[f] == 0
+    and mjm.flex_dim[f] == 3
+    and mjm.flex_stiffnessadr[f] >= 0
+    and mjm.flex_elemnum[f] > 0
+    and mjm.flex_stiffness[mjm.flex_stiffnessadr[f] + 21] != 0
+    for f in range(mjm.nflex)
   )
   if m.has_flex_snh and mjm.opt.integrator != mujoco.mjtIntegrator.mjINT_DISCRETE:
     raise ValueError("stable Neo-Hookean elasticity requires integrator='discrete'")
@@ -1125,11 +1097,6 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
 
   m.nJfs = m.flexstrain_J_colind.size
 
-  # tendon type: older mujoco versions imply it from the first wrap object
-  if not util_pkg.check_version("mujoco>=3.17.1"):
-    is_fixed = mjm.wrap_type[mjm.tendon_adr] == mujoco.mjtWrap.mjWRAP_JOINT
-    m.tendon_type = np.where(is_fixed, types.TendonType.FIXED, types.TendonType.SPATIAL)
-
   # fixed tendon
   m.tendon_jnt_adr, m.wrap_jnt_adr = [], []
   for i in range(mjm.ntendon):
@@ -1560,7 +1527,7 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
       flex_vert_rodelem[va : va + int(mjm.flex_vertnum[fi])] = _mjm_rod_vert_elems(mjm, fi)
 
     bendingadr = int(mjm.flex_bendingadr[fi])
-    if mjm.flex_dim[fi] == 1 and bendingadr >= 0 and types.ROD_HINGE_SIZE == 10:
+    if mjm.flex_dim[fi] == 1 and bendingadr >= 0:
       nhinge_raw = int(mjm.flex_bending[bendingadr])
       if nhinge_raw > 0:
         h0 = mjm.flex_bending[bendingadr + 1 : bendingadr + 1 + 10]
@@ -1746,18 +1713,28 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
   return m
 
 
-def _get_padded_sizes(nv: int, njmax: int, is_sparse: bool, tile_size: int, augment_cholesky: bool = False):
+def _get_padded_sizes(mjm: mujoco.MjModel, njmax: int):
   def round_up(x, multiple):
     return ((x + multiple - 1) // multiple) * multiple
 
+  tile_size = types.TILE_SIZE_JTDAJ_SPARSE if is_sparse(mjm) else types.TILE_SIZE_JTDAJ_DENSE
   njmax_padded = round_up(njmax, tile_size)
-  nv_padded = round_up(nv + int(augment_cholesky), tile_size) if (is_sparse or nv > 32) else round_up(nv, 4)
+  nv = mjm.nv
+  if nv > types.H_ONE_TILE_MAX:
+    # the blocked Cholesky's tiles, and its augmented row for Newton
+    nv_padded = round_up(nv + int(mjm.opt.solver == mujoco.mjtSolver.mjSOL_NEWTON), tile_size)
+  else:
+    # the one-tile Cholesky factors the padded tile: rows of whole 16-byte vectors
+    nv_padded = round_up(nv, 4)
 
   return njmax_padded, nv_padded
 
 
 def _nvmax_pad(nvmax: int) -> int:
-  """Reserve an augmented column and round nvmax up to the dense tile size."""
+  """Reserve an augmented column and round nvmax up to the dense tile size.
+
+  The compact smooth solve factors M with the blocked Cholesky, whatever the size.
+  """
   t = types.TILE_SIZE_JTDAJ_DENSE
   return ((max(nvmax, 1) + t) // t) * t
 
@@ -2398,25 +2375,14 @@ def make_data(
 
   sizes = dict(
     {"*": 1},
-    **{
-      f.name: (getattr(mjm, f.name, 0) if f.name == "nplastic" else getattr(mjm, f.name, None))
-      for f in dataclasses.fields(types.Model)
-      if f.type is int
-    },
+    **{f.name: getattr(mjm, f.name, None) for f in dataclasses.fields(types.Model) if f.type is int},
   )
   condim_arrays = [np.array([0]), mjm.geom_condim, mjm.pair_dim]
   if mjm.nflex > 0:
     condim_arrays.append(mjm.flex_condim)
   sizes["nmaxcondim"] = np.concatenate(condim_arrays).max()
   sizes["nmaxpyramid"] = np.maximum(1, 2 * (sizes["nmaxcondim"] - 1))
-  tile_size = types.TILE_SIZE_JTDAJ_SPARSE if is_sparse(mjm) else types.TILE_SIZE_JTDAJ_DENSE
-  sizes["njmax_pad"], sizes["nv_pad"] = _get_padded_sizes(
-    mjm.nv,
-    njmax,
-    is_sparse(mjm),
-    tile_size,
-    augment_cholesky=mjm.opt.solver == mujoco.mjtSolver.mjSOL_NEWTON and mjm.nv > 32,
-  )
+  sizes["njmax_pad"], sizes["nv_pad"] = _get_padded_sizes(mjm, njmax)
   sizes["nworld"] = nworld
   sizes["naconmax"] = naconmax
   sizes["njmax"] = njmax
@@ -2509,7 +2475,7 @@ def make_data(
     # plastic
     "plastic": (
       wp.array(np.tile(mjd.plastic, (nworld, 1)), shape=(nworld, mjm.nplastic), dtype=float)
-      if getattr(mjm, "nplastic", 0) > 0
+      if mjm.nplastic > 0
       else wp.zeros((nworld, 0), dtype=float)
     ),
     # island arrays
@@ -2646,25 +2612,14 @@ def put_data(
 
   sizes = dict(
     {"*": 1},
-    **{
-      f.name: (getattr(mjm, f.name, 0) if f.name == "nplastic" else getattr(mjm, f.name, None))
-      for f in dataclasses.fields(types.Model)
-      if f.type is int
-    },
+    **{f.name: getattr(mjm, f.name, None) for f in dataclasses.fields(types.Model) if f.type is int},
   )
   condim_arrays = [np.array([0]), mjm.geom_condim, mjm.pair_dim]
   if mjm.nflex > 0:
     condim_arrays.append(mjm.flex_condim)
   sizes["nmaxcondim"] = np.concatenate(condim_arrays).max()
   sizes["nmaxpyramid"] = np.maximum(1, 2 * (sizes["nmaxcondim"] - 1))
-  tile_size = types.TILE_SIZE_JTDAJ_SPARSE if is_sparse(mjm) else types.TILE_SIZE_JTDAJ_DENSE
-  sizes["njmax_pad"], sizes["nv_pad"] = _get_padded_sizes(
-    mjm.nv,
-    njmax,
-    is_sparse(mjm),
-    tile_size,
-    augment_cholesky=mjm.opt.solver == mujoco.mjtSolver.mjSOL_NEWTON and mjm.nv > 32,
-  )
+  sizes["njmax_pad"], sizes["nv_pad"] = _get_padded_sizes(mjm, njmax)
   sizes["nworld"] = nworld
   sizes["naconmax"] = naconmax
   sizes["njmax"] = njmax
@@ -2708,34 +2663,6 @@ def put_data(
       continue
     if f.name in ["flex", "elem", "vert"] and mjm.nflex == 0:
       contact_kwargs[f.name] = wp.empty(0, dtype=wp.vec2i)
-      continue
-    if f.name == "surfacevel" and not util_pkg.check_version("mujoco>=3.17.1"):
-      val = None
-      if mjm.flg_surfacevel and mjd.ncon > 0:
-        svel = np.zeros((mjd.ncon, 3))
-        sang = np.zeros((mjd.ncon, 3))
-        for side, sgn in ((0, -1.0), (1, 1.0)):
-          geom = mjd.contact.geom[: mjd.ncon, side]
-          valid = geom >= 0
-          g = geom[valid]
-          sv = mjm.geom_surfacevel[g]
-          xmat = mjd.geom_xmat[g].reshape((-1, 3, 3))
-          ang = np.einsum("nij,nj->ni", xmat, sv[:, 3:])
-          lin = np.einsum("nij,nj->ni", xmat, sv[:, :3]) + np.cross(ang, mjd.contact.pos[: mjd.ncon][valid] - mjd.geom_xpos[g])
-          svel[valid] += sgn * lin
-          sang[valid] += sgn * ang
-        frame = mjd.contact.frame[: mjd.ncon].reshape((-1, 3, 3))
-        val = np.stack(
-          (
-            np.einsum("ni,ni->n", frame[:, 1], svel),
-            np.einsum("ni,ni->n", frame[:, 2], svel),
-            np.einsum("ni,ni->n", frame[:, 0], sang),
-          ),
-          axis=-1,
-        )
-        val = np.tile(val, (nworld, 1))
-        val = np.pad(val, ((0, naconmax - val.shape[0]), (0, 0)))
-      contact_kwargs[f.name] = _create_array(val, f.type, sizes)
       continue
     val = getattr(mjd.contact, f.name)
     val = np.tile(val, (nworld,) + (1,) * (val.ndim - 1))
@@ -2861,8 +2788,8 @@ def put_data(
     "body_awake": wp.array(np.tile(body_awake_init.astype(np.int32), (nworld, 1)), dtype=int),
     # plastic
     "plastic": (
-      wp.array(np.tile(mjd.plastic, (nworld, 1)), shape=(nworld, getattr(mjm, "nplastic", 0)), dtype=float)
-      if getattr(mjm, "nplastic", 0) > 0 and hasattr(mjd, "plastic")
+      wp.array(np.tile(mjd.plastic, (nworld, 1)), shape=(nworld, mjm.nplastic), dtype=float)
+      if mjm.nplastic > 0
       else wp.zeros((nworld, 0), dtype=float)
     ),
   }
@@ -3038,7 +2965,7 @@ def get_data_into(
     result.flexedge_J[:] = d.flexedge_J.numpy()[world_id].reshape(-1)
   result.flexedge_length[:] = d.flexedge_length.numpy()[world_id]
   result.flexedge_velocity[:] = d.flexedge_velocity.numpy()[world_id]
-  if mjm.nflex > 0 and util_pkg.check_version("mujoco>=3.14.1.dev990351372"):
+  if mjm.nflex > 0:
     result.flex_hessian_valid[:] = d.flex_hessian_valid.numpy()[world_id]
     result.flexvert_hessian[:] = d.flexvert_hessian.numpy()[world_id]
     result.flexedge_hessian[:] = d.flexedge_hessian.numpy()[world_id].reshape((-1, 9))
@@ -3073,7 +3000,7 @@ def get_data_into(
   if mjm.nhistory > 0:
     result.history[:] = d.history.numpy()[world_id]
 
-  if getattr(mjm, "nplastic", 0) > 0:
+  if mjm.nplastic > 0:
     result.plastic[:] = d.plastic.numpy()[world_id]
 
   if mjm.nuserdata > 0:
@@ -3089,8 +3016,7 @@ def get_data_into(
   result.contact.solreffriction[:ncon] = d.contact.solreffriction.numpy()[ncon_filter]
   result.contact.solimp[:ncon] = d.contact.solimp.numpy()[ncon_filter]
   result.contact.adhesion[:ncon] = d.contact.adhesion.numpy()[ncon_filter]
-  if util_pkg.check_version("mujoco>=3.17.1"):
-    result.contact.surfacevel[:ncon] = d.contact.surfacevel.numpy()[ncon_filter]
+  result.contact.surfacevel[:ncon] = d.contact.surfacevel.numpy()[ncon_filter]
   result.contact.dim[:ncon] = d.contact.dim.numpy()[ncon_filter]
   result.contact.geom[:ncon] = d.contact.geom.numpy()[ncon_filter]
   is_passive = (contact_type[ncon_filter] & types.ContactType.PASSIVE) != 0
