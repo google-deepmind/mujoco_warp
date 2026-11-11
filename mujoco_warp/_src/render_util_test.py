@@ -26,7 +26,6 @@ import mujoco_warp as mjw
 from mujoco_warp import test_data
 from mujoco_warp._src import render_util
 from mujoco_warp._src import types
-from mujoco_warp._src import util_pkg
 
 
 def _assert_eq(a, b, name):
@@ -341,10 +340,6 @@ class RenderUtilTest(parameterized.TestCase):
     self.assertTrue(rc.use_textures, "use_textures")
     self.assertEqual(rc.textures.shape, (mjm.ntex,), "textures")
 
-  @absltest.skipIf(
-    not util_pkg.check_version("mujoco>=3.16.1"),
-    "Requires MuJoCo >= 3.16.1",
-  )
   def test_texture_by_reference(self):
     """A by-reference texture uploads the same pixels as its eager compile."""
     path = os.path.join(os.path.dirname(test_data.__file__), "mug", "mug.xml")
