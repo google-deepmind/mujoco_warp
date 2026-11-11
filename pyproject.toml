@@ -46,6 +46,10 @@ explicit = true
 name = "mujoco"
 url = "https://py.mujoco.org/"
 
+[tool.uv]
+# mjviser depends on the mujoco metapackage, but only needs mujoco-core
+override-dependencies = ["mujoco ; python_version < '0'"]
+
 [tool.uv.sources]
 warp-lang = {index = "nvidia"}
 mujoco-core = {index = "mujoco"}
