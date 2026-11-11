@@ -1248,6 +1248,33 @@ class SolverTest(parameterized.TestCase):
 
     self.assertTrue(d.overflow.numpy()[0] & types.OverflowType.LS_ITERATIONS)
 
+  @parameterized.product(
+    cone=(ConeType.PYRAMIDAL, ConeType.ELLIPTIC),
+    xml_jacobian=(
+      ("humanoid/humanoid.xml", mujoco.mjtJacobian.mjJAC_DENSE),
+      ("humanoid/humanoid.xml", mujoco.mjtJacobian.mjJAC_SPARSE),
+      ("constraints.xml", mujoco.mjtJacobian.mjJAC_DENSE),
+      ("constraints.xml", mujoco.mjtJacobian.mjJAC_SPARSE),
+      # dense Jacobians are limited to 60 DOFs
+      ("humanoid/n_humanoid.xml", mujoco.mjtJacobian.mjJAC_SPARSE),
+    ),
+  )
+  def test_solve_cholesky(self, cone, xml_jacobian):
+    """Newton from a cold start: one-tile (nv 27 padded, 48) and blocked (nv 81) Cholesky."""
+    xml, jacobian = xml_jacobian
+    for keyframe in range(3):
+      _, mjd, m, d = test_data.fixture(
+        xml,
+        keyframe=keyframe,
+        overrides={"opt.jacobian": jacobian, "opt.cone": cone, "opt.solver": SolverType.NEWTON, "opt.iterations": 50},
+      )
+      d.qacc_warmstart.zero_()
+      d.qacc.fill_(wp.inf)
+      d.efc.force.fill_(wp.inf)
+      mjw.solve(m, d)
+      _assert_eq(d.qacc.numpy()[0], mjd.qacc, "qacc")
+      _assert_eq(d.efc.force.numpy()[0, : mjd.nefc], mjd.efc_force, "efc_force")
+
   @parameterized.parameters(
     (ConeType.PYRAMIDAL, SolverType.CG, 10, 5, mujoco.mjtJacobian.mjJAC_DENSE),
     (ConeType.ELLIPTIC, SolverType.CG, 10, 5, mujoco.mjtJacobian.mjJAC_DENSE),
@@ -1409,7 +1436,7 @@ class SolverTest(parameterized.TestCase):
     ctx.done.fill_(False)
     wp.launch(
       solver._update_gradient_init_h_sparse(False),
-      dim=(d.nworld, m.nv_pad, solver._INIT_H_LANES),
+      dim=(d.nworld, m.nv_pad, solver._INIT_H_SECTOR),
       inputs=[m.nv, m.M_elemid, d.nf, d.M, d.efc.D, d.efc.state, d.dof_frictionadr, d.cdof_dof, ctx.done],
       outputs=[ctx.h],
     )
@@ -2535,7 +2562,7 @@ class SolverTest(parameterized.TestCase):
     wp.launch(
       solver._update_gradient_h_incremental,
       dim=(nworld, tri_dim),
-      inputs=inputs + [wp.array(ids, dtype=int), count],
+      inputs=[nv] + inputs + [wp.array(ids, dtype=int), count, tri_dim],
       outputs=[h_default],
     )
     np.testing.assert_allclose(h_default.numpy(), expected, rtol=1e-5, atol=1e-5)
@@ -3141,6 +3168,89 @@ class SolverTest(parameterized.TestCase):
               sequential[worldid, min(dofi, dofj), max(dofi, dofj)] += value
     np.testing.assert_array_equal(h.numpy(), sequential)
 
+  @parameterized.parameters(1, 2)
+  def test_dense_hessian_incremental_strided(self, nworld):
+    """Strided dense incremental H update matches exact rank-1 updates."""
+    self.assertEqual(solver._jtdaj_groups_per_world(10**7, 12, solver._update_gradient_h_incremental, 2), 2)
+
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <body>
+            <joint name="j0" frictionloss="1"/>
+            <geom size="0.1"/>
+            <body pos="0.2 0 0">
+              <joint frictionloss="2"/>
+              <geom size="0.1"/>
+              <body pos="0.2 0 0">
+                <joint name="j2"/>
+                <joint name="j3" type="slide"/>
+                <geom size="0.1"/>
+              </body>
+            </body>
+          </body>
+        </worldbody>
+        <tendon>
+          <fixed frictionloss="5">
+            <joint joint="j0" coef="1"/>
+            <joint joint="j2" coef="-0.5"/>
+            <joint joint="j3" coef="0.25"/>
+          </fixed>
+        </tendon>
+      </mujoco>
+      """,
+      nworld=nworld,
+    )
+    self.assertFalse(m.is_sparse)
+
+    ctx = solver._create_solver_context(m, d)
+    solver.init_context(m, d, ctx, grad=True)
+
+    state = np.full((nworld, d.njmax), types.ConstraintState.QUADRATIC.value, dtype=int)
+    state[:, 0] = types.ConstraintState.LINEARPOS.value
+    d.efc.state.assign(state)
+    ctx.done.fill_(False)
+    ctx.h.fill_(wp.inf)
+    solver._update_gradient(m, d, ctx)
+
+    # the last world adds row 0 and removes row 2, world 0 stays idle when nworld == 2
+    ids = np.zeros(ctx.quad_changed_ids.shape, dtype=int)
+    counts = np.zeros(nworld, dtype=int)
+    active_world = nworld - 1
+    state[active_world, 0] = types.ConstraintState.QUADRATIC.value
+    state[active_world, 2] = types.ConstraintState.LINEARPOS.value
+    ids[active_world, :2] = [0, 2]
+    counts[active_world] = 2
+    d.efc.state.assign(state)
+    ctx.quad_changed_ids.assign(ids)
+    ctx.quad_changed_count.assign(counts)
+
+    # fewer threads than upper-triangle elements, so each thread strides over several
+    threads_per_world = 3
+    self.assertLess(threads_per_world, m.nv * (m.nv + 1) // 2)
+    wp.launch(
+      solver._update_gradient_h_incremental,
+      dim=(nworld, threads_per_world),
+      inputs=[m.nv, d.efc.J, d.efc.D, d.efc.state, ctx.quad_changed_ids, ctx.quad_changed_count, threads_per_world],
+      outputs=[ctx.h],
+    )
+
+    h_actual = ctx.h.numpy()
+    J = d.efc.J.numpy()
+    D = d.efc.D.numpy()
+    nefc = d.nefc.numpy()
+    m_dense = np.zeros((m.nv, m.nv))
+    mujoco.mj_fullM(mjm, mjd, m_dense)
+    for w in range(nworld):
+      h_ref = m_dense.copy()
+      for efcid in np.flatnonzero(state[w, : nefc[w]] == types.ConstraintState.QUADRATIC.value):
+        row = J[w, efcid, : m.nv]
+        h_ref += D[w, efcid] * np.outer(row, row)
+      np.testing.assert_allclose(np.triu(h_actual[w, : m.nv, : m.nv]), np.triu(h_ref), rtol=1e-5, atol=1e-6)
+    if nworld == 2:
+      self.assertFalse(np.allclose(np.triu(h_actual[0, : m.nv, : m.nv]), np.triu(h_actual[1, : m.nv, : m.nv])))
+
   @parameterized.product(nworld=(1, 2), rows_from=("put_data", "make_constraint"))
   def test_sparse_hessian_dof_friction(self, nworld, rows_from):
     """Sparse Newton H, full and incremental, includes quadratic DOF and tendon friction rows."""
@@ -3375,7 +3485,7 @@ class SolverTest(parameterized.TestCase):
       <mujoco>
         <option cone="elliptic"/>
         <worldbody>
-          <replicate count="7" offset="0.2 0 0">
+          <replicate count="9" offset="0.2 0 0">
             <body>
               <freejoint/>
               <geom size="0.05"/>
@@ -3385,10 +3495,10 @@ class SolverTest(parameterized.TestCase):
       </mujoco>
       """,
     )
-    self.assertGreater(m.nv, solver._BLOCK_CHOLESKY_DIM)
+    self.assertGreater(m.nv, types.H_ONE_TILE_MAX)
     h_shape = (d.nworld, m.nv_pad, m.nv_pad)
 
-    # Non-incremental Newton with nv > _BLOCK_CHOLESKY_DIM aliases hfactor to h only when requested.
+    # Non-incremental Newton with nv > H_ONE_TILE_MAX aliases hfactor to h only when requested.
     ctx_inplace = solver._create_solver_context(m, d, inplace_cholesky=True)
     ctx_default = solver._create_solver_context(m, d)
     self.assertEqual(ctx_inplace.hfactor.shape, h_shape)
@@ -3407,7 +3517,7 @@ class SolverTest(parameterized.TestCase):
     self.assertEqual(ctx_cg.h.shape, (d.nworld, 0, 0))
     self.assertEqual(ctx_cg.hfactor.shape, (d.nworld, 0, 0))
 
-    m_small = dataclasses.replace(m, nv=solver._BLOCK_CHOLESKY_DIM)
+    m_small = dataclasses.replace(m, nv=types.H_ONE_TILE_MAX)
     self.assertEqual(solver._create_solver_context(m_small, d, inplace_cholesky=True).hfactor.shape, (d.nworld, 0, 0))
 
     # Runtime guards reject missing augmented RHS padding and skip_unchanged with aliased buffers.
@@ -3436,7 +3546,7 @@ class SolverTest(parameterized.TestCase):
         </option>
         <worldbody>
           <geom type="plane" size="5 5 0.1"/>
-          <replicate count="7" offset="0.25 0 0">
+          <replicate count="9" offset="0.25 0 0">
             <body pos="-0.75 0 0.03" euler="8 -6 12">
               <freejoint/>
               <geom type="box" size="0.05 0.04 0.04" condim="6"/>
@@ -3452,7 +3562,7 @@ class SolverTest(parameterized.TestCase):
         "opt.deterministic": types.DeterminismType.ALL,
       },
       nworld=nworld,
-      nvmax=42 if compact else -1,
+      nvmax=54 if compact else -1,
     )
     mjds = _perturb_worlds(mjm, mjd, d, nworld, 0.5)
 
