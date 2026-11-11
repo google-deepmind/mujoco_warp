@@ -1399,6 +1399,36 @@ class SolverTest(parameterized.TestCase):
     if nworld == 2:
       self.assertFalse(np.allclose(cone[0], cone[1]))
 
+  def test_elliptic_truncated_contact(self):
+    """Rows of an elliptic contact truncated by njmax get zero force and no curvature."""
+    mjm = mujoco.MjModel.from_xml_string("""
+      <mujoco>
+        <option cone="elliptic" jacobian="dense"/>
+        <worldbody>
+          <geom type="plane" size="5 5 .1"/>
+          <body pos="0 0 0.02"><freejoint/><geom type="box" size="0.04 0.05 0.03" mass="0.5"/></body>
+        </worldbody>
+      </mujoco>
+    """)
+    m = mjw.put_model(mjm)
+    m.opt.warn_overflow = 0
+    d = mjw.make_data(mjm, njmax=11)  # 4 contacts of condim 3
+    d.qvel.assign(np.array([[1.5, 0.0, 0.0, 0.0, 0.0, 0.0]]))
+
+    # efc.state and efc.force persist across steps
+    d.efc.state.fill_(types.ConstraintState.CONE)
+    d.efc.force.fill_(1.0e3)
+    mjw.forward(m, d)
+
+    self.assertGreater(d.nefc.numpy()[0], d.njmax)
+    efc_address = d.contact.efc_address.numpy()[: d.nacon.numpy()[0], :3]
+    truncated = efc_address[(efc_address < 0).any(axis=1)]
+    rows = truncated[truncated >= 0]
+    self.assertGreater(rows.size, 0)
+    np.testing.assert_array_equal(d.efc.state.numpy()[0, rows], types.ConstraintState.SATISFIED)
+    np.testing.assert_array_equal(d.efc.force.numpy()[0, rows], 0.0)
+    self.assertTrue(np.all(np.isfinite(d.qacc.numpy())))
+
   @parameterized.parameters("dense", "sparse")
   def test_elliptic_hessian_scale_invariance(self, jacobian):
     """Cone curvature is degree-0 homogeneous: scaling Jaref leaves Hessian unchanged."""
@@ -2809,18 +2839,29 @@ class CompactSolverTest(parameterized.TestCase):
   @parameterized.product(cone=("pyramidal", "elliptic"), jacobian=("sparse", "dense"))
   def test_constrained_solve_equivalence_all_active(self, cone, jacobian):
     """With every tree active and nvmax=nv, the compacted Newton solve matches baseline qacc."""
-    xml = _COMPACT_CONTACT_XML.replace('iterations="20"', f'iterations="20" cone="{cone}"')
+    # elliptic: a single Newton step from the warmstart, so that qacc depends on the cone Hessian
+    iterations = 1 if cone == "elliptic" else 20
+    xml = _COMPACT_CONTACT_XML.replace('iterations="20"', f'iterations="{iterations}" cone="{cone}"')
     xml = xml.replace('jacobian="sparse"', f'jacobian="{jacobian}"')
     _, _, m, d = _put_compact(xml)
     self.assertEqual(m.is_sparse, jacobian == "sparse")
+    # slide the spheres so that elliptic contacts are in the cone state
+    qvel = np.zeros((d.nworld, m.nv))
+    qvel[:, 1] = 5.0
+    qvel[:, 7] = -3.0
+    d.qvel.assign(qvel)
     mjw.forward(m, d)  # full baseline solve (also builds efc.J, M)
     self.assertGreater(d.nacon.numpy()[0], 0)  # contacts exist
+    if cone == "elliptic":
+      nefc = d.nefc.numpy()[0]
+      self.assertTrue((d.efc.state.numpy()[0, :nefc] == types.ConstraintState.CONE).any())
     baseline_qacc = d.qacc.numpy().copy()
 
     d.tree_awake = wp.array(np.ones((d.nworld, m.ntree), dtype=int), dtype=int)
     island.update_active_dofs(m, d)
     self.assertEqual(d.ncdof.numpy()[0], m.nv)
 
+    d.qacc.fill_(wp.inf)
     solver.solve_compact(m, d)
 
     np.testing.assert_allclose(d.qacc.numpy(), baseline_qacc, rtol=1e-3, atol=1e-4)
@@ -2877,7 +2918,7 @@ class CompactSolverTest(parameterized.TestCase):
 
     # the compact (m, d) that solve_compact passes to the solver
     nvp = d.nvmax_pad
-    m2 = dataclasses.replace(m, nv=nvp, nv_pad=nvp, is_sparse=False, dof_tri_row=d.cdof_tri_row, dof_tri_col=d.cdof_tri_col)
+    m2 = dataclasses.replace(m, nv=nvp, nv_pad=nvp, is_sparse=False)
     efc2 = dataclasses.replace(d.efc, J=d.cJ, Ma=d.cMa)
     d2 = dataclasses.replace(
       d,

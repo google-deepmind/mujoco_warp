@@ -902,7 +902,6 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
   jnt_limited_slide_hinge = mjm.jnt_limited & np.isin(mjm.jnt_type, (mujoco.mjtJoint.mjJNT_SLIDE, mujoco.mjtJoint.mjJNT_HINGE))
   m.jnt_limited_slide_hinge_adr = np.nonzero(jnt_limited_slide_hinge)[0]
   m.jnt_limited_ball_adr = np.nonzero(mjm.jnt_limited & (mjm.jnt_type == mujoco.mjtJoint.mjJNT_BALL))[0]
-  m.dof_tri_row, m.dof_tri_col = np.triu_indices(mjm.nv)
 
   # precompute body_isdofancestor: which DOFs affect each body
   # TODO: Investigate alternative approach such as bitmap
@@ -1641,7 +1640,6 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
       "nbody_fluid_box": len(m.body_fluid_box_adr),
       "njnt_limited_slide_hinge": len(m.jnt_limited_slide_hinge_adr),
       "njnt_limited_ball": len(m.jnt_limited_ball_adr),
-      "ndof_tri": len(m.dof_tri_row),
       "nnxn_geom_pair": len(m.nxn_geom_pair),
       "nnxn_geom_pair_filtered": len(m.nxn_geom_pair_filtered),
       "neq_connect": len(m.eq_connect_adr),
@@ -2182,8 +2180,6 @@ def _allocate_island_arrays(
 
 
 _COMPACT_DATA_FIELDS: tuple[str, ...] = (
-  "cdof_tri_row",
-  "cdof_tri_col",
   "cM",
   "cqLD",
   "crhs",
@@ -2208,11 +2204,10 @@ def _allocate_compact_arrays(
 ):
   """Allocate workspace for the compacted dense factor/solve (when nvmax is requested).
 
-  Mirrors the island-local ``i*`` Data fields with a ``c*`` (compact) prefix. The
-  constant dof-pair indices are derived on the host since
-  they depend only on nvmax_pad; the workspace shadows are sized by nvmax_pad so the
-  blocked Cholesky never reads out of bounds on its partial tile. When the user does not
-  request compaction (nvmax is None) everything is allocated empty.
+  Mirrors the island-local ``i*`` Data fields with a ``c*`` (compact) prefix. The workspace
+  shadows are sized by nvmax_pad so the blocked Cholesky never reads out of bounds on its
+  partial tile. When the user does not request compaction (nvmax is None) everything is
+  allocated empty.
 
   TODO(team): once the compact path replaces the island solver, the whole forward
   pipeline can run in compacted space and ``d.M`` / ``d.qacc`` etc. become nvmax-sized
@@ -2221,16 +2216,6 @@ def _allocate_compact_arrays(
   nw = nworld if compact else 0
   nvp = nvmax_pad if compact else 0
   njp = njmax_pad if compact else 0
-
-  if compact:
-    # all (i, j) DOF pairs of the nvmax_pad-wide compacted Hessian (the global dof_tri,
-    # triu over full nv, would index out of bounds).
-    idx = np.arange(nvmax_pad, dtype=np.int32)
-    d.cdof_tri_row = wp.array(np.repeat(idx, nvmax_pad), dtype=int)
-    d.cdof_tri_col = wp.array(np.tile(idx, nvmax_pad), dtype=int)
-  else:
-    d.cdof_tri_row = wp.empty(0, dtype=int)
-    d.cdof_tri_col = wp.empty(0, dtype=int)
 
   alloc_cJ = compact and not is_sparse(mjm)
 
@@ -2366,7 +2351,6 @@ def make_data(
   sizes["njmax"] = njmax
   sizes["nvmax"] = nvmax
   sizes["nvmax_pad"] = _nvmax_pad(nvmax)
-  sizes["nvmax_pad_sq"] = sizes["nvmax_pad"] * sizes["nvmax_pad"]
   sizes["nflexintcell"] = _get_nflexintcell(mjm)
   sizes["nflexface"] = _get_nflexface(mjm)
   sizes["nflexrodhinge"], sizes["nflexrodedge"] = _get_nflexrod_counts(mjm)
@@ -2614,7 +2598,6 @@ def put_data(
   sizes["njmax"] = njmax
   sizes["nvmax"] = nvmax
   sizes["nvmax_pad"] = _nvmax_pad(nvmax)
-  sizes["nvmax_pad_sq"] = sizes["nvmax_pad"] * sizes["nvmax_pad"]
   sizes["nflexface"] = _get_nflexface(mjm)
   sizes["nflexrodhinge"], sizes["nflexrodedge"] = _get_nflexrod_counts(mjm)
   efm_d = _get_efm_data(mjm)

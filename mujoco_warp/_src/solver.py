@@ -166,7 +166,8 @@ def _create_solver_context(
     h_rhs_work=h_rhs_work,
     inertia_scale=wp.empty((nworld,), dtype=float),
     cone_coef=wp.empty((nworld, njmax), dtype=types.vec6) if alloc_cone_rows else None,
-    cone_weight=wp.empty((nworld, njmax), dtype=float) if alloc_cone_rows else None,
+    # tile-loaded in whole chunks, like efc.D
+    cone_weight=wp.empty((nworld, d.njmax_pad), dtype=float) if alloc_cone_rows else None,
     cone_base=wp.empty((nworld, njmax), dtype=int) if alloc_cone_rows else None,
   )
 
@@ -1979,13 +1980,19 @@ def _update_constraint_efc(track_changes: bool, cone_rows: bool = False, determi
     if wp.static(CONE_ROWS):
       dim = int(0)
       friction = types.vec5()
+      u = types.vec6()
 
+    # rows of a contact truncated by an overflow are dropped, else they keep a stale force and state
     if is_elliptic:
       conid = efc_id_in[worldid, efcid]
-      if conid >= nacon_in[0]:
+      if conid >= wp.min(nacon_in[0], contact_dim_in.shape[0]):
+        efc_force_out[worldid, efcid] = 0.0
+        efc_state_out[worldid, efcid] = types.ConstraintState.SATISFIED.value
         return
       efcid0 = contact_efc_address_in[conid, 0]
       if efcid0 < 0:
+        efc_force_out[worldid, efcid] = 0.0
+        efc_state_out[worldid, efcid] = types.ConstraintState.SATISFIED.value
         return
 
       dim = contact_dim_in[conid]
@@ -1997,9 +2004,13 @@ def _update_constraint_efc(track_changes: bool, cone_rows: bool = False, determi
       for j in range(1, dim):
         efcidj = contact_efc_address_in[conid, j]
         if efcidj < 0:
+          efc_force_out[worldid, efcid] = 0.0
+          efc_state_out[worldid, efcid] = types.ConstraintState.SATISFIED.value
           return
         frictionj = friction[j - 1]
         uj = ctx_Jaref_in[worldid, efcidj] * frictionj
+        if wp.static(CONE_ROWS):
+          u[j] = uj
         TT += uj * uj
         if efcid == efcidj:
           ufrictionj = uj * frictionj
@@ -2026,10 +2037,6 @@ def _update_constraint_efc(track_changes: bool, cone_rows: bool = False, determi
 
     if wp.static(CONE_ROWS):
       if new_state == types.ConstraintState.CONE.value:
-        u = types.vec6()
-        for j in range(1, 6):
-          if j < dim:
-            u[j] = ctx_Jaref_in[worldid, efcid0 + j] * friction[j - 1]
         coef, weight = _cone_virtual_row(efcid - efcid0, dim, mu, D0, jaref0, u, TT, friction)
         ctx_cone_coef_out[worldid, efcid] = coef
         ctx_cone_weight_out[worldid, efcid] = weight
@@ -2865,8 +2872,8 @@ def _row_weight(D: float, state: int, cone_weight: float, active: float) -> floa
 
 
 @wp.func
-def _is_cone(state: int) -> int:
-  return wp.where(state == types.ConstraintState.CONE.value, 1, 0)
+def _is_cone(state: int, active: float) -> int:
+  return wp.where(active != 0.0 and state == types.ConstraintState.CONE.value, 1, 0)
 
 
 @wp.func
@@ -2936,7 +2943,7 @@ def _elliptic_chunk_weights(tile_size: int):
       _active_check, wp.tile_arange(TILE_SIZE_K, dtype=int), wp.tile_ones(shape=TILE_SIZE_K, dtype=int) * (nefc_world - k)
     )
     D_k = wp.tile_map(_row_weight, D_k, state, cone_weight, active)
-    ncone = wp.tile_reduce(wp.add, wp.tile_map(_is_cone, state))[0]
+    ncone = wp.tile_reduce(wp.add, wp.tile_map(_is_cone, state, active))[0]
     if ncone > 0:
       _rewrite_cone_rows(
         efc_J_in, ctx_cone_coef_in, ctx_cone_base_in, worldid, rank, lanes, nefc_world, k, TILE_SIZE_K, ncol, state, J_kj
@@ -2983,7 +2990,7 @@ def _update_gradient_JTDAJ_dense_tiled_compact(nv_pad: int, tile_size: int, njma
     if ctx_done_in[worldid]:
       return
 
-    nefc = nefc_in[worldid]
+    nefc = wp.min(nefc_in[worldid], njmax)
 
     # Load full symmetric compact inertia tile (Cholesky only reads upper triangle).
     sum_val = wp.tile_load(M_in[worldid], shape=(wp.static(nv_pad), wp.static(nv_pad)), bounds_check=True)
@@ -3067,7 +3074,7 @@ def _update_gradient_JTDAJ_dense_tiled(nv_pad: int, tile_size: int, njmax: int, 
     if ctx_done_in[worldid]:
       return
 
-    nefc = nefc_in[worldid]
+    nefc = wp.min(nefc_in[worldid], njmax)
 
     # CSR entries have unique destinations, so initializing M needs no atomics.
     # Densify M's upper triangle from CSR into the shared H tile (Cholesky reads fill_mode="upper").
@@ -5119,9 +5126,7 @@ def solve_compact(m: types.Model, d: types.Data):
   nvp = d.nvmax_pad
   gc = m.opt.graph_conditional and wp.get_device().is_cuda
   opt2 = dataclasses.replace(m.opt, graph_conditional=gc)
-  m2 = dataclasses.replace(
-    m, opt=opt2, nv=nvp, nv_pad=nvp, is_sparse=False, dof_tri_row=d.cdof_tri_row, dof_tri_col=d.cdof_tri_col
-  )
+  m2 = dataclasses.replace(m, opt=opt2, nv=nvp, nv_pad=nvp, is_sparse=False)
   efc2 = dataclasses.replace(d.efc, J=d.cJ, Ma=d.cMa)
   d2 = dataclasses.replace(
     d,
