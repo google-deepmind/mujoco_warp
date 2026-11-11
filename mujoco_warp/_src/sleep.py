@@ -27,7 +27,6 @@ from mujoco_warp._src.types import IntegratorType
 from mujoco_warp._src.types import ObjType
 from mujoco_warp._src.types import SleepPolicy
 from mujoco_warp._src.types import SleepState
-from mujoco_warp._src.types import SolverType
 from mujoco_warp._src.types import WrapType
 from mujoco_warp._src.warp_util import cache_kernel
 from mujoco_warp._src.warp_util import event_scope
@@ -653,7 +652,6 @@ def _wake_tendon_kernel(
   ntree: int,
   ntendon: int,
   opt_integrator: int,
-  opt_solver: int,
   opt_disableflags: int,
   body_treeid: wp.array[int],
   jnt_bodyid: wp.array[int],
@@ -720,19 +718,15 @@ def _wake_tendon_kernel(
       and not (opt_disableflags & DisableBit.FRICTIONLOSS)
       and tendon_frictionloss[worldid % tendon_frictionloss.shape[0], tenid] > 0.0
     )
-    is_metric = (
-      opt_integrator == IntegratorType.DISCRETE
-      and (opt_solver == SolverType.CG or opt_solver == SolverType.NEWTON)
-      and support.eff_tendon_possible(
-        opt_disableflags,
-        tendon_actuatorid,
-        tendon_stiffness,
-        tendon_stiffnesspoly,
-        tendon_damping,
-        tendon_dampingpoly,
-        worldid,
-        tenid,
-      )
+    is_metric = opt_integrator == IntegratorType.DISCRETE and support.eff_tendon_possible(
+      opt_disableflags,
+      tendon_actuatorid,
+      tendon_stiffness,
+      tendon_stiffnesspoly,
+      tendon_damping,
+      tendon_dampingpoly,
+      worldid,
+      tenid,
     )
     if has_limit or has_friction or is_metric:
       for i in range(num):
@@ -1150,7 +1144,7 @@ def wake_collision(m: types.Model, d: types.Data, woke: Optional[wp.array] = Non
 @event_scope
 def wake_tendon(m: types.Model, d: types.Data, woke: Optional[wp.array] = None):
   """Wakes sleeping trees with constrained or metric tendons."""
-  is_metric = m.opt.integrator == IntegratorType.DISCRETE and m.opt.solver in (SolverType.CG, SolverType.NEWTON)
+  is_metric = m.opt.integrator == IntegratorType.DISCRETE
   if m.ntendon == 0 or ((m.opt.disableflags & DisableBit.CONSTRAINT) and not is_metric):
     return
 
@@ -1163,7 +1157,6 @@ def wake_tendon(m: types.Model, d: types.Data, woke: Optional[wp.array] = None):
       m.ntree,
       m.ntendon,
       m.opt.integrator,
-      m.opt.solver,
       m.opt.disableflags,
       m.body_treeid,
       m.jnt_bodyid,
