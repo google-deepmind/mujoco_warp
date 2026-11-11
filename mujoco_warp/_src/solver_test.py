@@ -1399,6 +1399,33 @@ class SolverTest(parameterized.TestCase):
     if nworld == 2:
       self.assertFalse(np.allclose(cone[0], cone[1]))
 
+  def test_elliptic_dense_njmax_below_chunk(self):
+    """Dense elliptic Newton matches MuJoCo with njmax below the Hessian row chunk size."""
+    mjm, mjd, m, _ = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option cone="elliptic" jacobian="dense"/>
+        <worldbody>
+          <geom type="plane" size="5 5 .1"/>
+          <body pos="-0.5 0 0.08"><freejoint/><geom size=".1"/></body>
+          <body pos="0 0 0.08"><freejoint/><geom size=".1"/></body>
+          <body pos="0.5 0 0.08"><freejoint/><geom size=".1"/></body>
+        </worldbody>
+      </mujoco>
+      """
+    )
+    mjd.qvel[0::6] = 5.0
+    mujoco.mj_forward(mjm, mjd)
+    d = mjw.put_data(mjm, mjd, njmax=13)
+    self.assertLess(d.njmax, types.TILE_SIZE_JTDAJ_DENSE)
+
+    d.qacc.fill_(wp.inf)
+    mjw.forward(m, d)
+
+    nefc = d.nefc.numpy()[0]
+    self.assertTrue((d.efc.state.numpy()[0, :nefc] == types.ConstraintState.CONE).any())
+    _assert_eq(d.qacc.numpy()[0], mjd.qacc, "qacc")
+
   def test_elliptic_truncated_contact(self):
     """Rows of an elliptic contact truncated by njmax get zero force and no curvature."""
     mjm = mujoco.MjModel.from_xml_string("""
