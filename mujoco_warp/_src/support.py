@@ -20,7 +20,6 @@ import warp as wp
 from mujoco_warp._src import math
 from mujoco_warp._src.collision_primitive_core import tri_weights
 from mujoco_warp._src.math import motion_cross
-from mujoco_warp._src.types import FLEX_INTERP_PHYS_JAC
 from mujoco_warp._src.types import MJ_MAXVAL
 from mujoco_warp._src.types import MJ_MINVAL
 from mujoco_warp._src.types import ConeType
@@ -188,17 +187,16 @@ def compute_interp_cell_quat(
 
           idx += 1
 
-  if wp.static(FLEX_INTERP_PHYS_JAC):
-    node_0 = nstart + (ci * order) * ny_g * nz_g + (cj * order) * nz_g + (ck * order)
-    node_last = nstart + ((ci + 1) * order) * ny_g * nz_g + ((cj + 1) * order) * nz_g + ((ck + 1) * order)
-    dref = flex_node0[node_last] - flex_node0[node_0]
-    for c in range(3):
-      dc = dref[c]
-      if dc > MJ_MINVAL:
-        inv_dc = 1.0 / dc
-        F[0, c] *= inv_dc
-        F[1, c] *= inv_dc
-        F[2, c] *= inv_dc
+  node_0 = nstart + (ci * order) * ny_g * nz_g + (cj * order) * nz_g + (ck * order)
+  node_last = nstart + ((ci + 1) * order) * ny_g * nz_g + ((cj + 1) * order) * nz_g + ((ck + 1) * order)
+  dref = flex_node0[node_last] - flex_node0[node_0]
+  for c in range(3):
+    dc = dref[c]
+    if dc > MJ_MINVAL:
+      inv_dc = 1.0 / dc
+      F[0, c] *= inv_dc
+      F[1, c] *= inv_dc
+      F[2, c] *= inv_dc
 
   return mat33_to_quat_polar(F)
 
@@ -2159,16 +2157,15 @@ def compute_interp_face_quat(
       t1 += node_pos * grad0
       t2 += node_pos * grad1
 
-  if wp.static(FLEX_INTERP_PHYS_JAC):
-    axis0 = (normal_axis + 1) % 3
-    axis1 = (normal_axis + 2) % 3
-    dref = flex_node0[nstart + gidx1] - flex_node0[nstart + gidx0]
-    d0 = dref[axis0]
-    d1 = dref[axis1]
-    if d0 > MJ_MINVAL:
-      t1 = t1 / d0
-    if d1 > MJ_MINVAL:
-      t2 = t2 / d1
+  axis0 = (normal_axis + 1) % 3
+  axis1 = (normal_axis + 2) % 3
+  dref = flex_node0[nstart + gidx1] - flex_node0[nstart + gidx0]
+  d0 = dref[axis0]
+  d1 = dref[axis1]
+  if d0 > MJ_MINVAL:
+    t1 = t1 / d0
+  if d1 > MJ_MINVAL:
+    t2 = t2 / d1
 
   normal = wp.cross(t1, t2)
 

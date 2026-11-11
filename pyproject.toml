@@ -28,7 +28,7 @@ requires-python = ">=3.11"
 dependencies = [
     "absl-py",
     "etils[epath]",
-    "mujoco>=3.13.0",
+    "mujoco-core>=4.0.0",
     "numpy",
     "warp-lang>=1.15",
 ]
@@ -46,11 +46,20 @@ explicit = true
 name = "mujoco"
 url = "https://py.mujoco.org/"
 
+[tool.uv]
+# mjviser depends on the mujoco metapackage, but only needs mujoco-core
+override-dependencies = ["mujoco ; python_version < '0'"]
+
 [tool.uv.sources]
 warp-lang = {index = "nvidia"}
-mujoco = {index = "mujoco"}
+mujoco-core = {index = "mujoco"}
 
 [project.optional-dependencies]
+# mjwarp-viewer and mjwarp-record
+viewer = [
+    "mujoco-core[rendering]>=4.0.0",
+    "pillow",
+]
 dev = [
     "pre-commit",
     "pytest",
@@ -58,10 +67,9 @@ dev = [
     "ruff",
     "pygls>=1.0.0,<2.0.0",
     "lsprotocol>=2023.0.1,<2024.0.0",
-    "mujoco>=3.11.0",
+    "mujoco-warp[viewer]",
     "warp-lang>=1.15",
     "mjviser>=0.0.13",
-    "pillow",
 ]
 # TODO(team): cpu and cuda JAX optional dependencies are temporary, remove after we land MJX:Warp
 cpu = [

@@ -27,7 +27,6 @@ from mujoco_warp import GeomType
 from mujoco_warp import test_data
 from mujoco_warp._src import collision_convex
 from mujoco_warp._src import types
-from mujoco_warp._src import util_pkg
 from mujoco_warp._src.collision_core import Geom
 from mujoco_warp._src.collision_driver import MJ_COLLISION_TABLE
 from mujoco_warp._src.collision_primitive import plane_convex
@@ -2544,7 +2543,6 @@ class CollisionTest(parameterized.TestCase):
     if nworld == 2:
       self.assertFalse(np.allclose(dist[worldid == 0], dist[worldid == 1]))
 
-  @absltest.skipIf(not util_pkg.check_version("mujoco>=3.17.1"), "Requires MuJoCo >= 3.17.1")
   @parameterized.parameters(1, 2)
   def test_contact_surfacevel(self, nworld):
     """Populates contact.surfacevel from geom_surfacevel and zeroes contacts without surfacevel."""
