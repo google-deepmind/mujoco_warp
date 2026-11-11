@@ -82,6 +82,9 @@ MJ_MAX_EPAFACES = 5
 
 TILE_SIZE_JTDAJ_SPARSE = 16
 TILE_SIZE_JTDAJ_DENSE = 16
+# max Newton Hessian size factored as one tile; past it the blocked path's factor reuse wins on
+# Blackwell (Ada keeps one tile ahead to 64)
+H_ONE_TILE_MAX = 48
 
 # max M block size where dense tile-Cholesky beats sparse LDL (wins to ~64, degrades past ~80)
 M_BLOCK_DENSE_MAX = 64
@@ -153,7 +156,7 @@ class BlockDim:
   small_cholesky: int = 64
   solve_LD_sparse_fused: int = 128
   # solver
-  update_gradient_cholesky: int = 64
+  update_gradient_cholesky: int = 32
   update_gradient_cholesky_blocked: int = 32
   update_gradient_JTDAJ_sparse: int = 128
   update_gradient_JTDAJ_dense: int = 128
