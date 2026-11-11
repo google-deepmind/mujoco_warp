@@ -925,6 +925,18 @@ def _compute_efc_eval_pt_3alphas_elliptic(
 # =============================================================================
 
 
+@wp.func_native(
+  snippet="""
+#if defined(__CUDA_ARCH__)
+  return __fdiv_rn(x, y);
+#else
+  return x / y;
+#endif
+"""
+)
+def _div_rn(x: float, y: float) -> float: ...
+
+
 @cache_kernel
 def _linesearch_iterative_kernel(
   ls_iterations: int,
@@ -952,9 +964,6 @@ def _linesearch_iterative_kernel(
   # pyramidal rows are independent, so the Jaref update also sets efc force and state;
   # the incremental path tracks state flips in _update_constraint_efc
   UPDATE_EFC = not IS_ELLIPTIC and not INCREMENTAL
-
-  @wp.func_native(snippet="return __fdiv_rn(x, y);")
-  def _div_rn(x: float, y: float) -> float: ...
 
   # Native snippet for CUDA __syncthreads()
   @wp.func_native(snippet="WP_TILE_SYNC();")
@@ -1488,28 +1497,29 @@ def _linesearch_iterative_kernel(
       efc_Ma_out[worldid, dofid] += alpha * ctx_mv_in[worldid, dofid]
 
     # Jaref update
+    ne_nf = ne + nf
     for efcid in range(tid, nefc, wp.block_dim()):
-      ctx_Jaref_out[worldid, efcid] += alpha * ctx_jv_in[worldid, efcid]
+      jaref = ctx_Jaref_in[worldid, efcid] + alpha * ctx_jv_in[worldid, efcid]
+      ctx_Jaref_out[worldid, efcid] = jaref
 
       if wp.static(UPDATE_EFC):
-        jaref = ctx_Jaref_out[worldid, efcid]
-        efc_D = efc_D_in[worldid, efcid]
-        force = -efc_D * jaref
-        state = int(types.ConstraintState.QUADRATIC.value)
-        if efcid >= ne + nf:
-          if jaref >= 0.0:
-            force = 0.0
-            state = int(types.ConstraintState.SATISFIED.value)
-        elif efcid >= ne:
-          # IEEE division as in _eval_constraint, which is outside this fast-math module
-          frictionloss = efc_frictionloss_in[worldid, efcid]
-          rf = _div_rn(frictionloss, wp.where(efc_D != 0.0, efc_D, types.MJ_MINVAL))
-          if jaref <= -rf:
-            force = frictionloss
-            state = int(types.ConstraintState.LINEARNEG.value)
-          elif jaref >= rf:
-            force = -frictionloss
-            state = int(types.ConstraintState.LINEARPOS.value)
+        if efcid >= ne_nf and jaref >= 0.0:
+          force = 0.0
+          state = int(types.ConstraintState.SATISFIED.value)
+        else:
+          efc_D = efc_D_in[worldid, efcid]
+          force = -efc_D * jaref
+          state = int(types.ConstraintState.QUADRATIC.value)
+          if efcid >= ne and efcid < ne_nf:
+            # IEEE division as in _eval_constraint, outside this fast-math module
+            frictionloss = efc_frictionloss_in[worldid, efcid]
+            rf = _div_rn(frictionloss, wp.where(efc_D != 0.0, efc_D, types.MJ_MINVAL))
+            if jaref <= -rf:
+              force = frictionloss
+              state = int(types.ConstraintState.LINEARNEG.value)
+            elif jaref >= rf:
+              force = -frictionloss
+              state = int(types.ConstraintState.LINEARPOS.value)
         efc_force_out[worldid, efcid] = force
         efc_state_out[worldid, efcid] = state
 

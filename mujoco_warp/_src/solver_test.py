@@ -1143,6 +1143,92 @@ class SolverTest(parameterized.TestCase):
         _assert_eq(d.qfrc_constraint.numpy()[0], mjd.qfrc_constraint, "qfrc_constraint")
         _assert_eq(d.efc.force.numpy()[0, : mjd.nefc], mjd.efc_force, "efc_force")
 
+  @parameterized.product(
+    jacobian=(mujoco.mjtJacobian.mjJAC_DENSE, mujoco.mjtJacobian.mjJAC_SPARSE),
+    nworld=(1, 2),
+  )
+  def test_cg_pyramidal_efc_force_state(self, jacobian, nworld):
+    """CG pyramidal linesearch updates efc.force and efc.state across all row types."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option solver="CG" tolerance="1e-10">
+          <flag warmstart="disable" island="disable"/>
+        </option>
+        <worldbody>
+          <geom type="plane" size="5 5 0.1"/>
+          <body pos="0 0 0.08">
+            <freejoint/>
+            <geom size="0.1"/>
+          </body>
+          <body pos="0.5 0 0.5">
+            <joint name="j0" type="slide" frictionloss="0.5"/>
+            <geom size="0.05"/>
+          </body>
+          <body pos="-0.5 0 0.5">
+            <joint name="j1" type="slide" frictionloss="0.5"/>
+            <geom size="0.05"/>
+          </body>
+          <body pos="0 0.5 0.5">
+            <joint type="slide" frictionloss="5.0"/>
+            <geom size="0.05"/>
+          </body>
+          <body pos="0 -0.5 0.5">
+            <joint type="slide" frictionloss="0.5"/>
+            <geom size="0.05"/>
+          </body>
+        </worldbody>
+        <equality>
+          <joint joint1="j0" joint2="j1"/>
+        </equality>
+        <keyframe>
+          <key qvel="5 0 0 0 0 0 5 5 0 -5"/>
+        </keyframe>
+      </mujoco>
+      """,
+      keyframe=0,
+      overrides={"opt.jacobian": jacobian},
+      nworld=nworld,
+    )
+    mjds = _perturb_worlds(mjm, mjd, d, nworld, 0.2)
+
+    d.qacc.fill_(wp.inf)
+    d.qfrc_constraint.fill_(wp.inf)
+    d.efc.force.fill_(wp.inf)
+    d.efc.state.fill_(-1)
+    d.solver_niter.fill_(-1)
+
+    mjw.forward(m, d)
+
+    nefc = d.nefc.numpy()
+    niter = d.solver_niter.numpy()
+    qacc = d.qacc.numpy()
+    qfrc_constraint = d.qfrc_constraint.numpy()
+    efc_force = d.efc.force.numpy()
+    efc_state = d.efc.state.numpy()
+
+    expected_states = {
+      int(types.ConstraintState.SATISFIED),
+      int(types.ConstraintState.QUADRATIC),
+      int(types.ConstraintState.LINEARNEG),
+      int(types.ConstraintState.LINEARPOS),
+    }
+    for w, mjd_w in enumerate(mjds):
+      self.assertGreater(niter[w], 0)
+      n = nefc[w]
+      self.assertEqual(n, mjd_w.nefc)
+      self.assertEqual(set(efc_state[w, :n]), expected_states)
+      _assert_eq(qacc[w], mjd_w.qacc, f"qacc_world_{w}", tol=_TOLERANCE)
+      _assert_eq(qfrc_constraint[w], mjd_w.qfrc_constraint, f"qfrc_constraint_world_{w}", tol=_TOLERANCE)
+
+      d_idx = np.lexsort((efc_force[w, :n], efc_state[w, :n]))
+      mj_idx = np.lexsort((mjd_w.efc_force, mjd_w.efc_state))
+      np.testing.assert_array_equal(efc_state[w, :n][d_idx], mjd_w.efc_state[mj_idx])
+      _assert_eq(efc_force[w, :n][d_idx], mjd_w.efc_force[mj_idx], f"efc_force_world_{w}", tol=_TOLERANCE)
+
+    if nworld == 2:
+      self.assertFalse(np.allclose(qacc[0], qacc[1]))
+
   @parameterized.named_parameters(
     ("max3", (3,)),
     ("max4_mixed", (3, 4)),
