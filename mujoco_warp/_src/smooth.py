@@ -988,7 +988,15 @@ def _subtree_com_world_tiled(
   worldid, lane = wp.tid()
   subtreemass_id = worldid % body_subtreemass.shape[0]
 
-  com = xipos_in[worldid, 0] * body_mass[worldid % body_mass.shape[0], 0]
+  mass = body_subtreemass[subtreemass_id, 0]
+  if mass < MJ_MINVAL:
+    if lane == 0:
+      subtree_com_out[worldid, 0] = xipos_in[worldid, 0]
+    return
+
+  com = wp.vec3()
+  if lane == 0:
+    com = xipos_in[worldid, 0] * body_mass[worldid % body_mass.shape[0], 0]
   nroot = rootid_in.shape[0]
   for start in range(0, nroot, WORLD_SUM_CHUNK):
     rootid = wp.tile_load(rootid_in, shape=(WORLD_SUM_CHUNK,), offset=(start,), storage="shared")
@@ -999,12 +1007,7 @@ def _subtree_com_world_tiled(
         com += root_com[i] * root_mass[i]
 
   if lane == 0:
-    mass = body_subtreemass[subtreemass_id, 0]
-    if mass < MJ_MINVAL:
-      com = xipos_in[worldid, 0]
-    else:
-      com /= mass
-    subtree_com_out[worldid, 0] = com
+    subtree_com_out[worldid, 0] = com / mass
 
 
 @wp.kernel
