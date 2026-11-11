@@ -1393,7 +1393,7 @@ class Model:
     flex_solimp: constraint solver impedance: contact        (nflex, mjNIMP)
     flex_friction: friction for (slide, spin, roll)          (nflex, 3)
     flex_margin: detect contact if dist<margin               (nflex,)
-    flex_gap: include in solver if dist<margin-gap           (nflex,)
+    flex_gap: additional contact detection buffer            (nflex,)
     flex_selfcollide: self-collision mode                    (nflex,)
     flex_activelayers: active element layers                 (nflex,)
     flex_passive: passive contact mode                       (nflex,)
