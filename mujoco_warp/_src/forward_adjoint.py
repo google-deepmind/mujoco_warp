@@ -317,11 +317,14 @@ def _activation_vjp(
 @wp.kernel(enable_backward=False)
 def _actuator_limit_qvel_vjp(
   # Model:
+  jnt_dofadr: wp.array[int],
   jnt_actfrclimited: wp.array[bool],
   jnt_actfrcrange: wp.array2d[wp.vec2],
   dof_jntid: wp.array[int],
+  actuator_trntype: wp.array[int],
   actuator_gaintype: wp.array[int],
   actuator_biastype: wp.array[int],
+  actuator_trnid: wp.array[wp.vec2i],
   actuator_gainprm: wp.array2d[vec10],
   actuator_biasprm: wp.array2d[vec10],
   actuator_forcelimited: wp.array[bool],
@@ -344,6 +347,19 @@ def _actuator_limit_qvel_vjp(
 ):
   """Corrects actuator velocity derivatives for joint-force limits."""
   w, actid = wp.tid()
+  # The upstream derivative already excludes clamped joint transmissions. Other transmissions
+  # can still couple multiple DOFs, only some of which have clamped joint forces.
+  if derivative._jnt_actfrc_clamped(
+    jnt_dofadr,
+    jnt_actfrclimited,
+    jnt_actfrcrange,
+    actuator_trntype,
+    actuator_trnid,
+    qfrc_actuator_in,
+    w,
+    actid,
+  ):
+    return
   if actuator_forcelimited[actid]:
     bounds = actuator_forcerange[w % actuator_forcerange.shape[0], actid]
     force = actuator_force_in[w, actid]
@@ -837,16 +853,19 @@ def smooth_qvel_backward(m: Model, d: Data, d_bwd: Data, lam: wp.array, adj_qvel
     outputs=[adj_qvel],
   )
   if not (m.opt.disableflags & DisableBit.ACTUATION):
-    # deriv_smooth_vel includes control clamping but ignores joint-force limits.
+    # Correct only the multi-DOF joint-force limits not handled by deriv_smooth_vel.
     wp.launch(
       _actuator_limit_qvel_vjp,
       dim=(nworld, m.nu),
       inputs=[
+        m.jnt_dofadr,
         m.jnt_actfrclimited,
         m.jnt_actfrcrange,
         m.dof_jntid,
+        m.actuator_trntype,
         m.actuator_gaintype,
         m.actuator_biastype,
+        m.actuator_trnid,
         m.actuator_gainprm,
         m.actuator_biasprm,
         m.actuator_forcelimited,

@@ -40,6 +40,7 @@ from mujoco_warp._src import model_adjoint
 from mujoco_warp._src import smooth
 from mujoco_warp._src import smooth_kinematics_adjoint
 from mujoco_warp._src import solver
+from mujoco_warp._src.types import H_ONE_TILE_MAX
 from mujoco_warp._src.types import TILE_SIZE_JTDAJ_DENSE
 from mujoco_warp._src.types import BackwardContext
 from mujoco_warp._src.types import BiasType
@@ -282,7 +283,7 @@ def solve_backward(m: Model, d_bwd: Data, adj_qacc: wp.array, bc: BackwardContex
   solver.init_context(m, d_bwd, solver_ctx, grad=True)
   # Only the Hessian is needed; replace the initializer's gradient with the adjoint RHS.
   wp.launch(_load_rhs, dim=(d_bwd.nworld, m.nv_pad), inputs=[m.nv, adj_qacc], outputs=[solver_ctx.grad])
-  if m.nv <= solver._BLOCK_CHOLESKY_DIM:
+  if m.nv <= H_ONE_TILE_MAX:
     wp.launch_tiled(
       _solve_adjoint_cholesky(m.nv),
       dim=d_bwd.nworld,
@@ -291,12 +292,7 @@ def solve_backward(m: Model, d_bwd: Data, adj_qacc: wp.array, bc: BackwardContex
       block_dim=m.block_dim.update_gradient_cholesky,
     )
   else:
-    wp.launch(
-      solver._padding_h,
-      dim=(d_bwd.nworld, m.nv_pad - m.nv),
-      inputs=[m.nv, solver_ctx.done],
-      outputs=[solver_ctx.h],
-    )
+    # init_context already initializes the padded Hessian block to the identity.
     rhs = solver_ctx.grad.reshape((d_bwd.nworld, m.nv_pad, 1))
     # This helper loads the entire RHS before storing its solution, so reuse the padded buffer.
     wp.launch_tiled(
