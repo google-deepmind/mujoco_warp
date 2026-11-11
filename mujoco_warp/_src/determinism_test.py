@@ -170,7 +170,7 @@ def _spy(module, name, tag, events, d):
 
   def wrapper(*args, **kwargs):
     out = fn(*args, **kwargs)
-    events.append((tag, args[1] is d, _snapshot(_flatten(d, "d"))))
+    events.append((tag, any(arg is d for arg in args), _snapshot(_flatten(d, "d"))))
     return out
 
   return mock.patch.object(module, name, wrapper)
@@ -949,7 +949,7 @@ class DeterminismTest(parameterized.TestCase):
 
     m.callback.contactfilter = contactfilter
     spies = (
-      (collision_driver, "_sort_contacts", "contacts"),
+      (sort, "contacts", "contacts"),
       (collision_driver, "collision", "collision"),
       (sort, "constraints", "constraint"),
       (constraint, "make_constraint", "make_constraint"),
@@ -1014,7 +1014,7 @@ class DeterminismTest(parameterized.TestCase):
     )
     m.opt.deterministic = DeterminismType.ALL
     with (
-      mock.patch.object(collision_driver, "_sort_contacts") as contacts,
+      mock.patch.object(sort, "contacts") as contacts,
       mock.patch.object(sort, "constraints") as constraints,
     ):
       mjw.forward(m, d)

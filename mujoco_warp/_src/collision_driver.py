@@ -1152,11 +1152,6 @@ def _narrowphase(m: Model, d: Data, ctx: CollisionContext):
     sdf_narrowphase(m, d, ctx)
 
 
-def _sort_contacts(m: Model, d: Data):
-  """Deterministic contact sort."""
-  sort.contacts(d)
-
-
 @event_scope
 def collision(
   m: Model,
@@ -1236,4 +1231,4 @@ def collision(
     m.callback.contactfilter(m, d)
 
   if m.opt.deterministic & DeterminismType.CONTACTS:
-    _sort_contacts(m, d)
+    sort.contacts(d)

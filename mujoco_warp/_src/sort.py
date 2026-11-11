@@ -15,8 +15,7 @@
 
 """Device-side canonical permutations for contacts and constraints."""
 
-from types import SimpleNamespace
-from typing import Any, Callable
+from typing import Callable
 
 import warp as wp
 
@@ -46,44 +45,6 @@ _CHUNK = 4
 
 # The nonzero offsets of all worlds come from one scan while its running total fits an int.
 _SCAN_MAX = 2**31
-
-_CONTACT_FIELDS = (
-  "dist",
-  "pos",
-  "frame",
-  "includemargin",
-  "friction",
-  "solref",
-  "solreffriction",
-  "solimp",
-  "dim",
-  "geom",
-  "flex",
-  "elem",
-  "vert",
-  "efc_address",
-  "worldid",
-  "type",
-  "geomcollisionid",
-  "adhesion",
-  "surfacevel",
-)
-
-_CONSTRAINT_FIELDS = (
-  "type",
-  "id",
-  "pos",
-  "margin",
-  "D",
-  "vel",
-  "aref",
-  "frictionloss",
-  "force",
-  "state",
-  "island",
-  "Jqvel",
-  "J_rownnz",
-)
 
 
 @wp.struct
@@ -283,11 +244,13 @@ def _block_less(keys: _BlockKeys, worldid: int, a: int, b: int) -> bool:
 
 @cache_kernel
 def _rank(compare: Callable):
+  key_type = compare.input_types["keys"]
+
   @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
   def kernel(
     # In:
     count_in: wp.array[int],
-    keys_in: Any,
+    keys_in: key_type,
     width: int,
     # Out:
     order_out: wp.array2d[int],
@@ -321,11 +284,13 @@ def _rank(compare: Callable):
 
 @cache_kernel
 def _merge(compare: Callable):
+  key_type = compare.input_types["keys"]
+
   @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
   def kernel(
     # In:
     count_in: wp.array[int],
-    keys_in: Any,
+    keys_in: key_type,
     order_in: wp.array2d[int],
     width: int,
     # Out:
@@ -674,6 +639,8 @@ def _constraint_primary(
   # In:
   nnz_in: wp.array[int],
   rank_in: wp.array[int],
+  # Data out:
+  efc_Jqvel_out: wp.array2d[float],
   # Out:
   count_out: wp.array[int],
   nblock_out: wp.array[int],
@@ -689,6 +656,8 @@ def _constraint_primary(
     return
   row_type = efc_type_in[worldid, row]
   id = efc_id_in[worldid, row]
+  if row_type < int(types.ConstraintType.CONTACT_FRICTIONLESS):
+    efc_Jqvel_out[worldid, row] = 0.0
   subtype = int(0)
   component = int(0)
   if row_type == int(types.ConstraintType.EQUALITY):
@@ -996,7 +965,7 @@ def _rank_width(nworld: int, capacity: int) -> int:
 def permutation(
   count: wp.array,
   capacity: int,
-  keys: wp.array | _ContactKeys.cls | _ConstraintKeys.cls,
+  keys: wp.array | _ContactKeys.cls | _ConstraintKeys.cls | _BlockKeys.cls,
   compare: Callable,
   inverse: wp.array | None = None,
 ) -> wp.array:
@@ -1029,7 +998,7 @@ def row_view(value: wp.array, nworld: int, capacity: int) -> wp.array:
   return view.reshape((nworld, capacity, width))
 
 
-def _contact_keys(contact: Any) -> _ContactKeys.cls:
+def _contact_keys(contact: types.Contact | _ContactRows.cls) -> _ContactKeys.cls:
   keys = _ContactKeys()
   keys.worldid = contact.worldid
   keys.geom = contact.geom
@@ -1052,10 +1021,51 @@ def _contact_keys(contact: Any) -> _ContactKeys.cls:
   return keys
 
 
-def _contact_rows(contact: Any) -> _ContactRows.cls:
+def _contact_rows(contact: types.Contact) -> _ContactRows.cls:
   rows = _ContactRows()
-  for name in _CONTACT_FIELDS:
-    setattr(rows, name, getattr(contact, name))
+  rows.dist = contact.dist
+  rows.pos = contact.pos
+  rows.frame = contact.frame
+  rows.includemargin = contact.includemargin
+  rows.friction = contact.friction
+  rows.solref = contact.solref
+  rows.solreffriction = contact.solreffriction
+  rows.solimp = contact.solimp
+  rows.dim = contact.dim
+  rows.geom = contact.geom
+  rows.flex = contact.flex
+  rows.elem = contact.elem
+  rows.vert = contact.vert
+  rows.efc_address = contact.efc_address
+  rows.worldid = contact.worldid
+  rows.type = contact.type
+  rows.geomcollisionid = contact.geomcollisionid
+  rows.adhesion = contact.adhesion
+  rows.surfacevel = contact.surfacevel
+  return rows
+
+
+def _empty_contact_rows(contact: types.Contact) -> _ContactRows.cls:
+  rows = _ContactRows()
+  rows.dist = wp.empty_like(contact.dist)
+  rows.pos = wp.empty_like(contact.pos)
+  rows.frame = wp.empty_like(contact.frame)
+  rows.includemargin = wp.empty_like(contact.includemargin)
+  rows.friction = wp.empty_like(contact.friction)
+  rows.solref = wp.empty_like(contact.solref)
+  rows.solreffriction = wp.empty_like(contact.solreffriction)
+  rows.solimp = wp.empty_like(contact.solimp)
+  rows.dim = wp.empty_like(contact.dim)
+  rows.geom = wp.empty_like(contact.geom)
+  rows.flex = wp.empty_like(contact.flex)
+  rows.elem = wp.empty_like(contact.elem)
+  rows.vert = wp.empty_like(contact.vert)
+  rows.efc_address = wp.empty_like(contact.efc_address)
+  rows.worldid = wp.empty_like(contact.worldid)
+  rows.type = wp.empty_like(contact.type)
+  rows.geomcollisionid = wp.empty_like(contact.geomcollisionid)
+  rows.adhesion = wp.empty_like(contact.adhesion)
+  rows.surfacevel = wp.empty_like(contact.surfacevel)
   return rows
 
 
@@ -1074,9 +1084,8 @@ def contacts(d: types.Data):
     return
   # Preserve initialized unused-address sentinels along with the other contact fields: every field
   # moves through a copy, with one launch for all of them.
-  copy = SimpleNamespace(**{name: wp.empty_like(getattr(d.contact, name)) for name in _CONTACT_FIELDS})
   rows = _contact_rows(d.contact)
-  copy_rows = _contact_rows(copy)
+  copy_rows = _empty_contact_rows(d.contact)
   if d.naconmax <= _BUCKET_NCONMAX * d.nworld:
     # Group the contacts of each world, then every contact counts the contacts of its world that
     # precede it: a few launches instead of one merge pass per doubling of the whole buffer, and
@@ -1096,7 +1105,7 @@ def contacts(d: types.Data):
     wp.launch(
       _contact_place,
       dim=d.naconmax,
-      inputs=[d.nacon, _contact_keys(copy), offset, count, source, copy_rows],
+      inputs=[d.nacon, _contact_keys(copy_rows), offset, count, source, copy_rows],
       outputs=[rows],
     )
   else:
@@ -1178,7 +1187,7 @@ def constraints(m: types.Model, d: types.Data, nnz: wp.array | None = None):
       nnz,
       rank,
     ],
-    outputs=[count, nblock, keys.primary],
+    outputs=[d.efc.Jqvel, count, nblock, keys.primary],
   )
   inverse = wp.empty(shape, dtype=int)
   order = permutation(count, d.njmax, keys, _constraint_less, inverse)
@@ -1198,9 +1207,19 @@ def constraints(m: types.Model, d: types.Data, nnz: wp.array | None = None):
   # Every row field moves through one packed copy: one launch out and one launch back, instead of a
   # copy of the whole array and a launch per field.
   rows = _ConstraintRows()
-  for name in _CONSTRAINT_FIELDS:
-    if m.is_sparse or name != "J_rownnz":
-      setattr(rows, name, getattr(d.efc, name))
+  rows.type = d.efc.type
+  rows.id = d.efc.id
+  rows.pos = d.efc.pos
+  rows.margin = d.efc.margin
+  rows.D = d.efc.D
+  rows.vel = d.efc.vel
+  rows.aref = d.efc.aref
+  rows.frictionloss = d.efc.frictionloss
+  rows.force = d.efc.force
+  rows.state = d.efc.state
+  rows.island = d.efc.island
+  rows.Jqvel = d.efc.Jqvel
+  rows.J_rownnz = d.efc.J_rownnz
   ints = wp.empty((d.nworld, 5, d.njmax), dtype=int)
   floats = wp.empty((d.nworld, 8, d.njmax), dtype=float)
   unused = wp.empty((0, 0), dtype=int)
