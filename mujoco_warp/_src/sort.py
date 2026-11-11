@@ -33,15 +33,42 @@ _RANK_LARGE = 65536
 
 # Contacts are ranked within per-world buckets while the buffer holds at most this many contacts per
 # world. Larger buffers use the merge passes, whose cost does not grow with the square of a bucket.
-_BUCKET_NCONMAX = 128
+_BUCKET_NCONMAX = 256
 
 # Contact rows take the order of their contact from one launch that walks the rows of its world,
 # while a world holds at most this many rows. Unsorted contacts cost that launch the square of the
 # rows of a world, so larger worlds use the merge passes over the contact buffer instead.
 _ROW_RANK_NJMAX = 256
 
+# The rows that precede the contact rows of a world are ordered as one block, without merge passes,
+# while a world holds at most this many rows. Every row of a world is ordered with them when its
+# contact rows are not in place, which costs the square of the rows of the world.
+_HEAD_NJMAX = 256
+
+# What `_contact_row_count` knows of a contact, in one value: its rows, whether it is frictionless,
+# so that its row precedes those of the other contacts, and whether it is the first of its world.
+_ROWS_MASK = 255
+_ROWS_FRICTIONLESS = 256
+_ROWS_FIRST = 512
+
+# Threads per world that order its leading rows as one block. Each strides over the rows in use: a
+# launch with a thread per row of the capacity mostly starts threads that find no row.
+_ROW_LANES = 16
+
 # Adjacent columns of a wide row that one thread moves.
 _CHUNK = 4
+
+# A Jacobian whose capacity is larger than this many chunks is moved by threads that stride over
+# the chunks in use, so that a launch does not start a thread per chunk of the capacity, most of
+# which would find nothing to move: this many threads per world for the nonzeros of a sparse
+# Jacobian whose worlds hold more chunks, and the threads that move the row fields for the dense
+# rows of a batch that holds more chunks.
+_LANES = 64
+
+# JTDAJ blocks take their order from one launch that counts the blocks of their world that precede
+# them, while a world holds at most this many rows. The count costs the square of the blocks of a
+# world, so larger worlds sort their blocks with merge passes.
+_BLOCK_RANK_NJMAX = 256
 
 # The nonzero offsets of all worlds come from one scan while its running total fits an int.
 _SCAN_MAX = 2**31
@@ -365,6 +392,37 @@ def _restore(
 
 
 @wp.func
+def _dense_lane(
+  # In:
+  count_in: wp.array[int],
+  order_in: wp.array2d[int],
+  value_in: wp.array3d[wp.uint32],
+  restore: bool,
+  worldid: int,
+  lane: int,
+  stride: int,
+  # Out:
+  value_out: wp.array3d[wp.uint32],
+):
+  """Copy the sorted rows out like `_gather`, or restore the copy like `_restore`.
+
+  One of the threads of a world that stride over the chunks of its rows in use: neighbouring threads
+  move neighbouring chunks, and no thread is launched for the rows that are not in use.
+  """
+  nchunk = (value_in.shape[2] + _CHUNK - 1) // _CHUNK
+  for slot in range(lane, count_in[worldid] * nchunk, stride):
+    row = slot // nchunk
+    source = order_in[worldid, row]
+    # Rows that are already in place do not move.
+    if source != row:
+      if restore:
+        source = row
+      first = _CHUNK * (slot - row * nchunk)
+      for col in range(first, wp.min(first + _CHUNK, value_in.shape[2])):
+        value_out[worldid, row, col] = value_in[worldid, source, col]
+
+
+@wp.func
 def _move_contact(
   # In:
   rows_in: _ContactRows,
@@ -479,6 +537,108 @@ def _contact_place(
   _move_contact(rows_in, slot, rank, rows_out)
 
 
+@wp.func
+def _contact_precedes(
+  # In:
+  keys: _ContactKeys,
+  source: wp.array[int],
+  geom: wp.array[wp.vec2i],
+  pos: wp.array2d[wp.uint32],
+  outer: bool,
+  a: int,
+  b: int,
+  gb: wp.vec2i,
+) -> bool:
+  """Whether the contact in slot a of a bucket precedes the one in slot b in the stable order.
+
+  The grouped copies of the first keys decide most pairs: `gb` is the geom pair of slot b.
+  """
+  # The contacts of an outer bucket differ in their world IDs, which are not in the grouped copy.
+  if not outer:
+    ga = geom[a]
+    for i in range(2):
+      if ga[i] != gb[i]:
+        return ga[i] < gb[i]
+    # Flex features precede the position of a flex contact.
+    if not ((ga[0] < 0 or ga[1] < 0) and keys.flex.shape[0] > 0):
+      for i in range(3):
+        if pos[a, i] != pos[b, i]:
+          return _float_key(pos[a, i]) < _float_key(pos[b, i])
+  # Seldom reached: the remaining keys are read where collision detection wrote them, and equal
+  # contacts keep the order in which they were written, like the stable merge.
+  sa = source[a]
+  sb = source[b]
+  if _contact_less(keys, 0, sa, sb):
+    return True
+  if _contact_less(keys, 0, sb, sa):
+    return False
+  return sa < sb
+
+
+@wp.kernel
+def _contact_group_keys(
+  # Data in:
+  contact_surfacevel_in: wp.array[wp.vec3],
+  nacon_in: wp.array[int],
+  # In:
+  offset_in: wp.array[int],
+  slot_in: wp.array[int],
+  worldid_in: wp.array[int],
+  geom_in: wp.array[wp.vec2i],
+  pos_in: wp.array[wp.vec3],
+  # Out:
+  source_out: wp.array[int],
+  geom_out: wp.array[wp.vec2i],
+  pos_out: wp.array[wp.vec3],
+  surfacevel_out: wp.array[wp.vec3],
+):
+  """List the contacts of each world next to each other, with the keys that decide most ranks."""
+  conid = wp.tid()
+  if conid >= wp.min(nacon_in[0], slot_in.shape[0]):
+    return
+  target = offset_in[_contact_bucket(worldid_in[conid], offset_in.shape[0])] + slot_in[conid]
+  source_out[target] = conid
+  geom_out[target] = geom_in[conid]
+  pos_out[target] = pos_in[conid]
+  # Collision detection wrote no surface velocity: the one in the contact buffer moves with the
+  # contact that took its slot, as it does when the contacts are sorted in the contact buffer.
+  if contact_surfacevel_in.shape[0] > 0:
+    surfacevel_out[conid] = contact_surfacevel_in[conid]
+
+
+@wp.kernel
+def _contact_place_once(
+  # Data in:
+  nacon_in: wp.array[int],
+  # In:
+  keys_in: _ContactKeys,
+  offset_in: wp.array[int],
+  count_in: wp.array[int],
+  source_in: wp.array[int],
+  geom_in: wp.array[wp.vec2i],
+  pos_in: wp.array2d[wp.uint32],
+  rows_in: _ContactRows,
+  # Out:
+  rows_out: _ContactRows,
+):
+  """Move each contact from where collision detection wrote it to its canonical position."""
+  slot = wp.tid()
+  if slot >= wp.min(nacon_in[0], source_in.shape[0]):
+    return
+  conid = source_in[slot]
+  nbucket = offset_in.shape[0]
+  bucket = _contact_bucket(keys_in.worldid[conid], nbucket)
+  outer = bucket == 0 or bucket == nbucket - 1
+  start = offset_in[bucket]
+  rank = start
+  own = geom_in[slot]
+  for other in range(start, start + count_in[bucket]):
+    if other != slot:
+      if _contact_precedes(keys_in, source_in, geom_in, pos_in, outer, other, slot, own):
+        rank += 1
+  _move_contact(rows_in, conid, rank, rows_out)
+
+
 @wp.kernel
 def _contact_gather(
   # Data in:
@@ -548,6 +708,178 @@ def _contact_unsorted(
       unsorted_out[0] = nacon_in[0]
 
 
+@wp.func
+def _contact_nrow(opt_cone: int, condim: int) -> int:
+  """Rows of an active contact."""
+  if opt_cone == int(types.ConeType.PYRAMIDAL):
+    return wp.max(1, 2 * (condim - 1))
+  return condim
+
+
+@wp.kernel
+def _contact_row_count(
+  # Model:
+  opt_cone: int,
+  # Data in:
+  contact_dim_in: wp.array[int],
+  contact_efc_address_in: wp.array2d[int],
+  contact_worldid_in: wp.array[int],
+  efc_J_rownnz_in: wp.array2d[int],
+  nacon_in: wp.array[int],
+  # In:
+  keys_in: _ContactKeys,
+  # Out:
+  unsorted_out: wp.array[int],
+  rows_out: wp.array[int],
+  nnz_out: wp.array[int],
+):
+  """Rows and nonzeros that each contact allocated, and the count of `_contact_unsorted`."""
+  conid = wp.tid()
+  if conid >= wp.min(nacon_in[0], rows_out.shape[0]):
+    return
+  worldid = contact_worldid_in[conid]
+  rows = int(0)
+  if conid == 0:
+    rows = _ROWS_FIRST
+  else:
+    if _contact_less(keys_in, 0, conid, conid - 1):
+      unsorted_out[0] = nacon_in[0]
+    if contact_worldid_in[conid - 1] != worldid:
+      rows = _ROWS_FIRST
+  first = contact_efc_address_in[conid, 0]
+  if first >= 0:
+    condim = contact_dim_in[conid]
+    nrow = _contact_nrow(opt_cone, condim)
+    rows += nrow
+    if condim == 1:
+      rows += _ROWS_FRICTIONLESS
+    if nnz_out.shape[0] > 0:
+      rownnz = int(0)
+      if worldid >= 0 and worldid < efc_J_rownnz_in.shape[0] and first < efc_J_rownnz_in.shape[1]:
+        rownnz = efc_J_rownnz_in[worldid, first]
+      nnz_out[conid] = nrow * rownnz
+  rows_out[conid] = rows
+
+
+@wp.kernel
+def _contact_rows_place(
+  # Data in:
+  nefc_in: wp.array[int],
+  contact_worldid_in: wp.array[int],
+  njmax_in: int,
+  njmax_nnz_in: int,
+  nacon_in: wp.array[int],
+  # In:
+  nnz_in: wp.array[int],
+  nblock_in: wp.array[int],
+  unsorted_in: wp.array[int],
+  rows_in: wp.array[int],
+  contact_nnz_in: wp.array[int],
+  # Data out:
+  contact_efc_address_out: wp.array2d[int],
+  efc_id_out: wp.array2d[int],
+  efc_jtdaj_adr_out: wp.array2d[int],
+  efc_jtdaj_nrow_out: wp.array2d[int],
+  efc_J_rownnz_out: wp.array2d[int],
+  efc_J_rowadr_out: wp.array2d[int],
+):
+  """Give the rows that contacts just allocated, and that are still empty, their canonical address.
+
+  Contacts allocate their rows in the order in which their threads arrive, so the rows would have
+  to move once they are filled. In a canonical contact buffer the contacts of a world are
+  neighbours: frictionless contacts come first among its rows, then the other contacts, each in the
+  order of the buffer. Their nonzeros and their JTDAJ blocks follow that order. The sort that
+  follows the assembly still orders every row, and finds these in place.
+  """
+  conid = wp.tid()
+  ncon = wp.min(nacon_in[0], rows_in.shape[0])
+  if conid >= ncon or unsorted_in[0] != 0:
+    return
+  rows = rows_in[conid]
+  nrow = rows & _ROWS_MASK
+  if nrow == 0:
+    return
+  worldid = contact_worldid_in[conid]
+  if worldid < 0 or worldid >= nefc_in.shape[0]:
+    return
+  # Rows or nonzeros that did not fit were dropped in the order of arrival: leave such a world.
+  nefc = nefc_in[worldid]
+  if nefc > njmax_in:
+    return
+  sparse = contact_nnz_in.shape[0] > 0
+  nnz = int(0)
+  contact_nnz = int(0)
+  if sparse:
+    nnz = nnz_in[worldid]
+    if nnz > njmax_nnz_in:
+      return
+    contact_nnz = contact_nnz_in[conid]
+  frictionless = (rows & _ROWS_FRICTIONLESS) != 0
+  # Rows, nonzeros and contacts with rows that precede this contact, and those of the world.
+  before = int(0)
+  before_nnz = int(0)
+  before_count = int(0)
+  total = nrow
+  total_nnz = contact_nnz
+  total_count = int(1)
+  other_rows = rows
+  for i in range(conid):
+    # The contact that was just counted is the first of the world.
+    if (other_rows & _ROWS_FIRST) != 0:
+      break
+    other = conid - 1 - i
+    other_rows = rows_in[other]
+    other_nrow = other_rows & _ROWS_MASK
+    if other_nrow != 0:
+      other_nnz = int(0)
+      if sparse:
+        other_nnz = contact_nnz_in[other]
+      total += other_nrow
+      total_nnz += other_nnz
+      total_count += 1
+      # An earlier contact precedes this one unless it has friction and this one does not.
+      if (other_rows & _ROWS_FRICTIONLESS) != 0 or not frictionless:
+        before += other_nrow
+        before_nnz += other_nnz
+        before_count += 1
+  for other in range(conid + 1, ncon):
+    other_rows = rows_in[other]
+    if (other_rows & _ROWS_FIRST) != 0:
+      break
+    other_nrow = other_rows & _ROWS_MASK
+    if other_nrow != 0:
+      other_nnz = int(0)
+      if sparse:
+        other_nnz = contact_nnz_in[other]
+      total += other_nrow
+      total_nnz += other_nnz
+      total_count += 1
+      # A later contact only precedes this one when it is frictionless and this one is not.
+      if (other_rows & _ROWS_FRICTIONLESS) != 0 and not frictionless:
+        before += other_nrow
+        before_nnz += other_nnz
+        before_count += 1
+  # Contacts allocate the last rows, the last nonzeros and the last blocks of their world.
+  base = nefc - total
+  nnz_base = nnz - total_nnz
+  block_base = int(0)
+  if nblock_in.shape[0] > 0:
+    block_base = nblock_in[worldid] - total_count
+  if base < 0 or nnz_base < 0 or block_base < 0:
+    return
+  target = base + before
+  rownnz = contact_nnz / nrow
+  for i in range(nrow):
+    contact_efc_address_out[conid, i] = target + i
+    efc_id_out[worldid, target + i] = conid
+    if sparse:
+      efc_J_rownnz_out[worldid, target + i] = rownnz
+      efc_J_rowadr_out[worldid, target + i] = nnz_base + before_nnz + i * rownnz
+  if nblock_in.shape[0] > 0:
+    efc_jtdaj_adr_out[worldid, block_base + before_count] = target
+    efc_jtdaj_nrow_out[worldid, block_base + before_count] = nrow
+
+
 @wp.kernel
 def _contact_row_rank(
   # Model:
@@ -571,13 +903,13 @@ def _contact_row_rank(
 ):
   """Canonical order of each contact among the contacts of its world that have constraint rows."""
   conid = wp.tid()
-  ncon = wp.min(nacon_in[0], rank_out.shape[0])
-  if conid >= ncon:
-    return
   if unsorted_in[0] == 0:
     # No contact precedes its predecessor, so the buffer is in canonical order and the index of a
     # contact already is its order: the usual case, when collision detection sorted the contacts.
-    rank_out[conid] = conid
+    # The rows then read the index, not this rank.
+    return
+  ncon = wp.min(nacon_in[0], rank_out.shape[0])
+  if conid >= ncon:
     return
   rank_out[conid] = -1
   worldid = contact_worldid_in[conid]
@@ -638,6 +970,7 @@ def _constraint_primary(
   nacon_in: wp.array[int],
   # In:
   nnz_in: wp.array[int],
+  unsorted_in: wp.array[int],
   rank_in: wp.array[int],
   # Data out:
   efc_Jqvel_out: wp.array2d[float],
@@ -645,11 +978,16 @@ def _constraint_primary(
   count_out: wp.array[int],
   nblock_out: wp.array[int],
   keys_out: wp.array2d[wp.vec4i],
+  unsorted_out: wp.array[int],
+  disorder_out: wp.array[int],
 ):
   worldid, row = wp.tid()
   count = _constraint_count(nefc_in, njmax_in, njmax_nnz_in, nnz_in, worldid)
   if row == 0:
     count_out[worldid] = count
+    # The counts that the next launch raises.
+    unsorted_out[worldid] = 0
+    disorder_out[worldid] = 0
     if nblock_out.shape[0] > 0:
       nblock_out[worldid] = wp.where(count > 0, efc_jtdaj_nblock_in[worldid], 0)
   if row >= count:
@@ -674,17 +1012,107 @@ def _constraint_primary(
     # A row that its contact addresses is ordered by the rank of that contact and by its component,
     # not by the contact index. Components that the contact does not use cannot claim a row.
     if id >= 0 and id < wp.min(nacon_in[0], rank_in.shape[0]):
-      if contact_worldid_in[id] == worldid and rank_in[id] >= 0:
+      # The index of a contact is its rank in a canonical buffer, which has no rank to read.
+      rank = id
+      if unsorted_in[0] != 0:
+        rank = rank_in[id]
+      if contact_worldid_in[id] == worldid and rank >= 0:
         nrow = contact_dim_in[id]
         if opt_cone == int(types.ConeType.PYRAMIDAL):
           nrow = wp.max(1, 2 * (nrow - 1))
         for i in range(wp.min(nrow, contact_efc_address_in.shape[1])):
           if contact_efc_address_in[id, i] == row:
-            id = rank_in[id]
+            id = rank
             component = i
             break
   # Force reconstruction requires all connects before welds, regardless of XML equality IDs.
   keys_out[worldid, row] = wp.vec4i(row_type, subtype, id, component)
+
+
+@wp.kernel
+def _constraint_unsorted(
+  # In:
+  count_in: wp.array[int],
+  keys_in: _ConstraintKeys,
+  # Out:
+  unsorted_out: wp.array[int],
+  disorder_out: wp.array[int],
+):
+  """Count the leading rows of each world that the sort has to order, if any row is out of order.
+
+  Contact rows that end the rows of a world, none of which precedes its predecessor, are in
+  canonical order: every other row precedes a contact row. The count stays at the rows that precede
+  them, which is every row of a world whose contact rows are not such a tail. A world in which no
+  row precedes its predecessor is in canonical order altogether, and is not marked.
+  """
+  worldid, row = wp.tid()
+  count = count_in[worldid]
+  if row >= count:
+    return
+  contact = int(types.ConstraintType.CONTACT_FRICTIONLESS)
+  previous_type = int(-1)
+  precedes = False
+  if row > 0:
+    previous_type = keys_in.primary[worldid, row - 1][0]
+    precedes = _constraint_less(keys_in, worldid, row, row - 1)
+  if precedes:
+    disorder_out[worldid] = 1
+  # The largest count wins, in whatever order the threads arrive.
+  if keys_in.primary[worldid, row][0] < contact:
+    # A row that follows a contact row, or a world that does not end in contact rows.
+    if previous_type >= contact or row == count - 1:
+      wp.atomic_max(unsorted_out, worldid, count)  # kernel_analyzer: ignore[atomic]
+  elif previous_type < contact:
+    # The first contact row: the rows before it are not known to be in order.
+    wp.atomic_max(unsorted_out, worldid, row)  # kernel_analyzer: ignore[atomic]
+  elif precedes:
+    wp.atomic_max(unsorted_out, worldid, count)  # kernel_analyzer: ignore[atomic]
+
+
+@wp.kernel
+def _constraint_rank(
+  # In:
+  count_in: wp.array[int],
+  disorder_in: wp.array[int],
+  keys_in: _ConstraintKeys,
+  rows_in: wp.array[int],
+  stride: int,
+  # Out:
+  order_out: wp.array2d[int],
+  inverse_out: wp.array2d[int],
+  head_out: wp.array[int],
+):
+  """Order the leading rows of each world as one block, like `_rank` with `_constraint_less`.
+
+  A few threads per world stride over these rows, and each row counts those that precede it. A
+  world without a row out of order has no row to order: the count that the later launches read is
+  zero. The rows past the count keep their index, up to the rows that the later launches read.
+  """
+  worldid, lane = wp.tid()
+  count = int(0)
+  if disorder_in[worldid] != 0:
+    count = wp.min(count_in[worldid], order_out.shape[1])
+  if lane == 0:
+    head_out[worldid] = count
+  limit = count
+  if rows_in.shape[0] > 0:
+    limit = wp.max(count, wp.min(rows_in[worldid], order_out.shape[1]))
+  for row in range(lane, limit, stride):
+    if row >= count:
+      order_out[worldid, row] = row
+      inverse_out[worldid, row] = row
+    else:
+      rank = int(0)
+      # Stable order of identical rows: an equal row only precedes this one from a lower index.
+      for other in range(count):
+        if other < row:
+          if not _constraint_less(keys_in, worldid, row, other):
+            rank += 1
+        elif other > row:
+          if _constraint_less(keys_in, worldid, other, row):
+            rank += 1
+      order_out[worldid, rank] = row
+      inverse_out[worldid, row] = rank
 
 
 @wp.func
@@ -754,10 +1182,12 @@ def _constraint_gather(
   count_in: wp.array[int],
   order_in: wp.array2d[int],
   rows_in: _ConstraintRows,
+  J_in: wp.array3d[wp.uint32],
   # Out:
   ints_out: wp.array3d[int],
   floats_out: wp.array3d[float],
   nnz_out: wp.array2d[int],
+  J_out: wp.array3d[wp.uint32],
 ):
   worldid, row = wp.tid()
   if row < count_in[worldid]:
@@ -767,6 +1197,9 @@ def _constraint_gather(
     # Rows that are already in place do not move: with sorted contacts that is most of them.
     if source != row:
       _pack_constraint(rows_in, worldid, source, row, ints_out, floats_out)
+  # The threads of a world also stride over the chunks of its dense Jacobian rows.
+  if J_in.shape[2] > 0:
+    _dense_lane(count_in, order_in, J_in, False, worldid, row, order_in.shape[1], J_out)
 
 
 @wp.kernel
@@ -780,14 +1213,19 @@ def _constraint_unpack(
   nblock_in: wp.array[int],
   adr_in: wp.array2d[int],
   nrow_in: wp.array2d[int],
+  J_in: wp.array3d[wp.uint32],
   # Data out:
   efc_jtdaj_adr_out: wp.array2d[int],
   efc_jtdaj_nrow_out: wp.array2d[int],
   efc_J_rowadr_out: wp.array2d[int],
   # Out:
   rows_out: _ConstraintRows,
+  J_out: wp.array3d[wp.uint32],
 ):
   worldid, row = wp.tid()
+  # The threads of a world also stride over the chunks of the dense Jacobian rows that were copied.
+  if J_in.shape[2] > 0:
+    _dense_lane(count_in, order_in, J_in, True, worldid, row, order_in.shape[1], J_out)
   if row < count_in[worldid]:
     if order_in[worldid, row] != row:
       _unpack_constraint(ints_in, floats_in, worldid, row, rows_out)
@@ -811,12 +1249,17 @@ def _remap_contacts(
   # Data out:
   contact_efc_address_out: wp.array2d[int],
 ):
-  conid, component = wp.tid()
+  conid = wp.tid()
   if conid < wp.min(nacon_in[0], contact_efc_address_in.shape[0]):
-    row = contact_efc_address_in[conid, component]
+    # Rows past the count did not move, and neither did the rows of a world outside the batch.
     worldid = contact_worldid_in[conid]
-    if row >= 0 and row < count_in[worldid]:
-      contact_efc_address_out[conid, component] = inverse_in[worldid, row]
+    count = int(0)
+    if worldid >= 0 and worldid < count_in.shape[0]:
+      count = count_in[worldid]
+    for component in range(contact_efc_address_in.shape[1]):
+      row = contact_efc_address_in[conid, component]
+      if row >= 0 and row < count:
+        contact_efc_address_out[conid, component] = inverse_in[worldid, row]
 
 
 @wp.kernel
@@ -884,6 +1327,48 @@ def _sparse_nnz(
   return offsets_in[worldid + 1, 0] - offsets_in[worldid, 0]
 
 
+@wp.func
+def _sparse_chunk(
+  # Data in:
+  efc_J_rowadr_in: wp.array2d[int],
+  # In:
+  count_in: wp.array[int],
+  order_in: wp.array2d[int],
+  offsets_in: wp.array2d[int],
+  colind_in: wp.array2d[int],
+  J_in: wp.array2d[float],
+  restore: bool,
+  worldid: int,
+  first: int,
+  last: int,
+  # Out:
+  colind_out: wp.array2d[int],
+  J_out: wp.array2d[float],
+):
+  """Move the packed elements from first up to last, which all lie within the sorted rows."""
+  # Last row that starts at or before the first element: the row that holds it, since the empty
+  # rows that share an offset precede it.
+  count = count_in[worldid]
+  row = int(0)
+  hi = count
+  while hi - row > 1:
+    mid = (row + hi) // 2
+    if _sparse_offset(offsets_in, worldid, mid) <= first:
+      row = mid
+    else:
+      hi = mid
+  shift = efc_J_rowadr_in[worldid, order_in[worldid, row]] - _sparse_offset(offsets_in, worldid, row)
+  for i in range(first, last):
+    while row + 1 < count and _sparse_offset(offsets_in, worldid, row + 1) <= i:
+      row += 1
+      shift = efc_J_rowadr_in[worldid, order_in[worldid, row]] - _sparse_offset(offsets_in, worldid, row)
+    # Rows whose nonzeros are already in place do not move: with sorted contacts that is many.
+    if shift != 0:
+      source = i + wp.where(restore, 0, shift)
+      colind_out[worldid, i] = colind_in[worldid, source]
+      J_out[worldid, i] = J_in[worldid, source]
+
+
 @wp.kernel
 def _sparse_move(
   # Data in:
@@ -910,27 +1395,67 @@ def _sparse_move(
   last = wp.min(first + _CHUNK, _sparse_nnz(offsets_in, nnz_in, worldid))
   if first >= last:
     return
-  # Last row that starts at or before the first element: the row that holds it, since the empty
-  # rows that share an offset precede it.
-  count = count_in[worldid]
-  row = int(0)
-  hi = count
-  while hi - row > 1:
-    mid = (row + hi) // 2
-    if _sparse_offset(offsets_in, worldid, mid) <= first:
-      row = mid
-    else:
-      hi = mid
-  shift = efc_J_rowadr_in[worldid, order_in[worldid, row]] - _sparse_offset(offsets_in, worldid, row)
-  for i in range(first, last):
-    while row + 1 < count and _sparse_offset(offsets_in, worldid, row + 1) <= i:
-      row += 1
-      shift = efc_J_rowadr_in[worldid, order_in[worldid, row]] - _sparse_offset(offsets_in, worldid, row)
-    # Rows whose nonzeros are already in place do not move: with sorted contacts that is many.
-    if shift != 0:
-      source = i + wp.where(restore, 0, shift)
-      colind_out[worldid, i] = colind_in[worldid, source]
-      J_out[worldid, i] = J_in[worldid, source]
+  _sparse_chunk(
+    efc_J_rowadr_in, count_in, order_in, offsets_in, colind_in, J_in, restore, worldid, first, last, colind_out, J_out
+  )
+
+
+@wp.kernel
+def _sparse_unpacked(
+  # Data in:
+  efc_J_rownnz_in: wp.array2d[int],
+  efc_J_rowadr_in: wp.array2d[int],
+  # In:
+  count_in: wp.array[int],
+  order_in: wp.array2d[int],
+  offsets_in: wp.array2d[int],
+  # Out:
+  unpacked_out: wp.array[int],
+):
+  """Count the leading packed nonzeros of each world that hold a row that is not in place.
+
+  The nonzeros past that count are where the sorted rows pack them, so they do not move: with
+  contact rows in place, those are all but the nonzeros of the few rows that precede them.
+  """
+  worldid, row = wp.tid()
+  if row >= count_in[worldid]:
+    return
+  source = order_in[worldid, row]
+  target = _sparse_offset(offsets_in, worldid, row)
+  if efc_J_rowadr_in[worldid, source] != target:
+    # The largest count wins, in whatever order the threads arrive.
+    wp.atomic_max(unpacked_out, worldid, target + efc_J_rownnz_in[worldid, source])  # kernel_analyzer: ignore[atomic]
+
+
+@wp.kernel
+def _sparse_move_lanes(
+  # Data in:
+  efc_J_rowadr_in: wp.array2d[int],
+  # In:
+  count_in: wp.array[int],
+  order_in: wp.array2d[int],
+  offsets_in: wp.array2d[int],
+  nnz_in: wp.array[int],
+  colind_in: wp.array2d[int],
+  J_in: wp.array2d[float],
+  restore: bool,
+  stride: int,
+  # Out:
+  colind_out: wp.array2d[int],
+  J_out: wp.array2d[float],
+):
+  """Pack or restore the nonzeros like `_sparse_move`, with a few threads per world.
+
+  Each thread strides over the chunks of the nonzeros in use: neighbouring threads move neighbouring
+  chunks, and no thread is launched for the capacity that is not in use.
+  """
+  worldid, lane = wp.tid()
+  total = _sparse_nnz(offsets_in, nnz_in, worldid)
+  for first in range(_CHUNK * lane, total, _CHUNK * stride):
+    last = wp.min(first + _CHUNK, total)
+    _sparse_chunk(
+      efc_J_rowadr_in, count_in, order_in, offsets_in, colind_in, J_in, restore, worldid, first, last, colind_out, J_out
+    )
 
 
 @wp.kernel
@@ -953,6 +1478,36 @@ def _block_gather(
     nrow_out[worldid, block] = efc_jtdaj_nrow_in[worldid, source]
 
 
+@wp.kernel
+def _block_place(
+  # Data in:
+  efc_jtdaj_adr_in: wp.array2d[int],
+  efc_jtdaj_nrow_in: wp.array2d[int],
+  # In:
+  nblock_in: wp.array[int],
+  inverse_in: wp.array2d[int],
+  # Out:
+  adr_out: wp.array2d[int],
+  nrow_out: wp.array2d[int],
+):
+  """Order the blocks by the new position of their head row, like merges with `_block_less`."""
+  worldid, block = wp.tid()
+  nblock = wp.min(nblock_in[worldid], adr_out.shape[1])
+  if block >= nblock:
+    return
+  head = inverse_in[worldid, efc_jtdaj_adr_in[worldid, block]]
+  rank = int(0)
+  for other in range(nblock):
+    other_head = inverse_in[worldid, efc_jtdaj_adr_in[worldid, other]]
+    # An equal head only precedes this block from a lower index, like a stable merge.
+    if other_head < head:
+      rank += 1
+    elif other_head == head and other < block:
+      rank += 1
+  adr_out[worldid, rank] = head
+  nrow_out[worldid, rank] = efc_jtdaj_nrow_in[worldid, block]
+
+
 def _rank_width(nworld: int, capacity: int) -> int:
   """Power of two that one counting launch orders: the whole capacity when it is small."""
   limit = _RANK_WIDTH if nworld * capacity <= _RANK_LARGE else _RANK_WIDTH_LARGE
@@ -968,16 +1523,19 @@ def permutation(
   keys: wp.array | _ContactKeys.cls | _ConstraintKeys.cls | _BlockKeys.cls,
   compare: Callable,
   inverse: wp.array | None = None,
+  width: int | None = None,
 ) -> wp.array:
   """Stable parallel sort, bounded by capacity and compatible with CUDA capture.
 
   One launch orders blocks of elements by counting, then merge passes double the sorted width. The
   launches only depend on the capacity. The inverse permutation is written by the last of them.
+  The width of the counted blocks is a power of two, chosen from the sizes unless it is given.
   """
   shape = (count.size, capacity)
   order = wp.empty(shape, dtype=int)
   unused = wp.empty((0, 0), dtype=int)
-  width = _rank_width(count.size, capacity)
+  if width is None:
+    width = _rank_width(count.size, capacity)
   last = inverse if inverse is not None and width >= capacity else unused
   wp.launch(_rank(compare), dim=shape, inputs=[count, keys, width], outputs=[order, last])
   if width < capacity:
@@ -1078,13 +1636,96 @@ def contact_permutation(d: types.Data) -> wp.array:
   return permutation(d.nacon, d.naconmax, _contact_keys(d.contact), _contact_less)
 
 
-def contacts(d: types.Data):
-  """Sort contacts in place by `contact_permutation`, preserving references and unused slots."""
+def contact_buffer(m: types.Model, d: types.Data, incremental: bool = False) -> types.Contact | None:
+  """Arrays for collision detection to write its contacts to, instead of `d.contact`.
+
+  `contacts` then places every contact in `d.contact` at its canonical position: each field moves
+  once, instead of out of the contact buffer and back. The choice only depends on static sizes
+  and options, and the arrays are the same on every replay of a captured step.
+
+  Returns:
+    The arrays to pass to the narrowphase and to `contacts`, or None when collision detection has
+    to write to `d.contact`.
+  """
+  if not (m.opt.deterministic & types.DeterminismType.CONTACTS):
+    return None
+  # Merge passes order the contacts where they are.
+  if d.naconmax > _BUCKET_NCONMAX * d.nworld:
+    return None
+  # An incremental pass appends to the contacts in `d.contact`, and a contact filter reads them
+  # there.
+  if incremental or m.callback.contactfilter:
+    return None
+  # Rigid contacts keep the flex features of the slot that they are written to.
+  if d.contact.flex.size or d.contact.elem.size or d.contact.vert.size:
+    return None
+  # Every new contact gets the same addresses (-1), so collision detection writes them in place
+  # and they do not move. The flex features are empty arrays.
+  return types.Contact(
+    dist=wp.empty_like(d.contact.dist),
+    pos=wp.empty_like(d.contact.pos),
+    frame=wp.empty_like(d.contact.frame),
+    includemargin=wp.empty_like(d.contact.includemargin),
+    friction=wp.empty_like(d.contact.friction),
+    solref=wp.empty_like(d.contact.solref),
+    solreffriction=wp.empty_like(d.contact.solreffriction),
+    solimp=wp.empty_like(d.contact.solimp),
+    dim=wp.empty_like(d.contact.dim),
+    geom=wp.empty_like(d.contact.geom),
+    flex=d.contact.flex,
+    elem=d.contact.elem,
+    vert=d.contact.vert,
+    efc_address=d.contact.efc_address,
+    worldid=wp.empty_like(d.contact.worldid),
+    type=wp.empty_like(d.contact.type),
+    geomcollisionid=wp.empty_like(d.contact.geomcollisionid),
+    adhesion=wp.empty_like(d.contact.adhesion),
+    surfacevel=wp.empty_like(d.contact.surfacevel),
+  )
+
+
+def contacts(d: types.Data, source: types.Contact | None = None, surfacevel: bool = True):
+  """Sort contacts by `contact_permutation`, preserving references and unused slots.
+
+  Args:
+    d: The data that holds the contact buffer.
+    source: The arrays of `contact_buffer` that collision detection wrote the contacts to, or
+      None to sort the contacts in `d.contact`.
+    surfacevel: Whether collision detection wrote `source.surfacevel`. Otherwise the surface
+      velocities in `d.contact` move with the contacts that were written to their slots.
+  """
   if d.naconmax == 0:
+    return
+  rows = _contact_rows(d.contact)
+  if source is not None:
+    # Every contact counts the contacts of its world that precede it and moves from where it was
+    # written to its canonical position. The comparisons read a grouped copy of the first keys.
+    count = wp.zeros(d.nworld + 2, dtype=int)
+    offset = wp.empty(d.nworld + 2, dtype=int)
+    slot = wp.empty(d.naconmax, dtype=int)
+    order = wp.empty(d.naconmax, dtype=int)
+    geom = wp.empty(d.naconmax, dtype=wp.vec2i)
+    pos = wp.empty(d.naconmax, dtype=wp.vec3)
+    stale = wp.empty(0, dtype=wp.vec3) if surfacevel else d.contact.surfacevel
+    source_rows = _contact_rows(source)
+    source_rows.efc_address = wp.empty((0, 0), dtype=int)
+    wp.launch(_contact_buckets, dim=d.naconmax, inputs=[source.worldid, d.nacon], outputs=[count, slot])
+    wp.utils.array_scan(count, offset, False)
+    wp.launch(
+      _contact_group_keys,
+      dim=d.naconmax,
+      inputs=[stale, d.nacon, offset, slot, source.worldid, source.geom, source.pos],
+      outputs=[order, geom, pos, source.surfacevel],
+    )
+    wp.launch(
+      _contact_place_once,
+      dim=d.naconmax,
+      inputs=[d.nacon, _contact_keys(source), offset, count, order, geom, pos.view(wp.uint32), source_rows],
+      outputs=[rows],
+    )
     return
   # Preserve initialized unused-address sentinels along with the other contact fields: every field
   # moves through a copy, with one launch for all of them.
-  rows = _contact_rows(d.contact)
   copy_rows = _empty_contact_rows(d.contact)
   if d.naconmax <= _BUCKET_NCONMAX * d.nworld:
     # Group the contacts of each world, then every contact counts the contacts of its world that
@@ -1114,8 +1755,63 @@ def contacts(d: types.Data):
     wp.launch(_contact_restore, dim=d.naconmax, inputs=[d.nacon, copy_rows], outputs=[rows])
 
 
-def constraints(m: types.Model, d: types.Data, nnz: wp.array | None = None):
-  """Sort assembled rows and repair their contact, friction, sparse-J, and JTDAJ references."""
+def contact_rows(m: types.Model, d: types.Data, nnz: wp.array | None = None) -> wp.array | None:
+  """Move the rows that contacts allocated to their canonical address, before they are filled.
+
+  `constraints` then finds the contact rows, their Jacobian and their nonzeros in place, and only
+  has to move the other rows. Call it after the contacts allocated their rows, which must be the
+  last rows of each world, and pass the result to `constraints`.
+
+  Returns:
+    The count of `_contact_unsorted`, or None when the rows were left where they were allocated.
+  """
+  if d.njmax == 0 or d.contact.efc_address.size == 0:
+    return None
+  # Each contact walks the contacts of its world, like the buckets that sort the contacts.
+  if d.naconmax > _BUCKET_NCONMAX * d.nworld:
+    return None
+  # Contacts that collision detection did not sort are seldom in canonical order.
+  if not (m.opt.deterministic & types.DeterminismType.CONTACTS):
+    return None
+  unsorted = wp.zeros(1, dtype=int)
+  nnz = nnz if m.is_sparse and nnz is not None else wp.empty(0, dtype=int)
+  # Sparse Newton steps keep one JTDAJ block per contact.
+  blocks = m.is_sparse and m.opt.solver == types.SolverType.NEWTON
+  nblock = d.efc.jtdaj_nblock if blocks else wp.empty(0, dtype=int)
+  rows = wp.empty(d.naconmax, dtype=int)
+  contact_nnz = wp.empty(d.naconmax if m.is_sparse else 0, dtype=int)
+  wp.launch(
+    _contact_row_count,
+    dim=d.naconmax,
+    inputs=[
+      m.opt.cone,
+      d.contact.dim,
+      d.contact.efc_address,
+      d.contact.worldid,
+      d.efc.J_rownnz,
+      d.nacon,
+      _contact_keys(d.contact),
+    ],
+    outputs=[unsorted, rows, contact_nnz],
+  )
+  wp.launch(
+    _contact_rows_place,
+    dim=d.naconmax,
+    inputs=[d.nefc, d.contact.worldid, d.njmax, d.njmax_nnz, d.nacon, nnz, nblock, unsorted, rows, contact_nnz],
+    outputs=[d.contact.efc_address, d.efc.id, d.efc.jtdaj_adr, d.efc.jtdaj_nrow, d.efc.J_rownnz, d.efc.J_rowadr],
+  )
+  return unsorted
+
+
+def constraints(m: types.Model, d: types.Data, nnz: wp.array | None = None, unsorted: wp.array | None = None):
+  """Sort assembled rows and repair their contact, friction, sparse-J, and JTDAJ references.
+
+  Args:
+    m: The model containing kinematic and dynamic information (device).
+    d: The data object containing the current state and output arrays (device).
+    nnz: Nonzeros that the assembly reserved in each world, for a sparse Jacobian.
+    unsorted: The result of `contact_rows`, if it was called for these rows.
+  """
   if d.njmax == 0:
     return
   shape = (d.nworld, d.njmax)
@@ -1126,8 +1822,9 @@ def constraints(m: types.Model, d: types.Data, nnz: wp.array | None = None):
   rank = wp.empty(d.naconmax, dtype=int)
   if d.contact.efc_address.size:
     contact_keys = _contact_keys(d.contact)
-    unsorted = wp.zeros(1, dtype=int)
-    wp.launch(_contact_unsorted, dim=d.naconmax, inputs=[d.nacon, contact_keys], outputs=[unsorted])
+    if unsorted is None:
+      unsorted = wp.zeros(1, dtype=int)
+      wp.launch(_contact_unsorted, dim=d.naconmax, inputs=[d.nacon, contact_keys], outputs=[unsorted])
     if d.njmax <= _ROW_RANK_NJMAX:
       wp.launch(
         _contact_row_rank,
@@ -1154,7 +1851,13 @@ def constraints(m: types.Model, d: types.Data, nnz: wp.array | None = None):
       # unsorted count: none of a buffer in canonical order, whose contacts keep their index.
       permutation(unsorted, d.naconmax, contact_keys, _contact_less, rank.reshape((1, d.naconmax)))
   else:
+    # No contact has rows: the rank of every contact is read, and invalid.
+    unsorted = wp.ones(1, dtype=int)
     rank.fill_(-1)
+  # The rows of each world that have to be ordered, and whether any is out of order: the launch
+  # that writes the keys starts both at zero.
+  head = wp.empty(d.nworld, dtype=int)
+  disorder = wp.empty(d.nworld, dtype=int)
   keys = _ConstraintKeys()
   keys.primary = wp.empty(shape, dtype=wp.vec4i)
   keys.J = d.efc.J.view(wp.uint32)
@@ -1185,22 +1888,50 @@ def constraints(m: types.Model, d: types.Data, nnz: wp.array | None = None):
       d.njmax_nnz,
       d.nacon,
       nnz,
+      unsorted,
       rank,
     ],
-    outputs=[d.efc.Jqvel, count, nblock, keys.primary],
+    outputs=[d.efc.Jqvel, count, nblock, keys.primary, head, disorder],
   )
+  # With sorted contacts, contact rows usually are in place already and end the rows of their
+  # world: the passes then only order the few rows that precede them, and write the identity for
+  # the others. Without, nearly every row is ordered and moves, which the launches that are chosen
+  # for a few rows per world would do slowly.
+  sorted_contacts = bool(m.opt.deterministic & types.DeterminismType.CONTACTS)
+  lanes_shape = (d.nworld, min(_ROW_LANES, d.njmax))
+  if sorted_contacts:
+    wp.launch(_constraint_unsorted, dim=shape, inputs=[count, keys], outputs=[head, disorder])
+  else:
+    head = count
   inverse = wp.empty(shape, dtype=int)
-  order = permutation(count, d.njmax, keys, _constraint_less, inverse)
+  if sorted_contacts and d.njmax <= _HEAD_NJMAX:
+    # The head usually is a few rows, which one launch orders without merge passes, and none in a
+    # world whose rows are all in order.
+    order = wp.empty(shape, dtype=int)
+    ordered = wp.empty(d.nworld, dtype=int)
+    # Sparse rows all take a packed address, so the later launches read all of them.
+    read = count if m.is_sparse else wp.empty(0, dtype=int)
+    wp.launch(
+      _constraint_rank,
+      dim=lanes_shape,
+      inputs=[head, disorder, keys, read, lanes_shape[1]],
+      outputs=[order, inverse, ordered],
+    )
+    head = ordered
+  else:
+    # Larger worlds merge wide blocks, whatever the size of the batch.
+    order = permutation(head, d.njmax, keys, _constraint_less, inverse, _RANK_WIDTH if sorted_contacts else None)
+  # Only the rows of the head have a new address.
   wp.launch(
     _remap_contacts,
-    dim=d.contact.efc_address.shape,
-    inputs=[d.contact.efc_address, d.contact.worldid, d.nacon, count, inverse],
+    dim=d.naconmax,
+    inputs=[d.contact.efc_address, d.contact.worldid, d.nacon, head, inverse],
     outputs=[d.contact.efc_address],
   )
   wp.launch(
     _remap_friction,
     dim=d.dof_frictionadr.shape,
-    inputs=[d.nf, d.dof_frictionadr, count, inverse],
+    inputs=[d.nf, d.dof_frictionadr, head, inverse],
     outputs=[d.dof_frictionadr],
   )
 
@@ -1228,60 +1959,94 @@ def constraints(m: types.Model, d: types.Data, nnz: wp.array | None = None):
   # the count of a world hold zero, and so does a last row that ends the scan.
   scan = m.is_sparse and d.nworld * d.njmax_nnz < _SCAN_MAX
   rownnz = wp.zeros((d.nworld + 1, d.njmax), dtype=int) if scan else unused
-  wp.launch(_constraint_gather, dim=shape, inputs=[d.efc.J_rownnz, count, order, rows], outputs=[ints, floats, rownnz])
+  # Only the rows that the passes ordered can move. Sparse rows all take a packed address.
+  moved = count if m.is_sparse else head
+  # The threads that move the row fields of a world also stride over the chunks of its dense
+  # Jacobian rows in use, when the batch has more chunks than lanes: two launches with a thread
+  # per chunk of the capacity would mostly start threads that find nothing to move, and cost two
+  # launches however few chunks a world holds.
+  unused_J = wp.empty((0, 0, 0), dtype=wp.uint32)
+  J_lanes, J_lanes_sorted = unused_J, unused_J
+  dense = not m.is_sparse and d.efc.J.size > 0
+  lanes = False
+  if dense:
+    J_dense = row_view(d.efc.J, d.nworld, d.efc.J.shape[1])
+    J_dense_sorted = wp.empty_like(J_dense)
+    nchunk = (J_dense.shape[2] + _CHUNK - 1) // _CHUNK
+    lanes = sorted_contacts and d.nworld * d.njmax * nchunk > _LANES
+    if lanes:
+      J_lanes, J_lanes_sorted = J_dense, J_dense_sorted
+  wp.launch(
+    _constraint_gather,
+    dim=shape,
+    inputs=[d.efc.J_rownnz, moved, order, rows, J_lanes],
+    outputs=[ints, floats, rownnz, J_lanes_sorted],
+  )
 
   if m.is_sparse:
     # The nonzeros are packed in the new row order, so they move through a copy as well.
+    total = wp.empty(0, dtype=int)
     if scan:
       offsets = wp.empty_like(rownnz)
-      total = wp.empty(0, dtype=int)
       wp.utils.array_scan(rownnz.reshape(-1), offsets.reshape(-1), False)
     else:
       offsets = wp.empty(shape, dtype=int)
       total = wp.empty(d.nworld, dtype=int)
       wp.launch(_sparse_offsets, dim=d.nworld, inputs=[d.efc.J_rownnz, count, order], outputs=[offsets, total])
-    chunks = (d.nworld, (d.njmax_nnz + _CHUNK - 1) // _CHUNK)
+    nchunk = (d.njmax_nnz + _CHUNK - 1) // _CHUNK
     colind = d.efc.J_colind.reshape((d.nworld, d.njmax_nnz))
     J = d.efc.J.reshape((d.nworld, d.njmax_nnz))
     colind_sorted = wp.empty_like(colind)
     J_sorted = wp.empty_like(J)
-    wp.launch(
-      _sparse_move,
-      dim=chunks,
-      inputs=[d.efc.J_rowadr, count, order, offsets, total, colind, J, False],
-      outputs=[colind_sorted, J_sorted],
-    )
-    # Before the rows take their new addresses.
-    wp.launch(
-      _sparse_move,
-      dim=chunks,
-      inputs=[d.efc.J_rowadr, count, order, offsets, total, colind_sorted, J_sorted, True],
-      outputs=[colind, J],
-    )
+    # The threads only look at the packed nonzeros up to the last row that is not in place, which
+    # without sorted contacts are nearly all the nonzeros of a world.
+    unpacked = total
+    if sorted_contacts:
+      unpacked = wp.zeros(d.nworld, dtype=int)
+      wp.launch(
+        _sparse_unpacked,
+        dim=shape,
+        inputs=[d.efc.J_rownnz, d.efc.J_rowadr, count, order, offsets],
+        outputs=[unpacked],
+      )
+    # The second launch restores the copy before the rows take their new addresses.
+    for restore in (False, True):
+      inputs = [d.efc.J_rowadr, count, order, offsets, unpacked]
+      inputs += [colind_sorted, J_sorted] if restore else [colind, J]
+      outputs = [colind, J] if restore else [colind_sorted, J_sorted]
+      if sorted_contacts and nchunk > _LANES:
+        wp.launch(_sparse_move_lanes, dim=(d.nworld, _LANES), inputs=inputs + [restore, _LANES], outputs=outputs)
+      else:
+        wp.launch(_sparse_move, dim=(d.nworld, nchunk), inputs=inputs + [restore], outputs=outputs)
     if blocks:
-      block_keys = _BlockKeys()
-      block_keys.adr = d.efc.jtdaj_adr
-      block_keys.inverse = inverse
-      block_order = permutation(nblock, d.njmax, block_keys, _block_less)
       adr = wp.empty(shape, dtype=int)
       nrow = wp.empty(shape, dtype=int)
-      wp.launch(
-        _block_gather,
-        dim=shape,
-        inputs=[d.efc.jtdaj_adr, d.efc.jtdaj_nrow, nblock, block_order, inverse],
-        outputs=[adr, nrow],
-      )
-  elif d.efc.J.size:
-    J = row_view(d.efc.J, d.nworld, d.efc.J.shape[1])
-    J_sorted = wp.empty_like(J)
-    chunks = (d.nworld, d.njmax, (J.shape[2] + _CHUNK - 1) // _CHUNK)
-    wp.launch(_gather, dim=chunks, inputs=[count, order, J], outputs=[J_sorted])
+      if d.njmax <= _BLOCK_RANK_NJMAX:
+        wp.launch(
+          _block_place,
+          dim=shape,
+          inputs=[d.efc.jtdaj_adr, d.efc.jtdaj_nrow, nblock, inverse],
+          outputs=[adr, nrow],
+        )
+      else:
+        block_keys = _BlockKeys()
+        block_keys.adr = d.efc.jtdaj_adr
+        block_keys.inverse = inverse
+        block_order = permutation(nblock, d.njmax, block_keys, _block_less)
+        wp.launch(
+          _block_gather,
+          dim=shape,
+          inputs=[d.efc.jtdaj_adr, d.efc.jtdaj_nrow, nblock, block_order, inverse],
+          outputs=[adr, nrow],
+        )
+  elif dense and not lanes:
+    wp.launch(_gather, dim=(d.nworld, d.njmax, nchunk), inputs=[head, order, J_dense], outputs=[J_dense_sorted])
 
   wp.launch(
     _constraint_unpack,
     dim=shape,
-    inputs=[count, order, ints, floats, offsets, nblock, adr, nrow],
-    outputs=[d.efc.jtdaj_adr, d.efc.jtdaj_nrow, d.efc.J_rowadr, rows],
+    inputs=[moved, order, ints, floats, offsets, nblock, adr, nrow, J_lanes_sorted],
+    outputs=[d.efc.jtdaj_adr, d.efc.jtdaj_nrow, d.efc.J_rowadr, rows, J_lanes],
   )
-  if not m.is_sparse and d.efc.J.size:
-    wp.launch(_restore, dim=chunks, inputs=[count, order, J_sorted], outputs=[J])
+  if dense and not lanes:
+    wp.launch(_restore, dim=(d.nworld, d.njmax, nchunk), inputs=[head, order, J_dense_sorted], outputs=[J_dense])

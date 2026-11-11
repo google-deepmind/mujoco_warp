@@ -1187,6 +1187,11 @@ def collision(
 
   incremental = awake_prev is not None
 
+  # The deterministic contact sort moves each contact once when the narrowphase writes to its
+  # buffer.
+  ctx.contact = sort.contact_buffer(m, d, incremental)
+  contact = d.contact if ctx.contact is None else ctx.contact
+
   # The incremental sleeping pass appends newly-awakened contacts to the pass-1 buffer, so nacon is
   # preserved and only ncollision (the broadphase pair counter) is reset. nxn_broadphase also skips
   # its launch wholesale via a graph conditional when nothing woke; pre-zeroing ncollision here
@@ -1217,18 +1222,18 @@ def collision(
         m.geom_surfacevel,
         d.geom_xpos,
         d.geom_xmat,
-        d.contact.pos,
-        d.contact.frame,
-        d.contact.geom,
-        d.contact.worldid,
+        contact.pos,
+        contact.frame,
+        contact.geom,
+        contact.worldid,
         d.naconmax,
         d.nacon,
       ],
-      outputs=[d.contact.surfacevel],
+      outputs=[contact.surfacevel],
     )
 
   if m.callback.contactfilter:
     m.callback.contactfilter(m, d)
 
   if m.opt.deterministic & DeterminismType.CONTACTS:
-    sort.contacts(d)
+    sort.contacts(d, ctx.contact, m.flg_surfacevel)

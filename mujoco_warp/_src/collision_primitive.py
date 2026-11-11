@@ -19,6 +19,7 @@ import warp as wp
 
 from mujoco_warp._src.collision_core import CollisionContext
 from mujoco_warp._src.collision_core import Geom
+from mujoco_warp._src.collision_core import contact_outputs
 from mujoco_warp._src.collision_core import contact_params
 from mujoco_warp._src.collision_core import geom_collision_pair
 from mujoco_warp._src.collision_core import write_contact
@@ -1525,22 +1526,5 @@ def primitive_narrowphase(m: Model, d: Data, ctx: CollisionContext, collision_ta
       ctx.collision_pairid,
       ctx.collision_worldid,
     ],
-    outputs=[
-      d.contact.dist,
-      d.contact.pos,
-      d.contact.frame,
-      d.contact.includemargin,
-      d.contact.friction,
-      d.contact.solref,
-      d.contact.solreffriction,
-      d.contact.solimp,
-      d.contact.dim,
-      d.contact.geom,
-      d.contact.efc_address,
-      d.contact.worldid,
-      d.contact.type,
-      d.contact.geomcollisionid,
-      d.contact.adhesion,
-      d.nacon,
-    ],
+    outputs=contact_outputs(d, ctx),
   )

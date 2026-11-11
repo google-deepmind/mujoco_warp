@@ -21,6 +21,7 @@ from mujoco_warp._src.collision_core import CollisionContext
 from mujoco_warp._src.collision_core import Geom
 from mujoco_warp._src.collision_core import contact_margin_gap
 from mujoco_warp._src.collision_core import contact_material_params
+from mujoco_warp._src.collision_core import contact_outputs
 from mujoco_warp._src.collision_core import contact_params
 from mujoco_warp._src.collision_core import geom_collision_pair
 from mujoco_warp._src.collision_core import geom_collision_pair_from_types
@@ -1324,24 +1325,7 @@ def convex_narrowphase(m: Model, d: Data, ctx: CollisionContext, collision_table
   epa_horizon = wp.empty(shape=(d.naccdmax, MJ_MAX_EPAHORIZON), dtype=int)
 
   # Contact outputs
-  contact_outputs = [
-    d.contact.dist,
-    d.contact.pos,
-    d.contact.frame,
-    d.contact.includemargin,
-    d.contact.friction,
-    d.contact.solref,
-    d.contact.solreffriction,
-    d.contact.solimp,
-    d.contact.dim,
-    d.contact.geom,
-    d.contact.efc_address,
-    d.contact.worldid,
-    d.contact.type,
-    d.contact.geomcollisionid,
-    d.contact.adhesion,
-    d.nacon,
-  ]
+  outputs = contact_outputs(d, ctx)
 
   # Launch heightfield collision kernels (no multiccd args, 72 args total)
   for geom_pair in collision_table:
@@ -1410,7 +1394,7 @@ def convex_narrowphase(m: Model, d: Data, ctx: CollisionContext, collision_table
           epa_horizon,
           nccd,
         ],
-        outputs=contact_outputs + [d.overflow],
+        outputs=outputs + [d.overflow],
       )
 
   # Allocate multiccd arrays only for non-heightfield collisions
@@ -1522,5 +1506,5 @@ def convex_narrowphase(m: Model, d: Data, ctx: CollisionContext, collision_table
           multiccd_face2,
           nccd,
         ],
-        outputs=contact_outputs + [d.overflow],
+        outputs=outputs + [d.overflow],
       )
