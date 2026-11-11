@@ -394,6 +394,7 @@ class SmoothTest(parameterized.TestCase):
     mjm, mjd, m, d = _tree_fixture(model, overrides={"opt.jacobian": jacobian})
 
     d.crb.fill_(wp.inf)
+    d.M.fill_(wp.inf)
 
     mjw.crb(m, d)
     _assert_eq(d.crb.numpy()[0], mjd.crb, "crb")

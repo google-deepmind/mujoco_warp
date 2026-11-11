@@ -911,5 +911,194 @@ class CapsuleCapsuleTest(parameterized.TestCase):
     np.testing.assert_allclose(normal.numpy()[0], [[nx, 0.0, 0.0], [nx, 0.0, 0.0]], atol=1e-5)
 
 
+@wp.kernel
+def capsule_tetrahedron_kernel(
+  # In:
+  a: wp.vec3,
+  b: wp.vec3,
+  radius: float,
+  v0: wp.vec3,
+  v1: wp.vec3,
+  v2: wp.vec3,
+  v3: wp.vec3,
+  tet_radius: float,
+  # Out:
+  valid_out: wp.array[bool],
+  dist_out: wp.array[float],
+  pos_out: wp.array[wp.vec3],
+  normal_out: wp.array[wp.vec3],
+):
+  valid, dist, pos, normal = collision_primitive_core.capsule_tetrahedron(a, b, radius, v0, v1, v2, v3, tet_radius)
+  valid_out[0] = valid
+  dist_out[0] = dist
+  pos_out[0] = pos
+  normal_out[0] = normal
+
+
+class CapsuleTetrahedronTest(parameterized.TestCase):
+  """Tests for capsule_tetrahedron collision with the unit tetrahedron."""
+
+  _SQRT1_2 = np.sqrt(0.5)
+  _SQRT1_3 = np.sqrt(1.0 / 3.0)
+
+  @parameterized.named_parameters(
+    # sphere center inside, closest to face z = 0 (depth 0.05)
+    ("sphere_inside", [0.2, 0.2, 0.05], [0.2, 0.2, 0.05], 0.1, -0.15, [0.2, 0.2, 0.075], [0.0, 0.0, 1.0]),
+    # sphere center outside, closest to vertex (0, 0, 0)
+    (
+      "sphere_vertex",
+      [-0.1, -0.1, -0.1],
+      [-0.1, -0.1, -0.1],
+      0.2,
+      np.sqrt(0.03) - 0.2,
+      np.array([-0.1, -0.1, -0.1]) + _SQRT1_3 * (0.2 + 0.5 * (np.sqrt(0.03) - 0.2)),
+      [_SQRT1_3, _SQRT1_3, _SQRT1_3],
+    ),
+    # segment outside, closest to edge x
+    (
+      "capsule_edge_outside",
+      [0.5, -0.1, 0.05],
+      [0.5, 0.05, -0.1],
+      0.05,
+      0.05 * _SQRT1_2 - 0.05,
+      [
+        0.5,
+        -0.025 + _SQRT1_2 * (0.05 + 0.5 * (0.05 * _SQRT1_2 - 0.05)),
+        -0.025 + _SQRT1_2 * (0.05 + 0.5 * (0.05 * _SQRT1_2 - 0.05)),
+      ],
+      [0.0, _SQRT1_2, _SQRT1_2],
+    ),
+    # segment crossing the tetrahedron near edge x, minimum translation along an edge cross product
+    (
+      "capsule_edge_inside",
+      [0.5, -0.1, 0.12],
+      [0.5, 0.12, -0.1],
+      0.05,
+      -0.02 * _SQRT1_2 - 0.05,
+      [
+        0.5,
+        0.01 + _SQRT1_2 * (0.05 + 0.5 * (-0.02 * _SQRT1_2 - 0.05)),
+        0.01 + _SQRT1_2 * (0.05 + 0.5 * (-0.02 * _SQRT1_2 - 0.05)),
+      ],
+      [0.0, _SQRT1_2, _SQRT1_2],
+    ),
+    # segment inside, closest to face z = 0: contact at the deepest endpoint
+    ("capsule_face", [0.1, 0.1, 0.02], [0.3, 0.1, 0.04], 0.01, -0.05, [0.3, 0.1, 0.025], [0.0, 0.0, 1.0]),
+    # same segments with reversed endpoints: translation along the opposite edge axis, deepest
+    # endpoint first
+    (
+      "capsule_edge_inside_reversed",
+      [0.5, 0.12, -0.1],
+      [0.5, -0.1, 0.12],
+      0.05,
+      -0.02 * _SQRT1_2 - 0.05,
+      [
+        0.5,
+        0.01 + _SQRT1_2 * (0.05 + 0.5 * (-0.02 * _SQRT1_2 - 0.05)),
+        0.01 + _SQRT1_2 * (0.05 + 0.5 * (-0.02 * _SQRT1_2 - 0.05)),
+      ],
+      [0.0, _SQRT1_2, _SQRT1_2],
+    ),
+    ("capsule_face_reversed", [0.3, 0.1, 0.04], [0.1, 0.1, 0.02], 0.01, -0.05, [0.3, 0.1, 0.025], [0.0, 0.0, 1.0]),
+    # segment inside and parallel to face z = 0: contact at the middle of the segment
+    ("capsule_face_parallel", [0.1, 0.1, 0.02], [0.3, 0.1, 0.02], 0.01, -0.03, [0.2, 0.1, 0.015], [0.0, 0.0, 1.0]),
+    # sphere inside with tetrahedron radius 0.01: midpoint of the sphere point (z = 0.15) and the
+    # inflated face (z = -0.01)
+    ("sphere_inside_radius", [0.2, 0.2, 0.05], [0.2, 0.2, 0.05], 0.1, -0.16, [0.2, 0.2, 0.07], [0.0, 0.0, 1.0], 0.01),
+  )
+  def test_capsule_tetrahedron(self, a, b, radius, expected_dist, expected_pos, expected_normal, tet_radius=0.0):
+    valid = wp.zeros(1, dtype=bool)
+    dist = wp.full(1, wp.inf, dtype=float)
+    pos = wp.full(1, wp.vec3(wp.inf), dtype=wp.vec3)
+    normal = wp.full(1, wp.vec3(wp.inf), dtype=wp.vec3)
+    tet = [wp.vec3(0.0, 0.0, 0.0), wp.vec3(1.0, 0.0, 0.0), wp.vec3(0.0, 1.0, 0.0), wp.vec3(0.0, 0.0, 1.0)]
+    wp.launch(
+      capsule_tetrahedron_kernel,
+      dim=1,
+      inputs=[wp.vec3(a), wp.vec3(b), radius, *tet, tet_radius],
+      outputs=[valid, dist, pos, normal],
+    )
+    self.assertTrue(valid.numpy()[0])
+    np.testing.assert_allclose(dist.numpy()[0], expected_dist, atol=1e-6)
+    np.testing.assert_allclose(pos.numpy()[0], expected_pos, atol=1e-6)
+    np.testing.assert_allclose(normal.numpy()[0], expected_normal, atol=1e-6)
+
+  @parameterized.named_parameters(("origin", [0.0, 0.0, 0.0]), ("far", [100.0, -50.0, 30.0]))
+  def test_sphere_center_on_face(self, offset):
+    # sphere centers on the face x + y + z = 1, which are on either side of it within rounding:
+    # the normal is the face normal and the depth is the radius, also far from the origin
+    offset = np.array(offset)
+    tet = [wp.vec3(offset + v) for v in ([0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0])]
+    for w in ([0.2, 0.3, 0.5], [0.6, 0.2, 0.2], [0.25, 0.5, 0.25], [1 / 3, 1 / 3, 1 / 3], [0.45, 0.1, 0.45]):
+      center = wp.vec3(offset + np.array(w))
+      valid = wp.zeros(1, dtype=bool)
+      dist = wp.full(1, wp.inf, dtype=float)
+      pos = wp.full(1, wp.vec3(wp.inf), dtype=wp.vec3)
+      normal = wp.full(1, wp.vec3(wp.inf), dtype=wp.vec3)
+      wp.launch(
+        capsule_tetrahedron_kernel,
+        dim=1,
+        inputs=[center, center, 0.1, *tet, 0.0],
+        outputs=[valid, dist, pos, normal],
+      )
+      self.assertTrue(valid.numpy()[0])
+      np.testing.assert_allclose(dist.numpy()[0], -0.1, atol=1e-4)
+      np.testing.assert_allclose(normal.numpy()[0], -np.full(3, self._SQRT1_3), atol=1e-4)
+
+  def test_degenerate_tetrahedron(self):
+    valid = wp.ones(1, dtype=bool)
+    dist = wp.full(1, wp.inf, dtype=float)
+    pos = wp.full(1, wp.vec3(wp.inf), dtype=wp.vec3)
+    normal = wp.full(1, wp.vec3(wp.inf), dtype=wp.vec3)
+    # flat tetrahedron in the plane x + 2 y + 3 z = 0, not axis aligned
+    tet = [wp.vec3(0.0, 0.0, 0.0), wp.vec3(0.3, 0.0, -0.1), wp.vec3(0.0, 0.3, -0.2), wp.vec3(0.3, 0.3, -0.3)]
+    wp.launch(
+      capsule_tetrahedron_kernel,
+      dim=1,
+      inputs=[wp.vec3(0.2, 0.2, 0.0), wp.vec3(0.2, 0.2, 0.0), 0.1, *tet, 0.0],
+      outputs=[valid, dist, pos, normal],
+    )
+    self.assertFalse(valid.numpy()[0])
+    np.testing.assert_allclose(dist.numpy()[0], collision_primitive_core.MJ_MAXVAL, atol=1e-6)
+    np.testing.assert_allclose(pos.numpy()[0], [0.0, 0.0, 0.0], atol=1e-6)
+    np.testing.assert_allclose(normal.numpy()[0], [0.0, 0.0, 0.0], atol=1e-6)
+
+  @parameterized.named_parameters(
+    # sphere center just outside vertex (0, 0, 0)
+    ("sphere_vertex", [-5e-6, -5e-6, -5e-6], [-5e-6, -5e-6, -5e-6], 0.01, 5e-6 * np.sqrt(3.0), [_SQRT1_3] * 3),
+    # segment crossing just outside edge x, perpendicular to it
+    (
+      "capsule_edge",
+      [0.5, -0.100005, 0.099995],
+      [0.5, 0.099995, -0.100005],
+      0.05,
+      5e-6 * np.sqrt(2.0),
+      [0.0, _SQRT1_2, _SQRT1_2],
+    ),
+    # segment just below face z = 0, overhanging the tetrahedron on both sides
+    ("capsule_face_overhang", [-5.0, 0.5, -1e-7], [5.0, 0.5, -1e-7], 0.01, 1e-7, [0.0, 0.0, 1.0]),
+  )
+  def test_near_touching(self, a, b, radius, separation, expected_normal):
+    # sphere center or capsule axis within 1e-5 of the tetrahedron: the normal is exact
+    valid = wp.zeros(1, dtype=bool)
+    dist = wp.full(1, wp.inf, dtype=float)
+    pos = wp.full(1, wp.vec3(wp.inf), dtype=wp.vec3)
+    normal = wp.full(1, wp.vec3(wp.inf), dtype=wp.vec3)
+    tet = [wp.vec3(0.0, 0.0, 0.0), wp.vec3(1.0, 0.0, 0.0), wp.vec3(0.0, 1.0, 0.0), wp.vec3(0.0, 0.0, 1.0)]
+    wp.launch(
+      capsule_tetrahedron_kernel,
+      dim=1,
+      inputs=[wp.vec3(a), wp.vec3(b), radius, *tet, 0.0],
+      outputs=[valid, dist, pos, normal],
+    )
+    self.assertTrue(valid.numpy()[0])
+    np.testing.assert_allclose(dist.numpy()[0], separation - radius, atol=1e-6)
+    np.testing.assert_allclose(normal.numpy()[0], expected_normal, atol=1e-5)
+
+    # the closest point on the tetrahedron is on the plane through the origin normal to the contact
+    # normal, and the contact is at half the depth from it
+    np.testing.assert_allclose(np.dot(pos.numpy()[0], expected_normal), 0.5 * (radius - separation), atol=1e-6)
+
+
 if __name__ == "__main__":
   absltest.main()
