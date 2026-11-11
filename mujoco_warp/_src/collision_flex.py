@@ -45,7 +45,6 @@ from mujoco_warp._src.warp_util import event_scope
 
 wp.set_module_options({"enable_backward": False, "default_grid_stride": False})
 
-_FPS_BLOCK_SIZE: int = 256
 _FPS_SLOTS: int = 8  # candidates per thread kept in registers during FPS
 ENABLE_SAT_PREFILTER: bool = True
 _FLEX_CONTACT_DEDUP_TOLERANCE: float = 1e-3
@@ -3073,7 +3072,6 @@ def _parallel_fps(
   cand_dist: wp.array[float],
   cand_pos: wp.array[wp.vec3],
   cand_elem: wp.array[wp.vec2i],
-  cand_geom: wp.array[wp.vec2i],
   # Out:
   fps_min_dist_out: wp.array[float],
   cand_active_out: wp.array[int],
@@ -3091,10 +3089,6 @@ def _parallel_fps(
   ncand_limit = wp.min(ncand[0], cand_active_sorted.shape[0])
   g_start = flex_group_start_indices_in[g]
   if g_start < 0 or g_start >= ncand_limit:
-    return
-
-  first_cand_idx = sort_val[g_start]
-  if cand_geom[first_cand_idx][0] >= 0:
     return
 
   g_end = ncand_limit
@@ -3174,18 +3168,21 @@ def _parallel_fps(
     for si in range(overflow_start, g_end, nthread):
       if cand_active_sorted[si] == 1:
         c_idx = sort_val[si]
-        md = fps_min_dist_out[c_idx]
         if c_idx == sel:
           fps_min_dist_out[c_idx] = -1.0
-        elif md > 0.0:
-          md = wp.min(md, wp.length(cand_pos[c_idx] - sel_p))
-          fps_min_dist_out[c_idx] = md
-          if md > max_d:
-            max_d = md
-            best = c_idx
-          elif md == max_d:
-            if _tie_break_fps(c_idx, best, cand_elem):
+        else:
+          md = fps_min_dist_out[c_idx]
+          if md > 0.0:
+            d = wp.length(cand_pos[c_idx] - sel_p)
+            if d < md:
+              md = d
+              fps_min_dist_out[c_idx] = md
+            if md > max_d:
+              max_d = md
               best = c_idx
+            elif md == max_d:
+              if _tie_break_fps(c_idx, best, cand_elem):
+                best = c_idx
 
     pick = wp.tile_reduce(_fps_pick_max, wp.tile(_fps_pick(max_d, best, cand_elem)))[0]
     if pick.cidx < 0 or pick.dist <= 0.0:
@@ -3274,8 +3271,7 @@ def _allocate_flex_workspace(m: Model, d: Data) -> FlexWorkspace:
 
   has_fps = m.has_flex_selfcollide or m.nflex > 1
   if has_fps:
-    world_stride = m.ngeom * m.nflex + m.nflex * m.nflex
-    nmax_groups = d.nworld * world_stride
+    nmax_groups = d.nworld * m.nflex * m.nflex
     cand_active_sorted = wp.empty(d.naconmax, dtype=int)
     flex_group_temp = wp.empty(d.naconmax, dtype=int)
     flex_group_ids = wp.empty(d.naconmax, dtype=int)
@@ -3319,11 +3315,11 @@ def _allocate_flex_workspace(m: Model, d: Data) -> FlexWorkspace:
   )
 
 
-def _run_filter_flex_fps(ws: FlexWorkspace, nmax_groups: int):
+def _run_filter_flex_fps(m: Model, ws: FlexWorkspace):
   """Applies Far Point Sampling to limit contact points per group to MJ_MAXCONPAIR in parallel."""
   wp.launch_tiled(
     _parallel_fps,
-    dim=nmax_groups,
+    dim=ws.flex_group_start_indices.shape[0],
     inputs=[
       ws.flex_group_start_indices,
       ws.flex_num_groups,
@@ -3333,13 +3329,12 @@ def _run_filter_flex_fps(ws: FlexWorkspace, nmax_groups: int):
       ws.dist,
       ws.pos,
       ws.elem,
-      ws.geom,
     ],
     outputs=[
       ws.flex_fps_min_dist,
       ws.cand_active,
     ],
-    block_dim=_FPS_BLOCK_SIZE,
+    block_dim=m.block_dim.flex_fps,
   )
 
 
@@ -3404,9 +3399,6 @@ def _filter_and_write_contacts(
 
     wp.utils.array_scan(ws.flex_group_temp, ws.flex_group_ids, True)
 
-    world_stride = m.ngeom * m.nflex + m.nflex * m.nflex
-    nmax_groups = d.nworld * world_stride
-
     wp.launch(
       _populate_group_starts(int(m.opt.warn_overflow)),
       dim=d.naconmax,
@@ -3424,7 +3416,7 @@ def _filter_and_write_contacts(
       ],
     )
 
-    _run_filter_flex_fps(ws, nmax_groups)
+    _run_filter_flex_fps(m, ws)
 
   wp.launch(
     _write_filtered_contacts(int(m.opt.warn_overflow)),
