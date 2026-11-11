@@ -70,6 +70,7 @@ class BlockDim:
     segmented_sort: segmented sort block dimension (collision_driver)
     nxn_broadphase: NXN broadphase block dimension (collision_driver)
     convex_ccd: convex CCD kernel block dimension (collision_convex)
+    flex_fps: flex contact FPS block dimension (collision_flex)
     island_dsu: island discovery DSU block dimension (island)
     ray: ray block dimension (ray)
     contact_sort: contact sort block dimension (sensor)
@@ -98,6 +99,8 @@ class BlockDim:
   nxn_broadphase: int = 128
   # collision_convex
   convex_ccd: int = 64
+  # collision_flex
+  flex_fps: int = 256
   # island
   island_dsu: int = 32
   # ray

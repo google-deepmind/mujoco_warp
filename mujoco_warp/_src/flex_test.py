@@ -2992,7 +2992,8 @@ class FlexCollisionTest(parameterized.TestCase):
     np.testing.assert_allclose(pos_sat[idx_sat], pos_nosat[idx_nosat], atol=1e-5)
     np.testing.assert_allclose(dist_sat[idx_sat], dist_nosat[idx_nosat], atol=1e-5)
 
-  def test_parallel_fps_numpy_parity(self):
+  @parameterized.parameters(32, 256)
+  def test_parallel_fps_numpy_parity(self, block_dim):
     """Test that parallel FPS selects candidates matching a serial NumPy reference."""
     _, _, m, d = test_data.fixture(
       xml="""
@@ -3016,9 +3017,11 @@ class FlexCollisionTest(parameterized.TestCase):
     d.nacon.fill_(-1)
     d.contact.dist.fill_(wp.inf)
 
+    m.block_dim.flex_fps = block_dim
     mjw.kinematics(m, d)
 
     ws = collision_flex._allocate_flex_workspace(m, d)
+    ws.flex_fps_min_dist.fill_(wp.inf)
     sap_data = collision_flex._run_flex_sap_sort(m, d)
     ctx = collision_core.create_collision_context(d.naconmax)
     collision_flex._flex_sap_collision(m, d, ctx, ws, is_self=False, sap_data=sap_data)
