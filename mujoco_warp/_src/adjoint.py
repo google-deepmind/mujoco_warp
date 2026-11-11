@@ -32,7 +32,7 @@ from mujoco_warp._src import adjoint_util
 from mujoco_warp._src import collision_adjoint
 from mujoco_warp._src import collision_convex_adjoint
 from mujoco_warp._src import constraint_adjoint
-from mujoco_warp._src import forward
+from mujoco_warp._src import diff
 from mujoco_warp._src import forward_adjoint
 from mujoco_warp._src import io
 from mujoco_warp._src import math
@@ -98,6 +98,8 @@ def _model_supported(m: Model) -> tuple[tuple[str, ...], frozenset[str]]:
   cached = _SUPPORTED_CACHE.get(key)
   if cached is not None and cached[0]() is m:
     return (), cached[1]
+  if wp.get_device().is_capturing:
+    raise NotImplementedError("call create_backward_context or record a supported step before CUDA graph capture")
 
   reasons = []
   unsupported_parameters = set()
@@ -604,7 +606,7 @@ _STEP_OUT_FIELDS = (
   "act",
   "act_dot",
 )
-# Supported differentiable mjSTATE_USER inputs, selected separately from state gradients.
+# Supported differentiable mjSTATE_USER inputs, including copies to the output Data.
 _STEP_USER_FIELDS = (
   "ctrl",
   "qfrc_applied",
@@ -636,31 +638,18 @@ _KINEMATICS_IN_FIELDS = ("qpos", "mocap_pos", "mocap_quat")
 _KINEMATICS_OUT_FIELDS = ("site_xpos", "xpos", "xquat")
 
 
-def _data_arrays(d: Data, fields: tuple[str, ...], *, force_grad: bool = True) -> list[wp.array]:
-  """Returns nonempty Data arrays that require gradients, optionally enabling them first."""
-  arrays = [getattr(d, name) for name in fields if getattr(d, name).size]
-  if force_grad:
-    for array in arrays:
-      array.requires_grad = True
-  return [array for array in arrays if array.requires_grad]
-
-
-def _model_arrays(m: Model) -> list[wp.array]:
-  """Returns opted-in model parameters, rejecting incomplete step derivatives."""
-  parameters = {
-    prefix + name: value
-    for prefix, obj in (("", m), ("opt.", m.opt))
-    for name, value in vars(obj).items()
-    if isinstance(value, wp.array) and value.size and value.requires_grad
-  }
-  unsupported = parameters.keys() - set(_STEP_MODEL_FIELDS)
-  if unsupported:
-    raise NotImplementedError("native step parameter gradients are not implemented for: " + ", ".join(sorted(unsupported)))
-  return list(parameters.values())
+def _has_kinematics_grad(d: Data) -> bool:
+  """Returns whether a nonempty kinematic output has a gradient buffer."""
+  return any(getattr(d, name).size and getattr(d, name).requires_grad for name in _KINEMATICS_OUT_FIELDS)
 
 
 def step_supported(m: Model, d: Data, d_out: Data | None = None) -> tuple[str, ...]:
   """Returns unsupported-step reasons using the diff API's callback signature."""
+  if d_out is None or d_out is d:
+    return ("step() differentiation requires distinct input and output Data; in-place is unsupported",)
+  for name in ("nworld", "naconmax", "njmax"):
+    if getattr(d, name) != getattr(d_out, name):
+      return (f"step() differentiation expected matching {name}",)
   try:
     _assert_step_supported(m)
     _assert_model_supported(m)
@@ -669,31 +658,6 @@ def step_supported(m: Model, d: Data, d_out: Data | None = None) -> tuple[str, .
   except NotImplementedError as error:
     return (str(error),)
   return ()
-
-
-def step_backward_arrays(d: Data, d_out: Data, m: Model | None = None, *, user_fields: tuple[str, ...] = ("ctrl",)):
-  """Prepares state gradients and selected user-input gradients for the legacy tape adapter.
-
-  Explicitly enabled user-input gradients are also tracked. The diff API will own this selection.
-  """
-  for name in ("nworld", "naconmax", "njmax"):
-    assert getattr(d, name) == getattr(d_out, name), f"step() differentiation expected matching {name}"
-  requested = set(user_fields)
-  unsupported = requested - set(_STEP_USER_FIELDS)
-  if unsupported:
-    raise NotImplementedError("native step user-input gradients are not implemented for: " + ", ".join(sorted(unsupported)))
-  parameters = _model_arrays(m) if m is not None else []
-  arrays = [
-    *_data_arrays(d, _STEP_IN_FIELDS),
-    *_data_arrays(d_out, _STEP_OUT_FIELDS),
-    *_data_arrays(d_out, _KINEMATICS_OUT_FIELDS, force_grad=False),
-  ]
-  for name in _STEP_USER_FIELDS:
-    if name in requested or getattr(d, name).requires_grad or getattr(d_out, name).requires_grad:
-      arrays.extend(_data_arrays(d, (name,)))
-      arrays.extend(_data_arrays(d_out, (name,)))
-  arrays.extend(parameters)
-  return list(dict.fromkeys(array for array in arrays if array.size))
 
 
 @wp.kernel(enable_backward=False)
@@ -776,7 +740,7 @@ def _clear_kinematics_adjoints(d: Data):
 
 def step_backward_scratch(m: Model, d: Data, d_out: Data, bc: BackwardContext) -> Data:
   """Prepares backward scratch from forward inputs and retained intermediates."""
-  kinematics_grad = bool(_data_arrays(d_out, _KINEMATICS_OUT_FIELDS, force_grad=False))
+  kinematics_grad = _has_kinematics_grad(d_out)
   d_kin = bc.scratch if kinematics_grad else d_out
   # Borrow only read-only state and forward caches; all other fields remain backward scratch.
   d_bwd = dataclasses.replace(
@@ -880,12 +844,10 @@ def step_backward(m: Model, d: Data, d_out: Data, bc: BackwardContext | None = N
 @event_scope
 def _step_backward(m: Model, d: Data, d_out: Data, bc: BackwardContext | None = None):
   """Computes the step adjoint after support validation."""
-  # TODO: Remove this compatibility preparation when the diff API registers the rule (#1727).
-  step_backward_arrays(d, d_out, m, user_fields=())
   bc = bc or _ACTIVE_BACKWARD_CONTEXT.get() or _create_backward_context(m, d)
   _reset_backward_context(bc)
   d_bwd = step_backward_scratch(m, d, d_out, bc)
-  kinematics_grad = bool(_data_arrays(d_out, _KINEMATICS_OUT_FIELDS, force_grad=False))
+  kinematics_grad = _has_kinematics_grad(d_out)
   if kinematics_grad:
     forward_adjoint.kinematics_backward(m, d_out, d_bwd, bc)
   _, _, adj_qacc = forward_adjoint.advance_backward(m, d_out, d_bwd, bc)
@@ -894,12 +856,13 @@ def _step_backward(m: Model, d: Data, d_out: Data, bc: BackwardContext | None = 
   _write_user_adjoints(d, d_out, bc)
   if kinematics_grad:
     _clear_kinematics_adjoints(d_out)
-
-
-def fwd_kinematics_arrays(d: Data):
-  """Returns kinematic gradient arrays, keeping fixed mocap inputs opt-in."""
-  inputs = tuple(name for name in _KINEMATICS_IN_FIELDS if name == "qpos" or getattr(d, name).requires_grad)
-  return _data_arrays(d, inputs + _KINEMATICS_OUT_FIELDS)
+  # These values overwrite their output buffers. Shared user inputs keep their accumulated
+  # cotangents; distinct copies must be consumed before an earlier call receives them.
+  for name in _STEP_OUT_FIELDS + _STEP_USER_FIELDS:
+    output = getattr(d_out, name)
+    source = getattr(d, name)
+    if output.grad is not None and (source.grad is None or output.grad.ptr != source.grad.ptr):
+      output.grad.zero_()
 
 
 def fwd_kinematics_backward_scratch(d: Data, bc: BackwardContext) -> Data:
@@ -910,7 +873,7 @@ def fwd_kinematics_backward_scratch(d: Data, bc: BackwardContext) -> Data:
 @event_scope
 def fwd_kinematics_backward(m: Model, d: Data, bc: BackwardContext | None = None):
   """Maps Cartesian body/site cotangents to qpos and mocap inputs."""
-  kinematics_grad = bool(_data_arrays(d, _KINEMATICS_OUT_FIELDS, force_grad=False))
+  kinematics_grad = _has_kinematics_grad(d)
   if not kinematics_grad:
     return
   bc = bc or _ACTIVE_BACKWARD_CONTEXT.get() or _create_backward_context(m, d)
@@ -920,25 +883,40 @@ def fwd_kinematics_backward(m: Model, d: Data, bc: BackwardContext | None = None
   _write_kinematics_adjoints(d, bc)
 
 
+# TODO(etaoxing): Deprecate enable_grad() once the upstream Warp gradient fixes and tape APIs land.
 def enable_grad() -> None:
-  """Installs numerical derivative rules and analytic backward hooks.
+  """Installs numerical derivatives and registers analytic rules with the diff API.
 
   Replaces ``wp.sqrt`` with ``adjoint_util.safe_sqrt``, whose float32 and float64 adjoints
-  contribute zero at zero, and registers custom quaternion gradients. Also enables forward
-  recording and the step and forward-kinematics backward hooks.
+  contribute zero at zero, and registers custom quaternion gradients. Step and forward
+  kinematics use the diff API for validation, gradient allocation, and tape recording.
 
   Call before building kernels that need these rules. The numerical rules apply process-wide,
-  independently of tapes and backward-hook registration.
+  independently of tapes and adjoint-rule registration.
 
-  Mocap input gradients are opt-in via requires_grad.
+  Declared Data inputs and outputs receive gradient buffers automatically; Model parameters
+  remain opt-in via requires_grad.
   Kinematic output gradients support site_xpos, xpos, and xquat. Step computes these
   before integration; call fwd_kinematics on the output to refresh them using the updated qpos.
 
   Backward reductions are nondeterministic, regardless of forward determinism options.
   """
-  forward.ENABLE_GRAD = True
   wp.sqrt = adjoint_util.safe_sqrt
   wp.func_grad(math.quat_integrate)(adjoint_util._adj_quat_integrate)
   wp.func_grad(math.quat_to_vel)(adjoint_util._adj_quat_to_vel)
-  forward.register_step_backward(_step_backward, step_backward_arrays, step_supported)
-  forward.register_fwd_kinematics_backward(fwd_kinematics_backward, fwd_kinematics_arrays)
+  diff.register_adjoint(
+    "step",
+    _step_backward,
+    in_fields=_STEP_IN_FIELDS + _STEP_USER_FIELDS,
+    out_fields=_STEP_OUT_FIELDS + _STEP_USER_FIELDS + _KINEMATICS_OUT_FIELDS,
+    model_fields=_STEP_MODEL_FIELDS,
+    supported=step_supported,
+  )
+  diff.register_adjoint(
+    "fwd_kinematics",
+    fwd_kinematics_backward,
+    in_fields=_KINEMATICS_IN_FIELDS,
+    out_fields=_KINEMATICS_OUT_FIELDS,
+    # These fields affect inertial caches, but not the differentiated body and site poses.
+    model_fields=("body_mass", "body_inertia", "body_ipos", "body_iquat"),
+  )

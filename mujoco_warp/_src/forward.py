@@ -59,18 +59,6 @@ from mujoco_warp._src.warp_util import event_scope
 
 wp.set_module_options({"enable_backward": False})
 
-# gradient opt-in gate + analytic backward hooks, set by mujoco_warp.enable_grad()
-ENABLE_GRAD = False
-_fwd_kinematics_backward_hook = None
-_fwd_kinematics_backward_registration = None
-_step_backward_hook = None
-_step_backward_registration = None
-
-
-def model_backward(m: Model) -> Model:
-  """Retains Model and Option bindings for backward without copying device arrays."""
-  return dataclasses.replace(m, opt=dataclasses.replace(m.opt))
-
 
 @wp.func
 def next_position(
@@ -2694,13 +2682,6 @@ def implicit(m: Model, d: Data):
     _advance(m, d, d.qacc)
 
 
-def register_fwd_kinematics_backward(hook, prepare_arrays):
-  """Registers the analytic fwd_kinematics backward callback."""
-  global _fwd_kinematics_backward_hook, _fwd_kinematics_backward_registration
-  _fwd_kinematics_backward_hook = hook
-  _fwd_kinematics_backward_registration = (hook, prepare_arrays)
-
-
 @event_scope
 def fwd_kinematics(m: Model, d: Data):
   """Kinematics-dependent computations.
@@ -2709,38 +2690,16 @@ def fwd_kinematics(m: Model, d: Data):
     m: The model containing kinematic and dynamic information.
     d: The data object containing the current state and output arrays.
   """
-  rt = wp._src.context.runtime
-  tape = rt.tape if rt is not None else None
-  record = tape is not None
-  if record and not ENABLE_GRAD:
-    raise RuntimeError(
-      "fwd_kinematics() was recorded under a wp.Tape but gradients are disabled; "
-      "call mujoco_warp.enable_grad() first, or run fwd_kinematics outside the tape"
-    )
-  if record:
-    rt.tape = None  # pause recording; the record_func below is the sole adjoint
-  try:
-    smooth.kinematics(m, d)
-    smooth.com_pos(m, d)
-    smooth.camlight(m, d)
-    smooth.flex(m, d)
-    smooth.tendon(m, d)
+  smooth.kinematics(m, d)
+  smooth.com_pos(m, d)
+  smooth.camlight(m, d)
+  smooth.flex(m, d)
+  smooth.tendon(m, d)
 
-    sleep_enabled = bool(m.opt.enableflags & EnableBit.SLEEP) and not bool(m.opt.disableflags & DisableBit.ISLAND)
-    if sleep_enabled and m.ntendon > 0:
-      sleep.wake_tendon(m, d)
-      sleep.update_sleep_trees(m, d)
-  finally:
-    if record:
-      rt.tape = tape
-  if record:
-    hook, prepare_arrays = _fwd_kinematics_backward_registration
-    arrays = prepare_arrays(d)
-    if len(arrays) > 1:  # qpos + at least one differentiated output
-      # Keep the arrays from this forward call for its backward pass.
-      m_bwd = model_backward(m)
-      d = dataclasses.replace(d)
-      tape.record_func(lambda: hook(m_bwd, d), arrays=arrays)
+  sleep_enabled = bool(m.opt.enableflags & EnableBit.SLEEP) and not bool(m.opt.disableflags & DisableBit.ISLAND)
+  if sleep_enabled and m.ntendon > 0:
+    sleep.wake_tendon(m, d)
+    sleep.update_sleep_trees(m, d)
 
 
 @event_scope
@@ -3634,13 +3593,6 @@ def discrete(m: Model, d: Data):
   _advance(m, d, d.qacc)
 
 
-def register_step_backward(hook, prepare_arrays, supported=None):
-  """Registers the analytic step backward callback."""
-  global _step_backward_hook, _step_backward_registration
-  _step_backward_hook = hook
-  _step_backward_registration = (hook, prepare_arrays, supported)
-
-
 # Persistent inputs copied out of place; forward(m, d_out) normally recomputes the rest.
 _STEP_STATE_FIELDS = (
   "qpos",
@@ -3713,52 +3665,19 @@ def step(m: Model, d: Data, d_out: Optional[Data] = None):
   if inplace:
     d_out = d
 
-  rt = wp._src.context.runtime
-  tape = rt.tape if rt is not None else None
-  # pause recording across the forward: the analytic record_func below is the sole step adjoint;
-  # taping the state copy would double-count its wp.copy adjoints against it
-  record = tape is not None
-  if record and not ENABLE_GRAD:
-    raise RuntimeError(
-      "step() was recorded under a wp.Tape but gradients are disabled; "
-      "call mujoco_warp.enable_grad() first, or step outside the tape"
-    )
-  if record:
-    if d_out is d:
-      raise NotImplementedError("step() differentiation requires distinct input and output Data; in-place is unsupported")
-    rt.tape = None
-  try:
-    if record:
-      hook, prepare_arrays, supported = _step_backward_registration
-      # Use the original Model's cached validation, including during CUDA capture.
-      if supported is not None:
-        reasons = supported(m, d, d_out)
-        if reasons:
-          raise NotImplementedError("step() differentiation is not supported: " + ", ".join(reasons))
-      # TODO: Replace this preparation and tape registration with the diff API (#1727).
-      arrays = prepare_arrays(d, d_out, m=m)
-    if not inplace:
-      _copy_state(m, d, d_out)
-    forward(m, d_out)
-    if m.opt.integrator == IntegratorType.EULER:
-      euler(m, d_out)
-    elif m.opt.integrator == IntegratorType.RK4:
-      rungekutta4(m, d_out)
-    elif m.opt.integrator in (IntegratorType.IMPLICITFAST, IntegratorType.IMPLICIT):
-      implicit(m, d_out)
-    elif m.opt.integrator == IntegratorType.DISCRETE:
-      discrete(m, d_out)
-    else:
-      raise NotImplementedError(f"integrator {m.opt.integrator} not implemented.")
-  finally:
-    if record:
-      rt.tape = tape
-
-  if record:
-    # Like a recorded kernel, retain array identities if callers replace a held input later.
-    m_bwd = model_backward(m)
-    d, d_out = dataclasses.replace(d), dataclasses.replace(d_out)
-    tape.record_func(lambda: hook(m_bwd, d, d_out), arrays=arrays)
+  if not inplace:
+    _copy_state(m, d, d_out)
+  forward(m, d_out)
+  if m.opt.integrator == IntegratorType.EULER:
+    euler(m, d_out)
+  elif m.opt.integrator == IntegratorType.RK4:
+    rungekutta4(m, d_out)
+  elif m.opt.integrator in (IntegratorType.IMPLICITFAST, IntegratorType.IMPLICIT):
+    implicit(m, d_out)
+  elif m.opt.integrator == IntegratorType.DISCRETE:
+    discrete(m, d_out)
+  else:
+    raise NotImplementedError(f"integrator {m.opt.integrator} not implemented.")
 
 
 @event_scope
