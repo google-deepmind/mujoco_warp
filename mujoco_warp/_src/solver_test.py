@@ -3046,6 +3046,32 @@ class CompactSolverTest(parameterized.TestCase):
       np.testing.assert_allclose(d.qacc.numpy()[w], mjd.qacc, atol=1e-3, rtol=1e-3)
       np.testing.assert_allclose(d.qfrc_constraint.numpy()[w], mjd.qfrc_constraint, atol=1e-3, rtol=1e-3)
 
+  def test_newton_full_tile_pattern_blocked_cholesky(self):
+    """A single chain couples every tile through M, so no tile can be skipped."""
+    nlink = 100
+    chain = (
+      "".join(
+        f'<body pos="0 0 -0.1"><joint type="hinge" axis="0 1 0" range="-0.05 0.05" armature="1"/>'
+        f'<geom type="capsule" size="0.01" fromto="0 0 0 0 0 -0.1" mass="0.1"/>'
+        for _ in range(nlink)
+      )
+      + "</body>" * nlink
+    )
+    xml = f"""
+    <mujoco>
+      <worldbody>{chain}</worldbody>
+    </mujoco>
+    """
+    mjm, mjd, m, d = test_data.fixture(xml=xml, qpos_noise=0.1, nconmax=16, njmax=256)
+    self.assertGreater(m.nv, solver._SPARSE_BLOCK_CHOLESKY_DIM)
+    self.assertTrue(m.M_tile_full)
+    self.assertIsNone(solver._create_solver_context(m, d).h_col_mask)
+
+    mjw.forward(m, d)
+    mujoco.mj_forward(mjm, mjd)
+    self.assertGreater(mjd.nefc, 0)
+    np.testing.assert_allclose(d.qacc.numpy()[0], mjd.qacc, atol=1e-2, rtol=1e-3)
+
 
 if __name__ == "__main__":
   wp.init()

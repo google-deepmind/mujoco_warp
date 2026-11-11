@@ -508,6 +508,7 @@ class IOTest(parameterized.TestCase):
     m = put_model(mjm)
     np.testing.assert_array_equal(m.M_tile_colmask.numpy()[:3, 0], [0b0, 0b1, 0b10])
     np.testing.assert_array_equal(m.M_tile_offdiag.numpy()[:3], [1, 1, 1])
+    self.assertFalse(m.M_tile_full)  # tile 2 never couples to tile 0
 
   @parameterized.parameters((15, 16), (16, 32), (31, 32), (32, 48))
   def test_augmented_cholesky_nvmax_padding(self, nvmax, expected):

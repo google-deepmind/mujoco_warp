@@ -1773,6 +1773,7 @@ class Model:
     M_tile_colmask: per Newton H tile, bitmask of the tiles above it coupled by M
                     (nv_pad / 16, nwords)
     M_tile_offdiag: per Newton H tile, whether M couples DOFs within it (nv_pad / 16,)
+    M_tile_full: M and its fill-in cover every tile of the Newton H, so no tile can be skipped
     qD_fullm_i: D-structure row indices for RNE derivatives
     qD_fullm_j: D-structure column indices for RNE derivatives
     M_mulm_rowadr: sparse matmul row pointers
@@ -2342,6 +2343,7 @@ class Model:
   M_hinit_i: array("nC", int)  # row index of each CSR M entry (for densifying M into the dense Newton H)
   M_tile_colmask: array("nv_tile", "nv_tile_word", wp.uint64)  # per Newton H tile, bitmask of the tiles above it coupled by M
   M_tile_offdiag: array("nv_tile", int)  # per Newton H tile, whether M couples DOFs within it
+  M_tile_full: bool  # M and its fill-in cover every tile of the Newton H, so no tile can be skipped
   qD_fullm_i: array("nqD_fullm", int)  # D-structure (full square) row indices for RNE derivatives
   qD_fullm_j: array("nqD_fullm", int)  # D-structure (full square) column indices for RNE derivatives
   # Gather-based sparse mul_m indices (thread per DOF, no atomics)

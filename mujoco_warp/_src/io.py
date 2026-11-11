@@ -1344,6 +1344,14 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
   m.M_hinit_i = M_hinit_i
   m.M_tile_colmask = M_tile_colmask
   m.M_tile_offdiag = M_tile_offdiag
+  # whether M and its reverse-elimination fill-in cover every tile holding real DOFs
+  ntiles_nv = (mjm.nv + tile - 1) // tile
+  colmask = [sum(int(w) << (64 * k) for k, w in enumerate(row)) for row in M_tile_colmask[:ntiles_nv]]
+  for tk in range(ntiles_nv - 1, 0, -1):
+    if colmask[tk]:
+      parent = colmask[tk].bit_length() - 1
+      colmask[parent] |= colmask[tk] & ((1 << parent) - 1)
+  m.M_tile_full = all(colmask[tk] == (1 << tk) - 1 for tk in range(ntiles_nv))
 
   # Precompute per-block gather indices for the dense-block densify (tile_load_indexed). For each
   # dense block and flat slot (row, col), store the CSR address of M[max(i,j), min(i,j)], or nC
