@@ -2880,6 +2880,7 @@ def _is_cone(state: int, active: float) -> int:
 def _rewrite_cone_rows(
   # Data in:
   efc_J_in: wp.array3d[float],
+  efc_state_in: wp.array2d[int],
   # In:
   ctx_cone_coef_in: wp.array2d[types.vec6],
   ctx_cone_base_in: wp.array2d[int],
@@ -2890,7 +2891,6 @@ def _rewrite_cone_rows(
   k: int,
   nrow: int,
   ncol: int,
-  state: Any,
   J_kj: Any,
 ):
   """Replaces the cone-state rows of the shared Jacobian chunk with their virtual rows."""
@@ -2901,7 +2901,9 @@ def _rewrite_cone_rows(
     erow = ec // ncol
     dofid = ec - erow * ncol
     efcid = k + erow
-    enable = in_tile and (efcid < nefc_world) and (state[erow] == types.ConstraintState.CONE.value)
+    enable = in_tile and (efcid < nefc_world)
+    if enable:
+      enable = efc_state_in[worldid, efcid] == types.ConstraintState.CONE.value
     value = float(0.0)
     if enable:
       base = ctx_cone_base_in[worldid, efcid]
@@ -2963,7 +2965,7 @@ def _update_gradient_JTDAJ_dense_tiled_compact(nv_pad: int, tile_size: int, njma
       if wp.static(ELLIPTIC):
         J_kj = wp.tile_load(efc_J_in[worldid], shape=(TILE_SIZE_K, nv_pad), offset=(k, 0), bounds_check=False, storage="shared")
         # not a shared wp.func: Warp does not reserve shared memory for a tile returned by one
-        state = wp.tile_load(efc_state_in[worldid], shape=TILE_SIZE_K, offset=k, bounds_check=False, storage="shared")
+        state = wp.tile_load(efc_state_in[worldid], shape=TILE_SIZE_K, offset=k, bounds_check=False)
         D_k = wp.tile_load(efc_D_in[worldid], shape=TILE_SIZE_K, offset=k, bounds_check=False)
         cone_weight = wp.tile_load(ctx_cone_weight_in[worldid], shape=TILE_SIZE_K, offset=k, bounds_check=False)
         active = wp.tile_map(
@@ -2972,7 +2974,7 @@ def _update_gradient_JTDAJ_dense_tiled_compact(nv_pad: int, tile_size: int, njma
         D_k = wp.tile_map(_row_weight, D_k, state, cone_weight, active)
         if wp.tile_reduce(wp.add, wp.tile_map(_is_cone, state, active))[0] > 0:
           _rewrite_cone_rows(
-            efc_J_in, ctx_cone_coef_in, ctx_cone_base_in, worldid, rank, lanes, nefc, k, TILE_SIZE_K, nv_pad, state, J_kj
+            efc_J_in, efc_state_in, ctx_cone_coef_in, ctx_cone_base_in, worldid, rank, lanes, nefc, k, TILE_SIZE_K, nv_pad, J_kj
           )
       else:
         J_kj = wp.tile_load(efc_J_in[worldid], shape=(TILE_SIZE_K, nv_pad), offset=(k, 0), bounds_check=False)
@@ -3057,7 +3059,7 @@ def _update_gradient_JTDAJ_dense_tiled(nv_pad: int, tile_size: int, njmax: int, 
       if wp.static(ELLIPTIC):
         J_kj = wp.tile_load(efc_J_in[worldid], shape=(TILE_SIZE_K, nv_pad), offset=(k, 0), bounds_check=False, storage="shared")
         # not a shared wp.func: Warp does not reserve shared memory for a tile returned by one
-        state = wp.tile_load(efc_state_in[worldid], shape=TILE_SIZE_K, offset=k, bounds_check=False, storage="shared")
+        state = wp.tile_load(efc_state_in[worldid], shape=TILE_SIZE_K, offset=k, bounds_check=False)
         D_k = wp.tile_load(efc_D_in[worldid], shape=TILE_SIZE_K, offset=k, bounds_check=False)
         cone_weight = wp.tile_load(ctx_cone_weight_in[worldid], shape=TILE_SIZE_K, offset=k, bounds_check=False)
         active = wp.tile_map(
@@ -3066,7 +3068,7 @@ def _update_gradient_JTDAJ_dense_tiled(nv_pad: int, tile_size: int, njmax: int, 
         D_k = wp.tile_map(_row_weight, D_k, state, cone_weight, active)
         if wp.tile_reduce(wp.add, wp.tile_map(_is_cone, state, active))[0] > 0:
           _rewrite_cone_rows(
-            efc_J_in, ctx_cone_coef_in, ctx_cone_base_in, worldid, rank, lanes, nefc, k, TILE_SIZE_K, nv_pad, state, J_kj
+            efc_J_in, efc_state_in, ctx_cone_coef_in, ctx_cone_base_in, worldid, rank, lanes, nefc, k, TILE_SIZE_K, nv_pad, J_kj
           )
       else:
         # AD: leaving bounds-check disabled here because I'm not entirely sure that
