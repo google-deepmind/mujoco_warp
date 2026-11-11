@@ -16,7 +16,6 @@
 
 import warnings
 
-import mujoco
 import numpy as np
 import warp as wp
 
@@ -256,96 +255,76 @@ def _finalize_dof_invweight0(
 
 
 @wp.kernel
-def _compute_body_A_diag(
-  body_parentid: wp.array[int],
+def _compute_body_invweight0(
   body_rootid: wp.array[int],
-  body_dofadr: wp.array[int],
+  body_weldid: wp.array[int],
   body_dofnum: wp.array[int],
+  body_dofadr: wp.array[int],
   dof_parentid: wp.array[int],
   dof_treeid: wp.array[int],
   tree_dofadr: wp.array[int],
   tree_dofnum: wp.array[int],
   Minv_block_adr: wp.array[int],
-  subtree_com_in: wp.array2d[wp.vec3],
   xipos_in: wp.array2d[wp.vec3],
+  subtree_com_in: wp.array2d[wp.vec3],
   cdof_in: wp.array2d[wp.spatial_vector],
   Minv_in: wp.array2d[float],
-  body_A_diag_out: wp.array3d[float],
-):
-  worldid, bodyid_target = wp.tid()
-  body_A_diag_id = worldid % body_A_diag_out.shape[0]
-
-  bodyid = bodyid_target
-  while bodyid > 0 and body_dofnum[bodyid] == 0:
-    bodyid = body_parentid[bodyid]
-
-  # diagonal of A = J * inv(M) * J', where J is the body Jacobian on the dof ancestor chain
-  A_trans = wp.vec3(0.0)
-  A_rot = wp.vec3(0.0)
-  if bodyid > 0:
-    # Compute offset from point (xipos) to subtree_com of root body
-    point = xipos_in[worldid, bodyid_target]
-    offset = point - subtree_com_in[worldid, body_rootid[bodyid_target]]
-
-    # Get last dof that affects this body. The chain lies in one tree, so its inv(M) is one block.
-    last_dofid = body_dofadr[bodyid] + body_dofnum[bodyid] - 1
-    treeid = dof_treeid[last_dofid]
-    start = tree_dofadr[treeid]
-    size = tree_dofnum[treeid]
-    block_adr = Minv_block_adr[last_dofid]
-
-    dofid_a = last_dofid
-    while dofid_a >= 0:
-      cdof_a = cdof_in[worldid, dofid_a]
-      jac_rot_a = wp.spatial_top(cdof_a)
-      jac_trans_a = wp.spatial_bottom(cdof_a) + wp.cross(jac_rot_a, offset)
-      dofid_b = last_dofid
-      while dofid_b >= 0:
-        minv = Minv_in[worldid, block_adr + (dofid_a - start) * size + (dofid_b - start)]
-        cdof_b = cdof_in[worldid, dofid_b]
-        jac_rot_b = wp.spatial_top(cdof_b)
-        jac_trans_b = wp.spatial_bottom(cdof_b) + wp.cross(jac_rot_b, offset)
-        A_trans += minv * wp.cw_mul(jac_trans_a, jac_trans_b)
-        A_rot += minv * wp.cw_mul(jac_rot_a, jac_rot_b)
-        dofid_b = dof_parentid[dofid_b]
-      dofid_a = dof_parentid[dofid_a]
-
-  for i in range(3):
-    body_A_diag_out[body_A_diag_id, bodyid_target, i] = A_trans[i]
-    body_A_diag_out[body_A_diag_id, bodyid_target, 3 + i] = A_rot[i]
-
-
-@wp.kernel
-def _finalize_body_invweight0(
-  body_weldid: wp.array[int],
-  body_A_diag_in: wp.array3d[float],
   body_invweight0_out: wp.array2d[wp.vec2],
 ):
   worldid, bodyid = wp.tid()
   body_invweight0_id = worldid % body_invweight0_out.shape[0]
-  body_A_diag_id = worldid % body_A_diag_in.shape[0]
 
   # World body and static bodies have zero invweight
-  if bodyid == 0 or body_weldid[bodyid] == 0:
+  weldid = body_weldid[bodyid]
+  dofnum = body_dofnum[weldid]
+  if dofnum == 0:
     body_invweight0_out[body_invweight0_id, bodyid] = wp.vec2(0.0, 0.0)
     return
 
+  # Compute offset from point (xipos) to subtree_com of root body
+  offset = xipos_in[worldid, bodyid] - subtree_com_in[worldid, body_rootid[bodyid]]
+
+  # Get last dof that affects this body. The chain lies in one tree, so its inv(M) is one block.
+  last_dofid = body_dofadr[weldid] + dofnum - 1
+  treeid = dof_treeid[last_dofid]
+  start = tree_dofadr[treeid]
+  size = tree_dofnum[treeid]
+  block_adr = Minv_block_adr[last_dofid]
+
+  # diagonal of A = J * inv(M) * J', where J is the body Jacobian on the dof ancestor chain;
+  # inv(M) is symmetric, so each off-diagonal pair is visited once and counted twice
+  A_trans = wp.vec3(0.0)
+  A_rot = wp.vec3(0.0)
+  dofid_a = last_dofid
+  while dofid_a >= 0:
+    cdof_a = cdof_in[worldid, dofid_a]
+    jac_rot_a = wp.spatial_top(cdof_a)
+    jac_trans_a = wp.spatial_bottom(cdof_a) + wp.cross(jac_rot_a, offset)
+    row_adr = block_adr + (dofid_a - start) * size
+    sub_trans = wp.vec3(0.0)
+    sub_rot = wp.vec3(0.0)
+    dofid_b = dof_parentid[dofid_a]
+    while dofid_b >= 0:
+      minv = Minv_in[worldid, row_adr + (dofid_b - start)]
+      cdof_b = cdof_in[worldid, dofid_b]
+      jac_rot_b = wp.spatial_top(cdof_b)
+      jac_trans_b = wp.spatial_bottom(cdof_b) + wp.cross(jac_rot_b, offset)
+      sub_trans += minv * jac_trans_b
+      sub_rot += minv * jac_rot_b
+      dofid_b = dof_parentid[dofid_b]
+    minv_aa = Minv_in[worldid, row_adr + (dofid_a - start)]
+    A_trans += wp.cw_mul(jac_trans_a, minv_aa * jac_trans_a + 2.0 * sub_trans)
+    A_rot += wp.cw_mul(jac_rot_a, minv_aa * jac_rot_a + 2.0 * sub_rot)
+    dofid_a = dof_parentid[dofid_a]
+
   # Average diagonal: trans = (A[0,0]+A[1,1]+A[2,2])/3, rot = (A[3,3]+A[4,4]+A[5,5])/3
-  inv_trans = wp.static(1.0 / 3.0) * (
-    body_A_diag_in[body_A_diag_id, bodyid, 0]
-    + body_A_diag_in[body_A_diag_id, bodyid, 1]
-    + body_A_diag_in[body_A_diag_id, bodyid, 2]
-  )
-  inv_rot = wp.static(1.0 / 3.0) * (
-    body_A_diag_in[body_A_diag_id, bodyid, 3]
-    + body_A_diag_in[body_A_diag_id, bodyid, 4]
-    + body_A_diag_in[body_A_diag_id, bodyid, 5]
-  )
+  inv_trans = wp.static(1.0 / 3.0) * (A_trans[0] + A_trans[1] + A_trans[2])
+  inv_rot = wp.static(1.0 / 3.0) * (A_rot[0] + A_rot[1] + A_rot[2])
 
   # Prevent degenerate constraints: if one component is near zero, use the other as fallback
-  if inv_trans < mujoco.mjMINVAL and inv_rot > mujoco.mjMINVAL:
+  if inv_trans < types.MJ_MINVAL and inv_rot > types.MJ_MINVAL:
     inv_trans = inv_rot  # use rotation as fallback for translation
-  elif inv_rot < mujoco.mjMINVAL and inv_trans > mujoco.mjMINVAL:
+  elif inv_rot < types.MJ_MINVAL and inv_trans > types.MJ_MINVAL:
     inv_rot = inv_trans  # use translation as fallback for rotation
 
   body_invweight0_out[body_invweight0_id, bodyid] = wp.vec2(inv_trans, inv_rot)
@@ -608,31 +587,24 @@ def _set_inertia0(m: types.Model, d: types.Data):
 
   # body_invweight0: computed as mean diagonal of J * inv(M) * J'
   # where J is the 6xnv body Jacobian (3 rows translation, 3 rows rotation)
-  body_A_diag = wp.empty((d.nworld, m.nbody, 6), dtype=float)
   wp.launch(
-    _compute_body_A_diag,
-    dim=(d.nworld, m.nbody),
+    _compute_body_invweight0,
+    dim=(m.body_invweight0.shape[0], m.nbody),
     inputs=[
-      m.body_parentid,
       m.body_rootid,
-      m.body_dofadr,
+      m.body_weldid,
       m.body_dofnum,
+      m.body_dofadr,
       m.dof_parentid,
       m.dof_treeid,
       m.tree_dofadr,
       m.tree_dofnum,
       m.Minv_block_adr,
-      d.subtree_com,
       d.xipos,
+      d.subtree_com,
       d.cdof,
       Minv,
     ],
-    outputs=[body_A_diag],
-  )
-  wp.launch(
-    _finalize_body_invweight0,
-    dim=(m.body_invweight0.shape[0], m.nbody),
-    inputs=[m.body_weldid, body_A_diag],
     outputs=[m.body_invweight0],
   )
 

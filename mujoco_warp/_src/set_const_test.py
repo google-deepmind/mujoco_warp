@@ -862,7 +862,7 @@ class SetConstTest(parameterized.TestCase):
       <mujoco>
         <worldbody>
           <body>
-            <joint axis="0 0 1"/>
+            <joint name="single"/>
             <geom pos=".2 0 0" size=".1" mass="1"/>
           </body>
           <body pos="1 0 0">
@@ -876,6 +876,9 @@ class SetConstTest(parameterized.TestCase):
             <body pos=".2 0 0">
               <joint name="hinge" axis="0 1 0"/>
               <geom pos=".1 0 0" size=".05" mass=".5"/>
+              <body pos=".2 .1 0">
+                <geom size=".05" mass=".3"/>
+              </body>
             </body>
           </body>
           <body pos="3 0 0">
@@ -885,7 +888,7 @@ class SetConstTest(parameterized.TestCase):
         <tendon>
           <fixed name="tendon">
             <joint joint="hinge" coef="1"/>
-            <joint joint="pair2" coef="-.5"/>
+            <joint joint="single" coef="-.5"/>
           </fixed>
         </tendon>
         <actuator>
@@ -909,18 +912,24 @@ class SetConstTest(parameterized.TestCase):
     body_mass = m.body_mass.numpy()
     body_mass[nworld - 1] *= 1.0 + np.arange(mjm.nbody) / mjm.nbody
     m.body_mass.assign(body_mass)
-    fields = ("dof_invweight0", "body_invweight0", "tendon_invweight0", "actuator_acc0")
-    for field in fields:
-      getattr(m, field).fill_(wp.inf)
+    for arr in (m.dof_invweight0, m.body_invweight0, m.tendon_invweight0, m.actuator_acc0):
+      arr.fill_(wp.inf)
     mjwarp.set_const(m, d)
 
+    dof_invweight0 = m.dof_invweight0.numpy()
+    body_invweight0 = m.body_invweight0.numpy()
+    tendon_invweight0 = m.tendon_invweight0.numpy()
+    actuator_acc0 = m.actuator_acc0.numpy()
     for w in range(nworld):
       mjm.body_mass[:] = body_mass[w]
       mujoco.mj_setConst(mjm, mujoco.MjData(mjm))
-      for field in fields:
-        _assert_eq(getattr(m, field).numpy()[w], getattr(mjm, field), f"{field}_world_{w}")
+      _assert_eq(dof_invweight0[w], mjm.dof_invweight0, f"dof_invweight0_world_{w}")
+      _assert_eq(body_invweight0[w], mjm.body_invweight0, f"body_invweight0_world_{w}")
+      _assert_eq(tendon_invweight0[w], mjm.tendon_invweight0, f"tendon_invweight0_world_{w}")
+      _assert_eq(actuator_acc0[w], mjm.actuator_acc0, f"actuator_acc0_world_{w}")
     if nworld == 2:
-      self.assertFalse(np.allclose(m.dof_invweight0.numpy()[0], m.dof_invweight0.numpy()[1]))
+      for actual in (dof_invweight0, body_invweight0, tendon_invweight0, actuator_acc0):
+        self.assertFalse(np.allclose(actual[0], actual[1]))
 
   def test_set_length_range_joint_limited(self):
     """Test set_length_range for joint-limited actuator matches joint range."""

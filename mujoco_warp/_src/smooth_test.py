@@ -15,6 +15,7 @@
 
 """Tests for smooth dynamics functions."""
 
+import contextlib
 from unittest import mock
 
 import mujoco
@@ -1628,17 +1629,18 @@ class SmoothTest(parameterized.TestCase):
     mjw.solve_m(m, d, result, rhs)
     _assert_eq(result.numpy()[0], expected, "heterogeneous factor + solve")
 
-  def test_inv_m(self):
-    """Tests inv_m for compact, scalar, and sparse blocks with per-world masses."""
+  @parameterized.product(nworld=(1, 2), sparse_blocks=(False, True))
+  def test_inv_m(self, nworld, sparse_blocks):
+    """Tests inv_m for compact, scalar, tile, and sparse blocks with per-world masses."""
     # the 7-dof tree exceeds the patched dense block size and joins the sparse LDL region
-    nworld = 2
-    with mock.patch.multiple("mujoco_warp._src.types", M_BLOCK_DENSE_MAX=6):
+    blocks = mock.patch.multiple("mujoco_warp._src.types", M_BLOCK_DENSE_MAX=6)
+    with blocks if sparse_blocks else contextlib.nullcontext():
       mjm, mjd, m, d = test_data.fixture(
         xml="""
       <mujoco>
         <worldbody>
           <body>
-            <joint axis="0 0 1"/>
+            <joint/>
             <geom pos=".2 0 0" size=".1" mass="1"/>
           </body>
           <body pos="1 0 0">
@@ -1662,10 +1664,12 @@ class SmoothTest(parameterized.TestCase):
         batch_sizes={"body_mass": nworld},
       )
     block_adr = m.qLD_block_adr.numpy()[mjm.tree_dofadr]
-    self.assertEqual(sorted(block_adr), sorted([types.Q_LD_BLOCK_COMPACT, types.Q_LD_BLOCK_SPARSE, 0]))
+    # the 2-dof scalar block takes the first 4 entries of qLD, ahead of the 7-dof tile block
+    expected_blocks = [types.Q_LD_BLOCK_COMPACT, 0, types.Q_LD_BLOCK_SPARSE if sparse_blocks else 4]
+    self.assertEqual(sorted(block_adr), sorted(expected_blocks))
 
     body_mass = m.body_mass.numpy()
-    body_mass[1] *= 1.0 + np.arange(mjm.nbody) / mjm.nbody
+    body_mass[nworld - 1] *= 1.0 + np.arange(mjm.nbody) / mjm.nbody
     m.body_mass.assign(body_mass)
     mjw.kinematics(m, d)
     mjw.com_pos(m, d)
@@ -1685,6 +1689,8 @@ class SmoothTest(parameterized.TestCase):
         dofs = slice(start, start + size)
         adr = Minv_block_adr[start]
         _assert_eq(Minv[w, adr : adr + size * size], expected[dofs, dofs].reshape(-1), f"block {start} world {w}")
+    if nworld == 2:
+      self.assertFalse(np.allclose(Minv[0], Minv[1]))
 
   def test_factor_solve_mixed_blocks(self):
     """Per-block factor/solve: sparse LDL, scalar, and tile blocks all share one qLD."""
