@@ -1401,6 +1401,7 @@ class SolverTest(parameterized.TestCase):
         ),
         dim=d.nworld,
         inputs=[
+          m.nv,
           m.M_colind,
           m.M_hinit_i,
           d.nefc,
