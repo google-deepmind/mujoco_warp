@@ -101,6 +101,20 @@ def get(obj: object, path: str) -> object:
   return obj
 
 
+def _snapshot(obj: object, memo: dict[int, object]) -> object:
+  """Retains dataclass bindings for backward without copying array storage."""
+  if not dataclasses.is_dataclass(obj) or isinstance(obj, type):
+    return obj
+  if id(obj) not in memo:
+    result = dataclasses.replace(obj)
+    memo[id(obj)] = result
+    for field in dataclasses.fields(obj):
+      value = getattr(obj, field.name)
+      if dataclasses.is_dataclass(value) and not isinstance(value, type):
+        setattr(result, field.name, _snapshot(value, memo))
+  return memo[id(obj)]
+
+
 @dataclasses.dataclass(frozen=True)
 class AdjointRule:
   """Reverse-mode rule for an API function.
@@ -120,6 +134,9 @@ class AdjointRule:
   allocations rather than `Data` gradients, and should recompute intermediates from its inputs
   rather than rely on outputs that later calls may overwrite.
 
+  Custom backward calls retain the forward's dataclass bindings, including nested containers.
+  Array contents are not copied and must remain available until backward or be recomputed.
+
   Attributes:
     backward: accumulates input gradients from output gradients; if None, the forward's launches
       are recorded natively and its kernels must be compiled with `enable_backward=True`
@@ -128,8 +145,9 @@ class AdjointRule:
     model_fields: Model fields that can receive gradients when the user enables `requires_grad`
     render_fields: differentiable fields of the RenderContext argument
     array_args: names of differentiable standalone array arguments
-    supported: called untaped with the forward arguments, except during CUDA graph capture;
-      returns reasons differentiation is not supported
+    supported: called untaped with the forward arguments, including during CUDA graph capture;
+      returns reasons differentiation is not supported. Must avoid device synchronization during
+      capture, for example by using metadata cached beforehand.
   """
 
   backward: Callable[..., None] | None = None
@@ -238,7 +256,7 @@ def _wrap(fn: Callable) -> Callable:
             raise NotImplementedError(f"Differentiation of '{name}' with {label} is not supported.")
           foreign.append((label, arr))
 
-    reasons = None if rule.supported is None or wp.get_device().is_capturing else _call(None, rule.supported, *args, **kwargs)
+    reasons = None if rule.supported is None else _call(None, rule.supported, *args, **kwargs)
     if reasons:
       msg = reasons if isinstance(reasons, str) else ", ".join(reasons)
       raise NotImplementedError(f"Differentiation of '{name}' is not supported: {msg}.")
@@ -272,12 +290,15 @@ def _wrap(fn: Callable) -> Callable:
       # backward (as in a captured graph) zeroes them:
       tape.gradients.update({**fwd_tape.gradients, **{a: a.grad for a in arrays}})
     else:
+      memo = {}
+      backward_args = tuple(_snapshot(arg, memo) for arg in args)
+      backward_kwargs = {key: _snapshot(value, memo) for key, value in kwargs.items()}
 
       def backward():
         # Setting `requires_grad = False` after recording frees `.grad`:
         if any(a.grad is None for a in arrays):
           raise RuntimeError(f"Gradients for '{name}' were disabled after recording.")
-        _call(None, rule.backward, *args, **kwargs)
+        _call(None, rule.backward, *backward_args, **backward_kwargs)
 
       tape.record_func(backward=backward, arrays=arrays)
     return result

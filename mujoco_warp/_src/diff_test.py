@@ -1037,7 +1037,7 @@ class DiffApiTest(parameterized.TestCase):
 
   @absltest.skipIf(not wp.get_device().is_cuda, "CUDA graph capture requires a CUDA device.")
   def test_graph_capture(self):
-    # Native and custom rules can be captured in a CUDA graph with their backward, skipping
+    # Native and custom rules can be captured in a CUDA graph with their backward, validating
     # supported while capturing, whether the gradients were allocated by a warm-up or by the first
     # promotion inside the capture; the captured tape.zero() keeps replays from accumulating:
     calls = []
@@ -1077,7 +1077,7 @@ class DiffApiTest(parameterized.TestCase):
         wp.capture_launch(capture.graph)
       np.testing.assert_allclose(d_new.qvel.numpy(), 1.0)
       np.testing.assert_allclose(d_new.qpos.grad.numpy(), 6.0)
-    self.assertLen(calls, 2)
+    self.assertLen(calls, 6)
 
     # Nonlinear checkpoint replay in eager mode and inside a captured CUDA graph:
     def square_fn(x, y):
