@@ -4723,6 +4723,7 @@ def solve(m: types.Model, d: types.Data):
   if d.njmax == 0 or m.nv == 0:
     wp.copy(d.qacc, d.qacc_smooth)
     d.solver_niter.fill_(0)
+    support.mul_m(m, d, d.efc.Ma, d.qacc)
   else:
     ctx = _create_solver_context(m, d, inplace_cholesky=True)
     _solve(m, d, ctx)
