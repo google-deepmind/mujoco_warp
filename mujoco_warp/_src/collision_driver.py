@@ -17,6 +17,7 @@ from typing import Optional
 
 import warp as wp
 
+from mujoco_warp._src import sort
 from mujoco_warp._src.collision_convex import convex_narrowphase
 from mujoco_warp._src.collision_core import CollisionContext
 from mujoco_warp._src.collision_core import create_collision_context
@@ -1151,12 +1152,6 @@ def _narrowphase(m: Model, d: Data, ctx: CollisionContext):
     sdf_narrowphase(m, d, ctx)
 
 
-def _sort_contacts(m: Model, d: Data):
-  """Deterministic contact sort."""
-  # TODO(team): Implementation contact sorting.
-  pass
-
-
 @event_scope
 def collision(
   m: Model,
@@ -1236,4 +1231,4 @@ def collision(
     m.callback.contactfilter(m, d)
 
   if m.opt.deterministic & DeterminismType.CONTACTS:
-    _sort_contacts(m, d)
+    sort.contacts(d)
