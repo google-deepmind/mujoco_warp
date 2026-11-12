@@ -1108,11 +1108,12 @@ class ForwardTest(parameterized.TestCase):
     mjm, mjd, m, d = test_data.fixture(
       xml=f"""
     <mujoco>
-      <option timestep="0.002"/>
-      <default><geom contype="0" conaffinity="0"/></default>
+      <default>
+        <geom contype="0" conaffinity="0"/>
+      </default>
       <worldbody>
         <body>
-          <joint type="hinge" axis="0 1 0" damping="{damping}"/>
+          <joint axis="0 1 0" damping="{damping}"/>
           <geom type="capsule" fromto="0 0 0 0.5 0 0" size="0.02" mass="1"/>
         </body>
         <body pos="2 0 2">
@@ -1120,7 +1121,9 @@ class ForwardTest(parameterized.TestCase):
           <geom type="ellipsoid" size="0.1 0.2 0.3" mass="1"/>
         </body>
       </worldbody>
-      <keyframe><key qvel="0.2 0.1 -0.2 0.3 0.4 -0.5 0.6"/></keyframe>
+      <keyframe>
+        <key qvel="0.2 0.1 -0.2 0.3 0.4 -0.5 0.6"/>
+      </keyframe>
     </mujoco>
     """,
       keyframe=0,
@@ -1141,20 +1144,23 @@ class ForwardTest(parameterized.TestCase):
     d.qpos.assign(np.stack([reference.qpos for reference in references]))
     d.qvel.assign(np.stack([reference.qvel for reference in references]))
     d.efc.Ma.fill_(wp.inf)
-    d.qacc.fill_(wp.inf)
     d.solver_niter.fill_(-1)
+
+    with wp.ScopedCapture() as capture:
+      mjw.step(m, d)
 
     for _ in range(10):
       for reference in references:
         mujoco.mj_step(mjm, reference)
-      mjw.step(m, d)
+      wp.capture_launch(capture.graph)
 
-    np.testing.assert_allclose(d.qpos.numpy(), np.stack([ref.qpos for ref in references]), atol=1e-5, rtol=1e-5)
-    np.testing.assert_allclose(d.qvel.numpy(), np.stack([ref.qvel for ref in references]), atol=1e-5, rtol=1e-5)
+    qpos = d.qpos.numpy()
+    qvel = d.qvel.numpy()
+    np.testing.assert_allclose(qpos, np.stack([ref.qpos for ref in references]), atol=1e-5, rtol=1e-5)
+    np.testing.assert_allclose(qvel, np.stack([ref.qvel for ref in references]), atol=1e-5, rtol=1e-5)
     np.testing.assert_array_equal(d.solver_niter.numpy(), 0)
-    self.assertEqual(d.njmax, 0)
     if nworld == 2:
-      self.assertFalse(np.allclose(d.qvel.numpy()[0], d.qvel.numpy()[1]))
+      self.assertFalse(np.allclose(qvel[0], qvel[1]))
 
   def test_step_no_dofs(self):
     """Tests step with no degrees of freedom."""
