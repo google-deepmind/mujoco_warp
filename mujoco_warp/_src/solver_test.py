@@ -3267,22 +3267,30 @@ class CompactSolverTest(parameterized.TestCase):
     nlink = 100
     chain = (
       "".join(
-        f'<body pos="0 0 -0.1"><joint type="hinge" axis="0 1 0" range="-0.05 0.05" armature="1"/>'
+        f'<body pos="0 0 -0.1"><joint axis="0 1 0" range="-0.05 0.05" armature="1"/>'
         f'<geom type="capsule" size="0.01" fromto="0 0 0 0 0 -0.1" mass="0.1"/>'
         for _ in range(nlink)
       )
       + "</body>" * nlink
     )
-    xml = f"""
-    <mujoco>
-      <worldbody>{chain}</worldbody>
-    </mujoco>
-    """
-    mjm, mjd, m, d = test_data.fixture(xml=xml, qpos_noise=0.1, nconmax=16, njmax=256)
+    mjm, mjd, m, d = test_data.fixture(
+      xml=f"""
+      <mujoco>
+        <option>
+          <flag warmstart="disable"/>
+        </option>
+        <worldbody>{chain}</worldbody>
+      </mujoco>
+      """,
+      qpos_noise=0.1,
+      nconmax=16,
+      njmax=256,
+    )
     self.assertGreater(m.nv, solver._SPARSE_BLOCK_CHOLESKY_DIM)
     self.assertTrue(m.M_tile_full)
     self.assertIsNone(solver._create_solver_context(m, d).h_col_mask)
 
+    d.qacc.fill_(wp.inf)
     mjw.forward(m, d)
     mujoco.mj_forward(mjm, mjd)
     self.assertGreater(mjd.nefc, 0)
