@@ -936,14 +936,13 @@ class ForwardTest(parameterized.TestCase):
     step1_field = [
       "xpos",
       "xquat",
-      "xmat",
       "xipos",
-      "ximat",
+      "xiquat",
       "xanchor",
       "xaxis",
       "geom_xpos",
-      "geom_xmat",
-      "site_xmat",
+      "geom_xquat",
+      "site_xquat",
       "subtree_com",
       "cinert",
       "cdof",
@@ -988,18 +987,21 @@ class ForwardTest(parameterized.TestCase):
     if m.nflexedge:
       step1_field += ["flexedge_length", "flexedge_velocity"]
 
+    # quaternion fields are compared as the rotation matrices mjData stores
+    mat_of_quat = {"xiquat": "ximat", "geom_xquat": "geom_xmat", "site_xquat": "site_xmat"}
+
     def _getattr(arr):
       if (len(arr) >= 4) & (arr[:4] == "efc_"):
         return getattr(d.efc, arr[4:]), True
       return getattr(d, arr), False
 
     for arr in step1_field:
-      if arr in ("geom_xpos", "geom_xmat"):
-        # leave geom_xpos and geom_xmat untouched because they have static data
+      if arr in ("geom_xpos", "geom_xquat"):
+        # leave geom_xpos and geom_xquat untouched because they have static data
         continue
       attr, _ = _getattr(arr)
-      if arr in ("xquat", "xmat", "ximat"):
-        # xquat, xmat, ximat need to retain identity for world body
+      if arr in ("xquat", "xiquat"):
+        # xquat, xiquat need to retain identity for world body
         attr = attr[:, 1:]
       if attr.dtype == float:
         attr.fill_(wp.nan)
@@ -1045,8 +1047,11 @@ class ForwardTest(parameterized.TestCase):
       d_arr, is_efc = _getattr(arr)
 
       d_arr = d_arr.numpy()[0]
-      mjd_arr = getattr(mjd, arr)
-      if arr in ["xmat", "ximat", "geom_xmat", "site_xmat", "cam_xmat"]:
+      mjd_arr = getattr(mjd, mat_of_quat.get(arr, arr))
+      if arr in mat_of_quat:
+        mjd_arr = mjd_arr.reshape(-1)
+        d_arr = test_data.quat_to_mat(d_arr).reshape(-1)
+      elif arr in ["cam_xmat"]:
         mjd_arr = mjd_arr.reshape(-1)
         d_arr = d_arr.reshape(-1)
       elif arr == "M":
@@ -1170,6 +1175,70 @@ class ForwardTest(parameterized.TestCase):
         atol=tol,
         rtol=tol,
       )
+
+  @parameterized.product(
+    integrator=(IntegratorType.EULER, IntegratorType.IMPLICIT, IntegratorType.IMPLICITFAST, IntegratorType.RK4),
+    damping=(0.0, 0.2),
+    nworld=(1, 2),
+  )
+  def test_step_no_constraint_rows(self, integrator, damping, nworld):
+    """Zero constraint capacity must not leave the integrator's inertia product stale."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml=f"""
+    <mujoco>
+      <default>
+        <geom contype="0" conaffinity="0"/>
+      </default>
+      <worldbody>
+        <body>
+          <joint axis="0 1 0" damping="{damping}"/>
+          <geom type="capsule" fromto="0 0 0 0.5 0 0" size="0.02" mass="1"/>
+        </body>
+        <body pos="2 0 2">
+          <freejoint/>
+          <geom type="ellipsoid" size="0.1 0.2 0.3" mass="1"/>
+        </body>
+      </worldbody>
+      <keyframe>
+        <key qvel="0.2 0.1 -0.2 0.3 0.4 -0.5 0.6"/>
+      </keyframe>
+    </mujoco>
+    """,
+      keyframe=0,
+      overrides={"opt.integrator": integrator},
+      nworld=nworld,
+      nconmax=0,
+      njmax=0,
+    )
+    references = []
+    for world in range(nworld):
+      reference = mujoco.MjData(mjm)
+      reference.qpos[:] = mjd.qpos
+      reference.qvel[:] = mjd.qvel
+      if world:
+        reference.qpos[0] += 0.3
+        reference.qvel[:] += 0.1
+      references.append(reference)
+    d.qpos.assign(np.stack([reference.qpos for reference in references]))
+    d.qvel.assign(np.stack([reference.qvel for reference in references]))
+    d.efc.Ma.fill_(wp.inf)
+    d.solver_niter.fill_(-1)
+
+    with wp.ScopedCapture() as capture:
+      mjw.step(m, d)
+
+    for _ in range(10):
+      for reference in references:
+        mujoco.mj_step(mjm, reference)
+      wp.capture_launch(capture.graph)
+
+    qpos = d.qpos.numpy()
+    qvel = d.qvel.numpy()
+    np.testing.assert_allclose(qpos, np.stack([ref.qpos for ref in references]), atol=1e-5, rtol=1e-5)
+    np.testing.assert_allclose(qvel, np.stack([ref.qvel for ref in references]), atol=1e-5, rtol=1e-5)
+    np.testing.assert_array_equal(d.solver_niter.numpy(), 0)
+    if nworld == 2:
+      self.assertFalse(np.allclose(qvel[0], qvel[1]))
 
   def test_step_no_dofs(self):
     """Tests step with no degrees of freedom."""

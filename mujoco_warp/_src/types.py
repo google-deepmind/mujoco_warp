@@ -62,7 +62,7 @@ FLEX_INTERP_MAX_NODES = 27
 # TODO(team): add check that all wp.launch_tiled 'block_dim' settings are configurable
 @dataclasses.dataclass
 class BlockDim:
-  """Block dimension 'block_dim' settings for wp.launch_tiled.
+  """Block dimension settings for kernel launches.
 
   TODO(team): experimental and may be removed
 
@@ -90,6 +90,7 @@ class BlockDim:
     solve_search_update_cg: solve search update CG block dimension (solver)
     solve_init_search_cg: solve init search CG block dimension (solver)
     contact_jac_tiled: contact Jacobian tiled block dimension (solver)
+    contact_jac_sparse: sparse contact Jacobian block dimension (constraint)
     eff_pcg: effective-metric PCG block dimension (derivative)
     render: render block dimension (render)
   """
@@ -125,6 +126,8 @@ class BlockDim:
   solve_search_update_cg: int = 256
   solve_init_search_cg: int = 256
   contact_jac_tiled: int = 32
+  # constraint
+  contact_jac_sparse: int = 128
   # derivative
   eff_pcg: int = 128
   # render
@@ -1625,6 +1628,9 @@ class Model:
       factorization is a per-block decision -- see M_tiles and m_block_layout
     qLD_block_total: packed length of the dense region per world (also the offset of the LDL region)
     qLD_block_adr: packed factor offset; Q_LD_BLOCK_* sentinel otherwise (nv,)
+    Minv_block_total: packed length of the inverse inertia blocks, one per tree, per world
+    Minv_block_adr: offset of the dof's tree block in the packed inverse inertia (nv,)
+    Minv_block_dofmax: number of dofs of the largest tree
     flg_adhesion: flag indicating if model has passive adhesion
     has_fluid: True if wind, density, or viscosity are non-zero at put_model time
     flg_surfacevel: whether model has non-zero surfacevel
@@ -2198,6 +2204,9 @@ class Model:
   is_sparse: bool
   qLD_block_total: int
   qLD_block_adr: array("nv", int)
+  Minv_block_total: int
+  Minv_block_adr: array("nv", int)
+  Minv_block_dofmax: int
   flg_adhesion: bool
   has_fluid: bool
   flg_surfacevel: bool
@@ -2499,15 +2508,14 @@ class Data:
     tree_asleep: tree asleep counter; >=0: asleep cycle         (nworld, ntree)
     xpos: Cartesian position of body frame                      (nworld, nbody, 3)
     xquat: Cartesian orientation of body frame                  (nworld, nbody, 4)
-    xmat: Cartesian orientation of body frame                   (nworld, nbody, 3, 3)
     xipos: Cartesian position of body com                       (nworld, nbody, 3)
-    ximat: Cartesian orientation of body inertia                (nworld, nbody, 3, 3)
+    xiquat: Cartesian orientation of body inertia               (nworld, nbody, 4)
     xanchor: Cartesian position of joint anchor                 (nworld, njnt, 3)
     xaxis: Cartesian joint axis                                 (nworld, njnt, 3)
     geom_xpos: Cartesian geom position                          (nworld, ngeom, 3)
-    geom_xmat: Cartesian geom orientation                       (nworld, ngeom, 3, 3)
+    geom_xquat: Cartesian geom orientation                      (nworld, ngeom, 4)
     site_xpos: Cartesian site position                          (nworld, nsite, 3)
-    site_xmat: Cartesian site orientation                       (nworld, nsite, 3, 3)
+    site_xquat: Cartesian site orientation                      (nworld, nsite, 4)
     cam_xpos: Cartesian camera position                         (nworld, ncam, 3)
     cam_xmat: Cartesian camera orientation                      (nworld, ncam, 3, 3)
     light_xpos: Cartesian light position                        (nworld, nlight, 3)
@@ -2680,15 +2688,14 @@ class Data:
   tree_asleep: array("nworld", "ntree", int)
   xpos: array("nworld", "nbody", wp.vec3)
   xquat: array("nworld", "nbody", wp.quat)
-  xmat: array("nworld", "nbody", wp.mat33)
   xipos: array("nworld", "nbody", wp.vec3)
-  ximat: array("nworld", "nbody", wp.mat33)
+  xiquat: array("nworld", "nbody", wp.quat)
   xanchor: array("nworld", "njnt", wp.vec3)
   xaxis: array("nworld", "njnt", wp.vec3)
   geom_xpos: array("nworld", "ngeom", wp.vec3)
-  geom_xmat: array("nworld", "ngeom", wp.mat33)
+  geom_xquat: array("nworld", "ngeom", wp.quat)
   site_xpos: array("nworld", "nsite", wp.vec3)
-  site_xmat: array("nworld", "nsite", wp.mat33)
+  site_xquat: array("nworld", "nsite", wp.quat)
   cam_xpos: array("nworld", "ncam", wp.vec3)
   cam_xmat: array("nworld", "ncam", wp.mat33)
   light_xpos: array("nworld", "nlight", wp.vec3)

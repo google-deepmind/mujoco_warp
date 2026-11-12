@@ -1233,6 +1233,12 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
   m.qLD_block_total = _lay["total"]  # packed dense region length / offset of the LDL region
   m.qLD_block_adr = _lay["dof_adr"]
 
+  # inv(M) is block diagonal per tree: one dense block per tree
+  tree_area = mjm.tree_dofnum * mjm.tree_dofnum
+  m.Minv_block_total = int(tree_area.sum())
+  m.Minv_block_adr = (np.cumsum(tree_area) - tree_area)[mjm.dof_treeid]
+  m.Minv_block_dofmax = int(mjm.tree_dofnum.max(initial=0))
+
   scalar_tiles = [
     types.TileSet(
       adr=wp.array(_lay["scalar_tiles"][size], dtype=int),
@@ -2241,6 +2247,26 @@ def _initial_body_awake(mjm: mujoco.MjModel, nworld: int, init_asleep: bool) -> 
   return body_awake_np
 
 
+def _quat_to_mat(quat: np.ndarray) -> np.ndarray:
+  """Rotation matrices (..., 3, 3) of quaternions (..., 4), computed like math.quat_to_mat."""
+  q0, q1, q2, q3 = np.moveaxis(quat, -1, 0)
+  mat = np.stack(
+    [
+      q0 * q0 + q1 * q1 - q2 * q2 - q3 * q3,
+      2 * (q1 * q2 - q0 * q3),
+      2 * (q1 * q3 + q0 * q2),
+      2 * (q1 * q2 + q0 * q3),
+      q0 * q0 - q1 * q1 + q2 * q2 - q3 * q3,
+      2 * (q2 * q3 - q0 * q1),
+      2 * (q1 * q3 - q0 * q2),
+      2 * (q2 * q3 + q0 * q1),
+      q0 * q0 - q1 * q1 - q2 * q2 + q3 * q3,
+    ],
+    axis=-1,
+  )
+  return mat.reshape(quat.shape[:-1] + (3, 3))
+
+
 def make_data(
   mjm: mujoco.MjModel,
   nworld: int = 1,
@@ -2374,9 +2400,9 @@ def make_data(
     efc.J_colind = wp.zeros((nworld, 0, 0), dtype=int)
     efc.J = wp.zeros((nworld, sizes["njmax_pad"], sizes["nv_pad"]), dtype=float)
 
-  # Compute initial kinematic state. Static geom positions (geom_xpos, geom_xmat) are set here
+  # Compute initial kinematic state. Static geom positions (geom_xpos, geom_xquat) are set here
   # and never updated by the physics loop (see smooth.py geom_kinematics), so this call is the
-  # only place they are initialized. Also seeds body poses (xquat, xmat, ximat) at qpos0.
+  # only place they are initialized. Also seeds body poses (xquat, xiquat) at qpos0.
   mjd = mujoco.MjData(mjm)
   mujoco.mj_kinematics(mjm, mjd)
 
@@ -2398,11 +2424,10 @@ def make_data(
     "njmax_nnz": njmax_nnz,
     # world body
     "xquat": wp.array(np.tile(mjd.xquat, (nworld, 1)), shape=(nworld, mjm.nbody), dtype=wp.quat),
-    "xmat": wp.array(np.tile(mjd.xmat, (nworld, 1)), shape=(nworld, mjm.nbody), dtype=wp.mat33),
-    "ximat": wp.array(np.tile(mjd.ximat, (nworld, 1)), shape=(nworld, mjm.nbody), dtype=wp.mat33),
+    "xiquat": wp.array(np.tile(mjd.xiquat, (nworld, 1)), shape=(nworld, mjm.nbody), dtype=wp.quat),
     # static geoms
     "geom_xpos": wp.array(np.tile(mjd.geom_xpos, (nworld, 1)), shape=(nworld, mjm.ngeom), dtype=wp.vec3),
-    "geom_xmat": wp.array(np.tile(mjd.geom_xmat, (nworld, 1)), shape=(nworld, mjm.ngeom), dtype=wp.mat33),
+    "geom_xquat": wp.array(np.tile(mjd.geom_xquat, (nworld, 1)), shape=(nworld, mjm.ngeom), dtype=wp.quat),
     # mocap
     "mocap_pos": wp.array(np.tile(mjm.body_pos[mocap_body[mocap_id]], (nworld, 1)), shape=(nworld, mjm.nmocap), dtype=wp.vec3),
     "mocap_quat": wp.array(
@@ -2889,16 +2914,23 @@ def get_data_into(
   result.qacc[:] = d.qacc.numpy()[world_id]
   result.act_dot[:] = d.act_dot.numpy()[world_id]
   result.xpos[:] = d.xpos.numpy()[world_id]
-  result.xquat[:] = d.xquat.numpy()[world_id]
-  result.xmat[:] = d.xmat.numpy()[world_id].reshape((-1, 9))
+  xquat = d.xquat.numpy()[world_id]
+  result.xquat[:] = xquat
+  result.xmat[:] = _quat_to_mat(xquat).reshape((-1, 9))
   result.xipos[:] = d.xipos.numpy()[world_id]
-  result.ximat[:] = d.ximat.numpy()[world_id].reshape((-1, 9))
+  xiquat = d.xiquat.numpy()[world_id]
+  result.xiquat[:] = xiquat
+  result.ximat[:] = _quat_to_mat(xiquat).reshape((-1, 9))
   result.xanchor[:] = d.xanchor.numpy()[world_id]
   result.xaxis[:] = d.xaxis.numpy()[world_id]
   result.geom_xpos[:] = d.geom_xpos.numpy()[world_id]
-  result.geom_xmat[:] = d.geom_xmat.numpy()[world_id].reshape((-1, 9))
+  geom_xquat = d.geom_xquat.numpy()[world_id]
+  result.geom_xquat[:] = geom_xquat
+  result.geom_xmat[:] = _quat_to_mat(geom_xquat).reshape((-1, 9))
   result.site_xpos[:] = d.site_xpos.numpy()[world_id]
-  result.site_xmat[:] = d.site_xmat.numpy()[world_id].reshape((-1, 9))
+  site_xquat = d.site_xquat.numpy()[world_id]
+  result.site_xquat[:] = site_xquat
+  result.site_xmat[:] = _quat_to_mat(site_xquat).reshape((-1, 9))
   result.cam_xpos[:] = d.cam_xpos.numpy()[world_id]
   result.cam_xmat[:] = d.cam_xmat.numpy()[world_id].reshape((-1, 9))
   result.light_xpos[:] = d.light_xpos.numpy()[world_id]

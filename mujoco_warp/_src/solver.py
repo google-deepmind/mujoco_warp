@@ -37,6 +37,7 @@ from mujoco_warp._src.types import OverflowType
 from mujoco_warp._src.types import SolverContext
 from mujoco_warp._src.warp_util import cache_kernel
 from mujoco_warp._src.warp_util import event_scope
+from mujoco_warp._src.warp_util import side_stream
 
 wp.set_module_options({"enable_backward": False, "default_grid_stride": False})
 
@@ -1731,9 +1732,6 @@ def _linesearch(m: types.Model, d: types.Data, ctx: SolverContext):
   # iteration's values.
   skip = ctx.search_unchanged if _use_incremental(m) else ctx.done
 
-  # mv = M @ search (common to both parallel and iterative)
-  _mul_m_compact_aware(m, d, ctx, ctx.mv, ctx.search, skip)
-
   # Fuse jv computation in-kernel for small nv (iterative only, dense only)
   # Sparse mode requires pre-computed jv since in-kernel uses dense indexing
   # the sparse-compact J path reads the full model's sparse J structures;
@@ -1741,33 +1739,40 @@ def _linesearch(m: types.Model, d: types.Data, ctx: SolverContext):
   sc = _sparse_compact(ctx)
   fuse_jv = m.nv <= 50 and not m.is_sparse and not sc
 
-  # jv = J @ search (when not fused into iterative kernel)
+  # jv = J @ search (when not fused into iterative kernel), independent of mv below
+  jv_stream = None if fuse_jv else side_stream(d.qacc.device)
   if not fuse_jv:
-    dj = ctx.compact_d_full if sc else d
-    if sc or m.is_sparse:
-      # Sparse J has few nonzeros per row, one thread handles them all.
-      dofs_per_thread = m.nv
-      threads_per_efc = 1
-    else:
-      dofs_per_thread = 20 if m.nv > 50 else 50
-      threads_per_efc = ceil(m.nv / dofs_per_thread)
+    with wp.ScopedStream(jv_stream):
+      dj = ctx.compact_d_full if sc else d
+      if sc or m.is_sparse:
+        # Sparse J has few nonzeros per row, one thread handles them all.
+        dofs_per_thread = m.nv
+        threads_per_efc = 1
+      else:
+        dofs_per_thread = 20 if m.nv > 50 else 50
+        threads_per_efc = ceil(m.nv / dofs_per_thread)
 
-    if threads_per_efc > 1:
+      if threads_per_efc > 1:
+        wp.launch(
+          _linesearch_zero_jv,
+          dim=(d.nworld, d.njmax),
+          inputs=[d.nefc, skip],
+          outputs=[ctx.jv],
+        )
+
       wp.launch(
-        _linesearch_zero_jv,
-        dim=(d.nworld, d.njmax),
-        inputs=[d.nefc, skip],
+        _linesearch_jv_fused_kernel(
+          sc or m.is_sparse, m.nv, dofs_per_thread, sc, bool(m.opt.deterministic & types.DeterminismType.ATOMICS)
+        ),
+        dim=(d.nworld, d.njmax, threads_per_efc),
+        inputs=[d.nefc, dj.efc.J_rownnz, dj.efc.J_rowadr, dj.efc.J_colind, dj.efc.J, dj.dof_cdof, ctx.search, skip],
         outputs=[ctx.jv],
       )
 
-    wp.launch(
-      _linesearch_jv_fused_kernel(
-        sc or m.is_sparse, m.nv, dofs_per_thread, sc, bool(m.opt.deterministic & types.DeterminismType.ATOMICS)
-      ),
-      dim=(d.nworld, d.njmax, threads_per_efc),
-      inputs=[d.nefc, dj.efc.J_rownnz, dj.efc.J_rowadr, dj.efc.J_colind, dj.efc.J, dj.dof_cdof, ctx.search, skip],
-      outputs=[ctx.jv],
-    )
+  # mv = M @ search (common to both parallel and iterative)
+  _mul_m_compact_aware(m, d, ctx, ctx.mv, ctx.search, skip)
+  if jv_stream is not None:
+    wp.wait_stream(jv_stream)
 
   _linesearch_iterative(m, d, ctx, fuse_jv)
 
@@ -2320,6 +2325,12 @@ def _update_constraint(
   stable_fast: bool = False,
 ):
   """Update constraint arrays after each solve iteration."""
+  _update_efc_force(m, d, ctx, track_changes)
+  _update_qfrc_constraint(m, d, ctx, stable_fast)
+
+
+def _update_efc_force(m: types.Model, d: types.Data, ctx: SolverContext | InverseContext, track_changes: bool = False):
+  """Update constraint forces and states, recording state changes if track_changes."""
   efc_inputs = [
     m.opt.impratio_invsqrt,
     d.ne,
@@ -2345,6 +2356,9 @@ def _update_constraint(
     outputs=[d.efc.force, d.efc.state, ctx.quad_changed_ids, ctx.quad_changed_count, ctx.state_changed_count],
   )
 
+
+def _update_qfrc_constraint(m: types.Model, d: types.Data, ctx: SolverContext | InverseContext, stable_fast: bool = False):
+  """Update qfrc_constraint from the constraint forces."""
   # qfrc_constraint = efc_J.T @ efc_force. Fast-path worlds with no state flips
   # skip the rebuild; the public value is recovered after the solve.
   changed = ctx.state_changed_count if stable_fast else d.nefc
@@ -4230,29 +4244,9 @@ def _update_gradient(m: types.Model, d: types.Data, ctx: SolverContext, compact:
     )
 
 
-def _update_gradient_incremental(m: types.Model, d: types.Data, ctx: SolverContext, stable_fast: bool = False):
-  """Incremental gradient update: update H for changed constraints + re-factorize.
-
-  Skips the full J^T*D*J rebuild by applying only the delta from constraints
-  that changed QUADRATIC state, then re-factorizes and solves.
-  """
-  changed = ctx.state_changed_count if stable_fast else d.nefc
-  wp.launch(
-    _update_gradient_zero_grad_dot(stable_fast),
-    dim=d.nworld,
-    inputs=[changed, ctx.alpha, ctx.done],
-    outputs=[ctx.grad_dot, ctx.newton_decrement, ctx.grad_scale, ctx.search_unchanged],
-  )
-
+def _update_h_incremental(m: types.Model, d: types.Data, ctx: SolverContext):
+  """Update upper triangle of H with delta from constraints that changed QUADRATIC state."""
   det_atomics = bool(m.opt.deterministic & types.DeterminismType.ATOMICS)
-  wp.launch(
-    _update_gradient_grad(stable_fast, det_atomics),
-    dim=(d.nworld, m.nv),
-    inputs=[d.qfrc_smooth, d.qfrc_constraint, d.efc.Ma, changed, ctx.done],
-    outputs=[ctx.grad, ctx.grad_dot],
-  )
-
-  # Update upper triangle of H with delta from changed constraints.
   sc = _sparse_compact(ctx)
   if m.is_sparse or sc:
     mj = ctx.compact_m_full if sc else m
@@ -4299,6 +4293,37 @@ def _update_gradient_incremental(m: types.Model, d: types.Data, ctx: SolverConte
       ],
       outputs=[ctx.h],
     )
+
+
+def _update_gradient_incremental(
+  m: types.Model, d: types.Data, ctx: SolverContext, stable_fast: bool = False, h_stream: wp.Stream | None = None
+):
+  """Incremental gradient update: update H for changed constraints + re-factorize.
+
+  Skips the full J^T*D*J rebuild by applying only the delta from constraints
+  that changed QUADRATIC state, then re-factorizes and solves. If h_stream is given,
+  the caller already launched _update_h_incremental on it.
+  """
+  changed = ctx.state_changed_count if stable_fast else d.nefc
+  wp.launch(
+    _update_gradient_zero_grad_dot(stable_fast),
+    dim=d.nworld,
+    inputs=[changed, ctx.alpha, ctx.done],
+    outputs=[ctx.grad_dot, ctx.newton_decrement, ctx.grad_scale, ctx.search_unchanged],
+  )
+
+  det_atomics = bool(m.opt.deterministic & types.DeterminismType.ATOMICS)
+  wp.launch(
+    _update_gradient_grad(stable_fast, det_atomics),
+    dim=(d.nworld, m.nv),
+    inputs=[d.qfrc_smooth, d.qfrc_constraint, d.efc.Ma, changed, ctx.done],
+    outputs=[ctx.grad, ctx.grad_dot],
+  )
+
+  if h_stream is None:
+    _update_h_incremental(m, d, ctx)
+  else:
+    wp.wait_stream(h_stream)
 
   _cholesky_factorize_solve(m, d, ctx, skip_unchanged=True, skip_noflip=stable_fast)
   if m.opt.integrator == types.IntegratorType.DISCRETE and (m.opt.enableflags & types.EnableBit.SLEEP):
@@ -4540,15 +4565,24 @@ def _solver_iteration(
       outputs=[ctx.quad_changed_count, ctx.state_changed_count],
     )
 
-  # The tracking also enables the stable-state fast path: worlds with no state
-  # flips this iteration were exactly quadratic over the step, so grad/search
-  # only changed by a scalar along the same ray. Skip their qfrc/grad/
-  # solve/search updates and track the scalar in ctx.grad_scale.
-  _update_constraint(m, d, ctx, track_changes=incremental, stable_fast=incremental)
+  _update_efc_force(m, d, ctx, track_changes=incremental)
 
   if incremental:
-    _update_gradient_incremental(m, d, ctx, stable_fast=incremental)
+    # The H update only needs the state changes recorded above, so it can run beside
+    # qfrc_constraint and the gradient.
+    h_stream = side_stream(d.qacc.device)
+    if h_stream is not None:
+      with wp.ScopedStream(h_stream):
+        _update_h_incremental(m, d, ctx)
+
+    # The tracking also enables the stable-state fast path: worlds with no state
+    # flips this iteration were exactly quadratic over the step, so grad/search
+    # only changed by a scalar along the same ray. Skip their qfrc/grad/
+    # solve/search updates and track the scalar in ctx.grad_scale.
+    _update_qfrc_constraint(m, d, ctx, stable_fast=True)
+    _update_gradient_incremental(m, d, ctx, stable_fast=True, h_stream=h_stream)
   else:
+    _update_qfrc_constraint(m, d, ctx)
     _update_gradient(m, d, ctx, compact=compact)
 
   # polak-ribiere
@@ -4689,6 +4723,7 @@ def solve(m: types.Model, d: types.Data):
   if d.njmax == 0 or m.nv == 0:
     wp.copy(d.qacc, d.qacc_smooth)
     d.solver_niter.fill_(0)
+    support.mul_m(m, d, d.efc.Ma, d.qacc)
   else:
     ctx = _create_solver_context(m, d, inplace_cholesky=True)
     _solve(m, d, ctx)
@@ -5467,35 +5502,36 @@ def _qcqp3(Ain: types.mat55, bin: types.vec5, d: types.vec5, r: float):
 
 
 @wp.func
-def _chol_solve5(L: types.mat55, b: types.vec5, n: int) -> types.vec5:
-  """Solves L L' x = b for the leading n x n block (mju_cholSolve)."""
+def _chol_solve5(L: types.mat55, b: types.vec5) -> types.vec5:
+  """Solves L L' x = b in 5 dimensions (mju_cholSolve)."""
+  # constant loop bounds let Warp unroll the loops and keep L and x in registers
   x = types.vec5(0.0)
-  for i in range(n):
+  for i in range(5):
     val = b[i]
     for k in range(i):
       val -= L[i, k] * x[k]
     x[i] = val / L[i, i]
-  for ii in range(n):
-    i = n - 1 - ii
+  for i in range(4, -1, -1):
     val = x[i]
-    for k in range(i + 1, n):
+    for k in range(4, i, -1):
       val -= L[k, i] * x[k]
     x[i] = val / L[i, i]
   return x
 
 
 @wp.func
-def _qcqp(Ain: types.mat55, bin: types.vec5, d: types.vec5, r: float, n: int):
+def _qcqp5(Ain: types.mat55, bin: types.vec5, d: types.vec5, r: float):
   """Solves min 0.5 x' A x + x' b s.t.
 
-  sum (x_i / d_i)^2 <= r^2 in n <= 5 dimensions (mju_QCQP).
+  sum (x_i / d_i)^2 <= r^2 in 5 dimensions (mju_QCQP).
   """
+  # constant loop bounds let Warp unroll the loops and keep A and Ala in registers
+
   # scale A, b so that constraint becomes x' x <= r^2
+  b = wp.cw_mul(bin, d)
   A = types.mat55()
-  b = types.vec5(0.0)
-  for i in range(n):
-    b[i] = bin[i] * d[i]
-    for j in range(n):
+  for i in range(5):
+    for j in range(5):
       A[i, j] = Ain[i, j] * d[i] * d[j]
 
   # Newton iteration
@@ -5503,14 +5539,12 @@ def _qcqp(Ain: types.mat55, bin: types.vec5, d: types.vec5, r: float, n: int):
   la = float(0.0)
   for _ in range(20):
     # make A + la
-    Ala = types.mat55()
-    for i in range(n):
-      for j in range(n):
-        Ala[i, j] = A[i, j]
+    Ala = A
+    for i in range(5):
       Ala[i, i] = A[i, i] + la
 
     # factorize, check rank with 1e-10 threshold (mju_cholFactor)
-    for j in range(n):
+    for j in range(5):
       diag = Ala[j, j]
       for k in range(j):
         diag -= Ala[j, k] * Ala[j, k]
@@ -5518,14 +5552,14 @@ def _qcqp(Ain: types.mat55, bin: types.vec5, d: types.vec5, r: float, n: int):
         return types.vec5(0.0), False
       diag = wp.sqrt(diag)
       Ala[j, j] = diag
-      for i in range(j + 1, n):
+      for i in range(4, j, -1):
         val = Ala[i, j]
         for k in range(j):
           val -= Ala[i, k] * Ala[j, k]
         Ala[i, j] = val / diag
 
     # res = -Ala \ b
-    res = -_chol_solve5(Ala, b, n)
+    res = -_chol_solve5(Ala, b)
 
     # val = b' Ala^-2 b - r^2
     val = wp.dot(res, res) - r * r
@@ -5535,7 +5569,7 @@ def _qcqp(Ain: types.mat55, bin: types.vec5, d: types.vec5, r: float, n: int):
       break
 
     # deriv = -2 b' Ala^-3 b
-    tmp = _chol_solve5(Ala, res, n)
+    tmp = _chol_solve5(Ala, res)
     deriv = -2.0 * wp.dot(res, tmp)
 
     # compute update, exit if too small
@@ -5546,10 +5580,7 @@ def _qcqp(Ain: types.mat55, bin: types.vec5, d: types.vec5, r: float, n: int):
     la += delta
 
   # undo scaling
-  for i in range(n):
-    res[i] = res[i] * d[i]
-
-  return res, la != 0.0
+  return wp.cw_mul(res, d), la != 0.0
 
 
 @wp.func
@@ -5721,7 +5752,7 @@ def _noslip_elliptic(
     elif n == 3:
       force, active = _qcqp3(Ac, bc, friction, normal)
     else:
-      force, active = _qcqp(Ac, bc, friction, normal, n)
+      force, active = _qcqp5(Ac, bc, friction, normal)
 
     # on constraint: put force on ellipsoid, in case QCQP is approximate
     if active:

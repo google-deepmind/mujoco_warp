@@ -37,6 +37,7 @@ from mujoco_warp._src.collision_primitive import contact_params
 from mujoco_warp._src.collision_primitive import geom_collision_pair
 from mujoco_warp._src.collision_primitive import write_contact
 from mujoco_warp._src.math import make_frame
+from mujoco_warp._src.math import quat_to_mat
 from mujoco_warp._src.math import upper_trid_index
 from mujoco_warp._src.types import MJ_MAX_EPAFACES
 from mujoco_warp._src.types import MJ_MAX_EPAHORIZON
@@ -76,7 +77,7 @@ def _hfield_filter(
   hfield_size: wp.array[wp.vec4],
   # Data in:
   geom_xpos_in: wp.array2d[wp.vec3],
-  geom_xmat_in: wp.array2d[wp.mat33],
+  geom_xquat_in: wp.array2d[wp.quat],
   # In:
   worldid: int,
   g1: int,
@@ -97,7 +98,7 @@ def _hfield_filter(
   size_id = worldid % geom_size.shape[0]
 
   pos1 = geom_xpos_in[worldid, g1]
-  mat1 = geom_xmat_in[worldid, g1]
+  mat1 = quat_to_mat(geom_xquat_in[worldid, g1])
   mat1T = wp.transpose(mat1)
   pos2 = geom_xpos_in[worldid, g2]
   pos = mat1T @ (pos2 - pos1)
@@ -118,7 +119,7 @@ def _hfield_filter(
   if -size1[3] > pos[2] + r2 + margin:  # down
     return True, MJ_MAXVAL, MJ_MAXVAL, MJ_MAXVAL, MJ_MAXVAL, MJ_MAXVAL, MJ_MAXVAL
 
-  mat2 = geom_xmat_in[worldid, g2]
+  mat2 = quat_to_mat(geom_xquat_in[worldid, g2])
   mat = mat1T @ mat2
 
   # create geom in height field frame for support function queries
@@ -220,7 +221,7 @@ def ccd_hfield_kernel_builder(
     pair_friction: wp.array2d[vec5],
     # Data in:
     geom_xpos_in: wp.array2d[wp.vec3],
-    geom_xmat_in: wp.array2d[wp.mat33],
+    geom_xquat_in: wp.array2d[wp.quat],
     naconmax_in: int,
     naccdmax_in: int,
     ncollision_in: wp.array[int],
@@ -282,7 +283,7 @@ def ccd_hfield_kernel_builder(
       mesh_graph,
       hfield_size,
       geom_xpos_in,
-      geom_xmat_in,
+      geom_xquat_in,
       worldid,
       g1,
       g2,
@@ -344,14 +345,14 @@ def ccd_hfield_kernel_builder(
       mesh_polymapnum,
       mesh_polymap,
       geom_xpos_in,
-      geom_xmat_in,
+      geom_xquat_in,
       geoms,
       worldid,
     )
 
     # transform geom2 into heightfield frame
     hf_pos = geom_xpos_in[worldid, g1]
-    hf_mat = geom_xmat_in[worldid, g1]
+    hf_mat = quat_to_mat(geom_xquat_in[worldid, g1])
     hf_matT = wp.transpose(hf_mat)
 
     geom2.pos = hf_matT @ (geom2.pos - hf_pos)
@@ -1081,7 +1082,7 @@ def ccd_kernel_builder(
     pair_friction: wp.array2d[vec5],
     # Data in:
     geom_xpos_in: wp.array2d[wp.vec3],
-    geom_xmat_in: wp.array2d[wp.mat33],
+    geom_xquat_in: wp.array2d[wp.quat],
     naconmax_in: int,
     naccdmax_in: int,
     ncollision_in: wp.array[int],
@@ -1167,7 +1168,7 @@ def ccd_kernel_builder(
         mesh_polymapnum,
         mesh_polymap,
         geom_xpos_in,
-        geom_xmat_in,
+        geom_xquat_in,
         geomtype1,
         geomtype2,
         geoms,
@@ -1379,7 +1380,7 @@ def convex_narrowphase(m: Model, d: Data, ctx: CollisionContext, collision_table
           m.pair_adhesion,
           m.pair_friction,
           d.geom_xpos,
-          d.geom_xmat,
+          d.geom_xquat,
           d.naconmax,
           d.naccdmax,
           d.ncollision,
@@ -1479,7 +1480,7 @@ def convex_narrowphase(m: Model, d: Data, ctx: CollisionContext, collision_table
           m.pair_adhesion,
           m.pair_friction,
           d.geom_xpos,
-          d.geom_xmat,
+          d.geom_xquat,
           d.naconmax,
           d.naccdmax,
           d.ncollision,
