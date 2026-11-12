@@ -2101,6 +2101,57 @@ class BatchedDelayTest(parameterized.TestCase):
         np.testing.assert_equal(w_val, 1.0)
         np.testing.assert_allclose(xyz, [0.0, 0.0, 0.0])
 
+  @parameterized.parameters(1, 2)
+  def test_pid_delay(self, nworld):
+    """Tests multi-input control delay on <pid> with slew and integral states."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <body>
+            <joint name="j0" type="slide" axis="1 0 0"/>
+            <geom size="0.1"/>
+          </body>
+        </worldbody>
+        <actuator>
+          <pid joint="j0" input="pos vel ff" kp="20" kv="3" ki="10" slewmax="4"
+               delay="0.006" nsample="5" interp="linear"/>
+        </actuator>
+      </mujoco>
+      """,
+      nworld=nworld,
+    )
+    self.assertEqual(int(m.actuator_ctrlnum.numpy()[0]), 3)
+
+    mjds = [mjd]
+    if nworld == 2:
+      mjds.append(mujoco.MjData(mjm))
+
+    with wp.ScopedCapture() as capture:
+      step(m, d)
+
+    for k in range(15):
+      t = k * mjm.opt.timestep
+      ctrl = np.zeros((nworld, m.nu), dtype=np.float32)
+      ctrl[0] = [np.sin(5.0 * t), np.cos(3.0 * t), 0.2 * t]
+      if nworld == 2:
+        ctrl[1] = [-np.sin(4.0 * t), 0.5 * np.cos(2.0 * t), -0.3 * t]
+      d.ctrl.assign(ctrl)
+      for w in range(nworld):
+        mjds[w].ctrl[:] = ctrl[w]
+        mujoco.mj_step(mjm, mjds[w])
+      wp.capture_launch(capture.graph)
+
+    qpos = d.qpos.numpy()
+    act = d.act.numpy()
+    hist = d.history.numpy()
+    for w in range(nworld):
+      np.testing.assert_allclose(qpos[w], mjds[w].qpos, rtol=1e-5, atol=1e-5)
+      np.testing.assert_allclose(act[w], mjds[w].act, rtol=1e-5, atol=1e-5)
+      np.testing.assert_allclose(hist[w], mjds[w].history, rtol=1e-5, atol=1e-5)
+    if nworld == 2:
+      self.assertFalse(np.allclose(qpos[0], qpos[1]))
+
 
 if __name__ == "__main__":
   absltest.main()
