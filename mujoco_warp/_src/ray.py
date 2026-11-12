@@ -1043,6 +1043,7 @@ def _ray_geom_mesh_bvh(
   bodyexclude: int,
   geomid: int,
   mesh_bvh_id: wp.array[wp.uint64],
+  mesh_bvh_rot: wp.array[wp.mat33],
   hfield_bvh_id: wp.array[wp.uint64],
   min_dist: float,
 ) -> Tuple[float, wp.vec3]:
@@ -1064,11 +1065,14 @@ def _ray_geom_mesh_bvh(
 
     if gtype == GeomType.MESH or gtype == GeomType.HFIELD:
       bvh_ids = mesh_bvh_id if gtype == GeomType.MESH else hfield_bvh_id
+      data_id = geom_dataid[worldid % geom_dataid.shape[0], geomid]
+      if gtype == GeomType.MESH:
+        mat = mat @ mesh_bvh_rot[data_id]
       # Public ray API (mjw.ray / mjw.rays) preserves MuJoCo's mj_ray cull rule:
       # rangefinder sensors and user-facing ray casts always cull back-faces.
       t, n, u, v, f, geom_mesh_id = ray_mesh_with_bvh(
         bvh_ids,
-        geom_dataid[worldid % geom_dataid.shape[0], geomid],
+        data_id,
         pos,
         mat,
         pnt,
@@ -1117,6 +1121,7 @@ def _ray_bvh(
   group_root: wp.array[int],
   enabled_geom_ids: wp.array[int],
   mesh_bvh_id: wp.array[wp.uint64],
+  mesh_bvh_rot: wp.array[wp.mat33],
   hfield_bvh_id: wp.array[wp.uint64],
   # Out:
   dist_out: wp.array2d[float],
@@ -1160,6 +1165,7 @@ def _ray_bvh(
       body_exclude,
       geomid,
       mesh_bvh_id,
+      mesh_bvh_rot,
       hfield_bvh_id,
       min_dist,
     )
@@ -1327,6 +1333,7 @@ def rays(
         rc.group_root,
         rc.enabled_geom_ids,
         rc.mesh_bvh_id,
+        rc.mesh_bvh_rot,
         rc.hfield_bvh_id,
       ],
       outputs=[dist, geomid, normal],

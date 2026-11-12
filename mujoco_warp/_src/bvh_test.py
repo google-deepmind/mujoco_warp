@@ -189,10 +189,12 @@ class BvhTest(absltest.TestCase):
     """Tests that build_mesh_bvh creates a valid BVH."""
     mjm, mjd, m, d = test_data.fixture("ray.xml")
 
-    mesh, half = bvh.build_mesh_bvh(mjm, 0)
+    mesh, half, bvh_rot, reframed = bvh.build_mesh_bvh(mjm, 0)
 
     self.assertNotEqual(mesh.id, wp.uint64(0), "mesh id")
     self.assertFalse(np.array_equal(np.array(half), np.array([0.0, 0.0, 0.0])), "mesh half size")
+    self.assertFalse(reframed)
+    np.testing.assert_allclose(np.array(bvh_rot).reshape(3, 3), np.eye(3))
 
   def test_build_hfield_bvh(self):
     """Tests that build_hfield_bvh creates a valid BVH."""

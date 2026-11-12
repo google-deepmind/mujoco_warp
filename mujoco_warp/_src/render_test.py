@@ -1117,13 +1117,45 @@ class RenderTest(parameterized.TestCase):
     )
     with self.assertRaisesRegex(ValueError, "at least 1"):
       mjw.create_render_context(mjm, samples_per_pixel=0)
-    with self.assertRaisesRegex(ValueError, "use_precomputed_rays"):
-      mjw.create_render_context(mjm, samples_per_pixel=2, use_precomputed_rays=False)
     with self.assertRaisesRegex(ValueError, "render_rgb"):
       mjw.create_render_context(mjm, samples_per_pixel=2, render_rgb=False)
 
+  @parameterized.parameters(False, True)
+  def test_supersampling_dynamic_rays_matches_precomputed(self, orthographic: bool):
+    mjm, _, m, d = test_data.fixture(
+      xml=f"""
+      <mujoco>
+        <worldbody>
+          <light pos="0 -2 2" dir="0 1 -1" directional="true"/>
+          <camera pos="0 -2 0" xyaxes="1 0 0 0 0 1" projection="{"orthographic" if orthographic else "perspective"}" fovy="{1.5 if orthographic else 30}"/>
+          <geom type="box" size="0.3 0.3 0.3" euler="0 22 0" rgba="0.9 0.9 0.9 1"/>
+        </worldbody>
+      </mujoco>
+      """
+    )
+    outputs = []
+    for use_precomputed_rays in (True, False):
+      rc = mjw.create_render_context(
+        mjm,
+        cam_res=(32, 32),
+        render_rgb=True,
+        render_depth=True,
+        render_seg=True,
+        samples_per_pixel=2,
+        use_precomputed_rays=use_precomputed_rays,
+      )
+      rc.rgb_data.fill_(wp.uint32(0xDEADBEEF))
+      rc.depth_data.fill_(wp.inf)
+      rc.seg_data.fill_(wp.vec2i(-99, -99))
+      mjw.render(m, d, rc)
+      outputs.append((rc.rgb_data.numpy().copy(), rc.depth_data.numpy().copy(), rc.seg_data.numpy().copy()))
+
+    np.testing.assert_array_equal(outputs[0][0], outputs[1][0])
+    np.testing.assert_allclose(outputs[0][1], outputs[1][1], atol=1e-6)
+    np.testing.assert_array_equal(outputs[0][2], outputs[1][2])
+
   def test_supersampling_multi_camera_mixed_outputs(self):
-    # aa_accum spans only the RGB pixels; a depth-only camera must not widen it.
+    # RGB buffer spans only the RGB camera pixels; a depth-only camera must not widen it.
     mjm, _, m, d = test_data.fixture(
       xml="""
     <mujoco>
@@ -1144,7 +1176,7 @@ class RenderTest(parameterized.TestCase):
     )
     mjw.render(m, d, rc)
 
-    self.assertEqual(rc.aa_accum.shape, (1, 32 * 32))
+    self.assertEqual(rc.rgb_data.shape, (1, 32 * 32))
     self.assertGreater(np.count_nonzero(rc.rgb_data.numpy()[0]), 0)
     self.assertGreater(np.count_nonzero(rc.depth_data.numpy()[0]), 0)
 
@@ -1748,6 +1780,128 @@ class RenderTest(parameterized.TestCase):
       self.assertGreater(green_count, 0, f"Flex at dist {dist} should be visible")
     else:
       self.assertEqual(green_count, 0, f"Flex at dist {dist} should be clipped")
+
+  def test_authored_frame_mesh_bvh_parity(self):
+    """Reframed mesh BVHs match inertia-frame BVHs for rendering and ray casts."""
+    # Symmetric cube precedes the L-shaped mesh to exercise non-zero mesh_vertadr / mesh_faceadr
+    # offsets and mixed un-reframed (mesh 0) + reframed (mesh 1) mesh_bvh_rot indexing.
+    mjm, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <asset>
+          <mesh name="cube"
+                vertex="-0.1 -0.1 -0.1  0.1 -0.1 -0.1  0.1 0.1 -0.1  -0.1 0.1 -0.1
+                        -0.1 -0.1 0.1   0.1 -0.1 0.1   0.1 0.1 0.1   -0.1 0.1 0.1"/>
+          <mesh name="l_shape"
+                vertex="0 0 0  0.6 0 0  0.6 0.15 0  0.15 0.15 0  0.15 0.5 0  0 0.5 0
+                        0 0 0.12  0.6 0 0.12  0.6 0.15 0.12  0.15 0.15 0.12  0.15 0.5 0.12  0 0.5 0.12"
+                face="0 2 1  0 3 2  0 4 3  0 5 4
+                      6 7 8  6 8 9  6 9 10  6 10 11
+                      0 1 7  0 7 6  1 2 8  1 8 7  2 3 9  2 9 8
+                      3 4 10  3 10 9  4 5 11  4 11 10  5 0 6  5 6 11"/>
+        </asset>
+        <worldbody>
+          <light pos="0.2 -1.5 1.5" dir="0 1 -1" directional="true"/>
+          <camera pos="0.2 -1.2 0.4" xyaxes="1 0 0 0 0.3 1"/>
+          <geom type="plane" size="2 2 0.1" pos="0 0 -0.2" rgba="0.7 0.7 0.7 1"/>
+          <geom type="mesh" mesh="cube" pos="-0.25 0.1 0.1" rgba="0.2 0.6 0.9 1"/>
+          <geom type="mesh" mesh="l_shape" euler="15 -20 35" rgba="0.9 0.3 0.2 1"/>
+        </worldbody>
+      </mujoco>
+      """
+    )
+    rc = mjw.create_render_context(
+      mjm,
+      cam_res=(48, 48),
+      render_rgb=True,
+      render_depth=True,
+      render_seg=True,
+      use_shadows=True,
+    )
+    self.assertTrue(rc.has_reframed_meshes)
+    np.testing.assert_allclose(rc.mesh_bvh_rot.numpy()[0], np.eye(3), atol=1e-6)
+    self.assertFalse(np.allclose(rc.mesh_bvh_rot.numpy()[1], np.eye(3)))
+    rc.rgb_data.fill_(wp.uint32(0xDEADBEEF))
+    rc.depth_data.fill_(wp.inf)
+    rc.seg_data.fill_(wp.vec2i(-99, -99))
+    mjw.render(m, d, rc)
+    rgb_reframed = rc.rgb_data.numpy().copy()
+    depth_reframed = rc.depth_data.numpy().copy()
+    seg_reframed = rc.seg_data.numpy().copy()
+
+    # Build an un-reframed context in inertia frame and verify exact output parity.
+    rc_inertia = mjw.create_render_context(
+      mjm,
+      cam_res=(48, 48),
+      render_rgb=True,
+      render_depth=True,
+      render_seg=True,
+      use_shadows=True,
+    )
+    inertia_ids = []
+    inertia_rots = []
+    rc_inertia.mesh_registry = {}
+    for mid in range(mjm.nmesh):
+      v_start = mjm.mesh_vertadr[mid]
+      v_end = v_start + mjm.mesh_vertnum[mid]
+      f_start = mjm.mesh_faceadr[mid]
+      f_end = f_start + mjm.mesh_facenum[mid]
+      pts = wp.array(mjm.mesh_vert[v_start:v_end], dtype=wp.vec3)
+      idx = wp.array(mjm.mesh_face[f_start:f_end].flatten(), dtype=wp.int32)
+      inertia_mesh = wp.Mesh(points=pts, indices=idx, bvh_constructor="cubql", bvh_leaf_size=2)
+      rc_inertia.mesh_registry[inertia_mesh.id] = inertia_mesh
+      inertia_ids.append(inertia_mesh.id)
+      inertia_rots.append(wp.mat33(np.eye(3, dtype=np.float32)))
+    rc_inertia.mesh_bvh_id = wp.array(inertia_ids, dtype=wp.uint64)
+    rc_inertia.mesh_bvh_rot = wp.array(inertia_rots, dtype=wp.mat33)
+    rc_inertia.has_reframed_meshes = False
+    rc_inertia.rgb_data.fill_(wp.uint32(0xDEADBEEF))
+    rc_inertia.depth_data.fill_(wp.inf)
+    rc_inertia.seg_data.fill_(wp.vec2i(-99, -99))
+    mjw.render(m, d, rc_inertia)
+
+    np.testing.assert_array_equal(rgb_reframed, rc_inertia.rgb_data.numpy())
+    np.testing.assert_allclose(depth_reframed, rc_inertia.depth_data.numpy(), atol=1e-6)
+    np.testing.assert_array_equal(seg_reframed, rc_inertia.seg_data.numpy())
+
+    # Also verify mjw.ray with rc uses mesh_bvh_rot and matches un-reframed ray casts.
+    pnt = wp.array([[[0.2, -1.2, 0.2]]], dtype=wp.vec3)
+    vec = wp.array([[[0.0, 1.0, -0.05]]], dtype=wp.vec3)
+    dist_rc, geomid_rc, normal_rc = mjw.ray(m, d, pnt, vec, rc=rc)
+    dist_no_rc, geomid_no_rc, normal_no_rc = mjw.ray(m, d, pnt, vec, rc=None)
+    np.testing.assert_array_equal(geomid_rc.numpy(), geomid_no_rc.numpy())
+    np.testing.assert_allclose(dist_rc.numpy(), dist_no_rc.numpy(), atol=1e-5)
+    np.testing.assert_allclose(normal_rc.numpy(), normal_no_rc.numpy(), atol=1e-5)
+
+  @parameterized.parameters((7, 5), (19, 13), (33, 17))
+  def test_tiled_dispatch_non_multiple_resolutions(self, width: int, height: int):
+    """Cameras with non-multiple-of-8 dimensions preserve exact row-major pixel order."""
+    mjm, _, m, d = test_data.fixture(xml=self._ORTHOGRAPHIC_SCENE)
+    outputs = []
+    for use_precomputed_rays in (True, False):
+      rc = mjw.create_render_context(
+        mjm,
+        cam_res=(width, height),
+        render_rgb=True,
+        render_depth=True,
+        render_seg=True,
+        use_precomputed_rays=use_precomputed_rays,
+      )
+      rc.rgb_data.fill_(wp.uint32(0xDEADBEEF))
+      rc.depth_data.fill_(wp.inf)
+      rc.seg_data.fill_(wp.vec2i(-99, -99))
+      mjw.render(m, d, rc)
+      outputs.append((rc.rgb_data.numpy().copy(), rc.depth_data.numpy().copy(), rc.seg_data.numpy().copy()))
+
+    np.testing.assert_array_equal(outputs[0][0], outputs[1][0])
+    np.testing.assert_allclose(outputs[0][1], outputs[1][1], atol=1e-6)
+    np.testing.assert_array_equal(outputs[0][2], outputs[1][2])
+
+    seg = outputs[0][2].reshape(height, width, 2)
+    bottom_left_id = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_GEOM, "bottom_left_box")
+    top_right_id = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_GEOM, "top_right_box")
+    self.assertTrue(np.any(seg[height // 2 :, : width // 2, 0] == bottom_left_id))
+    self.assertTrue(np.any(seg[: height // 2, width // 2 :, 0] == top_right_id))
 
 
 if __name__ == "__main__":

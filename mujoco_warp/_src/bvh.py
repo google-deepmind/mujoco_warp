@@ -426,12 +426,43 @@ def refit_scene_bvh(m: Model, d: Data, rc: RenderContext):
   rc.bvh.refit()
 
 
+# Minimum triangle AABB surface-area reduction required to reframe a mesh BVH into authored space.
+_REFRAME_MIN_GAIN = 1.25
+
+
+def _select_mesh_bvh_frame(
+  points: np.ndarray,
+  faces: np.ndarray,
+  quat: np.ndarray,
+) -> tuple[np.ndarray, wp.mat33, bool]:
+  """Select inertia or authored frame for mesh BVH construction based on triangle AABB area."""
+  if faces.shape[0] == 0 or np.allclose(quat, (1.0, 0.0, 0.0, 0.0)):
+    return points, wp.mat33(np.eye(3, dtype=np.float32)), False
+
+  rot = np.empty(9, dtype=np.float64)
+  mujoco.mju_quat2Mat(rot, quat)
+  rot = rot.reshape(3, 3)
+  framed = np.ascontiguousarray(points @ rot.T, dtype=np.float32)
+
+  def _tri_half_area(pts: np.ndarray) -> float:
+    tris = pts[faces]
+    ext = tris.max(axis=1) - tris.min(axis=1)
+    return float(np.sum(ext[:, 0] * ext[:, 1] + ext[:, 1] * ext[:, 2] + ext[:, 2] * ext[:, 0]))
+
+  inertia_area = _tri_half_area(points)
+  authored_area = _tri_half_area(framed)
+  if inertia_area / max(authored_area, 1e-12) >= _REFRAME_MIN_GAIN:
+    return framed, wp.mat33(np.ascontiguousarray(rot.T, dtype=np.float32)), True
+
+  return points, wp.mat33(np.eye(3, dtype=np.float32)), False
+
+
 def build_mesh_bvh(
   mjm: mujoco.MjModel,
   meshid: int,
   constructor: str = "sah",
   leaf_size: int = 2,
-) -> tuple[wp.Mesh, wp.vec3]:
+) -> tuple[wp.Mesh, wp.vec3, wp.mat33, bool]:
   """Create a Warp mesh BVH from mesh data."""
   v_start = mjm.mesh_vertadr[meshid]
   v_end = v_start + mjm.mesh_vertnum[meshid]
@@ -439,17 +470,18 @@ def build_mesh_bvh(
 
   f_start = mjm.mesh_faceadr[meshid]
   f_end = mjm.mesh_face.shape[0] if (meshid + 1) >= mjm.mesh_faceadr.shape[0] else mjm.mesh_faceadr[meshid + 1]
-  indices = mjm.mesh_face[f_start:f_end]
-  indices = indices.flatten()
+  faces = mjm.mesh_face[f_start:f_end]
+  indices = faces.flatten()
   pmin = np.min(points, axis=0)
   pmax = np.max(points, axis=0)
   half = np.maximum(np.abs(pmin), np.abs(pmax))
 
-  points = wp.array(points, dtype=wp.vec3)
+  bvh_points, bvh_rot, reframed = _select_mesh_bvh_frame(points, faces, mjm.mesh_quat[meshid])
+  points = wp.array(bvh_points, dtype=wp.vec3)
   indices = wp.array(indices, dtype=wp.int32)
   mesh = wp.Mesh(points=points, indices=indices, bvh_constructor=constructor, bvh_leaf_size=leaf_size)
 
-  return mesh, half
+  return mesh, half, bvh_rot, reframed
 
 
 def _optimize_hfield_mesh(
