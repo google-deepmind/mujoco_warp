@@ -17,6 +17,7 @@ from typing import Optional
 
 import warp as wp
 
+from mujoco_warp._src import sort
 from mujoco_warp._src.collision_convex import convex_narrowphase
 from mujoco_warp._src.collision_core import CollisionContext
 from mujoco_warp._src.collision_core import create_collision_context
@@ -25,6 +26,7 @@ from mujoco_warp._src.collision_core import sap_range
 from mujoco_warp._src.collision_flex import flex_collision
 from mujoco_warp._src.collision_primitive import primitive_narrowphase
 from mujoco_warp._src.collision_sdf import sdf_narrowphase
+from mujoco_warp._src.math import quat_to_mat
 from mujoco_warp._src.math import upper_tri_index
 from mujoco_warp._src.types import MJ_MAXVAL
 from mujoco_warp._src.types import BroadphaseFilter
@@ -99,18 +101,10 @@ MJ_FLEX_COLLISION_TABLE = {
 
 @wp.func
 def _plane_filter(
-  size1: float, size2: float, margin1: float, margin2: float, xpos1: wp.vec3, xpos2: wp.vec3, xmat1: wp.mat33, xmat2: wp.mat33
+  rbound_other: float, margin1: float, margin2: float, xpos_plane: wp.vec3, xpos_other: wp.vec3, xmat_plane: wp.mat33
 ) -> bool:
-  if size1 == 0.0:
-    # geom1 is a plane
-    dist = wp.dot(xpos2 - xpos1, wp.vec3(xmat1[0, 2], xmat1[1, 2], xmat1[2, 2]))
-    return dist <= size2 + margin1 + margin2
-  elif size2 == 0.0:
-    # geom2 is a plane
-    dist = wp.dot(xpos1 - xpos2, wp.vec3(xmat2[0, 2], xmat2[1, 2], xmat2[2, 2]))
-    return dist <= size1 + margin1 + margin2
-
-  return True
+  dist = wp.dot(xpos_other - xpos_plane, xmat_plane[:, 2])
+  return dist <= rbound_other + margin1 + margin2
 
 
 @wp.func
@@ -301,7 +295,7 @@ def _broadphase_filter(
     pair_gap: wp.array2d[float],
     # Data in:
     geom_xpos_in: wp.array2d[wp.vec3],
-    geom_xmat_in: wp.array2d[wp.mat33],
+    geom_xquat_in: wp.array2d[wp.quat],
     # In:
     geom1: int,
     geom2: int,
@@ -334,21 +328,30 @@ def _broadphase_filter(
       effective_margin1 = margin1 + gap1
       effective_margin2 = margin2 + gap2
     xpos1, xpos2 = geom_xpos_in[worldid, geom1], geom_xpos_in[worldid, geom2]
-    xmat1, xmat2 = geom_xmat_in[worldid, geom1], geom_xmat_in[worldid, geom2]
 
-    if rbound1 == 0.0 or rbound2 == 0.0:
+    # orientations are loaded and expanded only where a filter needs them
+    if rbound1 == 0.0:
+      # geom1 is a plane
       if wp.static(opt_broadphase_filter & BroadphaseFilter.PLANE):
-        return _plane_filter(rbound1, rbound2, effective_margin1, effective_margin2, xpos1, xpos2, xmat1, xmat2)
+        xmat1 = quat_to_mat(geom_xquat_in[worldid, geom1])
+        return _plane_filter(rbound2, effective_margin1, effective_margin2, xpos1, xpos2, xmat1)
+    elif rbound2 == 0.0:
+      # geom2 is a plane
+      if wp.static(opt_broadphase_filter & BroadphaseFilter.PLANE):
+        xmat2 = quat_to_mat(geom_xquat_in[worldid, geom2])
+        return _plane_filter(rbound1, effective_margin1, effective_margin2, xpos2, xpos1, xmat2)
     else:
       if wp.static(opt_broadphase_filter & BroadphaseFilter.SPHERE):
         if not _sphere_filter(rbound1, rbound2, effective_margin1, effective_margin2, xpos1, xpos2):
           return False
-      if wp.static(opt_broadphase_filter & BroadphaseFilter.AABB):
-        if not _aabb_filter(center1, center2, size1, size2, effective_margin1, effective_margin2, xpos1, xpos2, xmat1, xmat2):
-          return False
-      if wp.static(opt_broadphase_filter & BroadphaseFilter.OBB):
-        if not _obb_filter(center1, center2, size1, size2, effective_margin1, effective_margin2, xpos1, xpos2, xmat1, xmat2):
-          return False
+      if wp.static(opt_broadphase_filter & (BroadphaseFilter.AABB | BroadphaseFilter.OBB)):
+        xmat1, xmat2 = quat_to_mat(geom_xquat_in[worldid, geom1]), quat_to_mat(geom_xquat_in[worldid, geom2])
+        if wp.static(opt_broadphase_filter & BroadphaseFilter.AABB):
+          if not _aabb_filter(center1, center2, size1, size2, effective_margin1, effective_margin2, xpos1, xpos2, xmat1, xmat2):
+            return False
+        if wp.static(opt_broadphase_filter & BroadphaseFilter.OBB):
+          if not _obb_filter(center1, center2, size1, size2, effective_margin1, effective_margin2, xpos1, xpos2, xmat1, xmat2):
+            return False
 
     return True
 
@@ -534,7 +537,7 @@ def _sap_broadphase(
     nxn_pairid: wp.array[wp.vec2i],
     # Data in:
     geom_xpos_in: wp.array2d[wp.vec3],
-    geom_xmat_in: wp.array2d[wp.mat33],
+    geom_xquat_in: wp.array2d[wp.quat],
     body_awake_in: wp.array2d[int],
     nworld_in: int,
     naconmax_in: int,
@@ -631,7 +634,7 @@ def _sap_broadphase(
           pair_margin,
           pair_gap,
           geom_xpos_in,
-          geom_xmat_in,
+          geom_xquat_in,
           geom1,
           geom2,
           pairid[0],
@@ -817,7 +820,7 @@ def sap_broadphase(
       m.pair_gap,
       m.nxn_pairid,
       d.geom_xpos,
-      d.geom_xmat,
+      d.geom_xquat,
       d.body_awake,
       d.nworld,
       d.naconmax,
@@ -864,7 +867,7 @@ def _nxn_broadphase(
     nxn_pairid: wp.array[wp.vec2i],
     # Data in:
     geom_xpos_in: wp.array2d[wp.vec3],
-    geom_xmat_in: wp.array2d[wp.mat33],
+    geom_xquat_in: wp.array2d[wp.quat],
     body_awake_in: wp.array2d[int],
     naconmax_in: int,
     # In:
@@ -934,7 +937,7 @@ def _nxn_broadphase(
         pair_margin,
         pair_gap,
         geom_xpos_in,
-        geom_xmat_in,
+        geom_xquat_in,
         geom1,
         geom2,
         pairid[0],
@@ -980,7 +983,7 @@ def _contact_surfacevel(
   geom_surfacevel: wp.array2d[vec6],
   # Data in:
   geom_xpos_in: wp.array2d[wp.vec3],
-  geom_xmat_in: wp.array2d[wp.mat33],
+  geom_xquat_in: wp.array2d[wp.quat],
   contact_pos_in: wp.array[wp.vec3],
   contact_frame_in: wp.array[wp.mat33],
   contact_geom_in: wp.array[wp.vec2i],
@@ -1020,7 +1023,7 @@ def _contact_surfacevel(
   if has_sv0:
     vw0, ww0 = _geom_surface_velocity(
       geom_xpos_in[worldid, g0],
-      geom_xmat_in[worldid, g0],
+      quat_to_mat(geom_xquat_in[worldid, g0]),
       sv0,
       pos,
     )
@@ -1030,7 +1033,7 @@ def _contact_surfacevel(
   if has_sv1:
     vw1, ww1 = _geom_surface_velocity(
       geom_xpos_in[worldid, g1],
-      geom_xmat_in[worldid, g1],
+      quat_to_mat(geom_xquat_in[worldid, g1]),
       sv1,
       pos,
     )
@@ -1114,7 +1117,7 @@ def nxn_broadphase(
         m.nxn_geom_pair_filtered,
         m.nxn_pairid_filtered,
         d.geom_xpos,
-        d.geom_xmat,
+        d.geom_xquat,
         d.body_awake,
         d.naconmax,
         awake_prev_in,
@@ -1149,12 +1152,6 @@ def _narrowphase(m: Model, d: Data, ctx: CollisionContext):
 
   if m.has_sdf_geom:
     sdf_narrowphase(m, d, ctx)
-
-
-def _sort_contacts(m: Model, d: Data):
-  """Deterministic contact sort."""
-  # TODO(team): Implementation contact sorting.
-  pass
 
 
 @event_scope
@@ -1221,7 +1218,7 @@ def collision(
       inputs=[
         m.geom_surfacevel,
         d.geom_xpos,
-        d.geom_xmat,
+        d.geom_xquat,
         d.contact.pos,
         d.contact.frame,
         d.contact.geom,
@@ -1236,4 +1233,4 @@ def collision(
     m.callback.contactfilter(m, d)
 
   if m.opt.deterministic & DeterminismType.CONTACTS:
-    _sort_contacts(m, d)
+    sort.contacts(d)
