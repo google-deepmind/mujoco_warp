@@ -283,7 +283,7 @@ class DiffApiTest(parameterized.TestCase):
       (self.d.qpos, True),
       (self.d.site_xpos, True),
       (self.d.xquat, True),
-      (self.d.xmat, True),
+      (self.d.contact.frame, True),
       (self.d.cdof, True),
       (self.d.nefc, False),
       (wp.zeros(1, dtype=wp.vec2i), False),
@@ -607,7 +607,7 @@ class DiffApiTest(parameterized.TestCase):
     # Non-empty float arrays (scalar, nested, vec3, quat, mat33, spatial, vec10) with the input,
     # output, or render role, and array_args, get gradients before execution; integer, empty, and
     # (opt-in) Model arrays do not:
-    float_paths = ("qpos", "efc.pos", "site_xpos", "xquat", "xmat", "cdof", "cinert")
+    float_paths = ("qpos", "efc.pos", "site_xpos", "xquat", "contact.frame", "cdof", "cinert")
     seen, calls = [], []
 
     def promote_roles(m, d, rc, x, y=None, d_out=None):
