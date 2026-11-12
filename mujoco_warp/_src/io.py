@@ -1690,10 +1690,10 @@ def _get_padded_sizes(mjm: mujoco.MjModel, njmax: int):
 
 
 def _nvmax_pad(nvmax: int) -> int:
-  """Reserve an augmented column for blocked Cholesky (n > 32) and round up to dense tile size."""
+  """Reserve an augmented column for blocked Cholesky and round up to dense tile size."""
   t = types.TILE_SIZE_JTDAJ_DENSE
   n = max(nvmax, 1)
-  return ((n + t - 1) // t) * t if n <= 32 else ((n + t) // t) * t
+  return ((n + t - 1) // t) * t if n <= types.H_ONE_TILE_MAX else ((n + t) // t) * t
 
 
 def _default_nconmax(mjm: mujoco.MjModel, mjd: Optional[mujoco.MjData] = None) -> int:

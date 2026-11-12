@@ -246,14 +246,25 @@ def _inertia_scale_tiled(
     inertia_scale_out[worldid] = 1.0 / wp.max(types.MJ_MINVAL, trace)
 
 
-def launch_inertia_scale(m: types.Model, M: wp.array2d[float], inertia_scale: wp.array[float]):
-  inputs = [m.nv, m.M_rownnz, m.M_rowadr, M]
-  if m.nv > smooth.WORLD_SUM_BLOCK:
+def launch_inertia_scale(m: types.Model, M: wp.array2d[float], inertia_scale: wp.array[float], d: types.Data | None = None):
+  enable_sleep = bool(m.opt.enableflags & types.EnableBit.SLEEP) and d is not None
+  if not enable_sleep and m.nv > smooth.WORLD_SUM_BLOCK:
     wp.launch_tiled(
-      _inertia_scale_tiled, dim=M.shape[0], inputs=inputs, outputs=[inertia_scale], block_dim=smooth.WORLD_SUM_BLOCK
+      _inertia_scale_tiled,
+      dim=M.shape[0],
+      inputs=[m.nv, m.M_rownnz, m.M_rowadr, M],
+      outputs=[inertia_scale],
+      block_dim=smooth.WORLD_SUM_BLOCK,
     )
   else:
-    wp.launch(_inertia_scale, dim=M.shape[0], inputs=inputs, outputs=[inertia_scale])
+    ncdof = d.ncdof if d is not None else wp.empty(0, dtype=int, device=M.device)
+    cdof_dof = d.cdof_dof if d is not None else wp.empty((0, 0), dtype=int, device=M.device)
+    wp.launch(
+      _inertia_scale(enable_sleep),
+      dim=M.shape[0],
+      inputs=[m.nv, m.M_rownnz, m.M_rowadr, M, ncdof, cdof_dof],
+      outputs=[inertia_scale],
+    )
 
 
 @wp.func
@@ -4670,13 +4681,7 @@ def init_context(m: types.Model, d: types.Data, ctx: SolverContext | InverseCont
   if isinstance(ctx, SolverContext):
     mf = m if ctx.compact_m_full is None else ctx.compact_m_full
     df = d if ctx.compact_d_full is None else ctx.compact_d_full
-    enable_sleep = bool(mf.opt.enableflags & types.EnableBit.SLEEP)
-    wp.launch(
-      _inertia_scale(enable_sleep),
-      dim=d.nworld,
-      inputs=[mf.nv, mf.M_rownnz, mf.M_rowadr, df.M, df.ncdof, df.cdof_dof],
-      outputs=[ctx.inertia_scale],
-    )
+    launch_inertia_scale(mf, df.M, ctx.inertia_scale, df)
 
   # initialize some efc arrays
   wp.launch(
@@ -4737,7 +4742,7 @@ def solve(m: types.Model, d: types.Data):
   if d.njmax == 0:
     wp.copy(d.qacc, d.qacc_smooth)
     d.qfrc_constraint.zero_()
-    wp.copy(d.efc.Ma, d.qfrc_smooth)
+    support.mul_m(m, d, d.efc.Ma, d.qacc)
     d.solver_niter.fill_(0)
     if enable_sleep and m.ntree > 1 and not (m.opt.disableflags & types.DisableBit.ISLAND):
       island.compute_island_mapping(m, d)
@@ -6140,12 +6145,7 @@ def noslip(m: types.Model, d: types.Data):
 
   sleep = bool(m.opt.enableflags & types.EnableBit.SLEEP)
 
-  wp.launch(
-    _inertia_scale(sleep),
-    dim=d.nworld,
-    inputs=[m.nv, m.M_rownnz, m.M_rowadr, d.M, d.ncdof, d.cdof_dof],
-    outputs=[inertia_scale],
-  )
+  launch_inertia_scale(m, d.M, inertia_scale, d)
   wp.launch(
     _noslip_factor_m(sleep),
     dim=d.nworld,

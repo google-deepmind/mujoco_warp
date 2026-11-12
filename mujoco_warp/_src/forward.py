@@ -1555,9 +1555,7 @@ def _advance(m: Model, d: Data, qacc: wp.array, qvel: Optional[wp.array] = None)
     ten_bias_coef = (
       wp.empty((d.nworld, m.ntendon), dtype=float) if can_capture_on_slept and m.ntendon > 0 and m.nJten > 0 else None
     )
-    cfrc_int_in = (
-      wp.empty_like(d.cfrc_int) if can_capture_on_slept and (m.opt.deterministic & DeterminismType.ATOMICS) else None
-    )
+    cfrc_int_in = wp.empty_like(d.cfrc_int) if can_capture_on_slept else None
 
     def _on_slept():
       fwd_velocity(m, d, ten_Jdot=ten_Jdot, ten_bias_coef=ten_bias_coef, cfrc_int_in=cfrc_int_in)

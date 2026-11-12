@@ -2003,9 +2003,9 @@ def _cfrc_world_tiled(
     cfrc_int_out[worldid, 0] = frc
 
 
-def _rne_cfrc(m: Model, d: Data, flg_cfrc_ext: bool = False):
+def _rne_cfrc(m: Model, d: Data, flg_cfrc_ext: bool = False, cfrc_body: Optional[wp.array2d[wp.spatial_vector]] = None):
   """Computes cfrc_int: each body's force plus the forces of its subtree."""
-  cfrc_body = wp.empty((d.nworld, m.nbody), dtype=wp.spatial_vector)
+  cfrc_body = cfrc_body if cfrc_body is not None else wp.empty((d.nworld, m.nbody), dtype=wp.spatial_vector)
   wp.launch(_cfrc, dim=[d.nworld, m.nbody], inputs=[d.cinert, d.cvel, d.cacc, d.cfrc_ext, flg_cfrc_ext], outputs=[cfrc_body])
   wp.launch(_cfrc_subtree, dim=(d.nworld, m.nbody), inputs=[m.body_subtreenum, cfrc_body], outputs=[d.cfrc_int])
   if m.nbody > 1 and m.body_tree[1].shape[0] > WORLD_SUM_BLOCK:
@@ -2042,11 +2042,11 @@ def rne(m: Model, d: Data, flg_acc: bool = False, cfrc_int_in: Optional[wp.array
     m: The model containing kinematic and dynamic information.
     d: The data object containing the current state and output arrays.
     flg_acc: If True, includes joint accelerations in the computation.
-    cfrc_int_in: Optional pre-allocated scratch buffer for deterministic backward pass.
+    cfrc_int_in: Optional pre-allocated scratch buffer for body forces.
   """
   _rne_cacc_world(m, d)
   _rne_cacc_forward(m, d, flg_acc=flg_acc)
-  _rne_cfrc(m, d)
+  _rne_cfrc(m, d, cfrc_body=cfrc_int_in)
   wp.launch(_qfrc_bias, dim=[d.nworld, m.nv], inputs=[m.dof_bodyid, d.cdof, d.cfrc_int], outputs=[d.qfrc_bias])
 
 
