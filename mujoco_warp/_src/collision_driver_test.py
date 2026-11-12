@@ -1638,38 +1638,43 @@ class CollisionTest(parameterized.TestCase):
 
     self.assertEqual(d.nacon.numpy()[0], mjd.ncon)
 
-  def test_hfield_maxconpair(self):
-    _XML = """
-    <mujoco>
-      <asset>
-        <hfield name="hfield" nrow="10" ncol="10" size="1e-1 1e-1 1 1"/>
-      </asset>
-      <worldbody>
-        <body>
-          <joint type="slide" axis="0 0 1"/>
-          <geom type="box" size="1 1 .1"/>
-        </body>
-        <geom type="hfield" hfield="hfield"/>
-      </worldbody>
-      <keyframe>
-        <key qpos=".099"/>
-      </keyframe>
-    </mujoco>
-    """
+  @parameterized.parameters(False, True)
+  def test_hfield_maxconpair(self, reduce_contacts):
+    _, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <asset>
+          <hfield name="hfield" nrow="10" ncol="10" size="1e-1 1e-1 1 1"/>
+        </asset>
+        <worldbody>
+          <body>
+            <joint type="slide" axis="0 0 1"/>
+            <geom type="box" size="1 1 .1"/>
+          </body>
+          <geom type="hfield" hfield="hfield"/>
+        </worldbody>
+        <keyframe>
+          <key qpos=".099"/>
+        </keyframe>
+      </mujoco>
+      """,
+      keyframe=0,
+    )
+    self.assertTrue(m.opt.hfield_reduce_contacts)
+    m.opt.hfield_reduce_contacts = reduce_contacts
 
-    _, _, m, d = test_data.fixture(xml=_XML, keyframe=0)
-
+    d.nacon.fill_(-1)
     mjw.collision(m, d)
 
-    np.testing.assert_equal(d.nacon.numpy()[0], 4)
+    np.testing.assert_equal(d.nacon.numpy()[0], 4 if reduce_contacts else mjd.ncon)
     self.assertTrue(d.overflow.numpy()[0] & types.OverflowType.HFIELD)
 
-  @parameterized.parameters(1, 2)
-  def test_hfield_sparse_subgrid_contacts(self, nworld):
+  @parameterized.product(nworld=(1, 2), reduce_contacts=(False, True))
+  def test_hfield_sparse_subgrid_contacts(self, nworld, reduce_contacts):
     """Tests that non-colliding prisms in the subgrid do not starve active contacts."""
     # The box is rotated 45 deg, so its subgrid is a large square while the box itself only
     # occupies the diagonal: 1458 prisms, of which more than MJ_MAXCONPAIR are in contact.
-    _, _, m, d = test_data.fixture(
+    _, mjd, m, d = test_data.fixture(
       xml="""
       <mujoco>
         <asset>
@@ -1687,6 +1692,7 @@ class CollisionTest(parameterized.TestCase):
       nworld=nworld,
     )
 
+    m.opt.hfield_reduce_contacts = reduce_contacts
     if nworld == 2:
       # Vary world 1 so it does not collide.
       qpos = d.qpos.numpy()
@@ -1700,18 +1706,18 @@ class CollisionTest(parameterized.TestCase):
     mjw.collision(m, d)
 
     nacon = d.nacon.numpy()[0]
-    np.testing.assert_equal(nacon, 4)
+    np.testing.assert_equal(nacon, 4 if reduce_contacts else mjd.ncon)
     np.testing.assert_equal(d.contact.worldid.numpy()[:nacon], 0)
     self.assertTrue(d.overflow.numpy()[0] & types.OverflowType.HFIELD)
 
     if nworld == 2:
       self.assertFalse(d.overflow.numpy()[1] & types.OverflowType.HFIELD)
 
-  @parameterized.parameters(1, 2)
-  def test_hfield_sparse_subgrid_no_overflow(self, nworld):
+  @parameterized.product(nworld=(1, 2), reduce_contacts=(False, True))
+  def test_hfield_sparse_subgrid_no_overflow(self, nworld, reduce_contacts):
     """Tests that non-colliding prisms in the subgrid do not report an overflow."""
     # As above at a coarser resolution: 72 prisms, far fewer than MJ_MAXCONPAIR in contact.
-    _, _, m, d = test_data.fixture(
+    _, mjd, m, d = test_data.fixture(
       xml="""
       <mujoco>
         <asset>
@@ -1729,6 +1735,7 @@ class CollisionTest(parameterized.TestCase):
       nworld=nworld,
     )
 
+    m.opt.hfield_reduce_contacts = reduce_contacts
     if nworld == 2:
       # Vary world 1 so it does not collide.
       qpos = d.qpos.numpy()
@@ -1742,7 +1749,7 @@ class CollisionTest(parameterized.TestCase):
     mjw.collision(m, d)
 
     nacon = d.nacon.numpy()[0]
-    np.testing.assert_equal(nacon, 4)
+    np.testing.assert_equal(nacon, 4 if reduce_contacts else mjd.ncon)
     np.testing.assert_equal(d.contact.worldid.numpy()[:nacon], 0)
     self.assertFalse(d.overflow.numpy()[0] & types.OverflowType.HFIELD)
 

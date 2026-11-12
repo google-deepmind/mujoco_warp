@@ -1063,6 +1063,8 @@ class Option:
     broadphase: broadphase type (BroadphaseType)
     broadphase_filter: broadphase filter bitflag (BroadphaseFilter)
     graph_conditional: flag to use cuda graph conditional
+    hfield_reduce_contacts: reduce heightfield contacts to four per geom pair; if False,
+      retain per-triangle contacts up to MJ_MAXCONPAIR
     run_collision_detection: if False, skips collision detection and allows user-populated
       contacts during the physics step (as opposed to DisableBit.CONTACT which explicitly
       zeros out the contacts at each step)
@@ -1104,6 +1106,7 @@ class Option:
   broadphase: BroadphaseType
   broadphase_filter: BroadphaseFilter
   graph_conditional: bool
+  hfield_reduce_contacts: bool
   run_collision_detection: bool
   run_rne_postconstraint: bool
   run_qacc_smooth: bool
