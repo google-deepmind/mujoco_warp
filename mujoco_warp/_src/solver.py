@@ -5501,35 +5501,36 @@ def _qcqp3(Ain: types.mat55, bin: types.vec5, d: types.vec5, r: float):
 
 
 @wp.func
-def _chol_solve5(L: types.mat55, b: types.vec5, n: int) -> types.vec5:
-  """Solves L L' x = b for the leading n x n block (mju_cholSolve)."""
+def _chol_solve5(L: types.mat55, b: types.vec5) -> types.vec5:
+  """Solves L L' x = b in 5 dimensions (mju_cholSolve)."""
+  # constant loop bounds let Warp unroll the loops and keep L and x in registers
   x = types.vec5(0.0)
-  for i in range(n):
+  for i in range(5):
     val = b[i]
     for k in range(i):
       val -= L[i, k] * x[k]
     x[i] = val / L[i, i]
-  for ii in range(n):
-    i = n - 1 - ii
+  for i in range(4, -1, -1):
     val = x[i]
-    for k in range(i + 1, n):
+    for k in range(4, i, -1):
       val -= L[k, i] * x[k]
     x[i] = val / L[i, i]
   return x
 
 
 @wp.func
-def _qcqp(Ain: types.mat55, bin: types.vec5, d: types.vec5, r: float, n: int):
+def _qcqp5(Ain: types.mat55, bin: types.vec5, d: types.vec5, r: float):
   """Solves min 0.5 x' A x + x' b s.t.
 
-  sum (x_i / d_i)^2 <= r^2 in n <= 5 dimensions (mju_QCQP).
+  sum (x_i / d_i)^2 <= r^2 in 5 dimensions (mju_QCQP).
   """
+  # constant loop bounds let Warp unroll the loops and keep A and Ala in registers
+
   # scale A, b so that constraint becomes x' x <= r^2
+  b = wp.cw_mul(bin, d)
   A = types.mat55()
-  b = types.vec5(0.0)
-  for i in range(n):
-    b[i] = bin[i] * d[i]
-    for j in range(n):
+  for i in range(5):
+    for j in range(5):
       A[i, j] = Ain[i, j] * d[i] * d[j]
 
   # Newton iteration
@@ -5537,14 +5538,12 @@ def _qcqp(Ain: types.mat55, bin: types.vec5, d: types.vec5, r: float, n: int):
   la = float(0.0)
   for _ in range(20):
     # make A + la
-    Ala = types.mat55()
-    for i in range(n):
-      for j in range(n):
-        Ala[i, j] = A[i, j]
+    Ala = A
+    for i in range(5):
       Ala[i, i] = A[i, i] + la
 
     # factorize, check rank with 1e-10 threshold (mju_cholFactor)
-    for j in range(n):
+    for j in range(5):
       diag = Ala[j, j]
       for k in range(j):
         diag -= Ala[j, k] * Ala[j, k]
@@ -5552,14 +5551,14 @@ def _qcqp(Ain: types.mat55, bin: types.vec5, d: types.vec5, r: float, n: int):
         return types.vec5(0.0), False
       diag = wp.sqrt(diag)
       Ala[j, j] = diag
-      for i in range(j + 1, n):
+      for i in range(4, j, -1):
         val = Ala[i, j]
         for k in range(j):
           val -= Ala[i, k] * Ala[j, k]
         Ala[i, j] = val / diag
 
     # res = -Ala \ b
-    res = -_chol_solve5(Ala, b, n)
+    res = -_chol_solve5(Ala, b)
 
     # val = b' Ala^-2 b - r^2
     val = wp.dot(res, res) - r * r
@@ -5569,7 +5568,7 @@ def _qcqp(Ain: types.mat55, bin: types.vec5, d: types.vec5, r: float, n: int):
       break
 
     # deriv = -2 b' Ala^-3 b
-    tmp = _chol_solve5(Ala, res, n)
+    tmp = _chol_solve5(Ala, res)
     deriv = -2.0 * wp.dot(res, tmp)
 
     # compute update, exit if too small
@@ -5580,10 +5579,7 @@ def _qcqp(Ain: types.mat55, bin: types.vec5, d: types.vec5, r: float, n: int):
     la += delta
 
   # undo scaling
-  for i in range(n):
-    res[i] = res[i] * d[i]
-
-  return res, la != 0.0
+  return wp.cw_mul(res, d), la != 0.0
 
 
 @wp.func
@@ -5755,7 +5751,7 @@ def _noslip_elliptic(
     elif n == 3:
       force, active = _qcqp3(Ac, bc, friction, normal)
     else:
-      force, active = _qcqp(Ac, bc, friction, normal, n)
+      force, active = _qcqp5(Ac, bc, friction, normal)
 
     # on constraint: put force on ellipsoid, in case QCQP is approximate
     if active:
