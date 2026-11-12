@@ -984,6 +984,15 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
   m.nxn_pairid = np.hstack([nxn_pairid_contact.reshape((-1, 1)), nxn_pairid_collision.reshape((-1, 1))])
   m.nxn_pairid_filtered = m.nxn_pairid[nxn_include]
 
+  if (mjm.opt.enableflags & mujoco.mjtEnableBit.mjENBL_SLEEP) and m.nxn_geom_pair_filtered.shape[0] > 0:
+    b1 = mjm.geom_bodyid[m.nxn_geom_pair_filtered[:, 0]]
+    b2 = mjm.geom_bodyid[m.nxn_geom_pair_filtered[:, 1]]
+    t1 = mjm.body_treeid[b1]
+    t2 = mjm.body_treeid[b2]
+    order = np.lexsort((np.maximum(t1, t2), np.minimum(t1, t2)))
+    m.nxn_geom_pair_filtered = m.nxn_geom_pair_filtered[order]
+    m.nxn_pairid_filtered = m.nxn_pairid_filtered[order]
+
   # count contact pair types
   def geom_trid_index(i, j):
     i, j = (j, i) if j < i else (i, j)

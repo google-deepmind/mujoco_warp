@@ -1515,9 +1515,16 @@ def _advance(m: Model, d: Data, qacc: wp.array, qvel: Optional[wp.array] = None)
 
   sleep_enabled = bool(m.opt.enableflags & EnableBit.SLEEP) and not bool(m.opt.disableflags & DisableBit.ISLAND)
   if sleep_enabled:
-    sleep.sleep(m, d)
-    fwd_velocity(m, d)
-    sleep.update_sleep(m, d)
+    nslept = sleep.sleep(m, d)
+
+    def _on_slept():
+      fwd_velocity(m, d)
+      sleep.update_sleep(m, d)
+
+    if m.opt.graph_conditional:
+      wp.capture_if(nslept, on_true=_on_slept)
+    else:
+      _on_slept()
 
 
 @wp.kernel
@@ -2655,8 +2662,12 @@ def fwd_kinematics(m: Model, d: Data):
 
   sleep_enabled = bool(m.opt.enableflags & EnableBit.SLEEP) and not bool(m.opt.disableflags & DisableBit.ISLAND)
   if sleep_enabled and m.ntendon > 0:
-    sleep.wake_tendon(m, d)
-    sleep.update_sleep_trees(m, d)
+    woke_ten = wp.zeros(1, dtype=int) if m.opt.graph_conditional else None
+    sleep.wake_tendon(m, d, woke=woke_ten)
+    if woke_ten is not None:
+      wp.capture_if(woke_ten, on_true=sleep.update_sleep_trees, m=m, d=d)
+    else:
+      sleep.update_sleep_trees(m, d)
 
 
 @event_scope
@@ -2681,14 +2692,18 @@ def fwd_position(m: Model, d: Data, factorize: bool = True):
       # pass 1
       collision_driver.collision(m, d)
       # wake any sleeping tree touched by an awake one
-      sleep.wake_collision(m, d)
+      woke_col = wp.zeros(1, dtype=int) if m.opt.graph_conditional else None
+      sleep.wake_collision(m, d, woke=woke_col)
       # snapshot the awake state pass 1 used, before update_sleep overwrites it. a body is "newly
       # awakened" if it was asleep here but awake after update_sleep below.
       awake_prev = wp.clone(d.body_awake)
-      sleep.update_sleep(m, d)
+      if woke_col is not None:
+        wp.capture_if(woke_col, on_true=sleep.update_sleep, m=m, d=d)
+      else:
+        sleep.update_sleep(m, d)
       # pass 2: passing awake_prev runs the incremental pass, emitting only pairs involving a
       # newly-awakened body and appending them to the pass-1 buffer.
-      collision_driver.collision(m, d, awake_prev=awake_prev)
+      collision_driver.collision(m, d, awake_prev=awake_prev, cond=woke_col)
     else:
       collision_driver.collision(m, d)
 
@@ -2696,8 +2711,12 @@ def fwd_position(m: Model, d: Data, factorize: bool = True):
 
   if sleep_enabled:
     if m.neq > 0:
-      sleep.wake_equality(m, d)
-    sleep.update_sleep(m, d)
+      woke_eq = wp.zeros(1, dtype=int) if m.opt.graph_conditional else None
+      sleep.wake_equality(m, d, woke=woke_eq)
+      if woke_eq is not None:
+        wp.capture_if(woke_eq, on_true=sleep.update_sleep, m=m, d=d)
+      else:
+        sleep.update_sleep(m, d)
 
   if sleep_enabled:
     island.island(m, d)
@@ -3471,15 +3490,14 @@ def fwd_acceleration(m: Model, d: Data, factorize: bool = False):
       island.update_active_dofs(m, d)
   elif m.opt.integrator == IntegratorType.DISCRETE:
     derivative.eff_solve(m, d, d.qacc_smooth)
-  elif enable_sleep:
-    # update the active-DOF set (needs contacts from fwd_position) and solve
-    # the smooth acceleration in compacted dense space.
-    island.update_active_dofs(m, d)
-    solver.smooth_solve_compact(m, d)
-  elif factorize:
-    smooth.factor_solve_i(m, d, d.M, d.qLD, d.qLDiagInv, d.qacc_smooth, d.qfrc_smooth)
   else:
-    smooth.solve_m(m, d, d.qacc_smooth, d.qfrc_smooth)
+    if enable_sleep:
+      # update the active-DOF set (needs contacts from fwd_position)
+      island.update_active_dofs(m, d)
+    if factorize:
+      smooth.factor_solve_i(m, d, d.M, d.qLD, d.qLDiagInv, d.qacc_smooth, d.qfrc_smooth)
+    else:
+      smooth.solve_m(m, d, d.qacc_smooth, d.qfrc_smooth)
 
 
 def _energy_pos(m: Model, d: Data, skip_sensor: bool = False):
@@ -3500,8 +3518,12 @@ def _forward(m: Model, d: Data, skip_sensor: bool = False):
   check_discrete(m)
   sleep_enabled = bool(m.opt.enableflags & EnableBit.SLEEP) and not bool(m.opt.disableflags & DisableBit.ISLAND)
   if sleep_enabled:
-    sleep.wake(m, d)
-    sleep.update_sleep(m, d)
+    woke = wp.zeros(1, dtype=int) if m.opt.graph_conditional else None
+    sleep.wake(m, d, woke=woke)
+    if woke is not None:
+      wp.capture_if(woke, on_true=sleep.update_sleep, m=m, d=d)
+    else:
+      sleep.update_sleep(m, d)
 
   fwd_position(m, d, factorize=False)
   if not skip_sensor:
@@ -3520,7 +3542,7 @@ def _forward(m: Model, d: Data, skip_sensor: bool = False):
   fwd_actuation(m, d)
   fwd_acceleration(m, d, factorize=True)
 
-  solver.solve(m, d)
+  solver.solve(m, d, update_active_dofs=False)
   if m.opt.integrator == IntegratorType.DISCRETE:
     _launch_discrete_free_gyro(m, d, d.qacc, d.qacc, False)
   if m.opt.run_rne_postconstraint or (
@@ -3585,7 +3607,7 @@ def step2(m: Model, d: Data):
   """Advance simulation in two phases: after input is set by user."""
   fwd_actuation(m, d)
   fwd_acceleration(m, d)
-  solver.solve(m, d)
+  solver.solve(m, d, update_active_dofs=False)
   if m.opt.integrator == IntegratorType.DISCRETE:
     _launch_discrete_free_gyro(m, d, d.qacc, d.qacc, False)
   if m.opt.run_rne_postconstraint or (not (m.opt.disableflags & DisableBit.SENSOR) and m.sensor_rne_postconstraint):

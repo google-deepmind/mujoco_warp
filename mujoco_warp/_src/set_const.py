@@ -736,6 +736,8 @@ def set_const(
     _set_fixed(m)
 
   if groups & (types.SetConstGroup.KIN0 | types.SetConstGroup.INERT0):
+    enableflags_saved = m.opt.enableflags
+    m.opt.enableflags = enableflags_saved & ~types.EnableBit.SLEEP
     qpos_saved = wp.clone(d.qpos)
     mocap_pos_saved = wp.clone(d.mocap_pos) if m.nmocap else None
     mocap_quat_saved = wp.clone(d.mocap_quat) if m.nmocap else None
@@ -761,6 +763,8 @@ def set_const(
 
     if restore:
       _restore(m, d, groups)
+
+    m.opt.enableflags = enableflags_saved
 
 
 # TODO(team): remove in future version

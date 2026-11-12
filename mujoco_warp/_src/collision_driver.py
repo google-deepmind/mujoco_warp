@@ -508,6 +508,36 @@ def _sap_project(opt_broadphase: int, ngeom_dataid: int, ngeom_pair_margin: int)
   return sap_project
 
 
+def _skip_sleep_pair(incremental: bool):
+  @wp.func
+  def func(
+    # Model:
+    geom_bodyid: wp.array[int],
+    # Data in:
+    body_awake_in: wp.array2d[int],
+    # In:
+    body_awake_prev_in: wp.array2d[int],
+    worldid: int,
+    geom1: int,
+    geom2: int,
+  ) -> bool:
+    b1 = geom_bodyid[geom1]
+    b2 = geom_bodyid[geom2]
+    s1 = body_awake_in[worldid, b1]
+    s2 = body_awake_in[worldid, b2]
+    if s1 != SleepState.AWAKE and s2 != SleepState.AWAKE:
+      return True
+    if wp.static(incremental):
+      # Only re-emit pairs that pass 1 skipped (both bodies non-awake in pass 1).
+      p1 = body_awake_prev_in[worldid, b1]
+      p2 = body_awake_prev_in[worldid, b2]
+      if p1 == SleepState.AWAKE or p2 == SleepState.AWAKE:
+        return True
+    return False
+
+  return func
+
+
 @cache_kernel
 def _sap_broadphase(
   opt_broadphase_filter: int,
@@ -594,26 +624,15 @@ def _sap_broadphase(
           continue
 
       if wp.static(enable_sleep):
-        b1 = geom_bodyid[geom1]
-        b2 = geom_bodyid[geom2]
-        s1 = body_awake_in[worldid, b1]
-        s2 = body_awake_in[worldid, b2]
-        if s1 == SleepState.ASLEEP and s2 == SleepState.ASLEEP:
+        if wp.static(_skip_sleep_pair(incremental))(
+          geom_bodyid,
+          body_awake_in,
+          body_awake_prev_in,
+          worldid,
+          geom1,
+          geom2,
+        ):
           continue
-        if (s1 == SleepState.ASLEEP and s2 == SleepState.STATIC) or (s2 == SleepState.ASLEEP and s1 == SleepState.STATIC):
-          continue
-
-        if wp.static(incremental):
-          # only re-emit pairs that pass 1 skipped (see _nxn_broadphase for rationale)
-          p1 = body_awake_prev_in[worldid, b1]
-          p2 = body_awake_prev_in[worldid, b2]
-          skipped_pass1 = (
-            (p1 == SleepState.ASLEEP and p2 == SleepState.ASLEEP)
-            or (p1 == SleepState.ASLEEP and p2 == SleepState.STATIC)
-            or (p2 == SleepState.ASLEEP and p1 == SleepState.STATIC)
-          )
-          if not skipped_pass1:
-            continue
 
       if (
         wp.static(
@@ -893,29 +912,15 @@ def _nxn_broadphase(
         return
 
     if wp.static(enable_sleep):
-      b1 = geom_bodyid[geom1]
-      b2 = geom_bodyid[geom2]
-      s1 = body_awake_in[worldid, b1]
-      s2 = body_awake_in[worldid, b2]
-      if s1 == SleepState.ASLEEP and s2 == SleepState.ASLEEP:
+      if wp.static(_skip_sleep_pair(incremental))(
+        geom_bodyid,
+        body_awake_in,
+        body_awake_prev_in,
+        worldid,
+        geom1,
+        geom2,
+      ):
         return
-      if (s1 == SleepState.ASLEEP and s2 == SleepState.STATIC) or (s2 == SleepState.ASLEEP and s1 == SleepState.STATIC):
-        return
-
-      if wp.static(incremental):
-        # On the incremental pass we only want pairs that were *not* already emitted in pass 1.
-        # Pass 1 skipped a pair iff both bodies were asleep, or one asleep and one static. Such a
-        # pair becomes relevant now only because one of its bodies was newly awakened, so re-emit
-        # it. Every other pair was handled in pass 1 and its contact geometry is unchanged.
-        p1 = body_awake_prev_in[worldid, b1]
-        p2 = body_awake_prev_in[worldid, b2]
-        skipped_pass1 = (
-          (p1 == SleepState.ASLEEP and p2 == SleepState.ASLEEP)
-          or (p1 == SleepState.ASLEEP and p2 == SleepState.STATIC)
-          or (p2 == SleepState.ASLEEP and p1 == SleepState.STATIC)
-        )
-        if not skipped_pass1:
-          return
 
     pairid = nxn_pairid[elementid]
     if (
@@ -1054,6 +1059,7 @@ def nxn_broadphase(
   d: Data,
   ctx: CollisionContext,
   awake_prev: Optional[wp.array] = None,
+  cond: Optional[wp.array] = None,
 ):
   """Runs broadphase collision detection using a brute-force N-squared approach.
 
@@ -1079,9 +1085,8 @@ def nxn_broadphase(
 
   # On the incremental pass, skip the broadphase wholesale via a graph conditional when nothing woke
   # since pass 1. A wake is exactly a body whose state changed between awake_prev and body_awake
-  # (nothing sleeps between the passes), so the condition is derived here rather than threaded in.
-  cond = None
-  if incremental and m.opt.graph_conditional:
+  # (nothing sleeps between the passes), so the condition is derived here if not already provided.
+  if cond is None and incremental and m.opt.graph_conditional:
     cond = wp.zeros(1, dtype=int)
     wp.launch(_any_awake_changed, dim=(d.nworld, m.nbody), inputs=[d.body_awake, awake_prev], outputs=[cond])
 
@@ -1130,13 +1135,13 @@ def nxn_broadphase(
       ],
     )
 
-  if cond is not None:
+  if cond is not None and m.opt.graph_conditional:
     wp.capture_if(cond, on_true=_launch)
   else:
     _launch()
 
 
-def _narrowphase(m: Model, d: Data, ctx: CollisionContext):
+def _narrowphase(m: Model, d: Data, ctx: CollisionContext, cond: Optional[wp.array] = None):
   collision_table = MJ_COLLISION_TABLE
   if m.opt.disableflags & DisableBit.NATIVECCD:
     collision_table = collision_table.copy()
@@ -1145,13 +1150,21 @@ def _narrowphase(m: Model, d: Data, ctx: CollisionContext):
   convex_pairs = [key for key, value in collision_table.items() if value == CollisionType.CONVEX]
   primitive_pairs = [key for key, value in collision_table.items() if value == CollisionType.PRIMITIVE]
 
+  def _run_cond(fn, *args):
+    if cond is not None and m.opt.graph_conditional:
+      event_scope(lambda: wp.capture_if(cond, on_true=lambda: fn(*args)), name=fn.__name__)()
+    else:
+      fn(*args)
+
   # TODO(team): we should reject far-away contacts in the narrowphase instead of constraint
   #             partitioning because we can move some pressure of the atomics
+  # Note: convex_narrowphase allocates temporary arrays internally and cannot be
+  # wrapped in capture_if; it uses d.ncollision (0 when cond is 0) as its inner loop bound.
   convex_narrowphase(m, d, ctx, convex_pairs)
-  primitive_narrowphase(m, d, ctx, primitive_pairs)
+  _run_cond(primitive_narrowphase, m, d, ctx, primitive_pairs)
 
   if m.has_sdf_geom:
-    sdf_narrowphase(m, d, ctx)
+    _run_cond(sdf_narrowphase, m, d, ctx)
 
 
 @event_scope
@@ -1159,6 +1172,7 @@ def collision(
   m: Model,
   d: Data,
   awake_prev: Optional[wp.array] = None,
+  cond: Optional[wp.array] = None,
 ):
   """Runs the full collision detection pipeline.
 
@@ -1199,11 +1213,11 @@ def collision(
     d.nacon.zero_()
 
   if m.opt.broadphase == BroadphaseType.NXN:
-    nxn_broadphase(m, d, ctx, awake_prev)
+    nxn_broadphase(m, d, ctx, awake_prev, cond=cond)
   else:
     sap_broadphase(m, d, ctx, awake_prev)
 
-  _narrowphase(m, d, ctx)
+  _narrowphase(m, d, ctx, cond=cond)
 
   # Flex collision is not sleeping-aware: pass 1 emits every flex contact regardless of awake state,
   # so the incremental pass has nothing to add (and re-running it would duplicate those contacts).
