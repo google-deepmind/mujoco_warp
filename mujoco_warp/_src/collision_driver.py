@@ -1210,17 +1210,39 @@ def _narrowphase(m: Model, d: Data, ctx: CollisionContext):
 
 
 @event_scope
-def run_collision(
+def collision(
   m: Model,
   d: Data,
-  ctx: CollisionContext,
+  ctx: Optional[CollisionContext] = None,
   awake_prev: Optional[wp.array] = None,
   woke: Optional[wp.array] = None,
 ):
-  """Runs broadphase and narrowphase collision detection with a pre-allocated CollisionContext."""
+  """Runs the full collision detection pipeline.
+
+  This function orchestrates the broadphase and narrowphase collision detection stages. It
+  first identifies potential collision pairs using a broadphase algorithm (either N-squared
+  or Sweep-and-Prune, based on `m.opt.broadphase`). Then, for each potential pair, it
+  performs narrowphase collision detection to compute detailed contact information like
+  distance, position, and frame.
+
+  The results are used to populate the `d.contact` array, and the total number of contacts
+  is stored in `d.nacon`.  If `d.nacon` is larger than `d.naconmax` then an overflow has
+  occurred and the remaining contacts will be skipped.  If this happens, raise the `nconmax`
+  parameter in `io.make_data` or `io.put_data`.
+
+  This function will do nothing except zero out arrays if collision detection is disabled
+  via `m.opt.disableflags` or if `d.nacon` is 0.
+
+  Passing `awake_prev` (the awake state snapshotted before the post-collision wake) runs the
+  incremental sleeping pass: contacts are appended to the existing buffer and only pairs
+  involving a newly-awakened body are emitted.
+  """
   if d.naconmax == 0 or m.opt.disableflags & (DisableBit.CONSTRAINT | DisableBit.CONTACT):
     d.nacon.zero_()
     return
+
+  if ctx is None:
+    ctx = prepare_collision_context(m, d)
 
   incremental = awake_prev is not None
   if incremental:
@@ -1272,37 +1294,3 @@ def run_collision(
 
   if m.opt.deterministic & DeterminismType.CONTACTS:
     sort.contacts(d)
-
-
-@event_scope
-def collision(
-  m: Model,
-  d: Data,
-  awake_prev: Optional[wp.array] = None,
-):
-  """Runs the full collision detection pipeline.
-
-  This function orchestrates the broadphase and narrowphase collision detection stages. It
-  first identifies potential collision pairs using a broadphase algorithm (either N-squared
-  or Sweep-and-Prune, based on `m.opt.broadphase`). Then, for each potential pair, it
-  performs narrowphase collision detection to compute detailed contact information like
-  distance, position, and frame.
-
-  The results are used to populate the `d.contact` array, and the total number of contacts
-  is stored in `d.nacon`.  If `d.nacon` is larger than `d.naconmax` then an overflow has
-  occurred and the remaining contacts will be skipped.  If this happens, raise the `nconmax`
-  parameter in `io.make_data` or `io.put_data`.
-
-  This function will do nothing except zero out arrays if collision detection is disabled
-  via `m.opt.disableflags` or if `d.nacon` is 0.
-
-  Passing `awake_prev` (the awake state snapshotted before the post-collision wake) runs the
-  incremental sleeping pass: contacts are appended to the existing buffer and only pairs involving
-  a newly-awakened body are emitted.
-  """
-  if d.naconmax == 0 or m.opt.disableflags & (DisableBit.CONSTRAINT | DisableBit.CONTACT):
-    d.nacon.zero_()
-    return
-
-  ctx = prepare_collision_context(m, d)
-  run_collision(m, d, ctx, awake_prev=awake_prev)
