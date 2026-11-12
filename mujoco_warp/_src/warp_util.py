@@ -18,6 +18,7 @@ import functools
 import inspect
 import warnings
 
+import numpy as np
 import warp as wp
 
 _STACK = None
@@ -153,6 +154,9 @@ def cache_kernel(func):
   @functools.wraps(func)
   def wrapper(*args):
     def _hash_arg(a):
+      # a numpy scalar has a size too, always 1: hash it like the Python scalar it equals
+      if isinstance(a, np.generic):
+        return hash(a.item())
       if hasattr(a, "size"):
         return a.size
       if isinstance(a, list):
