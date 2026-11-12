@@ -27,7 +27,6 @@ from mujoco_warp import GeomType
 from mujoco_warp import test_data
 from mujoco_warp._src import collision_convex
 from mujoco_warp._src import types
-from mujoco_warp._src import util_pkg
 from mujoco_warp._src.collision_core import Geom
 from mujoco_warp._src.collision_driver import MJ_COLLISION_TABLE
 from mujoco_warp._src.collision_primitive import plane_convex
@@ -797,6 +796,11 @@ class CollisionTest(parameterized.TestCase):
     self.assertTrue(np.isfinite(dist).all())
     self.assertTrue(np.isfinite(pos).all())
     self.assertTrue(np.isfinite(normal).all())
+    # the hull starts at the deepest vertex; between vertices tied in depth, float32 rounding may
+    # pick another start than MuJoCo, which rotates the otherwise identical cyclic order
+    shift = next((s for s in range(ncon) if np.allclose(np.roll(pos, -s, axis=0), mjd.contact.pos[:ncon], atol=1e-4)), 0)
+    np.testing.assert_allclose(dist[0], mjd.contact.dist[0], atol=1e-4)
+    dist, pos, normal = (np.roll(a, -shift, axis=0) for a in (dist, pos, normal))
     np.testing.assert_allclose(dist, mjd.contact.dist[:ncon], atol=1e-4)
     np.testing.assert_allclose(pos, mjd.contact.pos[:ncon], atol=1e-4)
     np.testing.assert_allclose(normal, mjd.contact.frame[:ncon, :3], atol=1e-4)
@@ -2539,7 +2543,6 @@ class CollisionTest(parameterized.TestCase):
     if nworld == 2:
       self.assertFalse(np.allclose(dist[worldid == 0], dist[worldid == 1]))
 
-  @absltest.skipIf(not util_pkg.check_version("mujoco>=3.17.1"), "Requires MuJoCo >= 3.17.1")
   @parameterized.parameters(1, 2)
   def test_contact_surfacevel(self, nworld):
     """Populates contact.surfacevel from geom_surfacevel and zeroes contacts without surfacevel."""
@@ -3026,7 +3029,7 @@ class BoxBoxTest(parameterized.TestCase):
     m = mjw.put_model(mjm)
     d = mjw.put_data(mjm, mjd, nworld=npose, nconmax=16)
     d.geom_xpos.assign(geom_xpos.astype(np.float32))
-    d.geom_xmat.assign(geom_xmat.astype(np.float32))
+    d.geom_xquat.assign(test_data.mat_to_quat(geom_xmat).astype(np.float32))
     # put_data copies the contacts of the last MuJoCo pose to every world
     d.contact.dist.fill_(wp.inf)
     d.contact.pos.fill_(wp.inf)

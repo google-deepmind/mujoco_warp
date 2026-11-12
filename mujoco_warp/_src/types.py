@@ -21,8 +21,6 @@ import mujoco
 import numpy as np
 import warp as wp
 
-from mujoco_warp._src import util_pkg
-
 MJ_MINVAL = mujoco.mjMINVAL
 MJ_MAXVAL = mujoco.mjMAXVAL
 MJ_MINIMP = mujoco.mjMINIMP  # minimum constraint impedance
@@ -30,50 +28,8 @@ MJ_MAXIMP = mujoco.mjMAXIMP  # maximum constraint impedance
 MJ_MAXCONPAIR = mujoco.mjMAXCONPAIR
 MJ_MINMU = mujoco.mjMINMU  # minimum friction
 MJ_MINAWAKE = mujoco.mjMINAWAKE  # minimum number of timesteps before sleeping
-FLEX_STIFFNESS_3D = 24 if util_pkg.check_version("mujoco>=3.14.1.dev989511280") else 21
-# TODO(team): remove version check once mujoco >= 4.0.0 is required.
-FLEX_INTERP_PHYS_JAC = util_pkg.check_version("mujoco>=3.17.1.dev1010658301")
-
-
-# TODO(team): Remove dynamic version probe once minimum MuJoCo version
-# supports curved rod references and set ROD_HINGE_SIZE = 10 directly.
-def _rod_hinge_size() -> int:
-  """Size of a 1D rod bending record in flex_bending of the installed MuJoCo.
-
-  Records have 10 values since MuJoCo supports curved rod references: a single hinge
-  [v0, v1, v2, -1, k, 0, kb0, 0, 0, 0] or a hinge pair [v0, v1, v2, v3, w0, w1, om0 (4)], see
-  passive.rod_stencil; before, they were [v0, v1, v2, k]. The size is read from a compiled rod,
-  because the first MuJoCo build with the larger record is not known when this code is written.
-
-  Returns:
-    The record size, 4 or 10.
-
-  Raises:
-    NotImplementedError: If the installed MuJoCo uses another record size.
-  """
-  xml = """
-  <mujoco>
-    <worldbody>
-      <flexcomp name="rod" type="grid" count="3 1 1" spacing="1 1 1" radius="0.1" dim="1">
-        <elasticity young="1"/>
-      </flexcomp>
-    </worldbody>
-  </mujoco>
-  """
-  try:
-    nflexbending = mujoco.MjModel.from_xml_string(xml).nflexbending
-  except ValueError:  # MuJoCo without 1D flex elasticity
-    return 4
-  if not isinstance(nflexbending, int):
-    return 4
-  # one hinge: nflexbending = 1 + record size, or 0 if 1D young is ignored
-  size = nflexbending - 1 if nflexbending else 4
-  if size not in (4, 10):
-    raise NotImplementedError(f"unsupported 1D rod record size {size} in flex_bending")
-  return size
-
-
-ROD_HINGE_SIZE = _rod_hinge_size()
+FLEX_STIFFNESS_3D = 24  # flex_stiffness values per 3D element
+ROD_HINGE_SIZE = 10  # flex_bending values per 1D rod hinge record
 
 # maximum size (by number of edges) of an horizon in EPA algorithm
 MJ_MAX_EPAHORIZON = 24
@@ -106,7 +62,7 @@ FLEX_INTERP_MAX_NODES = 27
 # TODO(team): add check that all wp.launch_tiled 'block_dim' settings are configurable
 @dataclasses.dataclass
 class BlockDim:
-  """Block dimension 'block_dim' settings for wp.launch_tiled.
+  """Block dimension settings for kernel launches.
 
   TODO(team): experimental and may be removed
 
@@ -114,6 +70,7 @@ class BlockDim:
     segmented_sort: segmented sort block dimension (collision_driver)
     nxn_broadphase: NXN broadphase block dimension (collision_driver)
     convex_ccd: convex CCD kernel block dimension (collision_convex)
+    flex_fps: flex contact FPS block dimension (collision_flex)
     island_dsu: island discovery DSU block dimension (island)
     ray: ray block dimension (ray)
     contact_sort: contact sort block dimension (sensor)
@@ -133,6 +90,7 @@ class BlockDim:
     solve_search_update_cg: solve search update CG block dimension (solver)
     solve_init_search_cg: solve init search CG block dimension (solver)
     contact_jac_tiled: contact Jacobian tiled block dimension (solver)
+    contact_jac_sparse: sparse contact Jacobian block dimension (constraint)
     eff_pcg: effective-metric PCG block dimension (derivative)
     render: render block dimension (render)
   """
@@ -142,6 +100,8 @@ class BlockDim:
   nxn_broadphase: int = 128
   # collision_convex
   convex_ccd: int = 64
+  # collision_flex
+  flex_fps: int = 256
   # island
   island_dsu: int = 32
   # ray
@@ -166,6 +126,8 @@ class BlockDim:
   solve_search_update_cg: int = 256
   solve_init_search_cg: int = 256
   contact_jac_tiled: int = 32
+  # constraint
+  contact_jac_sparse: int = 128
   # derivative
   eff_pcg: int = 128
   # render
@@ -875,9 +837,8 @@ class TendonType(enum.IntEnum):
     SPATIAL: path through sites, around geoms
   """
 
-  # TODO(team): use mujoco.mjtTendon when mujoco>=3.17.1 is required
-  FIXED = 0
-  SPATIAL = 1
+  FIXED = mujoco.mjtTendon.mjTENDON_FIXED
+  SPATIAL = mujoco.mjtTendon.mjTENDON_SPATIAL
 
 
 class WrapType(enum.IntEnum):
@@ -938,7 +899,7 @@ class State(enum.IntEnum):
   MOCAP_QUAT = mujoco.mjtState.mjSTATE_MOCAP_QUAT
   USERDATA = mujoco.mjtState.mjSTATE_USERDATA
   # unsupported: PLUGIN
-  PLASTIC = getattr(mujoco.mjtState, "mjSTATE_PLASTIC", 1 << 14)
+  PLASTIC = mujoco.mjtState.mjSTATE_PLASTIC
   NSTATE = mujoco.mjtState.mjNSTATE
   PHYSICS = mujoco.mjtState.mjSTATE_PHYSICS  # includes HISTORY and PLASTIC
   FULLPHYSICS = mujoco.mjtState.mjSTATE_FULLPHYSICS
@@ -1438,7 +1399,7 @@ class Model:
     flex_solimp: constraint solver impedance: contact        (nflex, mjNIMP)
     flex_friction: friction for (slide, spin, roll)          (nflex, 3)
     flex_margin: detect contact if dist<margin               (nflex,)
-    flex_gap: include in solver if dist<margin-gap           (nflex,)
+    flex_gap: additional contact detection buffer            (nflex,)
     flex_selfcollide: self-collision mode                    (nflex,)
     flex_activelayers: active element layers                 (nflex,)
     flex_passive: passive contact mode                       (nflex,)
@@ -1667,6 +1628,9 @@ class Model:
       factorization is a per-block decision -- see M_tiles and m_block_layout
     qLD_block_total: packed length of the dense region per world (also the offset of the LDL region)
     qLD_block_adr: packed factor offset; Q_LD_BLOCK_* sentinel otherwise (nv,)
+    Minv_block_total: packed length of the inverse inertia blocks, one per tree, per world
+    Minv_block_adr: offset of the dof's tree block in the packed inverse inertia (nv,)
+    Minv_block_dofmax: number of dofs of the largest tree
     flg_adhesion: flag indicating if model has passive adhesion
     has_fluid: True if wind, density, or viscosity are non-zero at put_model time
     flg_surfacevel: whether model has non-zero surfacevel
@@ -2242,6 +2206,9 @@ class Model:
   is_sparse: bool
   qLD_block_total: int
   qLD_block_adr: array("nv", int)
+  Minv_block_total: int
+  Minv_block_adr: array("nv", int)
+  Minv_block_dofmax: int
   flg_adhesion: bool
   has_fluid: bool
   flg_surfacevel: bool
@@ -2545,15 +2512,14 @@ class Data:
     tree_asleep: tree asleep counter; >=0: asleep cycle         (nworld, ntree)
     xpos: Cartesian position of body frame                      (nworld, nbody, 3)
     xquat: Cartesian orientation of body frame                  (nworld, nbody, 4)
-    xmat: Cartesian orientation of body frame                   (nworld, nbody, 3, 3)
     xipos: Cartesian position of body com                       (nworld, nbody, 3)
-    ximat: Cartesian orientation of body inertia                (nworld, nbody, 3, 3)
+    xiquat: Cartesian orientation of body inertia               (nworld, nbody, 4)
     xanchor: Cartesian position of joint anchor                 (nworld, njnt, 3)
     xaxis: Cartesian joint axis                                 (nworld, njnt, 3)
     geom_xpos: Cartesian geom position                          (nworld, ngeom, 3)
-    geom_xmat: Cartesian geom orientation                       (nworld, ngeom, 3, 3)
+    geom_xquat: Cartesian geom orientation                      (nworld, ngeom, 4)
     site_xpos: Cartesian site position                          (nworld, nsite, 3)
-    site_xmat: Cartesian site orientation                       (nworld, nsite, 3, 3)
+    site_xquat: Cartesian site orientation                      (nworld, nsite, 4)
     cam_xpos: Cartesian camera position                         (nworld, ncam, 3)
     cam_xmat: Cartesian camera orientation                      (nworld, ncam, 3, 3)
     light_xpos: Cartesian light position                        (nworld, nlight, 3)
@@ -2644,12 +2610,9 @@ class Data:
     ncdof: number of active (compacted) DOFs per world          (nworld,)
     dof_cdof: global DOF -> compacted DOF; -1 if inactive       (nworld, nv)
     cdof_dof: compacted DOF -> global DOF; -1 if unused         (nworld, nvmax_pad)
-    cdof_tri_row: row index of compacted Hessian dof-pairs      (nvmax_pad_sq,)
-    cdof_tri_col: col index of compacted Hessian dof-pairs      (nvmax_pad_sq,)
+    cdof_tri_row: row index of compacted Hessian dof-pairs      (ncdof_tri,)
+    cdof_tri_col: col index of compacted Hessian dof-pairs      (ncdof_tri,)
     cM: compacted dense inertia                                 (nworld, nvmax_pad, nvmax_pad)
-    cqLD: compacted upper Cholesky factor                       (nworld, nvmax_pad, nvmax_pad)
-    crhs: compacted smooth-solve right-hand side                (nworld, nvmax_pad, 1)
-    cx: compacted smooth-solve solution                         (nworld, nvmax_pad, 1)
     cJ: compacted dense constraint Jacobian                     (nworld, njmax_pad, nvmax_pad)
     cMa: compacted M @ qacc workspace                           (nworld, nvmax_pad)
     cqfrc_smooth: compacted net unconstrained force             (nworld, nvmax_pad)
@@ -2726,15 +2689,14 @@ class Data:
   tree_asleep: array("nworld", "ntree", int)
   xpos: array("nworld", "nbody", wp.vec3)
   xquat: array("nworld", "nbody", wp.quat)
-  xmat: array("nworld", "nbody", wp.mat33)
   xipos: array("nworld", "nbody", wp.vec3)
-  ximat: array("nworld", "nbody", wp.mat33)
+  xiquat: array("nworld", "nbody", wp.quat)
   xanchor: array("nworld", "njnt", wp.vec3)
   xaxis: array("nworld", "njnt", wp.vec3)
   geom_xpos: array("nworld", "ngeom", wp.vec3)
-  geom_xmat: array("nworld", "ngeom", wp.mat33)
+  geom_xquat: array("nworld", "ngeom", wp.quat)
   site_xpos: array("nworld", "nsite", wp.vec3)
-  site_xmat: array("nworld", "nsite", wp.mat33)
+  site_xquat: array("nworld", "nsite", wp.quat)
   cam_xpos: array("nworld", "ncam", wp.vec3)
   cam_xmat: array("nworld", "ncam", wp.mat33)
   light_xpos: array("nworld", "nlight", wp.vec3)
@@ -2822,12 +2784,9 @@ class Data:
   ncdof: array("nworld", int)
   dof_cdof: array("nworld", "nv", int)
   cdof_dof: array("nworld", "nvmax_pad", int)
-  cdof_tri_row: array("nvmax_pad_sq", int)
-  cdof_tri_col: array("nvmax_pad_sq", int)
+  cdof_tri_row: array("ncdof_tri", int)
+  cdof_tri_col: array("ncdof_tri", int)
   cM: array("nworld", "nvmax_pad", "nvmax_pad", float)
-  cqLD: array("nworld", "nvmax_pad", "nvmax_pad", float)
-  crhs: array("nworld", "nvmax_pad", 1, float)
-  cx: array("nworld", "nvmax_pad", 1, float)
   cJ: array("nworld", "njmax_pad", "nvmax_pad", float)
   cMa: array("nworld", "nvmax_pad", float)
   cqfrc_smooth: array("nworld", "nvmax_pad", float)

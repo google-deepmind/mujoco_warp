@@ -17,6 +17,7 @@ from typing import Tuple
 
 import warp as wp
 
+from mujoco_warp._src.math import quat_to_mat
 from mujoco_warp._src.math import safe_div
 from mujoco_warp._src.types import MJ_MAXVAL
 from mujoco_warp._src.types import MJ_MINVAL
@@ -850,7 +851,7 @@ def _ray_geom_mesh(
   mat_rgba: wp.array2d[wp.vec4],
   # Data in:
   geom_xpos_in: wp.array2d[wp.vec3],
-  geom_xmat_in: wp.array2d[wp.mat33],
+  geom_xquat_in: wp.array2d[wp.quat],
   # In:
   worldid: int,
   pnt: wp.vec3,
@@ -873,7 +874,7 @@ def _ray_geom_mesh(
     bodyexclude,
   ):
     pos = geom_xpos_in[worldid, geomid]
-    mat = geom_xmat_in[worldid, geomid]
+    mat = quat_to_mat(geom_xquat_in[worldid, geomid])
     type = geom_type[geomid]
 
     if type == GeomType.MESH:
@@ -936,7 +937,7 @@ def _ray(
   mat_rgba: wp.array2d[wp.vec4],
   # Data in:
   geom_xpos_in: wp.array2d[wp.vec3],
-  geom_xmat_in: wp.array2d[wp.mat33],
+  geom_xquat_in: wp.array2d[wp.quat],
   # In:
   pnt: wp.array2d[wp.vec3],
   vec: wp.array2d[wp.vec3],
@@ -983,7 +984,7 @@ def _ray(
         hfield_data,
         mat_rgba,
         geom_xpos_in,
-        geom_xmat_in,
+        geom_xquat_in,
         worldid,
         ray_origin,
         ray_dir,
@@ -1032,7 +1033,7 @@ def _ray_geom_mesh_bvh(
   mat_rgba: wp.array2d[wp.vec4],
   # Data in:
   geom_xpos_in: wp.array2d[wp.vec3],
-  geom_xmat_in: wp.array2d[wp.mat33],
+  geom_xquat_in: wp.array2d[wp.quat],
   # In:
   worldid: int,
   pnt: wp.vec3,
@@ -1058,7 +1059,7 @@ def _ray_geom_mesh_bvh(
     bodyexclude,
   ):
     pos = geom_xpos_in[worldid, geomid]
-    mat = geom_xmat_in[worldid, geomid]
+    mat = quat_to_mat(geom_xquat_in[worldid, geomid])
     gtype = geom_type[geomid]
 
     if gtype == GeomType.MESH or gtype == GeomType.HFIELD:
@@ -1105,7 +1106,7 @@ def _ray_bvh(
   mat_rgba: wp.array2d[wp.vec4],
   # Data in:
   geom_xpos_in: wp.array2d[wp.vec3],
-  geom_xmat_in: wp.array2d[wp.mat33],
+  geom_xquat_in: wp.array2d[wp.quat],
   # In:
   pnt: wp.array2d[wp.vec3],
   vec: wp.array2d[wp.vec3],
@@ -1150,7 +1151,7 @@ def _ray_bvh(
       geom_rgba,
       mat_rgba,
       geom_xpos_in,
-      geom_xmat_in,
+      geom_xquat_in,
       worldid,
       ray_origin,
       ray_dir,
@@ -1288,7 +1289,7 @@ def rays(
         m.hfield_data,
         m.mat_rgba,
         d.geom_xpos,
-        d.geom_xmat,
+        d.geom_xquat,
         pnt,
         vec,
         geomgroup,
@@ -1316,7 +1317,7 @@ def rays(
         m.geom_rgba,
         m.mat_rgba,
         d.geom_xpos,
-        d.geom_xmat,
+        d.geom_xquat,
         pnt,
         vec,
         geomgroup,
