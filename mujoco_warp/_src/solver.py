@@ -4767,11 +4767,6 @@ def _solve(m: types.Model, d: types.Data, ctx: SolverContext, compact: bool = Fa
   init_context(m, d, ctx, grad=False, compact=compact)
   _update_gradient(m, d, ctx, compact=compact)
 
-  if _use_incremental(m):
-    # A new solve computes a new search direction: invalidate the mv/jv reuse
-    # left over from the previous solve.
-    ctx.search_unchanged.zero_()
-
   nsolving = wp.full(shape=(1,), value=d.nworld, dtype=int)
 
   # CG search = -Mgrad
