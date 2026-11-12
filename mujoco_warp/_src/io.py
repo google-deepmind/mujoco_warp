@@ -606,8 +606,14 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
     condim_arrays.append(mjm.flex_condim)
     if (mjm.geom_type == mujoco.mjtGeom.mjGEOM_SDF).any():
       raise NotImplementedError("Flex-SDF collision is not implemented.")
-    if (mjm.geom_type == mujoco.mjtGeom.mjGEOM_HFIELD).any():
-      raise NotImplementedError("Flex-HField collision is not implemented.")
+    for geomid in np.flatnonzero(mjm.geom_type == mujoco.mjtGeom.mjGEOM_HFIELD):
+      collides = (mjm.flex_contype & mjm.geom_conaffinity[geomid]) | (mjm.geom_contype[geomid] & mjm.flex_conaffinity)
+      if not collides.any():
+        continue
+      if mjm.body_weldid[mjm.geom_bodyid[geomid]] != 0:
+        raise NotImplementedError("Flex-HField collision requires a static heightfield.")
+      if ((mjm.flex_dim[collides != 0] != 2) | (mjm.flex_interp[collides != 0] != 0)).any():
+        raise NotImplementedError("Flex-HField collision requires full-DOF 2D flexes.")
     if (mjm.flex_rigid != 0).any():
       raise NotImplementedError("Rigid flexes are not implemented.")
     # TODO(team): skip element pairs driven by a common grid node, as in mjc_ElemSharedNode
