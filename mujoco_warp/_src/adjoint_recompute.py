@@ -43,13 +43,13 @@ def _inertial_frames_recompute(
   xquat_in: wp.array2d[wp.quat],
   # Data out:
   xipos_out: wp.array2d[wp.vec3],
-  ximat_out: wp.array2d[wp.mat33],
+  xiquat_out: wp.array2d[wp.quat],
 ):
   w, b = wp.tid()
   xpos = xpos_in[w, b]
   xquat = xquat_in[w, b]
   xipos_out[w, b] = xpos + math.rot_vec_quat(body_ipos[w % body_ipos.shape[0], b], xquat)
-  ximat_out[w, b] = math.quat_to_mat(math.mul_quat(xquat, body_iquat[w % body_iquat.shape[0], b]))
+  xiquat_out[w, b] = math.mul_quat(xquat, body_iquat[w % body_iquat.shape[0], b])
 
 
 # passive._spring_damper_dof_passive (spring path)
@@ -190,13 +190,13 @@ def _cinert_recompute(
   body_inertia: wp.array2d[wp.vec3],
   # Data in:
   xipos_in: wp.array2d[wp.vec3],
-  ximat_in: wp.array2d[wp.mat33],
+  xiquat_in: wp.array2d[wp.quat],
   subtree_com_in: wp.array2d[wp.vec3],
   # Data out:
   cinert_out: wp.array2d[vec10],
 ):
   w, b = wp.tid()
-  mat = ximat_in[w, b]
+  mat = math.quat_to_mat(xiquat_in[w, b])
   inert = body_inertia[w % body_inertia.shape[0], b]
   mass = body_mass[w % body_mass.shape[0], b]
   dif = xipos_in[w, b] - subtree_com_in[w, body_rootid[b]]

@@ -278,7 +278,7 @@ def _narrowphase_witness(
   geom_size: wp.array2d[wp.vec3],
   # Data in:
   geom_xpos_in: wp.array2d[wp.vec3],
-  geom_xmat_in: wp.array2d[wp.mat33],
+  geom_xquat_in: wp.array2d[wp.quat],
   contact_dist_in: wp.array[float],
   contact_pos_in: wp.array[wp.vec3],
   contact_frame_in: wp.array[wp.mat33],
@@ -305,14 +305,14 @@ def _narrowphase_witness(
     # Undo the contact midpoint offset to recover the selected vertex in mesh coordinates.
     normal = contact_frame_in[cid][0]
     vertex = contact_pos_in[cid] + 0.5 * contact_dist_in[cid] * normal
-    contact_point_out[cid] = wp.transpose(geom_xmat_in[w, g1]) @ (vertex - geom_xpos_in[w, g1])
+    contact_point_out[cid] = wp.transpose(math.quat_to_mat(geom_xquat_in[w, g1])) @ (vertex - geom_xpos_in[w, g1])
     return
 
   if type1 != GeomType.BOX or (type0 != GeomType.CAPSULE and type0 != GeomType.BOX):
     return
   gw = w % geom_size.shape[0]
   p0, p1 = geom_xpos_in[w, g0], geom_xpos_in[w, g1]
-  m0, m1 = geom_xmat_in[w, g0], geom_xmat_in[w, g1]
+  m0, m1 = math.quat_to_mat(geom_xquat_in[w, g0]), math.quat_to_mat(geom_xquat_in[w, g1])
   s0, s1 = geom_size[gw, g0], geom_size[gw, g1]
   if type0 == GeomType.CAPSULE:
     axis = wp.vec3(m0[0, 2], m0[1, 2], m0[2, 2])
@@ -343,7 +343,7 @@ def _narrowphase_recompute(
   geom_size: wp.array2d[wp.vec3],
   # Data in:
   geom_xpos_in: wp.array2d[wp.vec3],
-  geom_xmat_in: wp.array2d[wp.mat33],
+  geom_xquat_in: wp.array2d[wp.quat],
   contact_geom_in: wp.array[wp.vec2i],
   contact_worldid_in: wp.array[int],
   contact_geomcollisionid_in: wp.array[int],
@@ -368,10 +368,10 @@ def _narrowphase_recompute(
   g0 = geoms[0]
   g1 = geoms[1]
   p0 = geom_xpos_in[w, g0]
-  m0 = geom_xmat_in[w, g0]
+  m0 = math.quat_to_mat(geom_xquat_in[w, g0])
   s0 = geom_size[gw, g0]
   p1 = geom_xpos_in[w, g1]
-  m1 = geom_xmat_in[w, g1]
+  m1 = math.quat_to_mat(geom_xquat_in[w, g1])
   s1 = geom_size[gw, g1]
   type0 = geom_type[g0]
   type1 = geom_type[g1]
@@ -511,12 +511,12 @@ def _geom_pose_dof_vjp(
   body_isdofancestor: wp.array2d[int],
   # Data in:
   geom_xpos_in: wp.array2d[wp.vec3],
-  geom_xmat_in: wp.array2d[wp.mat33],
+  geom_xquat_in: wp.array2d[wp.quat],
   subtree_com_in: wp.array2d[wp.vec3],
   cdof_in: wp.array2d[wp.spatial_vector],
   # In:
   res_geom_xpos: wp.array2d[wp.vec3],  # adj(geom_xpos) from the narrowphase backward
-  res_geom_xmat: wp.array2d[wp.mat33],  # adj(geom_xmat)
+  res_geom_xquat: wp.array2d[wp.quat],  # adj(geom_xquat)
   # Out:
   res_dof_out: wp.array2d[float],  # per-dof tangent gradient d(contact)/d(dof k)
 ):
@@ -524,7 +524,7 @@ def _geom_pose_dof_vjp(
   acc = float(0.0)
   for g in range(ngeom):
     rgp = res_geom_xpos[w, g]
-    rgm = res_geom_xmat[w, g]
+    rgm = res_geom_xquat[w, g]
     body = geom_bodyid[g]
     jacp, jacr = support.jac_dof(
       body_parentid,
@@ -538,7 +538,7 @@ def _geom_pose_dof_vjp(
       k,
       w,
     )
-    tau = adjoint_util._adj_rotation(geom_xmat_in[w, g], rgm)
+    tau = adjoint_util._adj_quat_rotation(geom_xquat_in[w, g], rgm)
     acc += wp.dot(jacp, rgp) + wp.dot(jacr, tau)
   res_dof_out[w, k] += acc
 
@@ -583,12 +583,12 @@ def contact_qpos_vjp(
   nconmax = d_out.contact.pos.shape[0]
   contact_point, contact_feature = bc.contact_point, bc.contact_feature
   contact_adj_dist = bc.contact_adj_dist
-  res_geom_xpos, res_geom_xmat = bc.res_geom_xpos, bc.res_geom_xmat
+  res_geom_xpos, res_geom_xquat = bc.res_geom_xpos, bc.res_geom_xquat
   contact_res_dof, contact_ceff = bc.contact_res_dof, bc.contact_ceff
   # _narrowphase_witness overwrites every feature consumed by _narrowphase_recompute.
   contact_adj_dist.zero_()
   res_geom_xpos.zero_()
-  res_geom_xmat.zero_()
+  res_geom_xquat.zero_()
   contact_res_dof.zero_()
   contact_ceff.zero_()
 
@@ -599,7 +599,7 @@ def contact_qpos_vjp(
       m.geom_type,
       m.geom_size,
       d_out.geom_xpos,
-      d_out.geom_xmat,
+      d_out.geom_xquat,
       d_out.contact.dist,
       d_out.contact.pos,
       d_out.contact.frame,
@@ -614,7 +614,7 @@ def contact_qpos_vjp(
     (m.geom_type, None),
     (m.geom_size, None),
     (d_out.geom_xpos, res_geom_xpos),
-    (d_out.geom_xmat, res_geom_xmat),
+    (d_out.geom_xquat, res_geom_xquat),
     (d_out.contact.geom, None),
     (d_out.contact.worldid, None),
     (d_out.contact.geomcollisionid, None),
@@ -637,7 +637,7 @@ def contact_qpos_vjp(
   )
   if bc.collision_convex_ctx is not None:
     collision_convex_adjoint.hfield_contact_pose_vjp(
-      m, d_out, bc.collision_convex_ctx, res_contact_pos, res_contact_frame, contact_adj_dist, res_geom_xpos, res_geom_xmat
+      m, d_out, bc.collision_convex_ctx, res_contact_pos, res_contact_frame, contact_adj_dist, res_geom_xpos, res_geom_xquat
     )
   wp.launch(
     _geom_pose_dof_vjp,
@@ -650,11 +650,11 @@ def contact_qpos_vjp(
       m.geom_bodyid,
       m.body_isdofancestor,
       d_out.geom_xpos,
-      d_out.geom_xmat,
+      d_out.geom_xquat,
       d_out.subtree_com,
       d_out.cdof,
       res_geom_xpos,
-      res_geom_xmat,
+      res_geom_xquat,
     ],
     outputs=[contact_res_dof],
   )

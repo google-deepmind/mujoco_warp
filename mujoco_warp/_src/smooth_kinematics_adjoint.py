@@ -51,16 +51,16 @@ def _kinematics_mocap_vjp(
   mocap_pos_in: wp.array2d[wp.vec3],
   mocap_quat_in: wp.array2d[wp.quat],
   xipos_in: wp.array2d[wp.vec3],
-  ximat_in: wp.array2d[wp.mat33],
+  xiquat_in: wp.array2d[wp.quat],
   geom_xpos_in: wp.array2d[wp.vec3],
-  geom_xmat_in: wp.array2d[wp.mat33],
+  geom_xquat_in: wp.array2d[wp.quat],
   subtree_com_in: wp.array2d[wp.vec3],
   cdof_in: wp.array2d[wp.spatial_vector],
   # In:
   adj_xipos: wp.array2d[wp.vec3],
-  adj_ximat: wp.array2d[wp.mat33],
+  adj_xiquat: wp.array2d[wp.quat],
   adj_geom_xpos: wp.array2d[wp.vec3],
-  adj_geom_xmat: wp.array2d[wp.mat33],
+  adj_geom_xquat: wp.array2d[wp.quat],
   adj_subtree_com: wp.array2d[wp.vec3],
   adj_cdof: wp.array2d[wp.spatial_vector],
   scale: float,
@@ -77,7 +77,7 @@ def _kinematics_mocap_vjp(
       seed = adj_xipos[w, body]
       force += seed
       torque += wp.cross(xipos_in[w, body] - origin, seed)
-      torque += adjoint_util._adj_rotation(ximat_in[w, body], adj_ximat[w, body])
+      torque += adjoint_util._adj_quat_rotation(xiquat_in[w, body], adj_xiquat[w, body])
     if adj_subtree_com:
       seed = adj_subtree_com[w, body]
       force += seed
@@ -88,7 +88,7 @@ def _kinematics_mocap_vjp(
         seed = adj_geom_xpos[w, geom]
         force += seed
         torque += wp.cross(geom_xpos_in[w, geom] - origin, seed)
-        torque += adjoint_util._adj_rotation(geom_xmat_in[w, geom], adj_geom_xmat[w, geom])
+        torque += adjoint_util._adj_quat_rotation(geom_xquat_in[w, geom], adj_geom_xquat[w, geom])
   if adj_cdof:
     for dof in range(nv):
       if body_rootid[dof_bodyid[dof]] == root:
@@ -115,15 +115,15 @@ def kinematics_mocap_backward(m: Model, d_bwd: Data, bc: BackwardContext, *, con
       d_bwd.mocap_pos,
       d_bwd.mocap_quat,
       d_bwd.xipos,
-      d_bwd.ximat,
+      d_bwd.xiquat,
       d_bwd.geom_xpos,
-      d_bwd.geom_xmat,
+      d_bwd.geom_xquat,
       d_bwd.subtree_com,
       d_bwd.cdof,
       bc.adj_xipos if not contact else None,
-      bc.adj_ximat if not contact else None,
+      bc.adj_xiquat if not contact else None,
       bc.res_geom_xpos if contact else None,
-      bc.res_geom_xmat if contact else None,
+      bc.res_geom_xquat if contact else None,
       bc.adj_subtree_com,
       bc.adj_cdof,
       scale,

@@ -183,6 +183,13 @@ def _adj_quat_to_vel(quat: wp.quat, adj_ret: wp.vec3):
 
 
 @wp.func
+def _adj_quat_rotation(rotation: wp.quat, adj_rotation: wp.quat) -> wp.vec3:
+  """Maps a wxyz quaternion cotangent to its world angular tangent cotangent."""
+  seed = math.mul_quat(adj_rotation, math.quat_inv(rotation))
+  return 0.5 * wp.vec3(seed[1], seed[2], seed[3])
+
+
+@wp.func
 def _adj_rotation(rotation: wp.mat33, adj_rotation: wp.mat33) -> wp.vec3:
   """Maps a rotation-matrix cotangent to its angular tangent cotangent."""
   return (

@@ -36,7 +36,7 @@ jobs:
       - name: Update mujoco to latest dev version
         if: matrix.branch == 'deepmind'
         run: |
-          uv lock --upgrade-package mujoco
+          uv lock --upgrade-package mujoco-core
       - name: Show updated dependency tree
         run: |
           uv tree

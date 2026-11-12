@@ -474,7 +474,7 @@ def _implicit_free_body_backward(
   # Data in:
   qvel_in: wp.array2d[float],
   xpos_in: wp.array2d[wp.vec3],
-  xmat_in: wp.array2d[wp.mat33],
+  xquat_in: wp.array2d[wp.quat],
   subtree_com_in: wp.array2d[wp.vec3],
   crb_in: wp.array2d[vec10],
   M_in: wp.array2d[float],
@@ -492,7 +492,7 @@ def _implicit_free_body_backward(
   bodyid = body_freeadr[freeid]
   dofadr = body_dofadr[bodyid]
   dt = opt_timestep[worldid % opt_timestep.shape[0]]
-  R = xmat_in[worldid, bodyid]
+  R = math.quat_to_mat(xquat_in[worldid, bodyid])
   crb = crb_in[worldid, bodyid]
   mass = crb[9]
   Iw = wp.mat33(crb[0], crb[3], crb[4], crb[3], crb[1], crb[5], crb[4], crb[5], crb[2])
@@ -771,7 +771,7 @@ def advance_backward(m: Model, d_out: Data, d_bwd: Data, bc: BackwardContext):
           m.body_freeadr,
           d_bwd.qvel,
           d_bwd.xpos,
-          d_bwd.xmat,
+          d_bwd.xquat,
           d_bwd.subtree_com,
           d_bwd.crb,
           d_bwd.M,

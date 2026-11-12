@@ -249,7 +249,6 @@ def _free_gyro_param_vjp(mass_grad: bool, inertia_grad: bool, ipos_grad: bool, i
     qvel_in: wp.array2d[float],
     xpos_in: wp.array2d[wp.vec3],
     xquat_in: wp.array2d[wp.quat],
-    xmat_in: wp.array2d[wp.mat33],
     subtree_com_in: wp.array2d[wp.vec3],
     crb_in: wp.array2d[vec10],
     # In:
@@ -270,7 +269,7 @@ def _free_gyro_param_vjp(mass_grad: bool, inertia_grad: bool, ipos_grad: bool, i
     gradients = wp.grad(_free_gyro_objective)(
       ci[9],
       inertia,
-      xmat_in[w, root],
+      math.quat_to_mat(xquat_in[w, root]),
       com - xpos_in[w, root],
       wp.vec3(qvel_in[w, adr + 3], qvel_in[w, adr + 4], qvel_in[w, adr + 5]),
       wp.vec3(acceleration[w, adr + 3], acceleration[w, adr + 4], acceleration[w, adr + 5]),
@@ -344,7 +343,6 @@ def implicitfast_inertia_vjp(m: Model, d: Data, acceleration: wp.array, y: wp.ar
       d.qvel,
       d.xpos,
       d.xquat,
-      d.xmat,
       d.subtree_com,
       d.crb,
       acceleration,
@@ -397,9 +395,9 @@ def inertia_param_vjp(m: Model, d: Data, bc: BackwardContext, scale: float = -1.
       adjoint_recompute._inertial_frames_recompute,
       dim=(d.nworld, m.nbody),
       inputs=[m.body_ipos, m.body_iquat, d.xpos, d.xquat],
-      outputs=[d.xipos, d.ximat],
+      outputs=[d.xipos, d.xiquat],
       adj_inputs=[bc.res_body_ipos, bc.res_body_iquat, None, None],
-      adj_outputs=[bc.adj_xipos, bc.adj_ximat],
+      adj_outputs=[bc.adj_xipos, bc.adj_xiquat],
       adjoint=True,
     )
   model_worlds = max(

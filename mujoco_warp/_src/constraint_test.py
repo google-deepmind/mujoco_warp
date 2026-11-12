@@ -26,7 +26,6 @@ from absl.testing import parameterized
 import mujoco_warp as mjw
 from mujoco_warp import ConeType
 from mujoco_warp import test_data
-from mujoco_warp._src import util_pkg
 
 # tolerance for difference between MuJoCo and MJWarp constraint calculations,
 # mostly due to float precision
@@ -160,6 +159,108 @@ class ConstraintTest(parameterized.TestCase):
 
     _assert_eq(d.nacon.numpy()[0], mjd.ncon, "nacon")
     _assert_efc_eq(mjm, m, d, mjd, mjd.nefc, "efc", m.nv)
+
+  @parameterized.product(
+    cone=(ConeType.PYRAMIDAL, ConeType.ELLIPTIC),
+    nworld=(1, 2),
+    block_dim=(64, 128),
+  )
+  def test_sparse_contact_jac_shared_ancestor(self, cone, nworld, block_dim):
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option jacobian="sparse"/>
+        <worldbody>
+          <body pos="0 0 0.5">
+            <freejoint/>
+            <geom size="0.02" contype="0" conaffinity="0"/>
+            <body pos="0 0.04 0">
+              <joint axis="1 0 0"/>
+              <joint axis="0 1 0"/>
+              <joint/>
+              <geom size="0.02" contype="0" conaffinity="0"/>
+              <body pos="0 0 -0.15">
+                <joint axis="1 0 0"/>
+                <joint axis="0 1 0"/>
+                <geom size="0.02" contype="0" conaffinity="0"/>
+                <body pos="0 -0.02 -0.15">
+                  <geom size="0.06" condim="6" friction="0.7 0.02 0.005"/>
+                </body>
+              </body>
+            </body>
+            <body pos="0 -0.04 0">
+              <joint axis="1 0 0"/>
+              <joint axis="0 1 0"/>
+              <joint/>
+              <geom size="0.02" contype="0" conaffinity="0"/>
+              <body pos="0 0 -0.15">
+                <joint axis="1 0 0"/>
+                <joint axis="0 1 0"/>
+                <geom pos="0 0.02 -0.15" size="0.06" condim="6" friction="0.7 0.02 0.005"/>
+              </body>
+            </body>
+          </body>
+        </worldbody>
+      </mujoco>
+      """,
+      overrides={"opt.cone": cone},
+      nworld=nworld,
+      qvel_noise=0.5,
+    )
+    m.block_dim.contact_jac_sparse = block_dim
+    self.assertTrue(m.is_sparse)
+    self.assertEqual(mjd.ncon, 1)
+
+    mjds = [mjd]
+    if nworld == 2:
+      mjd1 = mujoco.MjData(mjm)
+      qpos = d.qpos.numpy()
+      qvel = d.qvel.numpy()
+      qpos[1, 7:] += 0.05
+      qvel[1] *= -0.7
+      d.qpos.assign(qpos)
+      d.qvel.assign(qvel)
+      mjd1.qpos[:] = qpos[1]
+      mjd1.qvel[:] = qvel[1]
+      mujoco.mj_forward(mjm, mjd1)
+      self.assertEqual(mjd1.ncon, 1)
+      mjds.append(mjd1)
+      mjw.fwd_kinematics(m, d)
+      mjw.collision(m, d)
+
+    for arr in (d.efc.J, d.efc.Jqvel, d.efc.vel):
+      arr.fill_(wp.inf)
+    for arr in (d.efc.J_colind, d.efc.J_rownnz, d.efc.J_rowadr):
+      arr.fill_(-1)
+    mjw.make_constraint(m, d)
+
+    nefc = mjd.nefc
+    np.testing.assert_array_equal(d.nefc.numpy(), nefc)
+    efc_J = d.efc.J.numpy()
+    efc_rownnz = d.efc.J_rownnz.numpy()
+    efc_rowadr = d.efc.J_rowadr.numpy()
+    efc_colind = d.efc.J_colind.numpy()
+    efc_vel = d.efc.vel.numpy()
+
+    J_dense = np.zeros((nworld, nefc, mjm.nv))
+    for w in range(nworld):
+      np.testing.assert_array_equal(efc_rownnz[w, :nefc], 10)
+      mujoco.mju_sparse2dense(
+        J_dense[w],
+        efc_J[w, 0].astype(np.float64),
+        efc_rownnz[w, :nefc],
+        efc_rowadr[w, :nefc],
+        efc_colind[w, 0],
+      )
+      self.assertEqual(mjds[w].nefc, nefc)
+      mj_J = np.zeros((nefc, mjm.nv))
+      mujoco.mju_sparse2dense(mj_J, mjds[w].efc_J, mjds[w].efc_J_rownnz, mjds[w].efc_J_rowadr, mjds[w].efc_J_colind)
+      np.testing.assert_allclose(J_dense[w], mj_J, rtol=1e-5, atol=1e-5)
+      np.testing.assert_allclose(efc_vel[w, :nefc], mjds[w].efc_vel[:nefc], rtol=1e-5, atol=1e-5)
+
+    if nworld == 2:
+      self.assertFalse(np.allclose(J_dense[0], J_dense[1]))
+      self.assertFalse(np.allclose(efc_vel[0, :nefc], efc_vel[1, :nefc]))
 
   @parameterized.parameters(
     *itertools.product(
@@ -592,8 +693,6 @@ class ConstraintTest(parameterized.TestCase):
     cone=(ConeType.PYRAMIDAL, ConeType.ELLIPTIC),
     jacobian=(mujoco.mjtJacobian.mjJAC_DENSE, mujoco.mjtJacobian.mjJAC_SPARSE),
   )
-  # TODO(team): remove version check once mujoco >= 3.17.1 is required.
-  @absltest.skipIf(not util_pkg.check_version("mujoco>=3.17.1.dev1005593014"), "Requires MuJoCo >= 3.17.1.dev1005593014")
   def test_flex_barycentric_jacobian(self, xml, cone, jacobian):
     """Test barycentric contact Jacobian calculation for flex."""
     mjm, mjd, m, d = test_data.fixture(xml=xml, overrides={"opt.cone": cone, "opt.jacobian": jacobian})
@@ -606,8 +705,6 @@ class ConstraintTest(parameterized.TestCase):
 
     _assert_efc_eq(mjm, m, d, mjd, mjd.nefc, f"efc_flex_dim{m.flex_dim.numpy()[0]}", m.nv)
 
-  # TODO(team): remove version check once mujoco >= 3.17.1 is required.
-  @absltest.skipIf(not util_pkg.check_version("mujoco>=3.17.1.dev1005593014"), "Requires MuJoCo >= 3.17.1.dev1005593014")
   def test_flex_3d_simplex_collision(self):
     """Test 3D simplex flex collision and constraint generation."""
     mjm, mjd, m, d = test_data.fixture(
@@ -641,10 +738,12 @@ class ConstraintTest(parameterized.TestCase):
     _assert_efc_eq(mjm, m, d, mjd, mjd.nefc, "efc_flex_3d_simplex", m.nv, tol=1e-3)
 
   # TODO(thowell): Add support for quadratic flex interpolation.
-  # TODO(team): remove version check once mujoco >= 3.17.1 is required.
-  @absltest.skipIf(not util_pkg.check_version("mujoco>=3.17.1.dev1005593014"), "Requires MuJoCo >= 3.17.1.dev1005593014")
-  def test_flex_interpolated(self):
-    """Test collision and constraint generation for interpolated flex shells."""
+  @parameterized.parameters(
+    ("2 1 2", "none"),
+    ("2 2 2", "bend"),
+  )
+  def test_flex_interpolated(self, cellcount, elastic2d):
+    """Test collision and constraint generation for interpolated volume and shell flexes."""
     xml = f"""
       <mujoco>
         <option solver="CG" tolerance="1e-6" timestep=".001"/>
@@ -654,9 +753,9 @@ class ConstraintTest(parameterized.TestCase):
             <geom type="box" size=".05 .05 .05" mass="1"/>
           </body>
           <flexcomp name="softbody" type="grid" count="4 2 4" spacing=".025 .05 .025" pos="0 0 0"
-                    dim="3" cellcount="2 1 2" radius=".001"
+                    dim="3" cellcount="{cellcount}" radius=".001"
                     mass="5" dof="trilinear">
-            <elasticity young="1e4" poisson="0.3" damping="1e-3"/>
+            <elasticity young="1e4" poisson="0.3" damping="1e-3" elastic2d="{elastic2d}" thickness="0.01"/>
             <contact condim="3" selfcollide="none"/>
           </flexcomp>
         </worldbody>
@@ -675,7 +774,7 @@ class ConstraintTest(parameterized.TestCase):
 
     self.assertGreater(mjd.nefc, 0, "Expected active contacts in MuJoCo")
     self.assertEqual(d.nefc.numpy()[0], mjd.nefc, "nefc mismatch")
-    _assert_efc_eq(mjm, m, d, mjd, mjd.nefc, f"efc_flex_interpolated_trilinear", m.nv)
+    _assert_efc_eq(mjm, m, d, mjd, mjd.nefc, f"efc_flex_interpolated_trilinear_{elastic2d}", m.nv)
 
   def test_weld_coriolis(self):
     """Test weld Coriolis term Jdotv_r with default torquescale and high velocity."""
@@ -789,7 +888,6 @@ class ConstraintTest(parameterized.TestCase):
     self.assertGreater(mjd.nefc, 0)
     _assert_efc_eq(mjm, m, d, mjd, mjd.nefc, "surfacevel", m.nv)
 
-  @absltest.skipIf(not util_pkg.check_version("mujoco>=3.17.1"), "Requires MuJoCo >= 3.17.1")
   @parameterized.product(
     cone=(ConeType.PYRAMIDAL, ConeType.ELLIPTIC),
     nworld=(1, 2),

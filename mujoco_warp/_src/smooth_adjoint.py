@@ -271,7 +271,7 @@ def gravcomp_qpos_vjp(m: Model, d: Data, lam: wp.array2d, bc: BackwardContext | 
 
     bc = adjoint.create_backward_context(m, d)
   bc.adj_xipos.zero_()
-  bc.adj_ximat.zero_()
+  bc.adj_xiquat.zero_()
   bc.adj_subtree_com.zero_()
   bc.adj_cdof.zero_()
   bc.adj_qfrc_gravcomp.zero_()
@@ -473,7 +473,7 @@ def smooth_force_backward(
     wp.launch(_acc_spatial, dim=(nworld, nv), inputs=[res_cdof_extra], outputs=[bc.adj_cdof])
 
   bc.adj_xipos.zero_()
-  bc.adj_ximat.zero_()
+  bc.adj_xiquat.zero_()
   bc.adj_subtree_com.zero_()
   _cinert_vjp(m, d, bc.adj_cinert, bc)
   if res_subtree_extra is not None:
@@ -662,7 +662,7 @@ def smooth_force_channels_backward(
   )
   comvel_backward(m, d, bc.adj_cvel, bc.adj_cdof_dot, bc=bc)
   bc.adj_xipos.zero_()
-  bc.adj_ximat.zero_()
+  bc.adj_xiquat.zero_()
   bc.adj_subtree_com.zero_()
   _cinert_vjp(m, d, bc.adj_cinert, bc)
   if xfrc_applied is not None:
@@ -1031,14 +1031,14 @@ def comvel_backward(
 
 
 # --------------------------------------------------------------------------------------------
-# cinert reverse: the last kinematic dqpos leaf. cinert depends on qpos via ximat / xipos /
-# subtree_com[root]: source-AD the body-local _cinert leaf, chain xipos/ximat -> qpos via
+# cinert reverse: the last kinematic dqpos leaf. cinert depends on qpos via xiquat / xipos /
+# subtree_com[root]: source-AD the body-local _cinert leaf, chain xipos/xiquat -> qpos via
 # support.jac_dof, route adj_subtree_com through _subtree_com_qpos_vjp. cvel/cdof_dot have no
 # direct qpos path (it flows through the total adj_cdof via _cdof_qpos_vjp).
 # --------------------------------------------------------------------------------------------
 
 
-# chain adj_{xipos_in, ximat_in} to a per-dof tangent gradient via support.jac_dof
+# chain adj_{xipos_in, xiquat_in} to a per-dof tangent gradient via support.jac_dof
 @wp.kernel(module="unique", enable_backward=False)
 def _cinert_pose_dof_vjp(
   # Model:
@@ -1049,13 +1049,13 @@ def _cinert_pose_dof_vjp(
   body_isdofancestor: wp.array2d[int],
   # Data in:
   xipos_in: wp.array2d[wp.vec3],
-  ximat_in: wp.array2d[wp.mat33],
+  xiquat_in: wp.array2d[wp.quat],
   subtree_com_in: wp.array2d[wp.vec3],
   cdof_in: wp.array2d[wp.spatial_vector],
   # In:
   lanes: int,
   adj_xipos: wp.array2d[wp.vec3],
-  adj_ximat: wp.array2d[wp.mat33],
+  adj_xiquat: wp.array2d[wp.quat],
   # Out:
   res_dof_out: wp.array2d[float],  # (+=): per-dof tangent gradient
 ):
@@ -1076,7 +1076,7 @@ def _cinert_pose_dof_vjp(
       k,
       w,
     )
-    tau = adjoint_util._adj_rotation(ximat_in[w, b], adj_ximat[w, b])
+    tau = adjoint_util._adj_quat_rotation(xiquat_in[w, b], adj_xiquat[w, b])
     acc += wp.dot(jacp, adj_xipos[w, b]) + wp.dot(jacr, tau)
   wp.atomic_add(res_dof_out, w, k, acc)  # kernel_analyzer: ignore[atomic]
 
@@ -1088,9 +1088,9 @@ def _cinert_vjp(m: Model, d: Data, adj_cinert: wp.array2d, bc: BackwardContext):
   wp.launch(
     adjoint_recompute._cinert_recompute,
     dim=(d.nworld, m.nbody),
-    inputs=[m.body_rootid, m.body_mass, m.body_inertia, d.xipos, d.ximat, d.subtree_com],
+    inputs=[m.body_rootid, m.body_mass, m.body_inertia, d.xipos, d.xiquat, d.subtree_com],
     outputs=[d.cinert],
-    adj_inputs=[None, bc.res_body_mass, bc.res_body_inertia, bc.adj_xipos, bc.adj_ximat, bc.adj_subtree_com],
+    adj_inputs=[None, bc.res_body_mass, bc.res_body_inertia, bc.adj_xipos, bc.adj_xiquat, bc.adj_subtree_com],
     adj_outputs=[adj_cinert],
     adjoint=True,
   )
@@ -1112,12 +1112,12 @@ def _kinematic_qpos_vjp(m: Model, d: Data, adj_cdof: wp.array2d, bc: BackwardCon
       m.dof_bodyid,
       m.body_isdofancestor,
       d.xipos,
-      d.ximat,
+      d.xiquat,
       d.subtree_com,
       d.cdof,
       lanes,
       bc.adj_xipos,
-      bc.adj_ximat,
+      bc.adj_xiquat,
     ],
     outputs=[smooth_res_dof],
     block_dim=128,

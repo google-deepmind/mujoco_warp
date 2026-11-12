@@ -25,6 +25,7 @@ import warp as wp
 from mujoco_warp._src import adjoint_util
 from mujoco_warp._src import collision_gjk
 from mujoco_warp._src import collision_gjk_adjoint
+from mujoco_warp._src import math
 from mujoco_warp._src.collision_convex import _hfield_filter
 from mujoco_warp._src.collision_core import geom_collision_pair
 from mujoco_warp._src.collision_gjk import _get_face_verts
@@ -131,7 +132,7 @@ def _hfield_freeze(
   pair_gap: wp.array2d[float],
   # Data in:
   geom_xpos_in: wp.array2d[wp.vec3],
-  geom_xmat_in: wp.array2d[wp.mat33],
+  geom_xquat_in: wp.array2d[wp.quat],
   contact_dist_in: wp.array[float],
   contact_pos_in: wp.array[wp.vec3],
   contact_frame_in: wp.array[wp.mat33],
@@ -182,9 +183,9 @@ def _hfield_freeze(
   witness1 = contact_pos + half_dist * normal
   witness2 = contact_pos - half_dist * normal
   geom1_pos = geom_xpos_in[worldid, g1]
-  geom1_mat = geom_xmat_in[worldid, g1]
+  geom1_mat = math.quat_to_mat(geom_xquat_in[worldid, g1])
   geom2_pos = geom_xpos_in[worldid, g2]
-  geom2_mat = geom_xmat_in[worldid, g2]
+  geom2_mat = math.quat_to_mat(geom_xquat_in[worldid, g2])
   local1 = wp.transpose(geom1_mat) @ (witness1 - geom1_pos)
   local2 = wp.transpose(geom2_mat) @ (witness2 - geom2_pos)
   prism_out[cid] = collision_gjk_adjoint._mat33_rows(local1, local2, wp.vec3(0.0, 0.0, 0.0))
@@ -223,7 +224,7 @@ def _hfield_freeze(
     mesh_graph,
     hfield_size,
     geom_xpos_in,
-    geom_xmat_in,
+    geom_xquat_in,
     worldid,
     g1,
     g2,
@@ -256,7 +257,7 @@ def _hfield_freeze(
     mesh_polymapnum,
     mesh_polymap,
     geom_xpos_in,
-    geom_xmat_in,
+    geom_xquat_in,
     geoms,
     worldid,
   )
@@ -602,7 +603,7 @@ def _hfield_replay(
   mesh_vert: wp.array[wp.vec3],
   # Data in:
   geom_xpos_in: wp.array2d[wp.vec3],
-  geom_xmat_in: wp.array2d[wp.mat33],
+  geom_xquat_in: wp.array2d[wp.quat],
   contact_includemargin_in: wp.array[float],
   contact_geom_in: wp.array[wp.vec2i],
   contact_worldid_in: wp.array[int],
@@ -632,9 +633,9 @@ def _hfield_replay(
   g2 = geoms[1]
   worldid = contact_worldid_in[cid]
   geom1_pos = geom_xpos_in[worldid, g1]
-  geom1_mat = geom_xmat_in[worldid, g1]
+  geom1_mat = math.quat_to_mat(geom_xquat_in[worldid, g1])
   geom2_pos = geom_xpos_in[worldid, g2]
-  geom2_mat = geom_xmat_in[worldid, g2]
+  geom2_mat = math.quat_to_mat(geom_xquat_in[worldid, g2])
 
   if tag == _CASE_FROZEN:
     dist0, x1w, x2w = collision_gjk_adjoint._replay_frozen(
@@ -750,7 +751,7 @@ def hfield_contact_pose_vjp(
   res_contact_frame: wp.array,
   adj_contact_dist: wp.array,
   res_geom_xpos: wp.array,
-  res_geom_xmat: wp.array,
+  res_geom_xquat: wp.array,
 ):
   """Accumulates height field contact cotangents into geometry pose cotangents."""
   ngeomtype = len(GeomType)
@@ -795,7 +796,7 @@ def hfield_contact_pose_vjp(
       m.pair_geom2,
       m.pair_gap,
       d_out.geom_xpos,
-      d_out.geom_xmat,
+      d_out.geom_xquat,
       d_out.contact.dist,
       d_out.contact.pos,
       d_out.contact.frame,
@@ -823,7 +824,7 @@ def hfield_contact_pose_vjp(
     (m.mesh_vertadr, None),
     (m.mesh_vert, None),
     (d_out.geom_xpos, res_geom_xpos),
-    (d_out.geom_xmat, res_geom_xmat),
+    (d_out.geom_xquat, res_geom_xquat),
     (d_out.contact.includemargin, None),
     (d_out.contact.geom, None),
     (d_out.contact.worldid, None),

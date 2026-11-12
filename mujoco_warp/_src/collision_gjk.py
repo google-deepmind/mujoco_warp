@@ -692,7 +692,7 @@ def gjk(
   xnorm = wp.sqrt(wp.dot(x_k, x_k))
   xnorm_prev = float(0.0)
 
-  for _ in range(gjk_iterations):
+  for k in range(gjk_iterations):
     if xnorm < min_norm or wp.abs(xnorm_prev - xnorm) < MINVAL:
       break
 
@@ -761,7 +761,8 @@ def gjk(
 
     # get the next iteration of x_k
     x_k = _linear_combine(n, lmbda, simplex)
-    xnorm_prev = xnorm
+    # the initial guess is not a simplex point, so matching its norm is not a stall
+    xnorm_prev = wp.where(k == 0, 0.0, xnorm)
     xnorm = wp.sqrt(wp.dot(x_k, x_k))
 
     # we have a tetrahedron containing the origin so return early

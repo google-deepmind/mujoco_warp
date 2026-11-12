@@ -193,6 +193,52 @@ class SleepTest(parameterized.TestCase):
       self.assertEqual(d.tree_awake.numpy()[w, 1], 1, f"b2 in world {w} should have woken up due to tendon constraint")
 
   @parameterized.parameters(1, 2)
+  def test_tendon_frictionloss_waking(self, nworld):
+    """Verify moving an awake body wakes a connected sleeping body through tendon frictionloss."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option>
+          <flag sleep="enable" island="enable"/>
+        </option>
+        <worldbody>
+          <body name="b1" pos="0 0 0.5">
+            <joint name="j1" type="slide" axis="0 0 1"/>
+            <geom type="sphere" size=".1"/>
+          </body>
+          <body name="b2" pos="1 0 0.5">
+            <joint name="j2" type="slide" axis="0 0 1"/>
+            <geom type="sphere" size=".1"/>
+          </body>
+        </worldbody>
+        <tendon>
+          <fixed name="ten" frictionloss="2.0">
+            <joint joint="j1" coef="1.0"/>
+            <joint joint="j2" coef="-1.0"/>
+          </fixed>
+        </tendon>
+      </mujoco>
+      """,
+      nworld=nworld,
+    )
+
+    tree_asleep = d.tree_asleep.numpy()
+    for w in range(nworld):
+      tree_asleep[w, 1] = 1
+    d.tree_asleep = wp.array(tree_asleep, dtype=int)
+    sleep.update_sleep(m, d)
+
+    qvel = d.qvel.numpy()
+    for w in range(nworld):
+      qvel[w, 0] = -5.0
+    d.qvel = wp.array(qvel, dtype=float)
+
+    mjwarp.step(m, d)
+
+    for w in range(nworld):
+      self.assertEqual(d.tree_awake.numpy()[w, 1], 1, f"b2 in world {w} should have woken up due to tendon frictionloss")
+
+  @parameterized.parameters(1, 2)
   def test_equality_waking(self, nworld):
     """Verify that moving an awake body wakes up a connected sleeping body (weld equality)."""
     mjm, mjd, m, d = test_data.fixture(

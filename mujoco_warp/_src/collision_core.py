@@ -20,6 +20,7 @@ from typing import Any, Tuple
 
 import warp as wp
 
+from mujoco_warp._src.math import quat_to_mat
 from mujoco_warp._src.math import safe_div
 from mujoco_warp._src.types import MJ_MINMU
 from mujoco_warp._src.types import MJ_MINVAL
@@ -83,7 +84,7 @@ def geom_collision_pair_from_types(
   mesh_polymap: wp.array[int],
   # Data in:
   geom_xpos_in: wp.array2d[wp.vec3],
-  geom_xmat_in: wp.array2d[wp.mat33],
+  geom_xquat_in: wp.array2d[wp.quat],
   # In:
   geom_type1: int,
   geom_type2: int,
@@ -97,13 +98,13 @@ def geom_collision_pair_from_types(
   g2 = geoms[1]
 
   geom1.pos = geom_xpos_in[worldid, g1]
-  geom1.rot = geom_xmat_in[worldid, g1]
+  geom1.rot = quat_to_mat(geom_xquat_in[worldid, g1])
   geom1.size = geom_size[worldid % geom_size.shape[0], g1]
   # z-axis of the rotation matrix, used as the surface normal for plane collisions
   geom1.normal = wp.vec3(geom1.rot[0, 2], geom1.rot[1, 2], geom1.rot[2, 2])
 
   geom2.pos = geom_xpos_in[worldid, g2]
-  geom2.rot = geom_xmat_in[worldid, g2]
+  geom2.rot = quat_to_mat(geom_xquat_in[worldid, g2])
   geom2.size = geom_size[worldid % geom_size.shape[0], g2]
   # z-axis of the rotation matrix, used as the surface normal for plane collisions
   geom2.normal = wp.vec3(geom2.rot[0, 2], geom2.rot[1, 2], geom2.rot[2, 2])
@@ -177,7 +178,7 @@ def geom_collision_pair(
   mesh_polymap: wp.array[int],
   # Data in:
   geom_xpos_in: wp.array2d[wp.vec3],
-  geom_xmat_in: wp.array2d[wp.mat33],
+  geom_xquat_in: wp.array2d[wp.quat],
   # In:
   geoms: wp.vec2i,
   worldid: int,
@@ -202,7 +203,7 @@ def geom_collision_pair(
     mesh_polymapnum,
     mesh_polymap,
     geom_xpos_in,
-    geom_xmat_in,
+    geom_xquat_in,
     geom_type1,
     geom_type2,
     geoms,

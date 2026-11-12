@@ -612,7 +612,7 @@ def _make_cast_ray(geom_ray_types: Tuple[int], first_hit: bool = False) -> wp.Fu
     mat_rgba: wp.array2d[wp.vec4],
     # Data in:
     geom_xpos_in: wp.array2d[wp.vec3],
-    geom_xmat_in: wp.array2d[wp.mat33],
+    geom_xquat_in: wp.array2d[wp.quat],
     flexvert_xpos_in: wp.array2d[wp.vec3],
     # In:
     bvh_id: wp.uint64,
@@ -676,7 +676,7 @@ def _make_cast_ray(geom_ray_types: Tuple[int], first_hit: bool = False) -> wp.Fu
         if gtype == GeomType.PLANE:
           d, n = ray_plane(
             geom_xpos_in[worldid, gi],
-            geom_xmat_in[worldid, gi],
+            math.quat_to_mat(geom_xquat_in[worldid, gi]),
             geom_size[worldid % geom_size.shape[0], gi],
             ray_origin_world,
             ray_dir_world,
@@ -687,7 +687,7 @@ def _make_cast_ray(geom_ray_types: Tuple[int], first_hit: bool = False) -> wp.Fu
             hfield_bvh_id,
             geom_dataid[worldid % geom_dataid.shape[0], gi],
             geom_xpos_in[worldid, gi],
-            geom_xmat_in[worldid, gi],
+            math.quat_to_mat(geom_xquat_in[worldid, gi]),
             ray_origin_world,
             ray_dir_world,
             query_dist,
@@ -705,7 +705,7 @@ def _make_cast_ray(geom_ray_types: Tuple[int], first_hit: bool = False) -> wp.Fu
         if gtype == GeomType.ELLIPSOID:
           d, n = ray_ellipsoid(
             geom_xpos_in[worldid, gi],
-            geom_xmat_in[worldid, gi],
+            math.quat_to_mat(geom_xquat_in[worldid, gi]),
             geom_size[worldid % geom_size.shape[0], gi],
             ray_origin_world,
             ray_dir_world,
@@ -714,7 +714,7 @@ def _make_cast_ray(geom_ray_types: Tuple[int], first_hit: bool = False) -> wp.Fu
         if gtype == GeomType.CAPSULE:
           d, n = ray_capsule(
             geom_xpos_in[worldid, gi],
-            geom_xmat_in[worldid, gi],
+            math.quat_to_mat(geom_xquat_in[worldid, gi]),
             geom_size[worldid % geom_size.shape[0], gi],
             ray_origin_world,
             ray_dir_world,
@@ -723,7 +723,7 @@ def _make_cast_ray(geom_ray_types: Tuple[int], first_hit: bool = False) -> wp.Fu
         if gtype == GeomType.CYLINDER:
           d, n = ray_cylinder(
             geom_xpos_in[worldid, gi],
-            geom_xmat_in[worldid, gi],
+            math.quat_to_mat(geom_xquat_in[worldid, gi]),
             geom_size[worldid % geom_size.shape[0], gi],
             ray_origin_world,
             ray_dir_world,
@@ -732,7 +732,7 @@ def _make_cast_ray(geom_ray_types: Tuple[int], first_hit: bool = False) -> wp.Fu
         if gtype == GeomType.BOX:
           d, all, n = ray_box(
             geom_xpos_in[worldid, gi],
-            geom_xmat_in[worldid, gi],
+            math.quat_to_mat(geom_xquat_in[worldid, gi]),
             geom_size[worldid % geom_size.shape[0], gi],
             ray_origin_world,
             ray_dir_world,
@@ -744,7 +744,7 @@ def _make_cast_ray(geom_ray_types: Tuple[int], first_hit: bool = False) -> wp.Fu
               mesh_bvh_id,
               geom_dataid[worldid % geom_dataid.shape[0], gi],
               geom_xpos_in[worldid, gi],
-              geom_xmat_in[worldid, gi],
+              math.quat_to_mat(geom_xquat_in[worldid, gi]),
               ray_origin_world,
               ray_dir_world,
               dist,
@@ -755,7 +755,7 @@ def _make_cast_ray(geom_ray_types: Tuple[int], first_hit: bool = False) -> wp.Fu
               mesh_bvh_id,
               geom_dataid[worldid % geom_dataid.shape[0], gi],
               geom_xpos_in[worldid, gi],
-              geom_xmat_in[worldid, gi],
+              math.quat_to_mat(geom_xquat_in[worldid, gi]),
               ray_origin_world,
               ray_dir_world,
               query_dist,
@@ -846,7 +846,7 @@ def _make_compute_lighting(cast_ray_first_hit: wp.Function) -> wp.Function:
     mat_rgba: wp.array2d[wp.vec4],
     # Data in:
     geom_xpos_in: wp.array2d[wp.vec3],
-    geom_xmat_in: wp.array2d[wp.mat33],
+    geom_xquat_in: wp.array2d[wp.quat],
     flexvert_xpos_in: wp.array2d[wp.vec3],
     # In:
     use_shadows: bool,
@@ -938,7 +938,7 @@ def _make_compute_lighting(cast_ray_first_hit: wp.Function) -> wp.Function:
         flex_radius,
         mat_rgba,
         geom_xpos_in,
-        geom_xmat_in,
+        geom_xquat_in,
         flexvert_xpos_in,
         bvh_id,
         group_root,
@@ -1068,7 +1068,7 @@ def _build_megakernel(m: Model, rc: RenderContext):
     mat_rgba: wp.array2d[wp.vec4],
     # Data in:
     geom_xpos_in: wp.array2d[wp.vec3],
-    geom_xmat_in: wp.array2d[wp.mat33],
+    geom_xquat_in: wp.array2d[wp.quat],
     cam_xpos_in: wp.array2d[wp.vec3],
     cam_xmat_in: wp.array2d[wp.mat33],
     light_xpos_in: wp.array2d[wp.vec3],
@@ -1167,8 +1167,12 @@ def _build_megakernel(m: Model, rc: RenderContext):
       ray_origin_world += cam_mat_world @ ray_offset_local_cam
     ray_dir_world = cam_mat_world @ ray_dir_local_cam
 
+    # Start primary rays on the near plane.
+    inv_cos = 1.0 / wp.max(-ray_dir_local_cam[2], 1e-6)
+    ray_origin_world += wp.static(rc_static["znear"]) * inv_cos * ray_dir_world
+
     if wp.static(rc_static["zfar"] > 0.0):
-      max_cam_dist = wp.static(rc_static["zfar"]) / wp.max(-ray_dir_local_cam[2], 1e-6)
+      max_cam_dist = wp.static(rc_static["zfar"] - rc_static["znear"]) * inv_cos
     else:
       max_cam_dist = float(MJ_MAXVAL)
 
@@ -1183,7 +1187,7 @@ def _build_megakernel(m: Model, rc: RenderContext):
       flex_radius,
       mat_rgba,
       geom_xpos_in,
-      geom_xmat_in,
+      geom_xquat_in,
       flexvert_xpos_in,
       bvh_id,
       group_root[worldid],
@@ -1203,15 +1207,14 @@ def _build_megakernel(m: Model, rc: RenderContext):
       max_cam_dist,
       wp.static(rc_static["enable_backface_culling"]),
     )
-
     if wp.static(rc_static["zfar"] > 0.0):
-      if geom_id != -1 and (dist * -ray_dir_local_cam[2]) > wp.static(rc_static["zfar"]):
+      if geom_id != -1 and (dist * -ray_dir_local_cam[2]) > wp.static(rc_static["zfar"] - rc_static["znear"]):
         geom_id = -1
 
     if wp.static(rc_static["enable_vertex_normals"]) and geom_id >= 0 and mesh_id >= 0 and f >= 0:
       gtype = geom_type[geom_id]
       if gtype == int(GeomType.MESH.value) or gtype == int(GeomType.SDF.value):
-        mat = geom_xmat_in[worldid, geom_id]
+        mat = math.quat_to_mat(geom_xquat_in[worldid, geom_id])
         face = wp.transpose(mat) @ normal
         tri = mesh_facenormal[mesh_faceadr[mesh_id] + f]
         adr = mesh_normaladr[mesh_id]
@@ -1256,7 +1259,7 @@ def _build_megakernel(m: Model, rc: RenderContext):
         depth = 0.0
         if wp.static(has_splats):
           if splat_depth > 0.0:
-            depth = splat_depth * -ray_dir_local_cam[2]
+            depth = splat_depth * -ray_dir_local_cam[2] + wp.static(rc_static["znear"])
         depth_out[worldid, depth_adr[camid] + rayid_local] = depth
       if wp.static(rc_static["render_skybox"]) and render_rgb[camid]:
         skybox_id = skybox_tex_id[worldid % skybox_tex_id.shape[0]]
@@ -1285,7 +1288,7 @@ def _build_megakernel(m: Model, rc: RenderContext):
       return
 
     if ray_base == 0 and render_depth[camid]:
-      # Planar depth: project Euclidean distance onto the camera's optical axis.
+      # Planar depth: project distance from the near plane onto the optical axis.
       # In camera-local coordinates, the optical axis is -Z. The Z-component of the
       # normalized ray direction is negative, so -ray_dir_local_cam[2] gives cos(θ)
       # between the ray and the optical axis.
@@ -1293,7 +1296,7 @@ def _build_megakernel(m: Model, rc: RenderContext):
       if wp.static(has_splats):
         if splat_depth > 0.0:
           depth = splat_depth
-      depth_out[worldid, depth_adr[camid] + rayid_local] = depth * -ray_dir_local_cam[2]
+      depth_out[worldid, depth_adr[camid] + rayid_local] = depth * -ray_dir_local_cam[2] + wp.static(rc_static["znear"])
 
     if not render_rgb[camid]:
       return
@@ -1323,7 +1326,7 @@ def _build_megakernel(m: Model, rc: RenderContext):
             mat_texuniform[worldid % mat_texuniform.shape[0], mat_id],
             textures[tex_id],
             geom_xpos_in[worldid, geom_id],
-            geom_xmat_in[worldid, geom_id],
+            math.quat_to_mat(geom_xquat_in[worldid, geom_id]),
             mesh_facetexcoord,
             mesh_texcoord,
             mesh_texcoord_offsets,
@@ -1386,7 +1389,7 @@ def _build_megakernel(m: Model, rc: RenderContext):
         flex_radius,
         mat_rgba,
         geom_xpos_in,
-        geom_xmat_in,
+        geom_xquat_in,
         flexvert_xpos_in,
         use_shadows,
         bvh_id,
@@ -1440,7 +1443,7 @@ def _build_megakernel(m: Model, rc: RenderContext):
         flex_radius,
         mat_rgba,
         geom_xpos_in,
-        geom_xmat_in,
+        geom_xquat_in,
         flexvert_xpos_in,
         use_shadows,
         bvh_id,
@@ -1548,7 +1551,7 @@ def render(m: Model, d: Data, rc: RenderContext):
         m.mat_shininess,
         m.mat_rgba,
         d.geom_xpos,
-        d.geom_xmat,
+        d.geom_xquat,
         d.cam_xpos,
         d.cam_xmat,
         d.light_xpos,

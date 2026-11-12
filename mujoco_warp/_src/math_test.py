@@ -21,6 +21,7 @@ from absl.testing import parameterized
 from mujoco_warp._src import types
 from mujoco_warp._src.math import closest_segment_point
 from mujoco_warp._src.math import closest_segment_to_segment_points
+from mujoco_warp._src.math import eig3
 from mujoco_warp._src.math import free_bias_vel_blocks
 from mujoco_warp._src.math import lu_factor_6x6
 from mujoco_warp._src.math import lu_solve_6x6
@@ -69,6 +70,34 @@ def _free_bias_vel_blocks_kernel(
     for c in range(3):
       lin_out[r, c] = lin[r, c]
       rot_out[r, c] = rot[r, c]
+
+
+@wp.kernel
+def _eig3_kernel(
+  # In:
+  A_in: wp.array2d[float],
+  # Out:
+  eigval_out: wp.array[float],
+  eigvec_out: wp.array2d[float],
+):
+  A = wp.mat33(
+    A_in[0, 0],
+    A_in[0, 1],
+    A_in[0, 2],
+    A_in[1, 0],
+    A_in[1, 1],
+    A_in[1, 2],
+    A_in[2, 0],
+    A_in[2, 1],
+    A_in[2, 2],
+  )
+  eigval, eigvec = eig3(A)
+  eigval_out[0] = eigval[0]
+  eigval_out[1] = eigval[1]
+  eigval_out[2] = eigval[2]
+  for r in range(3):
+    for c in range(3):
+      eigvec_out[r, c] = eigvec[r, c]
 
 
 class ClosestSegmentPointTest(parameterized.TestCase):
@@ -318,6 +347,47 @@ class FreeBiasVelTest(absltest.TestCase):
 
     np.testing.assert_allclose(lin_wp.numpy(), lin_ref, atol=1e-5, rtol=1e-5)
     np.testing.assert_allclose(rot_wp.numpy(), rot_ref, atol=1e-5, rtol=1e-5)
+
+
+class Eig3Test(parameterized.TestCase):
+  """Tests for math.eig3 3x3 symmetric eigenvalue decomposition."""
+
+  @parameterized.named_parameters(
+    ("diagonal", np.diag([3.0, 1.0, 2.0])),
+    ("zeros", np.zeros((3, 3))),
+    ("half_turn", np.diag([1.0, -1.0, -1.0])),
+    ("symmetric_small", np.array([[2.0, 1.0, 0.5], [1.0, 3.0, -0.2], [0.5, -0.2, 1.5]])),
+    ("symmetric_large", np.array([[10.0, -2.0, 3.0], [-2.0, 5.0, 1.0], [3.0, 1.0, 8.0]])),
+  )
+  def test_eig3(self, A_np):
+    A_wp = wp.array2d(A_np, dtype=float)
+    eigval_wp = wp.zeros(3, dtype=float)
+    eigvec_wp = wp.zeros((3, 3), dtype=float)
+    wp.launch(
+      _eig3_kernel,
+      dim=1,
+      inputs=[A_wp],
+      outputs=[eigval_wp, eigvec_wp],
+    )
+
+    vals = eigval_wp.numpy()
+    vecs = eigvec_wp.numpy()
+
+    # Eigenvalues must be sorted in descending order
+    self.assertGreaterEqual(vals[0], vals[1] - 1e-6)
+    self.assertGreaterEqual(vals[1], vals[2] - 1e-6)
+
+    # Compare eigenvalues with numpy reference
+    expected_vals = np.sort(np.linalg.eigvalsh(A_np))[::-1]
+    np.testing.assert_allclose(vals, expected_vals, atol=1e-4, rtol=1e-4)
+
+    # V must be orthonormal: V^T @ V = I
+    np.testing.assert_allclose(vecs.T @ vecs, np.eye(3), atol=1e-4)
+
+    # Each eigenvector must satisfy A @ v = lambda * v
+    for i in range(3):
+      v = vecs[:, i]
+      np.testing.assert_allclose(A_np @ v, vals[i] * v, atol=1e-4)
 
 
 if __name__ == "__main__":

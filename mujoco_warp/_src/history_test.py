@@ -35,7 +35,6 @@ from mujoco_warp import reset_history
 from mujoco_warp import set_state
 from mujoco_warp import step
 from mujoco_warp import test_data
-from mujoco_warp._src import util_pkg
 from mujoco_warp._src.history import _reset_actuator_history_kernel
 from mujoco_warp._src.history import read_ctrl_delayed
 
@@ -77,12 +76,9 @@ class PublicAPITest(absltest.TestCase):
     time_arr = d.time
     warp_result = wp.empty(d.nworld, dtype=float)
     read_ctrl(m, d, 0, time_arr, interp=-1, result=warp_result)
-    if util_pkg.check_version("mujoco>=3.13.1.dev984848064"):
-      mj_result = np.zeros(1)
-      mujoco.mj_readCtrl(mjm, mjd, 0, mjd.time, mj_result, -1)
-      mj_result = mj_result[0]
-    else:
-      mj_result = mujoco.mj_readCtrl(mjm, mjd, 0, mjd.time, -1)
+    mj_result = np.zeros(1)
+    mujoco.mj_readCtrl(mjm, mjd, 0, mjd.time, mj_result, -1)
+    mj_result = mj_result[0]
     np.testing.assert_allclose(
       warp_result.numpy()[0],
       mj_result,
@@ -93,12 +89,9 @@ class PublicAPITest(absltest.TestCase):
     # compare with explicit interp=0 (ZOH)
     warp_result_zoh = wp.empty(d.nworld, dtype=float)
     read_ctrl(m, d, 0, time_arr, interp=0, result=warp_result_zoh)
-    if util_pkg.check_version("mujoco>=3.13.1.dev984848064"):
-      mj_result_zoh = np.zeros(1)
-      mujoco.mj_readCtrl(mjm, mjd, 0, mjd.time, mj_result_zoh, 0)
-      mj_result_zoh = mj_result_zoh[0]
-    else:
-      mj_result_zoh = mujoco.mj_readCtrl(mjm, mjd, 0, mjd.time, 0)
+    mj_result_zoh = np.zeros(1)
+    mujoco.mj_readCtrl(mjm, mjd, 0, mjd.time, mj_result_zoh, 0)
+    mj_result_zoh = mj_result_zoh[0]
     np.testing.assert_allclose(
       warp_result_zoh.numpy()[0],
       mj_result_zoh,
@@ -268,12 +261,9 @@ class PublicAPITest(absltest.TestCase):
     time_arr = wp.array([query_time], dtype=float)
     warp_result = wp.empty(d.nworld, dtype=float)
     read_ctrl(m, d, 0, time_arr, interp=0, result=warp_result)
-    if util_pkg.check_version("mujoco>=3.13.1.dev984848064"):
-      mj_result = np.zeros(1)
-      mujoco.mj_readCtrl(mjm, mjd, 0, query_time, mj_result, 0)
-      mj_result = mj_result[0]
-    else:
-      mj_result = mujoco.mj_readCtrl(mjm, mjd, 0, query_time, 0)
+    mj_result = np.zeros(1)
+    mujoco.mj_readCtrl(mjm, mjd, 0, query_time, mj_result, 0)
+    mj_result = mj_result[0]
     np.testing.assert_allclose(
       warp_result.numpy()[0],
       mj_result,
@@ -887,12 +877,9 @@ class InterpolationTest(parameterized.TestCase):
     time_arr = d.time
     warp_result = wp.empty(d.nworld, dtype=float)
     read_ctrl(m, d, 0, time_arr, interp=2, result=warp_result)
-    if util_pkg.check_version("mujoco>=3.13.1.dev984848064"):
-      mj_result = np.zeros(1)
-      mujoco.mj_readCtrl(mjm, mjd, 0, mjd.time, mj_result, 2)
-      mj_result = mj_result[0]
-    else:
-      mj_result = mujoco.mj_readCtrl(mjm, mjd, 0, mjd.time, 2)
+    mj_result = np.zeros(1)
+    mujoco.mj_readCtrl(mjm, mjd, 0, mjd.time, mj_result, 2)
+    mj_result = mj_result[0]
     np.testing.assert_allclose(warp_result.numpy()[0], mj_result, atol=_TOLERANCE, err_msg="read_ctrl cubic interp mismatch")
 
 
@@ -1640,6 +1627,56 @@ class ResetHistoryTest(parameterized.TestCase):
     for w in range(nworld):
       np.testing.assert_allclose(d.sensordata.numpy()[w], mjd.sensordata, atol=1e-6)
 
+  @parameterized.product(nworld=(1, 2), nsample=(5, 7, 10, 16))
+  def test_subtimestep_interval_sensor_reset(self, nworld, nsample):
+    """Test sub-timestep and equal-timestep sensor intervals initialize monotonic timestamps."""
+    mjm, _, m, d = test_data.fixture(
+      xml=f"""
+      <mujoco>
+        <option timestep="0.01" gravity="0 0 0"/>
+        <worldbody>
+          <body>
+            <joint name="slide" type="slide"/>
+            <geom size="0.1" mass="1"/>
+          </body>
+        </worldbody>
+        <sensor>
+          <jointpos joint="slide" delay="0.02" interval="0.002 0" nsample="{nsample}"/>
+          <jointpos joint="slide" delay="0.02" interval="0.002 -0.001" nsample="{nsample}"/>
+          <jointpos joint="slide" delay="0.02" interval="0.01 0" nsample="{nsample}"/>
+          <jointpos joint="slide" delay="0.02" interval="0.01 -0.005" nsample="{nsample}"/>
+          <jointpos joint="slide" delay="0.02" interval="0.015 0" nsample="{nsample}"/>
+        </sensor>
+      </mujoco>
+      """,
+      nworld=nworld,
+    )
+
+    qpos_vals = np.array([[5.0]]) + 3.0 * np.arange(nworld)[:, None]
+    d.qpos = wp.array2d(qpos_vals, dtype=float)
+    d.history.fill_(wp.inf)
+    reset_history(m, d)
+    hist = d.history.numpy()
+
+    for sid in range(mjm.nsensor):
+      adr = int(m.sensor_historyadr.numpy()[0, sid])
+      for w in range(nworld):
+        times = hist[w, adr + 2 : adr + 2 + nsample]
+        self.assertTrue(np.all(np.diff(times) > 0.0))
+
+    mjd = mujoco.MjData(mjm)
+    for w in range(nworld):
+      np.testing.assert_allclose(hist[w], mjd.history, atol=_TOLERANCE)
+
+    # Verify t=0 sample is recorded and read back after delay=0.02 (3 steps)
+    for _ in range(3):
+      step(m, d)
+    sens = d.sensordata.numpy()
+    for w in range(nworld):
+      np.testing.assert_allclose(sens[w, 0], qpos_vals[w, 0], atol=1e-6)
+    if nworld == 2:
+      self.assertFalse(np.allclose(sens[0], sens[1]))
+
   @parameterized.parameters(1, 2)
   def test_init_history_none_times_preserves_buffer(self, nworld):
     """Test init_ctrl_history and init_sensor_history with times=None preserve timestamps."""
@@ -1694,6 +1731,69 @@ class ResetHistoryTest(parameterized.TestCase):
       # Values updated
       np.testing.assert_allclose(updated_history[w, act_v : act_v + act_n], [10.0, 20.0, 30.0], atol=1e-6)
       np.testing.assert_allclose(updated_history[w, sens_v : sens_v + sens_n * sens_dim], [1.0, 2.0, 3.0], atol=1e-6)
+
+  @parameterized.parameters(1, 2)
+  def test_init_history_none_times_preserves_wrapped_cursor(self, nworld):
+    """Test init_ctrl_history and init_sensor_history with times=None after buffer wraps."""
+    mjm, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option timestep="0.01"/>
+        <worldbody>
+          <body>
+            <joint name="slide" type="slide"/>
+            <geom size="0.1" mass="1"/>
+          </body>
+        </worldbody>
+        <actuator>
+          <motor joint="slide" delay="0.02" nsample="3"/>
+        </actuator>
+        <sensor>
+          <jointpos joint="slide" delay="0.02" nsample="3"/>
+        </sensor>
+      </mujoco>
+      """,
+      nworld=nworld,
+    )
+
+    # advance the circular cursors away from nsample - 1
+    for _ in range(2):
+      step(m, d)
+    orig_history = d.history.numpy().copy()
+
+    ctrl_vals = np.array([[10.0, 20.0, 30.0]]) + 100.0 * np.arange(nworld)[:, None]
+    sensor_vals = np.array([[1.0, 2.0, 3.0]]) + 100.0 * np.arange(nworld)[:, None]
+    init_ctrl_history(m, d, ctrlid=0, times=None, values=wp.array2d(ctrl_vals, dtype=float))
+    init_sensor_history(m, d, sensorid=0, times=None, values=wp.array2d(sensor_vals, dtype=float))
+    history = d.history.numpy()
+
+    act_adr = m.actuator_historyadr.numpy()[0, 0]
+    sens_adr = m.sensor_historyadr.numpy()[0, 0]
+    nsample = 3
+
+    for w in range(nworld):
+      for adr, vals in ((act_adr, ctrl_vals), (sens_adr, sensor_vals)):
+        cursor = int(orig_history[w, adr + 1])
+        self.assertNotEqual(cursor, nsample - 1)
+        times = slice(adr + 2, adr + 2 + nsample)
+
+        # cursor and timestamps preserved
+        self.assertEqual(history[w, adr + 1], cursor)
+        np.testing.assert_allclose(history[w, times], orig_history[w, times], atol=_TOLERANCE)
+
+        # values written in logical order relative to the cursor
+        for i in range(nsample):
+          phys = (cursor + 1 + i) % nsample
+          np.testing.assert_allclose(history[w, adr + 2 + nsample + phys], vals[w, i], atol=_TOLERANCE)
+
+      mjd_w = mujoco.MjData(mjm)
+      mjd_w.history[:] = orig_history[w]
+      mujoco.mj_initCtrlHistory(mjm, mjd_w, 0, None, ctrl_vals[w])
+      mujoco.mj_initSensorHistory(mjm, mjd_w, 0, None, sensor_vals[w], mjd_w.history[sens_adr])
+      np.testing.assert_allclose(history[w], mjd_w.history, atol=_TOLERANCE)
+
+    if nworld == 2:
+      self.assertFalse(np.allclose(history[0], history[1]))
 
   def test_init_sensor_history_phase_none_preserves_user_slot(self):
     """Test init_sensor_history with phase=None preserves interval user slot (time_prev)."""
