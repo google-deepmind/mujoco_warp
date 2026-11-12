@@ -320,12 +320,6 @@ def _compute_body_invweight0(
   inv_trans = wp.static(1.0 / 3.0) * (A_trans[0] + A_trans[1] + A_trans[2])
   inv_rot = wp.static(1.0 / 3.0) * (A_rot[0] + A_rot[1] + A_rot[2])
 
-  # Prevent degenerate constraints: if one component is near zero, use the other as fallback
-  if inv_trans < types.MJ_MINVAL and inv_rot > types.MJ_MINVAL:
-    inv_trans = inv_rot  # use rotation as fallback for translation
-  elif inv_rot < types.MJ_MINVAL and inv_trans > types.MJ_MINVAL:
-    inv_rot = inv_trans  # use translation as fallback for rotation
-
   body_invweight0_out[body_invweight0_id, bodyid] = wp.vec2(inv_trans, inv_rot)
 
 
