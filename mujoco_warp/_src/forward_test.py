@@ -31,7 +31,6 @@ from mujoco_warp import GainType
 from mujoco_warp import IntegratorType
 from mujoco_warp import SolverType
 from mujoco_warp import test_data
-from mujoco_warp._src import util_pkg
 
 # tolerance for difference between MuJoCo and mjwarp smooth calculations - mostly
 # due to float precision
@@ -431,7 +430,6 @@ class ForwardTest(parameterized.TestCase):
 
     _assert_eq(rk_step().numpy()[0], rk_step().numpy()[0], "qpos")
 
-  @absltest.skipIf(not util_pkg.check_version("mujoco>=3.17.1"), "Requires MuJoCo >= 3.17.1")
   def test_rungekutta4_rotation(self):
     """RK4 applies the Runge-Kutta-Munthe-Kaas correction to ball and free joint orientations."""
     # fast rotation (timestep * |omega| ~ 0.5) so that the correction changes orientation
@@ -512,14 +510,10 @@ class ForwardTest(parameterized.TestCase):
     np.testing.assert_allclose(d.qacc_warmstart.numpy()[0, 0], a3, atol=1e-4)
     self.assertGreater(abs(qacc_rk - a3), 0.01)
 
-    # TODO(team): remove version check after mujoco>=3.17.1 is required
-    if util_pkg.check_version("mujoco>=3.17.1"):
-      mujoco.mj_RungeKutta(mjm, mjd, 4)
-      _assert_eq(d.qacc.numpy()[0], mjd.qacc, "qacc")
-      _assert_eq(d.qacc_warmstart.numpy()[0], mjd.qacc_warmstart, "qacc_warmstart")
+    mujoco.mj_RungeKutta(mjm, mjd, 4)
+    _assert_eq(d.qacc.numpy()[0], mjd.qacc, "qacc")
+    _assert_eq(d.qacc_warmstart.numpy()[0], mjd.qacc_warmstart, "qacc_warmstart")
 
-  # TODO(team): remove version check after mujoco>=3.17.1 is required
-  @absltest.skipIf(not util_pkg.check_version("mujoco>=3.17.1"), "Requires MuJoCo >= 3.17.1")
   def test_rungekutta4_delayed_sensor_and_actuator_state(self):
     """RK4 evaluates delayed sensors and activation updates at stage 0."""
 
@@ -3720,10 +3714,6 @@ class DiscreteIntegratorTest(parameterized.TestCase):
     if nworld == 2:
       self.assertFalse(np.allclose(d.qacc.numpy()[0], d.qacc.numpy()[1]))
 
-  @absltest.skipIf(
-    not util_pkg.check_version("mujoco>=3.14.1.dev990351372"),
-    "Requires MuJoCo >= 3.14.1.dev990351372",
-  )
   def test_snh_requires_discrete_integrator(self):
     """Verifies that 3D SNH flex requires integrator='discrete' in put_model and forward/step."""
     spec = mujoco.MjSpec.from_string(
@@ -3788,10 +3778,6 @@ class DiscreteIntegratorTest(parameterized.TestCase):
       )
       mjw.forward(m_stvk, d_stvk)
 
-  @absltest.skipIf(
-    not util_pkg.check_version("mujoco>=3.14.1.dev990351372"),
-    "Requires MuJoCo >= 3.14.1.dev990351372",
-  )
   @parameterized.parameters(1, 2)
   def test_discrete_snh_graph_capture(self, nworld):
     """Verifies that discrete integrator with 3D SNH flex is compatible with graph capture."""

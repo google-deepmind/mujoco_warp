@@ -35,7 +35,6 @@ from mujoco_warp import reset_history
 from mujoco_warp import set_state
 from mujoco_warp import step
 from mujoco_warp import test_data
-from mujoco_warp._src import util_pkg
 from mujoco_warp._src.history import _reset_actuator_history_kernel
 from mujoco_warp._src.history import read_ctrl_delayed
 
@@ -77,12 +76,9 @@ class PublicAPITest(absltest.TestCase):
     time_arr = d.time
     warp_result = wp.empty(d.nworld, dtype=float)
     read_ctrl(m, d, 0, time_arr, interp=-1, result=warp_result)
-    if util_pkg.check_version("mujoco>=3.13.1.dev984848064"):
-      mj_result = np.zeros(1)
-      mujoco.mj_readCtrl(mjm, mjd, 0, mjd.time, mj_result, -1)
-      mj_result = mj_result[0]
-    else:
-      mj_result = mujoco.mj_readCtrl(mjm, mjd, 0, mjd.time, -1)
+    mj_result = np.zeros(1)
+    mujoco.mj_readCtrl(mjm, mjd, 0, mjd.time, mj_result, -1)
+    mj_result = mj_result[0]
     np.testing.assert_allclose(
       warp_result.numpy()[0],
       mj_result,
@@ -93,12 +89,9 @@ class PublicAPITest(absltest.TestCase):
     # compare with explicit interp=0 (ZOH)
     warp_result_zoh = wp.empty(d.nworld, dtype=float)
     read_ctrl(m, d, 0, time_arr, interp=0, result=warp_result_zoh)
-    if util_pkg.check_version("mujoco>=3.13.1.dev984848064"):
-      mj_result_zoh = np.zeros(1)
-      mujoco.mj_readCtrl(mjm, mjd, 0, mjd.time, mj_result_zoh, 0)
-      mj_result_zoh = mj_result_zoh[0]
-    else:
-      mj_result_zoh = mujoco.mj_readCtrl(mjm, mjd, 0, mjd.time, 0)
+    mj_result_zoh = np.zeros(1)
+    mujoco.mj_readCtrl(mjm, mjd, 0, mjd.time, mj_result_zoh, 0)
+    mj_result_zoh = mj_result_zoh[0]
     np.testing.assert_allclose(
       warp_result_zoh.numpy()[0],
       mj_result_zoh,
@@ -268,12 +261,9 @@ class PublicAPITest(absltest.TestCase):
     time_arr = wp.array([query_time], dtype=float)
     warp_result = wp.empty(d.nworld, dtype=float)
     read_ctrl(m, d, 0, time_arr, interp=0, result=warp_result)
-    if util_pkg.check_version("mujoco>=3.13.1.dev984848064"):
-      mj_result = np.zeros(1)
-      mujoco.mj_readCtrl(mjm, mjd, 0, query_time, mj_result, 0)
-      mj_result = mj_result[0]
-    else:
-      mj_result = mujoco.mj_readCtrl(mjm, mjd, 0, query_time, 0)
+    mj_result = np.zeros(1)
+    mujoco.mj_readCtrl(mjm, mjd, 0, query_time, mj_result, 0)
+    mj_result = mj_result[0]
     np.testing.assert_allclose(
       warp_result.numpy()[0],
       mj_result,
@@ -887,12 +877,9 @@ class InterpolationTest(parameterized.TestCase):
     time_arr = d.time
     warp_result = wp.empty(d.nworld, dtype=float)
     read_ctrl(m, d, 0, time_arr, interp=2, result=warp_result)
-    if util_pkg.check_version("mujoco>=3.13.1.dev984848064"):
-      mj_result = np.zeros(1)
-      mujoco.mj_readCtrl(mjm, mjd, 0, mjd.time, mj_result, 2)
-      mj_result = mj_result[0]
-    else:
-      mj_result = mujoco.mj_readCtrl(mjm, mjd, 0, mjd.time, 2)
+    mj_result = np.zeros(1)
+    mujoco.mj_readCtrl(mjm, mjd, 0, mjd.time, mj_result, 2)
+    mj_result = mj_result[0]
     np.testing.assert_allclose(warp_result.numpy()[0], mj_result, atol=_TOLERANCE, err_msg="read_ctrl cubic interp mismatch")
 
 
@@ -1677,11 +1664,9 @@ class ResetHistoryTest(parameterized.TestCase):
         times = hist[w, adr + 2 : adr + 2 + nsample]
         self.assertTrue(np.all(np.diff(times) > 0.0))
 
-    # TODO(team): remove guard once sub-timestep reset fix lands in stable MuJoCo
-    if util_pkg.check_version("mujoco>=3.17.1.dev1011687792"):
-      mjd = mujoco.MjData(mjm)
-      for w in range(nworld):
-        np.testing.assert_allclose(hist[w], mjd.history, atol=_TOLERANCE)
+    mjd = mujoco.MjData(mjm)
+    for w in range(nworld):
+      np.testing.assert_allclose(hist[w], mjd.history, atol=_TOLERANCE)
 
     # Verify t=0 sample is recorded and read back after delay=0.02 (3 steps)
     for _ in range(3):
@@ -1801,13 +1786,11 @@ class ResetHistoryTest(parameterized.TestCase):
           phys = (cursor + 1 + i) % nsample
           np.testing.assert_allclose(history[w, adr + 2 + nsample + phys], vals[w, i], atol=_TOLERANCE)
 
-      # TODO(team): remove guard once mju_historyInit preserves the cursor in stable MuJoCo
-      if util_pkg.check_version("mujoco>=3.17.1"):
-        mjd_w = mujoco.MjData(mjm)
-        mjd_w.history[:] = orig_history[w]
-        mujoco.mj_initCtrlHistory(mjm, mjd_w, 0, None, ctrl_vals[w])
-        mujoco.mj_initSensorHistory(mjm, mjd_w, 0, None, sensor_vals[w], mjd_w.history[sens_adr])
-        np.testing.assert_allclose(history[w], mjd_w.history, atol=_TOLERANCE)
+      mjd_w = mujoco.MjData(mjm)
+      mjd_w.history[:] = orig_history[w]
+      mujoco.mj_initCtrlHistory(mjm, mjd_w, 0, None, ctrl_vals[w])
+      mujoco.mj_initSensorHistory(mjm, mjd_w, 0, None, sensor_vals[w], mjd_w.history[sens_adr])
+      np.testing.assert_allclose(history[w], mjd_w.history, atol=_TOLERANCE)
 
     if nworld == 2:
       self.assertFalse(np.allclose(history[0], history[1]))

@@ -38,7 +38,7 @@ from mujoco_warp._src import collision_driver
 from mujoco_warp._src import constraint
 from mujoco_warp._src import render_util
 from mujoco_warp._src import set_const
-from mujoco_warp._src import util_pkg
+from mujoco_warp._src import sort
 from mujoco_warp._src import warp_util
 from mujoco_warp._src.io import override_model
 from mujoco_warp._src.types import DeterminismType
@@ -169,7 +169,7 @@ def _spy(module, name, tag, events, d):
 
   def wrapper(*args, **kwargs):
     out = fn(*args, **kwargs)
-    events.append((tag, args[1] is d, _snapshot(_flatten(d, "d"))))
+    events.append((tag, any(arg is d for arg in args), _snapshot(_flatten(d, "d"))))
     return out
 
   return mock.patch.object(module, name, wrapper)
@@ -178,9 +178,9 @@ def _spy(module, name, tag, events, d):
 class _Replay:
   """Replays the contact and constraint rows of the first run in later runs.
 
-  CONTACTS and CONSTRAINT are not implemented yet, so collision and make_constraint emit rows in a
-  racy order. Later runs check that the inputs of these stages are bitwise equal to the first run
-  and that their float outputs are bitwise equal up to order, then restore the first run's outputs.
+  These ATOMICS-only tests deliberately leave CONTACTS and CONSTRAINT disabled. Later runs check
+  that stage inputs and float outputs agree up to order, then restore the first run's row order to
+  isolate atomic reductions. Unpatched sorting and capture regressions live in sort_test.py.
   """
 
   def __init__(self, test, d):
@@ -601,11 +601,6 @@ class DeterminismTest(parameterized.TestCase):
       nworld=2,
       qvel_noise=0.1,
     )
-    # TODO(team): remove version check once mujoco >= 3.16.1 is required.
-    if not util_pkg.check_version("mujoco>=3.16.1"):
-      covers = tuple(
-        c for c in covers if c not in ("derivative._eff_flex_rod_stiff", "passive._flex_rod_bending", "passive._flex_rod_mul")
-      )
     with _record_launches() as launches:
       rc = render_util.create_render_context(mjm, nworld=2, cam_res=(8, 8), deterministic=True)
     if not overrides:
@@ -947,9 +942,9 @@ class DeterminismTest(parameterized.TestCase):
 
     m.callback.contactfilter = contactfilter
     spies = (
-      (collision_driver, "_sort_contacts", "contacts"),
+      (sort, "contacts", "contacts"),
       (collision_driver, "collision", "collision"),
-      (constraint, "_sort_constraints", "constraint"),
+      (sort, "constraints", "constraint"),
       (constraint, "make_constraint", "make_constraint"),
     )
     with contextlib.ExitStack() as stack:
@@ -1012,8 +1007,8 @@ class DeterminismTest(parameterized.TestCase):
     )
     m.opt.deterministic = DeterminismType.ALL
     with (
-      mock.patch.object(collision_driver, "_sort_contacts") as contacts,
-      mock.patch.object(constraint, "_sort_constraints") as constraints,
+      mock.patch.object(sort, "contacts") as contacts,
+      mock.patch.object(sort, "constraints") as constraints,
     ):
       mjw.forward(m, d)
     self.assertEqual((contacts.call_count, constraints.call_count), ncalls)
