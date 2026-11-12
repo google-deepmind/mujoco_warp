@@ -644,6 +644,37 @@ class IOTest(parameterized.TestCase):
     with self.assertRaises(ValueError):
       mjwarp.put_data(mjm, mjd, njmax_nnz=1)
 
+  @parameterized.parameters("auto", "sparse")
+  def test_put_data_flex_equality_blocks(self, jacobian):
+    """Each edge row of a flex equality loads as its own JTDAJ block."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml=f"""
+      <mujoco>
+        <option jacobian="{jacobian}"/>
+        <worldbody>
+          <flexcomp name="rope" type="grid" dim="1" count="14 1 1" spacing=".1 .1 .1" radius=".03" mass="1">
+            <edge equality="true"/>
+            <contact contype="0" conaffinity="0" selfcollide="none"/>
+            <pin id="0"/>
+          </flexcomp>
+        </worldbody>
+      </mujoco>
+      """,
+      qvel_noise=0.5,
+    )
+    self.assertEqual(mujoco.mj_isSparse(mjm), jacobian == "sparse")
+    self.assertTrue(m.is_sparse)
+    self.assertGreater(mjd.nefc, 1)
+
+    nblock = d.efc.jtdaj_nblock.numpy()[0]
+    np.testing.assert_array_equal(d.efc.jtdaj_adr.numpy()[0, :nblock], np.arange(mjd.nefc))
+    np.testing.assert_array_equal(d.efc.jtdaj_nrow.numpy()[0, :nblock], 1)
+
+    d.qacc.fill_(wp.inf)
+    d.qacc_warmstart.zero_()
+    mjwarp.solve(m, d)
+    np.testing.assert_allclose(d.qacc.numpy()[0], mjd.qacc, rtol=1e-4, atol=1e-4)
+
   @parameterized.parameters(types.Model, types.Data, types.RenderContext)
   def test_is_batched_metadata(self, dataclass_type):
     """Verify that all fields specified with 'nworld' or '*' are marked with _is_batched=True."""

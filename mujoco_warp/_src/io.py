@@ -126,11 +126,12 @@ def _create_constraint(
   return types.Constraint(**efc_kwargs)
 
 
-def _jtdaj_groups(mjd: mujoco.MjData, dof_friction: bool = False) -> tuple[np.ndarray, np.ndarray]:
+def _jtdaj_groups(mjm: mujoco.MjModel, mjd: mujoco.MjData, dof_friction: bool = False) -> tuple[np.ndarray, np.ndarray]:
   """Group loaded efc rows into JTDAJ blocks: maximal runs sharing (efc_type, efc_id).
 
   MuJoCo lays each constraint's rows out contiguously, so this reproduces the block list
   make_constraint builds in-kernel. Returns block start rows (adr) and lengths (nrow).
+  The edge rows of a flex equality share an efc_id but are each their own block.
   DOF friction rows get no block, matching make_constraint, unless dof_friction.
   """
   nefc = mjd.nefc
@@ -138,8 +139,11 @@ def _jtdaj_groups(mjd: mujoco.MjData, dof_friction: bool = False) -> tuple[np.nd
     return np.zeros(0, dtype=int), np.zeros(0, dtype=int)
   etype = mjd.efc_type[:nefc]
   eid = mjd.efc_id[:nefc]
+  is_eq = etype == mujoco.mjtConstraint.mjCNSTR_EQUALITY
+  is_flex_eq = np.zeros(nefc, dtype=bool)
+  is_flex_eq[is_eq] = mjm.eq_type[eid[is_eq]] == mujoco.mjtEq.mjEQ_FLEX
   boundary = np.ones(nefc, dtype=bool)
-  boundary[1:] = (etype[1:] != etype[:-1]) | (eid[1:] != eid[:-1])
+  boundary[1:] = (etype[1:] != etype[:-1]) | (eid[1:] != eid[:-1]) | is_flex_eq[1:]
   adr = np.flatnonzero(boundary)
   nrow = np.diff(np.append(adr, nefc))
   if dof_friction:
@@ -148,10 +152,10 @@ def _jtdaj_groups(mjd: mujoco.MjData, dof_friction: bool = False) -> tuple[np.nd
   return adr[keep], nrow[keep]
 
 
-def _dense_J_supports(mjd: mujoco.MjData):
+def _dense_J_supports(mjm: mujoco.MjModel, mjd: mujoco.MjData):
   """Each block's rows and the union of their nonzero columns, DOF friction rows included."""
   dense_J = mjd.efc_J.reshape((mjd.nefc, -1))
-  for start, nrow in zip(*_jtdaj_groups(mjd, dof_friction=True)):
+  for start, nrow in zip(*_jtdaj_groups(mjm, mjd, dof_friction=True)):
     yield start, nrow, np.flatnonzero(np.any(dense_J[start : start + nrow] != 0.0, axis=0))
 
 
@@ -2652,7 +2656,7 @@ def put_data(
   sizes["qld_total"] = qld_total
 
   # MuJoCo's dense efc_J loads as sparse rows that keep their block's union support
-  supports = list(_dense_J_supports(mjd)) if is_sparse(mjm) and not mujoco.mj_isSparse(mjm) and mjd.nefc else []
+  supports = list(_dense_J_supports(mjm, mjd)) if is_sparse(mjm) and not mujoco.mj_isSparse(mjm) and mjd.nefc else []
   supports_nnz = sum(nrow * cols.size for _, nrow, cols in supports)
   if njmax_nnz is None:
     if is_sparse(mjm):
@@ -2750,7 +2754,7 @@ def put_data(
   # make_constraint builds the block list in-kernel; put_data does not run it, so build it here
   # -- otherwise solving a put_data state would assemble an empty J^T D J.
   if is_sparse(mjm) and mjm.opt.solver == mujoco.mjtSolver.mjSOL_NEWTON:
-    jtdaj_adr, jtdaj_nrow = _jtdaj_groups(mjd)
+    jtdaj_adr, jtdaj_nrow = _jtdaj_groups(mjm, mjd)
     nblock = jtdaj_adr.shape[0]
     adr_row = np.zeros(njmax, dtype=int)
     nrow_row = np.zeros(njmax, dtype=int)
